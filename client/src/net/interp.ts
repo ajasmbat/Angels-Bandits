@@ -5,7 +5,7 @@
 // loop feeds it a render time; it never looks at a clock itself.
 
 import type { Pose } from "@angels-bandits/common/protocol";
-import { wrapLerp } from "@angels-bandits/common/world";
+import { type Vec3, wrapDelta, wrapLerp } from "@angels-bandits/common/world";
 import * as THREE from "three";
 
 /** Samples older than this before the newest one are dropped, ms. */
@@ -40,6 +40,21 @@ export class InterpolationBuffer {
       if (head === undefined || head.time >= cutoff) break;
       this.samples.shift();
     }
+  }
+
+  /**
+   * Velocity across the two newest samples (m/s), seam-safe via wrapDelta —
+   * the lead indicator's target-velocity estimate. Null until two samples.
+   */
+  latestVelocity(): Vec3 | null {
+    if (this.samples.length < 2) return null;
+    const a = this.samples[this.samples.length - 2];
+    const b = this.samples[this.samples.length - 1];
+    if (a === undefined || b === undefined) return null;
+    const dt = (b.time - a.time) / 1000;
+    if (dt <= 0) return null;
+    const d = wrapDelta(a.pose.pos, b.pose.pos);
+    return { x: d.x / dt, y: d.y / dt, z: d.z / dt };
   }
 
   /**

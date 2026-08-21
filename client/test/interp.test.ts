@@ -76,3 +76,31 @@ describe("InterpolationBuffer", () => {
     expect(buf.latestTime).toBe(1000);
   });
 });
+
+describe("InterpolationBuffer.latestVelocity", () => {
+  it("derives velocity from the two newest samples: 20 m in 0.5 s → 40 m/s", () => {
+    const buf = new InterpolationBuffer();
+    buf.push(1000, pose(100, 300, 100));
+    buf.push(1500, pose(120, 290, 80));
+    const v = buf.latestVelocity();
+    expect(v?.x).toBeCloseTo(40);
+    expect(v?.y).toBeCloseTo(-20);
+    expect(v?.z).toBeCloseTo(-40);
+  });
+
+  it("is seam-safe: x=1990 → x=10 over 0.5 s is +40 m/s east, never −3960", () => {
+    const buf = new InterpolationBuffer();
+    buf.push(0, pose(1990, 300, 100));
+    buf.push(500, pose(10, 300, 100));
+    const v = buf.latestVelocity();
+    expect(v?.x).toBeCloseTo(40);
+    expect(v?.z).toBeCloseTo(0);
+  });
+
+  it("returns null with fewer than two samples", () => {
+    const buf = new InterpolationBuffer();
+    expect(buf.latestVelocity()).toBeNull();
+    buf.push(1000, pose(100, 300, 100));
+    expect(buf.latestVelocity()).toBeNull();
+  });
+});

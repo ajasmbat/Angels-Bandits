@@ -120,11 +120,18 @@ export class RemotePlanes {
     remote.lastPose = null;
   }
 
-  /** Living remotes as hit-test targets: interpolated canonical positions. */
-  targets(): { id: string; pos: Vec3 }[] {
-    const out: { id: string; pos: Vec3 }[] = [];
+  /** Living remotes as hit-test / lead targets: interpolated canonical
+   * positions plus a seam-safe velocity estimate (zero until two samples). */
+  targets(): { id: string; pos: Vec3; vel: Vec3 }[] {
+    const out: { id: string; pos: Vec3; vel: Vec3 }[] = [];
     for (const [id, r] of this.remotes) {
-      if (r.alive && r.lastPos) out.push({ id, pos: r.lastPos });
+      if (r.alive && r.lastPos) {
+        out.push({
+          id,
+          pos: r.lastPos,
+          vel: r.buffer.latestVelocity() ?? { x: 0, y: 0, z: 0 },
+        });
+      }
     }
     return out;
   }

@@ -34,6 +34,7 @@ import { nearestImage } from "./render/wrapPlacement";
 import { Hud } from "./ui/hud";
 import { requestName, showJoinError } from "./ui/join";
 import { KillFeed } from "./ui/killfeed";
+import { LeadIndicator } from "./ui/lead";
 import { EdgeMarkers } from "./ui/markers";
 import { Minimap } from "./ui/minimap";
 import { Scoreboard } from "./ui/scoreboard";
@@ -94,6 +95,7 @@ scene.add(tracers.group);
 const hud = new Hud();
 const minimap = new Minimap(city.cityBuildings);
 const edgeMarkers = new EdgeMarkers();
+const leadIndicator = new LeadIndicator();
 const markerScratch = new THREE.Vector3();
 const killFeed = new KillFeed();
 const scoreboard = new Scoreboard(socket.selfId);
@@ -386,11 +388,18 @@ renderer.setAnimationLoop((now) => {
 
   renderer.render(scene, camera);
 
-  // Matrices are fresh after the render — project the offscreen arrows now.
+  // Matrices are fresh after the render — project the screen-space UI now.
   edgeMarkers.update(
     camera,
     chase.position,
     targets.map((t) => t.pos),
+    markerScratch,
+  );
+  leadIndicator.update(
+    camera,
+    chase.position,
+    flight,
+    alive ? targets : [], // no reticle from the kill-cam
     markerScratch,
   );
 

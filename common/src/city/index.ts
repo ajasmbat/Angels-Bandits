@@ -45,8 +45,9 @@ export const PLAZA_BLOCKS: ReadonlyArray<readonly [number, number]> = [
   [8, 2],
 ];
 
-/** mulberry32 — tiny seeded PRNG, identical output in Node and the browser. */
-function mulberry32(seed: number): () => number {
+/** mulberry32 — tiny seeded PRNG, identical output in Node and the browser.
+ * Exported for other deterministic-cosmetics consumers (V3 traffic). */
+export function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
     a = (a + 0x6d2b79f5) | 0;

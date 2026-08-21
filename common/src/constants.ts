@@ -24,13 +24,49 @@ export const LANDMARK_HEIGHT = 250;
 /** Footprint side of the slim landmark towers, meters. */
 export const LANDMARK_FOOTPRINT = 90;
 
-// --- Flight (placeholders — T2 tunes them) ---
+// --- Flight (tuned by T2) ---
 /** Minimum airspeed, m/s. At MIN_SPEED you mush, never stall. */
 export const MIN_SPEED = 40;
 /** Maximum airspeed, m/s. */
 export const MAX_SPEED = 90;
 /** Soft altitude ceiling, meters — engine power fades above this. */
 export const SOFT_CEILING = 600;
+/** Band above SOFT_CEILING over which engine power fades to nothing, meters. */
+export const CEILING_FADE = 150;
+/** Sink rate at full ceiling fade, m/s — the "mush back down", never a wall. */
+export const MUSH_SINK = 25;
+/** Throttle response: target-speed change per second at full W/S, m/s². */
+export const THROTTLE_RATE = 30;
+/** Proportional pull of airspeed toward the commanded speed, 1/s. */
+export const SPEED_RESPONSE = 0.6;
+/** Energy rule strength: speed gain at a straight-down dive, m/s² (loss when climbing). */
+export const ENERGY_GAIN = 8;
+/** Speed bleed at full turn/pitch deflection, m/s². */
+export const TURN_BLEED = 8;
+/** Max pitch rate at full mouse deflection, rad/s. */
+export const PITCH_RATE = 1.0;
+/** Max yaw (turn) rate at full mouse deflection, rad/s. */
+export const TURN_RATE = 0.9;
+/** Bank angle the plane leans into at full turn deflection, rad (~57°). */
+export const BANK_ANGLE = 1.0;
+/** Exponential response of roll toward its target, 1/s. */
+export const BANK_RESPONSE = 4;
+/** Pitch is clamped to ±this, rad (~85° — arcade mouse-aim never goes vertical). */
+export const PITCH_LIMIT = 1.48;
+/** Player collision-sphere radius, meters. */
+export const PLAYER_RADIUS = 2;
+/** Respawn altitude, meters — above every rooftop (tallest landmark is 250 m). */
+export const RESPAWN_ALTITUDE = 300;
+/** Respawn airspeed, m/s — combat speed, mid-throttle. */
+export const RESPAWN_SPEED = 65;
+
+// --- Chase camera (client-only feel, kept here with the rest of the tuning) ---
+/** Camera distance behind the plane, meters. */
+export const CHASE_DISTANCE = 22;
+/** Camera height above the plane, meters. */
+export const CHASE_HEIGHT = 6;
+/** Exponential response of the camera toward its chase position, 1/s — the lag. */
+export const CAMERA_RESPONSE = 3.5;
 
 // --- Networking rates ---
 /** Client → server input/state rate, Hz. */

@@ -10,14 +10,53 @@
         margin: 0;
         height: 100%;
         overflow: hidden;
-        background: #0a0a14;
+        background: #141225;
+        cursor: crosshair;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       }
       canvas {
         display: block;
       }
+      #hud {
+        position: fixed;
+        left: 16px;
+        bottom: 14px;
+        color: #9fd8e8;
+        font-size: 13px;
+        line-height: 1.5;
+        text-shadow: 0 1px 2px #000;
+        user-select: none;
+        pointer-events: none;
+      }
+      #crosshair {
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        width: 6px;
+        height: 6px;
+        margin: -3px 0 0 -3px;
+        border: 1px solid #9fd8e8aa;
+        border-radius: 50%;
+        pointer-events: none;
+      }
+      #fade {
+        position: fixed;
+        inset: 0;
+        background: #000;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.7s ease-out;
+      }
+      #fade.dead {
+        transition: none;
+        opacity: 1;
+      }
     </style>
   </head>
   <body>
+    <div id="crosshair"></div>
+    <div id="hud"></div>
+    <div id="fade"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

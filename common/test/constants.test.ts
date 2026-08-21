@@ -1,4 +1,3 @@
-import { describe, expect, it } from "vitest";
 import {
   BLOCK_PITCH,
   BUILDING_MAX_HEIGHT,
@@ -7,6 +6,7 @@ import {
   LANDMARK_HEIGHT,
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
+import { describe, expect, it } from "vitest";
 
 describe("world constants invariants", () => {
   it("BLOCK_PITCH divides WORLD_SIZE evenly, so the street grid tiles across the torus seam", () => {

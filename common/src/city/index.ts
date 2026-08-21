@@ -65,7 +65,9 @@ const blockKey = (bx: number, bz: number) => bx * GRID + bz;
  */
 export function generateCity(seed: number): Building[] {
   const rand = mulberry32(seed);
-  const landmarks = new Set(LANDMARK_BLOCKS.map(([bx, bz]) => blockKey(bx, bz)));
+  const landmarks = new Set(
+    LANDMARK_BLOCKS.map(([bx, bz]) => blockKey(bx, bz)),
+  );
   const plazas = new Set(PLAZA_BLOCKS.map(([bx, bz]) => blockKey(bx, bz)));
 
   const buildings: Building[] = [];
@@ -100,7 +102,8 @@ export function generateCity(seed: number): Building[] {
         depth: Math.round(BUILDING_MIN_FOOTPRINT + rDepth * span),
         // Square the roll to skew heights low: mostly mid-rise, rare talls.
         height: Math.round(
-          BUILDING_MIN_HEIGHT + rHeight * rHeight * (BUILDING_MAX_HEIGHT - BUILDING_MIN_HEIGHT),
+          BUILDING_MIN_HEIGHT +
+            rHeight * rHeight * (BUILDING_MAX_HEIGHT - BUILDING_MIN_HEIGHT),
         ),
       });
     }

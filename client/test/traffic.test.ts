@@ -120,7 +120,7 @@ describe("carPose", () => {
         }).sort((a, b) => a - b);
         for (let i = 0; i < along.length; i++) {
           const next = along[(i + 1) % along.length];
-          const gap = ((next - along[i]) % 2000 + 2000) % 2000 || 2000;
+          const gap = (((next - along[i]) % 2000) + 2000) % 2000 || 2000;
           expect(gap).toBeGreaterThanOrEqual(200 - 1e-6);
         }
       }

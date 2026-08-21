@@ -38,6 +38,7 @@ import { RemotePlanes } from "./render/remotes";
 import { GroundPlane, SkyDome, setupSky } from "./render/sky";
 import { Streetlights } from "./render/streetlights";
 import { Tracers } from "./render/tracers";
+import { Traffic } from "./render/traffic";
 import { nearestImage } from "./render/wrapPlacement";
 import { Hud } from "./ui/hud";
 import { requestName, showJoinError } from "./ui/join";
@@ -117,6 +118,10 @@ const skyDome = new SkyDome();
 scene.add(skyDome.mesh);
 const streetlights = new Streetlights();
 scene.add(streetlights.group);
+// Cosmetic street traffic — pure function of the synced server clock, so
+// every client (late joiners included) sees identical cars. Zero netcode.
+const traffic = new Traffic(welcome.seed);
+scene.add(traffic.mesh);
 const explosions = new Explosions();
 scene.add(explosions.group);
 
@@ -321,6 +326,7 @@ declare global {
       aimAt: (x: number, z: number, y?: number) => void;
       setFiring: (held: boolean) => void;
       lampImage: (x: number, z: number) => { x: number; z: number } | null;
+      traffic: () => ReturnType<Traffic["debug"]>;
     };
   }
 }
@@ -365,6 +371,9 @@ window.__ab = {
   setFiring: (held) => guns.setTrigger(held),
   // Seam QA: where the lamp nearest canonical (x, z) is drawn right now.
   lampImage: (x, z) => streetlights.imageOf(x, z),
+  // Traffic QA: canonical poses of the first cars at the current synced time —
+  // two tabs must report the same cars at the same server time.
+  traffic: () => traffic.debug(socket.renderTime()),
 };
 
 // --- Frame loop ---
@@ -445,6 +454,7 @@ renderer.setAnimationLoop((now) => {
   remotes.update(socket.renderTime(), chase.position, dt);
   city.update(chase.position);
   streetlights.update(chase.position);
+  traffic.update(chase.position, socket.renderTime());
   ground.update(chase.position);
   skyDome.update(chase.position);
   explosions.update(chase.position, now, dt);

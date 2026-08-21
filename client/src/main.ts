@@ -34,6 +34,7 @@ import { nearestImage } from "./render/wrapPlacement";
 import { Hud } from "./ui/hud";
 import { requestName, showJoinError } from "./ui/join";
 import { KillFeed } from "./ui/killfeed";
+import { EdgeMarkers } from "./ui/markers";
 import { Minimap } from "./ui/minimap";
 import { Scoreboard } from "./ui/scoreboard";
 
@@ -92,6 +93,8 @@ const tracers = new Tracers();
 scene.add(tracers.group);
 const hud = new Hud();
 const minimap = new Minimap(city.cityBuildings);
+const edgeMarkers = new EdgeMarkers();
+const markerScratch = new THREE.Vector3();
 const killFeed = new KillFeed();
 const scoreboard = new Scoreboard(socket.selfId);
 scoreboard.setRoster(welcome.roster);
@@ -382,6 +385,14 @@ renderer.setAnimationLoop((now) => {
   minimap.update(flight.pos, flight.yaw, remotes.contacts());
 
   renderer.render(scene, camera);
+
+  // Matrices are fresh after the render — project the offscreen arrows now.
+  edgeMarkers.update(
+    camera,
+    chase.position,
+    targets.map((t) => t.pos),
+    markerScratch,
+  );
 
   // HUD + rolling perf counters (~2 Hz refresh).
   perf.frames++;

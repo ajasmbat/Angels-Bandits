@@ -3,5 +3,6 @@ export * from "./constants";
 export * from "./world/index";
 export * from "./flight";
 export * from "./collision";
+export * from "./combat";
 export * from "./city/index";
 export type * from "./protocol";

@@ -1,0 +1,9 @@
+# Keep the build context tiny and the ticket CLI token out of images.
+node_modules
+**/node_modules
+client/dist
+.git
+.fredrin
+Dockerfile
+fly.toml
+*.md

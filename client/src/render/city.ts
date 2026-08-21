@@ -9,6 +9,7 @@ import { type Building, generateCity } from "@angels-bandits/common/city";
 import { LANDMARK_HEIGHT } from "@angels-bandits/common/constants";
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { createBuildingsMaterial } from "./buildings-material";
 import { nearestImage } from "./wrapPlacement";
 
 export class CityRenderer {
@@ -23,10 +24,8 @@ export class CityRenderer {
     // into a building standing on the ground.
     const geometry = new THREE.BoxGeometry(1, 1, 1);
     geometry.translate(0, 0.5, 0);
-    const material = new THREE.MeshStandardMaterial({
-      roughness: 0.85,
-      metalness: 0.15,
-    });
+    // Night-neon material with procedural emissive window grids (T5 art pass).
+    const material = createBuildingsMaterial();
 
     this.mesh = new THREE.InstancedMesh(
       geometry,

@@ -18,6 +18,8 @@ import {
 import type { ScoreEntry, SpawnState } from "@angels-bandits/common/protocol";
 import { wrapDelta } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { GameAudio } from "./audio/sound";
+import { NEAR_MISS_RADIUS, closestApproach, spatialize } from "./audio/spatial";
 import { Bullets } from "./game/bullets";
 import { ChaseCamera } from "./game/camera";
 import { detectCrash } from "./game/collision";
@@ -26,14 +28,18 @@ import { Guns } from "./game/guns";
 import { bulletHitsSphere } from "./game/hitdetect";
 import { GameSocket } from "./net/socket";
 import { CityRenderer } from "./render/city";
-import { buildPlaneMesh } from "./render/plane";
+import { Explosions } from "./render/fx";
+import { buildPlaneMesh, spinPropeller } from "./render/plane";
 import { RemotePlanes } from "./render/remotes";
-import { GroundPlane, setupSky } from "./render/sky";
+import { GroundPlane, SkyDome, setupSky } from "./render/sky";
 import { Tracers } from "./render/tracers";
 import { nearestImage } from "./render/wrapPlacement";
 import { Hud } from "./ui/hud";
 import { requestName, showJoinError } from "./ui/join";
 import { KillFeed } from "./ui/killfeed";
+import { LeadIndicator } from "./ui/lead";
+import { EdgeMarkers } from "./ui/markers";
+import { Minimap } from "./ui/minimap";
 import { Scoreboard } from "./ui/scoreboard";
 
 // --- Join flow: name → server welcome (identity, seed, spawn) ---
@@ -76,6 +82,10 @@ const city = new CityRenderer(welcome.seed);
 scene.add(city.mesh);
 const ground = new GroundPlane();
 scene.add(ground.mesh);
+const skyDome = new SkyDome();
+scene.add(skyDome.mesh);
+const explosions = new Explosions();
+scene.add(explosions.group);
 
 const plane = buildPlaneMesh();
 scene.add(plane);
@@ -89,7 +99,12 @@ const guns = new Guns();
 const bullets = new Bullets();
 const tracers = new Tracers();
 scene.add(tracers.group);
+const audio = new GameAudio();
 const hud = new Hud();
+const minimap = new Minimap(city.cityBuildings);
+const edgeMarkers = new EdgeMarkers();
+const leadIndicator = new LeadIndicator();
+const markerScratch = new THREE.Vector3();
 const killFeed = new KillFeed();
 const scoreboard = new Scoreboard(socket.selfId);
 scoreboard.setRoster(welcome.roster);
@@ -188,6 +203,7 @@ function remoteFired(id: string): void {
     true,
   );
   tracers.flash(origin, performance.now());
+  audio.remoteGunshot(origin, flight.pos, flight.yaw);
 }
 
 // --- Server events ---
@@ -221,6 +237,15 @@ socket.events.onDamage = (msg) => {
 };
 socket.events.onDeath = (msg) => {
   lastDeath = { victimId: msg.victimId, killerId: msg.killerId };
+  // Grab the victim's position before setDead clears it (self = own plane).
+  const victimPos =
+    msg.victimId === socket.selfId
+      ? flight.pos
+      : remotes.poseOf(msg.victimId)?.pos;
+  if (victimPos) {
+    audio.explosion(victimPos, flight.pos, flight.yaw);
+    explosions.explode(victimPos, performance.now());
+  }
   killFeed.add(
     msg.killerId === null ? null : nameOf(msg.killerId),
     nameOf(msg.victimId),
@@ -340,12 +365,15 @@ renderer.setAnimationLoop((now) => {
       bullets.spawn(shot.seq, shot.origin, shot.vel);
       socket.sendFire(shot.seq);
       tracers.flash(shot.origin, now);
+      audio.gunshot();
     }
 
     chase.update(camera, flight, dt);
     const planePos = nearestImage(chase.position, flight.pos);
     plane.position.set(planePos.x, planePos.y, planePos.z);
     plane.rotation.set(flight.pitch, flight.yaw, flight.roll, "YXZ");
+    // Prop speed tracks the commanded throttle (same factor as remotes').
+    spinPropeller(plane, dt * flight.targetSpeed * 0.7);
   } else if (killCamTargetId !== null) {
     // Kill-cam beat: hold position, watch the killer if we can see them.
     const killerPose = remotes.poseOf(killCamTargetId);
@@ -359,7 +387,16 @@ renderer.setAnimationLoop((now) => {
   bullets.step(dt);
   const targets = remotes.targets();
   for (const bullet of [...bullets.all]) {
-    if (bullet.cosmetic) continue;
+    if (bullet.cosmetic) {
+      // An enemy bullet shaving past this frame → panned near-miss whoosh.
+      if (
+        alive &&
+        closestApproach(bullet.prev, bullet.pos, flight.pos) < NEAR_MISS_RADIUS
+      ) {
+        audio.whoosh(spatialize(flight.pos, flight.yaw, bullet.pos).pan, now);
+      }
+      continue;
+    }
     for (const target of targets) {
       if (bulletHitsSphere(bullet.prev, bullet.pos, target.pos)) {
         socket.sendHit(target.id, bullet.origin, bullet.seq);
@@ -369,16 +406,37 @@ renderer.setAnimationLoop((now) => {
     }
   }
 
-  remotes.update(socket.renderTime(), chase.position);
+  remotes.update(socket.renderTime(), chase.position, dt);
   city.update(chase.position);
   ground.update(chase.position);
+  skyDome.update(chase.position);
+  explosions.update(chase.position, now, dt);
   tracers.update(bullets.all, chase.position, now);
 
   const heat = guns.state;
   hud.setHeat(heat.heat, heat.locked);
   hud.update(now);
+  const contacts = remotes.contacts();
+  minimap.update(flight.pos, flight.yaw, contacts);
+  audio.setEngine(flight.targetSpeed, alive);
+  audio.syncRemotes(contacts, flight.pos, flight.yaw);
 
   renderer.render(scene, camera);
+
+  // Matrices are fresh after the render — project the screen-space UI now.
+  edgeMarkers.update(
+    camera,
+    chase.position,
+    targets.map((t) => t.pos),
+    markerScratch,
+  );
+  leadIndicator.update(
+    camera,
+    chase.position,
+    flight,
+    alive ? targets : [], // no reticle from the kill-cam
+    markerScratch,
+  );
 
   // HUD + rolling perf counters (~2 Hz refresh).
   perf.frames++;

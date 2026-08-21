@@ -1,33 +1,21 @@
-// Death & respawn — the thin client adapter over the shared collision seam.
+// Crash detection — the thin client adapter over the shared collision seam.
 // Crash detection itself lives in @angels-bandits/common/collision so client
-// and (later) server judge crashes from the same generateCity() data.
+// and server judge crashes from the same generateCity() data. Since T4 the
+// client only DETECTS the crash and reports it; death, credit, and the
+// respawn all come back from the server (authority split).
 
 import type { Building } from "@angels-bandits/common/city";
 import { collideCity, hitsGround } from "@angels-bandits/common/collision";
-import {
-  PLAYER_RADIUS,
-  RESPAWN_ALTITUDE,
-} from "@angels-bandits/common/constants";
-import {
-  type FlightState,
-  createFlightState,
-} from "@angels-bandits/common/flight";
+import { PLAYER_RADIUS } from "@angels-bandits/common/constants";
+import type { FlightState } from "@angels-bandits/common/flight";
 
-/**
- * Kill check + instant solo respawn: same x/z at mid altitude, level, combat
- * speed (RESPAWN_ALTITUDE is above every rooftop, so anywhere is safe).
- * Returns the respawned state when the plane died this frame, else null.
- */
-export function checkDeath(
+/** True the frame the plane hits a building or the ground. */
+export function detectCrash(
   state: FlightState,
   buildings: readonly Building[],
-): FlightState | null {
-  const dead =
+): boolean {
+  return (
     hitsGround(state.pos, PLAYER_RADIUS) ||
-    collideCity(state.pos, PLAYER_RADIUS, buildings) !== null;
-  if (!dead) return null;
-  return createFlightState(
-    { x: state.pos.x, y: RESPAWN_ALTITUDE, z: state.pos.z },
-    state.yaw,
+    collideCity(state.pos, PLAYER_RADIUS, buildings) !== null
   );
 }

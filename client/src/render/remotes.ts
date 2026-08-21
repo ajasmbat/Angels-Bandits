@@ -4,16 +4,22 @@
 // viewer (nearestImage) — the same placement rule as the rest of the scene,
 // which is what keeps a seam-crossing remote gliding instead of teleporting.
 
-import type { RosterEntry, SnapshotMsg } from "@angels-bandits/common/protocol";
+import type {
+  Pose,
+  RosterEntry,
+  SnapshotMsg,
+} from "@angels-bandits/common/protocol";
 import type { Vec3 } from "@angels-bandits/common/world";
-import type * as THREE from "three";
+import * as THREE from "three";
 import { InterpolationBuffer } from "../net/interp";
 import { TAG_ALTITUDE, createNameTag, disposeNameTag } from "./nametags";
 import { buildPlaneMesh, disposePlaneMesh } from "./plane";
 import { nearestImage } from "./wrapPlacement";
 
-/** Remote planes get a warm accent so friend-or-foe reads at a glance (T4 owns teams). */
+/** Remote planes get a warm accent so friend-or-foe reads at a glance (teams are v2). */
 const REMOTE_ACCENT = 0xff8a3d;
+/** Spawn-protection shimmer pulse rate, Hz. */
+const SHIMMER_HZ = 5;
 
 interface Remote {
   mesh: THREE.Group;
@@ -21,6 +27,12 @@ interface Remote {
   buffer: InterpolationBuffer;
   /** Canonical pose last applied — exposed for QA/debug. */
   lastPos: Vec3 | null;
+  /** Full pose last sampled (remote tracer spawning). */
+  lastPose: Pose | null;
+  /** False between a death event and the next respawn — hidden, no samples. */
+  alive: boolean;
+  /** Spawn protection as of the last snapshot (drives the shimmer). */
+  prot: boolean;
 }
 
 export class RemotePlanes {
@@ -58,7 +70,7 @@ export class RemotePlanes {
 
   /** Feed one server snapshot into the per-player buffers. */
   ingest(snap: SnapshotMsg): void {
-    for (const { id, pose } of snap.players) {
+    for (const { id, pose, prot } of snap.players) {
       if (id === this.selfId) continue;
       let remote = this.remotes.get(id);
       if (!remote) {
@@ -67,23 +79,72 @@ export class RemotePlanes {
           tag: createNameTag(this.names.get(id) ?? "???"),
           buffer: new InterpolationBuffer(),
           lastPos: null,
+          lastPose: null,
+          alive: true,
+          prot: false,
         };
         remote.mesh.visible = false; // until the first sampled pose
         remote.tag.visible = false;
         this.scene.add(remote.mesh, remote.tag);
         this.remotes.set(id, remote);
       }
+      // Presence in a snapshot IS being alive — dead planes are omitted.
+      remote.alive = true;
+      remote.prot = prot;
       remote.buffer.push(snap.time, pose);
     }
+  }
+
+  /** Death event: hide the plane and drop stale samples until it respawns. */
+  setDead(id: string): void {
+    const remote = this.remotes.get(id);
+    if (!remote) return;
+    remote.alive = false;
+    remote.buffer = new InterpolationBuffer();
+    remote.lastPos = null;
+    remote.lastPose = null;
+    remote.mesh.visible = false;
+    remote.tag.visible = false;
+  }
+
+  /** Respawn event: fresh buffer so the teleport snaps instead of gliding. */
+  respawn(id: string): void {
+    const remote = this.remotes.get(id);
+    if (!remote) return;
+    remote.alive = true;
+    remote.buffer = new InterpolationBuffer();
+    remote.lastPos = null;
+    remote.lastPose = null;
+  }
+
+  /** Living remotes as hit-test targets: interpolated canonical positions. */
+  targets(): { id: string; pos: Vec3 }[] {
+    const out: { id: string; pos: Vec3 }[] = [];
+    for (const [id, r] of this.remotes) {
+      if (r.alive && r.lastPos) out.push({ id, pos: r.lastPos });
+    }
+    return out;
+  }
+
+  /** The last sampled pose of one remote (remote tracer spawning). */
+  poseOf(id: string): Pose | null {
+    const remote = this.remotes.get(id);
+    return remote?.alive ? remote.lastPose : null;
+  }
+
+  nameOf(id: string): string {
+    return this.names.get(id) ?? "???";
   }
 
   /** Sample every buffer at `renderTime` and place meshes around `viewer`. */
   update(renderTime: number | null, viewer: Vec3): void {
     if (renderTime === null) return;
     for (const remote of this.remotes.values()) {
+      if (!remote.alive) continue;
       const pose = remote.buffer.sample(renderTime);
       if (!pose) continue;
       remote.lastPos = pose.pos;
+      remote.lastPose = pose;
       const p = nearestImage(viewer, pose.pos);
       remote.mesh.position.set(p.x, p.y, p.z);
       remote.mesh.quaternion.set(
@@ -95,11 +156,35 @@ export class RemotePlanes {
       remote.tag.position.set(p.x, p.y + TAG_ALTITUDE, p.z);
       remote.mesh.visible = true;
       remote.tag.visible = true;
+      // Spawn-protection shimmer: pulse the whole plane's material emissive.
+      const shimmer = remote.prot
+        ? 0.75 + 0.25 * Math.sin((renderTime / 1000) * SHIMMER_HZ * 2 * Math.PI)
+        : 0;
+      for (const child of remote.mesh.children) {
+        if (child instanceof THREE.Mesh) {
+          const mat = child.material as THREE.MeshStandardMaterial;
+          if (remote.prot) {
+            mat.emissive.setHex(0x9fd8e8);
+            mat.emissiveIntensity = shimmer;
+          } else if (mat.emissive.getHex() === 0x9fd8e8) {
+            // Restore the un-shimmered look (accent parts re-glow their color).
+            mat.emissive.setHex(mat.color.getHex());
+            mat.emissiveIntensity =
+              mat.color.getHex() === REMOTE_ACCENT ? 0.6 : 0;
+          }
+        }
+      }
     }
   }
 
-  /** QA hook: each remote's canonical position and render-space placement. */
-  debug(): { id: string; canonical: Vec3 | null; rendered: Vec3 }[] {
+  /** QA hook: each remote's canonical position, placement, and combat flags. */
+  debug(): {
+    id: string;
+    canonical: Vec3 | null;
+    rendered: Vec3;
+    alive: boolean;
+    prot: boolean;
+  }[] {
     return [...this.remotes.entries()].map(([id, r]) => ({
       id,
       canonical: r.lastPos,
@@ -108,6 +193,8 @@ export class RemotePlanes {
         y: r.mesh.position.y,
         z: r.mesh.position.z,
       },
+      alive: r.alive,
+      prot: r.prot,
     }));
   }
 }

@@ -15,8 +15,14 @@ export const STREET_WIDTH = 30;
 // --- Buildings ---
 export const BUILDING_MIN_HEIGHT = 40;
 export const BUILDING_MAX_HEIGHT = 180;
+/** Smallest building footprint side, meters. */
+export const BUILDING_MIN_FOOTPRINT = 100;
+/** Largest footprint side, meters. Must stay ≤ BLOCK_PITCH − STREET_WIDTH. */
+export const BUILDING_MAX_FOOTPRINT = 170;
 /** Hand-placed landmark supertalls for orientation. */
 export const LANDMARK_HEIGHT = 250;
+/** Footprint side of the slim landmark towers, meters. */
+export const LANDMARK_FOOTPRINT = 90;
 
 // --- Flight (placeholders — T2 tunes them) ---
 /** Minimum airspeed, m/s. At MIN_SPEED you mush, never stall. */

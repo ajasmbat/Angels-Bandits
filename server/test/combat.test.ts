@@ -93,7 +93,15 @@ const shoot = (
   targetPos = P,
 ) => {
   combat.fire(shooter, seq, now);
-  return combat.hit(shooter, target, seq, shooterPos, shooterPos, targetPos, now);
+  return combat.hit(
+    shooter,
+    target,
+    seq,
+    shooterPos,
+    shooterPos,
+    targetPos,
+    now,
+  );
 };
 
 describe("hit claim validation", () => {
@@ -135,15 +143,7 @@ describe("hit claim validation", () => {
     const combat = arena(2);
     combat.fire("p0", 0, T);
     // HIT_ORIGIN_SLACK is 50 m; an origin 60 m out is not this plane's gun.
-    const res = combat.hit(
-      "p0",
-      "p1",
-      0,
-      { x: 160, y: 300, z: 100 },
-      P,
-      P,
-      T,
-    );
+    const res = combat.hit("p0", "p1", 0, { x: 160, y: 300, z: 100 }, P, P, T);
     expect(!res.ok && res.reason).toBe("origin");
   });
 

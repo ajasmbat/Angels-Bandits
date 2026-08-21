@@ -28,7 +28,12 @@ export interface GunHeat {
 }
 
 export function createGunHeat(now = 0): GunHeat {
-  return { heat: 0, locked: false, at: now, lastShotAt: Number.NEGATIVE_INFINITY };
+  return {
+    heat: 0,
+    locked: false,
+    at: now,
+    lastShotAt: Number.NEGATIVE_INFINITY,
+  };
 }
 
 /** Heat after cooling to `now` (unlocks when it falls below HEAT_LOCK_BELOW). */

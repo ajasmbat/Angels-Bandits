@@ -115,7 +115,8 @@ export class Combat {
 
   isProtected(id: string, now: number): boolean {
     const p = this.players.get(id);
-    return p !== undefined && p.alive && now < p.protectedUntil;
+    if (!p?.alive) return false;
+    return now < p.protectedUntil;
   }
 
   hpOf(id: string): number {
@@ -207,7 +208,9 @@ export class Combat {
     target.lastDamagerId = shooterId;
     target.lastDamagedAt = now;
     const death =
-      target.hp <= 0 ? this.kill(targetId, target, shooterId, "shot", now) : null;
+      target.hp <= 0
+        ? this.kill(targetId, target, shooterId, "shot", now)
+        : null;
     return { ok: true, hp: Math.round(Math.max(0, target.hp)), death };
   }
 

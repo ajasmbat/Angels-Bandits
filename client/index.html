@@ -51,6 +51,159 @@
         transition: none;
         opacity: 1;
       }
+      #crosshair.hit {
+        border-color: #ffc46b;
+        box-shadow: 0 0 8px #ffc46b;
+      }
+      #gauges {
+        position: fixed;
+        right: 16px;
+        bottom: 14px;
+        width: 180px;
+        pointer-events: none;
+        user-select: none;
+      }
+      .gauge {
+        margin-top: 8px;
+      }
+      .gauge label {
+        display: block;
+        color: #9fd8e8;
+        font-size: 10px;
+        letter-spacing: 0.15em;
+        margin-bottom: 3px;
+        text-shadow: 0 1px 2px #000;
+      }
+      .gauge .bar {
+        height: 6px;
+        background: #0c0b18cc;
+        border: 1px solid #27e0c055;
+      }
+      .gauge .fill {
+        height: 100%;
+        width: 100%;
+        background: #27e0c0;
+        transition: width 0.12s linear;
+      }
+      #heat-fill {
+        background: #ffc46b;
+      }
+      #heat.locked .fill {
+        background: #ff7a9a;
+      }
+      #heat.locked label {
+        color: #ff7a9a;
+      }
+      #protected-badge {
+        display: none;
+        color: #9fd8e8;
+        font-size: 11px;
+        letter-spacing: 0.2em;
+        margin-top: 8px;
+        text-align: right;
+        animation: prot-pulse 0.4s ease-in-out infinite alternate;
+      }
+      #protected-badge.on {
+        display: block;
+      }
+      @keyframes prot-pulse {
+        from {
+          opacity: 0.35;
+        }
+        to {
+          opacity: 1;
+        }
+      }
+      #killfeed {
+        position: fixed;
+        top: 14px;
+        right: 16px;
+        text-align: right;
+        pointer-events: none;
+        user-select: none;
+        color: #e8f6fa;
+        font-size: 13px;
+        line-height: 1.7;
+        text-shadow: 0 1px 2px #000;
+      }
+      #killfeed .entry {
+        opacity: 1;
+        transition: opacity 1s ease-out;
+      }
+      #killfeed .entry.fading {
+        opacity: 0;
+      }
+      #killfeed .killer {
+        color: #27e0c0;
+      }
+      #killfeed .victim {
+        color: #ff7a9a;
+      }
+      #scoreboard {
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        display: none;
+        background: #0c0b18e6;
+        border: 1px solid #27e0c0;
+        color: #e8f6fa;
+        padding: 18px 26px;
+        min-width: 320px;
+        pointer-events: none;
+        user-select: none;
+      }
+      #scoreboard.open {
+        display: block;
+      }
+      #scoreboard h2 {
+        margin: 0 0 10px;
+        font-size: 13px;
+        letter-spacing: 0.25em;
+        color: #9fd8e8;
+        text-align: center;
+      }
+      #scoreboard table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      #scoreboard th,
+      #scoreboard td {
+        padding: 3px 10px;
+        text-align: right;
+      }
+      #scoreboard th:first-child,
+      #scoreboard td:first-child {
+        text-align: left;
+      }
+      #scoreboard th {
+        color: #9fd8e8;
+        font-weight: normal;
+        font-size: 10px;
+        letter-spacing: 0.15em;
+      }
+      #scoreboard tr.self td {
+        color: #27e0c0;
+      }
+      #killcam {
+        position: fixed;
+        left: 50%;
+        top: 32%;
+        transform: translateX(-50%);
+        display: none;
+        color: #ff7a9a;
+        font-size: 20px;
+        letter-spacing: 0.25em;
+        text-transform: uppercase;
+        text-align: center;
+        text-shadow: 0 1px 6px #000;
+        pointer-events: none;
+        user-select: none;
+      }
+      #killcam.open {
+        display: block;
+      }
       #join {
         position: fixed;
         inset: 0;
@@ -106,6 +259,28 @@
   <body>
     <div id="crosshair"></div>
     <div id="hud"></div>
+    <div id="gauges">
+      <div class="gauge" id="hp">
+        <label for="hp-fill">HULL</label>
+        <div class="bar"><div class="fill" id="hp-fill"></div></div>
+      </div>
+      <div class="gauge" id="heat">
+        <label for="heat-fill">GUNS</label>
+        <div class="bar"><div class="fill" id="heat-fill"></div></div>
+      </div>
+      <div id="protected-badge">◇ PROTECTED ◇</div>
+    </div>
+    <div id="killfeed"></div>
+    <div id="scoreboard">
+      <h2>SCOREBOARD</h2>
+      <table>
+        <thead>
+          <tr><th>PILOT</th><th>KILLS</th><th>DEATHS</th></tr>
+        </thead>
+        <tbody id="scoreboard-rows"></tbody>
+      </table>
+    </div>
+    <div id="killcam"></div>
     <div id="fade"></div>
     <div id="join">
       <form id="join-form">

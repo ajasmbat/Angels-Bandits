@@ -9,6 +9,7 @@
     "./world": "./src/world/index.ts",
     "./flight": "./src/flight.ts",
     "./collision": "./src/collision.ts",
+    "./combat": "./src/combat.ts",
     "./city": "./src/city/index.ts",
     "./protocol": "./src/protocol.ts"
   }

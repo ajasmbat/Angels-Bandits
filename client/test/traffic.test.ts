@@ -4,6 +4,7 @@
 // lanes offset ±3 m from the centerline, opposite directions, each a full
 // torus loop.
 
+import { wrapDelta } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
 import {
   CARS_PER_LANE,
@@ -88,6 +89,40 @@ describe("carPose", () => {
         expect(along).toBeGreaterThanOrEqual(0);
         expect(along).toBeLessThan(2000);
         expect(pos.y).toBe(0);
+      }
+    }
+  });
+
+  it("crosses the seam without a jump: WORLD_SIZE - ε to ε is a 2ε step", () => {
+    const lane = lanes.find((l) => l.axis === "z" && l.dir === 1);
+    if (!lane) throw new Error("lane not found");
+    const speed = laneSpeed(lane, SEED);
+    const epsilon = 0.5;
+    // Locate car 0 via the public seam, then drive it to z = WORLD_SIZE − ε.
+    const start = carPose(lane, 0, 0, SEED).pos.z;
+    const tBefore = (2000 - epsilon - start) / speed;
+    const before = carPose(lane, 0, tBefore, SEED).pos;
+    const after = carPose(lane, 0, tBefore + (2 * epsilon) / speed, SEED).pos;
+    expect(before.z).toBeCloseTo(2000 - epsilon, 6);
+    expect(after.z).toBeCloseTo(epsilon, 6);
+    // The shortest torus step between the two poses is 2ε — no 1999 m jump.
+    const d = wrapDelta(before, after);
+    expect(d.z).toBeCloseTo(2 * epsilon, 6);
+    expect(d.x).toBe(0);
+  });
+
+  it("never lets cars in a lane overlap: consecutive gaps stay >= 200 m", () => {
+    for (const lane of lanes) {
+      for (const t of [0, 999.25, 123456]) {
+        const along = Array.from({ length: CARS_PER_LANE }, (_, i) => {
+          const { pos } = carPose(lane, i, t, SEED);
+          return lane.axis === "x" ? pos.x : pos.z;
+        }).sort((a, b) => a - b);
+        for (let i = 0; i < along.length; i++) {
+          const next = along[(i + 1) % along.length];
+          const gap = ((next - along[i]) % 2000 + 2000) % 2000 || 2000;
+          expect(gap).toBeGreaterThanOrEqual(200 - 1e-6);
+        }
       }
     }
   });

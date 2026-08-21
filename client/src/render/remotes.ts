@@ -13,13 +13,15 @@ import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { InterpolationBuffer } from "../net/interp";
 import { TAG_ALTITUDE, createNameTag, disposeNameTag } from "./nametags";
-import { buildPlaneMesh, disposePlaneMesh } from "./plane";
+import { buildPlaneMesh, disposePlaneMesh, spinPropeller } from "./plane";
 import { nearestImage } from "./wrapPlacement";
 
-/** Remote planes get a warm accent so friend-or-foe reads at a glance (teams are v2). */
-const REMOTE_ACCENT = 0xff8a3d;
 /** Spawn-protection shimmer pulse rate, Hz. */
 const SHIMMER_HZ = 5;
+/** Spawn-protection shimmer emissive tint. */
+const SHIMMER_COLOR = 0x9fd8e8;
+/** Propeller spin per meter flown, rad — same feel as the local plane's. */
+const PROP_SPIN_PER_M = 0.7;
 
 const scratchQuat = new THREE.Quaternion();
 const scratchFwd = new THREE.Vector3();
@@ -78,7 +80,7 @@ export class RemotePlanes {
       let remote = this.remotes.get(id);
       if (!remote) {
         remote = {
-          mesh: buildPlaneMesh(REMOTE_ACCENT),
+          mesh: buildPlaneMesh(),
           tag: createNameTag(this.names.get(id) ?? "???"),
           buffer: new InterpolationBuffer(),
           lastPos: null,
@@ -171,12 +173,13 @@ export class RemotePlanes {
   }
 
   /** Sample every buffer at `renderTime` and place meshes around `viewer`. */
-  update(renderTime: number | null, viewer: Vec3): void {
+  update(renderTime: number | null, viewer: Vec3, dt: number): void {
     if (renderTime === null) return;
     for (const remote of this.remotes.values()) {
       if (!remote.alive) continue;
       const pose = remote.buffer.sample(renderTime);
       if (!pose) continue;
+      spinPropeller(remote.mesh, dt * pose.speed * PROP_SPIN_PER_M);
       remote.lastPos = pose.pos;
       remote.lastPose = pose;
       const p = nearestImage(viewer, pose.pos);
@@ -191,23 +194,24 @@ export class RemotePlanes {
       remote.mesh.visible = true;
       remote.tag.visible = true;
       // Spawn-protection shimmer: pulse the whole plane's material emissive.
+      // The biplane nests groups (prop holders, struts) — traverse, not
+      // children. Each remote owns its materials, so tinting is per-plane.
       const shimmer = remote.prot
         ? 0.75 + 0.25 * Math.sin((renderTime / 1000) * SHIMMER_HZ * 2 * Math.PI)
         : 0;
-      for (const child of remote.mesh.children) {
+      remote.mesh.traverse((child) => {
         if (child instanceof THREE.Mesh) {
           const mat = child.material as THREE.MeshStandardMaterial;
           if (remote.prot) {
-            mat.emissive.setHex(0x9fd8e8);
+            mat.emissive.setHex(SHIMMER_COLOR);
             mat.emissiveIntensity = shimmer;
-          } else if (mat.emissive.getHex() === 0x9fd8e8) {
-            // Restore the un-shimmered look (accent parts re-glow their color).
-            mat.emissive.setHex(mat.color.getHex());
-            mat.emissiveIntensity =
-              mat.color.getHex() === REMOTE_ACCENT ? 0.6 : 0;
+          } else if (mat.emissive.getHex() === SHIMMER_COLOR) {
+            // Restore the un-shimmered look (standard default: black, 1).
+            mat.emissive.setHex(0x000000);
+            mat.emissiveIntensity = 1;
           }
         }
-      }
+      });
     }
   }
 

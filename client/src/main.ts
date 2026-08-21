@@ -28,7 +28,7 @@ import { Guns } from "./game/guns";
 import { bulletHitsSphere } from "./game/hitdetect";
 import { GameSocket } from "./net/socket";
 import { CityRenderer } from "./render/city";
-import { buildPlaneMesh } from "./render/plane";
+import { buildPlaneMesh, spinPropeller } from "./render/plane";
 import { RemotePlanes } from "./render/remotes";
 import { GroundPlane, setupSky } from "./render/sky";
 import { Tracers } from "./render/tracers";
@@ -364,6 +364,8 @@ renderer.setAnimationLoop((now) => {
     const planePos = nearestImage(chase.position, flight.pos);
     plane.position.set(planePos.x, planePos.y, planePos.z);
     plane.rotation.set(flight.pitch, flight.yaw, flight.roll, "YXZ");
+    // Prop speed tracks the commanded throttle (same factor as remotes').
+    spinPropeller(plane, dt * flight.targetSpeed * 0.7);
   } else if (killCamTargetId !== null) {
     // Kill-cam beat: hold position, watch the killer if we can see them.
     const killerPose = remotes.poseOf(killCamTargetId);
@@ -396,7 +398,7 @@ renderer.setAnimationLoop((now) => {
     }
   }
 
-  remotes.update(socket.renderTime(), chase.position);
+  remotes.update(socket.renderTime(), chase.position, dt);
   city.update(chase.position);
   ground.update(chase.position);
   tracers.update(bullets.all, chase.position, now);

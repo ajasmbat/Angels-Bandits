@@ -136,10 +136,11 @@ export class RemotePlanes {
     return out;
   }
 
-  /** Living remotes as minimap blips: canonical position + map-space heading. */
-  contacts(): { pos: Vec3; angle: number }[] {
-    const out: { pos: Vec3; angle: number }[] = [];
-    for (const r of this.remotes.values()) {
+  /** Living remotes for the passive UI/audio: canonical position, map-space
+   * heading, and claimed airspeed (minimap blips + engine loops). */
+  contacts(): { id: string; pos: Vec3; angle: number; speed: number }[] {
+    const out: { id: string; pos: Vec3; angle: number; speed: number }[] = [];
+    for (const [id, r] of this.remotes) {
       if (!r.alive || !r.lastPose) continue;
       scratchQuat.set(
         r.lastPose.quat.x,
@@ -150,8 +151,10 @@ export class RemotePlanes {
       scratchFwd.set(0, 0, -1).applyQuaternion(scratchQuat);
       // Map is north (−Z) up: heading angle 0 = up, clockwise positive.
       out.push({
+        id,
         pos: r.lastPose.pos,
         angle: Math.atan2(scratchFwd.x, -scratchFwd.z),
+        speed: r.lastPose.speed,
       });
     }
     return out;

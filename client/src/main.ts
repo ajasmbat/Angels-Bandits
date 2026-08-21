@@ -18,6 +18,8 @@ import {
 import type { ScoreEntry, SpawnState } from "@angels-bandits/common/protocol";
 import { wrapDelta } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { GameAudio } from "./audio/sound";
+import { NEAR_MISS_RADIUS, closestApproach, spatialize } from "./audio/spatial";
 import { Bullets } from "./game/bullets";
 import { ChaseCamera } from "./game/camera";
 import { detectCrash } from "./game/collision";
@@ -92,6 +94,7 @@ const guns = new Guns();
 const bullets = new Bullets();
 const tracers = new Tracers();
 scene.add(tracers.group);
+const audio = new GameAudio();
 const hud = new Hud();
 const minimap = new Minimap(city.cityBuildings);
 const edgeMarkers = new EdgeMarkers();
@@ -195,6 +198,7 @@ function remoteFired(id: string): void {
     true,
   );
   tracers.flash(origin, performance.now());
+  audio.remoteGunshot(origin, flight.pos, flight.yaw);
 }
 
 // --- Server events ---
@@ -228,6 +232,12 @@ socket.events.onDamage = (msg) => {
 };
 socket.events.onDeath = (msg) => {
   lastDeath = { victimId: msg.victimId, killerId: msg.killerId };
+  // Grab the victim's position before setDead clears it (self = own plane).
+  const victimPos =
+    msg.victimId === socket.selfId
+      ? flight.pos
+      : remotes.poseOf(msg.victimId)?.pos;
+  if (victimPos) audio.explosion(victimPos, flight.pos, flight.yaw);
   killFeed.add(
     msg.killerId === null ? null : nameOf(msg.killerId),
     nameOf(msg.victimId),
@@ -347,6 +357,7 @@ renderer.setAnimationLoop((now) => {
       bullets.spawn(shot.seq, shot.origin, shot.vel);
       socket.sendFire(shot.seq);
       tracers.flash(shot.origin, now);
+      audio.gunshot();
     }
 
     chase.update(camera, flight, dt);
@@ -366,7 +377,16 @@ renderer.setAnimationLoop((now) => {
   bullets.step(dt);
   const targets = remotes.targets();
   for (const bullet of [...bullets.all]) {
-    if (bullet.cosmetic) continue;
+    if (bullet.cosmetic) {
+      // An enemy bullet shaving past this frame → panned near-miss whoosh.
+      if (
+        alive &&
+        closestApproach(bullet.prev, bullet.pos, flight.pos) < NEAR_MISS_RADIUS
+      ) {
+        audio.whoosh(spatialize(flight.pos, flight.yaw, bullet.pos).pan, now);
+      }
+      continue;
+    }
     for (const target of targets) {
       if (bulletHitsSphere(bullet.prev, bullet.pos, target.pos)) {
         socket.sendHit(target.id, bullet.origin, bullet.seq);
@@ -384,7 +404,10 @@ renderer.setAnimationLoop((now) => {
   const heat = guns.state;
   hud.setHeat(heat.heat, heat.locked);
   hud.update(now);
-  minimap.update(flight.pos, flight.yaw, remotes.contacts());
+  const contacts = remotes.contacts();
+  minimap.update(flight.pos, flight.yaw, contacts);
+  audio.setEngine(flight.targetSpeed, alive);
+  audio.syncRemotes(contacts, flight.pos, flight.yaw);
 
   renderer.render(scene, camera);
 

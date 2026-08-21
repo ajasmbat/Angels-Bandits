@@ -150,18 +150,20 @@ varying vec3 vCarNormal;
 
 const FRAGMENT_MAIN = /* glsl */ `
 // Paired light dots on the front (−Z) and rear (+Z) faces, in object space.
+// Oversized vs real car lights on purpose: they must read from flight
+// altitude, where bloom merges each pair into one glow.
 if (vCarNormal.z < -0.5) {
   float headDist = min(
+    distance(vCarPos.xy, vec2(0.5, 0.6)),
+    distance(vCarPos.xy, vec2(-0.5, 0.6))
+  );
+  totalEmissiveRadiance += (1.0 - smoothstep(0.28, 0.5, headDist)) * ${HEADLIGHT};
+} else if (vCarNormal.z > 0.5) {
+  float tailDist = min(
     distance(vCarPos.xy, vec2(0.55, 0.55)),
     distance(vCarPos.xy, vec2(-0.55, 0.55))
   );
-  totalEmissiveRadiance += (1.0 - smoothstep(0.10, 0.22, headDist)) * ${HEADLIGHT};
-} else if (vCarNormal.z > 0.5) {
-  float tailDist = min(
-    distance(vCarPos.xy, vec2(0.62, 0.5)),
-    distance(vCarPos.xy, vec2(-0.62, 0.5))
-  );
-  totalEmissiveRadiance += (1.0 - smoothstep(0.08, 0.16, tailDist)) * ${TAILLIGHT};
+  totalEmissiveRadiance += (1.0 - smoothstep(0.22, 0.4, tailDist)) * ${TAILLIGHT};
 }
 `;
 
@@ -172,6 +174,11 @@ function createCarMaterial(): THREE.MeshStandardMaterial {
     roughness: 0.6,
     metalness: 0.4,
   });
+  // Three keys its program cache on onBeforeCompile.toString() by default.
+  // This patch body is TEXTUALLY identical to buildings-material's (same
+  // idiom, same local names), so without an explicit key the cars silently
+  // reuse the buildings' compiled program and the light dots never appear.
+  material.customProgramCacheKey = () => "ab-car-lights";
   material.onBeforeCompile = (shader) => {
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", `#include <common>\n${VERTEX_PARS}`)
@@ -262,13 +269,22 @@ export class Traffic {
   debug(
     serverTimeMs: number | null,
     count = 5,
-  ): { time: number; cars: CarPose[] } | null {
+  ): { time: number; cars: CarPose[]; visible: boolean; drawnAt: Vec3 } | null {
     if (serverTimeMs === null) return null;
     const t = serverTimeMs / 1000;
     const cars: CarPose[] = [];
     for (const lane of this.lanes.slice(0, count)) {
       cars.push(carPose(lane, 0, t, this.seed));
     }
-    return { time: serverTimeMs, cars };
+    // The rendered truth for car 0, read back from its instance matrix
+    // (same idiom as Streetlights.imageOf) — not a re-derivation.
+    this.mesh.getMatrixAt(0, this.scratch);
+    const e = this.scratch.elements;
+    return {
+      time: serverTimeMs,
+      cars,
+      visible: this.mesh.visible,
+      drawnAt: { x: e[12] as number, y: e[13] as number, z: e[14] as number },
+    };
   }
 }

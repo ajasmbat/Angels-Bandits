@@ -1,0 +1,16 @@
+{
+  "name": "@angels-bandits/common",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./constants": "./src/constants.ts",
+    "./world": "./src/world/index.ts",
+    "./flight": "./src/flight.ts",
+    "./collision": "./src/collision.ts",
+    "./combat": "./src/combat.ts",
+    "./city": "./src/city/index.ts",
+    "./protocol": "./src/protocol.ts"
+  }
+}

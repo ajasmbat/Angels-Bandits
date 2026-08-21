@@ -51,12 +51,76 @@
         transition: none;
         opacity: 1;
       }
+      #join {
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: #141225ee;
+        cursor: default;
+      }
+      #join.open {
+        display: flex;
+      }
+      #join form {
+        text-align: center;
+        color: #9fd8e8;
+      }
+      #join h1 {
+        font-size: 22px;
+        letter-spacing: 0.2em;
+        margin: 0 0 18px;
+      }
+      #join input {
+        background: #0c0b18;
+        border: 1px solid #27e0c0;
+        color: #e8f6fa;
+        font: inherit;
+        font-size: 16px;
+        padding: 10px 14px;
+        text-align: center;
+        outline: none;
+        width: 220px;
+      }
+      #join button {
+        display: block;
+        margin: 14px auto 0;
+        background: #27e0c0;
+        border: none;
+        color: #0c0b18;
+        font: inherit;
+        font-size: 14px;
+        letter-spacing: 0.15em;
+        padding: 9px 26px;
+        cursor: pointer;
+      }
+      #join-status {
+        min-height: 1.2em;
+        margin: 12px 0 0;
+        font-size: 12px;
+        color: #ff7a9a;
+      }
     </style>
   </head>
   <body>
     <div id="crosshair"></div>
     <div id="hud"></div>
     <div id="fade"></div>
+    <div id="join">
+      <form id="join-form">
+        <h1>ANGELS &amp; BANDITS</h1>
+        <input
+          id="join-name"
+          type="text"
+          placeholder="callsign"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <button type="submit">FLY</button>
+        <p id="join-status"></p>
+      </form>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

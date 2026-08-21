@@ -1,7 +1,9 @@
-// T2: solo flight over the torus city. The plane simulates in canonical
-// coords via the shared flight model; the camera and every rendered thing are
-// placed per frame at their torus image nearest the viewer — that placement
-// (plus fog < WORLD_SIZE/2) IS the seamless-torus illusion.
+// T2: solo flight over the torus city. T3: the same city, shared — join with
+// a name, stream your pose up at TICK_UP_HZ, and render everyone else from
+// interpolation buffers ~100 ms behind server time. The plane simulates in
+// canonical coords via the shared flight model; the camera and every rendered
+// thing are placed per frame at their torus image nearest the viewer — that
+// placement (plus fog < WORLD_SIZE/2) IS the seamless-torus illusion.
 
 import { FOG_DISTANCE } from "@angels-bandits/common/constants";
 import {
@@ -13,11 +15,26 @@ import * as THREE from "three";
 import { ChaseCamera } from "./game/camera";
 import { checkDeath } from "./game/collision";
 import { FlightInputSource } from "./game/flight-input";
+import { GameSocket } from "./net/socket";
 import { CityRenderer } from "./render/city";
+import { buildPlaneMesh } from "./render/plane";
+import { RemotePlanes } from "./render/remotes";
 import { GroundPlane, setupSky } from "./render/sky";
 import { nearestImage } from "./render/wrapPlacement";
+import { requestName, showJoinError } from "./ui/join";
 
-const CITY_SEED = 42;
+// --- Join flow: name → server welcome (identity, seed, spawn) ---
+const name = await requestName();
+let socket: GameSocket;
+try {
+  socket = await GameSocket.connect(name);
+} catch (err) {
+  showJoinError(
+    err instanceof Error ? err.message : "could not reach the game server",
+  );
+  throw err;
+}
+const { welcome } = socket;
 
 // --- Scene & renderer ---
 const scene = new THREE.Scene();
@@ -41,43 +58,35 @@ window.addEventListener("resize", () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// --- World ---
-const city = new CityRenderer(CITY_SEED);
+// --- World (city seed comes from the server so every roommate agrees) ---
+const city = new CityRenderer(welcome.seed);
 scene.add(city.mesh);
 const ground = new GroundPlane();
 scene.add(ground.mesh);
 
-// --- Placeholder plane (proper model is T5 polish) ---
-function buildPlaneMesh(): THREE.Group {
-  const g = new THREE.Group();
-  const body = new THREE.MeshStandardMaterial({
-    color: 0x8a94a8,
-    roughness: 0.5,
-  });
-  const accent = new THREE.MeshStandardMaterial({
-    color: 0x27e0c0,
-    emissive: 0x27e0c0,
-    emissiveIntensity: 0.6,
-  });
-  const fuselage = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1, 6), body);
-  const wings = new THREE.Mesh(new THREE.BoxGeometry(9, 0.18, 1.8), body);
-  wings.position.z = 0.3;
-  const tailplane = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.15, 1), body);
-  tailplane.position.z = 2.6;
-  const fin = new THREE.Mesh(new THREE.BoxGeometry(0.15, 1.2, 1), accent);
-  fin.position.set(0, 0.8, 2.6);
-  const nose = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.8), accent);
-  nose.position.z = -3.2;
-  g.add(fuselage, wings, tailplane, fin, nose);
-  return g;
-}
 const plane = buildPlaneMesh();
 scene.add(plane);
+
+// --- Remote planes ---
+const remotes = new RemotePlanes(scene, socket.selfId);
+remotes.setRoster(welcome.roster);
+socket.events.onSnapshot = (snap) => remotes.ingest(snap);
+socket.events.onPlayerJoined = (player) => remotes.playerJoined(player);
+socket.events.onPlayerLeft = (id) => remotes.playerLeft(id);
 
 // --- Simulation state ---
 const input = new FlightInputSource();
 const chase = new ChaseCamera();
-let flight: FlightState = createFlightState({ x: 900, y: 300, z: 1100 });
+let flight: FlightState = createFlightState(
+  welcome.spawn.pos,
+  welcome.spawn.yaw,
+);
+flight = {
+  ...flight,
+  speed: welcome.spawn.speed,
+  targetSpeed: welcome.spawn.speed,
+};
+chase.snapTo(flight);
 
 const fadeEl = document.getElementById("fade") as HTMLDivElement;
 const hudEl = document.getElementById("hud") as HTMLDivElement;
@@ -100,6 +109,12 @@ declare global {
       state: () => FlightState;
       teleport: (x: number, z: number, y?: number, yaw?: number) => void;
       perf: () => { fps: number; frameMs: number; drawCalls: number };
+      net: () => {
+        selfId: string;
+        roomId: string;
+        remotes: ReturnType<RemotePlanes["debug"]>;
+        renderTime: number | null;
+      };
     };
   }
 }
@@ -114,9 +129,17 @@ window.__ab = {
     frameMs: perf.frameMs,
     drawCalls: renderer.info.render.calls,
   }),
+  net: () => ({
+    selfId: socket.selfId,
+    roomId: welcome.roomId,
+    remotes: remotes.debug(),
+    renderTime: socket.renderTime(),
+  }),
 };
 
 // --- Frame loop ---
+const poseEuler = new THREE.Euler();
+const poseQuat = new THREE.Quaternion();
 let last = performance.now();
 renderer.setAnimationLoop((now) => {
   const rawMs = now - last;
@@ -127,6 +150,15 @@ renderer.setAnimationLoop((now) => {
   const respawned = checkDeath(flight, city.cityBuildings);
   if (respawned) die(respawned);
 
+  // Stream our pose up (rate-limited to TICK_UP_HZ inside the socket).
+  poseEuler.set(flight.pitch, flight.yaw, flight.roll, "YXZ");
+  poseQuat.setFromEuler(poseEuler);
+  socket.sendPose({
+    pos: flight.pos,
+    quat: { x: poseQuat.x, y: poseQuat.y, z: poseQuat.z, w: poseQuat.w },
+    speed: flight.speed,
+  });
+
   chase.update(camera, flight, dt);
 
   // Plane drawn at its image nearest the camera (it always IS that image, but
@@ -135,6 +167,7 @@ renderer.setAnimationLoop((now) => {
   plane.position.set(planePos.x, planePos.y, planePos.z);
   plane.rotation.set(flight.pitch, flight.yaw, flight.roll, "YXZ");
 
+  remotes.update(socket.renderTime(), chase.position);
   city.update(chase.position);
   ground.update(chase.position);
 
@@ -150,6 +183,6 @@ renderer.setAnimationLoop((now) => {
     perf.ms = 0;
     hudEl.textContent =
       `SPD ${flight.speed.toFixed(0)} m/s  THR ${flight.targetSpeed.toFixed(0)}  ` +
-      `ALT ${flight.pos.y.toFixed(0)} m  FPS ${perf.fps.toFixed(0)}`;
+      `ALT ${flight.pos.y.toFixed(0)} m  PLR ${remotes.count + 1}  FPS ${perf.fps.toFixed(0)}`;
   }
 });

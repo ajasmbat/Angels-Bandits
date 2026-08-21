@@ -74,6 +74,22 @@ export const TICK_UP_HZ = 20;
 /** Server → client snapshot rate, Hz. */
 export const TICK_DOWN_HZ = 15;
 
+// --- Multiplayer presence (T3) ---
+/** Shared city seed — every room generates the same city for now. */
+export const CITY_SEED = 42;
+/** Remote planes render this far behind estimated server time, ms. */
+export const INTERP_DELAY_MS = 100;
+/** Server accepts claimed speeds up to MAX_SPEED × this factor. */
+export const SPEED_TOLERANCE = 1.1;
+/** Slack added to the per-update displacement bound, meters (network jitter). */
+export const POSE_DISTANCE_SLACK = 15;
+/** Claimed altitude is clamped to this, meters (legal flight can't sustain more). */
+export const MAX_ALTITUDE = 800;
+/** Max player-name length on the wire; longer names are truncated. */
+export const NAME_MAX_LENGTH = 16;
+/** Server drops a joined connection silent for this long, ms (clients stream at TICK_UP_HZ). */
+export const LIVENESS_TIMEOUT_MS = 4000;
+
 // --- Combat (placeholders — T4 tunes them) ---
 export const MAX_HP = 100;
 export const BULLET_SPEED = 400;

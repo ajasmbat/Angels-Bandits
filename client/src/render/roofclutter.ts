@@ -180,7 +180,11 @@ export class RoofClutterRenderer {
 
     const boxGeometry = new THREE.BoxGeometry(1, 1, 1);
     boxGeometry.translate(0, 0.5, 0);
-    this.boxMesh = new THREE.InstancedMesh(boxGeometry, dark, this.boxes.length);
+    this.boxMesh = new THREE.InstancedMesh(
+      boxGeometry,
+      dark,
+      this.boxes.length,
+    );
 
     const mastGeometry = new THREE.CylinderGeometry(0.08, 0.14, 1, 5);
     mastGeometry.translate(0, 0.5, 0);
@@ -267,7 +271,8 @@ export class RoofClutterRenderer {
     // Sin-pulse: peak ≈ 1.0 luminance (blooms), trough falls under the
     // threshold so the beacon visibly breathes instead of burning steady.
     const pulse =
-      0.25 + 0.75 * (0.5 + 0.5 * Math.sin((timeMs / BEACON_PERIOD_MS) * 2 * Math.PI));
+      0.25 +
+      0.75 * (0.5 + 0.5 * Math.sin((timeMs / BEACON_PERIOD_MS) * 2 * Math.PI));
     this.beaconMaterial.color
       .copy(BEACON_COLOR)
       .multiplyScalar(BEACON_BOOST * pulse);

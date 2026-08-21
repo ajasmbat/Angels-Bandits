@@ -1,8 +1,9 @@
 // Chunked city renderer. Tiles are aligned to BLOCK_PITCH per the plan — and
 // since generateCity() places exactly one building per block, a tile IS one
-// building. All buildings live in a single InstancedMesh (1 draw call); each
-// frame every instance is placed at its torus image nearest the camera, which
-// is what makes the seam invisible. Matrices for ~100 instances are a few KB —
+// building. The whole city stays a single InstancedMesh (1 draw call), now
+// with one instance per TIER (V2 setback towers, ~200 instances); each frame
+// every instance is placed at its torus image nearest the camera, which is
+// what makes the seam invisible. Matrices for ~200 instances are a few KB —
 // re-uploading them per frame is far cheaper than extra draw calls.
 
 import { type Building, generateCity } from "@angels-bandits/common/city";
@@ -12,16 +13,38 @@ import * as THREE from "three";
 import { createBuildingsMaterial } from "./buildings-material";
 import { nearestImage } from "./wrapPlacement";
 
+/** One drawable box: a tier of a building, at its stack height. */
+interface TierInstance {
+  building: Building;
+  width: number;
+  depth: number;
+  height: number;
+  /** Ground height the tier's base sits at (tier 1 → 0). */
+  baseY: number;
+}
+
 export class CityRenderer {
   readonly mesh: THREE.InstancedMesh;
   private readonly buildings: Building[];
+  private readonly instances: TierInstance[];
   private readonly scratch = new THREE.Matrix4();
 
   constructor(seed: number) {
     this.buildings = generateCity(seed);
 
+    // Flatten the tier stacks: the rendered silhouette is exactly the
+    // collision volume, so instances come 1:1 from the shared tier data.
+    this.instances = this.buildings.flatMap((building) => {
+      let baseY = 0;
+      return building.tiers.map((t) => {
+        const inst: TierInstance = { building, ...t, baseY };
+        baseY += t.height;
+        return inst;
+      });
+    });
+
     // Unit box with its origin at the base center, so a scale matrix turns it
-    // into a building standing on the ground.
+    // into a tier standing at its base height.
     const geometry = new THREE.BoxGeometry(1, 1, 1);
     geometry.translate(0, 0.5, 0);
     // Night-neon material with procedural emissive window grids (T5 art pass).
@@ -30,16 +53,18 @@ export class CityRenderer {
     this.mesh = new THREE.InstancedMesh(
       geometry,
       material,
-      this.buildings.length,
+      this.instances.length,
     );
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.mesh.frustumCulled = false; // instances move relative to the camera every frame
 
     // Dusk palette: dark blue-grey towers, slightly varied per building
-    // (deterministic from the building itself); landmarks get a neon accent
-    // so orientation — and the "never two images at once" QA check — works.
+    // (deterministic from the building itself, shared by all its tiers);
+    // landmarks get a neon accent so orientation — and the "never two images
+    // at once" QA check — works.
     const color = new THREE.Color();
-    this.buildings.forEach((b, i) => {
+    this.instances.forEach((inst, i) => {
+      const b = inst.building;
       if (b.height >= LANDMARK_HEIGHT) {
         color.setHSL(0.52, 0.55, 0.32);
       } else {
@@ -56,12 +81,18 @@ export class CityRenderer {
     return this.buildings;
   }
 
-  /** Place every building at its torus image nearest the camera. */
+  /** Instance count actually drawn (one per tier) — perf reporting/QA. */
+  get tierInstanceCount(): number {
+    return this.instances.length;
+  }
+
+  /** Place every tier at its torus image nearest the camera. */
   update(cameraPos: Vec3): void {
-    this.buildings.forEach((b, i) => {
+    this.instances.forEach((inst, i) => {
+      const b = inst.building;
       const p = nearestImage(cameraPos, { x: b.x, y: 0, z: b.z });
-      this.scratch.makeScale(b.width, b.height, b.depth);
-      this.scratch.setPosition(p.x, 0, p.z);
+      this.scratch.makeScale(inst.width, inst.height, inst.depth);
+      this.scratch.setPosition(p.x, inst.baseY, p.z);
       this.mesh.setMatrixAt(i, this.scratch);
     });
     this.mesh.instanceMatrix.needsUpdate = true;

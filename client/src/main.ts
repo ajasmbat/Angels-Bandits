@@ -35,6 +35,7 @@ import { CityRenderer } from "./render/city";
 import { Explosions } from "./render/fx";
 import { buildPlaneMesh, spinPropeller } from "./render/plane";
 import { RemotePlanes } from "./render/remotes";
+import { RoofClutterRenderer } from "./render/roofclutter";
 import { GroundPlane, SkyDome, setupSky } from "./render/sky";
 import { Streetlights } from "./render/streetlights";
 import { Tracers } from "./render/tracers";
@@ -111,6 +112,9 @@ window.addEventListener("resize", () => {
 // --- World (city seed comes from the server so every roommate agrees) ---
 const city = new CityRenderer(welcome.seed);
 scene.add(city.mesh);
+// Roof clutter + landmark beacons dress the same shared Building[] (V2).
+const roofClutter = new RoofClutterRenderer(city.cityBuildings);
+scene.add(roofClutter.group);
 const ground = new GroundPlane();
 scene.add(ground.mesh);
 const skyDome = new SkyDome();
@@ -321,6 +325,11 @@ declare global {
       aimAt: (x: number, z: number, y?: number) => void;
       setFiring: (held: boolean) => void;
       lampImage: (x: number, z: number) => { x: number; z: number } | null;
+      cityStats: () => {
+        buildings: number;
+        tierInstances: number;
+        clutterInstances: number;
+      };
     };
   }
 }
@@ -365,6 +374,12 @@ window.__ab = {
   setFiring: (held) => guns.setTrigger(held),
   // Seam QA: where the lamp nearest canonical (x, z) is drawn right now.
   lampImage: (x, z) => streetlights.imageOf(x, z),
+  // V2 QA: instance counts for the perf report.
+  cityStats: () => ({
+    buildings: city.cityBuildings.length,
+    tierInstances: city.tierInstanceCount,
+    clutterInstances: roofClutter.instanceCount,
+  }),
 };
 
 // --- Frame loop ---
@@ -444,6 +459,8 @@ renderer.setAnimationLoop((now) => {
 
   remotes.update(socket.renderTime(), chase.position, dt);
   city.update(chase.position);
+  // Beacons pulse on server-synced time so every client is in phase.
+  roofClutter.update(chase.position, socket.renderTime() ?? now);
   streetlights.update(chase.position);
   ground.update(chase.position);
   skyDome.update(chase.position);

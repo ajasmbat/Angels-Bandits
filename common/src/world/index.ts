@@ -18,7 +18,8 @@ export interface Vec3 {
   z: number;
 }
 
-const wrapAxis = (v: number): number => ((v % WORLD_SIZE) + WORLD_SIZE) % WORLD_SIZE;
+const wrapAxis = (v: number): number =>
+  ((v % WORLD_SIZE) + WORLD_SIZE) % WORLD_SIZE;
 
 /** Map a position's x/z into canonical [0, WORLD_SIZE) coordinates. Y is untouched. */
 export function canonicalize(p: Vec3): Vec3 {

@@ -17,5 +17,7 @@ const server = createServer((req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`angels-bandits server listening on :${PORT} (room cap ${ROOM_CAP})`);
+  console.log(
+    `angels-bandits server listening on :${PORT} (room cap ${ROOM_CAP})`,
+  );
 });

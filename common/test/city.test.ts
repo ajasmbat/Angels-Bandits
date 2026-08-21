@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { generateCity } from "@angels-bandits/common/city";
 import {
   BLOCK_PITCH,
   BUILDING_MAX_HEIGHT,
@@ -7,7 +7,7 @@ import {
   STREET_WIDTH,
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
-import { generateCity } from "@angels-bandits/common/city";
+import { describe, expect, it } from "vitest";
 
 // The map is a 10×10 grid of 200 m blocks (2000/200). Hand-placed layout per
 // PLAN.md: a handful of landmark supertalls and 2–3 empty plaza blocks.
@@ -18,7 +18,9 @@ const EXPECTED_LANDMARK_COUNT = 4;
 
 describe("generateCity determinism", () => {
   it("produces byte-identical output across two invocations of the same seed", () => {
-    expect(JSON.stringify(generateCity(42))).toBe(JSON.stringify(generateCity(42)));
+    expect(JSON.stringify(generateCity(42))).toBe(
+      JSON.stringify(generateCity(42)),
+    );
   });
 
   it("matches the committed snapshot for seed 42 (client and server must agree exactly)", () => {
@@ -26,7 +28,9 @@ describe("generateCity determinism", () => {
   });
 
   it("produces different cities for different seeds", () => {
-    expect(JSON.stringify(generateCity(1))).not.toBe(JSON.stringify(generateCity(2)));
+    expect(JSON.stringify(generateCity(1))).not.toBe(
+      JSON.stringify(generateCity(2)),
+    );
   });
 });
 
@@ -84,7 +88,8 @@ describe("generateCity layout", () => {
         .sort();
     expect(landmarkSpots(other)).toEqual(landmarkSpots(city));
 
-    const occupied = (bs: typeof city) => new Set(bs.map((b) => `${b.x},${b.z}`));
+    const occupied = (bs: typeof city) =>
+      new Set(bs.map((b) => `${b.x},${b.z}`));
     const spotsA = occupied(city);
     for (const spot of occupied(other)) {
       expect(spotsA.has(spot)).toBe(true); // same blocks filled → same plaza blocks empty

@@ -28,9 +28,10 @@ import { Guns } from "./game/guns";
 import { bulletHitsSphere } from "./game/hitdetect";
 import { GameSocket } from "./net/socket";
 import { CityRenderer } from "./render/city";
+import { Explosions } from "./render/fx";
 import { buildPlaneMesh, spinPropeller } from "./render/plane";
 import { RemotePlanes } from "./render/remotes";
-import { GroundPlane, setupSky } from "./render/sky";
+import { GroundPlane, SkyDome, setupSky } from "./render/sky";
 import { Tracers } from "./render/tracers";
 import { nearestImage } from "./render/wrapPlacement";
 import { Hud } from "./ui/hud";
@@ -81,6 +82,10 @@ const city = new CityRenderer(welcome.seed);
 scene.add(city.mesh);
 const ground = new GroundPlane();
 scene.add(ground.mesh);
+const skyDome = new SkyDome();
+scene.add(skyDome.mesh);
+const explosions = new Explosions();
+scene.add(explosions.group);
 
 const plane = buildPlaneMesh();
 scene.add(plane);
@@ -237,7 +242,10 @@ socket.events.onDeath = (msg) => {
     msg.victimId === socket.selfId
       ? flight.pos
       : remotes.poseOf(msg.victimId)?.pos;
-  if (victimPos) audio.explosion(victimPos, flight.pos, flight.yaw);
+  if (victimPos) {
+    audio.explosion(victimPos, flight.pos, flight.yaw);
+    explosions.explode(victimPos, performance.now());
+  }
   killFeed.add(
     msg.killerId === null ? null : nameOf(msg.killerId),
     nameOf(msg.victimId),
@@ -401,6 +409,8 @@ renderer.setAnimationLoop((now) => {
   remotes.update(socket.renderTime(), chase.position, dt);
   city.update(chase.position);
   ground.update(chase.position);
+  skyDome.update(chase.position);
+  explosions.update(chase.position, now, dt);
   tracers.update(bullets.all, chase.position, now);
 
   const heat = guns.state;

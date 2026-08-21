@@ -32,6 +32,53 @@ export function setupSky(scene: THREE.Scene): void {
   scene.add(fill);
 }
 
+/** 1×256 vertical dusk gradient: fog indigo at the horizon (so buildings
+ * dissolve into it seamlessly) warming through neon violet, deep night up top. */
+function skyGradientTexture(): THREE.Texture {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1;
+  canvas.height = 256;
+  const ctx = canvas.getContext("2d");
+  if (ctx) {
+    const grad = ctx.createLinearGradient(0, 0, 0, 256);
+    grad.addColorStop(0.0, "#08071a"); // zenith — deep night
+    grad.addColorStop(0.45, "#141225"); // fog indigo
+    grad.addColorStop(0.62, "#2b1838"); // neon violet band
+    grad.addColorStop(0.72, "#3d1f33"); // last-light magenta glow
+    grad.addColorStop(0.78, "#141225"); // back to fog at the horizon line
+    grad.addColorStop(1.0, "#141225");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 1, 256);
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/** Camera-following gradient dome, just inside the far plane, above the fog. */
+export class SkyDome {
+  readonly mesh: THREE.Mesh;
+
+  constructor() {
+    const material = new THREE.MeshBasicMaterial({
+      map: skyGradientTexture(),
+      side: THREE.BackSide,
+      fog: false,
+      depthWrite: false,
+    });
+    this.mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(FOG_DISTANCE + 60, 24, 16),
+      material,
+    );
+    this.mesh.renderOrder = -1; // always the backdrop
+  }
+
+  /** Keep the dome centered on the viewer. */
+  update(cameraPos: Vec3): void {
+    this.mesh.position.set(cameraPos.x, cameraPos.y, cameraPos.z);
+  }
+}
+
 /** One BLOCK_PITCH×BLOCK_PITCH cell: asphalt with lit street edges. */
 function streetTexture(): THREE.Texture {
   const size = 128;

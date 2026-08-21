@@ -21,6 +21,9 @@ const REMOTE_ACCENT = 0xff8a3d;
 /** Spawn-protection shimmer pulse rate, Hz. */
 const SHIMMER_HZ = 5;
 
+const scratchQuat = new THREE.Quaternion();
+const scratchFwd = new THREE.Vector3();
+
 interface Remote {
   mesh: THREE.Group;
   tag: THREE.Sprite;
@@ -122,6 +125,27 @@ export class RemotePlanes {
     const out: { id: string; pos: Vec3 }[] = [];
     for (const [id, r] of this.remotes) {
       if (r.alive && r.lastPos) out.push({ id, pos: r.lastPos });
+    }
+    return out;
+  }
+
+  /** Living remotes as minimap blips: canonical position + map-space heading. */
+  contacts(): { pos: Vec3; angle: number }[] {
+    const out: { pos: Vec3; angle: number }[] = [];
+    for (const r of this.remotes.values()) {
+      if (!r.alive || !r.lastPose) continue;
+      scratchQuat.set(
+        r.lastPose.quat.x,
+        r.lastPose.quat.y,
+        r.lastPose.quat.z,
+        r.lastPose.quat.w,
+      );
+      scratchFwd.set(0, 0, -1).applyQuaternion(scratchQuat);
+      // Map is north (−Z) up: heading angle 0 = up, clockwise positive.
+      out.push({
+        pos: r.lastPose.pos,
+        angle: Math.atan2(scratchFwd.x, -scratchFwd.z),
+      });
     }
     return out;
   }

@@ -34,6 +34,7 @@ import { nearestImage } from "./render/wrapPlacement";
 import { Hud } from "./ui/hud";
 import { requestName, showJoinError } from "./ui/join";
 import { KillFeed } from "./ui/killfeed";
+import { Minimap } from "./ui/minimap";
 import { Scoreboard } from "./ui/scoreboard";
 
 // --- Join flow: name → server welcome (identity, seed, spawn) ---
@@ -90,6 +91,7 @@ const bullets = new Bullets();
 const tracers = new Tracers();
 scene.add(tracers.group);
 const hud = new Hud();
+const minimap = new Minimap(city.cityBuildings);
 const killFeed = new KillFeed();
 const scoreboard = new Scoreboard(socket.selfId);
 scoreboard.setRoster(welcome.roster);
@@ -377,6 +379,7 @@ renderer.setAnimationLoop((now) => {
   const heat = guns.state;
   hud.setHeat(heat.heat, heat.locked);
   hud.update(now);
+  minimap.update(flight.pos, flight.yaw, remotes.contacts());
 
   renderer.render(scene, camera);
 

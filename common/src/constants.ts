@@ -90,12 +90,54 @@ export const NAME_MAX_LENGTH = 16;
 /** Server drops a joined connection silent for this long, ms (clients stream at TICK_UP_HZ). */
 export const LIVENESS_TIMEOUT_MS = 4000;
 
-// --- Combat (placeholders — T4 tunes them) ---
+// --- Combat (tuned by T4) ---
 export const MAX_HP = 100;
 export const BULLET_SPEED = 400;
+/** Damage per bullet. 15 hits to kill → ~1.5 s of sustained on-target fire at FIRE_INTERVAL_MS. */
 export const BULLET_DAMAGE = 7;
 /** Effective bullet range, meters (server also range-validates hits with this). */
 export const BULLET_RANGE = 350;
+/** How long a client-simulated bullet lives, seconds (≈ range / speed). */
+export const BULLET_LIFETIME_S = BULLET_RANGE / BULLET_SPEED;
+/** Plane hit-sphere radius, meters — generous (wingspan 9 m) because hits favor the shooter. */
+export const HIT_RADIUS = 6;
+
+// --- Guns / heat model (heat is a 0..1 meter; overheating locks the guns) ---
+/** Minimum time between shots, ms (10 rounds/s, alternating wingtips). */
+export const FIRE_INTERVAL_MS = 100;
+/** Heat added per shot. With cooling, continuous fire overheats in ~4 s. */
+export const HEAT_PER_SHOT = 0.055;
+/** Heat shed per second, always (firing or not). */
+export const HEAT_COOL_RATE = 0.3;
+/** Heat at or above this locks the guns (the meter's full scale). */
+export const OVERHEAT_AT = 1.0;
+/** Locked guns stay locked until heat cools below this (hysteresis, ~2.2 s). */
+export const HEAT_LOCK_BELOW = 0.35;
+
+// --- Server-side combat validation ---
+/** Meters of slack on top of BULLET_RANGE for hit claims: interpolation delay
+ * plus bullet flight time let both planes move before the claim arrives. */
+export const HIT_RANGE_SLACK = 200;
+/** A claim's bulletOrigin must be within this of the shooter's on-record pose, meters. */
+export const HIT_ORIGIN_SLACK = 50;
+/** Fire-rate token bucket burst: shots that may arrive batched by network jitter. */
+export const FIRE_BURST_SLACK = 5;
+/** Server heat tolerance above OVERHEAT_AT before shots are rejected (clock jitter). */
+export const HEAT_VALIDATION_SLACK = 0.1;
+
+// --- Death, respawn, regen (all server-owned) ---
+/** Invulnerability after (re)spawn, ms — canceled the instant that player fires. */
+export const SPAWN_PROTECTION_MS = 4000;
+/** Kill-cam beat between death and the server-issued respawn, ms. */
+export const KILL_CAM_MS = 2500;
+/** Crash within this of last taking damage credits the damager, ms. */
+export const DAMAGE_MEMORY_MS = 8000;
+/** No damage for this long starts health regen, ms. */
+export const REGEN_DELAY_MS = 8000;
+/** Regen rate once it starts, HP per second (MAX_HP / 10). */
+export const REGEN_RATE = MAX_HP / 10;
+/** Random points sampled when picking a farthest-from-enemies respawn. */
+export const RESPAWN_SAMPLES = 24;
 
 // --- Rooms ---
 /** Players per FFA room; rooms auto-spawn when full. */

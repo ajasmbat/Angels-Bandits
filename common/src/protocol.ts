@@ -50,9 +50,42 @@ export interface PoseMsg {
   pose: Pose;
 }
 
-export type ClientMsg = JoinMsg | PoseMsg;
+/**
+ * One shot fired. `seq` is a client-increasing bullet id — hit claims must
+ * reference a fired seq, so one bullet can never land twice. Firing cancels
+ * spawn protection server-side.
+ */
+export interface FireMsg {
+  type: "fire";
+  seq: number;
+}
+
+/**
+ * Shooter-side hit claim (PLAN.md: hits resolve on the shooter's client,
+ * favoring the shooter; the server only validates plausibility).
+ */
+export interface HitClaimMsg {
+  type: "hit";
+  targetId: string;
+  bulletOrigin: Vec3;
+  seq: number;
+}
+
+/** The client flew into a building or the ground (client-auth movement). */
+export interface CrashMsg {
+  type: "crash";
+}
+
+export type ClientMsg = JoinMsg | PoseMsg | FireMsg | HitClaimMsg | CrashMsg;
 
 // --- Server → client ---
+
+/** One player's kill/death tally (server-owned; resets only on rejoin). */
+export interface ScoreEntry {
+  id: string;
+  kills: number;
+  deaths: number;
+}
 
 /** Reply to a join: identity, room, shared city seed, spawn, current roster. */
 export interface WelcomeMsg {
@@ -62,6 +95,8 @@ export interface WelcomeMsg {
   seed: number;
   spawn: SpawnState;
   roster: RosterEntry[];
+  /** Current scoreboard, so a late joiner doesn't start from a blank board. */
+  scores: ScoreEntry[];
 }
 
 export interface PlayerJoinedMsg {
@@ -77,6 +112,10 @@ export interface PlayerLeftMsg {
 export interface SnapshotEntry {
   id: string;
   pose: Pose;
+  /** Server-owned HP, rounded to whole points (regen arrives through here). */
+  hp: number;
+  /** True while spawn protection is active (clients render the shimmer). */
+  prot: boolean;
 }
 
 /**
@@ -90,8 +129,55 @@ export interface SnapshotMsg {
   players: SnapshotEntry[];
 }
 
+/** Broadcast to everyone else when a player's shot passes validation —
+ * receivers render that plane's muzzle flash + tracer (cosmetic only). */
+export interface FiredMsg {
+  type: "fired";
+  id: string;
+}
+
+/** A validated hit landed: the target's new server-owned HP. */
+export interface DamageMsg {
+  type: "damage";
+  targetId: string;
+  shooterId: string;
+  hp: number;
+}
+
+/** Server-declared death. `killerId` null = un-credited crash. */
+export interface DeathMsg {
+  type: "death";
+  victimId: string;
+  killerId: string | null;
+  cause: "shot" | "crash";
+}
+
+/**
+ * Server-issued respawn after the kill-cam beat. The respawning client seeds
+ * its FlightState from `spawn`; everyone else resets that player's
+ * interpolation buffer (a respawn teleports — it must not glide).
+ * `protectedUntil` is on the server's snapshot clock.
+ */
+export interface RespawnMsg {
+  type: "respawn";
+  id: string;
+  spawn: SpawnState;
+  protectedUntil: number;
+}
+
+/** Scoreboard delta, broadcast whenever a death changes the tallies. */
+export interface ScoreMsg {
+  type: "score";
+  scores: ScoreEntry[];
+}
+
 export type ServerMsg =
   | WelcomeMsg
   | PlayerJoinedMsg
   | PlayerLeftMsg
-  | SnapshotMsg;
+  | SnapshotMsg
+  | FiredMsg
+  | DamageMsg
+  | DeathMsg
+  | RespawnMsg
+  | ScoreMsg;

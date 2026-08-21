@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import {
   LIVENESS_TIMEOUT_MS,
+  MAX_HP,
   NAME_MAX_LENGTH,
   RESPAWN_ALTITUDE,
   RESPAWN_SPEED,
@@ -99,6 +100,7 @@ function handleJoin(ws: WebSocket, rawName: unknown): Client {
     seed: room.seed,
     spawn,
     roster: room.roster(),
+    scores: [],
   };
   ws.send(JSON.stringify(welcome));
   sendToRoom(room, { type: "playerJoined", player: { id, name } }, id);
@@ -186,7 +188,9 @@ setInterval(() => {
       time,
       players: [...room.members.values()].flatMap(({ id }) => {
         const member = clients.get(id);
-        return member ? [{ id, pose: member.pose }] : [];
+        return member
+          ? [{ id, pose: member.pose, hp: MAX_HP, prot: false }]
+          : [];
       }),
     };
     sendToRoom(room, snapshot);

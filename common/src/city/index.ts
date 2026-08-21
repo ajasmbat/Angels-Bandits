@@ -66,8 +66,8 @@ export const PLAZA_BLOCKS: ReadonlyArray<readonly [number, number]> = [
 ];
 
 /** mulberry32 — tiny seeded PRNG, identical output in Node and the browser.
- * Exported so deterministic client-side dressing (roof clutter) reuses the
- * same generator instead of growing a parallel one. */
+ * Exported so deterministic client-side dressing (roof clutter, V3 traffic)
+ * reuses the same generator instead of growing a parallel one. */
 export function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return () => {

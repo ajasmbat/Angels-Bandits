@@ -1,0 +1,20 @@
+# Fly.io config (PLAN.md → Hosting: one small instance, several rooms per
+# process). Deploy with --ha=false — rooms live in process memory, so a
+# second machine would split the player pool.
+app = "angels-bandits"
+primary_region = "iad"
+
+[build]
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  # Scale-to-zero is safe: live ws connections keep the machine awake, and
+  # the first visitor auto-starts it.
+  min_machines_running = 0
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

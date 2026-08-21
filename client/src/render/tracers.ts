@@ -4,9 +4,11 @@
 // follows the one rule of the renderer: everything drawn goes through
 // nearestImage relative to the viewer.
 
+import { EMISSIVE_TRACER } from "@angels-bandits/common/constants";
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import type { Bullet } from "../game/bullets";
+import { emissiveBoost } from "./emissive";
 import { nearestImage } from "./wrapPlacement";
 
 const TRACER_POOL = 64;
@@ -15,9 +17,12 @@ const FLASH_POOL = 8;
 const FLASH_LIFE_MS = 60;
 
 const TRACER_COLOR = 0xffc46b; // warm incandescent rounds
-/** HDR push past 1.0 (~1.5 luminance) so tracers bloom hotter than any
- * window or lamp — combat visuals outrank scenery (V1). */
-const TRACER_BOOST = 2.4;
+/** HDR push to the ladder's top rung so tracers bloom hotter than any
+ * window or lamp — combat visuals outrank scenery (V1/S1). */
+const TRACER_BOOST = emissiveBoost(
+  new THREE.Color(TRACER_COLOR),
+  EMISSIVE_TRACER,
+);
 
 const up = new THREE.Vector3(0, 1, 0);
 const dir = new THREE.Vector3();

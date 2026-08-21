@@ -20,6 +20,19 @@ export const FURNITURE_MARGIN = 1;
 /** Depth of a crosswalk zebra band along the roadway, meters. */
 export const CROSSWALK_DEPTH = 4;
 
+// --- Emissive ladder (S1) ---
+// Peak linear-luminance target per emissive class, strictly increasing so
+// combat readability outranks scenery. Every rung sits above the client's
+// bloom threshold (0.72); client materials derive their HDR boosts from
+// these targets (plain numbers here — common/ stays THREE-free).
+export const EMISSIVE_WINDOW = 0.88;
+/** Reserved for S2 neon signage — between windows and lamp heads. */
+export const EMISSIVE_SIGN = 0.93;
+export const EMISSIVE_LAMP = 0.98;
+/** Landmark beacons at pulse PEAK; the trough dips under the bloom threshold. */
+export const EMISSIVE_BEACON = 1.05;
+export const EMISSIVE_TRACER = 1.5;
+
 // --- Buildings ---
 export const BUILDING_MIN_HEIGHT = 40;
 export const BUILDING_MAX_HEIGHT = 180;

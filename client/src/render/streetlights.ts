@@ -4,9 +4,14 @@
 // block grid (no PRNG): each block owns its west and south street segments,
 // so every street centerline is covered exactly once despite the torus wrap.
 
-import { BLOCK_PITCH, WORLD_SIZE } from "@angels-bandits/common/constants";
+import {
+  BLOCK_PITCH,
+  EMISSIVE_LAMP,
+  WORLD_SIZE,
+} from "@angels-bandits/common/constants";
 import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { emissiveBoost } from "./emissive";
 import { nearestImage } from "./wrapPlacement";
 
 /** Lamps per owned street segment, at these fractions along it. */
@@ -41,10 +46,9 @@ export function streetlampPositions(): StreetlampPosition[] {
 }
 
 const POLE_HEIGHT = 7;
-/** Lamp-head color, pushed past 1.0 so heads read hot to the bloom pass —
- * clearly above the window emissives, below tracers. */
+/** Lamp-head color, boosted to the ladder's LAMP rung so heads read hot to
+ * the bloom pass — above the window emissives, below beacons and tracers. */
 const LAMP_COLOR = 0xffb35c;
-const HEAD_BOOST = 1.6;
 const GLOW_RADIUS = 9;
 const GLOW_OPACITY = 0.32;
 
@@ -96,7 +100,9 @@ export class Streetlights {
     );
 
     const headMaterial = new THREE.MeshBasicMaterial({ color: LAMP_COLOR });
-    headMaterial.color.multiplyScalar(HEAD_BOOST);
+    headMaterial.color.multiplyScalar(
+      emissiveBoost(headMaterial.color, EMISSIVE_LAMP),
+    );
     this.heads = new THREE.InstancedMesh(
       new THREE.SphereGeometry(0.45, 8, 6),
       headMaterial,

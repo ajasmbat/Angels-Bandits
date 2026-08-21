@@ -15,6 +15,9 @@ const FLASH_POOL = 8;
 const FLASH_LIFE_MS = 60;
 
 const TRACER_COLOR = 0xffc46b; // warm incandescent rounds
+/** HDR push past 1.0 (~1.5 luminance) so tracers bloom hotter than any
+ * window or lamp — combat visuals outrank scenery (V1). */
+const TRACER_BOOST = 2.4;
 
 const up = new THREE.Vector3(0, 1, 0);
 const dir = new THREE.Vector3();
@@ -35,6 +38,7 @@ export class Tracers {
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     });
+    this.streakMaterial.color.multiplyScalar(TRACER_BOOST);
     // Thin cylinder along Y; oriented per frame with quaternions.
     this.streakGeometry = new THREE.CylinderGeometry(
       0.18,
@@ -54,6 +58,7 @@ export class Tracers {
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     });
+    this.flashMaterial.color.multiplyScalar(TRACER_BOOST);
     for (let i = 0; i < FLASH_POOL; i++) {
       const sprite = new THREE.Sprite(this.flashMaterial.clone());
       sprite.scale.set(4, 4, 1);

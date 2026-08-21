@@ -18,6 +18,10 @@ import {
 import type { ScoreEntry, SpawnState } from "@angels-bandits/common/protocol";
 import { wrapDelta } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { GameAudio } from "./audio/sound";
 import { NEAR_MISS_RADIUS, closestApproach, spatialize } from "./audio/spatial";
 import { Bullets } from "./game/bullets";
@@ -32,6 +36,7 @@ import { Explosions } from "./render/fx";
 import { buildPlaneMesh, spinPropeller } from "./render/plane";
 import { RemotePlanes } from "./render/remotes";
 import { GroundPlane, SkyDome, setupSky } from "./render/sky";
+import { Streetlights } from "./render/streetlights";
 import { Tracers } from "./render/tracers";
 import { nearestImage } from "./render/wrapPlacement";
 import { Hud } from "./ui/hud";
@@ -69,12 +74,38 @@ const camera = new THREE.PerspectiveCamera(
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+// Filmic curve keeps the HDR emissives from clipping; the OutputPass applies
+// this + sRGB at the end of the composer chain.
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
 document.body.appendChild(renderer.domElement);
+
+// --- Post pipeline: render → bloom → tonemap+sRGB (V1 night look) ---
+// The bloom threshold sits above everything lit-but-not-emissive (facades peak
+// ~0.05 luminance in linear HDR, the sky dome ~0.05) and below the emissives
+// (windows ~0.8+, lamp heads ~0.9, tracers ~1.5) — so ONLY emissives glow.
+// UnrealBloomPass runs its blur chain from HALF the drawing-buffer resolution.
+const BLOOM_STRENGTH = 0.42;
+const BLOOM_RADIUS = 0.3;
+const BLOOM_THRESHOLD = 0.72;
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloomPass = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  BLOOM_STRENGTH,
+  BLOOM_RADIUS,
+  BLOOM_THRESHOLD,
+);
+composer.addPass(bloomPass);
+composer.addPass(new OutputPass());
+// The composer renders many passes per frame — reset the info counters
+// ourselves so __ab.perf() reports the whole frame, not just the last pass.
+renderer.info.autoReset = false;
 
 window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  composer.setSize(window.innerWidth, window.innerHeight);
 });
 
 // --- World (city seed comes from the server so every roommate agrees) ---
@@ -84,6 +115,8 @@ const ground = new GroundPlane();
 scene.add(ground.mesh);
 const skyDome = new SkyDome();
 scene.add(skyDome.mesh);
+const streetlights = new Streetlights();
+scene.add(streetlights.group);
 const explosions = new Explosions();
 scene.add(explosions.group);
 
@@ -287,6 +320,7 @@ declare global {
       };
       aimAt: (x: number, z: number, y?: number) => void;
       setFiring: (held: boolean) => void;
+      lampImage: (x: number, z: number) => { x: number; z: number } | null;
     };
   }
 }
@@ -329,6 +363,8 @@ window.__ab = {
     chase.snapTo(flight);
   },
   setFiring: (held) => guns.setTrigger(held),
+  // Seam QA: where the lamp nearest canonical (x, z) is drawn right now.
+  lampImage: (x, z) => streetlights.imageOf(x, z),
 };
 
 // --- Frame loop ---
@@ -408,6 +444,7 @@ renderer.setAnimationLoop((now) => {
 
   remotes.update(socket.renderTime(), chase.position, dt);
   city.update(chase.position);
+  streetlights.update(chase.position);
   ground.update(chase.position);
   skyDome.update(chase.position);
   explosions.update(chase.position, now, dt);
@@ -421,7 +458,8 @@ renderer.setAnimationLoop((now) => {
   audio.setEngine(flight.targetSpeed, alive);
   audio.syncRemotes(contacts, flight.pos, flight.yaw);
 
-  renderer.render(scene, camera);
+  renderer.info.reset();
+  composer.render();
 
   // Matrices are fresh after the render — project the screen-space UI now.
   edgeMarkers.update(

@@ -320,6 +320,7 @@ declare global {
       };
       aimAt: (x: number, z: number, y?: number) => void;
       setFiring: (held: boolean) => void;
+      lampImage: (x: number, z: number) => { x: number; z: number } | null;
     };
   }
 }
@@ -362,6 +363,8 @@ window.__ab = {
     chase.snapTo(flight);
   },
   setFiring: (held) => guns.setTrigger(held),
+  // Seam QA: where the lamp nearest canonical (x, z) is drawn right now.
+  lampImage: (x, z) => streetlights.imageOf(x, z),
 };
 
 // --- Frame loop ---

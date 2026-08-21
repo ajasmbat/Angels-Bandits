@@ -5,7 +5,7 @@
 // so every street centerline is covered exactly once despite the torus wrap.
 
 import { BLOCK_PITCH, WORLD_SIZE } from "@angels-bandits/common/constants";
-import type { Vec3 } from "@angels-bandits/common/world";
+import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { nearestImage } from "./wrapPlacement";
 
@@ -140,5 +140,27 @@ export class Streetlights {
     this.poles.instanceMatrix.needsUpdate = true;
     this.heads.instanceMatrix.needsUpdate = true;
     this.glows.instanceMatrix.needsUpdate = true;
+  }
+
+  /**
+   * QA hook (seam checks, headless harness): the position the lamp nearest
+   * canonical (x, z) is currently DRAWN at, read back from the head's
+   * instance matrix — the rendered truth, not a re-derivation.
+   */
+  imageOf(x: number, z: number): { x: number; z: number } | null {
+    let best = -1;
+    let bestDist = Number.POSITIVE_INFINITY;
+    this.lamps.forEach((lamp, i) => {
+      const d = wrapDelta({ x, y: 0, z }, { x: lamp.x, y: 0, z: lamp.z });
+      const dist = d.x * d.x + d.z * d.z;
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = i;
+      }
+    });
+    if (best < 0) return null;
+    this.heads.getMatrixAt(best, this.scratch);
+    const e = this.scratch.elements;
+    return { x: e[12] as number, z: e[14] as number };
   }
 }

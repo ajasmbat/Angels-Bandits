@@ -18,6 +18,10 @@ import {
 import type { ScoreEntry, SpawnState } from "@angels-bandits/common/protocol";
 import { wrapDelta } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { GameAudio } from "./audio/sound";
 import { NEAR_MISS_RADIUS, closestApproach, spatialize } from "./audio/spatial";
 import { Bullets } from "./game/bullets";
@@ -75,10 +79,33 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 document.body.appendChild(renderer.domElement);
 
+// --- Post pipeline: render → bloom → tonemap+sRGB (V1 night look) ---
+// The bloom threshold sits above everything lit-but-not-emissive (facades peak
+// ~0.05 luminance in linear HDR, the sky dome ~0.05) and below the emissives
+// (windows ~0.8+, lamp heads ~0.9, tracers ~1.5) — so ONLY emissives glow.
+// UnrealBloomPass runs its blur chain from HALF the drawing-buffer resolution.
+const BLOOM_STRENGTH = 0.55;
+const BLOOM_RADIUS = 0.4;
+const BLOOM_THRESHOLD = 0.55;
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloomPass = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  BLOOM_STRENGTH,
+  BLOOM_RADIUS,
+  BLOOM_THRESHOLD,
+);
+composer.addPass(bloomPass);
+composer.addPass(new OutputPass());
+// The composer renders many passes per frame — reset the info counters
+// ourselves so __ab.perf() reports the whole frame, not just the last pass.
+renderer.info.autoReset = false;
+
 window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  composer.setSize(window.innerWidth, window.innerHeight);
 });
 
 // --- World (city seed comes from the server so every roommate agrees) ---
@@ -428,7 +455,8 @@ renderer.setAnimationLoop((now) => {
   audio.setEngine(flight.targetSpeed, alive);
   audio.syncRemotes(contacts, flight.pos, flight.yaw);
 
-  renderer.render(scene, camera);
+  renderer.info.reset();
+  composer.render();
 
   // Matrices are fresh after the render — project the screen-space UI now.
   edgeMarkers.update(

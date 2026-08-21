@@ -24,6 +24,21 @@ export const LANDMARK_HEIGHT = 250;
 /** Footprint side of the slim landmark towers, meters. */
 export const LANDMARK_FOOTPRINT = 90;
 
+// --- Tiered setbacks (V2) ---
+// Buildings are 1–3 stacked, centered tiers; tier 1 keeps the full footprint
+// so streets/canyons/minimap are untouched. All ratios feed the seeded PRNG
+// draws in generateCity — tune here, never downstream.
+/** Below this total height a building stays a single slab, meters. */
+export const TIER_TWO_MIN_HEIGHT = 80;
+/** Minimum total height for a 3-tier wedding-cake profile, meters. */
+export const TIER_THREE_MIN_HEIGHT = 130;
+/** Upper-tier footprint ratio vs the tier below, min..max (setback range). */
+export const TIER_SETBACK_MIN = 0.55;
+export const TIER_SETBACK_MAX = 0.8;
+/** Fraction of the remaining height a lower tier keeps, min..max. */
+export const TIER_SPLIT_MIN = 0.5;
+export const TIER_SPLIT_MAX = 0.7;
+
 // --- Flight (tuned by T2) ---
 /** Minimum airspeed, m/s. At MIN_SPEED you mush, never stall. */
 export const MIN_SPEED = 40;

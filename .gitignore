@@ -1,0 +1,6 @@
+node_modules/
+dist/
+
+# Fredrin: commit only the guidelines file; the wrapper carries a credential
+.fredrin/*
+!.fredrin/FREDRIN.md

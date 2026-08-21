@@ -32,6 +32,7 @@ import { Explosions } from "./render/fx";
 import { buildPlaneMesh, spinPropeller } from "./render/plane";
 import { RemotePlanes } from "./render/remotes";
 import { GroundPlane, SkyDome, setupSky } from "./render/sky";
+import { Streetlights } from "./render/streetlights";
 import { Tracers } from "./render/tracers";
 import { nearestImage } from "./render/wrapPlacement";
 import { Hud } from "./ui/hud";
@@ -84,6 +85,8 @@ const ground = new GroundPlane();
 scene.add(ground.mesh);
 const skyDome = new SkyDome();
 scene.add(skyDome.mesh);
+const streetlights = new Streetlights();
+scene.add(streetlights.group);
 const explosions = new Explosions();
 scene.add(explosions.group);
 
@@ -408,6 +411,7 @@ renderer.setAnimationLoop((now) => {
 
   remotes.update(socket.renderTime(), chase.position, dt);
   city.update(chase.position);
+  streetlights.update(chase.position);
   ground.update(chase.position);
   skyDome.update(chase.position);
   explosions.update(chase.position, now, dt);

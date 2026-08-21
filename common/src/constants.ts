@@ -12,6 +12,14 @@ export const BLOCK_PITCH = 200;
 /** Width of the street gap between adjacent building footprints, meters. */
 export const STREET_WIDTH = 30;
 
+// --- Street cross-section (S1) — consumed via common/src/city/street.ts ---
+/** Offset of each lane center from the street centerline, meters (right-hand traffic). */
+export const LANE_CENTER_OFFSET = 5;
+/** Street-furniture line (lamp posts): this far behind the curb, meters. */
+export const FURNITURE_MARGIN = 1;
+/** Depth of a crosswalk zebra band along the roadway, meters. */
+export const CROSSWALK_DEPTH = 4;
+
 // --- Buildings ---
 export const BUILDING_MIN_HEIGHT = 40;
 export const BUILDING_MAX_HEIGHT = 180;

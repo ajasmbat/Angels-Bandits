@@ -11,6 +11,10 @@ import * as THREE from "three";
 /** Window cell pitch, meters (x = along the facade, y = per floor). */
 const WINDOW_PITCH = "vec2(5.0, 3.6)";
 
+/** Lifts lit windows just over the bloom threshold (V1: gentle window glow,
+ * peak ~0.94 luminance — always below tracer/lamp emissives). */
+const WINDOW_EMISSIVE_INTENSITY = "1.25";
+
 const VERTEX_PARS = /* glsl */ `
 varying vec3 vMeters;
 varying vec3 vObjNormal;
@@ -53,7 +57,7 @@ float winH = fract(sin(dot(winCell + vBSeed * 61.0, vec2(127.1, 311.7))) * 43758
 float lit = step(0.62, winH);
 // Mostly warm incandescent windows, a few cool fluorescent ones.
 vec3 winColor = mix(vec3(1.0, 0.72, 0.35), vec3(0.55, 0.85, 1.0), step(0.88, winH));
-totalEmissiveRadiance += pane * lit * winColor * (0.55 + 0.45 * winH);
+totalEmissiveRadiance += pane * lit * winColor * (0.55 + 0.45 * winH) * ${WINDOW_EMISSIVE_INTENSITY};
 `;
 
 /** The city's instanced material: dark towers + procedural lit windows. */

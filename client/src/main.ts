@@ -70,6 +70,9 @@ const camera = new THREE.PerspectiveCamera(
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+// Filmic curve keeps the HDR emissives from clipping; the OutputPass applies
+// this + sRGB at the end of the composer chain.
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
 document.body.appendChild(renderer.domElement);
 
 window.addEventListener("resize", () => {

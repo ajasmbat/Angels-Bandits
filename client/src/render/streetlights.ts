@@ -6,13 +6,17 @@
 // contract's curbside lamp row, never the roadway), so every street is
 // covered exactly once despite the torus wrap.
 
+import { FURNITURE_LINE } from "@angels-bandits/common/city/street";
 import {
   BLOCK_PITCH,
   EMISSIVE_LAMP,
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
-import { FURNITURE_LINE } from "@angels-bandits/common/city/street";
-import { type Vec3, canonicalize, wrapDelta } from "@angels-bandits/common/world";
+import {
+  type Vec3,
+  canonicalize,
+  wrapDelta,
+} from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
 import { nearestImage } from "./wrapPlacement";
@@ -25,6 +29,16 @@ const LAMP_FRACTIONS = [0.125, 0.5, 0.875] as const;
  * clear of block corners so no lamp falls into a CROSSING street's roadway
  * (a naive half-step stagger puts one station 12.5 m from the corner). */
 const STAGGER = 0.3125;
+
+/** Lamp stations in meters along a street segment, per side — the ground
+ * shader's faked lamp reflections (S1 wet look) anchor to these, so the
+ * streaks always sit under the actual lamps. */
+export const LAMP_STATIONS_PLUS: readonly number[] = LAMP_FRACTIONS.map(
+  (f) => f * BLOCK_PITCH,
+);
+export const LAMP_STATIONS_MINUS: readonly number[] = LAMP_FRACTIONS.map(
+  (f) => ((f + STAGGER) % 1) * BLOCK_PITCH,
+);
 
 /** Canonical ground position of one lamp (on a furniture line, y = 0). */
 export interface StreetlampPosition {
@@ -48,9 +62,9 @@ export function streetlampPositions(): StreetlampPosition[] {
     for (let bz = 0; bz < grid; bz++) {
       const x0 = bx * BLOCK_PITCH;
       const z0 = bz * BLOCK_PITCH;
-      for (const f of LAMP_FRACTIONS) {
-        const along = f * BLOCK_PITCH;
-        const staggered = ((f + STAGGER) % 1) * BLOCK_PITCH;
+      for (let i = 0; i < LAMP_FRACTIONS.length; i++) {
+        const along = LAMP_STATIONS_PLUS[i] as number;
+        const staggered = LAMP_STATIONS_MINUS[i] as number;
         // West line: a lamp on each furniture line, negative side staggered.
         lamps.push({ x: x0 + FURNITURE_LINE, z: z0 + along });
         lamps.push({ x: canon(x0 - FURNITURE_LINE), z: z0 + staggered });

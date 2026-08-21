@@ -84,9 +84,9 @@ document.body.appendChild(renderer.domElement);
 // ~0.05 luminance in linear HDR, the sky dome ~0.05) and below the emissives
 // (windows ~0.8+, lamp heads ~0.9, tracers ~1.5) — so ONLY emissives glow.
 // UnrealBloomPass runs its blur chain from HALF the drawing-buffer resolution.
-const BLOOM_STRENGTH = 0.55;
-const BLOOM_RADIUS = 0.4;
-const BLOOM_THRESHOLD = 0.55;
+const BLOOM_STRENGTH = 0.42;
+const BLOOM_RADIUS = 0.3;
+const BLOOM_THRESHOLD = 0.72;
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
 const bloomPass = new UnrealBloomPass(

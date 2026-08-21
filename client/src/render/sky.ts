@@ -24,11 +24,15 @@ export function setupSky(scene: THREE.Scene): void {
   scene.background = new THREE.Color(DUSK.sky);
   scene.fog = new THREE.Fog(DUSK.sky, 60, FOG_DISTANCE);
 
-  scene.add(new THREE.AmbientLight(DUSK.ambient, 1.6));
-  const sun = new THREE.DirectionalLight(DUSK.sun, 1.4);
+  // Night rebalance (V1): ambient way down so the emissives — windows,
+  // tracers, street lamps — carry the scene; the hemisphere shapes the cool
+  // ambient (indigo sky over a near-black ground) and the directional is a
+  // low warm dusk key. No shadow maps, no point lights.
+  scene.add(new THREE.AmbientLight(DUSK.ambient, 0.5));
+  const sun = new THREE.DirectionalLight(DUSK.sun, 0.9);
   sun.position.set(-0.6, 0.25, 0.75); // direction only — a low dusk sun
   scene.add(sun);
-  const fill = new THREE.HemisphereLight(0x2c2c4a, 0x0c0c14, 0.9);
+  const fill = new THREE.HemisphereLight(0x2c2c4a, 0x05050a, 0.7);
   scene.add(fill);
 }
 

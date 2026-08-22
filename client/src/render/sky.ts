@@ -280,7 +280,7 @@ export class GroundPlane {
         )
         .replace(
           "#include <emissivemap_fragment>",
-          `#include <emissivemap_fragment>\ntotalEmissiveRadiance += abEmissive;`,
+          "#include <emissivemap_fragment>\ntotalEmissiveRadiance += abEmissive;",
         );
     };
     this.mesh = new THREE.Mesh(

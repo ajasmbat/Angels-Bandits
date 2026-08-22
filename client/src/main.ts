@@ -36,6 +36,7 @@ import { Explosions } from "./render/fx";
 import { buildPlaneMesh, spinPropeller } from "./render/plane";
 import { RemotePlanes } from "./render/remotes";
 import { RoofClutterRenderer } from "./render/roofclutter";
+import { Signage } from "./render/signage";
 import { GroundPlane, SkyDome, setupSky } from "./render/sky";
 import { Streetlights } from "./render/streetlights";
 import { Tracers } from "./render/tracers";
@@ -122,6 +123,10 @@ const skyDome = new SkyDome();
 scene.add(skyDome.mesh);
 const streetlights = new Streetlights();
 scene.add(streetlights.group);
+// Street-level neon (S2): marquees, billboards, strips, spill — one shared
+// Building[] again, so signage dresses exactly the rendered facades.
+const signage = new Signage(city.cityBuildings, welcome.seed);
+scene.add(signage.group);
 // Cosmetic street traffic — pure function of the synced server clock, so
 // every client (late joiners included) sees identical cars. Zero netcode.
 const traffic = new Traffic(welcome.seed);
@@ -336,6 +341,8 @@ declare global {
         tierInstances: number;
         clutterInstances: number;
       };
+      signage: () => Signage["counts"];
+      signImage: (x: number, z: number) => { x: number; z: number } | null;
     };
   }
 }
@@ -389,6 +396,9 @@ window.__ab = {
     tierInstances: city.tierInstanceCount,
     clutterInstances: roofClutter.instanceCount,
   }),
+  // S2 QA: signage instance counts + drawn-position read-back (seam checks).
+  signage: () => signage.counts,
+  signImage: (x, z) => signage.imageOf(x, z),
 };
 
 // --- Frame loop ---
@@ -471,6 +481,8 @@ renderer.setAnimationLoop((now) => {
   // Beacons pulse on server-synced time so every client is in phase.
   roofClutter.update(chase.position, socket.renderTime() ?? now);
   streetlights.update(chase.position);
+  // Neon pulses on the same synced clock as the beacons.
+  signage.update(chase.position, socket.renderTime() ?? now);
   traffic.update(chase.position, socket.renderTime());
   ground.update(chase.position);
   skyDome.update(chase.position);

@@ -56,7 +56,7 @@ export type HitReject =
 export interface Death {
   victimId: string;
   killerId: string | null;
-  cause: "shot" | "crash";
+  cause: "shot" | "crash" | "storm";
 }
 export type HitResult =
   | { ok: true; hp: number; death: Death | null }
@@ -216,11 +216,28 @@ export class Combat {
 
   /** Client-reported crash. Credits the last damager within DAMAGE_MEMORY_MS. */
   crash(id: string, now: number): Death | null {
+    return this.environmentKill(id, "crash", now);
+  }
+
+  /** Storm-ceiling execution (the hidden death ceiling's grace ran out) —
+   * the crash credit rule with cause "storm": a bolt finishing off a damaged
+   * plane still pays the damager; otherwise the storm itself (⚡) takes it. */
+  stormKill(id: string, now: number): Death | null {
+    return this.environmentKill(id, "storm", now);
+  }
+
+  /** An environment-caused death: last damager within DAMAGE_MEMORY_MS gets
+   * the credit (PLAN.md kill-credit rule), else no one. */
+  private environmentKill(
+    id: string,
+    cause: "crash" | "storm",
+    now: number,
+  ): Death | null {
     const p = this.players.get(id);
     if (!p || !p.alive) return null;
     const credited =
       p.lastDamagerId !== null && now - p.lastDamagedAt <= DAMAGE_MEMORY_MS;
-    return this.kill(id, p, credited ? p.lastDamagerId : null, "crash", now);
+    return this.kill(id, p, credited ? p.lastDamagerId : null, cause, now);
   }
 
   /**
@@ -267,7 +284,7 @@ export class Combat {
     victimId: string,
     victim: PlayerCombat,
     killerId: string | null,
-    cause: "shot" | "crash",
+    cause: Death["cause"],
     now: number,
   ): Death {
     victim.alive = false;

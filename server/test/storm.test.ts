@@ -4,6 +4,7 @@
 // ticket's spec literals, not recomputed from the implementation.
 
 import { describe, expect, it } from "vitest";
+import { Combat } from "../src/combat";
 import { StormCeiling } from "../src/storm";
 
 const KILL_ALT = 600; // spec: hidden ceiling arms strictly above 600 m
@@ -68,5 +69,63 @@ describe("StormCeiling grace timer", () => {
     storm.forget("p");
     expect(storm.observe("p", HIGH, 3100)).toBeNull(); // re-armed at 3100
     expect(storm.observe("p", HIGH, 6200)).toBe("kill");
+  });
+});
+
+// Kill settlement goes through the existing Combat seam: stormKill is the
+// crash rule with cause "storm" — credit the last damager within
+// DAMAGE_MEMORY_MS (8000 ms per constants.ts), else the environment (⚡).
+describe("Combat.stormKill credit", () => {
+  const at = { x: 0, y: 700, z: 0 };
+  /** Two players at t=0; p0 lands one validated hit on p1 at `now` (5000 is
+   * past the 4000 ms spawn protection). */
+  const damagedArena = (now: number): Combat => {
+    const combat = new Combat();
+    combat.addPlayer("p0", 0);
+    combat.addPlayer("p1", 0);
+    expect(combat.fire("p0", 1, now).ok).toBe(true);
+    expect(combat.hit("p0", "p1", 1, at, at, at, now).ok).toBe(true);
+    return combat;
+  };
+
+  it("credits a damager from the last 8 s, cause storm", () => {
+    const combat = damagedArena(5000);
+    const death = combat.stormKill("p1", 12_999); // 7 999 ms after the hit
+    expect(death).toEqual({ victimId: "p1", killerId: "p0", cause: "storm" });
+    expect(combat.scoreOf("p0")).toEqual({ id: "p0", kills: 1, deaths: 0 });
+    expect(combat.scoreOf("p1")).toEqual({ id: "p1", kills: 0, deaths: 1 });
+  });
+
+  it("blames the environment when the damage is older than 8 s", () => {
+    const combat = damagedArena(5000);
+    const death = combat.stormKill("p1", 13_100); // 8 100 ms after the hit
+    expect(death).toEqual({ victimId: "p1", killerId: null, cause: "storm" });
+    expect(combat.scoreOf("p0").kills).toBe(0);
+  });
+
+  it("blames the environment when the victim was never damaged", () => {
+    const combat = new Combat();
+    combat.addPlayer("p1", 0);
+    expect(combat.stormKill("p1", 5000)).toEqual({
+      victimId: "p1",
+      killerId: null,
+      cause: "storm",
+    });
+  });
+
+  it("returns null for a dead or unknown plane", () => {
+    const combat = new Combat();
+    combat.addPlayer("p1", 0);
+    combat.stormKill("p1", 5000);
+    expect(combat.stormKill("p1", 5100)).toBeNull();
+    expect(combat.stormKill("ghost", 5100)).toBeNull();
+  });
+
+  it("feeds the normal respawn pipeline (kill-cam beat, then due)", () => {
+    const combat = new Combat();
+    combat.addPlayer("p1", 0);
+    combat.stormKill("p1", 5000);
+    expect(combat.tick(7400).respawnsDue).toEqual([]); // KILL_CAM_MS = 2500
+    expect(combat.tick(7500).respawnsDue).toEqual(["p1"]);
   });
 });

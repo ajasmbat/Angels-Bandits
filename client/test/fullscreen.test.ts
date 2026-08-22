@@ -225,6 +225,58 @@ describe("initFullscreenUi", () => {
     expect(stopped).toBe(2); // Guns listens on window mousedown/mouseup
   });
 
+  describe("F key", () => {
+    /** Window-like target recording its keydown listener. */
+    function fakeWin() {
+      const keys = new Map<string, (ev: object) => void>();
+      return {
+        win: {
+          addEventListener: (type: string, cb: (ev: object) => void) =>
+            keys.set(type, cb),
+        },
+        press: (ev: object) => keys.get("keydown")?.(ev),
+      };
+    }
+
+    it("F toggles fullscreen", () => {
+      const { doc, calls } = uiDoc();
+      const { win, press } = fakeWin();
+      initFullscreenUi(doc, win);
+      press({ code: "KeyF", target: { tagName: "BODY" } });
+      expect(calls).toEqual(["request"]);
+    });
+
+    it("typing an F into the name input does NOT toggle", () => {
+      const { doc, calls } = uiDoc();
+      const { win, press } = fakeWin();
+      initFullscreenUi(doc, win);
+      press({ code: "KeyF", target: { tagName: "INPUT" } });
+      expect(calls).toEqual([]);
+    });
+
+    it("holding F does not re-toggle on key repeat", () => {
+      const { doc, calls } = uiDoc();
+      const { win, press } = fakeWin();
+      initFullscreenUi(doc, win);
+      press({ code: "KeyF", target: { tagName: "BODY" } });
+      press({ code: "KeyF", repeat: true, target: { tagName: "BODY" } });
+      expect(calls).toEqual(["request"]);
+    });
+
+    it("other keys do nothing; unsupported doc makes F a no-op", () => {
+      const { doc, calls } = uiDoc();
+      const { win, press } = fakeWin();
+      initFullscreenUi(doc, win);
+      press({ code: "KeyW", target: { tagName: "BODY" } });
+      expect(calls).toEqual([]);
+      const off = uiDoc({ fullscreenEnabled: undefined });
+      const offWin = fakeWin();
+      initFullscreenUi(off.doc, offWin.win);
+      offWin.press({ code: "KeyF", target: { tagName: "BODY" } });
+      expect(off.calls).toEqual([]);
+    });
+  });
+
   it("drives body.fullscreen from the change event, not from clicks", () => {
     const { doc, listeners, bodyClasses } = uiDoc();
     initFullscreenUi(doc);

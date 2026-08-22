@@ -73,11 +73,26 @@ export interface FullscreenUiDoc extends FullscreenDoc {
   } | null;
 }
 
-/** Wire the HUD + join-overlay buttons (chrome lives in index.html). Hides
- * them where fullscreen is unsupported; `body.fullscreen` (the icon's exit
- * state, CSS) follows the change events so Esc-exit stays truthful. */
+/** Keydown shape the F binding reads — target tag gates out the name input. */
+export interface FullscreenKeyEvent {
+  code: string;
+  repeat?: boolean;
+  target?: { tagName?: string } | null;
+}
+
+/** Wire the HUD + join-overlay buttons and the F key (chrome lives in
+ * index.html). Hides the buttons — and leaves F unbound — where fullscreen
+ * is unsupported; `body.fullscreen` (the icon's exit state, CSS) follows the
+ * change events so Esc-exit stays truthful. */
 export function initFullscreenUi(
   doc: FullscreenUiDoc = document as FullscreenUiDoc,
+  win: {
+    addEventListener: (
+      type: string,
+      listener: (ev: FullscreenKeyEvent) => void,
+    ) => void;
+    // Lazy default: tests run in a node env where `window` doesn't exist.
+  } | undefined = typeof window === "undefined" ? undefined : window,
 ): void {
   const buttons = [
     doc.getElementById?.("fs-btn"),
@@ -96,4 +111,11 @@ export function initFullscreenUi(
     btn?.addEventListener("mouseup", swallow);
   }
   watchFullscreen((on) => doc.body?.classList.toggle("fullscreen", on), doc);
+  win?.addEventListener("keydown", (ev) => {
+    if (ev.code !== "KeyF" || ev.repeat) return;
+    // Typing a name with an F in it must not fullscreen.
+    const tag = ev.target?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA") return;
+    toggleFullscreen(doc);
+  });
 }

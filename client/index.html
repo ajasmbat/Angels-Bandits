@@ -296,7 +296,9 @@
         outline: none;
         width: 220px;
       }
-      #join button {
+      /* Submit only — a bare `#join button` would also hit #join-fs and
+         out-specify .fs-toggle (the solid-teal-block bug). */
+      #join button[type="submit"] {
         display: block;
         margin: 14px auto 0;
         background: #27e0c0;
@@ -355,39 +357,61 @@
         user-select: none;
         will-change: transform;
       }
-      /* Fullscreen ghost glyph (chosen concept 1): bare ⛶, no chrome —
-         ghosted until hover; body.fullscreen overlays a small ✕ (exit). */
+      /* Fullscreen ghost icon (chosen concept 3): framed-viewport SVG, no
+         chrome — ghosted until hover; body.fullscreen swaps in the ×-in-frame
+         exit icon. Inline SVG, not a text glyph: U+26F6 falls back to an
+         emoji/boxed font on some platforms and rendered as a solid block. */
       .fs-toggle {
+        appearance: none;
+        -webkit-appearance: none;
         width: 22px;
         height: 22px;
         padding: 0;
-        background: none;
+        background: transparent;
         border: none;
         color: #9fd8e8;
-        font: inherit;
-        font-size: 18px;
-        line-height: 22px;
-        text-align: center;
-        text-shadow: 0 1px 2px #000;
         opacity: 0.4;
         cursor: pointer;
         transition: opacity 0.15s ease;
+        -webkit-tap-highlight-color: transparent;
         user-select: none;
+      }
+      .fs-toggle:hover,
+      .fs-toggle:active {
+        background: transparent;
       }
       .fs-toggle:hover {
         opacity: 1;
       }
+      .fs-toggle:focus-visible {
+        opacity: 1;
+        outline: 1px solid #9fd8e8aa;
+        outline-offset: 2px;
+        border-radius: 2px;
+      }
+      .fs-toggle svg {
+        display: block;
+        width: 100%;
+        height: 100%;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+        filter: drop-shadow(0 1px 2px #000);
+      }
+      .fs-toggle .icon-exit {
+        display: none;
+      }
       body.fullscreen .fs-toggle {
         opacity: 0.55;
       }
-      body.fullscreen .fs-toggle::after {
-        content: "✕";
-        position: absolute;
-        left: 0;
-        top: 0;
-        width: 100%;
-        font-size: 10px;
-        line-height: 22px;
+      body.fullscreen .fs-toggle:hover {
+        opacity: 1;
+      }
+      body.fullscreen .fs-toggle .icon-enter {
+        display: none;
+      }
+      body.fullscreen .fs-toggle .icon-exit {
+        display: block;
       }
       #fs-btn {
         position: fixed;
@@ -428,7 +452,21 @@
       <div id="protected-badge">◇ PROTECTED ◇</div>
       <div id="radio-toggle"></div>
     </div>
-    <button id="fs-btn" class="fs-toggle" title="Fullscreen (F)">⛶</button>
+    <button
+      id="fs-btn"
+      class="fs-toggle"
+      title="Fullscreen (F)"
+      aria-label="Toggle fullscreen"
+    >
+      <svg class="icon-enter" viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="7" y="7" width="10" height="10" stroke-width="1.6" />
+        <path d="M3 7V3h4M17 3h4v4M21 17v4h-4M7 21H3v-4" />
+      </svg>
+      <svg class="icon-exit" viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="7" y="7" width="10" height="10" stroke-width="1.6" />
+        <path d="M9.6 9.6l4.8 4.8M14.4 9.6l-4.8 4.8" stroke-width="1.6" />
+      </svg>
+    </button>
     <div id="freelook-hint">◇ FREE LOOK ◇</div>
     <div id="killfeed"></div>
     <div id="comms"></div>
@@ -444,8 +482,21 @@
     <div id="killcam"></div>
     <div id="fade"></div>
     <div id="join">
-      <button id="join-fs" class="fs-toggle" type="button" title="Fullscreen (F)">
-        ⛶
+      <button
+        id="join-fs"
+        class="fs-toggle"
+        type="button"
+        title="Fullscreen (F)"
+        aria-label="Toggle fullscreen"
+      >
+        <svg class="icon-enter" viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="7" y="7" width="10" height="10" stroke-width="1.6" />
+          <path d="M3 7V3h4M17 3h4v4M21 17v4h-4M7 21H3v-4" />
+        </svg>
+        <svg class="icon-exit" viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="7" y="7" width="10" height="10" stroke-width="1.6" />
+          <path d="M9.6 9.6l4.8 4.8M14.4 9.6l-4.8 4.8" stroke-width="1.6" />
+        </svg>
       </button>
       <form id="join-form">
         <h1>ANGELS &amp; BANDITS</h1>

@@ -320,6 +320,50 @@
         user-select: none;
         will-change: transform;
       }
+      /* Fullscreen ghost glyph (chosen concept 1): bare ⛶, no chrome —
+         ghosted until hover; body.fullscreen overlays a small ✕ (exit). */
+      .fs-toggle {
+        width: 22px;
+        height: 22px;
+        padding: 0;
+        background: none;
+        border: none;
+        color: #9fd8e8;
+        font: inherit;
+        font-size: 18px;
+        line-height: 22px;
+        text-align: center;
+        text-shadow: 0 1px 2px #000;
+        opacity: 0.4;
+        cursor: pointer;
+        transition: opacity 0.15s ease;
+        user-select: none;
+      }
+      .fs-toggle:hover {
+        opacity: 1;
+      }
+      body.fullscreen .fs-toggle {
+        opacity: 0.55;
+      }
+      body.fullscreen .fs-toggle::after {
+        content: "✕";
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100%;
+        font-size: 10px;
+        line-height: 22px;
+      }
+      #fs-btn {
+        position: fixed;
+        right: 16px;
+        bottom: 76px;
+      }
+      #join-fs {
+        position: absolute;
+        right: 14px;
+        top: 12px;
+      }
       #lead::after {
         content: "";
         position: absolute;
@@ -348,6 +392,7 @@
       </div>
       <div id="protected-badge">◇ PROTECTED ◇</div>
     </div>
+    <button id="fs-btn" class="fs-toggle" title="Fullscreen (F)">⛶</button>
     <div id="freelook-hint">◇ FREE LOOK ◇</div>
     <div id="killfeed"></div>
     <div id="scoreboard">
@@ -362,6 +407,9 @@
     <div id="killcam"></div>
     <div id="fade"></div>
     <div id="join">
+      <button id="join-fs" class="fs-toggle" type="button" title="Fullscreen (F)">
+        ⛶
+      </button>
       <form id="join-form">
         <h1>ANGELS &amp; BANDITS</h1>
         <input

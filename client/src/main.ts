@@ -34,7 +34,7 @@ import { bulletHitsSphere } from "./game/hitdetect";
 import { magnetizeVelocity } from "./game/magnetism";
 import { GameSocket } from "./net/socket";
 import { CityRenderer } from "./render/city";
-import { Explosions } from "./render/fx";
+import { Explosions, Sparks } from "./render/fx";
 import { buildPlaneMesh, spinPropeller } from "./render/plane";
 import { RemotePlanes } from "./render/remotes";
 import { RoofClutterRenderer } from "./render/roofclutter";
@@ -140,6 +140,8 @@ const traffic = new Traffic(welcome.seed);
 scene.add(traffic.mesh);
 const explosions = new Explosions();
 scene.add(explosions.group);
+const sparks = new Sparks();
+scene.add(sparks.points);
 
 const plane = buildPlaneMesh();
 scene.add(plane);
@@ -509,10 +511,12 @@ renderer.setAnimationLoop((now) => {
       if (bulletHitsSphere(bullet.prev, bullet.pos, target.pos)) {
         socket.sendHit(target.id, bullet.origin, bullet.seq);
         bullets.remove(bullet);
-        // Instant shooter-side feedback (marker + thunk); the server's
-        // damage broadcast stays the authoritative confirm (crosshair blip).
+        // Instant shooter-side feedback (marker + thunk + sparks at the
+        // impact point); the server's damage broadcast stays the
+        // authoritative confirm (crosshair blip).
         hud.hitMarker(now);
         audio.hitThunk();
+        sparks.burst(bullet.pos, now);
         break;
       }
     }
@@ -529,6 +533,7 @@ renderer.setAnimationLoop((now) => {
   ground.update(chase.position);
   skyDome.update(chase.position);
   explosions.update(chase.position, now, dt);
+  sparks.update(chase.position, now);
   tracers.update(bullets.all, chase.position, now);
 
   const heat = guns.state;

@@ -14,6 +14,8 @@ import * as THREE from "three";
 import { InterpolationBuffer } from "../net/interp";
 import { TAG_ALTITUDE, createNameTag, disposeNameTag } from "./nametags";
 import { buildPlaneMesh, disposePlaneMesh, spinPropeller } from "./plane";
+import type { PlaneLights } from "./planelights";
+import type { PlaneTrails } from "./trails";
 import { nearestImage } from "./wrapPlacement";
 
 /** Spawn-protection shimmer pulse rate, Hz. */
@@ -47,6 +49,8 @@ export class RemotePlanes {
   constructor(
     private readonly scene: THREE.Scene,
     private readonly selfId: string,
+    private readonly lights: PlaneLights,
+    private readonly trails: PlaneTrails,
   ) {}
 
   get count(): number {
@@ -75,6 +79,7 @@ export class RemotePlanes {
 
   playerLeft(id: string): void {
     this.names.delete(id);
+    this.trails.drop(id);
     const remote = this.remotes.get(id);
     if (!remote) return;
     this.remotes.delete(id);
@@ -121,6 +126,7 @@ export class RemotePlanes {
     remote.lastPose = null;
     remote.mesh.visible = false;
     remote.tag.visible = false;
+    this.trails.clear(id);
   }
 
   /** Respawn event: fresh buffer so the teleport snaps instead of gliding. */
@@ -131,6 +137,7 @@ export class RemotePlanes {
     remote.buffer = new InterpolationBuffer();
     remote.lastPos = null;
     remote.lastPose = null;
+    this.trails.clear(id); // the respawn teleport must not streak
   }
 
   /** Living remotes as hit-test / lead targets: interpolated canonical
@@ -183,10 +190,17 @@ export class RemotePlanes {
     return this.names.get(id)?.name ?? "???";
   }
 
-  /** Sample every buffer at `renderTime` and place meshes around `viewer`. */
-  update(renderTime: number | null, viewer: Vec3, dt: number): void {
+  /** Sample every buffer at `renderTime` and place meshes around `viewer`.
+   * `nowMs` is the local performance.now clock (trail aging); `renderTime`
+   * stays the synced server clock (strobe phase — all clients agree). */
+  update(
+    renderTime: number | null,
+    viewer: Vec3,
+    dt: number,
+    nowMs: number,
+  ): void {
     if (renderTime === null) return;
-    for (const remote of this.remotes.values()) {
+    for (const [id, remote] of this.remotes) {
       if (!remote.alive) continue;
       const pose = remote.buffer.sample(renderTime);
       if (!pose) continue;
@@ -194,6 +208,8 @@ export class RemotePlanes {
       remote.lastPos = pose.pos;
       remote.lastPose = pose;
       const p = nearestImage(viewer, pose.pos);
+      this.lights.place(id, p, pose.quat, pose.speed, renderTime);
+      this.trails.emit(id, pose.pos, pose.quat, nowMs, dt);
       remote.mesh.position.set(p.x, p.y, p.z);
       remote.mesh.quaternion.set(
         pose.quat.x,

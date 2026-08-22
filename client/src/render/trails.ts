@@ -135,7 +135,7 @@ const MAX_VERTICES = ROOM_CAP * 2 * (MAX_POINTS - 1) * 6;
 
 /** Concept 1 "Regulation Night Traffic": pale grey-white streaks, faint in
  * level flight, assertive only under hard turns. */
-const TRAIL_HALF_WIDTH = 0.22;
+const TRAIL_HALF_WIDTH = 0.42;
 const TRAIL_BASE_ALPHA = 0.08;
 const TRAIL_TURN_ALPHA = 0.55;
 const TRAIL_GREY = new THREE.Color(0.88, 0.88, 0.94);

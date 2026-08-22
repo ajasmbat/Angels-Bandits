@@ -22,10 +22,14 @@ export class Hud {
   private readonly crosshair = document.getElementById(
     "crosshair",
   ) as HTMLDivElement;
+  private readonly hitmarker = document.getElementById(
+    "hitmarker",
+  ) as HTMLDivElement;
   private readonly radioToggle = document.getElementById(
     "radio-toggle",
   ) as HTMLDivElement;
   private hitBlipUntil = 0;
+  private markerUntil = 0;
 
   /** Server-owned HP (snapshots / damage events). */
   setHp(hp: number): void {
@@ -87,11 +91,32 @@ export class Hud {
     this.crosshair.classList.add("hit");
   }
 
-  /** Call every frame to age the hit blip out. */
+  /** Instant X at the reticle the frame the local sweep connects (~120 ms). */
+  hitMarker(now: number): void {
+    // A kill flourish in flight outranks a plain hit — don't shrink it.
+    if (this.hitmarker.classList.contains("kill") && now < this.markerUntil) {
+      return;
+    }
+    this.markerUntil = now + 120;
+    this.hitmarker.classList.remove("kill");
+    this.hitmarker.classList.add("on");
+  }
+
+  /** Kill confirm: the marker grows into a pink X held ~400 ms. */
+  killConfirm(now: number): void {
+    this.markerUntil = now + 400;
+    this.hitmarker.classList.add("kill", "on");
+  }
+
+  /** Call every frame to age the hit blip and hitmarker out. */
   update(now: number): void {
     if (this.hitBlipUntil !== 0 && now > this.hitBlipUntil) {
       this.crosshair.classList.remove("hit");
       this.hitBlipUntil = 0;
+    }
+    if (this.markerUntil !== 0 && now > this.markerUntil) {
+      this.hitmarker.classList.remove("on"); // CSS fades the rest of the way
+      this.markerUntil = 0;
     }
   }
 }

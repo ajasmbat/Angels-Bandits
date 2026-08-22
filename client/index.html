@@ -55,6 +55,63 @@
         border-color: #ffc46b;
         box-shadow: 0 0 8px #ffc46b;
       }
+      /* Hitmarker (approved concept 1 "Classic Cross"): four X-strokes snap
+         in at the reticle on a local connect, fading out over 120 ms once
+         released; a kill swaps to a larger pink X held ~400 ms. */
+      #hitmarker {
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        width: 0;
+        height: 0;
+        opacity: 0;
+        transition: opacity 0.12s linear;
+        pointer-events: none;
+        user-select: none;
+      }
+      #hitmarker.on {
+        opacity: 1;
+        transition: none;
+      }
+      #hitmarker span {
+        position: absolute;
+        width: 2px;
+        height: 9px;
+        background: #ffc46b;
+        box-shadow: 0 0 6px #ffc46b;
+      }
+      #hitmarker span:nth-child(1) {
+        transform: translate(-7px, -13px) rotate(-45deg);
+      }
+      #hitmarker span:nth-child(2) {
+        transform: translate(5px, -13px) rotate(45deg);
+      }
+      #hitmarker span:nth-child(3) {
+        transform: translate(-7px, 3px) rotate(45deg);
+      }
+      #hitmarker span:nth-child(4) {
+        transform: translate(5px, 3px) rotate(-45deg);
+      }
+      #hitmarker.kill span {
+        height: 14px;
+        background: #ff7a9a;
+        box-shadow: 0 0 9px #ff7a9a;
+      }
+      #hitmarker.kill span:nth-child(1) {
+        transform: translate(-10px, -19px) rotate(-45deg);
+      }
+      #hitmarker.kill span:nth-child(2) {
+        transform: translate(8px, -19px) rotate(45deg);
+      }
+      #hitmarker.kill span:nth-child(3) {
+        transform: translate(-10px, 5px) rotate(45deg);
+      }
+      #hitmarker.kill span:nth-child(4) {
+        transform: translate(8px, 5px) rotate(-45deg);
+      }
+      body.freelook #hitmarker {
+        opacity: 0.3;
+      }
       #gauges {
         position: fixed;
         right: 16px;
@@ -437,6 +494,7 @@
   </head>
   <body>
     <div id="crosshair"></div>
+    <div id="hitmarker"><span></span><span></span><span></span><span></span></div>
     <div id="lead"></div>
     <canvas id="minimap" width="320" height="320"></canvas>
     <div id="hud"></div>

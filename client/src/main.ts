@@ -50,6 +50,7 @@ import { GameSocket } from "./net/socket";
 import { CityRenderer } from "./render/city";
 import { Explosions } from "./render/fx";
 import { buildPlaneMesh, spinPropeller } from "./render/plane";
+import { PlaneLights } from "./render/planelights";
 import { RemotePlanes } from "./render/remotes";
 import { RoofClutterRenderer } from "./render/roofclutter";
 import { Signage } from "./render/signage";
@@ -57,8 +58,10 @@ import { GroundPlane, SkyDome, setupSky } from "./render/sky";
 import { Streetlights } from "./render/streetlights";
 import { Tracers } from "./render/tracers";
 import { Traffic } from "./render/traffic";
+import { PlaneTrails } from "./render/trails";
 import { nearestImage } from "./render/wrapPlacement";
 import { CommsTicker } from "./ui/comms";
+import { initFullscreenUi } from "./ui/fullscreen";
 import { Hud } from "./ui/hud";
 import { requestName, showJoinError } from "./ui/join";
 import { KillFeed } from "./ui/killfeed";
@@ -66,6 +69,10 @@ import { LeadIndicator } from "./ui/lead";
 import { EdgeMarkers } from "./ui/markers";
 import { Minimap } from "./ui/minimap";
 import { Scoreboard } from "./ui/scoreboard";
+
+// Fullscreen chrome first — the join overlay carries its own toggle button,
+// so it must be live before the name prompt (hidden where unsupported).
+initFullscreenUi();
 
 // --- Join flow: name → server welcome (identity, seed, spawn) ---
 const name = await requestName();
@@ -154,8 +161,21 @@ scene.add(explosions.group);
 const plane = buildPlaneMesh();
 scene.add(plane);
 
+// Night visibility (ANGE-L7F2OS): every plane's aviation lights share one
+// Points draw call, every plane's wingtip ribbons one mesh — planes light
+// themselves, the world stays dark.
+const planeLights = new PlaneLights();
+scene.add(planeLights.points);
+const planeTrails = new PlaneTrails();
+scene.add(planeTrails.mesh);
+
 // --- Remote planes ---
-const remotes = new RemotePlanes(scene, socket.selfId);
+const remotes = new RemotePlanes(
+  scene,
+  socket.selfId,
+  planeLights,
+  planeTrails,
+);
 remotes.setRoster(welcome.roster);
 
 // --- Combat: guns, bullets, tracers, HUD chrome ---
@@ -255,11 +275,13 @@ function enterDeath(killerId: string | null): void {
   if (!alive) return;
   alive = false;
   plane.visible = false;
+  planeTrails.clear(socket.selfId);
   bullets.clearOwn();
   flashFade();
 }
 
 function respawnSelf(spawn: SpawnState): void {
+  planeTrails.clear(socket.selfId); // respawn teleports — no streak
   flight = createFlightState(spawn.pos, spawn.yaw);
   flight = { ...flight, speed: spawn.speed, targetSpeed: spawn.speed };
   chase.snapTo(flight);
@@ -503,6 +525,7 @@ renderer.setAnimationLoop((now) => {
   // dumps into the orbit as one jump. Signs: mouse-right pans the view
   // right, mouse-up looks up (both hand-tuned with LOOK_SENSITIVITY).
   const lookDelta = input.takeLookDelta();
+  planeLights.begin(); // own + remote lights re-append every frame
   if (alive) {
     freelook = stepFreeLook(
       freelook,
@@ -547,6 +570,16 @@ renderer.setAnimationLoop((now) => {
     plane.rotation.set(flight.pitch, flight.yaw, flight.roll, "YXZ");
     // Prop speed tracks the commanded throttle (same factor as remotes').
     spinPropeller(plane, dt * flight.targetSpeed * 0.7);
+    // Own aviation lights + wingtip trails (strobe on the synced clock so
+    // every client sees this plane blink at the same instant).
+    planeLights.place(
+      socket.selfId,
+      planePos,
+      poseQuat,
+      flight.speed,
+      socket.renderTime() ?? now,
+    );
+    planeTrails.emit(socket.selfId, flight.pos, poseQuat, now, dt);
   } else if (killCamTargetId !== null) {
     // Kill-cam beat: hold position, watch the killer if we can see them.
     const killerPose = remotes.poseOf(killCamTargetId);
@@ -581,7 +614,9 @@ renderer.setAnimationLoop((now) => {
     }
   }
 
-  remotes.update(socket.renderTime(), chase.position, dt);
+  remotes.update(socket.renderTime(), chase.position, dt, now);
+  planeLights.commit();
+  planeTrails.update(chase.position, now);
 
   // --- Radio: threat scan, ambient chatter, then the one-line channel ---
   if (alive && threatOnSix(flight.pos, flight.yaw, remotes.headings())) {

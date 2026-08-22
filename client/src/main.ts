@@ -309,6 +309,10 @@ socket.events.onDeath = (msg) => {
     msg.killerId === null ? null : nameOf(msg.killerId),
     nameOf(msg.victimId),
   );
+  if (msg.killerId === socket.selfId && msg.victimId !== socket.selfId) {
+    hud.killConfirm(performance.now());
+    audio.killConfirm();
+  }
   if (msg.victimId === socket.selfId) enterDeath(msg.killerId);
   else remotes.setDead(msg.victimId);
 };
@@ -505,6 +509,10 @@ renderer.setAnimationLoop((now) => {
       if (bulletHitsSphere(bullet.prev, bullet.pos, target.pos)) {
         socket.sendHit(target.id, bullet.origin, bullet.seq);
         bullets.remove(bullet);
+        // Instant shooter-side feedback (marker + thunk); the server's
+        // damage broadcast stays the authoritative confirm (crosshair blip).
+        hud.hitMarker(now);
+        audio.hitThunk();
         break;
       }
     }

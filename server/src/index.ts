@@ -530,7 +530,11 @@ setInterval(() => {
 }, 2000);
 
 server.listen(PORT, () => {
+  // The bound address, not PORT: with PORT=0 the OS picks one, and tests read
+  // the real number back off this line.
+  const addr = server.address();
+  const bound = typeof addr === "object" && addr ? addr.port : PORT;
   console.log(
-    `angels-bandits server listening on :${PORT} (statics: ${statics ? "client/dist" : "dev — use vite"})`,
+    `angels-bandits server listening on :${bound} (statics: ${statics ? "client/dist" : "dev — use vite"})`,
   );
 });

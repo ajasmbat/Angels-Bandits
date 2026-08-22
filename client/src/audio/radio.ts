@@ -5,6 +5,7 @@
 // the polled lines, framed by GameAudio's synthesized squelch/static —
 // TTS cannot route through WebAudio, so framing is the radio character.
 
+import { mulberry32 } from "@angels-bandits/common/city";
 import type { Callout, RadioKind } from "../game/callouts";
 
 /** Lower number = played first (plan: threat > own > kill > ambient). */
@@ -110,6 +111,67 @@ export class RadioQueue {
       if (this.queue[i]?.line.kind === kind) this.queue.splice(i, 1);
     }
   }
+}
+
+/**
+ * A voiced line's bundled-asset id: the same slug the generation script
+ * (tools/gen-radio-voices.sh) derives when it names the OGG files — the two
+ * implementations must agree, and the exhaustive bank↔file test keeps them
+ * honest. Lowercase, non-alphanumeric runs collapse to "-".
+ */
+export function voiceSlug(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+/** Unrendered BANDIT-<n> lines (the server mints numbers past the 12
+ * pre-rendered ones over a long-lived room) degrade to the anon variants. */
+const CHECK_IN_LINE = /^BANDIT-\d+, checking in\.$/;
+const OFF_STATION_LINE = /^BANDIT-\d+ off station\.$/;
+
+/**
+ * The bundled asset a voice line should play, or null (nothing rendered
+ * for it — the caller stays silent and the queue's estimate paces the
+ * channel). `has` answers whether an asset id exists in the bundle.
+ */
+export function resolveVoiceAsset(
+  text: string,
+  has: (id: string) => boolean,
+): string | null {
+  const slug = voiceSlug(text);
+  if (has(slug)) return slug;
+  if (CHECK_IN_LINE.test(text)) {
+    const anon = voiceSlug("New contact, checking in.");
+    if (has(anon)) return anon;
+  }
+  if (OFF_STATION_LINE.test(text)) {
+    const anon = voiceSlug("Contact off station.");
+    if (has(anon)) return anon;
+  }
+  return null;
+}
+
+/** Per-pilot identity band: playbackRate stays within ±6% of neutral. */
+const PILOT_RATE_SPREAD = 0.06;
+
+/**
+ * Deterministic per-bot voice identity: a callsign always maps to the same
+ * playbackRate in [1−6%, 1+6%], so BANDIT-2 and BANDIT-7 read as different
+ * pilots on every client. Non-bot speakers (humans, the GUARD net) stay
+ * neutral. Seeded through mulberry32 (the city generator's stream) off an
+ * FNV-1a hash of the callsign.
+ */
+export function pilotRate(speaker: string): number {
+  if (!/^BANDIT-\d+$/.test(speaker)) return 1;
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < speaker.length; i++) {
+    hash ^= speaker.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  const r = mulberry32(hash >>> 0)();
+  return 1 + (r * 2 - 1) * PILOT_RATE_SPREAD;
 }
 
 /** The framing SFX the voice adapter needs (GameAudio provides these). */

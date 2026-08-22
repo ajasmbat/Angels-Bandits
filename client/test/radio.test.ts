@@ -6,7 +6,13 @@
 // lines past their expiry never play. Times are plain ms numbers.
 
 import { describe, expect, it } from "vitest";
-import { COMBAT_WINDOW_MS, RadioQueue } from "../src/audio/radio";
+import {
+  COMBAT_WINDOW_MS,
+  pilotRate,
+  RadioQueue,
+  resolveVoiceAsset,
+  voiceSlug,
+} from "../src/audio/radio";
 import type { Callout, RadioKind } from "../src/game/callouts";
 
 /** Minimal test line; cooldown/expiry defaults sized to stay out of the way. */
@@ -101,6 +107,58 @@ describe("RadioQueue", () => {
     const q = new RadioQueue();
     q.enqueue(line("own", "old", { expiresMs: 4_000 }), 0);
     expect(q.poll(5_000)).toBeNull();
+  });
+
+  it("voiceSlug: a voiced line maps to its bundled asset id (known literals)", () => {
+    // Independent source of truth: the filenames the generation script emits.
+    expect(voiceSlug("Bandit on your six, break!")).toBe(
+      "bandit-on-your-six-break",
+    );
+    expect(voiceSlug("BANDIT-7, checking in.")).toBe("bandit-7-checking-in");
+    expect(voiceSlug("Splash one.")).toBe("splash-one");
+    expect(voiceSlug("I'm hit, I'm hit.")).toBe("i-m-hit-i-m-hit");
+  });
+
+  it("resolveVoiceAsset: exact bank lines hit their own file", () => {
+    const has = (id: string) => id === "splash-one";
+    expect(resolveVoiceAsset("Splash one.", has)).toBe("splash-one");
+    expect(resolveVoiceAsset("Never rendered line.", has)).toBeNull();
+  });
+
+  it("resolveVoiceAsset: an unrendered BANDIT-<n> falls back to the anonymous line", () => {
+    // Only BANDIT-1..12 are pre-rendered; the server can mint higher numbers
+    // over a long-lived room, so those degrade to the anon variants.
+    const rendered = new Set([
+      "bandit-7-checking-in",
+      "new-contact-checking-in",
+      "contact-off-station",
+    ]);
+    const has = (id: string) => rendered.has(id);
+    expect(resolveVoiceAsset("BANDIT-7, checking in.", has)).toBe(
+      "bandit-7-checking-in",
+    );
+    expect(resolveVoiceAsset("BANDIT-31, checking in.", has)).toBe(
+      "new-contact-checking-in",
+    );
+    expect(resolveVoiceAsset("BANDIT-31 off station.", has)).toBe(
+      "contact-off-station",
+    );
+  });
+
+  it("pilotRate: deterministic per-callsign identity within ±6%", () => {
+    const rates = new Map<string, number>();
+    for (let n = 1; n <= 12; n++) {
+      const rate = pilotRate(`BANDIT-${n}`);
+      expect(rate).toBe(pilotRate(`BANDIT-${n}`)); // same callsign → same rate
+      expect(rate).toBeGreaterThanOrEqual(0.94);
+      expect(rate).toBeLessThanOrEqual(1.06);
+      rates.set(`BANDIT-${n}`, rate);
+    }
+    // Different callsigns read as different pilots.
+    expect(new Set(rates.values()).size).toBe(12);
+    // Humans and the GUARD net stay at the neutral rate.
+    expect(pilotRate("SomePlayer")).toBe(1);
+    expect(pilotRate("GUARD")).toBe(1);
   });
 
   it("cooldown arithmetic runs from the last PLAY of the key", () => {

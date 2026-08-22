@@ -53,6 +53,23 @@ const HEAT_RADIUS = 3;
  * the dense concept repeats textures too visibly with fewer). */
 export const MARQUEE_TEXTURE_POOL = 16;
 
+/** Billboard quad: along-facade width, meters (plan: 8×5 to 16×9). */
+const BILLBOARD_WIDTH_MIN = 8;
+const BILLBOARD_WIDTH_MAX = 16;
+const BILLBOARD_HEIGHT_MIN = 5;
+const BILLBOARD_HEIGHT_MAX = 9;
+/** Billboard bottom edge above the storefront band, meters. */
+const BILLBOARD_BOTTOM_MIN = 6;
+const BILLBOARD_BOTTOM_MAX = 14;
+/** How proud of the facade a billboard sits, meters (flatter than marquees). */
+const BILLBOARD_DEPTH = 0.3;
+/** Mean billboards per facade before the density gradient (plan caps at 2). */
+const BILLBOARD_FACE_MEAN = 1.1;
+const BILLBOARD_FACE_MAX = 2;
+
+/** Billboard art-texture pool size (atlas tiles). */
+export const BILLBOARD_TEXTURE_POOL = 8;
+
 // --- Seeded neon palette (linear RGB, weighted like the reference photo) ---
 export interface PaletteColor {
   r: number;
@@ -265,6 +282,40 @@ export function signageFor(b: Building, seed: number): BuildingSignage {
         dir: face.dir,
         paletteIndex: paletteIndex(rand()),
         textureIndex: Math.floor(rand() * MARQUEE_TEXTURE_POOL),
+        phase: rand(),
+      });
+    }
+
+    // --- Billboards (lower facade, slots after the marquees') ---
+    const billboardCount = Math.min(
+      BILLBOARD_FACE_MAX,
+      Math.floor(BILLBOARD_FACE_MEAN * density * rand() * 2),
+    );
+    for (let i = 0; i < billboardCount; i++) {
+      const slot = slots[(marqueeCount + i) % FACE_SLOTS] as number;
+      const width =
+        BILLBOARD_WIDTH_MIN +
+        rand() * (BILLBOARD_WIDTH_MAX - BILLBOARD_WIDTH_MIN);
+      const height =
+        BILLBOARD_HEIGHT_MIN +
+        rand() * (BILLBOARD_HEIGHT_MAX - BILLBOARD_HEIGHT_MIN);
+      const bottom = Math.min(
+        BILLBOARD_BOTTOM_MIN +
+          rand() * (BILLBOARD_BOTTOM_MAX - BILLBOARD_BOTTOM_MIN),
+        t1.height - height,
+      );
+      const jitter = rand() * 2 - 1;
+      if (bottom < BILLBOARD_BOTTOM_MIN) continue;
+      out.billboards.push({
+        ...place(slot, width, BILLBOARD_DEPTH, jitter),
+        y: bottom,
+        width,
+        height,
+        depth: BILLBOARD_DEPTH,
+        axis: face.axis,
+        dir: face.dir,
+        paletteIndex: paletteIndex(rand()),
+        textureIndex: Math.floor(rand() * BILLBOARD_TEXTURE_POOL),
         phase: rand(),
       });
     }

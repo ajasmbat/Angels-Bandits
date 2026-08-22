@@ -121,22 +121,68 @@ describe("signageFor — marquees", () => {
 
   it("never puts any part of any sign in the roadway, across the whole seed-42 city", () => {
     for (const b of generateCity(CITY_SEED)) {
-      for (const m of signageFor(b, CITY_SEED).marquees) {
-        for (const c of panelCorners(m)) {
+      const s = signageFor(b, CITY_SEED);
+      for (const sign of [...s.marquees, ...s.billboards]) {
+        for (const c of panelCorners(sign)) {
           expect(isInRoadway({ x: c.x, y: 0, z: c.z })).toBe(false);
         }
       }
     }
   });
 
-  it("keeps every marquee in canonical [0, 2000) coordinates", () => {
+  it("keeps every sign in canonical [0, 2000) coordinates", () => {
     for (const b of generateCity(CITY_SEED)) {
-      for (const m of signageFor(b, CITY_SEED).marquees) {
-        expect(m.x).toBeGreaterThanOrEqual(0);
-        expect(m.x).toBeLessThan(2000);
-        expect(m.z).toBeGreaterThanOrEqual(0);
-        expect(m.z).toBeLessThan(2000);
+      const s = signageFor(b, CITY_SEED);
+      for (const sign of [...s.marquees, ...s.billboards]) {
+        expect(sign.x).toBeGreaterThanOrEqual(0);
+        expect(sign.x).toBeLessThan(2000);
+        expect(sign.z).toBeGreaterThanOrEqual(0);
+        expect(sign.z).toBeLessThan(2000);
       }
     }
+  });
+});
+
+describe("signageFor — billboards", () => {
+  it("keeps billboard dims in the plan's 8×5 to 16×9 m envelope, lower facade", () => {
+    let seen = 0;
+    for (const b of generateCity(CITY_SEED)) {
+      for (const bb of signageFor(b, CITY_SEED).billboards) {
+        seen++;
+        expect(bb.width).toBeGreaterThanOrEqual(8);
+        expect(bb.width).toBeLessThanOrEqual(16);
+        expect(bb.height).toBeGreaterThanOrEqual(5);
+        expect(bb.height).toBeLessThanOrEqual(9);
+        // Lower facade: the whole quad stays on tier 1.
+        const tier1 = b.tiers[0];
+        expect(tier1).toBeDefined();
+        if (tier1) expect(bb.y + bb.height).toBeLessThanOrEqual(tier1.height);
+      }
+    }
+    expect(seen).toBeGreaterThan(0);
+  });
+
+  it("caps billboards at the plan's 0–2 per street-facing facade", () => {
+    for (const b of generateCity(CITY_SEED)) {
+      expect(signageFor(b, CITY_SEED).billboards.length).toBeLessThanOrEqual(8);
+    }
+  });
+
+  it("concentrates signage near landmarks: hot block outdraws a far side street", () => {
+    // Block (2, 3) is a LANDMARK_BLOCK (center 500, 700 — heat 1); block
+    // (1, 0) (center 300, 100) is ≥3 blocks from every landmark AND plaza
+    // (wrap-aware Chebyshev, verified by hand) — heat 0. Same dims, same
+    // seed: only the block position differs.
+    const dims = {
+      width: 120,
+      depth: 120,
+      height: 60,
+      tiers: [{ width: 120, depth: 120, height: 60 }],
+    };
+    const hot = signageFor({ x: 500, z: 700, ...dims }, SEED);
+    const cold = signageFor({ x: 300, z: 100, ...dims }, SEED);
+    const count = (s: ReturnType<typeof signageFor>) =>
+      s.marquees.length + s.billboards.length;
+    expect(count(hot)).toBeGreaterThan(count(cold));
   });
 });

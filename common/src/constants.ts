@@ -26,11 +26,19 @@ export const CROSSWALK_DEPTH = 4;
 // bloom threshold (0.72); client materials derive their HDR boosts from
 // these targets (plain numbers here — common/ stays THREE-free).
 export const EMISSIVE_WINDOW = 0.88;
+/** Wingtip ribbon trails at full turn hardness — streaks, not neon. */
+export const EMISSIVE_TRAIL = 0.9;
 /** Reserved for S2 neon signage — between windows and lamp heads. */
 export const EMISSIVE_SIGN = 0.93;
+/** Engine exhaust flicker at full throttle — a warm ember, below the lamps. */
+export const EMISSIVE_EXHAUST = 0.95;
 export const EMISSIVE_LAMP = 0.98;
+/** Steady red/green/white aviation lights on every plane's wingtips/tail. */
+export const EMISSIVE_NAVLIGHT = 1.0;
 /** Landmark beacons at pulse PEAK; the trough dips under the bloom threshold. */
 export const EMISSIVE_BEACON = 1.05;
+/** Anti-collision strobe at flash peak — brightest plane light, under tracers. */
+export const EMISSIVE_STROBE = 1.1;
 export const EMISSIVE_TRACER = 1.5;
 
 // --- Buildings ---
@@ -126,6 +134,28 @@ export const NAME_MAX_LENGTH = 16;
 /** Server drops a joined connection silent for this long, ms (clients stream at TICK_UP_HZ). */
 export const LIVENESS_TIMEOUT_MS = 4000;
 
+// --- Storm (ST1) --- schedule shared client/server; the ceiling is a hidden
+// server rule — no constant here feeds a warning UI, by design.
+/** Cloud deck base altitude, m (ST2 renders the deck; bots stay under it). */
+export const CLOUD_BASE = 500;
+/** Above this altitude the hidden death ceiling arms, m. */
+export const STORM_KILL_ALT = 600;
+/** Continuous time above STORM_KILL_ALT before the kill bolt, ms — dipping
+ * below resets it. Never announced to clients: discovery is the design. */
+export const STORM_GRACE_MS = 3000;
+/** Radius a strike reveals planes within (ST2's global ping), m. */
+export const STORM_REVEAL_RADIUS = 300;
+/** How long a strike's reveal ping lasts (ST2), ms. */
+export const STORM_REVEAL_MS = 2000;
+/** Consecutive scheduled strikes are this far apart (seeded jitter), ms. */
+export const STRIKE_INTERVAL_MIN_MS = 8000;
+export const STRIKE_INTERVAL_MAX_MS = 15000;
+/** Strike coverage cell, m — every cell is struck once per 16-strike epoch. */
+export const STORM_CELL_SIZE = 500;
+/** A strike whose cell holds a landmark supertall lands within this of the
+ * tower's center — the 250 m towers are the city's lightning rods, m. */
+export const STORM_ROD_RADIUS = 60;
+
 // --- Combat (tuned by T4) ---
 export const MAX_HP = 100;
 export const BULLET_SPEED = 400;
@@ -217,5 +247,13 @@ export const BOT_PROBE_RADIUS = 12;
 export const BOT_RECOVER_CLEAR = 2;
 /** Below this altitude RECOVER pulls up unconditionally, m. */
 export const BOT_MIN_ALT = 40;
+/** Bots never enter the clouds (ST1): RECOVER pitches DOWN above this, m —
+ * a margin under CLOUD_BASE so the hidden storm rule can't kill a bot. */
+export const BOT_CEILING_ALT = 480;
+/** Ceiling anticipation: danger when the current climb would reach
+ * BOT_CEILING_ALT within this lookahead, s (the pitch-down turnaround). */
+export const BOT_CEILING_LOOKAHEAD_S = 1.2;
+/** RECOVER's ceiling hysteresis: exit only this far back below, m. */
+export const BOT_CEILING_HYST = 40;
 /** Steering gain: input per radian of yaw/pitch error (capped at BOT_INPUT_CAP). */
 export const BOT_STEER_GAIN = 3;

@@ -29,6 +29,7 @@ import { Combat } from "./combat";
 import { pickRespawn } from "./respawn";
 import { type Room, RoomManager } from "./room";
 import { createStaticHandler } from "./statics";
+import { StormCeiling } from "./storm";
 import { poseFromSpawn, validatePose } from "./validate";
 
 const PORT = Number(process.env.PORT ?? 8080);
@@ -55,6 +56,9 @@ const clients = new Map<string, Client>();
  * globally-unique player ids as `clients`; hit claims are gated to one room.
  * Bots are registered here too — identical rules, no special cases. */
 const combat = new Combat();
+/** The hidden death ceiling (ST1): continuous-time-above-600 m bookkeeping.
+ * Nothing about it is ever sent to clients — only the resulting death. */
+const storm = new StormCeiling();
 
 /** The seeded city, generated once — bot collision probes fly against the
  * exact Building[] every client renders and collides with. */
@@ -109,6 +113,7 @@ function syncRoomBots(room: Room): void {
   }
   for (const id of despawned) {
     combat.removePlayer(id);
+    storm.forget(id);
     rooms.leave(id);
     sendToRoom(room, { type: "playerLeft", id });
   }
@@ -200,6 +205,7 @@ function handlePose(client: Client, pose: Pose, now: number): void {
 function handleLeave(client: Client): void {
   clients.delete(client.id);
   combat.removePlayer(client.id);
+  storm.forget(client.id);
   const room = rooms.leave(client.id);
   if (room) {
     sendToRoom(room, { type: "playerLeft", id: client.id });
@@ -389,6 +395,29 @@ function tickRoomBots(room: Room, now: number): void {
   }
 }
 
+/** The hidden death ceiling: feed every living member's on-record altitude
+ * (humans from validated poses, bots from the sim) and settle expired graces
+ * as server-declared storm deaths — kill bolt via the ordinary death event.
+ * No warning precedes this, by design (discovery IS the feature). */
+function enforceStormCeiling(room: Room, now: number): void {
+  for (const member of room.members.values()) {
+    const pose = memberPose(room, member.id);
+    if (!pose) continue;
+    if (storm.observe(member.id, pose.pos.y, now) !== "kill") continue;
+    const death = combat.stormKill(member.id, now);
+    if (!death) continue;
+    storm.forget(member.id);
+    if (member.isBot) botsFor(room).setDead(member.id);
+    sendToRoom(room, {
+      type: "death",
+      victimId: death.victimId,
+      killerId: death.killerId,
+      cause: death.cause,
+    });
+    broadcastScores(room);
+  }
+}
+
 // --- HTTP: health + production statics ---
 const statics = createStaticHandler();
 const server = createServer((req, res) => {
@@ -444,6 +473,7 @@ setInterval(() => {
   issueRespawns(combat.tick(time).respawnsDue, time);
   for (const room of rooms.rooms) {
     tickRoomBots(room, time);
+    enforceStormCeiling(room, time);
     const snapshot: SnapshotMsg = {
       type: "snapshot",
       time,

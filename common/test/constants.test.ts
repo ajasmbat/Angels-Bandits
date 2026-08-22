@@ -3,9 +3,13 @@ import {
   BUILDING_MAX_HEIGHT,
   BUILDING_MIN_HEIGHT,
   EMISSIVE_BEACON,
+  EMISSIVE_EXHAUST,
   EMISSIVE_LAMP,
+  EMISSIVE_NAVLIGHT,
   EMISSIVE_SIGN,
+  EMISSIVE_STROBE,
   EMISSIVE_TRACER,
+  EMISSIVE_TRAIL,
   EMISSIVE_WINDOW,
   FOG_DISTANCE,
   LANDMARK_HEIGHT,
@@ -34,11 +38,22 @@ describe("world constants invariants", () => {
 });
 
 describe("emissive ladder", () => {
-  it("is strictly increasing: window < sign < lamp < beacon < tracer", () => {
-    expect(EMISSIVE_WINDOW).toBeLessThan(EMISSIVE_SIGN);
-    expect(EMISSIVE_SIGN).toBeLessThan(EMISSIVE_LAMP);
-    expect(EMISSIVE_LAMP).toBeLessThan(EMISSIVE_BEACON);
-    expect(EMISSIVE_BEACON).toBeLessThan(EMISSIVE_TRACER);
+  it("is strictly increasing: window < trail < sign < exhaust < lamp < navlight < beacon < strobe < tracer", () => {
+    expect(EMISSIVE_WINDOW).toBeLessThan(EMISSIVE_TRAIL);
+    expect(EMISSIVE_TRAIL).toBeLessThan(EMISSIVE_SIGN);
+    expect(EMISSIVE_SIGN).toBeLessThan(EMISSIVE_EXHAUST);
+    expect(EMISSIVE_EXHAUST).toBeLessThan(EMISSIVE_LAMP);
+    expect(EMISSIVE_LAMP).toBeLessThan(EMISSIVE_NAVLIGHT);
+    expect(EMISSIVE_NAVLIGHT).toBeLessThan(EMISSIVE_BEACON);
+    expect(EMISSIVE_BEACON).toBeLessThan(EMISSIVE_STROBE);
+    expect(EMISSIVE_STROBE).toBeLessThan(EMISSIVE_TRACER);
+  });
+
+  it("pins the ticket's plane-visibility bounds: trails ≤ 0.9, exhaust ≤ 0.95, strobe peak 1.1, tracers stay maximal", () => {
+    expect(EMISSIVE_TRAIL).toBeLessThanOrEqual(0.9);
+    expect(EMISSIVE_EXHAUST).toBeLessThanOrEqual(0.95);
+    expect(EMISSIVE_STROBE).toBe(1.1);
+    expect(EMISSIVE_TRACER).toBe(1.5);
   });
 
   it("keeps every rung above the V1 bloom threshold (0.72) — these are the things that bloom", () => {

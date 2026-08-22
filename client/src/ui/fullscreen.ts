@@ -86,13 +86,15 @@ export interface FullscreenKeyEvent {
  * change events so Esc-exit stays truthful. */
 export function initFullscreenUi(
   doc: FullscreenUiDoc = document as FullscreenUiDoc,
-  win: {
-    addEventListener: (
-      type: string,
-      listener: (ev: FullscreenKeyEvent) => void,
-    ) => void;
-    // Lazy default: tests run in a node env where `window` doesn't exist.
-  } | undefined = typeof window === "undefined" ? undefined : window,
+  win:
+    | {
+        addEventListener: (
+          type: string,
+          listener: (ev: FullscreenKeyEvent) => void,
+        ) => void;
+        // Lazy default: tests run in a node env where `window` doesn't exist.
+      }
+    | undefined = typeof window === "undefined" ? undefined : window,
 ): void {
   const buttons = [
     doc.getElementById?.("fs-btn"),

@@ -56,7 +56,12 @@ import { RemotePlanes } from "./render/remotes";
 import { RoofClutterRenderer } from "./render/roofclutter";
 import { Signage } from "./render/signage";
 import { GroundPlane, SkyDome, setupSky } from "./render/sky";
-import { CloudDeck, StormRenderer, StrikeFeed } from "./render/storm";
+import {
+  CloudDeck,
+  StormRenderer,
+  StrikeFeed,
+  turbulenceOffset,
+} from "./render/storm";
 import { Streetlights } from "./render/streetlights";
 import { Tracers } from "./render/tracers";
 import { Traffic } from "./render/traffic";
@@ -582,9 +587,19 @@ renderer.setAnimationLoop((now) => {
       radio.noteCombat(now); // firing = combat radio discipline
     }
 
-    chase.update(camera, flight, dt, freelook);
+    // In-cloud turbulence (ST2): pure offsets applied to the DISPLAYED
+    // camera and plane only — sendPose above already read flight.pos, and
+    // the flight model never sees any of this. Different time phases keep
+    // the camera and the airframe from moving in lockstep.
+    const camShake = turbulenceOffset(now, flight.pos.y);
+    const planeShake = turbulenceOffset(now + 537, flight.pos.y);
+    chase.update(camera, flight, dt, freelook, camShake);
     const planePos = nearestImage(chase.position, flight.pos);
-    plane.position.set(planePos.x, planePos.y, planePos.z);
+    plane.position.set(
+      planePos.x + planeShake.x * 0.5,
+      planePos.y + planeShake.y * 0.5,
+      planePos.z + planeShake.z * 0.5,
+    );
     plane.rotation.set(flight.pitch, flight.yaw, flight.roll, "YXZ");
     // Prop speed tracks the commanded throttle (same factor as remotes').
     spinPropeller(plane, dt * flight.targetSpeed * 0.7);

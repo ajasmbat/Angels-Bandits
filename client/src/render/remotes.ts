@@ -15,6 +15,8 @@ import { InterpolationBuffer } from "../net/interp";
 import { TAG_ALTITUDE, createNameTag, disposeNameTag } from "./nametags";
 import { buildPlaneMesh, disposePlaneMesh, spinPropeller } from "./plane";
 import type { PlaneLights } from "./planelights";
+import { strobePhaseMs } from "./planelights";
+import { turbulenceOffset } from "./storm";
 import type { PlaneTrails } from "./trails";
 import { nearestImage } from "./wrapPlacement";
 
@@ -231,7 +233,17 @@ export class RemotePlanes {
       const p = nearestImage(viewer, pose.pos);
       this.lights.place(id, p, pose.quat, pose.speed, renderTime);
       this.trails.emit(id, pose.pos, pose.quat, nowMs, dt);
-      remote.mesh.position.set(p.x, p.y, p.z);
+      // In-cloud turbulence wobble (ST2): display-only, zero at/below the
+      // deck; phase-shifted per plane so a formation doesn't shake as one.
+      const wobble = turbulenceOffset(
+        nowMs + strobePhaseMs(id) * 7,
+        pose.pos.y,
+      );
+      remote.mesh.position.set(
+        p.x + wobble.x * 0.5,
+        p.y + wobble.y * 0.5,
+        p.z + wobble.z * 0.5,
+      );
       remote.mesh.quaternion.set(
         pose.quat.x,
         pose.quat.y,

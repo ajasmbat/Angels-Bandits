@@ -42,20 +42,38 @@ float winLitRatio = 0.43;
 float winCoolBias = 0.74;         //   mostly cool fluorescent
 float winInset = 0.0;
 float winFloorCluster = 0.0;
+float roomDepth = 3.5;            //   fake interior depth, meters
+float winBlinds = 0.22;           //   share of lit windows with blinds drawn
 if (vArch > 1.5) {                // OFFICE: horizontal strips, floor blocks
   winPitch = vec2(6.0, 4.5);
   winPane = vec2(0.9, 0.48);
   winLitRatio = 0.38;
   winCoolBias = 0.4;
   winFloorCluster = 1.0;
+  roomDepth = 3.0;
+  winBlinds = 0.3;
 } else if (vArch > 0.5) {         // MASONRY: small punched windows, warm
   winPitch = vec2(3.5, 3.5);
   winPane = vec2(0.45, 0.42);
   winLitRatio = 0.3;
   winCoolBias = 0.08;
   winInset = 1.0;
+  roomDepth = 2.2;
+  winBlinds = 0.42;
 }
 `;
+
+// --- Weathering (Concept 5 "Balanced blend") ---
+/** Vertical AO: facades darkest at the street, fading out by this height. */
+const AO_HEIGHT = "25.0";
+/** AO strength at worldY = 0 (0 = off, 1 = black). */
+const AO_STRENGTH = "0.5";
+/** Per-face tone jitter amplitude — corners read because faces differ. */
+const FACE_JITTER = "0.08";
+/** Roof tone variation per building (roofs also sit darker than facades). */
+const ROOF_VAR = "0.22";
+/** Grime: fraction of facade columns carrying a dark streak. */
+const GRIME = "0.22";
 
 /** Street-level shop band height, meters of WORLD height (tier 1 only —
  * upper-tier bases sit far above this and keep ordinary windows). */
@@ -73,6 +91,7 @@ varying vec3 vObjNormal;
 varying float vBSeed;
 varying float vWorldY;
 varying float vArch;
+varying vec3 vBWorldPos;
 `;
 
 const VERTEX_MAIN = /* glsl */ `
@@ -92,6 +111,11 @@ vWorldY = vMeters.y + instanceMatrix[3].y;
 // which shifts by WORLD_SIZE whenever the building wraps past the seam.
 vBSeed = fract(sin(dot(bScale.xz, vec2(12.9898, 78.233)) + bScale.y) * 43758.5453);
 vArch = aArchetype;
+// World position for the fake window interiors' view ray. Boxes never
+// rotate, so world axes == facade axes and the ray needs no basis change;
+// instances sit at their nearest torus image, so camera-relative geometry
+// is already seam-correct.
+vBWorldPos = (modelMatrix * instanceMatrix * vec4(position, 1.0)).xyz;
 `;
 
 const FRAGMENT_PARS = /* glsl */ `
@@ -100,6 +124,14 @@ varying vec3 vObjNormal;
 varying float vBSeed;
 varying float vWorldY;
 varying float vArch;
+varying vec3 vBWorldPos;
+
+float abHash(vec2 p, float s) {
+  return fract(sin(dot(p + s * 61.0, vec2(127.1, 311.7))) * 43758.5453);
+}
+float abSafeDiv(float d) {
+  return abs(d) < 1e-4 ? (d < 0.0 ? -1e-4 : 1e-4) : d;
+}
 `;
 
 /** Injected after color_fragment: derives the shared window-grid locals
@@ -133,6 +165,24 @@ float lit = mix(
 float surround = step(paneLo.x - 0.08, winF.x) * step(winF.x, paneHi.x + 0.08)
                * step(paneLo.y - 0.1, winF.y) * step(winF.y, paneHi.y + 0.1);
 diffuseColor.rgb *= 1.0 - winInset * surround * facade * 0.6;
+// --- Weathering ---
+// Per-face tone jitter: each box face gets a slightly different value (and
+// opposite faces differ), so corners read even in flat night light.
+float faceId = abs(vObjNormal.x) > 0.5 ? (vObjNormal.x > 0.0 ? 0.0 : 1.0)
+             : abs(vObjNormal.z) > 0.5 ? (vObjNormal.z > 0.0 ? 2.0 : 3.0)
+             : 4.0;
+float faceJit = 1.0 + ${FACE_JITTER} * (abHash(vec2(faceId, 7.0), vBSeed * 61.0) * 2.0 - 1.0)
+              - 0.05 * mod(faceId, 2.0);
+// Vertical AO grounding: towers sit dark on their streets, fading out by
+// ${AO_HEIGHT} m of WORLD height (Y never wraps, so no seam cases).
+float ao = 1.0 - ${AO_STRENGTH} * (1.0 - clamp(vWorldY / ${AO_HEIGHT}, 0.0, 1.0));
+// Grime: some facade columns carry a dark streak, denser low on the wall.
+float grime = 1.0 - 0.5 * step(abHash(vec2(floor(winGrid.x / winPitch.x), 77.0), vBSeed * 61.0), ${GRIME})
+  * (1.0 - clamp(vWorldY / 60.0, 0.0, 0.85)) * facade;
+// Roofs: darker than facades, varied per building so the top-down view is
+// not one uniform slab color.
+float roofTone = 0.55 - ${ROOF_VAR} * abHash(vec2(11.0, 5.0), vBSeed * 61.0);
+diffuseColor.rgb *= mix(roofTone, faceJit * ao * grime, facade);
 `;
 
 const FRAGMENT_EMISSIVE = /* glsl */ `
@@ -140,7 +190,39 @@ const FRAGMENT_EMISSIVE = /* glsl */ `
 // fluorescent depending on the building's type.
 float winHC = fract(sin(dot(winCell + vBSeed * 53.0, vec2(269.5, 183.3))) * 43758.5453);
 vec3 winColor = mix(${glslVec3(WINDOW_WARM)}, ${glslVec3(WINDOW_COOL)}, step(1.0 - winCoolBias, winHC));
-vec3 windowGlow = pane * lit * winColor * (0.55 + 0.45 * winH) * ${WINDOW_EMISSIVE_INTENSITY};
+// Fake window interiors (interior mapping): raycast a room box behind every
+// lit pane — parallax ceiling/floor/side/back walls, no geometry. Boxes
+// never rotate, so the world-space view ray IS the facade-space ray. Every
+// wall factor is < 1, so the interior peaks BELOW the flat pane the WINDOW
+// rung was normalized for — the ladder ordering cannot be disturbed.
+vec3 viewRay = normalize(vBWorldPos - cameraPosition);
+float rayIn = 1.0;
+vec2 rayUV = vec2(0.0);
+if (abs(vObjNormal.x) > 0.5) {
+  rayIn = -sign(vObjNormal.x) * viewRay.x;
+  rayUV = vec2(viewRay.z, viewRay.y);
+} else if (abs(vObjNormal.z) > 0.5) {
+  rayIn = -sign(vObjNormal.z) * viewRay.z;
+  rayUV = vec2(viewRay.x, viewRay.y);
+}
+vec2 cellMeters = winF * winPitch;
+float tBack = roomDepth / max(rayIn, 0.03);
+float tU = ((rayUV.x > 0.0 ? winPitch.x : 0.0) - cellMeters.x) / abSafeDiv(rayUV.x);
+float tV = ((rayUV.y > 0.0 ? winPitch.y : 0.0) - cellMeters.y) / abSafeDiv(rayUV.y);
+float tHit = min(tBack, min(tU, tV));
+vec3 roomLight = winColor * (0.85 + 0.15 * abHash(winCell, vBSeed * 31.0));
+vec3 roomCol = tHit == tBack ? roomLight * 0.55
+             : tHit == tV ? (rayUV.y > 0.0 ? roomLight * 0.9 : roomLight * 0.24)
+             : roomLight * 0.38;
+roomCol *= 1.0 - 0.45 * clamp(tHit / (roomDepth * 2.2), 0.0, 1.0);
+// Some rooms draw their blinds: flat diffuse glow, no parallax.
+float blinds = step(abHash(winCell, vBSeed * 29.0), winBlinds);
+vec3 litWindow = mix(roomCol * (0.55 + 0.45 * winH), winColor * (0.5 + 0.3 * winH), blinds);
+vec3 windowGlow = pane * lit * litWindow * ${WINDOW_EMISSIVE_INTENSITY} * ao;
+// Unlit panes catch a faint grazing-angle sky sheen (far below the bloom
+// threshold — a glassy read, not a light source).
+float sheenF = pow(1.0 - clamp(abs(dot(viewRay, vObjNormal)), 0.0, 1.0), 3.0);
+windowGlow += pane * (1.0 - lit) * facade * vec3(0.35, 0.5, 0.7) * sheenF * 0.05;
 // V2 street-level shop band: the bottom ${SHOP_BAND_HEIGHT} m of WORLD height
 // (so only tier-1 bases qualify) swaps the window grid for wide, warm
 // storefront glass — brighter life at canyon level. Facades only.

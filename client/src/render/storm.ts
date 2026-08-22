@@ -8,15 +8,18 @@ import { type Building, mulberry32 } from "@angels-bandits/common/city";
 import {
   CLOUD_BASE,
   EMISSIVE_TRACER,
+  FOG_DISTANCE,
   STORM_KILL_ALT,
   STORM_REVEAL_MS,
   STORM_REVEAL_RADIUS,
+  WORLD_SIZE,
 } from "@angels-bandits/common/constants";
 import { type Strike, strikesInWindow } from "@angels-bandits/common/storm";
 import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { emissiveBoost } from "./emissive";
+import { DUSK } from "./sky";
 import { nearestImage } from "./wrapPlacement";
 
 /** Speed of sound, m/s — thunder trails the flash by wrapDistance / this. */
@@ -215,6 +218,10 @@ const FLASH_TINT = 0.24;
 /** Simultaneously-alive bolts: schedule cadence is 8–15 s, life 280 ms, so
  * 3 slots only ever fill when kill bolts pile onto a scheduled strike. */
 const BOLT_SLOTS = 3;
+/** In-cloud fog band (camera above CLOUD_BASE): dense grey-violet soup. */
+const IN_CLOUD_FOG_NEAR = 12;
+const IN_CLOUD_FOG_FAR = 190;
+const IN_CLOUD_FOG_COLOR = 0x3a3c52;
 
 interface BoltSlot {
   group: THREE.Group;
@@ -238,10 +245,10 @@ export class StormRenderer {
   readonly flashLight = new THREE.AmbientLight(FLASH_COLOR, 0);
   private readonly slots: BoltSlot[] = [];
   private flashAt = Number.NEGATIVE_INFINITY;
-  private readonly fogBase = new THREE.Color();
+  private readonly fogBase = new THREE.Color(DUSK.sky);
+  private readonly cloudFogColor = new THREE.Color(IN_CLOUD_FOG_COLOR);
   private readonly flashColor = new THREE.Color(FLASH_COLOR);
   private readonly scratch = new THREE.Color();
-  private fogBaseCaptured = false;
 
   constructor(private readonly buildings: readonly Building[]) {
     const coreBoost = emissiveBoost(
@@ -351,23 +358,30 @@ export class StormRenderer {
   }
 
   /**
-   * Drive the sky-flash pulse: violet ambient light plus a fog stain toward
-   * the flash color. The dome tint is returned for the SkyDome to apply, so
-   * this stays the single writer of storm atmosphere. Tracers and all other
-   * emissives are unlit materials — an ambient pulse cannot wash them out,
-   * and the stained fog peaks far below the 0.72 bloom threshold.
+   * The single writer of storm atmosphere, called once per frame: the sky
+   * flash (violet ambient pulse + fog stain) and the in-cloud fog override
+   * when the CAMERA climbs into the deck — dense grey-violet soup, restored
+   * smoothly below. Returns the SkyDome tint and whether the dome should
+   * render at all (inside cloud the fog IS the sky). Tracers and all other
+   * emissives are unlit materials, so the ambient pulse cannot wash them
+   * out, and the stained fog peaks far below the 0.72 bloom threshold.
    */
-  applyFlash(scene: THREE.Scene, nowMs: number): THREE.Color {
+  atmosphere(
+    scene: THREE.Scene,
+    cameraY: number,
+    nowMs: number,
+  ): { tint: THREE.Color; domeVisible: boolean } {
     const f = this.flashLevel(nowMs);
-    this.flashLight.intensity = f * FLASH_PEAK;
-    if (scene.fog && !this.fogBaseCaptured) {
-      this.fogBase.copy(scene.fog.color);
-      this.fogBaseCaptured = true;
-    }
-    if (scene.fog) {
+    // 0 below the deck → 1 fully inside; a 30 m ramp kills boundary flicker.
+    const inK = Math.min(1, Math.max(0, (cameraY - CLOUD_BASE) / 30));
+    this.flashLight.intensity = f * FLASH_PEAK * (1 + inK * 0.6);
+    if (scene.fog instanceof THREE.Fog) {
+      scene.fog.near = 60 + (IN_CLOUD_FOG_NEAR - 60) * inK;
+      scene.fog.far = FOG_DISTANCE + (IN_CLOUD_FOG_FAR - FOG_DISTANCE) * inK;
       scene.fog.color
         .copy(this.fogBase)
-        .lerp(this.flashColor, f * FLASH_TINT);
+        .lerp(this.cloudFogColor, inK * 0.85)
+        .lerp(this.flashColor, f * FLASH_TINT * (1 + inK));
       if (scene.background instanceof THREE.Color) {
         scene.background.copy(scene.fog.color);
       }
@@ -377,7 +391,123 @@ export class StormRenderer {
       .setRGB(1, 1, 1)
       .lerp(this.flashColor, f * FLASH_TINT)
       .multiplyScalar(1 + f * 1.6);
-    return this.scratch;
+    return { tint: this.scratch, domeVisible: inK < 0.5 };
+  }
+}
+
+// --- Cloud deck --------------------------------------------------------------
+
+/** Drifting puff billboards in the deck band above CLOUD_BASE. */
+const PUFF_COUNT = 160;
+const PUFF_BAND_MIN = CLOUD_BASE + 5;
+const PUFF_BAND_MAX = CLOUD_BASE + 75;
+const PUFF_SCALE_MIN = 160;
+const PUFF_SCALE_MAX = 340;
+/** Deck drift, m/s along +x (Neon Vein: visible slow march). */
+const PUFF_DRIFT_MPS = 1.4;
+/** Purple-stained puff tint over the dusk sky (Neon Vein deck dye). */
+const PUFF_COLOR = 0x4a3c6e;
+const PUFF_OPACITY = 0.38;
+/** The ceiling sheet: the deck's darker-from-below altitude read. */
+const CEILING_Y = CLOUD_BASE - 3;
+const CEILING_COLOR = 0x0a0b16;
+const CEILING_OPACITY = 0.55;
+
+/** Soft multi-blob puff texture (procedural, no assets — the game's idiom). */
+function puffTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 128;
+  const ctx = canvas.getContext("2d");
+  if (ctx) {
+    for (let i = 0; i < 5; i++) {
+      const x = 40 + Math.random() * 48;
+      const y = 44 + Math.random() * 40;
+      const r = 26 + Math.random() * 22;
+      const grad = ctx.createRadialGradient(x, y, 2, x, y, r);
+      grad.addColorStop(0, "rgba(255,255,255,0.85)");
+      grad.addColorStop(1, "rgba(255,255,255,0)");
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, 128, 128);
+    }
+  }
+  return new THREE.CanvasTexture(canvas);
+}
+
+/**
+ * The storm's cloud layer: one instanced draw call of camera-facing puff
+ * billboards drifting on the SYNCED clock (every client sees the identical
+ * cloudscape, traffic-style), plus a translucent ceiling sheet under the
+ * band that makes altitude read from below. Everything is placed at its
+ * torus image nearest the viewer, so the deck wraps with the world.
+ */
+export class CloudDeck {
+  readonly group = new THREE.Group();
+  private readonly puffs: THREE.InstancedMesh;
+  private readonly ceiling: THREE.Mesh;
+  private readonly layout: { x: number; y: number; z: number; s: number }[];
+  private readonly mat = new THREE.Matrix4();
+  private readonly pos = new THREE.Vector3();
+  private readonly scale = new THREE.Vector3();
+
+  constructor(seed: number) {
+    const rand = mulberry32((seed ^ 0x5f3759df) >>> 0);
+    this.layout = Array.from({ length: PUFF_COUNT }, () => ({
+      x: rand() * WORLD_SIZE,
+      y: PUFF_BAND_MIN + rand() * (PUFF_BAND_MAX - PUFF_BAND_MIN),
+      z: rand() * WORLD_SIZE,
+      s: PUFF_SCALE_MIN + rand() * (PUFF_SCALE_MAX - PUFF_SCALE_MIN),
+    }));
+    const material = new THREE.MeshBasicMaterial({
+      map: puffTexture(),
+      color: PUFF_COLOR,
+      transparent: true,
+      opacity: PUFF_OPACITY,
+      depthWrite: false,
+    });
+    this.puffs = new THREE.InstancedMesh(
+      new THREE.PlaneGeometry(1, 1),
+      material,
+      PUFF_COUNT,
+    );
+    this.puffs.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.puffs.frustumCulled = false;
+    // The dark underside: one camera-following sheet just below the band.
+    this.ceiling = new THREE.Mesh(
+      new THREE.PlaneGeometry(2 * FOG_DISTANCE + 200, 2 * FOG_DISTANCE + 200),
+      new THREE.MeshBasicMaterial({
+        color: CEILING_COLOR,
+        transparent: true,
+        opacity: CEILING_OPACITY,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      }),
+    );
+    this.ceiling.rotation.x = Math.PI / 2;
+    this.group.add(this.puffs, this.ceiling);
+  }
+
+  /** Billboard + drift + wrap-place every puff. Call once per frame. */
+  update(
+    viewer: Vec3,
+    cameraQuat: THREE.Quaternion,
+    serverTimeMs: number | null,
+  ): void {
+    const driftX = ((serverTimeMs ?? 0) / 1000) * PUFF_DRIFT_MPS;
+    for (let i = 0; i < this.layout.length; i++) {
+      const p = this.layout[i] as (typeof this.layout)[number];
+      const canonical = {
+        x: (p.x + driftX) % WORLD_SIZE,
+        y: p.y,
+        z: p.z,
+      };
+      const image = nearestImage(viewer, canonical);
+      this.pos.set(image.x, image.y, image.z);
+      this.scale.set(p.s, p.s * 0.45, 1);
+      this.mat.compose(this.pos, cameraQuat, this.scale);
+      this.puffs.setMatrixAt(i, this.mat);
+    }
+    this.puffs.instanceMatrix.needsUpdate = true;
+    this.ceiling.position.set(viewer.x, CEILING_Y, viewer.z);
   }
 }
 

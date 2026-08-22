@@ -56,7 +56,7 @@ import { RemotePlanes } from "./render/remotes";
 import { RoofClutterRenderer } from "./render/roofclutter";
 import { Signage } from "./render/signage";
 import { GroundPlane, SkyDome, setupSky } from "./render/sky";
-import { StormRenderer, StrikeFeed } from "./render/storm";
+import { CloudDeck, StormRenderer, StrikeFeed } from "./render/storm";
 import { Streetlights } from "./render/streetlights";
 import { Tracers } from "./render/tracers";
 import { Traffic } from "./render/traffic";
@@ -167,6 +167,9 @@ scene.add(explosions.group);
 const storm = new StormRenderer(city.cityBuildings);
 scene.add(storm.group, storm.flashLight);
 const strikeFeed = new StrikeFeed(welcome.seed);
+// The deck everyone shares: seeded layout, drifting on the synced clock.
+const clouds = new CloudDeck(welcome.seed);
+scene.add(clouds.group);
 
 const plane = buildPlaneMesh();
 scene.add(plane);
@@ -673,7 +676,10 @@ renderer.setAnimationLoop((now) => {
     storm.strike(s, now);
   }
   storm.update(chase.position, now);
-  skyDome.tint(storm.applyFlash(scene, now));
+  clouds.update(chase.position, camera.quaternion, socket.renderTime());
+  const sky = storm.atmosphere(scene, chase.position.y, now);
+  skyDome.tint(sky.tint);
+  skyDome.mesh.visible = sky.domeVisible;
   explosions.update(chase.position, now, dt);
   tracers.update(bullets.all, chase.position, now);
 

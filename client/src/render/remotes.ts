@@ -16,6 +16,8 @@ import { InterpolationBuffer } from "../net/interp";
 import { TAG_ALTITUDE, createNameTag, disposeNameTag } from "./nametags";
 import { buildPlaneMesh, disposePlaneMesh, spinPropeller } from "./plane";
 import type { PlaneLights } from "./planelights";
+import { strobePhaseMs } from "./planelights";
+import { REVEAL_COLOR, REVEAL_INTENSITY, turbulenceOffset } from "./storm";
 import type { PlaneTrails } from "./trails";
 import { nearestImage } from "./wrapPlacement";
 
@@ -226,6 +228,7 @@ export class RemotePlanes {
     viewer: Vec3,
     dt: number,
     nowMs: number,
+    revealLevelOf?: (id: string) => number,
   ): void {
     if (renderTime === null) return;
     for (const [id, remote] of this.remotes) {
@@ -238,7 +241,17 @@ export class RemotePlanes {
       const p = nearestImage(viewer, pose.pos);
       this.lights.place(id, p, pose.quat, pose.speed, renderTime);
       this.trails.emit(id, pose.pos, pose.quat, nowMs, dt);
-      remote.mesh.position.set(p.x, p.y, p.z);
+      // In-cloud turbulence wobble (ST2): display-only, zero at/below the
+      // deck; phase-shifted per plane so a formation doesn't shake as one.
+      const wobble = turbulenceOffset(
+        nowMs + strobePhaseMs(id) * 7,
+        pose.pos.y,
+      );
+      remote.mesh.position.set(
+        p.x + wobble.x * 0.5,
+        p.y + wobble.y * 0.5,
+        p.z + wobble.z * 0.5,
+      );
       remote.mesh.quaternion.set(
         pose.quat.x,
         pose.quat.y,
@@ -254,14 +267,23 @@ export class RemotePlanes {
       const shimmer = remote.prot
         ? 0.75 + 0.25 * Math.sin((renderTime / 1000) * SHIMMER_HZ * 2 * Math.PI)
         : 0;
+      // Storm reveal rim-flash (ST2): the shimmer's idiom with the reveal
+      // tint; spawn protection outranks it when both are active.
+      const reveal = revealLevelOf?.(id) ?? 0;
       remote.mesh.traverse((child) => {
         if (child instanceof THREE.Mesh) {
           const mat = child.material as THREE.MeshStandardMaterial;
           if (remote.prot) {
             mat.emissive.setHex(SHIMMER_COLOR);
             mat.emissiveIntensity = shimmer;
-          } else if (mat.emissive.getHex() === SHIMMER_COLOR) {
-            // Restore the un-shimmered look (standard default: black, 1).
+          } else if (reveal > 0) {
+            mat.emissive.setHex(REVEAL_COLOR);
+            mat.emissiveIntensity = reveal * REVEAL_INTENSITY;
+          } else if (
+            mat.emissive.getHex() === SHIMMER_COLOR ||
+            mat.emissive.getHex() === REVEAL_COLOR
+          ) {
+            // Restore the plain look (standard default: black, 1).
             mat.emissive.setHex(0x000000);
             mat.emissiveIntensity = 1;
           }

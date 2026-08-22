@@ -90,6 +90,12 @@ export class SkyDome {
   update(cameraPos: Vec3): void {
     this.mesh.position.set(cameraPos.x, cameraPos.y, cameraPos.z);
   }
+
+  /** Storm hook (ST2): multiplicative tint over the gradient — white is the
+   * resting state, a sky flash pulls it violet and brightens it briefly. */
+  tint(color: THREE.Color): void {
+    (this.mesh.material as THREE.MeshBasicMaterial).color.copy(color);
+  }
 }
 
 // --- S1 painted ground ------------------------------------------------------

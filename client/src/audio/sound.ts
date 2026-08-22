@@ -30,6 +30,10 @@ const KILL_LEVEL = 0.4;
 const VOICE_LEVEL = 0.9;
 const DUCK_LEVEL = 0.55;
 const DUCK_RAMP_S = 0.08;
+// Storm (ST2): thunder rumbles under the explosion level; the in-cloud
+// static bed is diegetic flavor, quieter than everything else.
+const THUNDER_LEVEL = 0.8;
+const STATIC_BED_LEVEL = 0.055;
 
 /** Engine pitch band: idle throttle → full throttle, Hz. */
 const ENGINE_MIN_HZ = 55;
@@ -50,6 +54,7 @@ export class GameAudio implements VoiceSink {
   private noise: AudioBuffer | null = null;
   private ownOsc: OscillatorNode | null = null;
   private ownGain: GainNode | null = null;
+  private staticGain: GainNode | null = null;
   private readonly remotes = new Map<string, RemoteEngine>();
   private lastWhooshAt = 0;
 
@@ -264,6 +269,53 @@ export class GameAudio implements VoiceSink {
     src.addEventListener("ended", onDone);
     src.start(now);
     return true;
+  }
+
+  /** Thunder for a due storm strike: soft = long low rumble, hard = crack
+   * plus the rumble body plus a sub-bass drop (the kill-bolt sound). */
+  thunder(gain01: number, hard: boolean): void {
+    const level = Math.min(1.2, gain01) * THUNDER_LEVEL;
+    if (level <= 0) return;
+    this.burst("lowpass", hard ? 420 : 180, 45, hard ? 1.7 : 2.6, level, 0);
+    if (!hard) return;
+    this.burst("bandpass", 1400, 320, 0.16, level * 0.9, 0);
+    const ctx = this.ensure();
+    if (!ctx || !this.master) return;
+    const now = ctx.currentTime;
+    const sub = ctx.createOscillator();
+    sub.type = "sine";
+    sub.frequency.setValueAtTime(70, now);
+    sub.frequency.exponentialRampToValueAtTime(24, now + 1.1);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.6 * level, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 1.2);
+    sub.connect(gain).connect(this.master);
+    sub.start(now);
+    sub.stop(now + 1.3);
+  }
+
+  /** In-cloud static crackle bed: level 0..1, ramped every frame like the
+   * engine loop. Silent at 0 — the loop idles at zero gain. */
+  setStatic(level: number): void {
+    const ctx = this.ensure();
+    if (!ctx || !this.master || !this.noise) return;
+    if (!this.staticGain) {
+      const src = ctx.createBufferSource();
+      src.buffer = this.noise;
+      src.loop = true;
+      const filter = ctx.createBiquadFilter();
+      filter.type = "highpass";
+      filter.frequency.value = 2600;
+      this.staticGain = ctx.createGain();
+      this.staticGain.gain.value = 0;
+      src.connect(filter).connect(this.staticGain).connect(this.master);
+      src.start();
+    }
+    this.staticGain.gain.setTargetAtTime(
+      Math.max(0, Math.min(1, level)) * STATIC_BED_LEVEL,
+      ctx.currentTime,
+      0.3,
+    );
   }
 
   /** Near-miss whoosh: an enemy bullet just shaved past. Rate-limited. */

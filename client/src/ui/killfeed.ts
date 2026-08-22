@@ -8,8 +8,13 @@ const MAX_ENTRIES = 6;
 export class KillFeed {
   private readonly root = document.getElementById("killfeed") as HTMLDivElement;
 
-  /** `killerName` null = un-credited crash ("☠ B"). */
-  add(killerName: string | null, victimName: string): void {
+  /** `killerName` null = un-credited crash ("☠ B"); a storm kill renders as
+   * the bolt's own line ("⚡ took down B") whoever got the credit. */
+  add(
+    killerName: string | null,
+    victimName: string,
+    cause?: "shot" | "crash" | "storm",
+  ): void {
     const entry = document.createElement("div");
     entry.className = "entry";
 
@@ -17,7 +22,9 @@ export class KillFeed {
     victim.className = "victim";
     victim.textContent = victimName;
 
-    if (killerName === null) {
+    if (cause === "storm") {
+      entry.append("⚡ took down ", victim);
+    } else if (killerName === null) {
       entry.append("☠ ", victim);
     } else {
       const killer = document.createElement("span");

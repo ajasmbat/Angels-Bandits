@@ -146,12 +146,15 @@ export interface DamageMsg {
   hp: number;
 }
 
-/** Server-declared death. `killerId` null = un-credited crash. */
+/** Server-declared death. `killerId` null = un-credited crash or the storm
+ * itself (⚡ environment). `"storm"` is the hidden death ceiling's kill bolt —
+ * clients render the bolt at the victim's last snapshot pose; the wire never
+ * carries a warning or a timer (the rule is discovered, not announced). */
 export interface DeathMsg {
   type: "death";
   victimId: string;
   killerId: string | null;
-  cause: "shot" | "crash";
+  cause: "shot" | "crash" | "storm";
 }
 
 /**

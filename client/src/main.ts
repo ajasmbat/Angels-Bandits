@@ -40,6 +40,7 @@ import { RemotePlanes } from "./render/remotes";
 import { RoofClutterRenderer } from "./render/roofclutter";
 import { Signage } from "./render/signage";
 import { GroundPlane, SkyDome, setupSky } from "./render/sky";
+import { SmokeTrails, smokeActive } from "./render/smoke";
 import { Streetlights } from "./render/streetlights";
 import { Tracers } from "./render/tracers";
 import { Traffic } from "./render/traffic";
@@ -142,6 +143,8 @@ const explosions = new Explosions();
 scene.add(explosions.group);
 const sparks = new Sparks();
 scene.add(sparks.points);
+const smoke = new SmokeTrails();
+scene.add(smoke.points);
 
 const plane = buildPlaneMesh();
 scene.add(plane);
@@ -319,6 +322,8 @@ socket.events.onDeath = (msg) => {
   else remotes.setDead(msg.victimId);
 };
 socket.events.onRespawn = (msg) => {
+  // Fresh spawn, fresh trail — a rebased teleport would smear smoke 1 km.
+  smoke.clear(msg.id);
   if (msg.id === socket.selfId) respawnSelf(msg.spawn);
   else remotes.respawn(msg.id);
 };
@@ -334,7 +339,12 @@ declare global {
     __ab?: {
       state: () => FlightState;
       teleport: (x: number, z: number, y?: number, yaw?: number) => void;
-      perf: () => { fps: number; frameMs: number; drawCalls: number };
+      perf: () => {
+        fps: number;
+        frameMs: number;
+        drawCalls: number;
+        smokePuffs: number;
+      };
       net: () => {
         selfId: string;
         roomId: string;
@@ -375,6 +385,7 @@ window.__ab = {
     fps: perf.fps,
     frameMs: perf.frameMs,
     drawCalls: renderer.info.render.calls,
+    smokePuffs: smoke.puffCount,
   }),
   net: () => ({
     selfId: socket.selfId,
@@ -532,6 +543,16 @@ renderer.setAnimationLoop((now) => {
   traffic.update(chase.position, socket.renderTime());
   ground.update(chase.position);
   skyDome.update(chase.position);
+  // Wounded smoke: own plane from server-said self HP, every remote (human
+  // or bot) from snapshot HP — all clients see the same wounds. Death clouds
+  // simply stop being synced and age out inside SmokeTrails.
+  if (alive) {
+    smoke.sync(socket.selfId, flight.pos, now, smokeActive(selfHp));
+  }
+  for (const target of targets) {
+    smoke.sync(target.id, target.pos, now, smokeActive(target.hp));
+  }
+  smoke.update(chase.position, now);
   explosions.update(chase.position, now, dt);
   sparks.update(chase.position, now);
   tracers.update(bullets.all, chase.position, now);

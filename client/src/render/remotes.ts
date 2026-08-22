@@ -4,6 +4,7 @@
 // viewer (nearestImage) — the same placement rule as the rest of the scene,
 // which is what keeps a seam-crossing remote gliding instead of teleporting.
 
+import { MAX_HP } from "@angels-bandits/common/constants";
 import type {
   Pose,
   RosterEntry,
@@ -38,6 +39,8 @@ interface Remote {
   alive: boolean;
   /** Spawn protection as of the last snapshot (drives the shimmer). */
   prot: boolean;
+  /** Server-said HP as of the last snapshot (drives wounded smoke). */
+  hp: number;
 }
 
 export class RemotePlanes {
@@ -85,7 +88,7 @@ export class RemotePlanes {
 
   /** Feed one server snapshot into the per-player buffers. */
   ingest(snap: SnapshotMsg): void {
-    for (const { id, pose, prot } of snap.players) {
+    for (const { id, pose, prot, hp } of snap.players) {
       if (id === this.selfId) continue;
       let remote = this.remotes.get(id);
       if (!remote) {
@@ -98,6 +101,7 @@ export class RemotePlanes {
           lastPose: null,
           alive: true,
           prot: false,
+          hp: MAX_HP,
         };
         remote.mesh.visible = false; // until the first sampled pose
         remote.tag.visible = false;
@@ -107,6 +111,7 @@ export class RemotePlanes {
       // Presence in a snapshot IS being alive — dead planes are omitted.
       remote.alive = true;
       remote.prot = prot;
+      remote.hp = hp;
       remote.buffer.push(snap.time, pose);
     }
   }
@@ -134,15 +139,17 @@ export class RemotePlanes {
   }
 
   /** Living remotes as hit-test / lead targets: interpolated canonical
-   * positions plus a seam-safe velocity estimate (zero until two samples). */
-  targets(): { id: string; pos: Vec3; vel: Vec3 }[] {
-    const out: { id: string; pos: Vec3; vel: Vec3 }[] = [];
+   * positions plus a seam-safe velocity estimate (zero until two samples)
+   * and the last snapshot's HP (wounded-smoke emission). */
+  targets(): { id: string; pos: Vec3; vel: Vec3; hp: number }[] {
+    const out: { id: string; pos: Vec3; vel: Vec3; hp: number }[] = [];
     for (const [id, r] of this.remotes) {
       if (r.alive && r.lastPos) {
         out.push({
           id,
           pos: r.lastPos,
           vel: r.buffer.latestVelocity() ?? { x: 0, y: 0, z: 0 },
+          hp: r.hp,
         });
       }
     }

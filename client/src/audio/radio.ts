@@ -1,9 +1,10 @@
 // The radio channel. RadioQueue is the pure seam (injected clock, no DOM,
 // no timers — same idiom as spatial.ts): one global channel, one line at a
 // time, priority + per-key play-time cooldowns + combat suppression.
-// RadioVoice below is the thin Web Speech API adapter that actually speaks
-// the polled lines, framed by GameAudio's synthesized squelch/static —
-// TTS cannot route through WebAudio, so framing is the radio character.
+// RadioVoice below is the thin adapter that actually speaks the polled
+// lines: pre-rendered, radio-processed OGGs (tools/gen-radio-voices.sh)
+// played as WebAudio buffers on GameAudio's ducked voice bus, with a
+// deterministic per-callsign playbackRate as each bot pilot's identity.
 
 import { mulberry32 } from "@angels-bandits/common/city";
 import type { Callout, RadioKind } from "../game/callouts";
@@ -174,78 +175,74 @@ export function pilotRate(speaker: string): number {
   return 1 + (r * 2 - 1) * PILOT_RATE_SPREAD;
 }
 
-/** The framing SFX the voice adapter needs (GameAudio provides these). */
-export interface RadioSfx {
-  radioSquelch(): void;
-  radioStatic(): void;
+/** What the voice adapter needs from GameAudio: decode once, play on the
+ * ducked voice bus. Both degrade to null/false without a running context. */
+export interface VoiceSink {
+  decodeVoice(data: ArrayBuffer): Promise<AudioBuffer | null>;
+  playVoice(buffer: AudioBuffer, rate: number, onDone: () => void): boolean;
 }
 
 /**
- * Thin Web Speech API adapter: speaks a polled line framed by a squelch
- * click and a static tail. Feature-detected — without TTS (headless QA,
- * unsupported browsers, empty voice list) it degrades to the framing SFX
- * alone and the queue's estimated duration paces the channel instead of
- * the utterance's end event.
+ * Thin pre-rendered-buffer adapter: speaks a polled line by playing its
+ * bundled OGG (squelch click-in and static tail-out are baked into the
+ * files by tools/gen-radio-voices.sh) at the speaker's pilotRate. Assets
+ * are fetched eagerly at construction and decoded once the AudioContext
+ * runs (first user gesture); until a line's buffer is ready — or when
+ * WebAudio is unavailable (headless QA) — the line stays ticker-only and
+ * the queue's estimated duration paces the channel instead of the
+ * buffer's end event.
  */
 export class RadioVoice {
-  private readonly available: boolean;
-  private voice: SpeechSynthesisVoice | null = null;
-  /** Chrome GC drops in-flight utterances (and their end events) unless
-   * something holds a reference — keep the latest alive here. */
-  private current: SpeechSynthesisUtterance | null = null;
+  /** asset id → fetched-but-undecoded bytes. */
+  private readonly raw = new Map<string, ArrayBuffer>();
+  private readonly buffers = new Map<string, AudioBuffer>();
+  private decoding = false;
 
-  constructor(private readonly sfx: RadioSfx) {
-    this.available =
-      typeof speechSynthesis !== "undefined" &&
-      typeof SpeechSynthesisUtterance !== "undefined";
-    if (this.available) {
-      this.pickVoice();
-      speechSynthesis.addEventListener("voiceschanged", () => this.pickVoice());
+  constructor(
+    private readonly sink: VoiceSink,
+    urls: Record<string, string>,
+  ) {
+    for (const [id, url] of Object.entries(urls)) {
+      void fetch(url)
+        .then((res) => (res.ok ? res.arrayBuffer() : null))
+        .then((data) => {
+          if (data) this.raw.set(id, data);
+        })
+        .catch(() => {}); // missing asset → that line stays ticker-only
     }
   }
 
-  /** A stable default: prefer a local en-* voice, then any en-*, then any. */
-  private pickVoice(): void {
-    const voices = speechSynthesis.getVoices();
-    this.voice =
-      voices.find((v) => v.lang.startsWith("en") && v.localService) ??
-      voices.find((v) => v.lang.startsWith("en")) ??
-      voices[0] ??
-      null;
+  /** True once at least one line is decoded and playable. */
+  get ready(): boolean {
+    return this.buffers.size > 0;
   }
 
-  get supported(): boolean {
-    return this.available;
+  /** Decode everything fetched so far; a no-op until the sink's context
+   * runs, and cheap to re-kick (undecoded bytes stay in `raw`). */
+  private ensureDecoded(): void {
+    if (this.decoding || this.raw.size === 0) return;
+    this.decoding = true;
+    void (async () => {
+      for (const [id, data] of this.raw) {
+        const buffer = await this.sink.decodeVoice(data);
+        if (!buffer) break; // context not running yet — retry on next speak
+        this.buffers.set(id, buffer);
+        this.raw.delete(id);
+      }
+      this.decoding = false;
+    })();
   }
 
   /**
-   * Put one line on the air. `onDone` fires when the utterance actually
-   * ends (feed it RadioQueue.release so the channel frees early); it is
-   * never called on the no-TTS path — the queue's estimate rules there.
+   * Put one line on the air. `onDone` fires when the buffer actually ends
+   * (feed it RadioQueue.release so the channel frees early); it is never
+   * called when nothing plays — the queue's estimate rules there.
    */
-  speak(text: string, onDone: () => void): void {
-    this.sfx.radioSquelch();
-    if (!this.available) {
-      this.sfx.radioStatic();
-      return;
-    }
-    try {
-      const utterance = new SpeechSynthesisUtterance(text);
-      if (this.voice) utterance.voice = this.voice;
-      utterance.rate = 1.1; // brisk military cadence
-      utterance.pitch = 0.85; // slight pitch-down toward radio timbre
-      const finish = () => {
-        if (this.current !== utterance) return;
-        this.current = null;
-        this.sfx.radioStatic();
-        onDone();
-      };
-      utterance.addEventListener("end", finish);
-      utterance.addEventListener("error", finish);
-      this.current = utterance;
-      speechSynthesis.speak(utterance);
-    } catch {
-      this.sfx.radioStatic(); // degrade silently — ticker already showed it
-    }
+  speak(text: string, speaker: string, onDone: () => void): void {
+    this.ensureDecoded();
+    const id = resolveVoiceAsset(text, (asset) => this.buffers.has(asset));
+    if (id === null) return;
+    const buffer = this.buffers.get(id);
+    if (buffer) this.sink.playVoice(buffer, pilotRate(speaker), onDone);
   }
 }

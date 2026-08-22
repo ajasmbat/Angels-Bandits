@@ -10,6 +10,7 @@ import { type Building, generateCity } from "@angels-bandits/common/city";
 import { LANDMARK_HEIGHT } from "@angels-bandits/common/constants";
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { FacadeArchetype, archetypeFor } from "./archetypes";
 import { createBuildingsMaterial } from "./buildings-material";
 import { nearestImage } from "./wrapPlacement";
 
@@ -47,7 +48,8 @@ export class CityRenderer {
     // into a tier standing at its base height.
     const geometry = new THREE.BoxGeometry(1, 1, 1);
     geometry.translate(0, 0.5, 0);
-    // Night-neon material with procedural emissive window grids (T5 art pass).
+    // Night-neon material with procedural emissive window grids (T5 art pass),
+    // branching per instance on the facade archetype (set once below).
     const material = createBuildingsMaterial();
 
     this.mesh = new THREE.InstancedMesh(
@@ -58,18 +60,35 @@ export class CityRenderer {
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.mesh.frustumCulled = false; // instances move relative to the camera every frame
 
-    // Dusk palette: dark blue-grey towers, slightly varied per building
-    // (deterministic from the building itself, shared by all its tiers);
-    // landmarks get a neon accent so orientation — and the "never two images
-    // at once" QA check — works.
+    // Facade archetype per instance (all tiers of a building agree) — the
+    // shader branches window pitch/pattern/lit-bias on this. Static: set at
+    // construction, never re-uploaded.
+    const archetypes = new Float32Array(this.instances.length);
+    this.instances.forEach((inst, i) => {
+      archetypes[i] = archetypeFor(inst.building);
+    });
+    geometry.setAttribute(
+      "aArchetype",
+      new THREE.InstancedBufferAttribute(archetypes, 1),
+    );
+
+    // Dusk palette, now per archetype (Concept 5 "Balanced blend"): steel-blue
+    // glass, warm brick masonry, grey-blue concrete offices — each slightly
+    // varied per building (deterministic from the building itself, shared by
+    // all its tiers). Landmarks keep their neon accent so orientation — and
+    // the "never two images at once" QA check — works.
     const color = new THREE.Color();
     this.instances.forEach((inst, i) => {
       const b = inst.building;
+      const t = ((b.height * 7 + b.width * 3 + b.depth) % 17) / 17;
       if (b.height >= LANDMARK_HEIGHT) {
         color.setHSL(0.52, 0.55, 0.32);
+      } else if (archetypes[i] === FacadeArchetype.GLASS) {
+        color.setHSL(0.6 + t * 0.04, 0.4, 0.09 + t * 0.05);
+      } else if (archetypes[i] === FacadeArchetype.MASONRY) {
+        color.setHSL(0.05 + t * 0.03, 0.28, 0.08 + t * 0.04);
       } else {
-        const t = (b.height * 7 + b.width * 3 + b.depth) % 17;
-        color.setHSL(0.62 + (t / 17) * 0.06, 0.25, 0.1 + (t / 17) * 0.08);
+        color.setHSL(0.63 + t * 0.03, 0.12, 0.08 + t * 0.05);
       }
       this.mesh.setColorAt(i, color);
     });

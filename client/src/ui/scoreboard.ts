@@ -54,13 +54,8 @@ export class Scoreboard {
   /**
    * Wire the shared bot-count bar (ANGE-6STDNN) to this panel: build its
    * cells, paint `bar`'s state, and drive drags from pointer events.
-   * `now` is injected the way the rest of the client passes clocks around.
    */
-  bindBotBar(
-    bar: BotBar,
-    now: () => number = () => performance.now(),
-    target: Window = window,
-  ): void {
+  bindBotBar(bar: BotBar, target: Window = window): void {
     const cells = document.getElementById("bots-cells") as HTMLDivElement;
     const value = document.getElementById("bots-value") as HTMLSpanElement;
     const by = document.getElementById("bots-by") as HTMLSpanElement;
@@ -101,19 +96,19 @@ export class Scoreboard {
       e.stopPropagation();
       e.preventDefault();
       this.dragging = true;
-      bar.dragTo(notchAt(e.clientX), now());
+      bar.dragTo(notchAt(e.clientX));
       paint();
     });
     target.addEventListener("mousemove", (e: MouseEvent) => {
       if (!this.dragging) return;
-      bar.dragTo(notchAt(e.clientX), now());
+      bar.dragTo(notchAt(e.clientX));
       paint();
     });
     target.addEventListener("mouseup", (e: MouseEvent) => {
       if (!this.dragging) return;
       e.stopPropagation();
       this.dragging = false;
-      bar.release(now());
+      bar.release();
       paint();
       // The panel only lingered for the drag; Tab is in charge again.
       if (!this.tabHeld) this.setOpen(false);

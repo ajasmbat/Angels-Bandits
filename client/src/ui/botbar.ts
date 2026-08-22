@@ -8,12 +8,11 @@
 // the last value the server confirmed. The server silently drops claims that
 // break its per-player rate limit, so that snap-back is the only feedback a
 // dropped claim gets, and it is enough: the bar visibly rebounds.
+//
+// One drag makes exactly one claim, on release — the rate limit is why, and
+// release() spells it out.
 
 import { BOT_TARGET_MAX } from "@angels-bandits/common/constants";
-
-/** Fastest a drag may claim, ms. Well under the server's accept window: the
- * in-between samples are disposable, the released value is not. */
-const DRAG_CLAIM_MS = 300;
 
 const clamp = (count: number): number =>
   Math.min(Math.max(Math.round(count), 0), BOT_TARGET_MAX);
@@ -25,8 +24,6 @@ export class BotBar {
   private drag: number | null = null;
   /** Who set the server's value, for the attribution line. */
   private setter: string | null = null;
-  private lastClaimAt = Number.NEGATIVE_INFINITY;
-  private lastClaimed: number | null = null;
 
   /** Send a claim to the server (main.ts hands this to the socket). */
   onClaim: ((count: number) => void) | null = null;
@@ -54,24 +51,31 @@ export class BotBar {
     this.setter = byName;
   }
 
-  /** The pointer moved to `count` with the button down. */
-  dragTo(count: number, now: number): void {
-    const value = clamp(count);
-    this.drag = value;
-    if (now - this.lastClaimAt >= DRAG_CLAIM_MS) this.claim(value, now);
+  /** The pointer moved to `count` with the button down. Preview only — see
+   * release() for why nothing is claimed until the player lets go. */
+  dragTo(count: number): void {
+    this.drag = clamp(count);
   }
 
-  /** The pointer came up: claim where it landed and hand the bar back to the
-   * server until it answers. */
-  release(now: number): void {
+  /**
+   * The pointer came up: claim where it landed, and hand the bar back to the
+   * server until it answers.
+   *
+   * This is the ONLY claim a drag makes, and that is deliberate. The server
+   * accepts one change per player per 3 s; a claim sent mid-drag would spend
+   * that budget on a notch the player was merely passing over, and the value
+   * they actually chose would be the one dropped — two-tab QA showed every
+   * drag rebounding to whatever notch the grab happened to start on.
+   *
+   * A release onto the value the room already holds asks for nothing, so it
+   * is not claimed: spending the rate limit on a no-op would block the next
+   * real change. The comparison is against the SERVER's value rather than
+   * this bar's own history, so putting a count back after someone else moved
+   * it is always a fresh claim.
+   */
+  release(): void {
     const value = this.drag;
     this.drag = null;
-    if (value !== null && value !== this.lastClaimed) this.claim(value, now);
-  }
-
-  private claim(count: number, now: number): void {
-    this.lastClaimAt = now;
-    this.lastClaimed = count;
-    this.onClaim?.(count);
+    if (value !== null && value !== this.server) this.onClaim?.(value);
   }
 }

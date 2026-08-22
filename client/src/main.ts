@@ -31,6 +31,7 @@ import { FlightInputSource } from "./game/flight-input";
 import { createFreeLook, shapeInput, stepFreeLook } from "./game/freelook";
 import { Guns } from "./game/guns";
 import { bulletHitsSphere } from "./game/hitdetect";
+import { magnetizeVelocity } from "./game/magnetism";
 import { GameSocket } from "./net/socket";
 import { CityRenderer } from "./render/city";
 import { Explosions } from "./render/fx";
@@ -480,9 +481,15 @@ renderer.setAnimationLoop((now) => {
     }
   }
 
-  // Bullets fly and sweep the frame's segment over every living remote.
-  bullets.step(dt);
+  // Bullets: bend own rounds a hair toward in-cone targets (magnetism seam),
+  // then fly and sweep the frame's segment over every living remote.
   const targets = remotes.targets();
+  for (const bullet of bullets.all) {
+    if (!bullet.cosmetic) {
+      bullet.vel = magnetizeVelocity(bullet.pos, bullet.vel, targets, dt);
+    }
+  }
+  bullets.step(dt);
   for (const bullet of [...bullets.all]) {
     if (bullet.cosmetic) {
       // An enemy bullet shaving past this frame → panned near-miss whoosh.

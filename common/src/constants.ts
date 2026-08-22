@@ -150,6 +150,15 @@ export const OVERHEAT_AT = 1.0;
 /** Locked guns stay locked until heat cools below this (hysteresis, ~2.2 s). */
 export const HEAT_LOCK_BELOW = 0.35;
 
+// --- Gun feel (client-only presentation/assist; server validation untouched) ---
+/** Bullet magnetism: own bullets bend toward a target within this half-angle
+ * of the flight line, degrees. Tight — connection help, not an aimbot. */
+export const MAGNETISM_CONE_DEG = 4;
+/** Max bend rate toward the target, degrees per second. */
+export const MAGNETISM_MAX_DEG_PER_S = 2;
+/** A plane strictly below this fraction of MAX_HP trails wounded smoke. */
+export const SMOKE_HP_FRAC = 0.3;
+
 // --- Server-side combat validation ---
 /** Meters of slack on top of BULLET_RANGE for hit claims: interpolation delay
  * plus bullet flight time let both planes move before the claim arrives. */

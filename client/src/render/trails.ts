@@ -9,11 +9,21 @@
 // torus seam (x = WORLD_SIZE−ε → ε) would connect two images ~WORLD_SIZE
 // apart and draw a 2 km streak.
 
-import { TURN_RATE } from "@angels-bandits/common/constants";
+import {
+  EMISSIVE_TRAIL,
+  ROOM_CAP,
+  TURN_RATE,
+} from "@angels-bandits/common/constants";
 import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
+import * as THREE from "three";
+import { LIGHT_MOUNTS } from "./planelights";
+import { nearestImage } from "./wrapPlacement";
 
 /** How long a trail point lives, ms (~the plan's "short ribbon trails"). */
 export const TRAIL_LIFETIME_MS = 1500;
+/** Pushes closer together than this slide the newest sample instead of
+ * appending — bounds every history to TRAIL_LIFETIME_MS / this points. */
+export const TRAIL_MIN_SAMPLE_MS = 25;
 
 /** Wire-shaped quaternion (the streamed Pose carries exactly this). */
 export interface QuatLike {
@@ -79,6 +89,15 @@ export class TrailHistory {
       }
     }
     this.anchorPos = { ...canonical };
+    // Bound memory at high frame rates: a push hot on the heels of the last
+    // sample slides that sample instead of growing the history.
+    const head = this.pts[this.pts.length - 1];
+    if (head && timeMs - head.t < TRAIL_MIN_SAMPLE_MS) {
+      head.off = { x: 0, y: 0, z: 0 };
+      head.t = timeMs;
+      head.hard = Math.max(head.hard, hard);
+      return;
+    }
     this.pts.push({ off: { x: 0, y: 0, z: 0 }, t: timeMs, hard });
   }
 
@@ -87,7 +106,10 @@ export class TrailHistory {
    * 1 = about to expire), and recorded hardness. Prunes expired points.
    */
   points(nowMs: number): { off: Vec3; age01: number; hard: number }[] {
-    while (this.pts.length && nowMs - (this.pts[0] as TrailPoint).t > TRAIL_LIFETIME_MS) {
+    while (
+      this.pts.length &&
+      nowMs - (this.pts[0] as TrailPoint).t > TRAIL_LIFETIME_MS
+    ) {
       this.pts.shift();
     }
     return this.pts.map((p) => ({
@@ -101,5 +123,215 @@ export class TrailHistory {
   clear(): void {
     this.pts = [];
     this.anchorPos = null;
+  }
+}
+
+// --- Renderer: every plane's two wingtip ribbons in ONE additive mesh ---
+
+/** Points a history can hold given the sampling floor (+1 for the head). */
+const MAX_POINTS = Math.ceil(TRAIL_LIFETIME_MS / TRAIL_MIN_SAMPLE_MS) + 1;
+/** Two tips per plane, a quad (6 vertices) per segment. */
+const MAX_VERTICES = ROOM_CAP * 2 * (MAX_POINTS - 1) * 6;
+
+/** Concept 1 "Regulation Night Traffic": pale grey-white streaks, faint in
+ * level flight, assertive only under hard turns. */
+const TRAIL_HALF_WIDTH = 0.22;
+const TRAIL_BASE_ALPHA = 0.08;
+const TRAIL_TURN_ALPHA = 0.55;
+const TRAIL_GREY = new THREE.Color(0.88, 0.88, 0.94);
+
+const tipScratch = new THREE.Vector3();
+const quatScratch = new THREE.Quaternion();
+const segScratch = new THREE.Vector3();
+const viewScratch = new THREE.Vector3();
+const sideScratch = new THREE.Vector3();
+
+interface PlaneTrail {
+  left: TrailHistory;
+  right: TrailHistory;
+  prevQuat: QuatLike | null;
+}
+
+export class PlaneTrails {
+  readonly mesh: THREE.Mesh;
+  private readonly planes = new Map<string, PlaneTrail>();
+  private readonly positions: Float32Array;
+  private readonly colors: Float32Array;
+  private readonly geometry: THREE.BufferGeometry;
+
+  constructor() {
+    this.positions = new Float32Array(MAX_VERTICES * 3);
+    this.colors = new Float32Array(MAX_VERTICES * 3);
+    this.geometry = new THREE.BufferGeometry();
+    this.geometry.setAttribute(
+      "position",
+      new THREE.BufferAttribute(this.positions, 3),
+    );
+    this.geometry.setAttribute(
+      "color",
+      new THREE.BufferAttribute(this.colors, 3),
+    );
+    this.geometry.boundingSphere = new THREE.Sphere(
+      new THREE.Vector3(),
+      Number.POSITIVE_INFINITY,
+    );
+    const material = new THREE.MeshBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      // Additive + fog brightens the distant scene (V1 lesson) — off.
+      fog: false,
+    });
+    this.mesh = new THREE.Mesh(this.geometry, material);
+    this.mesh.frustumCulled = false;
+  }
+
+  /**
+   * Feed one plane's pose for this frame. Positions are CANONICAL (trail
+   * history is seam-safe by construction); `timeMs` must come from one
+   * monotonic clock shared by every emit call (performance.now()).
+   */
+  emit(
+    id: string,
+    pos: Vec3,
+    quat: QuatLike,
+    timeMs: number,
+    dtS: number,
+  ): void {
+    let plane = this.planes.get(id);
+    if (!plane) {
+      plane = {
+        left: new TrailHistory(),
+        right: new TrailHistory(),
+        prevQuat: null,
+      };
+      this.planes.set(id, plane);
+    }
+    const hard = plane.prevQuat ? turnHardness(plane.prevQuat, quat, dtS) : 0;
+    plane.prevQuat = { ...quat };
+    quatScratch.set(quat.x, quat.y, quat.z, quat.w);
+    for (const [mount, history] of [
+      [LIGHT_MOUNTS.navL, plane.left],
+      [LIGHT_MOUNTS.navR, plane.right],
+    ] as const) {
+      tipScratch.set(mount.x, mount.y, mount.z).applyQuaternion(quatScratch);
+      history.push(
+        {
+          x: pos.x + tipScratch.x,
+          y: pos.y + tipScratch.y,
+          z: pos.z + tipScratch.z,
+        },
+        timeMs,
+        hard,
+      );
+    }
+  }
+
+  /** Cut a plane's ribbons (death / respawn teleport must not streak). */
+  clear(id: string): void {
+    const plane = this.planes.get(id);
+    plane?.left.clear();
+    plane?.right.clear();
+    if (plane) plane.prevQuat = null;
+  }
+
+  /** Forget a plane entirely (left the room). */
+  drop(id: string): void {
+    this.planes.delete(id);
+  }
+
+  /** Rebuild the merged ribbon geometry around the viewer. Every frame. */
+  update(viewer: Vec3, nowMs: number): void {
+    let v = 0;
+    for (const plane of this.planes.values()) {
+      for (const history of [plane.left, plane.right]) {
+        const anchor = history.anchor;
+        if (!anchor) continue;
+        const pts = history.points(nowMs);
+        if (pts.length < 2) continue;
+        // One nearest-image projection per ribbon; offsets are short.
+        const base = nearestImage(viewer, anchor);
+        for (let i = 1; i < pts.length && v + 6 <= MAX_VERTICES; i++) {
+          const a = pts[i - 1] as (typeof pts)[number];
+          const b = pts[i] as (typeof pts)[number];
+          const ax = base.x + a.off.x;
+          const ay = base.y + a.off.y;
+          const az = base.z + a.off.z;
+          const bx = base.x + b.off.x;
+          const by = base.y + b.off.y;
+          const bz = base.z + b.off.z;
+          segScratch.set(bx - ax, by - ay, bz - az);
+          viewScratch.set(ax - viewer.x, ay - viewer.y, az - viewer.z);
+          sideScratch.crossVectors(segScratch, viewScratch);
+          const len = sideScratch.length();
+          if (len < 1e-6) continue;
+          sideScratch.multiplyScalar(1 / len);
+          // Fade with age; swell with the turn hardness recorded per point.
+          const wa = TRAIL_HALF_WIDTH * (0.5 + a.hard) * (1 - a.age01 * 0.6);
+          const wb = TRAIL_HALF_WIDTH * (0.5 + b.hard) * (1 - b.age01 * 0.6);
+          const alphaA =
+            (1 - a.age01) * (TRAIL_BASE_ALPHA + TRAIL_TURN_ALPHA * a.hard);
+          const alphaB =
+            (1 - b.age01) * (TRAIL_BASE_ALPHA + TRAIL_TURN_ALPHA * b.hard);
+          // Additive blending: bake alpha into RGB (ladder peak at hard=1).
+          const ca = EMISSIVE_TRAIL * alphaA;
+          const cb = EMISSIVE_TRAIL * alphaB;
+          const quad = [
+            [
+              ax - sideScratch.x * wa,
+              ay - sideScratch.y * wa,
+              az - sideScratch.z * wa,
+              ca,
+            ],
+            [
+              ax + sideScratch.x * wa,
+              ay + sideScratch.y * wa,
+              az + sideScratch.z * wa,
+              ca,
+            ],
+            [
+              bx + sideScratch.x * wb,
+              by + sideScratch.y * wb,
+              bz + sideScratch.z * wb,
+              cb,
+            ],
+            [
+              ax - sideScratch.x * wa,
+              ay - sideScratch.y * wa,
+              az - sideScratch.z * wa,
+              ca,
+            ],
+            [
+              bx + sideScratch.x * wb,
+              by + sideScratch.y * wb,
+              bz + sideScratch.z * wb,
+              cb,
+            ],
+            [
+              bx - sideScratch.x * wb,
+              by - sideScratch.y * wb,
+              bz - sideScratch.z * wb,
+              cb,
+            ],
+          ] as const;
+          for (const [x, y, z, c] of quad) {
+            this.positions[v * 3] = x;
+            this.positions[v * 3 + 1] = y;
+            this.positions[v * 3 + 2] = z;
+            this.colors[v * 3] = TRAIL_GREY.r * c;
+            this.colors[v * 3 + 1] = TRAIL_GREY.g * c;
+            this.colors[v * 3 + 2] = TRAIL_GREY.b * c;
+            v++;
+          }
+        }
+      }
+    }
+    this.geometry.setDrawRange(0, v);
+    (this.geometry.attributes.position as THREE.BufferAttribute).needsUpdate =
+      true;
+    (this.geometry.attributes.color as THREE.BufferAttribute).needsUpdate =
+      true;
   }
 }

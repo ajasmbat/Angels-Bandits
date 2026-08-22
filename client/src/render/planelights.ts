@@ -45,8 +45,7 @@ export function strobePhaseMs(planeId: string): number {
  */
 export function strobeOn(planeId: string, timeMs: number): boolean {
   const period = STROBE_PERIOD_MS;
-  const p =
-    (((timeMs - strobePhaseMs(planeId)) % period) + period) % period;
+  const p = (((timeMs - strobePhaseMs(planeId)) % period) + period) % period;
   for (const off of STROBE_FLASH_OFFSETS) {
     if (p >= off && p < off + STROBE_FLASH_MS) return true;
   }
@@ -223,9 +222,7 @@ export class PlaneLights {
     const flicker =
       0.8 + 0.2 * Math.sin(t * FLICKER_A) * Math.sin(t * FLICKER_B);
     const throttle = Math.min(1, Math.max(0.25, speed / MAX_SPEED));
-    scratchColor
-      .copy(exhaustBoost)
-      .multiplyScalar(throttle * flicker);
+    scratchColor.copy(exhaustBoost).multiplyScalar(throttle * flicker);
     this.appendColor(
       rendered,
       LIGHT_MOUNTS.exhaust,

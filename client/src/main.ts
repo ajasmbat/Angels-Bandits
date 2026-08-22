@@ -17,6 +17,7 @@ import {
   stepFlight,
 } from "@angels-bandits/common/flight";
 import type { ScoreEntry, SpawnState } from "@angels-bandits/common/protocol";
+import { strikesInWindow } from "@angels-bandits/common/storm";
 import { wrapDelta, wrapDistance } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -185,6 +186,9 @@ scene.add(clouds.group);
 const reveals = new StormReveals();
 // Distance-delayed rumbles: flash now, thunder wrapDistance/340 later.
 const thunder = new ThunderSchedule();
+/** Recent strikes as consumed from the schedule (QA hook — two tabs must
+ * report identical entries, since the schedule is shared, not streamed). */
+const strikeLog: { timeMs: number; x: number; z: number }[] = [];
 
 const plane = buildPlaneMesh();
 scene.add(plane);
@@ -485,6 +489,15 @@ declare global {
         inCombat: boolean;
         log: { at: number; speaker: string; ticker: string; voice: string }[];
       };
+      storm: () => {
+        seed: number;
+        strikes: { timeMs: number; x: number; z: number }[];
+        nextStrike: { timeMs: number; x: number; z: number } | null;
+        pings: { id: string; pos: { x: number; y: number; z: number } }[];
+        selfReveal: number;
+        fogFar: number;
+        shake: { x: number; y: number; z: number };
+      };
     };
   }
 }
@@ -553,6 +566,23 @@ window.__ab = {
     inCombat: radio.inCombat(performance.now()),
     log: radioLog.map((l) => ({ ...l })),
   }),
+  // ST2 QA: consumed strikes (two tabs must agree), the next scheduled
+  // strike (for staging reveals), live reveal pings, and atmosphere state.
+  storm: () => {
+    const rt = socket.renderTime();
+    return {
+      seed: welcome.seed,
+      strikes: strikeLog.map((s) => ({ ...s })),
+      nextStrike:
+        rt === null
+          ? null
+          : (strikesInWindow(welcome.seed, rt, rt + 40_000)[0] ?? null),
+      pings: reveals.pings(performance.now()),
+      selfReveal: reveals.levelOf(socket.selfId, performance.now()),
+      fogFar: scene.fog instanceof THREE.Fog ? scene.fog.far : -1,
+      shake: turbulenceOffset(performance.now(), flight.pos.y),
+    };
+  },
 };
 
 // --- Frame loop ---
@@ -725,6 +755,8 @@ renderer.setAnimationLoop((now) => {
   // and drive the sky-flash pulse (fog stain + dome tint + violet ambient).
   for (const s of strikeFeed.poll(socket.renderTime())) {
     storm.strike(s, now);
+    strikeLog.push({ timeMs: s.timeMs, x: s.x, z: s.z });
+    if (strikeLog.length > 12) strikeLog.shift();
     // Everyone in the strike's column is revealed — self included; remote
     // positions come from the same interpolated poses everything else uses.
     const planesNow = [

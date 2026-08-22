@@ -23,10 +23,12 @@ const SMOKE_RISE = 3;
 const MAX_PLANES = 12;
 const MAX_PUFFS = 24;
 /** Puff sprite size ramp over life, meters (grows as it disperses). */
-const SIZE_MIN = 2.2;
+const SIZE_MIN = 2.4;
 const SIZE_MAX = 7;
-const SMOKE_COLOR = 0x241f2c; // dark oil smoke — reads as silhouette at night
-const SMOKE_OPACITY = 0.62;
+/** Smoky gray-purple: darker than every emissive, a touch lighter than the
+ * night sky, so the trail reads against sky glow AND over city lights. */
+const SMOKE_COLOR = 0x332e3a;
+const SMOKE_OPACITY = 0.55;
 
 /** Does a plane at this HP trail wounded smoke? Dead planes never smoke. */
 export function smokeActive(hp: number): boolean {

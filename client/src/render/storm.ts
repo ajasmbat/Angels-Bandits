@@ -270,6 +270,9 @@ const IN_CLOUD_FOG_NEAR = 12;
 const IN_CLOUD_FOG_FAR = 190;
 const IN_CLOUD_FOG_COLOR = 0x3a3c52;
 
+/** Kill bolts linger through the kill-cam beat, not just a schedule blink. */
+const KILL_BOLT_LIFE_MS = 900;
+
 interface BoltSlot {
   group: THREE.Group;
   core: THREE.Mesh;
@@ -278,6 +281,7 @@ interface BoltSlot {
   glowMat: THREE.MeshBasicMaterial;
   anchor: Vec3;
   bornAt: number;
+  lifeMs: number;
 }
 
 /** Reveal rim-flash tint on plane models + minimap echo color (Neon Vein
@@ -335,6 +339,7 @@ export class StormRenderer {
         glowMat,
         anchor: { x: 0, y: 0, z: 0 },
         bornAt: Number.NEGATIVE_INFINITY,
+        lifeMs: BOLT_LIFE_MS,
       });
     }
   }
@@ -356,15 +361,26 @@ export class StormRenderer {
 
   /** A scheduled strike: bolt from the deck to the rooftop/ground + flash. */
   strike(strike: Strike, nowMs: number): void {
-    this.fire(strike, this.topYAt(strike.x, strike.z), nowMs);
+    this.fire(strike, this.topYAt(strike.x, strike.z), nowMs, BOLT_LIFE_MS);
   }
 
-  /** A kill bolt (DeathMsg cause "storm"): straight down onto the victim. */
+  /** A kill bolt (DeathMsg cause "storm"): straight down onto the victim,
+   * lingering through the kill-cam beat. */
   boltAt(pos: Vec3, nowMs: number): void {
-    this.fire({ timeMs: Math.floor(nowMs), x: pos.x, z: pos.z }, pos.y, nowMs);
+    this.fire(
+      { timeMs: Math.floor(nowMs), x: pos.x, z: pos.z },
+      pos.y,
+      nowMs,
+      KILL_BOLT_LIFE_MS,
+    );
   }
 
-  private fire(strike: Strike, topY: number, nowMs: number): void {
+  private fire(
+    strike: Strike,
+    topY: number,
+    nowMs: number,
+    lifeMs: number,
+  ): void {
     const slot = this.slots.reduce((a, b) => (a.bornAt <= b.bornAt ? a : b));
     const main = boltPolyline(strike, topY);
     const runs = [main, ...boltBranches(strike, main)];
@@ -374,6 +390,7 @@ export class StormRenderer {
     slot.glow.geometry = boltTube(runs, BOLT_GLOW_RADIUS, 0.55);
     slot.anchor = { x: strike.x, y: 0, z: strike.z };
     slot.bornAt = nowMs;
+    slot.lifeMs = lifeMs;
     slot.group.visible = true;
     this.flashAt = nowMs;
   }
@@ -382,7 +399,7 @@ export class StormRenderer {
   update(viewer: Vec3, nowMs: number): void {
     for (const slot of this.slots) {
       const age = nowMs - slot.bornAt;
-      if (age > BOLT_LIFE_MS) {
+      if (age > slot.lifeMs) {
         slot.group.visible = false;
         continue;
       }
@@ -390,7 +407,7 @@ export class StormRenderer {
       slot.group.position.set(p.x, p.y, p.z);
       // Hold hot for 40% of the life, then the Neon Vein afterglow fade —
       // with a deterministic arc flicker so the channel feels alive.
-      const k = age / BOLT_LIFE_MS;
+      const k = age / slot.lifeMs;
       const hold = k < 0.4 ? 1 : 1 - (k - 0.4) / 0.6;
       const flicker = 0.8 + 0.2 * Math.sin(age * 0.11);
       slot.coreMat.opacity = hold * flicker;

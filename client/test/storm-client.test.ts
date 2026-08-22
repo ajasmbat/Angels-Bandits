@@ -7,6 +7,7 @@ import { CLOUD_BASE } from "@angels-bandits/common/constants";
 import { createFlightState } from "@angels-bandits/common/flight";
 import { type Strike, strikesInWindow } from "@angels-bandits/common/storm";
 import { describe, expect, it } from "vitest";
+import { ThunderSchedule } from "../src/audio/thunder";
 import { ChaseCamera } from "../src/game/camera";
 import {
   StormReveals,
@@ -223,6 +224,39 @@ describe("StrikeFeed", () => {
     seen.push(...feed.poll(400_000));
     // Independent truth: ST1's window function over the whole span at once.
     expect(seen).toEqual(strikesInWindow(42, 100_000, 400_000));
+  });
+});
+
+describe("ThunderSchedule", () => {
+  it("delivers each rumble once, exactly wrapDistance/340 after the flash", () => {
+    const schedule = new ThunderSchedule();
+    // 340 m overhead → exactly 1000 ms later.
+    schedule.add(
+      { timeMs: 0, x: 600, z: 800 },
+      { x: 600, y: 340, z: 800 },
+      20_000,
+    );
+    expect(schedule.due(20_999)).toEqual([]);
+    const events = schedule.due(21_000);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.hard).toBe(true); // 340 m < the 350 m crack range
+    expect(events[0]?.gain).toBeCloseTo(1 - 340 / 1400, 10);
+    expect(schedule.due(22_000)).toEqual([]); // popped, never repeats
+  });
+
+  it("is seam-aware and soft at range", () => {
+    const schedule = new ThunderSchedule();
+    // Strike x=1990, listener x=10 at 1000 m along z: dist ≈ 1000.2 m.
+    schedule.add(
+      { timeMs: 0, x: 1990, z: 500 },
+      { x: 10, y: 0, z: 1500 },
+      0,
+    );
+    const events = schedule.due(3200); // ~2942 ms due
+    expect(events).toHaveLength(1);
+    expect(events[0]?.hard).toBe(false);
+    expect(events[0]?.gain).toBeGreaterThan(0.27);
+    expect(events[0]?.gain).toBeLessThan(0.3);
   });
 });
 

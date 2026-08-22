@@ -7,6 +7,7 @@
 
 import {
   BULLET_SPEED,
+  CLOUD_BASE,
   FOG_DISTANCE,
   MAX_HP,
 } from "@angels-bandits/common/constants";
@@ -16,7 +17,7 @@ import {
   stepFlight,
 } from "@angels-bandits/common/flight";
 import type { ScoreEntry, SpawnState } from "@angels-bandits/common/protocol";
-import { wrapDelta } from "@angels-bandits/common/world";
+import { wrapDelta, wrapDistance } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
@@ -24,6 +25,7 @@ import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { RadioQueue, RadioVoice } from "./audio/radio";
 import { GameAudio } from "./audio/sound";
+import { ThunderSchedule } from "./audio/thunder";
 import { NEAR_MISS_RADIUS, closestApproach, spatialize } from "./audio/spatial";
 import { Bullets } from "./game/bullets";
 import {
@@ -63,6 +65,7 @@ import {
   StormRenderer,
   StormReveals,
   StrikeFeed,
+  thunderGain,
   turbulenceOffset,
 } from "./render/storm";
 import { Streetlights } from "./render/streetlights";
@@ -180,6 +183,8 @@ const clouds = new CloudDeck(welcome.seed);
 scene.add(clouds.group);
 // The storm's neutral radar: strikes reveal nearby planes to EVERYONE.
 const reveals = new StormReveals();
+// Distance-delayed rumbles: flash now, thunder wrapDistance/340 later.
+const thunder = new ThunderSchedule();
 
 const plane = buildPlaneMesh();
 scene.add(plane);
@@ -401,10 +406,20 @@ socket.events.onDeath = (msg) => {
   if (victimPos) {
     audio.explosion(victimPos, flight.pos, flight.yaw);
     explosions.explode(victimPos, performance.now());
+    // Storm kill: the bolt comes down ON the victim (kill-cam length) with
+    // an immediate hard crack — the one strike that isn't on the schedule.
+    if (msg.cause === "storm") {
+      storm.boltAt(victimPos, performance.now());
+      audio.thunder(
+        Math.max(0.5, thunderGain(wrapDistance(victimPos, flight.pos))),
+        true,
+      );
+    }
   }
   killFeed.add(
     msg.killerId === null ? null : nameOf(msg.killerId),
     nameOf(msg.victimId),
+    msg.cause,
   );
   if (msg.victimId === socket.selfId) enterDeath(msg.killerId);
   else remotes.setDead(msg.victimId);
@@ -717,7 +732,9 @@ renderer.setAnimationLoop((now) => {
       ...remotes.targets(),
     ];
     reveals.onStrike(s, planesNow, now);
+    thunder.add(s, flight.pos, now);
   }
+  for (const ev of thunder.due(now)) audio.thunder(ev.gain, ev.hard);
   storm.update(chase.position, now);
   clouds.update(chase.position, camera.quaternion, socket.renderTime());
   const sky = storm.atmosphere(scene, chase.position.y, now);
@@ -733,6 +750,11 @@ renderer.setAnimationLoop((now) => {
   minimap.update(flight.pos, flight.yaw, contacts, reveals.pings(now));
   audio.setEngine(flight.targetSpeed, alive);
   audio.syncRemotes(contacts, flight.pos, flight.yaw);
+  // In-cloud static bed: quiet crackle ramping in over the deck's first
+  // 60 m. The only audio cue for the hidden ceiling — no HUD, by design.
+  audio.setStatic(
+    alive ? Math.min(1, Math.max(0, (flight.pos.y - CLOUD_BASE) / 60)) : 0,
+  );
 
   renderer.info.reset();
   composer.render();

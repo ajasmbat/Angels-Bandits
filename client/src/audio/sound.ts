@@ -23,6 +23,9 @@ const WHOOSH_LEVEL = 0.7;
 const EXPLOSION_LEVEL = 1.0;
 const HIT_LEVEL = 0.55;
 const KILL_LEVEL = 0.4;
+// Radio framing sits well below combat SFX — it frames speech, not action.
+const RADIO_SQUELCH_LEVEL = 0.2;
+const RADIO_STATIC_LEVEL = 0.12;
 
 /** Engine pitch band: idle throttle → full throttle, Hz. */
 const ENGINE_MIN_HZ = 55;
@@ -222,6 +225,16 @@ export class GameAudio {
       osc.start(at);
       osc.stop(at + 0.3);
     }
+  }
+
+  /** Radio squelch: the short centered click that opens a voice line. */
+  radioSquelch(): void {
+    this.burst("bandpass", 2600, 1500, 0.05, RADIO_SQUELCH_LEVEL, 0);
+  }
+
+  /** Radio static: the brief hiss tail that closes a voice line. */
+  radioStatic(): void {
+    this.burst("highpass", 3200, 2000, 0.2, RADIO_STATIC_LEVEL, 0);
   }
 
   /** Near-miss whoosh: an enemy bullet just shaved past. Rate-limited. */

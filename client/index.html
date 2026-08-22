@@ -218,6 +218,41 @@
       #killfeed .victim {
         color: #ff7a9a;
       }
+      #comms {
+        position: fixed;
+        top: 158px;
+        right: 16px;
+        text-align: right;
+        pointer-events: none;
+        user-select: none;
+        color: #9fd8e8;
+        font-size: 12px;
+        line-height: 1.7;
+        text-shadow: 0 1px 2px #000;
+      }
+      #comms .entry {
+        opacity: 0.9;
+        transition: opacity 1s ease-out;
+      }
+      #comms .entry.fading {
+        opacity: 0;
+      }
+      #comms .speaker {
+        color: #ffc46b;
+      }
+      #radio-toggle {
+        margin-top: 8px;
+        color: #9fd8e8;
+        font-size: 10px;
+        letter-spacing: 0.15em;
+        text-align: right;
+        cursor: pointer;
+        pointer-events: auto;
+        user-select: none;
+      }
+      #radio-toggle.off {
+        color: #5a6b78;
+      }
       #scoreboard {
         position: fixed;
         left: 50%;
@@ -449,10 +484,12 @@
         <div class="bar"><div class="fill" id="heat-fill"></div></div>
       </div>
       <div id="protected-badge">◇ PROTECTED ◇</div>
+      <div id="radio-toggle"></div>
     </div>
     <button id="fs-btn" class="fs-toggle" title="Fullscreen (F)">⛶</button>
     <div id="freelook-hint">◇ FREE LOOK ◇</div>
     <div id="killfeed"></div>
+    <div id="comms"></div>
     <div id="scoreboard">
       <h2>SCOREBOARD</h2>
       <table>

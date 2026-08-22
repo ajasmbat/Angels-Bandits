@@ -7,11 +7,14 @@
 
 import * as THREE from "three";
 import { createBiplane } from "./biplane";
+import { applyRimSheen } from "./planelights";
 
 export function buildPlaneMesh(): THREE.Group {
   const g = new THREE.Group();
   const model = createBiplane();
   model.rotation.y = Math.PI; // model +Z nose → game −Z forward
+  // Faint fresnel rim on every plane (own + remotes) — night readability.
+  applyRimSheen(model);
   g.add(model);
   return g;
 }

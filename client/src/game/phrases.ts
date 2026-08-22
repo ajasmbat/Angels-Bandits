@@ -51,4 +51,8 @@ export const AMBIENT_PHRASES: readonly string[] = [
   "No bandits this pass, turning back.",
   "Engine's running smooth, temps good.",
   "Quiet night so far. Stay sharp.",
+  // Our own renders of the tools/radio-reference/ Pixabay lines — the
+  // reference audio itself is calibration-only and never ships.
+  "Engaging enemy.",
+  "Roger, prepare for medevac.",
 ];

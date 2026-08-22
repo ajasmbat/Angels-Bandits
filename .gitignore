@@ -1,6 +1,9 @@
 node_modules/
 dist/
 
+# gen-radio-voices working set: piper venv, voice model, intermediate wavs
+tools/.cache/
+
 # Fredrin: commit only the guidelines file; the wrapper carries a credential
 .fredrin/*
 !.fredrin/FREDRIN.md

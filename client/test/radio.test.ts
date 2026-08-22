@@ -5,6 +5,8 @@
 // ambient; ambient is fully suppressed during the 8 s combat window; queued
 // lines past their expiry never play. Times are plain ms numbers.
 
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   COMBAT_WINDOW_MS,
@@ -14,6 +16,7 @@ import {
   voiceSlug,
 } from "../src/audio/radio";
 import type { Callout, RadioKind } from "../src/game/callouts";
+import { AMBIENT_PHRASES, PHRASE } from "../src/game/phrases";
 
 /** Minimal test line; cooldown/expiry defaults sized to stay out of the way. */
 function line(
@@ -172,5 +175,35 @@ describe("RadioQueue", () => {
     expect(q.poll(4_000)).toBeNull(); // 12 s from play at t=0, not from release
     expect(q.poll(11_999)).toBeNull();
     expect(q.poll(12_000)?.kind).toBe("threat");
+  });
+});
+
+// Bank ↔ bundle tripwire: every voice string the game can ever emit (the
+// callout builders only produce these shapes — fixed PHRASE lines, ambient
+// bank lines, and BANDIT-1..12 check-in/off-station variants) must resolve
+// to a committed OGG in client/assets/radio/. A bank edit without rerunning
+// tools/gen-radio-voices.sh fails here instead of failing silently in-game.
+describe("voice bundle covers the whole phrase bank", () => {
+  const assetDir = join(__dirname, "..", "assets", "radio");
+  const ids = new Set(
+    readdirSync(assetDir)
+      .filter((f) => f.endsWith(".ogg"))
+      .map((f) => f.replace(/\.ogg$/, "")),
+  );
+  const has = (id: string) => ids.has(id);
+
+  const everyVoiceLine: string[] = [
+    ...Object.values(PHRASE).filter(
+      (p) => p !== PHRASE.checkIn && p !== PHRASE.offStation, // fragments — only voiced inside the shapes below
+    ),
+    ...AMBIENT_PHRASES,
+  ];
+  for (let n = 1; n <= 12; n++) {
+    everyVoiceLine.push(`BANDIT-${n}, ${PHRASE.checkIn}`);
+    everyVoiceLine.push(`BANDIT-${n} ${PHRASE.offStation}`);
+  }
+
+  it.each(everyVoiceLine)("%s → a bundled asset", (text) => {
+    expect(resolveVoiceAsset(text, has)).not.toBeNull();
   });
 });

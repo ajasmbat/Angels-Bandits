@@ -9,8 +9,9 @@
 // they are a TTS griefing vector. The `ticker`/`speaker` fields MAY carry
 // real names; the ticker renders them inert via textContent.
 
+import { mulberry32 } from "@angels-bandits/common/city";
 import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
-import { PHRASE } from "./phrases";
+import { AMBIENT_PHRASES, PHRASE } from "./phrases";
 
 /** Radio traffic classes, highest priority first (see RADIO_PRIORITY). */
 export type RadioKind = "threat" | "own" | "kill" | "ambient";
@@ -201,4 +202,55 @@ export function offStationCallout(name: string, isBot: boolean): Callout {
     ticker: PHRASE.offStation,
     speaker: name,
   };
+}
+
+/** Ambient chatter gap bounds, ms (plan: 20–45 s, seeded jitter). */
+export const AMBIENT_MIN_GAP_MS = 20_000;
+export const AMBIENT_MAX_GAP_MS = 45_000;
+
+/**
+ * Seeded ambient bot chatter: quiet-frequency filler between fights.
+ * mulberry32 (shared with the city generator) drives both the cadence and
+ * the phrase/speaker picks, so a given seed always produces the same
+ * schedule — ambient need not be cross-client identical, just stable.
+ * Combat suppression lives in RadioQueue, not here.
+ */
+export class AmbientChatter {
+  private readonly rand: () => number;
+  private nextAt: number;
+
+  constructor(seed: number, now: number) {
+    this.rand = mulberry32(seed);
+    this.nextAt = now + this.gap();
+  }
+
+  private gap(): number {
+    return (
+      AMBIENT_MIN_GAP_MS +
+      this.rand() * (AMBIENT_MAX_GAP_MS - AMBIENT_MIN_GAP_MS)
+    );
+  }
+
+  /**
+   * A due ambient line spoken by one of `botCallsigns`, or null. Polling a
+   * due slot always reschedules the next one; an empty frequency (no bots
+   * in the room) skips the slot silently — humans never generate ambient.
+   */
+  poll(now: number, botCallsigns: readonly string[]): Callout | null {
+    if (now < this.nextAt) return null;
+    this.nextAt = now + this.gap();
+    const phrase =
+      AMBIENT_PHRASES[Math.floor(this.rand() * AMBIENT_PHRASES.length)];
+    const speaker = botCallsigns[Math.floor(this.rand() * botCallsigns.length)];
+    if (phrase === undefined || speaker === undefined) return null;
+    return {
+      kind: "ambient",
+      key: "ambient",
+      cooldownMs: 0, // the seeded schedule IS the cooldown
+      expiresMs: 12_000,
+      voice: phrase, // fixed-bank text only — voice-safe by construction
+      ticker: phrase,
+      speaker,
+    };
+  }
 }

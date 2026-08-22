@@ -7,6 +7,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  AmbientChatter,
   checkInCallout,
   hitCallout,
   maydayCallout,
@@ -17,6 +18,7 @@ import {
   threatCallout,
   threatOnSix,
 } from "../src/game/callouts";
+import { AMBIENT_PHRASES } from "../src/game/phrases";
 
 const HOSTILE = "BadWord123";
 
@@ -146,5 +148,56 @@ describe("threatOnSix", () => {
       fwd: { x: 0, y: 0, z: -1 },
     };
     expect(threatOnSix(self, 0, [attacker])).toBe(true);
+  });
+});
+
+// Seeded ambient chatter: mulberry32 cadence with 20–45 s gaps, phrases from
+// the fixed bank, spoken by bot callsigns only. Determinism is asserted by
+// running two same-seed instances through the public poll surface.
+describe("AmbientChatter", () => {
+  const BOTS = ["BANDIT-1", "BANDIT-2"];
+
+  /** Drive poll at 250 ms ticks, collecting [time, callout] events. */
+  function run(chatter: AmbientChatter, untilMs: number, bots = BOTS) {
+    const events: { at: number; voice: string; speaker: string }[] = [];
+    for (let t = 0; t <= untilMs; t += 250) {
+      const c = chatter.poll(t, bots);
+      if (c) events.push({ at: t, voice: c.voice, speaker: c.speaker });
+    }
+    return events;
+  }
+
+  it("stays quiet for the first 20 s, then speaks within 45 s", () => {
+    const chatter = new AmbientChatter(1234, 0);
+    expect(chatter.poll(19_999, BOTS)).toBeNull();
+    const events = run(new AmbientChatter(1234, 0), 45_000);
+    expect(events.length).toBe(1);
+    const first = events[0];
+    expect(first.at).toBeGreaterThanOrEqual(20_000);
+    expect(AMBIENT_PHRASES).toContain(first.voice);
+    expect(BOTS).toContain(first.speaker);
+  });
+
+  it("keeps every gap inside the 20–45 s window", () => {
+    const events = run(new AmbientChatter(7, 0), 200_000);
+    expect(events.length).toBeGreaterThanOrEqual(3);
+    let prev = 0;
+    for (const e of events) {
+      expect(e.at - prev).toBeGreaterThanOrEqual(20_000);
+      expect(e.at - prev).toBeLessThanOrEqual(45_250); // + one poll tick
+      prev = e.at;
+    }
+  });
+
+  it("is deterministic for a given seed", () => {
+    const a = run(new AmbientChatter(99, 0), 150_000);
+    const b = run(new AmbientChatter(99, 0), 150_000);
+    expect(a).toEqual(b);
+    expect(a.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("stays silent with no bots on frequency", () => {
+    const events = run(new AmbientChatter(5, 0), 100_000, []);
+    expect(events.length).toBe(0);
   });
 });

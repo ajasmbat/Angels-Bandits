@@ -131,10 +131,7 @@ export class SmokeTrails {
           "#include <common>",
           "attribute float aSize;\n#include <common>",
         )
-        .replace(
-          "gl_PointSize = size;",
-          "gl_PointSize = size * aSize;",
-        );
+        .replace("gl_PointSize = size;", "gl_PointSize = size * aSize;");
     };
     material.customProgramCacheKey = () => "smoke-asize";
     this.points = new THREE.Points(geometry, material);

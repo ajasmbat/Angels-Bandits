@@ -33,9 +33,7 @@ export class HpBarTracker {
   }
 
   /** What the bar shows this frame, or null once faded out. */
-  current(
-    now: number,
-  ): { targetId: string; hp: number; alpha: number } | null {
+  current(now: number): { targetId: string; hp: number; alpha: number } | null {
     if (this.targetId === null) return null;
     const alpha = 1 - (now - this.hitAt) / HPBAR_LINGER_MS;
     if (alpha <= 0) return null;

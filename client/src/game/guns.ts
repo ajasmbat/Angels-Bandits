@@ -66,11 +66,13 @@ export class Guns {
 
   /**
    * Advance the heat model to `now` (ms) and, if the trigger is held and the
-   * model allows it, produce at most one shot this frame.
+   * model allows it, produce at most one shot this frame. Pass
+   * `allowFire: false` to keep cooling but suppress shots entirely
+   * (free-look: aim is meaningless mid-orbit, and no shot ⇒ no heat build).
    */
-  update(now: number, flight: FlightState): Shot | null {
+  update(now: number, flight: FlightState, allowFire = true): Shot | null {
     this.heat = cooledGunHeat(this.heat, now);
-    if (!this.trigger || !canFire(this.heat, now)) return null;
+    if (!this.trigger || !allowFire || !canFire(this.heat, now)) return null;
     this.heat = firedGunHeat(this.heat, now);
     this.side = -this.side;
 

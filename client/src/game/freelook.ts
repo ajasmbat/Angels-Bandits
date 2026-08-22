@@ -46,7 +46,14 @@ export interface FreeLookState {
 
 /** Fresh, inactive free-look (spawn / death force-exit). */
 export function createFreeLook(): FreeLookState {
-  return { held: false, steer: 1, targetYaw: 0, targetPitch: 0, yaw: 0, pitch: 0 };
+  return {
+    held: false,
+    steer: 1,
+    targetYaw: 0,
+    targetPitch: 0,
+    yaw: 0,
+    pitch: 0,
+  };
 }
 
 /** Ease toward zero, snapping when within epsilon so exit truly ends. */
@@ -104,11 +111,7 @@ export function stepFreeLook(
  * short of the poles, so the result is NaN-free for any input — including a
  * zero or straight-overhead base offset.
  */
-export function orbitOffset(
-  o: Vec3,
-  yaw: number,
-  pitch: number,
-): Vec3 {
+export function orbitOffset(o: Vec3, yaw: number, pitch: number): Vec3 {
   const r = Math.hypot(o.x, o.y, o.z);
   if (r < 1e-9) return { x: o.x, y: o.y, z: o.z };
   const baseYaw = Math.atan2(o.x, o.z);
@@ -130,10 +133,7 @@ export function orbitOffset(
 const scaleAxis = (v: number, k: number): number => (k === 0 ? 0 : v * k);
 
 /** Scale the steering axes by the current authority; throttle stays live. */
-export function shapeInput(
-  input: FlightInput,
-  s: FreeLookState,
-): FlightInput {
+export function shapeInput(input: FlightInput, s: FreeLookState): FlightInput {
   return {
     turn: scaleAxis(input.turn, s.steer),
     pitch: scaleAxis(input.pitch, s.steer),

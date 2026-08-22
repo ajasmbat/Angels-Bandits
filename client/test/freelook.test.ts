@@ -16,7 +16,7 @@ const DT = 1 / 60;
 
 /** Advance `seconds` of E-held (or released) time in 60 fps steps. */
 function advance(
-  state = createFreeLook(),
+  state: ReturnType<typeof createFreeLook>,
   held: boolean,
   seconds: number,
   dx = 0,

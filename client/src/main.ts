@@ -370,6 +370,7 @@ declare global {
         scores: ScoreEntry[];
         lastDeath: { victimId: string; killerId: string | null } | null;
         targets: { id: string; pos: { x: number; y: number; z: number } }[];
+        hpBarTarget: string | null;
       };
       aimAt: (x: number, z: number, y?: number) => void;
       setFiring: (held: boolean) => void;
@@ -412,6 +413,8 @@ window.__ab = {
     scores: lastScores,
     lastDeath,
     targets: remotes.targets(),
+    // Gun-feel QA: whose HP bar is showing right now (null = faded/none).
+    hpBarTarget: hpBar.current(performance.now())?.targetId ?? null,
   }),
   // Point the nose at a canonical world position (torus-aware, QA only).
   aimAt: (x, z, y = flight.pos.y) => {

@@ -161,3 +161,40 @@ export const ROOM_CAP = 12;
 // --- Bots (B1) — every knob for the server-side backfill pilots ---
 /** Minimum combatants (humans + bots) a room is kept backfilled to. */
 export const BOT_FLOOR = 6;
+/** A bot notices targets (human or bot) within this torus range, m. */
+export const BOT_DETECT_RANGE = 500;
+/** A bot pulls the trigger only inside this range, m (< BULLET_RANGE). */
+export const BOT_FIRE_RANGE = 300;
+/** …and only while its nose is within this half-angle of the target, rad. */
+export const BOT_FIRE_CONE = 0.14;
+/** Seeded aim error: the pursuit aim point wanders by up to this half-angle
+ * each brain decision, rad — the "beatable, not aimbot" miss source. */
+export const BOT_AIM_JITTER = 0.05;
+/** Reaction delay before the first shot at a freshly acquired target, ms. */
+export const BOT_REACTION_MS = 400;
+/** Bot steering-input cap (players reach 1.0): bots turn slightly worse. */
+export const BOT_INPUT_CAP = 0.85;
+/** Brain decision cadence: every Nth sim tick (15 Hz / 3 ≈ 5 Hz). */
+export const BOT_DECISION_EVERY = 3;
+/** Patrol waypoint altitude band, m — above every rooftop (250 m landmarks),
+ * below the soft ceiling. */
+export const BOT_PATROL_ALT_MIN = 270;
+export const BOT_PATROL_ALT_MAX = 460;
+/** A patrol waypoint counts as reached inside this torus range, m. */
+export const BOT_WAYPOINT_RADIUS = 120;
+/** How long a bot holds its evade break turn after taking fire, ms. */
+export const BOT_EVADE_MS = 2500;
+/** An enemy this close AND behind the bot triggers an evade break, m. */
+export const BOT_THREAT_RANGE = 150;
+/** Collision probe lookahead along the nose, seconds of current speed —
+ * the short probe catches corner-cuts mid-turn, the long ones buy turn room. */
+export const BOT_PROBE_TIMES: readonly number[] = [0.3, 0.8, 1.6, 2.6];
+/** Probe sphere radius, m — clearance margin around the plane. */
+export const BOT_PROBE_RADIUS = 12;
+/** RECOVER hysteresis: exit only once probes clear at this radius multiple —
+ * without it the brain flaps RECOVER→PATROL and re-steers into the wall. */
+export const BOT_RECOVER_CLEAR = 2;
+/** Below this altitude RECOVER pulls up unconditionally, m. */
+export const BOT_MIN_ALT = 40;
+/** Steering gain: input per radian of yaw/pitch error (capped at BOT_INPUT_CAP). */
+export const BOT_STEER_GAIN = 3;

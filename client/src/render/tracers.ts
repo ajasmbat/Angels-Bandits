@@ -12,7 +12,7 @@ import { emissiveBoost } from "./emissive";
 import { nearestImage } from "./wrapPlacement";
 
 const TRACER_POOL = 64;
-const TRACER_LENGTH = 10; // meters of glowing streak
+const TRACER_LENGTH = 14; // meters of glowing streak
 const FLASH_POOL = 8;
 const FLASH_LIFE_MS = 60;
 
@@ -44,10 +44,12 @@ export class Tracers {
       depthWrite: false,
     });
     this.streakMaterial.color.multiplyScalar(TRACER_BOOST);
-    // Thin cylinder along Y; oriented per frame with quaternions.
+    // Thin cylinder along Y; oriented per frame with quaternions. Gun-feel
+    // pass: readability comes from geometry size, NEVER emissive intensity —
+    // the ladder (EMISSIVE_TRACER top rung) is untouchable.
     this.streakGeometry = new THREE.CylinderGeometry(
-      0.18,
-      0.18,
+      0.28,
+      0.28,
       TRACER_LENGTH,
       5,
     );

@@ -157,3 +157,7 @@ export const RESPAWN_SAMPLES = 24;
 // --- Rooms ---
 /** Players per FFA room; rooms auto-spawn when full. */
 export const ROOM_CAP = 12;
+
+// --- Bots (B1) — every knob for the server-side backfill pilots ---
+/** Minimum combatants (humans + bots) a room is kept backfilled to. */
+export const BOT_FLOOR = 6;

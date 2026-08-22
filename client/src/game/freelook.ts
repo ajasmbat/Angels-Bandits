@@ -6,6 +6,7 @@
 // wire or common/.
 
 import type { FlightInput } from "@angels-bandits/common/flight";
+import type { Vec3 } from "@angels-bandits/common/world";
 
 /** The free-look key, hardcoded for now (no keybinding UI yet). */
 export const FREELOOK_KEY = "KeyE";
@@ -21,6 +22,14 @@ const LOOK_ENTER_RESPONSE = 22;
 const LOOK_EXIT_RESPONSE = 13;
 /** Radians below which a released offset snaps to exactly zero. */
 const LOOK_SNAP_EPSILON = 1e-3;
+/** Commanded look pitch is clamped to ±80° (spec); yaw is unbounded. */
+const LOOK_PITCH_LIMIT = (80 * Math.PI) / 180;
+/** Total camera elevation cap: the base chase offset already sits above the
+ * horizon, so base + look pitch could cross the pole — clamp short of it. */
+const ORBIT_ELEVATION_LIMIT = (88 * Math.PI) / 180;
+
+const clamp = (v: number, lo: number, hi: number): number =>
+  Math.min(hi, Math.max(lo, v));
 
 export interface FreeLookState {
   /** Whether E is currently held (edge rules key off this, not events). */
@@ -72,7 +81,11 @@ export function stepFreeLook(
     };
   }
   const targetYaw = s.targetYaw + dx * LOOK_SENSITIVITY;
-  const targetPitch = s.targetPitch + dy * LOOK_SENSITIVITY;
+  const targetPitch = clamp(
+    s.targetPitch + dy * LOOK_SENSITIVITY,
+    -LOOK_PITCH_LIMIT,
+    LOOK_PITCH_LIMIT,
+  );
   const blend = 1 - Math.exp(-LOOK_ENTER_RESPONSE * dt);
   return {
     held: true,
@@ -81,6 +94,35 @@ export function stepFreeLook(
     targetPitch,
     yaw: s.yaw + (targetYaw - s.yaw) * blend,
     pitch: s.pitch + (targetPitch - s.pitch) * blend,
+  };
+}
+
+/**
+ * Rotate a viewer-local camera offset (camera − plane, images already
+ * aligned) around the plane by the applied look angles: yaw about +Y, pitch
+ * as added elevation. Radius is preserved and total elevation is clamped
+ * short of the poles, so the result is NaN-free for any input — including a
+ * zero or straight-overhead base offset.
+ */
+export function orbitOffset(
+  o: Vec3,
+  yaw: number,
+  pitch: number,
+): Vec3 {
+  const r = Math.hypot(o.x, o.y, o.z);
+  if (r < 1e-9) return { x: o.x, y: o.y, z: o.z };
+  const baseYaw = Math.atan2(o.x, o.z);
+  const baseElev = Math.asin(clamp(o.y / r, -1, 1));
+  const orbYaw = baseYaw + yaw;
+  const orbElev = clamp(
+    baseElev + pitch,
+    -ORBIT_ELEVATION_LIMIT,
+    ORBIT_ELEVATION_LIMIT,
+  );
+  return {
+    x: r * Math.cos(orbElev) * Math.sin(orbYaw),
+    y: r * Math.sin(orbElev),
+    z: r * Math.cos(orbElev) * Math.cos(orbYaw),
   };
 }
 

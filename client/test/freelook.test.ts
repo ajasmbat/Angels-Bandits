@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createFreeLook,
+  orbitOffset,
   shapeInput,
   stepFreeLook,
 } from "../src/game/freelook";
@@ -76,6 +77,71 @@ describe("orbit offset easing", () => {
     s = advance(s, false, 0.6);
     expect(s.yaw).toBe(0);
     expect(s.pitch).toBe(0);
+  });
+});
+
+describe("pitch clamp and orbitOffset", () => {
+  const DEG80 = (80 * Math.PI) / 180;
+
+  it("clamps commanded pitch to +80° under a huge upward drag, yaw stays unbounded", () => {
+    // 100 frames of violent dragging: pitch must clamp, yaw must not.
+    let s = createFreeLook();
+    for (let i = 0; i < 100; i++) s = stepFreeLook(s, true, 5000, 5000, DT);
+    expect(s.targetPitch).toBe(DEG80);
+    expect(s.pitch).toBeLessThanOrEqual(DEG80);
+    expect(s.targetYaw).toBeGreaterThan(2 * Math.PI); // wrapped past a full turn
+    expect(Number.isFinite(s.yaw)).toBe(true);
+  });
+
+  it("clamps commanded pitch to −80° under a huge downward drag", () => {
+    let s = createFreeLook();
+    for (let i = 0; i < 100; i++) s = stepFreeLook(s, true, 0, -5000, DT);
+    expect(s.targetPitch).toBe(-DEG80);
+    expect(s.pitch).toBeGreaterThanOrEqual(-DEG80);
+  });
+
+  it("orbitOffset is the identity at zero offsets", () => {
+    const o = { x: 3, y: 6, z: 21 };
+    const r = orbitOffset(o, 0, 0);
+    expect(r.x).toBeCloseTo(3, 6);
+    expect(r.y).toBeCloseTo(6, 6);
+    expect(r.z).toBeCloseTo(21, 6);
+  });
+
+  it("orbitOffset preserves the camera distance for any orbit", () => {
+    const o = { x: 0, y: 6, z: 22 };
+    const len = Math.hypot(o.x, o.y, o.z);
+    for (const [yaw, pitch] of [
+      [Math.PI / 2, 0],
+      [Math.PI, DEG80],
+      [-3 * Math.PI, -DEG80],
+    ]) {
+      const r = orbitOffset(o, yaw as number, pitch as number);
+      expect(Math.hypot(r.x, r.y, r.z)).toBeCloseTo(len, 6);
+    }
+  });
+
+  it("orbitOffset yaws a quarter turn: behind (+Z) moves to the side, height kept", () => {
+    // Worked example: offset (0, 0, 22) yawed 90° lands on the ±X axis.
+    const r = orbitOffset({ x: 0, y: 0, z: 22 }, Math.PI / 2, 0);
+    expect(Math.abs(r.x)).toBeCloseTo(22, 6);
+    expect(r.y).toBeCloseTo(0, 6);
+    expect(r.z).toBeCloseTo(0, 6);
+  });
+
+  it("orbitOffset never produces NaN at the ±80° pitch extremes", () => {
+    for (const pitch of [DEG80, -DEG80]) {
+      const r = orbitOffset({ x: 0, y: 6, z: 22 }, 1.234, pitch);
+      expect(Number.isFinite(r.x)).toBe(true);
+      expect(Number.isFinite(r.y)).toBe(true);
+      expect(Number.isFinite(r.z)).toBe(true);
+    }
+    // Degenerate offsets must not divide by zero either.
+    const zero = orbitOffset({ x: 0, y: 0, z: 0 }, 1, 1);
+    expect(Number.isFinite(zero.x)).toBe(true);
+    // Straight-overhead base offset: elevation math is at its asin edge.
+    const overhead = orbitOffset({ x: 0, y: 10, z: 0 }, 0.5, DEG80);
+    expect(Number.isFinite(overhead.y)).toBe(true);
   });
 });
 

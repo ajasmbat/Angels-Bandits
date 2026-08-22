@@ -78,7 +78,24 @@ export interface CrashMsg {
   type: "crash";
 }
 
-export type ClientMsg = JoinMsg | PoseMsg | FireMsg | HitClaimMsg | CrashMsg;
+/**
+ * A claim on the room's shared bot count (ANGE-6STDNN) — anyone may send it,
+ * any time. `count` is ABSOLUTE (0–BOT_TARGET_MAX), not a delta. The server
+ * clamps, rate-limits, and answers with botsConfig; a claim it drops is
+ * simply never echoed, so the sender's slider snaps back.
+ */
+export interface SetBotsMsg {
+  type: "setBots";
+  count: number;
+}
+
+export type ClientMsg =
+  | JoinMsg
+  | PoseMsg
+  | FireMsg
+  | HitClaimMsg
+  | CrashMsg
+  | SetBotsMsg;
 
 // --- Server → client ---
 
@@ -99,6 +116,9 @@ export interface WelcomeMsg {
   roster: RosterEntry[];
   /** Current scoreboard, so a late joiner doesn't start from a blank board. */
   scores: ScoreEntry[];
+  /** The room's shared bot count, so a late joiner's slider starts in the
+   * right place instead of guessing the default. */
+  botTarget: number;
 }
 
 export interface PlayerJoinedMsg {
@@ -176,8 +196,22 @@ export interface ScoreMsg {
   scores: ScoreEntry[];
 }
 
+/**
+ * The room's bot count changed (ANGE-6STDNN). Broadcast to EVERYONE including
+ * the setter — the server is the only authority on the applied value, so
+ * every slider renders this and never its own optimistic guess. `byName` is
+ * for the comms ticker's attribution line and is free text: render it as
+ * textContent, and never hand it to the radio voice.
+ */
+export interface BotsConfigMsg {
+  type: "botsConfig";
+  count: number;
+  byName: string;
+}
+
 export type ServerMsg =
   | WelcomeMsg
+  | BotsConfigMsg
   | PlayerJoinedMsg
   | PlayerLeftMsg
   | SnapshotMsg

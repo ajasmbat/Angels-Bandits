@@ -64,6 +64,41 @@ describe("RoomBots population sync", () => {
     expect(bots.poseOf(despawned[0])).toBeNull();
   });
 
+  it("a lowered count takes the IDLE bot: one engaging a human keeps its seat", () => {
+    // ANGE-6STDNN: the shared slider can cut the population mid-fight, so
+    // the idle-first despawn rule is now load-bearing. Two bots far apart;
+    // only the first has a human in front of it, so only it ENGAGEs.
+    const bots = new RoomBots("room-1", 7, []);
+    const [engager, idler] = bots.syncTo(
+      2,
+      (() => {
+        let n = 0;
+        return () => (n++ === 0 ? spawnAt(1000, 1000) : spawnAt(200, 200));
+      })(),
+    ).spawned;
+    const human = {
+      id: "11111111-aaaa-bbbb-cccc-000000000001",
+      pos: { x: 1000, y: 300, z: 900 },
+      vel: { x: 0, y: 0, z: 0 },
+      prot: false,
+    };
+    const contacts = () =>
+      [engager.id, idler.id]
+        .map((id) => {
+          const self = bots.contactOf(id);
+          if (!self) throw new Error("bot vanished");
+          return { id, ...self, prot: false };
+        })
+        .concat([human]);
+    for (let i = 0; i < 3; i++) bots.tick(i, contacts());
+    expect(bots.stateOf(engager.id)).toBe("ENGAGE");
+    expect(bots.stateOf(idler.id)).toBe("PATROL");
+
+    const { despawned } = bots.syncTo(1, () => spawnAt(1000, 1000));
+    expect(despawned).toEqual([idler.id]);
+    expect(bots.poseOf(engager.id)).not.toBeNull();
+  });
+
   it("seam pursuit: a bot at x=10 chases a target at x=1990 across the seam, not across the map", () => {
     const bots = new RoomBots("room-1", 7, []);
     // Facing -Z (yaw 0): the target sits 20 m to the LEFT through the seam

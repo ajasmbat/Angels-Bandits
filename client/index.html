@@ -303,6 +303,61 @@
       #scoreboard tr.bot td {
         color: #ffa26b;
       }
+      /* Shared bot-count control (approved concept 2 "Segment Bar"): eleven
+         notches under the roster, one per bot seat, filled in the same orange
+         the bot rows use — the bar literally counts the BANDIT rows the room
+         will hold. The panel itself is pointer-events:none, so the control
+         opts back in; without that the cells can't be clicked. */
+      #bots-control {
+        margin-top: 14px;
+        padding-top: 12px;
+        border-top: 1px solid #27e0c033;
+        pointer-events: auto;
+      }
+      #bots-control .head {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        margin-bottom: 6px;
+      }
+      #bots-control .head label {
+        color: #9fd8e8;
+        font-size: 10px;
+        letter-spacing: 0.15em;
+      }
+      #bots-value {
+        color: #ffa26b;
+      }
+      #bots-by {
+        color: #ffc46b;
+        font-size: 10px;
+        opacity: 0.8;
+      }
+      #bots-cells {
+        display: flex;
+        gap: 3px;
+        cursor: pointer;
+      }
+      #bots-cells .cell {
+        flex: 1;
+        height: 14px;
+        background: #0c0b18;
+        border: 1px solid #27e0c033;
+      }
+      #bots-cells .cell.filled {
+        background: #ffa26b;
+        border-color: #ffa26b;
+        box-shadow: 0 0 5px #ffa26b55;
+      }
+      #bots-control .scale {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 3px;
+        font-size: 9px;
+        letter-spacing: 0.1em;
+        color: #9fd8e8;
+        opacity: 0.55;
+      }
       #killcam {
         position: fixed;
         left: 50%;
@@ -536,6 +591,23 @@
         </thead>
         <tbody id="scoreboard-rows"></tbody>
       </table>
+      <div id="bots-control">
+        <div class="head">
+          <label for="bots-cells">BOTS: <span id="bots-value">5</span></label>
+          <span id="bots-by"></span>
+        </div>
+        <!-- Cells are built by ui/scoreboard.ts (one per seat, count from
+             BOT_TARGET_MAX). tabindex=-1: focus must never land here, or the
+             flight keys would type into the page instead of flying. -->
+        <div
+          id="bots-cells"
+          role="slider"
+          tabindex="-1"
+          aria-label="Bots in this room"
+          aria-valuemin="0"
+        ></div>
+        <div class="scale"><span>0</span><span id="bots-max">11</span></div>
+      </div>
     </div>
     <div id="killcam"></div>
     <div id="fade"></div>

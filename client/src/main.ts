@@ -76,6 +76,7 @@ import { Tracers } from "./render/tracers";
 import { Traffic } from "./render/traffic";
 import { PlaneTrails } from "./render/trails";
 import { nearestImage } from "./render/wrapPlacement";
+import { BotBar } from "./ui/botbar";
 import { CommsTicker } from "./ui/comms";
 import { initFullscreenUi } from "./ui/fullscreen";
 import { HPBAR_ALTITUDE, HpBarSprite, HpBarTracker } from "./ui/hpbar";
@@ -235,6 +236,11 @@ const killFeed = new KillFeed();
 const scoreboard = new Scoreboard(socket.selfId);
 scoreboard.setRoster(welcome.roster);
 scoreboard.setScores(welcome.scores);
+// The room's shared bot count (ANGE-6STDNN): seeded from the welcome so a
+// late joiner's bar opens where the room already is.
+const botBar = new BotBar(welcome.botTarget);
+botBar.onClaim = (count) => socket.sendSetBots(count);
+scoreboard.bindBotBar(botBar);
 
 /** id → name/isBot for feed + radio lines (self included; remotes tracks the
  * others too). isBot gates whether the VOICE may speak the callsign. */
@@ -482,6 +488,15 @@ socket.events.onRespawn = (msg) => {
 socket.events.onScores = (scores) => {
   lastScores = scores;
   scoreboard.setScores(scores);
+};
+socket.events.onBotsConfig = (msg) => {
+  // The server is the only authority on this value — including for the
+  // player who just dragged, whose bar has been showing a preview.
+  botBar.applyServer(msg.count, msg.byName);
+  scoreboard.refreshBotBar();
+  // Ticker only, never the voice: byName is free text, and the radio's
+  // name guard (game/callouts.ts) exists precisely to keep it out of TTS.
+  comms.add("NET", `${msg.byName} set bots to ${msg.count}`);
 };
 
 // --- Dev/QA hooks (used by the headless verification harness) ---

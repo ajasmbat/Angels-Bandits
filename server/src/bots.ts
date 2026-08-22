@@ -25,6 +25,9 @@ import { type Building, mulberry32 } from "@angels-bandits/common/city";
 import { collideCity, hitsGround } from "@angels-bandits/common/collision";
 import {
   BOT_AIM_JITTER,
+  BOT_CEILING_ALT,
+  BOT_CEILING_HYST,
+  BOT_CEILING_LOOKAHEAD_S,
   BOT_DECISION_EVERY,
   BOT_DETECT_RANGE,
   BOT_EVADE_MS,
@@ -350,13 +353,16 @@ export class RoomBots {
     // in it, only a WIDE clearance releases it, or the brain flaps back to
     // PATROL/ENGAGE and immediately re-steers toward the obstacle.
     const margin = bot.state === "RECOVER" ? BOT_RECOVER_CLEAR : 1;
-    if (this.inDanger(bot.flight, margin)) {
+    const ceiling = this.nearCeiling(bot.flight, margin);
+    if (ceiling || this.inDanger(bot.flight, margin)) {
       if (bot.state !== "RECOVER") {
         bot.state = "RECOVER";
         bot.breakTurn = this.clearSide(bot.flight);
       }
       bot.input = {
-        pitch: BOT_INPUT_CAP,
+        // The ceiling dives back under the cloud deck; every other danger
+        // (ground, tier boxes ≤ 250 m) pulls up — never both at once.
+        pitch: ceiling ? -BOT_INPUT_CAP : BOT_INPUT_CAP,
         turn: bot.breakTurn * BOT_INPUT_CAP * 0.6,
         roll: 0,
         throttle: 1,
@@ -474,6 +480,17 @@ export class RoomBots {
       roll: 0,
       throttle,
     };
+  }
+
+  /** Would the current climb breach the bot ceiling soon? Predictive like
+   * the nose probes: vertical speed over the pitch-down turnaround time, so
+   * even a max-rate zoom climb tops out under CLOUD_BASE (ST1: weather must
+   * never kill a bot). `margin` > 1 is RECOVER's exit hysteresis — it
+   * demands BOT_CEILING_HYST of clearance below before releasing. */
+  private nearCeiling(flight: FlightState, margin = 1): boolean {
+    const climb = Math.max(0, flightForward(flight).y * flight.speed);
+    const limit = BOT_CEILING_ALT - (margin - 1) * BOT_CEILING_HYST;
+    return flight.pos.y + climb * BOT_CEILING_LOOKAHEAD_S > limit;
   }
 
   /** Would holding this course hit something soon? Ground margin + nose

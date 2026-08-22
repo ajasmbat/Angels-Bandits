@@ -7,6 +7,7 @@
 
 import {
   BULLET_SPEED,
+  CLOUD_BASE,
   FOG_DISTANCE,
   MAX_HP,
 } from "@angels-bandits/common/constants";
@@ -16,7 +17,8 @@ import {
   stepFlight,
 } from "@angels-bandits/common/flight";
 import type { ScoreEntry, SpawnState } from "@angels-bandits/common/protocol";
-import { wrapDelta } from "@angels-bandits/common/world";
+import { strikesInWindow } from "@angels-bandits/common/storm";
+import { wrapDelta, wrapDistance } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
@@ -25,6 +27,7 @@ import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPa
 import { RadioQueue, RadioVoice } from "./audio/radio";
 import { GameAudio } from "./audio/sound";
 import { NEAR_MISS_RADIUS, closestApproach, spatialize } from "./audio/spatial";
+import { ThunderSchedule } from "./audio/thunder";
 import { Bullets } from "./game/bullets";
 import {
   AmbientChatter,
@@ -58,6 +61,16 @@ import { RoofClutterRenderer } from "./render/roofclutter";
 import { Signage } from "./render/signage";
 import { GroundPlane, SkyDome, setupSky } from "./render/sky";
 import { SmokeTrails, smokeActive } from "./render/smoke";
+import {
+  CloudDeck,
+  REVEAL_COLOR,
+  REVEAL_INTENSITY,
+  StormRenderer,
+  StormReveals,
+  StrikeFeed,
+  thunderGain,
+  turbulenceOffset,
+} from "./render/storm";
 import { Streetlights } from "./render/streetlights";
 import { Tracers } from "./render/tracers";
 import { Traffic } from "./render/traffic";
@@ -168,6 +181,21 @@ const sparks = new Sparks();
 scene.add(sparks.points);
 const smoke = new SmokeTrails();
 scene.add(smoke.points);
+// ST2 storm: bolts + flash from the shared schedule — zero strike netcode;
+// every client computes the identical storm from (seed, synced clock).
+const storm = new StormRenderer(city.cityBuildings);
+scene.add(storm.group, storm.flashLight);
+const strikeFeed = new StrikeFeed(welcome.seed);
+// The deck everyone shares: seeded layout, drifting on the synced clock.
+const clouds = new CloudDeck(welcome.seed);
+scene.add(clouds.group);
+// The storm's neutral radar: strikes reveal nearby planes to EVERYONE.
+const reveals = new StormReveals();
+// Distance-delayed rumbles: flash now, thunder wrapDistance/340 later.
+const thunder = new ThunderSchedule();
+/** Recent strikes as consumed from the schedule (QA hook — two tabs must
+ * report identical entries, since the schedule is shared, not streamed). */
+const strikeLog: { timeMs: number; x: number; z: number }[] = [];
 
 const plane = buildPlaneMesh();
 scene.add(plane);
@@ -294,12 +322,12 @@ function flashFade(): void {
 }
 
 /** Freeze into the kill-cam; the server's respawn message ends it. */
-function enterDeath(killerId: string | null): void {
+function enterDeath(killerId: string | null, cause?: "storm"): void {
   // Kill-cam owns the camera — force-exit free-look instantly.
   freelook = createFreeLook();
   hud.setFreeLook(false);
   killCamTargetId = killerId;
-  hud.showKillCam(killerId === null ? null : nameOf(killerId));
+  hud.showKillCam(killerId === null ? null : nameOf(killerId), cause);
   if (!alive) return;
   alive = false;
   plane.visible = false;
@@ -412,18 +440,29 @@ socket.events.onDeath = (msg) => {
   if (victimPos) {
     audio.explosion(victimPos, flight.pos, flight.yaw);
     explosions.explode(victimPos, performance.now());
+    // Storm kill: the bolt comes down ON the victim (kill-cam length) with
+    // an immediate hard crack — the one strike that isn't on the schedule.
+    if (msg.cause === "storm") {
+      storm.boltAt(victimPos, performance.now());
+      audio.thunder(
+        Math.max(0.5, thunderGain(wrapDistance(victimPos, flight.pos))),
+        true,
+      );
+    }
   }
   killFeed.add(
     msg.killerId === null ? null : nameOf(msg.killerId),
     nameOf(msg.victimId),
+    msg.cause,
   );
   if (msg.killerId === socket.selfId && msg.victimId !== socket.selfId) {
     hud.killConfirm(performance.now());
     audio.killConfirm();
   }
   hpBar.clear(msg.victimId); // never float a stale bar over a respawn
-  if (msg.victimId === socket.selfId) enterDeath(msg.killerId);
-  else remotes.setDead(msg.victimId);
+  if (msg.victimId === socket.selfId) {
+    enterDeath(msg.killerId, msg.cause === "storm" ? "storm" : undefined);
+  } else remotes.setDead(msg.victimId);
   // Radio: the victim's mayday from us, or the killer's "splash one".
   if (msg.victimId === socket.selfId) {
     radio.noteCombat(performance.now());
@@ -493,6 +532,15 @@ declare global {
         voiceReady: boolean;
         inCombat: boolean;
         log: { at: number; speaker: string; ticker: string; voice: string }[];
+      };
+      storm: () => {
+        seed: number;
+        strikes: { timeMs: number; x: number; z: number }[];
+        nextStrike: { timeMs: number; x: number; z: number } | null;
+        pings: { id: string; pos: { x: number; y: number; z: number } }[];
+        selfReveal: number;
+        fogFar: number;
+        shake: { x: number; y: number; z: number };
       };
     };
   }
@@ -565,6 +613,23 @@ window.__ab = {
     inCombat: radio.inCombat(performance.now()),
     log: radioLog.map((l) => ({ ...l })),
   }),
+  // ST2 QA: consumed strikes (two tabs must agree), the next scheduled
+  // strike (for staging reveals), live reveal pings, and atmosphere state.
+  storm: () => {
+    const rt = socket.renderTime();
+    return {
+      seed: welcome.seed,
+      strikes: strikeLog.map((s) => ({ ...s })),
+      nextStrike:
+        rt === null
+          ? null
+          : (strikesInWindow(welcome.seed, rt, rt + 40_000)[0] ?? null),
+      pings: reveals.pings(performance.now()),
+      selfReveal: reveals.levelOf(socket.selfId, performance.now()),
+      fogFar: scene.fog instanceof THREE.Fog ? scene.fog.far : -1,
+      shake: turbulenceOffset(performance.now(), flight.pos.y),
+    };
+  },
 };
 
 // --- Frame loop ---
@@ -619,9 +684,19 @@ renderer.setAnimationLoop((now) => {
       radio.noteCombat(now); // firing = combat radio discipline
     }
 
-    chase.update(camera, flight, dt, freelook);
+    // In-cloud turbulence (ST2): pure offsets applied to the DISPLAYED
+    // camera and plane only — sendPose above already read flight.pos, and
+    // the flight model never sees any of this. Different time phases keep
+    // the camera and the airframe from moving in lockstep.
+    const camShake = turbulenceOffset(now, flight.pos.y);
+    const planeShake = turbulenceOffset(now + 537, flight.pos.y);
+    chase.update(camera, flight, dt, freelook, camShake);
     const planePos = nearestImage(chase.position, flight.pos);
-    plane.position.set(planePos.x, planePos.y, planePos.z);
+    plane.position.set(
+      planePos.x + planeShake.x * 0.5,
+      planePos.y + planeShake.y * 0.5,
+      planePos.z + planeShake.z * 0.5,
+    );
     plane.rotation.set(flight.pitch, flight.yaw, flight.roll, "YXZ");
     // Prop speed tracks the commanded throttle (same factor as remotes').
     spinPropeller(plane, dt * flight.targetSpeed * 0.7);
@@ -681,7 +756,23 @@ renderer.setAnimationLoop((now) => {
     }
   }
 
-  remotes.update(socket.renderTime(), chase.position, dt, now);
+  remotes.update(socket.renderTime(), chase.position, dt, now, (id) =>
+    reveals.levelOf(id, now),
+  );
+  // Own rim-flash: the storm lit us up — same tint the remotes wear.
+  const selfReveal = alive ? reveals.levelOf(socket.selfId, now) : 0;
+  plane.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+      const mat = child.material as THREE.MeshStandardMaterial;
+      if (selfReveal > 0) {
+        mat.emissive.setHex(REVEAL_COLOR);
+        mat.emissiveIntensity = selfReveal * REVEAL_INTENSITY;
+      } else if (mat.emissive.getHex() === REVEAL_COLOR) {
+        mat.emissive.setHex(0x000000);
+        mat.emissiveIntensity = 1;
+      }
+    }
+  });
   planeLights.commit();
   planeTrails.update(chase.position, now);
 
@@ -731,6 +822,27 @@ renderer.setAnimationLoop((now) => {
     smoke.sync(target.id, target.pos, now, smokeActive(target.hp));
   }
   smoke.update(chase.position, now);
+  // Storm: consume this frame's scheduled strikes, then age/place the bolts
+  // and drive the sky-flash pulse (fog stain + dome tint + violet ambient).
+  for (const s of strikeFeed.poll(socket.renderTime())) {
+    storm.strike(s, now);
+    strikeLog.push({ timeMs: s.timeMs, x: s.x, z: s.z });
+    if (strikeLog.length > 12) strikeLog.shift();
+    // Everyone in the strike's column is revealed — self included; remote
+    // positions come from the same interpolated poses everything else uses.
+    const planesNow = [
+      ...(alive ? [{ id: socket.selfId, pos: flight.pos }] : []),
+      ...remotes.targets(),
+    ];
+    reveals.onStrike(s, planesNow, now);
+    thunder.add(s, flight.pos, now);
+  }
+  for (const ev of thunder.due(now)) audio.thunder(ev.gain, ev.hard);
+  storm.update(chase.position, now);
+  clouds.update(chase.position, camera.quaternion, socket.renderTime());
+  const sky = storm.atmosphere(scene, chase.position.y, now);
+  skyDome.tint(sky.tint);
+  skyDome.mesh.visible = sky.domeVisible;
   explosions.update(chase.position, now, dt);
   sparks.update(chase.position, now);
   tracers.update(bullets.all, chase.position, now);
@@ -753,9 +865,14 @@ renderer.setAnimationLoop((now) => {
   hud.setHeat(heat.heat, heat.locked);
   hud.update(now);
   const contacts = remotes.contacts();
-  minimap.update(flight.pos, flight.yaw, contacts);
+  minimap.update(flight.pos, flight.yaw, contacts, reveals.pings(now));
   audio.setEngine(flight.targetSpeed, alive);
   audio.syncRemotes(contacts, flight.pos, flight.yaw);
+  // In-cloud static bed: quiet crackle ramping in over the deck's first
+  // 60 m. The only audio cue for the hidden ceiling — no HUD, by design.
+  audio.setStatic(
+    alive ? Math.min(1, Math.max(0, (flight.pos.y - CLOUD_BASE) / 60)) : 0,
+  );
 
   renderer.info.reset();
   composer.render();

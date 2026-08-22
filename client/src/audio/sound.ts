@@ -22,6 +22,8 @@ const REMOTE_ENGINE_LEVEL = 0.6;
 const GUN_LEVEL = 0.5;
 const WHOOSH_LEVEL = 0.7;
 const EXPLOSION_LEVEL = 1.0;
+const HIT_LEVEL = 0.55;
+const KILL_LEVEL = 0.4;
 // Radio voice bus: pre-rendered lines are loudness-normalized to −18 LUFS,
 // so one level rules them all; while a line is on air the rest of the mix
 // ducks under it so the call reads through combat.
@@ -217,6 +219,33 @@ export class GameAudio implements VoiceSink {
     // decodeAudioData detaches its input — hand it a copy so the caller's
     // bytes survive a failed decode.
     return ctx.decodeAudioData(data.slice(0)).catch(() => null);
+  }
+
+  /** Hit thunk: a local sweep just connected. Low centered knock with ±10%
+   * pitch jitter — clearly apart from the own-gun crack (1800→500 band). */
+  hitThunk(): void {
+    const jitter = 0.9 + Math.random() * 0.2;
+    this.burst("bandpass", 750 * jitter, 210 * jitter, 0.08, HIT_LEVEL, 0);
+  }
+
+  /** Kill confirm: quick rising two-note chime over the last thunk. */
+  killConfirm(): void {
+    const ctx = this.ensure();
+    if (!ctx || !this.sfx) return;
+    const now = ctx.currentTime;
+    for (const [i, hz] of [523, 784].entries()) {
+      const osc = ctx.createOscillator();
+      osc.type = "triangle";
+      osc.frequency.value = hz;
+      const gain = ctx.createGain();
+      const at = now + i * 0.09;
+      gain.gain.setValueAtTime(0.0001, at);
+      gain.gain.exponentialRampToValueAtTime(KILL_LEVEL, at + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.001, at + 0.28);
+      osc.connect(gain).connect(this.sfx);
+      osc.start(at);
+      osc.stop(at + 0.3);
+    }
   }
 
   /** Play one voice line on the voice bus at the pilot's playbackRate,

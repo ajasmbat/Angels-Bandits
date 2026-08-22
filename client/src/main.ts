@@ -46,16 +46,18 @@ import { FlightInputSource } from "./game/flight-input";
 import { createFreeLook, shapeInput, stepFreeLook } from "./game/freelook";
 import { Guns } from "./game/guns";
 import { bulletHitsSphere } from "./game/hitdetect";
+import { magnetizeVelocity } from "./game/magnetism";
 import { GameSocket } from "./net/socket";
 import { CityRenderer } from "./render/city";
 import { FacadeGarnishRenderer } from "./render/facade-garnish";
-import { Explosions } from "./render/fx";
+import { Explosions, Sparks } from "./render/fx";
 import { buildPlaneMesh, spinPropeller } from "./render/plane";
 import { PlaneLights } from "./render/planelights";
 import { RemotePlanes } from "./render/remotes";
 import { RoofClutterRenderer } from "./render/roofclutter";
 import { Signage } from "./render/signage";
 import { GroundPlane, SkyDome, setupSky } from "./render/sky";
+import { SmokeTrails, smokeActive } from "./render/smoke";
 import { Streetlights } from "./render/streetlights";
 import { Tracers } from "./render/tracers";
 import { Traffic } from "./render/traffic";
@@ -63,6 +65,7 @@ import { PlaneTrails } from "./render/trails";
 import { nearestImage } from "./render/wrapPlacement";
 import { CommsTicker } from "./ui/comms";
 import { initFullscreenUi } from "./ui/fullscreen";
+import { HPBAR_ALTITUDE, HpBarSprite, HpBarTracker } from "./ui/hpbar";
 import { Hud } from "./ui/hud";
 import { requestName, showJoinError } from "./ui/join";
 import { KillFeed } from "./ui/killfeed";
@@ -161,6 +164,10 @@ const traffic = new Traffic(welcome.seed);
 scene.add(traffic.mesh);
 const explosions = new Explosions();
 scene.add(explosions.group);
+const sparks = new Sparks();
+scene.add(sparks.points);
+const smoke = new SmokeTrails();
+scene.add(smoke.points);
 
 const plane = buildPlaneMesh();
 scene.add(plane);
@@ -193,6 +200,9 @@ const minimap = new Minimap(city.cityBuildings);
 const edgeMarkers = new EdgeMarkers();
 const leadIndicator = new LeadIndicator();
 const markerScratch = new THREE.Vector3();
+const hpBar = new HpBarTracker();
+const hpBarSprite = new HpBarSprite();
+scene.add(hpBarSprite.sprite);
 const killFeed = new KillFeed();
 const scoreboard = new Scoreboard(socket.selfId);
 scoreboard.setRoster(welcome.roster);
@@ -375,7 +385,13 @@ socket.events.onPlayerLeft = (id) => {
 };
 socket.events.onFired = (id) => remoteFired(id);
 socket.events.onDamage = (msg) => {
-  if (msg.shooterId === socket.selfId) hud.hitConfirm(performance.now());
+  if (msg.shooterId === socket.selfId) {
+    hud.hitConfirm(performance.now());
+    // OUR damage only — another player's hits never raise our target bar.
+    if (msg.targetId !== socket.selfId) {
+      hpBar.recordDamage(msg.targetId, msg.hp, performance.now());
+    }
+  }
   if (msg.targetId === socket.selfId) {
     selfHp = msg.hp;
     hud.setHp(msg.hp);
@@ -401,6 +417,11 @@ socket.events.onDeath = (msg) => {
     msg.killerId === null ? null : nameOf(msg.killerId),
     nameOf(msg.victimId),
   );
+  if (msg.killerId === socket.selfId && msg.victimId !== socket.selfId) {
+    hud.killConfirm(performance.now());
+    audio.killConfirm();
+  }
+  hpBar.clear(msg.victimId); // never float a stale bar over a respawn
   if (msg.victimId === socket.selfId) enterDeath(msg.killerId);
   else remotes.setDead(msg.victimId);
   // Radio: the victim's mayday from us, or the killer's "splash one".
@@ -414,6 +435,8 @@ socket.events.onDeath = (msg) => {
   }
 };
 socket.events.onRespawn = (msg) => {
+  // Fresh spawn, fresh trail — a rebased teleport would smear smoke 1 km.
+  smoke.clear(msg.id);
   if (msg.id === socket.selfId) respawnSelf(msg.spawn);
   else remotes.respawn(msg.id);
 };
@@ -429,7 +452,12 @@ declare global {
     __ab?: {
       state: () => FlightState;
       teleport: (x: number, z: number, y?: number, yaw?: number) => void;
-      perf: () => { fps: number; frameMs: number; drawCalls: number };
+      perf: () => {
+        fps: number;
+        frameMs: number;
+        drawCalls: number;
+        smokePuffs: number;
+      };
       net: () => {
         selfId: string;
         roomId: string;
@@ -444,6 +472,7 @@ declare global {
         scores: ScoreEntry[];
         lastDeath: { victimId: string; killerId: string | null } | null;
         targets: { id: string; pos: { x: number; y: number; z: number } }[];
+        hpBarTarget: string | null;
       };
       aimAt: (x: number, z: number, y?: number) => void;
       setFiring: (held: boolean) => void;
@@ -478,6 +507,7 @@ window.__ab = {
     fps: perf.fps,
     frameMs: perf.frameMs,
     drawCalls: renderer.info.render.calls,
+    smokePuffs: smoke.puffCount,
   }),
   net: () => ({
     selfId: socket.selfId,
@@ -493,6 +523,8 @@ window.__ab = {
     scores: lastScores,
     lastDeath,
     targets: remotes.targets(),
+    // Gun-feel QA: whose HP bar is showing right now (null = faded/none).
+    hpBarTarget: hpBar.current(performance.now())?.targetId ?? null,
   }),
   // Point the nose at a canonical world position (torus-aware, QA only).
   aimAt: (x, z, y = flight.pos.y) => {
@@ -612,9 +644,15 @@ renderer.setAnimationLoop((now) => {
     }
   }
 
-  // Bullets fly and sweep the frame's segment over every living remote.
-  bullets.step(dt);
+  // Bullets: bend own rounds a hair toward in-cone targets (magnetism seam),
+  // then fly and sweep the frame's segment over every living remote.
   const targets = remotes.targets();
+  for (const bullet of bullets.all) {
+    if (!bullet.cosmetic) {
+      bullet.vel = magnetizeVelocity(bullet.pos, bullet.vel, targets, dt);
+    }
+  }
+  bullets.step(dt);
   for (const bullet of [...bullets.all]) {
     if (bullet.cosmetic) {
       // An enemy bullet shaving past this frame → panned near-miss whoosh.
@@ -632,6 +670,12 @@ renderer.setAnimationLoop((now) => {
       if (bulletHitsSphere(bullet.prev, bullet.pos, target.pos)) {
         socket.sendHit(target.id, bullet.origin, bullet.seq);
         bullets.remove(bullet);
+        // Instant shooter-side feedback (marker + thunk + sparks at the
+        // impact point); the server's damage broadcast stays the
+        // authoritative confirm (crosshair blip).
+        hud.hitMarker(now);
+        audio.hitThunk();
+        sparks.burst(bullet.pos, now);
         break;
       }
     }
@@ -677,8 +721,33 @@ renderer.setAnimationLoop((now) => {
   traffic.update(chase.position, socket.renderTime());
   ground.update(chase.position);
   skyDome.update(chase.position);
+  // Wounded smoke: own plane from server-said self HP, every remote (human
+  // or bot) from snapshot HP — all clients see the same wounds. Death clouds
+  // simply stop being synced and age out inside SmokeTrails.
+  if (alive) {
+    smoke.sync(socket.selfId, flight.pos, now, smokeActive(selfHp));
+  }
+  for (const target of targets) {
+    smoke.sync(target.id, target.pos, now, smokeActive(target.hp));
+  }
+  smoke.update(chase.position, now);
   explosions.update(chase.position, now, dt);
+  sparks.update(chase.position, now);
   tracers.update(bullets.all, chase.position, now);
+
+  // Target HP bar: over the plane WE damaged in the last 3 s (fading).
+  const shownBar = hpBar.current(now);
+  const barTarget = shownBar
+    ? targets.find((t) => t.id === shownBar.targetId)
+    : undefined;
+  if (shownBar && barTarget) {
+    const p = nearestImage(chase.position, barTarget.pos);
+    hpBarSprite.sprite.position.set(p.x, p.y + HPBAR_ALTITUDE, p.z);
+    // Snapshot HP is fresher than the damage event (covers regen ticks).
+    hpBarSprite.show(barTarget.hp, shownBar.alpha);
+  } else {
+    hpBarSprite.hide();
+  }
 
   const heat = guns.state;
   hud.setHeat(heat.heat, heat.locked);

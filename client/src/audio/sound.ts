@@ -21,6 +21,8 @@ const REMOTE_ENGINE_LEVEL = 0.6;
 const GUN_LEVEL = 0.5;
 const WHOOSH_LEVEL = 0.7;
 const EXPLOSION_LEVEL = 1.0;
+const HIT_LEVEL = 0.55;
+const KILL_LEVEL = 0.4;
 // Radio framing sits well below combat SFX — it frames speech, not action.
 const RADIO_SQUELCH_LEVEL = 0.2;
 const RADIO_STATIC_LEVEL = 0.12;
@@ -196,6 +198,33 @@ export class GameAudio {
   remoteGunshot(pos: Vec3, listenerPos: Vec3, listenerYaw: number): void {
     const s = spatialize(listenerPos, listenerYaw, pos);
     this.burst("bandpass", 1500, 450, 0.09, GUN_LEVEL * s.gain * 2, s.pan);
+  }
+
+  /** Hit thunk: a local sweep just connected. Low centered knock with ±10%
+   * pitch jitter — clearly apart from the own-gun crack (1800→500 band). */
+  hitThunk(): void {
+    const jitter = 0.9 + Math.random() * 0.2;
+    this.burst("bandpass", 750 * jitter, 210 * jitter, 0.08, HIT_LEVEL, 0);
+  }
+
+  /** Kill confirm: quick rising two-note chime over the last thunk. */
+  killConfirm(): void {
+    const ctx = this.ensure();
+    if (!ctx || !this.master) return;
+    const now = ctx.currentTime;
+    for (const [i, hz] of [523, 784].entries()) {
+      const osc = ctx.createOscillator();
+      osc.type = "triangle";
+      osc.frequency.value = hz;
+      const gain = ctx.createGain();
+      const at = now + i * 0.09;
+      gain.gain.setValueAtTime(0.0001, at);
+      gain.gain.exponentialRampToValueAtTime(KILL_LEVEL, at + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.001, at + 0.28);
+      osc.connect(gain).connect(this.master);
+      osc.start(at);
+      osc.stop(at + 0.3);
+    }
   }
 
   /** Radio squelch: the short centered click that opens a voice line. */

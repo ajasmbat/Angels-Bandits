@@ -111,3 +111,79 @@ export class RadioQueue {
     }
   }
 }
+
+/** The framing SFX the voice adapter needs (GameAudio provides these). */
+export interface RadioSfx {
+  radioSquelch(): void;
+  radioStatic(): void;
+}
+
+/**
+ * Thin Web Speech API adapter: speaks a polled line framed by a squelch
+ * click and a static tail. Feature-detected — without TTS (headless QA,
+ * unsupported browsers, empty voice list) it degrades to the framing SFX
+ * alone and the queue's estimated duration paces the channel instead of
+ * the utterance's end event.
+ */
+export class RadioVoice {
+  private readonly available: boolean;
+  private voice: SpeechSynthesisVoice | null = null;
+  /** Chrome GC drops in-flight utterances (and their end events) unless
+   * something holds a reference — keep the latest alive here. */
+  private current: SpeechSynthesisUtterance | null = null;
+
+  constructor(private readonly sfx: RadioSfx) {
+    this.available =
+      typeof speechSynthesis !== "undefined" &&
+      typeof SpeechSynthesisUtterance !== "undefined";
+    if (this.available) {
+      this.pickVoice();
+      speechSynthesis.addEventListener("voiceschanged", () => this.pickVoice());
+    }
+  }
+
+  /** A stable default: prefer a local en-* voice, then any en-*, then any. */
+  private pickVoice(): void {
+    const voices = speechSynthesis.getVoices();
+    this.voice =
+      voices.find((v) => v.lang.startsWith("en") && v.localService) ??
+      voices.find((v) => v.lang.startsWith("en")) ??
+      voices[0] ??
+      null;
+  }
+
+  get supported(): boolean {
+    return this.available;
+  }
+
+  /**
+   * Put one line on the air. `onDone` fires when the utterance actually
+   * ends (feed it RadioQueue.release so the channel frees early); it is
+   * never called on the no-TTS path — the queue's estimate rules there.
+   */
+  speak(text: string, onDone: () => void): void {
+    this.sfx.radioSquelch();
+    if (!this.available) {
+      this.sfx.radioStatic();
+      return;
+    }
+    try {
+      const utterance = new SpeechSynthesisUtterance(text);
+      if (this.voice) utterance.voice = this.voice;
+      utterance.rate = 1.1; // brisk military cadence
+      utterance.pitch = 0.85; // slight pitch-down toward radio timbre
+      const finish = () => {
+        if (this.current !== utterance) return;
+        this.current = null;
+        this.sfx.radioStatic();
+        onDone();
+      };
+      utterance.addEventListener("end", finish);
+      utterance.addEventListener("error", finish);
+      this.current = utterance;
+      speechSynthesis.speak(utterance);
+    } catch {
+      this.sfx.radioStatic(); // degrade silently — ticker already showed it
+    }
+  }
+}

@@ -32,6 +32,9 @@ export interface Callout {
   speaker: string;
 }
 
+/** Own HP below this voices "I'm hit" (edge-triggered, re-armed on regen). */
+export const LOW_HP_CALLOUT = 30;
+
 /** Per-event cooldowns, ms (plan: threat ≤ 1/12 s, others' kills ≤ 1/6 s). */
 export const THREAT_COOLDOWN_MS = 12_000;
 export const KILL_COOLDOWN_MS = 6_000;

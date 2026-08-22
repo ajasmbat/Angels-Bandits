@@ -21,6 +21,9 @@ const REMOTE_ENGINE_LEVEL = 0.6;
 const GUN_LEVEL = 0.5;
 const WHOOSH_LEVEL = 0.7;
 const EXPLOSION_LEVEL = 1.0;
+// Radio framing sits well below combat SFX — it frames speech, not action.
+const RADIO_SQUELCH_LEVEL = 0.2;
+const RADIO_STATIC_LEVEL = 0.12;
 
 /** Engine pitch band: idle throttle → full throttle, Hz. */
 const ENGINE_MIN_HZ = 55;
@@ -193,6 +196,16 @@ export class GameAudio {
   remoteGunshot(pos: Vec3, listenerPos: Vec3, listenerYaw: number): void {
     const s = spatialize(listenerPos, listenerYaw, pos);
     this.burst("bandpass", 1500, 450, 0.09, GUN_LEVEL * s.gain * 2, s.pan);
+  }
+
+  /** Radio squelch: the short centered click that opens a voice line. */
+  radioSquelch(): void {
+    this.burst("bandpass", 2600, 1500, 0.05, RADIO_SQUELCH_LEVEL, 0);
+  }
+
+  /** Radio static: the brief hiss tail that closes a voice line. */
+  radioStatic(): void {
+    this.burst("highpass", 3200, 2000, 0.2, RADIO_STATIC_LEVEL, 0);
   }
 
   /** Near-miss whoosh: an enemy bullet just shaved past. Rate-limited. */

@@ -214,3 +214,44 @@ describe("signageFor — storefront strips", () => {
     }
   });
 });
+
+describe("signageFor — neon spill", () => {
+  it("pools under a dense hotspot cluster, never under a bare facade", () => {
+    // Landmark-block building (heat 1) — dense facades spill; the
+    // max-footprint building has no signs at all, so nothing to spill.
+    const hot = signageFor(
+      {
+        x: 500,
+        z: 700,
+        width: 120,
+        depth: 120,
+        height: 60,
+        tiers: [{ width: 120, depth: 120, height: 60 }],
+      },
+      SEED,
+    );
+    expect(hot.spills.length).toBeGreaterThan(0);
+    expect(signageFor(MAX_FOOTPRINT, SEED).spills).toHaveLength(0);
+  });
+
+  it("centers every pool on the sidewalk — never in the roadway", () => {
+    for (const b of generateCity(CITY_SEED)) {
+      for (const p of signageFor(b, CITY_SEED).spills) {
+        expect(isInRoadway({ x: p.x, y: 0, z: p.z })).toBe(false);
+        expect(p.x).toBeGreaterThanOrEqual(0);
+        expect(p.x).toBeLessThan(2000);
+        expect(p.z).toBeGreaterThanOrEqual(0);
+        expect(p.z).toBeLessThan(2000);
+      }
+    }
+  });
+
+  it("keeps pool radii in the lamp-glow ballpark (2–8 m)", () => {
+    for (const b of generateCity(CITY_SEED)) {
+      for (const p of signageFor(b, CITY_SEED).spills) {
+        expect(p.radius).toBeGreaterThanOrEqual(2);
+        expect(p.radius).toBeLessThanOrEqual(8);
+      }
+    }
+  });
+});

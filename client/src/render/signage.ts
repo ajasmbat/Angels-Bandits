@@ -77,6 +77,11 @@ const STRIP_HEIGHT = 0.7;
 /** How proud of the facade the strip sits, meters. */
 const STRIP_DEPTH = 0.4;
 
+/** A facade spills onto the sidewalk once it carries this many signs. */
+const SPILL_MIN_CLUSTER = 3;
+/** Pool radius bounds, meters (lamp glow pools are 9 m). */
+const SPILL_RADIUS_MAX = 8;
+
 // --- Seeded neon palette (linear RGB, weighted like the reference photo) ---
 export interface PaletteColor {
   r: number;
@@ -128,11 +133,20 @@ export interface SignPlacement {
   phase: number;
 }
 
+/** One additive ground-glow pool on the sidewalk (lamp-glow idiom). */
+export interface SpillPool {
+  x: number;
+  z: number;
+  radius: number;
+  paletteIndex: number;
+  phase: number;
+}
+
 export interface BuildingSignage {
   marquees: SignPlacement[];
   billboards: SignPlacement[];
   strips: SignPlacement[];
-  spills: never[];
+  spills: SpillPool[];
 }
 
 /** Torus-wrapped block-index distance on the GRID×GRID block grid. */
@@ -257,6 +271,9 @@ export function signageFor(b: Building, seed: number): BuildingSignage {
       return { x: c.x, z: c.z };
     };
 
+    /** Marquees + billboards mounted on THIS facade (drives the spill). */
+    const faceSigns: SignPlacement[] = [];
+
     // --- Vertical marquees ---
     const marqueeCount = Math.min(
       MARQUEE_FACE_MAX,
@@ -276,7 +293,7 @@ export function signageFor(b: Building, seed: number): BuildingSignage {
       const jitter =
         (rand() * 2 - 1) * Math.max(0, slotWidth / 2 - width / 2 - 0.5);
       if (height < MARQUEE_HEIGHT_MIN) continue;
-      out.marquees.push({
+      const marquee: SignPlacement = {
         ...place(along(slot) + jitter, MARQUEE_DEPTH),
         y: bottom,
         width,
@@ -287,7 +304,9 @@ export function signageFor(b: Building, seed: number): BuildingSignage {
         paletteIndex: paletteIndex(rand()),
         textureIndex: Math.floor(rand() * MARQUEE_TEXTURE_POOL),
         phase: rand(),
-      });
+      };
+      out.marquees.push(marquee);
+      faceSigns.push(marquee);
     }
 
     // --- Billboards (lower facade, slots after the marquees') ---
@@ -311,7 +330,7 @@ export function signageFor(b: Building, seed: number): BuildingSignage {
       const jitter =
         (rand() * 2 - 1) * Math.max(0, slotWidth / 2 - width / 2 - 0.5);
       if (bottom < BILLBOARD_BOTTOM_MIN) continue;
-      out.billboards.push({
+      const billboard: SignPlacement = {
         ...place(along(slot) + jitter, BILLBOARD_DEPTH),
         y: bottom,
         width,
@@ -322,7 +341,9 @@ export function signageFor(b: Building, seed: number): BuildingSignage {
         paletteIndex: paletteIndex(rand()),
         textureIndex: Math.floor(rand() * BILLBOARD_TEXTURE_POOL),
         phase: rand(),
-      });
+      };
+      out.billboards.push(billboard);
+      faceSigns.push(billboard);
     }
 
     // --- Storefront strip (one continuous band per facade, Concept 4) ---
@@ -338,6 +359,27 @@ export function signageFor(b: Building, seed: number): BuildingSignage {
       textureIndex: 0,
       phase: rand(),
     });
+
+    // --- Neon spill: a dense facade tints its sidewalk (lamp-glow idiom) ---
+    if (faceSigns.length >= SPILL_MIN_CLUSTER) {
+      const mid = face.plane + (face.dir * face.clearance) / 2;
+      const alongMid = face.axis === "x" ? b.z : b.x;
+      const c = canonicalize(
+        face.axis === "x"
+          ? { x: mid, y: 0, z: alongMid }
+          : { x: alongMid, y: 0, z: mid },
+      );
+      out.spills.push({
+        x: c.x,
+        z: c.z,
+        radius: Math.min(
+          SPILL_RADIUS_MAX,
+          Math.max(2, face.clearance * 0.75),
+        ),
+        paletteIndex: (faceSigns[0] as SignPlacement).paletteIndex,
+        phase: rand(),
+      });
+    }
   });
 
   return out;

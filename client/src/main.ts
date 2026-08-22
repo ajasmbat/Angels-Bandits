@@ -46,6 +46,7 @@ import { Tracers } from "./render/tracers";
 import { Traffic } from "./render/traffic";
 import { nearestImage } from "./render/wrapPlacement";
 import { initFullscreenUi } from "./ui/fullscreen";
+import { HPBAR_ALTITUDE, HpBarSprite, HpBarTracker } from "./ui/hpbar";
 import { Hud } from "./ui/hud";
 import { requestName, showJoinError } from "./ui/join";
 import { KillFeed } from "./ui/killfeed";
@@ -164,6 +165,9 @@ const minimap = new Minimap(city.cityBuildings);
 const edgeMarkers = new EdgeMarkers();
 const leadIndicator = new LeadIndicator();
 const markerScratch = new THREE.Vector3();
+const hpBar = new HpBarTracker();
+const hpBarSprite = new HpBarSprite();
+scene.add(hpBarSprite.sprite);
 const killFeed = new KillFeed();
 const scoreboard = new Scoreboard(socket.selfId);
 scoreboard.setRoster(welcome.roster);
@@ -293,7 +297,13 @@ socket.events.onPlayerLeft = (id) => {
 };
 socket.events.onFired = (id) => remoteFired(id);
 socket.events.onDamage = (msg) => {
-  if (msg.shooterId === socket.selfId) hud.hitConfirm(performance.now());
+  if (msg.shooterId === socket.selfId) {
+    hud.hitConfirm(performance.now());
+    // OUR damage only — another player's hits never raise our target bar.
+    if (msg.targetId !== socket.selfId) {
+      hpBar.recordDamage(msg.targetId, msg.hp, performance.now());
+    }
+  }
   if (msg.targetId === socket.selfId) {
     selfHp = msg.hp;
     hud.setHp(msg.hp);
@@ -318,6 +328,7 @@ socket.events.onDeath = (msg) => {
     hud.killConfirm(performance.now());
     audio.killConfirm();
   }
+  hpBar.clear(msg.victimId); // never float a stale bar over a respawn
   if (msg.victimId === socket.selfId) enterDeath(msg.killerId);
   else remotes.setDead(msg.victimId);
 };
@@ -556,6 +567,20 @@ renderer.setAnimationLoop((now) => {
   explosions.update(chase.position, now, dt);
   sparks.update(chase.position, now);
   tracers.update(bullets.all, chase.position, now);
+
+  // Target HP bar: over the plane WE damaged in the last 3 s (fading).
+  const shownBar = hpBar.current(now);
+  const barTarget = shownBar
+    ? targets.find((t) => t.id === shownBar.targetId)
+    : undefined;
+  if (shownBar && barTarget) {
+    const p = nearestImage(chase.position, barTarget.pos);
+    hpBarSprite.sprite.position.set(p.x, p.y + HPBAR_ALTITUDE, p.z);
+    // Snapshot HP is fresher than the damage event (covers regen ticks).
+    hpBarSprite.show(barTarget.hp, shownBar.alpha);
+  } else {
+    hpBarSprite.hide();
+  }
 
   const heat = guns.state;
   hud.setHeat(heat.heat, heat.locked);

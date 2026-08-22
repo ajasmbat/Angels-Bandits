@@ -161,6 +161,41 @@
       #killfeed .victim {
         color: #ff7a9a;
       }
+      #comms {
+        position: fixed;
+        top: 158px;
+        right: 16px;
+        text-align: right;
+        pointer-events: none;
+        user-select: none;
+        color: #9fd8e8;
+        font-size: 12px;
+        line-height: 1.7;
+        text-shadow: 0 1px 2px #000;
+      }
+      #comms .entry {
+        opacity: 0.9;
+        transition: opacity 1s ease-out;
+      }
+      #comms .entry.fading {
+        opacity: 0;
+      }
+      #comms .speaker {
+        color: #ffc46b;
+      }
+      #radio-toggle {
+        margin-top: 8px;
+        color: #9fd8e8;
+        font-size: 10px;
+        letter-spacing: 0.15em;
+        text-align: right;
+        cursor: pointer;
+        pointer-events: auto;
+        user-select: none;
+      }
+      #radio-toggle.off {
+        color: #5a6b78;
+      }
       #scoreboard {
         position: fixed;
         left: 50%;
@@ -320,6 +355,50 @@
         user-select: none;
         will-change: transform;
       }
+      /* Fullscreen ghost glyph (chosen concept 1): bare ⛶, no chrome —
+         ghosted until hover; body.fullscreen overlays a small ✕ (exit). */
+      .fs-toggle {
+        width: 22px;
+        height: 22px;
+        padding: 0;
+        background: none;
+        border: none;
+        color: #9fd8e8;
+        font: inherit;
+        font-size: 18px;
+        line-height: 22px;
+        text-align: center;
+        text-shadow: 0 1px 2px #000;
+        opacity: 0.4;
+        cursor: pointer;
+        transition: opacity 0.15s ease;
+        user-select: none;
+      }
+      .fs-toggle:hover {
+        opacity: 1;
+      }
+      body.fullscreen .fs-toggle {
+        opacity: 0.55;
+      }
+      body.fullscreen .fs-toggle::after {
+        content: "✕";
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100%;
+        font-size: 10px;
+        line-height: 22px;
+      }
+      #fs-btn {
+        position: fixed;
+        right: 16px;
+        bottom: 76px;
+      }
+      #join-fs {
+        position: absolute;
+        right: 14px;
+        top: 12px;
+      }
       #lead::after {
         content: "";
         position: absolute;
@@ -347,9 +426,12 @@
         <div class="bar"><div class="fill" id="heat-fill"></div></div>
       </div>
       <div id="protected-badge">◇ PROTECTED ◇</div>
+      <div id="radio-toggle"></div>
     </div>
+    <button id="fs-btn" class="fs-toggle" title="Fullscreen (F)">⛶</button>
     <div id="freelook-hint">◇ FREE LOOK ◇</div>
     <div id="killfeed"></div>
+    <div id="comms"></div>
     <div id="scoreboard">
       <h2>SCOREBOARD</h2>
       <table>
@@ -362,6 +444,9 @@
     <div id="killcam"></div>
     <div id="fade"></div>
     <div id="join">
+      <button id="join-fs" class="fs-toggle" type="button" title="Fullscreen (F)">
+        ⛶
+      </button>
       <form id="join-form">
         <h1>ANGELS &amp; BANDITS</h1>
         <input

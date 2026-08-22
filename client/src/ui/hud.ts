@@ -22,6 +22,9 @@ export class Hud {
   private readonly crosshair = document.getElementById(
     "crosshair",
   ) as HTMLDivElement;
+  private readonly radioToggle = document.getElementById(
+    "radio-toggle",
+  ) as HTMLDivElement;
   private hitBlipUntil = 0;
 
   /** Server-owned HP (snapshots / damage events). */
@@ -38,6 +41,28 @@ export class Hud {
 
   setProtected(on: boolean): void {
     this.badge.classList.toggle("on", on);
+  }
+
+  /**
+   * Radio-voice mute toggle (mutes TTS only — the comms ticker stays on).
+   * Guns hold their trigger from a window-level mousedown, so pointer events
+   * on the toggle must never bubble — clicking it can't mean "fire".
+   */
+  bindRadioToggle(initial: boolean, onToggle: (on: boolean) => void): void {
+    let on = initial;
+    const render = () => {
+      this.radioToggle.textContent = on ? "RADIO VOICE ON" : "RADIO VOICE OFF";
+      this.radioToggle.classList.toggle("off", !on);
+    };
+    render();
+    this.radioToggle.addEventListener("mousedown", (e) => e.stopPropagation());
+    this.radioToggle.addEventListener("mouseup", (e) => e.stopPropagation());
+    this.radioToggle.addEventListener("click", (e) => {
+      e.stopPropagation();
+      on = !on;
+      render();
+      onToggle(on);
+    });
   }
 
   /** Free-look (hold E): show the hint and dim the aim chrome via CSS. */

@@ -26,11 +26,19 @@ export const CROSSWALK_DEPTH = 4;
 // bloom threshold (0.72); client materials derive their HDR boosts from
 // these targets (plain numbers here — common/ stays THREE-free).
 export const EMISSIVE_WINDOW = 0.88;
+/** Wingtip ribbon trails at full turn hardness — streaks, not neon. */
+export const EMISSIVE_TRAIL = 0.9;
 /** Reserved for S2 neon signage — between windows and lamp heads. */
 export const EMISSIVE_SIGN = 0.93;
+/** Engine exhaust flicker at full throttle — a warm ember, below the lamps. */
+export const EMISSIVE_EXHAUST = 0.95;
 export const EMISSIVE_LAMP = 0.98;
+/** Steady red/green/white aviation lights on every plane's wingtips/tail. */
+export const EMISSIVE_NAVLIGHT = 1.0;
 /** Landmark beacons at pulse PEAK; the trough dips under the bloom threshold. */
 export const EMISSIVE_BEACON = 1.05;
+/** Anti-collision strobe at flash peak — brightest plane light, under tracers. */
+export const EMISSIVE_STROBE = 1.1;
 export const EMISSIVE_TRACER = 1.5;
 
 // --- Buildings ---

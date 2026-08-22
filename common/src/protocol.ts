@@ -35,6 +35,8 @@ export interface SpawnState {
 export interface RosterEntry {
   id: string;
   name: string;
+  /** Set (true) only on server-flown backfill bots — drives client styling. */
+  isBot?: boolean;
 }
 
 // --- Client → server ---

@@ -32,7 +32,10 @@ All decisions below were grilled and locked on 2026-08-21. No open branches.
 - **Authority split:** client-authoritative movement, server-authoritative
   combat. Client simulates its own plane locally (instant feel, no
   reconciliation code); server clamps impossibilities (speed caps, teleports)
-  and owns all health/damage/kill/respawn decisions.
+  and owns all health/damage/kill/respawn decisions. The server runs no
+  flight sim **except for bots** (B1): backfill bot planes are flown
+  server-side with the same shared `stepFlight` at snapshot cadence, and
+  their fire is resolved directly by the server (no hit-claim path).
 - **Hit detection on the shooter's client** (favor the shooter); server
   sanity-checks range, fire rate, and plausibility.
 - **Wire format: JSON over plain `ws`** for now. All message shapes live in one

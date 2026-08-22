@@ -114,6 +114,28 @@
           opacity: 1;
         }
       }
+      #freelook-hint {
+        position: fixed;
+        left: 50%;
+        top: 14px;
+        transform: translateX(-50%);
+        display: none;
+        color: #9fd8e8;
+        font-size: 11px;
+        letter-spacing: 0.2em;
+        text-shadow: 0 1px 2px #000;
+        opacity: 0.65;
+        pointer-events: none;
+        user-select: none;
+      }
+      body.freelook #freelook-hint {
+        display: block;
+      }
+      /* Aim chrome is meaningless mid-orbit — dim it to ~30%. */
+      body.freelook #crosshair,
+      body.freelook #lead {
+        opacity: 0.3;
+      }
       #killfeed {
         position: fixed;
         top: 14px;
@@ -185,6 +207,9 @@
       }
       #scoreboard tr.self td {
         color: #27e0c0;
+      }
+      #scoreboard tr.bot td {
+        color: #ffa26b;
       }
       #killcam {
         position: fixed;
@@ -323,6 +348,7 @@
       </div>
       <div id="protected-badge">◇ PROTECTED ◇</div>
     </div>
+    <div id="freelook-hint">◇ FREE LOOK ◇</div>
     <div id="killfeed"></div>
     <div id="scoreboard">
       <h2>SCOREBOARD</h2>

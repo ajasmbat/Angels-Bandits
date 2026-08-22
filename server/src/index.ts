@@ -1,11 +1,15 @@
 // The Angels & Bandits server: one Node process serving /healthz, the built
-// client statics (production), and the ws presence rooms. Movement stays
-// client-authoritative (PLAN.md authority split) — this process never runs the
-// flight sim; it clamps pose claims via validatePose and relays snapshots.
+// client statics (production), and the ws presence rooms. HUMAN movement stays
+// client-authoritative (PLAN.md authority split) — pose claims are clamped via
+// validatePose and relayed in snapshots. The one flight sim this process DOES
+// run is the backfill bots (B1): RoomBots advances them with the shared
+// stepFlight inside the same 15 Hz snapshot tick.
 
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
+import { generateCity } from "@angels-bandits/common/city";
 import {
+  CITY_SEED,
   LIVENESS_TIMEOUT_MS,
   NAME_MAX_LENGTH,
   SPAWN_PROTECTION_MS,
@@ -20,6 +24,7 @@ import type {
 } from "@angels-bandits/common/protocol";
 import type { Vec3 } from "@angels-bandits/common/world";
 import { type WebSocket, WebSocketServer } from "ws";
+import { type BotContact, RoomBots, applyBotFire, poseVelocity } from "./bots";
 import { Combat } from "./combat";
 import { pickRespawn } from "./respawn";
 import { type Room, RoomManager } from "./room";
@@ -47,20 +52,69 @@ interface Client {
 const rooms = new RoomManager();
 const clients = new Map<string, Client>();
 /** Server-authoritative combat state (HP/kills/respawns). Keyed by the same
- * globally-unique player ids as `clients`; hit claims are gated to one room. */
+ * globally-unique player ids as `clients`; hit claims are gated to one room.
+ * Bots are registered here too — identical rules, no special cases. */
 const combat = new Combat();
+
+/** The seeded city, generated once — bot collision probes fly against the
+ * exact Building[] every client renders and collides with. */
+const city = generateCity(CITY_SEED);
+
+/** Per-room bot pilots. Created lazily; seeded from the room's number so
+ * bot behavior is deterministic per room. */
+const botsByRoom = new Map<string, RoomBots>();
+const botsFor = (room: Room): RoomBots => {
+  let bots = botsByRoom.get(room.id);
+  if (!bots) {
+    const n = Number(room.id.split("-")[1] ?? 0);
+    bots = new RoomBots(room.id, CITY_SEED ^ (n * 0x9e3779b9), city);
+    botsByRoom.set(room.id, bots);
+  }
+  return bots;
+};
+
+/** On-record pose of any living room member — humans from their validated
+ * claims, bots from the server-side sim. */
+const memberPose = (room: Room, id: string): Pose | null => {
+  const member = room.members.get(id);
+  if (!member || !combat.isAlive(id)) return null;
+  if (member.isBot) return botsFor(room).poseOf(id);
+  return clients.get(id)?.pose ?? null;
+};
 
 /** On-record positions of living roommates other than `exceptId` — the
  * enemies a farthest-from-enemies spawn keeps away from. */
 const livingEnemyPositions = (room: Room, exceptId: string): Vec3[] => {
   const positions: Vec3[] = [];
   for (const { id } of room.members.values()) {
-    if (id === exceptId || !combat.isAlive(id)) continue;
-    const member = clients.get(id);
-    if (member) positions.push(member.pose.pos);
+    if (id === exceptId) continue;
+    const pose = memberPose(room, id);
+    if (pose) positions.push(pose.pos);
   }
   return positions;
 };
+
+/** Sync a room's bot population to the backfill target: spawn/despawn bots,
+ * mirror them into the roster + Combat, and announce like any player. */
+function syncRoomBots(room: Room): void {
+  const bots = botsFor(room);
+  const now = Date.now();
+  const { spawned, despawned } = bots.syncTo(rooms.desiredBots(room), () =>
+    pickRespawn(livingEnemyPositions(room, "")),
+  );
+  for (const entry of spawned) {
+    rooms.addBot(room, entry.id, entry.name);
+    combat.addPlayer(entry.id, now);
+    sendToRoom(room, { type: "playerJoined", player: entry });
+  }
+  for (const id of despawned) {
+    combat.removePlayer(id);
+    rooms.leave(id);
+    sendToRoom(room, { type: "playerLeft", id });
+  }
+  // A wound-down room (no humans, no bots) is gone — drop its pilots too.
+  if (!rooms.rooms.includes(room)) botsByRoom.delete(room.id);
+}
 
 const sanitizeName = (raw: unknown): string => {
   if (typeof raw !== "string") return "Pilot";
@@ -111,6 +165,9 @@ function handleJoin(ws: WebSocket, rawName: unknown): Client {
   };
   ws.send(JSON.stringify(welcome));
   sendToRoom(room, { type: "playerJoined", player: { id, name } }, id);
+  // The human takes a seat: one bot yields (idle first) after the welcome so
+  // the joiner sees a consistent roster then a normal playerLeft.
+  syncRoomBots(room);
   return client;
 }
 
@@ -144,7 +201,11 @@ function handleLeave(client: Client): void {
   clients.delete(client.id);
   combat.removePlayer(client.id);
   const room = rooms.leave(client.id);
-  if (room) sendToRoom(room, { type: "playerLeft", id: client.id });
+  if (room) {
+    sendToRoom(room, { type: "playerLeft", id: client.id });
+    // Refill the vacated seat (or wind the bots down if the room is done).
+    if (rooms.rooms.includes(room)) syncRoomBots(room);
+  }
 }
 
 /** Room-scoped scoreboard broadcast (after any death changes the tallies). */
@@ -181,8 +242,9 @@ function handleHitClaim(
   ) {
     return;
   }
-  const target = clients.get(targetId);
-  if (!target || !client.room.members.has(targetId)) return;
+  // Bots are valid targets too: their on-record pose comes from the sim.
+  const targetPose = memberPose(client.room, targetId);
+  if (!targetPose) return;
 
   const verdict = combat.hit(
     client.id,
@@ -190,7 +252,7 @@ function handleHitClaim(
     seq,
     origin,
     client.pose.pos,
-    target.pose.pos,
+    targetPose.pos,
     now,
   );
   if (!verdict.ok) return;
@@ -201,7 +263,13 @@ function handleHitClaim(
     shooterId: client.id,
     hp: verdict.hp,
   });
+  if (client.room.members.get(targetId)?.isBot) {
+    botsFor(client.room).onDamaged(targetId, now);
+  }
   if (verdict.death) {
+    if (client.room.members.get(targetId)?.isBot) {
+      botsFor(client.room).setDead(targetId);
+    }
     sendToRoom(client.room, {
       type: "death",
       victimId: verdict.death.victimId,
@@ -224,25 +292,100 @@ function handleCrash(client: Client, now: number): void {
   broadcastScores(client.room);
 }
 
-/** Kill-cams that just ended: place each player far from living enemies,
- * reset their on-record pose, and announce the respawn to the room. */
+/** Kill-cams that just ended: place each player (human or bot) far from
+ * living enemies, reset their on-record pose, and announce the respawn. */
 function issueRespawns(due: string[], now: number): void {
   for (const id of due) {
-    const client = clients.get(id);
-    if (!client) continue;
-    const spawn: SpawnState = pickRespawn(
-      livingEnemyPositions(client.room, id),
-    );
-    combat.respawned(id, now);
-    client.pose = poseFromSpawn(spawn);
-    client.rejectStreak = 0;
-    client.lastPoseAt = now;
-    sendToRoom(client.room, {
+    const room = rooms.roomOf(id);
+    if (!room) continue;
+    const spawn: SpawnState = pickRespawn(livingEnemyPositions(room, id));
+    if (room.members.get(id)?.isBot) {
+      combat.respawned(id, now);
+      botsFor(room).respawn(id, spawn);
+    } else {
+      const client = clients.get(id);
+      if (!client) continue;
+      combat.respawned(id, now);
+      client.pose = poseFromSpawn(spawn);
+      client.rejectStreak = 0;
+      client.lastPoseAt = now;
+    }
+    sendToRoom(room, {
       type: "respawn",
       id,
       spawn,
       protectedUntil: now + SPAWN_PROTECTION_MS,
     });
+  }
+}
+
+/** One bot sim step for a room: build the coherent contact list, advance the
+ * pilots, settle crashes, and route trigger pulls through Combat — reusing
+ * the same broadcasts human fire produces. */
+function tickRoomBots(room: Room, now: number): void {
+  const bots = botsFor(room);
+  const contacts: BotContact[] = [];
+  for (const member of room.members.values()) {
+    const pose = memberPose(room, member.id);
+    if (!pose) continue;
+    contacts.push({
+      id: member.id,
+      pos: pose.pos,
+      vel: member.isBot
+        ? (bots.contactOf(member.id)?.vel ?? { x: 0, y: 0, z: 0 })
+        : poseVelocity(pose),
+      prot: combat.isProtected(member.id, now),
+    });
+  }
+
+  const { shots, crashes } = bots.tick(now, contacts);
+
+  for (const id of crashes) {
+    const death = combat.crash(id, now);
+    if (!death) continue;
+    sendToRoom(room, {
+      type: "death",
+      victimId: death.victimId,
+      killerId: death.killerId,
+      cause: death.cause,
+    });
+    broadcastScores(room);
+  }
+
+  for (const shot of shots) {
+    if (!combat.isAlive(shot.botId)) continue;
+    const targetPose = memberPose(room, shot.targetId);
+    const { accepted, hit } = applyBotFire(
+      combat,
+      shot,
+      targetPose?.pos ?? null,
+      now,
+    );
+    if (!accepted) continue;
+    // Same cosmetic path as human fire: everyone renders the tracer.
+    sendToRoom(room, { type: "fired", id: shot.botId });
+    if (!hit?.ok) continue;
+    sendToRoom(room, {
+      type: "damage",
+      targetId: shot.targetId,
+      shooterId: shot.botId,
+      hp: hit.hp,
+    });
+    if (room.members.get(shot.targetId)?.isBot) {
+      bots.onDamaged(shot.targetId, now);
+    }
+    if (hit.death) {
+      if (room.members.get(shot.targetId)?.isBot) {
+        bots.setDead(shot.targetId);
+      }
+      sendToRoom(room, {
+        type: "death",
+        victimId: hit.death.victimId,
+        killerId: hit.death.killerId,
+        cause: hit.death.cause,
+      });
+      broadcastScores(room);
+    }
   }
 }
 
@@ -295,22 +438,23 @@ wss.on("connection", (ws) => {
   ws.on("error", () => ws.terminate());
 });
 
-// --- Combat tick + snapshots down at TICK_DOWN_HZ, one stringify per room ---
+// --- Combat + bot sim tick + snapshots at TICK_DOWN_HZ, one stringify per room ---
 setInterval(() => {
   const time = Date.now();
   issueRespawns(combat.tick(time).respawnsDue, time);
   for (const room of rooms.rooms) {
+    tickRoomBots(room, time);
     const snapshot: SnapshotMsg = {
       type: "snapshot",
       time,
       // Dead planes are simply absent until their respawn is announced.
       players: [...room.members.values()].flatMap(({ id }) => {
-        const member = clients.get(id);
-        return member && combat.isAlive(id)
+        const pose = memberPose(room, id);
+        return pose
           ? [
               {
                 id,
-                pose: member.pose,
+                pose,
                 hp: combat.hpOf(id),
                 prot: combat.isProtected(id, time),
               },
@@ -321,6 +465,10 @@ setInterval(() => {
     sendToRoom(room, snapshot);
   }
 }, 1000 / TICK_DOWN_HZ);
+
+// The standing arena: bots fly the first room even before anyone joins, so
+// the first joiner drops into a live dogfight instead of an empty sky.
+syncRoomBots(rooms.ensureRoom());
 
 // --- Liveness: joined clients stream at TICK_UP_HZ; prolonged silence = gone ---
 setInterval(() => {

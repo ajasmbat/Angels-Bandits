@@ -566,6 +566,18 @@ export class RoomBots {
   }
 }
 
+/** World velocity implied by a wire pose: nose direction × speed — the
+ * quaternion-rotated -Z axis, expanded (no Three.js on the server). */
+export function poseVelocity(pose: Pose): Vec3 {
+  const { x, y, w } = pose.quat;
+  const z = pose.quat.z;
+  return {
+    x: (-2 * w * y - 2 * x * z) * pose.speed,
+    y: (2 * w * x - 2 * y * z) * pose.speed,
+    z: (-1 + 2 * x * x + 2 * y * y) * pose.speed,
+  };
+}
+
 /**
  * Route one bot trigger pull through the SAME Combat seam humans use:
  * fire() (heat model, token bucket, spawn-protection forfeit), then — when

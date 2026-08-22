@@ -56,6 +56,7 @@ import { RemotePlanes } from "./render/remotes";
 import { RoofClutterRenderer } from "./render/roofclutter";
 import { Signage } from "./render/signage";
 import { GroundPlane, SkyDome, setupSky } from "./render/sky";
+import { StormRenderer, StrikeFeed } from "./render/storm";
 import { Streetlights } from "./render/streetlights";
 import { Tracers } from "./render/tracers";
 import { Traffic } from "./render/traffic";
@@ -161,6 +162,11 @@ const traffic = new Traffic(welcome.seed);
 scene.add(traffic.mesh);
 const explosions = new Explosions();
 scene.add(explosions.group);
+// ST2 storm: bolts + flash from the shared schedule — zero strike netcode;
+// every client computes the identical storm from (seed, synced clock).
+const storm = new StormRenderer(city.cityBuildings);
+scene.add(storm.group, storm.flashLight);
+const strikeFeed = new StrikeFeed(welcome.seed);
 
 const plane = buildPlaneMesh();
 scene.add(plane);
@@ -661,6 +667,13 @@ renderer.setAnimationLoop((now) => {
   traffic.update(chase.position, socket.renderTime());
   ground.update(chase.position);
   skyDome.update(chase.position);
+  // Storm: consume this frame's scheduled strikes, then age/place the bolts
+  // and drive the sky-flash pulse (fog stain + dome tint + violet ambient).
+  for (const s of strikeFeed.poll(socket.renderTime())) {
+    storm.strike(s, now);
+  }
+  storm.update(chase.position, now);
+  skyDome.tint(storm.applyFlash(scene, now));
   explosions.update(chase.position, now, dt);
   tracers.update(bullets.all, chase.position, now);
 

@@ -36,6 +36,7 @@ import { CityRenderer } from "./render/city";
 import { Explosions } from "./render/fx";
 import { buildPlaneMesh, spinPropeller } from "./render/plane";
 import { RemotePlanes } from "./render/remotes";
+import { FacadeGarnishRenderer } from "./render/facade-garnish";
 import { RoofClutterRenderer } from "./render/roofclutter";
 import { Signage } from "./render/signage";
 import { GroundPlane, SkyDome, setupSky } from "./render/sky";
@@ -118,6 +119,9 @@ scene.add(city.mesh);
 // Roof clutter + landmark beacons dress the same shared Building[] (V2).
 const roofClutter = new RoofClutterRenderer(city.cityBuildings);
 scene.add(roofClutter.group);
+// Parapet caps + entrance canopies dress the same shared Building[] (ANGE-XY8LH8).
+const facadeGarnish = new FacadeGarnishRenderer(city.cityBuildings);
+scene.add(facadeGarnish.group);
 const ground = new GroundPlane();
 scene.add(ground.mesh);
 const skyDome = new SkyDome();
@@ -347,9 +351,11 @@ declare global {
         buildings: number;
         tierInstances: number;
         clutterInstances: number;
+        garnishInstances: number;
       };
       signage: () => Signage["counts"];
       signImage: (x: number, z: number) => { x: number; z: number } | null;
+      garnishImage: (x: number, z: number) => { x: number; z: number } | null;
     };
   }
 }
@@ -404,10 +410,13 @@ window.__ab = {
     buildings: city.cityBuildings.length,
     tierInstances: city.tierInstanceCount,
     clutterInstances: roofClutter.instanceCount,
+    garnishInstances: facadeGarnish.instanceCount,
   }),
   // S2 QA: signage instance counts + drawn-position read-back (seam checks).
   signage: () => signage.counts,
   signImage: (x, z) => signage.imageOf(x, z),
+  // ANGE-XY8LH8 seam QA: drawn position of the parapet nearest (x, z).
+  garnishImage: (x, z) => facadeGarnish.imageOf(x, z),
 };
 
 // --- Frame loop ---
@@ -502,6 +511,7 @@ renderer.setAnimationLoop((now) => {
   city.update(chase.position);
   // Beacons pulse on server-synced time so every client is in phase.
   roofClutter.update(chase.position, socket.renderTime() ?? now);
+  facadeGarnish.update(chase.position);
   streetlights.update(chase.position);
   // Neon pulses on the same synced clock as the beacons.
   signage.update(chase.position, socket.renderTime() ?? now);

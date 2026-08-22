@@ -11,6 +11,9 @@
 import { type Building, mulberry32 } from "@angels-bandits/common/city";
 import { ROADWAY_HALF, nearestStreet } from "@angels-bandits/common/city/street";
 import { BLOCK_PITCH } from "@angels-bandits/common/constants";
+import type { Vec3 } from "@angels-bandits/common/world";
+import * as THREE from "three";
+import { nearestImage } from "./wrapPlacement";
 
 /** Parapet lip thickness across the edge, meters. */
 const LIP_THICKNESS = 1.1;
@@ -112,4 +115,93 @@ function canopyFor(b: Building): Canopy | null {
     sizeX: onX ? depth : CANOPY_WIDTH,
     sizeZ: onX ? CANOPY_WIDTH : depth,
   };
+}
+
+// --- Renderer (RoofClutter idiom: canonical layout, re-placed each frame) ---
+
+/** Caps slightly lighter than facades so roof edges catch the sky. */
+const PARAPET_COLOR = 0x262633;
+/** Awnings darker than the shop band behind them — a silhouette over the door. */
+const CANOPY_COLOR = 0x0a0a14;
+/** Lips sink this far into the tier top (kills z-gaps on the roof line). */
+const LIP_SINK = 0.2;
+
+/** The instanced parapet + canopy renderer: two draw calls for the city. */
+export class FacadeGarnishRenderer {
+  readonly group = new THREE.Group();
+  private readonly parapets: ParapetLip[];
+  private readonly canopies: Canopy[];
+  private readonly parapetMesh: THREE.InstancedMesh;
+  private readonly canopyMesh: THREE.InstancedMesh;
+  private readonly scratch = new THREE.Matrix4();
+
+  constructor(buildings: readonly Building[]) {
+    const layouts = buildings.map(facadeGarnishFor);
+    this.parapets = layouts.flatMap((g) => g.parapets);
+    this.canopies = layouts.flatMap((g) => (g.canopy ? [g.canopy] : []));
+
+    // Unit box with its base at y=0 so a scale matrix stands it up
+    // (same idiom as the city's unit box).
+    const geometry = new THREE.BoxGeometry(1, 1, 1);
+    geometry.translate(0, 0.5, 0);
+
+    this.parapetMesh = new THREE.InstancedMesh(
+      geometry,
+      new THREE.MeshStandardMaterial({ color: PARAPET_COLOR, roughness: 1 }),
+      this.parapets.length,
+    );
+    this.canopyMesh = new THREE.InstancedMesh(
+      geometry,
+      new THREE.MeshStandardMaterial({ color: CANOPY_COLOR, roughness: 1 }),
+      this.canopies.length,
+    );
+    for (const mesh of [this.parapetMesh, this.canopyMesh]) {
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      mesh.frustumCulled = false; // instances move relative to the camera every frame
+      this.group.add(mesh);
+    }
+  }
+
+  /** Total garnish instances drawn — perf reporting/QA. */
+  get instanceCount(): number {
+    return this.parapets.length + this.canopies.length;
+  }
+
+  /** Seam QA: where the parapet nearest canonical (x, z) is drawn right now
+   * (matrix read-back, same contract as Streetlights/Signage imageOf). */
+  imageOf(x: number, z: number): { x: number; z: number } | null {
+    let best = -1;
+    let bestD = Number.POSITIVE_INFINITY;
+    this.parapets.forEach((p, i) => {
+      const d = (p.x - x) ** 2 + (p.z - z) ** 2;
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    });
+    if (best < 0) return null;
+    this.parapetMesh.getMatrixAt(best, this.scratch);
+    return {
+      x: this.scratch.elements[12],
+      z: this.scratch.elements[14],
+    };
+  }
+
+  /** Place everything at its torus image nearest the camera. */
+  update(cameraPos: Vec3): void {
+    this.parapets.forEach((p, i) => {
+      const img = nearestImage(cameraPos, { x: p.x, y: 0, z: p.z });
+      this.scratch.makeScale(p.width, PARAPET_HEIGHT, p.depth);
+      this.scratch.setPosition(img.x, p.y - LIP_SINK, img.z);
+      this.parapetMesh.setMatrixAt(i, this.scratch);
+    });
+    this.canopies.forEach((c, i) => {
+      const img = nearestImage(cameraPos, { x: c.x, y: 0, z: c.z });
+      this.scratch.makeScale(c.sizeX, CANOPY_THICKNESS, c.sizeZ);
+      this.scratch.setPosition(img.x, c.y, img.z);
+      this.canopyMesh.setMatrixAt(i, this.scratch);
+    });
+    this.parapetMesh.instanceMatrix.needsUpdate = true;
+    this.canopyMesh.instanceMatrix.needsUpdate = true;
+  }
 }

@@ -444,25 +444,28 @@ function marqueeAtlas(seed: number): THREE.CanvasTexture {
   canvas.height = MARQUEE_TILE_H;
   const ctx = canvas.getContext("2d");
   if (ctx) {
-    ctx.fillStyle = "#0b0b12";
+    // Lit backing panel (~0.35 gray): tinted per instance it renders as a
+    // solid colored panel BELOW the bloom threshold — the sign's colored
+    // mass — while the white frame + glyphs bloom right at the rung.
+    ctx.fillStyle = "#595959";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     for (let tile = 0; tile < MARQUEE_TEXTURE_POOL; tile++) {
       const x0 = tile * MARQUEE_TILE_W;
       // Neon tube frame at full white — tinted to the rung per instance.
       ctx.strokeStyle = "#ffffff";
-      ctx.lineWidth = 4;
+      ctx.lineWidth = 6;
       ctx.strokeRect(x0 + 5, 5, MARQUEE_TILE_W - 10, MARQUEE_TILE_H - 10);
       const cells = 5 + Math.floor(rand() * 5);
       const cellH = (MARQUEE_TILE_H - 44) / cells;
       for (let c = 0; c < cells; c++) {
-        ctx.fillStyle = rand() < 0.85 ? "#ffffff" : "#c8c8c8";
+        ctx.fillStyle = rand() < 0.85 ? "#ffffff" : "#d8d8d8";
         drawGlyph(
           ctx,
           rand,
-          x0 + MARQUEE_TILE_W * 0.22,
-          22 + c * cellH + cellH * 0.14,
-          MARQUEE_TILE_W * 0.56,
-          cellH * 0.72,
+          x0 + MARQUEE_TILE_W * 0.16,
+          22 + c * cellH + cellH * 0.1,
+          MARQUEE_TILE_W * 0.68,
+          cellH * 0.8,
         );
       }
     }
@@ -490,8 +493,8 @@ function billboardAtlas(seed: number): THREE.CanvasTexture {
         x0 + BILLBOARD_TILE_W,
         BILLBOARD_TILE_H,
       );
-      grad.addColorStop(0, "#8c8c8c");
-      grad.addColorStop(1, "#e6e6e6");
+      grad.addColorStop(0, "#b4b4b4");
+      grad.addColorStop(1, "#ffffff");
       ctx.fillStyle = grad;
       ctx.fillRect(x0, 0, BILLBOARD_TILE_W, BILLBOARD_TILE_H);
       // A few hard color blocks, light and dark.

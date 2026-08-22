@@ -8,6 +8,8 @@
 import { describe, expect, it } from "vitest";
 import {
   type FullscreenDoc,
+  type FullscreenUiDoc,
+  initFullscreenUi,
   isFullscreen,
   isFullscreenSupported,
   toggleFullscreen,
@@ -152,5 +154,86 @@ describe("watchFullscreen", () => {
     doc.webkitFullscreenElement = {};
     listeners.get("webkitfullscreenchange")?.();
     expect(seen).toEqual([true]);
+  });
+});
+
+describe("initFullscreenUi", () => {
+  /** Fake #fs-btn / #join-fs elements + a classList-bearing body. */
+  function uiDoc(overrides: Partial<FullscreenDoc> = {}) {
+    const handlers = new Map<
+      string,
+      (ev: { stopPropagation: () => void }) => void
+    >();
+    function fakeButton(id: string) {
+      return {
+        hidden: false,
+        addEventListener: (
+          type: string,
+          cb: (ev: { stopPropagation: () => void }) => void,
+        ) => handlers.set(`${id}:${type}`, cb),
+      };
+    }
+    const buttons = {
+      "fs-btn": fakeButton("fs-btn"),
+      "join-fs": fakeButton("join-fs"),
+    };
+    const bodyClasses = new Set<string>();
+    const listeners = new Map<string, () => void>();
+    const { doc: base, calls } = mockDoc(overrides);
+    base.addEventListener = (type: string, cb: () => void) =>
+      listeners.set(type, cb);
+    const doc: FullscreenUiDoc = {
+      ...base,
+      body: {
+        classList: {
+          toggle: (name: string, on: boolean) => {
+            if (on) bodyClasses.add(name);
+            else bodyClasses.delete(name);
+          },
+        },
+      },
+      getElementById: (id: string) =>
+        buttons[id as keyof typeof buttons] ?? null,
+    };
+    const noEvent = { stopPropagation: () => {} };
+    return { doc, buttons, handlers, noEvent, calls, listeners, bodyClasses };
+  }
+
+  it("hides both buttons when fullscreen is unsupported", () => {
+    const { doc, buttons } = uiDoc({ fullscreenEnabled: undefined });
+    initFullscreenUi(doc);
+    expect(buttons["fs-btn"].hidden).toBe(true);
+    expect(buttons["join-fs"].hidden).toBe(true);
+  });
+
+  it("clicking either button toggles fullscreen", () => {
+    const { doc, handlers, noEvent, calls } = uiDoc();
+    initFullscreenUi(doc);
+    handlers.get("fs-btn:click")?.(noEvent);
+    expect(calls).toEqual(["request"]);
+    doc.fullscreenElement = {}; // browser grants it
+    handlers.get("join-fs:click")?.(noEvent); // second trigger toggles back out
+    expect(calls).toEqual(["request", "exit"]);
+  });
+
+  it("swallows mousedown on the HUD button so the guns never hear it", () => {
+    const { doc, handlers } = uiDoc();
+    initFullscreenUi(doc);
+    let stopped = 0;
+    handlers.get("fs-btn:mousedown")?.({ stopPropagation: () => stopped++ });
+    handlers.get("fs-btn:mouseup")?.({ stopPropagation: () => stopped++ });
+    expect(stopped).toBe(2); // Guns listens on window mousedown/mouseup
+  });
+
+  it("drives body.fullscreen from the change event, not from clicks", () => {
+    const { doc, listeners, bodyClasses } = uiDoc();
+    initFullscreenUi(doc);
+    expect(bodyClasses.has("fullscreen")).toBe(false);
+    doc.fullscreenElement = {};
+    listeners.get("fullscreenchange")?.();
+    expect(bodyClasses.has("fullscreen")).toBe(true);
+    doc.fullscreenElement = undefined; // Esc — browser-owned exit
+    listeners.get("fullscreenchange")?.();
+    expect(bodyClasses.has("fullscreen")).toBe(false);
   });
 });

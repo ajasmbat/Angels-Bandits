@@ -60,3 +60,40 @@ export function watchFullscreen(
   doc.addEventListener?.("fullscreenchange", report);
   doc.addEventListener?.("webkitfullscreenchange", report);
 }
+
+/** The extra document surface the button wiring needs (still mockable). */
+export interface FullscreenUiDoc extends FullscreenDoc {
+  body?: { classList: { toggle: (name: string, on: boolean) => void } };
+  getElementById?: (id: string) => {
+    hidden: boolean;
+    addEventListener: (
+      type: string,
+      listener: (ev: { stopPropagation: () => void }) => void,
+    ) => void;
+  } | null;
+}
+
+/** Wire the HUD + join-overlay buttons (chrome lives in index.html). Hides
+ * them where fullscreen is unsupported; `body.fullscreen` (the icon's exit
+ * state, CSS) follows the change events so Esc-exit stays truthful. */
+export function initFullscreenUi(
+  doc: FullscreenUiDoc = document as FullscreenUiDoc,
+): void {
+  const buttons = [
+    doc.getElementById?.("fs-btn"),
+    doc.getElementById?.("join-fs"),
+  ];
+  if (!isFullscreenSupported(doc)) {
+    for (const btn of buttons) if (btn) btn.hidden = true;
+    return;
+  }
+  const swallow = (ev: { stopPropagation: () => void }) => ev.stopPropagation();
+  for (const btn of buttons) {
+    btn?.addEventListener("click", () => toggleFullscreen(doc));
+    // The gun trigger listens on window mousedown/mouseup — a click on the
+    // button must never double as a trigger pull.
+    btn?.addEventListener("mousedown", swallow);
+    btn?.addEventListener("mouseup", swallow);
+  }
+  watchFullscreen((on) => doc.body?.classList.toggle("fullscreen", on), doc);
+}

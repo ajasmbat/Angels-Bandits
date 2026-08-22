@@ -70,6 +70,13 @@ const BILLBOARD_FACE_MAX = 2;
 /** Billboard art-texture pool size (atlas tiles). */
 export const BILLBOARD_TEXTURE_POOL = 8;
 
+/** Storefront strip: a thin sign band just above the shop-glass line the
+ * buildings shader paints (its shop band tops out at 4 m of world height). */
+const STRIP_BOTTOM = 4.1;
+const STRIP_HEIGHT = 0.7;
+/** How proud of the facade the strip sits, meters. */
+const STRIP_DEPTH = 0.4;
+
 // --- Seeded neon palette (linear RGB, weighted like the reference photo) ---
 export interface PaletteColor {
   r: number;
@@ -238,13 +245,9 @@ export function signageFor(b: Building, seed: number): BuildingSignage {
 
     // Panel center sits depth/2 outside the facade plane.
     const place = (
-      slot: number,
-      width: number,
+      centerAlong: number,
       depth: number,
-      jitter: number,
     ): { x: number; z: number } => {
-      const centerAlong =
-        along(slot) + jitter * Math.max(0, slotWidth / 2 - width / 2 - 0.5);
       const centerPerp = face.plane + (face.dir * depth) / 2;
       const p =
         face.axis === "x"
@@ -270,10 +273,11 @@ export function signageFor(b: Building, seed: number): BuildingSignage {
         MARQUEE_HEIGHT_MIN + rand() * (MARQUEE_HEIGHT_MAX - MARQUEE_HEIGHT_MIN),
         tier1Top - bottom,
       );
-      const jitter = rand() * 2 - 1;
+      const jitter =
+        (rand() * 2 - 1) * Math.max(0, slotWidth / 2 - width / 2 - 0.5);
       if (height < MARQUEE_HEIGHT_MIN) continue;
       out.marquees.push({
-        ...place(slot, width, MARQUEE_DEPTH, jitter),
+        ...place(along(slot) + jitter, MARQUEE_DEPTH),
         y: bottom,
         width,
         height,
@@ -304,10 +308,11 @@ export function signageFor(b: Building, seed: number): BuildingSignage {
           rand() * (BILLBOARD_BOTTOM_MAX - BILLBOARD_BOTTOM_MIN),
         t1.height - height,
       );
-      const jitter = rand() * 2 - 1;
+      const jitter =
+        (rand() * 2 - 1) * Math.max(0, slotWidth / 2 - width / 2 - 0.5);
       if (bottom < BILLBOARD_BOTTOM_MIN) continue;
       out.billboards.push({
-        ...place(slot, width, BILLBOARD_DEPTH, jitter),
+        ...place(along(slot) + jitter, BILLBOARD_DEPTH),
         y: bottom,
         width,
         height,
@@ -319,6 +324,20 @@ export function signageFor(b: Building, seed: number): BuildingSignage {
         phase: rand(),
       });
     }
+
+    // --- Storefront strip (one continuous band per facade, Concept 4) ---
+    out.strips.push({
+      ...place(face.axis === "x" ? b.z : b.x, STRIP_DEPTH),
+      y: STRIP_BOTTOM,
+      width: span,
+      height: STRIP_HEIGHT,
+      depth: STRIP_DEPTH,
+      axis: face.axis,
+      dir: face.dir,
+      paletteIndex: paletteIndex(rand()),
+      textureIndex: 0,
+      phase: rand(),
+    });
   });
 
   return out;

@@ -122,7 +122,7 @@ describe("signageFor — marquees", () => {
   it("never puts any part of any sign in the roadway, across the whole seed-42 city", () => {
     for (const b of generateCity(CITY_SEED)) {
       const s = signageFor(b, CITY_SEED);
-      for (const sign of [...s.marquees, ...s.billboards]) {
+      for (const sign of [...s.marquees, ...s.billboards, ...s.strips]) {
         for (const c of panelCorners(sign)) {
           expect(isInRoadway({ x: c.x, y: 0, z: c.z })).toBe(false);
         }
@@ -133,7 +133,7 @@ describe("signageFor — marquees", () => {
   it("keeps every sign in canonical [0, 2000) coordinates", () => {
     for (const b of generateCity(CITY_SEED)) {
       const s = signageFor(b, CITY_SEED);
-      for (const sign of [...s.marquees, ...s.billboards]) {
+      for (const sign of [...s.marquees, ...s.billboards, ...s.strips]) {
         expect(sign.x).toBeGreaterThanOrEqual(0);
         expect(sign.x).toBeLessThan(2000);
         expect(sign.z).toBeGreaterThanOrEqual(0);
@@ -184,5 +184,33 @@ describe("signageFor — billboards", () => {
     const count = (s: ReturnType<typeof signageFor>) =>
       s.marquees.length + s.billboards.length;
     expect(count(hot)).toBeGreaterThan(count(cold));
+  });
+});
+
+describe("signageFor — storefront strips", () => {
+  it("bands every sidewalk-facing facade: 4 strips on the mid-block slab", () => {
+    expect(signageFor(MIDRISE, SEED).strips).toHaveLength(4);
+  });
+
+  it("skips strips where the facade sits on the curb", () => {
+    expect(signageFor(MAX_FOOTPRINT, SEED).strips).toHaveLength(0);
+  });
+
+  it("sits the band above the shop-glow line (shader shop band tops at 4 m)", () => {
+    // 4.0 is SHOP_BAND_HEIGHT in buildings-material.ts — the storefront
+    // glass the strip must clear.
+    for (const s of signageFor(MIDRISE, SEED).strips) {
+      expect(s.y).toBeGreaterThanOrEqual(4);
+      expect(s.height).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("runs the strip along the facade without reaching the corners", () => {
+    for (const s of signageFor(MIDRISE, SEED).strips) {
+      // MIDRISE faces are 120 m long, centered on 500.
+      expect(s.width).toBeLessThan(120);
+      const along = s.axis === "x" ? s.z : s.x;
+      expect(along).toBeCloseTo(500, 6);
+    }
   });
 });

@@ -42,7 +42,7 @@ interface Remote {
 
 export class RemotePlanes {
   private readonly remotes = new Map<string, Remote>();
-  private readonly names = new Map<string, string>();
+  private readonly names = new Map<string, { name: string; isBot: boolean }>();
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -55,12 +55,22 @@ export class RemotePlanes {
 
   setRoster(roster: RosterEntry[]): void {
     for (const entry of roster) {
-      if (entry.id !== this.selfId) this.names.set(entry.id, entry.name);
+      if (entry.id !== this.selfId) {
+        this.names.set(entry.id, {
+          name: entry.name,
+          isBot: entry.isBot ?? false,
+        });
+      }
     }
   }
 
   playerJoined(player: RosterEntry): void {
-    if (player.id !== this.selfId) this.names.set(player.id, player.name);
+    if (player.id !== this.selfId) {
+      this.names.set(player.id, {
+        name: player.name,
+        isBot: player.isBot ?? false,
+      });
+    }
   }
 
   playerLeft(id: string): void {
@@ -79,9 +89,10 @@ export class RemotePlanes {
       if (id === this.selfId) continue;
       let remote = this.remotes.get(id);
       if (!remote) {
+        const known = this.names.get(id);
         remote = {
           mesh: buildPlaneMesh(),
-          tag: createNameTag(this.names.get(id) ?? "???"),
+          tag: createNameTag(known?.name ?? "???", known?.isBot ?? false),
           buffer: new InterpolationBuffer(),
           lastPos: null,
           lastPose: null,
@@ -169,7 +180,7 @@ export class RemotePlanes {
   }
 
   nameOf(id: string): string {
-    return this.names.get(id) ?? "???";
+    return this.names.get(id)?.name ?? "???";
   }
 
   /** Sample every buffer at `renderTime` and place meshes around `viewer`. */

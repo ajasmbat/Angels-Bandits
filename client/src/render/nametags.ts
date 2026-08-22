@@ -8,7 +8,12 @@ import * as THREE from "three";
 /** Meters above a plane's position its tag floats. */
 export const TAG_ALTITUDE = 6;
 
-export function createNameTag(name: string): THREE.Sprite {
+/** Human tag tint (matches the HUD's cool cyan). */
+const HUMAN_COLOR = "#9fd8e8";
+/** Bot (BANDIT) tag tint — hostile amber, obviously non-human. */
+const BOT_COLOR = "#ffa26b";
+
+export function createNameTag(name: string, isBot = false): THREE.Sprite {
   const canvas = document.createElement("canvas");
   canvas.width = 256;
   canvas.height = 64;
@@ -19,7 +24,7 @@ export function createNameTag(name: string): THREE.Sprite {
     ctx.textBaseline = "middle";
     ctx.shadowColor = "#000";
     ctx.shadowBlur = 6;
-    ctx.fillStyle = "#9fd8e8";
+    ctx.fillStyle = isBot ? BOT_COLOR : HUMAN_COLOR;
     ctx.fillText(name, canvas.width / 2, canvas.height / 2);
   }
   const texture = new THREE.CanvasTexture(canvas);

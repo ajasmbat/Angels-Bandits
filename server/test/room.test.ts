@@ -49,3 +49,68 @@ describe("RoomManager", () => {
     expect(mgr.roomOf("p1")).toBeUndefined();
   });
 });
+
+describe("bot backfill math", () => {
+  it("a fresh standing room wants BOT_FLOOR bots (6, from PLAN's ≥6 combatants)", () => {
+    const mgr = new RoomManager();
+    const room = mgr.ensureRoom();
+    expect(mgr.desiredBots(room)).toBe(6);
+  });
+
+  it("each human join displaces one bot: 1 human → 5 bots, 6+ humans → 0", () => {
+    const mgr = new RoomManager();
+    const room = mgr.join("p1", "Pilot 1");
+    expect(mgr.desiredBots(room)).toBe(5);
+    fill(mgr, 5, 1);
+    expect(mgr.desiredBots(room)).toBe(0);
+    fill(mgr, 6, 6);
+    expect(room.humanCount).toBe(12);
+    expect(mgr.desiredBots(room)).toBe(0);
+  });
+
+  it("bots never block humans: a room with 12 humans is full regardless of bots", () => {
+    const mgr = new RoomManager();
+    const room = mgr.ensureRoom();
+    mgr.addBot(room, "bot:room-1:1", "BANDIT-1");
+    fill(mgr, 12);
+    // 12 humans + 1 lingering bot: full for the NEXT human, who gets room 2.
+    expect(room.full).toBe(true);
+    const other = mgr.join("p13", "Pilot 13");
+    expect(other.id).not.toBe(room.id);
+  });
+
+  it("a bot-only room that is not the standing (first) room wants 0 bots", () => {
+    const mgr = new RoomManager();
+    fill(mgr, 13); // rooms 1 and 2 exist
+    const second = mgr.roomOf("p13");
+    if (!second) throw new Error("expected a second room");
+    mgr.leave("p13");
+    // p13 left but the room lingers only if it still has members; simulate
+    // the bot that was backfilled into it surviving the leave.
+    mgr.addBot(second, "bot:room-2:1", "BANDIT-1");
+    expect(mgr.desiredBots(second)).toBe(0);
+  });
+
+  it("addBot registers the bot as a member; leave() despawns it and can empty the room", () => {
+    const mgr = new RoomManager();
+    const room = mgr.ensureRoom();
+    const entry = mgr.addBot(room, "bot:room-1:1", "BANDIT-1");
+    expect(entry).toEqual({
+      id: "bot:room-1:1",
+      name: "BANDIT-1",
+      isBot: true,
+    });
+    expect(room.humanCount).toBe(0);
+    expect(room.members.size).toBe(1);
+    expect(mgr.roomOf("bot:room-1:1")?.id).toBe(room.id);
+    mgr.leave("bot:room-1:1");
+    expect(mgr.rooms).toHaveLength(0);
+  });
+
+  it("ensureRoom returns the existing first room instead of minting a new one", () => {
+    const mgr = new RoomManager();
+    const room = mgr.join("p1", "Pilot 1");
+    expect(mgr.ensureRoom().id).toBe(room.id);
+    expect(mgr.rooms).toHaveLength(1);
+  });
+});

@@ -9,9 +9,13 @@
 // together.
 
 import { type Building, mulberry32 } from "@angels-bandits/common/city";
-import { LANDMARK_HEIGHT } from "@angels-bandits/common/constants";
+import {
+  EMISSIVE_BEACON,
+  LANDMARK_HEIGHT,
+} from "@angels-bandits/common/constants";
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { emissiveBoost } from "./emissive";
 import { nearestImage } from "./wrapPlacement";
 
 /** Buildings at least this tall grow antenna masts (with red tips). */
@@ -129,10 +133,10 @@ export function roofClutterFor(b: Building): RoofClutter {
 }
 
 // --- Emissive rungs (V1 bloom ladder: threshold 0.72, tracers ~1.5) ---
-/** Beacon red pushed so its PEAK luminance ≈ 1.0 — above lamp heads, below
- * tracers; the pulse trough falls under the threshold so beacons breathe. */
+/** Beacon red pushed to its ladder rung at pulse PEAK — above lamp heads,
+ * below tracers; the pulse trough falls under the threshold so beacons breathe. */
 const BEACON_COLOR = new THREE.Color(1.0, 0.12, 0.1);
-const BEACON_BOOST = 3.3;
+const BEACON_BOOST = emissiveBoost(BEACON_COLOR, EMISSIVE_BEACON);
 /** Beacon pulse period, ms of synced server time — all clients in phase. */
 const BEACON_PERIOD_MS = 2000;
 /** Antenna tips stay UNDER the bloom threshold: visible red dots, no halo. */

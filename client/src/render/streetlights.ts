@@ -1,18 +1,46 @@
-// Street lamps (V1 lighting pass): deterministic emissive lamp heads along
-// the street grid, plus a faked warm glow pool under each — NO point lights,
-// the night look is emissive + bloom only. Layout is a pure function of the
-// block grid (no PRNG): each block owns its west and south street segments,
-// so every street centerline is covered exactly once despite the torus wrap.
+// Street lamps (V1 lighting pass, repositioned by S1): deterministic emissive
+// lamp heads along the street grid, plus a faked warm glow pool under each —
+// NO point lights, the night look is emissive + bloom only. Layout is a pure
+// function of the block grid (no PRNG): each block owns its west and south
+// street LINES and dresses BOTH furniture lines of each (the S1 street
+// contract's curbside lamp row, never the roadway), so every street is
+// covered exactly once despite the torus wrap.
 
-import { BLOCK_PITCH, WORLD_SIZE } from "@angels-bandits/common/constants";
-import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
+import { FURNITURE_LINE } from "@angels-bandits/common/city/street";
+import {
+  BLOCK_PITCH,
+  EMISSIVE_LAMP,
+  WORLD_SIZE,
+} from "@angels-bandits/common/constants";
+import {
+  type Vec3,
+  canonicalize,
+  wrapDelta,
+} from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { emissiveBoost } from "./emissive";
 import { nearestImage } from "./wrapPlacement";
 
 /** Lamps per owned street segment, at these fractions along it. */
 const LAMP_FRACTIONS = [0.125, 0.5, 0.875] as const;
+/** The negative side is staggered by this fraction (5/16, binary-exact) so
+ * the two curbside rows never mirror each other across the street. Its
+ * stations land at 37.5 / 87.5 / 162.5 m — the same 50/75/75 rhythm, kept
+ * clear of block corners so no lamp falls into a CROSSING street's roadway
+ * (a naive half-step stagger puts one station 12.5 m from the corner). */
+const STAGGER = 0.3125;
 
-/** Canonical ground position of one lamp (street centerline, y = 0). */
+/** Lamp stations in meters along a street segment, per side — the ground
+ * shader's faked lamp reflections (S1 wet look) anchor to these, so the
+ * streaks always sit under the actual lamps. */
+export const LAMP_STATIONS_PLUS: readonly number[] = LAMP_FRACTIONS.map(
+  (f) => f * BLOCK_PITCH,
+);
+export const LAMP_STATIONS_MINUS: readonly number[] = LAMP_FRACTIONS.map(
+  (f) => ((f + STAGGER) % 1) * BLOCK_PITCH,
+);
+
+/** Canonical ground position of one lamp (on a furniture line, y = 0). */
 export interface StreetlampPosition {
   x: number;
   z: number;
@@ -20,20 +48,29 @@ export interface StreetlampPosition {
 
 /**
  * Every street lamp in canonical [0, WORLD_SIZE) coords, deterministic from
- * the block grid. Each block contributes its west edge (x = bx·PITCH) and its
- * south edge (z = bz·PITCH); with the torus wrap that tiles all street lines
- * exactly once, corners excluded (fractions never land on 0 or 1).
+ * the block grid. Each block contributes its west line (x = bx·PITCH) and its
+ * south line (z = bz·PITCH), placing lamps on BOTH of the line's furniture
+ * lines (contract: FURNITURE_LINE m off the centerline, 1 m behind the curb);
+ * with the torus wrap that tiles all street lines exactly once, corners
+ * excluded (fractions never land on 0 or 1).
  */
 export function streetlampPositions(): StreetlampPosition[] {
   const grid = WORLD_SIZE / BLOCK_PITCH;
+  const canon = (v: number) => canonicalize({ x: v, y: 0, z: 0 }).x;
   const lamps: StreetlampPosition[] = [];
   for (let bx = 0; bx < grid; bx++) {
     for (let bz = 0; bz < grid; bz++) {
       const x0 = bx * BLOCK_PITCH;
       const z0 = bz * BLOCK_PITCH;
-      for (const f of LAMP_FRACTIONS) {
-        lamps.push({ x: x0, z: z0 + f * BLOCK_PITCH }); // west segment
-        lamps.push({ x: x0 + f * BLOCK_PITCH, z: z0 }); // south segment
+      for (let i = 0; i < LAMP_FRACTIONS.length; i++) {
+        const along = LAMP_STATIONS_PLUS[i] as number;
+        const staggered = LAMP_STATIONS_MINUS[i] as number;
+        // West line: a lamp on each furniture line, negative side staggered.
+        lamps.push({ x: x0 + FURNITURE_LINE, z: z0 + along });
+        lamps.push({ x: canon(x0 - FURNITURE_LINE), z: z0 + staggered });
+        // South line: same cross-section, axes swapped.
+        lamps.push({ x: x0 + along, z: z0 + FURNITURE_LINE });
+        lamps.push({ x: x0 + staggered, z: canon(z0 - FURNITURE_LINE) });
       }
     }
   }
@@ -41,10 +78,9 @@ export function streetlampPositions(): StreetlampPosition[] {
 }
 
 const POLE_HEIGHT = 7;
-/** Lamp-head color, pushed past 1.0 so heads read hot to the bloom pass —
- * clearly above the window emissives, below tracers. */
+/** Lamp-head color, boosted to the ladder's LAMP rung so heads read hot to
+ * the bloom pass — above the window emissives, below beacons and tracers. */
 const LAMP_COLOR = 0xffb35c;
-const HEAD_BOOST = 1.6;
 const GLOW_RADIUS = 9;
 const GLOW_OPACITY = 0.32;
 
@@ -96,7 +132,9 @@ export class Streetlights {
     );
 
     const headMaterial = new THREE.MeshBasicMaterial({ color: LAMP_COLOR });
-    headMaterial.color.multiplyScalar(HEAD_BOOST);
+    headMaterial.color.multiplyScalar(
+      emissiveBoost(headMaterial.color, EMISSIVE_LAMP),
+    );
     this.heads = new THREE.InstancedMesh(
       new THREE.SphereGeometry(0.45, 8, 6),
       headMaterial,

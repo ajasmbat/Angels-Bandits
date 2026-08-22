@@ -6,14 +6,27 @@
 // same-sized windows with a deterministic lit/unlit mix. Purely visual —
 // no gameplay code touches this.
 
+import { EMISSIVE_WINDOW } from "@angels-bandits/common/constants";
 import * as THREE from "three";
+import { luminance } from "./emissive";
 
 /** Window cell pitch, meters (x = along the facade, y = per floor). */
 const WINDOW_PITCH = "vec2(5.0, 3.6)";
 
-/** Lifts lit windows just over the bloom threshold (V1: gentle window glow,
- * peak ~0.94 luminance — always below tracer/lamp emissives). */
-const WINDOW_EMISSIVE_INTENSITY = "1.25";
+/** Window palette, linear (GLSL space): mostly warm incandescent, a few cool
+ * fluorescent. Shared with the intensity derivation below. */
+const WINDOW_WARM = new THREE.Color(1.0, 0.72, 0.35);
+const WINDOW_COOL = new THREE.Color(0.55, 0.85, 1.0);
+const glslVec3 = (c: THREE.Color) =>
+  `vec3(${c.r.toFixed(3)}, ${c.g.toFixed(3)}, ${c.b.toFixed(3)})`;
+
+/** Lifts lit windows to the ladder's WINDOW rung (S1): the BRIGHTEST palette
+ * variant peaks exactly at EMISSIVE_WINDOW, so no window outshines the rung —
+ * always below sign/lamp/beacon/tracer emissives, still over the 0.72 bloom
+ * threshold for a gentle glow. */
+const WINDOW_EMISSIVE_INTENSITY = (
+  EMISSIVE_WINDOW / Math.max(luminance(WINDOW_WARM), luminance(WINDOW_COOL))
+).toFixed(4);
 
 /** Street-level shop band height, meters of WORLD height (tier 1 only —
  * upper-tier bases sit far above this and keep ordinary windows). */
@@ -70,7 +83,7 @@ float pane = step(0.18, winF.x) * step(winF.x, 0.82)
 float winH = fract(sin(dot(winCell + vBSeed * 61.0, vec2(127.1, 311.7))) * 43758.5453);
 float lit = step(0.62, winH);
 // Mostly warm incandescent windows, a few cool fluorescent ones.
-vec3 winColor = mix(vec3(1.0, 0.72, 0.35), vec3(0.55, 0.85, 1.0), step(0.88, winH));
+vec3 winColor = mix(${glslVec3(WINDOW_WARM)}, ${glslVec3(WINDOW_COOL)}, step(0.88, winH));
 vec3 windowGlow = pane * lit * winColor * (0.55 + 0.45 * winH) * ${WINDOW_EMISSIVE_INTENSITY};
 // V2 street-level shop band: the bottom ${SHOP_BAND_HEIGHT} m of WORLD height
 // (so only tier-1 bases qualify) swaps the window grid for wide, warm

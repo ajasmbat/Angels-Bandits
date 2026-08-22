@@ -5,6 +5,7 @@
 
 import { INTERP_DELAY_MS, TICK_UP_HZ } from "@angels-bandits/common/constants";
 import type {
+  BotsConfigMsg,
   DamageMsg,
   DeathMsg,
   Pose,
@@ -26,6 +27,7 @@ export interface GameSocketEvents {
   onDeath?: (msg: DeathMsg) => void;
   onRespawn?: (msg: RespawnMsg) => void;
   onScores?: (scores: ScoreEntry[]) => void;
+  onBotsConfig?: (msg: BotsConfigMsg) => void;
   onClose?: () => void;
 }
 
@@ -103,6 +105,12 @@ export class GameSocket {
     this.send({ type: "crash" });
   }
 
+  /** Claim the room's shared bot count. The server may clamp or silently
+   * drop it (rate limit) — only the botsConfig it answers with is real. */
+  sendSetBots(count: number): void {
+    this.send({ type: "setBots", count });
+  }
+
   private send(msg: object): void {
     if (this.ws.readyState === WebSocket.OPEN)
       this.ws.send(JSON.stringify(msg));
@@ -153,6 +161,9 @@ export class GameSocket {
         break;
       case "score":
         this.events.onScores?.(msg.scores);
+        break;
+      case "botsConfig":
+        this.events.onBotsConfig?.(msg);
         break;
       case "welcome":
         break; // already consumed by connect()

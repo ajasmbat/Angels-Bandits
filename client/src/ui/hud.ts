@@ -70,10 +70,15 @@ export class Hud {
     document.body.classList.toggle("freelook", on);
   }
 
-  /** Kill-cam overlay: who got you (null = you crashed clean). */
-  showKillCam(killerName: string | null): void {
+  /** Kill-cam overlay: who got you (null = you crashed clean; the storm's
+   * bolt names itself — discovery is the design, so no more than that). */
+  showKillCam(killerName: string | null, cause?: "storm"): void {
     this.killcam.textContent =
-      killerName === null ? "YOU CRASHED" : `ELIMINATED BY ${killerName}`;
+      cause === "storm"
+        ? "⚡ STRUCK BY THE STORM"
+        : killerName === null
+          ? "YOU CRASHED"
+          : `ELIMINATED BY ${killerName}`;
     this.killcam.classList.add("open");
   }
 

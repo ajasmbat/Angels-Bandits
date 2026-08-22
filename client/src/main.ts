@@ -298,12 +298,12 @@ function flashFade(): void {
 }
 
 /** Freeze into the kill-cam; the server's respawn message ends it. */
-function enterDeath(killerId: string | null): void {
+function enterDeath(killerId: string | null, cause?: "storm"): void {
   // Kill-cam owns the camera — force-exit free-look instantly.
   freelook = createFreeLook();
   hud.setFreeLook(false);
   killCamTargetId = killerId;
-  hud.showKillCam(killerId === null ? null : nameOf(killerId));
+  hud.showKillCam(killerId === null ? null : nameOf(killerId), cause);
   if (!alive) return;
   alive = false;
   plane.visible = false;
@@ -425,8 +425,9 @@ socket.events.onDeath = (msg) => {
     nameOf(msg.victimId),
     msg.cause,
   );
-  if (msg.victimId === socket.selfId) enterDeath(msg.killerId);
-  else remotes.setDead(msg.victimId);
+  if (msg.victimId === socket.selfId) {
+    enterDeath(msg.killerId, msg.cause === "storm" ? "storm" : undefined);
+  } else remotes.setDead(msg.victimId);
   // Radio: the victim's mayday from us, or the killer's "splash one".
   if (msg.victimId === socket.selfId) {
     radio.noteCombat(performance.now());

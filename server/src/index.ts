@@ -167,6 +167,7 @@ function handleJoin(ws: WebSocket, rawName: unknown): Client {
     spawn,
     roster: room.roster(),
     scores: room.roster().map(({ id: rid }) => combat.scoreOf(rid)),
+    botTarget: room.botTarget,
   };
   ws.send(JSON.stringify(welcome));
   sendToRoom(room, { type: "playerJoined", player: { id, name } }, id);
@@ -284,6 +285,24 @@ function handleHitClaim(
     });
     broadcastScores(client.room);
   }
+}
+
+/**
+ * A claim on the room's shared bot count (ANGE-6STDNN). The Room seam owns
+ * the governance — clamp, whole-number check, per-player rate limit — so a
+ * refusal is simply silence here: nothing is broadcast, and the claimant's
+ * slider snaps back to the last value the server confirmed.
+ */
+function handleSetBots(client: Client, count: unknown, now: number): void {
+  const accepted = client.room.setBotTarget(client.id, count, now);
+  if (accepted === null) return;
+  sendToRoom(client.room, {
+    type: "botsConfig",
+    count: accepted,
+    byName: client.name,
+  });
+  // Bots spawn/despawn through the same path a join or a leave uses.
+  syncRoomBots(client.room);
 }
 
 function handleCrash(client: Client, now: number): void {
@@ -457,6 +476,8 @@ wss.on("connection", (ws) => {
       handleHitClaim(client, msg, now);
     } else if (msg.type === "crash" && client) {
       handleCrash(client, now);
+    } else if (msg.type === "setBots" && client) {
+      handleSetBots(client, msg.count, now);
     }
   });
 

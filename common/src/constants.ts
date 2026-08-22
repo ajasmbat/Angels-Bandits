@@ -219,8 +219,14 @@ export const RESPAWN_SAMPLES = 24;
 export const ROOM_CAP = 12;
 
 // --- Bots (B1) — every knob for the server-side backfill pilots ---
-/** Minimum combatants (humans + bots) a room is kept backfilled to. */
-export const BOT_FLOOR = 6;
+/** Bot count a fresh room starts at, before anyone touches the slider. */
+export const BOT_TARGET_DEFAULT = 5;
+/** Highest bot count the shared slider can ask for. One seat is always kept
+ * for a human, so the arena can never be locked to bots only. */
+export const BOT_TARGET_MAX = ROOM_CAP - 1;
+/** One accepted bot-count change per player per this long, ms — the shared
+ * slider's only governance besides last-write-wins (ANGE-6STDNN). */
+export const BOT_TARGET_RATE_MS = 3000;
 /** A bot notices targets (human or bot) within this torus range, m. */
 export const BOT_DETECT_RANGE = 500;
 /** A bot pulls the trigger only inside this range, m (< BULLET_RANGE). */

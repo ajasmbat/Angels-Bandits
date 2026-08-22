@@ -42,6 +42,7 @@ export class ChaseCamera {
     state: FlightState,
     dt: number,
     look?: { yaw: number; pitch: number },
+    shake?: Vec3,
   ): void {
     if (!this.pos) this.snapTo(state);
     else this.pos = nearestImage(state.pos, this.pos); // seam re-alignment
@@ -69,6 +70,12 @@ export class ChaseCamera {
         look.pitch,
       );
       view = { x: aim.x + off.x, y: aim.y + off.y, z: aim.z + off.z };
+    }
+    // Turbulence shake (ST2) displaces the DISPLAYED camera only — like the
+    // free-look orbit, it never enters the chase state or the flight state,
+    // so nothing visual can leak into the streamed pose.
+    if (shake) {
+      view = { x: view.x + shake.x, y: view.y + shake.y, z: view.z + shake.z };
     }
     camera.position.set(view.x, view.y, view.z);
     camera.lookAt(aim.x, aim.y + 2, aim.z);

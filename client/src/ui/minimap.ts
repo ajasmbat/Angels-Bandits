@@ -48,6 +48,15 @@ export interface MinimapContact {
   angle: number;
 }
 
+/** A storm reveal echo: where a plane was lit + its fading level (1 → 0). */
+export interface StormEcho {
+  pos: Vec3;
+  level: number;
+}
+
+/** Neon Vein ping magenta — the reveal accent across model, map, and feed. */
+const ECHO_COLOR = "#e07bff";
+
 /** One world's worth of city blocks, drawn once (footprints by height). */
 function renderCityTile(
   buildings: readonly Building[],
@@ -107,11 +116,14 @@ export class Minimap {
     ctx.restore();
   }
 
-  /** Redraw: wrapped city under the player, contacts, self arrow at center. */
+  /** Redraw: wrapped city under the player, storm echoes, contacts, self
+   * arrow at center. Echoes draw under contacts — a live blip outranks the
+   * storm's 2 s old radar memory of the same plane. */
   update(
     playerPos: Vec3,
     playerYaw: number,
     contacts: readonly MinimapContact[],
+    echoes: readonly StormEcho[] = [],
   ): void {
     const ctx = this.ctx;
     if (!ctx) return;
@@ -121,6 +133,18 @@ export class Minimap {
       for (const dy of [0, size]) {
         ctx.drawImage(this.tile, o.x + dx, o.y + dy);
       }
+    }
+    for (const e of echoes) {
+      const p = minimapPoint(playerPos, e.pos, size);
+      // Pulsing magenta echo (Neon Vein): ~3 Hz throb while it fades out.
+      const throb =
+        0.55 + 0.45 * Math.abs(Math.sin((1 - e.level) * Math.PI * 6));
+      ctx.globalAlpha = e.level * throb;
+      ctx.fillStyle = ECHO_COLOR;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 4 + (1 - e.level) * 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
     }
     for (const c of contacts) {
       const p = minimapPoint(playerPos, c.pos, size);

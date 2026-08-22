@@ -22,6 +22,9 @@ export class Hud {
   private readonly crosshair = document.getElementById(
     "crosshair",
   ) as HTMLDivElement;
+  private readonly radioToggle = document.getElementById(
+    "radio-toggle",
+  ) as HTMLDivElement;
   private hitBlipUntil = 0;
 
   /** Server-owned HP (snapshots / damage events). */
@@ -40,15 +43,42 @@ export class Hud {
     this.badge.classList.toggle("on", on);
   }
 
+  /**
+   * Radio-voice mute toggle (mutes TTS only — the comms ticker stays on).
+   * Guns hold their trigger from a window-level mousedown, so pointer events
+   * on the toggle must never bubble — clicking it can't mean "fire".
+   */
+  bindRadioToggle(initial: boolean, onToggle: (on: boolean) => void): void {
+    let on = initial;
+    const render = () => {
+      this.radioToggle.textContent = on ? "RADIO VOICE ON" : "RADIO VOICE OFF";
+      this.radioToggle.classList.toggle("off", !on);
+    };
+    render();
+    this.radioToggle.addEventListener("mousedown", (e) => e.stopPropagation());
+    this.radioToggle.addEventListener("mouseup", (e) => e.stopPropagation());
+    this.radioToggle.addEventListener("click", (e) => {
+      e.stopPropagation();
+      on = !on;
+      render();
+      onToggle(on);
+    });
+  }
+
   /** Free-look (hold E): show the hint and dim the aim chrome via CSS. */
   setFreeLook(on: boolean): void {
     document.body.classList.toggle("freelook", on);
   }
 
-  /** Kill-cam overlay: who got you (null = you crashed clean). */
-  showKillCam(killerName: string | null): void {
+  /** Kill-cam overlay: who got you (null = you crashed clean; the storm's
+   * bolt names itself — discovery is the design, so no more than that). */
+  showKillCam(killerName: string | null, cause?: "storm"): void {
     this.killcam.textContent =
-      killerName === null ? "YOU CRASHED" : `ELIMINATED BY ${killerName}`;
+      cause === "storm"
+        ? "⚡ STRUCK BY THE STORM"
+        : killerName === null
+          ? "YOU CRASHED"
+          : `ELIMINATED BY ${killerName}`;
     this.killcam.classList.add("open");
   }
 

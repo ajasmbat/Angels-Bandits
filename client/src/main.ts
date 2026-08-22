@@ -216,9 +216,23 @@ const players = new Map<string, { name: string; isBot: boolean }>(
 const nameOf = (id: string): string => players.get(id)?.name ?? "???";
 const isBotOf = (id: string): boolean => players.get(id)?.isBot ?? false;
 
-// --- Radio comms: one channel, priority queue, TTS + ticker (client-only) ---
+// --- Radio comms: one channel, priority queue, voice + ticker (client-only) ---
+// The pre-rendered voice bundle (tools/gen-radio-voices.sh): asset id → url,
+// fetched eagerly by RadioVoice and decoded once the AudioContext runs.
+const radioAssetUrls = Object.fromEntries(
+  Object.entries(
+    import.meta.glob("../assets/radio/*.ogg", {
+      eager: true,
+      query: "?url",
+      import: "default",
+    }) as Record<string, string>,
+  ).map(([path, url]) => [
+    path.replace(/^.*\//, "").replace(/\.ogg$/, ""),
+    url,
+  ]),
+);
 const radio = new RadioQueue();
-const radioVoice = new RadioVoice(audio);
+const radioVoice = new RadioVoice(audio, radioAssetUrls);
 const comms = new CommsTicker();
 const ambient = new AmbientChatter(welcome.seed, performance.now());
 const RADIO_VOICE_KEY = "ab-radio-voice";
@@ -476,7 +490,7 @@ declare global {
       garnishImage: (x: number, z: number) => { x: number; z: number } | null;
       radio: () => {
         voiceOn: boolean;
-        ttsSupported: boolean;
+        voiceReady: boolean;
         inCombat: boolean;
         log: { at: number; speaker: string; ticker: string; voice: string }[];
       };
@@ -544,10 +558,10 @@ window.__ab = {
   signImage: (x, z) => signage.imageOf(x, z),
   // ANGE-XY8LH8 seam QA: drawn position of the parapet nearest (x, z).
   garnishImage: (x, z) => facadeGarnish.imageOf(x, z),
-  // Radio QA: recent on-air lines (headless runs can't hear the TTS).
+  // Radio QA: recent on-air lines (headless runs can't hear the voice).
   radio: () => ({
     voiceOn: radioVoiceOn,
-    ttsSupported: radioVoice.supported,
+    voiceReady: radioVoice.ready,
     inCombat: radio.inCombat(performance.now()),
     log: radioLog.map((l) => ({ ...l })),
   }),
@@ -688,10 +702,12 @@ renderer.setAnimationLoop((now) => {
       voice: onAir.voice,
     });
     if (radioLog.length > 20) radioLog.shift();
-    // Muted voice: no TTS, no framing SFX — the ticker alone carries the
-    // line and the queue's estimated duration paces the channel.
+    // Muted voice: nothing plays — the ticker alone carries the line and
+    // the queue's estimated duration paces the channel.
     if (radioVoiceOn) {
-      radioVoice.speak(onAir.voice, () => radio.release(performance.now()));
+      radioVoice.speak(onAir.voice, onAir.speaker, () =>
+        radio.release(performance.now()),
+      );
     }
   }
 

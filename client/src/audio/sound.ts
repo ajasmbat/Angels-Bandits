@@ -6,6 +6,7 @@
 
 import { MAX_SPEED, MIN_SPEED } from "@angels-bandits/common/constants";
 import type { Vec3 } from "@angels-bandits/common/world";
+import type { VoiceSink } from "./radio";
 import { spatialize } from "./spatial";
 
 /** A remote plane audible this frame (from RemotePlanes.contacts()). */
@@ -23,9 +24,12 @@ const WHOOSH_LEVEL = 0.7;
 const EXPLOSION_LEVEL = 1.0;
 const HIT_LEVEL = 0.55;
 const KILL_LEVEL = 0.4;
-// Radio framing sits well below combat SFX — it frames speech, not action.
-const RADIO_SQUELCH_LEVEL = 0.2;
-const RADIO_STATIC_LEVEL = 0.12;
+// Radio voice bus: pre-rendered lines are loudness-normalized to −18 LUFS,
+// so one level rules them all; while a line is on air the rest of the mix
+// ducks under it so the call reads through combat.
+const VOICE_LEVEL = 0.9;
+const DUCK_LEVEL = 0.55;
+const DUCK_RAMP_S = 0.08;
 
 /** Engine pitch band: idle throttle → full throttle, Hz. */
 const ENGINE_MIN_HZ = 55;
@@ -37,9 +41,12 @@ interface RemoteEngine {
   pan: StereoPannerNode;
 }
 
-export class GameAudio {
+export class GameAudio implements VoiceSink {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
+  /** Everything except the radio voice — ducked while a line is on air. */
+  private sfx: GainNode | null = null;
+  private voice: GainNode | null = null;
   private noise: AudioBuffer | null = null;
   private ownOsc: OscillatorNode | null = null;
   private ownGain: GainNode | null = null;
@@ -64,6 +71,11 @@ export class GameAudio {
       this.master = this.ctx.createGain();
       this.master.gain.value = MASTER_LEVEL;
       this.master.connect(this.ctx.destination);
+      this.sfx = this.ctx.createGain();
+      this.sfx.connect(this.master);
+      this.voice = this.ctx.createGain();
+      this.voice.gain.value = VOICE_LEVEL;
+      this.voice.connect(this.master);
       // 1 s of shared white noise for every burst-shaped sound.
       const len = this.ctx.sampleRate;
       this.noise = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
@@ -85,7 +97,7 @@ export class GameAudio {
   /** Own engine loop: pitch tracks the throttle. Call every frame. */
   setEngine(targetSpeed: number, alive: boolean): void {
     const ctx = this.ensure();
-    if (!ctx || !this.master) return;
+    if (!ctx || !this.sfx) return;
     if (!this.ownOsc || !this.ownGain) {
       this.ownOsc = ctx.createOscillator();
       this.ownOsc.type = "sawtooth";
@@ -94,7 +106,7 @@ export class GameAudio {
       filter.frequency.value = 900;
       this.ownGain = ctx.createGain();
       this.ownGain.gain.value = 0;
-      this.ownOsc.connect(filter).connect(this.ownGain).connect(this.master);
+      this.ownOsc.connect(filter).connect(this.ownGain).connect(this.sfx);
       this.ownOsc.start();
     }
     const t = GameAudio.throttle01(targetSpeed);
@@ -118,7 +130,7 @@ export class GameAudio {
     listenerYaw: number,
   ): void {
     const ctx = this.ensure();
-    if (!ctx || !this.master) return;
+    if (!ctx || !this.sfx) return;
     const seen = new Set<string>();
     const now = ctx.currentTime;
     for (const src of sources) {
@@ -133,7 +145,7 @@ export class GameAudio {
         const gain = ctx.createGain();
         gain.gain.value = 0;
         const pan = ctx.createStereoPanner();
-        osc.connect(filter).connect(gain).connect(pan).connect(this.master);
+        osc.connect(filter).connect(gain).connect(pan).connect(this.sfx);
         osc.start();
         engine = { osc, gain, pan };
         this.remotes.set(src.id, engine);
@@ -166,7 +178,7 @@ export class GameAudio {
     pan: number,
   ): void {
     const ctx = this.ensure();
-    if (!ctx || !this.master || !this.noise || level <= 0) return;
+    if (!ctx || !this.sfx || !this.noise || level <= 0) return;
     const now = ctx.currentTime;
     const src = ctx.createBufferSource();
     src.buffer = this.noise;
@@ -184,7 +196,7 @@ export class GameAudio {
     gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
     const panner = ctx.createStereoPanner();
     panner.pan.value = pan;
-    src.connect(filter).connect(gain).connect(panner).connect(this.master);
+    src.connect(filter).connect(gain).connect(panner).connect(this.sfx);
     src.start(now, Math.random());
     src.stop(now + duration + 0.05);
   }
@@ -200,6 +212,15 @@ export class GameAudio {
     this.burst("bandpass", 1500, 450, 0.09, GUN_LEVEL * s.gain * 2, s.pan);
   }
 
+  /** Decode one pre-rendered voice line; null until the context runs. */
+  decodeVoice(data: ArrayBuffer): Promise<AudioBuffer | null> {
+    const ctx = this.ensure();
+    if (!ctx) return Promise.resolve(null);
+    // decodeAudioData detaches its input — hand it a copy so the caller's
+    // bytes survive a failed decode.
+    return ctx.decodeAudioData(data.slice(0)).catch(() => null);
+  }
+
   /** Hit thunk: a local sweep just connected. Low centered knock with ±10%
    * pitch jitter — clearly apart from the own-gun crack (1800→500 band). */
   hitThunk(): void {
@@ -210,7 +231,7 @@ export class GameAudio {
   /** Kill confirm: quick rising two-note chime over the last thunk. */
   killConfirm(): void {
     const ctx = this.ensure();
-    if (!ctx || !this.master) return;
+    if (!ctx || !this.sfx) return;
     const now = ctx.currentTime;
     for (const [i, hz] of [523, 784].entries()) {
       const osc = ctx.createOscillator();
@@ -221,20 +242,28 @@ export class GameAudio {
       gain.gain.setValueAtTime(0.0001, at);
       gain.gain.exponentialRampToValueAtTime(KILL_LEVEL, at + 0.015);
       gain.gain.exponentialRampToValueAtTime(0.001, at + 0.28);
-      osc.connect(gain).connect(this.master);
+      osc.connect(gain).connect(this.sfx);
       osc.start(at);
       osc.stop(at + 0.3);
     }
   }
 
-  /** Radio squelch: the short centered click that opens a voice line. */
-  radioSquelch(): void {
-    this.burst("bandpass", 2600, 1500, 0.05, RADIO_SQUELCH_LEVEL, 0);
-  }
-
-  /** Radio static: the brief hiss tail that closes a voice line. */
-  radioStatic(): void {
-    this.burst("highpass", 3200, 2000, 0.2, RADIO_STATIC_LEVEL, 0);
+  /** Play one voice line on the voice bus at the pilot's playbackRate,
+   * ducking everything else under it for the line's duration. */
+  playVoice(buffer: AudioBuffer, rate: number, onDone: () => void): boolean {
+    const ctx = this.ensure();
+    if (!ctx || !this.voice || !this.sfx) return false;
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.playbackRate.value = rate;
+    src.connect(this.voice);
+    const now = ctx.currentTime;
+    this.sfx.gain.cancelScheduledValues(now);
+    this.sfx.gain.setTargetAtTime(DUCK_LEVEL, now, DUCK_RAMP_S);
+    this.sfx.gain.setTargetAtTime(1, now + buffer.duration / rate, DUCK_RAMP_S);
+    src.addEventListener("ended", onDone);
+    src.start(now);
+    return true;
   }
 
   /** Near-miss whoosh: an enemy bullet just shaved past. Rate-limited. */
@@ -250,7 +279,7 @@ export class GameAudio {
     const level = Math.min(1, s.gain * 6); // audible well past engine range
     this.burst("lowpass", 500, 50, 1.1, EXPLOSION_LEVEL * level, s.pan);
     const ctx = this.ensure();
-    if (!ctx || !this.master || level <= 0) return;
+    if (!ctx || !this.sfx || level <= 0) return;
     const now = ctx.currentTime;
     const sub = ctx.createOscillator();
     sub.type = "sine";
@@ -261,7 +290,7 @@ export class GameAudio {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.9);
     const panner = ctx.createStereoPanner();
     panner.pan.value = s.pan;
-    sub.connect(gain).connect(panner).connect(this.master);
+    sub.connect(gain).connect(panner).connect(this.sfx);
     sub.start(now);
     sub.stop(now + 1);
   }

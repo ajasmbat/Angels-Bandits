@@ -13,6 +13,7 @@ import { type FlightState, flightForward } from "@angels-bandits/common/flight";
 import type { Vec3 } from "@angels-bandits/common/world";
 import type * as THREE from "three";
 import { nearestImage } from "../render/wrapPlacement";
+import { orbitOffset } from "./freelook";
 
 export class ChaseCamera {
   private pos: Vec3 | null = null;
@@ -40,6 +41,7 @@ export class ChaseCamera {
     camera: THREE.PerspectiveCamera,
     state: FlightState,
     dt: number,
+    look?: { yaw: number; pitch: number },
   ): void {
     if (!this.pos) this.snapTo(state);
     else this.pos = nearestImage(state.pos, this.pos); // seam re-alignment
@@ -55,8 +57,20 @@ export class ChaseCamera {
       z: p.z + (target.z - p.z) * blend,
     };
 
-    camera.position.set(this.pos.x, this.pos.y, this.pos.z);
+    // Free-look orbits the DISPLAYED camera around the plane; the chase state
+    // itself stays un-orbited, so releasing E always eases back to the exact
+    // chase framing and the orbit never feeds back into the smoothing.
     const aim = nearestImage(this.pos, state.pos);
+    let view = this.pos as Vec3;
+    if (look && (look.yaw !== 0 || look.pitch !== 0)) {
+      const off = orbitOffset(
+        { x: view.x - aim.x, y: view.y - aim.y, z: view.z - aim.z },
+        look.yaw,
+        look.pitch,
+      );
+      view = { x: aim.x + off.x, y: aim.y + off.y, z: aim.z + off.z };
+    }
+    camera.position.set(view.x, view.y, view.z);
     camera.lookAt(aim.x, aim.y + 2, aim.z);
   }
 }

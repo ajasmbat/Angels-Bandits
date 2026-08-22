@@ -40,6 +40,11 @@ export class Hud {
     this.badge.classList.toggle("on", on);
   }
 
+  /** Free-look (hold E): show the hint and dim the aim chrome via CSS. */
+  setFreeLook(on: boolean): void {
+    document.body.classList.toggle("freelook", on);
+  }
+
   /** Kill-cam overlay: who got you (null = you crashed clean). */
   showKillCam(killerName: string | null): void {
     this.killcam.textContent =

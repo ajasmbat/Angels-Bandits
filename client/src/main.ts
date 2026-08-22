@@ -28,6 +28,7 @@ import { Bullets } from "./game/bullets";
 import { ChaseCamera } from "./game/camera";
 import { detectCrash } from "./game/collision";
 import { FlightInputSource } from "./game/flight-input";
+import { createFreeLook, shapeInput, stepFreeLook } from "./game/freelook";
 import { Guns } from "./game/guns";
 import { bulletHitsSphere } from "./game/hitdetect";
 import { GameSocket } from "./net/socket";
@@ -161,6 +162,8 @@ const nameOf = (id: string): string => playerNames.get(id) ?? "???";
 // --- Simulation state ---
 const input = new FlightInputSource();
 const chase = new ChaseCamera();
+// Hold-E free-look: pure client camera state, never streamed (B2).
+let freelook = createFreeLook();
 let flight: FlightState = createFlightState(
   welcome.spawn.pos,
   welcome.spawn.yaw,
@@ -194,6 +197,9 @@ function flashFade(): void {
 
 /** Freeze into the kill-cam; the server's respawn message ends it. */
 function enterDeath(killerId: string | null): void {
+  // Kill-cam owns the camera — force-exit free-look instantly.
+  freelook = createFreeLook();
+  hud.setFreeLook(false);
   killCamTargetId = killerId;
   hud.showKillCam(killerId === null ? null : nameOf(killerId));
   if (!alive) return;
@@ -329,6 +335,7 @@ declare global {
       };
       aimAt: (x: number, z: number, y?: number) => void;
       setFiring: (held: boolean) => void;
+      freelook: () => ReturnType<typeof createFreeLook>;
       lampImage: (x: number, z: number) => { x: number; z: number } | null;
       traffic: () => ReturnType<Traffic["debug"]>;
       cityStats: () => {
@@ -378,6 +385,8 @@ window.__ab = {
     chase.snapTo(flight);
   },
   setFiring: (held) => guns.setTrigger(held),
+  // B2 QA: current free-look state (drive it with real key/mouse events).
+  freelook: () => freelook,
   // Seam QA: where the lamp nearest canonical (x, z) is drawn right now.
   lampImage: (x, z) => streetlights.imageOf(x, z),
   // Traffic QA: canonical poses of the first cars at the current synced time —
@@ -400,8 +409,20 @@ renderer.setAnimationLoop((now) => {
   const dt = Math.min(rawMs / 1000, 0.05); // clamp hitches, keep sim stable
   last = now;
 
+  // Drain look deltas every frame (dead too) so stale mouse motion never
+  // dumps into the orbit as one jump. Signs: mouse-right pans the view
+  // right, mouse-up looks up (both hand-tuned with LOOK_SENSITIVITY).
+  const lookDelta = input.takeLookDelta();
   if (alive) {
-    flight = stepFlight(flight, input.read(), dt);
+    freelook = stepFreeLook(
+      freelook,
+      input.freeLookHeld(),
+      -lookDelta.dx,
+      lookDelta.dy,
+      dt,
+    );
+    hud.setFreeLook(freelook.held);
+    flight = stepFlight(flight, shapeInput(input.read(), freelook), dt);
     if (detectCrash(flight, city.cityBuildings)) {
       // Report and freeze; the server decides credit and the respawn.
       socket.sendCrash();
@@ -420,7 +441,8 @@ renderer.setAnimationLoop((now) => {
     });
 
     // Guns: at most one shot a frame; the same seq goes to server and sim.
-    const shot = guns.update(now, flight);
+    // Free-look suppresses shots (heat keeps cooling, none builds).
+    const shot = guns.update(now, flight, !freelook.held);
     if (shot) {
       bullets.spawn(shot.seq, shot.origin, shot.vel);
       socket.sendFire(shot.seq);
@@ -428,7 +450,7 @@ renderer.setAnimationLoop((now) => {
       audio.gunshot();
     }
 
-    chase.update(camera, flight, dt);
+    chase.update(camera, flight, dt, freelook);
     const planePos = nearestImage(chase.position, flight.pos);
     plane.position.set(planePos.x, planePos.y, planePos.z);
     plane.rotation.set(flight.pitch, flight.yaw, flight.roll, "YXZ");

@@ -9,6 +9,7 @@
 // they are a TTS griefing vector. The `ticker`/`speaker` fields MAY carry
 // real names; the ticker renders them inert via textContent.
 
+import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
 import { PHRASE } from "./phrases";
 
 /** Radio traffic classes, highest priority first (see RADIO_PRIORITY). */
@@ -36,6 +37,51 @@ export const KILL_COOLDOWN_MS = 6_000;
 const HIT_COOLDOWN_MS = 8_000;
 const NEAR_MISS_COOLDOWN_MS = 8_000;
 const CHECK_IN_COOLDOWN_MS = 3_000;
+
+/** Pursuer counts as a threat inside this torus range, meters. */
+export const THREAT_RANGE_M = 400;
+/** …and only when their nose points within this cone of you, degrees. */
+export const THREAT_CONE_DEG = 20;
+const THREAT_CONE_COS = Math.cos((THREAT_CONE_DEG * Math.PI) / 180);
+
+/** A remote plane's interpolated pose, reduced to threat inputs. */
+export interface ThreatContact {
+  pos: Vec3;
+  /** World-space nose direction (any nonzero length). */
+  fwd: Vec3;
+}
+
+/**
+ * True when any contact is on the local player's six: within THREAT_RANGE_M,
+ * nose within THREAT_CONE_DEG of the (torus-shortest) line to you, and aft
+ * of your 3-9 line. Self forward from yaw is (−sin yaw, 0, −cos yaw) — the
+ * flight convention: yaw 0 faces −Z, right turn decreases yaw.
+ */
+export function threatOnSix(
+  selfPos: Vec3,
+  selfYaw: number,
+  contacts: readonly ThreatContact[],
+): boolean {
+  for (const contact of contacts) {
+    const toSelf = wrapDelta(contact.pos, selfPos);
+    const dist = Math.hypot(toSelf.x, toSelf.y, toSelf.z);
+    if (dist > THREAT_RANGE_M || dist < 1e-6) continue;
+    const fwdLen = Math.hypot(contact.fwd.x, contact.fwd.y, contact.fwd.z);
+    if (fwdLen < 1e-6) continue;
+    const aimCos =
+      (contact.fwd.x * toSelf.x +
+        contact.fwd.y * toSelf.y +
+        contact.fwd.z * toSelf.z) /
+      (fwdLen * dist);
+    if (aimCos < THREAT_CONE_COS) continue;
+    // Aft of the 3-9 line: self-forward · (self→attacker) < 0, written with
+    // toSelf negated (wrapDelta(self, attacker) ≈ −toSelf on the torus).
+    const behind =
+      Math.sin(selfYaw) * toSelf.x + Math.cos(selfYaw) * toSelf.z < 0;
+    if (behind) return true;
+  }
+  return false;
+}
 
 /** Server-minted bot callsigns are exactly BANDIT-<n> — anything else
  * (any human name, any spoofed bot name) is refused by the voice. */

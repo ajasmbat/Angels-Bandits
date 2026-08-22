@@ -15,6 +15,7 @@ import {
   ownKillCallout,
   splashCallout,
   threatCallout,
+  threatOnSix,
 } from "../src/game/callouts";
 
 const HOSTILE = "BadWord123";
@@ -79,5 +80,71 @@ describe("callout builders", () => {
     for (const c of callouts) {
       expect(c.voice).not.toContain(HOSTILE);
     }
+  });
+});
+
+// Threat geometry: attacker within 400 m, forward vector within 20° of the
+// line attacker→you, AND aft of your 3-9 line. World yaw convention (see
+// audio-spatial.test.ts): yaw 0 faces −Z, so "behind" a yaw-0 self is +Z.
+describe("threatOnSix", () => {
+  const SELF = { x: 1000, y: 300, z: 1000 };
+
+  it("flags an attacker 200 m dead astern pointing at you", () => {
+    const attacker = {
+      pos: { x: 1000, y: 300, z: 1200 },
+      fwd: { x: 0, y: 0, z: -1 },
+    };
+    expect(threatOnSix(SELF, 0, [attacker])).toBe(true);
+  });
+
+  it("ignores the same geometry ahead of the 3-9 line", () => {
+    const attacker = {
+      pos: { x: 1000, y: 300, z: 800 },
+      fwd: { x: 0, y: 0, z: 1 }, // head-on, pointing straight at you
+    };
+    expect(threatOnSix(SELF, 0, [attacker])).toBe(false);
+  });
+
+  it("ignores an attacker astern who is pointing away", () => {
+    const attacker = {
+      pos: { x: 1000, y: 300, z: 1200 },
+      fwd: { x: 0, y: 0, z: 1 },
+    };
+    expect(threatOnSix(SELF, 0, [attacker])).toBe(false);
+  });
+
+  it("ignores an aimed pursuer beyond 400 m", () => {
+    const attacker = {
+      pos: { x: 1000, y: 300, z: 1500 },
+      fwd: { x: 0, y: 0, z: -1 },
+    };
+    expect(threatOnSix(SELF, 0, [attacker])).toBe(false);
+  });
+
+  it("ignores a pursuer aimed 30° off your tailpipe", () => {
+    const off = (30 * Math.PI) / 180;
+    const attacker = {
+      pos: { x: 1000, y: 300, z: 1200 },
+      fwd: { x: Math.sin(off), y: 0, z: -Math.cos(off) },
+    };
+    expect(threatOnSix(SELF, 0, [attacker])).toBe(false);
+  });
+
+  it("follows self yaw: facing east, a pursuer to the west is on your six", () => {
+    // Yaw −π/2 faces +… east is +X (right turn decreases yaw from 0/north).
+    const attacker = {
+      pos: { x: 800, y: 300, z: 1000 }, // 200 m west = dead astern
+      fwd: { x: 1, y: 0, z: 0 }, // flying east, at you
+    };
+    expect(threatOnSix(SELF, -Math.PI / 2, [attacker])).toBe(true);
+  });
+
+  it("sees across the torus seam: a pursuer 100 m astern through the wrap", () => {
+    const self = { x: 1000, y: 300, z: 1950 }; // facing north (−Z)
+    const attacker = {
+      pos: { x: 1000, y: 300, z: 50 }, // behind you, across the z seam
+      fwd: { x: 0, y: 0, z: -1 },
+    };
+    expect(threatOnSix(self, 0, [attacker])).toBe(true);
   });
 });

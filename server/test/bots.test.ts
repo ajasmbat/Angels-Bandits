@@ -105,9 +105,8 @@ describe("RoomBots population sync", () => {
     // Spawn deep in a street canyon at 60 m, flying west along the z=1000
     // street between tower rows — the climb-out forces RECOVER episodes
     // against real tier boxes. 900 ticks = 60 s at 15 Hz.
-    const [entry] = bots.syncTo(
-      1,
-      () => spawnAt(500, 1002, Math.PI / 2, 60),
+    const [entry] = bots.syncTo(1, () =>
+      spawnAt(500, 1002, Math.PI / 2, 60),
     ).spawned;
     let sawRecover = false;
     for (let i = 1; i <= 900; i++) {
@@ -125,7 +124,9 @@ describe("RoomBots population sync", () => {
 
   it("a bot pose carries the spawn position, yaw attitude, and speed", () => {
     const bots = new RoomBots("room-1", 7, []);
-    const [entry] = bots.syncTo(1, () => spawnAt(100, 200, Math.PI / 2)).spawned;
+    const [entry] = bots.syncTo(1, () =>
+      spawnAt(100, 200, Math.PI / 2),
+    ).spawned;
     const pose = bots.poseOf(entry.id);
     expect(pose?.pos).toEqual({ x: 100, y: 300, z: 200 });
     expect(pose?.speed).toBe(RESPAWN_SPEED);
@@ -223,7 +224,11 @@ describe("applyBotFire — bots use human combat rules", () => {
       const r = applyBotFire(combat, deadOn(k), targetPos, 10_000 + k * 100);
       if (r.hit?.ok && r.hit.death) death = r.hit.death;
     }
-    expect(death).toEqual({ victimId: TARGET, killerId: BOT_ID, cause: "shot" });
+    expect(death).toEqual({
+      victimId: TARGET,
+      killerId: BOT_ID,
+      cause: "shot",
+    });
     expect(combat.scoreOf(BOT_ID).kills).toBe(1);
   });
 
@@ -276,7 +281,10 @@ describe("applyBotFire — bots use human combat rules", () => {
       const now = i * (1000 / 15);
       const self = bots.contactOf(entry.id);
       if (!self) throw new Error("bot vanished");
-      const r = bots.tick(now, [{ id: entry.id, ...self, prot: false }, target]);
+      const r = bots.tick(now, [
+        { id: entry.id, ...self, prot: false },
+        target,
+      ]);
       if (acquiredAt === null && bots.targetOf(entry.id) === target.id) {
         acquiredAt = now;
       }

@@ -21,6 +21,8 @@
 // applyBotFire routes them through the existing Combat seam — same heat
 // model, damage, spawn protection, kill credit, and respawn as humans.
 
+import { type Building, mulberry32 } from "@angels-bandits/common/city";
+import { collideCity, hitsGround } from "@angels-bandits/common/collision";
 import {
   BOT_AIM_JITTER,
   BOT_DECISION_EVERY,
@@ -34,8 +36,8 @@ import {
   BOT_PATROL_ALT_MIN,
   BOT_PROBE_RADIUS,
   BOT_PROBE_TIMES,
-  BOT_RECOVER_CLEAR,
   BOT_REACTION_MS,
+  BOT_RECOVER_CLEAR,
   BOT_STEER_GAIN,
   BOT_THREAT_RANGE,
   BOT_WAYPOINT_RADIUS,
@@ -46,8 +48,6 @@ import {
   TICK_DOWN_HZ,
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
-import { type Building, mulberry32 } from "@angels-bandits/common/city";
-import { collideCity, hitsGround } from "@angels-bandits/common/collision";
 import {
   type FlightInput,
   type FlightState,

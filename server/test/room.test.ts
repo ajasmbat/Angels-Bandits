@@ -95,7 +95,11 @@ describe("bot backfill math", () => {
     const mgr = new RoomManager();
     const room = mgr.ensureRoom();
     const entry = mgr.addBot(room, "bot:room-1:1", "BANDIT-1");
-    expect(entry).toEqual({ id: "bot:room-1:1", name: "BANDIT-1", isBot: true });
+    expect(entry).toEqual({
+      id: "bot:room-1:1",
+      name: "BANDIT-1",
+      isBot: true,
+    });
     expect(room.humanCount).toBe(0);
     expect(room.members.size).toBe(1);
     expect(mgr.roomOf("bot:room-1:1")?.id).toBe(room.id);

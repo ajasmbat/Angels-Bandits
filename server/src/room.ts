@@ -8,7 +8,11 @@
 // `full` counts HUMANS (bots always yield seats), and desiredBots() is the
 // backfill target index.ts syncs each room's bot population to.
 
-import { BOT_FLOOR, CITY_SEED, ROOM_CAP } from "@angels-bandits/common/constants";
+import {
+  BOT_FLOOR,
+  CITY_SEED,
+  ROOM_CAP,
+} from "@angels-bandits/common/constants";
 import type { RosterEntry } from "@angels-bandits/common/protocol";
 
 export class Room {

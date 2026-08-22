@@ -8,6 +8,7 @@ interface Row {
   name: string;
   kills: number;
   deaths: number;
+  isBot: boolean;
 }
 
 export class Scoreboard {
@@ -37,12 +38,18 @@ export class Scoreboard {
   }
 
   setRoster(roster: RosterEntry[]): void {
-    for (const { id, name } of roster) this.upsert(id).name = name;
+    for (const { id, name, isBot } of roster) {
+      const row = this.upsert(id);
+      row.name = name;
+      row.isBot = isBot ?? false;
+    }
     this.dirty = true;
   }
 
-  playerJoined({ id, name }: RosterEntry): void {
-    this.upsert(id).name = name;
+  playerJoined({ id, name, isBot }: RosterEntry): void {
+    const row = this.upsert(id);
+    row.name = name;
+    row.isBot = isBot ?? false;
     this.dirty = true;
   }
 
@@ -64,7 +71,7 @@ export class Scoreboard {
   private upsert(id: string): Row {
     let row = this.rows.get(id);
     if (!row) {
-      row = { name: "???", kills: 0, deaths: 0 };
+      row = { name: "???", kills: 0, deaths: 0, isBot: false };
       this.rows.set(id, row);
     }
     return row;
@@ -83,6 +90,7 @@ export class Scoreboard {
       ...sorted.map(([id, row]) => {
         const tr = document.createElement("tr");
         if (id === this.selfId) tr.className = "self";
+        else if (row.isBot) tr.className = "bot";
         for (const text of [row.name, `${row.kills}`, `${row.deaths}`]) {
           const td = document.createElement("td");
           td.textContent = text;

@@ -10,8 +10,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   COMBAT_WINDOW_MS,
-  pilotRate,
   RadioQueue,
+  pilotRate,
   resolveVoiceAsset,
   voiceSlug,
 } from "../src/audio/radio";

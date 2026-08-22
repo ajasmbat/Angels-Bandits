@@ -9,7 +9,10 @@
 // exception, same as roof clutter.
 
 import { type Building, mulberry32 } from "@angels-bandits/common/city";
-import { ROADWAY_HALF, nearestStreet } from "@angels-bandits/common/city/street";
+import {
+  ROADWAY_HALF,
+  nearestStreet,
+} from "@angels-bandits/common/city/street";
 import { BLOCK_PITCH } from "@angels-bandits/common/constants";
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
@@ -72,10 +75,34 @@ export function facadeGarnishFor(b: Building): FacadeGarnish {
     const spanX = tier.width + LIP_OVERHANG * 2;
     const spanZ = tier.depth + LIP_OVERHANG * 2;
     parapets.push(
-      { x: b.x, z: b.z - tier.depth / 2, y: top, width: spanX, depth: LIP_THICKNESS },
-      { x: b.x, z: b.z + tier.depth / 2, y: top, width: spanX, depth: LIP_THICKNESS },
-      { x: b.x - tier.width / 2, z: b.z, y: top, width: LIP_THICKNESS, depth: spanZ },
-      { x: b.x + tier.width / 2, z: b.z, y: top, width: LIP_THICKNESS, depth: spanZ },
+      {
+        x: b.x,
+        z: b.z - tier.depth / 2,
+        y: top,
+        width: spanX,
+        depth: LIP_THICKNESS,
+      },
+      {
+        x: b.x,
+        z: b.z + tier.depth / 2,
+        y: top,
+        width: spanX,
+        depth: LIP_THICKNESS,
+      },
+      {
+        x: b.x - tier.width / 2,
+        z: b.z,
+        y: top,
+        width: LIP_THICKNESS,
+        depth: spanZ,
+      },
+      {
+        x: b.x + tier.width / 2,
+        z: b.z,
+        y: top,
+        width: LIP_THICKNESS,
+        depth: spanZ,
+      },
     );
   }
 

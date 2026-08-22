@@ -58,7 +58,8 @@ describe("facadeGarnishFor — parapets", () => {
       .sort((a, b) => a - b);
     expect(eastWest).toEqual([440, 560]);
     // Long lips span the full 120 m facade (plus a small overhang).
-    for (const p of tier1) expect(Math.max(p.width, p.depth)).toBeGreaterThanOrEqual(120);
+    for (const p of tier1)
+      expect(Math.max(p.width, p.depth)).toBeGreaterThanOrEqual(120);
     // Tier 2: 40×40 crown topping out at y=160.
     const tier2 = parapets.filter((p) => p.y === 160);
     expect(tier2).toHaveLength(4);
@@ -93,8 +94,14 @@ describe("facadeGarnishFor — canopies", () => {
       const { canopy } = facadeGarnishFor(b);
       if (!canopy) continue;
       canopies++;
-      for (const cx of [canopy.x - canopy.sizeX / 2, canopy.x + canopy.sizeX / 2]) {
-        for (const cz of [canopy.z - canopy.sizeZ / 2, canopy.z + canopy.sizeZ / 2]) {
+      for (const cx of [
+        canopy.x - canopy.sizeX / 2,
+        canopy.x + canopy.sizeX / 2,
+      ]) {
+        for (const cz of [
+          canopy.z - canopy.sizeZ / 2,
+          canopy.z + canopy.sizeZ / 2,
+        ]) {
           expect(isInRoadway({ x: cx, y: 0, z: cz })).toBe(false);
         }
       }

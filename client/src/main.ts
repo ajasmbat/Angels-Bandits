@@ -43,6 +43,7 @@ import { Streetlights } from "./render/streetlights";
 import { Tracers } from "./render/tracers";
 import { Traffic } from "./render/traffic";
 import { nearestImage } from "./render/wrapPlacement";
+import { initFullscreenUi } from "./ui/fullscreen";
 import { Hud } from "./ui/hud";
 import { requestName, showJoinError } from "./ui/join";
 import { KillFeed } from "./ui/killfeed";
@@ -50,6 +51,10 @@ import { LeadIndicator } from "./ui/lead";
 import { EdgeMarkers } from "./ui/markers";
 import { Minimap } from "./ui/minimap";
 import { Scoreboard } from "./ui/scoreboard";
+
+// Fullscreen chrome first — the join overlay carries its own toggle button,
+// so it must be live before the name prompt (hidden where unsupported).
+initFullscreenUi();
 
 // --- Join flow: name → server welcome (identity, seed, spawn) ---
 const name = await requestName();

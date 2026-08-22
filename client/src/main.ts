@@ -25,8 +25,8 @@ import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { RadioQueue, RadioVoice } from "./audio/radio";
 import { GameAudio } from "./audio/sound";
-import { ThunderSchedule } from "./audio/thunder";
 import { NEAR_MISS_RADIUS, closestApproach, spatialize } from "./audio/spatial";
+import { ThunderSchedule } from "./audio/thunder";
 import { Bullets } from "./game/bullets";
 import {
   AmbientChatter,

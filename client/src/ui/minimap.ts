@@ -137,7 +137,8 @@ export class Minimap {
     for (const e of echoes) {
       const p = minimapPoint(playerPos, e.pos, size);
       // Pulsing magenta echo (Neon Vein): ~3 Hz throb while it fades out.
-      const throb = 0.55 + 0.45 * Math.abs(Math.sin((1 - e.level) * Math.PI * 6));
+      const throb =
+        0.55 + 0.45 * Math.abs(Math.sin((1 - e.level) * Math.PI * 6));
       ctx.globalAlpha = e.level * throb;
       ctx.fillStyle = ECHO_COLOR;
       ctx.beginPath();

@@ -218,7 +218,7 @@ describe("StrikeFeed", () => {
     let step = 16;
     while (t < 400_000) {
       t += step;
-      step = (step * 31) % 700 + 16;
+      step = ((step * 31) % 700) + 16;
       seen.push(...feed.poll(t));
     }
     seen.push(...feed.poll(400_000));
@@ -247,11 +247,7 @@ describe("ThunderSchedule", () => {
   it("is seam-aware and soft at range", () => {
     const schedule = new ThunderSchedule();
     // Strike x=1990, listener x=10 at 1000 m along z: dist ≈ 1000.2 m.
-    schedule.add(
-      { timeMs: 0, x: 1990, z: 500 },
-      { x: 10, y: 0, z: 1500 },
-      0,
-    );
+    schedule.add({ timeMs: 0, x: 1990, z: 500 }, { x: 10, y: 0, z: 1500 }, 0);
     const events = schedule.due(3200); // ~2942 ms due
     expect(events).toHaveLength(1);
     expect(events[0]?.hard).toBe(false);

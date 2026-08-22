@@ -25,10 +25,7 @@ export class ThunderSchedule {
   private pending: Pending[] = [];
 
   add(strike: Strike, listener: Vec3, nowMs: number): void {
-    const dist = wrapDistance(
-      { x: strike.x, y: 0, z: strike.z },
-      listener,
-    );
+    const dist = wrapDistance({ x: strike.x, y: 0, z: strike.z }, listener);
     const gain = thunderGain(dist);
     if (gain <= 0) return; // inaudible — never schedule silence
     this.pending.push({

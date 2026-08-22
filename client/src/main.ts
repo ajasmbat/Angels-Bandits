@@ -58,7 +58,10 @@ import { Signage } from "./render/signage";
 import { GroundPlane, SkyDome, setupSky } from "./render/sky";
 import {
   CloudDeck,
+  REVEAL_COLOR,
+  REVEAL_INTENSITY,
   StormRenderer,
+  StormReveals,
   StrikeFeed,
   turbulenceOffset,
 } from "./render/storm";
@@ -175,6 +178,8 @@ const strikeFeed = new StrikeFeed(welcome.seed);
 // The deck everyone shares: seeded layout, drifting on the synced clock.
 const clouds = new CloudDeck(welcome.seed);
 scene.add(clouds.group);
+// The storm's neutral radar: strikes reveal nearby planes to EVERYONE.
+const reveals = new StormReveals();
 
 const plane = buildPlaneMesh();
 scene.add(plane);
@@ -647,7 +652,23 @@ renderer.setAnimationLoop((now) => {
     }
   }
 
-  remotes.update(socket.renderTime(), chase.position, dt, now);
+  remotes.update(socket.renderTime(), chase.position, dt, now, (id) =>
+    reveals.levelOf(id, now),
+  );
+  // Own rim-flash: the storm lit us up — same tint the remotes wear.
+  const selfReveal = alive ? reveals.levelOf(socket.selfId, now) : 0;
+  plane.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+      const mat = child.material as THREE.MeshStandardMaterial;
+      if (selfReveal > 0) {
+        mat.emissive.setHex(REVEAL_COLOR);
+        mat.emissiveIntensity = selfReveal * REVEAL_INTENSITY;
+      } else if (mat.emissive.getHex() === REVEAL_COLOR) {
+        mat.emissive.setHex(0x000000);
+        mat.emissiveIntensity = 1;
+      }
+    }
+  });
   planeLights.commit();
   planeTrails.update(chase.position, now);
 
@@ -689,6 +710,13 @@ renderer.setAnimationLoop((now) => {
   // and drive the sky-flash pulse (fog stain + dome tint + violet ambient).
   for (const s of strikeFeed.poll(socket.renderTime())) {
     storm.strike(s, now);
+    // Everyone in the strike's column is revealed — self included; remote
+    // positions come from the same interpolated poses everything else uses.
+    const planesNow = [
+      ...(alive ? [{ id: socket.selfId, pos: flight.pos }] : []),
+      ...remotes.targets(),
+    ];
+    reveals.onStrike(s, planesNow, now);
   }
   storm.update(chase.position, now);
   clouds.update(chase.position, camera.quaternion, socket.renderTime());
@@ -702,7 +730,7 @@ renderer.setAnimationLoop((now) => {
   hud.setHeat(heat.heat, heat.locked);
   hud.update(now);
   const contacts = remotes.contacts();
-  minimap.update(flight.pos, flight.yaw, contacts);
+  minimap.update(flight.pos, flight.yaw, contacts, reveals.pings(now));
   audio.setEngine(flight.targetSpeed, alive);
   audio.syncRemotes(contacts, flight.pos, flight.yaw);
 

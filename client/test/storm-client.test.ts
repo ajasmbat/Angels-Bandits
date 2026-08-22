@@ -9,6 +9,7 @@ import { type Strike, strikesInWindow } from "@angels-bandits/common/storm";
 import { describe, expect, it } from "vitest";
 import { ChaseCamera } from "../src/game/camera";
 import {
+  StormReveals,
   StrikeFeed,
   boltBranches,
   boltPolyline,
@@ -169,6 +170,34 @@ describe("boltPolyline", () => {
     expect(boltPolyline(strike, 120)).toEqual(boltPolyline(strike, 120));
     const other = boltPolyline({ timeMs: 241_500, x: 700, z: 300 }, 120);
     expect(boltPolyline(strike, 120)).not.toEqual(other);
+  });
+});
+
+describe("StormReveals", () => {
+  const strike = { timeMs: 50_000, x: 1000, z: 1000 };
+  const planes = [
+    { id: "near", pos: { x: 1250, y: 300, z: 1000 } },
+    { id: "far", pos: { x: 1350, y: 300, z: 1000 } },
+  ];
+
+  it("tracks revealed planes for STORM_REVEAL_MS, by id and as pings", () => {
+    const reveals = new StormReveals();
+    reveals.onStrike(strike, planes, 7_000);
+    expect(reveals.levelOf("near", 7_000)).toBe(1);
+    expect(reveals.levelOf("near", 8_000)).toBeCloseTo(0.5, 10);
+    expect(reveals.levelOf("near", 9_000)).toBe(0);
+    expect(reveals.levelOf("far", 7_000)).toBe(0); // 350 m out — never revealed
+    const pings = reveals.pings(7_500);
+    expect(pings).toHaveLength(1);
+    expect(pings[0]?.pos).toEqual({ x: 1250, y: 300, z: 1000 }); // echo where lit
+    expect(reveals.pings(9_100)).toEqual([]); // expired echoes pruned
+  });
+
+  it("a fresh strike re-reveals a fading plane at full strength", () => {
+    const reveals = new StormReveals();
+    reveals.onStrike(strike, planes, 7_000);
+    reveals.onStrike({ ...strike, timeMs: 58_000 }, planes, 8_500);
+    expect(reveals.levelOf("near", 8_500)).toBe(1);
   });
 });
 

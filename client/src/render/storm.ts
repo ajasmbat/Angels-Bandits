@@ -97,6 +97,53 @@ export class StrikeFeed {
   }
 }
 
+/** One active reveal: a plane the storm lit, echoing where it was lit. */
+interface Reveal {
+  id: string;
+  pos: Vec3;
+  at: number;
+}
+
+/**
+ * The storm's neutral radar: every strike reveals the planes in its column
+ * for STORM_REVEAL_MS — rim-flash on the model, echo blip on EVERY minimap.
+ * Pure bookkeeping over revealedPlanes/revealLevel; a fresh strike replaces
+ * a fading reveal at full strength.
+ */
+export class StormReveals {
+  private reveals: Reveal[] = [];
+
+  onStrike(
+    strike: Strike,
+    planes: readonly { id: string; pos: Vec3 }[],
+    atMs: number,
+  ): void {
+    for (const p of revealedPlanes(strike, planes)) {
+      // Latest reveal wins per plane — drop any older echo for the same id.
+      this.reveals = this.reveals.filter((r) => r.id !== p.id);
+      this.reveals.push({ id: p.id, pos: { ...p.pos }, at: atMs });
+    }
+  }
+
+  /** Rim-flash intensity for one plane, 1 → 0 over STORM_REVEAL_MS. */
+  levelOf(id: string, nowMs: number): number {
+    for (const r of this.reveals) {
+      if (r.id === id) return revealLevel(r.at, nowMs);
+    }
+    return 0;
+  }
+
+  /** Active minimap echoes, pruned as they expire. */
+  pings(nowMs: number): { id: string; pos: Vec3; level: number }[] {
+    this.reveals = this.reveals.filter((r) => revealLevel(r.at, nowMs) > 0);
+    return this.reveals.map((r) => ({
+      id: r.id,
+      pos: r.pos,
+      level: revealLevel(r.at, nowMs),
+    }));
+  }
+}
+
 /** Bolt origin height above the deck, m — the channel starts in the cloud. */
 const BOLT_TOP_Y = CLOUD_BASE + 40;
 /** Midpoint-displacement iterations: 2^5 = 32 segments on the main channel. */
@@ -233,11 +280,12 @@ interface BoltSlot {
   bornAt: number;
 }
 
-/** Reveal ping fed to the minimap: where a plane was when the storm lit it. */
-export interface StormPing {
-  pos: Vec3;
-  at: number;
-}
+/** Reveal rim-flash tint on plane models + minimap echo color (Neon Vein
+ * ping magenta). Peak emissive luminance stays under the 0.72 bloom
+ * threshold by design — a silhouette glow, not a new ladder rung. */
+export const REVEAL_COLOR = 0xe07bff;
+/** Peak emissiveIntensity of the rim-flash (#e07bff luminance ≈ 0.4 → ~0.6). */
+export const REVEAL_INTENSITY = 1.5;
 
 export class StormRenderer {
   readonly group = new THREE.Group();

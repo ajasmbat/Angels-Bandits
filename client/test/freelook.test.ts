@@ -50,6 +50,35 @@ describe("steering authority decay", () => {
   });
 });
 
+describe("orbit offset easing", () => {
+  it("mouse delta while held drives a yaw offset in the delta's direction", () => {
+    const s = stepFreeLook(createFreeLook(), true, 120, 0, DT);
+    expect(s.targetYaw).toBeGreaterThan(0);
+  });
+
+  it("enters within 0.15 s: applied offset settles to ≥95% of the commanded orbit", () => {
+    // One flick of the mouse on the first frame, then hold steady.
+    let s = stepFreeLook(createFreeLook(), true, 400, 0, DT);
+    s = advance(s, true, 0.15 - DT);
+    expect(s.targetYaw).toBeGreaterThan(0);
+    expect(s.yaw / s.targetYaw).toBeGreaterThanOrEqual(0.95);
+  });
+
+  it("exits over ~0.25 s: released offsets decay to ≤5% and then snap to zero", () => {
+    let s = stepFreeLook(createFreeLook(), true, 400, -200, DT);
+    s = advance(s, true, 0.2);
+    const atRelease = s.yaw;
+    expect(atRelease).toBeGreaterThan(0);
+
+    s = advance(s, false, 0.25);
+    expect(Math.abs(s.yaw / atRelease)).toBeLessThanOrEqual(0.05);
+
+    s = advance(s, false, 0.6);
+    expect(s.yaw).toBe(0);
+    expect(s.pitch).toBe(0);
+  });
+});
+
 describe("shapeInput", () => {
   const input = { turn: 1, pitch: -0.5, roll: 1, throttle: 1 };
 

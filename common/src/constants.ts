@@ -247,5 +247,13 @@ export const BOT_PROBE_RADIUS = 12;
 export const BOT_RECOVER_CLEAR = 2;
 /** Below this altitude RECOVER pulls up unconditionally, m. */
 export const BOT_MIN_ALT = 40;
+/** Bots never enter the clouds (ST1): RECOVER pitches DOWN above this, m —
+ * a margin under CLOUD_BASE so the hidden storm rule can't kill a bot. */
+export const BOT_CEILING_ALT = 480;
+/** Ceiling anticipation: danger when the current climb would reach
+ * BOT_CEILING_ALT within this lookahead, s (the pitch-down turnaround). */
+export const BOT_CEILING_LOOKAHEAD_S = 1.2;
+/** RECOVER's ceiling hysteresis: exit only this far back below, m. */
+export const BOT_CEILING_HYST = 40;
 /** Steering gain: input per radian of yaw/pitch error (capped at BOT_INPUT_CAP). */
 export const BOT_STEER_GAIN = 3;

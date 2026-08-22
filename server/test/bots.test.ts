@@ -8,12 +8,15 @@ import { collideCity, hitsGround } from "@angels-bandits/common/collision";
 import {
   BOT_REACTION_MS,
   CITY_SEED,
+  CLOUD_BASE,
   KILL_CAM_MS,
   MAX_HP,
   PLAYER_RADIUS,
   RESPAWN_SPEED,
 } from "@angels-bandits/common/constants";
+import { flightForward } from "@angels-bandits/common/flight";
 import type { SpawnState } from "@angels-bandits/common/protocol";
+import { canonicalize } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
 import { type BotShot, RoomBots, applyBotFire } from "../src/bots";
 import { Combat } from "../src/combat";
@@ -120,6 +123,39 @@ describe("RoomBots population sync", () => {
     }
     // The scenario is only meaningful if the probes actually fired.
     expect(sawRecover).toBe(true);
+  });
+
+  it("ceiling: 120 s chasing a carrot above the clouds never exceeds CLOUD_BASE", () => {
+    const bots = new RoomBots("room-1", 7, []);
+    const [entry] = bots.syncTo(1, () => spawnAt(1000, 1000)).spawned;
+    let engaged = false;
+    // The worst case for the ceiling: an unprotected bait that is ALWAYS
+    // 250 m ahead of the bot's nose and parked above the cloud deck at
+    // 700 m, so pursuit wants to climb forever. 1800 ticks = 120 s at 15 Hz.
+    for (let i = 1; i <= 1800; i++) {
+      const flight = bots.flightOf(entry.id);
+      if (!flight) throw new Error("bot vanished");
+      const fwd = flightForward(flight);
+      const bait = {
+        id: "11111111-aaaa-bbbb-cccc-000000000002",
+        pos: canonicalize({
+          x: flight.pos.x + fwd.x * 250,
+          y: 700,
+          z: flight.pos.z + fwd.z * 250,
+        }),
+        vel: { x: 0, y: 0, z: 0 },
+        prot: false,
+      };
+      bots.tick(i * (1000 / 15), [bait]);
+      const after = bots.flightOf(entry.id);
+      if (!after) throw new Error("bot vanished");
+      // The hidden storm rule must be unreachable for a bot — it may brush
+      // the cloud deck's underside, never enter the clouds at 500 m.
+      expect(after.pos.y).toBeLessThanOrEqual(CLOUD_BASE);
+      if (bots.stateOf(entry.id) === "ENGAGE") engaged = true;
+    }
+    // Vacuity guard: the bait really was acquired and chased.
+    expect(engaged).toBe(true);
   });
 
   it("a bot pose carries the spawn position, yaw attitude, and speed", () => {

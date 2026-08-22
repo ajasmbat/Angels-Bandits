@@ -180,6 +180,27 @@ export class RemotePlanes {
     return out;
   }
 
+  /** Living remotes as threat-warning inputs: canonical position plus the
+   * full 3D nose vector from the sampled quat (radio "on your six" check). */
+  headings(): { pos: Vec3; fwd: Vec3 }[] {
+    const out: { pos: Vec3; fwd: Vec3 }[] = [];
+    for (const r of this.remotes.values()) {
+      if (!r.alive || !r.lastPose) continue;
+      scratchQuat.set(
+        r.lastPose.quat.x,
+        r.lastPose.quat.y,
+        r.lastPose.quat.z,
+        r.lastPose.quat.w,
+      );
+      scratchFwd.set(0, 0, -1).applyQuaternion(scratchQuat);
+      out.push({
+        pos: r.lastPose.pos,
+        fwd: { x: scratchFwd.x, y: scratchFwd.y, z: scratchFwd.z },
+      });
+    }
+    return out;
+  }
+
   /** The last sampled pose of one remote (remote tracer spawning). */
   poseOf(id: string): Pose | null {
     const remote = this.remotes.get(id);

@@ -22,9 +22,24 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+import { RadioQueue, RadioVoice } from "./audio/radio";
 import { GameAudio } from "./audio/sound";
 import { NEAR_MISS_RADIUS, closestApproach, spatialize } from "./audio/spatial";
 import { Bullets } from "./game/bullets";
+import {
+  AmbientChatter,
+  type Callout,
+  LOW_HP_CALLOUT,
+  checkInCallout,
+  hitCallout,
+  maydayCallout,
+  nearMissCallout,
+  offStationCallout,
+  ownKillCallout,
+  splashCallout,
+  threatCallout,
+  threatOnSix,
+} from "./game/callouts";
 import { ChaseCamera } from "./game/camera";
 import { detectCrash } from "./game/collision";
 import { FlightInputSource } from "./game/flight-input";
@@ -45,6 +60,7 @@ import { Tracers } from "./render/tracers";
 import { Traffic } from "./render/traffic";
 import { PlaneTrails } from "./render/trails";
 import { nearestImage } from "./render/wrapPlacement";
+import { CommsTicker } from "./ui/comms";
 import { initFullscreenUi } from "./ui/fullscreen";
 import { Hud } from "./ui/hud";
 import { requestName, showJoinError } from "./ui/join";
@@ -178,11 +194,40 @@ const scoreboard = new Scoreboard(socket.selfId);
 scoreboard.setRoster(welcome.roster);
 scoreboard.setScores(welcome.scores);
 
-/** id → name for feed lines (self included; remotes tracks the others too). */
-const playerNames = new Map<string, string>(
-  welcome.roster.map((r) => [r.id, r.name]),
+/** id → name/isBot for feed + radio lines (self included; remotes tracks the
+ * others too). isBot gates whether the VOICE may speak the callsign. */
+const players = new Map<string, { name: string; isBot: boolean }>(
+  welcome.roster.map((r) => [r.id, { name: r.name, isBot: r.isBot ?? false }]),
 );
-const nameOf = (id: string): string => playerNames.get(id) ?? "???";
+const nameOf = (id: string): string => players.get(id)?.name ?? "???";
+const isBotOf = (id: string): boolean => players.get(id)?.isBot ?? false;
+
+// --- Radio comms: one channel, priority queue, TTS + ticker (client-only) ---
+const radio = new RadioQueue();
+const radioVoice = new RadioVoice(audio);
+const comms = new CommsTicker();
+const ambient = new AmbientChatter(welcome.seed, performance.now());
+const RADIO_VOICE_KEY = "ab-radio-voice";
+let radioVoiceOn = localStorage.getItem(RADIO_VOICE_KEY) !== "off";
+hud.bindRadioToggle(radioVoiceOn, (on) => {
+  radioVoiceOn = on;
+  localStorage.setItem(RADIO_VOICE_KEY, on ? "on" : "off");
+});
+/** Armed while HP is healthy; fires once per drop below LOW_HP_CALLOUT. */
+let lowHpArmed = true;
+/** Recent on-air lines (QA hook — headless runs can't hear the TTS). */
+const radioLog: {
+  at: number;
+  speaker: string;
+  ticker: string;
+  voice: string;
+}[] = [];
+const say = (c: Callout): boolean => radio.enqueue(c, performance.now());
+const botCallsigns = (): string[] => {
+  const out: string[] = [];
+  for (const p of players.values()) if (p.isBot) out.push(p.name);
+  return out;
+};
 
 // --- Simulation state ---
 const input = new FlightInputSource();
@@ -245,6 +290,7 @@ function respawnSelf(spawn: SpawnState): void {
   plane.visible = true;
   hud.hideKillCam();
   guns.reset(performance.now());
+  lowHpArmed = true; // fresh plane, fresh "I'm hit" edge
   flashFade();
 }
 
@@ -290,17 +336,24 @@ socket.events.onSnapshot = (snap) => {
     selfProt = self.prot;
     hud.setHp(self.hp);
     hud.setProtected(self.prot);
+    // Regen back above the threshold re-arms the "I'm hit" callout.
+    if (self.hp >= LOW_HP_CALLOUT) lowHpArmed = true;
   }
 };
 socket.events.onPlayerJoined = (player) => {
-  playerNames.set(player.id, player.name);
+  players.set(player.id, {
+    name: player.name,
+    isBot: player.isBot ?? false,
+  });
   remotes.playerJoined(player);
   scoreboard.playerJoined(player);
+  say(checkInCallout(player.name, player.isBot ?? false));
 };
 socket.events.onPlayerLeft = (id) => {
+  say(offStationCallout(nameOf(id), isBotOf(id)));
   remotes.playerLeft(id);
   scoreboard.playerLeft(id);
-  playerNames.delete(id);
+  players.delete(id);
 };
 socket.events.onFired = (id) => remoteFired(id);
 socket.events.onDamage = (msg) => {
@@ -308,6 +361,11 @@ socket.events.onDamage = (msg) => {
   if (msg.targetId === socket.selfId) {
     selfHp = msg.hp;
     hud.setHp(msg.hp);
+    radio.noteCombat(performance.now());
+    if (lowHpArmed && msg.hp < LOW_HP_CALLOUT) {
+      lowHpArmed = false;
+      say(hitCallout(name));
+    }
   }
 };
 socket.events.onDeath = (msg) => {
@@ -327,6 +385,15 @@ socket.events.onDeath = (msg) => {
   );
   if (msg.victimId === socket.selfId) enterDeath(msg.killerId);
   else remotes.setDead(msg.victimId);
+  // Radio: the victim's mayday from us, or the killer's "splash one".
+  if (msg.victimId === socket.selfId) {
+    radio.noteCombat(performance.now());
+    say(maydayCallout(name));
+  } else if (msg.killerId === socket.selfId) {
+    say(ownKillCallout(name));
+  } else if (msg.killerId !== null) {
+    say(splashCallout(nameOf(msg.killerId), isBotOf(msg.killerId)));
+  }
 };
 socket.events.onRespawn = (msg) => {
   if (msg.id === socket.selfId) respawnSelf(msg.spawn);
@@ -372,6 +439,12 @@ declare global {
       };
       signage: () => Signage["counts"];
       signImage: (x: number, z: number) => { x: number; z: number } | null;
+      radio: () => {
+        voiceOn: boolean;
+        ttsSupported: boolean;
+        inCombat: boolean;
+        log: { at: number; speaker: string; ticker: string; voice: string }[];
+      };
     };
   }
 }
@@ -430,6 +503,13 @@ window.__ab = {
   // S2 QA: signage instance counts + drawn-position read-back (seam checks).
   signage: () => signage.counts,
   signImage: (x, z) => signage.imageOf(x, z),
+  // Radio QA: recent on-air lines (headless runs can't hear the TTS).
+  radio: () => ({
+    voiceOn: radioVoiceOn,
+    ttsSupported: radioVoice.supported,
+    inCombat: radio.inCombat(performance.now()),
+    log: radioLog.map((l) => ({ ...l })),
+  }),
 };
 
 // --- Frame loop ---
@@ -481,6 +561,7 @@ renderer.setAnimationLoop((now) => {
       socket.sendFire(shot.seq);
       tracers.flash(shot.origin, now);
       audio.gunshot();
+      radio.noteCombat(now); // firing = combat radio discipline
     }
 
     chase.update(camera, flight, dt, freelook);
@@ -519,6 +600,8 @@ renderer.setAnimationLoop((now) => {
         closestApproach(bullet.prev, bullet.pos, flight.pos) < NEAR_MISS_RADIUS
       ) {
         audio.whoosh(spatialize(flight.pos, flight.yaw, bullet.pos).pan, now);
+        radio.noteCombat(now);
+        say(nearMissCallout(name));
       }
       continue;
     }
@@ -534,6 +617,31 @@ renderer.setAnimationLoop((now) => {
   remotes.update(socket.renderTime(), chase.position, dt, now);
   planeLights.commit();
   planeTrails.update(chase.position, now);
+
+  // --- Radio: threat scan, ambient chatter, then the one-line channel ---
+  if (alive && threatOnSix(flight.pos, flight.yaw, remotes.headings())) {
+    say(threatCallout(name));
+    radio.noteCombat(now); // an active tail counts as combat
+  }
+  const ambientLine = ambient.poll(now, botCallsigns());
+  if (ambientLine) say(ambientLine);
+  const onAir = radio.poll(now);
+  if (onAir) {
+    comms.add(onAir.speaker, onAir.ticker);
+    radioLog.push({
+      at: now,
+      speaker: onAir.speaker,
+      ticker: onAir.ticker,
+      voice: onAir.voice,
+    });
+    if (radioLog.length > 20) radioLog.shift();
+    // Muted voice: no TTS, no framing SFX — the ticker alone carries the
+    // line and the queue's estimated duration paces the channel.
+    if (radioVoiceOn) {
+      radioVoice.speak(onAir.voice, () => radio.release(performance.now()));
+    }
+  }
+
   city.update(chase.position);
   // Beacons pulse on server-synced time so every client is in phase.
   roofClutter.update(chase.position, socket.renderTime() ?? now);

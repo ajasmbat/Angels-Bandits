@@ -6,13 +6,14 @@
 // streetlights.ts: the exported functions are the tested seam.
 
 import { mulberry32 } from "@angels-bandits/common/city";
+import { LANE_CENTERS } from "@angels-bandits/common/city/street";
 import { BLOCK_PITCH, WORLD_SIZE } from "@angels-bandits/common/constants";
 import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { nearestImage } from "./wrapPlacement";
 
-/** Sideways offset of each lane from its street centerline, meters. */
-const LANE_OFFSET = 3;
+/** Lane centerlines from the S1 street contract (±5 m, right-hand traffic). */
+const [LANE_MINUS, LANE_PLUS] = LANE_CENTERS;
 /** Cars on every lane. 40 lanes × 4 = 160 cars total (~the plan's ~150). */
 export const CARS_PER_LANE = 4;
 /** Speed band from the plan, m/s — one shared speed per lane, so the fixed
@@ -31,7 +32,7 @@ export interface TrafficLane {
   id: number;
   /** World axis the lane runs along ('z' lanes belong to north–south streets). */
   axis: "x" | "z";
-  /** Canonical coordinate on the OTHER axis (centerline ± LANE_OFFSET). */
+  /** Canonical coordinate on the OTHER axis (a contract lane center). */
   cross: number;
   /** Direction of travel along `axis`. */
   dir: 1 | -1;
@@ -39,9 +40,9 @@ export interface TrafficLane {
 
 /**
  * The full lane graph, deterministic from the block grid: every street line
- * (each BLOCK_PITCH multiple, both axes) carries two lanes offset
- * ±LANE_OFFSET from the centerline, driving opposite directions — right-hand
- * traffic. Lanes are complete torus loops of length WORLD_SIZE.
+ * (each BLOCK_PITCH multiple, both axes) carries two lanes on the contract's
+ * lane centers, driving opposite directions — right-hand traffic. Lanes are
+ * complete torus loops of length WORLD_SIZE.
  */
 export function trafficLanes(): TrafficLane[] {
   const grid = WORLD_SIZE / BLOCK_PITCH;
@@ -49,8 +50,8 @@ export function trafficLanes(): TrafficLane[] {
   for (let line = 0; line < grid; line++) {
     const center = line * BLOCK_PITCH;
     // canonicalize wraps line 0's negative-side lane to WORLD_SIZE − offset.
-    const minus = canonicalize({ x: center - LANE_OFFSET, y: 0, z: 0 }).x;
-    const plus = center + LANE_OFFSET;
+    const minus = canonicalize({ x: center + LANE_MINUS, y: 0, z: 0 }).x;
+    const plus = center + LANE_PLUS;
     lanes.push(
       { id: lanes.length, axis: "z", cross: minus, dir: -1 },
       { id: lanes.length + 1, axis: "z", cross: plus, dir: 1 },
@@ -58,8 +59,8 @@ export function trafficLanes(): TrafficLane[] {
   }
   for (let line = 0; line < grid; line++) {
     const center = line * BLOCK_PITCH;
-    const minus = canonicalize({ x: center - LANE_OFFSET, y: 0, z: 0 }).x;
-    const plus = center + LANE_OFFSET;
+    const minus = canonicalize({ x: center + LANE_MINUS, y: 0, z: 0 }).x;
+    const plus = center + LANE_PLUS;
     lanes.push(
       { id: lanes.length, axis: "x", cross: minus, dir: 1 },
       { id: lanes.length + 1, axis: "x", cross: plus, dir: -1 },

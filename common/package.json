@@ -14,6 +14,7 @@
     "./city/layout": "./src/city/layout.ts",
     "./city/street": "./src/city/street.ts",
     "./storm": "./src/storm.ts",
-    "./protocol": "./src/protocol.ts"
+    "./protocol": "./src/protocol.ts",
+    "./net": "./src/net.ts"
   }
 }

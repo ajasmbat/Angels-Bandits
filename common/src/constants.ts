@@ -156,16 +156,45 @@ export const CHASE_HEIGHT = 6;
 export const CAMERA_RESPONSE = 3.5;
 
 // --- Networking rates ---
-/** Client → server input/state rate, Hz. */
+/** Client → server input/state rate, Hz. Unchanged by ANGE-4KO2W2: one
+ * plane's pose is already cheap, and raising it would not shorten the interp
+ * buffer (that floor is set by the DOWN rate). */
 export const TICK_UP_HZ = 20;
-/** Server → client snapshot rate, Hz. */
-export const TICK_DOWN_HZ = 15;
+/** Server → client snapshot rate, Hz. Raised 15 → 20 (ANGE-4KO2W2) and paid
+ * for by snapshot quantisation (common/src/net.ts): the wire got ~2.6x
+ * cheaper per snapshot, so a 33% faster cadence still costs far less than
+ * before. This is the number that sets the interpolation floor. */
+export const TICK_DOWN_HZ = 20;
+/** One snapshot interval, ms — the hard floor on interpolation delay, because
+ * below it there is frequently no future sample to lerp toward. */
+export const SNAPSHOT_INTERVAL_MS = 1000 / TICK_DOWN_HZ;
 
 // --- Multiplayer presence (T3) ---
 /** Shared city seed — every room generates the same city for now. */
 export const CITY_SEED = 42;
-/** Remote planes render this far behind estimated server time, ms. */
-export const INTERP_DELAY_MS = 100;
+
+// --- Interpolation delay (ANGE-4KO2W2) --- the fixed INTERP_DELAY_MS is gone:
+// the client now holds the smallest SAFE buffer for its own measured snapshot
+// jitter (common/src/net.ts owns the pure math, client/src/net/delay.ts the
+// state). A LAN player gets the floor; bad wifi grows its own buffer instead
+// of everyone paying for the worst case.
+/** Safety margin on top of one snapshot interval, ms — covers the sub-tick
+ * phase between a snapshot's arrival and the frame that samples it. */
+export const INTERP_MARGIN_MS = 8;
+/** Smallest interpolation delay any client may use, ms (58 ms at 20 Hz). */
+export const INTERP_FLOOR_MS = SNAPSHOT_INTERVAL_MS + INTERP_MARGIN_MS;
+/** Measured jitter is multiplied by this before being added to the floor —
+ * ~2 sigma of headroom, so an ordinary wobble never empties the buffer. */
+export const INTERP_JITTER_FACTOR = 2;
+/** Ceiling on the adaptive delay, ms. Past this the connection is beyond
+ * saving and a longer buffer only adds lag. Also the widest hit-claim slack
+ * the server will honour. */
+export const INTERP_DELAY_MAX_MS = 250;
+/** Per-snapshot decay of the jitter estimate. Jitter attacks INSTANTLY (the
+ * buffer grows before remotes stutter) and only decays at this rate, which is
+ * what makes the controller grow faster than it shrinks — and what stops it
+ * oscillating on alternating jitter. ~1.7 s half-life at 20 Hz. */
+export const INTERP_JITTER_DECAY = 0.02;
 /** Server accepts claimed speeds up to MAX_SPEED × this factor. */
 export const SPEED_TOLERANCE = 1.1;
 /** Slack added to the per-update displacement bound, meters (network jitter). */
@@ -233,14 +262,24 @@ export const MAGNETISM_MAX_DEG_PER_S = 2;
 export const SMOKE_HP_FRAC = 0.3;
 
 // --- Server-side combat validation ---
-/** Meters of slack on top of BULLET_RANGE for hit claims: interpolation delay
- * plus bullet flight time let both planes move before the claim arrives. */
-export const HIT_RANGE_SLACK = 200;
-/** A claim's bulletOrigin must be within this of the shooter's on-record pose, meters. */
+// Hit-claim range slack is DERIVED, not a constant: see hitRangeSlackFor() in
+// common/src/net.ts. It exists to absorb the distance both planes cover during
+// the shooter's interpolation delay plus the bullet's flight time, and the
+// delay is adaptive now — a hardcoded 200 m beside a variable would drift into
+// rejecting legitimate hits (too tight) or widening the shooter-favoured
+// window (too loose).
+/** A claim's bulletOrigin must be within this of the shooter's on-record pose,
+ * meters. Independent of the snapshot cadence: it bounds how stale the
+ * SHOOTER's own pose can be, which is a TICK_UP_HZ question (unchanged), not
+ * an interpolation one — the shooter's plane is never interpolated. */
 export const HIT_ORIGIN_SLACK = 50;
-/** Fire-rate token bucket burst: shots that may arrive batched by network jitter. */
+/** Fire-rate token bucket burst: shots that may arrive batched by network
+ * jitter. Fire messages are sent the instant the trigger breaks, never batched
+ * into the snapshot tick, so this is unaffected by TICK_DOWN_HZ. */
 export const FIRE_BURST_SLACK = 5;
-/** Server heat tolerance above OVERHEAT_AT before shots are rejected (clock jitter). */
+/** Server heat tolerance above OVERHEAT_AT before shots are rejected (clock
+ * jitter). The heat model is wall-clock driven on both sides — no tick
+ * cadence enters it — so this is unaffected by TICK_DOWN_HZ. */
 export const HEAT_VALIDATION_SLACK = 0.1;
 
 // --- Death, respawn, regen (all server-owned) ---
@@ -283,8 +322,10 @@ export const BOT_AIM_JITTER = 0.05;
 export const BOT_REACTION_MS = 400;
 /** Bot steering-input cap (players reach 1.0): bots turn slightly worse. */
 export const BOT_INPUT_CAP = 0.85;
-/** Brain decision cadence: every Nth sim tick (15 Hz / 3 ≈ 5 Hz). */
-export const BOT_DECISION_EVERY = 3;
+/** Brain decision cadence: every Nth sim tick (20 Hz / 4 = 5 Hz). Tracks
+ * TICK_DOWN_HZ deliberately — bots fly at snapshot cadence, and ANGE-4KO2W2's
+ * faster tick must not silently sharpen their reflexes. */
+export const BOT_DECISION_EVERY = 4;
 /** Patrol waypoint altitude band, m — above every rooftop (250 m landmarks),
  * below the soft ceiling. */
 export const BOT_PATROL_ALT_MIN = 270;

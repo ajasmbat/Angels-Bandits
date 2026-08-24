@@ -6,7 +6,9 @@
 // The sim is the SHARED flight model: every bot holds a FlightState advanced
 // with stepFlight at snapshot cadence (dt = 1/TICK_DOWN_HZ), so a bot can
 // never out-fly the envelope players have — its brain only chooses inputs.
-// The 4-state brain decides every BOT_DECISION_EVERY-th tick (~5 Hz):
+// The 4-state brain decides every BOT_DECISION_EVERY-th tick (5 Hz — the
+// constant tracks TICK_DOWN_HZ so a faster snapshot cadence does not silently
+// sharpen bot reflexes):
 //
 //   PATROL  — seeded waypoint wander in the mid-altitude band.
 //   ENGAGE  — lead pursuit of the nearest contact in BOT_DETECT_RANGE; all

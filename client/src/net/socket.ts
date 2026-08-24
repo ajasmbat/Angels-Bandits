@@ -1,9 +1,16 @@
 // GameSocket: the client's one connection to the presence server. Joins with
 // a name, streams the local plane's pose up at TICK_UP_HZ, surfaces
 // snapshots/join/leave events, and estimates the server clock so the render
-// loop can sample interpolation buffers INTERP_DELAY_MS behind it.
+// loop can sample interpolation buffers the ADAPTIVE interpolation delay
+// behind it (ANGE-4KO2W2).
+//
+// Snapshots arrive QUANTISED — a tuple of integers per plane — and are decoded
+// here, so nothing downstream of this file knows the wire got cheaper. This is
+// also where snapshot-arrival jitter is measured: it is the one place that
+// sees every snapshot land on the local clock.
 
-import { INTERP_DELAY_MS, TICK_UP_HZ } from "@angels-bandits/common/constants";
+import { TICK_UP_HZ } from "@angels-bandits/common/constants";
+import { decodeSnapshotEntry } from "@angels-bandits/common/net";
 import type {
   BotsConfigMsg,
   DamageMsg,
@@ -17,6 +24,7 @@ import type {
   WelcomeMsg,
 } from "@angels-bandits/common/protocol";
 import type { Vec3 } from "@angels-bandits/common/world";
+import { InterpDelay } from "./delay";
 
 export interface GameSocketEvents {
   onSnapshot?: (snap: SnapshotMsg) => void;
@@ -47,6 +55,8 @@ export class GameSocket {
   /** serverTime − performance.now(), estimated from stamped snapshots. */
   private clockOffset: number | null = null;
   private lastPoseSentAt = 0;
+  /** The adaptive interpolation buffer, fed by snapshot arrival times. */
+  private readonly delay = new InterpDelay();
 
   private constructor(ws: WebSocket, welcome: WelcomeMsg) {
     this.ws = ws;
@@ -95,9 +105,18 @@ export class GameSocket {
     this.send({ type: "fire", seq });
   }
 
-  /** Claim a shooter-side hit on `targetId` by bullet `seq`. */
+  /** Claim a shooter-side hit on `targetId` by bullet `seq`. The claim
+   * declares the buffer this client was holding: the server's range slack is
+   * derived from it, so a shooter on a clean link is judged against a tighter
+   * window than one that genuinely needs a deep buffer. */
   sendHit(targetId: string, bulletOrigin: Vec3, seq: number): void {
-    this.send({ type: "hit", targetId, bulletOrigin, seq });
+    this.send({
+      type: "hit",
+      targetId,
+      bulletOrigin,
+      seq,
+      delay: this.interpDelayMs,
+    });
   }
 
   /** Report flying into a building or the ground. */
@@ -122,23 +141,40 @@ export class GameSocket {
    */
   renderTime(): number | null {
     if (this.clockOffset === null) return null;
-    return performance.now() + this.clockOffset - INTERP_DELAY_MS;
+    return performance.now() + this.clockOffset - this.interpDelayMs;
+  }
+
+  /** The interpolation buffer this client is currently holding, ms. */
+  get interpDelayMs(): number {
+    return this.delay.delayMs;
+  }
+
+  /** Measured snapshot-arrival jitter, ms — QA/telemetry only. */
+  get jitterMs(): number {
+    return this.delay.jitter;
   }
 
   private handle(ev: MessageEvent): void {
     const msg = JSON.parse(ev.data as string) as ServerMsg;
     switch (msg.type) {
       case "snapshot": {
+        const arrival = performance.now();
+        this.delay.observe(arrival);
         // Each sample of serverTime − now is the true offset minus that
         // packet's latency, so the LARGEST sample is the best estimate; adapt
         // slowly downward to track drift or a route change.
-        const sample = msg.time - performance.now();
+        const sample = msg.time - arrival;
         if (this.clockOffset === null || sample > this.clockOffset) {
           this.clockOffset = sample;
         } else {
           this.clockOffset += (sample - this.clockOffset) * 0.02;
         }
-        this.events.onSnapshot?.(msg);
+        const decoded: SnapshotMsg = {
+          type: "snapshot",
+          time: msg.time,
+          players: msg.p.map(decodeSnapshotEntry),
+        };
+        this.events.onSnapshot?.(decoded);
         break;
       }
       case "playerJoined":

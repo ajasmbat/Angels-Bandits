@@ -11,6 +11,7 @@ import {
   shapeInput,
   stepFreeLook,
 } from "../src/game/freelook";
+import { zoomSteer } from "../src/game/zoom";
 
 const DT = 1 / 60;
 
@@ -169,5 +170,34 @@ describe("shapeInput", () => {
     expect(shaped.pitch).toBeCloseTo(-0.25, 6);
     expect(shaped.roll).toBeCloseTo(0.5, 6);
     expect(shaped.throttle).toBe(1);
+  });
+
+  // ANGE-G9CPCV: the aim zoom pays for its steady sight picture in turn rate,
+  // and it spends it through this same seam rather than reaching into flight
+  // state. Authority is the PRODUCT of both costs — during the beat where E
+  // interrupts a zoom, both are below 1 at once.
+  it("takes any authority carrier, not just a FreeLookState", () => {
+    expect(shapeInput(input, { steer: zoomSteer(0) })).toEqual(input);
+  });
+
+  it("costs 40% of turn/pitch/roll at full zoom, throttle untouched", () => {
+    const shaped = shapeInput(input, { steer: zoomSteer(1) });
+    expect(shaped.turn).toBeCloseTo(0.6, 6);
+    expect(shaped.pitch).toBeCloseTo(-0.3, 6);
+    expect(shaped.roll).toBeCloseTo(0.6, 6);
+    expect(shaped.throttle).toBe(1);
+  });
+
+  it("is bit-identical to un-zoomed flight at z=0 (regression guard)", () => {
+    const authority = createFreeLook().steer * zoomSteer(0);
+    expect(shapeInput(input, { steer: authority })).toEqual(input);
+  });
+
+  it("multiplies the free-look and zoom costs while a zoom eases out", () => {
+    // Half-decayed free-look (0.5) under a full zoom (0.6) ⇒ 0.30 authority.
+    const authority = 0.5 * zoomSteer(1);
+    const shaped = shapeInput(input, { steer: authority });
+    expect(shaped.turn).toBeCloseTo(0.3, 6);
+    expect(shaped.roll).toBeCloseTo(0.3, 6);
   });
 });

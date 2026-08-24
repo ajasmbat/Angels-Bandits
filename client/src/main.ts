@@ -50,6 +50,14 @@ import { createFreeLook, shapeInput, stepFreeLook } from "./game/freelook";
 import { Guns } from "./game/guns";
 import { bulletHitsSphere } from "./game/hitdetect";
 import { magnetizeVelocity } from "./game/magnetism";
+import {
+  BASE_FOV,
+  createZoom,
+  stepZoom,
+  zoomFov,
+  zoomHeld,
+  zoomSteer,
+} from "./game/zoom";
 import { GameSocket } from "./net/socket";
 import { CityRenderer } from "./render/city";
 import { FacadeGarnishRenderer } from "./render/facade-garnish";
@@ -110,7 +118,7 @@ const scene = new THREE.Scene();
 setupSky(scene);
 
 const camera = new THREE.PerspectiveCamera(
-  70,
+  BASE_FOV,
   window.innerWidth / window.innerHeight,
   0.1,
   FOG_DISTANCE + 100,
@@ -296,6 +304,8 @@ const input = new FlightInputSource();
 const chase = new ChaseCamera();
 // Hold-E free-look: pure client camera state, never streamed (B2).
 let freelook = createFreeLook();
+// Hold-right-click aim zoom: same deal — display + input shaping only.
+let zoom = createZoom();
 let flight: FlightState = createFlightState(
   welcome.spawn.pos,
   welcome.spawn.yaw,
@@ -329,8 +339,9 @@ function flashFade(): void {
 
 /** Freeze into the kill-cam; the server's respawn message ends it. */
 function enterDeath(killerId: string | null, cause?: "storm"): void {
-  // Kill-cam owns the camera — force-exit free-look instantly.
+  // Kill-cam owns the camera — force-exit free-look and the zoom instantly.
   freelook = createFreeLook();
+  zoom = createZoom();
   hud.setFreeLook(false);
   killCamTargetId = killerId;
   hud.showKillCam(killerId === null ? null : nameOf(killerId), cause);
@@ -661,6 +672,10 @@ renderer.setAnimationLoop((now) => {
   // right, mouse-up looks up (both hand-tuned with LOOK_SENSITIVITY).
   const lookDelta = input.takeLookDelta();
   planeLights.begin(); // own + remote lights re-append every frame
+  // Step the zoom OUTSIDE the alive gate: chase.update() only runs while
+  // alive, so a death mid-zoom would otherwise freeze the FOV narrowed for
+  // the whole kill-cam. Dying eases it back out instead.
+  zoom = stepZoom(zoom, alive && zoomHeld(input.aimHeld(), freelook.held), dt);
   if (alive) {
     freelook = stepFreeLook(
       freelook,
@@ -670,7 +685,11 @@ renderer.setAnimationLoop((now) => {
       dt,
     );
     hud.setFreeLook(freelook.held);
-    flight = stepFlight(flight, shapeInput(input.read(), freelook), dt);
+    // Zoom buys its steady sight picture with turn rate, and spends it
+    // through the same input-shaping seam free-look uses — the camera never
+    // reaches flight state. Authority is the product of both costs.
+    const steer = freelook.steer * zoomSteer(zoom.z);
+    flight = stepFlight(flight, shapeInput(input.read(), { steer }), dt);
     if (detectCrash(flight, city.cityBuildings)) {
       // Report and freeze; the server decides credit and the respawn.
       socket.sendCrash();
@@ -888,6 +907,16 @@ renderer.setAnimationLoop((now) => {
   audio.setStatic(
     alive ? Math.min(1, Math.max(0, (flight.pos.y - CLOUD_BASE) / 60)) : 0,
   );
+
+  // FOV must land BEFORE the render: the lead reticle and edge markers below
+  // read camera.projectionMatrix directly, so writing it after would project
+  // them with last frame's FOV. Guarded so a static FOV costs nothing, and
+  // aspect (the resize handler's business) is left alone.
+  const fov = zoomFov(zoom.z);
+  if (camera.fov !== fov) {
+    camera.fov = fov;
+    camera.updateProjectionMatrix();
+  }
 
   renderer.info.reset();
   composer.render();

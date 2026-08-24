@@ -17,10 +17,11 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { VOICE_MODEL, VOICE_SPEAKER, voiceLines } from "./radio-bank.mjs";
 
 const CACHE = "tools/.cache";
 const PIPER = `${CACHE}/piper-venv/bin/piper`;
-const MODEL = `${CACHE}/voices/en_US-joe-medium.onnx`;
+const MODEL = `${CACHE}/voices/${VOICE_MODEL}.onnx`;
 const OUT = "client/assets/radio";
 const TMP = `${CACHE}/render`;
 
@@ -73,41 +74,7 @@ const { PHRASE, AMBIENT_PHRASES } = await import(
   pathToFileURL(`${TMP}/bank/phrases.js`).href
 );
 
-const NUMBER_WORD = [
-  "",
-  "One",
-  "Two",
-  "Three",
-  "Four",
-  "Five",
-  "Six",
-  "Seven",
-  "Eight",
-  "Nine",
-  "Ten",
-  "Eleven",
-  "Twelve",
-];
-
-/** [asset text (slug source), spoken text piper reads] */
-const lines = [];
-for (const text of Object.values(PHRASE)) {
-  // The two bare fragments are only ever voiced inside the callsign shapes.
-  if (text === PHRASE.checkIn || text === PHRASE.offStation) continue;
-  lines.push([text, text]);
-}
-for (const text of AMBIENT_PHRASES) lines.push([text, text]);
-for (let n = 1; n <= 12; n++) {
-  // Voice strings carry the wire callsign; piper reads it as words.
-  lines.push([
-    `BANDIT-${n}, ${PHRASE.checkIn}`,
-    `Bandit ${NUMBER_WORD[n]}, ${PHRASE.checkIn}`,
-  ]);
-  lines.push([
-    `BANDIT-${n} ${PHRASE.offStation}`,
-    `Bandit ${NUMBER_WORD[n]} ${PHRASE.offStation}`,
-  ]);
-}
+const lines = voiceLines(PHRASE, AMBIENT_PHRASES);
 
 // --- Render ------------------------------------------------------------------
 mkdirSync(OUT, { recursive: true });
@@ -152,6 +119,7 @@ for (const [text, spoken] of lines) {
     [
       "-m",
       MODEL,
+      ...(VOICE_SPEAKER === null ? [] : ["-s", String(VOICE_SPEAKER)]),
       "--length-scale",
       LENGTH_SCALE,
       "--sentence-silence",

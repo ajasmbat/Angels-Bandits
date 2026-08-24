@@ -116,26 +116,26 @@ describe("zoomOffset — the camera dolly", () => {
     expect(zoomOffset(CHASE_OFFSET, FWD_NORTH, 0)).toEqual(CHASE_OFFSET);
   });
 
-  it("dollies to 6 m behind and 2.2 m above at full zoom", () => {
-    // Facing −Z, "behind" is +Z: −fwd·6 = (0, 0, 6), plus 2.2 m of height.
+  it("dollies to 6 m behind and 2.6 m above at full zoom", () => {
+    // Facing −Z, "behind" is +Z: −fwd·6 = (0, 0, 6), plus 2.6 m of height.
     const o = zoomOffset(CHASE_OFFSET, FWD_NORTH, 1);
     expect(o.x).toBeCloseTo(0);
-    expect(o.y).toBeCloseTo(2.2);
+    expect(o.y).toBeCloseTo(2.6);
     expect(o.z).toBeCloseTo(6);
   });
 
-  it("closes the eye-to-plane distance from 22.8 m to 6.4 m", () => {
+  it("closes the eye-to-plane distance from 22.8 m to 6.5 m", () => {
     const far = zoomOffset(CHASE_OFFSET, FWD_NORTH, 0);
     const near = zoomOffset(CHASE_OFFSET, FWD_NORTH, 1);
     expect(Math.hypot(far.x, far.y, far.z)).toBeCloseTo(22.804, 2);
-    expect(Math.hypot(near.x, near.y, near.z)).toBeCloseTo(6.391, 2);
+    expect(Math.hypot(near.x, near.y, near.z)).toBeCloseTo(6.539, 2);
   });
 
   it("dollies along the nose when the plane is climbing", () => {
     // 45° climb: forward is (0, √½, −√½), so the eye sits below and behind.
     const s = Math.SQRT1_2;
     const o = zoomOffset(CHASE_OFFSET, { x: 0, y: s, z: -s }, 1);
-    expect(o.y).toBeCloseTo(2.2 - 6 * s, 3);
+    expect(o.y).toBeCloseTo(2.6 - 6 * s, 3);
     expect(o.z).toBeCloseTo(6 * s, 3);
   });
 });

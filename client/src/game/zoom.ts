@@ -14,8 +14,13 @@ export const BASE_FOV = 70;
 export const ZOOM_FOV = 28;
 /** Eye distance behind the plane at full zoom (chase is 22 m). */
 const ZOOM_DISTANCE = 6;
-/** Eye height above the plane at full zoom (chase is 6 m). */
-const ZOOM_HEIGHT = 2.2;
+/** Eye height above the plane at full zoom (chase is 6 m). Tuned by capture,
+ * not by theory: a 9 m span subtends 73 degrees at 6 m, so at a 28-degree FOV
+ * the airframe is ALWAYS wider than the frame and the only question is where
+ * it sits vertically. 2.2 put the upper wing and struts across the bottom
+ * third; 3.0 lifted the plane out of shot entirely. 2.6 leaves a thin
+ * foreground silhouette along the bottom edge with the target area clear. */
+const ZOOM_HEIGHT = 2.6;
 /** Steering authority at full zoom: a stabilized gun platform can't break hard. */
 const ZOOM_STEER = 0.6;
 /** Exp response 1/s: ≥95% of the commanded zoom within ~0.17 s. */

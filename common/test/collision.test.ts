@@ -1,5 +1,10 @@
-import { generateCity } from "@angels-bandits/common/city";
-import { collideCity, hitsGround } from "@angels-bandits/common/collision";
+import { generateCity, mulberry32 } from "@angels-bandits/common/city";
+import {
+  buildCityIndex,
+  collideCity,
+  hitsGround,
+} from "@angels-bandits/common/collision";
+import { WORLD_SIZE } from "@angels-bandits/common/constants";
 import { describe, expect, it } from "vitest";
 
 // Hand-built buildings with worked-example geometry; the last block consumes
@@ -104,5 +109,113 @@ describe("collideCity against real generateCity() output", () => {
 
   it("finds only air over the fixed plaza block (4,4) — center (900, 900)", () => {
     expect(collideCity({ x: 900, y: 20, z: 900 }, R, city)).toBeNull();
+  });
+});
+
+// --- C1: block-indexed collision ----------------------------------------
+// At ~650 buildings the linear scan is the server's hot loop (11 bots × 4
+// nose probes at 5 Hz, plus a physics probe per bot per tick). The index
+// buckets buildings by the block lattice they already live on. Its contract
+// is PARITY: for any probe it must return the very same Building the linear
+// scan returns — including when a probe is inside two expanded footprints at
+// once, where "first in array order" is the tie-break both must agree on.
+
+// Each case runs the LINEAR scan over all ~650 buildings once per probe —
+// deliberately, since that is the oracle — so these are the slowest tests in
+// the suite (see the testTimeout note in vitest.config.ts).
+describe("buildCityIndex parity with the linear scan", () => {
+  const city = generateCity(42);
+  const index = buildCityIndex(city);
+
+  /** Deterministic probe stream — same points every run, no Math.random. */
+  function* probes(count: number, radius: number) {
+    const rand = mulberry32(0xc1c1);
+    for (let i = 0; i < count; i++) {
+      yield {
+        pos: {
+          x: rand() * WORLD_SIZE,
+          y: rand() * 260,
+          z: rand() * WORLD_SIZE,
+        },
+        radius,
+      };
+    }
+  }
+
+  it("returns the identical building for 3000 probes across the city", () => {
+    const mismatches: string[] = [];
+    for (const { pos, radius } of probes(3000, R)) {
+      const linear = collideCity(pos, radius, city);
+      const indexed = collideCity(pos, radius, city, index);
+      if (linear !== indexed) {
+        mismatches.push(`${pos.x},${pos.y},${pos.z}`);
+      }
+    }
+    expect(mismatches).toEqual([]);
+  });
+
+  it("agrees at the torus seam, where a probe straddles x=0 and z=0", () => {
+    const mismatches: string[] = [];
+    const rand = mulberry32(0x5ea3);
+    for (let i = 0; i < 3000; i++) {
+      // Hug both seams: a few meters either side of 0 / WORLD_SIZE.
+      const near = () =>
+        rand() < 0.5 ? rand() * 30 : WORLD_SIZE - rand() * 30;
+      const pos = { x: near(), y: rand() * 120, z: near() };
+      const linear = collideCity(pos, R, city);
+      const indexed = collideCity(pos, R, city, index);
+      if (linear !== indexed) {
+        mismatches.push(`${pos.x},${pos.y},${pos.z}`);
+      }
+    }
+    expect(mismatches).toEqual([]);
+  });
+
+  it("agrees at a bot's probe radius, which straddles several blocks", () => {
+    // BOT_PROBE_RADIUS × BOT_RECOVER_CLEAR = the widest sphere in the game.
+    const mismatches: string[] = [];
+    for (const { pos, radius } of probes(3000, 24)) {
+      const linear = collideCity(pos, radius, city);
+      const indexed = collideCity(pos, radius, city, index);
+      if (linear !== indexed) {
+        mismatches.push(`${pos.x},${pos.y},${pos.z}`);
+      }
+    }
+    expect(mismatches).toEqual([]);
+  });
+
+  it("indexes hand-built buildings that straddle the seam, not just city lots", () => {
+    // The index must be correct for ANY Building[], not only lattice-aligned
+    // lots — collision's contract takes a plain array.
+    const seamTower = {
+      x: 10,
+      z: 500,
+      width: 40,
+      depth: 40,
+      height: 100,
+      tiers: [{ width: 40, depth: 40, height: 100 }],
+    };
+    const seamIndex = buildCityIndex([seamTower]);
+    expect(
+      collideCity({ x: 1995, y: 50, z: 500 }, R, [seamTower], seamIndex),
+    ).toBe(seamTower);
+    expect(
+      collideCity({ x: 1980, y: 50, z: 500 }, R, [seamTower], seamIndex),
+    ).toBeNull();
+  });
+
+  it("falls back to the linear scan when handed an index for another array", () => {
+    // A stale index must degrade to correct-and-slow, never to silently wrong.
+    const other = generateCity(7);
+    const stale = buildCityIndex(other);
+    const mismatches: string[] = [];
+    for (const { pos, radius } of probes(3000, R)) {
+      const withStale = collideCity(pos, radius, city, stale);
+      const linear = collideCity(pos, radius, city);
+      if (withStale !== linear) {
+        mismatches.push(`${pos.x},${pos.y},${pos.z}`);
+      }
+    }
+    expect(mismatches).toEqual([]);
   });
 });

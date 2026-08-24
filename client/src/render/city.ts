@@ -7,6 +7,10 @@
 // re-uploading them per frame is far cheaper than extra draw calls.
 
 import { type Building, generateCity } from "@angels-bandits/common/city";
+import {
+  type CityIndex,
+  buildCityIndex,
+} from "@angels-bandits/common/collision";
 import { LANDMARK_HEIGHT } from "@angels-bandits/common/constants";
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
@@ -27,11 +31,15 @@ interface TierInstance {
 export class CityRenderer {
   readonly mesh: THREE.InstancedMesh;
   private readonly buildings: Building[];
+  private readonly index: CityIndex;
   private readonly instances: TierInstance[];
   private readonly scratch = new THREE.Matrix4();
 
   constructor(seed: number) {
     this.buildings = generateCity(seed);
+    // Built once, beside the array it describes, so the per-frame crash probe
+    // costs a couple of block lookups instead of a scan of the whole city.
+    this.index = buildCityIndex(this.buildings);
 
     // Flatten the tier stacks: the rendered silhouette is exactly the
     // collision volume, so instances come 1:1 from the shared tier data.
@@ -98,6 +106,11 @@ export class CityRenderer {
   /** The same Building[] the renderer draws — collision's single source of truth. */
   get cityBuildings(): readonly Building[] {
     return this.buildings;
+  }
+
+  /** Block index over `cityBuildings`, for collideCity's 4th argument. */
+  get cityIndex(): CityIndex {
+    return this.index;
   }
 
   /** Instance count actually drawn (one per tier) — perf reporting/QA. */

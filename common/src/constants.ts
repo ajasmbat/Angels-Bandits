@@ -42,16 +42,59 @@ export const EMISSIVE_STROBE = 1.1;
 export const EMISSIVE_TRACER = 1.5;
 
 // --- Buildings ---
-export const BUILDING_MIN_HEIGHT = 40;
-export const BUILDING_MAX_HEIGHT = 180;
-/** Smallest building footprint side, meters. */
-export const BUILDING_MIN_FOOTPRINT = 100;
-/** Largest footprint side, meters. Must stay ≤ BLOCK_PITCH − STREET_WIDTH. */
-export const BUILDING_MAX_FOOTPRINT = 170;
+// Height bounds are the envelope of HEIGHT_BANDS below; the bands are what
+// actually shapes the skyline. BUILDING_MAX_HEIGHT stays strictly under
+// LANDMARK_HEIGHT because four consumers (minimap, roof beacons, facade
+// archetypes, the city's neon tint) identify a landmark by height alone.
+export const BUILDING_MIN_HEIGHT = 20;
+export const BUILDING_MAX_HEIGHT = 240;
 /** Hand-placed landmark supertalls for orientation. */
 export const LANDMARK_HEIGHT = 250;
 /** Footprint side of the slim landmark towers, meters. */
 export const LANDMARK_FOOTPRINT = 90;
+
+// --- Lot subdivision (C1) ---
+// Blocks are cut into irregular lots by seeded binary subdivision and every
+// lot builds out to the lot line, so a block reads as one continuous
+// streetwall. These replace the old BUILDING_MIN/MAX_FOOTPRINT pair: the
+// "≤ BLOCK_PITCH − STREET_WIDTH" constraint now binds the block extent, not
+// any single building.
+/** Buildable lot line, meters behind the street-furniture line. Sized so the
+ * deepest thing that hangs off a facade (a 3.2 m canopy) still lands short of
+ * the curb; see LOT_LINE in city/street.ts. */
+export const LOT_LINE_MARGIN = 4;
+/** Smallest lot side a split may leave, meters. */
+export const LOT_MIN_WIDTH = 26;
+/** Deepest subdivision recursion — 2^n is the per-block lot ceiling. */
+export const LOT_MAX_DEPTH = 3;
+/** Chance a lot stops subdividing early once past depth 1. This is what puts
+ * one wide lot beside three narrow ones instead of a uniform grid. */
+export const LOT_STOP_CHANCE = 0.25;
+/** Split position along the chosen axis, as a fraction of its length. Clamped
+ * per split so neither half falls under LOT_MIN_WIDTH. */
+export const LOT_SPLIT_MIN = 0.35;
+export const LOT_SPLIT_MAX = 0.65;
+/** Chance a split takes the SHORTER axis instead of the longer one — the
+ * irregularity that stops lots converging on one modal shape. */
+export const LOT_CROSS_SPLIT_CHANCE = 0.25;
+/** Interior (non-street-facing) lot edges pull back by up to this, meters,
+ * opening mid-block light wells. Street-facing edges always build flush. */
+export const LOT_INTERIOR_INSET_MAX = 4;
+
+/**
+ * Skyline distribution: [cumulative probability, min height, max height].
+ * A continuous low/mid streetwall with a thin tail of towers punching
+ * through — a plain power curve over one range gives a lumpy mid-rise mass
+ * once there are several buildings per block. Must be sorted ascending by
+ * probability, end at exactly 1, and stay inside
+ * [BUILDING_MIN_HEIGHT, BUILDING_MAX_HEIGHT].
+ */
+export const HEIGHT_BANDS: ReadonlyArray<readonly [number, number, number]> = [
+  [0.7, 20, 60],
+  [0.9, 60, 120],
+  [0.98, 120, 190],
+  [1.0, 190, 240],
+];
 
 // --- Tiered setbacks (V2) ---
 // Buildings are 1–3 stacked, centered tiers; tier 1 keeps the full footprint

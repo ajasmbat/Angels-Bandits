@@ -6,12 +6,16 @@
 
 import {
   BLOCK_PITCH,
-  BUILDING_MAX_FOOTPRINT,
-  BUILDING_MAX_HEIGHT,
-  BUILDING_MIN_FOOTPRINT,
-  BUILDING_MIN_HEIGHT,
+  HEIGHT_BANDS,
   LANDMARK_FOOTPRINT,
   LANDMARK_HEIGHT,
+  LOT_CROSS_SPLIT_CHANCE,
+  LOT_INTERIOR_INSET_MAX,
+  LOT_MAX_DEPTH,
+  LOT_MIN_WIDTH,
+  LOT_SPLIT_MAX,
+  LOT_SPLIT_MIN,
+  LOT_STOP_CHANCE,
   TIER_SETBACK_MAX,
   TIER_SETBACK_MIN,
   TIER_SPLIT_MAX,
@@ -20,6 +24,12 @@ import {
   TIER_TWO_MIN_HEIGHT,
   WORLD_SIZE,
 } from "../constants";
+import { LANDMARK_BLOCKS, PLAZA_BLOCKS } from "./layout";
+import { LOT_LINE } from "./street";
+
+// Re-exported so the hand-placed lists keep their long-standing import site
+// (client signage, common/storm) while living in their own module.
+export { LANDMARK_BLOCKS, PLAZA_BLOCKS };
 
 /** One box of a setback tower, centered on the building's (x, z). */
 export interface Tier {
@@ -44,26 +54,9 @@ export interface Building {
   tiers: Tier[];
 }
 
-/** Blocks per world side (10 for a 2 km world with 200 m blocks). */
-const GRID = WORLD_SIZE / BLOCK_PITCH;
-
-/**
- * Hand-placed landmark supertall blocks (bx, bz block indices) — fixed for
- * orientation, independent of the seed.
- */
-export const LANDMARK_BLOCKS: ReadonlyArray<readonly [number, number]> = [
-  [2, 3],
-  [7, 1],
-  [5, 8],
-  [8, 6],
-];
-
-/** Hand-placed empty plaza blocks (bx, bz) — landmarks' counterpart for orientation. */
-export const PLAZA_BLOCKS: ReadonlyArray<readonly [number, number]> = [
-  [4, 4],
-  [1, 7],
-  [8, 2],
-];
+/** Blocks per world side (10 for a 2 km world with 200 m blocks). Exported
+ * because the collision block index buckets by exactly this lattice. */
+export const CITY_GRID = WORLD_SIZE / BLOCK_PITCH;
 
 /** mulberry32 — tiny seeded PRNG, identical output in Node and the browser.
  * Exported so deterministic client-side dressing (roof clutter, V3 traffic)
@@ -78,7 +71,7 @@ export function mulberry32(seed: number): () => number {
   };
 }
 
-const blockKey = (bx: number, bz: number) => bx * GRID + bz;
+const blockKey = (bx: number, bz: number) => bx * CITY_GRID + bz;
 
 /**
  * Landmarks' fixed slim-shaft-and-crown profile: podium at the full
@@ -131,37 +124,162 @@ function buildTiers(
 }
 
 /**
- * Generate the full city for a seed: one building centered in every block of
- * the GRID×GRID Manhattan grid, except fixed plaza blocks (empty) and fixed
- * landmark blocks (slim supertalls). Deterministic for a given seed.
+ * A rectangle of buildable land in canonical world coordinates, x0 < x1 and
+ * z0 < z1. Lots never wrap: every one sits strictly inside its block, which
+ * is what lets the collision block index bucket them by a single lattice cell.
+ */
+interface Lot {
+  x0: number;
+  z0: number;
+  x1: number;
+  z1: number;
+}
+
+/** Clamp `v` into [lo, hi]. */
+const clamp = (v: number, lo: number, hi: number) =>
+  v < lo ? lo : v > hi ? hi : v;
+
+/**
+ * Recursive binary subdivision of one block's buildable rectangle into lots.
+ *
+ * Splits favour the longer axis (with a seeded chance to take the shorter one)
+ * and land at a seeded ratio rather than the middle, so a block ends up with
+ * the irregular rhythm a cadastral map has — one wide lot beside three narrow
+ * ones — instead of the uniform widths a fixed grid would give. Recursion
+ * stops at LOT_MAX_DEPTH, at a seeded early stop past depth 1, or when neither
+ * axis can be cut without leaving a lot under LOT_MIN_WIDTH.
+ */
+function subdivide(
+  lot: Lot,
+  depth: number,
+  rand: () => number,
+  out: Lot[],
+): void {
+  const width = lot.x1 - lot.x0;
+  const depthM = lot.z1 - lot.z0;
+  const canX = width >= 2 * LOT_MIN_WIDTH;
+  const canZ = depthM >= 2 * LOT_MIN_WIDTH;
+
+  if (depth >= LOT_MAX_DEPTH || (!canX && !canZ)) {
+    out.push(lot);
+    return;
+  }
+  if (depth >= 2 && rand() < LOT_STOP_CHANCE) {
+    out.push(lot);
+    return;
+  }
+
+  // Longer axis by default; the cross-split roll is the irregularity source.
+  let splitX = width >= depthM;
+  if (rand() < LOT_CROSS_SPLIT_CHANCE) splitX = !splitX;
+  if (splitX && !canX) splitX = false;
+  if (!splitX && !canZ) splitX = true;
+
+  const len = splitX ? width : depthM;
+  const start = splitX ? lot.x0 : lot.z0;
+  // Keep the ratio inside the range that leaves both halves buildable; when
+  // the lot is so tight that no such ratio exists in [MIN, MAX], halve it.
+  const lo = Math.max(LOT_SPLIT_MIN, LOT_MIN_WIDTH / len);
+  const hi = Math.min(LOT_SPLIT_MAX, 1 - LOT_MIN_WIDTH / len);
+  const ratio = lo >= hi ? 0.5 : lo + rand() * (hi - lo);
+  // Round to whole meters, then re-clamp: rounding must not shave a half
+  // below LOT_MIN_WIDTH, which is the invariant the whole recursion rests on.
+  const cut = clamp(
+    Math.round(start + len * ratio),
+    start + LOT_MIN_WIDTH,
+    start + len - LOT_MIN_WIDTH,
+  );
+
+  const a = splitX ? { ...lot, x1: cut } : { ...lot, z1: cut };
+  const b = splitX ? { ...lot, x0: cut } : { ...lot, z0: cut };
+  subdivide(a, depth + 1, rand, out);
+  subdivide(b, depth + 1, rand, out);
+}
+
+/**
+ * Pull a lot's REAR edges back, opening mid-block light wells — the rear
+ * yards a real block has behind its streetwall.
+ *
+ * An edge may move only when the slot it opens cannot be seen from a street.
+ * Moving the edge at z0 opens a slot running along the lot's whole x-span, so
+ * it is street-visible unless BOTH x edges are interior; symmetrically for the
+ * x edges. An edge lying on the block boundary is street frontage and never
+ * moves at all. Together those two rules mean the perimeter of every block
+ * stays a solid, unbroken plane while its inside gets light wells.
+ */
+function insetInterior(lot: Lot, block: Lot, rand: () => number): Lot {
+  const freeX = lot.x0 > block.x0 && lot.x1 < block.x1;
+  const freeZ = lot.z0 > block.z0 && lot.z1 < block.z1;
+  // Draw all four regardless of which edges may actually move, so a lot's
+  // inset does not depend on where in the block it happens to sit.
+  const pull = (allowed: boolean) =>
+    allowed ? Math.round(rand() * LOT_INTERIOR_INSET_MAX) : 0;
+  const dx0 = pull(freeZ && lot.x0 > block.x0);
+  const dx1 = pull(freeZ && lot.x1 < block.x1);
+  const dz0 = pull(freeX && lot.z0 > block.z0);
+  const dz1 = pull(freeX && lot.z1 < block.z1);
+
+  const inset = {
+    x0: lot.x0 + dx0,
+    x1: lot.x1 - dx1,
+    z0: lot.z0 + dz0,
+    z1: lot.z1 - dz1,
+  };
+  // Never inset a lot out of existence.
+  const minSide = LOT_MIN_WIDTH / 2;
+  if (inset.x1 - inset.x0 < minSide || inset.z1 - inset.z0 < minSide) {
+    return lot;
+  }
+  return inset;
+}
+
+/**
+ * Height for one lot from the HEIGHT_BANDS table: `rBand` picks the band,
+ * `rIn` picks uniformly inside it. A band table rather than a power curve
+ * because the skyline read is the histogram — mostly low streetwall with a
+ * thin tail of towers — and that is far easier to tune as bands.
+ */
+function bandHeight(rBand: number, rIn: number): number {
+  for (const band of HEIGHT_BANDS) {
+    if (rBand < band[0]) return Math.round(band[1] + rIn * (band[2] - band[1]));
+  }
+  const last = HEIGHT_BANDS[HEIGHT_BANDS.length - 1];
+  if (!last) throw new Error("HEIGHT_BANDS is empty");
+  return Math.round(last[1] + rIn * (last[2] - last[1]));
+}
+
+/**
+ * Per-block PRNG stream. Replaces the old "draw every block's randoms even
+ * for skipped blocks" trick, which cannot survive lot subdivision drawing a
+ * VARIABLE number of randoms per block. Seeding each block independently is
+ * strictly stronger: a block's lots depend only on (seed, bx, bz), so editing
+ * LANDMARK_BLOCKS or PLAZA_BLOCKS cannot shift any other block's layout.
+ * Same spatial-hash recipe the client's roof clutter and signage already use.
+ */
+const blockSeed = (seed: number, bx: number, bz: number) =>
+  (seed ^ Math.imul(bx + 1, 73856093) ^ Math.imul(bz + 1, 19349663)) >>> 0;
+
+/**
+ * Generate the full city for a seed. Every block of the CITY_GRID×CITY_GRID
+ * Manhattan grid is subdivided into irregular lots that build out to the lot
+ * line, except fixed plaza blocks (left empty for C2) and fixed landmark
+ * blocks (one slim supertall each). Deterministic for a given seed.
  */
 export function generateCity(seed: number): Building[] {
-  const rand = mulberry32(seed);
   const landmarks = new Set(
     LANDMARK_BLOCKS.map(([bx, bz]) => blockKey(bx, bz)),
   );
   const plazas = new Set(PLAZA_BLOCKS.map(([bx, bz]) => blockKey(bx, bz)));
 
   const buildings: Building[] = [];
-  for (let bx = 0; bx < GRID; bx++) {
-    for (let bz = 0; bz < GRID; bz++) {
-      const x = bx * BLOCK_PITCH + BLOCK_PITCH / 2;
-      const z = bz * BLOCK_PITCH + BLOCK_PITCH / 2;
-      // Always draw the block's randoms, even for skipped blocks, so the
-      // layout of every other block is independent of the fixed placements.
-      const rWidth = rand();
-      const rDepth = rand();
-      const rHeight = rand();
-      const rTier = rand();
-      const rSetback = rand();
-      const rSplit = rand();
-
+  for (let bx = 0; bx < CITY_GRID; bx++) {
+    for (let bz = 0; bz < CITY_GRID; bz++) {
       const key = blockKey(bx, bz);
       if (plazas.has(key)) continue;
       if (landmarks.has(key)) {
         buildings.push({
-          x,
-          z,
+          x: bx * BLOCK_PITCH + BLOCK_PITCH / 2,
+          z: bz * BLOCK_PITCH + BLOCK_PITCH / 2,
           width: LANDMARK_FOOTPRINT,
           depth: LANDMARK_FOOTPRINT,
           height: LANDMARK_HEIGHT,
@@ -170,29 +288,44 @@ export function generateCity(seed: number): Building[] {
         continue;
       }
 
-      const span = BUILDING_MAX_FOOTPRINT - BUILDING_MIN_FOOTPRINT;
-      const width = Math.round(BUILDING_MIN_FOOTPRINT + rWidth * span);
-      const depth = Math.round(BUILDING_MIN_FOOTPRINT + rDepth * span);
-      // Square the roll to skew heights low: mostly mid-rise, rare talls.
-      const height = Math.round(
-        BUILDING_MIN_HEIGHT +
-          rHeight * rHeight * (BUILDING_MAX_HEIGHT - BUILDING_MIN_HEIGHT),
-      );
-      buildings.push({
-        x,
-        z,
-        width,
-        depth,
-        height,
-        tiers: buildTiers(
+      // The buildable rectangle: the block inset by the sidewalk on all four
+      // sides. Streets are centered on block-boundary lines, so LOT_LINE off
+      // the centerline is exactly LOT_LINE inside the block edge.
+      const block: Lot = {
+        x0: bx * BLOCK_PITCH + LOT_LINE,
+        z0: bz * BLOCK_PITCH + LOT_LINE,
+        x1: (bx + 1) * BLOCK_PITCH - LOT_LINE,
+        z1: (bz + 1) * BLOCK_PITCH - LOT_LINE,
+      };
+
+      const rand = mulberry32(blockSeed(seed, bx, bz));
+      const lots: Lot[] = [];
+      subdivide(block, 0, rand, lots);
+
+      for (const raw of lots) {
+        const lot = insetInterior(raw, block, rand);
+        const width = lot.x1 - lot.x0;
+        const depth = lot.z1 - lot.z0;
+        const height = bandHeight(rand(), rand());
+        const rTier = rand();
+        const rSetback = rand();
+        const rSplit = rand();
+        buildings.push({
+          x: (lot.x0 + lot.x1) / 2,
+          z: (lot.z0 + lot.z1) / 2,
           width,
           depth,
           height,
-          tierCount(height, rTier),
-          rSetback,
-          rSplit,
-        ),
-      });
+          tiers: buildTiers(
+            width,
+            depth,
+            height,
+            tierCount(height, rTier),
+            rSetback,
+            rSplit,
+          ),
+        });
+      }
     }
   }
   return buildings;

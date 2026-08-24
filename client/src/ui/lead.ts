@@ -61,6 +61,44 @@ export function leadPoint(
   });
 }
 
+/**
+ * Where the gun line reaches at `range`. guns.ts fires from alternating
+ * wingtips with velocity exactly along flightForward, so the honest single
+ * line is the plane's centreline — this is the point bullets occupy at the
+ * end of their effective range.
+ */
+export function gunLinePoint(flight: FlightState, range: number): Vec3 {
+  const fwd = flightForward(flight);
+  return canonicalize({
+    x: flight.pos.x + fwd.x * range,
+    y: flight.pos.y + fwd.y * range,
+    z: flight.pos.z + fwd.z * range,
+  });
+}
+
+/**
+ * Project a canonical world point to pixels for the viewer, or null when it is
+ * behind the camera. Call AFTER the render, when the matrices are fresh — and
+ * after any FOV write, or it projects with the previous frame's projection.
+ */
+export function projectToScreen(
+  camera: THREE.Camera,
+  viewer: Vec3,
+  point: Vec3,
+  scratch: THREE.Vector3,
+  width: number,
+  height: number,
+): { x: number; y: number } | null {
+  const p = nearestImage(viewer, point);
+  scratch.set(p.x, p.y, p.z).applyMatrix4(camera.matrixWorldInverse);
+  if (scratch.z >= 0) return null; // behind the camera
+  scratch.applyMatrix4(camera.projectionMatrix);
+  return {
+    x: ((scratch.x + 1) / 2) * width,
+    y: ((1 - scratch.y) / 2) * height,
+  };
+}
+
 /** DOM reticle over the intercept point of the best on-aim target. */
 export class LeadIndicator {
   private readonly el = document.getElementById("lead") as HTMLDivElement;
@@ -83,33 +121,43 @@ export class LeadIndicator {
     return best;
   }
 
-  /** Recompute and place (or hide) the reticle. Call after the render. */
+  /**
+   * Recompute and place (or hide) the reticle, and return where the gun line
+   * lands on screen so the HUD can put the pipper (and the hitmarker) there.
+   * Call AFTER the render and after any FOV write — it reads the camera's
+   * matrices directly.
+   */
   update(
     camera: THREE.Camera,
     viewer: Vec3,
     flight: FlightState,
     targets: readonly LeadTarget[],
     scratch: THREE.Vector3,
-  ): void {
+  ): { x: number; y: number } | null {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const aim = projectToScreen(
+      camera,
+      viewer,
+      gunLinePoint(flight, BULLET_RANGE),
+      scratch,
+      w,
+      h,
+    );
     const target = this.pick(flight, targets);
     // Bullets inherit the plane's forward speed (guns.ts) — lead with it.
     const point =
       target && leadPoint(flight.pos, BULLET_SPEED + flight.speed, target);
-    if (!point) {
+    const px = point
+      ? projectToScreen(camera, viewer, point, scratch, w, h)
+      : null;
+    if (!px) {
+      // No target, or behind the camera — no reticle.
       this.el.style.display = "none";
-      return;
+      return aim;
     }
-    const p = nearestImage(viewer, point);
-    scratch.set(p.x, p.y, p.z).applyMatrix4(camera.matrixWorldInverse);
-    if (scratch.z >= 0) {
-      // Behind the camera — no reticle.
-      this.el.style.display = "none";
-      return;
-    }
-    scratch.applyMatrix4(camera.projectionMatrix);
-    const px = ((scratch.x + 1) / 2) * window.innerWidth;
-    const py = ((1 - scratch.y) / 2) * window.innerHeight;
-    this.el.style.transform = `translate(${px.toFixed(1)}px, ${py.toFixed(1)}px)`;
+    this.el.style.transform = `translate(${px.x.toFixed(1)}px, ${px.y.toFixed(1)}px)`;
     this.el.style.display = "block";
+    return aim;
   }
 }

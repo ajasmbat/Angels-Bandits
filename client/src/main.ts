@@ -685,6 +685,7 @@ renderer.setAnimationLoop((now) => {
       dt,
     );
     hud.setFreeLook(freelook.held);
+    hud.setZoom(zoom.z > 0);
     // Zoom buys its steady sight picture with turn rate, and spends it
     // through the same input-shaping seam free-look uses — the camera never
     // reaches flight state. Authority is the product of both costs.
@@ -928,13 +929,16 @@ renderer.setAnimationLoop((now) => {
     targets.map((t) => t.pos),
     markerScratch,
   );
-  leadIndicator.update(
+  const aimPoint = leadIndicator.update(
     camera,
     chase.position,
     flight,
     alive ? targets : [], // no reticle from the kill-cam
     markerScratch,
   );
+  // The pipper is the gun line's own vanishing point, so it only means
+  // anything while we are flying it — the kill-cam gets no aim chrome.
+  hud.setAimPoint(alive ? aimPoint : null);
 
   // HUD + rolling perf counters (~2 Hz refresh).
   perf.frames++;

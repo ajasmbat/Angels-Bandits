@@ -28,16 +28,35 @@
         user-select: none;
         pointer-events: none;
       }
+      /* Gun-line pipper (ANGE-G9CPCV, Concept 1 "Classic Gunsight"). PROJECTED,
+         not pinned: the chase camera looks ~10 degrees below the plane's forward
+         vector, so a centred crosshair points nowhere near where the bullets
+         actually go. ui/lead.ts drives the transform; left/top stay at the
+         origin and the negative margin re-centres the 48px box, same as #lead. */
       #crosshair {
         position: fixed;
-        left: 50%;
-        top: 50%;
-        width: 6px;
-        height: 6px;
-        margin: -3px 0 0 -3px;
-        border: 1px solid #9fd8e8aa;
-        border-radius: 50%;
+        left: 0;
+        top: 0;
+        width: 48px;
+        height: 48px;
+        margin: -24px 0 0 -24px;
+        display: none;
+        color: #9fd8e8cc;
         pointer-events: none;
+        will-change: transform;
+      }
+      #crosshair .ring {
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.5;
+      }
+      #crosshair .tick {
+        stroke: currentColor;
+        stroke-width: 1.5;
+        opacity: 0.8;
+      }
+      #crosshair .dot {
+        fill: currentColor;
       }
       #fade {
         position: fixed;
@@ -52,22 +71,23 @@
         opacity: 1;
       }
       #crosshair.hit {
-        border-color: #ffc46b;
-        box-shadow: 0 0 8px #ffc46b;
+        color: #ffc46b;
+        filter: drop-shadow(0 0 8px #ffc46b);
       }
       /* Hitmarker (approved concept 1 "Classic Cross"): four X-strokes snap
          in at the reticle on a local connect, fading out over 120 ms once
          released; a kill swaps to a larger pink X held ~400 ms. */
       #hitmarker {
         position: fixed;
-        left: 50%;
-        top: 50%;
+        left: 0;
+        top: 0;
         width: 0;
         height: 0;
         opacity: 0;
         transition: opacity 0.12s linear;
         pointer-events: none;
         user-select: none;
+        will-change: transform;
       }
       #hitmarker.on {
         opacity: 1;
@@ -192,6 +212,16 @@
       body.freelook #crosshair,
       body.freelook #lead {
         opacity: 0.3;
+      }
+      /* Zoomed, the pipper IS the gunsight — brighten and thicken it. */
+      body.zoom #crosshair {
+        color: #ffd9a0;
+      }
+      body.zoom #crosshair .ring {
+        stroke-width: 2;
+      }
+      body.zoom #crosshair .tick {
+        opacity: 1;
       }
       #killfeed {
         position: fixed;
@@ -454,20 +484,53 @@
         user-select: none;
         will-change: transform;
       }
+      /* Lead reticle (ANGE-G9CPCV, Concept 1). Dashed while merely tracking,
+         solid + filled + glowing once the gun line and the intercept agree —
+         a SHAPE change, because brightness alone loses against a bloomed
+         facade at BLOOM_THRESHOLD 0.72. */
       #lead {
         position: fixed;
         left: 0;
         top: 0;
-        width: 14px;
-        height: 14px;
-        margin: -7px 0 0 -7px;
-        border: 1px solid #ffc46b;
-        border-radius: 50%;
-        box-shadow: 0 0 6px #ffc46b66;
+        width: 48px;
+        height: 48px;
+        margin: -24px 0 0 -24px;
+        color: #ffc46b;
         display: none;
         pointer-events: none;
         user-select: none;
         will-change: transform;
+      }
+      #lead .ring {
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1;
+        stroke-dasharray: 3 4;
+        opacity: 0.85;
+      }
+      #lead .core {
+        fill: currentColor;
+        opacity: 0;
+      }
+      #lead .brk {
+        stroke: currentColor;
+        stroke-width: 2;
+        opacity: 0;
+      }
+      #lead.solution {
+        color: #fff3d6;
+        filter: drop-shadow(0 0 6px #ffc46b);
+      }
+      #lead.solution .ring {
+        stroke-dasharray: none;
+        stroke-width: 2;
+        opacity: 1;
+      }
+      #lead.solution .core {
+        opacity: 0.55;
+      }
+      #lead.solution .brk {
+        opacity: 0.9;
       }
       /* Fullscreen ghost icon (chosen concept 3): framed-viewport SVG, no
          chrome — ghosted until hover; body.fullscreen swaps in the ×-in-frame
@@ -535,22 +598,27 @@
         right: 14px;
         top: 12px;
       }
-      #lead::after {
-        content: "";
-        position: absolute;
-        left: 50%;
-        top: 50%;
-        width: 2px;
-        height: 2px;
-        margin: -1px 0 0 -1px;
-        background: #ffc46b;
-      }
+
     </style>
   </head>
   <body>
-    <div id="crosshair"></div>
+    <svg id="crosshair" viewBox="0 0 48 48" aria-hidden="true">
+      <circle class="ring" cx="24" cy="24" r="7" />
+      <circle class="dot" cx="24" cy="24" r="1.2" />
+      <line class="tick" x1="24" y1="11" x2="24" y2="15" />
+      <line class="tick" x1="24" y1="33" x2="24" y2="37" />
+      <line class="tick" x1="11" y1="24" x2="15" y2="24" />
+      <line class="tick" x1="33" y1="24" x2="37" y2="24" />
+    </svg>
     <div id="hitmarker"><span></span><span></span><span></span><span></span></div>
-    <div id="lead"></div>
+    <svg id="lead" viewBox="0 0 48 48" aria-hidden="true">
+      <circle class="core" cx="24" cy="24" r="10" />
+      <circle class="ring" cx="24" cy="24" r="10" />
+      <line class="brk" x1="24" y1="6" x2="24" y2="10" />
+      <line class="brk" x1="24" y1="38" x2="24" y2="42" />
+      <line class="brk" x1="6" y1="24" x2="10" y2="24" />
+      <line class="brk" x1="38" y1="24" x2="42" y2="24" />
+    </svg>
     <canvas id="minimap" width="320" height="320"></canvas>
     <div id="hud"></div>
     <div id="gauges">

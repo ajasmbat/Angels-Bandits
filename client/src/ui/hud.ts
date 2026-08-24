@@ -21,7 +21,7 @@ export class Hud {
   ) as HTMLDivElement;
   private readonly crosshair = document.getElementById(
     "crosshair",
-  ) as HTMLDivElement;
+  ) as unknown as SVGSVGElement;
   private readonly hitmarker = document.getElementById(
     "hitmarker",
   ) as HTMLDivElement;
@@ -72,6 +72,29 @@ export class Hud {
   /** Free-look (hold E): show the hint and dim the aim chrome via CSS. */
   setFreeLook(on: boolean): void {
     document.body.classList.toggle("freelook", on);
+  }
+
+  /** Aim zoom (hold right-click): brighten the pipper via CSS. */
+  setZoom(on: boolean): void {
+    document.body.classList.toggle("zoom", on);
+  }
+
+  /**
+   * Put the pipper — and the hitmarker with it — where the gun line lands on
+   * screen. Both used to be pinned at 50%/50%, which pointed ~10 degrees below
+   * the actual gun line; the hitmarker follows so it still lands "at the
+   * reticle" the way its own design says it does. Null hides them (the gun
+   * line is behind the camera, or we are dead).
+   */
+  setAimPoint(p: { x: number; y: number } | null): void {
+    if (!p) {
+      this.crosshair.style.display = "none";
+      return;
+    }
+    const t = `translate(${p.x.toFixed(1)}px, ${p.y.toFixed(1)}px)`;
+    this.crosshair.style.transform = t;
+    this.crosshair.style.display = "block";
+    this.hitmarker.style.transform = t;
   }
 
   /** Kill-cam overlay: who got you (null = you crashed clean; the storm's

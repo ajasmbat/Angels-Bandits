@@ -2,7 +2,8 @@
 // entry point): phrase bank + BANDIT-1..12 callsign variants → Piper TTS →
 // the "hard" military-radio chain (the design pick: bandpass 280–3200 Hz,
 // 6:1 compression, +6 dB drive into soft clip, pink-noise bed, baked squelch
-// click-in / static tail-out, −18 LUFS) → mono 24 kHz OGG Vorbis in
+// click-in / static tail-out, speech two-pass normalised to −18 LUFS)
+// → mono 16 kHz OGG Vorbis in
 // client/assets/radio/<voiceSlug>.ogg.
 //
 // The phrase bank is imported from client/src/game/phrases.ts (compiled on
@@ -14,17 +15,18 @@
 // VITS sampling is internally random (no seed exposed), so bytes differ
 // between renders while the delivery stays equivalent.
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { VOICE_MODEL, VOICE_SPEAKER, voiceLines } from "./radio-bank.mjs";
 
 const CACHE = "tools/.cache";
 const PIPER = `${CACHE}/piper-venv/bin/piper`;
-const MODEL = `${CACHE}/voices/en_US-joe-medium.onnx`;
+const MODEL = `${CACHE}/voices/${VOICE_MODEL}.onnx`;
 const OUT = "client/assets/radio";
 const TMP = `${CACHE}/render`;
 
-// --- The radio chain (design Concept 2: "Joe" x Hard) -----------------------
+// --- The radio chain (the design pick: "Hard") ------------------------------
 // 16 kHz: the chain lowpasses at 3.8 kHz, so 8 kHz Nyquist is transparent
 // here and Vorbis's bitrate floor sits ~30% lower than at 24 kHz.
 const SAMPLE_RATE = 16000;
@@ -73,41 +75,7 @@ const { PHRASE, AMBIENT_PHRASES } = await import(
   pathToFileURL(`${TMP}/bank/phrases.js`).href
 );
 
-const NUMBER_WORD = [
-  "",
-  "One",
-  "Two",
-  "Three",
-  "Four",
-  "Five",
-  "Six",
-  "Seven",
-  "Eight",
-  "Nine",
-  "Ten",
-  "Eleven",
-  "Twelve",
-];
-
-/** [asset text (slug source), spoken text piper reads] */
-const lines = [];
-for (const text of Object.values(PHRASE)) {
-  // The two bare fragments are only ever voiced inside the callsign shapes.
-  if (text === PHRASE.checkIn || text === PHRASE.offStation) continue;
-  lines.push([text, text]);
-}
-for (const text of AMBIENT_PHRASES) lines.push([text, text]);
-for (let n = 1; n <= 12; n++) {
-  // Voice strings carry the wire callsign; piper reads it as words.
-  lines.push([
-    `BANDIT-${n}, ${PHRASE.checkIn}`,
-    `Bandit ${NUMBER_WORD[n]}, ${PHRASE.checkIn}`,
-  ]);
-  lines.push([
-    `BANDIT-${n} ${PHRASE.offStation}`,
-    `Bandit ${NUMBER_WORD[n]} ${PHRASE.offStation}`,
-  ]);
-}
+const lines = voiceLines(PHRASE, AMBIENT_PHRASES);
 
 // --- Render ------------------------------------------------------------------
 mkdirSync(OUT, { recursive: true });
@@ -116,6 +84,26 @@ for (const f of readdirSync(OUT)) {
   if (f.endsWith(".ogg")) rmSync(`${OUT}/${f}`);
 }
 const ffmpeg = (args) => execFileSync("ffmpeg", ["-v", "error", "-y", ...args]);
+
+/** Delivery target for every line — see the two-pass note at its use site. */
+const LOUDNORM = "loudnorm=I=-18:TP=-1.0:LRA=9";
+
+/** Pass one: what this file actually measures, for pass two to correct.
+ * loudnorm prints its report to stderr, so this reads stderr rather than
+ * stdout (spawnSync, not execFileSync). */
+function measureLoudness(path) {
+  const { stderr, status } = spawnSync(
+    "ffmpeg",
+    ["-i", path, "-af", `${LOUDNORM}:print_format=json`, "-f", "null", "-"],
+    { encoding: "utf8" },
+  );
+  if (status !== 0) throw new Error(`loudness measure failed for ${path}`);
+  const json = stderr.slice(
+    stderr.lastIndexOf("{"),
+    stderr.lastIndexOf("}") + 1,
+  );
+  return JSON.parse(json);
+}
 
 // Framing pieces are rendered once and concatenated onto every line: the
 // squelch click that opens the channel and the static tail that closes it
@@ -152,6 +140,7 @@ for (const [text, spoken] of lines) {
     [
       "-m",
       MODEL,
+      ...(VOICE_SPEAKER === null ? [] : ["-s", String(VOICE_SPEAKER)]),
       "--length-scale",
       LENGTH_SCALE,
       "--sentence-silence",
@@ -193,15 +182,45 @@ for (const [text, spoken] of lines) {
     "1",
     `${TMP}/${slug}.proc.wav`,
   ]);
+  // Normalise the SPEECH, then frame it — in that order, and in two passes.
+  //
+  // Order matters: the squelch click peaks at −3 dBFS, about 3 dB above the
+  // loudest speech, so with the framing already attached it is the click
+  // that sets the file's true peak. loudnorm then refuses to lift a quiet
+  // line into the −1 dBFS ceiling and leaves it quiet — measured as a
+  // 2.8 dB spread across the bank, which a player hears as some calls
+  // arriving softer than others. Normalising the bare speech lets every
+  // line reach the target; the framing is a fixed-level element and goes on
+  // afterwards, keeping its punch.
+  //
+  // Two passes because one-pass loudnorm normalises blind and dynamically.
+  // The old en_US-joe-medium bank held 0.6 dB that way only because its
+  // delivery was so flat; a voice with real dynamics needs the measurement.
+  const measured = measureLoudness(`${TMP}/${slug}.proc.wav`);
+  ffmpeg([
+    "-i",
+    `${TMP}/${slug}.proc.wav`,
+    "-af",
+    `${LOUDNORM}:measured_I=${measured.input_i}` +
+      `:measured_TP=${measured.input_tp}` +
+      `:measured_LRA=${measured.input_lra}` +
+      `:measured_thresh=${measured.input_thresh}` +
+      `:offset=${measured.target_offset}:linear=true`,
+    "-ac",
+    "1",
+    "-ar",
+    String(SAMPLE_RATE),
+    `${TMP}/${slug}.norm.wav`,
+  ]);
   ffmpeg([
     "-i",
     `${TMP}/click.wav`,
     "-i",
-    `${TMP}/${slug}.proc.wav`,
+    `${TMP}/${slug}.norm.wav`,
     "-i",
     `${TMP}/tail.wav`,
     "-filter_complex",
-    "[0:a][1:a][2:a]concat=n=3:v=0:a=1,loudnorm=I=-18:TP=-1.0:LRA=9[o]",
+    "[0:a][1:a][2:a]concat=n=3:v=0:a=1,alimiter=limit=0.95:level=false[o]",
     "-map",
     "[o]",
     "-ac",

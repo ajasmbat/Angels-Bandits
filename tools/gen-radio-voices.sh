@@ -11,27 +11,31 @@
 # test fails until you do.
 #
 # Voice: Piper TTS (https://github.com/OHF-Voice/piper1-gpl, GPL-3 engine —
-# build-time tool only, nothing of it ships) with the en_US-joe-medium model.
-# Model card (https://huggingface.co/rhasspy/piper-voices → en/en_US/joe):
-# dataset "joe", license CC0. The rendered audio is processed through the
-# "hard" military-radio chain calibrated by ear against the (non-shipped)
-# references in tools/radio-reference/ — see gen-radio-voices.mjs.
+# build-time tool only, nothing of it ships). WHICH voice is named once, in
+# tools/radio-bank.mjs, and read from there below — see
+# client/assets/radio/CREDITS.md for the model's licence. The rendered audio
+# is processed through the "hard" military-radio chain calibrated by ear
+# against the (non-shipped) references in tools/radio-reference/ — see
+# gen-radio-voices.mjs.
 #
 # Deps: python3 (venv-capable), ffmpeg (with libvorbis), node >= 20.
 # Everything heavy is cached under tools/.cache/ (git-ignored): the piper
 # venv, the voice model, and the compiled phrase bank. First run downloads
-# ~60 MB; later runs are offline.
+# ~200 MB (the high-quality voice is the bulk of it); later runs are offline.
 set -eu
 cd "$(dirname "$0")/.."
 
 CACHE=tools/.cache
 VENV="$CACHE/piper-venv"
 VOICES="$CACHE/voices"
-MODEL=en_US-joe-medium
-
 command -v ffmpeg >/dev/null || { echo "ffmpeg is required" >&2; exit 1; }
 command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
 command -v node >/dev/null || { echo "node is required" >&2; exit 1; }
+
+# The voice is named once, in the render pipeline's seam. Reading it here
+# keeps the download and the render from ever disagreeing.
+MODEL=$(node --input-type=module -e \
+  'import {VOICE_MODEL} from "./tools/radio-bank.mjs"; console.log(VOICE_MODEL)')
 
 if [ ! -x "$VENV/bin/piper" ]; then
   echo "-- creating piper venv ($VENV)"

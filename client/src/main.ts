@@ -724,7 +724,7 @@ renderer.setAnimationLoop((now) => {
     // the camera and the airframe from moving in lockstep.
     const camShake = turbulenceOffset(now, flight.pos.y);
     const planeShake = turbulenceOffset(now + 537, flight.pos.y);
-    chase.update(camera, flight, dt, freelook, camShake);
+    chase.update(camera, flight, dt, freelook, camShake, zoom.z);
     const planePos = nearestImage(chase.position, flight.pos);
     plane.position.set(
       planePos.x + planeShake.x * 0.5,

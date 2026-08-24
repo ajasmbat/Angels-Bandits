@@ -14,6 +14,7 @@ import type { Vec3 } from "@angels-bandits/common/world";
 import type * as THREE from "three";
 import { nearestImage } from "../render/wrapPlacement";
 import { orbitOffset } from "./freelook";
+import { zoomLookAt, zoomOffset } from "./zoom";
 
 export class ChaseCamera {
   private pos: Vec3 | null = null;
@@ -43,6 +44,7 @@ export class ChaseCamera {
     dt: number,
     look?: { yaw: number; pitch: number },
     shake?: Vec3,
+    zoom = 0,
   ): void {
     if (!this.pos) this.snapTo(state);
     else this.pos = nearestImage(state.pos, this.pos); // seam re-alignment
@@ -63,6 +65,20 @@ export class ChaseCamera {
     // chase framing and the orbit never feeds back into the smoothing.
     const aim = nearestImage(this.pos, state.pos);
     let view = this.pos as Vec3;
+    // Aim zoom (ANGE-G9CPCV) dollies the DISPLAYED eye in toward the nose and
+    // swings the look-at out along the gun line. Like the orbit and the shake
+    // below it rides `view`, never `this.pos` — so releasing the button eases
+    // back to the exact chase framing and the dolly never feeds the smoothing.
+    // It runs FIRST so the orbit rotates the shortened offset, not the long one.
+    const fwd = flightForward(state);
+    if (zoom !== 0) {
+      const off = zoomOffset(
+        { x: view.x - aim.x, y: view.y - aim.y, z: view.z - aim.z },
+        fwd,
+        zoom,
+      );
+      view = { x: aim.x + off.x, y: aim.y + off.y, z: aim.z + off.z };
+    }
     if (look && (look.yaw !== 0 || look.pitch !== 0)) {
       const off = orbitOffset(
         { x: view.x - aim.x, y: view.y - aim.y, z: view.z - aim.z },
@@ -78,6 +94,7 @@ export class ChaseCamera {
       view = { x: view.x + shake.x, y: view.y + shake.y, z: view.z + shake.z };
     }
     camera.position.set(view.x, view.y, view.z);
-    camera.lookAt(aim.x, aim.y + 2, aim.z);
+    const at = zoomLookAt(aim, fwd, zoom);
+    camera.lookAt(at.x, at.y, at.z);
   }
 }

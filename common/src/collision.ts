@@ -58,12 +58,18 @@ export function buildCityIndex(buildings: readonly Building[]): CityIndex {
 
 /**
  * The block indices an interval [lo, hi] touches, wrapped. An interval at
- * least a world wide covers every block exactly once.
+ * least a world wide covers every block exactly once. A non-finite interval
+ * (an infinite probe radius) also covers everything — falling through to an
+ * empty span there would silently answer "no hit" where the linear scan hits.
  */
 function blockSpan(lo: number, hi: number): number[] {
   const first = Math.floor(lo / BLOCK_PITCH);
   const last = Math.floor(hi / BLOCK_PITCH);
-  const count = Math.min(last - first + 1, CITY_GRID);
+  const width = last - first + 1;
+  if (!Number.isFinite(width)) {
+    return Array.from({ length: CITY_GRID }, (_, i) => i);
+  }
+  const count = Math.min(width, CITY_GRID);
   const out: number[] = [];
   for (let i = 0; i < count; i++) {
     out.push((((first + i) % CITY_GRID) + CITY_GRID) % CITY_GRID);

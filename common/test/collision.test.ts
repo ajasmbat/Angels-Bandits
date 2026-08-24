@@ -4,7 +4,7 @@ import {
   collideCity,
   hitsGround,
 } from "@angels-bandits/common/collision";
-import { WORLD_SIZE } from "@angels-bandits/common/constants";
+import { BLOCK_PITCH, WORLD_SIZE } from "@angels-bandits/common/constants";
 import { describe, expect, it } from "vitest";
 
 // Hand-built buildings with worked-example geometry; the last block consumes
@@ -217,5 +217,117 @@ describe("buildCityIndex parity with the linear scan", () => {
       }
     }
     expect(mismatches).toEqual([]);
+  });
+});
+
+describe("buildCityIndex edge cases", () => {
+  it("handles an empty city", () => {
+    const index = buildCityIndex([]);
+    expect(collideCity({ x: 100, y: 10, z: 100 }, R, [], index)).toBeNull();
+  });
+
+  it("handles a zero-area footprint without losing it from the index", () => {
+    const sliver = {
+      x: 300,
+      z: 300,
+      width: 0,
+      depth: 0,
+      height: 50,
+      tiers: [{ width: 0, depth: 0, height: 50 }],
+    };
+    const index = buildCityIndex([sliver]);
+    // The expanded-AABB test still gives it the sphere radius of reach.
+    expect(collideCity({ x: 301, y: 10, z: 300 }, R, [sliver], index)).toBe(
+      sliver,
+    );
+    expect(
+      collideCity({ x: 310, y: 10, z: 300 }, R, [sliver], index),
+    ).toBeNull();
+  });
+
+  it("agrees with the linear scan for uncanonical probe positions", () => {
+    // Nothing canonicalizes before calling collideCity, so negative and
+    // beyond-the-world coordinates reach it in practice.
+    const city = generateCity(42);
+    const index = buildCityIndex(city);
+    const rand = mulberry32(0x0ff);
+    const mismatches: string[] = [];
+    for (let i = 0; i < 3000; i++) {
+      const pos = {
+        x: rand() * WORLD_SIZE * 4 - WORLD_SIZE * 2,
+        y: rand() * 120,
+        z: rand() * WORLD_SIZE * 4 - WORLD_SIZE * 2,
+      };
+      const linear = collideCity(pos, R, city);
+      const indexed = collideCity(pos, R, city, index);
+      if (linear !== indexed) mismatches.push(`${pos.x},${pos.y},${pos.z}`);
+    }
+    expect(mismatches).toEqual([]);
+  });
+
+  it("agrees with the linear scan for a radius wider than the world", () => {
+    // Degenerate, but it must not silently answer from a truncated block
+    // range: the span has to saturate at the whole grid, not wrap onto
+    // itself — and an infinite radius must saturate too rather than
+    // computing an empty span and reporting a miss the scan would hit.
+    const city = generateCity(42);
+    const index = buildCityIndex(city);
+    for (const radius of [
+      BLOCK_PITCH,
+      WORLD_SIZE / 2,
+      WORLD_SIZE * 3,
+      Number.POSITIVE_INFINITY,
+    ]) {
+      const pos = { x: 137, y: 10, z: 1904 };
+      expect(collideCity(pos, radius, city, index)).toBe(
+        collideCity(pos, radius, city),
+      );
+    }
+  });
+
+  it("stays correct at a city far larger than the block grid", () => {
+    // Ten buildings per cell rather than seven — the index must not assume a
+    // bounded bucket size.
+    const rand = mulberry32(0xd15);
+    const many = Array.from({ length: 5000 }, () => {
+      const x = rand() * WORLD_SIZE;
+      const z = rand() * WORLD_SIZE;
+      return {
+        x,
+        z,
+        width: 10 + rand() * 30,
+        depth: 10 + rand() * 30,
+        height: 20 + rand() * 100,
+        tiers: [{ width: 40, depth: 40, height: 120 }],
+      };
+    });
+    const index = buildCityIndex(many);
+    const mismatches: string[] = [];
+    for (let i = 0; i < 2000; i++) {
+      const pos = {
+        x: rand() * WORLD_SIZE,
+        y: rand() * 100,
+        z: rand() * WORLD_SIZE,
+      };
+      const linear = collideCity(pos, R, many);
+      const indexed = collideCity(pos, R, many, index);
+      if (linear !== indexed) mismatches.push(`${pos.x},${pos.y},${pos.z}`);
+    }
+    expect(mismatches).toEqual([]);
+  });
+});
+
+describe("generateCity edge cases", () => {
+  it("generates a valid city for extreme seeds", () => {
+    for (const seed of [0, 1, -1, 2 ** 31, 2 ** 32 - 1, -(2 ** 31)]) {
+      const city = generateCity(seed);
+      expect(city.length).toBeGreaterThan(500);
+      for (const b of city) {
+        expect(Number.isFinite(b.x)).toBe(true);
+        expect(b.width).toBeGreaterThan(0);
+        expect(b.depth).toBeGreaterThan(0);
+        expect(b.height).toBeGreaterThan(0);
+      }
+    }
   });
 });

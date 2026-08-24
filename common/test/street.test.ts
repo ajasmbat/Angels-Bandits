@@ -15,7 +15,10 @@ import {
   isInIntersection,
   isInRoadway,
   nearestStreet,
+  nextIntersection,
 } from "@angels-bandits/common/city/street";
+import { BLOCK_PITCH } from "@angels-bandits/common/constants";
+import { wrapDistance } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
 
 describe("street cross-section constants", () => {
@@ -101,5 +104,91 @@ describe("nearestStreet", () => {
       expect(s.centerline).toBe(line);
       expect(s.side).toBe(1);
     }
+  });
+});
+
+describe("nextIntersection", () => {
+  // Intersections sit on every (BLOCK_PITCH, BLOCK_PITCH) lattice point, and
+  // NearestStreet.axis is the direction of TRAVEL — a north–south street on a
+  // line of constant x has axis "z", so `centerline` is that x.
+  const NS = { axis: "z", centerline: 0 } as const; // street on the x = 0 line
+  const EW = { axis: "x", centerline: 600 } as const; // street on the z = 600 line
+
+  it("takes the next lattice point ahead along the travel axis", () => {
+    expect(nextIntersection({ x: 0, y: 40, z: 250 }, NS, 1)).toEqual({
+      x: 0,
+      y: 0,
+      z: 400,
+    });
+    expect(nextIntersection({ x: 0, y: 40, z: 250 }, NS, -1)).toEqual({
+      x: 0,
+      y: 0,
+      z: 200,
+    });
+  });
+
+  it("keeps the cross-axis coordinate on the street's own centerline", () => {
+    // Travelling east along the z = 600 street, drifted 9 m off the line.
+    expect(nextIntersection({ x: 1370, y: 40, z: 609 }, EW, 1)).toEqual({
+      x: 1400,
+      y: 0,
+      z: 600,
+    });
+  });
+
+  it("is strictly ahead: standing on an intersection returns the NEXT one", () => {
+    expect(nextIntersection({ x: 0, y: 40, z: 200 }, NS, 1)).toEqual({
+      x: 0,
+      y: 0,
+      z: 400,
+    });
+    expect(nextIntersection({ x: 0, y: 40, z: 200 }, NS, -1)).toEqual({
+      x: 0,
+      y: 0,
+      z: 0,
+    });
+  });
+
+  it("wraps across the seam instead of running off the end of the world", () => {
+    // 1950 + 50 = 2000, which is canonical 0 — one block ahead, not 10 back.
+    const wrapped = nextIntersection({ x: 0, y: 40, z: 1950 }, NS, 1);
+    expect(wrapped).toEqual({ x: 0, y: 0, z: 0 });
+    expect(wrapDistance({ x: 0, y: 0, z: 1950 }, wrapped)).toBeCloseTo(50);
+    // And backwards off the low end.
+    expect(nextIntersection({ x: 0, y: 40, z: 50 }, NS, -1)).toEqual({
+      x: 0,
+      y: 0,
+      z: 0,
+    });
+    expect(nextIntersection({ x: 0, y: 40, z: -50 }, NS, -1)).toEqual({
+      x: 0,
+      y: 0,
+      z: 1800,
+    });
+  });
+
+  it("lands on a real intersection, one block from the next one, all the way round", () => {
+    let p = { x: 0, y: 0, z: 0 };
+    for (let i = 0; i < 12; i++) {
+      const next = nextIntersection(p, NS, 1);
+      expect(isInIntersection(next)).toBe(true);
+      expect(wrapDistance(p, next)).toBeCloseTo(BLOCK_PITCH);
+      p = next;
+    }
+    // Twelve 200 m steps around a 2000 m torus land two blocks past the start.
+    expect(p).toEqual({ x: 0, y: 0, z: 400 });
+  });
+
+  it("composes with nearestStreet from an arbitrary point in a canyon", () => {
+    // 4 m off the x = 1400 line, mid-block in z: the nearest street is the
+    // north–south one on x = 1400, so travel runs along z.
+    const street = nearestStreet({ x: 1404, y: 40, z: 930 });
+    expect(street.axis).toBe("z");
+    expect(street.centerline).toBe(1400);
+    expect(nextIntersection({ x: 1404, y: 40, z: 930 }, street, 1)).toEqual({
+      x: 1400,
+      y: 0,
+      z: 1000,
+    });
   });
 });

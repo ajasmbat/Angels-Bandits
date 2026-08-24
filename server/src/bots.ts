@@ -25,22 +25,44 @@
 
 import { type Building, mulberry32 } from "@angels-bandits/common/city";
 import {
+  nearestStreet,
+  nextIntersection,
+} from "@angels-bandits/common/city/street";
+import {
   type CityIndex,
   buildCityIndex,
   collideCity,
   hitsGround,
+  losClear,
 } from "@angels-bandits/common/collision";
 import {
   BOT_AIM_JITTER,
+  BOT_CANYON_ALT_MAX,
+  BOT_CANYON_ALT_MIN,
+  BOT_CANYON_GLIDE,
+  BOT_CANYON_HOP,
+  BOT_CANYON_PROBE_ALT,
+  BOT_CANYON_PROBE_RADIUS,
+  BOT_CANYON_PROBE_TIMES,
+  BOT_CANYON_SHARE,
+  BOT_CANYON_SLOW_RADIUS,
+  BOT_CANYON_STRAIGHT_CHANCE,
+  BOT_CANYON_TURN_YAW,
+  BOT_CANYON_WAYPOINT_RADIUS,
   BOT_CEILING_ALT,
   BOT_CEILING_HYST,
   BOT_CEILING_LOOKAHEAD_S,
   BOT_DECISION_EVERY,
   BOT_DETECT_RANGE,
   BOT_EVADE_MS,
+  BOT_FAN_PITCH,
+  BOT_FAN_TIMES,
+  BOT_FAN_YAW,
   BOT_FIRE_CONE,
   BOT_FIRE_RANGE,
   BOT_INPUT_CAP,
+  BOT_LOS_MEMORY_MS,
+  BOT_LOS_TESTS_MAX,
   BOT_MIN_ALT,
   BOT_PATROL_ALT_MAX,
   BOT_PATROL_ALT_MIN,
@@ -54,6 +76,7 @@ import {
   BULLET_RANGE,
   BULLET_SPEED,
   HIT_RADIUS,
+  PITCH_LIMIT,
   PLAYER_RADIUS,
   TICK_DOWN_HZ,
   WORLD_SIZE,
@@ -123,6 +146,22 @@ const wrapAngle = (a: number): number => {
 
 const NEUTRAL: FlightInput = { pitch: 0, turn: 0, roll: 0, throttle: 0 };
 
+/**
+ * Candidate heading offsets (yaw, pitch) sampled around the pursuit vector.
+ * Deliberately UNORDERED: the angle a yaw offset subtends shrinks as the base
+ * pitch steepens, so no fixed order is "nearest the pursuit vector" for every
+ * aim — fanAround ranks them by real dot product when it needs to.
+ */
+const FAN: readonly (readonly [number, number])[] = (() => {
+  const out: [number, number][] = [[0, 0]];
+  for (const p of BOT_FAN_PITCH) out.push([0, p], [0, -p]);
+  for (const y of BOT_FAN_YAW) {
+    out.push([y, 0], [-y, 0]);
+    for (const p of BOT_FAN_PITCH) out.push([y, p], [y, -p], [-y, p], [-y, -p]);
+  }
+  return out;
+})();
+
 interface Bot {
   entry: RosterEntry;
   flight: FlightState;
@@ -131,7 +170,21 @@ interface Bot {
   targetId: string | null;
   /** Earliest time the trigger may be pulled at the current target, ms. */
   fireAllowedAt: number;
+  /** When the current target was last actually SEEN, ms — the memory window
+   * that carries a chase through a building. */
+  lastSeenAt: number;
   waypoint: Vec3 | null;
+  /** Seeded once and fixed for life: does this bot patrol the streets? It
+   * steers PATROL only — ENGAGE follows the target into either layer. */
+  canyon: boolean;
+  /** The altitude this bot calls home, m: the floor an EVADE dives back to,
+   * and for a canyon bot the height it flies its street lattice at (drawn
+   * across the band, so canyon bots stagger vertically instead of flying a
+   * conga line). High bots all share BOT_PATROL_ALT_MIN — their patrol
+   * altitude is still redrawn per waypoint, exactly as before. */
+  bandY: number;
+  /** Which street line the canyon patrol is flying, and which way along it. */
+  travel: { axis: "x" | "z"; dir: 1 | -1 } | null;
   evadeUntil: number;
   /** Break-turn direction for EVADE/RECOVER, seeded per episode. */
   breakTurn: 1 | -1;
@@ -184,6 +237,12 @@ export class RoomBots {
       isBot: true,
     };
     const rand = mulberry32(Math.floor(this.rand() * 0xffffffff));
+    // Disposition, then this bot's slot inside its band — both drawn ONCE, so
+    // a bot keeps its layer through every respawn (see respawn()).
+    const canyon = rand() < BOT_CANYON_SHARE;
+    const bandY = canyon
+      ? BOT_CANYON_ALT_MIN + rand() * (BOT_CANYON_ALT_MAX - BOT_CANYON_ALT_MIN)
+      : BOT_PATROL_ALT_MIN;
     this.bots.set(entry.id, {
       entry,
       flight: this.flightFromSpawn(spawn),
@@ -191,7 +250,11 @@ export class RoomBots {
       state: "PATROL",
       targetId: null,
       fireAllowedAt: 0,
+      lastSeenAt: Number.NEGATIVE_INFINITY,
       waypoint: null,
+      canyon,
+      bandY,
+      travel: null,
       evadeUntil: Number.NEGATIVE_INFINITY,
       breakTurn: 1,
       aimJitterYaw: 0,
@@ -324,7 +387,9 @@ export class RoomBots {
     bot.input = NEUTRAL;
     bot.state = "PATROL";
     bot.targetId = null;
+    bot.lastSeenAt = Number.NEGATIVE_INFINITY;
     bot.waypoint = null;
+    bot.travel = null;
     bot.evadeUntil = Number.NEGATIVE_INFINITY;
   }
 
@@ -369,32 +434,56 @@ export class RoomBots {
   // --- brain ---
 
   private decide(bot: Bot, now: number, contacts: readonly BotContact[]): void {
-    // RECOVER is a hard override of everything else — with hysteresis: once
-    // in it, only a WIDE clearance releases it, or the brain flaps back to
-    // PATROL/ENGAGE and immediately re-steers toward the obstacle.
-    const margin = bot.state === "RECOVER" ? BOT_RECOVER_CLEAR : 1;
+    // RECOVER keeps its hysteresis: once in it, only a WIDE clearance releases
+    // it, or the brain flaps back to PATROL/ENGAGE and immediately re-steers
+    // toward the obstacle.
+    // Latched up front: `decide` sets bot.state = "ENGAGE" before it knows
+    // whether the fan can find a heading, so asking "am I already recovering?"
+    // later would answer no every time and re-draw the break turn each
+    // decision — the exact flapping the hysteresis exists to prevent.
+    const wasRecover = bot.state === "RECOVER";
+    const margin = wasRecover ? BOT_RECOVER_CLEAR : 1;
     const ceiling = this.nearCeiling(bot.flight, margin);
-    if (ceiling || this.inDanger(bot.flight, margin)) {
-      if (bot.state !== "RECOVER") {
-        bot.state = "RECOVER";
-        bot.breakTurn = this.clearSide(bot.flight);
-      }
+    const recover = (dive: boolean): void => {
+      if (!wasRecover) bot.breakTurn = this.clearSide(bot.flight);
+      // Down among the towers a recovery also has to SLOW: turn radius is
+      // speed / 0.765 rad/s, so the bot that keeps full power through a
+      // pull-up needs 100 m to change direction and has maybe 60 m of probe.
+      bot.state = "RECOVER";
+      const canyon = !dive && bot.flight.pos.y < BOT_CANYON_PROBE_ALT;
       bot.input = {
         // The ceiling dives back under the cloud deck; every other danger
         // (ground, tier boxes ≤ 250 m) pulls up — never both at once.
-        pitch: ceiling ? -BOT_INPUT_CAP : BOT_INPUT_CAP,
+        pitch: dive ? -BOT_INPUT_CAP : BOT_INPUT_CAP,
         turn: bot.breakTurn * BOT_INPUT_CAP * 0.6,
         roll: 0,
-        throttle: 1,
+        throttle: canyon ? -1 : 1,
       };
+    };
+
+    // The storm ceiling and the altitude floor stay HARD overrides in every
+    // state — a bot chasing a diving human still pulls up (and weather must
+    // never kill a bot, ST1's rule).
+    if (ceiling || bot.flight.pos.y < BOT_MIN_ALT) {
+      recover(ceiling);
       return;
     }
 
+    // Terrain ahead of the NOSE. For PATROL and EVADE this is still the hard
+    // override it always was; ENGAGE gets first refusal through the fan below,
+    // because a binary override can only ever produce avoidance, never weaving.
+    const fwd = flightForward(bot.flight);
+    const blocked = this.blockedAlong(bot.flight, fwd.x, fwd.z, fwd.y, margin);
+
     if (now < bot.evadeUntil) {
+      if (blocked) {
+        recover(false);
+        return;
+      }
       bot.state = "EVADE";
       // Break turn + dive toward canyon altitude: hold the turn and let the
       // nose drop while above the canyon band (RECOVER guards the floor).
-      const divePitch = bot.flight.pos.y > BOT_PATROL_ALT_MIN ? -0.35 : 0;
+      const divePitch = bot.flight.pos.y > bot.bandY ? -0.35 : 0;
       bot.input = {
         pitch: clamp(
           (divePitch - bot.flight.pitch) * BOT_STEER_GAIN,
@@ -408,7 +497,7 @@ export class RoomBots {
       return;
     }
 
-    const target = this.acquire(bot, contacts);
+    const target = this.acquire(bot, now, contacts);
     if (target) {
       if (bot.targetId !== target.id) {
         bot.targetId = target.id;
@@ -438,13 +527,43 @@ export class RoomBots {
         y: d.y + target.vel.y * t,
         z: d.z + target.vel.z * t,
       };
-      this.steerToward(bot, aim, bot.aimJitterYaw, bot.aimJitterPitch, 1);
+      // The fan's first candidate IS the pursuit vector, so an unobstructed
+      // chase steers exactly as it always did (steerToward reads direction
+      // only, so a normalized survivor and the raw lead vector are the same
+      // command). A blocked line yields the nearest clear heading instead of
+      // cancelling the chase.
+      const heading = this.fanAround(bot, aim, margin);
+      if (heading) {
+        // Weaving means the terrain is close, and turn radius is speed / 0.765
+        // rad/s — so the bot that keeps its throttle buried is the bot that
+        // cannot make the gap. Only a clear pursuit line gets full power.
+        this.steerToward(
+          bot,
+          heading.dir,
+          bot.aimJitterYaw,
+          bot.aimJitterPitch,
+          heading.direct ? 1 : -1,
+        );
+        return;
+      }
+      // Every heading in the fan is blocked: genuinely boxed in, so RECOVER
+      // survives as the last-resort guard it was always meant to be.
+      recover(false);
       return;
     }
 
-    // PATROL: seeded waypoint wander in the mid-altitude band.
+    if (blocked) {
+      recover(false);
+      return;
+    }
+
+    // PATROL: the street lattice down low, seeded waypoint wander up high.
     bot.state = "PATROL";
     bot.targetId = null;
+    if (bot.canyon) {
+      this.canyonPatrol(bot);
+      return;
+    }
     if (
       !bot.waypoint ||
       wrapDistance(bot.flight.pos, bot.waypoint) < BOT_WAYPOINT_RADIUS
@@ -460,22 +579,124 @@ export class RoomBots {
     this.steerToward(bot, wrapDelta(bot.flight.pos, bot.waypoint), 0, 0, 0);
   }
 
-  /** Nearest living, unprotected contact within detect range (never self). */
+  /**
+   * Fly the street lattice: hold the centerline to the next intersection,
+   * then take a seeded straight/left/right. Two concessions to the flight
+   * model, both measured: bleed throttle into a corner (turn radius is
+   * speed / 0.765 rad/s, so slowing is the ONLY way to tighten it), and hop
+   * — a 90° turn sweeps ~52 m, wider than any roadway, so it must cross the
+   * block corner and wants vertical margin over whatever stands there.
+   */
+  private canyonPatrol(bot: Bot): void {
+    // Reaching a waypoint is a GROUND-TRACK test: the lattice is a plan-view
+    // graph and altitude is the glide's business. Measuring it in 3D strands a
+    // bot that is still high above the intersection it is aiming at.
+    let d = bot.waypoint
+      ? wrapDelta(bot.flight.pos, bot.waypoint)
+      : { x: 0, y: 0, z: 0 };
+    if (!bot.waypoint || Math.hypot(d.x, d.z) < BOT_CANYON_WAYPOINT_RADIUS) {
+      bot.waypoint = this.nextCanyonWaypoint(bot);
+      d = wrapDelta(bot.flight.pos, bot.waypoint);
+    }
+    const flat = Math.hypot(d.x, d.z);
+    const yawErr = Math.abs(wrapAngle(Math.atan2(-d.x, -d.z) - bot.flight.yaw));
+    const turning = yawErr > BOT_CANYON_TURN_YAW;
+    const slowing = turning || flat < BOT_CANYON_SLOW_RADIUS;
+    // The hop raises the TARGET altitude (never the commanded climb), then the
+    // glide caps how steeply the bot may descend toward it — so arriving from
+    // RESPAWN_ALTITUDE is a slope down the lattice, not a plunge.
+    const targetY = bot.waypoint.y + (slowing ? BOT_CANYON_HOP : 0);
+    const dy = Math.max(targetY - bot.flight.pos.y, -flat * BOT_CANYON_GLIDE);
+    // Never accelerate on a canyon patrol: turn radius is speed / 0.765 rad/s,
+    // so a street-grid bot has to arrive at a corner near MIN_SPEED or its arc
+    // cuts the block. Throttle only ever holds or bleeds here; a chase (ENGAGE)
+    // is free to firewall it.
+    this.steerToward(bot, { x: d.x, y: dy, z: d.z }, 0, 0, slowing ? -1 : 0);
+  }
+
+  /** The next lattice intersection to fly to, at this bot's band altitude. */
+  private nextCanyonWaypoint(bot: Bot): Vec3 {
+    const fwd = flightForward(bot.flight);
+    if (!bot.travel) {
+      // Joining the lattice (a fresh spawn is still up at RESPAWN_ALTITUDE):
+      // adopt the street below, heading whichever way we already face.
+      const street = nearestStreet(bot.flight.pos);
+      bot.travel = {
+        axis: street.axis,
+        dir: (street.axis === "x" ? fwd.x : fwd.z) >= 0 ? 1 : -1,
+      };
+      const p = nextIntersection(bot.flight.pos, street, bot.travel.dir);
+      return { x: p.x, y: bot.bandY, z: p.z };
+    }
+    // Standing on an intersection: carry straight on, or turn onto the cross
+    // street. Both draws come from the per-bot stream, never Math.random.
+    const at = bot.waypoint ?? bot.flight.pos;
+    if (bot.rand() >= BOT_CANYON_STRAIGHT_CHANCE) {
+      bot.travel = {
+        axis: bot.travel.axis === "x" ? "z" : "x",
+        dir: bot.rand() < 0.5 ? 1 : -1,
+      };
+    }
+    const p = nextIntersection(
+      at,
+      {
+        axis: bot.travel.axis,
+        centerline: bot.travel.axis === "x" ? at.z : at.x,
+      },
+      bot.travel.dir,
+    );
+    return { x: p.x, y: bot.bandY, z: p.z };
+  }
+
+  /**
+   * The contact this bot should hunt: the nearest living, unprotected one in
+   * detect range that it can actually SEE (never self).
+   *
+   * Above the rooftops every sight line is clear, so this is free for a high
+   * patrol; in a canyon it is what stops a bot locking onto a human on the far
+   * side of a skyscraper and flying lead pursuit into the wall.
+   *
+   * Contacts are walked nearest-first and the walk stops at the first one
+   * visible, so the common case costs a single sight test; BOT_LOS_TESTS_MAX
+   * bounds the worst case.
+   */
   private acquire(
     bot: Bot,
+    now: number,
     contacts: readonly BotContact[],
   ): BotContact | null {
-    let best: BotContact | null = null;
-    let bestDist = BOT_DETECT_RANGE;
+    const inRange: { c: BotContact; dist: number }[] = [];
     for (const c of contacts) {
       if (c.id === bot.entry.id || c.prot) continue;
       const dist = wrapDistance(bot.flight.pos, c.pos);
-      if (dist <= bestDist) {
-        best = c;
-        bestDist = dist;
+      if (dist <= BOT_DETECT_RANGE) inRange.push({ c, dist });
+    }
+    inRange.sort((a, b) => a.dist - b.dist);
+    // Nearest first, stopping at the first one actually visible. The budget
+    // bounds the WORK, not the candidate set: truncating to the nearest few
+    // would let a knot of contacts behind one tower blind a bot to a human in
+    // open air right in front of it.
+    let tests = BOT_LOS_TESTS_MAX;
+    for (const { c } of inRange) {
+      if (tests-- <= 0) break;
+      if (losClear(bot.flight.pos, c.pos, this.buildings)) {
+        bot.lastSeenAt = now;
+        return c;
       }
     }
-    return best;
+
+    // Nothing in sight: keep pressing the CURRENT target through a short
+    // memory window. Returning the same contact id matters — decide() only
+    // re-arms the reaction delay when the id CHANGES, so a flickering sight
+    // line must not look like a new acquisition.
+    if (bot.targetId && now - bot.lastSeenAt <= BOT_LOS_MEMORY_MS) {
+      for (const c of contacts) {
+        if (c.id !== bot.targetId || c.prot) continue;
+        if (wrapDistance(bot.flight.pos, c.pos) > BOT_DETECT_RANGE) break;
+        return c;
+      }
+    }
+    return null;
   }
 
   /** Proportional rate steering toward the (torus) delta `d`, inputs capped
@@ -513,25 +734,94 @@ export class RoomBots {
     return flight.pos.y + climb * BOT_CEILING_LOOKAHEAD_S > limit;
   }
 
-  /** Would holding this course hit something soon? Ground margin + nose
-   * probes against the shared tier boxes at BOT_PROBE_TIMES of lookahead.
-   * `margin` scales the probe radius (RECOVER's exit hysteresis). */
-  private inDanger(flight: FlightState, margin = 1): boolean {
-    if (flight.pos.y < BOT_MIN_ALT) return true;
-    const fwd = flightForward(flight);
-    return this.blockedAlong(flight, fwd.x, fwd.z, fwd.y, margin);
+  /**
+   * The nearest heading to `aim` that the probes report clear, or null when
+   * every candidate is blocked. Walks the pre-sorted FAN table and returns
+   * the first survivor — see FAN for why that IS the best-dot-product pick.
+   */
+  private fanAround(
+    bot: Bot,
+    aim: Vec3,
+    margin: number,
+  ): { dir: Vec3; direct: boolean } | null {
+    const len = Math.hypot(aim.x, aim.y, aim.z);
+    if (len === 0) return null;
+    const baseYaw = Math.atan2(-aim.x, -aim.z);
+    const basePitch = Math.asin(clamp(aim.y / len, -1, 1));
+    const at = (dYaw: number, dPitch: number): Vec3 =>
+      flightForward({
+        yaw: baseYaw + dYaw,
+        pitch: clamp(basePitch + dPitch, -PITCH_LIMIT, PITCH_LIMIT),
+      });
+
+    // The overwhelmingly common case: the pursuit line is clear over the long
+    // steering horizon, and the chase steers exactly as it always did.
+    const straight = at(0, 0);
+    if (
+      !this.blockedAlong(
+        bot.flight,
+        straight.x,
+        straight.z,
+        straight.y,
+        margin,
+        BOT_FAN_TIMES,
+      )
+    ) {
+      return { dir: straight, direct: true };
+    }
+
+    // Blocked, so it is worth ranking the alternatives properly: score each
+    // candidate by its actual dot product with the desired pursuit direction
+    // and take the best survivor.
+    const ranked = FAN.map(([dYaw, dPitch]) => {
+      const dir = at(dYaw, dPitch);
+      return {
+        dir,
+        dot: (dir.x * aim.x + dir.y * aim.y + dir.z * aim.z) / len,
+      };
+    }).sort((a, b) => b.dot - a.dot);
+
+    // Two horizons, and the order is the point. First insist on a heading that
+    // stays clear long enough to still be able to turn; only if nothing
+    // survives that does the bot settle for one that merely survives the short
+    // "am I about to hit it" look. Both are explicit — falling back to the
+    // altitude default would hand a HIGH bot a 2.6 s horizon, which is LONGER
+    // than the first pass and so could never rescue it.
+    for (const times of [BOT_FAN_TIMES, BOT_CANYON_PROBE_TIMES]) {
+      for (const { dir } of ranked) {
+        if (
+          !this.blockedAlong(bot.flight, dir.x, dir.z, dir.y, margin, times)
+        ) {
+          return { dir, direct: false };
+        }
+      }
+    }
+    return null;
   }
 
-  /** Probe a direction (unit horizontal dx/dz plus vertical dy) for danger. */
+  /**
+   * Probe a direction (unit horizontal dx/dz plus vertical dy) for danger.
+   *
+   * The profile is chosen by ALTITUDE, not disposition, so a high patroller
+   * diving into a chase gets the canyon probes too. Among the towers the long
+   * samples are actively harmful: they reach past an intersection into the
+   * cross-street facade, which reports danger on ~76% of the ticks of a turn
+   * that hits nothing. `times` overrides the horizon for callers that are
+   * CHOOSING a heading rather than deciding whether to abandon one.
+   */
   private blockedAlong(
     flight: FlightState,
     dx: number,
     dz: number,
     dy: number,
     margin = 1,
+    times?: readonly number[],
   ): boolean {
-    const radius = BOT_PROBE_RADIUS * margin;
-    for (const t of BOT_PROBE_TIMES) {
+    const canyon = flight.pos.y < BOT_CANYON_PROBE_ALT;
+    const radius =
+      (canyon ? BOT_CANYON_PROBE_RADIUS : BOT_PROBE_RADIUS) * margin;
+    for (const t of times ??
+      (canyon ? BOT_CANYON_PROBE_TIMES : BOT_PROBE_TIMES)) {
       const s = flight.speed * t;
       const p = canonicalize({
         x: flight.pos.x + dx * s,
@@ -544,24 +834,30 @@ export class RoomBots {
     return false;
   }
 
-  /** Which break-turn direction has clearer air? Probes the nose swung ±60°. */
+  /** Which break-turn direction has clearer air? Probes the nose swung ±60°,
+   * over the fan's longer STEERING horizon: this picks which way to go, and a
+   * 0.9 s look cannot see far enough to make that choice well. */
   private clearSide(flight: FlightState): 1 | -1 {
     const fwd = flightForward(flight);
     const swing = Math.PI / 3;
     // turn=+1 decreases yaw; a yaw change of -swing rotates the nose to the
     // "turn right" side. Test both and prefer the unblocked one.
-    for (const dir of [1, -1] as const) {
-      const yaw = flight.yaw - dir * swing;
-      const cosP = Math.cos(flight.pitch);
-      if (
-        !this.blockedAlong(
-          flight,
-          -Math.sin(yaw) * cosP,
-          -Math.cos(yaw) * cosP,
-          fwd.y,
-        )
-      ) {
-        return dir;
+    for (const times of [BOT_FAN_TIMES, BOT_CANYON_PROBE_TIMES]) {
+      for (const dir of [1, -1] as const) {
+        const yaw = flight.yaw - dir * swing;
+        const cosP = Math.cos(flight.pitch);
+        if (
+          !this.blockedAlong(
+            flight,
+            -Math.sin(yaw) * cosP,
+            -Math.cos(yaw) * cosP,
+            fwd.y,
+            1,
+            times,
+          )
+        ) {
+          return dir;
+        }
       }
     }
     return 1;

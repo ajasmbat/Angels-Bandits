@@ -166,3 +166,34 @@ export function nearestStreet(p: Vec3): NearestStreet {
     side: d >= 0 ? 1 : -1,
   };
 }
+
+/**
+ * The next lattice intersection ahead of `p` along `street`'s travel axis,
+ * in direction `dir` (+1 = increasing coordinate). Returned on the ground
+ * plane (y = 0) — callers add their own altitude.
+ *
+ * "Ahead" is strict: sitting exactly on an intersection returns the NEXT one,
+ * so a patrol that reaches its waypoint always gets a fresh block to fly.
+ * Wrap-correct like the rest of this file — BLOCK_PITCH divides WORLD_SIZE,
+ * so stepping past the last line lands on line 0 rather than off the map.
+ */
+export function nextIntersection(
+  p: Vec3,
+  /** Only the line matters here, so a hand-built {axis, centerline} works as
+   * well as a nearestStreet() result — `side` is irrelevant to the lattice. */
+  street: Pick<NearestStreet, "axis" | "centerline">,
+  dir: 1 | -1,
+): Vec3 {
+  const c = canonicalize(p);
+  const along = street.axis === "x" ? c.x : c.z;
+  const steps =
+    dir === 1
+      ? Math.floor(along / BLOCK_PITCH) + 1
+      : Math.ceil(along / BLOCK_PITCH) - 1;
+  const next = steps * BLOCK_PITCH;
+  return canonicalize(
+    street.axis === "x"
+      ? { x: next, y: 0, z: street.centerline }
+      : { x: street.centerline, y: 0, z: next },
+  );
+}

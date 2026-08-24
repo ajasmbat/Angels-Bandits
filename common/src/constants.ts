@@ -242,10 +242,38 @@ export const BOT_REACTION_MS = 400;
 export const BOT_INPUT_CAP = 0.85;
 /** Brain decision cadence: every Nth sim tick (15 Hz / 3 ≈ 5 Hz). */
 export const BOT_DECISION_EVERY = 3;
-/** Patrol waypoint altitude band, m — above every rooftop (250 m landmarks),
- * below the soft ceiling. */
+/** HIGH patrol waypoint altitude band, m — above every rooftop (250 m
+ * landmarks), below the soft ceiling. */
 export const BOT_PATROL_ALT_MIN = 270;
 export const BOT_PATROL_ALT_MAX = 460;
+/** Share of bots seeded as CANYON pilots (ANGE-SINI5F); the rest patrol high.
+ * Drawn once per bot and fixed for its life — disposition steers PATROL only,
+ * never ENGAGE, so a chase drags bots through both layers. */
+export const BOT_CANYON_SHARE = 0.6;
+/** Canyon patrol band, m. The floor sits clear of BOT_MIN_ALT; the ceiling is
+ * well under the ~73 m median building, so a bot in this band is threading the
+ * streets rather than cruising over roofs — though the highest slots do clear
+ * the shortest (BUILDING_MIN_HEIGHT) buildings, and a corner hop lifts it
+ * further still. The spread staggers bots vertically instead of flying them in
+ * a conga line. */
+export const BOT_CANYON_ALT_MIN = 25;
+export const BOT_CANYON_ALT_MAX = 70;
+/** A canyon patrol waypoint counts as reached inside this torus range, m.
+ * BOT_WAYPOINT_RADIUS is wider than half a block, so an intersection would
+ * read as already-reached the moment it was picked. */
+export const BOT_CANYON_WAYPOINT_RADIUS = 60;
+/** Chance a canyon bot carries straight on through an intersection rather
+ * than turning; the turn's left/right is a second seeded draw. */
+export const BOT_CANYON_STRAIGHT_CHANCE = 0.5;
+/** Extra altitude a canyon bot carries through an intersection turn, m. A 90°
+ * turn sweeps ~52 m at MIN_SPEED — wider than any roadway — so it MUST cross
+ * the block corner; the hop buys vertical margin over whatever stands there. */
+export const BOT_CANYON_HOP = 30;
+/** A canyon bot bleeds throttle while its heading error exceeds this, rad.
+ * Turn radius is speed / 0.765 rad/s, so slowing is the only way to tighten
+ * it: measured over all 800 city intersections, the same turn crashes 4.5% of
+ * the time at 65 m/s and 1.0% at 40 m/s. */
+export const BOT_CANYON_TURN_YAW = 0.5;
 /** A patrol waypoint counts as reached inside this torus range, m. */
 export const BOT_WAYPOINT_RADIUS = 120;
 /** How long a bot holds its evade break turn after taking fire, ms. */
@@ -253,15 +281,32 @@ export const BOT_EVADE_MS = 2500;
 /** An enemy this close AND behind the bot triggers an evade break, m. */
 export const BOT_THREAT_RANGE = 150;
 /** Collision probe lookahead along the nose, seconds of current speed —
- * the short probe catches corner-cuts mid-turn, the long ones buy turn room. */
+ * the short probe catches corner-cuts mid-turn, the long ones buy turn room.
+ * These are the HIGH-altitude values; among the towers the canyon profile
+ * below replaces them. */
 export const BOT_PROBE_TIMES: readonly number[] = [0.3, 0.8, 1.6, 2.6];
 /** Probe sphere radius, m — clearance margin around the plane. */
 export const BOT_PROBE_RADIUS = 12;
+/** Below this altitude a bot probes with the CANYON profile, m — under the
+ * landmark tops, so anything flying among the towers gets it, including a
+ * high patroller diving into a chase. */
+export const BOT_CANYON_PROBE_ALT = 200;
+/** Canyon probe radius, m. The wide probe leaves only 3.5 m of tracking slack
+ * against the tightest facade setback, so a 2° heading error trips it on 22%
+ * of ticks; this radius restores real tolerance inside a street. */
+export const BOT_CANYON_PROBE_RADIUS = 5;
+/** Canyon probe lookahead, s. The decisive knob: flying a real 90° turn that
+ * hits nothing, the high profile reports BLOCKED on 76% of ticks (and still
+ * 68% at radius 4) — the long samples reach past the intersection into the
+ * cross-street facade. These drop that to ~5%. */
+export const BOT_CANYON_PROBE_TIMES: readonly number[] = [0.2, 0.5, 0.9];
 /** RECOVER hysteresis: exit only once probes clear at this radius multiple —
  * without it the brain flaps RECOVER→PATROL and re-steers into the wall. */
 export const BOT_RECOVER_CLEAR = 2;
-/** Below this altitude RECOVER pulls up unconditionally, m. */
-export const BOT_MIN_ALT = 40;
+/** Below this altitude RECOVER pulls up unconditionally, m. Sits below the
+ * canyon band (high patrollers never approach it); the ground still kills at
+ * y = 0, this only moves the pull-up trigger. */
+export const BOT_MIN_ALT = 15;
 /** Bots never enter the clouds (ST1): RECOVER pitches DOWN above this, m —
  * a margin under CLOUD_BASE so the hidden storm rule can't kill a bot. */
 export const BOT_CEILING_ALT = 480;
@@ -272,3 +317,38 @@ export const BOT_CEILING_LOOKAHEAD_S = 1.2;
 export const BOT_CEILING_HYST = 40;
 /** Steering gain: input per radian of yaw/pitch error (capped at BOT_INPUT_CAP). */
 export const BOT_STEER_GAIN = 3;
+
+/** A canyon bot bleeds throttle inside this range of its next intersection, m
+ * — the lead-in that lets it arrive slow enough to turn the corner. */
+export const BOT_CANYON_SLOW_RADIUS = 110;
+/** Steepest descent a canyon bot commands, meters dropped per meter of ground
+ * track. Bots spawn at RESPAWN_ALTITUDE, and aiming straight at a waypoint
+ * 275 m below is a near-vertical dive that arrives too fast to fly a street —
+ * this turns the arrival into a glide down the lattice instead. */
+export const BOT_CANYON_GLIDE = 0.5;
+
+/** Steering fan (ANGE-SINI5F): yaw offsets sampled either side of the pursuit
+ * vector when terrain blocks the direct line, rad. */
+export const BOT_FAN_YAW: readonly number[] = [0.3, 0.6, 1.0, 1.4];
+/** ...and the vertical offsets, so a bot can pop over a roof or duck under a
+ * setback ledge instead of only going around, rad. */
+export const BOT_FAN_PITCH: readonly number[] = [0.35];
+
+/** How long a bot keeps pursuing a target it can no longer see, ms. Sight
+ * lines flicker constantly in a canyon; without this the brain would drop and
+ * re-acquire several times a second, re-arming BOT_REACTION_MS each time, and
+ * the bot would never fire at all. (It is also how a real pilot behaves.) */
+export const BOT_LOS_MEMORY_MS = 2000;
+/** Worst-case sight tests one bot may spend in a single decision. Contacts are
+ * walked nearest-first and the walk stops at the first VISIBLE one, so the
+ * common case is a single test; this only bounds the pathological case. It is
+ * a work budget, never a candidate cap — capping candidates would let a knot
+ * of contacts behind one tower blind a bot to a human in open air. */
+export const BOT_LOS_TESTS_MAX = ROOM_CAP;
+
+/** Steering horizon for the fan, seconds of current speed. Deliberately longer
+ * than the probe profiles: a 90 deg turn takes ~2.07 s at any speed, so a bot
+ * that only looks 0.9 s ahead can SEE a wall it can no longer avoid. The fan
+ * uses this to CHOOSE between headings early; the short profile still decides
+ * when the chase is hopeless and RECOVER takes over. */
+export const BOT_FAN_TIMES: readonly number[] = [0.5, 1.2, 2.2];

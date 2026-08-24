@@ -7,7 +7,14 @@ import { BULLET_RANGE } from "@angels-bandits/common/constants";
 import { createFlightState } from "@angels-bandits/common/flight";
 import * as THREE from "three";
 import { describe, expect, it } from "vitest";
-import { gunLinePoint, leadPoint, projectToScreen } from "../src/ui/lead";
+import {
+  SolutionTone,
+  gunLinePoint,
+  hasSolution,
+  leadPoint,
+  projectToScreen,
+  solutionMiss,
+} from "../src/ui/lead";
 
 describe("leadPoint", () => {
   it("aims straight at a stationary target: 400 m ahead at bullet speed 400 → the target itself", () => {
@@ -174,5 +181,104 @@ describe("projectToScreen", () => {
     );
     expect(p?.x).toBeCloseTo(W / 2, 3);
     expect(p?.y).toBeCloseTo(H / 2, 3);
+  });
+});
+
+// The firing solution. "Hot" means your bullets would actually connect, so the
+// test is the PERPENDICULAR MISS of the intercept point from the gun line
+// against HIT_RADIUS (6 m) — not a flat angle, which would be 7.3 m of slop at
+// 350 m but 1.0 m at 50 m. A 4-degree ceiling stops point-blank pinning it on.
+// Expected values are hand-worked right triangles.
+describe("solutionMiss", () => {
+  const level = createFlightState({ x: 1000, y: 300, z: 1000 }); // nose −Z
+
+  it("reads zero miss straight down the gun line", () => {
+    const e = solutionMiss(level, { x: 1000, y: 300, z: 800 });
+    expect(e.miss).toBeCloseTo(0, 6);
+    expect(e.angleRad).toBeCloseTo(0, 6);
+    expect(hasSolution(e)).toBe(true);
+  });
+
+  it("measures 5 m of miss for a target 200 m out and 5 m off-axis", () => {
+    const e = solutionMiss(level, { x: 1005, y: 300, z: 800 });
+    expect(e.miss).toBeCloseTo(5, 6);
+    expect(e.angleRad).toBeCloseTo(Math.atan2(5, 200), 6);
+    expect(hasSolution(e)).toBe(true);
+  });
+
+  it("goes cold at 8 m of miss — wider than the 6 m hit radius", () => {
+    expect(hasSolution(solutionMiss(level, { x: 1008, y: 300, z: 800 }))).toBe(
+      false,
+    );
+  });
+
+  it("counts vertical miss the same as lateral", () => {
+    const e = solutionMiss(level, { x: 1000, y: 308, z: 800 });
+    expect(e.miss).toBeCloseTo(8, 6);
+    expect(hasSolution(e)).toBe(false);
+  });
+
+  it("refuses point-blank sloppiness: 3 m off at 20 m is 8.5 deg, not a solution", () => {
+    // Inside the hit radius, but nowhere near lined up — without the angle
+    // ceiling the reticle would sit permanently hot in a knife fight.
+    const e = solutionMiss(level, { x: 1003, y: 300, z: 980 });
+    expect(e.miss).toBeCloseTo(3, 6);
+    expect(e.angleRad).toBeCloseTo(Math.atan2(3, 20), 6);
+    expect(hasSolution(e)).toBe(false);
+  });
+
+  it("still trips at max range, where a flat 1.2 deg would be 7.3 m of slop", () => {
+    const e = solutionMiss(level, { x: 1005, y: 300, z: 650 });
+    expect(e.miss).toBeCloseTo(5, 6);
+    expect(hasSolution(e)).toBe(true);
+  });
+
+  it("is cold for a target directly astern", () => {
+    const e = solutionMiss(level, { x: 1000, y: 300, z: 1200 });
+    expect(e.angleRad).toBeCloseTo(Math.PI, 6);
+    expect(hasSolution(e)).toBe(false);
+  });
+
+  it("is seam-safe: 150 m ahead through the z edge, not 1850 m astern", () => {
+    const near = createFlightState({ x: 1000, y: 300, z: 50 });
+    const e = solutionMiss(near, { x: 1000, y: 300, z: 1900 });
+    expect(e.miss).toBeCloseTo(0, 6);
+    expect(hasSolution(e)).toBe(true);
+  });
+
+  it("takes only the shooter and the point — no camera, so zoom cannot move it", () => {
+    // Structural: a pixel- or FOV-derived threshold would need one of those.
+    expect(solutionMiss.length).toBe(2);
+  });
+});
+
+describe("SolutionTone", () => {
+  it("ticks once on acquiring, not every frame it stays hot", () => {
+    const t = new SolutionTone();
+    expect(t.shouldPlay(true, 0)).toBe(true);
+    expect(t.shouldPlay(true, 16)).toBe(false);
+    expect(t.shouldPlay(true, 32)).toBe(false);
+  });
+
+  it("stays silent while cold", () => {
+    const t = new SolutionTone();
+    expect(t.shouldPlay(false, 0)).toBe(false);
+    expect(t.shouldPlay(false, 500)).toBe(false);
+  });
+
+  it("refuses to re-tick inside 400 ms — a jinking target cannot machine-gun it", () => {
+    const t = new SolutionTone();
+    expect(t.shouldPlay(true, 0)).toBe(true);
+    t.shouldPlay(false, 100);
+    expect(t.shouldPlay(true, 200)).toBe(false);
+    t.shouldPlay(false, 300);
+    expect(t.shouldPlay(true, 399)).toBe(false);
+  });
+
+  it("ticks again once the cooldown has expired", () => {
+    const t = new SolutionTone();
+    expect(t.shouldPlay(true, 1000)).toBe(true);
+    t.shouldPlay(false, 1100);
+    expect(t.shouldPlay(true, 1400)).toBe(true);
   });
 });

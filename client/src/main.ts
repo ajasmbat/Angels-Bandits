@@ -91,7 +91,7 @@ import { HPBAR_ALTITUDE, HpBarSprite, HpBarTracker } from "./ui/hpbar";
 import { Hud } from "./ui/hud";
 import { requestName, showJoinError } from "./ui/join";
 import { KillFeed } from "./ui/killfeed";
-import { LeadIndicator } from "./ui/lead";
+import { LeadIndicator, SolutionTone } from "./ui/lead";
 import { EdgeMarkers } from "./ui/markers";
 import { Minimap } from "./ui/minimap";
 import { Scoreboard } from "./ui/scoreboard";
@@ -236,6 +236,8 @@ const hud = new Hud();
 const minimap = new Minimap(city.cityBuildings);
 const edgeMarkers = new EdgeMarkers();
 const leadIndicator = new LeadIndicator();
+// One soft tick on ACQUIRING a firing solution, never while it holds.
+const solutionTone = new SolutionTone();
 const markerScratch = new THREE.Vector3();
 const hpBar = new HpBarTracker();
 const hpBarSprite = new HpBarSprite();
@@ -929,7 +931,7 @@ renderer.setAnimationLoop((now) => {
     targets.map((t) => t.pos),
     markerScratch,
   );
-  const aimPoint = leadIndicator.update(
+  const aimResult = leadIndicator.update(
     camera,
     chase.position,
     flight,
@@ -938,7 +940,10 @@ renderer.setAnimationLoop((now) => {
   );
   // The pipper is the gun line's own vanishing point, so it only means
   // anything while we are flying it — the kill-cam gets no aim chrome.
-  hud.setAimPoint(alive ? aimPoint : null);
+  hud.setAimPoint(alive ? aimResult.aim : null);
+  if (solutionTone.shouldPlay(alive && aimResult.solution, now)) {
+    audio.solutionTick();
+  }
 
   // HUD + rolling perf counters (~2 Hz refresh).
   perf.frames++;

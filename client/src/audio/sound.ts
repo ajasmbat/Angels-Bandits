@@ -24,6 +24,7 @@ const WHOOSH_LEVEL = 0.7;
 const EXPLOSION_LEVEL = 1.0;
 const HIT_LEVEL = 0.55;
 const KILL_LEVEL = 0.4;
+const SOLUTION_LEVEL = 0.13;
 // Radio voice bus: pre-rendered lines are loudness-normalized to −18 LUFS,
 // so one level rules them all; while a line is on air the rest of the mix
 // ducks under it so the call reads through combat.
@@ -231,6 +232,24 @@ export class GameAudio implements VoiceSink {
   hitThunk(): void {
     const jitter = 0.9 + Math.random() * 0.2;
     this.burst("bandpass", 750 * jitter, 210 * jitter, 0.08, HIT_LEVEL, 0);
+  }
+
+  /** Firing solution acquired: one soft, short blip — a nudge, not an alarm.
+   * Rate-limiting lives in ui/lead.ts's SolutionTone, which can be tested. */
+  solutionTick(): void {
+    const ctx = this.ensure();
+    if (!ctx || !this.sfx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = "triangle";
+    osc.frequency.value = 1046;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(SOLUTION_LEVEL, now + 0.008);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
+    osc.connect(gain).connect(this.sfx);
+    osc.start(now);
+    osc.stop(now + 0.12);
   }
 
   /** Kill confirm: quick rising two-note chime over the last thunk. */

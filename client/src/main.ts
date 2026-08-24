@@ -16,6 +16,7 @@ import {
   createFlightState,
   stepFlight,
 } from "@angels-bandits/common/flight";
+import { hitRangeBudgetFor } from "@angels-bandits/common/net";
 import type { ScoreEntry, SpawnState } from "@angels-bandits/common/protocol";
 import { strikesInWindow } from "@angels-bandits/common/storm";
 import { wrapDelta, wrapDistance } from "@angels-bandits/common/world";
@@ -530,6 +531,12 @@ declare global {
         roomId: string;
         remotes: ReturnType<RemotePlanes["debug"]>;
         renderTime: number | null;
+        /** The adaptive interpolation buffer this tab is holding, ms. */
+        interpDelayMs: number;
+        /** Measured snapshot-arrival jitter driving it, ms. */
+        jitterMs: number;
+        /** The hit-claim range budget the server will judge us against, m. */
+        hitRangeBudget: number;
       };
       combat: () => {
         alive: boolean;
@@ -546,7 +553,7 @@ declare global {
       freelook: () => ReturnType<typeof createFreeLook>;
       zoom: () => { held: boolean; z: number; fov: number };
       lampImage: (x: number, z: number) => { x: number; z: number } | null;
-      traffic: () => ReturnType<Traffic["debug"]>;
+      traffic: (at?: number | null) => ReturnType<Traffic["debug"]>;
       cityStats: () => {
         buildings: number;
         tierInstances: number;
@@ -591,6 +598,11 @@ window.__ab = {
     roomId: welcome.roomId,
     remotes: remotes.debug(),
     renderTime: socket.renderTime(),
+    // ANGE-4KO2W2 QA: the buffer, what it is reacting to, and the range
+    // budget it buys — the three numbers that have to move together.
+    interpDelayMs: socket.interpDelayMs,
+    jitterMs: socket.jitterMs,
+    hitRangeBudget: hitRangeBudgetFor(socket.interpDelayMs),
   }),
   combat: () => ({
     alive,
@@ -623,9 +635,11 @@ window.__ab = {
   zoom: () => ({ held: zoom.held, z: zoom.z, fov: camera.fov }),
   // Seam QA: where the lamp nearest canonical (x, z) is drawn right now.
   lampImage: (x, z) => streetlights.imageOf(x, z),
-  // Traffic QA: canonical poses of the first cars at the current synced time —
-  // two tabs must report the same cars at the same server time.
-  traffic: () => traffic.debug(socket.renderTime()),
+  // Traffic QA: canonical poses of the first cars at a server time. Pass one
+  // explicitly for the two-tab seam check — since ANGE-4KO2W2 each tab holds
+  // its OWN interpolation delay, so two tabs' default render times are no
+  // longer the same instant (that is the feature; the QA must pin the time).
+  traffic: (at) => traffic.debug(at === undefined ? socket.renderTime() : at),
   // V2 QA: instance counts for the perf report.
   cityStats: () => ({
     buildings: city.cityBuildings.length,
@@ -697,7 +711,7 @@ renderer.setAnimationLoop((now) => {
     // reaches flight state. Authority is the product of both costs.
     const steer = freelook.steer * zoomSteer(zoom.z);
     flight = stepFlight(flight, shapeInput(input.read(), { steer }), dt);
-    if (detectCrash(flight, city.cityBuildings)) {
+    if (detectCrash(flight, city.cityBuildings, city.cityIndex)) {
       // Report and freeze; the server decides credit and the respawn.
       socket.sendCrash();
       enterDeath(null);

@@ -3,7 +3,7 @@
 // client-authoritative (PLAN.md authority split) — pose claims are clamped via
 // validatePose and relayed in snapshots. The one flight sim this process DOES
 // run is the backfill bots (B1): RoomBots advances them with the shared
-// stepFlight inside the same 15 Hz snapshot tick.
+// stepFlight inside the same TICK_DOWN_HZ snapshot tick.
 
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
@@ -15,12 +15,16 @@ import {
   SPAWN_PROTECTION_MS,
   TICK_DOWN_HZ,
 } from "@angels-bandits/common/constants";
+import {
+  clampInterpDelay,
+  encodeSnapshotEntry,
+} from "@angels-bandits/common/net";
 import type {
   ClientMsg,
   Pose,
   ServerMsg,
-  SnapshotMsg,
   SpawnState,
+  WireSnapshotMsg,
 } from "@angels-bandits/common/protocol";
 import type { Vec3 } from "@angels-bandits/common/world";
 import { type WebSocket, WebSocketServer } from "ws";
@@ -235,10 +239,15 @@ function handleFire(client: Client, seq: unknown, now: number): void {
 
 function handleHitClaim(
   client: Client,
-  msg: { targetId?: unknown; bulletOrigin?: unknown; seq?: unknown },
+  msg: {
+    targetId?: unknown;
+    bulletOrigin?: unknown;
+    seq?: unknown;
+    delay?: unknown;
+  },
   now: number,
 ): void {
-  const { targetId, bulletOrigin, seq } = msg;
+  const { targetId, bulletOrigin, seq, delay } = msg;
   if (typeof targetId !== "string" || typeof seq !== "number") return;
   const origin = bulletOrigin as Vec3 | undefined;
   if (
@@ -261,6 +270,9 @@ function handleHitClaim(
     client.pose.pos,
     targetPose.pos,
     now,
+    // The shooter's declared interpolation buffer sizes the range budget
+    // (ANGE-4KO2W2). Clamped here: a nonsense claim reads as the tight floor.
+    clampInterpDelay(delay),
   );
   if (!verdict.ok) return;
 
@@ -489,33 +501,58 @@ wss.on("connection", (ws) => {
 });
 
 // --- Combat + bot sim tick + snapshots at TICK_DOWN_HZ, one stringify per room ---
-setInterval(() => {
+// Snapshots go out QUANTISED (ANGE-4KO2W2): common/src/net.ts turns each entry
+// into a tuple of integers, which is what pays for the 20 Hz cadence.
+function tick(): void {
   const time = Date.now();
   issueRespawns(combat.tick(time).respawnsDue, time);
   for (const room of rooms.rooms) {
     tickRoomBots(room, time);
     enforceStormCeiling(room, time);
-    const snapshot: SnapshotMsg = {
+    const snapshot: WireSnapshotMsg = {
       type: "snapshot",
       time,
       // Dead planes are simply absent until their respawn is announced.
-      players: [...room.members.values()].flatMap(({ id }) => {
+      p: [...room.members.values()].flatMap(({ id }) => {
         const pose = memberPose(room, id);
         return pose
           ? [
-              {
+              encodeSnapshotEntry({
                 id,
                 pose,
                 hp: combat.hpOf(id),
                 prot: combat.isProtected(id, time),
-              },
+              }),
             ]
           : [];
       }),
     };
     sendToRoom(room, snapshot);
   }
-}, 1000 / TICK_DOWN_HZ);
+}
+
+// Drift-compensating scheduler rather than setInterval: a tick that overruns
+// pushes the NEXT one earlier, so the mean cadence really is TICK_DOWN_HZ.
+// With a plain interval the bot sim's own cost stretched the observed gap well
+// past nominal — and a faster tick you don't actually deliver is not a faster
+// tick. BOT_DT assumes this cadence too, so the drift was slowing bots down.
+const TICK_MS = 1000 / TICK_DOWN_HZ;
+let nextTickAt = Date.now();
+const scheduleTick = (): void => {
+  nextTickAt += TICK_MS;
+  // A long stall (debugger, GC pause) must not queue a burst of catch-up
+  // ticks: skip straight to the next deadline in the future.
+  const now = Date.now();
+  if (nextTickAt < now) nextTickAt = now + TICK_MS;
+  setTimeout(
+    () => {
+      tick();
+      scheduleTick();
+    },
+    Math.max(0, nextTickAt - now),
+  );
+};
+scheduleTick();
 
 // The standing arena: bots fly the first room even before anyone joins, so
 // the first joiner drops into a live dogfight instead of an empty sky.

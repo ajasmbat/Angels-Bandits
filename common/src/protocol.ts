@@ -71,6 +71,16 @@ export interface HitClaimMsg {
   targetId: string;
   bulletOrigin: Vec3;
   seq: number;
+  /**
+   * The shooter's live interpolation delay, ms (ANGE-4KO2W2). The server's
+   * range slack exists to absorb the distance both planes cover during
+   * exactly this window, so the claim has to declare it — a LAN shooter gets
+   * a tight window, a buffered one gets the room it actually needs. The
+   * server clamps it to [INTERP_FLOOR_MS, INTERP_DELAY_MAX_MS] and treats an
+   * absent or nonsense value as the FLOOR, so declaring is never a way to buy
+   * more than the ceiling already allows.
+   */
+  delay: number;
 }
 
 /** The client flew into a building or the ground (client-auth movement). */
@@ -131,6 +141,8 @@ export interface PlayerLeftMsg {
   id: string;
 }
 
+/** One plane's snapshot state, DECODED — what the client actually consumes.
+ * The wire carries `WireSnapshotEntry` instead; see common/src/net.ts. */
 export interface SnapshotEntry {
   id: string;
   pose: Pose;
@@ -141,14 +153,52 @@ export interface SnapshotEntry {
 }
 
 /**
- * Room state at TICK_DOWN_HZ. `time` is the server's clock (ms) — the client
- * buffers snapshots and renders remotes INTERP_DELAY_MS behind it. Includes
- * every player (sender too — receivers skip their own id).
+ * One snapshot entry as it actually crosses the wire (ANGE-4KO2W2): a fixed
+ * tuple of quantised INTEGERS, which is both shorter than the float text it
+ * replaces and exactly reconstructible.
+ *
+ *   [id, x, y, z, qx, qy, qz, qw, speed, hp, prot?]
+ *
+ * Positions and airspeed are in tenths (POS_SCALE / SPEED_SCALE), attitude in
+ * thousandths (QUAT_SCALE). `prot` is omitted while a plane is NOT
+ * spawn-protected — the common case — and read back as false. Encode/decode
+ * live in common/src/net.ts; nothing else may build this tuple by hand.
+ */
+export type WireSnapshotEntry = [
+  id: string,
+  x: number,
+  y: number,
+  z: number,
+  qx: number,
+  qy: number,
+  qz: number,
+  qw: number,
+  speed: number,
+  hp: number,
+  prot?: 0 | 1,
+];
+
+/**
+ * Room state at TICK_DOWN_HZ, DECODED — the shape client code sees after
+ * common/src/net.ts unpacks the wire. Includes every player (sender too —
+ * receivers skip their own id).
  */
 export interface SnapshotMsg {
   type: "snapshot";
   time: number;
   players: SnapshotEntry[];
+}
+
+/**
+ * Room state as it crosses the wire. `time` is the server's clock (ms) — the
+ * client buffers snapshots and renders remotes its own adaptive interpolation
+ * delay behind it (common/src/net.ts). `p` is terse on purpose: at 20 Hz the
+ * key name is paid for on every snapshot, forever.
+ */
+export interface WireSnapshotMsg {
+  type: "snapshot";
+  time: number;
+  p: WireSnapshotEntry[];
 }
 
 /** Broadcast to everyone else when a player's shot passes validation —
@@ -214,7 +264,7 @@ export type ServerMsg =
   | BotsConfigMsg
   | PlayerJoinedMsg
   | PlayerLeftMsg
-  | SnapshotMsg
+  | WireSnapshotMsg
   | FiredMsg
   | DamageMsg
   | DeathMsg

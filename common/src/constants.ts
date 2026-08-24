@@ -42,16 +42,59 @@ export const EMISSIVE_STROBE = 1.1;
 export const EMISSIVE_TRACER = 1.5;
 
 // --- Buildings ---
-export const BUILDING_MIN_HEIGHT = 40;
-export const BUILDING_MAX_HEIGHT = 180;
-/** Smallest building footprint side, meters. */
-export const BUILDING_MIN_FOOTPRINT = 100;
-/** Largest footprint side, meters. Must stay ≤ BLOCK_PITCH − STREET_WIDTH. */
-export const BUILDING_MAX_FOOTPRINT = 170;
+// Height bounds are the envelope of HEIGHT_BANDS below; the bands are what
+// actually shapes the skyline. BUILDING_MAX_HEIGHT stays strictly under
+// LANDMARK_HEIGHT because four consumers (minimap, roof beacons, facade
+// archetypes, the city's neon tint) identify a landmark by height alone.
+export const BUILDING_MIN_HEIGHT = 20;
+export const BUILDING_MAX_HEIGHT = 240;
 /** Hand-placed landmark supertalls for orientation. */
 export const LANDMARK_HEIGHT = 250;
 /** Footprint side of the slim landmark towers, meters. */
 export const LANDMARK_FOOTPRINT = 90;
+
+// --- Lot subdivision (C1) ---
+// Blocks are cut into irregular lots by seeded binary subdivision and every
+// lot builds out to the lot line, so a block reads as one continuous
+// streetwall. These replace the old BUILDING_MIN/MAX_FOOTPRINT pair: the
+// "≤ BLOCK_PITCH − STREET_WIDTH" constraint now binds the block extent, not
+// any single building.
+/** Buildable lot line, meters behind the street-furniture line. Sized so the
+ * deepest thing that hangs off a facade (a 3.2 m canopy) still lands short of
+ * the curb; see LOT_LINE in city/street.ts. */
+export const LOT_LINE_MARGIN = 4;
+/** Smallest lot side a split may leave, meters. */
+export const LOT_MIN_WIDTH = 26;
+/** Deepest subdivision recursion — 2^n is the per-block lot ceiling. */
+export const LOT_MAX_DEPTH = 3;
+/** Chance a lot stops subdividing early once past depth 1. This is what puts
+ * one wide lot beside three narrow ones instead of a uniform grid. */
+export const LOT_STOP_CHANCE = 0.25;
+/** Split position along the chosen axis, as a fraction of its length. Clamped
+ * per split so neither half falls under LOT_MIN_WIDTH. */
+export const LOT_SPLIT_MIN = 0.35;
+export const LOT_SPLIT_MAX = 0.65;
+/** Chance a split takes the SHORTER axis instead of the longer one — the
+ * irregularity that stops lots converging on one modal shape. */
+export const LOT_CROSS_SPLIT_CHANCE = 0.25;
+/** Interior (non-street-facing) lot edges pull back by up to this, meters,
+ * opening mid-block light wells. Street-facing edges always build flush. */
+export const LOT_INTERIOR_INSET_MAX = 4;
+
+/**
+ * Skyline distribution: [cumulative probability, min height, max height].
+ * A continuous low/mid streetwall with a thin tail of towers punching
+ * through — a plain power curve over one range gives a lumpy mid-rise mass
+ * once there are several buildings per block. Must be sorted ascending by
+ * probability, end at exactly 1, and stay inside
+ * [BUILDING_MIN_HEIGHT, BUILDING_MAX_HEIGHT].
+ */
+export const HEIGHT_BANDS: ReadonlyArray<readonly [number, number, number]> = [
+  [0.7, 20, 60],
+  [0.9, 60, 120],
+  [0.98, 120, 190],
+  [1.0, 190, 240],
+];
 
 // --- Tiered setbacks (V2) ---
 // Buildings are 1–3 stacked, centered tiers; tier 1 keeps the full footprint
@@ -113,16 +156,45 @@ export const CHASE_HEIGHT = 6;
 export const CAMERA_RESPONSE = 3.5;
 
 // --- Networking rates ---
-/** Client → server input/state rate, Hz. */
+/** Client → server input/state rate, Hz. Unchanged by ANGE-4KO2W2: one
+ * plane's pose is already cheap, and raising it would not shorten the interp
+ * buffer (that floor is set by the DOWN rate). */
 export const TICK_UP_HZ = 20;
-/** Server → client snapshot rate, Hz. */
-export const TICK_DOWN_HZ = 15;
+/** Server → client snapshot rate, Hz. Raised 15 → 20 (ANGE-4KO2W2) and paid
+ * for by snapshot quantisation (common/src/net.ts): the wire got ~2.6x
+ * cheaper per snapshot, so a 33% faster cadence still costs far less than
+ * before. This is the number that sets the interpolation floor. */
+export const TICK_DOWN_HZ = 20;
+/** One snapshot interval, ms — the hard floor on interpolation delay, because
+ * below it there is frequently no future sample to lerp toward. */
+export const SNAPSHOT_INTERVAL_MS = 1000 / TICK_DOWN_HZ;
 
 // --- Multiplayer presence (T3) ---
 /** Shared city seed — every room generates the same city for now. */
 export const CITY_SEED = 42;
-/** Remote planes render this far behind estimated server time, ms. */
-export const INTERP_DELAY_MS = 100;
+
+// --- Interpolation delay (ANGE-4KO2W2) --- the fixed INTERP_DELAY_MS is gone:
+// the client now holds the smallest SAFE buffer for its own measured snapshot
+// jitter (common/src/net.ts owns the pure math, client/src/net/delay.ts the
+// state). A LAN player gets the floor; bad wifi grows its own buffer instead
+// of everyone paying for the worst case.
+/** Safety margin on top of one snapshot interval, ms — covers the sub-tick
+ * phase between a snapshot's arrival and the frame that samples it. */
+export const INTERP_MARGIN_MS = 8;
+/** Smallest interpolation delay any client may use, ms (58 ms at 20 Hz). */
+export const INTERP_FLOOR_MS = SNAPSHOT_INTERVAL_MS + INTERP_MARGIN_MS;
+/** Measured jitter is multiplied by this before being added to the floor —
+ * ~2 sigma of headroom, so an ordinary wobble never empties the buffer. */
+export const INTERP_JITTER_FACTOR = 2;
+/** Ceiling on the adaptive delay, ms. Past this the connection is beyond
+ * saving and a longer buffer only adds lag. Also the widest hit-claim slack
+ * the server will honour. */
+export const INTERP_DELAY_MAX_MS = 250;
+/** Per-snapshot decay of the jitter estimate. Jitter attacks INSTANTLY (the
+ * buffer grows before remotes stutter) and only decays at this rate, which is
+ * what makes the controller grow faster than it shrinks — and what stops it
+ * oscillating on alternating jitter. ~1.7 s half-life at 20 Hz. */
+export const INTERP_JITTER_DECAY = 0.02;
 /** Server accepts claimed speeds up to MAX_SPEED × this factor. */
 export const SPEED_TOLERANCE = 1.1;
 /** Slack added to the per-update displacement bound, meters (network jitter). */
@@ -190,14 +262,24 @@ export const MAGNETISM_MAX_DEG_PER_S = 2;
 export const SMOKE_HP_FRAC = 0.3;
 
 // --- Server-side combat validation ---
-/** Meters of slack on top of BULLET_RANGE for hit claims: interpolation delay
- * plus bullet flight time let both planes move before the claim arrives. */
-export const HIT_RANGE_SLACK = 200;
-/** A claim's bulletOrigin must be within this of the shooter's on-record pose, meters. */
+// Hit-claim range slack is DERIVED, not a constant: see hitRangeSlackFor() in
+// common/src/net.ts. It exists to absorb the distance both planes cover during
+// the shooter's interpolation delay plus the bullet's flight time, and the
+// delay is adaptive now — a hardcoded 200 m beside a variable would drift into
+// rejecting legitimate hits (too tight) or widening the shooter-favoured
+// window (too loose).
+/** A claim's bulletOrigin must be within this of the shooter's on-record pose,
+ * meters. Independent of the snapshot cadence: it bounds how stale the
+ * SHOOTER's own pose can be, which is a TICK_UP_HZ question (unchanged), not
+ * an interpolation one — the shooter's plane is never interpolated. */
 export const HIT_ORIGIN_SLACK = 50;
-/** Fire-rate token bucket burst: shots that may arrive batched by network jitter. */
+/** Fire-rate token bucket burst: shots that may arrive batched by network
+ * jitter. Fire messages are sent the instant the trigger breaks, never batched
+ * into the snapshot tick, so this is unaffected by TICK_DOWN_HZ. */
 export const FIRE_BURST_SLACK = 5;
-/** Server heat tolerance above OVERHEAT_AT before shots are rejected (clock jitter). */
+/** Server heat tolerance above OVERHEAT_AT before shots are rejected (clock
+ * jitter). The heat model is wall-clock driven on both sides — no tick
+ * cadence enters it — so this is unaffected by TICK_DOWN_HZ. */
 export const HEAT_VALIDATION_SLACK = 0.1;
 
 // --- Death, respawn, regen (all server-owned) ---
@@ -240,8 +322,10 @@ export const BOT_AIM_JITTER = 0.05;
 export const BOT_REACTION_MS = 400;
 /** Bot steering-input cap (players reach 1.0): bots turn slightly worse. */
 export const BOT_INPUT_CAP = 0.85;
-/** Brain decision cadence: every Nth sim tick (15 Hz / 3 ≈ 5 Hz). */
-export const BOT_DECISION_EVERY = 3;
+/** Brain decision cadence: every Nth sim tick (20 Hz / 4 = 5 Hz). Tracks
+ * TICK_DOWN_HZ deliberately — bots fly at snapshot cadence, and ANGE-4KO2W2's
+ * faster tick must not silently sharpen their reflexes. */
+export const BOT_DECISION_EVERY = 4;
 /** HIGH patrol waypoint altitude band, m — above every rooftop (250 m
  * landmarks), below the soft ceiling. */
 export const BOT_PATROL_ALT_MIN = 270;
@@ -251,11 +335,11 @@ export const BOT_PATROL_ALT_MAX = 460;
  * never ENGAGE, so a chase drags bots through both layers. */
 export const BOT_CANYON_SHARE = 0.6;
 /** Canyon patrol band, m. The floor sits clear of BOT_MIN_ALT; the ceiling is
- * well under the ~73 m median building, so a bot in this band is threading the
- * streets rather than cruising over roofs — though the highest slots do clear
- * the shortest (BUILDING_MIN_HEIGHT) buildings, and a corner hop lifts it
- * further still. The spread staggers bots vertically instead of flying them in
- * a conga line. */
+ * under the 79 m upper quartile of C1's skyline (median 49 m), so a bot in
+ * this band is threading the streets rather than cruising over roofs — though
+ * the highest slots do clear the shortest (BUILDING_MIN_HEIGHT) buildings, and
+ * a corner hop lifts it further still. The spread staggers bots vertically
+ * instead of flying them in a conga line. */
 export const BOT_CANYON_ALT_MIN = 25;
 export const BOT_CANYON_ALT_MAX = 70;
 /** A canyon patrol waypoint counts as reached inside this torus range, m.
@@ -287,13 +371,23 @@ export const BOT_THREAT_RANGE = 150;
 export const BOT_PROBE_TIMES: readonly number[] = [0.3, 0.8, 1.6, 2.6];
 /** Probe sphere radius, m — clearance margin around the plane. */
 export const BOT_PROBE_RADIUS = 12;
-/** Below this altitude a bot probes with the CANYON profile, m — under the
- * landmark tops, so anything flying among the towers gets it, including a
- * high patroller diving into a chase. */
-export const BOT_CANYON_PROBE_ALT = 200;
-/** Canyon probe radius, m. The wide probe leaves only 3.5 m of tracking slack
- * against the tightest facade setback, so a 2° heading error trips it on 22%
- * of ticks; this radius restores real tolerance inside a street. */
+/** Below this altitude a bot probes with the CANYON profile, m. It sits just
+ * over the canyon band ceiling plus a corner hop (BOT_CANYON_ALT_MAX +
+ * BOT_CANYON_HOP = 100), so a bot actually threading a street keeps the short
+ * profile all the way through a hopped corner — and everything above the
+ * streetwall roofline gets the long one. C1's dense city is what pins it
+ * here: the short profile's 0.9 s horizon is deliberately blind past the
+ * cross-street facade, which is right inside a canyon and wrong among the
+ * towers, where 646 buildings now fill the mid-altitude air that 97
+ * free-standing ones left empty. Measured over 3 rooms x 11 bots x 200 s,
+ * terrain's share of bot deaths: 53.8% at 200 m, 36.6% at 160, 20.7% here. */
+export const BOT_CANYON_PROBE_ALT = 110;
+/** Canyon probe radius, m. C1's streetwall makes the corridor uniform:
+ * buildings stand on LOT_LINE, so a street centerline has exactly 20 m of
+ * clearance to the facades on either side, everywhere, at every altitude
+ * below the roofline (measured over all 40 street lanes). The wide
+ * BOT_PROBE_RADIUS would leave 8 m of tracking slack in that 40 m corridor;
+ * this one leaves 15. */
 export const BOT_CANYON_PROBE_RADIUS = 5;
 /** Canyon probe lookahead, s. The decisive knob: flying a real 90° turn that
  * hits nothing, the high profile reports BLOCKED on 76% of ticks (and still

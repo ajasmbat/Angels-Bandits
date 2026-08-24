@@ -6,7 +6,9 @@
 // The sim is the SHARED flight model: every bot holds a FlightState advanced
 // with stepFlight at snapshot cadence (dt = 1/TICK_DOWN_HZ), so a bot can
 // never out-fly the envelope players have — its brain only chooses inputs.
-// The 4-state brain decides every BOT_DECISION_EVERY-th tick (~5 Hz):
+// The 4-state brain decides every BOT_DECISION_EVERY-th tick (5 Hz — the
+// constant tracks TICK_DOWN_HZ so a faster snapshot cadence does not silently
+// sharpen bot reflexes):
 //
 //   PATROL  — seeded waypoint wander in the mid-altitude band.
 //   ENGAGE  — lead pursuit of the nearest contact in BOT_DETECT_RANGE; all
@@ -27,6 +29,8 @@ import {
   nextIntersection,
 } from "@angels-bandits/common/city/street";
 import {
+  type CityIndex,
+  buildCityIndex,
   collideCity,
   hitsGround,
   losClear,
@@ -206,7 +210,15 @@ export class RoomBots {
     private readonly buildings: readonly Building[],
   ) {
     this.rand = mulberry32(seed);
+    // Built once per room over the shared city array. Bots are the heaviest
+    // collision consumer in the game (a physics probe per bot per tick plus
+    // four nose probes per brain decision, all bots deciding on the same
+    // tick), so the block index is what keeps that off the 15 Hz budget.
+    this.cityIndex = buildCityIndex(buildings);
   }
+
+  /** Block index over `buildings` — see collideCity's optional 4th argument. */
+  private readonly cityIndex: CityIndex;
 
   get count(): number {
     return this.bots.size;
@@ -401,7 +413,12 @@ export class RoomBots {
       // Identical geometry to players: tier boxes + ground, PLAYER_RADIUS.
       if (
         hitsGround(bot.flight.pos) ||
-        collideCity(bot.flight.pos, PLAYER_RADIUS, this.buildings)
+        collideCity(
+          bot.flight.pos,
+          PLAYER_RADIUS,
+          this.buildings,
+          this.cityIndex,
+        )
       ) {
         bot.alive = false;
         crashes.push(bot.entry.id);
@@ -812,7 +829,7 @@ export class RoomBots {
         z: flight.pos.z + dz * s,
       });
       if (p.y - radius <= 0) return true;
-      if (collideCity(p, radius, this.buildings)) return true;
+      if (collideCity(p, radius, this.buildings, this.cityIndex)) return true;
     }
     return false;
   }

@@ -1,5 +1,6 @@
-// Snapshot interpolation buffer — remote planes render INTERP_DELAY_MS behind
-// server time by sampling between the two snapshots that straddle the render
+// Snapshot interpolation buffer — remote planes render the client's adaptive
+// interpolation delay behind server time (ANGE-4KO2W2: net/delay.ts owns that
+// number) by sampling between the two snapshots that straddle the render
 // time: wrapLerp for positions (seam crossings glide — PLAN.md non-negotiable),
 // slerp for attitude, plain lerp for speed. Pure and renderer-free: the frame
 // loop feeds it a render time; it never looks at a clock itself.

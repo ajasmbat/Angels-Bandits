@@ -10,19 +10,31 @@
 // client/src/game/phrases.ts, the test hands over the real module.
 
 /**
- * The Piper voice the committed bundle is rendered with. Three places must
- * agree and the seam test enforces it: this constant, MODEL= in
- * gen-radio-voices.sh (which downloads it), and the licence record in
- * client/assets/radio/CREDITS.md.
+ * The Piper voice the committed bundle is rendered with — the single place
+ * it is named. gen-radio-voices.sh reads it from here to download the
+ * model; the seam test additionally holds the licence record in
+ * client/assets/radio/CREDITS.md to it, since that one is prose a human
+ * maintains and cannot be derived.
+ *
+ * Chosen by ear over an audition of five candidates against the reference
+ * recordings in tools/radio-reference/ (ticket ANGE-N0UOVH): the
+ * en_US-joe-medium bank it replaces was reported as audibly robotic.
+ * LibriTTS is trained on audiobook reading rather than prompted studio
+ * lines, which is what buys the conversational delivery.
  */
-export const VOICE_MODEL = "en_US-joe-medium";
+export const VOICE_MODEL = "en_US-libritts-high";
 
 /**
  * Speaker id for a multi-speaker model, or null for a single-speaker one.
  * Passing -s to a single-speaker voice errors; omitting it on a
  * multi-speaker voice silently renders everything as speaker 0.
+ *
+ * LibriTTS carries 904 speakers, so the voice is a choice rather than a
+ * given. Candidates were narrowed by measuring the fundamental frequency
+ * of a test render per speaker and keeping the male band; 90 is the
+ * deepest of those (~107 Hz) and was picked from the audition.
  */
-export const VOICE_SPEAKER = null;
+export const VOICE_SPEAKER = 90;
 
 /** Wire callsigns carry digits; Piper reads them as words. */
 const NUMBER_WORD = [

@@ -84,12 +84,16 @@ describe("voiceLines: the bank expanded into renderable lines", () => {
 });
 
 describe("VOICE_MODEL: one model name, three places, no drift", () => {
-  it("is the model the one-shot script downloads", () => {
+  it("is the model the one-shot script downloads — derived, never retyped", () => {
+    // The shell wrapper downloads the voice before handing off to node, so
+    // it needs the name too. It must READ it from this module rather than
+    // carry its own copy: a second literal is a second thing to forget.
     const sh = readFileSync(
       join(repoRoot, "tools/gen-radio-voices.sh"),
       "utf8",
     );
-    expect(sh).toMatch(new RegExp(`^MODEL=${VOICE_MODEL}$`, "m"));
+    expect(sh).toContain("radio-bank.mjs");
+    expect(sh).not.toMatch(/MODEL=["']?en_[A-Z]{2}-/);
   });
 
   it("is the model the shipped licence record documents", () => {

@@ -6,13 +6,34 @@ speech, no recorded human actor ships in the bundle.
 - **TTS engine**: [Piper](https://github.com/OHF-Voice/piper1-gpl)
   (`piper-tts` 1.7.0, GPL-3.0). Build-time tool only — no Piper code or
   weights ship with the game; only its rendered audio does.
-- **Voice model**: `en_US-joe-medium` from
+- **Voice model**: `en_US-libritts-high`, **speaker 90**, from
   [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices)
-  (`en/en_US/joe/medium`). Model card lists its training dataset
-  ("joe", https://github.com/OHF-Voice/voice-datasets) as **CC0**.
+  (`en/en_US/libritts/high`). Model card lists its training dataset
+  ([LibriTTS](http://www.openslr.org/60/) train-clean-360) as
+  **CC BY 4.0** — no commercial restriction. LibriTTS carries 904
+  speakers; the speaker id is part of the credit because it selects the
+  voice. It is set alongside the model in `tools/radio-bank.mjs`, which is
+  the single place either is named.
 - **Radio processing**: ffmpeg chain (bandpass, compression, soft clip,
   seeded noise bed, squelch framing) — parameters in
   `tools/gen-radio-voices.mjs`, calibrated by ear against
   `tools/radio-reference/*.mp3` (Pixabay, applehillstudios; Pixabay Content
   License). The reference recordings are a calibration target only and are
   **not** bundled into the game or reused in any rendered line.
+
+## Voices auditioned and not chosen
+
+Kept as a record so the next model swap does not re-tread this (ticket
+ANGE-N0UOVH). All were rendered through the identical chain and judged by
+ear against the reference recordings.
+
+| Model | Dataset licence | Why not |
+| --- | --- | --- |
+| `en_US-joe-medium` | CC0 | The bank this replaces — reported as audibly robotic. |
+| `en_US-ryan-high` | CC BY-NC-SA 4.0 | **Non-commercial** dataset (RyanSpeech). |
+| `en_US-hfc_male-medium` | CC BY-NC-SA 4.0 | **Non-commercial** dataset (Hi-Fi Captain). |
+| `en_GB-northern_english_male-medium` | CC BY-SA 4.0 | Licence fine; not the voice picked. |
+
+The two `-NC-` entries are recorded deliberately: they are usable in a free
+build and a licensing problem the day this game takes money, so neither
+should be reached for without that trade being made again on purpose.

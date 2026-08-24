@@ -13,6 +13,7 @@ export class FlightInputSource {
   private mouseY = 0; // -1..1 of half-viewport, +down
   private lookDx = 0; // px of mouse motion since the last takeLookDelta
   private lookDy = 0;
+  private aim = false; // right button held: the aim-zoom command (ANGE-G9CPCV)
   private readonly keys = new Set<string>();
 
   constructor(target: Window = window) {
@@ -29,12 +30,32 @@ export class FlightInputSource {
     target.addEventListener("keyup", (e: KeyboardEvent) =>
       this.keys.delete(e.code),
     );
-    target.addEventListener("blur", () => this.keys.clear());
+    // Button 2 is the aim zoom; button 0 stays the guns' trigger (guns.ts).
+    target.addEventListener("mousedown", (e: MouseEvent) => {
+      if (e.button === 2) this.aim = true;
+    });
+    target.addEventListener("mouseup", (e: MouseEvent) => {
+      if (e.button === 2) this.aim = false;
+    });
+    // Without this the browser menu eats the hold and steals focus mid-zoom.
+    target.addEventListener("contextmenu", (e: Event) => e.preventDefault());
+    // A right mouseup delivered outside the window never arrives — the same
+    // bug guns.ts already learned. Drop the button as well as the keys.
+    target.addEventListener("blur", () => {
+      this.keys.clear();
+      this.aim = false;
+    });
   }
 
   /** Whether the free-look key is held (key-held state — no repeat events). */
   freeLookHeld(): boolean {
     return this.keys.has(FREELOOK_KEY);
+  }
+
+  /** Whether the right button is held — the raw aim-zoom command, before the
+   * free-look exclusivity rule in zoom.ts decides whether it counts. */
+  aimHeld(): boolean {
+    return this.aim;
   }
 
   /** Mouse motion (px) accumulated since the last call; drains the buffer.

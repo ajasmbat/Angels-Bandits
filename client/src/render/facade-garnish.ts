@@ -10,7 +10,7 @@
 
 import { type Building, mulberry32 } from "@angels-bandits/common/city";
 import {
-  ROADWAY_HALF,
+  facadeClearances,
   nearestStreet,
 } from "@angels-bandits/common/city/street";
 import { BLOCK_PITCH } from "@angels-bandits/common/constants";
@@ -117,8 +117,13 @@ function canopyFor(b: Building): Canopy | null {
   const facadeHalf = onX ? b.width / 2 : b.depth / 2;
   const faceLength = onX ? b.depth : b.width;
   const dir = -street.side;
-  // S2 sidewalk depth: facade to curb along the protrusion axis.
-  const clearance = (BLOCK_PITCH - facadeHalf * 2) / 2 - ROADWAY_HALF;
+  const plane = (onX ? b.x : b.z) + dir * facadeHalf;
+  // Sidewalk depth in front of THIS facade, from the street contract. Since
+  // C1 a lot is not centered in its block, the facade nearest a street is
+  // often a party wall with no sidewalk at all — an awning there would hang
+  // inside the neighbouring building.
+  const side = `${onX ? "x" : "z"}${dir < 0 ? 0 : 1}` as const;
+  const clearance = facadeClearances(b.x, b.z, b.width, b.depth)[side];
   if (clearance < MIN_CLEARANCE) return null;
   const depth = Math.min(CANOPY_MAX_DEPTH, clearance - 0.3);
 
@@ -133,7 +138,6 @@ function canopyFor(b: Building): Canopy | null {
   );
   const offset = (rand() * 2 - 1) * Math.max(0, faceLength / 2 - CANOPY_WIDTH);
 
-  const plane = (onX ? b.x : b.z) + dir * facadeHalf;
   const center = plane + (dir * depth) / 2;
   return {
     x: onX ? center : b.x + offset,

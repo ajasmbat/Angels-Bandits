@@ -6,7 +6,11 @@
 // math (the pure seam below); the canvas painting is a thin adapter.
 
 import type { Building } from "@angels-bandits/common/city";
-import { LANDMARK_HEIGHT, WORLD_SIZE } from "@angels-bandits/common/constants";
+import {
+  BUILDING_MAX_HEIGHT,
+  LANDMARK_HEIGHT,
+  WORLD_SIZE,
+} from "@angels-bandits/common/constants";
 import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
 
 const mod = (v: number, m: number): number => ((v % m) + m) % m;
@@ -74,7 +78,9 @@ function renderCityTile(
     if (b.height >= LANDMARK_HEIGHT) {
       ctx.fillStyle = "#3fb8c9"; // landmark accent — same read as the 3D city
     } else {
-      const shade = 30 + Math.round((b.height / 180) * 45);
+      // Height ramp over the real building range (C1 raised the ceiling;
+      // this used to hardcode the old 180 m maximum and clipped flat).
+      const shade = 30 + Math.round((b.height / BUILDING_MAX_HEIGHT) * 45);
       ctx.fillStyle = `rgb(${shade - 6}, ${shade - 4}, ${shade + 14})`;
     }
     ctx.fillRect(

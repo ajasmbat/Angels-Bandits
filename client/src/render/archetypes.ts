@@ -25,8 +25,12 @@ const GLASS_MIN_HEIGHT = 120;
 const GLASS_MIN_ASPECT = 1.4;
 /** MASONRY under this height (and wide) — low brick/stone mid-rises. */
 const MASONRY_MAX_HEIGHT = 70;
-/** MASONRY needs a footprint at least this wide on its longest side. */
-const MASONRY_MIN_SIDE = 120;
+/** MASONRY needs a footprint at least this wide on its longest side —
+ * "low and wide" is relative to the lot scale, so this tracks it. C1's BSP
+ * lots have a median longest side of ~78 m (they used to be 100–170 m
+ * free-standing blocks); at the old 120 m threshold masonry all but vanished
+ * and four buildings in five came out OFFICE. */
+const MASONRY_MIN_SIDE = 80;
 
 /**
  * Classify one building. Deterministic and total: landmarks and supertalls

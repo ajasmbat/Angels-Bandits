@@ -6,6 +6,7 @@
 import { generateCity } from "@angels-bandits/common/city";
 import { collideCity, hitsGround } from "@angels-bandits/common/collision";
 import {
+  BOT_DECISION_EVERY,
   BOT_REACTION_MS,
   CITY_SEED,
   CLOUD_BASE,
@@ -13,6 +14,7 @@ import {
   MAX_HP,
   PLAYER_RADIUS,
   RESPAWN_SPEED,
+  SNAPSHOT_INTERVAL_MS,
 } from "@angels-bandits/common/constants";
 import { flightForward } from "@angels-bandits/common/flight";
 import type { SpawnState } from "@angels-bandits/common/protocol";
@@ -90,7 +92,8 @@ describe("RoomBots population sync", () => {
           return { id, ...self, prot: false };
         })
         .concat([human]);
-    for (let i = 0; i < 3; i++) bots.tick(i, contacts());
+    // One brain decision is enough to acquire and engage.
+    for (let i = 0; i < BOT_DECISION_EVERY; i++) bots.tick(i, contacts());
     expect(bots.stateOf(engager.id)).toBe("ENGAGE");
     expect(bots.stateOf(idler.id)).toBe("PATROL");
 
@@ -117,8 +120,8 @@ describe("RoomBots population sync", () => {
       return [{ id: entry.id, ...self, prot: false }, target];
     };
 
-    // One decision (every 3rd tick) is enough to acquire and engage.
-    for (let i = 0; i < 3; i++) bots.tick(i, contacts());
+    // One decision (every BOT_DECISION_EVERY-th tick) acquires and engages.
+    for (let i = 0; i < BOT_DECISION_EVERY; i++) bots.tick(i, contacts());
     expect(bots.stateOf(entry.id)).toBe("ENGAGE");
     expect(bots.targetOf(entry.id)).toBe(target.id);
 
@@ -126,7 +129,7 @@ describe("RoomBots population sync", () => {
     // toward NEGATIVE x (the short way), never the +x trek across the map.
     let crossed = false;
     for (let i = 3; i < 45; i++) {
-      bots.tick(i * (1000 / 15), contacts());
+      bots.tick(i * SNAPSHOT_INTERVAL_MS, contacts());
       const flight = bots.flightOf(entry.id);
       if (!flight) throw new Error("bot vanished");
       expect(flight.pos.x < 500 || flight.pos.x > 1500).toBe(true);
@@ -148,7 +151,7 @@ describe("RoomBots population sync", () => {
     ).spawned;
     let sawRecover = false;
     for (let i = 1; i <= 900; i++) {
-      const result = bots.tick(i * (1000 / 15), []);
+      const result = bots.tick(i * SNAPSHOT_INTERVAL_MS, []);
       expect(result.crashes).toEqual([]);
       const flight = bots.flightOf(entry.id);
       if (!flight) throw new Error("bot vanished");
@@ -166,7 +169,8 @@ describe("RoomBots population sync", () => {
     let engaged = false;
     // The worst case for the ceiling: an unprotected bait that is ALWAYS
     // 250 m ahead of the bot's nose and parked above the cloud deck at
-    // 700 m, so pursuit wants to climb forever. 1800 ticks = 120 s at 15 Hz.
+    // 700 m, so pursuit wants to climb forever. 1800 ticks is well over a
+    // minute of flight at the snapshot cadence bots are simulated on.
     for (let i = 1; i <= 1800; i++) {
       const flight = bots.flightOf(entry.id);
       if (!flight) throw new Error("bot vanished");
@@ -181,7 +185,7 @@ describe("RoomBots population sync", () => {
         vel: { x: 0, y: 0, z: 0 },
         prot: false,
       };
-      bots.tick(i * (1000 / 15), [bait]);
+      bots.tick(i * SNAPSHOT_INTERVAL_MS, [bait]);
       const after = bots.flightOf(entry.id);
       if (!after) throw new Error("bot vanished");
       // The hidden storm rule must be unreachable for a bot — it may brush
@@ -241,18 +245,20 @@ describe("applyBotFire — bots use human combat rules", () => {
     expect(accepted).toBe(43);
   });
 
-  it("respects the fire-rate token bucket at bot tick cadence (~15 Hz attempts)", () => {
+  it("respects the fire-rate token bucket at bot tick cadence", () => {
     const combat = new Combat();
     combat.addPlayer(BOT_ID, 0);
     let accepted = 0;
-    // 45 attempts over 3 s: the bucket caps sustained fire at 10/s
-    // (FIRE_INTERVAL_MS) plus the FIRE_BURST_SLACK burst of 5.
-    for (let k = 0; k < 45; k++) {
+    // 3 s of attempts, one per snapshot tick: the bucket caps sustained fire
+    // at 10/s (FIRE_INTERVAL_MS) plus the FIRE_BURST_SLACK burst of 5,
+    // whatever cadence the bots are actually simulated at.
+    const attempts = Math.round(3000 / SNAPSHOT_INTERVAL_MS);
+    for (let k = 0; k < attempts; k++) {
       const { accepted: ok } = applyBotFire(
         combat,
         deadOn(k),
         null,
-        (k * 1000) / 15,
+        k * SNAPSHOT_INTERVAL_MS,
       );
       if (ok) accepted++;
     }
@@ -349,7 +355,7 @@ describe("applyBotFire — bots use human combat rules", () => {
     const shotTimes: number[] = [];
     let acquiredAt: number | null = null;
     for (let i = 1; i <= 15; i++) {
-      const now = i * (1000 / 15);
+      const now = i * SNAPSHOT_INTERVAL_MS;
       const self = bots.contactOf(entry.id);
       if (!self) throw new Error("bot vanished");
       const r = bots.tick(now, [

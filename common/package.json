@@ -13,6 +13,7 @@
     "./city": "./src/city/index.ts",
     "./storm": "./src/storm.ts",
     "./city/street": "./src/city/street.ts",
-    "./protocol": "./src/protocol.ts"
+    "./protocol": "./src/protocol.ts",
+    "./net": "./src/net.ts"
   }
 }

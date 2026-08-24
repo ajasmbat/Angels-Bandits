@@ -106,21 +106,27 @@ const shoot = (
 
 describe("hit claim validation", () => {
   it("accepts a claim at range-plus-slack and rejects one beyond it (torus-aware)", () => {
-    // BULLET_RANGE 350 + HIT_RANGE_SLACK 200 = 550 m budget. Across the seam:
-    // shooter x=1900, target x=449 → shortest distance 100 + 449 = 549. A
-    // target at x=452 is 552 away — over budget even though the raw
-    // difference (1448) is meaningless on the torus.
+    // The slack is DERIVED from the shooter's interpolation delay
+    // (ANGE-4KO2W2). A claim that declares nothing is judged at the FLOOR —
+    // the tightest budget — so, worked from the spec constants:
+    //   closing speed = 2 × MAX_SPEED 90 × SPEED_TOLERANCE 1.1  = 198 m/s
+    //   window = INTERP_FLOOR_MS 58 ms + BULLET_LIFETIME_S 0.875 = 0.933 s
+    //   slack  = 198 × 0.933                                     = 184.73 m
+    //   budget = BULLET_RANGE 350 + 184.73                       = 534.73 m
+    // Across the seam: shooter x=1900, target x=434 → shortest distance
+    // 100 + 434 = 534. A target at x=436 is 536 away — over budget even
+    // though the raw difference (1464) is meaningless on the torus.
     const combat = arena(2);
     const shooterPos = { x: 1900, y: 300, z: 100 };
     const okRes = shoot(combat, "p0", "p1", 0, T, shooterPos, {
-      x: 449,
+      x: 434,
       y: 300,
       z: 100,
     });
     expect(okRes.ok).toBe(true);
 
     const farRes = shoot(combat, "p0", "p1", 1, T + 200, shooterPos, {
-      x: 452,
+      x: 436,
       y: 300,
       z: 100,
     });

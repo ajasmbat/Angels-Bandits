@@ -19,13 +19,12 @@ import {
 import {
   BULLET_DAMAGE,
   BULLET_LIFETIME_S,
-  BULLET_RANGE,
   DAMAGE_MEMORY_MS,
   FIRE_BURST_SLACK,
   FIRE_INTERVAL_MS,
   HEAT_VALIDATION_SLACK,
   HIT_ORIGIN_SLACK,
-  HIT_RANGE_SLACK,
+  INTERP_FLOOR_MS,
   KILL_CAM_MS,
   MAX_HP,
   OVERHEAT_AT,
@@ -33,6 +32,7 @@ import {
   REGEN_RATE,
   SPAWN_PROTECTION_MS,
 } from "@angels-bandits/common/constants";
+import { hitRangeBudgetFor } from "@angels-bandits/common/net";
 import type { ScoreEntry } from "@angels-bandits/common/protocol";
 import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 
@@ -172,6 +172,13 @@ export class Combat {
   /**
    * Judge a shooter-side hit claim. Positions are the ON-RECORD poses from
    * pose validation, never interpolated ghosts (PLAN.md decision).
+   *
+   * `interpDelayMs` is the buffer the SHOOTER was holding when it made the
+   * claim (ANGE-4KO2W2). The range budget is derived from it rather than
+   * fixed, because that delay is exactly the window during which the target
+   * image the shooter aimed at went stale. It is clamped to the legal range
+   * on the way in, and an omitted value reads as the floor — the tightest
+   * budget — so the default can only ever be stricter than a declared one.
    */
   hit(
     shooterId: string,
@@ -181,6 +188,7 @@ export class Combat {
     shooterPos: Vec3,
     targetPos: Vec3,
     now: number,
+    interpDelayMs: number = INTERP_FLOOR_MS,
   ): HitResult {
     const shooter = this.players.get(shooterId);
     const target = this.players.get(targetId);
@@ -200,7 +208,9 @@ export class Combat {
     if (wrapDistance(bulletOrigin, shooterPos) > HIT_ORIGIN_SLACK) {
       return { ok: false, reason: "origin" };
     }
-    if (wrapDistance(shooterPos, targetPos) > BULLET_RANGE + HIT_RANGE_SLACK) {
+    if (
+      wrapDistance(shooterPos, targetPos) > hitRangeBudgetFor(interpDelayMs)
+    ) {
       return { ok: false, reason: "range" };
     }
 

@@ -3,6 +3,10 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./net/delay": "./src/net/delay.ts",
+    "./net/interp": "./src/net/interp.ts"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",

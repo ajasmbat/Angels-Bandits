@@ -14,7 +14,7 @@ import {
   PLAZA_BLOCKS,
   mulberry32,
 } from "@angels-bandits/common/city";
-import { ROADWAY_HALF } from "@angels-bandits/common/city/street";
+import { facadeClearances } from "@angels-bandits/common/city/street";
 import {
   BLOCK_PITCH,
   EMISSIVE_SIGN,
@@ -200,17 +200,24 @@ function tierOneFaces(b: Building): Face[] {
   const t1 = b.tiers[0];
   if (!t1) return [];
   const faces: Face[] = [];
+  // Per FACE, from the street contract. This used to be one per-building
+  // number, (BLOCK_PITCH − perp) / 2 − ROADWAY_HALF, which assumed a single
+  // building centered in its block. Since C1 subdivides blocks into lots that
+  // build out to the lot line that estimate is wrong in both directions: it
+  // invents a sidewalk in front of party walls, and it over-measured the real
+  // one badly enough to put spill pools in the roadway.
+  const clearances = facadeClearances(b.x, b.z, t1.width, t1.depth);
   for (const axis of ["x", "z"] as const) {
     const perp = axis === "x" ? t1.width : t1.depth;
     const length = axis === "x" ? t1.depth : t1.width;
-    const clearance = (BLOCK_PITCH - perp) / 2 - ROADWAY_HALF;
     for (const dir of [-1, 1] as const) {
+      const side = `${axis}${dir < 0 ? 0 : 1}` as keyof typeof clearances;
       faces.push({
         axis,
         dir,
         length,
         plane: (axis === "x" ? b.x : b.z) + (dir * perp) / 2,
-        clearance,
+        clearance: clearances[side],
       });
     }
   }

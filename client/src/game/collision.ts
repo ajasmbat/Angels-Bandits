@@ -5,7 +5,11 @@
 // respawn all come back from the server (authority split).
 
 import type { Building } from "@angels-bandits/common/city";
-import { collideCity, hitsGround } from "@angels-bandits/common/collision";
+import {
+  type CityIndex,
+  collideCity,
+  hitsGround,
+} from "@angels-bandits/common/collision";
 import { PLAYER_RADIUS } from "@angels-bandits/common/constants";
 import type { FlightState } from "@angels-bandits/common/flight";
 
@@ -13,9 +17,10 @@ import type { FlightState } from "@angels-bandits/common/flight";
 export function detectCrash(
   state: FlightState,
   buildings: readonly Building[],
+  index?: CityIndex,
 ): boolean {
   return (
     hitsGround(state.pos, PLAYER_RADIUS) ||
-    collideCity(state.pos, PLAYER_RADIUS, buildings) !== null
+    collideCity(state.pos, PLAYER_RADIUS, buildings, index) !== null
   );
 }

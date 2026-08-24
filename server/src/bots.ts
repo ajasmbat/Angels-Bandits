@@ -24,7 +24,12 @@
 // model, damage, spawn protection, kill credit, and respawn as humans.
 
 import { type Building, mulberry32 } from "@angels-bandits/common/city";
-import { collideCity, hitsGround } from "@angels-bandits/common/collision";
+import {
+  type CityIndex,
+  buildCityIndex,
+  collideCity,
+  hitsGround,
+} from "@angels-bandits/common/collision";
 import {
   BOT_AIM_JITTER,
   BOT_CEILING_ALT,
@@ -152,7 +157,15 @@ export class RoomBots {
     private readonly buildings: readonly Building[],
   ) {
     this.rand = mulberry32(seed);
+    // Built once per room over the shared city array. Bots are the heaviest
+    // collision consumer in the game (a physics probe per bot per tick plus
+    // four nose probes per brain decision, all bots deciding on the same
+    // tick), so the block index is what keeps that off the 15 Hz budget.
+    this.cityIndex = buildCityIndex(buildings);
   }
+
+  /** Block index over `buildings` — see collideCity's optional 4th argument. */
+  private readonly cityIndex: CityIndex;
 
   get count(): number {
     return this.bots.size;
@@ -335,7 +348,12 @@ export class RoomBots {
       // Identical geometry to players: tier boxes + ground, PLAYER_RADIUS.
       if (
         hitsGround(bot.flight.pos) ||
-        collideCity(bot.flight.pos, PLAYER_RADIUS, this.buildings)
+        collideCity(
+          bot.flight.pos,
+          PLAYER_RADIUS,
+          this.buildings,
+          this.cityIndex,
+        )
       ) {
         bot.alive = false;
         crashes.push(bot.entry.id);
@@ -521,7 +539,7 @@ export class RoomBots {
         z: flight.pos.z + dz * s,
       });
       if (p.y - radius <= 0) return true;
-      if (collideCity(p, radius, this.buildings)) return true;
+      if (collideCity(p, radius, this.buildings, this.cityIndex)) return true;
     }
     return false;
   }

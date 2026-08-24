@@ -711,7 +711,7 @@ renderer.setAnimationLoop((now) => {
     // reaches flight state. Authority is the product of both costs.
     const steer = freelook.steer * zoomSteer(zoom.z);
     flight = stepFlight(flight, shapeInput(input.read(), { steer }), dt);
-    if (detectCrash(flight, city.cityBuildings)) {
+    if (detectCrash(flight, city.cityBuildings, city.cityIndex)) {
       // Report and freeze; the server decides credit and the respawn.
       socket.sendCrash();
       enterDeath(null);

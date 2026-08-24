@@ -11,8 +11,9 @@
     "./collision": "./src/collision.ts",
     "./combat": "./src/combat.ts",
     "./city": "./src/city/index.ts",
-    "./storm": "./src/storm.ts",
+    "./city/layout": "./src/city/layout.ts",
     "./city/street": "./src/city/street.ts",
+    "./storm": "./src/storm.ts",
     "./protocol": "./src/protocol.ts",
     "./net": "./src/net.ts"
   }

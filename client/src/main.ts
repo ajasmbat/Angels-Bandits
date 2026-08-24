@@ -50,6 +50,14 @@ import { createFreeLook, shapeInput, stepFreeLook } from "./game/freelook";
 import { Guns } from "./game/guns";
 import { bulletHitsSphere } from "./game/hitdetect";
 import { magnetizeVelocity } from "./game/magnetism";
+import {
+  BASE_FOV,
+  createZoom,
+  stepZoom,
+  zoomFov,
+  zoomHeld,
+  zoomSteer,
+} from "./game/zoom";
 import { GameSocket } from "./net/socket";
 import { CityRenderer } from "./render/city";
 import { FacadeGarnishRenderer } from "./render/facade-garnish";
@@ -83,7 +91,7 @@ import { HPBAR_ALTITUDE, HpBarSprite, HpBarTracker } from "./ui/hpbar";
 import { Hud } from "./ui/hud";
 import { requestName, showJoinError } from "./ui/join";
 import { KillFeed } from "./ui/killfeed";
-import { LeadIndicator } from "./ui/lead";
+import { LeadIndicator, SolutionTone } from "./ui/lead";
 import { EdgeMarkers } from "./ui/markers";
 import { Minimap } from "./ui/minimap";
 import { Scoreboard } from "./ui/scoreboard";
@@ -110,7 +118,7 @@ const scene = new THREE.Scene();
 setupSky(scene);
 
 const camera = new THREE.PerspectiveCamera(
-  70,
+  BASE_FOV,
   window.innerWidth / window.innerHeight,
   0.1,
   FOG_DISTANCE + 100,
@@ -228,6 +236,8 @@ const hud = new Hud();
 const minimap = new Minimap(city.cityBuildings);
 const edgeMarkers = new EdgeMarkers();
 const leadIndicator = new LeadIndicator();
+// One soft tick on ACQUIRING a firing solution, never while it holds.
+const solutionTone = new SolutionTone();
 const markerScratch = new THREE.Vector3();
 const hpBar = new HpBarTracker();
 const hpBarSprite = new HpBarSprite();
@@ -296,6 +306,8 @@ const input = new FlightInputSource();
 const chase = new ChaseCamera();
 // Hold-E free-look: pure client camera state, never streamed (B2).
 let freelook = createFreeLook();
+// Hold-right-click aim zoom: same deal — display + input shaping only.
+let zoom = createZoom();
 let flight: FlightState = createFlightState(
   welcome.spawn.pos,
   welcome.spawn.yaw,
@@ -329,8 +341,9 @@ function flashFade(): void {
 
 /** Freeze into the kill-cam; the server's respawn message ends it. */
 function enterDeath(killerId: string | null, cause?: "storm"): void {
-  // Kill-cam owns the camera — force-exit free-look instantly.
+  // Kill-cam owns the camera — force-exit free-look and the zoom instantly.
   freelook = createFreeLook();
+  zoom = createZoom();
   hud.setFreeLook(false);
   killCamTargetId = killerId;
   hud.showKillCam(killerId === null ? null : nameOf(killerId), cause);
@@ -531,6 +544,7 @@ declare global {
       aimAt: (x: number, z: number, y?: number) => void;
       setFiring: (held: boolean) => void;
       freelook: () => ReturnType<typeof createFreeLook>;
+      zoom: () => { held: boolean; z: number; fov: number };
       lampImage: (x: number, z: number) => { x: number; z: number } | null;
       traffic: () => ReturnType<Traffic["debug"]>;
       cityStats: () => {
@@ -604,6 +618,9 @@ window.__ab = {
   setFiring: (held) => guns.setTrigger(held),
   // B2 QA: current free-look state (drive it with real key/mouse events).
   freelook: () => freelook,
+  // ANGE-G9CPCV QA: aim-zoom state plus the FOV it is actually driving
+  // (drive it with real button-2 mouse events).
+  zoom: () => ({ held: zoom.held, z: zoom.z, fov: camera.fov }),
   // Seam QA: where the lamp nearest canonical (x, z) is drawn right now.
   lampImage: (x, z) => streetlights.imageOf(x, z),
   // Traffic QA: canonical poses of the first cars at the current synced time —
@@ -661,6 +678,10 @@ renderer.setAnimationLoop((now) => {
   // right, mouse-up looks up (both hand-tuned with LOOK_SENSITIVITY).
   const lookDelta = input.takeLookDelta();
   planeLights.begin(); // own + remote lights re-append every frame
+  // Step the zoom OUTSIDE the alive gate: chase.update() only runs while
+  // alive, so a death mid-zoom would otherwise freeze the FOV narrowed for
+  // the whole kill-cam. Dying eases it back out instead.
+  zoom = stepZoom(zoom, alive && zoomHeld(input.aimHeld(), freelook.held), dt);
   if (alive) {
     freelook = stepFreeLook(
       freelook,
@@ -670,7 +691,12 @@ renderer.setAnimationLoop((now) => {
       dt,
     );
     hud.setFreeLook(freelook.held);
-    flight = stepFlight(flight, shapeInput(input.read(), freelook), dt);
+    hud.setZoom(zoom.z > 0);
+    // Zoom buys its steady sight picture with turn rate, and spends it
+    // through the same input-shaping seam free-look uses — the camera never
+    // reaches flight state. Authority is the product of both costs.
+    const steer = freelook.steer * zoomSteer(zoom.z);
+    flight = stepFlight(flight, shapeInput(input.read(), { steer }), dt);
     if (detectCrash(flight, city.cityBuildings)) {
       // Report and freeze; the server decides credit and the respawn.
       socket.sendCrash();
@@ -705,7 +731,7 @@ renderer.setAnimationLoop((now) => {
     // the camera and the airframe from moving in lockstep.
     const camShake = turbulenceOffset(now, flight.pos.y);
     const planeShake = turbulenceOffset(now + 537, flight.pos.y);
-    chase.update(camera, flight, dt, freelook, camShake);
+    chase.update(camera, flight, dt, freelook, camShake, zoom.z);
     const planePos = nearestImage(chase.position, flight.pos);
     plane.position.set(
       planePos.x + planeShake.x * 0.5,
@@ -889,6 +915,16 @@ renderer.setAnimationLoop((now) => {
     alive ? Math.min(1, Math.max(0, (flight.pos.y - CLOUD_BASE) / 60)) : 0,
   );
 
+  // FOV must land BEFORE the render: the lead reticle and edge markers below
+  // read camera.projectionMatrix directly, so writing it after would project
+  // them with last frame's FOV. Guarded so a static FOV costs nothing, and
+  // aspect (the resize handler's business) is left alone.
+  const fov = zoomFov(zoom.z);
+  if (camera.fov !== fov) {
+    camera.fov = fov;
+    camera.updateProjectionMatrix();
+  }
+
   renderer.info.reset();
   composer.render();
 
@@ -899,13 +935,19 @@ renderer.setAnimationLoop((now) => {
     targets.map((t) => t.pos),
     markerScratch,
   );
-  leadIndicator.update(
+  const aimResult = leadIndicator.update(
     camera,
     chase.position,
     flight,
     alive ? targets : [], // no reticle from the kill-cam
     markerScratch,
   );
+  // The pipper is the gun line's own vanishing point, so it only means
+  // anything while we are flying it — the kill-cam gets no aim chrome.
+  hud.setAimPoint(alive ? aimResult.aim : null);
+  if (solutionTone.shouldPlay(alive && aimResult.solution, now)) {
+    audio.solutionTick();
+  }
 
   // HUD + rolling perf counters (~2 Hz refresh).
   perf.frames++;

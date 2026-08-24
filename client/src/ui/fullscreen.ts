@@ -61,6 +61,13 @@ export function watchFullscreen(
   doc.addEventListener?.("webkitfullscreenchange", report);
 }
 
+/** The mouse-event surface the trigger swallow reads. */
+export interface SwallowableEvent {
+  /** Which button; absent in the synthetic events the tests fire. */
+  button?: number;
+  stopPropagation: () => void;
+}
+
 /** The extra document surface the button wiring needs (still mockable). */
 export interface FullscreenUiDoc extends FullscreenDoc {
   body?: { classList: { toggle: (name: string, on: boolean) => void } };
@@ -68,7 +75,7 @@ export interface FullscreenUiDoc extends FullscreenDoc {
     hidden: boolean;
     addEventListener: (
       type: string,
-      listener: (ev: { stopPropagation: () => void }) => void,
+      listener: (ev: SwallowableEvent) => void,
     ) => void;
   } | null;
 }
@@ -104,7 +111,11 @@ export function initFullscreenUi(
     for (const btn of buttons) if (btn) btn.hidden = true;
     return;
   }
-  const swallow = (ev: { stopPropagation: () => void }) => ev.stopPropagation();
+  // Button 2 is the aim zoom (ANGE-G9CPCV), which also listens on window —
+  // let it through, or resting the cursor here silently kills the zoom.
+  const swallow = (ev: SwallowableEvent) => {
+    if (ev.button !== 2) ev.stopPropagation();
+  };
   for (const btn of buttons) {
     btn?.addEventListener("click", () => toggleFullscreen(doc));
     // The gun trigger listens on window mousedown/mouseup — a click on the

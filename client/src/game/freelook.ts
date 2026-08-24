@@ -31,11 +31,9 @@ const ORBIT_ELEVATION_LIMIT = (88 * Math.PI) / 180;
 const clamp = (v: number, lo: number, hi: number): number =>
   Math.min(hi, Math.max(lo, v));
 
-export interface FreeLookState {
+export interface FreeLookState extends SteerAuthority {
   /** Whether E is currently held (edge rules key off this, not events). */
   held: boolean;
-  /** Steering authority 0..1: scales turn/pitch/roll while free-looking. */
-  steer: number;
   /** Mouse-commanded orbit angles, radians. Yaw unbounded (wraps). */
   targetYaw: number;
   targetPitch: number;
@@ -132,8 +130,15 @@ export function orbitOffset(o: Vec3, yaw: number, pitch: number): Vec3 {
 /** Axis × authority, without ever emitting IEEE −0 at full decay. */
 const scaleAxis = (v: number, k: number): number => (k === 0 ? 0 : v * k);
 
+/** Anything that can spend steering authority: free-look, the aim zoom, or
+ * their product. Kept structural so shapeInput stays the single seam. */
+export interface SteerAuthority {
+  /** Steering authority 0..1: scales turn/pitch/roll, never throttle. */
+  steer: number;
+}
+
 /** Scale the steering axes by the current authority; throttle stays live. */
-export function shapeInput(input: FlightInput, s: FreeLookState): FlightInput {
+export function shapeInput(input: FlightInput, s: SteerAuthority): FlightInput {
   return {
     turn: scaleAxis(input.turn, s.steer),
     pitch: scaleAxis(input.pitch, s.steer),

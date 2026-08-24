@@ -225,6 +225,30 @@ describe("initFullscreenUi", () => {
     expect(stopped).toBe(2); // Guns listens on window mousedown/mouseup
   });
 
+  // ANGE-G9CPCV: the aim zoom listens on window mousedown for button 2. The
+  // swallow exists to protect the TRIGGER (button 0), so it must let the right
+  // button through — otherwise resting the cursor over the fullscreen button
+  // silently kills the zoom.
+  it("lets right-click through so the aim zoom still engages over the button", () => {
+    const { doc, handlers } = uiDoc();
+    initFullscreenUi(doc);
+    let stopped = 0;
+    const right = { button: 2, stopPropagation: () => stopped++ };
+    handlers.get("fs-btn:mousedown")?.(right);
+    handlers.get("fs-btn:mouseup")?.(right);
+    expect(stopped).toBe(0);
+  });
+
+  it("still swallows the left button — that one IS the trigger", () => {
+    const { doc, handlers } = uiDoc();
+    initFullscreenUi(doc);
+    let stopped = 0;
+    const left = { button: 0, stopPropagation: () => stopped++ };
+    handlers.get("fs-btn:mousedown")?.(left);
+    handlers.get("fs-btn:mouseup")?.(left);
+    expect(stopped).toBe(2);
+  });
+
   describe("F key", () => {
     /** Window-like target recording its keydown listener. */
     function fakeWin() {

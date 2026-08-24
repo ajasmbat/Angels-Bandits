@@ -59,8 +59,12 @@ export class Hud {
       this.radioToggle.classList.toggle("off", !on);
     };
     render();
-    this.radioToggle.addEventListener("mousedown", (e) => e.stopPropagation());
-    this.radioToggle.addEventListener("mouseup", (e) => e.stopPropagation());
+    // ...except button 2, which is the aim zoom and also listens on window.
+    const swallow = (e: MouseEvent) => {
+      if (e.button !== 2) e.stopPropagation();
+    };
+    this.radioToggle.addEventListener("mousedown", swallow);
+    this.radioToggle.addEventListener("mouseup", swallow);
     this.radioToggle.addEventListener("click", (e) => {
       e.stopPropagation();
       on = !on;

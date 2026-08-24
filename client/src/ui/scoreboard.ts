@@ -91,6 +91,8 @@ export class Scoreboard {
     };
 
     cells.addEventListener("mousedown", (e: MouseEvent) => {
+      // Right-click is the aim zoom, not a grab — let it reach the window.
+      if (e.button === 2) return;
       // The gun trigger listens on window mousedown — a grab at the bar is
       // not a trigger pull (same swallow as the HUD fullscreen button).
       e.stopPropagation();

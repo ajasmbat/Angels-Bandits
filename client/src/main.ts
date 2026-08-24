@@ -544,6 +544,7 @@ declare global {
       aimAt: (x: number, z: number, y?: number) => void;
       setFiring: (held: boolean) => void;
       freelook: () => ReturnType<typeof createFreeLook>;
+      zoom: () => { held: boolean; z: number; fov: number };
       lampImage: (x: number, z: number) => { x: number; z: number } | null;
       traffic: () => ReturnType<Traffic["debug"]>;
       cityStats: () => {
@@ -617,6 +618,9 @@ window.__ab = {
   setFiring: (held) => guns.setTrigger(held),
   // B2 QA: current free-look state (drive it with real key/mouse events).
   freelook: () => freelook,
+  // ANGE-G9CPCV QA: aim-zoom state plus the FOV it is actually driving
+  // (drive it with real button-2 mouse events).
+  zoom: () => ({ held: zoom.held, z: zoom.z, fov: camera.fov }),
   // Seam QA: where the lamp nearest canonical (x, z) is drawn right now.
   lampImage: (x, z) => streetlights.imageOf(x, z),
   // Traffic QA: canonical poses of the first cars at the current synced time —

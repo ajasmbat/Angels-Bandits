@@ -7,3 +7,10 @@ tools/.cache/
 # Fredrin: commit only the guidelines file; the wrapper carries a credential
 .fredrin/*
 !.fredrin/FREDRIN.md
+
+# tools/perf working files: `last.json` is the default --out scratch, and
+# aa-comparison.html embeds every capture as base64 (the .png is committed).
+tools/perf/last.json
+tools/perf/aa-comparison.html
+# the full uncropped frame is a debugging aid; the committed pair is the crop
+tools/perf/aa-frame.png

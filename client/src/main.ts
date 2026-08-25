@@ -24,6 +24,7 @@ import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { SMAAPass } from "three/examples/jsm/postprocessing/SMAAPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { RadioQueue, RadioVoice } from "./audio/radio";
 import { GameAudio } from "./audio/sound";
@@ -63,9 +64,18 @@ import { GameSocket } from "./net/socket";
 import { CityRenderer } from "./render/city";
 import { FacadeGarnishRenderer } from "./render/facade-garnish";
 import { Explosions, Sparks } from "./render/fx";
+import { GpuTimer } from "./render/gputimer";
+import { FrameMeter, type FrameStats } from "./render/perfmeter";
 import { buildPlaneMesh, spinPropeller } from "./render/plane";
 import { PlaneLights } from "./render/planelights";
 import { RemotePlanes } from "./render/remotes";
+import { MSAA_SAMPLES, readRenderOptions } from "./render/renderopts";
+import {
+  WINDOW_FRAMES,
+  createResolution,
+  defaultLimits,
+  stepResolution,
+} from "./render/resolution";
 import { RoofClutterRenderer } from "./render/roofclutter";
 import { Signage } from "./render/signage";
 import { GroundPlane, SkyDome, setupSky } from "./render/sky";
@@ -95,6 +105,7 @@ import { KillFeed } from "./ui/killfeed";
 import { LeadIndicator, SolutionTone } from "./ui/lead";
 import { EdgeMarkers } from "./ui/markers";
 import { Minimap } from "./ui/minimap";
+import { PerfHud, bindPerfHudKey } from "./ui/perfhud";
 import { Scoreboard } from "./ui/scoreboard";
 
 // Fullscreen chrome first — the join overlay carries its own toggle button,
@@ -125,13 +136,45 @@ const camera = new THREE.PerspectiveCamera(
   FOG_DISTANCE + 100,
 );
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+// P1 render knobs. Defaults ARE what ships; the query params exist so the
+// headless perf harness can measure two AA modes and a pinned pixel ratio
+// out of one build (client/src/render/renderopts.ts).
+const renderOpts = readRenderOptions(window.location.search);
+const resLimits = defaultLimits(window.devicePixelRatio);
+let resAuto = renderOpts.pixelRatio === "auto";
+let resolution =
+  renderOpts.pixelRatio === "auto"
+    ? createResolution(window.devicePixelRatio, performance.now())
+    : {
+        ratio: renderOpts.pixelRatio,
+        changedAt: 0,
+        hotRatio: Number.POSITIVE_INFINITY,
+      };
+
+// `antialias` is a CONTEXT attribute — it antialiases the default
+// framebuffer, and with the composer in the chain the scene never touches
+// that; only OutputPass's fullscreen quad does. So it used to buy a
+// multisampled backbuffer, and its per-frame resolve, for one textured
+// quad while the city itself stayed jagged. Real scene AA now comes from
+// the composer target (msaa) or an SMAA pass (smaa); `legacy` reproduces
+// the old wiring so the harness can measure the before/after in one build.
+const renderer = new THREE.WebGLRenderer({
+  antialias: renderOpts.aa === "legacy",
+});
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setPixelRatio(resolution.ratio);
 // Filmic curve keeps the HDR emissives from clipping; the OutputPass applies
 // this + sRGB at the end of the composer chain.
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 document.body.appendChild(renderer.domElement);
+// Read once, here, while the DEFAULT framebuffer is the bound one — this is
+// the receipt for win A. `antialias: true` multisamples the default
+// framebuffer, and the scene never renders into it; QA reads this next to
+// the composer target's own sample count to see the mismatch as two numbers
+// rather than as an argument.
+const DEFAULT_FB_SAMPLES = renderer
+  .getContext()
+  .getParameter(WebGLRenderingContext.SAMPLES) as number;
 
 // --- Post pipeline: render → bloom → tonemap+sRGB (V1 night look) ---
 // The bloom threshold sits above everything lit-but-not-emissive (facades peak
@@ -141,7 +184,22 @@ document.body.appendChild(renderer.domElement);
 const BLOOM_STRENGTH = 0.42;
 const BLOOM_RADIUS = 0.3;
 const BLOOM_THRESHOLD = 0.72;
-const composer = new EffectComposer(renderer);
+// The composer owns its own render target so `msaa` can put samples on the
+// buffer the SCENE is actually drawn into. HalfFloat matches what
+// EffectComposer would have allocated on its own — the HDR emissive ladder
+// depends on it, so it is not negotiable.
+const bufferSize = renderer.getDrawingBufferSize(new THREE.Vector2());
+const composer = new EffectComposer(
+  renderer,
+  new THREE.WebGLRenderTarget(bufferSize.x, bufferSize.y, {
+    type: THREE.HalfFloatType,
+    samples: renderOpts.aa === "msaa" ? MSAA_SAMPLES : 0,
+  }),
+);
+// Passing a target makes the composer take its size from that target (in
+// drawing-buffer pixels) — hand it the CSS size once so its own
+// pixelRatio bookkeeping starts from the same place setSize() uses.
+composer.setSize(window.innerWidth, window.innerHeight);
 composer.addPass(new RenderPass(scene, camera));
 const bloomPass = new UnrealBloomPass(
   new THREE.Vector2(window.innerWidth, window.innerHeight),
@@ -151,15 +209,39 @@ const bloomPass = new UnrealBloomPass(
 );
 composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
+// SMAA goes AFTER the output pass, on purpose: its edge detection wants the
+// tonemapped, sRGB-encoded image, not linear HDR where a bloomed window
+// swamps every luma gradient near it.
+if (renderOpts.aa === "smaa") {
+  composer.addPass(new SMAAPass(bufferSize.x, bufferSize.y));
+}
 // The composer renders many passes per frame — reset the info counters
 // ourselves so __ab.perf() reports the whole frame, not just the last pass.
 renderer.info.autoReset = false;
+
+/**
+ * Resize everything that is sized in DEVICE pixels, together. `composer`
+ * owns its render targets AND forwards setSize to every pass, so the bloom
+ * chain and the SMAA buffers follow from this one call — nothing here may
+ * be split up or the passes drift out of step with the framebuffer.
+ */
+function applyPixelRatio(ratio: number): void {
+  renderer.setPixelRatio(ratio);
+  composer.setPixelRatio(ratio);
+}
+applyPixelRatio(resolution.ratio);
 
 window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
   composer.setSize(window.innerWidth, window.innerHeight);
+  // A resize changes the pixel count the scaler learned its limit at, so
+  // the latch is stale: leaving fullscreen must be allowed to win the
+  // resolution back. Only the latch is cleared — the current ratio stays,
+  // and the controller re-earns anything above it the usual way.
+  resolution = { ...resolution, hotRatio: Number.POSITIVE_INFINITY };
+  resFrames.reset();
 });
 
 // --- World (city seed comes from the server so every roommate agrees) ---
@@ -513,6 +595,28 @@ socket.events.onBotsConfig = (msg) => {
   comms.add("NET", `${msg.byName} set bots to ${msg.count}`);
 };
 
+// --- Perf instrumentation (P1) ---
+// One meter feeds the HUD line, the dev perf overlay, `__ab.perf()` and the
+// headless harness, so those four can never disagree. A second, short meter
+// feeds the resolution controller and is CLEARED on every ratio change —
+// otherwise the window still holds frames rendered at the old ratio and the
+// controller double-steps on stale evidence.
+const frames = new FrameMeter();
+const resFrames = new FrameMeter(WINDOW_FRAMES * 3);
+// GPU-side cost of the same frames, when the harness asked for it. Null on
+// drivers without the timer-query extension — a missing number, never an
+// error (client/src/render/gputimer.ts).
+const gpuTimer = renderOpts.gpuTimer
+  ? GpuTimer.create(renderer.getContext(), 16)
+  : null;
+const gpuFrames = new FrameMeter();
+/** How often the resolution controller looks; it is rate-limited past this. */
+const RES_EVAL_MS = 250;
+let nextResEvalAt = 0;
+const perfHud = new PerfHud();
+bindPerfHudKey(perfHud);
+if (renderOpts.perfHud) perfHud.setOpen(true);
+
 // --- Dev/QA hooks (used by the headless verification harness) ---
 const perf = { frames: 0, ms: 0, fps: 0, frameMs: 0 };
 declare global {
@@ -526,6 +630,34 @@ declare global {
         drawCalls: number;
         smokePuffs: number;
       };
+      /** P1: the full frame-time window — p50/p95/p99/worst + draw calls. */
+      perfStats: () => FrameStats;
+      /** Every frame time held, oldest first (harness histograms). */
+      perfSamples: () => number[];
+      /** GPU-only frame cost over the same window; null unless ?gputime=1. */
+      gpuStats: () => FrameStats | null;
+      /** Drop the window — the harness calls this at each segment boundary. */
+      perfReset: () => void;
+      /** Live render config: pixel ratio, its limits, and the AA mode. */
+      render: () => {
+        aa: string;
+        /** The `antialias` CONTEXT attribute — multisamples the default fb. */
+        antialiasAttribute: boolean;
+        /** Samples on the default framebuffer, which the scene never uses. */
+        defaultFramebufferSamples: number;
+        /** Samples on the target the scene ACTUALLY renders into. */
+        sceneTargetSamples: number;
+        pixelRatio: number;
+        auto: boolean;
+        floor: number;
+        ceiling: number;
+        hotRatio: number;
+        drawingBuffer: { width: number; height: number };
+      };
+      /** Pin the pixel ratio (a number) or hand it back to the controller. */
+      setPixelRatio: (ratio: number | "auto") => void;
+      /** Claim the room's shared bot count (QA: 0 makes a scene reproducible). */
+      setBots: (count: number) => void;
       net: () => {
         selfId: string;
         roomId: string;
@@ -593,6 +725,45 @@ window.__ab = {
     drawCalls: renderer.info.render.calls,
     smokePuffs: smoke.puffCount,
   }),
+  // P1 harness surface: percentiles over the window since the last reset.
+  perfStats: () => frames.stats(),
+  perfSamples: () => frames.samples(),
+  gpuStats: () => (gpuTimer === null ? null : gpuFrames.stats()),
+  perfReset: () => {
+    frames.reset();
+    gpuFrames.reset();
+  },
+  render: () => {
+    const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+    return {
+      aa: renderOpts.aa,
+      antialiasAttribute: renderer.getContextAttributes()?.antialias ?? false,
+      defaultFramebufferSamples: DEFAULT_FB_SAMPLES,
+      sceneTargetSamples: composer.renderTarget1.samples,
+      pixelRatio: resolution.ratio,
+      auto: resAuto,
+      floor: resLimits.floor,
+      ceiling: resLimits.ceiling,
+      hotRatio: resolution.hotRatio,
+      drawingBuffer: { width: size.x, height: size.y },
+    };
+  },
+  setPixelRatio: (ratio) => {
+    if (ratio === "auto") {
+      resAuto = true;
+      resolution = createResolution(window.devicePixelRatio, performance.now());
+    } else {
+      resAuto = false;
+      resolution = {
+        ratio: Math.min(resLimits.ceiling, Math.max(resLimits.floor, ratio)),
+        changedAt: performance.now(),
+        hotRatio: Number.POSITIVE_INFINITY,
+      };
+    }
+    applyPixelRatio(resolution.ratio);
+    resFrames.reset();
+  },
+  setBots: (count) => socket.sendSetBots(count),
   net: () => ({
     selfId: socket.selfId,
     roomId: welcome.roomId,
@@ -940,7 +1111,9 @@ renderer.setAnimationLoop((now) => {
   }
 
   renderer.info.reset();
+  gpuTimer?.begin();
   composer.render();
+  gpuTimer?.end();
 
   // Matrices are fresh after the render — project the screen-space UI now.
   edgeMarkers.update(
@@ -962,6 +1135,42 @@ renderer.setAnimationLoop((now) => {
   if (solutionTone.shouldPlay(alive && aimResult.solution, now)) {
     audio.solutionTick();
   }
+
+  // --- Perf accounting (P1) ---
+  // Both meters take the RAW frame delta, not the clamped sim dt: a 200 ms
+  // hitch is exactly the number this ticket exists to surface, and the sim
+  // clamp is there to keep flight stable, not to flatter the report.
+  const drawCalls = renderer.info.render.calls;
+  frames.push(rawMs, drawCalls);
+  resFrames.push(rawMs, drawCalls);
+  // GPU results land a few frames late — they are attributed to the window,
+  // not to a specific frame, which is all the percentiles need.
+  if (gpuTimer !== null) {
+    for (const ms of gpuTimer.drain()) gpuFrames.push(ms, drawCalls);
+  }
+  if (resAuto && now >= nextResEvalAt) {
+    nextResEvalAt = now + RES_EVAL_MS;
+    const next = stepResolution(
+      resolution,
+      resFrames.tail(WINDOW_FRAMES),
+      now,
+      resLimits,
+    );
+    if (next !== resolution) {
+      resolution = next;
+      applyPixelRatio(next.ratio);
+      // Frames drawn at the previous ratio are no longer evidence about
+      // this one — judging the new ratio on them double-steps the scaler.
+      resFrames.reset();
+    }
+  }
+  perfHud.update(
+    now,
+    () => frames.stats(),
+    { ratio: resolution.ratio, auto: resAuto },
+    renderOpts.aa,
+    () => (gpuTimer === null ? null : gpuFrames.stats()),
+  );
 
   // HUD + rolling perf counters (~2 Hz refresh).
   perf.frames++;

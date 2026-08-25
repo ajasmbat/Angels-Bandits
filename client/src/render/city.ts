@@ -80,23 +80,27 @@ export class CityRenderer {
       new THREE.InstancedBufferAttribute(archetypes, 1),
     );
 
-    // Dusk palette, now per archetype (Concept 5 "Balanced blend"): steel-blue
-    // glass, warm brick masonry, grey-blue concrete offices — each slightly
-    // varied per building (deterministic from the building itself, shared by
-    // all its tiers). Landmarks keep their neon accent so orientation — and
-    // the "never two images at once" QA check — works.
+    // Dusk palette (C3 "Sparse Late Shift"): the same three archetype families
+    // — steel-blue glass, warm brick masonry, grey-blue concrete offices — but
+    // DESATURATED hard (glass 0.40 → 0.14, masonry 0.28 → 0.13, office 0.12 →
+    // 0.05) so the surface reads as painted concrete and dirty glass instead
+    // of saturated toy plastic, with a WIDER per-building hue/lightness spread
+    // so a dense BSP block is many buildings rather than one long wall. The
+    // variation is deterministic from the building itself (shared by all its
+    // tiers). Landmarks keep their neon accent so orientation — and the "never
+    // two images at once" QA check — still works.
     const color = new THREE.Color();
     this.instances.forEach((inst, i) => {
       const b = inst.building;
       const t = ((b.height * 7 + b.width * 3 + b.depth) % 17) / 17;
       if (b.height >= LANDMARK_HEIGHT) {
-        color.setHSL(0.52, 0.55, 0.32);
+        color.setHSL(0.52, 0.4, 0.26);
       } else if (archetypes[i] === FacadeArchetype.GLASS) {
-        color.setHSL(0.6 + t * 0.04, 0.4, 0.09 + t * 0.05);
+        color.setHSL(0.6 + t * 0.05, 0.14, 0.075 + t * 0.05);
       } else if (archetypes[i] === FacadeArchetype.MASONRY) {
-        color.setHSL(0.05 + t * 0.03, 0.28, 0.08 + t * 0.04);
+        color.setHSL(0.06 + t * 0.04, 0.13, 0.065 + t * 0.045);
       } else {
-        color.setHSL(0.63 + t * 0.03, 0.12, 0.08 + t * 0.05);
+        color.setHSL(0.62 + t * 0.05, 0.05, 0.07 + t * 0.05);
       }
       this.mesh.setColorAt(i, color);
     });

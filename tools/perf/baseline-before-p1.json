@@ -1,0 +1,317 @@
+{
+  "version": 1,
+  "label": "before-p1: antialias:true + fixed pixelRatio 2",
+  "createdAt": "2026-08-25T17:21:52.285Z",
+  "harness": {
+    "viewport": {
+      "width": 1280,
+      "height": 720
+    },
+    "deviceScaleFactor": 2,
+    "vsync": "disabled",
+    "sampleMs": 5000,
+    "settleMs": 900,
+    "warmupMs": 700,
+    "runs": 3,
+    "paired": false
+  },
+  "env": {
+    "gpu": "ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)",
+    "devicePixelRatio": 2,
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.7922.34 Safari/537.36",
+    "platform": "darwin 24.6.0",
+    "cpus": 8,
+    "node": "v25.5.0",
+    "loadavg": [
+      159.9,
+      116.9,
+      87.2
+    ]
+  },
+  "config": {
+    "aa": "legacy",
+    "antialiasAttribute": true,
+    "defaultFramebufferSamples": 4,
+    "sceneTargetSamples": 0,
+    "pixelRatio": 2,
+    "auto": false,
+    "floor": 0.75,
+    "ceiling": 2,
+    "hotRatio": null,
+    "drawingBuffer": {
+      "width": 2560,
+      "height": 1440
+    },
+    "seed": 42,
+    "roomId": "room-2",
+    "city": {
+      "buildings": 646,
+      "tierInstances": 811,
+      "clutterInstances": 1763,
+      "garnishInstances": 3871
+    },
+    "signage": {
+      "marquees": 2084,
+      "billboards": 919,
+      "strips": 1041,
+      "spills": 637
+    },
+    "bots": 0
+  },
+  "segments": [
+    {
+      "name": "core",
+      "what": "dense midtown at facade height, down a canyon (signage, lamps, traffic)",
+      "count": 563,
+      "p50": 8.300000000001091,
+      "p95": 12.700000000000728,
+      "p99": 25,
+      "worst": 54.39999999999782,
+      "mean": 8.877442273534635,
+      "fps": 120.48192771082753,
+      "drawCalls": 107,
+      "drawCallsMax": 109,
+      "gpuP50": 20.039166,
+      "gpuP95": 24.216374,
+      "gpuWorst": 28.909333,
+      "gpuFrames": 564,
+      "alive": true,
+      "pos": {
+        "x": 1000,
+        "y": 90,
+        "z": 1216.3374999999996
+      },
+      "strikes": 2
+    },
+    {
+      "name": "plaza",
+      "what": "over the open plaza block (4,4) — sparse geometry, wide ground",
+      "count": 610,
+      "p50": 8.099999999998545,
+      "p95": 10.69999999999709,
+      "p99": 13,
+      "worst": 17.5,
+      "mean": 8.203442622950817,
+      "fps": 123.45679012347897,
+      "drawCalls": 107,
+      "drawCallsMax": 107,
+      "gpuP50": 17.699666,
+      "gpuP95": 21.794999,
+      "gpuWorst": 23.701499,
+      "gpuFrames": 608,
+      "alive": true,
+      "pos": {
+        "x": 900,
+        "y": 300,
+        "z": 676.1230000000032
+      },
+      "strikes": 2
+    },
+    {
+      "name": "sky",
+      "what": "high and level — the whole skyline inside FOG_DISTANCE at once",
+      "count": 519,
+      "p50": 8.900000000001455,
+      "p95": 16,
+      "p99": 28.299999999999272,
+      "worst": 51,
+      "mean": 9.644894026974953,
+      "fps": 112.35955056177939,
+      "drawCalls": 106,
+      "drawCallsMax": 108,
+      "gpuP50": 9.208958,
+      "gpuP95": 10.748874,
+      "gpuWorst": 19.74075,
+      "gpuFrames": 520,
+      "alive": true,
+      "pos": {
+        "x": 427.56978843174784,
+        "y": 560,
+        "z": 1672.430211568255
+      },
+      "strikes": 3
+    },
+    {
+      "name": "canyon",
+      "what": "low between the towers, down the x=200 street",
+      "count": 556,
+      "p50": 8.69999999999709,
+      "p95": 12.5,
+      "p99": 26.80000000000291,
+      "worst": 67.5,
+      "mean": 8.998201438848922,
+      "fps": 114.94252873567063,
+      "drawCalls": 107,
+      "drawCallsMax": 107,
+      "gpuP50": 19.683416,
+      "gpuP95": 24.375499,
+      "gpuWorst": 25.797291,
+      "gpuFrames": 567,
+      "alive": true,
+      "pos": {
+        "x": 200,
+        "y": 45,
+        "z": 817.0329999999994
+      },
+      "strikes": 3
+    },
+    {
+      "name": "storm",
+      "what": "a lightning strike inside the window — bolt, flash, fog stain, reveals",
+      "count": 600,
+      "p50": 8.200000000004366,
+      "p95": 10.5,
+      "p99": 13.60000000000582,
+      "worst": 42.80000000000291,
+      "mean": 8.345499999999992,
+      "fps": 121.9512195121302,
+      "drawCalls": 107,
+      "drawCallsMax": 109,
+      "gpuP50": 9.903749,
+      "gpuP95": 16.624041,
+      "gpuWorst": 19.338791,
+      "gpuFrames": 600,
+      "alive": true,
+      "pos": {
+        "x": 1000,
+        "y": 380,
+        "z": 70.57799999999679
+      },
+      "strikes": 5
+    }
+  ],
+  "overall": {
+    "p50": 8.300000000001091,
+    "p95": 16,
+    "worst": 67.5,
+    "gpuP50": 17.699666,
+    "gpuP95": 24.375499,
+    "gpuWorst": 28.909333,
+    "drawCallsMax": 109,
+    "frames": 2848
+  },
+  "determinism": {
+    "worstGpuP50SpreadPct": 88.31603559389191,
+    "worstGpuP50SpreadMs": 8.30075,
+    "worstP50SpreadPct": 15.789473684270991,
+    "drawCallsAgreeEverywhere": true,
+    "tolerance": {
+      "gpuP50Pct": 10,
+      "gpuP50Ms": 1
+    },
+    "pass": false,
+    "perSegment": [
+      {
+        "name": "core",
+        "p50s": [
+          8.399999999999636,
+          8.300000000001091,
+          8.299999999999272
+        ],
+        "p50SpreadPct": 1.2048192771129225,
+        "gpuP50s": [
+          18.981041,
+          20.039166,
+          18.229708
+        ],
+        "gpuP50SpreadPct": 9.925874841220732,
+        "gpuP50SpreadMs": 1.809458000000003,
+        "drawCalls": [
+          107,
+          107,
+          107
+        ],
+        "drawCallsAgree": true
+      },
+      {
+        "name": "plaza",
+        "p50s": [
+          8.099999999998545,
+          8,
+          8.400000000001455
+        ],
+        "p50SpreadPct": 5.00000000001819,
+        "gpuP50s": [
+          17.699666,
+          10.754291,
+          9.398916
+        ],
+        "gpuP50SpreadPct": 88.31603559389191,
+        "gpuP50SpreadMs": 8.30075,
+        "drawCalls": [
+          107,
+          107,
+          107
+        ],
+        "drawCallsAgree": true
+      },
+      {
+        "name": "sky",
+        "p50s": [
+          9,
+          8.599999999998545,
+          8.900000000001455
+        ],
+        "p50SpreadPct": 4.651162790715382,
+        "gpuP50s": [
+          8.895208,
+          14.519375,
+          9.208958
+        ],
+        "gpuP50SpreadPct": 63.22693072494763,
+        "gpuP50SpreadMs": 5.624167,
+        "drawCalls": [
+          106,
+          106,
+          106
+        ],
+        "drawCallsAgree": true
+      },
+      {
+        "name": "canyon",
+        "p50s": [
+          8.69999999999709,
+          8.69999999999709,
+          7.799999999999272
+        ],
+        "p50SpreadPct": 11.53846153843463,
+        "gpuP50s": [
+          19.683416,
+          20.214166,
+          19.586916
+        ],
+        "gpuP50SpreadPct": 3.2023928626640363,
+        "gpuP50SpreadMs": 0.6272500000000001,
+        "drawCalls": [
+          107,
+          107,
+          107
+        ],
+        "drawCallsAgree": true
+      },
+      {
+        "name": "storm",
+        "p50s": [
+          8.200000000004366,
+          8.80000000000291,
+          7.599999999998545
+        ],
+        "p50SpreadPct": 15.789473684270991,
+        "gpuP50s": [
+          9.903749,
+          8.53125,
+          9.249833
+        ],
+        "gpuP50SpreadPct": 16.08790036630036,
+        "gpuP50SpreadMs": 1.3724989999999995,
+        "drawCalls": [
+          107,
+          107,
+          107
+        ],
+        "drawCallsAgree": true
+      }
+    ]
+  },
+  "pageErrors": []
+}

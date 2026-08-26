@@ -30,6 +30,7 @@ export function perfHudText(
   res: ResolutionReadout,
   aa: string,
   gpu: FrameStats | null = null,
+  gpuStarved = 0,
 ): string {
   const ms = (v: number) => v.toFixed(1);
   const lines = [
@@ -40,7 +41,11 @@ export function perfHudText(
   ];
   // Only when ?gputime=1 asked for it AND the driver has the extension.
   if (gpu !== null) {
-    lines.push(`GPU p50 ${ms(gpu.p50)}  p95 ${ms(gpu.p95)} ms`);
+    // A skip count is never decoration: the query pool empties on the
+    // EXPENSIVE frames, so any number here means the GPU tail below is
+    // missing its worst samples (see render/gputimer.ts).
+    const skipped = gpuStarved > 0 ? `  !${gpuStarved} SKIPPED` : "";
+    lines.push(`GPU p50 ${ms(gpu.p50)}  p95 ${ms(gpu.p95)} ms${skipped}`);
   }
   return lines.join("\n");
 }
@@ -82,10 +87,17 @@ export class PerfHud {
     res: ResolutionReadout,
     aa: string,
     gpuOf: () => FrameStats | null = () => null,
+    gpuStarvedOf: () => number = () => 0,
   ): void {
     if (!this.open || this.el === null || now < this.nextWriteAt) return;
     this.nextWriteAt = now + PERF_HUD_REFRESH_MS;
-    this.el.textContent = perfHudText(statsOf(), res, aa, gpuOf());
+    this.el.textContent = perfHudText(
+      statsOf(),
+      res,
+      aa,
+      gpuOf(),
+      gpuStarvedOf(),
+    );
   }
 }
 

@@ -12,7 +12,8 @@
     "lint": "biome check .",
     "dev:client": "npm run dev -w client",
     "dev:server": "npm run dev -w server",
-    "perf": "node tools/perf/run.mjs"
+    "perf": "node tools/perf/run.mjs",
+    "perf:setup": "playwright install chromium"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

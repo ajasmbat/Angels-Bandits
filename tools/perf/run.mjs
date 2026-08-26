@@ -22,7 +22,7 @@
 //    every comparison into a comparison of two different resolutions.
 
 import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { cpus, loadavg, platform, release } from "node:os";
 import { dirname, resolve } from "node:path";
@@ -65,6 +65,18 @@ function parseArgs(argv) {
     headed: false,
     quiet: false,
     strict: false,
+  };
+  const finish = () => {
+    // There is no determinism check with a single pass, so --strict would
+    // exit 0 having asserted nothing at all — the most dangerous shape a
+    // gate can have.
+    if (opts.strict && !(opts.runs >= 2)) {
+      throw new Error("--strict needs at least two passes: add --runs 3");
+    }
+    if (!Number.isFinite(opts.runs) || opts.runs < 1) {
+      throw new Error(`--runs must be a positive number (got ${opts.runs})`);
+    }
+    return opts;
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -109,6 +121,9 @@ function parseArgs(argv) {
       case "--strict":
         opts.strict = true;
         break;
+      case "--samples":
+        // reserved; see README ("Should this gate CI?")
+        break;
       case "--help":
       case "-h":
         console.log(readFileSync(resolve(HERE, "README.md"), "utf8"));
@@ -118,7 +133,7 @@ function parseArgs(argv) {
         throw new Error(`unknown flag ${arg} (try --help)`);
     }
   }
-  return opts;
+  return finish();
 }
 
 // --- Process plumbing -----------------------------------------------------
@@ -258,6 +273,10 @@ async function flySegment(page, seg, sampleMs) {
       const gpu = ab.gpuStats();
       return {
         ...ab.perfStats(),
+        // Frames the GPU timer could not open a query for. Non-zero means
+        // its p95/worst below are missing their tail — the pool empties on
+        // exactly the frames those percentiles are made of.
+        gpuStarved: ab.gpuStarved(),
         gpuP50: gpu === null ? null : gpu.p50,
         gpuP95: gpu === null ? null : gpu.p95,
         gpuWorst: gpu === null ? null : gpu.worst,
@@ -371,10 +390,12 @@ const pct = (sorted, p) =>
 function overall(segments) {
   const p50s = segments.map((s) => s.p50).sort((a, b) => a - b);
   const p95s = segments.map((s) => s.p95).sort((a, b) => a - b);
+  const p99s = segments.map((s) => s.p99).sort((a, b) => a - b);
   const gpuP50s = segments.map((s) => s.gpuP50 ?? 0).sort((a, b) => a - b);
   return {
     p50: pct(p50s, 0.5),
     p95: Math.max(...p95s),
+    p99: Math.max(...p99s),
     worst: Math.max(...segments.map((s) => s.worst)),
     gpuP50: pct(gpuP50s, 0.5),
     gpuP95: Math.max(...segments.map((s) => s.gpuP95 ?? 0)),
@@ -399,25 +420,33 @@ function printTable(report) {
     `machine: ${report.env.cpus} cpus, load ${report.env.loadavg.join(" ")}`,
   );
   console.log(
-    "\n           ---------- wall clock ----------   ------ GPU ------",
+    "\n           ------------- wall clock -------------   ------ GPU ------",
   );
   console.log(
-    "segment       p50     p95   worst  draws     p50     p95   worst  alive",
+    "segment       p50     p95     p99   worst  draws     p50     p95   worst  alive",
   );
-  console.log("".padEnd(72, "-"));
+  console.log("".padEnd(80, "-"));
   for (const s of report.segments) {
     console.log(
-      `${s.name.padEnd(8)}${f1(s.p50)}  ${f1(s.p95)}  ${f1(s.worst)}  ` +
+      `${s.name.padEnd(8)}${f1(s.p50)}  ${f1(s.p95)}  ${f1(s.p99)}  ${f1(s.worst)}  ` +
         `${String(s.drawCalls).padStart(5)}  ${f1(s.gpuP50 ?? 0)}  ` +
         `${f1(s.gpuP95 ?? 0)}  ${f1(s.gpuWorst ?? 0)}  ${s.alive ? "yes" : "NO "}`,
     );
   }
   const o = report.overall;
-  console.log("".padEnd(72, "-"));
+  console.log("".padEnd(80, "-"));
   console.log(
-    `overall ${f1(o.p50)}  ${f1(o.p95)}  ${f1(o.worst)}  ` +
+    `overall ${f1(o.p50)}  ${f1(o.p95)}  ${f1(o.p99)}  ${f1(o.worst)}  ` +
       `${String(o.drawCallsMax).padStart(5)}  ${f1(o.gpuP50)}  ${f1(o.gpuP95)}  ${f1(o.gpuWorst)}`,
   );
+  // The GPU query pool empties on the frames that cost the most, so any skip
+  // count at all means the GPU tail above is missing its worst samples.
+  const starved = report.segments.reduce((n, s) => n + (s.gpuStarved ?? 0), 0);
+  if (starved > 0) {
+    console.log(
+      `\n!! the GPU timer could not measure ${starved} frame(s) — its p95/worst columns are missing their tail and must not be quoted.`,
+    );
+  }
   console.log(
     "\n(frame times are COSTS — vsync is disabled; lower is better.\n" +
       " Read the GPU columns for render changes: they are far more\n" +
@@ -498,10 +527,14 @@ export const TOLERANCE = { gpuP50Pct: 10, gpuP50Ms: 1.0 };
 export const UNPINNED_SEGMENTS = new Set(["storm", "canyon"]);
 
 /** Per-segment agreement between the runs of one invocation. */
-function determinism(runs) {
+export function determinism(runs) {
   if (runs.length < 2) return null;
-  const spreadPct = (xs) =>
-    ((Math.max(...xs) - Math.min(...xs)) / Math.min(...xs)) * 100;
+  // A driver with no timer query gives a column of zeros; dividing by the
+  // minimum would print `Infinity %` for a measurement that never happened.
+  const spreadPct = (xs) => {
+    const lo = Math.min(...xs);
+    return lo === 0 ? 0 : ((Math.max(...xs) - lo) / lo) * 100;
+  };
   const spreadMs = (xs) => Math.max(...xs) - Math.min(...xs);
   const perSegment = SEGMENTS.map((seg, i) => {
     const p50s = runs.map((r) => r.segments[i].p50);
@@ -526,6 +559,11 @@ function determinism(runs) {
     ...pinned.map((s) => s.gpuP50SpreadPct),
   );
   const worstGpuP50SpreadMs = Math.max(...pinned.map((s) => s.gpuP50SpreadMs));
+  // Only `storm` moves its draw calls between runs (its strike CELL is a
+  // function of absolute time). `canyon` is unpinned for TIMING — traffic
+  // fills more of its frame — but it submits the same draws every run, so it
+  // is still held to the identity check. Naming storm explicitly, rather
+  // than reusing UNPINNED_SEGMENTS, keeps those two claims separate.
   const drawCallsAgreeEverywhere = perSegment.every(
     (s) => s.drawCallsAgree || s.name === "storm",
   );
@@ -534,10 +572,17 @@ function determinism(runs) {
   // real numbers before the verdict can be based on them.
   const gpuMeasured = pinned.every((s) => s.gpuP50s.every((v) => v > 0));
   // Whichever band is looser — see TOLERANCE for why it takes both forms.
+  // PER SEGMENT, not max-of-pct OR max-of-ms across all of them. Taking the
+  // two maxima independently and then OR-ing lets a run FAIL when every
+  // single segment passed: segment A at 20 %/0.9 ms and B at 9 %/5.0 ms both
+  // satisfy "10 % or 1 ms", but the aggregate reads 20 % and 5 ms.
   const gpuAgrees =
     gpuMeasured &&
-    (worstGpuP50SpreadPct <= TOLERANCE.gpuP50Pct ||
-      worstGpuP50SpreadMs <= TOLERANCE.gpuP50Ms);
+    pinned.every(
+      (s) =>
+        s.gpuP50SpreadPct <= TOLERANCE.gpuP50Pct ||
+        s.gpuP50SpreadMs <= TOLERANCE.gpuP50Ms,
+    );
   return {
     worstGpuP50SpreadPct,
     worstGpuP50SpreadMs,
@@ -584,17 +629,42 @@ function printDelta(report, baseline) {
   );
 }
 
-/** Fold N passes of one configuration into a single report. */
+/**
+ * Fold N passes of one configuration into a single report.
+ *
+ * The reported segment is the MEDIAN PASS — the whole row from one real
+ * pass, never a per-column mix. A row assembled column-by-column can publish
+ * a gpuP95 below its own gpuP50, or a `worst` beside draw calls from a
+ * different pass, and an impossible row is worse than a noisy one in a
+ * harness whose whole claim is that its numbers are trustworthy.
+ *
+ * Two things here were wrong and both made numbers wrong:
+ *   - `floor((n - 1) / 2)` is the LOWER median, i.e. index 0 for n = 2 — the
+ *     fastest of two, which is exactly the "reports its luckiest run"
+ *     failure the old comment here warned about. Every README recipe used
+ *     `--runs 2`.
+ *   - the pass was chosen by WALL p50, and that pass's GPU columns were then
+ *     reported. The README spends two paragraphs explaining that wall clock
+ *     is contention and the GPU columns are the evidence, so the headline
+ *     GPU number was being picked by the one metric it says not to trust.
+ * Prefer an odd `--runs` regardless: with an even count "the median" is a
+ * choice between two passes rather than a reading.
+ */
+export function pickMedianPass(all) {
+  // Rank by GPU cost where we have it, and fall back to wall clock only on a
+  // driver with no timer query at all.
+  const key = all.every((s) => typeof s.gpuP50 === "number")
+    ? (s) => s.gpuP50
+    : (s) => s.p50;
+  const ranked = [...all].sort((a, b) => key(a) - key(b));
+  return ranked[Math.floor(ranked.length / 2)];
+}
+
 function buildReport(label, runs, opts) {
   const primary = runs[0];
-  // With several passes the reported number is the MEDIAN pass per segment,
-  // not the best one — a harness that reports its luckiest run is a harness
-  // that reports noise.
-  const segments = SEGMENTS.map((seg, i) => {
-    const all = runs.map((r) => r.segments[i]);
-    const byP50 = [...all].sort((a, b) => a.p50 - b.p50);
-    return byP50[Math.floor((byP50.length - 1) / 2)];
-  });
+  const segments = SEGMENTS.map((seg, i) =>
+    pickMedianPass(runs.map((r) => r.segments[i])),
+  );
   return {
     version: REPORT_VERSION,
     label,
@@ -623,11 +693,68 @@ function buildReport(label, runs, opts) {
     segments,
     overall: overall(segments),
     determinism: determinism(runs),
-    pageErrors: primary.errors,
+    pageErrors: runs.flatMap((r) => r.errors),
   };
 }
 
 // --- Main -----------------------------------------------------------------
+
+// --- Child-process ownership -----------------------------------------------
+//
+// Exactly one place kills the server and the browser, and it is reachable
+// from the happy path, the error path AND a signal. Anything less leaks: on
+// this machine the harness runs alongside other agent worktrees, and a
+// squatting server is somebody else's confusing failure an hour later.
+
+let liveServer = null;
+let liveBrowser = null;
+
+async function killEverything() {
+  const server = liveServer;
+  const browser = liveBrowser;
+  liveServer = null;
+  liveBrowser = null;
+  if (server !== null) server.kill();
+  if (browser !== null) {
+    // Never let a hung close() strand the kill above — that ordering was the
+    // original bug.
+    await browser.close().catch(() => {});
+  }
+}
+
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(sig, () => {
+    killEverything().finally(() => process.exit(130));
+  });
+}
+
+/**
+ * Launch Chromium, and fail with the fix rather than a stack trace when the
+ * browser binary was never downloaded.
+ *
+ * `playwright` is a devDependency with no postinstall — deliberately, since
+ * this repo builds a Fly image and an unconditional ~150 MB Chromium download
+ * would land in every deploy. The cost is that `npm ci && npm run perf` on a
+ * cold machine hits "Executable doesn't exist", so the harness names the one
+ * command that fixes it.
+ */
+async function launchBrowser(opts) {
+  try {
+    return await chromium.launch({
+      headless: !opts.headed,
+      args: CHROME_ARGS,
+    });
+  } catch (err) {
+    if (/Executable doesn.t exist|playwright install/i.test(String(err))) {
+      throw new Error(
+        "Chromium is not installed for Playwright.\n" +
+          "Run this once, then re-run the harness:\n\n" +
+          "    npm run perf:setup\n",
+      );
+    }
+    throw err;
+  }
+}
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
@@ -640,7 +767,12 @@ async function main() {
 
   const port = opts.port || (await freePort());
   console.log(`starting server on :${port}…`);
+  // REGISTERED BEFORE ANYTHING CAN THROW. The server used to be spawned
+  // outside the try that owns cleanup, so a chromium.launch() failure
+  // orphaned `node --import tsx server/src/index.ts` — a real one was found
+  // alive nine hours after the session that started it, still holding a port.
   const server = await startServer(port);
+  liveServer = server;
 
   const urlFor = (overrides) => {
     const params = new URLSearchParams();
@@ -651,10 +783,8 @@ async function main() {
     return `http://127.0.0.1:${port}/?${params}`;
   };
 
-  const browser = await chromium.launch({
-    headless: !opts.headed,
-    args: CHROME_ARGS,
-  });
+  const browser = await launchBrowser(opts);
+  liveBrowser = browser;
 
   let report;
   let abReport = null;
@@ -682,8 +812,10 @@ async function main() {
     report = buildReport(opts.label, runs, opts);
     if (opts.ab !== null) abReport = buildReport(opts.ab, abRuns, opts);
   } finally {
-    await browser.close();
-    server.kill();
+    // The server FIRST: it is the one nothing else will clean up. Playwright
+    // reaps its own browser on exit; an orphaned node process squats a port
+    // until someone notices.
+    await killEverything();
   }
 
   printTable(report);
@@ -710,9 +842,7 @@ async function main() {
         `${d.drawCallsAgreeEverywhere ? "identical" : "DIFFER"} per segment`,
     );
     console.log(
-      `  asserted over ${d.assertedOver.join(", ")}; ` +
-        `${d.notAsserted.join(" and ")} measured but not asserted ` +
-        "(server-clock content — see UNPINNED_SEGMENTS)",
+      `  asserted over ${d.assertedOver.join(", ")}; ${d.notAsserted.join(" and ")} measured but not asserted (server-clock content — see UNPINNED_SEGMENTS)`,
     );
     console.log(
       `  tolerance: draw calls identical + GPU p50 within ${TOLERANCE.gpuP50Pct}% or ${TOLERANCE.gpuP50Ms.toFixed(1)} ms, whichever is looser (wall p50 reported, not asserted) — ${d.pass ? "PASS" : "FAIL"}`,
@@ -744,7 +874,14 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// Only when RUN as the entry point. `tools/perf/run.test.mjs` imports the
+// pure helpers above, and importing a module must never boot a server and
+// fly a benchmark.
+const entry = process.argv[1];
+if (entry && realpathSync(entry) === realpathSync(resolve(HERE, "run.mjs"))) {
+  main().catch(async (err) => {
+    console.error(err);
+    await killEverything();
+    process.exit(1);
+  });
+}

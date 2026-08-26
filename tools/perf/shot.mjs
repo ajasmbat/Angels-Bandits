@@ -24,19 +24,28 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const MODES = ["legacy", "off", "smaa", "msaa"];
+// `off` FIRST, so the temporal control captured right after it sits one
+// capture apart — the same gap as `off` to `legacy`. Comparing a control
+// taken four captures later against a pair taken one apart flatters the pair.
+const MODES = ["off", "legacy", "smaa", "msaa"];
 const VIEWPORT = { width: 1280, height: 720 };
 const DEVICE_SCALE_FACTOR = 2;
 /** Rooftop edges against the sky at close range — the worst case for aliasing. */
 const VIEW = { x: 200, z: 1000, y: 120, yaw: 0 };
 /**
- * The crop the comparison page magnifies, in CSS pixels. Chosen off
- * aa-frame.png: the near tower's roofline runs as a shallow diagonal against
- * the night sky, with lit windows right underneath it. A shallow high-
- * contrast diagonal is the hardest case for aliasing and the easiest to
- * judge by eye.
+ * The crop the comparison page magnifies, in CSS pixels.
+ *
+ * It must land on a HIGH-CONTRAST SILHOUETTE AGAINST THE SKY — that is the
+ * only thing in this scene where antialiasing is visible at all. The first
+ * version of this file picked a crop off an older frame and, once the city
+ * changed under it, magnified 240x135 of empty night sky four times over: a
+ * perfectly reproducible comparison of nothing. `cropEnergy` below now
+ * measures the crop and refuses to let that happen quietly.
+ *
+ * This one is the near-right tower's stepped roofline: sky above, a lit
+ * window grid below, and both a shallow step and a sloped edge between them.
  */
-const CROP = { x: 790, y: 155, width: 240, height: 135 };
+const CROP = { x: 1035, y: 30, width: 240, height: 135 };
 /** Long enough for the city to stream in and the scene to settle. */
 const SETTLE_MS = 2500;
 
@@ -48,6 +57,30 @@ function freePort() {
       const { port } = srv.address();
       srv.close(() => ok(port));
     });
+  });
+}
+
+// Exactly one owner for the child processes, reachable from the happy path,
+// the error path and a signal alike. Spawning the server outside the try that
+// owns cleanup is how this family of scripts orphaned a node process that was
+// still holding a port nine hours later.
+let liveServer = null;
+let liveBrowser = null;
+
+async function killEverything() {
+  const server = liveServer;
+  const browser = liveBrowser;
+  liveServer = null;
+  liveBrowser = null;
+  // Server first: nothing else will ever reap it, while Playwright reaps its
+  // own browser on exit. A hung close() must not strand the kill.
+  if (server !== null) server.kill();
+  if (browser !== null) await browser.close().catch(() => {});
+}
+
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(sig, () => {
+    killEverything().finally(() => process.exit(130));
   });
 }
 
@@ -118,6 +151,53 @@ async function capture(browser, baseUrl, mode) {
     crop: `data:image/png;base64,${crop.toString("base64")}`,
   };
 }
+
+/**
+ * How much EDGE there is in the crop, as the share of pixels whose luminance
+ * differs from the neighbour to their right or below by more than a step.
+ *
+ * This exists because the failure it guards against is invisible in every
+ * number the rest of this script prints: a crop of empty sky produces a
+ * perfectly valid, perfectly reproducible, perfectly useless comparison, and
+ * the pixel-diff table beside it looks exactly as convincing as a good one.
+ */
+async function cropEnergy(browser, src) {
+  const page = await browser.newPage();
+  await page.goto("about:blank");
+  const share = await page.evaluate(async (source) => {
+    const img = await new Promise((ok) => {
+      const i = new Image();
+      i.onload = () => ok(i);
+      i.src = source;
+    });
+    const c = document.createElement("canvas");
+    c.width = img.width;
+    c.height = img.height;
+    const ctx = c.getContext("2d");
+    ctx.drawImage(img, 0, 0);
+    const { data } = ctx.getImageData(0, 0, c.width, c.height);
+    const lum = (i) =>
+      0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+    let edges = 0;
+    let total = 0;
+    for (let y = 0; y < c.height - 1; y++) {
+      for (let x = 0; x < c.width - 1; x++) {
+        const i = (y * c.width + x) * 4;
+        const here = lum(i);
+        const dx = Math.abs(here - lum(i + 4));
+        const dy = Math.abs(here - lum(i + c.width * 4));
+        if (Math.max(dx, dy) > 24) edges++;
+        total++;
+      }
+    }
+    return total === 0 ? 0 : edges / total;
+  }, src);
+  await page.close();
+  return share;
+}
+
+/** Below this the crop is not showing an edge, whatever the table says. */
+const MIN_CROP_EDGE_SHARE = 0.03;
 
 /** Pixels that differ between two data-URI PNGs, measured in a blank page. */
 async function diff(browser, a, b) {
@@ -231,10 +311,18 @@ function comparisonPage(shots, diffs) {
   against it.</p>`;
 }
 
+/** The crop image for one mode, by name. */
+function byModeSource(shots, mode) {
+  const found = shots.find((s) => s.mode === mode);
+  if (found === undefined) throw new Error(`no capture for aa=${mode}`);
+  return found.crop;
+}
+
 async function main() {
   const port = await freePort();
   console.log(`starting server on :${port}…`);
   const server = await startServer(port);
+  liveServer = server;
   const browser = await chromium.launch({
     headless: true,
     args: [
@@ -244,28 +332,49 @@ async function main() {
       "--autoplay-policy=no-user-gesture-required",
     ],
   });
+  liveBrowser = browser;
   try {
     const baseUrl = `http://127.0.0.1:${port}/`;
     const shots = [];
+    let control = null;
     for (const mode of MODES) {
       console.log(`capturing aa=${mode}…`);
       shots.push(await capture(browser, baseUrl, mode));
+      if (mode === "off") {
+        // The control, taken IMMEDIATELY after `off`. Two captures of the
+        // same build differ only because the scene animates between them —
+        // traffic drives, neon pulses, beacons blink, the cloud deck drifts.
+        // Every cross-mode number below is read against this floor, or a
+        // moving car reads as an antialiasing change.
+        console.log("capturing aa=off again (temporal control)…");
+        control = await capture(browser, baseUrl, "off");
+      }
     }
-    // The control. Two captures of the SAME mode differ only because the
-    // scene animates between them — traffic drives, neon pulses, beacons
-    // blink, the cloud deck drifts. Every cross-mode number below has to be
-    // read against this floor, or a moving car reads as an antialiasing
-    // change.
-    console.log("capturing aa=off again (temporal control)…");
-    const control = await capture(browser, baseUrl, "off");
+    // Before any pixel-diff number is believed: is the crop even looking at
+    // an edge? `off` is the shipping mode, so it is the one to judge.
+    const energy = await cropEnergy(browser, byModeSource(shots, "off"));
+    console.log(`crop edge share: ${(energy * 100).toFixed(1)}%`);
+    if (energy < MIN_CROP_EDGE_SHARE) {
+      console.error(
+        `\n!! the crop at (${CROP.x}, ${CROP.y}) is ${(energy * 100).toFixed(1)}% edge — it is` +
+          " magnifying flat sky, so the panels below prove nothing by eye." +
+          " Move CROP onto a silhouette (open tools/perf/aa-frame.png and pick one).",
+      );
+    }
     const byMode = Object.fromEntries(shots.map((s) => [s.mode, s]));
     byMode["off (again)"] = control;
     const pairs = [
       ["off", "off (again)"],
-      ["legacy", "off"],
-      ["off", "smaa"],
-      ["off", "msaa"],
+      ["off (again)", "legacy"],
+      ["off (again)", "smaa"],
+      ["off (again)", "msaa"],
     ];
+    /**
+     * A lightning strike between two captures re-lights the WHOLE frame, so
+     * a run that catches one produces a control near 100 % and proves
+     * nothing. That is a property of the run, not of the build.
+     */
+    const STORM_FLASH_SHARE = 0.6;
     const diffs = [];
     for (const [a, b] of pairs) {
       const d = await diff(browser, byMode[a].full, byMode[b].full);
@@ -273,6 +382,14 @@ async function main() {
       console.log(
         `${a} vs ${b}: ${d.differing} / ${d.total} px differ ` +
           `(${d.differingPct.toFixed(3)}%), max Δ ${d.maxDelta}, mean Δ ${d.meanDelta.toFixed(3)}`,
+      );
+    }
+    const controlDiff = diffs[0];
+    if (controlDiff.differingPct / 100 > STORM_FLASH_SHARE) {
+      console.error(
+        `\n!! the control differs by ${controlDiff.differingPct.toFixed(1)}% — a lightning strike re-lit the` +
+          " whole frame between two captures, so every row below is measured against" +
+          " a floor that is not the animation floor. Re-run; this says nothing about the build.",
       );
     }
 
@@ -299,12 +416,12 @@ async function main() {
     await page.close();
     console.log(`\nwrote ${resolve(HERE, "aa-comparison.png")}`);
   } finally {
-    await browser.close();
-    server.kill();
+    await killEverything();
   }
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error(err);
+  await killEverything();
   process.exit(1);
 });

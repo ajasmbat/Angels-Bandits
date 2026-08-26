@@ -14,6 +14,10 @@ export default defineConfig({
       "common/test/**/*.test.ts",
       "server/test/**/*.test.ts",
       "client/test/**/*.test.ts",
+      // The perf harness is plain ESM, not TypeScript, but its arithmetic
+      // decides every frame-time number this repo publishes — so it is
+      // tested like source, not treated as a script.
+      "tools/perf/**/*.test.mjs",
     ],
   },
 });

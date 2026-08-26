@@ -27,6 +27,28 @@ export class GpuTimer {
   private active: WebGLQuery | null = null;
   /** Reused by drain() so polling never allocates. */
   private readonly out: number[] = [];
+  /**
+   * Frames that could not be timed because every query was still in flight.
+   *
+   * This is not a curiosity, it is the ONE number that says whether to
+   * believe the tail: the pool runs dry exactly when the GPU is behind, i.e.
+   * on the expensive frames, so a starved timer silently drops the very
+   * samples p95/p99/worst are made of and reports a scene as cheaper than it
+   * is. A measurement that quietly discards its own tail is worse than one
+   * that admits it, so the count is surfaced everywhere the numbers are.
+   */
+  private starvedFrames = 0;
+  /**
+   * Queries that were in flight when the driver last reported a disjoint.
+   *
+   * GPU_DISJOINT_EXT is CLEARED BY READING IT, so the flag cannot simply be
+   * consulted at the moment a result is collected: a disjoint raised while
+   * every query is still un-available would be consumed by a drain that
+   * discards nothing, and the poisoned queries would then be reported as
+   * valid milliseconds. Latching the in-flight depth instead means each
+   * affected query is dropped when it finally lands, however many drains later.
+   */
+  private poisoned = 0;
 
   private constructor(
     private readonly gl: WebGL2RenderingContext,
@@ -62,7 +84,10 @@ export class GpuTimer {
   begin(): boolean {
     if (this.active !== null) return false;
     const query = this.free.pop();
-    if (query === undefined) return false;
+    if (query === undefined) {
+      this.starvedFrames++;
+      return false;
+    }
     this.gl.beginQuery(TIME_ELAPSED_EXT, query);
     this.active = query;
     return true;
@@ -84,7 +109,12 @@ export class GpuTimer {
    */
   drain(): readonly number[] {
     this.out.length = 0;
-    const disjoint = this.gl.getParameter(GPU_DISJOINT_EXT) as boolean;
+    // Read (and thereby clear) the flag every drain, and remember how deep
+    // the queue was: everything already in flight is poisoned, and nothing
+    // queued after this point is.
+    if (this.gl.getParameter(GPU_DISJOINT_EXT) as boolean) {
+      this.poisoned = Math.max(this.poisoned, this.pending.length);
+    }
     while (this.pending.length > 0) {
       const query = this.pending[0] as WebGLQuery;
       const ready = this.gl.getQueryParameter(
@@ -93,7 +123,9 @@ export class GpuTimer {
       ) as boolean;
       if (!ready) break;
       this.pending.shift();
-      if (!disjoint) {
+      if (this.poisoned > 0) {
+        this.poisoned--;
+      } else {
         const ns = this.gl.getQueryParameter(
           query,
           this.gl.QUERY_RESULT,
@@ -103,5 +135,15 @@ export class GpuTimer {
       this.free.push(query);
     }
     return this.out;
+  }
+
+  /** Frames begin() had to skip for want of a free query. See `starvedFrames`. */
+  get starved(): number {
+    return this.starvedFrames;
+  }
+
+  /** Forget the starvation count — the harness calls this per segment. */
+  resetStarved(): void {
+    this.starvedFrames = 0;
   }
 }

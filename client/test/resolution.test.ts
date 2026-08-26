@@ -5,8 +5,9 @@
 //
 // Expected values are hand-worked from the spec (floor 0.75, ceiling 2, miss
 // at 1.5x the 16.67 ms budget, step down 0.85 then 0.95, step up 1.06, cap
-// every climb at 0.97x the ratio we retreated from) — never recomputed the
-// way the implementation does it.
+// every climb at 0.9x the ratio we retreated from, and relax that cap one
+// notch after 60 s of unbroken clean frames) — never recomputed the way the
+// implementation does it.
 
 import { describe, expect, it } from "vitest";
 import {
@@ -14,6 +15,8 @@ import {
   FRAME_BUDGET_MS,
   HOT_MARGIN,
   MISS_MS,
+  RELAX_AFTER_MS,
+  RELAX_MAX_MS,
   RESOLUTION_CEILING,
   RESOLUTION_FLOOR,
   type ResolutionLimits,
@@ -39,11 +42,22 @@ const at = (
   ratio: number,
   changedAt = 0,
   hotRatio = Number.POSITIVE_INFINITY,
+  extra: Partial<ResolutionState> = {},
 ): ResolutionState => ({
   ratio,
   changedAt,
   hotRatio,
+  cleanSince: null,
+  relaxAfterMs: RELAX_AFTER_MS,
+  ...extra,
 });
+
+/**
+ * Relaxation off. Isolates the properties that are about the STEPS (does it
+ * converge, does it respect its limits) from the one that is about the
+ * latch being released over time, so each is tested for what it claims.
+ */
+const NO_RELAX = { relaxAfterMs: Number.POSITIVE_INFINITY };
 
 /**
  * Run the controller for `ticks` evaluations against a cost model, returning
@@ -55,17 +69,35 @@ function simulate(
   costOf: (ratio: number) => number,
   ticks: number,
   limits = LIMITS,
+  stepMs = 1000,
 ): number[] {
   let state = start;
   const trace: number[] = [state.ratio];
   let now = 0;
   for (let i = 0; i < ticks; i++) {
     // A whole window elapses between evaluations, so the cooldowns can clear.
-    now += 1000;
+    now += stepMs;
     state = stepResolution(state, window_(costOf(state.ratio)), now, limits);
     trace.push(state.ratio);
   }
   return trace;
+}
+
+/** Same, but hands back the final state rather than the ratio trace. */
+function run(
+  start: ResolutionState,
+  costOf: (ratio: number) => number,
+  ticks: number,
+  limits = LIMITS,
+  stepMs = 1000,
+): ResolutionState {
+  let state = start;
+  let now = 0;
+  for (let i = 0; i < ticks; i++) {
+    now += stepMs;
+    state = stepResolution(state, window_(costOf(state.ratio)), now, limits);
+  }
+  return state;
 }
 
 describe("defaultLimits", () => {
@@ -122,12 +154,19 @@ describe("stepResolution — evidence requirements", () => {
     const frames = window_(FAST);
     frames[0] = SLOW;
     const state = at(2);
+    // Nothing at all changes in the hysteresis band with no clean run open,
+    // so this one really is the same object.
     expect(stepResolution(state, frames, 10_000, LIMITS)).toBe(state);
   });
 
-  it("returns the SAME object when it holds, so callers can test identity", () => {
+  it("leaves the ratio untouched when it holds — callers compare ratio", () => {
+    // A clean tick at the ceiling moves nothing visible, but it DOES start
+    // the clean run the relax timer measures, so the object is new and the
+    // ratio is not. main.ts compares ratio for exactly this reason.
     const state = at(2);
-    expect(stepResolution(state, window_(FAST), 100, LIMITS)).toBe(state);
+    const next = stepResolution(state, window_(FAST), 100, LIMITS);
+    expect(next.ratio).toBe(state.ratio);
+    expect(next.cleanSince).toBe(100);
   });
 });
 
@@ -157,11 +196,22 @@ describe("stepResolution — backing off", () => {
 
   it("does not latch the floor as hot — that would strand us there", () => {
     // Missing at the floor leaves nothing to retreat from; latching it would
-    // cap every future climb at 0.75 x 0.97 and pin the game at the floor.
+    // cap every future climb at 0.75 x 0.9 and pin the game at the floor.
     const state = at(LIMITS.floor, 0);
     const next = stepResolution(state, window_(SLOW), 10_000, LIMITS);
-    expect(next).toBe(state);
+    expect(next.ratio).toBe(state.ratio);
     expect(next.hotRatio).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it("leaves a reachable rung above the floor after landing ON it", () => {
+    // The regression this file missed: the guard above only fires once the
+    // ratio IS the floor, but the step that LANDS on the floor used to latch
+    // the ratio just above it — whose cap (x0.9) falls UNDER the floor, so
+    // there was no rung left and the controller could never climb again.
+    const settled = run(createResolution(2), () => SLOW, 200, LIMITS, 250);
+    expect(settled.ratio).toBe(LIMITS.floor);
+    const cap = Math.min(LIMITS.ceiling, settled.hotRatio * HOT_MARGIN);
+    expect(cap).toBeGreaterThan(LIMITS.floor);
   });
 });
 
@@ -175,7 +225,7 @@ describe("stepResolution — climbing back", () => {
     expect(UP_COOLDOWN_MS).toBeGreaterThan(DOWN_COOLDOWN_MS);
     const state = at(1, 10_000);
     const tooSoon = 10_000 + UP_COOLDOWN_MS - 1;
-    expect(stepResolution(state, window_(FAST), tooSoon, LIMITS)).toBe(state);
+    expect(stepResolution(state, window_(FAST), tooSoon, LIMITS).ratio).toBe(1);
   });
 
   it("never exceeds the ceiling, and stops dead once it is there", () => {
@@ -187,9 +237,9 @@ describe("stepResolution — climbing back", () => {
     expect(trace.at(-2)).toBe(LIMITS.ceiling);
   });
 
-  it("never climbs back to a ratio it retreated from (the hot latch)", () => {
+  it("never climbs back to a ratio it retreated from, while the latch holds", () => {
     const hot = 1.7;
-    let state = at(1.4, 0, hot);
+    let state = at(1.4, 0, hot, NO_RELAX);
     for (let i = 1; i <= 50; i++) {
       state = stepResolution(state, window_(FAST), i * 10_000, LIMITS);
       expect(state.ratio).toBeLessThanOrEqual(hot * HOT_MARGIN + 1e-9);
@@ -233,7 +283,11 @@ describe("stepResolution — it cannot oscillate", () => {
     // Cost model: frame time grows with the pixel count (ratio squared).
     // At ratio 2 that is 40 ms (a miss); the sustainable ratio is ~1.29.
     const costOf = (ratio: number) => 10 * ratio * ratio;
-    const trace = simulate(createResolution(2), costOf, 120);
+    const trace = simulate(
+      { ...createResolution(2), ...NO_RELAX },
+      costOf,
+      120,
+    );
     const settled = trace.slice(-25);
     expect(new Set(settled).size).toBe(1);
     const final = settled[0] as number;
@@ -246,9 +300,116 @@ describe("stepResolution — it cannot oscillate", () => {
 
   it("converges on a 1x panel too (floor and ceiling both bind)", () => {
     const limits = defaultLimits(1);
-    const trace = simulate(createResolution(1), () => FAST, 40, limits);
+    const trace = simulate(
+      { ...createResolution(1), ...NO_RELAX },
+      () => FAST,
+      40,
+      limits,
+    );
     expect(trace.at(-1)).toBe(1);
     expect(Math.max(...trace)).toBe(1);
+  });
+});
+
+describe("stepResolution — it recovers what a transient cost it", () => {
+  // These are the properties the first cut of this module did not have, and
+  // its suite could not see: every test below FAILS against the shipped
+  // controller, which froze on its second backoff and never moved again.
+
+  it("wins the ratio back after a hitch that is over", () => {
+    // Three seconds of bad frames, then a machine that is simply fine.
+    let state = run(createResolution(2), () => SLOW, 12, LIMITS, 250);
+    expect(state.ratio).toBeLessThan(2);
+    const dropped = state.ratio;
+    state = run(state, () => FAST, 4000, LIMITS, 250);
+    expect(state.ratio).toBeGreaterThan(dropped);
+    expect(state.ratio).toBe(LIMITS.ceiling);
+  });
+
+  it("climbs off the floor once the overload is gone", () => {
+    let state = run(createResolution(2), () => SLOW, 200, LIMITS, 250);
+    expect(state.ratio).toBe(LIMITS.floor);
+    state = run(state, () => FAST, 8000, LIMITS, 250);
+    expect(state.ratio).toBeGreaterThan(LIMITS.floor);
+  });
+
+  it("drops the latch entirely once relaxing lifts it past the ceiling", () => {
+    const state = run(
+      at(1.7, 0, 2, { cleanSince: null }),
+      () => FAST,
+      4000,
+      LIMITS,
+      250,
+    );
+    expect(state.hotRatio).toBe(Number.POSITIVE_INFINITY);
+    expect(state.relaxAfterMs).toBe(RELAX_AFTER_MS);
+  });
+
+  it("needs the clean run to be UNBROKEN — one miss restarts the timer", () => {
+    const hot = 1.7;
+    let state = at(1.5, 0, hot);
+    // 59 s clean, then a single bad window, repeated: never a full minute.
+    for (let cycle = 0; cycle < 20; cycle++) {
+      for (let i = 0; i < 59; i++) {
+        state = stepResolution(
+          state,
+          window_(FAST),
+          cycle * 60_000 + i * 1000,
+          LIMITS,
+        );
+      }
+      state = stepResolution(
+        state,
+        window_(SLOW),
+        cycle * 60_000 + 59_500,
+        LIMITS,
+      );
+    }
+    expect(state.hotRatio).toBeLessThanOrEqual(hot);
+  });
+
+  it("makes each probe rarer than the last, so it cannot become a pump", () => {
+    // A machine that genuinely cannot hold the ratio: every probe fails.
+    // The requirement is not that probing stops, but that its period grows
+    // without bound (capped), so what a player sees goes to zero.
+    const sustainable = 1.2;
+    const costOf = (ratio: number) => (ratio <= sustainable ? FAST : SLOW);
+    let state = { ...createResolution(2), relaxAfterMs: RELAX_AFTER_MS };
+    let now = 0;
+    const intervals: number[] = [];
+    let prevRelaxAfter = state.relaxAfterMs;
+    for (let i = 0; i < 20_000; i++) {
+      now += 250;
+      const next = stepResolution(
+        state,
+        window_(costOf(state.ratio)),
+        now,
+        LIMITS,
+      );
+      if (next.relaxAfterMs !== prevRelaxAfter) {
+        intervals.push(next.relaxAfterMs);
+        prevRelaxAfter = next.relaxAfterMs;
+      }
+      state = next;
+    }
+    // It did probe (otherwise the test proves nothing)...
+    expect(intervals.length).toBeGreaterThan(2);
+    // ...and every probe pushed the next one further out, up to the cap.
+    for (let i = 1; i < intervals.length; i++) {
+      expect(intervals[i] as number).toBeGreaterThanOrEqual(
+        intervals[i - 1] as number,
+      );
+    }
+    expect(intervals.at(-1)).toBe(RELAX_MAX_MS);
+    // And the excursion stayed small: never more than one step above what
+    // the machine can actually hold.
+    expect(state.ratio).toBeLessThanOrEqual(sustainable * 1.06 + 1e-9);
+  });
+
+  it("never relaxes a latch that is not there", () => {
+    const state = run(at(1.2), () => FAST, 10, LIMITS, 250);
+    expect(state.hotRatio).toBe(Number.POSITIVE_INFINITY);
+    expect(state.relaxAfterMs).toBe(RELAX_AFTER_MS);
   });
 });
 

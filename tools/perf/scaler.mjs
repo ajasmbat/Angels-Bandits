@@ -47,6 +47,30 @@ function freePort() {
   });
 }
 
+// Exactly one owner for the child processes, reachable from the happy path,
+// the error path and a signal alike. Spawning the server outside the try that
+// owns cleanup is how this family of scripts orphaned a node process that was
+// still holding a port nine hours later.
+let liveServer = null;
+let liveBrowser = null;
+
+async function killEverything() {
+  const server = liveServer;
+  const browser = liveBrowser;
+  liveServer = null;
+  liveBrowser = null;
+  // Server first: nothing else will ever reap it, while Playwright reaps its
+  // own browser on exit. A hung close() must not strand the kill.
+  if (server !== null) server.kill();
+  if (browser !== null) await browser.close().catch(() => {});
+}
+
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(sig, () => {
+    killEverything().finally(() => process.exit(130));
+  });
+}
+
 async function startServer(port) {
   const proc = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
     cwd: REPO,
@@ -69,6 +93,7 @@ async function main() {
   const port = await freePort();
   console.log(`starting server on :${port}…`);
   const server = await startServer(port);
+  liveServer = server;
   const browser = await chromium.launch({
     headless: true,
     // No --disable-gpu-vsync: this test needs the vsync the controller reads.
@@ -79,6 +104,7 @@ async function main() {
       "--autoplay-policy=no-user-gesture-required",
     ],
   });
+  liveBrowser = browser;
   let failed = false;
   try {
     const page = await browser.newPage({
@@ -201,13 +227,13 @@ async function main() {
       if (!ok) failed = true;
     }
   } finally {
-    await browser.close();
-    server.kill();
+    await killEverything();
   }
   process.exit(failed ? 1 : 0);
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error(err);
+  await killEverything();
   process.exit(1);
 });

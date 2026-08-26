@@ -61,10 +61,22 @@ export class FrameMeter {
   private readonly calls: Float64Array;
   private head = 0;
   private filled = 0;
-  /** Scratch for stats()/tail() — reused so summarising never allocates. */
+  /**
+   * Scratch for tail(), which the resolution controller calls at 4 Hz — that
+   * one is allocation-free. `stats()` is NOT: it sorts, so it copies first,
+   * which is why it is documented as a few-Hz call rather than a per-frame one.
+   * A retained tail() result is invalidated by the next tail() call.
+   */
   private readonly scratch: number[] = [];
 
-  constructor(readonly capacity = 1200) {
+  /**
+   * 4096, not 1200: the harness captures a 5 s window, and any configuration
+   * cheaper than ~4.2 ms a frame overruns 1200 samples and wraps the ring —
+   * silently dropping the oldest frames and capping `count`, so `worst` is
+   * no longer the worst of the window it claims to summarise. Two Float64
+   * arrays at this size are 64 KB, which is nothing next to being wrong.
+   */
+  constructor(readonly capacity = 4096) {
     this.times = new Float64Array(capacity);
     this.calls = new Float64Array(capacity);
   }

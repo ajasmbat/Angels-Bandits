@@ -41,25 +41,52 @@ export const STEP_UP = 1.06;
 export const DOWN_COOLDOWN_MS = 600;
 export const UP_COOLDOWN_MS = 6000;
 /**
- * Once a ratio has missed the budget we never climb back to it — only to
- * this fraction of it. This latch is what makes the controller CONVERGE
- * rather than pump between a ratio that works and one that does not.
+ * Once a ratio has missed the budget we never climb straight back to it —
+ * only to this fraction of it. The latch is what stops the controller
+ * pumping between a ratio that works and one that does not.
  *
  * 0.9, not something closer to 1, because of what the browser QA showed
  * (tools/perf/scaler.mjs): at 0.97 the climb lands 3 % under a ratio we
  * already know misses, misses again, backs off 5 %, and repeats — a slow
- * 2-5 % pump that had not settled after 30 s. Backing off a clear 10 %
- * costs a little sharpness and settles in at most two probes, because the
- * first backoff is 15 % and 0.85 < 0.9 means the retreat ratio is already
- * above the next cap.
+ * 2-5 % pump that had not settled after 30 s.
  *
- * There is deliberately no "forget" timer: a resolution change is visible,
- * and re-climbing 10 % of pixel ratio every time the view opens up would
- * trade a fixed, quiet image for a twitchy one. The latch is cleared only
- * when the frame is RESIZED, because that changes the pixel count the
- * latch was learned at (see main.ts's resize handler).
+ * NOTE the trap this margin sets, which shipped as a bug and is the reason
+ * `stepResolution` is shaped the way it is: a retreat that LANDS above
+ * `hotRatio * HOT_MARGIN` can never climb again, because the up-branch
+ * refuses any step that would not raise the ratio. `STEP_DOWN_FINE` (0.95)
+ * is shallower than this margin, so every fine backoff lands above its own
+ * cap. That froze the controller permanently — a 3 s hitch at boot pinned
+ * the session at 1.46 and 83 simulated minutes of flawless frames never
+ * recovered it. Headroom-for-recovery and room-to-pump are the same
+ * quantity, so it cannot be fixed by widening the gap between the steps.
+ * Recovery comes from RELAXING the latch on evidence instead — see
+ * RELAX_AFTER_MS.
  */
 export const HOT_MARGIN = 0.9;
+
+/**
+ * How long every frame must stay clean before the latch is relaxed one
+ * notch (`hotRatio /= HOT_MARGIN`), letting the controller win resolution
+ * back that a transient cost it.
+ *
+ * This is the "forget timer" the first cut of this module deliberately did
+ * not have, and the objection it was left out for was FREQUENCY: re-climbing
+ * 10 % of pixel ratio every time the view opens up trades a fixed, quiet
+ * image for a twitchy one. A minute of UNBROKEN clean frames is not that —
+ * it is a different machine state — and without it any transient hitch is a
+ * permanent penalty for the rest of the session.
+ *
+ * The interval DOUBLES at every relaxation, capped at RELAX_MAX_MS, which is
+ * what keeps this from becoming the pump it replaced. If the machine really
+ * did get faster the ratio reaches the ceiling in three or four relaxations
+ * and the latch stops binding entirely; if it did not, the probes fail and
+ * get geometrically rarer (1 → 2 → 4 → 8 min) until they are invisible.
+ * So the anti-pump guarantee is now: at most one +6 % probe per interval,
+ * and the interval never shrinks.
+ */
+export const RELAX_AFTER_MS = 60_000;
+/** Ceiling on the relax interval — past here, probing has effectively stopped. */
+export const RELAX_MAX_MS = 480_000;
 
 export interface ResolutionState {
   /** Device-pixel ratio to draw at. */
@@ -68,10 +95,19 @@ export interface ResolutionState {
   changedAt: number;
   /**
    * Lowest ratio we have ever RETREATED from; Infinity until we retreat
-   * once. Monotonically non-increasing, and it caps every later climb — that
-   * is the whole convergence argument.
+   * once, and Infinity again once relaxation lifts it clear of the ceiling.
+   * It caps every later climb — that is the convergence argument.
    */
   hotRatio: number;
+  /**
+   * Clock reading of the first tick of the current UNBROKEN clean run, or
+   * null when the last window was not clean. A single missed window sends
+   * this back to null, so the relax timer measures sustained health rather
+   * than an average.
+   */
+  cleanSince: number | null;
+  /** Clean time required before the next relaxation; doubles at each one. */
+  relaxAfterMs: number;
 }
 
 export interface ResolutionLimits {
@@ -88,6 +124,8 @@ export function createResolution(
     ratio: clampRatio(devicePixelRatio, defaultLimits(devicePixelRatio)),
     changedAt: now,
     hotRatio: Number.POSITIVE_INFINITY,
+    cleanSince: null,
+    relaxAfterMs: RELAX_AFTER_MS,
   };
 }
 
@@ -109,17 +147,23 @@ export function missShare(frames: readonly number[]): number {
 }
 
 /**
- * One controller tick. Returns the SAME state object when nothing changes,
- * so callers can test identity to know whether to resize the renderer.
+ * One controller tick.
  *
- * Three outcomes, and only ever one per call:
+ * Compare `ratio` — NOT object identity — to decide whether to resize the
+ * renderer. The state also carries clean-run bookkeeping for the relax
+ * timer, which advances on ticks that do not move the ratio at all; a caller
+ * that treated every new object as a resize would reset its frame window
+ * every tick and starve the controller of a full window forever.
+ *
+ * Four outcomes, and only ever one per call:
  *  - misses at or over MISS_SHARE  → step down (and latch `hotRatio`)
- *  - a completely clean window     → step up, capped by the latch
+ *  - a clean window, latch due     → relax the latch one notch
+ *  - a clean window, latch not due → step up, capped by the latch
  *  - anything between              → hold; this band is the hysteresis
  *
- * The two triggers are mutually exclusive by construction (a window cannot
- * both contain >=10 % misses and zero misses), so no single window can ever
- * argue for both directions.
+ * The down and clean triggers are mutually exclusive by construction (a
+ * window cannot both contain >=10 % misses and zero misses), so no single
+ * window can ever argue for both directions.
  */
 export function stepResolution(
   state: ResolutionState,
@@ -131,28 +175,64 @@ export function stepResolution(
   const share = missShare(frames);
 
   if (share >= MISS_SHARE) {
-    if (now - state.changedAt < DOWN_COOLDOWN_MS) return state;
+    // Any miss ends the clean run outright — the relax timer measures
+    // sustained health, so it restarts rather than accumulating.
+    const broken =
+      state.cleanSince === null ? state : { ...state, cleanSince: null };
+    if (now - state.changedAt < DOWN_COOLDOWN_MS) return broken;
     const step =
       state.hotRatio === Number.POSITIVE_INFINITY ? STEP_DOWN : STEP_DOWN_FINE;
     const next = clampRatio(state.ratio * step, limits);
-    // Already on the floor: nothing left to give, and nothing to latch —
-    // `hotRatio` names a ratio we RETREATED from, so the floor never enters
-    // it (latching it there would strand us at the floor forever).
-    if (next >= state.ratio) return state;
+    if (next >= state.ratio) return broken;
+    // `hotRatio` names a ratio we RETREATED from, and it is only meaningful
+    // while the cap it implies is still reachable. Latching a ratio whose
+    // cap falls under the floor would pin the game at the floor with no rung
+    // above it — which is exactly what the step that LANDS on the floor used
+    // to do, one step before the guard that was written to prevent it.
+    const latchable = state.ratio * HOT_MARGIN >= limits.floor;
     return {
+      ...broken,
       ratio: next,
       changedAt: now,
-      hotRatio: Math.min(state.hotRatio, state.ratio),
+      hotRatio: latchable
+        ? Math.min(state.hotRatio, state.ratio)
+        : state.hotRatio,
     };
   }
 
   if (share === 0) {
-    if (now - state.changedAt < UP_COOLDOWN_MS) return state;
+    const cleanSince = state.cleanSince ?? now;
+    const base = state.cleanSince === null ? { ...state, cleanSince } : state;
+
+    // Relaxation comes FIRST: while the latch binds, the climb below is
+    // capped by it, and a frozen controller (ratio already at its cap) has
+    // no other way out. Only relevant while there is a latch to relax.
+    if (
+      state.hotRatio !== Number.POSITIVE_INFINITY &&
+      now - cleanSince >= state.relaxAfterMs
+    ) {
+      const relaxed = state.hotRatio / HOT_MARGIN;
+      // Once the relaxed cap clears the ceiling the latch no longer binds
+      // anything: drop it, and let the interval start over from scratch.
+      const cleared = relaxed * HOT_MARGIN >= limits.ceiling;
+      return {
+        ...base,
+        hotRatio: cleared ? Number.POSITIVE_INFINITY : relaxed,
+        cleanSince: now,
+        relaxAfterMs: cleared
+          ? RELAX_AFTER_MS
+          : Math.min(state.relaxAfterMs * 2, RELAX_MAX_MS),
+      };
+    }
+
+    if (now - state.changedAt < UP_COOLDOWN_MS) return base;
     const cap = Math.min(limits.ceiling, state.hotRatio * HOT_MARGIN);
     const next = Math.max(limits.floor, Math.min(state.ratio * STEP_UP, cap));
-    if (next <= state.ratio) return state;
-    return { ...state, ratio: next, changedAt: now };
+    if (next <= state.ratio) return base;
+    return { ...base, ratio: next, changedAt: now };
   }
 
-  return state;
+  // The hysteresis band. Not clean, so the relax timer restarts; not bad
+  // enough to be evidence for backing off.
+  return state.cleanSince === null ? state : { ...state, cleanSince: null };
 }

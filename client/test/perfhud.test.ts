@@ -172,3 +172,16 @@ describe("perf HUD markup", () => {
     expect(rule).toContain("user-select: none");
   });
 });
+
+describe("perfHudText — the GPU skip count", () => {
+  it("says nothing when every frame was timed", () => {
+    const text = perfHudText(STATS, { ratio: 2, auto: true }, "off", STATS, 0);
+    expect(text).toContain("GPU p50");
+    expect(text).not.toContain("SKIPPED");
+  });
+
+  it("shouts when the timer dropped frames, because those are the worst ones", () => {
+    const text = perfHudText(STATS, { ratio: 2, auto: true }, "off", STATS, 17);
+    expect(text).toContain("!17 SKIPPED");
+  });
+});

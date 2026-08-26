@@ -71,6 +71,8 @@ import { PlaneLights } from "./render/planelights";
 import { RemotePlanes } from "./render/remotes";
 import { MSAA_SAMPLES, readRenderOptions } from "./render/renderopts";
 import {
+  RELAX_AFTER_MS,
+  type ResolutionState,
   WINDOW_FRAMES,
   createResolution,
   defaultLimits,
@@ -140,16 +142,26 @@ const camera = new THREE.PerspectiveCamera(
 // headless perf harness can measure two AA modes and a pinned pixel ratio
 // out of one build (client/src/render/renderopts.ts).
 const renderOpts = readRenderOptions(window.location.search);
-const resLimits = defaultLimits(window.devicePixelRatio);
+// Recomputed on resize: browser zoom and dragging the window to another
+// panel both change devicePixelRatio AND fire `resize`, and a stale ceiling
+// either strands the scaler below the panel or lets it burn 4x the pixels.
+let resLimits = defaultLimits(window.devicePixelRatio);
 let resAuto = renderOpts.pixelRatio === "auto";
 let resolution =
   renderOpts.pixelRatio === "auto"
     ? createResolution(window.devicePixelRatio, performance.now())
-    : {
-        ratio: renderOpts.pixelRatio,
-        changedAt: 0,
-        hotRatio: Number.POSITIVE_INFINITY,
-      };
+    : pinnedResolution(renderOpts.pixelRatio);
+
+/** A pinned (non-adaptive) state: clamped to the panel, with no latch. */
+function pinnedResolution(ratio: number): ResolutionState {
+  return {
+    ratio: Math.min(resLimits.ceiling, Math.max(resLimits.floor, ratio)),
+    changedAt: 0,
+    hotRatio: Number.POSITIVE_INFINITY,
+    cleanSince: null,
+    relaxAfterMs: RELAX_AFTER_MS,
+  };
+}
 
 // `antialias` is a CONTEXT attribute — it antialiases the default
 // framebuffer, and with the composer in the chain the scene never touches
@@ -240,7 +252,13 @@ window.addEventListener("resize", () => {
   // the latch is stale: leaving fullscreen must be allowed to win the
   // resolution back. Only the latch is cleared — the current ratio stays,
   // and the controller re-earns anything above it the usual way.
-  resolution = { ...resolution, hotRatio: Number.POSITIVE_INFINITY };
+  resLimits = defaultLimits(window.devicePixelRatio);
+  resolution = {
+    ...resolution,
+    hotRatio: Number.POSITIVE_INFINITY,
+    cleanSince: null,
+    relaxAfterMs: RELAX_AFTER_MS,
+  };
   resFrames.reset();
 });
 
@@ -606,13 +624,26 @@ const resFrames = new FrameMeter(WINDOW_FRAMES * 3);
 // GPU-side cost of the same frames, when the harness asked for it. Null on
 // drivers without the timer-query extension — a missing number, never an
 // error (client/src/render/gputimer.ts).
+// 64, not 16: begin() has to skip a frame whenever every query is still in
+// flight, and the pool drains precisely when the GPU is behind — i.e. on the
+// expensive frames p95/p99/worst are made of. A deeper pool plus the skip
+// COUNT (surfaced below) is what makes the tail believable.
 const gpuTimer = renderOpts.gpuTimer
-  ? GpuTimer.create(renderer.getContext(), 16)
+  ? GpuTimer.create(renderer.getContext(), 64)
   : null;
 const gpuFrames = new FrameMeter();
 /** How often the resolution controller looks; it is rate-limited past this. */
 const RES_EVAL_MS = 250;
 let nextResEvalAt = 0;
+/**
+ * Frames drawn in the first few seconds are not evidence about this machine:
+ * they pay for shader compiles, pipeline-state creation and texture uploads,
+ * none of which recur. Without this grace the controller's FIRST decision
+ * lands inside that window on every client, latches a penalty nobody earned,
+ * and (before the latch could be relaxed) kept it for the whole session.
+ */
+const RES_WARMUP_MS = 3000;
+let resWarmupUntil = -1;
 const perfHud = new PerfHud();
 bindPerfHudKey(perfHud);
 if (renderOpts.perfHud) perfHud.setOpen(true);
@@ -636,6 +667,12 @@ declare global {
       perfSamples: () => number[];
       /** GPU-only frame cost over the same window; null unless ?gputime=1. */
       gpuStats: () => FrameStats | null;
+      /**
+       * Frames the GPU timer could not measure since the last perfReset().
+       * Non-zero means the tail of gpuStats() is missing its worst samples
+       * and must not be quoted — see render/gputimer.ts.
+       */
+      gpuStarved: () => number | null;
       /** Drop the window — the harness calls this at each segment boundary. */
       perfReset: () => void;
       /** Live render config: pixel ratio, its limits, and the AA mode. */
@@ -729,9 +766,11 @@ window.__ab = {
   perfStats: () => frames.stats(),
   perfSamples: () => frames.samples(),
   gpuStats: () => (gpuTimer === null ? null : gpuFrames.stats()),
+  gpuStarved: () => (gpuTimer === null ? null : gpuTimer.starved),
   perfReset: () => {
     frames.reset();
     gpuFrames.reset();
+    gpuTimer?.resetStarved();
   },
   render: () => {
     const size = renderer.getDrawingBufferSize(new THREE.Vector2());
@@ -754,11 +793,7 @@ window.__ab = {
       resolution = createResolution(window.devicePixelRatio, performance.now());
     } else {
       resAuto = false;
-      resolution = {
-        ratio: Math.min(resLimits.ceiling, Math.max(resLimits.floor, ratio)),
-        changedAt: performance.now(),
-        hotRatio: Number.POSITIVE_INFINITY,
-      };
+      resolution = pinnedResolution(ratio);
     }
     applyPixelRatio(resolution.ratio);
     resFrames.reset();
@@ -1148,7 +1183,12 @@ renderer.setAnimationLoop((now) => {
   if (gpuTimer !== null) {
     for (const ms of gpuTimer.drain()) gpuFrames.push(ms, drawCalls);
   }
-  if (resAuto && now >= nextResEvalAt) {
+  if (resWarmupUntil < 0) resWarmupUntil = now + RES_WARMUP_MS;
+  if (resAuto && now < resWarmupUntil) {
+    // Keep the window empty rather than merely ignoring it, so the first
+    // decision is taken on 45 frames that are ALL post-warm-up.
+    resFrames.reset();
+  } else if (resAuto && now >= nextResEvalAt) {
     nextResEvalAt = now + RES_EVAL_MS;
     const next = stepResolution(
       resolution,
@@ -1156,8 +1196,13 @@ renderer.setAnimationLoop((now) => {
       now,
       resLimits,
     );
-    if (next !== resolution) {
-      resolution = next;
+    // RATIO, not identity: the controller also advances clean-run
+    // bookkeeping on ticks that move nothing, and treating those as a
+    // change would reset the window every 250 ms — the controller would
+    // then never hold a full window and never decide anything again.
+    const moved = next.ratio !== resolution.ratio;
+    resolution = next;
+    if (moved) {
       applyPixelRatio(next.ratio);
       // Frames drawn at the previous ratio are no longer evidence about
       // this one — judging the new ratio on them double-steps the scaler.
@@ -1170,6 +1215,7 @@ renderer.setAnimationLoop((now) => {
     { ratio: resolution.ratio, auto: resAuto },
     renderOpts.aa,
     () => (gpuTimer === null ? null : gpuFrames.stats()),
+    () => gpuTimer?.starved ?? 0,
   );
 
   // HUD + rolling perf counters (~2 Hz refresh).

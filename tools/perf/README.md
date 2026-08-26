@@ -74,6 +74,23 @@ report prints and stores its `loadavg`; check it before trusting a small
 delta. Numbers recorded here at load ~3 are repeatable to ~5 %, and the same
 build at load ~220 is not repeatable at all.
 
+**And the GPU has a state of its own, which no `loadavg` reading shows.** The
+same build, same seed, same path, identical draw calls and a wall-clock p50
+inside 5 % has been measured on this M3 at both ~7 ms and ~19 ms of GPU p50 on
+different days. Nothing about the scene changed; the GPU was charging a
+different price for the same work. Two consequences, and they are the whole
+reason `--ab` exists:
+
+- **An absolute number is only comparable to numbers recorded in the same
+  session.** Do not read a committed baseline against a fresh run and call the
+  difference a regression. The determinism check says which case it is: if it
+  fails while draw calls held and wall clock did not move, that is the GPU
+  state, not the build, and the harness now says so instead of blaming the
+  pinning.
+- **A paired `--ab` delta survives it**, because the two arms are interleaved
+  through whatever state the machine is in. Quote the delta. That is the
+  claim.
+
 **There is a measurement floor at roughly 4 ms of GPU time.** Below it the
 timer query is measuring its own overhead and the queue depth as much as the
 scene: pinned to `--res 1` the scene costs ~2–4 ms and three passes read core

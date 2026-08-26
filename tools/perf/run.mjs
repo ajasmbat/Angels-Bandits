@@ -276,7 +276,9 @@ async function flySegment(page, seg, sampleMs) {
         // Frames the GPU timer could not open a query for. Non-zero means
         // its p95/worst below are missing their tail — the pool empties on
         // exactly the frames those percentiles are made of.
-        gpuStarved: ab.gpuStarved(),
+        // Optional so the harness can still measure an OLDER client build
+        // (checked out to compare against), which has no such hook.
+        gpuStarved: ab.gpuStarved?.() ?? null,
         gpuP50: gpu === null ? null : gpu.p50,
         gpuP95: gpu === null ? null : gpu.p95,
         gpuWorst: gpu === null ? null : gpu.worst,
@@ -848,10 +850,27 @@ async function main() {
       `  tolerance: draw calls identical + GPU p50 within ${TOLERANCE.gpuP50Pct}% or ${TOLERANCE.gpuP50Ms.toFixed(1)} ms, whichever is looser (wall p50 reported, not asserted) — ${d.pass ? "PASS" : "FAIL"}`,
     );
     if (!d.pass) {
-      console.error(
-        "  !! the harness is not pinning something; fix that before " +
-          "trusting any optimisation measured against it.",
-      );
+      // "It disagreed" has two very different causes and the harness already
+      // holds the evidence to tell them apart, so it says WHICH rather than
+      // always blaming the pinning. Draw calls are an integer count of what
+      // was submitted: if they held, the scene did not move, and the spread
+      // is in what the machine charged for the same work.
+      if (!d.drawCallsAgreeEverywhere) {
+        console.error(
+          "  !! DRAW CALLS MOVED — the harness stopped pinning the scene. Nothing measured against it is trustworthy until that is fixed.",
+        );
+      } else if (d.worstP50SpreadPct >= d.worstGpuP50SpreadPct) {
+        console.error(
+          `  !! the machine was busy: wall p50 moved ${d.worstP50SpreadPct.toFixed(1)}% alongside the GPU's ${d.worstGpuP50SpreadPct.toFixed(1)}%, and contention raises both together. Re-run on a quieter box.`,
+        );
+      } else {
+        console.error(
+          `  !! the SCENE held (draw calls identical, wall p50 within ${d.worstP50SpreadPct.toFixed(1)}%) but GPU cost moved ${d.worstGpuP50SpreadPct.toFixed(1)}% — that is the GPU's own clock/occupancy state between passes, not the build.`,
+        );
+        console.error(
+          "     Absolute numbers from this run are not comparable to a baseline recorded in a different GPU state. A paired --ab delta still is: both arms are interleaved through the same state, which is exactly what --ab is for.",
+        );
+      }
     }
   }
 

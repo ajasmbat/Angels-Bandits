@@ -32,7 +32,11 @@ export type AaMode = "legacy" | "off" | "msaa" | "smaa";
  * while the city itself stayed jagged. Dropping it is visually identical and
  * costs nothing to give up.
  *
- * GPU p50 at pixelRatio 2, measured by tools/perf on an M3:
+ * GPU p50 at pixelRatio 2, measured by tools/perf on an M3. Read these as a
+ * RANKING, not as absolutes: this GPU charges materially different prices for
+ * the identical scene on different days (tools/perf/README.md documents a
+ * 7 ms / 19 ms spread on the same build), so what is durable here is the
+ * order and the ratios, which came from interleaved `--ab` runs.
  *
  *   legacy (antialias:true, no scene AA)   16.2 ms   <- what shipped
  *   off    (no scene AA)                    8.5 ms   <- ships now, -47 %

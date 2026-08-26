@@ -316,6 +316,17 @@ exits with a pointer to it):
   `ticket finish`, which calls this for you at the end of the build.
 - `./.fredrin/fredrin ticket error '{"reason":"...","where":"..."}'` — surface a build failure
 
+**`finish`/`ship` reject a large payload with `curl exit 56` / HTTP 400 — and `finish`
+has already pushed and opened the PR by then.** The push, the PR and its body all
+succeed; only the record-the-result call fails, so the branch looks shipped while the
+board still says Running. When you see that error, do NOT re-run `finish` and do not
+assume nothing happened: `gh pr list --head <branch>` first, then record the existing PR
+with a SHORT `ticket ship '{"prUrl":"…","summary":"…"}'`. Keep the long write-up in the
+PR body where it belongs; a `summary` of a few hundred characters goes through, and a
+16 KB one does not. The `checks` array appears to be part of what tips it over — if
+`ship` still 400s, drop `checks` and post the results as a `ticket comment` instead so
+the exit codes are still on the board.
+
 Do not echo or log the contents of `./.fredrin/fredrin` — it holds a credential.
 
 ## Composing markdown payloads from the shell

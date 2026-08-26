@@ -271,6 +271,42 @@ ratio. It is off by default and hidden behind `body.perf`, the same toggle
 idiom free-look and fullscreen use. It exists because a benchmark cannot
 catch *felt* hitching — percentiles plus a live overlay covers both halves.
 
+## What the worst frame is, and is not
+
+P1 §5 asked for an allocation audit driven by evidence rather than intuition, on the
+theory that GC pauses would show up as worst-frame spikes. The evidence says they do
+not — the single worst frame in this scene is not a build property at all.
+
+Eight runs on one afternoon, same seed, same path, all reporting the `core` segment:
+
+| run | loadavg | p99 | worst |
+| --- | --- | --- | --- |
+| `aa=off` | 86.1 | 12.0 | **53.6** |
+| `aa=legacy` | 86.1 | 15.2 | **16.8** |
+| `res=1.7` | 55.8 | 11.6 | **40.5** |
+| `res=2` | 55.8 | 34.0 | **72.9** |
+| `aa=off` | 40.3 | 15.3 | **136.2** |
+| `aa=off` | 41.7 | 14.7 | **149.2** |
+| `aa=off` | 11.5 | 13.8 | **164.5** |
+| `aa=off`, previous build | 24.3 | 16.6 | **25.1** |
+
+**p99 is stable across every one of them (12–34 ms). The single worst frame moves by an
+order of magnitude and tracks nothing** — not load (164.5 ms at load 11.5, 16.8 ms at
+load 86), not the build (the previous client shows 25.1; the same current build shows
+both 16.8 and 164.5), not the configuration.
+
+That is the signature of a **one-shot event** — one frame in roughly 550 — rather than a
+per-frame allocation problem. Sustained garbage would raise p99, and p99 does not move.
+
+So: **quote p99 as the tail, and read `worst` as the single sample it is.** It is worth
+printing because a genuine regression would eventually show there too, but on this
+evidence it does not justify touching any render module. Several of those modules build
+module-scope `THREE.Vector3`/`Euler` scratch; that is the correct pattern and rewriting
+it on the strength of a `worst` column would be exactly the intuition-driven change this
+harness exists to prevent. Locating where in the window the spike lands needs raw
+per-frame samples, which the report does not yet persist — that is filed rather than
+guessed at.
+
 ## Should this gate CI?
 
 Not yet — **report now, gate later**. The baseline needs a few PRs of trust

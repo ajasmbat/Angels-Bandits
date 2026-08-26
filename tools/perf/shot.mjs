@@ -356,9 +356,7 @@ async function main() {
     console.log(`crop edge share: ${(energy * 100).toFixed(1)}%`);
     if (energy < MIN_CROP_EDGE_SHARE) {
       console.error(
-        `\n!! the crop at (${CROP.x}, ${CROP.y}) is ${(energy * 100).toFixed(1)}% edge — it is` +
-          " magnifying flat sky, so the panels below prove nothing by eye." +
-          " Move CROP onto a silhouette (open tools/perf/aa-frame.png and pick one).",
+        `\n!! the crop at (${CROP.x}, ${CROP.y}) is ${(energy * 100).toFixed(1)}% edge — it is magnifying flat sky, so the panels below prove nothing by eye. Move CROP onto a silhouette (open tools/perf/aa-frame.png and pick one).`,
       );
     }
     const byMode = Object.fromEntries(shots.map((s) => [s.mode, s]));
@@ -387,9 +385,7 @@ async function main() {
     const controlDiff = diffs[0];
     if (controlDiff.differingPct / 100 > STORM_FLASH_SHARE) {
       console.error(
-        `\n!! the control differs by ${controlDiff.differingPct.toFixed(1)}% — a lightning strike re-lit the` +
-          " whole frame between two captures, so every row below is measured against" +
-          " a floor that is not the animation floor. Re-run; this says nothing about the build.",
+        `\n!! the control differs by ${controlDiff.differingPct.toFixed(1)}% — a lightning strike re-lit the whole frame between two captures, so every row below is measured against a floor that is not the animation floor. Re-run; this says nothing about the build.`,
       );
     }
 

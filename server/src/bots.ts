@@ -25,6 +25,11 @@
 
 import { type Building, mulberry32 } from "@angels-bandits/common/city";
 import {
+  EMPTY_MOVERS,
+  type MoverField,
+  collideBotMovers,
+} from "@angels-bandits/common/city/movers";
+import {
   nearestStreet,
   nextIntersection,
 } from "@angels-bandits/common/city/street";
@@ -64,6 +69,7 @@ import {
   BOT_LOS_MEMORY_MS,
   BOT_LOS_TESTS_MAX,
   BOT_MIN_ALT,
+  BOT_MOVER_CLEAR,
   BOT_PATROL_ALT_MAX,
   BOT_PATROL_ALT_MIN,
   BOT_PROBE_RADIUS,
@@ -208,6 +214,22 @@ export class RoomBots {
     seed: number,
     /** The seeded city — the SAME Building[] players collide with. */
     private readonly buildings: readonly Building[],
+    /**
+     * The seeded moving obstacles (L2), from the SAME seed as `buildings`.
+     * Optional with an empty default so the twenty-odd existing call sites in
+     * the tests keep compiling — and note that none of `server/test/**` is
+     * covered by `tsc -p server` (its tsconfig is `include: ["src"]`), so a
+     * required parameter here would land as a runtime surprise, not a type
+     * error.
+     */
+    private readonly movers: MoverField = EMPTY_MOVERS,
+    /**
+     * Whether the nose/fan probes consider movers. The ONLY reason this is a
+     * knob: it is the negative control for the probe wiring — a sim with it
+     * off must actually fly bots into jibs, which is what proves the wiring
+     * is load-bearing rather than decorative. Never turn it off in a room.
+     */
+    private readonly probeMovers = true,
   ) {
     this.rand = mulberry32(seed);
     // Built once per room over the shared city array. Bots are the heaviest
@@ -410,7 +432,9 @@ export class RoomBots {
       if (decide) this.decide(bot, now, contacts);
       bot.flight = stepFlight(bot.flight, bot.input, BOT_DT);
 
-      // Identical geometry to players: tier boxes + ground, PLAYER_RADIUS.
+      // Identical geometry to players: tier boxes + ground, PLAYER_RADIUS —
+      // plus the L2 movers a bot is allowed to hit (crane geometry and the
+      // blimp; helicopters are bot-transparent, see collideBotMovers).
       if (
         hitsGround(bot.flight.pos) ||
         collideCity(
@@ -418,7 +442,8 @@ export class RoomBots {
           PLAYER_RADIUS,
           this.buildings,
           this.cityIndex,
-        )
+        ) ||
+        collideBotMovers(bot.flight.pos, PLAYER_RADIUS, this.movers, now)
       ) {
         bot.alive = false;
         crashes.push(bot.entry.id);
@@ -445,7 +470,7 @@ export class RoomBots {
     const margin = wasRecover ? BOT_RECOVER_CLEAR : 1;
     const ceiling = this.nearCeiling(bot.flight, margin);
     const recover = (dive: boolean): void => {
-      if (!wasRecover) bot.breakTurn = this.clearSide(bot.flight);
+      if (!wasRecover) bot.breakTurn = this.clearSide(bot.flight, now);
       // Down among the towers a recovery also has to SLOW: turn radius is
       // speed / 0.765 rad/s, so the bot that keeps full power through a
       // pull-up needs 100 m to change direction and has maybe 60 m of probe.
@@ -473,7 +498,14 @@ export class RoomBots {
     // override it always was; ENGAGE gets first refusal through the fan below,
     // because a binary override can only ever produce avoidance, never weaving.
     const fwd = flightForward(bot.flight);
-    const blocked = this.blockedAlong(bot.flight, fwd.x, fwd.z, fwd.y, margin);
+    const blocked = this.blockedAlong(
+      bot.flight,
+      now,
+      fwd.x,
+      fwd.z,
+      fwd.y,
+      margin,
+    );
 
     if (now < bot.evadeUntil) {
       if (blocked) {
@@ -532,7 +564,7 @@ export class RoomBots {
       // only, so a normalized survivor and the raw lead vector are the same
       // command). A blocked line yields the nearest clear heading instead of
       // cancelling the chase.
-      const heading = this.fanAround(bot, aim, margin);
+      const heading = this.fanAround(bot, now, aim, margin);
       if (heading) {
         // Weaving means the terrain is close, and turn radius is speed / 0.765
         // rad/s — so the bot that keeps its throttle buried is the bot that
@@ -741,6 +773,7 @@ export class RoomBots {
    */
   private fanAround(
     bot: Bot,
+    now: number,
     aim: Vec3,
     margin: number,
   ): { dir: Vec3; direct: boolean } | null {
@@ -760,6 +793,7 @@ export class RoomBots {
     if (
       !this.blockedAlong(
         bot.flight,
+        now,
         straight.x,
         straight.z,
         straight.y,
@@ -790,7 +824,15 @@ export class RoomBots {
     for (const times of [BOT_FAN_TIMES, BOT_CANYON_PROBE_TIMES]) {
       for (const { dir } of ranked) {
         if (
-          !this.blockedAlong(bot.flight, dir.x, dir.z, dir.y, margin, times)
+          !this.blockedAlong(
+            bot.flight,
+            now,
+            dir.x,
+            dir.z,
+            dir.y,
+            margin,
+            times,
+          )
         ) {
           return { dir, direct: false };
         }
@@ -811,6 +853,7 @@ export class RoomBots {
    */
   private blockedAlong(
     flight: FlightState,
+    now: number,
     dx: number,
     dz: number,
     dy: number,
@@ -820,8 +863,10 @@ export class RoomBots {
     const canyon = flight.pos.y < BOT_CANYON_PROBE_ALT;
     const radius =
       (canyon ? BOT_CANYON_PROBE_RADIUS : BOT_PROBE_RADIUS) * margin;
-    for (const t of times ??
-      (canyon ? BOT_CANYON_PROBE_TIMES : BOT_PROBE_TIMES)) {
+    const profile =
+      times ?? (canyon ? BOT_CANYON_PROBE_TIMES : BOT_PROBE_TIMES);
+    for (let i = 0; i < profile.length; i++) {
+      const t = profile[i] ?? 0;
       const s = flight.speed * t;
       const p = canonicalize({
         x: flight.pos.x + dx * s,
@@ -830,6 +875,27 @@ export class RoomBots {
       });
       if (p.y - radius <= 0) return true;
       if (collideCity(p, radius, this.buildings, this.cityIndex)) return true;
+      if (!this.probeMovers) continue;
+      // Movers need a SWEPT test, not the point sample buildings get. This
+      // profile places samples 16-22 m apart at combat speed, which is fine
+      // against a 40 m facade and useless against a 2.6 m crane boom — it
+      // simply falls between two samples. So the mover sphere is grown to
+      // half the gap to the previous sample, which makes consecutive samples
+      // tile the probe ray exactly instead of dotting it. Over-avoidance is
+      // the safe direction here: bots must never die to scenery.
+      // The first sample also has to cover the gap back to the bot's NOSE.
+      // Decisions are 200 ms apart (BOT_DECISION_EVERY at TICK_DOWN_HZ), which
+      // is ~11 m of travel at combat speed — more than enough for a 6 m mast
+      // to appear inside the first sample's blind spot between two decisions.
+      const prev = i === 0 ? -s : flight.speed * (profile[i - 1] ?? 0);
+      const swept = radius + (s - prev) / 2 + BOT_MOVER_CLEAR;
+      // Posed at the ARRIVAL time, not now: `p` is where the bot will be t
+      // seconds from here, and the jib slews the whole way there — over
+      // max(BOT_PROBE_TIMES) that is more than PLAYER_RADIUS of tip travel,
+      // so probing the present steers the bot into where the jib is going.
+      if (collideBotMovers(p, swept, this.movers, now + t * 1000)) {
+        return true;
+      }
     }
     return false;
   }
@@ -837,7 +903,7 @@ export class RoomBots {
   /** Which break-turn direction has clearer air? Probes the nose swung ±60°,
    * over the fan's longer STEERING horizon: this picks which way to go, and a
    * 0.9 s look cannot see far enough to make that choice well. */
-  private clearSide(flight: FlightState): 1 | -1 {
+  private clearSide(flight: FlightState, now: number): 1 | -1 {
     const fwd = flightForward(flight);
     const swing = Math.PI / 3;
     // turn=+1 decreases yaw; a yaw change of -swing rotates the nose to the
@@ -849,6 +915,7 @@ export class RoomBots {
         if (
           !this.blockedAlong(
             flight,
+            now,
             -Math.sin(yaw) * cosP,
             -Math.cos(yaw) * cosP,
             fwd.y,

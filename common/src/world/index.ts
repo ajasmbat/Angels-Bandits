@@ -26,7 +26,17 @@ export function canonicalize(p: Vec3): Vec3 {
   return { x: wrapAxis(p.x), y: p.y, z: wrapAxis(p.z) };
 }
 
-const wrapDeltaAxis = (from: number, to: number): number => {
+/**
+ * The single-axis half of wrapDelta: shortest signed offset from `from` to
+ * `to` along one wrapping axis, in [-WORLD_SIZE/2, WORLD_SIZE/2].
+ *
+ * Exported because wrapDelta allocates a fresh Vec3 per call, and the mover
+ * broad phase (common/src/city/movers.ts) runs inside the bot probe loop —
+ * thousands of calls per second per bot. Two scalar calls there keep the
+ * torus API the only source of wrapping math while allocating nothing.
+ * Prefer wrapDelta everywhere that is not on that hot path.
+ */
+export const wrapDeltaAxis = (from: number, to: number): number => {
   const raw = wrapAxis(to) - wrapAxis(from); // in (-WORLD_SIZE, WORLD_SIZE)
   if (raw > WORLD_SIZE / 2) return raw - WORLD_SIZE;
   if (raw < -WORLD_SIZE / 2) return raw + WORLD_SIZE;

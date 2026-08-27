@@ -228,6 +228,88 @@ export const STORM_CELL_SIZE = 500;
  * tower's center — the 250 m towers are the city's lightning rods, m. */
 export const STORM_ROD_RADIUS = 60;
 
+// --- Moving obstacles (L2) --- the city's big moving parts. Every pose is a
+// pure function of (seed, server snapshot clock) in common/src/city/movers.ts,
+// so client and server agree with nothing streamed. The ticket's design rule:
+// anything that LOOKS solid in the flight band IS solid, so every dimension
+// here is a collision dimension, not just a rendering one.
+/** Square tower-crane mast, side in m. Slim enough to read as a lattice. */
+export const CRANE_MAST_SIDE = 6;
+/** Mast setback from its block's edge, m. The edge is a street centerline and
+ * LOT_LINE is 20, so this keeps the mast footprint off the sidewalk while the
+ * jib still oversails the roadway — which is the whole point of the hazard. */
+export const CRANE_MAST_INSET = 28;
+/** Hub altitude band, m — a HARD band, not a preference. The jib sweeping the
+ * 60-90 m canyon band is the gameplay item, so when a site's neighbours are
+ * tall the JIB gets shorter; the mast never climbs out of the fight to buy
+ * itself room. Generation shrinks the jib until the sweep clears everything
+ * it can reach with CRANE_HUB_CLEARANCE to spare. */
+export const CRANE_MAST_MIN = 62;
+export const CRANE_MAST_MAX = 96;
+/** Jib (hub to tip) length band, m. A block is BLOCK_PITCH wide and the mast
+ * stands CRANE_MAST_INSET inside one edge, so anything past ~28 m oversails
+ * the street. Shortened per site until the sweep clears every neighbour. */
+export const CRANE_JIB_MIN = 34;
+export const CRANE_JIB_MAX = 70;
+/** Jib length is searched downward from CRANE_JIB_MAX in steps this big, m. */
+export const CRANE_JIB_STEP = 4;
+/** Counter-jib length as a fraction of the jib — the short, heavy end. */
+export const CRANE_COUNTER_RATIO = 0.36;
+/** Boom cross-section, m (square). Also the hook block's side. */
+export const CRANE_JIB_SIDE = 2.6;
+/** Hoist cable cross-section, m. Thin, but collidable: a cable hanging into
+ * the canyon band is solid-looking geometry, so the rule says it is solid. */
+export const CRANE_CABLE_SIDE = 0.7;
+/** Vertical gap the swept jib keeps above every building it can reach, m.
+ * Generation raises the mast (or shortens the jib) until this holds, so a jib
+ * can never be buried inside a facade where it would be an invisible killer. */
+export const CRANE_HUB_CLEARANCE = 9;
+/** Hook drop below the hub, m — the trolley's load line. Clamped per site to
+ * whatever headroom is left under the hub after CRANE_HUB_CLEARANCE, so the
+ * hook and its cable are as collision-clean as the jib above them. A tight
+ * site simply parks its hook up, which is what a real crane does. */
+export const CRANE_HOOK_DROP_MIN = 10;
+export const CRANE_HOOK_DROP_MAX = 24;
+/** Slew rate band, rad/s. 0.02 rad/s is ~5 min per revolution: slow enough to
+ * read as a hazard, fast enough that 15 s of slew is ~19 m of tip travel at a
+ * 65 m radius — which is what makes "the jib moved" testable. */
+export const CRANE_SLEW_MIN = 0.014;
+export const CRANE_SLEW_MAX = 0.026;
+/** Helicopters on straight torus loops along street axes. */
+export const HELI_COUNT = 3;
+/** Helicopter cruise altitude band, m — above the canyon, below the blimp. */
+export const HELI_ALT_MIN = 120;
+export const HELI_ALT_MAX = 260;
+/** Helicopter cruise speed band, m/s. */
+export const HELI_SPEED_MIN = 30;
+export const HELI_SPEED_MAX = 45;
+/** Helicopter hull half-extents, m: half-length along travel, half-height, half-width. */
+export const HELI_HULL = [6.5, 2.2, 1.9] as const;
+/** Blimp cruise altitude, m. Below CLOUD_BASE so it flies under the deck, and
+ * far enough under RESPAWN_ALTITUDE's 300 m that a spawn can never land in it. */
+export const BLIMP_ALT = 430;
+/** Blimp cruise speed, m/s — the slowest thing in the sky. */
+export const BLIMP_SPEED = 12;
+/** Blimp hull half-extents, m: half-length, half-height, half-width. */
+export const BLIMP_HULL = [30, 9, 9] as const;
+
+// --- Fireworks (L2) --- a shared schedule in the strikesInWindow idiom:
+// every client computes the same bursts from (seed, synced clock), particles
+// only, no collision and no protocol.
+/** Consecutive bursts are this far apart (seeded jitter), ms. */
+export const FIREWORK_INTERVAL_MIN_MS = 6000;
+export const FIREWORK_INTERVAL_MAX_MS = 11000;
+/** Burst altitude band, m — well above the streetwall, under the cloud deck. */
+export const FIREWORK_ALT_MIN = 150;
+export const FIREWORK_ALT_MAX = 300;
+/** How long one burst's sparks live, ms. */
+export const FIREWORK_LIFETIME_MS = 2200;
+/** Sparks per burst, and concurrent bursts the client budgets for. Capped
+ * because a burst must never wash out tracers — EMISSIVE_TRACER stays the
+ * readable top rung and brightness here comes from count and hue, not a rung. */
+export const FIREWORK_SPARKS = 40;
+export const FIREWORK_BURSTS = 6;
+
 // --- Combat (tuned by T4) ---
 export const MAX_HP = 100;
 export const BULLET_SPEED = 400;
@@ -309,6 +391,21 @@ export const BOT_TARGET_MAX = ROOM_CAP - 1;
 /** One accepted bot-count change per player per this long, ms — the shared
  * slider's only governance besides last-write-wins (ANGE-6STDNN). */
 export const BOT_TARGET_RATE_MS = 3000;
+/**
+ * Extra clearance a bot's probe demands around an L2 mover, m — on top of the
+ * probe radius and the swept-sample padding in blockedAlong.
+ *
+ * Movers need it and buildings do not, for two reasons the probe profile was
+ * never designed for. A crane boom is CRANE_JIB_SIDE = 2.6 m thick against a
+ * facade's 40 m, so it fits between two probe samples; and the brain only
+ * re-decides every BOT_DECISION_EVERY ticks (200 ms, ~11 m at combat speed),
+ * so a jib can slew into a heading that was clear when it was chosen.
+ * Measured, not guessed: over a 120 s adversarial sim that parks a decoy in a
+ * construction block and makes eight bots orbit through the sweep, 0 m of pad
+ * leaves 1 mover death and 6 m leaves none. 8 m is that with margin.
+ * Over-avoidance is the safe direction — bots must never die to scenery.
+ */
+export const BOT_MOVER_CLEAR = 8;
 /** A bot notices targets (human or bot) within this torus range, m. */
 export const BOT_DETECT_RANGE = 500;
 /** A bot pulls the trigger only inside this range, m (< BULLET_RANGE). */

@@ -9,6 +9,10 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { generateCity } from "@angels-bandits/common/city";
 import {
+  type MoverField,
+  generateMovers,
+} from "@angels-bandits/common/city/movers";
+import {
   CITY_SEED,
   LIVENESS_TIMEOUT_MS,
   NAME_MAX_LENGTH,
@@ -68,6 +72,28 @@ const storm = new StormCeiling();
  * exact Building[] every client renders and collides with. */
 const city = generateCity(CITY_SEED);
 
+/**
+ * The seeded moving obstacles (L2), memoised by the room's CITY seed.
+ *
+ * Keyed by `room.seed` rather than built once beside `city`, because Room
+ * already carries a seed field that is only "shared by all rooms for now" —
+ * the day rooms get distinct cities, their cranes follow instead of silently
+ * desyncing from the buildings they were fitted to. `welcome.seed` is that
+ * same value, which is what makes the client compute an identical field.
+ */
+const moversBySeed = new Map<number, MoverField>();
+const moversFor = (seed: number): MoverField => {
+  let field = moversBySeed.get(seed);
+  if (!field) {
+    field = generateMovers(
+      seed,
+      seed === CITY_SEED ? city : generateCity(seed),
+    );
+    moversBySeed.set(seed, field);
+  }
+  return field;
+};
+
 /** Per-room bot pilots. Created lazily; seeded from the room's number so
  * bot behavior is deterministic per room. */
 const botsByRoom = new Map<string, RoomBots>();
@@ -75,7 +101,12 @@ const botsFor = (room: Room): RoomBots => {
   let bots = botsByRoom.get(room.id);
   if (!bots) {
     const n = Number(room.id.split("-")[1] ?? 0);
-    bots = new RoomBots(room.id, CITY_SEED ^ (n * 0x9e3779b9), city);
+    bots = new RoomBots(
+      room.id,
+      CITY_SEED ^ (n * 0x9e3779b9),
+      city,
+      moversFor(room.seed),
+    );
     botsByRoom.set(room.id, bots);
   }
   return bots;

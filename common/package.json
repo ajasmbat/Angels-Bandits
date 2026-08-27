@@ -13,7 +13,9 @@
     "./city": "./src/city/index.ts",
     "./city/layout": "./src/city/layout.ts",
     "./city/street": "./src/city/street.ts",
+    "./city/movers": "./src/city/movers.ts",
     "./storm": "./src/storm.ts",
+    "./fireworks": "./src/fireworks.ts",
     "./protocol": "./src/protocol.ts",
     "./net": "./src/net.ts"
   }

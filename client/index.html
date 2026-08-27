@@ -598,6 +598,30 @@
         right: 14px;
         top: 12px;
       }
+      /* Dev perf HUD (P1). Never player-visible: hidden unless body.perf is
+         set, which only ui/perfhud.ts does — from the P key in a dev build
+         or a ?perf=1 visit. Same body.<class> toggle idiom as body.freelook
+         and body.fullscreen. */
+      #perfhud {
+        position: fixed;
+        left: 16px;
+        top: 190px;
+        display: none;
+        white-space: pre;
+        color: #27e0c0;
+        font-size: 11px;
+        line-height: 1.6;
+        letter-spacing: 0.05em;
+        text-shadow: 0 1px 2px #000;
+        background: #0c0b18aa;
+        border: 1px solid #27e0c033;
+        padding: 6px 9px;
+        pointer-events: none;
+        user-select: none;
+      }
+      body.perf #perfhud {
+        display: block;
+      }
 
     </style>
   </head>
@@ -620,6 +644,7 @@
       <line class="brk" x1="38" y1="24" x2="42" y2="24" />
     </svg>
     <canvas id="minimap" width="320" height="320"></canvas>
+    <div id="perfhud"></div>
     <div id="hud"></div>
     <div id="gauges">
       <div class="gauge" id="hp">

@@ -1,0 +1,40 @@
+Adaptive-resolution browser QA — `node tools/perf/scaler.mjs`
+Vsync ON (the controller's metric is a MISSED vsync, so it must be measured in the
+situation it actually runs in), 2560x1440 CSS at deviceScaleFactor 2 — four times
+the harness's normal frame, which no laptop GPU holds at 60 fps under this bloom chain.
+
+watching for 30s at 2560x1440 (device ratio 2) …
+
+ratio changes:
+  4.6s  2.000 -> 1.700  (down 15.0%)
+  5.6s  1.700 -> 1.615  (down 5.0%)
+  11.9s  1.615 -> 1.458  (down 9.8%)
+
+start 2.000  final 1.458  buffer 3731x2098  hotRatio 1.53425
+3 changes (3 down, 0 up); unchanged for the last 18.1s
+
+aim-zoom while scaling: fov 70.0 -> 28.0 (held, z=1.00, ratio 1.458) -> 70.0 (released)
+
+PASS  backed off under a load it cannot hold
+PASS  settled and stayed settled
+PASS  did not pump (no up/down/up cycling)
+PASS  stayed at or above the floor
+PASS  aim-zoom narrowed the FOV while the scaler was live
+PASS  aim-zoom released cleanly
+
+Note the final state: ratio 1.458 sitting ABOVE its own climb cap of
+hotRatio * HOT_MARGIN = 1.53425 * 0.9 = 1.381. That is precisely the state
+that used to be TERMINAL — the up-branch refuses any step that would not
+raise the ratio, so before this ticket the session was pinned at 1.458 for
+good, whatever the machine did afterwards. Reproducing it here in a real
+browser is the bug, not a leftover.
+
+What lets it out is the latch relaxation (render/resolution.ts,
+RELAX_AFTER_MS): 60 s of UNBROKEN clean frames lifts hotRatio one notch and
+the climb resumes, with the required clean period doubling at each relaxation
+so probing gets geometrically rarer instead of pumping. This 30 s window is
+deliberately too short to reach that — the workload here is one the GPU
+cannot hold, so it never produces a clean minute. Recovery is proven instead
+by client/test/resolution.test.ts (five tests that fail against the shipped
+controller) and by simulating the real module: ~15 min of clean frames back
+to the full device ratio after a boot hitch, ~55 min from the floor.

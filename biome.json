@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "ignore": ["**/*.snap"]
+    "ignore": ["**/*.snap", "tools/perf/*.json"]
   },
   "formatter": {
     "enabled": true,

@@ -5,7 +5,16 @@
 // harness nothing tests is a harness that gets believed anyway.
 
 import { describe, expect, it } from "vitest";
-import { TOLERANCE, determinism, pickMedianPass } from "./run.mjs";
+import {
+  SPIKE_EARLY_FRACTION,
+  SPIKE_FACTOR,
+  SPIKE_LIST_MAX,
+  TOLERANCE,
+  determinism,
+  pickMedianPass,
+  ratioHonoured,
+  summariseSpikes,
+} from "./run.mjs";
 
 /** One segment's row as a pass produces it. */
 const row = (p50, gpuP50, extra = {}) => ({
@@ -161,5 +170,177 @@ describe("determinism", () => {
       ]),
     );
     expect(d.tolerance).toEqual(TOLERANCE);
+  });
+});
+
+/** A window of `n` clean frames at `ms`, with spikes spliced in by index. */
+const window_ = (n, ms, spikes = {}) =>
+  Array.from({ length: n }, (_, i) => spikes[i] ?? ms);
+
+describe("summariseSpikes", () => {
+  it("finds nothing in a window with no spike in it", () => {
+    // p95/p99 sit near 1.6-1.8x p50 in this scene; the factor has to clear
+    // that shoulder or every report claims hundreds of spikes.
+    const k = summariseSpikes(window_(600, 8, { 5: 14, 300: 13.5 }), 8);
+    expect(k.count).toBe(0);
+    expect(k.at).toEqual([]);
+    expect(k.worst).toBe(14);
+  });
+
+  it("counts only frames past the factor", () => {
+    const p50 = 8;
+    const k = summariseSpikes(
+      window_(600, p50, {
+        100: p50 * SPIKE_FACTOR + 0.1,
+        200: p50 * SPIKE_FACTOR - 0.1,
+      }),
+      p50,
+    );
+    expect(k.count).toBe(1);
+    expect(k.threshold).toBe(p50 * SPIKE_FACTOR);
+  });
+
+  it("places a spike by ELAPSED TIME, not by frame index", () => {
+    // The distinction is the point: a window whose first half was cheap and
+    // second half expensive puts its midpoint frame nowhere near 50 %.
+    const samples = [...window_(10, 1), ...window_(10, 9), 100];
+    const k = summariseSpikes(samples, 1);
+    const spike = k.at.at(-1);
+    expect(spike.frame).toBe(20);
+    // 10 + 90 = 100 ms elapsed before it, out of 200 ms of window.
+    expect(spike.at).toBeCloseTo(0.5, 3);
+    expect(k.worstAt).toBeCloseTo(0.5, 3);
+  });
+
+  it("separates first-sight cost from something spread through the window", () => {
+    const p50 = 8;
+    // Compilation / upload: everything in the opening tenth.
+    const early = summariseSpikes(
+      window_(600, p50, { 1: 120, 3: 90, 7: 60 }),
+      p50,
+    );
+    expect(early.count).toBe(3);
+    expect(early.early).toBe(3);
+    // Something per-frame: the same three spikes, spread out.
+    const spread = summariseSpikes(
+      window_(600, p50, { 100: 120, 300: 90, 500: 60 }),
+      p50,
+    );
+    expect(spread.count).toBe(3);
+    expect(spread.early).toBe(0);
+    expect(SPIKE_EARLY_FRACTION).toBeLessThan(0.5);
+  });
+
+  it("prices the tail against the whole window, not against p50", () => {
+    // The number that keeps `worst` in proportion: one 150 ms frame in a 5 s
+    // window is 142 ms of a 5000 ms window, i.e. under 3 %.
+    const p50 = 8;
+    const k = summariseSpikes(window_(600, p50, { 300: 150 }), p50);
+    expect(k.costMs).toBeCloseTo(142, 5);
+    expect(k.costMs / k.windowMs).toBeLessThan(0.05);
+  });
+
+  it("keeps an exact count while capping the itemised list", () => {
+    const p50 = 8;
+    const spikes = {};
+    for (let i = 0; i < SPIKE_LIST_MAX + 5; i++) spikes[i * 10] = 100;
+    const k = summariseSpikes(window_(600, p50, spikes), p50);
+    expect(k.count).toBe(SPIKE_LIST_MAX + 5);
+    expect(k.at).toHaveLength(SPIKE_LIST_MAX);
+    expect(k.truncated).toBe(true);
+  });
+
+  it("reports zeros rather than NaN on a window that was never measured", () => {
+    const k = summariseSpikes([], 0);
+    expect(k).toMatchObject({ count: 0, frames: 0, windowMs: 0, worst: 0 });
+    expect(Number.isNaN(k.worstAt)).toBe(false);
+  });
+
+  it("never calls a whole window one long spike when p50 is zero", () => {
+    // p50 0 means the meter was empty, not that every frame beat the
+    // threshold of 0 ms.
+    expect(summariseSpikes([16, 16, 16], 0).count).toBe(0);
+  });
+
+  it("says nothing at all about a client with no GPU timer running", () => {
+    // Without ?gputime=1 the hook answers null and the harness passes [],
+    // and an empty GPU row must read as "not measured" — never as the
+    // "no spike on the GPU clock" that would acquit the GPU.
+    const k = summariseSpikes([], 0);
+    expect(k.frames).toBe(0);
+    expect(k.count).toBe(0);
+  });
+});
+
+describe("summariseSpikes on the two clocks — the diagnosis", () => {
+  // The pair is the instrument. Neither window alone names the culprit;
+  // the harness prints both rows for exactly this reason.
+  const CLEAN = 8;
+
+  it("puts a JS pause in the wall window and NOT the GPU window", () => {
+    // A GC or a long script blocks this thread while the GPU sits idle, so
+    // the wall frame is enormous and every GPU frame is ordinary.
+    const wall = summariseSpikes(window_(600, CLEAN, { 300: 120 }), CLEAN);
+    const gpu = summariseSpikes(window_(598, 7), 7);
+    expect(wall.count).toBe(1);
+    expect(gpu.count).toBe(0);
+  });
+
+  it("puts a real GPU stall in BOTH windows", () => {
+    // A driver or compositor stall is charged to the GPU clock too, and no
+    // JavaScript change can move it.
+    const wall = summariseSpikes(window_(600, CLEAN, { 300: 120 }), CLEAN);
+    const gpu = summariseSpikes(window_(598, 7, { 299: 117 }), 7);
+    expect(wall.count).toBe(1);
+    expect(gpu.count).toBe(1);
+    expect(gpu.worst).toBeCloseTo(117, 5);
+  });
+
+  it("compares the windows by POSITION, never sample by sample", () => {
+    // A timer query resolves a frame or two after the frame it measured and
+    // a starved frame never resolves at all, so the two windows hold
+    // different counts. A spike at the same FRACTION is the same event.
+    const wall = summariseSpikes(window_(600, CLEAN, { 300: 120 }), CLEAN);
+    const gpu = summariseSpikes(window_(594, 7, { 297: 117 }), 7);
+    expect(gpu.frames).not.toBe(wall.frames);
+    expect(Math.abs(gpu.worstAt - wall.worstAt)).toBeLessThan(0.02);
+  });
+});
+
+describe("ratioHonoured", () => {
+  it("is true when the client drew at the ratio the URL asked for", () => {
+    expect(ratioHonoured({ requestedPixelRatio: "2", pixelRatio: 2 })).toBe(
+      true,
+    );
+  });
+
+  it("is FALSE when the panel clamped it — the run measured other pixels", () => {
+    // `--res 2` on a 1x display: the client honours the panel, so the
+    // harness measured half the linear resolution the label claims.
+    expect(ratioHonoured({ requestedPixelRatio: "2", pixelRatio: 1 })).toBe(
+      false,
+    );
+  });
+
+  it("does not accuse the scaler of disobeying an instruction to be free", () => {
+    expect(
+      ratioHonoured({ requestedPixelRatio: "auto", pixelRatio: 1.68 }),
+    ).toBe(true);
+    expect(ratioHonoured({ requestedPixelRatio: null, pixelRatio: 2 })).toBe(
+      true,
+    );
+  });
+
+  it("treats junk as the fallback it is, not as a mismatch", () => {
+    // readRenderOptions ignores an unparseable ?res= and leaves the scaler on.
+    expect(
+      ratioHonoured({ requestedPixelRatio: "banana", pixelRatio: 1.5 }),
+    ).toBe(true);
+  });
+
+  it("does not trip on float noise", () => {
+    expect(
+      ratioHonoured({ requestedPixelRatio: "1.5", pixelRatio: 0.5 + 1.0 }),
+    ).toBe(true);
   });
 });

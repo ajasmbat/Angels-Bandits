@@ -112,7 +112,7 @@ import { KillFeed } from "./ui/killfeed";
 import { LeadIndicator, SolutionTone } from "./ui/lead";
 import { EdgeMarkers } from "./ui/markers";
 import { Minimap } from "./ui/minimap";
-import { PerfHud, bindPerfHudKey } from "./ui/perfhud";
+import { PerfHud, bindPerfHudKey, perfHudKeyEnabled } from "./ui/perfhud";
 import { Scoreboard } from "./ui/scoreboard";
 
 // Fullscreen chrome first — the join overlay carries its own toggle button,
@@ -146,7 +146,10 @@ const camera = new THREE.PerspectiveCamera(
 // P1 render knobs. Defaults ARE what ships; the query params exist so the
 // headless perf harness can measure two AA modes and a pinned pixel ratio
 // out of one build (client/src/render/renderopts.ts).
-const renderOpts = readRenderOptions(window.location.search);
+const renderOpts = readRenderOptions(
+  window.location.search,
+  window.devicePixelRatio,
+);
 // Recomputed on resize: browser zoom and dragging the window to another
 // panel both change devicePixelRatio AND fire `resize`, and a stale ceiling
 // either strands the scaler below the panel or lets it burn 4x the pixels.
@@ -666,7 +669,13 @@ let nextResEvalAt = 0;
 const RES_WARMUP_MS = 3000;
 let resWarmupUntil = -1;
 const perfHud = new PerfHud();
-bindPerfHudKey(perfHud);
+// `P` is a DEBUG key, not a player key: bound only in a dev build or when
+// the URL asked for the overlay. A production visit registers no listener,
+// so a player who presses P gets nothing (client/src/ui/perfhud.ts).
+bindPerfHudKey(
+  perfHud,
+  perfHudKeyEnabled(import.meta.env.DEV, renderOpts.perfHud),
+);
 if (renderOpts.perfHud) perfHud.setOpen(true);
 
 // --- Dev/QA hooks (used by the headless verification harness) ---
@@ -688,6 +697,18 @@ declare global {
       perfSamples: () => number[];
       /** GPU-only frame cost over the same window; null unless ?gputime=1. */
       gpuStats: () => FrameStats | null;
+      /**
+       * The GPU window's own per-frame samples, oldest first; null unless
+       * ?gputime=1. The pair with perfSamples() is what tells a JS pause
+       * apart from a GPU stall: a garbage collection or a long script shows
+       * up ONLY in the wall samples, because the GPU was idle through it.
+       *
+       * NOT index-aligned with perfSamples(): a timer query resolves a
+       * frame or two after the frame it measured, and a starved frame
+       * (gpuStarved) is missing entirely. Compare the two as windows —
+       * where in each a spike lands, how big — never sample by sample.
+       */
+      gpuSamples: () => number[] | null;
       /**
        * Frames the GPU timer could not measure since the last perfReset().
        * Non-zero means the tail of gpuStats() is missing its worst samples
@@ -793,6 +814,7 @@ window.__ab = {
   perfStats: () => frames.stats(),
   perfSamples: () => frames.samples(),
   gpuStats: () => (gpuTimer === null ? null : gpuFrames.stats()),
+  gpuSamples: () => (gpuTimer === null ? null : gpuFrames.samples()),
   gpuStarved: () => (gpuTimer === null ? null : gpuTimer.starved),
   perfReset: () => {
     frames.reset();

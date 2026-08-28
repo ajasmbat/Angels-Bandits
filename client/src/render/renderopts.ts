@@ -5,11 +5,12 @@
 // the shipped configuration and nothing else.
 //
 //   ?aa=legacy|off|msaa|smaa   antialiasing mode (default DEFAULT_AA)
-//   ?res=auto|<number>    pin the pixel ratio   (default "auto" — the scaler)
+//   ?res=auto|<number>    pin the pixel ratio, clamped to THIS panel's own
+//                         limits (default "auto" — the scaler)
 //   ?perf=1               open the dev perf HUD (default closed)
 //   ?gputime=1            measure GPU frame cost   (default off)
 
-import { RESOLUTION_CEILING, RESOLUTION_FLOOR } from "./resolution";
+import { defaultLimits } from "./resolution";
 
 /**
  * - `legacy` — exactly what shipped before P1: `WebGLRenderer({antialias:
@@ -79,10 +80,32 @@ const AA_MODES: readonly AaMode[] = ["legacy", "off", "msaa", "smaa"];
  * Parse a `location.search` string. Unknown or malformed values fall back to
  * the shipped default rather than throwing — a typo in a QA URL must never
  * be the reason the game fails to boot.
+ *
+ * `devicePixelRatio` is REQUIRED, and it is the panel's, not a guess: a
+ * pinned `?res=` is clamped to `defaultLimits(devicePixelRatio)` — the very
+ * limits the adaptive controller would have used — rather than to the raw
+ * module constants. The difference only shows on a panel below the ceiling,
+ * and there it is the whole ballgame: on a 1x display the constants let
+ * `?res=2` through and the client draws FOUR times the pixels the same URL
+ * draws on a Retina panel, under a five-level bloom chain. Someone repeating
+ * P1's before/after on a non-Retina monitor would have compared two
+ * different workloads and called the difference a render win.
+ *
+ * A zero, negative or non-finite ratio is read as 1. `defaultLimits(0)`
+ * returns a ceiling of 0, which would pin the renderer at zero pixels — a
+ * black canvas from a value no real panel reports, but jsdom and a few
+ * headless contexts do.
  */
-export function readRenderOptions(search: string): RenderOptions {
+export function readRenderOptions(
+  search: string,
+  devicePixelRatio: number,
+): RenderOptions {
   const params = new URLSearchParams(search);
   const opts: RenderOptions = { ...DEFAULT_RENDER_OPTIONS };
+  const dpr =
+    Number.isFinite(devicePixelRatio) && devicePixelRatio > 0
+      ? devicePixelRatio
+      : 1;
 
   const aa = params.get("aa");
   if (aa !== null && (AA_MODES as readonly string[]).includes(aa)) {
@@ -94,10 +117,8 @@ export function readRenderOptions(search: string): RenderOptions {
   else if (res !== null) {
     const n = Number(res);
     if (Number.isFinite(n) && n > 0) {
-      opts.pixelRatio = Math.min(
-        RESOLUTION_CEILING,
-        Math.max(RESOLUTION_FLOOR, n),
-      );
+      const limits = defaultLimits(dpr);
+      opts.pixelRatio = Math.min(limits.ceiling, Math.max(limits.floor, n));
     }
   }
 

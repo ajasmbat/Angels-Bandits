@@ -24,12 +24,12 @@ import {
   TIER_TWO_MIN_HEIGHT,
   WORLD_SIZE,
 } from "../constants";
-import { LANDMARK_BLOCKS, PLAZA_BLOCKS } from "./layout";
+import { CONSTRUCTION_BLOCKS, LANDMARK_BLOCKS, PLAZA_BLOCKS } from "./layout";
 import { LOT_LINE } from "./street";
 
 // Re-exported so the hand-placed lists keep their long-standing import site
 // (client signage, common/storm) while living in their own module.
-export { LANDMARK_BLOCKS, PLAZA_BLOCKS };
+export { CONSTRUCTION_BLOCKS, LANDMARK_BLOCKS, PLAZA_BLOCKS };
 
 /** One box of a setback tower, centered on the building's (x, z). */
 export interface Tier {
@@ -270,12 +270,17 @@ export function generateCity(seed: number): Building[] {
     LANDMARK_BLOCKS.map(([bx, bz]) => blockKey(bx, bz)),
   );
   const plazas = new Set(PLAZA_BLOCKS.map(([bx, bz]) => blockKey(bx, bz)));
+  // Construction sites are empty ground like plazas: their tower cranes live
+  // in city/movers.ts as movers, never as Buildings (see CONSTRUCTION_BLOCKS).
+  const sites = new Set(
+    CONSTRUCTION_BLOCKS.map(([bx, bz]) => blockKey(bx, bz)),
+  );
 
   const buildings: Building[] = [];
   for (let bx = 0; bx < CITY_GRID; bx++) {
     for (let bz = 0; bz < CITY_GRID; bz++) {
       const key = blockKey(bx, bz);
-      if (plazas.has(key)) continue;
+      if (plazas.has(key) || sites.has(key)) continue;
       if (landmarks.has(key)) {
         buildings.push({
           x: bx * BLOCK_PITCH + BLOCK_PITCH / 2,

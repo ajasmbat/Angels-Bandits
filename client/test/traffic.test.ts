@@ -9,8 +9,12 @@ import { wrapDelta } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
 import {
   CARS_PER_LANE,
+  EMERGENCY_CARS,
+  SIREN_BEAT,
   carPose,
+  emergencyCars,
   laneSpeed,
+  sirenState,
   trafficLanes,
 } from "../src/render/traffic";
 
@@ -147,5 +151,59 @@ describe("carPose", () => {
     expect(byAxisDir("z", -1)).toBeCloseTo(0, 10);
     expect(byAxisDir("x", 1)).toBeCloseTo(-Math.PI / 2, 10);
     expect(byAxisDir("x", -1)).toBeCloseTo(Math.PI / 2, 10);
+  });
+});
+
+// --- The L1 emergency vehicle: which cars, and when they flash --------------
+
+describe("emergencyCars", () => {
+  it("picks EMERGENCY_CARS distinct cars, deterministically from the seed", () => {
+    const a = emergencyCars(SEED);
+    expect(a).toHaveLength(EMERGENCY_CARS);
+    expect(emergencyCars(SEED)).toEqual(a);
+    expect(new Set(a.map((c) => `${c.laneId}:${c.carIndex}`)).size).toBe(
+      a.length,
+    );
+    expect(emergencyCars(SEED + 1)).not.toEqual(a);
+  });
+
+  it("only ever names cars that exist in the fleet", () => {
+    const lanes = trafficLanes().length;
+    for (const c of emergencyCars(SEED)) {
+      expect(c.laneId).toBeGreaterThanOrEqual(0);
+      expect(c.laneId).toBeLessThan(lanes);
+      expect(c.carIndex).toBeGreaterThanOrEqual(0);
+      expect(c.carIndex).toBeLessThan(CARS_PER_LANE);
+    }
+  });
+});
+
+describe("sirenState", () => {
+  it("alternates red and blue on the beat, deterministically", () => {
+    // A real light bar alternates rather than blinking dark, so the state is
+    // always 1 or 2 — and it is a pure function of SERVER time, which is what
+    // makes two tabs flash together.
+    expect(sirenState(0)).toBe(1);
+    expect(sirenState(SIREN_BEAT * 1.5)).toBe(1);
+    expect(sirenState(SIREN_BEAT * 2.5)).toBe(2);
+    expect(sirenState(SIREN_BEAT * 3.5)).toBe(2);
+    expect(sirenState(SIREN_BEAT * 4.5)).toBe(1);
+  });
+
+  it("repeats every four beats and survives a negative clock", () => {
+    for (const t of [0.01, 0.3, 0.77]) {
+      expect(sirenState(t + SIREN_BEAT * 4)).toBe(sirenState(t));
+    }
+    expect([1, 2]).toContain(sirenState(-1));
+  });
+
+  it("spends equal time on each side", () => {
+    let red = 0;
+    let samples = 0;
+    for (let t = 0; t < 100; t += 0.005) {
+      samples++;
+      if (sirenState(t) === 1) red++;
+    }
+    expect(red / samples).toBeCloseTo(0.5, 2);
   });
 });

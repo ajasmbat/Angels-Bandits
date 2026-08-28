@@ -168,19 +168,26 @@ function blockDist(a: number, b: number): number {
 }
 
 /**
- * Landmark/plaza heat for a building: 1 on a hotspot-adjacent block fading
- * linearly to 0 at HEAT_RADIUS blocks (Chebyshev, wrap-aware). This is the
- * "Times Square concentration" — pure function of the block position.
+ * Landmark/plaza heat for a BLOCK: 1 on a hotspot block fading linearly to 0
+ * at HEAT_RADIUS blocks (Chebyshev, wrap-aware). This is the "Times Square
+ * concentration" — a pure function of the block index, so the L1 micro tier
+ * (which has blocks but no buildings to hand) reads the identical gradient.
  */
-export function landmarkHeat(b: Building): number {
-  const bx = Math.floor(b.x / BLOCK_PITCH);
-  const bz = Math.floor(b.z / BLOCK_PITCH);
+export function blockHeat(bx: number, bz: number): number {
   let nearest = Number.POSITIVE_INFINITY;
   for (const [hx, hz] of [...LANDMARK_BLOCKS, ...PLAZA_BLOCKS]) {
     const d = Math.max(blockDist(bx, hx), blockDist(bz, hz));
     if (d < nearest) nearest = d;
   }
   return Math.max(0, 1 - nearest / HEAT_RADIUS);
+}
+
+/** The same heat, addressed by building — what the sign density gradient reads. */
+export function landmarkHeat(b: Building): number {
+  return blockHeat(
+    Math.floor(b.x / BLOCK_PITCH),
+    Math.floor(b.z / BLOCK_PITCH),
+  );
 }
 
 /** The four tier-1 facades of a building, with the S1-derived clearance

@@ -5,8 +5,10 @@
 // split). Death freezes the plane for a kill-cam beat until the server's
 // respawn message reseeds the flight state far from every enemy.
 
+import type { Building } from "@angels-bandits/common/city";
 import { generateMovers } from "@angels-bandits/common/city/movers";
 import {
+  BLOCK_PITCH,
   BULLET_SPEED,
   CLOUD_BASE,
   FOG_DISTANCE,
@@ -64,11 +66,13 @@ import {
 import { GameSocket } from "./net/socket";
 import { Birds } from "./render/birds";
 import { CityRenderer } from "./render/city";
+import { ConstructionSparks } from "./render/construction";
 import { FacadeGarnishRenderer } from "./render/facade-garnish";
 import { Fireworks } from "./render/fireworks";
 import { Explosions, Sparks } from "./render/fx";
 import { GpuTimer } from "./render/gputimer";
 import { MoverLights, Movers } from "./render/movers";
+import { Pedestrians } from "./render/pedestrians";
 import { FrameMeter, type FrameStats } from "./render/perfmeter";
 import { buildPlaneMesh, spinPropeller } from "./render/plane";
 import { PlaneLights } from "./render/planelights";
@@ -85,8 +89,10 @@ import {
 import { RoofClutterRenderer } from "./render/roofclutter";
 import { Searchlights } from "./render/searchlights";
 import { Signage } from "./render/signage";
+import { Signals } from "./render/signals";
 import { GroundPlane, SkyDome, setupSky } from "./render/sky";
 import { SmokeTrails, smokeActive } from "./render/smoke";
+import { Steam } from "./render/steam";
 import {
   CloudDeck,
   REVEAL_COLOR,
@@ -97,6 +103,7 @@ import {
   thunderGain,
   turbulenceOffset,
 } from "./render/storm";
+import { microGate } from "./render/streetlife";
 import { Streetlights } from "./render/streetlights";
 import { Tracers } from "./render/tracers";
 import { Traffic } from "./render/traffic";
@@ -309,6 +316,31 @@ const searchlights = new Searchlights(city.cityBuildings);
 scene.add(searchlights.mesh);
 const birds = new Birds(welcome.seed);
 scene.add(birds.points);
+// L1 living streets — the micro tier. Client-only, non-collidable, and gated
+// on camera altitude (100 → 140 m): four extra draw calls at street level and
+// literally zero above the band, where a 1.8 m figure would be sub-pixel.
+// generateCity hands back a FLAT Building[] and its blockKey is private to
+// common/, so the client buckets by block itself, once.
+const buildingsByBlock = new Map<number, Building[]>();
+for (const b of city.cityBuildings) {
+  const key =
+    Math.floor(b.x / BLOCK_PITCH) * 1000 + Math.floor(b.z / BLOCK_PITCH);
+  const bucket = buildingsByBlock.get(key);
+  if (bucket) bucket.push(b);
+  else buildingsByBlock.set(key, [b]);
+}
+const pedestrians = new Pedestrians(welcome.seed);
+scene.add(pedestrians.mesh);
+const steam = new Steam(buildingsByBlock, welcome.seed);
+scene.add(steam.points);
+const signals = new Signals(welcome.seed);
+scene.add(signals.mesh);
+const constructionSparks = new ConstructionSparks(welcome.seed);
+scene.add(constructionSparks.points);
+/** Dev/QA switch (`?micro=0`, or __ab.setMicro): the perf A/B control. */
+let microOn = renderOpts.micro;
+/** The block __ab.micro() samples — fixed, so two tabs compare the same city. */
+const MICRO_SAMPLE_BLOCK = { bx: 5, bz: 5 } as const;
 const explosions = new Explosions();
 scene.add(explosions.group);
 const sparks = new Sparks();
@@ -779,6 +811,39 @@ declare global {
       };
       signage: () => Signage["counts"];
       signImage: (x: number, z: number) => { x: number; z: number } | null;
+      /**
+       * L1 micro tier: the live gate, what each subsystem drew, and a sample
+       * pinned to a FIXED block at a FIXED server time. The sample is pinned
+       * rather than read in instance-slot order because the block window is
+       * camera-relative — two tabs legitimately fill slots differently while
+       * the city they draw is identical (the lesson __ab.traffic already
+       * carries).
+       */
+      micro: (at?: number | null) => {
+        gate: number;
+        cameraY: number;
+        on: boolean;
+        drawn: {
+          pedestrians: number;
+          steamPuffs: number;
+          signals: number;
+          sparks: number;
+        };
+        meshesVisible: number;
+        sample: {
+          time: number;
+          block: { bx: number; bz: number };
+          peds: ReturnType<Pedestrians["sample"]>;
+          signal: ReturnType<Signals["sample"]>;
+          sites: number;
+        };
+      };
+      /** Rendered truth: where pedestrian instance `i` was actually DRAWN,
+       * read back out of the instance matrix — not a re-derivation. */
+      microImage: (i: number) => { x: number; y: number; z: number } | null;
+      /** Perf A/B: false takes the same early return as an above-gate camera,
+       * so it skips the CPU work and not merely the draw call. */
+      setMicro: (on: boolean) => void;
       garnishImage: (x: number, z: number) => { x: number; z: number } | null;
       radio: () => {
         voiceOn: boolean;
@@ -916,6 +981,47 @@ window.__ab = {
   // S2 QA: signage instance counts + drawn-position read-back (seam checks).
   signage: () => signage.counts,
   signImage: (x, z) => signage.imageOf(x, z),
+  micro: (at) => {
+    const time =
+      at === undefined ? (socket.renderTime() ?? performance.now()) : (at ?? 0);
+    const gate = microOn ? microGate(chase.position.y) : 0;
+    return {
+      gate,
+      cameraY: chase.position.y,
+      on: microOn,
+      drawn: {
+        pedestrians: pedestrians.count,
+        steamPuffs: steam.count,
+        signals: signals.count,
+        sparks: constructionSparks.count,
+      },
+      meshesVisible: [
+        pedestrians.mesh.visible,
+        steam.points.visible,
+        signals.mesh.visible,
+        constructionSparks.points.visible,
+      ].filter(Boolean).length,
+      sample: {
+        time,
+        block: MICRO_SAMPLE_BLOCK,
+        peds: pedestrians.sample(
+          MICRO_SAMPLE_BLOCK.bx,
+          MICRO_SAMPLE_BLOCK.bz,
+          time,
+        ),
+        signal: signals.sample(
+          MICRO_SAMPLE_BLOCK.bx,
+          MICRO_SAMPLE_BLOCK.bz,
+          time,
+        ),
+        sites: constructionSparks.siteList.length,
+      },
+    };
+  },
+  microImage: (i) => pedestrians.imageOf(i),
+  setMicro: (on) => {
+    microOn = on;
+  },
   // ANGE-XY8LH8 seam QA: drawn position of the parapet nearest (x, z).
   garnishImage: (x, z) => facadeGarnish.imageOf(x, z),
   // Radio QA: recent on-air lines (headless runs can't hear the voice).
@@ -948,6 +1054,29 @@ window.__ab = {
 const poseEuler = new THREE.Euler();
 const poseQuat = new THREE.Quaternion();
 let last = performance.now();
+// Pre-warm the micro tier's four programs. They would otherwise first compile
+// on the frame the player descends through 140 m — a guaranteed stutter at
+// exactly the moment the tier is meant to appear seamlessly. compile() walks
+// the VISIBLE scene, so the meshes are shown for the one call and hidden
+// again; each subsystem's own update() turns them back on when the gate opens.
+for (const o of [
+  pedestrians.mesh,
+  steam.points,
+  signals.mesh,
+  constructionSparks.points,
+]) {
+  o.visible = true;
+}
+renderer.compile(scene, camera);
+for (const o of [
+  pedestrians.mesh,
+  steam.points,
+  signals.mesh,
+  constructionSparks.points,
+]) {
+  o.visible = false;
+}
+
 renderer.setAnimationLoop((now) => {
   const rawMs = now - last;
   const dt = Math.min(rawMs / 1000, 0.05); // clamp hitches, keep sim stable
@@ -1153,6 +1282,22 @@ renderer.setAnimationLoop((now) => {
   searchlights.update(chase.position, renderMs);
   birds.update(chase.position, renderMs);
   moverLights.commit();
+  // L1 micro tier — on the same latched clock, for the same reason. ONE gate
+  // value drives all four subsystems; k === 0 takes an early return inside
+  // each, so above 140 m (and with ?micro=0) they cost no draw call AND no
+  // per-instance CPU work.
+  //
+  // Kill-cam note: chase.update() only runs while alive, so during the death
+  // beat the gate reads a frozen camera altitude. That is correct — the view
+  // is frozen too.
+  const microK = microOn ? microGate(chase.position.y) : 0;
+  pedestrians.update(chase.position, renderMs, microK);
+  // Phase-only subsystems fall back to local time before the first snapshot
+  // (the signage policy): a plume or a signal in the wrong part of its cycle
+  // is invisible, where hiding every one of them until clock sync would not be.
+  steam.update(chase.position, renderMs ?? now, microK);
+  signals.update(chase.position, renderMs ?? now, microK);
+  constructionSparks.update(chase.position, renderMs ?? now, microK);
   ground.update(chase.position);
   skyDome.update(chase.position);
   // Wounded smoke: own plane from server-said self HP, every remote (human

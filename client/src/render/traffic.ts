@@ -4,12 +4,21 @@
 // so all clients — late joiners included — see identical traffic with no
 // per-frame integration state to drift. Same pure-layout/renderer split as
 // streetlights.ts: the exported functions are the tested seam.
+//
+// L1 added the emergency vehicle: two of the cars carry a flashing light bar,
+// riding the SAME InstancedMesh through a per-instance aSiren attribute — zero
+// new draw calls, per the ticket's "reuse the traffic car-light slots" rule.
 
 import { mulberry32 } from "@angels-bandits/common/city";
 import { LANE_CENTERS } from "@angels-bandits/common/city/street";
-import { BLOCK_PITCH, WORLD_SIZE } from "@angels-bandits/common/constants";
+import {
+  BLOCK_PITCH,
+  EMISSIVE_BEACON,
+  WORLD_SIZE,
+} from "@angels-bandits/common/constants";
 import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { emissiveBoost } from "./emissive";
 import { nearestImage } from "./wrapPlacement";
 
 /** Lane centerlines from the S1 street contract (±5 m, right-hand traffic). */
@@ -117,6 +126,58 @@ export function carPose(
   return { pos, yaw: laneYaw(lane) };
 }
 
+// --- The emergency vehicle (L1) -------------------------------------------
+
+/** Ambulances on the road. Two, so one is usually somewhere you can see. */
+export const EMERGENCY_CARS = 2;
+/** Light-bar alternation beat, seconds — red side, then blue side. */
+export const SIREN_BEAT = 0.22;
+
+/** One car's slot in the traffic fleet. */
+export interface EmergencyCar {
+  laneId: number;
+  carIndex: number;
+}
+
+/**
+ * Which cars are ambulances, drawn from the world seed — so every tab has the
+ * same ambulance in the same lane, and the flash beat below is server time, so
+ * they flash in sync too. Picked from the whole fleet (40 lanes ×
+ * CARS_PER_LANE), with a retry on collision rather than a modulo, so the two
+ * are always distinct cars.
+ */
+export function emergencyCars(seed: number): EmergencyCar[] {
+  const laneCount = trafficLanes().length;
+  const fleet = laneCount * CARS_PER_LANE;
+  const rand = mulberry32((seed ^ 0x4d454447) >>> 0);
+  const taken = new Set<number>();
+  const out: EmergencyCar[] = [];
+  // Bounded: 2 picks out of 160 slots collide vanishingly rarely, and the cap
+  // makes the loop terminate whatever the PRNG does.
+  for (let guard = 0; guard < 64 && out.length < EMERGENCY_CARS; guard++) {
+    const slot = Math.floor(rand() * fleet);
+    if (taken.has(slot)) continue;
+    taken.add(slot);
+    out.push({
+      laneId: Math.floor(slot / CARS_PER_LANE),
+      carIndex: slot % CARS_PER_LANE,
+    });
+  }
+  return out;
+}
+
+/**
+ * The light-bar state of an ambulance at server time `timeSeconds`:
+ * 1 = red side lit, 2 = blue side lit — a real bar alternates rather than
+ * blinking dark. A pure function of the synced clock, so two tabs strobe on
+ * the same beat; that is the acceptance check.
+ */
+export function sirenState(timeSeconds: number): 1 | 2 {
+  let beat = Math.floor(timeSeconds / SIREN_BEAT) % 4;
+  if (beat < 0) beat += 4;
+  return beat < 2 ? 1 : 2;
+}
+
 // --- Renderer (consumes the pure model above; untested, like Streetlights) ---
 
 /** Car body, meters: length along Z (forward = −Z, the plane convention). */
@@ -132,21 +193,45 @@ const TAILLIGHT = "vec3(3.4, 0.16, 0.14)";
 
 /** Muted night palette; per-car pick is deterministic so every client agrees. */
 const BODY_COLORS = [0x2a2d38, 0x3a2f2c, 0x24333a, 0x38323f, 0x2e3830];
+/** Ambulances are pale so the light bar has something to wash across. */
+const AMBULANCE_BODY = 0xf2f4f7;
+
+/**
+ * A ladder-derived GLSL literal. The existing HEADLIGHT/TAILLIGHT literals
+ * above were hand-tuned and have since drifted off-ladder (the headlight
+ * computes to luminance 1.003, above EMISSIVE_LAMP); this ticket will not add
+ * a third drifting literal, so the siren colours are DERIVED from the rung.
+ * Sirens sit on the BEACON rung — a light bar is literally a beacon, and it is
+ * still two rungs under EMISSIVE_TRACER.
+ */
+const ladderVec3 = (hex: number, rung: number): string => {
+  const c = new THREE.Color(hex);
+  c.multiplyScalar(emissiveBoost(c, rung));
+  return `vec3(${c.r.toFixed(4)}, ${c.g.toFixed(4)}, ${c.b.toFixed(4)})`;
+};
+const SIREN_RED = ladderVec3(0xff1a1f, EMISSIVE_BEACON);
+const SIREN_BLUE = ladderVec3(0x2a55ff, EMISSIVE_BEACON);
 
 const VERTEX_PARS = /* glsl */ `
+// Three aliases the attribute KEYWORD via "#define attribute in", but it
+// injects no declaration for a custom attribute — this line is required.
+attribute float aSiren;
 varying vec3 vCarPos;
 varying vec3 vCarNormal;
+varying float vSiren;
 `;
 
 const VERTEX_MAIN = /* glsl */ `
 // All cars share one fixed-size geometry, so object space IS meters.
 vCarPos = position;
 vCarNormal = normal;
+vSiren = aSiren;
 `;
 
 const FRAGMENT_PARS = /* glsl */ `
 varying vec3 vCarPos;
 varying vec3 vCarNormal;
+varying float vSiren;
 `;
 
 const FRAGMENT_MAIN = /* glsl */ `
@@ -166,6 +251,17 @@ if (vCarNormal.z < -0.5) {
   );
   totalEmissiveRadiance += (1.0 - smoothstep(0.22, 0.4, tailDist)) * ${TAILLIGHT};
 }
+// Ambulance light bar, on the roof face. Compared by BAND, never by equality:
+// an interpolated varying is not bit-exact across the perspective divide.
+if (vSiren > 0.5 && vCarNormal.y > 0.5) {
+  float redSide = step(vSiren, 1.5);
+  float dRed = distance(vCarPos.xz, vec2(-0.55, 0.0));
+  float dBlue = distance(vCarPos.xz, vec2(0.55, 0.0));
+  totalEmissiveRadiance +=
+    (1.0 - smoothstep(0.18, 0.42, dRed)) * redSide * ${SIREN_RED};
+  totalEmissiveRadiance +=
+    (1.0 - smoothstep(0.18, 0.42, dBlue)) * (1.0 - redSide) * ${SIREN_BLUE};
+}
 `;
 
 /** Dark car body + procedural head/taillight dots (same onBeforeCompile
@@ -179,7 +275,7 @@ function createCarMaterial(): THREE.MeshStandardMaterial {
   // This patch body is TEXTUALLY identical to buildings-material's (same
   // idiom, same local names), so without an explicit key the cars silently
   // reuse the buildings' compiled program and the light dots never appear.
-  material.customProgramCacheKey = () => "ab-car-lights";
+  material.customProgramCacheKey = () => "ab-car-lights-siren";
   material.onBeforeCompile = (shader) => {
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", `#include <common>\n${VERTEX_PARS}`)
@@ -207,6 +303,10 @@ export class Traffic {
   readonly mesh: THREE.InstancedMesh;
   private readonly lanes: TrafficLane[];
   private readonly seed: number;
+  /** Per-instance light-bar state, rewritten every frame (0 = ordinary car). */
+  private readonly siren: THREE.InstancedBufferAttribute;
+  /** Instance index → true when that slot is an ambulance. */
+  private readonly isAmbulance: boolean[];
   private readonly scratch = new THREE.Matrix4();
   private readonly quat = new THREE.Quaternion();
   private readonly pos = new THREE.Vector3();
@@ -223,10 +323,26 @@ export class Traffic {
     );
     geometry.translate(0, CAR_SIZE.height / 2, 0); // wheels on the street
 
+    const capacity = this.lanes.length * CARS_PER_LANE;
+    // An instanced attribute on the per-Traffic BoxGeometry is safe:
+    // WebGLBindingStates takes the divisor from meshPerAttribute and skips the
+    // _maxInstanceCount override for an isInstancedMesh draw.
+    this.siren = new THREE.InstancedBufferAttribute(
+      new Float32Array(capacity),
+      1,
+    );
+    this.siren.setUsage(THREE.DynamicDrawUsage);
+    geometry.setAttribute("aSiren", this.siren);
+    this.isAmbulance = new Array(capacity).fill(false);
+    for (const { laneId, carIndex } of emergencyCars(seed)) {
+      const slot = laneId * CARS_PER_LANE + carIndex;
+      if (slot >= 0 && slot < capacity) this.isAmbulance[slot] = true;
+    }
+
     this.mesh = new THREE.InstancedMesh(
       geometry,
       createCarMaterial(),
-      this.lanes.length * CARS_PER_LANE,
+      capacity,
     );
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.mesh.frustumCulled = false; // instances move relative to the camera every frame
@@ -234,7 +350,11 @@ export class Traffic {
 
     const color = new THREE.Color();
     for (let i = 0; i < this.mesh.count; i++) {
-      color.setHex(BODY_COLORS[i % BODY_COLORS.length] ?? 0x2a2d38);
+      color.setHex(
+        this.isAmbulance[i]
+          ? AMBULANCE_BODY
+          : (BODY_COLORS[i % BODY_COLORS.length] ?? 0x2a2d38),
+      );
       this.mesh.setColorAt(i, color);
     }
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
@@ -248,6 +368,9 @@ export class Traffic {
     }
     this.mesh.visible = true;
     const t = serverTimeMs / 1000;
+    // One siren state for the whole fleet: the flash is a function of server
+    // time alone, so both ambulances beat together and so do both tabs.
+    const flash = sirenState(t);
     let index = 0;
     for (const lane of this.lanes) {
       for (let i = 0; i < CARS_PER_LANE; i++) {
@@ -256,10 +379,12 @@ export class Traffic {
         this.quat.setFromAxisAngle(Traffic.UP, yaw);
         this.pos.set(p.x, p.y, p.z);
         this.scratch.compose(this.pos, this.quat, Traffic.UNIT);
+        this.siren.setX(index, this.isAmbulance[index] ? flash : 0);
         this.mesh.setMatrixAt(index++, this.scratch);
       }
     }
     this.mesh.instanceMatrix.needsUpdate = true;
+    this.siren.needsUpdate = true;
   }
 
   /**
@@ -270,7 +395,14 @@ export class Traffic {
   debug(
     serverTimeMs: number | null,
     count = 5,
-  ): { time: number; cars: CarPose[]; visible: boolean; drawnAt: Vec3 } | null {
+  ): {
+    time: number;
+    cars: CarPose[];
+    visible: boolean;
+    drawnAt: Vec3;
+    /** L1: the light-bar state of every ambulance slot, in slot order. */
+    siren: number[];
+  } | null {
     if (serverTimeMs === null) return null;
     const t = serverTimeMs / 1000;
     const cars: CarPose[] = [];
@@ -286,6 +418,9 @@ export class Traffic {
       cars,
       visible: this.mesh.visible,
       drawnAt: { x: e[12] as number, y: e[13] as number, z: e[14] as number },
+      siren: this.isAmbulance.flatMap((amb, i) =>
+        amb ? [this.siren.getX(i)] : [],
+      ),
     };
   }
 }

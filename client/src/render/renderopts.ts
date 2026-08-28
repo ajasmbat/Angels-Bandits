@@ -9,6 +9,7 @@
 //                         limits (default "auto" — the scaler)
 //   ?perf=1               open the dev perf HUD (default closed)
 //   ?gputime=1            measure GPU frame cost   (default off)
+//   ?micro=0              disable the L1 micro tier (default on)
 
 import { defaultLimits } from "./resolution";
 
@@ -65,6 +66,13 @@ export interface RenderOptions {
    * shipped game: it is driver state the player gains nothing from.
    */
   gpuTimer: boolean;
+  /**
+   * Whether the L1 micro tier (pedestrians, steam, signals, sparks) is drawn.
+   * On in the shipped game; `?micro=0` is the perf harness's A/B control, and
+   * it takes the SAME early-return path as the altitude gate, so it skips the
+   * CPU work and not merely the draw — otherwise the A/B measures nothing.
+   */
+  micro: boolean;
 }
 
 export const DEFAULT_RENDER_OPTIONS: RenderOptions = {
@@ -72,6 +80,7 @@ export const DEFAULT_RENDER_OPTIONS: RenderOptions = {
   pixelRatio: "auto",
   perfHud: false,
   gpuTimer: false,
+  micro: true,
 };
 
 const AA_MODES: readonly AaMode[] = ["legacy", "off", "msaa", "smaa"];
@@ -127,6 +136,9 @@ export function readRenderOptions(
 
   const gpu = params.get("gputime");
   if (gpu !== null) opts.gpuTimer = gpu !== "0" && gpu !== "false";
+
+  const micro = params.get("micro");
+  if (micro !== null) opts.micro = micro !== "0" && micro !== "false";
 
   return opts;
 }

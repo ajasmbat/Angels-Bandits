@@ -4,6 +4,11 @@
 // — so every expectation here is deterministic.
 
 import { generateCity } from "@angels-bandits/common/city";
+import {
+  aircraftBox,
+  collideMovers,
+  generateMovers,
+} from "@angels-bandits/common/city/movers";
 import { isInRoadway } from "@angels-bandits/common/city/street";
 import { collideCity, hitsGround } from "@angels-bandits/common/collision";
 import {
@@ -27,7 +32,7 @@ import {
 } from "@angels-bandits/common/constants";
 import { flightForward } from "@angels-bandits/common/flight";
 import type { SpawnState } from "@angels-bandits/common/protocol";
-import { canonicalize } from "@angels-bandits/common/world";
+import { canonicalize, wrapDeltaAxis } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
 import { type BotShot, RoomBots, applyBotFire } from "../src/bots";
 import { Combat } from "../src/combat";
@@ -922,4 +927,208 @@ describe("long-sim regressions", () => {
     expect(crashed / (crashed + shot)).toBeLessThan(0.4);
     // Long seeded sims: generous timeout so a loaded CI box cannot flake it.
   }, 30_000);
+});
+
+// --- L2 (ANGE-1PVSJE): bots and the moving obstacles ---
+
+describe("bots vs the L2 movers", () => {
+  const l2City = generateCity(CITY_SEED);
+  const l2Field = generateMovers(CITY_SEED, l2City);
+
+  /** Is this bot inside a mover right now? Measured EXTERNALLY, against the
+   * real field — never against whatever field the RoomBots under test was
+   * handed. That is what makes the negative control below mean anything: a
+   * bot given an empty field is also crane-IMMORTAL, so asking its own crash
+   * list would report zero in both runs and prove nothing. */
+  const insideMover = (bots: RoomBots, id: string, now: number) => {
+    const f = bots.flightOf(id);
+    return f ? collideMovers(f.pos, PLAYER_RADIUS, l2Field, now) : null;
+  };
+
+  /** Within a crane's swept disc, at jib altitude — the volume a bot has to
+   * spend real time in before "it never hit anything" says anything. */
+  const inSweep = (pos: Vec3) =>
+    l2Field.cranes.some((site) => {
+      const dx = wrapDeltaAxis(site.x, pos.x);
+      const dz = wrapDeltaAxis(site.z, pos.z);
+      return (
+        Math.hypot(dx, dz) < site.jibLength + PLAYER_RADIUS &&
+        Math.abs(pos.y - site.hubY) < site.jibLength
+      );
+    });
+
+  /** 120 s of contact-free patrol seeded around the three crane sites. */
+  function patrolCranes(seed: number, probeMovers: boolean) {
+    const bots = new RoomBots("room-0", seed, l2City, l2Field, probeMovers);
+    let n = 0;
+    const spawn = (): SpawnState => {
+      const site = l2Field.cranes[n % l2Field.cranes.length];
+      if (!site) throw new Error("no crane sites");
+      const a = (n++ / 6) * Math.PI * 2;
+      const p = canonicalize({
+        x: site.x + Math.cos(a) * 150,
+        y: 0,
+        z: site.z + Math.sin(a) * 150,
+      });
+      // Nose pointed at the mast: forward is (-sin yaw, -cos yaw), and the
+      // inward direction from the ring is (-cos a, -sin a).
+      return {
+        pos: { x: p.x, y: site.hubY, z: p.z },
+        yaw: Math.atan2(Math.cos(a), Math.sin(a)),
+        speed: RESPAWN_SPEED,
+      };
+    };
+    bots.syncTo(11, spawn);
+
+    let moverDeaths = 0;
+    let sweepTicks = 0;
+    const ticks = Math.round(120 * TICK_DOWN_HZ);
+    for (let i = 1; i <= ticks; i++) {
+      const now = i * (1000 / TICK_DOWN_HZ);
+      for (const id of bots.tick(now, []).crashes) {
+        if (insideMover(bots, id, now)) moverDeaths++;
+        bots.respawn(id, spawn());
+      }
+      for (const id of bots.ids()) {
+        const f = bots.flightOf(id);
+        if (f && inSweep(f.pos)) sweepTicks++;
+      }
+    }
+    return { moverDeaths, sweepTicks };
+  }
+
+  it("never flies a bot into a crane over 120 s of patrol at the crane sites", () => {
+    let deaths = 0;
+    let sweepTicks = 0;
+    for (const seed of [1234, 7, 20260826]) {
+      const r = patrolCranes(seed, true);
+      deaths += r.moverDeaths;
+      sweepTicks += r.sweepTicks;
+    }
+    // Vacuity guard: bots must spend real time inside the swept disc, or
+    // "they never hit it" is only saying they flew somewhere else.
+    expect(sweepTicks).toBeGreaterThan(800);
+    expect(deaths).toBe(0);
+  }, 60_000);
+
+  /**
+   * The adversarial version: a stationary decoy parked in the construction
+   * block's open air, ~90 m from the mast — outside the sweep, so the bots'
+   * GOAL is not itself inside solid geometry, but reaching it means crossing
+   * the sweep over and over for two minutes. Nothing in a real match is this
+   * relentless; it exists to make the probe's contribution measurable.
+   */
+  function orbitCrane(seed: number, probeMovers: boolean) {
+    const site = l2Field.cranes[0];
+    if (!site) throw new Error("no crane site");
+    const bots = new RoomBots("room-0", seed, l2City, l2Field, probeMovers);
+    let n = 0;
+    const spawn = (): SpawnState => {
+      const a = (n++ / 8) * Math.PI * 2;
+      const p = canonicalize({
+        x: site.x + Math.cos(a) * 230,
+        y: 0,
+        z: site.z + Math.sin(a) * 230,
+      });
+      return {
+        pos: { x: p.x, y: site.hubY, z: p.z },
+        yaw: Math.atan2(Math.cos(a), Math.sin(a)),
+        speed: RESPAWN_SPEED,
+      };
+    };
+    bots.syncTo(8, spawn);
+    const lure = canonicalize({ x: site.x + 92, y: 0, z: site.z + 92 });
+    const contacts = [
+      {
+        id: "decoy",
+        pos: { x: lure.x, y: site.hubY, z: lure.z },
+        vel: { x: 0, y: 0, z: 0 },
+        prot: false,
+      },
+    ];
+
+    let moverDeaths = 0;
+    let sweepTicks = 0;
+    const ticks = Math.round(120 * TICK_DOWN_HZ);
+    for (let i = 1; i <= ticks; i++) {
+      const now = i * (1000 / TICK_DOWN_HZ);
+      for (const id of bots.tick(now, contacts).crashes) {
+        if (insideMover(bots, id, now)) moverDeaths++;
+        bots.respawn(id, spawn());
+      }
+      for (const id of bots.ids()) {
+        const f = bots.flightOf(id);
+        if (f && inSweep(f.pos)) sweepTicks++;
+      }
+    }
+    return { moverDeaths, sweepTicks };
+  }
+
+  it("negative control: the probe is load-bearing, not decorative", () => {
+    // The measured contribution of wiring movers into blockedAlong. Blind,
+    // eight bots dogfighting through a crane's sweep for two minutes die to
+    // it 42-46 times (mostly mast and jib, roughly evenly); with the probe on
+    // it is 0-1, across every seed tried. This asserts the gap, not a
+    // fragile exact count.
+    const seeing = orbitCrane(1234, true);
+    const blind = orbitCrane(1234, false);
+    expect(blind.sweepTicks).toBeGreaterThan(800);
+    expect(seeing.sweepTicks).toBeGreaterThan(800);
+    expect(blind.moverDeaths).toBeGreaterThan(20);
+    expect(seeing.moverDeaths * 10).toBeLessThan(blind.moverDeaths);
+  }, 60_000);
+
+  it("keeps the storm ceiling while it is busy dodging a crane", () => {
+    // The mover probe must not have cost bots a guarantee they already had.
+    let breaches = 0;
+    const bots = new RoomBots("room-0", 99, l2City, l2Field);
+    const site = l2Field.cranes[0];
+    if (!site) throw new Error("no crane site");
+    let n = 0;
+    bots.syncTo(8, () => {
+      const a = (n++ / 8) * Math.PI * 2;
+      const p = canonicalize({
+        x: site.x + Math.cos(a) * 150,
+        y: 0,
+        z: site.z + Math.sin(a) * 150,
+      });
+      return {
+        pos: { x: p.x, y: site.hubY, z: p.z },
+        yaw: Math.atan2(Math.cos(a), Math.sin(a)),
+        speed: RESPAWN_SPEED,
+      };
+    });
+    const ticks = Math.round(120 * TICK_DOWN_HZ);
+    for (let i = 1; i <= ticks; i++) {
+      bots.tick(i * (1000 / TICK_DOWN_HZ), []);
+      for (const id of bots.ids()) {
+        const f = bots.flightOf(id);
+        if (f && f.pos.y > CLOUD_BASE) breaches++;
+      }
+    }
+    expect(breaches).toBe(0);
+  }, 60_000);
+
+  it("crashes a bot into the blimp but never into a helicopter — D3, in the sim", () => {
+    const heli = l2Field.aircraft.find((a) => a.kind === "helicopter");
+    const blimp = l2Field.aircraft.find((a) => a.kind === "blimp");
+    if (!heli || !blimp) throw new Error("missing aircraft");
+    const bots = new RoomBots("room-0", 5, [], l2Field);
+    bots.syncTo(2, () => spawnAt(0, 0));
+    const [inHeli, inBlimp] = bots.ids();
+    if (!inHeli || !inBlimp) throw new Error("expected two bots");
+
+    const now = 1000 / TICK_DOWN_HZ;
+    const hf = bots.flightOf(inHeli);
+    const bf = bots.flightOf(inBlimp);
+    if (!hf || !bf) throw new Error("no flight state");
+    const hb = aircraftBox(heli, now);
+    const bb = aircraftBox(blimp, now);
+    hf.pos = { x: hb.x, y: hb.y, z: hb.z };
+    bf.pos = { x: bb.x, y: bb.y, z: bb.z };
+
+    const { crashes } = bots.tick(now, []);
+    expect(crashes).toContain(inBlimp);
+    expect(crashes).not.toContain(inHeli);
+  });
 });

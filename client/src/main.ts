@@ -5,6 +5,7 @@
 // split). Death freezes the plane for a kill-cam beat until the server's
 // respawn message reseeds the flight state far from every enemy.
 
+import { generateMovers } from "@angels-bandits/common/city/movers";
 import {
   BULLET_SPEED,
   CLOUD_BASE,
@@ -61,10 +62,13 @@ import {
   zoomSteer,
 } from "./game/zoom";
 import { GameSocket } from "./net/socket";
+import { Birds } from "./render/birds";
 import { CityRenderer } from "./render/city";
 import { FacadeGarnishRenderer } from "./render/facade-garnish";
+import { Fireworks } from "./render/fireworks";
 import { Explosions, Sparks } from "./render/fx";
 import { GpuTimer } from "./render/gputimer";
+import { MoverLights, Movers } from "./render/movers";
 import { FrameMeter, type FrameStats } from "./render/perfmeter";
 import { buildPlaneMesh, spinPropeller } from "./render/plane";
 import { PlaneLights } from "./render/planelights";
@@ -79,6 +83,7 @@ import {
   stepResolution,
 } from "./render/resolution";
 import { RoofClutterRenderer } from "./render/roofclutter";
+import { Searchlights } from "./render/searchlights";
 import { Signage } from "./render/signage";
 import { GroundPlane, SkyDome, setupSky } from "./render/sky";
 import { SmokeTrails, smokeActive } from "./render/smoke";
@@ -285,6 +290,22 @@ scene.add(signage.group);
 // every client (late joiners included) sees identical cars. Zero netcode.
 const traffic = new Traffic(welcome.seed);
 scene.add(traffic.mesh);
+// L2 movers: cranes, helicopters, the blimp. Poses are the SAME pure function
+// of (seed, server clock) the crash check uses, so what you see is what you
+// can hit — and nothing about them is ever streamed.
+const moverField = generateMovers(welcome.seed, city.cityBuildings);
+const movers = new Movers(moverField);
+scene.add(movers.rig, movers.hulls, movers.rotors);
+// One additive point cloud shared by every L2 light: crane warning beacons,
+// aircraft nav lights AND firework sparks. That merge is what keeps the whole
+// L2 spectacle inside its draw-call budget.
+const moverLights = new MoverLights();
+scene.add(moverLights.points);
+const fireworks = new Fireworks(welcome.seed);
+const searchlights = new Searchlights(city.cityBuildings);
+scene.add(searchlights.mesh);
+const birds = new Birds(welcome.seed);
+scene.add(birds.points);
 const explosions = new Explosions();
 scene.add(explosions.group);
 const sparks = new Sparks();
@@ -723,11 +744,17 @@ declare global {
       zoom: () => { held: boolean; z: number; fov: number };
       lampImage: (x: number, z: number) => { x: number; z: number } | null;
       traffic: (at?: number | null) => ReturnType<Traffic["debug"]>;
+      movers: (at?: number | null) => ReturnType<Movers["debug"]>;
+      fireworks: (at?: number | null) => ReturnType<Fireworks["debug"]>;
       cityStats: () => {
         buildings: number;
         tierInstances: number;
         clutterInstances: number;
         garnishInstances: number;
+        rigInstances: number;
+        moverLights: number;
+        beams: number;
+        birds: number;
       };
       signage: () => Signage["counts"];
       signImage: (x: number, z: number) => { x: number; z: number } | null;
@@ -846,12 +873,23 @@ window.__ab = {
   // its OWN interpolation delay, so two tabs' default render times are no
   // longer the same instant (that is the feature; the QA must pin the time).
   traffic: (at) => traffic.debug(at === undefined ? socket.renderTime() : at),
+  // L2 QA: jib angles, aircraft positions and the drawn read-back at a server
+  // time. Pass the time explicitly for the two-tab check — each tab holds its
+  // own interpolation delay, so their default render clocks are NOT the same
+  // instant. Two tabs given the same `at` must return identical JSON.
+  movers: (at) => movers.debug(at === undefined ? socket.renderTime() : at),
+  fireworks: (at) =>
+    fireworks.debug(at === undefined ? socket.renderTime() : at),
   // V2 QA: instance counts for the perf report.
   cityStats: () => ({
     buildings: city.cityBuildings.length,
     tierInstances: city.tierInstanceCount,
     clutterInstances: roofClutter.instanceCount,
     garnishInstances: facadeGarnish.instanceCount,
+    rigInstances: movers.rigInstances,
+    moverLights: moverLights.lightCount,
+    beams: searchlights.beamCount,
+    birds: birds.birdCount,
   }),
   // S2 QA: signage instance counts + drawn-position read-back (seam checks).
   signage: () => signage.counts,
@@ -897,7 +935,15 @@ renderer.setAnimationLoop((now) => {
   // dumps into the orbit as one jump. Signs: mouse-right pans the view
   // right, mouse-up looks up (both hand-tuned with LOOK_SENSITIVITY).
   const lookDelta = input.takeLookDelta();
+  // Latch the render clock ONCE. socket.renderTime() reads performance.now()
+  // live, so calling it again 150 lines further down would pose the movers a
+  // frame away from where the crash check tested them — and dying to a jib
+  // drawn somewhere else is exactly the failure the shared seam exists to
+  // prevent. Null until the first snapshot: movers then render hidden AND
+  // count as non-solid.
+  const renderMs = socket.renderTime();
   planeLights.begin(); // own + remote lights re-append every frame
+  moverLights.begin(); // crane/aircraft lights + firework sparks, same deal
   // Step the zoom OUTSIDE the alive gate: chase.update() only runs while
   // alive, so a death mid-zoom would otherwise freeze the FOV narrowed for
   // the whole kill-cam. Dying eases it back out instead.
@@ -917,7 +963,15 @@ renderer.setAnimationLoop((now) => {
     // reaches flight state. Authority is the product of both costs.
     const steer = freelook.steer * zoomSteer(zoom.z);
     flight = stepFlight(flight, shapeInput(input.read(), { steer }), dt);
-    if (detectCrash(flight, city.cityBuildings, city.cityIndex)) {
+    if (
+      detectCrash(
+        flight,
+        city.cityBuildings,
+        city.cityIndex,
+        moverField,
+        renderMs,
+      )
+    ) {
       // Report and freeze; the server decides credit and the respawn.
       socket.sendCrash();
       enterDeath(null);
@@ -968,7 +1022,7 @@ renderer.setAnimationLoop((now) => {
       planePos,
       poseQuat,
       flight.speed,
-      socket.renderTime() ?? now,
+      renderMs ?? now,
     );
     planeTrails.emit(socket.selfId, flight.pos, poseQuat, now, dt);
   } else if (killCamTargetId !== null) {
@@ -1017,7 +1071,7 @@ renderer.setAnimationLoop((now) => {
     }
   }
 
-  remotes.update(socket.renderTime(), chase.position, dt, now, (id) =>
+  remotes.update(renderMs, chase.position, dt, now, (id) =>
     reveals.levelOf(id, now),
   );
   // Own rim-flash: the storm lit us up — same tint the remotes wear.
@@ -1065,12 +1119,18 @@ renderer.setAnimationLoop((now) => {
 
   city.update(chase.position);
   // Beacons pulse on server-synced time so every client is in phase.
-  roofClutter.update(chase.position, socket.renderTime() ?? now);
+  roofClutter.update(chase.position, renderMs ?? now);
   facadeGarnish.update(chase.position);
   streetlights.update(chase.position);
   // Neon pulses on the same synced clock as the beacons.
-  signage.update(chase.position, socket.renderTime() ?? now);
-  traffic.update(chase.position, socket.renderTime());
+  signage.update(chase.position, renderMs ?? now);
+  traffic.update(chase.position, renderMs);
+  // Every L2 system takes the SAME latched clock the crash check used.
+  movers.update(chase.position, renderMs, moverLights);
+  fireworks.update(chase.position, renderMs, moverLights);
+  searchlights.update(chase.position, renderMs);
+  birds.update(chase.position, renderMs);
+  moverLights.commit();
   ground.update(chase.position);
   skyDome.update(chase.position);
   // Wounded smoke: own plane from server-said self HP, every remote (human
@@ -1085,7 +1145,7 @@ renderer.setAnimationLoop((now) => {
   smoke.update(chase.position, now);
   // Storm: consume this frame's scheduled strikes, then age/place the bolts
   // and drive the sky-flash pulse (fog stain + dome tint + violet ambient).
-  for (const s of strikeFeed.poll(socket.renderTime())) {
+  for (const s of strikeFeed.poll(renderMs)) {
     storm.strike(s, now);
     strikeLog.push({ timeMs: s.timeMs, x: s.x, z: s.z });
     if (strikeLog.length > 12) strikeLog.shift();
@@ -1100,7 +1160,7 @@ renderer.setAnimationLoop((now) => {
   }
   for (const ev of thunder.due(now)) audio.thunder(ev.gain, ev.hard);
   storm.update(chase.position, now);
-  clouds.update(chase.position, camera.quaternion, socket.renderTime());
+  clouds.update(chase.position, camera.quaternion, renderMs);
   const sky = storm.atmosphere(scene, chase.position.y, now);
   skyDome.tint(sky.tint);
   skyDome.mesh.visible = sky.domeVisible;

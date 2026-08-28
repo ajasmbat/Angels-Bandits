@@ -1,4 +1,5 @@
 import {
+  CONSTRUCTION_BLOCKS,
   LANDMARK_BLOCKS,
   PLAZA_BLOCKS,
   generateCity,
@@ -102,6 +103,33 @@ describe("generateCity layout", () => {
       );
       expect(inBlock).toHaveLength(0);
     }
+  });
+
+  it("leaves the construction blocks empty too — the crane is a mover, not a Building", () => {
+    // L2: a tower crane's mast/jib/hook live in city/movers.ts. A slim lattice
+    // mast could not be a Building anyway (it fails the LOT_MIN_WIDTH / 2 floor
+    // three tests down), and as a Building it would collect windows, roof AC
+    // units, billboards and an entrance canopy from the client's dressing.
+    for (const [bx, bz] of CONSTRUCTION_BLOCKS) {
+      const inBlock = city.filter(
+        (b) =>
+          Math.floor(b.x / BLOCK_PITCH) === bx &&
+          Math.floor(b.z / BLOCK_PITCH) === bz,
+      );
+      expect(inBlock).toHaveLength(0);
+    }
+  });
+
+  it("keeps the three hand-placed lists disjoint", () => {
+    const key = ([bx, bz]: readonly [number, number]) => `${bx},${bz}`;
+    const all = [
+      ...LANDMARK_BLOCKS,
+      ...PLAZA_BLOCKS,
+      ...CONSTRUCTION_BLOCKS,
+    ].map(key);
+    expect(new Set(all).size).toBe(all.length);
+    // collision.test.ts probes block (0,0)'s center for a building.
+    expect(CONSTRUCTION_BLOCKS.map(key)).not.toContain("0,0");
   });
 
   it("has 4 landmark supertalls at LANDMARK_HEIGHT and all other heights in [min, max]", () => {
@@ -426,11 +454,15 @@ describe("generateCity block independence", () => {
   async function cityWithLayout(
     landmarks: ReadonlyArray<readonly [number, number]>,
     plazas: ReadonlyArray<readonly [number, number]>,
+    sites: ReadonlyArray<readonly [number, number]> = CONSTRUCTION_BLOCKS,
   ) {
     vi.resetModules();
     vi.doMock("@angels-bandits/common/city/layout", () => ({
       LANDMARK_BLOCKS: landmarks,
       PLAZA_BLOCKS: plazas,
+      // Every list the generator imports must be present: the factory REPLACES
+      // the module, so a missing key reaches generateCity as undefined.
+      CONSTRUCTION_BLOCKS: sites,
     }));
     const mod = await import("@angels-bandits/common/city");
     const city = mod.generateCity(42);

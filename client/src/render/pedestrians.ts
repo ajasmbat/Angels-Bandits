@@ -397,7 +397,7 @@ export class Pedestrians {
     bx: number,
     bz: number,
     serverTimeMs: number,
-    limit = 8,
+    limit = 32,
   ): PedestrianPose[] {
     const t = serverTimeMs / 1000;
     return this.specsFor(bx, bz)

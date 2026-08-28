@@ -8,8 +8,10 @@
 //
 // Off by default and never player-visible: the markup lives in index.html
 // hidden behind `body.perf`, exactly the toggle idiom free-look and
-// fullscreen already use. `P` flips it (dev builds, or any build visited
-// with ?perf=1 — see render/renderopts.ts).
+// fullscreen already use. `P` flips it — but ONLY in a dev build, or in a
+// build visited with ?perf=1 (see render/renderopts.ts and
+// perfHudKeyEnabled below). In a plain production visit the key is never
+// bound at all, so a player who happens to press P gets nothing.
 
 import type { FrameStats } from "../render/perfmeter";
 
@@ -102,13 +104,45 @@ export class PerfHud {
 }
 
 /**
- * Bind `P` to the HUD. Guarded the way fullscreen's `F` is: never while
- * typing a callsign, never on auto-repeat.
+ * Whether `P` should be bound at all — the production/dev split, kept pure so
+ * the test can assert both sides of it without a bundler.
+ *
+ * The overlay is a debug tool: teal monospace percentiles over the canvas,
+ * meaningless to a player and confusing if it appears by accident. It is
+ * hidden behind `body.perf`, so the only way in is the key, and the key used
+ * to be registered unconditionally — every shipped build answered P. Two
+ * doors stay open, and no others:
+ *
+ *  - a **dev build** (`import.meta.env.DEV`), where the whole point is to
+ *    press it while flying;
+ *  - **`?perf=1`**, which a human (or the harness) types deliberately. That
+ *    one already opens the overlay, so binding the key there only lets them
+ *    close it again.
+ *
+ * A production player has neither, so nothing listens for their keystroke.
+ */
+export function perfHudKeyEnabled(
+  devBuild: boolean,
+  perfHudRequested: boolean,
+): boolean {
+  return devBuild || perfHudRequested;
+}
+
+/**
+ * Bind `P` to the HUD, when `enabled` (see perfHudKeyEnabled). Guarded the
+ * way fullscreen's `F` is: never while typing a callsign, never on
+ * auto-repeat.
+ *
+ * `enabled` gates the REGISTRATION, not the handler body: a disabled build
+ * adds no keydown listener at all, so the HUD costs a production player
+ * nothing — not even a predicate per keystroke.
  */
 export function bindPerfHudKey(
   hud: PerfHud,
+  enabled: boolean,
   target: Pick<Window, "addEventListener"> = window,
 ): void {
+  if (!enabled) return;
   target.addEventListener("keydown", (ev: KeyboardEvent) => {
     if (ev.code !== "KeyP" || ev.repeat) return;
     const tag = (ev.target as { tagName?: string } | null)?.tagName;

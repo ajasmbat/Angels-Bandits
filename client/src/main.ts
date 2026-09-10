@@ -71,6 +71,7 @@ import { FacadeGarnishRenderer } from "./render/facade-garnish";
 import { Fireworks } from "./render/fireworks";
 import { Explosions, Sparks } from "./render/fx";
 import { GpuTimer } from "./render/gputimer";
+import { createGradePass } from "./render/grade";
 import { MoverLights, Movers } from "./render/movers";
 import { Pedestrians } from "./render/pedestrians";
 import { FrameMeter, type FrameStats } from "./render/perfmeter";
@@ -208,8 +209,11 @@ const DEFAULT_FB_SAMPLES = renderer
 // ~0.05 luminance in linear HDR, the sky dome ~0.05) and below the emissives
 // (windows ~0.8+, lamp heads ~0.9, tracers ~1.5) — so ONLY emissives glow.
 // UnrealBloomPass runs its blur chain from HALF the drawing-buffer resolution.
-const BLOOM_STRENGTH = 0.42;
-const BLOOM_RADIUS = 0.3;
+// Strength and radius are the LOOK (a wider, gentler halo reads as haze
+// around a light rather than a hard glow); the threshold is the CONTRACT the
+// emissive ladder is built against and does not move.
+const BLOOM_STRENGTH = 0.48;
+const BLOOM_RADIUS = 0.42;
 const BLOOM_THRESHOLD = 0.72;
 // The composer owns its own render target so `msaa` can put samples on the
 // buffer the SCENE is actually drawn into. HalfFloat matches what
@@ -236,6 +240,11 @@ const bloomPass = new UnrealBloomPass(
 );
 composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
+// The grade (vignette + saturation) works on the display-referred image, so
+// it follows the OutputPass; SMAA, when on, still comes last.
+if (renderOpts.grade) {
+  composer.addPass(createGradePass());
+}
 // SMAA goes AFTER the output pass, on purpose: its edge detection wants the
 // tonemapped, sRGB-encoded image, not linear HDR where a bloomed window
 // swamps every luma gradient near it.
@@ -1279,7 +1288,9 @@ renderer.setAnimationLoop((now) => {
   // Every L2 system takes the SAME latched clock the crash check used.
   movers.update(chase.position, renderMs, moverLights);
   fireworks.update(chase.position, renderMs, moverLights);
-  searchlights.update(chase.position, renderMs);
+  // After movers.update: the helicopters' belly spots are this frame's, and
+  // the lamp heads land in the same point cloud before commit().
+  searchlights.update(chase.position, renderMs, movers.spots, moverLights);
   birds.update(chase.position, renderMs);
   moverLights.commit();
   // L1 micro tier — on the same latched clock, for the same reason. ONE gate

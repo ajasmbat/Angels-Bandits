@@ -6,15 +6,24 @@
 // into matrices. That is the whole reason there are no invisible walls here.
 //
 // Three draw calls, and the merges that hold them there:
-//   1. `rig`      — one InstancedMesh of boxes for every crane's lattice.
-//   2. `hulls`    — one InstancedMesh of ellipsoids for helicopter fuselages
+//   1. `rig`      — one InstancedMesh of boxes for every crane's lattice AND
+//                   the aircraft's hard parts: tail booms, fins, skids, the
+//                   blimp's gondola and tail fins. Same steel, same mesh.
+//   2. `hulls`    — one InstancedMesh of ellipsoids for helicopter cabins
 //                   AND the blimp envelope (same shape at different scales).
-//                   The blimp's lit ad banner is an emissive stripe inside
-//                   that material, flagged per instance, not a fourth mesh.
-//   3. `rotors`   — one InstancedMesh of blurred discs.
+//                   The blimp's lit ad banner and the cabins' window glow are
+//                   emissive patches inside that material, flagged per
+//                   instance, not a fourth mesh.
+//   3. `rotors`   — one InstancedMesh of blurred discs: main AND tail rotors.
 // The nav/warning lights are NOT here: they go into the shared additive point
 // cloud below, which fireworks also write into. Merging those two is what
-// keeps the whole L2 spectacle inside its six-draw-call budget.
+// keeps the whole L2 spectacle inside its six-draw-call budget. The
+// helicopters' belly spots are not here either — they are handed to the
+// Searchlights mesh each frame (`spots`), which already draws cones.
+//
+// Every detail part stays INSIDE its aircraft's collision box: a fin or a
+// skid you can see is something you would hit anyway. Only the rotor blurs
+// sit outside, and a blur is not something that looks solid.
 //
 // Hidden — and, at main.ts's crash check, non-solid — until the server clock
 // estimate exists. A mover you cannot see must never be able to kill you.
@@ -29,18 +38,22 @@ import {
   EMISSIVE_BEACON,
   EMISSIVE_NAVLIGHT,
   EMISSIVE_SIGN,
+  EMISSIVE_STROBE,
+  EMISSIVE_WINDOW,
 } from "@angels-bandits/common/constants";
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
+import type { SpotBeam } from "./searchlights";
 import { nearestImage } from "./wrapPlacement";
 
 // --- Shared additive point cloud (nav lights, warning beacons, sparks) ---
 
 /** Lights the movers themselves need, plus headroom for a firework show:
- * 3 cranes x 3 + 3 helis x 3 + blimp x 4 = 22, and FIREWORK_BURSTS x
- * FIREWORK_SPARKS = 240. Fixed cap, never grown. */
-const LIGHT_CAPACITY = 320;
+ * 3 cranes x 3 + 4 helis x 5 + blimp x 8 = 37, the searchlight heads (10
+ * rooftops + 4 spots), and FIREWORK_BURSTS x FIREWORK_SPARKS = 240. Fixed
+ * cap, never grown. */
+const LIGHT_CAPACITY = 400;
 
 /**
  * Program cache keys for the two patched materials here.
@@ -166,8 +179,9 @@ export class MoverLights {
 
 /** Crane steelwork: dark, warm, industrial. Bloom only touches the lights. */
 const STEEL_COLOR = 0x33302c;
-/** Aircraft hulls read as silhouettes at night. */
-const HULL_COLOR = 0x22242a;
+/** Aircraft hulls: cool gunmetal with enough sheen that the low dusk key
+ * catches the flank, so a hull reads as a shape and not only as its lights. */
+const HULL_COLOR = 0x3b414e;
 
 /** Aviation warning red, at the beacon rung's pulse peak. */
 const WARNING_RED = new THREE.Color(1.0, 0.11, 0.09);
@@ -175,6 +189,10 @@ const WARNING_BOOST = emissiveBoost(WARNING_RED, EMISSIVE_BEACON);
 /** Warning beacon period, ms — slower than a plane strobe so the two read
  * as different classes of object at distance. */
 const WARNING_PERIOD_MS = 2600;
+/** Helicopter anti-collision strobe: a red double-flash, ms. */
+const HELI_STROBE_PERIOD_MS = 1500;
+const HELI_STROBE_FLASH_MS = 80;
+const HELI_STROBE_OFFSETS = [0, 220] as const;
 
 /** Aircraft navigation lights: the steady red/green/white every aircraft in
  * the game already wears, at the same rung. */
@@ -195,6 +213,20 @@ const navWhiteBoost = NAV_WHITE.clone().multiplyScalar(
  * billboard is exactly as bright as the ones on the buildings and no brighter. */
 const BANNER_COLOR = new THREE.Color(1.0, 0.42, 0.72);
 const BANNER_BOOST = emissiveBoost(BANNER_COLOR, EMISSIVE_SIGN);
+/** A second band under the banner in the complementary neon — same rung. */
+const BANNER_COLOR_2 = new THREE.Color(0.35, 0.85, 1.0);
+const BANNER_BOOST_2 = emissiveBoost(BANNER_COLOR_2, EMISSIVE_SIGN);
+/** Helicopter cabin glass: warm cockpit light at the WINDOW rung. */
+const CABIN_COLOR = new THREE.Color(1.0, 0.78, 0.5);
+const CABIN_BOOST = emissiveBoost(CABIN_COLOR, EMISSIVE_WINDOW);
+/** Gondola window strip lights, warm, in the point cloud. */
+const GONDOLA_WARM = new THREE.Color(1.0, 0.8, 0.55);
+const gondolaBoost = GONDOLA_WARM.clone().multiplyScalar(
+  emissiveBoost(GONDOLA_WARM, EMISSIVE_NAVLIGHT),
+);
+const strobeRedBoost = NAV_RED.clone().multiplyScalar(
+  emissiveBoost(NAV_RED, EMISSIVE_STROBE),
+);
 
 /** Lattice legs per mast, and how many horizontal ties up its height. */
 const MAST_LEGS = 4;
@@ -206,6 +238,13 @@ const JIB_TIES = 5;
  * hook. Must match exactly what update() writes — a short count would silently
  * drop the LAST parts written, which are the hook and cable. */
 const BOXES_PER_CRANE = MAST_LEGS + MAST_TIES + 1 + JIB_TIES + 5;
+/** Boxes one helicopter adds to the rig: tail boom, fin, two skids, rotor
+ * mast. One blimp: gondola and four tail fins. Same "must match what
+ * update() writes" rule as the crane count. */
+const BOXES_PER_HELI = 5;
+const BOXES_PER_BLIMP = 5;
+/** Rotor discs per helicopter: the main blur and the tail rotor. */
+const ROTORS_PER_HELI = 2;
 
 const BANNER_PARS = /* glsl */ `
 varying vec3 vHullPos;
@@ -220,25 +259,38 @@ vBanner = aBanner;
 `;
 
 const BANNER_FRAGMENT = /* glsl */ `
-// The blimp's lit ad banner: a bright horizontal stripe down the flank,
-// faded at the nose and tail so it reads as a panel rather than a paint job.
-if (vBanner > 0.5) {
-  float stripe = 1.0 - smoothstep(0.06, 0.16, abs(vHullPos.y));
-  float ends = 1.0 - smoothstep(0.22, 0.44, abs(vHullPos.x));
-  totalEmissiveRadiance += stripe * ends * ${BANNER_BOOST.toFixed(4)} *
+// aBanner flags the hull's role: 1 = blimp envelope, 2 = helicopter cabin.
+if (vBanner > 1.5) {
+  // Cockpit glass: a warm band across the front third of the cabin, on the
+  // flanks and the nose, cut off below the belt line.
+  float front = smoothstep(0.02, 0.18, vHullPos.x);
+  float belt = 1.0 - smoothstep(0.02, 0.16, abs(vHullPos.y - 0.06));
+  float glass = front * belt;
+  totalEmissiveRadiance += glass * ${CABIN_BOOST.toFixed(4)} *
+    vec3(${CABIN_COLOR.r.toFixed(4)}, ${CABIN_COLOR.g.toFixed(4)}, ${CABIN_COLOR.b.toFixed(4)});
+} else if (vBanner > 0.5) {
+  // The blimp's lit ad banner: two bright horizontal bands down the flank,
+  // faded at the nose and tail so they read as panels rather than paint.
+  float ends = 1.0 - smoothstep(0.24, 0.46, abs(vHullPos.x));
+  float upper = 1.0 - smoothstep(0.05, 0.13, abs(vHullPos.y - 0.09));
+  float lower = 1.0 - smoothstep(0.03, 0.09, abs(vHullPos.y + 0.09));
+  totalEmissiveRadiance += upper * ends * ${BANNER_BOOST.toFixed(4)} *
     vec3(${BANNER_COLOR.r.toFixed(4)}, ${BANNER_COLOR.g.toFixed(4)}, ${BANNER_COLOR.b.toFixed(4)});
+  totalEmissiveRadiance += lower * ends * ${BANNER_BOOST_2.toFixed(4)} *
+    vec3(${BANNER_COLOR_2.r.toFixed(4)}, ${BANNER_COLOR_2.g.toFixed(4)}, ${BANNER_COLOR_2.b.toFixed(4)});
 }
 `;
 
-/** Hull material with the per-instance banner stripe patched in. Flagged by
- * an `aBanner` instanced attribute, the same idiom signage uses for `aTile` —
- * an attribute rather than instanceColor, because instanceColor would also
- * multiply the diffuse hull and turn the whole envelope pink. */
+/** Hull material with the per-instance emissive patches (banner, cabin
+ * glass) patched in. Flagged by an `aBanner` instanced attribute, the same
+ * idiom signage uses for `aTile` — an attribute rather than instanceColor,
+ * because instanceColor would also multiply the diffuse hull and turn the
+ * whole envelope pink. */
 function createHullMaterial(): THREE.MeshStandardMaterial {
   const material = new THREE.MeshStandardMaterial({
     color: HULL_COLOR,
-    roughness: 0.7,
-    metalness: 0.3,
+    roughness: 0.5,
+    metalness: 0.45,
   });
   material.customProgramCacheKey = () => MOVER_HULL_CACHE_KEY;
   material.onBeforeCompile = (shader) => {
@@ -273,13 +325,16 @@ export class Movers {
   private readonly field: MoverField;
   private readonly matrix = new THREE.Matrix4();
   private readonly quat = new THREE.Quaternion();
+  private readonly tilt = new THREE.Quaternion();
   private readonly pos = new THREE.Vector3();
   private readonly scale = new THREE.Vector3();
   private static readonly UP = new THREE.Vector3(0, 1, 0);
+  private static readonly FORWARD = new THREE.Vector3(1, 0, 0);
 
   constructor(field: MoverField) {
     this.field = field;
 
+    const helis = field.aircraft.filter((a) => a.kind === "helicopter").length;
     const box = new THREE.BoxGeometry(1, 1, 1);
     this.rig = new THREE.InstancedMesh(
       box,
@@ -288,33 +343,33 @@ export class Movers {
         roughness: 0.85,
         metalness: 0.5,
       }),
-      Math.max(1, field.cranes.length * BOXES_PER_CRANE),
+      Math.max(1, this.rigInstances),
     );
 
-    // One low-poly ellipsoid serves both aircraft: a 13 m helicopter fuselage
-    // and a 60 m blimp envelope are the same shape at different scales, which
-    // is what lets them share an InstancedMesh (and so one draw call).
-    const hull = new THREE.SphereGeometry(0.5, 10, 7);
+    // One ellipsoid serves both aircraft: a 20 m helicopter cabin and a 92 m
+    // blimp envelope are the same shape at different scales, which is what
+    // lets them share an InstancedMesh (and so one draw call).
+    const hull = new THREE.SphereGeometry(0.5, 14, 10);
     const aircraft = Math.max(1, field.aircraft.length);
     this.hulls = new THREE.InstancedMesh(hull, createHullMaterial(), aircraft);
     const banner = new Float32Array(aircraft);
     for (let i = 0; i < field.aircraft.length; i++) {
-      banner[i] = field.aircraft[i]?.kind === "blimp" ? 1 : 0;
+      banner[i] = field.aircraft[i]?.kind === "blimp" ? 1 : 2;
     }
     hull.setAttribute("aBanner", new THREE.InstancedBufferAttribute(banner, 1));
 
-    const disc = new THREE.CircleGeometry(0.5, 16).rotateX(-Math.PI / 2);
+    const disc = new THREE.CircleGeometry(0.5, 20).rotateX(-Math.PI / 2);
     this.rotors = new THREE.InstancedMesh(
       disc,
       new THREE.MeshBasicMaterial({
-        color: 0x8a8f99,
+        color: 0x9aa0ac,
         transparent: true,
-        opacity: 0.16,
+        opacity: 0.14,
         depthWrite: false,
         side: THREE.DoubleSide,
         fog: false,
       }),
-      Math.max(1, field.aircraft.filter((a) => a.kind === "helicopter").length),
+      Math.max(1, helis * ROTORS_PER_HELI),
     );
 
     for (const mesh of [this.rig, this.hulls, this.rotors]) {
@@ -328,8 +383,19 @@ export class Movers {
 
   /** Instances the rig actually draws — for the perf report. */
   get rigInstances(): number {
-    return this.field.cranes.length * BOXES_PER_CRANE;
+    let n = this.field.cranes.length * BOXES_PER_CRANE;
+    for (const a of this.field.aircraft) {
+      n += a.kind === "helicopter" ? BOXES_PER_HELI : BOXES_PER_BLIMP;
+    }
+    return n;
   }
+
+  /**
+   * The helicopters' belly spots for the frame just posed by update(),
+   * nearest-image placed. Read AFTER update(); the Searchlights mesh draws
+   * them so the beam cone stays a single draw call for the whole city.
+   */
+  readonly spots: SpotBeam[] = [];
 
   /**
    * Pose every mover for this frame.
@@ -482,61 +548,181 @@ export class Movers {
         2.6,
       );
     }
-    this.rig.instanceMatrix.needsUpdate = true;
-
     let rotorIndex = 0;
+    this.spots.length = 0;
+    const strobeT = serverTimeMs % HELI_STROBE_PERIOD_MS;
     for (let i = 0; i < this.field.aircraft.length; i++) {
       const route = this.field.aircraft[i];
       if (!route) continue;
       const box: MoverBox = aircraftBox(route, serverTimeMs);
       const p = nearestImage(cameraPos, { x: box.x, y: box.y, z: box.z });
-      this.pos.set(p.x, p.y, p.z);
-      this.quat.setFromAxisAngle(Movers.UP, box.yaw);
-      this.scale.set(box.hx * 2, box.hy * 2, box.hz * 2);
-      this.matrix.compose(this.pos, this.quat, this.scale);
-      this.hulls.setMatrixAt(i, this.matrix);
-
       const ax = Math.cos(box.yaw);
       const az = -Math.sin(box.yaw);
+      // Helper: a point at (along, up, across) in the aircraft's own frame.
+      const at = (along: number, up: number, across: number): Vec3 => ({
+        x: p.x + ax * along - az * across,
+        y: p.y + up,
+        z: p.z + az * along + ax * across,
+      });
+
       if (route.kind === "helicopter") {
-        // Rotor disc above the fuselage, spun fast enough to be a blur.
-        this.pos.set(p.x, p.y + box.hy * 1.5, p.z);
+        // Cabin: the front 58 % of the box, full height and width — so the
+        // tail boom has somewhere to go and the whole thing reads as an
+        // aircraft rather than an egg.
+        const cabinHalf = box.hx * 0.575;
+        const cabin = at(box.hx - cabinHalf, 0, 0);
+        this.pos.set(cabin.x, cabin.y, cabin.z);
+        this.quat.setFromAxisAngle(Movers.UP, box.yaw);
+        this.scale.set(cabinHalf * 2, box.hy * 2, box.hz * 2);
+        this.matrix.compose(this.pos, this.quat, this.scale);
+        this.hulls.setMatrixAt(i, this.matrix);
+
+        // Tail boom from the cabin back to the end of the box, tapering by
+        // being thinner than the cabin; a fin at its end; two skids under
+        // the cabin; a rotor mast on top. All inside the collision box.
+        const boomLen = box.hx * 0.95;
+        const boom = at(-box.hx + boomLen / 2, box.hy * 0.15, 0);
+        put(
+          { ...boom, yaw: box.yaw },
+          boomLen,
+          box.hy * 0.55,
+          box.hz * 0.5,
+          cameraPos,
+        );
+        const fin = at(-box.hx * 0.9, box.hy * 0.3, 0);
+        put(
+          { ...fin, yaw: box.yaw },
+          box.hx * 0.16,
+          box.hy * 1.4,
+          box.hz * 0.16,
+          cameraPos,
+        );
+        for (const side of [-1, 1]) {
+          const skid = at(box.hx * 0.35, -box.hy * 0.85, side * box.hz * 0.7);
+          put(
+            { ...skid, yaw: box.yaw },
+            box.hx * 1.1,
+            box.hy * 0.14,
+            box.hz * 0.16,
+            cameraPos,
+          );
+        }
+        const mast = at(box.hx * 0.35, box.hy * 0.95, 0);
+        put(
+          { ...mast, yaw: box.yaw },
+          box.hx * 0.14,
+          box.hy * 0.5,
+          box.hz * 0.3,
+          cameraPos,
+        );
+
+        // Main rotor blur over the cabin, spun fast enough to be a disc.
+        const hub = at(box.hx * 0.35, box.hy * 1.2, 0);
+        this.pos.set(hub.x, hub.y, hub.z);
         this.quat.setFromAxisAngle(Movers.UP, serverTimeMs * 0.02);
-        const span = box.hx * 2.6;
+        const span = box.hx * 2.4;
         this.scale.set(span, 1, span);
         this.matrix.compose(this.pos, this.quat, this.scale);
         this.rotors.setMatrixAt(rotorIndex++, this.matrix);
-        // Port red, starboard green, tail white — the aircraft convention.
+        // Tail rotor: a small vertical disc on the fin's flank.
+        const tailHub = at(-box.hx * 0.9, box.hy * 0.55, box.hz * 0.3);
+        this.pos.set(tailHub.x, tailHub.y, tailHub.z);
+        this.quat.setFromAxisAngle(Movers.UP, box.yaw);
+        this.tilt.setFromAxisAngle(Movers.FORWARD, Math.PI / 2);
+        this.quat.multiply(this.tilt);
+        const tailSpan = box.hy * 1.1;
+        this.scale.set(tailSpan, 1, tailSpan);
+        this.matrix.compose(this.pos, this.quat, this.scale);
+        this.rotors.setMatrixAt(rotorIndex++, this.matrix);
+
+        // Port red, starboard green, tail white — the aircraft convention —
+        // plus a red anti-collision strobe on the spine and the belly lamp
+        // whose beam the Searchlights mesh draws.
         lights.place(
-          { x: p.x - az * box.hz * 1.4, y: p.y, z: p.z + ax * box.hz * 1.4 },
+          at(box.hx * 0.3, -box.hy * 0.2, -box.hz),
           navRedBoost,
-          1.5,
+          2.2,
         );
         lights.place(
-          { x: p.x + az * box.hz * 1.4, y: p.y, z: p.z - ax * box.hz * 1.4 },
+          at(box.hx * 0.3, -box.hy * 0.2, box.hz),
           navGreenBoost,
-          1.5,
+          2.2,
         );
-        lights.place(
-          { x: p.x - ax * box.hx, y: p.y + box.hy, z: p.z - az * box.hx },
-          navWhiteBoost,
-          1.2,
-        );
+        lights.place(at(-box.hx * 0.92, box.hy * 0.95, 0), navWhiteBoost, 1.8);
+        for (const off of HELI_STROBE_OFFSETS) {
+          const phase = (strobeT + route.id * 370) % HELI_STROBE_PERIOD_MS;
+          if (phase >= off && phase < off + HELI_STROBE_FLASH_MS) {
+            lights.place(
+              at(box.hx * 0.35, box.hy * 1.25, 0),
+              strobeRedBoost,
+              4.5,
+            );
+            break;
+          }
+        }
+        const lamp = at(box.hx * 0.7, -box.hy * 0.9, 0);
+        this.spots.push({
+          x: lamp.x,
+          y: lamp.y,
+          z: lamp.z,
+          ax,
+          az,
+          phase: route.id * 1.7,
+        });
       } else {
-        // The blimp wears its lights on the nose, tail and belly fins.
-        lights.place(
-          { x: p.x + ax * box.hx, y: p.y, z: p.z + az * box.hx },
-          navWhiteBoost,
-          2.4,
+        // Envelope: the full box length, a little shy of the box vertically
+        // so the gondola hangs UNDER it and still inside the box.
+        this.pos.set(p.x, p.y + box.hy * 0.1, p.z);
+        this.quat.setFromAxisAngle(Movers.UP, box.yaw);
+        this.scale.set(box.hx * 2, box.hy * 1.6, box.hz * 1.8);
+        this.matrix.compose(this.pos, this.quat, this.scale);
+        this.hulls.setMatrixAt(i, this.matrix);
+
+        // Gondola slung under the belly, forward of centre.
+        const gondola = at(box.hx * 0.12, -box.hy * 0.8, 0);
+        put(
+          { ...gondola, yaw: box.yaw },
+          box.hx * 0.42,
+          box.hy * 0.3,
+          box.hz * 0.4,
+          cameraPos,
         );
-        lights.place(
-          { x: p.x - ax * box.hx, y: p.y, z: p.z - az * box.hx },
-          navRedBoost,
-          2.4,
-        );
-        lights.place({ x: p.x, y: p.y - box.hy, z: p.z }, navWhiteBoost, 2.0);
+        // Four tail fins in a cross where the envelope tapers, reaching out
+        // to — never past — the box's own half-extents.
+        const finAlong = -box.hx * 0.72;
+        for (const [up, across] of [
+          [1, 0],
+          [-1, 0],
+          [0, 1],
+          [0, -1],
+        ] as const) {
+          const fin = at(finAlong, up * box.hy * 0.76, across * box.hz * 0.78);
+          put(
+            { ...fin, yaw: box.yaw },
+            box.hx * 0.36,
+            up === 0 ? box.hy * 0.08 : box.hy * 0.48,
+            up === 0 ? box.hz * 0.44 : box.hz * 0.08,
+            cameraPos,
+          );
+        }
+
+        // Nose white, tail red, a beacon on the spine, and a warm strip of
+        // gondola windows — a lit ship, not a dark balloon.
+        lights.place(at(box.hx, 0, 0), navWhiteBoost, 3.2);
+        lights.place(at(-box.hx, 0, 0), navRedBoost, 3.2);
+        lights.place(at(-box.hx * 0.88, box.hy * 0.5, 0), navWhiteBoost, 2.2);
+        lights.place(at(0, box.hy * 0.9, 0), navRedBoost, 2.6);
+        for (const k of [-1, 0, 1]) {
+          lights.place(
+            at(box.hx * 0.12 + k * box.hx * 0.14, -box.hy * 0.8, box.hz * 0.42),
+            gondolaBoost,
+            1.6,
+          );
+        }
+        lights.place(at(box.hx * 0.12, -box.hy * 0.97, 0), navWhiteBoost, 2.4);
       }
     }
+    this.rig.instanceMatrix.needsUpdate = true;
     this.hulls.instanceMatrix.needsUpdate = true;
     this.rotors.instanceMatrix.needsUpdate = true;
   }

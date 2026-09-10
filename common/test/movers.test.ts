@@ -513,8 +513,11 @@ describe("aircraft routes close on the torus", () => {
       const lapMs = (WORLD_SIZE / a.speed) * 1000;
       const start = aircraftBox(a, T0);
       const lap = aircraftBox(a, T0 + lapMs);
-      expect(lap.x).toBeCloseTo(start.x, 6);
-      expect(lap.z).toBeCloseTo(start.z, 6);
+      // Tolerance is set by double precision at epoch-ms times, not by the
+      // math: speed * (T0 / 1000) is ~7e10 m before canonicalize, where one
+      // ulp is ~1.5e-5 m. Closure is exact; the residue is rounding.
+      expect(lap.x).toBeCloseTo(start.x, 4);
+      expect(lap.z).toBeCloseTo(start.z, 4);
       expect(lap.yaw).toBe(start.yaw);
     }
   });

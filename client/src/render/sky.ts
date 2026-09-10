@@ -54,10 +54,12 @@ function skyGradientTexture(): THREE.Texture {
   const ctx = canvas.getContext("2d");
   if (ctx) {
     const grad = ctx.createLinearGradient(0, 0, 0, 256);
-    grad.addColorStop(0.0, "#08071a"); // zenith — deep night
-    grad.addColorStop(0.45, "#141225"); // fog indigo
-    grad.addColorStop(0.62, "#2b1838"); // neon violet band
-    grad.addColorStop(0.72, "#3d1f33"); // last-light magenta glow
+    grad.addColorStop(0.0, "#05041a"); // zenith — deep night
+    grad.addColorStop(0.3, "#0d0b24"); // night indigo
+    grad.addColorStop(0.48, "#171436"); // a little lift toward the band
+    grad.addColorStop(0.6, "#2d1a44"); // neon violet band
+    grad.addColorStop(0.68, "#48243f"); // last-light magenta glow
+    grad.addColorStop(0.73, "#3a2a3a"); // warm haze under it
     grad.addColorStop(0.78, "#141225"); // back to fog at the horizon line
     grad.addColorStop(1.0, "#141225");
     ctx.fillStyle = grad;
@@ -66,6 +68,67 @@ function skyGradientTexture(): THREE.Texture {
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
+}
+
+/** Stars on the dome: count, and the elevation band they occupy. */
+export const STAR_COUNT = 900;
+const STAR_ELEVATION_MIN = 0.16; // rad above the horizon — under the haze band
+/** Brightest star, as a multiplier on white: sub-bloom (luminance < 0.72). */
+export const STAR_PEAK = 0.62;
+
+/**
+ * A seeded star field, as a child of the dome so it follows the camera and
+ * hides with it. NOT additive over emissives — stars are drawn first (the
+ * dome's render order) and the city paints over them, as it should. Sizes
+ * are in pixels with no attenuation: a star is a point, not a sprite.
+ */
+function starField(seed: number): THREE.Points {
+  let state = seed >>> 0;
+  const rand = () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const radius = FOG_DISTANCE + 40;
+  const positions = new Float32Array(STAR_COUNT * 3);
+  const colors = new Float32Array(STAR_COUNT * 3);
+  for (let i = 0; i < STAR_COUNT; i++) {
+    const az = rand() * Math.PI * 2;
+    // Uniform on the cap above STAR_ELEVATION_MIN.
+    const sinMin = Math.sin(STAR_ELEVATION_MIN);
+    const el = Math.asin(sinMin + rand() * (1 - sinMin));
+    positions[i * 3] = Math.cos(el) * Math.cos(az) * radius;
+    positions[i * 3 + 1] = Math.sin(el) * radius;
+    positions[i * 3 + 2] = Math.cos(el) * Math.sin(az) * radius;
+    // Mostly faint, a few bright; fade into the haze near the horizon; a
+    // little colour temperature spread so it is not a field of one white.
+    const mag = rand() ** 2.2;
+    const horizon = Math.min(1, (el - STAR_ELEVATION_MIN) / 0.35);
+    const k = STAR_PEAK * (0.25 + 0.75 * mag) * horizon;
+    const warm = rand();
+    colors[i * 3] = k * (0.85 + 0.15 * warm);
+    colors[i * 3 + 1] = k * (0.88 + 0.08 * warm);
+    colors[i * 3 + 2] = k * (1.0 - 0.12 * warm);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  const points = new THREE.Points(
+    geometry,
+    new THREE.PointsMaterial({
+      size: 1.6,
+      sizeAttenuation: false,
+      vertexColors: true,
+      transparent: true,
+      opacity: 1,
+      depthWrite: false,
+      fog: false,
+    }),
+  );
+  points.renderOrder = -1;
+  points.frustumCulled = false;
+  return points;
 }
 
 /** Camera-following gradient dome, just inside the far plane, above the fog. */
@@ -84,6 +147,8 @@ export class SkyDome {
       material,
     );
     this.mesh.renderOrder = -1; // always the backdrop
+    // Stars ride the dome: same centre, hidden with it inside the cloud deck.
+    this.mesh.add(starField(0x57a2f1e1));
   }
 
   /** Keep the dome centered on the viewer. */

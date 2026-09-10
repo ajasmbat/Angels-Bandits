@@ -276,7 +276,7 @@ export const CRANE_HOOK_DROP_MAX = 24;
 export const CRANE_SLEW_MIN = 0.014;
 export const CRANE_SLEW_MAX = 0.026;
 /** Helicopters on straight torus loops along street axes. */
-export const HELI_COUNT = 3;
+export const HELI_COUNT = 4;
 /** Helicopter cruise altitude band, m — above the canyon, below the blimp. */
 export const HELI_ALT_MIN = 120;
 export const HELI_ALT_MAX = 260;
@@ -284,14 +284,14 @@ export const HELI_ALT_MAX = 260;
 export const HELI_SPEED_MIN = 30;
 export const HELI_SPEED_MAX = 45;
 /** Helicopter hull half-extents, m: half-length along travel, half-height, half-width. */
-export const HELI_HULL = [6.5, 2.2, 1.9] as const;
+export const HELI_HULL = [10, 3.2, 2.8] as const;
 /** Blimp cruise altitude, m. Below CLOUD_BASE so it flies under the deck, and
  * far enough under RESPAWN_ALTITUDE's 300 m that a spawn can never land in it. */
 export const BLIMP_ALT = 430;
 /** Blimp cruise speed, m/s — the slowest thing in the sky. */
 export const BLIMP_SPEED = 12;
 /** Blimp hull half-extents, m: half-length, half-height, half-width. */
-export const BLIMP_HULL = [30, 9, 9] as const;
+export const BLIMP_HULL = [46, 14, 14] as const;
 
 // --- Fireworks (L2) --- a shared schedule in the strikesInWindow idiom:
 // every client computes the same bursts from (seed, synced clock), particles

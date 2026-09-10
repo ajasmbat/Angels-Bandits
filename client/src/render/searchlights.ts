@@ -28,6 +28,7 @@ import {
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
+import { AB_FOG_GLSL } from "./fog";
 import type { MoverLights } from "./movers";
 import { nearestImage } from "./wrapPlacement";
 
@@ -172,6 +173,8 @@ varying float vT;
 varying float vFacing;
 varying vec3 vTint;
 varying float vShimmer;
+varying float vDepth;
+varying float vWorldY;
 
 void main() {
   #ifdef USE_INSTANCING
@@ -199,16 +202,24 @@ void main() {
   vTint = aTint;
   // Slow drift of faint bands along the beam: dust in the throw.
   vShimmer = 0.88 + 0.12 * sin(position.y * 38.0 - uTime * 1.7 + apex.x * 0.01);
-  gl_Position = projectionMatrix * viewMatrix * worldPos;
+  vec4 mvPosition = viewMatrix * worldPos;
+  vDepth = -mvPosition.z;
+  vWorldY = worldPos.y;
+  gl_Position = projectionMatrix * mvPosition;
 }
 `;
 
 const BEAM_FRAGMENT = /* glsl */ `
 uniform float uOpacity;
+uniform float fogNear;
+uniform float fogFar;
 varying float vT;
 varying float vFacing;
 varying vec3 vTint;
 varying float vShimmer;
+varying float vDepth;
+varying float vWorldY;
+${AB_FOG_GLSL}
 
 void main() {
   float along = 1.0 - vT;
@@ -219,6 +230,13 @@ void main() {
   // Silhouette: the beam has no outline, it just thins to nothing.
   float edge = smoothstep(0.0, 0.8, vFacing);
   float a = uOpacity * fade * hot * edge * vShimmer;
+  // Fog, the additive way: a beam in the distance ATTENUATES to nothing,
+  // exactly as the buildings behind it dissolve — it never lerps toward the
+  // fog colour (that would brighten the sky). Both layers: the linear fog
+  // that guarantees the torus, and the height haze the city sits in.
+  float fogFactor = smoothstep(fogNear, fogFar, vDepth);
+  float haze = abHazeAmount(cameraPosition.y, vWorldY, vDepth);
+  a *= (1.0 - fogFactor) * (1.0 - haze);
   gl_FragColor = vec4(vTint * a, 1.0);
 }
 `;
@@ -235,10 +253,10 @@ export class Searchlights {
   private readonly stations: SearchlightStation[];
   private readonly tints: THREE.InstancedBufferAttribute;
   private readonly capacity: number;
-  private readonly uniforms = {
-    uOpacity: { value: BEAM_OPACITY },
-    uTime: { value: 0 },
-  };
+  private readonly uniforms = THREE.UniformsUtils.merge([
+    THREE.UniformsLib.fog,
+    { uOpacity: { value: BEAM_OPACITY }, uTime: { value: 0 } },
+  ]) as { uOpacity: { value: number }; uTime: { value: number } };
   private readonly matrix = new THREE.Matrix4();
   private readonly quat = new THREE.Quaternion();
   private readonly pos = new THREE.Vector3();
@@ -275,9 +293,11 @@ export class Searchlights {
         blending: THREE.AdditiveBlending,
         depthWrite: false,
         side: THREE.DoubleSide,
-        // Additive + fog brightens the distant scene (the V1 lesson); a
-        // ShaderMaterial has no fog unless asked, and it is not asked.
-        fog: false,
+        // `fog: true` only feeds the scene's fogNear/fogFar/fogColor
+        // uniforms (so the storm's in-cloud fog reaches the beams); the
+        // shader attenuates rather than lerping to the fog colour, which is
+        // what additive + three's fog would do (the V1 lesson).
+        fog: true,
       }),
       Math.max(1, capacity),
     );

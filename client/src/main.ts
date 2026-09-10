@@ -69,6 +69,7 @@ import { CityRenderer } from "./render/city";
 import { ConstructionSparks } from "./render/construction";
 import { FacadeGarnishRenderer } from "./render/facade-garnish";
 import { Fireworks } from "./render/fireworks";
+import { installHeightFog } from "./render/fog";
 import { Explosions, Sparks } from "./render/fx";
 import { GpuTimer } from "./render/gputimer";
 import { createGradePass } from "./render/grade";
@@ -142,6 +143,8 @@ const { welcome } = socket;
 
 // --- Scene & renderer ---
 const scene = new THREE.Scene();
+// Before anything compiles: the haze layer lives in three's fog chunks.
+installHeightFog();
 setupSky(scene);
 
 const camera = new THREE.PerspectiveCamera(

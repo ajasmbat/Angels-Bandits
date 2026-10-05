@@ -33,9 +33,7 @@ try {
     await sleep(250);
   }
   browser = await chromium.launch({
-    executablePath:
-      process.env.HOME +
-      "/Library/Caches/ms-playwright/chromium_headless_shell-1223/chrome-headless-shell-mac-arm64/chrome-headless-shell",
+    executablePath: `${process.env.HOME}/Library/Caches/ms-playwright/chromium_headless_shell-1223/chrome-headless-shell-mac-arm64/chrome-headless-shell`,
     args: ["--use-angle=metal", "--enable-gpu"],
   });
   const page = await browser.newPage({

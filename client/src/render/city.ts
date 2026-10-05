@@ -18,6 +18,45 @@ import { FacadeArchetype, archetypeFor } from "./archetypes";
 import { createBuildingsMaterial } from "./buildings-material";
 import { nearestImage } from "./wrapPlacement";
 
+/**
+ * VO2 "Neon Blue Hour" facade albedo — real building materials instead of
+ * C3's near-black desaturated slabs. Each archetype is a FAMILY of finishes
+ * (glass: teal / steel-blue / bronze; masonry: terracotta / red brick /
+ * sandstone; office: limestone / warm concrete / cool grey), picked and
+ * varied deterministically from the building's own dimensions (shared by
+ * all its tiers, seam-safe — never its translation), so a dense block reads
+ * as many neighbouring buildings. Albedo only: the lights and the window
+ * emissive do the rest, and the brightest finish stays far under the bloom
+ * threshold once lit (client/test/facade-palette.test.ts). setHSL is in
+ * three's LINEAR working space, so `l` here is (roughly) linear albedo: the
+ * pale finishes are pulled to ~0.25 so they don't read as daylit concrete
+ * next to the windows.
+ */
+export function facadeColor(
+  b: Pick<Building, "width" | "depth" | "height">,
+  arch: number,
+  out = new THREE.Color(),
+): THREE.Color {
+  const t = ((b.height * 7 + b.width * 3 + b.depth) % 17) / 17;
+  const v = ((b.width * 13 + b.depth * 7 + b.height * 3) % 23) / 23;
+  if (b.height >= LANDMARK_HEIGHT) {
+    return out.setHSL(0.52, 0.42, 0.22); // landmark teal — orientation
+  }
+  if (arch === FacadeArchetype.GLASS) {
+    if (v < 0.22) return out.setHSL(0.09 + t * 0.03, 0.34, 0.156 + t * 0.047); // bronze
+    if (v < 0.6) return out.setHSL(0.5 + t * 0.04, 0.32, 0.14 + t * 0.055); // teal
+    return out.setHSL(0.58 + t * 0.05, 0.3, 0.156 + t * 0.055); // steel blue
+  }
+  if (arch === FacadeArchetype.MASONRY) {
+    if (v < 0.4) return out.setHSL(0.03 + t * 0.02, 0.46, 0.172 + t * 0.047); // terracotta
+    if (v < 0.75) return out.setHSL(0.0 + t * 0.02, 0.4, 0.14 + t * 0.039); // red brick
+    return out.setHSL(0.08 + t * 0.03, 0.36, 0.19 + t * 0.04); // sandstone
+  }
+  if (v < 0.45) return out.setHSL(0.1 + t * 0.03, 0.16, 0.185 + t * 0.04); // limestone
+  if (v < 0.8) return out.setHSL(0.07 + t * 0.03, 0.1, 0.175 + t * 0.04); // warm concrete
+  return out.setHSL(0.6 + t * 0.04, 0.1, 0.165 + t * 0.04); // cool grey
+}
+
 /** One drawable box: a tier of a building, at its stack height. */
 interface TierInstance {
   building: Building;
@@ -80,29 +119,13 @@ export class CityRenderer {
       new THREE.InstancedBufferAttribute(archetypes, 1),
     );
 
-    // Dusk palette (C3 "Sparse Late Shift"): the same three archetype families
-    // — steel-blue glass, warm brick masonry, grey-blue concrete offices — but
-    // DESATURATED hard (glass 0.40 → 0.14, masonry 0.28 → 0.13, office 0.12 →
-    // 0.05) so the surface reads as painted concrete and dirty glass instead
-    // of saturated toy plastic, with a WIDER per-building hue/lightness spread
-    // so a dense BSP block is many buildings rather than one long wall. The
-    // variation is deterministic from the building itself (shared by all its
-    // tiers). Landmarks keep their neon accent so orientation — and the "never
-    // two images at once" QA check — still works.
+    // Facade albedo per building (VO2 palette — see facadeColor above).
     const color = new THREE.Color();
     this.instances.forEach((inst, i) => {
-      const b = inst.building;
-      const t = ((b.height * 7 + b.width * 3 + b.depth) % 17) / 17;
-      if (b.height >= LANDMARK_HEIGHT) {
-        color.setHSL(0.52, 0.4, 0.26);
-      } else if (archetypes[i] === FacadeArchetype.GLASS) {
-        color.setHSL(0.6 + t * 0.05, 0.14, 0.075 + t * 0.05);
-      } else if (archetypes[i] === FacadeArchetype.MASONRY) {
-        color.setHSL(0.06 + t * 0.04, 0.13, 0.065 + t * 0.045);
-      } else {
-        color.setHSL(0.62 + t * 0.05, 0.05, 0.07 + t * 0.05);
-      }
-      this.mesh.setColorAt(i, color);
+      this.mesh.setColorAt(
+        i,
+        facadeColor(inst.building, archetypeFor(inst.building), color),
+      );
     });
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
   }

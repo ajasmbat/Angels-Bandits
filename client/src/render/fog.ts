@@ -3,7 +3,7 @@
 // shader chunks, and a helper the additive beams use to fade to black.
 //
 // Two layers, two jobs:
-//   1. The linear fog (scene.fog, 60 → FOG_DISTANCE) is the torus's
+//   1. The linear fog (scene.fog, FOG_NEAR → FOG_DISTANCE) is the torus's
 //      occlusion guarantee — everything must be fully dissolved into the sky
 //      colour before the half-world limit, or the wrap shows. It is applied
 //      exactly as three applies it and its factor reaches 1 at fogFar.

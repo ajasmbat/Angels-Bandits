@@ -125,75 +125,86 @@ export const MOON_RADIUS = 0.045;
  * it carries a soft halo, still far under the tracer rung (1.5). */
 export const MOON_PEAK = 0.95;
 
-const MOON_VERTEX = /* glsl */ `
-varying vec2 vUv;
-void main() {
-  vUv = uv * 2.0 - 1.0;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-}
-`;
+/** Disc angular radius as a gnomonic (tangent-plane) distance. */
+const MOON_TAN = Math.tan(MOON_RADIUS);
 
-const MOON_FRAGMENT = /* glsl */ `
-uniform vec3 uColor;
-uniform float uDisc; // disc radius as a fraction of the quad half-size
-uniform vec3 uTint; // storm dome tint, multiplied in like the dome's
-varying vec2 vUv;
+const vec3Literal = (v: readonly number[]): string =>
+  `vec3(${v.map((c) => c.toFixed(5)).join(", ")})`;
+
+/**
+ * The moon, drawn by the dome's own fragment shader — no extra mesh, so no
+ * extra draw call. The dome is centred on the camera, so its local vertex
+ * position IS the view direction; the disc lives in the tangent plane at
+ * MOON_DIR (gnomonic projection, the same mapping a camera-facing quad
+ * would give). The dome draws first and the city paints over it, so towers
+ * occlude the moon exactly as they occlude the sky.
+ */
+function moonPatch(material: THREE.MeshBasicMaterial): void {
+  const peak = new THREE.Color(DUSK.moon);
+  const lum = 0.2126 * peak.r + 0.7152 * peak.g + 0.0722 * peak.b;
+  peak.multiplyScalar(MOON_PEAK / lum);
+  // Tangent frame around MOON_DIR (MOON_DIR is never vertical).
+  const east = new THREE.Vector3(0, 1, 0).cross(MOON_DIR).normalize();
+  const north = MOON_DIR.clone().cross(east);
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nvarying vec3 vSkyDir;")
+      .replace(
+        "#include <begin_vertex>",
+        "#include <begin_vertex>\nvSkyDir = position;",
+      );
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        /* glsl */ `#include <common>
+varying vec3 vSkyDir;
 float mHash(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
 float mNoise(vec2 p) {
   vec2 i = floor(p); vec2 f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
   return mix(mix(mHash(i), mHash(i + vec2(1.0, 0.0)), u.x),
              mix(mHash(i + vec2(0.0, 1.0)), mHash(i + vec2(1.0, 1.0)), u.x), u.y);
-}
-void main() {
-  float r = length(vUv) / uDisc;
-  // Disc: soft limb darkening + maria (low-frequency dark patches).
-  float disc = 1.0 - smoothstep(0.96, 1.0, r);
-  vec2 q = vUv / uDisc;
-  float maria = mNoise(q * 2.3 + 3.1) * 0.6 + mNoise(q * 5.1) * 0.4;
-  float limb = 0.78 + 0.22 * sqrt(max(0.0, 1.0 - r * r));
-  vec3 discCol = uColor * limb * (1.0 - 0.28 * smoothstep(0.45, 0.75, maria));
-  // Halo: two exponential falloffs — a tight corona and a wide moonlit haze.
-  float d = max(r - 1.0, 0.0);
-  float halo = 0.22 * exp(-d * 2.6) + 0.07 * exp(-d * 0.55);
-  vec3 col = discCol * disc + uColor * halo * (1.0 - disc);
-  float a = max(disc, halo * 1.4);
-  gl_FragColor = vec4(col * uTint, clamp(a, 0.0, 1.0));
-}
-`;
-
-/** The moon: one camera-facing quad on the dome, at MOON_DIR. */
-function moonMesh(radius: number): THREE.Mesh {
-  const peak = new THREE.Color(DUSK.moon);
-  const lum = 0.2126 * peak.r + 0.7152 * peak.g + 0.0722 * peak.b;
-  peak.multiplyScalar(MOON_PEAK / lum);
-  // Quad half-size covers the halo: 9 disc radii.
-  const half = Math.tan(MOON_RADIUS) * radius * 9;
-  const material = new THREE.ShaderMaterial({
-    uniforms: {
-      uColor: { value: peak },
-      uDisc: { value: 1 / 9 },
-      uTint: { value: new THREE.Color(1, 1, 1) },
-    },
-    vertexShader: MOON_VERTEX,
-    fragmentShader: MOON_FRAGMENT,
-    transparent: true,
-    depthWrite: false,
-    fog: false,
-  });
-  const mesh = new THREE.Mesh(
-    new THREE.PlaneGeometry(half * 2, half * 2),
-    material,
-  );
-  mesh.name = "moon";
-  mesh.position.copy(MOON_DIR).multiplyScalar(radius);
-  mesh.lookAt(0, 0, 0); // faces the dome centre — the camera
-  mesh.frustumCulled = false;
-  return mesh;
+}`,
+      )
+      .replace(
+        "#include <map_fragment>",
+        /* glsl */ `#include <map_fragment>
+{
+  vec3 sd = normalize(vSkyDir);
+  float facing = dot(sd, ${vec3Literal(MOON_DIR.toArray())});
+  if (facing > 0.0) {
+    // Disc-radius units on the tangent plane at the moon.
+    vec2 q = vec2(dot(sd, ${vec3Literal(east.toArray())}),
+                  dot(sd, ${vec3Literal(north.toArray())}))
+             / (facing * ${MOON_TAN.toFixed(6)});
+    float r = length(q);
+    vec3 moonCol = ${vec3Literal(peak.toArray())};
+    // Disc: soft limb darkening + maria (low-frequency dark patches).
+    float disc = 1.0 - smoothstep(0.96, 1.0, r);
+    float maria = mNoise(q * 2.3 + 3.1) * 0.6 + mNoise(q * 5.1) * 0.4;
+    float limb = 0.78 + 0.22 * sqrt(max(0.0, 1.0 - r * r));
+    vec3 discCol = moonCol * limb * (1.0 - 0.28 * smoothstep(0.45, 0.75, maria));
+    // Halo, added over the sky: a tight corona and a wide moonlit haze.
+    float d = max(r - 1.0, 0.0);
+    float halo = 0.22 * exp(-d * 2.6) + 0.07 * exp(-d * 0.55);
+    // The storm flash tints the dome (diffuse) up to ~2.6x; the moon takes
+    // its hue but never its gain, so it can never out-shine a tracer.
+    vec3 hue = diffuse / max(1.0, max(diffuse.r, max(diffuse.g, diffuse.b)));
+    vec3 moonLit = (discCol * disc + moonCol * halo * (1.0 - disc)) * hue;
+    diffuseColor.rgb = diffuseColor.rgb * (1.0 - disc) + moonLit;
+  }
+}`,
+      );
+  };
+  // Unique key: three caches programs on onBeforeCompile.toString().
+  material.customProgramCacheKey = () => "vo1-sky-dome-moon";
 }
 
 /** Stars on the dome: count, and the elevation band they occupy. */
 export const STAR_COUNT = 900;
-const STAR_ELEVATION_MIN = 0.24; // rad above the horizon — clear of the glow band
+/** Lowest star elevation, rad: where the gradient stops being fog-coloured.
+ * A star below it could outline a fully fogged landmark against the sky —
+ * a torus-wrap tell (see SKY_FOG_STOP). */
+const STAR_ELEVATION_MIN = (0.5 - SKY_FOG_STOP) * Math.PI;
 /** Brightest star, as a multiplier on white: sub-bloom (luminance < 0.72). */
 export const STAR_PEAK = 0.62;
 
@@ -263,6 +274,7 @@ export class SkyDome {
       fog: false,
       depthWrite: false,
     });
+    moonPatch(material);
     this.mesh = new THREE.Mesh(
       new THREE.SphereGeometry(FOG_DISTANCE + 60, 24, 16),
       material,
@@ -270,16 +282,7 @@ export class SkyDome {
     this.mesh.renderOrder = -1; // always the backdrop
     // Stars ride the dome: same centre, hidden with it inside the cloud deck.
     this.mesh.add(starField(0x57a2f1e1));
-    // So does the moon — drawn in the transparent pass, after the city, so
-    // towers occlude it through the depth buffer.
-    this.moon = moonMesh(FOG_DISTANCE + 20);
-    this.moonTint = (this.moon.material as THREE.ShaderMaterial).uniforms.uTint
-      ?.value as THREE.Color;
-    this.mesh.add(this.moon);
   }
-
-  private readonly moon: THREE.Mesh;
-  private readonly moonTint: THREE.Color;
 
   /** Keep the dome centered on the viewer. */
   update(cameraPos: Vec3): void {
@@ -290,7 +293,6 @@ export class SkyDome {
    * resting state, a sky flash pulls it violet and brightens it briefly. */
   tint(color: THREE.Color): void {
     (this.mesh.material as THREE.MeshBasicMaterial).color.copy(color);
-    this.moonTint.copy(color);
   }
 }
 

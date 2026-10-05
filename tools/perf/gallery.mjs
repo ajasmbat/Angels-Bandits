@@ -23,6 +23,7 @@ const VIEWS = [
   { name: "plane-front", x: 800, z: 300, y: 160, yaw: -0.4, orbit: 620 },
   { name: "street-low", x: 1000, z: 1300, y: 35, yaw: 0 },
   { name: "rooftop-skim", x: 1210, z: 500, y: 140, yaw: 1.57, pitch: -0.15 },
+  { name: "moon", x: 700, z: 1000, y: 260, yaw: -0.61, pitch: 0.2 }, // faces MOON_DIR
 ];
 let browser;
 try {

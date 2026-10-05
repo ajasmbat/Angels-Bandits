@@ -3,7 +3,7 @@
 // shader chunks, and a helper the additive beams use to fade to black.
 //
 // Two layers, two jobs:
-//   1. The linear fog (scene.fog, 60 → FOG_DISTANCE) is the torus's
+//   1. The linear fog (scene.fog, FOG_NEAR → FOG_DISTANCE) is the torus's
 //      occlusion guarantee — everything must be fully dissolved into the sky
 //      colour before the half-world limit, or the wrap shows. It is applied
 //      exactly as three applies it and its factor reaches 1 at fogFar.
@@ -25,9 +25,11 @@ import * as THREE from "three";
 /** Scale height of the haze, m: density falls to 1/e every H metres. */
 export const HAZE_SCALE_HEIGHT = 85;
 /** Haze density at street level, 1/m — visibility ~ 1/density. */
-export const HAZE_DENSITY = 0.0032;
-/** Where the haze layer is tinted toward (sRGB): sodium-and-neon city glow. */
-export const HAZE_COLOR = 0x2b2244;
+export const HAZE_DENSITY = 0.0027;
+/** Where the haze layer is tinted toward (sRGB): sodium-and-neon city glow —
+ * VO1 lifted it from a near-black plum to a luminous warm violet, so the
+ * canyons swim in lit air rather than in murk. */
+export const HAZE_COLOR = 0x6e4a6e;
 /** How far the haze's colour departs from the fog colour, 0..1. */
 export const HAZE_TINT = 0.55;
 

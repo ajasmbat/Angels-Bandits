@@ -19,7 +19,7 @@ import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { emissiveBoost } from "./emissive";
-import { DUSK } from "./sky";
+import { DUSK, FOG_NEAR } from "./sky";
 import { nearestImage } from "./wrapPlacement";
 
 /** Speed of sound, m/s — thunder trails the flash by wrapDistance / this. */
@@ -258,8 +258,10 @@ const BOLT_GLOW_RADIUS = 4.6;
 /** Sky flash: violet ambient pulse + fog/dome stain, ≤ 150 ms by contract. */
 const FLASH_MS = 140;
 const FLASH_COLOR = 0xa678ff;
-/** Peak added ambient intensity (base scene ambient is 0.5). */
-const FLASH_PEAK = 1.3;
+/** Peak added ambient intensity. VO1's blue-hour fill (ambient 0.75 +
+ * hemisphere 1.35) is ~7x the old night's, so the flash doubled to stay a
+ * visible pulse: ~3x the base fill at peak, facades still far sub-bloom. */
+const FLASH_PEAK = 2.6;
 /** Peak fog/sky-dome stain toward FLASH_COLOR (0..1 lerp). */
 const FLASH_TINT = 0.24;
 /** Simultaneously-alive bolts: schedule cadence is 8–15 s, life 280 ms, so
@@ -441,7 +443,7 @@ export class StormRenderer {
     const inK = Math.min(1, Math.max(0, (cameraY - CLOUD_BASE) / 30));
     this.flashLight.intensity = f * FLASH_PEAK * (1 + inK * 0.6);
     if (scene.fog instanceof THREE.Fog) {
-      scene.fog.near = 60 + (IN_CLOUD_FOG_NEAR - 60) * inK;
+      scene.fog.near = FOG_NEAR + (IN_CLOUD_FOG_NEAR - FOG_NEAR) * inK;
       scene.fog.far = FOG_DISTANCE + (IN_CLOUD_FOG_FAR - FOG_DISTANCE) * inK;
       scene.fog.color
         .copy(this.fogBase)

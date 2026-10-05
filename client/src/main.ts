@@ -92,7 +92,7 @@ import { RoofClutterRenderer } from "./render/roofclutter";
 import { Searchlights } from "./render/searchlights";
 import { Signage } from "./render/signage";
 import { Signals } from "./render/signals";
-import { GroundPlane, SkyDome, setupSky } from "./render/sky";
+import { EXPOSURE, GroundPlane, SkyDome, setupSky } from "./render/sky";
 import { SmokeTrails, smokeActive } from "./render/smoke";
 import { Steam } from "./render/steam";
 import {
@@ -197,6 +197,9 @@ renderer.setPixelRatio(resolution.ratio);
 // Filmic curve keeps the HDR emissives from clipping; the OutputPass applies
 // this + sRGB at the end of the composer chain.
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
+// VO1: the whole-image lift. Applied by OutputPass AFTER bloom, so it brightens
+// the frame without moving which pixels cross the 0.72 bloom threshold.
+renderer.toneMappingExposure = EXPOSURE;
 document.body.appendChild(renderer.domElement);
 // Read once, here, while the DEFAULT framebuffer is the bound one — this is
 // the receipt for win A. `antialias: true` multisamples the default

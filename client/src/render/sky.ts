@@ -21,47 +21,95 @@ import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { LAMP_STATIONS_MINUS, LAMP_STATIONS_PLUS } from "./streetlights";
 
+/**
+ * VO1 "Neon Blue Hour" palette. The night stays a night — windows, neon and
+ * tracers still carry identity — but it is a LUMINOUS night: light pollution
+ * makes the horizon the brightest part of the sky, so the fog that dissolves
+ * distant towers is a glowing blue-violet rather than black, and silhouettes
+ * separate by depth (aerial perspective) instead of merging into one mass.
+ */
 export const DUSK = {
-  sky: 0x141225, // deep dusk indigo — clear color AND fog color, always identical
-  ambient: 0x3a3a5c,
-  sun: 0xff9a66, // low orange sun for long dusk shadows on tower faces
+  sky: 0x3a3160, // horizon glow — clear color AND fog color, always identical
+  ambient: 0x56587e, // cool skylight floor so nothing is ever pure black
+  moon: 0xc8d2ff, // cool moonlight key: the light that gives faces their form
+  glow: 0xff8a5c, // warm low afterglow / sodium city glow from the far side
+  hemiSky: 0x5c64a0, // hemisphere: blue sky above...
+  hemiGround: 0x845038, // ...warm street-glow bounce from below
 } as const;
+
+/**
+ * Moonlight direction (towards the moon, world space). Low enough — ~24°
+ * up — that a chase camera flying toward it actually sees the disc, high
+ * enough that it lights roofs as well as facades. The disc on the dome and
+ * the directional key share this vector, so the light always comes from
+ * where the moon is drawn.
+ */
+export const MOON_DIR = new THREE.Vector3(0.52, 0.42, -0.74).normalize();
+
+/** Light intensities (three's physical units: irradiance multipliers). */
+export const LIGHT_RIG = {
+  ambient: 0.75,
+  moon: 2.1,
+  glow: 1.15,
+  hemi: 1.35,
+} as const;
+
+/** Tone-mapping exposure — the whole-image lift (ACES filmic). */
+export const EXPOSURE = 1.18;
+
+/** Where the linear fog starts, m. VO1 pushed it out from 60 m: with a
+ * luminous fog colour, a fog that starts at 60 m flattens the mid-distance
+ * into one violet wash. The far end (FOG_DISTANCE) is the torus contract and
+ * does not move. */
+export const FOG_NEAR = 140;
 
 const GROUND_SIZE = 2 * FOG_DISTANCE + 200; // fully covers the fog radius
 
 export function setupSky(scene: THREE.Scene): void {
   scene.background = new THREE.Color(DUSK.sky);
-  scene.fog = new THREE.Fog(DUSK.sky, 60, FOG_DISTANCE);
+  scene.fog = new THREE.Fog(DUSK.sky, FOG_NEAR, FOG_DISTANCE);
 
-  // Night rebalance (V1): ambient way down so the emissives — windows,
-  // tracers, street lamps — carry the scene; the hemisphere shapes the cool
-  // ambient (indigo sky over a near-black ground) and the directional is a
-  // low warm dusk key. No shadow maps, no point lights.
-  scene.add(new THREE.AmbientLight(DUSK.ambient, 0.5));
-  const sun = new THREE.DirectionalLight(DUSK.sun, 0.9);
-  sun.position.set(-0.6, 0.25, 0.75); // direction only — a low dusk sun
-  scene.add(sun);
-  const fill = new THREE.HemisphereLight(0x2c2c4a, 0x05050a, 0.7);
-  scene.add(fill);
+  // VO1 rig: a cool moon key gives every face a lit side and a shadow side,
+  // a warm low glow from the opposite quarter rims the dark side, and the
+  // hemisphere supplies sky-blue from above and street-glow from below — the
+  // canyon reads as lit by its own city. Still no shadow maps and no point
+  // lights: these four are uniform-cost per fragment.
+  scene.add(new THREE.AmbientLight(DUSK.ambient, LIGHT_RIG.ambient));
+  const moon = new THREE.DirectionalLight(DUSK.moon, LIGHT_RIG.moon);
+  moon.position.copy(MOON_DIR); // direction only
+  scene.add(moon);
+  const glow = new THREE.DirectionalLight(DUSK.glow, LIGHT_RIG.glow);
+  glow.position.set(-0.6, 0.18, 0.78); // the old dusk sun, now a rim
+  scene.add(glow);
+  scene.add(
+    new THREE.HemisphereLight(DUSK.hemiSky, DUSK.hemiGround, LIGHT_RIG.hemi),
+  );
 }
 
-/** 1×256 vertical dusk gradient: fog indigo at the horizon (so buildings
- * dissolve into it seamlessly) warming through neon violet, deep night up top. */
+/** Canvas fraction at which the gradient becomes the fog colour for good.
+ * 0.5 is the horizon; 0.4 is 18° above it — higher than the tallest landmark
+ * at the fog limit can reach seen from the street, so a fully fogged tower
+ * can never be told apart from the sky behind it (the torus occlusion
+ * guarantee; pinned in client/test/sky.test.ts). */
+export const SKY_FOG_STOP = 0.4;
+
+/** 1×256 vertical gradient: deep blue zenith, through moonlit blue and a
+ * violet light-pollution band, to the fog colour from SKY_FOG_STOP down. */
 function skyGradientTexture(): THREE.Texture {
   const canvas = document.createElement("canvas");
   canvas.width = 1;
   canvas.height = 256;
   const ctx = canvas.getContext("2d");
   if (ctx) {
+    const fog = `#${DUSK.sky.toString(16).padStart(6, "0")}`;
     const grad = ctx.createLinearGradient(0, 0, 0, 256);
-    grad.addColorStop(0.0, "#05041a"); // zenith — deep night
-    grad.addColorStop(0.3, "#0d0b24"); // night indigo
-    grad.addColorStop(0.48, "#171436"); // a little lift toward the band
-    grad.addColorStop(0.6, "#2d1a44"); // neon violet band
-    grad.addColorStop(0.68, "#48243f"); // last-light magenta glow
-    grad.addColorStop(0.73, "#3a2a3a"); // warm haze under it
-    grad.addColorStop(0.78, "#141225"); // back to fog at the horizon line
-    grad.addColorStop(1.0, "#141225");
+    grad.addColorStop(0.0, "#060a26"); // zenith — deep blue night
+    grad.addColorStop(0.14, "#0b1336"); // night blue
+    grad.addColorStop(0.25, "#131d4a"); // moonlit blue
+    grad.addColorStop(0.32, "#22245a"); // lifting toward the band
+    grad.addColorStop(0.37, "#30295f"); // violet light pollution
+    grad.addColorStop(SKY_FOG_STOP, fog); // the horizon glow IS the fog
+    grad.addColorStop(1.0, fog);
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, 1, 256);
   }
@@ -70,9 +118,93 @@ function skyGradientTexture(): THREE.Texture {
   return tex;
 }
 
+/** Moon disc angular radius, radians (~2.6° — big and cinematic, the way a
+ * long lens shows it; the real 0.26° would be a sub-pixel dot at FOV 70). */
+export const MOON_RADIUS = 0.045;
+/** Peak linear luminance of the disc: just over the 0.72 bloom threshold so
+ * it carries a soft halo, still far under the tracer rung (1.5). */
+export const MOON_PEAK = 0.95;
+
+/** Disc angular radius as a gnomonic (tangent-plane) distance. */
+const MOON_TAN = Math.tan(MOON_RADIUS);
+
+const vec3Literal = (v: readonly number[]): string =>
+  `vec3(${v.map((c) => c.toFixed(5)).join(", ")})`;
+
+/**
+ * The moon, drawn by the dome's own fragment shader — no extra mesh, so no
+ * extra draw call. The dome is centred on the camera, so its local vertex
+ * position IS the view direction; the disc lives in the tangent plane at
+ * MOON_DIR (gnomonic projection, the same mapping a camera-facing quad
+ * would give). The dome draws first and the city paints over it, so towers
+ * occlude the moon exactly as they occlude the sky.
+ */
+function moonPatch(material: THREE.MeshBasicMaterial): void {
+  const peak = new THREE.Color(DUSK.moon);
+  const lum = 0.2126 * peak.r + 0.7152 * peak.g + 0.0722 * peak.b;
+  peak.multiplyScalar(MOON_PEAK / lum);
+  // Tangent frame around MOON_DIR (MOON_DIR is never vertical).
+  const east = new THREE.Vector3(0, 1, 0).cross(MOON_DIR).normalize();
+  const north = MOON_DIR.clone().cross(east);
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nvarying vec3 vSkyDir;")
+      .replace(
+        "#include <begin_vertex>",
+        "#include <begin_vertex>\nvSkyDir = position;",
+      );
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        /* glsl */ `#include <common>
+varying vec3 vSkyDir;
+float mHash(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
+float mNoise(vec2 p) {
+  vec2 i = floor(p); vec2 f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mHash(i), mHash(i + vec2(1.0, 0.0)), u.x),
+             mix(mHash(i + vec2(0.0, 1.0)), mHash(i + vec2(1.0, 1.0)), u.x), u.y);
+}`,
+      )
+      .replace(
+        "#include <map_fragment>",
+        /* glsl */ `#include <map_fragment>
+{
+  vec3 sd = normalize(vSkyDir);
+  float facing = dot(sd, ${vec3Literal(MOON_DIR.toArray())});
+  if (facing > 0.0) {
+    // Disc-radius units on the tangent plane at the moon.
+    vec2 q = vec2(dot(sd, ${vec3Literal(east.toArray())}),
+                  dot(sd, ${vec3Literal(north.toArray())}))
+             / (facing * ${MOON_TAN.toFixed(6)});
+    float r = length(q);
+    vec3 moonCol = ${vec3Literal(peak.toArray())};
+    // Disc: soft limb darkening + maria (low-frequency dark patches).
+    float disc = 1.0 - smoothstep(0.96, 1.0, r);
+    float maria = mNoise(q * 2.3 + 3.1) * 0.6 + mNoise(q * 5.1) * 0.4;
+    float limb = 0.78 + 0.22 * sqrt(max(0.0, 1.0 - r * r));
+    vec3 discCol = moonCol * limb * (1.0 - 0.28 * smoothstep(0.45, 0.75, maria));
+    // Halo, added over the sky: a tight corona and a wide moonlit haze.
+    float d = max(r - 1.0, 0.0);
+    float halo = 0.22 * exp(-d * 2.6) + 0.07 * exp(-d * 0.55);
+    // The storm flash tints the dome (diffuse) up to ~2.6x; the moon takes
+    // its hue but never its gain, so it can never out-shine a tracer.
+    vec3 hue = diffuse / max(1.0, max(diffuse.r, max(diffuse.g, diffuse.b)));
+    vec3 moonLit = (discCol * disc + moonCol * halo * (1.0 - disc)) * hue;
+    diffuseColor.rgb = diffuseColor.rgb * (1.0 - disc) + moonLit;
+  }
+}`,
+      );
+  };
+  // Unique key: three caches programs on onBeforeCompile.toString().
+  material.customProgramCacheKey = () => "vo1-sky-dome-moon";
+}
+
 /** Stars on the dome: count, and the elevation band they occupy. */
 export const STAR_COUNT = 900;
-const STAR_ELEVATION_MIN = 0.16; // rad above the horizon — under the haze band
+/** Lowest star elevation, rad: where the gradient stops being fog-coloured.
+ * A star below it could outline a fully fogged landmark against the sky —
+ * a torus-wrap tell (see SKY_FOG_STOP). */
+const STAR_ELEVATION_MIN = (0.5 - SKY_FOG_STOP) * Math.PI;
 /** Brightest star, as a multiplier on white: sub-bloom (luminance < 0.72). */
 export const STAR_PEAK = 0.62;
 
@@ -142,6 +274,7 @@ export class SkyDome {
       fog: false,
       depthWrite: false,
     });
+    moonPatch(material);
     this.mesh = new THREE.Mesh(
       new THREE.SphereGeometry(FOG_DISTANCE + 60, 24, 16),
       material,

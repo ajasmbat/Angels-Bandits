@@ -159,8 +159,8 @@ export const ringPoint = (
  * Block-window radius, in blocks, shared by all four subsystems: a (2r+1)²
  * neighbourhood, camera-to-far-edge <= 600 m.
  *
- * Not a free knob. scene.fog is linear 60 → 800 and is applied AFTER emissive,
- * so a signal head at 700 m is 86 % fogged and bloom cannot rescue it; below
+ * Not a free knob. scene.fog is linear 140 → 800 and is applied AFTER emissive,
+ * so a signal head at 700 m is 85 % fogged and bloom cannot rescue it; below
  * the gate the streetwall occludes nearly everything past one block anyway.
  * 3 is the hard ceiling regardless — a block's far edge would sit 4·BLOCK_PITCH
  * = 800 m out, and wrapDelta/nearestImage go ambiguous at WORLD_SIZE / 2.

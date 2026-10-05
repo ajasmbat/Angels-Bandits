@@ -18,6 +18,7 @@ import {
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
+import { DUSK, MOON_DIR } from "./sky";
 import type { QuatLike } from "./trails";
 
 // --- Strobe pattern spec (all clients share it verbatim) ---
@@ -28,14 +29,20 @@ export const STROBE_FLASH_MS = 70;
 /** Pulse starts within the cycle, ms — the aviation double-flash. */
 export const STROBE_FLASH_OFFSETS = [0, 180] as const;
 
-/** FNV-1a over the plane id — a stable, cheap per-plane phase seed. */
-export function strobePhaseMs(planeId: string): number {
+/** FNV-1a over the plane id (uint32) — the stable, cheap per-plane seed
+ * behind the strobe phase and the remote livery pick. */
+export function planeHash(planeId: string): number {
   let h = 0x811c9dc5;
   for (let i = 0; i < planeId.length; i++) {
     h ^= planeId.charCodeAt(i);
     h = Math.imul(h, 0x01000193) >>> 0;
   }
-  return h % STROBE_PERIOD_MS;
+  return h;
+}
+
+/** Strobe phase offset within the cycle, ms. */
+export function strobePhaseMs(planeId: string): number {
+  return planeHash(planeId) % STROBE_PERIOD_MS;
 }
 
 /**
@@ -271,30 +278,158 @@ export class PlaneLights {
 
 const scratchColor = new THREE.Color();
 
-// --- Fresnel rim sheen: a faint moonlit edge on the plane materials ---
+// --- Hero light (VO4): every plane lights ITSELF, in its own shader ---
+//
+// A per-plane key/fill/rim rig evaluated in the plane materials' fragment
+// shader — zero scene-light cost, and it follows each plane everywhere. All
+// terms are peak linear luminances at albedo 1, N·L 1 and F 1 (the colours are
+// boosted to them with emissiveBoost, so the constants ARE what the shader
+// bakes). The lit body — scene rig + hero — is then capped in the shader
+// below the bloom threshold: the airframe never blooms, only the plane's
+// lights and its exhaust ring do. `material.emissive` (spawn shimmer, storm
+// reveal) is never touched here and stays additive and uncapped.
 
-/** Cool moon tint × strength — peaks ~0.15 luminance, far under the 0.72
- * bloom threshold: a silhouette hint, never a glow source. */
-const RIM_GLSL =
-  "totalEmissiveRadiance += vec3(0.055, 0.075, 0.13) * " +
-  "pow(1.0 - saturate(dot(normalize(vViewPosition), normalize(normal))), 3.0);";
+/** Warm key from the camera side (view space: right, up, toward camera) —
+ * ~45° off the view axis, so it models the airframe instead of flattening
+ * it like a headlamp. */
+const HERO_KEY_DIR = new THREE.Vector3(0.45, 0.55, 0.7).normalize();
+/** Wrap-Lambert factor for the key: a soft terminator, no hard black side. */
+const HERO_KEY_WRAP = 0.25;
+/** Roughness floor for the key glint (keeps chrome from a pinpoint lobe). */
+const HERO_SPEC_MIN_ROUGHNESS = 0.18;
+
+export const HERO_KEY_LUM = 0.16;
+/** Key glint peak (F0 = 1); dielectrics see 4% of it, polished metal most. */
+export const HERO_SPEC_LUM = 0.3;
+/** Cool sky top-up for dielectrics — small: the HemisphereLight already fills. */
+export const HERO_FILL_LUM = 0.05;
+/** Moon rim (fresnel³), brightest on the moon-facing side — ~2.4× the old
+ * pre-VO4 rim sheen. */
+export const HERO_RIM_LUM = 0.18;
+/** Fake environment reflection for metals: there is no envMap anywhere, so
+ * without it chrome, wires and gold render black between highlights. */
+export const HERO_ENV_LUM = 0.22;
+/** Lit-body luminance cap (scene rig + hero), under the 0.72 bloom threshold. */
+export const HERO_BODY_CAP = 0.68;
+/** Exhaust-ring glow (radial cylinders): over the bloom threshold so it glows,
+ * under EMISSIVE_EXHAUST so the exhaust point stays the hottest thing. */
+export const EXHAUST_RING_LUM = 0.82;
+
+const HERO_KEY_COLOR = new THREE.Color(1.0, 0.82, 0.62);
+const HERO_FILL_COLOR = new THREE.Color(0.55, 0.66, 1.0);
+const HERO_RIM_COLOR = new THREE.Color(DUSK.moon);
+const HERO_ENV_SKY = new THREE.Color(DUSK.hemiSky);
+const HERO_ENV_GROUND = new THREE.Color(DUSK.hemiGround);
+const EXHAUST_RING_COLOR = new THREE.Color(1.0, 0.42, 0.12);
+
+const boosted = (c: THREE.Color, lum: number): THREE.Color =>
+  c.clone().multiplyScalar(emissiveBoost(c, lum));
+
+/** Pre-cap upper bound of the hero add on a white, fully-lit, F=1 surface. */
+export function heroPeakLuminance(): number {
+  return (
+    HERO_KEY_LUM + HERO_SPEC_LUM + HERO_FILL_LUM + HERO_RIM_LUM + HERO_ENV_LUM
+  );
+}
+
+const glF = (n: number): string => n.toFixed(5);
+const glV = (c: { r: number; g: number; b: number }): string =>
+  `vec3(${glF(c.r)}, ${glF(c.g)}, ${glF(c.b)})`;
+const glDir = (v: THREE.Vector3): string =>
+  `vec3(${glF(v.x)}, ${glF(v.y)}, ${glF(v.z)})`;
+
+// The env pair shares ONE boost (the sky's), keeping its sky:ground ratio;
+// the ground colour is the dimmer of the two, so the sky sets the peak.
+const envBoost = emissiveBoost(HERO_ENV_SKY, HERO_ENV_LUM);
+
+/** Injected after <emissivemap_fragment>: only names declared by then. */
+function heroTerms(exhaust: boolean): string {
+  return `
+vec3 abHero = vec3(0.0);
+vec3 abExhaust = vec3(0.0);
+{
+  vec3 abN = normalize(normal);
+  vec3 abV = normalize(vViewPosition);
+  vec3 abUp = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+  vec3 abMoon = normalize((viewMatrix * vec4(${glDir(MOON_DIR)}, 0.0)).xyz);
+  vec3 abK = ${glDir(HERO_KEY_DIR)};
+  vec3 abAlbedo = diffuseColor.rgb;
+  float abMetal = metalnessFactor;
+  vec3 abF0 = mix(vec3(0.04), abAlbedo, abMetal);
+  float abNK = dot(abN, abK);
+  abHero += ${glV(boosted(HERO_KEY_COLOR, HERO_KEY_LUM))} * abAlbedo * (1.0 - abMetal)
+    * saturate((abNK + ${glF(HERO_KEY_WRAP)}) / ${glF(1 + HERO_KEY_WRAP)});
+  float abA = max(roughnessFactor, ${glF(HERO_SPEC_MIN_ROUGHNESS)});
+  abA *= abA;
+  float abShine = clamp(2.0 / (abA * abA) - 2.0, 4.0, 256.0);
+  abHero += ${glV(boosted(HERO_KEY_COLOR, HERO_SPEC_LUM))} * abF0 * step(0.0, abNK)
+    * pow(saturate(dot(abN, normalize(abK + abV))), abShine);
+  abHero += ${glV(boosted(HERO_FILL_COLOR, HERO_FILL_LUM))} * abAlbedo * (1.0 - abMetal)
+    * (0.5 + 0.5 * dot(abN, abUp));
+  float abSkyward = saturate(dot(reflect(-abV, abN), abUp) * 0.5 + 0.5);
+  abHero += abMetal * abF0 * mix(${glV(HERO_ENV_GROUND.clone().multiplyScalar(envBoost))},
+    ${glV(HERO_ENV_SKY.clone().multiplyScalar(envBoost))}, abSkyward);
+  abHero += ${glV(boosted(HERO_RIM_COLOR, HERO_RIM_LUM))}
+    * pow(1.0 - saturate(dot(abN, abV)), 3.0)
+    * (0.35 + 0.65 * saturate(dot(abN, abMoon) * 0.5 + 0.5));
+${
+  exhaust
+    ? `  abExhaust = ${glV(boosted(EXHAUST_RING_COLOR, EXHAUST_RING_LUM))}
+    * (0.75 + 0.25 * saturate(dot(abN, abV)));`
+    : ""
+}
+}`;
+}
+
+const EMISSIVE_TARGET = "#include <emissivemap_fragment>";
+const OUTGOING_TARGET =
+  "vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;";
+/** Lit body capped below bloom; shimmer/reveal and the exhaust ride on top. */
+const OUTGOING_CAPPED = `vec3 abLit = totalDiffuse + totalSpecular + abHero;
+abLit *= min(1.0, ${glF(HERO_BODY_CAP)} / max(luminance(abLit), 1e-4));
+vec3 outgoingLight = abLit + totalEmissiveRadiance + abExhaust;`;
+
+let patchMissReported = false;
+
+/** The fragment rewrite for one variant (exported for one-off checks). */
+export function patchHeroFragment(fragment: string, exhaust: boolean): string {
+  if (
+    !fragment.includes(EMISSIVE_TARGET) ||
+    !fragment.includes(OUTGOING_TARGET)
+  ) {
+    if (!patchMissReported) {
+      patchMissReported = true;
+      console.error(
+        "plane hero light: shader targets missing (three upgrade?)",
+      );
+    }
+    return fragment;
+  }
+  return fragment
+    .replace(EMISSIVE_TARGET, `${EMISSIVE_TARGET}\n${heroTerms(exhaust)}`)
+    .replace(OUTGOING_TARGET, OUTGOING_CAPPED);
+}
+
+export const HERO_CACHE_KEY = "ab-plane-hero";
+export const HERO_EXHAUST_CACHE_KEY = "ab-plane-hero-exhaust";
 
 /**
- * Patch every material under a plane group with a view-angle rim term
- * (same onBeforeCompile idiom as buildings-material). The biplane nests
- * groups, so traverse — and materials are per-plane clones, so patching
- * here never leaks to unrelated meshes.
+ * Patch every material under a plane group with the hero light. The biplane
+ * nests groups, so traverse; materials are per-plane (createBiplane builds
+ * fresh ones), so patching never leaks. Transparent glass is skipped — a key
+ * light would wash the windscreen white. Materials flagged
+ * `userData.exhaustGlow` (the radial engine) also get the exhaust ring.
  */
-export function applyRimSheen(plane: THREE.Group): void {
+export function applyHeroLight(plane: THREE.Group): void {
   plane.traverse((child) => {
     if (!(child instanceof THREE.Mesh)) return;
     const material = child.material as THREE.MeshStandardMaterial;
-    material.customProgramCacheKey = () => "ab-plane-rim";
+    if (material.transparent) return;
+    const exhaust = material.userData.exhaustGlow === true;
+    material.customProgramCacheKey = () =>
+      exhaust ? HERO_EXHAUST_CACHE_KEY : HERO_CACHE_KEY;
     material.onBeforeCompile = (shader) => {
-      shader.fragmentShader = shader.fragmentShader.replace(
-        "#include <emissivemap_fragment>",
-        `#include <emissivemap_fragment>\n${RIM_GLSL}`,
-      );
+      shader.fragmentShader = patchHeroFragment(shader.fragmentShader, exhaust);
     };
   });
 }

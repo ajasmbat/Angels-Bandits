@@ -14,7 +14,12 @@ import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { InterpolationBuffer } from "../net/interp";
 import { TAG_ALTITUDE, createNameTag, disposeNameTag } from "./nametags";
-import { buildPlaneMesh, disposePlaneMesh, spinPropeller } from "./plane";
+import {
+  buildPlaneMesh,
+  disposePlaneMesh,
+  liveryFor,
+  spinPropeller,
+} from "./plane";
 import type { PlaneLights } from "./planelights";
 import { strobePhaseMs } from "./planelights";
 import { REVEAL_COLOR, REVEAL_INTENSITY, turbulenceOffset } from "./storm";
@@ -101,7 +106,7 @@ export class RemotePlanes {
       if (!remote) {
         const known = this.names.get(id);
         remote = {
-          mesh: buildPlaneMesh(),
+          mesh: buildPlaneMesh(liveryFor(id)), // per-pilot livery
           tag: createNameTag(known?.name ?? "???", known?.isBot ?? false),
           buffer: new InterpolationBuffer(),
           lastPos: null,

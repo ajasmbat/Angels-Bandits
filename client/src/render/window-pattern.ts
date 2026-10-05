@@ -84,12 +84,17 @@ export interface FacadeParams {
   roofVar: number;
 }
 
-/** Concept 1 "Sparse Late Shift" — the approved tuning. */
+/** Concept 1 "Sparse Late Shift" — the approved tuning, brightened by VO2
+ * ("Neon Blue Hour", 2026-10-05): the human found the city too dark, so
+ * fewer floors have gone home (42% → 30%), baseline occupancy is up ~6
+ * points per archetype, and the street AO is lighter — at night the street
+ * is a light source, not a shadow (the canyon bounce in buildings-material
+ * now lifts the lower facades instead). */
 export const FACADE: FacadeParams = {
   glass: {
     pitch: [3.2, 3.1],
     pane: [0.87, 0.76],
-    lit: 0.3,
+    lit: 0.36,
     cool: 0.62,
     blinds: 0.22,
     roomDepth: 3.4,
@@ -98,7 +103,7 @@ export const FACADE: FacadeParams = {
   masonry: {
     pitch: [3.5, 3.5],
     pane: [0.45, 0.42],
-    lit: 0.2,
+    lit: 0.28,
     cool: 0.06,
     blinds: 0.44,
     roomDepth: 2.2,
@@ -107,7 +112,7 @@ export const FACADE: FacadeParams = {
   office: {
     pitch: [5.2, 4.1],
     pane: [0.9, 0.5],
-    lit: 0.26,
+    lit: 0.32,
     cool: 0.38,
     blinds: 0.3,
     roomDepth: 3.0,
@@ -118,7 +123,7 @@ export const FACADE: FacadeParams = {
   zoneH: 3,
   zoneLo: 0.4,
   zoneHi: 1.5,
-  darkFloor: 0.42,
+  darkFloor: 0.3,
   darkFloorLit: 0.03,
   brightFloor: 0.1,
   brightFloorLit: 0.95,
@@ -128,11 +133,11 @@ export const FACADE: FacadeParams = {
   brightSpread: 0.45,
   faceJitter: 0.09,
   aoHeight: 26,
-  aoStrength: 0.5,
+  aoStrength: 0.22,
   streakWidth: 1,
   grimeDensity: 0.3,
   grimeStrength: 0.4,
-  soot: 0.12,
+  soot: 0.08,
   roofVar: 0.22,
 };
 

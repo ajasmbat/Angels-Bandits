@@ -19,7 +19,7 @@ import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { emissiveBoost } from "./emissive";
-import { DUSK } from "./sky";
+import { DUSK, FOG_NEAR } from "./sky";
 import { nearestImage } from "./wrapPlacement";
 
 /** Speed of sound, m/s — thunder trails the flash by wrapDistance / this. */
@@ -441,7 +441,7 @@ export class StormRenderer {
     const inK = Math.min(1, Math.max(0, (cameraY - CLOUD_BASE) / 30));
     this.flashLight.intensity = f * FLASH_PEAK * (1 + inK * 0.6);
     if (scene.fog instanceof THREE.Fog) {
-      scene.fog.near = 60 + (IN_CLOUD_FOG_NEAR - 60) * inK;
+      scene.fog.near = FOG_NEAR + (IN_CLOUD_FOG_NEAR - FOG_NEAR) * inK;
       scene.fog.far = FOG_DISTANCE + (IN_CLOUD_FOG_FAR - FOG_DISTANCE) * inK;
       scene.fog.color
         .copy(this.fogBase)

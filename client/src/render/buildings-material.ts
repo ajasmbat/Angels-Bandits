@@ -53,6 +53,34 @@ const SHOP_PITCH = "7.0";
  * ~0.96 for the rare cool accent — under the V1 ladder's tracer rung. */
 const SHOP_EMISSIVE_INTENSITY = "1.3";
 
+/**
+ * VO2 canyon bounce: at night the STREET is the light source — sodium lamps,
+ * shop glass and neon spill climb the lower facades and fade with height.
+ * Modelled as light (it multiplies the facade's own albedo, so terracotta
+ * glows warm and teal glass glows teal-amber) with an exponential falloff in
+ * WORLD height. A sub-bloom emissive term: on the brightest albedo in the city
+ * it peaks under BOUNCE_LUMINANCE_CAP at street level, and the lit facade as a
+ * whole stays far below the 0.72 bloom threshold
+ * (client/test/facade-palette.test.ts) — the facade never becomes a lamp.
+ * NOTE three's setHSL is in LINEAR space, so facadeColor's lightness is
+ * already a linear albedo — the reference tuning's 1.4 gain read the bounce
+ * as ~0.27 and broke the cap.
+ */
+export const BOUNCE_INTENSITY = 1.0;
+/** e-folding height of the bounce, meters of world height (~10% left by
+ * 40 m, gone by the upper floors, which keep the cool moon key). */
+export const BOUNCE_HEIGHT = 17;
+/** The bounce's ceiling, linear luminance — the ticket's sub-bloom bound. */
+export const BOUNCE_LUMINANCE_CAP = 0.15;
+/** Sodium bounce colour (linear) and the neon accents some blocks pick up,
+ * blended in at BOUNCE_NEON_MIX. */
+export const BOUNCE_TINTS = {
+  sodium: new THREE.Color(1.0, 0.62, 0.34),
+  magenta: new THREE.Color(1.0, 0.36, 0.78),
+  cyan: new THREE.Color(0.36, 0.82, 1.0),
+} as const;
+export const BOUNCE_NEON_MIX = 0.55;
+
 const VERTEX_PARS = /* glsl */ `
 attribute float aArchetype;
 varying vec3 vMeters;
@@ -128,6 +156,17 @@ float shopLit = step(0.12, shopH); // nearly every storefront glows
 vec3 shopColor = mix(vec3(1.0, 0.62, 0.26), vec3(0.45, 0.8, 0.95), step(0.85, shopH));
 vec3 shopGlow = glass * shopLit * shopColor * (0.8 + 0.2 * shopH) * ${SHOP_EMISSIVE_INTENSITY};
 totalEmissiveRadiance += mix(windowGlow, shopGlow, shopBand);
+// VO2 canyon bounce (see BOUNCE_INTENSITY): street light reflected by the
+// facade's own albedo, fading with world height; a third of buildings stand
+// in a neon-tinted spill instead of plain sodium. Lit panes and lit shop
+// glass already emit their own light, so the bounce skips them.
+float bounceK = exp(-vWorldY / ${BOUNCE_HEIGHT.toFixed(1)}) * facade
+  * (1.0 - pane * lit) * (1.0 - shopBand * glass * shopLit);
+float bounceH = fract(vBSeed * 7.31);
+vec3 bounceTint = mix(${glslVec3(BOUNCE_TINTS.sodium)},
+  mix(${glslVec3(BOUNCE_TINTS.magenta)}, ${glslVec3(BOUNCE_TINTS.cyan)}, step(0.5, fract(vBSeed * 3.7))),
+  step(0.66, bounceH) * ${BOUNCE_NEON_MIX.toFixed(2)});
+totalEmissiveRadiance += diffuseColor.rgb * bounceTint * ${BOUNCE_INTENSITY.toFixed(2)} * bounceK;
 `;
 
 const FRAGMENT_EMISSIVE = `${windowEmissiveGlsl(
@@ -135,6 +174,18 @@ const FRAGMENT_EMISSIVE = `${windowEmissiveGlsl(
   glslVec3(WINDOW_COOL),
   WINDOW_EMISSIVE_INTENSITY,
 )}${SHOP_BAND_GLSL}`;
+
+/**
+ * VO2: cap the grazing-angle Fresnel. Standard materials reflect 100% at
+ * grazing (specularF90 = 1), which under the VO1 moon key turned every
+ * canyon wall seen edge-on into a pale mirror sheet and washed its windows
+ * out. Real concrete and brick are far less reflective than that; curtain
+ * glass keeps more of its sheen.
+ */
+export const GRAZING_REFLECTANCE = { glass: 0.4, solid: 0.2 } as const;
+const FRAGMENT_SPECULAR = /* glsl */ `
+material.specularF90 = vArch < 0.5 ? ${GRAZING_REFLECTANCE.glass.toFixed(2)} : ${GRAZING_REFLECTANCE.solid.toFixed(2)};
+`;
 
 /** The compiled shader sources, for QA/tests that assert on the patch
  * without a GPU (there is no CPU-side geometry to inspect otherwise). */
@@ -144,6 +195,7 @@ export const BUILDING_SHADER_SOURCE = {
   fragmentPars: FRAGMENT_PARS,
   fragmentColor: FRAGMENT_COLOR,
   fragmentEmissive: FRAGMENT_EMISSIVE,
+  fragmentSpecular: FRAGMENT_SPECULAR,
 } as const;
 
 /** The city's instanced material: dark towers + procedural lit windows. */
@@ -168,10 +220,14 @@ export function createBuildingsMaterial(): THREE.MeshStandardMaterial {
       .replace(
         "#include <emissivemap_fragment>",
         `#include <emissivemap_fragment>\n${FRAGMENT_EMISSIVE}`,
+      )
+      .replace(
+        "#include <lights_physical_fragment>",
+        `#include <lights_physical_fragment>\n${FRAGMENT_SPECULAR}`,
       );
   };
   // Distinct compiled program per patch (V3 rule: three keys programs on
   // onBeforeCompile.toString(), and sibling materials collide silently).
-  material.customProgramCacheKey = () => "ab-buildings-facade-realism";
+  material.customProgramCacheKey = () => "ab-buildings-vo2-palette";
   return material;
 }

@@ -460,8 +460,8 @@ export class RoomBots {
   /**
    * Is a (re)spawn at `pos` heading `yaw` (level) safe for a bot? The spawn
    * point and BOT_SPAWN_CLEAR_AHEAD of straight-ahead flight must miss the
-   * city and the L2 movers — pickBotRespawn's predicate, so a canyon spawn
-   * never lands in a facade, an arch or a crane jib.
+   * city, the trees and the L2 movers — pickBotRespawn's predicate, so a
+   * canyon spawn never lands in a facade, a canopy or a crane jib.
    */
   spawnClear(pos: Vec3, yaw: number, now: number): boolean {
     const fwd = flightForward({ yaw, pitch: 0 });
@@ -476,6 +476,8 @@ export class RoomBots {
       if (collideCity(p, BOT_PROBE_RADIUS, this.buildings, this.cityIndex)) {
         return false;
       }
+      // The overlapping spheres already tile the run, so trees need no sweep.
+      if (collideNature(p, BOT_PROBE_RADIUS, this.nature)) return false;
       if (
         collideBotMovers(
           p,

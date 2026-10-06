@@ -7,7 +7,7 @@
 // the expanded-AABB approximation (box grown by the radius), which is within
 // ~radius·0.41 at corners — plenty for an arcade crash check.
 
-import { type Building, CITY_GRID } from "./city/index";
+import { type Building, CITY_GRID, solids } from "./city/index";
 import { BLOCK_PITCH, PLAYER_RADIUS } from "./constants";
 import { type Vec3, wrapDelta } from "./world/index";
 
@@ -78,28 +78,44 @@ function blockSpan(lo: number, hi: number): number[] {
 }
 
 /**
+ * How a query treats H1 fly-through holes. "open" is the truth — the plane
+ * crashes into exactly what is drawn. "solid" fills every hole back in, for
+ * AVOIDANCE probes only: a bot's point-sampled probes can straddle a thin
+ * hole wall, so until bots route through holes on purpose (B2) they steer
+ * clear of them instead of discovering them.
+ */
+export type HoleMode = "open" | "solid";
+
+/**
  * First building the player sphere intersects, or null. Distances go through
  * wrapDelta, so footprints and planes on opposite sides of the seam still hit.
- * The hit volume is the building's tier stack — exactly the rendered setback
- * silhouette, so a plane above a ledge flies clean (no invisible walls).
+ * The hit volume is the building's solids — exactly the rendered setback
+ * silhouette with its holes cut, so a plane above a ledge or through an arch
+ * flies clean (no invisible walls).
  */
 export function collideCity(
   pos: Vec3,
   radius: number = PLAYER_RADIUS,
   buildings: readonly Building[] = [],
   index?: CityIndex,
+  holes: HoleMode = "open",
 ): Building | null {
   if (index && index.buildings === buildings) {
-    return collideIndexed(pos, radius, buildings, index);
+    return collideIndexed(pos, radius, buildings, index, holes);
   }
   for (const b of buildings) {
-    if (hits(pos, radius, b)) return b;
+    if (hits(pos, radius, b, holes)) return b;
   }
   return null;
 }
 
-/** True when the player sphere intersects this building's tier stack. */
-function hits(pos: Vec3, radius: number, b: Building): boolean {
+/** True when the player sphere intersects this building's solids. */
+function hits(
+  pos: Vec3,
+  radius: number,
+  b: Building,
+  holes: HoleMode,
+): boolean {
   if (pos.y - radius > b.height) return false;
   const d = wrapDelta({ x: b.x, y: 0, z: b.z }, { x: pos.x, y: 0, z: pos.z });
   // Tier-1 footprint bounds the whole stack — cheap whole-building reject.
@@ -109,18 +125,31 @@ function hits(pos: Vec3, radius: number, b: Building): boolean {
   ) {
     return false;
   }
-  let base = 0;
-  for (const t of b.tiers) {
-    const top = base + t.height;
+  if (holes === "solid" || !b.holes) {
+    let base = 0;
+    for (const t of b.tiers) {
+      const top = base + t.height;
+      if (
+        pos.y - radius <= top &&
+        pos.y + radius >= base &&
+        Math.abs(d.x) <= t.width / 2 + radius &&
+        Math.abs(d.z) <= t.depth / 2 + radius
+      ) {
+        return true;
+      }
+      base = top;
+    }
+    return false;
+  }
+  for (const s of solids(b)) {
     if (
-      pos.y - radius <= top &&
-      pos.y + radius >= base &&
-      Math.abs(d.x) <= t.width / 2 + radius &&
-      Math.abs(d.z) <= t.depth / 2 + radius
+      pos.y - radius <= s.baseY + s.height &&
+      pos.y + radius >= s.baseY &&
+      Math.abs(d.x - s.dx) <= s.width / 2 + radius &&
+      Math.abs(d.z - s.dz) <= s.depth / 2 + radius
     ) {
       return true;
     }
-    base = top;
   }
   return false;
 }
@@ -136,6 +165,7 @@ function collideIndexed(
   radius: number,
   buildings: readonly Building[],
   index: CityIndex,
+  holes: HoleMode,
 ): Building | null {
   let best = -1;
   for (const bx of blockSpan(pos.x - radius, pos.x + radius)) {
@@ -146,7 +176,7 @@ function collideIndexed(
         // Cells are ascending, so once we pass the best hit this cell is done.
         if (best >= 0 && i >= best) break;
         const b = buildings[i];
-        if (b && hits(pos, radius, b)) {
+        if (b && hits(pos, radius, b, holes)) {
           best = i;
           break;
         }
@@ -206,10 +236,10 @@ function segmentHitsBox(
  * True when nothing in the city stands between `from` and `to` — the sight
  * line the bot brain acquires targets on (ANGE-SINI5F).
  *
- * Exact, not sampled: every tier box is clipped against the segment, so a
+ * Exact, not sampled: every solid box is clipped against the segment, so a
  * sight line can neither tunnel through a slim tower nor be blocked by one it
- * passes wide of. It tests the SAME tier stack collideCity does, so seeing
- * past a setback ledge and flying past it agree by construction. A line
+ * passes wide of. It tests the SAME solids collideCity does, so seeing past a
+ * setback ledge or through an H1 hole and flying there agree by construction. A line
  * exactly tangent to a face counts as blocked — the boxes are closed.
  *
  * Torus-correct the same way collideCity is: the segment and every building
@@ -244,23 +274,22 @@ export function losClear(
     ) {
       continue;
     }
-    let base = 0;
-    for (const t of b.tiers) {
-      const top = base + t.height;
+    for (const t of solids(b)) {
+      const x = c.x + t.dx;
+      const z = c.z + t.dz;
       if (
         segmentHitsBox(
           d,
-          c.x - t.width / 2,
-          c.x + t.width / 2,
-          base - from.y,
-          top - from.y,
-          c.z - t.depth / 2,
-          c.z + t.depth / 2,
+          x - t.width / 2,
+          x + t.width / 2,
+          t.baseY - from.y,
+          t.baseY + t.height - from.y,
+          z - t.depth / 2,
+          z + t.depth / 2,
         )
       ) {
         return false;
       }
-      base = top;
     }
   }
   return true;

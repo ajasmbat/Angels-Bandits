@@ -442,7 +442,7 @@ export class RoomBots {
       if (decide) this.decide(bot, now, contacts);
       bot.flight = stepFlight(bot.flight, bot.input, BOT_DT);
 
-      // Identical geometry to players: tier boxes + ground, PLAYER_RADIUS —
+      // Identical geometry to players: solids (H1 holes open) + ground, PLAYER_RADIUS —
       // plus the L2 movers a bot is allowed to hit (crane geometry and the
       // blimp; helicopters are bot-transparent, see collideBotMovers).
       if (
@@ -885,7 +885,12 @@ export class RoomBots {
         z: flight.pos.z + dz * s,
       });
       if (p.y - radius <= 0) return true;
-      if (collideCity(p, radius, this.buildings, this.cityIndex)) return true;
+      // Holes count as SOLID here: point samples 16–36 m apart can land
+      // inside a hole and skip its thin walls, and bots do not route through
+      // holes until B2 — so they avoid them rather than discover them.
+      if (collideCity(p, radius, this.buildings, this.cityIndex, "solid")) {
+        return true;
+      }
       // Trees are swept like the movers below, for the same reason: a 0.5 m
       // trunk falls straight between two point samples.
       const gap = s - (i === 0 ? -s : flight.speed * (profile[i - 1] ?? 0));

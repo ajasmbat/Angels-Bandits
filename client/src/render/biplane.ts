@@ -2,30 +2,49 @@
 // Three.js geometry — no external assets, per the project constraint that
 // everything ships bundled. Reference: red fuselage/wings, maroon cowl ring,
 // checkered rudder, N-struts with crossed flying wires, open cockpit,
-// radial engine, spatted gear.
+// radial engine, spatted gear. The livery (primary/secondary colours) is a
+// parameter so remote pilots can wear their own; the shapes never change.
 //
 // Axes: +Z = nose, +Y = up. Model is ~9 units wingspan (≈ meters).
 
 import * as THREE from "three";
 
-const RED = 0xc8102e;
-const MAROON = 0x77111f;
+/** The two livery colours: `primary` paints fuselage, wings, tail and gear;
+ * `secondary` the cowl ring and aileron hinges. Trim (cream struts, gold
+ * cheat line) and metal stay common to every livery. */
+export interface Livery {
+  primary: number;
+  secondary: number;
+}
+
+/** The classic red-and-maroon scheme — the own plane always wears it. */
+export const CLASSIC_LIVERY: Livery = {
+  primary: 0xe0182f,
+  secondary: 0x8c1424,
+};
+
 const CREAM = 0xf2ead8;
+const GOLD = 0xd9a441;
 const SILVER = 0xd6d8da;
 const DARK = 0x1d1d20;
 const TIRE = 0x141414;
 
-function mats() {
+function mats(livery: Livery) {
   return {
     red: new THREE.MeshStandardMaterial({
-      color: RED,
+      color: livery.primary,
       roughness: 0.32,
       metalness: 0.12,
     }),
     maroon: new THREE.MeshStandardMaterial({
-      color: MAROON,
+      color: livery.secondary,
       roughness: 0.35,
       metalness: 0.2,
+    }),
+    gold: new THREE.MeshStandardMaterial({
+      color: GOLD,
+      roughness: 0.3,
+      metalness: 0.85,
     }),
     cream: new THREE.MeshStandardMaterial({
       color: CREAM,
@@ -39,14 +58,25 @@ function mats() {
     }),
     silver: new THREE.MeshStandardMaterial({
       color: SILVER,
-      roughness: 0.4,
-      metalness: 0.7,
+      roughness: 0.25,
+      metalness: 0.85,
     }),
     dark: new THREE.MeshStandardMaterial({
       color: DARK,
       roughness: 0.6,
       metalness: 0.4,
     }),
+    // The radial's cylinders + crank case: dark metal that the hero-light
+    // patch (planelights.ts) heats into the glowing exhaust ring.
+    engine: (() => {
+      const m = new THREE.MeshStandardMaterial({
+        color: DARK,
+        roughness: 0.6,
+        metalness: 0.4,
+      });
+      m.userData.exhaustGlow = true;
+      return m;
+    })(),
     tire: new THREE.MeshStandardMaterial({
       color: TIRE,
       roughness: 0.95,
@@ -67,7 +97,7 @@ function mats() {
     }),
     wire: new THREE.MeshStandardMaterial({
       color: 0xb9bbbd,
-      roughness: 0.35,
+      roughness: 0.3,
       metalness: 0.9,
     }),
   };
@@ -136,8 +166,8 @@ function strut(
   return m;
 }
 
-export function createBiplane(): THREE.Group {
-  const M = mats();
+export function createBiplane(livery: Livery = CLASSIC_LIVERY): THREE.Group {
+  const M = mats(livery);
   const g = new THREE.Group();
 
   // ---------- fuselage (lathe of a side profile, squashed slightly oval)
@@ -158,11 +188,11 @@ export function createBiplane(): THREE.Group {
   fus.scale.x = 0.88;
   g.add(fus);
 
-  // cream cheat-line stripe along each flank
+  // gold cheat-line stripe along each flank
   for (const sx of [1, -1]) {
     const stripe = new THREE.Mesh(
       new THREE.BoxGeometry(0.02, 0.09, 5.6),
-      M.cream,
+      M.gold,
     );
     stripe.position.set(sx * 0.51, 0.13, -0.35);
     stripe.rotation.y = sx * -0.035;
@@ -186,7 +216,7 @@ export function createBiplane(): THREE.Group {
   g.add(firewall);
   const crank = new THREE.Mesh(
     new THREE.CylinderGeometry(0.17, 0.2, 0.3, 20),
-    M.dark,
+    M.engine,
   );
   crank.rotation.x = Math.PI / 2;
   crank.position.z = 3.28;
@@ -196,7 +226,7 @@ export function createBiplane(): THREE.Group {
     const a = (i / 7) * Math.PI * 2;
     const cyl = new THREE.Mesh(
       new THREE.CylinderGeometry(0.075, 0.075, 0.26, 10),
-      M.dark,
+      M.engine,
     );
     cyl.position.set(Math.cos(a) * 0.28, Math.sin(a) * 0.28, 3.18);
     cyl.quaternion.setFromUnitVectors(

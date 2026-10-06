@@ -12,6 +12,11 @@ import {
   type MoverField,
   generateMovers,
 } from "@angels-bandits/common/city/movers";
+import { natureFor } from "@angels-bandits/common/city/nature";
+import {
+  type NatureIndex,
+  buildNatureIndex,
+} from "@angels-bandits/common/collision";
 import {
   CITY_SEED,
   LIVENESS_TIMEOUT_MS,
@@ -94,6 +99,23 @@ const moversFor = (seed: number): MoverField => {
   return field;
 };
 
+/**
+ * The solid N1 trees, memoised per city seed exactly like `moversFor` — and
+ * fitted to generateCity(seed), never to another seed's buildings, since a
+ * tree is rejected wherever that city has a footprint.
+ */
+const natureBySeed = new Map<number, NatureIndex>();
+const natureIndexFor = (seed: number): NatureIndex => {
+  let index = natureBySeed.get(seed);
+  if (!index) {
+    index = buildNatureIndex(
+      natureFor(seed, seed === CITY_SEED ? city : generateCity(seed)),
+    );
+    natureBySeed.set(seed, index);
+  }
+  return index;
+};
+
 /** Per-room bot pilots. Created lazily; seeded from the room's number so
  * bot behavior is deterministic per room. */
 const botsByRoom = new Map<string, RoomBots>();
@@ -106,6 +128,8 @@ const botsFor = (room: Room): RoomBots => {
       CITY_SEED ^ (n * 0x9e3779b9),
       city,
       moversFor(room.seed),
+      true,
+      natureIndexFor(room.seed),
     );
     botsByRoom.set(room.id, bots);
   }

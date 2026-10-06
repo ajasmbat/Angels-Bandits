@@ -310,6 +310,40 @@ export const FIREWORK_LIFETIME_MS = 2200;
 export const FIREWORK_SPARKS = 40;
 export const FIREWORK_BURSTS = 6;
 
+// --- Nature (N1) --- trees, park lamps, planters and hoardings in the city's
+// dead ground (common/src/city/nature.ts). The L2 rule applies: anything that
+// LOOKS solid in the flight band IS solid. So park and forecourt trees are
+// collidable for players and bots alike, and these bands are collision
+// dimensions, not just rendering ones. Everything no taller than
+// STREET_TREE_MAX_HEIGHT is the street-lamp exception instead (lamp poles are 7 m and have
+// never collided): street trees, park lamps, planters and hoardings are
+// dressing you can clip, the same way you can clip a lamp post.
+/** Park tree total height band (trunk + canopy), m. */
+export const PARK_TREE_HEIGHT_MIN = 8;
+export const PARK_TREE_HEIGHT_MAX = 18;
+/** Landmark forecourt tree total height band, m — formal rows, so narrow. */
+export const FORECOURT_TREE_HEIGHT_MIN = 9;
+export const FORECOURT_TREE_HEIGHT_MAX = 13;
+/** Street trees never top this, m: the lamp-pole height, which is what makes
+ * them the accepted no-collision exception — below every flight band. */
+export const STREET_TREE_MAX_HEIGHT = 7;
+/** Street-tree trunk (clear stem) band, m. Limbed up above the 4.2 m top of
+ * the facade-garnish entrance awning (CANOPY_Y 3.6 + 0.6 slab), so a crown
+ * can never sit in an awning, and above every car (1.4 m) in the curb lane. */
+export const STREET_TREE_TRUNK_MIN = 4.6;
+export const STREET_TREE_TRUNK_MAX = 4.9;
+/** Street-tree crown radius band, m. On the furniture line (16 m off the
+ * centerline) a 2.2 m crown spans 13.8–18.2 m: it oversails the curb lane
+ * (only above STREET_TREE_TRUNK_MIN) but stops short of every facade-mounted
+ * sign, the deepest of which (a 0.6 m marquee) starts at 19.4 m. */
+export const STREET_TREE_CANOPY_MIN = 1.7;
+export const STREET_TREE_CANOPY_MAX = 2.2;
+/** Slack added to a canopy's collision ellipsoid on every axis, m. The
+ * inflated-axes sphere test (point inside the ellipsoid grown by the sphere
+ * radius) under-reaches the true swept sphere by a few cm at oblique angles
+ * on flattened crowns; this covers it, so what you see is always solid. */
+export const CANOPY_COLLISION_SLACK = 0.1;
+
 // --- Combat (tuned by T4) ---
 export const MAX_HP = 100;
 export const BULLET_SPEED = 400;

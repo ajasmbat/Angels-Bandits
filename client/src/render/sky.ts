@@ -10,6 +10,24 @@
 // disagree with lamp/traffic geometry. Mod arithmetic on canonical coords
 // tiles across the seam by construction — no wrap special-cases.
 
+import { CITY_GRID } from "@angels-bandits/common/city";
+import {
+  FORECOURT_GATE_HALF,
+  FORECOURT_LAWN_INNER,
+  FORECOURT_LAWN_OUTER,
+  GROUND_FORECOURT,
+  GROUND_PARK,
+  GROUND_SITE,
+  PARK_LAMP_COUNT,
+  PARK_LAMP_PHASE,
+  PARK_LAMP_RADIUS,
+  PARK_LAWN_HALF,
+  PARK_PATH_HALF,
+  PARK_POND_RADIUS,
+  PARK_POND_RIM,
+  PARK_RING_RADIUS,
+  blockGroundKind,
+} from "@angels-bandits/common/city/nature";
 import {
   CROSSWALK_DEPTH,
   CURB_LINE,
@@ -325,7 +343,31 @@ const GROUND_COLORS = {
   edge: glslColor(0x9ca4b6),
   zebra: glslColor(0xd4dcea),
   lampWarm: glslColor(0xffb35c), // the existing streetlight color family
+  // N1 nature — night albedos, lifted just enough to read under the moon.
+  lawn: glslColor(0x1f3a22),
+  hedge: glslColor(0x12241a),
+  path: glslColor(0x34333a),
+  rim: glslColor(0x46454f),
+  water: glslColor(0x05080f),
+  paving: glslColor(0x2a2b36),
+  slabJoint: glslColor(0x1c1d26),
+  earth: glslColor(0x2a1f16),
+  gravel: glslColor(0x3b3732),
+  moon: glslColor(DUSK.moon),
 } as const;
+// N1 nature emissives, all far under the 0.72 bloom threshold — and the
+// GROUND_LUMA_CAP below clamps whatever they stack to anyway, so a park can
+// never become a ladder rung. Park-lamp HEADS bloom (the LAMP rung, in
+// render/nature.ts); their pools here do not.
+/** Park-lamp pool peak gain on the warm lamp colour (~0.18 luminance). */
+const PARK_POOL_GLOW = "0.35";
+/** Pond rim's warm uplight gain (~0.24 luminance). */
+const POND_RIM_GLOW = "0.45";
+/** Faked moon glint on the pond: gain and highlight tightness. */
+const POND_GLINT = "0.6";
+const POND_GLINT_POWER = "300.0";
+/** Pond roughness close up (the real moonlight's specular helps the glint). */
+const POND_ROUGHNESS = "0.22";
 /** Marking emissive lift: ~0.45 peak luminance — under the 0.72 bloom threshold. */
 const MARKING_GLOW = "0.65";
 /** Peak of a lamp-reflection streak (~0.27 luminance — sub-bloom, warm). */
@@ -363,6 +405,38 @@ const NEON_PALETTE = `vec3[${SIGN_PALETTE.length}](${SIGN_PALETTE.map((c) => {
 }).join(", ")})`;
 /** Sidewalk paint band beyond the curb, meters (building faces sit further out). */
 const SIDEWALK_BAND = 8;
+
+/**
+ * Every block's ground kind (common/src/city/nature.ts) as a GLSL const
+ * table, indexed bx * CITY_GRID + bz. Seed-free by construction — the
+ * hand-placed block lists alone decide it — so it bakes into the shader.
+ */
+const BLOCK_KIND_TABLE = `int[${CITY_GRID * CITY_GRID}](${Array.from(
+  { length: CITY_GRID * CITY_GRID },
+  (_, i) => blockGroundKind(Math.floor(i / CITY_GRID), i % CITY_GRID),
+).join(", ")})`;
+
+/** Park / forecourt layout anchors — from the nature seam's exports, never
+ * retyped, so the paint sits under the lamps and around the trees. */
+const N = {
+  lawnHalf: glslNum(PARK_LAWN_HALF),
+  pond: glslNum(PARK_POND_RADIUS),
+  rimOut: glslNum(PARK_POND_RADIUS + PARK_POND_RIM),
+  ring: glslNum(PARK_RING_RADIUS),
+  path: glslNum(PARK_PATH_HALF),
+  lampR: glslNum(PARK_LAMP_RADIUS),
+  lampPhase: glslNum(PARK_LAMP_PHASE),
+  lampStep: glslNum((2 * Math.PI) / PARK_LAMP_COUNT),
+  gate: glslNum(FORECOURT_GATE_HALF),
+  lawnIn: glslNum(FORECOURT_LAWN_INNER),
+  lawnOut: glslNum(FORECOURT_LAWN_OUTER),
+  world: glslNum(WORLD_SIZE),
+  grid: `${CITY_GRID}`,
+  park: `${GROUND_PARK}`,
+  forecourt: `${GROUND_FORECOURT}`,
+  site: `${GROUND_SITE}`,
+  moonDir: `vec3(${MOON_DIR.x.toFixed(4)}, ${MOON_DIR.y.toFixed(4)}, ${MOON_DIR.z.toFixed(4)})`,
+} as const;
 
 // Geometry anchors — every street offset comes from the contract imports.
 const G = {
@@ -442,6 +516,74 @@ vec3 abNeonSpill(float line, float along, float side, float dCross) {
   }
   return acc * c;
 }
+// --- N1 nature ground ---
+const int AB_BLOCK_KIND[${CITY_GRID * CITY_GRID}] = ${BLOCK_KIND_TABLE};
+// Ground kind of the block under world XZ (wrap-safe: mod the world first).
+int abBlockKind(vec2 w) {
+  vec2 c = mod(w, ${N.world});
+  ivec2 b = clamp(ivec2(floor(c / ${G.pitch})), ivec2(0), ivec2(${N.grid} - 1));
+  return AB_BLOCK_KIND[b.x * ${N.grid} + b.y];
+}
+// A night park, l = metres from the block centre. Returns albedo; adds the
+// lamp pools and the lit pond rim to em; marks open water in water.
+vec3 abParkPaint(vec2 l, float n, inout vec3 em, inout float water) {
+  float r = length(l);
+  // Mown lawn: 8 m stripes and a soft mottle.
+  float stripe = step(0.5, fract(l.x / 8.0));
+  vec3 c = ${GROUND_COLORS.lawn} * (1.0 + (n - 0.5) * 0.45) * (0.92 + 0.16 * stripe);
+  // A low hedge line where the lawn meets the pavement.
+  if (max(abs(l.x), abs(l.y)) > ${N.lawnHalf} - 1.2) c = ${GROUND_COLORS.hedge};
+  float onPath = max(
+    max(step(abs(l.x), ${N.path}), step(abs(l.y), ${N.path})),
+    step(abs(r - ${N.ring}), ${N.path}));
+  if (onPath > 0.5) c = ${GROUND_COLORS.path} * (1.0 + (abNoise(l * 2.3) - 0.5) * 0.35);
+  // Warm pool under the nearest park lamp.
+  float k = floor((atan(l.y, l.x) - ${N.lampPhase}) / ${N.lampStep} + 0.5);
+  float a = ${N.lampPhase} + k * ${N.lampStep};
+  float pool = 1.0 - smoothstep(0.0, 9.0, length(l - vec2(cos(a), sin(a)) * ${N.lampR}));
+  em += ${GROUND_COLORS.lampWarm} * pool * pool * ${PARK_POOL_GLOW};
+  if (r < ${N.pond}) {
+    c = ${GROUND_COLORS.water};
+    water = 1.0;
+  } else if (r < ${N.rimOut}) {
+    c = ${GROUND_COLORS.rim};
+    em += ${GROUND_COLORS.lampWarm} * ${POND_RIM_GLOW};
+  }
+  return c;
+}
+// Neon from the surrounding streetwall, reflected in a pond: hashed sign
+// colours in angular sectors, strongest toward the rim.
+vec3 abPondNeon(vec2 l, vec2 w) {
+  float r = length(l);
+  float sector = floor((atan(l.y, l.x) + 3.14159) / 0.5236);
+  vec2 key = floor(w / ${G.pitch}) + vec2(sector * 1.37, 3.0);
+  float present = step(abHash(key + 9.1), 0.6);
+  int hue = int(floor(abHash(key) * ${SIGN_PALETTE.length}.0));
+  float band = smoothstep(${N.pond} * 0.45, ${N.pond}, r);
+  // Streaks run radially — a reflection smears toward the viewer — broken
+  // only softly along the radius.
+  float ripple = smoothstep(0.4, 0.85, abNoise(vec2(atan(l.y, l.x) * 14.0, r * 0.3)));
+  return AB_NEON[hue] * present * band * ripple * 0.4;
+}
+// A landmark forecourt: granite slabs, lawn panels each side of the entrance.
+vec3 abForecourtPaint(vec2 l, float n) {
+  vec2 a = abs(l);
+  float off = max(a.x, a.y);
+  float along = min(a.x, a.y);
+  vec3 c = ${GROUND_COLORS.paving} * (1.0 + (n - 0.5) * 0.25);
+  vec2 j = mod(l, 6.0);
+  c = mix(c, ${GROUND_COLORS.slabJoint}, max(step(j.x, 0.12), step(j.y, 0.12)));
+  if (off > ${N.lawnIn} && off < ${N.lawnOut} && along > ${N.gate} && along < ${N.lawnOut}) {
+    c = ${GROUND_COLORS.lawn} * (1.0 + (n - 0.5) * 0.4);
+  }
+  return c;
+}
+// A construction site: churned earth with gravel patches.
+vec3 abSitePaint(vec2 w, float n) {
+  vec3 c = mix(${GROUND_COLORS.earth}, ${GROUND_COLORS.gravel},
+    smoothstep(0.45, 0.62, abNoise(w * 0.18)));
+  return c * (1.0 + (abNoise(w * 3.1) - 0.5) * 0.4) * (1.0 + (n - 0.5) * 0.2);
+}
 `;
 
 const GROUND_FRAGMENT_MAIN = /* glsl */ `
@@ -458,6 +600,7 @@ vec3 abEmissive = vec3(0.0);
 vec3 abNeon = vec3(0.0); // Fresnel-weighted at the emissive splice
 float abPud = 0.0; // puddle mask, roadway only
 float abWet = 0.0; // 0 dry .. 1 standing water
+float abWater = 0.0; // N1 park pond
 if (abRoad > 0.5) {
   abPaint = ${GROUND_COLORS.asphalt} * (1.0 + (abNoiseV - 0.5) * 0.5);
   abPud = smoothstep(0.5, 0.68, abNoise(vWorldXZ * 0.085 + 13.0));
@@ -511,6 +654,22 @@ if (abRoad > 0.5) {
     abPaint = mix(abPaint, ${GROUND_COLORS.curb}, abCurb);
   } else {
     abPaint = ${GROUND_COLORS.interior}; // block interiors: darkest
+    // N1: parks, landmark forecourts and construction sites paint their own.
+    int abKind = abBlockKind(vWorldXZ);
+    vec2 abLocal = mod(vWorldXZ, ${G.pitch}) - ${G.pitch} * 0.5;
+    if (abKind == ${N.park}) {
+      abPaint = abParkPaint(abLocal, abNoiseV, abEmissive, abWater);
+      if (abWater > 0.5) {
+        // Open water: the wet look's sky sheen at full wetness, plus the
+        // streetwall's neon smeared across the surface.
+        abWet = 1.0;
+        abNeon = abPondNeon(abLocal, vWorldXZ);
+      }
+    } else if (abKind == ${N.forecourt}) {
+      abPaint = abForecourtPaint(abLocal, abNoiseV);
+    } else if (abKind == ${N.site}) {
+      abPaint = abSitePaint(vWorldXZ, abNoiseV);
+    }
   }
 }
 diffuseColor.rgb = abPaint;
@@ -552,7 +711,8 @@ export class GroundPlane {
           // distance so a moon glint never sparkles from altitude.
           `#include <roughnessmap_fragment>
 float abNear = 1.0 - smoothstep(${PUDDLE_FADE.near}, ${PUDDLE_FADE.far}, length(vViewPosition));
-roughnessFactor = mix(roughnessFactor, mix(${ROADWAY_ROUGHNESS}, ${PUDDLE_ROUGHNESS}, abPud * abNear), abRoad);`,
+roughnessFactor = mix(roughnessFactor, mix(${ROADWAY_ROUGHNESS}, ${PUDDLE_ROUGHNESS}, abPud * abNear), abRoad);
+roughnessFactor = mix(roughnessFactor, mix(${ROADWAY_ROUGHNESS}, ${POND_ROUGHNESS}, abNear), abWater);`,
         )
         .replace(
           "#include <emissivemap_fragment>",
@@ -563,7 +723,18 @@ roughnessFactor = mix(roughnessFactor, mix(${ROADWAY_ROUGHNESS}, ${PUDDLE_ROUGHN
 float abFres = 0.02 + 0.98 * pow(1.0 - saturate(dot(normal, normalize(vViewPosition))), 5.0);
 totalEmissiveRadiance += abEmissive
   + ${SHEEN_COLOR} * (${SHEEN_GAIN} * abFres * abWet)
-  + abNeon * (0.5 + 0.5 * abWet) * (0.55 + 0.45 * abFres);`,
+  + abNeon * (0.5 + 0.5 * abWet) * (0.55 + 0.45 * abFres);
+if (abWater > 0.5) {
+  // Faked moon reflection: the view ray mirrored off a gently rippled pond,
+  // against the moon's direction. Ripples and glint calm down with distance
+  // (abNear) so the pond never sparkles from altitude.
+  vec2 abRip = vec2(abNoise(vWorldXZ * 0.9), abNoise(vWorldXZ * 0.9 + 17.0)) - 0.5;
+  vec3 abN = normalize(normal + vec3(abRip.x, 0.0, abRip.y) * 0.08 * abNear);
+  vec3 abRefl = reflect(normalize(-vViewPosition), abN);
+  vec3 abMoonV = normalize((viewMatrix * vec4(${N.moonDir}, 0.0)).xyz);
+  float abGlint = pow(max(dot(abRefl, abMoonV), 0.0), ${POND_GLINT_POWER});
+  totalEmissiveRadiance += ${GROUND_COLORS.moon} * abGlint * ${POND_GLINT} * mix(0.35, 1.0, abNear);
+}`,
         )
         .replace(
           "vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;",

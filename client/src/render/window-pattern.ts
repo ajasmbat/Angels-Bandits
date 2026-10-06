@@ -22,6 +22,14 @@
 // pitch), never a specific window's on/off state on a specific GPU.
 
 import { FacadeArchetype } from "./archetypes";
+import {
+  GARDEN_LIGHT_COLOR,
+  PAD_LIGHT_COLOR,
+  PARAPET_INSET,
+  ROOF_ALBEDO,
+  RoofKind,
+  SKYLIGHT_COLOR,
+} from "./roofs";
 
 /** Per-archetype facade look: window grid, occupancy and light colour. */
 export interface ArchetypeFacade {
@@ -80,7 +88,7 @@ export interface FacadeParams {
   grimeStrength: number;
   /** Broad soot gradient over the lower facade. */
   soot: number;
-  /** Roof tone variation per building. */
+  /** Roof albedo swing per building (VO3: roofs.ts rolls the tone). */
   roofVar: number;
 }
 
@@ -436,9 +444,231 @@ float soot = clamp(
       - ${glslFloat(FACADE.soot)} * (1.0 - clamp(vWorldY / 90.0, 0.0, 1.0)) * facade,
   0.15, 1.0
 );
-// Roofs: darker than facades, varied per building so the top-down view is
-// not one uniform slab color.
-float roofTone = 0.5 - ${glslFloat(FACADE.roofVar)} * abHash(vec2(11.0, 5.0), vBSeed * 61.0);
-diffuseColor.rgb *= mix(roofTone, faceJit * ao * soot, facade);
+// Facades only — roofs are repainted from scratch by roofSurfaceGlsl().
+diffuseColor.rgb *= mix(1.0, faceJit * ao * soot, facade);
+`;
+}
+
+// --- VO3 roofs & crowns --------------------------------------------------
+// Roof paint and architectural light, generated from roofs.ts (which decides
+// WHAT each roof is) and ROOF below (how big things are). All roof geometry
+// is in the tier's OBJECT meters (vMeters.xz, origin at the tier centre), so
+// nothing swims when the instance jumps to another torus image.
+
+/** Roof pattern sizes, meters. */
+export const ROOF = {
+  /** Coping pavers run from the parapet to this far in. */
+  copingWidth: 1.6,
+  /** Membrane strip width (seams run along the roof's long axis). */
+  stripWidth: 2.6,
+  seamHalf: 0.05,
+  /** Gravel blotch scale, and the broad stain scale every roof shares. */
+  gravelScale: 1.6,
+  stainScale: 9,
+  /** Skylight grid: pitch and glazing half-size (x, z), frame width. */
+  skyPitch: [7.0, 9.5] as const,
+  skyHalf: [1.5, 2.6] as const,
+  skyFrame: 0.25,
+  /** Skylights keep this far from the roof edge. */
+  skyMargin: 3,
+  /** Share of skylights glowing from the floor below. */
+  skyLit: 0.7,
+  /** Garden: bed pitch and half-size (x, z), bed margin from the edge. */
+  bedPitch: [6.0, 4.2] as const,
+  bedHalf: [2.3, 1.4] as const,
+  bedMargin: 2.5,
+  bollardRadius: 0.22,
+  /** Helipad: deck margin past the circle, ring/H proportions, lights. */
+  deckPad: 1.8,
+  ringHalf: 0.05,
+  padLights: 12,
+  padLightOffset: 1.1,
+  padLightRadius: 0.32,
+  /** LED lines: half-widths and where they sit. */
+  ledHalf: 0.18,
+  ledStripDrop: 0.6,
+  ledStripHalf: 0.15,
+  ledRingInset: PARAPET_INSET + 0.15,
+  ledRingHalf: 0.15,
+  /** Crown floodlights: one fixture per bay along the facade. */
+  crownBay: 6,
+} as const;
+
+const glslVec3 = (c: { r: number; g: number; b: number }): string =>
+  `vec3(${glslFloat(c.r)}, ${glslFloat(c.g)}, ${glslFloat(c.b)})`;
+const vec2Lit = (v: readonly [number, number]): string =>
+  `vec2(${glslFloat(v[0])}, ${glslFloat(v[1])})`;
+
+/** Helpers for the roof emitters — emitted into the fragment pars. */
+export function roofParsGlsl(): string {
+  return /* glsl */ `
+float abNoise(vec2 p, float s) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(abHash(i, s), abHash(i + vec2(1.0, 0.0), s), f.x),
+             mix(abHash(i + vec2(0.0, 1.0), s), abHash(i + vec2(1.0, 1.0), s), f.x), f.y);
+}
+// Coverage of a line of half-width w at distance d, with aa = meters per
+// pixel. Once the line is thinner than a pixel it stays one pixel wide and
+// its intensity scales by w / aa, so it fades with distance instead of
+// shimmering — and never exceeds 1 (the LED ladder argument).
+float abLine(float d, float w, float aa) {
+  float a = max(aa, 1e-4);
+  float wd = max(w, a);
+  return (1.0 - smoothstep(wd - a * 0.5, wd + a * 0.5, d)) * min(1.0, w / a);
+}
+// Anti-aliased box of half-size h around the origin.
+float abBox(vec2 p, vec2 h, float aa) {
+  vec2 d = abs(p) - h;
+  float b = max(aa, 1e-4);
+  return (1.0 - smoothstep(-b, b, d.x)) * (1.0 - smoothstep(-b, b, d.y));
+}
+// 1 while a pattern of this period (m) is well resolved, fading to 0 once a
+// pixel spans about half of it — patterns fall back to their mean albedo.
+float abDetail(float period, float aa) {
+  return 1.0 - smoothstep(0.25 * period, 0.5 * period, aa);
+}
+`;
+}
+
+/**
+ * Roof surface (diffuse) + the LED/crown masks the emissive block consumes.
+ * Emitted AFTER weatheringGlsl() into the colour slot: it reads the window
+ * grid locals (`facade`, `winGrid`, `pane`, `lit`) and declares the roof
+ * locals the emissive half reads (`roofUp`, `skyGlow`, `padLight`,
+ * `bollard`, `led`, `crownK`). Derivatives are taken at the top level only —
+ * never inside a branch (undefined in non-uniform control flow).
+ */
+export function roofSurfaceGlsl(): string {
+  const A = ROOF_ALBEDO;
+  return /* glsl */ `
+// --- VO3 roof surface ---
+float roofUp = (1.0 - facade) * step(0.5, vObjNormal.y);
+vec3 mAA = fwidth(vMeters);                 // meters per pixel, per axis
+// Horizontal meters per pixel: the roof plane, or the facade run (on a side
+// face one of x/z is constant, so the max is the run axis).
+float rPix = max(max(mAA.x, mAA.z), 1e-4);
+vec2 rP = vMeters.xz;
+float rEdge = min(vHalfXZ.x - abs(rP.x), vHalfXZ.y - abs(rP.y));
+float rKind = vRoof.x;
+float skyGlow = 0.0;
+float padLight = 0.0;
+float bollard = 0.0;
+vec3 roofAlbedo = ${glslVec3(A.membrane)};
+if (roofUp > 0.5) {
+  // Long axis first: membrane seams and the helipad H run along it.
+  vec2 rL = vHalfXZ.x >= vHalfXZ.y ? rP : rP.yx;
+  float rStain = abNoise(rP / ${glslFloat(ROOF.stainScale)}, vBSeed * 17.0);
+  if (rKind < ${glslFloat(RoofKind.GRAVEL - 0.5)}) {
+    // Single-ply membrane: welded strips, a seam every strip, per-strip tone.
+    float sU = rL.y / ${glslFloat(ROOF.stripWidth)};
+    float sSeam = abLine((0.5 - abs(fract(sU) - 0.5)) * ${glslFloat(ROOF.stripWidth)}, ${glslFloat(ROOF.seamHalf)}, rPix);
+    float sTone = abHash(vec2(floor(sU), 3.0), vBSeed * 13.0) * 2.0 - 1.0;
+    roofAlbedo = ${glslVec3(A.membrane)} * (1.0 + 0.06 * sTone * abDetail(${glslFloat(ROOF.stripWidth)}, rPix))
+      * (1.0 - 0.2 * sSeam) * (0.86 + 0.28 * rStain);
+  } else if (rKind < ${glslFloat(RoofKind.SKYLIGHTS - 0.5)}) {
+    // Gravel ballast: blotchy fine grain over broad drifts.
+    float gN = abNoise(rP / ${glslFloat(ROOF.gravelScale)}, vBSeed * 23.0) - 0.5;
+    roofAlbedo = ${glslVec3(A.gravel)} * (1.0 + 0.3 * gN * abDetail(${glslFloat(ROOF.gravelScale)}, rPix))
+      * (0.84 + 0.32 * rStain);
+  } else if (rKind < ${glslFloat(RoofKind.GARDEN - 0.5)}) {
+    // Skylights: a grid of framed glazing over membrane, kept off the edge.
+    vec2 kPitch = ${vec2Lit(ROOF.skyPitch)};
+    vec2 kHalf = ${vec2Lit(ROOF.skyHalf)};
+    vec2 kId = floor(rP / kPitch + 0.5);
+    vec2 kLocal = rP - kId * kPitch;
+    vec2 kRoom = vHalfXZ - ${glslFloat(ROOF.skyMargin)} - kHalf;
+    float kFits = step(abs(kId.x * kPitch.x), kRoom.x) * step(abs(kId.y * kPitch.y), kRoom.y);
+    float kFrame = abBox(kLocal, kHalf + ${glslFloat(ROOF.skyFrame)}, rPix) * kFits;
+    float kGlass = abBox(kLocal, kHalf, rPix) * kFits;
+    roofAlbedo = mix(${glslVec3(A.membrane)} * (0.86 + 0.28 * rStain), ${glslVec3(A.coping)}, kFrame);
+    roofAlbedo = mix(roofAlbedo, ${glslVec3(A.skyGlass)}, kGlass);
+    skyGlow = kGlass * step(abHash(kId + 5.0, vBSeed * 37.0), ${glslFloat(ROOF.skyLit)})
+      * (0.75 + 0.25 * abHash(kId + 9.0, vBSeed * 41.0));
+  } else if (rKind < ${glslFloat(RoofKind.HELIPAD - 0.5)}) {
+    // Roof garden: planted beds on a paver grid, bollards at the crossings.
+    vec2 gPitch = ${vec2Lit(ROOF.bedPitch)};
+    vec2 gLocal = (fract(rP / gPitch) - 0.5) * gPitch;
+    float gIn = step(${glslFloat(ROOF.bedMargin)}, rEdge);
+    float gBed = abBox(gLocal, ${vec2Lit(ROOF.bedHalf)}, rPix) * gIn;
+    float gLeaf = abNoise(rP / 1.3, vBSeed * 29.0);
+    roofAlbedo = mix(${glslVec3(A.path)} * (0.9 + 0.2 * rStain),
+                     ${glslVec3(A.bed)} * (0.6 + 0.8 * mix(0.5, gLeaf, abDetail(1.3, rPix))), gBed);
+    vec2 gCorner = gPitch * 0.5 - abs(gLocal);
+    float gR = ${glslFloat(ROOF.bollardRadius)};
+    bollard = gIn * step(abHash(floor(rP / gPitch + 0.5), vBSeed * 43.0), 0.5)
+      * (1.0 - smoothstep(gR - rPix, gR + rPix, length(gCorner)))
+      * min(1.0, (gR * gR) / (rPix * rPix));
+  } else {
+    // Helipad: dark deck, yellow touchdown circle, white H along the long
+    // axis, green perimeter lights. Radius mirrors roofs.ts helipadRadius().
+    float hR = 0.62 * (min(vHalfXZ.x, vHalfXZ.y) - ${glslFloat(PARAPET_INSET)});
+    float hRr = length(rP);
+    float hDeck = 1.0 - smoothstep(hR + ${glslFloat(ROOF.deckPad)} - rPix, hR + ${glslFloat(ROOF.deckPad)} + rPix, hRr);
+    float hRing = abLine(abs(hRr - hR), ${glslFloat(ROOF.ringHalf)} * hR, rPix);
+    float hH = max(
+      abBox(vec2(rL.x, abs(rL.y) - 0.3 * hR), vec2(0.42 * hR, 0.07 * hR), rPix),
+      abBox(rL, vec2(0.07 * hR, 0.3 * hR), rPix)
+    );
+    roofAlbedo = mix(${glslVec3(A.membrane)} * (0.86 + 0.28 * rStain), ${glslVec3(A.deck)} * (0.9 + 0.2 * rStain), hDeck);
+    roofAlbedo = mix(roofAlbedo, ${glslVec3(A.padYellow)}, hRing);
+    roofAlbedo = mix(roofAlbedo, ${glslVec3(A.padWhite)}, hH);
+    float hRl = hR + ${glslFloat(ROOF.padLightOffset)};
+    float hSeg = (fract(atan(rP.y, rP.x) / 6.2831853 * ${glslFloat(ROOF.padLights)}) - 0.5)
+      * 6.2831853 * hRl / ${glslFloat(ROOF.padLights)};
+    float hLr = ${glslFloat(ROOF.padLightRadius)};
+    padLight = (1.0 - smoothstep(hLr - rPix, hLr + rPix, length(vec2(hSeg, hRr - hRl))))
+      * min(1.0, (hLr * hLr) / (rPix * rPix));
+  }
+  // Coping pavers between the parapet and the deck, every roof kind.
+  float cope = 1.0 - smoothstep(${glslFloat(ROOF.copingWidth)} - rPix, ${glslFloat(ROOF.copingWidth)} + rPix, rEdge);
+  roofAlbedo = mix(roofAlbedo, ${glslVec3(A.coping)}, cope);
+  roofAlbedo *= 1.0 - ${glslFloat(FACADE.roofVar)} * vRoof.z;
+}
+diffuseColor.rgb = mix(diffuseColor.rgb, roofAlbedo, roofUp);
+
+// --- VO3 LED outline mask (0..1, convex: the emissive block REPLACES with it)
+// Vertical tier corners, a strip just under the parapet (clear of its 0.2 m
+// sink), and a ring on the roof just inside the parapet.
+float ledOn = step(1e-3, vLed.r + vLed.g + vLed.b);
+float ledRunHalf = abs(vObjNormal.x) > 0.5 ? vHalfXZ.y : vHalfXZ.x;
+float ledCorner = abLine(max(ledRunHalf - abs(winGrid.x), 0.0), ${glslFloat(ROOF.ledHalf)}, rPix);
+float ledStrip = abLine(abs(vMeters.y - (vBHeight - ${glslFloat(ROOF.ledStripDrop)})), ${glslFloat(ROOF.ledStripHalf)}, max(mAA.y, 1e-4));
+float ledRing = abLine(abs(rEdge - ${glslFloat(ROOF.ledRingInset)}), ${glslFloat(ROOF.ledRingHalf)}, rPix);
+float led = ledOn * clamp(max(ledCorner, ledStrip) * facade + ledRing * roofUp, 0.0, 1.0);
+// The strip IS the light: no diffuse under it, so lit facade + LED never stack.
+diffuseColor.rgb *= 1.0 - led;
+
+// --- VO3 crown floodlight wash (top tier of the tallest towers) ---
+// Fixtures on the ledge below the crown throw scalloped cones up the top
+// floors: bright just above the fixture line, fading with height, a scallop
+// per bay that fades to its mean with distance. Lit panes already emit, so
+// the wash skips them; glass takes less of it than the wall.
+float crownD = vRoof.y;
+float crownZ = vMeters.y - (vBHeight - crownD);
+float crownU = (fract(winGrid.x / ${glslFloat(ROOF.crownBay)}) - 0.5) * ${glslFloat(ROOF.crownBay)};
+float crownSpread = 0.8 + 0.4 * max(crownZ, 0.0);
+float crownScallop = mix(0.6, 0.35 + 0.65 * exp(-(crownU * crownU) / (crownSpread * crownSpread)),
+  abDetail(${glslFloat(ROOF.crownBay)}, rPix));
+float crownK = step(0.5, crownD) * facade * smoothstep(0.0, 1.5, crownZ)
+  * mix(exp(-max(crownZ, 0.0) / max(crownD * 0.6, 1.0)), 1.0, 0.3)
+  * crownScallop * (1.0 - pane * lit) * (1.0 - 0.5 * pane);
+`;
+}
+
+/**
+ * Architectural light, appended to the emissive slot AFTER the VO2 bounce
+ * (so the LED replacement also overrides the bounce): crown wash (light ×
+ * the facade's own albedo), skylight/pad/bollard glow, then the LED outline
+ * replacing whatever the pixel emitted — a convex mix, so the brightest
+ * pixel is max(existing rung, LED rung), never their sum.
+ */
+export function roofLightGlsl(): string {
+  return /* glsl */ `
+totalEmissiveRadiance += diffuseColor.rgb * vCrown * crownK;
+totalEmissiveRadiance += roofUp * (skyGlow * ${glslVec3(SKYLIGHT_COLOR)}
+  + padLight * ${glslVec3(PAD_LIGHT_COLOR)} + bollard * ${glslVec3(GARDEN_LIGHT_COLOR)});
+totalEmissiveRadiance = mix(totalEmissiveRadiance, vLed, led);
 `;
 }

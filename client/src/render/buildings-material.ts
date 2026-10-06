@@ -22,6 +22,9 @@ import { EMISSIVE_WINDOW } from "@angels-bandits/common/constants";
 import * as THREE from "three";
 import { luminance } from "./emissive";
 import {
+  roofLightGlsl,
+  roofParsGlsl,
+  roofSurfaceGlsl,
   weatheringGlsl,
   windowEmissiveGlsl,
   windowGridGlsl,
@@ -83,6 +86,9 @@ export const BOUNCE_NEON_MIX = 0.55;
 
 const VERTEX_PARS = /* glsl */ `
 attribute float aArchetype;
+attribute vec4 aRoof;
+attribute vec3 aLed;
+attribute vec3 aCrown;
 varying vec3 vMeters;
 varying vec3 vObjNormal;
 varying float vBSeed;
@@ -90,6 +96,10 @@ varying float vWorldY;
 varying float vArch;
 varying float vBHeight;
 varying vec3 vBWorldPos;
+varying vec4 vRoof;
+varying vec3 vLed;
+varying vec3 vCrown;
+varying vec2 vHalfXZ;
 `;
 
 const VERTEX_MAIN = /* glsl */ `
@@ -117,6 +127,12 @@ vBHeight = bScale.y;
 // instances sit at their nearest torus image, so camera-relative geometry
 // is already seam-correct.
 vBWorldPos = (modelMatrix * instanceMatrix * vec4(position, 1.0)).xyz;
+// VO3 roofs & crowns (roofs.ts → city.ts): roof kind / crown depth / tone,
+// LED outline colour, crown tint — plus the tier's half extents in meters.
+vRoof = aRoof;
+vLed = aLed;
+vCrown = aCrown;
+vHalfXZ = bScale.xz * 0.5;
 `;
 
 const FRAGMENT_PARS = /* glsl */ `
@@ -127,6 +143,10 @@ varying float vWorldY;
 varying float vArch;
 varying float vBHeight;
 varying vec3 vBWorldPos;
+varying vec4 vRoof;
+varying vec3 vLed;
+varying vec3 vCrown;
+varying vec2 vHalfXZ;
 
 float abHash(vec2 p, float s) {
   return fract(sin(dot(p + s * 61.0, vec2(127.1, 311.7))) * 43758.5453);
@@ -134,12 +154,14 @@ float abHash(vec2 p, float s) {
 float abSafeDiv(float d) {
   return abs(d) < 1e-4 ? (d < 0.0 ? -1e-4 : 1e-4) : d;
 }
-`;
+${roofParsGlsl()}`;
 
 /** Injected after color_fragment: derives the shared window-grid locals
- * (in scope for the emissive block below — same main body) and modulates the
- * DIFFUSE facade with the weathering pass. */
-const FRAGMENT_COLOR = windowGridGlsl() + weatheringGlsl();
+ * (in scope for the emissive block below — same main body), modulates the
+ * DIFFUSE facade with the weathering pass, then (VO3) repaints the roofs and
+ * derives the LED/crown masks — that order is load-bearing: the roof pass
+ * reads the grid's `facade`/`winGrid`/`pane`/`lit`. */
+const FRAGMENT_COLOR = windowGridGlsl() + weatheringGlsl() + roofSurfaceGlsl();
 
 /** The lit-pane emissive, then the V2 street-level shop band: the bottom
  * SHOP_BAND_HEIGHT m of WORLD height (so only tier-1 bases qualify) swaps the
@@ -169,11 +191,13 @@ vec3 bounceTint = mix(${glslVec3(BOUNCE_TINTS.sodium)},
 totalEmissiveRadiance += diffuseColor.rgb * bounceTint * ${BOUNCE_INTENSITY.toFixed(2)} * bounceK;
 `;
 
+/** Windows, shops and the VO2 bounce, then the VO3 architectural light LAST
+ * so its LED replacement overrides everything the pixel emitted before. */
 const FRAGMENT_EMISSIVE = `${windowEmissiveGlsl(
   glslVec3(WINDOW_WARM),
   glslVec3(WINDOW_COOL),
   WINDOW_EMISSIVE_INTENSITY,
-)}${SHOP_BAND_GLSL}`;
+)}${SHOP_BAND_GLSL}${roofLightGlsl()}`;
 
 /**
  * VO2: cap the grazing-angle Fresnel. Standard materials reflect 100% at
@@ -228,6 +252,6 @@ export function createBuildingsMaterial(): THREE.MeshStandardMaterial {
   };
   // Distinct compiled program per patch (V3 rule: three keys programs on
   // onBeforeCompile.toString(), and sibling materials collide silently).
-  material.customProgramCacheKey = () => "ab-buildings-vo2-palette";
+  material.customProgramCacheKey = () => "ab-buildings-vo3-roofs";
   return material;
 }

@@ -16,6 +16,7 @@ import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { FacadeArchetype, archetypeFor } from "./archetypes";
 import { createBuildingsMaterial } from "./buildings-material";
+import { roofStyleFor } from "./roofs";
 import { nearestImage } from "./wrapPlacement";
 
 /**
@@ -60,6 +61,8 @@ export function facadeColor(
 /** One drawable box: a tier of a building, at its stack height. */
 interface TierInstance {
   building: Building;
+  /** Position in the building's tier stack (0 = street tier). */
+  tierIndex: number;
   width: number;
   depth: number;
   height: number;
@@ -84,8 +87,8 @@ export class CityRenderer {
     // collision volume, so instances come 1:1 from the shared tier data.
     this.instances = this.buildings.flatMap((building) => {
       let baseY = 0;
-      return building.tiers.map((t) => {
-        const inst: TierInstance = { building, ...t, baseY };
+      return building.tiers.map((t, tierIndex) => {
+        const inst: TierInstance = { building, tierIndex, ...t, baseY };
         baseY += t.height;
         return inst;
       });
@@ -117,6 +120,32 @@ export class CityRenderer {
     geometry.setAttribute(
       "aArchetype",
       new THREE.InstancedBufferAttribute(archetypes, 1),
+    );
+
+    // VO3 roofs & crowns (roofs.ts decides, the shader paints): per tier
+    // aRoof = (roof kind, crown depth on the top tier else 0, roof tone, 0),
+    // aLed = boosted LED outline colour (0 = none, every tier of the
+    // building agrees), aCrown = crown wash tint × gain (top tier only).
+    // Static like aArchetype: set once, never re-uploaded.
+    const roof = new Float32Array(this.instances.length * 4);
+    const led = new Float32Array(this.instances.length * 3);
+    const crown = new Float32Array(this.instances.length * 3);
+    const styles = new Map(this.buildings.map((b) => [b, roofStyleFor(b)]));
+    this.instances.forEach((inst, i) => {
+      const style = styles.get(inst.building);
+      if (!style) return;
+      const isTop = inst.tierIndex === inst.building.tiers.length - 1;
+      roof[i * 4] = style.tierKinds[inst.tierIndex] ?? 0;
+      roof[i * 4 + 1] = isTop && style.crown ? style.crown.depth : 0;
+      roof[i * 4 + 2] = style.tone;
+      style.led?.toArray(led, i * 3);
+      if (isTop) style.crown?.color.toArray(crown, i * 3);
+    });
+    geometry.setAttribute("aRoof", new THREE.InstancedBufferAttribute(roof, 4));
+    geometry.setAttribute("aLed", new THREE.InstancedBufferAttribute(led, 3));
+    geometry.setAttribute(
+      "aCrown",
+      new THREE.InstancedBufferAttribute(crown, 3),
     );
 
     // Facade albedo per building (VO2 palette — see facadeColor above).

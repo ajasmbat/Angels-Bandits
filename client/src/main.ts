@@ -7,6 +7,8 @@
 
 import type { Building } from "@angels-bandits/common/city";
 import { generateMovers } from "@angels-bandits/common/city/movers";
+import { natureFor } from "@angels-bandits/common/city/nature";
+import { buildNatureIndex } from "@angels-bandits/common/collision";
 import {
   BLOCK_PITCH,
   BULLET_SPEED,
@@ -74,6 +76,7 @@ import { Explosions, Sparks } from "./render/fx";
 import { GpuTimer } from "./render/gputimer";
 import { createGradePass } from "./render/grade";
 import { MoverLights, Movers } from "./render/movers";
+import { NatureRenderer } from "./render/nature";
 import { Pedestrians } from "./render/pedestrians";
 import { FrameMeter, type FrameStats } from "./render/perfmeter";
 import { buildPlaneMesh, spinPropeller } from "./render/plane";
@@ -326,6 +329,13 @@ scene.add(movers.rig, movers.hulls, movers.rotors);
 // L2 spectacle inside its draw-call budget.
 const moverLights = new MoverLights();
 scene.add(moverLights.points);
+// N1 nature: night parks, landmark forecourts, street trees, hoardings. One
+// pure seam feeds this renderer AND the crash check, so a tree is solid
+// exactly where it is drawn (street trees excepted — lamp-pole height).
+const nature = natureFor(welcome.seed, city.cityBuildings);
+const natureIndex = buildNatureIndex(nature);
+const natureRenderer = new NatureRenderer(nature);
+scene.add(natureRenderer.group);
 const fireworks = new Fireworks(welcome.seed);
 const searchlights = new Searchlights(city.cityBuildings);
 scene.add(searchlights.mesh);
@@ -1136,6 +1146,7 @@ renderer.setAnimationLoop((now) => {
         city.cityIndex,
         moverField,
         renderMs,
+        natureIndex,
       )
     ) {
       // Report and freeze; the server decides credit and the respawn.
@@ -1288,6 +1299,7 @@ renderer.setAnimationLoop((now) => {
   roofClutter.update(chase.position, renderMs ?? now);
   facadeGarnish.update(chase.position);
   streetlights.update(chase.position);
+  natureRenderer.update(chase.position);
   // Neon pulses on the same synced clock as the beacons.
   signage.update(chase.position, renderMs ?? now);
   traffic.update(chase.position, renderMs);

@@ -8,8 +8,19 @@
 // ~radius·0.41 at corners — plenty for an arcade crash check.
 
 import { type Building, CITY_GRID } from "./city/index";
-import { BLOCK_PITCH, PLAYER_RADIUS } from "./constants";
-import { type Vec3, wrapDelta } from "./world/index";
+import {
+  type Nature,
+  type NatureBox,
+  type Tree,
+  treeBoxes,
+  treeCollides,
+} from "./city/nature";
+import {
+  BLOCK_PITCH,
+  CANOPY_COLLISION_SLACK,
+  PLAYER_RADIUS,
+} from "./constants";
+import { type Vec3, wrapDelta, wrapDeltaAxis } from "./world/index";
 
 /**
  * A block-lattice bucket index over one `Building[]`, built once and reused.
@@ -154,6 +165,111 @@ function collideIndexed(
     }
   }
   return best < 0 ? null : (buildings[best] ?? null);
+}
+
+/** One solid tree as the index stores it: its treeBoxes(), computed once. */
+interface IndexedTree {
+  readonly tree: Tree;
+  readonly trunk: NatureBox;
+  readonly canopy: NatureBox;
+}
+
+/**
+ * A block-lattice bucket index over the SOLID trees of one Nature (N1) —
+ * the CityIndex idea applied to trees. Street trees are the lamp-pole
+ * exception (treeCollides) and are never indexed.
+ */
+export interface NatureIndex {
+  readonly trees: readonly IndexedTree[];
+  /** CITY_GRID² cells of indices into `trees`. */
+  readonly cells: ReadonlyArray<readonly number[]>;
+}
+
+/** No trees at all — the default for callers that predate N1. */
+export const EMPTY_NATURE_INDEX: NatureIndex = {
+  trees: [],
+  cells: Array.from({ length: CITY_GRID * CITY_GRID }, () => []),
+};
+
+/**
+ * Index `nature`'s solid trees by every block their crown or trunk touches.
+ * Boxes come from treeBoxes() — the same call the renderer scales its
+ * instances from — so the solid volume is the drawn one by construction.
+ */
+export function buildNatureIndex(nature: Pick<Nature, "trees">): NatureIndex {
+  const trees: IndexedTree[] = [];
+  const cells: number[][] = Array.from(
+    { length: CITY_GRID * CITY_GRID },
+    () => [],
+  );
+  for (const tree of nature.trees) {
+    if (!treeCollides(tree)) continue;
+    const { trunk, canopy } = treeBoxes(tree);
+    const i = trees.length;
+    trees.push({ tree, trunk, canopy });
+    const reach = Math.max(trunk.hx, canopy.hx);
+    for (const bx of blockSpan(tree.x - reach, tree.x + reach)) {
+      for (const bz of blockSpan(tree.z - reach, tree.z + reach)) {
+        cells[bx * CITY_GRID + bz]?.push(i);
+      }
+    }
+  }
+  return { trees, cells };
+}
+
+/**
+ * Does the sphere touch this tree? The trunk is an exact sphere-vs-box test;
+ * the crown is the ellipsoid inscribed in its canopy box — what is drawn —
+ * tested by inflating its semi-axes by the radius (plus CANOPY_COLLISION_
+ * SLACK, which covers the few cm that approximation misses at oblique
+ * angles). No empty-air deaths at the box's corners.
+ */
+function hitsTree(pos: Vec3, radius: number, t: IndexedTree): boolean {
+  const { trunk, canopy } = t;
+  if (pos.y - radius > canopy.y1) return false;
+  const dx = wrapDeltaAxis(t.tree.x, pos.x);
+  const dz = wrapDeltaAxis(t.tree.z, pos.z);
+  const reach = Math.max(trunk.hx, canopy.hx) + radius;
+  if (Math.abs(dx) > reach || Math.abs(dz) > reach) return false;
+
+  const ex = Math.max(0, Math.abs(dx) - trunk.hx);
+  const ez = Math.max(0, Math.abs(dz) - trunk.hz);
+  const ey = Math.max(0, trunk.y0 - pos.y, pos.y - trunk.y1);
+  if (ex * ex + ey * ey + ez * ez <= radius * radius) return true;
+
+  const grow = radius + CANOPY_COLLISION_SLACK;
+  const ax = canopy.hx + grow;
+  const az = canopy.hz + grow;
+  const ay = (canopy.y1 - canopy.y0) / 2 + grow;
+  const cy = (canopy.y0 + canopy.y1) / 2;
+  const nx = dx / ax;
+  const ny = (pos.y - cy) / ay;
+  const nz = dz / az;
+  return nx * nx + ny * ny + nz * nz <= 1;
+}
+
+/**
+ * First solid tree the sphere touches, or null. Torus-correct through
+ * wrapDeltaAxis; only the blocks the sphere spans are visited, so this is
+ * cheap enough for the bot probe loop.
+ */
+export function collideNature(
+  pos: Vec3,
+  radius: number,
+  index: NatureIndex,
+): Tree | null {
+  if (index.trees.length === 0) return null;
+  for (const bx of blockSpan(pos.x - radius, pos.x + radius)) {
+    for (const bz of blockSpan(pos.z - radius, pos.z + radius)) {
+      const cell = index.cells[bx * CITY_GRID + bz];
+      if (!cell) continue;
+      for (const i of cell) {
+        const t = index.trees[i];
+        if (t && hitsTree(pos, radius, t)) return t.tree;
+      }
+    }
+  }
+  return null;
 }
 
 /** True when the player sphere touches the ground plane at y = 0. */

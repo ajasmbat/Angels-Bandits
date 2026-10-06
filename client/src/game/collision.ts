@@ -11,14 +11,17 @@ import {
 } from "@angels-bandits/common/city/movers";
 import {
   type CityIndex,
+  type NatureIndex,
   collideCity,
+  collideNature,
   hitsGround,
 } from "@angels-bandits/common/collision";
 import { PLAYER_RADIUS } from "@angels-bandits/common/constants";
 import type { FlightState } from "@angels-bandits/common/flight";
 
 /**
- * True the frame the plane hits a building, the ground, or an L2 mover.
+ * True the frame the plane hits a building, the ground, a solid N1 tree, or
+ * an L2 mover.
  *
  * `movers`/`serverTimeMs` are optional so the existing call sites and tests
  * keep working, but when they are supplied the TIME MUST BE THE ONE THE
@@ -26,6 +29,9 @@ import type { FlightState } from "@angels-bandits/common/flight";
  * and passes that same value here and to the mover renderers. Use any other
  * clock and you die to a jib drawn somewhere else. A null clock means the
  * movers are hidden, so they are not solid either.
+ *
+ * `nature` is static (trees never move), so unlike the movers it is solid
+ * whatever the clock says.
  */
 export function detectCrash(
   state: FlightState,
@@ -33,9 +39,13 @@ export function detectCrash(
   index?: CityIndex,
   movers?: MoverField,
   serverTimeMs?: number | null,
+  nature?: NatureIndex,
 ): boolean {
   if (hitsGround(state.pos, PLAYER_RADIUS)) return true;
   if (collideCity(state.pos, PLAYER_RADIUS, buildings, index) !== null) {
+    return true;
+  }
+  if (nature && collideNature(state.pos, PLAYER_RADIUS, nature) !== null) {
     return true;
   }
   if (!movers || serverTimeMs === null || serverTimeMs === undefined) {

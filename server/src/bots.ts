@@ -35,8 +35,11 @@ import {
 } from "@angels-bandits/common/city/street";
 import {
   type CityIndex,
+  EMPTY_NATURE_INDEX,
+  type NatureIndex,
   buildCityIndex,
   collideCity,
+  collideNature,
   hitsGround,
   losClear,
 } from "@angels-bandits/common/collision";
@@ -230,6 +233,13 @@ export class RoomBots {
      * is load-bearing rather than decorative. Never turn it off in a room.
      */
     private readonly probeMovers = true,
+    /**
+     * The solid N1 trees (park + forecourt), from the SAME seed as
+     * `buildings`. Static, so the physics tick and the probes test it like
+     * buildings. Sight lines (losClear) deliberately ignore it: foliage is
+     * see-through, and a canopy is not cover.
+     */
+    private readonly nature: NatureIndex = EMPTY_NATURE_INDEX,
   ) {
     this.rand = mulberry32(seed);
     // Built once per room over the shared city array. Bots are the heaviest
@@ -443,7 +453,8 @@ export class RoomBots {
           this.buildings,
           this.cityIndex,
         ) ||
-        collideBotMovers(bot.flight.pos, PLAYER_RADIUS, this.movers, now)
+        collideBotMovers(bot.flight.pos, PLAYER_RADIUS, this.movers, now) ||
+        collideNature(bot.flight.pos, PLAYER_RADIUS, this.nature)
       ) {
         bot.alive = false;
         crashes.push(bot.entry.id);
@@ -880,6 +891,10 @@ export class RoomBots {
       if (collideCity(p, radius, this.buildings, this.cityIndex, "solid")) {
         return true;
       }
+      // Trees are swept like the movers below, for the same reason: a 0.5 m
+      // trunk falls straight between two point samples.
+      const gap = s - (i === 0 ? -s : flight.speed * (profile[i - 1] ?? 0));
+      if (collideNature(p, radius + gap / 2, this.nature)) return true;
       if (!this.probeMovers) continue;
       // Movers need a SWEPT test, not the point sample buildings get. This
       // profile places samples 16-22 m apart at combat speed, which is fine

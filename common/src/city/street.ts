@@ -42,6 +42,29 @@ export const LANE_CENTERS = [-LANE_CENTER_OFFSET, LANE_CENTER_OFFSET] as const;
 /** Half-side of the square where two streets cross, centered on block corners. */
 export const INTERSECTION_HALF = ROADWAY_HALF;
 
+/** Lamps per owned street segment, at these fractions along it. */
+const LAMP_FRACTIONS = [0.125, 0.5, 0.875] as const;
+/** The negative side is staggered by this fraction (5/16, binary-exact) so
+ * the two curbside rows never mirror each other across the street. Its
+ * stations land at 37.5 / 87.5 / 162.5 m — the same 50/75/75 rhythm, kept
+ * clear of block corners so no lamp falls into a CROSSING street's roadway
+ * (a naive half-step stagger puts one station 12.5 m from the corner). */
+const LAMP_STAGGER = 0.3125;
+
+/**
+ * Lamp stations in meters along a street segment, per side of the street:
+ * PLUS is the furniture line on the centerline's positive side, MINUS the
+ * negative one. Part of the street contract (not the lamp renderer) because
+ * more than lamps anchor to them — the ground shader's wet-look reflections
+ * sit under the lamps, and N1's street trees stand between them.
+ */
+export const LAMP_STATIONS_PLUS: readonly number[] = LAMP_FRACTIONS.map(
+  (f) => f * BLOCK_PITCH,
+);
+export const LAMP_STATIONS_MINUS: readonly number[] = LAMP_FRACTIONS.map(
+  (f) => ((f + LAMP_STAGGER) % 1) * BLOCK_PITCH,
+);
+
 /**
  * Signed shortest offset from `v` to its nearest street centerline (a
  * BLOCK_PITCH multiple) along one axis, in (−BLOCK_PITCH/2, BLOCK_PITCH/2].

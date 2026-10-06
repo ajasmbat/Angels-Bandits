@@ -6,7 +6,11 @@
 // contract's curbside lamp row, never the roadway), so every street is
 // covered exactly once despite the torus wrap.
 
-import { FURNITURE_LINE } from "@angels-bandits/common/city/street";
+import {
+  FURNITURE_LINE,
+  LAMP_STATIONS_MINUS,
+  LAMP_STATIONS_PLUS,
+} from "@angels-bandits/common/city/street";
 import {
   BLOCK_PITCH,
   EMISSIVE_LAMP,
@@ -21,24 +25,10 @@ import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
 import { nearestImage } from "./wrapPlacement";
 
-/** Lamps per owned street segment, at these fractions along it. */
-const LAMP_FRACTIONS = [0.125, 0.5, 0.875] as const;
-/** The negative side is staggered by this fraction (5/16, binary-exact) so
- * the two curbside rows never mirror each other across the street. Its
- * stations land at 37.5 / 87.5 / 162.5 m — the same 50/75/75 rhythm, kept
- * clear of block corners so no lamp falls into a CROSSING street's roadway
- * (a naive half-step stagger puts one station 12.5 m from the corner). */
-const STAGGER = 0.3125;
-
-/** Lamp stations in meters along a street segment, per side — the ground
- * shader's faked lamp reflections (S1 wet look) anchor to these, so the
- * streaks always sit under the actual lamps. */
-export const LAMP_STATIONS_PLUS: readonly number[] = LAMP_FRACTIONS.map(
-  (f) => f * BLOCK_PITCH,
-);
-export const LAMP_STATIONS_MINUS: readonly number[] = LAMP_FRACTIONS.map(
-  (f) => ((f + STAGGER) % 1) * BLOCK_PITCH,
-);
+// Lamp stations live in the S1 street contract (common/src/city/street.ts):
+// the ground shader's reflections and N1's street trees anchor to them too.
+// Re-exported so this file stays their long-standing import site.
+export { LAMP_STATIONS_MINUS, LAMP_STATIONS_PLUS };
 
 /** Canonical ground position of one lamp (on a furniture line, y = 0). */
 export interface StreetlampPosition {
@@ -62,7 +52,7 @@ export function streetlampPositions(): StreetlampPosition[] {
     for (let bz = 0; bz < grid; bz++) {
       const x0 = bx * BLOCK_PITCH;
       const z0 = bz * BLOCK_PITCH;
-      for (let i = 0; i < LAMP_FRACTIONS.length; i++) {
+      for (let i = 0; i < LAMP_STATIONS_PLUS.length; i++) {
         const along = LAMP_STATIONS_PLUS[i] as number;
         const staggered = LAMP_STATIONS_MINUS[i] as number;
         // West line: a lamp on each furniture line, negative side staggered.

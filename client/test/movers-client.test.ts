@@ -93,7 +93,8 @@ describe("program cache keys", () => {
     const taken = [
       "ab-car-lights",
       "ab-plane-lights",
-      "ab-plane-rim",
+      "ab-plane-hero",
+      "ab-plane-hero-exhaust",
       "ab-sign-marquee",
       "ab-sign-billboard",
     ];

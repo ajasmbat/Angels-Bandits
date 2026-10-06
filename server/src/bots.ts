@@ -10,14 +10,19 @@
 // constant tracks TICK_DOWN_HZ so a faster snapshot cadence does not silently
 // sharpen bot reflexes):
 //
-//   PATROL  — seeded waypoint wander in the mid-altitude band.
-//   ENGAGE  — lead pursuit of the nearest contact in BOT_DETECT_RANGE; all
-//             direction/distance math via wrapDelta/wrapDistance, so bots
-//             chase straight through the torus seam.
-//   EVADE   — break turn + dive for a beat after taking fire or with a
-//             threat parked close behind.
+//   PATROL  — fly the street lattice in the canyon band (every bot lives in
+//             the city since B1 — there is no high layer).
+//   ENGAGE  — lead pursuit of the nearest contact in BOT_DETECT_RANGE, aimed
+//             no higher than BOT_ENGAGE_CEILING except for a brief climbing
+//             attack pass at a high target; all direction/distance math via
+//             wrapDelta/wrapDistance, so bots chase straight through the
+//             torus seam.
+//   EVADE   — for a beat after taking fire or with a threat parked close
+//             behind: a break along the street down in the canyon, a break
+//             turn + dive back to the band above it.
 //   RECOVER — hard override: nose probes against the SAME tier boxes and
-//             ground players collide with → pull up / turn to the clear side.
+//             ground players collide with → pull up / turn to the clear side
+//             (in a street: onto a clear street heading, slowing).
 //
 // Bots never send hit claims: tick() emits trigger pulls (BotShot) and
 // applyBotFire routes them through the existing Combat seam — same heat
@@ -30,8 +35,9 @@ import {
   collideBotMovers,
 } from "@angels-bandits/common/city/movers";
 import {
-  nearestStreet,
+  ROADWAY_HALF,
   nextIntersection,
+  offCenterline,
 } from "@angels-bandits/common/city/street";
 import {
   type CityIndex,
@@ -41,15 +47,21 @@ import {
   losClear,
 } from "@angels-bandits/common/collision";
 import {
+  BLOCK_PITCH,
+  BOT_ACQUIRE_ALT_WEIGHT,
   BOT_AIM_JITTER,
+  BOT_ATTACK_CLIMB,
+  BOT_ATTACK_COOLDOWN_MS,
+  BOT_ATTACK_PASS_MS,
+  BOT_ATTACK_YAW,
   BOT_CANYON_ALT_MAX,
   BOT_CANYON_ALT_MIN,
   BOT_CANYON_GLIDE,
   BOT_CANYON_HOP,
+  BOT_CANYON_MERGE_LEAD,
   BOT_CANYON_PROBE_ALT,
   BOT_CANYON_PROBE_RADIUS,
   BOT_CANYON_PROBE_TIMES,
-  BOT_CANYON_SHARE,
   BOT_CANYON_SLOW_RADIUS,
   BOT_CANYON_STRAIGHT_CHANCE,
   BOT_CANYON_TURN_YAW,
@@ -59,7 +71,12 @@ import {
   BOT_CEILING_LOOKAHEAD_S,
   BOT_DECISION_EVERY,
   BOT_DETECT_RANGE,
+  BOT_ENGAGE_CEILING,
+  BOT_ENGAGE_OVERHEAD,
+  BOT_EVADE_JINK,
+  BOT_EVADE_JINK_MS,
   BOT_EVADE_MS,
+  BOT_EVADE_STREET_LEAD,
   BOT_FAN_PITCH,
   BOT_FAN_TIMES,
   BOT_FAN_YAW,
@@ -70,22 +87,21 @@ import {
   BOT_LOS_TESTS_MAX,
   BOT_MIN_ALT,
   BOT_MOVER_CLEAR,
-  BOT_PATROL_ALT_MAX,
-  BOT_PATROL_ALT_MIN,
   BOT_PROBE_RADIUS,
   BOT_PROBE_TIMES,
   BOT_REACTION_MS,
   BOT_RECOVER_CLEAR,
+  BOT_RETARGET_MARGIN,
+  BOT_SPAWN_CLEAR_AHEAD,
   BOT_STEER_GAIN,
   BOT_THREAT_RANGE,
-  BOT_WAYPOINT_RADIUS,
   BULLET_RANGE,
   BULLET_SPEED,
   HIT_RADIUS,
   PITCH_LIMIT,
   PLAYER_RADIUS,
+  RESPAWN_SPEED,
   TICK_DOWN_HZ,
-  WORLD_SIZE,
 } from "@angels-bandits/common/constants";
 import {
   type FlightInput,
@@ -180,18 +196,27 @@ interface Bot {
    * that carries a chase through a building. */
   lastSeenAt: number;
   waypoint: Vec3 | null;
-  /** Seeded once and fixed for life: does this bot patrol the streets? It
-   * steers PATROL only — ENGAGE follows the target into either layer. */
-  canyon: boolean;
-  /** The altitude this bot calls home, m: the floor an EVADE dives back to,
-   * and for a canyon bot the height it flies its street lattice at (drawn
-   * across the band, so canyon bots stagger vertically instead of flying a
-   * conga line). High bots all share BOT_PATROL_ALT_MIN — their patrol
-   * altitude is still redrawn per waypoint, exactly as before. */
+  /** The altitude this bot calls home, m: the height it flies its street
+   * lattice at, and the floor an EVADE or a finished attack pass dives back
+   * to (drawn across the canyon band, so bots stagger vertically instead of
+   * flying a conga line). */
   bandY: number;
   /** Which street line the canyon patrol is flying, and which way along it. */
   travel: { axis: "x" | "z"; dir: 1 | -1 } | null;
   evadeUntil: number;
+  /** A climbing attack pass at a high target runs until this time, ms. */
+  attackUntil: number;
+  /** No new attack pass before this time, ms — the dive back to the band. */
+  attackCooldownUntil: number;
+  /** The street heading a low RECOVER latched, rad (null: none yet). */
+  escapeYaw: number | null;
+  /** Has the bot left its street to fight (ENGAGE/EVADE) since it last
+   * patrolled? Back in PATROL it then re-joins the NEAREST street rather than
+   * flying cross-country to a waypoint picked before the fight. */
+  fought: boolean;
+  /** Is the current ENGAGE chasing along the street lattice (pursuit line
+   * blocked) rather than flying straight at the target? */
+  streetChase: boolean;
   /** Break-turn direction for EVADE/RECOVER, seeded per episode. */
   breakTurn: 1 | -1;
   /** Aim wander resampled each decision — the seeded miss source. */
@@ -259,12 +284,10 @@ export class RoomBots {
       isBot: true,
     };
     const rand = mulberry32(Math.floor(this.rand() * 0xffffffff));
-    // Disposition, then this bot's slot inside its band — both drawn ONCE, so
-    // a bot keeps its layer through every respawn (see respawn()).
-    const canyon = rand() < BOT_CANYON_SHARE;
-    const bandY = canyon
-      ? BOT_CANYON_ALT_MIN + rand() * (BOT_CANYON_ALT_MAX - BOT_CANYON_ALT_MIN)
-      : BOT_PATROL_ALT_MIN;
+    // This bot's slot inside the canyon band — drawn ONCE, so a bot keeps its
+    // altitude through every respawn (see respawn()).
+    const bandY =
+      BOT_CANYON_ALT_MIN + rand() * (BOT_CANYON_ALT_MAX - BOT_CANYON_ALT_MIN);
     this.bots.set(entry.id, {
       entry,
       flight: this.flightFromSpawn(spawn),
@@ -274,10 +297,14 @@ export class RoomBots {
       fireAllowedAt: 0,
       lastSeenAt: Number.NEGATIVE_INFINITY,
       waypoint: null,
-      canyon,
       bandY,
       travel: null,
       evadeUntil: Number.NEGATIVE_INFINITY,
+      attackUntil: Number.NEGATIVE_INFINITY,
+      attackCooldownUntil: Number.NEGATIVE_INFINITY,
+      escapeYaw: null,
+      fought: false,
+      streetChase: false,
       breakTurn: 1,
       aimJitterYaw: 0,
       aimJitterPitch: 0,
@@ -413,6 +440,45 @@ export class RoomBots {
     bot.waypoint = null;
     bot.travel = null;
     bot.evadeUntil = Number.NEGATIVE_INFINITY;
+    bot.attackUntil = Number.NEGATIVE_INFINITY;
+    bot.attackCooldownUntil = Number.NEGATIVE_INFINITY;
+    bot.escapeYaw = null;
+    bot.fought = false;
+    bot.streetChase = false;
+  }
+
+  /**
+   * Is a (re)spawn at `pos` heading `yaw` (level) safe for a bot? The spawn
+   * point and BOT_SPAWN_CLEAR_AHEAD of straight-ahead flight must miss the
+   * city and the L2 movers — pickBotRespawn's predicate, so a canyon spawn
+   * never lands in a facade, an arch or a crane jib.
+   */
+  spawnClear(pos: Vec3, yaw: number, now: number): boolean {
+    const fwd = flightForward({ yaw, pitch: 0 });
+    // Samples a probe radius apart tile the run with overlapping spheres.
+    for (let s = 0; s <= BOT_SPAWN_CLEAR_AHEAD; s += BOT_PROBE_RADIUS) {
+      const p = canonicalize({
+        x: pos.x + fwd.x * s,
+        y: pos.y,
+        z: pos.z + fwd.z * s,
+      });
+      if (p.y - BOT_PROBE_RADIUS <= 0) return false;
+      if (collideCity(p, BOT_PROBE_RADIUS, this.buildings, this.cityIndex)) {
+        return false;
+      }
+      if (
+        collideBotMovers(
+          p,
+          BOT_PROBE_RADIUS + BOT_MOVER_CLEAR,
+          this.movers,
+          // Posed when the bot gets there, like blockedAlong: a jib slews.
+          now + (s / RESPAWN_SPEED) * 1000,
+        )
+      ) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /**
@@ -470,12 +536,35 @@ export class RoomBots {
     const margin = wasRecover ? BOT_RECOVER_CLEAR : 1;
     const ceiling = this.nearCeiling(bot.flight, margin);
     const recover = (dive: boolean): void => {
-      if (!wasRecover) bot.breakTurn = this.clearSide(bot.flight, now);
+      if (!wasRecover) {
+        bot.breakTurn = this.clearSide(bot.flight, now);
+        bot.escapeYaw = null;
+      }
+      bot.state = "RECOVER";
       // Down among the towers a recovery also has to SLOW: turn radius is
       // speed / 0.765 rad/s, so the bot that keeps full power through a
       // pull-up needs 100 m to change direction and has maybe 60 m of probe.
-      bot.state = "RECOVER";
       const canyon = !dive && bot.flight.pos.y < BOT_CANYON_PROBE_ALT;
+      // In a street, turn onto a clear street heading while pulling up, so
+      // the recovery ends back on the lattice rather than wherever the break
+      // turn happened to point. Measured: a LEVEL escape (no pull-up) chooses
+      // headings that are clear straight ahead but not along the arc the
+      // bot can actually fly, and crashed ~3x as often as the climb.
+      const streetYaw =
+        canyon && bot.flight.pos.y >= BOT_MIN_ALT
+          ? this.streetEscape(bot, now)
+          : null;
+      if (streetYaw !== null) {
+        bot.escapeYaw = streetYaw;
+        const yawErr = wrapAngle(streetYaw - bot.flight.yaw);
+        bot.input = {
+          pitch: BOT_INPUT_CAP,
+          turn: clamp(-yawErr * BOT_STEER_GAIN, -BOT_INPUT_CAP, BOT_INPUT_CAP),
+          roll: 0,
+          throttle: -1,
+        };
+        return;
+      }
       bot.input = {
         // The ceiling dives back under the cloud deck; every other danger
         // (ground, tier boxes ≤ 250 m) pulls up — never both at once.
@@ -513,6 +602,14 @@ export class RoomBots {
         return;
       }
       bot.state = "EVADE";
+      bot.fought = true;
+      // Down in a street a break turn is a turn into the facade: run along
+      // the street instead.
+      const run = this.streetBreak(bot, now);
+      if (run) {
+        this.steerToward(bot, run, 0, 0, 0);
+        return;
+      }
       // Break turn + dive toward canyon altitude: hold the turn and let the
       // nose drop while above the canyon band (RECOVER guards the floor).
       const divePitch = bot.flight.pos.y > bot.bandY ? -0.35 : 0;
@@ -536,6 +633,7 @@ export class RoomBots {
         bot.fireAllowedAt = now + BOT_REACTION_MS;
       }
       bot.state = "ENGAGE";
+      bot.fought = true;
       const d = wrapDelta(bot.flight.pos, target.pos);
       const dist = Math.hypot(d.x, d.y, d.z);
 
@@ -559,22 +657,68 @@ export class RoomBots {
         y: d.y + target.vel.y * t,
         z: d.z + target.vel.z * t,
       };
+      // The fight stays in the city: a brief climbing pass at a high target,
+      // otherwise a chase along its ground track down among the towers.
+      const passing = this.attackPass(bot, now, target, dist, aim);
+      if (passing) {
+        // Steep enough to bring the guns to bear, never a vertical zoom.
+        aim.y = Math.min(aim.y, Math.hypot(aim.x, aim.z) * BOT_ATTACK_CLIMB);
+      } else {
+        this.holdBand(bot, now, target, aim);
+      }
       // The fan's first candidate IS the pursuit vector, so an unobstructed
       // chase steers exactly as it always did (steerToward reads direction
       // only, so a normalized survivor and the raw lead vector are the same
       // command). A blocked line yields the nearest clear heading instead of
       // cancelling the chase.
       const heading = this.fanAround(bot, now, aim, margin);
+      // Down among the towers a straight chase is a line across the blocks,
+      // and weaving after a target over them is what kills canyon bots
+      // (measured: every low crash in the first all-canyon sim was a slow
+      // bot over a block). So below the probe split the bot flies straight
+      // at its target only with a clear line AND a reason to — inside gun
+      // range, or with the target up the street it is already flying. The
+      // rest of the time it chases along the street lattice, the same flying
+      // PATROL does safely, until the shot opens up.
+      if (
+        !passing &&
+        bot.flight.pos.y < BOT_CANYON_PROBE_ALT &&
+        (!heading?.direct ||
+          (dist > BOT_FIRE_RANGE && !this.alongStreet(bot.flight, aim)))
+      ) {
+        if (blocked) {
+          recover(false);
+          return;
+        }
+        if (!bot.streetChase) {
+          // Coming off a direct chase: the old waypoint is wherever the bot
+          // was before it left the lattice.
+          bot.waypoint = null;
+          bot.travel = null;
+          bot.streetChase = true;
+        }
+        this.canyonPatrol(bot, target.pos);
+        return;
+      }
+      bot.streetChase = false;
       if (heading) {
         // Weaving means the terrain is close, and turn radius is speed / 0.765
         // rad/s — so the bot that keeps its throttle buried is the bot that
-        // cannot make the gap. Only a clear pursuit line gets full power.
+        // cannot make the gap. Only a clear pursuit line gets full power, and
+        // down in a street not even that: a 90 m/s turn is ~118 m across and
+        // the street is 40. Diving home after a pass bleeds speed too, so it
+        // reaches the street slow enough to fly it.
+        const low = bot.flight.pos.y < BOT_CANYON_PROBE_ALT;
+        const diving = !passing && now < bot.attackCooldownUntil && !low;
+        let throttle = heading.direct ? (low ? 0 : 1) : -1;
+        if (passing) throttle = 1;
+        else if (diving) throttle = -1;
         this.steerToward(
           bot,
           heading.dir,
           bot.aimJitterYaw,
           bot.aimJitterPitch,
-          heading.direct ? 1 : -1,
+          throttle,
         );
         return;
       }
@@ -589,26 +733,173 @@ export class RoomBots {
       return;
     }
 
-    // PATROL: the street lattice down low, seeded waypoint wander up high.
+    // PATROL: the street lattice. Coming back from a fight, re-join the
+    // NEAREST street — the waypoint picked before the chase may now be a
+    // cross-country flight over the blocks.
     bot.state = "PATROL";
     bot.targetId = null;
-    if (bot.canyon) {
-      this.canyonPatrol(bot);
-      return;
+    if (bot.fought) {
+      bot.fought = false;
+      bot.waypoint = null;
+      bot.travel = null;
+    }
+    this.canyonPatrol(bot);
+  }
+
+  /**
+   * Is a climbing attack pass at `target` running (or starting now)? Only a
+   * target above BOT_ENGAGE_CEILING earns one, only inside BOT_FIRE_RANGE with
+   * the bot already lined up in plan view, and only once per pass +
+   * BOT_ATTACK_COOLDOWN_MS — so a high human gets brief zoom-climb
+   * shots, and the bot spends the rest of its time back in the streets.
+   */
+  private attackPass(
+    bot: Bot,
+    now: number,
+    target: BotContact,
+    dist: number,
+    aim: Vec3,
+  ): boolean {
+    if (now < bot.attackUntil) return true;
+    if (now < bot.attackCooldownUntil) return false;
+    if (target.pos.y <= BOT_ENGAGE_CEILING || dist > BOT_FIRE_RANGE) {
+      return false;
+    }
+    // Lined up in plan view — which a target nearly overhead never is: its
+    // bearing is noise, and a pass at it would be a vertical climb through
+    // the crane layer at MIN_SPEED. holdBand extends away from it instead.
+    const flat = Math.hypot(aim.x, aim.z);
+    const yawErr = Math.abs(
+      wrapAngle(Math.atan2(-aim.x, -aim.z) - bot.flight.yaw),
+    );
+    if (flat < BOT_ENGAGE_OVERHEAD || yawErr > BOT_ATTACK_YAW) return false;
+    bot.attackUntil = now + BOT_ATTACK_PASS_MS;
+    bot.attackCooldownUntil = bot.attackUntil + BOT_ATTACK_COOLDOWN_MS;
+    return true;
+  }
+
+  /**
+   * Keep a pursuit (`aim`, a delta from the bot) in the canyon band: aim no
+   * higher than BOT_ENGAGE_CEILING — or the bot's own band while it dives home
+   * after a pass — descending no steeper than BOT_CANYON_GLIDE so it arrives
+   * in a street slow and shallow enough to fly it. A target LOW enough is
+   * followed down unchanged: bots chase players into the streets.
+   */
+  private holdBand(bot: Bot, now: number, target: BotContact, aim: Vec3): void {
+    const top = now < bot.attackCooldownUntil ? bot.bandY : BOT_ENGAGE_CEILING;
+    const cap = top - bot.flight.pos.y;
+    if (aim.y <= cap) return;
+    // Nearly underneath a high target the clamped aim has almost no
+    // horizontal part, and its bearing would swing every decision — extend
+    // along the current heading instead, which sets up the next pass.
+    if (
+      target.pos.y > BOT_ENGAGE_CEILING &&
+      Math.hypot(aim.x, aim.z) < BOT_ENGAGE_OVERHEAD
+    ) {
+      const fwd = flightForward({ yaw: bot.flight.yaw, pitch: 0 });
+      aim.x = fwd.x * BOT_EVADE_STREET_LEAD;
+      aim.z = fwd.z * BOT_EVADE_STREET_LEAD;
+    }
+    aim.y = Math.max(cap, -Math.hypot(aim.x, aim.z) * BOT_CANYON_GLIDE);
+  }
+
+  /**
+   * A low EVADE's escape run, as a steering delta: along the street the bot is
+   * flying (streetAxis), toward a lead point on its centreline jinked from
+   * side to side. Null above the probe split or off a street.
+   */
+  private streetBreak(bot: Bot, now: number): Vec3 | null {
+    const { pos } = bot.flight;
+    if (pos.y >= BOT_CANYON_PROBE_ALT) return null;
+    const axis = this.streetAxis(bot.flight);
+    if (!axis) return null;
+    const centerline =
+      Math.round((axis === "x" ? pos.z : pos.x) / BLOCK_PITCH) * BLOCK_PITCH;
+    const fwd = flightForward({ yaw: bot.flight.yaw, pitch: 0 });
+    const along = axis === "x" ? fwd.x : fwd.z;
+    const lead = (along >= 0 ? 1 : -1) * BOT_EVADE_STREET_LEAD;
+    const side = Math.floor(now / BOT_EVADE_JINK_MS) % 2 === 0 ? 1 : -1;
+    const jink = side * bot.breakTurn * BOT_EVADE_JINK;
+    return wrapDelta(
+      pos,
+      axis === "x"
+        ? { x: pos.x + lead, y: bot.bandY, z: centerline + jink }
+        : { x: centerline + jink, y: bot.bandY, z: pos.z + lead },
+    );
+  }
+
+  /** Is `aim` (a plan-view delta) up the street this flight is flying? */
+  private alongStreet(flight: FlightState, aim: Vec3): boolean {
+    const axis = this.streetAxis(flight);
+    if (!axis) return false;
+    const flat = Math.hypot(aim.x, aim.z);
+    if (flat === 0) return false;
+    return (
+      Math.abs(axis === "x" ? aim.x : aim.z) / flat >= Math.cos(BOT_ATTACK_YAW)
+    );
+  }
+
+  /**
+   * The travel axis of the street this flight is flying ALONG — over its
+   * roadway with the nose within 45° of it — or null. In an intersection
+   * either street qualifies. Past 45° the turn onto it is a ~100 m arc at
+   * speed, wider than the 40 m street, so that flight is crossing, not
+   * following.
+   */
+  private streetAxis(flight: FlightState): "x" | "z" | null {
+    const fwd = flightForward({ yaw: flight.yaw, pitch: 0 });
+    // A north–south street lies on a line of constant x and is travelled
+    // along z (street.ts's axis convention), and vice versa.
+    if (
+      offCenterline(flight.pos.x) <= ROADWAY_HALF &&
+      Math.abs(fwd.z) >= Math.SQRT1_2
+    ) {
+      return "z";
     }
     if (
-      !bot.waypoint ||
-      wrapDistance(bot.flight.pos, bot.waypoint) < BOT_WAYPOINT_RADIUS
+      offCenterline(flight.pos.z) <= ROADWAY_HALF &&
+      Math.abs(fwd.x) >= Math.SQRT1_2
     ) {
-      bot.waypoint = {
-        x: bot.rand() * WORLD_SIZE,
-        y:
-          BOT_PATROL_ALT_MIN +
-          bot.rand() * (BOT_PATROL_ALT_MAX - BOT_PATROL_ALT_MIN),
-        z: bot.rand() * WORLD_SIZE,
-      };
+      return "x";
     }
-    this.steerToward(bot, wrapDelta(bot.flight.pos, bot.waypoint), 0, 0, 0);
+    return null;
+  }
+
+  /**
+   * A heading for a low RECOVER's pull-up to turn onto, as a yaw — clear at
+   * level on the canyon probe profile — or null when there is none. The latched escape first (re-picking every decision would flap like
+   * an unlatched break turn), then the street directions nearest the nose
+   * (the lattice is axis-aligned, so those are the four quarter yaws; never
+   * one behind the bot), then the fan's yaw offsets toward the break side.
+   */
+  private streetEscape(bot: Bot, now: number): number | null {
+    const { flight } = bot;
+    const clear = (yaw: number): boolean => {
+      const d = flightForward({ yaw, pitch: 0 });
+      return !this.blockedAlong(
+        flight,
+        now,
+        d.x,
+        d.z,
+        0,
+        1,
+        BOT_CANYON_PROBE_TIMES,
+      );
+    };
+    if (bot.escapeYaw !== null && clear(bot.escapeYaw)) return bot.escapeYaw;
+    const streets = [0, Math.PI / 2, Math.PI, -Math.PI / 2]
+      .map((yaw) => ({ yaw, err: Math.abs(wrapAngle(yaw - flight.yaw)) }))
+      .filter((c) => c.err <= Math.PI / 2)
+      .sort((a, b) => a.err - b.err)
+      .map((c) => c.yaw);
+    const offsets = BOT_FAN_YAW.flatMap((off) => [
+      flight.yaw - bot.breakTurn * off,
+      flight.yaw + bot.breakTurn * off,
+    ]);
+    for (const yaw of [...streets, ...offsets]) {
+      if (clear(yaw)) return yaw;
+    }
+    return null;
   }
 
   /**
@@ -619,7 +910,7 @@ export class RoomBots {
    * — a 90° turn sweeps ~52 m, wider than any roadway, so it must cross the
    * block corner and wants vertical margin over whatever stands there.
    */
-  private canyonPatrol(bot: Bot): void {
+  private canyonPatrol(bot: Bot, toward?: Vec3): void {
     // Reaching a waypoint is a GROUND-TRACK test: the lattice is a plan-view
     // graph and altitude is the glide's business. Measuring it in 3D strands a
     // bot that is still high above the intersection it is aiming at.
@@ -627,17 +918,27 @@ export class RoomBots {
       ? wrapDelta(bot.flight.pos, bot.waypoint)
       : { x: 0, y: 0, z: 0 };
     if (!bot.waypoint || Math.hypot(d.x, d.z) < BOT_CANYON_WAYPOINT_RADIUS) {
-      bot.waypoint = this.nextCanyonWaypoint(bot);
+      bot.waypoint = this.nextCanyonWaypoint(bot, toward);
       d = wrapDelta(bot.flight.pos, bot.waypoint);
     }
-    const flat = Math.hypot(d.x, d.z);
+    let flat = Math.hypot(d.x, d.z);
+    // Off the street being joined (a bot back from a fight, over a block):
+    // MERGE onto it — a shallow line to a point up the street, holding
+    // altitude — rather than cutting the block corner to the intersection
+    // at street height, which is exactly where the facades are.
+    const merge = this.mergePoint(bot, d);
+    if (merge) {
+      d = merge;
+      flat = Math.hypot(d.x, d.z);
+    }
     const yawErr = Math.abs(wrapAngle(Math.atan2(-d.x, -d.z) - bot.flight.yaw));
     const turning = yawErr > BOT_CANYON_TURN_YAW;
     const slowing = turning || flat < BOT_CANYON_SLOW_RADIUS;
     // The hop raises the TARGET altitude (never the commanded climb), then the
     // glide caps how steeply the bot may descend toward it — so arriving from
     // RESPAWN_ALTITUDE is a slope down the lattice, not a plunge.
-    const targetY = bot.waypoint.y + (slowing ? BOT_CANYON_HOP : 0);
+    let targetY = bot.waypoint.y + (slowing ? BOT_CANYON_HOP : 0);
+    if (merge) targetY = Math.max(targetY, bot.flight.pos.y);
     const dy = Math.max(targetY - bot.flight.pos.y, -flat * BOT_CANYON_GLIDE);
     // Never accelerate on a canyon patrol: turn radius is speed / 0.765 rad/s,
     // so a street-grid bot has to arrive at a corner near MIN_SPEED or its arc
@@ -646,24 +947,59 @@ export class RoomBots {
     this.steerToward(bot, { x: d.x, y: dy, z: d.z }, 0, 0, slowing ? -1 : 0);
   }
 
-  /** The next lattice intersection to fly to, at this bot's band altitude. */
-  private nextCanyonWaypoint(bot: Bot): Vec3 {
+  /**
+   * Where a bot that is not over its street's roadway should steer instead of
+   * the waypoint (`d`, the delta to it): a point on the street's centreline
+   * up to BOT_CANYON_MERGE_LEAD further along — never past the waypoint — so
+   * the merge is shallow. Null when already over the roadway (or no street).
+   */
+  private mergePoint(bot: Bot, d: Vec3): Vec3 | null {
+    const { travel } = bot;
+    if (!travel || !bot.waypoint) return null;
+    const pos = bot.flight.pos;
+    // The travel line's centreline is the waypoint's cross coordinate.
+    const off = wrapDelta(pos, bot.waypoint);
+    const lateral = travel.axis === "x" ? off.z : off.x;
+    if (Math.abs(lateral) <= ROADWAY_HALF) return null;
+    const along = (travel.axis === "x" ? d.x : d.z) * travel.dir;
+    const lead = Math.max(0, Math.min(BOT_CANYON_MERGE_LEAD, along));
+    return travel.axis === "x"
+      ? { x: travel.dir * lead, y: d.y, z: lateral }
+      : { x: lateral, y: d.y, z: travel.dir * lead };
+  }
+
+  /** The next lattice intersection to fly to, at this bot's band altitude —
+   * on a street chase, taking whichever way at the corner heads `toward` the
+   * target. */
+  private nextCanyonWaypoint(bot: Bot, toward?: Vec3): Vec3 {
     const fwd = flightForward(bot.flight);
     if (!bot.travel) {
-      // Joining the lattice (a fresh spawn is still up at RESPAWN_ALTITUDE):
-      // adopt the street below, heading whichever way we already face.
-      const street = nearestStreet(bot.flight.pos);
-      bot.travel = {
-        axis: street.axis,
-        dir: (street.axis === "x" ? fwd.x : fwd.z) >= 0 ? 1 : -1,
-      };
-      const p = nextIntersection(bot.flight.pos, street, bot.travel.dir);
+      // Joining the lattice (a fresh spawn, or a bot back from a fight that
+      // may be over a block): adopt the nearest street running the way we
+      // already face — a perpendicular one is a 90° turn away — heading
+      // whichever way along it the nose points, and aim at an intersection
+      // far enough ahead to merge onto the street before reaching it.
+      const pos = bot.flight.pos;
+      const axis = Math.abs(fwd.x) >= Math.abs(fwd.z) ? "x" : "z";
+      const dir = (axis === "x" ? fwd.x : fwd.z) >= 0 ? 1 : -1;
+      const cross = axis === "x" ? pos.z : pos.x;
+      const centerline = Math.round(cross / BLOCK_PITCH) * BLOCK_PITCH;
+      bot.travel = { axis, dir };
+      const p = nextIntersection(
+        axis === "x"
+          ? { x: pos.x + dir * BOT_CANYON_SLOW_RADIUS, y: 0, z: pos.z }
+          : { x: pos.x, y: 0, z: pos.z + dir * BOT_CANYON_SLOW_RADIUS },
+        { axis, centerline },
+        dir,
+      );
       return { x: p.x, y: bot.bandY, z: p.z };
     }
     // Standing on an intersection: carry straight on, or turn onto the cross
     // street. Both draws come from the per-bot stream, never Math.random.
     const at = bot.waypoint ?? bot.flight.pos;
-    if (bot.rand() >= BOT_CANYON_STRAIGHT_CHANCE) {
+    if (toward) {
+      bot.travel = this.chaseTurn(bot.travel, wrapDelta(at, toward));
+    } else if (bot.rand() >= BOT_CANYON_STRAIGHT_CHANCE) {
       bot.travel = {
         axis: bot.travel.axis === "x" ? "z" : "x",
         dir: bot.rand() < 0.5 ? 1 : -1,
@@ -681,8 +1017,27 @@ export class RoomBots {
   }
 
   /**
-   * The contact this bot should hunt: the nearest living, unprotected one in
-   * detect range that it can actually SEE (never self).
+   * A street chase's way out of an intersection: straight on, left or right
+   * (never back — a U-turn is wider than any street), whichever points most
+   * nearly along `d`, the plan-view delta to the target.
+   */
+  private chaseTurn(
+    travel: { axis: "x" | "z"; dir: 1 | -1 },
+    d: Vec3,
+  ): { axis: "x" | "z"; dir: 1 | -1 } {
+    const along = travel.axis === "x" ? d.x : d.z;
+    const cross = travel.axis === "x" ? d.z : d.x;
+    // Straight on wins unless the target is more off to the side than ahead.
+    if (along * travel.dir >= Math.abs(cross)) return travel;
+    return { axis: travel.axis === "x" ? "z" : "x", dir: cross >= 0 ? 1 : -1 };
+  }
+
+  /**
+   * The contact this bot should hunt: the best-ranked living, unprotected one
+   * in detect range that it can actually SEE (never self). Ranking is
+   * distance plus a penalty per metre above BOT_ENGAGE_CEILING — the fight at
+   * the bot's own altitude beats a nearer one up high — with the current
+   * target held unless another beats it by BOT_RETARGET_MARGIN.
    *
    * Above the rooftops every sight line is clear, so this is free for a high
    * patrol; in a canyon it is what stops a bot locking onto a human on the far
@@ -697,14 +1052,19 @@ export class RoomBots {
     now: number,
     contacts: readonly BotContact[],
   ): BotContact | null {
-    const inRange: { c: BotContact; dist: number }[] = [];
+    const inRange: { c: BotContact; score: number }[] = [];
     for (const c of contacts) {
       if (c.id === bot.entry.id || c.prot) continue;
       const dist = wrapDistance(bot.flight.pos, c.pos);
-      if (dist <= BOT_DETECT_RANGE) inRange.push({ c, dist });
+      if (dist > BOT_DETECT_RANGE) continue;
+      const score =
+        dist +
+        Math.max(0, c.pos.y - BOT_ENGAGE_CEILING) * BOT_ACQUIRE_ALT_WEIGHT -
+        (c.id === bot.targetId ? BOT_RETARGET_MARGIN : 0);
+      inRange.push({ c, score });
     }
-    inRange.sort((a, b) => a.dist - b.dist);
-    // Nearest first, stopping at the first one actually visible. The budget
+    inRange.sort((a, b) => a.score - b.score);
+    // Best first, stopping at the first one actually visible. The budget
     // bounds the WORK, not the candidate set: truncating to the nearest few
     // would let a knot of contacts behind one tower blind a bot to a human in
     // open air right in front of it.

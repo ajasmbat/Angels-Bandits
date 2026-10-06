@@ -218,8 +218,8 @@ const DEFAULT_FB_SAMPLES = renderer
 // Strength and radius are the LOOK (a wider, gentler halo reads as haze
 // around a light rather than a hard glow); the threshold is the CONTRACT the
 // emissive ladder is built against and does not move.
-const BLOOM_STRENGTH = 0.48;
-const BLOOM_RADIUS = 0.42;
+const BLOOM_STRENGTH = 0.4;
+const BLOOM_RADIUS = 0.5;
 const BLOOM_THRESHOLD = 0.72;
 // The composer owns its own render target so `msaa` can put samples on the
 // buffer the SCENE is actually drawn into. HalfFloat matches what

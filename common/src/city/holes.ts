@@ -127,15 +127,26 @@ function splitTier(
   const lo = hole.offset - hole.width / 2;
   const hi = hole.offset + hole.width / 2;
   // (across center, across size, base, height) → a box in building frame.
-  const box = (
-    c: number,
-    size: number,
-    y: number,
-    h: number,
-  ): SolidBox =>
+  const box = (c: number, size: number, y: number, h: number): SolidBox =>
     hole.axis === "x"
-      ? { dx: 0, dz: c, baseY: y, width: along, height: h, depth: size, tierIndex }
-      : { dx: c, dz: 0, baseY: y, width: size, height: h, depth: along, tierIndex };
+      ? {
+          dx: 0,
+          dz: c,
+          baseY: y,
+          width: along,
+          height: h,
+          depth: size,
+          tierIndex,
+        }
+      : {
+          dx: c,
+          dz: 0,
+          baseY: y,
+          width: size,
+          height: h,
+          depth: along,
+          tierIndex,
+        };
   const out = [
     box((-across / 2 + lo) / 2, lo + across / 2, baseY, t.height),
     box((hi + across / 2) / 2, across / 2 - hi, baseY, t.height),
@@ -275,7 +286,10 @@ function clearFloor(
   let tallest = 0;
   for (const o of buildings) {
     if (o === host) continue;
-    const d = wrapDelta({ x: host.x, y: 0, z: host.z }, { x: o.x, y: 0, z: o.z });
+    const d = wrapDelta(
+      { x: host.x, y: 0, z: host.z },
+      { x: o.x, y: 0, z: o.z },
+    );
     const along = axis === "x" ? d.x : d.z;
     const across = axis === "x" ? d.z : d.x;
     const oAlong = (axis === "x" ? o.width : o.depth) / 2;

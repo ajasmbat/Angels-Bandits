@@ -16,9 +16,14 @@ import {
   LANE_CENTERS,
   ROADWAY_HALF,
 } from "@angels-bandits/common/city/street";
-import { BLOCK_PITCH, FOG_DISTANCE } from "@angels-bandits/common/constants";
+import {
+  BLOCK_PITCH,
+  FOG_DISTANCE,
+  WORLD_SIZE,
+} from "@angels-bandits/common/constants";
 import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { SIGN_PALETTE } from "./signage";
 import { LAMP_STATIONS_MINUS, LAMP_STATIONS_PLUS } from "./streetlights";
 
 /**
@@ -326,7 +331,36 @@ const MARKING_GLOW = "0.65";
 /** Peak of a lamp-reflection streak (~0.27 luminance — sub-bloom, warm). */
 const STREAK_GLOW = "0.5";
 /** Damp roadway roughness; sidewalks/interiors stay matte at the base 1.0. */
-const ROADWAY_ROUGHNESS = "0.7";
+const ROADWAY_ROUGHNESS = "0.55";
+// VO5 wet streets. There is no envMap, so a smooth surface alone reads
+// DARKER, not shinier: the "reflection" is faked as emissive — a sky-tinted
+// Fresnel sheen and neon sign spill smeared along the curbs — and the low
+// puddle roughness only buys the moon a specular glint.
+/** Puddle roughness FLOOR: lower makes moon-glint fireflies at altitude. */
+const PUDDLE_ROUGHNESS = "0.32";
+/** Puddles fade back to the damp base over this view distance, m (aliasing). */
+const PUDDLE_FADE = { near: "70.0", far: "260.0" } as const;
+/** Puddle albedo darkening (wet asphalt is darker than damp). */
+const PUDDLE_DARKEN = "0.62";
+/** Sky reflected at grazing angles: the horizon colour, lifted. */
+const SHEEN_COLOR = glslColor(0x6c62b0);
+/** Peak sheen gain at full Fresnel on a puddle. */
+const SHEEN_GAIN = "0.9";
+/** Neon spill smear peak luminance (before Fresnel/wetness; sub-bloom). */
+const NEON_LUM = 0.5;
+/** Ground luminance cap on the WHOLE lit result (diffuse + specular +
+ * emissive): 0.55 + the lamp glow pool's ~0.17 additive peak stays under the
+ * 0.72 bloom threshold however markings, streaks, smears, sheen and a moon
+ * glint stack — the ground is never a ladder rung. */
+const GROUND_LUMA_CAP = "0.55";
+/** Street segments per world along one axis (hash period — wrap-safe). */
+const SEGMENTS = WORLD_SIZE / BLOCK_PITCH;
+/** The signs' own palette, normalised to equal luminance, as a GLSL array. */
+const NEON_PALETTE = `vec3[${SIGN_PALETTE.length}](${SIGN_PALETTE.map((c) => {
+  const l = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+  const k = NEON_LUM / l;
+  return `vec3(${(c.r * k).toFixed(4)}, ${(c.g * k).toFixed(4)}, ${(c.b * k).toFixed(4)})`;
+}).join(", ")})`;
 /** Sidewalk paint band beyond the curb, meters (building faces sit further out). */
 const SIDEWALK_BAND = 8;
 
@@ -341,6 +375,8 @@ const G = {
   edgeOut: glslNum(CURB_LINE - 0.45),
   walkOut: glslNum(CURB_LINE + SIDEWALK_BAND),
   streakCross: glslNum(CURB_LINE - 2), // reflection streak center on the roadway
+  neonCross: glslNum(CURB_LINE - 1.6), // neon spill smear center, curb side
+  segments: glslNum(SEGMENTS),
   stationsPlus: glslVec3Of(LAMP_STATIONS_PLUS),
   stationsMinus: glslVec3Of(LAMP_STATIONS_MINUS),
 } as const;
@@ -384,6 +420,28 @@ float abStreak(float dAlong, float dCross) {
   float c = 1.0 - smoothstep(0.0, 2.2, abs(dCross));
   return a * a * c;
 }
+const vec3 AB_NEON[${SIGN_PALETTE.length}] = ${NEON_PALETTE};
+// Neon spill reflected along one curb of one street segment: up to two smears
+// at hashed stations, each a hashed sign colour. The hash keys on the street
+// line and segment index taken mod the world's segment count, so the same
+// smear is drawn on both sides of the torus seam.
+vec3 abNeonSpill(float line, float along, float side, float dCross) {
+  float seg = mod(floor(along / ${G.pitch}), ${G.segments});
+  float ln = mod(line, ${G.segments});
+  vec2 key = vec2(ln * ${G.segments} + seg, side);
+  float local = mod(along, ${G.pitch});
+  float c = 1.0 - smoothstep(0.0, 2.4, abs(dCross));
+  vec3 acc = vec3(0.0);
+  for (int k = 0; k < 2; k++) {
+    vec2 kk = key + vec2(0.0, 7.0 * float(k + 1));
+    float present = step(abHash(kk + 3.1), 0.8);
+    float station = 30.0 + 140.0 * abHash(kk);
+    float a = 1.0 - smoothstep(0.0, 16.0 + 12.0 * abHash(kk + 1.7), abs(local - station));
+    int hue = int(floor(abHash(kk + 5.3) * ${SIGN_PALETTE.length}.0));
+    acc += AB_NEON[hue] * present * a * a;
+  }
+  return acc * c;
+}
 `;
 
 const GROUND_FRAGMENT_MAIN = /* glsl */ `
@@ -397,8 +455,13 @@ float abRoad = max(abRoadX, abRoadZ);
 float abNoiseV = abNoise(vWorldXZ * 0.5); // ~2 m value noise
 vec3 abPaint;
 vec3 abEmissive = vec3(0.0);
+vec3 abNeon = vec3(0.0); // Fresnel-weighted at the emissive splice
+float abPud = 0.0; // puddle mask, roadway only
+float abWet = 0.0; // 0 dry .. 1 standing water
 if (abRoad > 0.5) {
   abPaint = ${GROUND_COLORS.asphalt} * (1.0 + (abNoiseV - 0.5) * 0.5);
+  abPud = smoothstep(0.5, 0.68, abNoise(vWorldXZ * 0.085 + 13.0));
+  abWet = 0.45 + 0.55 * abPud;
   // Wear mask: markings survive where it passes (light wear on the wet look).
   float abWear = step(0.18, abNoise(vWorldXZ * 0.77 + 40.0));
   if (abRoadX * abRoadZ < 0.5) { // outside the intersection core
@@ -425,7 +488,13 @@ if (abRoad > 0.5) {
       abStreak(abStationDist(abAlong, ${G.stationsPlus}), abCross - ${G.streakCross}) +
       abStreak(abStationDist(abAlong, ${G.stationsMinus}), abCross + ${G.streakCross});
     abEmissive += ${GROUND_COLORS.lampWarm} * abStr * ${STREAK_GLOW};
+    // Neon sign spill along both curbs (side = which curb).
+    float abLine = floor((abRoadX > 0.5 ? vWorldXZ.x : vWorldXZ.y) / ${G.pitch} + 0.5);
+    float abSide = step(0.0, abCross);
+    abNeon = abNeonSpill(abLine, abAlong, abSide, abAcr - ${G.neonCross});
   }
+  // Standing water darkens everything under it, paint included.
+  abPaint *= mix(1.0, ${PUDDLE_DARKEN}, abPud);
 } else {
   float abWalkX = 1.0 - step(${G.walkOut}, abAdx);
   float abWalkZ = 1.0 - step(${G.walkOut}, abAdz);
@@ -479,12 +548,27 @@ export class GroundPlane {
         )
         .replace(
           "#include <roughnessmap_fragment>",
-          // Damp sheen on the roadway only — no reflections, just roughness.
-          `#include <roughnessmap_fragment>\nroughnessFactor = mix(roughnessFactor, ${ROADWAY_ROUGHNESS}, abRoad);`,
+          // Damp roadway; puddles smoother up close, fading back with
+          // distance so a moon glint never sparkles from altitude.
+          `#include <roughnessmap_fragment>
+float abNear = 1.0 - smoothstep(${PUDDLE_FADE.near}, ${PUDDLE_FADE.far}, length(vViewPosition));
+roughnessFactor = mix(roughnessFactor, mix(${ROADWAY_ROUGHNESS}, ${PUDDLE_ROUGHNESS}, abPud * abNear), abRoad);`,
         )
         .replace(
           "#include <emissivemap_fragment>",
-          "#include <emissivemap_fragment>\ntotalEmissiveRadiance += abEmissive;",
+          // Faked reflections: Schlick Fresnel (water F0 0.02) on the view
+          // angle, so the sheen and the neon spill grow toward grazing — the
+          // way a wet street lights up toward the horizon.
+          `#include <emissivemap_fragment>
+float abFres = 0.02 + 0.98 * pow(1.0 - saturate(dot(normal, normalize(vViewPosition))), 5.0);
+totalEmissiveRadiance += abEmissive
+  + ${SHEEN_COLOR} * (${SHEEN_GAIN} * abFres * abWet)
+  + abNeon * (0.5 + 0.5 * abWet) * (0.55 + 0.45 * abFres);`,
+        )
+        .replace(
+          "vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;",
+          `vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;
+outgoingLight *= min(1.0, ${GROUND_LUMA_CAP} / max(luminance(outgoingLight), 1e-4));`,
         );
     };
     this.mesh = new THREE.Mesh(

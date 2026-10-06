@@ -214,6 +214,13 @@ function tierOneFaces(b: Building): Face[] {
   // invents a sidewalk in front of party walls, and it over-measured the real
   // one badly enough to put spill pools in the roadway.
   const clearances = facadeClearances(b.x, b.z, t1.width, t1.depth);
+  // H1: a tier-1 hole along an axis opens BOTH facades facing that axis —
+  // a sign there would hang across the mouth, so those faces report no
+  // clearance and stay bare (kept in the list so face indices, which seed
+  // each face's PRNG, do not shift).
+  const mouths = new Set(
+    (b.holes ?? []).filter((h) => h.tierIndex === 0).map((h) => h.axis),
+  );
   for (const axis of ["x", "z"] as const) {
     const perp = axis === "x" ? t1.width : t1.depth;
     const length = axis === "x" ? t1.depth : t1.width;
@@ -224,7 +231,7 @@ function tierOneFaces(b: Building): Face[] {
         dir,
         length,
         plane: (axis === "x" ? b.x : b.z) + (dir * perp) / 2,
-        clearance: clearances[side],
+        clearance: mouths.has(axis) ? 0 : clearances[side],
       });
     }
   }

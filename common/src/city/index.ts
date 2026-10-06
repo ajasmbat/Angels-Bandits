@@ -24,12 +24,23 @@ import {
   TIER_TWO_MIN_HEIGHT,
   WORLD_SIZE,
 } from "../constants";
+import { type Hole, assignHoles, landmarkArch } from "./holes";
 import { CONSTRUCTION_BLOCKS, LANDMARK_BLOCKS, PLAZA_BLOCKS } from "./layout";
 import { LOT_LINE } from "./street";
 
 // Re-exported so the hand-placed lists keep their long-standing import site
 // (client signage, common/storm) while living in their own module.
 export { CONSTRUCTION_BLOCKS, LANDMARK_BLOCKS, PLAZA_BLOCKS };
+// H1 fly-through holes: the seam collision, rendering and bots all read.
+export {
+  type Hole,
+  type HoleAxis,
+  type HoleKind,
+  type HoleSpan,
+  type SolidBox,
+  cityHoles,
+  solids,
+} from "./holes";
 
 /** One box of a setback tower, centered on the building's (x, z). */
 export interface Tier {
@@ -52,6 +63,12 @@ export interface Building {
   depth: number;
   height: number;
   tiers: Tier[];
+  /**
+   * H1 fly-through holes (at most one), absent on a solid building. Tiers
+   * stay the OUTER silhouette; `solids()` in ./holes is what is actually
+   * there once the holes are cut, and every collider/renderer reads that.
+   */
+  holes?: Hole[];
 }
 
 /** Blocks per world side (10 for a 2 km world with 200 m blocks). Exported
@@ -259,11 +276,17 @@ function bandHeight(rBand: number, rIn: number): number {
 const blockSeed = (seed: number, bx: number, bz: number) =>
   (seed ^ Math.imul(bx + 1, 73856093) ^ Math.imul(bz + 1, 19349663)) >>> 0;
 
+/** Salt for the H1 hole stream — separate from the lot stream (roofs.ts
+ * idiom), so adding holes moved no lot, and hole rolls never correlate with
+ * lot rolls. */
+const HOLE_SALT = 0x4f1bbcdc;
+
 /**
  * Generate the full city for a seed. Every block of the CITY_GRID×CITY_GRID
  * Manhattan grid is subdivided into irregular lots that build out to the lot
  * line, except fixed plaza blocks (left empty for C2) and fixed landmark
- * blocks (one slim supertall each). Deterministic for a given seed.
+ * blocks (one slim supertall each, arched through its podium). Some lots then
+ * get an H1 tunnel or sky hole. Deterministic for a given seed.
  */
 export function generateCity(seed: number): Building[] {
   const landmarks = new Set(
@@ -289,6 +312,7 @@ export function generateCity(seed: number): Building[] {
           depth: LANDMARK_FOOTPRINT,
           height: LANDMARK_HEIGHT,
           tiers: LANDMARK_TIERS.map((t) => ({ ...t })),
+          holes: [landmarkArch(bx, bz)],
         });
         continue;
       }
@@ -333,5 +357,11 @@ export function generateCity(seed: number): Building[] {
       }
     }
   }
+  // Tunnels and sky holes need their neighbours' heights (clear air beyond
+  // both mouths), so they are cut once the whole city stands. Lots above
+  // stay a pure function of (seed, bx, bz); holes do not.
+  assignHoles(buildings, (bx, bz) =>
+    mulberry32((blockSeed(seed, bx, bz) ^ HOLE_SALT) >>> 0),
+  );
   return buildings;
 }

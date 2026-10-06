@@ -5,7 +5,7 @@
 // minimap never shows one. Dots and the tiling both go through wrapDelta
 // math (the pure seam below); the canvas painting is a thin adapter.
 
-import type { Building } from "@angels-bandits/common/city";
+import { type Building, cityHoles } from "@angels-bandits/common/city";
 import {
   BUILDING_MAX_HEIGHT,
   LANDMARK_HEIGHT,
@@ -89,6 +89,18 @@ function renderCityTile(
       b.width * s,
       b.depth * s,
     );
+  }
+  // H1 holes: a bright tick through the footprint along the line you fly,
+  // in the mouth frames' cool white — the map shows where to aim, not just
+  // that a hole exists.
+  ctx.strokeStyle = "#bfe8ff";
+  ctx.lineCap = "round";
+  for (const h of cityHoles(buildings)) {
+    ctx.lineWidth = Math.max(2, h.hole.width * s);
+    ctx.beginPath();
+    ctx.moveTo(h.entry.x * s, h.entry.z * s);
+    ctx.lineTo(h.exit.x * s, h.exit.z * s);
+    ctx.stroke();
   }
   return tile;
 }

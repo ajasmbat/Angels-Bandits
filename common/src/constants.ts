@@ -111,6 +111,43 @@ export const TIER_SETBACK_MAX = 0.8;
 export const TIER_SPLIT_MIN = 0.5;
 export const TIER_SPLIT_MAX = 0.7;
 
+// --- Fly-through holes (H1) — consumed via common/src/city/holes.ts ---
+// Sized against the plane: a 2 m collision sphere, ~9 m wingspan, and a turn
+// radius of ~52 m at MIN_SPEED / ~118 m at MAX_SPEED. Nothing is under 12 m
+// wide and no floor is under HOLE_MIN_FLOOR (touching y − 2 ≤ 0 kills).
+/** Landmark podium archway, across × tall, meters. */
+export const ARCH_WIDTH = 30;
+export const ARCH_HEIGHT = 24;
+/** Street tunnel through a lot that spans its whole block, meters. */
+export const TUNNEL_WIDTH = 22;
+export const TUNNEL_HEIGHT = 16;
+/** Sky hole through the top tier of a tall tower, meters (the hard one). */
+export const SKY_HOLE_WIDTH = 18;
+export const SKY_HOLE_HEIGHT = 14;
+/** Lowest hole floor above the street, meters (arches sit exactly here). */
+export const HOLE_MIN_FLOOR = 8;
+/** Thinnest side wall / lintel a hole may leave, and a sky hole's minimum
+ * sill above its tier base, meters. */
+export const HOLE_WALL_MIN = 6;
+export const HOLE_LINTEL_MIN = 6;
+export const HOLE_SILL_MIN = 4;
+/** Clear air beyond each mouth, meters: the MAX_SPEED turn radius plus a
+ * reaction margin, so a hole never exits into a wall a pilot cannot miss. */
+export const HOLE_RUN_OUT = 140;
+/** A hole's floor clears every roof in its run-out corridor by this, meters. */
+export const HOLE_CLEARANCE = 6;
+/** The run-out corridor's half-width beyond the hole's own, meters. Kept
+ * under HOLE_WALL_MIN so party-wall neighbours beside the host stay out. */
+export const HOLE_CORRIDOR_MARGIN = 5;
+/** Towers at least this tall may get a sky hole, meters. */
+export const SKY_HOLE_MIN_HEIGHT = 120;
+/** Roll per eligible candidate: a block's first winning lot gets its one
+ * tunnel; a tower that wins its roll gets a sky hole. Tunnels always win —
+ * clear air above the facing streetwall is already the scarce filter (0–2
+ * per seed); sky holes are thinned to ~6–10 per city. */
+export const TUNNEL_CHANCE = 1;
+export const SKY_HOLE_CHANCE = 0.22;
+
 // --- Flight (tuned by T2) ---
 /** Minimum airspeed, m/s. At MIN_SPEED you mush, never stall. */
 export const MIN_SPEED = 40;

@@ -22,6 +22,8 @@ import { EMISSIVE_WINDOW } from "@angels-bandits/common/constants";
 import * as THREE from "three";
 import { luminance } from "./emissive";
 import {
+  holeLightGlsl,
+  holeSurfaceGlsl,
   roofLightGlsl,
   roofParsGlsl,
   roofSurfaceGlsl,
@@ -89,6 +91,9 @@ attribute float aArchetype;
 attribute vec4 aRoof;
 attribute vec3 aLed;
 attribute vec3 aCrown;
+attribute vec3 aSubOff;
+attribute vec3 aParent;
+attribute vec4 aHole;
 varying vec3 vMeters;
 varying vec3 vObjNormal;
 varying float vBSeed;
@@ -100,21 +105,27 @@ varying vec4 vRoof;
 varying vec3 vLed;
 varying vec3 vCrown;
 varying vec2 vHalfXZ;
+varying vec4 vHole;
 `;
 
 const VERTEX_MAIN = /* glsl */ `
 // Unit box (x/z in [-0.5, 0.5], y in [0, 1]) times the instance scale =
-// object-space meters; the normal stays the box's axis-aligned face normal.
-vec3 bScale = vec3(
+// the solid's own meters; the normal stays the box's axis-aligned face normal.
+vec3 sScale = vec3(
   length(instanceMatrix[0].xyz),
   length(instanceMatrix[1].xyz),
   length(instanceMatrix[2].xyz)
 );
-vMeters = position * bScale;
+// H1: everything below lives in the PARENT TIER's frame (city.ts aParent /
+// aSubOff). A tier with a hole is drawn as walls + lintel + sill, and they
+// must share one window grid and one seed; for an unholed tier the parent IS
+// the solid, so nothing changes.
+vec3 bScale = aParent;
+vMeters = position * sScale + aSubOff;
 vObjNormal = normal;
-// Ground height in meters: tier-local meters plus the tier's base height
-// (the instance's Y translation, which never wraps — Y has no seam).
-vWorldY = vMeters.y + instanceMatrix[3].y;
+// Ground height in meters: the solid's own meters plus its base height (the
+// instance's Y translation, which never wraps — Y has no seam).
+vWorldY = position.y * sScale.y + instanceMatrix[3].y;
 // Per-building seed from its (stable) dimensions — NOT its translation,
 // which shifts by WORLD_SIZE whenever the building wraps past the seam.
 vBSeed = fract(sin(dot(bScale.xz, vec2(12.9898, 78.233)) + bScale.y) * 43758.5453);
@@ -133,6 +144,7 @@ vRoof = aRoof;
 vLed = aLed;
 vCrown = aCrown;
 vHalfXZ = bScale.xz * 0.5;
+vHole = aHole;
 `;
 
 const FRAGMENT_PARS = /* glsl */ `
@@ -147,6 +159,7 @@ varying vec4 vRoof;
 varying vec3 vLed;
 varying vec3 vCrown;
 varying vec2 vHalfXZ;
+varying vec4 vHole;
 
 float abHash(vec2 p, float s) {
   return fract(sin(dot(p + s * 61.0, vec2(127.1, 311.7))) * 43758.5453);
@@ -160,8 +173,10 @@ ${roofParsGlsl()}`;
  * (in scope for the emissive block below — same main body), modulates the
  * DIFFUSE facade with the weathering pass, then (VO3) repaints the roofs and
  * derives the LED/crown masks — that order is load-bearing: the roof pass
- * reads the grid's `facade`/`winGrid`/`pane`/`lit`. */
-const FRAGMENT_COLOR = windowGridGlsl() + weatheringGlsl() + roofSurfaceGlsl();
+ * reads the grid's `facade`/`winGrid`/`pane`/`lit`; the H1 hole lining
+ * comes last, over whatever the facade pass left inside a hole. */
+const FRAGMENT_COLOR =
+  windowGridGlsl() + weatheringGlsl() + roofSurfaceGlsl() + holeSurfaceGlsl();
 
 /** The lit-pane emissive, then the V2 street-level shop band: the bottom
  * SHOP_BAND_HEIGHT m of WORLD height (so only tier-1 bases qualify) swaps the
@@ -191,13 +206,14 @@ vec3 bounceTint = mix(${glslVec3(BOUNCE_TINTS.sodium)},
 totalEmissiveRadiance += diffuseColor.rgb * bounceTint * ${BOUNCE_INTENSITY.toFixed(2)} * bounceK;
 `;
 
-/** Windows, shops and the VO2 bounce, then the VO3 architectural light LAST
- * so its LED replacement overrides everything the pixel emitted before. */
+/** Windows, shops and the VO2 bounce, then the VO3 architectural light so its
+ * LED replacement overrides everything the pixel emitted before, then the H1
+ * hole frame LAST (a convex replacement too — it never stacks on the rest). */
 const FRAGMENT_EMISSIVE = `${windowEmissiveGlsl(
   glslVec3(WINDOW_WARM),
   glslVec3(WINDOW_COOL),
   WINDOW_EMISSIVE_INTENSITY,
-)}${SHOP_BAND_GLSL}${roofLightGlsl()}`;
+)}${SHOP_BAND_GLSL}${roofLightGlsl()}${holeLightGlsl()}`;
 
 /**
  * VO2: cap the grazing-angle Fresnel. Standard materials reflect 100% at
@@ -252,6 +268,6 @@ export function createBuildingsMaterial(): THREE.MeshStandardMaterial {
   };
   // Distinct compiled program per patch (V3 rule: three keys programs on
   // onBeforeCompile.toString(), and sibling materials collide silently).
-  material.customProgramCacheKey = () => "ab-buildings-vo3-roofs";
+  material.customProgramCacheKey = () => "ab-buildings-h1-holes";
   return material;
 }

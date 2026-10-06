@@ -122,7 +122,10 @@ function canopyFor(b: Building): Canopy | null {
   // C1 a lot is not centered in its block, the facade nearest a street is
   // often a party wall with no sidewalk at all — an awning there would hang
   // inside the neighbouring building.
-  const side = `${onX ? "x" : "z"}${dir < 0 ? 0 : 1}` as const;
+  // H1: never an awning on a facade with a hole mouth in it.
+  const axis = onX ? "x" : "z";
+  if (b.holes?.some((h) => h.tierIndex === 0 && h.axis === axis)) return null;
+  const side = `${axis}${dir < 0 ? 0 : 1}` as const;
   const clearance = facadeClearances(b.x, b.z, b.width, b.depth)[side];
   if (clearance < MIN_CLEARANCE) return null;
   const depth = Math.min(CANOPY_MAX_DEPTH, clearance - 0.3);

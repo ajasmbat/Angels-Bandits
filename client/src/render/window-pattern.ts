@@ -21,7 +21,9 @@
 // distributions and invariants (lit fraction, clustering, convexity, finite
 // pitch), never a specific window's on/off state on a specific GPU.
 
+import * as THREE from "three";
 import { FacadeArchetype } from "./archetypes";
+import { emissiveBoost } from "./emissive";
 import {
   GARDEN_LIGHT_COLOR,
   PAD_LIGHT_COLOR,
@@ -314,7 +316,7 @@ vec2 winGrid = vec2(1e6);
 if (abs(vObjNormal.x) > 0.5) winGrid = vec2(vMeters.z, vMeters.y);
 else if (abs(vObjNormal.z) > 0.5) winGrid = vec2(vMeters.x, vMeters.y);
 float facade = 1.0 - step(1e5, abs(winGrid.x));
-vec2 winCell = floor(winGrid / winPitch);
+${holeMaskGlsl()}vec2 winCell = floor(winGrid / winPitch);
 vec2 winF = fract(winGrid / winPitch);
 // The pane inside its cell — mullions between panes stay dark.
 vec2 paneLo = (1.0 - winPane) * 0.5;
@@ -544,7 +546,8 @@ export function roofSurfaceGlsl(): string {
   const A = ROOF_ALBEDO;
   return /* glsl */ `
 // --- VO3 roof surface ---
-float roofUp = (1.0 - facade) * step(0.5, vObjNormal.y);
+// A sill's top face points up but is a hole floor, not a roof (H1).
+float roofUp = (1.0 - facade) * step(0.5, vObjNormal.y) * (1.0 - holeLining);
 vec3 mAA = fwidth(vMeters);                 // meters per pixel, per axis
 // Horizontal meters per pixel: the roof plane, or the facade run (on a side
 // face one of x/z is constant, so the max is the run axis).
@@ -670,5 +673,106 @@ totalEmissiveRadiance += diffuseColor.rgb * vCrown * crownK;
 totalEmissiveRadiance += roofUp * (skyGlow * ${glslVec3(SKYLIGHT_COLOR)}
   + padLight * ${glslVec3(PAD_LIGHT_COLOR)} + bollard * ${glslVec3(GARDEN_LIGHT_COLOR)});
 totalEmissiveRadiance = mix(totalEmissiveRadiance, vLed, led);
+`;
+}
+
+// --- H1 fly-through holes -------------------------------------------------
+// A holed tier is drawn as walls + lintel + sill (city.ts), all painted in the
+// PARENT tier's frame, and every one of them carries the tier's hole as
+// `vHole` = (across offset, half width, floor above the tier base, ±height —
+// + travels along x, − along z; 0 = no hole). From that one vec4 each
+// fragment knows whether it lines the hole or frames its mouth, so the
+// pattern needs no per-face flags and an unholed tier pays one branchless
+// mask that comes out 0.
+
+/** Hole sizes and tuning, meters. */
+export const HOLE = {
+  /** Windows stop this far short of a mouth opening — no half-cut panes. */
+  reveal: 2.4,
+  /** LED frame line: centred this far outside the opening, half-width. */
+  frameOffset: 0.9,
+  frameHalf: 0.22,
+  /** Rim ring just inside each mouth, on the lining. */
+  rimDepth: 0.6,
+  rimHalf: 0.2,
+  /** Ceiling lights: dashed line down the lintel's underside. */
+  ceilingPitch: 7,
+  ceilingDuty: 0.45,
+  ceilingHalf: 0.3,
+  ceilingGain: 0.55,
+  /** Lining concrete: panel joints along the tunnel, depth falloff (AO). */
+  panel: 4,
+  aoDepth: 14,
+  aoFloor: 0.3,
+} as const;
+
+/** Tunnel-lining albedo, linear: weathered board-formed concrete. */
+export const HOLE_LINING = new THREE.Color(0.11, 0.105, 0.1);
+/** The mouth frame's luminance — the VO3 LED rung, under EMISSIVE_SIGN. */
+export const HOLE_LED_LUMINANCE = 0.9;
+/** Mouth frame colour: a cool white that reads against every facade hue,
+ * boosted to exactly HOLE_LED_LUMINANCE. */
+export const HOLE_LED_COLOR = new THREE.Color(0.7, 0.9, 1.0).multiplyScalar(
+  emissiveBoost(new THREE.Color(0.7, 0.9, 1.0), HOLE_LED_LUMINANCE),
+);
+
+/**
+ * Which fragments line a hole, and which frame its mouth. Emitted right after
+ * the facade mask (before any window is lit), and it takes those fragments
+ * OFF the facade: no windows, shop band, bounce, grime, LED corners or crown
+ * wash inside a hole or around its opening.
+ */
+export function holeMaskGlsl(): string {
+  return /* glsl */ `
+// --- H1 hole mask (parent-tier meters) ---
+float holeH = abs(vHole.w);
+float holeOn = step(1e-3, holeH);
+float holeX = step(0.0, vHole.w);              // 1: travels along x
+float holeAlong = mix(vMeters.z, vMeters.x, holeX);
+float holeAcross = mix(vMeters.x, vMeters.z, holeX);
+float holeHalfLen = mix(vHalfXZ.y, vHalfXZ.x, holeX);
+// Normal along the travel axis = a mouth face (the tier's end facades).
+float holeMouthFace = step(0.5, abs(mix(vObjNormal.z, vObjNormal.x, holeX)));
+// Signed distance to the opening's rectangle (across, height); < 0 inside.
+vec2 holeQ = vec2(abs(holeAcross - vHole.x) - vHole.y,
+                  abs(vMeters.y - vHole.z - 0.5 * holeH) - 0.5 * holeH);
+float holeSd = max(holeQ.x, holeQ.y);
+// Lining: the walls, floor and ceiling of the hole itself.
+float holeLining = holeOn * (1.0 - holeMouthFace) * step(holeSd, 0.02);
+// Reveal: the band of mouth facade around the opening.
+float holeReveal = holeOn * holeMouthFace * step(holeSd, ${glslFloat(HOLE.reveal)});
+// Meters in from the nearer mouth.
+float holeDepth = holeHalfLen - abs(holeAlong);
+facade *= 1.0 - max(holeLining, holeReveal);
+`;
+}
+
+/** Lining albedo (diffuse), after the roof pass: concrete panels darkening
+ * with depth — there are no shadows, so the AO is what makes it a tunnel. */
+export function holeSurfaceGlsl(): string {
+  return /* glsl */ `
+// --- H1 hole lining ---
+float holePanel = abHash(vec2(floor(holeAlong / ${glslFloat(HOLE.panel)}), 7.0), vBSeed * 19.0);
+float holeJoint = abLine((0.5 - abs(fract(holeAlong / ${glslFloat(HOLE.panel)}) - 0.5)) * ${glslFloat(HOLE.panel)}, 0.04, rPix);
+float holeAo = mix(${glslFloat(HOLE.aoFloor)}, 1.0, exp(-max(holeDepth, 0.0) / ${glslFloat(HOLE.aoDepth)}));
+vec3 holeAlbedo = ${glslVec3(HOLE_LINING)} * (0.85 + 0.3 * holePanel) * (1.0 - 0.35 * holeJoint) * holeAo;
+diffuseColor.rgb = mix(diffuseColor.rgb, holeAlbedo, holeLining);
+// The frame strip IS the light: no diffuse under it (the VO3 LED rule).
+float holePix = max(rPix, max(mAA.y, 1e-4));
+float holeFrame = holeReveal * abLine(abs(holeSd - ${glslFloat(HOLE.frameOffset)}), ${glslFloat(HOLE.frameHalf)}, holePix);
+float holeRim = holeLining * abLine(abs(holeDepth - ${glslFloat(HOLE.rimDepth)}), ${glslFloat(HOLE.rimHalf)}, holePix);
+float holeCeil = holeLining * step(vObjNormal.y, -0.5)
+  * abLine(abs(holeAcross - vHole.x), ${glslFloat(HOLE.ceilingHalf)}, holePix)
+  * step(fract(holeAlong / ${glslFloat(HOLE.ceilingPitch)}), ${glslFloat(HOLE.ceilingDuty)});
+float holeLed = clamp(max(max(holeFrame, holeRim), holeCeil * ${glslFloat(HOLE.ceilingGain)}), 0.0, 1.0);
+diffuseColor.rgb *= 1.0 - holeLed;
+`;
+}
+
+/** The mouth frame, rim and ceiling lights — a convex replacement like the
+ * VO3 LEDs, so the brightest pixel is HOLE_LED_LUMINANCE, never a sum. */
+export function holeLightGlsl(): string {
+  return /* glsl */ `
+totalEmissiveRadiance = mix(totalEmissiveRadiance, ${glslVec3(HOLE_LED_COLOR)}, holeLed);
 `;
 }

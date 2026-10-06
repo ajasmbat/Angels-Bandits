@@ -16,12 +16,16 @@ import {
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
+import { RoofKind, roofStyleFor } from "./roofs";
 import { nearestImage } from "./wrapPlacement";
 
 /** Buildings at least this tall grow antenna masts (with red tips). */
 const MAST_MIN_HEIGHT = 120;
 /** Smallest top-roof side that fits a water tower, meters. */
 const TOWER_MIN_ROOF = 24;
+/** How far a helipad roof's corner units may wander in from the corner, m —
+ * small enough that the smallest pad roof (34 m) keeps them off the pad. */
+const HELIPAD_CORNER_SPAN = 2;
 /** Beacon hover above the landmark crown, meters. */
 const BEACON_LIFT = 3;
 
@@ -92,6 +96,30 @@ export function roofClutterFor(b: Building): RoofClutter {
 
   const clutter: RoofClutter = { ...none };
 
+  // VO3 helipad roofs take their OWN placement path (so every other roof's
+  // stream, and the steam vents that follow acBoxes[0], stay byte-identical):
+  // no water tower, a few units pushed into the corners, clear of the pad
+  // circle and its perimeter lights. Helipads only exist under the mast
+  // height (roofs.ts), so there are no masts to place.
+  if (roofStyleFor(b).tierKinds[b.tiers.length - 1] === RoofKind.HELIPAD) {
+    const units = 1 + Math.floor(rand() * 3);
+    for (let i = 0; i < units; i++) {
+      const width = 1.6 + rand() * 2.4;
+      const depth = 1.6 + rand() * 2.4;
+      const sx = rand() < 0.5 ? -1 : 1;
+      const sz = rand() < 0.5 ? -1 : 1;
+      clutter.acBoxes.push({
+        x: b.x + sx * (halfW - width / 2 - 1 - rand() * HELIPAD_CORNER_SPAN),
+        z: b.z + sz * (halfD - depth / 2 - 1 - rand() * HELIPAD_CORNER_SPAN),
+        y: b.height,
+        width,
+        depth,
+        height: 1.2 + rand() * 1.6,
+      });
+    }
+    return clutter;
+  }
+
   if (Math.min(top.width, top.depth) >= TOWER_MIN_ROOF && rand() < 0.55) {
     const radius = 2.2 + rand() * 1.3;
     clutter.waterTowers.push({
@@ -143,7 +171,23 @@ const BEACON_PERIOD_MS = 2000;
 const TIP_COLOR = 0xff2620;
 const TIP_BOOST = 1.5;
 
-const CLUTTER_MATERIAL_COLOR = 0x1a1a26; // same dark dressing as lamp poles
+/** VO3: clutter is lit and lighter — galvanized ducts, painted plant,
+ * weathered timber tanks — so roofs read as working decks, not black holes.
+ * The material is WHITE and every instance carries its tone in instanceColor
+ * (three multiplies the two, so a dark material colour could never be
+ * lightened per instance). sRGB hex, converted to linear by THREE.Color. */
+const CLUTTER_MATERIAL_COLOR = 0xffffff;
+const TOWER_TONES = [0x7a6552, 0x6e7680, 0x86705a] as const; // timber / steel
+const BOX_TONES = [0x9aa1aa, 0x9c9585, 0x8a929c, 0xa7a49b] as const; // plant
+const MAST_TONE = 0x737a85;
+/** Stable per-item pick from its canonical position (never a torus image). */
+const toneOf = <T>(tones: readonly T[], x: number, z: number): T =>
+  tones[
+    ((Math.imul(Math.round(x * 8), 73856093) ^
+      Math.imul(Math.round(z * 8), 19349663)) >>>
+      0) %
+      tones.length
+  ] as T;
 
 /** The instanced roof-clutter renderer + pulsing landmark beacons. */
 export class RoofClutterRenderer {
@@ -212,6 +256,18 @@ export class RoofClutterRenderer {
       this.beaconMaterial,
       this.beacons.length,
     );
+
+    // Per-instance tones (static — set once, before the first compile).
+    const tone = new THREE.Color();
+    this.towers.forEach((t, i) => {
+      this.towerMesh.setColorAt(i, tone.setHex(toneOf(TOWER_TONES, t.x, t.z)));
+    });
+    this.boxes.forEach((box, i) => {
+      this.boxMesh.setColorAt(i, tone.setHex(toneOf(BOX_TONES, box.x, box.z)));
+    });
+    this.masts.forEach((_, i) => {
+      this.mastMesh.setColorAt(i, tone.setHex(MAST_TONE));
+    });
 
     for (const mesh of [
       this.towerMesh,

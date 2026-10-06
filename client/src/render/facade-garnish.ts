@@ -150,8 +150,9 @@ function canopyFor(b: Building): Canopy | null {
 
 // --- Renderer (RoofClutter idiom: canonical layout, re-placed each frame) ---
 
-/** Caps slightly lighter than facades so roof edges catch the sky. */
-const PARAPET_COLOR = 0x262633;
+/** VO3: precast coping, light enough that every roof edge reads as a clean
+ * line against the deck (it was near-black — roofs merged into the street). */
+const PARAPET_COLOR = 0x6b6a70;
 /** Awnings darker than the shop band behind them — a silhouette over the door. */
 const CANOPY_COLOR = 0x0a0a14;
 /** Lips sink this far into the tier top (kills z-gaps on the roof line). */

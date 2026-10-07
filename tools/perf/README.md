@@ -866,10 +866,14 @@ the runner, the first frame of the `core` and `plaza` windows (sometimes
 the furball's) read 1.6–10 s of wall time with no GPU-timer spike and
 nothing allocated, while the frames around it read 1–16 ms. That pattern
 fits SwiftShader's GPU process draining a queued backlog behind one
-blocking GL call, rather than a main-thread or first-sight cost. It is
-**unresolved**: the pin-only build's one 3-pass run on this box did not
-show it, and the runner cannot attribute it further. The M3's `--samples`
-run (command 3) is the deciding number.
+blocking GL call, rather than a main-thread or first-sight cost. In one
+core window the wall frames sum to 11.4 s against 4.8 s of GPU-timed work,
+so frame 0 is paying for the settle's queued frames. It is not the post
+chain (the same build on `?post=legacy` shows it, 5.8 s) nor the depth
+discard (a build without it shows 6.4 s). The pin-only build queues too
+(wall frames shorter than GPU frames) but did not spike on this box. It
+stays **unresolved** here; the M3's `--samples` run (command 3) is the
+deciding number.
 
 ### GPU cost at ratio 2
 

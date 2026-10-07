@@ -35,6 +35,10 @@ const DUCK_RAMP_S = 0.08;
 // static bed is diegetic flavor, quieter than everything else.
 const THUNDER_LEVEL = 0.8;
 const STATIC_BED_LEVEL = 0.055;
+// L4 weather: rain on the canopy — a band-passed hiss from the first drizzle,
+// plus a low roar that only fills in for a downpour. Under the engine.
+const RAIN_HISS_LEVEL = 0.07;
+const RAIN_ROAR_LEVEL = 0.09;
 
 /** Engine pitch band: idle throttle → full throttle, Hz. */
 const ENGINE_MIN_HZ = 55;
@@ -63,6 +67,8 @@ export class GameAudio implements VoiceSink {
   private ownOsc: OscillatorNode | null = null;
   private ownGain: GainNode | null = null;
   private staticGain: GainNode | null = null;
+  private rainHiss: GainNode | null = null;
+  private rainRoar: GainNode | null = null;
   private readonly remotes = new Map<string, RemoteEngine>();
   private lastWhooshAt = 0;
   private lastPullUpAt = Number.NEGATIVE_INFINITY;
@@ -349,6 +355,45 @@ export class GameAudio implements VoiceSink {
   }
 
   /** Boost ignition (F2): a rising rush of air as the burn lights. */
+  /** L4 rain bed, `level` = rain intensity 0..1 (0 above the deck). Call
+   * every frame; the shared noise buffer feeds both layers. */
+  setRain(level: number): void {
+    const ctx = this.ensure();
+    if (!ctx || !this.sfx || !this.noise) return;
+    if (!this.rainHiss || !this.rainRoar) {
+      const src = ctx.createBufferSource();
+      src.buffer = this.noise;
+      src.loop = true;
+      const hissFilter = ctx.createBiquadFilter();
+      hissFilter.type = "bandpass";
+      hissFilter.frequency.value = 5200;
+      hissFilter.Q.value = 0.6;
+      const roarFilter = ctx.createBiquadFilter();
+      roarFilter.type = "lowpass";
+      roarFilter.frequency.value = 700;
+      this.rainHiss = ctx.createGain();
+      this.rainHiss.gain.value = 0;
+      this.rainRoar = ctx.createGain();
+      this.rainRoar.gain.value = 0;
+      src.connect(hissFilter).connect(this.rainHiss).connect(this.sfx);
+      src.connect(roarFilter).connect(this.rainRoar).connect(this.sfx);
+      src.start();
+    }
+    const r = Math.max(0, Math.min(1, level));
+    const now = ctx.currentTime;
+    this.rainHiss.gain.setTargetAtTime(
+      Math.sqrt(r) * RAIN_HISS_LEVEL,
+      now,
+      0.8,
+    );
+    // The roar only builds past drizzle strength (0.3).
+    this.rainRoar.gain.setTargetAtTime(
+      Math.max(0, (r - 0.3) / 0.7) * RAIN_ROAR_LEVEL,
+      now,
+      0.8,
+    );
+  }
+
   boostCue(): void {
     this.burst("bandpass", 500, 2600, 0.5, BOOST_CUE_LEVEL, 0);
   }

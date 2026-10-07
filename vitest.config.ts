@@ -10,9 +10,6 @@ export default defineConfig({
     // default on an idle machine, but not under load. This is flake headroom,
     // not an expected runtime.
     testTimeout: 20000,
-    // Lets the worker's RPC replies land between long synchronous tests;
-    // see the file for why that is what "Timeout calling onTaskUpdate" was.
-    setupFiles: ["./vitest.setup.ts"],
     include: [
       "common/test/**/*.test.ts",
       "server/test/**/*.test.ts",

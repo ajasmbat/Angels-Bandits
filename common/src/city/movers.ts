@@ -56,6 +56,7 @@ import {
 import { type Vec3, canonicalize, wrapDeltaAxis } from "../world/index";
 import { type Building, mulberry32 } from "./index";
 import { CONSTRUCTION_BLOCKS } from "./layout";
+import { type TrainLine, collideTrain, generateTrain } from "./train";
 
 /** Which part of which mover a collision landed on. */
 export type MoverKind =
@@ -65,7 +66,10 @@ export type MoverKind =
   | "hook"
   | "cable"
   | "helicopter"
-  | "blimp";
+  | "blimp"
+  // L5's elevated train (city/train.ts): the static deck and pillars, a car.
+  | "viaduct"
+  | "train";
 
 /**
  * An oriented box. `x`/`z` are canonical in [0, WORLD_SIZE); `y` is the
@@ -141,6 +145,9 @@ export interface AircraftRoute {
 export interface MoverField {
   readonly cranes: readonly CraneSite[];
   readonly aircraft: readonly AircraftRoute[];
+  /** L5's elevated train, or null when no loop fits the city. Optional so a
+   * hand-built field (tests, EMPTY_MOVERS) need not mention it. */
+  readonly train?: TrainLine | null;
 }
 
 /** A field with nothing in it — the safe default for callers that have none. */
@@ -292,7 +299,7 @@ export function generateMovers(
     hz: BLIMP_HULL[2],
   });
 
-  return { cranes, aircraft };
+  return { cranes, aircraft, train: generateTrain(seed, buildings) };
 }
 
 const TAU = Math.PI * 2;
@@ -514,11 +521,14 @@ export function collideMovers(
       return { kind: route.kind, id: route.id };
     }
   }
+  // L5: the viaduct and the cars.
+  if (field.train) return collideTrain(field.train, pos, radius, timeMs);
   return null;
 }
 
 /**
- * The BOT-facing query: crane geometry and the blimp, never helicopters.
+ * The BOT-facing query: crane geometry, the blimp and the L5 train line,
+ * never helicopters.
  *
  * Bots must not die to scenery (ST1's rule for weather, applied here), so
  * everything a bot could plausibly fly into has to be something it also
@@ -544,5 +554,8 @@ export function collideBotMovers(
       return { kind: route.kind, id: route.id };
     }
   }
+  // L5: the viaduct and the train are solid for bots too — they sit right in
+  // the canyon band, so a bot that could not see them would die to them.
+  if (field.train) return collideTrain(field.train, pos, radius, timeMs);
   return null;
 }

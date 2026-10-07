@@ -183,6 +183,52 @@
       #protected-badge.on {
         display: block;
       }
+      /* Boost (F2): the energy gauge, and speed-line streaks while burning. */
+      #boost-fill {
+        background: #7ad8ff;
+      }
+      #boost.low .fill {
+        background: #5a6a80;
+      }
+      #boost.low label {
+        color: #5a6a80;
+      }
+      body.boost #boost .fill {
+        background: #e8f6ff;
+        box-shadow: 0 0 8px #7ad8ff;
+      }
+      #speedlines {
+        position: fixed;
+        inset: -10%;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.35s ease-out;
+        background: repeating-conic-gradient(
+          from 0deg,
+          #ffffff00 0deg 3.1deg,
+          #dff4ff2e 3.4deg 3.6deg,
+          #ffffff00 3.9deg 7.3deg
+        );
+        -webkit-mask-image: radial-gradient(
+          circle,
+          transparent 30%,
+          #000 75%
+        );
+        mask-image: radial-gradient(circle, transparent 30%, #000 75%);
+      }
+      body.boost #speedlines {
+        opacity: 1;
+        transition: opacity 0.12s ease-in;
+        animation: speedlines-rush 0.18s steps(3) infinite;
+      }
+      @keyframes speedlines-rush {
+        from {
+          transform: rotate(0deg) scale(1);
+        }
+        to {
+          transform: rotate(2.4deg) scale(1.04);
+        }
+      }
       @keyframes prot-pulse {
         from {
           opacity: 0.35;
@@ -626,6 +672,8 @@
     </style>
   </head>
   <body>
+    <!-- First child: every other fixed HUD element paints over the streaks. -->
+    <div id="speedlines"></div>
     <svg id="crosshair" viewBox="0 0 48 48" aria-hidden="true">
       <circle class="ring" cx="24" cy="24" r="7" />
       <circle class="dot" cx="24" cy="24" r="1.2" />
@@ -654,6 +702,10 @@
       <div class="gauge" id="heat">
         <label for="heat-fill">GUNS</label>
         <div class="bar"><div class="fill" id="heat-fill"></div></div>
+      </div>
+      <div class="gauge" id="boost">
+        <label for="boost-fill">BOOST · SPACE</label>
+        <div class="bar"><div class="fill" id="boost-fill"></div></div>
       </div>
       <div id="protected-badge">◇ PROTECTED ◇</div>
       <div id="radio-toggle"></div>

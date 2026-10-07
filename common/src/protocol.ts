@@ -63,6 +63,18 @@ export interface FireMsg {
 }
 
 /**
+ * SPACE boost edge (F2): `on: true` the instant a burn starts, `on: false`
+ * the instant it ends (release or the gauge running dry). Sent immediately,
+ * never batched — the socket is ordered, so a start always lands before the
+ * first boosted pose. The server steps its mirror of the shared energy model
+ * (common/src/boost.ts) from these edges and validates speed against it.
+ */
+export interface BoostMsg {
+  type: "boost";
+  on: boolean;
+}
+
+/**
  * Shooter-side hit claim (PLAN.md: hits resolve on the shooter's client,
  * favoring the shooter; the server only validates plausibility).
  */
@@ -103,6 +115,7 @@ export type ClientMsg =
   | JoinMsg
   | PoseMsg
   | FireMsg
+  | BoostMsg
   | HitClaimMsg
   | CrashMsg
   | SetBotsMsg;

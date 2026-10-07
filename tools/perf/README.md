@@ -720,7 +720,7 @@ What it *can* measure honestly is GPU-independent:
   | `ImageCache.update` | 0.90 | `Pedestrians.update` | 0.76 |
   | `Pedestrians.update` | 0.78 | GC | 0.32 |
   | `Signage.place` | 0.77 | `Signage.place` | 0.18 |
-  | GC | 0.69 | `sphereHitsBox` (crash/camera/proximity probes) | 0.18 |
+  | GC | 0.69 | `sphereHitsBox` (crash and camera-arm probes) | 0.18 |
   | `pedestrianPoseInto` | 0.25 | `frame` (the loop body) | 0.18 |
   | `frame` | 0.24 | three `renderBufferDirect` | 0.15 |
   | `Color.setHex` (crowd coats) | 0.15 | three `arraysEqual` (uniform cache) | 0.15 |

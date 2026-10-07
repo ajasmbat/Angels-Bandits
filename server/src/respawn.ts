@@ -13,6 +13,7 @@ import {
   BOT_CANYON_SLOW_RADIUS,
   BOT_SPAWN_ALT_MAX,
   BOT_SPAWN_ALT_MIN,
+  BOT_SPAWN_SPEED,
   RESPAWN_ALTITUDE,
   RESPAWN_SAMPLES,
   RESPAWN_SPEED,
@@ -61,7 +62,7 @@ export function pickRespawn(
  * city fight. Each candidate stands on a street centreline at
  * BOT_SPAWN_ALT_MIN..MAX, nose along the street, with at least
  * BOT_CANYON_SLOW_RADIUS to the next intersection so the first corner can be
- * flown at RESPAWN_SPEED. `clear` (RoomBots.spawnClear) vetoes candidates
+ * flown at BOT_SPAWN_SPEED. `clear` (RoomBots.spawnClear) vetoes candidates
  * that would spawn into a facade or a mover; among the rest the same
  * farthest-from-enemies rule as pickRespawn picks the winner. Nothing clear
  * (never, in practice) falls back to the high spawn, which is always safe.
@@ -103,7 +104,7 @@ export function pickBotRespawn(
       score = Math.min(score, wrapDistance(pos, enemy));
     }
     if (score > bestScore) {
-      best = { pos, yaw, speed: RESPAWN_SPEED };
+      best = { pos, yaw, speed: BOT_SPAWN_SPEED };
       bestScore = score;
     }
   }

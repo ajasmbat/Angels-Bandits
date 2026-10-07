@@ -9,7 +9,7 @@ import {
   collideMovers,
   generateMovers,
 } from "@angels-bandits/common/city/movers";
-import { isInRoadway } from "@angels-bandits/common/city/street";
+import { isInRoadway, nearestStreet } from "@angels-bandits/common/city/street";
 import { collideCity, hitsGround } from "@angels-bandits/common/collision";
 import {
   BOT_CANYON_ALT_MAX,
@@ -1014,12 +1014,18 @@ describe("bots vs the L2 movers", () => {
   }, 60_000);
 
   /**
-   * The adversarial version: a stationary decoy parked in the construction
-   * block's open air, ~90 m from the mast — outside the sweep, so the bots'
-   * GOAL is not itself inside solid geometry, but reaching it means crossing
-   * the sweep over and over for two minutes. Nothing in a real match is this
+   * The adversarial version: a stationary decoy parked on the street the jib
+   * oversails, just outside the sweep — so the bots' GOAL is not itself
+   * inside solid geometry, but reaching it means crossing the sweep over and
+   * over for four minutes. Nothing in a real match is this
    * relentless; it exists to make the probe's contribution measurable.
    */
+  /** How long orbitCrane runs, s. Four minutes since B1: bots that keep to
+   * the streets cross a crane's sweep about half as often as the old high
+   * layer did, and the vacuity guard below is about absolute time spent in
+   * the sweep — so the exposure is doubled rather than the bar halved. */
+  const ORBIT_SECONDS = 240;
+
   function orbitCrane(seed: number, probeMovers: boolean) {
     const site = l2Field.cranes[0];
     if (!site) throw new Error("no crane site");
@@ -1039,7 +1045,25 @@ describe("bots vs the L2 movers", () => {
       };
     };
     bots.syncTo(8, spawn);
-    const lure = canonicalize({ x: site.x + 92, y: 0, z: site.z + 92 });
+    // On the street the jib oversails, just outside the sweep: since B1 a
+    // low bot will not cut across a construction block to reach a decoy
+    // parked inside it, but it will chase one up the street — straight
+    // through the jib's arc.
+    const street = nearestStreet({ x: site.x, y: 0, z: site.z });
+    const perp = Math.abs(
+      street.axis === "x"
+        ? wrapDeltaAxis(site.z, street.centerline)
+        : wrapDeltaAxis(site.x, street.centerline),
+    );
+    const clearOfSweep = Math.sqrt(
+      Math.max(0, (site.jibLength + PLAYER_RADIUS + 10) ** 2 - perp ** 2),
+    );
+    const along = (street.axis === "x" ? site.x : site.z) + clearOfSweep;
+    const lure = canonicalize(
+      street.axis === "x"
+        ? { x: along, y: 0, z: street.centerline }
+        : { x: street.centerline, y: 0, z: along },
+    );
     const contacts = [
       {
         id: "decoy",
@@ -1051,7 +1075,7 @@ describe("bots vs the L2 movers", () => {
 
     let moverDeaths = 0;
     let sweepTicks = 0;
-    const ticks = Math.round(120 * TICK_DOWN_HZ);
+    const ticks = Math.round(ORBIT_SECONDS * TICK_DOWN_HZ);
     for (let i = 1; i <= ticks; i++) {
       const now = i * (1000 / TICK_DOWN_HZ);
       for (const id of bots.tick(now, contacts).crashes) {
@@ -1068,13 +1092,14 @@ describe("bots vs the L2 movers", () => {
 
   it("negative control: the probe is load-bearing, not decorative", () => {
     // The measured contribution of wiring movers into blockedAlong. Blind,
-    // eight bots dogfighting through a crane's sweep for two minutes died to
-    // it 42-46 times per seed while a third of them flew straight lines up
-    // high; now that every bot chases along the streets (B1) it is 8-14 per
-    // seed, so the same seeds as the patrol test are summed. With the probe
-    // on it is 0-1. This asserts the gap, not a fragile exact count.
+    // eight bots dogfighting through a crane's sweep died to it 42-46 times
+    // per seed while a third of them flew straight lines up high. Since B1
+    // every bot keeps to the streets, so the decoy moved onto the street the
+    // jib oversails and the run is summed over five seeds of four minutes:
+    // blind it is ~30 deaths, with the probe on 0. This asserts the gap, not
+    // a fragile exact count.
     const sum = (probe: boolean) =>
-      [1234, 7, 20260826]
+      [1234, 7, 20260826, 99, 5]
         .map((seed) => orbitCrane(seed, probe))
         .reduce((a, r) => ({
           moverDeaths: a.moverDeaths + r.moverDeaths,
@@ -1082,9 +1107,9 @@ describe("bots vs the L2 movers", () => {
         }));
     const seeing = sum(true);
     const blind = sum(false);
-    // Three seeds' worth of the single-seed 800-tick vacuity guard.
-    expect(blind.sweepTicks).toBeGreaterThan(2400);
-    expect(seeing.sweepTicks).toBeGreaterThan(2400);
+    // Five seeds' worth of the single-seed 800-tick vacuity guard.
+    expect(blind.sweepTicks).toBeGreaterThan(4000);
+    expect(seeing.sweepTicks).toBeGreaterThan(4000);
     expect(blind.moverDeaths).toBeGreaterThan(20);
     expect(seeing.moverDeaths * 10).toBeLessThan(blind.moverDeaths);
   }, 60_000);

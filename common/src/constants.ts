@@ -632,14 +632,23 @@ export const BOT_ATTACK_COOLDOWN_MS = 6000;
 export const BOT_ATTACK_YAW = 0.35;
 /** Bot (re)spawn altitude band, m: on a street centreline, heading along it,
  * already inside the canyon — a respawn at RESPAWN_ALTITUDE spent ~10 s
- * gliding down before it was part of the city fight. Under every rooftop
- * that lines a street (C1's streetwall), above the canyon band's floor. */
-export const BOT_SPAWN_ALT_MIN = 60;
-export const BOT_SPAWN_ALT_MAX = 80;
-/** A canyon spawn must see this much clear street straight ahead, m (about
- * 2.3 s at RESPAWN_SPEED): the first decision then has room to slow for the
- * next corner instead of spawning into a facade or a crane jib. */
-export const BOT_SPAWN_CLEAR_AHEAD = 150;
+ * gliding down before it was part of the city fight. High in the street (the
+ * corner hop's headroom over most of the streetwall) rather than at band
+ * height: 60–80 m crashed 31 of 252 spawns within 20 s (review round 2). */
+export const BOT_SPAWN_ALT_MIN = 75;
+export const BOT_SPAWN_ALT_MAX = 90;
+/** A canyon spawn must see this much clear street straight ahead, m — a long
+ * straight run-out (6 s at BOT_SPAWN_SPEED) that the spawn grace flies before
+ * the bot is allowed to fight or turn. */
+export const BOT_SPAWN_CLEAR_AHEAD = 300;
+/** A bot (re)spawns this fast, m/s — slower than RESPAWN_SPEED, so its first
+ * corner fits the street (turn radius is speed / 0.765 rad/s). */
+export const BOT_SPAWN_SPEED = 50;
+/** After a (re)spawn a bot flies a straight canyon patrol for this long, ms:
+ * no acquisition, no chase, no turn at the first intersection — it settles
+ * into the street before it joins the fight. The terrain and ceiling guards
+ * still apply. */
+export const BOT_SPAWN_GRACE_MS = 3000;
 /** Acquisition ranks contacts by distance plus this many metres per metre the
  * contact flies above BOT_ENGAGE_CEILING — so the low layer prefers the fight
  * at its own altitude and is not forever dragged up by the nearest high one. */

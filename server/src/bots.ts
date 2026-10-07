@@ -35,6 +35,7 @@ import {
   collideBotMovers,
 } from "@angels-bandits/common/city/movers";
 import {
+  LOT_LINE,
   ROADWAY_HALF,
   nextIntersection,
   offCenterline,
@@ -96,6 +97,8 @@ import {
   BOT_RECOVER_CLEAR,
   BOT_RETARGET_MARGIN,
   BOT_SPAWN_CLEAR_AHEAD,
+  BOT_SPAWN_GRACE_MS,
+  BOT_SPAWN_SPEED,
   BOT_STEER_GAIN,
   BOT_THREAT_RANGE,
   BULLET_RANGE,
@@ -103,7 +106,6 @@ import {
   HIT_RADIUS,
   PITCH_LIMIT,
   PLAYER_RADIUS,
-  RESPAWN_SPEED,
   TICK_DOWN_HZ,
 } from "@angels-bandits/common/constants";
 import {
@@ -171,6 +173,11 @@ const wrapAngle = (a: number): number => {
 
 const NEUTRAL: FlightInput = { pitch: 0, turn: 0, roll: 0, throttle: 0 };
 
+/** A fresh bot's graceUntil: unstamped (NaN) for a spawn in the canyons, none
+ * at all for a high one — see Bot.graceUntil. */
+const streetGrace = (spawn: SpawnState): number =>
+  spawn.pos.y < BOT_CANYON_PROBE_ALT ? Number.NaN : Number.NEGATIVE_INFINITY;
+
 /**
  * Candidate heading offsets (yaw, pitch) sampled around the pursuit vector.
  * Deliberately UNORDERED: the angle a yaw offset subtends shrinks as the base
@@ -217,6 +224,12 @@ interface Bot {
    * patrolled? Back in PATROL it then re-joins the NEAREST street rather than
    * flying cross-country to a waypoint picked before the fight. */
   fought: boolean;
+  /** End of the post-spawn straight patrol, ms — NaN until the first
+   * decision after a (re)spawn stamps it (the brain has no clock of its own
+   * at spawn time). Only a spawn down IN a street gets one: the grace is for
+   * settling into the street before the fight, and a high (fallback) spawn
+   * has no street to settle into. */
+  graceUntil: number;
   /** Is the current ENGAGE chasing along the street lattice (pursuit line
    * blocked) rather than flying straight at the target? */
   streetChase: boolean;
@@ -314,6 +327,7 @@ export class RoomBots {
       attackCooldownUntil: Number.NEGATIVE_INFINITY,
       escapeYaw: null,
       fought: false,
+      graceUntil: streetGrace(spawn),
       streetChase: false,
       breakTurn: 1,
       aimJitterYaw: 0,
@@ -388,6 +402,11 @@ export class RoomBots {
     return this.bots.get(id)?.flight;
   }
 
+  /** The stick a bot is currently holding — read-only, for the sim's logs. */
+  inputOf(id: string): FlightInput | undefined {
+    return this.bots.get(id)?.input;
+  }
+
   /** The wire pose of a living bot (Euler YXZ → quat, Three.js order). */
   poseOf(id: string): Pose | null {
     const bot = this.bots.get(id);
@@ -454,6 +473,7 @@ export class RoomBots {
     bot.attackCooldownUntil = Number.NEGATIVE_INFINITY;
     bot.escapeYaw = null;
     bot.fought = false;
+    bot.graceUntil = streetGrace(spawn);
     bot.streetChase = false;
   }
 
@@ -484,7 +504,7 @@ export class RoomBots {
           BOT_PROBE_RADIUS + BOT_MOVER_CLEAR,
           this.movers,
           // Posed when the bot gets there, like blockedAlong: a jib slews.
-          now + (s / RESPAWN_SPEED) * 1000,
+          now + (s / BOT_SPAWN_SPEED) * 1000,
         )
       ) {
         return false;
@@ -507,7 +527,18 @@ export class RoomBots {
 
     for (const bot of this.bots.values()) {
       if (!bot.alive) continue;
-      if (decide) this.decide(bot, now, contacts);
+      // Down among the towers the curved probe runs every tick, not just at
+      // the 5 Hz decision: a decision is ~8 m of travel at MIN_SPEED, and a
+      // wall on the inside of a turn closes that fast. A blocked path pulls
+      // the next decision forward; it never sharpens anything else.
+      if (
+        decide ||
+        (bot.state !== "RECOVER" &&
+          bot.flight.pos.y < BOT_CANYON_PROBE_ALT &&
+          this.pathBlocked(bot, now, 1))
+      ) {
+        this.decide(bot, now, contacts);
+      }
       bot.flight = stepFlight(bot.flight, bot.input, BOT_DT);
 
       // Identical geometry to players: solids (H1 holes open) + ground, PLAYER_RADIUS —
@@ -553,6 +584,10 @@ export class RoomBots {
         bot.breakTurn = this.clearSide(bot.flight, now);
         bot.escapeYaw = null;
       }
+      // A recovery leaves the lattice as surely as a fight does: the waypoint
+      // it was flying to may now be behind it, and turning back toward it is
+      // what tripped the probe. PATROL re-joins the street ahead instead.
+      bot.fought = true;
       bot.state = "RECOVER";
       // Down among the towers a recovery also has to SLOW: turn radius is
       // speed / 0.765 rad/s, so the bot that keeps full power through a
@@ -569,7 +604,9 @@ export class RoomBots {
           : null;
       if (streetYaw !== null) {
         bot.escapeYaw = streetYaw;
-        const yawErr = wrapAngle(streetYaw - bot.flight.yaw);
+        const yawErr = wrapAngle(
+          this.centredYaw(bot.flight, streetYaw) - bot.flight.yaw,
+        );
         bot.input = {
           pitch: BOT_INPUT_CAP,
           turn: clamp(-yawErr * BOT_STEER_GAIN, -BOT_INPUT_CAP, BOT_INPUT_CAP),
@@ -600,14 +637,26 @@ export class RoomBots {
     // override it always was; ENGAGE gets first refusal through the fan below,
     // because a binary override can only ever produce avoidance, never weaving.
     const fwd = flightForward(bot.flight);
-    const blocked = this.blockedAlong(
-      bot.flight,
-      now,
-      fwd.x,
-      fwd.z,
-      fwd.y,
-      margin,
-    );
+    // The curved probe only ever ENTERS a recovery early; leaving one stays
+    // the straight probe's call at the hysteresis radius, as it always was —
+    // a curved path sampled at that radius never clears beside a facade, and
+    // the pull-up becomes a zoom climb.
+    const blocked =
+      this.blockedAlong(bot.flight, now, fwd.x, fwd.z, fwd.y, margin) ||
+      (!wasRecover && this.pathBlocked(bot, now, 1));
+
+    // Fresh off a spawn: fly the street straight before joining the fight.
+    if (Number.isNaN(bot.graceUntil)) bot.graceUntil = now + BOT_SPAWN_GRACE_MS;
+    if (now < bot.graceUntil) {
+      if (blocked) {
+        recover(false);
+        return;
+      }
+      bot.state = "PATROL";
+      bot.targetId = null;
+      this.canyonPatrol(bot, undefined, true);
+      return;
+    }
 
     if (now < bot.evadeUntil) {
       if (blocked) {
@@ -686,18 +735,18 @@ export class RoomBots {
       // cancelling the chase.
       const heading = this.fanAround(bot, now, aim, margin);
       // Down among the towers a straight chase is a line across the blocks,
-      // and weaving after a target over them is what kills canyon bots
-      // (measured: every low crash in the first all-canyon sim was a slow
-      // bot over a block). So below the probe split the bot flies straight
-      // at its target only with a clear line AND a reason to — inside gun
-      // range, or with the target up the street it is already flying. The
-      // rest of the time it chases along the street lattice, the same flying
-      // PATROL does safely, until the shot opens up.
+      // and a low bot over a block is in a maze of taller roofs: every crash
+      // in the canyon sims was a slow bot over a block, and at that point no
+      // stick input escapes (measured — a search over break/pull-up inputs
+      // saved none). So below the probe split the bot flies straight at its
+      // target only with a clear line AND the target up the street it is
+      // already flying; otherwise it chases along the street lattice, the
+      // same flying PATROL does safely, until the shot lines up. (Allowing
+      // straight chases inside gun range too cost ~45% more crashes.)
       if (
         !passing &&
         bot.flight.pos.y < BOT_CANYON_PROBE_ALT &&
-        (!heading?.direct ||
-          (dist > BOT_FIRE_RANGE && !this.alongStreet(bot.flight, aim)))
+        (!heading?.direct || !this.alongStreet(bot.flight, aim))
       ) {
         if (blocked) {
           recover(false);
@@ -726,6 +775,12 @@ export class RoomBots {
         let throttle = heading.direct ? (low ? 0 : 1) : -1;
         if (passing) throttle = 1;
         else if (diving) throttle = -1;
+        // Mid-street, below the roofline, a chase stays IN the street.
+        const lane = low && !passing ? this.laneLock(bot, aim) : null;
+        if (lane) {
+          this.steerToward(bot, lane, 0, bot.aimJitterPitch, throttle);
+          return;
+        }
         this.steerToward(
           bot,
           heading.dir,
@@ -841,6 +896,57 @@ export class RoomBots {
     );
   }
 
+  /**
+   * A low chase's steering delta while it is over ONE street's roadway (not
+   * an intersection, where turning onto the cross street is the point): up
+   * that street the way the bot is already flying — at least a turn radius
+   * ahead, a U-turn being wider than any street — offset toward the target
+   * only as far as the roadway allows. Straight lead pursuit swung a low bot
+   * 30–45° off the street axis and out of a 30 m roadway into the facades
+   * within a second: once chases kept to the streets, that was the top crash
+   * cause, and the sim's tuning seeds lost 26% of their crashes to this.
+   * Null when the bot is off the road or in an intersection.
+   */
+  private laneLock(bot: Bot, aim: Vec3): Vec3 | null {
+    const pos = bot.flight.pos;
+    const inX = offCenterline(pos.z) <= ROADWAY_HALF; // on an x-travel street
+    const inZ = offCenterline(pos.x) <= ROADWAY_HALF;
+    if (inX === inZ) return null; // off the road, or in an intersection
+    const axis = inX ? "x" : "z";
+    const fwd = flightForward({ yaw: bot.flight.yaw, pitch: 0 });
+    const dir = (axis === "x" ? fwd.x : fwd.z) >= 0 ? 1 : -1;
+    const cross = axis === "x" ? pos.z : pos.x;
+    const toLine = Math.round(cross / BLOCK_PITCH) * BLOCK_PITCH - cross;
+    const along = (axis === "x" ? aim.x : aim.z) * dir;
+    const side = (axis === "x" ? aim.z : aim.x) - toLine;
+    const room = ROADWAY_HALF - BOT_CANYON_PROBE_RADIUS;
+    const lateral = toLine + (along > 0 ? clamp(side, -room, room) : 0);
+    const ahead = dir * Math.max(along, bot.flight.speed / 0.765);
+    return axis === "x"
+      ? { x: ahead, y: aim.y, z: lateral }
+      : { x: lateral, y: aim.y, z: ahead };
+  }
+
+  /**
+   * `yaw`, bent toward the centreline of the street it runs along when the
+   * bot is over that street: aim a turn radius up the centreline. An escape
+   * that only matches the street's HEADING leaves the bot flying the curb,
+   * 5 m off a facade, where the hysteresis probe never clears.
+   */
+  private centredYaw(flight: FlightState, yaw: number): number {
+    const fwd = flightForward({ yaw, pitch: 0 });
+    const axis = Math.abs(fwd.x) > Math.abs(fwd.z) ? "x" : "z";
+    const cross = axis === "x" ? flight.pos.z : flight.pos.x;
+    if (offCenterline(cross) > LOT_LINE) return yaw;
+    const toLine = Math.round(cross / BLOCK_PITCH) * BLOCK_PITCH - cross;
+    const ahead = Math.max(flight.speed / 0.765, 40);
+    const d =
+      axis === "x"
+        ? { x: Math.sign(fwd.x) * ahead, z: toLine }
+        : { x: toLine, z: Math.sign(fwd.z) * ahead };
+    return Math.atan2(-d.x, -d.z);
+  }
+
   /** Is `aim` (a plan-view delta) up the street this flight is flying? */
   private alongStreet(flight: FlightState, aim: Vec3): boolean {
     const axis = this.streetAxis(flight);
@@ -923,7 +1029,7 @@ export class RoomBots {
    * — a 90° turn sweeps ~52 m, wider than any roadway, so it must cross the
    * block corner and wants vertical margin over whatever stands there.
    */
-  private canyonPatrol(bot: Bot, toward?: Vec3): void {
+  private canyonPatrol(bot: Bot, toward?: Vec3, straight = false): void {
     // Reaching a waypoint is a GROUND-TRACK test: the lattice is a plan-view
     // graph and altitude is the glide's business. Measuring it in 3D strands a
     // bot that is still high above the intersection it is aiming at.
@@ -931,7 +1037,7 @@ export class RoomBots {
       ? wrapDelta(bot.flight.pos, bot.waypoint)
       : { x: 0, y: 0, z: 0 };
     if (!bot.waypoint || Math.hypot(d.x, d.z) < BOT_CANYON_WAYPOINT_RADIUS) {
-      bot.waypoint = this.nextCanyonWaypoint(bot, toward);
+      bot.waypoint = this.nextCanyonWaypoint(bot, toward, straight);
       d = wrapDelta(bot.flight.pos, bot.waypoint);
     }
     let flat = Math.hypot(d.x, d.z);
@@ -984,7 +1090,7 @@ export class RoomBots {
   /** The next lattice intersection to fly to, at this bot's band altitude —
    * on a street chase, taking whichever way at the corner heads `toward` the
    * target. */
-  private nextCanyonWaypoint(bot: Bot, toward?: Vec3): Vec3 {
+  private nextCanyonWaypoint(bot: Bot, toward?: Vec3, straight = false): Vec3 {
     const fwd = flightForward(bot.flight);
     if (!bot.travel) {
       // Joining the lattice (a fresh spawn, or a bot back from a fight that
@@ -1012,7 +1118,7 @@ export class RoomBots {
     const at = bot.waypoint ?? bot.flight.pos;
     if (toward) {
       bot.travel = this.chaseTurn(bot.travel, wrapDelta(at, toward));
-    } else if (bot.rand() >= BOT_CANYON_STRAIGHT_CHANCE) {
+    } else if (!straight && bot.rand() >= BOT_CANYON_STRAIGHT_CHANCE) {
       bot.travel = {
         axis: bot.travel.axis === "x" ? "z" : "x",
         dir: bot.rand() < 0.5 ? 1 : -1,
@@ -1276,6 +1382,46 @@ export class RoomBots {
       // max(BOT_PROBE_TIMES) that is more than PLAYER_RADIUS of tip travel,
       // so probing the present steers the bot into where the jib is going.
       if (collideBotMovers(p, swept, this.movers, now + t * 1000)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Is the path the bot will ACTUALLY fly blocked? Below the probe split only.
+   * Straight-ray probes are blind to the inside of a turn: at MIN_SPEED the
+   * 52 m turn radius carries the bot ~12 m off its nose line within the
+   * canyon profile's 0.9 s, more than the probe radius, so a wall on the
+   * inside of the arc surfaced a tick before impact. This flies the shared
+   * stepFlight forward under the input the bot is holding and tests the
+   * canyon profile's sample times along that curve.
+   */
+  private pathBlocked(bot: Bot, now: number, margin: number): boolean {
+    if (bot.flight.pos.y >= BOT_CANYON_PROBE_ALT) return false;
+    const radius = BOT_CANYON_PROBE_RADIUS * margin;
+    let f = bot.flight;
+    let t = 0;
+    let next = 0;
+    const times = BOT_CANYON_PROBE_TIMES;
+    while (next < times.length) {
+      f = stepFlight(f, bot.input, BOT_DT);
+      t += BOT_DT;
+      if (t + 1e-9 < (times[next] ?? 0)) continue;
+      next++;
+      const p = f.pos;
+      if (p.y - radius <= 0) return true;
+      if (collideCity(p, radius, this.buildings, this.cityIndex)) return true;
+      if (collideNature(p, radius, this.nature)) return true;
+      if (
+        this.probeMovers &&
+        collideBotMovers(
+          p,
+          radius + BOT_MOVER_CLEAR,
+          this.movers,
+          now + t * 1000,
+        )
+      ) {
         return true;
       }
     }

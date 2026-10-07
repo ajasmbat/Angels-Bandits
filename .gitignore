@@ -7,6 +7,9 @@ tools/.cache/
 # Fredrin: commit only the guidelines file; the wrapper carries a credential
 .fredrin/*
 !.fredrin/FREDRIN.md
+# Claude Code's machine-local settings: never repo content (biome's VCS
+# integration reads only this file, not .git/info/exclude)
+.claude/settings.local.json
 
 # tools/perf working files: `last.json` is the default --out scratch, and
 # aa-comparison.html embeds every capture as base64 (the .png is committed).
@@ -15,6 +18,6 @@ tools/perf/aa-comparison.html
 # the full uncropped frame is a debugging aid; the committed pair is the crop
 tools/perf/aa-frame.png
 
-# Claude Code's per-machine settings (never committed). Listed here, not only
-# in .git/info/exclude, because biome's useIgnoreFile reads .gitignore alone.
+# Claude Code: machine-local settings (the shared .claude/settings.json is
+# committable); biome only reads .gitignore, not .git/info/exclude.
 .claude/settings.local.json

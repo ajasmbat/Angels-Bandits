@@ -16,6 +16,7 @@
     "./city/street": "./src/city/street.ts",
     "./city/movers": "./src/city/movers.ts",
     "./city/newsheli": "./src/city/newsheli.ts",
+    "./city/train": "./src/city/train.ts",
     "./city/nature": "./src/city/nature.ts",
     "./storm": "./src/storm.ts",
     "./fireworks": "./src/fireworks.ts",

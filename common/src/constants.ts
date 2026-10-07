@@ -333,6 +333,47 @@ export const BLIMP_SPEED = 12;
 /** Blimp hull half-extents, m: half-length, half-height, half-width. */
 export const BLIMP_HULL = [46, 14, 14] as const;
 
+// --- Elevated train (L5) --- a lit train looping a rectangle of streets on a
+// viaduct, in common/src/city/train.ts. Same rule as the movers above: every
+// dimension is a collision dimension, so the deck, the pillars and the cars
+// are exactly as solid as they look.
+/** Top of the viaduct deck (the rail level), m above the street. */
+export const TRAIN_DECK_TOP = 25;
+/** Deck slab thickness, m — its underside is the ceiling you fly under. */
+export const TRAIN_DECK_THICK = 2;
+/** Deck half-width, m. Wide enough to cover a car's ~1 m overhang on a
+ * corner, narrow enough to stay far inside the 20 m lot lines. */
+export const TRAIN_DECK_HALF_WIDTH = 5;
+/** Square pillar side, m. Pillars stand on the street centreline, between
+ * the ±5 m traffic lanes. */
+export const TRAIN_PILLAR_SIDE = 2.4;
+/** Pillar spacing along a straight, m (a divisor of BLOCK_PITCH). */
+export const TRAIN_PILLAR_SPACING = 40;
+/** No pillar within this of a crossing street's centreline, m: the
+ * intersection square, its crosswalk and a margin stay clear for traffic. */
+export const TRAIN_PILLAR_CLEAR = 23;
+/** Corner radius where the loop turns from one street onto another, m. */
+export const TRAIN_CORNER_RADIUS = 32;
+/** One car, m: length, height, width; and the coupling gap between cars. */
+export const TRAIN_CAR_LENGTH = 16;
+export const TRAIN_CAR_HEIGHT = 3.8;
+export const TRAIN_CAR_WIDTH = 3.2;
+export const TRAIN_CAR_GAP = 1.5;
+/** Daylight between the deck top and a car's floor (bogies), m. */
+export const TRAIN_CAR_LIFT = 0.3;
+/** Seeded car count band. */
+export const TRAIN_CARS_MIN = 4;
+export const TRAIN_CARS_MAX = 6;
+/** Constant line speed, m/s. */
+export const TRAIN_SPEED = 22;
+/** Top of a car's roof — the highest solid the train line owns, m. */
+export const TRAIN_TOP = TRAIN_DECK_TOP + TRAIN_CAR_LIFT + TRAIN_CAR_HEIGHT;
+/** Canyon bots near the line hold at least TRAIN_TOP + this, m. */
+export const TRAIN_BOT_CLEAR = 16;
+/** "Near the line" for that floor, plan-view m: far enough out that a bot at
+ * MIN_SPEED has climbed over the deck before it gets there. */
+export const TRAIN_BOT_REACH = 150;
+
 // --- Fireworks (L2) --- a shared schedule in the strikesInWindow idiom:
 // every client computes the same bursts from (seed, synced clock), particles
 // only, no collision and no protocol.

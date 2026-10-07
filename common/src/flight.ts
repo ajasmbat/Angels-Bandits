@@ -97,11 +97,7 @@ export function stepFlight(
   // wider than the burn did (86.8 m at 125 m/s). Exactly 1 at ≤ MAX_SPEED.
   const excess = boost
     ? 1
-    : clamp(
-        (state.speed - MAX_SPEED) / (BOOST_MAX_SPEED - MAX_SPEED),
-        0,
-        1,
-      );
+    : clamp((state.speed - MAX_SPEED) / (BOOST_MAX_SPEED - MAX_SPEED), 0, 1);
   const turnRate = TURN_RATE * (1 + (BOOST_TURN_MULT - 1) * excess);
   const pitchRate = PITCH_RATE * (1 + (BOOST_PITCH_MULT - 1) * excess);
 

@@ -20,9 +20,11 @@
     "./city/nature": "./src/city/nature.ts",
     "./city/river": "./src/city/river.ts",
     "./storm": "./src/storm.ts",
+    "./wind": "./src/wind.ts",
     "./fireworks": "./src/fireworks.ts",
     "./skytraffic": "./src/skytraffic.ts",
     "./protocol": "./src/protocol.ts",
-    "./net": "./src/net.ts"
+    "./net": "./src/net.ts",
+    "./cityevents": "./src/cityevents.ts"
   }
 }

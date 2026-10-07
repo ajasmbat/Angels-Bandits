@@ -35,6 +35,11 @@ const DUCK_RAMP_S = 0.08;
 // static bed is diegetic flavor, quieter than everything else.
 const THUNDER_LEVEL = 0.8;
 const STATIC_BED_LEVEL = 0.055;
+// L7: a broken neon tube's buzz — faint, close-range only (the level that
+// reaches here is already distance-scaled by signage-anim buzzLevel()).
+const NEON_BUZZ_LEVEL = 0.05;
+/** Mains hum's first harmonic — the classic failing-ballast pitch. */
+const NEON_BUZZ_HZ = 120;
 // Elevated train (L5): a low rolling rumble from the nearest car, and a thin
 // wheel squeal on top while a car rounds a curve. A train is loud, so its
 // falloff is a few times slower than an engine's.
@@ -79,6 +84,8 @@ export class GameAudio implements VoiceSink {
   private ownOsc: OscillatorNode | null = null;
   private ownGain: GainNode | null = null;
   private staticGain: GainNode | null = null;
+  private buzzGain: GainNode | null = null;
+  private buzzPan: StereoPannerNode | null = null;
   private train: {
     rumble: GainNode;
     squeal: GainNode;
@@ -375,6 +382,39 @@ export class GameAudio implements VoiceSink {
       ctx.currentTime,
       0.3,
     );
+  }
+
+  /** Broken-neon buzz (L7): level 0..1 and pan, ramped every frame. Built
+   * lazily the first time a tube is in earshot; idles at zero gain after. */
+  setNeonBuzz(level: number, pan: number): void {
+    if (!this.buzzGain && level <= 0) return;
+    const ctx = this.ensure();
+    if (!ctx || !this.sfx) return;
+    if (!this.buzzGain || !this.buzzPan) {
+      const osc = ctx.createOscillator();
+      osc.type = "sawtooth";
+      osc.frequency.value = NEON_BUZZ_HZ;
+      const filter = ctx.createBiquadFilter();
+      filter.type = "bandpass";
+      filter.frequency.value = 1100;
+      filter.Q.value = 0.8;
+      this.buzzGain = ctx.createGain();
+      this.buzzGain.gain.value = 0;
+      this.buzzPan = ctx.createStereoPanner();
+      osc
+        .connect(filter)
+        .connect(this.buzzGain)
+        .connect(this.buzzPan)
+        .connect(this.sfx);
+      osc.start();
+    }
+    const now = ctx.currentTime;
+    this.buzzGain.gain.setTargetAtTime(
+      Math.max(0, Math.min(1, level)) * NEON_BUZZ_LEVEL,
+      now,
+      0.03,
+    );
+    this.buzzPan.pan.setTargetAtTime(Math.max(-1, Math.min(1, pan)), now, 0.05);
   }
 
   /** The L5 train's rumble (and curve squeal) from `source`, the nearest

@@ -21,7 +21,9 @@
 import { EMISSIVE_WINDOW } from "@angels-bandits/common/constants";
 import * as THREE from "three";
 import { luminance } from "./emissive";
+import { WAKE_PARS_GLSL, wakeWindowGlsl, windowWakeUniform } from "./reactions";
 import {
+  OCCUPANCY_UNIFORM,
   holeLightGlsl,
   holeSurfaceGlsl,
   pitchSeedGlsl,
@@ -153,6 +155,7 @@ vHole = aHole;
 `;
 
 const FRAGMENT_PARS = /* glsl */ `
+uniform float uOccupancy; // L12 sky cycle: window occupancy, 0..1
 varying vec3 vMeters;
 varying vec3 vObjNormal;
 varying float vBSeed;
@@ -173,7 +176,7 @@ float abHash(vec2 p, float s) {
 float abSafeDiv(float d) {
   return abs(d) < 1e-4 ? (d < 0.0 ? -1e-4 : 1e-4) : d;
 }
-${roofParsGlsl()}`;
+${roofParsGlsl()}${WAKE_PARS_GLSL}`;
 
 /** Injected after color_fragment: derives the shared window-grid locals
  * (in scope for the emissive block below — same main body), modulates the
@@ -219,7 +222,7 @@ const FRAGMENT_EMISSIVE = `${windowEmissiveGlsl(
   glslVec3(WINDOW_WARM),
   glslVec3(WINDOW_COOL),
   WINDOW_EMISSIVE_INTENSITY,
-)}${SHOP_BAND_GLSL}${roofLightGlsl()}${holeLightGlsl()}`;
+)}${wakeWindowGlsl(WINDOW_EMISSIVE_INTENSITY)}${SHOP_BAND_GLSL}${roofLightGlsl()}${holeLightGlsl()}`;
 
 /**
  * VO2: cap the grazing-angle Fresnel. Standard materials reflect 100% at
@@ -251,6 +254,9 @@ export function createBuildingsMaterial(): THREE.MeshStandardMaterial {
     metalness: 0.15,
   });
   material.onBeforeCompile = (shader) => {
+    // L1 reactive city: the shared window-wake sources (reactions.ts).
+    shader.uniforms.uWake = windowWakeUniform;
+    shader.uniforms.uOccupancy = OCCUPANCY_UNIFORM;
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", `#include <common>\n${VERTEX_PARS}`)
       .replace(
@@ -274,6 +280,6 @@ export function createBuildingsMaterial(): THREE.MeshStandardMaterial {
   };
   // Distinct compiled program per patch (V3 rule: three keys programs on
   // onBeforeCompile.toString(), and sibling materials collide silently).
-  material.customProgramCacheKey = () => "ab-buildings-h1-holes";
+  material.customProgramCacheKey = () => "ab-buildings-h1-holes-l1-wake";
   return material;
 }

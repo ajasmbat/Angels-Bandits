@@ -170,6 +170,13 @@ export class Streetlights {
     this.glows.instanceMatrix.needsUpdate = true;
   }
 
+  /** L12 sky cycle: the ground pools' level, 0..1 (dusk is still half
+   * daylit). Only the additive pool dims — the lamp heads keep their
+   * emissive-ladder rung. */
+  setPoolLevel(k: number): void {
+    (this.glows.material as THREE.MeshBasicMaterial).opacity = GLOW_OPACITY * k;
+  }
+
   /**
    * QA hook (seam checks, headless harness): the position the lamp nearest
    * canonical (x, z) is currently DRAWN at, read back from the head's

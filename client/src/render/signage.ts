@@ -27,6 +27,21 @@ import {
 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
+import {
+  BrokenNeon,
+  type NeonBuzz,
+  type SignAnim,
+  type SignageAnimation,
+  rungPalette,
+  signAnimations,
+  signClock,
+} from "./signage-anim";
+import {
+  type SignUniforms,
+  createSignUniforms,
+  patchSignMaterial,
+  writeStutter,
+} from "./signage-shader";
 import { nearestImage } from "./wrapPlacement";
 
 // --- Tunables (Concept 4: steep density gradient, everything on) ---
@@ -635,6 +650,10 @@ export class Signage {
   private readonly pos = new THREE.Vector3();
   private readonly scale = new THREE.Vector3();
   private static readonly UP = new THREE.Vector3(0, 1, 0);
+  // L7 animation: shared shader clock + broken-tube stutter/buzz.
+  private readonly animUniforms: SignUniforms;
+  private readonly broken: BrokenNeon;
+  private readonly brokenSigns: SignPlacement[];
 
   constructor(buildings: readonly Building[], seed: number) {
     const layouts = buildings.map((b) => signageFor(b, seed));
@@ -658,9 +677,11 @@ export class Signage {
       ),
       this.billboards.length,
     );
+    const stripMaterial = new THREE.MeshBasicMaterial();
+    stripMaterial.customProgramCacheKey = () => "ab-sign-strip";
     this.stripMesh = new THREE.InstancedMesh(
       panel,
-      new THREE.MeshBasicMaterial(),
+      stripMaterial,
       this.strips.length,
     );
 
@@ -681,6 +702,68 @@ export class Signage {
 
     this.setTiles(this.marqueeMesh, this.marquees);
     this.setTiles(this.billboardMesh, this.billboards);
+
+    // L7: animate in the shader off one clock uniform — no texture uploads,
+    // no extra draws. Broken tubes stutter via a small uniform array.
+    const anim = signAnimations(
+      this.marquees,
+      this.billboards,
+      this.strips,
+      seed,
+    );
+    this.brokenSigns = anim.broken.map(
+      (t) =>
+        (t.kind === "marquee" ? this.marquees : this.strips)[
+          t.index
+        ] as SignPlacement,
+    );
+    this.broken = new BrokenNeon(
+      this.brokenSigns.map((s, i) => {
+        const t = anim.broken[i] as SignageAnimation["broken"][number];
+        return {
+          seed: t.seed,
+          center: { x: s.x, y: s.y + s.height / 2, z: s.z },
+        };
+      }),
+    );
+    const brokenCount = this.broken.count;
+    this.animUniforms = createSignUniforms(
+      brokenCount,
+      rungPalette(SIGN_PALETTE, EMISSIVE_SIGN),
+    );
+    const animated: [
+      THREE.InstancedMesh,
+      SignPlacement[],
+      SignAnim[],
+      "marquee" | "billboard" | "strip",
+      number,
+    ][] = [
+      [
+        this.marqueeMesh,
+        this.marquees,
+        anim.marquees,
+        "marquee",
+        MARQUEE_TEXTURE_POOL,
+      ],
+      [
+        this.billboardMesh,
+        this.billboards,
+        anim.billboards,
+        "billboard",
+        BILLBOARD_TEXTURE_POOL,
+      ],
+      [this.stripMesh, this.strips, anim.strips, "strip", 1],
+    ];
+    for (const [mesh, signs, anims, kind, tiles] of animated) {
+      Signage.setAnim(mesh, signs, anims);
+      patchSignMaterial(
+        mesh.material as THREE.MeshBasicMaterial,
+        kind,
+        this.animUniforms,
+        tiles,
+        brokenCount,
+      );
+    }
 
     for (const mesh of [
       this.marqueeMesh,
@@ -703,6 +786,30 @@ export class Signage {
     mesh.geometry.setAttribute(
       "aTile",
       new THREE.InstancedBufferAttribute(tiles, 1),
+    );
+  }
+
+  /** Per-instance animation attributes (uploaded once): aAnim = (kind,
+   * rate, phase, variant), aSize = (width, height, broken slot or −1). */
+  private static setAnim(
+    mesh: THREE.InstancedMesh,
+    signs: SignPlacement[],
+    anims: SignAnim[],
+  ): void {
+    const a = new Float32Array(signs.length * 4);
+    const s = new Float32Array(signs.length * 3);
+    signs.forEach((sign, i) => {
+      const an = anims[i] as SignAnim;
+      a.set([an.kind, an.rate, an.phase, an.variant], i * 4);
+      s.set([sign.width, sign.height, an.brokenSlot], i * 3);
+    });
+    mesh.geometry.setAttribute(
+      "aAnim",
+      new THREE.InstancedBufferAttribute(a, 4),
+    );
+    mesh.geometry.setAttribute(
+      "aSize",
+      new THREE.InstancedBufferAttribute(s, 3),
     );
   }
 
@@ -763,6 +870,11 @@ export class Signage {
    * as the landmark beacons).
    */
   update(cameraPos: Vec3, timeMs: number): void {
+    // L7: the shader clock and the broken tubes' stutter, same synced time.
+    this.animUniforms.uSignTime.value = signClock(timeMs);
+    for (let i = 0; i < this.broken.count; i++) {
+      writeStutter(this.animUniforms, i, this.broken.level(i, timeMs));
+    }
     this.place(this.marqueeMesh, this.marquees, cameraPos, timeMs, this.tint);
     this.place(
       this.billboardMesh,
@@ -787,6 +899,23 @@ export class Signage {
     if (this.spillMesh.instanceColor) {
       this.spillMesh.instanceColor.needsUpdate = true;
     }
+  }
+
+  /** L7: the nearest broken tube to the listener and its buzz level (torus
+   * distance; the returned object is reused). */
+  buzz(listener: Vec3, timeMs: number): NeonBuzz {
+    return this.broken.buzz(listener, timeMs);
+  }
+
+  /** QA hook: broken tubes and their next burst at or after `timeMs`. */
+  brokenTubes(timeMs: number): (ReturnType<BrokenNeon["nextBursts"]>[number] & {
+    axis: "x" | "z";
+    dir: -1 | 1;
+  })[] {
+    return this.broken.nextBursts(timeMs).map((b, i) => {
+      const s = this.brokenSigns[i] as SignPlacement;
+      return { ...b, axis: s.axis, dir: s.dir };
+    });
   }
 
   /**

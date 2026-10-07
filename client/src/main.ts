@@ -39,7 +39,11 @@ import { hitRangeBudgetFor } from "@angels-bandits/common/net";
 import type { ScoreEntry, SpawnState } from "@angels-bandits/common/protocol";
 import { airlinerOffsetInto } from "@angels-bandits/common/skytraffic";
 import { strikesInWindow } from "@angels-bandits/common/storm";
-import { wrapDelta, wrapDistance } from "@angels-bandits/common/world";
+import {
+  type Vec3,
+  wrapDelta,
+  wrapDistance,
+} from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
@@ -107,9 +111,11 @@ import { FacadeDetailRenderer } from "./render/facade-detail";
 import { FacadeGarnishRenderer } from "./render/facade-garnish";
 import { Fireworks } from "./render/fireworks";
 import { installHeightFog } from "./render/fog";
+import { Fountains } from "./render/fountains";
 import { Explosions, Sparks } from "./render/fx";
 import { GpuTimer } from "./render/gputimer";
 import { createGradePass } from "./render/grade";
+import { Headlights } from "./render/headlights";
 import { MoverLights, Movers } from "./render/movers";
 import { NatureRenderer } from "./render/nature";
 import { Pedestrians } from "./render/pedestrians";
@@ -123,6 +129,7 @@ import {
   spinPropeller,
 } from "./render/plane";
 import { PlaneLights } from "./render/planelights";
+import { CityReactor } from "./render/reactions";
 import { RemotePlanes } from "./render/remotes";
 import { MSAA_SAMPLES, readRenderOptions } from "./render/renderopts";
 import {
@@ -135,10 +142,17 @@ import {
 } from "./render/resolution";
 import { RiverRenderer } from "./render/river";
 import { RoofClutterRenderer } from "./render/roofclutter";
+import { RooftopLifeRenderer } from "./render/rooftop-life";
 import { Searchlights } from "./render/searchlights";
 import { Signage } from "./render/signage";
 import { Signals } from "./render/signals";
 import { EXPOSURE, GroundPlane, SkyDome, setupSky } from "./render/sky";
+import {
+  SKY_MOMENTS,
+  SkyCycle,
+  parseSkyParam,
+  skyPhase,
+} from "./render/skycycle";
 import { SmokeTrails, smokeActive } from "./render/smoke";
 import { Steam } from "./render/steam";
 import {
@@ -192,7 +206,7 @@ const { welcome } = socket;
 const scene = new THREE.Scene();
 // Before anything compiles: the haze layer lives in three's fog chunks.
 installHeightFog();
-setupSky(scene);
+const skyRig = setupSky(scene); // L12: the sky cycle drives these lights
 
 const camera = new THREE.PerspectiveCamera(
   BASE_FOV,
@@ -295,8 +309,9 @@ composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
 // The grade (vignette + saturation) works on the display-referred image, so
 // it follows the OutputPass; SMAA, when on, still comes last.
-if (renderOpts.grade) {
-  composer.addPass(createGradePass());
+const gradePass = renderOpts.grade ? createGradePass() : null;
+if (gradePass) {
+  composer.addPass(gradePass);
 }
 // SMAA goes AFTER the output pass, on purpose: its edge detection wants the
 // tonemapped, sRGB-encoded image, not linear HDR where a bloomed window
@@ -345,6 +360,10 @@ scene.add(city.mesh);
 // Roof clutter + landmark beacons dress the same shared Building[] (V2).
 const roofClutter = new RoofClutterRenderer(city.cityBuildings);
 scene.add(roofClutter.group);
+// L8 rooftop life (ANGE-972BJX): parties, pools, fans, flags, aviation
+// lights — two static draws placed and animated on the GPU from one uniform.
+const rooftopLife = new RooftopLifeRenderer(city.cityBuildings);
+scene.add(rooftopLife.group);
 // Parapet caps + entrance canopies dress the same shared Building[] (ANGE-XY8LH8).
 const facadeGarnish = new FacadeGarnishRenderer(city.cityBuildings);
 scene.add(facadeGarnish.group);
@@ -362,6 +381,20 @@ const airliners = new Airliners(welcome.seed);
 skyDome.mesh.add(airliners.points);
 const streetlights = new Streetlights();
 scene.add(streetlights.group);
+// L12 sky cycle: dusk → deep night → pre-dawn on the synced server clock
+// (~40 min loop). Writes lights, dome, haze, exposure, bloom strength, grade,
+// window occupancy and lamp pools each frame; `?sky=` pins a phase (QA).
+const skyCycle = new SkyCycle(
+  {
+    rig: skyRig,
+    dome: skyDome,
+    streetlights,
+    renderer,
+    bloom: bloomPass,
+    grade: gradePass,
+  },
+  parseSkyParam(window.location.search),
+);
 // Street-level neon (S2): marquees, billboards, strips, spill — one shared
 // Building[] again, so signage dresses exactly the rendered facades.
 const signage = new Signage(city.cityBuildings, welcome.seed);
@@ -370,6 +403,10 @@ scene.add(signage.group);
 // every client (late joiners included) sees identical cars. Zero netcode.
 const traffic = new Traffic(welcome.seed);
 scene.add(traffic.mesh);
+// L6 headlights: soft cones in the haze + warm pools on the asphalt, lit from
+// the cars Traffic placed this frame. Two additive draws for the whole city.
+const headlights = new Headlights(traffic.capacity);
+scene.add(headlights.cones, headlights.pools);
 // L2 movers: cranes, helicopters, the blimp. Poses are the SAME pure function
 // of (seed, server clock) the crash check uses, so what you see is what you
 // can hit — and nothing about them is ever streamed.
@@ -411,6 +448,11 @@ scene.add(natureRenderer.group);
 // this is drawing only — updated on the same latched clock as the movers.
 const river = new RiverRenderer(welcome.seed, city.cityBuildings);
 scene.add(river.group);
+// L9 moving nature: lit spray from the plaza ponds (pure ballistic function
+// of the synced clock; one Points, drawn only near a pond). Tree sway lives
+// in natureRenderer's crown shader; bird scatter in birds.update below.
+const fountains = new Fountains(nature.ponds);
+scene.add(fountains.points);
 const fireworks = new Fireworks(welcome.seed);
 const searchlights = new Searchlights(city.cityBuildings);
 scene.add(searchlights.mesh);
@@ -418,6 +460,8 @@ scene.add(searchlights.mesh);
 const droneShow = new DroneShowRenderer(welcome.seed);
 const birds = new Birds(welcome.seed);
 scene.add(birds.points);
+/** L9: planes the flocks react to, refilled per frame (no per-frame array). */
+const birdPlanes: Vec3[] = [];
 // L1 living streets — the micro tier. Client-only, non-collidable, and gated
 // on camera altitude (100 → 140 m): four extra draw calls at street level and
 // literally zero above the band, where a 1.8 m figure would be sub-pixel.
@@ -449,6 +493,27 @@ const sparks = new Sparks();
 scene.add(sparks.points);
 const smoke = new SmokeTrails();
 scene.add(smoke.points);
+// --- L1 reactive city (ANGE-WCQNFJ) ---
+// Server-accepted city events (gunfire near buildings, deaths — coalesced on
+// the server, replayed in the welcome) drive car alarms, woken windows, smoke
+// columns and responders; snapshot low passes scatter the crowd; planes in
+// range pull the searchlights. One Points draw (the smoke) — everything else
+// rides traffic/signals/pedestrians/searchlights/building shader. Fed below in
+// onSnapshot/onRespawn and evaluated per frame before traffic.update.
+const reactor = new CityReactor(city.cityBuildings);
+scene.add(reactor.points);
+reactor.ingest(welcome.cityEvents ?? []);
+socket.events.onCityEvent = (event) => reactor.ingest([event]);
+/** Planes the searchlights track this frame (reused, no per-frame array). */
+const trackedPlanes: { x: number; y: number; z: number }[] = [];
+/** QA-only fixed camera (`__ab.qaCamera`): canonical eye + look-at, applied
+ * just before the render so a capture can hold one viewpoint through a
+ * death, the kill-cam and the respawn. Null = the normal chase camera. */
+let qaView: { eye: Vec3; at: Vec3 } | null = null;
+/** QA-only (`__ab.qaReactionClock`): evaluate the city's reactions at this
+ * server time instead of the render clock, so a capture on a slow software
+ * renderer can show "event + 2 s" exactly. Null = the render clock. */
+let qaReactAt: number | null = null;
 // ST2 storm: bolts + flash from the shared schedule — zero strike netcode;
 // every client computes the identical storm from (seed, synced clock).
 const storm = new StormRenderer(city.cityBuildings);
@@ -729,6 +794,7 @@ function remoteFired(id: string): void {
 // --- Server events ---
 socket.events.onSnapshot = (snap) => {
   remotes.ingest(snap);
+  reactor.observeSnapshot(snap, socket.selfId); // L1 low passes + own track
   const self = snap.players.find((p) => p.id === socket.selfId);
   if (self) {
     selfHp = self.hp;
@@ -819,6 +885,7 @@ socket.events.onDeath = (msg) => {
 socket.events.onRespawn = (msg) => {
   // Fresh spawn, fresh trail — a rebased teleport would smear smoke 1 km.
   smoke.clear(msg.id);
+  if (msg.id === socket.selfId) reactor.clearSelfTrack(); // L1: track jumps
   if (msg.id === socket.selfId) respawnSelf(msg.spawn);
   else remotes.respawn(msg.id);
 };
@@ -972,9 +1039,19 @@ declare global {
       };
       lampImage: (x: number, z: number) => { x: number; z: number } | null;
       traffic: (at?: number | null) => ReturnType<Traffic["debug"]>;
+      /** L6 QA: the longest red-light queue at a server time (gallery pin). */
+      trafficQueue: (at?: number) => ReturnType<Traffic["queue"]>;
+      /** L6 QA: what intersection (bx, bz) shows at a server time. */
+      trafficAspect: (
+        bx: number,
+        bz: number,
+        at?: number,
+      ) => ReturnType<Signals["sample"]>;
       movers: (at?: number | null) => ReturnType<Movers["debug"]>;
       train: (at?: number | null) => ReturnType<TrainRenderer["debug"]>;
       fireworks: (at?: number | null) => ReturnType<Fireworks["debug"]>;
+      /** L9 QA: flock centres at the render clock, and which are scattered. */
+      birds: () => ReturnType<Birds["debug"]>;
       /** L10 QA: airliners and drone show drawn last frame, the news heli's
        * slot, and (forceDroneShow) the gallery's way to start a show now. */
       skyTraffic: () => {
@@ -990,6 +1067,7 @@ declare global {
         buildings: number;
         tierInstances: number;
         clutterInstances: number;
+        rooftopLife: RooftopLifeRenderer["counts"];
         garnishInstances: number;
         rigInstances: number;
         moverLights: number;
@@ -998,6 +1076,8 @@ declare global {
       };
       signage: () => Signage["counts"];
       signImage: (x: number, z: number) => { x: number; z: number } | null;
+      /** L7: broken neon tubes and their next stutter burst (synced ms). */
+      signBroken: (at?: number) => ReturnType<Signage["brokenTubes"]>;
       /**
        * L1 micro tier: the live gate, what each subsystem drew, and a sample
        * pinned to a FIXED block at a FIXED server time. The sample is pinned
@@ -1031,6 +1111,8 @@ declare global {
       /** Perf A/B: false takes the same early return as an above-gate camera,
        * so it skips the CPU work and not merely the draw call. */
       setMicro: (on: boolean) => void;
+      /** L8 perf A/B: hide/show the rooftop-life group (its 2 draw calls). */
+      setRooftopLife: (on: boolean) => void;
       garnishImage: (x: number, z: number) => { x: number; z: number } | null;
       radio: () => {
         voiceOn: boolean;
@@ -1038,8 +1120,38 @@ declare global {
         inCombat: boolean;
         log: { at: number; speaker: string; ticker: string; voice: string }[];
       };
+      /** L12 QA: force the sky cycle to a fraction (0..1) or a named
+       * moment, or release it to the synced clock with null. */
+      sky: (t?: number | "dusk" | "night" | "predawn" | null) => {
+        phase: number;
+        forced: boolean;
+        clockPhase: number | null;
+      };
       /** L2 QA: the city soundscape's per-layer gains and their inputs. */
       ambience: () => ReturnType<CityAmbience["debug"]>;
+      /** QA-only: hold the camera at a canonical eye looking at `at`
+       * (null restores the chase camera). */
+      qaCamera: (
+        view: {
+          eye: { x: number; y: number; z: number };
+          at: { x: number; y: number; z: number };
+        } | null,
+      ) => void;
+      /** QA-only: pin the reaction clock to a server time (null = live). */
+      qaReactionClock: (serverTimeMs: number | null) => void;
+      /** L1 QA: the live city events and what the city is doing about them
+       * at this tab's render clock — two tabs must report the same. */
+      reactions: () => {
+        renderTime: number | null;
+        events: { kind: string; x: number; y: number; z: number; t: number }[];
+        wakes: { x: number; z: number; strength: number }[];
+        smokes: { x: number; base: number; z: number; age: number }[];
+        responders: { kind: string; x: number; z: number; yaw: number }[];
+        lowPasses: { x: number; z: number; t: number }[];
+        puffs: number;
+        smoke: CityReactor["smokeDebug"];
+        camera: { x: number; y: number; z: number };
+      };
       storm: () => {
         seed: number;
         strikes: { timeMs: number; x: number; z: number }[];
@@ -1158,6 +1270,13 @@ window.__ab = {
   // its OWN interpolation delay, so two tabs' default render times are no
   // longer the same instant (that is the feature; the QA must pin the time).
   traffic: (at) => traffic.debug(at === undefined ? socket.renderTime() : at),
+  // L9 QA: flock centres and which are scattered, at the render clock.
+  birds: () => birds.debug(socket.renderTime()),
+  // L6 QA: pin the gallery's red/green intersection views to a real queue.
+  trafficQueue: (at) =>
+    traffic.queue(at ?? socket.renderTime() ?? performance.now()),
+  trafficAspect: (bx, bz, at) =>
+    signals.sample(bx, bz, at ?? socket.renderTime() ?? performance.now()),
   // L2 QA: jib angles, aircraft positions and the drawn read-back at a server
   // time. Pass the time explicitly for the two-tab check — each tab holds its
   // own interpolation delay, so their default render clocks are NOT the same
@@ -1190,6 +1309,7 @@ window.__ab = {
     buildings: city.cityBuildings.length,
     tierInstances: city.tierInstanceCount,
     clutterInstances: roofClutter.instanceCount,
+    rooftopLife: rooftopLife.counts,
     garnishInstances: facadeGarnish.instanceCount,
     detailInstances: facadeDetail.instanceCount,
     rigInstances: movers.rigInstances,
@@ -1200,6 +1320,8 @@ window.__ab = {
   // S2 QA: signage instance counts + drawn-position read-back (seam checks).
   signage: () => signage.counts,
   signImage: (x, z) => signage.imageOf(x, z),
+  signBroken: (at) =>
+    signage.brokenTubes(at ?? socket.renderTime() ?? performance.now()),
   micro: (at) => {
     const time =
       at === undefined ? (socket.renderTime() ?? performance.now()) : (at ?? 0);
@@ -1241,6 +1363,9 @@ window.__ab = {
   setMicro: (on) => {
     microOn = on;
   },
+  setRooftopLife: (on) => {
+    rooftopLife.group.visible = on;
+  },
   // ANGE-XY8LH8 seam QA: drawn position of the parapet nearest (x, z).
   garnishImage: (x, z) => facadeGarnish.imageOf(x, z),
   // Radio QA: recent on-air lines (headless runs can't hear the voice).
@@ -1250,9 +1375,53 @@ window.__ab = {
     inCombat: radio.inCombat(performance.now()),
     log: radioLog.map((l) => ({ ...l })),
   }),
+  ambience: () => ambience.debug(),
+  qaCamera: (view) => {
+    qaView = view;
+  },
+  qaReactionClock: (serverTimeMs) => {
+    qaReactAt = serverTimeMs;
+  },
+  reactions: () => {
+    const r = reactor.reactions;
+    return {
+      renderTime: r.timeMs,
+      events: reactor.eventList,
+      wakes: r.wakes
+        .slice(0, r.wakeCount)
+        .map((w) => ({ x: w.x, z: w.z, strength: w.strength })),
+      smokes: r.smokes
+        .slice(0, r.smokeCount)
+        .map((s) => ({ x: s.x, base: s.base, z: s.z, age: s.age })),
+      responders: r.responders.slice(0, r.responderCount).map((v) => ({
+        kind: v.kind,
+        x: v.x,
+        z: v.z,
+        yaw: v.yaw,
+      })),
+      lowPasses: reactor.lowPasses.map((p) => ({ ...p })),
+      puffs: reactor.puffCount,
+      smoke: reactor.smokeDebug,
+      camera: {
+        x: camera.position.x,
+        y: camera.position.y,
+        z: camera.position.z,
+      },
+    };
+  },
+  sky: (t) => {
+    if (t === null) skyCycle.forced = null;
+    else if (typeof t === "string") skyCycle.forced = SKY_MOMENTS[t];
+    else if (typeof t === "number") skyCycle.forced = t - Math.floor(t);
+    const rt = socket.renderTime();
+    return {
+      phase: skyCycle.phaseNow,
+      forced: skyCycle.forced !== null,
+      clockPhase: rt === null ? null : skyPhase(rt),
+    };
+  },
   // ST2 QA: consumed strikes (two tabs must agree), the next scheduled
   // strike (for staging reveals), live reveal pings, and atmosphere state.
-  ambience: () => ambience.debug(),
   storm: () => {
     const rt = socket.renderTime();
     return {
@@ -1284,6 +1453,7 @@ for (const o of [
   steam.points,
   signals.mesh,
   constructionSparks.points,
+  reactor.points, // L1: first death must not compile the smoke mid-fight
 ]) {
   o.visible = true;
 }
@@ -1293,6 +1463,7 @@ for (const o of [
   steam.points,
   signals.mesh,
   constructionSparks.points,
+  reactor.points, // L1: first death must not compile the smoke mid-fight
 ]) {
   o.visible = false;
 }
@@ -1626,21 +1797,50 @@ renderer.setAnimationLoop((now) => {
   city.update(chase.position);
   // Beacons pulse on server-synced time so every client is in phase.
   roofClutter.update(chase.position, renderMs ?? now);
+  // L8: rooftop life animates on the same synced clock (local before sync).
+  rooftopLife.update(renderMs ?? now);
   facadeGarnish.update(chase.position);
   facadeDetail.update(chase.position, microOn); // L13: re-streams on block change only
   streetlights.update(chase.position);
-  natureRenderer.update(chase.position);
+  // L9: crowns sway in the shared wind on the same latched clock.
+  natureRenderer.update(chase.position, renderMs);
+  fountains.update(chase.position, renderMs);
   // Neon pulses on the same synced clock as the beacons.
   signage.update(chase.position, renderMs ?? now);
-  traffic.update(chase.position, renderMs);
+  // L7: the nearest broken neon tube buzzes, crackling through its stutter;
+  // silent while dead or with the tab hidden.
+  const neonBuzz = signage.buzz(flight.pos, renderMs ?? now);
+  audio.setNeonBuzz(
+    alive && !document.hidden ? neonBuzz.gain : 0,
+    spatialize(flight.pos, flight.yaw, neonBuzz.pos).pan,
+  );
+  // L1 reactive city: evaluate once on the latched clock, then hand the view
+  // to traffic (responders + hazards), signals, pedestrians, searchlights.
+  const cityReact = reactor.update(chase.position, qaReactAt ?? renderMs);
+  traffic.update(chase.position, renderMs, cityReact);
+  headlights.update(chase.position, traffic); // L6: after traffic.update
   // Every L2 system takes the SAME latched clock the crash check used.
   movers.update(chase.position, renderMs, moverLights);
   train.update(chase.position, renderMs, moverLights); // L5, same latched clock
   fireworks.update(chase.position, renderMs, moverLights);
   // After movers.update: the helicopters' belly spots are this frame's, and
   // the lamp heads land in the same point cloud before commit().
-  searchlights.update(chase.position, renderMs, movers.spots, moverLights);
-  birds.update(chase.position, renderMs);
+  trackedPlanes.length = 0;
+  const selfOnRecord = renderMs === null ? null : reactor.selfAt(renderMs);
+  if (selfOnRecord) trackedPlanes.push(selfOnRecord);
+  for (const target of targets) trackedPlanes.push(target.pos);
+  searchlights.update(
+    chase.position,
+    renderMs,
+    movers.spots,
+    moverLights,
+    trackedPlanes,
+  );
+  // L9: flocks scatter from any plane this client sees within ~60 m.
+  birdPlanes.length = 0;
+  if (alive) birdPlanes.push(flight.pos);
+  for (const r of remotes.headings()) birdPlanes.push(r.pos);
+  birds.update(chase.position, renderMs, birdPlanes);
   // L10: the drones write LAST, so a full cloud drops drones, not nav lights.
   droneShow.update(chase.position, renderMs, moverLights);
   moverLights.commit();
@@ -1653,12 +1853,12 @@ renderer.setAnimationLoop((now) => {
   // beat the gate reads a frozen camera altitude. That is correct — the view
   // is frozen too.
   const microK = microOn ? microGate(chase.position.y) : 0;
-  pedestrians.update(chase.position, renderMs, microK);
+  pedestrians.update(chase.position, renderMs, microK, reactor.lowPasses);
   // Phase-only subsystems fall back to local time before the first snapshot
   // (the signage policy): a plume or a signal in the wrong part of its cycle
   // is invisible, where hiding every one of them until clock sync would not be.
   steam.update(chase.position, renderMs ?? now, microK);
-  signals.update(chase.position, renderMs ?? now, microK);
+  signals.update(chase.position, renderMs ?? now, microK, cityReact);
   constructionSparks.update(chase.position, renderMs ?? now, microK);
   ground.update(chase.position);
   river.update(chase.position, renderMs, now); // L11
@@ -1692,6 +1892,9 @@ renderer.setAnimationLoop((now) => {
   for (const ev of thunder.due(now)) audio.thunder(ev.gain, ev.hard);
   storm.update(chase.position, now);
   clouds.update(chase.position, camera.quaternion, renderMs);
+  // L12: the cycle's horizon is the storm's clear-sky fog base.
+  skyCycle.update(renderMs);
+  storm.setFogBase(skyCycle.horizon);
   const sky = storm.atmosphere(scene, chase.position.y, now);
   skyDome.tint(sky.tint);
   skyDome.mesh.visible = sky.domeVisible;
@@ -1752,6 +1955,12 @@ renderer.setAnimationLoop((now) => {
     camera.updateProjectionMatrix();
   }
 
+  if (qaView) {
+    const eye = nearestImage(chase.position, qaView.eye);
+    const at = nearestImage(eye, qaView.at);
+    camera.position.set(eye.x, eye.y, eye.z);
+    camera.lookAt(at.x, at.y, at.z);
+  }
   renderer.info.reset();
   gpuTimer?.begin();
   composer.render();

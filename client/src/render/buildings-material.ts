@@ -22,6 +22,13 @@ import { EMISSIVE_WINDOW } from "@angels-bandits/common/constants";
 import * as THREE from "three";
 import { luminance } from "./emissive";
 import {
+  BUILDING_WET_COLOR_GLSL,
+  BUILDING_WET_EMISSIVE_GLSL,
+  BUILDING_WET_ROUGHNESS_GLSL,
+  WEATHER_PARS_GLSL,
+  WEATHER_UNIFORM,
+} from "./weather";
+import {
   holeLightGlsl,
   holeSurfaceGlsl,
   roofLightGlsl,
@@ -167,7 +174,7 @@ float abHash(vec2 p, float s) {
 float abSafeDiv(float d) {
   return abs(d) < 1e-4 ? (d < 0.0 ? -1e-4 : 1e-4) : d;
 }
-${roofParsGlsl()}`;
+${roofParsGlsl()}${WEATHER_PARS_GLSL}`;
 
 /** Injected after color_fragment: derives the shared window-grid locals
  * (in scope for the emissive block below — same main body), modulates the
@@ -176,7 +183,11 @@ ${roofParsGlsl()}`;
  * reads the grid's `facade`/`winGrid`/`pane`/`lit`; the H1 hole lining
  * comes last, over whatever the facade pass left inside a hole. */
 const FRAGMENT_COLOR =
-  windowGridGlsl() + weatheringGlsl() + roofSurfaceGlsl() + holeSurfaceGlsl();
+  windowGridGlsl() +
+  weatheringGlsl() +
+  roofSurfaceGlsl() +
+  holeSurfaceGlsl() +
+  BUILDING_WET_COLOR_GLSL;
 
 /** The lit-pane emissive, then the V2 street-level shop band: the bottom
  * SHOP_BAND_HEIGHT m of WORLD height (so only tier-1 bases qualify) swaps the
@@ -213,7 +224,7 @@ const FRAGMENT_EMISSIVE = `${windowEmissiveGlsl(
   glslVec3(WINDOW_WARM),
   glslVec3(WINDOW_COOL),
   WINDOW_EMISSIVE_INTENSITY,
-)}${SHOP_BAND_GLSL}${roofLightGlsl()}${holeLightGlsl()}`;
+)}${SHOP_BAND_GLSL}${roofLightGlsl()}${holeLightGlsl()}${BUILDING_WET_EMISSIVE_GLSL}`;
 
 /**
  * VO2: cap the grazing-angle Fresnel. Standard materials reflect 100% at
@@ -245,6 +256,8 @@ export function createBuildingsMaterial(): THREE.MeshStandardMaterial {
     metalness: 0.15,
   });
   material.onBeforeCompile = (shader) => {
+    // L4: the shared weather uniform (render/weather.ts), by reference.
+    shader.uniforms.uWeather = WEATHER_UNIFORM;
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", `#include <common>\n${VERTEX_PARS}`)
       .replace(
@@ -256,6 +269,10 @@ export function createBuildingsMaterial(): THREE.MeshStandardMaterial {
       .replace(
         "#include <color_fragment>",
         `#include <color_fragment>\n${FRAGMENT_COLOR}`,
+      )
+      .replace(
+        "#include <metalnessmap_fragment>",
+        `${BUILDING_WET_ROUGHNESS_GLSL}\n#include <metalnessmap_fragment>`,
       )
       .replace(
         "#include <emissivemap_fragment>",

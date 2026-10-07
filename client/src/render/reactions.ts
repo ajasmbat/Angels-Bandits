@@ -589,9 +589,9 @@ float wakeK = 0.0;
 for (int wi = 0; wi < ${MAX_WAKES}; wi++) {
   vec4 wk = uWake[wi];
   if (wk.w <= 0.0) continue;
-  vec3 wd = vBWorldPos - wk.xyz;
-  wd.xz -= ${S} * floor(wd.xz / ${S} + 0.5);
-  wakeK = max(wakeK, wk.w * (1.0 - smoothstep(${lo}, ${R}, length(wd))));
+  vec3 wakeD = vBWorldPos - wk.xyz;
+  wakeD.xz -= ${S} * floor(wakeD.xz / ${S} + 0.5);
+  wakeK = max(wakeK, wk.w * (1.0 - smoothstep(${lo}, ${R}, length(wakeD))));
 }
 float wakeH = abHash(winCell + 57.0, vBSeed * 37.0);
 float woke = pane * (1.0 - lit) * facade * step(wakeH, wakeK * 0.8);

@@ -34,7 +34,11 @@ import {
 import { hitRangeBudgetFor } from "@angels-bandits/common/net";
 import type { ScoreEntry, SpawnState } from "@angels-bandits/common/protocol";
 import { strikesInWindow } from "@angels-bandits/common/storm";
-import { wrapDelta, wrapDistance } from "@angels-bandits/common/world";
+import {
+  type Vec3,
+  wrapDelta,
+  wrapDistance,
+} from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
@@ -414,6 +418,14 @@ reactor.ingest(welcome.cityEvents ?? []);
 socket.events.onCityEvent = (event) => reactor.ingest([event]);
 /** Planes the searchlights track this frame (reused, no per-frame array). */
 const trackedPlanes: { x: number; y: number; z: number }[] = [];
+/** QA-only fixed camera (`__ab.qaCamera`): canonical eye + look-at, applied
+ * just before the render so a capture can hold one viewpoint through a
+ * death, the kill-cam and the respawn. Null = the normal chase camera. */
+let qaView: { eye: Vec3; at: Vec3 } | null = null;
+/** QA-only (`__ab.qaReactionClock`): evaluate the city's reactions at this
+ * server time instead of the render clock, so a capture on a slow software
+ * renderer can show "event + 2 s" exactly. Null = the render clock. */
+let qaReactAt: number | null = null;
 // ST2 storm: bolts + flash from the shared schedule — zero strike netcode;
 // every client computes the identical storm from (seed, synced clock).
 const storm = new StormRenderer(city.cityBuildings);
@@ -985,6 +997,16 @@ declare global {
       };
       /** L1 QA: the live city events and what the city is doing about them
        * at this tab's render clock — two tabs must report the same. */
+      /** QA-only: hold the camera at a canonical eye looking at `at`
+       * (null restores the chase camera). */
+      qaCamera: (
+        view: {
+          eye: { x: number; y: number; z: number };
+          at: { x: number; y: number; z: number };
+        } | null,
+      ) => void;
+      /** QA-only: pin the reaction clock to a server time (null = live). */
+      qaReactionClock: (serverTimeMs: number | null) => void;
       reactions: () => {
         renderTime: number | null;
         events: { kind: string; x: number; y: number; z: number; t: number }[];
@@ -1184,6 +1206,12 @@ window.__ab = {
   }),
   // ST2 QA: consumed strikes (two tabs must agree), the next scheduled
   // strike (for staging reveals), live reveal pings, and atmosphere state.
+  qaCamera: (view) => {
+    qaView = view;
+  },
+  qaReactionClock: (serverTimeMs) => {
+    qaReactAt = serverTimeMs;
+  },
   reactions: () => {
     const r = reactor.reactions;
     return {
@@ -1236,6 +1264,7 @@ for (const o of [
   steam.points,
   signals.mesh,
   constructionSparks.points,
+  reactor.points, // L1: first death must not compile the smoke mid-fight
 ]) {
   o.visible = true;
 }
@@ -1245,6 +1274,7 @@ for (const o of [
   steam.points,
   signals.mesh,
   constructionSparks.points,
+  reactor.points, // L1: first death must not compile the smoke mid-fight
 ]) {
   o.visible = false;
 }
@@ -1584,7 +1614,7 @@ renderer.setAnimationLoop((now) => {
   signage.update(chase.position, renderMs ?? now);
   // L1 reactive city: evaluate once on the latched clock, then hand the view
   // to traffic (responders + hazards), signals, pedestrians, searchlights.
-  const cityReact = reactor.update(chase.position, renderMs);
+  const cityReact = reactor.update(chase.position, qaReactAt ?? renderMs);
   traffic.update(chase.position, renderMs, cityReact);
   // Every L2 system takes the SAME latched clock the crash check used.
   movers.update(chase.position, renderMs, moverLights);
@@ -1698,6 +1728,12 @@ renderer.setAnimationLoop((now) => {
     camera.updateProjectionMatrix();
   }
 
+  if (qaView) {
+    const eye = nearestImage(chase.position, qaView.eye);
+    const at = nearestImage(eye, qaView.at);
+    camera.position.set(eye.x, eye.y, eye.z);
+    camera.lookAt(at.x, at.y, at.z);
+  }
   renderer.info.reset();
   gpuTimer?.begin();
   composer.render();

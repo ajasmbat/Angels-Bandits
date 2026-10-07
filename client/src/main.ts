@@ -124,6 +124,12 @@ import { Searchlights } from "./render/searchlights";
 import { Signage } from "./render/signage";
 import { Signals } from "./render/signals";
 import { EXPOSURE, GroundPlane, SkyDome, setupSky } from "./render/sky";
+import {
+  SKY_MOMENTS,
+  SkyCycle,
+  parseSkyParam,
+  skyPhase,
+} from "./render/skycycle";
 import { SmokeTrails, smokeActive } from "./render/smoke";
 import { Steam } from "./render/steam";
 import {
@@ -176,7 +182,7 @@ const { welcome } = socket;
 const scene = new THREE.Scene();
 // Before anything compiles: the haze layer lives in three's fog chunks.
 installHeightFog();
-setupSky(scene);
+const skyRig = setupSky(scene); // L12: the sky cycle drives these lights
 
 const camera = new THREE.PerspectiveCamera(
   BASE_FOV,
@@ -279,8 +285,9 @@ composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
 // The grade (vignette + saturation) works on the display-referred image, so
 // it follows the OutputPass; SMAA, when on, still comes last.
-if (renderOpts.grade) {
-  composer.addPass(createGradePass());
+const gradePass = renderOpts.grade ? createGradePass() : null;
+if (gradePass) {
+  composer.addPass(gradePass);
 }
 // SMAA goes AFTER the output pass, on purpose: its edge detection wants the
 // tonemapped, sRGB-encoded image, not linear HDR where a bloomed window
@@ -338,6 +345,20 @@ const skyDome = new SkyDome();
 scene.add(skyDome.mesh);
 const streetlights = new Streetlights();
 scene.add(streetlights.group);
+// L12 sky cycle: dusk → deep night → pre-dawn on the synced server clock
+// (~40 min loop). Writes lights, dome, haze, exposure, bloom strength, grade,
+// window occupancy and lamp pools each frame; `?sky=` pins a phase (QA).
+const skyCycle = new SkyCycle(
+  {
+    rig: skyRig,
+    dome: skyDome,
+    streetlights,
+    renderer,
+    bloom: bloomPass,
+    grade: gradePass,
+  },
+  parseSkyParam(window.location.search),
+);
 // Street-level neon (S2): marquees, billboards, strips, spill — one shared
 // Building[] again, so signage dresses exactly the rendered facades.
 const signage = new Signage(city.cityBuildings, welcome.seed);
@@ -967,6 +988,13 @@ declare global {
         inCombat: boolean;
         log: { at: number; speaker: string; ticker: string; voice: string }[];
       };
+      /** L12 QA: force the sky cycle to a fraction (0..1) or a named
+       * moment, or release it to the synced clock with null. */
+      sky: (t?: number | "dusk" | "night" | "predawn" | null) => {
+        phase: number;
+        forced: boolean;
+        clockPhase: number | null;
+      };
       storm: () => {
         seed: number;
         strikes: { timeMs: number; x: number; z: number }[];
@@ -1155,6 +1183,17 @@ window.__ab = {
     inCombat: radio.inCombat(performance.now()),
     log: radioLog.map((l) => ({ ...l })),
   }),
+  sky: (t) => {
+    if (t === null) skyCycle.forced = null;
+    else if (typeof t === "string") skyCycle.forced = SKY_MOMENTS[t];
+    else if (typeof t === "number") skyCycle.forced = t - Math.floor(t);
+    const rt = socket.renderTime();
+    return {
+      phase: skyCycle.phaseNow,
+      forced: skyCycle.forced !== null,
+      clockPhase: rt === null ? null : skyPhase(rt),
+    };
+  },
   // ST2 QA: consumed strikes (two tabs must agree), the next scheduled
   // strike (for staging reveals), live reveal pings, and atmosphere state.
   storm: () => {
@@ -1589,6 +1628,9 @@ renderer.setAnimationLoop((now) => {
   for (const ev of thunder.due(now)) audio.thunder(ev.gain, ev.hard);
   storm.update(chase.position, now);
   clouds.update(chase.position, camera.quaternion, renderMs);
+  // L12: the cycle's horizon is the storm's clear-sky fog base.
+  skyCycle.update(renderMs);
+  storm.setFogBase(skyCycle.horizon);
   const sky = storm.atmosphere(scene, chase.position.y, now);
   skyDome.tint(sky.tint);
   skyDome.mesh.visible = sky.domeVisible;

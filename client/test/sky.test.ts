@@ -12,6 +12,7 @@ import {
   SKY_FOG_STOP,
   STAR_PEAK,
 } from "../src/render/sky";
+import { SKY_CYCLE_MS, domeGradient, skyStateAt } from "../src/render/skycycle";
 
 const BLOOM_THRESHOLD = 0.72;
 
@@ -44,5 +45,21 @@ describe("VO1 blue-hour sky", () => {
   it("lifts exposure modestly — the ladder, not exposure, carries the night", () => {
     expect(EXPOSURE).toBeGreaterThanOrEqual(1);
     expect(EXPOSURE).toBeLessThan(1.5);
+  });
+
+  it("L12: the dome IS the fog colour below the stop at every moment of the cycle", () => {
+    // The torus contract under the sky cycle: whatever time of night it is,
+    // the sky from SKY_FOG_STOP down equals the colour handed to the fog.
+    for (let t = 0; t < SKY_CYCLE_MS; t += 1000) {
+      const s = skyStateAt(t);
+      for (const f of [SKY_FOG_STOP, 0.45, 0.5, 0.75, 1]) {
+        const c = domeGradient(f, s);
+        for (let i = 0; i < 3; i++) {
+          expect(
+            Math.abs((c[i] as number) - (s.horizon[i] as number)),
+          ).toBeLessThan(1e-9);
+        }
+      }
+    }
   });
 });

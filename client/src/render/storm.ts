@@ -417,6 +417,13 @@ export class StormRenderer {
     }
   }
 
+  /** L12 sky cycle: the clear-sky fog colour atmosphere() builds on (the
+   * in-cloud soup and the flash stain still layer over it). Call before
+   * atmosphere() each frame; defaults to the VO1 night colour. */
+  setFogBase(color: THREE.Color): void {
+    this.fogBase.copy(color);
+  }
+
   /** Current flash envelope 0..1 (soft 140 ms decay). */
   private flashLevel(nowMs: number): number {
     const age = nowMs - this.flashAt;

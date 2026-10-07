@@ -35,6 +35,7 @@ import { AB_FOG_DISTANCE_GLSL, AB_FOG_GLSL } from "./fog";
 import type { MoverLights } from "./movers";
 import { trackPlanesInto } from "./reactions";
 import { RENDER_ORDER } from "./render-order";
+import { glslFloat } from "./window-pattern";
 import { nearestImage } from "./wrapPlacement";
 
 /** How many rooftops carry a light. */
@@ -142,7 +143,7 @@ export function spotDirection(spot: SpotBeam, serverTimeMs: number): Vec3 {
   return { x: x / len, y: -1 / len, z: z / len };
 }
 
-// --- Renderer (consumes the pure model above; untested, like Streetlights) ---
+// --- Renderer (consumes the pure model above) ---
 
 /**
  * Cool arc-lamp white, and the PEAK alpha it is drawn at — the hottest point
@@ -159,6 +160,149 @@ export const BEAM_COLOR = new THREE.Color(0.62, 0.72, 0.9);
 export const BEAM_OPACITY = 0.4;
 /** A helicopter's spot is a warmer, whiter lamp than the rooftop arcs. */
 const SPOT_COLOR = new THREE.Color(0.8, 0.76, 0.64);
+
+// --- Camera falloff (V1, ANGE-6OM7QM) ---------------------------------------
+// From INSIDE a cone (or right beside its wall) the beam drew as a flat pale
+// sheet over most of the screen, cut by a hard edge. Three causes, each fixed
+// below with a continuous term, so no camera position can produce a step:
+//   - Facing was a per-VERTEX value smeared across wall triangles that span
+//     the whole 420 m throw; from inside, every wall faces the eye at ~1. It
+//     is now taken per FRAGMENT from the true radial normal.
+//   - A wall passing the camera is clipped along the near plane, a straight
+//     line on screen. The NEAR fade takes a fragment to zero as its distance
+//     from the eye drops to a few local beam radii, so the clip is invisible.
+//   - L1's tracking aims a rooftop beam AT the own plane, which parks the
+//     chase camera in or beside the cone exactly when the beam matters. The
+//     CAMERA term dims the whole beam toward a floor as the eye nears the
+//     axis, keeping the far lamp end readable.
+// beamAlpha() is the model, and BEAM_FALLOFF_GLSL is it again for the shader,
+// generated from the same constants (the crownSway twin pattern, wind.ts).
+
+/** Floor on the beam radius the falloff measures against, m — the lamp end
+ * is a point, and a camera 4 m from it is already in the glare. Spots keep
+ * their own 6 m minimum throw radius on top of this. */
+export const BEAM_MIN_RADIUS = 4;
+/** Near fade, in local beam radii from the eye: 0 → 1 across [IN, OUT]. With
+ * the 4 m floor it is exactly 0 at the 1 m near plane. */
+export const BEAM_NEAR_IN = 0.5;
+export const BEAM_NEAR_OUT = 3;
+/** Camera term, in beam radii from the axis (rho): the beam is at the floor
+ * from the wall inward and full strength from RHO_OUT out. */
+export const BEAM_RHO_IN = 1;
+export const BEAM_RHO_OUT = 3;
+export const BEAM_INSIDE_FLOOR = 0.25;
+
+const smoothstep = (e0: number, e1: number, x: number): number => {
+  const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+};
+
+/**
+ * Where the eye sits relative to one beam: its distance from the beam's axis
+ * SEGMENT (apex → tip) over the beam's radius at the closest point, floored
+ * at BEAM_MIN_RADIUS. 0 on the axis, 1 on the wall, growing outside; behind
+ * the lamp or past the tip it measures from the end point, so it is
+ * continuous everywhere. `dir` is the unit beam direction; `radius` the
+ * radius at the tip (the instance scale).
+ */
+export function beamCameraRho(
+  eye: Vec3,
+  apex: Vec3,
+  dir: Vec3,
+  length: number,
+  radius: number,
+): number {
+  const rx = eye.x - apex.x;
+  const ry = eye.y - apex.y;
+  const rz = eye.z - apex.z;
+  const t = Math.min(
+    1,
+    Math.max(0, (rx * dir.x + ry * dir.y + rz * dir.z) / length),
+  );
+  const d = Math.hypot(
+    rx - dir.x * length * t,
+    ry - dir.y * length * t,
+    rz - dir.z * length * t,
+  );
+  return d / Math.max(radius * t, BEAM_MIN_RADIUS);
+}
+
+/** The camera term: the floor at or inside the wall, 1 from RHO_OUT out. */
+export const beamCameraFade = (rho: number): number =>
+  BEAM_INSIDE_FLOOR +
+  (1 - BEAM_INSIDE_FLOOR) * smoothstep(BEAM_RHO_IN, BEAM_RHO_OUT, rho);
+
+/** The near fade of one fragment `viewDist` m from the eye, where the beam's
+ * radius is `localRadius` m. */
+export const beamNearFade = (viewDist: number, localRadius: number): number =>
+  smoothstep(
+    BEAM_NEAR_IN,
+    BEAM_NEAR_OUT,
+    viewDist / Math.max(localRadius, BEAM_MIN_RADIUS),
+  );
+
+/** One fragment of a beam, as the shader sees it. */
+export interface BeamFragment {
+  /** Fraction of the way along the throw, 0 at the lamp. */
+  t: number;
+  /** |cos| between the wall's radial normal and the direction to the eye. */
+  facing: number;
+  /** Distance from the eye, m. */
+  viewDist: number;
+  /** The beam's radius at this fragment, m. */
+  localRadius: number;
+  /** The eye's beamCameraRho for this beam. */
+  rho: number;
+}
+
+/**
+ * A beam fragment's alpha before the dust shimmer and fog: the hot core and
+ * the falloff along the throw, the soft silhouette, and the two camera
+ * terms. Peaks at BEAM_OPACITY; only ever scales it down.
+ */
+export function beamAlpha(f: BeamFragment): number {
+  const fade = (1 - f.t) ** 1.5;
+  const hot = 0.4 + 0.6 * Math.exp(-f.t * 6);
+  const edge = smoothstep(0, 0.8, f.facing);
+  return (
+    BEAM_OPACITY *
+    fade *
+    hot *
+    edge *
+    beamNearFade(f.viewDist, f.localRadius) *
+    beamCameraFade(f.rho)
+  );
+}
+
+/**
+ * The model again in GLSL, from the same constants: `abBeamCameraRho` and
+ * `abBeamCameraFade` (per instance, in the vertex shader) and `abBeamAlpha`
+ * (per fragment, taking the camera fade already applied).
+ */
+export const BEAM_FALLOFF_GLSL = /* glsl */ `
+float abBeamSmooth(float e0, float e1, float x) {
+  float t = clamp((x - e0) / (e1 - e0), 0.0, 1.0);
+  return t * t * (3.0 - 2.0 * t);
+}
+float abBeamCameraRho(vec3 eye, vec3 apex, vec3 dir, float len, float radius) {
+  vec3 r = eye - apex;
+  float t = clamp(dot(r, dir) / len, 0.0, 1.0);
+  return length(r - dir * (len * t)) / max(radius * t, ${glslFloat(BEAM_MIN_RADIUS)});
+}
+float abBeamCameraFade(float rho) {
+  return ${glslFloat(BEAM_INSIDE_FLOOR)} + ${glslFloat(1 - BEAM_INSIDE_FLOOR)} *
+    abBeamSmooth(${glslFloat(BEAM_RHO_IN)}, ${glslFloat(BEAM_RHO_OUT)}, rho);
+}
+float abBeamAlpha(float peak, float t, float facing, float viewDist,
+                  float localRadius, float cameraFade) {
+  float fade = pow(1.0 - t, 1.5);
+  float hot = 0.4 + 0.6 * exp(-t * 6.0);
+  float edge = abBeamSmooth(0.0, 0.8, facing);
+  float near = abBeamSmooth(${glslFloat(BEAM_NEAR_IN)}, ${glslFloat(BEAM_NEAR_OUT)},
+    viewDist / max(localRadius, ${glslFloat(BEAM_MIN_RADIUS)}));
+  return peak * fade * hot * edge * near * cameraFade;
+}
+`;
 
 /** The lamp head: the one part of a searchlight that sits ON a rung. */
 const HEAD_COLOR = new THREE.Color(0.85, 0.9, 1.0);
@@ -180,11 +324,16 @@ const BEAM_VERTEX = /* glsl */ `
 attribute vec3 aTint;
 uniform float uTime;
 varying float vT;
-varying float vFacing;
 varying vec3 vTint;
 varying float vShimmer;
 varying float vDepth;
 varying float vWorldY;
+varying vec3 vWorldPos;
+varying vec3 vApex;
+varying vec3 vAxis;
+varying float vTipRadius;
+varying float vCameraFade;
+${BEAM_FALLOFF_GLSL}
 
 void main() {
   #ifdef USE_INSTANCING
@@ -196,19 +345,20 @@ void main() {
   // The cone is unit: apex at the origin, axis +Y, so position.y is the
   // fraction of the way along the beam.
   vT = position.y;
-  // Silhouette softness from the surface normal of the SCALED cone: the
-  // radial direction from the beam axis at this vertex. Built from the axis
-  // rather than the mesh normal because the (r, L, r) scale is wildly
-  // non-uniform and a plain mat3 transform would tip every normal along
-  // the axis.
+  // The instance's beam, for the per-fragment falloff: apex, unit axis, and
+  // the (r, L, r) scale read back off the matrix. These are the same at every
+  // vertex of an instance, so they interpolate to themselves.
   vec3 apex = (model * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-  vec3 axis = normalize(mat3(model) * vec3(0.0, 1.0, 0.0));
-  vec3 rel = worldPos.xyz - apex;
-  vec3 radial = rel - axis * dot(rel, axis);
-  float rlen = length(radial);
-  vec3 normal_w = rlen > 1e-4 ? radial / rlen : axis;
-  vec3 viewDir = normalize(cameraPosition - worldPos.xyz);
-  vFacing = abs(dot(normal_w, viewDir));
+  vec3 axisL = mat3(model) * vec3(0.0, 1.0, 0.0);
+  float len = length(axisL);
+  vec3 axis = axisL / len;
+  float tipRadius = length(mat3(model) * vec3(1.0, 0.0, 0.0));
+  vApex = apex;
+  vAxis = axis;
+  vTipRadius = tipRadius;
+  vCameraFade = abBeamCameraFade(
+    abBeamCameraRho(cameraPosition, apex, axis, len, tipRadius));
+  vWorldPos = worldPos.xyz;
   vTint = aTint;
   // Slow drift of faint bands along the beam: dust in the throw.
   vShimmer = 0.88 + 0.12 * sin(position.y * 38.0 - uTime * 1.7 + apex.x * 0.01);
@@ -224,22 +374,32 @@ uniform float uOpacity;
 uniform float fogNear;
 uniform float fogFar;
 varying float vT;
-varying float vFacing;
 varying vec3 vTint;
 varying float vShimmer;
 varying float vDepth;
 varying float vWorldY;
+varying vec3 vWorldPos;
+varying vec3 vApex;
+varying vec3 vAxis;
+varying float vTipRadius;
+varying float vCameraFade;
 ${AB_FOG_GLSL}
+${BEAM_FALLOFF_GLSL}
 
 void main() {
-  float along = 1.0 - vT;
-  // Falloff along the throw: bright at the lamp, gone before the tip.
-  float fade = pow(along, 1.5);
-  // Hot core near the lamp, settling to a steady body further out.
-  float hot = 0.4 + 0.6 * exp(-vT * 6.0);
-  // Silhouette: the beam has no outline, it just thins to nothing.
-  float edge = smoothstep(0.0, 0.8, vFacing);
-  float a = uOpacity * fade * hot * edge * vShimmer;
+  // Silhouette softness from the TRUE wall normal at this fragment: the
+  // radial direction off the beam axis. Built from the axis rather than the
+  // mesh normal because the (r, L, r) scale is wildly non-uniform, and per
+  // fragment because one wall triangle spans the whole throw.
+  vec3 rel = vWorldPos - vApex;
+  vec3 radial = rel - vAxis * dot(rel, vAxis);
+  float rlen = length(radial);
+  vec3 normal_w = rlen > 1e-4 ? radial / rlen : vAxis;
+  vec3 toEye = cameraPosition - vWorldPos;
+  float viewDist = length(toEye);
+  float facing = abs(dot(normal_w, toEye / max(viewDist, 1e-4)));
+  float a = abBeamAlpha(uOpacity, vT, facing, viewDist, vTipRadius * vT,
+    vCameraFade) * vShimmer;
   // Fog, the additive way: a beam in the distance ATTENUATES to nothing,
   // exactly as the buildings behind it dissolve — it never lerps toward the
   // fog colour (that would brighten the sky). Both layers: the linear fog

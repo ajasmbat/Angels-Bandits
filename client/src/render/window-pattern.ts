@@ -290,6 +290,37 @@ export function isWindowLit(
 }
 
 /**
+ * L12 sky cycle: share of the night's lit windows that are switched on right
+ * now (dusk: people still arriving; pre-dawn: thinning out). One shared
+ * uniform for the buildings material; the cycle writes `.value` per frame.
+ */
+export const OCCUPANCY_UNIFORM = { value: 1 };
+/** Occupancy span over which one window fades on/off. The cycle moves
+ * occupancy ≤ 0.001 per second, so each window takes a few seconds to fade —
+ * windows switch one at a time and never pop. */
+export const OCCUPANCY_FADE = 0.004;
+
+/**
+ * How switched-on this window is at `occupancy` (0..1), mirroring the
+ * shader: each window draws its OWN occupancy hash — not the brightness
+ * hash — so thinning out removes windows evenly across the brightness
+ * range, and at occupancy 1 every lit window is fully on.
+ */
+export function windowOccupied(
+  seed: number,
+  cellX: number,
+  cellY: number,
+  occupancy: number,
+): number {
+  const h = abHash(cellX + 59, cellY + 59, seed * 61);
+  const t = Math.min(
+    1,
+    Math.max(0, (occupancy * (1 + OCCUPANCY_FADE) - h) / OCCUPANCY_FADE),
+  );
+  return t * t * (3 - 2 * t);
+}
+
+/**
  * Probability that a lit window reads cool fluorescent rather than warm
  * incandescent: the archetype's bias, shifted per building (a warm law
  * office over a cool trading floor) and again per floor.
@@ -398,6 +429,9 @@ float pLit = clamp(winLit * (${glslFloat(FACADE.zoneLo)} + ${glslFloat(FACADE.zo
 if (floorH < ${glslFloat(FACADE.darkFloor)}) pLit = ${glslFloat(FACADE.darkFloorLit)};
 else if (floorH > ${glslFloat(1 - FACADE.brightFloor)}) pLit = ${glslFloat(FACADE.brightFloorLit)};
 float lit = step(winH, pLit) * facade;
+// L12 sky cycle: tonight's occupancy, own hash per window, soft switch.
+float occH = abHash(winCell + 59.0, vBSeed * 61.0);
+lit *= smoothstep(occH, occH + ${glslFloat(OCCUPANCY_FADE)}, uOccupancy * ${glslFloat(1 + OCCUPANCY_FADE)});
 `;
 }
 

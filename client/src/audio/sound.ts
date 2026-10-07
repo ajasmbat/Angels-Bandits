@@ -39,6 +39,9 @@ const STATIC_BED_LEVEL = 0.055;
 /** Engine pitch band: idle throttle → full throttle, Hz. */
 const ENGINE_MIN_HZ = 55;
 const ENGINE_MAX_HZ = 135;
+/** Engine pitch at full boost speed (F2) — the burn climbs past full throttle. */
+const ENGINE_BOOST_HZ = 185;
+const BOOST_CUE_LEVEL = 0.45;
 
 interface RemoteEngine {
   osc: OscillatorNode;
@@ -100,8 +103,9 @@ export class GameAudio implements VoiceSink {
     );
   }
 
-  /** Own engine loop: pitch tracks the throttle. Call every frame. */
-  setEngine(targetSpeed: number, alive: boolean): void {
+  /** Own engine loop: pitch tracks the throttle, then climbs further with
+   * `boost01` (airspeed past MAX_SPEED, 0..1 — F2). Call every frame. */
+  setEngine(targetSpeed: number, alive: boolean, boost01 = 0): void {
     const ctx = this.ensure();
     if (!ctx || !this.sfx) return;
     if (!this.ownOsc || !this.ownGain) {
@@ -118,12 +122,14 @@ export class GameAudio implements VoiceSink {
     const t = GameAudio.throttle01(targetSpeed);
     const now = ctx.currentTime;
     this.ownOsc.frequency.setTargetAtTime(
-      ENGINE_MIN_HZ + t * (ENGINE_MAX_HZ - ENGINE_MIN_HZ),
+      ENGINE_MIN_HZ +
+        t * (ENGINE_MAX_HZ - ENGINE_MIN_HZ) +
+        boost01 * (ENGINE_BOOST_HZ - ENGINE_MAX_HZ),
       now,
       0.08,
     );
     this.ownGain.gain.setTargetAtTime(
-      alive ? OWN_ENGINE_LEVEL * (0.55 + 0.45 * t) : 0,
+      alive ? OWN_ENGINE_LEVEL * (0.55 + 0.45 * t + 0.3 * boost01) : 0,
       now,
       0.1,
     );
@@ -335,6 +341,11 @@ export class GameAudio implements VoiceSink {
       ctx.currentTime,
       0.3,
     );
+  }
+
+  /** Boost ignition (F2): a rising rush of air as the burn lights. */
+  boostCue(): void {
+    this.burst("bandpass", 500, 2600, 0.5, BOOST_CUE_LEVEL, 0);
   }
 
   /** Near-miss whoosh: an enemy bullet just shaved past. Rate-limited. */

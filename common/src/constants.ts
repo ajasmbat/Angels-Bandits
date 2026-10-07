@@ -39,6 +39,9 @@ export const EMISSIVE_NAVLIGHT = 1.0;
 export const EMISSIVE_BEACON = 1.05;
 /** Anti-collision strobe at flash peak — brightest plane light, under tracers. */
 export const EMISSIVE_STROBE = 1.1;
+/** Boost afterburn flame at full burn (F2) — the hottest plane light, still
+ * under tracers so a boosting bandit never out-shines its own gunfire. */
+export const EMISSIVE_AFTERBURN = 1.3;
 export const EMISSIVE_TRACER = 1.5;
 
 // --- Buildings ---
@@ -380,6 +383,34 @@ export const STREET_TREE_CANOPY_MAX = 2.2;
  * radius) under-reaches the true swept sphere by a few cm at oblique angles
  * on flattened crowns; this covers it, so what you see is always solid. */
 export const CANOPY_COLLISION_SLACK = 0.1;
+
+// --- Boost (F2) --- hold SPACE: a short burn of extra speed and sharper
+// handling, metered by an energy gauge. The energy model is wall-clock and
+// pure (common/src/boost.ts), shared by the client's gauge and the server's
+// mirror the same way gun heat is; the flight model reads the multipliers.
+/** Top airspeed while boosting, m/s (MAX_SPEED is the un-boosted top). */
+export const BOOST_MAX_SPEED = 125;
+/** Proportional pull of airspeed toward BOOST_MAX_SPEED while boosting, 1/s —
+ * the engine surge. 90 → ~119 m/s in 1 s, ~124 by the end of a full burn. */
+export const BOOST_RESPONSE = 1.5;
+/** Turn and pitch rate multipliers at full boost. 125 m/s / (TURN_RATE 0.9 ×
+ * 1.6) is an 86.8 m turn radius against 100 m at 90 m/s un-boosted. */
+export const BOOST_TURN_MULT = 1.6;
+export const BOOST_PITCH_MULT = 1.4;
+/** Energy (0..1 gauge) burned per second of boost: a full gauge lasts 3 s. */
+export const BOOST_DRAIN_RATE = 1 / 3;
+/** Energy regained per second once recharging: empty → full in 6 s. */
+export const BOOST_RECHARGE_RATE = 1 / 6;
+/** Recharge waits this long after a boost ends (release or empty), ms. */
+export const BOOST_RECHARGE_DELAY_MS = 1000;
+/** A boost may only start with at least this much energy. */
+export const BOOST_MIN_START = 0.25;
+/** Energy every start costs up front — tapping SPACE can't stretch a burn. */
+export const BOOST_START_COST = 0.1;
+/** Server energy tolerance (clock/arrival jitter on the boost edges): the
+ * mirror starts a boost this much below BOOST_MIN_START and lets energy run
+ * this far below empty before it calls the burn over. 0.15 is 0.45 s of burn. */
+export const BOOST_VALIDATION_SLACK = 0.15;
 
 // --- Combat (tuned by T4) ---
 export const MAX_HP = 100;

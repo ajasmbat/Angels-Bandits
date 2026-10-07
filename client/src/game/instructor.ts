@@ -174,7 +174,9 @@ export function angleBetween(a: Vec3, b: Vec3): number {
  * It is added to an offset the controller ignores, so reframing never kicks
  * the nose; while `reframing` holds the offset stays put, after that it fades
  * and the cursor takes back over smoothly. The plane's own motion is never
- * latched, so a zoom pressed mid-turn keeps the turn.
+ * latched, so a zoom pressed mid-turn keeps the turn. `rates` are the
+ * full-deflection rates stepFlight will apply this frame (handlingRates —
+ * boost raises them), so the loop gain, and the damping, never change.
  */
 export function instructorInput(
   err: AimError,
@@ -182,17 +184,25 @@ export function instructorInput(
   reframing: boolean,
   dt: number,
   s: InstructorState,
+  rates: { turnRate: number; pitchRate: number } = {
+    turnRate: TURN_RATE,
+    pitchRate: PITCH_RATE,
+  },
 ): InstructorState {
   const keep = reframing ? 1 : Math.exp(-dt / LATCH_FADE);
   const offYaw = wrapAngle(s.offYaw + latch.yaw) * keep;
   const offPitch = (s.offPitch + latch.pitch) * keep;
   // turn +1 is a right-hand turn, which DEcreases yaw (flight.ts).
   const turnCmd = clamp(
-    (-GAIN * wrapAngle(err.yaw - offYaw)) / TURN_RATE,
+    (-GAIN * wrapAngle(err.yaw - offYaw)) / rates.turnRate,
     -1,
     1,
   );
-  const pitchCmd = clamp((GAIN * (err.pitch - offPitch)) / PITCH_RATE, -1, 1);
+  const pitchCmd = clamp(
+    (GAIN * (err.pitch - offPitch)) / rates.pitchRate,
+    -1,
+    1,
+  );
   const blend = 1 - Math.exp(-dt / LAG);
   return {
     turn: s.turn + (turnCmd - s.turn) * blend,

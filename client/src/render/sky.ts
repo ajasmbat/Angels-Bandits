@@ -249,7 +249,9 @@ ${chain}
     float r = length(q);
     vec3 moonCol = ${vec3Literal(peak.toArray())};
     // Disc: soft limb darkening + maria (low-frequency dark patches).
-    float disc = (1.0 - smoothstep(0.96, 1.0, r)) * uMoonVis * above;
+    // The disc itself never reaches the fog band (MOON_EL_LOW); only the
+    // wide halo could, so only the halo takes the ramp.
+    float disc = (1.0 - smoothstep(0.96, 1.0, r)) * uMoonVis;
     float maria = mNoise(q * 2.3 + 3.1) * 0.6 + mNoise(q * 5.1) * 0.4;
     float limb = 0.78 + 0.22 * sqrt(max(0.0, 1.0 - r * r));
     vec3 discCol = moonCol * limb * (1.0 - 0.28 * smoothstep(0.45, 0.75, maria));

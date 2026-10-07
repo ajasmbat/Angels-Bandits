@@ -205,8 +205,16 @@ describe("hit claims at the new cadence", () => {
       streamPose(target, at(1000 + BULLET_RANGE / 2, 1000));
       await wait(1000 / 20);
     }
-    // Spawn protection has to lapse before a hit can land at all.
-    await wait(SPAWN_PROTECTION_MS);
+    // Spawn protection has to lapse before a hit can land at all. Keep
+    // streaming through it, as a real client does: SPAWN_PROTECTION_MS is
+    // longer than LIVENESS_TIMEOUT_MS, so a silent wait got both sockets
+    // reaped by the server's liveness sweep whenever a sweep landed in the gap.
+    const protectionEnds = performance.now() + SPAWN_PROTECTION_MS;
+    while (performance.now() < protectionEnds) {
+      streamPose(shooter, at(1000, 1000));
+      streamPose(target, at(1000 + BULLET_RANGE / 2, 1000));
+      await wait(1000 / 20);
+    }
     for (let i = 0; i < 4; i++) {
       streamPose(shooter, at(1000, 1000));
       streamPose(target, at(1000 + BULLET_RANGE / 2, 1000));

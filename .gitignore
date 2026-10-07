@@ -14,3 +14,7 @@ tools/perf/last.json
 tools/perf/aa-comparison.html
 # the full uncropped frame is a debugging aid; the committed pair is the crop
 tools/perf/aa-frame.png
+
+# Claude Code: machine-local settings (the shared .claude/settings.json is
+# committable); biome only reads .gitignore, not .git/info/exclude.
+.claude/settings.local.json

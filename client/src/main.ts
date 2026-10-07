@@ -100,7 +100,14 @@ import { MoverLights, Movers } from "./render/movers";
 import { NatureRenderer } from "./render/nature";
 import { Pedestrians } from "./render/pedestrians";
 import { FrameMeter, type FrameStats } from "./render/perfmeter";
-import { buildPlaneMesh, spinPropeller } from "./render/plane";
+import {
+  type ControlDeflection,
+  NEUTRAL_CONTROLS,
+  animatePlane,
+  buildPlaneMesh,
+  inputControls,
+  spinPropeller,
+} from "./render/plane";
 import { PlaneLights } from "./render/planelights";
 import { RemotePlanes } from "./render/remotes";
 import { MSAA_SAMPLES, readRenderOptions } from "./render/renderopts";
@@ -559,6 +566,8 @@ let alive = true;
 let killCamTargetId: string | null = null;
 // Server-said combat state about self (snapshots), kept for HUD + QA.
 let selfHp = MAX_HP;
+/** The own plane's control-surface commands, from the last flight step. */
+let ownControls: ControlDeflection = NEUTRAL_CONTROLS;
 let selfProt = true;
 let lastScores: ScoreEntry[] = welcome.scores;
 let lastDeath: { victimId: string; killerId: string | null } | null = null;
@@ -1352,6 +1361,9 @@ renderer.setAnimationLoop((now) => {
     hud.setPullUp(avoid.warning);
     if (avoid.warning) audio.pullUpTone(now);
     flight = stepFlight(flight, avoid.input, dt);
+    // Own control surfaces follow what the plane is actually flying — the
+    // stick plus any assist (F3).
+    ownControls = inputControls(avoid.input, flight);
     // Hold the post-boost tail to the wall-clock envelope the server checks
     // (boostSpeedCap): a slow or hidden frame clamps dt, so the sim's own
     // decay can lag the clock — this keeps every pose inside the mirror.
@@ -1410,6 +1422,7 @@ renderer.setAnimationLoop((now) => {
     plane.rotation.set(flight.pitch, flight.yaw, flight.roll, "YXZ");
     // Prop speed tracks the commanded throttle (same factor as remotes').
     spinPropeller(plane, dt * flight.targetSpeed * 0.7);
+    animatePlane(plane, ownControls, flight.speed, selfHp, dt);
     // Own aviation lights + wingtip trails (strobe on the synced clock so
     // every client sees this plane blink at the same instant).
     planeLights.place(

@@ -69,6 +69,22 @@ const VIEWS = [
     yaw: 0.6,
     sky: "predawn",
   },
+  // L5: the elevated train running down its canyon. x/z/yaw are recomputed
+  // from the live train pose at every pin (it moves 22 m/s): the plane sits
+  // `behind` m back from the last car and `side` m off its track, `y` m up,
+  // nose `dyaw` off the train's heading so the plane does not hide it.
+  // `leadMs` poses the train that far ahead of now (a slow software renderer
+  // shows a frame seconds after it was pinned).
+  {
+    name: "train-canyon",
+    train: true,
+    behind: 38,
+    side: -5,
+    dyaw: 0.4,
+    y: 40,
+    pitch: -0.32,
+    leadMs: 0,
+  },
 ];
 let browser;
 try {
@@ -104,6 +120,20 @@ try {
     if (ONLY && !ONLY.includes(v.name)) continue;
     const pin = async () =>
       page.evaluate((v) => {
+        if (v.train) {
+          // Behind the last car, facing its heading (box yaw -> flight yaw is
+          // a quarter turn: flight yaw 0 faces -Z).
+          const now = window.__ab.train()?.time ?? 0;
+          const cars = window.__ab.train(now + v.leadMs)?.cars ?? [];
+          const tail = cars[cars.length - 1];
+          if (tail) {
+            const hx = Math.cos(tail.yaw);
+            const hz = -Math.sin(tail.yaw);
+            v.x = tail.x - hx * v.behind - hz * v.side;
+            v.z = tail.z - hz * v.behind + hx * v.side;
+            v.yaw = tail.yaw - Math.PI / 2 + v.dyaw;
+          }
+        }
         window.__ab.teleport(v.x, v.z, v.y, v.yaw);
         if (v.pitch) {
           const s = window.__ab.state();

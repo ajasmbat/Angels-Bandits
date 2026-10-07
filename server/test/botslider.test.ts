@@ -90,9 +90,8 @@ const setBots = (peer: Peer, count: number): void => {
 };
 
 beforeAll(async () => {
-  // The server itself, not `npx tsx` around it: child.kill() only signals
-  // the process it spawned, and npx's grandchild node server outlived every
-  // run — orphans piled up by the dozen and starved later suites of CPU.
+  // node itself (tsx as a loader), not `npx tsx`: kill() in afterAll must
+  // reach the server, or it outlives the test and keeps flying its bots.
   child = spawn(process.execPath, ["--import", "tsx", entry], {
     env: { ...process.env, PORT: "0" },
     stdio: ["ignore", "pipe", "pipe"],

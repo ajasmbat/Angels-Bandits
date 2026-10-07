@@ -35,7 +35,7 @@ import {
 import { flightForward } from "@angels-bandits/common/flight";
 import type { SpawnState } from "@angels-bandits/common/protocol";
 import { canonicalize, wrapDeltaAxis } from "@angels-bandits/common/world";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   type BotShot,
   RoomBots,
@@ -46,22 +46,26 @@ import {
 import { Combat } from "../src/combat";
 import { pickRespawn } from "../src/respawn";
 
-/** A fixed mid-altitude spawn: tests place bots explicitly. */
-/**
- * Hand the event loop back to vitest's worker between independent chunks of
- * a long synchronous sim. A 40 s block outlasts the worker's 60 s RPC
- * timeout on a loaded machine ("Timeout calling onTaskUpdate", which fails
- * the run with every test green). The sims never read the clock, so
- * yielding cannot change a result.
- */
-const yieldToWorker = (): Promise<void> =>
-  new Promise((resolve) => setImmediate(resolve));
+// Most tests here are long SYNCHRONOUS sims, and vitest's runner chains sync
+// tests without ever yielding a macrotask. Its fire-and-forget onTaskUpdate
+// RPC reply then sits unread until the whole file ends; on a loaded box the
+// file takes > 60 s, the worker's RPC timer fires first, and `npm test` exits
+// 1 ("Timeout calling onTaskUpdate") with every test green. One event-loop
+// turn after each test lets the reply be read, so only a single test, never
+// the whole file, has to fit inside the RPC timeout.
+afterEach(() => new Promise<void>((resolve) => setImmediate(resolve)));
 
+/** A fixed mid-altitude spawn: tests place bots explicitly. */
 const spawnAt = (x: number, z: number, yaw = 0, y = 300): SpawnState => ({
   pos: { x, y, z },
   yaw,
   speed: RESPAWN_SPEED,
 });
+
+/** Let the event loop turn once — long synchronous sims call this between
+ * chunks so the vitest worker can answer its RPC (fixed 60 s timeout). */
+const yieldToEventLoop = () =>
+  new Promise<void>((resolve) => setImmediate(resolve));
 
 describe("RoomBots population sync", () => {
   it("syncTo(6) on an empty room spawns BANDIT-1..6 with room-scoped ids", () => {
@@ -905,14 +909,12 @@ describe("long-sim regressions", () => {
     // Long seeded sims: generous timeout so a loaded CI box cannot flake it.
   }, 30_000);
 
-  it("keeps terrain crashes a minority of deaths in a live furball", async () => {
+  it("keeps terrain crashes a minority of deaths in a live furball", () => {
     const city = generateCity(CITY_SEED);
     let crashed = 0;
     let shot = 0;
     let ceilingBreaches = 0;
     for (let room = 0; room < 3; room++) {
-      // Yield between rooms (see yieldToWorker): the sims are clock-free.
-      await yieldToWorker();
       const bots = new RoomBots(`room-${room}`, 2024 + room * 31, city);
       const combat = new Combat();
       const roster = bots.syncTo(11, spreadSpawner()).spawned;
@@ -1129,13 +1131,18 @@ describe("bots vs the L2 movers", () => {
     // jib oversails and the run is summed over five seeds of four minutes:
     // blind it is ~30 deaths, with the probe on 0. This asserts the gap, not
     // a fragile exact count.
+    //
+    // Ten runs of a few seconds each, with a yield to the event loop between
+    // them: as one synchronous 40 s block (on a loaded box) it starved the
+    // vitest worker's RPC, whose fixed 60 s timeout then failed the whole
+    // `npm test` with "Timeout calling onTaskUpdate" though every test passed.
     const sum = async (probe: boolean) => {
       const total = { moverDeaths: 0, sweepTicks: 0 };
       for (const seed of [1234, 7, 20260826, 99, 5]) {
         const r = orbitCrane(seed, probe);
         total.moverDeaths += r.moverDeaths;
         total.sweepTicks += r.sweepTicks;
-        await yieldToWorker(); // one seed per block, not all ten at once
+        await yieldToEventLoop();
       }
       return total;
     };
@@ -1146,7 +1153,7 @@ describe("bots vs the L2 movers", () => {
     expect(seeing.sweepTicks).toBeGreaterThan(4000);
     expect(blind.moverDeaths).toBeGreaterThan(20);
     expect(seeing.moverDeaths * 10).toBeLessThan(blind.moverDeaths);
-  }, 60_000);
+  }, 300_000);
 
   it("keeps the storm ceiling while it is busy dodging a crane", () => {
     // The mover probe must not have cost bots a guarantee they already had.

@@ -580,7 +580,7 @@ Two rules every tier obeys:
 
 | | High | Medium | Low | Mobile (M3) |
 | --- | --- | --- | --- | --- |
-| pixel-ratio ceiling for the scaler | 2 | 1.5 | 1 | 1.25 (1.0 / 0.75 at thermal levels 1 / 2) |
+| pixel-ratio ceiling for the scaler | 2 | 1.5 | 1 | 1 (0.75 at thermal level 2) |
 | L1 alarms, lit windows, responders | full | full | full | full |
 | L1 smoke columns | full | full | half the puffs | a third of the puffs |
 | L1 pedestrians | full | 70 % | 40 % | 30 %, one block out |
@@ -604,7 +604,7 @@ Two rules every tier obeys:
 | L11 river, bridges, boats | full | full | full (solid) | full |
 | L12 sky cycle | full | full | full (uniforms) | full |
 | L13 facade detail | full | full | off (dressing, not solid) | off |
-| bloom | full | full | full | half-res chain (cheaper via the ceiling); off at thermal level 1 |
+| bloom | full | full | full | half-res chain (cheaper via the ceiling); off from thermal level 1 |
 | final grade | full | full | full | off |
 | window interiors (parallax rooms) | full | full | full | off: the room's mean light (uniform guard) |
 
@@ -790,7 +790,8 @@ things besides the table:
   against the 30 fps budget.
   - **Trigger and settle.** 10 s of unbroken pressure steps one level, then
     a 30 s settle follows.
-  - **Level 1** drops bloom and caps the scaler at 1.0.
+  - **Level 1** drops bloom (and caps the scaler at 1.0, Mobile's own
+    ceiling today).
   - **Level 2** caps it at 0.75, the floor, on purpose.
   - **Levels never step back**, so nothing oscillates. The cap is also what
     stops the scaler's latch-relax probes climbing back into the heat.
@@ -810,16 +811,38 @@ Every Mobile switch obeys O3's rule 1, and nothing compiles a shader:
 
 ```sh
 # On the runner (no GPU): the CPU-cost proxy. High at its own ratio vs Mobile
-# at its own ceiling, as a landscape phone, JS throttled 4x, core view only.
+# at its own ceiling (1), as a landscape phone, JS throttled 4x, core view only.
 # Read the "cost:" block: fragment proxy and draws × pixels ratios, JS p50.
 AB_CHROME_ARGS="--use-angle=swiftshader --enable-unsafe-swiftshader" \
   node tools/perf/run.mjs --device phone --cpu-throttle 4 --segments core \
-  --res 2 --label high --ab "quality=mobile&res=1.25"
+  --res 2 --label high --ab "quality=mobile&res=1"
 
 # On the M3 (real GPU), machine otherwise idle: Mobile at ratio 1 as a phone.
 # GPU p50 <= 5 ms is the target: an ASSUMED proxy for a phone GPU ~4x
 # slower than the M3, not a measurement of one.
 node tools/perf/run.mjs --runs 3 --device phone --quality mobile --res 1 --label mobile
 # The same, paired against High at its own ratio, for the GPU ratio.
-node tools/perf/run.mjs --runs 3 --device phone --res 2 --label high --ab "quality=mobile&res=1.25"
+node tools/perf/run.mjs --runs 3 --device phone --res 2 --label high --ab "quality=mobile&res=1"
 ```
+
+### What the runner measured (M3)
+
+GPU-less Linux box, SwiftShader (Vulkan), `--device phone --cpu-throttle 4
+--segments core`, one interleaved pass each, load average ~17. SwiftShader's
+GPU and wall times are the CPU rasterising, so read only the
+GPU-independent rows:
+
+| core view | High, ratio 2 | Mobile, ratio 1 | Mobile cheaper by |
+| --- | --- | --- | --- |
+| drawing buffer | 1688×780 | 844×390 | 4× pixels |
+| full-screen-pass equivalents | 5.17 (bloom, grade) | 4.17 (bloom, no grade) | |
+| fragment proxy | 6.80 Mpx·passes | 1.37 Mpx·passes | **4.96×** |
+| draw calls | 79 | 73 | |
+| draws × pixels | | | **4.33×** |
+| pre-render JS p50 (4× throttled) | 8.50 ms | 5.40 ms | 1.57× |
+
+Mobile was first measured at a 1.25 ceiling: fragment proxy 3.18×, but
+draws × pixels only 2.77×. Draw calls barely move between tiers (80 → 74),
+so pixels carry the ratio, and M3's 3× bar set the ceiling to 1. Neither
+arm logged a page error, so both shader paths (the uniform guards on and
+off) compiled and ran.

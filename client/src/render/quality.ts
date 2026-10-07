@@ -21,9 +21,11 @@
 // sits ABOVE it and only acts once the scaler has already given up most of
 // its pixels and frames still miss — then it trades features instead.
 //
-// M3 Mobile: a fourth tier for phones, the cheapest on every knob but the
-// pixel ceiling (a phone has few CSS pixels, so 1.25 still costs far less
-// than Low's 1 on a desktop panel). It steers to 30 fps rather than 60 —
+// M3 Mobile: a fourth tier for phones, the cheapest on every knob. Its pixel
+// ceiling is 1, like Low's: 1.25 was measured first, and on the runner's
+// phone proxy it left Mobile only 2.8x cheaper than High on draw calls ×
+// pixels (the draw count barely moves between tiers), short of the 3x M3
+// asks for; 1 clears it. It steers to 30 fps rather than 60 —
 // see MOBILE_FRAME_BUDGET_MS — and Auto starts there on a coarse-pointer
 // device, where the thermal step-down (bottom of this file) replaces the
 // desktop tier drops.
@@ -168,7 +170,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     windowInteriors: true,
   },
   mobile: {
-    maxPixelRatio: 1.25,
+    maxPixelRatio: 1,
     rainDensity: 0.25,
     crowdDensity: 0.3,
     smokeColumns: 0.34,
@@ -610,7 +612,9 @@ export function stepAutoQuality(
 //
 // Each level only ever makes things cheaper and nothing ever steps back up,
 // so there is no oscillation by construction. Level 1 drops bloom and caps
-// the scaler at 1.0; level 2 caps it at 0.75 — RESOLUTION_FLOOR, so the
+// the scaler at 1.0 (Mobile's own ceiling today; the cap keeps a thermal
+// level meaning the same thing if that ceiling is ever raised); level 2
+// caps it at 0.75 — RESOLUTION_FLOOR, so the
 // scaler is pinned there on purpose. The cap is the point: without it, the
 // scaler's latch relaxes every 1–8 minutes and probes straight back up into
 // the heat. A reload, or picking a tier by hand, starts over at level 0.

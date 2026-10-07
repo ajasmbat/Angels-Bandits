@@ -282,8 +282,8 @@ let qualityTier: QualityTier =
 // Recomputed on resize: browser zoom and dragging the window to another
 // panel both change devicePixelRatio AND fire `resize`, and a stale ceiling
 // either strands the scaler below the panel or lets it burn 4x the pixels.
-// The quality tier caps the ceiling (High 2, Medium 1.5, Low 1, Mobile
-// 1.25), and a thermal level caps it further (M3).
+// The quality tier caps the ceiling (High 2, Medium 1.5, Low 1, Mobile 1),
+// and a thermal level caps it further (M3).
 let resLimits = qualityLimits(
   window.devicePixelRatio,
   qualityTier,

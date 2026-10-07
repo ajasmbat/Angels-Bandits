@@ -34,11 +34,16 @@ export { CONSTRUCTION_BLOCKS, LANDMARK_BLOCKS, PLAZA_BLOCKS };
 // H1 fly-through holes: the seam collision, rendering and bots all read.
 export {
   type Hole,
+  type EdgeFrame,
   type HoleAxis,
+  type HoleEdge,
   type HoleKind,
   type HoleSpan,
   type SolidBox,
   cityHoles,
+  edgeFrame,
+  holeEdges,
+  segmentThroughHole,
   solids,
 } from "./holes";
 

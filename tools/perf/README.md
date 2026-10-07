@@ -685,3 +685,65 @@ node tools/perf/flicker.mjs --ref 0b90284
 #    Performance → record 5 s of the `core` view at ?quality=high, then
 #    Bottom-Up, grouped by function, sorted by self time.
 ```
+
+### What the runner could and could not measure (O3)
+
+O3 ran on a GPU-less Linux box: Chromium there gets SwiftShader, so every
+GPU and wall-clock number it produces is the CPU rasterising, not the game.
+What it *can* measure honestly is GPU-independent:
+
+- **Draw calls per segment** (a count, not a time). Final pass at ratio
+  0.75 on High: core 80 (budget 120), plaza 77, sky 68, canyon 81, storm 73,
+  street 80. The furball with all 11 pilots in view (profiled separately,
+  because the full pass loses them to the liveness reap below) draws a
+  median 178, 234 worst. That is down from 223/277 before O3's single-pass
+  fix. The extra ~100 calls over `street` are 11 near-LOD airframes at about
+  9 each. If the furball misses 60 fps on the M3,
+  look at `PLANE_LOD_DISTANCE` (plane.ts) first.
+- **The `room` check.** All 11 fake pilots arrive (a standalone repro reads
+  11 targets). Under SwiftShader the server's 4 s liveness timeout then drops
+  the page as its frames slow, so the runner's furball reads 1 plane. That is
+  runner-only, and the verdict flags it rather than measuring a smaller fight.
+- **Per-frame JS**, from a CDP sampling profile at the `core` view
+  (SwiftShader, so the CPU is shared with the rasteriser: treat the numbers
+  as a ranking, not absolutes). The top 10 before and after O3's fixes, ms
+  per frame, self time:
+
+  | before | | after | |
+  | --- | --- | --- | --- |
+  | `ImageCache.update` | 0.90 | `Pedestrians.update` | 0.76 |
+  | `Pedestrians.update` | 0.78 | GC | 0.32 |
+  | `Signage.place` | 0.77 | `Signage.place` | 0.18 |
+  | GC | 0.69 | `sphereHitsBox` (crash/camera/proximity probes) | 0.18 |
+  | `pedestrianPoseInto` | 0.25 | `frame` (the loop body) | 0.18 |
+  | `frame` | 0.24 | three `renderBufferDirect` | 0.15 |
+  | `Color.setHex` (crowd coats) | 0.15 | three `arraysEqual` (uniform cache) | 0.15 |
+  | `Signals.update` | 0.14 | `InstancedMesh.setColorAt` | 0.15 |
+  | `sphereHitsBox` | 0.14 | `Signals.update` | 0.13 |
+  | three `setProgram` | 0.11 | three `setProgram` | 0.13 |
+
+  Fixed, because each was avoidable:
+  - `ImageCache` re-checks only the instances whose half-world line the
+    viewer crossed.
+  - Signage's emissive boost is computed once instead of every frame.
+  - The crowd writes its matrices and pre-linearised coat colours directly.
+  - Eight systems that pack a prefix of a worst-case buffer now upload only
+    that prefix. That brought the core view from ~600 KB of `bufferSubData`
+    a frame to ~235 KB.
+  - Five flat transparent double-sided materials (trails, the cloud ceiling,
+    rotors, each plane's glass and prop blur) draw in one pass instead of
+    three's back-then-front pair. The pair flagged them `needsUpdate` twice
+    a frame, which cost two program re-checks and an extra draw each. In the
+    furball, ×12 planes, that was 45 draw calls.
+  - Signals and the cloud deck place without allocating.
+  - Lightning bolts are built in place, not cloned and merged: ~2 MB of
+    garbage and a frame spike per strike.
+
+  Left as they are: `Pedestrians.update` poses every walker every frame by
+  design; Medium and Low thin the crowd to 70 % / 40 %. The GC remainder is
+  mostly short-lived boxes in the shared collision code (`common/`, also run
+  by the server and bots), which O3 does not touch.
+- **Flicker** (`flicker.mjs --ref 0b90284`, see above). The frozen score
+  passes against O1's build, and the pan reads a few percent higher. O1's
+  own pan moved 5.5 % between two runs, so treat the pan as unresolved.
+  Re-run on the M3.

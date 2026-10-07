@@ -815,7 +815,7 @@ function printVerdicts(report) {
   const failed = report.segments.filter((s) => s.verdicts?.room === false);
   for (const s of failed) {
     console.error(
-      `!! ${s.name}: only ${s.planes} planes in the room during the window — the fake pilots did not all make it, so this is not the full-room scene.`,
+      `!! ${s.name}: only ${s.planes} plane(s) in the room during the window — the fake pilots did not all make it, so this is not the full-room scene.`,
     );
   }
 }

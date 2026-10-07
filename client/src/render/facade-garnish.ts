@@ -16,7 +16,7 @@ import {
 import { BLOCK_PITCH } from "@angels-bandits/common/constants";
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
-import { nearestImage } from "./wrapPlacement";
+import { ImageCache, InstanceUploads } from "./wrapPlacement";
 
 /** Parapet lip thickness across the edge, meters. */
 const LIP_THICKNESS = 1.1;
@@ -169,6 +169,10 @@ export class FacadeGarnishRenderer {
   private readonly parapetMesh: THREE.InstancedMesh;
   private readonly canopyMesh: THREE.InstancedMesh;
   private readonly scratch = new THREE.Matrix4();
+  private readonly parapetImages: ImageCache;
+  private readonly canopyImages: ImageCache;
+  private readonly parapetUploads: InstanceUploads;
+  private readonly canopyUploads: InstanceUploads;
 
   constructor(buildings: readonly Building[]) {
     const layouts = buildings.map(facadeGarnishFor);
@@ -195,6 +199,18 @@ export class FacadeGarnishRenderer {
       mesh.frustumCulled = false; // instances move relative to the camera every frame
       this.group.add(mesh);
     }
+    this.parapetImages = new ImageCache(
+      this.parapets.map((p) => p.x),
+      this.parapets.map((p) => p.z),
+    );
+    this.canopyImages = new ImageCache(
+      this.canopies.map((c) => c.x),
+      this.canopies.map((c) => c.z),
+    );
+    this.parapetUploads = new InstanceUploads([
+      this.parapetMesh.instanceMatrix,
+    ]);
+    this.canopyUploads = new InstanceUploads([this.canopyMesh.instanceMatrix]);
   }
 
   /** Total garnish instances drawn — perf reporting/QA. */
@@ -222,21 +238,28 @@ export class FacadeGarnishRenderer {
     };
   }
 
-  /** Place everything at its torus image nearest the camera. */
+  /** Place everything at its torus image nearest the camera — rewriting
+   * and uploading only what flipped image (O2). */
   update(cameraPos: Vec3): void {
-    this.parapets.forEach((p, i) => {
-      const img = nearestImage(cameraPos, { x: p.x, y: 0, z: p.z });
-      this.scratch.makeScale(p.width, PARAPET_HEIGHT, p.depth);
-      this.scratch.setPosition(img.x, p.y - LIP_SINK, img.z);
-      this.parapetMesh.setMatrixAt(i, this.scratch);
-    });
-    this.canopies.forEach((c, i) => {
-      const img = nearestImage(cameraPos, { x: c.x, y: 0, z: c.z });
-      this.scratch.makeScale(c.sizeX, CANOPY_THICKNESS, c.sizeZ);
-      this.scratch.setPosition(img.x, c.y, img.z);
-      this.canopyMesh.setMatrixAt(i, this.scratch);
-    });
-    this.parapetMesh.instanceMatrix.needsUpdate = true;
-    this.canopyMesh.instanceMatrix.needsUpdate = true;
+    this.parapetImages.update(cameraPos, this.placeParapet);
+    this.canopyImages.update(cameraPos, this.placeCanopy);
+    this.parapetUploads.flush();
+    this.canopyUploads.flush();
   }
+
+  private readonly placeParapet = (i: number, x: number, z: number): void => {
+    const p = this.parapets[i] as ParapetLip;
+    this.scratch.makeScale(p.width, PARAPET_HEIGHT, p.depth);
+    this.scratch.setPosition(x, p.y - LIP_SINK, z);
+    this.parapetMesh.setMatrixAt(i, this.scratch);
+    this.parapetUploads.mark(i);
+  };
+
+  private readonly placeCanopy = (i: number, x: number, z: number): void => {
+    const c = this.canopies[i] as Canopy;
+    this.scratch.makeScale(c.sizeX, CANOPY_THICKNESS, c.sizeZ);
+    this.scratch.setPosition(x, c.y, z);
+    this.canopyMesh.setMatrixAt(i, this.scratch);
+    this.canopyUploads.mark(i);
+  };
 }

@@ -12,7 +12,7 @@ import { MAX_HP, SMOKE_HP_FRAC } from "@angels-bandits/common/constants";
 import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { RENDER_ORDER } from "./render-order";
-import { nearestImage } from "./wrapPlacement";
+import { nearestImageInto } from "./wrapPlacement";
 
 /** Min ms between puffs per plane (~14 Hz at a steady wound). */
 export const SMOKE_EMIT_MS = 70;
@@ -20,6 +20,7 @@ export const SMOKE_EMIT_MS = 70;
 export const SMOKE_LIFE_MS = 1500;
 /** Upward drift baked into a puff as it ages, m/s. */
 const SMOKE_RISE = 3;
+const scratchImage = { x: 0, y: 0, z: 0 };
 /** Point budget: planes × puffs a full-rate trail can hold (1500/70 ≈ 22). */
 const MAX_PLANES = 12;
 const MAX_PUFFS = 24;
@@ -170,7 +171,7 @@ export class SmokeTrails {
         continue;
       }
       if (!anchor) continue;
-      const base = nearestImage(viewer, anchor);
+      const base = nearestImageInto(scratchImage, viewer, anchor);
       for (const p of puffs) {
         if (i >= budget) break;
         const rise = p.age01 * (SMOKE_LIFE_MS / 1000) * SMOKE_RISE;

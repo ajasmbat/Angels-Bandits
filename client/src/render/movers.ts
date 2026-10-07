@@ -51,7 +51,7 @@ import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
 import type { SpotBeam } from "./searchlights";
-import { nearestImage } from "./wrapPlacement";
+import { nearestImage, nearestImageInto } from "./wrapPlacement";
 
 // --- Shared additive point cloud (nav lights, warning beacons, sparks) ---
 
@@ -353,6 +353,9 @@ export class Movers {
   private readonly tilt = new THREE.Quaternion();
   private readonly pos = new THREE.Vector3();
   private readonly scale = new THREE.Vector3();
+  /** Per-frame scratch (O2: the mover loop allocates as little as it can). */
+  private readonly image = { x: 0, y: 0, z: 0 };
+  private readonly warn = new THREE.Color();
   private static readonly UP = new THREE.Vector3(0, 1, 0);
   private static readonly FORWARD = new THREE.Vector3(1, 0, 0);
 
@@ -457,7 +460,7 @@ export class Movers {
       cameraAt: Vec3,
     ): void => {
       if (rigIndex >= this.rig.count) return;
-      const p = nearestImage(cameraAt, { x: box.x, y: box.y, z: box.z });
+      const p = nearestImageInto(this.image, cameraAt, box);
       this.pos.set(p.x, p.y, p.z);
       this.quat.setFromAxisAngle(Movers.UP, box.yaw);
       this.scale.set(sx, sy, sz);
@@ -467,12 +470,11 @@ export class Movers {
 
     for (const site of this.field.cranes) {
       const parts = craneBoxes(site, serverTimeMs);
-      const byKind = new Map(parts.map((p) => [p.kind, p]));
-      const mast = byKind.get("mast");
-      const jib = byKind.get("jib");
-      const counter = byKind.get("counterJib");
-      const cable = byKind.get("cable");
-      const hook = byKind.get("hook");
+      const mast = parts.find((p) => p.kind === "mast");
+      const jib = parts.find((p) => p.kind === "jib");
+      const counter = parts.find((p) => p.kind === "counterJib");
+      const cable = parts.find((p) => p.kind === "cable");
+      const hook = parts.find((p) => p.kind === "hook");
       if (!mast || !jib || !counter || !cable || !hook) continue;
 
       // Mast as four corner legs plus horizontal ties: a lattice at close
@@ -557,7 +559,9 @@ export class Movers {
         0.78 *
           (0.5 +
             0.5 * Math.sin((serverTimeMs / WARNING_PERIOD_MS) * Math.PI * 2));
-      const warn = WARNING_RED.clone().multiplyScalar(WARNING_BOOST * pulse);
+      const warn = this.warn
+        .copy(WARNING_RED)
+        .multiplyScalar(WARNING_BOOST * pulse);
       const tip = nearestImage(cameraPos, {
         x: site.x + ax * site.jibLength,
         y: site.hubY,

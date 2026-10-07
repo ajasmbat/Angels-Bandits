@@ -66,7 +66,7 @@ import {
   alarmed,
 } from "./reactions";
 import { GO_WINDOW, GREEN, SIGNAL_CYCLE, goWindowStart } from "./signals";
-import { nearestImage } from "./wrapPlacement";
+import { nearestImageInto } from "./wrapPlacement";
 
 /** Lane centerlines from the S1 street contract (±5 m, right-hand traffic). */
 const [LANE_MINUS, LANE_PLUS] = LANE_CENTERS;
@@ -973,6 +973,9 @@ export class Traffic {
   private readonly bodyColor = new THREE.Color();
   private static readonly HIDDEN = new THREE.Matrix4().makeScale(0, 0, 0);
   private readonly state = newVehicleState();
+  /** Per-frame scratch: the fleet loop allocates no placement objects (O2). */
+  private readonly canonical = { x: 0, y: 0, z: 0 };
+  private readonly image = { x: 0, y: 0, z: 0 };
   private readonly scratch = new THREE.Matrix4();
   private readonly quat = new THREE.Quaternion();
   private readonly pos = new THREE.Vector3();
@@ -1065,7 +1068,9 @@ export class Traffic {
     for (let i = 0; i < vehicles.length; i++) {
       const v = vehicles[i] as TrafficVehicle;
       vehicleState(this.fleet, v, t, s);
-      const p = nearestImage(cameraPos, { x: s.x, y: 0, z: s.z });
+      this.canonical.x = s.x;
+      this.canonical.z = s.z;
+      const p = nearestImageInto(this.image, cameraPos, this.canonical);
       this.quat.setFromAxisAngle(Traffic.UP, s.yaw);
       this.pos.set(p.x, 0, p.z);
       this.scratch.compose(this.pos, this.quat, Traffic.UNIT);
@@ -1125,7 +1130,9 @@ export class Traffic {
         );
         redressed = true;
       }
-      const p = nearestImage(cameraPos, { x: r.x, y: 0, z: r.z });
+      this.canonical.x = r.x;
+      this.canonical.z = r.z;
+      const p = nearestImageInto(this.image, cameraPos, this.canonical);
       this.quat.setFromAxisAngle(Traffic.UP, r.yaw);
       this.pos.set(p.x, 0, p.z);
       this.scratch.compose(this.pos, this.quat, Traffic.UNIT);

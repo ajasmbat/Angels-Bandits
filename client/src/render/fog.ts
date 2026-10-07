@@ -34,11 +34,30 @@ export const HAZE_COLOR = 0x6e4a6e;
 export const HAZE_TINT = 0.55;
 
 /**
+ * L4 weather: the haze's EXTRA density, shared by every fogged material.
+ * The shader reads `AB_HAZE_DENSITY * (1.0 + abWeather.x)`, so the default 0
+ * is exactly the dry haze; `.y` is reserved (0). StormRenderer.atmosphere()
+ * is its only writer, once per frame.
+ *
+ * Load-bearing: this is a PLAIN `{x, y}` object, never a THREE.Vector2.
+ * three's cloneUniforms deep-copies three types (and arrays) per material
+ * but copies a plain object BY REFERENCE, so this one object reaches every
+ * built-in program's uniform clone — mutate it and every material follows
+ * without a recompile. A Vector2 would be cloned and silently freeze.
+ */
+export const HAZE_WEATHER: { x: number; y: number } = { x: 0, y: 0 };
+
+/**
  * Fraction of a view ray, from a camera at `camY` to a point at `fragY`
  * and view depth `dist`, that the haze layer obscures. Pure mirror of the
  * GLSL below — the tested seam. Altitudes below the ground clamp to 0.
  */
-export function hazeAmount(camY: number, fragY: number, dist: number): number {
+export function hazeAmount(
+  camY: number,
+  fragY: number,
+  dist: number,
+  densityMul = 1,
+): number {
   const H = HAZE_SCALE_HEIGHT;
   const cy = Math.max(camY, 0);
   const fy = Math.max(fragY, 0);
@@ -46,7 +65,10 @@ export function hazeAmount(camY: number, fragY: number, dist: number): number {
   const ec = Math.exp(-cy / H);
   // Mean density along the ray, relative to street level.
   const t = Math.abs(dy) > 0.5 ? ((ec - Math.exp(-fy / H)) * H) / dy : ec;
-  return 1 - Math.exp(-Math.max(0, dist) * HAZE_DENSITY * Math.max(t, 0));
+  return (
+    1 -
+    Math.exp(-Math.max(0, dist) * HAZE_DENSITY * densityMul * Math.max(t, 0))
+  );
 }
 
 /**
@@ -98,19 +120,25 @@ export function setHaze(color: readonly number[], tint: number): void {
 }
 
 /** GLSL for the haze: the function plus its constants. Usable in any shader
- * that has `cameraPosition` (every three shader does). */
+ * that has `cameraPosition` (every three shader does). It declares the L4
+ * `abWeather` uniform itself — the ONLY declaration, since the searchlight
+ * beams include this raw (without fog_pars_fragment) — so a material using it
+ * should carry HAZE_WEATHER in its uniforms (UniformsLib.fog does, once
+ * installHeightFog has run). One without it reads 0 or a sibling program's
+ * value: the dry haze or the current weather, never garbage. */
 export const AB_FOG_GLSL = /* glsl */ `
 const float AB_HAZE_H = ${HAZE_SCALE_HEIGHT.toFixed(1)};
 const float AB_HAZE_DENSITY = ${HAZE_DENSITY.toFixed(5)};
 const vec3 AB_HAZE_COLOR = vec3(${hazeLinear.r.toFixed(4)}, ${hazeLinear.g.toFixed(4)}, ${hazeLinear.b.toFixed(4)});
 const float AB_HAZE_TINT = ${HAZE_TINT.toFixed(3)};
+uniform vec2 abWeather;
 float abHazeAmount(float camY, float fragY, float dist) {
   float cy = max(camY, 0.0);
   float fy = max(fragY, 0.0);
   float dy = fy - cy;
   float ec = exp(-cy / AB_HAZE_H);
   float t = abs(dy) > 0.5 ? (ec - exp(-fy / AB_HAZE_H)) * AB_HAZE_H / dy : ec;
-  return 1.0 - exp(-max(dist, 0.0) * AB_HAZE_DENSITY * max(t, 0.0));
+  return 1.0 - exp(-max(dist, 0.0) * AB_HAZE_DENSITY * (1.0 + abWeather.x) * max(t, 0.0));
 }
 `;
 
@@ -137,6 +165,25 @@ export function installHeightFog(): void {
     }
   }
   (THREE.UniformsLib.fog as Record<string, unknown>).abHazeParams = hazeUniform;
+  // L4: the weather's haze uniform on every fogged material. Each ShaderLib
+  // entry merged its OWN copy of UniformsLib.fog at import, so patch them all
+  // (built-ins clone these per program); UniformsLib.fog covers the
+  // ShaderMaterials that merge it later (searchlights). Programs compiled
+  // BEFORE this call miss it — so this must stay ahead of any pre-warm.
+  for (const shader of Object.values(THREE.ShaderLib)) {
+    if ("fogColor" in shader.uniforms) {
+      shader.uniforms.abWeather = { value: HAZE_WEATHER };
+    }
+  }
+  (THREE.UniformsLib.fog as Record<string, THREE.IUniform>).abWeather = {
+    value: HAZE_WEATHER,
+  };
+  // The clone path every built-in program takes must keep the reference —
+  // if a three upgrade starts deep-copying plain objects, say so loudly.
+  const probe = THREE.UniformsUtils.clone(THREE.ShaderLib.standard.uniforms);
+  if (probe.abWeather?.value !== HAZE_WEATHER) {
+    console.error("fog: abWeather no longer shared — weather haze is frozen");
+  }
   THREE.ShaderChunk.fog_pars_vertex = /* glsl */ `
 #ifdef USE_FOG
 	varying float vFogDepth;

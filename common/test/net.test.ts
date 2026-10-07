@@ -143,6 +143,31 @@ describe("snapshot quantisation", () => {
     expect(decodeSnapshotEntry(on).prot).toBe(true);
   });
 
+  it("carries a pose age in a 12th slot, writing the flag slot as an explicit 0/1 (O2)", () => {
+    const pose: Pose = {
+      pos: { x: 10, y: 300, z: 20 },
+      quat: attitude(0, 0),
+      speed: 65,
+    };
+    // Age 0 (every bot row) adds nothing: the old 10/11-slot shapes hold.
+    expect(encodeSnapshotEntry({ ...entry(pose), age: 0 })).toHaveLength(10);
+    expect(decodeSnapshotEntry(encodeSnapshotEntry(entry(pose))).age).toBe(0);
+
+    const aged = encodeSnapshotEntry({ ...entry(pose, 90, false), age: 23.4 });
+    expect(aged).toHaveLength(12);
+    expect(aged[10]).toBe(0); // never a hole — JSON would send null
+    expect(JSON.stringify(aged)).not.toContain("null");
+    expect(decodeSnapshotEntry(aged)).toMatchObject({
+      age: 23,
+      prot: false,
+      hp: 90,
+    });
+
+    const agedProt = encodeSnapshotEntry({ ...entry(pose, 100, true), age: 7 });
+    expect(agedProt).toHaveLength(12);
+    expect(decodeSnapshotEntry(agedProt)).toMatchObject({ age: 7, prot: true });
+  });
+
   it("sends nothing but integers, which is where the byte saving comes from", () => {
     const wire = encodeSnapshotEntry(
       entry({

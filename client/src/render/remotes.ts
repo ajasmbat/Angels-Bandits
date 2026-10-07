@@ -3,8 +3,18 @@
 // delayed render time and places everything at its torus image nearest the
 // viewer (nearestImage) — the same placement rule as the rest of the scene,
 // which is what keeps a seam-crossing remote gliding instead of teleporting.
+//
+// O2: each sample is buffered at the time its pose was TAKEN (snapshot time
+// minus the entry's age), not the tick that happened to sample it — the old
+// tick stamp mislabelled a pose 0–50 ms old as "now", which was the judder.
+// A human's newest pose is therefore older than the tick by its hold plus its
+// latency, so a shared render clock would outrun its buffer: each remote
+// slews its OWN RenderClock toward the frame's target minus a peak-hold of
+// that lag. Trade-off, accepted: a bot (age 0) and a human are drawn on
+// clocks a few tens of ms apart. Strobes and the spawn shimmer stay on the
+// shared clock so every client blinks in phase.
 
-import { MAX_HP } from "@angels-bandits/common/constants";
+import { INTERP_JITTER_DECAY, MAX_HP } from "@angels-bandits/common/constants";
 import type {
   Pose,
   RosterEntry,
@@ -12,7 +22,9 @@ import type {
 } from "@angels-bandits/common/protocol";
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { RenderClock } from "../net/clock";
 import { InterpolationBuffer } from "../net/interp";
+import type { FrameClock } from "../net/socket";
 import { TAG_ALTITUDE, createNameTag, disposeNameTag } from "./nametags";
 import {
   NEUTRAL_CONTROLS,
@@ -27,7 +39,7 @@ import type { PlaneLights } from "./planelights";
 import { strobePhaseMs } from "./planelights";
 import { REVEAL_COLOR, REVEAL_INTENSITY, turbulenceOffset } from "./storm";
 import type { PlaneTrails, QuatLike } from "./trails";
-import { nearestImage } from "./wrapPlacement";
+import { nearestImageInto } from "./wrapPlacement";
 
 /** Spawn-protection shimmer pulse rate, Hz. */
 const SHIMMER_HZ = 5;
@@ -38,6 +50,7 @@ const PROP_SPIN_PER_M = 0.7;
 
 const scratchQuat = new THREE.Quaternion();
 const scratchFwd = new THREE.Vector3();
+const scratchImage = { x: 0, y: 0, z: 0 };
 
 interface Remote {
   mesh: THREE.Group;
@@ -56,6 +69,17 @@ interface Remote {
   /** Last frame's sampled orientation + render time (control surfaces). */
   prevQuat: QuatLike | null;
   prevTime: number;
+  /** This remote's own smoothed render clock (O2). */
+  clock: RenderClock;
+  /** Peak-hold of the entries' pose age, ms: attacks instantly, decays
+   * like the jitter estimate — how far behind the tick this remote's newest
+   * pose can be, i.e. how much later than the shared clock to draw it. */
+  lagPeak: number;
+  /** The age on the newest snapshot entry, ms. */
+  lastAge: number;
+  /** How much staler this remote's image is than the server's on-record
+   * pose of it, beyond the shared delay, ms (hit-claim budget). */
+  extraDelay: number;
 }
 
 export class RemotePlanes {
@@ -106,7 +130,7 @@ export class RemotePlanes {
 
   /** Feed one server snapshot into the per-player buffers. */
   ingest(snap: SnapshotMsg): void {
-    for (const { id, pose, prot, hp } of snap.players) {
+    for (const { id, pose, prot, hp, age = 0 } of snap.players) {
       if (id === this.selfId) continue;
       let remote = this.remotes.get(id);
       if (!remote) {
@@ -122,6 +146,10 @@ export class RemotePlanes {
           hp: MAX_HP,
           prevQuat: null,
           prevTime: 0,
+          clock: new RenderClock(),
+          lagPeak: 0,
+          lastAge: 0,
+          extraDelay: 0,
         };
         remote.mesh.visible = false; // until the first sampled pose
         remote.tag.visible = false;
@@ -132,7 +160,12 @@ export class RemotePlanes {
       remote.alive = true;
       remote.prot = prot;
       remote.hp = hp;
-      remote.buffer.push(snap.time, pose);
+      remote.lagPeak =
+        age > remote.lagPeak
+          ? age
+          : remote.lagPeak + (age - remote.lagPeak) * INTERP_JITTER_DECAY;
+      remote.lastAge = age;
+      remote.buffer.push(snap.time - age, pose);
     }
   }
 
@@ -147,6 +180,7 @@ export class RemotePlanes {
     remote.mesh.visible = false;
     remote.tag.visible = false;
     remote.prevQuat = null;
+    remote.clock.reset();
     this.trails.clear(id);
   }
 
@@ -159,6 +193,7 @@ export class RemotePlanes {
     remote.lastPos = null;
     remote.lastPose = null;
     remote.prevQuat = null; // nor slam the control surfaces
+    remote.clock.reset(); // the new buffer starts its own timeline
     this.trails.clear(id); // the respawn teleport must not streak
   }
 
@@ -231,24 +266,41 @@ export class RemotePlanes {
     return remote?.alive ? remote.lastPose : null;
   }
 
+  /** Extra staleness of `id`'s drawn image over the server's on-record pose
+   * of it, ms — added to the declared delay of a hit claim on it. */
+  extraDelayOf(id: string): number {
+    return this.remotes.get(id)?.extraDelay ?? 0;
+  }
+
   nameOf(id: string): string {
     return this.names.get(id)?.name ?? "???";
   }
 
-  /** Sample every buffer at `renderTime` and place meshes around `viewer`.
-   * `nowMs` is the local performance.now clock (trail aging); `renderTime`
-   * stays the synced server clock (strobe phase — all clients agree). */
+  /** Sample every buffer at its remote's own clock and place meshes around
+   * `viewer`. `nowMs` is the local performance.now clock (trail aging);
+   * `clock.time` stays the shared synced clock (strobe phase — all clients
+   * agree). */
   update(
-    renderTime: number | null,
+    clock: FrameClock,
     viewer: Vec3,
     dt: number,
     nowMs: number,
     revealLevelOf?: (id: string) => number,
   ): void {
-    if (renderTime === null) return;
+    const renderTime = clock.time;
+    const target = clock.target;
+    if (renderTime === null || target === null) return;
     for (const [id, remote] of this.remotes) {
       if (!remote.alive) continue;
-      const pose = remote.buffer.sample(renderTime);
+      const ownTime = remote.clock.advance(
+        clock.frameMs,
+        target - remote.lagPeak,
+      );
+      // The server judges a hit on this remote against its NEWEST pose,
+      // which is lastAge older than the tick; the image is drawn
+      // (renderTime − ownTime) further back than the shared delay.
+      remote.extraDelay = Math.max(0, renderTime - ownTime - remote.lastAge);
+      const pose = remote.buffer.sample(ownTime);
       if (!pose) continue;
       spinPropeller(remote.mesh, dt * pose.speed * PROP_SPIN_PER_M);
       // Control surfaces from the frame-to-frame orientation delta over the
@@ -257,15 +309,15 @@ export class RemotePlanes {
         ? poseControls(
             remote.prevQuat,
             pose.quat,
-            (renderTime - remote.prevTime) / 1000,
+            (ownTime - remote.prevTime) / 1000,
           )
         : NEUTRAL_CONTROLS;
       remote.prevQuat = { ...pose.quat };
-      remote.prevTime = renderTime;
+      remote.prevTime = ownTime;
       animatePlane(remote.mesh, controls, pose.speed, remote.hp, dt);
       remote.lastPos = pose.pos;
       remote.lastPose = pose;
-      const p = nearestImage(viewer, pose.pos);
+      const p = nearestImageInto(scratchImage, viewer, pose.pos);
       this.lights.place(id, p, pose.quat, pose.speed, renderTime);
       this.trails.emit(id, pose.pos, pose.quat, nowMs, dt);
       // In-cloud turbulence wobble (ST2): display-only, zero at/below the

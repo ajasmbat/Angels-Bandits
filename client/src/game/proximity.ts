@@ -15,12 +15,18 @@
 // dragged players up out of the city. Walls now alarm only when a gentle
 // street-following correction would not clear them, and the assist tries
 // level, street-following escapes before it ever climbs.
+// L11b: the river channel is a 15 m band between the water and the decks, so
+// it gets the same treatment vertically — a river contact is split into
+// ground / ceiling / wall by the sink rule, threats a gentle level-out (after
+// a reaction delay) clears stay quiet, and the assist levels off instead of
+// climbing into the next deck.
 
 import type { Building } from "@angels-bandits/common/city";
 import {
   type MoverField,
   collideMovers,
 } from "@angels-bandits/common/city/movers";
+import { overChannel, riverOffset } from "@angels-bandits/common/city/river";
 import { LOT_LINE } from "@angels-bandits/common/city/street";
 import {
   type CityIndex,
@@ -86,6 +92,14 @@ const CENTRE_MAX = 0.25;
  * 45° midpoint, rad — no frame-to-frame flip through a diagonal. */
 const AXIS_HYSTERESIS = (10 * Math.PI) / 180;
 
+// The river channel (L11b).
+/** Level-out gain: pitch command per radian of nose-up attitude. */
+const LEVEL_GAIN = 3;
+/** In the channel a ground/ceiling threat is dodgeable only if the gentle
+ * level-out still clears after the player holds on (relaxing) this long, s —
+ * so once it stops being dodgeable there is still about this much warning. */
+const CHANNEL_REACT_S = 1;
+
 const QUARTER = Math.PI / 2;
 
 const clamp = (v: number, lo: number, hi: number): number =>
@@ -106,9 +120,10 @@ export interface ProximityWorld {
   timeMs?: number | null;
 }
 
-/** What a predicted impact hits: the ground (or a roof, from above), or a
- * wall (a facade, a tree, a mover). */
-export type ImpactKind = "ground" | "wall";
+/** What a predicted impact hits: the ground (or a roof or a deck, from
+ * above), a ceiling (a bridge deck, from below), or a wall (a facade, a bank
+ * wall, a deck edge, a tree, a mover). */
+export type ImpactKind = "ground" | "ceiling" | "wall";
 
 export interface Impact {
   /** Seconds from now. */
@@ -120,17 +135,34 @@ export interface Impact {
  * ahead) → the input flown at that step. */
 export type Pilot = (f: FlightState, t: number) => FlightInput;
 
+/** Below street level over the open channel: where the river rules apply. */
+function inChannel(pos: FlightState["pos"]): boolean {
+  return pos.y < -PROBE_RADIUS && overChannel(pos.z);
+}
+
 /** What a probe sphere at `pos`, `ahead` seconds from now, is in — or
  * null. `prevY` is the previous sample's height: a building contact that
  * clears at that height was made by sinking onto it — a roof or setback
- * ledge, which is ground for the cue — and anything else is a wall. */
+ * ledge, which is ground for the cue — and anything else is a wall. The
+ * ground (river.ts riverHit, via hitsGround) follows the same rule both
+ * ways: sinking onto the water, a bank top or a deck is ground, rising into
+ * a deck's underside is a ceiling, and a bank wall, a deck edge or a parapet
+ * met level is a wall. */
 function solidAt(
   pos: FlightState["pos"],
   prevY: number,
   world: ProximityWorld,
   ahead: number,
 ): ImpactKind | null {
-  if (hitsGround(pos, PROBE_RADIUS)) return "ground";
+  if (hitsGround(pos, PROBE_RADIUS)) {
+    if (!hitsGround({ ...pos, y: Math.max(pos.y, prevY) }, PROBE_RADIUS)) {
+      return "ground";
+    }
+    if (!hitsGround({ ...pos, y: Math.min(pos.y, prevY) }, PROBE_RADIUS)) {
+      return "ceiling";
+    }
+    return "wall";
+  }
   if (collideCity(pos, PROBE_RADIUS, world.buildings, world.index) !== null) {
     const level = { ...pos, y: Math.max(pos.y, prevY) };
     const roof =
@@ -201,7 +233,8 @@ function nearestAxis(yaw: number, prev: number | null): number {
 /**
  * The absolute turn command that lines `f` up with the street axis `axis`,
  * bent toward the nearest parallel street centreline while the plane is
- * inside that street (LOT_LINE of it). Elsewhere — over a block, through a
+ * inside that street (LOT_LINE of it) — or toward the river's centreline
+ * while it flies along the channel. Elsewhere — over a block, through a
  * mid-block arch — it only holds the heading, so it never pulls the plane
  * sideways into a jamb.
  */
@@ -210,10 +243,14 @@ export function followTurn(f: FlightState, axis: number): number {
   const fz = -Math.cos(axis);
   // Along ±z the street centrelines are x = k·BLOCK_PITCH, and vice versa.
   const alongZ = Math.abs(fz) > Math.abs(fx);
+  // The river runs along x (river.ts), between two street lines.
+  const river = !alongZ && inChannel(f.pos);
   const lat = alongZ ? f.pos.x : f.pos.z;
-  const off = lat - Math.round(lat / BLOCK_PITCH) * BLOCK_PITCH;
+  const off = river
+    ? riverOffset(lat)
+    : lat - Math.round(lat / BLOCK_PITCH) * BLOCK_PITCH;
   const bend =
-    Math.abs(off) < LOT_LINE
+    river || Math.abs(off) < LOT_LINE
       ? clamp(-CENTRE_GAIN * off, -CENTRE_MAX, CENTRE_MAX)
       : 0;
   const dx = fx + (alongZ ? bend : 0);
@@ -223,23 +260,42 @@ export function followTurn(f: FlightState, axis: number): number {
   return clamp(-FOLLOW_GAIN * err, -1, 1);
 }
 
+/** The absolute pitch command that flies `f`'s attitude back to level. */
+const levelPitch = (f: FlightState): number =>
+  clamp(-LEVEL_GAIN * f.pitch, -1, 1);
+
 /** `base`'s command with its turn moved toward following `axis` by at
- * most `k`. */
-function following(base: FlightInput | Pilot, axis: number, k: number): Pilot {
+ * most `k` — and, when `flatten`, its pitch toward level by at most `k`. */
+function following(
+  base: FlightInput | Pilot,
+  axis: number,
+  k: number,
+  flatten = false,
+): Pilot {
   return (f, t) => {
     const cmd = typeof base === "function" ? base(f, t) : base;
     return {
       ...cmd,
+      pitch: flatten
+        ? cmd.pitch + clamp(levelPitch(f) - cmd.pitch, -k, k)
+        : cmd.pitch,
       turn: cmd.turn + clamp(followTurn(f, axis) - cmd.turn, -k, k),
     };
   };
 }
 
+/** `first` until `after` seconds ahead, then `then`. */
+function delayed(first: Pilot, then: Pilot, after: number): Pilot {
+  return (f, t) => (t < after ? first(f, t) : then(f, t));
+}
+
 /** An escape: a level one turns onto a street axis (closed-loop, so it rolls
- * out instead of flying on into the far facade); a climbing one is a fixed
- * direction (pitch + = up, turn + = right), normalised to the same size. */
+ * out instead of flying on into the far facade), and a flattening one also
+ * flies the nose back to level (the river channel's level-out); a climbing
+ * one is a fixed direction (pitch + = up, turn + = right), normalised to the
+ * same size. */
 type Escape =
-  | { level: true; axisTurn: number }
+  | { level: true; axisTurn: number; flatten?: boolean }
   | { level: false; pitch: number; turn: number };
 
 /** Index order matters: AvoidanceState.escape stores it. */
@@ -250,11 +306,17 @@ const ESCAPES: readonly Escape[] = [
   { level: false, pitch: Math.SQRT1_2, turn: -Math.SQRT1_2 },
   { level: false, pitch: Math.SQRT1_2, turn: Math.SQRT1_2 },
   { level: false, pitch: 1, turn: 0 },
+  { level: true, axisTurn: 0, flatten: true }, // level out along the street
 ];
 /** Walls: level escapes first, climb only when none clears. */
 const WALL_ORDER = [0, 1, 2, 3, 4, 5];
 /** Ground: turning never helps — pull up (pure first). */
 const GROUND_ORDER = [5, 3, 4];
+/** Ground in the river channel: level off first — a pull-up there climbs
+ * into the next deck or out of the river. */
+const CHANNEL_GROUND_ORDER = [6, 5, 3, 4];
+/** A ceiling (a deck overhead): only levelling off helps. */
+const CEILING_ORDER = [6];
 
 const clamp1 = (v: number): number => clamp(v, -1, 1);
 
@@ -279,7 +341,7 @@ function escapePilot(
   k: number,
 ): FlightInput | Pilot {
   return e.level
-    ? following(input, wrapAngle(axis + e.axisTurn), k)
+    ? following(input, wrapAngle(axis + e.axisTurn), k, e.flatten)
     : withEscape(input, e, k);
 }
 
@@ -293,12 +355,19 @@ function escapeOffset(
 ): { pitch: number; turn: number } {
   if (!e.level) return { pitch: e.pitch * k, turn: e.turn * k };
   const want = followTurn(flight, wrapAngle(axis + e.axisTurn));
-  return { pitch: 0, turn: clamp(want - input.turn, -k, k) };
+  return {
+    pitch: e.flatten ? clamp(levelPitch(flight) - input.pitch, -k, k) : 0,
+    turn: clamp(want - input.turn, -k, k),
+  };
 }
 
 /** What the HUD says: PULL UP for the ground (or a climb-out), BREAK
- * LEFT/RIGHT for a wall a turn escapes. */
-export type ProximityCue = "pull-up" | "break-left" | "break-right";
+ * LEFT/RIGHT for a wall a turn escapes, LEVEL OUT for a deck overhead. */
+export type ProximityCue =
+  | "pull-up"
+  | "break-left"
+  | "break-right"
+  | "level-out";
 
 export interface AvoidanceState {
   /** Applied (eased) assist, added to the command's pitch/turn axes. */
@@ -360,16 +429,19 @@ function ease(v: number, target: number, blend: number): number {
  * The threat is the LATER impact of the held and relaxed paths (none if
  * either clears). A wall threat the player escapes by letting go and
  * nudging along the street (half the cap) is dodgeable, not imminent — no
- * alarm and no help, which is what keeps a canyon weave quiet. For an
- * imminent threat:
+ * alarm and no help, which is what keeps a canyon weave quiet. In the river
+ * channel the nudge also levels the nose, and a water or deck threat is
+ * dodgeable when that nudge clears even after CHANNEL_REACT_S of holding on.
+ * For an imminent threat:
  * - assist: within ASSIST_S, escapes are tried at the full ASSIST_CAP in
  *   order — for a wall the level, street-following ones first, so the assist
  *   never climbs while a level escape clears; for the ground only the
- *   pull-ups — and the first that clears wins (the previous choice while it
+ *   pull-ups (in the channel the level-out first); for a ceiling only the
+ *   level-out — and the first that clears wins (the previous choice while it
  *   still clears); failing that the one that hits latest, and only if it
  *   beats doing nothing. Strength grows with urgency and is eased in and out.
  * - warning: within WARN_S of the ground (or a roof), or WALL_WARN_S of a
- *   wall.
+ *   wall or a ceiling.
  * `enabled` false still reports the warning and its cue (the player toggled
  * the help, not the alarm).
  */
@@ -387,12 +459,20 @@ export function stepAvoidance(
   const threat = held && loose ? (loose.t >= held.t ? loose : held) : null;
 
   // A wall the player escapes by letting go and nudging along the street is
-  // not imminent: no alarm, no help (the canyon-weave case).
+  // not imminent: no alarm, no help (the canyon-weave case). In the river
+  // channel the nudge also levels the nose, and the water and the decks are
+  // judged the same way — but only after a reaction delay, so a shallow
+  // descent into the water still warns with time to act.
+  const channel = inChannel(flight.pos);
+  const gentle = following(relaxed(input), axis, ASSIST_CAP / 2, channel);
   const dodgeable =
-    threat?.kind === "wall" &&
+    threat !== null &&
+    (threat.kind === "wall" || channel) &&
     predictImpact(
       flight,
-      following(relaxed(input), axis, ASSIST_CAP / 2),
+      threat.kind === "wall"
+        ? gentle
+        : delayed(relaxed(input), gentle, CHANNEL_REACT_S),
       world,
       ESCAPE_HORIZON_S,
     ) === null;
@@ -404,7 +484,14 @@ export function stepAvoidance(
   let chosen = -1;
   let cue: ProximityCue | null = null;
   if (imminent && (enabled || warn)) {
-    const order = threat.kind === "wall" ? WALL_ORDER : GROUND_ORDER;
+    const order =
+      threat.kind === "wall"
+        ? WALL_ORDER
+        : threat.kind === "ceiling"
+          ? CEILING_ORDER
+          : channel
+            ? CHANNEL_GROUND_ORDER
+            : GROUND_ORDER;
     const hit = new Map<number, number>();
     const tryEscape = (i: number): number => {
       const known = hit.get(i);
@@ -473,9 +560,10 @@ export function stepAvoidance(
   };
 }
 
-/** The cue for a warning: PULL UP for the ground or a climb-out; for a wall,
- * BREAK toward the level escape's turn (the chosen one, else the level one
- * that hits latest). A dead-level turn keeps the last direction. */
+/** The cue for a warning: PULL UP for the ground or a climb-out, LEVEL OUT
+ * for a ceiling; for a wall, BREAK toward the level escape's turn (the chosen
+ * one, else the level one that hits latest). A dead-level turn keeps the
+ * last direction. */
 function cueFor(
   kind: ImpactKind,
   chosen: Escape | undefined,
@@ -485,6 +573,7 @@ function cueFor(
   prev: ProximityCue | null,
   hit: ReadonlyMap<number, number>,
 ): ProximityCue {
+  if (kind === "ceiling") return "level-out";
   if (kind === "ground" || (chosen && !chosen.level)) return "pull-up";
   let e: Escape | undefined = chosen;
   if (!e) {

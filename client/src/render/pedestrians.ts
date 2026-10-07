@@ -36,7 +36,7 @@ import {
   ringPerimeter,
   ringPointInto,
 } from "./streetlife";
-import { nearestImage } from "./wrapPlacement";
+import { nearestImageInto } from "./wrapPlacement";
 
 /** Pedestrians on the coldest block (heat 0). */
 export const PED_MIN = 30;
@@ -334,6 +334,7 @@ export class Pedestrians {
   private readonly vec = new THREE.Vector3();
   private readonly scale = new THREE.Vector3(1, 1, 1);
   private readonly color = new THREE.Color();
+  private readonly image = { x: 0, y: 0, z: 0 };
   private static readonly UP = new THREE.Vector3(0, 1, 0);
   private drawn = 0;
 
@@ -405,7 +406,7 @@ export class Pedestrians {
         const spec = specs[i] as PedestrianSpec;
         pedestrianPoseInto(spec, t, this.pose);
         if (scatter) this.scatter(spec, t, serverTimeMs, passes);
-        const p = nearestImage(cameraPos, this.pose.pos);
+        const p = nearestImageInto(this.image, cameraPos, this.pose.pos);
         this.quat.setFromAxisAngle(Pedestrians.UP, this.pose.yaw);
         this.vec.set(p.x, this.pose.bob, p.z);
         this.scale.set(1, spec.height, 1);

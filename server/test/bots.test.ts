@@ -35,7 +35,7 @@ import {
 import { flightForward } from "@angels-bandits/common/flight";
 import type { SpawnState } from "@angels-bandits/common/protocol";
 import { canonicalize, wrapDeltaAxis } from "@angels-bandits/common/world";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
   type BotShot,
   RoomBots,
@@ -45,6 +45,13 @@ import {
 } from "../src/bots";
 import { Combat } from "../src/combat";
 import { pickRespawn } from "../src/respawn";
+
+// Many tests below are long SYNCHRONOUS sims. Between tests the runner only
+// yields microtasks, so back to back they can hold the worker's event loop
+// past vitest's 60 s worker-RPC timeout on a loaded machine — the pending
+// onTaskUpdate reply is never read and the run fails with every test green.
+// One macrotask turn before each test lets the worker drain its RPC.
+beforeEach(() => new Promise<void>((resolve) => setImmediate(resolve)));
 
 /** A fixed mid-altitude spawn: tests place bots explicitly. */
 const spawnAt = (x: number, z: number, yaw = 0, y = 300): SpawnState => ({

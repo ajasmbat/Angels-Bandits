@@ -19,6 +19,7 @@ import {
   BULLET_RANGE,
   INTERP_FLOOR_MS,
   MAX_HP,
+  POSE_AGE_MAX_MS,
   SNAPSHOT_INTERVAL_MS,
   SPAWN_PROTECTION_MS,
 } from "@angels-bandits/common/constants";
@@ -183,6 +184,128 @@ describe("quantised snapshots over the wire", () => {
     // The old shape spelled out pose/pos/quat/speed/hp/prot plus full float
     // text and ran ~240 bytes per plane; the tuple is comfortably under 100.
     expect(perEntry).toBeLessThan(100);
+    peer.ws.close();
+  }, 20000);
+});
+
+describe("pose timestamps (O2)", () => {
+  /** Stream `pose` stamped by `stamp(now)` for `n` up-ticks; returns the
+   * stamps actually sent, with the local send time of each. */
+  const streamStamped = async (
+    peer: Peer,
+    pose: Pose,
+    n: number,
+    stamp: (now: number) => number | undefined,
+  ): Promise<{ t: number | undefined; sentAt: number }[]> => {
+    const sent: { t: number | undefined; sentAt: number }[] = [];
+    for (let i = 0; i < n; i++) {
+      const sentAt = Date.now();
+      const t = stamp(sentAt);
+      peer.ws.send(JSON.stringify({ type: "pose", pose, t }));
+      sent.push({ t, sentAt });
+      await wait(1000 / 30);
+    }
+    return sent;
+  };
+
+  /** The decoded self entries of every snapshot received since `from`, with
+   * the pose time each one claims (snapshot time − age). */
+  const selfTimes = (peer: Peer, from: number) =>
+    peer.snapshots.slice(from).flatMap(({ msg }) => {
+      const w = msg.p.find((e) => e[0] === peer.welcome.id);
+      if (!w) return [];
+      const d = decodeSnapshotEntry(w);
+      return [
+        {
+          snapTime: msg.time,
+          poseTime: msg.time - (d.age ?? 0),
+          age: d.age ?? 0,
+        },
+      ];
+    });
+
+  const parked = (peer: Peer): Pose => ({
+    pos: { ...peer.welcome.spawn.pos },
+    quat: { ...IDENTITY },
+    speed: peer.welcome.spawn.speed,
+  });
+
+  it("stamps each snapshot entry with the pose's own time, not the tick's", async () => {
+    const peer = await connect("Stamped");
+    const pose = parked(peer);
+    await streamStamped(peer, pose, 4, (now) => now - 37); // settle on record
+    const from = peer.snapshots.length;
+    // Same machine, same Date.now(): these stamps are exact server times,
+    // 37 ms before each send — well inside the trusted window.
+    const sent = await streamStamped(peer, pose, 30, (now) => now - 37);
+    await wait(SNAPSHOT_INTERVAL_MS * 2);
+    const stamps = new Set(sent.map((s) => s.t));
+    const seen = selfTimes(peer, from);
+    expect(seen.length).toBeGreaterThan(10);
+    for (const { poseTime, age } of seen) {
+      expect(stamps.has(poseTime)).toBe(true); // exactly the pose's own t
+      expect(age).toBeGreaterThanOrEqual(37); // never the tick's own time
+    }
+    peer.ws.close();
+  }, 20000);
+
+  it("clamps a backdated or future stamp into [arrival − POSE_AGE_MAX_MS, arrival]", async () => {
+    const peer = await connect("Clamped");
+    const pose = parked(peer);
+    await streamStamped(peer, pose, 4, (now) => now);
+
+    let from = peer.snapshots.length;
+    const old = await streamStamped(peer, pose, 10, (now) => now - 5000);
+    await wait(SNAPSHOT_INTERVAL_MS * 2);
+    const firstSent = old[0]?.sentAt ?? 0;
+    for (const { poseTime, snapTime } of selfTimes(peer, from)) {
+      expect(poseTime).toBeGreaterThanOrEqual(firstSent - POSE_AGE_MAX_MS - 1);
+      expect(poseTime).toBeLessThanOrEqual(snapTime);
+    }
+
+    from = peer.snapshots.length;
+    const future = await streamStamped(peer, pose, 10, (now) => now + 5000);
+    await wait(SNAPSHOT_INTERVAL_MS * 2);
+    const firstFuture = future[0]?.sentAt ?? 0;
+    const seen = selfTimes(peer, from).filter(
+      (s) => s.snapTime > firstFuture + 60,
+    );
+    expect(seen.length).toBeGreaterThan(0);
+    for (const { poseTime, snapTime, age } of seen) {
+      expect(age).toBeGreaterThanOrEqual(0); // never from the future
+      expect(poseTime).toBeLessThanOrEqual(snapTime);
+      expect(poseTime).toBeGreaterThanOrEqual(firstFuture);
+    }
+
+    // No stamp at all (a client before its first snapshot): arrival time.
+    from = peer.snapshots.length;
+    const bare = await streamStamped(peer, pose, 10, () => undefined);
+    await wait(SNAPSHOT_INTERVAL_MS * 2);
+    const firstBare = bare[0]?.sentAt ?? 0;
+    for (const { poseTime, snapTime } of selfTimes(peer, from).filter(
+      (s) => s.snapTime > firstBare + 60,
+    )) {
+      expect(poseTime).toBeGreaterThanOrEqual(firstBare);
+      expect(poseTime).toBeLessThanOrEqual(snapTime);
+    }
+    peer.ws.close();
+  }, 20000);
+
+  it("leaves bot rows unaged — they keep the pre-O2 tuple length", async () => {
+    const peer = await connect("BotRows");
+    await wait(SNAPSHOT_INTERVAL_MS * 4);
+    const bots = new Set(
+      peer.welcome.roster.filter((r) => r.isBot).map((r) => r.id),
+    );
+    expect(bots.size).toBeGreaterThan(0);
+    const rows = peer.snapshots.flatMap(({ msg }) =>
+      msg.p.filter((e) => bots.has(e[0])),
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row.length).toBeLessThanOrEqual(11);
+      expect(decodeSnapshotEntry(row).age).toBe(0);
+    }
     peer.ws.close();
   }, 20000);
 });

@@ -22,6 +22,7 @@ import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { emissiveBoost } from "./emissive";
+import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { type CityReactions, alarmBlinkOn, alarmed } from "./reactions";
 import {
   BLOCK_WINDOW_RADIUS,
@@ -361,9 +362,14 @@ export class Signals {
   /** Vehicle masts are taller; scale Y so one geometry serves both kinds. */
   private readonly scale = new THREE.Vector3(1, 1, 1);
   private drawn = 0;
+  /** The radius the buffer is sized for, and (M3) the tier's radius within it. */
+  private readonly maxRadius: number;
+  private radius: number;
 
   constructor(seed: number, windowRadius = BLOCK_WINDOW_RADIUS) {
     this.seed = seed;
+    this.maxRadius = windowRadius;
+    this.radius = windowRadius;
     const perBlock = signalMastsForBlock(0, 0).length;
     const capacity = (2 * windowRadius + 1) ** 2 * perBlock;
     this.mesh = new THREE.InstancedMesh(
@@ -423,7 +429,7 @@ export class Signals {
       ? ASPECT_COLORS.amber
       : WALK_COLORS.dont;
     let n = 0;
-    for (const { bx, bz } of blockWindow(cameraPos)) {
+    for (const { bx, bz } of blockWindow(cameraPos, this.radius)) {
       const aspects = signalPhase(bx, bz, t, this.seed);
       const masts = this.mastsFor(bx, bz);
       for (const mast of masts) {
@@ -453,6 +459,11 @@ export class Signals {
   }
 
   /** Instances drawn last frame. */
+  /** M3 quality tier: stream masts in a tighter block window (count only). */
+  setQuality(tier: QualityTier): void {
+    this.radius = Math.min(this.maxRadius, QUALITY_PROFILES[tier].microRadius);
+  }
+
   get count(): number {
     return this.drawn;
   }

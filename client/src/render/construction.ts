@@ -19,6 +19,7 @@ import { EMISSIVE_BEACON } from "@angels-bandits/common/constants";
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
+import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import {
   BLOCK_WINDOW_RADIUS,
   PED_BAND_MAX,
@@ -210,6 +211,8 @@ export class ConstructionSparks {
   private readonly material: THREE.PointsMaterial;
   private readonly pose: SparkPose = { pos: { x: 0, y: 0, z: 0 }, life: 0 };
   private drawn = 0;
+  /** M3 quality tier: sites drawn within this many blocks of the camera. */
+  private radius = BLOCK_WINDOW_RADIUS;
 
   constructor(seed: number) {
     this.sites = constructionSites(seed);
@@ -268,8 +271,8 @@ export class ConstructionSparks {
     let i = 0;
     for (const site of this.sites) {
       if (
-        blockDistance(cam.bx, site.bx) > BLOCK_WINDOW_RADIUS ||
-        blockDistance(cam.bz, site.bz) > BLOCK_WINDOW_RADIUS
+        blockDistance(cam.bx, site.bx) > this.radius ||
+        blockDistance(cam.bz, site.bz) > this.radius
       ) {
         continue;
       }
@@ -301,6 +304,14 @@ export class ConstructionSparks {
   }
 
   /** Points drawn last frame. */
+  /** M3 quality tier: the street-detail radius (a count, nothing else). */
+  setQuality(tier: QualityTier): void {
+    this.radius = Math.min(
+      BLOCK_WINDOW_RADIUS,
+      QUALITY_PROFILES[tier].microRadius,
+    );
+  }
+
   get count(): number {
     return this.drawn;
   }

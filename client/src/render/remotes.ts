@@ -15,15 +15,18 @@ import * as THREE from "three";
 import { InterpolationBuffer } from "../net/interp";
 import { TAG_ALTITUDE, createNameTag, disposeNameTag } from "./nametags";
 import {
+  NEUTRAL_CONTROLS,
+  animatePlane,
   buildPlaneMesh,
   disposePlaneMesh,
   liveryFor,
+  poseControls,
   spinPropeller,
 } from "./plane";
 import type { PlaneLights } from "./planelights";
 import { strobePhaseMs } from "./planelights";
 import { REVEAL_COLOR, REVEAL_INTENSITY, turbulenceOffset } from "./storm";
-import type { PlaneTrails } from "./trails";
+import type { PlaneTrails, QuatLike } from "./trails";
 import { nearestImage } from "./wrapPlacement";
 
 /** Spawn-protection shimmer pulse rate, Hz. */
@@ -50,6 +53,9 @@ interface Remote {
   prot: boolean;
   /** Server-said HP as of the last snapshot (drives wounded smoke). */
   hp: number;
+  /** Last frame's sampled orientation + render time (control surfaces). */
+  prevQuat: QuatLike | null;
+  prevTime: number;
 }
 
 export class RemotePlanes {
@@ -114,6 +120,8 @@ export class RemotePlanes {
           alive: true,
           prot: false,
           hp: MAX_HP,
+          prevQuat: null,
+          prevTime: 0,
         };
         remote.mesh.visible = false; // until the first sampled pose
         remote.tag.visible = false;
@@ -138,6 +146,7 @@ export class RemotePlanes {
     remote.lastPose = null;
     remote.mesh.visible = false;
     remote.tag.visible = false;
+    remote.prevQuat = null;
     this.trails.clear(id);
   }
 
@@ -149,6 +158,7 @@ export class RemotePlanes {
     remote.buffer = new InterpolationBuffer();
     remote.lastPos = null;
     remote.lastPose = null;
+    remote.prevQuat = null; // nor slam the control surfaces
     this.trails.clear(id); // the respawn teleport must not streak
   }
 
@@ -241,6 +251,18 @@ export class RemotePlanes {
       const pose = remote.buffer.sample(renderTime);
       if (!pose) continue;
       spinPropeller(remote.mesh, dt * pose.speed * PROP_SPIN_PER_M);
+      // Control surfaces from the frame-to-frame orientation delta over the
+      // render clock the pose was sampled on (no protocol change).
+      const controls = remote.prevQuat
+        ? poseControls(
+            remote.prevQuat,
+            pose.quat,
+            (renderTime - remote.prevTime) / 1000,
+          )
+        : NEUTRAL_CONTROLS;
+      remote.prevQuat = { ...pose.quat };
+      remote.prevTime = renderTime;
+      animatePlane(remote.mesh, controls, pose.speed, remote.hp, dt);
       remote.lastPos = pose.pos;
       remote.lastPose = pose;
       const p = nearestImage(viewer, pose.pos);
@@ -267,7 +289,7 @@ export class RemotePlanes {
       remote.mesh.visible = true;
       remote.tag.visible = true;
       // Spawn-protection shimmer: pulse the whole plane's material emissive.
-      // The biplane nests groups (prop holders, struts) — traverse, not
+      // The biplane nests groups (LOD levels, hinges) — traverse, not
       // children. Each remote owns its materials, so tinting is per-plane.
       const shimmer = remote.prot
         ? 0.75 + 0.25 * Math.sin((renderTime / 1000) * SHIMMER_HZ * 2 * Math.PI)

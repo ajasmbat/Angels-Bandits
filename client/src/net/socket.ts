@@ -16,6 +16,7 @@ import type {
   BotsConfigMsg,
   DamageMsg,
   DeathMsg,
+  NewsHeliMsg,
   Pose,
   RespawnMsg,
   RosterEntry,
@@ -39,6 +40,7 @@ export interface GameSocketEvents {
   onBotsConfig?: (msg: BotsConfigMsg) => void;
   /** L1: a server-accepted event the city reacts to (reactions.ts). */
   onCityEvent?: (event: CityEvent) => void;
+  onNewsHeli?: (msg: NewsHeliMsg) => void;
   onClose?: () => void;
 }
 
@@ -212,6 +214,9 @@ export class GameSocket {
         break;
       case "botsConfig":
         this.events.onBotsConfig?.(msg);
+        break;
+      case "newsHeli":
+        this.events.onNewsHeli?.(msg);
         break;
       case "welcome":
         break; // already consumed by connect()

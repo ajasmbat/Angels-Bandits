@@ -664,13 +664,6 @@ export class RoomBots {
     };
   }
 
-  /** Last sim position of a bot, alive or not — where it died (L1 city
-   * reactions read it after Combat has already marked the bot dead). */
-  lastPosOf(id: string): Vec3 | null {
-    const pos = this.bots.get(id)?.flight.pos;
-    return pos ? { ...pos } : null;
-  }
-
   /** Position + velocity of a living bot, for building contact lists. */
   contactOf(id: string): { pos: Vec3; vel: Vec3 } | null {
     const bot = this.bots.get(id);
@@ -689,6 +682,12 @@ export class RoomBots {
     if (!bot || !bot.alive) return;
     bot.evadeUntil = now + BOT_EVADE_MS;
     bot.breakTurn = bot.rand() < 0.5 ? -1 : 1;
+  }
+
+  /** Where a bot last was, alive or not — a crash marks it dead inside
+   * tick(), before index.ts can ask poseOf(). The news heli (L10) needs it. */
+  lastPosOf(id: string): Vec3 | null {
+    return this.bots.get(id)?.flight.pos ?? null;
   }
 
   /** Death settled by Combat: freeze until respawn() reseeds the flight. */

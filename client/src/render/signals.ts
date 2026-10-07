@@ -22,6 +22,7 @@ import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { emissiveBoost } from "./emissive";
+import { type CityReactions, alarmBlinkOn, alarmed } from "./reactions";
 import {
   BLOCK_WINDOW_RADIUS,
   TAG_SIGNAL,
@@ -397,8 +398,14 @@ export class Signals {
     return masts;
   }
 
-  /** Phase-only, so a missing clock falls back to local time. */
-  update(cameraPos: Vec3, timeMs: number, gate: number): void {
+  /** Phase-only, so a missing clock falls back to local time. `reactions`
+   * (L1): vehicle heads inside an alarm radius flash amber instead. */
+  update(
+    cameraPos: Vec3,
+    timeMs: number,
+    gate: number,
+    reactions?: CityReactions,
+  ): void {
     if (gate <= 0) {
       this.mesh.visible = false;
       this.mesh.count = 0;
@@ -407,6 +414,11 @@ export class Signals {
     }
     this.mesh.visible = true;
     const t = timeMs / 1000;
+    const alarms =
+      reactions !== undefined && reactions.wakeCount > 0 ? reactions : null;
+    const blinkLens = alarmBlinkOn(timeMs)
+      ? ASPECT_COLORS.amber
+      : WALK_COLORS.dont;
     let n = 0;
     for (const { bx, bz } of blockWindow(cameraPos)) {
       const aspects = signalPhase(bx, bz, t, this.seed);
@@ -422,7 +434,9 @@ export class Signals {
         this.mesh.setMatrixAt(n, this.matrix);
         const lens =
           mast.kind === "vehicle"
-            ? ASPECT_COLORS[mast.ns ? aspects.ns : aspects.ew]
+            ? alarms && alarmed(alarms, mast.x, mast.z)
+              ? blinkLens
+              : ASPECT_COLORS[mast.ns ? aspects.ns : aspects.ew]
             : WALK_COLORS[mast.ns ? aspects.walkNs : aspects.walkEw];
         this.mesh.setColorAt(n, lens);
         n++;

@@ -165,7 +165,10 @@ export const clampInterpDelay = (ms: unknown): number => {
 
 // --- The slack that must track the delay ---
 
-/** Worst-case closing speed of two legally-flying planes, m/s. */
+/** Worst-case closing speed of two legally-flying, un-boosted planes, m/s.
+ * A boosting shooter or target (F2) is judged at its own boost envelope
+ * instead: the server passes that closing speed per claim, so boost widens
+ * the window only for the claims it can actually affect. */
 const CLOSING_SPEED = 2 * MAX_SPEED * SPEED_TOLERANCE;
 
 /**
@@ -181,9 +184,14 @@ const CLOSING_SPEED = 2 * MAX_SPEED * SPEED_TOLERANCE;
  * hand-tuned 200 m it replaces. At the new 58 ms floor it TIGHTENS to 185 m,
  * and only a client that genuinely declares a deep buffer reaches 223 m.
  */
-export const hitRangeSlackFor = (interpDelayMs: number): number =>
-  CLOSING_SPEED * (clampInterpDelay(interpDelayMs) / 1000 + BULLET_LIFETIME_S);
+export const hitRangeSlackFor = (
+  interpDelayMs: number,
+  closingSpeed: number = CLOSING_SPEED,
+): number =>
+  closingSpeed * (clampInterpDelay(interpDelayMs) / 1000 + BULLET_LIFETIME_S);
 
 /** Full range budget a claim gets: bullet range plus the derived slack. */
-export const hitRangeBudgetFor = (interpDelayMs: number): number =>
-  BULLET_RANGE + hitRangeSlackFor(interpDelayMs);
+export const hitRangeBudgetFor = (
+  interpDelayMs: number,
+  closingSpeed: number = CLOSING_SPEED,
+): number => BULLET_RANGE + hitRangeSlackFor(interpDelayMs, closingSpeed);

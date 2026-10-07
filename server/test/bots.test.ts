@@ -9,15 +9,15 @@ import {
   collideMovers,
   generateMovers,
 } from "@angels-bandits/common/city/movers";
-import { isInRoadway } from "@angels-bandits/common/city/street";
+import { isInRoadway, nearestStreet } from "@angels-bandits/common/city/street";
 import { collideCity, hitsGround } from "@angels-bandits/common/collision";
 import {
   BOT_CANYON_ALT_MAX,
   BOT_CANYON_HOP,
   BOT_CANYON_PROBE_ALT,
+  BOT_CEILING_ALT,
   BOT_DECISION_EVERY,
   BOT_MIN_ALT,
-  BOT_PATROL_ALT_MIN,
   BOT_REACTION_MS,
   CITY_SEED,
   CLOUD_BASE,
@@ -190,12 +190,17 @@ describe("RoomBots population sync", () => {
 
   it("ceiling: 120 s chasing a carrot above the clouds never exceeds CLOUD_BASE", () => {
     const bots = new RoomBots("room-1", 7, []);
-    const [entry] = bots.syncTo(1, () => spawnAt(1000, 1000)).spawned;
+    // Spawned high: since B1 a chase only climbs at a high target inside an
+    // attack pass (BOT_FIRE_RANGE), so the bot has to start within reach of
+    // the deck for its pass to test the ceiling guard at all.
+    const [entry] = bots.syncTo(1, () => spawnAt(1000, 1000, 0, 440)).spawned;
     let engaged = false;
+    let peak = 0;
     // The worst case for the ceiling: an unprotected bait that is ALWAYS
-    // 250 m ahead of the bot's nose and parked above the cloud deck at
-    // 700 m, so pursuit wants to climb forever. 1800 ticks is well over a
-    // minute of flight at the snapshot cadence bots are simulated on.
+    // 100 m ahead of the bot's nose — close enough for an attack pass — and
+    // parked above the cloud deck at 700 m, so pursuit wants to climb
+    // forever. 1800 ticks is well over a minute of flight at the snapshot
+    // cadence bots are simulated on.
     for (let i = 1; i <= 1800; i++) {
       const flight = bots.flightOf(entry.id);
       if (!flight) throw new Error("bot vanished");
@@ -203,9 +208,9 @@ describe("RoomBots population sync", () => {
       const bait = {
         id: "11111111-aaaa-bbbb-cccc-000000000002",
         pos: canonicalize({
-          x: flight.pos.x + fwd.x * 250,
+          x: flight.pos.x + fwd.x * 100,
           y: 700,
-          z: flight.pos.z + fwd.z * 250,
+          z: flight.pos.z + fwd.z * 100,
         }),
         vel: { x: 0, y: 0, z: 0 },
         prot: false,
@@ -217,9 +222,12 @@ describe("RoomBots population sync", () => {
       // the cloud deck's underside, never enter the clouds at 500 m.
       expect(after.pos.y).toBeLessThanOrEqual(CLOUD_BASE);
       if (bots.stateOf(entry.id) === "ENGAGE") engaged = true;
+      peak = Math.max(peak, after.pos.y);
     }
-    // Vacuity guard: the bait really was acquired and chased.
+    // Vacuity guards: the bait really was acquired and chased, and the pass
+    // really did climb at the deck from the spawn altitude.
     expect(engaged).toBe(true);
+    expect(peak).toBeGreaterThan(BOT_CEILING_ALT - 30);
   });
 
   it("a bot pose carries the spawn position, yaw attitude, and speed", () => {
@@ -422,7 +430,7 @@ const spreadSpawner = () => {
 };
 
 describe("canyon disposition", () => {
-  it("seeds ~60% of bots into the canyons and the rest high, with nothing in between", () => {
+  it("puts every bot in the canyons — there is no high layer (B1)", () => {
     // Empty city: isolates the seeded disposition draw from terrain avoidance.
     const rooms = [11, 22, 33, 44].map(
       (seed, n) => new RoomBots(`room-${n}`, seed, []),
@@ -436,24 +444,17 @@ describe("canyon disposition", () => {
     // Long enough for a bot spawned at RESPAWN_ALTITUDE to reach its band.
     patrol(rooms, 90);
 
-    let canyon = 0;
+    // ANGE-I5XRNW: every bot is a canyon pilot, so after the descent from
+    // RESPAWN_ALTITUDE nobody is left up high.
     for (const { bots, id } of roster) {
       const y = bots.flightOf(id)?.pos.y ?? Number.NaN;
-      if (y < BOT_CANYON_ALT_MAX + 30) {
-        expect(y).toBeGreaterThan(0);
-        canyon++;
-      } else {
-        // The layers must be clean: anything not in the canyons is up high.
-        expect(y).toBeGreaterThan(BOT_PATROL_ALT_MIN - 30);
-      }
+      expect(y).toBeGreaterThan(0);
+      expect(y).toBeLessThan(BOT_CANYON_ALT_MAX + 30);
     }
-    const share = canyon / roster.length;
-    expect(share).toBeGreaterThan(0.5);
-    expect(share).toBeLessThan(0.7);
     // Long seeded sims: generous timeout so a loaded CI box cannot flake it.
   }, 30_000);
 
-  it("keeps a bot in its own layer across a respawn", () => {
+  it("brings a bot back down to the canyons after a high respawn", () => {
     const bots = new RoomBots("room-1", 11, []);
     const roster = bots.syncTo(20, spreadSpawner()).spawned;
     let now = patrol([bots], 90);
@@ -468,8 +469,8 @@ describe("canyon disposition", () => {
 
     for (const [i, e] of roster.entries()) {
       const after = bots.flightOf(e.id)?.pos.y ?? Number.NaN;
-      const wasCanyon = (before[i] ?? 0) < BOT_CANYON_ALT_MAX + 30;
-      expect(after < BOT_CANYON_ALT_MAX + 30).toBe(wasCanyon);
+      expect(before[i] ?? Number.NaN).toBeLessThan(BOT_CANYON_ALT_MAX + 30);
+      expect(after).toBeLessThan(BOT_CANYON_ALT_MAX + 30);
     }
     expect(now).toBeGreaterThan(0);
     // Long seeded sims: generous timeout so a loaded CI box cannot flake it.
@@ -515,10 +516,9 @@ describe("canyon patrol in the real seeded city", () => {
 
     const scored = roster.filter((e) => (stat.get(e.id)?.ticks ?? 0) > 100);
     const canyons = scored.filter((e) => (stat.get(e.id)?.maxY ?? 0) < 120);
-    const highs = scored.filter((e) => (stat.get(e.id)?.maxY ?? 0) >= 120);
-    // Vacuity guards: the run has to contain both layers to mean anything.
+    // Vacuity guard: enough canyon bots were scored to mean anything (since
+    // B1 every bot is one; a RECOVER climb can still lift one out of it).
     expect(canyons.length).toBeGreaterThanOrEqual(4);
-    expect(highs.length).toBeGreaterThanOrEqual(2);
 
     const roadFrac = (e: { id: string }) => {
       const s = stat.get(e.id);
@@ -537,9 +537,6 @@ describe("canyon patrol in the real seeded city", () => {
       expect(roadFrac(e)).toBeGreaterThan(0.6);
       expect(s.minY).toBeGreaterThan(BOT_MIN_ALT);
     }
-    // Control: the high patrollers still wander, so they hit roughly the
-    // area share — proof the canyon number above is street-following.
-    for (const e of highs) expect(roadFrac(e)).toBeLessThan(0.45);
     // Long seeded sims: generous timeout so a loaded CI box cannot flake it.
   }, 30_000);
 });
@@ -594,6 +591,11 @@ describe("terrain shapes pursuit instead of cancelling it", () => {
   /** yaw for a nose pointing at +X (yaw 0 faces -Z). */
   const EAST = -Math.PI / 2;
 
+  /** Above BOT_CANYON_PROBE_ALT: down in the streets a pursuit the fan
+   * cannot fly straight becomes a street chase instead (B1), so the fan's
+   * weaving is exercised where it still steers. The slab towers over it. */
+  const ALT = BOT_CANYON_PROBE_ALT + 10;
+
   /**
    * Fly east down the street straight at the slab, 45 m out — inside probe
    * range, and closer than the ~85 m it takes to turn away, so the terrain
@@ -603,13 +605,13 @@ describe("terrain shapes pursuit instead of cancelling it", () => {
    */
   const runAtWall = (contact: boolean) => {
     const bots = new RoomBots("room-1", 3, [WALL]);
-    const [entry] = bots.syncTo(1, () => spawnAt(595, 600, EAST, 100)).spawned;
+    const [entry] = bots.syncTo(1, () => spawnAt(595, 600, EAST, ALT)).spawned;
     if (!entry) throw new Error("no bot");
     // Well off to the side down the cross street: the sight line and the
     // pursuit line both stay clear of the slab.
     const target = {
       id: HUNTED,
-      pos: { x: 595, y: 100, z: 250 },
+      pos: { x: 595, y: ALT, z: 250 },
       vel: { x: 0, y: 0, z: 0 },
       prot: false,
     };
@@ -1012,12 +1014,18 @@ describe("bots vs the L2 movers", () => {
   }, 60_000);
 
   /**
-   * The adversarial version: a stationary decoy parked in the construction
-   * block's open air, ~90 m from the mast — outside the sweep, so the bots'
-   * GOAL is not itself inside solid geometry, but reaching it means crossing
-   * the sweep over and over for two minutes. Nothing in a real match is this
+   * The adversarial version: a stationary decoy parked on the street the jib
+   * oversails, just outside the sweep — so the bots' GOAL is not itself
+   * inside solid geometry, but reaching it means crossing the sweep over and
+   * over for four minutes. Nothing in a real match is this
    * relentless; it exists to make the probe's contribution measurable.
    */
+  /** How long orbitCrane runs, s. Four minutes since B1: bots that keep to
+   * the streets cross a crane's sweep about half as often as the old high
+   * layer did, and the vacuity guard below is about absolute time spent in
+   * the sweep — so the exposure is doubled rather than the bar halved. */
+  const ORBIT_SECONDS = 240;
+
   function orbitCrane(seed: number, probeMovers: boolean) {
     const site = l2Field.cranes[0];
     if (!site) throw new Error("no crane site");
@@ -1037,7 +1045,25 @@ describe("bots vs the L2 movers", () => {
       };
     };
     bots.syncTo(8, spawn);
-    const lure = canonicalize({ x: site.x + 92, y: 0, z: site.z + 92 });
+    // On the street the jib oversails, just outside the sweep: since B1 a
+    // low bot will not cut across a construction block to reach a decoy
+    // parked inside it, but it will chase one up the street — straight
+    // through the jib's arc.
+    const street = nearestStreet({ x: site.x, y: 0, z: site.z });
+    const perp = Math.abs(
+      street.axis === "x"
+        ? wrapDeltaAxis(site.z, street.centerline)
+        : wrapDeltaAxis(site.x, street.centerline),
+    );
+    const clearOfSweep = Math.sqrt(
+      Math.max(0, (site.jibLength + PLAYER_RADIUS + 10) ** 2 - perp ** 2),
+    );
+    const along = (street.axis === "x" ? site.x : site.z) + clearOfSweep;
+    const lure = canonicalize(
+      street.axis === "x"
+        ? { x: along, y: 0, z: street.centerline }
+        : { x: street.centerline, y: 0, z: along },
+    );
     const contacts = [
       {
         id: "decoy",
@@ -1049,7 +1075,7 @@ describe("bots vs the L2 movers", () => {
 
     let moverDeaths = 0;
     let sweepTicks = 0;
-    const ticks = Math.round(120 * TICK_DOWN_HZ);
+    const ticks = Math.round(ORBIT_SECONDS * TICK_DOWN_HZ);
     for (let i = 1; i <= ticks; i++) {
       const now = i * (1000 / TICK_DOWN_HZ);
       for (const id of bots.tick(now, contacts).crashes) {
@@ -1066,14 +1092,24 @@ describe("bots vs the L2 movers", () => {
 
   it("negative control: the probe is load-bearing, not decorative", () => {
     // The measured contribution of wiring movers into blockedAlong. Blind,
-    // eight bots dogfighting through a crane's sweep for two minutes die to
-    // it 42-46 times (mostly mast and jib, roughly evenly); with the probe on
-    // it is 0-1, across every seed tried. This asserts the gap, not a
-    // fragile exact count.
-    const seeing = orbitCrane(1234, true);
-    const blind = orbitCrane(1234, false);
-    expect(blind.sweepTicks).toBeGreaterThan(800);
-    expect(seeing.sweepTicks).toBeGreaterThan(800);
+    // eight bots dogfighting through a crane's sweep died to it 42-46 times
+    // per seed while a third of them flew straight lines up high. Since B1
+    // every bot keeps to the streets, so the decoy moved onto the street the
+    // jib oversails and the run is summed over five seeds of four minutes:
+    // blind it is ~30 deaths, with the probe on 0. This asserts the gap, not
+    // a fragile exact count.
+    const sum = (probe: boolean) =>
+      [1234, 7, 20260826, 99, 5]
+        .map((seed) => orbitCrane(seed, probe))
+        .reduce((a, r) => ({
+          moverDeaths: a.moverDeaths + r.moverDeaths,
+          sweepTicks: a.sweepTicks + r.sweepTicks,
+        }));
+    const seeing = sum(true);
+    const blind = sum(false);
+    // Five seeds' worth of the single-seed 800-tick vacuity guard.
+    expect(blind.sweepTicks).toBeGreaterThan(4000);
+    expect(seeing.sweepTicks).toBeGreaterThan(4000);
     expect(blind.moverDeaths).toBeGreaterThan(20);
     expect(seeing.moverDeaths * 10).toBeLessThan(blind.moverDeaths);
   }, 60_000);

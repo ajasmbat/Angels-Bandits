@@ -4,6 +4,7 @@ export * from "./world/index";
 export * from "./flight";
 export * from "./collision";
 export * from "./combat";
+export * from "./boost";
 export * from "./city/index";
 export * from "./storm";
 export * from "./fireworks";

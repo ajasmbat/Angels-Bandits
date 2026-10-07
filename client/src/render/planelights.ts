@@ -9,6 +9,8 @@
 // a small onBeforeCompile patch — same idiom as the other night systems.
 
 import {
+  BOOST_MAX_SPEED,
+  EMISSIVE_AFTERBURN,
   EMISSIVE_EXHAUST,
   EMISSIVE_NAVLIGHT,
   EMISSIVE_STROBE,
@@ -115,6 +117,17 @@ const strobeBoost = NAV_WHITE.clone().multiplyScalar(
 const exhaustBoost = EXHAUST_AMBER.clone().multiplyScalar(
   emissiveBoost(EXHAUST_AMBER, EMISSIVE_EXHAUST),
 );
+/** Boost afterburn (F2): a hotter, whiter flame on its own rung, still
+ * under tracers. */
+const AFTERBURN_WHITE_HOT = new THREE.Color(1, 0.86, 0.62);
+const afterburnBoost = AFTERBURN_WHITE_HOT.clone().multiplyScalar(
+  emissiveBoost(AFTERBURN_WHITE_HOT, EMISSIVE_AFTERBURN),
+);
+/** Afterburn flame size at full burn, as a multiple of EXHAUST_SIZE. */
+const AFTERBURN_SIZE = 2.2;
+/** Remotes show the flame from streamed speed past this, m/s — high enough
+ * that it lights within a beat of the burn and dies ~1 s into the tail. */
+const AFTERBURN_FROM_SPEED = 105;
 
 /** Soft round glow: hard bright core, gentle falloff — one shared sprite. */
 function glowTexture(): THREE.Texture {
@@ -201,6 +214,8 @@ export class PlaneLights {
    * Append one plane's five lights. `rendered` is the plane's already
    * nearest-image-placed world position (the same one its mesh uses), so
    * lights can never drift to another torus image than their plane.
+   * `afterburn` (0..1) is the boost flame: the own plane passes its real burn
+   * state; remotes leave it out and it is read from streamed speed.
    */
   place(
     planeId: string,
@@ -208,6 +223,14 @@ export class PlaneLights {
     quat: QuatLike,
     speed: number,
     syncedTimeMs: number,
+    afterburn: number = Math.min(
+      1,
+      Math.max(
+        0,
+        (speed - AFTERBURN_FROM_SPEED) /
+          (BOOST_MAX_SPEED - AFTERBURN_FROM_SPEED),
+      ),
+    ),
   ): void {
     if (this.count + LIGHTS_PER_PLANE > CAPACITY) return;
     scratchQuat.set(quat.x, quat.y, quat.z, quat.w);
@@ -230,12 +253,18 @@ export class PlaneLights {
     const flicker =
       0.8 + 0.2 * Math.sin(t * FLICKER_A) * Math.sin(t * FLICKER_B);
     const throttle = Math.min(1, Math.max(0.25, speed / MAX_SPEED));
-    scratchColor.copy(exhaustBoost).multiplyScalar(throttle * flicker);
+    scratchColor
+      .copy(exhaustBoost)
+      .multiplyScalar(throttle * flicker)
+      .lerp(
+        scratchFlame.copy(afterburnBoost).multiplyScalar(flicker),
+        afterburn,
+      );
     this.appendColor(
       rendered,
       LIGHT_MOUNTS.exhaust,
       scratchColor,
-      EXHAUST_SIZE,
+      EXHAUST_SIZE * (1 + (AFTERBURN_SIZE - 1) * afterburn),
     );
   }
 
@@ -278,6 +307,7 @@ export class PlaneLights {
 }
 
 const scratchColor = new THREE.Color();
+const scratchFlame = new THREE.Color();
 
 // --- Hero light (VO4): every plane lights ITSELF, in its own shader ---
 //

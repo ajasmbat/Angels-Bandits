@@ -1,6 +1,6 @@
 // Magnetism seam: own bullets bend toward the nearest target inside a tight
 // aim cone, capped per second — connection help, not an aimbot. Worked
-// examples pin the spec numbers: MAGNETISM_CONE_DEG = 4, MAGNETISM_MAX_DEG_PER_S = 2
+// examples pin the spec numbers: MAGNETISM_CONE_DEG = 6, MAGNETISM_MAX_DEG_PER_S = 2
 // (constants.ts); angles below are literals derived from those by hand.
 
 import type { Vec3 } from "@angels-bandits/common/world";
@@ -58,7 +58,7 @@ describe("magnetizeVelocity", () => {
     expect(angleBetween(out, toTarget)).toBeCloseTo(0, 5);
   });
 
-  it("gives zero bend to a target 10° off (outside the 4° cone)", () => {
+  it("gives zero bend to a target 10° off (outside the 6° cone)", () => {
     const target = offsetTarget(pos, 10, 200);
     const out = magnetizeVelocity(pos, vel, [target], 0.1);
     expect(out).toEqual(vel);

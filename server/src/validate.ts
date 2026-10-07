@@ -32,9 +32,17 @@ const finiteQuat = (q: Quat) =>
 /**
  * Judge `claim` against the last accepted `prev`, `dt` seconds apart.
  * MUSH_SINK rides on top of the speed cap because above the soft ceiling the
- * sink adds vertical motion the airspeed number doesn't carry.
+ * sink adds vertical motion the airspeed number doesn't carry. `maxSpeed` is
+ * the fastest the model allows over the window — MAX_SPEED, or the boost
+ * mirror's boostSpeedCap (F2) — and bounds both the claimed airspeed and the
+ * displacement, so a boost is legal on record and nothing beyond it is.
  */
-export function validatePose(prev: Pose, claim: Pose, dt: number): PoseVerdict {
+export function validatePose(
+  prev: Pose,
+  claim: Pose,
+  dt: number,
+  maxSpeed: number = MAX_SPEED,
+): PoseVerdict {
   const reject: PoseVerdict = { ok: false, pose: prev };
 
   const { pos, quat, speed } = claim;
@@ -48,7 +56,7 @@ export function validatePose(prev: Pose, claim: Pose, dt: number): PoseVerdict {
     return reject;
   }
 
-  if (speed > MAX_SPEED * SPEED_TOLERANCE || speed < 0) return reject;
+  if (speed > maxSpeed * SPEED_TOLERANCE || speed < 0) return reject;
 
   const norm = Math.hypot(quat.x, quat.y, quat.z, quat.w);
   if (norm < 0.9 || norm > 1.1) return reject;
@@ -59,7 +67,7 @@ export function validatePose(prev: Pose, claim: Pose, dt: number): PoseVerdict {
     z: pos.z,
   });
   const maxTravel =
-    (MAX_SPEED * SPEED_TOLERANCE + MUSH_SINK) * dt + POSE_DISTANCE_SLACK;
+    (maxSpeed * SPEED_TOLERANCE + MUSH_SINK) * dt + POSE_DISTANCE_SLACK;
   if (wrapDistance(prev.pos, clampedPos) > maxTravel) return reject;
 
   return {

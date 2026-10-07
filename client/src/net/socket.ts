@@ -105,6 +105,12 @@ export class GameSocket {
     this.send({ type: "fire", seq });
   }
 
+  /** Boost edge (F2): the instant a burn starts or ends. Never batched —
+   * the server's energy mirror is stepped from exactly these edges. */
+  sendBoost(on: boolean): void {
+    this.send({ type: "boost", on });
+  }
+
   /** Claim a shooter-side hit on `targetId` by bullet `seq`. The claim
    * declares the buffer this client was holding: the server's range slack is
    * derived from it, so a shooter on a clean link is judged against a tighter

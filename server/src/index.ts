@@ -7,6 +7,14 @@
 
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
+import {
+  type Boost,
+  boostLevel,
+  boostSpeedCap,
+  createBoost,
+  startBoost,
+  stopBoost,
+} from "@angels-bandits/common/boost";
 import { generateCity } from "@angels-bandits/common/city";
 import {
   type MoverField,
@@ -18,6 +26,7 @@ import {
   buildNatureIndex,
 } from "@angels-bandits/common/collision";
 import {
+  BOOST_VALIDATION_SLACK,
   CITY_SEED,
   LIVENESS_TIMEOUT_MS,
   NAME_MAX_LENGTH,
@@ -38,8 +47,8 @@ import type {
 import type { Vec3 } from "@angels-bandits/common/world";
 import { type WebSocket, WebSocketServer } from "ws";
 import { type BotContact, RoomBots, applyBotFire, poseVelocity } from "./bots";
-import { Combat } from "./combat";
-import { pickRespawn } from "./respawn";
+import { Combat, type SpeedCapFn } from "./combat";
+import { pickBotRespawn, pickRespawn } from "./respawn";
 import { type Room, RoomManager } from "./room";
 import { createStaticHandler } from "./statics";
 import { StormCeiling } from "./storm";
@@ -61,6 +70,9 @@ interface Client {
   lastMsgAt: number;
   lastPoseAt: number;
   rejectStreak: number;
+  /** Mirror of the client's boost energy (F2), stepped from its edges with
+   * BOOST_VALIDATION_SLACK — the only thing that makes boost speed legal. */
+  boost: Boost;
 }
 
 const rooms = new RoomManager();
@@ -163,7 +175,9 @@ function syncRoomBots(room: Room): void {
   const bots = botsFor(room);
   const now = Date.now();
   const { spawned, despawned } = bots.syncTo(rooms.desiredBots(room), () =>
-    pickRespawn(livingEnemyPositions(room, "")),
+    pickBotRespawn(livingEnemyPositions(room, ""), (pos, yaw) =>
+      bots.spawnClear(pos, yaw, now),
+    ),
   );
   for (const entry of spawned) {
     rooms.addBot(room, entry.id, entry.name);
@@ -215,6 +229,7 @@ function handleJoin(ws: WebSocket, rawName: unknown): Client {
     lastMsgAt: now,
     lastPoseAt: now,
     rejectStreak: 0,
+    boost: createBoost(now),
   };
   clients.set(id, client);
 
@@ -243,8 +258,11 @@ function handlePose(client: Client, pose: Pose, now: number): void {
   // dt from wall time between claims, bounded: a hidden tab that resumes may
   // legally have moved far; a spammed socket must not shrink the bound to 0.
   const dt = Math.min(Math.max((now - client.lastPoseAt) / 1000, 0.02), 1);
+  // Fastest the boost model allows since the last claim — levelled to now
+  // first, so a burn whose stop edge never comes still runs dry on time.
+  const cap = speedCapOf(client, now)(client.lastPoseAt);
   client.lastPoseAt = now;
-  const verdict = validatePose(client.pose, pose, dt);
+  const verdict = validatePose(client.pose, pose, dt, cap);
   if (verdict.ok) {
     client.pose = verdict.pose;
     client.rejectStreak = 0;
@@ -254,12 +272,29 @@ function handlePose(client: Client, pose: Pose, now: number): void {
   if (client.rejectStreak >= RESYNC_AFTER_REJECTS) {
     // Persistent disagreement = a real discontinuity (client respawn), not
     // jitter. Re-sync to the claim rather than freezing the plane forever.
-    const resync = validatePose(pose, pose, dt);
+    const resync = validatePose(pose, pose, dt, cap);
     if (resync.ok) {
       client.pose = resync.pose;
       client.rejectStreak = 0;
     }
   }
+}
+
+/** A human's boost window cap as of `now` (see SpeedCapFn); bots never
+ * boost, so callers use the combat default for them. */
+function speedCapOf(client: Client, now: number): SpeedCapFn {
+  client.boost = boostLevel(client.boost, now, BOOST_VALIDATION_SLACK);
+  const levelled = client.boost;
+  return (since) => boostSpeedCap(levelled, since);
+}
+
+/** A boost edge (F2): step the mirror. A refused start simply leaves it
+ * idle — the boosted poses that follow fail validation. */
+function handleBoost(client: Client, on: unknown, now: number): void {
+  if (typeof on !== "boolean" || !combat.isAlive(client.id)) return;
+  client.boost = on
+    ? startBoost(client.boost, now, BOOST_VALIDATION_SLACK)
+    : stopBoost(client.boost, now, BOOST_VALIDATION_SLACK);
 }
 
 function handleLeave(client: Client): void {
@@ -316,6 +351,7 @@ function handleHitClaim(
   // Bots are valid targets too: their on-record pose comes from the sim.
   const targetPose = memberPose(client.room, targetId);
   if (!targetPose) return;
+  const targetClient = clients.get(targetId);
 
   const verdict = combat.hit(
     client.id,
@@ -328,6 +364,10 @@ function handleHitClaim(
     // The shooter's declared interpolation buffer sizes the range budget
     // (ANGE-4KO2W2). Clamped here: a nonsense claim reads as the tight floor.
     clampInterpDelay(delay),
+    // Boost (F2) widens the origin and range windows only for a plane that
+    // was actually burning. Bots never boost: their cap is the default.
+    speedCapOf(client, now),
+    targetClient ? speedCapOf(targetClient, now) : undefined,
   );
   if (!verdict.ok) return;
 
@@ -390,17 +430,25 @@ function issueRespawns(due: string[], now: number): void {
   for (const id of due) {
     const room = rooms.roomOf(id);
     if (!room) continue;
-    const spawn: SpawnState = pickRespawn(livingEnemyPositions(room, id));
+    const enemies = livingEnemyPositions(room, id);
+    let spawn: SpawnState;
     if (room.members.get(id)?.isBot) {
+      // Bots respawn down in a street (B1); humans keep the high spawn.
+      const bots = botsFor(room);
+      spawn = pickBotRespawn(enemies, (pos, yaw) =>
+        bots.spawnClear(pos, yaw, now),
+      );
       combat.respawned(id, now);
-      botsFor(room).respawn(id, spawn);
+      bots.respawn(id, spawn);
     } else {
+      spawn = pickRespawn(enemies);
       const client = clients.get(id);
       if (!client) continue;
       combat.respawned(id, now);
       client.pose = poseFromSpawn(spawn);
       client.rejectStreak = 0;
       client.lastPoseAt = now;
+      client.boost = createBoost(now); // fresh plane, full gauge, no tail
     }
     sendToRoom(room, {
       type: "respawn",
@@ -537,6 +585,8 @@ wss.on("connection", (ws) => {
       client = handleJoin(ws, msg.name);
     } else if (msg.type === "pose" && client && msg.pose) {
       handlePose(client, msg.pose, now);
+    } else if (msg.type === "boost" && client) {
+      handleBoost(client, msg.on, now);
     } else if (msg.type === "fire" && client) {
       handleFire(client, msg.seq, now);
     } else if (msg.type === "hit" && client) {

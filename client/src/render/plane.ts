@@ -15,7 +15,11 @@ import {
   PITCH_RATE,
   TURN_RATE,
 } from "@angels-bandits/common/constants";
-import type { FlightInput, FlightState } from "@angels-bandits/common/flight";
+import {
+  type FlightInput,
+  type FlightState,
+  handlingRates,
+} from "@angels-bandits/common/flight";
 import * as THREE from "three";
 import { BASE_FOV } from "../game/zoom";
 import {
@@ -93,17 +97,18 @@ export function ratesToControls(
 
 /**
  * Own plane: the body rates stepFlight is commanding this frame, from the
- * shaped input and the current attitude (the same frame decomposition a
- * remote's quaternion delta yields, so the own plane and a remote doing the
- * same turn show the same surfaces).
+ * shaped input, the current attitude and the boost-sharpened handling rates
+ * (the same frame decomposition a remote's quaternion delta yields, so the
+ * own plane and a remote doing the same turn show the same surfaces).
  */
 export function inputControls(
   input: FlightInput,
-  state: Pick<FlightState, "pitch" | "roll">,
+  state: Pick<FlightState, "pitch" | "roll" | "speed">,
 ): ControlDeflection {
+  const rates = handlingRates(state.speed, input.boost === true);
   const turn = clamp1(input.turn);
-  const pitchRate = clamp1(input.pitch) * PITCH_RATE;
-  const yawRate = -turn * TURN_RATE; // world-up axis
+  const pitchRate = clamp1(input.pitch) * rates.pitchRate;
+  const yawRate = -turn * rates.turnRate; // world-up axis
   const rollTarget = -turn * BANK_ANGLE + clamp1(input.roll) * BANK_ANGLE;
   const rollRate = BANK_RESPONSE * (rollTarget - state.roll);
   const sp = Math.sin(state.pitch);

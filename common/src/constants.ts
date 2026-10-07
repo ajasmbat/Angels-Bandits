@@ -39,6 +39,9 @@ export const EMISSIVE_NAVLIGHT = 1.0;
 export const EMISSIVE_BEACON = 1.05;
 /** Anti-collision strobe at flash peak — brightest plane light, under tracers. */
 export const EMISSIVE_STROBE = 1.1;
+/** Boost afterburn flame at full burn (F2) — the hottest plane light, still
+ * under tracers so a boosting bandit never out-shines its own gunfire. */
+export const EMISSIVE_AFTERBURN = 1.3;
 export const EMISSIVE_TRACER = 1.5;
 
 // --- Buildings ---
@@ -381,6 +384,34 @@ export const STREET_TREE_CANOPY_MAX = 2.2;
  * on flattened crowns; this covers it, so what you see is always solid. */
 export const CANOPY_COLLISION_SLACK = 0.1;
 
+// --- Boost (F2) --- hold SPACE: a short burn of extra speed and sharper
+// handling, metered by an energy gauge. The energy model is wall-clock and
+// pure (common/src/boost.ts), shared by the client's gauge and the server's
+// mirror the same way gun heat is; the flight model reads the multipliers.
+/** Top airspeed while boosting, m/s (MAX_SPEED is the un-boosted top). */
+export const BOOST_MAX_SPEED = 125;
+/** Proportional pull of airspeed toward BOOST_MAX_SPEED while boosting, 1/s —
+ * the engine surge. 90 → ~119 m/s in 1 s, ~124 by the end of a full burn. */
+export const BOOST_RESPONSE = 1.5;
+/** Turn and pitch rate multipliers at full boost. 125 m/s / (TURN_RATE 0.9 ×
+ * 1.6) is an 86.8 m turn radius against 100 m at 90 m/s un-boosted. */
+export const BOOST_TURN_MULT = 1.6;
+export const BOOST_PITCH_MULT = 1.4;
+/** Energy (0..1 gauge) burned per second of boost: a full gauge lasts 3 s. */
+export const BOOST_DRAIN_RATE = 1 / 3;
+/** Energy regained per second once recharging: empty → full in 6 s. */
+export const BOOST_RECHARGE_RATE = 1 / 6;
+/** Recharge waits this long after a boost ends (release or empty), ms. */
+export const BOOST_RECHARGE_DELAY_MS = 1000;
+/** A boost may only start with at least this much energy. */
+export const BOOST_MIN_START = 0.25;
+/** Energy every start costs up front — tapping SPACE can't stretch a burn. */
+export const BOOST_START_COST = 0.1;
+/** Server energy tolerance (clock/arrival jitter on the boost edges): the
+ * mirror starts a boost this much below BOOST_MIN_START and lets energy run
+ * this far below empty before it calls the burn over. 0.15 is 0.45 s of burn. */
+export const BOOST_VALIDATION_SLACK = 0.15;
+
 // --- Combat (tuned by T4) ---
 export const MAX_HP = 100;
 export const BULLET_SPEED = 400;
@@ -390,8 +421,10 @@ export const BULLET_DAMAGE = 7;
 export const BULLET_RANGE = 350;
 /** How long a client-simulated bullet lives, seconds (≈ range / speed). */
 export const BULLET_LIFETIME_S = BULLET_RANGE / BULLET_SPEED;
-/** Plane hit-sphere radius, meters — generous (wingspan 9 m) because hits favor the shooter. */
-export const HIT_RADIUS = 6;
+/** Plane hit-sphere radius, meters — generous (wingspan 9 m) because hits favor
+ * the shooter. Symmetric: client hit detection on human shots AND the server's
+ * bot-gunnery test both read it. 7.5 since F1 (easy-to-fly aim help). */
+export const HIT_RADIUS = 7.5;
 
 // --- Guns / heat model (heat is a 0..1 meter; overheating locks the guns) ---
 /** Minimum time between shots, ms (10 rounds/s, alternating wingtips). */
@@ -406,9 +439,11 @@ export const OVERHEAT_AT = 1.0;
 export const HEAT_LOCK_BELOW = 0.35;
 
 // --- Gun feel (client-only presentation/assist; server validation untouched) ---
-/** Bullet magnetism: own bullets bend toward a target within this half-angle
- * of the flight line, degrees. Tight — connection help, not an aimbot. */
-export const MAGNETISM_CONE_DEG = 4;
+/** Bullet magnetism: own bullets bend toward a target whose intercept point
+ * sits within this half-angle of the flight line, degrees. Connection help,
+ * not an aimbot — F1 widened it from 4 and checked that an aimer held 12 m
+ * off the lead marker still lands under 15% (faster bend rates did not). */
+export const MAGNETISM_CONE_DEG = 6;
 /** Max bend rate toward the target, degrees per second. */
 export const MAGNETISM_MAX_DEG_PER_S = 2;
 /** A plane strictly below this fraction of MAX_HP trails wounded smoke. */
@@ -494,15 +529,9 @@ export const BOT_INPUT_CAP = 0.85;
  * TICK_DOWN_HZ deliberately — bots fly at snapshot cadence, and ANGE-4KO2W2's
  * faster tick must not silently sharpen their reflexes. */
 export const BOT_DECISION_EVERY = 4;
-/** HIGH patrol waypoint altitude band, m — above every rooftop (250 m
- * landmarks), below the soft ceiling. */
-export const BOT_PATROL_ALT_MIN = 270;
-export const BOT_PATROL_ALT_MAX = 460;
-/** Share of bots seeded as CANYON pilots (ANGE-SINI5F); the rest patrol high.
- * Drawn once per bot and fixed for its life — disposition steers PATROL only,
- * never ENGAGE, so a chase drags bots through both layers. */
-export const BOT_CANYON_SHARE = 0.6;
-/** Canyon patrol band, m. The floor sits clear of BOT_MIN_ALT; the ceiling is
+/** Canyon patrol band, m — EVERY bot's home (B1, ANGE-I5XRNW: there is no
+ * high layer any more; a human flying high sees bots weaving below the
+ * roofline). The floor sits clear of BOT_MIN_ALT; the ceiling is
  * under the 79 m upper quartile of C1's skyline (median 49 m), so a bot in
  * this band is threading the streets rather than cruising over roofs — though
  * the highest slots do clear the shortest (BUILDING_MIN_HEIGHT) buildings, and
@@ -511,8 +540,8 @@ export const BOT_CANYON_SHARE = 0.6;
 export const BOT_CANYON_ALT_MIN = 25;
 export const BOT_CANYON_ALT_MAX = 70;
 /** A canyon patrol waypoint counts as reached inside this torus range, m.
- * BOT_WAYPOINT_RADIUS is wider than half a block, so an intersection would
- * read as already-reached the moment it was picked. */
+ * Tighter than half a block, so an intersection never reads as
+ * already-reached the moment it is picked. */
 export const BOT_CANYON_WAYPOINT_RADIUS = 60;
 /** Chance a canyon bot carries straight on through an intersection rather
  * than turning; the turn's left/right is a second seeded draw. */
@@ -526,8 +555,6 @@ export const BOT_CANYON_HOP = 30;
  * it: measured over all 800 city intersections, the same turn crashes 4.5% of
  * the time at 65 m/s and 1.0% at 40 m/s. */
 export const BOT_CANYON_TURN_YAW = 0.5;
-/** A patrol waypoint counts as reached inside this torus range, m. */
-export const BOT_WAYPOINT_RADIUS = 120;
 /** How long a bot holds its evade break turn after taking fire, ms. */
 export const BOT_EVADE_MS = 2500;
 /** An enemy this close AND behind the bot triggers an evade break, m. */
@@ -614,3 +641,70 @@ export const BOT_LOS_TESTS_MAX = ROOM_CAP;
  * uses this to CHOOSE between headings early; the short profile still decides
  * when the chase is hopeless and RECOVER takes over. */
 export const BOT_FAN_TIMES: readonly number[] = [0.5, 1.2, 2.2];
+
+// --- Canyon fights (B1, ANGE-I5XRNW) — bots fight INSIDE the city ---
+/** Highest altitude an ENGAGEd bot aims its pursuit at, m, outside an attack
+ * pass. A chase follows the target's ground track down here instead of
+ * climbing to it, so a high human drags nobody up out of the streets. Just
+ * over BOT_CANYON_PROBE_ALT + a corner hop: low enough that the chase stays
+ * among the rooftops, high enough to hop the streetwall mid-pursuit. */
+export const BOT_ENGAGE_CEILING = 130;
+/** Longest a climbing attack pass at a target above BOT_ENGAGE_CEILING may
+ * last, ms — then the bot breaks off and dives back to its band. */
+export const BOT_ATTACK_PASS_MS = 3000;
+/** Steepest climb an attack pass aims at, as a tangent (≈ 1.0 rad): steep
+ * enough to bring the guns onto a 300 m human from inside the fire range,
+ * never the near-vertical zoom that bleeds to MIN_SPEED through the crane
+ * jibs' 60–96 m layer. */
+export const BOT_ATTACK_CLIMB = 1.55;
+/** After a pass the bot may not start another for this long, ms: the dive
+ * back down. Pass + cooldown is the duty cycle that keeps a bot hunting a
+ * high human mostly below the roofline. */
+export const BOT_ATTACK_COOLDOWN_MS = 6000;
+/** An attack pass starts only with the target this close to the nose in
+ * PLAN view, rad — the bot climbs into a shot it is already lined up for,
+ * never into a zoom climb that still has to turn. */
+export const BOT_ATTACK_YAW = 0.35;
+/** Bot (re)spawn altitude band, m: on a street centreline, heading along it,
+ * already inside the canyon — a respawn at RESPAWN_ALTITUDE spent ~10 s
+ * gliding down before it was part of the city fight. High in the street (the
+ * corner hop's headroom over most of the streetwall) rather than at band
+ * height: 60–80 m crashed 31 of 252 spawns within 20 s (review round 2). */
+export const BOT_SPAWN_ALT_MIN = 75;
+export const BOT_SPAWN_ALT_MAX = 90;
+/** A canyon spawn must see this much clear street straight ahead, m — a long
+ * straight run-out (6 s at BOT_SPAWN_SPEED) that the spawn grace flies before
+ * the bot is allowed to fight or turn. */
+export const BOT_SPAWN_CLEAR_AHEAD = 300;
+/** A bot (re)spawns this fast, m/s — slower than RESPAWN_SPEED, so its first
+ * corner fits the street (turn radius is speed / 0.765 rad/s). */
+export const BOT_SPAWN_SPEED = 50;
+/** After a (re)spawn a bot flies a straight canyon patrol for this long, ms:
+ * no acquisition, no chase, no turn at the first intersection — it settles
+ * into the street before it joins the fight. The terrain and ceiling guards
+ * still apply. */
+export const BOT_SPAWN_GRACE_MS = 3000;
+/** Acquisition ranks contacts by distance plus this many metres per metre the
+ * contact flies above BOT_ENGAGE_CEILING — so the low layer prefers the fight
+ * at its own altitude and is not forever dragged up by the nearest high one. */
+export const BOT_ACQUIRE_ALT_WEIGHT = 1;
+/** A low EVADE breaks along its street toward a point this far ahead, m. */
+export const BOT_EVADE_STREET_LEAD = 150;
+/** …jinking this far either side of its centreline, m, flipping every
+ * BOT_EVADE_JINK_MS: a dead-straight run down a street is the easiest
+ * deflection shot a chaser ever gets. */
+export const BOT_EVADE_JINK = 6;
+export const BOT_EVADE_JINK_MS = 800;
+/** A high target closer than this in PLAN view no longer steers the heading,
+ * m: with the pursuit aim clamped under it, the horizontal part of the aim
+ * vector is too small for atan2 to mean anything and the bot would orbit
+ * underneath. It extends along its heading instead, setting up a pass. */
+export const BOT_ENGAGE_OVERHEAD = 60;
+/** Acquisition hysteresis, m of ranking score: a new contact must beat the
+ * current target by this much to take over — otherwise two contacts at
+ * similar scores flicker and every switch re-arms BOT_REACTION_MS. */
+export const BOT_RETARGET_MARGIN = 100;
+/** A bot joining a street from over a block steers at a point on the
+ * centreline up to this far along it, m — a shallow merge, instead of cutting
+ * the block corner to the next intersection at street height. */
+export const BOT_CANYON_MERGE_LEAD = 150;

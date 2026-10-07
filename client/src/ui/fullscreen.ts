@@ -50,6 +50,15 @@ export function toggleFullscreen(
   }
 }
 
+/** Launched from the home screen (installed PWA, or iOS's navigator flag). */
+export function isStandalone(win: Window = window): boolean {
+  return (
+    win.matchMedia("(display-mode: fullscreen), (display-mode: standalone)")
+      .matches ||
+    (win.navigator as { standalone?: boolean }).standalone === true
+  );
+}
+
 /** Report the truthful state on every change event (standard + webkit) —
  * icon state hangs off this, never off which button was clicked. */
 export function watchFullscreen(
@@ -89,8 +98,9 @@ export interface FullscreenKeyEvent {
 
 /** Wire the HUD + join-overlay buttons and the F key (chrome lives in
  * index.html). Hides the buttons — and leaves F unbound — where fullscreen
- * is unsupported; `body.fullscreen` (the icon's exit state, CSS) follows the
- * change events so Esc-exit stays truthful. */
+ * is unsupported (showing the add-to-home-screen hint instead);
+ * `body.fullscreen` (the icon's exit state, CSS) follows the change events
+ * so Esc-exit stays truthful. */
 export function initFullscreenUi(
   doc: FullscreenUiDoc = document as FullscreenUiDoc,
   win:
@@ -109,6 +119,12 @@ export function initFullscreenUi(
   ];
   if (!isFullscreenSupported(doc)) {
     for (const btn of buttons) if (btn) btn.hidden = true;
+    // iPhone (M2): pages can't go fullscreen there, home-screen apps can —
+    // point at that instead, unless this already is the home-screen app.
+    const hint = doc.getElementById?.("pwa-hint");
+    if (hint && typeof window !== "undefined" && !isStandalone(window)) {
+      hint.hidden = false;
+    }
     return;
   }
   // Button 2 is the aim zoom (ANGE-G9CPCV), which also listens on window —

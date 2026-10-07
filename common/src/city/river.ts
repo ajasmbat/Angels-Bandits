@@ -147,8 +147,8 @@ function inBox(
 /**
  * Does a sphere at `pos` touch the ground, an embankment wall or railing, a
  * bridge deck or a bridge parapet? The single ground truth: collision.ts
- * hitsGround() is this, so the client's crash check, the pull-up warning, the
- * bot physics tick and every bot probe agree on it.
+ * hitsGround() is this, so the client's crash check, the bot physics tick and
+ * every bot probe agree on it.
  *
  * Expanded-box convention throughout: the bank (solid below y = 0 outside
  * the channel) grows by `r` into the channel, the water by `r` upward.

@@ -93,12 +93,6 @@ import {
 } from "./game/instructor";
 import { magnetizeVelocity } from "./game/magnetism";
 import {
-  type ProximityCue,
-  assistLatch,
-  createAvoidance,
-  stepAvoidance,
-} from "./game/proximity";
-import {
   BASE_FOV,
   createZoom,
   stepZoom,
@@ -689,16 +683,6 @@ let cursorPrev = input.cursorNdc();
 let aimConverged = false;
 /** The FOV the instructor last read the cursor through (latch reference). */
 let aimFovPrev = BASE_FOV;
-// Proximity warning + avoidance assist (F4): client-only, its output is
-// ordinary input. The latch is the nose motion the assist caused last frame,
-// fed back so the instructor does not fly straight back into the wall.
-let avoidance = createAvoidance();
-let assistOn = input.assistOn();
-let avoidLatch: AimError = { yaw: 0, pitch: 0 };
-/** Last frame's warning / predicted impact (QA hook only). */
-let avoidWarning = false;
-let avoidImpactIn: number | null = null;
-let avoidCue: ProximityCue | null = null;
 // Hold-SPACE boost (F2): the local half of the shared energy model. The
 // server mirrors it from the edges we send, so `boostSent` tracks what the
 // server was last told.
@@ -753,13 +737,7 @@ function enterDeath(killerId: string | null, cause?: "storm"): void {
   freelook = createFreeLook();
   zoom = createZoom();
   instructor = createInstructor();
-  avoidance = createAvoidance();
-  avoidLatch = { yaw: 0, pitch: 0 };
   hud.setFreeLook(false);
-  hud.setProximity(null);
-  avoidWarning = false;
-  avoidImpactIn = null;
-  avoidCue = null;
   killCamTargetId = killerId;
   hud.showKillCam(killerId === null ? null : nameOf(killerId), cause);
   setBoostBurning(false, performance.now());
@@ -777,8 +755,6 @@ function respawnSelf(spawn: SpawnState): void {
   flight = { ...flight, speed: spawn.speed, targetSpeed: spawn.speed };
   chase.snapTo(flight);
   instructor = createInstructor();
-  avoidance = createAvoidance();
-  avoidLatch = { yaw: 0, pitch: 0 };
   alive = true;
   killCamTargetId = null;
   plane.visible = true;
@@ -1070,14 +1046,6 @@ declare global {
       setFiring: (held: boolean) => void;
       freelook: () => ReturnType<typeof createFreeLook>;
       zoom: () => { held: boolean; z: number; fov: number };
-      avoidance: () => {
-        on: boolean;
-        warning: boolean;
-        cue: ProximityCue | null;
-        impactIn: number | null;
-        pitch: number;
-        turn: number;
-      };
       lampImage: (x: number, z: number) => { x: number; z: number } | null;
       traffic: (at?: number | null) => ReturnType<Traffic["debug"]>;
       /** L6 QA: the longest red-light queue at a server time (gallery pin). */
@@ -1309,15 +1277,6 @@ window.__ab = {
   // ANGE-G9CPCV QA: aim-zoom state plus the FOV it is actually driving
   // (drive it with real button-2 mouse events).
   zoom: () => ({ held: zoom.held, z: zoom.z, fov: camera.fov }),
-  // F4 QA: the proximity warning and the assist currently applied.
-  avoidance: () => ({
-    on: assistOn,
-    warning: avoidWarning,
-    cue: avoidCue,
-    impactIn: avoidImpactIn,
-    pitch: avoidance.pitch,
-    turn: avoidance.turn,
-  }),
   // Seam QA: where the lamp nearest canonical (x, z) is drawn right now.
   lampImage: (x, z) => streetlights.imageOf(x, z),
   // Traffic QA: canonical poses of the first cars at a server time. Pass one
@@ -1562,13 +1521,7 @@ const frame = (now: number): void => {
     // command from the other mode ever reaches the plane.
     aimMode = input.aimMode();
     instructor = createInstructor();
-    avoidLatch = { yaw: 0, pitch: 0 };
     hud.showAimMode(aimMode);
-  }
-  if (input.assistOn() !== assistOn) {
-    // N flips the avoidance assist; the proximity warning stays either way.
-    assistOn = input.assistOn();
-    hud.showAssist(assistOn);
   }
   // Step the zoom OUTSIDE the alive gate: chase.update() only runs while
   // alive, so a death mid-zoom would otherwise freeze the FOV narrowed for
@@ -1638,15 +1591,7 @@ const frame = (now: number): void => {
         const e0 = aimError(flight, before.aimDir, before.pipperDir);
         latch = { yaw: err.yaw - e0.yaw, pitch: err.pitch - e0.pitch };
       }
-      // The avoidance assist's own nose motion is latched too, and held
-      // while it acts: the cursor takes back over only once the path clears.
-      latch = {
-        yaw: latch.yaw + avoidLatch.yaw,
-        pitch: latch.pitch + avoidLatch.pitch,
-      };
-      const avoiding = avoidance.pitch !== 0 || avoidance.turn !== 0;
-      const reframing =
-        looking || (zoom.z > 0 && zoom.z < 1) || (assistOn && avoiding);
+      const reframing = looking || (zoom.z > 0 && zoom.z < 1);
       instructor = instructorInput(
         err,
         latch,
@@ -1665,41 +1610,10 @@ const frame = (now: number): void => {
       aimConverged = angleBetween(view.aimDir, view.pipperDir) < CONVERGED_RAD;
       aimFovPrev = aimFov;
     }
-    // Proximity warning + avoidance assist (F4), after the instructor and
-    // the free-look/zoom authority: it predicts the path the plane is about
-    // to fly and, when that path ends in something solid, adds a capped
-    // correction — the warning shows whether or not the assist is on.
     const shaped = { ...shapeInput(command, { steer }), boost: boost.active };
-    const avoid = stepAvoidance(
-      avoidance,
-      shaped,
-      flight,
-      {
-        buildings: city.cityBuildings,
-        index: city.cityIndex,
-        nature: natureIndex,
-        movers: moverField,
-        timeMs: renderMs,
-      },
-      dt,
-      assistOn,
-    );
-    avoidance = avoid.state;
-    avoidLatch = assistLatch(
-      shaped,
-      avoid.input,
-      handlingRates(flight.speed, boost.active),
-      dt,
-    );
-    avoidWarning = avoid.warning;
-    avoidImpactIn = avoid.impactIn;
-    avoidCue = avoid.cue;
-    hud.setProximity(avoid.cue);
-    if (avoid.warning) audio.pullUpTone(now);
-    flight = stepFlight(flight, avoid.input, dt);
-    // Own control surfaces follow what the plane is actually flying — the
-    // stick plus any assist (F3).
-    ownControls = inputControls(avoid.input, flight);
+    flight = stepFlight(flight, shaped, dt);
+    // Own control surfaces follow what the stick is commanding (F3).
+    ownControls = inputControls(shaped, flight);
     // Hold the post-boost tail to the wall-clock envelope the server checks
     // (boostSpeedCap): a slow or hidden frame clamps dt, so the sim's own
     // decay can lag the clock — this keeps every pose inside the mirror.

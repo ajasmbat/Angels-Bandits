@@ -110,6 +110,7 @@ import { installHeightFog } from "./render/fog";
 import { Explosions, Sparks } from "./render/fx";
 import { GpuTimer } from "./render/gputimer";
 import { createGradePass } from "./render/grade";
+import { Headlights } from "./render/headlights";
 import { MoverLights, Movers } from "./render/movers";
 import { NatureRenderer } from "./render/nature";
 import { Pedestrians } from "./render/pedestrians";
@@ -395,6 +396,10 @@ scene.add(signage.group);
 // every client (late joiners included) sees identical cars. Zero netcode.
 const traffic = new Traffic(welcome.seed);
 scene.add(traffic.mesh);
+// L6 headlights: soft cones in the haze + warm pools on the asphalt, lit from
+// the cars Traffic placed this frame. Two additive draws for the whole city.
+const headlights = new Headlights(traffic.capacity);
+scene.add(headlights.cones, headlights.pools);
 // L2 movers: cranes, helicopters, the blimp. Poses are the SAME pure function
 // of (seed, server clock) the crash check uses, so what you see is what you
 // can hit — and nothing about them is ever streamed.
@@ -992,6 +997,14 @@ declare global {
       };
       lampImage: (x: number, z: number) => { x: number; z: number } | null;
       traffic: (at?: number | null) => ReturnType<Traffic["debug"]>;
+      /** L6 QA: the longest red-light queue at a server time (gallery pin). */
+      trafficQueue: (at?: number) => ReturnType<Traffic["queue"]>;
+      /** L6 QA: what intersection (bx, bz) shows at a server time. */
+      trafficAspect: (
+        bx: number,
+        bz: number,
+        at?: number,
+      ) => ReturnType<Signals["sample"]>;
       movers: (at?: number | null) => ReturnType<Movers["debug"]>;
       train: (at?: number | null) => ReturnType<TrainRenderer["debug"]>;
       fireworks: (at?: number | null) => ReturnType<Fireworks["debug"]>;
@@ -1019,6 +1032,8 @@ declare global {
       };
       signage: () => Signage["counts"];
       signImage: (x: number, z: number) => { x: number; z: number } | null;
+      /** L7: broken neon tubes and their next stutter burst (synced ms). */
+      signBroken: (at?: number) => ReturnType<Signage["brokenTubes"]>;
       /**
        * L1 micro tier: the live gate, what each subsystem drew, and a sample
        * pinned to a FIXED block at a FIXED server time. The sample is pinned
@@ -1188,6 +1203,11 @@ window.__ab = {
   // its OWN interpolation delay, so two tabs' default render times are no
   // longer the same instant (that is the feature; the QA must pin the time).
   traffic: (at) => traffic.debug(at === undefined ? socket.renderTime() : at),
+  // L6 QA: pin the gallery's red/green intersection views to a real queue.
+  trafficQueue: (at) =>
+    traffic.queue(at ?? socket.renderTime() ?? performance.now()),
+  trafficAspect: (bx, bz, at) =>
+    signals.sample(bx, bz, at ?? socket.renderTime() ?? performance.now()),
   // L2 QA: jib angles, aircraft positions and the drawn read-back at a server
   // time. Pass the time explicitly for the two-tab check — each tab holds its
   // own interpolation delay, so their default render clocks are NOT the same
@@ -1231,6 +1251,8 @@ window.__ab = {
   // S2 QA: signage instance counts + drawn-position read-back (seam checks).
   signage: () => signage.counts,
   signImage: (x, z) => signage.imageOf(x, z),
+  signBroken: (at) =>
+    signage.brokenTubes(at ?? socket.renderTime() ?? performance.now()),
   micro: (at) => {
     const time =
       at === undefined ? (socket.renderTime() ?? performance.now()) : (at ?? 0);
@@ -1679,7 +1701,15 @@ renderer.setAnimationLoop((now) => {
   natureRenderer.update(chase.position);
   // Neon pulses on the same synced clock as the beacons.
   signage.update(chase.position, renderMs ?? now);
+  // L7: the nearest broken neon tube buzzes, crackling through its stutter;
+  // silent while dead or with the tab hidden.
+  const neonBuzz = signage.buzz(flight.pos, renderMs ?? now);
+  audio.setNeonBuzz(
+    alive && !document.hidden ? neonBuzz.gain : 0,
+    spatialize(flight.pos, flight.yaw, neonBuzz.pos).pan,
+  );
   traffic.update(chase.position, renderMs);
+  headlights.update(chase.position, traffic); // L6: after traffic.update
   // Every L2 system takes the SAME latched clock the crash check used.
   movers.update(chase.position, renderMs, moverLights);
   train.update(chase.position, renderMs, moverLights); // L5, same latched clock

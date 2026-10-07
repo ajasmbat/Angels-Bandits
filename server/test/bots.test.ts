@@ -47,6 +47,16 @@ import { Combat } from "../src/combat";
 import { pickRespawn } from "../src/respawn";
 
 /** A fixed mid-altitude spawn: tests place bots explicitly. */
+/**
+ * Hand the event loop back to vitest's worker between independent chunks of
+ * a long synchronous sim. A 40 s block outlasts the worker's 60 s RPC
+ * timeout on a loaded machine ("Timeout calling onTaskUpdate", which fails
+ * the run with every test green). The sims never read the clock, so
+ * yielding cannot change a result.
+ */
+const yieldToWorker = (): Promise<void> =>
+  new Promise((resolve) => setImmediate(resolve));
+
 const spawnAt = (x: number, z: number, yaw = 0, y = 300): SpawnState => ({
   pos: { x, y, z },
   yaw,
@@ -895,12 +905,14 @@ describe("long-sim regressions", () => {
     // Long seeded sims: generous timeout so a loaded CI box cannot flake it.
   }, 30_000);
 
-  it("keeps terrain crashes a minority of deaths in a live furball", () => {
+  it("keeps terrain crashes a minority of deaths in a live furball", async () => {
     const city = generateCity(CITY_SEED);
     let crashed = 0;
     let shot = 0;
     let ceilingBreaches = 0;
     for (let room = 0; room < 3; room++) {
+      // Yield between rooms (see yieldToWorker): the sims are clock-free.
+      await yieldToWorker();
       const bots = new RoomBots(`room-${room}`, 2024 + room * 31, city);
       const combat = new Combat();
       const roster = bots.syncTo(11, spreadSpawner()).spawned;
@@ -1109,7 +1121,7 @@ describe("bots vs the L2 movers", () => {
     return { moverDeaths, sweepTicks };
   }
 
-  it("negative control: the probe is load-bearing, not decorative", () => {
+  it("negative control: the probe is load-bearing, not decorative", async () => {
     // The measured contribution of wiring movers into blockedAlong. Blind,
     // eight bots dogfighting through a crane's sweep died to it 42-46 times
     // per seed while a third of them flew straight lines up high. Since B1
@@ -1117,15 +1129,18 @@ describe("bots vs the L2 movers", () => {
     // jib oversails and the run is summed over five seeds of four minutes:
     // blind it is ~30 deaths, with the probe on 0. This asserts the gap, not
     // a fragile exact count.
-    const sum = (probe: boolean) =>
-      [1234, 7, 20260826, 99, 5]
-        .map((seed) => orbitCrane(seed, probe))
-        .reduce((a, r) => ({
-          moverDeaths: a.moverDeaths + r.moverDeaths,
-          sweepTicks: a.sweepTicks + r.sweepTicks,
-        }));
-    const seeing = sum(true);
-    const blind = sum(false);
+    const sum = async (probe: boolean) => {
+      const total = { moverDeaths: 0, sweepTicks: 0 };
+      for (const seed of [1234, 7, 20260826, 99, 5]) {
+        const r = orbitCrane(seed, probe);
+        total.moverDeaths += r.moverDeaths;
+        total.sweepTicks += r.sweepTicks;
+        await yieldToWorker(); // one seed per block, not all ten at once
+      }
+      return total;
+    };
+    const seeing = await sum(true);
+    const blind = await sum(false);
     // Five seeds' worth of the single-seed 800-tick vacuity guard.
     expect(blind.sweepTicks).toBeGreaterThan(4000);
     expect(seeing.sweepTicks).toBeGreaterThan(4000);

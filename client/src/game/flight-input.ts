@@ -5,10 +5,13 @@
 // - classic: the cursor's offset from screen centre is a direct rate stick
 //   (deadzone + expo, read()).
 // W/S drive throttle, A/D the roll assist. No pointer lock — the HUD needs
-// the visible cursor.
+// the visible cursor. On a touch device (M1) ui/touch-controls.ts feeds the
+// same state through the setTouch* seams: the thumb's aim point IS the
+// cursor, so nothing downstream knows which one is steering.
 
 import type { FlightInput } from "@angels-bandits/common/flight";
 import { FREELOOK_KEY } from "./freelook";
+import { emulatedMouse, watchTouches } from "./touch-input";
 
 const DEADZONE = 0.06; // fraction of the half-window the cursor can rest in
 /** Classic-stick expo: 0 = linear, 1 = pure cube. Soft centre, full edges. */
@@ -46,10 +49,17 @@ export class FlightInputSource {
   private lookDy = 0;
   private aim = false; // right button held: the aim-zoom command (ANGE-G9CPCV)
   private readonly keys = new Set<string>();
+  // Touch controls (M1): all neutral on a desktop, so read() is unchanged.
+  private touchThrottle = 0; // −1..1, the throttle slider's servo command
+  private touchZoom = false; // ZOOM button held or latched
+  private touchLook = false; // two fingers on the aim zone
 
   constructor(private readonly target: Window = window) {
     this.aimModeV = loadAimMode(target);
+    watchTouches(target);
     target.addEventListener("mousemove", (e: MouseEvent) => {
+      // A tap's compatibility echo would yank the cursor to the tap point.
+      if (emulatedMouse(e)) return;
       // Raw pixels — normalised per frame against the CURRENT window size in
       // tick(), so a resize can never leave a stale aim behind.
       this.rawX = e.clientX;
@@ -62,19 +72,14 @@ export class FlightInputSource {
     // Leaving the window must not mean "keep turning forever": a null
     // relatedTarget is the pointer leaving the document altogether.
     target.addEventListener("mouseout", (e: MouseEvent) => {
-      if (!e.relatedTarget) this.inside = false;
+      if (!e.relatedTarget && !emulatedMouse(e)) this.inside = false;
     });
     target.addEventListener("keydown", (e: KeyboardEvent) => {
       if (e.code !== AIM_MODE_KEY || e.repeat) return;
       // Typing a name with an M in it must not switch modes.
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
-      this.aimModeV = this.aimModeV === "instructor" ? "classic" : "instructor";
-      try {
-        target.localStorage.setItem(AIM_MODE_STORAGE, this.aimModeV);
-      } catch {
-        // Private mode / blocked storage: the toggle still works this visit.
-      }
+      this.toggleAimMode();
     });
     target.addEventListener("keydown", (e: KeyboardEvent) =>
       this.keys.add(e.code),
@@ -84,7 +89,7 @@ export class FlightInputSource {
     );
     // Button 2 is the aim zoom; button 0 stays the guns' trigger (guns.ts).
     target.addEventListener("mousedown", (e: MouseEvent) => {
-      if (e.button === 2) this.aim = true;
+      if (e.button === 2 && !emulatedMouse(e)) this.aim = true;
     });
     target.addEventListener("mouseup", (e: MouseEvent) => {
       if (e.button === 2) this.aim = false;
@@ -119,6 +124,46 @@ export class FlightInputSource {
     if (!this.inside) this.presenceK *= Math.exp(-dt / PRESENCE_FADE_S);
   }
 
+  /** Flip the aim mode — the M key and the touch aim-mode icon. */
+  toggleAimMode(): void {
+    this.aimModeV = this.aimModeV === "instructor" ? "classic" : "instructor";
+    try {
+      this.target.localStorage.setItem(AIM_MODE_STORAGE, this.aimModeV);
+    } catch {
+      // Private mode / blocked storage: the toggle still works this visit.
+    }
+  }
+
+  /** Touch aim point, client px — exactly what a mousemove would report.
+   * A finger on the glass is present: steering never fades under it. */
+  setTouchAim(x: number, y: number): void {
+    this.rawX = x;
+    this.rawY = y;
+    this.inside = true;
+    this.presenceK = 1;
+  }
+
+  /** The throttle slider's command, −1..1, added to W/S. */
+  setTouchThrottle(v: number): void {
+    this.touchThrottle = v;
+  }
+
+  /** The ZOOM button: the touch twin of the right button. */
+  setTouchZoom(held: boolean): void {
+    this.touchZoom = held;
+  }
+
+  /** Two-finger free-look: the touch twin of holding E. */
+  setTouchLook(held: boolean): void {
+    this.touchLook = held;
+  }
+
+  /** Two-finger drag, px in the mouse's convention (takeLookDelta drains). */
+  addLookDelta(dx: number, dy: number): void {
+    this.lookDx += dx;
+    this.lookDy += dy;
+  }
+
   /** Current aim mode (M toggles; persisted when storage allows). */
   aimMode(): AimMode {
     return this.aimModeV;
@@ -144,13 +189,13 @@ export class FlightInputSource {
 
   /** Whether the free-look key is held (key-held state — no repeat events). */
   freeLookHeld(): boolean {
-    return this.keys.has(FREELOOK_KEY);
+    return this.keys.has(FREELOOK_KEY) || this.touchLook;
   }
 
   /** Whether the right button is held — the raw aim-zoom command, before the
    * free-look exclusivity rule in zoom.ts decides whether it counts. */
   aimHeld(): boolean {
-    return this.aim;
+    return this.aim || this.touchZoom;
   }
 
   /** Mouse motion (px) accumulated since the last call; drains the buffer.
@@ -171,8 +216,9 @@ export class FlightInputSource {
   }
 
   read(): FlightInput {
-    const throttle =
+    const keys =
       (this.keys.has("KeyW") ? 1 : 0) + (this.keys.has("KeyS") ? -1 : 0);
+    const throttle = Math.max(-1, Math.min(1, keys + this.touchThrottle));
     // A rolls left (positive roll = left wing down), D rolls right.
     const roll =
       (this.keys.has("KeyA") ? 1 : 0) + (this.keys.has("KeyD") ? -1 : 0);

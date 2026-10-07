@@ -993,6 +993,135 @@
         opacity: 0.7;
       }
 
+      /* ===== M1 touch controls ===============================================
+         Built by ui/touch-controls.ts, shown only under body.touch. Lives
+         in M1's zone of the M2 contract above: everything below
+         --hud-top-band, inset by --safe-*. #touch-ui sits right after
+         #speedlines, so every later HUD element paints over it — the
+         interactive ones (#minimap, #fs-btn, the toggles, the bots cells)
+         keep their taps; the pointer-events:none ones let touches through to
+         the full-screen layer. The buttons and icons are SIBLINGS of the
+         layer, never inside it: its preventDefault would eat their taps. */
+      #touch-ui {
+        display: none;
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        color: #9fd8e8;
+        font-size: 11px;
+        letter-spacing: 0.15em;
+        text-shadow: 0 1px 2px #000;
+      }
+      body.touch #touch-ui {
+        display: block;
+      }
+      #touch-layer {
+        position: absolute;
+        inset: 0;
+        pointer-events: auto;
+        touch-action: none;
+      }
+      #touch-ui .tc {
+        position: absolute;
+        box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        pointer-events: auto;
+        touch-action: none;
+        background: #0c0b1859;
+        border: 1px solid #9fd8e859;
+        opacity: 0.75;
+      }
+      #touch-ui .tc.on {
+        background: #27e0c040;
+        border-color: #27e0c0;
+        opacity: 1;
+      }
+      #touch-throttle {
+        left: calc(var(--safe-l) + 14px);
+        top: calc(var(--hud-top-band) + 10px);
+        bottom: calc(var(--safe-b) + 18px);
+        width: 52px;
+        border-radius: 26px;
+      }
+      #touch-rail {
+        position: absolute;
+        top: 22px;
+        bottom: 22px;
+        left: 50%;
+        width: 2px;
+        margin-left: -1px;
+        background: #9fd8e859;
+      }
+      #touch-knob {
+        position: absolute;
+        left: 50%;
+        bottom: 0;
+        width: 40px;
+        height: 22px;
+        margin-left: -20px;
+        transform: translateY(50%);
+        border-radius: 11px;
+        background: #9fd8e8b3;
+      }
+      #touch-throttle.on #touch-knob {
+        background: #27e0c0;
+      }
+      #touch-fire,
+      #touch-boost,
+      #touch-zoom {
+        border-radius: 50%;
+      }
+      #touch-fire {
+        left: calc(var(--safe-l) + 82px);
+        bottom: calc(var(--safe-b) + 18px);
+        width: 96px;
+        height: 96px;
+        font-size: 13px;
+        border-color: #ff6b6b80;
+      }
+      #touch-fire.on {
+        background: #ff6b6b40;
+        border-color: #ff6b6b;
+      }
+      #touch-boost {
+        left: calc(var(--safe-l) + 100px);
+        bottom: calc(var(--safe-b) + 128px);
+        width: 60px;
+        height: 60px;
+        font-size: 10px;
+      }
+      #touch-zoom {
+        right: calc(var(--safe-r) + 18px);
+        bottom: calc(var(--safe-b) + 18px);
+        width: 64px;
+        height: 64px;
+        font-size: 10px;
+      }
+      /* Kill-cam: nothing to fire, boost or zoom. */
+      #touch-ui.dead #touch-fire,
+      #touch-ui.dead #touch-boost,
+      #touch-ui.dead #touch-zoom {
+        visibility: hidden;
+      }
+      #touch-icons {
+        position: absolute;
+        right: calc(var(--safe-r) + 10px);
+        top: calc(var(--hud-top-band) + 8px);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      #touch-icons .tc {
+        position: static;
+        width: 38px;
+        height: 34px;
+        border-radius: 6px;
+        font-size: 12px;
+        letter-spacing: 0;
+      }
+
       /* Back from the background with a dead socket (server liveness) or a
          lost GL context: one tap reloads and rejoins under the same name. */
       #signal-lost {
@@ -1081,6 +1210,21 @@
   <body>
     <!-- First child: every other fixed HUD element paints over the streaks. -->
     <div id="speedlines"></div>
+    <!-- M1 touch controls (ui/touch-controls.ts); hidden off touch. -->
+    <div id="touch-ui" aria-hidden="true">
+      <div id="touch-layer"></div>
+      <div id="touch-throttle" class="tc">
+        <div id="touch-rail"><div id="touch-knob"></div></div>
+      </div>
+      <div id="touch-fire" class="tc">FIRE</div>
+      <div id="touch-boost" class="tc">BOOST</div>
+      <div id="touch-zoom" class="tc">ZOOM</div>
+      <div id="touch-icons">
+        <div id="touch-score" class="tc" title="Scoreboard">≡</div>
+        <div id="touch-aim-mode" class="tc" title="Aim mode">◎</div>
+        <div id="touch-sens" class="tc" title="Aim sensitivity">1.5×</div>
+      </div>
+    </div>
     <svg id="crosshair" viewBox="0 0 48 48" aria-hidden="true">
       <circle class="ring" cx="24" cy="24" r="7" />
       <circle class="dot" cx="24" cy="24" r="1.2" />

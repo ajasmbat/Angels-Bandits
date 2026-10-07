@@ -15,6 +15,7 @@ import { BULLET_SPEED } from "@angels-bandits/common/constants";
 import { type FlightState, flightForward } from "@angels-bandits/common/flight";
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { emulatedMouse, watchTouches } from "./touch-input";
 
 /** Gun muzzle in plane-local coords (wings span ±4.5 m, guns just inboard). */
 const GUN_OFFSET_X = 3.5;
@@ -38,11 +39,14 @@ export class Guns {
   private side = 1; // +1 / −1: alternate wingtips
 
   constructor(target: Window = window) {
+    watchTouches(target);
     target.addEventListener("mousedown", (e: MouseEvent) => {
-      if (e.button === 0) this.setTrigger(true);
+      // A tap's compatibility echo is not a trigger pull (touch FIRE calls
+      // setTrigger itself) — tapping an icon or the canvas must not shoot.
+      if (e.button === 0 && !emulatedMouse(e)) this.setTrigger(true);
     });
     target.addEventListener("mouseup", (e: MouseEvent) => {
-      if (e.button === 0) this.setTrigger(false);
+      if (e.button === 0 && !emulatedMouse(e)) this.setTrigger(false);
     });
     target.addEventListener("blur", () => {
       this.setTrigger(false);

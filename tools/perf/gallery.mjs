@@ -36,8 +36,14 @@ try {
     await sleep(250);
   }
   browser = await chromium.launch({
-    executablePath: `${process.env.HOME}/Library/Caches/ms-playwright/chromium_headless_shell-1223/chrome-headless-shell-mac-arm64/chrome-headless-shell`,
-    args: ["--use-angle=metal", "--enable-gpu"],
+    // AB_CHROME / AB_CHROME_ARGS let the same script shoot off the M3 (e.g. a
+    // Linux box: no Metal, so ANGLE's GL/Vulkan backends instead).
+    executablePath:
+      process.env.AB_CHROME ??
+      `${process.env.HOME}/Library/Caches/ms-playwright/chromium_headless_shell-1223/chrome-headless-shell-mac-arm64/chrome-headless-shell`,
+    args: (
+      process.env.AB_CHROME_ARGS ?? "--use-angle=metal --enable-gpu"
+    ).split(" "),
   });
   const page = await browser.newPage({
     viewport: { width: 1280, height: 720 },
@@ -86,6 +92,75 @@ try {
       v.name,
       JSON.stringify(await page.evaluate(() => window.__ab.perf())),
     );
+  }
+  // L6: one intersection at a red (a real queue behind the stop line), then
+  // the SAME intersection on green as the queue pulls away. Pinned through
+  // __ab.trafficQueue / __ab.trafficAspect so the shots are of a queue the
+  // model really holds, not a lucky frame.
+  const wantRed = !ONLY || ONLY.includes("intersection-red");
+  const wantGreen = !ONLY || ONLY.includes("intersection-green");
+  if (wantRed || wantGreen) {
+    let q = null;
+    for (let k = 0; k < 120; k++) {
+      q = await page.evaluate(() => {
+        const queue = window.__ab.trafficQueue();
+        if (!queue || queue.count < 3) return null;
+        const aspect = window.__ab.trafficAspect(queue.bx, queue.bz)[
+          queue.axis
+        ];
+        return aspect === "red" ? queue : null;
+      });
+      if (q) break;
+      await sleep(500);
+    }
+    if (!q) throw new Error("no red-light queue of 3+ within 60 s");
+    // The plane hangs back along the lane, looking down it at the stop line:
+    // forward is −Z at yaw 0 for planes and cars alike.
+    const fx = -Math.sin(q.yaw);
+    const fz = -Math.cos(q.yaw);
+    const view = {
+      x: q.x - fx * 62,
+      z: q.z - fz * 62,
+      y: 24,
+      yaw: q.yaw,
+      pitch: -0.32,
+    };
+    const hold = async () => {
+      for (let k = 0; k < 18; k++) {
+        await page.evaluate((v) => {
+          window.__ab.teleport(v.x, v.z, v.y, v.yaw);
+          window.__ab.state().pitch = v.pitch;
+        }, view);
+        await sleep(90);
+      }
+    };
+    if (wantRed) {
+      await hold();
+      await page.screenshot({ path: `${OUT}/intersection-red.png` });
+      console.log(
+        "shot intersection-red",
+        JSON.stringify(q),
+        JSON.stringify(await page.evaluate(() => window.__ab.perf())),
+      );
+    }
+    if (wantGreen) {
+      for (let k = 0; k < 120; k++) {
+        const aspect = await page.evaluate(
+          (q) => window.__ab.trafficAspect(q.bx, q.bz)[q.axis],
+          q,
+        );
+        if (aspect === "green") break;
+        await sleep(250);
+      }
+      // A few seconds into green: the start-up wave is rolling.
+      await sleep(2500);
+      await hold();
+      await page.screenshot({ path: `${OUT}/intersection-green.png` });
+      console.log(
+        "shot intersection-green",
+        JSON.stringify(await page.evaluate(() => window.__ab.perf())),
+      );
+    }
   }
 } finally {
   server.kill();

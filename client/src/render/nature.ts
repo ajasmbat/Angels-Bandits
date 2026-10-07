@@ -17,6 +17,12 @@
 // icosahedron whose vertices all sit on the unit sphere, scaled to the
 // canopy box's half-extents — i.e. the ellipsoid inscribed in the box, which
 // is exactly the volume collideNature() treats as solid.
+//
+// WIND (L9). The crowns sway in the shared wind (common/src/wind.ts) inside
+// their vertex shader: drawn at CROWN_DRAW_SCALE and displaced at most the
+// slack that leaves, so a swaying crown never leaves the solid ellipsoid.
+// Park, forecourt and street crowns and planter shrubs all share the one
+// crown mesh and sway alike — still three draw calls.
 
 import {
   type Nature,
@@ -24,6 +30,16 @@ import {
   treeBoxes,
 } from "@angels-bandits/common/city/nature";
 import { EMISSIVE_LAMP } from "@angels-bandits/common/constants";
+import {
+  CROWN_BEGIN_VERTEX_GLSL,
+  CROWN_SWAY_GLSL,
+  SWAY_UNIFORM_PHASE,
+  SWAY_UNIFORM_WIND,
+  type SwayPhases,
+  type Wind,
+  swayPhases,
+  windAt,
+} from "@angels-bandits/common/wind";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
@@ -55,6 +71,10 @@ const HEAD_RADIUS = 0.32;
 /** Shrub in a planter: crown radius and height above the soil, m. */
 const SHRUB_RADIUS = 0.95;
 const SHRUB_HEIGHT = 1.4;
+
+/** Program-cache key for the swaying crown material: three keys programs on
+ * onBeforeCompile.toString() by default (see traffic.ts for that bug). */
+export const NATURE_CROWN_CACHE_KEY = "ab-nature-crown-sway";
 
 /** One instance's canonical ground position plus its fixed scale/height. */
 interface Slot {
@@ -139,6 +159,11 @@ export class NatureRenderer {
   private readonly parts: Part[];
   /** Camera position at the last re-image; NaN forces the first one. */
   private readonly lastCam = { x: Number.NaN, z: Number.NaN };
+  /** The crown shader's wind uniforms, refreshed per frame in place. */
+  private readonly windUniform = { value: new THREE.Vector3() };
+  private readonly phaseUniform = { value: new THREE.Vector3() };
+  private readonly wind: Wind = { x: 1, z: 0, strength: 0 };
+  private readonly phases: SwayPhases = { gust: 0, flutterA: 0, flutterB: 0 };
 
   constructor(nature: Nature) {
     const solids: Slot[] = [];
@@ -228,6 +253,20 @@ export class NatureRenderer {
       emissiveBoost(headMaterial.color, EMISSIVE_LAMP),
     );
 
+    const crownMaterial = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.9,
+      flatShading: true,
+    });
+    crownMaterial.customProgramCacheKey = () => NATURE_CROWN_CACHE_KEY;
+    crownMaterial.onBeforeCompile = (shader) => {
+      shader.uniforms[SWAY_UNIFORM_WIND] = this.windUniform;
+      shader.uniforms[SWAY_UNIFORM_PHASE] = this.phaseUniform;
+      shader.vertexShader = shader.vertexShader
+        .replace("void main() {", `${CROWN_SWAY_GLSL}\nvoid main() {`)
+        .replace("#include <begin_vertex>", CROWN_BEGIN_VERTEX_GLSL);
+    };
+
     this.parts = [
       new Part(
         new THREE.BoxGeometry(1, 1, 1),
@@ -237,13 +276,9 @@ export class NatureRenderer {
       ),
       new Part(
         // Detail 1: 80 faces, every vertex on the unit sphere — so the
-        // scaled crown never leaves its collision ellipsoid.
+        // scaled, swaying crown never leaves its collision ellipsoid.
         new THREE.IcosahedronGeometry(1, 1),
-        new THREE.MeshStandardMaterial({
-          color: 0xffffff,
-          roughness: 0.9,
-          flatShading: true,
-        }),
+        crownMaterial,
         crowns,
         crownColors,
       ),
@@ -252,8 +287,18 @@ export class NatureRenderer {
     for (const p of this.parts) this.group.add(p.mesh);
   }
 
-  /** Re-image when the camera has moved REIMAGE_STEP. Call per frame. */
-  update(cameraPos: Vec3): void {
+  /** Sway the crowns on the synced clock, and re-image when the camera has
+   * moved REIMAGE_STEP. Call per frame. A null clock holds the crowns still
+   * (zero strength) rather than swaying out of step with other clients. */
+  update(cameraPos: Vec3, serverTimeMs: number | null): void {
+    if (serverTimeMs === null) {
+      this.windUniform.value.set(1, 0, 0);
+    } else {
+      const w = windAt(serverTimeMs, this.wind);
+      const p = swayPhases(serverTimeMs, this.phases);
+      this.windUniform.value.set(w.x, w.z, w.strength);
+      this.phaseUniform.value.set(p.gust, p.flutterA, p.flutterB);
+    }
     // The camera's own render-space travel since the last re-image — raw on
     // purpose: a seam crossing teleports the camera by WORLD_SIZE, and that
     // jump is exactly what must trigger a re-image.

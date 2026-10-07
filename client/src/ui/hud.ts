@@ -3,7 +3,7 @@
 // the chrome in index.html (same split as ui/join.ts) — the values shown are
 // whatever the server said, never a client-side simulation of them.
 
-import { MAX_HP } from "@angels-bandits/common/constants";
+import { BOOST_MIN_START, MAX_HP } from "@angels-bandits/common/constants";
 
 export class Hud {
   private readonly hpFill = document.getElementById(
@@ -12,6 +12,10 @@ export class Hud {
   private readonly heatEl = document.getElementById("heat") as HTMLDivElement;
   private readonly heatFill = document.getElementById(
     "heat-fill",
+  ) as HTMLDivElement;
+  private readonly boostEl = document.getElementById("boost") as HTMLDivElement;
+  private readonly boostFill = document.getElementById(
+    "boost-fill",
   ) as HTMLDivElement;
   private readonly badge = document.getElementById(
     "protected-badge",
@@ -41,6 +45,16 @@ export class Hud {
   setHeat(heat: number, locked: boolean): void {
     this.heatFill.style.width = `${(Math.min(1, heat) * 100).toFixed(1)}%`;
     this.heatEl.classList.toggle("locked", locked);
+  }
+
+  /** Local boost energy (F2) — the same model the server mirrors. `low`
+   * means a fresh press couldn't start a burn yet; `body.boost` drives the
+   * speed-line streaks while burning. */
+  setBoost(energy: number, burning: boolean): void {
+    const frac = Math.min(1, Math.max(0, energy));
+    this.boostFill.style.width = `${(frac * 100).toFixed(1)}%`;
+    this.boostEl.classList.toggle("low", !burning && frac < BOOST_MIN_START);
+    document.body.classList.toggle("boost", burning);
   }
 
   setProtected(on: boolean): void {

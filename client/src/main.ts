@@ -37,6 +37,7 @@ import {
 } from "@angels-bandits/common/flight";
 import { hitRangeBudgetFor } from "@angels-bandits/common/net";
 import type { ScoreEntry, SpawnState } from "@angels-bandits/common/protocol";
+import { airlinerOffsetInto } from "@angels-bandits/common/skytraffic";
 import { strikesInWindow } from "@angels-bandits/common/storm";
 import { wrapDelta, wrapDistance } from "@angels-bandits/common/world";
 import * as THREE from "three";
@@ -943,6 +944,8 @@ declare global {
        * slot, and (forceDroneShow) the gallery's way to start a show now. */
       skyTraffic: () => {
         airliners: Airliners["drawn"];
+        /** Each drawn airliner's offset from the viewer, m (y up). */
+        airlinerOffsets: { x: number; y: number; z: number }[];
         airlinerPoints: number;
         droneShow: DroneShowRenderer["current"];
         newsHeli: typeof moverField.news;
@@ -1126,6 +1129,16 @@ window.__ab = {
     fireworks.debug(at === undefined ? socket.renderTime() : at),
   skyTraffic: () => ({
     airliners: airliners.drawn,
+    airlinerOffsets: airliners.drawn.map((a) => {
+      const o = airlinerOffsetInto(a, socket.renderTime() ?? 0, {
+        x: 0,
+        y: 0,
+        z: 0,
+        hx: 0,
+        hz: 0,
+      });
+      return { x: o.x, y: o.y, z: o.z };
+    }),
     airlinerPoints: airliners.pointCount,
     droneShow: droneShow.current,
     newsHeli: moverField.news,

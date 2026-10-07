@@ -57,9 +57,9 @@ const STROBE = boosted(1.0, 1.0, 1.0, EMISSIVE_STROBE);
 const CONTRAIL = new THREE.Color(0.11, 0.12, 0.16);
 
 /** Pixel sizes (no attenuation — these are as far away as the stars). */
-const NAV_PX = 3.2;
-const STROBE_PX = 5;
-const CONTRAIL_PX = 7;
+const NAV_PX = 4;
+const STROBE_PX = 7;
+const CONTRAIL_PX = 9;
 
 function glowTexture(): THREE.Texture {
   const c = document.createElement("canvas");

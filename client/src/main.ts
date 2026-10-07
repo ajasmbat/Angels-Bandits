@@ -1040,11 +1040,17 @@ const cpuFrames = new FrameMeter(WINDOW_FRAMES * 3);
 /**
  * Hand a tier to every system whose cost depends on it and re-cap the
  * scaler. Each hook only flips visibility, counts or uniforms (quality.ts
- * rule 1), so this never compiles a shader. The scaler restarts from the
- * new ceiling with its latch cleared, and both windows are dropped: frames
- * drawn under the old tier are not evidence about the new one.
+ * rule 1), so this never compiles a shader. Both windows are dropped:
+ * frames drawn under the old tier are not evidence about the new one.
+ *
+ * The scaler always loses its latch — a new tier must not inherit the
+ * penalty the old one earned. A PICK (key, HUD, QA) restarts it at the new
+ * tier's ceiling, so choosing High looks like High at once. An Auto DROP
+ * (`keepRatio`) keeps the current ratio instead: restarting at the ceiling
+ * would walk the very rungs that just missed, a second burst of dropped
+ * frames, where a cleared latch lets the cheaper tier earn them back.
  */
-function applyQualityTier(tier: QualityTier): void {
+function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   qualityTier = tier;
   city.setQuality(tier);
   reactor.setQuality(tier);
@@ -1060,7 +1066,10 @@ function applyQualityTier(tier: QualityTier): void {
   facadeDetail.setQuality(tier);
   resLimits = qualityLimits(window.devicePixelRatio, tier);
   if (resAuto) {
-    resolution = autoResolution(performance.now());
+    const fresh = autoResolution(performance.now());
+    resolution = keepRatio
+      ? { ...fresh, ratio: Math.min(resolution.ratio, fresh.ratio) }
+      : fresh;
     applyPixelRatio(resolution.ratio);
   }
   resFrames.reset();
@@ -1128,7 +1137,7 @@ function stepQuality(now: number): void {
   );
   const dropped = next.tier !== autoQuality.tier;
   autoQuality = next;
-  if (dropped) applyQualityTier(next.tier);
+  if (dropped) applyQualityTier(next.tier, true);
 }
 
 applyQualityTier(qualityTier);
@@ -2284,8 +2293,12 @@ const frame = (now: number): void => {
     cpuFrames.reset();
   } else if (now >= nextResEvalAt) {
     nextResEvalAt = now + RES_EVAL_MS;
-    if (resAuto) stepScaler(now);
+    // Auto FIRST, on the same window: a scaler step empties the window, and
+    // stepping first would hide every full window from Auto until the
+    // scaler hit its floor — on a CPU-bound machine, four rungs of misses
+    // that pixels could never fix.
     if (qualitySetting === "auto") stepQuality(now);
+    if (resAuto) stepScaler(now);
   }
   perfHud.update(
     now,

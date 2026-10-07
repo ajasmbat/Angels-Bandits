@@ -90,7 +90,9 @@ const setBots = (peer: Peer, count: number): void => {
 };
 
 beforeAll(async () => {
-  child = spawn("npx", ["tsx", entry], {
+  // node itself (tsx as a loader), not `npx tsx`: kill() in afterAll must
+  // reach the server, or it outlives the test and keeps flying its bots.
+  child = spawn(process.execPath, ["--import", "tsx", entry], {
     env: { ...process.env, PORT: "0" },
     stdio: ["ignore", "pipe", "pipe"],
   });

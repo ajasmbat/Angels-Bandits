@@ -16,8 +16,16 @@ export interface FullscreenDoc {
     requestFullscreen?: () => Promise<void>;
     webkitRequestFullscreen?: () => void;
   };
-  addEventListener?: (type: string, listener: () => void) => void;
+  addEventListener?: (
+    type: string,
+    listener: () => void,
+    options?: { once?: boolean },
+  ) => void;
 }
+
+/** The webkit entry point returns nothing; give up on its change event after
+ * this long (a denied request fires none). */
+const WEBKIT_ENTER_TIMEOUT_MS = 1000;
 
 /** False on iPhones (no fullscreen API at all) — callers hide the UI. */
 export function isFullscreenSupported(
@@ -33,6 +41,37 @@ export function isFullscreen(
   return Boolean(doc.fullscreenElement ?? doc.webkitFullscreenElement);
 }
 
+/** Request fullscreen; settles when the browser has answered. Rejects where
+ * unsupported or denied — every caller must catch. Must run inside a user
+ * gesture (M5's JOIN tap and re-enter pill, the toggle's button/F key). */
+export function enterFullscreen(
+  doc: FullscreenDoc = document as FullscreenDoc,
+): Promise<void> {
+  const root = doc.documentElement;
+  if (!isFullscreenSupported(doc)) {
+    return Promise.reject(new Error("fullscreen unsupported"));
+  }
+  if (root.requestFullscreen) return root.requestFullscreen();
+  if (!root.webkitRequestFullscreen) {
+    return Promise.reject(new Error("fullscreen unsupported"));
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error("fullscreen denied")),
+      WEBKIT_ENTER_TIMEOUT_MS,
+    );
+    doc.addEventListener?.(
+      "webkitfullscreenchange",
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+    root.webkitRequestFullscreen?.();
+  });
+}
+
 /** One toggle for both triggers (button click, F key). No-op if unsupported;
  * the request promise may still reject (browser denies) — state stays truthful
  * because the icon follows fullscreenchange, never this call. */
@@ -44,9 +83,7 @@ export function toggleFullscreen(
     if (doc.exitFullscreen) doc.exitFullscreen().catch(() => {});
     else doc.webkitExitFullscreen?.();
   } else {
-    const root = doc.documentElement;
-    if (root.requestFullscreen) root.requestFullscreen().catch(() => {});
-    else root.webkitRequestFullscreen?.();
+    enterFullscreen(doc).catch(() => {});
   }
 }
 

@@ -219,6 +219,7 @@ import { EdgeMarkers } from "./ui/markers";
 import { Minimap } from "./ui/minimap";
 import { coarsePointer, initMobileShell, whenTouch } from "./ui/mobile";
 import { PerfHud, bindPerfHudKey, perfHudKeyEnabled } from "./ui/perfhud";
+import { initPhoneFullscreen } from "./ui/phone-fullscreen";
 import { Scoreboard } from "./ui/scoreboard";
 import { TouchControls } from "./ui/touch-controls";
 
@@ -228,9 +229,13 @@ initFullscreenUi();
 // M2: touch chrome, gesture lock and keyboard-aware join — before the name
 // prompt, which is the first thing a phone types into. No-op on desktop.
 initMobileShell();
+// M5: phone fullscreen — after the shell (it reads body.touch / --vv-h),
+// before the name prompt (the JOIN tap is its gesture; the iPhone sheet
+// greets the join card). No-op on desktop.
+const phoneFullscreen = initPhoneFullscreen();
 
 // --- Join flow: name → server welcome (identity, seed, spawn) ---
-const name = await requestName();
+const name = await requestName(phoneFullscreen.onJoinGesture);
 let socket: GameSocket;
 try {
   socket = await GameSocket.connect(name);
@@ -240,6 +245,8 @@ try {
   );
   throw err;
 }
+// Only once connected: a failed join must not grow a pill over its error.
+phoneFullscreen.onJoined();
 const { welcome } = socket;
 
 // --- Scene & renderer ---
@@ -1040,6 +1047,9 @@ socket.events.onDeath = (msg) => {
   hpBar.clear(msg.victimId); // never float a stale bar over a respawn
   if (msg.victimId === socket.selfId) {
     enterDeath(msg.killerId, msg.cause === "storm" ? "storm" : undefined);
+    // M5: the first life is over ("after the first match" in a drop-in
+    // game) — the kill-cam pause is when an install offer intrudes least.
+    phoneFullscreen.onFirstLifeOver();
   } else remotes.setDead(msg.victimId);
   // Radio: the victim's mayday from us, or the killer's "splash one".
   if (msg.victimId === socket.selfId) {

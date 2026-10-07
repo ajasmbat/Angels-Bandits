@@ -1026,6 +1026,7 @@
         flex-direction: column;
         align-items: center;
         justify-content: center;
+        z-index: 10;
         background: #141225ee;
         color: #9fd8e8;
         cursor: pointer;
@@ -1062,6 +1063,8 @@
         align-items: center;
         justify-content: center;
         gap: 22px;
+        /* Above the edge markers ui/markers.ts appends to body at runtime. */
+        z-index: 10;
         background: #141225;
         color: #9fd8e8;
         font-size: 13px;

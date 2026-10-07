@@ -835,8 +835,13 @@ the end of this section.
 The harness counts, through an init-script probe (`installGlProbe`), every
 program link, texture allocation and buffer allocation, and prints them per
 segment for the settle and the window (`first sight` table). Before O4 the
-probe read 4 buffers in every window that had a strike in it; now it reads
-**0 / 0 / 0 in every settle and every window**. The fixes:
+probe read 4 buffers in every window that had a strike in it. Now it reads
+**0 programs and 0 textures in every settle and every window**, and 0
+buffers everywhere except the full-room furball. There, each remote plane's
+own scarf mesh (the one per-plane geometry; the rest of the airframe is
+shared) uploads a few KB the first time that plane comes inside
+`PLANE_LOD_DISTANCE` (21 buffers in the settle and 6 in the window on the
+one runner pass that held all 12 planes). The fixes:
 
 - **The pre-warm compiled the wrong variants.** three keys a program on the
   bound render target (tone mapping and output colour space), and
@@ -856,7 +861,15 @@ probe read 4 buffers in every window that had a strike in it; now it reads
 
 The probe cannot see what a Metal driver does lazily on its own, which is
 why the pre-warm now *draws* rather than only compiling. "0 wall spikes in
-the first 10 %" is a Metal number; read it from `--samples` on the M3.
+the first 10 %" is a Metal number; read it from `--samples` on the M3. On
+the runner, the first frame of the `core` and `plaza` windows (sometimes
+the furball's) read 1.6–10 s of wall time with no GPU-timer spike and
+nothing allocated, while the frames around it read 1–16 ms. That pattern
+fits SwiftShader's GPU process draining a queued backlog behind one
+blocking GL call, rather than a main-thread or first-sight cost. It is
+**unresolved**: the pin-only build's one 3-pass run on this box did not
+show it, and the runner cannot attribute it further. The M3's `--samples`
+run (command 3) is the deciding number.
 
 ### GPU cost at ratio 2
 

@@ -355,6 +355,7 @@ export class TrainRenderer {
       cars: number;
       dir: number;
     };
+    time: number | null;
     viaductBoxes: number;
     cars: { x: number; y: number; z: number; yaw: number; curve: boolean }[];
     drawnAt: Vec3 | null;
@@ -390,6 +391,7 @@ export class TrainRenderer {
         cars: line.cars,
         dir: line.dir,
       },
+      time: serverTimeMs,
       viaductBoxes: line.viaduct.length,
       cars,
       drawnAt,

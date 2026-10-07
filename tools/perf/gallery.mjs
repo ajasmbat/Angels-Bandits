@@ -124,6 +124,20 @@ try {
         await pin();
         await sleep(90);
       }
+      if (wx) {
+        // A scheduled strike flashes the whole sky violet for one frame, and
+        // at a software renderer's ~0.5 fps that is a large share of frames:
+        // wait for a quiet sky (next strike well beyond the shot's latency).
+        for (let k = 0; k < 30; k++) {
+          const quiet = await page.evaluate(() => {
+            const w = window.__ab.weather();
+            const next = window.__ab.storm().nextStrike;
+            return !next || next.timeMs - (w.timeMs - w.shiftMs) > 9000;
+          });
+          if (quiet) break;
+          await sleep(1000);
+        }
+      }
       const shot = wx ? `${v.name}-${wx}` : v.name;
       // Generous timeout: a software (SwiftShader) frame can take seconds.
       await page.screenshot({ path: `${OUT}/${shot}.png`, timeout: 180000 });

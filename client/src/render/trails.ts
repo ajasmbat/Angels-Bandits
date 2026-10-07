@@ -17,7 +17,7 @@ import {
 import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { LIGHT_MOUNTS } from "./planelights";
-import { nearestImage, uploadPrefix } from "./wrapPlacement";
+import { nearestImage, nearestImageInto, uploadPrefix } from "./wrapPlacement";
 
 /** How long a trail point lives, ms (~the plan's "short ribbon trails"). */
 export const TRAIL_LIFETIME_MS = 1500;
@@ -106,17 +106,26 @@ export class TrailHistory {
    * 1 = about to expire), and recorded hardness. Prunes expired points.
    */
   points(nowMs: number): { off: Vec3; age01: number; hard: number }[] {
+    return this.live(nowMs).map((p) => ({
+      off: p.off,
+      age01: age01(nowMs, p.t),
+      hard: p.hard,
+    }));
+  }
+
+  /**
+   * The live points themselves, oldest-first, after pruning — no copies. The
+   * renderer reads these every frame for every ribbon (O4: points() built a
+   * fresh object per point per frame, steady garbage in a 12-plane furball).
+   */
+  live(nowMs: number): readonly TrailPoint[] {
     while (
       this.pts.length &&
       nowMs - (this.pts[0] as TrailPoint).t > TRAIL_LIFETIME_MS
     ) {
       this.pts.shift();
     }
-    return this.pts.map((p) => ({
-      off: p.off,
-      age01: Math.min(1, Math.max(0, (nowMs - p.t) / TRAIL_LIFETIME_MS)),
-      hard: p.hard,
-    }));
+    return this.pts;
   }
 
   /** Drop everything (death/respawn — a respawn teleport must not streak). */
@@ -145,6 +154,10 @@ const quatScratch = new THREE.Quaternion();
 const segScratch = new THREE.Vector3();
 const viewScratch = new THREE.Vector3();
 const sideScratch = new THREE.Vector3();
+const baseScratch = { x: 0, y: 0, z: 0 };
+/** A point's age as a share of the trail's life, 0 (new) .. 1 (expiring). */
+const age01 = (nowMs: number, t: number): number =>
+  Math.min(1, Math.max(0, (nowMs - t) / TRAIL_LIFETIME_MS));
 
 interface PlaneTrail {
   left: TrailHistory;
@@ -252,13 +265,13 @@ export class PlaneTrails {
       for (const history of [plane.left, plane.right]) {
         const anchor = history.anchor;
         if (!anchor) continue;
-        const pts = history.points(nowMs);
+        const pts = history.live(nowMs);
         if (pts.length < 2) continue;
         // One nearest-image projection per ribbon; offsets are short.
-        const base = nearestImage(viewer, anchor);
+        const base = nearestImageInto(baseScratch, viewer, anchor);
         for (let i = 1; i < pts.length && v + 6 <= MAX_VERTICES; i++) {
-          const a = pts[i - 1] as (typeof pts)[number];
-          const b = pts[i] as (typeof pts)[number];
+          const a = pts[i - 1] as TrailPoint;
+          const b = pts[i] as TrailPoint;
           const ax = base.x + a.off.x;
           const ay = base.y + a.off.y;
           const az = base.z + a.off.z;
@@ -272,12 +285,14 @@ export class PlaneTrails {
           if (len < 1e-6) continue;
           sideScratch.multiplyScalar(1 / len);
           // Fade with age; swell with the turn hardness recorded per point.
-          const wa = TRAIL_HALF_WIDTH * (0.5 + a.hard) * (1 - a.age01 * 0.6);
-          const wb = TRAIL_HALF_WIDTH * (0.5 + b.hard) * (1 - b.age01 * 0.6);
+          const aAge = age01(nowMs, a.t);
+          const bAge = age01(nowMs, b.t);
+          const wa = TRAIL_HALF_WIDTH * (0.5 + a.hard) * (1 - aAge * 0.6);
+          const wb = TRAIL_HALF_WIDTH * (0.5 + b.hard) * (1 - bAge * 0.6);
           const alphaA =
-            (1 - a.age01) * (TRAIL_BASE_ALPHA + TRAIL_TURN_ALPHA * a.hard);
+            (1 - aAge) * (TRAIL_BASE_ALPHA + TRAIL_TURN_ALPHA * a.hard);
           const alphaB =
-            (1 - b.age01) * (TRAIL_BASE_ALPHA + TRAIL_TURN_ALPHA * b.hard);
+            (1 - bAge) * (TRAIL_BASE_ALPHA + TRAIL_TURN_ALPHA * b.hard);
           // Additive blending: bake alpha into RGB (ladder peak at hard=1).
           const ca = EMISSIVE_TRAIL * alphaA;
           const cb = EMISSIVE_TRAIL * alphaB;

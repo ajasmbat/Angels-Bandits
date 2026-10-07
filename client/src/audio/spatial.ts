@@ -3,7 +3,11 @@
 // these numbers into StereoPanner/Gain nodes; this module is the seam.
 
 import { FOG_DISTANCE } from "@angels-bandits/common/constants";
-import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
+import {
+  type Vec3,
+  wrapDelta,
+  wrapDeltaAxis,
+} from "@angels-bandits/common/world";
 
 /** Full volume within this range, inverse falloff beyond it, meters. */
 export const AUDIO_REF_DISTANCE = 30;
@@ -57,13 +61,19 @@ export function spatialize(
  * Same torus-relative sweep as hitdetect's bulletHitsSphere.
  */
 export function closestApproach(prev: Vec3, cur: Vec3, listener: Vec3): number {
-  const rel0 = wrapDelta(listener, prev);
-  const seg = wrapDelta(prev, cur);
-  const segLenSq = seg.x * seg.x + seg.y * seg.y + seg.z * seg.z;
+  // wrapDelta, one axis at a time: this runs per enemy bullet per frame, and
+  // two fresh Vec3s each was the furball's biggest steady garbage (O4).
+  const rx = wrapDeltaAxis(listener.x, prev.x);
+  const ry = prev.y - listener.y;
+  const rz = wrapDeltaAxis(listener.z, prev.z);
+  const sx = wrapDeltaAxis(prev.x, cur.x);
+  const sy = cur.y - prev.y;
+  const sz = wrapDeltaAxis(prev.z, cur.z);
+  const segLenSq = sx * sx + sy * sy + sz * sz;
   let t = 0;
   if (segLenSq > 0) {
-    const dot = rel0.x * seg.x + rel0.y * seg.y + rel0.z * seg.z;
+    const dot = rx * sx + ry * sy + rz * sz;
     t = Math.min(1, Math.max(0, -dot / segLenSq));
   }
-  return Math.hypot(rel0.x + seg.x * t, rel0.y + seg.y * t, rel0.z + seg.z * t);
+  return Math.hypot(rx + sx * t, ry + sy * t, rz + sz * t);
 }

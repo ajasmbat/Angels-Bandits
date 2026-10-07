@@ -21,6 +21,13 @@ export interface Vec3 {
 const wrapAxis = (v: number): number =>
   ((v % WORLD_SIZE) + WORLD_SIZE) % WORLD_SIZE;
 
+/**
+ * One coordinate of canonicalize(): x or z into [0, WORLD_SIZE). For hot
+ * loops that update a position in place (client bullets, O4) and must not
+ * allocate the Vec3 canonicalize() returns.
+ */
+export const wrapCoord = (v: number): number => wrapAxis(v);
+
 /** Map a position's x/z into canonical [0, WORLD_SIZE) coordinates. Y is untouched. */
 export function canonicalize(p: Vec3): Vec3 {
   return { x: wrapAxis(p.x), y: p.y, z: wrapAxis(p.z) };

@@ -116,6 +116,23 @@ the server (unchanged), the viewpoint from `segments.mjs`, and it sets the
 room's bot count to **0** before measuring — bots are a live sim whose poses
 depend on wall-clock timing and would smear every segment.
 
+**And since O4 it pins the clock as well.** Every segment calls
+`__ab.pinWorld(t)` before it flies: the client then renders its whole world
+(traffic, signage, living windows, movers and the news heli, the train,
+drones, airliners, birds, fireworks, the storm schedule, reactions, and the
+crash check, which reads the same latched time) at `t`, advancing from
+there by the sim's own step (the flight model's clamped `dt`), so the world
+and the plane move in lockstep: frame *n* of a pass is the same scene on a
+software rasteriser at 3 fps as on a GPU, where `dt` is never clamped and
+this is simply real time. Segment *i* is pinned to `WORLD_EPOCH_MS + i × 30 s`
+(`segments.mjs`), the warm-up lap flies the same spots earlier on the same
+clock, so the world only ever moves forward within a page. Every segment also
+pins its weather (`clear` unless it names one) and the sky is pinned to deep
+night (`?sky=night`). Remote planes keep the real network clock, which is why
+the furball, whose fake pilots fly on their own wall clock, stays the one
+exception. A build without the hook (an older `--ab-ref`) flies on the live
+clock and the first-sight table prints `NOT PINNED` for it.
+
 ### The path
 
 | segment  | what it stresses                                                   |
@@ -179,9 +196,14 @@ columns for render changes.**
 `--strict` turns a FAIL into exit code 1; without it the harness reports and
 returns 0 (see "Should this gate CI?" below).
 
-**Two segments are honest exceptions, and both for the same reason** — the
-harness pins the seed and the path, but it cannot pin the *server clock*
-without a server change:
+**Before O4, two segments were honest exceptions, and both for the same
+reason.** The harness pinned the seed and the path, but it could not pin the
+*server clock* without a server change. With `__ab.pinWorld` the client
+renders its world at a pinned time instead, so `determinism()` now holds
+every segment except `furball` to identical draw calls and the GPU band
+(`UNPINNED_WORLD_PINNED` / `DRAWS_FLOAT_WORLD_PINNED` in `run.mjs`). The
+exemptions below still apply to an arm that does NOT report its world pinned
+(a build from before O4):
 
 - `storm` — strike *positions* are a function of absolute time, so which cell
   gets hit varies between runs. The viewpoint is fixed and the flash/fog/
@@ -288,7 +310,7 @@ npm run perf -- --res auto --label scaler
 
 ## The client hooks it uses
 
-All read-only except the two that exist for QA, all on `window.__ab`:
+All read-only except the QA writes (`teleport`, `setPixelRatio`, `setBots`, `weather`, `pinWorld`), all on `window.__ab`:
 
 | hook                             | used for                                    |
 | -------------------------------- | ------------------------------------------- |
@@ -299,7 +321,9 @@ All read-only except the two that exist for QA, all on `window.__ab`:
 | `render()`                       | AA mode, pixel ratio, drawing-buffer size   |
 | `setPixelRatio(r \| "auto")`     | pin or release the scaler at runtime        |
 | `setBots(0)`                     | empty the room so the scene is reproducible |
-| `storm()` / `net()` / `combat()` | strike timing, clock, alive check           |
+| `storm()` / `net()` / `combat()` | strike timing, clock, alive check, death cause |
+| `pinWorld(t \| null)` (O4)       | render the world at server time `t` (a QA write) |
+| `weather(phase)` / `quality()`   | the pinned weather, the tier the window ran at |
 
 The same `FrameMeter` (`client/src/render/perfmeter.ts`) feeds `perfStats()`,
 the in-game dev HUD and the adaptive resolution controller, so the number in
@@ -846,3 +870,182 @@ draws × pixels only 2.77×. Draw calls barely move between tiers (80 → 74),
 so pixels carry the ratio, and M3's 3× bar set the ceiling to 1. Neither
 arm logged a page error, so both shader paths (the uniform guards on and
 off) compiled and ran.
+
+---
+
+## O4: Retina 60 fps — pinned scene, first sight, the post chain
+
+O4 ran on the same GPU-less Linux runner as O3, so its claims split in two.
+**Counts and images** (draw calls, programs linked, buffers allocated,
+fragments per pixel, PSNR) are GPU-independent and were measured here.
+**Milliseconds on a real GPU** were not, and are left to the M3 commands at
+the end of this section.
+
+### A harness that pins the scene
+
+- **The world clock is pinned.** `__ab.pinWorld(t)` makes the client render
+  every time-driven system at server time `t`, advancing with the sim's step (see
+  "Why a fixed path measures anything" above). Each segment gets its own
+  instant (`segmentWorldMs(i)` in `segments.mjs`) and its weather (`clear`
+  unless it names one), and the pinned clock advances by the sim's step.
+  Three-pass runs on the runner at ratio 0.75 (draw calls per pass): one run
+  read **identical draw calls in all seven segments**, furball included (core
+  77, plaza 74, sky 66, canyon 78, storm 71, street 78, furball 78), and
+  every run held core, sky, canyon and street identical. What still moved
+  was one draw in one segment: storm 71/70/70 before the clock advanced by
+  the sim step (it is fixed since), and plaza 73/74/73 on a run that shared
+  the box with a flicker capture. That residue is the runner's own limit: at
+  2–4 fps a 5 s wall-clock window holds 15–40 frames, so the median draw
+  count flips when the frame count shifts across a visibility toggle. On the
+  M3 a window holds ~500 frames. Before O4 the storm, canyon, street and
+  furball were all exempt. The final run on the merged branch (3 passes)
+  held all six pinned segments identical: core 77, plaza 73, sky 66, canyon
+  78, storm 71, street 78. Every segment was alive, and there were no page
+  errors. The furball, exempt, read 78/239/78: its fake pilots were reaped
+  by the server's liveness timeout in two of the passes, which is O3's known
+  runner limit.
+- **The storm no longer waits.** It used to wait for the live clock's next
+  strike, up to ~15 s of unpiloted flight from 380 m (the plane sinks or
+  climbs with no input). It now pins its world time so the strike lands
+  `STRIKE_LEAD_MS` into the window, and the segment is as short as the
+  others. (The lead is world time, so on a machine whose frames exceed the
+  sim's 50 ms clamp, e.g. SwiftShader, the strike lands seconds later, often
+  after the window. On a GPU it lands 1.2 s in.) Every segment records whether the plane was alive at both ends and
+  why it died (`lastDeath.cause`).
+- **A pin is a jump**, so it re-primes the two `[last, now)` feeds (storm
+  strikes, fireworks). Without that, the first pin (from today's clock to
+  the 2033 epoch) made the fireworks feed enumerate seven years of buckets:
+  ~5 GB of garbage and a 4.5 s frame, found by a heap profile.
+- Each window also checks that the pixel ratio and tier held
+  (`workloadStable`).
+
+### No first-sight freezes
+
+The harness counts, through an init-script probe (`installGlProbe`), every
+program link, texture allocation and buffer allocation, and prints them per
+segment for the settle and the window (`first sight` table). Before O4 the
+probe read 4 buffers in every window that had a strike in it. Now it reads
+**0 programs and 0 textures in every settle and every window**, and 0
+buffers everywhere except the full-room furball. There, each remote plane's
+own scarf mesh (the one per-plane geometry; the rest of the airframe is
+shared) uploads a few KB the first time that plane comes inside
+`PLANE_LOD_DISTANCE` (21 buffers in the settle and 6 in the window on the
+one runner pass that held all 12 planes). The fixes:
+
+- **The pre-warm compiled the wrong variants.** three keys a program on the
+  bound render target (tone mapping and output colour space), and
+  `prewarmScene` ran with no target bound. So it compiled "ACES + sRGB to the
+  screen" for everything hidden, while the game draws through the
+  composer's linear HalfFloat target. Every hidden object compiled AGAIN on
+  first sight: the canyon's micro tier, the storm, birds, tracers. It now
+  compiles with the composer target bound, then draws one real composer
+  frame with everything shown and culling off, behind the boot fade, so
+  textures, buffers and the driver's pipeline states exist too.
+- **Lightning reused nothing.** Every strike built two new tube geometries,
+  i.e. fresh GL buffers on the flash frame. Each bolt slot now owns one
+  geometry at full capacity and rewrites its position prefix.
+- **Signage allocated its instance colours lazily**, after boot, so the
+  pre-warm drew it in a colour-less variant its patched shader cannot
+  compile. They are allocated at construction now.
+
+The probe cannot see what a Metal driver does lazily on its own, which is
+why the pre-warm now *draws* rather than only compiling. "0 wall spikes in
+the first 10 %" is a Metal number; read it from `--samples` on the M3. On
+the runner, the first frame of the `core` and `plaza` windows (sometimes
+the furball's) read 1.6–10 s of wall time with no GPU-timer spike and
+nothing allocated, while the frames around it read 1–16 ms. That pattern
+fits SwiftShader's GPU process draining a queued backlog behind one
+blocking GL call, rather than a main-thread or first-sight cost. In one
+core window the wall frames sum to 11.4 s against 4.8 s of GPU-timed work,
+so frame 0 is paying for the settle's queued frames. It is not the post
+chain (the same build on `?post=legacy` shows it, 5.8 s) nor the depth
+discard (a build without it shows 6.4 s). The pin-only build queues too
+(wall frames shorter than GPU frames) but did not spike on this box. It
+stays **unresolved** here; the M3's `--samples` run (command 3) is the
+deciding number.
+
+### GPU cost at ratio 2
+
+Measured on the runner as counts, images, and SwiftShader's GPU timer as a
+*proxy* (a CPU rasteriser, so the ratio is evidence, not a Metal number):
+
+| change | what it removes at 2560×1440 | evidence here |
+| --- | --- | --- |
+| **Fused final pass** (`render/post.ts` `FinalPass`): bloom add + ACES + sRGB + grade in one pass | two full-res RGBA16F read+write passes (the bloom's additive blend into the scene target, and the separate grade pass), −2 draws | SwiftShader GPU p50, ABBA: core **−10 %** (0.894, 0.904), plaza **−13 %** (0.874, 0.862) |
+| **Bloom at CSS density** (`AbBloomPass`): bright pass and mip 0 at a quarter of the buffer per axis at ratio 2, blur taps at their old screen offsets, 4-tap box bright pass | 3/4 of the bloom chain's pixels at ratio 2 (unchanged at ratio ≤ 1) | included in the row above |
+| bloom targets without depth buffers; the scene's depth `invalidateFramebuffer`d after the scene pass | 11 depth clears/stores a frame; a full-res depth write-back on a tile GPU | — (no SwiftShader effect) |
+| building shader: per-window detail (temperature, TV, parallax room) skipped where a window cell is sub-pixel | ~8 hashes and the interior ray-cast on every far-field facade fragment | old vs new pinned frames at the capture's own noise floor (below) |
+
+`?post=legacy` rebuilds the old chain out of the same build (like
+`?aa=legacy`), so the M3 can measure the post-chain win as a paired `--ab`.
+
+In M3's fill proxy (`fragmentProxy`, full-screen-pass equivalents × pixels),
+High at ratio 2 drops from **5.17 to 2.29 pass-equivalents**, 2.25× less
+post-processing fill. The proxy now prices the fused chain
+(`fusedBloomPassEquiv`) when the build reports `render().post`, and the
+legacy chain otherwise. M3's Mobile tier still switches bloom with
+`pass.enabled`, and a disabled bloom feeds the final pass nothing. On the
+fused chain the grade switch is a uniform inside `FinalPass` (`uGradeOn`)
+instead, since that pass also tone-maps and cannot be the one disabled.
+
+**Looks.** Pinned world, fixed `qaCamera`, living-window clock pinned, ratio
+2 on SwiftShader. Legacy vs fused post chain: **60.4 dB** PSNR at core and
+**58.0 dB** at canyon; 0.007 % / 0.029 % of pixels differ by more than 8/255.
+The same build captured twice reads 59–64 dB, so the difference sits at the
+capture's own noise floor. The old shader (`86a4c09`) vs the new, both on the
+legacy chain: 59.8 / 67.7 / 61.6 dB at core / canyon / plaza, against 60.8 dB
+for the old build against itself. The shader change is exact by construction
+(`mix(mean, x, 0.0)` already returned `mean`), but this capture is not
+bit-repeatable, so "identical to the noise floor" is what was shown.
+
+**Shimmer.** `node tools/perf/flicker.mjs --ref a487412 --repeat 2` (ratio
+1, 30 frames, interleaved): frozen **0.018** against main's 0.031, limit
+0.041, a **PASS**. That tool captures at ratio 1, where the bloom chain is
+unchanged, so a ratio-2 copy of it (DPR 2, `?res=2`, 15 frames) compared the
+two post chains on the same build, in legacy-fused-legacy-fused order:
+frozen 0.028 / 0.030 and 0.022 / 0.021. The pairs agree to the run's own
+noise; the CSS-density bloom adds no measurable shimmer.
+
+**Blended overdraw** (a counting pass per transparent mesh at pinned views,
+fragments per pixel, each mesh's ~0.04 clear-colour floor subtracted).
+Street in a downpour totals ~0.45 layers: rain 0.11, searchlight beams
+0.09, the sky's airliner points 0.17, headlight cones and pools under 0.01
+each. Plaza from 300 m totals ~1.1, mostly the cloud deck's puffs (0.57) and
+the beams (0.26). Opaque overdraw is close to free under
+Apple's hidden-surface removal, and nothing here is wasted fill, so nothing
+was cut.
+
+### The furball
+
+Profiled on the runner with 11 fake pilots in view (CDP CPU profile plus
+sampling heap profile). The per-frame garbage came mostly from code paths
+that scale with planes and bullets, and those now allocate nothing per
+frame: bullets step in place (and the hit loop no longer copies the list),
+the near-miss test (`closestApproach`, per enemy bullet per frame) goes axis
+by axis, trail ribbons read their points in place, and the crowd wraps
+positions without a Vec3 (`wrapCoord`, a scalar torus helper in
+`common/world`). The remaining garbage is spread thin, ~20 KB a frame per
+site (snapshot decode, movers, birds, steam). Whether p99/p50 reaches ≤ 2 is a
+Metal number.
+
+### Commands for the M3 (O4)
+
+```sh
+# 1. The gate, against a PINNED baseline: 86a4c09 is main plus only the
+#    pinning and probe (no render change), so both arms fly the same pinned
+#    scene and the delta is the render work. Read the 60fps / hitch / room
+#    rows and the delta table. (If the branch has been squash-merged, fetch
+#    the commit with: git fetch origin pull/<PR>/head.)
+node tools/perf/run.mjs --runs 3 --label O4 --ab-ref 86a4c09
+
+# 2. The post chain alone, paired, out of one build.
+node tools/perf/run.mjs --runs 3 --label fused --ab "post=legacy"
+
+# 3. Determinism and first sight: draw calls identical in every segment,
+#    the first-sight table 0/0/0, and "0 in the first 10%" on every spike row.
+node tools/perf/run.mjs --runs 3 --samples --strict
+
+# 4. Flicker not worse than main, and Auto never stepping down on the M3.
+node tools/perf/flicker.mjs --ref a487412
+node tools/perf/run.mjs --soak 600 --quality auto --res auto
+```

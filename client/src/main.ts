@@ -36,7 +36,11 @@ import {
   stepFlight,
 } from "@angels-bandits/common/flight";
 import { hitRangeBudgetFor } from "@angels-bandits/common/net";
-import type { ScoreEntry, SpawnState } from "@angels-bandits/common/protocol";
+import type {
+  DeathMsg,
+  ScoreEntry,
+  SpawnState,
+} from "@angels-bandits/common/protocol";
 import { airlinerOffsetInto } from "@angels-bandits/common/skytraffic";
 import { strikesInWindow } from "@angels-bandits/common/storm";
 import {
@@ -128,6 +132,7 @@ import {
   spinPropeller,
 } from "./render/plane";
 import { PlaneLights } from "./render/planelights";
+import { AbBloomPass, DiscardDepthPass, FinalPass } from "./render/post";
 import { prewarmScene } from "./render/prewarm";
 import {
   type AutoQualityState,
@@ -155,7 +160,11 @@ import {
 import { Rain } from "./render/rain";
 import { CityReactor } from "./render/reactions";
 import { RemotePlanes } from "./render/remotes";
-import { MSAA_SAMPLES, readRenderOptions } from "./render/renderopts";
+import {
+  MSAA_SAMPLES,
+  type PostMode,
+  readRenderOptions,
+} from "./render/renderopts";
 import {
   RELAX_AFTER_MS,
   type ResolutionState,
@@ -353,7 +362,8 @@ const DEFAULT_FB_SAMPLES = renderer
 // The bloom threshold sits above everything lit-but-not-emissive (facades peak
 // ~0.05 luminance in linear HDR, the sky dome ~0.05) and below the emissives
 // (windows ~0.8+, lamp heads ~0.9, tracers ~1.5) — so ONLY emissives glow.
-// UnrealBloomPass runs its blur chain from HALF the drawing-buffer resolution.
+// The blur chain runs from half the CSS resolution (O4: AbBloomPass — at
+// ratio 2 that is a quarter of the drawing buffer per axis, same halo).
 // Strength and radius are the LOOK (a wider, gentler halo reads as haze
 // around a light rather than a hard glow); the threshold is the CONTRACT the
 // emissive ladder is built against and does not move.
@@ -377,19 +387,53 @@ const composer = new EffectComposer(
 // pixelRatio bookkeeping starts from the same place setSize() uses.
 composer.setSize(window.innerWidth, window.innerHeight);
 composer.addPass(new RenderPass(scene, camera));
-const bloomPass = new UnrealBloomPass(
-  new THREE.Vector2(window.innerWidth, window.innerHeight),
-  BLOOM_STRENGTH,
-  BLOOM_RADIUS,
-  BLOOM_THRESHOLD,
-);
+// O4: nothing after the scene pass reads its depth — tell a tile GPU not to
+// write it back to memory (a no-op where the driver ignores the hint).
+composer.addPass(new DiscardDepthPass());
+// O4 (render/post.ts): the bloom chain at CSS density, then bloom add + tone
+// map + sRGB + grade in ONE full-res pass. `?post=legacy` rebuilds the old
+// chain (three's UnrealBloomPass with its full-res additive blend, the
+// OutputPass and a separate grade pass) out of the same build, so the
+// harness can measure the difference as a paired --ab.
+const legacyPost = renderOpts.post === "legacy";
+const bloomPass = legacyPost
+  ? new UnrealBloomPass(
+      new THREE.Vector2(window.innerWidth, window.innerHeight),
+      BLOOM_STRENGTH,
+      BLOOM_RADIUS,
+      BLOOM_THRESHOLD,
+    )
+  : new AbBloomPass(BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD);
 composer.addPass(bloomPass);
-composer.addPass(new OutputPass());
-// The grade (vignette + saturation) works on the display-referred image, so
-// it follows the OutputPass; SMAA, when on, still comes last.
-const gradePass = renderOpts.grade ? createGradePass() : null;
-if (gradePass) {
-  composer.addPass(gradePass);
+/** What the sky cycle tints and M3's tiers switch: the fused pass's grade
+ * (a uniform inside FinalPass), or the legacy chain's own grade pass. */
+let gradePass: {
+  uniforms: Record<string, THREE.IUniform>;
+  enabled: boolean;
+} | null = null;
+if (bloomPass instanceof AbBloomPass) {
+  const finalPass = new FinalPass(bloomPass, renderOpts.grade);
+  composer.addPass(finalPass);
+  if (renderOpts.grade) {
+    gradePass = {
+      uniforms: finalPass.uniforms,
+      get enabled() {
+        return finalPass.gradeEnabled;
+      },
+      set enabled(on: boolean) {
+        finalPass.gradeEnabled = on;
+      },
+    };
+  }
+} else {
+  composer.addPass(new OutputPass());
+  // The grade works on the display-referred image, so it follows the
+  // OutputPass.
+  if (renderOpts.grade) {
+    const legacyGrade = createGradePass();
+    composer.addPass(legacyGrade);
+    gradePass = legacyGrade;
+  }
 }
 // SMAA goes AFTER the output pass, on purpose: its edge detection wants the
 // tonemapped, sRGB-encoded image, not linear HDR where a bloomed window
@@ -410,6 +454,8 @@ renderer.info.autoReset = false;
 function applyPixelRatio(ratio: number): void {
   renderer.setPixelRatio(ratio);
   composer.setPixelRatio(ratio);
+  // The bloom chain is anchored to CSS pixels (render/post.ts).
+  if (bloomPass instanceof AbBloomPass) bloomPass.setPixelRatio(ratio);
 }
 applyPixelRatio(resolution.ratio);
 
@@ -598,6 +644,22 @@ let qaView: { eye: Vec3; at: Vec3 } | null = null;
  * server time instead of the render clock, so a capture on a slow software
  * renderer can show "event + 2 s" exactly. Null = the render clock. */
 let qaReactAt: number | null = null;
+/**
+ * QA-only (`__ab.pinWorld`, O4): the WORLD clock pinned to a server time,
+ * then advanced by each frame's sim step. Everything that renders on
+ * the latched `renderMs` — sky cycle, weather, traffic, signage, living
+ * windows, movers and the news heli, train, drones, airliners, birds,
+ * fireworks, storm strikes, reactions and the crash check — then shows the
+ * same world on every pass of the perf harness. Remote planes keep the real
+ * network clock. Meant for an empty, kill-free room: events the server
+ * stamps (kills, news-heli retargets) are not re-timed. Null = the render
+ * clock; clearing it may step the world back, which the strike feed and the
+ * smoothed clocks already resync from.
+ */
+let qaWorld: { ms: number; frameMs: number | null } | null = null;
+/** The world clock the frame loop rendered at last (pinned or synced). */
+const worldTime = (): number | null =>
+  qaWorld !== null ? qaWorld.ms : socket.renderTime();
 // ST2 storm: bolts + flash from the shared schedule — zero strike netcode;
 // every client computes the identical storm from (seed, synced clock).
 const storm = new StormRenderer(city.cityBuildings);
@@ -797,7 +859,11 @@ let selfHp = MAX_HP;
 let ownControls: ControlDeflection = NEUTRAL_CONTROLS;
 let selfProt = true;
 let lastScores: ScoreEntry[] = welcome.scores;
-let lastDeath: { victimId: string; killerId: string | null } | null = null;
+let lastDeath: {
+  victimId: string;
+  killerId: string | null;
+  cause: DeathMsg["cause"];
+} | null = null;
 let remoteFireSide = 1;
 
 const fadeEl = document.getElementById("fade") as HTMLDivElement;
@@ -938,7 +1004,12 @@ socket.events.onDamage = (msg) => {
   }
 };
 socket.events.onDeath = (msg) => {
-  lastDeath = { victimId: msg.victimId, killerId: msg.killerId };
+  // O4: the cause too, so the perf harness can say WHY a segment died.
+  lastDeath = {
+    victimId: msg.victimId,
+    killerId: msg.killerId,
+    cause: msg.cause,
+  };
   // Grab the victim's position before setDead clears it (self = own plane).
   const victimPos =
     msg.victimId === socket.selfId
@@ -1266,6 +1337,9 @@ declare global {
         ceiling: number;
         hotRatio: number;
         drawingBuffer: { width: number; height: number };
+        /** O4: the post chain (`?post=`) and the bloom chain's density. */
+        post: PostMode;
+        bloomDensity: number;
       };
       /** Pin the pixel ratio (a number) or hand it back to the controller. */
       setPixelRatio: (ratio: number | "auto") => void;
@@ -1292,6 +1366,8 @@ declare global {
         roomId: string;
         remotes: ReturnType<RemotePlanes["debug"]>;
         renderTime: number | null;
+        /** O4: the world clock (renderTime unless `pinWorld` is set). */
+        worldTime: number | null;
         /** The adaptive interpolation buffer this tab is holding, ms. */
         interpDelayMs: number;
         /** Measured snapshot-arrival jitter driving it, ms. */
@@ -1305,7 +1381,11 @@ declare global {
         prot: boolean;
         heat: { heat: number; locked: boolean };
         scores: ScoreEntry[];
-        lastDeath: { victimId: string; killerId: string | null } | null;
+        lastDeath: {
+          victimId: string;
+          killerId: string | null;
+          cause: DeathMsg["cause"];
+        } | null;
         targets: { id: string; pos: { x: number; y: number; z: number } }[];
         hpBarTarget: string | null;
       };
@@ -1440,6 +1520,12 @@ declare global {
       ) => void;
       /** QA-only: pin the reaction clock to a server time (null = live). */
       qaReactionClock: (serverTimeMs: number | null) => void;
+      /**
+       * O4 perf-harness pin: render the WORLD at this server time from now
+       * on, advancing with the sim's step (null = the synced clock). Returns the
+       * world time the next frame starts from.
+       */
+      pinWorld: (serverTimeMs: number | null) => number | null;
       /** L1 QA: the live city events and what the city is doing about them
        * at this tab's render clock — two tabs must report the same. */
       reactions: () => {
@@ -1504,6 +1590,10 @@ window.__ab = {
       ceiling: resLimits.ceiling,
       hotRatio: resolution.hotRatio,
       drawingBuffer: { width: size.x, height: size.y },
+      // O4: which post chain, and the bloom chain's density divisor (the
+      // fused chain runs it at CSS density) — for the harness's fill proxy.
+      post: renderOpts.post,
+      bloomDensity: bloomPass instanceof AbBloomPass ? bloomPass.cssDensity : 1,
     };
   },
   setPixelRatio: (ratio) => {
@@ -1535,6 +1625,8 @@ window.__ab = {
     roomId: welcome.roomId,
     remotes: remotes.debug(),
     renderTime: socket.renderTime(),
+    // O4: what the world renders at (= renderTime unless pinWorld is set).
+    worldTime: worldTime(),
     // ANGE-4KO2W2 QA: the buffer, what it is reacting to, and the range
     // budget it buys — the three numbers that have to move together.
     interpDelayMs: socket.interpDelayMs,
@@ -1584,30 +1676,28 @@ window.__ab = {
   // explicitly for the two-tab seam check — since ANGE-4KO2W2 each tab holds
   // its OWN interpolation delay, so two tabs' default render times are no
   // longer the same instant (that is the feature; the QA must pin the time).
-  traffic: (at) => traffic.debug(at === undefined ? socket.renderTime() : at),
+  traffic: (at) => traffic.debug(at === undefined ? worldTime() : at),
   // L9 QA: flock centres and which are scattered, at the render clock.
-  birds: () => birds.debug(socket.renderTime()),
+  birds: () => birds.debug(worldTime()),
   // L6 QA: pin the gallery's red/green intersection views to a real queue.
-  trafficQueue: (at) =>
-    traffic.queue(at ?? socket.renderTime() ?? performance.now()),
+  trafficQueue: (at) => traffic.queue(at ?? worldTime() ?? performance.now()),
   trafficAspect: (bx, bz, at) =>
-    signals.sample(bx, bz, at ?? socket.renderTime() ?? performance.now()),
+    signals.sample(bx, bz, at ?? worldTime() ?? performance.now()),
   // L2 QA: jib angles, aircraft positions and the drawn read-back at a server
   // time. Pass the time explicitly for the two-tab check — each tab holds its
   // own interpolation delay, so their default render clocks are NOT the same
   // instant. Two tabs given the same `at` must return identical JSON.
-  movers: (at) => movers.debug(at === undefined ? socket.renderTime() : at),
+  movers: (at) => movers.debug(at === undefined ? worldTime() : at),
   // L5 QA: the route, the cars' poses at a server time and the drawn read-back.
-  train: (at) => train.debug(at === undefined ? socket.renderTime() : at),
-  fireworks: (at) =>
-    fireworks.debug(at === undefined ? socket.renderTime() : at),
+  train: (at) => train.debug(at === undefined ? worldTime() : at),
+  fireworks: (at) => fireworks.debug(at === undefined ? worldTime() : at),
   // L3 QA: pin the living-windows clock (live seconds) for t / t+60 s
   // captures; null follows the server clock again.
   windowClock: (sec) => city.pinLiveWindows(sec),
   skyTraffic: () => ({
     airliners: airliners.drawn,
     airlinerOffsets: airliners.drawn.map((a) => {
-      const o = airlinerOffsetInto(a, socket.renderTime() ?? 0, {
+      const o = airlinerOffsetInto(a, worldTime() ?? 0, {
         x: 0,
         y: 0,
         z: 0,
@@ -1621,7 +1711,7 @@ window.__ab = {
     newsHeli: moverField.news,
   }),
   forceDroneShow: (ageS) =>
-    droneShow.force(socket.renderTime(), ageS === null ? null : ageS * 1000),
+    droneShow.force(worldTime(), ageS === null ? null : ageS * 1000),
   // V2 QA: instance counts for the perf report.
   cityStats: () => ({
     buildings: city.cityBuildings.length,
@@ -1639,10 +1729,10 @@ window.__ab = {
   signage: () => signage.counts,
   signImage: (x, z) => signage.imageOf(x, z),
   signBroken: (at) =>
-    signage.brokenTubes(at ?? socket.renderTime() ?? performance.now()),
+    signage.brokenTubes(at ?? worldTime() ?? performance.now()),
   micro: (at) => {
     const time =
-      at === undefined ? (socket.renderTime() ?? performance.now()) : (at ?? 0);
+      at === undefined ? (worldTime() ?? performance.now()) : (at ?? 0);
     const gate = microOn ? microGate(chase.position.y) : 0;
     return {
       gate,
@@ -1700,6 +1790,15 @@ window.__ab = {
   qaReactionClock: (serverTimeMs) => {
     qaReactAt = serverTimeMs;
   },
+  pinWorld: (serverTimeMs) => {
+    qaWorld =
+      serverTimeMs === null ? null : { ms: serverTimeMs, frameMs: null };
+    // A pin is a jump: the windowed feeds must not replay (or enumerate —
+    // a jump of years is billions of buckets) everything in between.
+    strikeFeed.reset();
+    fireworks.resetClock();
+    return worldTime();
+  },
   reactions: () => {
     const r = reactor.reactions;
     return {
@@ -1731,7 +1830,7 @@ window.__ab = {
     if (t === null) skyCycle.forced = null;
     else if (typeof t === "string") skyCycle.forced = SKY_MOMENTS[t];
     else if (typeof t === "number") skyCycle.forced = t - Math.floor(t);
-    const rt = socket.renderTime();
+    const rt = worldTime();
     return {
       phase: skyCycle.phaseNow,
       forced: skyCycle.forced !== null,
@@ -1741,7 +1840,7 @@ window.__ab = {
   // ST2 QA: consumed strikes (two tabs must agree), the next scheduled
   // strike (for staging reveals), live reveal pings, and atmosphere state.
   storm: () => {
-    const rt = socket.renderTime();
+    const rt = worldTime();
     return {
       seed: welcome.seed,
       strikes: strikeLog.map((s) => ({ ...s })),
@@ -1756,7 +1855,7 @@ window.__ab = {
     };
   },
   weather: (at) => {
-    const rt = socket.renderTime();
+    const rt = worldTime();
     if (at === null) weatherShift = 0;
     else if (typeof at === "number") weatherShift = rt === null ? 0 : at - rt;
     else if (at !== undefined && rt !== null && WEATHER_PHASES.includes(at)) {
@@ -1790,7 +1889,7 @@ let last = performance.now();
 // otherwise compile on the frame it first appears, which is exactly the
 // moment a hitch is noticed. Each subsystem's update() then owns visibility.
 fadeEl.classList.add("dead");
-await prewarmScene(renderer, scene, camera);
+await prewarmScene(renderer, scene, camera, composer);
 flashFade();
 
 // Named (M2) so the visibility pause at the bottom can stop and restore it.
@@ -1814,7 +1913,15 @@ const frame = (now: number): void => {
   // controller or the clock-offset estimate jumps. Null until the first
   // snapshot: movers then render hidden AND count as non-solid.
   const frameClock = socket.tickRenderClock(now);
-  const renderMs = frameClock.time;
+  if (qaWorld !== null) {
+    // O4 QA pin: advanced by the SIM's step (dt, clamped like the flight
+    // model), not wall time, so the world and the plane move in lockstep —
+    // frame n of a pass shows the same scene on a 3 fps software rasteriser
+    // as on a GPU (where dt is never clamped and this IS real time).
+    if (qaWorld.frameMs !== null) qaWorld.ms += dt * 1000;
+    qaWorld.frameMs = now;
+  }
+  const renderMs = qaWorld !== null ? qaWorld.ms : frameClock.time;
   planeLights.begin(); // own + remote lights re-append every frame
   moverLights.begin(); // crane/aircraft lights + firework sparks, same deal
   // Cursor smoothing + the leave-the-window fade run alive or dead, so
@@ -2013,7 +2120,12 @@ const frame = (now: number): void => {
     }
   }
   bullets.step(dt);
-  for (const bullet of [...bullets.all]) {
+  // Backwards, so a hit's bullets.remove() never skips the next bullet
+  // (and no per-frame copy of the list — O4).
+  const live = bullets.all;
+  for (let i = live.length - 1; i >= 0; i--) {
+    const bullet = live[i];
+    if (bullet === undefined) continue;
     if (bullet.cosmetic) {
       // An enemy bullet shaving past this frame → panned near-miss whoosh.
       if (

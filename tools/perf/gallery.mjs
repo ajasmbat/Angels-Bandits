@@ -1,6 +1,10 @@
 // VO gallery: fixed viewpoints -> PNGs, for before/after visual review.
 //   npm run build -w client && node tools/perf/gallery.mjs <outDir> [port] [view,view]
-// Uses the cached chromium headless shell on Metal (see tools/perf/README.md).
+// Uses the cached chromium headless shell on Metal (see tools/perf/README.md);
+// on Linux, playwright's own headless shell on SwiftShader (slow, but the
+// pixels are right). The sky is pinned to deep night (`?sky=night`, L12) so
+// shots never depend on the server's time of night; the sky-* views force
+// their own phase through __ab.sky.
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
@@ -26,6 +30,45 @@ const VIEWS = [
   // N1: plaza (4,4) as a night park — pond, paths, lamps, tree clusters.
   { name: "plaza-park", x: 900, z: 1030, y: 120, yaw: 0, pitch: -0.6 },
   { name: "moon", x: 700, z: 1000, y: 260, yaw: -0.61, pitch: 0.2 }, // faces MOON_DIR
+  // L12 sky cycle: each phase toward its own horizon (dusk glow in the west,
+  // the night moon, the dawn glow in the east) and over the same rooftops.
+  {
+    name: "sky-dusk",
+    x: 700,
+    z: 1000,
+    y: 230,
+    yaw: 2.5,
+    pitch: 0.12,
+    sky: "dusk",
+  },
+  {
+    name: "sky-night",
+    x: 700,
+    z: 1000,
+    y: 230,
+    yaw: -0.61,
+    pitch: 0.12,
+    sky: "night",
+  },
+  {
+    name: "sky-predawn",
+    x: 700,
+    z: 1000,
+    y: 230,
+    yaw: -0.66,
+    pitch: 0.12,
+    sky: "predawn",
+  },
+  { name: "sky-dusk-city", x: 300, z: 900, y: 175, yaw: 0.6, sky: "dusk" },
+  { name: "sky-night-city", x: 300, z: 900, y: 175, yaw: 0.6, sky: "night" },
+  {
+    name: "sky-predawn-city",
+    x: 300,
+    z: 900,
+    y: 175,
+    yaw: 0.6,
+    sky: "predawn",
+  },
 ];
 let browser;
 try {
@@ -35,10 +78,14 @@ try {
     } catch {}
     await sleep(250);
   }
-  browser = await chromium.launch({
-    executablePath: `${process.env.HOME}/Library/Caches/ms-playwright/chromium_headless_shell-1223/chrome-headless-shell-mac-arm64/chrome-headless-shell`,
-    args: ["--use-angle=metal", "--enable-gpu"],
-  });
+  browser = await chromium.launch(
+    process.platform === "darwin"
+      ? {
+          executablePath: `${process.env.HOME}/Library/Caches/ms-playwright/chromium_headless_shell-1223/chrome-headless-shell-mac-arm64/chrome-headless-shell`,
+          args: ["--use-angle=metal", "--enable-gpu"],
+        }
+      : { args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] },
+  );
   const page = await browser.newPage({
     viewport: { width: 1280, height: 720 },
     deviceScaleFactor: 1,
@@ -47,7 +94,7 @@ try {
   page.on("console", (m) => {
     if (m.type() === "error") console.error("CONSOLE", m.text());
   });
-  await page.goto(`http://127.0.0.1:${PORT}/?res=1.5`);
+  await page.goto(`http://127.0.0.1:${PORT}/?res=1.5&sky=night`);
   await page.fill("#join-name", "SHOT");
   await page.click('#join button[type="submit"]');
   await page.waitForFunction(() => !!window.__ab, null, { timeout: 60000 });
@@ -63,6 +110,7 @@ try {
           s.pitch = v.pitch;
         }
       }, v);
+    await page.evaluate((s) => window.__ab.sky(s ?? "night"), v.sky);
     await pin();
     if (v.orbit) {
       await page.mouse.move(640, 360);
@@ -76,7 +124,8 @@ try {
       await pin();
       await sleep(90);
     }
-    await page.screenshot({ path: `${OUT}/${v.name}.png` });
+    // SwiftShader (Linux) can take far longer than the 30 s default.
+    await page.screenshot({ path: `${OUT}/${v.name}.png`, timeout: 180_000 });
     if (v.orbit) {
       await page.keyboard.up("KeyE");
       await sleep(600);

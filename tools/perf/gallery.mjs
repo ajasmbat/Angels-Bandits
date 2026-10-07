@@ -73,6 +73,20 @@ try {
   await page.waitForFunction(() => !!window.__ab, null, { timeout: 60000 });
   await page.evaluate(() => window.__ab.setBots(0));
   await sleep(1500);
+  // Hold each view's pose EVERY frame from inside the page: on a software
+  // renderer a frame takes seconds, and a pin sent from here between frames
+  // lets the plane fly away from the view before the shot lands.
+  await page.evaluate(() => {
+    const hold = () => {
+      const v = window.__galleryPin;
+      if (v) {
+        window.__ab.teleport(v.x, v.z, v.y, v.yaw);
+        if (v.pitch) window.__ab.state().pitch = v.pitch;
+      }
+      requestAnimationFrame(hold);
+    };
+    requestAnimationFrame(hold);
+  });
   const perfRows = [];
   for (const wx of WEATHERS) {
     if (wx) {
@@ -84,6 +98,7 @@ try {
       if (ONLY && !ONLY.includes(v.name)) continue;
       const pin = async () =>
         page.evaluate((v) => {
+          window.__galleryPin = v;
           window.__ab.teleport(v.x, v.z, v.y, v.yaw);
           if (v.pitch) {
             const s = window.__ab.state();

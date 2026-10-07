@@ -278,7 +278,7 @@ const IN_CLOUD_FOG_COLOR = 0x3a3c52;
  * by up to RAIN_HAZE_EXTRA, and darkens fog + dome TOGETHER by up to
  * RAIN_DARKEN (darken-only, so the horizon seam stays invisible). */
 const RAIN_FOG_NEAR = 70;
-const RAIN_HAZE_EXTRA = 0.9;
+const RAIN_HAZE_EXTRA = 0.6;
 const RAIN_DARKEN = 0.15;
 
 /** The slice of the shared weather (common/src/weather.ts) the sky reads. */

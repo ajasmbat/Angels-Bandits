@@ -153,9 +153,9 @@ if (uWeather.y > 0.0) {
 /** Facade / roof albedo darkening at full wetness. */
 const FACADE_WET_DARKEN = "0.15";
 const ROOF_WET_DARKEN = "0.3";
-/** Fresnel sheen gain: WET_SHEEN_COLOR (~0.29 luminance) × 0.4 ≈ 0.12 peak at
- * full grazing — the facade stays far sub-bloom. */
-const FACADE_SHEEN_GAIN = "0.4";
+/** Fresnel sheen gain: WET_SHEEN_COLOR (~0.29 luminance) × 0.25 ≈ 0.07 peak
+ * at full grazing — a slight sheen, the facade stays far sub-bloom. */
+const FACADE_SHEEN_GAIN = "0.25";
 
 /** After the facade/roof colour passes. */
 export const BUILDING_WET_COLOR_GLSL = /* glsl */ `

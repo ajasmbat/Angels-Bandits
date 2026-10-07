@@ -11,7 +11,7 @@
 // leaves every drop exactly where it was.
 //
 // Readability (the ticket's hard rule: rain never hides tracers or planes):
-// streaks are thin, alpha ≤ RAIN_ALPHA, colour luminance ≈ 0.37 (far under
+// streaks are thin and additive, adding ≤ ~0.12 luminance each (far under
 // the 0.72 bloom threshold), and a drop within NEAR_CUT of the camera
 // collapses to zero size in the vertex shader — no lens-filling streak and no
 // wasted fill. renderOrder −0.5 draws it after the sky dome (−1) and BEFORE
@@ -26,23 +26,26 @@ import * as THREE from "three";
 /** Horizontal box edge, m — must divide WORLD_SIZE (seam-invariant field). */
 const BOX_XZ = 80;
 /** Vertical box edge, m (no seam on Y). */
-const BOX_Y = 60;
+const BOX_Y = 40;
 /** Drops at full downpour. */
-const MAX_DROPS = 7000;
+const MAX_DROPS = 12000;
 /** Terminal fall speed, m/s. */
 const FALL_SPEED = 11;
 /** Streak length = relative speed × this exposure, clamped (plane speeds). */
-const EXPOSURE_S = 0.03;
-const STREAK_MIN = 0.6;
-const STREAK_MAX = 3.5;
+const EXPOSURE_S = 0.06;
+const STREAK_MIN = 1.2;
+const STREAK_MAX = 4;
 /** Streak half-width, m (widens a little with distance against shimmer). */
-const STREAK_HALF_WIDTH = 0.012;
+const STREAK_HALF_WIDTH = 0.02;
 /** Drops nearer than this collapse — the lens never fills with rain. */
 const NEAR_CUT = 3;
 /** Peak streak alpha (low: tracers and planes must read through rain). */
-const RAIN_ALPHA = 0.18;
-/** Lit-by-the-city blue-grey (linear luminance ≈ 0.37 — sub-bloom). */
-const RAIN_COLOR = 0x9aa4c8;
+const RAIN_ALPHA = 0.22;
+/** Lit-by-the-city blue-white, linear luminance ≈ 0.55. ADDITIVE: a blended
+ * pale streak vanishes against the bright downpour haze, so a streak instead
+ * adds at most 0.55 × RAIN_ALPHA ≈ 0.12 — visible on dark sky and lit haze
+ * alike, never a bloom source on its own. */
+const RAIN_COLOR = 0xb8c4e8;
 /** A camera jump larger than this in one frame (teleport, torus wrap) is not
  * motion — the streaks ignore it. */
 const MAX_FRAME_JUMP = 60;
@@ -76,7 +79,7 @@ void main() {
   // k == 0 collapses all four corners onto the head: a zero-area quad.
   float on = step(1e-3, k);
   vec3 pos = head - dir * (len * position.y * on)
-    + side * (position.x * on * ${STREAK_HALF_WIDTH.toFixed(3)} * (1.0 + dist * 0.04));
+    + side * (position.x * on * ${STREAK_HALF_WIDTH.toFixed(3)} * (1.0 + dist * 0.05));
   vAlpha = k * uFade * (0.6 + 0.4 * aSeed.w) * mix(1.0, 0.15, position.y);
   vSide = position.x;
   gl_Position = projectionMatrix * viewMatrix * vec4(pos, 1.0);
@@ -138,6 +141,9 @@ export class Rain {
         vertexShader: VERTEX,
         fragmentShader: FRAGMENT,
         transparent: true,
+        blending: THREE.AdditiveBlending,
+        // The quad is billboarded in the shader; its winding faces either way.
+        side: THREE.DoubleSide,
         depthWrite: false,
         depthTest: true,
         fog: false,

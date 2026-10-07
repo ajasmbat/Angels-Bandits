@@ -50,16 +50,19 @@ describe("VO1 blue-hour sky", () => {
   it("L12: the dome IS the fog colour below the stop at every moment of the cycle", () => {
     // The torus contract under the sky cycle: whatever time of night it is,
     // the sky from SKY_FOG_STOP down equals the colour handed to the fog.
+    let worst = 0;
     for (let t = 0; t < SKY_CYCLE_MS; t += 1000) {
       const s = skyStateAt(t);
       for (const f of [SKY_FOG_STOP, 0.45, 0.5, 0.75, 1]) {
         const c = domeGradient(f, s);
         for (let i = 0; i < 3; i++) {
-          expect(
+          worst = Math.max(
+            worst,
             Math.abs((c[i] as number) - (s.horizon[i] as number)),
-          ).toBeLessThan(1e-9);
+          );
         }
       }
     }
+    expect(worst).toBeLessThan(1e-9);
   });
 });

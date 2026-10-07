@@ -132,22 +132,25 @@ describe("L12 sky cycle — the pure schedule", () => {
 
   it("turns the moon and the rim light no faster than 1°/s", () => {
     const limit = ((1 * Math.PI) / 180) * (STEP_MS / 1000);
+    // Aggregated, not one expect per sample: 24 000 samples of expect()
+    // starve the vitest worker's RPC heartbeat on a loaded machine.
+    let moonWorst = 0;
+    let glowWorst = 0;
     for (let j = 1; j < samples.length; j++) {
       const a = (samples[j - 1] as (typeof samples)[number]).s;
       const b = (samples[j] as (typeof samples)[number]).s;
-      expect(angle(a.moonDir, b.moonDir)).toBeLessThanOrEqual(limit);
-      expect(angle(a.glowDir, b.glowDir)).toBeLessThanOrEqual(limit);
+      moonWorst = Math.max(moonWorst, angle(a.moonDir, b.moonDir));
+      glowWorst = Math.max(glowWorst, angle(a.glowDir, b.glowDir));
     }
+    expect(moonWorst).toBeLessThanOrEqual(limit);
+    expect(glowWorst).toBeLessThanOrEqual(limit);
   });
 
   it("keeps the moon disc above the fog band, inside a level frame", () => {
     expect(MOON_EL_LOW - MOON_RADIUS).toBeGreaterThan(SKY_FOG_ELEVATION);
     expect(MOON_EL_PEAK).toBeLessThan(0.6);
-    for (const { s } of samples) {
-      expect(Math.asin(s.moonDir[1])).toBeGreaterThanOrEqual(
-        MOON_EL_LOW - 1e-9,
-      );
-    }
+    const lowest = Math.min(...samples.map(({ s }) => Math.asin(s.moonDir[1])));
+    expect(lowest).toBeGreaterThanOrEqual(MOON_EL_LOW - 1e-9);
     // It actually travels: ~100° of azimuth across the night.
     const az = (f: number) => {
       const d = skyStateAtPhase(f).moonDir;
@@ -174,14 +177,17 @@ describe("L12 sky cycle — the pure schedule", () => {
   });
 
   it("keeps every level in range", () => {
-    for (const { s } of samples) {
-      for (const v of [s.occupancy, s.pools, s.stars, s.moonVis]) {
-        expect(v).toBeGreaterThanOrEqual(0);
-        expect(v).toBeLessThanOrEqual(1);
-      }
-      expect(s.exposure).toBeGreaterThanOrEqual(1);
-      expect(s.exposure).toBeLessThan(1.5);
-    }
+    const levels = samples.flatMap(({ s }) => [
+      s.occupancy,
+      s.pools,
+      s.stars,
+      s.moonVis,
+    ]);
+    expect(Math.min(...levels)).toBeGreaterThanOrEqual(0);
+    expect(Math.max(...levels)).toBeLessThanOrEqual(1);
+    const exposures = samples.map(({ s }) => s.exposure);
+    expect(Math.min(...exposures)).toBeGreaterThanOrEqual(1);
+    expect(Math.max(...exposures)).toBeLessThan(1.5);
   });
 
   it("parses the ?sky= boot pin", () => {
@@ -201,14 +207,12 @@ describe("L12 sky cycle — the emissive ladder holds", () => {
 
   it("keeps every facade far under the bloom threshold all night", () => {
     const night = rigIrradiance(NIGHT);
-    for (const { s } of samples) {
-      const irr = rigIrradiance(s);
-      // Never more worst-case light than the night rig facade-palette pins…
-      expect(irr).toBeLessThanOrEqual(night + 1e-9);
-      // …and the bound itself, brightest albedo + bounce on top.
-      const peak = (maxDiffuse * irr) / Math.PI + BOUNCE_LUMINANCE_CAP;
-      expect(peak).toBeLessThan(FACADE_PEAK);
-    }
+    const irr = Math.max(...samples.map(({ s }) => rigIrradiance(s)));
+    // Never more worst-case light than the night rig facade-palette pins…
+    expect(irr).toBeLessThanOrEqual(night + 1e-9);
+    // …and the bound itself, brightest albedo + bounce on top.
+    const peak = (maxDiffuse * irr) / Math.PI + BOUNCE_LUMINANCE_CAP;
+    expect(peak).toBeLessThan(FACADE_PEAK);
     expect(FACADE_PEAK).toBeLessThan(BLOOM_THRESHOLD);
   });
 
@@ -235,13 +239,17 @@ describe("L12 sky cycle — the GPU seams", () => {
     }
     expect(OCCUPANCY_FADE / rate).toBeGreaterThanOrEqual(2); // ≥ 2 s fades
     let on = 0;
+    let full = 0;
+    let none = 0;
     for (let x = 0; x < 60; x++) {
       for (let y = 0; y < 60; y++) {
-        expect(windowOccupied(1234, x, y, 1)).toBe(1);
-        expect(windowOccupied(1234, x, y, 0)).toBe(0);
+        full += windowOccupied(1234, x, y, 1);
+        none += windowOccupied(1234, x, y, 0);
         on += windowOccupied(1234, x, y, 0.55);
       }
     }
+    expect(full).toBe(3600); // occupancy 1: every lit window fully on
+    expect(none).toBe(0); // occupancy 0: none at all
     expect(on / 3600).toBeGreaterThan(0.5);
     expect(on / 3600).toBeLessThan(0.6);
     expect(BUILDING_SHADER_SOURCE.fragmentPars).toContain(

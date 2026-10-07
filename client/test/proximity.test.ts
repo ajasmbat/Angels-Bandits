@@ -7,6 +7,7 @@
 
 import { generateCity } from "@angels-bandits/common/city";
 import { natureFor } from "@angels-bandits/common/city/nature";
+import { RIVER_CENTER_Z } from "@angels-bandits/common/city/river";
 import {
   buildCityIndex,
   buildNatureIndex,
@@ -57,8 +58,9 @@ interface Run {
   crashAt: number | null;
   cues: Set<ProximityCue>;
   maxDy: number;
-  /** Where the run ended along x (the arch's exit check). */
+  /** Where the run ended along x (the arch's exit check), and its height. */
   exitX: number;
+  endY: number;
 }
 
 /**
@@ -83,6 +85,7 @@ function fly(
     cues: new Set(),
     maxDy: 0,
     exitX: start.pos.x,
+    endY: start.pos.y,
   };
   const n = Math.round(seconds / DT);
   for (let i = 0; i < n; i++) {
@@ -112,6 +115,7 @@ function fly(
     if (until?.(f)) break;
   }
   run.exitX = f.pos.x;
+  run.endY = f.pos.y;
   return run;
 }
 
@@ -362,6 +366,123 @@ describe("H1 archway (d)", () => {
     it(`the arch alone is silent on its centreline at ${v} m/s`, () => {
       expect(landmark).toBeDefined();
       thread({ buildings: landmark ? [landmark] : [] }, v);
+    });
+  }
+});
+
+// L11b: the river channel (river.ts): water at y −22, decks −2.5…0 every
+// 200 m along x, bank walls at z 1100 ± 60. The probe (r 2) has a 15.5 m band
+// between them, so a pitch nudge held for 2.2 s always "hits" something — the
+// vertical twin of the canyon bug above.
+describe("river flight is calm (L11b)", () => {
+  /** Pursuit of a ±10 m lateral weave along the channel centreline, with a
+   * gentle altitude wander kept inside 5–15 m above the water: `y0` plus a
+   * ±2 m wander mid-band, or up to 3 m inward from either edge. */
+  const riverPilot = (x0: number, y0: number) => {
+    const inward = y0 <= -15 ? 1 : y0 >= -9 ? -1 : 0;
+    const at = (s: number) => ({
+      z: RIVER_CENTER_Z + 10 * Math.sin((2 * Math.PI * s) / 280),
+      y:
+        y0 +
+        (inward === 0
+          ? 2 * Math.sin((2 * Math.PI * s) / 330)
+          : inward * 1.5 * (1 - Math.cos((2 * Math.PI * s) / 330))),
+    });
+    const LOOK = 25;
+    return (f: FlightState): FlightInput => {
+      const s = wrapDelta({ x: x0, y: 0, z: 0 }, f.pos).x;
+      const s2 = s < -1 ? s + 2000 : s; // distance flown along +x
+      const want = at(s2 + LOOK);
+      const yaw = Math.atan2(-LOOK, -(want.z - f.pos.z));
+      const pitch = Math.atan2(want.y - f.pos.y, LOOK);
+      return {
+        pitch: clamp(3 * (pitch - f.pitch), -0.3, 0.3),
+        turn: clamp(-3 * wrapAngle(yaw - f.yaw), -0.3, 0.3),
+        roll: 0,
+        throttle: 0,
+      };
+    };
+  };
+
+  for (const y of [-17, -12, -7]) {
+    for (const v of [50, 70, 90]) {
+      it(`weaving down the river at y ${y}, ${v} m/s, under every bridge`, () => {
+        // Eastbound from mid-span; a whole lap passes all ten bridges.
+        const x0 = 100;
+        const seconds = 2100 / v;
+        const start = plane({ x: x0, y, z: RIVER_CENTER_Z }, -Math.PI / 2, v);
+        const off = fly(start, riverPilot(x0, y), CITY, seconds, false);
+        expect(off.crashAt).toBeNull(); // the route itself is flyable
+        const on = fly(start, riverPilot(x0, y), CITY, seconds, true);
+        expect(on.crashAt).toBeNull();
+        expect(on.warnFrames / on.frames).toBeLessThan(0.03);
+        // No net assist climb: the assisted run ends where the pilot does.
+        expect(on.endY - off.endY).toBeLessThan(1);
+        expect(on.maxDy).toBeLessThan(off.maxDy + 1);
+      });
+    }
+  }
+});
+
+describe("genuine river impacts still alarm (L11b)", () => {
+  const hold = () => ({ pitch: 0, turn: 0, roll: 0, throttle: 0 });
+  const warnedAhead = (start: FlightState) => {
+    const off = fly(start, hold, CITY, 12, false);
+    expect(off.crashAt).not.toBeNull();
+    expect(off.firstWarnAt).not.toBeNull();
+    expect((off.crashAt ?? 0) - (off.firstWarnAt ?? 0)).toBeGreaterThanOrEqual(
+      1.0,
+    );
+    return off;
+  };
+  const deg = Math.PI / 180;
+
+  for (const v of [50, 70, 90]) {
+    it(`a shallow descent into the water at ${v} m/s: PULL UP ≥ 1 s ahead`, () => {
+      for (const pitch of [-2 * deg, -5 * deg]) {
+        const start = plane(
+          { x: 100, y: -7, z: RIVER_CENTER_Z },
+          -Math.PI / 2,
+          v,
+          pitch,
+        );
+        expect(warnedAhead(start).cues).toEqual(new Set(["pull-up"]));
+      }
+    });
+
+    it(`diving into the river from above at ${v} m/s: PULL UP ≥ 1 s ahead`, () => {
+      // From across the x seam, so it meets the water mid-span (x ≈ 100).
+      const start = plane(
+        { x: 1940, y: 40, z: RIVER_CENTER_Z },
+        -Math.PI / 2,
+        v,
+        -20 * deg,
+      );
+      expect(warnedAhead(start).cues).toEqual(new Set(["pull-up"]));
+    });
+
+    it(`head-on into a bank wall at ${v} m/s: warned ≥ 1 s ahead`, () => {
+      // Northbound across the channel from the south bank, mid-span.
+      warnedAhead(plane({ x: 100, y: -12, z: 1155 }, 0, v));
+    });
+
+    it(`climbing into a deck's underside at ${v} m/s: LEVEL OUT ≥ 1 s ahead`, () => {
+      // +5° from y −16 meets the x = 200 deck from below near its middle.
+      const start = plane(
+        { x: 70, y: -16, z: RIVER_CENTER_Z },
+        -Math.PI / 2,
+        v,
+        5 * deg,
+      );
+      expect(warnedAhead(start).cues).toEqual(new Set(["level-out"]));
+      expect(fly(start, hold, CITY, 12, true).crashAt).toBeNull();
+    });
+
+    it(`head-on into a deck at ${v} m/s: warned ≥ 1 s ahead`, () => {
+      // Eastbound at deck height from just past the x = 0 (seam) bridge.
+      warnedAhead(
+        plane({ x: 25, y: -1.5, z: RIVER_CENTER_Z }, -Math.PI / 2, v),
+      );
     });
   }
 });

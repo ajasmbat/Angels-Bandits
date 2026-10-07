@@ -11,6 +11,7 @@ const CUE_TEXT: Record<ProximityCue, string> = {
   "pull-up": "PULL UP",
   "break-left": "◀ BREAK LEFT",
   "break-right": "BREAK RIGHT ▶",
+  "level-out": "▼ LEVEL OUT",
 };
 
 export class Hud {
@@ -165,7 +166,8 @@ export class Hud {
   }
 
   /** Ground/wall proximity warning (F4): the flashing PULL UP — or, for a
-   * wall a turn escapes, BREAK LEFT/RIGHT — cue; null hides it. */
+   * wall a turn escapes, BREAK LEFT/RIGHT, or for a deck overhead LEVEL OUT
+   * (L11b) — cue; null hides it. */
   setProximity(cue: ProximityCue | null): void {
     if (cue !== null) this.pullUp.textContent = CUE_TEXT[cue];
     this.pullUp.classList.toggle("on", cue !== null);

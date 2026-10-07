@@ -72,7 +72,7 @@ import {
   threatOnSix,
 } from "./game/callouts";
 import { ChaseCamera } from "./game/camera";
-import { detectCrash } from "./game/collision";
+import { detectCrash, touchesSolid } from "./game/collision";
 import { FlightInputSource } from "./game/flight-input";
 import { createFreeLook, shapeInput, stepFreeLook } from "./game/freelook";
 import { Guns } from "./game/guns";
@@ -639,6 +639,19 @@ const botCallsigns = (): string[] => {
 // --- Simulation state ---
 const input = new FlightInputSource();
 const chase = new ChaseCamera();
+// L11b spring arm: the eye never sits inside a building, the ground, the
+// river's decks and bank walls, or a mover at the latched render clock
+// (trees excepted — a canopy flick would pump the arm).
+let chaseMoversMs: number | null = null;
+chase.solid = (p, r) =>
+  touchesSolid(
+    p,
+    r,
+    city.cityBuildings,
+    city.cityIndex,
+    moverField,
+    chaseMoversMs,
+  );
 // Hold-E free-look: pure client camera state, never streamed (B2).
 let freelook = createFreeLook();
 // Hold-right-click aim zoom: same deal — display + input shaping only.
@@ -1688,6 +1701,7 @@ renderer.setAnimationLoop((now) => {
     // the camera and the airframe from moving in lockstep.
     const camShake = turbulenceOffset(now, flight.pos.y);
     const planeShake = turbulenceOffset(now + 537, flight.pos.y);
+    chaseMoversMs = renderMs;
     chase.update(camera, flight, dt, freelook, camShake, zoom.z);
     const planePos = nearestImage(chase.position, flight.pos);
     plane.position.set(

@@ -129,6 +129,7 @@ import {
   spinPropeller,
 } from "./render/plane";
 import { PlaneLights } from "./render/planelights";
+import { prewarmScene } from "./render/prewarm";
 import { CityReactor } from "./render/reactions";
 import { RemotePlanes } from "./render/remotes";
 import { MSAA_SAMPLES, readRenderOptions } from "./render/renderopts";
@@ -1464,30 +1465,15 @@ window.__ab = {
 const poseEuler = new THREE.Euler();
 const poseQuat = new THREE.Quaternion();
 let last = performance.now();
-// Pre-warm the micro tier's four programs. They would otherwise first compile
-// on the frame the player descends through 140 m — a guaranteed stutter at
-// exactly the moment the tier is meant to appear seamlessly. compile() walks
-// the VISIBLE scene, so the meshes are shown for the one call and hidden
-// again; each subsystem's own update() turns them back on when the gate opens.
-for (const o of [
-  pedestrians.mesh,
-  steam.points,
-  signals.mesh,
-  constructionSparks.points,
-  reactor.points, // L1: first death must not compile the smoke mid-fight
-]) {
-  o.visible = true;
-}
-renderer.compile(scene, camera);
-for (const o of [
-  pedestrians.mesh,
-  steam.points,
-  signals.mesh,
-  constructionSparks.points,
-  reactor.points, // L1: first death must not compile the smoke mid-fight
-]) {
-  o.visible = false;
-}
+// Pre-warm every program the scene can ever draw, behind the boot fade (O2):
+// the micro tier (first seen descending through 140 m), and every effect
+// that starts hidden — guns, explosions, sparks, storm bolts, searchlights,
+// birds, movers, traffic, the prop blur, the HP sprite, name tags. Each would
+// otherwise compile on the frame it first appears, which is exactly the
+// moment a hitch is noticed. Each subsystem's update() then owns visibility.
+fadeEl.classList.add("dead");
+await prewarmScene(renderer, scene, camera);
+flashFade();
 
 renderer.setAnimationLoop((now) => {
   const rawMs = now - last;
@@ -1498,13 +1484,15 @@ renderer.setAnimationLoop((now) => {
   // dumps into the orbit as one jump. Signs: mouse-right pans the view
   // right, mouse-up looks up (both hand-tuned with LOOK_SENSITIVITY).
   const lookDelta = input.takeLookDelta();
-  // Latch the render clock ONCE. socket.renderTime() reads performance.now()
-  // live, so calling it again 150 lines further down would pose the movers a
-  // frame away from where the crash check tested them — and dying to a jib
-  // drawn somewhere else is exactly the failure the shared seam exists to
-  // prevent. Null until the first snapshot: movers then render hidden AND
-  // count as non-solid.
-  const renderMs = socket.renderTime();
+  // Latch the render clock ONCE, on this frame's rAF timestamp: every system
+  // below poses against the same instant, so the movers are drawn exactly
+  // where the crash check tested them — dying to a jib drawn somewhere else
+  // is the failure the shared seam exists to prevent. The clock is smoothed
+  // (O2: net/clock.ts) — it never steps or runs backward when the delay
+  // controller or the clock-offset estimate jumps. Null until the first
+  // snapshot: movers then render hidden AND count as non-solid.
+  const frameClock = socket.tickRenderClock(now);
+  const renderMs = frameClock.time;
   planeLights.begin(); // own + remote lights re-append every frame
   moverLights.begin(); // crane/aircraft lights + firework sparks, same deal
   // Cursor smoothing + the leave-the-window fade run alive or dead, so
@@ -1675,14 +1663,18 @@ renderer.setAnimationLoop((now) => {
   }
 
   if (alive) {
-    // Stream our pose up (rate-limited to TICK_UP_HZ inside the socket).
+    // Stream our pose up (fixed TICK_UP_HZ cadence inside the socket,
+    // stamped with this frame's time — the pose is the one simulated for it).
     poseEuler.set(flight.pitch, flight.yaw, flight.roll, "YXZ");
     poseQuat.setFromEuler(poseEuler);
-    socket.sendPose({
-      pos: flight.pos,
-      quat: { x: poseQuat.x, y: poseQuat.y, z: poseQuat.z, w: poseQuat.w },
-      speed: flight.speed,
-    });
+    socket.sendPose(
+      {
+        pos: flight.pos,
+        quat: { x: poseQuat.x, y: poseQuat.y, z: poseQuat.z, w: poseQuat.w },
+        speed: flight.speed,
+      },
+      now,
+    );
 
     // Guns: at most one shot a frame; the same seq goes to server and sim.
     // Free-look suppresses shots (heat keeps cooling, none builds).
@@ -1757,7 +1749,12 @@ renderer.setAnimationLoop((now) => {
     }
     for (const target of targets) {
       if (bulletHitsSphere(bullet.prev, bullet.pos, target.pos)) {
-        socket.sendHit(target.id, bullet.origin, bullet.seq);
+        socket.sendHit(
+          target.id,
+          bullet.origin,
+          bullet.seq,
+          remotes.extraDelayOf(target.id),
+        );
         bullets.remove(bullet);
         // Instant shooter-side feedback (marker + thunk + sparks at the
         // impact point); the server's damage broadcast stays the
@@ -1770,7 +1767,7 @@ renderer.setAnimationLoop((now) => {
     }
   }
 
-  remotes.update(renderMs, chase.position, dt, now, (id) =>
+  remotes.update(frameClock, chase.position, dt, now, (id) =>
     reveals.levelOf(id, now),
   );
   // Own rim-flash: the storm lit us up — same tint the remotes wear.

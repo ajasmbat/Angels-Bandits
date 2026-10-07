@@ -357,9 +357,10 @@ export function tierBelow(t: QualityTier): QualityTier | null {
 // GPU-bound frame read as CPU-bound — exactly backwards.
 // The second test is what stops a CPU-bound machine from walking four
 // useless resolution rungs before it sheds a single feature. After a drop
-// main.ts restarts the scaler from the new tier's ceiling with its latch
-// cleared, so the player does not stay blurry AND reduced while the latch
-// slowly relaxes.
+// main.ts keeps the scaler's current ratio but clears its latch, so the
+// cheaper tier earns its pixels back rung by rung — the player does not stay
+// blurry AND reduced while the latch slowly relaxes, and does not re-walk
+// the rungs that just missed either.
 //
 // What does NOT count, because none of it is the machine's steady state:
 // a hidden tab, the first frames back from one, death/respawn, a resize, a

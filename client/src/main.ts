@@ -416,6 +416,7 @@ window.addEventListener("resize", () => {
     relaxAfterMs: RELAX_AFTER_MS,
   };
   resFrames.reset();
+  cpuFrames.reset();
 });
 
 // --- World (city seed comes from the server so every roommate agrees) ---
@@ -1442,6 +1443,7 @@ window.__ab = {
     }
     applyPixelRatio(resolution.ratio);
     resFrames.reset();
+    cpuFrames.reset();
   },
   quality: () => ({
     setting: qualitySetting,

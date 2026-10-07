@@ -2,6 +2,7 @@
 // Temporal flicker metric (O1's, committed by O3 so it can be re-run).
 //
 //     node tools/perf/flicker.mjs [--ref <git-ref>] [--frames 30] [--no-build]
+//                                 [--shots <dir>] [--out <file>]
 //
 // Captures FRAMES consecutive frames on a FIXED 1/60 s clock and scores the
 // mean per-pixel frame-to-frame luminance change (0–255 units; lower is
@@ -62,13 +63,14 @@ const SCENES = {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function parseArgs(argv) {
-  const opts = { ref: null, frames: 30, build: true, out: null };
+  const opts = { ref: null, frames: 30, build: true, out: null, shots: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--ref") opts.ref = argv[++i];
     else if (a === "--frames") opts.frames = Number(argv[++i]);
     else if (a === "--no-build") opts.build = false;
     else if (a === "--out") opts.out = resolve(process.cwd(), argv[++i]);
+    else if (a === "--shots") opts.shots = resolve(process.cwd(), argv[++i]);
     else throw new Error(`unknown flag ${a}`);
   }
   if (!(opts.frames >= 3)) throw new Error("--frames must be >= 3");
@@ -123,6 +125,10 @@ function initScript() {
   const getContext = HTMLCanvasElement.prototype.getContext;
   HTMLCanvasElement.prototype.getContext = function (type, attrs) {
     if (type === "webgl2" || type === "webgl") {
+      // The 3D view. NOT `querySelector("canvas")`: the minimap and other
+      // HUD canvases come first in the document, and scoring the minimap
+      // reads a calm ~0 for any build.
+      window.__flickerGls = [...(window.__flickerGls ?? []), this];
       return getContext.call(this, type, {
         ...(attrs ?? {}),
         preserveDrawingBuffer: true,
@@ -159,6 +165,7 @@ function aimScene(page, scene) {
         };
       };
       window.__flickerPrev = null;
+      window.__flickerPin = { x: s.eye.x, z: s.eye.z };
       window.__ab.qaCamera(window.__flickerView(0));
     },
     { scene, panM: PAN_M },
@@ -168,7 +175,11 @@ function aimScene(page, scene) {
 /** Read the canvas, luminance it, diff against the previous frame. */
 function readFrame(page) {
   return page.evaluate(() => {
-    const src = document.querySelector("canvas");
+    // The renderer's canvas: a WebGL one that is in the page (a capability
+    // probe's detached canvas never is), the largest if several are.
+    const src = (window.__flickerGls ?? [])
+      .filter((c) => c.isConnected)
+      .sort((a, b) => b.width * b.height - a.width * a.height)[0];
     const w = src.width;
     const h = src.height;
     let c = window.__flickerCanvas;
@@ -201,7 +212,7 @@ function readFrame(page) {
   });
 }
 
-async function measureBuild(browser, label, cwd, frames) {
+async function measureBuild(browser, label, cwd, frames, shots) {
   const { proc, port } = await startServer(cwd);
   const page = await browser.newPage({
     viewport: VIEWPORT,
@@ -225,11 +236,16 @@ async function measureBuild(browser, label, cwd, frames) {
       timeout: 120_000,
     });
     await page.evaluate(() => window.__ab.setBots(0));
-    // Hold the plane high and still, so it can neither die nor drift; the
-    // view itself comes from qaCamera.
+    // Hold the plane still right above the scene's eye, so it can neither
+    // die nor drift and the city streams around the view; the view itself
+    // comes from qaCamera. 330 m: crash-proof (over every roof) and well
+    // under the cloud deck — the atmosphere is computed from the PLANE's
+    // altitude, and inside the deck its fog hides the whole city.
     await page.evaluate(() => {
+      window.__flickerPin = { x: 1000, z: 1500 };
       const pin = () => {
-        window.__ab.teleport(1000, 1300, 520, 0);
+        const p = window.__flickerPin;
+        window.__ab.teleport(p.x, p.z, 330, 0);
         requestAnimationFrame(pin);
       };
       pin();
@@ -280,6 +296,19 @@ async function measureBuild(browser, label, cwd, frames) {
         );
         await page.clock.runFor(STEP_MS);
         const f = await readFrame(page);
+        // --shots: the first and last captured frame of each scene, to look
+        // at before trusting a score (a wrong view scores as well as a right
+        // one). Written after the read, so it never perturbs the clock.
+        if (shots && (i === 0 || i === frames - 1)) {
+          const png = await page.evaluate(() =>
+            window.__flickerCanvas.toDataURL("image/png"),
+          );
+          mkdirSync(shots, { recursive: true });
+          writeFileSync(
+            resolve(shots, `${label.replace(/\W+/g, "-")}-${scene}-${i}.png`),
+            Buffer.from(png.split(",")[1], "base64"),
+          );
+        }
         means.push(f.mean);
         if (f.delta !== null) deltas.push(f.delta);
       }
@@ -339,9 +368,21 @@ async function main() {
     })();
     report.gpu = gpu;
     console.log(`GPU: ${gpu}`);
-    report.head = await measureBuild(browser, "HEAD", REPO, opts.frames);
+    report.head = await measureBuild(
+      browser,
+      "HEAD",
+      REPO,
+      opts.frames,
+      opts.shots,
+    );
     if (ref !== null) {
-      report.ref = await measureBuild(browser, ref.label, ref.dir, opts.frames);
+      report.ref = await measureBuild(
+        browser,
+        ref.label,
+        ref.dir,
+        opts.frames,
+        opts.shots,
+      );
     }
   } finally {
     await browser.close().catch(() => {});

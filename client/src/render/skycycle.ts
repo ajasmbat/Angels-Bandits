@@ -15,8 +15,6 @@
 // fog.ts HAZE_*, grade.ts tints): deep night IS today's look.
 
 import * as THREE from "three";
-import type { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
-import type { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { HAZE_COLOR, HAZE_TINT, setHaze } from "./fog";
 import { HIGHLIGHT_TINT, SHADOW_TINT, setGradeTone } from "./grade";
 import {
@@ -431,9 +429,10 @@ export interface SkyTargets {
   dome: { setCycle(s: SkyState): void };
   streetlights: { setPoolLevel(k: number): void };
   renderer: THREE.WebGLRenderer;
-  bloom: UnrealBloomPass;
-  /** The grade pass, when ?grade is on. */
-  grade: ShaderPass | null;
+  /** The bloom pass (its strength follows the night). */
+  bloom: { strength: number };
+  /** Whatever carries the grade's uniforms (the final pass), when ?grade is on. */
+  grade: { uniforms: Record<string, THREE.IUniform> } | null;
 }
 
 /**

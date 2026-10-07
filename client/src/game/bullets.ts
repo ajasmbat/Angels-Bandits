@@ -5,7 +5,11 @@
 // Cosmetic bullets are other players' tracers — rendered, never claimed.
 
 import { BULLET_LIFETIME_S } from "@angels-bandits/common/constants";
-import { type Vec3, canonicalize } from "@angels-bandits/common/world";
+import {
+  type Vec3,
+  canonicalize,
+  wrapCoord,
+} from "@angels-bandits/common/world";
 
 export interface Bullet {
   /** Client-issued bullet id — the seq of FireMsg and hit claims. */
@@ -31,29 +35,39 @@ export class Bullets {
 
   spawn(seq: number, origin: Vec3, vel: Vec3, cosmetic = false): void {
     const pos = canonicalize(origin);
+    // Three distinct objects: step() reuses pos/prev in place (O4), and the
+    // muzzle position a hit claim carries must never move with them.
     this.list.push({
       seq,
       pos,
-      prev: pos,
+      prev: { ...pos },
       vel,
-      origin: pos,
+      origin: { ...pos },
       age: 0,
       cosmetic,
     });
   }
 
-  /** Advance every bullet one frame; expired ones drop out. */
+  /**
+   * Advance every bullet one frame; expired ones drop out. In place (O4): a
+   * 12-plane furball keeps a couple of hundred tracers alive, and two fresh
+   * objects per bullet per frame plus a filtered copy of the list was garbage
+   * the collector had to stop for mid-fight. `prev` and `pos` swap objects,
+   * so `prev` is still exactly last frame's position.
+   */
   step(dt: number): void {
+    let kept = 0;
     for (const b of this.list) {
+      const next = b.prev;
+      next.x = wrapCoord(b.pos.x + b.vel.x * dt);
+      next.y = b.pos.y + b.vel.y * dt;
+      next.z = wrapCoord(b.pos.z + b.vel.z * dt);
       b.prev = b.pos;
-      b.pos = canonicalize({
-        x: b.pos.x + b.vel.x * dt,
-        y: b.pos.y + b.vel.y * dt,
-        z: b.pos.z + b.vel.z * dt,
-      });
+      b.pos = next;
       b.age += dt;
+      if (b.age <= BULLET_LIFETIME_S) this.list[kept++] = b;
     }
-    this.list = this.list.filter((b) => b.age <= BULLET_LIFETIME_S);
+    this.list.length = kept;
   }
 
   /** Remove a bullet that just hit (one bullet, one claim). */

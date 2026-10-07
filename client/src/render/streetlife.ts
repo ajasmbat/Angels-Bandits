@@ -27,7 +27,11 @@ import {
   LOT_LINE,
 } from "@angels-bandits/common/city/street";
 import { BLOCK_PITCH } from "@angels-bandits/common/constants";
-import { type Vec3, canonicalize } from "@angels-bandits/common/world";
+import {
+  type Vec3,
+  canonicalize,
+  wrapCoord,
+} from "@angels-bandits/common/world";
 
 // --- The lateral-band contract -------------------------------------------
 // Every offset below is DERIVED from the S1 street contract. No downstream
@@ -139,9 +143,9 @@ export function ringPointInto(
     out.dx = 0;
     out.dz = -1;
   }
-  const c = canonicalize({ x, y: 0, z });
-  out.x = c.x;
-  out.z = c.z;
+  // Per walker per frame: wrap in place (canonicalize's Vec3 was garbage).
+  out.x = wrapCoord(x);
+  out.z = wrapCoord(z);
   return out;
 }
 

@@ -19,6 +19,7 @@ import {
 } from "@angels-bandits/common/collision";
 import { PLAYER_RADIUS } from "@angels-bandits/common/constants";
 import type { FlightState } from "@angels-bandits/common/flight";
+import type { Vec3 } from "@angels-bandits/common/world";
 
 /**
  * True the frame the plane hits a building, the ground, a solid N1 tree, or
@@ -43,21 +44,43 @@ export function detectCrash(
   serverTimeMs?: number | null,
   nature?: NatureIndex,
 ): boolean {
-  if (hitsGround(state.pos, PLAYER_RADIUS)) return true;
-  if (collideCity(state.pos, PLAYER_RADIUS, buildings, index) !== null) {
-    return true;
-  }
-  if (nature && collideNature(state.pos, PLAYER_RADIUS, nature) !== null) {
-    return true;
-  }
+  return touchesSolid(
+    state.pos,
+    PLAYER_RADIUS,
+    buildings,
+    index,
+    movers,
+    serverTimeMs,
+    nature,
+  );
+}
+
+/**
+ * detectCrash's solids for any sphere: true when a sphere of `radius` at
+ * `pos` touches the ground (the river's water, walls and decks included), a
+ * building, a tree (when `nature` is given) or a mover at `serverTimeMs` —
+ * the same clock rules. Wrap-safe, so a render-space position (any torus
+ * image) works: the chase camera's spring arm (L11b) sweeps with it.
+ */
+export function touchesSolid(
+  pos: Vec3,
+  radius: number,
+  buildings: readonly Building[],
+  index?: CityIndex,
+  movers?: MoverField,
+  serverTimeMs?: number | null,
+  nature?: NatureIndex,
+): boolean {
+  if (hitsGround(pos, radius)) return true;
+  if (collideCity(pos, radius, buildings, index) !== null) return true;
+  if (nature && collideNature(pos, radius, nature) !== null) return true;
   if (!movers) return false;
   if (serverTimeMs === null || serverTimeMs === undefined) {
     // No clock yet: the moving parts are hidden and not solid, but the L5
     // viaduct is static scenery — drawn from the first frame, so solid too.
     return (
-      !!movers.train &&
-      collideTrain(movers.train, state.pos, PLAYER_RADIUS, null) !== null
+      !!movers.train && collideTrain(movers.train, pos, radius, null) !== null
     );
   }
-  return collideMovers(state.pos, PLAYER_RADIUS, movers, serverTimeMs) !== null;
+  return collideMovers(pos, radius, movers, serverTimeMs) !== null;
 }

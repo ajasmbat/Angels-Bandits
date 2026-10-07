@@ -27,6 +27,7 @@ import {
 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
+import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import {
   BrokenNeon,
   type NeonBuzz,
@@ -918,6 +919,10 @@ export class Signage {
       this.place(kind, cameraPos, timeMs, this.tint);
     }
 
+    // O3: off on Low — hidden, and its per-frame placing and tinting skipped.
+    // The image cache keeps the images it last placed, which are exactly the
+    // ones still in the (hidden) mesh, so turning it back on is consistent.
+    if (!this.spillMesh.visible) return;
     this.spillImages.update(cameraPos, this.placeSpill);
     this.spillUploads.flush();
     for (let i = 0; i < this.spills.length; i++) {
@@ -930,6 +935,11 @@ export class Signage {
     if (this.spillMesh.instanceColor) {
       this.spillMesh.instanceColor.needsUpdate = true;
     }
+  }
+
+  /** O3: Low drops the sidewalk spill pools (additive ground decals). */
+  setQuality(tier: QualityTier): void {
+    this.spillMesh.visible = QUALITY_PROFILES[tier].signSpill;
   }
 
   private readonly placeSpill = (i: number, x: number, z: number): void => {

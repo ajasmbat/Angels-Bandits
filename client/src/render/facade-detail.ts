@@ -30,6 +30,7 @@ import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { FacadeArchetype, archetypeFor } from "./archetypes";
 import { emissiveBoost } from "./emissive";
+import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { type SignPlacement, signageFor } from "./signage";
 import { blockOf, blockWindow } from "./streetlife";
 import { facadeFor, pitchSeed, windowPitch } from "./window-pattern";
@@ -814,6 +815,8 @@ export class FacadeDetailRenderer {
   private readonly lightMesh: THREE.InstancedMesh;
   private readonly blocks = new Map<number, BlockData>();
   private lastBlock = -1;
+  /** O3 quality tier: whether the detail is drawn at all. */
+  private tierOn = true;
 
   constructor(buildings: readonly Building[], seed: number) {
     const m = new THREE.Matrix4();
@@ -921,6 +924,11 @@ export class FacadeDetailRenderer {
     return this.mesh.count + this.lightMesh.count;
   }
 
+  /** O3: Low drops the facade detail (dressing only — none of it is solid). */
+  setQuality(tier: QualityTier): void {
+    this.tierOn = QUALITY_PROFILES[tier].facadeDetail;
+  }
+
   /**
    * Re-stream on block change only: the window's buildings are copied in
    * (precomputed matrices) and shifted to their torus image nearest the
@@ -929,7 +937,8 @@ export class FacadeDetailRenderer {
    * per frame; the fade runs on the GPU.
    */
   update(cameraPos: Vec3, enabled = true): void {
-    const visible = enabled && cameraPos.y < FADE_FAR + DETAIL_TOP;
+    const visible =
+      enabled && this.tierOn && cameraPos.y < FADE_FAR + DETAIL_TOP;
     this.mesh.visible = visible;
     this.lightMesh.visible = visible;
     if (!visible) return;

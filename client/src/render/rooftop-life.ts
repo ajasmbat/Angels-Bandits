@@ -33,6 +33,7 @@ import {
 } from "@angels-bandits/common/constants";
 import * as THREE from "three";
 import { emissiveBoost, luminance } from "./emissive";
+import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { roofClutterFor } from "./roofclutter";
 import { RoofKind, roofStyleFor } from "./roofs";
 
@@ -1311,5 +1312,10 @@ export class RooftopLifeRenderer {
   /** `timeMs` is synced server time, so every client animates in phase. */
   update(timeMs: number): void {
     this.loop.value = loopPhase(timeMs);
+  }
+
+  /** O3: Low drops the string-light sprites; pools, fans and flags stay. */
+  setQuality(tier: QualityTier): void {
+    this.lights.visible = QUALITY_PROFILES[tier].rooftopLights;
   }
 }

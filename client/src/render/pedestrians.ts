@@ -22,6 +22,7 @@ import type { Vec3 } from "@angels-bandits/common/world";
 import { wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { type LowPass, SCATTER_RADIUS, scatterShift } from "./reactions";
 import { blockHeat } from "./signage";
 import {
@@ -337,6 +338,8 @@ export class Pedestrians {
   private readonly image = { x: 0, y: 0, z: 0 };
   private static readonly UP = new THREE.Vector3(0, 1, 0);
   private drawn = 0;
+  /** O3 quality tier: share of the crowd kept. */
+  private density = 1;
 
   constructor(seed: number) {
     this.seed = seed;
@@ -376,6 +379,11 @@ export class Pedestrians {
     return specs;
   }
 
+  /** O3: Medium/Low keep 70 % / 40 % of the crowd. */
+  setQuality(tier: QualityTier): void {
+    this.density = QUALITY_PROFILES[tier].crowdDensity;
+  }
+
   /**
    * Place the crowd for server time `serverTimeMs`. Pedestrians MOVE, so a
    * null clock hides them outright (the Traffic policy) rather than showing a
@@ -396,13 +404,16 @@ export class Pedestrians {
     }
     this.mesh.visible = true;
     const t = serverTimeMs / 1000;
+    // O3: the tier thins the crowd through the SAME deterministic keep test
+    // the altitude gate uses, so who stays on the street never flickers.
+    const keep = gate * this.density;
     let n = 0;
     for (const { bx, bz } of blockWindow(cameraPos)) {
       const specs = this.specsFor(bx, bz);
       // L1 scatter: only blocks a live pass can reach pay the per-walker test.
       const scatter = passes.length > 0 && blockNearPass(bx, bz, passes);
       for (let i = 0; i < specs.length; i++) {
-        if (!microKeep(i, gate)) continue;
+        if (!microKeep(i, keep)) continue;
         const spec = specs[i] as PedestrianSpec;
         pedestrianPoseInto(spec, t, this.pose);
         if (scatter) this.scatter(spec, t, serverTimeMs, passes);

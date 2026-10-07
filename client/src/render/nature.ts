@@ -43,6 +43,7 @@ import {
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
+import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { ImageCache, InstanceUploads } from "./wrapPlacement";
 
 /** Re-image every instance once the camera has moved this far, m. An
@@ -175,6 +176,8 @@ export class NatureRenderer {
   private readonly lastCam = { x: Number.NaN, z: Number.NaN };
   /** The crown shader's wind uniforms, refreshed per frame in place. */
   private readonly windUniform = { value: new THREE.Vector3() };
+  /** O3 quality tier: whether the crowns sway in the shared wind. */
+  private sway = true;
   private readonly phaseUniform = { value: new THREE.Vector3() };
   private readonly wind: Wind = { x: 1, z: 0, strength: 0 };
   private readonly phases: SwayPhases = { gust: 0, flutterA: 0, flutterB: 0 };
@@ -305,7 +308,8 @@ export class NatureRenderer {
    * moved REIMAGE_STEP. Call per frame. A null clock holds the crowns still
    * (zero strength) rather than swaying out of step with other clients. */
   update(cameraPos: Vec3, serverTimeMs: number | null): void {
-    if (serverTimeMs === null) {
+    // O3: with sway off the crowns hold still exactly as before clock sync.
+    if (serverTimeMs === null || !this.sway) {
       this.windUniform.value.set(1, 0, 0);
     } else {
       const w = windAt(serverTimeMs, this.wind);
@@ -325,5 +329,10 @@ export class NatureRenderer {
     this.lastCam.x = cameraPos.x;
     this.lastCam.z = cameraPos.z;
     for (const p of this.parts) p.reimage(cameraPos);
+  }
+
+  /** O3: Low holds the crowns still (zero wind strength, no recompile). */
+  setQuality(tier: QualityTier): void {
+    this.sway = QUALITY_PROFILES[tier].treeSway;
   }
 }

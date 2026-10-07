@@ -61,6 +61,9 @@ export class Hud {
   private readonly radioToggle = document.getElementById(
     "radio-toggle",
   ) as HTMLDivElement;
+  private readonly qualityToggle = document.getElementById(
+    "quality-toggle",
+  ) as HTMLDivElement | null;
   private readonly aimCursor = document.getElementById(
     "aim-cursor",
   ) as unknown as SVGSVGElement;
@@ -128,6 +131,34 @@ export class Hud {
       render();
       onToggle(on);
     });
+  }
+
+  /**
+   * O3 graphics quality entry: a click cycles the setting (main.ts owns the
+   * order and the state). Same click-swallowing as the radio toggle, so a
+   * click here never fires the guns.
+   */
+  bindQualityToggle(onCycle: () => void): void {
+    const el = this.qualityToggle;
+    if (!el) return;
+    const swallow = (e: MouseEvent) => {
+      if (e.button !== 2) e.stopPropagation();
+    };
+    el.addEventListener("mousedown", swallow);
+    el.addEventListener("mouseup", swallow);
+    el.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onCycle();
+    });
+  }
+
+  /** "GFX AUTO · HIGH" — under Auto, the tier it is currently running. */
+  setQuality(setting: string, tier: string): void {
+    if (!this.qualityToggle) return;
+    this.qualityToggle.textContent =
+      setting === "auto"
+        ? `GFX AUTO · ${tier.toUpperCase()}`
+        : `GFX ${tier.toUpperCase()}`;
   }
 
   /** Free-look (hold E): show the hint and dim the aim chrome via CSS. */

@@ -35,6 +35,7 @@ import {
   wrapLerp,
 } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { RENDER_ORDER } from "./render-order";
 import { nearestImage } from "./wrapPlacement";
 
@@ -660,6 +661,8 @@ export class CityReactor {
   private readonly positions: THREE.BufferAttribute;
   private readonly sizes: THREE.BufferAttribute;
   private drawnPuffs = 0;
+  /** O3 quality tier: every Nth puff of a column is drawn (1 = all). */
+  private puffStride = 1;
 
   constructor(buildings: readonly Building[]) {
     this.buildings = buildings;
@@ -844,6 +847,12 @@ export class CityReactor {
     return r;
   }
 
+  /** O3: Low thins each smoke column; alarms, wake and responders stay. */
+  setQuality(tier: QualityTier): void {
+    const share = QUALITY_PROFILES[tier].smokeColumns;
+    this.puffStride = Math.max(1, Math.round(1 / Math.max(share, 0.01)));
+  }
+
   private placeSmoke(cameraPos: Vec3): void {
     const r = this.reactions;
     let n = 0;
@@ -852,7 +861,7 @@ export class CityReactor {
       const p = nearestImage(cameraPos, { x: site.x, y: site.base, z: site.z });
       // Fade the whole column over its last 10 s by shrinking the puffs.
       const tail = Math.min(1, (SMOKE_LIFE_MS - site.age) / 10_000);
-      for (let i = 0; i < PUFFS; i++) {
+      for (let i = 0; i < PUFFS; i += this.puffStride) {
         const u = puffPhase(site.age, i, site.t);
         if (u < 0) continue;
         const lean = u ** 1.3;

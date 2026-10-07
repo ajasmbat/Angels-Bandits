@@ -21,6 +21,7 @@ import { wrapDeltaAxis } from "@angels-bandits/common/world";
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { AB_FOG_DISTANCE_GLSL, AB_FOG_GLSL } from "./fog";
+import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import type { Traffic } from "./traffic";
 
 /** Lamp height above the street, m. */
@@ -205,6 +206,8 @@ export class Headlights {
   private readonly poolScale = new THREE.Vector3(POOL_WIDTH, 1, POOL_LENGTH);
   private static readonly UP = new THREE.Vector3(0, 1, 0);
   private lit = 0;
+  /** O3 quality tier: the additive cones are the cost; the pools stay. */
+  private conesOn = true;
 
   constructor(capacity: number) {
     // Open cone, apex at the origin, opening along +Y. ConeGeometry puts its
@@ -283,24 +286,35 @@ export class Headlights {
       const fade = headlightFade(Math.sqrt(dx * dx + dy * dy + dz * dz));
       if (fade <= 0) continue;
       this.yawQuat.setFromAxisAngle(Headlights.UP, yaw);
-      this.quat.copy(this.yawQuat).multiply(this.tilt);
-      this.pos.set(x, LAMP_Y, z);
-      this.matrix.compose(this.pos, this.quat, this.coneScale);
-      this.cones.setMatrixAt(n, this.matrix);
-      this.pos.y = POOL_Y;
+      if (this.conesOn) {
+        this.quat.copy(this.yawQuat).multiply(this.tilt);
+        this.pos.set(x, LAMP_Y, z);
+        this.matrix.compose(this.pos, this.quat, this.coneScale);
+        this.cones.setMatrixAt(n, this.matrix);
+        this.coneFade.setX(n, fade);
+      }
+      this.pos.set(x, POOL_Y, z);
       this.matrix.compose(this.pos, this.yawQuat, this.poolScale);
       this.pools.setMatrixAt(n, this.matrix);
-      this.coneFade.setX(n, fade);
       this.poolFade.setX(n, fade);
       n++;
     }
     this.lit = n;
-    for (const mesh of [this.cones, this.pools]) {
-      mesh.count = n;
-      mesh.visible = n > 0;
-      mesh.instanceMatrix.needsUpdate = true;
+    const cones = this.conesOn ? n : 0;
+    this.cones.count = cones;
+    this.cones.visible = cones > 0;
+    if (cones > 0) {
+      this.cones.instanceMatrix.needsUpdate = true;
+      this.coneFade.needsUpdate = true;
     }
-    this.coneFade.needsUpdate = true;
+    this.pools.count = n;
+    this.pools.visible = n > 0;
+    this.pools.instanceMatrix.needsUpdate = true;
     this.poolFade.needsUpdate = true;
+  }
+
+  /** O3: Low drops the cones (additive fill over the street); pools stay. */
+  setQuality(tier: QualityTier): void {
+    this.conesOn = QUALITY_PROFILES[tier].headlightCones;
   }
 }

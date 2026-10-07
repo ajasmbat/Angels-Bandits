@@ -378,10 +378,20 @@ export const crewSwitchesOn = (
 
 // --- GLSL emitters -------------------------------------------------------------
 
+/**
+ * O3 quality tier: 1 = living windows on, 0 = the static C3/L12 window grid.
+ * Shared by reference into the building shader (the OCCUPANCY_UNIFORM idiom)
+ * and tested as a UNIFORM branch, not a `#define`, so switching tiers never
+ * recompiles the city's program — every fragment takes the same side of the
+ * branch, and with it off none of the L3 hashing runs.
+ */
+export const LIVE_ON_UNIFORM = { value: 1 };
+
 /** Fragment pars: the live clock and the per-instance crew slot. */
 export function livingParsGlsl(): string {
   return /* glsl */ `
 uniform float uLiveTime;
+uniform float uLiveOn;
 varying vec4 vCrew;
 float liveSmooth(float x) { return smoothstep(0.0, 1.0, x); }
 `;
@@ -395,8 +405,8 @@ export function livingLitGlsl(): string {
   const u = LIVE;
   return /* glsl */ `
 // --- L3 living windows: slow on/off (living-windows.ts) ---
-float liveN = ${glslFloat(u.nMin)} + floor(abHash(winCell + vec2(11.0, 71.0), vBSeed * 67.0) * ${glslFloat(u.nSpan)});
-if (abHash(winCell + vec2(57.0, 13.0), vBSeed * 67.0) < ${glslFloat(u.volatile)}) {
+if (uLiveOn > 0.5 && abHash(winCell + vec2(57.0, 13.0), vBSeed * 67.0) < ${glslFloat(u.volatile)}) {
+  float liveN = ${glslFloat(u.nMin)} + floor(abHash(winCell + vec2(11.0, 71.0), vBSeed * 67.0) * ${glslFloat(u.nSpan)});
   float livePeriod = ${glslFloat(u.periodUnit)} / liveN;
   float liveWrap = ${glslFloat(u.period / u.periodUnit)} * liveN;
   float liveQ = (uLiveTime + abHash(winCell + vec2(23.0, 5.0), vBSeed * 67.0) * livePeriod) / livePeriod;
@@ -408,7 +418,7 @@ if (abHash(winCell + vec2(57.0, 13.0), vBSeed * 67.0) < ${glslFloat(u.volatile)}
 // Cleaning crew: a band of floors climbing this building during its visit.
 // Rows are the tier's own window rows, measured from the street.
 float liveInto = mod(uLiveTime - vCrew.x, max(vCrew.z, 1.0));
-if (vCrew.z > 0.5 && liveInto < vCrew.y) {
+if (uLiveOn > 0.5 && vCrew.z > 0.5 && liveInto < vCrew.y) {
   float liveCrewHead = liveInto * ${glslFloat(u.crewSpeed)};
   float liveRowY = vWorldY - vMeters.y + (winCell.y + 0.5) * winPitch.y;
   float liveCrew = liveSmooth((liveCrewHead - liveRowY) / ${glslFloat(u.crewRamp)})
@@ -431,7 +441,7 @@ export function livingColorGlsl(tv: string): string {
     .join("");
   return /* glsl */ `
 // --- L3 TV glow ---
-if (abHash(winCell + 61.0, vBSeed * 83.0) < ${glslFloat(u.tvShare)}) {
+if (uLiveOn > 0.5 && abHash(winCell + 61.0, vBSeed * 83.0) < ${glslFloat(u.tvShare)}) {
   float liveTvPh = abHash(winCell + vec2(5.0, 29.0), vBSeed * 83.0);
   float liveSq = uLiveTime / ${glslFloat(u.tvSceneLength)} + liveTvPh;
   float liveSk = floor(liveSq);
@@ -454,7 +464,7 @@ export function livingShadeGlsl(): string {
 float liveSq2 = uLiveTime / ${glslFloat(u.silSlot)} + abHash(winCell + vec2(13.0, 37.0), vBSeed * 89.0);
 float liveSlot = floor(liveSq2);
 float liveWalk = (liveSq2 - liveSlot) * ${glslFloat(u.silSlot / u.silWalk)};
-if (blinds * lit > 0.0 && liveWalk < 1.0
+if (uLiveOn > 0.5 && blinds * lit > 0.0 && liveWalk < 1.0
     && abHash(vec2(winCell.x + mod(liveSlot, ${glslFloat(u.period / u.silSlot)}) * 0.913 + 7.0, winCell.y + 7.0), vBSeed * 89.0) < ${glslFloat(u.silChance)}) {
   float liveDir = step(0.5, abHash(winCell + vec2(2.0, 17.0), vBSeed * 89.0));
   float liveX = ${glslFloat(-u.silWidth)} + ${glslFloat(1 + 2 * u.silWidth)} * mix(liveWalk, 1.0 - liveWalk, liveDir);

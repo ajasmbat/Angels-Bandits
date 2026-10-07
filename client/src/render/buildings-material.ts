@@ -21,7 +21,7 @@
 import { EMISSIVE_WINDOW } from "@angels-bandits/common/constants";
 import * as THREE from "three";
 import { luminance } from "./emissive";
-import { livingParsGlsl } from "./living-windows";
+import { LIVE_ON_UNIFORM, livingParsGlsl } from "./living-windows";
 import { WAKE_PARS_GLSL, wakeWindowGlsl, windowWakeUniform } from "./reactions";
 import {
   BUILDING_WET_COLOR_GLSL,
@@ -283,6 +283,8 @@ export function createBuildingsMaterial(
   });
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uLiveTime = liveTime;
+    // O3: the quality tier's living-windows switch, shared by reference.
+    shader.uniforms.uLiveOn = LIVE_ON_UNIFORM;
     // L1 reactive city: the shared window-wake sources (reactions.ts).
     shader.uniforms.uWake = windowWakeUniform;
     shader.uniforms.uOccupancy = OCCUPANCY_UNIFORM;

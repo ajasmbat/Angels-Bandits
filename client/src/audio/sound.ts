@@ -35,6 +35,12 @@ const DUCK_RAMP_S = 0.08;
 // static bed is diegetic flavor, quieter than everything else.
 const THUNDER_LEVEL = 0.8;
 const STATIC_BED_LEVEL = 0.055;
+// Elevated train (L5): a low rolling rumble from the nearest car, and a thin
+// wheel squeal on top while a car rounds a curve. A train is loud, so its
+// falloff is a few times slower than an engine's.
+const TRAIN_RUMBLE_LEVEL = 0.45;
+const TRAIN_SQUEAL_LEVEL = 0.07;
+const TRAIN_FALLOFF = 3;
 
 /** Engine pitch band: idle throttle → full throttle, Hz. */
 const ENGINE_MIN_HZ = 55;
@@ -63,6 +69,11 @@ export class GameAudio implements VoiceSink {
   private ownOsc: OscillatorNode | null = null;
   private ownGain: GainNode | null = null;
   private staticGain: GainNode | null = null;
+  private train: {
+    rumble: GainNode;
+    squeal: GainNode;
+    pan: StereoPannerNode;
+  } | null = null;
   private readonly remotes = new Map<string, RemoteEngine>();
   private lastWhooshAt = 0;
   private lastPullUpAt = Number.NEGATIVE_INFINITY;
@@ -346,6 +357,58 @@ export class GameAudio implements VoiceSink {
       ctx.currentTime,
       0.3,
     );
+  }
+
+  /** The L5 train's rumble (and curve squeal) from `source`, the nearest
+   * car's position, or silence with null. Call every frame; both loops idle
+   * at zero gain and are ramped like the engine. */
+  setTrainRumble(
+    source: Vec3 | null,
+    squeal: boolean,
+    listenerPos: Vec3,
+    listenerYaw: number,
+  ): void {
+    const ctx = this.ensure();
+    if (!ctx || !this.sfx || !this.noise) return;
+    if (!this.train) {
+      const src = ctx.createBufferSource();
+      src.buffer = this.noise;
+      src.loop = true;
+      const low = ctx.createBiquadFilter();
+      low.type = "lowpass";
+      low.frequency.value = 110;
+      low.Q.value = 2.5;
+      const high = ctx.createBiquadFilter();
+      high.type = "bandpass";
+      high.frequency.value = 3200;
+      high.Q.value = 9;
+      const rumble = ctx.createGain();
+      rumble.gain.value = 0;
+      const squealGain = ctx.createGain();
+      squealGain.gain.value = 0;
+      const pan = ctx.createStereoPanner();
+      src.connect(low).connect(rumble).connect(pan);
+      src.connect(high).connect(squealGain).connect(pan);
+      pan.connect(this.sfx);
+      src.start();
+      this.train = { rumble, squeal: squealGain, pan };
+    }
+    const s = source
+      ? spatialize(listenerPos, listenerYaw, source)
+      : { gain: 0, pan: 0 };
+    const level = Math.min(1, s.gain * TRAIN_FALLOFF);
+    const now = ctx.currentTime;
+    this.train.rumble.gain.setTargetAtTime(
+      level * TRAIN_RUMBLE_LEVEL,
+      now,
+      0.2,
+    );
+    this.train.squeal.gain.setTargetAtTime(
+      squeal ? level * TRAIN_SQUEAL_LEVEL : 0,
+      now,
+      0.15,
+    );
+    this.train.pan.pan.setTargetAtTime(s.pan, now, 0.1);
   }
 
   /** Boost ignition (F2): a rising rush of air as the burn lights. */

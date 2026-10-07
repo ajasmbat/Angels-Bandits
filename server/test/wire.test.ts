@@ -205,8 +205,16 @@ describe("hit claims at the new cadence", () => {
       streamPose(target, at(1000 + BULLET_RANGE / 2, 1000));
       await wait(1000 / 20);
     }
-    // Spawn protection has to lapse before a hit can land at all.
-    await wait(SPAWN_PROTECTION_MS);
+    // Spawn protection has to lapse before a hit can land at all. Keep
+    // streaming through it, as a real client does: since F4 the protection
+    // (5.5 s) outlasts LIVENESS_TIMEOUT_MS (4 s), and a silent wait got both
+    // sockets dropped by the liveness sweep before the claim was ever sent.
+    const protectedUntil = Date.now() + SPAWN_PROTECTION_MS;
+    while (Date.now() < protectedUntil) {
+      streamPose(shooter, at(1000, 1000));
+      streamPose(target, at(1000 + BULLET_RANGE / 2, 1000));
+      await wait(1000 / 20);
+    }
     for (let i = 0; i < 4; i++) {
       streamPose(shooter, at(1000, 1000));
       streamPose(target, at(1000 + BULLET_RANGE / 2, 1000));

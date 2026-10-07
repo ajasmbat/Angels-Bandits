@@ -28,6 +28,30 @@ export const SETTLE_MS = 900;
 export const WARMUP_MS = 700;
 /** How far into the storm window the scheduled strike is lined up to land. */
 export const STRIKE_LEAD_MS = 1200;
+/**
+ * After a segment's fake pilots join, before its settle starts: long enough
+ * for the server to re-sync each pilot from its spawn to the weave (10
+ * rejected poses at 30 Hz) and for the page to fill its interpolation buffer.
+ */
+export const PILOT_SETTLE_MS = 1500;
+
+/**
+ * O3's contract, judged per segment (run.mjs `segmentVerdicts`).
+ *
+ *  - `gpuP50Ms` — 60 fps at the measured ratio: a 16.7 ms frame minus ~2.7 ms
+ *    for the compositor and the CPU's share. GPU, because with vsync off the
+ *    wall clock is the CPU's pace, not the frame's cost.
+ *  - `hitchRatio` — no hitches: wall p99 within 2x wall p50.
+ *  - `drawCalls` — per-segment budgets. Only `core` has one: it is the
+ *    densest everyday view and the one the ticket names. Over budget, cut in
+ *    this order: sign spill pools, rooftop string lights, fountains,
+ *    headlight pools (each is one draw, all are dressing).
+ */
+export const BUDGETS = {
+  gpuP50Ms: 14,
+  hitchRatio: 2,
+  drawCalls: { core: 120 },
+};
 
 export const SEGMENTS = [
   {
@@ -91,5 +115,36 @@ export const SEGMENTS = [
     y: 380,
     yaw: 0,
     storm: true,
+  },
+  // --- O3: appended, so the five above still line up with every older
+  // report by index. Both are street level in a downpour: rain streaks,
+  // wet streets and the crowd only exist down here.
+  {
+    name: "street",
+    what: "street level in a downpour — rain, traffic, the crowd (L1/L4/L6)",
+    // x = 600 is a street centerline. Checked offline against the shared
+    // collision (buildings, trees, the viaduct, bridges, every mover at any
+    // server time) for 1000 m of travel at 25–45 m: clear. 32 m keeps the
+    // camera under the micro tier's full-gate height (100 m), so every
+    // pedestrian is drawn.
+    x: 600,
+    z: 1400,
+    y: 32,
+    yaw: 0,
+    weather: "downpour",
+  },
+  {
+    name: "furball",
+    what: "a full 12-plane room weaving and firing down a street, in a downpour",
+    // HELD, not flown: the page re-teleports here every frame while 11 fake
+    // pilots (tools/perf/pilots.mjs) weave 80–380 m ahead of it — the page
+    // plus 11 is ROOM_CAP. Same offline collision check as `street`.
+    x: 400,
+    z: 1000,
+    y: 34,
+    yaw: 0,
+    weather: "downpour",
+    hold: true,
+    pilots: 11,
   },
 ];

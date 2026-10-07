@@ -125,6 +125,16 @@ depend on wall-clock timing and would smear every segment.
 | `sky`    | high and level — the whole skyline inside `FOG_DISTANCE` at once    |
 | `canyon` | low down the `x = 200` street — closest geometry, most overdraw     |
 | `storm`  | a scheduled strike inside the window — bolt, flash, fog, reveals    |
+| `street` | street level (`x = 600`, 32 m) in a pinned **downpour** — rain streaks, wet streets, traffic, headlight cones, the full crowd |
+| `furball`| a **full 12-plane room** in a downpour at street level: the page holds a fixed view down `x = 400` while 11 fake pilots (`pilots.mjs`) weave and fire 80–380 m ahead |
+
+`street` and `furball` (O3) are appended after the original five, so an older
+report still lines up segment by segment. Both are collision-checked offline
+against the shared crash code — buildings, trees, the viaduct, bridges and
+every mover at any server time — for 1000 m of travel at 25–45 m. The fake
+pilots send `join`/`pose`/`fire` but never a hit claim, so they cannot hurt
+the page; the harness asserts the room really held 12 planes for the whole
+window (the `room` verdict).
 
 Every segment is crash-proof by construction (`segments.mjs` documents the
 two rules), and the harness **shouts if the plane died during one** — a dead
@@ -187,6 +197,13 @@ without a server change:
   together; more GPU work at constant draw calls is a fuller frame, not a
   busier machine. Read canyon's paired `--ab` delta, not its absolute number.
 
+- `street` and `furball` (O3) — street level, where the server-clock traffic
+  and the synced-clock rain and crowd fill the frame (canyon's reason), and
+  the furball's pilots fly on *their* wall clock. Their tracer bursts and
+  headlight cones come and go, so their draw counts are reported, not held
+  to identity. Judge them on a paired `--ab`/`--ab-ref` delta and on the
+  p99/p50 ratio, never on an absolute GPU p50.
+
 Everything else is pinned.
 
 ---
@@ -208,6 +225,26 @@ Everything else is pinned.
 | `--headed`           | off                | watch it fly                                    |
 | `--strict`           | off                | exit 1 if the determinism check FAILs (needs `--runs` >= 2) |
 | `--samples`          | off                | keep every per-frame time (wall **and** GPU) in the JSON |
+| `--quality <tier>`   | `high`             | the graphics tier every arm runs (`auto` \| `high` \| `medium` \| `low`); pinned so Auto can never step down mid-run |
+| `--soak <seconds>`   | —                  | instead of the path: hold the full-room `furball` that long and report the tier Auto ended on (exit 1 if it stepped down) |
+| `--ab-ref <git-ref>` | —                  | second arm is **another build**: that commit, checked out to its own worktree with its own `npm ci`, built and served on its own port, interleaved like `--ab` |
+
+`--ab` takes a URL **query**. A bare commit hash there fails fast and names
+`--ab-ref` — it used to be read as the query `86e5982=`, an arm identical to
+the first, reported as a paired comparison. `--ab-ref` keeps its worktree
+(under the OS temp dir, keyed by commit) so a second run skips the install
+and build; the harness prints the `git worktree remove` line. An older build
+lacks some hooks: it still measures every segment, but a segment it cannot
+reproduce (no `__ab.weather` before L4, so no downpour) prints **no
+baseline** in the delta table instead of a comparison of rain against clear
+skies.
+
+`AB_CHROME` / `AB_CHROME_ARGS` point the harness at another headless shell
+and other GPU flags (default: Playwright's Chromium with
+`--use-angle=metal --enable-gpu`). On a GPU-less Linux box,
+`AB_CHROME_ARGS="--use-angle=swiftshader --enable-unsafe-swiftshader"` runs
+the whole path — useful for draw calls, the `room` check and CPU-side
+numbers, meaningless for GPU time.
 
 **`--ab` is how you measure a render change you actually trust.** It runs a
 second arm with the given query-string overrides and **interleaves** the
@@ -496,3 +533,153 @@ mystery in a delta table. (Reports carrying these fields, and the per-segment
 spike summary, are `version: 2`. Nothing reads the version to compare, and no
 existing field changed meaning, so a `version: 1` baseline still compares
 correctly.)
+
+---
+
+## O3: the final gate — budgets, quality tiers, flicker
+
+### The budgets every segment is judged on
+
+`segments.mjs` exports `BUDGETS`, and every table now ends with one verdict
+row per segment (`segmentVerdicts` in `run.mjs`; also in the JSON as
+`verdicts`):
+
+| verdict | passes when | why this number |
+| ------- | ----------- | --------------- |
+| `60fps` | GPU p50 ≤ **14 ms** | a 16.7 ms frame minus the compositor's and the CPU's share. GPU, because with vsync off the wall clock is the CPU's pace, not the frame's cost |
+| `hitch` | wall p99 ≤ **2×** wall p50 | "no hitches": the slow 1 % of frames stays within double a typical one |
+| `draws` | `core` median draw calls ≤ **120** | the densest everyday view. Over budget, cut in this order: sign spill pools, rooftop string lights, fountains, headlight pools (each one draw, all dressing) |
+| `room`  | the furball held all **12** planes for the whole window | otherwise it measured a smaller fight than it claims |
+
+A verdict reads `n/a` when the run could not measure it (no GPU timer, or no
+budget defined for that segment). The table also prints the **tier** each
+segment ran at and its pinned **weather** (`NOT PINNED` on a build too old
+to pin it).
+
+### Quality tiers
+
+`client/src/render/quality.ts` owns them. The player picks **Auto / High /
+Medium / Low** with **G** or the `GFX …` entry under the radio toggle; it is
+saved in localStorage, and `?quality=` (what the harness pins) wins over the
+saved pick without overwriting it. Defaults ship: a plain visit gets Auto,
+which starts at High.
+
+Two rules every tier obeys:
+
+1. **A switch never compiles a shader.** Tiers only flip `.visible`, instance
+   and draw counts, and uniforms (living windows sit behind a uniform guard,
+   not a `#define`), so O2's boot pre-warm stays complete and Auto can step
+   down mid-fight without the very hitch it is stepping down to avoid.
+2. **Visibility parity.** Fog, haze, the storm, the cloud deck and every
+   solid thing are identical on every tier, so Low never sees further or
+   through anything High cannot. Rain streaks are near-field dressing; the
+   weather's haze is the visibility mechanism and it does not change.
+
+| | High | Medium | Low |
+| --- | --- | --- | --- |
+| pixel-ratio ceiling for the scaler | 2 | 1.5 | 1 |
+| L1 alarms, lit windows, responders | full | full | full |
+| L1 smoke columns | full | full | half the puffs |
+| L1 pedestrians | full | 70 % | 40 % |
+| L1 steam, signals, sparks | full | full | full (already altitude-gated) |
+| L2 soundscape | full | full | full (audio) |
+| L3 living windows | full | full | off (static grid) |
+| L4 rain streaks | full | 50 % | 35 % (haze unchanged) |
+| L4 wet streets, puddles | full | full | full (uniforms) |
+| L5 train + viaduct | full | full | full (solid) |
+| L6 traffic | full | full | full (feeds audio and reactions) |
+| L6 headlight cones | full | full | off (ground pools stay) |
+| L7 signage animation | full | full | full (a uniform clock) |
+| L7 sign light spill | full | full | off |
+| L8 rooftop props | full | full | full |
+| L8 rooftop string lights | full | full | off |
+| L9 tree sway | full | full | off (crowns hold still) |
+| L9 fountains | full | half the spray | off |
+| L9 birds | full | full | half of each flock |
+| L10 airliners | full | full | contrails half as long |
+| L10 news heli, drone shows | full | full | full (solid / shared light cloud) |
+| L11 river, bridges, boats | full | full | full (solid) |
+| L12 sky cycle | full | full | full (uniforms) |
+| L13 facade detail | full | full | off (dressing, not solid) |
+
+**Auto** starts at High and only ever steps **down**: a feature popping back
+in is far more visible than one resolution rung, and a player who wants it
+back picks a tier. The adaptive resolution scaler stays the first line of
+defence; Auto acts above it. It reads the scaler's own frame window, at the
+scaler's cadence (before the scaler, so the scaler emptying the window on a
+step cannot hide it). A window is **pressure** when ≥ 10 % of its frames miss
+the budget AND pixels can no longer help: either the scaler is already at
+≤ 1.0, or the window's median *pre-render* JS cost is ≥ 80 % of the budget,
+i.e. the frame is CPU-bound. The render call itself is not timed, because a
+driver may block in it waiting on the GPU and a GPU-bound frame would then
+read as CPU-bound. 3 s of unbroken pressure drops one tier. The drop keeps
+the current ratio but clears the scaler's latch, so the cheaper tier can earn
+pixels back, and a 5 s settle follows. A hidden tab, death or respawn, a
+resize and a teleport each restart the pressure clock. Picking a tier by hand
+restarts the scaler at that tier's ceiling.
+
+What that buys, replayed through the real `stepResolution` +
+`stepAutoQuality` on synthetic vsync'd frame traces:
+
+| trace | result |
+| --- | --- |
+| M3: GPU 8.5 ms at ratio 2, 10 min | **High**, ratio 2, never moved |
+| M3 + a 200 ms GC pause every 2 s, 10 min | **High**, ratio 2 |
+| M3 + a 4 s burst of 40 ms frames | **High**; the scaler dips to 1.25 and relaxes back |
+| GPU-bound laptop, 40 ms at ratio 2 | **High** at ratio 1: pixels alone fix it |
+| very weak GPU, 90 ms at ratio 2 | the scaler reaches 0.75, then **Medium** at 22 s and **Low** at 31 s |
+| CPU-bound: 22 ms of JS on High | **Medium** at 9 s (the CPU path, before the scaler bottoms out), **Low** at 18 s |
+| JS 14 ms with 20 ms spikes (holds 60) | **High** |
+
+Known limit: the shipped game has no GPU timer, so Auto cannot see GPU
+headroom directly. A GPU-bound machine spends the scaler's rungs before it
+spends features. That order is deliberate (resolution steps are the cheaper
+loss), but it means such a machine takes about 20 s to reach its tier.
+
+### Flicker
+
+`tools/perf/flicker.mjs` is O1's temporal flicker metric, committed so it can
+be re-run. It captures 30 frames on Playwright's fake clock at exactly 1/60 s
+a step, at 640×360, ratio 1, with the network held and the weather pinned
+clear and dry. It scores the mean per-pixel |Δluma| between consecutive
+frames:
+
+- `frozen` — camera pinned over midtown from 300 m. This is the **pass/fail**
+  number: with ~16 ms of animation per step, what changes is shimmer.
+- `pan` — the same view sliding 1.5 m a frame (O1's pan). There is no motion
+  compensation, so it is mostly the motion itself: **indicative only**.
+
+`--ref <git-ref>` measures another build the same way, right after, and
+judges "not worse": HEAD frozen ≤ ref frozen + max(5 %, 0.05). It exits 1 on
+a FAIL. Against `--ref 0b90284` (O1's merge) that is O3's acceptance
+check. `0b90284` already carries every Living City ticket except L4, and
+weather is pinned dry, so the two builds draw the same city.
+
+### Commands for the M3 (run with the machine otherwise idle)
+
+```sh
+npm run perf:setup   # once
+
+# 1. The gate: every segment against the pre-Living-City baseline. Read the
+#    verdict rows (60fps / hitch / draws / room) and the delta table; street
+#    and furball print "no baseline" (86e5982 has no weather), so judge
+#    them on their own verdicts.
+node tools/perf/run.mjs --runs 3 --label O3 --ab-ref 86e5982
+
+# 2. Low vs High, each at its own ratio (High pins 2, Low pins 1): the
+#    "Low >= 2x cheaper GPU in core" number. Then the features-only delta,
+#    with both at ratio 2.
+node tools/perf/run.mjs --runs 3 --res 2 --label high --ab "quality=low&res=1"
+node tools/perf/run.mjs --runs 3 --res 2 --label high --ab "quality=low"
+
+# 3. Auto never forces a lower tier on the M3: hold the full-room furball for
+#    10 minutes on Auto with the scaler live; exits 1 if Auto stepped down.
+node tools/perf/run.mjs --soak 600 --quality auto --res auto
+
+# 4. Flicker against O1's merged build.
+node tools/perf/flicker.mjs --ref 0b90284
+
+# 5. One Chrome performance trace for the per-frame JS top 10: DevTools →
+#    Performance → record 5 s of the `core` view at ?quality=high, then
+#    Bottom-Up, grouped by function, sorted by self time.
+```

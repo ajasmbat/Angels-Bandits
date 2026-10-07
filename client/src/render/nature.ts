@@ -62,9 +62,11 @@ const STREET_GREENS = [0x47763f, 0x3e6c3b] as const;
 const SHRUB_GREEN = 0x355f37;
 const LAMP_COLOR = 0xffb35c; // the street-lamp head colour family
 
-/** Tree-pit side and depth (a flat soil square around each street trunk), m. */
+/** Tree-pit side and depth (a flat soil square around each street trunk), m.
+ * O1: 0.15 m, not 0.06 m — a box that thin z-fought the pavement from
+ * altitude; a raised soil bed stays clear of it at any range. */
 const PIT_SIDE = 1.4;
-const PIT_HEIGHT = 0.06;
+const PIT_HEIGHT = 0.15;
 /** Lamp pole half-side, head radius, m. */
 const POLE_HALF = 0.09;
 const HEAD_RADIUS = 0.32;

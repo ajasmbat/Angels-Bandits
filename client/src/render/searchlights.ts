@@ -31,9 +31,10 @@ import {
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
-import { AB_FOG_GLSL } from "./fog";
+import { AB_FOG_DISTANCE_GLSL, AB_FOG_GLSL } from "./fog";
 import type { MoverLights } from "./movers";
 import { trackPlanesInto } from "./reactions";
+import { RENDER_ORDER } from "./render-order";
 import { nearestImage } from "./wrapPlacement";
 
 /** How many rooftops carry a light. */
@@ -212,7 +213,7 @@ void main() {
   // Slow drift of faint bands along the beam: dust in the throw.
   vShimmer = 0.88 + 0.12 * sin(position.y * 38.0 - uTime * 1.7 + apex.x * 0.01);
   vec4 mvPosition = viewMatrix * worldPos;
-  vDepth = -mvPosition.z;
+  vDepth = ${AB_FOG_DISTANCE_GLSL}; // radial, like every fogged material (O1)
   vWorldY = worldPos.y;
   gl_Position = projectionMatrix * mvPosition;
 }
@@ -318,7 +319,7 @@ export class Searchlights {
     this.mesh.visible = false;
     // Draw after the opaque city so the cones blend over it, and after the
     // sky dome (renderOrder -1) — a beam must never be painted under the sky.
-    this.mesh.renderOrder = 2;
+    this.mesh.renderOrder = RENDER_ORDER.beams;
   }
 
   /** Beams drawn — for the perf report. */

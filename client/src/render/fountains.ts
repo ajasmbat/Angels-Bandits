@@ -83,7 +83,7 @@ function jetTable(): Jet[] {
       vz: Math.sin(a) * s,
       life: flight(vy),
       stagger: (i + hash01(i, 4)) / CENTRAL_COUNT,
-      size: 0.45 + 0.25 * hash01(i, 5),
+      size: 1.3 + 0.6 * hash01(i, 5),
     });
   }
   for (let j = 0; j < RING_JETS; j++) {
@@ -101,7 +101,7 @@ function jetTable(): Jet[] {
         vz: -cz * RING_INWARD,
         life: flight(vy),
         stagger: (k + hash01(i, 4)) / RING_PER_JET,
-        size: 0.35 + 0.2 * hash01(i, 5),
+        size: 1.0 + 0.5 * hash01(i, 5),
       });
     }
   }

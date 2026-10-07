@@ -927,6 +927,8 @@ declare global {
       traffic: (at?: number | null) => ReturnType<Traffic["debug"]>;
       movers: (at?: number | null) => ReturnType<Movers["debug"]>;
       fireworks: (at?: number | null) => ReturnType<Fireworks["debug"]>;
+      /** L9 QA: flock centres at the render clock, and which are scattered. */
+      birds: () => ReturnType<Birds["debug"]>;
       cityStats: () => {
         buildings: number;
         tierInstances: number;
@@ -1096,6 +1098,7 @@ window.__ab = {
   // its OWN interpolation delay, so two tabs' default render times are no
   // longer the same instant (that is the feature; the QA must pin the time).
   traffic: (at) => traffic.debug(at === undefined ? socket.renderTime() : at),
+  birds: () => birds.debug(socket.renderTime()),
   // L2 QA: jib angles, aircraft positions and the drawn read-back at a server
   // time. Pass the time explicitly for the two-tab check — each tab holds its
   // own interpolation delay, so their default render clocks are NOT the same

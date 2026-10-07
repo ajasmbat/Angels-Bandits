@@ -164,6 +164,16 @@ export class Birds {
     this.points.visible = false;
   }
 
+  /** QA hook (__ab.birds): every flock's centre and whether it is
+   * scattered at `serverTimeMs`. */
+  debug(serverTimeMs: number | null): { center: Vec3; scattered: boolean }[] {
+    if (serverTimeMs === null) return [];
+    return this.flocks.map((f, i) => ({
+      center: flockCenter(f, serverTimeMs),
+      scattered: this.scatters[i] != null,
+    }));
+  }
+
   /** Birds drawn — for the perf report. */
   get birdCount(): number {
     return this.flocks.length * BIRDS_PER_FLOCK;

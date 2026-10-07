@@ -17,7 +17,7 @@ export interface EngineSource {
 }
 
 const MASTER_LEVEL = 0.5;
-const OWN_ENGINE_LEVEL = 0.16;
+export const OWN_ENGINE_LEVEL = 0.16;
 const REMOTE_ENGINE_LEVEL = 0.6;
 const GUN_LEVEL = 0.5;
 const WHOOSH_LEVEL = 0.7;
@@ -51,6 +51,16 @@ const BOOST_CUE_LEVEL = 0.45;
 const PULL_UP_LEVEL = 0.22;
 /** One warning pair every this many ms while the warning holds. */
 const PULL_UP_EVERY_MS = 550;
+
+/** A running context and its buses, for an add-on layer (L2 city ambience)
+ * that builds its own nodes once and mixes into the existing chain. */
+export interface MixBus {
+  ctx: AudioContext;
+  /** The ducked effects bus (the radio voice ducks everything on it). */
+  sfx: GainNode;
+  /** The master, after the duck — where a send off `sfx` returns to. */
+  master: GainNode;
+}
 
 interface RemoteEngine {
   osc: OscillatorNode;
@@ -105,6 +115,14 @@ export class GameAudio implements VoiceSink {
     }
     if (this.ctx.state === "suspended") void this.ctx.resume();
     return this.ctx.state === "running" ? this.ctx : null;
+  }
+
+  /** The buses an add-on layer mixes into; null until the context runs
+   * (first user gesture), so nothing downstream starts before the join. */
+  mixBus(): MixBus | null {
+    const ctx = this.ensure();
+    if (!ctx || !this.sfx || !this.master) return null;
+    return { ctx, sfx: this.sfx, master: this.master };
   }
 
   /** Throttle fraction 0…1 from a commanded speed. */

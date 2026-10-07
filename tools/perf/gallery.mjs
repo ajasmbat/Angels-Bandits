@@ -78,6 +78,9 @@ try {
   // lets the plane fly away from the view before the shot lands.
   await page.evaluate(() => {
     const hold = () => {
+      // Re-pin the weather phase too: on a slow renderer a perf window lasts
+      // minutes, long enough for a pinned offset to drift into the next phase.
+      if (window.__galleryWeather) window.__ab.weather(window.__galleryWeather);
       const v = window.__galleryPin;
       if (v) {
         window.__ab.teleport(v.x, v.z, v.y, v.yaw);
@@ -90,7 +93,10 @@ try {
   const perfRows = [];
   for (const wx of WEATHERS) {
     if (wx) {
-      const state = await page.evaluate((w) => window.__ab.weather(w), wx);
+      const state = await page.evaluate((w) => {
+        window.__galleryWeather = w;
+        return window.__ab.weather(w);
+      }, wx);
       console.log("weather", wx, JSON.stringify(state));
       await sleep(1500); // resample + let the haze/rain settle
     }

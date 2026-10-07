@@ -180,17 +180,76 @@ export const buildingSeed = (
 ): number =>
   fract(Math.sin(width * 12.9898 + depth * 78.233 + height) * 43758.5453);
 
-/** Window cell pitch in meters after this building's per-building jitter. */
+/**
+ * L13: the pitch-jitter seed, BIT-EXACT on the GPU and in JS. `buildingSeed`
+ * runs a large-argument `sin` that float32 and float64 disagree on, so it can
+ * pick a lit pattern but never tell JS where the drawn rows are — and facade
+ * detail (facade-detail.ts) must sit on them. This hashes the float32 BITS of
+ * the tier's (w, h, d) with integer mixing (identical mod 2^32 in GLSL ES
+ * 3.00 and under Math.imul) and keeps the top 24 bits, so the uint → float
+ * step is exact too. Dimensions, never translation (the seam rule).
+ */
+const PITCH_MIX = [0x7feb352d, 0x846ca68b] as const;
+const f32 = new Float32Array(1);
+const f32Bits = new Uint32Array(f32.buffer);
+const bitsOf = (v: number): number => {
+  f32[0] = v;
+  return f32Bits[0] as number;
+};
+const pitchMix = (x: number): number => {
+  let h = x >>> 0;
+  h ^= h >>> 16;
+  h = Math.imul(h, PITCH_MIX[0]);
+  h ^= h >>> 15;
+  h = Math.imul(h, PITCH_MIX[1]);
+  h ^= h >>> 16;
+  return h >>> 0;
+};
+export const pitchSeed = (
+  width: number,
+  height: number,
+  depth: number,
+): number =>
+  (pitchMix(
+    bitsOf(width) ^ pitchMix(bitsOf(height) ^ pitchMix(bitsOf(depth))),
+  ) >>>
+    8) /
+  16777216;
+
+/** GLSL twin of `pitchSeed` (vertex stage), from the same constants. */
+export function pitchSeedGlsl(): string {
+  return /* glsl */ `
+uint abPitchMix(uint h) {
+  h ^= h >> 16u;
+  h *= ${PITCH_MIX[0]}u;
+  h ^= h >> 15u;
+  h *= ${PITCH_MIX[1]}u;
+  h ^= h >> 16u;
+  return h;
+}
+float abPitchSeed(vec3 dims) {
+  uvec3 b = floatBitsToUint(dims);
+  return float(abPitchMix(b.x ^ abPitchMix(b.y ^ abPitchMix(b.z))) >> 8u) / 16777216.0;
+}
+`;
+}
+
+/**
+ * Window cell pitch in meters after this building's per-building jitter,
+ * from its `pitchSeed`: x takes the seed, y its low 12 bits (`fract(seed ·
+ * 4096)`, exact for a 24-bit seed) so the two jitters are independent.
+ * Cells are measured from the TIER's horizontal centre and the tier's base
+ * (the shader's vMeters frame).
+ */
 export function windowPitch(
   arch: FacadeArchetype,
   seed: number,
 ): [number, number] {
   const f = facadeFor(arch);
   const j = FACADE.pitchJitter;
-  const s = seed * 61;
   return [
-    f.pitch[0] * (1 - j + 2 * j * abHash(9, 13, s)),
-    f.pitch[1] * (1 - j + 2 * j * abHash(5, 3, s)),
+    f.pitch[0] * (1 - j + 2 * j * seed),
+    f.pitch[1] * (1 - j + 2 * j * fract(seed * 4096)),
   ];
 }
 
@@ -308,8 +367,9 @@ if (vArch > 1.5) {                 // OFFICE — strip windows, mixed light${arc
 }
 // Per-building floor height and bay width: a block of BSP lots must read as
 // many buildings, not one wall with one window grid stamped across it.
-winPitch.y *= ${glslFloat(1 - FACADE.pitchJitter)} + ${glslFloat(2 * FACADE.pitchJitter)} * abHash(vec2(5.0, 3.0), vBSeed * 61.0);
-winPitch.x *= ${glslFloat(1 - FACADE.pitchJitter)} + ${glslFloat(2 * FACADE.pitchJitter)} * abHash(vec2(9.0, 13.0), vBSeed * 61.0);
+// L13: from the bit-exact vPitchSeed, so JS (windowPitch) knows the rows.
+winPitch.y *= ${glslFloat(1 - FACADE.pitchJitter)} + ${glslFloat(2 * FACADE.pitchJitter)} * fract(vPitchSeed * 4096.0);
+winPitch.x *= ${glslFloat(1 - FACADE.pitchJitter)} + ${glslFloat(2 * FACADE.pitchJitter)} * vPitchSeed;
 
 // Facade plane: side faces get (facade-run, height) meters; roofs none.
 vec2 winGrid = vec2(1e6);

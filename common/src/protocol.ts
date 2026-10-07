@@ -4,6 +4,7 @@
 // keeping every shape in this one file is what makes a binary encoder a later
 // drop-in swap.
 
+import type { NewsHeliSlot, NewsHeliTarget } from "./city/newsheli";
 import type { Vec3 } from "./world/index";
 
 /** Unit quaternion, Three.js component order. Attitude of a plane on the wire. */
@@ -150,6 +151,10 @@ export interface WelcomeMsg {
   /** The room's shared bot count, so a late joiner's slider starts in the
    * right place instead of guessing the default. */
   botTarget: number;
+  /** The room's news heli (L10): current target and the one before it, so a
+   * late joiner flies the same heli as everyone else. Welcome-only — live
+   * changes arrive as NewsHeliMsg, so snapshots pay nothing for it. */
+  newsHeli?: NewsHeliSlot;
 }
 
 export interface PlayerJoinedMsg {
@@ -287,8 +292,20 @@ export interface BotsConfigMsg {
   byName: string;
 }
 
+/**
+ * The news heli takes a new story (L10): the server picked the latest kill
+ * site and authored the route there. Every client installs it and derives the
+ * pose from (target, server clock) — the same pure function the server's bot
+ * probes use. Broadcast to the whole room.
+ */
+export interface NewsHeliMsg {
+  type: "newsHeli";
+  target: NewsHeliTarget;
+}
+
 export type ServerMsg =
   | WelcomeMsg
+  | NewsHeliMsg
   | BotsConfigMsg
   | PlayerJoinedMsg
   | PlayerLeftMsg

@@ -90,8 +90,8 @@ const setBots = (peer: Peer, count: number): void => {
 };
 
 beforeAll(async () => {
-  // One process, not `npx tsx`: kill() on the npx wrapper left the real
-  // server running (reparented, flying its bot sim forever) after every run.
+  // node itself (tsx as a loader), not `npx tsx`: kill() in afterAll must
+  // reach the server, or it outlives the test and keeps flying its bots.
   child = spawn(process.execPath, ["--import", "tsx", entry], {
     env: { ...process.env, PORT: "0" },
     stdio: ["ignore", "pipe", "pipe"],

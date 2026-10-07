@@ -19,8 +19,14 @@ import { generateCity } from "@angels-bandits/common/city";
 import {
   type MoverField,
   generateMovers,
+  withNewsHeli,
 } from "@angels-bandits/common/city/movers";
 import { natureFor } from "@angels-bandits/common/city/nature";
+import {
+  canRetarget,
+  retargetNewsHeli,
+  setNewsTarget,
+} from "@angels-bandits/common/city/newsheli";
 import {
   type NatureIndex,
   buildNatureIndex,
@@ -138,6 +144,24 @@ const natureIndexFor = (seed: number): NatureIndex => {
   return index;
 };
 
+/**
+ * Each room's OWN mover field (L10): the seed's shared cranes and aircraft
+ * plus that room's news heli, whose route follows that room's kills. The bots
+ * fly against this field, so they see the heli exactly where clients draw it.
+ * Created lazily, dropped with the room's bots.
+ */
+const roomMoversById = new Map<string, MoverField>();
+const roomMovers = (room: Room): MoverField => {
+  let field = roomMoversById.get(room.id);
+  if (!field) {
+    field = withNewsHeli(moversFor(room.seed), room.seed);
+    roomMoversById.set(room.id, field);
+  }
+  return field;
+};
+/** The newest kill site per room that the news heli has not taken yet. */
+const pendingKillByRoom = new Map<string, { x: number; z: number }>();
+
 /** Per-room bot pilots. Created lazily; seeded from the room's number so
  * bot behavior is deterministic per room. */
 const botsByRoom = new Map<string, RoomBots>();
@@ -149,7 +173,7 @@ const botsFor = (room: Room): RoomBots => {
       room.id,
       CITY_SEED ^ (n * 0x9e3779b9),
       city,
-      moversFor(room.seed),
+      roomMovers(room),
       true,
       natureIndexFor(room.seed),
     );
@@ -208,7 +232,11 @@ function syncRoomBots(room: Room): void {
     sendToRoom(room, { type: "playerLeft", id });
   }
   // A wound-down room (no humans, no bots) is gone — drop its pilots too.
-  if (!rooms.rooms.includes(room)) botsByRoom.delete(room.id);
+  if (!rooms.rooms.includes(room)) {
+    botsByRoom.delete(room.id);
+    roomMoversById.delete(room.id);
+    pendingKillByRoom.delete(room.id);
+  }
 }
 
 const sanitizeName = (raw: unknown): string => {
@@ -260,6 +288,7 @@ function handleJoin(ws: WebSocket, rawName: unknown): Client {
     roster: room.roster(),
     scores: room.roster().map(({ id: rid }) => combat.scoreOf(rid)),
     botTarget: room.botTarget,
+    newsHeli: roomMovers(room).news,
   };
   ws.send(JSON.stringify(welcome));
   sendToRoom(room, { type: "playerJoined", player: { id, name } }, id);
@@ -412,6 +441,7 @@ function handleHitClaim(
     botsFor(client.room).onDamaged(targetId, now);
   }
   if (verdict.death) {
+    noteKillSite(client.room, targetId);
     if (client.room.members.get(targetId)?.isBot) {
       botsFor(client.room).setDead(targetId);
     }
@@ -443,9 +473,33 @@ function handleSetBots(client: Client, count: unknown, now: number): void {
   syncRoomBots(client.room);
 }
 
+/**
+ * A death happened: its position becomes the room's pending story for the
+ * news heli (L10). Call BEFORE bots.setDead — a dead bot has no pose — though
+ * lastPosOf also covers bots that crashed inside the sim tick.
+ */
+function noteKillSite(room: Room, victimId: string): void {
+  const pos = room.members.get(victimId)?.isBot
+    ? botsFor(room).lastPosOf(victimId)
+    : clients.get(victimId)?.pose.pos;
+  if (pos) pendingKillByRoom.set(room.id, { x: pos.x, z: pos.z });
+}
+
+/** Once the heli is free (arrived + dwelt), send it to the newest kill. */
+function updateNewsHeli(room: Room, now: number): void {
+  const site = pendingKillByRoom.get(room.id);
+  const news = roomMovers(room).news;
+  if (!site || !news || !canRetarget(news.target, now)) return;
+  pendingKillByRoom.delete(room.id);
+  const target = retargetNewsHeli(news.target, site, now);
+  setNewsTarget(news, target);
+  sendToRoom(room, { type: "newsHeli", target });
+}
+
 function handleCrash(client: Client, now: number): void {
   const death = combat.crash(client.id, now);
   if (!death) return;
+  noteKillSite(client.room, client.id);
   sendToRoom(client.room, {
     type: "death",
     victimId: death.victimId,
@@ -516,6 +570,7 @@ function tickRoomBots(room: Room, now: number): void {
   for (const id of crashes) {
     const death = combat.crash(id, now);
     if (!death) continue;
+    noteKillSite(room, id);
     sendToRoom(room, {
       type: "death",
       victimId: death.victimId,
@@ -560,6 +615,7 @@ function routeBotHit(
     bots.onDamaged(shot.targetId, now);
   }
   if (hit.death) {
+    noteKillSite(room, shot.targetId);
     if (room.members.get(shot.targetId)?.isBot) {
       bots.setDead(shot.targetId);
     }
@@ -584,6 +640,7 @@ function enforceStormCeiling(room: Room, now: number): void {
     if (storm.observe(member.id, pose.pos.y, now) !== "kill") continue;
     const death = combat.stormKill(member.id, now);
     if (!death) continue;
+    noteKillSite(room, member.id);
     storm.forget(member.id);
     if (member.isBot) botsFor(room).setDead(member.id);
     sendToRoom(room, {
@@ -658,6 +715,7 @@ function tick(): void {
   for (const room of rooms.rooms) {
     tickRoomBots(room, time);
     enforceStormCeiling(room, time);
+    updateNewsHeli(room, time);
     const snapshot: WireSnapshotMsg = {
       type: "snapshot",
       time,

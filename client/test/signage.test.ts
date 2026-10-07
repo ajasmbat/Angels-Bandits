@@ -6,9 +6,52 @@
 
 import { type Building, generateCity } from "@angels-bandits/common/city";
 import { isInRoadway } from "@angels-bandits/common/city/street";
-import { CITY_SEED } from "@angels-bandits/common/constants";
+import { CITY_SEED, EMISSIVE_SIGN } from "@angels-bandits/common/constants";
 import { describe, expect, it } from "vitest";
-import { type SignPlacement, signageFor } from "../src/render/signage";
+import {
+  SIGN_PALETTE,
+  type SignPlacement,
+  signageFor,
+} from "../src/render/signage";
+import {
+  ANIM_CHASE,
+  ANIM_GLYPH_TICKER,
+  ANIM_LED_TICKER,
+  ANIM_VIDEO,
+  BROKEN_SHARE_MAX,
+  BUZZ_RANGE_M,
+  BrokenNeon,
+  CHASE_GAP,
+  CHASE_OFF,
+  CHASE_ON,
+  LED_MEAN,
+  SIGN_LOOP_S,
+  STUTTER_BURST_MAX_MS,
+  STUTTER_DIP,
+  STUTTER_FLASH_MS,
+  STUTTER_SLOT_MS,
+  VIDEO_BACKDROP,
+  VIDEO_CUT_S,
+  VIDEO_FIELD_S,
+  VIDEO_PAN_S,
+  VIDEO_SPIN_S,
+  burstIn,
+  buzzLevel,
+  chaseGain,
+  chaseStep,
+  fieldGain,
+  glyphScroll,
+  inBurst,
+  ledGain,
+  ledScroll,
+  rungPalette,
+  signAnimations,
+  signClock,
+  spinGain,
+  stutterAt,
+  videoMode,
+} from "../src/render/signage-anim";
+import { signShaderChunks } from "../src/render/signage-shader";
 
 // Mid-block slab at (500, 500): 120×120 footprint leaves a 25 m clearance
 // between each facade and the curb ((200 − 120) / 2 − 15) — signs fit.
@@ -253,5 +296,247 @@ describe("signageFor — neon spill", () => {
         expect(p.radius).toBeLessThanOrEqual(8);
       }
     }
+  });
+});
+
+// --- L7 animated signage: the schedule seam (signage-anim.ts) ---
+
+/** The whole city's sign lists, in the Signage renderer's order. */
+function citySigns(seed: number) {
+  const layouts = generateCity(seed).map((b) => signageFor(b, seed));
+  return {
+    marquees: layouts.flatMap((s) => s.marquees),
+    billboards: layouts.flatMap((s) => s.billboards),
+    strips: layouts.flatMap((s) => s.strips),
+  };
+}
+const CITY = citySigns(CITY_SEED);
+const ANIM = signAnimations(
+  CITY.marquees,
+  CITY.billboards,
+  CITY.strips,
+  CITY_SEED,
+);
+const ALL_ANIMS = [...ANIM.marquees, ...ANIM.billboards, ...ANIM.strips];
+
+describe("signAnimations — deterministic in time", () => {
+  it("assigns the same animation to the same sign on every client", () => {
+    const again = signAnimations(
+      CITY.marquees,
+      CITY.billboards,
+      CITY.strips,
+      CITY_SEED,
+    );
+    expect(JSON.stringify(again)).toBe(JSON.stringify(ANIM));
+  });
+
+  it("runs every animated kind somewhere in the seed-42 city", () => {
+    const kinds = new Set(ALL_ANIMS.map((a) => a.kind));
+    for (const k of [
+      ANIM_GLYPH_TICKER,
+      ANIM_CHASE,
+      ANIM_VIDEO,
+      ANIM_LED_TICKER,
+    ]) {
+      expect(kinds.has(k)).toBe(true);
+    }
+  });
+
+  it("maps synced ms onto one wrapped shader clock", () => {
+    const L = SIGN_LOOP_S * 1000;
+    for (const ms of [0, 1234.5, 1_791_337_653_270, -5000]) {
+      expect(signClock(ms)).toBeGreaterThanOrEqual(0);
+      expect(signClock(ms)).toBeLessThan(SIGN_LOOP_S);
+      expect(signClock(ms + L)).toBeCloseTo(signClock(ms), 6);
+    }
+  });
+
+  it("is the same frame at t = L as at t = 0 (the clock wrap is invisible)", () => {
+    for (const a of ALL_ANIMS) {
+      if (a.kind === ANIM_GLYPH_TICKER) {
+        const d = glyphScroll(a, SIGN_LOOP_S) - glyphScroll(a, 0);
+        expect(Math.abs(d - Math.round(d))).toBeLessThan(1e-9);
+      }
+      if (a.kind === ANIM_CHASE) {
+        expect((chaseStep(a, SIGN_LOOP_S) - chaseStep(a, 0)) % 3).toBe(0);
+      }
+      if (a.kind === ANIM_LED_TICKER) {
+        expect(ledScroll(a, SIGN_LOOP_S)).toBeCloseTo(ledScroll(a, 0), 6);
+      }
+      if (a.kind === ANIM_VIDEO) {
+        expect(videoMode(a, SIGN_LOOP_S)).toBe(videoMode(a, 0));
+      }
+    }
+    // Pure-time shader periods divide the loop exactly.
+    for (const period of [VIDEO_FIELD_S, VIDEO_SPIN_S, VIDEO_PAN_S]) {
+      expect(SIGN_LOOP_S % period).toBe(0);
+    }
+    // Video cuts are ≥ 8 s apart and keep the 3-programme rotation aligned.
+    for (const cut of VIDEO_CUT_S) {
+      expect(cut).toBeGreaterThanOrEqual(8);
+      expect((SIGN_LOOP_S / cut) % 3).toBe(0);
+    }
+  });
+
+  it("stutters identically for the same (tube, synced ms)", () => {
+    const seed = ANIM.broken[0]?.seed ?? 1;
+    const tube = new BrokenNeon([{ seed, center: { x: 0, y: 0, z: 0 } }]);
+    for (let ms = 0; ms < 5 * 60_000; ms += 7) {
+      expect(tube.level(0, ms)).toBe(stutterAt(seed, ms));
+    }
+  });
+});
+
+describe("broken neon — rare, and never reads as a flicker bug", () => {
+  it("breaks at most 2% of signs (and at least one), across several worlds", () => {
+    for (const seed of [CITY_SEED, 7, 1234]) {
+      const c = seed === CITY_SEED ? CITY : citySigns(seed);
+      const a =
+        seed === CITY_SEED
+          ? ANIM
+          : signAnimations(c.marquees, c.billboards, c.strips, seed);
+      const total = c.marquees.length + c.billboards.length + c.strips.length;
+      expect(a.broken.length).toBeGreaterThan(0);
+      expect(a.broken.length / total).toBeLessThanOrEqual(BROKEN_SHARE_MAX);
+      // Only neon tubes break, each at most once.
+      const flagged = [...a.marquees, ...a.strips].filter(
+        (x) => x.brokenSlot >= 0,
+      );
+      expect(flagged).toHaveLength(a.broken.length);
+      expect(a.billboards.every((x) => x.brokenSlot === -1)).toBe(true);
+    }
+  });
+
+  it("keeps bursts ≤ 1.5 s and ≥ 20 s apart (analytic, 2 h of slots)", () => {
+    const slots = (2 * 3_600_000) / STUTTER_SLOT_MS;
+    for (const { seed } of ANIM.broken) {
+      let lastEnd = Number.NEGATIVE_INFINITY;
+      let bursts = 0;
+      for (let s = 0; s < slots; s++) {
+        const b = burstIn(seed, s);
+        if (!b) continue;
+        bursts++;
+        const start = s * STUTTER_SLOT_MS + b.start;
+        expect(b.duration).toBeLessThanOrEqual(STUTTER_BURST_MAX_MS);
+        expect(start - lastEnd).toBeGreaterThanOrEqual(20_000);
+        lastEnd = start + b.duration;
+      }
+      // "Occasionally": it does happen, but nowhere near every slot.
+      expect(bursts).toBeGreaterThan(0);
+      expect(bursts).toBeLessThan(slots);
+    }
+  });
+
+  it("agrees when sampled every 10 ms: short bursts, long gaps, gentle dips", () => {
+    // Collect violations and assert once — 10 min × 100 Hz per tube.
+    const bad: string[] = [];
+    let bursts = 0;
+    for (const { seed } of ANIM.broken.slice(0, 3)) {
+      let runStart = -1;
+      let lastEnd = Number.NEGATIVE_INFINITY;
+      let lastDip = Number.NEGATIVE_INFINITY;
+      let wasDipped = false;
+      for (let ms = 0; ms <= 10 * 60_000; ms += 10) {
+        const on = inBurst(seed, ms);
+        if (on && runStart < 0) {
+          runStart = ms;
+          bursts++;
+          if (ms - lastEnd < 20_000) bad.push(`gap ${seed}@${ms}`);
+        }
+        if (!on && runStart >= 0) {
+          if (ms - runStart > STUTTER_BURST_MAX_MS + 10) {
+            bad.push(`long ${seed}@${ms}`);
+          }
+          lastEnd = ms;
+          runStart = -1;
+        }
+        const level = stutterAt(seed, ms);
+        // Never black, never brighter than healthy.
+        if (level < STUTTER_DIP || level > 1) bad.push(`level ${seed}@${ms}`);
+        const dipped = level < 1;
+        if (dipped && !on) bad.push(`dip outside burst ${seed}@${ms}`);
+        if (dipped && !wasDipped) {
+          // ≤ 3 dips per second (photosensitivity guidance).
+          if (ms - lastDip < STUTTER_FLASH_MS - 10)
+            bad.push(`fast ${seed}@${ms}`);
+          lastDip = ms;
+        }
+        wasDipped = dipped;
+      }
+    }
+    expect(bad).toEqual([]);
+    expect(bursts).toBeGreaterThan(0);
+  });
+
+  it("buzzes only up close: 1 at the tube, falling to silence at 45 m", () => {
+    expect(buzzLevel(0)).toBe(1);
+    expect(buzzLevel(BUZZ_RANGE_M)).toBe(0);
+    expect(buzzLevel(500)).toBe(0);
+    let prev = 1;
+    for (let d = 0; d <= BUZZ_RANGE_M; d += 0.5) {
+      const v = buzzLevel(d);
+      expect(v).toBeLessThanOrEqual(prev);
+      prev = v;
+    }
+  });
+});
+
+describe("animated signage — peak stays on the SIGN rung", () => {
+  it("never lifts a sign above its tint: every effect gain ≤ 1", () => {
+    for (const g of [
+      CHASE_ON,
+      CHASE_OFF,
+      CHASE_GAP,
+      VIDEO_BACKDROP,
+      LED_MEAN,
+    ]) {
+      expect(g).toBeGreaterThanOrEqual(0);
+      expect(g).toBeLessThanOrEqual(1);
+    }
+    for (let bulb = 0; bulb < 9; bulb++) {
+      for (let step = -3; step < 6; step++) {
+        expect(chaseGain(bulb, step)).toBeLessThanOrEqual(1);
+      }
+    }
+    for (const lit of [true, false]) {
+      for (let dot = 0; dot <= 1; dot += 0.25) {
+        for (let fade = 0; fade <= 1; fade += 0.25) {
+          expect(ledGain(lit, dot, fade)).toBeLessThanOrEqual(1);
+          expect(ledGain(lit, dot, fade)).toBeGreaterThanOrEqual(0);
+        }
+      }
+    }
+    for (let x = -3; x <= 3; x += 0.01) {
+      expect(fieldGain(x)).toBeLessThanOrEqual(1 + 1e-12);
+      expect(spinGain(x * 10)).toBeLessThanOrEqual(1 + 1e-12);
+    }
+  });
+
+  it("mixes video colour fields only between hues ON the rung", () => {
+    const lum = (c: { r: number; g: number; b: number }) =>
+      0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+    for (const c of rungPalette(SIGN_PALETTE, EMISSIVE_SIGN)) {
+      expect(lum(c)).toBeCloseTo(EMISSIVE_SIGN, 9);
+    }
+  });
+
+  it("runs the very constants the tests pin (TS → GLSL interpolation)", () => {
+    const f = (x: number) => x.toFixed(6);
+    const strip = signShaderChunks("strip", 1, ANIM.broken.length);
+    expect(strip.fragmentColor).toContain(f(LED_MEAN));
+    expect(strip.fragmentPars).toContain(f(SIGN_LOOP_S));
+    expect(strip.fragmentPars).toContain(f(EMISSIVE_SIGN));
+    const marquee = signShaderChunks("marquee", 16, ANIM.broken.length);
+    for (const g of [CHASE_ON, CHASE_OFF, CHASE_GAP]) {
+      expect(marquee.fragmentColor).toContain(f(g));
+    }
+    const billboard = signShaderChunks("billboard", 8, ANIM.broken.length);
+    expect(billboard.fragmentColor).toContain(f(VIDEO_BACKDROP));
+    expect(billboard.fragmentColor).toContain(f(VIDEO_SPIN_S));
+    expect(billboard.fragmentMap).toContain(f(VIDEO_PAN_S));
+    // The stutter array is sized for every broken tube.
+    expect(strip.vertexPars).toContain(
+      `SIGN_STUTTER_VEC4S ${Math.ceil(ANIM.broken.length / 4)}`,
+    );
   });
 });

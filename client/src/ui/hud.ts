@@ -4,6 +4,14 @@
 // whatever the server said, never a client-side simulation of them.
 
 import { BOOST_MIN_START, MAX_HP } from "@angels-bandits/common/constants";
+import type { ProximityCue } from "../game/proximity";
+
+/** The proximity cue's words, by cue. */
+const CUE_TEXT: Record<ProximityCue, string> = {
+  "pull-up": "PULL UP",
+  "break-left": "◀ BREAK LEFT",
+  "break-right": "BREAK RIGHT ▶",
+};
 
 /** Last value written per element per style property (O2): the HUD setters
  * run every frame, and an unchanged write still costs a style parse and can
@@ -184,9 +192,11 @@ export class Hud {
     this.toast(on ? "◇ AVOID ASSIST: ON (N) ◇" : "◇ AVOID ASSIST: OFF (N) ◇");
   }
 
-  /** Ground/wall proximity warning (F4): the flashing PULL UP cue. */
-  setPullUp(on: boolean): void {
-    this.pullUp.classList.toggle("on", on);
+  /** Ground/wall proximity warning (F4): the flashing PULL UP — or, for a
+   * wall a turn escapes, BREAK LEFT/RIGHT — cue; null hides it. */
+  setProximity(cue: ProximityCue | null): void {
+    if (cue !== null) this.pullUp.textContent = CUE_TEXT[cue];
+    this.pullUp.classList.toggle("on", cue !== null);
   }
 
   /** The shared top-centre toast (aim mode, assist). */

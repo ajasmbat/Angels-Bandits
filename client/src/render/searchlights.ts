@@ -74,6 +74,10 @@ export interface SpotBeam {
   az: number;
   /** Per-aircraft phase so the spots do not wander in unison, rad. */
   phase: number;
+  /** L10: an explicit unit beam direction (the news heli holding its kill
+   * site) instead of the wandering street spot, and the throw it needs. */
+  aim?: Vec3;
+  length?: number;
 }
 
 /**
@@ -163,8 +167,9 @@ const spotHeadBoost = SPOT_HEAD_COLOR.clone().multiplyScalar(
 const HEAD_SIZE = 7;
 const SPOT_HEAD_SIZE = 4;
 
-/** Instances the mesh can hold beyond the rooftop stations. */
-const SPOT_CAPACITY = 8;
+/** Instances the mesh can hold beyond the rooftop stations (4 street helis,
+ * the L10 news heli, headroom). */
+const SPOT_CAPACITY = 9;
 
 const BEAM_VERTEX = /* glsl */ `
 attribute vec3 aTint;
@@ -363,10 +368,11 @@ export class Searchlights {
     for (const spot of spots) {
       if (index >= this.capacity) break;
       this.pos.set(spot.x, spot.y, spot.z);
-      const d = spotDirection(spot, serverTimeMs);
+      const d = spot.aim ?? spotDirection(spot, serverTimeMs);
       // Throw as far as the ground and a little past it, never further than
       // the lamp is rated for — a spot on the deck is a pool, not a pillar.
-      const length = Math.min(SPOT_LENGTH_MAX, (spot.y + 12) / -d.y);
+      const length =
+        spot.length ?? Math.min(SPOT_LENGTH_MAX, (spot.y + 12) / -d.y);
       const radius = SPOT_RADIUS * (length / SPOT_LENGTH_MAX);
       this.place(index++, d, length, Math.max(6, radius));
       lights?.place(spot, spotHeadBoost, SPOT_HEAD_SIZE);

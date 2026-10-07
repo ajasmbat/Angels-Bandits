@@ -90,12 +90,11 @@ const setBots = (peer: Peer, count: number): void => {
 };
 
 beforeAll(async () => {
-  child = spawn("npx", ["tsx", entry], {
+  // node itself (tsx as a loader), not `npx tsx`: kill() in afterAll must
+  // reach the server, or it outlives the test and keeps flying its bots.
+  child = spawn(process.execPath, ["--import", "tsx", entry], {
     env: { ...process.env, PORT: "0" },
     stdio: ["ignore", "pipe", "pipe"],
-    // Its own process group, so afterAll can stop the real server too:
-    // npx → tsx → node, and a plain kill() only reaches npx.
-    detached: true,
   });
   url = await new Promise<string>((resolve, reject) => {
     const timer = setTimeout(
@@ -112,9 +111,7 @@ beforeAll(async () => {
 }, 30000);
 
 afterAll(() => {
-  // Negative pid = the whole group. Without it every run orphaned a live
-  // server (bots ticking at 20 Hz) that outlived the suite.
-  if (child?.pid) process.kill(-child.pid);
+  child?.kill();
 });
 
 describe("shared bot slider over the wire", () => {

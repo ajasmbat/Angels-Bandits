@@ -333,6 +333,47 @@ export const BLIMP_SPEED = 12;
 /** Blimp hull half-extents, m: half-length, half-height, half-width. */
 export const BLIMP_HULL = [46, 14, 14] as const;
 
+// --- Elevated train (L5) --- a lit train looping a rectangle of streets on a
+// viaduct, in common/src/city/train.ts. Same rule as the movers above: every
+// dimension is a collision dimension, so the deck, the pillars and the cars
+// are exactly as solid as they look.
+/** Top of the viaduct deck (the rail level), m above the street. */
+export const TRAIN_DECK_TOP = 25;
+/** Deck slab thickness, m — its underside is the ceiling you fly under. */
+export const TRAIN_DECK_THICK = 2;
+/** Deck half-width, m. Wide enough to cover a car's ~1 m overhang on a
+ * corner, narrow enough to stay far inside the 20 m lot lines. */
+export const TRAIN_DECK_HALF_WIDTH = 5;
+/** Square pillar side, m. Pillars stand on the street centreline, between
+ * the ±5 m traffic lanes. */
+export const TRAIN_PILLAR_SIDE = 2.4;
+/** Pillar spacing along a straight, m (a divisor of BLOCK_PITCH). */
+export const TRAIN_PILLAR_SPACING = 40;
+/** No pillar within this of a crossing street's centreline, m: the
+ * intersection square, its crosswalk and a margin stay clear for traffic. */
+export const TRAIN_PILLAR_CLEAR = 23;
+/** Corner radius where the loop turns from one street onto another, m. */
+export const TRAIN_CORNER_RADIUS = 32;
+/** One car, m: length, height, width; and the coupling gap between cars. */
+export const TRAIN_CAR_LENGTH = 16;
+export const TRAIN_CAR_HEIGHT = 3.8;
+export const TRAIN_CAR_WIDTH = 3.2;
+export const TRAIN_CAR_GAP = 1.5;
+/** Daylight between the deck top and a car's floor (bogies), m. */
+export const TRAIN_CAR_LIFT = 0.3;
+/** Seeded car count band. */
+export const TRAIN_CARS_MIN = 4;
+export const TRAIN_CARS_MAX = 6;
+/** Constant line speed, m/s. */
+export const TRAIN_SPEED = 22;
+/** Top of a car's roof — the highest solid the train line owns, m. */
+export const TRAIN_TOP = TRAIN_DECK_TOP + TRAIN_CAR_LIFT + TRAIN_CAR_HEIGHT;
+/** Canyon bots near the line hold at least TRAIN_TOP + this, m. */
+export const TRAIN_BOT_CLEAR = 16;
+/** "Near the line" for that floor, plan-view m: far enough out that a bot at
+ * MIN_SPEED has climbed over the deck before it gets there. */
+export const TRAIN_BOT_REACH = 150;
+
 // --- Fireworks (L2) --- a shared schedule in the strikesInWindow idiom:
 // every client computes the same bursts from (seed, synced clock), particles
 // only, no collision and no protocol.
@@ -746,3 +787,24 @@ export const BOT_HOLE_LINEUP_MAX = 450;
  * recently, ms, from no further than this before the mouth, m. */
 export const BOT_HOLE_FOLLOW_MS = 3000;
 export const BOT_HOLE_FOLLOW_RANGE = 400;
+
+// --- Sky traffic (L10) --- the news helicopter is a MOVER (solid, shared
+// with the bots); its pose is a pure function of (server-broadcast target,
+// server clock) in common/src/city/newsheli.ts. Airliners and the drone show
+// are scenery schedules in common/src/skytraffic.ts.
+/** News-heli orbit altitude band, m. Inside the ticket's 350-450 m band, but
+ * capped so the hull and rotor stay under the blimp's belly (BLIMP_ALT -
+ * BLIMP_HULL[1] = 416 m) and far above every roof (LANDMARK_HEIGHT 250). */
+export const NEWS_HELI_ALT_MIN = 350;
+export const NEWS_HELI_ALT_MAX = 390;
+/** Orbit radius around the kill site, m, and the speeds it flies at, m/s. */
+export const NEWS_HELI_ORBIT_R = 110;
+export const NEWS_HELI_ORBIT_SPEED = 28;
+export const NEWS_HELI_TRANSIT_SPEED = 50;
+/** Climb/descent rate cap during a transit, m/s. */
+export const NEWS_HELI_CLIMB = 6;
+/** Seconds the heading takes to swing onto a new course after a retarget. */
+export const NEWS_HELI_TURN_S = 3;
+/** Minimum time on station after arriving before the heli takes a new
+ * story, ms — rapid kills must not whip it between sites. */
+export const NEWS_HELI_DWELL_MS = 20000;

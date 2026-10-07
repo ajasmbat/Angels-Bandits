@@ -83,12 +83,11 @@ const streamPose = (peer: Peer, pose: Pose): void => {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 beforeAll(async () => {
-  child = spawn("npx", ["tsx", entry], {
+  // node itself (tsx as a loader), not `npx tsx`: kill() in afterAll must
+  // reach the server, or it outlives the test and keeps flying its bots.
+  child = spawn(process.execPath, ["--import", "tsx", entry], {
     env: { ...process.env, PORT: "0" },
     stdio: ["ignore", "pipe", "pipe"],
-    // Its own process group, so afterAll can stop the real server too:
-    // npx → tsx → node, and a plain kill() only reaches npx.
-    detached: true,
   });
   url = await new Promise<string>((resolve, reject) => {
     const timer = setTimeout(
@@ -105,9 +104,7 @@ beforeAll(async () => {
 }, 30000);
 
 afterAll(() => {
-  // Negative pid = the whole group. Without it every run orphaned a live
-  // server (bots ticking at 20 Hz) that outlived the suite.
-  if (child?.pid) process.kill(-child.pid);
+  child?.kill();
 });
 
 describe("quantised snapshots over the wire", () => {
@@ -211,11 +208,11 @@ describe("hit claims at the new cadence", () => {
       await wait(1000 / 20);
     }
     // Spawn protection has to lapse before a hit can land at all. Keep
-    // streaming the parked poses while it does, as a real client would:
-    // SPAWN_PROTECTION_MS outlasts LIVENESS_TIMEOUT_MS, and a silent socket
-    // is terminated by the server's liveness sweep before the claim is sent.
-    const until = performance.now() + SPAWN_PROTECTION_MS;
-    while (performance.now() < until) {
+    // streaming at the uplink rate meanwhile, as a real client does: since F4
+    // raised protection to 5.5 s, a silent wait outlasts LIVENESS_TIMEOUT_MS
+    // and the server drops both sockets before the shot.
+    const protectionEnds = Date.now() + SPAWN_PROTECTION_MS;
+    while (Date.now() < protectionEnds) {
       streamPose(shooter, at(1000, 1000));
       streamPose(target, at(1000 + BULLET_RANGE / 2, 1000));
       await wait(1000 / 20);

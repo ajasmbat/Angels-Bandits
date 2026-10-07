@@ -13,8 +13,12 @@ import {
   stopBoost,
 } from "@angels-bandits/common/boost";
 import { type Building, cityHoles } from "@angels-bandits/common/city";
-import { generateMovers } from "@angels-bandits/common/city/movers";
+import {
+  generateMovers,
+  withNewsHeli,
+} from "@angels-bandits/common/city/movers";
 import { natureFor } from "@angels-bandits/common/city/nature";
+import { setNewsTarget } from "@angels-bandits/common/city/newsheli";
 import { buildNatureIndex } from "@angels-bandits/common/collision";
 import {
   BLOCK_PITCH,
@@ -33,6 +37,7 @@ import {
 } from "@angels-bandits/common/flight";
 import { hitRangeBudgetFor } from "@angels-bandits/common/net";
 import type { ScoreEntry, SpawnState } from "@angels-bandits/common/protocol";
+import { airlinerOffsetInto } from "@angels-bandits/common/skytraffic";
 import { strikesInWindow } from "@angels-bandits/common/storm";
 import { wrapDelta, wrapDistance } from "@angels-bandits/common/world";
 import * as THREE from "three";
@@ -78,7 +83,12 @@ import {
   instructorInput,
 } from "./game/instructor";
 import { magnetizeVelocity } from "./game/magnetism";
-import { assistLatch, createAvoidance, stepAvoidance } from "./game/proximity";
+import {
+  type ProximityCue,
+  assistLatch,
+  createAvoidance,
+  stepAvoidance,
+} from "./game/proximity";
 import {
   BASE_FOV,
   createZoom,
@@ -88,9 +98,12 @@ import {
   zoomSteer,
 } from "./game/zoom";
 import { GameSocket } from "./net/socket";
+import { Airliners } from "./render/airliners";
 import { Birds } from "./render/birds";
 import { CityRenderer } from "./render/city";
 import { ConstructionSparks } from "./render/construction";
+import { DroneShowRenderer } from "./render/drones";
+import { FacadeDetailRenderer } from "./render/facade-detail";
 import { FacadeGarnishRenderer } from "./render/facade-garnish";
 import { Fireworks } from "./render/fireworks";
 import { installHeightFog } from "./render/fog";
@@ -143,6 +156,7 @@ import { Streetlights } from "./render/streetlights";
 import { Tracers } from "./render/tracers";
 import { Traffic } from "./render/traffic";
 import { PlaneTrails } from "./render/trails";
+import { TrainRenderer } from "./render/train";
 import { nearestImage } from "./render/wrapPlacement";
 import { BotBar } from "./ui/botbar";
 import { CommsTicker } from "./ui/comms";
@@ -334,10 +348,18 @@ scene.add(roofClutter.group);
 // Parapet caps + entrance canopies dress the same shared Building[] (ANGE-XY8LH8).
 const facadeGarnish = new FacadeGarnishRenderer(city.cityBuildings);
 scene.add(facadeGarnish.group);
+// L13 facade detail (ANGE-G6JR64): fire escapes, balconies, AC units and
+// scaffolding, streamed per camera block (r = 2) and faded on the GPU.
+const facadeDetail = new FacadeDetailRenderer(city.cityBuildings, welcome.seed);
+scene.add(facadeDetail.group);
 const ground = new GroundPlane();
 scene.add(ground.mesh);
 const skyDome = new SkyDome();
 scene.add(skyDome.mesh);
+// L10 airliners ride the dome like the stars: camera-following, fog off,
+// never in world space. Pure schedule of (seed, synced clock).
+const airliners = new Airliners(welcome.seed);
+skyDome.mesh.add(airliners.points);
 const streetlights = new Streetlights();
 scene.add(streetlights.group);
 // Street-level neon (S2): marquees, billboards, strips, spill — one shared
@@ -351,7 +373,19 @@ scene.add(traffic.mesh);
 // L2 movers: cranes, helicopters, the blimp. Poses are the SAME pure function
 // of (seed, server clock) the crash check uses, so what you see is what you
 // can hit — and nothing about them is ever streamed.
-const moverField = generateMovers(welcome.seed, city.cityBuildings);
+// L10: plus this room's news heli — the server authors its route from kill
+// sites; the welcome hands a late joiner the current one, `newsHeli` the rest.
+const moverField = withNewsHeli(
+  generateMovers(welcome.seed, city.cityBuildings),
+  welcome.seed,
+);
+if (moverField.news && welcome.newsHeli) {
+  moverField.news.target = welcome.newsHeli.target;
+  moverField.news.prev = welcome.newsHeli.prev;
+}
+socket.events.onNewsHeli = (msg) => {
+  if (moverField.news) setNewsTarget(moverField.news, msg.target);
+};
 const movers = new Movers(moverField);
 scene.add(movers.rig, movers.hulls, movers.rotors);
 // One additive point cloud shared by every L2 light: crane warning beacons,
@@ -359,6 +393,12 @@ scene.add(movers.rig, movers.hulls, movers.rotors);
 // L2 spectacle inside its draw-call budget.
 const moverLights = new MoverLights();
 scene.add(moverLights.points);
+// L5 elevated train: the viaduct and its lit cars, from the same movers field
+// the crash check and the bots use (one InstancedMesh; lamps and curve sparks
+// go into moverLights). The viaduct is static and drawn from frame one; the
+// cars wait for the server clock like every mover.
+const train = new TrainRenderer(moverField.train ?? null);
+scene.add(train.mesh);
 // N1 nature: night parks, landmark forecourts, street trees, hoardings. One
 // pure seam feeds this renderer AND the crash check, so a tree is solid
 // exactly where it is drawn (street trees excepted — lamp-pole height).
@@ -374,6 +414,8 @@ scene.add(river.group);
 const fireworks = new Fireworks(welcome.seed);
 const searchlights = new Searchlights(city.cityBuildings);
 scene.add(searchlights.mesh);
+// L10 drone show: points in the shared MoverLights cloud (zero draw calls).
+const droneShow = new DroneShowRenderer(welcome.seed);
 const birds = new Birds(welcome.seed);
 scene.add(birds.points);
 // L1 living streets — the micro tier. Client-only, non-collidable, and gated
@@ -550,6 +592,7 @@ let avoidLatch: AimError = { yaw: 0, pitch: 0 };
 /** Last frame's warning / predicted impact (QA hook only). */
 let avoidWarning = false;
 let avoidImpactIn: number | null = null;
+let avoidCue: ProximityCue | null = null;
 // Hold-SPACE boost (F2): the local half of the shared energy model. The
 // server mirrors it from the edges we send, so `boostSent` tracks what the
 // server was last told.
@@ -607,9 +650,10 @@ function enterDeath(killerId: string | null, cause?: "storm"): void {
   avoidance = createAvoidance();
   avoidLatch = { yaw: 0, pitch: 0 };
   hud.setFreeLook(false);
-  hud.setPullUp(false);
+  hud.setProximity(null);
   avoidWarning = false;
   avoidImpactIn = null;
+  avoidCue = null;
   killCamTargetId = killerId;
   hud.showKillCam(killerId === null ? null : nameOf(killerId), cause);
   setBoostBurning(false, performance.now());
@@ -921,6 +965,7 @@ declare global {
       avoidance: () => {
         on: boolean;
         warning: boolean;
+        cue: ProximityCue | null;
         impactIn: number | null;
         pitch: number;
         turn: number;
@@ -928,7 +973,19 @@ declare global {
       lampImage: (x: number, z: number) => { x: number; z: number } | null;
       traffic: (at?: number | null) => ReturnType<Traffic["debug"]>;
       movers: (at?: number | null) => ReturnType<Movers["debug"]>;
+      train: (at?: number | null) => ReturnType<TrainRenderer["debug"]>;
       fireworks: (at?: number | null) => ReturnType<Fireworks["debug"]>;
+      /** L10 QA: airliners and drone show drawn last frame, the news heli's
+       * slot, and (forceDroneShow) the gallery's way to start a show now. */
+      skyTraffic: () => {
+        airliners: Airliners["drawn"];
+        /** Each drawn airliner's offset from the viewer, m (y up). */
+        airlinerOffsets: { x: number; y: number; z: number }[];
+        airlinerPoints: number;
+        droneShow: DroneShowRenderer["current"];
+        newsHeli: typeof moverField.news;
+      };
+      forceDroneShow: (ageS: number | null) => void;
       cityStats: () => {
         buildings: number;
         tierInstances: number;
@@ -1089,6 +1146,7 @@ window.__ab = {
   avoidance: () => ({
     on: assistOn,
     warning: avoidWarning,
+    cue: avoidCue,
     impactIn: avoidImpactIn,
     pitch: avoidance.pitch,
     turn: avoidance.turn,
@@ -1105,14 +1163,35 @@ window.__ab = {
   // own interpolation delay, so their default render clocks are NOT the same
   // instant. Two tabs given the same `at` must return identical JSON.
   movers: (at) => movers.debug(at === undefined ? socket.renderTime() : at),
+  // L5 QA: the route, the cars' poses at a server time and the drawn read-back.
+  train: (at) => train.debug(at === undefined ? socket.renderTime() : at),
   fireworks: (at) =>
     fireworks.debug(at === undefined ? socket.renderTime() : at),
+  skyTraffic: () => ({
+    airliners: airliners.drawn,
+    airlinerOffsets: airliners.drawn.map((a) => {
+      const o = airlinerOffsetInto(a, socket.renderTime() ?? 0, {
+        x: 0,
+        y: 0,
+        z: 0,
+        hx: 0,
+        hz: 0,
+      });
+      return { x: o.x, y: o.y, z: o.z };
+    }),
+    airlinerPoints: airliners.pointCount,
+    droneShow: droneShow.current,
+    newsHeli: moverField.news,
+  }),
+  forceDroneShow: (ageS) =>
+    droneShow.force(socket.renderTime(), ageS === null ? null : ageS * 1000),
   // V2 QA: instance counts for the perf report.
   cityStats: () => ({
     buildings: city.cityBuildings.length,
     tierInstances: city.tierInstanceCount,
     clutterInstances: roofClutter.instanceCount,
     garnishInstances: facadeGarnish.instanceCount,
+    detailInstances: facadeDetail.instanceCount,
     rigInstances: movers.rigInstances,
     moverLights: moverLights.lightCount,
     beams: searchlights.beamCount,
@@ -1248,7 +1327,7 @@ renderer.setAnimationLoop((now) => {
     hud.showAimMode(aimMode);
   }
   if (input.assistOn() !== assistOn) {
-    // N flips the avoidance assist; the PULL UP warning stays either way.
+    // N flips the avoidance assist; the proximity warning stays either way.
     assistOn = input.assistOn();
     hud.showAssist(assistOn);
   }
@@ -1375,7 +1454,8 @@ renderer.setAnimationLoop((now) => {
     );
     avoidWarning = avoid.warning;
     avoidImpactIn = avoid.impactIn;
-    hud.setPullUp(avoid.warning);
+    avoidCue = avoid.cue;
+    hud.setProximity(avoid.cue);
     if (avoid.warning) audio.pullUpTone(now);
     flight = stepFlight(flight, avoid.input, dt);
     // Own control surfaces follow what the plane is actually flying — the
@@ -1547,6 +1627,7 @@ renderer.setAnimationLoop((now) => {
   // Beacons pulse on server-synced time so every client is in phase.
   roofClutter.update(chase.position, renderMs ?? now);
   facadeGarnish.update(chase.position);
+  facadeDetail.update(chase.position, microOn); // L13: re-streams on block change only
   streetlights.update(chase.position);
   natureRenderer.update(chase.position);
   // Neon pulses on the same synced clock as the beacons.
@@ -1554,11 +1635,14 @@ renderer.setAnimationLoop((now) => {
   traffic.update(chase.position, renderMs);
   // Every L2 system takes the SAME latched clock the crash check used.
   movers.update(chase.position, renderMs, moverLights);
+  train.update(chase.position, renderMs, moverLights); // L5, same latched clock
   fireworks.update(chase.position, renderMs, moverLights);
   // After movers.update: the helicopters' belly spots are this frame's, and
   // the lamp heads land in the same point cloud before commit().
   searchlights.update(chase.position, renderMs, movers.spots, moverLights);
   birds.update(chase.position, renderMs);
+  // L10: the drones write LAST, so a full cloud drops drones, not nav lights.
+  droneShow.update(chase.position, renderMs, moverLights);
   moverLights.commit();
   // L1 micro tier — on the same latched clock, for the same reason. ONE gate
   // value drives all four subsystems; k === 0 takes an early return inside
@@ -1579,6 +1663,7 @@ renderer.setAnimationLoop((now) => {
   ground.update(chase.position);
   river.update(chase.position, renderMs, now); // L11
   skyDome.update(chase.position);
+  airliners.update(renderMs);
   // Wounded smoke: own plane from server-said self HP, every remote (human
   // or bot) from snapshot HP — all clients see the same wounds. Death clouds
   // simply stop being synced and age out inside SmokeTrails.
@@ -1654,6 +1739,8 @@ renderer.setAnimationLoop((now) => {
     combat: radio.inCombat(now),
     serverTimeMs: renderMs,
   });
+  // L5: the train's rumble from its nearest car, squealing on a curve.
+  audio.setTrainRumble(train.rumbleAt, train.squeal, flight.pos, flight.yaw);
 
   // FOV must land BEFORE the render: the lead reticle and edge markers below
   // read camera.projectionMatrix directly, so writing it after would project

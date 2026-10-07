@@ -46,13 +46,14 @@ import {
 import { Combat } from "../src/combat";
 import { pickRespawn } from "../src/respawn";
 
-// These sims are long, synchronous CPU loops, and vitest only yields
-// MICROtasks between tests: the worker never reads the main thread's RPC
-// acks until the file ends. On a loaded machine that stretch outlives the
-// worker's 60 s RPC timeout ("Timeout calling onTaskUpdate") and fails the
-// run with every test green. One macrotask turn after each test lets the
-// acks through.
-afterEach(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+// Most tests here are long SYNCHRONOUS sims, and vitest's runner chains sync
+// tests without ever yielding a macrotask. Its fire-and-forget onTaskUpdate
+// RPC reply then sits unread until the whole file ends; on a loaded box the
+// file takes > 60 s, the worker's RPC timer fires first, and `npm test` exits
+// 1 ("Timeout calling onTaskUpdate") with every test green. One event-loop
+// turn after each test lets the reply be read, so only a single test, never
+// the whole file, has to fit inside the RPC timeout.
+afterEach(() => new Promise<void>((resolve) => setImmediate(resolve)));
 
 /** A fixed mid-altitude spawn: tests place bots explicitly. */
 const spawnAt = (x: number, z: number, yaw = 0, y = 300): SpawnState => ({
@@ -60,6 +61,11 @@ const spawnAt = (x: number, z: number, yaw = 0, y = 300): SpawnState => ({
   yaw,
   speed: RESPAWN_SPEED,
 });
+
+/** Let the event loop turn once — long synchronous sims call this between
+ * chunks so the vitest worker can answer its RPC (fixed 60 s timeout). */
+const yieldToEventLoop = () =>
+  new Promise<void>((resolve) => setImmediate(resolve));
 
 describe("RoomBots population sync", () => {
   it("syncTo(6) on an empty room spawns BANDIT-1..6 with room-scoped ids", () => {
@@ -1117,7 +1123,7 @@ describe("bots vs the L2 movers", () => {
     return { moverDeaths, sweepTicks };
   }
 
-  it("negative control: the probe is load-bearing, not decorative", () => {
+  it("negative control: the probe is load-bearing, not decorative", async () => {
     // The measured contribution of wiring movers into blockedAlong. Blind,
     // eight bots dogfighting through a crane's sweep died to it 42-46 times
     // per seed while a third of them flew straight lines up high. Since B1
@@ -1125,21 +1131,29 @@ describe("bots vs the L2 movers", () => {
     // jib oversails and the run is summed over five seeds of four minutes:
     // blind it is ~30 deaths, with the probe on 0. This asserts the gap, not
     // a fragile exact count.
-    const sum = (probe: boolean) =>
-      [1234, 7, 20260826, 99, 5]
-        .map((seed) => orbitCrane(seed, probe))
-        .reduce((a, r) => ({
-          moverDeaths: a.moverDeaths + r.moverDeaths,
-          sweepTicks: a.sweepTicks + r.sweepTicks,
-        }));
-    const seeing = sum(true);
-    const blind = sum(false);
+    //
+    // Ten runs of a few seconds each, with a yield to the event loop between
+    // them: as one synchronous 40 s block (on a loaded box) it starved the
+    // vitest worker's RPC, whose fixed 60 s timeout then failed the whole
+    // `npm test` with "Timeout calling onTaskUpdate" though every test passed.
+    const sum = async (probe: boolean) => {
+      const total = { moverDeaths: 0, sweepTicks: 0 };
+      for (const seed of [1234, 7, 20260826, 99, 5]) {
+        const r = orbitCrane(seed, probe);
+        total.moverDeaths += r.moverDeaths;
+        total.sweepTicks += r.sweepTicks;
+        await yieldToEventLoop();
+      }
+      return total;
+    };
+    const seeing = await sum(true);
+    const blind = await sum(false);
     // Five seeds' worth of the single-seed 800-tick vacuity guard.
     expect(blind.sweepTicks).toBeGreaterThan(4000);
     expect(seeing.sweepTicks).toBeGreaterThan(4000);
     expect(blind.moverDeaths).toBeGreaterThan(20);
     expect(seeing.moverDeaths * 10).toBeLessThan(blind.moverDeaths);
-  }, 60_000);
+  }, 300_000);
 
   it("keeps the storm ceiling while it is busy dodging a crane", () => {
     // The mover probe must not have cost bots a guarantee they already had.

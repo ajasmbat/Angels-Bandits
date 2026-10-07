@@ -95,6 +95,7 @@ import { GameSocket } from "./net/socket";
 import { Birds } from "./render/birds";
 import { CityRenderer } from "./render/city";
 import { ConstructionSparks } from "./render/construction";
+import { FacadeDetailRenderer } from "./render/facade-detail";
 import { FacadeGarnishRenderer } from "./render/facade-garnish";
 import { Fireworks } from "./render/fireworks";
 import { installHeightFog } from "./render/fog";
@@ -147,6 +148,7 @@ import { Streetlights } from "./render/streetlights";
 import { Tracers } from "./render/tracers";
 import { Traffic } from "./render/traffic";
 import { PlaneTrails } from "./render/trails";
+import { TrainRenderer } from "./render/train";
 import { nearestImage } from "./render/wrapPlacement";
 import { BotBar } from "./ui/botbar";
 import { CommsTicker } from "./ui/comms";
@@ -338,6 +340,10 @@ scene.add(roofClutter.group);
 // Parapet caps + entrance canopies dress the same shared Building[] (ANGE-XY8LH8).
 const facadeGarnish = new FacadeGarnishRenderer(city.cityBuildings);
 scene.add(facadeGarnish.group);
+// L13 facade detail (ANGE-G6JR64): fire escapes, balconies, AC units and
+// scaffolding, streamed per camera block (r = 2) and faded on the GPU.
+const facadeDetail = new FacadeDetailRenderer(city.cityBuildings, welcome.seed);
+scene.add(facadeDetail.group);
 const ground = new GroundPlane();
 scene.add(ground.mesh);
 const skyDome = new SkyDome();
@@ -363,6 +369,12 @@ scene.add(movers.rig, movers.hulls, movers.rotors);
 // L2 spectacle inside its draw-call budget.
 const moverLights = new MoverLights();
 scene.add(moverLights.points);
+// L5 elevated train: the viaduct and its lit cars, from the same movers field
+// the crash check and the bots use (one InstancedMesh; lamps and curve sparks
+// go into moverLights). The viaduct is static and drawn from frame one; the
+// cars wait for the server clock like every mover.
+const train = new TrainRenderer(moverField.train ?? null);
+scene.add(train.mesh);
 // N1 nature: night parks, landmark forecourts, street trees, hoardings. One
 // pure seam feeds this renderer AND the crash check, so a tree is solid
 // exactly where it is drawn (street trees excepted — lamp-pole height).
@@ -950,6 +962,7 @@ declare global {
       lampImage: (x: number, z: number) => { x: number; z: number } | null;
       traffic: (at?: number | null) => ReturnType<Traffic["debug"]>;
       movers: (at?: number | null) => ReturnType<Movers["debug"]>;
+      train: (at?: number | null) => ReturnType<TrainRenderer["debug"]>;
       fireworks: (at?: number | null) => ReturnType<Fireworks["debug"]>;
       cityStats: () => {
         buildings: number;
@@ -1150,6 +1163,8 @@ window.__ab = {
   // own interpolation delay, so their default render clocks are NOT the same
   // instant. Two tabs given the same `at` must return identical JSON.
   movers: (at) => movers.debug(at === undefined ? socket.renderTime() : at),
+  // L5 QA: the route, the cars' poses at a server time and the drawn read-back.
+  train: (at) => train.debug(at === undefined ? socket.renderTime() : at),
   fireworks: (at) =>
     fireworks.debug(at === undefined ? socket.renderTime() : at),
   // V2 QA: instance counts for the perf report.
@@ -1158,6 +1173,7 @@ window.__ab = {
     tierInstances: city.tierInstanceCount,
     clutterInstances: roofClutter.instanceCount,
     garnishInstances: facadeGarnish.instanceCount,
+    detailInstances: facadeDetail.instanceCount,
     rigInstances: movers.rigInstances,
     moverLights: moverLights.lightCount,
     beams: searchlights.beamCount,
@@ -1627,6 +1643,7 @@ renderer.setAnimationLoop((now) => {
   // Beacons pulse on server-synced time so every client is in phase.
   roofClutter.update(chase.position, renderMs ?? now);
   facadeGarnish.update(chase.position);
+  facadeDetail.update(chase.position, microOn); // L13: re-streams on block change only
   streetlights.update(chase.position);
   natureRenderer.update(chase.position);
   // Neon pulses on the same synced clock as the beacons.
@@ -1637,6 +1654,7 @@ renderer.setAnimationLoop((now) => {
   traffic.update(chase.position, renderMs, cityReact);
   // Every L2 system takes the SAME latched clock the crash check used.
   movers.update(chase.position, renderMs, moverLights);
+  train.update(chase.position, renderMs, moverLights); // L5, same latched clock
   fireworks.update(chase.position, renderMs, moverLights);
   // After movers.update: the helicopters' belly spots are this frame's, and
   // the lamp heads land in the same point cloud before commit().
@@ -1746,6 +1764,8 @@ renderer.setAnimationLoop((now) => {
     combat: radio.inCombat(now),
     serverTimeMs: renderMs,
   });
+  // L5: the train's rumble from its nearest car, squealing on a curve.
+  audio.setTrainRumble(train.rumbleAt, train.squeal, flight.pos, flight.yaw);
 
   // FOV must land BEFORE the render: the lead reticle and edge markers below
   // read camera.projectionMatrix directly, so writing it after would project

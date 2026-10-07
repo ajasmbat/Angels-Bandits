@@ -58,6 +58,7 @@ import {
   nextIntersection,
   offCenterline,
 } from "@angels-bandits/common/city/street";
+import { trainFloor } from "@angels-bandits/common/city/train";
 import {
   type CityIndex,
   EMPTY_NATURE_INDEX,
@@ -136,6 +137,7 @@ import {
   PITCH_LIMIT,
   PLAYER_RADIUS,
   TICK_DOWN_HZ,
+  TRAIN_BOT_REACH,
 } from "@angels-bandits/common/constants";
 import {
   type FlightInput,
@@ -1670,6 +1672,17 @@ export class RoomBots {
     // RESPAWN_ALTITUDE is a slope down the lattice, not a plunge.
     let targetY = stageY ?? bot.waypoint.y + (slowing ? BOT_CANYON_HOP : 0);
     if (merge) targetY = Math.max(targetY, bot.flight.pos.y);
+    // L5: over the train line — its own streets and every street crossing
+    // them — hold above the deck and the cars. The probes would see them, but
+    // dodging a viaduct down in the canyon is exactly the late, hard turn
+    // that puts a bot into a facade; climbing early costs nothing.
+    if (this.movers.train) {
+      targetY = Math.max(
+        targetY,
+        trainFloor(this.movers.train, bot.flight.pos, TRAIN_BOT_REACH),
+        trainFloor(this.movers.train, bot.waypoint, 0),
+      );
+    }
     const dy = Math.max(targetY - bot.flight.pos.y, -flat * BOT_CANYON_GLIDE);
     // Never accelerate on a canyon patrol: turn radius is speed / 0.765 rad/s,
     // so a street-grid bot has to arrive at a corner near MIN_SPEED or its arc

@@ -15,6 +15,7 @@
     "./city/layout": "./src/city/layout.ts",
     "./city/street": "./src/city/street.ts",
     "./city/movers": "./src/city/movers.ts",
+    "./city/train": "./src/city/train.ts",
     "./city/nature": "./src/city/nature.ts",
     "./storm": "./src/storm.ts",
     "./fireworks": "./src/fireworks.ts",

@@ -25,6 +25,7 @@ import { WAKE_PARS_GLSL, wakeWindowGlsl, windowWakeUniform } from "./reactions";
 import {
   holeLightGlsl,
   holeSurfaceGlsl,
+  pitchSeedGlsl,
   roofLightGlsl,
   roofParsGlsl,
   roofSurfaceGlsl,
@@ -98,6 +99,7 @@ attribute vec4 aHole;
 varying vec3 vMeters;
 varying vec3 vObjNormal;
 varying float vBSeed;
+flat varying float vPitchSeed;
 varying float vWorldY;
 varying float vArch;
 varying float vBHeight;
@@ -107,7 +109,7 @@ varying vec3 vLed;
 varying vec3 vCrown;
 varying vec2 vHalfXZ;
 varying vec4 vHole;
-`;
+${pitchSeedGlsl()}`;
 
 const VERTEX_MAIN = /* glsl */ `
 // Unit box (x/z in [-0.5, 0.5], y in [0, 1]) times the instance scale =
@@ -130,6 +132,9 @@ vWorldY = position.y * sScale.y + instanceMatrix[3].y;
 // Per-building seed from its (stable) dimensions — NOT its translation,
 // which shifts by WORLD_SIZE whenever the building wraps past the seam.
 vBSeed = fract(sin(dot(bScale.xz, vec2(12.9898, 78.233)) + bScale.y) * 43758.5453);
+// L13: the window pitch jitter's seed, bit-exact with window-pattern.ts
+// pitchSeed() so facade detail can sit on the drawn rows.
+vPitchSeed = abPitchSeed(bScale);
 vArch = aArchetype;
 // This instance's own height, so weathering scales with the building rather
 // than with a constant written for one tower size.
@@ -152,6 +157,7 @@ const FRAGMENT_PARS = /* glsl */ `
 varying vec3 vMeters;
 varying vec3 vObjNormal;
 varying float vBSeed;
+flat varying float vPitchSeed;
 varying float vWorldY;
 varying float vArch;
 varying float vBHeight;

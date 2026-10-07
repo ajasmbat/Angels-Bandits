@@ -35,7 +35,7 @@ import {
 import { flightForward } from "@angels-bandits/common/flight";
 import type { SpawnState } from "@angels-bandits/common/protocol";
 import { canonicalize, wrapDeltaAxis } from "@angels-bandits/common/world";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   type BotShot,
   RoomBots,
@@ -46,14 +46,11 @@ import {
 import { Combat } from "../src/combat";
 import { pickRespawn } from "../src/respawn";
 
-/** One event-loop turn. These long synchronous sims otherwise chain
- * test-to-test in microtasks for well over a minute on a loaded machine;
- * the worker then never reads the main process's reply to Vitest's
- * "onTaskUpdate" RPC, birpc's 60 s timeout fires first, and the run exits 1
- * with every test green. Yielding lets the reply through. */
+/** One event-loop turn. vitest.setup.ts yields between tests; a single
+ * test that runs many long sims yields between them too, or on a loaded box
+ * one test alone outlasts the 60 s Vitest worker-RPC timeout. */
 const yieldToEventLoop = () =>
   new Promise<void>((resolve) => setImmediate(resolve));
-afterEach(yieldToEventLoop);
 
 /** A fixed mid-altitude spawn: tests place bots explicitly. */
 const spawnAt = (x: number, z: number, yaw = 0, y = 300): SpawnState => ({

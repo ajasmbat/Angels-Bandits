@@ -62,22 +62,23 @@ export function strobeOn(planeId: string, timeMs: number): boolean {
 }
 
 // --- Mount points, game-local coords (forward −Z, right +X, up +Y) ---
-// Derived from the approved biplane model (model nose +Z, flown inside a
-// π-turned parent): upper-wing tips at model x = ±4.5, y = 1.38, z = 0.62;
-// tail post at model z ≈ −3.3; cowl at model z ≈ +3.1. The π turn maps
-// model (x, z) → game (−x, −z). Do not restyle the model — these are
-// attachment offsets only.
+// Derived from the biplane model (model nose +Z, flown inside a π-turned
+// parent): upper-wing tips at model x = ±4.5, z = 0.62, raised by the F3
+// 1.2° dihedral from y = 1.38 to ≈ 1.47; tail post at model z ≈ −3.3;
+// exhaust-stub outlets below the cowl's left flank at model ≈ (0.53, −0.34,
+// 2.46). The π turn maps model (x, z) → game (−x, −z). Wingtip trails
+// (trails.ts) ride the nav mounts, so moving a tip here moves both.
 export const LIGHT_MOUNTS = {
   /** Red — LEFT wingtip (game −X). */
-  navL: { x: -4.5, y: 1.38, z: -0.62 },
+  navL: { x: -4.5, y: 1.47, z: -0.62 },
   /** Green — RIGHT wingtip (game +X). */
-  navR: { x: 4.5, y: 1.38, z: -0.62 },
+  navR: { x: 4.5, y: 1.47, z: -0.62 },
   /** White — tail post (game +Z is aft). */
   tail: { x: 0, y: 1.2, z: 3.25 },
   /** White anti-collision strobe on the fuselage spine. */
   strobe: { x: 0, y: 0.75, z: 1.7 },
-  /** Warm exhaust glow at the cowl (nose is −Z). */
-  exhaust: { x: -0.3, y: -0.15, z: -3.0 },
+  /** Warm exhaust glow at the stub outlets (nose is −Z). */
+  exhaust: { x: -0.53, y: -0.34, z: -2.46 },
 } as const satisfies Record<string, Vec3>;
 
 // --- Renderer: one Points draw call for every plane's five lights ---
@@ -445,8 +446,9 @@ export const HERO_EXHAUST_CACHE_KEY = "ab-plane-hero-exhaust";
 
 /**
  * Patch every material under a plane group with the hero light. The biplane
- * nests groups, so traverse; materials are per-plane (createBiplane builds
- * fresh ones), so patching never leaks. Transparent glass is skipped — a key
+ * nests groups (LOD levels, hinges), so traverse; materials are per-plane
+ * (createBiplane builds fresh ones — only the merged GEOMETRY is shared), so
+ * patching never leaks. Transparent glass is skipped — a key
  * light would wash the windscreen white. Materials flagged
  * `userData.exhaustGlow` (the radial engine) also get the exhaust ring.
  */

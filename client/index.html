@@ -256,8 +256,68 @@
       }
       /* Aim chrome is meaningless mid-orbit — dim it to ~30%. */
       body.freelook #crosshair,
-      body.freelook #lead {
+      body.freelook #lead,
+      body.freelook #aim-cursor {
         opacity: 0.3;
+      }
+      /* Mouse-aim instructor (F1): the cursor IS the aim point, so it is
+         drawn as an aim circle the pipper flies onto. Over the 3D view the
+         OS cursor would double it — hidden there, and only while flying in
+         that mode (body.aim-instructor, set by ui/hud.ts). HUD controls keep
+         their own cursor. */
+      body.aim-instructor > canvas:not(#minimap) {
+        cursor: none;
+      }
+      #aim-cursor {
+        position: fixed;
+        left: 0;
+        top: 0;
+        width: 40px;
+        height: 40px;
+        margin: -20px 0 0 -20px;
+        display: none;
+        color: #e8f6facc;
+        pointer-events: none;
+        user-select: none;
+        will-change: transform;
+      }
+      #aim-cursor .ring {
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.5;
+        stroke-dasharray: 5 3;
+      }
+      #aim-cursor .dot {
+        fill: currentColor;
+      }
+      /* Pipper on the cursor: both close up solid — one reticle, guns on. */
+      #aim-cursor.converged {
+        color: #b9f6ff;
+        filter: drop-shadow(0 0 4px #9fd8e8);
+      }
+      #aim-cursor.converged .ring {
+        stroke-dasharray: none;
+      }
+      #crosshair.converged {
+        color: #b9f6ff;
+      }
+      #aim-mode-toast {
+        position: fixed;
+        left: 50%;
+        top: 34px;
+        transform: translateX(-50%);
+        color: #9fd8e8;
+        font-size: 11px;
+        letter-spacing: 0.2em;
+        text-shadow: 0 1px 2px #000;
+        opacity: 0;
+        transition: opacity 0.4s ease-out;
+        pointer-events: none;
+        user-select: none;
+      }
+      #aim-mode-toast.on {
+        opacity: 0.85;
+        transition: none;
       }
       /* Zoomed, the pipper IS the gunsight — brighten and thicken it. */
       body.zoom #crosshair {
@@ -538,10 +598,11 @@
         position: fixed;
         left: 0;
         top: 0;
-        width: 48px;
-        height: 48px;
-        margin: -24px 0 0 -24px;
+        width: 60px;
+        height: 60px;
+        margin: -30px 0 0 -30px;
         color: #ffc46b;
+        filter: drop-shadow(0 0 2px #000);
         display: none;
         pointer-events: none;
         user-select: none;
@@ -550,9 +611,9 @@
       #lead .ring {
         fill: none;
         stroke: currentColor;
-        stroke-width: 1;
-        stroke-dasharray: 3 4;
-        opacity: 0.85;
+        stroke-width: 1.8;
+        stroke-dasharray: 4 3;
+        opacity: 1;
       }
       #lead .core {
         fill: currentColor;
@@ -683,6 +744,10 @@
       <line class="tick" x1="33" y1="24" x2="37" y2="24" />
     </svg>
     <div id="hitmarker"><span></span><span></span><span></span><span></span></div>
+    <svg id="aim-cursor" viewBox="0 0 40 40" aria-hidden="true">
+      <circle class="ring" cx="20" cy="20" r="12" />
+      <circle class="dot" cx="20" cy="20" r="1.4" />
+    </svg>
     <svg id="lead" viewBox="0 0 48 48" aria-hidden="true">
       <circle class="core" cx="24" cy="24" r="10" />
       <circle class="ring" cx="24" cy="24" r="10" />
@@ -726,6 +791,7 @@
       </svg>
     </button>
     <div id="freelook-hint">◇ FREE LOOK ◇</div>
+    <div id="aim-mode-toast"></div>
     <div id="killfeed"></div>
     <div id="comms"></div>
     <div id="scoreboard">

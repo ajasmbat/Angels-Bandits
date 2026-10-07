@@ -28,6 +28,7 @@ import {
 import {
   type FlightState,
   createFlightState,
+  handlingRates,
   stepFlight,
 } from "@angels-bandits/common/flight";
 import { hitRangeBudgetFor } from "@angels-bandits/common/net";
@@ -66,6 +67,15 @@ import { FlightInputSource } from "./game/flight-input";
 import { createFreeLook, shapeInput, stepFreeLook } from "./game/freelook";
 import { Guns } from "./game/guns";
 import { bulletHitsSphere } from "./game/hitdetect";
+import {
+  type AimError,
+  CONVERGED_RAD,
+  aimError,
+  aimView,
+  angleBetween,
+  createInstructor,
+  instructorInput,
+} from "./game/instructor";
 import { magnetizeVelocity } from "./game/magnetism";
 import {
   BASE_FOV,
@@ -89,7 +99,14 @@ import { MoverLights, Movers } from "./render/movers";
 import { NatureRenderer } from "./render/nature";
 import { Pedestrians } from "./render/pedestrians";
 import { FrameMeter, type FrameStats } from "./render/perfmeter";
-import { buildPlaneMesh, spinPropeller } from "./render/plane";
+import {
+  type ControlDeflection,
+  NEUTRAL_CONTROLS,
+  animatePlane,
+  buildPlaneMesh,
+  inputControls,
+  spinPropeller,
+} from "./render/plane";
 import { PlaneLights } from "./render/planelights";
 import { RemotePlanes } from "./render/remotes";
 import { MSAA_SAMPLES, readRenderOptions } from "./render/renderopts";
@@ -500,6 +517,15 @@ const chase = new ChaseCamera();
 let freelook = createFreeLook();
 // Hold-right-click aim zoom: same deal — display + input shaping only.
 let zoom = createZoom();
+// Mouse-aim instructor (F1): client-only, its output is ordinary input.
+let instructor = createInstructor();
+let aimMode = input.aimMode();
+/** Last frame's smoothed cursor — the free-look drag latch diffs against it. */
+let cursorPrev = input.cursorNdc();
+/** Whether the pipper sits on the cursor this frame (HUD converged state). */
+let aimConverged = false;
+/** The FOV the instructor last read the cursor through (latch reference). */
+let aimFovPrev = BASE_FOV;
 // Hold-SPACE boost (F2): the local half of the shared energy model. The
 // server mirrors it from the edges we send, so `boostSent` tracks what the
 // server was last told.
@@ -508,6 +534,13 @@ let boost = createBoost(performance.now());
 let boostSent = false;
 /** Extra vertical FOV at full boost speed, degrees — the speed kick. */
 const BOOST_FOV_KICK = 9;
+/** 0 at ≤ MAX_SPEED, 1 at full boost speed. */
+const overspeedOf = (speed: number): number =>
+  Math.min(1, Math.max(0, (speed - MAX_SPEED) / (BOOST_MAX_SPEED - MAX_SPEED)));
+/** The vertical FOV the render writes: zoom, plus the boost kick un-zoomed.
+ * The instructor reads the cursor through the same one. */
+const viewFov = (z: number, overspeed: number): number =>
+  zoomFov(z) + BOOST_FOV_KICK * overspeed * (1 - z);
 let flight: FlightState = createFlightState(
   welcome.spawn.pos,
   welcome.spawn.yaw,
@@ -523,6 +556,8 @@ let alive = true;
 let killCamTargetId: string | null = null;
 // Server-said combat state about self (snapshots), kept for HUD + QA.
 let selfHp = MAX_HP;
+/** The own plane's control-surface commands, from the last flight step. */
+let ownControls: ControlDeflection = NEUTRAL_CONTROLS;
 let selfProt = true;
 let lastScores: ScoreEntry[] = welcome.scores;
 let lastDeath: { victimId: string; killerId: string | null } | null = null;
@@ -544,6 +579,7 @@ function enterDeath(killerId: string | null, cause?: "storm"): void {
   // Kill-cam owns the camera — force-exit free-look and the zoom instantly.
   freelook = createFreeLook();
   zoom = createZoom();
+  instructor = createInstructor();
   hud.setFreeLook(false);
   killCamTargetId = killerId;
   hud.showKillCam(killerId === null ? null : nameOf(killerId), cause);
@@ -561,6 +597,7 @@ function respawnSelf(spawn: SpawnState): void {
   flight = createFlightState(spawn.pos, spawn.yaw);
   flight = { ...flight, speed: spawn.speed, targetSpeed: spawn.speed };
   chase.snapTo(flight);
+  instructor = createInstructor();
   alive = true;
   killCamTargetId = null;
   plane.visible = true;
@@ -1150,10 +1187,22 @@ renderer.setAnimationLoop((now) => {
   const renderMs = socket.renderTime();
   planeLights.begin(); // own + remote lights re-append every frame
   moverLights.begin(); // crane/aircraft lights + firework sparks, same deal
+  // Cursor smoothing + the leave-the-window fade run alive or dead, so
+  // neither comes back stale at respawn.
+  input.tick(dt);
+  if (input.aimMode() !== aimMode) {
+    // M flips the mode (dead or alive); a fresh instructor means no lagged
+    // command from the other mode ever reaches the plane.
+    aimMode = input.aimMode();
+    instructor = createInstructor();
+    hud.showAimMode(aimMode);
+  }
   // Step the zoom OUTSIDE the alive gate: chase.update() only runs while
   // alive, so a death mid-zoom would otherwise freeze the FOV narrowed for
   // the whole kill-cam. Dying eases it back out instead.
+  const zoomPrev = zoom.z;
   zoom = stepZoom(zoom, alive && zoomHeld(input.aimHeld(), freelook.held), dt);
+  aimConverged = false;
   // Boost (F2): a burn starts only on a fresh press (drained every frame, dead
   // too, so a press during the kill-cam can't fire after respawn) and ends on
   // release or an empty gauge — each edge reaches the server's mirror.
@@ -1178,11 +1227,67 @@ renderer.setAnimationLoop((now) => {
     // through the same input-shaping seam free-look uses — the camera never
     // reaches flight state. Authority is the product of both costs.
     const steer = freelook.steer * zoomSteer(zoom.z);
-    flight = stepFlight(
-      flight,
-      { ...shapeInput(input.read(), { steer }), boost: boost.active },
-      dt,
-    );
+    let command = input.read();
+    if (aimMode === "instructor") {
+      // The cursor is the aim point: fly the pipper onto it. The view is the
+      // un-orbited chase frame at THIS frame's (already stepped) zoom, with
+      // the same FOV formula the render writes (boost kick included) —
+      // camera.fov itself is never read or written here.
+      const cursor = input.cursorNdc();
+      const aimFov = viewFov(zoom.z, overspeedOf(flight.speed));
+      const view = aimView(
+        flight,
+        chase.aimFrame(flight, zoom.z),
+        aimFov,
+        camera.aspect,
+        cursor,
+      );
+      const err = aimError(flight, view.aimDir, view.pipperDir);
+      // Latch only what the VIEW changed this frame — the zoom easing, the
+      // boost FOV kick, or the cursor moving while free-look owns the mouse
+      // (held, or its orbit still easing back, which also covers the
+      // smoothing catching up on the drag) — by re-reading the error with
+      // last frame's zoom/FOV/cursor at the same attitude. The plane's own
+      // turn is never latched, so a zoom pressed mid-turn keeps the turn.
+      let latch: AimError = { yaw: 0, pitch: 0 };
+      const zoomMoved = zoom.z !== zoomPrev;
+      const looking =
+        freelook.held || freelook.yaw !== 0 || freelook.pitch !== 0;
+      if (zoomMoved || aimFov !== aimFovPrev || looking) {
+        const z0 = zoomMoved ? zoomPrev : zoom.z;
+        const before = aimView(
+          flight,
+          chase.aimFrame(flight, z0),
+          aimFovPrev,
+          camera.aspect,
+          looking ? cursorPrev : cursor,
+        );
+        const e0 = aimError(flight, before.aimDir, before.pipperDir);
+        latch = { yaw: err.yaw - e0.yaw, pitch: err.pitch - e0.pitch };
+      }
+      const reframing = looking || (zoom.z > 0 && zoom.z < 1);
+      instructor = instructorInput(
+        err,
+        latch,
+        reframing,
+        dt,
+        instructor,
+        handlingRates(flight.speed, boost.active),
+      );
+      // Off-window the presence fades the instructor out too: attitude hold.
+      const presence = input.presence();
+      command = {
+        ...command,
+        turn: instructor.turn * presence,
+        pitch: instructor.pitch * presence,
+      };
+      aimConverged = angleBetween(view.aimDir, view.pipperDir) < CONVERGED_RAD;
+      aimFovPrev = aimFov;
+    }
+    const shaped = { ...shapeInput(command, { steer }), boost: boost.active };
+    flight = stepFlight(flight, shaped, dt);
+    // Own control surfaces follow what the stick is commanding (F3).
+    ownControls = inputControls(shaped, flight);
     // Hold the post-boost tail to the wall-clock envelope the server checks
     // (boostSpeedCap): a slow or hidden frame clamps dt, so the sim's own
     // decay can lag the clock — this keeps every pose inside the mirror.
@@ -1241,6 +1346,7 @@ renderer.setAnimationLoop((now) => {
     plane.rotation.set(flight.pitch, flight.yaw, flight.roll, "YXZ");
     // Prop speed tracks the commanded throttle (same factor as remotes').
     spinPropeller(plane, dt * flight.targetSpeed * 0.7);
+    animatePlane(plane, ownControls, flight.speed, selfHp, dt);
     // Own aviation lights + wingtip trails (strobe on the synced clock so
     // every client sees this plane blink at the same instant).
     planeLights.place(
@@ -1436,12 +1542,7 @@ renderer.setAnimationLoop((now) => {
   minimap.update(flight.pos, flight.yaw, contacts, reveals.pings(now));
   // 0 at ≤ MAX_SPEED, 1 at full boost speed: drives the engine pitch rise and
   // the FOV kick, and eases out with the post-boost tail on its own.
-  const overspeed = alive
-    ? Math.min(
-        1,
-        Math.max(0, (flight.speed - MAX_SPEED) / (BOOST_MAX_SPEED - MAX_SPEED)),
-      )
-    : 0;
+  const overspeed = alive ? overspeedOf(flight.speed) : 0;
   audio.setEngine(flight.targetSpeed, alive, overspeed);
   audio.syncRemotes(contacts, flight.pos, flight.yaw);
   // In-cloud static bed: quiet crackle ramping in over the deck's first
@@ -1454,7 +1555,7 @@ renderer.setAnimationLoop((now) => {
   // read camera.projectionMatrix directly, so writing it after would project
   // them with last frame's FOV. Guarded so a static FOV costs nothing, and
   // aspect (the resize handler's business) is left alone.
-  const fov = zoomFov(zoom.z) + BOOST_FOV_KICK * overspeed * (1 - zoom.z);
+  const fov = viewFov(zoom.z, overspeed);
   if (camera.fov !== fov) {
     camera.fov = fov;
     camera.updateProjectionMatrix();
@@ -1482,6 +1583,13 @@ renderer.setAnimationLoop((now) => {
   // The pipper is the gun line's own vanishing point, so it only means
   // anything while we are flying it — the kill-cam gets no aim chrome.
   hud.setAimPoint(alive ? aimResult.aim : null);
+  // The instructor's cursor marker: only while flying in that mode (the
+  // kill-cam and classic mode keep the plain OS cursor).
+  hud.setAimCursor(
+    alive && aimMode === "instructor" ? input.cursorPx() : null,
+    aimConverged,
+  );
+  cursorPrev = input.cursorNdc();
   if (solutionTone.shouldPlay(alive && aimResult.solution, now)) {
     audio.solutionTick();
   }

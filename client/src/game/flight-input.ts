@@ -1,28 +1,80 @@
-// Mouse-aim + keyboard → FlightInput. The cursor's offset from screen center
-// commands turn/pitch rates (PLAN.md: plane banks/pitches toward the cursor);
-// W/S drive throttle, A/D the roll assist. No pointer lock — the visible
-// cursor IS the aim point.
+// Mouse-aim + keyboard → FlightInput. Two aim modes, M toggles (F1):
+// - instructor (default): the cursor is the aim point — this class only
+//   reports the smoothed cursor, and game/instructor.ts flies the pipper
+//   onto it;
+// - classic: the cursor's offset from screen centre is a direct rate stick
+//   (deadzone + expo, read()).
+// W/S drive throttle, A/D the roll assist. No pointer lock — the HUD needs
+// the visible cursor.
 
 import type { FlightInput } from "@angels-bandits/common/flight";
 import { FREELOOK_KEY } from "./freelook";
 
-const DEADZONE = 0.06; // fraction of half-screen the cursor can rest in
+const DEADZONE = 0.06; // fraction of the half-window the cursor can rest in
+/** Classic-stick expo: 0 = linear, 1 = pure cube. Soft centre, full edges. */
+const EXPO = 0.5;
+/** Cursor smoothing time constant, s — takes the twitch out of a hand. */
+const CURSOR_SMOOTH_S = 0.04;
+/** Once the cursor leaves the window, steering fades out over this, s. */
+const PRESENCE_FADE_S = 0.25;
+/** The aim-mode key, hardcoded like FREELOOK_KEY (no keybinding UI yet). */
+export const AIM_MODE_KEY = "KeyM";
+const AIM_MODE_STORAGE = "ab-aim-mode";
+
+export type AimMode = "instructor" | "classic";
+
+/** Stored mode, or the instructor when storage is absent or throws. */
+function loadAimMode(target: Window): AimMode {
+  try {
+    return target.localStorage.getItem(AIM_MODE_STORAGE) === "classic"
+      ? "classic"
+      : "instructor";
+  } catch {
+    return "instructor";
+  }
+}
 
 export class FlightInputSource {
-  private mouseX = 0; // -1..1 of half-viewport, +right
-  private mouseY = 0; // -1..1 of half-viewport, +down
+  private rawX: number | null = null; // last clientX/Y, px (null = never moved)
+  private rawY = 0;
+  private mouseX = 0; // smoothed, -1..1 of the half-window, +right
+  private mouseY = 0; // smoothed, -1..1 of the half-window, +down
+  private inside = true; // false once the cursor leaves the window
+  private presenceK = 1; // steering presence 1 → 0 after leaving
+  private aimModeV: AimMode;
   private lookDx = 0; // px of mouse motion since the last takeLookDelta
   private lookDy = 0;
   private aim = false; // right button held: the aim-zoom command (ANGE-G9CPCV)
   private readonly keys = new Set<string>();
 
-  constructor(target: Window = window) {
+  constructor(private readonly target: Window = window) {
+    this.aimModeV = loadAimMode(target);
     target.addEventListener("mousemove", (e: MouseEvent) => {
-      const half = Math.min(target.innerWidth, target.innerHeight) / 2;
-      this.mouseX = (e.clientX - target.innerWidth / 2) / half;
-      this.mouseY = (e.clientY - target.innerHeight / 2) / half;
+      // Raw pixels — normalised per frame against the CURRENT window size in
+      // tick(), so a resize can never leave a stale aim behind.
+      this.rawX = e.clientX;
+      this.rawY = e.clientY;
+      this.inside = true;
+      this.presenceK = 1;
       this.lookDx += e.movementX;
       this.lookDy += e.movementY;
+    });
+    // Leaving the window must not mean "keep turning forever": a null
+    // relatedTarget is the pointer leaving the document altogether.
+    target.addEventListener("mouseout", (e: MouseEvent) => {
+      if (!e.relatedTarget) this.inside = false;
+    });
+    target.addEventListener("keydown", (e: KeyboardEvent) => {
+      if (e.code !== AIM_MODE_KEY || e.repeat) return;
+      // Typing a name with an M in it must not switch modes.
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      this.aimModeV = this.aimModeV === "instructor" ? "classic" : "instructor";
+      try {
+        target.localStorage.setItem(AIM_MODE_STORAGE, this.aimModeV);
+      } catch {
+        // Private mode / blocked storage: the toggle still works this visit.
+      }
     });
     target.addEventListener("keydown", (e: KeyboardEvent) =>
       this.keys.add(e.code),
@@ -44,7 +96,50 @@ export class FlightInputSource {
     target.addEventListener("blur", () => {
       this.keys.clear();
       this.aim = false;
+      this.inside = false;
     });
+  }
+
+  /**
+   * Advance the cursor smoothing and the presence fade. Call once per frame,
+   * alive or dead, before read() — frame-rate independent.
+   */
+  tick(dt: number): void {
+    if (this.rawX !== null) {
+      // Both axes over the full window: ±1 at the left/right and top/bottom
+      // edges, so a wide screen no longer saturates X a third of the way out.
+      const hw = this.target.innerWidth / 2;
+      const hh = this.target.innerHeight / 2;
+      const x = Math.max(-1, Math.min(1, (this.rawX - hw) / hw));
+      const y = Math.max(-1, Math.min(1, (this.rawY - hh) / hh));
+      const blend = 1 - Math.exp(-dt / CURSOR_SMOOTH_S);
+      this.mouseX += (x - this.mouseX) * blend;
+      this.mouseY += (y - this.mouseY) * blend;
+    }
+    if (!this.inside) this.presenceK *= Math.exp(-dt / PRESENCE_FADE_S);
+  }
+
+  /** Current aim mode (M toggles; persisted when storage allows). */
+  aimMode(): AimMode {
+    return this.aimModeV;
+  }
+
+  /** Smoothed cursor in NDC (−1..1, +x right, +y UP) — the camera's convention. */
+  cursorNdc(): { x: number; y: number } {
+    return { x: this.mouseX, y: -this.mouseY };
+  }
+
+  /** Smoothed cursor in pixels, for the aim-circle HUD. */
+  cursorPx(): { x: number; y: number } {
+    const hw = this.target.innerWidth / 2;
+    const hh = this.target.innerHeight / 2;
+    return { x: hw + this.mouseX * hw, y: hh + this.mouseY * hh };
+  }
+
+  /** Steering presence 0..1: 1 while the cursor is in the window, fading to
+   * 0 (neutral, attitude hold) once it leaves. Scales both modes' steering. */
+  presence(): number {
+    return this.presenceK;
   }
 
   /** Whether the free-look key is held (key-held state — no repeat events). */
@@ -71,8 +166,8 @@ export class FlightInputSource {
   private axis(v: number): number {
     const a = Math.abs(v);
     if (a < DEADZONE) return 0;
-    const scaled = (a - DEADZONE) / (1 - DEADZONE);
-    return Math.sign(v) * Math.min(1, scaled);
+    const s = Math.min(1, (a - DEADZONE) / (1 - DEADZONE));
+    return Math.sign(v) * this.presenceK * ((1 - EXPO) * s + EXPO * s * s * s);
   }
 
   read(): FlightInput {

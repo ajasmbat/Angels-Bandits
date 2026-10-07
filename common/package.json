@@ -19,6 +19,7 @@
     "./storm": "./src/storm.ts",
     "./fireworks": "./src/fireworks.ts",
     "./protocol": "./src/protocol.ts",
-    "./net": "./src/net.ts"
+    "./net": "./src/net.ts",
+    "./cityevents": "./src/cityevents.ts"
   }
 }

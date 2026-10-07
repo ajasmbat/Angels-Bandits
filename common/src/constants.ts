@@ -32,6 +32,9 @@ export const EMISSIVE_TRAIL = 0.9;
 export const EMISSIVE_SIGN = 0.93;
 /** Engine exhaust flicker at full throttle — a warm ember, below the lamps. */
 export const EMISSIVE_EXHAUST = 0.95;
+/** L1 car-alarm hazard flashers at blink peak — street furniture brightness,
+ * a touch under the lamp heads they flash beneath. */
+export const EMISSIVE_HAZARD = 0.96;
 export const EMISSIVE_LAMP = 0.98;
 /** Steady red/green/white aviation lights on every plane's wingtips/tail. */
 export const EMISSIVE_NAVLIGHT = 1.0;

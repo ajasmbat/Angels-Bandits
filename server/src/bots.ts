@@ -662,6 +662,13 @@ export class RoomBots {
     };
   }
 
+  /** Last sim position of a bot, alive or not — where it died (L1 city
+   * reactions read it after Combat has already marked the bot dead). */
+  lastPosOf(id: string): Vec3 | null {
+    const pos = this.bots.get(id)?.flight.pos;
+    return pos ? { ...pos } : null;
+  }
+
   /** Position + velocity of a living bot, for building contact lists. */
   contactOf(id: string): { pos: Vec3; vel: Vec3 } | null {
     const bot = this.bots.get(id);

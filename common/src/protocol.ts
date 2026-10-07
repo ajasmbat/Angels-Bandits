@@ -4,6 +4,7 @@
 // keeping every shape in this one file is what makes a binary encoder a later
 // drop-in swap.
 
+import type { CityEvent } from "./cityevents";
 import type { Vec3 } from "./world/index";
 
 /** Unit quaternion, Three.js component order. Attitude of a plane on the wire. */
@@ -142,6 +143,9 @@ export interface WelcomeMsg {
   /** The room's shared bot count, so a late joiner's slider starts in the
    * right place instead of guessing the default. */
   botTarget: number;
+  /** L1: the room's city events from the last SMOKE_LIFE_MS, oldest first, so
+   * a joiner sees the same smoke, alarms and responders as everyone else. */
+  cityEvents: CityEvent[];
 }
 
 export interface PlayerJoinedMsg {
@@ -272,6 +276,13 @@ export interface BotsConfigMsg {
   byName: string;
 }
 
+/** L1: a server-accepted moment the city reacts to (gunfire near buildings,
+ * a death). Sent right after the `death` it belongs to, same server `now`. */
+export interface CityEventMsg {
+  type: "cityEvent";
+  event: CityEvent;
+}
+
 export type ServerMsg =
   | WelcomeMsg
   | BotsConfigMsg
@@ -282,4 +293,5 @@ export type ServerMsg =
   | DamageMsg
   | DeathMsg
   | RespawnMsg
-  | ScoreMsg;
+  | ScoreMsg
+  | CityEventMsg;

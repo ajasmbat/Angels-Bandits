@@ -27,6 +27,10 @@
 // Bots never send hit claims: tick() emits trigger pulls (BotShot) and
 // applyBotFire routes them through the existing Combat seam — same heat
 // model, damage, spawn protection, kill credit, and respawn as humans.
+// Since F4 a bot round is not hitscan: an accepted shot is launch()ed and
+// flies at the same speed a human bullet does, each tick sweeping its path
+// against where its target ACTUALLY went, so a target that jinks inside the
+// bullet's flight time dodges it exactly as it would dodge a human's.
 
 import { type Building, mulberry32 } from "@angels-bandits/common/city";
 import {
@@ -101,7 +105,7 @@ import {
   BOT_SPAWN_SPEED,
   BOT_STEER_GAIN,
   BOT_THREAT_RANGE,
-  BULLET_RANGE,
+  BULLET_LIFETIME_S,
   BULLET_SPEED,
   HIT_RADIUS,
   PITCH_LIMIT,
@@ -154,8 +158,34 @@ export interface BotShot {
   dir: Vec3;
 }
 
+/** A bot round that met its target this tick (F4) — what landBotRound
+ * settles through Combat.hit. */
+export interface BotRoundHit {
+  shot: BotShot;
+  /** The shooter's position when the round landed (its on-record pose). */
+  shooterPos: Vec3;
+  /** Where the target was when the round met it. */
+  targetPos: Vec3;
+}
+
+/** One bot round in flight. */
+interface BotRound {
+  shot: BotShot;
+  firedAt: number;
+  /** World velocity, m/s: the nose × (BULLET_SPEED + shooter airspeed) — a
+   * human bullet's speed (guns.ts), so bots lead by the same rule. */
+  vel: Vec3;
+  /** Time, ms, the round's path has been swept up to. */
+  sweptTo: number;
+  /** The target's position at `sweptTo`. */
+  targetAt: Vec3;
+}
+
 export interface BotTickResult {
   shots: BotShot[];
+  /** Earlier rounds that met their target this tick, swept before anyone
+   * moved — settle each through landBotRound. */
+  hits: BotRoundHit[];
   /** Bots that flew into a building or the ground this tick (marked dead
    * here; the caller settles the death through Combat.crash). */
   crashes: string[];
@@ -163,6 +193,48 @@ export interface BotTickResult {
 
 const clamp = (v: number, lo: number, hi: number) =>
   Math.min(hi, Math.max(lo, v));
+
+/** Seconds a round fired at `shooterSpeed` takes to cover `dist` — the one
+ * lead time the pursuit aim and the trigger cone both use. */
+const leadTime = (dist: number, shooterSpeed: number): number =>
+  dist / (BULLET_SPEED + shooterSpeed);
+
+/**
+ * Does a round at `origin + vel·t` pass within HIT_RADIUS of its target over
+ * the flight window [t0, t1] s, while the target moves (linearly) from `from`
+ * to `to`? The sweep is in the target's frame — the relative segment's
+ * closest approach to it — so a fast crossing round cannot tunnel through a
+ * 15 m hit sphere between ticks. Torus-safe: both ends go through wrapDelta.
+ */
+export function roundMeets(
+  origin: Vec3,
+  vel: Vec3,
+  t0: number,
+  t1: number,
+  from: Vec3,
+  to: Vec3,
+): boolean {
+  const r0 = wrapDelta(from, {
+    x: origin.x + vel.x * t0,
+    y: origin.y + vel.y * t0,
+    z: origin.z + vel.z * t0,
+  });
+  const r1 = wrapDelta(to, {
+    x: origin.x + vel.x * t1,
+    y: origin.y + vel.y * t1,
+    z: origin.z + vel.z * t1,
+  });
+  const dx = r1.x - r0.x;
+  const dy = r1.y - r0.y;
+  const dz = r1.z - r0.z;
+  const len2 = dx * dx + dy * dy + dz * dz;
+  const k =
+    len2 > 0 ? clamp(-(r0.x * dx + r0.y * dy + r0.z * dz) / len2, 0, 1) : 0;
+  const px = r0.x + dx * k;
+  const py = r0.y + dy * k;
+  const pz = r0.z + dz * k;
+  return px * px + py * py + pz * pz <= HIT_RADIUS * HIT_RADIUS;
+}
 
 /** Smallest signed angle equivalent, in [-π, π]. */
 const wrapAngle = (a: number): number => {
@@ -245,6 +317,11 @@ interface Bot {
 
 export class RoomBots {
   private readonly bots = new Map<string, Bot>();
+  /** Rounds in flight (F4), oldest first. */
+  private rounds: BotRound[] = [];
+  /** Every contact's position as of the latest tick — where launch() starts
+   * a round's target track. */
+  private contactPos = new Map<string, Vec3>();
   private nextIndex = 1;
   private tickCount = 0;
   /** Room-level stream: mints per-bot seeds so bots stay deterministic. */
@@ -524,6 +601,7 @@ export class RoomBots {
     const decide = this.tickCount % BOT_DECISION_EVERY === 0;
     const shots: BotShot[] = [];
     const crashes: string[] = [];
+    const hits = this.flyRounds(now, contacts);
 
     for (const bot of this.bots.values()) {
       if (!bot.alive) continue;
@@ -563,7 +641,79 @@ export class RoomBots {
       const shot = this.maybeFire(bot, now, contacts);
       if (shot) shots.push(shot);
     }
-    return { shots, crashes };
+    return { shots, hits, crashes };
+  }
+
+  /**
+   * Put a trigger pull Combat ACCEPTED into the air (F4) — call it with the
+   * same `now` as the tick that produced the shot. A rejected pull (heat,
+   * cadence) never flies, exactly like a human's.
+   */
+  launch(shot: BotShot, now: number): void {
+    const bot = this.bots.get(shot.botId);
+    const targetAt = this.contactPos.get(shot.targetId);
+    if (!bot?.alive || !targetAt) return;
+    const v = BULLET_SPEED + bot.flight.speed;
+    this.rounds.push({
+      shot,
+      firedAt: now,
+      vel: { x: shot.dir.x * v, y: shot.dir.y * v, z: shot.dir.z * v },
+      sweptTo: now,
+      targetAt,
+    });
+  }
+
+  /** Rounds still in flight (QA / tests). */
+  roundsInFlight(): number {
+    return this.rounds.length;
+  }
+
+  /**
+   * Sweep every round from where its last tick left it to `now` against its
+   * target's real motion over the same window. A round whose shooter died or
+   * whose target is gone is dropped (Combat would refuse it anyway); one
+   * that meets its target counts only with a clear line from the muzzle —
+   * towers stop bot bullets as surely as they stop a pursuit.
+   */
+  private flyRounds(
+    now: number,
+    contacts: readonly BotContact[],
+  ): BotRoundHit[] {
+    this.contactPos = new Map(contacts.map((c) => [c.id, c.pos]));
+    const hits: BotRoundHit[] = [];
+    const flying: BotRound[] = [];
+    const lifeEnd = BULLET_LIFETIME_S * 1000;
+    for (const r of this.rounds) {
+      const shooter = this.bots.get(r.shot.botId);
+      const targetPos = this.contactPos.get(r.shot.targetId);
+      if (!shooter?.alive || !targetPos) continue;
+      const end = Math.min(now, r.firedAt + lifeEnd);
+      if (end <= r.sweptTo) continue;
+      if (
+        roundMeets(
+          r.shot.origin,
+          r.vel,
+          (r.sweptTo - r.firedAt) / 1000,
+          (end - r.firedAt) / 1000,
+          r.targetAt,
+          targetPos,
+        )
+      ) {
+        if (losClear(r.shot.origin, targetPos, this.buildings)) {
+          hits.push({
+            shot: r.shot,
+            shooterPos: shooter.flight.pos,
+            targetPos,
+          });
+        }
+        continue;
+      }
+      if (end < r.firedAt + lifeEnd) {
+        flying.push({ ...r, sweptTo: end, targetAt: targetPos });
+      }
+    }
+    this.rounds = flying;
+    return hits;
   }
 
   // --- brain ---
@@ -713,7 +863,7 @@ export class RoomBots {
       // wandered by the seeded jitter (resampled per decision).
       bot.aimJitterYaw = (bot.rand() * 2 - 1) * BOT_AIM_JITTER;
       bot.aimJitterPitch = (bot.rand() * 2 - 1) * BOT_AIM_JITTER;
-      const t = dist / BULLET_SPEED;
+      const t = leadTime(dist, bot.flight.speed);
       const aim: Vec3 = {
         x: d.x + target.vel.x * t,
         y: d.y + target.vel.y * t,
@@ -1459,8 +1609,9 @@ export class RoomBots {
   }
 
   /** Trigger discipline: ENGAGEd, past the reaction delay, inside fire range,
-   * nose within the aim cone of the target's true bearing → one trigger pull
-   * (Combat's token bucket and heat model gate the actual cadence). */
+   * nose within the aim cone of the LEAD bearing (where the target will be
+   * when a round gets there — rounds have travel time since F4) → one
+   * trigger pull (Combat's token bucket and heat model gate the cadence). */
   private maybeFire(
     bot: Bot,
     now: number,
@@ -1473,8 +1624,14 @@ export class RoomBots {
     const d = wrapDelta(bot.flight.pos, target.pos);
     const dist = Math.hypot(d.x, d.y, d.z);
     if (dist > BOT_FIRE_RANGE || dist === 0) return null;
+    const t = leadTime(dist, bot.flight.speed);
+    const lx = d.x + target.vel.x * t;
+    const ly = d.y + target.vel.y * t;
+    const lz = d.z + target.vel.z * t;
+    const lead = Math.hypot(lx, ly, lz);
+    if (lead === 0) return null;
     const fwd = flightForward(bot.flight);
-    const along = (d.x * fwd.x + d.y * fwd.y + d.z * fwd.z) / dist;
+    const along = (lx * fwd.x + ly * fwd.y + lz * fwd.z) / lead;
     if (along < Math.cos(BOT_FIRE_CONE)) return null;
     return {
       botId: bot.entry.id,
@@ -1508,39 +1665,36 @@ export function poseVelocity(pose: Pose): Vec3 {
 
 /**
  * Route one bot trigger pull through the SAME Combat seam humans use:
- * fire() (heat model, token bucket, spawn-protection forfeit), then — when
- * the hitscan ray meets the target's hit sphere — hit() (damage, kill
- * credit, protection checks). No claim path, no loosened validation.
- * `targetPos` is the target's authoritative on-record position, or null if
- * it is gone/dead this tick.
+ * fire() — heat model, token bucket, spawn-protection forfeit. True when
+ * accepted; the caller then launch()es the round, and whatever it meets
+ * comes back from a later tick as a BotRoundHit for landBotRound. No claim
+ * path, no loosened validation.
  */
 export function applyBotFire(
   combat: Combat,
   shot: BotShot,
-  targetPos: Vec3 | null,
   now: number,
-): { accepted: boolean; hit: HitResult | null } {
-  const fired = combat.fire(shot.botId, shot.seq, now);
-  if (!fired.ok) return { accepted: false, hit: null };
-  if (!targetPos) return { accepted: true, hit: null };
+): boolean {
+  return combat.fire(shot.botId, shot.seq, now).ok;
+}
 
-  const d = wrapDelta(shot.origin, targetPos);
-  const along = d.x * shot.dir.x + d.y * shot.dir.y + d.z * shot.dir.z;
-  if (along < 0 || along > BULLET_RANGE) return { accepted: true, hit: null };
-  const px = d.x - shot.dir.x * along;
-  const py = d.y - shot.dir.y * along;
-  const pz = d.z - shot.dir.z * along;
-  if (px * px + py * py + pz * pz > HIT_RADIUS * HIT_RADIUS) {
-    return { accepted: true, hit: null };
-  }
-  const hit = combat.hit(
-    shot.botId,
-    shot.targetId,
-    shot.seq,
-    shot.origin,
-    shot.origin,
-    targetPos,
+/**
+ * Settle a round that met its target through Combat.hit — damage, kill
+ * credit, protection, one-bullet-one-hit and the origin/range checks, with
+ * the shooter's pose at landing time as its on-record position.
+ */
+export function landBotRound(
+  combat: Combat,
+  hit: BotRoundHit,
+  now: number,
+): HitResult {
+  return combat.hit(
+    hit.shot.botId,
+    hit.shot.targetId,
+    hit.shot.seq,
+    hit.shot.origin,
+    hit.shooterPos,
+    hit.targetPos,
     now,
   );
-  return { accepted: true, hit };
 }

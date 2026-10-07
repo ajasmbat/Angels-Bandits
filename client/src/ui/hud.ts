@@ -38,6 +38,9 @@ export class Hud {
   private readonly aimModeToast = document.getElementById(
     "aim-mode-toast",
   ) as HTMLDivElement;
+  private readonly pullUp = document.getElementById(
+    "pull-up",
+  ) as HTMLDivElement;
   private hitBlipUntil = 0;
   private aimModeTimer: ReturnType<typeof setTimeout> | undefined;
   private markerUntil = 0;
@@ -141,10 +144,26 @@ export class Hud {
 
   /** Brief toast naming the aim mode M just switched to. */
   showAimMode(mode: "instructor" | "classic"): void {
-    this.aimModeToast.textContent =
+    this.toast(
       mode === "instructor"
         ? "◇ AIM: MOUSE INSTRUCTOR (M) ◇"
-        : "◇ AIM: CLASSIC STICK (M) ◇";
+        : "◇ AIM: CLASSIC STICK (M) ◇",
+    );
+  }
+
+  /** Brief toast for the avoidance-assist toggle N just flipped (F4). */
+  showAssist(on: boolean): void {
+    this.toast(on ? "◇ AVOID ASSIST: ON (N) ◇" : "◇ AVOID ASSIST: OFF (N) ◇");
+  }
+
+  /** Ground/wall proximity warning (F4): the flashing PULL UP cue. */
+  setPullUp(on: boolean): void {
+    this.pullUp.classList.toggle("on", on);
+  }
+
+  /** The shared top-centre toast (aim mode, assist). */
+  private toast(text: string): void {
+    this.aimModeToast.textContent = text;
     this.aimModeToast.classList.add("on");
     // Re-arm the fade: the class must be off for a frame to transition out.
     clearTimeout(this.aimModeTimer);

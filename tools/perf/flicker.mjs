@@ -2,7 +2,7 @@
 // Temporal flicker metric (O1's, committed by O3 so it can be re-run).
 //
 //     node tools/perf/flicker.mjs [--ref <git-ref>] [--frames 30] [--no-build]
-//                                 [--shots <dir>] [--out <file>]
+//                                 [--shots <dir>] [--out <file>] [--repeat N]
 //
 // Captures FRAMES consecutive frames on a FIXED 1/60 s clock and scores the
 // mean per-pixel frame-to-frame luminance change (0–255 units; lower is
@@ -22,6 +22,11 @@
 // Against O1's merge commit (`--ref 0b90284`) that is O3's "the flicker
 // metric is not worse than O1's merged number": the same tool on both
 // builds, rather than a new number against a figure measured another way.
+//
+// Same world instant: every server starts on one fixed epoch
+// (fixed-epoch.mjs) and every capture waits for the same server time, so
+// both builds frame the same searchlight sweep, helicopters and aircraft —
+// otherwise those moving lights, not shimmer, dominate a frozen view.
 //
 // Fixed clock: Playwright's fake clock is installed BEFORE the page loads
 // (installing it later sends performance.now() backwards and the sim goes
@@ -56,8 +61,34 @@ const VIEWPORT = { width: 640, height: 360 };
 export const TOLERANCE = { pct: 5, abs: 0.01 };
 /** Frame step, ms — the fake clock ticks exactly this per captured frame. */
 const STEP_MS = 1000 / 60;
-/** Freeze the clock only with the next storm strike at least this far off. */
-const STRIKE_CLEAR_MS = 8000;
+/**
+ * A step this large — and over 3x the scene's own median step — is a storm
+ * strike's full-sky flash, not shimmer (a frozen city moves ~0.1 a step, a
+ * pan ~6; a flash adds several units on top).
+ * A capture that contains one fails loudly rather than score the flash: the
+ * strike schedule is a pure function of (seed, time), so move CAPTURE_AT_MS.
+ */
+const FLASH_DELTA = 1;
+/** How far before the capture instant the page clock is frozen and stepped. */
+const ALIGN_LEAD_MS = 2500;
+/**
+ * Every server this tool starts runs on this epoch (fixed-epoch.mjs), and
+ * every capture starts at the same server time after it, so every build
+ * frames the SAME world instant: the same searchlight sweep, the same
+ * helicopters and aircraft, the same storm schedule. Without it a frozen
+ * view's score swung 2x between runs of one build, on whichever moving
+ * lights happened to be in frame.
+ */
+const EPOCH_MS = 1_800_000_000_000;
+/**
+ * Server time after EPOCH_MS at which every capture starts. The storm
+ * schedule (common/src/storm.ts, a pure function of seed and time) strikes
+ * at +113.6 s and +128.3 s around here, and a strike's flash takes ~4 s to
+ * fade, so +120 s gives the ~1.1 s capture clean air on both sides.
+ * FLASH_DELTA catches it if the schedule ever changes.
+ */
+const CAPTURE_AT_MS = 120_000;
+const FIXED_EPOCH = resolve(HERE, "fixed-epoch.mjs");
 /** Pan speed, metres per frame (90 m/s, a slow cruise). */
 const PAN_M = 1.5;
 /** Where the scenes look: midtown from 300 m, toward the dense core. */
@@ -72,7 +103,14 @@ const SCENES = {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function parseArgs(argv) {
-  const opts = { ref: null, frames: 30, build: true, out: null, shots: null };
+  const opts = {
+    ref: null,
+    frames: 30,
+    build: true,
+    out: null,
+    shots: null,
+    repeat: 1,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--ref") opts.ref = argv[++i];
@@ -80,6 +118,7 @@ function parseArgs(argv) {
     else if (a === "--no-build") opts.build = false;
     else if (a === "--out") opts.out = resolve(process.cwd(), argv[++i]);
     else if (a === "--shots") opts.shots = resolve(process.cwd(), argv[++i]);
+    else if (a === "--repeat") opts.repeat = Number(argv[++i]);
     else throw new Error(`unknown flag ${a}`);
   }
   if (!(opts.frames >= 3)) throw new Error("--frames must be >= 3");
@@ -108,11 +147,19 @@ function freePort() {
 
 async function startServer(cwd) {
   const port = await freePort();
-  const proc = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
-    cwd,
-    env: { ...process.env, PORT: String(port) },
-    stdio: "ignore",
-  });
+  const proc = spawn(
+    "node",
+    ["--import", FIXED_EPOCH, "--import", "tsx", "server/src/index.ts"],
+    {
+      cwd,
+      env: {
+        ...process.env,
+        PORT: String(port),
+        AB_EPOCH_MS: String(EPOCH_MS),
+      },
+      stdio: "ignore",
+    },
+  );
   for (let i = 0; i < 120; i++) {
     // A bind failure exits the process — never measure someone else's server.
     if (proc.exitCode !== null) throw new Error("server died on startup");
@@ -286,26 +333,41 @@ async function measureBuild(browser, label, cwd, frames, shots) {
     // Let streaming and first-sight compiles land on the real clock, then
     // freeze it: from here on time only moves when a frame is stepped.
     await sleep(3000);
-    // A scheduled storm strike paints a full-sky violet flash that decays
-    // over several frames — a strike inside the capture would score as the
-    // worst "flicker" in the city. The capture spans ~2 s of fake time, so
-    // freeze only once the next strike is STRIKE_CLEAR_MS away (waiting out
-    // any that is closer, on the real clock).
-    for (let i = 0; i < 120; i++) {
-      const lead = await page.evaluate(() => {
-        const next = window.__ab.storm().nextStrike;
-        const rt = window.__ab.net().renderTime;
-        return next === null || rt === null ? null : next.timeMs - rt;
-      });
-      if (lead === null || lead > STRIKE_CLEAR_MS) break;
-      await sleep(Math.max(500, lead + 1500));
+    // Land on the shared capture instant (see EPOCH_MS) EXACTLY: wait on
+    // the real clock until it is ALIGN_LEAD_MS away, freeze the page clock
+    // and hold the network, then step the fake clock the rest of the way —
+    // to within one frame of CAPTURE_AT on every build, where waiting on the
+    // real clock alone landed up to 2 s apart and framed different lights.
+    const target = EPOCH_MS + CAPTURE_AT_MS;
+    const at = await page.evaluate(() => window.__ab.net().renderTime);
+    if (at !== null && at > target - ALIGN_LEAD_MS) {
+      throw new Error(
+        `${label} joined after the capture instant (server time +${Math.round((at - EPOCH_MS) / 1000)} s): raise CAPTURE_AT_MS`,
+      );
+    }
+    for (let i = 0; i < 3000; i++) {
+      const rt = await page.evaluate(() => window.__ab.net().renderTime);
+      if (rt !== null && rt >= target - ALIGN_LEAD_MS) break;
+      await sleep(100);
     }
     await page.evaluate(() => {
       window.__flickerHoldNet = true;
     });
-    await page.clock.pauseAt(Date.now() + 1000);
+    // pauseAt must name a moment still ahead of the page clock, and a slow
+    // frame can pass between reading it and pausing: a second of margin.
+    const pageNow = await page.evaluate(() => Date.now());
+    await page.clock.pauseAt(pageNow + 1000);
+    const rtPaused = await page.evaluate(() => window.__ab.net().renderTime);
+    if (rtPaused !== null && rtPaused < target) {
+      await page.clock.runFor(target - rtPaused);
+    }
 
-    const result = { label, weather, errors };
+    const result = {
+      label,
+      weather,
+      errors,
+      capturedAt: await page.evaluate(() => window.__ab.net().renderTime),
+    };
     for (const scene of Object.keys(SCENES)) {
       await aimScene(page, scene);
       // Two settle steps on the new view before the first captured frame.
@@ -343,6 +405,16 @@ async function measureBuild(browser, label, cwd, frames, shots) {
           Math.round((means.reduce((a, b) => a + b, 0) / means.length) * 10) /
           10,
       };
+      // Relative to the scene's own typical step: a pan moves ~6 a step by
+      // itself, a frozen view ~0.1, and a flash jumps far above either.
+      const typical = [...deltas].sort((x, y) => x - y)[
+        Math.floor(deltas.length / 2)
+      ];
+      if (deltas.some((d) => d > Math.max(FLASH_DELTA, 3 * typical))) {
+        throw new Error(
+          `${label} ${scene}: a storm flash landed in the capture (max step ${Math.max(...deltas).toFixed(2)}) — move CAPTURE_AT_MS`,
+        );
+      }
       // A black or blank capture scores 0 — the calmest possible — and would
       // pass any verdict. Refuse it instead.
       if (result[scene].meanLuma < 2) {
@@ -357,6 +429,12 @@ async function measureBuild(browser, label, cwd, frames, shots) {
     await page.close().catch(() => {});
     proc.kill();
   }
+}
+
+/** The run whose frozen score is the median (a whole run, never a mix). */
+function medianRun(runs) {
+  const sorted = [...runs].sort((a, b) => a.frozen.score - b.frozen.score);
+  return sorted[Math.floor(sorted.length / 2)];
 }
 
 export function verdict(head, ref) {
@@ -391,22 +469,28 @@ async function main() {
     })();
     report.gpu = gpu;
     console.log(`GPU: ${gpu}`);
-    report.head = await measureBuild(
-      browser,
-      "HEAD",
-      REPO,
-      opts.frames,
-      opts.shots,
-    );
-    if (ref !== null) {
-      report.ref = await measureBuild(
-        browser,
-        ref.label,
-        ref.dir,
-        opts.frames,
-        opts.shots,
+    // Interleaved (HEAD, ref, HEAD, ref, …) so any drift on the box lands
+    // in both builds; the verdict is taken on the medians.
+    const runs = { head: [], ref: [] };
+    for (let r = 0; r < opts.repeat; r++) {
+      runs.head.push(
+        await measureBuild(browser, "HEAD", REPO, opts.frames, opts.shots),
       );
+      if (ref !== null) {
+        runs.ref.push(
+          await measureBuild(
+            browser,
+            ref.label,
+            ref.dir,
+            opts.frames,
+            opts.shots,
+          ),
+        );
+      }
     }
+    report.runs = runs;
+    report.head = medianRun(runs.head);
+    if (ref !== null) report.ref = medianRun(runs.ref);
   } finally {
     await browser.close().catch(() => {});
   }
@@ -417,6 +501,11 @@ async function main() {
   console.log(
     `\nflicker — mean |Δluma| per pixel per 1/60 s step, ${opts.frames} frames, ${VIEWPORT.width}x${VIEWPORT.height}`,
   );
+  if (opts.repeat > 1) {
+    for (const r of report.runs.head) console.log(`  run  ${line(r)}`);
+    for (const r of report.runs.ref) console.log(`  run  ${line(r)}`);
+    console.log("median:");
+  }
   console.log(line(report.head));
   if (report.ref) {
     console.log(line(report.ref));

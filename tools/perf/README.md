@@ -640,10 +640,16 @@ loss), but it means such a machine takes about 20 s to reach its tier.
 
 `tools/perf/flicker.mjs` is O1's temporal flicker metric, committed so it can
 be re-run. It captures 30 frames on Playwright's fake clock at exactly 1/60 s
-a step, at 640×360, ratio 1, with the network held, the weather pinned
-clear and dry, and the clock frozen only once the next storm strike is at
-least 8 s away. A strike's full-sky flash inside the window once scored HEAD
-at 17× O1's build; the frames after it matched O1 exactly. It scores the mean per-pixel |Δluma| between consecutive
+a step, at 640×360, ratio 1, with the network held and the weather pinned
+clear and dry. Every build is captured at **the same world instant**. Each
+server is started on one fixed epoch (`fixed-epoch.mjs`, a `Date.now`
+preload; not a server change). The page clock is then stepped onto the same
+server time, +130 s, to within a frame. Searchlight sweeps, helicopters,
+aircraft and the storm schedule are all pure functions of (seed, time), so
+both builds frame the same moving lights. Without the alignment, those
+lights dominated a frozen view and its score swung 2× between runs of one
+build. A capture that catches a storm strike's full-sky flash (a step over
+1.0) fails loudly instead of being scored. It scores the mean per-pixel |Δluma| between consecutive
 frames:
 
 - `frozen` — camera pinned over midtown from 300 m. This is the **pass/fail**
@@ -743,7 +749,16 @@ What it *can* measure honestly is GPU-independent:
   design; Medium and Low thin the crowd to 70 % / 40 %. The GC remainder is
   mostly short-lived boxes in the shared collision code (`common/`, also run
   by the server and bots), which O3 does not touch.
-- **Flicker** (`flicker.mjs --ref 0b90284`, see above). The frozen score
-  passes against O1's build, and the pan reads a few percent higher. O1's
-  own pan moved 5.5 % between two runs, so treat the pan as unresolved.
-  Re-run on the M3.
+- **Flicker** (`flicker.mjs --ref 0b90284 --repeat 2`, see above), every
+  capture aligned to server time +120 s:
+
+  | run | frozen | pan |
+  | --- | --- | --- |
+  | HEAD | 0.020, 0.020 | 6.268, 6.273 |
+  | O1 (`0b90284`) | 0.018, 0.012 (the second 250 ms off the instant) | 6.272, 6.246 |
+
+  Verdict on the medians: frozen 0.020 against 0.018, limit 0.028, a
+  **PASS**. The pans agree to 0.4 %. HEAD repeats itself to the third
+  decimal. Before the epoch alignment the same pair swung 0.04–0.09, set by
+  whichever searchlight or helicopter was in frame; a fair comparison needs
+  the alignment.

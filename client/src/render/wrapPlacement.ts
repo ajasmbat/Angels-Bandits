@@ -55,6 +55,24 @@ const UNSET = 0x7fff;
 export class ImageCache {
   private readonly kx: Int16Array;
   private readonly kz: Int16Array;
+  /**
+   * O3: each instance's half-world line per axis — the viewer coordinate
+   * (mod WORLD_SIZE) at which its image along that axis flips — sorted,
+   * with the instance index alongside. A frame only has to re-check the
+   * instances whose line the viewer crossed since the last frame: two
+   * binary searches and a handful of candidates instead of a pass over
+   * every instance (the O3 profile's costliest JS path in the city).
+   */
+  private readonly linesX: Float64Array;
+  private readonly orderX: Int32Array;
+  private readonly linesZ: Float64Array;
+  private readonly orderZ: Int32Array;
+  /** Per-frame scratch: candidate indices, and a "seen" flag to dedupe. */
+  private readonly cand: Int32Array;
+  private readonly seen: Uint8Array;
+  /** Viewer at the last update; NaN forces the next one to scan everything. */
+  private lastX = Number.NaN;
+  private lastZ = Number.NaN;
 
   /** `xs` / `zs`: each instance's canonical anchor (fixed for its life). */
   constructor(
@@ -63,6 +81,10 @@ export class ImageCache {
   ) {
     this.kx = new Int16Array(xs.length).fill(UNSET);
     this.kz = new Int16Array(xs.length).fill(UNSET);
+    [this.linesX, this.orderX] = halfWorldLines(xs);
+    [this.linesZ, this.orderZ] = halfWorldLines(zs);
+    this.cand = new Int32Array(xs.length);
+    this.seen = new Uint8Array(xs.length);
   }
 
   get length(): number {
@@ -71,23 +93,47 @@ export class ImageCache {
 
   /**
    * Call `write(i, imageX, imageZ)` for every instance whose image differs
-   * from the last update (all of them on the first). Returns how many.
+   * from the last update (all of them on the first), in increasing `i`
+   * (InstanceUploads merges adjacent marks on that). Returns how many.
    */
   update(
     viewer: Vec3,
     write: (i: number, x: number, z: number) => void,
   ): number {
+    const dx = viewer.x - this.lastX;
+    const dz = viewer.z - this.lastZ;
+    // First update, after invalidate(), or a jump (the camera re-canonicalised
+    // across the seam, a teleport): scan everything, exactly as before.
+    if (!(Math.abs(dx) < SCAN_JUMP && Math.abs(dz) < SCAN_JUMP)) {
+      this.lastX = viewer.x;
+      this.lastZ = viewer.z;
+      let changed = 0;
+      for (let i = 0; i < this.xs.length; i++) {
+        if (this.refresh(i, viewer, write)) changed++;
+      }
+      return changed;
+    }
+    let n = 0;
+    n = this.crossed(this.linesX, this.orderX, this.lastX, viewer.x, n);
+    n = this.crossed(this.linesZ, this.orderZ, this.lastZ, viewer.z, n);
+    this.lastX = viewer.x;
+    this.lastZ = viewer.z;
+    // Increasing index order; candidate sets are a few per frame.
+    const c = this.cand;
+    for (let a = 1; a < n; a++) {
+      const v = c[a] as number;
+      let b = a - 1;
+      while (b >= 0 && (c[b] as number) > v) {
+        c[b + 1] = c[b] as number;
+        b--;
+      }
+      c[b + 1] = v;
+    }
     let changed = 0;
-    for (let i = 0; i < this.xs.length; i++) {
-      const cx = this.xs[i] as number;
-      const cz = this.zs[i] as number;
-      const kx = imageIndex(viewer.x, cx);
-      const kz = imageIndex(viewer.z, cz);
-      if (kx === this.kx[i] && kz === this.kz[i]) continue;
-      this.kx[i] = kx;
-      this.kz[i] = kz;
-      write(i, cx + kx * WORLD_SIZE, cz + kz * WORLD_SIZE);
-      changed++;
+    for (let a = 0; a < n; a++) {
+      const i = c[a] as number;
+      this.seen[i] = 0;
+      if (this.refresh(i, viewer, write)) changed++;
     }
     return changed;
   }
@@ -96,7 +142,89 @@ export class ImageCache {
   invalidate(): void {
     this.kx.fill(UNSET);
     this.kz.fill(UNSET);
+    this.lastX = Number.NaN;
+    this.lastZ = Number.NaN;
   }
+
+  /** Re-derive instance `i`'s image; write and report it if it changed. */
+  private refresh(
+    i: number,
+    viewer: Vec3,
+    write: (i: number, x: number, z: number) => void,
+  ): boolean {
+    const cx = this.xs[i] as number;
+    const cz = this.zs[i] as number;
+    const kx = imageIndex(viewer.x, cx);
+    const kz = imageIndex(viewer.z, cz);
+    if (kx === this.kx[i] && kz === this.kz[i]) return false;
+    this.kx[i] = kx;
+    this.kz[i] = kz;
+    write(i, cx + kx * WORLD_SIZE, cz + kz * WORLD_SIZE);
+    return true;
+  }
+
+  /**
+   * Append (deduped) every instance whose line lies between `from` and `to`
+   * (widened by LINE_EPS, so a tie that rounds either way is still checked)
+   * to the candidates; returns the new count. The span is < WORLD_SIZE / 4,
+   * so on the circle it is one interval or two (when it wraps past 0).
+   */
+  private crossed(
+    lines: Float64Array,
+    order: Int32Array,
+    from: number,
+    to: number,
+    n: number,
+  ): number {
+    const lo = mod(Math.min(from, to) - LINE_EPS, WORLD_SIZE);
+    const span = Math.abs(to - from) + 2 * LINE_EPS;
+    const hi = lo + span;
+    let count = this.collect(lines, order, lo, Math.min(hi, WORLD_SIZE), n);
+    if (hi > WORLD_SIZE) {
+      count = this.collect(lines, order, 0, hi - WORLD_SIZE, count);
+    }
+    return count;
+  }
+
+  private collect(
+    lines: Float64Array,
+    order: Int32Array,
+    lo: number,
+    hi: number,
+    start: number,
+  ): number {
+    let n = start;
+    // First line >= lo.
+    let a = 0;
+    let b = lines.length;
+    while (a < b) {
+      const m = (a + b) >> 1;
+      if ((lines[m] as number) < lo) a = m + 1;
+      else b = m;
+    }
+    for (let j = a; j < lines.length && (lines[j] as number) <= hi; j++) {
+      const i = order[j] as number;
+      if (this.seen[i]) continue;
+      this.seen[i] = 1;
+      this.cand[n++] = i;
+    }
+    return n;
+  }
+}
+
+/** Past this much viewer travel in one update, scan every instance. */
+const SCAN_JUMP = WORLD_SIZE / 4;
+/** Lines this close to the travelled span are re-checked anyway (metres). */
+const LINE_EPS = 1e-3;
+const mod = (v: number, m: number): number => ((v % m) + m) % m;
+
+/** Each anchor's half-world line (mod WORLD_SIZE), sorted, with its index. */
+function halfWorldLines(cs: ArrayLike<number>): [Float64Array, Int32Array] {
+  const order = Array.from({ length: cs.length }, (_, i) => i);
+  const line = (i: number) =>
+    mod((cs[i] as number) + WORLD_SIZE / 2, WORLD_SIZE);
+  order.sort((p, q) => line(p) - line(q));
+  return [Float64Array.from(order, line), Int32Array.from(order)];
 }
 
 /** Past this many separate runs a frame uploads the whole buffer once
@@ -165,5 +293,27 @@ export class InstanceUploads {
     if (this.runStart >= 0) this.runs.push(this.runStart, this.runEnd);
     this.runStart = -1;
     this.runEnd = -1;
+  }
+}
+
+/**
+ * Upload only slots `[0, count)` of attributes a system re-packs from the
+ * front every frame (O3) — walkers, headlights, trails, puffs. Each of them
+ * sizes its buffer for the worst case and draws a prefix of it, and a bare
+ * `needsUpdate` re-uploads the WHOLE capacity: the profile found ~600 KB a
+ * frame going up that way, a quarter of a MB of it for pedestrians alone
+ * at a few hundred walkers out of a 3 250-slot buffer. A frame that draws
+ * nothing uploads nothing.
+ */
+export function uploadPrefix(
+  attrs: readonly (THREE.BufferAttribute | null | undefined)[],
+  count: number,
+): void {
+  for (const attr of attrs) {
+    if (!attr) continue;
+    attr.clearUpdateRanges();
+    if (count <= 0) continue;
+    attr.addUpdateRange(0, count * attr.itemSize);
+    attr.needsUpdate = true;
   }
 }

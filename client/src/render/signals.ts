@@ -29,7 +29,7 @@ import {
   blockStream,
   blockWindow,
 } from "./streetlife";
-import { nearestImage } from "./wrapPlacement";
+import { nearestImage, uploadPrefix } from "./wrapPlacement";
 
 /** Green phase, seconds. */
 export const GREEN = 18;
@@ -444,8 +444,7 @@ export class Signals {
     }
     this.drawn = n;
     this.mesh.count = n;
-    this.mesh.instanceMatrix.needsUpdate = true;
-    if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
+    uploadPrefix([this.mesh.instanceMatrix, this.mesh.instanceColor], n);
   }
 
   /** Instances drawn last frame. */

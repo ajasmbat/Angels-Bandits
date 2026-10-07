@@ -27,7 +27,7 @@ import {
   ringPerimeter,
   ringPointInto,
 } from "./streetlife";
-import { nearestImage } from "./wrapPlacement";
+import { nearestImage, uploadPrefix } from "./wrapPlacement";
 
 /** Hard per-block vent budget — enforced in the pure function (see header). */
 export const MAX_VENTS_PER_BLOCK = 5;
@@ -312,8 +312,7 @@ export class Steam {
     }
     this.drawn = i;
     this.points.geometry.setDrawRange(0, i);
-    this.positions.needsUpdate = true;
-    this.sizes.needsUpdate = true;
+    uploadPrefix([this.positions, this.sizes], i);
   }
 
   /** Puffs drawn last frame (perf + the altitude-gate acceptance check). */

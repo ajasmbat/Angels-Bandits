@@ -642,20 +642,40 @@ interface SignKind {
   signs: SignPlacement[];
   images: ImageCache;
   uploads: InstanceUploads;
+  /**
+   * Each sign's palette colour already lifted to the SIGN rung, rgb-packed.
+   * The boost is a pure function of the palette colour, so it is computed
+   * once here instead of per sign per frame (O3 profile: the per-frame
+   * tint loop was one of the costliest JS paths in the city).
+   */
+  boosted: Float32Array;
 }
 
 const signKind = (
   mesh: THREE.InstancedMesh,
   signs: SignPlacement[],
-): SignKind => ({
-  mesh,
-  signs,
-  images: new ImageCache(
-    signs.map((s) => s.x),
-    signs.map((s) => s.z),
-  ),
-  uploads: new InstanceUploads([mesh.instanceMatrix]),
-});
+): SignKind => {
+  const boosted = new Float32Array(signs.length * 3);
+  const c = new THREE.Color();
+  signs.forEach((s, i) => {
+    const base = SIGN_PALETTE[s.paletteIndex] as PaletteColor;
+    c.setRGB(base.r, base.g, base.b);
+    c.multiplyScalar(emissiveBoost(c, EMISSIVE_SIGN));
+    boosted[i * 3] = c.r;
+    boosted[i * 3 + 1] = c.g;
+    boosted[i * 3 + 2] = c.b;
+  });
+  return {
+    mesh,
+    signs,
+    images: new ImageCache(
+      signs.map((s) => s.x),
+      signs.map((s) => s.z),
+    ),
+    uploads: new InstanceUploads([mesh.instanceMatrix]),
+    boosted,
+  };
+};
 
 export class Signage {
   readonly group = new THREE.Group();
@@ -890,16 +910,20 @@ export class Signage {
       kind.uploads.mark(i);
     });
     kind.uploads.flush();
+    // The pulsed HDR tint, written straight into the colour buffer — the
+    // same values setColorAt would write, minus a Color round trip per sign.
+    if (mesh.instanceColor === null) mesh.setColorAt(0, color); // allocate
+    const out = (mesh.instanceColor as THREE.InstancedBufferAttribute)
+      .array as Float32Array;
+    const boosted = kind.boosted;
     for (let i = 0; i < signs.length; i++) {
-      const s = signs[i] as SignPlacement;
-      const base = SIGN_PALETTE[s.paletteIndex] as PaletteColor;
-      color.setRGB(base.r, base.g, base.b);
-      color.multiplyScalar(
-        emissiveBoost(color, EMISSIVE_SIGN) * Signage.pulse(timeMs, s.phase),
-      );
-      mesh.setColorAt(i, color);
+      const p = Signage.pulse(timeMs, (signs[i] as SignPlacement).phase);
+      const j = i * 3;
+      out[j] = (boosted[j] as number) * p;
+      out[j + 1] = (boosted[j + 1] as number) * p;
+      out[j + 2] = (boosted[j + 2] as number) * p;
     }
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    (mesh.instanceColor as THREE.InstancedBufferAttribute).needsUpdate = true;
   }
 
   private readonly tint = new THREE.Color();

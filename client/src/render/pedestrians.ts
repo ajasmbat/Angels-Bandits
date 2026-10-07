@@ -37,7 +37,7 @@ import {
   ringPerimeter,
   ringPointInto,
 } from "./streetlife";
-import { nearestImageInto } from "./wrapPlacement";
+import { nearestImageInto, uploadPrefix } from "./wrapPlacement";
 
 /** Pedestrians on the coldest block (heat 0). */
 export const PED_MIN = 30;
@@ -72,6 +72,20 @@ const COAT_COLORS = [
   0x7b828f, 0xa08d76, 0x5d7290, 0xb07a5e, 0x8b8b96, 0xc4ab86, 0x4f7264,
   0x9a8fa6,
 ];
+/**
+ * COAT_COLORS as the linear RGB `setHex` would produce, packed once (O3):
+ * the per-walker hex → linear conversion was a measurable slice of the
+ * crowd's per-frame cost, and a tone's colour never changes.
+ */
+const COAT_LINEAR = (() => {
+  const c = new THREE.Color();
+  const out = new Float32Array(COAT_COLORS.length * 3);
+  COAT_COLORS.forEach((hex, i) => {
+    c.setHex(hex);
+    out.set([c.r, c.g, c.b], i * 3);
+  });
+  return out;
+})();
 
 /** How many pedestrians block (bx, bz) carries — the district gradient. */
 export function pedestrianCount(bx: number, bz: number): number {
@@ -331,12 +345,8 @@ export class Pedestrians {
     bob: 0,
   };
   private readonly matrix = new THREE.Matrix4();
-  private readonly quat = new THREE.Quaternion();
-  private readonly vec = new THREE.Vector3();
-  private readonly scale = new THREE.Vector3(1, 1, 1);
   private readonly color = new THREE.Color();
   private readonly image = { x: 0, y: 0, z: 0 };
-  private static readonly UP = new THREE.Vector3(0, 1, 0);
   private drawn = 0;
   /** O3 quality tier: share of the crowd kept. */
   private density = 1;
@@ -407,6 +417,10 @@ export class Pedestrians {
     // O3: the tier thins the crowd through the SAME deterministic keep test
     // the altitude gate uses, so who stays on the street never flickers.
     const keep = gate * this.density;
+    const m = this.mesh.instanceMatrix.array as Float32Array;
+    // Allocated in the constructor (every slot is coloured there once).
+    const colors = (this.mesh.instanceColor as THREE.InstancedBufferAttribute)
+      .array as Float32Array;
     let n = 0;
     for (const { bx, bz } of blockWindow(cameraPos)) {
       const specs = this.specsFor(bx, bz);
@@ -418,20 +432,39 @@ export class Pedestrians {
         pedestrianPoseInto(spec, t, this.pose);
         if (scatter) this.scatter(spec, t, serverTimeMs, passes);
         const p = nearestImageInto(this.image, cameraPos, this.pose.pos);
-        this.quat.setFromAxisAngle(Pedestrians.UP, this.pose.yaw);
-        this.vec.set(p.x, this.pose.bob, p.z);
-        this.scale.set(1, spec.height, 1);
-        this.matrix.compose(this.vec, this.quat, this.scale);
-        this.mesh.setMatrixAt(n, this.matrix);
-        this.color.setHex(COAT_COLORS[spec.tone] ?? 0x7b828f);
-        this.mesh.setColorAt(n, this.color);
+        // A yaw about +Y, a height scale and a translation, written straight
+        // into the instance buffers: the same matrix compose() builds from
+        // setFromAxisAngle(UP, yaw), minus the general-quaternion path, for
+        // every walker every frame (O3 profile).
+        const cy = Math.cos(this.pose.yaw);
+        const sy = Math.sin(this.pose.yaw);
+        const o = n * 16;
+        m[o] = cy;
+        m[o + 1] = 0;
+        m[o + 2] = -sy;
+        m[o + 3] = 0;
+        m[o + 4] = 0;
+        m[o + 5] = spec.height;
+        m[o + 6] = 0;
+        m[o + 7] = 0;
+        m[o + 8] = sy;
+        m[o + 9] = 0;
+        m[o + 10] = cy;
+        m[o + 11] = 0;
+        m[o + 12] = p.x;
+        m[o + 13] = this.pose.bob;
+        m[o + 14] = p.z;
+        m[o + 15] = 1;
+        const tone = (spec.tone % COAT_COLORS.length) * 3;
+        colors[n * 3] = COAT_LINEAR[tone] as number;
+        colors[n * 3 + 1] = COAT_LINEAR[tone + 1] as number;
+        colors[n * 3 + 2] = COAT_LINEAR[tone + 2] as number;
         n++;
       }
     }
     this.drawn = n;
     this.mesh.count = n;
-    this.mesh.instanceMatrix.needsUpdate = true;
-    if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
+    uploadPrefix([this.mesh.instanceMatrix, this.mesh.instanceColor], n);
   }
 
   /** Re-pose a walker shifted along its ring away from nearby passes, facing

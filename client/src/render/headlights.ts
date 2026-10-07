@@ -23,6 +23,7 @@ import * as THREE from "three";
 import { AB_FOG_DISTANCE_GLSL, AB_FOG_GLSL } from "./fog";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import type { Traffic } from "./traffic";
+import { uploadPrefix } from "./wrapPlacement";
 
 /** Lamp height above the street, m. */
 const LAMP_Y = 0.65;
@@ -303,14 +304,10 @@ export class Headlights {
     const cones = this.conesOn ? n : 0;
     this.cones.count = cones;
     this.cones.visible = cones > 0;
-    if (cones > 0) {
-      this.cones.instanceMatrix.needsUpdate = true;
-      this.coneFade.needsUpdate = true;
-    }
+    uploadPrefix([this.cones.instanceMatrix, this.coneFade], cones);
     this.pools.count = n;
     this.pools.visible = n > 0;
-    this.pools.instanceMatrix.needsUpdate = true;
-    this.poolFade.needsUpdate = true;
+    uploadPrefix([this.pools.instanceMatrix, this.poolFade], n);
   }
 
   /** O3: Low drops the cones (additive fill over the street); pools stay. */

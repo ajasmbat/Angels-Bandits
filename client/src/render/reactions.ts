@@ -37,7 +37,7 @@ import {
 import * as THREE from "three";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { RENDER_ORDER } from "./render-order";
-import { nearestImage } from "./wrapPlacement";
+import { nearestImage, uploadPrefix } from "./wrapPlacement";
 
 // --- Tuning ---------------------------------------------------------------
 
@@ -882,7 +882,6 @@ export class CityReactor {
     this.drawnPuffs = n;
     this.points.geometry.setDrawRange(0, n);
     this.points.visible = n > 0;
-    this.positions.needsUpdate = true;
-    this.sizes.needsUpdate = true;
+    uploadPrefix([this.positions, this.sizes], n);
   }
 }

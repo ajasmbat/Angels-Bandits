@@ -30,7 +30,7 @@ import {
   ringPerimeter,
   ringPointInto,
 } from "./streetlife";
-import { nearestImage } from "./wrapPlacement";
+import { nearestImage, uploadPrefix } from "./wrapPlacement";
 
 /** Welders per construction block — a small night crew, not a work camp. */
 const WELDERS_PER_BLOCK = 2;
@@ -297,8 +297,7 @@ export class ConstructionSparks {
     }
     this.drawn = i;
     this.points.geometry.setDrawRange(0, i);
-    this.positions.needsUpdate = true;
-    this.sizes.needsUpdate = true;
+    uploadPrefix([this.positions, this.sizes], i);
   }
 
   /** Points drawn last frame. */

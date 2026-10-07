@@ -9,6 +9,10 @@
 import {
   BANK_ANGLE,
   BANK_RESPONSE,
+  BOOST_MAX_SPEED,
+  BOOST_PITCH_MULT,
+  BOOST_RESPONSE,
+  BOOST_TURN_MULT,
   CEILING_FADE,
   ENERGY_GAIN,
   MAX_SPEED,
@@ -37,7 +41,8 @@ export interface FlightState {
   pitch: number;
   /** Radians, bank angle (visual + assist). */
   roll: number;
-  /** Current airspeed, m/s. Always in [MIN_SPEED, MAX_SPEED]. */
+  /** Current airspeed, m/s. In [MIN_SPEED, MAX_SPEED], or up to
+   * BOOST_MAX_SPEED while boosting and through the post-boost tail. */
   speed: number;
   /** Throttle-commanded speed, m/s, set by W/S. In [MIN_SPEED, MAX_SPEED]. */
   targetSpeed: number;
@@ -49,6 +54,9 @@ export interface FlightInput {
   turn: number;
   roll: number;
   throttle: number;
+  /** SPACE boost (F2) is burning. Optional: bots never boost and simply
+   * leave it out — absent is bit-identical to the pre-boost model. */
+  boost?: boolean;
 }
 
 /** Fresh level flight state at `pos` (canonicalized): spawn / respawn shape. */
@@ -82,12 +90,26 @@ export function stepFlight(
   const turnIn = clamp(input.turn, -1, 1);
   const pitchIn = clamp(input.pitch, -1, 1);
   const rollIn = clamp(input.roll, -1, 1);
+  const boost = input.boost === true;
+
+  // Boost sharpens handling: the full multipliers while burning, and after
+  // release they ride the speed back down, so the post-boost tail never turns
+  // wider than the burn did (86.8 m at 125 m/s). Exactly 1 at ≤ MAX_SPEED.
+  const excess = boost
+    ? 1
+    : clamp(
+        (state.speed - MAX_SPEED) / (BOOST_MAX_SPEED - MAX_SPEED),
+        0,
+        1,
+      );
+  const turnRate = TURN_RATE * (1 + (BOOST_TURN_MULT - 1) * excess);
+  const pitchRate = PITCH_RATE * (1 + (BOOST_PITCH_MULT - 1) * excess);
 
   // Mouse-aim steering: inputs are rate commands at capped rates; neutral
   // input holds the current attitude (no auto-level of pitch or yaw).
-  const yaw = state.yaw - turnIn * TURN_RATE * dt;
+  const yaw = state.yaw - turnIn * turnRate * dt;
   const pitch = clamp(
-    state.pitch + pitchIn * PITCH_RATE * dt,
+    state.pitch + pitchIn * pitchRate * dt,
     -PITCH_LIMIT,
     PITCH_LIMIT,
   );
@@ -112,14 +134,24 @@ export function stepFlight(
   // Energy rule: airspeed is pulled toward the commanded speed (throttle only
   // reaches MIN_SPEED in thin air), diving adds energy (climbing bleeds it —
   // same term, sign of sin(pitch)), and hard maneuvering bleeds it further.
-  // Clamped: at MIN_SPEED you mush, never stall.
-  const effectiveTarget = MIN_SPEED + (targetSpeed - MIN_SPEED) * power;
+  // Clamped: at MIN_SPEED you mush, never stall. Boost commands
+  // BOOST_MAX_SPEED with a harder pull, through the same ceiling fade — a
+  // burn is never a way to climb out past the soft ceiling.
+  const commanded = boost ? BOOST_MAX_SPEED : targetSpeed;
+  const effectiveTarget = MIN_SPEED + (commanded - MIN_SPEED) * power;
   const maneuver = Math.min(1, Math.abs(turnIn) + Math.abs(pitchIn));
   const dSpeed =
-    SPEED_RESPONSE * (effectiveTarget - state.speed) -
+    (boost ? BOOST_RESPONSE : SPEED_RESPONSE) *
+      (effectiveTarget - state.speed) -
     ENERGY_GAIN * Math.sin(pitch) -
     TURN_BLEED * maneuver;
-  const speed = clamp(state.speed + dSpeed * dt, MIN_SPEED, MAX_SPEED);
+  // Above MAX_SPEED without boost (the post-boost tail) speed may only fall:
+  // a dive can't hold boost speed. The wall-clock tail envelope itself is
+  // boostSpeedCap in boost.ts, which the client clamps to every frame.
+  const topSpeed = boost
+    ? BOOST_MAX_SPEED
+    : Math.max(MAX_SPEED, Math.min(state.speed, BOOST_MAX_SPEED));
+  const speed = clamp(state.speed + dSpeed * dt, MIN_SPEED, topSpeed);
 
   // Always moving forward along the nose — but above the ceiling, climb fades
   // with power and a sink sets in: the plane mushes back down, no wall.

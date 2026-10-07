@@ -24,11 +24,25 @@
 //             ground players collide with → pull up / turn to the clear side
 //             (in a street: onto a clear street heading, slowing).
 //
+// Threads (B2) sit outside the four states: a pass through an H1 hole —
+// taken now and then off a patrol leg, or behind a target that just flew
+// one. A bot commits to one only after flying the whole pass forward with
+// stepFlight on the real geometry (see rolloutThread), so a committed thread
+// replays a path already known to be clear and suspends every override.
+//
 // Bots never send hit claims: tick() emits trigger pulls (BotShot) and
 // applyBotFire routes them through the existing Combat seam — same heat
 // model, damage, spawn protection, kill credit, and respawn as humans.
 
-import { type Building, mulberry32 } from "@angels-bandits/common/city";
+import {
+  type Building,
+  type HoleEdge,
+  cityHoles,
+  edgeFrame,
+  holeEdges,
+  mulberry32,
+  segmentThroughHole,
+} from "@angels-bandits/common/city";
 import {
   EMPTY_MOVERS,
   type MoverField,
@@ -86,6 +100,16 @@ import {
   BOT_FAN_YAW,
   BOT_FIRE_CONE,
   BOT_FIRE_RANGE,
+  BOT_HOLE_CARROT,
+  BOT_HOLE_CHANCE,
+  BOT_HOLE_FOLLOW_MS,
+  BOT_HOLE_FOLLOW_RANGE,
+  BOT_HOLE_LINEUP_MAX,
+  BOT_HOLE_MARGIN,
+  BOT_HOLE_RETRY_MS,
+  BOT_HOLE_ROLLOUTS_PER_TICK,
+  BOT_HOLE_ROLLOUT_S,
+  BOT_HOLE_TURN_IN_MAX,
   BOT_INPUT_CAP,
   BOT_LOS_MEMORY_MS,
   BOT_LOS_TESTS_MAX,
@@ -104,6 +128,7 @@ import {
   BULLET_RANGE,
   BULLET_SPEED,
   HIT_RADIUS,
+  HOLE_RUN_OUT,
   PITCH_LIMIT,
   PLAYER_RADIUS,
   TICK_DOWN_HZ,
@@ -164,6 +189,9 @@ export interface BotTickResult {
 const clamp = (v: number, lo: number, hi: number) =>
   Math.min(hi, Math.max(lo, v));
 
+/** A contact moving further than this in one tick respawned, m. */
+const TRANSIT_JUMP = 50;
+
 /** Smallest signed angle equivalent, in [-π, π]. */
 const wrapAngle = (a: number): number => {
   const twoPi = Math.PI * 2;
@@ -172,6 +200,106 @@ const wrapAngle = (a: number): number => {
 };
 
 const NEUTRAL: FlightInput = { pitch: 0, turn: 0, roll: 0, throttle: 0 };
+
+/** Proportional rate steering toward the (torus) delta `d`, inputs capped
+ * below the player envelope; null for a zero delta (hold the stick). */
+function steerInput(
+  flight: FlightState,
+  d: Vec3,
+  jitterYaw: number,
+  jitterPitch: number,
+  throttle: number,
+): FlightInput | null {
+  const len = Math.hypot(d.x, d.y, d.z);
+  if (len === 0) return null;
+  const desiredYaw = Math.atan2(-d.x, -d.z) + jitterYaw;
+  const yawErr = wrapAngle(desiredYaw - flight.yaw);
+  const desiredPitch = Math.asin(clamp(d.y / len, -1, 1)) + jitterPitch;
+  const pitchErr = desiredPitch - flight.pitch;
+  return {
+    // turn +1 decreases yaw, so a positive yaw error needs negative turn.
+    turn: clamp(-yawErr * BOT_STEER_GAIN, -BOT_INPUT_CAP, BOT_INPUT_CAP),
+    pitch: clamp(pitchErr * BOT_STEER_GAIN, -BOT_INPUT_CAP, BOT_INPUT_CAP),
+    roll: 0,
+    throttle,
+  };
+}
+
+/** A street-lattice heading: travel axis and which way along it. */
+type Travel = { axis: "x" | "z"; dir: 1 | -1 };
+
+/**
+ * One committed (or candidate) pass through a hole. Everything the thread
+ * controller reads lives here, so a rollout can fly a copy of it and the
+ * live bot then flies the original through exactly the same inputs.
+ */
+interface Thread {
+  edge: HoleEdge;
+  /** How the bot leaves: onto the street that crosses the hole's axis past
+   * the exit (`edge.to`), heading this way along it — or, when null, straight
+   * down H1's guaranteed-clear run-out. */
+  exit: Travel | null;
+  /** Every exit a rollout passed, `exit` among them. A follow keeps both
+   * street turns and takes the one toward its target as it clears the far
+   * mouth (pickExit) — at commit the target is still in the hole, and which
+   * way it turns is not known yet. */
+  exits: (Travel | null)[];
+  /** The bot's band altitude: an exit street climbs back toward it. */
+  bandY: number;
+  /** Past the far mouth (sticky). */
+  out: boolean;
+}
+
+/** Hand back once lined up on the exit street this well: m off its
+ * centreline, rad off its heading. */
+const EXIT_LATERAL = 5;
+const EXIT_YAW = 0.2;
+/** A runout hands back this short of H1's clear run-out, m — the corridor is
+ * guaranteed, the merge after it is the lattice's business. */
+const RUNOUT_SLACK = 20;
+
+/**
+ * The thread controller: line-follow the hole's axis (a carrot
+ * BOT_HOLE_CARROT ahead on the centreline, height on the centreline), then
+ * the exit street or the run-out. Pure in (flight, thread) — no clock, no
+ * rand, no contacts — which is what lets a rollout predict the live flight
+ * bit for bit. Returns null once the pass is over (hand back to the brain).
+ */
+function threadInput(f: FlightState, th: Thread): FlightInput | null {
+  const { edge } = th;
+  const { axis } = edge.span.hole;
+  const L = BOT_HOLE_CARROT;
+  const fr = edgeFrame(edge, f.pos);
+  if (fr.along >= edge.span.length) th.out = true;
+  if (!th.out || !th.exit) {
+    if (th.out && fr.along >= edge.span.length + HOLE_RUN_OUT - RUNOUT_SLACK) {
+      return null;
+    }
+    // Never a corner hop and never a dive steeper than the canyon glide: the
+    // lintel is a few metres over the centreline.
+    const dy = clamp(-fr.up, -L * BOT_CANYON_GLIDE, L * BOT_CANYON_GLIDE);
+    const d =
+      axis === "x"
+        ? { x: edge.dir * L, y: dy, z: -fr.lateral }
+        : { x: -fr.lateral, y: dy, z: edge.dir * L };
+    return steerInput(f, d, 0, 0, th.out ? 0 : -1);
+  }
+  // The exit street runs across the hole's axis through edge.to.
+  const { exit } = th;
+  const off = wrapDelta(edge.to, f.pos);
+  const lateral = axis === "x" ? off.x : off.z;
+  const fwd = flightForward({ yaw: f.yaw, pitch: 0 });
+  const heading = (exit.axis === "x" ? fwd.x : fwd.z) * exit.dir;
+  if (Math.abs(lateral) < EXIT_LATERAL && heading > Math.cos(EXIT_YAW)) {
+    return null;
+  }
+  const dy = clamp(th.bandY - f.pos.y, -L * BOT_CANYON_GLIDE, L * 0.3);
+  const d =
+    exit.axis === "x"
+      ? { x: exit.dir * L, y: dy, z: -lateral }
+      : { x: -lateral, y: dy, z: exit.dir * L };
+  return steerInput(f, d, 0, 0, -1);
+}
 
 /** A fresh bot's graceUntil: unstamped (NaN) for a spawn in the canyons, none
  * at all for a high one — see Bot.graceUntil. */
@@ -233,6 +361,15 @@ interface Bot {
   /** Is the current ENGAGE chasing along the street lattice (pursuit line
    * blocked) rather than flying straight at the target? */
   streetChase: boolean;
+  /** The hole pass this bot is committed to (B2), or null. */
+  thread: Thread | null;
+  /** Hole routing's own seeded stream — salted off the bot's seed so B1's
+   * `rand` sequence (patrol turns, jitter, break turns) is untouched. */
+  holeRand: () => number;
+  /** Patrol hole encounters by edge index: the roll's outcome, and when a
+   * won roll may next try a rollout, ms. Dropped when the edge stops being
+   * a candidate, so the next pass by is a fresh roll. */
+  holeRolls: Map<number, { won: boolean; retryAt: number }>;
   /** Break-turn direction for EVADE/RECOVER, seeded per episode. */
   breakTurn: 1 | -1;
   /** Aim wander resampled each decision — the seeded miss source. */
@@ -285,10 +422,19 @@ export class RoomBots {
     // four nose probes per brain decision, all bots deciding on the same
     // tick), so the block index is what keeps that off the 15 Hz budget.
     this.cityIndex = buildCityIndex(buildings);
+    this.edges = holeEdges(cityHoles(buildings));
   }
 
   /** Block index over `buildings` — see collideCity's optional 4th argument. */
   private readonly cityIndex: CityIndex;
+  /** Every hole as two directed street-graph edges (H1's shared seam). */
+  private readonly edges: readonly HoleEdge[];
+  /** Each living contact's position last tick, for hole-transit tracking. */
+  private readonly contactPrev = new Map<string, Vec3>();
+  /** The last hole each contact flew through: edge index and when, ms. */
+  private readonly transits = new Map<string, { edge: number; at: number }>();
+  /** Rollouts left this tick (BOT_HOLE_ROLLOUTS_PER_TICK). */
+  private rolloutsLeft = 0;
 
   get count(): number {
     return this.bots.size;
@@ -306,7 +452,8 @@ export class RoomBots {
       name: `BANDIT-${n}`,
       isBot: true,
     };
-    const rand = mulberry32(Math.floor(this.rand() * 0xffffffff));
+    const botSeed = Math.floor(this.rand() * 0xffffffff);
+    const rand = mulberry32(botSeed);
     // This bot's slot inside the canyon band — drawn ONCE, so a bot keeps its
     // altitude through every respawn (see respawn()).
     const bandY =
@@ -329,6 +476,9 @@ export class RoomBots {
       fought: false,
       graceUntil: streetGrace(spawn),
       streetChase: false,
+      thread: null,
+      holeRand: mulberry32((botSeed ^ 0x2545f491) >>> 0),
+      holeRolls: new Map(),
       breakTurn: 1,
       aimJitterYaw: 0,
       aimJitterPitch: 0,
@@ -388,6 +538,11 @@ export class RoomBots {
       if (!best || rank(b) < rank(best)) best = b;
     }
     return best?.entry.id ?? null;
+  }
+
+  /** The hole edge a bot is threading, or null — read-only, for the sim. */
+  threadOf(id: string): HoleEdge | null {
+    return this.bots.get(id)?.thread?.edge ?? null;
   }
 
   stateOf(id: string): BotState | undefined {
@@ -453,7 +608,9 @@ export class RoomBots {
   /** Death settled by Combat: freeze until respawn() reseeds the flight. */
   setDead(id: string): void {
     const bot = this.bots.get(id);
-    if (bot) bot.alive = false;
+    if (!bot) return;
+    bot.alive = false;
+    bot.thread = null;
   }
 
   /** Server-issued respawn (same sampler as humans): fresh flight state. */
@@ -475,6 +632,8 @@ export class RoomBots {
     bot.fought = false;
     bot.graceUntil = streetGrace(spawn);
     bot.streetChase = false;
+    bot.thread = null;
+    bot.holeRolls.clear();
   }
 
   /**
@@ -524,16 +683,21 @@ export class RoomBots {
     const decide = this.tickCount % BOT_DECISION_EVERY === 0;
     const shots: BotShot[] = [];
     const crashes: string[] = [];
+    this.rolloutsLeft = BOT_HOLE_ROLLOUTS_PER_TICK;
+    this.trackTransits(now, contacts);
 
     for (const bot of this.bots.values()) {
       if (!bot.alive) continue;
       // Down among the towers the curved probe runs every tick, not just at
       // the 5 Hz decision: a decision is ~8 m of travel at MIN_SPEED, and a
       // wall on the inside of a turn closes that fast. A blocked path pulls
-      // the next decision forward; it never sharpens anything else.
+      // the next decision forward; it never sharpens anything else. A thread
+      // is exempt: its rollout assumed the plain 5 Hz cadence, and an extra
+      // decision would fly a path nobody checked.
       if (
         decide ||
-        (bot.state !== "RECOVER" &&
+        (!bot.thread &&
+          bot.state !== "RECOVER" &&
           bot.flight.pos.y < BOT_CANYON_PROBE_ALT &&
           this.pathBlocked(bot, now, 1))
       ) {
@@ -566,9 +730,50 @@ export class RoomBots {
     return { shots, crashes };
   }
 
+  /**
+   * Record which contacts flew through a hole since last tick (segment vs the
+   * hole's mid-plane, so a 20 Hz track never steps over a short sky hole).
+   * A jump bigger than any tick's flight is a respawn, not a move; contacts
+   * missing from the list (dead, left) are forgotten.
+   */
+  private trackTransits(now: number, contacts: readonly BotContact[]): void {
+    const seen = new Set<string>();
+    for (const c of contacts) {
+      seen.add(c.id);
+      const prev = this.contactPrev.get(c.id);
+      this.contactPrev.set(c.id, c.pos);
+      if (!prev || wrapDistance(prev, c.pos) > TRANSIT_JUMP) continue;
+      this.edges.forEach((edge, i) => {
+        // Both directions share a span: test it once, on its +1 edge.
+        if (edge.dir !== 1) return;
+        const dir = segmentThroughHole(edge.span, prev, c.pos);
+        if (dir !== 0) {
+          this.transits.set(c.id, { edge: dir === 1 ? i : i + 1, at: now });
+        }
+      });
+    }
+    for (const id of this.contactPrev.keys()) {
+      if (seen.has(id)) continue;
+      this.contactPrev.delete(id);
+      this.transits.delete(id);
+    }
+  }
+
   // --- brain ---
 
   private decide(bot: Bot, now: number, contacts: readonly BotContact[]): void {
+    // A committed thread outranks everything, the floor and the probes
+    // included: its rollout already flew this exact path clear of the real
+    // geometry, and the solid-hole probes would read the hole as a wall.
+    if (bot.thread) {
+      this.pickExit(bot, bot.thread, contacts);
+      const input = threadInput(bot.flight, bot.thread);
+      if (input) {
+        bot.input = input;
+        return;
+      }
+      this.endThread(bot);
+    }
     // RECOVER keeps its hysteresis: once in it, only a WIDE clearance releases
     // it, or the brain flaps back to PATROL/ENGAGE and immediately re-steers
     // toward the obstacle.
@@ -709,6 +914,11 @@ export class RoomBots {
         return;
       }
 
+      // The target just flew through a hole this bot can line up on: follow
+      // it through rather than around. A committed follow holds ENGAGE and
+      // the target (guns stay live) for the few seconds of the pass.
+      if (this.followThrough(bot, now, target)) return;
+
       // Lead pursuit: aim where the target will be when a bullet arrives,
       // wandered by the seeded jitter (resampled per decision).
       bot.aimJitterYaw = (bot.rand() * 2 - 1) * BOT_AIM_JITTER;
@@ -811,7 +1021,242 @@ export class RoomBots {
       bot.waypoint = null;
       bot.travel = null;
     }
-    this.canyonPatrol(bot);
+    const stageY = this.holeRouting(bot, now);
+    if (bot.thread) return;
+    this.canyonPatrol(bot, undefined, false, stageY);
+  }
+
+  // --- threads (B2) ---
+
+  /**
+   * A patrol's opportunistic hole: find the edges this bot's street leads
+   * to, roll each once per encounter, and for a won roll stage the approach
+   * and try to commit. Returns the altitude to stage at (the patrol flies
+   * there instead of its band, with no corner hop), or undefined.
+   *
+   * Only arches and street tunnels: an arch is lined up off the cross street
+   * its axis meets 55 m before the mouth; a tunnel off the parallel street,
+   * jogging over onto its axis inside H1's clear corridor. Sky holes sit at
+   * 69-157 m and are never worth a canyon bot's climb — they are only ever
+   * followed (followThrough).
+   */
+  private holeRouting(bot: Bot, now: number): number | undefined {
+    if (!bot.travel || this.edges.length === 0) return undefined;
+    const axis = this.streetAxis(bot.flight);
+    let stage: number | undefined;
+    this.edges.forEach((edge, i) => {
+      const window = axis ? this.holeWindow(bot, edge, axis) : null;
+      if (window === null) {
+        bot.holeRolls.delete(i);
+        return;
+      }
+      let roll = bot.holeRolls.get(i);
+      if (!roll) {
+        roll = { won: bot.holeRand() < BOT_HOLE_CHANCE, retryAt: 0 };
+        bot.holeRolls.set(i, roll);
+      }
+      if (!roll.won || bot.thread) return;
+      // An arch's centreline is 5 m over BOT_MIN_ALT: stage a little above
+      // it. A high tunnel stages under the probe split, so the street climb
+      // keeps the canyon profile; the rollout covers the rest of the climb.
+      stage ??= Math.min(edge.span.center.y + 4, BOT_CANYON_PROBE_ALT - 5);
+      if (!window || now < roll.retryAt) return;
+      if (!this.tryThread(bot, edge, now))
+        roll.retryAt = now + BOT_HOLE_RETRY_MS;
+    });
+    return stage;
+  }
+
+  /**
+   * Is `edge` ahead of this patrol? null: no. false: yes, but too far to
+   * commit yet (stage only). true: inside the commit window.
+   */
+  private holeWindow(
+    bot: Bot,
+    edge: HoleEdge,
+    streetAxis: "x" | "z",
+  ): boolean | null {
+    const { kind, axis } = edge.span.hole;
+    if (kind === "sky") return null;
+    const pos = bot.flight.pos;
+    const fwd = flightForward({ yaw: bot.flight.yaw, pitch: 0 });
+    if (kind === "arch") {
+      // On the cross street through edge.from, flying toward the node.
+      if (streetAxis === axis) return null;
+      const d = wrapDelta(pos, edge.from);
+      const across = axis === "x" ? d.x : d.z;
+      if (Math.abs(across) > ROADWAY_HALF) return null;
+      const ahead =
+        (streetAxis === "x" ? d.x : d.z) *
+        Math.sign(streetAxis === "x" ? fwd.x : fwd.z);
+      if (ahead <= 0 || ahead > 2 * BOT_HOLE_TURN_IN_MAX) return null;
+      return ahead <= BOT_HOLE_TURN_IN_MAX;
+    }
+    // Tunnel: on a street parallel to it, flying its way, mouth ahead.
+    if (streetAxis !== axis) return null;
+    if ((axis === "x" ? fwd.x : fwd.z) * edge.dir < Math.SQRT1_2) return null;
+    const fr = edgeFrame(edge, pos);
+    if (fr.along > -BOT_CANYON_SLOW_RADIUS || fr.along < -BOT_HOLE_LINEUP_MAX) {
+      return null;
+    }
+    if (Math.abs(fr.lateral) > BLOCK_PITCH / 2) return null;
+    return fr.along >= -BOT_HOLE_LINEUP_MAX / 2;
+  }
+
+  /**
+   * A chaser's follow-through: its target flew through a hole within
+   * BOT_HOLE_FOLLOW_MS and the bot is still short of the mouth it went in
+   * by, close enough to line up — commit if the rollout passes. Otherwise
+   * the chase carries on around the building (solid-hole probes, fan,
+   * street chase): breaking off is the safe default, never a gamble.
+   */
+  private followThrough(bot: Bot, now: number, target: BotContact): boolean {
+    const transit = this.transits.get(target.id);
+    if (!transit || now - transit.at > BOT_HOLE_FOLLOW_MS) return false;
+    const edge = this.edges[transit.edge];
+    if (!edge) return false;
+    const fr = edgeFrame(edge, bot.flight.pos);
+    if (fr.along > -BOT_CANYON_PROBE_RADIUS) return false;
+    if (wrapDistance(bot.flight.pos, edge.mouthIn) > BOT_HOLE_FOLLOW_RANGE) {
+      return false;
+    }
+    return this.tryThread(bot, edge, now, true);
+  }
+
+  /**
+   * Commit to `edge` if a rollout of some exit flies clean: the street exits
+   * for an arch, the guaranteed run-out first for anything else. A follow
+   * tries the street turn toward its target first (leaving the arch the
+   * other way means a U-turn in a street to resume the chase); a patrol
+   * picks its side with a seeded draw. Spends the room's rollout budget.
+   */
+  private tryThread(
+    bot: Bot,
+    edge: HoleEdge,
+    now: number,
+    follow = false,
+  ): boolean {
+    const across: "x" | "z" = edge.span.hole.axis === "x" ? "z" : "x";
+    const first: 1 | -1 = bot.holeRand() < 0.5 ? 1 : -1;
+    const streets: Travel[] = [
+      { axis: across, dir: first },
+      { axis: across, dir: first === 1 ? -1 : 1 },
+    ];
+    const order: (Travel | null)[] =
+      edge.span.hole.kind === "arch" ? [...streets, null] : [null, ...streets];
+    const passed: (Travel | null)[] = [];
+    for (const exit of order) {
+      // A patrol takes the first exit that flies; a follow wants both street
+      // turns, so it can turn after its target (pickExit).
+      if (passed.length > 0 && !(follow && exit && passed[0])) break;
+      if (this.rolloutsLeft <= 0) break;
+      this.rolloutsLeft--;
+      const probe: Thread = {
+        edge,
+        exit,
+        exits: [],
+        bandY: bot.bandY,
+        out: false,
+      };
+      if (this.rolloutThread(bot, probe, now)) passed.push(exit);
+    }
+    const exit = passed[0];
+    if (exit === undefined) return false;
+    const thread: Thread = {
+      edge,
+      exit,
+      exits: passed,
+      bandY: bot.bandY,
+      out: false,
+    };
+    const input = threadInput(bot.flight, thread);
+    if (!input) return false;
+    bot.thread = thread;
+    bot.input = input;
+    return true;
+  }
+
+  /**
+   * A follow's exit, chosen as the bot clears the far mouth — the decision
+   * on which the controller turns to its exit, in the rollout as here: the
+   * street turn toward the target if that turn's rollout passed.
+   */
+  private pickExit(
+    bot: Bot,
+    thread: Thread,
+    contacts: readonly BotContact[],
+  ): void {
+    if (thread.out || thread.exits.length < 2) return;
+    const { edge } = thread;
+    if (edgeFrame(edge, bot.flight.pos).along < edge.span.length) return;
+    const target = contacts.find((c) => c.id === bot.targetId);
+    if (!target) return;
+    const d = wrapDelta(edge.to, target.pos);
+    for (const exit of thread.exits) {
+      if (!exit) continue;
+      if ((exit.axis === "x" ? d.x : d.z) * exit.dir > 0) thread.exit = exit;
+    }
+  }
+
+  /**
+   * Fly `thread` forward from the bot's live state exactly as tick() will:
+   * the controller re-decides on the room's own BOT_DECISION_EVERY phase,
+   * stepFlight in between, and every step is tested against the city (holes
+   * OPEN), the trees, the ground and the movers (posed when the bot gets
+   * there) with BOT_HOLE_MARGIN to spare. Steps are 2-4.5 m apart, under
+   * the 6 m thinnest hole wall, so no wall or lintel falls between two.
+   * True only if the pass ends (hands back) clean inside the horizon.
+   */
+  private rolloutThread(bot: Bot, thread: Thread, now: number): boolean {
+    const r = PLAYER_RADIUS + BOT_HOLE_MARGIN;
+    let f = bot.flight;
+    let input: FlightInput = NEUTRAL;
+    const steps = Math.round(BOT_HOLE_ROLLOUT_S / BOT_DT);
+    for (let k = 0; k < steps; k++) {
+      if (k === 0 || (this.tickCount + k) % BOT_DECISION_EVERY === 0) {
+        const next = threadInput(f, thread);
+        if (!next) return true;
+        input = next;
+      }
+      f = stepFlight(f, input, BOT_DT);
+      const t = now + k * BOT_DT * 1000;
+      if (
+        hitsGround(f.pos, r) ||
+        collideCity(f.pos, r, this.buildings, this.cityIndex) ||
+        collideNature(f.pos, r, this.nature) ||
+        collideBotMovers(f.pos, r + BOT_MOVER_CLEAR, this.movers, t)
+      ) {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  /** The pass is over: hand back to the lattice. A street exit leaves the
+   * bot flying that street to its next intersection; a run-out re-joins the
+   * nearest street like a bot back from a fight. */
+  private endThread(bot: Bot): void {
+    const thread = bot.thread;
+    bot.thread = null;
+    bot.streetChase = false;
+    if (!thread?.exit) {
+      bot.fought = true;
+      bot.waypoint = null;
+      bot.travel = null;
+      return;
+    }
+    const { exit, edge } = thread;
+    const p = nextIntersection(
+      bot.flight.pos,
+      {
+        axis: exit.axis,
+        centerline: exit.axis === "x" ? edge.to.z : edge.to.x,
+      },
+      exit.dir,
+    );
+    bot.fought = false;
+    bot.travel = exit;
+    bot.waypoint = { x: p.x, y: bot.bandY, z: p.z };
   }
 
   /**
@@ -1029,7 +1474,14 @@ export class RoomBots {
    * — a 90° turn sweeps ~52 m, wider than any roadway, so it must cross the
    * block corner and wants vertical margin over whatever stands there.
    */
-  private canyonPatrol(bot: Bot, toward?: Vec3, straight = false): void {
+  private canyonPatrol(
+    bot: Bot,
+    toward?: Vec3,
+    straight = false,
+    /** Staging for a hole (B2): fly at this altitude instead of the band,
+     * bleeding speed, with no corner hop — an arch lintel is at 32 m. */
+    stageY?: number,
+  ): void {
     // Reaching a waypoint is a GROUND-TRACK test: the lattice is a plan-view
     // graph and altitude is the glide's business. Measuring it in 3D strands a
     // bot that is still high above the intersection it is aiming at.
@@ -1056,14 +1508,15 @@ export class RoomBots {
     // The hop raises the TARGET altitude (never the commanded climb), then the
     // glide caps how steeply the bot may descend toward it — so arriving from
     // RESPAWN_ALTITUDE is a slope down the lattice, not a plunge.
-    let targetY = bot.waypoint.y + (slowing ? BOT_CANYON_HOP : 0);
+    let targetY = stageY ?? bot.waypoint.y + (slowing ? BOT_CANYON_HOP : 0);
     if (merge) targetY = Math.max(targetY, bot.flight.pos.y);
     const dy = Math.max(targetY - bot.flight.pos.y, -flat * BOT_CANYON_GLIDE);
     // Never accelerate on a canyon patrol: turn radius is speed / 0.765 rad/s,
     // so a street-grid bot has to arrive at a corner near MIN_SPEED or its arc
     // cuts the block. Throttle only ever holds or bleeds here; a chase (ENGAGE)
     // is free to firewall it.
-    this.steerToward(bot, { x: d.x, y: dy, z: d.z }, 0, 0, slowing ? -1 : 0);
+    const throttle = slowing || stageY !== undefined ? -1 : 0;
+    this.steerToward(bot, { x: d.x, y: dy, z: d.z }, 0, 0, throttle);
   }
 
   /**
@@ -1210,8 +1663,8 @@ export class RoomBots {
     return null;
   }
 
-  /** Proportional rate steering toward the (torus) delta `d`, inputs capped
-   * below the player envelope. Jitter offsets the commanded attitude. */
+  /** steerInput onto the bot (a zero delta holds the stick). Jitter offsets
+   * the commanded attitude. */
   private steerToward(
     bot: Bot,
     d: Vec3,
@@ -1219,19 +1672,8 @@ export class RoomBots {
     jitterPitch: number,
     throttle: number,
   ): void {
-    const len = Math.hypot(d.x, d.y, d.z);
-    if (len === 0) return;
-    const desiredYaw = Math.atan2(-d.x, -d.z) + jitterYaw;
-    const yawErr = wrapAngle(desiredYaw - bot.flight.yaw);
-    const desiredPitch = Math.asin(clamp(d.y / len, -1, 1)) + jitterPitch;
-    const pitchErr = desiredPitch - bot.flight.pitch;
-    bot.input = {
-      // turn +1 decreases yaw, so a positive yaw error needs negative turn.
-      turn: clamp(-yawErr * BOT_STEER_GAIN, -BOT_INPUT_CAP, BOT_INPUT_CAP),
-      pitch: clamp(pitchErr * BOT_STEER_GAIN, -BOT_INPUT_CAP, BOT_INPUT_CAP),
-      roll: 0,
-      throttle,
-    };
+    const input = steerInput(bot.flight, d, jitterYaw, jitterPitch, throttle);
+    if (input) bot.input = input;
   }
 
   /** Would the current climb breach the bot ceiling soon? Predictive like
@@ -1354,8 +1796,9 @@ export class RoomBots {
       });
       if (p.y - radius <= 0) return true;
       // Holes count as SOLID here: point samples 16–36 m apart can land
-      // inside a hole and skip its thin walls, and bots do not route through
-      // holes until B2 — so they avoid them rather than discover them.
+      // inside a hole and skip its thin walls. Bots never discover a hole
+      // with a probe — they fly one only as a committed thread, checked by
+      // rolloutThread at 50 ms steps with the holes open.
       if (collideCity(p, radius, this.buildings, this.cityIndex, "solid")) {
         return true;
       }

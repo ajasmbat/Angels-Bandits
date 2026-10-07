@@ -28,7 +28,9 @@
 // NaN), the network is held once the clock is synced (otherwise the
 // snapshot clock estimator chases real server time between frames), and
 // the WebGL context keeps its drawing buffer so a frame can be read back
-// after the fake clock drove it. Weather is pinned clear AND dry (late in
+// after the fake clock drove it. No storm strike may land inside the
+// capture (its sky flash would dominate the score). Weather is pinned clear
+// AND dry (late in
 // the clear phase, wetness 0): a ref older than L4 has no weather at all,
 // so anything else would score rain streaks as flicker.
 //
@@ -45,10 +47,17 @@ import { prepareRefBuild } from "./refbuild.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
 const VIEWPORT = { width: 640, height: 360 };
-/** "Not worse": the frozen score may exceed the ref's by at most this much. */
-export const TOLERANCE = { pct: 5, abs: 0.05 };
+/**
+ * "Not worse": the frozen score may exceed the ref's by at most the larger
+ * of these. A frozen city scores ~0.035 (the animation in 16 ms), and the
+ * same build repeats to ~0.005 — so 0.01 is a resolution, not slack; a
+ * strike flash or a shimmering pattern lands in whole units.
+ */
+export const TOLERANCE = { pct: 5, abs: 0.01 };
 /** Frame step, ms — the fake clock ticks exactly this per captured frame. */
 const STEP_MS = 1000 / 60;
+/** Freeze the clock only with the next storm strike at least this far off. */
+const STRIKE_CLEAR_MS = 8000;
 /** Pan speed, metres per frame (90 m/s, a slow cruise). */
 const PAN_M = 1.5;
 /** Where the scenes look: midtown from 300 m, toward the dense core. */
@@ -277,6 +286,20 @@ async function measureBuild(browser, label, cwd, frames, shots) {
     // Let streaming and first-sight compiles land on the real clock, then
     // freeze it: from here on time only moves when a frame is stepped.
     await sleep(3000);
+    // A scheduled storm strike paints a full-sky violet flash that decays
+    // over several frames — a strike inside the capture would score as the
+    // worst "flicker" in the city. The capture spans ~2 s of fake time, so
+    // freeze only once the next strike is STRIKE_CLEAR_MS away (waiting out
+    // any that is closer, on the real clock).
+    for (let i = 0; i < 120; i++) {
+      const lead = await page.evaluate(() => {
+        const next = window.__ab.storm().nextStrike;
+        const rt = window.__ab.net().renderTime;
+        return next === null || rt === null ? null : next.timeMs - rt;
+      });
+      if (lead === null || lead > STRIKE_CLEAR_MS) break;
+      await sleep(Math.max(500, lead + 1500));
+    }
     await page.evaluate(() => {
       window.__flickerHoldNet = true;
     });

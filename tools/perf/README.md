@@ -640,8 +640,10 @@ loss), but it means such a machine takes about 20 s to reach its tier.
 
 `tools/perf/flicker.mjs` is O1's temporal flicker metric, committed so it can
 be re-run. It captures 30 frames on Playwright's fake clock at exactly 1/60 s
-a step, at 640×360, ratio 1, with the network held and the weather pinned
-clear and dry. It scores the mean per-pixel |Δluma| between consecutive
+a step, at 640×360, ratio 1, with the network held, the weather pinned
+clear and dry, and the clock frozen only once the next storm strike is at
+least 8 s away. A strike's full-sky flash inside the window once scored HEAD
+at 17× O1's build; the frames after it matched O1 exactly. It scores the mean per-pixel |Δluma| between consecutive
 frames:
 
 - `frozen` — camera pinned over midtown from 300 m. This is the **pass/fail**
@@ -650,7 +652,7 @@ frames:
   compensation, so it is mostly the motion itself: **indicative only**.
 
 `--ref <git-ref>` measures another build the same way, right after, and
-judges "not worse": HEAD frozen ≤ ref frozen + max(5 %, 0.05). It exits 1 on
+judges "not worse": HEAD frozen ≤ ref frozen + max(5 %, 0.01). It exits 1 on
 a FAIL. Against `--ref 0b90284` (O1's merge) that is O3's acceptance
 check. `0b90284` already carries every Living City ticket except L4, and
 weather is pinned dry, so the two builds draw the same city.

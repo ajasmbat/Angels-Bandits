@@ -1219,7 +1219,9 @@
         display: none;
         position: fixed;
         left: calc(var(--gut-x) + var(--safe-l) + var(--mini) + 10px);
-        top: calc(var(--gut-y) + var(--safe-t) + 60px);
+        /* Bottom-aligned with the minimap (2 px up): clear of the gauges'
+           second row above and the #hud stats line below it. */
+        top: calc(var(--gut-y) + var(--safe-t) + var(--mini) - 26px);
         gap: 6px;
         z-index: 6;
         pointer-events: none;

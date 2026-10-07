@@ -13,8 +13,12 @@ import {
   stopBoost,
 } from "@angels-bandits/common/boost";
 import { type Building, cityHoles } from "@angels-bandits/common/city";
-import { generateMovers } from "@angels-bandits/common/city/movers";
+import {
+  generateMovers,
+  withNewsHeli,
+} from "@angels-bandits/common/city/movers";
 import { natureFor } from "@angels-bandits/common/city/nature";
+import { setNewsTarget } from "@angels-bandits/common/city/newsheli";
 import { buildNatureIndex } from "@angels-bandits/common/collision";
 import {
   BLOCK_PITCH,
@@ -33,6 +37,7 @@ import {
 } from "@angels-bandits/common/flight";
 import { hitRangeBudgetFor } from "@angels-bandits/common/net";
 import type { ScoreEntry, SpawnState } from "@angels-bandits/common/protocol";
+import { airlinerOffsetInto } from "@angels-bandits/common/skytraffic";
 import { strikesInWindow } from "@angels-bandits/common/storm";
 import { wrapDelta, wrapDistance } from "@angels-bandits/common/world";
 import * as THREE from "three";
@@ -88,9 +93,11 @@ import {
   zoomSteer,
 } from "./game/zoom";
 import { GameSocket } from "./net/socket";
+import { Airliners } from "./render/airliners";
 import { Birds } from "./render/birds";
 import { CityRenderer } from "./render/city";
 import { ConstructionSparks } from "./render/construction";
+import { DroneShowRenderer } from "./render/drones";
 import { FacadeDetailRenderer } from "./render/facade-detail";
 import { FacadeGarnishRenderer } from "./render/facade-garnish";
 import { Fireworks } from "./render/fireworks";
@@ -343,6 +350,10 @@ const ground = new GroundPlane();
 scene.add(ground.mesh);
 const skyDome = new SkyDome();
 scene.add(skyDome.mesh);
+// L10 airliners ride the dome like the stars: camera-following, fog off,
+// never in world space. Pure schedule of (seed, synced clock).
+const airliners = new Airliners(welcome.seed);
+skyDome.mesh.add(airliners.points);
 const streetlights = new Streetlights();
 scene.add(streetlights.group);
 // Street-level neon (S2): marquees, billboards, strips, spill — one shared
@@ -356,7 +367,19 @@ scene.add(traffic.mesh);
 // L2 movers: cranes, helicopters, the blimp. Poses are the SAME pure function
 // of (seed, server clock) the crash check uses, so what you see is what you
 // can hit — and nothing about them is ever streamed.
-const moverField = generateMovers(welcome.seed, city.cityBuildings);
+// L10: plus this room's news heli — the server authors its route from kill
+// sites; the welcome hands a late joiner the current one, `newsHeli` the rest.
+const moverField = withNewsHeli(
+  generateMovers(welcome.seed, city.cityBuildings),
+  welcome.seed,
+);
+if (moverField.news && welcome.newsHeli) {
+  moverField.news.target = welcome.newsHeli.target;
+  moverField.news.prev = welcome.newsHeli.prev;
+}
+socket.events.onNewsHeli = (msg) => {
+  if (moverField.news) setNewsTarget(moverField.news, msg.target);
+};
 const movers = new Movers(moverField);
 scene.add(movers.rig, movers.hulls, movers.rotors);
 // One additive point cloud shared by every L2 light: crane warning beacons,
@@ -380,6 +403,8 @@ scene.add(natureRenderer.group);
 const fireworks = new Fireworks(welcome.seed);
 const searchlights = new Searchlights(city.cityBuildings);
 scene.add(searchlights.mesh);
+// L10 drone show: points in the shared MoverLights cloud (zero draw calls).
+const droneShow = new DroneShowRenderer(welcome.seed);
 const birds = new Birds(welcome.seed);
 scene.add(birds.points);
 // L1 living streets — the micro tier. Client-only, non-collidable, and gated
@@ -936,6 +961,17 @@ declare global {
       movers: (at?: number | null) => ReturnType<Movers["debug"]>;
       train: (at?: number | null) => ReturnType<TrainRenderer["debug"]>;
       fireworks: (at?: number | null) => ReturnType<Fireworks["debug"]>;
+      /** L10 QA: airliners and drone show drawn last frame, the news heli's
+       * slot, and (forceDroneShow) the gallery's way to start a show now. */
+      skyTraffic: () => {
+        airliners: Airliners["drawn"];
+        /** Each drawn airliner's offset from the viewer, m (y up). */
+        airlinerOffsets: { x: number; y: number; z: number }[];
+        airlinerPoints: number;
+        droneShow: DroneShowRenderer["current"];
+        newsHeli: typeof moverField.news;
+      };
+      forceDroneShow: (ageS: number | null) => void;
       cityStats: () => {
         buildings: number;
         tierInstances: number;
@@ -1116,6 +1152,24 @@ window.__ab = {
   train: (at) => train.debug(at === undefined ? socket.renderTime() : at),
   fireworks: (at) =>
     fireworks.debug(at === undefined ? socket.renderTime() : at),
+  skyTraffic: () => ({
+    airliners: airliners.drawn,
+    airlinerOffsets: airliners.drawn.map((a) => {
+      const o = airlinerOffsetInto(a, socket.renderTime() ?? 0, {
+        x: 0,
+        y: 0,
+        z: 0,
+        hx: 0,
+        hz: 0,
+      });
+      return { x: o.x, y: o.y, z: o.z };
+    }),
+    airlinerPoints: airliners.pointCount,
+    droneShow: droneShow.current,
+    newsHeli: moverField.news,
+  }),
+  forceDroneShow: (ageS) =>
+    droneShow.force(socket.renderTime(), ageS === null ? null : ageS * 1000),
   // V2 QA: instance counts for the perf report.
   cityStats: () => ({
     buildings: city.cityBuildings.length,
@@ -1571,6 +1625,8 @@ renderer.setAnimationLoop((now) => {
   // the lamp heads land in the same point cloud before commit().
   searchlights.update(chase.position, renderMs, movers.spots, moverLights);
   birds.update(chase.position, renderMs);
+  // L10: the drones write LAST, so a full cloud drops drones, not nav lights.
+  droneShow.update(chase.position, renderMs, moverLights);
   moverLights.commit();
   // L1 micro tier — on the same latched clock, for the same reason. ONE gate
   // value drives all four subsystems; k === 0 takes an early return inside
@@ -1590,6 +1646,7 @@ renderer.setAnimationLoop((now) => {
   constructionSparks.update(chase.position, renderMs ?? now, microK);
   ground.update(chase.position);
   skyDome.update(chase.position);
+  airliners.update(renderMs);
   // Wounded smoke: own plane from server-said self HP, every remote (human
   // or bot) from snapshot HP — all clients see the same wounds. Death clouds
   // simply stop being synced and age out inside SmokeTrails.

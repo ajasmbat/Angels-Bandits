@@ -28,7 +28,11 @@ import { cpus, loadavg, platform, release } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { startPilots } from "./pilots.mjs";
+import { prepareRefBuild } from "./refbuild.mjs";
 import {
+  BUDGETS,
+  PILOT_SETTLE_MS,
   SAMPLE_MS,
   SEGMENTS,
   SETTLE_MS,
@@ -48,8 +52,13 @@ const REPO = resolve(HERE, "../..");
  *    `pixelRatioHonoured`, and the raw `samples` / `gpuSamples` arrays under
  *    `--samples`. No existing field changed meaning and nothing reads this
  *    version to compare, so a version-1 baseline is still comparable.
+ * 3: O3 — the `street` and `furball` segments (appended, so the first five
+ *    still line up by index), per-segment `tier`, `weather`,
+ *    `weatherPinned`, `planes` and `verdicts`, and `config.quality` /
+ *    `config.ref`. `overall` now pools seven segments, so compare an older
+ *    report segment by segment rather than on its overall row.
  */
-const REPORT_VERSION = 2;
+const REPORT_VERSION = 3;
 const VIEWPORT = { width: 1280, height: 720 };
 const DEVICE_SCALE_FACTOR = 2;
 /** The pixel ratio measurements are taken at unless --res says otherwise. */
@@ -75,6 +84,9 @@ function parseArgs(argv) {
     quiet: false,
     strict: false,
     samples: false,
+    quality: "high",
+    abRef: null,
+    soak: null,
   };
   const finish = () => {
     // There is no determinism check with a single pass, so --strict would
@@ -85,6 +97,9 @@ function parseArgs(argv) {
     }
     if (!Number.isFinite(opts.runs) || opts.runs < 1) {
       throw new Error(`--runs must be a positive number (got ${opts.runs})`);
+    }
+    if (opts.ab !== null && opts.abRef !== null) {
+      throw new Error("--ab and --ab-ref both name the second arm: pick one");
     }
     return opts;
   };
@@ -114,7 +129,13 @@ function parseArgs(argv) {
         opts.compare = resolve(process.cwd(), next());
         break;
       case "--ab":
-        opts.ab = next();
+        opts.ab = abQuery(next());
+        break;
+      case "--ab-ref":
+        opts.abRef = next();
+        break;
+      case "--quality":
+        opts.quality = next();
         break;
       case "--no-build":
         opts.build = false;
@@ -133,6 +154,9 @@ function parseArgs(argv) {
         break;
       case "--samples":
         opts.samples = true;
+        break;
+      case "--soak":
+        opts.soak = Number(next());
         break;
       case "--help":
       case "-h":
@@ -170,10 +194,10 @@ function freePort() {
   });
 }
 
-async function startServer(port) {
+async function startServer(port, cwd = REPO) {
   const log = [];
   const proc = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
-    cwd: REPO,
+    cwd,
     env: { ...process.env, PORT: String(port) },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -201,13 +225,30 @@ async function startServer(port) {
  * anything; ANGLE/Metal is the difference between the real GPU and
  * SwiftShader, which collapses to ~9 fps under the bloom chain. */
 const CHROME_ARGS = [
-  "--use-angle=metal",
-  "--enable-gpu",
+  ...(process.env.AB_CHROME_ARGS
+    ? process.env.AB_CHROME_ARGS.split(" ").filter(Boolean)
+    : ["--use-angle=metal", "--enable-gpu"]),
   "--disable-gpu-vsync",
   "--disable-frame-rate-limit",
   "--mute-audio",
   "--autoplay-policy=no-user-gesture-required",
 ];
+
+/**
+ * `--ab` is a URL QUERY for a second arm of the SAME build. A bare commit
+ * hash there used to be silently read as the query `86e5982=` — an arm
+ * identical to the first, reported as a paired comparison. Fail instead,
+ * and name the flag that does build another commit.
+ */
+export function abQuery(value) {
+  if (value === undefined) throw new Error("--ab needs a query string");
+  if (/^[0-9a-f]{7,40}$/i.test(value)) {
+    throw new Error(
+      `--ab takes a URL query (e.g. "quality=low"), not a commit.\nTo measure another build, use:  --ab-ref ${value}`,
+    );
+  }
+  return value;
+}
 
 async function joinGame(page, url) {
   const errors = [];
@@ -259,7 +300,24 @@ async function flySegment(page, seg, sampleMs) {
           requestAnimationFrame(tick);
         });
 
+      // O3: pin the segment's weather (a downpour, for the street-level
+      // segments). An --ab-ref build from before L4 has no weather hook at
+      // all: the segment still flies dry, and is reported as having no
+      // baseline rather than as a delta.
+      const weatherPinned =
+        s.weather !== undefined && typeof ab.weather === "function";
+      if (weatherPinned) ab.weather(s.weather);
       ab.teleport(s.x, s.z, s.y, s.yaw);
+      // O3: a HELD view re-teleports every frame instead of flying the
+      // street — the furball's fake pilots weave ahead of a fixed point, so
+      // the camera has to stay on it.
+      let holding = s.hold === true;
+      const hold = () => {
+        if (!holding) return;
+        ab.teleport(s.x, s.z, s.y, s.yaw);
+        requestAnimationFrame(hold);
+      };
+      if (holding) requestAnimationFrame(hold);
       await waitMs(s.settleMs);
 
       if (s.storm) {
@@ -274,8 +332,16 @@ async function flySegment(page, seg, sampleMs) {
         }
       }
 
+      // Planes in the room (self + live remotes), at both ends of the window
+      // rather than per frame — a per-frame read would cost JS inside the
+      // very window being measured.
+      const planesNow = () => (ab.combat().targets?.length ?? 0) + 1;
+      const planesBefore = planesNow();
       ab.perfReset();
       await waitMs(s.sampleMs);
+      const planes = Math.min(planesBefore, planesNow());
+      holding = false;
+      if (weatherPinned) ab.weather(null);
       // The GPU-clock cost of the same window. THIS is the number to read
       // for a render change: contention from everything else on the machine
       // cannot move it, and with vsync off the CPU runs several frames ahead
@@ -306,6 +372,11 @@ async function flySegment(page, seg, sampleMs) {
         alive: ab.combat().alive,
         pos: ab.state().pos,
         strikes: ab.storm().strikes.length,
+        // O3. Optional so an older build (--ab-ref) still measures.
+        tier: ab.quality?.().tier ?? null,
+        weather: s.weather ?? null,
+        weatherPinned,
+        planes,
       };
     },
     { ...seg, sampleMs, settleMs: SETTLE_MS, strikeLeadMs: STRIKE_LEAD_MS },
@@ -319,6 +390,37 @@ async function flySegment(page, seg, sampleMs) {
     // window; the two windows cover the same wall time but not the same
     // sample count (a query resolves late, a starved frame never resolves).
     gpuSpikes: summariseSpikes(stats.gpuSamples, stats.gpuP50 ?? 0),
+    verdicts: segmentVerdicts(seg.name, stats),
+  };
+}
+
+/**
+ * O3's per-segment contract (BUDGETS in segments.mjs), judged on one
+ * segment's stats. Each verdict is true, false, or null when this run could
+ * not measure it (no GPU timer; no budget defined for the segment).
+ *
+ *  - `fps60`   — GPU p50 within BUDGETS.gpuP50Ms. GPU, not wall: with vsync
+ *                off the wall clock is the CPU's pace, and the GPU number is
+ *                the one a frame at ratio 2 has to fit in.
+ *  - `hitches` — wall p99 <= BUDGETS.hitchRatio x wall p50.
+ *  - `draws`   — median draw calls within the segment's own budget, if any.
+ *  - `room`    — a segment that asks for fake pilots really had the full
+ *                room in view for the whole window.
+ */
+export function segmentVerdicts(name, stats) {
+  const draws = BUDGETS.drawCalls[name];
+  const seg = SEGMENTS.find((s) => s.name === name);
+  return {
+    fps60:
+      typeof stats.gpuP50 === "number" && stats.gpuP50 > 0
+        ? stats.gpuP50 <= BUDGETS.gpuP50Ms
+        : null,
+    hitches: stats.p50 > 0 ? stats.p99 <= BUDGETS.hitchRatio * stats.p50 : null,
+    draws: draws === undefined ? null : stats.drawCalls <= draws,
+    room:
+      seg?.pilots === undefined
+        ? null
+        : typeof stats.planes === "number" && stats.planes >= seg.pilots + 1,
   };
 }
 
@@ -378,6 +480,50 @@ async function warmArm(browser, url) {
 }
 
 /**
+ * `--soak <seconds>`: hold the full-room `furball` for that long and report
+ * the graphics tier at the end — the "Auto never forces a lower tier on this
+ * machine" check (`--quality auto --res auto`). One window, no warm-up arm:
+ * this asks what Auto DECIDES under sustained load, not what a frame costs.
+ */
+async function soak(browser, url, seconds) {
+  const seg = SEGMENTS.find((s) => s.name === "furball");
+  const page = await browser.newPage({
+    viewport: VIEWPORT,
+    deviceScaleFactor: DEVICE_SCALE_FACTOR,
+  });
+  const errors = await joinGame(page, url);
+  await flyWarmupLap(page);
+  const pilots = await startPilots(Number(new URL(url).port), seg.pilots, {
+    x: seg.x,
+    z: seg.z,
+  });
+  let s;
+  try {
+    await sleep(PILOT_SETTLE_MS);
+    console.log(`soaking the furball for ${seconds} s…`);
+    s = await flySegment(page, seg, seconds * 1000);
+  } finally {
+    pilots.stop();
+  }
+  const q = await page.evaluate(() => window.__ab.quality?.() ?? null);
+  await page.close();
+  console.log(
+    `\nsoak ${seconds} s: wall p50 ${s.p50.toFixed(1)} p99 ${s.p99.toFixed(1)} ms, ` +
+      `${s.planes} planes, alive ${s.alive ? "yes" : "NO"}`,
+  );
+  console.log(
+    q === null
+      ? "this build has no quality tiers"
+      : `quality: setting ${q.setting}, tier ${q.tier} (Auto ${q.auto.tier}), scaler ceiling ${q.ceiling}`,
+  );
+  if (errors.length > 0) console.error(`page errors:\n${errors.join("\n")}`);
+  if (q !== null && q.setting === "auto" && q.tier !== "high") {
+    console.error(`!! Auto stepped down to ${q.tier} during the soak.`);
+    process.exitCode = 1;
+  }
+}
+
+/**
  * Did the client draw at the ratio the URL asked for? `--res auto` hands the
  * ratio to the adaptive controller on purpose, so it is honoured by
  * definition; a pinned request is honoured only if the applied ratio matches.
@@ -402,8 +548,10 @@ async function measure(browser, url) {
     ...window.__ab.render(),
     seed: window.__ab.storm().seed,
     roomId: window.__ab.net().roomId,
-    city: window.__ab.cityStats(),
-    signage: window.__ab.signage(),
+    // Optional so an older build (--ab-ref) still measures.
+    city: window.__ab.cityStats?.() ?? null,
+    signage: window.__ab.signage?.() ?? null,
+    quality: window.__ab.quality?.() ?? null,
   }));
   // What the URL ASKED for, beside what the client APPLIED. The client
   // clamps a pinned `?res=` to the panel's own limits, so on a display below
@@ -415,8 +563,22 @@ async function measure(browser, url) {
   config.pixelRatioHonoured = ratioHonoured(config);
 
   const segments = [];
-  for (const seg of SEGMENTS)
-    segments.push(await flySegment(page, seg, SAMPLE_MS));
+  const port = Number(new URL(url).port);
+  for (const seg of SEGMENTS) {
+    // O3 furball: fake pilots join for this segment only, and get time to
+    // re-sync on the server and fill the page's interpolation buffer before
+    // the segment's own settle starts.
+    const pilots =
+      seg.pilots === undefined
+        ? null
+        : await startPilots(port, seg.pilots, { x: seg.x, z: seg.z });
+    try {
+      if (pilots) await sleep(PILOT_SETTLE_MS);
+      segments.push(await flySegment(page, seg, SAMPLE_MS));
+    } finally {
+      pilots?.stop();
+    }
+  }
   const env = await page.evaluate(() => {
     const canvas = document.createElement("canvas");
     const gl = canvas.getContext("webgl2");
@@ -566,8 +728,7 @@ function printTable(report) {
       ? ""
       : ` (asked for ${c.requestedPixelRatio})`;
   console.log(
-    `\n${report.label} — aa=${c.aa} pixelRatio=${c.pixelRatio}${asked}${c.auto ? " (auto)" : ""} ` +
-      `buffer=${c.drawingBuffer.width}x${c.drawingBuffer.height}`,
+    `\n${report.label} — aa=${c.aa} pixelRatio=${c.pixelRatio}${asked}${c.auto ? " (auto)" : ""} buffer=${c.drawingBuffer.width}x${c.drawingBuffer.height} quality=${c.quality ? c.quality.setting : "n/a"}${c.ref ? ` build=${c.ref}` : ""}`,
   );
   console.log(`GPU: ${report.env.gpu}`);
   // Printed, not just stored: on a shared laptop this is the single most
@@ -611,6 +772,7 @@ function printTable(report) {
       `\n!! --res ${c.requestedPixelRatio} was NOT applied: the client drew at ${c.pixelRatio}, clamped to this panel's own limits (devicePixelRatio ${report.env.devicePixelRatio}). This run measured a different pixel count than the flag says and is not comparable to one recorded at ${c.requestedPixelRatio}.`,
     );
   }
+  printVerdicts(report);
   printSpikes(report);
   console.log(
     "\n(frame times are COSTS — vsync is disabled; lower is better.\n" +
@@ -618,6 +780,44 @@ function printTable(report) {
       " contention-resistant than wall clock, but not immune — check the\n" +
       " machine line above before trusting a small delta.)",
   );
+}
+
+const mark = (v) => (v === null ? " n/a" : v ? "  ok" : "FAIL");
+
+/** O3: the per-segment budgets, one row per segment (see segmentVerdicts). */
+function printVerdicts(report) {
+  const drawBudgets = Object.entries(BUDGETS.drawCalls)
+    .map(([n, b]) => `${n} <= ${b}`)
+    .join(", ");
+  console.log(
+    `\nbudgets: GPU p50 <= ${BUDGETS.gpuP50Ms} ms (60 fps at this ratio) · ` +
+      `wall p99 <= ${BUDGETS.hitchRatio}x p50 · draw calls ${drawBudgets}`,
+  );
+  console.log(
+    "segment   60fps   p99/p50  hitch  draws  room    tier    weather",
+  );
+  for (const s of report.segments) {
+    const v = s.verdicts ?? segmentVerdicts(s.name, s);
+    const ratio = s.p50 > 0 ? (s.p99 / s.p50).toFixed(2) : "—";
+    const weather =
+      s.weather == null
+        ? "—"
+        : s.weatherPinned
+          ? s.weather
+          : `${s.weather} NOT PINNED`;
+    const room =
+      v.room === null ? " n/a" : `${v.room ? "  ok" : "FAIL"} ${s.planes}`;
+    console.log(
+      `${s.name.padEnd(8)}  ${mark(v.fps60)}  ${ratio.padStart(8)}  ${mark(v.hitches)}  ` +
+        `${mark(v.draws)}  ${room.padEnd(8)}${String(s.tier ?? "—").padEnd(8)}${weather}`,
+    );
+  }
+  const failed = report.segments.filter((s) => s.verdicts?.room === false);
+  for (const s of failed) {
+    console.error(
+      `!! ${s.name}: only ${s.planes} plane(s) in the room during the window — the fake pilots did not all make it, so this is not the full-room scene.`,
+    );
+  }
 }
 
 /**
@@ -740,7 +940,16 @@ export const TOLERANCE = { gpuP50Pct: 10, gpuP50Ms: 1.0 };
  * segments are still measured, still printed, and still worth reading as a
  * paired `--ab` delta — they are simply not evidence about the harness.
  */
-export const UNPINNED_SEGMENTS = new Set(["storm", "canyon"]);
+export const UNPINNED_SEGMENTS = new Set([
+  "storm",
+  "canyon",
+  // O3: rain and the crowd on the synced clock, traffic as for canyon.
+  "street",
+  // O3: fake pilots fly on THEIR wall clock (tools/perf/pilots.mjs).
+  "furball",
+]);
+/** Segments whose draw count may legitimately move between passes. */
+export const DRAWS_FLOAT = new Set(["storm", "street", "furball"]);
 
 /** Per-segment agreement between the runs of one invocation. */
 export function determinism(runs) {
@@ -752,7 +961,10 @@ export function determinism(runs) {
     return lo === 0 ? 0 : ((Math.max(...xs) - lo) / lo) * 100;
   };
   const spreadMs = (xs) => Math.max(...xs) - Math.min(...xs);
-  const perSegment = SEGMENTS.map((seg, i) => {
+  // Only the segments every pass actually flew: a report recorded before a
+  // segment was appended simply does not have it.
+  const flown = SEGMENTS.filter((_, i) => runs.every((r) => r.segments[i]));
+  const perSegment = flown.map((seg, i) => {
     const p50s = runs.map((r) => r.segments[i].p50);
     const gpuP50s = runs.map((r) => r.segments[i].gpuP50 ?? 0);
     const draws = runs.map((r) => r.segments[i].drawCalls);
@@ -780,8 +992,12 @@ export function determinism(runs) {
   // fills more of its frame — but it submits the same draws every run, so it
   // is still held to the identity check. Naming storm explicitly, rather
   // than reusing UNPINNED_SEGMENTS, keeps those two claims separate.
+  // O3's two street-level segments are exempt for the same kind of reason:
+  // `street` sits in the server-clock traffic with headlight cones that come
+  // and go with it, and `furball` draws fake pilots' tracer bursts whose
+  // timing is wall-clock. Their draw counts are reported, not asserted.
   const drawCallsAgreeEverywhere = perSegment.every(
-    (s) => s.drawCallsAgree || s.name === "storm",
+    (s) => s.drawCallsAgree || DRAWS_FLOAT.has(s.name),
   );
   // A driver with no timer-query extension reports `null`, which lands here
   // as a column of zeros — a MISSING measurement, not a passing one. Require
@@ -831,7 +1047,21 @@ function printDelta(report, baseline) {
   };
   for (const seg of report.segments) {
     const base = baseline.segments.find((s) => s.name === seg.name);
-    if (base) row(seg.name, seg, base);
+    if (!base) {
+      console.log(`${seg.name.padEnd(8)}  no baseline (segment absent)`);
+    } else if (
+      seg.weather != null &&
+      (seg.weatherPinned === false || base.weatherPinned !== true)
+    ) {
+      // An older build (before L4) has no weather hook, so its arm flew this
+      // segment DRY: a delta would compare a downpour against clear skies.
+      const dry = seg.weatherPinned === false ? report.label : baseline.label;
+      console.log(
+        `${seg.name.padEnd(8)}  no baseline (${dry} could not pin the ${seg.weather})`,
+      );
+    } else {
+      row(seg.name, seg, base);
+    }
   }
   row(
     "overall",
@@ -902,7 +1132,7 @@ function buildReport(label, runs, opts) {
       settleMs: SETTLE_MS,
       warmupMs: WARMUP_MS,
       runs: opts.runs,
-      paired: opts.ab !== null,
+      paired: opts.ab !== null || opts.abRef !== null,
       /** Whether the raw per-frame arrays are in this file (--samples). */
       samples: opts.samples,
       spikeFactor: SPIKE_FACTOR,
@@ -934,15 +1164,15 @@ function buildReport(label, runs, opts) {
 // this machine the harness runs alongside other agent worktrees, and a
 // squatting server is somebody else's confusing failure an hour later.
 
-let liveServer = null;
+let liveServers = [];
 let liveBrowser = null;
 
 async function killEverything() {
-  const server = liveServer;
+  const servers = liveServers;
   const browser = liveBrowser;
-  liveServer = null;
+  liveServers = [];
   liveBrowser = null;
-  if (server !== null) server.kill();
+  for (const server of servers) server.kill();
   if (browser !== null) {
     // Never let a hung close() strand the kill above — that ordering was the
     // original bug.
@@ -971,6 +1201,11 @@ async function launchBrowser(opts) {
     return await chromium.launch({
       headless: !opts.headed,
       args: CHROME_ARGS,
+      // AB_CHROME: another headless shell (e.g. a Linux box whose Playwright
+      // cache holds a different build than this playwright expects).
+      ...(process.env.AB_CHROME
+        ? { executablePath: process.env.AB_CHROME }
+        : {}),
     });
   } catch (err) {
     if (/Executable doesn.t exist|playwright install/i.test(String(err))) {
@@ -993,16 +1228,30 @@ async function main() {
     });
   }
 
+  // O3 --ab-ref: the second arm is ANOTHER BUILD, checked out into its own
+  // worktree with its own node_modules (a symlinked one would resolve
+  // @angels-bandits/common to THIS tree's common/) and served by its own
+  // server, interleaved exactly like a query arm.
+  const ref =
+    opts.abRef === null
+      ? null
+      : await prepareRefBuild(opts.abRef, { quiet: opts.quiet });
+
   const port = opts.port || (await freePort());
   console.log(`starting server on :${port}…`);
   // REGISTERED BEFORE ANYTHING CAN THROW. The server used to be spawned
   // outside the try that owns cleanup, so a chromium.launch() failure
   // orphaned `node --import tsx server/src/index.ts` — a real one was found
   // alive nine hours after the session that started it, still holding a port.
-  const server = await startServer(port);
-  liveServer = server;
+  liveServers.push(await startServer(port));
+  let refPort = null;
+  if (ref !== null) {
+    refPort = await freePort();
+    console.log(`starting ${ref.label} server on :${refPort}…`);
+    liveServers.push(await startServer(refPort, ref.dir));
+  }
 
-  const urlFor = (overrides) => {
+  const urlFor = (overrides, at = port) => {
     const params = new URLSearchParams();
     if (opts.aa) params.set("aa", opts.aa);
     params.set("res", opts.res);
@@ -1010,12 +1259,33 @@ async function main() {
     // L12: pin the sky cycle to deep night so a baseline never depends on
     // the server's time of night (overrides may still pick another phase).
     params.set("sky", "night");
+    // O3: pin the graphics tier (High unless --quality says otherwise), so
+    // Auto can never step down mid-run and change the workload under a
+    // measurement. An older build ignores the parameter.
+    params.set("quality", opts.quality);
     for (const [k, v] of new URLSearchParams(overrides ?? "")) params.set(k, v);
-    return `http://127.0.0.1:${port}/?${params}`;
+    return `http://127.0.0.1:${at}/?${params}`;
   };
+  // The second arm, whichever kind it is: a query on this build, or a build.
+  const abLabel = ref !== null ? ref.label : opts.ab;
+  const abUrl =
+    ref !== null
+      ? urlFor(null, refPort)
+      : opts.ab !== null
+        ? urlFor(opts.ab)
+        : null;
 
   const browser = await launchBrowser(opts);
   liveBrowser = browser;
+
+  if (opts.soak !== null) {
+    try {
+      await soak(browser, urlFor(null), opts.soak);
+    } finally {
+      await killEverything();
+    }
+    return;
+  }
 
   let report;
   let abReport = null;
@@ -1026,22 +1296,25 @@ async function main() {
     // arm has to warm its own or the interleave measures cache state.
     console.log("warm-up pass (discarded — caches and GPU clock)…");
     await warmArm(browser, urlFor(null));
-    if (opts.ab !== null) await warmArm(browser, urlFor(opts.ab));
+    if (abUrl !== null) await warmArm(browser, abUrl);
     for (let i = 0; i < opts.runs; i++) {
       console.log(`measuring pass ${i + 1}/${opts.runs}…`);
       runs.push(await measure(browser, urlFor(null)));
-      if (opts.ab !== null) {
+      if (abUrl !== null) {
         // INTERLEAVED, not "all of A then all of B". The GPU's clock state
         // drifts as the machine warms: a straight A-then-B run showed pass 2
         // reading ~40 % slower than pass 1 on identical work. Alternating
         // puts that drift into both arms equally, which is the only way the
         // A/B delta means anything.
-        console.log(`measuring pass ${i + 1}/${opts.runs} (${opts.ab})…`);
-        abRuns.push(await measure(browser, urlFor(opts.ab)));
+        console.log(`measuring pass ${i + 1}/${opts.runs} (${abLabel})…`);
+        abRuns.push(await measure(browser, abUrl));
       }
     }
     report = buildReport(opts.label, runs, opts);
-    if (opts.ab !== null) abReport = buildReport(opts.ab, abRuns, opts);
+    if (abUrl !== null) {
+      abReport = buildReport(abLabel, abRuns, opts);
+      if (ref !== null) abReport.config.ref = ref.label;
+    }
   } finally {
     // The server FIRST: it is the one nothing else will clean up. Playwright
     // reaps its own browser on exit; an orphaned node process squats a port

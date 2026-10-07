@@ -169,6 +169,10 @@ function materials(livery: Livery, shared: SharedGeometry): BiplaneMaterials {
       transparent: true,
       opacity: 0.35,
       side: THREE.DoubleSide,
+      // Flat panes (windshield, goggle lenses): one pass draws what three's
+      // back-then-front pair would, minus two program re-checks and a draw
+      // per plane per frame (O3).
+      forceSinglePass: true,
     }),
     rudder,
     scarf: std({
@@ -188,6 +192,8 @@ function materials(livery: Livery, shared: SharedGeometry): BiplaneMaterials {
       opacity: 0,
       depthWrite: false,
       side: THREE.DoubleSide,
+      // A flat disc: single pass, as for the glass (O3).
+      forceSinglePass: true,
     }),
   };
 }

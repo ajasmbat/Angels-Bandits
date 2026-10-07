@@ -17,7 +17,7 @@ import {
 import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { LIGHT_MOUNTS } from "./planelights";
-import { nearestImage } from "./wrapPlacement";
+import { nearestImage, uploadPrefix } from "./wrapPlacement";
 
 /** How long a trail point lives, ms (~the plan's "short ribbon trails"). */
 export const TRAIL_LIFETIME_MS = 1500;
@@ -181,6 +181,9 @@ export class PlaneTrails {
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       side: THREE.DoubleSide,
+      // Additive is order-free, so three's back-then-front pair buys nothing
+      // and costs two program re-checks and a draw a frame (O3).
+      forceSinglePass: true,
       // Additive + fog brightens the distant scene (V1 lesson) — off.
       fog: false,
     });
@@ -278,60 +281,45 @@ export class PlaneTrails {
           // Additive blending: bake alpha into RGB (ladder peak at hard=1).
           const ca = EMISSIVE_TRAIL * alphaA;
           const cb = EMISSIVE_TRAIL * alphaB;
-          const quad = [
-            [
-              ax - sideScratch.x * wa,
-              ay - sideScratch.y * wa,
-              az - sideScratch.z * wa,
-              ca,
-            ],
-            [
-              ax + sideScratch.x * wa,
-              ay + sideScratch.y * wa,
-              az + sideScratch.z * wa,
-              ca,
-            ],
-            [
-              bx + sideScratch.x * wb,
-              by + sideScratch.y * wb,
-              bz + sideScratch.z * wb,
-              cb,
-            ],
-            [
-              ax - sideScratch.x * wa,
-              ay - sideScratch.y * wa,
-              az - sideScratch.z * wa,
-              ca,
-            ],
-            [
-              bx + sideScratch.x * wb,
-              by + sideScratch.y * wb,
-              bz + sideScratch.z * wb,
-              cb,
-            ],
-            [
-              bx - sideScratch.x * wb,
-              by - sideScratch.y * wb,
-              bz - sideScratch.z * wb,
-              cb,
-            ],
-          ] as const;
-          for (const [x, y, z, c] of quad) {
-            this.positions[v * 3] = x;
-            this.positions[v * 3 + 1] = y;
-            this.positions[v * 3 + 2] = z;
-            this.colors[v * 3] = TRAIL_GREY.r * c;
-            this.colors[v * 3 + 1] = TRAIL_GREY.g * c;
-            this.colors[v * 3 + 2] = TRAIL_GREY.b * c;
-            v++;
-          }
+          // Two triangles, written in place: this runs per segment per
+          // frame, and the array-of-arrays it replaced was ~1 400 short-lived
+          // allocations a frame in a full room (O3 profile).
+          const sx = sideScratch.x;
+          const sy = sideScratch.y;
+          const sz = sideScratch.z;
+          v = this.vertex(v, ax - sx * wa, ay - sy * wa, az - sz * wa, ca);
+          v = this.vertex(v, ax + sx * wa, ay + sy * wa, az + sz * wa, ca);
+          v = this.vertex(v, bx + sx * wb, by + sy * wb, bz + sz * wb, cb);
+          v = this.vertex(v, ax - sx * wa, ay - sy * wa, az - sz * wa, ca);
+          v = this.vertex(v, bx + sx * wb, by + sy * wb, bz + sz * wb, cb);
+          v = this.vertex(v, bx - sx * wb, by - sy * wb, bz - sz * wb, cb);
         }
       }
     }
     this.geometry.setDrawRange(0, v);
-    (this.geometry.attributes.position as THREE.BufferAttribute).needsUpdate =
-      true;
-    (this.geometry.attributes.color as THREE.BufferAttribute).needsUpdate =
-      true;
+    uploadPrefix(
+      [
+        this.geometry.attributes.position as THREE.BufferAttribute,
+        this.geometry.attributes.color as THREE.BufferAttribute,
+      ],
+      v,
+    );
+  }
+
+  /** Write vertex `v` (position + additive grey at strength `c`); returns v+1. */
+  private vertex(
+    v: number,
+    x: number,
+    y: number,
+    z: number,
+    c: number,
+  ): number {
+    this.positions[v * 3] = x;
+    this.positions[v * 3 + 1] = y;
+    this.positions[v * 3 + 2] = z;
+    this.colors[v * 3] = TRAIL_GREY.r * c;
+    this.colors[v * 3 + 1] = TRAIL_GREY.g * c;
+    this.colors[v * 3 + 2] = TRAIL_GREY.b * c;
+    return v + 1;
   }
 }

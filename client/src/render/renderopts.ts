@@ -11,7 +11,10 @@
 //   ?gputime=1            measure GPU frame cost   (default off)
 //   ?micro=0              disable the L1 micro tier (default on)
 //   ?grade=0              disable the final vignette/saturation grade (default on)
+//   ?quality=auto|high|medium|low   graphics tier (default: the player's
+//                         saved pick, else DEFAULT_QUALITY — see quality.ts)
 
+import { type QualitySetting, parseQualitySetting } from "./quality";
 import { defaultLimits } from "./resolution";
 
 /**
@@ -80,6 +83,13 @@ export interface RenderOptions {
    * the cost of that one fullscreen pass.
    */
   grade: boolean;
+  /**
+   * The graphics tier the URL asks for, or null to use the player's saved
+   * pick (G / the HUD entry), falling back to DEFAULT_QUALITY. A URL value
+   * wins over the saved one and is NOT saved — a QA link must never change
+   * what the player's next plain visit gets.
+   */
+  quality: QualitySetting | null;
 }
 
 export const DEFAULT_RENDER_OPTIONS: RenderOptions = {
@@ -89,6 +99,7 @@ export const DEFAULT_RENDER_OPTIONS: RenderOptions = {
   gpuTimer: false,
   micro: true,
   grade: true,
+  quality: null,
 };
 
 const AA_MODES: readonly AaMode[] = ["legacy", "off", "msaa", "smaa"];
@@ -150,6 +161,8 @@ export function readRenderOptions(
 
   const grade = params.get("grade");
   if (grade !== null) opts.grade = grade !== "0" && grade !== "false";
+
+  opts.quality = parseQualitySetting(params.get("quality"));
 
   return opts;
 }

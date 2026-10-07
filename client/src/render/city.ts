@@ -21,7 +21,8 @@ import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { FacadeArchetype, archetypeFor } from "./archetypes";
 import { createBuildingsMaterial } from "./buildings-material";
-import { LiveClock, crewSchedule } from "./living-windows";
+import { LIVE_ON_UNIFORM, LiveClock, crewSchedule } from "./living-windows";
+import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { roofStyleFor } from "./roofs";
 import { ImageCache, InstanceUploads } from "./wrapPlacement";
 
@@ -266,6 +267,11 @@ export class CityRenderer {
    * snapshot; `nowMs` = the frame's performance.now()). */
   updateLiveWindows(serverMs: number | null, nowMs: number): void {
     this.liveTime.value = this.liveClock.update(serverMs, nowMs);
+  }
+
+  /** O3: Low turns the L3 living windows off — a uniform, so no recompile. */
+  setQuality(tier: QualityTier): void {
+    LIVE_ON_UNIFORM.value = QUALITY_PROFILES[tier].livingWindows ? 1 : 0;
   }
 
   /** QA: pin the living-windows clock (live seconds), or null to follow the server. */

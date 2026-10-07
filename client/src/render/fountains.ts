@@ -23,6 +23,7 @@ import { EMISSIVE_WINDOW } from "@angels-bandits/common/constants";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
+import { QUALITY_PROFILES, type QualityTier } from "./quality";
 
 /** Draw a pond's spray only within this distance of the camera, m. */
 const FOUNTAIN_RANGE = 350;
@@ -154,6 +155,8 @@ export class Fountains {
   private readonly sizes = new Float32Array(FOUNTAIN_PARTICLES);
   private readonly geometry = new THREE.BufferGeometry();
   private readonly p = { x: 0, y: 0, z: 0, glow: 0 };
+  /** O3 quality tier: every Nth jet particle is drawn; 0 = no fountains. */
+  private stride = 1;
 
   constructor(ponds: readonly Pond[]) {
     this.ponds = ponds;
@@ -206,7 +209,7 @@ export class Fountains {
     let pond: Pond | null = null;
     let dx = 0;
     let dz = 0;
-    if (serverTimeMs !== null) {
+    if (serverTimeMs !== null && this.stride > 0) {
       for (const candidate of this.ponds) {
         const ex = wrapDeltaAxis(cameraPos.x, candidate.x);
         const ez = wrapDeltaAxis(cameraPos.z, candidate.z);
@@ -227,19 +230,32 @@ export class Fountains {
     const cx = cameraPos.x + dx;
     const cz = cameraPos.z + dz;
     const p = this.p;
-    for (let i = 0; i < this.jets.length; i++) {
-      sprayAt(this.jets[i] as Jet, serverTimeMs, p);
-      this.positions[i * 3] = cx + p.x;
-      this.positions[i * 3 + 1] = p.y;
-      this.positions[i * 3 + 2] = cz + p.z;
+    // Packed from the front, so a reduced tier draws a contiguous range of
+    // every `stride`-th particle — the whole fountain, thinner.
+    let n = 0;
+    for (let i = 0; i < this.jets.length; i += this.stride) {
+      const jet = this.jets[i] as Jet;
+      sprayAt(jet, serverTimeMs, p);
+      this.positions[n * 3] = cx + p.x;
+      this.positions[n * 3 + 1] = p.y;
+      this.positions[n * 3 + 2] = cz + p.z;
       const b = SPRAY_BOOST * p.glow;
-      this.colors[i * 3] = SPRAY_COLOR.r * b;
-      this.colors[i * 3 + 1] = SPRAY_COLOR.g * b;
-      this.colors[i * 3 + 2] = SPRAY_COLOR.b * b;
+      this.colors[n * 3] = SPRAY_COLOR.r * b;
+      this.colors[n * 3 + 1] = SPRAY_COLOR.g * b;
+      this.colors[n * 3 + 2] = SPRAY_COLOR.b * b;
+      this.sizes[n] = jet.size;
+      n++;
     }
-    for (const name of ["position", "color"]) {
+    this.geometry.setDrawRange(0, n);
+    for (const name of ["position", "color", "aSize"]) {
       const attr = this.geometry.getAttribute(name);
       if (attr) attr.needsUpdate = true;
     }
+  }
+
+  /** O3: Medium thins the spray to half, Low turns the fountains off. */
+  setQuality(tier: QualityTier): void {
+    const share = QUALITY_PROFILES[tier].fountains;
+    this.stride = share <= 0 ? 0 : Math.max(1, Math.round(1 / share));
   }
 }

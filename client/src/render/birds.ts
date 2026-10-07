@@ -20,6 +20,7 @@ import { WORLD_SIZE } from "@angels-bandits/common/constants";
 import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { type Scatter, nextScatter, scatterOffset } from "./bird-scatter";
+import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { RENDER_ORDER } from "./render-order";
 import { nearestImage } from "./wrapPlacement";
 
@@ -136,6 +137,8 @@ export class Birds {
   /** Each flock's current scatter (L9), null while it wheels undisturbed. */
   private readonly scatters: (Scatter | null)[];
   private readonly offset: Vec3 = { x: 0, y: 0, z: 0 };
+  /** O3 quality tier: birds drawn per flock. */
+  private perFlock = BIRDS_PER_FLOCK;
 
   constructor(seed: number) {
     this.flocks = flocks(seed);
@@ -204,7 +207,7 @@ export class Birds {
         this.scatters[f] ?? null,
       );
       this.scatters[f] = scatter;
-      for (let b = 0; b < BIRDS_PER_FLOCK; b++) {
+      for (let b = 0; b < this.perFlock; b++) {
         const p = nearestImage(cameraPos, birdPosition(flock, b, serverTimeMs));
         const o = scatterOffset(
           flock.id,
@@ -219,7 +222,16 @@ export class Birds {
         i++;
       }
     }
+    this.geometry.setDrawRange(0, i);
     const attr = this.geometry.getAttribute("position");
     if (attr) attr.needsUpdate = true;
+  }
+
+  /** O3: Low draws half of each flock (scatter logic is per flock, unchanged). */
+  setQuality(tier: QualityTier): void {
+    this.perFlock = Math.max(
+      1,
+      Math.round(BIRDS_PER_FLOCK * QUALITY_PROFILES[tier].birds),
+    );
   }
 }

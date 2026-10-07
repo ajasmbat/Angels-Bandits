@@ -27,6 +27,7 @@ import type { Weather } from "@angels-bandits/common/weather";
 import { type Wind, windAt } from "@angels-bandits/common/wind";
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { RENDER_ORDER } from "./render-order";
 
 /** Horizontal box edge, m — must divide WORLD_SIZE (seam-invariant field). */
@@ -119,6 +120,8 @@ export class Rain {
   private readonly wind: Wind = { x: 0, z: 0, strength: 0 };
   private driftX = 0;
   private driftZ = 0;
+  /** O3 quality tier: share of the streaks drawn (the haze is untouched). */
+  private density = 1;
 
   constructor() {
     // Unit streak quad: x = side (−1..1), y = along (0 head .. 1 tail).
@@ -171,6 +174,11 @@ export class Rain {
     return this.mesh.visible ? this.geometry.instanceCount : 0;
   }
 
+  /** O3: the tier thins the streaks; `level` (the rain bed) never changes. */
+  setQuality(tier: QualityTier): void {
+    this.density = QUALITY_PROFILES[tier].rainDensity;
+  }
+
   /** Rain heard at the camera, 0..1 (none above the cloud base). */
   get level(): number {
     return this.heard;
@@ -204,7 +212,7 @@ export class Rain {
       1 - Math.min(1, Math.max(0, (camera.y - (CLOUD_BASE - 40)) / 40));
     const k = wx.rain * altK;
     this.heard = k;
-    const count = Math.round(MAX_DROPS * Math.min(1, k / 0.9));
+    const count = Math.round(MAX_DROPS * Math.min(1, k / 0.9) * this.density);
     if (count === 0 || syncedMs === null) {
       this.mesh.visible = false;
       return;

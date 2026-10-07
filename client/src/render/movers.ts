@@ -398,6 +398,9 @@ export class Movers {
         opacity: 0.14,
         depthWrite: false,
         side: THREE.DoubleSide,
+        // A flat disc: one pass draws what three's two-pass default would,
+        // without re-checking the program twice a frame (O3).
+        forceSinglePass: true,
         fog: false,
       }),
       Math.max(1, helis * ROTORS_PER_HELI),

@@ -118,7 +118,7 @@ import { Headlights } from "./render/headlights";
 import { MoverLights, Movers } from "./render/movers";
 import { NatureRenderer } from "./render/nature";
 import { Pedestrians } from "./render/pedestrians";
-import { FrameMeter, type FrameStats } from "./render/perfmeter";
+import { FrameMeter, type FrameStats, percentile } from "./render/perfmeter";
 import {
   type ControlDeflection,
   NEUTRAL_CONTROLS,
@@ -129,6 +129,20 @@ import {
 } from "./render/plane";
 import { PlaneLights } from "./render/planelights";
 import { prewarmScene } from "./render/prewarm";
+import {
+  type AutoQualityState,
+  DEFAULT_QUALITY,
+  QUALITY_KEY,
+  QUALITY_STORAGE_KEY,
+  type QualitySetting,
+  type QualityTier,
+  createAutoQuality,
+  interruptAutoQuality,
+  nextQualitySetting,
+  parseQualitySetting,
+  qualityLimits,
+  stepAutoQuality,
+} from "./render/quality";
 import { Rain } from "./render/rain";
 import { CityReactor } from "./render/reactions";
 import { RemotePlanes } from "./render/remotes";
@@ -139,6 +153,7 @@ import {
   WINDOW_FRAMES,
   createResolution,
   defaultLimits,
+  missShare,
   stepResolution,
 } from "./render/resolution";
 import { RiverRenderer } from "./render/river";
@@ -234,20 +249,50 @@ const renderOpts = readRenderOptions(
   window.location.search,
   window.devicePixelRatio,
 );
+// O3 graphics quality: the URL wins (QA links, the perf harness), then the
+// player's saved pick (G / the HUD entry), then the shipped default, Auto.
+// Auto starts at High and only ever steps down (render/quality.ts).
+const readSavedQuality = (): QualitySetting | null => {
+  try {
+    return parseQualitySetting(localStorage.getItem(QUALITY_STORAGE_KEY));
+  } catch {
+    return null; // storage blocked: the default is fine
+  }
+};
+let qualitySetting: QualitySetting =
+  renderOpts.quality ?? readSavedQuality() ?? DEFAULT_QUALITY;
+let autoQuality = createAutoQuality(performance.now());
+let qualityTier: QualityTier =
+  qualitySetting === "auto" ? autoQuality.tier : qualitySetting;
 // Recomputed on resize: browser zoom and dragging the window to another
 // panel both change devicePixelRatio AND fire `resize`, and a stale ceiling
 // either strands the scaler below the panel or lets it burn 4x the pixels.
-let resLimits = defaultLimits(window.devicePixelRatio);
+// The quality tier caps the ceiling (High 2, Medium 1.5, Low 1).
+let resLimits = qualityLimits(window.devicePixelRatio, qualityTier);
 let resAuto = renderOpts.pixelRatio === "auto";
 let resolution =
   renderOpts.pixelRatio === "auto"
-    ? createResolution(window.devicePixelRatio, performance.now())
+    ? autoResolution(performance.now())
     : pinnedResolution(renderOpts.pixelRatio);
 
-/** A pinned (non-adaptive) state: clamped to the panel, with no latch. */
+/**
+ * A fresh adaptive state at the current tier's ceiling: the panel's ratio,
+ * capped by the tier, no latch. Used at boot, on `setPixelRatio("auto")`
+ * and on every tier change — a new tier must not inherit the latch the old
+ * one earned, or a CPU-bound drop would leave the player blurry AND reduced
+ * for the minutes the latch takes to relax.
+ */
+function autoResolution(now: number): ResolutionState {
+  const fresh = createResolution(window.devicePixelRatio, now);
+  return { ...fresh, ratio: Math.min(fresh.ratio, resLimits.ceiling) };
+}
+
+/** A pinned (non-adaptive) state: clamped to the PANEL, with no latch. The
+ * quality tier's cap does not apply — a pinned ratio is a QA instrument. */
 function pinnedResolution(ratio: number): ResolutionState {
+  const panel = defaultLimits(window.devicePixelRatio);
   return {
-    ratio: Math.min(resLimits.ceiling, Math.max(resLimits.floor, ratio)),
+    ratio: Math.min(panel.ceiling, Math.max(panel.floor, ratio)),
     changedAt: 0,
     hotRatio: Number.POSITIVE_INFINITY,
     cleanSince: null,
@@ -356,7 +401,8 @@ window.addEventListener("resize", () => {
   // the latch is stale: leaving fullscreen must be allowed to win the
   // resolution back. Only the latch is cleared — the current ratio stays,
   // and the controller re-earns anything above it the usual way.
-  resLimits = defaultLimits(window.devicePixelRatio);
+  resLimits = qualityLimits(window.devicePixelRatio, qualityTier);
+  autoQuality = interruptAutoQuality(autoQuality);
   resolution = {
     ...resolution,
     hotRatio: Number.POSITIVE_INFINITY,
@@ -364,6 +410,7 @@ window.addEventListener("resize", () => {
     relaxAfterMs: RELAX_AFTER_MS,
   };
   resFrames.reset();
+  cpuFrames.reset();
 });
 
 // --- World (city seed comes from the server so every roommate agrees) ---
@@ -751,6 +798,7 @@ function enterDeath(killerId: string | null, cause?: "storm"): void {
 
 function respawnSelf(spawn: SpawnState): void {
   planeTrails.clear(socket.selfId); // respawn teleports — no streak
+  autoQuality = interruptAutoQuality(autoQuality); // O3: a transient
   flight = createFlightState(spawn.pos, spawn.yaw);
   flight = { ...flight, speed: spawn.speed, targetSpeed: spawn.speed };
   chase.snapTo(flight);
@@ -961,6 +1009,123 @@ bindPerfHudKey(
 );
 if (renderOpts.perfHud) perfHud.setOpen(true);
 
+// --- O3 graphics quality ---
+// The window's pre-render JS cost per frame — Auto's CPU-bound signal. Fed
+// and cleared alongside resFrames, so both always describe the same frames.
+const cpuFrames = new FrameMeter(WINDOW_FRAMES * 3);
+
+/**
+ * Hand a tier to every system whose cost depends on it and re-cap the
+ * scaler. Each hook only flips visibility, counts or uniforms (quality.ts
+ * rule 1), so this never compiles a shader. Both windows are dropped:
+ * frames drawn under the old tier are not evidence about the new one.
+ *
+ * The scaler always loses its latch — a new tier must not inherit the
+ * penalty the old one earned. A PICK (key, HUD, QA) restarts it at the new
+ * tier's ceiling, so choosing High looks like High at once. An Auto DROP
+ * (`keepRatio`) keeps the current ratio instead: restarting at the ceiling
+ * would walk the very rungs that just missed, a second burst of dropped
+ * frames, where a cleared latch lets the cheaper tier earn them back.
+ */
+function applyQualityTier(tier: QualityTier, keepRatio = false): void {
+  qualityTier = tier;
+  city.setQuality(tier);
+  reactor.setQuality(tier);
+  pedestrians.setQuality(tier);
+  rain.setQuality(tier);
+  headlights.setQuality(tier);
+  signage.setQuality(tier);
+  rooftopLife.setQuality(tier);
+  natureRenderer.setQuality(tier);
+  fountains.setQuality(tier);
+  birds.setQuality(tier);
+  airliners.setQuality(tier);
+  facadeDetail.setQuality(tier);
+  resLimits = qualityLimits(window.devicePixelRatio, tier);
+  if (resAuto) {
+    const fresh = autoResolution(performance.now());
+    resolution = keepRatio
+      ? { ...fresh, ratio: Math.min(resolution.ratio, fresh.ratio) }
+      : fresh;
+    applyPixelRatio(resolution.ratio);
+  }
+  resFrames.reset();
+  cpuFrames.reset();
+  hud.setQuality(qualitySetting, tier);
+}
+
+/** The player's (or QA's) pick. Re-picking Auto restarts it at High. */
+function setQualitySetting(setting: QualitySetting, persist: boolean): void {
+  qualitySetting = setting;
+  if (setting === "auto") autoQuality = createAutoQuality(performance.now());
+  if (persist) {
+    try {
+      localStorage.setItem(QUALITY_STORAGE_KEY, setting);
+    } catch {
+      /* storage blocked: the pick still applies for this session */
+    }
+  }
+  applyQualityTier(setting === "auto" ? autoQuality.tier : setting);
+}
+
+/** One adaptive-resolution tick (P1/O1), at RES_EVAL_MS after the warm-up. */
+function stepScaler(now: number): void {
+  const next = stepResolution(
+    resolution,
+    resFrames.tail(WINDOW_FRAMES),
+    now,
+    resLimits,
+  );
+  // RATIO, not identity: the controller also advances clean-run
+  // bookkeeping on ticks that move nothing, and treating those as a
+  // change would reset the window every 250 ms — the controller would
+  // then never hold a full window and never decide anything again.
+  const moved = next.ratio !== resolution.ratio;
+  resolution = next;
+  if (moved) {
+    applyPixelRatio(next.ratio);
+    // Frames drawn at the previous ratio are no longer evidence about
+    // this one — judging the new ratio on them double-steps the scaler.
+    resFrames.reset();
+    cpuFrames.reset();
+  }
+}
+
+/**
+ * One Auto tick, on the scaler's cadence and its window. Only a living,
+ * visible player's frames are evidence (a kill-cam, a hidden tab and the
+ * frames right after one are not the machine's steady state), and only a
+ * FULL window is judged — the scaler empties it on every ratio change.
+ */
+function stepQuality(now: number): void {
+  if (!alive || document.hidden) {
+    autoQuality = interruptAutoQuality(autoQuality);
+    return;
+  }
+  const wall = resFrames.tail(WINDOW_FRAMES);
+  if (wall.length < WINDOW_FRAMES) return;
+  const cpu = [...cpuFrames.tail(WINDOW_FRAMES)].sort((a, b) => a - b);
+  const next = stepAutoQuality(
+    autoQuality,
+    missShare(wall),
+    resolution.ratio,
+    percentile(cpu, 0.5),
+    now,
+  );
+  const dropped = next.tier !== autoQuality.tier;
+  autoQuality = next;
+  if (dropped) applyQualityTier(next.tier, true);
+}
+
+applyQualityTier(qualityTier);
+const cycleQuality = (): void =>
+  setQualitySetting(nextQualitySetting(qualitySetting), true);
+hud.bindQualityToggle(cycleQuality);
+window.addEventListener("keydown", (e) => {
+  if (e.code !== QUALITY_KEY || e.repeat) return;
+  cycleQuality();
+});
+
 // --- Dev/QA hooks (used by the headless verification harness) ---
 const perf = { frames: 0, ms: 0, fps: 0, frameMs: 0 };
 declare global {
@@ -1018,6 +1183,16 @@ declare global {
       };
       /** Pin the pixel ratio (a number) or hand it back to the controller. */
       setPixelRatio: (ratio: number | "auto") => void;
+      /** O3: the graphics setting, the tier it resolves to, Auto's state and
+       * the scaler ceiling the tier imposes. */
+      quality: () => {
+        setting: QualitySetting;
+        tier: QualityTier;
+        auto: AutoQualityState;
+        ceiling: number;
+      };
+      /** O3 QA: pick a setting for this session (never saved). */
+      setQuality: (setting: QualitySetting) => void;
       /** Claim the room's shared bot count (QA: 0 makes a scene reproducible). */
       setBots: (count: number) => void;
       net: () => {
@@ -1190,6 +1365,7 @@ declare global {
 window.__ab = {
   state: () => flight,
   teleport: (x, z, y = 300, yaw = 0) => {
+    autoQuality = interruptAutoQuality(autoQuality); // O3: a transient
     flight = { ...createFlightState({ x, y, z }, yaw), speed: flight.speed };
     chase.snapTo(flight);
   },
@@ -1228,14 +1404,22 @@ window.__ab = {
   setPixelRatio: (ratio) => {
     if (ratio === "auto") {
       resAuto = true;
-      resolution = createResolution(window.devicePixelRatio, performance.now());
+      resolution = autoResolution(performance.now());
     } else {
       resAuto = false;
       resolution = pinnedResolution(ratio);
     }
     applyPixelRatio(resolution.ratio);
     resFrames.reset();
+    cpuFrames.reset();
   },
+  quality: () => ({
+    setting: qualitySetting,
+    tier: qualityTier,
+    auto: { ...autoQuality },
+    ceiling: resLimits.ceiling,
+  }),
+  setQuality: (setting) => setQualitySetting(setting, false),
   setBots: (count) => socket.sendSetBots(count),
   net: () => ({
     selfId: socket.selfId,
@@ -1494,6 +1678,9 @@ flashFade();
 
 // Named (M2) so the visibility pause at the bottom can stop and restore it.
 const frame = (now: number): void => {
+  // O3: when this callback actually started running — the pre-render JS
+  // cost below is measured from here (the rAF timestamp can predate it).
+  const frameStart = performance.now();
   const rawMs = now - last;
   const dt = Math.min(rawMs / 1000, 0.05); // clamp hitches, keep sim stable
   last = now;
@@ -1964,6 +2151,10 @@ const frame = (now: number): void => {
     camera.position.set(eye.x, eye.y, eye.z);
     camera.lookAt(at.x, at.y, at.z);
   }
+  // Everything up to here is this frame's JS: sim, streaming, instance
+  // packing. The render call is NOT included — a driver can block in it
+  // waiting on the GPU, which would read a GPU-bound frame as CPU-bound.
+  const preRenderMs = performance.now() - frameStart;
   renderer.info.reset();
   gpuTimer?.begin();
   composer.render();
@@ -2004,36 +2195,26 @@ const frame = (now: number): void => {
   const drawCalls = renderer.info.render.calls;
   frames.push(rawMs, drawCalls);
   resFrames.push(rawMs, drawCalls);
+  cpuFrames.push(preRenderMs, drawCalls);
   // GPU results land a few frames late — they are attributed to the window,
   // not to a specific frame, which is all the percentiles need.
   if (gpuTimer !== null) {
     for (const ms of gpuTimer.drain()) gpuFrames.push(ms, drawCalls);
   }
   if (resWarmupUntil < 0) resWarmupUntil = now + RES_WARMUP_MS;
-  if (resAuto && now < resWarmupUntil) {
+  if (now < resWarmupUntil) {
     // Keep the window empty rather than merely ignoring it, so the first
     // decision is taken on 45 frames that are ALL post-warm-up.
     resFrames.reset();
-  } else if (resAuto && now >= nextResEvalAt) {
+    cpuFrames.reset();
+  } else if (now >= nextResEvalAt) {
     nextResEvalAt = now + RES_EVAL_MS;
-    const next = stepResolution(
-      resolution,
-      resFrames.tail(WINDOW_FRAMES),
-      now,
-      resLimits,
-    );
-    // RATIO, not identity: the controller also advances clean-run
-    // bookkeeping on ticks that move nothing, and treating those as a
-    // change would reset the window every 250 ms — the controller would
-    // then never hold a full window and never decide anything again.
-    const moved = next.ratio !== resolution.ratio;
-    resolution = next;
-    if (moved) {
-      applyPixelRatio(next.ratio);
-      // Frames drawn at the previous ratio are no longer evidence about
-      // this one — judging the new ratio on them double-steps the scaler.
-      resFrames.reset();
-    }
+    // Auto FIRST, on the same window: a scaler step empties the window, and
+    // stepping first would hide every full window from Auto until the
+    // scaler hit its floor — on a CPU-bound machine, four rungs of misses
+    // that pixels could never fix.
+    if (qualitySetting === "auto") stepQuality(now);
+    if (resAuto) stepScaler(now);
   }
   perfHud.update(
     now,
@@ -2065,6 +2246,7 @@ renderer.setAnimationLoop(frame);
 // event). On return, a fresh `last` keeps the first dt from spanning the gap.
 let glLost = false;
 document.addEventListener("visibilitychange", () => {
+  autoQuality = interruptAutoQuality(autoQuality); // O3: a transient
   if (document.hidden) {
     renderer.setAnimationLoop(null);
   } else if (!glLost) {

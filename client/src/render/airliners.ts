@@ -26,6 +26,7 @@ import {
 } from "@angels-bandits/common/skytraffic";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
+import { QUALITY_PROFILES, type QualityTier } from "./quality";
 
 /** Inside the dome (FOG_DISTANCE + 60) and in front of the stars (+40). */
 const DOME_RADIUS = FOG_DISTANCE + 20;
@@ -83,6 +84,8 @@ export class Airliners {
   private readonly geometry = new THREE.BufferGeometry();
   private readonly off = { x: 0, y: 0, z: 0, hx: 0, hz: 0 };
   private count = 0;
+  /** O3 quality tier: contrail samples behind each airliner. */
+  private contrailPoints = CONTRAIL_POINTS;
   /** Airliners drawn last frame — QA read-back. */
   drawn: Airliner[] = [];
 
@@ -212,10 +215,11 @@ export class Airliners {
       }
       // Contrail: vapour along the track already flown, thinning with age.
       const flown = (a.speed * (t - a.startMs)) / 1000;
-      for (let c = 1; c <= CONTRAIL_POINTS; c++) {
+      const trail = this.contrailPoints;
+      for (let c = 1; c <= trail; c++) {
         const back = c * CONTRAIL_SPACING + TAIL;
         if (back > flown || back > 2 * AIRLINER_HALF_TRACK) break;
-        const fade = (1 - c / (CONTRAIL_POINTS + 1)) * k;
+        const fade = (1 - c / (trail + 1)) * k;
         const cx = o.x - o.hx * back;
         const cz = o.z - o.hz * back;
         // Each sample onto the dome along its OWN direction (it is a
@@ -227,7 +231,7 @@ export class Airliners {
           DOME_RADIUS / Math.hypot(cx, o.y, cz),
           CONTRAIL,
           fade,
-          CONTRAIL_PX * (0.7 + (0.6 * c) / CONTRAIL_POINTS),
+          CONTRAIL_PX * (0.7 + (0.6 * c) / trail),
         );
       }
     }
@@ -236,6 +240,14 @@ export class Airliners {
       const attr = this.geometry.getAttribute(name);
       if (attr) attr.needsUpdate = true;
     }
+  }
+
+  /** O3: Low shortens every contrail to half its samples (it fades sooner). */
+  setQuality(tier: QualityTier): void {
+    this.contrailPoints = Math.max(
+      1,
+      Math.round(CONTRAIL_POINTS * QUALITY_PROFILES[tier].contrails),
+    );
   }
 
   /** Points written last frame — the perf report's handle. */

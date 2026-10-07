@@ -12,7 +12,7 @@ import { MAX_HP, SMOKE_HP_FRAC } from "@angels-bandits/common/constants";
 import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { RENDER_ORDER } from "./render-order";
-import { nearestImageInto } from "./wrapPlacement";
+import { nearestImageInto, uploadPrefix } from "./wrapPlacement";
 
 /** Min ms between puffs per plane (~14 Hz at a steady wound). */
 export const SMOKE_EMIT_MS = 70;
@@ -193,8 +193,7 @@ export class SmokeTrails {
     }
     this.lastPuffCount = i;
     this.points.geometry.setDrawRange(0, i);
-    this.positions.needsUpdate = true;
-    this.sizes.needsUpdate = true;
+    uploadPrefix([this.positions, this.sizes], i);
   }
 
   /** QA: live puff count last frame (perf reporting). */

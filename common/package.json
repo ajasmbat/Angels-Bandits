@@ -18,6 +18,7 @@
     "./city/newsheli": "./src/city/newsheli.ts",
     "./city/train": "./src/city/train.ts",
     "./city/nature": "./src/city/nature.ts",
+    "./city/river": "./src/city/river.ts",
     "./storm": "./src/storm.ts",
     "./wind": "./src/wind.ts",
     "./fireworks": "./src/fireworks.ts",

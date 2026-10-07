@@ -240,7 +240,9 @@ describe("generateCity BSP lots", () => {
   ];
 
   it("subdivides blocks into many lots: a dense city, not 97 towers", () => {
-    expect(city.length).toBeGreaterThanOrEqual(600);
+    // 550, not 600: L11 turned one block row into the river, taking its ~69
+    // lots with it (seed 42: 628 → 559). Density per built block is unchanged.
+    expect(city.length).toBeGreaterThanOrEqual(550);
     expect(city.length).toBeLessThanOrEqual(750);
   });
 

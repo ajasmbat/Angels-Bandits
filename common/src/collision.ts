@@ -15,6 +15,7 @@ import {
   treeBoxes,
   treeCollides,
 } from "./city/nature";
+import { riverHit, riverSegmentClear } from "./city/river";
 import {
   BLOCK_PITCH,
   CANOPY_COLLISION_SLACK,
@@ -303,9 +304,13 @@ export function collideNature(
   return null;
 }
 
-/** True when the player sphere touches the ground plane at y = 0. */
+/**
+ * True when the player sphere touches the ground: the street-level plane at
+ * y = 0 — or, over the L11 river, the water, the embankment walls and
+ * railings, and the bridge decks and parapets (city/river.ts riverHit).
+ */
 export function hitsGround(pos: Vec3, radius: number = PLAYER_RADIUS): boolean {
-  return pos.y - radius <= 0;
+  return riverHit(pos, radius);
 }
 
 /**
@@ -351,7 +356,8 @@ function segmentHitsBox(
 
 /**
  * True when nothing in the city stands between `from` and `to` — the sight
- * line the bot brain acquires targets on (ANGE-SINI5F).
+ * line the bot brain acquires targets on (ANGE-SINI5F). The L11 river's
+ * solids (bank ground, bridge decks, parapets, railings) count too.
  *
  * Exact, not sampled: every solid box is clipped against the segment, so a
  * sight line can neither tunnel through a slim tower nor be blocked by one it
@@ -372,6 +378,8 @@ export function losClear(
 ): boolean {
   const d = wrapDelta(from, to);
   if (d.x === 0 && d.y === 0 && d.z === 0) return true;
+  // L11: the river's decks and embankments are cover like any facade.
+  if (!riverSegmentClear(from, d)) return false;
   const loX = Math.min(0, d.x);
   const hiX = Math.max(0, d.x);
   const loZ = Math.min(0, d.z);

@@ -7,6 +7,7 @@
 // The RNG is injected (like the city generator's seeding) so tests choose
 // the candidates and the winner is deterministic.
 
+import { overChannel } from "@angels-bandits/common/city/river";
 import { ROADWAY_HALF } from "@angels-bandits/common/city/street";
 import {
   BLOCK_PITCH,
@@ -98,6 +99,9 @@ export function pickBotRespawn(
       : dir === 1
         ? Math.PI
         : 0;
+    // L11: never a low spawn over the river — a north–south street there is
+    // a bridge, and a bot appearing over open water is one dive from it.
+    if (overChannel(pos.z)) continue;
     if (!clear(pos, yaw)) continue;
     let score = Number.POSITIVE_INFINITY;
     for (const enemy of enemies) {

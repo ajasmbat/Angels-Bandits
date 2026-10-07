@@ -63,6 +63,7 @@ import {
   newsHeliSlot,
   newsTargetAt,
 } from "./newsheli";
+import { type Boat, collideBoats, riverBoats } from "./river";
 import { type TrainLine, collideTrain, generateTrain } from "./train";
 
 /** Which part of which mover a collision landed on. */
@@ -75,6 +76,8 @@ export type MoverKind =
   | "helicopter"
   | "blimp"
   | "newsHeli"
+  // L11 river boats (city/river.ts).
+  | "boat"
   // L5's elevated train (city/train.ts): the static deck and pillars, a car.
   | "viaduct"
   | "train";
@@ -153,6 +156,9 @@ export interface AircraftRoute {
 export interface MoverField {
   readonly cranes: readonly CraneSite[];
   readonly aircraft: readonly AircraftRoute[];
+  /** L11 river boats (city/river.ts). Optional so hand-built fields in the
+   * tests keep compiling; generateMovers always sets it. */
+  readonly boats?: readonly Boat[];
   /** The L10 news heli — PER ROOM, so it lives on a room's own copy of the
    * field (withNewsHeli), never on the seed-shared one. The slot is mutated
    * in place when the server issues a new target. */
@@ -318,7 +324,12 @@ export function generateMovers(
     hz: BLIMP_HULL[2],
   });
 
-  return { cranes, aircraft, train: generateTrain(seed, buildings) };
+  return {
+    cranes,
+    aircraft,
+    boats: riverBoats(seed),
+    train: generateTrain(seed, buildings),
+  };
 }
 
 const TAU = Math.PI * 2;
@@ -559,8 +570,11 @@ export function collideMovers(
     return { kind: "newsHeli", id: NEWS_HELI_ID };
   }
   // L5: the viaduct and the cars.
-  if (field.train) return collideTrain(field.train, pos, radius, timeMs);
-  return null;
+  if (field.train) {
+    const hit = collideTrain(field.train, pos, radius, timeMs);
+    if (hit) return hit;
+  }
+  return hitBoat(pos, radius, field, timeMs);
 }
 
 /**
@@ -600,6 +614,23 @@ export function collideBotMovers(
   }
   // L5: the viaduct and the train are solid for bots too — they sit right in
   // the canyon band, so a bot that could not see them would die to them.
-  if (field.train) return collideTrain(field.train, pos, radius, timeMs);
-  return null;
+  if (field.train) {
+    const hit = collideTrain(field.train, pos, radius, timeMs);
+    if (hit) return hit;
+  }
+  // Boats are solid for bots too: a chaser following a target under a bridge
+  // flies the boats' height band, and bots must never die to scenery.
+  return hitBoat(pos, radius, field, timeMs);
+}
+
+/** The L11 boat the sphere touches, as a mover hit (id = fleet index). */
+function hitBoat(
+  pos: Vec3,
+  radius: number,
+  field: MoverField,
+  timeMs: number,
+): MoverHit | null {
+  if (!field.boats) return null;
+  const i = collideBoats(pos, radius, field.boats, timeMs);
+  return i < 0 ? null : { kind: "boat", id: i };
 }

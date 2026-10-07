@@ -140,6 +140,7 @@ import {
   defaultLimits,
   stepResolution,
 } from "./render/resolution";
+import { RiverRenderer } from "./render/river";
 import { RoofClutterRenderer } from "./render/roofclutter";
 import { RooftopLifeRenderer } from "./render/rooftop-life";
 import { Searchlights } from "./render/searchlights";
@@ -442,6 +443,11 @@ const nature = natureFor(welcome.seed, city.cityBuildings);
 const natureIndex = buildNatureIndex(nature);
 const natureRenderer = new NatureRenderer(nature);
 scene.add(natureRenderer.group);
+// L11 river: embankment walls, bridges, the reflecting water and the boats.
+// Its solids (decks, walls, boats) collide through hitsGround/the movers, so
+// this is drawing only — updated on the same latched clock as the movers.
+const river = new RiverRenderer(welcome.seed, city.cityBuildings);
+scene.add(river.group);
 // L9 moving nature: lit spray from the plaza ponds (pure ballistic function
 // of the synced clock; one Points, drawn only near a pond). Tree sway lives
 // in natureRenderer's crown shader; bird scatter in birds.update below.
@@ -1862,6 +1868,7 @@ renderer.setAnimationLoop((now) => {
   signals.update(chase.position, renderMs ?? now, microK, cityReact);
   constructionSparks.update(chase.position, renderMs ?? now, microK);
   ground.update(chase.position);
+  river.update(chase.position, renderMs, now); // L11
   skyDome.update(chase.position);
   airliners.update(renderMs);
   // Wounded smoke: own plane from server-said self HP, every remote (human

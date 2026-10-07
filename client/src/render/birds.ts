@@ -10,11 +10,16 @@
 // Every position is a pure function of (seed, server time): flocks wheel
 // around seeded centers that drift on the shared clock, so all clients see
 // the same birds without a byte on the wire and without per-frame state.
+//
+// L9: a flock scatters from a plane that passes within ~60 m, then resettles
+// (bird-scatter.ts). That reaction is a per-client cosmetic layered on top of
+// the shared wheel — see that file's header.
 
 import { mulberry32 } from "@angels-bandits/common/city";
 import { WORLD_SIZE } from "@angels-bandits/common/constants";
 import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { type Scatter, nextScatter, scatterOffset } from "./bird-scatter";
 import { RENDER_ORDER } from "./render-order";
 import { nearestImage } from "./wrapPlacement";
 
@@ -64,6 +69,17 @@ export function flocks(seed: number): Flock[] {
     });
   }
   return out;
+}
+
+/** A flock's wheel centre at a server time, canonical. */
+export function flockCenter(flock: Flock, serverTimeMs: number): Vec3 {
+  const t = serverTimeMs / 1000;
+  const p = canonicalize({
+    x: flock.x + flock.dx * DRIFT_SPEED * t,
+    y: 0,
+    z: flock.z + flock.dz * DRIFT_SPEED * t,
+  });
+  return { x: p.x, y: flock.y, z: p.z };
 }
 
 /**
@@ -117,9 +133,13 @@ export class Birds {
   private readonly flocks: Flock[];
   private readonly positions: Float32Array;
   private readonly geometry = new THREE.BufferGeometry();
+  /** Each flock's current scatter (L9), null while it wheels undisturbed. */
+  private readonly scatters: (Scatter | null)[];
+  private readonly offset: Vec3 = { x: 0, y: 0, z: 0 };
 
   constructor(seed: number) {
     this.flocks = flocks(seed);
+    this.scatters = this.flocks.map(() => null);
     this.positions = new Float32Array(FLOCK_COUNT * BIRDS_PER_FLOCK * 3);
     this.geometry.setAttribute(
       "position",
@@ -146,25 +166,56 @@ export class Birds {
     this.points.visible = false;
   }
 
+  /** QA hook (__ab.birds): every flock's centre and whether it is
+   * scattered at `serverTimeMs`. */
+  debug(serverTimeMs: number | null): { center: Vec3; scattered: boolean }[] {
+    if (serverTimeMs === null) return [];
+    return this.flocks.map((f, i) => ({
+      center: flockCenter(f, serverTimeMs),
+      scattered: this.scatters[i] != null,
+    }));
+  }
+
   /** Birds drawn — for the perf report. */
   get birdCount(): number {
     return this.flocks.length * BIRDS_PER_FLOCK;
   }
 
-  /** Fly the flocks. A null clock hides them, like the rest of L2. */
-  update(cameraPos: Vec3, serverTimeMs: number | null): void {
+  /** Fly the flocks, scattering any a plane in `planes` (canonical
+   * positions: own plane while alive + living remotes) passes close to. A
+   * null clock hides them, like the rest of L2. */
+  update(
+    cameraPos: Vec3,
+    serverTimeMs: number | null,
+    planes: readonly Vec3[],
+  ): void {
     if (serverTimeMs === null) {
       this.points.visible = false;
       return;
     }
     this.points.visible = true;
     let i = 0;
-    for (const flock of this.flocks) {
+    for (let f = 0; f < this.flocks.length; f++) {
+      const flock = this.flocks[f] as Flock;
+      const scatter = nextScatter(
+        flockCenter(flock, serverTimeMs),
+        serverTimeMs,
+        planes,
+        this.scatters[f] ?? null,
+      );
+      this.scatters[f] = scatter;
       for (let b = 0; b < BIRDS_PER_FLOCK; b++) {
         const p = nearestImage(cameraPos, birdPosition(flock, b, serverTimeMs));
-        this.positions[i * 3] = p.x;
-        this.positions[i * 3 + 1] = p.y;
-        this.positions[i * 3 + 2] = p.z;
+        const o = scatterOffset(
+          flock.id,
+          b,
+          serverTimeMs,
+          scatter,
+          this.offset,
+        );
+        this.positions[i * 3] = p.x + o.x;
+        this.positions[i * 3 + 1] = p.y + o.y;
+        this.positions[i * 3 + 2] = p.z + o.z;
         i++;
       }
     }

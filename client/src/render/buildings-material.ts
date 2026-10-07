@@ -21,9 +21,13 @@
 import { EMISSIVE_WINDOW } from "@angels-bandits/common/constants";
 import * as THREE from "three";
 import { luminance } from "./emissive";
+import { livingParsGlsl } from "./living-windows";
+import { WAKE_PARS_GLSL, wakeWindowGlsl, windowWakeUniform } from "./reactions";
 import {
+  OCCUPANCY_UNIFORM,
   holeLightGlsl,
   holeSurfaceGlsl,
+  pitchSeedGlsl,
   roofLightGlsl,
   roofParsGlsl,
   roofSurfaceGlsl,
@@ -94,9 +98,11 @@ attribute vec3 aCrown;
 attribute vec3 aSubOff;
 attribute vec3 aParent;
 attribute vec4 aHole;
+attribute vec4 aCrew;
 varying vec3 vMeters;
 varying vec3 vObjNormal;
 varying float vBSeed;
+flat varying float vPitchSeed;
 varying float vWorldY;
 varying float vArch;
 varying float vBHeight;
@@ -106,7 +112,8 @@ varying vec3 vLed;
 varying vec3 vCrown;
 varying vec2 vHalfXZ;
 varying vec4 vHole;
-`;
+varying vec4 vCrew;
+${pitchSeedGlsl()}`;
 
 const VERTEX_MAIN = /* glsl */ `
 // Unit box (x/z in [-0.5, 0.5], y in [0, 1]) times the instance scale =
@@ -129,6 +136,9 @@ vWorldY = position.y * sScale.y + instanceMatrix[3].y;
 // Per-building seed from its (stable) dimensions — NOT its translation,
 // which shifts by WORLD_SIZE whenever the building wraps past the seam.
 vBSeed = fract(sin(dot(bScale.xz, vec2(12.9898, 78.233)) + bScale.y) * 43758.5453);
+// L13: the window pitch jitter's seed, bit-exact with window-pattern.ts
+// pitchSeed() so facade detail can sit on the drawn rows.
+vPitchSeed = abPitchSeed(bScale);
 vArch = aArchetype;
 // This instance's own height, so weathering scales with the building rather
 // than with a constant written for one tower size.
@@ -145,12 +155,16 @@ vLed = aLed;
 vCrown = aCrown;
 vHalfXZ = bScale.xz * 0.5;
 vHole = aHole;
+// L3 cleaning crew: this building's visit slot (living-windows.ts).
+vCrew = aCrew;
 `;
 
 const FRAGMENT_PARS = /* glsl */ `
+uniform float uOccupancy; // L12 sky cycle: window occupancy, 0..1
 varying vec3 vMeters;
 varying vec3 vObjNormal;
 varying float vBSeed;
+flat varying float vPitchSeed;
 varying float vWorldY;
 varying float vArch;
 varying float vBHeight;
@@ -167,7 +181,7 @@ float abHash(vec2 p, float s) {
 float abSafeDiv(float d) {
   return abs(d) < 1e-4 ? (d < 0.0 ? -1e-4 : 1e-4) : d;
 }
-${roofParsGlsl()}`;
+${roofParsGlsl()}${WAKE_PARS_GLSL}${livingParsGlsl()}`;
 
 /** Injected after color_fragment: derives the shared window-grid locals
  * (in scope for the emissive block below — same main body), modulates the
@@ -216,7 +230,7 @@ const FRAGMENT_EMISSIVE = `${windowEmissiveGlsl(
   glslVec3(WINDOW_WARM),
   glslVec3(WINDOW_COOL),
   WINDOW_EMISSIVE_INTENSITY,
-)}${SHOP_BAND_GLSL}${roofLightGlsl()}${holeLightGlsl()}`;
+)}${wakeWindowGlsl(WINDOW_EMISSIVE_INTENSITY)}${SHOP_BAND_GLSL}${roofLightGlsl()}${holeLightGlsl()}`;
 
 /**
  * VO2: cap the grazing-angle Fresnel. Standard materials reflect 100% at
@@ -241,13 +255,26 @@ export const BUILDING_SHADER_SOURCE = {
   fragmentSpecular: FRAGMENT_SPECULAR,
 } as const;
 
-/** The city's instanced material: dark towers + procedural lit windows. */
-export function createBuildingsMaterial(): THREE.MeshStandardMaterial {
+/** The live-windows clock uniform (L3), seconds in [0, LIVE.period). */
+export interface LiveTimeUniform {
+  value: number;
+}
+
+/** The city's instanced material: dark towers + procedural lit windows.
+ * `liveTime` is the L3 living-windows clock; the city renderer owns it and
+ * writes it once per frame. */
+export function createBuildingsMaterial(
+  liveTime: LiveTimeUniform = { value: 0 },
+): THREE.MeshStandardMaterial {
   const material = new THREE.MeshStandardMaterial({
     roughness: 0.85,
     metalness: 0.15,
   });
   material.onBeforeCompile = (shader) => {
+    shader.uniforms.uLiveTime = liveTime;
+    // L1 reactive city: the shared window-wake sources (reactions.ts).
+    shader.uniforms.uWake = windowWakeUniform;
+    shader.uniforms.uOccupancy = OCCUPANCY_UNIFORM;
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", `#include <common>\n${VERTEX_PARS}`)
       .replace(
@@ -271,6 +298,7 @@ export function createBuildingsMaterial(): THREE.MeshStandardMaterial {
   };
   // Distinct compiled program per patch (V3 rule: three keys programs on
   // onBeforeCompile.toString(), and sibling materials collide silently).
-  material.customProgramCacheKey = () => "ab-buildings-h1-holes";
+  material.customProgramCacheKey = () =>
+    "ab-buildings-h1-holes-l1-wake-l3-live";
   return material;
 }

@@ -27,6 +27,8 @@ export const RENDER_ORDER = {
   cloudCeilingBelow: -0.5,
   steam: -0.3,
   birds: -0.2,
+  /** L1 smoke columns over kill sites: on the ground, beyond the trails. */
+  smokeColumns: -0.15,
   smoke: -0.1,
   /** Searchlight beams: additive, after the opaque city and the sky. */
   beams: 2,

@@ -6,6 +6,7 @@
 // unit-ish quaternion. An implausible claim is snap-rejected: the previous
 // pose stands until a believable one arrives.
 
+import { minAltitude } from "@angels-bandits/common/city/river";
 import {
   MAX_ALTITUDE,
   MAX_SPEED,
@@ -63,7 +64,9 @@ export function validatePose(
 
   const clampedPos = canonicalize({
     x: pos.x,
-    y: Math.min(Math.max(pos.y, 0), MAX_ALTITUDE),
+    // Street level is the floor — except over the L11 river, where a plane
+    // may fly the channel down to the water (and under the bridges).
+    y: Math.min(Math.max(pos.y, minAltitude(pos.z)), MAX_ALTITUDE),
     z: pos.z,
   });
   const maxTravel =

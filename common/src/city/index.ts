@@ -26,6 +26,7 @@ import {
 } from "../constants";
 import { type Hole, assignHoles, landmarkArch } from "./holes";
 import { CONSTRUCTION_BLOCKS, LANDMARK_BLOCKS, PLAZA_BLOCKS } from "./layout";
+import { isRiverRow } from "./river";
 import { LOT_LINE } from "./street";
 
 // Re-exported so the hand-placed lists keep their long-standing import site
@@ -289,8 +290,9 @@ const HOLE_SALT = 0x4f1bbcdc;
 /**
  * Generate the full city for a seed. Every block of the CITY_GRID×CITY_GRID
  * Manhattan grid is subdivided into irregular lots that build out to the lot
- * line, except fixed plaza blocks (left empty for C2) and fixed landmark
- * blocks (one slim supertall each, arched through its podium). Some lots then
+ * line, except fixed plaza blocks (left empty for C2), fixed landmark
+ * blocks (one slim supertall each, arched through its podium) and the L11
+ * river row (city/river.ts — no buildings at all). Some lots then
  * get an H1 tunnel or sky hole. Deterministic for a given seed.
  */
 export function generateCity(seed: number): Building[] {
@@ -309,6 +311,10 @@ export function generateCity(seed: number): Building[] {
     for (let bz = 0; bz < CITY_GRID; bz++) {
       const key = blockKey(bx, bz);
       if (plazas.has(key) || sites.has(key)) continue;
+      // L11: the river row is a walled channel and its promenades — no lots.
+      // Skipping costs no other block anything: each block draws from its
+      // own PRNG stream (blockSeed), so the rest of the city is unchanged.
+      if (isRiverRow(bz)) continue;
       if (landmarks.has(key)) {
         buildings.push({
           x: bx * BLOCK_PITCH + BLOCK_PITCH / 2,

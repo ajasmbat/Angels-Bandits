@@ -75,6 +75,28 @@ export function combinedFog(linear: number, haze: number): number {
 
 const hazeLinear = new THREE.Color(HAZE_COLOR);
 
+/**
+ * L12 sky cycle: the haze colour (rgb, linear) and tint (a) as ONE shared
+ * uniform value. three's cloneUniforms copies typed arrays by reference, so
+ * this single array, injected into every fog-capable ShaderLib entry at
+ * install time, reaches every material's program — one write per frame.
+ * Starts at the VO1 constants above.
+ */
+export const HAZE_PARAMS = new Float32Array([
+  hazeLinear.r,
+  hazeLinear.g,
+  hazeLinear.b,
+  HAZE_TINT,
+]);
+
+/** Set the haze colour (linear rgb) and tint for every fogged material. */
+export function setHaze(color: readonly number[], tint: number): void {
+  HAZE_PARAMS[0] = color[0] as number;
+  HAZE_PARAMS[1] = color[1] as number;
+  HAZE_PARAMS[2] = color[2] as number;
+  HAZE_PARAMS[3] = tint;
+}
+
 /** GLSL for the haze: the function plus its constants. Usable in any shader
  * that has `cameraPosition` (every three shader does). */
 export const AB_FOG_GLSL = /* glsl */ `
@@ -106,6 +128,15 @@ let installed = false;
 export function installHeightFog(): void {
   if (installed) return;
   installed = true;
+  // The shared haze uniform rides along with three's own fog uniforms.
+  const hazeUniform = { value: HAZE_PARAMS };
+  const libs = Object.values(THREE.ShaderLib) as { uniforms: object }[];
+  for (const lib of libs) {
+    if ("fogColor" in lib.uniforms) {
+      (lib.uniforms as Record<string, unknown>).abHazeParams = hazeUniform;
+    }
+  }
+  (THREE.UniformsLib.fog as Record<string, unknown>).abHazeParams = hazeUniform;
   THREE.ShaderChunk.fog_pars_vertex = /* glsl */ `
 #ifdef USE_FOG
 	varying float vFogDepth;
@@ -124,6 +155,7 @@ export function installHeightFog(): void {
   THREE.ShaderChunk.fog_pars_fragment = /* glsl */ `
 #ifdef USE_FOG
 	uniform vec3 fogColor;
+	uniform vec4 abHazeParams; // L12: haze colour (rgb) + tint (a)
 	varying float vFogDepth;
 	varying float vFogWorldY;
 	#ifdef FOG_EXP2
@@ -144,7 +176,7 @@ export function installHeightFog(): void {
 	#endif
 	gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, fogFactor );
 	float abHaze = abHazeAmount(cameraPosition.y, vFogWorldY, vFogDepth) * (1.0 - fogFactor);
-	vec3 abHazeColor = mix(fogColor, AB_HAZE_COLOR, AB_HAZE_TINT);
+	vec3 abHazeColor = mix(fogColor, abHazeParams.rgb, abHazeParams.a);
 	gl_FragColor.rgb = mix( gl_FragColor.rgb, abHazeColor, abHaze );
 #endif
 `;

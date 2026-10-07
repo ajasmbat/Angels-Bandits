@@ -25,8 +25,10 @@ function fwidthDepths(src: string): number[] {
   return depths;
 }
 
-/** Any step() whose argument list reads a repeating term directly. */
-const BARE_PERIODIC_STEP = /step\([^;]*\b(fract|mod)\(/;
+/** Any step() whose argument list reads a repeating term directly. A mod()
+ * inside an abHash() key (L3's time slots) is a per-cell random, not a
+ * periodic pattern, and is excluded. */
+const BARE_PERIODIC_STEP = /step\((?![^;]*abHash)[^;]*\b(fract|mod)\(/;
 
 /** The line declaring `name` (up to its semicolon). */
 const declaration = (src: string, name: string): string => {
@@ -62,10 +64,13 @@ describe("window grid (buildings)", () => {
     expect(color).not.toMatch(/step\(paneLo/);
   });
 
-  it("resolves the lit coin flip to its expected share once sub-pixel", () => {
-    const lit = declaration(color, "lit");
-    expect(lit).toContain("pLitAA");
-    expect(lit).toContain("winDetail");
+  it("resolves the lit decision to its expected share once sub-pixel", () => {
+    // The fade is the LAST word on `lit` in the grid block: after the coin
+    // flip, the L3 crossfade and the L12 occupancy switch.
+    const fade = color.indexOf("lit = mix(pLitAA");
+    expect(fade).toBeGreaterThan(color.indexOf("float lit ="));
+    expect(fade).toBeGreaterThan(color.indexOf("uOccupancy"));
+    expect(color.slice(fade, color.indexOf(";", fade))).toContain("winDetail");
     expect(declaration(color, "pLitAA")).toContain("floorDetail");
   });
 

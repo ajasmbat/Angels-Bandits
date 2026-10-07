@@ -13,7 +13,7 @@
 // sky on an 8-bit canvas. Off with `?grade=0` so the perf harness can A/B the
 // cost of the pass itself.
 
-import type * as THREE from "three";
+import * as THREE from "three";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 
 /** Darkening at the very corner, 0..1 — the centre is untouched. */
@@ -46,6 +46,9 @@ const GradeShader = {
     uStart: { value: VIGNETTE_START },
     uSaturation: { value: SATURATION },
     uContrast: { value: CONTRAST },
+    // L12 sky cycle: the split-tone shifts with the time of night.
+    uShadowTint: { value: new THREE.Vector3(...SHADOW_TINT) },
+    uHighlightTint: { value: new THREE.Vector3(...HIGHLIGHT_TINT) },
   },
   vertexShader: /* glsl */ `
 varying vec2 vUv;
@@ -60,6 +63,8 @@ uniform float uVignette;
 uniform float uStart;
 uniform float uSaturation;
 uniform float uContrast;
+uniform vec3 uShadowTint;
+uniform vec3 uHighlightTint;
 varying vec2 vUv;
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
 void main() {
@@ -72,8 +77,8 @@ void main() {
   g = mix(g, g * g * (3.0 - 2.0 * g), uContrast);
   // Split-tone: teal in the shadows, amber in the highlights.
   float l = dot(g, LUMA);
-  g += ${vec3Of(SHADOW_TINT)} * (1.0 - l) * (1.0 - l);
-  g += ${vec3Of(HIGHLIGHT_TINT)} * l * l;
+  g += uShadowTint * (1.0 - l) * (1.0 - l);
+  g += uHighlightTint * l * l;
   g = clamp(g, 0.0, 1.0);
   // Lifted blacks: remap [0,1] onto [LIFT,1] per channel.
   vec3 lift = ${vec3Of(LIFT)};
@@ -94,4 +99,15 @@ void main() {
 /** The grade pass, ready to add to the composer after the OutputPass. */
 export function createGradePass(): ShaderPass {
   return new ShaderPass(GradeShader);
+}
+
+/** Set the split-tone on a grade pass (ShaderPass clones its uniforms, so
+ * the pass's own copy is the one the shader reads). */
+export function setGradeTone(
+  pass: ShaderPass,
+  shadow: readonly number[],
+  highlight: readonly number[],
+): void {
+  (pass.uniforms.uShadowTint?.value as THREE.Vector3).fromArray(shadow);
+  (pass.uniforms.uHighlightTint?.value as THREE.Vector3).fromArray(highlight);
 }

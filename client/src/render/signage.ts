@@ -31,6 +31,7 @@ import {
   BrokenNeon,
   type NeonBuzz,
   type SignAnim,
+  type SignageAnimation,
   rungPalette,
   signAnimations,
   signClock,
@@ -652,6 +653,7 @@ export class Signage {
   // L7 animation: shared shader clock + broken-tube stutter/buzz.
   private readonly animUniforms: SignUniforms;
   private readonly broken: BrokenNeon;
+  private readonly brokenSigns: SignPlacement[];
 
   constructor(buildings: readonly Building[], seed: number) {
     const layouts = buildings.map((b) => signageFor(b, seed));
@@ -709,11 +711,15 @@ export class Signage {
       this.strips,
       seed,
     );
-    this.broken = new BrokenNeon(
-      anim.broken.map((t) => {
-        const s = (t.kind === "marquee" ? this.marquees : this.strips)[
+    this.brokenSigns = anim.broken.map(
+      (t) =>
+        (t.kind === "marquee" ? this.marquees : this.strips)[
           t.index
-        ] as SignPlacement;
+        ] as SignPlacement,
+    );
+    this.broken = new BrokenNeon(
+      this.brokenSigns.map((s, i) => {
+        const t = anim.broken[i] as SignageAnimation["broken"][number];
         return {
           seed: t.seed,
           center: { x: s.x, y: s.y + s.height / 2, z: s.z },
@@ -902,8 +908,14 @@ export class Signage {
   }
 
   /** QA hook: broken tubes and their next burst at or after `timeMs`. */
-  brokenTubes(timeMs: number): ReturnType<BrokenNeon["nextBursts"]> {
-    return this.broken.nextBursts(timeMs);
+  brokenTubes(timeMs: number): (ReturnType<BrokenNeon["nextBursts"]>[number] & {
+    axis: "x" | "z";
+    dir: -1 | 1;
+  })[] {
+    return this.broken.nextBursts(timeMs).map((b, i) => {
+      const s = this.brokenSigns[i] as SignPlacement;
+      return { ...b, axis: s.axis, dir: s.dir };
+    });
   }
 
   /**

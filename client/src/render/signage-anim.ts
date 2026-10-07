@@ -43,9 +43,10 @@ const GLYPH_CYCLES_MIN = 24;
 const GLYPH_CYCLES_MAX = 40;
 
 // --- Chasing bulbs (marquees) ---
-/** Chase steps per loop → 2–4 steps/s (each bulb lights every third step). */
-const CHASE_STEPS_MIN = 480;
-const CHASE_STEPS_MAX = 960;
+/** Chase steps per loop → 2–4 steps/s (each bulb lights every third step).
+ * Always a multiple of 3, so the lit third is the same at t = L as t = 0. */
+const CHASE_THIRDS_MIN = 160;
+const CHASE_THIRDS_MAX = 320;
 /** Bulb ring brightness, of the sign's own tint. */
 export const CHASE_ON = 1;
 export const CHASE_OFF = 0.22;
@@ -77,9 +78,10 @@ export const LED_MEAN =
   (1 - LED_DOT_AREA) * LED_BACKING;
 
 // --- Video billboards ---
-/** Hard cuts between programmes every this many seconds (all divide the
- * loop; ≥ 8 s apart, so a cut never reads as a flicker). */
-export const VIDEO_CUT_S = [8, 10, 12, 15] as const;
+/** Hard cuts between programmes every this many seconds (≥ 8 s apart, so a
+ * cut never reads as a flicker). Each fits the loop a multiple-of-3 times,
+ * so the three-programme rotation is on the same programme at t = L. */
+export const VIDEO_CUT_S = [8, 10, 16, 20] as const;
 /** Colour-field band drift period, seconds. */
 export const VIDEO_FIELD_S = 8;
 /** Product spin period, seconds. */
@@ -180,7 +182,7 @@ export function signAnimations(
     if (pick < MARQUEE_TICKER_SHARE + MARQUEE_CHASE_SHARE) {
       return {
         kind: ANIM_CHASE,
-        rate: intIn(rm(), CHASE_STEPS_MIN, CHASE_STEPS_MAX),
+        rate: 3 * intIn(rm(), CHASE_THIRDS_MIN, CHASE_THIRDS_MAX),
         phase,
         variant: 0,
         brokenSlot: -1,

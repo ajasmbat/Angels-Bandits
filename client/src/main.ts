@@ -927,6 +927,8 @@ declare global {
       };
       signage: () => Signage["counts"];
       signImage: (x: number, z: number) => { x: number; z: number } | null;
+      /** L7: broken neon tubes and their next stutter burst (synced ms). */
+      signBroken: (at?: number) => ReturnType<Signage["brokenTubes"]>;
       /**
        * L1 micro tier: the live gate, what each subsystem drew, and a sample
        * pinned to a FIXED block at a FIXED server time. The sample is pinned
@@ -1105,6 +1107,8 @@ window.__ab = {
   // S2 QA: signage instance counts + drawn-position read-back (seam checks).
   signage: () => signage.counts,
   signImage: (x, z) => signage.imageOf(x, z),
+  signBroken: (at) =>
+    signage.brokenTubes(at ?? socket.renderTime() ?? performance.now()),
   micro: (at) => {
     const time =
       at === undefined ? (socket.renderTime() ?? performance.now()) : (at ?? 0);
@@ -1534,6 +1538,13 @@ renderer.setAnimationLoop((now) => {
   natureRenderer.update(chase.position);
   // Neon pulses on the same synced clock as the beacons.
   signage.update(chase.position, renderMs ?? now);
+  // L7: the nearest broken neon tube buzzes, crackling through its stutter;
+  // silent while dead or with the tab hidden.
+  const neonBuzz = signage.buzz(flight.pos, renderMs ?? now);
+  audio.setNeonBuzz(
+    alive && !document.hidden ? neonBuzz.gain : 0,
+    spatialize(flight.pos, flight.yaw, neonBuzz.pos).pan,
+  );
   traffic.update(chase.position, renderMs);
   // Every L2 system takes the SAME latched clock the crash check used.
   movers.update(chase.position, renderMs, moverLights);

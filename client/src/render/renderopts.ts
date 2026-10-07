@@ -11,6 +11,7 @@
 //   ?gputime=1            measure GPU frame cost   (default off)
 //   ?micro=0              disable the L1 micro tier (default on)
 //   ?grade=0              disable the final vignette/saturation grade (default on)
+//   ?post=legacy          the pre-O4 post chain (default: the fused one)
 //   ?quality=auto|high|medium|low   graphics tier (default: the player's
 //                         saved pick, else DEFAULT_QUALITY — see quality.ts)
 
@@ -90,7 +91,17 @@ export interface RenderOptions {
    * what the player's next plain visit gets.
    */
   quality: QualitySetting | null;
+  /**
+   * O4: the post chain. `fused` (ships) runs bloom at CSS density and does
+   * bloom add + tone map + sRGB + grade in one full-res pass
+   * (render/post.ts); `legacy` rebuilds the old UnrealBloomPass + OutputPass
+   * + grade-pass chain, so the harness can measure the two as a paired --ab
+   * out of one build — the same idea as `?aa=legacy`.
+   */
+  post: PostMode;
 }
+
+export type PostMode = "fused" | "legacy";
 
 export const DEFAULT_RENDER_OPTIONS: RenderOptions = {
   aa: DEFAULT_AA,
@@ -100,6 +111,7 @@ export const DEFAULT_RENDER_OPTIONS: RenderOptions = {
   micro: true,
   grade: true,
   quality: null,
+  post: "fused",
 };
 
 const AA_MODES: readonly AaMode[] = ["legacy", "off", "msaa", "smaa"];
@@ -163,6 +175,8 @@ export function readRenderOptions(
   if (grade !== null) opts.grade = grade !== "0" && grade !== "false";
 
   opts.quality = parseQualitySetting(params.get("quality"));
+
+  if (params.get("post") === "legacy") opts.post = "legacy";
 
   return opts;
 }

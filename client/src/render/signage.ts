@@ -748,6 +748,15 @@ export class Signage {
 
     this.setTiles(this.marqueeMesh, this.marquees);
     this.setTiles(this.billboardMesh, this.billboards);
+    // The pulsed tint rides instanceColor, and the L7 sign shader reads it
+    // (vColor). Allocate it NOW, not on the first place(): the boot pre-warm
+    // draws these meshes before any update, and without the attribute three
+    // builds the colour-less program variant — which the patched shader
+    // cannot compile (O4: a shader error on every boot, then a second compile
+    // on the first frame).
+    for (const mesh of [this.marqueeMesh, this.billboardMesh, this.stripMesh]) {
+      mesh.setColorAt(0, new THREE.Color(0, 0, 0));
+    }
 
     // L7: animate in the shader off one clock uniform — no texture uploads,
     // no extra draws. Broken tubes stutter via a small uniform array.

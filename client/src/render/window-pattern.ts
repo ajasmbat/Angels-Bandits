@@ -481,56 +481,20 @@ export function windowEmissiveGlsl(
 // warm law office over a cool trading floor), then per-window jitter.
 float floorT = abHash(vec2(9.0, winCell.y), vBSeed * 53.0);
 float bldT = abHash(vec2(21.0, 2.0), vBSeed * 53.0);
-float winT = abHash(winCell + 7.0, vBSeed * 53.0);
 float pCool = clamp(
   winCool + (bldT - 0.5) * ${glslFloat(FACADE.buildingTempSwing)} + (floorT - 0.5) * ${glslFloat(FACADE.floorTempSwing)},
   0.02, 0.98
 );
-float coolWin = step(winT, pCool);
-float tJit = abHash(winCell + 31.0, vBSeed * 53.0);
-// CONVEX mixes of WARM/COOL only: luminance is linear in colour, so every
-// window stays at or below the peak ${intensity} was normalised for.
-float mixT = mix(${glslFloat(FACADE.tempJitter)} * tJit, 1.0 - ${glslFloat(FACADE.tempJitter)} * tJit, coolWin);
 // O1: past the cell's resolution limit the per-window temperature is its
 // expected value (per floor, then per building) — still a convex mix.
 float pCoolB = clamp(winCool + (bldT - 0.5) * ${glslFloat(FACADE.buildingTempSwing)}, 0.02, 0.98);
 float mixMean = mix(${glslFloat(FACADE.tempJitter * 0.5)}, ${glslFloat(1 - FACADE.tempJitter * 0.5)}, mix(pCoolB, pCool, floorDetail));
-mixT = mix(mixMean, mixT, winDetail);
-vec3 winColor = mix(${warm}, ${cool}, mixT);
 // The far-field colour: the expected temperature, untouched by the per-cell
 // TV swap below (a sub-pixel TV cell must not sparkle either).
 vec3 winColorMean = mix(${warm}, ${cool}, mixMean);
-${livingColorGlsl(glslVec3(TV_COLOR))}
-// Fake window interiors (interior mapping): raycast a room box behind every
-// lit pane — parallax ceiling/floor/side/back walls, no geometry. Boxes never
-// rotate, so the world-space view ray IS the facade-space ray. Every wall
-// factor is < 1, so the interior peaks BELOW the flat pane the WINDOW rung
-// was normalized for — the ladder ordering cannot be disturbed.
 vec3 viewRay = normalize(vBWorldPos - cameraPosition);
-float rayIn = 1.0;
-vec2 rayUV = vec2(0.0);
-if (abs(vObjNormal.x) > 0.5) {
-  rayIn = -sign(vObjNormal.x) * viewRay.x;
-  rayUV = vec2(viewRay.z, viewRay.y);
-} else if (abs(vObjNormal.z) > 0.5) {
-  rayIn = -sign(vObjNormal.z) * viewRay.z;
-  rayUV = vec2(viewRay.x, viewRay.y);
-}
-vec2 cellMeters = winF * winPitch;
-float tBack = roomDepth / max(rayIn, 0.03);
-float tU = ((rayUV.x > 0.0 ? winPitch.x : 0.0) - cellMeters.x) / abSafeDiv(rayUV.x);
-float tV = ((rayUV.y > 0.0 ? winPitch.y : 0.0) - cellMeters.y) / abSafeDiv(rayUV.y);
-float tHit = min(tBack, min(tU, tV));
-vec3 roomLight = winColor * (0.85 + 0.15 * abHash(winCell, vBSeed * 31.0));
-vec3 roomCol = tHit == tBack ? roomLight * 0.55
-             : tHit == tV ? (rayUV.y > 0.0 ? roomLight * 0.9 : roomLight * 0.24)
-             : roomLight * 0.38;
-roomCol *= 1.0 - 0.45 * clamp(tHit / (roomDepth * 2.2), 0.0, 1.0);
 // Some rooms draw their blinds: flat diffuse glow, no parallax.
 float blinds = step(abHash(winCell + 3.0, vBSeed * 29.0), winBlinds);
-// Per-window brightness spread: a real block is not one bulb repeated.
-float dim = ${glslFloat(1 - FACADE.brightSpread)} + ${glslFloat(FACADE.brightSpread)} * winH;
-vec3 litWindow = mix(roomCol * (0.55 + 0.45 * winH), winColor * (0.5 + 0.3 * winH), blinds) * dim;
 // O1: the parallax room, the blinds and the brightness spread are per-cell
 // detail too; far away a lit window is their mean (a lit cell's winH is
 // uniform on [0, pLit), so its mean is pLit / 2; the room averages ~0.45 of
@@ -538,7 +502,53 @@ vec3 litWindow = mix(roomCol * (0.55 + 0.45 * winH), winColor * (0.5 + 0.3 * win
 float winHMean = 0.5 * pLitAA;
 vec3 litMeanCol = mix(winColorMean * ${glslFloat(0.45)} * (0.55 + 0.45 * winHMean), winColorMean * (0.5 + 0.3 * winHMean), winBlinds)
   * (${glslFloat(1 - FACADE.brightSpread)} + ${glslFloat(FACADE.brightSpread)} * winHMean);
-litWindow = mix(litMeanCol, litWindow, winDetail);
+vec3 litWindow = litMeanCol;
+// O4: everything per WINDOW below — its temperature, the L3 TV, the parallax
+// room, the brightness spread — is mixed in by winDetail, so where a cell is
+// sub-pixel (winDetail 0: most of a distant skyline at Retina) it was all
+// computed and then multiplied by zero. The branch skips it there. It is
+// coherent in screen space (winDetail follows distance), takes no derivative
+// (wAA is taken above, at the top level), and is bit-identical: the old
+// mix(litMeanCol, x, 0.0) already returned litMeanCol exactly.
+if (winDetail > 0.0) {
+  float winT = abHash(winCell + 7.0, vBSeed * 53.0);
+  float coolWin = step(winT, pCool);
+  float tJit = abHash(winCell + 31.0, vBSeed * 53.0);
+  // CONVEX mixes of WARM/COOL only: luminance is linear in colour, so every
+  // window stays at or below the peak ${intensity} was normalised for.
+  float mixT = mix(${glslFloat(FACADE.tempJitter)} * tJit, 1.0 - ${glslFloat(FACADE.tempJitter)} * tJit, coolWin);
+  mixT = mix(mixMean, mixT, winDetail);
+  vec3 winColor = mix(${warm}, ${cool}, mixT);
+${livingColorGlsl(glslVec3(TV_COLOR))}
+  // Fake window interiors (interior mapping): raycast a room box behind every
+  // lit pane — parallax ceiling/floor/side/back walls, no geometry. Boxes never
+  // rotate, so the world-space view ray IS the facade-space ray. Every wall
+  // factor is < 1, so the interior peaks BELOW the flat pane the WINDOW rung
+  // was normalized for — the ladder ordering cannot be disturbed.
+  float rayIn = 1.0;
+  vec2 rayUV = vec2(0.0);
+  if (abs(vObjNormal.x) > 0.5) {
+    rayIn = -sign(vObjNormal.x) * viewRay.x;
+    rayUV = vec2(viewRay.z, viewRay.y);
+  } else if (abs(vObjNormal.z) > 0.5) {
+    rayIn = -sign(vObjNormal.z) * viewRay.z;
+    rayUV = vec2(viewRay.x, viewRay.y);
+  }
+  vec2 cellMeters = winF * winPitch;
+  float tBack = roomDepth / max(rayIn, 0.03);
+  float tU = ((rayUV.x > 0.0 ? winPitch.x : 0.0) - cellMeters.x) / abSafeDiv(rayUV.x);
+  float tV = ((rayUV.y > 0.0 ? winPitch.y : 0.0) - cellMeters.y) / abSafeDiv(rayUV.y);
+  float tHit = min(tBack, min(tU, tV));
+  vec3 roomLight = winColor * (0.85 + 0.15 * abHash(winCell, vBSeed * 31.0));
+  vec3 roomCol = tHit == tBack ? roomLight * 0.55
+               : tHit == tV ? (rayUV.y > 0.0 ? roomLight * 0.9 : roomLight * 0.24)
+               : roomLight * 0.38;
+  roomCol *= 1.0 - 0.45 * clamp(tHit / (roomDepth * 2.2), 0.0, 1.0);
+  // Per-window brightness spread: a real block is not one bulb repeated.
+  float dim = ${glslFloat(1 - FACADE.brightSpread)} + ${glslFloat(FACADE.brightSpread)} * winH;
+  litWindow = mix(roomCol * (0.55 + 0.45 * winH), winColor * (0.5 + 0.3 * winH), blinds) * dim;
+  litWindow = mix(litMeanCol, litWindow, winDetail);
+}
 ${livingShadeGlsl()}vec3 windowGlow = pane * lit * litWindow * ${intensity} * ao;
 // Unlit panes catch a faint grazing-angle sky sheen (far below the bloom
 // threshold — a glassy read, not a light source).

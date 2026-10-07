@@ -59,6 +59,13 @@ export class BurstFeed {
     this.lastT = serverTimeMs;
     return bursts;
   }
+
+  /** Forget the last poll: the next one only primes. A QA clock jump
+   * (`__ab.pinWorld`, O4) must not enumerate every bucket in between — a
+   * jump of years did, gigabytes of garbage in one frame. */
+  reset(): void {
+    this.lastT = null;
+  }
 }
 
 /**
@@ -125,6 +132,12 @@ export class Fireworks {
 
   constructor(private readonly seed: number) {
     this.feed = new BurstFeed(seed);
+  }
+
+  /** A QA clock jump (O4): drop the live bursts and re-prime the feed. */
+  resetClock(): void {
+    this.feed.reset();
+    this.live.length = 0;
   }
 
   /** Bursts currently alive — the perf report's handle on the spark budget. */

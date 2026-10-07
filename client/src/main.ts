@@ -132,6 +132,7 @@ import {
   spinPropeller,
 } from "./render/plane";
 import { PlaneLights } from "./render/planelights";
+import { AbBloomPass, DiscardDepthPass, FinalPass } from "./render/post";
 import { prewarmScene } from "./render/prewarm";
 import {
   type AutoQualityState,
@@ -336,7 +337,8 @@ const DEFAULT_FB_SAMPLES = renderer
 // The bloom threshold sits above everything lit-but-not-emissive (facades peak
 // ~0.05 luminance in linear HDR, the sky dome ~0.05) and below the emissives
 // (windows ~0.8+, lamp heads ~0.9, tracers ~1.5) — so ONLY emissives glow.
-// UnrealBloomPass runs its blur chain from HALF the drawing-buffer resolution.
+// The blur chain runs from half the CSS resolution (O4: AbBloomPass — at
+// ratio 2 that is a quarter of the drawing buffer per axis, same halo).
 // Strength and radius are the LOOK (a wider, gentler halo reads as haze
 // around a light rather than a hard glow); the threshold is the CONTRACT the
 // emissive ladder is built against and does not move.
@@ -360,19 +362,38 @@ const composer = new EffectComposer(
 // pixelRatio bookkeeping starts from the same place setSize() uses.
 composer.setSize(window.innerWidth, window.innerHeight);
 composer.addPass(new RenderPass(scene, camera));
-const bloomPass = new UnrealBloomPass(
-  new THREE.Vector2(window.innerWidth, window.innerHeight),
-  BLOOM_STRENGTH,
-  BLOOM_RADIUS,
-  BLOOM_THRESHOLD,
-);
+// O4: nothing after the scene pass reads its depth — tell a tile GPU not to
+// write it back to memory (a no-op where the driver ignores the hint).
+composer.addPass(new DiscardDepthPass());
+// O4 (render/post.ts): the bloom chain at CSS density, then bloom add + tone
+// map + sRGB + grade in ONE full-res pass. `?post=legacy` rebuilds the old
+// chain (three's UnrealBloomPass with its full-res additive blend, the
+// OutputPass and a separate grade pass) out of the same build, so the
+// harness can measure the difference as a paired --ab.
+const legacyPost = renderOpts.post === "legacy";
+const bloomPass = legacyPost
+  ? new UnrealBloomPass(
+      new THREE.Vector2(window.innerWidth, window.innerHeight),
+      BLOOM_STRENGTH,
+      BLOOM_RADIUS,
+      BLOOM_THRESHOLD,
+    )
+  : new AbBloomPass(BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD);
 composer.addPass(bloomPass);
-composer.addPass(new OutputPass());
-// The grade (vignette + saturation) works on the display-referred image, so
-// it follows the OutputPass; SMAA, when on, still comes last.
-const gradePass = renderOpts.grade ? createGradePass() : null;
-if (gradePass) {
-  composer.addPass(gradePass);
+let gradePass: { uniforms: Record<string, THREE.IUniform> } | null = null;
+if (bloomPass instanceof AbBloomPass) {
+  const finalPass = new FinalPass(bloomPass, renderOpts.grade);
+  composer.addPass(finalPass);
+  if (renderOpts.grade) gradePass = finalPass;
+} else {
+  composer.addPass(new OutputPass());
+  // The grade works on the display-referred image, so it follows the
+  // OutputPass.
+  if (renderOpts.grade) {
+    const legacyGrade = createGradePass();
+    composer.addPass(legacyGrade);
+    gradePass = legacyGrade;
+  }
 }
 // SMAA goes AFTER the output pass, on purpose: its edge detection wants the
 // tonemapped, sRGB-encoded image, not linear HDR where a bloomed window
@@ -393,6 +414,8 @@ renderer.info.autoReset = false;
 function applyPixelRatio(ratio: number): void {
   renderer.setPixelRatio(ratio);
   composer.setPixelRatio(ratio);
+  // The bloom chain is anchored to CSS pixels (render/post.ts).
+  if (bloomPass instanceof AbBloomPass) bloomPass.setPixelRatio(ratio);
 }
 applyPixelRatio(resolution.ratio);
 
@@ -1627,8 +1650,10 @@ window.__ab = {
   pinWorld: (serverTimeMs) => {
     qaWorld =
       serverTimeMs === null ? null : { ms: serverTimeMs, frameMs: null };
-    // A pin is a jump: the feed must not replay every strike in between.
+    // A pin is a jump: the windowed feeds must not replay (or enumerate —
+    // a jump of years is billions of buckets) everything in between.
     strikeFeed.reset();
+    fireworks.resetClock();
     return worldTime();
   },
   reactions: () => {
@@ -1721,7 +1746,7 @@ let last = performance.now();
 // otherwise compile on the frame it first appears, which is exactly the
 // moment a hitch is noticed. Each subsystem's update() then owns visibility.
 fadeEl.classList.add("dead");
-await prewarmScene(renderer, scene, camera);
+await prewarmScene(renderer, scene, camera, composer);
 flashFade();
 
 // Named (M2) so the visibility pause at the bottom can stop and restore it.
@@ -1948,7 +1973,12 @@ const frame = (now: number): void => {
     }
   }
   bullets.step(dt);
-  for (const bullet of [...bullets.all]) {
+  // Backwards, so a hit's bullets.remove() never skips the next bullet
+  // (and no per-frame copy of the list — O4).
+  const live = bullets.all;
+  for (let i = live.length - 1; i >= 0; i--) {
+    const bullet = live[i];
+    if (bullet === undefined) continue;
     if (bullet.cosmetic) {
       // An enemy bullet shaving past this frame → panned near-miss whoosh.
       if (

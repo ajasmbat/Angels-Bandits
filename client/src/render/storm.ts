@@ -21,7 +21,7 @@ import { emissiveBoost } from "./emissive";
 import { HAZE_WEATHER } from "./fog";
 import { RENDER_ORDER } from "./render-order";
 import { DUSK, FOG_NEAR } from "./sky";
-import { nearestImage, nearestImageInto } from "./wrapPlacement";
+import { nearestImage, nearestImageInto, uploadPrefix } from "./wrapPlacement";
 
 /** Speed of sound, m/s — thunder trails the flash by wrapDistance / this. */
 const SOUND_SPEED_MPS = 340;
@@ -348,8 +348,8 @@ export class StormRenderer {
         depthWrite: false,
         fog: false,
       });
-      const core = new THREE.Mesh(new THREE.BufferGeometry(), coreMat);
-      const glow = new THREE.Mesh(new THREE.BufferGeometry(), glowMat);
+      const core = new THREE.Mesh(createBoltGeometry(), coreMat);
+      const glow = new THREE.Mesh(createBoltGeometry(), glowMat);
       core.frustumCulled = false;
       glow.frustumCulled = false;
       const group = new THREE.Group();
@@ -409,10 +409,8 @@ export class StormRenderer {
     const slot = this.slots.reduce((a, b) => (a.bornAt <= b.bornAt ? a : b));
     const main = boltPolyline(strike, topY);
     const runs = [main, ...boltBranches(strike, main)];
-    slot.core.geometry.dispose();
-    slot.glow.geometry.dispose();
-    slot.core.geometry = boltTube(runs, BOLT_CORE_RADIUS, 1);
-    slot.glow.geometry = boltTube(runs, BOLT_GLOW_RADIUS, 0.55);
+    writeBoltTube(slot.core.geometry, runs, BOLT_CORE_RADIUS, 1);
+    writeBoltTube(slot.glow.geometry, runs, BOLT_GLOW_RADIUS, 0.55);
     slot.anchor = { x: strike.x, y: 0, z: strike.z };
     slot.bornAt = nowMs;
     slot.lifeMs = lifeMs;
@@ -662,71 +660,92 @@ const TUBE_INDEX: readonly number[] = (() => {
 })();
 const TUBE_VERT_COUNT = TUBE_VERTS.length / 3;
 
+/** Most segments one bolt can have: the main channel and every branch are
+ * BOLT_ITERATIONS rounds of midpoint displacement. */
+const BOLT_MAX_SEGMENTS = (1 + BOLT_BRANCH_COUNT) * 2 ** BOLT_ITERATIONS;
+
+/**
+ * A bolt slot's geometry, allocated ONCE at its full capacity (O4). It used
+ * to be rebuilt per strike, so every strike created fresh GL buffers on the
+ * very frame its flash lands — a first-sight upload the pre-warm could
+ * never absorb (the perf harness's GL probe caught 4 buffer allocations in
+ * every window with a strike in it). The index is the same for every bolt
+ * (segment n's tube is TUBE_INDEX offset by n's vertices), so it uploads
+ * once; a strike rewrites the position prefix and the draw range.
+ */
+function createBoltGeometry(): THREE.BufferGeometry {
+  const index = new Uint32Array(BOLT_MAX_SEGMENTS * TUBE_INDEX.length);
+  for (let n = 0; n < BOLT_MAX_SEGMENTS; n++) {
+    for (let k = 0; k < TUBE_INDEX.length; k++) {
+      index[n * TUBE_INDEX.length + k] =
+        n * TUBE_VERT_COUNT + (TUBE_INDEX[k] as number);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  const position = new THREE.BufferAttribute(
+    new Float32Array(BOLT_MAX_SEGMENTS * TUBE_VERT_COUNT * 3),
+    3,
+  );
+  position.setUsage(THREE.DynamicDrawUsage);
+  geometry.setAttribute("position", position);
+  geometry.setIndex(new THREE.BufferAttribute(index, 1));
+  geometry.setDrawRange(0, 0);
+  return geometry;
+}
+
+const tubeUp = new THREE.Vector3(0, 1, 0);
+const tubeDir = new THREE.Vector3();
+const tubeQuat = new THREE.Quaternion();
+const tubeMat = new THREE.Matrix4();
+const tubePos = new THREE.Vector3();
+const tubeScale = new THREE.Vector3();
+const tubeV = new THREE.Vector3();
+
 /**
  * One tube (an open cylinder per segment) over a set of polylines, written
- * straight into one position + index buffer. Built on every strike: it used
+ * straight into a bolt slot's position buffer (createBoltGeometry). It used
  * to clone a CylinderGeometry per segment and merge the clones, ~2 MB of
  * garbage a strike and a frame-time spike on exactly the frame the flash
  * lands (O3 profile). The bolt material is unlit, so positions are all it
  * reads.
  */
-function boltTube(
+function writeBoltTube(
+  geometry: THREE.BufferGeometry,
   runs: readonly (readonly Vec3[])[],
   radius: number,
   branchScale: number,
-): THREE.BufferGeometry {
-  let segments = 0;
-  for (const run of runs) segments += Math.max(0, run.length - 1);
-  const positions = new Float32Array(segments * TUBE_VERT_COUNT * 3);
-  const index = new Uint32Array(segments * TUBE_INDEX.length);
-  const up = new THREE.Vector3(0, 1, 0);
-  const dir = new THREE.Vector3();
-  const quat = new THREE.Quaternion();
-  const mat = new THREE.Matrix4();
-  const pos = new THREE.Vector3();
-  const scale = new THREE.Vector3();
-  const v = new THREE.Vector3();
+): void {
+  const attr = geometry.getAttribute("position") as THREE.BufferAttribute;
+  const positions = attr.array as Float32Array;
   let n = 0; // segments written
   runs.forEach((run, runIdx) => {
     const r = radius * (runIdx === 0 ? 1 : branchScale);
-    for (let i = 1; i < run.length; i++) {
+    for (let i = 1; i < run.length && n < BOLT_MAX_SEGMENTS; i++) {
       const a = run[i - 1] as Vec3;
       const b = run[i] as Vec3;
-      dir.set(b.x - a.x, b.y - a.y, b.z - a.z);
-      const len = dir.length();
+      tubeDir.set(b.x - a.x, b.y - a.y, b.z - a.z);
+      const len = tubeDir.length();
       if (len < 0.01) continue;
-      quat.setFromUnitVectors(up, dir.normalize());
-      pos.set((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
-      scale.set(r, len * 1.06, r);
-      mat.compose(pos, quat, scale);
+      tubeQuat.setFromUnitVectors(tubeUp, tubeDir.normalize());
+      tubePos.set((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
+      tubeScale.set(r, len * 1.06, r);
+      tubeMat.compose(tubePos, tubeQuat, tubeScale);
       const base = n * TUBE_VERT_COUNT;
       for (let k = 0; k < TUBE_VERT_COUNT; k++) {
-        v.set(
-          TUBE_VERTS[k * 3] as number,
-          TUBE_VERTS[k * 3 + 1] as number,
-          TUBE_VERTS[k * 3 + 2] as number,
-        ).applyMatrix4(mat);
-        positions[(base + k) * 3] = v.x;
-        positions[(base + k) * 3 + 1] = v.y;
-        positions[(base + k) * 3 + 2] = v.z;
-      }
-      const ib = n * TUBE_INDEX.length;
-      for (let k = 0; k < TUBE_INDEX.length; k++) {
-        index[ib + k] = base + (TUBE_INDEX[k] as number);
+        tubeV
+          .set(
+            TUBE_VERTS[k * 3] as number,
+            TUBE_VERTS[k * 3 + 1] as number,
+            TUBE_VERTS[k * 3 + 2] as number,
+          )
+          .applyMatrix4(tubeMat);
+        positions[(base + k) * 3] = tubeV.x;
+        positions[(base + k) * 3 + 1] = tubeV.y;
+        positions[(base + k) * 3 + 2] = tubeV.z;
       }
       n++;
     }
   });
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute(
-    "position",
-    new THREE.BufferAttribute(
-      positions.subarray(0, n * TUBE_VERT_COUNT * 3),
-      3,
-    ),
-  );
-  geometry.setIndex(
-    new THREE.BufferAttribute(index.subarray(0, n * TUBE_INDEX.length), 1),
-  );
-  return geometry;
+  geometry.setDrawRange(0, n * TUBE_INDEX.length);
+  uploadPrefix([attr], n * TUBE_VERT_COUNT);
 }

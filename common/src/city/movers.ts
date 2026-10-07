@@ -56,6 +56,13 @@ import {
 import { type Vec3, canonicalize, wrapDeltaAxis } from "../world/index";
 import { type Building, mulberry32 } from "./index";
 import { CONSTRUCTION_BLOCKS } from "./layout";
+import {
+  NEWS_HELI_ID,
+  type NewsHeliSlot,
+  newsHeliBoxInto,
+  newsHeliSlot,
+  newsTargetAt,
+} from "./newsheli";
 import { type TrainLine, collideTrain, generateTrain } from "./train";
 
 /** Which part of which mover a collision landed on. */
@@ -67,6 +74,7 @@ export type MoverKind =
   | "cable"
   | "helicopter"
   | "blimp"
+  | "newsHeli"
   // L5's elevated train (city/train.ts): the static deck and pillars, a car.
   | "viaduct"
   | "train";
@@ -145,10 +153,21 @@ export interface AircraftRoute {
 export interface MoverField {
   readonly cranes: readonly CraneSite[];
   readonly aircraft: readonly AircraftRoute[];
+  /** The L10 news heli — PER ROOM, so it lives on a room's own copy of the
+   * field (withNewsHeli), never on the seed-shared one. The slot is mutated
+   * in place when the server issues a new target. */
+  readonly news?: NewsHeliSlot;
   /** L5's elevated train, or null when no loop fits the city. Optional so a
    * hand-built field (tests, EMPTY_MOVERS) need not mention it. */
   readonly train?: TrainLine | null;
 }
+
+/** A room's field: the seed's shared cranes and aircraft plus its own news
+ * heli, starting on the seed's idle orbit. */
+export const withNewsHeli = (field: MoverField, seed: number): MoverField => ({
+  ...field,
+  news: newsHeliSlot(seed),
+});
 
 /** A field with nothing in it — the safe default for callers that have none. */
 export const EMPTY_MOVERS: MoverField = { cranes: [], aircraft: [] };
@@ -502,6 +521,21 @@ function hitsCrane(
   return null;
 }
 
+/** Does the sphere touch the news heli? Altitude reject before any trig:
+ * the route never leaves the band between its start and orbit altitudes. */
+function hitsNewsHeli(
+  slot: NewsHeliSlot,
+  pos: Vec3,
+  radius: number,
+  timeMs: number,
+): boolean {
+  const target = newsTargetAt(slot, timeMs);
+  const reach = radius + HELI_HULL[0];
+  if (pos.y + reach < Math.min(target.fy, target.y)) return false;
+  if (pos.y - reach > Math.max(target.fy, target.y)) return false;
+  return sphereHitsBox(newsHeliBoxInto(target, timeMs, scratch), pos, radius);
+}
+
 /**
  * First mover the sphere intersects, or null — the PLAYER-facing query.
  * Cranes first (they are the ones you fly among), then aircraft.
@@ -521,6 +555,9 @@ export function collideMovers(
       return { kind: route.kind, id: route.id };
     }
   }
+  if (field.news && hitsNewsHeli(field.news, pos, radius, timeMs)) {
+    return { kind: "newsHeli", id: NEWS_HELI_ID };
+  }
   // L5: the viaduct and the cars.
   if (field.train) return collideTrain(field.train, pos, radius, timeMs);
   return null;
@@ -537,6 +574,10 @@ export function collideMovers(
  * that would make the AI look broken, and the blimp is 60 m of hull sitting
  * at BLIMP_ALT, right under the bot ceiling. A 13 m helicopter, usually
  * hundreds of metres away, is not worth a probe — bots pass through it.
+ *
+ * The L10 news heli is the exception: it parks over the latest kill, which
+ * is exactly where the fight is, at an altitude bots fly. It is one box with
+ * an altitude reject, so bots probe it and avoid it like a crane.
  */
 export function collideBotMovers(
   pos: Vec3,
@@ -553,6 +594,9 @@ export function collideBotMovers(
     if (sphereHitsBox(aircraftBox(route, timeMs), pos, radius)) {
       return { kind: route.kind, id: route.id };
     }
+  }
+  if (field.news && hitsNewsHeli(field.news, pos, radius, timeMs)) {
+    return { kind: "newsHeli", id: NEWS_HELI_ID };
   }
   // L5: the viaduct and the train are solid for bots too — they sit right in
   // the canyon band, so a bot that could not see them would die to them.

@@ -82,6 +82,13 @@ const streamPose = (peer: Peer, pose: Pose): void => {
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Poll until `done()` or `timeoutMs` passes. The server is a child process:
+ * on a loaded machine its replies can land well after a fixed sleep. */
+async function waitUntil(done: () => boolean, timeoutMs: number) {
+  const deadline = Date.now() + timeoutMs;
+  while (!done() && Date.now() < deadline) await wait(20);
+}
+
 beforeAll(async () => {
   child = spawn("npx", ["tsx", entry], {
     env: { ...process.env, PORT: "0" },
@@ -226,7 +233,16 @@ describe("hit claims at the new cadence", () => {
         delay: INTERP_FLOOR_MS,
       }),
     );
-    await wait(SNAPSHOT_INTERVAL_MS * 6);
+    // Normally a few snapshot intervals; bounded, so a lost hit still fails.
+    const hpInSnapshot = () => {
+      const last = target.snapshots[target.snapshots.length - 1];
+      const self = last?.msg.p.find((w) => w[0] === target.welcome.id);
+      return !!self && decodeSnapshotEntry(self).hp === MAX_HP - BULLET_DAMAGE;
+    };
+    await waitUntil(
+      () => target.seen.some((m) => m.type === "damage") && hpInSnapshot(),
+      5000,
+    );
 
     const damage = target.seen.find(
       (m): m is DamageMsg =>

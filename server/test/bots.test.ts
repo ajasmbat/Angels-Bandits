@@ -35,7 +35,7 @@ import {
 import { flightForward } from "@angels-bandits/common/flight";
 import type { SpawnState } from "@angels-bandits/common/protocol";
 import { canonicalize, wrapDeltaAxis } from "@angels-bandits/common/world";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   type BotShot,
   RoomBots,
@@ -45,6 +45,15 @@ import {
 } from "../src/bots";
 import { Combat } from "../src/combat";
 import { pickRespawn } from "../src/respawn";
+
+/** One event-loop turn. These long synchronous sims otherwise chain
+ * test-to-test in microtasks for well over a minute on a loaded machine;
+ * the worker then never reads the main process's reply to Vitest's
+ * "onTaskUpdate" RPC, birpc's 60 s timeout fires first, and the run exits 1
+ * with every test green. Yielding lets the reply through. */
+const yieldToEventLoop = () =>
+  new Promise<void>((resolve) => setImmediate(resolve));
+afterEach(yieldToEventLoop);
 
 /** A fixed mid-altitude spawn: tests place bots explicitly. */
 const spawnAt = (x: number, z: number, yaw = 0, y = 300): SpawnState => ({
@@ -1109,7 +1118,7 @@ describe("bots vs the L2 movers", () => {
     return { moverDeaths, sweepTicks };
   }
 
-  it("negative control: the probe is load-bearing, not decorative", () => {
+  it("negative control: the probe is load-bearing, not decorative", async () => {
     // The measured contribution of wiring movers into blockedAlong. Blind,
     // eight bots dogfighting through a crane's sweep died to it 42-46 times
     // per seed while a third of them flew straight lines up high. Since B1
@@ -1117,15 +1126,19 @@ describe("bots vs the L2 movers", () => {
     // jib oversails and the run is summed over five seeds of four minutes:
     // blind it is ~30 deaths, with the probe on 0. This asserts the gap, not
     // a fragile exact count.
-    const sum = (probe: boolean) =>
-      [1234, 7, 20260826, 99, 5]
-        .map((seed) => orbitCrane(seed, probe))
-        .reduce((a, r) => ({
-          moverDeaths: a.moverDeaths + r.moverDeaths,
-          sweepTicks: a.sweepTicks + r.sweepTicks,
-        }));
-    const seeing = sum(true);
-    const blind = sum(false);
+    // Ten long sims: yield between them (see yieldToEventLoop).
+    const sum = async (probe: boolean) => {
+      const total = { moverDeaths: 0, sweepTicks: 0 };
+      for (const seed of [1234, 7, 20260826, 99, 5]) {
+        const r = orbitCrane(seed, probe);
+        total.moverDeaths += r.moverDeaths;
+        total.sweepTicks += r.sweepTicks;
+        await yieldToEventLoop();
+      }
+      return total;
+    };
+    const seeing = await sum(true);
+    const blind = await sum(false);
     // Five seeds' worth of the single-seed 800-tick vacuity guard.
     expect(blind.sweepTicks).toBeGreaterThan(4000);
     expect(seeing.sweepTicks).toBeGreaterThan(4000);

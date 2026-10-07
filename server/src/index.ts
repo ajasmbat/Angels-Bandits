@@ -48,7 +48,7 @@ import type { Vec3 } from "@angels-bandits/common/world";
 import { type WebSocket, WebSocketServer } from "ws";
 import { type BotContact, RoomBots, applyBotFire, poseVelocity } from "./bots";
 import { Combat, type SpeedCapFn } from "./combat";
-import { pickRespawn } from "./respawn";
+import { pickBotRespawn, pickRespawn } from "./respawn";
 import { type Room, RoomManager } from "./room";
 import { createStaticHandler } from "./statics";
 import { StormCeiling } from "./storm";
@@ -175,7 +175,9 @@ function syncRoomBots(room: Room): void {
   const bots = botsFor(room);
   const now = Date.now();
   const { spawned, despawned } = bots.syncTo(rooms.desiredBots(room), () =>
-    pickRespawn(livingEnemyPositions(room, "")),
+    pickBotRespawn(livingEnemyPositions(room, ""), (pos, yaw) =>
+      bots.spawnClear(pos, yaw, now),
+    ),
   );
   for (const entry of spawned) {
     rooms.addBot(room, entry.id, entry.name);
@@ -428,11 +430,18 @@ function issueRespawns(due: string[], now: number): void {
   for (const id of due) {
     const room = rooms.roomOf(id);
     if (!room) continue;
-    const spawn: SpawnState = pickRespawn(livingEnemyPositions(room, id));
+    const enemies = livingEnemyPositions(room, id);
+    let spawn: SpawnState;
     if (room.members.get(id)?.isBot) {
+      // Bots respawn down in a street (B1); humans keep the high spawn.
+      const bots = botsFor(room);
+      spawn = pickBotRespawn(enemies, (pos, yaw) =>
+        bots.spawnClear(pos, yaw, now),
+      );
       combat.respawned(id, now);
-      botsFor(room).respawn(id, spawn);
+      bots.respawn(id, spawn);
     } else {
+      spawn = pickRespawn(enemies);
       const client = clients.get(id);
       if (!client) continue;
       combat.respawned(id, now);

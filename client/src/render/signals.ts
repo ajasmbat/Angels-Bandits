@@ -3,14 +3,13 @@
 // pure function of (block, server time, seed), so two tabs turn green on the
 // same beat.
 //
-// CARS DO NOT OBEY THESE SIGNALS. That is a locked ticket decision, not an
-// oversight: carPose() must stay a pure function of time or the in-lane
-// no-overlap guarantee (fixed phase offsets, one shared lane speed) breaks,
-// and stopping logic would need per-car integration state — exactly the drift
-// this whole tier is built to avoid. A car sailing through a red is a real
-// visible cost, accepted openly rather than hidden.
+// Cars OBEY these signals (L6). The aspect below is the one pure source:
+// traffic.ts reads the same go window through goWindowStart(), so the lens a
+// player sees and the stop line a car honours can never disagree. Traffic
+// stays a pure function of time because every lane's leader trajectory is
+// built over whole signal cycles — see traffic.ts.
 //
-// NOBODY CROSSES THE ROAD EITHER — pedestrians stay on the sidewalk ring by
+// NOBODY CROSSES THE ROAD — pedestrians stay on the sidewalk ring by
 // decision. A painted crosswalk plus a permanent WALK signal and an empty
 // crossing is a stronger "this is fake" cue than no crosswalk signal at all,
 // so WALK is lit for only ~14 % of the cycle, as in a real city. That is what
@@ -33,15 +32,17 @@ import {
 import { nearestImage } from "./wrapPlacement";
 
 /** Green phase, seconds. */
-const GREEN = 18;
+export const GREEN = 18;
 /** Amber phase, seconds. */
-const AMBER = 3;
+export const AMBER = 3;
 /** All-red clearance between the two axes, seconds. */
 const ALL_RED = 1;
 /** One axis's half of the cycle, seconds. */
 const HALF_CYCLE = GREEN + AMBER + ALL_RED;
 /** The full two-axis cycle, seconds. */
 export const SIGNAL_CYCLE = 2 * HALF_CYCLE;
+/** An axis's go window (green then amber), seconds — red for the rest. */
+export const GO_WINDOW = GREEN + AMBER;
 /** Seconds of steady WALK at the head of the parallel green. */
 const WALK_ON = 6;
 /** Seconds of flashing DON'T-WALK after it. */
@@ -116,6 +117,25 @@ export function signalPhase(
     walkNs: walkAt(qNs),
     walkEw: walkAt(qEw),
   };
+}
+
+/**
+ * When `axis` traffic's go window (green, then amber) opens at intersection
+ * (bx, bz), as seconds in [0, SIGNAL_CYCLE) of server time mod the cycle.
+ * It lasts GO_WINDOW; the rest of the cycle is red for that axis. The same
+ * arithmetic as signalPhase — the traffic tests check the two agree by
+ * reading signalPhase directly.
+ */
+export function goWindowStart(
+  bx: number,
+  bz: number,
+  axis: "ns" | "ew",
+  seed: number,
+): number {
+  const base = axis === "ns" ? 0 : HALF_CYCLE;
+  let s = (base - signalOffset(bx, bz, seed)) % SIGNAL_CYCLE;
+  if (s < 0) s += SIGNAL_CYCLE;
+  return s;
 }
 
 /** One signal head standing on the street furniture line. */

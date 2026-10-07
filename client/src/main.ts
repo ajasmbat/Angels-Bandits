@@ -79,7 +79,14 @@ import { MoverLights, Movers } from "./render/movers";
 import { NatureRenderer } from "./render/nature";
 import { Pedestrians } from "./render/pedestrians";
 import { FrameMeter, type FrameStats } from "./render/perfmeter";
-import { buildPlaneMesh, spinPropeller } from "./render/plane";
+import {
+  type ControlDeflection,
+  NEUTRAL_CONTROLS,
+  animatePlane,
+  buildPlaneMesh,
+  inputControls,
+  spinPropeller,
+} from "./render/plane";
 import { PlaneLights } from "./render/planelights";
 import { RemotePlanes } from "./render/remotes";
 import { MSAA_SAMPLES, readRenderOptions } from "./render/renderopts";
@@ -505,6 +512,8 @@ let alive = true;
 let killCamTargetId: string | null = null;
 // Server-said combat state about self (snapshots), kept for HUD + QA.
 let selfHp = MAX_HP;
+/** The own plane's control-surface commands, from the last flight step. */
+let ownControls: ControlDeflection = NEUTRAL_CONTROLS;
 let selfProt = true;
 let lastScores: ScoreEntry[] = welcome.scores;
 let lastDeath: { victimId: string; killerId: string | null } | null = null;
@@ -1138,7 +1147,10 @@ renderer.setAnimationLoop((now) => {
     // through the same input-shaping seam free-look uses — the camera never
     // reaches flight state. Authority is the product of both costs.
     const steer = freelook.steer * zoomSteer(zoom.z);
-    flight = stepFlight(flight, shapeInput(input.read(), { steer }), dt);
+    const shaped = shapeInput(input.read(), { steer });
+    flight = stepFlight(flight, shaped, dt);
+    // Own control surfaces follow what the stick is commanding (F3).
+    ownControls = inputControls(shaped, flight);
     if (
       detectCrash(
         flight,
@@ -1192,6 +1204,7 @@ renderer.setAnimationLoop((now) => {
     plane.rotation.set(flight.pitch, flight.yaw, flight.roll, "YXZ");
     // Prop speed tracks the commanded throttle (same factor as remotes').
     spinPropeller(plane, dt * flight.targetSpeed * 0.7);
+    animatePlane(plane, ownControls, flight.speed, selfHp, dt);
     // Own aviation lights + wingtip trails (strobe on the synced clock so
     // every client sees this plane blink at the same instant).
     planeLights.place(

@@ -612,9 +612,12 @@ const WIND_LEAN = { x: 26, z: 11 } as const;
 /** Puff sprite size ramp, meters. */
 const PUFF_MIN = 6;
 const PUFF_MAX = 17;
-/** Darker than the wounded-plane trail: a burning wreck, not a wound. */
-const COLUMN_COLOR = 0x2b272f;
-const COLUMN_OPACITY = 0.6;
+/** City-lit grey: at night a smoke column reads by the street light it
+ * catches, so it is LIGHTER than the dark sky and asphalt it rises over
+ * (a near-black column vanishes against both). Not a light source: linear
+ * luminance ~0.11, far under the 0.72 bloom threshold. */
+export const COLUMN_COLOR = 0x5e575c;
+const COLUMN_OPACITY = 0.62;
 /** Hard cap on the projected sprite, px — GL point sizes clamp anyway, and a
  * consistent cap reads better than each driver's own limit. */
 const MAX_POINT_PX = 256;
@@ -770,6 +773,28 @@ export class CityReactor {
   /** Puffs drawn last frame (perf report). */
   get puffCount(): number {
     return this.drawnPuffs;
+  }
+
+  /** QA: the drawn smoke as the GPU sees it — visibility, draw count, and
+   * the first puff's render-space position and sprite size. */
+  get smokeDebug(): {
+    visible: boolean;
+    drawn: number;
+    first: { x: number; y: number; z: number; size: number } | null;
+  } {
+    return {
+      visible: this.points.visible,
+      drawn: this.points.geometry.drawRange.count,
+      first:
+        this.drawnPuffs > 0
+          ? {
+              x: this.positions.getX(0),
+              y: this.positions.getY(0),
+              z: this.positions.getZ(0),
+              size: this.sizes.getX(0),
+            }
+          : null,
+    };
   }
 
   /** Raw events still in the log (QA). */

@@ -1015,6 +1015,8 @@ declare global {
         responders: { kind: string; x: number; z: number; yaw: number }[];
         lowPasses: { x: number; z: number; t: number }[];
         puffs: number;
+        smoke: CityReactor["smokeDebug"];
+        camera: { x: number; y: number; z: number };
       };
       storm: () => {
         seed: number;
@@ -1231,6 +1233,12 @@ window.__ab = {
       })),
       lowPasses: reactor.lowPasses.map((p) => ({ ...p })),
       puffs: reactor.puffCount,
+      smoke: reactor.smokeDebug,
+      camera: {
+        x: camera.position.x,
+        y: camera.position.y,
+        z: camera.position.z,
+      },
     };
   },
   storm: () => {

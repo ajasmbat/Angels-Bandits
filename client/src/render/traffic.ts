@@ -85,7 +85,13 @@ export const VEHICLES: Record<VehicleKind, VehicleSpec> = {
     bodies: [0x2a2d38, 0x3a2f2c, 0x24333a, 0x38323f, 0x2e3830],
   },
   taxi: { code: 1, length: 4.5, width: 1.9, height: 1.5, bodies: [0xd9a514] },
-  bus: { code: 2, length: 11, width: 2.5, height: 3.1, bodies: [0x2c5470, 0x6b2f2a] },
+  bus: {
+    code: 2,
+    length: 11,
+    width: 2.5,
+    height: 3.1,
+    bodies: [0x2c5470, 0x6b2f2a],
+  },
   // Ambulances are pale so the light bar has something to wash across.
   emergency: {
     code: 3,
@@ -280,10 +286,7 @@ function drawPlatoon(rand: () => number, speed: number): Platoon {
     bodies.push(palette[Math.floor(shade * palette.length)] as number);
   }
   let platoon = buildPlatoon(kinds, bodies);
-  while (
-    kinds.length > 1 &&
-    cruiseClearance(platoon, speed) > PASS_BUDGET
-  ) {
+  while (kinds.length > 1 && cruiseClearance(platoon, speed) > PASS_BUDGET) {
     kinds.pop();
     bodies.pop();
     platoon = buildPlatoon(kinds, bodies);
@@ -387,7 +390,8 @@ function walkLane(
     const tLine = tBrake + brakeD / speed;
     const q = mod(tLine - start, C);
     const green = q < GREEN;
-    const passes = green && tLine + cruiseClear <= tLine - q + GO_WINDOW - CLEAR_MARGIN;
+    const passes =
+      green && tLine + cruiseClear <= tLine - q + GO_WINDOW - CLEAR_MARGIN;
     const last = i === CITY_GRID;
     if (passes && !last) continue;
     segments.push({ t0: tBrake, u0: uBrake, v0: speed, a: -BRAKE });
@@ -409,7 +413,8 @@ function walkLane(
     }
     // Go as soon as the light allows: straight away if it is (or turned)
     // green while braking and the platoon still clears, else at next green.
-    const now = qs < GREEN && tStop + restClear <= tStop - qs + GO_WINDOW - CLEAR_MARGIN;
+    const now =
+      qs < GREEN && tStop + restClear <= tStop - qs + GO_WINDOW - CLEAR_MARGIN;
     depart(now ? tStop : tStop - qs + C, uStop);
   }
   throw new Error("unreachable: the walk always closes at the anchor");
@@ -420,18 +425,27 @@ function walkLane(
  * the platoon shifts. A pure function of (lane, seed).
  */
 export function planLane(lane: TrafficLane, seed: number): LanePlan {
-  const rand = mulberry32((seed ^ Math.imul(lane.id + 1, 0x2545f491) ^ 0x7a1f6b) >>> 0);
+  const rand = mulberry32(
+    (seed ^ Math.imul(lane.id + 1, 0x2545f491) ^ 0x7a1f6b) >>> 0,
+  );
   const axis = laneSignalAxis(lane);
   const starts = Array.from({ length: CITY_GRID }, (_, k) => {
     const { bx, bz } = laneBlock(lane, k);
     return goWindowStart(bx, bz, axis, seed);
   });
-  type Pick = { speed: number; anchor: number; platoons: Platoon[]; walk: Walk };
+  type Pick = {
+    speed: number;
+    anchor: number;
+    platoons: Platoon[];
+    walk: Walk;
+  };
   let fallback: Pick | null = null;
   let chosen: Pick | null = null;
   for (let attempt = 0; attempt < SPEED_TRIES && !chosen; attempt++) {
     const speed = SPEED_MIN + rand() * SPEED_SPAN;
-    const platoons = Array.from({ length: MAX_PLATOONS }, () => drawPlatoon(rand, speed));
+    const platoons = Array.from({ length: MAX_PLATOONS }, () =>
+      drawPlatoon(rand, speed),
+    );
     const first = Math.floor(rand() * CITY_GRID);
     for (let j = 0; j < CITY_GRID; j++) {
       const anchor = (first + j) % CITY_GRID;
@@ -448,7 +462,10 @@ export function planLane(lane: TrafficLane, seed: number): LanePlan {
   // Whole-cycle platoon spacing, ≥ PLATOON_SPACING everywhere including the
   // wrap gap from the last platoon to the first one's next lap.
   const cycles = Math.round(pick.walk.period / SIGNAL_CYCLE);
-  const count = Math.max(1, Math.min(MAX_PLATOONS, Math.floor(cycles / PLATOON_SPACING)));
+  const count = Math.max(
+    1,
+    Math.min(MAX_PLATOONS, Math.floor(cycles / PLATOON_SPACING)),
+  );
   const gaps = new Array<number>(count).fill(PLATOON_SPACING);
   for (let spare = cycles - count * PLATOON_SPACING; spare > 0; spare--) {
     const g = Math.floor(rand() * count);
@@ -482,7 +499,11 @@ export interface LeaderState {
   accel: number;
 }
 
-export function leaderAt(plan: LanePlan, t: number, out: LeaderState): LeaderState {
+export function leaderAt(
+  plan: LanePlan,
+  t: number,
+  out: LeaderState,
+): LeaderState {
   const rel = t - plan.t0;
   const lap = Math.floor(rel / plan.period);
   // `period` is a whole number of seconds, so lap · period is exact.
@@ -646,7 +667,11 @@ export function vehicleState(
     // The street centerline, between the two lanes.
     cross = laneLine(lane) * BLOCK_PITCH;
   } else {
-    const s = leaderAt(fleet.plans[v.lane] as LanePlan, t - v.delay, scratchLeader);
+    const s = leaderAt(
+      fleet.plans[v.lane] as LanePlan,
+      t - v.delay,
+      scratchLeader,
+    );
     out.front = s.u - v.back;
     out.speed = s.speed;
     out.braking = s.accel < 0 || s.speed < 0.05;
@@ -672,7 +697,11 @@ export interface CarPose {
 }
 
 /** Allocating convenience for tests and QA. */
-export function vehiclePose(fleet: TrafficFleet, v: TrafficVehicle, t: number): CarPose {
+export function vehiclePose(
+  fleet: TrafficFleet,
+  v: TrafficVehicle,
+  t: number,
+): CarPose {
   const s = vehicleState(fleet, v, t, newVehicleState());
   return { pos: { x: s.x, y: 0, z: s.z }, yaw: s.yaw };
 }
@@ -697,7 +726,10 @@ export interface QueueSighting {
  * QA: the longest standing queue anywhere at server time `t` (ties → lowest
  * lane id, then intersection). Used to pin the gallery's red/green views.
  */
-export function findQueue(fleet: TrafficFleet, t: number): QueueSighting | null {
+export function findQueue(
+  fleet: TrafficFleet,
+  t: number,
+): QueueSighting | null {
   const counts = new Map<number, number>();
   const s = newVehicleState();
   for (const v of fleet.vehicles) {
@@ -920,12 +952,19 @@ export class Traffic {
       body.set([spec.width, spec.height, spec.length, spec.code], i * 4);
     });
     geometry.setAttribute("aBody", new THREE.InstancedBufferAttribute(body, 4));
-    this.lamp = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 2), 2);
+    this.lamp = new THREE.InstancedBufferAttribute(
+      new Float32Array(capacity * 2),
+      2,
+    );
     this.lamp.setUsage(THREE.DynamicDrawUsage);
     geometry.setAttribute("aLamp", this.lamp);
     this.frame = new Float32Array(capacity * 4);
 
-    this.mesh = new THREE.InstancedMesh(geometry, createCarMaterial(), capacity);
+    this.mesh = new THREE.InstancedMesh(
+      geometry,
+      createCarMaterial(),
+      capacity,
+    );
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.mesh.frustumCulled = false; // instances move relative to the camera every frame
     this.mesh.visible = false; // until the first server clock estimate

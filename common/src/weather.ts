@@ -144,8 +144,7 @@ export function weatherAt(seed: number, timeMs: number): Weather {
       break;
     case 2: // downpour: rain climbs to the cycle's peak, standing water
       rain = DRIZZLE_RAIN + (peak - DRIZZLE_RAIN) * smooth(0, 0.25, t);
-      wetness =
-        DRIZZLE_WETNESS + (1 - DRIZZLE_WETNESS) * smooth(0.05, 0.45, t);
+      wetness = DRIZZLE_WETNESS + (1 - DRIZZLE_WETNESS) * smooth(0.05, 0.45, t);
       break;
     default: // clearing: rain stops early, the city stays soaked a while
       rain = peak * (1 - smooth(0, 0.4, t));
@@ -178,3 +177,15 @@ export function phaseWindow(
   for (let i = 0; i < index; i++) start += layout.lengths[i] ?? 0;
   return [start, start + (layout.lengths[index] ?? 0)];
 }
+
+/** The weather before the synced clock arrives: dry, still, dim flashes. */
+export const CLEAR_WEATHER: Readonly<Weather> = {
+  phase: "clear",
+  phaseT: 0,
+  cycle: 0,
+  rain: 0,
+  wetness: 0,
+  haze: 0,
+  flash: FLASH_DRY,
+  wind: { x: 0, z: 0 },
+};

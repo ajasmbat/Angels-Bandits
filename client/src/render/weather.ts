@@ -16,7 +16,11 @@
 // emissive sheen/ripples — never SSR. Every new term stays far under the 0.72
 // bloom threshold (the ground additionally sits under its own luma cap).
 
-import type { Weather } from "@angels-bandits/common/weather";
+import {
+  CLEAR_WEATHER,
+  type Weather,
+  weatherAt,
+} from "@angels-bandits/common/weather";
 import * as THREE from "three";
 
 export const WEATHER_UNIFORM = { value: new THREE.Vector4() };
@@ -24,6 +28,28 @@ export const WEATHER_UNIFORM = { value: new THREE.Vector4() };
 /** Ripple clock wrap, s. Every ripple period (1, 1.5, 2 s) divides it, so
  * the wrap is seamless. */
 export const RIPPLE_WRAP_S = 600;
+
+/** The weather curves move over minutes — resample at most this often, ms
+ * (keeps weatherAt's small allocations out of most frames). */
+const RESAMPLE_MS = 250;
+
+/** Cached sampler of the shared cycle: CLEAR_WEATHER until the synced clock
+ * exists (never a local clock — every client must agree). */
+export class WeatherClock {
+  private lastMs = Number.NEGATIVE_INFINITY;
+  private current: Weather = CLEAR_WEATHER;
+
+  constructor(private readonly seed: number) {}
+
+  at(syncedMs: number | null): Weather {
+    if (syncedMs === null) return CLEAR_WEATHER;
+    if (Math.abs(syncedMs - this.lastMs) >= RESAMPLE_MS) {
+      this.current = weatherAt(this.seed, syncedMs);
+      this.lastMs = syncedMs;
+    }
+    return this.current;
+  }
+}
 
 /** Feed this frame's weather. `syncedMs` null (clock not synced yet) keeps the
  * ripple clock still — there is no rain before sync anyway. */

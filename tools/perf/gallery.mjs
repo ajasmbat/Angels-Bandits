@@ -1,13 +1,30 @@
 // VO gallery: fixed viewpoints -> PNGs, for before/after visual review.
 //   npm run build -w client && node tools/perf/gallery.mjs <outDir> [port] [view,view]
 // Uses the cached chromium headless shell on Metal (see tools/perf/README.md).
+//
+// L4 weather pass (optional): WEATHER=clear,drizzle,downpour pins each
+// weather phase via __ab.weather(phase) and shoots every view once per
+// weather, as <view>-<weather>.png. FRAMES=120 also measures each shot's
+// frame-time p50 and draw calls over that many frames (after a 2 s warm-up)
+// into <outDir>/weather-perf.json. RES=<ratio> pins the pixel ratio (default
+// 1.5). CHROMIUM=<path> overrides the browser;
+// off macOS it falls back to Playwright's own (SwiftShader — relative
+// numbers only, see the README).
 import { spawn } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { platform } from "node:os";
 import { resolve } from "node:path";
 import { chromium } from "playwright";
 const OUT = resolve(process.argv[2] ?? "gallery");
 const PORT = Number(process.argv[3] ?? 8099);
 const ONLY = process.argv[4] ? process.argv[4].split(",") : null;
+const WEATHERS = process.env.WEATHER ? process.env.WEATHER.split(",") : [null];
+const FRAMES = Number(process.env.FRAMES ?? 0);
+/** Pinned pixel ratio (the auto scaler would hide fill cost). */
+const RES = process.env.RES ?? "1.5";
+const MAC_SHELL = `${process.env.HOME}/Library/Caches/ms-playwright/chromium_headless_shell-1223/chrome-headless-shell-mac-arm64/chrome-headless-shell`;
+const EXECUTABLE =
+  process.env.CHROMIUM ?? (existsSync(MAC_SHELL) ? MAC_SHELL : undefined);
 mkdirSync(OUT, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const server = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
@@ -36,8 +53,11 @@ try {
     await sleep(250);
   }
   browser = await chromium.launch({
-    executablePath: `${process.env.HOME}/Library/Caches/ms-playwright/chromium_headless_shell-1223/chrome-headless-shell-mac-arm64/chrome-headless-shell`,
-    args: ["--use-angle=metal", "--enable-gpu"],
+    executablePath: EXECUTABLE,
+    args:
+      platform() === "darwin"
+        ? ["--use-angle=metal", "--enable-gpu"]
+        : ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"],
   });
   const page = await browser.newPage({
     viewport: { width: 1280, height: 720 },
@@ -47,44 +67,87 @@ try {
   page.on("console", (m) => {
     if (m.type() === "error") console.error("CONSOLE", m.text());
   });
-  await page.goto(`http://127.0.0.1:${PORT}/?res=1.5`);
+  await page.goto(`http://127.0.0.1:${PORT}/?res=${RES}`);
   await page.fill("#join-name", "SHOT");
   await page.click('#join button[type="submit"]');
   await page.waitForFunction(() => !!window.__ab, null, { timeout: 60000 });
   await page.evaluate(() => window.__ab.setBots(0));
   await sleep(1500);
-  for (const v of VIEWS) {
-    if (ONLY && !ONLY.includes(v.name)) continue;
-    const pin = async () =>
-      page.evaluate((v) => {
-        window.__ab.teleport(v.x, v.z, v.y, v.yaw);
-        if (v.pitch) {
-          const s = window.__ab.state();
-          s.pitch = v.pitch;
-        }
-      }, v);
-    await pin();
-    if (v.orbit) {
-      await page.mouse.move(640, 360);
-      await page.keyboard.down("KeyE");
-      for (let k = 0; k < 12; k++) {
-        await page.mouse.move(640 + ((k + 1) * v.orbit) / 12, 360 - k * 2);
-        await sleep(30);
-      }
+  const perfRows = [];
+  for (const wx of WEATHERS) {
+    if (wx) {
+      const state = await page.evaluate((w) => window.__ab.weather(w), wx);
+      console.log("weather", wx, JSON.stringify(state));
+      await sleep(1500); // resample + let the haze/rain settle
     }
-    for (let k = 0; k < 18; k++) {
+    for (const v of VIEWS) {
+      if (ONLY && !ONLY.includes(v.name)) continue;
+      const pin = async () =>
+        page.evaluate((v) => {
+          window.__ab.teleport(v.x, v.z, v.y, v.yaw);
+          if (v.pitch) {
+            const s = window.__ab.state();
+            s.pitch = v.pitch;
+          }
+        }, v);
       await pin();
-      await sleep(90);
+      if (v.orbit) {
+        await page.mouse.move(640, 360);
+        await page.keyboard.down("KeyE");
+        for (let k = 0; k < 12; k++) {
+          await page.mouse.move(640 + ((k + 1) * v.orbit) / 12, 360 - k * 2);
+          await sleep(30);
+        }
+      }
+      for (let k = 0; k < 18; k++) {
+        await pin();
+        await sleep(90);
+      }
+      const shot = wx ? `${v.name}-${wx}` : v.name;
+      // Generous timeout: a software (SwiftShader) frame can take seconds.
+      await page.screenshot({ path: `${OUT}/${shot}.png`, timeout: 180000 });
+      if (FRAMES > 0) {
+        // Frame cost at this exact pin: warm up, reset, hold until FRAMES.
+        for (let k = 0; k < 20; k++) {
+          await pin();
+          await sleep(100);
+        }
+        await page.evaluate(() => window.__ab.perfReset());
+        while (
+          (await page.evaluate(() => window.__ab.perfStats().count)) < FRAMES
+        ) {
+          await pin();
+          await sleep(100);
+        }
+        const st = await page.evaluate(() => window.__ab.perfStats());
+        const drops = wx
+          ? (await page.evaluate(() => window.__ab.weather())).drops
+          : 0;
+        perfRows.push({
+          view: v.name,
+          weather: wx,
+          p50: st.p50,
+          drawCalls: st.drawCalls,
+          drawCallsMax: st.drawCallsMax,
+          drops,
+        });
+        console.log("perf", shot, JSON.stringify(perfRows.at(-1)));
+      }
+      if (v.orbit) {
+        await page.keyboard.up("KeyE");
+        await sleep(600);
+      }
+      console.log(
+        "shot",
+        shot,
+        JSON.stringify(await page.evaluate(() => window.__ab.perf())),
+      );
     }
-    await page.screenshot({ path: `${OUT}/${v.name}.png` });
-    if (v.orbit) {
-      await page.keyboard.up("KeyE");
-      await sleep(600);
-    }
-    console.log(
-      "shot",
-      v.name,
-      JSON.stringify(await page.evaluate(() => window.__ab.perf())),
+  }
+  if (FRAMES > 0) {
+    writeFileSync(
+      `${OUT}/weather-perf.json`,
+      JSON.stringify(perfRows, null, 2),
     );
   }
 } finally {

@@ -34,6 +34,11 @@ import {
 import { hitRangeBudgetFor } from "@angels-bandits/common/net";
 import type { ScoreEntry, SpawnState } from "@angels-bandits/common/protocol";
 import { strikesInWindow } from "@angels-bandits/common/storm";
+import {
+  WEATHER_PHASES,
+  type WeatherPhase,
+  phaseWindow,
+} from "@angels-bandits/common/weather";
 import { wrapDelta, wrapDistance } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -109,6 +114,7 @@ import {
   spinPropeller,
 } from "./render/plane";
 import { PlaneLights } from "./render/planelights";
+import { Rain } from "./render/rain";
 import { RemotePlanes } from "./render/remotes";
 import { MSAA_SAMPLES, readRenderOptions } from "./render/renderopts";
 import {
@@ -141,6 +147,7 @@ import { Streetlights } from "./render/streetlights";
 import { Tracers } from "./render/tracers";
 import { Traffic } from "./render/traffic";
 import { PlaneTrails } from "./render/trails";
+import { WeatherClock, setWeatherUniform } from "./render/weather";
 import { nearestImage } from "./render/wrapPlacement";
 import { BotBar } from "./ui/botbar";
 import { CommsTicker } from "./ui/comms";
@@ -174,7 +181,9 @@ const { welcome } = socket;
 
 // --- Scene & renderer ---
 const scene = new THREE.Scene();
-// Before anything compiles: the haze layer lives in three's fog chunks.
+// Before anything compiles: the haze layer lives in three's fog chunks, and
+// (L4) the weather's haze uniform is patched into every fogged ShaderLib
+// entry here — any program compiled earlier (a pre-warm) would miss it.
 installHeightFog();
 setupSky(scene);
 
@@ -410,6 +419,14 @@ const clouds = new CloudDeck(welcome.seed);
 scene.add(clouds.group);
 // The storm's neutral radar: strikes reveal nearby planes to EVERYONE.
 const reveals = new StormReveals();
+// L4 weather: one seeded cycle on the synced clock (clear until sync) drives
+// the rain streaks, wet ground/facades, haze (via storm.atmosphere) and the
+// rain bed. `weatherShift` is the QA pin (__ab.weather) — an offset, so the
+// pinned sky keeps its ripples and drift moving.
+const weather = new WeatherClock(welcome.seed);
+const rain = new Rain();
+scene.add(rain.mesh);
+let weatherShift = 0;
 // Distance-delayed rumbles: flash now, thunder wrapDistance/340 later.
 const thunder = new ThunderSchedule();
 /** Recent strikes as consumed from the schedule (QA hook — two tabs must
@@ -967,6 +984,19 @@ declare global {
         inCombat: boolean;
         log: { at: number; speaker: string; ticker: string; voice: string }[];
       };
+      /** L4 QA: pin the weather to a synced time (number) or the middle of a
+       * phase (name) in the current cycle; null releases the pin. */
+      weather: (at?: number | WeatherPhase | null) => {
+        shiftMs: number;
+        timeMs: number | null;
+        phase: string;
+        phaseT: number;
+        rain: number;
+        wetness: number;
+        haze: number;
+        flash: number;
+        drops: number;
+      };
       storm: () => {
         seed: number;
         strikes: { timeMs: number; x: number; z: number }[];
@@ -1172,6 +1202,28 @@ window.__ab = {
       shake: turbulenceOffset(performance.now(), flight.pos.y),
     };
   },
+  weather: (at) => {
+    const rt = socket.renderTime();
+    if (at === null) weatherShift = 0;
+    else if (typeof at === "number") weatherShift = rt === null ? 0 : at - rt;
+    else if (at !== undefined && rt !== null && WEATHER_PHASES.includes(at)) {
+      const [a, b] = phaseWindow(welcome.seed, rt, at);
+      weatherShift = (a + b) / 2 - rt;
+    }
+    const t = rt === null ? null : rt + weatherShift;
+    const wx = weather.at(t);
+    return {
+      shiftMs: weatherShift,
+      timeMs: t,
+      phase: wx.phase,
+      phaseT: wx.phaseT,
+      rain: wx.rain,
+      wetness: wx.wetness,
+      haze: wx.haze,
+      flash: wx.flash,
+      drops: rain.drops,
+    };
+  },
 };
 
 // --- Frame loop ---
@@ -1200,6 +1252,10 @@ for (const o of [
 ]) {
   o.visible = false;
 }
+// L4: the rain program too — the first drizzle must not hitch on a compile.
+rain.mesh.visible = true;
+renderer.compile(rain.mesh, camera, scene);
+rain.mesh.visible = false;
 
 renderer.setAnimationLoop((now) => {
   const rawMs = now - last;
@@ -1589,7 +1645,14 @@ renderer.setAnimationLoop((now) => {
   for (const ev of thunder.due(now)) audio.thunder(ev.gain, ev.hard);
   storm.update(chase.position, now);
   clouds.update(chase.position, camera.quaternion, renderMs);
-  const sky = storm.atmosphere(scene, chase.position.y, now);
+  // L4 weather on the latched clock: rain streaks, wet surfaces, rain bed,
+  // and (through atmosphere, the single fog writer) haze + flash strength.
+  const wxMs = renderMs === null ? null : renderMs + weatherShift;
+  const wx = weather.at(wxMs);
+  setWeatherUniform(wx, wxMs);
+  rain.update(wx, wxMs, camera.position, dt);
+  audio.setRain(rain.level);
+  const sky = storm.atmosphere(scene, chase.position.y, now, wx);
   skyDome.tint(sky.tint);
   skyDome.mesh.visible = sky.domeVisible;
   explosions.update(chase.position, now, dt);

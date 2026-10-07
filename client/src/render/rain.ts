@@ -103,6 +103,7 @@ export class Rain {
   private readonly fade = { value: 0 };
   private readonly lastCam = new THREE.Vector3();
   private hasLastCam = false;
+  private heard = 0;
 
   constructor() {
     // Unit streak quad: x = side (−1..1), y = along (0 head .. 1 tail).
@@ -147,6 +148,16 @@ export class Rain {
     this.mesh.visible = false;
   }
 
+  /** Streaks drawn this frame (QA). */
+  get drops(): number {
+    return this.mesh.visible ? this.geometry.instanceCount : 0;
+  }
+
+  /** Rain heard at the camera, 0..1 (none above the cloud base). */
+  get level(): number {
+    return this.heard;
+  }
+
   /**
    * Once per frame. `wx` is the shared weather, `syncedMs` the synced clock
    * (null before sync — the weather is clear then anyway), `camera` the
@@ -174,6 +185,7 @@ export class Rain {
     const altK =
       1 - Math.min(1, Math.max(0, (camera.y - (CLOUD_BASE - 40)) / 40));
     const k = wx.rain * altK;
+    this.heard = k;
     const count = Math.round(MAX_DROPS * Math.min(1, k / 0.9));
     if (count === 0 || syncedMs === null) {
       this.mesh.visible = false;

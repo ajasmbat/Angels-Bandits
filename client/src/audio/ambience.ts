@@ -37,6 +37,14 @@ const WEIGHTS = {
   plaza: 0.2,
   wind: 0.28,
 } as const;
+/** L4 rain on the canopy, absolute levels on the sfx bus (weather is not a
+ * city layer: it keeps falling through combat and the kill-cam). A
+ * band-passed hiss from the first drizzle, plus a low roar that only fills
+ * in past drizzle strength (0.3). A tunnel keeps most of it out. */
+const RAIN_HISS_LEVEL = 0.07;
+const RAIN_ROAR_LEVEL = 0.09;
+const RAIN_DRIZZLE = 0.3;
+const RAIN_TUNNEL_KEEP = 0.2;
 /** Tunnel reverb send off the sfx bus, capped: it taps the explosions too. */
 const REVERB_SEND = 0.3;
 const REVERB_SECONDS = 1.3;
@@ -70,6 +78,8 @@ export interface AmbienceFrame {
   combat: boolean;
   /** Synced server clock (socket.renderTime()); null until the first snapshot. */
   serverTimeMs: number | null;
+  /** L4 weather: rain heard at the camera, 0..1 (0 above the cloud base). */
+  rain?: number;
 }
 
 interface Graph {
@@ -88,6 +98,8 @@ interface Graph {
   wind: GainNode;
   windFilter: BiquadFilterNode;
   reverbSend: GainNode;
+  rainHiss: GainNode;
+  rainRoar: GainNode;
 }
 
 /** A seeded buffer of white noise (or a decaying stereo impulse). */
@@ -132,6 +144,7 @@ export class CityAmbience {
   private inHole = false;
   private sirenDistance: number | null = null;
   private sirenLevel = 0;
+  private rainLevel = 0;
 
   constructor(
     private readonly audio: { mixBus(): MixBus | null },
@@ -158,6 +171,7 @@ export class CityAmbience {
     const sp = siren ? spatialize(f.pos, f.yaw, siren.pos) : null;
     this.sirenDistance = sp ? sp.distance : null;
     this.sirenLevel = siren && sp ? siren.level * sirenGain(sp.distance) : 0;
+    this.rainLevel = Math.max(0, Math.min(1, f.rain ?? 0));
 
     const mixBus = this.audio.mixBus();
     if (!mixBus) return;
@@ -180,6 +194,23 @@ export class CityAmbience {
     // The send is gated BEFORE the convolver, so leaving a tunnel lets the
     // tail ring out instead of cutting the echo dead.
     this.ramp(g.reverbSend.gain, REVERB_SEND * m.reverb, now, 0.15);
+    // L4 rain: slow ramps — weather swells, it never snaps.
+    const rainKeep = 1 - (1 - RAIN_TUNNEL_KEEP) * m.reverb;
+    const r = this.rainLevel;
+    this.ramp(
+      g.rainHiss.gain,
+      Math.sqrt(r) * RAIN_HISS_LEVEL * rainKeep,
+      now,
+      0.8,
+    );
+    this.ramp(
+      g.rainRoar.gain,
+      (Math.max(0, r - RAIN_DRIZZLE) / (1 - RAIN_DRIZZLE)) *
+        RAIN_ROAR_LEVEL *
+        rainKeep,
+      now,
+      0.8,
+    );
 
     if (now >= this.nextHornAt) {
       this.nextHornAt =
@@ -214,6 +245,7 @@ export class CityAmbience {
         this.sirenDistance === null
           ? null
           : { distance: this.sirenDistance, gain: this.sirenLevel },
+      rain: this.rainLevel,
     };
   }
 
@@ -384,6 +416,21 @@ export class CityAmbience {
     );
     sfx.connect(reverbSend).connect(convolver).connect(master);
 
+    // L4 rain: two beds off the shared long noise (no audible loop), straight
+    // into sfx — under the radio duck, outside the city bus's alive/combat gate.
+    const rainHiss = ctx.createGain();
+    rainHiss.gain.value = 0;
+    noiseSource(1.31, 2.1)
+      .connect(filter("bandpass", 5200, 0.6))
+      .connect(rainHiss)
+      .connect(sfx);
+    const rainRoar = ctx.createGain();
+    rainRoar.gain.value = 0;
+    noiseSource(0.83, 0.7)
+      .connect(filter("lowpass", 700, 0.7))
+      .connect(rainRoar)
+      .connect(sfx);
+
     this.nextBarAt = now;
     this.nextHornAt = now + HORN_MIN_GAP_S;
     return {
@@ -402,6 +449,8 @@ export class CityAmbience {
       wind,
       windFilter,
       reverbSend,
+      rainHiss,
+      rainRoar,
     };
   }
 }

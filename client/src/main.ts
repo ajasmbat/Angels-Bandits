@@ -422,7 +422,7 @@ scene.add(clouds.group);
 const reveals = new StormReveals();
 // L4 weather: one seeded cycle on the synced clock (clear until sync) drives
 // the rain streaks, wet ground/facades, haze (via storm.atmosphere) and the
-// rain bed. `weatherShift` is the QA pin (__ab.weather) — an offset, so the
+// rain bed (through L2's ambience). `weatherShift` is the QA pin (__ab.weather) — an offset, so the
 // pinned sky keeps its ripples and drift moving.
 const weather = new WeatherClock(welcome.seed);
 const rain = new Rain();
@@ -1656,13 +1656,13 @@ renderer.setAnimationLoop((now) => {
   for (const ev of thunder.due(now)) audio.thunder(ev.gain, ev.hard);
   storm.update(chase.position, now);
   clouds.update(chase.position, camera.quaternion, renderMs);
-  // L4 weather on the latched clock: rain streaks, wet surfaces, rain bed,
-  // and (through atmosphere, the single fog writer) haze + flash strength.
+  // L4 weather on the latched clock: rain streaks, wet surfaces, and
+  // (through atmosphere, the single fog writer) haze + flash strength. The
+  // rain bed rides L2's ambience below (rain.level).
   const wxMs = renderMs === null ? null : renderMs + weatherShift;
   const wx = weather.at(wxMs);
   setWeatherUniform(wx, wxMs);
   rain.update(wx, wxMs, camera.position, dt);
-  audio.setRain(rain.level);
   const sky = storm.atmosphere(scene, chase.position.y, now, wx);
   skyDome.tint(sky.tint);
   skyDome.mesh.visible = sky.domeVisible;
@@ -1709,6 +1709,7 @@ renderer.setAnimationLoop((now) => {
     alive,
     combat: radio.inCombat(now),
     serverTimeMs: renderMs,
+    rain: rain.level, // L4 weather
   });
 
   // FOV must land BEFORE the render: the lead reticle and edge markers below

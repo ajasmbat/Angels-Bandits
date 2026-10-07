@@ -109,6 +109,7 @@ import {
   spinPropeller,
 } from "./render/plane";
 import { PlaneLights } from "./render/planelights";
+import { CityReactor } from "./render/reactions";
 import { RemotePlanes } from "./render/remotes";
 import { MSAA_SAMPLES, readRenderOptions } from "./render/renderopts";
 import {
@@ -400,6 +401,19 @@ const sparks = new Sparks();
 scene.add(sparks.points);
 const smoke = new SmokeTrails();
 scene.add(smoke.points);
+// --- L1 reactive city (ANGE-WCQNFJ) ---
+// Server-accepted city events (gunfire near buildings, deaths — coalesced on
+// the server, replayed in the welcome) drive car alarms, woken windows, smoke
+// columns and responders; snapshot low passes scatter the crowd; planes in
+// range pull the searchlights. One Points draw (the smoke) — everything else
+// rides traffic/signals/pedestrians/searchlights/building shader. Fed below in
+// onSnapshot/onRespawn and evaluated per frame before traffic.update.
+const reactor = new CityReactor(city.cityBuildings);
+scene.add(reactor.points);
+reactor.ingest(welcome.cityEvents ?? []);
+socket.events.onCityEvent = (event) => reactor.ingest([event]);
+/** Planes the searchlights track this frame (reused, no per-frame array). */
+const trackedPlanes: { x: number; y: number; z: number }[] = [];
 // ST2 storm: bolts + flash from the shared schedule — zero strike netcode;
 // every client computes the identical storm from (seed, synced clock).
 const storm = new StormRenderer(city.cityBuildings);
@@ -671,6 +685,7 @@ function remoteFired(id: string): void {
 // --- Server events ---
 socket.events.onSnapshot = (snap) => {
   remotes.ingest(snap);
+  reactor.observeSnapshot(snap, socket.selfId); // L1 low passes + own track
   const self = snap.players.find((p) => p.id === socket.selfId);
   if (self) {
     selfHp = self.hp;
@@ -761,6 +776,7 @@ socket.events.onDeath = (msg) => {
 socket.events.onRespawn = (msg) => {
   // Fresh spawn, fresh trail — a rebased teleport would smear smoke 1 km.
   smoke.clear(msg.id);
+  if (msg.id === socket.selfId) reactor.clearSelfTrack(); // L1: track jumps
   if (msg.id === socket.selfId) respawnSelf(msg.spawn);
   else remotes.respawn(msg.id);
 };
@@ -967,6 +983,17 @@ declare global {
         inCombat: boolean;
         log: { at: number; speaker: string; ticker: string; voice: string }[];
       };
+      /** L1 QA: the live city events and what the city is doing about them
+       * at this tab's render clock — two tabs must report the same. */
+      reactions: () => {
+        renderTime: number | null;
+        events: { kind: string; x: number; y: number; z: number; t: number }[];
+        wakes: { x: number; z: number; strength: number }[];
+        smokes: { x: number; base: number; z: number; age: number }[];
+        responders: { kind: string; x: number; z: number; yaw: number }[];
+        lowPasses: { x: number; z: number; t: number }[];
+        puffs: number;
+      };
       storm: () => {
         seed: number;
         strikes: { timeMs: number; x: number; z: number }[];
@@ -1157,6 +1184,27 @@ window.__ab = {
   }),
   // ST2 QA: consumed strikes (two tabs must agree), the next scheduled
   // strike (for staging reveals), live reveal pings, and atmosphere state.
+  reactions: () => {
+    const r = reactor.reactions;
+    return {
+      renderTime: r.timeMs,
+      events: reactor.eventList,
+      wakes: r.wakes
+        .slice(0, r.wakeCount)
+        .map((w) => ({ x: w.x, z: w.z, strength: w.strength })),
+      smokes: r.smokes
+        .slice(0, r.smokeCount)
+        .map((s) => ({ x: s.x, base: s.base, z: s.z, age: s.age })),
+      responders: r.responders.slice(0, r.responderCount).map((v) => ({
+        kind: v.kind,
+        x: v.x,
+        z: v.z,
+        yaw: v.yaw,
+      })),
+      lowPasses: reactor.lowPasses.map((p) => ({ ...p })),
+      puffs: reactor.puffCount,
+    };
+  },
   storm: () => {
     const rt = socket.renderTime();
     return {
@@ -1534,13 +1582,26 @@ renderer.setAnimationLoop((now) => {
   natureRenderer.update(chase.position);
   // Neon pulses on the same synced clock as the beacons.
   signage.update(chase.position, renderMs ?? now);
-  traffic.update(chase.position, renderMs);
+  // L1 reactive city: evaluate once on the latched clock, then hand the view
+  // to traffic (responders + hazards), signals, pedestrians, searchlights.
+  const cityReact = reactor.update(chase.position, renderMs);
+  traffic.update(chase.position, renderMs, cityReact);
   // Every L2 system takes the SAME latched clock the crash check used.
   movers.update(chase.position, renderMs, moverLights);
   fireworks.update(chase.position, renderMs, moverLights);
   // After movers.update: the helicopters' belly spots are this frame's, and
   // the lamp heads land in the same point cloud before commit().
-  searchlights.update(chase.position, renderMs, movers.spots, moverLights);
+  trackedPlanes.length = 0;
+  const selfOnRecord = renderMs === null ? null : reactor.selfAt(renderMs);
+  if (selfOnRecord) trackedPlanes.push(selfOnRecord);
+  for (const target of targets) trackedPlanes.push(target.pos);
+  searchlights.update(
+    chase.position,
+    renderMs,
+    movers.spots,
+    moverLights,
+    trackedPlanes,
+  );
   birds.update(chase.position, renderMs);
   moverLights.commit();
   // L1 micro tier — on the same latched clock, for the same reason. ONE gate
@@ -1552,12 +1613,12 @@ renderer.setAnimationLoop((now) => {
   // beat the gate reads a frozen camera altitude. That is correct — the view
   // is frozen too.
   const microK = microOn ? microGate(chase.position.y) : 0;
-  pedestrians.update(chase.position, renderMs, microK);
+  pedestrians.update(chase.position, renderMs, microK, reactor.lowPasses);
   // Phase-only subsystems fall back to local time before the first snapshot
   // (the signage policy): a plume or a signal in the wrong part of its cycle
   // is invisible, where hiding every one of them until clock sync would not be.
   steam.update(chase.position, renderMs ?? now, microK);
-  signals.update(chase.position, renderMs ?? now, microK);
+  signals.update(chase.position, renderMs ?? now, microK, cityReact);
   constructionSparks.update(chase.position, renderMs ?? now, microK);
   ground.update(chase.position);
   skyDome.update(chase.position);

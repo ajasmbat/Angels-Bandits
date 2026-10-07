@@ -5,6 +5,11 @@
 // per-frame integration state to drift. Same pure-layout/renderer split as
 // streetlights.ts: the exported functions are the tested seam.
 //
+// L1 reactive city (ANGE-WCQNFJ) appends MAX_RESPONDERS slots to the same
+// mesh for the police cars and ambulances answering a death (reactions.ts),
+// and flashes the hazards (aSiren band 3) of any car inside an alarm radius.
+// Still one draw call.
+//
 // L1 added the emergency vehicle: two of the cars carry a flashing light bar,
 // riding the SAME InstancedMesh through a per-instance aSiren attribute — zero
 // new draw calls, per the ticket's "reuse the traffic car-light slots" rule.
@@ -14,11 +19,19 @@ import { LANE_CENTERS } from "@angels-bandits/common/city/street";
 import {
   BLOCK_PITCH,
   EMISSIVE_BEACON,
+  EMISSIVE_HAZARD,
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
 import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
+import {
+  type CityReactions,
+  MAX_RESPONDERS,
+  type ResponderPose,
+  alarmBlinkOn,
+  alarmed,
+} from "./reactions";
 import { nearestImage } from "./wrapPlacement";
 
 /** Lane centerlines from the S1 street contract (±5 m, right-hand traffic). */
@@ -195,6 +208,10 @@ const TAILLIGHT = "vec3(3.4, 0.16, 0.14)";
 const BODY_COLORS = [0x2a2d38, 0x3a2f2c, 0x24333a, 0x38323f, 0x2e3830];
 /** Ambulances are pale so the light bar has something to wash across. */
 const AMBULANCE_BODY = 0xf2f4f7;
+/** L1 responders: police are dark navy, their ambulances the same pale. */
+const POLICE_BODY = 0x1b2744;
+/** aSiren value for a car whose hazards are lit this beat (L1 alarms). */
+const HAZARD_ON = 3;
 
 /**
  * A ladder-derived GLSL literal. The existing HEADLIGHT/TAILLIGHT literals
@@ -211,6 +228,8 @@ const ladderVec3 = (hex: number, rung: number): string => {
 };
 const SIREN_RED = ladderVec3(0xff1a1f, EMISSIVE_BEACON);
 const SIREN_BLUE = ladderVec3(0x2a55ff, EMISSIVE_BEACON);
+/** Car-alarm hazard amber, on its own HAZARD rung (just under the lamps). */
+const HAZARD_AMBER = ladderVec3(0xffa21a, EMISSIVE_HAZARD);
 
 const VERTEX_PARS = /* glsl */ `
 // Three aliases the attribute KEYWORD via "#define attribute in", but it
@@ -238,22 +257,26 @@ const FRAGMENT_MAIN = /* glsl */ `
 // Paired light dots on the front (−Z) and rear (+Z) faces, in object space.
 // Oversized vs real car lights on purpose: they must read from flight
 // altitude, where bloom merges each pair into one glow.
+// L1 hazards: band 2.5–3.5 lights amber over the head/tail dots this beat.
+float hazard = step(2.5, vSiren) * step(vSiren, 3.5);
 if (vCarNormal.z < -0.5) {
   float headDist = min(
     distance(vCarPos.xy, vec2(0.5, 0.6)),
     distance(vCarPos.xy, vec2(-0.5, 0.6))
   );
-  totalEmissiveRadiance += (1.0 - smoothstep(0.28, 0.5, headDist)) * ${HEADLIGHT};
+  float headDot = 1.0 - smoothstep(0.28, 0.5, headDist);
+  totalEmissiveRadiance += headDot * mix(${HEADLIGHT}, ${HAZARD_AMBER}, hazard);
 } else if (vCarNormal.z > 0.5) {
   float tailDist = min(
     distance(vCarPos.xy, vec2(0.55, 0.55)),
     distance(vCarPos.xy, vec2(-0.55, 0.55))
   );
-  totalEmissiveRadiance += (1.0 - smoothstep(0.22, 0.4, tailDist)) * ${TAILLIGHT};
+  float tailDot = 1.0 - smoothstep(0.22, 0.4, tailDist);
+  totalEmissiveRadiance += tailDot * mix(${TAILLIGHT}, ${HAZARD_AMBER}, hazard);
 }
 // Ambulance light bar, on the roof face. Compared by BAND, never by equality:
 // an interpolated varying is not bit-exact across the perspective divide.
-if (vSiren > 0.5 && vCarNormal.y > 0.5) {
+if (vSiren > 0.5 && vSiren < 2.5 && vCarNormal.y > 0.5) {
   float redSide = step(vSiren, 1.5);
   float dRed = distance(vCarPos.xz, vec2(-0.55, 0.0));
   float dBlue = distance(vCarPos.xz, vec2(0.55, 0.0));
@@ -275,7 +298,7 @@ function createCarMaterial(): THREE.MeshStandardMaterial {
   // This patch body is TEXTUALLY identical to buildings-material's (same
   // idiom, same local names), so without an explicit key the cars silently
   // reuse the buildings' compiled program and the light dots never appear.
-  material.customProgramCacheKey = () => "ab-car-lights-siren";
+  material.customProgramCacheKey = () => "ab-car-lights-siren-hazard";
   material.onBeforeCompile = (shader) => {
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", `#include <common>\n${VERTEX_PARS}`)
@@ -307,6 +330,10 @@ export class Traffic {
   private readonly siren: THREE.InstancedBufferAttribute;
   /** Instance index → true when that slot is an ambulance. */
   private readonly isAmbulance: boolean[];
+  /** Ordinary traffic slots; responders occupy [fleet, fleet + MAX_RESPONDERS). */
+  private readonly fleet: number;
+  private readonly bodyColor = new THREE.Color();
+  private static readonly HIDDEN = new THREE.Matrix4().makeScale(0, 0, 0);
   private readonly scratch = new THREE.Matrix4();
   private readonly quat = new THREE.Quaternion();
   private readonly pos = new THREE.Vector3();
@@ -323,7 +350,9 @@ export class Traffic {
     );
     geometry.translate(0, CAR_SIZE.height / 2, 0); // wheels on the street
 
-    const capacity = this.lanes.length * CARS_PER_LANE;
+    this.fleet = this.lanes.length * CARS_PER_LANE;
+    // L1: responder slots ride the end of the same mesh (0 new draws).
+    const capacity = this.fleet + MAX_RESPONDERS;
     // An instanced attribute on the per-Traffic BoxGeometry is safe:
     // WebGLBindingStates takes the divisor from meshPerAttribute and skips the
     // _maxInstanceCount override for an isInstancedMesh draw.
@@ -360,8 +389,13 @@ export class Traffic {
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
   }
 
-  /** Place every car for server time `serverTimeMs` (null = clock unknown → hide). */
-  update(cameraPos: Vec3, serverTimeMs: number | null): void {
+  /** Place every car for server time `serverTimeMs` (null = clock unknown → hide).
+   * `reactions` (L1) adds the responders and lights alarmed cars' hazards. */
+  update(
+    cameraPos: Vec3,
+    serverTimeMs: number | null,
+    reactions?: CityReactions,
+  ): void {
     if (serverTimeMs === null) {
       this.mesh.visible = false;
       return;
@@ -371,6 +405,12 @@ export class Traffic {
     // One siren state for the whole fleet: the flash is a function of server
     // time alone, so both ambulances beat together and so do both tabs.
     const flash = sirenState(t);
+    // Alarms only matter on the lit half of the blink, and only while any
+    // source is ringing — otherwise the per-car check is skipped outright.
+    const hazards =
+      reactions !== undefined &&
+      reactions.wakeCount > 0 &&
+      alarmBlinkOn(serverTimeMs);
     let index = 0;
     for (const lane of this.lanes) {
       for (let i = 0; i < CARS_PER_LANE; i++) {
@@ -379,12 +419,53 @@ export class Traffic {
         this.quat.setFromAxisAngle(Traffic.UP, yaw);
         this.pos.set(p.x, p.y, p.z);
         this.scratch.compose(this.pos, this.quat, Traffic.UNIT);
-        this.siren.setX(index, this.isAmbulance[index] ? flash : 0);
+        let siren = this.isAmbulance[index] ? flash : 0;
+        if (siren === 0 && hazards && alarmed(reactions, pos.x, pos.z)) {
+          siren = HAZARD_ON;
+        }
+        this.siren.setX(index, siren);
         this.mesh.setMatrixAt(index++, this.scratch);
       }
     }
+    this.placeResponders(cameraPos, flash, reactions);
     this.mesh.instanceMatrix.needsUpdate = true;
     this.siren.needsUpdate = true;
+  }
+
+  /** L1: police + ambulances answering a death, light bars going; idle
+   * slots collapse to a zero-scale matrix. */
+  private placeResponders(
+    cameraPos: Vec3,
+    flash: 1 | 2,
+    reactions?: CityReactions,
+  ): void {
+    const count = reactions?.responderCount ?? 0;
+    let colors = false;
+    for (let k = 0; k < MAX_RESPONDERS; k++) {
+      const slot = this.fleet + k;
+      const r = k < count ? (reactions?.responders[k] as ResponderPose) : null;
+      if (!r) {
+        this.mesh.setMatrixAt(slot, Traffic.HIDDEN);
+        this.siren.setX(slot, 0);
+        continue;
+      }
+      const p = nearestImage(cameraPos, { x: r.x, y: 0, z: r.z });
+      this.quat.setFromAxisAngle(Traffic.UP, r.yaw);
+      this.pos.set(p.x, 0, p.z);
+      this.scratch.compose(this.pos, this.quat, Traffic.UNIT);
+      this.mesh.setMatrixAt(slot, this.scratch);
+      // Police and ambulance alternate opposite sides of the bar.
+      this.siren.setX(
+        slot,
+        r.kind === "police" ? (flash === 1 ? 2 : 1) : flash,
+      );
+      this.bodyColor.setHex(r.kind === "police" ? POLICE_BODY : AMBULANCE_BODY);
+      this.mesh.setColorAt(slot, this.bodyColor);
+      colors = true;
+    }
+    if (colors && this.mesh.instanceColor) {
+      this.mesh.instanceColor.needsUpdate = true;
+    }
   }
 
   /**

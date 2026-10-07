@@ -77,7 +77,12 @@ import {
   instructorInput,
 } from "./game/instructor";
 import { magnetizeVelocity } from "./game/magnetism";
-import { assistLatch, createAvoidance, stepAvoidance } from "./game/proximity";
+import {
+  type ProximityCue,
+  assistLatch,
+  createAvoidance,
+  stepAvoidance,
+} from "./game/proximity";
 import {
   BASE_FOV,
   createZoom,
@@ -536,6 +541,7 @@ let avoidLatch: AimError = { yaw: 0, pitch: 0 };
 /** Last frame's warning / predicted impact (QA hook only). */
 let avoidWarning = false;
 let avoidImpactIn: number | null = null;
+let avoidCue: ProximityCue | null = null;
 // Hold-SPACE boost (F2): the local half of the shared energy model. The
 // server mirrors it from the edges we send, so `boostSent` tracks what the
 // server was last told.
@@ -593,9 +599,10 @@ function enterDeath(killerId: string | null, cause?: "storm"): void {
   avoidance = createAvoidance();
   avoidLatch = { yaw: 0, pitch: 0 };
   hud.setFreeLook(false);
-  hud.setPullUp(false);
+  hud.setProximity(null);
   avoidWarning = false;
   avoidImpactIn = null;
+  avoidCue = null;
   killCamTargetId = killerId;
   hud.showKillCam(killerId === null ? null : nameOf(killerId), cause);
   setBoostBurning(false, performance.now());
@@ -907,6 +914,7 @@ declare global {
       avoidance: () => {
         on: boolean;
         warning: boolean;
+        cue: ProximityCue | null;
         impactIn: number | null;
         pitch: number;
         turn: number;
@@ -1073,6 +1081,7 @@ window.__ab = {
   avoidance: () => ({
     on: assistOn,
     warning: avoidWarning,
+    cue: avoidCue,
     impactIn: avoidImpactIn,
     pitch: avoidance.pitch,
     turn: avoidance.turn,
@@ -1231,7 +1240,7 @@ renderer.setAnimationLoop((now) => {
     hud.showAimMode(aimMode);
   }
   if (input.assistOn() !== assistOn) {
-    // N flips the avoidance assist; the PULL UP warning stays either way.
+    // N flips the avoidance assist; the proximity warning stays either way.
     assistOn = input.assistOn();
     hud.showAssist(assistOn);
   }
@@ -1358,7 +1367,8 @@ renderer.setAnimationLoop((now) => {
     );
     avoidWarning = avoid.warning;
     avoidImpactIn = avoid.impactIn;
-    hud.setPullUp(avoid.warning);
+    avoidCue = avoid.cue;
+    hud.setProximity(avoid.cue);
     if (avoid.warning) audio.pullUpTone(now);
     flight = stepFlight(flight, avoid.input, dt);
     // Own control surfaces follow what the plane is actually flying — the

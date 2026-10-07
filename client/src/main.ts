@@ -13,8 +13,12 @@ import {
   stopBoost,
 } from "@angels-bandits/common/boost";
 import type { Building } from "@angels-bandits/common/city";
-import { generateMovers } from "@angels-bandits/common/city/movers";
+import {
+  generateMovers,
+  withNewsHeli,
+} from "@angels-bandits/common/city/movers";
 import { natureFor } from "@angels-bandits/common/city/nature";
+import { setNewsTarget } from "@angels-bandits/common/city/newsheli";
 import { buildNatureIndex } from "@angels-bandits/common/collision";
 import {
   BLOCK_PITCH,
@@ -349,7 +353,19 @@ scene.add(traffic.mesh);
 // L2 movers: cranes, helicopters, the blimp. Poses are the SAME pure function
 // of (seed, server clock) the crash check uses, so what you see is what you
 // can hit — and nothing about them is ever streamed.
-const moverField = generateMovers(welcome.seed, city.cityBuildings);
+// L10: plus this room's news heli — the server authors its route from kill
+// sites; the welcome hands a late joiner the current one, `newsHeli` the rest.
+const moverField = withNewsHeli(
+  generateMovers(welcome.seed, city.cityBuildings),
+  welcome.seed,
+);
+if (moverField.news && welcome.newsHeli) {
+  moverField.news.target = welcome.newsHeli.target;
+  moverField.news.prev = welcome.newsHeli.prev;
+}
+socket.events.onNewsHeli = (msg) => {
+  if (moverField.news) setNewsTarget(moverField.news, msg.target);
+};
 const movers = new Movers(moverField);
 scene.add(movers.rig, movers.hulls, movers.rotors);
 // One additive point cloud shared by every L2 light: crane warning beacons,

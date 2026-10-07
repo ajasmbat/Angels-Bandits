@@ -682,6 +682,12 @@ export class RoomBots {
     bot.breakTurn = bot.rand() < 0.5 ? -1 : 1;
   }
 
+  /** Where a bot last was, alive or not — a crash marks it dead inside
+   * tick(), before index.ts can ask poseOf(). The news heli (L10) needs it. */
+  lastPosOf(id: string): Vec3 | null {
+    return this.bots.get(id)?.flight.pos ?? null;
+  }
+
   /** Death settled by Combat: freeze until respawn() reseeds the flight. */
   setDead(id: string): void {
     const bot = this.bots.get(id);

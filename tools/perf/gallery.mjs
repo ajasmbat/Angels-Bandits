@@ -114,28 +114,37 @@ try {
       await sleep(500);
     }
     if (!q) throw new Error("no red-light queue of 3+ within 60 s");
-    // The plane hangs back along the lane, looking down it at the stop line:
-    // forward is −Z at yaw 0 for planes and cars alike.
+    // The plane hangs beyond the intersection over the OPPOSITE lane and
+    // looks back down the street, so the queue faces the camera — headlights,
+    // cones and pools — without the plane hiding it. Forward is −Z at yaw 0
+    // for planes and cars alike.
     const fx = -Math.sin(q.yaw);
     const fz = -Math.cos(q.yaw);
+    const alongZ = Math.abs(fz) > 0.5;
+    const cross = alongZ ? q.x : q.z;
+    const mirror = 2 * Math.round(cross / 200) * 200 - cross;
     const view = {
-      x: q.x - fx * 62,
-      z: q.z - fz * 62,
-      y: 24,
-      yaw: q.yaw,
-      pitch: -0.32,
+      x: (alongZ ? mirror : q.x) + fx * 45,
+      z: (alongZ ? q.z : mirror) + fz * 45,
+      y: 40,
+      yaw: q.yaw + Math.PI,
+      pitch: -0.45,
     };
-    const hold = async () => {
-      for (let k = 0; k < 18; k++) {
-        await page.evaluate((v) => {
-          window.__ab.teleport(v.x, v.z, v.y, v.yaw);
-          window.__ab.state().pitch = v.pitch;
-        }, view);
-        await sleep(90);
-      }
-    };
+    // Pin the plane every frame IN the page (no round trip per pin): on a
+    // slow GPU each page.evaluate waits on a frame, and the queue would drive
+    // out of shot before a round-trip hold finished.
+    await page.evaluate((v) => {
+      const pin = () => {
+        if (!window.__abPin) return;
+        window.__ab.teleport(v.x, v.z, v.y, v.yaw);
+        window.__ab.state().pitch = v.pitch;
+        requestAnimationFrame(pin);
+      };
+      window.__abPin = true;
+      pin();
+    }, view);
+    await sleep(1500);
     if (wantRed) {
-      await hold();
       await page.screenshot({ path: `${OUT}/intersection-red.png` });
       console.log(
         "shot intersection-red",
@@ -144,23 +153,36 @@ try {
       );
     }
     if (wantGreen) {
-      for (let k = 0; k < 120; k++) {
-        const aspect = await page.evaluate(
-          (q) => window.__ab.trafficAspect(q.bx, q.bz)[q.axis],
-          q,
+      // Shoot as the light turns: by the time the frame is captured the
+      // start-up wave is rolling (a slow GPU adds whole seconds here).
+      await page.waitForFunction(
+        (q) => window.__ab.trafficAspect(q.bx, q.bz)[q.axis] === "green",
+        q,
+        { polling: "raf", timeout: 60000 },
+      );
+      const greenAt = await page.evaluate(() => window.__ab.traffic().time);
+      const wait = Number(process.env.AB_GREEN_WAIT_MS ?? 1500);
+      if (wait > 0) {
+        await page.waitForFunction(
+          ([at, ms]) => window.__ab.traffic().time >= at + ms,
+          [greenAt, wait],
+          { polling: "raf", timeout: 30000 },
         );
-        if (aspect === "green") break;
-        await sleep(250);
       }
-      // A few seconds into green: the start-up wave is rolling.
-      await sleep(2500);
-      await hold();
       await page.screenshot({ path: `${OUT}/intersection-green.png` });
+      const late = await page.evaluate(
+        (at) => window.__ab.traffic().time - at,
+        greenAt,
+      );
       console.log(
         "shot intersection-green",
+        `${(late / 1000).toFixed(1)} s into green`,
         JSON.stringify(await page.evaluate(() => window.__ab.perf())),
       );
     }
+    await page.evaluate(() => {
+      window.__abPin = false;
+    });
   }
 } finally {
   server.kill();

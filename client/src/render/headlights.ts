@@ -225,8 +225,11 @@ export class Headlights {
       CONE_COLOR,
       CONE_OPACITY,
     );
-    // The camera can sit inside a beam at street level.
+    // The camera can sit inside a beam at street level. One pass, not three's
+    // default back-then-front pair for transparent double-sided materials:
+    // additive blending is order-free, and the second pass is a draw call.
     coneMaterial.side = THREE.DoubleSide;
+    coneMaterial.forceSinglePass = true;
     this.cones = new THREE.InstancedMesh(cone, coneMaterial, capacity);
 
     // A unit quad on the ground, from the bumper (z = 0) forward to z = −1.

@@ -125,18 +125,23 @@ try {
         await sleep(90);
       }
       if (wx) {
-        // A scheduled strike flashes the whole sky violet for one frame, and
-        // at a software renderer's ~0.5 fps that is a large share of frames:
-        // wait for a quiet sky (next strike well beyond the shot's latency).
-        for (let k = 0; k < 30; k++) {
-          const quiet = await page.evaluate(() => {
-            const w = window.__ab.weather();
-            const next = window.__ab.storm().nextStrike;
-            return !next || next.timeMs - (w.timeMs - w.shiftMs) > 9000;
-          });
-          if (quiet) break;
-          await sleep(1000);
+        // A scheduled strike flashes the whole sky violet in the frame that
+        // consumes it, and on a software renderer (~0.5 fps) a strike that is
+        // due but not yet consumed lands in the very frame a shot captures.
+        // So wait for a strike to be CONSUMED, let two more frames render,
+        // and shoot then: the next strike is ≥ 8 s away by the schedule.
+        const lastStrike = () =>
+          page.evaluate(() => window.__ab.storm().strikes.at(-1)?.timeMs ?? 0);
+        const before = await lastStrike();
+        for (let k = 0; k < 60 && (await lastStrike()) === before; k++) {
+          await sleep(500);
         }
+        await page.evaluate(
+          () =>
+            new Promise((r) =>
+              requestAnimationFrame(() => requestAnimationFrame(r)),
+            ),
+        );
       }
       const shot = wx ? `${v.name}-${wx}` : v.name;
       // Generous timeout: a software (SwiftShader) frame can take seconds.

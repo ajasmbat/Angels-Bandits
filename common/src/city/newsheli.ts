@@ -19,7 +19,8 @@
 //      box points a little off its track, which is accepted.
 //   2. Transit: a straight line to the TANGENT point of a counter-clockwise
 //      orbit around the site, so it joins the circle already flying along it.
-//      A start inside (or on) the circle flies radially out and joins there.
+//      A start inside (or on) the circle has no tangent: it spirals out onto
+//      the circle instead, already flying the orbit's direction.
 //      Altitude eases from fy to the orbit altitude under NEWS_HELI_CLIMB.
 //   3. Orbit: counter-clockwise at NEWS_HELI_ORBIT_SPEED, forever, until the
 //      server issues the next target.
@@ -104,8 +105,12 @@ interface Route {
   /** Transit length, m, and duration, s. */
   len: number;
   dur: number;
-  /** Orbit angle where the transit joins the circle, rad. */
+  /** Orbit angle where the transit joins the circle, rad — or, for a
+   * spiral (start inside the circle), the angle the spiral starts at. */
   theta: number;
+  spiral: boolean;
+  /** Start's distance from the centre, m. */
+  d: number;
 }
 
 function routeOf(target: NewsHeliTarget): Route {
@@ -127,7 +132,7 @@ function routeOf(target: NewsHeliTarget): Route {
     dx = -Math.sin(theta);
     dz = Math.cos(theta);
   } else {
-    // Inside or on the circle: radially out, join where we cross it.
+    // Inside or on the circle: spiral out from the start's own angle.
     theta = phi;
     len = R - d;
     dx = Math.cos(theta);
@@ -137,7 +142,7 @@ function routeOf(target: NewsHeliTarget): Route {
     len / NEWS_HELI_TRANSIT_SPEED,
     Math.abs(target.y - target.fy) / NEWS_HELI_CLIMB,
   );
-  return { vx, vz, dx, dz, len, dur, theta };
+  return { vx, vz, dx, dz, len, dur, theta, spiral: d <= R, d };
 }
 
 /** Server time the heli reaches its orbit for this target, ms. */
@@ -164,7 +169,18 @@ export function newsHeliBoxInto(
   let y: number;
   let hx: number;
   let hz: number;
-  if (tau < r.dur) {
+  const omega = NEWS_HELI_ORBIT_SPEED / NEWS_HELI_ORBIT_R;
+  if (r.spiral) {
+    // Angle advances at orbit rate from the start; radius eases out to R.
+    const k = r.dur > 0 ? Math.min(1, tau / r.dur) : 1;
+    const a = r.theta + tau * omega;
+    const rad = r.d + r.len * k;
+    rx = Math.cos(a) * rad;
+    rz = Math.sin(a) * rad;
+    y = target.fy + (target.y - target.fy) * k;
+    hx = -Math.sin(a);
+    hz = Math.cos(a);
+  } else if (tau < r.dur) {
     const k = tau / r.dur;
     rx = r.vx + r.dx * r.len * k;
     rz = r.vz + r.dz * r.len * k;
@@ -172,8 +188,7 @@ export function newsHeliBoxInto(
     hx = r.dx;
     hz = r.dz;
   } else {
-    const a =
-      r.theta + ((tau - r.dur) * NEWS_HELI_ORBIT_SPEED) / NEWS_HELI_ORBIT_R;
+    const a = r.theta + (tau - r.dur) * omega;
     rx = Math.cos(a) * NEWS_HELI_ORBIT_R;
     rz = Math.sin(a) * NEWS_HELI_ORBIT_R;
     y = target.y;

@@ -19,6 +19,7 @@ import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { emissiveBoost } from "./emissive";
+import { HAZE_WEATHER } from "./fog";
 import { DUSK, FOG_NEAR } from "./sky";
 import { nearestImage } from "./wrapPlacement";
 
@@ -272,6 +273,23 @@ const IN_CLOUD_FOG_NEAR = 12;
 const IN_CLOUD_FOG_FAR = 190;
 const IN_CLOUD_FOG_COLOR = 0x3a3c52;
 
+/** L4 weather → atmosphere. A downpour pulls the fog's near edge in (fog FAR
+ * never moves: it is the torus occlusion guarantee), thickens the height haze
+ * by up to RAIN_HAZE_EXTRA, and darkens fog + dome TOGETHER by up to
+ * RAIN_DARKEN (darken-only, so the horizon seam stays invisible). */
+const RAIN_FOG_NEAR = 70;
+const RAIN_HAZE_EXTRA = 0.9;
+const RAIN_DARKEN = 0.15;
+
+/** The slice of the shared weather (common/src/weather.ts) the sky reads. */
+export interface SkyWeather {
+  /** Extra haze, 0..1. */
+  haze: number;
+  /** Lightning flash scale (dim in a dry sky, 1 in a downpour). */
+  flash: number;
+}
+const DRY_SKY: SkyWeather = { haze: 0, flash: 1 };
+
 /** Kill bolts linger through the kill-cam beat, not just a schedule blink. */
 const KILL_BOLT_LIFE_MS = 900;
 
@@ -432,21 +450,31 @@ export class StormRenderer {
    * render at all (inside cloud the fog IS the sky). Tracers and all other
    * emissives are unlit materials, so the ambient pulse cannot wash them
    * out, and the stained fog peaks far below the 0.72 bloom threshold.
+   *
+   * L4: `wx` is the shared weather — rain haze, darker air and a flash that
+   * reads brightest in a downpour all route through here, so this stays the
+   * single writer of fog state (the strike schedule itself never changes:
+   * strikes are server-authoritative kills).
    */
   atmosphere(
     scene: THREE.Scene,
     cameraY: number,
     nowMs: number,
+    wx: SkyWeather = DRY_SKY,
   ): { tint: THREE.Color; domeVisible: boolean } {
-    const f = this.flashLevel(nowMs);
+    const f = this.flashLevel(nowMs) * wx.flash;
     // 0 below the deck → 1 fully inside; a 30 m ramp kills boundary flicker.
     const inK = Math.min(1, Math.max(0, (cameraY - CLOUD_BASE) / 30));
     this.flashLight.intensity = f * FLASH_PEAK * (1 + inK * 0.6);
+    HAZE_WEATHER.x = RAIN_HAZE_EXTRA * wx.haze;
+    const dim = 1 - RAIN_DARKEN * wx.haze;
     if (scene.fog instanceof THREE.Fog) {
-      scene.fog.near = FOG_NEAR + (IN_CLOUD_FOG_NEAR - FOG_NEAR) * inK;
+      const near = FOG_NEAR + (RAIN_FOG_NEAR - FOG_NEAR) * wx.haze;
+      scene.fog.near = near + (IN_CLOUD_FOG_NEAR - near) * inK;
       scene.fog.far = FOG_DISTANCE + (IN_CLOUD_FOG_FAR - FOG_DISTANCE) * inK;
       scene.fog.color
         .copy(this.fogBase)
+        .multiplyScalar(dim)
         .lerp(this.cloudFogColor, inK * 0.85)
         .lerp(this.flashColor, f * FLASH_TINT * (1 + inK));
       if (scene.background instanceof THREE.Color) {
@@ -455,7 +483,7 @@ export class StormRenderer {
     }
     // Dome stain: multiplicative tint pulled toward violet and brightened.
     this.scratch
-      .setRGB(1, 1, 1)
+      .setRGB(dim, dim, dim)
       .lerp(this.flashColor, f * FLASH_TINT)
       .multiplyScalar(1 + f * 1.6);
     return { tint: this.scratch, domeVisible: inK < 0.5 };

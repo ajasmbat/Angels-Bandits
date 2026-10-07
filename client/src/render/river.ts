@@ -571,7 +571,9 @@ export class RiverRenderer {
     sky.needsUpdate = true;
     const material = new THREE.MeshStandardMaterial({
       color: COLORS.water,
-      roughness: 0.3,
+      // Rough on purpose: the reflection is the faked one below. A smooth
+      // material adds the real moon's specular as a wide white smear on top.
+      roughness: 0.9,
       metalness: 0,
     });
     material.customProgramCacheKey = () => "ab-river-water";

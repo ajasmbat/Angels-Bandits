@@ -35,7 +35,7 @@ import {
 import { flightForward } from "@angels-bandits/common/flight";
 import type { SpawnState } from "@angels-bandits/common/protocol";
 import { canonicalize, wrapDeltaAxis } from "@angels-bandits/common/world";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   type BotShot,
   RoomBots,
@@ -45,6 +45,14 @@ import {
 } from "../src/bots";
 import { Combat } from "../src/combat";
 import { pickRespawn } from "../src/respawn";
+
+// These sims are long, synchronous CPU loops, and vitest only yields
+// MICROtasks between tests: the worker never reads the main thread's RPC
+// acks until the file ends. On a loaded machine that stretch outlives the
+// worker's 60 s RPC timeout ("Timeout calling onTaskUpdate") and fails the
+// run with every test green. One macrotask turn after each test lets the
+// acks through.
+afterEach(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
 
 /** A fixed mid-altitude spawn: tests place bots explicitly. */
 const spawnAt = (x: number, z: number, yaw = 0, y = 300): SpawnState => ({

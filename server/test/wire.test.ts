@@ -86,6 +86,9 @@ beforeAll(async () => {
   child = spawn("npx", ["tsx", entry], {
     env: { ...process.env, PORT: "0" },
     stdio: ["ignore", "pipe", "pipe"],
+    // Its own process group, so afterAll can stop the real server too:
+    // npx → tsx → node, and a plain kill() only reaches npx.
+    detached: true,
   });
   url = await new Promise<string>((resolve, reject) => {
     const timer = setTimeout(
@@ -102,7 +105,9 @@ beforeAll(async () => {
 }, 30000);
 
 afterAll(() => {
-  child?.kill();
+  // Negative pid = the whole group. Without it every run orphaned a live
+  // server (bots ticking at 20 Hz) that outlived the suite.
+  if (child?.pid) process.kill(-child.pid);
 });
 
 describe("quantised snapshots over the wire", () => {
@@ -205,8 +210,16 @@ describe("hit claims at the new cadence", () => {
       streamPose(target, at(1000 + BULLET_RANGE / 2, 1000));
       await wait(1000 / 20);
     }
-    // Spawn protection has to lapse before a hit can land at all.
-    await wait(SPAWN_PROTECTION_MS);
+    // Spawn protection has to lapse before a hit can land at all. Keep
+    // streaming the parked poses while it does, as a real client would:
+    // SPAWN_PROTECTION_MS outlasts LIVENESS_TIMEOUT_MS, and a silent socket
+    // is terminated by the server's liveness sweep before the claim is sent.
+    const until = performance.now() + SPAWN_PROTECTION_MS;
+    while (performance.now() < until) {
+      streamPose(shooter, at(1000, 1000));
+      streamPose(target, at(1000 + BULLET_RANGE / 2, 1000));
+      await wait(1000 / 20);
+    }
     for (let i = 0; i < 4; i++) {
       streamPose(shooter, at(1000, 1000));
       streamPose(target, at(1000 + BULLET_RANGE / 2, 1000));

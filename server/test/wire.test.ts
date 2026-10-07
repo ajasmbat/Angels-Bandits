@@ -83,7 +83,9 @@ const streamPose = (peer: Peer, pose: Pose): void => {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 beforeAll(async () => {
-  child = spawn("npx", ["tsx", entry], {
+  // node itself (tsx as a loader), not `npx tsx`: kill() in afterAll must
+  // reach the server, or it outlives the test and keeps flying its bots.
+  child = spawn(process.execPath, ["--import", "tsx", entry], {
     env: { ...process.env, PORT: "0" },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -206,11 +208,11 @@ describe("hit claims at the new cadence", () => {
       await wait(1000 / 20);
     }
     // Spawn protection has to lapse before a hit can land at all. Keep
-    // streaming through it, as a real client does: since F4 the protection
-    // (5.5 s) outlasts LIVENESS_TIMEOUT_MS (4 s), and a silent wait got both
-    // sockets dropped by the liveness sweep before the claim was ever sent.
-    const protectedUntil = Date.now() + SPAWN_PROTECTION_MS;
-    while (Date.now() < protectedUntil) {
+    // streaming at the uplink rate meanwhile, as a real client does: since F4
+    // raised protection to 5.5 s, a silent wait outlasts LIVENESS_TIMEOUT_MS
+    // and the server drops both sockets before the shot.
+    const protectionEnds = Date.now() + SPAWN_PROTECTION_MS;
+    while (Date.now() < protectionEnds) {
       streamPose(shooter, at(1000, 1000));
       streamPose(target, at(1000 + BULLET_RANGE / 2, 1000));
       await wait(1000 / 20);

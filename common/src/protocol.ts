@@ -5,6 +5,7 @@
 // drop-in swap.
 
 import type { NewsHeliSlot, NewsHeliTarget } from "./city/newsheli";
+import type { CityEvent } from "./cityevents";
 import type { Vec3 } from "./world/index";
 
 /** Unit quaternion, Three.js component order. Attitude of a plane on the wire. */
@@ -151,6 +152,9 @@ export interface WelcomeMsg {
   /** The room's shared bot count, so a late joiner's slider starts in the
    * right place instead of guessing the default. */
   botTarget: number;
+  /** L1: the room's city events from the last SMOKE_LIFE_MS, oldest first, so
+   * a joiner sees the same smoke, alarms and responders as everyone else. */
+  cityEvents: CityEvent[];
   /** The room's news heli (L10): current target and the one before it, so a
    * late joiner flies the same heli as everyone else. Welcome-only — live
    * changes arrive as NewsHeliMsg, so snapshots pay nothing for it. */
@@ -292,6 +296,13 @@ export interface BotsConfigMsg {
   byName: string;
 }
 
+/** L1: a server-accepted moment the city reacts to (gunfire near buildings,
+ * a death). Sent right after the `death` it belongs to, same server `now`. */
+export interface CityEventMsg {
+  type: "cityEvent";
+  event: CityEvent;
+}
+
 /**
  * The news heli takes a new story (L10): the server picked the latest kill
  * site and authored the route there. Every client installs it and derives the
@@ -314,4 +325,5 @@ export type ServerMsg =
   | DamageMsg
   | DeathMsg
   | RespawnMsg
-  | ScoreMsg;
+  | ScoreMsg
+  | CityEventMsg;

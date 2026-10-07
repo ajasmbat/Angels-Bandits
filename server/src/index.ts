@@ -60,6 +60,7 @@ import {
   landBotRound,
   poseVelocity,
 } from "./bots";
+import { CityEventLog, nearBuildingProbe } from "./cityevents";
 import { Combat, type HitResult, type SpeedCapFn } from "./combat";
 import { pickBotRespawn, pickRespawn } from "./respawn";
 import { type Room, RoomManager } from "./room";
@@ -198,6 +199,32 @@ const poseAgeOf = (id: string, time: number): number => {
   return client ? Math.max(0, time - client.poseTime) : 0;
 };
 
+// --- L1 reactive city: server-accepted events, broadcast + replayed ---
+const cityEvents = new CityEventLog(nearBuildingProbe(city));
+
+/** Where a member is on record, alive OR dead — memberPose() is null the
+ * moment Combat marks a victim dead, which is exactly when a death's site is
+ * needed. Humans: last validated pose. Bots: last sim position. */
+const lastPosOf = (room: Room, id: string): Vec3 | null =>
+  room.members.get(id)?.isBot
+    ? botsFor(room).lastPosOf(id)
+    : (clients.get(id)?.pose.pos ?? null);
+
+/** Offer `id`'s position to the room's city-event log at server time `now`
+ * and broadcast the event if the city reacts. Call it right after the
+ * `death`/fire it belongs to, with the same `now`. */
+function offerCityEvent(
+  room: Room,
+  kind: "gunfire" | "death",
+  id: string,
+  now: number,
+): void {
+  const pos = lastPosOf(room, id);
+  if (!pos) return;
+  const event = cityEvents.offer(room.id, kind, pos, now);
+  if (event) sendToRoom(room, { type: "cityEvent", event });
+}
+
 /** On-record positions of living roommates other than `exceptId` — the
  * enemies a farthest-from-enemies spawn keeps away from. */
 const livingEnemyPositions = (room: Room, exceptId: string): Vec3[] => {
@@ -234,6 +261,7 @@ function syncRoomBots(room: Room): void {
   // A wound-down room (no humans, no bots) is gone — drop its pilots too.
   if (!rooms.rooms.includes(room)) {
     botsByRoom.delete(room.id);
+    cityEvents.forget(room.id);
     roomMoversById.delete(room.id);
     pendingKillByRoom.delete(room.id);
   }
@@ -288,6 +316,7 @@ function handleJoin(ws: WebSocket, rawName: unknown): Client {
     roster: room.roster(),
     scores: room.roster().map(({ id: rid }) => combat.scoreOf(rid)),
     botTarget: room.botTarget,
+    cityEvents: cityEvents.recent(room.id, now),
     newsHeli: roomMovers(room).news,
   };
   ws.send(JSON.stringify(welcome));
@@ -384,6 +413,7 @@ function handleFire(client: Client, seq: unknown, now: number): void {
   // the shooter — a rejected shot just doesn't exist to anyone else).
   if (verdict.ok) {
     sendToRoom(client.room, { type: "fired", id: client.id }, client.id);
+    offerCityEvent(client.room, "gunfire", client.id, now);
   }
 }
 
@@ -451,6 +481,7 @@ function handleHitClaim(
       killerId: verdict.death.killerId,
       cause: verdict.death.cause,
     });
+    offerCityEvent(client.room, "death", verdict.death.victimId, now);
     broadcastScores(client.room);
   }
 }
@@ -506,6 +537,7 @@ function handleCrash(client: Client, now: number): void {
     killerId: death.killerId,
     cause: death.cause,
   });
+  offerCityEvent(client.room, "death", death.victimId, now);
   broadcastScores(client.room);
 }
 
@@ -577,6 +609,7 @@ function tickRoomBots(room: Room, now: number): void {
       killerId: death.killerId,
       cause: death.cause,
     });
+    offerCityEvent(room, "death", death.victimId, now);
     broadcastScores(room);
   }
 
@@ -592,6 +625,7 @@ function tickRoomBots(room: Room, now: number): void {
     bots.launch(shot, now);
     // Same cosmetic path as human fire: everyone renders the tracer.
     sendToRoom(room, { type: "fired", id: shot.botId });
+    offerCityEvent(room, "gunfire", shot.botId, now);
   }
 }
 
@@ -625,6 +659,7 @@ function routeBotHit(
       killerId: hit.death.killerId,
       cause: hit.death.cause,
     });
+    offerCityEvent(room, "death", hit.death.victimId, now);
     broadcastScores(room);
   }
 }
@@ -649,6 +684,7 @@ function enforceStormCeiling(room: Room, now: number): void {
       killerId: death.killerId,
       cause: death.cause,
     });
+    offerCityEvent(room, "death", death.victimId, now);
     broadcastScores(room);
   }
 }

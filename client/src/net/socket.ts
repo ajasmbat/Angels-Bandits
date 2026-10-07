@@ -11,6 +11,7 @@
 // also where snapshot-arrival jitter is measured: it is the one place that
 // sees every snapshot land on the local clock.
 
+import type { CityEvent } from "@angels-bandits/common/cityevents";
 import { TICK_UP_HZ } from "@angels-bandits/common/constants";
 import { decodeSnapshotEntry } from "@angels-bandits/common/net";
 import type {
@@ -40,6 +41,8 @@ export interface GameSocketEvents {
   onRespawn?: (msg: RespawnMsg) => void;
   onScores?: (scores: ScoreEntry[]) => void;
   onBotsConfig?: (msg: BotsConfigMsg) => void;
+  /** L1: a server-accepted event the city reacts to (reactions.ts). */
+  onCityEvent?: (event: CityEvent) => void;
   onNewsHeli?: (msg: NewsHeliMsg) => void;
   onClose?: () => void;
 }
@@ -273,6 +276,9 @@ export class GameSocket {
         break;
       case "death":
         this.events.onDeath?.(msg);
+        break;
+      case "cityEvent":
+        this.events.onCityEvent?.(msg.event);
         break;
       case "respawn":
         this.events.onRespawn?.(msg);

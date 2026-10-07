@@ -17,6 +17,9 @@
 // storm.ts makes for its rim flash. A bloomed cone would smear over half the
 // screen and bury tracers.
 //
+// L1 (ANGE-WCQNFJ): rooftop beams blend toward planes passing within ~250 m
+// (reactions.ts trackPlanesInto — a continuous weight, so no hand-off pop).
+//
 // Stations and sweeps are pure functions of (city, server time) — no seed
 // stream of its own, no state — so every client sweeps in lockstep.
 
@@ -30,6 +33,7 @@ import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
 import { AB_FOG_GLSL } from "./fog";
 import type { MoverLights } from "./movers";
+import { trackPlanesInto } from "./reactions";
 import { nearestImage } from "./wrapPlacement";
 
 /** How many rooftops carry a light. */
@@ -267,6 +271,9 @@ export class Searchlights {
   private readonly pos = new THREE.Vector3();
   private readonly dir = new THREE.Vector3();
   private readonly scale = new THREE.Vector3();
+  /** L1 tracking scratch: the canonical lamp and the biased direction. */
+  private readonly lamp = { x: 0, y: 0, z: 0 };
+  private readonly tracked = { x: 0, y: 1, z: 0 };
   /** Beams drawn last frame — for the perf report. */
   private drawn = 0;
 
@@ -339,6 +346,7 @@ export class Searchlights {
     serverTimeMs: number | null,
     spots: readonly SpotBeam[] = [],
     lights?: MoverLights,
+    planes: readonly Vec3[] = [],
   ): void {
     if (serverTimeMs === null) {
       this.mesh.visible = false;
@@ -357,9 +365,17 @@ export class Searchlights {
       // The lamp sits a little above the parapet, so the beam's root is not
       // swallowed by the roof slab.
       this.pos.set(p.x, p.y + 1.5, p.z);
+      // L1: the sweep swings toward planes within range of the lamp
+      // (canonical lamp → torus-aware deltas inside trackPlanesInto).
+      this.lamp.x = station.x;
+      this.lamp.y = station.y + 1.5;
+      this.lamp.z = station.z;
+      const sweep = beamDirection(station, serverTimeMs);
       this.place(
         index++,
-        beamDirection(station, serverTimeMs),
+        planes.length > 0
+          ? trackPlanesInto(this.lamp, sweep, planes, this.tracked)
+          : sweep,
         BEAM_LENGTH,
         BEAM_RADIUS,
       );

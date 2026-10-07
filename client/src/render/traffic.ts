@@ -28,6 +28,12 @@
 //    whole signal cycles: a shift of k·SIGNAL_CYCLE meets identical signals, so
 //    every platoon obeys them, and ≥ 2 cycles apart they never catch up.
 //
+// L1 reactive city (ANGE-WCQNFJ) appends MAX_RESPONDERS slots to the same
+// mesh for the police cars and ambulances answering a death (reactions.ts —
+// their own street routes, not the lane plans), and flashes the hazards
+// (light-bar channel band 3) of any vehicle inside an alarm radius. Still one
+// draw call.
+//
 // Emergency vehicles are the exception: they run the street CENTERLINE
 // between the two lanes at a steady speed, light bar flashing, through reds.
 // The centerline keeps them clear of every queue.
@@ -45,12 +51,20 @@ import {
 import {
   BLOCK_PITCH,
   EMISSIVE_BEACON,
+  EMISSIVE_HAZARD,
   EMISSIVE_SIGN,
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
 import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
+import {
+  type CityReactions,
+  MAX_RESPONDERS,
+  type ResponderPose,
+  alarmBlinkOn,
+  alarmed,
+} from "./reactions";
 import { GO_WINDOW, GREEN, SIGNAL_CYCLE, goWindowStart } from "./signals";
 import { nearestImageInto } from "./wrapPlacement";
 
@@ -61,11 +75,11 @@ const [LANE_MINUS, LANE_PLUS] = LANE_CENTERS;
 // Extensible on purpose: L1's responders (and anything after) add a row here
 // and a `code` branch in the shader, nothing else.
 
-export type VehicleKind = "car" | "taxi" | "bus" | "emergency";
+export type VehicleKind = "car" | "taxi" | "bus" | "emergency" | "police";
 
 export interface VehicleSpec {
   /** Shader selector: 0 car, 1 taxi (roof sign), 2 bus (window band),
-   * 3 emergency (light bar). */
+   * 3 emergency (light bar), 4 police (L1 responder; light bar). */
   code: number;
   /** Body box, meters; forward is −Z at yaw 0 (the plane convention). */
   length: number;
@@ -100,7 +114,19 @@ export const VEHICLES: Record<VehicleKind, VehicleSpec> = {
     height: 2.3,
     bodies: [0xf2f4f7],
   },
+  // L1 responders only (never drawn into a lane platoon): a dark navy cruiser.
+  police: {
+    code: 4,
+    length: 4.8,
+    width: 1.95,
+    height: 1.5,
+    bodies: [0x1b2744],
+  },
 };
+
+/** Light-bar channel value for a vehicle whose hazards are lit this beat
+ * (L1 car alarms) — band 2.5–3.5 in the shader, never a light bar. */
+const HAZARD_ON = 3;
 
 // --- Kinematics and the signal contract ------------------------------------
 
@@ -801,6 +827,8 @@ const TAXI_SIGN = ladderVec3(0xffd34a, EMISSIVE_SIGN);
 /** A bus's lit cabin: warm, deliberately SUB-bloom (0.55) — a glow behind
  * glass, not a light source. */
 const BUS_CABIN = ladderVec3(0xffd6a0, 0.55);
+/** L1 car-alarm hazard amber, on its own HAZARD rung (just under the lamps). */
+const HAZARD_AMBER = ladderVec3(0xffa21a, EMISSIVE_HAZARD);
 
 const VERTEX_PARS = /* glsl */ `
 // Three aliases the attribute KEYWORD via "#define attribute in", but it
@@ -848,13 +876,18 @@ bool abBus = vKind > 1.5 && vKind < 2.5;
 float abLampX = vDims.x * 0.5 - 0.45;
 float abLampY = abBus ? 0.85 : 0.6;
 vec2 abFace = vec2(abs(vCarPos.x), vCarPos.y);
+// L1 hazards: light-bar channel band 2.5–3.5 lights amber over the head and
+// tail dots this beat.
+float abHazard = step(2.5, vSiren) * step(vSiren, 3.5);
 if (vCarNormal.z < -0.5) {
   float headDist = distance(abFace, vec2(abLampX, abLampY));
-  totalEmissiveRadiance += (1.0 - smoothstep(0.28, 0.5, headDist)) * ${HEADLIGHT};
+  float head = 1.0 - smoothstep(0.28, 0.5, headDist);
+  totalEmissiveRadiance += head * mix(${HEADLIGHT}, ${HAZARD_AMBER}, abHazard);
 } else if (vCarNormal.z > 0.5) {
   float tailDist = distance(abFace, vec2(abLampX + 0.05, abLampY - 0.05));
   float tail = 1.0 - smoothstep(0.22 + 0.06 * vBrake, 0.4 + 0.08 * vBrake, tailDist);
-  totalEmissiveRadiance += tail * mix(${TAILLIGHT}, ${BRAKE_LIGHT}, vBrake);
+  vec3 tailLight = mix(${TAILLIGHT}, ${BRAKE_LIGHT}, vBrake);
+  totalEmissiveRadiance += tail * mix(tailLight, ${HAZARD_AMBER}, abHazard);
 }
 // Bus: a lit cabin band down both sides, broken by window pillars.
 if (abBus && abs(vCarNormal.x) > 0.5) {
@@ -871,7 +904,8 @@ if (vCarNormal.y > 0.5) {
     totalEmissiveRadiance += sign * ${TAXI_SIGN};
   }
   // Emergency light bar: red side, then blue side, on the server-time beat.
-  if (vSiren > 0.5) {
+  // Band 0.5–2.5 only: 3 is the L1 hazard flash, not a bar.
+  if (vSiren > 0.5 && vSiren < 2.5) {
     float redSide = step(vSiren, 1.5);
     float dRed = distance(vCarPos.xz, vec2(-0.55, 0.0));
     float dBlue = distance(vCarPos.xz, vec2(0.55, 0.0));
@@ -894,7 +928,7 @@ function createCarMaterial(): THREE.MeshStandardMaterial {
   // This patch body is TEXTUALLY identical to buildings-material's (same
   // idiom, same local names), so without an explicit key the cars silently
   // reuse the buildings' compiled program and the light dots never appear.
-  material.customProgramCacheKey = () => "ab-traffic-l6";
+  material.customProgramCacheKey = () => "ab-traffic-l6-l1-hazard";
   material.onBeforeCompile = (shader) => {
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", `#include <common>\n${VERTEX_PARS}`)
@@ -930,6 +964,14 @@ export class Traffic {
   private drawnCount = 0;
   /** Per-instance brake (x) and light-bar (y) state, rewritten every frame. */
   private readonly lamp: THREE.InstancedBufferAttribute;
+  /** Per-instance body dims + kind; responder slots are rewritten on change. */
+  private readonly body: THREE.InstancedBufferAttribute;
+  /** L1: which kind each responder slot is currently dressed as. */
+  private readonly responderKind: ("police" | "ambulance" | null)[] = new Array(
+    MAX_RESPONDERS,
+  ).fill(null);
+  private readonly bodyColor = new THREE.Color();
+  private static readonly HIDDEN = new THREE.Matrix4().makeScale(0, 0, 0);
   private readonly state = newVehicleState();
   /** Per-frame scratch: the fleet loop allocates no placement objects (O2). */
   private readonly canonical = { x: 0, y: 0, z: 0 };
@@ -942,7 +984,8 @@ export class Traffic {
 
   constructor(seed: number) {
     this.fleet = trafficFleet(seed);
-    const capacity = this.fleet.vehicles.length;
+    // L1: responder slots ride the end of the same mesh (0 new draws).
+    const capacity = this.fleet.vehicles.length + MAX_RESPONDERS;
     const geometry = new THREE.BoxGeometry(1, 1, 1);
     geometry.translate(0, 0.5, 0); // wheels on the street
 
@@ -954,14 +997,15 @@ export class Traffic {
       const spec = VEHICLES[v.kind];
       body.set([spec.width, spec.height, spec.length, spec.code], i * 4);
     });
-    geometry.setAttribute("aBody", new THREE.InstancedBufferAttribute(body, 4));
+    this.body = new THREE.InstancedBufferAttribute(body, 4);
+    geometry.setAttribute("aBody", this.body);
     this.lamp = new THREE.InstancedBufferAttribute(
       new Float32Array(capacity * 2),
       2,
     );
     this.lamp.setUsage(THREE.DynamicDrawUsage);
     geometry.setAttribute("aLamp", this.lamp);
-    this.frame = new Float32Array(capacity * 4);
+    this.frame = new Float32Array(this.fleet.vehicles.length * 4);
 
     this.mesh = new THREE.InstancedMesh(
       geometry,
@@ -976,10 +1020,15 @@ export class Traffic {
     this.fleet.vehicles.forEach((v, i) => {
       this.mesh.setColorAt(i, color.setHex(v.body));
     });
+    for (let k = 0; k < MAX_RESPONDERS; k++) {
+      const slot = this.fleet.vehicles.length + k;
+      this.mesh.setMatrixAt(slot, Traffic.HIDDEN);
+      this.mesh.setColorAt(slot, color.setHex(VEHICLES.police.bodies[0] ?? 0));
+    }
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
   }
 
-  /** Vehicles in the fleet (the instance count). */
+  /** Vehicles in the fleet (the lane traffic; responder slots excluded). */
   get capacity(): number {
     return this.fleet.vehicles.length;
   }
@@ -989,8 +1038,13 @@ export class Traffic {
     return this.drawnCount;
   }
 
-  /** Place every vehicle for server time `serverTimeMs` (null = clock unknown → hide). */
-  update(cameraPos: Vec3, serverTimeMs: number | null): void {
+  /** Place every vehicle for server time `serverTimeMs` (null = clock unknown → hide).
+   * `reactions` (L1) adds the responders and lights alarmed vehicles' hazards. */
+  update(
+    cameraPos: Vec3,
+    serverTimeMs: number | null,
+    reactions?: CityReactions,
+  ): void {
     if (serverTimeMs === null) {
       this.mesh.visible = false;
       this.drawnCount = 0;
@@ -1001,6 +1055,14 @@ export class Traffic {
     // One siren state for the whole fleet: the flash is a function of server
     // time alone, so both ambulances beat together and so do both tabs.
     const flash = sirenState(t);
+    // Alarms only matter on the lit half of the blink, and only while a
+    // source is ringing — otherwise the per-vehicle check is skipped.
+    const alarms =
+      reactions !== undefined &&
+      reactions.wakeCount > 0 &&
+      alarmBlinkOn(serverTimeMs)
+        ? reactions
+        : null;
     const s = this.state;
     const { vehicles } = this.fleet;
     for (let i = 0; i < vehicles.length; i++) {
@@ -1013,7 +1075,12 @@ export class Traffic {
       this.pos.set(p.x, 0, p.z);
       this.scratch.compose(this.pos, this.quat, Traffic.UNIT);
       this.mesh.setMatrixAt(i, this.scratch);
-      this.lamp.setXY(i, s.braking ? 1 : 0, v.runner ? flash : 0);
+      const hazard = !v.runner && alarms !== null && alarmed(alarms, s.x, s.z);
+      this.lamp.setXY(
+        i,
+        s.braking ? 1 : 0,
+        v.runner ? flash : hazard ? HAZARD_ON : 0,
+      );
       // Front bumper centre: half a length forward (forward = −Z at yaw 0).
       const half = VEHICLES[v.kind].length / 2;
       const f = i * 4;
@@ -1023,8 +1090,64 @@ export class Traffic {
       this.frame[f + 3] = VEHICLES[v.kind].width / 2;
     }
     this.drawnCount = vehicles.length;
+    this.placeResponders(cameraPos, flash, reactions);
     this.mesh.instanceMatrix.needsUpdate = true;
     this.lamp.needsUpdate = true;
+  }
+
+  /** L1: police + ambulances answering a death, light bars going; idle
+   * slots collapse to a zero-scale matrix. A slot is re-dressed (dims, kind
+   * code, body colour) only when the responder it carries changes kind. */
+  private placeResponders(
+    cameraPos: Vec3,
+    flash: 1 | 2,
+    reactions?: CityReactions,
+  ): void {
+    const base = this.fleet.vehicles.length;
+    const count = reactions?.responderCount ?? 0;
+    let redressed = false;
+    for (let k = 0; k < MAX_RESPONDERS; k++) {
+      const slot = base + k;
+      const r = k < count ? (reactions?.responders[k] as ResponderPose) : null;
+      if (!r) {
+        this.mesh.setMatrixAt(slot, Traffic.HIDDEN);
+        this.lamp.setXY(slot, 0, 0);
+        continue;
+      }
+      if (this.responderKind[k] !== r.kind) {
+        this.responderKind[k] = r.kind;
+        const spec = VEHICLES[r.kind === "police" ? "police" : "emergency"];
+        this.body.setXYZW(
+          slot,
+          spec.width,
+          spec.height,
+          spec.length,
+          spec.code,
+        );
+        this.mesh.setColorAt(
+          slot,
+          this.bodyColor.setHex(spec.bodies[0] ?? 0xf2f4f7),
+        );
+        redressed = true;
+      }
+      this.canonical.x = r.x;
+      this.canonical.z = r.z;
+      const p = nearestImageInto(this.image, cameraPos, this.canonical);
+      this.quat.setFromAxisAngle(Traffic.UP, r.yaw);
+      this.pos.set(p.x, 0, p.z);
+      this.scratch.compose(this.pos, this.quat, Traffic.UNIT);
+      this.mesh.setMatrixAt(slot, this.scratch);
+      // Police and ambulance alternate opposite sides of the bar.
+      this.lamp.setXY(
+        slot,
+        0,
+        r.kind === "police" ? (flash === 1 ? 2 : 1) : flash,
+      );
+    }
+    if (redressed) {
+      this.body.needsUpdate = true;
+      if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
+    }
   }
 
   /**

@@ -898,7 +898,12 @@ the end of this section.
   2–4 fps a 5 s wall-clock window holds 15–40 frames, so the median draw
   count flips when the frame count shifts across a visibility toggle. On the
   M3 a window holds ~500 frames. Before O4 the storm, canyon, street and
-  furball were all exempt.
+  furball were all exempt. The final run on the merged branch (3 passes)
+  held all six pinned segments identical: core 77, plaza 73, sky 66, canyon
+  78, storm 71, street 78. Every segment was alive, and there were no page
+  errors. The furball, exempt, read 78/239/78: its fake pilots were reaped
+  by the server's liveness timeout in two of the passes, which is O3's known
+  runner limit.
 - **The storm no longer waits.** It used to wait for the live clock's next
   strike, up to ~15 s of unpiloted flight from 380 m (the plane sinks or
   climbs with no input). It now pins its world time so the strike lands

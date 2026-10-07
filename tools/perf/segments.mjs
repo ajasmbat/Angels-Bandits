@@ -36,6 +36,32 @@ export const STRIKE_LEAD_MS = 1200;
 export const PILOT_SETTLE_MS = 1500;
 
 /**
+ * O4: the WORLD clock every segment is pinned to (`__ab.pinWorld`). Traffic,
+ * signage, living windows, the news heli, the train, drones, airliners,
+ * birds, fireworks and the storm are pure functions of (seed, server time),
+ * so pinning the time pins the scene — on every pass, in every arm that has
+ * the hook. Segment i starts at WORLD_EPOCH_MS + i * WORLD_STEP_MS (the
+ * storm segment then slides to its next strike), and the warm-up lap flies
+ * the same spots earlier still, so the world clock only ever moves FORWARD
+ * through a page: nothing in the client assumes a clock that runs back.
+ * A fixed instant in the FUTURE (2033), so even the first pin — from the
+ * live clock the page booted on — is a forward jump. The sky is pinned to
+ * deep night separately (`?sky=night`), the weather per segment below.
+ */
+export const WORLD_EPOCH_MS = 2_000_000_000_000;
+/** World time between segment starts: a segment (settle + window) plus the
+ * storm's longest slide to its next strike (15 s) fit inside it. */
+export const WORLD_STEP_MS = 30_000;
+/** Weather for a segment that does not name one. */
+export const DEFAULT_WEATHER = "clear";
+
+/** Where segment `i` of the measured pass starts on the world clock. */
+export const segmentWorldMs = (i) => WORLD_EPOCH_MS + i * WORLD_STEP_MS;
+/** Where segment `i` of the warm-up lap starts — before the whole pass. */
+export const warmupWorldMs = (i) =>
+  WORLD_EPOCH_MS - (SEGMENTS.length - i + 1) * WORLD_STEP_MS;
+
+/**
  * O3's contract, judged per segment (run.mjs `segmentVerdicts`).
  *
  *  - `gpuP50Ms` — 60 fps at the measured ratio: a 16.7 ms frame minus ~2.7 ms

@@ -96,6 +96,11 @@ export class StrikeFeed {
     this.lastT = nowServerMs;
     return strikes;
   }
+
+  /** Forget the last poll: the next one only primes (a QA clock jump). */
+  reset(): void {
+    this.lastT = null;
+  }
 }
 
 /** One active reveal: a plane the storm lit, echoing where it was lit. */

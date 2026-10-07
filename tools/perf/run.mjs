@@ -32,12 +32,15 @@ import { startPilots } from "./pilots.mjs";
 import { prepareRefBuild } from "./refbuild.mjs";
 import {
   BUDGETS,
+  DEFAULT_WEATHER,
   PILOT_SETTLE_MS,
   SAMPLE_MS,
   SEGMENTS,
   SETTLE_MS,
   STRIKE_LEAD_MS,
   WARMUP_MS,
+  segmentWorldMs,
+  warmupWorldMs,
 } from "./segments.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -285,7 +288,7 @@ async function joinGame(page, url) {
  * which is exactly the kind of silent drift a determinism claim has to not
  * have.
  */
-async function flySegment(page, seg, sampleMs) {
+async function flySegment(page, seg, sampleMs, worldMs) {
   const stats = await page.evaluate(
     async (s) => {
       const ab = window.__ab;
@@ -300,13 +303,31 @@ async function flySegment(page, seg, sampleMs) {
           requestAnimationFrame(tick);
         });
 
-      // O3: pin the segment's weather (a downpour, for the street-level
-      // segments). An --ab-ref build from before L4 has no weather hook at
-      // all: the segment still flies dry, and is reported as having no
+      // O4: pin the WORLD clock (segments.mjs WORLD_EPOCH_MS) so traffic,
+      // signage, movers, the storm and every other time-driven system draw
+      // the same scene on every pass. An --ab-ref build from before O4 has
+      // no hook: it flies on the live clock and is reported NOT PINNED.
+      const worldPinned = typeof ab.pinWorld === "function";
+      if (worldPinned) {
+        ab.pinWorld(s.worldMs);
+        if (s.storm) {
+          // Slide the pin so the next scheduled strike lands strikeLeadMs
+          // into the window. No more flying unpiloted for up to 15 s while
+          // waiting for the live clock to reach a strike.
+          const next = ab.storm().nextStrike;
+          if (next !== null) {
+            ab.pinWorld(next.timeMs - s.settleMs - s.strikeLeadMs);
+          }
+        }
+      }
+      // O3: pin the segment's weather (O4: every segment — a named phase,
+      // else clear). After the world pin: the weather pin is an offset from
+      // the world clock. An --ab-ref build from before L4 has no weather
+      // hook at all: the segment still flies, and is reported as having no
       // baseline rather than as a delta.
-      const weatherPinned =
-        s.weather !== undefined && typeof ab.weather === "function";
-      if (weatherPinned) ab.weather(s.weather);
+      const weatherName = s.weather ?? s.defaultWeather;
+      const weatherPinned = typeof ab.weather === "function";
+      if (weatherPinned) ab.weather(weatherName);
       ab.teleport(s.x, s.z, s.y, s.yaw);
       // O3: a HELD view re-teleports every frame instead of flying the
       // street — the furball's fake pilots weave ahead of a fixed point, so
@@ -318,9 +339,13 @@ async function flySegment(page, seg, sampleMs) {
         requestAnimationFrame(hold);
       };
       if (holding) requestAnimationFrame(hold);
+      // O4 first-sight probe (an init script counts GL allocations): what
+      // the settle and the window each had to compile or allocate.
+      const gl = () => (window.__abGl ? { ...window.__abGl } : null);
+      const glAtSettle = gl();
       await waitMs(s.settleMs);
 
-      if (s.storm) {
+      if (s.storm && !worldPinned) {
         // Line the window up so a scheduled strike lands `strikeLeadMs` in.
         // Strike times are on the SERVER clock; renderTime() is this client's
         // estimate of it.
@@ -332,6 +357,16 @@ async function flySegment(page, seg, sampleMs) {
         }
       }
 
+      // O4: the workload must not change under the window — a ratio step
+      // reallocates every full-res and bloom target, a tier step changes
+      // the scene. Read at both ends.
+      const workload = () =>
+        `${ab.render().pixelRatio}/${ab.quality?.().tier ?? "-"}`;
+      const workloadBefore = workload();
+      const aliveBefore = ab.combat().alive;
+      const glAtWindow = gl();
+      // Where the window starts on the world clock (null on an older build).
+      const worldAtWindow = worldPinned ? (ab.net().worldTime ?? null) : null;
       // Planes in the room (self + live remotes), at both ends of the window
       // rather than per frame — a per-frame read would cost JS inside the
       // very window being measured.
@@ -340,8 +375,20 @@ async function flySegment(page, seg, sampleMs) {
       ab.perfReset();
       await waitMs(s.sampleMs);
       const planes = Math.min(planesBefore, planesNow());
+      const glAtEnd = gl();
+      const workloadStable = workload() === workloadBefore;
       holding = false;
       if (weatherPinned) ab.weather(null);
+      const diff = (a, b) =>
+        a === null || b === null
+          ? null
+          : {
+              programs: b.programs - a.programs,
+              textures: b.textures - a.textures,
+              buffers: b.buffers - a.buffers,
+            };
+      const combat = ab.combat();
+      const selfId = ab.net().selfId;
       // The GPU-clock cost of the same window. THIS is the number to read
       // for a render change: contention from everything else on the machine
       // cannot move it, and with vsync off the CPU runs several frames ahead
@@ -369,17 +416,41 @@ async function flySegment(page, seg, sampleMs) {
         gpuP95: gpu === null ? null : gpu.p95,
         gpuWorst: gpu === null ? null : gpu.worst,
         gpuFrames: gpu === null ? null : gpu.count,
-        alive: ab.combat().alive,
+        alive: combat.alive,
+        aliveBefore,
+        // Why the plane died, if it did (an older build has no cause).
+        death:
+          combat.lastDeath && combat.lastDeath.victimId === selfId
+            ? {
+                cause: combat.lastDeath.cause ?? null,
+                killerId: combat.lastDeath.killerId,
+              }
+            : null,
         pos: ab.state().pos,
         strikes: ab.storm().strikes.length,
         // O3. Optional so an older build (--ab-ref) still measures.
         tier: ab.quality?.().tier ?? null,
-        weather: s.weather ?? null,
+        weather: weatherName,
         weatherPinned,
+        // O4.
+        worldPinned,
+        worldMs: worldAtWindow,
+        workloadStable,
+        firstSight: {
+          settle: diff(glAtSettle, glAtWindow),
+          window: diff(glAtWindow, glAtEnd),
+        },
         planes,
       };
     },
-    { ...seg, sampleMs, settleMs: SETTLE_MS, strikeLeadMs: STRIKE_LEAD_MS },
+    {
+      ...seg,
+      sampleMs,
+      settleMs: SETTLE_MS,
+      strikeLeadMs: STRIKE_LEAD_MS,
+      worldMs,
+      defaultWeather: DEFAULT_WEATHER,
+    },
   );
   return {
     name: seg.name,
@@ -425,6 +496,49 @@ export function segmentVerdicts(name, stats) {
 }
 
 /**
+ * O4 first-sight probe, harness-only (no client change): count the GL calls
+ * that ALLOCATE — a program link, a texture's storage, a buffer's storage —
+ * so the report can say what a segment had to compile or upload while it
+ * was being measured. Those are exactly the first-sight hitches the warm-up
+ * and the boot pre-warm exist to absorb; per-frame UPDATES (texSubImage2D,
+ * bufferSubData) are not counted. Blind to what the driver does lazily on
+ * top (ANGLE/Metal pipeline states): that is what the real-draw pre-warm in
+ * client/src/render/prewarm.ts covers.
+ */
+function installGlProbe() {
+  const counts = { programs: 0, textures: 0, buffers: 0 };
+  window.__abGl = counts;
+  const wrap = (proto, name, key) => {
+    const original = proto[name];
+    proto[name] = function (...args) {
+      counts[key]++;
+      return original.apply(this, args);
+    };
+  };
+  for (const proto of [
+    window.WebGL2RenderingContext?.prototype,
+    window.WebGLRenderingContext?.prototype,
+  ]) {
+    if (!proto) continue;
+    wrap(proto, "linkProgram", "programs");
+    wrap(proto, "texImage2D", "textures");
+    wrap(proto, "texImage3D", "textures");
+    wrap(proto, "texStorage2D", "textures");
+    wrap(proto, "texStorage3D", "textures");
+    wrap(proto, "bufferData", "buffers");
+  }
+}
+
+async function newProbedPage(browser) {
+  const page = await browser.newPage({
+    viewport: VIEWPORT,
+    deviceScaleFactor: DEVICE_SCALE_FACTOR,
+  });
+  await page.addInitScript(installGlProbe);
+  return page;
+}
+
+/**
  * One unmeasured lap of the whole path: first sight of a segment pays for
  * shader compiles, texture uploads and instance-buffer growth, none of which
  * recur. Every page flies this before anything is captured.
@@ -432,8 +546,14 @@ export function segmentVerdicts(name, stats) {
 function flyWarmupLap(page) {
   return page.evaluate(
     async ([segs, ms]) => {
+      const ab = window.__ab;
       for (const s of segs) {
-        window.__ab.teleport(s.x, s.z, s.y, s.yaw);
+        // O4: the same world pin and weather the measured segment will use,
+        // earlier on the world clock — so first sight of the segment's
+        // weather (the downpour) and world state is paid for here.
+        ab.pinWorld?.(s.worldMs);
+        if (typeof ab.weather === "function") ab.weather(s.weather);
+        ab.teleport(s.x, s.z, s.y, s.yaw);
         await new Promise((resolve) => {
           const t0 = performance.now();
           const tick = () =>
@@ -443,8 +563,19 @@ function flyWarmupLap(page) {
           requestAnimationFrame(tick);
         });
       }
+      if (typeof ab.weather === "function") ab.weather(null);
     },
-    [SEGMENTS.map(({ x, z, y, yaw }) => ({ x, z, y, yaw })), WARMUP_MS],
+    [
+      SEGMENTS.map(({ x, z, y, yaw, weather }, i) => ({
+        x,
+        z,
+        y,
+        yaw,
+        weather: weather ?? DEFAULT_WEATHER,
+        worldMs: warmupWorldMs(i),
+      })),
+      WARMUP_MS,
+    ],
   );
 }
 
@@ -487,10 +618,7 @@ async function warmArm(browser, url) {
  */
 async function soak(browser, url, seconds) {
   const seg = SEGMENTS.find((s) => s.name === "furball");
-  const page = await browser.newPage({
-    viewport: VIEWPORT,
-    deviceScaleFactor: DEVICE_SCALE_FACTOR,
-  });
+  const page = await newProbedPage(browser);
   const errors = await joinGame(page, url);
   await flyWarmupLap(page);
   const pilots = await startPilots(Number(new URL(url).port), seg.pilots, {
@@ -501,7 +629,12 @@ async function soak(browser, url, seconds) {
   try {
     await sleep(PILOT_SETTLE_MS);
     console.log(`soaking the furball for ${seconds} s…`);
-    s = await flySegment(page, seg, seconds * 1000);
+    s = await flySegment(
+      page,
+      seg,
+      seconds * 1000,
+      segmentWorldMs(SEGMENTS.indexOf(seg)),
+    );
   } finally {
     pilots.stop();
   }
@@ -537,10 +670,7 @@ export function ratioHonoured(config) {
 }
 
 async function measure(browser, url) {
-  const page = await browser.newPage({
-    viewport: VIEWPORT,
-    deviceScaleFactor: DEVICE_SCALE_FACTOR,
-  });
+  const page = await newProbedPage(browser);
   const errors = await joinGame(page, url);
   await flyWarmupLap(page);
 
@@ -564,7 +694,7 @@ async function measure(browser, url) {
 
   const segments = [];
   const port = Number(new URL(url).port);
-  for (const seg of SEGMENTS) {
+  for (const [i, seg] of SEGMENTS.entries()) {
     // O3 furball: fake pilots join for this segment only, and get time to
     // re-sync on the server and fill the page's interpolation buffer before
     // the segment's own settle starts.
@@ -574,7 +704,7 @@ async function measure(browser, url) {
         : await startPilots(port, seg.pilots, { x: seg.x, z: seg.z });
     try {
       if (pilots) await sleep(PILOT_SETTLE_MS);
-      segments.push(await flySegment(page, seg, SAMPLE_MS));
+      segments.push(await flySegment(page, seg, SAMPLE_MS, segmentWorldMs(i)));
     } finally {
       pilots?.stop();
     }
@@ -773,6 +903,7 @@ function printTable(report) {
     );
   }
   printVerdicts(report);
+  printFirstSight(report);
   printSpikes(report);
   console.log(
     "\n(frame times are COSTS — vsync is disabled; lower is better.\n" +
@@ -816,6 +947,52 @@ function printVerdicts(report) {
   for (const s of failed) {
     console.error(
       `!! ${s.name}: only ${s.planes} plane(s) in the room during the window — the fake pilots did not all make it, so this is not the full-room scene.`,
+    );
+  }
+}
+
+/**
+ * O4: what each segment had to compile or allocate on the GPU while it was
+ * flown — the GPU-independent half of "no first-sight freezes", measured by
+ * the init-script probe (installGlProbe). The window column must read 0/0:
+ * a program linked or a texture allocated inside the measured window is a
+ * hitch the boot pre-warm and the warm-up lap both missed. Also printed: the
+ * world clock each segment was pinned to, and whether the ratio and tier
+ * held through the window.
+ */
+function printFirstSight(report) {
+  const fmt = (d) =>
+    d == null
+      ? "   n/a   "
+      : `${d.programs}p ${d.textures}t ${d.buffers}b`.padEnd(9);
+  console.log(
+    "\nfirst sight (GL allocations: p = programs linked, t = textures, b = buffers)",
+  );
+  console.log("segment   settle     window     world clock        workload");
+  for (const s of report.segments) {
+    const f = s.firstSight ?? {};
+    const world = s.worldPinned
+      ? `pinned ${s.worldMs === null || s.worldMs === undefined ? "?" : Math.round(s.worldMs)}`
+      : "NOT PINNED";
+    console.log(
+      `${s.name.padEnd(8)}  ${fmt(f.settle)}  ${fmt(f.window)}  ${world.padEnd(18)} ` +
+        `${s.workloadStable === false ? "CHANGED in the window" : "held"}`,
+    );
+  }
+  const late = report.segments.filter(
+    (s) =>
+      s.firstSight?.window &&
+      (s.firstSight.window.programs > 0 || s.firstSight.window.textures > 0),
+  );
+  if (late.length > 0) {
+    console.error(
+      `!! first sight inside the measured window: ${late.map((s) => s.name).join(", ")} — a program or texture the pre-warm and warm-up lap missed.`,
+    );
+  }
+  const changed = report.segments.filter((s) => s.workloadStable === false);
+  if (changed.length > 0) {
+    console.error(
+      `!! the pixel ratio or quality tier changed inside: ${changed.map((s) => s.name).join(", ")} — those windows measured two workloads.`,
     );
   }
 }
@@ -951,6 +1128,17 @@ export const UNPINNED_SEGMENTS = new Set([
 /** Segments whose draw count may legitimately move between passes. */
 export const DRAWS_FLOAT = new Set(["storm", "street", "furball"]);
 
+/**
+ * O4: with the WORLD clock pinned (`__ab.pinWorld`, segments.mjs
+ * WORLD_EPOCH_MS) the server-clock content above — the strike cell, the
+ * traffic, the rain and the crowd — is the same on every pass, so only the
+ * furball stays exempt: its 11 fake pilots fly, weave and fire on their own
+ * wall clock. These apply only when EVERY pass of the arm reports its world
+ * pinned; an older build (an --ab-ref from before O4) keeps the sets above.
+ */
+export const UNPINNED_WORLD_PINNED = new Set(["furball"]);
+export const DRAWS_FLOAT_WORLD_PINNED = new Set(["furball"]);
+
 /** Per-segment agreement between the runs of one invocation. */
 export function determinism(runs) {
   if (runs.length < 2) return null;
@@ -964,6 +1152,13 @@ export function determinism(runs) {
   // Only the segments every pass actually flew: a report recorded before a
   // segment was appended simply does not have it.
   const flown = SEGMENTS.filter((_, i) => runs.every((r) => r.segments[i]));
+  // O4: an arm whose every segment flew on the pinned world clock is held to
+  // the stricter sets.
+  const worldPinned = runs.every((r) =>
+    r.segments.every((s) => s.worldPinned === true),
+  );
+  const unpinned = worldPinned ? UNPINNED_WORLD_PINNED : UNPINNED_SEGMENTS;
+  const drawsFloat = worldPinned ? DRAWS_FLOAT_WORLD_PINNED : DRAWS_FLOAT;
   const perSegment = flown.map((seg, i) => {
     const p50s = runs.map((r) => r.segments[i].p50);
     const gpuP50s = runs.map((r) => r.segments[i].gpuP50 ?? 0);
@@ -977,7 +1172,7 @@ export function determinism(runs) {
       gpuP50SpreadMs: spreadMs(gpuP50s),
       drawCalls: draws,
       drawCallsAgree: new Set(draws).size === 1,
-      pinned: !UNPINNED_SEGMENTS.has(seg.name),
+      pinned: !unpinned.has(seg.name),
     };
   });
   // The verdict is taken over the segments the harness actually pins; the
@@ -997,7 +1192,7 @@ export function determinism(runs) {
   // and go with it, and `furball` draws fake pilots' tracer bursts whose
   // timing is wall-clock. Their draw counts are reported, not asserted.
   const drawCallsAgreeEverywhere = perSegment.every(
-    (s) => s.drawCallsAgree || DRAWS_FLOAT.has(s.name),
+    (s) => s.drawCallsAgree || drawsFloat.has(s.name),
   );
   // A driver with no timer-query extension reports `null`, which lands here
   // as a column of zeros — a MISSING measurement, not a passing one. Require
@@ -1022,6 +1217,7 @@ export function determinism(runs) {
     assertedOver: pinned.map((s) => s.name),
     notAsserted: perSegment.filter((s) => !s.pinned).map((s) => s.name),
     drawCallsAgreeEverywhere,
+    worldPinned,
     tolerance: TOLERANCE,
     pass: drawCallsAgreeEverywhere && gpuAgrees,
     perSegment,
@@ -1331,7 +1527,14 @@ async function main() {
   const dead = report.segments.filter((s) => !s.alive);
   if (dead.length > 0) {
     console.error(
-      `\n!! plane was dead during: ${dead.map((s) => s.name).join(", ")} — that segment measured a kill-cam, not the scene. Fix the path.`,
+      `\n!! plane was dead during: ${dead
+        .map(
+          (s) =>
+            `${s.name} (${s.aliveBefore === false ? "dead before the window" : "died in the window"}${s.death ? `, cause ${s.death.cause ?? "unknown"}` : ""})`,
+        )
+        .join(
+          ", ",
+        )} — that segment measured a kill-cam, not the scene. Fix the path.`,
     );
   }
   if (report.pageErrors.length > 0) {
@@ -1346,7 +1549,7 @@ async function main() {
         `${d.drawCallsAgreeEverywhere ? "identical" : "DIFFER"} per segment`,
     );
     console.log(
-      `  asserted over ${d.assertedOver.join(", ")}; ${d.notAsserted.join(" and ")} measured but not asserted (server-clock content — see UNPINNED_SEGMENTS)`,
+      `  asserted over ${d.assertedOver.join(", ")}; ${d.notAsserted.join(" and ")} measured but not asserted (${d.worldPinned ? "fake pilots on their own wall clock — see UNPINNED_WORLD_PINNED" : "server-clock content, world NOT pinned — see UNPINNED_SEGMENTS"})`,
     );
     console.log(
       `  tolerance: draw calls identical + GPU p50 within ${TOLERANCE.gpuP50Pct}% or ${TOLERANCE.gpuP50Ms.toFixed(1)} ms, whichever is looser (wall p50 reported, not asserted) — ${d.pass ? "PASS" : "FAIL"}`,

@@ -52,6 +52,7 @@ import {
   type MoverField,
   collideBotMovers,
 } from "@angels-bandits/common/city/movers";
+import { bridgeSpans } from "@angels-bandits/common/city/river";
 import {
   LOT_LINE,
   ROADWAY_HALF,
@@ -330,6 +331,11 @@ const EXIT_YAW = 0.2;
  * guaranteed, the merge after it is the lattice's business. */
 const RUNOUT_SLACK = 20;
 
+/** L11 bridge threads: the steepest dive into an underpass and the climb out
+ * of the channel after it, as slopes (m per m along the carrot). */
+const BRIDGE_DIVE = 0.8;
+const BRIDGE_CLIMB = 0.3;
+
 /**
  * The thread controller: line-follow the hole's axis (a carrot
  * BOT_HOLE_CARROT ahead on the centreline, height on the centreline), then
@@ -349,7 +355,18 @@ function threadInput(f: FlightState, th: Thread): FlightInput | null {
     }
     // Never a corner hop and never a dive steeper than the canyon glide: the
     // lintel is a few metres over the centreline.
-    const dy = clamp(-fr.up, -L * BOT_CANYON_GLIDE, L * BOT_CANYON_GLIDE);
+    let dy = clamp(-fr.up, -L * BOT_CANYON_GLIDE, L * BOT_CANYON_GLIDE);
+    if (edge.span.hole.kind === "bridge") {
+      // L11: the river is open sky above, so the dive in may be steeper —
+      // a bot in the canyon band needs it to reach the underpass inside the
+      // 160 m between two decks. Past the exit the run-out climbs back
+      // toward the band, so the hand-back is out of the channel and clear of
+      // the next deck rather than 40 m short of it at water level. Both are
+      // flown by the rollout before the bot commits.
+      dy = th.out
+        ? clamp(th.bandY - f.pos.y, -L * BOT_CANYON_GLIDE, L * BRIDGE_CLIMB)
+        : clamp(-fr.up, -L * BRIDGE_DIVE, L * BOT_CANYON_GLIDE);
+    }
     const d =
       axis === "x"
         ? { x: edge.dir * L, y: dy, z: -fr.lateral }
@@ -499,7 +516,9 @@ export class RoomBots {
     // four nose probes per brain decision, all bots deciding on the same
     // tick), so the block index is what keeps that off the 15 Hz budget.
     this.cityIndex = buildCityIndex(buildings);
-    this.edges = holeEdges(cityHoles(buildings));
+    // L11: every river bridge's underpass is an edge too (kind "bridge"),
+    // appended AFTER the city's holes so their edge indices are unchanged.
+    this.edges = holeEdges([...cityHoles(buildings), ...bridgeSpans()]);
   }
 
   /** Block index over `buildings` — see collideCity's optional 4th argument. */
@@ -728,7 +747,7 @@ export class RoomBots {
         y: pos.y,
         z: pos.z + fwd.z * s,
       });
-      if (p.y - BOT_PROBE_RADIUS <= 0) return false;
+      if (hitsGround(p, BOT_PROBE_RADIUS)) return false;
       if (collideCity(p, BOT_PROBE_RADIUS, this.buildings, this.cityIndex)) {
         return false;
       }
@@ -1230,7 +1249,9 @@ export class RoomBots {
     streetAxis: "x" | "z",
   ): boolean | null {
     const { kind, axis } = edge.span.hole;
-    if (kind === "sky") return null;
+    // Sky holes and L11 bridge underpasses are only ever FOLLOWED: a dive
+    // from the canyon band into the river is worth it only after a target.
+    if (kind === "sky" || kind === "bridge") return null;
     const pos = bot.flight.pos;
     const fwd = flightForward({ yaw: bot.flight.yaw, pitch: 0 });
     if (kind === "arch") {
@@ -1295,8 +1316,15 @@ export class RoomBots {
       { axis: across, dir: first },
       { axis: across, dir: first === 1 ? -1 : 1 },
     ];
+    const { kind } = edge.span.hole;
+    // Under a bridge the only way on is down the channel: a street exit
+    // would turn into an embankment wall, so it is never worth a rollout.
     const order: (Travel | null)[] =
-      edge.span.hole.kind === "arch" ? [...streets, null] : [null, ...streets];
+      kind === "arch"
+        ? [...streets, null]
+        : kind === "bridge"
+          ? [null]
+          : [null, ...streets];
     const passed: (Travel | null)[] = [];
     for (const exit of order) {
       // A patrol takes the first exit that flies; a follow wants both street
@@ -1947,7 +1975,7 @@ export class RoomBots {
         y: flight.pos.y + dy * s,
         z: flight.pos.z + dz * s,
       });
-      if (p.y - radius <= 0) return true;
+      if (hitsGround(p, radius)) return true;
       // Holes count as SOLID here: point samples 16–36 m apart can land
       // inside a hole and skip its thin walls. Bots never discover a hole
       // with a probe — they fly one only as a committed thread, checked by
@@ -2006,7 +2034,7 @@ export class RoomBots {
       if (t + 1e-9 < (times[next] ?? 0)) continue;
       next++;
       const p = f.pos;
-      if (p.y - radius <= 0) return true;
+      if (hitsGround(p, radius)) return true;
       if (collideCity(p, radius, this.buildings, this.cityIndex)) return true;
       if (collideNature(p, radius, this.nature)) return true;
       if (

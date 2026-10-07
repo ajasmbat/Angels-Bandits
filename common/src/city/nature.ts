@@ -41,6 +41,7 @@ import {
 import { canonicalize, wrapDeltaAxis } from "../world/index";
 import { type Building, CITY_GRID, mulberry32 } from "./index";
 import { CONSTRUCTION_BLOCKS, LANDMARK_BLOCKS, PLAZA_BLOCKS } from "./layout";
+import { isRiverRow, overChannel } from "./river";
 import {
   FURNITURE_LINE,
   INTERSECTION_HALF,
@@ -107,6 +108,8 @@ export const GROUND_NONE = 0;
 export const GROUND_PARK = 1;
 export const GROUND_FORECOURT = 2;
 export const GROUND_SITE = 3;
+/** L11: the river row — promenade paving out to the channel (city/river.ts). */
+export const GROUND_RIVER = 4;
 
 const blockKey = (bx: number, bz: number) => bx * CITY_GRID + bz;
 const PARKS = new Set(PLAZA_BLOCKS.map(([bx, bz]) => blockKey(bx, bz)));
@@ -123,6 +126,7 @@ export function blockGroundKind(bx: number, bz: number): number {
   if (PARKS.has(key)) return GROUND_PARK;
   if (FORECOURTS.has(key)) return GROUND_FORECOURT;
   if (SITES.has(key)) return GROUND_SITE;
+  if (isRiverRow(bz)) return GROUND_RIVER;
   return GROUND_NONE;
 }
 
@@ -476,6 +480,9 @@ function streetTrees(seed: number, out: Tree[]): void {
         if (blockGroundKind(ox, oz) === GROUND_SITE) continue;
         const p = canon(x, z);
         if (isInRoadway({ x: p.x, y: 0, z: p.z })) continue;
+        // L11: no tree pits on a bridge deck — the sidewalk there is a slab
+        // over the water. Promenade-side pits keep their trees.
+        if (overChannel(p.z)) continue;
         out.push({
           x: p.x,
           z: p.z,

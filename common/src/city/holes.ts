@@ -41,7 +41,10 @@ import type { Building, Tier } from "./index";
 import { CONSTRUCTION_BLOCKS } from "./layout";
 import { LOT_LINE, nextIntersection } from "./street";
 
-export type HoleKind = "arch" | "tunnel" | "sky";
+/** "bridge" is L11's underpass under a river bridge (city/river.ts
+ * bridgeSpans) — never a hole in a Building, only an edge of the bots'
+ * street graph. */
+export type HoleKind = "arch" | "tunnel" | "sky" | "bridge";
 /** The axis a plane TRAVELS along to fly through the hole. */
 export type HoleAxis = "x" | "z";
 

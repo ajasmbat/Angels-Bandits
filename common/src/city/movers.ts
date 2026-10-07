@@ -56,6 +56,7 @@ import {
 import { type Vec3, canonicalize, wrapDeltaAxis } from "../world/index";
 import { type Building, mulberry32 } from "./index";
 import { CONSTRUCTION_BLOCKS } from "./layout";
+import { type Boat, collideBoats, riverBoats } from "./river";
 
 /** Which part of which mover a collision landed on. */
 export type MoverKind =
@@ -65,7 +66,8 @@ export type MoverKind =
   | "hook"
   | "cable"
   | "helicopter"
-  | "blimp";
+  | "blimp"
+  | "boat";
 
 /**
  * An oriented box. `x`/`z` are canonical in [0, WORLD_SIZE); `y` is the
@@ -141,6 +143,9 @@ export interface AircraftRoute {
 export interface MoverField {
   readonly cranes: readonly CraneSite[];
   readonly aircraft: readonly AircraftRoute[];
+  /** L11 river boats (city/river.ts). Optional so hand-built fields in the
+   * tests keep compiling; generateMovers always sets it. */
+  readonly boats?: readonly Boat[];
 }
 
 /** A field with nothing in it — the safe default for callers that have none. */
@@ -292,7 +297,7 @@ export function generateMovers(
     hz: BLIMP_HULL[2],
   });
 
-  return { cranes, aircraft };
+  return { cranes, aircraft, boats: riverBoats(seed) };
 }
 
 const TAU = Math.PI * 2;
@@ -514,7 +519,7 @@ export function collideMovers(
       return { kind: route.kind, id: route.id };
     }
   }
-  return null;
+  return hitBoat(pos, radius, field, timeMs);
 }
 
 /**
@@ -544,5 +549,19 @@ export function collideBotMovers(
       return { kind: route.kind, id: route.id };
     }
   }
-  return null;
+  // Boats are solid for bots too: a chaser following a target under a bridge
+  // flies the boats' height band, and bots must never die to scenery.
+  return hitBoat(pos, radius, field, timeMs);
+}
+
+/** The L11 boat the sphere touches, as a mover hit (id = fleet index). */
+function hitBoat(
+  pos: Vec3,
+  radius: number,
+  field: MoverField,
+  timeMs: number,
+): MoverHit | null {
+  if (!field.boats) return null;
+  const i = collideBoats(pos, radius, field.boats, timeMs);
+  return i < 0 ? null : { kind: "boat", id: i };
 }

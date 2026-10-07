@@ -7,6 +7,12 @@
 
 import { type Building, cityHoles } from "@angels-bandits/common/city";
 import {
+  BRIDGE_HALF_WIDTH,
+  RIVER_CENTER_Z,
+  RIVER_HALF_WIDTH,
+} from "@angels-bandits/common/city/river";
+import {
+  BLOCK_PITCH,
   BUILDING_MAX_HEIGHT,
   LANDMARK_HEIGHT,
   WORLD_SIZE,
@@ -74,6 +80,24 @@ function renderCityTile(
   const s = sizePx / WORLD_SIZE;
   ctx.fillStyle = "#0d0c1a";
   ctx.fillRect(0, 0, sizePx, sizePx);
+  // L11 river: the channel as a band of water, crossed by every bridge. It
+  // runs along x, so one band wraps with the tile like the streets do.
+  ctx.fillStyle = "#123049";
+  ctx.fillRect(
+    0,
+    (RIVER_CENTER_Z - RIVER_HALF_WIDTH) * s,
+    sizePx,
+    2 * RIVER_HALF_WIDTH * s,
+  );
+  ctx.fillStyle = "#2a2c3c";
+  for (let x = 0; x <= WORLD_SIZE; x += BLOCK_PITCH) {
+    ctx.fillRect(
+      (x - BRIDGE_HALF_WIDTH) * s,
+      (RIVER_CENTER_Z - RIVER_HALF_WIDTH) * s,
+      2 * BRIDGE_HALF_WIDTH * s,
+      2 * RIVER_HALF_WIDTH * s,
+    );
+  }
   for (const b of buildings) {
     if (b.height >= LANDMARK_HEIGHT) {
       ctx.fillStyle = "#3fb8c9"; // landmark accent — same read as the 3D city

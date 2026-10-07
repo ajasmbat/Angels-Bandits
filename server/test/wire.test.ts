@@ -83,7 +83,10 @@ const streamPose = (peer: Peer, pose: Pose): void => {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 beforeAll(async () => {
-  child = spawn("npx", ["tsx", entry], {
+  // The server itself, not `npx tsx` around it: child.kill() only signals
+  // the process it spawned, and npx's grandchild node server outlived every
+  // run — orphans piled up by the dozen and starved later suites of CPU.
+  child = spawn(process.execPath, ["--import", "tsx", entry], {
     env: { ...process.env, PORT: "0" },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -205,8 +208,16 @@ describe("hit claims at the new cadence", () => {
       streamPose(target, at(1000 + BULLET_RANGE / 2, 1000));
       await wait(1000 / 20);
     }
-    // Spawn protection has to lapse before a hit can land at all.
-    await wait(SPAWN_PROTECTION_MS);
+    // Spawn protection has to lapse before a hit can land at all. Keep
+    // streaming through it, as a real client does: 5.5 s of silence outlasts
+    // LIVENESS_TIMEOUT_MS (4 s), and whether the 2 s sweep dropped both
+    // peers first came down to timer phase — a flake under load.
+    const protectedUntil = performance.now() + SPAWN_PROTECTION_MS;
+    while (performance.now() < protectedUntil) {
+      streamPose(shooter, at(1000, 1000));
+      streamPose(target, at(1000 + BULLET_RANGE / 2, 1000));
+      await wait(1000 / 20);
+    }
     for (let i = 0; i < 4; i++) {
       streamPose(shooter, at(1000, 1000));
       streamPose(target, at(1000 + BULLET_RANGE / 2, 1000));

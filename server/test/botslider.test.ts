@@ -90,7 +90,10 @@ const setBots = (peer: Peer, count: number): void => {
 };
 
 beforeAll(async () => {
-  child = spawn("npx", ["tsx", entry], {
+  // The server itself, not `npx tsx` around it: child.kill() only signals
+  // the process it spawned, and npx's grandchild node server outlived every
+  // run — orphans piled up by the dozen and starved later suites of CPU.
+  child = spawn(process.execPath, ["--import", "tsx", entry], {
     env: { ...process.env, PORT: "0" },
     stdio: ["ignore", "pipe", "pipe"],
   });

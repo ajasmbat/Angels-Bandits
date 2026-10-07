@@ -39,7 +39,11 @@ import { hitRangeBudgetFor } from "@angels-bandits/common/net";
 import type { ScoreEntry, SpawnState } from "@angels-bandits/common/protocol";
 import { airlinerOffsetInto } from "@angels-bandits/common/skytraffic";
 import { strikesInWindow } from "@angels-bandits/common/storm";
-import { wrapDelta, wrapDistance } from "@angels-bandits/common/world";
+import {
+  type Vec3,
+  wrapDelta,
+  wrapDistance,
+} from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
@@ -107,6 +111,7 @@ import { FacadeDetailRenderer } from "./render/facade-detail";
 import { FacadeGarnishRenderer } from "./render/facade-garnish";
 import { Fireworks } from "./render/fireworks";
 import { installHeightFog } from "./render/fog";
+import { Fountains } from "./render/fountains";
 import { Explosions, Sparks } from "./render/fx";
 import { GpuTimer } from "./render/gputimer";
 import { createGradePass } from "./render/grade";
@@ -141,6 +146,12 @@ import { Searchlights } from "./render/searchlights";
 import { Signage } from "./render/signage";
 import { Signals } from "./render/signals";
 import { EXPOSURE, GroundPlane, SkyDome, setupSky } from "./render/sky";
+import {
+  SKY_MOMENTS,
+  SkyCycle,
+  parseSkyParam,
+  skyPhase,
+} from "./render/skycycle";
 import { SmokeTrails, smokeActive } from "./render/smoke";
 import { Steam } from "./render/steam";
 import {
@@ -194,7 +205,7 @@ const { welcome } = socket;
 const scene = new THREE.Scene();
 // Before anything compiles: the haze layer lives in three's fog chunks.
 installHeightFog();
-setupSky(scene);
+const skyRig = setupSky(scene); // L12: the sky cycle drives these lights
 
 const camera = new THREE.PerspectiveCamera(
   BASE_FOV,
@@ -297,8 +308,9 @@ composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
 // The grade (vignette + saturation) works on the display-referred image, so
 // it follows the OutputPass; SMAA, when on, still comes last.
-if (renderOpts.grade) {
-  composer.addPass(createGradePass());
+const gradePass = renderOpts.grade ? createGradePass() : null;
+if (gradePass) {
+  composer.addPass(gradePass);
 }
 // SMAA goes AFTER the output pass, on purpose: its edge detection wants the
 // tonemapped, sRGB-encoded image, not linear HDR where a bloomed window
@@ -368,6 +380,20 @@ const airliners = new Airliners(welcome.seed);
 skyDome.mesh.add(airliners.points);
 const streetlights = new Streetlights();
 scene.add(streetlights.group);
+// L12 sky cycle: dusk → deep night → pre-dawn on the synced server clock
+// (~40 min loop). Writes lights, dome, haze, exposure, bloom strength, grade,
+// window occupancy and lamp pools each frame; `?sky=` pins a phase (QA).
+const skyCycle = new SkyCycle(
+  {
+    rig: skyRig,
+    dome: skyDome,
+    streetlights,
+    renderer,
+    bloom: bloomPass,
+    grade: gradePass,
+  },
+  parseSkyParam(window.location.search),
+);
 // Street-level neon (S2): marquees, billboards, strips, spill — one shared
 // Building[] again, so signage dresses exactly the rendered facades.
 const signage = new Signage(city.cityBuildings, welcome.seed);
@@ -416,6 +442,11 @@ const nature = natureFor(welcome.seed, city.cityBuildings);
 const natureIndex = buildNatureIndex(nature);
 const natureRenderer = new NatureRenderer(nature);
 scene.add(natureRenderer.group);
+// L9 moving nature: lit spray from the plaza ponds (pure ballistic function
+// of the synced clock; one Points, drawn only near a pond). Tree sway lives
+// in natureRenderer's crown shader; bird scatter in birds.update below.
+const fountains = new Fountains(nature.ponds);
+scene.add(fountains.points);
 const fireworks = new Fireworks(welcome.seed);
 const searchlights = new Searchlights(city.cityBuildings);
 scene.add(searchlights.mesh);
@@ -423,6 +454,8 @@ scene.add(searchlights.mesh);
 const droneShow = new DroneShowRenderer(welcome.seed);
 const birds = new Birds(welcome.seed);
 scene.add(birds.points);
+/** L9: planes the flocks react to, refilled per frame (no per-frame array). */
+const birdPlanes: Vec3[] = [];
 // L1 living streets — the micro tier. Client-only, non-collidable, and gated
 // on camera altitude (100 → 140 m): four extra draw calls at street level and
 // literally zero above the band, where a 1.8 m figure would be sub-pixel.
@@ -988,6 +1021,8 @@ declare global {
       movers: (at?: number | null) => ReturnType<Movers["debug"]>;
       train: (at?: number | null) => ReturnType<TrainRenderer["debug"]>;
       fireworks: (at?: number | null) => ReturnType<Fireworks["debug"]>;
+      /** L9 QA: flock centres at the render clock, and which are scattered. */
+      birds: () => ReturnType<Birds["debug"]>;
       /** L10 QA: airliners and drone show drawn last frame, the news heli's
        * slot, and (forceDroneShow) the gallery's way to start a show now. */
       skyTraffic: () => {
@@ -1055,6 +1090,13 @@ declare global {
         voiceReady: boolean;
         inCombat: boolean;
         log: { at: number; speaker: string; ticker: string; voice: string }[];
+      };
+      /** L12 QA: force the sky cycle to a fraction (0..1) or a named
+       * moment, or release it to the synced clock with null. */
+      sky: (t?: number | "dusk" | "night" | "predawn" | null) => {
+        phase: number;
+        forced: boolean;
+        clockPhase: number | null;
       };
       /** L2 QA: the city soundscape's per-layer gains and their inputs. */
       ambience: () => ReturnType<CityAmbience["debug"]>;
@@ -1176,6 +1218,8 @@ window.__ab = {
   // its OWN interpolation delay, so two tabs' default render times are no
   // longer the same instant (that is the feature; the QA must pin the time).
   traffic: (at) => traffic.debug(at === undefined ? socket.renderTime() : at),
+  // L9 QA: flock centres and which are scattered, at the render clock.
+  birds: () => birds.debug(socket.renderTime()),
   // L6 QA: pin the gallery's red/green intersection views to a real queue.
   trafficQueue: (at) =>
     traffic.queue(at ?? socket.renderTime() ?? performance.now()),
@@ -1279,6 +1323,17 @@ window.__ab = {
     inCombat: radio.inCombat(performance.now()),
     log: radioLog.map((l) => ({ ...l })),
   }),
+  sky: (t) => {
+    if (t === null) skyCycle.forced = null;
+    else if (typeof t === "string") skyCycle.forced = SKY_MOMENTS[t];
+    else if (typeof t === "number") skyCycle.forced = t - Math.floor(t);
+    const rt = socket.renderTime();
+    return {
+      phase: skyCycle.phaseNow,
+      forced: skyCycle.forced !== null,
+      clockPhase: rt === null ? null : skyPhase(rt),
+    };
+  },
   // ST2 QA: consumed strikes (two tabs must agree), the next scheduled
   // strike (for staging reveals), live reveal pings, and atmosphere state.
   ambience: () => ambience.debug(),
@@ -1658,7 +1713,9 @@ renderer.setAnimationLoop((now) => {
   facadeGarnish.update(chase.position);
   facadeDetail.update(chase.position, microOn); // L13: re-streams on block change only
   streetlights.update(chase.position);
-  natureRenderer.update(chase.position);
+  // L9: crowns sway in the shared wind on the same latched clock.
+  natureRenderer.update(chase.position, renderMs);
+  fountains.update(chase.position, renderMs);
   // Neon pulses on the same synced clock as the beacons.
   signage.update(chase.position, renderMs ?? now);
   // L7: the nearest broken neon tube buzzes, crackling through its stutter;
@@ -1677,7 +1734,11 @@ renderer.setAnimationLoop((now) => {
   // After movers.update: the helicopters' belly spots are this frame's, and
   // the lamp heads land in the same point cloud before commit().
   searchlights.update(chase.position, renderMs, movers.spots, moverLights);
-  birds.update(chase.position, renderMs);
+  // L9: flocks scatter from any plane this client sees within ~60 m.
+  birdPlanes.length = 0;
+  if (alive) birdPlanes.push(flight.pos);
+  for (const r of remotes.headings()) birdPlanes.push(r.pos);
+  birds.update(chase.position, renderMs, birdPlanes);
   // L10: the drones write LAST, so a full cloud drops drones, not nav lights.
   droneShow.update(chase.position, renderMs, moverLights);
   moverLights.commit();
@@ -1728,6 +1789,9 @@ renderer.setAnimationLoop((now) => {
   for (const ev of thunder.due(now)) audio.thunder(ev.gain, ev.hard);
   storm.update(chase.position, now);
   clouds.update(chase.position, camera.quaternion, renderMs);
+  // L12: the cycle's horizon is the storm's clear-sky fog base.
+  skyCycle.update(renderMs);
+  storm.setFogBase(skyCycle.horizon);
   const sky = storm.atmosphere(scene, chase.position.y, now);
   skyDome.tint(sky.tint);
   skyDome.mesh.visible = sky.domeVisible;

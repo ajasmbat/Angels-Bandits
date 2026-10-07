@@ -1007,6 +1007,9 @@ async function main() {
     if (opts.aa) params.set("aa", opts.aa);
     params.set("res", opts.res);
     params.set("gputime", "1");
+    // L12: pin the sky cycle to deep night so a baseline never depends on
+    // the server's time of night (overrides may still pick another phase).
+    params.set("sky", "night");
     for (const [k, v] of new URLSearchParams(overrides ?? "")) params.set(k, v);
     return `http://127.0.0.1:${port}/?${params}`;
   };

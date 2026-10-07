@@ -15,6 +15,7 @@ import type {
   BotsConfigMsg,
   DamageMsg,
   DeathMsg,
+  NewsHeliMsg,
   Pose,
   RespawnMsg,
   RosterEntry,
@@ -36,6 +37,7 @@ export interface GameSocketEvents {
   onRespawn?: (msg: RespawnMsg) => void;
   onScores?: (scores: ScoreEntry[]) => void;
   onBotsConfig?: (msg: BotsConfigMsg) => void;
+  onNewsHeli?: (msg: NewsHeliMsg) => void;
   onClose?: () => void;
 }
 
@@ -206,6 +208,9 @@ export class GameSocket {
         break;
       case "botsConfig":
         this.events.onBotsConfig?.(msg);
+        break;
+      case "newsHeli":
+        this.events.onNewsHeli?.(msg);
         break;
       case "welcome":
         break; // already consumed by connect()

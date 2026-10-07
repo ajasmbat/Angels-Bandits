@@ -787,3 +787,24 @@ export const BOT_HOLE_LINEUP_MAX = 450;
  * recently, ms, from no further than this before the mouth, m. */
 export const BOT_HOLE_FOLLOW_MS = 3000;
 export const BOT_HOLE_FOLLOW_RANGE = 400;
+
+// --- Sky traffic (L10) --- the news helicopter is a MOVER (solid, shared
+// with the bots); its pose is a pure function of (server-broadcast target,
+// server clock) in common/src/city/newsheli.ts. Airliners and the drone show
+// are scenery schedules in common/src/skytraffic.ts.
+/** News-heli orbit altitude band, m. Inside the ticket's 350-450 m band, but
+ * capped so the hull and rotor stay under the blimp's belly (BLIMP_ALT -
+ * BLIMP_HULL[1] = 416 m) and far above every roof (LANDMARK_HEIGHT 250). */
+export const NEWS_HELI_ALT_MIN = 350;
+export const NEWS_HELI_ALT_MAX = 390;
+/** Orbit radius around the kill site, m, and the speeds it flies at, m/s. */
+export const NEWS_HELI_ORBIT_R = 110;
+export const NEWS_HELI_ORBIT_SPEED = 28;
+export const NEWS_HELI_TRANSIT_SPEED = 50;
+/** Climb/descent rate cap during a transit, m/s. */
+export const NEWS_HELI_CLIMB = 6;
+/** Seconds the heading takes to swing onto a new course after a retarget. */
+export const NEWS_HELI_TURN_S = 3;
+/** Minimum time on station after arriving before the heli takes a new
+ * story, ms — rapid kills must not whip it between sites. */
+export const NEWS_HELI_DWELL_MS = 20000;

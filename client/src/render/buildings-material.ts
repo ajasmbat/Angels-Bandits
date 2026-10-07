@@ -23,8 +23,10 @@ import * as THREE from "three";
 import { luminance } from "./emissive";
 import { livingParsGlsl } from "./living-windows";
 import {
+  OCCUPANCY_UNIFORM,
   holeLightGlsl,
   holeSurfaceGlsl,
+  pitchSeedGlsl,
   roofLightGlsl,
   roofParsGlsl,
   roofSurfaceGlsl,
@@ -99,6 +101,7 @@ attribute vec4 aCrew;
 varying vec3 vMeters;
 varying vec3 vObjNormal;
 varying float vBSeed;
+flat varying float vPitchSeed;
 varying float vWorldY;
 varying float vArch;
 varying float vBHeight;
@@ -109,7 +112,7 @@ varying vec3 vCrown;
 varying vec2 vHalfXZ;
 varying vec4 vHole;
 varying vec4 vCrew;
-`;
+${pitchSeedGlsl()}`;
 
 const VERTEX_MAIN = /* glsl */ `
 // Unit box (x/z in [-0.5, 0.5], y in [0, 1]) times the instance scale =
@@ -132,6 +135,9 @@ vWorldY = position.y * sScale.y + instanceMatrix[3].y;
 // Per-building seed from its (stable) dimensions — NOT its translation,
 // which shifts by WORLD_SIZE whenever the building wraps past the seam.
 vBSeed = fract(sin(dot(bScale.xz, vec2(12.9898, 78.233)) + bScale.y) * 43758.5453);
+// L13: the window pitch jitter's seed, bit-exact with window-pattern.ts
+// pitchSeed() so facade detail can sit on the drawn rows.
+vPitchSeed = abPitchSeed(bScale);
 vArch = aArchetype;
 // This instance's own height, so weathering scales with the building rather
 // than with a constant written for one tower size.
@@ -153,9 +159,11 @@ vCrew = aCrew;
 `;
 
 const FRAGMENT_PARS = /* glsl */ `
+uniform float uOccupancy; // L12 sky cycle: window occupancy, 0..1
 varying vec3 vMeters;
 varying vec3 vObjNormal;
 varying float vBSeed;
+flat varying float vPitchSeed;
 varying float vWorldY;
 varying float vArch;
 varying float vBHeight;
@@ -260,6 +268,7 @@ export function createBuildingsMaterial(
   });
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uLiveTime = liveTime;
+    shader.uniforms.uOccupancy = OCCUPANCY_UNIFORM;
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", `#include <common>\n${VERTEX_PARS}`)
       .replace(

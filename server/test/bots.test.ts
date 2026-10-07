@@ -35,7 +35,7 @@ import {
 import { flightForward } from "@angels-bandits/common/flight";
 import type { SpawnState } from "@angels-bandits/common/protocol";
 import { canonicalize, wrapDeltaAxis } from "@angels-bandits/common/world";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   type BotShot,
   RoomBots,
@@ -45,6 +45,15 @@ import {
 } from "../src/bots";
 import { Combat } from "../src/combat";
 import { pickRespawn } from "../src/respawn";
+
+// Most tests here are long SYNCHRONOUS sims, and vitest's runner chains sync
+// tests without ever yielding a macrotask. Its fire-and-forget onTaskUpdate
+// RPC reply then sits unread until the whole file ends; on a loaded box the
+// file takes > 60 s, the worker's RPC timer fires first, and `npm test` exits
+// 1 ("Timeout calling onTaskUpdate") with every test green. One event-loop
+// turn after each test lets the reply be read, so only a single test, never
+// the whole file, has to fit inside the RPC timeout.
+afterEach(() => new Promise<void>((resolve) => setImmediate(resolve)));
 
 /** A fixed mid-altitude spawn: tests place bots explicitly. */
 const spawnAt = (x: number, z: number, yaw = 0, y = 300): SpawnState => ({

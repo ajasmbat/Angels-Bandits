@@ -17,6 +17,7 @@ import {
   FORECOURT_LAWN_OUTER,
   GROUND_FORECOURT,
   GROUND_PARK,
+  GROUND_RIVER,
   GROUND_SITE,
   PARK_LAMP_COUNT,
   PARK_LAMP_PHASE,
@@ -41,6 +42,7 @@ import {
 } from "@angels-bandits/common/constants";
 import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { RIVER_GROUND_PARS } from "./river";
 import { SIGN_PALETTE } from "./signage";
 import { LAMP_STATIONS_MINUS, LAMP_STATIONS_PLUS } from "./streetlights";
 
@@ -435,6 +437,7 @@ const N = {
   park: `${GROUND_PARK}`,
   forecourt: `${GROUND_FORECOURT}`,
   site: `${GROUND_SITE}`,
+  river: `${GROUND_RIVER}`,
   moonDir: `vec3(${MOON_DIR.x.toFixed(4)}, ${MOON_DIR.y.toFixed(4)}, ${MOON_DIR.z.toFixed(4)})`,
 } as const;
 
@@ -584,9 +587,14 @@ vec3 abSitePaint(vec2 w, float n) {
     smoothstep(0.45, 0.62, abNoise(w * 0.18)));
   return c * (1.0 + (abNoise(w * 3.1) - 0.5) * 0.4) * (1.0 + (n - 0.5) * 0.2);
 }
+// --- L11 river (render/river.ts owns this paint) ---
+${RIVER_GROUND_PARS}
 `;
 
 const GROUND_FRAGMENT_MAIN = /* glsl */ `
+// L11: the open river channel is a hole in the ground (the water and the
+// embankment walls are render/river.ts meshes). Bridge decks stay painted.
+if (abRiverOpen(vWorldXZ)) discard;
 float abDx = abLineDist(vWorldXZ.x);
 float abDz = abLineDist(vWorldXZ.y);
 float abAdx = abs(abDx);
@@ -669,6 +677,8 @@ if (abRoad > 0.5) {
       abPaint = abForecourtPaint(abLocal, abNoiseV);
     } else if (abKind == ${N.site}) {
       abPaint = abSitePaint(vWorldXZ, abNoiseV);
+    } else if (abKind == ${N.river}) {
+      abPaint = abPromenadePaint(vWorldXZ, abNoiseV, ${GROUND_COLORS.paving}, ${GROUND_COLORS.slabJoint});
     }
   }
 }

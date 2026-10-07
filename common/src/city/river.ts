@@ -384,10 +384,9 @@ const BOAT_SALT = 0x6b6f6174;
 
 /** One boat's fixed character. */
 export interface Boat {
-  /** Length, beam (m) and the lit cabin's share of the length. */
+  /** Length and beam, m. */
   length: number;
   beam: number;
-  cabin: number;
   /** +1 sails toward +x, −1 toward −x. */
   dir: 1 | -1;
   /** Cruising speed, m/s. */
@@ -411,7 +410,6 @@ export function riverBoats(seed: number): Boat[] {
     boats.push({
       length: 14 + rand() * 18,
       beam: 4.5 + rand() * 2.5,
-      cabin: 0.35 + rand() * 0.3,
       dir,
       speed: BOAT_SPEED_MIN + lane * BOAT_SPEED_STEP,
       x0: ((i + rand() * 0.5) / BOAT_COUNT) * WORLD_SIZE,

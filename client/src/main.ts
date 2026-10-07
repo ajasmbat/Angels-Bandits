@@ -119,6 +119,7 @@ import {
   defaultLimits,
   stepResolution,
 } from "./render/resolution";
+import { RiverRenderer } from "./render/river";
 import { RoofClutterRenderer } from "./render/roofclutter";
 import { Searchlights } from "./render/searchlights";
 import { Signage } from "./render/signage";
@@ -364,6 +365,11 @@ const nature = natureFor(welcome.seed, city.cityBuildings);
 const natureIndex = buildNatureIndex(nature);
 const natureRenderer = new NatureRenderer(nature);
 scene.add(natureRenderer.group);
+// L11 river: embankment walls, bridges, the reflecting water and the boats.
+// Its solids (decks, walls, boats) collide through hitsGround/the movers, so
+// this is drawing only — updated on the same latched clock as the movers.
+const river = new RiverRenderer(welcome.seed, city.cityBuildings);
+scene.add(river.group);
 const fireworks = new Fireworks(welcome.seed);
 const searchlights = new Searchlights(city.cityBuildings);
 scene.add(searchlights.mesh);
@@ -1560,6 +1566,7 @@ renderer.setAnimationLoop((now) => {
   signals.update(chase.position, renderMs ?? now, microK);
   constructionSparks.update(chase.position, renderMs ?? now, microK);
   ground.update(chase.position);
+  river.update(chase.position, renderMs, now); // L11
   skyDome.update(chase.position);
   // Wounded smoke: own plane from server-said self HP, every remote (human
   // or bot) from snapshot HP — all clients see the same wounds. Death clouds

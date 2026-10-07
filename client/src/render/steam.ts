@@ -15,6 +15,7 @@
 import { type Building, mulberry32 } from "@angels-bandits/common/city";
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { RENDER_ORDER } from "./render-order";
 import { roofClutterFor } from "./roofclutter";
 import {
@@ -223,6 +224,10 @@ export class Steam {
     size: 0,
   };
   private drawn = 0;
+  /** M3 quality tier: every Nth puff of a vent is drawn (1 = all). */
+  private puffStride = 1;
+  /** M3 quality tier: block-window radius (the budget stays sized for the max). */
+  private radius = BLOCK_WINDOW_RADIUS;
 
   constructor(buildingsByBlock: Map<number, Building[]>, seed: number) {
     this.seed = seed;
@@ -294,10 +299,10 @@ export class Steam {
     this.material.opacity = STEAM_OPACITY * gate;
     const t = timeMs / 1000;
     let i = 0;
-    for (const { bx, bz } of blockWindow(cameraPos)) {
+    for (const { bx, bz } of blockWindow(cameraPos, this.radius)) {
       for (const vent of this.ventsFor(bx, bz)) {
         const base = nearestImage(cameraPos, { x: vent.x, y: 0, z: vent.z });
-        for (let j = 0; j < PUFFS_PER_VENT; j++) {
+        for (let j = 0; j < PUFFS_PER_VENT; j += this.puffStride) {
           puffPoseInto(vent, j, t, this.pose);
           this.positions.setXYZ(
             i,
@@ -313,6 +318,17 @@ export class Steam {
     this.drawn = i;
     this.points.geometry.setDrawRange(0, i);
     uploadPrefix([this.positions, this.sizes], i);
+  }
+
+  /** M3: the tier's share of each vent's puffs, and how far out it streams.
+   * Counts only — the buffer and the material are untouched (O3 rule 1). */
+  setQuality(tier: QualityTier): void {
+    const p = QUALITY_PROFILES[tier];
+    this.puffStride = Math.max(
+      1,
+      Math.round(1 / Math.max(p.steamDensity, 0.01)),
+    );
+    this.radius = Math.min(BLOCK_WINDOW_RADIUS, p.microRadius);
   }
 
   /** Puffs drawn last frame (perf + the altitude-gate acceptance check). */

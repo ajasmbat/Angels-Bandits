@@ -177,11 +177,15 @@ function rungAbove(ratio: number, limits: ResolutionLimits): number | null {
   return null;
 }
 
-/** Share of `frames` (ms) that missed the budget outright. */
-export function missShare(frames: readonly number[]): number {
+/** Share of `frames` (ms) that missed the budget outright. `missMs` is the
+ * miss line — MISS_MS unless a tier steers to another budget (M3 Mobile). */
+export function missShare(
+  frames: readonly number[],
+  missMs: number = MISS_MS,
+): number {
   if (frames.length === 0) return 0;
   let missed = 0;
-  for (const f of frames) if (f > MISS_MS) missed++;
+  for (const f of frames) if (f > missMs) missed++;
   return missed / frames.length;
 }
 
@@ -193,6 +197,9 @@ export function missShare(frames: readonly number[]): number {
  * timer, which advances on ticks that do not move the ratio at all; a caller
  * that treated every new object as a resize would reset its frame window
  * every tick and starve the controller of a full window forever.
+ *
+ * `missMs` is the miss line: MISS_MS (60 fps) everywhere except the M3
+ * Mobile tier, which steers to 30 fps (quality.ts `tierBudgetMs`).
  *
  * Four outcomes, and only ever one per call:
  *  - misses at or over MISS_SHARE  → one rung down (and latch `hotRatio`)
@@ -209,9 +216,10 @@ export function stepResolution(
   frames: readonly number[],
   now: number,
   limits: ResolutionLimits,
+  missMs: number = MISS_MS,
 ): ResolutionState {
   if (frames.length < WINDOW_FRAMES) return state;
-  const share = missShare(frames);
+  const share = missShare(frames, missMs);
 
   if (share >= MISS_SHARE) {
     // Any miss ends the clean run outright — the relax timer measures

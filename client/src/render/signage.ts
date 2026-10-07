@@ -38,6 +38,7 @@ import {
   signClock,
 } from "./signage-anim";
 import {
+  SIGN_ANIM_ON_UNIFORM,
   type SignUniforms,
   createSignUniforms,
   patchSignMaterial,
@@ -970,9 +971,11 @@ export class Signage {
     }
   }
 
-  /** O3: Low drops the sidewalk spill pools (additive ground decals). */
+  /** O3: Low drops the sidewalk spill pools (additive ground decals).
+   * M3: Mobile also stills the animation (a uniform guard, no recompile). */
   setQuality(tier: QualityTier): void {
     this.spillMesh.visible = QUALITY_PROFILES[tier].signSpill;
+    SIGN_ANIM_ON_UNIFORM.value = QUALITY_PROFILES[tier].signAnimation ? 1 : 0;
   }
 
   private readonly placeSpill = (i: number, x: number, z: number): void => {

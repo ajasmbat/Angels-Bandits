@@ -1,5 +1,5 @@
 // Graphics quality tiers (O3). One table says what every Living City feature
-// does on High, Medium and Low; main.ts hands the chosen tier to each
+// does on High, Medium, Low and Mobile (M3); main.ts hands the chosen tier to each
 // module's `setQuality` and caps the adaptive resolution scaler with it.
 //
 // Two rules every tier obeys, and the reason the table is shaped like this:
@@ -20,24 +20,36 @@
 // trades pixels for frame time within a tier's ceiling. The Auto tier logic
 // sits ABOVE it and only acts once the scaler has already given up most of
 // its pixels and frames still miss — then it trades features instead.
+//
+// M3 Mobile: a fourth tier for phones, the cheapest on every knob. Its pixel
+// ceiling is 1, like Low's: 1.25 was measured first, and on the runner's
+// phone proxy it left Mobile only 2.8x cheaper than High on draw calls ×
+// pixels (the draw count barely moves between tiers), short of the 3x M3
+// asks for; 1 clears it. It steers to 30 fps rather than 60 —
+// see MOBILE_FRAME_BUDGET_MS — and Auto starts there on a coarse-pointer
+// device, where the thermal step-down (bottom of this file) replaces the
+// desktop tier drops.
 
 import {
   FRAME_BUDGET_MS,
+  MISS_MS,
   MISS_SHARE,
   type ResolutionLimits,
   defaultLimits,
 } from "./resolution";
 
-export type QualityTier = "high" | "medium" | "low";
+export type QualityTier = "high" | "medium" | "low" | "mobile";
 /** What the player picks: a fixed tier, or Auto (starts High, steps down). */
 export type QualitySetting = "auto" | QualityTier;
 
-/** The G key and the HUD entry cycle through these, in this order. */
+/** The G key and the HUD entry cycle through these, in this order. Mobile
+ * is last, and is a legitimate pick on any device (a weak laptop too). */
 export const QUALITY_SETTINGS: readonly QualitySetting[] = [
   "auto",
   "high",
   "medium",
   "low",
+  "mobile",
 ];
 /** What ships: Auto. On a machine that holds 60 fps it never leaves High. */
 export const DEFAULT_QUALITY: QualitySetting = "auto";
@@ -74,6 +86,23 @@ export interface QualityProfile {
   contrails: number;
   /** L13 fire escapes, balconies, AC units, scaffolding. */
   facadeDetail: boolean;
+  /** The bloom pass (half-res chain). Mobile keeps it: the lower pixel ratio
+   * already makes it cheap, and a quarter-res chain would let a 1–2 px tracer
+   * fall between texels and its halo shimmer. Only thermal level 1 drops it. */
+  bloom: boolean;
+  /** The final grade pass (vignette, saturation, split-tone). */
+  grade: boolean;
+  /** L1 street steam, share of each vent's puffs. */
+  steamDensity: number;
+  /** L1 micro tier + street detail: the block-window radius pedestrians,
+   * steam, signals and construction sparks stream in (BLOCK_WINDOW_RADIUS is
+   * the ceiling; their buffers stay sized for it, so this only moves counts). */
+  microRadius: number;
+  /** L7 sign animation (tickers, chases, video). Off = each sign's static art. */
+  signAnimation: boolean;
+  /** Fake window interiors (the per-pane parallax room raycast). Off = the
+   * room's mean colour, the same value the distance fade already ends on. */
+  windowInteriors: boolean;
 }
 
 export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
@@ -91,6 +120,12 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     birds: 1,
     contrails: 1,
     facadeDetail: true,
+    bloom: true,
+    grade: true,
+    steamDensity: 1,
+    microRadius: 2,
+    signAnimation: true,
+    windowInteriors: true,
   },
   medium: {
     maxPixelRatio: 1.5,
@@ -106,6 +141,12 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     birds: 1,
     contrails: 1,
     facadeDetail: true,
+    bloom: true,
+    grade: true,
+    steamDensity: 1,
+    microRadius: 2,
+    signAnimation: true,
+    windowInteriors: true,
   },
   low: {
     maxPixelRatio: 1,
@@ -121,6 +162,33 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     birds: 0.5,
     contrails: 0.5,
     facadeDetail: false,
+    bloom: true,
+    grade: true,
+    steamDensity: 1,
+    microRadius: 2,
+    signAnimation: true,
+    windowInteriors: true,
+  },
+  mobile: {
+    maxPixelRatio: 1,
+    rainDensity: 0.25,
+    crowdDensity: 0.3,
+    smokeColumns: 0.34,
+    livingWindows: false,
+    headlightCones: false,
+    signSpill: false,
+    rooftopLights: false,
+    treeSway: false,
+    fountains: 0,
+    birds: 0.5,
+    contrails: 0.5,
+    facadeDetail: false,
+    bloom: true,
+    grade: false,
+    steamDensity: 0.5,
+    microRadius: 1,
+    signAnimation: false,
+    windowInteriors: false,
   },
 };
 
@@ -137,6 +205,7 @@ export const FEATURE_TIERS: readonly {
   high: Behaviour;
   medium: Behaviour;
   low: Behaviour;
+  mobile: Behaviour;
   note: string;
 }[] = [
   {
@@ -144,6 +213,7 @@ export const FEATURE_TIERS: readonly {
     high: "full",
     medium: "full",
     low: "full",
+    mobile: "full",
     note: "gameplay-adjacent (kill sites); CPU only",
   },
   {
@@ -151,27 +221,31 @@ export const FEATURE_TIERS: readonly {
     high: "full",
     medium: "full",
     low: "reduced",
-    note: "half the puffs per column",
+    mobile: "reduced",
+    note: "half the puffs per column (Mobile: a third)",
   },
   {
     feature: "L1 street life — pedestrians",
     high: "full",
     medium: "reduced",
     low: "reduced",
-    note: "70 % / 40 % of the crowd",
+    mobile: "reduced",
+    note: "70 % / 40 % / 30 % of the crowd",
   },
   {
     feature: "L1 street life — steam, signals, sparks",
     high: "full",
     medium: "full",
     low: "full",
-    note: "already altitude-gated",
+    mobile: "reduced",
+    note: "already altitude-gated; Mobile streams one block out, half the steam",
   },
   {
     feature: "L2 city soundscape",
     high: "full",
     medium: "full",
     low: "full",
+    mobile: "full",
     note: "audio, no GPU cost",
   },
   {
@@ -179,6 +253,7 @@ export const FEATURE_TIERS: readonly {
     high: "full",
     medium: "full",
     low: "off",
+    mobile: "off",
     note: "uniform guard: static window grid",
   },
   {
@@ -186,13 +261,15 @@ export const FEATURE_TIERS: readonly {
     high: "full",
     medium: "reduced",
     low: "reduced",
-    note: "50 % / 35 % of the streaks; haze unchanged",
+    mobile: "reduced",
+    note: "50 % / 35 % / 25 % of the streaks; haze unchanged",
   },
   {
     feature: "L4 wet streets, puddles",
     high: "full",
     medium: "full",
     low: "full",
+    mobile: "full",
     note: "uniform-only",
   },
   {
@@ -200,6 +277,7 @@ export const FEATURE_TIERS: readonly {
     high: "full",
     medium: "full",
     low: "full",
+    mobile: "full",
     note: "solid",
   },
   {
@@ -207,6 +285,7 @@ export const FEATURE_TIERS: readonly {
     high: "full",
     medium: "full",
     low: "full",
+    mobile: "full",
     note: "feeds audio and reactions; one instanced draw",
   },
   {
@@ -214,6 +293,7 @@ export const FEATURE_TIERS: readonly {
     high: "full",
     medium: "full",
     low: "off",
+    mobile: "off",
     note: "additive fill; the ground pools stay",
   },
   {
@@ -221,13 +301,15 @@ export const FEATURE_TIERS: readonly {
     high: "full",
     medium: "full",
     low: "full",
-    note: "uniform clock",
+    mobile: "off",
+    note: "uniform clock; Mobile: uniform guard, each sign's static art",
   },
   {
     feature: "L7 sign light spill",
     high: "full",
     medium: "full",
     low: "off",
+    mobile: "off",
     note: "additive ground decals",
   },
   {
@@ -235,6 +317,7 @@ export const FEATURE_TIERS: readonly {
     high: "full",
     medium: "full",
     low: "full",
+    mobile: "full",
     note: "one merged mesh",
   },
   {
@@ -242,6 +325,7 @@ export const FEATURE_TIERS: readonly {
     high: "full",
     medium: "full",
     low: "off",
+    mobile: "off",
     note: "point sprites",
   },
   {
@@ -249,6 +333,7 @@ export const FEATURE_TIERS: readonly {
     high: "full",
     medium: "full",
     low: "off",
+    mobile: "off",
     note: "crowns hold still",
   },
   {
@@ -256,6 +341,7 @@ export const FEATURE_TIERS: readonly {
     high: "full",
     medium: "reduced",
     low: "off",
+    mobile: "off",
     note: "half the spray / none",
   },
   {
@@ -263,6 +349,7 @@ export const FEATURE_TIERS: readonly {
     high: "full",
     medium: "full",
     low: "reduced",
+    mobile: "reduced",
     note: "half of each flock",
   },
   {
@@ -270,6 +357,7 @@ export const FEATURE_TIERS: readonly {
     high: "full",
     medium: "full",
     low: "reduced",
+    mobile: "reduced",
     note: "contrails half as long",
   },
   {
@@ -277,6 +365,7 @@ export const FEATURE_TIERS: readonly {
     high: "full",
     medium: "full",
     low: "full",
+    mobile: "full",
     note: "solid mover / shared light cloud",
   },
   {
@@ -284,6 +373,7 @@ export const FEATURE_TIERS: readonly {
     high: "full",
     medium: "full",
     low: "full",
+    mobile: "full",
     note: "solid",
   },
   {
@@ -291,6 +381,7 @@ export const FEATURE_TIERS: readonly {
     high: "full",
     medium: "full",
     low: "full",
+    mobile: "full",
     note: "uniforms only",
   },
   {
@@ -298,7 +389,32 @@ export const FEATURE_TIERS: readonly {
     high: "full",
     medium: "full",
     low: "off",
+    mobile: "off",
     note: "not solid; dressing only",
+  },
+  {
+    feature: "Bloom",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "half-res chain, cheaper via the pixel ceiling; off at thermal level 1",
+  },
+  {
+    feature: "Final grade (vignette, saturation)",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "off",
+    note: "one full-screen pass",
+  },
+  {
+    feature: "Window interiors (parallax rooms)",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "off",
+    note: "uniform guard: the room's mean colour",
   },
 ];
 
@@ -311,10 +427,39 @@ export const FEATURE_TIERS: readonly {
 export function qualityLimits(
   devicePixelRatio: number,
   tier: QualityTier,
+  thermalLevel = 0,
 ): ResolutionLimits {
   const panel = defaultLimits(devicePixelRatio);
-  const ceiling = Math.min(panel.ceiling, QUALITY_PROFILES[tier].maxPixelRatio);
+  const ceiling = Math.min(
+    panel.ceiling,
+    QUALITY_PROFILES[tier].maxPixelRatio,
+    thermalCeiling(thermalLevel),
+  );
   return { floor: Math.min(panel.floor, ceiling), ceiling };
+}
+
+/**
+ * M3: the frame budget a tier steers to, ms. Mobile aims at a steady 30 fps:
+ * against a 60 fps budget, iOS Low Power Mode's 30 Hz rAF cap (or any phone
+ * that holds a steady 30) reads as every frame missing, and the scaler would
+ * sit on its floor for good. Nothing caps a phone that does better — this
+ * only moves the line the scaler and the step-downs call a miss.
+ */
+export const MOBILE_FRAME_BUDGET_MS = 1000 / 30;
+
+export function tierBudgetMs(tier: QualityTier): number {
+  return tier === "mobile" ? MOBILE_FRAME_BUDGET_MS : FRAME_BUDGET_MS;
+}
+
+/** The miss line under a tier's budget: the same 1.5x ratio as MISS_MS. */
+export function tierMissMs(tier: QualityTier): number {
+  return tierBudgetMs(tier) * (MISS_MS / FRAME_BUDGET_MS);
+}
+
+/** Whether the bloom pass runs: the tier's switch, and off from thermal
+ * level 1 (the biggest post cost left on a phone once grade is off). */
+export function bloomOn(tier: QualityTier, thermalLevel: number): boolean {
+  return QUALITY_PROFILES[tier].bloom && thermalLevel < 1;
 }
 
 /** A `?quality=` / localStorage value, or null when absent or junk. */
@@ -334,9 +479,19 @@ export function nextQualitySetting(s: QualitySetting): QualitySetting {
   return QUALITY_SETTINGS[(i + 1) % QUALITY_SETTINGS.length] as QualitySetting;
 }
 
-/** The tier one step cheaper, or null at the bottom. */
+/** The tier one step cheaper, or null at the bottom. Desktop Auto bottoms
+ * out at Low; Mobile is its own ladder, whose rungs are thermal levels. */
 export function tierBelow(t: QualityTier): QualityTier | null {
   return t === "high" ? "medium" : t === "medium" ? "low" : null;
+}
+
+/**
+ * Where Auto starts. A coarse PRIMARY pointer is a phone or tablet (M2's
+ * touch rule, ui/mobile.ts): Mobile. A touchscreen laptop keeps a fine
+ * primary pointer, so it starts at High like any desktop.
+ */
+export function autoStartTier(coarsePointer: boolean): QualityTier {
+  return coarsePointer ? "mobile" : "high";
 }
 
 // --- Auto ------------------------------------------------------------------
@@ -389,13 +544,32 @@ export interface AutoQualityState {
   changedAt: number;
 }
 
-export function createAutoQuality(now: number): AutoQualityState {
-  return { tier: "high", pressureSince: null, changedAt: now };
+export function createAutoQuality(
+  now: number,
+  start: QualityTier = "high",
+): AutoQualityState {
+  return { tier: start, pressureSince: null, changedAt: now };
 }
 
 /** A transient (hidden tab, death, resize, teleport): forget the pressure run. */
 export function interruptAutoQuality(s: AutoQualityState): AutoQualityState {
   return s.pressureSince === null ? s : { ...s, pressureSince: null };
+}
+
+/**
+ * Pressure: enough of the window missed, and drawing fewer pixels can no
+ * longer fix it. `budgetMs` scales the CPU-bound line with the tier's budget
+ * (the caller already counted misses against that budget's miss line).
+ */
+export function underPressure(
+  missShare: number,
+  ratio: number,
+  cpuMs: number,
+  budgetMs: number = FRAME_BUDGET_MS,
+): boolean {
+  const pixelsCannotHelp =
+    ratio <= AUTO_RATIO_GATE || cpuMs >= budgetMs * AUTO_CPU_BOUND;
+  return missShare >= MISS_SHARE && pixelsCannotHelp;
 }
 
 /**
@@ -410,11 +584,11 @@ export function stepAutoQuality(
   ratio: number,
   cpuMs: number,
   now: number,
+  budgetMs: number = FRAME_BUDGET_MS,
 ): AutoQualityState {
-  const pixelsCannotHelp =
-    ratio <= AUTO_RATIO_GATE || cpuMs >= FRAME_BUDGET_MS * AUTO_CPU_BOUND;
-  const pressured = missShare >= MISS_SHARE && pixelsCannotHelp;
-  if (!pressured) return interruptAutoQuality(s);
+  if (!underPressure(missShare, ratio, cpuMs, budgetMs)) {
+    return interruptAutoQuality(s);
+  }
   if (now - s.changedAt < AUTO_SETTLE_MS) return interruptAutoQuality(s);
   const since = s.pressureSince ?? now;
   if (now - since < AUTO_PRESSURE_MS) {
@@ -423,4 +597,86 @@ export function stepAutoQuality(
   const below = tierBelow(s.tier);
   if (below === null) return s;
   return { tier: below, pressureSince: null, changedAt: now };
+}
+
+// --- Thermal step-down (M3) -------------------------------------------------
+//
+// Auto on a phone starts at Mobile, which has no tier below it. A phone's
+// steady state still changes under it, though: after a few minutes of
+// sustained GPU load it throttles, and frames that held 30–60 fps start to
+// miss. No browser exposes a temperature, so throttling is read by its
+// SYMPTOM — the same pressure Auto uses, against Mobile's 30 fps budget:
+// misses in at least MISS_SHARE of the window while pixels can no longer
+// help. Pressure only counts once the scaler has given up its pixels, so the
+// two controllers act in turn and never pull against each other.
+//
+// Each level only ever makes things cheaper and nothing ever steps back up,
+// so there is no oscillation by construction. Level 1 drops bloom and caps
+// the scaler at 1.0 (Mobile's own ceiling today; the cap keeps a thermal
+// level meaning the same thing if that ceiling is ever raised); level 2
+// caps it at 0.75 — RESOLUTION_FLOOR, so the
+// scaler is pinned there on purpose. The cap is the point: without it, the
+// scaler's latch relaxes every 1–8 minutes and probes straight back up into
+// the heat. A reload, or picking a tier by hand, starts over at level 0.
+
+/** Highest thermal level. */
+export const THERMAL_MAX_LEVEL = 2;
+/** Pixel-ratio ceiling per thermal level (level 0 adds no cap). */
+export const THERMAL_CEILINGS: readonly number[] = [
+  Number.POSITIVE_INFINITY,
+  1,
+  0.75,
+];
+/** Unbroken pressure before a step. Longer than Auto's 3 s: heat builds
+ * over minutes, and a GC pause or a streaming burst is not heat. */
+export const THERMAL_PRESSURE_MS = 10_000;
+/** After a step, how long the new level is left alone to settle, ms. */
+export const THERMAL_SETTLE_MS = 30_000;
+
+/** The pixel-ratio cap a thermal level imposes. */
+export function thermalCeiling(level: number): number {
+  const i = Math.max(0, Math.min(THERMAL_MAX_LEVEL, Math.floor(level)));
+  return THERMAL_CEILINGS[i] as number;
+}
+
+export interface ThermalState {
+  level: number;
+  /** Clock of the first tick of the current unbroken pressure run, or null. */
+  pressureSince: number | null;
+  /** Clock of the last step (or of the start) — the settle window. */
+  changedAt: number;
+}
+
+export function createThermal(now: number): ThermalState {
+  return { level: 0, pressureSince: null, changedAt: now };
+}
+
+/** A transient (hidden tab, death, resize, teleport): forget the pressure run. */
+export function interruptThermal(s: ThermalState): ThermalState {
+  return s.pressureSince === null ? s : { ...s, pressureSince: null };
+}
+
+/**
+ * One thermal tick, on the scaler's cadence and window, with the same inputs
+ * as `stepAutoQuality` (misses counted against Mobile's miss line). Compare
+ * `level`, not object identity, to decide whether to re-apply anything.
+ */
+export function stepThermal(
+  s: ThermalState,
+  missShare: number,
+  ratio: number,
+  cpuMs: number,
+  now: number,
+  budgetMs: number = MOBILE_FRAME_BUDGET_MS,
+): ThermalState {
+  if (!underPressure(missShare, ratio, cpuMs, budgetMs)) {
+    return interruptThermal(s);
+  }
+  if (now - s.changedAt < THERMAL_SETTLE_MS) return interruptThermal(s);
+  const since = s.pressureSince ?? now;
+  if (now - since < THERMAL_PRESSURE_MS) {
+    return s.pressureSince === null ? { ...s, pressureSince: since } : s;
+  }
+  if (s.level >= THERMAL_MAX_LEVEL) return s;
+  return { level: s.level + 1, pressureSince: null, changedAt: now };
 }

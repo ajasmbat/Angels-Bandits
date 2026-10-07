@@ -54,6 +54,15 @@ const GLYPH_V1 = 490 / 512;
  * every programme. */
 const FOOTER_V = 0.28;
 
+/**
+ * M3 quality tier: 1 = signs animate, 0 = every sign draws its static art
+ * (plain marquee frame, the billboard's still, a solid strip) — exactly what
+ * an ANIM_STATIC sign already shows. A uniform guard compiled into the one
+ * boot program, not a `#define`, so a tier switch compiles nothing (O3 rule 1).
+ * Shared by reference across every sign material.
+ */
+export const SIGN_ANIM_ON_UNIFORM = { value: 1 };
+
 /** Uniforms every sign material shares (one write per frame). */
 export interface SignUniforms {
   uSignTime: { value: number };
@@ -124,6 +133,7 @@ if (aSize.z >= 0.0) {
 const FRAG_PARS = (kind: SignShaderKind) => `
 uniform highp float uSignTime;
 uniform vec3 uSignPalette[5];
+uniform float uSignAnimOn;
 varying vec4 vAnim;
 varying vec2 vSize;
 varying vec2 vSignUv;
@@ -132,7 +142,7 @@ ${kind === "strip" ? "" : "varying float vSignTile;"}
 #define SIGN_LOOP ${f(SIGN_LOOP_S)}
 #define SIGN_RUNG ${f(EMISSIVE_SIGN)}
 const vec3 SIGN_LUMA = vec3(0.2126, 0.7152, 0.0722);
-bool signKind(float k) { return vSignFront > 0.5 && abs(vAnim.x - k) < 0.5; }
+bool signKind(float k) { return uSignAnimOn > 0.5 && vSignFront > 0.5 && abs(vAnim.x - k) < 0.5; }
 // PCG integer hash: identical on every GPU (a sin() hash is not).
 uint signHash(uint v) {
   uint s = v * 747796405u + 2891336453u;
@@ -338,6 +348,7 @@ export function patchSignMaterial(
     shader.uniforms.uSignTime = uniforms.uSignTime;
     shader.uniforms.uStutter = uniforms.uStutter;
     shader.uniforms.uSignPalette = uniforms.uSignPalette;
+    shader.uniforms.uSignAnimOn = SIGN_ANIM_ON_UNIFORM;
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", `#include <common>\n${chunks.vertexPars}`)
       .replace(

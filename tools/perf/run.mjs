@@ -60,10 +60,62 @@ const REPO = resolve(HERE, "../..");
  *    `weatherPinned`, `planes` and `verdicts`, and `config.quality` /
  *    `config.ref`. `overall` now pools seven segments, so compare an older
  *    report segment by segment rather than on its overall row.
+ * 4: M3 — `harness.device` / `cpuThrottle` / `segments`, per-segment
+ *    `jsP50`, and `config.fragmentProxy`. With `--segments`, `segments`
+ *    holds only the named ones, so match them by name, not index.
  */
-const REPORT_VERSION = 3;
+const REPORT_VERSION = 4;
 const VIEWPORT = { width: 1280, height: 720 };
 const DEVICE_SCALE_FACTOR = 2;
+
+/**
+ * M3 `--device`: the page each arm is measured in. `desktop` is what every
+ * earlier report used. `phone` is a landscape iPhone 12-class screen — 844×390
+ * CSS px at a device ratio of 3, touch, mobile viewport — so a pinned
+ * `--res 2` and Mobile's 1.25 ceiling both really apply, and the pixel counts
+ * are a phone's rather than a laptop's.
+ */
+export const DEVICES = {
+  desktop: {
+    viewport: VIEWPORT,
+    deviceScaleFactor: DEVICE_SCALE_FACTOR,
+    hasTouch: false,
+    isMobile: false,
+  },
+  phone: {
+    viewport: { width: 844, height: 390 },
+    deviceScaleFactor: 3,
+    hasTouch: true,
+    isMobile: true,
+  },
+};
+/** The device every page of this invocation opens as (set from --device). */
+let device = DEVICES.desktop;
+/** CDP CPU throttling rate for every page (1 = none; set from --cpu-throttle). */
+let cpuThrottle = 1;
+/** --segments: the names to fly, or null for all of SEGMENTS. */
+let segmentFilter = null;
+
+/** The segments this invocation flies, in SEGMENTS order. Every per-index
+ * structure (passes, determinism, the report) is built over this list. */
+export const activeSegments = () =>
+  segmentFilter === null
+    ? SEGMENTS
+    : SEGMENTS.filter((s) => segmentFilter.has(s.name));
+
+/**
+ * Open a measured page as `device`, CPU-throttled if asked. Throttling is a
+ * CDP emulation on the page's renderer: the page's JS (and only its JS) runs
+ * `cpuThrottle` times slower — the runner's stand-in for a phone's CPU.
+ */
+async function openPage(browser) {
+  const page = await browser.newPage(device);
+  if (cpuThrottle !== 1) {
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Emulation.setCPUThrottlingRate", { rate: cpuThrottle });
+  }
+  return page;
+}
 /** The pixel ratio measurements are taken at unless --res says otherwise. */
 const DEFAULT_PINNED_RATIO = 2;
 
@@ -90,6 +142,9 @@ function parseArgs(argv) {
     quality: "high",
     abRef: null,
     soak: null,
+    device: "desktop",
+    cpuThrottle: 1,
+    segments: null,
   };
   const finish = () => {
     // There is no determinism check with a single pass, so --strict would
@@ -103,6 +158,25 @@ function parseArgs(argv) {
     }
     if (opts.ab !== null && opts.abRef !== null) {
       throw new Error("--ab and --ab-ref both name the second arm: pick one");
+    }
+    if (!(opts.device in DEVICES)) {
+      throw new Error(
+        `--device must be one of ${Object.keys(DEVICES).join(", ")} (got ${opts.device})`,
+      );
+    }
+    if (!Number.isFinite(opts.cpuThrottle) || opts.cpuThrottle < 1) {
+      throw new Error(
+        `--cpu-throttle must be a rate >= 1 (got ${opts.cpuThrottle})`,
+      );
+    }
+    if (opts.segments !== null) {
+      const known = new Set(SEGMENTS.map((s) => s.name));
+      const bad = opts.segments.filter((n) => !known.has(n));
+      if (bad.length > 0 || opts.segments.length === 0) {
+        throw new Error(
+          `--segments takes names from: ${[...known].join(", ")} (got ${opts.segments.join(",")})`,
+        );
+      }
     }
     return opts;
   };
@@ -160,6 +234,18 @@ function parseArgs(argv) {
         break;
       case "--soak":
         opts.soak = Number(next());
+        break;
+      case "--device":
+        opts.device = next();
+        break;
+      case "--cpu-throttle":
+        opts.cpuThrottle = Number(next());
+        break;
+      case "--segments":
+        opts.segments = String(next())
+          .split(",")
+          .map((n) => n.trim())
+          .filter(Boolean);
         break;
       case "--help":
       case "-h":
@@ -430,6 +516,9 @@ async function flySegment(page, seg, sampleMs, worldMs) {
         strikes: ab.storm().strikes.length,
         // O3. Optional so an older build (--ab-ref) still measures.
         tier: ab.quality?.().tier ?? null,
+        // M3: the window's pre-render JS cost per frame (sim, streaming,
+        // instance packing). Optional for an older build.
+        jsP50: ab.jsStats?.().p50 ?? null,
         weather: weatherName,
         weatherPinned,
         // O4.
@@ -530,10 +619,7 @@ function installGlProbe() {
 }
 
 async function newProbedPage(browser) {
-  const page = await browser.newPage({
-    viewport: VIEWPORT,
-    deviceScaleFactor: DEVICE_SCALE_FACTOR,
-  });
+  const page = await openPage(browser);
   await page.addInitScript(installGlProbe);
   return page;
 }
@@ -566,13 +652,15 @@ function flyWarmupLap(page) {
       if (typeof ab.weather === "function") ab.weather(null);
     },
     [
-      SEGMENTS.map(({ x, z, y, yaw, weather }, i) => ({
+      // World times key on the segment's place in SEGMENTS, not in the
+      // --segments selection, so a filtered run pins the same instants.
+      activeSegments().map(({ name, x, z, y, yaw, weather }) => ({
         x,
         z,
         y,
         yaw,
         weather: weather ?? DEFAULT_WEATHER,
-        worldMs: warmupWorldMs(i),
+        worldMs: warmupWorldMs(SEGMENTS.findIndex((s) => s.name === name)),
       })),
       WARMUP_MS,
     ],
@@ -669,6 +757,119 @@ export function ratioHonoured(config) {
   return Math.abs(n - config.pixelRatio) < 1e-6;
 }
 
+/**
+ * UnrealBloomPass in full-screen-pass equivalents, area-weighted: the bright
+ * pass at half resolution (0.25), five mips of a horizontal + vertical blur
+ * from half resolution down (2 × 0.25 × (1 + 1/4 + … + 1/256)), the
+ * composite at half resolution (0.25) and the additive blend back over the
+ * full frame (1). ≈ 2.17.
+ */
+export const BLOOM_PASS_EQUIV =
+  0.25 + 2 * 0.25 * (1 + 1 / 4 + 1 / 16 + 1 / 64 + 1 / 256) + 0.25 + 1;
+/** SMAA's three passes (edges, weights, blend), each full-frame. */
+const SMAA_PASS_EQUIV = 3;
+
+/**
+ * O4's fused chain (`render/post.ts`), same units: the bright pass, the blur
+ * mips and the composite all at half the CSS resolution — so divided by the
+ * square of the buffer's density over CSS pixels — and no additive blend
+ * back over the frame (FinalPass adds the bloom while it tone-maps).
+ */
+export const fusedBloomPassEquiv = (density) =>
+  (BLOOM_PASS_EQUIV - 1) / (density * density);
+
+/**
+ * M3's fragment-cost proxy: drawing-buffer pixels × full-screen-pass
+ * equivalents (scene 1 + bloom + output 1 + grade + SMAA). A CONFIGURATION
+ * check, not a measurement — it says how much fill the enabled passes ask
+ * for, which a GPU-less runner can state honestly where it cannot time it.
+ * Scene overdraw is not in it (counted as one pass on every tier).
+ * Bloom/grade come from `__ab.quality()`; a build without M3 reports
+ * neither and is taken to run both, as every build before M3 did.
+ *
+ * O4: on the fused chain (`config.post === "fused"`) the grade costs no pass
+ * of its own (it runs inside the output pass) and the bloom is
+ * `fusedBloomPassEquiv`. A build without O4 reports no `post` and is priced
+ * as the legacy chain it runs.
+ */
+export function fragmentProxy(config) {
+  const { width, height } = config.drawingBuffer;
+  const q = config.quality ?? {};
+  const bloom = q.bloom ?? true;
+  const grade = q.grade ?? true;
+  const fused = config.post === "fused";
+  const bloomEquiv = fused
+    ? fusedBloomPassEquiv(config.bloomDensity ?? 1)
+    : BLOOM_PASS_EQUIV;
+  const passes =
+    1 +
+    (bloom ? bloomEquiv : 0) +
+    1 +
+    (grade && !fused ? 1 : 0) +
+    (config.aa === "smaa" ? SMAA_PASS_EQUIV : 0);
+  const pixels = width * height;
+  return {
+    pixels,
+    passes: Math.round(passes * 1000) / 1000,
+    cost: Math.round(pixels * passes),
+    bloom,
+    grade,
+    post: fused ? "fused" : "legacy",
+  };
+}
+
+/**
+ * M3: B's cost as a share of A's, by the three numbers a GPU-less runner can
+ * defend. `fragment` is the fragment proxy; `drawsXPixels` is each segment's
+ * median draw calls × drawing-buffer pixels; `jsP50` the pre-render JS cost
+ * (null where either build lacks the hook).
+ */
+export function costRatios(a, b) {
+  const ratio = (x, y) =>
+    typeof x === "number" && typeof y === "number" && x > 0 ? y / x : null;
+  const pa = a.config.fragmentProxy ?? fragmentProxy(a.config);
+  const pb = b.config.fragmentProxy ?? fragmentProxy(b.config);
+  return {
+    fragment: ratio(pa.cost, pb.cost),
+    segments: a.segments
+      .map((sa) => {
+        const sb = b.segments.find((s) => s.name === sa.name);
+        if (!sb) return null;
+        return {
+          name: sa.name,
+          draws: [sa.drawCalls, sb.drawCalls],
+          drawsXPixels: ratio(
+            sa.drawCalls * pa.pixels,
+            sb.drawCalls * pb.pixels,
+          ),
+          jsP50: [sa.jsP50 ?? null, sb.jsP50 ?? null],
+        };
+      })
+      .filter((s) => s !== null),
+  };
+}
+
+function printCostRatios(a, b) {
+  const r = costRatios(a, b);
+  const x = (v) => (v === null ? "n/a" : `${(1 / v).toFixed(2)}x cheaper`);
+  const pa = a.config.fragmentProxy;
+  const pb = b.config.fragmentProxy;
+  console.log(`
+cost: ${b.label} vs ${a.label} (GPU-independent proxies)`);
+  if (pa && pb) {
+    console.log(
+      `  fragment proxy: ${(pa.cost / 1e6).toFixed(2)} → ${(pb.cost / 1e6).toFixed(2)} Mpx·passes ` +
+        `(${pa.pixels} px × ${pa.passes} → ${pb.pixels} px × ${pb.passes}) = ${x(r.fragment)}`,
+    );
+  }
+  for (const s of r.segments) {
+    const js = s.jsP50.map((v) => (v === null ? "n/a" : v.toFixed(2)));
+    console.log(
+      `  ${s.name.padEnd(8)} draws ${s.draws[0]} → ${s.draws[1]}, draws × pixels ${x(s.drawsXPixels)}, JS p50 ${js[0]} → ${js[1]} ms`,
+    );
+  }
+}
+
 async function measure(browser, url) {
   const page = await newProbedPage(browser);
   const errors = await joinGame(page, url);
@@ -691,10 +892,11 @@ async function measure(browser, url) {
   // visible instead of a mystery in a delta table.
   config.requestedPixelRatio = new URL(url).searchParams.get("res");
   config.pixelRatioHonoured = ratioHonoured(config);
+  config.fragmentProxy = fragmentProxy(config);
 
   const segments = [];
   const port = Number(new URL(url).port);
-  for (const [i, seg] of SEGMENTS.entries()) {
+  for (const seg of activeSegments()) {
     // O3 furball: fake pilots join for this segment only, and get time to
     // re-sync on the server and fill the page's interpolation buffer before
     // the segment's own settle starts.
@@ -704,7 +906,14 @@ async function measure(browser, url) {
         : await startPilots(port, seg.pilots, { x: seg.x, z: seg.z });
     try {
       if (pilots) await sleep(PILOT_SETTLE_MS);
-      segments.push(await flySegment(page, seg, SAMPLE_MS, segmentWorldMs(i)));
+      segments.push(
+        await flySegment(
+          page,
+          seg,
+          SAMPLE_MS,
+          segmentWorldMs(SEGMENTS.indexOf(seg)),
+        ),
+      );
     } finally {
       pilots?.stop();
     }
@@ -861,6 +1070,14 @@ function printTable(report) {
     `\n${report.label} — aa=${c.aa} pixelRatio=${c.pixelRatio}${asked}${c.auto ? " (auto)" : ""} buffer=${c.drawingBuffer.width}x${c.drawingBuffer.height} quality=${c.quality ? c.quality.setting : "n/a"}${c.ref ? ` build=${c.ref}` : ""}`,
   );
   console.log(`GPU: ${report.env.gpu}`);
+  const h = report.harness;
+  if (h?.device || h?.cpuThrottle > 1 || c.fragmentProxy) {
+    console.log(
+      `device: ${h?.device ?? "desktop"} ${h?.viewport?.width}x${h?.viewport?.height}@${h?.deviceScaleFactor}` +
+        `${h?.cpuThrottle > 1 ? `, CPU throttled ${h.cpuThrottle}x` : ""}` +
+        `${c.fragmentProxy ? `, fragment proxy ${c.fragmentProxy.pixels} px × ${c.fragmentProxy.passes} passes (bloom ${c.fragmentProxy.bloom ? "on" : "off"}, grade ${c.fragmentProxy.grade ? "on" : "off"})` : ""}`,
+    );
+  }
   // Printed, not just stored: on a shared laptop this is the single most
   // common reason two runs of the same build disagree.
   console.log(
@@ -1151,7 +1368,9 @@ export function determinism(runs) {
   const spreadMs = (xs) => Math.max(...xs) - Math.min(...xs);
   // Only the segments every pass actually flew: a report recorded before a
   // segment was appended simply does not have it.
-  const flown = SEGMENTS.filter((_, i) => runs.every((r) => r.segments[i]));
+  const flown = activeSegments().filter((_, i) =>
+    runs.every((r) => r.segments[i]),
+  );
   // O4: an arm whose every segment flew on the pinned world clock is held to
   // the stricter sets.
   const worldPinned = runs.every((r) =>
@@ -1304,25 +1523,28 @@ export function pickMedianPass(all) {
 
 function buildReport(label, runs, opts) {
   const primary = runs[0];
-  const segments = SEGMENTS.map((seg, i) =>
-    pickMedianPass(runs.map((r) => r.segments[i])),
-  ).map((seg) => {
-    // Raw per-frame samples are ~650 numbers a segment, and baseline.json is
-    // a committed file a human reads in a diff. The SPIKE SUMMARY derived
-    // from them always ships (it is a dozen fields and it is the part that
-    // answers a question); the samples themselves only on --samples, which
-    // is what you pass when you want to plot a histogram yourself.
-    if (opts.samples) return seg;
-    const { samples: _wall, gpuSamples: _gpu, ...rest } = seg;
-    return rest;
-  });
+  const segments = activeSegments()
+    .map((seg, i) => pickMedianPass(runs.map((r) => r.segments[i])))
+    .map((seg) => {
+      // Raw per-frame samples are ~650 numbers a segment, and baseline.json is
+      // a committed file a human reads in a diff. The SPIKE SUMMARY derived
+      // from them always ships (it is a dozen fields and it is the part that
+      // answers a question); the samples themselves only on --samples, which
+      // is what you pass when you want to plot a histogram yourself.
+      if (opts.samples) return seg;
+      const { samples: _wall, gpuSamples: _gpu, ...rest } = seg;
+      return rest;
+    });
   return {
     version: REPORT_VERSION,
     label,
     createdAt: new Date().toISOString(),
     harness: {
-      viewport: VIEWPORT,
-      deviceScaleFactor: DEVICE_SCALE_FACTOR,
+      viewport: device.viewport,
+      deviceScaleFactor: device.deviceScaleFactor,
+      device: opts.device,
+      cpuThrottle,
+      segments: activeSegments().map((s) => s.name),
       vsync: "disabled",
       sampleMs: SAMPLE_MS,
       settleMs: SETTLE_MS,
@@ -1417,6 +1639,9 @@ async function launchBrowser(opts) {
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
+  device = DEVICES[opts.device];
+  cpuThrottle = opts.cpuThrottle;
+  segmentFilter = opts.segments === null ? null : new Set(opts.segments);
   if (opts.build) {
     console.log("building client…");
     await run("npm", ["run", "build", "-w", "client"], {
@@ -1522,6 +1747,7 @@ async function main() {
   if (abReport) {
     printTable(abReport);
     printDelta(report, abReport);
+    printCostRatios(report, abReport);
     report.ab = abReport;
   }
   const dead = report.segments.filter((s) => !s.alive);

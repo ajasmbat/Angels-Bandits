@@ -24,6 +24,7 @@ import { createBuildingsMaterial } from "./buildings-material";
 import { LIVE_ON_UNIFORM, LiveClock, crewSchedule } from "./living-windows";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { roofStyleFor } from "./roofs";
+import { WIN_INTERIOR_UNIFORM } from "./window-pattern";
 import { ImageCache, InstanceUploads } from "./wrapPlacement";
 
 /**
@@ -269,9 +270,11 @@ export class CityRenderer {
     this.liveTime.value = this.liveClock.update(serverMs, nowMs);
   }
 
-  /** O3: Low turns the L3 living windows off — a uniform, so no recompile. */
+  /** O3: Low turns the L3 living windows off — a uniform, so no recompile.
+   * M3: Mobile also drops the parallax window rooms, the same way. */
   setQuality(tier: QualityTier): void {
     LIVE_ON_UNIFORM.value = QUALITY_PROFILES[tier].livingWindows ? 1 : 0;
+    WIN_INTERIOR_UNIFORM.value = QUALITY_PROFILES[tier].windowInteriors ? 1 : 0;
   }
 
   /** QA: pin the living-windows clock (live seconds), or null to follow the server. */

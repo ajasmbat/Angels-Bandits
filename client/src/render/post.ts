@@ -114,6 +114,11 @@ export class AbBloomPass extends UnrealBloomPass {
     return this.renderTargetsHorizontal[0]?.texture as THREE.Texture;
   }
 
+  /** Device pixels per CSS pixel the chain runs at (1 at ratio <= 1). */
+  get cssDensity(): number {
+    return this.density;
+  }
+
   /** The renderer's pixel ratio; the chain runs at CSS density above 1. */
   setPixelRatio(ratio: number): void {
     this.density = Math.max(1, ratio);
@@ -254,14 +259,16 @@ function finalFragmentShader(grade: boolean): string {
     .slice(0, tail)
     .replace(
       "#include <colorspace_pars_fragment>",
-      `#include <colorspace_pars_fragment>\nuniform sampler2D tBloom;\n${grade ? GRADE_PARS_GLSL : ""}`,
+      `#include <colorspace_pars_fragment>\nuniform sampler2D tBloom;\n${grade ? `uniform float uGradeOn;\n${GRADE_PARS_GLSL}` : ""}`,
     )
     .replace(
       read,
       // The old additive blend, exactly: SRC_ALPHA, ONE on a float target.
       `${read}\nvec4 abBloom = texture2D( tBloom, vUv );\ngl_FragColor.rgb += abBloom.rgb * abBloom.a;`,
     );
-  return `${body}${grade ? GRADE_GLSL : ""}\n}`;
+  // M3's tiers switch the grade off (Mobile): a uniform, so the switch never
+  // compiles a program.
+  return `${body}${grade ? `if (uGradeOn > 0.5) ${GRADE_GLSL}` : ""}\n}`;
 }
 
 /**
@@ -287,7 +294,7 @@ export class FinalPass extends Pass {
       tDiffuse: { value: null },
       tBloom: { value: null },
       toneMappingExposure: { value: 1 },
-      ...(grade ? gradeUniforms() : {}),
+      ...(grade ? { uGradeOn: { value: 1 }, ...gradeUniforms() } : {}),
     };
     this.material = new THREE.RawShaderMaterial({
       name: grade ? "AbFinalGradeShader" : "AbFinalShader",
@@ -298,12 +305,29 @@ export class FinalPass extends Pass {
     this.quad = new FullScreenQuad(this.material);
   }
 
+  /**
+   * The grade's own switch (M3 turns it off on the Mobile tier). A uniform,
+   * not a pass toggle: this pass also does the tone map and the encode, so
+   * it can never be the thing that is disabled. False when built without it.
+   */
+  get gradeEnabled(): boolean {
+    return (this.uniforms.uGradeOn?.value ?? 0) > 0.5;
+  }
+
+  set gradeEnabled(on: boolean) {
+    const u = this.uniforms.uGradeOn;
+    if (u) u.value = on ? 1 : 0;
+  }
+
   override render(
     renderer: THREE.WebGLRenderer,
     writeBuffer: THREE.WebGLRenderTarget,
     readBuffer: THREE.WebGLRenderTarget,
   ): void {
     (this.uniforms.tDiffuse as THREE.IUniform).value = readBuffer.texture;
+    // A disabled bloom (M3: Mobile, a thermal level) is skipped by the
+    // composer, so its texture is stale — add nothing instead (a null
+    // sampler binds three's empty texture: zero, alpha zero).
     (this.uniforms.tBloom as THREE.IUniform).value = this.bloom.enabled
       ? this.bloom.bloomTexture
       : null;

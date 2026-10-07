@@ -12,7 +12,7 @@ import {
   startBoost,
   stopBoost,
 } from "@angels-bandits/common/boost";
-import type { Building } from "@angels-bandits/common/city";
+import { type Building, cityHoles } from "@angels-bandits/common/city";
 import { generateMovers } from "@angels-bandits/common/city/movers";
 import { natureFor } from "@angels-bandits/common/city/nature";
 import { buildNatureIndex } from "@angels-bandits/common/collision";
@@ -41,6 +41,7 @@ import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { SMAAPass } from "three/examples/jsm/postprocessing/SMAAPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+import { CityAmbience } from "./audio/ambience";
 import { RadioQueue, RadioVoice } from "./audio/radio";
 import { GameAudio } from "./audio/sound";
 import { NEAR_MISS_RADIUS, closestApproach, spatialize } from "./audio/spatial";
@@ -448,6 +449,13 @@ const bullets = new Bullets();
 const tracers = new Tracers();
 scene.add(tracers.group);
 const audio = new GameAudio();
+// L2 city soundscape: traffic, horns, sirens, plaza music, wind and tunnel
+// echo — procedural, built once into GameAudio's ducked sfx bus.
+const ambience = new CityAmbience(
+  audio,
+  welcome.seed,
+  cityHoles(city.cityBuildings),
+);
 const hud = new Hud();
 const minimap = new Minimap(city.cityBuildings);
 const edgeMarkers = new EdgeMarkers();
@@ -973,6 +981,8 @@ declare global {
         inCombat: boolean;
         log: { at: number; speaker: string; ticker: string; voice: string }[];
       };
+      /** L2 QA: the city soundscape's per-layer gains and their inputs. */
+      ambience: () => ReturnType<CityAmbience["debug"]>;
       storm: () => {
         seed: number;
         strikes: { timeMs: number; x: number; z: number }[];
@@ -1163,6 +1173,7 @@ window.__ab = {
   }),
   // ST2 QA: consumed strikes (two tabs must agree), the next scheduled
   // strike (for staging reveals), live reveal pings, and atmosphere state.
+  ambience: () => ambience.debug(),
   storm: () => {
     const rt = socket.renderTime();
     return {
@@ -1633,6 +1644,16 @@ renderer.setAnimationLoop((now) => {
   audio.setStatic(
     alive ? Math.min(1, Math.max(0, (flight.pos.y - CLOUD_BASE) / 60)) : 0,
   );
+  // L2 city soundscape, heard from the plane (the echo follows it into a
+  // hole); sirens run on the synced clock, so every client hears the same.
+  ambience.update({
+    pos: flight.pos,
+    yaw: flight.yaw,
+    speed: alive ? flight.speed : 0,
+    alive,
+    combat: radio.inCombat(now),
+    serverTimeMs: renderMs,
+  });
 
   // FOV must land BEFORE the render: the lead reticle and edge markers below
   // read camera.projectionMatrix directly, so writing it after would project

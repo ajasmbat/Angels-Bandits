@@ -1051,6 +1051,7 @@ declare global {
       movers: (at?: number | null) => ReturnType<Movers["debug"]>;
       train: (at?: number | null) => ReturnType<TrainRenderer["debug"]>;
       fireworks: (at?: number | null) => ReturnType<Fireworks["debug"]>;
+      windowClock: (sec: number | null) => void;
       /** L9 QA: flock centres at the render clock, and which are scattered. */
       birds: () => ReturnType<Birds["debug"]>;
       /** L10 QA: airliners and drone show drawn last frame, the news heli's
@@ -1287,6 +1288,9 @@ window.__ab = {
   train: (at) => train.debug(at === undefined ? socket.renderTime() : at),
   fireworks: (at) =>
     fireworks.debug(at === undefined ? socket.renderTime() : at),
+  // L3 QA: pin the living-windows clock (live seconds) for t / t+60 s
+  // captures; null follows the server clock again.
+  windowClock: (sec) => city.pinLiveWindows(sec),
   skyTraffic: () => ({
     airliners: airliners.drawn,
     airlinerOffsets: airliners.drawn.map((a) => {
@@ -1792,6 +1796,9 @@ renderer.setAnimationLoop((now) => {
   }
 
   city.update(chase.position);
+  // L3 living windows: slow on/off, TV glow, silhouettes and the cleaning
+  // crew all run off this one shared-clock uniform (living-windows.ts).
+  city.updateLiveWindows(renderMs, now);
   // Beacons pulse on server-synced time so every client is in phase.
   roofClutter.update(chase.position, renderMs ?? now);
   // L8: rooftop life animates on the same synced clock (local before sync).

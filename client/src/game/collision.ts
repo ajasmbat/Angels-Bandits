@@ -9,6 +9,7 @@ import {
   type MoverField,
   collideMovers,
 } from "@angels-bandits/common/city/movers";
+import { collideTrain } from "@angels-bandits/common/city/train";
 import {
   type CityIndex,
   type NatureIndex,
@@ -28,7 +29,8 @@ import type { FlightState } from "@angels-bandits/common/flight";
  * MOVERS ARE RENDERED AT — main.ts latches socket.renderTime() once per frame
  * and passes that same value here and to the mover renderers. Use any other
  * clock and you die to a jib drawn somewhere else. A null clock means the
- * movers are hidden, so they are not solid either.
+ * movers are hidden, so they are not solid either — except the L5 viaduct,
+ * which never moves and is always drawn.
  *
  * `nature` is static (trees never move), so unlike the movers it is solid
  * whatever the clock says.
@@ -48,8 +50,14 @@ export function detectCrash(
   if (nature && collideNature(state.pos, PLAYER_RADIUS, nature) !== null) {
     return true;
   }
-  if (!movers || serverTimeMs === null || serverTimeMs === undefined) {
-    return false;
+  if (!movers) return false;
+  if (serverTimeMs === null || serverTimeMs === undefined) {
+    // No clock yet: the moving parts are hidden and not solid, but the L5
+    // viaduct is static scenery — drawn from the first frame, so solid too.
+    return (
+      !!movers.train &&
+      collideTrain(movers.train, state.pos, PLAYER_RADIUS, null) !== null
+    );
   }
   return collideMovers(state.pos, PLAYER_RADIUS, movers, serverTimeMs) !== null;
 }

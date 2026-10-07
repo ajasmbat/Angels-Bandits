@@ -177,17 +177,21 @@ import { CommsTicker } from "./ui/comms";
 import { initFullscreenUi } from "./ui/fullscreen";
 import { HPBAR_ALTITUDE, HpBarSprite, HpBarTracker } from "./ui/hpbar";
 import { Hud } from "./ui/hud";
-import { requestName, showJoinError } from "./ui/join";
+import { requestName, showJoinError, showSignalLost } from "./ui/join";
 import { KillFeed } from "./ui/killfeed";
 import { LeadIndicator, SolutionTone } from "./ui/lead";
 import { EdgeMarkers } from "./ui/markers";
 import { Minimap } from "./ui/minimap";
+import { initMobileShell } from "./ui/mobile";
 import { PerfHud, bindPerfHudKey, perfHudKeyEnabled } from "./ui/perfhud";
 import { Scoreboard } from "./ui/scoreboard";
 
 // Fullscreen chrome first — the join overlay carries its own toggle button,
 // so it must be live before the name prompt (hidden where unsupported).
 initFullscreenUi();
+// M2: touch chrome, gesture lock and keyboard-aware join — before the name
+// prompt, which is the first thing a phone types into. No-op on desktop.
+initMobileShell();
 
 // --- Join flow: name → server welcome (identity, seed, spawn) ---
 const name = await requestName();
@@ -586,6 +590,8 @@ scoreboard.setScores(welcome.scores);
 const botBar = new BotBar(welcome.botTarget);
 botBar.onClaim = (count) => socket.sendSetBots(count);
 scoreboard.bindBotBar(botBar);
+// M2: no Tab key on a phone — a minimap tap pins the scoreboard (touch only).
+scoreboard.bindTapToggle(document.getElementById("minimap") as HTMLElement);
 
 /** id → name/isBot for feed + radio lines (self included; remotes tracks the
  * others too). isBot gates whether the VOICE may speak the callsign. */
@@ -1489,7 +1495,8 @@ for (const o of [
   o.visible = false;
 }
 
-renderer.setAnimationLoop((now) => {
+// Named (M2) so the visibility pause at the bottom can stop and restore it.
+const frame = (now: number): void => {
   const rawMs = now - last;
   const dt = Math.min(rawMs / 1000, 0.05); // clamp hitches, keep sim stable
   last = now;
@@ -2078,4 +2085,49 @@ renderer.setAnimationLoop((now) => {
       `SPD ${flight.speed.toFixed(0)} m/s  THR ${flight.targetSpeed.toFixed(0)}  ` +
       `ALT ${flight.pos.y.toFixed(0)} m  PLR ${remotes.count + 1}  FPS ${perf.fps.toFixed(0)}`;
   }
+};
+renderer.setAnimationLoop(frame);
+
+// --- M2: backgrounded tab → pause; back with a dead session → rejoin ---
+// Browsers already throttle rAF in a hidden tab; stop the loop outright so a
+// phone app-switch burns nothing (GameAudio suspends itself on the same
+// event). On return, a fresh `last` keeps the first dt from spanning the gap.
+let glLost = false;
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    renderer.setAnimationLoop(null);
+  } else if (!glLost) {
+    last = performance.now();
+    renderer.setAnimationLoop(frame);
+  }
+});
+// More than LIVENESS_TIMEOUT_MS without poses (any real app-switch) and the
+// server drops the socket; iOS also tends to drop the GL context. Neither
+// recovers in place, so offer a one-tap rejoin — never during an unload,
+// and only once the tab is visible again (wired after the welcome, so a
+// rejected join keeps its own showJoinError).
+let unloading = false;
+const signalLost = (): void => {
+  if (unloading) return;
+  if (document.hidden) {
+    document.addEventListener("visibilitychange", signalLost, { once: true });
+    return;
+  }
+  showSignalLost();
+};
+window.addEventListener("pagehide", () => {
+  unloading = true;
+});
+// Restored from the back/forward cache: the socket died while frozen and
+// no close event reaches this page.
+window.addEventListener("pageshow", (e) => {
+  if (!e.persisted) return;
+  unloading = false;
+  signalLost();
+});
+socket.events.onClose = signalLost;
+renderer.domElement.addEventListener("webglcontextlost", () => {
+  glLost = true;
+  renderer.setAnimationLoop(null);
+  signalLost();
 });

@@ -23,6 +23,7 @@
     "./fireworks": "./src/fireworks.ts",
     "./skytraffic": "./src/skytraffic.ts",
     "./protocol": "./src/protocol.ts",
-    "./net": "./src/net.ts"
+    "./net": "./src/net.ts",
+    "./cityevents": "./src/cityevents.ts"
   }
 }

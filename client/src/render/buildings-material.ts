@@ -22,6 +22,7 @@ import { EMISSIVE_WINDOW } from "@angels-bandits/common/constants";
 import * as THREE from "three";
 import { luminance } from "./emissive";
 import { livingParsGlsl } from "./living-windows";
+import { WAKE_PARS_GLSL, wakeWindowGlsl, windowWakeUniform } from "./reactions";
 import {
   OCCUPANCY_UNIFORM,
   holeLightGlsl,
@@ -180,7 +181,7 @@ float abHash(vec2 p, float s) {
 float abSafeDiv(float d) {
   return abs(d) < 1e-4 ? (d < 0.0 ? -1e-4 : 1e-4) : d;
 }
-${roofParsGlsl()}${livingParsGlsl()}`;
+${roofParsGlsl()}${WAKE_PARS_GLSL}${livingParsGlsl()}`;
 
 /** Injected after color_fragment: derives the shared window-grid locals
  * (in scope for the emissive block below — same main body), modulates the
@@ -226,7 +227,7 @@ const FRAGMENT_EMISSIVE = `${windowEmissiveGlsl(
   glslVec3(WINDOW_WARM),
   glslVec3(WINDOW_COOL),
   WINDOW_EMISSIVE_INTENSITY,
-)}${SHOP_BAND_GLSL}${roofLightGlsl()}${holeLightGlsl()}`;
+)}${wakeWindowGlsl(WINDOW_EMISSIVE_INTENSITY)}${SHOP_BAND_GLSL}${roofLightGlsl()}${holeLightGlsl()}`;
 
 /**
  * VO2: cap the grazing-angle Fresnel. Standard materials reflect 100% at
@@ -268,6 +269,8 @@ export function createBuildingsMaterial(
   });
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uLiveTime = liveTime;
+    // L1 reactive city: the shared window-wake sources (reactions.ts).
+    shader.uniforms.uWake = windowWakeUniform;
     shader.uniforms.uOccupancy = OCCUPANCY_UNIFORM;
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", `#include <common>\n${VERTEX_PARS}`)
@@ -292,6 +295,7 @@ export function createBuildingsMaterial(
   };
   // Distinct compiled program per patch (V3 rule: three keys programs on
   // onBeforeCompile.toString(), and sibling materials collide silently).
-  material.customProgramCacheKey = () => "ab-buildings-l3-live";
+  material.customProgramCacheKey = () =>
+    "ab-buildings-h1-holes-l1-wake-l3-live";
   return material;
 }

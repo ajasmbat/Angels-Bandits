@@ -325,10 +325,10 @@ vec2 winF = fract(winGrid / winPitch);
 // On a side face one of x/z is constant, so the max is the run axis.
 vec3 winMAA = fwidth(vMeters);
 vec2 wAA = vec2(max(winMAA.x, winMAA.z), winMAA.y);
-// 1 while one window cell spans a few pixels, 0 once it is ~2 px: from
-// there every per-cell decision is replaced by its expected value, so a
-// distant facade is a stable average instead of a sparkle.
-float winDetail = min(abDetail(winPitch.x, wAA.x), abDetail(winPitch.y, wAA.y));
+// 1 until one window cell is ~3 px, 0 once it is ~1.5 px: from there every
+// per-cell decision is replaced by its expected value, so a distant facade
+// is a stable average instead of a sparkle. Up close nothing changes.
+float winDetail = min(abCellDetail(winPitch.x, wAA.x), abCellDetail(winPitch.y, wAA.y));
 // The pane inside its cell — mullions between panes stay dark. A filtered
 // box (sub-pixel edges up close), fading to its area share far away.
 vec2 paneLo = (1.0 - winPane) * 0.5;
@@ -358,7 +358,7 @@ else if (floorH > ${glslFloat(1 - FACADE.brightFloor)}) pLit = ${glslFloat(FACAD
 // the bloom it feeds) keeps its energy.
 float litMean = ${glslFloat(FACADE.darkFloor * FACADE.darkFloorLit + FACADE.brightFloor * FACADE.brightFloorLit)}
   + ${glslFloat(1 - FACADE.darkFloor - FACADE.brightFloor)} * min(winLit * ${glslFloat(FACADE.zoneLo + 0.5 * FACADE.zoneHi)}, 0.97);
-float floorDetail = min(abDetail(winPitch.y, wAA.y), abDetail(winPitch.x * ${glslFloat(FACADE.zoneW)}, wAA.x));
+float floorDetail = min(abCellDetail(winPitch.y, wAA.y), abCellDetail(winPitch.x * ${glslFloat(FACADE.zoneW)}, wAA.x));
 float pLitAA = mix(litMean, pLit, floorDetail);
 float lit = mix(pLitAA, step(winH, pLit), winDetail) * facade;
 `;

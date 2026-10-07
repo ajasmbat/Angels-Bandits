@@ -10,7 +10,7 @@
 // control flow, so every caller takes them once at the top of its main body
 // and passes the result down into its branches.
 
-/** GLSL: `abLine`, `abBox`, `abDetail`, `abEdge`, `abPeriodic`. */
+/** GLSL: `abLine`, `abBox`, `abDetail`, `abCellDetail`, `abEdge`, `abPeriodic`. */
 export const AB_AA_GLSL = /* glsl */ `
 // Coverage of a line of half-width w at distance d, with aa = meters per
 // pixel. Once the line is thinner than a pixel it stays one pixel wide and
@@ -31,6 +31,14 @@ float abBox(vec2 p, vec2 h, float aa) {
 // pixel spans about half of it — patterns fall back to their mean albedo.
 float abDetail(float period, float aa) {
   return 1.0 - smoothstep(0.25 * period, 0.5 * period, aa);
+}
+// The same fade, later, for lit window cells: full detail until a cell is
+// ~3 px, its expected value at ~1.5 px — i.e. it engages around the 2 px
+// sampling limit. Windows are the city's bright points (and its bloom), so
+// they keep their sparkle as long as it is real and only resolve to the
+// mean once it would alias.
+float abCellDetail(float period, float aa) {
+  return 1.0 - smoothstep(0.33 * period, 0.67 * period, aa);
 }
 // Filtered step(edge, x): one pixel wide, so a long edge does not crawl.
 float abEdge(float edge, float x, float aa) {

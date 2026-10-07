@@ -30,6 +30,10 @@ export const RENDER_ORDER = {
   /** L1 smoke columns over kill sites: on the ground, beyond the trails. */
   smokeColumns: -0.15,
   smoke: -0.1,
+  /** L4 rain streaks (additive): the nearest layer of all — the field lives
+   * within 40 m of the camera — so after the smoke, still before the 0 group
+   * (tracers, planes, tags), which therefore always paints over the rain. */
+  rain: -0.05,
   /** Searchlight beams: additive, after the opaque city and the sky. */
   beams: 2,
 } as const;

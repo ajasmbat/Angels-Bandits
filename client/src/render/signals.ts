@@ -29,7 +29,7 @@ import {
   blockStream,
   blockWindow,
 } from "./streetlife";
-import { nearestImage, uploadPrefix } from "./wrapPlacement";
+import { nearestImageInto, uploadPrefix } from "./wrapPlacement";
 
 /** Green phase, seconds. */
 export const GREEN = 18;
@@ -354,6 +354,9 @@ export class Signals {
   private readonly matrix = new THREE.Matrix4();
   private readonly quat = new THREE.Quaternion();
   private readonly vec = new THREE.Vector3();
+  /** Per-mast scratch: nearestImageInto writes here, never allocates (O3). */
+  private readonly anchor: Vec3 = { x: 0, y: 0, z: 0 };
+  private readonly image: Vec3 = { x: 0, y: 0, z: 0 };
   private static readonly UP = new THREE.Vector3(0, 1, 0);
   /** Vehicle masts are taller; scale Y so one geometry serves both kinds. */
   private readonly scale = new THREE.Vector3(1, 1, 1);
@@ -424,7 +427,9 @@ export class Signals {
       const aspects = signalPhase(bx, bz, t, this.seed);
       const masts = this.mastsFor(bx, bz);
       for (const mast of masts) {
-        const p = nearestImage(cameraPos, { x: mast.x, y: 0, z: mast.z });
+        this.anchor.x = mast.x;
+        this.anchor.z = mast.z;
+        const p = nearestImageInto(this.image, cameraPos, this.anchor);
         this.quat.setFromAxisAngle(Signals.UP, mast.yaw);
         this.vec.set(p.x, 0, p.z);
         const shrink =

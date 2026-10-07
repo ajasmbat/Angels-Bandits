@@ -17,12 +17,11 @@ import {
 import { type Strike, strikesInWindow } from "@angels-bandits/common/storm";
 import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 import * as THREE from "three";
-import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { emissiveBoost } from "./emissive";
 import { HAZE_WEATHER } from "./fog";
 import { RENDER_ORDER } from "./render-order";
 import { DUSK, FOG_NEAR } from "./sky";
-import { nearestImage } from "./wrapPlacement";
+import { nearestImage, nearestImageInto } from "./wrapPlacement";
 
 /** Speed of sound, m/s — thunder trails the flash by wrapDistance / this. */
 const SOUND_SPEED_MPS = 340;
@@ -551,6 +550,9 @@ export class CloudDeck {
   private readonly mat = new THREE.Matrix4();
   private readonly pos = new THREE.Vector3();
   private readonly scale = new THREE.Vector3();
+  /** Per-puff scratch for the wrap placement — no allocation per frame (O3). */
+  private readonly canonical: Vec3 = { x: 0, y: 0, z: 0 };
+  private readonly image: Vec3 = { x: 0, y: 0, z: 0 };
 
   constructor(seed: number) {
     const rand = mulberry32((seed ^ 0x5f3759df) >>> 0);
@@ -604,12 +606,11 @@ export class CloudDeck {
     const driftX = ((serverTimeMs ?? 0) / 1000) * PUFF_DRIFT_MPS;
     for (let i = 0; i < this.layout.length; i++) {
       const p = this.layout[i] as (typeof this.layout)[number];
-      const canonical = {
-        x: (p.x + driftX) % WORLD_SIZE,
-        y: p.y,
-        z: p.z,
-      };
-      const image = nearestImage(viewer, canonical);
+      const canonical = this.canonical;
+      canonical.x = (p.x + driftX) % WORLD_SIZE;
+      canonical.y = p.y;
+      canonical.z = p.z;
+      const image = nearestImageInto(this.image, viewer, canonical);
       this.pos.set(image.x, image.y, image.z);
       this.scale.set(p.s, p.s * 0.45, 1);
       this.mat.compose(this.pos, cameraQuat, this.scale);
@@ -625,20 +626,62 @@ export class CloudDeck {
   }
 }
 
-/** Merge one tube (open cylinders per segment) over a set of polylines. */
+/** Sides of each bolt segment's open tube. */
+const BOLT_SIDES = 5;
+/**
+ * One segment's tube in unit space: exactly the vertices and triangles
+ * `CylinderGeometry(1, 1, 1, BOLT_SIDES, 1, true)` builds (two rings of
+ * BOLT_SIDES + 1, the seam duplicated, top ring at +0.5).
+ */
+const TUBE_VERTS: readonly number[] = (() => {
+  const out: number[] = [];
+  for (const y of [0.5, -0.5]) {
+    for (let x = 0; x <= BOLT_SIDES; x++) {
+      const theta = (x / BOLT_SIDES) * Math.PI * 2;
+      out.push(Math.sin(theta), y, Math.cos(theta));
+    }
+  }
+  return out;
+})();
+const TUBE_INDEX: readonly number[] = (() => {
+  const out: number[] = [];
+  const row = BOLT_SIDES + 1;
+  for (let x = 0; x < BOLT_SIDES; x++) {
+    const a = x;
+    const b = row + x;
+    const c = row + x + 1;
+    const d = x + 1;
+    out.push(a, b, d, b, c, d);
+  }
+  return out;
+})();
+const TUBE_VERT_COUNT = TUBE_VERTS.length / 3;
+
+/**
+ * One tube (an open cylinder per segment) over a set of polylines, written
+ * straight into one position + index buffer. Built on every strike: it used
+ * to clone a CylinderGeometry per segment and merge the clones, ~2 MB of
+ * garbage a strike and a frame-time spike on exactly the frame the flash
+ * lands (O3 profile). The bolt material is unlit, so positions are all it
+ * reads.
+ */
 function boltTube(
   runs: readonly (readonly Vec3[])[],
   radius: number,
   branchScale: number,
 ): THREE.BufferGeometry {
-  const template = new THREE.CylinderGeometry(1, 1, 1, 5, 1, true);
+  let segments = 0;
+  for (const run of runs) segments += Math.max(0, run.length - 1);
+  const positions = new Float32Array(segments * TUBE_VERT_COUNT * 3);
+  const index = new Uint32Array(segments * TUBE_INDEX.length);
   const up = new THREE.Vector3(0, 1, 0);
   const dir = new THREE.Vector3();
   const quat = new THREE.Quaternion();
   const mat = new THREE.Matrix4();
   const pos = new THREE.Vector3();
   const scale = new THREE.Vector3();
-  const parts: THREE.BufferGeometry[] = [];
+  const v = new THREE.Vector3();
+  let n = 0; // segments written
   runs.forEach((run, runIdx) => {
     const r = radius * (runIdx === 0 ? 1 : branchScale);
     for (let i = 1; i < run.length; i++) {
@@ -651,11 +694,34 @@ function boltTube(
       pos.set((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
       scale.set(r, len * 1.06, r);
       mat.compose(pos, quat, scale);
-      parts.push(template.clone().applyMatrix4(mat));
+      const base = n * TUBE_VERT_COUNT;
+      for (let k = 0; k < TUBE_VERT_COUNT; k++) {
+        v.set(
+          TUBE_VERTS[k * 3] as number,
+          TUBE_VERTS[k * 3 + 1] as number,
+          TUBE_VERTS[k * 3 + 2] as number,
+        ).applyMatrix4(mat);
+        positions[(base + k) * 3] = v.x;
+        positions[(base + k) * 3 + 1] = v.y;
+        positions[(base + k) * 3 + 2] = v.z;
+      }
+      const ib = n * TUBE_INDEX.length;
+      for (let k = 0; k < TUBE_INDEX.length; k++) {
+        index[ib + k] = base + (TUBE_INDEX[k] as number);
+      }
+      n++;
     }
   });
-  template.dispose();
-  const merged = mergeGeometries(parts);
-  for (const part of parts) part.dispose();
-  return merged ?? new THREE.BufferGeometry();
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute(
+    "position",
+    new THREE.BufferAttribute(
+      positions.subarray(0, n * TUBE_VERT_COUNT * 3),
+      3,
+    ),
+  );
+  geometry.setIndex(
+    new THREE.BufferAttribute(index.subarray(0, n * TUBE_INDEX.length), 1),
+  );
+  return geometry;
 }

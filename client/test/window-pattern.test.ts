@@ -6,6 +6,7 @@
 // only fail on a GPU: the seam rule, the emissive ladder, and the clustering
 // that is the whole point of the ticket.
 
+import { readFileSync } from "node:fs";
 import { type Building, generateCity } from "@angels-bandits/common/city";
 import { EMISSIVE_WINDOW } from "@angels-bandits/common/constants";
 import { CITY_SEED } from "@angels-bandits/common/constants";
@@ -16,6 +17,24 @@ import {
   WINDOW_EMISSIVE_INTENSITY,
   createBuildingsMaterial,
 } from "../src/render/buildings-material";
+import { luminance } from "../src/render/emissive";
+import {
+  LIVE,
+  LiveClock,
+  TV_COLOR,
+  TV_GAIN_MAX,
+  crewLevel,
+  crewSchedule,
+  crewSwitchesOn,
+  crewVisitSeconds,
+  hasBlinds,
+  isTvWindow,
+  liveClockSeconds,
+  silhouetteFactor,
+  tvGain,
+  windowCycle,
+  windowLitLevel,
+} from "../src/render/living-windows";
 import {
   FACADE,
   abHash,
@@ -454,5 +473,307 @@ describe("against the real city", () => {
     });
     expect(Math.min(...fractions)).toBeLessThan(0.15);
     expect(Math.max(...fractions)).toBeGreaterThan(0.5);
+  });
+});
+
+// L3 living windows (ANGE-GUFAK3): the lit pattern moves on the shared live
+// clock. Metrics: lit fraction = Σ crossfaded level / windows; a toggle = the
+// level crossing 0.5. Time samples include the clock wrap (7199.9 → 0).
+describe("living windows", () => {
+  const P = LIVE.period;
+  const SAMPLES = [
+    0, 0.05, 37.5, 59.9, 450, 1234.5, 3599.9, 3600, 5000, 7140, 7199.9,
+  ];
+
+  it("keeps the lit fraction inside the C3 band at every time sample", () => {
+    for (const arch of ARCHES) {
+      for (const t of SAMPLES) {
+        let level = 0;
+        let total = 0;
+        for (const seed of seeds(40)) {
+          for (let y = 0; y < 30; y++) {
+            for (let x = 0; x < 12; x++) {
+              level += windowLitLevel(arch, seed, x, y, t);
+              total += 1;
+            }
+          }
+        }
+        expect(level / total).toBeGreaterThan(0.12);
+        expect(level / total).toBeLessThan(0.45);
+      }
+    }
+  });
+
+  it("keeps the real city in the band with the cleaning crew included", () => {
+    const city = generateCity(CITY_SEED);
+    const rota = crewSchedule(city, CITY_SEED);
+    for (const t of [0, 300, 1800, 3599.9, 7199.9]) {
+      let level = 0;
+      let total = 0;
+      for (const b of city) {
+        const arch = archetypeFor(b);
+        const tier = b.tiers[0];
+        const seed = buildingSeed(tier.width, tier.height, tier.depth);
+        const [, py] = windowPitch(arch, seed);
+        const slot = rota.get(b);
+        const rows = Math.min(Math.floor(tier.height / py), 40);
+        for (let y = 0; y < rows; y++) {
+          const crew = slot ? crewLevel(slot, (y + 0.5) * py, t) : 0;
+          for (let x = 0; x < 8; x++) {
+            const on = crewSwitchesOn(seed, x, y) ? crew : 0;
+            level += Math.max(windowLitLevel(arch, seed, x, y, t), on);
+            total += 1;
+          }
+        }
+      }
+      expect(level / total).toBeGreaterThan(0.12);
+      expect(level / total).toBeLessThan(0.45);
+    }
+  });
+
+  /** Crossing times (level through 0.5) and the largest per-step change. */
+  function trace(f: (t: number) => number, from: number, to: number) {
+    const dt = 0.1;
+    const crossings: number[] = [];
+    let maxStep = 0;
+    let prev = f(from);
+    for (let i = 1; from + i * dt <= to; i++) {
+      const t = from + i * dt;
+      const cur = f(((t % P) + P) % P);
+      maxStep = Math.max(maxStep, Math.abs(cur - prev));
+      if (prev < 0.5 !== cur < 0.5) crossings.push(t);
+      prev = cur;
+    }
+    return { crossings, maxStep };
+  }
+
+  it("toggles each window at most once per 20 s, always as a slow crossfade", () => {
+    // 0.1 s steps across the clock wrap: smoothstep over LIVE.fade s peaks at
+    // 1.5 / fade per second, so no 0.1 s step may move more than that — the
+    // no-pop proof, wrap included.
+    const stepCap = (1.5 / 1.5) * 0.1; // a ramp no faster than 1.5 s
+    let volatileSeen = 0;
+    let toggles = 0;
+    for (const seed of seeds(6)) {
+      for (let y = 0; y < 20; y++) {
+        for (let x = 0; x < 12; x++) {
+          if (!windowCycle(seed, x, y).volatile) continue;
+          volatileSeen += 1;
+          const { crossings, maxStep } = trace(
+            (t) => windowLitLevel(FacadeArchetype.OFFICE, seed, x, y, t),
+            P - 600,
+            P + 600,
+          );
+          expect(maxStep).toBeLessThanOrEqual(stepCap);
+          for (let i = 1; i < crossings.length; i++) {
+            expect(crossings[i] - crossings[i - 1]).toBeGreaterThanOrEqual(20);
+          }
+          toggles += crossings.length;
+        }
+      }
+    }
+    expect(volatileSeen).toBeGreaterThan(100);
+    expect(toggles).toBeGreaterThan(50);
+  });
+
+  it("moves the crew band floor by floor, slowly, one row at a time", () => {
+    const slot = { start: 100, duration: crewVisitSeconds(120), cycle: 900 };
+    for (const rowY of [1.5, 20, 64.2, 119]) {
+      const { crossings, maxStep } = trace(
+        (t) => crewLevel(slot, rowY, t),
+        0,
+        1800,
+      );
+      expect(maxStep).toBeLessThanOrEqual(0.1);
+      // Lit once per visit (two visits in 1800 s), for ≥ 20 s each time.
+      expect(crossings.length).toBe(4);
+      for (let i = 1; i < crossings.length; i++) {
+        expect(crossings[i] - crossings[i - 1]).toBeGreaterThanOrEqual(20);
+      }
+    }
+    // Lower rows light first: the band climbs.
+    const onAt = (rowY: number) =>
+      trace((t) => crewLevel(slot, rowY, t), 0, 900).crossings[0];
+    expect(onAt(4)).toBeLessThan(onAt(40));
+    expect(onAt(40)).toBeLessThan(onAt(100));
+  });
+
+  it("changes a visible share of lit windows over a minute", () => {
+    for (const t of [0, 1000, 7170]) {
+      let lit = 0;
+      let changed = 0;
+      for (const seed of seeds(40)) {
+        for (let y = 0; y < 30; y++) {
+          for (let x = 0; x < 12; x++) {
+            const a = windowLitLevel(FacadeArchetype.GLASS, seed, x, y, t);
+            const b = windowLitLevel(
+              FacadeArchetype.GLASS,
+              seed,
+              x,
+              y,
+              (t + 60) % P,
+            );
+            if (a > 0.5) lit += 1;
+            if (Math.abs(a - b) > 0.5) changed += 1;
+          }
+        }
+      }
+      expect(changed / lit).toBeGreaterThan(0.08);
+    }
+  });
+
+  it("puts a TV in at most 3% of lit windows, peaking below the WINDOW rung", () => {
+    let lit = 0;
+    let tv = 0;
+    for (const seed of seeds(60)) {
+      for (let y = 0; y < 40; y++) {
+        for (let x = 0; x < 12; x++) {
+          if (windowLitLevel(FacadeArchetype.MASONRY, seed, x, y, 900) <= 0.5)
+            continue;
+          lit += 1;
+          if (isTvWindow(seed, x, y)) tv += 1;
+        }
+      }
+    }
+    expect(tv).toBeGreaterThan(0);
+    expect(tv / lit).toBeLessThanOrEqual(0.03);
+    // Amplitude: the brightest the flicker can get, at the real boost.
+    const peak =
+      luminance(TV_COLOR) * TV_GAIN_MAX * Number(WINDOW_EMISSIVE_INTENSITY);
+    expect(peak).toBeLessThan(EMISSIVE_WINDOW);
+    for (const [, hz] of LIVE.tvWobble) expect(hz).toBeLessThanOrEqual(3);
+    for (let t = 0; t < 120; t += 0.05) {
+      const g = tvGain(seeds(1)[0], 3, 4, t);
+      expect(g).toBeGreaterThan(0);
+      expect(g).toBeLessThanOrEqual(TV_GAIN_MAX);
+    }
+  });
+
+  it("only darkens lit blinds with silhouettes, and only now and then", () => {
+    let crossings = 0;
+    let lo = 1;
+    let hi = 0;
+    let gatedOff = true;
+    for (const seed of seeds(10)) {
+      for (let x = 0; x < 12; x++) {
+        const blinds = hasBlinds(FacadeArchetype.MASONRY, seed, x, 2);
+        let seen = false;
+        for (let t = 0; t < 300; t += 0.5) {
+          for (const u of [0.2, 0.5, 0.8]) {
+            const f = silhouetteFactor(seed, x, 2, t, u, 0.4, blinds, 1);
+            lo = Math.min(lo, f);
+            hi = Math.max(hi, f);
+            if (f < 0.9) seen = true;
+            // No silhouette on an open window or an unlit one.
+            if (
+              silhouetteFactor(seed, x, 2, t, u, 0.4, false, 1) !== 1 ||
+              silhouetteFactor(seed, x, 2, t, u, 0.4, blinds, 0) !== 1
+            )
+              gatedOff = false;
+          }
+        }
+        if (seen) crossings += 1;
+      }
+    }
+    expect(lo).toBeGreaterThanOrEqual(1 - LIVE.silDark - 1e-9);
+    expect(hi).toBeLessThanOrEqual(1);
+    expect(gatedOff).toBe(true);
+    expect(crossings).toBeGreaterThan(0);
+  });
+
+  it("sends the crew to one building per block at a time, seamlessly", () => {
+    const city = generateCity(CITY_SEED);
+    const rota = crewSchedule(city, CITY_SEED);
+    expect(rota.size).toBeGreaterThan(city.length * 0.5);
+    const byCycle = new Map<string, { start: number; end: number }[]>();
+    for (const [b, slot] of rota) {
+      expect(LIVE.period % slot.cycle).toBe(0);
+      expect(slot.duration).toBeCloseTo(crewVisitSeconds(b.height), 9);
+      expect(slot.start).toBeGreaterThanOrEqual(0);
+      expect(slot.start).toBeLessThan(slot.cycle);
+      const key = `${Math.floor(b.x / 200)},${Math.floor(b.z / 200)}`;
+      const list = byCycle.get(key) ?? [];
+      list.push({ start: slot.start, end: slot.start + slot.duration });
+      byCycle.set(key, list);
+    }
+    for (const [key, visits] of byCycle) {
+      const slot = [...rota].find(
+        ([b]) => `${Math.floor(b.x / 200)},${Math.floor(b.z / 200)}` === key,
+      )?.[1];
+      const cycle = slot?.cycle ?? 0;
+      // Unwrap onto [0, 2·cycle) and check no two visits (ramps included —
+      // crewLevel is 0 outside [start, start+duration)) overlap.
+      const spans = visits
+        .flatMap((v) => [v, { start: v.start + cycle, end: v.end + cycle }])
+        .sort((a, b) => a.start - b.start);
+      for (let i = 1; i < spans.length; i++) {
+        expect(spans[i].start).toBeGreaterThanOrEqual(spans[i - 1].end);
+      }
+    }
+    // The same city and seed always give the same rota (every client).
+    const again = crewSchedule(generateCity(CITY_SEED), CITY_SEED);
+    expect([...again.values()]).toEqual([...rota.values()]);
+  });
+
+  it("is a pure function of the clock (deterministic, no Math.random)", () => {
+    const seed = seeds(3)[2];
+    for (const t of [0, 61.25, 7199.9]) {
+      expect(windowLitLevel(FacadeArchetype.GLASS, seed, 4, 9, t)).toBe(
+        windowLitLevel(FacadeArchetype.GLASS, seed, 4, 9, t),
+      );
+      expect(tvGain(seed, 4, 9, t)).toBe(tvGain(seed, 4, 9, t));
+    }
+    const src = readFileSync(
+      new URL("../src/render/living-windows.ts", import.meta.url),
+      "utf8",
+    );
+    expect(src).not.toContain("Math.random");
+    expect(liveClockSeconds(1_760_000_000.5)).toBeGreaterThanOrEqual(0);
+    expect(liveClockSeconds(1_760_000_000.5)).toBeLessThan(P);
+  });
+
+  it("runs a live clock that snaps once, then slews instead of popping", () => {
+    const c = new LiveClock();
+    expect(c.update(null, 0)).toBe(0); // before the first snapshot: hold
+    const base = 1_760_000_000_000; // epoch ms, like the server's
+    const t0 = c.update(base, 16);
+    expect(t0).toBeCloseTo(liveClockSeconds(base / 1000), 6);
+    // A 2 s re-sync step: the clock moves at most 1.1× real time.
+    let prev = t0;
+    for (let i = 1; i <= 60; i++) {
+      const t = c.update(base + i * 16 + 2000, 16 + i * 16);
+      expect(t - prev).toBeLessThanOrEqual(0.016 * (1 + LIVE.slew) + 1e-6);
+      expect(t - prev).toBeGreaterThanOrEqual(0.016 * (1 - LIVE.slew) - 1e-6);
+      prev = t;
+    }
+    // A jump past LIVE.snap snaps; a QA pin overrides.
+    expect(c.update(base + 60_000, 1000)).toBeCloseTo(
+      liveClockSeconds(base / 1000 + 60),
+      6,
+    );
+    c.pinned = 123;
+    expect(c.update(base + 60_016, 1016)).toBe(123);
+  });
+
+  it("splices the live clock and crew slot into the patched shader", () => {
+    const { fragmentPars, fragmentColor, fragmentEmissive, vertexPars } =
+      BUILDING_SHADER_SOURCE;
+    expect(fragmentPars).toContain("uniform float uLiveTime;");
+    expect(vertexPars).toContain("attribute vec4 aCrew;");
+    expect(fragmentColor).toContain("liveCrew");
+    expect(fragmentEmissive).toContain("liveTvPh");
+    expect(fragmentEmissive).toContain("liveFig");
+    const live = { value: 42 };
+    const m = createBuildingsMaterial(live);
+    const shader = {
+      uniforms: {} as Record<string, unknown>,
+      vertexShader: "#include <common>\n#include <begin_vertex>",
+      fragmentShader: "#include <common>\n#include <color_fragment>",
+    };
+    m.onBeforeCompile(
+      shader as unknown as Parameters<typeof m.onBeforeCompile>[0],
+      undefined as unknown as Parameters<typeof m.onBeforeCompile>[1],
+    );
+    expect(shader.uniforms.uLiveTime).toBe(live);
   });
 });

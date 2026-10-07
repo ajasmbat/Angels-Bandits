@@ -22,8 +22,15 @@
 // pitch), never a specific window's on/off state on a specific GPU.
 
 import * as THREE from "three";
+import { AB_AA_GLSL } from "./aa-glsl";
 import { FacadeArchetype } from "./archetypes";
 import { emissiveBoost } from "./emissive";
+import {
+  TV_COLOR,
+  livingColorGlsl,
+  livingLitGlsl,
+  livingShadeGlsl,
+} from "./living-windows";
 import {
   GARDEN_LIGHT_COLOR,
   PAD_LIGHT_COLOR,
@@ -409,11 +416,24 @@ else if (abs(vObjNormal.z) > 0.5) winGrid = vec2(vMeters.x, vMeters.y);
 float facade = 1.0 - step(1e5, abs(winGrid.x));
 ${holeMaskGlsl()}vec2 winCell = floor(winGrid / winPitch);
 vec2 winF = fract(winGrid / winPitch);
-// The pane inside its cell — mullions between panes stay dark.
+// O1 anti-aliasing: facade meters per pixel, (run, height). Taken from the
+// continuous object meters (winGrid is 1e6 on roofs, so its own derivative
+// is garbage along every roof edge), at the top level — never in a branch.
+// On a side face one of x/z is constant, so the max is the run axis.
+vec3 winMAA = fwidth(vMeters);
+vec2 wAA = vec2(max(winMAA.x, winMAA.z), winMAA.y);
+// 1 until one window cell is ~3 px, 0 once it is ~1.5 px: from there every
+// per-cell decision is replaced by its expected value, so a distant facade
+// is a stable average instead of a sparkle. Up close nothing changes.
+float winDetail = min(abCellDetail(winPitch.x, wAA.x), abCellDetail(winPitch.y, wAA.y));
+// The pane inside its cell — mullions between panes stay dark. A filtered
+// box (sub-pixel edges up close), fading to its area share far away.
 vec2 paneLo = (1.0 - winPane) * 0.5;
 vec2 paneHi = 1.0 - paneLo;
-float pane = step(paneLo.x, winF.x) * step(winF.x, paneHi.x)
-           * step(paneLo.y, winF.y) * step(winF.y, paneHi.y);
+vec2 paneAA = wAA / winPitch;            // cell fraction per pixel
+vec2 paneD = abs(winF - 0.5) - winPane * 0.5;
+vec2 paneCov = 1.0 - smoothstep(-0.5 * paneAA, 0.5 * paneAA, paneD);
+float pane = mix(winPane.x * winPane.y, paneCov.x * paneCov.y, winDetail);
 
 // --- CLUSTERED occupancy: floor state, then tenant zone, then the window ---
 // Real towers do not scatter their lit windows independently: a floor has
@@ -429,9 +449,20 @@ float pLit = clamp(winLit * (${glslFloat(FACADE.zoneLo)} + ${glslFloat(FACADE.zo
 if (floorH < ${glslFloat(FACADE.darkFloor)}) pLit = ${glslFloat(FACADE.darkFloorLit)};
 else if (floorH > ${glslFloat(1 - FACADE.brightFloor)}) pLit = ${glslFloat(FACADE.brightFloorLit)};
 float lit = step(winH, pLit) * facade;
-// L12 sky cycle: tonight's occupancy, own hash per window, soft switch.
+${livingLitGlsl()}// L12 sky cycle: tonight's occupancy, own hash per window, soft switch.
 float occH = abHash(winCell + 59.0, vBSeed * 61.0);
 lit *= smoothstep(occH, occH + ${glslFloat(OCCUPANCY_FADE)}, uOccupancy * ${glslFloat(1 + OCCUPANCY_FADE)});
+// O1: the per-window decision (coin flip, L3 crossfade, L12 occupancy)
+// resolves to the floor's lit share once the cell is sub-pixel, and the
+// floor's share to the building's expected share once a FLOOR (or a tenant
+// zone) is — otherwise sub-pixel floors would still sparkle row against
+// row. Expected values (occupancy's is uOccupancy: its threshold is
+// uniform), so the distant glow — and the bloom it feeds — keeps its energy.
+float litMean = ${glslFloat(FACADE.darkFloor * FACADE.darkFloorLit + FACADE.brightFloor * FACADE.brightFloorLit)}
+  + ${glslFloat(1 - FACADE.darkFloor - FACADE.brightFloor)} * min(winLit * ${glslFloat(FACADE.zoneLo + 0.5 * FACADE.zoneHi)}, 0.97);
+float floorDetail = min(abCellDetail(winPitch.y, wAA.y), abCellDetail(winPitch.x * ${glslFloat(FACADE.zoneW)}, wAA.x));
+float pLitAA = mix(litMean, pLit, floorDetail);
+lit = mix(pLitAA * clamp(uOccupancy, 0.0, 1.0) * facade, lit, winDetail);
 `;
 }
 
@@ -460,8 +491,16 @@ float tJit = abHash(winCell + 31.0, vBSeed * 53.0);
 // CONVEX mixes of WARM/COOL only: luminance is linear in colour, so every
 // window stays at or below the peak ${intensity} was normalised for.
 float mixT = mix(${glslFloat(FACADE.tempJitter)} * tJit, 1.0 - ${glslFloat(FACADE.tempJitter)} * tJit, coolWin);
+// O1: past the cell's resolution limit the per-window temperature is its
+// expected value (per floor, then per building) — still a convex mix.
+float pCoolB = clamp(winCool + (bldT - 0.5) * ${glslFloat(FACADE.buildingTempSwing)}, 0.02, 0.98);
+float mixMean = mix(${glslFloat(FACADE.tempJitter * 0.5)}, ${glslFloat(1 - FACADE.tempJitter * 0.5)}, mix(pCoolB, pCool, floorDetail));
+mixT = mix(mixMean, mixT, winDetail);
 vec3 winColor = mix(${warm}, ${cool}, mixT);
-
+// The far-field colour: the expected temperature, untouched by the per-cell
+// TV swap below (a sub-pixel TV cell must not sparkle either).
+vec3 winColorMean = mix(${warm}, ${cool}, mixMean);
+${livingColorGlsl(glslVec3(TV_COLOR))}
 // Fake window interiors (interior mapping): raycast a room box behind every
 // lit pane — parallax ceiling/floor/side/back walls, no geometry. Boxes never
 // rotate, so the world-space view ray IS the facade-space ray. Every wall
@@ -492,7 +531,15 @@ float blinds = step(abHash(winCell + 3.0, vBSeed * 29.0), winBlinds);
 // Per-window brightness spread: a real block is not one bulb repeated.
 float dim = ${glslFloat(1 - FACADE.brightSpread)} + ${glslFloat(FACADE.brightSpread)} * winH;
 vec3 litWindow = mix(roomCol * (0.55 + 0.45 * winH), winColor * (0.5 + 0.3 * winH), blinds) * dim;
-vec3 windowGlow = pane * lit * litWindow * ${intensity} * ao;
+// O1: the parallax room, the blinds and the brightness spread are per-cell
+// detail too; far away a lit window is their mean (a lit cell's winH is
+// uniform on [0, pLit), so its mean is pLit / 2; the room averages ~0.45 of
+// its light over walls, floor and ceiling).
+float winHMean = 0.5 * pLitAA;
+vec3 litMeanCol = mix(winColorMean * ${glslFloat(0.45)} * (0.55 + 0.45 * winHMean), winColorMean * (0.5 + 0.3 * winHMean), winBlinds)
+  * (${glslFloat(1 - FACADE.brightSpread)} + ${glslFloat(FACADE.brightSpread)} * winHMean);
+litWindow = mix(litMeanCol, litWindow, winDetail);
+${livingShadeGlsl()}vec3 windowGlow = pane * lit * litWindow * ${intensity} * ao;
 // Unlit panes catch a faint grazing-angle sky sheen (far below the bloom
 // threshold — a glassy read, not a light source).
 float sheenF = pow(1.0 - clamp(abs(dot(viewRay, vObjNormal)), 0.0, 1.0), 3.0);
@@ -509,8 +556,12 @@ export function weatheringGlsl(): string {
   return /* glsl */ `
 // MASONRY punched windows read as deep holes: darken a surround ring around
 // the pane (diffuse only — the lit glow is emissive and unaffected).
-float surround = step(paneLo.x - 0.08, winF.x) * step(winF.x, paneHi.x + 0.08)
-               * step(paneLo.y - 0.1, winF.y) * step(winF.y, paneHi.y + 0.1);
+vec2 surroundCov = 1.0 - smoothstep(-0.5 * paneAA, 0.5 * paneAA, paneD - vec2(0.08, 0.1));
+float surround = mix(
+  min(winPane.x + 0.16, 1.0) * min(winPane.y + 0.2, 1.0),
+  surroundCov.x * surroundCov.y,
+  winDetail
+);
 diffuseColor.rgb *= 1.0 - winInset * surround * facade * 0.6;
 // Per-face tone jitter: each box face gets a slightly different value (and
 // opposite faces differ), so corners read even in flat night light.
@@ -595,7 +646,8 @@ const glslVec3 = (c: { r: number; g: number; b: number }): string =>
 const vec2Lit = (v: readonly [number, number]): string =>
   `vec2(${glslFloat(v[0])}, ${glslFloat(v[1])})`;
 
-/** Helpers for the roof emitters — emitted into the fragment pars. */
+/** Helpers for the roof emitters and the O1 window AA — emitted into the
+ * fragment pars. */
 export function roofParsGlsl(): string {
   return /* glsl */ `
 float abNoise(vec2 p, float s) {
@@ -605,27 +657,7 @@ float abNoise(vec2 p, float s) {
   return mix(mix(abHash(i, s), abHash(i + vec2(1.0, 0.0), s), f.x),
              mix(abHash(i + vec2(0.0, 1.0), s), abHash(i + vec2(1.0, 1.0), s), f.x), f.y);
 }
-// Coverage of a line of half-width w at distance d, with aa = meters per
-// pixel. Once the line is thinner than a pixel it stays one pixel wide and
-// its intensity scales by w / aa, so it fades with distance instead of
-// shimmering — and never exceeds 1 (the LED ladder argument).
-float abLine(float d, float w, float aa) {
-  float a = max(aa, 1e-4);
-  float wd = max(w, a);
-  return (1.0 - smoothstep(wd - a * 0.5, wd + a * 0.5, d)) * min(1.0, w / a);
-}
-// Anti-aliased box of half-size h around the origin.
-float abBox(vec2 p, vec2 h, float aa) {
-  vec2 d = abs(p) - h;
-  float b = max(aa, 1e-4);
-  return (1.0 - smoothstep(-b, b, d.x)) * (1.0 - smoothstep(-b, b, d.y));
-}
-// 1 while a pattern of this period (m) is well resolved, fading to 0 once a
-// pixel spans about half of it — patterns fall back to their mean albedo.
-float abDetail(float period, float aa) {
-  return 1.0 - smoothstep(0.25 * period, 0.5 * period, aa);
-}
-`;
+${AB_AA_GLSL}`;
 }
 
 /**
@@ -857,7 +889,10 @@ float holeFrame = holeReveal * abLine(abs(holeSd - ${glslFloat(HOLE.frameOffset)
 float holeRim = holeLining * abLine(abs(holeDepth - ${glslFloat(HOLE.rimDepth)}), ${glslFloat(HOLE.rimHalf)}, holePix);
 float holeCeil = holeLining * step(vObjNormal.y, -0.5)
   * abLine(abs(holeAcross - vHole.x), ${glslFloat(HOLE.ceilingHalf)}, holePix)
-  * step(fract(holeAlong / ${glslFloat(HOLE.ceilingPitch)}), ${glslFloat(HOLE.ceilingDuty)});
+  // Segments on for the first ceilingDuty of every pitch — filtered (O1).
+  * mix(${glslFloat(HOLE.ceilingDuty)},
+        abLine(abPeriodic(holeAlong, ${glslFloat(0.5 * HOLE.ceilingDuty * HOLE.ceilingPitch)}, ${glslFloat(HOLE.ceilingPitch)}), ${glslFloat(0.5 * HOLE.ceilingDuty * HOLE.ceilingPitch)}, holePix),
+        abDetail(${glslFloat(HOLE.ceilingPitch)}, holePix));
 float holeLed = clamp(max(max(holeFrame, holeRim), holeCeil * ${glslFloat(HOLE.ceilingGain)}), 0.0, 1.0);
 diffuseColor.rgb *= 1.0 - holeLed;
 `;

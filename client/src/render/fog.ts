@@ -49,6 +49,25 @@ export function hazeAmount(camY: number, fragY: number, dist: number): number {
   return 1 - Math.exp(-Math.max(0, dist) * HAZE_DENSITY * Math.max(t, 0));
 }
 
+/**
+ * O1: the distance every fogged shader measures — the TRUE (radial) distance
+ * from the eye, `length(mvPosition.xyz)`, not three's planar view depth
+ * `-mvPosition.z`. Planar depth shrinks by cos(angle off-axis): a building
+ * at the half-world limit near the screen edge read ~60 % of its distance,
+ * stood partly unfogged, and popped as its torus image switched. Pure mirror
+ * of the GLSL below — the tested seam.
+ */
+export function fogDistance(
+  viewX: number,
+  viewY: number,
+  viewZ: number,
+): number {
+  return Math.hypot(viewX, viewY, viewZ);
+}
+
+/** GLSL for fogDistance, on a view-space position. */
+export const AB_FOG_DISTANCE_GLSL = "length(mvPosition.xyz)";
+
 /** The two layers combined: what a fogged surface's colour is mixed by. */
 export function combinedFog(linear: number, haze: number): number {
   return 1 - (1 - linear) * (1 - haze);
@@ -126,7 +145,9 @@ export function installHeightFog(): void {
 `;
   THREE.ShaderChunk.fog_vertex = /* glsl */ `
 #ifdef USE_FOG
-	vFogDepth = - mvPosition.z;
+	// O1: radial distance (see fogDistance), so the fog — the torus's
+	// occlusion guarantee — does not thin toward the screen edges.
+	vFogDepth = ${AB_FOG_DISTANCE_GLSL};
 	// R^T * mv, y component: column 1 of the camera rotation (GLSL is column-major).
 	vFogWorldY = cameraPosition.y + dot(viewMatrix[1].xyz, mvPosition.xyz);
 #endif

@@ -20,7 +20,7 @@
 import { wrapDeltaAxis } from "@angels-bandits/common/world";
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
-import { AB_FOG_GLSL } from "./fog";
+import { AB_FOG_DISTANCE_GLSL, AB_FOG_GLSL } from "./fog";
 import type { Traffic } from "./traffic";
 
 /** Lamp height above the street, m. */
@@ -91,7 +91,7 @@ void main() {
   vFacing = abs(dot(normalW, normalize(cameraPosition - worldPos.xyz)));
   vFade = aFade;
   vec4 mvPosition = viewMatrix * worldPos;
-  vDepth = -mvPosition.z;
+  vDepth = ${AB_FOG_DISTANCE_GLSL}; // radial, like every fogged material (O1)
   vWorldY = worldPos.y;
   gl_Position = projectionMatrix * mvPosition;
 }
@@ -133,7 +133,7 @@ void main() {
   vFade = aFade;
   vec4 worldPos = modelMatrix * instanceMatrix * vec4(position, 1.0);
   vec4 mvPosition = viewMatrix * worldPos;
-  vDepth = -mvPosition.z;
+  vDepth = ${AB_FOG_DISTANCE_GLSL}; // radial, like every fogged material (O1)
   vWorldY = worldPos.y;
   gl_Position = projectionMatrix * mvPosition;
 }

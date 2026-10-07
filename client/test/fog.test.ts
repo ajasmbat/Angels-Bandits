@@ -4,15 +4,20 @@
 // the linear fog, and the linear fog still reaches 1 at FOG_DISTANCE, so
 // nothing is visible past the half-world limit at any altitude.
 
-import { FOG_DISTANCE } from "@angels-bandits/common/constants";
+import { FOG_DISTANCE, WORLD_SIZE } from "@angels-bandits/common/constants";
+import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import {
+  AB_FOG_DISTANCE_GLSL,
   AB_FOG_GLSL,
   HAZE_DENSITY,
   HAZE_SCALE_HEIGHT,
   combinedFog,
+  fogDistance,
   hazeAmount,
+  installHeightFog,
 } from "../src/render/fog";
+import { FOG_NEAR } from "../src/render/sky";
 
 /** three's linear fog factor, as fog_fragment computes it. */
 const linear = (near: number, far: number, d: number) => {
@@ -95,5 +100,39 @@ describe("the GLSL mirror", () => {
       `AB_HAZE_DENSITY = ${HAZE_DENSITY.toFixed(5)}`,
     );
     expect(AB_FOG_GLSL).toContain("float abHazeAmount(");
+  });
+});
+
+describe("O1: fog measures TRUE distance, so the wrap never pops at the edges", () => {
+  // A building on the far side of the torus, at the half-world limit, seen
+  // 51° off the view axis — the edge of a wide screen. View space looks
+  // down -z.
+  const R = WORLD_SIZE / 2;
+  const off = (51 * Math.PI) / 180;
+  const edge = { x: R * Math.sin(off), y: 0, z: -R * Math.cos(off) };
+
+  it("is the radial distance, not the planar view depth", () => {
+    expect(fogDistance(edge.x, edge.y, edge.z)).toBeCloseTo(R, 6);
+    expect(fogDistance(0, 0, -300)).toBe(300);
+    expect(fogDistance(3, 4, 0)).toBe(5);
+  });
+
+  it("fully fogs a half-world object at the screen edge", () => {
+    const d = fogDistance(edge.x, edge.y, edge.z);
+    expect(linear(FOG_NEAR, FOG_DISTANCE, d)).toBeGreaterThanOrEqual(0.999);
+  });
+
+  it("(the regression) planar depth left that same object visible", () => {
+    // What three's stock chunk measured: -mvPosition.z = R cos 51° ≈ 629 m.
+    expect(linear(FOG_NEAR, FOG_DISTANCE, -edge.z)).toBeLessThan(0.999);
+  });
+
+  it("is what the patched fog chunk actually computes", () => {
+    installHeightFog();
+    expect(AB_FOG_DISTANCE_GLSL).toBe("length(mvPosition.xyz)");
+    expect(THREE.ShaderChunk.fog_vertex).toContain(
+      `vFogDepth = ${AB_FOG_DISTANCE_GLSL};`,
+    );
+    expect(THREE.ShaderChunk.fog_vertex).not.toContain("mvPosition.z");
   });
 });

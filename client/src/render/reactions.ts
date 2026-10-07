@@ -35,6 +35,7 @@ import {
   wrapLerp,
 } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { RENDER_ORDER } from "./render-order";
 import { nearestImage } from "./wrapPlacement";
 
 // --- Tuning ---------------------------------------------------------------
@@ -707,6 +708,7 @@ export class CityReactor {
     material.customProgramCacheKey = () => "ab-reaction-smoke";
     this.points = new THREE.Points(geometry, material);
     this.points.frustumCulled = false;
+    this.points.renderOrder = RENDER_ORDER.smokeColumns;
   }
 
   /** Add server city events (live broadcast or the welcome replay). Keeps

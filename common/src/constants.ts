@@ -408,12 +408,13 @@ export const OVERHEAT_AT = 1.0;
 export const HEAT_LOCK_BELOW = 0.35;
 
 // --- Gun feel (client-only presentation/assist; server validation untouched) ---
-/** Bullet magnetism: own bullets bend toward a target within this half-angle
- * of the flight line, degrees. Connection help, not an aimbot — F1 widened it
- * from 4 and checked a deliberately-off aimer still mostly misses. */
-export const MAGNETISM_CONE_DEG = 7;
-/** Max bend rate toward the target, degrees per second (F1: from 2). */
-export const MAGNETISM_MAX_DEG_PER_S = 6;
+/** Bullet magnetism: own bullets bend toward a target whose intercept point
+ * sits within this half-angle of the flight line, degrees. Connection help,
+ * not an aimbot — F1 widened it from 4 and checked that an aimer held 12 m
+ * off the lead marker still lands under 15% (faster bend rates did not). */
+export const MAGNETISM_CONE_DEG = 6;
+/** Max bend rate toward the target, degrees per second. */
+export const MAGNETISM_MAX_DEG_PER_S = 2;
 /** A plane strictly below this fraction of MAX_HP trails wounded smoke. */
 export const SMOKE_HP_FRAC = 0.3;
 

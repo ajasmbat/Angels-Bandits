@@ -22,8 +22,10 @@ import {
 import { type FlightState, flightForward } from "@angels-bandits/common/flight";
 import type { Vec3 } from "@angels-bandits/common/world";
 
-/** Loop gain, rad/s of commanded rate per rad of error, on both axes. */
-const GAIN = 6;
+/** Loop gain, rad/s of commanded rate per rad of error, on both axes. High
+ * enough that a bandit crossing at ~15°/s is tracked within ~1.5° (rate/K),
+ * inside the hit sphere at gun range; 6 lagged it by ~2.5° and mostly missed. */
+const GAIN = 10;
 /** Command lag, s. GAIN × LAG = 0.25 is critical damping on the plant
  * (yaw/pitch integrate the rate command), so the pipper never overshoots. */
 const LAG = 1 / (4 * GAIN);

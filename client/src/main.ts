@@ -1182,29 +1182,29 @@ renderer.setAnimationLoop((now) => {
         cursor,
       );
       const err = aimError(flight, view.aimDir, view.pipperDir);
-      // Latch only what the VIEW changed this frame — the zoom easing, or a
-      // free-look drag moving the cursor — by re-reading the error with last
-      // frame's zoom/cursor at the same attitude. The plane's own turn is
-      // never latched, so a zoom pressed mid-turn keeps the turn.
+      // Latch only what the VIEW changed this frame — the zoom easing, or the
+      // cursor moving while free-look owns the mouse (held, or its orbit
+      // still easing back, which also covers the smoothing catching up on
+      // the drag) — by re-reading the error with last frame's zoom/cursor at
+      // the same attitude. The plane's own turn is never latched, so a zoom
+      // pressed mid-turn keeps the turn.
       let latch: AimError = { yaw: 0, pitch: 0 };
       const zoomMoved = zoom.z !== zoomPrev;
-      if (zoomMoved || freelook.held) {
+      const looking =
+        freelook.held || freelook.yaw !== 0 || freelook.pitch !== 0;
+      if (zoomMoved || looking) {
         const z0 = zoomMoved ? zoomPrev : zoom.z;
         const before = aimView(
           flight,
           chase.aimFrame(flight, z0),
           zoomFov(z0),
           camera.aspect,
-          freelook.held ? cursorPrev : cursor,
+          looking ? cursorPrev : cursor,
         );
         const e0 = aimError(flight, before.aimDir, before.pipperDir);
         latch = { yaw: err.yaw - e0.yaw, pitch: err.pitch - e0.pitch };
       }
-      const reframing =
-        freelook.held ||
-        freelook.yaw !== 0 ||
-        freelook.pitch !== 0 ||
-        (zoom.z > 0 && zoom.z < 1);
+      const reframing = looking || (zoom.z > 0 && zoom.z < 1);
       instructor = instructorInput(err, latch, reframing, dt, instructor);
       // Off-window the presence fades the instructor out too: attitude hold.
       const presence = input.presence();

@@ -584,6 +584,11 @@ export class CloudDeck {
         opacity: CEILING_OPACITY,
         depthWrite: false,
         side: THREE.DoubleSide,
+        // One pass, not three's back-then-front pair for a transparent
+        // double-sided material (O3): that pair flags the material
+        // needsUpdate twice a frame — two program re-checks and an extra
+        // draw — and on a flat sheet it draws the same pixels one pass does.
+        forceSinglePass: true,
       }),
     );
     this.ceiling.rotation.x = Math.PI / 2;

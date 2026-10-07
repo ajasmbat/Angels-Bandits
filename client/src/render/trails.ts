@@ -181,6 +181,9 @@ export class PlaneTrails {
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       side: THREE.DoubleSide,
+      // Additive is order-free, so three's back-then-front pair buys nothing
+      // and costs two program re-checks and a draw a frame (O3).
+      forceSinglePass: true,
       // Additive + fog brightens the distant scene (V1 lesson) — off.
       fog: false,
     });

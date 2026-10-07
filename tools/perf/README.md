@@ -225,7 +225,10 @@ Everything else is pinned.
 | `--headed`           | off                | watch it fly                                    |
 | `--strict`           | off                | exit 1 if the determinism check FAILs (needs `--runs` >= 2) |
 | `--samples`          | off                | keep every per-frame time (wall **and** GPU) in the JSON |
-| `--quality <tier>`   | `high`             | the graphics tier every arm runs (`auto` \| `high` \| `medium` \| `low`); pinned so Auto can never step down mid-run |
+| `--quality <tier>`   | `high`             | the graphics tier every arm runs (`auto` \| `high` \| `medium` \| `low` \| `mobile`); pinned so Auto can never step down mid-run |
+| `--device <name>`    | `desktop`          | M3: the page every arm opens as — `desktop` (1280×720 @2) or `phone` (844×390 @3, touch, mobile viewport) |
+| `--cpu-throttle <r>` | `1`                | M3: CDP `Emulation.setCPUThrottlingRate` on every page — its JS runs r× slower (a phone-CPU stand-in) |
+| `--segments <a,b>`   | all                | M3: fly only these segments (by name; the report matches them by name) |
 | `--soak <seconds>`   | —                  | instead of the path: hold the full-room `furball` that long and report the tier Auto ended on (exit 1 if it stepped down) |
 | `--ab-ref <git-ref>` | —                  | second arm is **another build**: that commit, checked out to its own worktree with its own `npm ci`, built and served on its own port, interleaved like `--ab` |
 
@@ -575,32 +578,35 @@ Two rules every tier obeys:
    through anything High cannot. Rain streaks are near-field dressing; the
    weather's haze is the visibility mechanism and it does not change.
 
-| | High | Medium | Low |
-| --- | --- | --- | --- |
-| pixel-ratio ceiling for the scaler | 2 | 1.5 | 1 |
-| L1 alarms, lit windows, responders | full | full | full |
-| L1 smoke columns | full | full | half the puffs |
-| L1 pedestrians | full | 70 % | 40 % |
-| L1 steam, signals, sparks | full | full | full (already altitude-gated) |
-| L2 soundscape | full | full | full (audio) |
-| L3 living windows | full | full | off (static grid) |
-| L4 rain streaks | full | 50 % | 35 % (haze unchanged) |
-| L4 wet streets, puddles | full | full | full (uniforms) |
-| L5 train + viaduct | full | full | full (solid) |
-| L6 traffic | full | full | full (feeds audio and reactions) |
-| L6 headlight cones | full | full | off (ground pools stay) |
-| L7 signage animation | full | full | full (a uniform clock) |
-| L7 sign light spill | full | full | off |
-| L8 rooftop props | full | full | full |
-| L8 rooftop string lights | full | full | off |
-| L9 tree sway | full | full | off (crowns hold still) |
-| L9 fountains | full | half the spray | off |
-| L9 birds | full | full | half of each flock |
-| L10 airliners | full | full | contrails half as long |
-| L10 news heli, drone shows | full | full | full (solid / shared light cloud) |
-| L11 river, bridges, boats | full | full | full (solid) |
-| L12 sky cycle | full | full | full (uniforms) |
-| L13 facade detail | full | full | off (dressing, not solid) |
+| | High | Medium | Low | Mobile (M3) |
+| --- | --- | --- | --- | --- |
+| pixel-ratio ceiling for the scaler | 2 | 1.5 | 1 | 1 (0.75 at thermal level 2) |
+| L1 alarms, lit windows, responders | full | full | full | full |
+| L1 smoke columns | full | full | half the puffs | a third of the puffs |
+| L1 pedestrians | full | 70 % | 40 % | 30 %, one block out |
+| L1 steam, signals, sparks | full | full | full (already altitude-gated) | one block out; half the steam |
+| L2 soundscape | full | full | full (audio) | full |
+| L3 living windows | full | full | off (static grid) | off |
+| L4 rain streaks | full | 50 % | 35 % (haze unchanged) | 25 % |
+| L4 wet streets, puddles | full | full | full (uniforms) | full |
+| L5 train + viaduct | full | full | full (solid) | full |
+| L6 traffic | full | full | full (feeds audio and reactions) | full |
+| L6 headlight cones | full | full | off (ground pools stay) | off |
+| L7 signage animation | full | full | full (a uniform clock) | off: each sign's static art (uniform guard) |
+| L7 sign light spill | full | full | off | off |
+| L8 rooftop props | full | full | full | full |
+| L8 rooftop string lights | full | full | off | off |
+| L9 tree sway | full | full | off (crowns hold still) | off |
+| L9 fountains | full | half the spray | off | off |
+| L9 birds | full | full | half of each flock | half of each flock |
+| L10 airliners | full | full | contrails half as long | contrails half as long |
+| L10 news heli, drone shows | full | full | full (solid / shared light cloud) | full |
+| L11 river, bridges, boats | full | full | full (solid) | full |
+| L12 sky cycle | full | full | full (uniforms) | full |
+| L13 facade detail | full | full | off (dressing, not solid) | off |
+| bloom | full | full | full | half-res chain (cheaper via the ceiling); off from thermal level 1 |
+| final grade | full | full | full | off |
+| window interiors (parallax rooms) | full | full | full | off: the room's mean light (uniform guard) |
 
 **Auto** starts at High and only ever steps **down**: a feature popping back
 in is far more visible than one resolution rung, and a player who wants it
@@ -762,3 +768,81 @@ What it *can* measure honestly is GPU-independent:
   decimal. Before the epoch alignment the same pair swung 0.04–0.09, set by
   whichever searchlight or helicopter was in frame; a fair comparison needs
   the alignment.
+
+## M3: the Mobile tier
+
+`quality.ts` adds **Mobile**, last in the G / `GFX` cycle (pickable on any
+device, a weak laptop included). The table above gives its column. Three
+things besides the table:
+
+- **A 30 fps budget.** On the Mobile tier, the scaler, Auto and the thermal
+  step-down count a frame as missed only past 50 ms (1.5 × 33.3 ms), and the
+  CPU-bound line moves to 26.7 ms. Against a 60 fps budget, iOS Low Power
+  Mode's 30 Hz rAF cap, or any phone holding a steady 30, reads as every
+  frame missing, and the scaler would sit on its 0.75 floor for good. A phone
+  that does better still draws as fast as it can; only the miss line moves.
+- **Auto starts at Mobile on a coarse-pointer device.** That is M2's touch
+  rule (`ui/mobile.ts` `coarsePointer()`). A touchscreen laptop keeps a fine
+  primary pointer, so it starts at High, as before.
+- **Thermal step-down** applies only to Auto on Mobile. No browser exposes a
+  temperature, so throttling is read by its symptom: Auto's own pressure
+  test (misses in ≥ 10 % of the window while pixels can no longer help),
+  against the 30 fps budget.
+  - **Trigger and settle.** 10 s of unbroken pressure steps one level, then
+    a 30 s settle follows.
+  - **Level 1** drops bloom (and caps the scaler at 1.0, Mobile's own
+    ceiling today).
+  - **Level 2** caps it at 0.75, the floor, on purpose.
+  - **Levels never step back**, so nothing oscillates. The cap is also what
+    stops the scaler's latch-relax probes climbing back into the heat.
+  - **Reset.** A reload, or picking any tier by hand, starts over at level 0.
+  - **Transients.** A hidden tab, a death, a resize and a teleport each
+    restart the pressure clock, as for Auto.
+
+Every Mobile switch obeys O3's rule 1, and nothing compiles a shader:
+
+- Sign animation and window interiors are uniform guards (`uSignAnimOn`,
+  `uWinInterior`) in the programs pre-warmed at boot.
+- Bloom and grade are `pass.enabled`.
+- Radii and densities are draw counts inside buffers that are still sized for
+  High.
+
+### Commands
+
+```sh
+# On the runner (no GPU): the CPU-cost proxy. High at its own ratio vs Mobile
+# at its own ceiling (1), as a landscape phone, JS throttled 4x, core view only.
+# Read the "cost:" block: fragment proxy and draws × pixels ratios, JS p50.
+AB_CHROME_ARGS="--use-angle=swiftshader --enable-unsafe-swiftshader" \
+  node tools/perf/run.mjs --device phone --cpu-throttle 4 --segments core \
+  --res 2 --label high --ab "quality=mobile&res=1"
+
+# On the M3 (real GPU), machine otherwise idle: Mobile at ratio 1 as a phone.
+# GPU p50 <= 5 ms is the target: an ASSUMED proxy for a phone GPU ~4x
+# slower than the M3, not a measurement of one.
+node tools/perf/run.mjs --runs 3 --device phone --quality mobile --res 1 --label mobile
+# The same, paired against High at its own ratio, for the GPU ratio.
+node tools/perf/run.mjs --runs 3 --device phone --res 2 --label high --ab "quality=mobile&res=1"
+```
+
+### What the runner measured (M3)
+
+GPU-less Linux box, SwiftShader (Vulkan), `--device phone --cpu-throttle 4
+--segments core`, one interleaved pass each, load average ~17. SwiftShader's
+GPU and wall times are the CPU rasterising, so read only the
+GPU-independent rows:
+
+| core view | High, ratio 2 | Mobile, ratio 1 | Mobile cheaper by |
+| --- | --- | --- | --- |
+| drawing buffer | 1688×780 | 844×390 | 4× pixels |
+| full-screen-pass equivalents | 5.17 (bloom, grade) | 4.17 (bloom, no grade) | |
+| fragment proxy | 6.80 Mpx·passes | 1.37 Mpx·passes | **4.96×** |
+| draw calls | 79 | 73 | |
+| draws × pixels | | | **4.33×** |
+| pre-render JS p50 (4× throttled) | 8.50 ms | 5.40 ms | 1.57× |
+
+Mobile was first measured at a 1.25 ceiling: fragment proxy 3.18×, but
+draws × pixels only 2.77×. Draw calls barely move between tiers (80 → 74),
+so pixels carry the ratio, and M3's 3× bar set the ceiling to 1. Neither
+arm logged a page error, so both shader paths (the uniform guards on and
+off) compiled and ran.

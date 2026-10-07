@@ -32,6 +32,7 @@ import {
 } from "./weather";
 import {
   OCCUPANCY_UNIFORM,
+  WIN_INTERIOR_UNIFORM,
   holeLightGlsl,
   holeSurfaceGlsl,
   pitchSeedGlsl,
@@ -168,6 +169,7 @@ vCrew = aCrew;
 
 const FRAGMENT_PARS = /* glsl */ `
 uniform float uOccupancy; // L12 sky cycle: window occupancy, 0..1
+uniform float uWinInterior; // M3 tier: parallax rooms on (1) or mean light (0)
 varying vec3 vMeters;
 varying vec3 vObjNormal;
 varying float vBSeed;
@@ -288,6 +290,8 @@ export function createBuildingsMaterial(
     // L1 reactive city: the shared window-wake sources (reactions.ts).
     shader.uniforms.uWake = windowWakeUniform;
     shader.uniforms.uOccupancy = OCCUPANCY_UNIFORM;
+    // M3: the quality tier's window-interior switch, shared by reference.
+    shader.uniforms.uWinInterior = WIN_INTERIOR_UNIFORM;
     // L4: the shared weather uniform (render/weather.ts), by reference.
     shader.uniforms.uWeather = WEATHER_UNIFORM;
     shader.vertexShader = shader.vertexShader

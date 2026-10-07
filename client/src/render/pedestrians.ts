@@ -350,6 +350,8 @@ export class Pedestrians {
   private drawn = 0;
   /** O3 quality tier: share of the crowd kept. */
   private density = 1;
+  /** M3 quality tier: block-window radius (capacity stays sized for the max). */
+  private radius = BLOCK_WINDOW_RADIUS;
 
   constructor(seed: number) {
     this.seed = seed;
@@ -392,6 +394,10 @@ export class Pedestrians {
   /** O3: Medium/Low keep 70 % / 40 % of the crowd. */
   setQuality(tier: QualityTier): void {
     this.density = QUALITY_PROFILES[tier].crowdDensity;
+    this.radius = Math.min(
+      BLOCK_WINDOW_RADIUS,
+      QUALITY_PROFILES[tier].microRadius,
+    );
   }
 
   /**
@@ -422,7 +428,7 @@ export class Pedestrians {
     const colors = (this.mesh.instanceColor as THREE.InstancedBufferAttribute)
       .array as Float32Array;
     let n = 0;
-    for (const { bx, bz } of blockWindow(cameraPos)) {
+    for (const { bx, bz } of blockWindow(cameraPos, this.radius)) {
       const specs = this.specsFor(bx, bz);
       // L1 scatter: only blocks a live pass can reach pay the per-walker test.
       const scatter = passes.length > 0 && blockNearPass(bx, bz, passes);

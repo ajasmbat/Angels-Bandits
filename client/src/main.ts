@@ -133,15 +133,24 @@ import {
   type AutoQualityState,
   DEFAULT_QUALITY,
   QUALITY_KEY,
+  QUALITY_PROFILES,
   QUALITY_STORAGE_KEY,
   type QualitySetting,
   type QualityTier,
+  type ThermalState,
+  autoStartTier,
+  bloomOn,
   createAutoQuality,
+  createThermal,
   interruptAutoQuality,
+  interruptThermal,
   nextQualitySetting,
   parseQualitySetting,
   qualityLimits,
   stepAutoQuality,
+  stepThermal,
+  tierBudgetMs,
+  tierMissMs,
 } from "./render/quality";
 import { Rain } from "./render/rain";
 import { CityReactor } from "./render/reactions";
@@ -199,7 +208,7 @@ import { KillFeed } from "./ui/killfeed";
 import { LeadIndicator, SolutionTone } from "./ui/lead";
 import { EdgeMarkers } from "./ui/markers";
 import { Minimap } from "./ui/minimap";
-import { initMobileShell } from "./ui/mobile";
+import { coarsePointer, initMobileShell } from "./ui/mobile";
 import { PerfHud, bindPerfHudKey, perfHudKeyEnabled } from "./ui/perfhud";
 import { Scoreboard } from "./ui/scoreboard";
 
@@ -261,14 +270,25 @@ const readSavedQuality = (): QualitySetting | null => {
 };
 let qualitySetting: QualitySetting =
   renderOpts.quality ?? readSavedQuality() ?? DEFAULT_QUALITY;
-let autoQuality = createAutoQuality(performance.now());
+// M3: Auto starts at Mobile on a coarse-pointer device (M2's touch rule),
+// at High everywhere else. Read once: the device does not change mid-session.
+const autoStart = autoStartTier(coarsePointer());
+let autoQuality = createAutoQuality(performance.now(), autoStart);
+// M3: the thermal step-down below Mobile (render/quality.ts). Only Auto on
+// the Mobile tier steps it; a hand-picked tier resets it to level 0.
+let thermal = createThermal(performance.now());
 let qualityTier: QualityTier =
   qualitySetting === "auto" ? autoQuality.tier : qualitySetting;
 // Recomputed on resize: browser zoom and dragging the window to another
 // panel both change devicePixelRatio AND fire `resize`, and a stale ceiling
 // either strands the scaler below the panel or lets it burn 4x the pixels.
-// The quality tier caps the ceiling (High 2, Medium 1.5, Low 1).
-let resLimits = qualityLimits(window.devicePixelRatio, qualityTier);
+// The quality tier caps the ceiling (High 2, Medium 1.5, Low 1, Mobile 1),
+// and a thermal level caps it further (M3).
+let resLimits = qualityLimits(
+  window.devicePixelRatio,
+  qualityTier,
+  thermal.level,
+);
 let resAuto = renderOpts.pixelRatio === "auto";
 let resolution =
   renderOpts.pixelRatio === "auto"
@@ -401,8 +421,12 @@ window.addEventListener("resize", () => {
   // the latch is stale: leaving fullscreen must be allowed to win the
   // resolution back. Only the latch is cleared — the current ratio stays,
   // and the controller re-earns anything above it the usual way.
-  resLimits = qualityLimits(window.devicePixelRatio, qualityTier);
-  autoQuality = interruptAutoQuality(autoQuality);
+  resLimits = qualityLimits(
+    window.devicePixelRatio,
+    qualityTier,
+    thermal.level,
+  );
+  interruptQuality();
   resolution = {
     ...resolution,
     hotRatio: Number.POSITIVE_INFINITY,
@@ -798,7 +822,7 @@ function enterDeath(killerId: string | null, cause?: "storm"): void {
 
 function respawnSelf(spawn: SpawnState): void {
   planeTrails.clear(socket.selfId); // respawn teleports — no streak
-  autoQuality = interruptAutoQuality(autoQuality); // O3: a transient
+  interruptQuality(); // O3: a transient
   flight = createFlightState(spawn.pos, spawn.yaw);
   flight = { ...flight, speed: spawn.speed, targetSpeed: spawn.speed };
   chase.snapTo(flight);
@@ -975,6 +999,8 @@ socket.events.onBotsConfig = (msg) => {
 // otherwise the window still holds frames rendered at the old ratio and the
 // controller double-steps on stale evidence.
 const frames = new FrameMeter();
+/** M3: pre-render JS per frame over the harness's window (`__ab.jsStats`). */
+const jsFrames = new FrameMeter();
 const resFrames = new FrameMeter(WINDOW_FRAMES * 3);
 // GPU-side cost of the same frames, when the harness asked for it. Null on
 // drivers without the timer-query extension — a missing number, never an
@@ -1032,6 +1058,10 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   city.setQuality(tier);
   reactor.setQuality(tier);
   pedestrians.setQuality(tier);
+  // M3: steam, signals and construction sparks stream in the tier's radius.
+  steam.setQuality(tier);
+  signals.setQuality(tier);
+  constructionSparks.setQuality(tier);
   rain.setQuality(tier);
   headlights.setQuality(tier);
   signage.setQuality(tier);
@@ -1041,7 +1071,8 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   birds.setQuality(tier);
   airliners.setQuality(tier);
   facadeDetail.setQuality(tier);
-  resLimits = qualityLimits(window.devicePixelRatio, tier);
+  applyPostQuality();
+  resLimits = qualityLimits(window.devicePixelRatio, tier, thermal.level);
   if (resAuto) {
     const fresh = autoResolution(performance.now());
     resolution = keepRatio
@@ -1054,10 +1085,31 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   hud.setQuality(qualitySetting, tier);
 }
 
-/** The player's (or QA's) pick. Re-picking Auto restarts it at High. */
+/**
+ * M3: the post passes a tier (and a thermal level) keeps. `.enabled` only —
+ * the composer sends the last ENABLED pass to screen, and no program
+ * changes. `?grade=0` (gradePass null) stays off whatever the tier says.
+ */
+function applyPostQuality(): void {
+  bloomPass.enabled = bloomOn(qualityTier, thermal.level);
+  if (gradePass) gradePass.enabled = QUALITY_PROFILES[qualityTier].grade;
+}
+
+/** O3/M3: a transient (hidden tab, death, resize, teleport) — forget the
+ * pressure runs of both Auto and the thermal step-down. */
+function interruptQuality(): void {
+  autoQuality = interruptAutoQuality(autoQuality);
+  thermal = interruptThermal(thermal);
+}
+
+/** The player's (or QA's) pick. Re-picking Auto restarts it at its start
+ * tier (High, or Mobile on a phone); any pick restarts the thermal level. */
 function setQualitySetting(setting: QualitySetting, persist: boolean): void {
   qualitySetting = setting;
-  if (setting === "auto") autoQuality = createAutoQuality(performance.now());
+  thermal = createThermal(performance.now());
+  if (setting === "auto") {
+    autoQuality = createAutoQuality(performance.now(), autoStart);
+  }
   if (persist) {
     try {
       localStorage.setItem(QUALITY_STORAGE_KEY, setting);
@@ -1075,6 +1127,7 @@ function stepScaler(now: number): void {
     resFrames.tail(WINDOW_FRAMES),
     now,
     resLimits,
+    tierMissMs(qualityTier), // M3: Mobile steers to 30 fps
   );
   // RATIO, not identity: the controller also advances clean-run
   // bookkeeping on ticks that move nothing, and treating those as a
@@ -1099,18 +1152,39 @@ function stepScaler(now: number): void {
  */
 function stepQuality(now: number): void {
   if (!alive || document.hidden) {
-    autoQuality = interruptAutoQuality(autoQuality);
+    interruptQuality();
     return;
   }
   const wall = resFrames.tail(WINDOW_FRAMES);
   if (wall.length < WINDOW_FRAMES) return;
   const cpu = [...cpuFrames.tail(WINDOW_FRAMES)].sort((a, b) => a - b);
+  // M3: misses and the CPU-bound line are judged against the tier's budget.
+  const share = missShare(wall, tierMissMs(qualityTier));
+  const cpuMs = percentile(cpu, 0.5);
+  const budgetMs = tierBudgetMs(qualityTier);
+  if (autoQuality.tier === "mobile") {
+    // Mobile has no tier below it: its rungs are thermal levels, which only
+    // re-cap the scaler and drop bloom (render/quality.ts).
+    const next = stepThermal(
+      thermal,
+      share,
+      resolution.ratio,
+      cpuMs,
+      now,
+      budgetMs,
+    );
+    const stepped = next.level !== thermal.level;
+    thermal = next;
+    if (stepped) applyQualityTier(qualityTier, true);
+    return;
+  }
   const next = stepAutoQuality(
     autoQuality,
-    missShare(wall),
+    share,
     resolution.ratio,
-    percentile(cpu, 0.5),
+    cpuMs,
     now,
+    budgetMs,
   );
   const dropped = next.tier !== autoQuality.tier;
   autoQuality = next;
@@ -1141,6 +1215,9 @@ declare global {
       };
       /** P1: the full frame-time window — p50/p95/p99/worst + draw calls. */
       perfStats: () => FrameStats;
+      /** M3: the same window's pre-render JS cost per frame (sim, streaming,
+       * instance packing — the render call itself is not in it). */
+      jsStats: () => FrameStats;
       /** Every frame time held, oldest first (harness histograms). */
       perfSamples: () => number[];
       /** GPU-only frame cost over the same window; null unless ?gputime=1. */
@@ -1190,6 +1267,12 @@ declare global {
         tier: QualityTier;
         auto: AutoQualityState;
         ceiling: number;
+        /** M3: the thermal step-down's state (level 0 = none). */
+        thermal: ThermalState;
+        /** M3: the post passes running now, and the budget steered to. */
+        bloom: boolean;
+        grade: boolean;
+        budgetMs: number;
       };
       /** O3 QA: pick a setting for this session (never saved). */
       setQuality: (setting: QualitySetting) => void;
@@ -1365,7 +1448,7 @@ declare global {
 window.__ab = {
   state: () => flight,
   teleport: (x, z, y = 300, yaw = 0) => {
-    autoQuality = interruptAutoQuality(autoQuality); // O3: a transient
+    interruptQuality(); // O3: a transient
     flight = { ...createFlightState({ x, y, z }, yaw), speed: flight.speed };
     chase.snapTo(flight);
   },
@@ -1377,12 +1460,14 @@ window.__ab = {
   }),
   // P1 harness surface: percentiles over the window since the last reset.
   perfStats: () => frames.stats(),
+  jsStats: () => jsFrames.stats(),
   perfSamples: () => frames.samples(),
   gpuStats: () => (gpuTimer === null ? null : gpuFrames.stats()),
   gpuSamples: () => (gpuTimer === null ? null : gpuFrames.samples()),
   gpuStarved: () => (gpuTimer === null ? null : gpuTimer.starved),
   perfReset: () => {
     frames.reset();
+    jsFrames.reset();
     gpuFrames.reset();
     gpuTimer?.resetStarved();
   },
@@ -1418,6 +1503,10 @@ window.__ab = {
     tier: qualityTier,
     auto: { ...autoQuality },
     ceiling: resLimits.ceiling,
+    thermal: { ...thermal },
+    bloom: bloomPass.enabled,
+    grade: gradePass?.enabled ?? false,
+    budgetMs: tierBudgetMs(qualityTier),
   }),
   setQuality: (setting) => setQualitySetting(setting, false),
   setBots: (count) => socket.sendSetBots(count),
@@ -2194,6 +2283,7 @@ const frame = (now: number): void => {
   // clamp is there to keep flight stable, not to flatter the report.
   const drawCalls = renderer.info.render.calls;
   frames.push(rawMs, drawCalls);
+  jsFrames.push(preRenderMs, drawCalls);
   resFrames.push(rawMs, drawCalls);
   cpuFrames.push(preRenderMs, drawCalls);
   // GPU results land a few frames late — they are attributed to the window,
@@ -2246,7 +2336,7 @@ renderer.setAnimationLoop(frame);
 // event). On return, a fresh `last` keeps the first dt from spanning the gap.
 let glLost = false;
 document.addEventListener("visibilitychange", () => {
-  autoQuality = interruptAutoQuality(autoQuality); // O3: a transient
+  interruptQuality(); // O3: a transient
   if (document.hidden) {
     renderer.setAnimationLoop(null);
   } else if (!glLost) {

@@ -302,6 +302,12 @@ export function isWindowLit(
  * uniform for the buildings material; the cycle writes `.value` per frame.
  */
 export const OCCUPANCY_UNIFORM = { value: 1 };
+/**
+ * M3 quality tier: 1 = the per-pane parallax room raycast, 0 = every lit
+ * pane takes the room's mean light (the Mobile tier's cheaper far path). One
+ * shared uniform for the buildings material; city.setQuality writes it.
+ */
+export const WIN_INTERIOR_UNIFORM = { value: 1 };
 /** Occupancy span over which one window fades on/off. The cycle moves
  * occupancy ≤ 0.001 per second, so each window takes a few seconds to fade —
  * windows switch one at a time and never pop. */
@@ -507,25 +513,32 @@ ${livingColorGlsl(glslVec3(TV_COLOR))}
 // factor is < 1, so the interior peaks BELOW the flat pane the WINDOW rung
 // was normalized for — the ladder ordering cannot be disturbed.
 vec3 viewRay = normalize(vBWorldPos - cameraPosition);
-float rayIn = 1.0;
-vec2 rayUV = vec2(0.0);
-if (abs(vObjNormal.x) > 0.5) {
-  rayIn = -sign(vObjNormal.x) * viewRay.x;
-  rayUV = vec2(viewRay.z, viewRay.y);
-} else if (abs(vObjNormal.z) > 0.5) {
-  rayIn = -sign(vObjNormal.z) * viewRay.z;
-  rayUV = vec2(viewRay.x, viewRay.y);
-}
-vec2 cellMeters = winF * winPitch;
-float tBack = roomDepth / max(rayIn, 0.03);
-float tU = ((rayUV.x > 0.0 ? winPitch.x : 0.0) - cellMeters.x) / abSafeDiv(rayUV.x);
-float tV = ((rayUV.y > 0.0 ? winPitch.y : 0.0) - cellMeters.y) / abSafeDiv(rayUV.y);
-float tHit = min(tBack, min(tU, tV));
 vec3 roomLight = winColor * (0.85 + 0.15 * abHash(winCell, vBSeed * 31.0));
-vec3 roomCol = tHit == tBack ? roomLight * 0.55
-             : tHit == tV ? (rayUV.y > 0.0 ? roomLight * 0.9 : roomLight * 0.24)
-             : roomLight * 0.38;
-roomCol *= 1.0 - 0.45 * clamp(tHit / (roomDepth * 2.2), 0.0, 1.0);
+// M3: with uWinInterior off (the Mobile tier) every pane takes the room's
+// average light — the same 0.45 the distance fade below already ends on —
+// and skips the raycast. A uniform branch (coherent, no derivatives inside),
+// so the tier switch compiles nothing.
+vec3 roomCol = roomLight * 0.45;
+if (uWinInterior > 0.5) {
+  float rayIn = 1.0;
+  vec2 rayUV = vec2(0.0);
+  if (abs(vObjNormal.x) > 0.5) {
+    rayIn = -sign(vObjNormal.x) * viewRay.x;
+    rayUV = vec2(viewRay.z, viewRay.y);
+  } else if (abs(vObjNormal.z) > 0.5) {
+    rayIn = -sign(vObjNormal.z) * viewRay.z;
+    rayUV = vec2(viewRay.x, viewRay.y);
+  }
+  vec2 cellMeters = winF * winPitch;
+  float tBack = roomDepth / max(rayIn, 0.03);
+  float tU = ((rayUV.x > 0.0 ? winPitch.x : 0.0) - cellMeters.x) / abSafeDiv(rayUV.x);
+  float tV = ((rayUV.y > 0.0 ? winPitch.y : 0.0) - cellMeters.y) / abSafeDiv(rayUV.y);
+  float tHit = min(tBack, min(tU, tV));
+  roomCol = tHit == tBack ? roomLight * 0.55
+          : tHit == tV ? (rayUV.y > 0.0 ? roomLight * 0.9 : roomLight * 0.24)
+          : roomLight * 0.38;
+  roomCol *= 1.0 - 0.45 * clamp(tHit / (roomDepth * 2.2), 0.0, 1.0);
+}
 // Some rooms draw their blinds: flat diffuse glow, no parallax.
 float blinds = step(abHash(winCell + 3.0, vBSeed * 29.0), winBlinds);
 // Per-window brightness spread: a real block is not one bulb repeated.

@@ -123,6 +123,11 @@ export const SEGMENTS = [
     // pinned at 107. CPU contention would push wall and GPU up together;
     // more GPU work at constant draw calls is a fuller frame, not a busier
     // machine.
+    //
+    // O4: the client now renders the world at a pinned time
+    // (`__ab.pinWorld`, WORLD_EPOCH_MS above), traffic included, so on a
+    // build with the hook this segment's scene is pinned like the others.
+    // The note above stands for an older build (an --ab-ref before O4).
     x: 200,
     z: 1200,
     y: 45,
@@ -131,11 +136,12 @@ export const SEGMENTS = [
   {
     name: "storm",
     what: "a lightning strike inside the window — bolt, flash, fog stain, reveals",
-    // Fixed viewpoint, high enough to be crash-proof; the harness times the
-    // window so a scheduled strike lands ~1.2 s in. The strike's POSITION
-    // moves with the wall clock (it is a function of absolute time), so this
-    // is the one segment whose scene is not byte-identical between runs —
-    // see the tolerance note in README.md.
+    // Fixed viewpoint, high enough to be crash-proof. O4: the harness pins
+    // the world clock so the next scheduled strike lands STRIKE_LEAD_MS of
+    // world time into the window — the same strike, the same cell, every
+    // pass, and no unpiloted wait for the live clock to reach one. A build
+    // without `__ab.pinWorld` falls back to waiting on the live clock, and
+    // its strike position then moves between runs (README.md).
     x: 1000,
     z: 1000,
     y: 380,

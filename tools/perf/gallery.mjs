@@ -1,6 +1,10 @@
 // VO gallery: fixed viewpoints -> PNGs, for before/after visual review.
 //   npm run build -w client && node tools/perf/gallery.mjs <outDir> [port] [view,view]
-// Uses the cached chromium headless shell on Metal (see tools/perf/README.md).
+// Uses the cached chromium headless shell on Metal (see tools/perf/README.md;
+// AB_CHROME / AB_CHROME_ARGS point it elsewhere, e.g. SwiftShader on Linux).
+// The sky is pinned to deep night (`?sky=night`, L12) so shots never depend
+// on the server's time of night; views with a `sky` field force their own
+// phase through __ab.sky.
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
@@ -26,6 +30,45 @@ const VIEWS = [
   // N1: plaza (4,4) as a night park — pond, paths, lamps, tree clusters.
   { name: "plaza-park", x: 900, z: 1030, y: 120, yaw: 0, pitch: -0.6 },
   { name: "moon", x: 700, z: 1000, y: 260, yaw: -0.61, pitch: 0.2 }, // faces MOON_DIR
+  // L12 sky cycle: each phase toward its own horizon (dusk glow in the west,
+  // the night moon, the dawn glow in the east) and over the same rooftops.
+  {
+    name: "sky-dusk",
+    x: 700,
+    z: 1000,
+    y: 230,
+    yaw: 2.5,
+    pitch: 0.12,
+    sky: "dusk",
+  },
+  {
+    name: "sky-night",
+    x: 700,
+    z: 1000,
+    y: 230,
+    yaw: -0.61,
+    pitch: 0.12,
+    sky: "night",
+  },
+  {
+    name: "sky-predawn",
+    x: 700,
+    z: 1000,
+    y: 230,
+    yaw: -0.66,
+    pitch: 0.12,
+    sky: "predawn",
+  },
+  { name: "sky-dusk-city", x: 300, z: 900, y: 175, yaw: 0.6, sky: "dusk" },
+  { name: "sky-night-city", x: 300, z: 900, y: 175, yaw: 0.6, sky: "night" },
+  {
+    name: "sky-predawn-city",
+    x: 300,
+    z: 900,
+    y: 175,
+    yaw: 0.6,
+    sky: "predawn",
+  },
   // L10 sky traffic: placed at capture time from the live __ab read-backs,
   // since all three move on the synced clock.
   { name: "sky-airliner", dyn: "airliner" },
@@ -140,7 +183,7 @@ try {
   });
   // AB_GALLERY_RES: a software-GL box cannot draw 1.5x in time.
   await page.goto(
-    `http://127.0.0.1:${PORT}/?res=${process.env.AB_GALLERY_RES ?? 1.5}`,
+    `http://127.0.0.1:${PORT}/?res=${process.env.AB_GALLERY_RES ?? 1.5}&sky=night`,
   );
   await page.fill("#join-name", "SHOT");
   await page.click('#join button[type="submit"]');
@@ -149,6 +192,8 @@ try {
   await sleep(1500);
   for (const view of VIEWS) {
     if (ONLY && !ONLY.includes(view.name)) continue;
+    // L12: each view at its own time of night (deep night unless it says).
+    await page.evaluate((s) => window.__ab.sky(s ?? "night"), view.sky);
     const v = view.dyn ? await place(page, view) : view;
     const pin = async () =>
       page.evaluate((v) => {

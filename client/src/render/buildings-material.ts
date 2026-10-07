@@ -23,6 +23,7 @@ import * as THREE from "three";
 import { luminance } from "./emissive";
 import { WAKE_PARS_GLSL, wakeWindowGlsl, windowWakeUniform } from "./reactions";
 import {
+  OCCUPANCY_UNIFORM,
   holeLightGlsl,
   holeSurfaceGlsl,
   pitchSeedGlsl,
@@ -154,6 +155,7 @@ vHole = aHole;
 `;
 
 const FRAGMENT_PARS = /* glsl */ `
+uniform float uOccupancy; // L12 sky cycle: window occupancy, 0..1
 varying vec3 vMeters;
 varying vec3 vObjNormal;
 varying float vBSeed;
@@ -254,6 +256,7 @@ export function createBuildingsMaterial(): THREE.MeshStandardMaterial {
   material.onBeforeCompile = (shader) => {
     // L1 reactive city: the shared window-wake sources (reactions.ts).
     shader.uniforms.uWake = windowWakeUniform;
+    shader.uniforms.uOccupancy = OCCUPANCY_UNIFORM;
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", `#include <common>\n${VERTEX_PARS}`)
       .replace(

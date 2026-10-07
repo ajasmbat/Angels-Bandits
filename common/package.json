@@ -17,6 +17,7 @@
     "./city/movers": "./src/city/movers.ts",
     "./city/nature": "./src/city/nature.ts",
     "./storm": "./src/storm.ts",
+    "./weather": "./src/weather.ts",
     "./fireworks": "./src/fireworks.ts",
     "./protocol": "./src/protocol.ts",
     "./net": "./src/net.ts"

@@ -1,6 +1,6 @@
 // RoomBots seam: the server-side bot population of one room — spawn/despawn
 // sync, the 4-state brain, shared-stepFlight simulation, and the combat
-// routing (applyBotFire). Everything is seeded (mulberry32) — no Math.random
+// routing (applyBotFire + landBotRound). Everything is seeded (mulberry32) — no Math.random
 // — so every expectation here is deterministic.
 
 import { generateCity } from "@angels-bandits/common/city";
@@ -19,6 +19,8 @@ import {
   BOT_DECISION_EVERY,
   BOT_MIN_ALT,
   BOT_REACTION_MS,
+  BULLET_LIFETIME_S,
+  BULLET_SPEED,
   CITY_SEED,
   CLOUD_BASE,
   KILL_CAM_MS,
@@ -34,7 +36,13 @@ import { flightForward } from "@angels-bandits/common/flight";
 import type { SpawnState } from "@angels-bandits/common/protocol";
 import { canonicalize, wrapDeltaAxis } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
-import { type BotShot, RoomBots, applyBotFire } from "../src/bots";
+import {
+  type BotShot,
+  RoomBots,
+  applyBotFire,
+  landBotRound,
+  roundMeets,
+} from "../src/bots";
 import { Combat } from "../src/combat";
 import { pickRespawn } from "../src/respawn";
 
@@ -272,8 +280,7 @@ describe("applyBotFire — bots use human combat rules", () => {
     let accepted = 0;
     for (let k = 0; k < 60; k++) {
       // Fire without a target so only the heat model is in play.
-      const { accepted: ok } = applyBotFire(combat, deadOn(k), null, k * 100);
-      if (ok) accepted++;
+      if (applyBotFire(combat, deadOn(k), k * 100)) accepted++;
     }
     expect(accepted).toBe(43);
   });
@@ -287,13 +294,9 @@ describe("applyBotFire — bots use human combat rules", () => {
     // whatever cadence the bots are actually simulated at.
     const attempts = Math.round(3000 / SNAPSHOT_INTERVAL_MS);
     for (let k = 0; k < attempts; k++) {
-      const { accepted: ok } = applyBotFire(
-        combat,
-        deadOn(k),
-        null,
-        k * SNAPSHOT_INTERVAL_MS,
-      );
-      if (ok) accepted++;
+      if (applyBotFire(combat, deadOn(k), k * SNAPSHOT_INTERVAL_MS)) {
+        accepted++;
+      }
     }
     expect(accepted).toBeLessThanOrEqual(35);
     expect(accepted).toBeGreaterThanOrEqual(30);
@@ -305,9 +308,13 @@ describe("applyBotFire — bots use human combat rules", () => {
     combat.addPlayer(BOT_ID, now);
     combat.addPlayer(TARGET, now); // protected for SPAWN_PROTECTION_MS
     expect(combat.isProtected(BOT_ID, now + 1)).toBe(true);
-    const result = applyBotFire(combat, deadOn(1), targetPos, now + 1);
-    expect(result.accepted).toBe(true);
-    expect(result.hit).toEqual({ ok: false, reason: "protected" });
+    expect(applyBotFire(combat, deadOn(1), now + 1)).toBe(true);
+    const hit = landBotRound(
+      combat,
+      { shot: deadOn(1), shooterPos: deadOn(1).origin, targetPos },
+      now + 1,
+    );
+    expect(hit).toEqual({ ok: false, reason: "protected" });
     expect(combat.hpOf(TARGET)).toBe(MAX_HP);
     // Firing forfeits the bot's own spawn protection (PLAN.md rule).
     expect(combat.isProtected(BOT_ID, now + 2)).toBe(false);
@@ -317,22 +324,31 @@ describe("applyBotFire — bots use human combat rules", () => {
     const combat = new Combat();
     combat.addPlayer(BOT_ID, 0);
     combat.addPlayer(TARGET, 0);
-    // A ray 20 m wide of the target: accepted fire, no hit.
-    const miss = applyBotFire(
-      combat,
-      { ...deadOn(0), origin: { x: 1020, y: 300, z: 1000 } },
-      targetPos,
-      10_000,
+    // A round flying 20 m wide of the target over its whole life: accepted
+    // fire, no hit — nothing to land.
+    const wide = { ...deadOn(0), origin: { x: 1020, y: 300, z: 1000 } };
+    const vel = { x: 0, y: 0, z: -BULLET_SPEED };
+    const life = BULLET_LIFETIME_S;
+    expect(applyBotFire(combat, wide, 10_000)).toBe(true);
+    expect(roundMeets(wide.origin, vel, 0, life, targetPos, targetPos)).toBe(
+      false,
     );
-    expect(miss.accepted).toBe(true);
-    expect(miss.hit).toBeNull();
     expect(combat.hpOf(TARGET)).toBe(MAX_HP);
 
     // 15 dead-on hits at 7 damage kill the 100 HP target (worked: ⌈100/7⌉).
     let death: unknown = null;
     for (let k = 1; k <= 15; k++) {
-      const r = applyBotFire(combat, deadOn(k), targetPos, 10_000 + k * 100);
-      if (r.hit?.ok && r.hit.death) death = r.hit.death;
+      const shot = deadOn(k);
+      if (!applyBotFire(combat, shot, 10_000 + k * 100)) continue;
+      if (!roundMeets(shot.origin, vel, 0, life, targetPos, targetPos)) {
+        continue;
+      }
+      const hit = landBotRound(
+        combat,
+        { shot, shooterPos: shot.origin, targetPos },
+        10_000 + k * 100,
+      );
+      if (hit.ok && hit.death) death = hit.death;
     }
     expect(death).toEqual({
       victimId: TARGET,
@@ -387,7 +403,8 @@ describe("applyBotFire — bots use human combat rules", () => {
     };
     const shotTimes: number[] = [];
     let acquiredAt: number | null = null;
-    for (let i = 1; i <= 15; i++) {
+    // Long enough to clear the first decision plus the reaction beat.
+    for (let i = 1; i <= 25; i++) {
       const now = i * SNAPSHOT_INTERVAL_MS;
       const self = bots.contactOf(entry.id);
       if (!self) throw new Error("bot vanished");
@@ -402,7 +419,7 @@ describe("applyBotFire — bots use human combat rules", () => {
     }
     if (acquiredAt === null) throw new Error("never acquired");
     expect(shotTimes.length).toBeGreaterThan(0);
-    // No trigger pull before the ~400 ms reaction beat after acquisition.
+    // No trigger pull before the BOT_REACTION_MS beat after acquisition.
     expect(Math.min(...shotTimes)).toBeGreaterThanOrEqual(
       acquiredAt + BOT_REACTION_MS,
     );
@@ -843,7 +860,7 @@ describe("line of sight gates acquisition", () => {
 
   it("still shoots while the sight line flickers — the reaction delay arms once", () => {
     // 0.4 s seen, 0.4 s hidden, repeatedly. A naive gate would drop and
-    // re-acquire on every flicker, re-arming BOT_REACTION_MS (400 ms) each
+    // re-acquire on every flicker, re-arming BOT_REACTION_MS each
     // time, and the bot would never get a shot off at all.
     const { shotTimes, acquiredAt } = fly(
       (i) => (Math.floor((i - 1) / 6) % 2 === 0 ? SEEN : HIDDEN),
@@ -903,18 +920,20 @@ describe("long-sim regressions", () => {
             ? [{ id: e.id, ...self, prot: combat.isProtected(e.id, now) }]
             : [];
         });
-        const { shots, crashes } = bots.tick(now, contacts);
+        const { shots, hits, crashes } = bots.tick(now, contacts);
         for (const id of crashes) {
           if (combat.crash(id, now)) crashed++;
         }
-        for (const s of shots) {
-          if (!combat.isAlive(s.botId)) continue;
-          const victim = bots.contactOf(s.targetId);
-          const { hit } = applyBotFire(combat, s, victim?.pos ?? null, now);
-          if (hit?.ok && hit.death) {
-            bots.setDead(s.targetId);
+        for (const round of hits) {
+          const hit = landBotRound(combat, round, now);
+          if (hit.ok && hit.death) {
+            bots.setDead(round.shot.targetId);
             shot++;
           }
+        }
+        for (const s of shots) {
+          if (!combat.isAlive(s.botId)) continue;
+          if (applyBotFire(combat, s, now)) bots.launch(s, now);
         }
         for (const e of roster) {
           const f = bots.flightOf(e.id);

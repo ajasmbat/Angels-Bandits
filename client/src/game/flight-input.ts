@@ -20,6 +20,9 @@ const PRESENCE_FADE_S = 0.25;
 /** The aim-mode key, hardcoded like FREELOOK_KEY (no keybinding UI yet). */
 export const AIM_MODE_KEY = "KeyM";
 const AIM_MODE_STORAGE = "ab-aim-mode";
+/** The avoidance-assist toggle (F4), hardcoded the same way. */
+export const ASSIST_KEY = "KeyN";
+const ASSIST_STORAGE = "ab-assist";
 
 export type AimMode = "instructor" | "classic";
 
@@ -34,6 +37,16 @@ function loadAimMode(target: Window): AimMode {
   }
 }
 
+/** Stored assist setting: ON unless explicitly turned off, or when storage
+ * is absent or throws. */
+function loadAssist(target: Window): boolean {
+  try {
+    return target.localStorage.getItem(ASSIST_STORAGE) !== "off";
+  } catch {
+    return true;
+  }
+}
+
 export class FlightInputSource {
   private rawX: number | null = null; // last clientX/Y, px (null = never moved)
   private rawY = 0;
@@ -42,6 +55,7 @@ export class FlightInputSource {
   private inside = true; // false once the cursor leaves the window
   private presenceK = 1; // steering presence 1 → 0 after leaving
   private aimModeV: AimMode;
+  private assistV: boolean;
   private lookDx = 0; // px of mouse motion since the last takeLookDelta
   private lookDy = 0;
   private aim = false; // right button held: the aim-zoom command (ANGE-G9CPCV)
@@ -49,6 +63,7 @@ export class FlightInputSource {
 
   constructor(private readonly target: Window = window) {
     this.aimModeV = loadAimMode(target);
+    this.assistV = loadAssist(target);
     target.addEventListener("mousemove", (e: MouseEvent) => {
       // Raw pixels — normalised per frame against the CURRENT window size in
       // tick(), so a resize can never leave a stale aim behind.
@@ -65,13 +80,25 @@ export class FlightInputSource {
       if (!e.relatedTarget) this.inside = false;
     });
     target.addEventListener("keydown", (e: KeyboardEvent) => {
-      if (e.code !== AIM_MODE_KEY || e.repeat) return;
-      // Typing a name with an M in it must not switch modes.
+      if ((e.code !== AIM_MODE_KEY && e.code !== ASSIST_KEY) || e.repeat) {
+        return;
+      }
+      // Typing a name with an M or N in it must not flip anything.
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
-      this.aimModeV = this.aimModeV === "instructor" ? "classic" : "instructor";
+      let key = AIM_MODE_STORAGE;
+      let value: string;
+      if (e.code === AIM_MODE_KEY) {
+        this.aimModeV =
+          this.aimModeV === "instructor" ? "classic" : "instructor";
+        value = this.aimModeV;
+      } else {
+        this.assistV = !this.assistV;
+        key = ASSIST_STORAGE;
+        value = this.assistV ? "on" : "off";
+      }
       try {
-        target.localStorage.setItem(AIM_MODE_STORAGE, this.aimModeV);
+        target.localStorage.setItem(key, value);
       } catch {
         // Private mode / blocked storage: the toggle still works this visit.
       }
@@ -122,6 +149,12 @@ export class FlightInputSource {
   /** Current aim mode (M toggles; persisted when storage allows). */
   aimMode(): AimMode {
     return this.aimModeV;
+  }
+
+  /** Whether the avoidance assist is on (N toggles; persisted when storage
+   * allows). The PULL UP warning shows either way. */
+  assistOn(): boolean {
+    return this.assistV;
   }
 
   /** Smoothed cursor in NDC (−1..1, +x right, +y UP) — the camera's convention. */

@@ -22,19 +22,22 @@ import {
 import {
   BLOCK_PITCH,
   BOT_SPAWN_GRACE_MS,
-  BULLET_RANGE,
   CITY_SEED,
   CLOUD_BASE,
-  HIT_RADIUS,
   PLAYER_RADIUS,
   RESPAWN_ALTITUDE,
   TICK_DOWN_HZ,
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
 import type { SpawnState } from "@angels-bandits/common/protocol";
-import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
+import type { Vec3 } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
-import { type BotContact, RoomBots, applyBotFire } from "../src/bots";
+import {
+  type BotContact,
+  RoomBots,
+  applyBotFire,
+  landBotRound,
+} from "../src/bots";
 import { Combat } from "../src/combat";
 import { pickBotRespawn } from "../src/respawn";
 
@@ -110,18 +113,6 @@ function human(now: number): BotContact {
     vel: { x: -70 * Math.sin(a), y: 0, z: 70 * Math.cos(a) },
     prot: false,
   };
-}
-
-/** Would this trigger pull hit a target at `target`? Same ray test as
- * applyBotFire — the human is scripted, so its hits are only counted. */
-function wouldHit(origin: Vec3, dir: Vec3, target: Vec3): boolean {
-  const d = wrapDelta(origin, target);
-  const along = d.x * dir.x + d.y * dir.y + d.z * dir.z;
-  if (along < 0 || along > BULLET_RANGE) return false;
-  const px = d.x - dir.x * along;
-  const py = d.y - dir.y * along;
-  const pz = d.z - dir.z * along;
-  return px * px + py * py + pz * pz <= HIT_RADIUS * HIT_RADIUS;
 }
 
 describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
@@ -229,18 +220,26 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
           const hit = wreck ? collideCity(wreck, PLAYER_RADIUS, city) : null;
           if (hit) roofsHit.push(hit.height);
         }
+        for (const round of result.hits) {
+          if (round.shot.targetId === hi.id) {
+            humanHits++;
+            continue;
+          }
+          const hit = landBotRound(combat, round, now);
+          if (hit.ok && hit.death) {
+            bots.setDead(round.shot.targetId);
+            kills++;
+          }
+        }
         for (const s of result.shots) {
+          // The human is scripted: its rounds fly (and are counted when they
+          // land) without going through Combat.
           if (s.targetId === hi.id) {
-            if (wouldHit(s.origin, s.dir, hi.pos)) humanHits++;
+            bots.launch(s, now);
             continue;
           }
           if (!combat.isAlive(s.botId)) continue;
-          const victim = bots.contactOf(s.targetId);
-          const { hit } = applyBotFire(combat, s, victim?.pos ?? null, now);
-          if (hit?.ok && hit.death) {
-            bots.setDead(s.targetId);
-            kills++;
-          }
+          if (applyBotFire(combat, s, now)) bots.launch(s, now);
         }
 
         for (const e of roster) {

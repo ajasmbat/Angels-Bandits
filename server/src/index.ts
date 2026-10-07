@@ -46,8 +46,14 @@ import type {
 } from "@angels-bandits/common/protocol";
 import type { Vec3 } from "@angels-bandits/common/world";
 import { type WebSocket, WebSocketServer } from "ws";
-import { type BotContact, RoomBots, applyBotFire, poseVelocity } from "./bots";
-import { Combat, type SpeedCapFn } from "./combat";
+import {
+  type BotContact,
+  RoomBots,
+  applyBotFire,
+  landBotRound,
+  poseVelocity,
+} from "./bots";
+import { Combat, type HitResult, type SpeedCapFn } from "./combat";
 import { pickBotRespawn, pickRespawn } from "./respawn";
 import { type Room, RoomManager } from "./room";
 import { createStaticHandler } from "./statics";
@@ -460,7 +466,8 @@ function issueRespawns(due: string[], now: number): void {
 }
 
 /** One bot sim step for a room: build the coherent contact list, advance the
- * pilots, settle crashes, and route trigger pulls through Combat — reusing
+ * pilots, settle crashes, land the rounds that met their targets, and route
+ * trigger pulls through Combat (accepted ones fly as rounds) — reusing
  * the same broadcasts human fire produces. */
 function tickRoomBots(room: Room, now: number): void {
   const bots = botsFor(room);
@@ -478,7 +485,7 @@ function tickRoomBots(room: Room, now: number): void {
     });
   }
 
-  const { shots, crashes } = bots.tick(now, contacts);
+  const { shots, hits, crashes } = bots.tick(now, contacts);
 
   for (const id of crashes) {
     const death = combat.crash(id, now);
@@ -492,40 +499,51 @@ function tickRoomBots(room: Room, now: number): void {
     broadcastScores(room);
   }
 
+  // Rounds that landed this tick first (they were swept before anyone
+  // moved), then this tick's fresh trigger pulls go into the air.
+  for (const round of hits) {
+    routeBotHit(room, bots, landBotRound(combat, round, now), round.shot, now);
+  }
+
   for (const shot of shots) {
     if (!combat.isAlive(shot.botId)) continue;
-    const targetPose = memberPose(room, shot.targetId);
-    const { accepted, hit } = applyBotFire(
-      combat,
-      shot,
-      targetPose?.pos ?? null,
-      now,
-    );
-    if (!accepted) continue;
+    if (!applyBotFire(combat, shot, now)) continue;
+    bots.launch(shot, now);
     // Same cosmetic path as human fire: everyone renders the tracer.
     sendToRoom(room, { type: "fired", id: shot.botId });
-    if (!hit?.ok) continue;
-    sendToRoom(room, {
-      type: "damage",
-      targetId: shot.targetId,
-      shooterId: shot.botId,
-      hp: hit.hp,
-    });
+  }
+}
+
+/** Broadcast one settled bot hit: damage, the victim bot's evade, and a
+ * kill's death + scores — the human hit path's messages, unchanged. */
+function routeBotHit(
+  room: Room,
+  bots: RoomBots,
+  hit: HitResult,
+  shot: { botId: string; targetId: string },
+  now: number,
+): void {
+  if (!hit.ok) return;
+  sendToRoom(room, {
+    type: "damage",
+    targetId: shot.targetId,
+    shooterId: shot.botId,
+    hp: hit.hp,
+  });
+  if (room.members.get(shot.targetId)?.isBot) {
+    bots.onDamaged(shot.targetId, now);
+  }
+  if (hit.death) {
     if (room.members.get(shot.targetId)?.isBot) {
-      bots.onDamaged(shot.targetId, now);
+      bots.setDead(shot.targetId);
     }
-    if (hit.death) {
-      if (room.members.get(shot.targetId)?.isBot) {
-        bots.setDead(shot.targetId);
-      }
-      sendToRoom(room, {
-        type: "death",
-        victimId: hit.death.victimId,
-        killerId: hit.death.killerId,
-        cause: hit.death.cause,
-      });
-      broadcastScores(room);
-    }
+    sendToRoom(room, {
+      type: "death",
+      victimId: hit.death.victimId,
+      killerId: hit.death.killerId,
+      cause: hit.death.cause,
+    });
+    broadcastScores(room);
   }
 }
 

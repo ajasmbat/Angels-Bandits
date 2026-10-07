@@ -56,7 +56,7 @@ describe("fire validation (cadence + heat)", () => {
 
   it("firing cancels spawn protection the instant it happens", () => {
     const combat = arena(1);
-    // Added at t=0 → protected until 4000 (SPAWN_PROTECTION_MS).
+    // Added at t=0 → protected until 5500 (SPAWN_PROTECTION_MS).
     expect(combat.isProtected("p0", 1000)).toBe(true);
     const res = combat.fire("p0", 0, 1000);
     expect(res.ok && res.protectionCanceled).toBe(true);
@@ -66,7 +66,7 @@ describe("fire validation (cadence + heat)", () => {
   it("rejects fire from a dead player", () => {
     const combat = arena(2);
     // p1 shoots p0 dead: 15 hits × 7 = 105 ≥ 100 HP.
-    const t = 10_000; // everyone's spawn protection (4 s) long expired
+    const t = 10_000; // everyone's spawn protection (5.5 s) long expired
     const at = { x: 100, y: 300, z: 100 };
     for (let i = 0; i < 15; i++) {
       combat.fire("p1", i, t + i * 100);
@@ -155,13 +155,13 @@ describe("hit claim validation", () => {
 
   it("rejects hits on a spawn-protected target until protection expires", () => {
     const combat = arena(2);
-    // p1 added at t=0 → protected until 4000.
+    // p1 added at t=0 → protected until 5500.
     combat.fire("p0", 0, 3000);
     const early = combat.hit("p0", "p1", 0, P, P, P, 3000);
     expect(!early.ok && early.reason).toBe("protected");
 
-    combat.fire("p0", 1, 4200);
-    expect(combat.hit("p0", "p1", 1, P, P, P, 4200).ok).toBe(true);
+    combat.fire("p0", 1, 5700);
+    expect(combat.hit("p0", "p1", 1, P, P, P, 5700).ok).toBe(true);
   });
 });
 
@@ -214,19 +214,19 @@ describe("damage, death, and kill credit", () => {
 });
 
 describe("regen, respawn scheduling, and score persistence", () => {
-  it("regens +10 HP/s starting 8 s after the last damage, capped at MAX_HP", () => {
+  it("regens +10 HP/s starting 5 s after the last damage, capped at MAX_HP", () => {
     const combat = arena(2);
     // Two hits: 100 − 14 = 86 HP, last damage at T+100.
     shoot(combat, "p0", "p1", 0, T);
     shoot(combat, "p0", "p1", 1, T + 100);
     combat.tick(T + 5000);
-    expect(combat.hpOf("p1")).toBe(86); // still inside the 8 s delay
+    expect(combat.hpOf("p1")).toBe(86); // still inside the 5 s delay
 
-    // Regen window opens at T+8100; one second of it → 86 + 10 = 96.
-    combat.tick(T + 9100);
+    // Regen window opens at T+5100; one second of it → 86 + 10 = 96.
+    combat.tick(T + 6100);
     expect(combat.hpOf("p1")).toBe(96);
     // Two more seconds would be 116 — capped at 100.
-    combat.tick(T + 11_100);
+    combat.tick(T + 8100);
     expect(combat.hpOf("p1")).toBe(100);
   });
 

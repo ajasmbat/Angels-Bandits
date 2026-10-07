@@ -77,8 +77,8 @@ describe("StormCeiling grace timer", () => {
 // DAMAGE_MEMORY_MS (8000 ms per constants.ts), else the environment (⚡).
 describe("Combat.stormKill credit", () => {
   const at = { x: 0, y: 700, z: 0 };
-  /** Two players at t=0; p0 lands one validated hit on p1 at `now` (5000 is
-   * past the 4000 ms spawn protection). */
+  /** Two players at t=0; p0 lands one validated hit on p1 at `now` (6000 is
+   * past the 5500 ms spawn protection). */
   const damagedArena = (now: number): Combat => {
     const combat = new Combat();
     combat.addPlayer("p0", 0);
@@ -89,16 +89,16 @@ describe("Combat.stormKill credit", () => {
   };
 
   it("credits a damager from the last 8 s, cause storm", () => {
-    const combat = damagedArena(5000);
-    const death = combat.stormKill("p1", 12_999); // 7 999 ms after the hit
+    const combat = damagedArena(6000);
+    const death = combat.stormKill("p1", 13_999); // 7 999 ms after the hit
     expect(death).toEqual({ victimId: "p1", killerId: "p0", cause: "storm" });
     expect(combat.scoreOf("p0")).toEqual({ id: "p0", kills: 1, deaths: 0 });
     expect(combat.scoreOf("p1")).toEqual({ id: "p1", kills: 0, deaths: 1 });
   });
 
   it("blames the environment when the damage is older than 8 s", () => {
-    const combat = damagedArena(5000);
-    const death = combat.stormKill("p1", 13_100); // 8 100 ms after the hit
+    const combat = damagedArena(6000);
+    const death = combat.stormKill("p1", 14_100); // 8 100 ms after the hit
     expect(death).toEqual({ victimId: "p1", killerId: null, cause: "storm" });
     expect(combat.scoreOf("p0").kills).toBe(0);
   });

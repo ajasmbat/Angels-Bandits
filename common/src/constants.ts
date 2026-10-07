@@ -471,14 +471,16 @@ export const FIRE_BURST_SLACK = 5;
 export const HEAT_VALIDATION_SLACK = 0.1;
 
 // --- Death, respawn, regen (all server-owned) ---
-/** Invulnerability after (re)spawn, ms — canceled the instant that player fires. */
-export const SPAWN_PROTECTION_MS = 4000;
+/** Invulnerability after (re)spawn, ms — canceled the instant that player fires.
+ * 5.5 s since F4 (was 4): a fresh pilot gets a beat to find their bearings. */
+export const SPAWN_PROTECTION_MS = 5500;
 /** Kill-cam beat between death and the server-issued respawn, ms. */
 export const KILL_CAM_MS = 2500;
 /** Crash within this of last taking damage credits the damager, ms. */
 export const DAMAGE_MEMORY_MS = 8000;
-/** No damage for this long starts health regen, ms. */
-export const REGEN_DELAY_MS = 8000;
+/** No damage for this long starts health regen, ms. 5 s since F4 (was 8):
+ * a pilot who breaks off gets back into the fight sooner. */
+export const REGEN_DELAY_MS = 5000;
 /** Regen rate once it starts, HP per second (MAX_HP / 10). */
 export const REGEN_RATE = MAX_HP / 10;
 /** Random points sampled when picking a farthest-from-enemies respawn. */
@@ -520,9 +522,11 @@ export const BOT_FIRE_RANGE = 300;
 export const BOT_FIRE_CONE = 0.14;
 /** Seeded aim error: the pursuit aim point wanders by up to this half-angle
  * each brain decision, rad — the "beatable, not aimbot" miss source. */
-export const BOT_AIM_JITTER = 0.05;
-/** Reaction delay before the first shot at a freshly acquired target, ms. */
-export const BOT_REACTION_MS = 400;
+export const BOT_AIM_JITTER = 0.07;
+/** Reaction delay before the first shot at a freshly acquired target, ms.
+ * F4 fairness pass: 650 (was 400), jitter 0.07 (was 0.05) — and bot rounds
+ * now have bullet travel time instead of hitscan (bots.ts). */
+export const BOT_REACTION_MS = 650;
 /** Bot steering-input cap (players reach 1.0): bots turn slightly worse. */
 export const BOT_INPUT_CAP = 0.85;
 /** Brain decision cadence: every Nth sim tick (20 Hz / 4 = 5 Hz). Tracks

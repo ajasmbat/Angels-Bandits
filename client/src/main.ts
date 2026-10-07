@@ -134,6 +134,7 @@ import {
   stepResolution,
 } from "./render/resolution";
 import { RoofClutterRenderer } from "./render/roofclutter";
+import { RooftopLifeRenderer } from "./render/rooftop-life";
 import { Searchlights } from "./render/searchlights";
 import { Signage } from "./render/signage";
 import { Signals } from "./render/signals";
@@ -344,6 +345,10 @@ scene.add(city.mesh);
 // Roof clutter + landmark beacons dress the same shared Building[] (V2).
 const roofClutter = new RoofClutterRenderer(city.cityBuildings);
 scene.add(roofClutter.group);
+// L8 rooftop life (ANGE-972BJX): parties, pools, fans, flags, aviation
+// lights — two static draws placed and animated on the GPU from one uniform.
+const rooftopLife = new RooftopLifeRenderer(city.cityBuildings);
+scene.add(rooftopLife.group);
 // Parapet caps + entrance canopies dress the same shared Building[] (ANGE-XY8LH8).
 const facadeGarnish = new FacadeGarnishRenderer(city.cityBuildings);
 scene.add(facadeGarnish.group);
@@ -984,6 +989,7 @@ declare global {
         buildings: number;
         tierInstances: number;
         clutterInstances: number;
+        rooftopLife: RooftopLifeRenderer["counts"];
         garnishInstances: number;
         rigInstances: number;
         moverLights: number;
@@ -1025,6 +1031,8 @@ declare global {
       /** Perf A/B: false takes the same early return as an above-gate camera,
        * so it skips the CPU work and not merely the draw call. */
       setMicro: (on: boolean) => void;
+      /** L8 perf A/B: hide/show the rooftop-life group (its 2 draw calls). */
+      setRooftopLife: (on: boolean) => void;
       garnishImage: (x: number, z: number) => { x: number; z: number } | null;
       radio: () => {
         voiceOn: boolean;
@@ -1184,6 +1192,7 @@ window.__ab = {
     buildings: city.cityBuildings.length,
     tierInstances: city.tierInstanceCount,
     clutterInstances: roofClutter.instanceCount,
+    rooftopLife: rooftopLife.counts,
     garnishInstances: facadeGarnish.instanceCount,
     detailInstances: facadeDetail.instanceCount,
     rigInstances: movers.rigInstances,
@@ -1234,6 +1243,9 @@ window.__ab = {
   microImage: (i) => pedestrians.imageOf(i),
   setMicro: (on) => {
     microOn = on;
+  },
+  setRooftopLife: (on) => {
+    rooftopLife.group.visible = on;
   },
   // ANGE-XY8LH8 seam QA: drawn position of the parapet nearest (x, z).
   garnishImage: (x, z) => facadeGarnish.imageOf(x, z),
@@ -1620,6 +1632,8 @@ renderer.setAnimationLoop((now) => {
   city.update(chase.position);
   // Beacons pulse on server-synced time so every client is in phase.
   roofClutter.update(chase.position, renderMs ?? now);
+  // L8: rooftop life animates on the same synced clock (local before sync).
+  rooftopLife.update(renderMs ?? now);
   facadeGarnish.update(chase.position);
   facadeDetail.update(chase.position, microOn); // L13: re-streams on block change only
   streetlights.update(chase.position);

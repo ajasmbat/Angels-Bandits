@@ -19,6 +19,7 @@ import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { emissiveBoost } from "./emissive";
+import { RENDER_ORDER } from "./render-order";
 import { DUSK, FOG_NEAR } from "./sky";
 import { nearestImage } from "./wrapPlacement";
 
@@ -538,6 +539,7 @@ export class CloudDeck {
     );
     this.puffs.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.puffs.frustumCulled = false;
+    this.puffs.renderOrder = RENDER_ORDER.cloudPuffs;
     // The dark underside: one camera-following sheet just below the band.
     this.ceiling = new THREE.Mesh(
       new THREE.PlaneGeometry(2 * FOG_DISTANCE + 200, 2 * FOG_DISTANCE + 200),
@@ -575,6 +577,11 @@ export class CloudDeck {
     }
     this.puffs.instanceMatrix.needsUpdate = true;
     this.ceiling.position.set(viewer.x, CEILING_Y, viewer.z);
+    // In front of the puffs from below, behind them from above (O1).
+    this.ceiling.renderOrder =
+      viewer.y < CEILING_Y
+        ? RENDER_ORDER.cloudCeilingBelow
+        : RENDER_ORDER.cloudCeilingAbove;
   }
 }
 

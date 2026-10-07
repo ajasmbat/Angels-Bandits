@@ -15,6 +15,7 @@ import { mulberry32 } from "@angels-bandits/common/city";
 import { WORLD_SIZE } from "@angels-bandits/common/constants";
 import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { RENDER_ORDER } from "./render-order";
 import { nearestImage } from "./wrapPlacement";
 
 /** Flocks in the world, and birds per flock: 6 x 24 = 144 points. */
@@ -141,6 +142,7 @@ export class Birds {
       }),
     );
     this.points.frustumCulled = false;
+    this.points.renderOrder = RENDER_ORDER.birds;
     this.points.visible = false;
   }
 

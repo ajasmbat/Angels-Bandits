@@ -11,6 +11,7 @@
 import { MAX_HP, SMOKE_HP_FRAC } from "@angels-bandits/common/constants";
 import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { RENDER_ORDER } from "./render-order";
 import { nearestImage } from "./wrapPlacement";
 
 /** Min ms between puffs per plane (~14 Hz at a steady wound). */
@@ -138,6 +139,7 @@ export class SmokeTrails {
     material.customProgramCacheKey = () => "smoke-asize";
     this.points = new THREE.Points(geometry, material);
     this.points.frustumCulled = false;
+    this.points.renderOrder = RENDER_ORDER.smoke;
   }
 
   /** Per-frame per-plane: advance/emit that plane's trail (torus anchor). */

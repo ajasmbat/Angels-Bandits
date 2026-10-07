@@ -178,10 +178,14 @@ const scene = new THREE.Scene();
 installHeightFog();
 setupSky(scene);
 
+// O1: near 1 m, not 0.1 m — depth precision scales with near/far, so this
+// is 10x the precision at range (no z-fighting of ground details from
+// altitude). Nothing is ever drawn closer: the chase camera sits >= 6 m
+// (ZOOM_DISTANCE) behind the plane.
 const camera = new THREE.PerspectiveCamera(
   BASE_FOV,
   window.innerWidth / window.innerHeight,
-  0.1,
+  1.0,
   FOG_DISTANCE + 100,
 );
 

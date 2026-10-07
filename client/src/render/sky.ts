@@ -41,6 +41,8 @@ import {
 } from "@angels-bandits/common/constants";
 import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { AB_AA_GLSL } from "./aa-glsl";
+import { RENDER_ORDER } from "./render-order";
 import { SIGN_PALETTE } from "./signage";
 import { LAMP_STATIONS_MINUS, LAMP_STATIONS_PLUS } from "./streetlights";
 
@@ -281,7 +283,7 @@ function starField(seed: number): THREE.Points {
       fog: false,
     }),
   );
-  points.renderOrder = -1;
+  points.renderOrder = RENDER_ORDER.sky;
   points.frustumCulled = false;
   return points;
 }
@@ -302,7 +304,7 @@ export class SkyDome {
       new THREE.SphereGeometry(FOG_DISTANCE + 60, 24, 16),
       material,
     );
-    this.mesh.renderOrder = -1; // always the backdrop
+    this.mesh.renderOrder = RENDER_ORDER.sky; // always the backdrop
     // Stars ride the dome: same centre, hidden with it inside the cloud deck.
     this.mesh.add(starField(0x57a2f1e1));
   }
@@ -468,7 +470,7 @@ vWorldXZ = uGroundOrigin + vec2(position.x, -position.y);
 
 const GROUND_FRAGMENT_PARS = /* glsl */ `
 varying vec2 vWorldXZ;
-float abHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+${AB_AA_GLSL}float abHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 float abNoise(vec2 p) {
   vec2 i = floor(p);
   vec2 f = fract(p);
@@ -526,10 +528,10 @@ int abBlockKind(vec2 w) {
 }
 // A night park, l = metres from the block centre. Returns albedo; adds the
 // lamp pools and the lit pond rim to em; marks open water in water.
-vec3 abParkPaint(vec2 l, float n, inout vec3 em, inout float water) {
+vec3 abParkPaint(vec2 l, float n, float aa, inout vec3 em, inout float water) {
   float r = length(l);
-  // Mown lawn: 8 m stripes and a soft mottle.
-  float stripe = step(0.5, fract(l.x / 8.0));
+  // Mown lawn: 8 m stripes (the back half of each period) and a soft mottle.
+  float stripe = mix(0.5, abLine(abPeriodic(l.x, 6.0, 8.0), 2.0, aa), abDetail(8.0, aa));
   vec3 c = ${GROUND_COLORS.lawn} * (1.0 + (n - 0.5) * 0.45) * (0.92 + 0.16 * stripe);
   // A low hedge line where the lawn meets the pavement.
   if (max(abs(l.x), abs(l.y)) > ${N.lawnHalf} - 1.2) c = ${GROUND_COLORS.hedge};
@@ -566,13 +568,16 @@ vec3 abPondNeon(vec2 l, vec2 w) {
   return AB_NEON[hue] * present * band * ripple * 0.4;
 }
 // A landmark forecourt: granite slabs, lawn panels each side of the entrance.
-vec3 abForecourtPaint(vec2 l, float n) {
+vec3 abForecourtPaint(vec2 l, float n, float aa) {
   vec2 a = abs(l);
   float off = max(a.x, a.y);
   float along = min(a.x, a.y);
   vec3 c = ${GROUND_COLORS.paving} * (1.0 + (n - 0.5) * 0.25);
-  vec2 j = mod(l, 6.0);
-  c = mix(c, ${GROUND_COLORS.slabJoint}, max(step(j.x, 0.12), step(j.y, 0.12)));
+  // Slab joints: 0.12 m lines every 6 m, resolving to their 2 % share.
+  float jd = abDetail(6.0, aa);
+  float jx = mix(0.02, abLine(abPeriodic(l.x, 0.06, 6.0), 0.06, aa), jd);
+  float jy = mix(0.02, abLine(abPeriodic(l.y, 0.06, 6.0), 0.06, aa), jd);
+  c = mix(c, ${GROUND_COLORS.slabJoint}, max(jx, jy));
   if (off > ${N.lawnIn} && off < ${N.lawnOut} && along > ${N.gate} && along < ${N.lawnOut}) {
     c = ${GROUND_COLORS.lawn} * (1.0 + (n - 0.5) * 0.4);
   }
@@ -587,6 +592,10 @@ vec3 abSitePaint(vec2 w, float n) {
 `;
 
 const GROUND_FRAGMENT_MAIN = /* glsl */ `
+// O1: ground meters per pixel, taken HERE at the top level — every marking
+// below sits inside a branch, where derivatives are undefined.
+vec2 abPx = fwidth(vWorldXZ);
+float abAA = max(abPx.x, abPx.y);
 float abDx = abLineDist(vWorldXZ.x);
 float abDz = abLineDist(vWorldXZ.y);
 float abAdx = abs(abDx);
@@ -606,7 +615,9 @@ if (abRoad > 0.5) {
   abPud = smoothstep(0.5, 0.68, abNoise(vWorldXZ * 0.085 + 13.0));
   abWet = 0.45 + 0.55 * abPud;
   // Wear mask: markings survive where it passes (light wear on the wet look).
-  float abWear = step(0.18, abNoise(vWorldXZ * 0.77 + 40.0));
+  // Value noise at 0.77/m: its gradient is ~1.2 per metre, and ~93 % of it
+  // lies above the threshold — what the mask resolves to once sub-pixel.
+  float abWear = mix(0.93, abEdge(0.18, abNoise(vWorldXZ * 0.77 + 40.0), abAA * 1.2), abDetail(1.3, abAA));
   if (abRoadX * abRoadZ < 0.5) { // outside the intersection core
     float abAlong = abRoadX > 0.5 ? vWorldXZ.y : vWorldXZ.x;
     float abCross = abRoadX > 0.5 ? abDx : abDz;
@@ -614,17 +625,20 @@ if (abRoad > 0.5) {
     float abOther = abRoadX > 0.5 ? abAdz : abAdx;
     if (abOther <= ${G.xwalkOut}) {
       // Crosswalk zebra on this approach: stripes repeat across the roadway.
-      float abS = mod(abRoadX > 0.5 ? vWorldXZ.x : vWorldXZ.y, 1.7);
-      float abZebra = step(abS, 0.95) * (1.0 - step(${G.road} - 0.6, abAcr)) * abWear;
+      // Stripes 0.95 m wide every 1.7 m, resolving to their 56 % duty cycle.
+      float abS = abPeriodic(abRoadX > 0.5 ? vWorldXZ.x : vWorldXZ.y, 0.475, 1.7);
+      float abStripe = mix(0.56, abLine(abS, 0.475, abAA), abDetail(1.7, abAA));
+      float abZebra = abStripe * (1.0 - abEdge(${G.road} - 0.6, abAcr, abAA)) * abWear;
       abPaint = mix(abPaint, ${GROUND_COLORS.zebra}, abZebra * 0.9);
       abEmissive += ${GROUND_COLORS.zebra} * abZebra * ${MARKING_GLOW};
     } else {
       // Dashed center line (3 m on / 3 m off) + solid lane-edge lines.
-      float abDash = (1.0 - step(0.18, abAcr)) * (1.0 - step(3.0, mod(abAlong, 6.0))) * abWear;
-      float abEdge = step(${G.edgeIn}, abAcr) * (1.0 - step(${G.edgeOut}, abAcr)) * abWear;
+      float abDashOn = mix(0.5, abLine(abPeriodic(abAlong, 1.5, 6.0), 1.5, abAA), abDetail(6.0, abAA));
+      float abDash = abLine(abAcr, 0.18, abAA) * abDashOn * abWear;
+      float abEdgeLine = abLine(abs(abAcr - (${G.edgeIn} + ${G.edgeOut}) * 0.5), (${G.edgeOut} - ${G.edgeIn}) * 0.5, abAA) * abWear;
       abPaint = mix(abPaint, ${GROUND_COLORS.marking}, abDash * 0.95);
-      abPaint = mix(abPaint, ${GROUND_COLORS.edge}, abEdge * 0.85);
-      abEmissive += (${GROUND_COLORS.marking} * abDash + ${GROUND_COLORS.edge} * abEdge * 0.6) * ${MARKING_GLOW};
+      abPaint = mix(abPaint, ${GROUND_COLORS.edge}, abEdgeLine * 0.85);
+      abEmissive += (${GROUND_COLORS.marking} * abDash + ${GROUND_COLORS.edge} * abEdgeLine * 0.6) * ${MARKING_GLOW};
     }
     // Wet sheen: lamp glow smeared into a warm streak under each lamp.
     float abStr =
@@ -632,9 +646,9 @@ if (abRoad > 0.5) {
       abStreak(abStationDist(abAlong, ${G.stationsMinus}), abCross + ${G.streakCross});
     abEmissive += ${GROUND_COLORS.lampWarm} * abStr * ${STREAK_GLOW};
     // Neon sign spill along both curbs (side = which curb).
-    float abLine = floor((abRoadX > 0.5 ? vWorldXZ.x : vWorldXZ.y) / ${G.pitch} + 0.5);
+    float abStreetLine = floor((abRoadX > 0.5 ? vWorldXZ.x : vWorldXZ.y) / ${G.pitch} + 0.5);
     float abSide = step(0.0, abCross);
-    abNeon = abNeonSpill(abLine, abAlong, abSide, abAcr - ${G.neonCross});
+    abNeon = abNeonSpill(abStreetLine, abAlong, abSide, abAcr - ${G.neonCross});
   }
   // Standing water darkens everything under it, paint included.
   abPaint *= mix(1.0, ${PUDDLE_DARKEN}, abPud);
@@ -644,13 +658,15 @@ if (abRoad > 0.5) {
   if (max(abWalkX, abWalkZ) > 0.5) {
     // Sidewalk concrete with expansion joints every 5 m and a curb stone.
     abPaint = ${GROUND_COLORS.sidewalk} * (1.0 + (abNoiseV - 0.5) * 0.3);
+    // Joints: 0.15 m lines every 5 m, resolving to their 3 % share.
+    float abJd = abDetail(5.0, abAA);
     float abJoint = max(
-      abWalkX * step(mod(vWorldXZ.y, 5.0), 0.15),
-      abWalkZ * step(mod(vWorldXZ.x, 5.0), 0.15));
+      abWalkX * mix(0.03, abLine(abPeriodic(vWorldXZ.y, 0.075, 5.0), 0.075, abAA), abJd),
+      abWalkZ * mix(0.03, abLine(abPeriodic(vWorldXZ.x, 0.075, 5.0), 0.075, abAA), abJd));
     abPaint = mix(abPaint, ${GROUND_COLORS.seam}, abJoint);
     float abCurb = max(
-      abWalkX * (1.0 - step(${G.curb} + 0.5, abAdx)),
-      abWalkZ * (1.0 - step(${G.curb} + 0.5, abAdz)));
+      abWalkX * (1.0 - abEdge(${G.curb} + 0.5, abAdx, abAA)),
+      abWalkZ * (1.0 - abEdge(${G.curb} + 0.5, abAdz, abAA)));
     abPaint = mix(abPaint, ${GROUND_COLORS.curb}, abCurb);
   } else {
     abPaint = ${GROUND_COLORS.interior}; // block interiors: darkest
@@ -658,7 +674,7 @@ if (abRoad > 0.5) {
     int abKind = abBlockKind(vWorldXZ);
     vec2 abLocal = mod(vWorldXZ, ${G.pitch}) - ${G.pitch} * 0.5;
     if (abKind == ${N.park}) {
-      abPaint = abParkPaint(abLocal, abNoiseV, abEmissive, abWater);
+      abPaint = abParkPaint(abLocal, abNoiseV, abAA, abEmissive, abWater);
       if (abWater > 0.5) {
         // Open water: the wet look's sky sheen at full wetness, plus the
         // streetwall's neon smeared across the surface.
@@ -666,7 +682,7 @@ if (abRoad > 0.5) {
         abNeon = abPondNeon(abLocal, vWorldXZ);
       }
     } else if (abKind == ${N.forecourt}) {
-      abPaint = abForecourtPaint(abLocal, abNoiseV);
+      abPaint = abForecourtPaint(abLocal, abNoiseV, abAA);
     } else if (abKind == ${N.site}) {
       abPaint = abSitePaint(vWorldXZ, abNoiseV);
     }
@@ -674,6 +690,13 @@ if (abRoad > 0.5) {
 }
 diffuseColor.rgb = abPaint;
 `;
+
+/** The ground patch sources, for tests that assert on the shader without a
+ * GPU (the AA contract: every marking filtered, derivatives at top level). */
+export const GROUND_SHADER_SOURCE = {
+  fragmentPars: GROUND_FRAGMENT_PARS,
+  fragmentMain: GROUND_FRAGMENT_MAIN,
+} as const;
 
 export class GroundPlane {
   readonly mesh: THREE.Mesh;

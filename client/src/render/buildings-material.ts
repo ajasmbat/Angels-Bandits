@@ -184,10 +184,13 @@ const FRAGMENT_COLOR =
  * level. Facades only. */
 const SHOP_BAND_GLSL = /* glsl */ `
 float shopBand = (1.0 - step(${SHOP_BAND_HEIGHT}, vWorldY)) * facade;
-float shopF = fract(winGrid.x / ${SHOP_PITCH});
 float shopH = fract(sin((floor(winGrid.x / ${SHOP_PITCH}) + vBSeed * 47.0) * 12.9898) * 43758.5453);
-// Tall glass from 0.5 m to 3.4 m with thin mullions between shopfronts.
-float glass = step(0.06, shopF) * step(shopF, 0.94)
+// Tall glass from 0.5 m to 3.4 m with thin mullions between shopfronts —
+// filtered (O1), so from altitude the mullions fade to their 12 % share.
+float shopMullion = mix(0.12,
+  abLine(abPeriodic(winGrid.x, 0.0, ${SHOP_PITCH}), 0.06 * ${SHOP_PITCH}, wAA.x),
+  abDetail(${SHOP_PITCH}, wAA.x));
+float glass = (1.0 - shopMullion)
             * step(0.5, vWorldY) * (1.0 - step(3.4, vWorldY));
 float shopLit = step(0.12, shopH); // nearly every storefront glows
 vec3 shopColor = mix(vec3(1.0, 0.62, 0.26), vec3(0.45, 0.8, 0.95), step(0.85, shopH));

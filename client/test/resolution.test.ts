@@ -4,10 +4,10 @@
 // and no window of frames can talk it into oscillating.
 //
 // Expected values are hand-worked from the spec (floor 0.75, ceiling 2, miss
-// at 1.5x the 16.67 ms budget, step down 0.85 then 0.95, step up 1.06, cap
-// every climb at 0.9x the ratio we retreated from, and relax that cap one
-// notch after 60 s of unbroken clean frames) — never recomputed the way the
-// implementation does it.
+// at 1.5x the 16.67 ms budget, one rung of the 2/1.75/1.5/1.25/1/0.75 ladder
+// per step, cap every climb at 0.9x the ratio we retreated from, and relax
+// that cap one rung after 60 s of unbroken clean frames) — never recomputed
+// the way the implementation does it.
 
 import { describe, expect, it } from "vitest";
 import {
@@ -26,6 +26,7 @@ import {
   createResolution,
   defaultLimits,
   missShare,
+  resolutionRungs,
   stepResolution,
 } from "../src/render/resolution";
 
@@ -171,16 +172,16 @@ describe("stepResolution — evidence requirements", () => {
 });
 
 describe("stepResolution — backing off", () => {
-  it("takes a decisive first step down and latches the ratio it left", () => {
+  it("steps down one rung and latches the ratio it left", () => {
     const next = stepResolution(at(2), window_(SLOW), 10_000, LIMITS);
-    expect(next.ratio).toBeCloseTo(1.7, 5); // 2 x 0.85
+    expect(next.ratio).toBe(1.75);
     expect(next.hotRatio).toBe(2);
     expect(next.changedAt).toBe(10_000);
   });
 
-  it("nudges (not lurches) once a hot ratio is known — no visible pump", () => {
-    const next = stepResolution(at(1.7, 0, 2), window_(SLOW), 10_000, LIMITS);
-    expect(next.ratio).toBeCloseTo(1.615, 5); // 1.7 x 0.95, not x 0.85
+  it("steps one rung at a time once a hot ratio is known — no lurch", () => {
+    const next = stepResolution(at(1.75, 0, 2), window_(SLOW), 10_000, LIMITS);
+    expect(next.ratio).toBe(1.5);
   });
 
   it("respects the down cooldown", () => {
@@ -216,9 +217,9 @@ describe("stepResolution — backing off", () => {
 });
 
 describe("stepResolution — climbing back", () => {
-  it("climbs on a completely clean window", () => {
+  it("climbs one rung on a completely clean window", () => {
     const next = stepResolution(at(1), window_(FAST), 10_000, LIMITS);
-    expect(next.ratio).toBeCloseTo(1.06, 5);
+    expect(next.ratio).toBe(1.25);
   });
 
   it("respects the up cooldown, which is far longer than the down one", () => {
@@ -229,8 +230,8 @@ describe("stepResolution — climbing back", () => {
   });
 
   it("never exceeds the ceiling, and stops dead once it is there", () => {
-    // The up cooldown is 4 s and evaluations are 1 s apart, so a climb only
-    // lands every 4th tick — 80 ticks is ~20 climbs for the 12 it needs.
+    // The up cooldown is 6 s and evaluations are 1 s apart, so a climb only
+    // lands every 6th tick — 80 ticks is ~13 climbs for the 4 rungs it needs.
     const trace = simulate(at(1), () => FAST, 80);
     expect(Math.max(...trace)).toBe(LIMITS.ceiling);
     expect(trace.at(-1)).toBe(LIMITS.ceiling);
@@ -401,15 +402,106 @@ describe("stepResolution — it recovers what a transient cost it", () => {
       );
     }
     expect(intervals.at(-1)).toBe(RELAX_MAX_MS);
-    // And the excursion stayed small: never more than one step above what
-    // the machine can actually hold.
-    expect(state.ratio).toBeLessThanOrEqual(sustainable * 1.06 + 1e-9);
+    // And the excursion stayed small: never more than one rung above what
+    // the machine can actually hold (1.2 sits between the 1 and 1.25 rungs).
+    expect(state.ratio).toBeLessThanOrEqual(1.25);
   });
 
   it("never relaxes a latch that is not there", () => {
     const state = run(at(1.2), () => FAST, 10, LIMITS, 250);
     expect(state.hotRatio).toBe(Number.POSITIVE_INFINITY);
     expect(state.relaxAfterMs).toBe(RELAX_AFTER_MS);
+  });
+});
+
+describe("stepResolution — O1: a few clean rungs, never a jitter", () => {
+  const LADDER = [2, 1.75, 1.5, 1.25, 1, 0.75];
+
+  /** Every ratio a long run against `costOf` visits, start included. */
+  function visited(
+    costOf: (ratio: number, i: number) => number,
+    limits: ResolutionLimits,
+    start = createResolution(limits.ceiling),
+  ): Set<number> {
+    let state = start;
+    const seen = new Set([state.ratio]);
+    for (let i = 1; i <= 20_000; i++) {
+      state = stepResolution(
+        state,
+        window_(costOf(state.ratio, i)),
+        i * 250,
+        limits,
+      );
+      seen.add(state.ratio);
+    }
+    return seen;
+  }
+
+  // Overloads, recoveries, a bistable machine and a hitchy one: the paths
+  // that used to produce 1.7, 1.615, 1.458…
+  const LOADS: [string, (ratio: number, i: number) => number][] = [
+    ["sustained overload", () => SLOW],
+    ["a hitch, then clean", (_r, i) => (i < 12 ? SLOW : FAST)],
+    ["pixel-bound cost", (r) => 10 * r * r],
+    ["bistable", (r, i) => (r > 1.3 && i % 7 < 3 ? SLOW : FAST)],
+    ["periodic hitches", (_r, i) => (i % 400 < 8 ? SLOW : FAST)],
+  ];
+
+  it("only ever draws at a ladder rung on a 2x panel", () => {
+    for (const [, costOf] of LOADS) {
+      for (const r of visited(costOf, LIMITS)) expect(LADDER).toContain(r);
+    }
+  });
+
+  it("keeps a non-ladder panel's own ratio as its top rung (1.1x)", () => {
+    const limits = defaultLimits(1.1);
+    expect(resolutionRungs(limits)).toEqual([1.1, 1, 0.75]);
+    for (const [, costOf] of LOADS) {
+      for (const r of visited(costOf, limits)) {
+        expect([1.1, 1, 0.75]).toContain(r);
+      }
+    }
+  });
+
+  it("clamps the ladder to the panel: 1x and 3x panels", () => {
+    expect(resolutionRungs(defaultLimits(1))).toEqual([1, 0.75]);
+    expect(resolutionRungs(defaultLimits(3))).toEqual(LADDER);
+  });
+
+  it("climbs back to the panel ceiling from ANY latch on clean frames", () => {
+    // The frozen-latch bug, re-asked on the discrete ladder: from every rung
+    // and every latch above it, a machine that is simply fine must get the
+    // full resolution back.
+    for (const ceiling of [2, 1.1, 1]) {
+      const limits = defaultLimits(ceiling);
+      const rungs = resolutionRungs(limits);
+      for (const ratio of rungs) {
+        for (const hot of rungs.filter((r) => r > ratio)) {
+          const state = run(at(ratio, 0, hot), () => FAST, 10_000, limits, 250);
+          expect(state.ratio).toBe(limits.ceiling);
+        }
+      }
+    }
+  });
+
+  it("changes ratio rarely under a bistable load (each change is a rebuild)", () => {
+    let state = createResolution(2);
+    let changes = 0;
+    const ticks = 4 * 60 * 10; // ten minutes at 250 ms
+    for (let i = 1; i <= ticks; i++) {
+      const slow = state.ratio > 1.3 && i % 7 < 3;
+      const next = stepResolution(
+        state,
+        window_(slow ? SLOW : FAST),
+        i * 250,
+        LIMITS,
+      );
+      if (next.ratio !== state.ratio) changes++;
+      state = next;
+    }
+    // Settling takes a couple of steps; after that only the doubling relax
+    // probes may move it.
+    expect(changes).toBeLessThanOrEqual(12);
   });
 });
 

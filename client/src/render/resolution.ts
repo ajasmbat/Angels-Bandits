@@ -16,6 +16,14 @@
 // time. Under vsync a kept frame reads ~16.7 ms whether it cost 3 ms or
 // 16 ms of GPU work — average frame time simply cannot see headroom there.
 // A *missed* vsync, though, doubles the interval, and that is unambiguous.
+//
+// O1: the ratio moves on a LADDER of a few clean rungs, never by a
+// multiplier. Every change rebuilds the composer's targets and resamples the
+// whole frame, and the multiplicative steps (x0.85, x0.95, x1.06) produced a
+// long tail of odd ratios (1.458…) that each re-quantised every pattern on
+// screen — a continuous resolution jitter. Rungs are quarter steps, so a
+// change is rare, visible as one clean step, and lands on a ratio that maps
+// CSS pixels to device pixels evenly.
 
 /** Lowest device-pixel ratio we will ever draw at — below this it reads soft. */
 export const RESOLUTION_FLOOR = 0.75;
@@ -29,14 +37,11 @@ export const MISS_MS = FRAME_BUDGET_MS * 1.5;
 export const MISS_SHARE = 0.1;
 /** Frames required before the controller will decide anything. */
 export const WINDOW_FRAMES = 45;
-/** Down is decisive; up is timid. Asymmetry is most of the anti-pump. */
-export const STEP_DOWN = 0.85;
 /**
- * Once `hotRatio` is latched we already know roughly where the cliff is, so
- * further backoffs are nudges — a second 15 % drop would be the visible pump.
+ * The rungs, highest first. A panel's own ceiling (e.g. 1.1x) is added as its
+ * top rung and RESOLUTION_FLOOR is the bottom one — see `resolutionRungs`.
  */
-export const STEP_DOWN_FINE = 0.95;
-export const STEP_UP = 1.06;
+export const RESOLUTION_LADDER = [2, 1.75, 1.5, 1.25, 1, 0.75] as const;
 /** Rate limits, ms. Backing off is allowed ~7x more often than climbing. */
 export const DOWN_COOLDOWN_MS = 600;
 export const UP_COOLDOWN_MS = 6000;
@@ -50,14 +55,18 @@ export const UP_COOLDOWN_MS = 6000;
  * already know misses, misses again, backs off 5 %, and repeats — a slow
  * 2-5 % pump that had not settled after 30 s.
  *
+ * On the ladder this means: never climb back to the rung we retreated from
+ * until the latch relaxes (a rung below it is always under the cap, since
+ * adjacent rungs are at most 25 % apart).
+ *
  * NOTE the trap this margin sets, which shipped as a bug and is the reason
  * `stepResolution` is shaped the way it is: a retreat that LANDS above
  * `hotRatio * HOT_MARGIN` can never climb again, because the up-branch
- * refuses any step that would not raise the ratio. `STEP_DOWN_FINE` (0.95)
- * is shallower than this margin, so every fine backoff lands above its own
- * cap. That froze the controller permanently — a 3 s hitch at boot pinned
- * the session at 1.46 and 83 simulated minutes of flawless frames never
- * recovered it. Headroom-for-recovery and room-to-pump are the same
+ * refuses any step that would not raise the ratio. The old fine backoff
+ * (x0.95) was shallower than this margin, so every such backoff landed above
+ * its own cap. That froze the controller permanently — a 3 s hitch at boot
+ * pinned the session at 1.46 and 83 simulated minutes of flawless frames
+ * never recovered it. Headroom-for-recovery and room-to-pump are the same
  * quantity, so it cannot be fixed by widening the gap between the steps.
  * Recovery comes from RELAXING the latch on evidence instead — see
  * RELAX_AFTER_MS.
@@ -66,7 +75,7 @@ export const HOT_MARGIN = 0.9;
 
 /**
  * How long every frame must stay clean before the latch is relaxed one
- * notch (`hotRatio /= HOT_MARGIN`), letting the controller win resolution
+ * rung (`hotRatio` → the rung above it), letting the controller win resolution
  * back that a transient cost it.
  *
  * This is the "forget timer" the first cut of this module deliberately did
@@ -138,6 +147,36 @@ export function defaultLimits(devicePixelRatio: number): ResolutionLimits {
 const clampRatio = (r: number, l: ResolutionLimits): number =>
   Math.min(l.ceiling, Math.max(l.floor, r));
 
+/**
+ * The ratios the controller may draw at on a panel, highest first: the
+ * panel's ceiling, every RESOLUTION_LADDER rung strictly inside the limits,
+ * and the floor. The only values `stepResolution` ever moves to.
+ */
+export function resolutionRungs(limits: ResolutionLimits): number[] {
+  const rungs = [limits.ceiling];
+  for (const r of RESOLUTION_LADDER) {
+    if (r < limits.ceiling && r > limits.floor) rungs.push(r);
+  }
+  if (limits.floor < limits.ceiling) rungs.push(limits.floor);
+  return rungs;
+}
+
+/** The highest rung strictly below `ratio`, or null at the bottom. */
+function rungBelow(ratio: number, limits: ResolutionLimits): number | null {
+  for (const r of resolutionRungs(limits)) if (r < ratio) return r;
+  return null;
+}
+
+/** The lowest rung strictly above `ratio`, or null at the top. */
+function rungAbove(ratio: number, limits: ResolutionLimits): number | null {
+  const rungs = resolutionRungs(limits);
+  for (let i = rungs.length - 1; i >= 0; i--) {
+    const r = rungs[i] as number;
+    if (r > ratio) return r;
+  }
+  return null;
+}
+
 /** Share of `frames` (ms) that missed the budget outright. */
 export function missShare(frames: readonly number[]): number {
   if (frames.length === 0) return 0;
@@ -156,9 +195,9 @@ export function missShare(frames: readonly number[]): number {
  * every tick and starve the controller of a full window forever.
  *
  * Four outcomes, and only ever one per call:
- *  - misses at or over MISS_SHARE  → step down (and latch `hotRatio`)
+ *  - misses at or over MISS_SHARE  → one rung down (and latch `hotRatio`)
  *  - a clean window, latch due     → relax the latch one notch
- *  - a clean window, latch not due → step up, capped by the latch
+ *  - a clean window, latch not due → one rung up, capped by the latch
  *  - anything between              → hold; this band is the hysteresis
  *
  * The down and clean triggers are mutually exclusive by construction (a
@@ -180,10 +219,8 @@ export function stepResolution(
     const broken =
       state.cleanSince === null ? state : { ...state, cleanSince: null };
     if (now - state.changedAt < DOWN_COOLDOWN_MS) return broken;
-    const step =
-      state.hotRatio === Number.POSITIVE_INFINITY ? STEP_DOWN : STEP_DOWN_FINE;
-    const next = clampRatio(state.ratio * step, limits);
-    if (next >= state.ratio) return broken;
+    const next = rungBelow(state.ratio, limits);
+    if (next === null) return broken;
     // `hotRatio` names a ratio we RETREATED from, and it is only meaningful
     // while the cap it implies is still reachable. Latching a ratio whose
     // cap falls under the floor would pin the game at the floor with no rung
@@ -211,10 +248,11 @@ export function stepResolution(
       state.hotRatio !== Number.POSITIVE_INFINITY &&
       now - cleanSince >= state.relaxAfterMs
     ) {
-      const relaxed = state.hotRatio / HOT_MARGIN;
-      // Once the relaxed cap clears the ceiling the latch no longer binds
-      // anything: drop it, and let the interval start over from scratch.
-      const cleared = relaxed * HOT_MARGIN >= limits.ceiling;
+      // One rung up: the cap (x HOT_MARGIN) then admits exactly the rung
+      // that was latched. Once the latch is the top rung there is nothing
+      // left for it to bind: drop it, and start the interval over.
+      const relaxed = rungAbove(state.hotRatio, limits);
+      const cleared = relaxed === null;
       return {
         ...base,
         hotRatio: cleared ? Number.POSITIVE_INFINITY : relaxed,
@@ -227,8 +265,8 @@ export function stepResolution(
 
     if (now - state.changedAt < UP_COOLDOWN_MS) return base;
     const cap = Math.min(limits.ceiling, state.hotRatio * HOT_MARGIN);
-    const next = Math.max(limits.floor, Math.min(state.ratio * STEP_UP, cap));
-    if (next <= state.ratio) return base;
+    const next = rungAbove(state.ratio, limits);
+    if (next === null || next > cap) return base;
     return { ...base, ratio: next, changedAt: now };
   }
 

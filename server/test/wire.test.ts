@@ -19,6 +19,7 @@ import {
   BULLET_RANGE,
   INTERP_FLOOR_MS,
   MAX_HP,
+  POSE_AGE_MAX_MS,
   SNAPSHOT_INTERVAL_MS,
   SPAWN_PROTECTION_MS,
 } from "@angels-bandits/common/constants";
@@ -83,7 +84,9 @@ const streamPose = (peer: Peer, pose: Pose): void => {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 beforeAll(async () => {
-  child = spawn("npx", ["tsx", entry], {
+  // node itself (tsx as a loader), not `npx tsx`: kill() in afterAll must
+  // reach the server, or it outlives the test and keeps flying its bots.
+  child = spawn(process.execPath, ["--import", "tsx", entry], {
     env: { ...process.env, PORT: "0" },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -187,6 +190,128 @@ describe("quantised snapshots over the wire", () => {
   }, 20000);
 });
 
+describe("pose timestamps (O2)", () => {
+  /** Stream `pose` stamped by `stamp(now)` for `n` up-ticks; returns the
+   * stamps actually sent, with the local send time of each. */
+  const streamStamped = async (
+    peer: Peer,
+    pose: Pose,
+    n: number,
+    stamp: (now: number) => number | undefined,
+  ): Promise<{ t: number | undefined; sentAt: number }[]> => {
+    const sent: { t: number | undefined; sentAt: number }[] = [];
+    for (let i = 0; i < n; i++) {
+      const sentAt = Date.now();
+      const t = stamp(sentAt);
+      peer.ws.send(JSON.stringify({ type: "pose", pose, t }));
+      sent.push({ t, sentAt });
+      await wait(1000 / 30);
+    }
+    return sent;
+  };
+
+  /** The decoded self entries of every snapshot received since `from`, with
+   * the pose time each one claims (snapshot time − age). */
+  const selfTimes = (peer: Peer, from: number) =>
+    peer.snapshots.slice(from).flatMap(({ msg }) => {
+      const w = msg.p.find((e) => e[0] === peer.welcome.id);
+      if (!w) return [];
+      const d = decodeSnapshotEntry(w);
+      return [
+        {
+          snapTime: msg.time,
+          poseTime: msg.time - (d.age ?? 0),
+          age: d.age ?? 0,
+        },
+      ];
+    });
+
+  const parked = (peer: Peer): Pose => ({
+    pos: { ...peer.welcome.spawn.pos },
+    quat: { ...IDENTITY },
+    speed: peer.welcome.spawn.speed,
+  });
+
+  it("stamps each snapshot entry with the pose's own time, not the tick's", async () => {
+    const peer = await connect("Stamped");
+    const pose = parked(peer);
+    await streamStamped(peer, pose, 4, (now) => now - 37); // settle on record
+    const from = peer.snapshots.length;
+    // Same machine, same Date.now(): these stamps are exact server times,
+    // 37 ms before each send — well inside the trusted window.
+    const sent = await streamStamped(peer, pose, 30, (now) => now - 37);
+    await wait(SNAPSHOT_INTERVAL_MS * 2);
+    const stamps = new Set(sent.map((s) => s.t));
+    const seen = selfTimes(peer, from);
+    expect(seen.length).toBeGreaterThan(10);
+    for (const { poseTime, age } of seen) {
+      expect(stamps.has(poseTime)).toBe(true); // exactly the pose's own t
+      expect(age).toBeGreaterThanOrEqual(37); // never the tick's own time
+    }
+    peer.ws.close();
+  }, 20000);
+
+  it("clamps a backdated or future stamp into [arrival − POSE_AGE_MAX_MS, arrival]", async () => {
+    const peer = await connect("Clamped");
+    const pose = parked(peer);
+    await streamStamped(peer, pose, 4, (now) => now);
+
+    let from = peer.snapshots.length;
+    const old = await streamStamped(peer, pose, 10, (now) => now - 5000);
+    await wait(SNAPSHOT_INTERVAL_MS * 2);
+    const firstSent = old[0]?.sentAt ?? 0;
+    for (const { poseTime, snapTime } of selfTimes(peer, from)) {
+      expect(poseTime).toBeGreaterThanOrEqual(firstSent - POSE_AGE_MAX_MS - 1);
+      expect(poseTime).toBeLessThanOrEqual(snapTime);
+    }
+
+    from = peer.snapshots.length;
+    const future = await streamStamped(peer, pose, 10, (now) => now + 5000);
+    await wait(SNAPSHOT_INTERVAL_MS * 2);
+    const firstFuture = future[0]?.sentAt ?? 0;
+    const seen = selfTimes(peer, from).filter(
+      (s) => s.snapTime > firstFuture + 60,
+    );
+    expect(seen.length).toBeGreaterThan(0);
+    for (const { poseTime, snapTime, age } of seen) {
+      expect(age).toBeGreaterThanOrEqual(0); // never from the future
+      expect(poseTime).toBeLessThanOrEqual(snapTime);
+      expect(poseTime).toBeGreaterThanOrEqual(firstFuture);
+    }
+
+    // No stamp at all (a client before its first snapshot): arrival time.
+    from = peer.snapshots.length;
+    const bare = await streamStamped(peer, pose, 10, () => undefined);
+    await wait(SNAPSHOT_INTERVAL_MS * 2);
+    const firstBare = bare[0]?.sentAt ?? 0;
+    for (const { poseTime, snapTime } of selfTimes(peer, from).filter(
+      (s) => s.snapTime > firstBare + 60,
+    )) {
+      expect(poseTime).toBeGreaterThanOrEqual(firstBare);
+      expect(poseTime).toBeLessThanOrEqual(snapTime);
+    }
+    peer.ws.close();
+  }, 20000);
+
+  it("leaves bot rows unaged — they keep the pre-O2 tuple length", async () => {
+    const peer = await connect("BotRows");
+    await wait(SNAPSHOT_INTERVAL_MS * 4);
+    const bots = new Set(
+      peer.welcome.roster.filter((r) => r.isBot).map((r) => r.id),
+    );
+    expect(bots.size).toBeGreaterThan(0);
+    const rows = peer.snapshots.flatMap(({ msg }) =>
+      msg.p.filter((e) => bots.has(e[0])),
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row.length).toBeLessThanOrEqual(11);
+      expect(decodeSnapshotEntry(row).age).toBe(0);
+    }
+    peer.ws.close();
+  }, 20000);
+});
+
 describe("hit claims at the new cadence", () => {
   it("a claim that declares its interpolation delay still lands a normal hit", async () => {
     const shooter = await connect("Shooter");
@@ -205,8 +330,16 @@ describe("hit claims at the new cadence", () => {
       streamPose(target, at(1000 + BULLET_RANGE / 2, 1000));
       await wait(1000 / 20);
     }
-    // Spawn protection has to lapse before a hit can land at all.
-    await wait(SPAWN_PROTECTION_MS);
+    // Spawn protection has to lapse before a hit can land at all. Keep
+    // streaming at the uplink rate meanwhile, as a real client does: since F4
+    // raised protection to 5.5 s, a silent wait outlasts LIVENESS_TIMEOUT_MS
+    // and the server drops both sockets before the shot.
+    const protectionEnds = Date.now() + SPAWN_PROTECTION_MS;
+    while (Date.now() < protectionEnds) {
+      streamPose(shooter, at(1000, 1000));
+      streamPose(target, at(1000 + BULLET_RANGE / 2, 1000));
+      await wait(1000 / 20);
+    }
     for (let i = 0; i < 4; i++) {
       streamPose(shooter, at(1000, 1000));
       streamPose(target, at(1000 + BULLET_RANGE / 2, 1000));

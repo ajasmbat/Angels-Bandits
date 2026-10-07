@@ -27,7 +27,22 @@ import {
 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
-import { nearestImage } from "./wrapPlacement";
+import {
+  BrokenNeon,
+  type NeonBuzz,
+  type SignAnim,
+  type SignageAnimation,
+  rungPalette,
+  signAnimations,
+  signClock,
+} from "./signage-anim";
+import {
+  type SignUniforms,
+  createSignUniforms,
+  patchSignMaterial,
+  writeStutter,
+} from "./signage-shader";
+import { ImageCache, InstanceUploads } from "./wrapPlacement";
 
 // --- Tunables (Concept 4: steep density gradient, everything on) ---
 /** Marquee panel: along-facade width, meters. */
@@ -620,6 +635,27 @@ const panelYaw = (s: SignPlacement): number => {
  * Per-instance palette tints ride instanceColor at HDR: base color × the
  * emissive boost that lifts it to the SIGN rung, × the synced-clock pulse.
  */
+/** One sign kind's mesh, placements and torus-image bookkeeping (O2). */
+interface SignKind {
+  mesh: THREE.InstancedMesh;
+  signs: SignPlacement[];
+  images: ImageCache;
+  uploads: InstanceUploads;
+}
+
+const signKind = (
+  mesh: THREE.InstancedMesh,
+  signs: SignPlacement[],
+): SignKind => ({
+  mesh,
+  signs,
+  images: new ImageCache(
+    signs.map((s) => s.x),
+    signs.map((s) => s.z),
+  ),
+  uploads: new InstanceUploads([mesh.instanceMatrix]),
+});
+
 export class Signage {
   readonly group = new THREE.Group();
   private readonly marquees: SignPlacement[];
@@ -635,6 +671,14 @@ export class Signage {
   private readonly pos = new THREE.Vector3();
   private readonly scale = new THREE.Vector3();
   private static readonly UP = new THREE.Vector3(0, 1, 0);
+  /** Marquees, billboards, strips: one cache + upload tracker each (O2). */
+  private readonly kinds: SignKind[];
+  private readonly spillImages: ImageCache;
+  private readonly spillUploads: InstanceUploads;
+  // L7 animation: shared shader clock + broken-tube stutter/buzz.
+  private readonly animUniforms: SignUniforms;
+  private readonly broken: BrokenNeon;
+  private readonly brokenSigns: SignPlacement[];
 
   constructor(buildings: readonly Building[], seed: number) {
     const layouts = buildings.map((b) => signageFor(b, seed));
@@ -658,9 +702,11 @@ export class Signage {
       ),
       this.billboards.length,
     );
+    const stripMaterial = new THREE.MeshBasicMaterial();
+    stripMaterial.customProgramCacheKey = () => "ab-sign-strip";
     this.stripMesh = new THREE.InstancedMesh(
       panel,
-      new THREE.MeshBasicMaterial(),
+      stripMaterial,
       this.strips.length,
     );
 
@@ -682,6 +728,68 @@ export class Signage {
     this.setTiles(this.marqueeMesh, this.marquees);
     this.setTiles(this.billboardMesh, this.billboards);
 
+    // L7: animate in the shader off one clock uniform — no texture uploads,
+    // no extra draws. Broken tubes stutter via a small uniform array.
+    const anim = signAnimations(
+      this.marquees,
+      this.billboards,
+      this.strips,
+      seed,
+    );
+    this.brokenSigns = anim.broken.map(
+      (t) =>
+        (t.kind === "marquee" ? this.marquees : this.strips)[
+          t.index
+        ] as SignPlacement,
+    );
+    this.broken = new BrokenNeon(
+      this.brokenSigns.map((s, i) => {
+        const t = anim.broken[i] as SignageAnimation["broken"][number];
+        return {
+          seed: t.seed,
+          center: { x: s.x, y: s.y + s.height / 2, z: s.z },
+        };
+      }),
+    );
+    const brokenCount = this.broken.count;
+    this.animUniforms = createSignUniforms(
+      brokenCount,
+      rungPalette(SIGN_PALETTE, EMISSIVE_SIGN),
+    );
+    const animated: [
+      THREE.InstancedMesh,
+      SignPlacement[],
+      SignAnim[],
+      "marquee" | "billboard" | "strip",
+      number,
+    ][] = [
+      [
+        this.marqueeMesh,
+        this.marquees,
+        anim.marquees,
+        "marquee",
+        MARQUEE_TEXTURE_POOL,
+      ],
+      [
+        this.billboardMesh,
+        this.billboards,
+        anim.billboards,
+        "billboard",
+        BILLBOARD_TEXTURE_POOL,
+      ],
+      [this.stripMesh, this.strips, anim.strips, "strip", 1],
+    ];
+    for (const [mesh, signs, anims, kind, tiles] of animated) {
+      Signage.setAnim(mesh, signs, anims);
+      patchSignMaterial(
+        mesh.material as THREE.MeshBasicMaterial,
+        kind,
+        this.animUniforms,
+        tiles,
+        brokenCount,
+      );
+    }
+
     for (const mesh of [
       this.marqueeMesh,
       this.billboardMesh,
@@ -692,6 +800,16 @@ export class Signage {
       mesh.frustumCulled = false; // instances move relative to the camera every frame
       this.group.add(mesh);
     }
+    this.kinds = [
+      signKind(this.marqueeMesh, this.marquees),
+      signKind(this.billboardMesh, this.billboards),
+      signKind(this.stripMesh, this.strips),
+    ];
+    this.spillImages = new ImageCache(
+      this.spills.map((sp) => sp.x),
+      this.spills.map((sp) => sp.z),
+    );
+    this.spillUploads = new InstanceUploads([this.spillMesh.instanceMatrix]);
   }
 
   /** Per-instance atlas-tile attribute for a sign mesh. */
@@ -703,6 +821,30 @@ export class Signage {
     mesh.geometry.setAttribute(
       "aTile",
       new THREE.InstancedBufferAttribute(tiles, 1),
+    );
+  }
+
+  /** Per-instance animation attributes (uploaded once): aAnim = (kind,
+   * rate, phase, variant), aSize = (width, height, broken slot or −1). */
+  private static setAnim(
+    mesh: THREE.InstancedMesh,
+    signs: SignPlacement[],
+    anims: SignAnim[],
+  ): void {
+    const a = new Float32Array(signs.length * 4);
+    const s = new Float32Array(signs.length * 3);
+    signs.forEach((sign, i) => {
+      const an = anims[i] as SignAnim;
+      a.set([an.kind, an.rate, an.phase, an.variant], i * 4);
+      s.set([sign.width, sign.height, an.brokenSlot], i * 3);
+    });
+    mesh.geometry.setAttribute(
+      "aAnim",
+      new THREE.InstancedBufferAttribute(a, 4),
+    );
+    mesh.geometry.setAttribute(
+      "aSize",
+      new THREE.InstancedBufferAttribute(s, 3),
     );
   }
 
@@ -728,30 +870,34 @@ export class Signage {
     return 1 - PULSE_DEPTH + PULSE_DEPTH * s;
   }
 
-  /** Write one sign kind's matrices + pulsed HDR tints for this frame. */
+  /** Write one sign kind's flipped matrices (O2: only those whose torus
+   * image changed) + every pulsed HDR tint for this frame. */
   private place(
-    mesh: THREE.InstancedMesh,
-    signs: SignPlacement[],
+    kind: SignKind,
     cameraPos: Vec3,
     timeMs: number,
     color: THREE.Color,
   ): void {
-    signs.forEach((s, i) => {
-      const p = nearestImage(cameraPos, { x: s.x, y: 0, z: s.z });
+    const { mesh, signs } = kind;
+    kind.images.update(cameraPos, (i, x, z) => {
+      const s = signs[i] as SignPlacement;
       this.quat.setFromAxisAngle(Signage.UP, panelYaw(s));
-      this.pos.set(p.x, s.y, p.z);
+      this.pos.set(x, s.y, z);
       this.scale.set(s.width, s.height, s.depth);
       this.scratch.compose(this.pos, this.quat, this.scale);
       mesh.setMatrixAt(i, this.scratch);
-
+      kind.uploads.mark(i);
+    });
+    kind.uploads.flush();
+    for (let i = 0; i < signs.length; i++) {
+      const s = signs[i] as SignPlacement;
       const base = SIGN_PALETTE[s.paletteIndex] as PaletteColor;
       color.setRGB(base.r, base.g, base.b);
       color.multiplyScalar(
         emissiveBoost(color, EMISSIVE_SIGN) * Signage.pulse(timeMs, s.phase),
       );
       mesh.setColorAt(i, color);
-    });
-    mesh.instanceMatrix.needsUpdate = true;
+    }
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   }
 
@@ -763,30 +909,52 @@ export class Signage {
    * as the landmark beacons).
    */
   update(cameraPos: Vec3, timeMs: number): void {
-    this.place(this.marqueeMesh, this.marquees, cameraPos, timeMs, this.tint);
-    this.place(
-      this.billboardMesh,
-      this.billboards,
-      cameraPos,
-      timeMs,
-      this.tint,
-    );
-    this.place(this.stripMesh, this.strips, cameraPos, timeMs, this.tint);
+    // L7: the shader clock and the broken tubes' stutter, same synced time.
+    this.animUniforms.uSignTime.value = signClock(timeMs);
+    for (let i = 0; i < this.broken.count; i++) {
+      writeStutter(this.animUniforms, i, this.broken.level(i, timeMs));
+    }
+    for (const kind of this.kinds) {
+      this.place(kind, cameraPos, timeMs, this.tint);
+    }
 
-    this.spills.forEach((sp, i) => {
-      const p = nearestImage(cameraPos, { x: sp.x, y: 0, z: sp.z });
-      this.scratch.makeScale(sp.radius, 1, sp.radius);
-      this.scratch.setPosition(p.x, SPILL_LIFT, p.z);
-      this.spillMesh.setMatrixAt(i, this.scratch);
+    this.spillImages.update(cameraPos, this.placeSpill);
+    this.spillUploads.flush();
+    for (let i = 0; i < this.spills.length; i++) {
+      const sp = this.spills[i] as SpillPool;
       const base = SIGN_PALETTE[sp.paletteIndex] as PaletteColor;
       this.tint.setRGB(base.r, base.g, base.b);
       this.tint.multiplyScalar(Signage.pulse(timeMs, sp.phase));
       this.spillMesh.setColorAt(i, this.tint);
-    });
-    this.spillMesh.instanceMatrix.needsUpdate = true;
+    }
     if (this.spillMesh.instanceColor) {
       this.spillMesh.instanceColor.needsUpdate = true;
     }
+  }
+
+  private readonly placeSpill = (i: number, x: number, z: number): void => {
+    const sp = this.spills[i] as SpillPool;
+    this.scratch.makeScale(sp.radius, 1, sp.radius);
+    this.scratch.setPosition(x, SPILL_LIFT, z);
+    this.spillMesh.setMatrixAt(i, this.scratch);
+    this.spillUploads.mark(i);
+  };
+
+  /** L7: the nearest broken tube to the listener and its buzz level (torus
+   * distance; the returned object is reused). */
+  buzz(listener: Vec3, timeMs: number): NeonBuzz {
+    return this.broken.buzz(listener, timeMs);
+  }
+
+  /** QA hook: broken tubes and their next burst at or after `timeMs`. */
+  brokenTubes(timeMs: number): (ReturnType<BrokenNeon["nextBursts"]>[number] & {
+    axis: "x" | "z";
+    dir: -1 | 1;
+  })[] {
+    return this.broken.nextBursts(timeMs).map((b, i) => {
+      const s = this.brokenSigns[i] as SignPlacement;
+      return { ...b, axis: s.axis, dir: s.dir };
+    });
   }
 
   /**

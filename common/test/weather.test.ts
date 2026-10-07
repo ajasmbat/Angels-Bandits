@@ -61,7 +61,7 @@ describe("weatherAt", () => {
     }
   });
 
-  it("is dry around every cycle boundary, where the wind switches", () => {
+  it("is dry around every cycle boundary, where the downpour re-seeds", () => {
     for (const seed of SEEDS) {
       for (let k = 1; k < CYCLES; k++) {
         for (let dt = -30_000; dt <= 30_000; dt += 5_000) {

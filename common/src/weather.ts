@@ -14,8 +14,9 @@
 // and cycle boundary: rain ramps in through drizzle to a seeded downpour peak
 // and stops early in clearing; wetness LAGS the rain (streets need a while to
 // get wet) and dries slowly through clearing and the next clear phase. The
-// whole clear phase is dry, so the per-cycle wind switch at a cycle boundary
-// never shows.
+// whole clear phase is dry, so a cycle boundary (where the downpour peak
+// re-seeds) never shows. The wind is NOT defined here: rain drifts on L9's
+// shared windAt() (wind.ts), the same air the trees sway in.
 //
 // The lightning schedule (storm.ts) is deliberately NOT gated on this: strikes
 // are server-authoritative kills, so only their LOOK (`flash`) follows the
@@ -45,9 +46,6 @@ const PEAK_MIN = 0.85;
 const CARRY_WETNESS = 0.45;
 /** Drizzle alone only dampens the streets this far. */
 const DRIZZLE_WETNESS = 0.4;
-/** Wind speed band, m/s (constant within a cycle). */
-const WIND_MIN = 2;
-const WIND_MAX = 6;
 /** Sky-flash scale in a dry sky — downpours flash at 1. */
 const FLASH_DRY = 0.55;
 
@@ -66,16 +64,12 @@ export interface Weather {
   haze: number;
   /** Lightning flash scale, FLASH_DRY..1 — brightest in a downpour. */
   flash: number;
-  /** Wind drift, m/s, horizontal (constant within a cycle). */
-  wind: { x: number; z: number };
 }
 
 interface CycleLayout {
   /** Phase lengths, ms, in WEATHER_PHASES order (sum = WEATHER_CYCLE_MS). */
   lengths: readonly [number, number, number, number];
   peak: number;
-  windX: number;
-  windZ: number;
 }
 
 /** Per-cycle stream: golden-ratio hash of the cycle index into the seed,
@@ -87,8 +81,6 @@ function cycleLayout(seed: number, cycle: number): CycleLayout {
   const u = (rand() * 2 - 1) * PHASE_SWING_MS;
   const v = (rand() * 2 - 1) * PHASE_SWING_MS;
   const peak = PEAK_MIN + (1 - PEAK_MIN) * rand();
-  const angle = rand() * Math.PI * 2;
-  const speed = WIND_MIN + (WIND_MAX - WIND_MIN) * rand();
   return {
     lengths: [
       PHASE_MID_MS + u,
@@ -97,8 +89,6 @@ function cycleLayout(seed: number, cycle: number): CycleLayout {
       PHASE_MID_MS - v,
     ],
     peak,
-    windX: Math.cos(angle) * speed,
-    windZ: Math.sin(angle) * speed,
   };
 }
 
@@ -159,7 +149,6 @@ export function weatherAt(seed: number, timeMs: number): Weather {
     wetness,
     haze: rain * Math.sqrt(rain),
     flash: FLASH_DRY + (1 - FLASH_DRY) * Math.min(1, rain / PEAK_MIN),
-    wind: { x: layout.windX, z: layout.windZ },
   };
 }
 
@@ -187,5 +176,4 @@ export const CLEAR_WEATHER: Readonly<Weather> = {
   wetness: 0,
   haze: 0,
   flash: FLASH_DRY,
-  wind: { x: 0, z: 0 },
 };

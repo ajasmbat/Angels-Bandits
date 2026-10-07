@@ -15,11 +15,17 @@
     "./city/layout": "./src/city/layout.ts",
     "./city/street": "./src/city/street.ts",
     "./city/movers": "./src/city/movers.ts",
+    "./city/newsheli": "./src/city/newsheli.ts",
+    "./city/train": "./src/city/train.ts",
     "./city/nature": "./src/city/nature.ts",
+    "./city/river": "./src/city/river.ts",
     "./storm": "./src/storm.ts",
     "./weather": "./src/weather.ts",
+    "./wind": "./src/wind.ts",
     "./fireworks": "./src/fireworks.ts",
+    "./skytraffic": "./src/skytraffic.ts",
     "./protocol": "./src/protocol.ts",
-    "./net": "./src/net.ts"
+    "./net": "./src/net.ts",
+    "./cityevents": "./src/cityevents.ts"
   }
 }

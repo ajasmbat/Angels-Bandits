@@ -116,7 +116,7 @@ function human(now: number): BotContact {
 }
 
 describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
-  it("bots fight low without crashing more than main's high furball", () => {
+  it("bots fight low without crashing more than main's high furball", async () => {
     const city = generateCity(CITY_SEED);
     const movers = generateMovers(CITY_SEED, city);
     const nature = buildNatureIndex(natureFor(CITY_SEED, city));
@@ -137,6 +137,11 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
     let graceFights = 0;
 
     for (let room = 0; room < ROOMS; room++) {
+      // One room at a time, then let the event loop turn: the whole sim as a
+      // single synchronous block (>60 s on a loaded box) starved the vitest
+      // worker's RPC, whose fixed 60 s timeout failed the run with
+      // "Timeout calling onTaskUpdate" even though the assertions passed.
+      if (room > 0) await new Promise<void>((r) => setImmediate(r));
       const bots = new RoomBots(
         `room-${room}`,
         roomSeed(room),

@@ -19,8 +19,14 @@ import { generateCity } from "@angels-bandits/common/city";
 import {
   type MoverField,
   generateMovers,
+  withNewsHeli,
 } from "@angels-bandits/common/city/movers";
 import { natureFor } from "@angels-bandits/common/city/nature";
+import {
+  canRetarget,
+  retargetNewsHeli,
+  setNewsTarget,
+} from "@angels-bandits/common/city/newsheli";
 import {
   type NatureIndex,
   buildNatureIndex,
@@ -30,6 +36,7 @@ import {
   CITY_SEED,
   LIVENESS_TIMEOUT_MS,
   NAME_MAX_LENGTH,
+  POSE_AGE_MAX_MS,
   SPAWN_PROTECTION_MS,
   TICK_DOWN_HZ,
 } from "@angels-bandits/common/constants";
@@ -53,6 +60,7 @@ import {
   landBotRound,
   poseVelocity,
 } from "./bots";
+import { CityEventLog, nearBuildingProbe } from "./cityevents";
 import { Combat, type HitResult, type SpeedCapFn } from "./combat";
 import { pickBotRespawn, pickRespawn } from "./respawn";
 import { type Room, RoomManager } from "./room";
@@ -73,6 +81,9 @@ interface Client {
   room: Room;
   /** Last accepted pose — what snapshots broadcast. */
   pose: Pose;
+  /** When `pose` was taken, server clock ms (O2): the client's own stamp,
+   * clamped by poseTimeOf. Snapshots forward it as the entry's age. */
+  poseTime: number;
   lastMsgAt: number;
   lastPoseAt: number;
   rejectStreak: number;
@@ -134,6 +145,24 @@ const natureIndexFor = (seed: number): NatureIndex => {
   return index;
 };
 
+/**
+ * Each room's OWN mover field (L10): the seed's shared cranes and aircraft
+ * plus that room's news heli, whose route follows that room's kills. The bots
+ * fly against this field, so they see the heli exactly where clients draw it.
+ * Created lazily, dropped with the room's bots.
+ */
+const roomMoversById = new Map<string, MoverField>();
+const roomMovers = (room: Room): MoverField => {
+  let field = roomMoversById.get(room.id);
+  if (!field) {
+    field = withNewsHeli(moversFor(room.seed), room.seed);
+    roomMoversById.set(room.id, field);
+  }
+  return field;
+};
+/** The newest kill site per room that the news heli has not taken yet. */
+const pendingKillByRoom = new Map<string, { x: number; z: number }>();
+
 /** Per-room bot pilots. Created lazily; seeded from the room's number so
  * bot behavior is deterministic per room. */
 const botsByRoom = new Map<string, RoomBots>();
@@ -145,7 +174,7 @@ const botsFor = (room: Room): RoomBots => {
       room.id,
       CITY_SEED ^ (n * 0x9e3779b9),
       city,
-      moversFor(room.seed),
+      roomMovers(room),
       true,
       natureIndexFor(room.seed),
     );
@@ -162,6 +191,39 @@ const memberPose = (room: Room, id: string): Pose | null => {
   if (member.isBot) return botsFor(room).poseOf(id);
   return clients.get(id)?.pose ?? null;
 };
+
+/** How long before `time` a member's on-record pose was taken, ms (O2).
+ * Bots are posed by the tick itself, so their age is always 0. */
+const poseAgeOf = (id: string, time: number): number => {
+  const client = clients.get(id);
+  return client ? Math.max(0, time - client.poseTime) : 0;
+};
+
+// --- L1 reactive city: server-accepted events, broadcast + replayed ---
+const cityEvents = new CityEventLog(nearBuildingProbe(city));
+
+/** Where a member is on record, alive OR dead — memberPose() is null the
+ * moment Combat marks a victim dead, which is exactly when a death's site is
+ * needed. Humans: last validated pose. Bots: last sim position. */
+const lastPosOf = (room: Room, id: string): Vec3 | null =>
+  room.members.get(id)?.isBot
+    ? botsFor(room).lastPosOf(id)
+    : (clients.get(id)?.pose.pos ?? null);
+
+/** Offer `id`'s position to the room's city-event log at server time `now`
+ * and broadcast the event if the city reacts. Call it right after the
+ * `death`/fire it belongs to, with the same `now`. */
+function offerCityEvent(
+  room: Room,
+  kind: "gunfire" | "death",
+  id: string,
+  now: number,
+): void {
+  const pos = lastPosOf(room, id);
+  if (!pos) return;
+  const event = cityEvents.offer(room.id, kind, pos, now);
+  if (event) sendToRoom(room, { type: "cityEvent", event });
+}
 
 /** On-record positions of living roommates other than `exceptId` — the
  * enemies a farthest-from-enemies spawn keeps away from. */
@@ -197,7 +259,12 @@ function syncRoomBots(room: Room): void {
     sendToRoom(room, { type: "playerLeft", id });
   }
   // A wound-down room (no humans, no bots) is gone — drop its pilots too.
-  if (!rooms.rooms.includes(room)) botsByRoom.delete(room.id);
+  if (!rooms.rooms.includes(room)) {
+    botsByRoom.delete(room.id);
+    cityEvents.forget(room.id);
+    roomMoversById.delete(room.id);
+    pendingKillByRoom.delete(room.id);
+  }
 }
 
 const sanitizeName = (raw: unknown): string => {
@@ -232,6 +299,7 @@ function handleJoin(ws: WebSocket, rawName: unknown): Client {
     ws,
     room,
     pose: poseFromSpawn(spawn),
+    poseTime: now,
     lastMsgAt: now,
     lastPoseAt: now,
     rejectStreak: 0,
@@ -248,6 +316,8 @@ function handleJoin(ws: WebSocket, rawName: unknown): Client {
     roster: room.roster(),
     scores: room.roster().map(({ id: rid }) => combat.scoreOf(rid)),
     botTarget: room.botTarget,
+    cityEvents: cityEvents.recent(room.id, now),
+    newsHeli: roomMovers(room).news,
   };
   ws.send(JSON.stringify(welcome));
   sendToRoom(room, { type: "playerJoined", player: { id, name } }, id);
@@ -257,7 +327,18 @@ function handleJoin(ws: WebSocket, rawName: unknown): Client {
   return client;
 }
 
-function handlePose(client: Client, pose: Pose, now: number): void {
+/**
+ * When a pose claim was taken, server clock ms (O2). The client's stamp is
+ * trusted only inside [now − POSE_AGE_MAX_MS, now]: it can never claim the
+ * future, and backdating itself buys at most the bound. An absent or
+ * nonsense stamp reads as the arrival time — the pre-O2 behaviour.
+ */
+const poseTimeOf = (t: unknown, now: number): number =>
+  typeof t === "number" && Number.isFinite(t)
+    ? Math.min(now, Math.max(now - POSE_AGE_MAX_MS, t))
+    : now;
+
+function handlePose(client: Client, pose: Pose, t: unknown, now: number): void {
   // A dead plane has no pose: the client freezes for the kill-cam and the
   // respawn will reset the on-record pose server-side.
   if (!combat.isAlive(client.id)) return;
@@ -271,6 +352,7 @@ function handlePose(client: Client, pose: Pose, now: number): void {
   const verdict = validatePose(client.pose, pose, dt, cap);
   if (verdict.ok) {
     client.pose = verdict.pose;
+    client.poseTime = poseTimeOf(t, now);
     client.rejectStreak = 0;
     return;
   }
@@ -281,6 +363,7 @@ function handlePose(client: Client, pose: Pose, now: number): void {
     const resync = validatePose(pose, pose, dt, cap);
     if (resync.ok) {
       client.pose = resync.pose;
+      client.poseTime = poseTimeOf(t, now);
       client.rejectStreak = 0;
     }
   }
@@ -330,6 +413,7 @@ function handleFire(client: Client, seq: unknown, now: number): void {
   // the shooter — a rejected shot just doesn't exist to anyone else).
   if (verdict.ok) {
     sendToRoom(client.room, { type: "fired", id: client.id }, client.id);
+    offerCityEvent(client.room, "gunfire", client.id, now);
   }
 }
 
@@ -387,6 +471,7 @@ function handleHitClaim(
     botsFor(client.room).onDamaged(targetId, now);
   }
   if (verdict.death) {
+    noteKillSite(client.room, targetId);
     if (client.room.members.get(targetId)?.isBot) {
       botsFor(client.room).setDead(targetId);
     }
@@ -396,6 +481,7 @@ function handleHitClaim(
       killerId: verdict.death.killerId,
       cause: verdict.death.cause,
     });
+    offerCityEvent(client.room, "death", verdict.death.victimId, now);
     broadcastScores(client.room);
   }
 }
@@ -418,15 +504,40 @@ function handleSetBots(client: Client, count: unknown, now: number): void {
   syncRoomBots(client.room);
 }
 
+/**
+ * A death happened: its position becomes the room's pending story for the
+ * news heli (L10). Call BEFORE bots.setDead — a dead bot has no pose — though
+ * lastPosOf also covers bots that crashed inside the sim tick.
+ */
+function noteKillSite(room: Room, victimId: string): void {
+  const pos = room.members.get(victimId)?.isBot
+    ? botsFor(room).lastPosOf(victimId)
+    : clients.get(victimId)?.pose.pos;
+  if (pos) pendingKillByRoom.set(room.id, { x: pos.x, z: pos.z });
+}
+
+/** Once the heli is free (arrived + dwelt), send it to the newest kill. */
+function updateNewsHeli(room: Room, now: number): void {
+  const site = pendingKillByRoom.get(room.id);
+  const news = roomMovers(room).news;
+  if (!site || !news || !canRetarget(news.target, now)) return;
+  pendingKillByRoom.delete(room.id);
+  const target = retargetNewsHeli(news.target, site, now);
+  setNewsTarget(news, target);
+  sendToRoom(room, { type: "newsHeli", target });
+}
+
 function handleCrash(client: Client, now: number): void {
   const death = combat.crash(client.id, now);
   if (!death) return;
+  noteKillSite(client.room, client.id);
   sendToRoom(client.room, {
     type: "death",
     victimId: death.victimId,
     killerId: death.killerId,
     cause: death.cause,
   });
+  offerCityEvent(client.room, "death", death.victimId, now);
   broadcastScores(client.room);
 }
 
@@ -452,6 +563,7 @@ function issueRespawns(due: string[], now: number): void {
       if (!client) continue;
       combat.respawned(id, now);
       client.pose = poseFromSpawn(spawn);
+      client.poseTime = now;
       client.rejectStreak = 0;
       client.lastPoseAt = now;
       client.boost = createBoost(now); // fresh plane, full gauge, no tail
@@ -490,12 +602,14 @@ function tickRoomBots(room: Room, now: number): void {
   for (const id of crashes) {
     const death = combat.crash(id, now);
     if (!death) continue;
+    noteKillSite(room, id);
     sendToRoom(room, {
       type: "death",
       victimId: death.victimId,
       killerId: death.killerId,
       cause: death.cause,
     });
+    offerCityEvent(room, "death", death.victimId, now);
     broadcastScores(room);
   }
 
@@ -511,6 +625,7 @@ function tickRoomBots(room: Room, now: number): void {
     bots.launch(shot, now);
     // Same cosmetic path as human fire: everyone renders the tracer.
     sendToRoom(room, { type: "fired", id: shot.botId });
+    offerCityEvent(room, "gunfire", shot.botId, now);
   }
 }
 
@@ -534,6 +649,7 @@ function routeBotHit(
     bots.onDamaged(shot.targetId, now);
   }
   if (hit.death) {
+    noteKillSite(room, shot.targetId);
     if (room.members.get(shot.targetId)?.isBot) {
       bots.setDead(shot.targetId);
     }
@@ -543,6 +659,7 @@ function routeBotHit(
       killerId: hit.death.killerId,
       cause: hit.death.cause,
     });
+    offerCityEvent(room, "death", hit.death.victimId, now);
     broadcastScores(room);
   }
 }
@@ -558,6 +675,7 @@ function enforceStormCeiling(room: Room, now: number): void {
     if (storm.observe(member.id, pose.pos.y, now) !== "kill") continue;
     const death = combat.stormKill(member.id, now);
     if (!death) continue;
+    noteKillSite(room, member.id);
     storm.forget(member.id);
     if (member.isBot) botsFor(room).setDead(member.id);
     sendToRoom(room, {
@@ -566,6 +684,7 @@ function enforceStormCeiling(room: Room, now: number): void {
       killerId: death.killerId,
       cause: death.cause,
     });
+    offerCityEvent(room, "death", death.victimId, now);
     broadcastScores(room);
   }
 }
@@ -602,7 +721,7 @@ wss.on("connection", (ws) => {
     if (msg.type === "join" && !client) {
       client = handleJoin(ws, msg.name);
     } else if (msg.type === "pose" && client && msg.pose) {
-      handlePose(client, msg.pose, now);
+      handlePose(client, msg.pose, msg.t, now);
     } else if (msg.type === "boost" && client) {
       handleBoost(client, msg.on, now);
     } else if (msg.type === "fire" && client) {
@@ -632,6 +751,7 @@ function tick(): void {
   for (const room of rooms.rooms) {
     tickRoomBots(room, time);
     enforceStormCeiling(room, time);
+    updateNewsHeli(room, time);
     const snapshot: WireSnapshotMsg = {
       type: "snapshot",
       time,
@@ -645,6 +765,7 @@ function tick(): void {
                 pose,
                 hp: combat.hpOf(id),
                 prot: combat.isProtected(id, time),
+                age: poseAgeOf(id, time),
               }),
             ]
           : [];

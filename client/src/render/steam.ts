@@ -15,6 +15,7 @@
 import { type Building, mulberry32 } from "@angels-bandits/common/city";
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { RENDER_ORDER } from "./render-order";
 import { roofClutterFor } from "./roofclutter";
 import {
   BLOCK_WINDOW_RADIUS,
@@ -261,6 +262,7 @@ export class Steam {
     this.material.customProgramCacheKey = () => "ab-steam-asize";
     this.points = new THREE.Points(geometry, this.material);
     this.points.frustumCulled = false;
+    this.points.renderOrder = RENDER_ORDER.steam;
     this.points.visible = false;
   }
 

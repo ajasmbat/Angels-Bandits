@@ -2,10 +2,13 @@
 // in a world-anchored lattice that tiles space with period BOX; the vertex
 // shader folds each one into the box centred on the camera, so the field
 // never runs out wherever you fly, and parallax is real (drops are fixed in
-// the world, not glued to the lens). Motion is a single drift offset (fall +
-// the cycle's wind) computed in closed form on the CPU in double precision
-// from the synced clock and wrapped mod BOX before upload — the GPU never sees
-// a large number, and nothing is allocated per frame.
+// the world, not glued to the lens). Motion is a single drift offset kept on
+// the CPU in double precision and wrapped mod BOX before upload — the GPU
+// never sees a large number, and nothing is allocated per frame. The fall is
+// closed-form on the synced clock; the sideways drift integrates L9's shared
+// windAt() (common/src/wind.ts), so rain leans with the same air the trees
+// sway in. The field is camera-local scenery, so integrating per client is
+// fine — no two players compare drops.
 //
 // BOX_XZ divides WORLD_SIZE, so the camera's torus wrap (a 2000 m jump)
 // leaves every drop exactly where it was.
@@ -14,14 +17,17 @@
 // streaks are thin and additive, adding ≤ ~0.14 luminance each (far under
 // the 0.72 bloom threshold), and a drop within NEAR_CUT of the camera
 // collapses to zero size in the vertex shader — no lens-filling streak and no
-// wasted fill. renderOrder −0.5 draws it after the sky dome (−1) and BEFORE
-// the tracers (0) and searchlight beams (2), so those always paint over it.
+// wasted fill. RENDER_ORDER.rain draws it after the sky, clouds and smoke and
+// BEFORE the tracers, planes (0) and searchlight beams (2), so those always
+// paint over it.
 
 import { mulberry32 } from "@angels-bandits/common/city";
 import { CLOUD_BASE, WORLD_SIZE } from "@angels-bandits/common/constants";
-import { WEATHER_CYCLE_MS, type Weather } from "@angels-bandits/common/weather";
+import type { Weather } from "@angels-bandits/common/weather";
+import { type Wind, windAt } from "@angels-bandits/common/wind";
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { RENDER_ORDER } from "./render-order";
 
 /** Horizontal box edge, m — must divide WORLD_SIZE (seam-invariant field). */
 const BOX_XZ = 80;
@@ -31,6 +37,9 @@ const BOX_Y = 40;
 const MAX_DROPS = 8000;
 /** Terminal fall speed, m/s. */
 const FALL_SPEED = 11;
+/** Sideways drift, m/s, at windAt() strength 0 and 1. */
+const DRIFT_CALM = 1.5;
+const DRIFT_GUST = 6.5;
 /** Streak length = relative speed × this exposure, clamped (plane speeds). */
 const EXPOSURE_S = 0.06;
 const STREAK_MIN = 1.2;
@@ -107,6 +116,9 @@ export class Rain {
   private readonly lastCam = new THREE.Vector3();
   private hasLastCam = false;
   private heard = 0;
+  private readonly wind: Wind = { x: 0, z: 0, strength: 0 };
+  private driftX = 0;
+  private driftZ = 0;
 
   constructor() {
     // Unit streak quad: x = side (−1..1), y = along (0 head .. 1 tail).
@@ -150,7 +162,7 @@ export class Rain {
       }),
     );
     this.mesh.frustumCulled = false; // drawn around the camera by the shader
-    this.mesh.renderOrder = -0.5;
+    this.mesh.renderOrder = RENDER_ORDER.rain;
     this.mesh.visible = false;
   }
 
@@ -201,16 +213,19 @@ export class Rain {
     this.geometry.instanceCount = count;
     this.fade.value = 0.55 + 0.45 * Math.min(1, k);
 
-    // Closed-form drift: fall on the synced clock, wind since the cycle
-    // began (the wind is constant within a cycle, and the cycle boundary is
-    // dry — weather.test.ts — so the switch never shows).
-    const tS = syncedMs / 1000;
-    const sinceCycleS = (syncedMs - wx.cycle * WEATHER_CYCLE_MS) / 1000;
+    // Fall: closed-form on the synced clock. Drift: the shared wind,
+    // integrated and wrapped (it veers and gusts, so it has no closed form).
+    windAt(syncedMs, this.wind);
+    const drift = DRIFT_CALM + (DRIFT_GUST - DRIFT_CALM) * this.wind.strength;
+    const wx2 = this.wind.x * drift;
+    const wz2 = this.wind.z * drift;
+    this.driftX = wrap(this.driftX + wx2 * dt, BOX_XZ);
+    this.driftZ = wrap(this.driftZ + wz2 * dt, BOX_XZ);
     this.offset.set(
-      wrap(wx.wind.x * sinceCycleS, BOX_XZ),
-      wrap(-FALL_SPEED * tS, BOX_Y),
-      wrap(wx.wind.z * sinceCycleS, BOX_XZ),
+      this.driftX,
+      wrap((-FALL_SPEED * syncedMs) / 1000, BOX_Y),
+      this.driftZ,
     );
-    this.vel.set(wx.wind.x - cvx, -FALL_SPEED - cvy, wx.wind.z - cvz);
+    this.vel.set(wx2 - cvx, -FALL_SPEED - cvy, wz2 - cvz);
   }
 }

@@ -17,9 +17,12 @@
 // and at 100 m it is 16 px, where a swinging leg is sub-pixel; the bob is
 // keyed to DISTANCE WALKED rather than time, so it reads as footfalls.
 
+import { BLOCK_PITCH } from "@angels-bandits/common/constants";
 import type { Vec3 } from "@angels-bandits/common/world";
+import { wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { type LowPass, SCATTER_RADIUS, scatterShift } from "./reactions";
 import { blockHeat } from "./signage";
 import {
   BLOCK_WINDOW_RADIUS,
@@ -33,7 +36,7 @@ import {
   ringPerimeter,
   ringPointInto,
 } from "./streetlife";
-import { nearestImage } from "./wrapPlacement";
+import { nearestImageInto } from "./wrapPlacement";
 
 /** Pedestrians on the coldest block (heat 0). */
 export const PED_MIN = 30;
@@ -161,8 +164,12 @@ export function pedestrianPoseInto(
   spec: PedestrianSpec,
   timeSeconds: number,
   out: PedestrianPose,
+  /** L1 scatter: extra meters along the ring (signed, +s), e.g. running
+   * from a low pass. Staying ON the ring keeps a scattered walker on the
+   * sidewalk, corners included. */
+  shift = 0,
 ): PedestrianPose {
-  const walked = spec.base + spec.dir * spec.speed * timeSeconds;
+  const walked = spec.base + spec.dir * spec.speed * timeSeconds + shift;
   ringPointInto(spec.bx, spec.bz, spec.d, walked, ringScratch);
   out.pos.x = ringScratch.x;
   out.pos.y = 0;
@@ -191,6 +198,27 @@ export const pedestrianPose = (
     yaw: 0,
     bob: 0,
   });
+
+/** Can any pass in `passes` reach a walker on block (bx, bz)'s ring? The ring
+ * stays inside the block's square, so a centre-distance test suffices. */
+function blockNearPass(
+  bx: number,
+  bz: number,
+  passes: readonly LowPass[],
+): boolean {
+  const cx = (bx + 0.5) * BLOCK_PITCH;
+  const cz = (bz + 0.5) * BLOCK_PITCH;
+  const reach = BLOCK_PITCH / 2 + SCATTER_RADIUS;
+  for (const p of passes) {
+    if (
+      Math.abs(wrapDeltaAxis(cx, p.x)) <= reach &&
+      Math.abs(wrapDeltaAxis(cz, p.z)) <= reach
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 
 // --- Renderer -------------------------------------------------------------
 
@@ -306,6 +334,7 @@ export class Pedestrians {
   private readonly vec = new THREE.Vector3();
   private readonly scale = new THREE.Vector3(1, 1, 1);
   private readonly color = new THREE.Color();
+  private readonly image = { x: 0, y: 0, z: 0 };
   private static readonly UP = new THREE.Vector3(0, 1, 0);
   private drawn = 0;
 
@@ -350,9 +379,15 @@ export class Pedestrians {
   /**
    * Place the crowd for server time `serverTimeMs`. Pedestrians MOVE, so a
    * null clock hides them outright (the Traffic policy) rather than showing a
-   * city two tabs would disagree about.
+   * city two tabs would disagree about. `passes` (L1): recent low passes —
+   * walkers near one run along the sidewalk away from it.
    */
-  update(cameraPos: Vec3, serverTimeMs: number | null, gate: number): void {
+  update(
+    cameraPos: Vec3,
+    serverTimeMs: number | null,
+    gate: number,
+    passes: readonly LowPass[] = [],
+  ): void {
     if (serverTimeMs === null || gate <= 0) {
       this.mesh.visible = false;
       this.mesh.count = 0;
@@ -364,11 +399,14 @@ export class Pedestrians {
     let n = 0;
     for (const { bx, bz } of blockWindow(cameraPos)) {
       const specs = this.specsFor(bx, bz);
+      // L1 scatter: only blocks a live pass can reach pay the per-walker test.
+      const scatter = passes.length > 0 && blockNearPass(bx, bz, passes);
       for (let i = 0; i < specs.length; i++) {
         if (!microKeep(i, gate)) continue;
         const spec = specs[i] as PedestrianSpec;
         pedestrianPoseInto(spec, t, this.pose);
-        const p = nearestImage(cameraPos, this.pose.pos);
+        if (scatter) this.scatter(spec, t, serverTimeMs, passes);
+        const p = nearestImageInto(this.image, cameraPos, this.pose.pos);
         this.quat.setFromAxisAngle(Pedestrians.UP, this.pose.yaw);
         this.vec.set(p.x, this.pose.bob, p.z);
         this.scale.set(1, spec.height, 1);
@@ -383,6 +421,29 @@ export class Pedestrians {
     this.mesh.count = n;
     this.mesh.instanceMatrix.needsUpdate = true;
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
+  }
+
+  /** Re-pose a walker shifted along its ring away from nearby passes, facing
+   * the way it is running (out, then back as it drifts home). */
+  private scatter(
+    spec: PedestrianSpec,
+    t: number,
+    timeMs: number,
+    passes: readonly LowPass[],
+  ): void {
+    const { x, z } = this.pose.pos;
+    const tx = ringScratch.dx;
+    const tz = ringScratch.dz;
+    const n = passes.length;
+    const shift = scatterShift(passes, n, x, z, tx, tz, timeMs);
+    if (shift === 0) return;
+    const ahead = scatterShift(passes, n, x, z, tx, tz, timeMs + 150);
+    pedestrianPoseInto(spec, t, this.pose, shift);
+    const run = ahead - shift;
+    if (Math.abs(run) > 0.005) {
+      const sign = run > 0 ? 1 : -1;
+      this.pose.yaw = Math.atan2(ringScratch.dx * sign, ringScratch.dz * sign);
+    }
   }
 
   /** Instances drawn last frame (perf + the altitude-gate acceptance check). */

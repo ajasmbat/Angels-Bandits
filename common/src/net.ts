@@ -18,6 +18,7 @@
 // whole number of wire units), so a rounded position can never land one unit
 // past the seam and read as 2000 m instead of 0.
 
+import { RIVER_WATER_Y } from "./city/river";
 import {
   BULLET_LIFETIME_S,
   BULLET_RANGE,
@@ -47,6 +48,9 @@ export const SPEED_SCALE = 10;
  * what makes integer-space canonicalisation exact. */
 const WORLD_UNITS = WORLD_SIZE * POS_SCALE;
 const MAX_ALTITUDE_UNITS = MAX_ALTITUDE * POS_SCALE;
+/** The lowest encodable altitude: the L11 river's water (a plane under a
+ * bridge is below street level). Negative units are plain JSON ints. */
+const MIN_ALTITUDE_UNITS = RIVER_WATER_Y * POS_SCALE;
 
 /** Canonicalise a position already expressed in integer wire units. */
 const wrapUnits = (n: number): number => {
@@ -70,7 +74,10 @@ export function encodeSnapshotEntry(entry: SnapshotEntry): WireSnapshotEntry {
   const tuple: WireSnapshotEntry = [
     entry.id,
     wrapUnits(Math.round(pos.x * POS_SCALE)),
-    Math.min(MAX_ALTITUDE_UNITS, Math.max(0, Math.round(pos.y * POS_SCALE))),
+    Math.min(
+      MAX_ALTITUDE_UNITS,
+      Math.max(MIN_ALTITUDE_UNITS, Math.round(pos.y * POS_SCALE)),
+    ),
     wrapUnits(Math.round(pos.z * POS_SCALE)),
     Math.round((quat.x / norm) * QUAT_SCALE),
     Math.round((quat.y / norm) * QUAT_SCALE),
@@ -80,8 +87,16 @@ export function encodeSnapshotEntry(entry: SnapshotEntry): WireSnapshotEntry {
     Math.round(entry.hp),
   ];
   // Spawn protection is the rare case: send the flag only when it is set and
-  // let the decoder read an absent slot as false.
-  if (entry.prot) tuple[10] = 1;
+  // let the decoder read an absent slot as false. A pose age (O2) rides in
+  // the slot after it — omitted at 0 (every bot row) — and forces the flag
+  // slot to an explicit 0/1, so the tuple never serialises a hole as null.
+  const age = Math.max(0, Math.round(entry.age ?? 0));
+  if (age > 0) {
+    tuple[10] = entry.prot ? 1 : 0;
+    tuple[11] = age;
+  } else if (entry.prot) {
+    tuple[10] = 1;
+  }
   return tuple;
 }
 
@@ -108,6 +123,7 @@ export function decodeSnapshotEntry(w: WireSnapshotEntry): SnapshotEntry {
     },
     hp: w[9],
     prot: w[10] === 1,
+    age: w[11] ?? 0,
   };
 }
 

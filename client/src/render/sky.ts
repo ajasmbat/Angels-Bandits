@@ -17,6 +17,7 @@ import {
   FORECOURT_LAWN_OUTER,
   GROUND_FORECOURT,
   GROUND_PARK,
+  GROUND_RIVER,
   GROUND_SITE,
   PARK_LAMP_COUNT,
   PARK_LAMP_PHASE,
@@ -41,7 +42,11 @@ import {
 } from "@angels-bandits/common/constants";
 import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { AB_AA_GLSL } from "./aa-glsl";
+import { RENDER_ORDER } from "./render-order";
+import { RIVER_GROUND_PARS } from "./river";
 import { SIGN_PALETTE } from "./signage";
+import type { SkyState } from "./skycycle";
 import { LAMP_STATIONS_MINUS, LAMP_STATIONS_PLUS } from "./streetlights";
 import {
   GROUND_WET_EMISSIVE_GLSL,
@@ -95,7 +100,19 @@ export const FOG_NEAR = 140;
 
 const GROUND_SIZE = 2 * FOG_DISTANCE + 200; // fully covers the fog radius
 
-export function setupSky(scene: THREE.Scene): void {
+/** Direction toward the warm rim light (the old dusk sun), world space. The
+ * L12 sky cycle swings it to the opposite quarter for pre-dawn. */
+export const GLOW_DIR = new THREE.Vector3(-0.6, 0.18, 0.78).normalize();
+
+/** The four lights setupSky adds — handles for the L12 sky cycle. */
+export interface SkyRig {
+  ambient: THREE.AmbientLight;
+  moon: THREE.DirectionalLight;
+  glow: THREE.DirectionalLight;
+  hemi: THREE.HemisphereLight;
+}
+
+export function setupSky(scene: THREE.Scene): SkyRig {
   scene.background = new THREE.Color(DUSK.sky);
   scene.fog = new THREE.Fog(DUSK.sky, FOG_NEAR, FOG_DISTANCE);
 
@@ -104,16 +121,21 @@ export function setupSky(scene: THREE.Scene): void {
   // hemisphere supplies sky-blue from above and street-glow from below — the
   // canyon reads as lit by its own city. Still no shadow maps and no point
   // lights: these four are uniform-cost per fragment.
-  scene.add(new THREE.AmbientLight(DUSK.ambient, LIGHT_RIG.ambient));
+  const ambient = new THREE.AmbientLight(DUSK.ambient, LIGHT_RIG.ambient);
+  scene.add(ambient);
   const moon = new THREE.DirectionalLight(DUSK.moon, LIGHT_RIG.moon);
   moon.position.copy(MOON_DIR); // direction only
   scene.add(moon);
   const glow = new THREE.DirectionalLight(DUSK.glow, LIGHT_RIG.glow);
-  glow.position.set(-0.6, 0.18, 0.78); // the old dusk sun, now a rim
+  glow.position.copy(GLOW_DIR); // the old dusk sun, now a rim
   scene.add(glow);
-  scene.add(
-    new THREE.HemisphereLight(DUSK.hemiSky, DUSK.hemiGround, LIGHT_RIG.hemi),
+  const hemi = new THREE.HemisphereLight(
+    DUSK.hemiSky,
+    DUSK.hemiGround,
+    LIGHT_RIG.hemi,
   );
+  scene.add(hemi);
+  return { ambient, moon, glow, hemi };
 }
 
 /** Canvas fraction at which the gradient becomes the fog colour for good.
@@ -123,30 +145,20 @@ export function setupSky(scene: THREE.Scene): void {
  * guarantee; pinned in client/test/sky.test.ts). */
 export const SKY_FOG_STOP = 0.4;
 
-/** 1×256 vertical gradient: deep blue zenith, through moonlit blue and a
- * violet light-pollution band, to the fog colour from SKY_FOG_STOP down. */
-function skyGradientTexture(): THREE.Texture {
-  const canvas = document.createElement("canvas");
-  canvas.width = 1;
-  canvas.height = 256;
-  const ctx = canvas.getContext("2d");
-  if (ctx) {
-    const fog = `#${DUSK.sky.toString(16).padStart(6, "0")}`;
-    const grad = ctx.createLinearGradient(0, 0, 0, 256);
-    grad.addColorStop(0.0, "#060a26"); // zenith — deep blue night
-    grad.addColorStop(0.14, "#0b1336"); // night blue
-    grad.addColorStop(0.25, "#131d4a"); // moonlit blue
-    grad.addColorStop(0.32, "#22245a"); // lifting toward the band
-    grad.addColorStop(0.37, "#30295f"); // violet light pollution
-    grad.addColorStop(SKY_FOG_STOP, fog); // the horizon glow IS the fog
-    grad.addColorStop(1.0, fog);
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, 1, 256);
-  }
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
+/** Vertical gradient stops, as polar-angle fractions (0 zenith, 0.5 the
+ * horizon): the last is SKY_FOG_STOP, from which the sky IS the fog colour. */
+export const SKY_STOPS = [0, 0.14, 0.25, 0.32, 0.37, SKY_FOG_STOP] as const;
+/** VO1 night gradient (sRGB): deep blue zenith, night blue, moonlit blue,
+ * lifting toward the band, violet light pollution — then DUSK.sky. */
+export const SKY_GRADIENT_NIGHT = [
+  0x060a26, 0x0b1336, 0x131d4a, 0x22245a, 0x30295f,
+] as const;
+/** Elevation (rad) above SKY_FOG_STOP over which the moon halo and the
+ * dawn/dusk dome glows ramp in from exactly zero — nothing additive may
+ * touch the fog-coloured band (a fogged tower would show against it). */
+export const SKY_GLOW_RAMP = 0.06;
+/** Elevation of SKY_FOG_STOP, rad. */
+export const SKY_FOG_ELEVATION = (0.5 - SKY_FOG_STOP) * Math.PI;
 
 /** Moon disc angular radius, radians (~2.6° — big and cinematic, the way a
  * long lens shows it; the real 0.26° would be a sub-pixel dot at FOV 70). */
@@ -162,21 +174,36 @@ const vec3Literal = (v: readonly number[]): string =>
   `vec3(${v.map((c) => c.toFixed(5)).join(", ")})`;
 
 /**
- * The moon, drawn by the dome's own fragment shader — no extra mesh, so no
- * extra draw call. The dome is centred on the camera, so its local vertex
- * position IS the view direction; the disc lives in the tangent plane at
- * MOON_DIR (gnomonic projection, the same mapping a camera-facing quad
- * would give). The dome draws first and the city paints over it, so towers
- * occlude the moon exactly as they occlude the sky.
+ * The sky, drawn entirely by the dome's own fragment shader — no texture,
+ * no extra mesh, so no extra draw call. The dome is centred on the camera,
+ * so its local vertex position IS the view direction.
+ *
+ * Gradient (L12 sky cycle): the stops are uniforms, mixed piecewise-linearly
+ * in sRGB and decoded to linear exactly as the old 1×256 canvas texture was;
+ * from SKY_FOG_STOP down it is the horizon uniform, which the cycle feeds
+ * from the SAME colour it hands the fog. A dusk glow (west) and a dawn glow
+ * (east) are added above the stop only.
+ *
+ * Moon: the disc lives in the tangent plane at uMoonDir (gnomonic
+ * projection, the same mapping a camera-facing quad would give). The dome
+ * draws first and the city paints over it, so towers occlude the moon
+ * exactly as they occlude the sky.
  */
-function moonPatch(material: THREE.MeshBasicMaterial): void {
+function skyPatch(material: THREE.MeshBasicMaterial, u: SkyUniforms): void {
   const peak = new THREE.Color(DUSK.moon);
   const lum = 0.2126 * peak.r + 0.7152 * peak.g + 0.0722 * peak.b;
   peak.multiplyScalar(MOON_PEAK / lum);
-  // Tangent frame around MOON_DIR (MOON_DIR is never vertical).
-  const east = new THREE.Vector3(0, 1, 0).cross(MOON_DIR).normalize();
-  const north = MOON_DIR.clone().cross(east);
+  const n = SKY_STOPS.length;
+  // Chained mixes: each is 0 before its interval and 1 after it, so the
+  // chain IS the piecewise-linear gradient.
+  const chain = SKY_STOPS.slice(1)
+    .map(
+      (f, i) =>
+        `  c = mix(c, uSkyStops[${i + 1}], clamp((f - ${SKY_STOPS[i]?.toFixed(5)}) / ${(f - (SKY_STOPS[i] as number)).toFixed(5)}, 0.0, 1.0));`,
+    )
+    .join("\n");
   material.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, u);
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", "#include <common>\nvarying vec3 vSkyDir;")
       .replace(
@@ -188,11 +215,22 @@ function moonPatch(material: THREE.MeshBasicMaterial): void {
         "#include <common>",
         /* glsl */ `#include <common>
 varying vec3 vSkyDir;
+uniform vec3 uSkyStops[${n}];
+uniform vec3 uMoonDir;
+uniform vec3 uMoonEast;
+uniform vec3 uMoonNorth;
+uniform float uMoonVis;
+uniform vec3 uDuskGlow;
+uniform vec3 uDawnGlow;
+uniform vec2 uDuskDir;
 float mHash(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
 float mNoise(vec2 p) {
   vec2 i = floor(p); vec2 f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
   return mix(mix(mHash(i), mHash(i + vec2(1.0, 0.0)), u.x),
              mix(mHash(i + vec2(0.0, 1.0)), mHash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+vec3 abSrgbDecode(vec3 c) {
+  return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
 }`,
       )
       .replace(
@@ -200,22 +238,37 @@ float mNoise(vec2 p) {
         /* glsl */ `#include <map_fragment>
 {
   vec3 sd = normalize(vSkyDir);
-  float facing = dot(sd, ${vec3Literal(MOON_DIR.toArray())});
+  float f = acos(clamp(sd.y, -1.0, 1.0)) / PI;
+  vec3 c = uSkyStops[0];
+${chain}
+  vec3 sky = abSrgbDecode(c);
+  // Nothing additive below the fog stop: ramp in from exactly zero above it.
+  float el = asin(clamp(sd.y, -1.0, 1.0));
+  float above = smoothstep(${SKY_FOG_ELEVATION.toFixed(5)}, ${(SKY_FOG_ELEVATION + SKY_GLOW_RAMP).toFixed(5)}, el);
+  // Dusk / dawn glow: hugs the band just above the stop, in one quarter.
+  vec2 hz = sd.xz / max(length(sd.xz), 1e-4);
+  float band = above * (1.0 - smoothstep(${(SKY_FOG_ELEVATION + SKY_GLOW_RAMP).toFixed(5)}, ${(SKY_FOG_ELEVATION + 0.5).toFixed(5)}, el));
+  float side = dot(hz, uDuskDir);
+  sky += uDuskGlow * band * pow(max(side, 0.0), 3.0);
+  sky += uDawnGlow * band * pow(max(-side, 0.0), 3.0);
+  diffuseColor.rgb *= sky;
+  float facing = dot(sd, uMoonDir);
   if (facing > 0.0) {
     // Disc-radius units on the tangent plane at the moon.
-    vec2 q = vec2(dot(sd, ${vec3Literal(east.toArray())}),
-                  dot(sd, ${vec3Literal(north.toArray())}))
+    vec2 q = vec2(dot(sd, uMoonEast), dot(sd, uMoonNorth))
              / (facing * ${MOON_TAN.toFixed(6)});
     float r = length(q);
     vec3 moonCol = ${vec3Literal(peak.toArray())};
     // Disc: soft limb darkening + maria (low-frequency dark patches).
-    float disc = 1.0 - smoothstep(0.96, 1.0, r);
+    // The disc itself never reaches the fog band (MOON_EL_LOW); only the
+    // wide halo could, so only the halo takes the ramp.
+    float disc = (1.0 - smoothstep(0.96, 1.0, r)) * uMoonVis;
     float maria = mNoise(q * 2.3 + 3.1) * 0.6 + mNoise(q * 5.1) * 0.4;
     float limb = 0.78 + 0.22 * sqrt(max(0.0, 1.0 - r * r));
     vec3 discCol = moonCol * limb * (1.0 - 0.28 * smoothstep(0.45, 0.75, maria));
     // Halo, added over the sky: a tight corona and a wide moonlit haze.
     float d = max(r - 1.0, 0.0);
-    float halo = 0.22 * exp(-d * 2.6) + 0.07 * exp(-d * 0.55);
+    float halo = (0.22 * exp(-d * 2.6) + 0.07 * exp(-d * 0.55)) * uMoonVis * above;
     // The storm flash tints the dome (diffuse) up to ~2.6x; the moon takes
     // its hue but never its gain, so it can never out-shine a tracer.
     vec3 hue = diffuse / max(1.0, max(diffuse.r, max(diffuse.g, diffuse.b)));
@@ -226,8 +279,26 @@ float mNoise(vec2 p) {
       );
   };
   // Unique key: three caches programs on onBeforeCompile.toString().
-  material.customProgramCacheKey = () => "vo1-sky-dome-moon";
+  material.customProgramCacheKey = () => "l12-sky-dome-cycle";
 }
+
+/** The dome's uniforms — written by SkyDome.setCycle once per frame. */
+interface SkyUniforms {
+  [name: string]: THREE.IUniform;
+  uSkyStops: { value: THREE.Vector3[] };
+  uMoonDir: { value: THREE.Vector3 };
+  uMoonEast: { value: THREE.Vector3 };
+  uMoonNorth: { value: THREE.Vector3 };
+  uMoonVis: { value: number };
+  uDuskGlow: { value: THREE.Vector3 };
+  uDawnGlow: { value: THREE.Vector3 };
+  uDuskDir: { value: THREE.Vector2 };
+}
+
+/** Linear → sRGB transfer (the gradient uniforms are sRGB, like the old
+ * canvas). Exact IEC 61966-2-1. */
+const encodeSrgb = (c: number): number =>
+  c <= 0.0031308 ? c * 12.92 : 1.055 * c ** (1 / 2.4) - 0.055;
 
 /** Stars on the dome: count, and the elevation band they occupy. */
 export const STAR_COUNT = 900;
@@ -288,7 +359,7 @@ function starField(seed: number): THREE.Points {
       fog: false,
     }),
   );
-  points.renderOrder = -1;
+  points.renderOrder = RENDER_ORDER.sky;
   points.frustumCulled = false;
   return points;
 }
@@ -296,22 +367,71 @@ function starField(seed: number): THREE.Points {
 /** Camera-following gradient dome, just inside the far plane, above the fog. */
 export class SkyDome {
   readonly mesh: THREE.Mesh;
+  private readonly stars: THREE.Points;
+  private readonly uniforms: SkyUniforms;
 
   constructor() {
     const material = new THREE.MeshBasicMaterial({
-      map: skyGradientTexture(),
       side: THREE.BackSide,
       fog: false,
       depthWrite: false,
     });
-    moonPatch(material);
+    // Starts on the VO1 night (the L12 cycle overwrites it every frame).
+    const stops = [...SKY_GRADIENT_NIGHT, DUSK.sky].map((hex) => {
+      const v = new THREE.Vector3();
+      return v
+        .set((hex >> 16) & 255, (hex >> 8) & 255, hex & 255)
+        .divideScalar(255);
+    });
+    const dusk = new THREE.Vector2(GLOW_DIR.x, GLOW_DIR.z).normalize();
+    this.uniforms = {
+      uSkyStops: { value: stops },
+      uMoonDir: { value: MOON_DIR.clone() },
+      uMoonEast: { value: new THREE.Vector3() },
+      uMoonNorth: { value: new THREE.Vector3() },
+      uMoonVis: { value: 1 },
+      uDuskGlow: { value: new THREE.Vector3() },
+      uDawnGlow: { value: new THREE.Vector3() },
+      uDuskDir: { value: dusk },
+    };
+    this.setMoon(MOON_DIR);
+    skyPatch(material, this.uniforms);
     this.mesh = new THREE.Mesh(
       new THREE.SphereGeometry(FOG_DISTANCE + 60, 24, 16),
       material,
     );
-    this.mesh.renderOrder = -1; // always the backdrop
+    this.mesh.renderOrder = RENDER_ORDER.sky; // always the backdrop
     // Stars ride the dome: same centre, hidden with it inside the cloud deck.
-    this.mesh.add(starField(0x57a2f1e1));
+    this.stars = starField(0x57a2f1e1);
+    this.mesh.add(this.stars);
+  }
+
+  /** Point the moon (and its tangent frame) along `dir` (unit, never
+   * vertical — the cycle's arc tops out far below the zenith). */
+  private setMoon(dir: { x: number; y: number; z: number }): void {
+    const u = this.uniforms;
+    u.uMoonDir.value.set(dir.x, dir.y, dir.z);
+    u.uMoonEast.value.set(0, 1, 0).cross(u.uMoonDir.value).normalize();
+    u.uMoonNorth.value.copy(u.uMoonDir.value).cross(u.uMoonEast.value);
+  }
+
+  /** L12 sky cycle: write this frame's gradient, glows, moon and stars. */
+  setCycle(s: SkyState): void {
+    const u = this.uniforms;
+    const stops = [s.zenith, s.sky14, s.sky25, s.sky32, s.sky37, s.horizon];
+    for (let i = 0; i < stops.length; i++) {
+      const c = stops[i] as readonly number[];
+      (u.uSkyStops.value[i] as THREE.Vector3).set(
+        encodeSrgb(c[0] as number),
+        encodeSrgb(c[1] as number),
+        encodeSrgb(c[2] as number),
+      );
+    }
+    u.uDuskGlow.value.fromArray(s.duskGlow);
+    u.uDawnGlow.value.fromArray(s.dawnGlow);
+    u.uMoonVis.value = s.moonVis;
+    this.setMoon({ x: s.moonDir[0], y: s.moonDir[1], z: s.moonDir[2] });
+    (this.stars.material as THREE.PointsMaterial).opacity = s.stars;
   }
 
   /** Keep the dome centered on the viewer. */
@@ -442,6 +562,7 @@ const N = {
   park: `${GROUND_PARK}`,
   forecourt: `${GROUND_FORECOURT}`,
   site: `${GROUND_SITE}`,
+  river: `${GROUND_RIVER}`,
   moonDir: `vec3(${MOON_DIR.x.toFixed(4)}, ${MOON_DIR.y.toFixed(4)}, ${MOON_DIR.z.toFixed(4)})`,
 } as const;
 
@@ -475,7 +596,7 @@ vWorldXZ = uGroundOrigin + vec2(position.x, -position.y);
 
 const GROUND_FRAGMENT_PARS = /* glsl */ `
 varying vec2 vWorldXZ;
-float abHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+${AB_AA_GLSL}float abHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 float abNoise(vec2 p) {
   vec2 i = floor(p);
   vec2 f = fract(p);
@@ -533,10 +654,10 @@ int abBlockKind(vec2 w) {
 }
 // A night park, l = metres from the block centre. Returns albedo; adds the
 // lamp pools and the lit pond rim to em; marks open water in water.
-vec3 abParkPaint(vec2 l, float n, inout vec3 em, inout float water) {
+vec3 abParkPaint(vec2 l, float n, float aa, inout vec3 em, inout float water) {
   float r = length(l);
-  // Mown lawn: 8 m stripes and a soft mottle.
-  float stripe = step(0.5, fract(l.x / 8.0));
+  // Mown lawn: 8 m stripes (the back half of each period) and a soft mottle.
+  float stripe = mix(0.5, abLine(abPeriodic(l.x, 6.0, 8.0), 2.0, aa), abDetail(8.0, aa));
   vec3 c = ${GROUND_COLORS.lawn} * (1.0 + (n - 0.5) * 0.45) * (0.92 + 0.16 * stripe);
   // A low hedge line where the lawn meets the pavement.
   if (max(abs(l.x), abs(l.y)) > ${N.lawnHalf} - 1.2) c = ${GROUND_COLORS.hedge};
@@ -573,13 +694,16 @@ vec3 abPondNeon(vec2 l, vec2 w) {
   return AB_NEON[hue] * present * band * ripple * 0.4;
 }
 // A landmark forecourt: granite slabs, lawn panels each side of the entrance.
-vec3 abForecourtPaint(vec2 l, float n) {
+vec3 abForecourtPaint(vec2 l, float n, float aa) {
   vec2 a = abs(l);
   float off = max(a.x, a.y);
   float along = min(a.x, a.y);
   vec3 c = ${GROUND_COLORS.paving} * (1.0 + (n - 0.5) * 0.25);
-  vec2 j = mod(l, 6.0);
-  c = mix(c, ${GROUND_COLORS.slabJoint}, max(step(j.x, 0.12), step(j.y, 0.12)));
+  // Slab joints: 0.12 m lines every 6 m, resolving to their 2 % share.
+  float jd = abDetail(6.0, aa);
+  float jx = mix(0.02, abLine(abPeriodic(l.x, 0.06, 6.0), 0.06, aa), jd);
+  float jy = mix(0.02, abLine(abPeriodic(l.y, 0.06, 6.0), 0.06, aa), jd);
+  c = mix(c, ${GROUND_COLORS.slabJoint}, max(jx, jy));
   if (off > ${N.lawnIn} && off < ${N.lawnOut} && along > ${N.gate} && along < ${N.lawnOut}) {
     c = ${GROUND_COLORS.lawn} * (1.0 + (n - 0.5) * 0.4);
   }
@@ -591,9 +715,19 @@ vec3 abSitePaint(vec2 w, float n) {
     smoothstep(0.45, 0.62, abNoise(w * 0.18)));
   return c * (1.0 + (abNoise(w * 3.1) - 0.5) * 0.4) * (1.0 + (n - 0.5) * 0.2);
 }
+// --- L11 river (render/river.ts owns this paint) ---
+${RIVER_GROUND_PARS}
 `;
 
 const GROUND_FRAGMENT_MAIN = /* glsl */ `
+// O1: ground meters per pixel, taken HERE at the top level — every marking
+// below sits inside a branch, where derivatives are undefined — and before
+// the river discard, after which they are undefined too.
+vec2 abPx = fwidth(vWorldXZ);
+float abAA = max(abPx.x, abPx.y);
+// L11: the open river channel is a hole in the ground (the water and the
+// embankment walls are render/river.ts meshes). Bridge decks stay painted.
+if (abRiverOpen(vWorldXZ)) discard;
 float abDx = abLineDist(vWorldXZ.x);
 float abDz = abLineDist(vWorldXZ.y);
 float abAdx = abs(abDx);
@@ -613,7 +747,9 @@ if (abRoad > 0.5) {
   abPud = smoothstep(0.5, 0.68, abNoise(vWorldXZ * 0.085 + 13.0));
   abWet = 0.45 + 0.55 * abPud;
   // Wear mask: markings survive where it passes (light wear on the wet look).
-  float abWear = step(0.18, abNoise(vWorldXZ * 0.77 + 40.0));
+  // Value noise at 0.77/m: its gradient is ~1.2 per metre, and ~93 % of it
+  // lies above the threshold — what the mask resolves to once sub-pixel.
+  float abWear = mix(0.93, abEdge(0.18, abNoise(vWorldXZ * 0.77 + 40.0), abAA * 1.2), abDetail(1.3, abAA));
   if (abRoadX * abRoadZ < 0.5) { // outside the intersection core
     float abAlong = abRoadX > 0.5 ? vWorldXZ.y : vWorldXZ.x;
     float abCross = abRoadX > 0.5 ? abDx : abDz;
@@ -621,17 +757,20 @@ if (abRoad > 0.5) {
     float abOther = abRoadX > 0.5 ? abAdz : abAdx;
     if (abOther <= ${G.xwalkOut}) {
       // Crosswalk zebra on this approach: stripes repeat across the roadway.
-      float abS = mod(abRoadX > 0.5 ? vWorldXZ.x : vWorldXZ.y, 1.7);
-      float abZebra = step(abS, 0.95) * (1.0 - step(${G.road} - 0.6, abAcr)) * abWear;
+      // Stripes 0.95 m wide every 1.7 m, resolving to their 56 % duty cycle.
+      float abS = abPeriodic(abRoadX > 0.5 ? vWorldXZ.x : vWorldXZ.y, 0.475, 1.7);
+      float abStripe = mix(0.56, abLine(abS, 0.475, abAA), abDetail(1.7, abAA));
+      float abZebra = abStripe * (1.0 - abEdge(${G.road} - 0.6, abAcr, abAA)) * abWear;
       abPaint = mix(abPaint, ${GROUND_COLORS.zebra}, abZebra * 0.9);
       abEmissive += ${GROUND_COLORS.zebra} * abZebra * ${MARKING_GLOW};
     } else {
       // Dashed center line (3 m on / 3 m off) + solid lane-edge lines.
-      float abDash = (1.0 - step(0.18, abAcr)) * (1.0 - step(3.0, mod(abAlong, 6.0))) * abWear;
-      float abEdge = step(${G.edgeIn}, abAcr) * (1.0 - step(${G.edgeOut}, abAcr)) * abWear;
+      float abDashOn = mix(0.5, abLine(abPeriodic(abAlong, 1.5, 6.0), 1.5, abAA), abDetail(6.0, abAA));
+      float abDash = abLine(abAcr, 0.18, abAA) * abDashOn * abWear;
+      float abEdgeLine = abLine(abs(abAcr - (${G.edgeIn} + ${G.edgeOut}) * 0.5), (${G.edgeOut} - ${G.edgeIn}) * 0.5, abAA) * abWear;
       abPaint = mix(abPaint, ${GROUND_COLORS.marking}, abDash * 0.95);
-      abPaint = mix(abPaint, ${GROUND_COLORS.edge}, abEdge * 0.85);
-      abEmissive += (${GROUND_COLORS.marking} * abDash + ${GROUND_COLORS.edge} * abEdge * 0.6) * ${MARKING_GLOW};
+      abPaint = mix(abPaint, ${GROUND_COLORS.edge}, abEdgeLine * 0.85);
+      abEmissive += (${GROUND_COLORS.marking} * abDash + ${GROUND_COLORS.edge} * abEdgeLine * 0.6) * ${MARKING_GLOW};
     }
     // Wet sheen: lamp glow smeared into a warm streak under each lamp.
     float abStr =
@@ -639,9 +778,9 @@ if (abRoad > 0.5) {
       abStreak(abStationDist(abAlong, ${G.stationsMinus}), abCross + ${G.streakCross});
     abEmissive += ${GROUND_COLORS.lampWarm} * abStr * ${STREAK_GLOW};
     // Neon sign spill along both curbs (side = which curb).
-    float abLine = floor((abRoadX > 0.5 ? vWorldXZ.x : vWorldXZ.y) / ${G.pitch} + 0.5);
+    float abStreetLine = floor((abRoadX > 0.5 ? vWorldXZ.x : vWorldXZ.y) / ${G.pitch} + 0.5);
     float abSide = step(0.0, abCross);
-    abNeon = abNeonSpill(abLine, abAlong, abSide, abAcr - ${G.neonCross});
+    abNeon = abNeonSpill(abStreetLine, abAlong, abSide, abAcr - ${G.neonCross});
   }
   // Standing water darkens everything under it, paint included.
   abPaint *= mix(1.0, ${PUDDLE_DARKEN}, abPud);
@@ -651,13 +790,15 @@ if (abRoad > 0.5) {
   if (max(abWalkX, abWalkZ) > 0.5) {
     // Sidewalk concrete with expansion joints every 5 m and a curb stone.
     abPaint = ${GROUND_COLORS.sidewalk} * (1.0 + (abNoiseV - 0.5) * 0.3);
+    // Joints: 0.15 m lines every 5 m, resolving to their 3 % share.
+    float abJd = abDetail(5.0, abAA);
     float abJoint = max(
-      abWalkX * step(mod(vWorldXZ.y, 5.0), 0.15),
-      abWalkZ * step(mod(vWorldXZ.x, 5.0), 0.15));
+      abWalkX * mix(0.03, abLine(abPeriodic(vWorldXZ.y, 0.075, 5.0), 0.075, abAA), abJd),
+      abWalkZ * mix(0.03, abLine(abPeriodic(vWorldXZ.x, 0.075, 5.0), 0.075, abAA), abJd));
     abPaint = mix(abPaint, ${GROUND_COLORS.seam}, abJoint);
     float abCurb = max(
-      abWalkX * (1.0 - step(${G.curb} + 0.5, abAdx)),
-      abWalkZ * (1.0 - step(${G.curb} + 0.5, abAdz)));
+      abWalkX * (1.0 - abEdge(${G.curb} + 0.5, abAdx, abAA)),
+      abWalkZ * (1.0 - abEdge(${G.curb} + 0.5, abAdz, abAA)));
     abPaint = mix(abPaint, ${GROUND_COLORS.curb}, abCurb);
   } else {
     abPaint = ${GROUND_COLORS.interior}; // block interiors: darkest
@@ -665,7 +806,7 @@ if (abRoad > 0.5) {
     int abKind = abBlockKind(vWorldXZ);
     vec2 abLocal = mod(vWorldXZ, ${G.pitch}) - ${G.pitch} * 0.5;
     if (abKind == ${N.park}) {
-      abPaint = abParkPaint(abLocal, abNoiseV, abEmissive, abWater);
+      abPaint = abParkPaint(abLocal, abNoiseV, abAA, abEmissive, abWater);
       if (abWater > 0.5) {
         // Open water: the wet look's sky sheen at full wetness, plus the
         // streetwall's neon smeared across the surface.
@@ -673,14 +814,23 @@ if (abRoad > 0.5) {
         abNeon = abPondNeon(abLocal, vWorldXZ);
       }
     } else if (abKind == ${N.forecourt}) {
-      abPaint = abForecourtPaint(abLocal, abNoiseV);
+      abPaint = abForecourtPaint(abLocal, abNoiseV, abAA);
     } else if (abKind == ${N.site}) {
       abPaint = abSitePaint(vWorldXZ, abNoiseV);
+    } else if (abKind == ${N.river}) {
+      abPaint = abPromenadePaint(vWorldXZ, abNoiseV, ${GROUND_COLORS.paving}, ${GROUND_COLORS.slabJoint});
     }
   }
 }
 diffuseColor.rgb = abPaint;
 `;
+
+/** The ground patch sources, for tests that assert on the shader without a
+ * GPU (the AA contract: every marking filtered, derivatives at top level). */
+export const GROUND_SHADER_SOURCE = {
+  fragmentPars: GROUND_FRAGMENT_PARS,
+  fragmentMain: GROUND_FRAGMENT_MAIN,
+} as const;
 
 export class GroundPlane {
   readonly mesh: THREE.Mesh;

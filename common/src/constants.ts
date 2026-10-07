@@ -32,6 +32,9 @@ export const EMISSIVE_TRAIL = 0.9;
 export const EMISSIVE_SIGN = 0.93;
 /** Engine exhaust flicker at full throttle — a warm ember, below the lamps. */
 export const EMISSIVE_EXHAUST = 0.95;
+/** L1 car-alarm hazard flashers at blink peak — street furniture brightness,
+ * a touch under the lamp heads they flash beneath. */
+export const EMISSIVE_HAZARD = 0.96;
 export const EMISSIVE_LAMP = 0.98;
 /** Steady red/green/white aviation lights on every plane's wingtips/tail. */
 export const EMISSIVE_NAVLIGHT = 1.0;
@@ -196,10 +199,13 @@ export const CHASE_HEIGHT = 6;
 export const CAMERA_RESPONSE = 3.5;
 
 // --- Networking rates ---
-/** Client → server input/state rate, Hz. Unchanged by ANGE-4KO2W2: one
- * plane's pose is already cheap, and raising it would not shorten the interp
- * buffer (that floor is set by the DOWN rate). */
-export const TICK_UP_HZ = 20;
+/** Client → server input/state rate, Hz. Raised 20 → 30 (O2): it does not
+ * shorten the interp buffer (that floor is set by the DOWN rate), but each
+ * 20 Hz snapshot now carries a pose at most 33 ms old instead of 50, and the
+ * pose's own timestamp rides along (PoseMsg.t) so the remaining hold never
+ * shows up as judder. One pose is ~120 bytes; the server has no pose rate
+ * limiter, and validatePose's 20 ms dt floor sits under the 33 ms interval. */
+export const TICK_UP_HZ = 30;
 /** Server → client snapshot rate, Hz. Raised 15 → 20 (ANGE-4KO2W2) and paid
  * for by snapshot quantisation (common/src/net.ts): the wire got ~2.6x
  * cheaper per snapshot, so a 33% faster cadence still costs far less than
@@ -235,6 +241,11 @@ export const INTERP_DELAY_MAX_MS = 250;
  * what makes the controller grow faster than it shrinks — and what stops it
  * oscillating on alternating jitter. ~1.7 s half-life at 20 Hz. */
 export const INTERP_JITTER_DECAY = 0.02;
+/** Oldest a human's claimed pose time may be when it arrives, ms (O2). A
+ * claim older than this is clamped up to it: an honest client's stamp lags
+ * arrival by its own latency, and a dishonest one can backdate itself at
+ * most this far — never past what the INTERP_DELAY_MAX_MS hit budget covers. */
+export const POSE_AGE_MAX_MS = 200;
 /** Server accepts claimed speeds up to MAX_SPEED × this factor. */
 export const SPEED_TOLERANCE = 1.1;
 /** Slack added to the per-update displacement bound, meters (network jitter). */
@@ -332,6 +343,47 @@ export const BLIMP_ALT = 430;
 export const BLIMP_SPEED = 12;
 /** Blimp hull half-extents, m: half-length, half-height, half-width. */
 export const BLIMP_HULL = [46, 14, 14] as const;
+
+// --- Elevated train (L5) --- a lit train looping a rectangle of streets on a
+// viaduct, in common/src/city/train.ts. Same rule as the movers above: every
+// dimension is a collision dimension, so the deck, the pillars and the cars
+// are exactly as solid as they look.
+/** Top of the viaduct deck (the rail level), m above the street. */
+export const TRAIN_DECK_TOP = 25;
+/** Deck slab thickness, m — its underside is the ceiling you fly under. */
+export const TRAIN_DECK_THICK = 2;
+/** Deck half-width, m. Wide enough to cover a car's ~1 m overhang on a
+ * corner, narrow enough to stay far inside the 20 m lot lines. */
+export const TRAIN_DECK_HALF_WIDTH = 5;
+/** Square pillar side, m. Pillars stand on the street centreline, between
+ * the ±5 m traffic lanes. */
+export const TRAIN_PILLAR_SIDE = 2.4;
+/** Pillar spacing along a straight, m (a divisor of BLOCK_PITCH). */
+export const TRAIN_PILLAR_SPACING = 40;
+/** No pillar within this of a crossing street's centreline, m: the
+ * intersection square, its crosswalk and a margin stay clear for traffic. */
+export const TRAIN_PILLAR_CLEAR = 23;
+/** Corner radius where the loop turns from one street onto another, m. */
+export const TRAIN_CORNER_RADIUS = 32;
+/** One car, m: length, height, width; and the coupling gap between cars. */
+export const TRAIN_CAR_LENGTH = 16;
+export const TRAIN_CAR_HEIGHT = 3.8;
+export const TRAIN_CAR_WIDTH = 3.2;
+export const TRAIN_CAR_GAP = 1.5;
+/** Daylight between the deck top and a car's floor (bogies), m. */
+export const TRAIN_CAR_LIFT = 0.3;
+/** Seeded car count band. */
+export const TRAIN_CARS_MIN = 4;
+export const TRAIN_CARS_MAX = 6;
+/** Constant line speed, m/s. */
+export const TRAIN_SPEED = 22;
+/** Top of a car's roof — the highest solid the train line owns, m. */
+export const TRAIN_TOP = TRAIN_DECK_TOP + TRAIN_CAR_LIFT + TRAIN_CAR_HEIGHT;
+/** Canyon bots near the line hold at least TRAIN_TOP + this, m. */
+export const TRAIN_BOT_CLEAR = 16;
+/** "Near the line" for that floor, plan-view m: far enough out that a bot at
+ * MIN_SPEED has climbed over the deck before it gets there. */
+export const TRAIN_BOT_REACH = 150;
 
 // --- Fireworks (L2) --- a shared schedule in the strikesInWindow idiom:
 // every client computes the same bursts from (seed, synced clock), particles
@@ -746,3 +798,24 @@ export const BOT_HOLE_LINEUP_MAX = 450;
  * recently, ms, from no further than this before the mouth, m. */
 export const BOT_HOLE_FOLLOW_MS = 3000;
 export const BOT_HOLE_FOLLOW_RANGE = 400;
+
+// --- Sky traffic (L10) --- the news helicopter is a MOVER (solid, shared
+// with the bots); its pose is a pure function of (server-broadcast target,
+// server clock) in common/src/city/newsheli.ts. Airliners and the drone show
+// are scenery schedules in common/src/skytraffic.ts.
+/** News-heli orbit altitude band, m. Inside the ticket's 350-450 m band, but
+ * capped so the hull and rotor stay under the blimp's belly (BLIMP_ALT -
+ * BLIMP_HULL[1] = 416 m) and far above every roof (LANDMARK_HEIGHT 250). */
+export const NEWS_HELI_ALT_MIN = 350;
+export const NEWS_HELI_ALT_MAX = 390;
+/** Orbit radius around the kill site, m, and the speeds it flies at, m/s. */
+export const NEWS_HELI_ORBIT_R = 110;
+export const NEWS_HELI_ORBIT_SPEED = 28;
+export const NEWS_HELI_TRANSIT_SPEED = 50;
+/** Climb/descent rate cap during a transit, m/s. */
+export const NEWS_HELI_CLIMB = 6;
+/** Seconds the heading takes to swing onto a new course after a retarget. */
+export const NEWS_HELI_TURN_S = 3;
+/** Minimum time on station after arriving before the heli takes a new
+ * story, ms — rapid kills must not whip it between sites. */
+export const NEWS_HELI_DWELL_MS = 20000;

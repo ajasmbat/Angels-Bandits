@@ -35,25 +35,33 @@ import {
   craneBoxes,
 } from "@angels-bandits/common/city/movers";
 import {
+  NEWS_SPOT_REACH,
+  newsHeliBoxInto,
+  newsTargetAt,
+} from "@angels-bandits/common/city/newsheli";
+import {
   EMISSIVE_BEACON,
   EMISSIVE_NAVLIGHT,
   EMISSIVE_SIGN,
   EMISSIVE_STROBE,
   EMISSIVE_WINDOW,
+  NEWS_HELI_ORBIT_R,
 } from "@angels-bandits/common/constants";
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
 import type { SpotBeam } from "./searchlights";
-import { nearestImage } from "./wrapPlacement";
+import { nearestImage, nearestImageInto } from "./wrapPlacement";
 
 // --- Shared additive point cloud (nav lights, warning beacons, sparks) ---
 
 /** Lights the movers themselves need, plus headroom for a firework show:
  * 3 cranes x 3 + 4 helis x 5 + blimp x 8 = 37, the searchlight heads (10
- * rooftops + 4 spots), and FIREWORK_BURSTS x FIREWORK_SPARKS = 240. Fixed
- * cap, never grown. */
-const LIGHT_CAPACITY = 400;
+ * rooftops + 4 spots), and FIREWORK_BURSTS x FIREWORK_SPARKS = 240 — 291 —
+ * plus L10: the news heli (5 + its spot pool + spot head = 7) and the drone
+ * show (DRONE_COUNT = 200), which writes LAST so it is what a full cloud
+ * drops. 498 at the worst instant. Fixed cap, never grown per frame. */
+const LIGHT_CAPACITY = 640;
 
 /**
  * Program cache keys for the two patched materials here.
@@ -227,6 +235,10 @@ const gondolaBoost = GONDOLA_WARM.clone().multiplyScalar(
 const strobeRedBoost = NAV_RED.clone().multiplyScalar(
   emissiveBoost(NAV_RED, EMISSIVE_STROBE),
 );
+/** The news heli's pool of light on the ground under its spot: a big, dim
+ * sprite, deliberately sub-bloom (luminance ~0.3) — light, not a rung. */
+const SPOT_POOL = new THREE.Color(1.0, 0.94, 0.8).multiplyScalar(0.32);
+const SPOT_POOL_SIZE = 26;
 
 /** Lattice legs per mast, and how many horizontal ties up its height. */
 const MAST_LEGS = 4;
@@ -323,18 +335,37 @@ export class Movers {
   readonly rotors: THREE.InstancedMesh;
 
   private readonly field: MoverField;
+  /** The L10 news heli rides the helicopter slots AFTER the routes (1 or 0). */
+  private readonly newsSlots: number;
+  private readonly newsBox: MoverBox = {
+    x: 0,
+    y: 0,
+    z: 0,
+    hx: 0,
+    hy: 0,
+    hz: 0,
+    yaw: 0,
+    kind: "newsHeli",
+    id: 0,
+  };
   private readonly matrix = new THREE.Matrix4();
   private readonly quat = new THREE.Quaternion();
   private readonly tilt = new THREE.Quaternion();
   private readonly pos = new THREE.Vector3();
   private readonly scale = new THREE.Vector3();
+  /** Per-frame scratch (O2: the mover loop allocates as little as it can). */
+  private readonly image = { x: 0, y: 0, z: 0 };
+  private readonly warn = new THREE.Color();
   private static readonly UP = new THREE.Vector3(0, 1, 0);
   private static readonly FORWARD = new THREE.Vector3(1, 0, 0);
 
   constructor(field: MoverField) {
     this.field = field;
+    this.newsSlots = field.news ? 1 : 0;
 
-    const helis = field.aircraft.filter((a) => a.kind === "helicopter").length;
+    const helis =
+      field.aircraft.filter((a) => a.kind === "helicopter").length +
+      this.newsSlots;
     const box = new THREE.BoxGeometry(1, 1, 1);
     this.rig = new THREE.InstancedMesh(
       box,
@@ -350,10 +381,10 @@ export class Movers {
     // blimp envelope are the same shape at different scales, which is what
     // lets them share an InstancedMesh (and so one draw call).
     const hull = new THREE.SphereGeometry(0.5, 14, 10);
-    const aircraft = Math.max(1, field.aircraft.length);
+    const aircraft = Math.max(1, field.aircraft.length + this.newsSlots);
     this.hulls = new THREE.InstancedMesh(hull, createHullMaterial(), aircraft);
     const banner = new Float32Array(aircraft);
-    for (let i = 0; i < field.aircraft.length; i++) {
+    for (let i = 0; i < field.aircraft.length + this.newsSlots; i++) {
       banner[i] = field.aircraft[i]?.kind === "blimp" ? 1 : 2;
     }
     hull.setAttribute("aBanner", new THREE.InstancedBufferAttribute(banner, 1));
@@ -387,7 +418,7 @@ export class Movers {
     for (const a of this.field.aircraft) {
       n += a.kind === "helicopter" ? BOXES_PER_HELI : BOXES_PER_BLIMP;
     }
-    return n;
+    return n + this.newsSlots * BOXES_PER_HELI;
   }
 
   /**
@@ -429,7 +460,7 @@ export class Movers {
       cameraAt: Vec3,
     ): void => {
       if (rigIndex >= this.rig.count) return;
-      const p = nearestImage(cameraAt, { x: box.x, y: box.y, z: box.z });
+      const p = nearestImageInto(this.image, cameraAt, box);
       this.pos.set(p.x, p.y, p.z);
       this.quat.setFromAxisAngle(Movers.UP, box.yaw);
       this.scale.set(sx, sy, sz);
@@ -439,12 +470,11 @@ export class Movers {
 
     for (const site of this.field.cranes) {
       const parts = craneBoxes(site, serverTimeMs);
-      const byKind = new Map(parts.map((p) => [p.kind, p]));
-      const mast = byKind.get("mast");
-      const jib = byKind.get("jib");
-      const counter = byKind.get("counterJib");
-      const cable = byKind.get("cable");
-      const hook = byKind.get("hook");
+      const mast = parts.find((p) => p.kind === "mast");
+      const jib = parts.find((p) => p.kind === "jib");
+      const counter = parts.find((p) => p.kind === "counterJib");
+      const cable = parts.find((p) => p.kind === "cable");
+      const hook = parts.find((p) => p.kind === "hook");
       if (!mast || !jib || !counter || !cable || !hook) continue;
 
       // Mast as four corner legs plus horizontal ties: a lattice at close
@@ -529,7 +559,9 @@ export class Movers {
         0.78 *
           (0.5 +
             0.5 * Math.sin((serverTimeMs / WARNING_PERIOD_MS) * Math.PI * 2));
-      const warn = WARNING_RED.clone().multiplyScalar(WARNING_BOOST * pulse);
+      const warn = this.warn
+        .copy(WARNING_RED)
+        .multiplyScalar(WARNING_BOOST * pulse);
       const tip = nearestImage(cameraPos, {
         x: site.x + ax * site.jibLength,
         y: site.hubY,
@@ -551,10 +583,20 @@ export class Movers {
     let rotorIndex = 0;
     this.spots.length = 0;
     const strobeT = serverTimeMs % HELI_STROBE_PERIOD_MS;
-    for (let i = 0; i < this.field.aircraft.length; i++) {
+    const routes = this.field.aircraft.length;
+    for (let i = 0; i < routes + this.newsSlots; i++) {
       const route = this.field.aircraft[i];
-      if (!route) continue;
-      const box: MoverBox = aircraftBox(route, serverTimeMs);
+      const news = this.field.news;
+      let box: MoverBox;
+      if (route) box = aircraftBox(route, serverTimeMs);
+      else if (news) {
+        // L10: the SAME pose function the crash check and the bots use.
+        box = newsHeliBoxInto(
+          newsTargetAt(news, serverTimeMs),
+          serverTimeMs,
+          this.newsBox,
+        );
+      } else continue;
       const p = nearestImage(cameraPos, { x: box.x, y: box.y, z: box.z });
       const ax = Math.cos(box.yaw);
       const az = -Math.sin(box.yaw);
@@ -565,7 +607,7 @@ export class Movers {
         z: p.z + az * along + ax * across,
       });
 
-      if (route.kind === "helicopter") {
+      if (box.kind !== "blimp") {
         // Cabin: the front 58 % of the box, full height and width — so the
         // tail boom has somewhere to go and the whole thing reads as an
         // aircraft rather than an egg.
@@ -650,7 +692,7 @@ export class Movers {
         );
         lights.place(at(-box.hx * 0.92, box.hy * 0.95, 0), navWhiteBoost, 1.8);
         for (const off of HELI_STROBE_OFFSETS) {
-          const phase = (strobeT + route.id * 370) % HELI_STROBE_PERIOD_MS;
+          const phase = (strobeT + i * 370) % HELI_STROBE_PERIOD_MS;
           if (phase >= off && phase < off + HELI_STROBE_FLASH_MS) {
             lights.place(
               at(box.hx * 0.35, box.hy * 1.25, 0),
@@ -661,14 +703,37 @@ export class Movers {
           }
         }
         const lamp = at(box.hx * 0.7, -box.hy * 0.9, 0);
-        this.spots.push({
+        const spot: SpotBeam = {
           x: lamp.x,
           y: lamp.y,
           z: lamp.z,
           ax,
           az,
-          phase: route.id * 1.7,
-        });
+          phase: i * 1.7,
+        };
+        if (!route && news) {
+          // The news heli's spot holds the kill site once it is on station,
+          // and throws all the way down to a pool on the ground there.
+          const target = newsTargetAt(news, serverTimeMs);
+          const site = nearestImage(cameraPos, {
+            x: target.x,
+            y: 0,
+            z: target.z,
+          });
+          const dx = site.x - lamp.x;
+          const dz = site.z - lamp.z;
+          if (Math.hypot(dx, dz) < NEWS_HELI_ORBIT_R * 1.3) {
+            const dist = Math.hypot(dx, lamp.y, dz);
+            spot.aim = { x: dx / dist, y: -lamp.y / dist, z: dz / dist };
+            spot.length = Math.min(NEWS_SPOT_REACH, dist + 12);
+            lights.place(
+              { x: site.x, y: 1.5, z: site.z },
+              SPOT_POOL,
+              SPOT_POOL_SIZE,
+            );
+          }
+        }
+        this.spots.push(spot);
       } else {
         // Envelope: the full box length, a little shy of the box vertically
         // so the gondola hangs UNDER it and still inside the box.
@@ -755,10 +820,24 @@ export class Movers {
         },
       };
     });
-    const aircraft = this.field.aircraft.map((route) => {
+    const aircraft: {
+      id: number;
+      kind: string;
+      x: number;
+      y: number;
+      z: number;
+    }[] = this.field.aircraft.map((route) => {
       const b = aircraftBox(route, serverTimeMs);
       return { id: route.id, kind: route.kind, x: b.x, y: b.y, z: b.z };
     });
+    if (this.field.news) {
+      const b = newsHeliBoxInto(
+        newsTargetAt(this.field.news, serverTimeMs),
+        serverTimeMs,
+        this.newsBox,
+      );
+      aircraft.push({ id: b.id, kind: b.kind, x: b.x, y: b.y, z: b.z });
+    }
     this.rig.getMatrixAt(0, this.matrix);
     const e = this.matrix.elements;
     return {

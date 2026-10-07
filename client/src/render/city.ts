@@ -3,8 +3,9 @@
 // building. The whole city stays a single InstancedMesh (1 draw call), now
 // with one instance per SOLID (V2 setback tiers, plus H1 hole walls/lintels/
 // sills); each frame every instance is placed at its torus image nearest the
-// camera, which is what makes the seam invisible. Matrices for ~200 instances are a few KB —
-// re-uploading them per frame is far cheaper than extra draw calls.
+// camera, which is what makes the seam invisible. Only the instances whose
+// torus image actually flipped are rewritten and uploaded (O2) — a building's
+// image changes only as the camera crosses the half-world line from it.
 
 import {
   type Building,
@@ -20,8 +21,9 @@ import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { FacadeArchetype, archetypeFor } from "./archetypes";
 import { createBuildingsMaterial } from "./buildings-material";
+import { LiveClock, crewSchedule } from "./living-windows";
 import { roofStyleFor } from "./roofs";
-import { nearestImage } from "./wrapPlacement";
+import { ImageCache, InstanceUploads } from "./wrapPlacement";
 
 /**
  * VO2 "Neon Blue Hour" facade albedo — real building materials instead of
@@ -87,6 +89,11 @@ export class CityRenderer {
   private readonly index: CityIndex;
   private readonly instances: SolidInstance[];
   private readonly scratch = new THREE.Matrix4();
+  private readonly images: ImageCache;
+  private readonly uploads: InstanceUploads;
+  /** L3 living windows: the shader's live clock and its uniform. */
+  private readonly liveClock = new LiveClock();
+  private readonly liveTime = { value: 0 };
 
   constructor(seed: number) {
     this.buildings = generateCity(seed);
@@ -107,7 +114,7 @@ export class CityRenderer {
     geometry.translate(0, 0.5, 0);
     // Night-neon material with procedural emissive window grids (T5 art pass),
     // branching per instance on the facade archetype (set once below).
-    const material = createBuildingsMaterial();
+    const material = createBuildingsMaterial(this.liveTime);
 
     this.mesh = new THREE.InstancedMesh(
       geometry,
@@ -115,6 +122,11 @@ export class CityRenderer {
       this.instances.length,
     );
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.images = new ImageCache(
+      this.instances.map((inst) => inst.building.x),
+      this.instances.map((inst) => inst.building.z),
+    );
+    this.uploads = new InstanceUploads([this.mesh.instanceMatrix]);
     this.mesh.frustumCulled = false; // instances move relative to the camera every frame
 
     // Facade archetype per instance (all tiers of a building agree) — the
@@ -197,6 +209,17 @@ export class CityRenderer {
     );
     geometry.setAttribute("aHole", new THREE.InstancedBufferAttribute(hole, 4));
 
+    // L3 cleaning crew: aCrew = (visit start, duration, block cycle, 0) in
+    // live-clock seconds, the same on every solid of a building; cycle 0 =
+    // no crew this cycle. Static like aArchetype.
+    const crew = new Float32Array(this.instances.length * 4);
+    const rota = crewSchedule(this.buildings, seed);
+    this.instances.forEach((inst, i) => {
+      const slot = rota.get(inst.building);
+      if (slot) crew.set([slot.start, slot.duration, slot.cycle, 0], i * 4);
+    });
+    geometry.setAttribute("aCrew", new THREE.InstancedBufferAttribute(crew, 4));
+
     // Facade albedo per building (VO2 palette — see facadeColor above).
     const color = new THREE.Color();
     this.instances.forEach((inst, i) => {
@@ -224,15 +247,29 @@ export class CityRenderer {
     return this.instances.length;
   }
 
-  /** Place every solid at its building's torus image nearest the camera. */
+  /** Place every solid at its building's torus image nearest the camera —
+   * rewriting and uploading only the solids whose image flipped. */
   update(cameraPos: Vec3): void {
-    this.instances.forEach((inst, i) => {
-      const b = inst.building;
-      const p = nearestImage(cameraPos, { x: b.x, y: 0, z: b.z });
-      this.scratch.makeScale(inst.width, inst.height, inst.depth);
-      this.scratch.setPosition(p.x + inst.dx, inst.baseY, p.z + inst.dz);
-      this.mesh.setMatrixAt(i, this.scratch);
-    });
-    this.mesh.instanceMatrix.needsUpdate = true;
+    this.images.update(cameraPos, this.place);
+    this.uploads.flush();
+  }
+
+  private readonly place = (i: number, x: number, z: number): void => {
+    const inst = this.instances[i] as SolidInstance;
+    this.scratch.makeScale(inst.width, inst.height, inst.depth);
+    this.scratch.setPosition(x + inst.dx, inst.baseY, z + inst.dz);
+    this.mesh.setMatrixAt(i, this.scratch);
+    this.uploads.mark(i);
+  };
+
+  /** L3: advance the living-windows clock (server ms, null before the first
+   * snapshot; `nowMs` = the frame's performance.now()). */
+  updateLiveWindows(serverMs: number | null, nowMs: number): void {
+    this.liveTime.value = this.liveClock.update(serverMs, nowMs);
+  }
+
+  /** QA: pin the living-windows clock (live seconds), or null to follow the server. */
+  pinLiveWindows(sec: number | null): void {
+    this.liveClock.pinned = sec;
   }
 }

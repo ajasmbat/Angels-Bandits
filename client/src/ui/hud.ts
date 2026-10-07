@@ -4,6 +4,35 @@
 // whatever the server said, never a client-side simulation of them.
 
 import { BOOST_MIN_START, MAX_HP } from "@angels-bandits/common/constants";
+import type { ProximityCue } from "../game/proximity";
+
+/** The proximity cue's words, by cue. */
+const CUE_TEXT: Record<ProximityCue, string> = {
+  "pull-up": "PULL UP",
+  "break-left": "◀ BREAK LEFT",
+  "break-right": "BREAK RIGHT ▶",
+  "level-out": "▼ LEVEL OUT",
+};
+
+/** Last value written per element per style property (O2): the HUD setters
+ * run every frame, and an unchanged write still costs a style parse and can
+ * dirty layout — so only a CHANGED value reaches the DOM. */
+const written = new WeakMap<HTMLElement | SVGElement, Map<string, string>>();
+
+function setStyle(
+  el: HTMLElement | SVGElement,
+  prop: "width" | "transform" | "display",
+  value: string,
+): void {
+  let props = written.get(el);
+  if (!props) {
+    props = new Map();
+    written.set(el, props);
+  }
+  if (props.get(prop) === value) return;
+  props.set(prop, value);
+  el.style[prop] = value;
+}
 
 export class Hud {
   private readonly hpFill = document.getElementById(
@@ -48,12 +77,16 @@ export class Hud {
   /** Server-owned HP (snapshots / damage events). */
   setHp(hp: number): void {
     const frac = Math.min(1, Math.max(0, hp / MAX_HP));
-    this.hpFill.style.width = `${(frac * 100).toFixed(1)}%`;
+    setStyle(this.hpFill, "width", `${(frac * 100).toFixed(1)}%`);
   }
 
   /** Local heat model state (identical to what the server validates with). */
   setHeat(heat: number, locked: boolean): void {
-    this.heatFill.style.width = `${(Math.min(1, heat) * 100).toFixed(1)}%`;
+    setStyle(
+      this.heatFill,
+      "width",
+      `${(Math.min(1, heat) * 100).toFixed(1)}%`,
+    );
     this.heatEl.classList.toggle("locked", locked);
   }
 
@@ -62,7 +95,7 @@ export class Hud {
    * speed-line streaks while burning. */
   setBoost(energy: number, burning: boolean): void {
     const frac = Math.min(1, Math.max(0, energy));
-    this.boostFill.style.width = `${(frac * 100).toFixed(1)}%`;
+    setStyle(this.boostFill, "width", `${(frac * 100).toFixed(1)}%`);
     this.boostEl.classList.toggle("low", !burning && frac < BOOST_MIN_START);
     document.body.classList.toggle("boost", burning);
   }
@@ -116,13 +149,13 @@ export class Hud {
    */
   setAimPoint(p: { x: number; y: number } | null): void {
     if (!p) {
-      this.crosshair.style.display = "none";
+      setStyle(this.crosshair, "display", "none");
       return;
     }
     const t = `translate(${p.x.toFixed(1)}px, ${p.y.toFixed(1)}px)`;
-    this.crosshair.style.transform = t;
-    this.crosshair.style.display = "block";
-    this.hitmarker.style.transform = t;
+    setStyle(this.crosshair, "transform", t);
+    setStyle(this.crosshair, "display", "block");
+    setStyle(this.hitmarker, "transform", t);
   }
 
   /**
@@ -134,11 +167,15 @@ export class Hud {
     document.body.classList.toggle("aim-instructor", p !== null);
     this.crosshair.classList.toggle("converged", p !== null && converged);
     if (!p) {
-      this.aimCursor.style.display = "none";
+      setStyle(this.aimCursor, "display", "none");
       return;
     }
-    this.aimCursor.style.transform = `translate(${p.x.toFixed(1)}px, ${p.y.toFixed(1)}px)`;
-    this.aimCursor.style.display = "block";
+    setStyle(
+      this.aimCursor,
+      "transform",
+      `translate(${p.x.toFixed(1)}px, ${p.y.toFixed(1)}px)`,
+    );
+    setStyle(this.aimCursor, "display", "block");
     this.aimCursor.classList.toggle("converged", converged);
   }
 
@@ -156,9 +193,12 @@ export class Hud {
     this.toast(on ? "◇ AVOID ASSIST: ON (N) ◇" : "◇ AVOID ASSIST: OFF (N) ◇");
   }
 
-  /** Ground/wall proximity warning (F4): the flashing PULL UP cue. */
-  setPullUp(on: boolean): void {
-    this.pullUp.classList.toggle("on", on);
+  /** Ground/wall proximity warning (F4): the flashing PULL UP — or, for a
+   * wall a turn escapes, BREAK LEFT/RIGHT, or for a deck overhead LEVEL OUT
+   * (L11b) — cue; null hides it. */
+  setProximity(cue: ProximityCue | null): void {
+    if (cue !== null) this.pullUp.textContent = CUE_TEXT[cue];
+    this.pullUp.classList.toggle("on", cue !== null);
   }
 
   /** The shared top-centre toast (aim mode, assist). */

@@ -20,6 +20,7 @@ import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { emissiveBoost } from "./emissive";
 import { HAZE_WEATHER } from "./fog";
+import { RENDER_ORDER } from "./render-order";
 import { DUSK, FOG_NEAR } from "./sky";
 import { nearestImage } from "./wrapPlacement";
 
@@ -435,6 +436,13 @@ export class StormRenderer {
     }
   }
 
+  /** L12 sky cycle: the clear-sky fog colour atmosphere() builds on (the
+   * in-cloud soup and the flash stain still layer over it). Call before
+   * atmosphere() each frame; defaults to the VO1 night colour. */
+  setFogBase(color: THREE.Color): void {
+    this.fogBase.copy(color);
+  }
+
   /** Current flash envelope 0..1 (soft 140 ms decay). */
   private flashLevel(nowMs: number): number {
     const age = nowMs - this.flashAt;
@@ -566,6 +574,7 @@ export class CloudDeck {
     );
     this.puffs.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.puffs.frustumCulled = false;
+    this.puffs.renderOrder = RENDER_ORDER.cloudPuffs;
     // The dark underside: one camera-following sheet just below the band.
     this.ceiling = new THREE.Mesh(
       new THREE.PlaneGeometry(2 * FOG_DISTANCE + 200, 2 * FOG_DISTANCE + 200),
@@ -603,6 +612,11 @@ export class CloudDeck {
     }
     this.puffs.instanceMatrix.needsUpdate = true;
     this.ceiling.position.set(viewer.x, CEILING_Y, viewer.z);
+    // In front of the puffs from below, behind them from above (O1).
+    this.ceiling.renderOrder =
+      viewer.y < CEILING_Y
+        ? RENDER_ORDER.cloudCeilingBelow
+        : RENDER_ORDER.cloudCeilingAbove;
   }
 }
 

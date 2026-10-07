@@ -4,6 +4,8 @@
 // keeping every shape in this one file is what makes a binary encoder a later
 // drop-in swap.
 
+import type { NewsHeliSlot, NewsHeliTarget } from "./city/newsheli";
+import type { CityEvent } from "./cityevents";
 import type { Vec3 } from "./world/index";
 
 /** Unit quaternion, Three.js component order. Attitude of a plane on the wire. */
@@ -50,6 +52,14 @@ export interface JoinMsg {
 export interface PoseMsg {
   type: "pose";
   pose: Pose;
+  /**
+   * When this pose was taken, on the client's estimate of the SERVER clock,
+   * ms (O2). Absent until the client has seen a snapshot. The server clamps
+   * it to [arrival − POSE_AGE_MAX_MS, arrival] and forwards it as each
+   * snapshot entry's `age`, so receivers interpolate on when the pose was
+   * taken instead of on the tick that happened to sample it.
+   */
+  t?: number;
 }
 
 /**
@@ -142,6 +152,13 @@ export interface WelcomeMsg {
   /** The room's shared bot count, so a late joiner's slider starts in the
    * right place instead of guessing the default. */
   botTarget: number;
+  /** L1: the room's city events from the last SMOKE_LIFE_MS, oldest first, so
+   * a joiner sees the same smoke, alarms and responders as everyone else. */
+  cityEvents: CityEvent[];
+  /** The room's news heli (L10): current target and the one before it, so a
+   * late joiner flies the same heli as everyone else. Welcome-only — live
+   * changes arrive as NewsHeliMsg, so snapshots pay nothing for it. */
+  newsHeli?: NewsHeliSlot;
 }
 
 export interface PlayerJoinedMsg {
@@ -163,6 +180,10 @@ export interface SnapshotEntry {
   hp: number;
   /** True while spawn protection is active (clients render the shimmer). */
   prot: boolean;
+  /** How long before the snapshot's `time` this pose was taken, whole ms
+   * (O2): the pose's own time is `time − age`. 0 for bots (posed by the tick
+   * itself); absent reads as 0. */
+  age?: number;
 }
 
 /**
@@ -170,11 +191,13 @@ export interface SnapshotEntry {
  * tuple of quantised INTEGERS, which is both shorter than the float text it
  * replaces and exactly reconstructible.
  *
- *   [id, x, y, z, qx, qy, qz, qw, speed, hp, prot?]
+ *   [id, x, y, z, qx, qy, qz, qw, speed, hp, prot?, age?]
  *
  * Positions and airspeed are in tenths (POS_SCALE / SPEED_SCALE), attitude in
  * thousandths (QUAT_SCALE). `prot` is omitted while a plane is NOT
- * spawn-protected — the common case — and read back as false. Encode/decode
+ * spawn-protected — the common case — and read back as false. `age` (O2,
+ * whole ms) is omitted when 0 — every bot row — and when present `prot` is
+ * written as an explicit 0/1 so the slot is never a JSON hole. Encode/decode
  * live in common/src/net.ts; nothing else may build this tuple by hand.
  */
 export type WireSnapshotEntry = [
@@ -189,6 +212,7 @@ export type WireSnapshotEntry = [
   speed: number,
   hp: number,
   prot?: 0 | 1,
+  age?: number,
 ];
 
 /**
@@ -272,8 +296,27 @@ export interface BotsConfigMsg {
   byName: string;
 }
 
+/** L1: a server-accepted moment the city reacts to (gunfire near buildings,
+ * a death). Sent right after the `death` it belongs to, same server `now`. */
+export interface CityEventMsg {
+  type: "cityEvent";
+  event: CityEvent;
+}
+
+/**
+ * The news heli takes a new story (L10): the server picked the latest kill
+ * site and authored the route there. Every client installs it and derives the
+ * pose from (target, server clock) — the same pure function the server's bot
+ * probes use. Broadcast to the whole room.
+ */
+export interface NewsHeliMsg {
+  type: "newsHeli";
+  target: NewsHeliTarget;
+}
+
 export type ServerMsg =
   | WelcomeMsg
+  | NewsHeliMsg
   | BotsConfigMsg
   | PlayerJoinedMsg
   | PlayerLeftMsg
@@ -282,4 +325,5 @@ export type ServerMsg =
   | DamageMsg
   | DeathMsg
   | RespawnMsg
-  | ScoreMsg;
+  | ScoreMsg
+  | CityEventMsg;

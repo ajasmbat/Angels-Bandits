@@ -17,7 +17,7 @@ import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
 import { RoofKind, roofStyleFor } from "./roofs";
-import { nearestImage } from "./wrapPlacement";
+import { ImageCache, InstanceUploads } from "./wrapPlacement";
 
 /** Buildings at least this tall grow antenna masts (with red tips). */
 const MAST_MIN_HEIGHT = 120;
@@ -203,6 +203,15 @@ export class RoofClutterRenderer {
   private readonly beaconMesh: THREE.InstancedMesh;
   private readonly beaconMaterial: THREE.MeshBasicMaterial;
   private readonly scratch = new THREE.Matrix4();
+  /** O2: per-kind torus-image caches — only flipped instances re-upload. */
+  private readonly towerImages: ImageCache;
+  private readonly boxImages: ImageCache;
+  private readonly mastImages: ImageCache;
+  private readonly beaconImages: ImageCache;
+  private readonly towerUploads: InstanceUploads;
+  private readonly boxUploads: InstanceUploads;
+  private readonly mastUploads: InstanceUploads;
+  private readonly beaconUploads: InstanceUploads;
 
   constructor(buildings: readonly Building[]) {
     const layouts = buildings.map(roofClutterFor);
@@ -280,7 +289,56 @@ export class RoofClutterRenderer {
       mesh.frustumCulled = false; // instances move relative to the camera every frame
       this.group.add(mesh);
     }
+    const cache = (items: { x: number; z: number }[]): ImageCache =>
+      new ImageCache(
+        items.map((t) => t.x),
+        items.map((t) => t.z),
+      );
+    this.towerImages = cache(this.towers);
+    this.boxImages = cache(this.boxes);
+    this.mastImages = cache(this.masts);
+    this.beaconImages = cache(this.beacons);
+    this.towerUploads = new InstanceUploads([this.towerMesh.instanceMatrix]);
+    this.boxUploads = new InstanceUploads([this.boxMesh.instanceMatrix]);
+    this.mastUploads = new InstanceUploads([
+      this.mastMesh.instanceMatrix,
+      this.tipMesh.instanceMatrix,
+    ]);
+    this.beaconUploads = new InstanceUploads([this.beaconMesh.instanceMatrix]);
   }
+
+  private readonly placeTower = (i: number, x: number, z: number): void => {
+    const t = this.towers[i] as WaterTower;
+    this.scratch.makeScale(t.radius, t.height, t.radius);
+    this.scratch.setPosition(x, t.y, z);
+    this.towerMesh.setMatrixAt(i, this.scratch);
+    this.towerUploads.mark(i);
+  };
+
+  private readonly placeBox = (i: number, x: number, z: number): void => {
+    const box = this.boxes[i] as AcBox;
+    this.scratch.makeScale(box.width, box.height, box.depth);
+    this.scratch.setPosition(x, box.y, z);
+    this.boxMesh.setMatrixAt(i, this.scratch);
+    this.boxUploads.mark(i);
+  };
+
+  private readonly placeMast = (i: number, x: number, z: number): void => {
+    const m = this.masts[i] as Mast;
+    this.scratch.makeScale(1, m.height, 1);
+    this.scratch.setPosition(x, m.y, z);
+    this.mastMesh.setMatrixAt(i, this.scratch);
+    this.scratch.makeTranslation(x, m.y + m.height, z);
+    this.tipMesh.setMatrixAt(i, this.scratch);
+    this.mastUploads.mark(i);
+  };
+
+  private readonly placeBeacon = (i: number, x: number, z: number): void => {
+    const b = this.beacons[i] as { x: number; z: number; y: number };
+    this.scratch.makeTranslation(x, b.y, z);
+    this.beaconMesh.setMatrixAt(i, this.scratch);
+    this.beaconUploads.mark(i);
+  };
 
   /** Total clutter+beacon instances drawn — perf reporting/QA. */
   get instanceCount(): number {
@@ -297,36 +355,14 @@ export class RoofClutterRenderer {
    * server-synced time so every client's beacons pulse in phase.
    */
   update(cameraPos: Vec3, timeMs: number): void {
-    this.towers.forEach((t, i) => {
-      const p = nearestImage(cameraPos, { x: t.x, y: 0, z: t.z });
-      this.scratch.makeScale(t.radius, t.height, t.radius);
-      this.scratch.setPosition(p.x, t.y, p.z);
-      this.towerMesh.setMatrixAt(i, this.scratch);
-    });
-    this.boxes.forEach((box, i) => {
-      const p = nearestImage(cameraPos, { x: box.x, y: 0, z: box.z });
-      this.scratch.makeScale(box.width, box.height, box.depth);
-      this.scratch.setPosition(p.x, box.y, p.z);
-      this.boxMesh.setMatrixAt(i, this.scratch);
-    });
-    this.masts.forEach((m, i) => {
-      const p = nearestImage(cameraPos, { x: m.x, y: 0, z: m.z });
-      this.scratch.makeScale(1, m.height, 1);
-      this.scratch.setPosition(p.x, m.y, p.z);
-      this.mastMesh.setMatrixAt(i, this.scratch);
-      this.scratch.makeTranslation(p.x, m.y + m.height, p.z);
-      this.tipMesh.setMatrixAt(i, this.scratch);
-    });
-    this.beacons.forEach((b, i) => {
-      const p = nearestImage(cameraPos, { x: b.x, y: 0, z: b.z });
-      this.scratch.makeTranslation(p.x, b.y, p.z);
-      this.beaconMesh.setMatrixAt(i, this.scratch);
-    });
-    this.towerMesh.instanceMatrix.needsUpdate = true;
-    this.boxMesh.instanceMatrix.needsUpdate = true;
-    this.mastMesh.instanceMatrix.needsUpdate = true;
-    this.tipMesh.instanceMatrix.needsUpdate = true;
-    this.beaconMesh.instanceMatrix.needsUpdate = true;
+    this.towerImages.update(cameraPos, this.placeTower);
+    this.boxImages.update(cameraPos, this.placeBox);
+    this.mastImages.update(cameraPos, this.placeMast);
+    this.beaconImages.update(cameraPos, this.placeBeacon);
+    this.towerUploads.flush();
+    this.boxUploads.flush();
+    this.mastUploads.flush();
+    this.beaconUploads.flush();
 
     // Sin-pulse: peak ≈ 1.0 luminance (blooms), trough falls under the
     // threshold so the beacon visibly breathes instead of burning steady.

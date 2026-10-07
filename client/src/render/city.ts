@@ -20,6 +20,7 @@ import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { FacadeArchetype, archetypeFor } from "./archetypes";
 import { createBuildingsMaterial } from "./buildings-material";
+import { LiveClock, crewSchedule } from "./living-windows";
 import { roofStyleFor } from "./roofs";
 import { nearestImage } from "./wrapPlacement";
 
@@ -87,6 +88,9 @@ export class CityRenderer {
   private readonly index: CityIndex;
   private readonly instances: SolidInstance[];
   private readonly scratch = new THREE.Matrix4();
+  /** L3 living windows: the shader's live clock and its uniform. */
+  private readonly liveClock = new LiveClock();
+  private readonly liveTime = { value: 0 };
 
   constructor(seed: number) {
     this.buildings = generateCity(seed);
@@ -107,7 +111,7 @@ export class CityRenderer {
     geometry.translate(0, 0.5, 0);
     // Night-neon material with procedural emissive window grids (T5 art pass),
     // branching per instance on the facade archetype (set once below).
-    const material = createBuildingsMaterial();
+    const material = createBuildingsMaterial(this.liveTime);
 
     this.mesh = new THREE.InstancedMesh(
       geometry,
@@ -197,6 +201,17 @@ export class CityRenderer {
     );
     geometry.setAttribute("aHole", new THREE.InstancedBufferAttribute(hole, 4));
 
+    // L3 cleaning crew: aCrew = (visit start, duration, block cycle, 0) in
+    // live-clock seconds, the same on every solid of a building; cycle 0 =
+    // no crew this cycle. Static like aArchetype.
+    const crew = new Float32Array(this.instances.length * 4);
+    const rota = crewSchedule(this.buildings, seed);
+    this.instances.forEach((inst, i) => {
+      const slot = rota.get(inst.building);
+      if (slot) crew.set([slot.start, slot.duration, slot.cycle, 0], i * 4);
+    });
+    geometry.setAttribute("aCrew", new THREE.InstancedBufferAttribute(crew, 4));
+
     // Facade albedo per building (VO2 palette — see facadeColor above).
     const color = new THREE.Color();
     this.instances.forEach((inst, i) => {
@@ -234,5 +249,16 @@ export class CityRenderer {
       this.mesh.setMatrixAt(i, this.scratch);
     });
     this.mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  /** L3: advance the living-windows clock (server ms, null before the first
+   * snapshot; `nowMs` = the frame's performance.now()). */
+  updateLiveWindows(serverMs: number | null, nowMs: number): void {
+    this.liveTime.value = this.liveClock.update(serverMs, nowMs);
+  }
+
+  /** QA: pin the living-windows clock (live seconds), or null to follow the server. */
+  pinLiveWindows(sec: number | null): void {
+    this.liveClock.pinned = sec;
   }
 }

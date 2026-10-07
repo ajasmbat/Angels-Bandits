@@ -915,6 +915,7 @@ declare global {
       traffic: (at?: number | null) => ReturnType<Traffic["debug"]>;
       movers: (at?: number | null) => ReturnType<Movers["debug"]>;
       fireworks: (at?: number | null) => ReturnType<Fireworks["debug"]>;
+      windowClock: (sec: number | null) => void;
       cityStats: () => {
         buildings: number;
         tierInstances: number;
@@ -1091,6 +1092,9 @@ window.__ab = {
   movers: (at) => movers.debug(at === undefined ? socket.renderTime() : at),
   fireworks: (at) =>
     fireworks.debug(at === undefined ? socket.renderTime() : at),
+  // L3 QA: pin the living-windows clock (live seconds) for t / t+60 s
+  // captures; null follows the server clock again.
+  windowClock: (sec) => city.pinLiveWindows(sec),
   // V2 QA: instance counts for the perf report.
   cityStats: () => ({
     buildings: city.cityBuildings.length,
@@ -1527,6 +1531,9 @@ renderer.setAnimationLoop((now) => {
   }
 
   city.update(chase.position);
+  // L3 living windows: slow on/off, TV glow, silhouettes and the cleaning
+  // crew all run off this one shared-clock uniform (living-windows.ts).
+  city.updateLiveWindows(renderMs, now);
   // Beacons pulse on server-synced time so every client is in phase.
   roofClutter.update(chase.position, renderMs ?? now);
   facadeGarnish.update(chase.position);

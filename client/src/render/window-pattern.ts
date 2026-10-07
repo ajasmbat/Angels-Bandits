@@ -25,6 +25,12 @@ import * as THREE from "three";
 import { FacadeArchetype } from "./archetypes";
 import { emissiveBoost } from "./emissive";
 import {
+  TV_COLOR,
+  livingColorGlsl,
+  livingLitGlsl,
+  livingShadeGlsl,
+} from "./living-windows";
+import {
   GARDEN_LIGHT_COLOR,
   PAD_LIGHT_COLOR,
   PARAPET_INSET,
@@ -338,7 +344,7 @@ float pLit = clamp(winLit * (${glslFloat(FACADE.zoneLo)} + ${glslFloat(FACADE.zo
 if (floorH < ${glslFloat(FACADE.darkFloor)}) pLit = ${glslFloat(FACADE.darkFloorLit)};
 else if (floorH > ${glslFloat(1 - FACADE.brightFloor)}) pLit = ${glslFloat(FACADE.brightFloorLit)};
 float lit = step(winH, pLit) * facade;
-`;
+${livingLitGlsl()}`;
 }
 
 /**
@@ -367,7 +373,7 @@ float tJit = abHash(winCell + 31.0, vBSeed * 53.0);
 // window stays at or below the peak ${intensity} was normalised for.
 float mixT = mix(${glslFloat(FACADE.tempJitter)} * tJit, 1.0 - ${glslFloat(FACADE.tempJitter)} * tJit, coolWin);
 vec3 winColor = mix(${warm}, ${cool}, mixT);
-
+${livingColorGlsl(glslVec3(TV_COLOR))}
 // Fake window interiors (interior mapping): raycast a room box behind every
 // lit pane — parallax ceiling/floor/side/back walls, no geometry. Boxes never
 // rotate, so the world-space view ray IS the facade-space ray. Every wall
@@ -398,7 +404,7 @@ float blinds = step(abHash(winCell + 3.0, vBSeed * 29.0), winBlinds);
 // Per-window brightness spread: a real block is not one bulb repeated.
 float dim = ${glslFloat(1 - FACADE.brightSpread)} + ${glslFloat(FACADE.brightSpread)} * winH;
 vec3 litWindow = mix(roomCol * (0.55 + 0.45 * winH), winColor * (0.5 + 0.3 * winH), blinds) * dim;
-vec3 windowGlow = pane * lit * litWindow * ${intensity} * ao;
+${livingShadeGlsl()}vec3 windowGlow = pane * lit * litWindow * ${intensity} * ao;
 // Unlit panes catch a faint grazing-angle sky sheen (far below the bloom
 // threshold — a glassy read, not a light source).
 float sheenF = pow(1.0 - clamp(abs(dot(viewRay, vObjNormal)), 0.0, 1.0), 3.0);

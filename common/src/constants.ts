@@ -712,3 +712,37 @@ export const BOT_RETARGET_MARGIN = 100;
  * centreline up to this far along it, m — a shallow merge, instead of cutting
  * the block corner to the next intersection at street height. */
 export const BOT_CANYON_MERGE_LEAD = 150;
+
+// --- Threading holes (B2, ANGE-2FLPE2) — bots fly H1's holes on purpose ---
+// A bot never discovers a hole: before it commits it flies the whole pass
+// (line-up, hole, exit) forward with the shared stepFlight and its real
+// decision cadence, against the real solids, and only a clean rollout is
+// flown. Clearance budget after PLAYER_RADIUS + BOT_HOLE_MARGIN (3.5 m),
+// lateral/vertical either side of the centreline: arch 11.5/8.5 m,
+// tunnel 7.5/4.5 m, sky hole 5.5/3.5 m.
+/** Clearance a thread rollout demands beyond PLAYER_RADIUS, m. */
+export const BOT_HOLE_MARGIN = 1.5;
+/** Line-following lookahead along a hole's axis (and the exit street), m —
+ * under the 52 m MIN_SPEED turn radius so the line-up converges before an
+ * arch's 55 m run-in rather than overshooting it. */
+export const BOT_HOLE_CARROT = 45;
+/** Chance a patrolling bot takes a hole it can reach, rolled once per
+ * encounter. The rollout gates it further (~58% of won rolls fly, measured
+ * on the B1 sim seeds), so ~17% of patrol passes by a hole go through it —
+ * an occasional sight, not a habit. */
+export const BOT_HOLE_CHANCE = 0.3;
+/** Longest pass a rollout may fly before it must hand back to the lattice, s. */
+export const BOT_HOLE_ROLLOUT_S = 14;
+/** Rollouts a room may spend per sim tick, and how long a bot waits before
+ * re-trying the same hole after a failed one, ms. */
+export const BOT_HOLE_ROLLOUTS_PER_TICK = 3;
+export const BOT_HOLE_RETRY_MS = 200;
+/** Patrol staging: an arch is lined up from its cross street once its node
+ * is this close ahead, m (a turn radius plus the 55 m run-in, with slack). */
+export const BOT_HOLE_TURN_IN_MAX = 160;
+/** ...and a tunnel from its parallel street with its mouth this far ahead, m. */
+export const BOT_HOLE_LINEUP_MAX = 450;
+/** A chaser follows its target through a hole the target transited this
+ * recently, ms, from no further than this before the mouth, m. */
+export const BOT_HOLE_FOLLOW_MS = 3000;
+export const BOT_HOLE_FOLLOW_RANGE = 400;

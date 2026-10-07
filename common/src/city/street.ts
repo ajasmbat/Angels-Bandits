@@ -203,7 +203,9 @@ export function nearestStreet(p: Vec3): NearestStreet {
 export function nextIntersection(
   p: Vec3,
   /** Only the line matters here, so a hand-built {axis, centerline} works as
-   * well as a nearestStreet() result — `side` is irrelevant to the lattice. */
+   * well as a nearestStreet() result — `side` is irrelevant to the lattice.
+   * B2's hole edges (holes.ts) run it along a hole's axis to find the
+   * streets either side of the hole. */
   street: Pick<NearestStreet, "axis" | "centerline">,
   dir: 1 | -1,
 ): Vec3 {

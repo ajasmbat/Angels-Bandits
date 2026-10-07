@@ -39,7 +39,7 @@ import {
 import { type Vec3, canonicalize, wrapDelta } from "../world/index";
 import type { Building, Tier } from "./index";
 import { CONSTRUCTION_BLOCKS } from "./layout";
-import { LOT_LINE } from "./street";
+import { LOT_LINE, nextIntersection } from "./street";
 
 export type HoleKind = "arch" | "tunnel" | "sky";
 /** The axis a plane TRAVELS along to fly through the hole. */
@@ -198,7 +198,7 @@ export function solids(b: Building): readonly SolidBox[] {
   return out;
 }
 
-/** A hole in world space — the surface bots (B2) and dressing route by. */
+/** A hole in world space — the surface bots and dressing route by. */
 export interface HoleSpan {
   building: Building;
   hole: Hole;
@@ -235,6 +235,103 @@ export function cityHoles(buildings: readonly Building[]): HoleSpan[] {
     }
   }
   return out;
+}
+
+// --- Bot routing (B2): holes as edges of the street graph ---------------
+
+/**
+ * One directed pass through a hole: an edge of the bots' street graph. Its
+ * two nodes are where the hole's axis crosses the perpendicular street behind
+ * the mouth it enters by and beyond the one it leaves by — the lattice's own
+ * nextIntersection, run along the hole's line instead of a street's. For an
+ * arch (mid-block) that street is 55 m from the mouth, for a tunnel (a lot
+ * spanning its block) it is the sidewalk in front of it.
+ */
+export interface HoleEdge {
+  span: HoleSpan;
+  /** +1 flies entry → exit (increasing `axis` coordinate), −1 the reverse. */
+  dir: 1 | -1;
+  /** Mouth centres the plane enters by and leaves by (centreline height). */
+  mouthIn: Vec3;
+  mouthOut: Vec3;
+  /** The street-graph nodes behind mouthIn and beyond mouthOut, at
+   * centreline height. */
+  from: Vec3;
+  to: Vec3;
+}
+
+/** Both directed edges of every hole, in cityHoles() order. */
+export function holeEdges(spans: readonly HoleSpan[]): HoleEdge[] {
+  const out: HoleEdge[] = [];
+  for (const span of spans) {
+    const { axis } = span.hole;
+    const centerline = axis === "x" ? span.center.z : span.center.x;
+    const node = (mouth: Vec3, dir: 1 | -1): Vec3 => ({
+      ...nextIntersection(mouth, { axis, centerline }, dir),
+      y: span.center.y,
+    });
+    for (const dir of [1, -1] as const) {
+      const mouthIn = dir === 1 ? span.entry : span.exit;
+      const mouthOut = dir === 1 ? span.exit : span.entry;
+      out.push({
+        span,
+        dir,
+        mouthIn,
+        mouthOut,
+        from: node(mouthIn, dir === 1 ? -1 : 1),
+        to: node(mouthOut, dir),
+      });
+    }
+  }
+  return out;
+}
+
+/** A point in an edge's own frame, meters (torus-correct via wrapDelta). */
+export interface EdgeFrame {
+  /** Distance travelled past mouthIn along the edge (negative: before it). */
+  along: number;
+  /** Offset off the hole's centreline across the axis (world-axis sign). */
+  lateral: number;
+  /** Height above the centreline. */
+  up: number;
+}
+
+export function edgeFrame(edge: HoleEdge, p: Vec3): EdgeFrame {
+  const d = wrapDelta(edge.mouthIn, p);
+  const x = edge.span.hole.axis === "x";
+  return {
+    along: (x ? d.x : d.z) * edge.dir,
+    lateral: x ? d.z : d.x,
+    up: d.y,
+  };
+}
+
+/**
+ * Did the straight move a → b pass through `span`'s clear volume? Tests where
+ * it crosses the hole's mid-plane, so a 20 Hz track through a 16 m sky hole
+ * still registers. Returns the travel direction (+1 along increasing `axis`,
+ * −1 against it), or 0 for no transit.
+ */
+export function segmentThroughHole(
+  span: HoleSpan,
+  a: Vec3,
+  b: Vec3,
+): 0 | 1 | -1 {
+  const x = span.hole.axis === "x";
+  const da = wrapDelta(span.center, a);
+  const db = wrapDelta(span.center, b);
+  const alongA = x ? da.x : da.z;
+  const alongB = x ? db.x : db.z;
+  if (alongA === alongB || Math.sign(alongA) === Math.sign(alongB)) return 0;
+  // A teleport across the map is not a transit (and would interpolate junk).
+  if (Math.abs(alongB - alongA) > span.length + 2 * span.hole.width) return 0;
+  const t = alongA / (alongA - alongB);
+  const lateral =
+    (x ? da.z : da.x) + ((x ? db.z : db.x) - (x ? da.z : da.x)) * t;
+  const y = a.y + (b.y - a.y) * t;
+  const { width, y0, height } = span.hole;
+  if (Math.abs(lateral) > width / 2 || y < y0 || y > y0 + height) return 0;
+  return alongB > alongA ? 1 : -1;
 }
 
 // --- Placement: the city-level pass -------------------------------------

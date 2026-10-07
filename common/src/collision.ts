@@ -92,8 +92,9 @@ function blockSpan(lo: number, hi: number): number[] {
  * How a query treats H1 fly-through holes. "open" is the truth — the plane
  * crashes into exactly what is drawn. "solid" fills every hole back in, for
  * AVOIDANCE probes only: a bot's point-sampled probes can straddle a thin
- * hole wall, so until bots route through holes on purpose (B2) they steer
- * clear of them instead of discovering them.
+ * hole wall, so a probe steers clear of holes instead of discovering them.
+ * Bots fly holes only as committed threads (B2), checked "open" at 50 ms
+ * steps by a full rollout before they commit.
  */
 export type HoleMode = "open" | "solid";
 

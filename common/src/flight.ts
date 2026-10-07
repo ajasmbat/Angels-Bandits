@@ -81,6 +81,27 @@ export function flightForward(state: Pick<FlightState, "yaw" | "pitch">): Vec3 {
   };
 }
 
+/**
+ * Full-deflection turn and pitch rates, rad/s, at `speed`. Boost sharpens
+ * handling: the full multipliers while burning, and after release they ride
+ * the speed back down, so the post-boost tail never turns wider than the burn
+ * did (86.8 m at 125 m/s). Exactly TURN_RATE/PITCH_RATE at ≤ MAX_SPEED.
+ * Exported so the client's mouse-aim instructor normalises by the rates
+ * stepFlight will actually apply.
+ */
+export function handlingRates(
+  speed: number,
+  boost: boolean,
+): { turnRate: number; pitchRate: number } {
+  const excess = boost
+    ? 1
+    : clamp((speed - MAX_SPEED) / (BOOST_MAX_SPEED - MAX_SPEED), 0, 1);
+  return {
+    turnRate: TURN_RATE * (1 + (BOOST_TURN_MULT - 1) * excess),
+    pitchRate: PITCH_RATE * (1 + (BOOST_PITCH_MULT - 1) * excess),
+  };
+}
+
 /** Advance the flight model one tick. Pure: never mutates `state` or `input`. */
 export function stepFlight(
   state: FlightState,
@@ -92,14 +113,7 @@ export function stepFlight(
   const rollIn = clamp(input.roll, -1, 1);
   const boost = input.boost === true;
 
-  // Boost sharpens handling: the full multipliers while burning, and after
-  // release they ride the speed back down, so the post-boost tail never turns
-  // wider than the burn did (86.8 m at 125 m/s). Exactly 1 at ≤ MAX_SPEED.
-  const excess = boost
-    ? 1
-    : clamp((state.speed - MAX_SPEED) / (BOOST_MAX_SPEED - MAX_SPEED), 0, 1);
-  const turnRate = TURN_RATE * (1 + (BOOST_TURN_MULT - 1) * excess);
-  const pitchRate = PITCH_RATE * (1 + (BOOST_PITCH_MULT - 1) * excess);
+  const { turnRate, pitchRate } = handlingRates(state.speed, boost);
 
   // Mouse-aim steering: inputs are rate commands at capped rates; neutral
   // input holds the current attitude (no auto-level of pitch or yaw).

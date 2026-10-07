@@ -1,7 +1,7 @@
 // hitdetect seam: the shooter-side bullet test — one frame's bullet segment
 // vs a remote plane's hit sphere, all through wrapDelta so a duel across the
 // torus seam behaves exactly like one in the middle of the map.
-// HIT_RADIUS is 6 m (constants.ts); worked examples use that literal.
+// HIT_RADIUS is 7.5 m (constants.ts); worked examples use that literal.
 
 import { describe, expect, it } from "vitest";
 import { bulletHitsSphere } from "../src/game/hitdetect";
@@ -17,7 +17,7 @@ describe("bulletHitsSphere", () => {
         center,
       ),
     ).toBe(true);
-    // 5 m abeam — inside the 6 m sphere.
+    // 5 m abeam — inside the 7.5 m sphere.
     expect(
       bulletHitsSphere(
         { x: 95, y: 300, z: 60 },

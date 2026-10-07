@@ -29,6 +29,25 @@ export class ChaseCamera {
     this.pos = this.desired(state);
   }
 
+  /**
+   * The view the mouse-aim instructor reads the cursor through: eye and
+   * look-at as offsets from the plane, at zoom `zoom`, built from the
+   * smoothed chase state with the same dolly/look-at the render uses but
+   * BEFORE any free-look orbit or turbulence shake — neither may steer.
+   * Computed on demand (any zoom, so main can diff two of them), from the
+   * chase position as last updated or snapped, so it is never stale.
+   */
+  aimFrame(state: FlightState, zoom: number): { eye: Vec3; at: Vec3 } {
+    if (!this.pos) this.snapTo(state);
+    const plane = nearestImage(this.pos as Vec3, state.pos);
+    const p = this.pos as Vec3;
+    const fwd = flightForward(state);
+    const chase = { x: p.x - plane.x, y: p.y - plane.y, z: p.z - plane.z };
+    const eye = zoom !== 0 ? zoomOffset(chase, fwd, zoom) : chase;
+    const at = zoomLookAt({ x: 0, y: 0, z: 0 }, fwd, zoom);
+    return { eye, at };
+  }
+
   private desired(state: FlightState): Vec3 {
     const fwd = flightForward(state);
     return {

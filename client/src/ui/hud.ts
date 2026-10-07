@@ -32,7 +32,14 @@ export class Hud {
   private readonly radioToggle = document.getElementById(
     "radio-toggle",
   ) as HTMLDivElement;
+  private readonly aimCursor = document.getElementById(
+    "aim-cursor",
+  ) as unknown as SVGSVGElement;
+  private readonly aimModeToast = document.getElementById(
+    "aim-mode-toast",
+  ) as HTMLDivElement;
   private hitBlipUntil = 0;
+  private aimModeTimer: ReturnType<typeof setTimeout> | undefined;
   private markerUntil = 0;
 
   /** Server-owned HP (snapshots / damage events). */
@@ -113,6 +120,38 @@ export class Hud {
     this.crosshair.style.transform = t;
     this.crosshair.style.display = "block";
     this.hitmarker.style.transform = t;
+  }
+
+  /**
+   * The instructor's aim circle at the (smoothed) cursor, and the converged
+   * state it shares with the pipper once the nose has arrived. Null hides it
+   * and hands the 3D view its OS cursor back (classic mode, kill-cam).
+   */
+  setAimCursor(p: { x: number; y: number } | null, converged: boolean): void {
+    document.body.classList.toggle("aim-instructor", p !== null);
+    this.crosshair.classList.toggle("converged", p !== null && converged);
+    if (!p) {
+      this.aimCursor.style.display = "none";
+      return;
+    }
+    this.aimCursor.style.transform = `translate(${p.x.toFixed(1)}px, ${p.y.toFixed(1)}px)`;
+    this.aimCursor.style.display = "block";
+    this.aimCursor.classList.toggle("converged", converged);
+  }
+
+  /** Brief toast naming the aim mode M just switched to. */
+  showAimMode(mode: "instructor" | "classic"): void {
+    this.aimModeToast.textContent =
+      mode === "instructor"
+        ? "◇ AIM: MOUSE INSTRUCTOR (M) ◇"
+        : "◇ AIM: CLASSIC STICK (M) ◇";
+    this.aimModeToast.classList.add("on");
+    // Re-arm the fade: the class must be off for a frame to transition out.
+    clearTimeout(this.aimModeTimer);
+    this.aimModeTimer = setTimeout(
+      () => this.aimModeToast.classList.remove("on"),
+      1200,
+    );
   }
 
   /** Kill-cam overlay: who got you (null = you crashed clean; the storm's

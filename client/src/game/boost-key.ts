@@ -35,6 +35,12 @@ export class BoostKey {
     });
   }
 
+  /** The touch BOOST button (M1): the same held state and press edge. */
+  setHeld(held: boolean): void {
+    if (held && !this.held) this.pressed = true;
+    this.held = held;
+  }
+
   /** Whether SPACE is down right now. */
   isHeld(): boolean {
     return this.held;

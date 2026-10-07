@@ -217,9 +217,10 @@ import { KillFeed } from "./ui/killfeed";
 import { LeadIndicator, SolutionTone } from "./ui/lead";
 import { EdgeMarkers } from "./ui/markers";
 import { Minimap } from "./ui/minimap";
-import { coarsePointer, initMobileShell } from "./ui/mobile";
+import { coarsePointer, initMobileShell, whenTouch } from "./ui/mobile";
 import { PerfHud, bindPerfHudKey, perfHudKeyEnabled } from "./ui/perfhud";
 import { Scoreboard } from "./ui/scoreboard";
+import { TouchControls } from "./ui/touch-controls";
 
 // Fullscreen chrome first — the join overlay carries its own toggle button,
 // so it must be live before the name prompt (hidden where unsupported).
@@ -822,6 +823,14 @@ let aimFovPrev = BASE_FOV;
 const boostKey = new BoostKey();
 let boost = createBoost(performance.now());
 let boostSent = false;
+// M1 touch controls: only once the device is touch (M2's whenTouch). The
+// thumbs drive the SAME seams as the mouse and keyboard — the aim point is
+// `input`'s cursor, FIRE is `guns`' trigger, BOOST is `boostKey`'s edge — so
+// the frame loop below has no touch branch beyond the throttle servo call.
+let touchControls: TouchControls | null = null;
+whenTouch(() => {
+  touchControls = new TouchControls({ input, guns, boostKey, scoreboard });
+});
 /** Extra vertical FOV at full boost speed, degrees — the speed kick. */
 const BOOST_FOV_KICK = 9;
 /** 0 at ≤ MAX_SPEED, 1 at full boost speed. */
@@ -1383,6 +1392,17 @@ declare global {
       aimAt: (x: number, z: number, y?: number) => void;
       setFiring: (held: boolean) => void;
       freelook: () => ReturnType<typeof createFreeLook>;
+      /** M1 QA: the aim point and whether the pipper sits on it (F1). */
+      aim: () => {
+        mode: "instructor" | "classic";
+        converged: boolean;
+        cursor: { x: number; y: number };
+        ndc: { x: number; y: number };
+      };
+      /** M1 QA: the boost gauge (drained by BOOST, keyboard or touch). */
+      boost: () => { energy: number; active: boolean };
+      /** M1 QA: touch-control state; null off touch. */
+      touch: () => ReturnType<TouchControls["debug"]> | null;
       zoom: () => { held: boolean; z: number; fov: number };
       lampImage: (x: number, z: number) => { x: number; z: number } | null;
       traffic: (at?: number | null) => ReturnType<Traffic["debug"]>;
@@ -1639,6 +1659,14 @@ window.__ab = {
   setFiring: (held) => guns.setTrigger(held),
   // B2 QA: current free-look state (drive it with real key/mouse events).
   freelook: () => freelook,
+  aim: () => ({
+    mode: aimMode,
+    converged: aimConverged,
+    cursor: input.cursorPx(),
+    ndc: input.cursorNdc(),
+  }),
+  boost: () => ({ energy: boost.energy, active: boost.active }),
+  touch: () => touchControls?.debug() ?? null,
   // ANGE-G9CPCV QA: aim-zoom state plus the FOV it is actually driving
   // (drive it with real button-2 mouse events).
   zoom: () => ({ held: zoom.held, z: zoom.z, fov: camera.fov }),
@@ -1898,6 +1926,8 @@ const frame = (now: number): void => {
   moverLights.begin(); // crane/aircraft lights + firework sparks, same deal
   // Cursor smoothing + the leave-the-window fade run alive or dead, so
   // neither comes back stale at respawn.
+  // M1: the throttle slider servoes through input.read()'s throttle axis.
+  touchControls?.frame(flight.targetSpeed, alive, dt);
   input.tick(dt);
   if (input.aimMode() !== aimMode) {
     // M flips the mode (dead or alive); a fresh instructor means no lagged

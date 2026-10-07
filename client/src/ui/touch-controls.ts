@@ -51,11 +51,16 @@ const points = (list: Iterable<Touch>): TouchPoint[] =>
  * still down. Its own touches are cancelled so no click or emulated mouse
  * event ever leaves it. Returns the release hook.
  */
-function holdButton(el: HTMLElement, onChange: (down: boolean) => void) {
+function holdButton(
+  el: HTMLElement,
+  onChange: (down: boolean, at: number) => void,
+) {
   const fingers = new Set<number>();
-  const set = (down: boolean) => {
+  // `at` is the input's own time (Event.timeStamp, performance.now's
+  // clock), not the handler's: a slow frame must not turn a tap into a hold.
+  const set = (down: boolean, at = performance.now()) => {
     el.classList.toggle("on", down);
-    onChange(down);
+    onChange(down, at);
   };
   el.addEventListener(
     "touchstart",
@@ -63,14 +68,14 @@ function holdButton(el: HTMLElement, onChange: (down: boolean) => void) {
       e.preventDefault();
       const was = fingers.size > 0;
       for (const t of Array.from(e.changedTouches)) fingers.add(t.identifier);
-      if (!was) set(true);
+      if (!was) set(true, e.timeStamp);
     },
     { passive: false },
   );
   const up = (e: TouchEvent) => {
     e.preventDefault();
     for (const t of Array.from(e.changedTouches)) fingers.delete(t.identifier);
-    if (fingers.size === 0) set(false);
+    if (fingers.size === 0) set(false, e.timeStamp);
   };
   el.addEventListener("touchend", up, { passive: false });
   el.addEventListener("touchcancel", up, { passive: false });
@@ -116,7 +121,7 @@ export class TouchControls {
     this.releases.push(
       holdButton(byId("touch-fire"), (down) => t.guns.setTrigger(down)),
       holdButton(byId("touch-boost"), (down) => t.boostKey.setHeld(down)),
-      holdButton(byId("touch-zoom"), (down) => this.zoomPress(down)),
+      holdButton(byId("touch-zoom"), (down, at) => this.zoomPress(down, at)),
     );
     t.scoreboard.bindTapToggle(byId("touch-score"));
     iconButton(this.aimIcon, () => t.input.toggleAimMode());
@@ -232,9 +237,10 @@ export class TouchControls {
     let s = this.aim;
     if (s.fingers.length === 0 && touches.length > 0) {
       // Pick up wherever the cursor is (a hybrid laptop's mouse may have
-      // moved it), so the first touch never jumps the aim.
-      const c = this.t.input.cursorPx();
-      s = { ...s, aimX: c.x, aimY: c.y };
+      // moved it), so the first touch never jumps the aim. The RAW point:
+      // the smoothed one lags by whole frames on a slow phone.
+      const c = this.t.input.pointerPx();
+      if (c) s = { ...s, aimX: c.x, aimY: c.y };
     }
     s = touchInput(s, touches, this.viewport(), this.sensitivity);
     this.t.input.setTouchLook(s.looking);
@@ -296,16 +302,15 @@ export class TouchControls {
   }
 
   /** ZOOM: a quick tap toggles the latch, a longer press is a hold. */
-  private zoomPress(down: boolean): void {
-    const now = performance.now();
+  private zoomPress(down: boolean, at: number): void {
     if (down) {
-      this.zoomDownAt = now;
+      this.zoomDownAt = at;
       this.zoomWasLatched = this.zoomLatched;
       this.t.input.setTouchZoom(true);
       return;
     }
     this.zoomLatched =
-      now - this.zoomDownAt < ZOOM_TAP_MS ? !this.zoomWasLatched : false;
+      at - this.zoomDownAt < ZOOM_TAP_MS ? !this.zoomWasLatched : false;
     this.t.input.setTouchZoom(this.zoomLatched);
   }
 

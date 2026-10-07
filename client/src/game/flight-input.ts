@@ -174,6 +174,12 @@ export class FlightInputSource {
     return { x: this.mouseX, y: -this.mouseY };
   }
 
+  /** Raw (unsmoothed) cursor in pixels, null before any move — where a new
+   * touch picks the aim up, so slow frames' smoothing lag never jumps it. */
+  pointerPx(): { x: number; y: number } | null {
+    return this.rawX === null ? null : { x: this.rawX, y: this.rawY };
+  }
+
   /** Smoothed cursor in pixels, for the aim-circle HUD. */
   cursorPx(): { x: number; y: number } {
     const hw = this.target.innerWidth / 2;

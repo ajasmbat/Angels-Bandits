@@ -18,6 +18,8 @@ const MIME: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
   ".map": "application/json",
   ".json": "application/json",
+  // M2: the PWA manifest — browsers want its own type to treat it as one.
+  ".webmanifest": "application/manifest+json",
   ".svg": "image/svg+xml",
   ".png": "image/png",
   ".ico": "image/x-icon",

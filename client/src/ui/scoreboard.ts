@@ -26,6 +26,9 @@ export class Scoreboard {
    * must not yank the surface out from under the pointer. */
   private dragging = false;
   private tabHeld = false;
+  /** Touch (M2): there is no Tab key, so a minimap tap pins the panel open
+   * until the next tap — see bindTapToggle. */
+  private pinned = false;
 
   constructor(
     private readonly selfId: string,
@@ -41,12 +44,13 @@ export class Scoreboard {
     target.addEventListener("keyup", (e: KeyboardEvent) => {
       if (e.code === "Tab") {
         this.tabHeld = false;
-        if (!this.dragging) this.setOpen(false);
+        if (!this.dragging && !this.pinned) this.setOpen(false);
       }
     });
     target.addEventListener("blur", () => {
       this.tabHeld = false;
       this.dragging = false;
+      this.pinned = false;
       this.setOpen(false);
     });
   }
@@ -113,9 +117,24 @@ export class Scoreboard {
       bar.release();
       paint();
       // The panel only lingered for the drag; Tab is in charge again.
-      if (!this.tabHeld) this.setOpen(false);
+      if (!this.tabHeld && !this.pinned) this.setOpen(false);
     });
     paint();
+  }
+
+  /** Touch (M2): a tap on `el` (the minimap) opens the panel, the next one
+   * closes it. Only touch devices make the minimap tappable (index.html),
+   * so on desktop this never fires and Tab stays the one path. */
+  bindTapToggle(el: HTMLElement): void {
+    // A tap also synthesises mousedown/mouseup, and the gun trigger listens
+    // on window — the tap must not double as a trigger pull.
+    const swallow = (e: MouseEvent) => e.stopPropagation();
+    el.addEventListener("mousedown", swallow);
+    el.addEventListener("mouseup", swallow);
+    el.addEventListener("click", () => {
+      this.pinned = !this.pinned;
+      this.setOpen(this.pinned || this.tabHeld);
+    });
   }
 
   /** Repaint the bot bar after a server change; set by bindBotBar. */

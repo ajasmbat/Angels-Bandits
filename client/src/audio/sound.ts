@@ -95,11 +95,46 @@ export class GameAudio implements VoiceSink {
   private lastWhooshAt = 0;
   private lastPullUpAt = Number.NEGATIVE_INFINITY;
 
+  /** Backgrounded (M2): the context is suspended on purpose, and the
+   * per-frame ensure() must not wake it back up. */
+  private hidden = false;
+
   constructor() {
     const kick = () => this.ensure();
     window.addEventListener("pointerdown", kick);
     window.addEventListener("keydown", kick);
+    // iOS only unlocks Web Audio inside touchend/click (not pointerdown), and
+    // only for a resume() called synchronously in that handler. Permanent,
+    // not once: the same gesture also recovers an iOS "interrupted" context
+    // (a phone call, Siri) later in the session.
+    const unlock = () => this.unlock();
+    window.addEventListener("touchend", unlock);
+    window.addEventListener("click", unlock);
+    // Safari 17+: "playback" plays through the ringer/silent switch, which
+    // otherwise mutes Web Audio entirely on an iPhone.
+    const session = (navigator as { audioSession?: { type: string } })
+      .audioSession;
+    if (session) session.type = "playback";
+    document.addEventListener("visibilitychange", () => {
+      this.hidden = document.hidden;
+      if (!this.ctx) return;
+      if (this.hidden) void this.ctx.suspend();
+      else this.ensure();
+    });
     this.ensure();
+  }
+
+  /** A user gesture: resume, and while still locked start a silent
+   * one-sample buffer — older iOS only unlocks on a source started in the
+   * gesture itself. */
+  private unlock(): void {
+    this.ensure();
+    const ctx = this.ctx;
+    if (!ctx || ctx.state === "running") return;
+    const src = ctx.createBufferSource();
+    src.buffer = ctx.createBuffer(1, 1, ctx.sampleRate);
+    src.connect(ctx.destination);
+    src.start();
   }
 
   /** Create/resume the context. Safe to call every frame. */
@@ -124,7 +159,12 @@ export class GameAudio implements VoiceSink {
       const data = this.noise.getChannelData(0);
       for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
     }
-    if (this.ctx.state === "suspended") void this.ctx.resume();
+    // Not while backgrounded (M2). "interrupted" is iOS-only (a call,
+    // Siri) and missing from TS's AudioContextState.
+    const state = this.ctx.state as AudioContextState | "interrupted";
+    if (!this.hidden && (state === "suspended" || state === "interrupted")) {
+      void this.ctx.resume();
+    }
     return this.ctx.state === "running" ? this.ctx : null;
   }
 

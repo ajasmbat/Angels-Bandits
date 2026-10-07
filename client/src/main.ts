@@ -109,6 +109,7 @@ import {
   spinPropeller,
 } from "./render/plane";
 import { PlaneLights } from "./render/planelights";
+import { prewarmScene } from "./render/prewarm";
 import { RemotePlanes } from "./render/remotes";
 import { MSAA_SAMPLES, readRenderOptions } from "./render/renderopts";
 import {
@@ -1178,28 +1179,15 @@ window.__ab = {
 const poseEuler = new THREE.Euler();
 const poseQuat = new THREE.Quaternion();
 let last = performance.now();
-// Pre-warm the micro tier's four programs. They would otherwise first compile
-// on the frame the player descends through 140 m — a guaranteed stutter at
-// exactly the moment the tier is meant to appear seamlessly. compile() walks
-// the VISIBLE scene, so the meshes are shown for the one call and hidden
-// again; each subsystem's own update() turns them back on when the gate opens.
-for (const o of [
-  pedestrians.mesh,
-  steam.points,
-  signals.mesh,
-  constructionSparks.points,
-]) {
-  o.visible = true;
-}
-renderer.compile(scene, camera);
-for (const o of [
-  pedestrians.mesh,
-  steam.points,
-  signals.mesh,
-  constructionSparks.points,
-]) {
-  o.visible = false;
-}
+// Pre-warm every program the scene can ever draw, behind the boot fade (O2):
+// the micro tier (first seen descending through 140 m), and every effect
+// that starts hidden — guns, explosions, sparks, storm bolts, searchlights,
+// birds, movers, traffic, the prop blur, the HP sprite, name tags. Each would
+// otherwise compile on the frame it first appears, which is exactly the
+// moment a hitch is noticed. Each subsystem's update() then owns visibility.
+fadeEl.classList.add("dead");
+await prewarmScene(renderer, scene, camera);
+flashFade();
 
 renderer.setAnimationLoop((now) => {
   const rawMs = now - last;

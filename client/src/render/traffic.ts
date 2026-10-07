@@ -16,10 +16,14 @@ import {
   EMISSIVE_BEACON,
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
-import { type Vec3, canonicalize } from "@angels-bandits/common/world";
+import {
+  type Vec3,
+  canonicalAxis,
+  canonicalize,
+} from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
-import { nearestImage } from "./wrapPlacement";
+import { nearestImageInto } from "./wrapPlacement";
 
 /** Lane centerlines from the S1 street contract (±5 m, right-hand traffic). */
 const [LANE_MINUS, LANE_PLUS] = LANE_CENTERS;
@@ -95,6 +99,23 @@ export function laneSpeed(lane: TrafficLane, seed: number): number {
   return SPEED_MIN + laneRand(lane, seed)() * SPEED_SPAN;
 }
 
+/** The time-independent half of a car's pose: where along its lane it sits
+ * at t = 0 (index spacing + its phase jitter) and its lane's speed. Split
+ * out so the renderer can draw it ONCE per car instead of replaying the
+ * lane's PRNG every frame (O2) — carPose and Traffic.update share it, so the
+ * two can never disagree. */
+function carTrack(
+  lane: TrafficLane,
+  carIndex: number,
+  seed: number,
+): { base: number; speed: number } {
+  const rand = laneRand(lane, seed);
+  const speed = SPEED_MIN + rand() * SPEED_SPAN;
+  let jitter = 0;
+  for (let i = 0; i <= carIndex; i++) jitter = (rand() * 2 - 1) * PHASE_JITTER;
+  return { base: carIndex * SPACING + jitter, speed };
+}
+
 /** Heading for a lane: forward is −Z at yaw 0 (the plane convention), so
  * +Z travel → π, −Z → 0, +X → −π/2, −X → π/2. */
 const laneYaw = (lane: TrafficLane): number => {
@@ -113,11 +134,8 @@ export function carPose(
   timeSeconds: number,
   seed: number,
 ): CarPose {
-  const rand = laneRand(lane, seed);
-  const speed = SPEED_MIN + rand() * SPEED_SPAN;
-  let jitter = 0;
-  for (let i = 0; i <= carIndex; i++) jitter = (rand() * 2 - 1) * PHASE_JITTER;
-  const along = carIndex * SPACING + jitter + lane.dir * speed * timeSeconds;
+  const { base, speed } = carTrack(lane, carIndex, seed);
+  const along = base + lane.dir * speed * timeSeconds;
   const pos = canonicalize(
     lane.axis === "x"
       ? { x: along, y: 0, z: lane.cross }
@@ -312,10 +330,24 @@ export class Traffic {
   private readonly pos = new THREE.Vector3();
   private static readonly UP = new THREE.Vector3(0, 1, 0);
   private static readonly UNIT = new THREE.Vector3(1, 1, 1);
+  /** Per slot (lane × CARS_PER_LANE): carTrack's base and speed, drawn once. */
+  private readonly trackBase: Float64Array;
+  private readonly trackSpeed: Float64Array;
+  private readonly canonical = { x: 0, y: 0, z: 0 };
+  private readonly image = { x: 0, y: 0, z: 0 };
 
   constructor(seed: number) {
     this.seed = seed;
     this.lanes = trafficLanes();
+    this.trackBase = new Float64Array(this.lanes.length * CARS_PER_LANE);
+    this.trackSpeed = new Float64Array(this.lanes.length * CARS_PER_LANE);
+    this.lanes.forEach((lane, l) => {
+      for (let i = 0; i < CARS_PER_LANE; i++) {
+        const track = carTrack(lane, i, seed);
+        this.trackBase[l * CARS_PER_LANE + i] = track.base;
+        this.trackSpeed[l * CARS_PER_LANE + i] = track.speed;
+      }
+    });
     const geometry = new THREE.BoxGeometry(
       CAR_SIZE.width,
       CAR_SIZE.height,
@@ -372,11 +404,18 @@ export class Traffic {
     // time alone, so both ambulances beat together and so do both tabs.
     const flash = sirenState(t);
     let index = 0;
+    const c = this.canonical;
     for (const lane of this.lanes) {
+      // carPose's arithmetic, without its per-car PRNG replay and objects.
+      this.quat.setFromAxisAngle(Traffic.UP, laneYaw(lane));
       for (let i = 0; i < CARS_PER_LANE; i++) {
-        const { pos, yaw } = carPose(lane, i, t, this.seed);
-        const p = nearestImage(cameraPos, pos);
-        this.quat.setFromAxisAngle(Traffic.UP, yaw);
+        const along = canonicalAxis(
+          (this.trackBase[index] as number) +
+            lane.dir * (this.trackSpeed[index] as number) * t,
+        );
+        c.x = lane.axis === "x" ? along : canonicalAxis(lane.cross);
+        c.z = lane.axis === "x" ? canonicalAxis(lane.cross) : along;
+        const p = nearestImageInto(this.image, cameraPos, c);
         this.pos.set(p.x, p.y, p.z);
         this.scratch.compose(this.pos, this.quat, Traffic.UNIT);
         this.siren.setX(index, this.isAmbulance[index] ? flash : 0);

@@ -30,6 +30,9 @@
       body {
         margin: 0;
         height: 100%;
+        /* M5: the visible viewport on phones (iOS Safari's toolbars), so the
+           page never extends under the address bar or home indicator. */
+        height: 100dvh;
         overflow: hidden;
         background: #141225;
         cursor: crosshair;
@@ -769,8 +772,9 @@
            M1 owns       everything below --hud-top-band (thumb zones), the
                          touch-action of its own control elements
            pointer-events: every M2 HUD element is none EXCEPT #minimap (tap =
-           scoreboard) and #fs-btn; M1's aim drag must ignore touches whose
-           target is one of those two.
+           scoreboard) and #fs-btn — plus M5's #fs-chips (re-enter pill,
+           install chip), which sit in the top band below the gauges; M1's
+           aim drag must ignore touches whose target is one of those.
            body.touch    set only by ui/mobile.ts (isTouch / whenTouch). */
       :root {
         --safe-t: env(safe-area-inset-top, 0px);
@@ -1205,6 +1209,178 @@
       }
       /* ===== end M2 mobile shell ============================================ */
 
+      /* ===== M5 phone fullscreen =============================================
+         Built by ui/phone-fullscreen.ts, touch only. The chips (re-enter
+         pill, one-time install offer) are one row in M2's top band: right of
+         the minimap, in the strip BELOW the gauges, never below
+         --hud-top-band (M1's zone). z-index above the killfeed/comms and
+         M1's layer, below #rotate (10) and the iPhone sheet (11). */
+      #fs-chips {
+        display: none;
+        position: fixed;
+        left: calc(var(--gut-x) + var(--safe-l) + var(--mini) + 10px);
+        top: calc(var(--gut-y) + var(--safe-t) + 60px);
+        gap: 6px;
+        z-index: 6;
+        pointer-events: none;
+      }
+      body.touch #fs-chips {
+        display: flex;
+      }
+      #fs-chips [hidden] {
+        display: none;
+      }
+      #fs-chips button {
+        appearance: none;
+        -webkit-appearance: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        height: 24px;
+        margin: 0;
+        padding: 0 10px;
+        background: #0c0b18cc;
+        border: 1px solid #27e0c0aa;
+        border-radius: 12px;
+        color: #9fd8e8;
+        font: inherit;
+        font-size: 9px;
+        letter-spacing: 0.12em;
+        white-space: nowrap;
+        cursor: pointer;
+        pointer-events: auto;
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+      }
+      #fs-chips svg {
+        width: 12px;
+        height: 12px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+      }
+      #install-chip {
+        display: flex;
+        pointer-events: none;
+      }
+      #install-chip #install-go {
+        border-radius: 12px 0 0 12px;
+        border-right: none;
+      }
+      #install-chip #install-dismiss {
+        padding: 0 8px;
+        border-radius: 0 12px 12px 0;
+      }
+
+      /* iPhone: the one-time "Add to Home Screen" sheet over the join card.
+         Sized to the visible viewport (--vv-h, ui/mobile.ts) — the page's
+         touchmove lock means it can never scroll. */
+      #ios-sheet {
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 11;
+        background: #141225e6;
+        cursor: default;
+      }
+      #ios-sheet.open {
+        display: flex;
+      }
+      #ios-sheet .card {
+        box-sizing: border-box;
+        width: min(440px, calc(100vw - 32px));
+        max-height: calc(var(--vv-h, 100dvh) - 24px);
+        overflow: hidden;
+        padding: 14px 18px 16px;
+        background: #0c0b18;
+        border: 1px solid #27e0c0;
+        color: #9fd8e8;
+        text-align: center;
+      }
+      #ios-sheet h2 {
+        margin: 0 0 6px;
+        font-size: 15px;
+        letter-spacing: 0.2em;
+        color: #e8f6fa;
+      }
+      #ios-sheet p {
+        margin: 0 0 12px;
+        font-size: 11px;
+        line-height: 1.5;
+        letter-spacing: 0.04em;
+      }
+      #ios-sheet ol {
+        display: flex;
+        align-items: flex-start;
+        justify-content: center;
+        gap: 4px;
+        margin: 0 0 12px;
+        padding: 0;
+        list-style: none;
+      }
+      #ios-sheet li {
+        flex: 1 1 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        font-size: 9px;
+        letter-spacing: 0.1em;
+        line-height: 1.4;
+      }
+      #ios-sheet li.arrow {
+        flex: 0 0 14px;
+        padding-top: 12px;
+      }
+      #ios-sheet .glyph {
+        box-sizing: border-box;
+        width: 38px;
+        height: 38px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid #27e0c066;
+        border-radius: 9px;
+        color: #27e0c0;
+      }
+      #ios-sheet .glyph svg {
+        width: 22px;
+        height: 22px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      #ios-sheet .glyph img {
+        width: 30px;
+        height: 30px;
+        border-radius: 7px;
+      }
+      #ios-sheet li.arrow svg {
+        width: 14px;
+        height: 14px;
+        fill: none;
+        stroke: #9fd8e8;
+        stroke-width: 2;
+      }
+      #ios-sheet button {
+        appearance: none;
+        -webkit-appearance: none;
+        background: #27e0c0;
+        border: none;
+        color: #0c0b18;
+        font: inherit;
+        font-size: 13px;
+        letter-spacing: 0.15em;
+        padding: 8px 26px;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+      }
+      /* ===== end M5 phone fullscreen ======================================== */
+
     </style>
   </head>
   <body>
@@ -1282,6 +1458,28 @@
         <path d="M9.6 9.6l4.8 4.8M14.4 9.6l-4.8 4.8" stroke-width="1.6" />
       </svg>
     </button>
+    <!-- M5 (ui/phone-fullscreen.ts): touch-only chips in the top band. -->
+    <div id="fs-chips">
+      <button id="fs-pill" type="button" aria-label="Enter fullscreen" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" />
+        </svg>
+        FULLSCREEN
+      </button>
+      <div id="install-chip" hidden>
+        <button id="install-go" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 4v11M7 10l5 5 5-5M5 20h14" />
+          </svg>
+          INSTALL APP
+        </button>
+        <button id="install-dismiss" type="button" aria-label="Not now">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 6l12 12M18 6L6 18" />
+          </svg>
+        </button>
+      </div>
+    </div>
     <div id="freelook-hint">◇ FREE LOOK ◇</div>
     <div id="aim-mode-toast"></div>
     <div id="killfeed"></div>
@@ -1351,6 +1549,48 @@
           FOR FULLSCREEN: SHARE ▸ ADD TO HOME SCREEN
         </p>
       </form>
+    </div>
+    <!-- M5: iPhone pages can't go fullscreen; the home-screen app can. Shown
+         once by ui/phone-fullscreen.ts, never in the installed app. -->
+    <div id="ios-sheet" role="dialog" aria-labelledby="ios-sheet-h">
+      <div class="card">
+        <h2 id="ios-sheet-h">PLAY FULLSCREEN</h2>
+        <p>Safari can't go fullscreen in a tab. Add the game to your Home
+          Screen and it opens fullscreen, every time.</p>
+        <ol>
+          <li>
+            <span class="glyph">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 3v12M8 7l4-4 4 4" />
+                <path d="M8 10H6v10h12V10h-2" />
+              </svg>
+            </span>
+            TAP SHARE
+          </li>
+          <li class="arrow" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" /></svg>
+          </li>
+          <li>
+            <span class="glyph">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="4" y="4" width="16" height="16" rx="3" />
+                <path d="M12 8v8M8 12h8" />
+              </svg>
+            </span>
+            ADD TO HOME SCREEN
+          </li>
+          <li class="arrow" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" /></svg>
+          </li>
+          <li>
+            <span class="glyph">
+              <img src="/icons/apple-touch-icon.png" alt="" />
+            </span>
+            OPEN IT FROM YOUR HOME SCREEN
+          </li>
+        </ol>
+        <button type="button">GOT IT</button>
+      </div>
     </div>
     <div id="signal-lost" role="alertdialog" aria-labelledby="signal-lost-h">
       <h1 id="signal-lost-h">SIGNAL LOST</h1>

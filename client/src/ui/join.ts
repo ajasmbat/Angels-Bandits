@@ -20,8 +20,10 @@ function takeRejoin(): boolean {
   }
 }
 
-/** Show the join overlay and resolve with the pilot's name once they enter. */
-export function requestName(): Promise<string> {
+/** Show the join overlay and resolve with the pilot's name once they enter.
+ * `onGesture` runs synchronously inside the submit (the user gesture) — M5's
+ * phone fullscreen request must not wait for anything async. */
+export function requestName(onGesture?: () => void): Promise<string> {
   const overlay = document.getElementById("join") as HTMLDivElement;
   const form = document.getElementById("join-form") as HTMLFormElement;
   const input = document.getElementById("join-name") as HTMLInputElement;
@@ -39,6 +41,10 @@ export function requestName(): Promise<string> {
       "submit",
       (ev) => {
         ev.preventDefault();
+        // Close the on-screen keyboard first: it must not ride into
+        // fullscreen over the game.
+        input.blur();
+        onGesture?.();
         const name = input.value.trim().slice(0, NAME_MAX_LENGTH) || "Pilot";
         localStorage.setItem(STORAGE_KEY, name);
         overlay.classList.remove("open");

@@ -602,7 +602,7 @@ windowGlow += woke * litWindow * ${intensity} * ao;
 // --- Renderer -------------------------------------------------------------
 
 /** Puffs per smoke column. */
-const PUFFS = 28;
+export const PUFFS = 36;
 /** Seconds for one puff to rise the full column. */
 const PUFF_RISE_S = 9;
 /** Column height a puff reaches, meters. */
@@ -610,14 +610,14 @@ const COLUMN_HEIGHT = 95;
 /** The column leans downwind by this much at the top, meters. */
 const WIND_LEAN = { x: 26, z: 11 } as const;
 /** Puff sprite size ramp, meters. */
-const PUFF_MIN = 6;
-const PUFF_MAX = 17;
+const PUFF_MIN = 9;
+const PUFF_MAX = 24;
 /** City-lit grey: at night a smoke column reads by the street light it
  * catches, so it is LIGHTER than the dark sky and asphalt it rises over
  * (a near-black column vanishes against both). Not a light source: linear
- * luminance ~0.11, far under the 0.72 bloom threshold. */
-export const COLUMN_COLOR = 0x5e575c;
-const COLUMN_OPACITY = 0.62;
+ * luminance ~0.14, far under the 0.72 bloom threshold. */
+export const COLUMN_COLOR = 0x6c6569;
+const COLUMN_OPACITY = 0.78;
 /** Hard cap on the projected sprite, px — GL point sizes clamp anyway, and a
  * consistent cap reads better than each driver's own limit. */
 const MAX_POINT_PX = 256;

@@ -28,6 +28,7 @@ import {
   type LowPass,
   MAX_RESPONDER_SITES,
   MAX_WAKES,
+  PUFFS,
   SCATTER_LIFE_MS,
   SCATTER_RADIUS,
   TRACK_RANGE,
@@ -179,11 +180,11 @@ describe("cityReactions — expiry", () => {
 
   it("the smoke column builds from the ground and is fully spent at 60 s", () => {
     // 2 s in, only puffs that have had time to rise are in the air — low.
-    for (let i = 0; i < 28; i++) {
+    for (let i = 0; i < PUFFS; i++) {
       const u = puffPhase(2_000, i, T0);
       if (u >= 0) expect(u * 9_000).toBeLessThanOrEqual(2_000 + 1e-6);
     }
-    for (let i = 0; i < 28; i++) {
+    for (let i = 0; i < PUFFS; i++) {
       expect(puffPhase(SMOKE_LIFE_MS + 1, i, T0)).toBe(-1);
     }
   });
@@ -239,18 +240,22 @@ describe("responders", () => {
   sites.push(death(1999.5, 37), death(3, 1998), death(1000, 1000));
 
   it("drive only on the roadway, the whole way in, for every site", () => {
+    // Collected, then asserted once: ~30 k samples through expect() is slow.
+    const off: string[] = [];
     for (const ev of sites) {
       for (const kind of ["police", "ambulance"] as const) {
         const route = responderRoute(ev, kind);
         const pose = { kind, x: 0, z: 0, yaw: 0 };
         for (let age = 0; age < SMOKE_LIFE_MS; age += 250) {
           if (!responderPoseInto(route, age, pose)) continue;
-          expect(pose.x).toBeGreaterThanOrEqual(0);
-          expect(pose.x).toBeLessThan(2000);
-          expect(isInRoadway({ x: pose.x, y: 0, z: pose.z })).toBe(true);
+          const canonical = pose.x >= 0 && pose.x < 2000;
+          if (!canonical || !isInRoadway({ x: pose.x, y: 0, z: pose.z })) {
+            off.push(`${kind} of (${ev.x}, ${ev.z}) at ${age} ms`);
+          }
         }
       }
     }
+    expect(off).toEqual([]);
   });
 
   it("leave after the dispatch beat and park on the scene street, either side of the scene", () => {

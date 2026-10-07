@@ -205,8 +205,14 @@ describe("hit claims at the new cadence", () => {
       streamPose(target, at(1000 + BULLET_RANGE / 2, 1000));
       await wait(1000 / 20);
     }
-    // Spawn protection has to lapse before a hit can land at all.
-    await wait(SPAWN_PROTECTION_MS);
+    // Spawn protection has to lapse before a hit can land at all. Keep both
+    // planes streaming while it does, as a live client would: idling longer
+    // than LIVENESS_TIMEOUT_MS lets the 2 s liveness sweep drop them first.
+    for (let t = 0; t < SPAWN_PROTECTION_MS; t += 1000 / 20) {
+      streamPose(shooter, at(1000, 1000));
+      streamPose(target, at(1000 + BULLET_RANGE / 2, 1000));
+      await wait(1000 / 20);
+    }
     for (let i = 0; i < 4; i++) {
       streamPose(shooter, at(1000, 1000));
       streamPose(target, at(1000 + BULLET_RANGE / 2, 1000));

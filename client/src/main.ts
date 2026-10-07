@@ -602,7 +602,7 @@ let qaView: { eye: Vec3; at: Vec3 } | null = null;
 let qaReactAt: number | null = null;
 /**
  * QA-only (`__ab.pinWorld`, O4): the WORLD clock pinned to a server time,
- * then advanced by each frame's real elapsed time. Everything that renders on
+ * then advanced by each frame's sim step. Everything that renders on
  * the latched `renderMs` — sky cycle, weather, traffic, signage, living
  * windows, movers and the news heli, train, drones, airliners, birds,
  * fireworks, storm strikes, reactions and the crash check — then shows the
@@ -1397,7 +1397,7 @@ declare global {
       qaReactionClock: (serverTimeMs: number | null) => void;
       /**
        * O4 perf-harness pin: render the WORLD at this server time from now
-       * on, advancing in real time (null = the synced clock). Returns the
+       * on, advancing with the sim's step (null = the synced clock). Returns the
        * world time the next frame starts from.
        */
       pinWorld: (serverTimeMs: number | null) => number | null;
@@ -1771,9 +1771,11 @@ const frame = (now: number): void => {
   // snapshot: movers then render hidden AND count as non-solid.
   const frameClock = socket.tickRenderClock(now);
   if (qaWorld !== null) {
-    // O4 QA pin: real elapsed time, like the RenderClock, from the pin on.
-    if (qaWorld.frameMs !== null)
-      qaWorld.ms += Math.max(0, now - qaWorld.frameMs);
+    // O4 QA pin: advanced by the SIM's step (dt, clamped like the flight
+    // model), not wall time, so the world and the plane move in lockstep —
+    // frame n of a pass shows the same scene on a 3 fps software rasteriser
+    // as on a GPU (where dt is never clamped and this IS real time).
+    if (qaWorld.frameMs !== null) qaWorld.ms += dt * 1000;
     qaWorld.frameMs = now;
   }
   const renderMs = qaWorld !== null ? qaWorld.ms : frameClock.time;

@@ -4,15 +4,6 @@
 // whatever the server said, never a client-side simulation of them.
 
 import { BOOST_MIN_START, MAX_HP } from "@angels-bandits/common/constants";
-import type { ProximityCue } from "../game/proximity";
-
-/** The proximity cue's words, by cue. */
-const CUE_TEXT: Record<ProximityCue, string> = {
-  "pull-up": "PULL UP",
-  "break-left": "◀ BREAK LEFT",
-  "break-right": "BREAK RIGHT ▶",
-  "level-out": "▼ LEVEL OUT",
-};
 
 /** Last value written per element per style property (O2): the HUD setters
  * run every frame, and an unchanged write still costs a style parse and can
@@ -66,9 +57,6 @@ export class Hud {
   ) as unknown as SVGSVGElement;
   private readonly aimModeToast = document.getElementById(
     "aim-mode-toast",
-  ) as HTMLDivElement;
-  private readonly pullUp = document.getElementById(
-    "pull-up",
   ) as HTMLDivElement;
   private hitBlipUntil = 0;
   private aimModeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -188,20 +176,7 @@ export class Hud {
     );
   }
 
-  /** Brief toast for the avoidance-assist toggle N just flipped (F4). */
-  showAssist(on: boolean): void {
-    this.toast(on ? "◇ AVOID ASSIST: ON (N) ◇" : "◇ AVOID ASSIST: OFF (N) ◇");
-  }
-
-  /** Ground/wall proximity warning (F4): the flashing PULL UP — or, for a
-   * wall a turn escapes, BREAK LEFT/RIGHT, or for a deck overhead LEVEL OUT
-   * (L11b) — cue; null hides it. */
-  setProximity(cue: ProximityCue | null): void {
-    if (cue !== null) this.pullUp.textContent = CUE_TEXT[cue];
-    this.pullUp.classList.toggle("on", cue !== null);
-  }
-
-  /** The shared top-centre toast (aim mode, assist). */
+  /** The shared top-centre toast (aim mode). */
   private toast(text: string): void {
     this.aimModeToast.textContent = text;
     this.aimModeToast.classList.add("on");

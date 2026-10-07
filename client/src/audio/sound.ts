@@ -53,10 +53,6 @@ const ENGINE_MAX_HZ = 135;
 /** Engine pitch at full boost speed (F2) — the burn climbs past full throttle. */
 const ENGINE_BOOST_HZ = 185;
 const BOOST_CUE_LEVEL = 0.45;
-/** Proximity warning beep (F4): clearly audible over the engine, short. */
-const PULL_UP_LEVEL = 0.22;
-/** One warning pair every this many ms while the warning holds. */
-const PULL_UP_EVERY_MS = 550;
 
 /** A running context and its buses, for an add-on layer (L2 city ambience)
  * that builds its own nodes once and mixes into the existing chain. */
@@ -93,7 +89,6 @@ export class GameAudio implements VoiceSink {
   } | null = null;
   private readonly remotes = new Map<string, RemoteEngine>();
   private lastWhooshAt = 0;
-  private lastPullUpAt = Number.NEGATIVE_INFINITY;
 
   /** Backgrounded (M2): the context is suspended on purpose, and the
    * per-frame ensure() must not wake it back up. */
@@ -512,30 +507,6 @@ export class GameAudio implements VoiceSink {
   /** Boost ignition (F2): a rising rush of air as the burn lights. */
   boostCue(): void {
     this.burst("bandpass", 500, 2600, 0.5, BOOST_CUE_LEVEL, 0);
-  }
-
-  /** Proximity warning (F4): a high-low square-wave pair, repeating every
-   * PULL_UP_EVERY_MS while main keeps calling it — rate-limited here. */
-  pullUpTone(nowMs: number): void {
-    if (nowMs - this.lastPullUpAt < PULL_UP_EVERY_MS) return;
-    this.lastPullUpAt = nowMs;
-    const ctx = this.ensure();
-    if (!ctx || !this.sfx) return;
-    const now = ctx.currentTime;
-    for (const [i, hz] of [1320, 990].entries()) {
-      const osc = ctx.createOscillator();
-      osc.type = "square";
-      osc.frequency.value = hz;
-      const gain = ctx.createGain();
-      const at = now + i * 0.13;
-      gain.gain.setValueAtTime(0.0001, at);
-      gain.gain.exponentialRampToValueAtTime(PULL_UP_LEVEL, at + 0.01);
-      gain.gain.setValueAtTime(PULL_UP_LEVEL, at + 0.09);
-      gain.gain.exponentialRampToValueAtTime(0.001, at + 0.12);
-      osc.connect(gain).connect(this.sfx);
-      osc.start(at);
-      osc.stop(at + 0.13);
-    }
   }
 
   /** Near-miss whoosh: an enemy bullet just shaved past. Rate-limited. */

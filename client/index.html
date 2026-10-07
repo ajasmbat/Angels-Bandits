@@ -340,36 +340,6 @@
         opacity: 0.85;
         transition: none;
       }
-      /* Proximity warning (F4): ~1.5 s before a predicted impact. Big,
-         red and blinking — but off-centre, so it never covers the pipper. */
-      #pull-up {
-        position: fixed;
-        left: 50%;
-        top: 30%;
-        transform: translateX(-50%);
-        display: none;
-        padding: 4px 14px;
-        border: 2px solid currentColor;
-        color: #ff5a4a;
-        font-size: 22px;
-        font-weight: bold;
-        letter-spacing: 0.3em;
-        text-shadow: 0 1px 3px #000;
-        pointer-events: none;
-        user-select: none;
-      }
-      #pull-up.on {
-        display: block;
-        animation: pull-up-blink 0.5s steps(2, jump-none) infinite;
-      }
-      @keyframes pull-up-blink {
-        from {
-          opacity: 1;
-        }
-        to {
-          opacity: 0.25;
-        }
-      }
       /* Zoomed, the pipper IS the gunsight — brighten and thicken it. */
       body.zoom #crosshair {
         color: #ffd9a0;
@@ -1170,7 +1140,6 @@
     </button>
     <div id="freelook-hint">◇ FREE LOOK ◇</div>
     <div id="aim-mode-toast"></div>
-    <div id="pull-up">PULL UP</div>
     <div id="killfeed"></div>
     <div id="comms"></div>
     <div id="scoreboard">

@@ -90,6 +90,7 @@ import { GameSocket } from "./net/socket";
 import { Birds } from "./render/birds";
 import { CityRenderer } from "./render/city";
 import { ConstructionSparks } from "./render/construction";
+import { FacadeDetailRenderer } from "./render/facade-detail";
 import { FacadeGarnishRenderer } from "./render/facade-garnish";
 import { Fireworks } from "./render/fireworks";
 import { installHeightFog } from "./render/fog";
@@ -332,6 +333,10 @@ scene.add(roofClutter.group);
 // Parapet caps + entrance canopies dress the same shared Building[] (ANGE-XY8LH8).
 const facadeGarnish = new FacadeGarnishRenderer(city.cityBuildings);
 scene.add(facadeGarnish.group);
+// L13 facade detail (ANGE-G6JR64): fire escapes, balconies, AC units and
+// scaffolding, streamed per camera block (r = 2) and faded on the GPU.
+const facadeDetail = new FacadeDetailRenderer(city.cityBuildings, welcome.seed);
+scene.add(facadeDetail.group);
 const ground = new GroundPlane();
 scene.add(ground.mesh);
 const skyDome = new SkyDome();
@@ -1097,6 +1102,7 @@ window.__ab = {
     tierInstances: city.tierInstanceCount,
     clutterInstances: roofClutter.instanceCount,
     garnishInstances: facadeGarnish.instanceCount,
+    detailInstances: facadeDetail.instanceCount,
     rigInstances: movers.rigInstances,
     moverLights: moverLights.lightCount,
     beams: searchlights.beamCount,
@@ -1530,6 +1536,7 @@ renderer.setAnimationLoop((now) => {
   // Beacons pulse on server-synced time so every client is in phase.
   roofClutter.update(chase.position, renderMs ?? now);
   facadeGarnish.update(chase.position);
+  facadeDetail.update(chase.position, microOn); // L13: re-streams on block change only
   streetlights.update(chase.position);
   natureRenderer.update(chase.position);
   // Neon pulses on the same synced clock as the beacons.

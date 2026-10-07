@@ -1,6 +1,6 @@
 // Magnetism seam: own bullets bend toward the nearest target inside a tight
 // aim cone, capped per second — connection help, not an aimbot. Worked
-// examples pin the spec numbers: MAGNETISM_CONE_DEG = 4, MAGNETISM_MAX_DEG_PER_S = 2
+// examples pin the spec numbers: MAGNETISM_CONE_DEG = 7, MAGNETISM_MAX_DEG_PER_S = 6
 // (constants.ts); angles below are literals derived from those by hand.
 
 import type { Vec3 } from "@angels-bandits/common/world";
@@ -32,17 +32,17 @@ describe("magnetizeVelocity", () => {
   const pos: Vec3 = { x: 1000, y: 300, z: 1000 };
   const vel: Vec3 = { x: 0, y: 0, z: -400 }; // straight −Z, 400 m/s
 
-  it("bends toward a target 3° off, by exactly the per-frame cap (2°/s × 0.1 s = 0.2°)", () => {
+  it("bends toward a target 3° off, by exactly the per-frame cap (6°/s × 0.1 s = 0.6°)", () => {
     const target = offsetTarget(pos, 3, 200);
     const out = magnetizeVelocity(pos, vel, [target], 0.1);
-    // Bent by the cap: 0.2°, toward the target (aim error 3° → 2.8°).
-    expect(angleBetween(vel, out)).toBeCloseTo(0.2 * DEG, 5);
+    // Bent by the cap: 0.6°, toward the target (aim error 3° → 2.4°).
+    expect(angleBetween(vel, out)).toBeCloseTo(0.6 * DEG, 5);
     const toTarget = {
       x: target.pos.x - pos.x,
       y: 0,
       z: target.pos.z - pos.z,
     };
-    expect(angleBetween(out, toTarget)).toBeCloseTo(2.8 * DEG, 5);
+    expect(angleBetween(out, toTarget)).toBeCloseTo(2.4 * DEG, 5);
     // Speed is preserved — magnetism steers, never accelerates.
     expect(Math.hypot(out.x, out.y, out.z)).toBeCloseTo(400, 6);
   });
@@ -58,7 +58,7 @@ describe("magnetizeVelocity", () => {
     expect(angleBetween(out, toTarget)).toBeCloseTo(0, 5);
   });
 
-  it("gives zero bend to a target 10° off (outside the 4° cone)", () => {
+  it("gives zero bend to a target 10° off (outside the 7° cone)", () => {
     const target = offsetTarget(pos, 10, 200);
     const out = magnetizeVelocity(pos, vel, [target], 0.1);
     expect(out).toEqual(vel);
@@ -80,7 +80,7 @@ describe("magnetizeVelocity", () => {
     };
     const out = magnetizeVelocity(seamPos, seamVel, [target], 0.1);
     // Bent (not the unchanged reference) and toward +Z (the short way).
-    expect(angleBetween(seamVel, out)).toBeCloseTo(0.2 * DEG, 5);
+    expect(angleBetween(seamVel, out)).toBeCloseTo(0.6 * DEG, 5);
     expect(out.z).toBeGreaterThan(0);
   });
 

@@ -186,7 +186,7 @@ describe("projectToScreen", () => {
 
 // The firing solution. "Hot" means your bullets would actually connect, so the
 // test is the PERPENDICULAR MISS of the intercept point from the gun line
-// against HIT_RADIUS (6 m) — not a flat angle, which would be 7.3 m of slop at
+// against HIT_RADIUS (7.5 m) — not a flat angle, which would be 7.3 m of slop at
 // 350 m but 1.0 m at 50 m. A 4-degree ceiling stops point-blank pinning it on.
 // Expected values are hand-worked right triangles.
 describe("solutionMiss", () => {
@@ -206,7 +206,7 @@ describe("solutionMiss", () => {
     expect(hasSolution(e)).toBe(true);
   });
 
-  it("goes cold at 8 m of miss — wider than the 6 m hit radius", () => {
+  it("goes cold at 8 m of miss — wider than the 7.5 m hit radius", () => {
     expect(hasSolution(solutionMiss(level, { x: 1008, y: 300, z: 800 }))).toBe(
       false,
     );

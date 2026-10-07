@@ -56,6 +56,15 @@ import { FlightInputSource } from "./game/flight-input";
 import { createFreeLook, shapeInput, stepFreeLook } from "./game/freelook";
 import { Guns } from "./game/guns";
 import { bulletHitsSphere } from "./game/hitdetect";
+import {
+  type AimError,
+  CONVERGED_RAD,
+  aimError,
+  aimView,
+  angleBetween,
+  createInstructor,
+  instructorInput,
+} from "./game/instructor";
 import { magnetizeVelocity } from "./game/magnetism";
 import {
   BASE_FOV,
@@ -490,6 +499,13 @@ const chase = new ChaseCamera();
 let freelook = createFreeLook();
 // Hold-right-click aim zoom: same deal — display + input shaping only.
 let zoom = createZoom();
+// Mouse-aim instructor (F1): client-only, its output is ordinary input.
+let instructor = createInstructor();
+let aimMode = input.aimMode();
+/** Last frame's smoothed cursor — the free-look drag latch diffs against it. */
+let cursorPrev = input.cursorNdc();
+/** Whether the pipper sits on the cursor this frame (HUD converged state). */
+let aimConverged = false;
 let flight: FlightState = createFlightState(
   welcome.spawn.pos,
   welcome.spawn.yaw,
@@ -526,6 +542,7 @@ function enterDeath(killerId: string | null, cause?: "storm"): void {
   // Kill-cam owns the camera — force-exit free-look and the zoom instantly.
   freelook = createFreeLook();
   zoom = createZoom();
+  instructor = createInstructor();
   hud.setFreeLook(false);
   killCamTargetId = killerId;
   hud.showKillCam(killerId === null ? null : nameOf(killerId), cause);
@@ -542,6 +559,7 @@ function respawnSelf(spawn: SpawnState): void {
   flight = createFlightState(spawn.pos, spawn.yaw);
   flight = { ...flight, speed: spawn.speed, targetSpeed: spawn.speed };
   chase.snapTo(flight);
+  instructor = createInstructor();
   alive = true;
   killCamTargetId = null;
   plane.visible = true;
@@ -1120,10 +1138,22 @@ renderer.setAnimationLoop((now) => {
   const renderMs = socket.renderTime();
   planeLights.begin(); // own + remote lights re-append every frame
   moverLights.begin(); // crane/aircraft lights + firework sparks, same deal
+  // Cursor smoothing + the leave-the-window fade run alive or dead, so
+  // neither comes back stale at respawn.
+  input.tick(dt);
+  if (input.aimMode() !== aimMode) {
+    // M flips the mode (dead or alive); a fresh instructor means no lagged
+    // command from the other mode ever reaches the plane.
+    aimMode = input.aimMode();
+    instructor = createInstructor();
+    hud.showAimMode(aimMode);
+  }
   // Step the zoom OUTSIDE the alive gate: chase.update() only runs while
   // alive, so a death mid-zoom would otherwise freeze the FOV narrowed for
   // the whole kill-cam. Dying eases it back out instead.
+  const zoomPrev = zoom.z;
   zoom = stepZoom(zoom, alive && zoomHeld(input.aimHeld(), freelook.held), dt);
+  aimConverged = false;
   if (alive) {
     freelook = stepFreeLook(
       freelook,
@@ -1138,7 +1168,54 @@ renderer.setAnimationLoop((now) => {
     // through the same input-shaping seam free-look uses — the camera never
     // reaches flight state. Authority is the product of both costs.
     const steer = freelook.steer * zoomSteer(zoom.z);
-    flight = stepFlight(flight, shapeInput(input.read(), { steer }), dt);
+    let command = input.read();
+    if (aimMode === "instructor") {
+      // The cursor is the aim point: fly the pipper onto it. The view is the
+      // un-orbited chase frame at THIS frame's (already stepped) zoom, with
+      // the FOV from the pure zoomFov — camera.fov is never touched here.
+      const cursor = input.cursorNdc();
+      const view = aimView(
+        flight,
+        chase.aimFrame(flight, zoom.z),
+        zoomFov(zoom.z),
+        camera.aspect,
+        cursor,
+      );
+      const err = aimError(flight, view.aimDir, view.pipperDir);
+      // Latch only what the VIEW changed this frame — the zoom easing, or a
+      // free-look drag moving the cursor — by re-reading the error with last
+      // frame's zoom/cursor at the same attitude. The plane's own turn is
+      // never latched, so a zoom pressed mid-turn keeps the turn.
+      let latch: AimError = { yaw: 0, pitch: 0 };
+      const zoomMoved = zoom.z !== zoomPrev;
+      if (zoomMoved || freelook.held) {
+        const z0 = zoomMoved ? zoomPrev : zoom.z;
+        const before = aimView(
+          flight,
+          chase.aimFrame(flight, z0),
+          zoomFov(z0),
+          camera.aspect,
+          freelook.held ? cursorPrev : cursor,
+        );
+        const e0 = aimError(flight, before.aimDir, before.pipperDir);
+        latch = { yaw: err.yaw - e0.yaw, pitch: err.pitch - e0.pitch };
+      }
+      const reframing =
+        freelook.held ||
+        freelook.yaw !== 0 ||
+        freelook.pitch !== 0 ||
+        (zoom.z > 0 && zoom.z < 1);
+      instructor = instructorInput(err, latch, reframing, dt, instructor);
+      // Off-window the presence fades the instructor out too: attitude hold.
+      const presence = input.presence();
+      command = {
+        ...command,
+        turn: instructor.turn * presence,
+        pitch: instructor.pitch * presence,
+      };
+      aimConverged = angleBetween(view.aimDir, view.pipperDir) < CONVERGED_RAD;
+    }
+    flight = stepFlight(flight, shapeInput(command, { steer }), dt);
     if (
       detectCrash(
         flight,
@@ -1423,6 +1500,13 @@ renderer.setAnimationLoop((now) => {
   // The pipper is the gun line's own vanishing point, so it only means
   // anything while we are flying it — the kill-cam gets no aim chrome.
   hud.setAimPoint(alive ? aimResult.aim : null);
+  // The instructor's cursor marker: only while flying in that mode (the
+  // kill-cam and classic mode keep the plain OS cursor).
+  hud.setAimCursor(
+    alive && aimMode === "instructor" ? input.cursorPx() : null,
+    aimConverged,
+  );
+  cursorPrev = input.cursorNdc();
   if (solutionTone.shouldPlay(alive && aimResult.solution, now)) {
     audio.solutionTick();
   }

@@ -390,8 +390,10 @@ export const BULLET_DAMAGE = 7;
 export const BULLET_RANGE = 350;
 /** How long a client-simulated bullet lives, seconds (≈ range / speed). */
 export const BULLET_LIFETIME_S = BULLET_RANGE / BULLET_SPEED;
-/** Plane hit-sphere radius, meters — generous (wingspan 9 m) because hits favor the shooter. */
-export const HIT_RADIUS = 6;
+/** Plane hit-sphere radius, meters — generous (wingspan 9 m) because hits favor
+ * the shooter. Symmetric: client hit detection on human shots AND the server's
+ * bot-gunnery test both read it. 7.5 since F1 (easy-to-fly aim help). */
+export const HIT_RADIUS = 7.5;
 
 // --- Guns / heat model (heat is a 0..1 meter; overheating locks the guns) ---
 /** Minimum time between shots, ms (10 rounds/s, alternating wingtips). */
@@ -407,10 +409,11 @@ export const HEAT_LOCK_BELOW = 0.35;
 
 // --- Gun feel (client-only presentation/assist; server validation untouched) ---
 /** Bullet magnetism: own bullets bend toward a target within this half-angle
- * of the flight line, degrees. Tight — connection help, not an aimbot. */
-export const MAGNETISM_CONE_DEG = 4;
-/** Max bend rate toward the target, degrees per second. */
-export const MAGNETISM_MAX_DEG_PER_S = 2;
+ * of the flight line, degrees. Connection help, not an aimbot — F1 widened it
+ * from 4 and checked a deliberately-off aimer still mostly misses. */
+export const MAGNETISM_CONE_DEG = 7;
+/** Max bend rate toward the target, degrees per second (F1: from 2). */
+export const MAGNETISM_MAX_DEG_PER_S = 6;
 /** A plane strictly below this fraction of MAX_HP trails wounded smoke. */
 export const SMOKE_HP_FRAC = 0.3;
 

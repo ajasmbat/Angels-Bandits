@@ -11,8 +11,9 @@
 //   ?gputime=1            measure GPU frame cost   (default off)
 //   ?micro=0              disable the L1 micro tier (default on)
 //   ?grade=0              disable the final vignette/saturation grade (default on)
-//   ?quality=auto|high|medium|low   graphics tier (default: the player's
-//                         saved pick, else DEFAULT_QUALITY — see quality.ts)
+//   ?quality=auto|high|medium|low|mobile   graphics tier (default: the
+//                         player's saved pick, else DEFAULT_QUALITY — see
+//                         quality.ts; Mobile is M3's phone tier)
 
 import { type QualitySetting, parseQualitySetting } from "./quality";
 import { defaultLimits } from "./resolution";

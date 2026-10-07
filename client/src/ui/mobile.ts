@@ -123,9 +123,20 @@ function enableTouch(): void {
   for (const fn of touchListeners.splice(0)) fn();
 }
 
+/** Whether the PRIMARY pointer is coarse right now: the boot-time half of
+ * the touch rule above, for a decision that cannot wait for a first touch —
+ * M3's quality tier, which Auto starts at Mobile on such a device. */
+export function coarsePointer(): boolean {
+  try {
+    return window.matchMedia(TOUCH_QUERY).matches;
+  } catch {
+    return false; // no matchMedia (a headless context): a desktop
+  }
+}
+
 /** Install the mobile shell. Call once, before the join prompt. */
 export function initMobileShell(): void {
-  if (window.matchMedia(TOUCH_QUERY).matches) enableTouch();
+  if (coarsePointer()) enableTouch();
   else
     window.addEventListener("touchstart", enableTouch, {
       once: true,

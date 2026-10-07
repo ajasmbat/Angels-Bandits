@@ -23,7 +23,7 @@ import {
 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
-import { nearestImage } from "./wrapPlacement";
+import { ImageCache, InstanceUploads } from "./wrapPlacement";
 
 // Lamp stations live in the S1 street contract (common/src/city/street.ts):
 // the ground shader's reflections and N1's street trees anchor to them too.
@@ -108,6 +108,8 @@ export class Streetlights {
   private readonly heads: THREE.InstancedMesh;
   private readonly glows: THREE.InstancedMesh;
   private readonly scratch = new THREE.Matrix4();
+  private readonly images: ImageCache;
+  private readonly uploads: InstanceUploads;
 
   constructor() {
     this.lamps = streetlampPositions();
@@ -151,24 +153,34 @@ export class Streetlights {
       mesh.frustumCulled = false; // instances move relative to the camera every frame
       this.group.add(mesh);
     }
+    this.images = new ImageCache(
+      this.lamps.map((l) => l.x),
+      this.lamps.map((l) => l.z),
+    );
+    this.uploads = new InstanceUploads([
+      this.poles.instanceMatrix,
+      this.heads.instanceMatrix,
+      this.glows.instanceMatrix,
+    ]);
   }
 
-  /** Place every lamp at its torus image nearest the camera. Call per frame. */
+  /** Place every lamp at its torus image nearest the camera. Call per
+   * frame; only lamps whose image flipped are rewritten and uploaded (O2). */
   update(cameraPos: Vec3): void {
-    this.lamps.forEach((lamp, i) => {
-      const p = nearestImage(cameraPos, { x: lamp.x, y: 0, z: lamp.z });
-      this.scratch.makeTranslation(p.x, 0, p.z);
-      this.poles.setMatrixAt(i, this.scratch);
-      this.scratch.makeTranslation(p.x, POLE_HEIGHT, p.z);
-      this.heads.setMatrixAt(i, this.scratch);
-      // Slightly above the street so the pool never z-fights the ground plane.
-      this.scratch.makeTranslation(p.x, 0.2, p.z);
-      this.glows.setMatrixAt(i, this.scratch);
-    });
-    this.poles.instanceMatrix.needsUpdate = true;
-    this.heads.instanceMatrix.needsUpdate = true;
-    this.glows.instanceMatrix.needsUpdate = true;
+    this.images.update(cameraPos, this.place);
+    this.uploads.flush();
   }
+
+  private readonly place = (i: number, x: number, z: number): void => {
+    this.scratch.makeTranslation(x, 0, z);
+    this.poles.setMatrixAt(i, this.scratch);
+    this.scratch.makeTranslation(x, POLE_HEIGHT, z);
+    this.heads.setMatrixAt(i, this.scratch);
+    // Slightly above the street so the pool never z-fights the ground plane.
+    this.scratch.makeTranslation(x, 0.2, z);
+    this.glows.setMatrixAt(i, this.scratch);
+    this.uploads.mark(i);
+  };
 
   /**
    * QA hook (seam checks, headless harness): the position the lamp nearest

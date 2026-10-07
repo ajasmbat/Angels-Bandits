@@ -196,10 +196,13 @@ export const CHASE_HEIGHT = 6;
 export const CAMERA_RESPONSE = 3.5;
 
 // --- Networking rates ---
-/** Client → server input/state rate, Hz. Unchanged by ANGE-4KO2W2: one
- * plane's pose is already cheap, and raising it would not shorten the interp
- * buffer (that floor is set by the DOWN rate). */
-export const TICK_UP_HZ = 20;
+/** Client → server input/state rate, Hz. Raised 20 → 30 (O2): it does not
+ * shorten the interp buffer (that floor is set by the DOWN rate), but each
+ * 20 Hz snapshot now carries a pose at most 33 ms old instead of 50, and the
+ * pose's own timestamp rides along (PoseMsg.t) so the remaining hold never
+ * shows up as judder. One pose is ~120 bytes; the server has no pose rate
+ * limiter, and validatePose's 20 ms dt floor sits under the 33 ms interval. */
+export const TICK_UP_HZ = 30;
 /** Server → client snapshot rate, Hz. Raised 15 → 20 (ANGE-4KO2W2) and paid
  * for by snapshot quantisation (common/src/net.ts): the wire got ~2.6x
  * cheaper per snapshot, so a 33% faster cadence still costs far less than
@@ -235,6 +238,11 @@ export const INTERP_DELAY_MAX_MS = 250;
  * what makes the controller grow faster than it shrinks — and what stops it
  * oscillating on alternating jitter. ~1.7 s half-life at 20 Hz. */
 export const INTERP_JITTER_DECAY = 0.02;
+/** Oldest a human's claimed pose time may be when it arrives, ms (O2). A
+ * claim older than this is clamped up to it: an honest client's stamp lags
+ * arrival by its own latency, and a dishonest one can backdate itself at
+ * most this far — never past what the INTERP_DELAY_MAX_MS hit budget covers. */
+export const POSE_AGE_MAX_MS = 200;
 /** Server accepts claimed speeds up to MAX_SPEED × this factor. */
 export const SPEED_TOLERANCE = 1.1;
 /** Slack added to the per-update displacement bound, meters (network jitter). */

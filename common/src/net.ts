@@ -80,8 +80,16 @@ export function encodeSnapshotEntry(entry: SnapshotEntry): WireSnapshotEntry {
     Math.round(entry.hp),
   ];
   // Spawn protection is the rare case: send the flag only when it is set and
-  // let the decoder read an absent slot as false.
-  if (entry.prot) tuple[10] = 1;
+  // let the decoder read an absent slot as false. A pose age (O2) rides in
+  // the slot after it — omitted at 0 (every bot row) — and forces the flag
+  // slot to an explicit 0/1, so the tuple never serialises a hole as null.
+  const age = Math.max(0, Math.round(entry.age ?? 0));
+  if (age > 0) {
+    tuple[10] = entry.prot ? 1 : 0;
+    tuple[11] = age;
+  } else if (entry.prot) {
+    tuple[10] = 1;
+  }
   return tuple;
 }
 
@@ -108,6 +116,7 @@ export function decodeSnapshotEntry(w: WireSnapshotEntry): SnapshotEntry {
     },
     hp: w[9],
     prot: w[10] === 1,
+    age: w[11] ?? 0,
   };
 }
 

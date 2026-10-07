@@ -95,7 +95,8 @@ describe("jitter-compensation constants at the current cadence", () => {
     // It bounds how stale the SHOOTER's own pose can be. The shooter's plane
     // is never interpolated, so the snapshot cadence does not enter it — but
     // it must still cover several pose updates plus the trip to the server.
-    expect(travelPerUpTick).toBeCloseTo(4.95, 6);
+    // 3.3 m at 30 Hz (O2 raised TICK_UP_HZ from 20, where it was 4.95 m).
+    expect(travelPerUpTick).toBeCloseTo(3.3, 6);
     expect(HIT_ORIGIN_SLACK).toBeGreaterThan(4 * travelPerUpTick);
   });
 

@@ -39,7 +39,11 @@ import { hitRangeBudgetFor } from "@angels-bandits/common/net";
 import type { ScoreEntry, SpawnState } from "@angels-bandits/common/protocol";
 import { airlinerOffsetInto } from "@angels-bandits/common/skytraffic";
 import { strikesInWindow } from "@angels-bandits/common/storm";
-import { wrapDelta, wrapDistance } from "@angels-bandits/common/world";
+import {
+  type Vec3,
+  wrapDelta,
+  wrapDistance,
+} from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
@@ -107,6 +111,7 @@ import { FacadeDetailRenderer } from "./render/facade-detail";
 import { FacadeGarnishRenderer } from "./render/facade-garnish";
 import { Fireworks } from "./render/fireworks";
 import { installHeightFog } from "./render/fog";
+import { Fountains } from "./render/fountains";
 import { Explosions, Sparks } from "./render/fx";
 import { GpuTimer } from "./render/gputimer";
 import { createGradePass } from "./render/grade";
@@ -415,6 +420,11 @@ const nature = natureFor(welcome.seed, city.cityBuildings);
 const natureIndex = buildNatureIndex(nature);
 const natureRenderer = new NatureRenderer(nature);
 scene.add(natureRenderer.group);
+// L9 moving nature: lit spray from the plaza ponds (pure ballistic function
+// of the synced clock; one Points, drawn only near a pond). Tree sway lives
+// in natureRenderer's crown shader; bird scatter in birds.update below.
+const fountains = new Fountains(nature.ponds);
+scene.add(fountains.points);
 const fireworks = new Fireworks(welcome.seed);
 const searchlights = new Searchlights(city.cityBuildings);
 scene.add(searchlights.mesh);
@@ -422,6 +432,8 @@ scene.add(searchlights.mesh);
 const droneShow = new DroneShowRenderer(welcome.seed);
 const birds = new Birds(welcome.seed);
 scene.add(birds.points);
+/** L9: planes the flocks react to, refilled per frame (no per-frame array). */
+const birdPlanes: Vec3[] = [];
 // L1 living streets — the micro tier. Client-only, non-collidable, and gated
 // on camera altitude (100 → 140 m): four extra draw calls at street level and
 // literally zero above the band, where a 1.8 m figure would be sub-pixel.
@@ -987,6 +999,8 @@ declare global {
       movers: (at?: number | null) => ReturnType<Movers["debug"]>;
       train: (at?: number | null) => ReturnType<TrainRenderer["debug"]>;
       fireworks: (at?: number | null) => ReturnType<Fireworks["debug"]>;
+      /** L9 QA: flock centres at the render clock, and which are scattered. */
+      birds: () => ReturnType<Birds["debug"]>;
       /** L10 QA: airliners and drone show drawn last frame, the news heli's
        * slot, and (forceDroneShow) the gallery's way to start a show now. */
       skyTraffic: () => {
@@ -1175,6 +1189,8 @@ window.__ab = {
   // its OWN interpolation delay, so two tabs' default render times are no
   // longer the same instant (that is the feature; the QA must pin the time).
   traffic: (at) => traffic.debug(at === undefined ? socket.renderTime() : at),
+  // L9 QA: flock centres and which are scattered, at the render clock.
+  birds: () => birds.debug(socket.renderTime()),
   // L6 QA: pin the gallery's red/green intersection views to a real queue.
   trafficQueue: (at) =>
     traffic.queue(at ?? socket.renderTime() ?? performance.now()),
@@ -1659,7 +1675,9 @@ renderer.setAnimationLoop((now) => {
   facadeGarnish.update(chase.position);
   facadeDetail.update(chase.position, microOn); // L13: re-streams on block change only
   streetlights.update(chase.position);
-  natureRenderer.update(chase.position);
+  // L9: crowns sway in the shared wind on the same latched clock.
+  natureRenderer.update(chase.position, renderMs);
+  fountains.update(chase.position, renderMs);
   // Neon pulses on the same synced clock as the beacons.
   signage.update(chase.position, renderMs ?? now);
   // L7: the nearest broken neon tube buzzes, crackling through its stutter;
@@ -1678,7 +1696,11 @@ renderer.setAnimationLoop((now) => {
   // After movers.update: the helicopters' belly spots are this frame's, and
   // the lamp heads land in the same point cloud before commit().
   searchlights.update(chase.position, renderMs, movers.spots, moverLights);
-  birds.update(chase.position, renderMs);
+  // L9: flocks scatter from any plane this client sees within ~60 m.
+  birdPlanes.length = 0;
+  if (alive) birdPlanes.push(flight.pos);
+  for (const r of remotes.headings()) birdPlanes.push(r.pos);
+  birds.update(chase.position, renderMs, birdPlanes);
   // L10: the drones write LAST, so a full cloud drops drones, not nav lights.
   droneShow.update(chase.position, renderMs, moverLights);
   moverLights.commit();

@@ -5,16 +5,25 @@
 // split). Death freezes the plane for a kill-cam beat until the server's
 // respawn message reseeds the flight state far from every enemy.
 
+import {
+  boostLevel,
+  boostSpeedCap,
+  createBoost,
+  startBoost,
+  stopBoost,
+} from "@angels-bandits/common/boost";
 import type { Building } from "@angels-bandits/common/city";
 import { generateMovers } from "@angels-bandits/common/city/movers";
 import { natureFor } from "@angels-bandits/common/city/nature";
 import { buildNatureIndex } from "@angels-bandits/common/collision";
 import {
   BLOCK_PITCH,
+  BOOST_MAX_SPEED,
   BULLET_SPEED,
   CLOUD_BASE,
   FOG_DISTANCE,
   MAX_HP,
+  MAX_SPEED,
 } from "@angels-bandits/common/constants";
 import {
   type FlightState,
@@ -35,6 +44,7 @@ import { RadioQueue, RadioVoice } from "./audio/radio";
 import { GameAudio } from "./audio/sound";
 import { NEAR_MISS_RADIUS, closestApproach, spatialize } from "./audio/spatial";
 import { ThunderSchedule } from "./audio/thunder";
+import { BoostKey } from "./game/boost-key";
 import { Bullets } from "./game/bullets";
 import {
   AmbientChatter,
@@ -490,6 +500,14 @@ const chase = new ChaseCamera();
 let freelook = createFreeLook();
 // Hold-right-click aim zoom: same deal — display + input shaping only.
 let zoom = createZoom();
+// Hold-SPACE boost (F2): the local half of the shared energy model. The
+// server mirrors it from the edges we send, so `boostSent` tracks what the
+// server was last told.
+const boostKey = new BoostKey();
+let boost = createBoost(performance.now());
+let boostSent = false;
+/** Extra vertical FOV at full boost speed, degrees — the speed kick. */
+const BOOST_FOV_KICK = 9;
 let flight: FlightState = createFlightState(
   welcome.spawn.pos,
   welcome.spawn.yaw,
@@ -529,6 +547,7 @@ function enterDeath(killerId: string | null, cause?: "storm"): void {
   hud.setFreeLook(false);
   killCamTargetId = killerId;
   hud.showKillCam(killerId === null ? null : nameOf(killerId), cause);
+  setBoostBurning(false, performance.now());
   if (!alive) return;
   alive = false;
   plane.visible = false;
@@ -547,8 +566,19 @@ function respawnSelf(spawn: SpawnState): void {
   plane.visible = true;
   hud.hideKillCam();
   guns.reset(performance.now());
+  boost = createBoost(performance.now()); // fresh plane, full gauge
   lowHpArmed = true; // fresh plane, fresh "I'm hit" edge
   flashFade();
+}
+
+/** Start or end the local burn and tell the server's mirror on any change.
+ * A start the energy can't pay for leaves `boost` idle — nothing is sent. */
+function setBoostBurning(on: boolean, now: number): void {
+  boost = on ? startBoost(boost, now) : stopBoost(boost, now);
+  if (boost.active === boostSent) return;
+  boostSent = boost.active;
+  socket.sendBoost(boostSent);
+  if (boostSent) audio.boostCue();
 }
 
 /** Cosmetic tracer burst for a remote's validated shot. */
@@ -1124,6 +1154,16 @@ renderer.setAnimationLoop((now) => {
   // alive, so a death mid-zoom would otherwise freeze the FOV narrowed for
   // the whole kill-cam. Dying eases it back out instead.
   zoom = stepZoom(zoom, alive && zoomHeld(input.aimHeld(), freelook.held), dt);
+  // Boost (F2): a burn starts only on a fresh press (drained every frame, dead
+  // too, so a press during the kill-cam can't fire after respawn) and ends on
+  // release or an empty gauge — each edge reaches the server's mirror.
+  const boostPressed = boostKey.takePress();
+  boost = boostLevel(boost, now);
+  if (alive) {
+    if (boostPressed && boostKey.isHeld()) setBoostBurning(true, now);
+    else if (!boostKey.isHeld()) setBoostBurning(false, now);
+  }
+  if (boost.active !== boostSent) setBoostBurning(false, now); // ran dry
   if (alive) {
     freelook = stepFreeLook(
       freelook,
@@ -1138,7 +1178,16 @@ renderer.setAnimationLoop((now) => {
     // through the same input-shaping seam free-look uses — the camera never
     // reaches flight state. Authority is the product of both costs.
     const steer = freelook.steer * zoomSteer(zoom.z);
-    flight = stepFlight(flight, shapeInput(input.read(), { steer }), dt);
+    flight = stepFlight(
+      flight,
+      { ...shapeInput(input.read(), { steer }), boost: boost.active },
+      dt,
+    );
+    // Hold the post-boost tail to the wall-clock envelope the server checks
+    // (boostSpeedCap): a slow or hidden frame clamps dt, so the sim's own
+    // decay can lag the clock — this keeps every pose inside the mirror.
+    const speedCap = boostSpeedCap(boost, now);
+    if (flight.speed > speedCap) flight = { ...flight, speed: speedCap };
     if (
       detectCrash(
         flight,
@@ -1200,6 +1249,7 @@ renderer.setAnimationLoop((now) => {
       poseQuat,
       flight.speed,
       renderMs ?? now,
+      boost.active ? 1 : 0, // own flame follows the real burn, not speed
     );
     planeTrails.emit(socket.selfId, flight.pos, poseQuat, now, dt);
   } else if (killCamTargetId !== null) {
@@ -1380,10 +1430,19 @@ renderer.setAnimationLoop((now) => {
 
   const heat = guns.state;
   hud.setHeat(heat.heat, heat.locked);
+  hud.setBoost(boost.energy, boost.active);
   hud.update(now);
   const contacts = remotes.contacts();
   minimap.update(flight.pos, flight.yaw, contacts, reveals.pings(now));
-  audio.setEngine(flight.targetSpeed, alive);
+  // 0 at ≤ MAX_SPEED, 1 at full boost speed: drives the engine pitch rise and
+  // the FOV kick, and eases out with the post-boost tail on its own.
+  const overspeed = alive
+    ? Math.min(
+        1,
+        Math.max(0, (flight.speed - MAX_SPEED) / (BOOST_MAX_SPEED - MAX_SPEED)),
+      )
+    : 0;
+  audio.setEngine(flight.targetSpeed, alive, overspeed);
   audio.syncRemotes(contacts, flight.pos, flight.yaw);
   // In-cloud static bed: quiet crackle ramping in over the deck's first
   // 60 m. The only audio cue for the hidden ceiling — no HUD, by design.
@@ -1395,7 +1454,7 @@ renderer.setAnimationLoop((now) => {
   // read camera.projectionMatrix directly, so writing it after would project
   // them with last frame's FOV. Guarded so a static FOV costs nothing, and
   // aspect (the resize handler's business) is left alone.
-  const fov = zoomFov(zoom.z);
+  const fov = zoomFov(zoom.z) + BOOST_FOV_KICK * overspeed * (1 - zoom.z);
   if (camera.fov !== fov) {
     camera.fov = fov;
     camera.updateProjectionMatrix();

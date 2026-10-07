@@ -27,18 +27,36 @@ import {
   INTERP_FLOOR_MS,
   KILL_CAM_MS,
   MAX_HP,
+  MAX_SPEED,
   OVERHEAT_AT,
   REGEN_DELAY_MS,
   REGEN_RATE,
   SPAWN_PROTECTION_MS,
+  SPEED_TOLERANCE,
 } from "@angels-bandits/common/constants";
-import { hitRangeBudgetFor } from "@angels-bandits/common/net";
+import {
+  clampInterpDelay,
+  hitRangeBudgetFor,
+} from "@angels-bandits/common/net";
 import type { ScoreEntry } from "@angels-bandits/common/protocol";
 import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 
 /** How long after firing a bullet's hit claim is still credible, ms:
  * full flight time plus generous network slack. */
 const CLAIM_WINDOW_MS = BULLET_LIFETIME_S * 1000 + 1000;
+
+/** Longest bullet age the origin check pays shooter travel for, ms: a full
+ * flight plus a little fire→claim arrival jitter. Bounded so the long tail
+ * of CLAIM_WINDOW_MS never buys a wider origin window. */
+const ORIGIN_AGE_MAX_MS = BULLET_LIFETIME_S * 1000 + 100;
+
+/**
+ * A plane's fastest legal airspeed over [since, now], m/s, before
+ * SPEED_TOLERANCE — the boost mirror's window cap (F2). Hit validation asks
+ * for it per claim, so a boost widens only the claims it can affect.
+ */
+export type SpeedCapFn = (since: number) => number;
+const unboosted: SpeedCapFn = () => MAX_SPEED;
 
 export type FireReject = "dead" | "overheat" | "cadence";
 export type FireResult =
@@ -179,6 +197,9 @@ export class Combat {
    * image the shooter aimed at went stale. It is clamped to the legal range
    * on the way in, and an omitted value reads as the floor — the tightest
    * budget — so the default can only ever be stricter than a declared one.
+   *
+   * `shooterCap` / `targetCap` are each plane's boost window cap (F2); they
+   * default to MAX_SPEED, which reproduces the un-boosted budget exactly.
    */
   hit(
     shooterId: string,
@@ -189,6 +210,8 @@ export class Combat {
     targetPos: Vec3,
     now: number,
     interpDelayMs: number = INTERP_FLOOR_MS,
+    shooterCap: SpeedCapFn = unboosted,
+    targetCap: SpeedCapFn = unboosted,
   ): HitResult {
     const shooter = this.players.get(shooterId);
     const target = this.players.get(targetId);
@@ -205,11 +228,24 @@ export class Combat {
     }
     shooter.bullets.delete(seq);
 
-    if (wrapDistance(bulletOrigin, shooterPos) > HIT_ORIGIN_SLACK) {
+    // The origin is the muzzle at FIRE time, but the on-record pose is the
+    // shooter's NOW — it kept flying for the bullet's whole age, at up to its
+    // own legal speed (boost included).
+    const age = Math.min(now - firedAt, ORIGIN_AGE_MAX_MS) / 1000;
+    const originSlack =
+      HIT_ORIGIN_SLACK + shooterCap(firedAt) * SPEED_TOLERANCE * age;
+    if (wrapDistance(bulletOrigin, shooterPos) > originSlack) {
       return { ok: false, reason: "origin" };
     }
+    // Both planes keep flying through the delay + flight window; judge the
+    // closing speed at each one's own cap over that window.
+    const rangeSince =
+      now - clampInterpDelay(interpDelayMs) - BULLET_LIFETIME_S * 1000;
+    const closing =
+      (shooterCap(rangeSince) + targetCap(rangeSince)) * SPEED_TOLERANCE;
     if (
-      wrapDistance(shooterPos, targetPos) > hitRangeBudgetFor(interpDelayMs)
+      wrapDistance(shooterPos, targetPos) >
+      hitRangeBudgetFor(interpDelayMs, closing)
     ) {
       return { ok: false, reason: "range" };
     }

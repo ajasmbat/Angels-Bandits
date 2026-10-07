@@ -24,6 +24,13 @@ import { luminance } from "./emissive";
 import { livingParsGlsl } from "./living-windows";
 import { WAKE_PARS_GLSL, wakeWindowGlsl, windowWakeUniform } from "./reactions";
 import {
+  BUILDING_WET_COLOR_GLSL,
+  BUILDING_WET_EMISSIVE_GLSL,
+  BUILDING_WET_ROUGHNESS_GLSL,
+  WEATHER_PARS_GLSL,
+  WEATHER_UNIFORM,
+} from "./weather";
+import {
   OCCUPANCY_UNIFORM,
   holeLightGlsl,
   holeSurfaceGlsl,
@@ -181,7 +188,7 @@ float abHash(vec2 p, float s) {
 float abSafeDiv(float d) {
   return abs(d) < 1e-4 ? (d < 0.0 ? -1e-4 : 1e-4) : d;
 }
-${roofParsGlsl()}${WAKE_PARS_GLSL}${livingParsGlsl()}`;
+${roofParsGlsl()}${WAKE_PARS_GLSL}${livingParsGlsl()}${WEATHER_PARS_GLSL}`;
 
 /** Injected after color_fragment: derives the shared window-grid locals
  * (in scope for the emissive block below — same main body), modulates the
@@ -190,7 +197,11 @@ ${roofParsGlsl()}${WAKE_PARS_GLSL}${livingParsGlsl()}`;
  * reads the grid's `facade`/`winGrid`/`pane`/`lit`; the H1 hole lining
  * comes last, over whatever the facade pass left inside a hole. */
 const FRAGMENT_COLOR =
-  windowGridGlsl() + weatheringGlsl() + roofSurfaceGlsl() + holeSurfaceGlsl();
+  windowGridGlsl() +
+  weatheringGlsl() +
+  roofSurfaceGlsl() +
+  holeSurfaceGlsl() +
+  BUILDING_WET_COLOR_GLSL;
 
 /** The lit-pane emissive, then the V2 street-level shop band: the bottom
  * SHOP_BAND_HEIGHT m of WORLD height (so only tier-1 bases qualify) swaps the
@@ -230,7 +241,7 @@ const FRAGMENT_EMISSIVE = `${windowEmissiveGlsl(
   glslVec3(WINDOW_WARM),
   glslVec3(WINDOW_COOL),
   WINDOW_EMISSIVE_INTENSITY,
-)}${wakeWindowGlsl(WINDOW_EMISSIVE_INTENSITY)}${SHOP_BAND_GLSL}${roofLightGlsl()}${holeLightGlsl()}`;
+)}${wakeWindowGlsl(WINDOW_EMISSIVE_INTENSITY)}${SHOP_BAND_GLSL}${roofLightGlsl()}${holeLightGlsl()}${BUILDING_WET_EMISSIVE_GLSL}`;
 
 /**
  * VO2: cap the grazing-angle Fresnel. Standard materials reflect 100% at
@@ -275,6 +286,8 @@ export function createBuildingsMaterial(
     // L1 reactive city: the shared window-wake sources (reactions.ts).
     shader.uniforms.uWake = windowWakeUniform;
     shader.uniforms.uOccupancy = OCCUPANCY_UNIFORM;
+    // L4: the shared weather uniform (render/weather.ts), by reference.
+    shader.uniforms.uWeather = WEATHER_UNIFORM;
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", `#include <common>\n${VERTEX_PARS}`)
       .replace(
@@ -288,6 +301,10 @@ export function createBuildingsMaterial(
         `#include <color_fragment>\n${FRAGMENT_COLOR}`,
       )
       .replace(
+        "#include <metalnessmap_fragment>",
+        `${BUILDING_WET_ROUGHNESS_GLSL}\n#include <metalnessmap_fragment>`,
+      )
+      .replace(
         "#include <emissivemap_fragment>",
         `#include <emissivemap_fragment>\n${FRAGMENT_EMISSIVE}`,
       )
@@ -299,6 +316,6 @@ export function createBuildingsMaterial(
   // Distinct compiled program per patch (V3 rule: three keys programs on
   // onBeforeCompile.toString(), and sibling materials collide silently).
   material.customProgramCacheKey = () =>
-    "ab-buildings-h1-holes-l1-wake-l3-live";
+    "ab-buildings-h1-holes-l1-wake-l3-live-l4-wet";
   return material;
 }

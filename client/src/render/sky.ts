@@ -48,6 +48,13 @@ import { RIVER_GROUND_PARS } from "./river";
 import { SIGN_PALETTE } from "./signage";
 import type { SkyState } from "./skycycle";
 import { LAMP_STATIONS_MINUS, LAMP_STATIONS_PLUS } from "./streetlights";
+import {
+  GROUND_WET_EMISSIVE_GLSL,
+  GROUND_WET_GLSL,
+  GROUND_WET_ROUGHNESS_GLSL,
+  WEATHER_PARS_GLSL,
+  WEATHER_UNIFORM,
+} from "./weather";
 
 /**
  * VO1 "Neon Blue Hour" palette. The night stays a night — windows, neon and
@@ -837,6 +844,8 @@ export class GroundPlane {
     material.customProgramCacheKey = () => "ab-ground-paint";
     material.onBeforeCompile = (shader) => {
       shader.uniforms.uGroundOrigin = { value: this.origin };
+      // L4: the shared weather uniform (render/weather.ts), by reference.
+      shader.uniforms.uWeather = WEATHER_UNIFORM;
       shader.vertexShader = shader.vertexShader
         .replace(
           "#include <common>",
@@ -849,11 +858,11 @@ export class GroundPlane {
       shader.fragmentShader = shader.fragmentShader
         .replace(
           "#include <common>",
-          `#include <common>\n${GROUND_FRAGMENT_PARS}`,
+          `#include <common>\n${GROUND_FRAGMENT_PARS}${WEATHER_PARS_GLSL}`,
         )
         .replace(
           "vec4 diffuseColor = vec4( diffuse, opacity );",
-          `vec4 diffuseColor = vec4( diffuse, opacity );\n${GROUND_FRAGMENT_MAIN}`,
+          `vec4 diffuseColor = vec4( diffuse, opacity );\n${GROUND_FRAGMENT_MAIN}${GROUND_WET_GLSL}`,
         )
         .replace(
           "#include <roughnessmap_fragment>",
@@ -885,6 +894,16 @@ if (abWater > 0.5) {
   float abGlint = pow(max(dot(abRefl, abMoonV), 0.0), ${POND_GLINT_POWER});
   totalEmissiveRadiance += ${GROUND_COLORS.moon} * abGlint * ${POND_GLINT} * mix(0.35, 1.0, abNear);
 }`,
+        )
+        // L4 weather (render/weather.ts): wet roughness after the VO5 lines,
+        // rain ripples once the emissive is final.
+        .replace(
+          "#include <metalnessmap_fragment>",
+          `${GROUND_WET_ROUGHNESS_GLSL}\n#include <metalnessmap_fragment>`,
+        )
+        .replace(
+          "#include <lights_physical_fragment>",
+          `#include <lights_physical_fragment>\n${GROUND_WET_EMISSIVE_GLSL}`,
         )
         .replace(
           "vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;",

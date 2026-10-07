@@ -40,6 +40,11 @@ import type { ScoreEntry, SpawnState } from "@angels-bandits/common/protocol";
 import { airlinerOffsetInto } from "@angels-bandits/common/skytraffic";
 import { strikesInWindow } from "@angels-bandits/common/storm";
 import {
+  WEATHER_PHASES,
+  type WeatherPhase,
+  phaseWindow,
+} from "@angels-bandits/common/weather";
+import {
   type Vec3,
   wrapDelta,
   wrapDistance,
@@ -129,6 +134,8 @@ import {
   spinPropeller,
 } from "./render/plane";
 import { PlaneLights } from "./render/planelights";
+import { prewarmScene } from "./render/prewarm";
+import { Rain } from "./render/rain";
 import { CityReactor } from "./render/reactions";
 import { RemotePlanes } from "./render/remotes";
 import { MSAA_SAMPLES, readRenderOptions } from "./render/renderopts";
@@ -171,6 +178,7 @@ import { Tracers } from "./render/tracers";
 import { Traffic } from "./render/traffic";
 import { PlaneTrails } from "./render/trails";
 import { TrainRenderer } from "./render/train";
+import { WeatherClock, setWeatherUniform } from "./render/weather";
 import { nearestImage } from "./render/wrapPlacement";
 import { BotBar } from "./ui/botbar";
 import { CommsTicker } from "./ui/comms";
@@ -208,7 +216,9 @@ const { welcome } = socket;
 
 // --- Scene & renderer ---
 const scene = new THREE.Scene();
-// Before anything compiles: the haze layer lives in three's fog chunks.
+// Before anything compiles: the haze layer lives in three's fog chunks, and
+// (L4) the weather's haze uniform is patched into every fogged ShaderLib
+// entry here — any program compiled earlier (a pre-warm) would miss it.
 installHeightFog();
 const skyRig = setupSky(scene); // L12: the sky cycle drives these lights
 
@@ -532,6 +542,14 @@ const clouds = new CloudDeck(welcome.seed);
 scene.add(clouds.group);
 // The storm's neutral radar: strikes reveal nearby planes to EVERYONE.
 const reveals = new StormReveals();
+// L4 weather: one seeded cycle on the synced clock (clear until sync) drives
+// the rain streaks, wet ground/facades, haze (via storm.atmosphere) and the
+// rain bed (through L2's ambience). `weatherShift` is the QA pin (__ab.weather) — an offset, so the
+// pinned sky keeps its ripples and drift moving.
+const weather = new WeatherClock(welcome.seed);
+const rain = new Rain();
+scene.add(rain.mesh);
+let weatherShift = 0;
 // Distance-delayed rumbles: flash now, thunder wrapDistance/340 later.
 const thunder = new ThunderSchedule();
 /** Recent strikes as consumed from the schedule (QA hook — two tabs must
@@ -1144,6 +1162,19 @@ declare global {
         inCombat: boolean;
         log: { at: number; speaker: string; ticker: string; voice: string }[];
       };
+      /** L4 QA: pin the weather to a synced time (number) or the middle of a
+       * phase (name) in the current cycle; null releases the pin. */
+      weather: (at?: number | WeatherPhase | null) => {
+        shiftMs: number;
+        timeMs: number | null;
+        phase: string;
+        phaseT: number;
+        rain: number;
+        wetness: number;
+        haze: number;
+        flash: number;
+        drops: number;
+      };
       /** L12 QA: force the sky cycle to a fraction (0..1) or a named
        * moment, or release it to the synced clock with null. */
       sky: (t?: number | "dusk" | "night" | "predawn" | null) => {
@@ -1464,36 +1495,43 @@ window.__ab = {
       shake: turbulenceOffset(performance.now(), flight.pos.y),
     };
   },
+  weather: (at) => {
+    const rt = socket.renderTime();
+    if (at === null) weatherShift = 0;
+    else if (typeof at === "number") weatherShift = rt === null ? 0 : at - rt;
+    else if (at !== undefined && rt !== null && WEATHER_PHASES.includes(at)) {
+      const [a, b] = phaseWindow(welcome.seed, rt, at);
+      weatherShift = (a + b) / 2 - rt;
+    }
+    const t = rt === null ? null : rt + weatherShift;
+    const wx = weather.at(t);
+    return {
+      shiftMs: weatherShift,
+      timeMs: t,
+      phase: wx.phase,
+      phaseT: wx.phaseT,
+      rain: wx.rain,
+      wetness: wx.wetness,
+      haze: wx.haze,
+      flash: wx.flash,
+      drops: rain.drops,
+    };
+  },
 };
 
 // --- Frame loop ---
 const poseEuler = new THREE.Euler();
 const poseQuat = new THREE.Quaternion();
 let last = performance.now();
-// Pre-warm the micro tier's four programs. They would otherwise first compile
-// on the frame the player descends through 140 m — a guaranteed stutter at
-// exactly the moment the tier is meant to appear seamlessly. compile() walks
-// the VISIBLE scene, so the meshes are shown for the one call and hidden
-// again; each subsystem's own update() turns them back on when the gate opens.
-for (const o of [
-  pedestrians.mesh,
-  steam.points,
-  signals.mesh,
-  constructionSparks.points,
-  reactor.points, // L1: first death must not compile the smoke mid-fight
-]) {
-  o.visible = true;
-}
-renderer.compile(scene, camera);
-for (const o of [
-  pedestrians.mesh,
-  steam.points,
-  signals.mesh,
-  constructionSparks.points,
-  reactor.points, // L1: first death must not compile the smoke mid-fight
-]) {
-  o.visible = false;
-}
+// Pre-warm every program the scene can ever draw, behind the boot fade (O2):
+// the micro tier (first seen descending through 140 m), and every effect
+// that starts hidden — guns, explosions, sparks, storm bolts, searchlights,
+// birds, movers, traffic, the prop blur, the HP sprite, name tags. Each would
+// otherwise compile on the frame it first appears, which is exactly the
+// moment a hitch is noticed. Each subsystem's update() then owns visibility.
+fadeEl.classList.add("dead");
+await prewarmScene(renderer, scene, camera);
+flashFade();
 
 // Named (M2) so the visibility pause at the bottom can stop and restore it.
 const frame = (now: number): void => {
@@ -1505,13 +1543,15 @@ const frame = (now: number): void => {
   // dumps into the orbit as one jump. Signs: mouse-right pans the view
   // right, mouse-up looks up (both hand-tuned with LOOK_SENSITIVITY).
   const lookDelta = input.takeLookDelta();
-  // Latch the render clock ONCE. socket.renderTime() reads performance.now()
-  // live, so calling it again 150 lines further down would pose the movers a
-  // frame away from where the crash check tested them — and dying to a jib
-  // drawn somewhere else is exactly the failure the shared seam exists to
-  // prevent. Null until the first snapshot: movers then render hidden AND
-  // count as non-solid.
-  const renderMs = socket.renderTime();
+  // Latch the render clock ONCE, on this frame's rAF timestamp: every system
+  // below poses against the same instant, so the movers are drawn exactly
+  // where the crash check tested them — dying to a jib drawn somewhere else
+  // is the failure the shared seam exists to prevent. The clock is smoothed
+  // (O2: net/clock.ts) — it never steps or runs backward when the delay
+  // controller or the clock-offset estimate jumps. Null until the first
+  // snapshot: movers then render hidden AND count as non-solid.
+  const frameClock = socket.tickRenderClock(now);
+  const renderMs = frameClock.time;
   planeLights.begin(); // own + remote lights re-append every frame
   moverLights.begin(); // crane/aircraft lights + firework sparks, same deal
   // Cursor smoothing + the leave-the-window fade run alive or dead, so
@@ -1682,14 +1722,18 @@ const frame = (now: number): void => {
   }
 
   if (alive) {
-    // Stream our pose up (rate-limited to TICK_UP_HZ inside the socket).
+    // Stream our pose up (fixed TICK_UP_HZ cadence inside the socket,
+    // stamped with this frame's time — the pose is the one simulated for it).
     poseEuler.set(flight.pitch, flight.yaw, flight.roll, "YXZ");
     poseQuat.setFromEuler(poseEuler);
-    socket.sendPose({
-      pos: flight.pos,
-      quat: { x: poseQuat.x, y: poseQuat.y, z: poseQuat.z, w: poseQuat.w },
-      speed: flight.speed,
-    });
+    socket.sendPose(
+      {
+        pos: flight.pos,
+        quat: { x: poseQuat.x, y: poseQuat.y, z: poseQuat.z, w: poseQuat.w },
+        speed: flight.speed,
+      },
+      now,
+    );
 
     // Guns: at most one shot a frame; the same seq goes to server and sim.
     // Free-look suppresses shots (heat keeps cooling, none builds).
@@ -1764,7 +1808,12 @@ const frame = (now: number): void => {
     }
     for (const target of targets) {
       if (bulletHitsSphere(bullet.prev, bullet.pos, target.pos)) {
-        socket.sendHit(target.id, bullet.origin, bullet.seq);
+        socket.sendHit(
+          target.id,
+          bullet.origin,
+          bullet.seq,
+          remotes.extraDelayOf(target.id),
+        );
         bullets.remove(bullet);
         // Instant shooter-side feedback (marker + thunk + sparks at the
         // impact point); the server's damage broadcast stays the
@@ -1777,7 +1826,7 @@ const frame = (now: number): void => {
     }
   }
 
-  remotes.update(renderMs, chase.position, dt, now, (id) =>
+  remotes.update(frameClock, chase.position, dt, now, (id) =>
     reveals.levelOf(id, now),
   );
   // Own rim-flash: the storm lit us up — same tint the remotes wear.
@@ -1927,7 +1976,14 @@ const frame = (now: number): void => {
   // L12: the cycle's horizon is the storm's clear-sky fog base.
   skyCycle.update(renderMs);
   storm.setFogBase(skyCycle.horizon);
-  const sky = storm.atmosphere(scene, chase.position.y, now);
+  // L4 weather on the latched clock: rain streaks, wet surfaces, and
+  // (through atmosphere, the single fog writer) haze + flash strength. The
+  // rain bed rides L2's ambience below (rain.level).
+  const wxMs = renderMs === null ? null : renderMs + weatherShift;
+  const wx = weather.at(wxMs);
+  setWeatherUniform(wx, wxMs);
+  rain.update(wx, wxMs, camera.position, dt);
+  const sky = storm.atmosphere(scene, chase.position.y, now, wx);
   skyDome.tint(sky.tint);
   skyDome.mesh.visible = sky.domeVisible;
   explosions.update(chase.position, now, dt);
@@ -1973,6 +2029,7 @@ const frame = (now: number): void => {
     alive,
     combat: radio.inCombat(now),
     serverTimeMs: renderMs,
+    rain: rain.level, // L4 weather
   });
   // L5: the train's rumble from its nearest car, squealing on a curve.
   audio.setTrainRumble(train.rumbleAt, train.squeal, flight.pos, flight.yaw);

@@ -20,6 +20,7 @@
     "./city/nature": "./src/city/nature.ts",
     "./city/river": "./src/city/river.ts",
     "./storm": "./src/storm.ts",
+    "./weather": "./src/weather.ts",
     "./wind": "./src/wind.ts",
     "./fireworks": "./src/fireworks.ts",
     "./skytraffic": "./src/skytraffic.ts",

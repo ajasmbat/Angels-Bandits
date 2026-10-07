@@ -36,6 +36,7 @@ import {
   CITY_SEED,
   LIVENESS_TIMEOUT_MS,
   NAME_MAX_LENGTH,
+  POSE_AGE_MAX_MS,
   SPAWN_PROTECTION_MS,
   TICK_DOWN_HZ,
 } from "@angels-bandits/common/constants";
@@ -80,6 +81,9 @@ interface Client {
   room: Room;
   /** Last accepted pose — what snapshots broadcast. */
   pose: Pose;
+  /** When `pose` was taken, server clock ms (O2): the client's own stamp,
+   * clamped by poseTimeOf. Snapshots forward it as the entry's age. */
+  poseTime: number;
   lastMsgAt: number;
   lastPoseAt: number;
   rejectStreak: number;
@@ -188,6 +192,13 @@ const memberPose = (room: Room, id: string): Pose | null => {
   return clients.get(id)?.pose ?? null;
 };
 
+/** How long before `time` a member's on-record pose was taken, ms (O2).
+ * Bots are posed by the tick itself, so their age is always 0. */
+const poseAgeOf = (id: string, time: number): number => {
+  const client = clients.get(id);
+  return client ? Math.max(0, time - client.poseTime) : 0;
+};
+
 // --- L1 reactive city: server-accepted events, broadcast + replayed ---
 const cityEvents = new CityEventLog(nearBuildingProbe(city));
 
@@ -288,6 +299,7 @@ function handleJoin(ws: WebSocket, rawName: unknown): Client {
     ws,
     room,
     pose: poseFromSpawn(spawn),
+    poseTime: now,
     lastMsgAt: now,
     lastPoseAt: now,
     rejectStreak: 0,
@@ -315,7 +327,18 @@ function handleJoin(ws: WebSocket, rawName: unknown): Client {
   return client;
 }
 
-function handlePose(client: Client, pose: Pose, now: number): void {
+/**
+ * When a pose claim was taken, server clock ms (O2). The client's stamp is
+ * trusted only inside [now − POSE_AGE_MAX_MS, now]: it can never claim the
+ * future, and backdating itself buys at most the bound. An absent or
+ * nonsense stamp reads as the arrival time — the pre-O2 behaviour.
+ */
+const poseTimeOf = (t: unknown, now: number): number =>
+  typeof t === "number" && Number.isFinite(t)
+    ? Math.min(now, Math.max(now - POSE_AGE_MAX_MS, t))
+    : now;
+
+function handlePose(client: Client, pose: Pose, t: unknown, now: number): void {
   // A dead plane has no pose: the client freezes for the kill-cam and the
   // respawn will reset the on-record pose server-side.
   if (!combat.isAlive(client.id)) return;
@@ -329,6 +352,7 @@ function handlePose(client: Client, pose: Pose, now: number): void {
   const verdict = validatePose(client.pose, pose, dt, cap);
   if (verdict.ok) {
     client.pose = verdict.pose;
+    client.poseTime = poseTimeOf(t, now);
     client.rejectStreak = 0;
     return;
   }
@@ -339,6 +363,7 @@ function handlePose(client: Client, pose: Pose, now: number): void {
     const resync = validatePose(pose, pose, dt, cap);
     if (resync.ok) {
       client.pose = resync.pose;
+      client.poseTime = poseTimeOf(t, now);
       client.rejectStreak = 0;
     }
   }
@@ -538,6 +563,7 @@ function issueRespawns(due: string[], now: number): void {
       if (!client) continue;
       combat.respawned(id, now);
       client.pose = poseFromSpawn(spawn);
+      client.poseTime = now;
       client.rejectStreak = 0;
       client.lastPoseAt = now;
       client.boost = createBoost(now); // fresh plane, full gauge, no tail
@@ -695,7 +721,7 @@ wss.on("connection", (ws) => {
     if (msg.type === "join" && !client) {
       client = handleJoin(ws, msg.name);
     } else if (msg.type === "pose" && client && msg.pose) {
-      handlePose(client, msg.pose, now);
+      handlePose(client, msg.pose, msg.t, now);
     } else if (msg.type === "boost" && client) {
       handleBoost(client, msg.on, now);
     } else if (msg.type === "fire" && client) {
@@ -739,6 +765,7 @@ function tick(): void {
                 pose,
                 hp: combat.hpOf(id),
                 prot: combat.isProtected(id, time),
+                age: poseAgeOf(id, time),
               }),
             ]
           : [];

@@ -40,9 +40,10 @@ import {
   swayPhases,
   windAt,
 } from "@angels-bandits/common/wind";
-import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
+import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
+import { ImageCache, InstanceUploads } from "./wrapPlacement";
 
 /** Re-image every instance once the camera has moved this far, m. An
  * instance can then sit on a stale image only while it is within this
@@ -117,6 +118,9 @@ const pick = <T>(list: readonly T[], x: number, z: number): T =>
 class Part {
   readonly mesh: THREE.InstancedMesh;
   private readonly slots: Slot[];
+  /** O2: re-image rewrites + uploads only the slots whose image flipped. */
+  private readonly images: ImageCache;
+  private readonly uploads: InstanceUploads;
 
   constructor(
     geometry: THREE.BufferGeometry,
@@ -142,18 +146,26 @@ class Part {
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     // Instances move relative to the camera when they re-image.
     this.mesh.frustumCulled = false;
+    this.images = new ImageCache(
+      slots.map((s) => s.x),
+      slots.map((s) => s.z),
+    );
+    this.uploads = new InstanceUploads([this.mesh.instanceMatrix]);
   }
 
-  /** Move every instance to its image nearest `cam` (translation only). */
+  /** Move every instance whose image flipped to its image nearest `cam`
+   * (translation only). */
   reimage(cam: Vec3): void {
-    const a = this.mesh.instanceMatrix.array;
-    for (let i = 0; i < this.slots.length; i++) {
-      const s = this.slots[i] as Slot;
-      a[i * 16 + 12] = cam.x + wrapDeltaAxis(cam.x, s.x);
-      a[i * 16 + 14] = cam.z + wrapDeltaAxis(cam.z, s.z);
-    }
-    this.mesh.instanceMatrix.needsUpdate = true;
+    this.images.update(cam, this.place);
+    this.uploads.flush();
   }
+
+  private readonly place = (i: number, x: number, z: number): void => {
+    const a = this.mesh.instanceMatrix.array;
+    a[i * 16 + 12] = x;
+    a[i * 16 + 14] = z;
+    this.uploads.mark(i);
+  };
 }
 
 export class NatureRenderer {

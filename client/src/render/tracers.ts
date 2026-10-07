@@ -9,7 +9,7 @@ import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import type { Bullet } from "../game/bullets";
 import { emissiveBoost } from "./emissive";
-import { nearestImage } from "./wrapPlacement";
+import { nearestImageInto } from "./wrapPlacement";
 
 const TRACER_POOL = 64;
 const TRACER_LENGTH = 14; // meters of glowing streak
@@ -26,6 +26,7 @@ const TRACER_BOOST = emissiveBoost(
 
 const up = new THREE.Vector3(0, 1, 0);
 const dir = new THREE.Vector3();
+const scratchImage = { x: 0, y: 0, z: 0 };
 
 export class Tracers {
   readonly group = new THREE.Group();
@@ -91,7 +92,7 @@ export class Tracers {
         mesh.visible = false;
         continue;
       }
-      const p = nearestImage(viewer, bullet.pos);
+      const p = nearestImageInto(scratchImage, viewer, bullet.pos);
       mesh.position.set(p.x, p.y, p.z);
       dir.set(bullet.vel.x, bullet.vel.y, bullet.vel.z).normalize();
       mesh.quaternion.setFromUnitVectors(up, dir);
@@ -104,7 +105,7 @@ export class Tracers {
         continue;
       }
       const at = f.sprite.userData.at as Vec3;
-      const p = nearestImage(viewer, at);
+      const p = nearestImageInto(scratchImage, viewer, at);
       f.sprite.position.set(p.x, p.y, p.z);
       f.sprite.material.opacity = 1 - age / FLASH_LIFE_MS;
       f.sprite.visible = true;

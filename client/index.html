@@ -892,7 +892,7 @@
         top: calc(var(--gut-y) + var(--safe-t));
         right: auto;
         bottom: auto;
-        width: min(300px, 38vw);
+        width: min(300px, calc((100vw - var(--safe-l) - var(--safe-r)) * 0.36));
         display: flex;
         flex-wrap: wrap;
         column-gap: 8px;
@@ -932,6 +932,17 @@
         right: calc(var(--gut-x) + var(--safe-r) + 36px);
         font-size: 11px;
         line-height: 1.5;
+      }
+      /* Long callsigns ellipsize rather than run into the gauges. */
+      body.touch #killfeed,
+      body.touch #comms {
+        max-width: calc((100vw - var(--safe-l) - var(--safe-r)) * 0.3);
+      }
+      body.touch #killfeed .entry,
+      body.touch #comms .entry {
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
       }
       body.touch #killfeed .entry:nth-last-child(n + 4),
       body.touch #comms .entry:nth-last-child(n + 3) {

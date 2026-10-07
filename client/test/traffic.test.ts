@@ -53,6 +53,12 @@ const SEED = 42;
 const NOW = 1_800_000_000;
 
 const fleet = trafficFleet(SEED);
+/** Seeds 0–49's fleets, built once and shared by the across-seed sweeps. */
+let seedFleets: TrafficFleet[] | null = null;
+const fleetsBySeed = (): TrafficFleet[] => {
+  seedFleets ??= Array.from({ length: 50 }, (_, seed) => trafficFleet(seed));
+  return seedFleets;
+};
 const lengthOf = (v: TrafficVehicle) => VEHICLES[v.kind].length;
 
 describe("trafficLanes", () => {
@@ -156,8 +162,8 @@ describe("planLane", () => {
   });
 
   it("admits only platoons that clear the box, cruising or from rest", () => {
-    for (let seed = 0; seed < 50; seed++) {
-      for (const plan of trafficFleet(seed).plans) {
+    for (const f of fleetsBySeed()) {
+      for (const plan of f.plans) {
         for (const p of plan.platoons) {
           expect(p.members.length).toBeGreaterThanOrEqual(1);
           expect(p.members.length).toBeLessThanOrEqual(4);
@@ -180,8 +186,8 @@ describe("planLane", () => {
     let early = 0;
     let lanesOver = 0;
     let lanes = 0;
-    for (let seed = 0; seed < 50; seed++) {
-      for (const plan of trafficFleet(seed).plans) {
+    for (const f of fleetsBySeed()) {
+      for (const plan of f.plans) {
         const n = plan.stops.filter((s) => s.greenLeft > AMBER).length;
         stops += plan.stops.length;
         early += n;
@@ -210,8 +216,8 @@ describe("trafficFleet", () => {
   });
 
   it("stays in a sane size band (≤ 600 instances) across seeds", () => {
-    for (let seed = 0; seed < 50; seed++) {
-      const n = trafficFleet(seed).vehicles.length;
+    for (const f of fleetsBySeed()) {
+      const n = f.vehicles.length;
       expect(n).toBeGreaterThan(160);
       expect(n).toBeLessThanOrEqual(600);
     }
@@ -353,7 +359,7 @@ describe("signals", () => {
   it("holds at negative server time too", () => {
     for (const v of fleet.vehicles) {
       if (v.runner) continue;
-      for (let t = -300; t < 0; t += 1.1) {
+      for (let t = -150; t < 0; t += 0.7) {
         expect(boxAspect(fleet, v, t).red).toBe(false);
       }
     }

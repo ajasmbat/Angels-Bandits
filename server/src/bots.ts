@@ -333,6 +333,9 @@ const EXIT_YAW = 0.2;
  * guaranteed, the merge after it is the lattice's business. */
 const RUNOUT_SLACK = 20;
 
+/** How far ahead RECOVER checks its pull-up against the movers, s. */
+const RECOVER_LOOK_S = 1.2;
+
 /** L11 bridge threads: the steepest dive into an underpass and the climb out
  * of the channel after it, as slopes (m per m along the carrot). */
 const BRIDGE_DIVE = 0.8;
@@ -998,16 +1001,17 @@ export class RoomBots {
           roll: 0,
           throttle: -1,
         };
-        return;
+      } else {
+        bot.input = {
+          // The ceiling dives back under the cloud deck; every other danger
+          // (ground, tier boxes ≤ 250 m) pulls up — never both at once.
+          pitch: dive ? -BOT_INPUT_CAP : BOT_INPUT_CAP,
+          turn: bot.breakTurn * BOT_INPUT_CAP * 0.6,
+          roll: 0,
+          throttle: canyon ? -1 : 1,
+        };
       }
-      bot.input = {
-        // The ceiling dives back under the cloud deck; every other danger
-        // (ground, tier boxes ≤ 250 m) pulls up — never both at once.
-        pitch: dive ? -BOT_INPUT_CAP : BOT_INPUT_CAP,
-        turn: bot.breakTurn * BOT_INPUT_CAP * 0.6,
-        roll: 0,
-        throttle: canyon ? -1 : 1,
-      };
+      if (!dive) this.pullUpUnderMover(bot, now);
     };
 
     // The storm ceiling and the altitude floor stay HARD overrides in every
@@ -2064,6 +2068,54 @@ export class RoomBots {
           this.movers,
           now + t * 1000,
         )
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * RECOVER's pull-up is blind to what hangs overhead: measured, every bot
+   * the mover probe failed to save died climbing at MIN_SPEED into a crane
+   * jib it was passing under. So fly the held input forward first. If the
+   * climb meets a mover, take the first gentler pitch whose arc is clear of
+   * movers, city, trees and ground; if none is, keep the climb.
+   */
+  private pullUpUnderMover(bot: Bot, now: number): void {
+    if (!this.probeMovers) return;
+    const climb = bot.input;
+    if (!this.arcBlocked(bot.flight, climb, now, true)) return;
+    for (const pitch of [0, -BOT_INPUT_CAP / 2, -BOT_INPUT_CAP]) {
+      const input = { ...climb, pitch };
+      if (!this.arcBlocked(bot.flight, input, now, false)) {
+        bot.input = input;
+        return;
+      }
+    }
+  }
+
+  /** Does `input`, held for RECOVER_LOOK_S from `flight`, hit a mover (or,
+   * unless `moversOnly`, anything else solid)? Movers posed on arrival. */
+  private arcBlocked(
+    flight: FlightState,
+    input: FlightInput,
+    now: number,
+    moversOnly: boolean,
+  ): boolean {
+    let f = flight;
+    const steps = Math.round(RECOVER_LOOK_S / BOT_DT);
+    for (let k = 1; k <= steps; k++) {
+      f = stepFlight(f, input, BOT_DT);
+      const r = PLAYER_RADIUS + BOT_MOVER_CLEAR;
+      if (collideBotMovers(f.pos, r, this.movers, now + k * BOT_DT * 1000)) {
+        return true;
+      }
+      if (moversOnly) continue;
+      if (
+        hitsGround(f.pos, PLAYER_RADIUS) ||
+        collideCity(f.pos, PLAYER_RADIUS, this.buildings, this.cityIndex) ||
+        collideNature(f.pos, PLAYER_RADIUS, this.nature)
       ) {
         return true;
       }

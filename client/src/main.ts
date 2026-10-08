@@ -199,6 +199,11 @@ import {
   thunderGain,
   turbulenceOffset,
 } from "./render/storm";
+import { MAX_CART_VENTS_PER_BLOCK } from "./render/street-detail";
+import {
+  StreetFurniture,
+  buildStreetDetailContext,
+} from "./render/street-furniture";
 import { microGate } from "./render/streetlife";
 import { Streetlights } from "./render/streetlights";
 import { Tracers } from "./render/tracers";
@@ -614,7 +619,28 @@ for (const b of city.cityBuildings) {
 }
 const pedestrians = new Pedestrians(welcome.seed);
 scene.add(pedestrians.mesh);
-const steam = new Steam(buildingsByBlock, welcome.seed);
+// G1 street-level detail: benches, bins, hydrants, shelters, racks, booths,
+// carts and parked cars in ONE instanced rig (+1 draw call); the fine road
+// and sidewalk paint lives in the ground shader (street-paint.ts). All of it
+// non-solid (the ≤ 3 m street-level exception). Built before Steam, whose
+// cloud also carries the food carts' steam.
+const streetFurniture = new StreetFurniture(
+  welcome.seed,
+  buildStreetDetailContext(
+    welcome.seed,
+    buildingsByBlock,
+    cityHoles(city.cityBuildings),
+    moverField.train ?? null,
+  ),
+);
+scene.add(streetFurniture.mesh);
+streetFurniture.setEnabled(renderOpts.street);
+const steam = new Steam(
+  buildingsByBlock,
+  welcome.seed,
+  streetFurniture.cartSteamVents,
+  MAX_CART_VENTS_PER_BLOCK,
+);
 scene.add(steam.points);
 const signals = new Signals(welcome.seed);
 scene.add(signals.mesh);
@@ -1150,6 +1176,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   pedestrians.setQuality(tier);
   // M3: steam, signals and construction sparks stream in the tier's radius.
   steam.setQuality(tier);
+  streetFurniture.setQuality(tier); // G1
   signals.setQuality(tier);
   constructionSparks.setQuality(tier);
   rain.setQuality(tier);
@@ -1489,6 +1516,12 @@ declare global {
       /** Perf A/B: false takes the same early return as an above-gate camera,
        * so it skips the CPU work and not merely the draw call. */
       setMicro: (on: boolean) => void;
+      /** G1 QA: what the street-detail rig drew, its keep shares, the paint. */
+      streetDetail: () => StreetFurniture["counts"] & {
+        sample: ReturnType<StreetFurniture["sample"]>;
+      };
+      /** G1 perf A/B: street furniture, parked cars and fine paint on/off. */
+      setStreet: (on: boolean) => void;
       /** L8 perf A/B: hide/show the rooftop-life group (its 2 draw calls). */
       setRooftopLife: (on: boolean) => void;
       garnishImage: (x: number, z: number) => { x: number; z: number } | null;
@@ -1781,6 +1814,14 @@ window.__ab = {
   setMicro: (on) => {
     microOn = on;
   },
+  streetDetail: () => ({
+    ...streetFurniture.counts,
+    sample: streetFurniture.sample(
+      MICRO_SAMPLE_BLOCK.bx,
+      MICRO_SAMPLE_BLOCK.bz,
+    ),
+  }),
+  setStreet: (on) => streetFurniture.setEnabled(on),
   setRooftopLife: (on) => {
     rooftopLife.group.visible = on;
   },
@@ -2281,6 +2322,9 @@ const frame = (now: number): void => {
   // (the signage policy): a plume or a signal in the wrong part of its cycle
   // is invisible, where hiding every one of them until clock sync would not be.
   steam.update(chase.position, renderMs ?? now, microK);
+  // G1: static layout — re-packed only when the block window moves; the
+  // furniture thins with the micro gate, parked cars by their own gate.
+  streetFurniture.update(chase.position, microK);
   signals.update(chase.position, renderMs ?? now, microK, cityReact);
   constructionSparks.update(chase.position, renderMs ?? now, microK);
   ground.update(chase.position);

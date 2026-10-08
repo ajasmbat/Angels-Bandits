@@ -26,6 +26,11 @@ const VIEWS = [
   { name: "plane-side", x: 600, z: 700, y: 200, yaw: 1.2, orbit: 260 },
   { name: "plane-front", x: 800, z: 300, y: 160, yaw: -0.4, orbit: 620 },
   { name: "street-low", x: 1000, z: 1300, y: 35, yaw: 0 },
+  // G1: skimming the curb at 8 m, a lane in from the parked cars, looking
+  // down the sidewalk — furniture, parked cars, road wear, lit shopfronts.
+  // At 8 m the plane sinks into the street within one stalled frame, so this
+  // view is pinned every frame in the page (`raf`), not by round trips.
+  { name: "sidewalk-closeup", x: 810, z: 1380, y: 8, yaw: 0.08, raf: true },
   { name: "rooftop-skim", x: 1210, z: 500, y: 140, yaw: 1.57, pitch: -0.15 },
   // N1: plaza (4,4) as a night park — pond, paths, lamps, tree clusters.
   { name: "plaza-park", x: 900, z: 1030, y: 120, yaw: 0, pitch: -0.6 },
@@ -218,6 +223,18 @@ try {
         }
       }, v);
     await pin();
+    if (v.raf) {
+      await page.evaluate((v) => {
+        const hold = () => {
+          if (!window.__abPin) return;
+          window.__ab.teleport(v.x, v.z, v.y, v.yaw);
+          if (v.pitch) window.__ab.state().pitch = v.pitch;
+          requestAnimationFrame(hold);
+        };
+        window.__abPin = true;
+        hold();
+      }, v);
+    }
     if (v.orbit) {
       await page.mouse.move(640, 360);
       await page.keyboard.down("KeyE");
@@ -231,6 +248,11 @@ try {
       await sleep(90);
     }
     await page.screenshot({ path: `${OUT}/${v.name}.png`, timeout: 180000 });
+    if (v.raf) {
+      await page.evaluate(() => {
+        window.__abPin = false;
+      });
+    }
     if (v.orbit) {
       await page.keyboard.up("KeyE");
       await sleep(600);

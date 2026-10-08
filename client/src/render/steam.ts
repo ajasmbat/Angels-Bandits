@@ -64,6 +64,8 @@ export interface SteamVent {
   phase: number;
   /** True for rooftop HVAC, false for a gutter grate. */
   roof: boolean;
+  /** Puff size multiplier (G1 food carts are small, close plumes); 1 if absent. */
+  scale?: number;
 }
 
 /** Stable per-vent hash — orders roof vents so truncation is camera-independent. */
@@ -169,7 +171,7 @@ export function puffPoseInto(
   // Grow while dispersing, then collapse over the last 15 % of life: the
   // smoke.ts trick for faking an alpha fade under a constant-opacity
   // PointsMaterial.
-  const grow = PUFF_SIZE * (0.45 + age * 2.1);
+  const grow = PUFF_SIZE * (vent.scale ?? 1) * (0.45 + age * 2.1);
   out.size = age > 0.85 ? grow * (1 - (age - 0.85) / 0.15) : grow;
   return out;
 }
@@ -215,6 +217,10 @@ export class Steam {
   private readonly seed: number;
   private readonly buildingsByBlock: Map<number, Building[]>;
   private readonly byBlock = new Map<number, SteamVent[]>();
+  private readonly extraVents?: (
+    bx: number,
+    bz: number,
+  ) => readonly SteamVent[];
   private readonly positions: THREE.BufferAttribute;
   private readonly sizes: THREE.BufferAttribute;
   private readonly material: THREE.PointsMaterial;
@@ -229,11 +235,25 @@ export class Steam {
   /** M3 quality tier: block-window radius (the budget stays sized for the max). */
   private radius = BLOCK_WINDOW_RADIUS;
 
-  constructor(buildingsByBlock: Map<number, Building[]>, seed: number) {
+  /**
+   * `extraVents` (G1): vents another system owns — food-cart steam from
+   * street-furniture.ts — appended AFTER this block's capped list. They do
+   * not count against MAX_VENTS_PER_BLOCK; the provider caps its own at
+   * `extraPerBlock` in its pure layout, and the buffer grows by exactly that.
+   */
+  constructor(
+    buildingsByBlock: Map<number, Building[]>,
+    seed: number,
+    extraVents?: (bx: number, bz: number) => readonly SteamVent[],
+    extraPerBlock = 0,
+  ) {
     this.seed = seed;
     this.buildingsByBlock = buildingsByBlock;
+    this.extraVents = extraVents;
     const budget =
-      (2 * BLOCK_WINDOW_RADIUS + 1) ** 2 * MAX_VENTS_PER_BLOCK * PUFFS_PER_VENT;
+      (2 * BLOCK_WINDOW_RADIUS + 1) ** 2 *
+      (MAX_VENTS_PER_BLOCK + extraPerBlock) *
+      PUFFS_PER_VENT;
     const geometry = new THREE.BufferGeometry();
     this.positions = new THREE.BufferAttribute(new Float32Array(budget * 3), 3);
     this.sizes = new THREE.BufferAttribute(new Float32Array(budget), 1);
@@ -281,6 +301,8 @@ export class Steam {
         this.buildingsByBlock.get(key) ?? [],
         this.seed,
       );
+      // G1: the one append point for other systems' vents (food carts).
+      if (this.extraVents) vents = [...vents, ...this.extraVents(bx, bz)];
       this.byBlock.set(key, vents);
     }
     return vents;

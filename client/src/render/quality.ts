@@ -101,8 +101,15 @@ export interface QualityProfile {
   /** L7 sign animation (tickers, chases, video). Off = each sign's static art. */
   signAnimation: boolean;
   /** Fake window interiors (the per-pane parallax room raycast). Off = the
-   * room's mean colour, the same value the distance fade already ends on. */
+   * room's mean colour, the same value the distance fade already ends on.
+   * G1: the lit lobbies / shop rooms behind the street-level glass too. */
   windowInteriors: boolean;
+  /** G1 street furniture + parked cars: share of objects kept (golden-ratio
+   * thinning by a uniform — street-furniture.ts). */
+  streetDetail: number;
+  /** G1 fine ground paint (wear, patches, manholes, drains, arrows, words,
+   * bike lanes, ramps, tiles, grates). Off = the S1/VO5 paint alone. */
+  streetPaint: boolean;
 }
 
 export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
@@ -126,6 +133,8 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     microRadius: 2,
     signAnimation: true,
     windowInteriors: true,
+    streetDetail: 1,
+    streetPaint: true,
   },
   medium: {
     maxPixelRatio: 1.5,
@@ -147,6 +156,8 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     microRadius: 2,
     signAnimation: true,
     windowInteriors: true,
+    streetDetail: 1,
+    streetPaint: true,
   },
   low: {
     maxPixelRatio: 1,
@@ -168,6 +179,8 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     microRadius: 2,
     signAnimation: true,
     windowInteriors: true,
+    streetDetail: 0.7,
+    streetPaint: true,
   },
   mobile: {
     maxPixelRatio: 1,
@@ -189,6 +202,8 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     microRadius: 1,
     signAnimation: false,
     windowInteriors: false,
+    streetDetail: 0.4,
+    streetPaint: false,
   },
 };
 
@@ -409,12 +424,28 @@ export const FEATURE_TIERS: readonly {
     note: "one full-screen pass",
   },
   {
+    feature: "G1 street furniture, parked cars",
+    high: "full",
+    medium: "full",
+    low: "reduced",
+    mobile: "reduced",
+    note: "not solid; 70 % / 40 % kept (Mobile streams one block out)",
+  },
+  {
+    feature: "G1 fine street paint (wear, manholes, words, ramps)",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "off",
+    note: "uniform guard: the S1 paint alone",
+  },
+  {
     feature: "Window interiors (parallax rooms)",
     high: "full",
     medium: "full",
     low: "full",
     mobile: "off",
-    note: "uniform guard: the room's mean colour",
+    note: "uniform guard: the room's mean colour (G1 lobbies too)",
   },
 ];
 

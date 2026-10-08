@@ -425,17 +425,17 @@ async function flySegment(page, seg, sampleMs, worldMs) {
       let trains = null;
       if (s.trainsAt && worldPinned && typeof ab.train === "function") {
         const { line, station, withinM } = s.trainsAt;
-        const st = ab.train(s.worldMs)?.lines[line]?.stations[station];
+        // Optional chaining throughout: an --ab-ref build from before T2
+        // has no `lines` / `trains` read-back, and simply finds no moment.
+        const st = ab.train(s.worldMs)?.lines?.[line]?.stations?.[station];
         const wrap = (d) => d - Math.round(d / 2000) * 2000;
         trains = { offsetMs: null, tracks: null };
         for (let dt = 0; st && dt <= s.slideMaxMs; dt += 250) {
-          const inside = ab
-            .train(s.worldMs + dt)
-            .trains.filter(
-              (tr) =>
-                tr.line === line &&
-                Math.hypot(wrap(tr.x - st.x), wrap(tr.z - st.z)) <= withinM,
-            );
+          const inside = (ab.train(s.worldMs + dt)?.trains ?? []).filter(
+            (tr) =>
+              tr.line === line &&
+              Math.hypot(wrap(tr.x - st.x), wrap(tr.z - st.z)) <= withinM,
+          );
           if (new Set(inside.map((tr) => tr.track)).size >= 2) {
             ab.pinWorld(s.worldMs + dt);
             trains = {
@@ -1537,8 +1537,20 @@ function printDelta(report, baseline) {
   };
   for (const seg of report.segments) {
     const base = baseline.segments.find((s) => s.name === seg.name);
+    // P2: an arm that could not fly the scene — an older build with no
+    // two-train read-back, or one that died in the window (a build from
+    // before H2 has no tunnel to glide through) — is not a baseline.
+    const unreproduced = (s) =>
+      s.alive === false ||
+      (SEGMENTS.find((g) => g.name === s.name)?.trainsAt !== undefined &&
+        typeof s.trains?.offsetMs !== "number");
     if (!base) {
       console.log(`${seg.name.padEnd(8)}  no baseline (segment absent)`);
+    } else if (unreproduced(seg) || unreproduced(base)) {
+      const which = unreproduced(seg) ? report.label : baseline.label;
+      console.log(
+        `${seg.name.padEnd(8)}  no baseline (${which} could not fly this scene: dead, or no two-train moment)`,
+      );
     } else if (
       seg.weather != null &&
       (seg.weatherPinned === false || base.weatherPinned !== true)

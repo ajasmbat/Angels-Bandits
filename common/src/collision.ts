@@ -17,6 +17,11 @@ import {
 } from "./city/nature";
 import { riverHit, riverSegmentClear } from "./city/river";
 import {
+  ROOF_STRUCTURE_MAX_HEIGHT,
+  type RoofStructure,
+  structureCovers,
+} from "./city/roof-structures";
+import {
   BLOCK_PITCH,
   CANOPY_COLLISION_SLACK,
   PLAYER_RADIUS,
@@ -129,7 +134,16 @@ function hits(
   b: Building,
   holes: HoleMode,
 ): boolean {
-  if (pos.y - radius > b.height) return false;
+  // R2: above the roof only its structures can be hit, and none stands
+  // taller than ROOF_STRUCTURE_MAX_HEIGHT.
+  const roof = b.roof;
+  const above = pos.y - radius > b.height;
+  if (
+    above &&
+    (!roof || pos.y - radius > b.height + ROOF_STRUCTURE_MAX_HEIGHT)
+  ) {
+    return false;
+  }
   const d = wrapDelta({ x: b.x, y: 0, z: b.z }, { x: pos.x, y: 0, z: pos.z });
   // Tier-1 footprint bounds the whole stack — cheap whole-building reject.
   if (
@@ -138,6 +152,10 @@ function hits(
   ) {
     return false;
   }
+  if (roof && pos.y + radius >= b.height && hitsRoof(pos.y, radius, d, roof)) {
+    return true;
+  }
+  if (above) return false;
   if (holes === "solid" || !b.holes) {
     let base = 0;
     for (const t of b.tiers) {
@@ -160,6 +178,27 @@ function hits(
       pos.y + radius >= s.baseY &&
       Math.abs(d.x - s.dx) <= s.width / 2 + radius &&
       Math.abs(d.z - s.dz) <= s.depth / 2 + radius
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Sphere vs the R2 roof structures (boxes, or vertical cylinders for tanks
+ * and masts), `d` the sphere's offset from the building centre. The same
+ * expanded-shape approximation as the tiers. */
+function hitsRoof(
+  y: number,
+  radius: number,
+  d: Vec3,
+  roof: readonly RoofStructure[],
+): boolean {
+  for (const s of roof) {
+    if (
+      y - radius <= s.baseY + s.height &&
+      y + radius >= s.baseY &&
+      structureCovers(s, d.x, d.z, radius)
     ) {
       return true;
     }
@@ -355,6 +394,43 @@ function segmentHitsBox(
 }
 
 /**
+ * Segment vs a vertical cylinder (axis at (cx, cz), radius r, y in
+ * [minY, maxY]), all in the sight line's local frame like segmentHitsBox:
+ * the t interval inside the circle in XZ, clipped to [0, 1] and to the
+ * y slab.
+ */
+function segmentHitsCylinder(
+  d: Vec3,
+  cx: number,
+  cz: number,
+  r: number,
+  minY: number,
+  maxY: number,
+): boolean {
+  let t0 = 0;
+  let t1 = 1;
+  const a = d.x * d.x + d.z * d.z;
+  const c = cx * cx + cz * cz - r * r;
+  if (a === 0) {
+    if (c > 0) return false;
+  } else {
+    const b = -2 * (d.x * cx + d.z * cz);
+    const disc = b * b - 4 * a * c;
+    if (disc < 0) return false;
+    const s = Math.sqrt(disc);
+    t0 = Math.max(t0, (-b - s) / (2 * a));
+    t1 = Math.min(t1, (-b + s) / (2 * a));
+    if (t0 > t1) return false;
+  }
+  if (d.y === 0) return minY <= 0 && maxY >= 0;
+  const ya = minY / d.y;
+  const yb = maxY / d.y;
+  t0 = Math.max(t0, Math.min(ya, yb));
+  t1 = Math.min(t1, Math.max(ya, yb));
+  return t0 <= t1;
+}
+
+/**
  * True when nothing in the city stands between `from` and `to` — the sight
  * line the bot brain acquires targets on (ANGE-SINI5F). The L11 river's
  * solids (bank ground, bridge decks, parapets, railings) count too.
@@ -387,8 +463,15 @@ export function losClear(
   // Altitude is monotonic along the segment, so its lower end bounds it.
   const loY = Math.min(from.y, to.y);
   for (const b of buildings) {
-    // Whole sight line above the roof — the strong reject for high patrols.
-    if (loY > b.height) continue;
+    // Whole sight line above the roof — the strong reject for high patrols
+    // (R2: above the tallest roof structure, when it has any).
+    const roof = b.roof;
+    if (
+      loY > b.height &&
+      (!roof || loY > b.height + ROOF_STRUCTURE_MAX_HEIGHT)
+    ) {
+      continue;
+    }
     const c = wrapDelta(from, { x: b.x, y: 0, z: b.z });
     // Tier-1 footprint vs the segment's XZ bounds — cheap whole-building reject.
     if (
@@ -400,6 +483,7 @@ export function losClear(
       continue;
     }
     for (const t of solids(b)) {
+      if (loY > b.height) break; // only roof structures reach this high
       const x = c.x + t.dx;
       const z = c.z + t.dz;
       if (
@@ -412,6 +496,28 @@ export function losClear(
           z - t.depth / 2,
           z + t.depth / 2,
         )
+      ) {
+        return false;
+      }
+    }
+    for (const s of roof ?? []) {
+      if (loY > s.baseY + s.height) continue;
+      const x = c.x + s.dx;
+      const z = c.z + s.dz;
+      const minY = s.baseY - from.y;
+      const maxY = s.baseY + s.height - from.y;
+      if (
+        s.round
+          ? segmentHitsCylinder(d, x, z, s.width / 2, minY, maxY)
+          : segmentHitsBox(
+              d,
+              x - s.width / 2,
+              x + s.width / 2,
+              minY,
+              maxY,
+              z - s.depth / 2,
+              z + s.depth / 2,
+            )
       ) {
         return false;
       }

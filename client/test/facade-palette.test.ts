@@ -18,13 +18,13 @@ import {
 } from "../src/render/buildings-material";
 import { facadeColor } from "../src/render/city";
 import { luminance } from "../src/render/emissive";
+import { BILLBOARD_FACE_LUMINANCE } from "../src/render/roof-details";
 import {
   CROWN_MIN_HEIGHT,
   GARDEN_LIGHT_COLOR,
   LED_LUMINANCE,
   PAD_LIGHT_COLOR,
   ROOF_ALBEDO,
-  SKYLIGHT_COLOR,
   crownDepth,
   roofStyleFor,
 } from "../src/render/roofs";
@@ -154,13 +154,14 @@ describe("VO3 roofs & crowns on the emissive ladder", () => {
     expect(crownPeak + lit + bounceThere).toBeLessThan(BLOOM_THRESHOLD);
   });
 
-  it("lights roofs readably but never near bloom, skylight glow included", () => {
+  it("lights roofs readably but never near bloom, billboard art included", () => {
     const roofs = Object.values(ROOF_ALBEDO).map(luminance);
     const roofPeak = (Math.max(...roofs) * irradiance) / Math.PI;
-    const glassPeak =
-      (luminance(ROOF_ALBEDO.skyGlass) * irradiance) / Math.PI +
-      luminance(SKYLIGHT_COLOR);
-    expect(Math.max(roofPeak, glassPeak)).toBeLessThan(FACADE_PEAK);
+    // R2 retired the skylight glow; the roof's lit SURFACE now is billboard
+    // art, which glows like a pane, never like a lamp.
+    expect(Math.max(roofPeak, BILLBOARD_FACE_LUMINANCE)).toBeLessThan(
+      FACADE_PEAK,
+    );
     expect(luminance(GARDEN_LIGHT_COLOR)).toBeLessThan(BLOOM_THRESHOLD);
     // …and the deck itself is no longer a black hole.
     expect(luminance(ROOF_ALBEDO.membrane)).toBeGreaterThan(0.2);

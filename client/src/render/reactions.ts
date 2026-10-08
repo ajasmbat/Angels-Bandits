@@ -17,6 +17,7 @@
 // column; everything else rides meshes and shaders that already exist).
 
 import { type Building, mulberry32, solids } from "@angels-bandits/common/city";
+import { structureCovers } from "@angels-bandits/common/city/roof-structures";
 import {
   LANE_CENTERS,
   nearestStreet,
@@ -302,6 +303,12 @@ export function smokeBase(
       ) {
         continue;
       }
+      const top = s.baseY + s.height;
+      if (top <= y + 1 && top > base) base = top;
+    }
+    // R2: a wreck on a penthouse or tank smokes from its top.
+    for (const s of b.roof ?? []) {
+      if (!structureCovers(s, dx, dz, 0)) continue;
       const top = s.baseY + s.height;
       if (top <= y + 1 && top > base) base = top;
     }

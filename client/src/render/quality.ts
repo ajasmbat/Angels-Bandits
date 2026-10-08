@@ -115,6 +115,9 @@ export interface QualityProfile {
   /** G1 fine ground paint (wear, patches, manholes, drains, arrows, words,
    * bike lanes, ramps, tiles, grates). Off = the S1/VO5 paint alone. */
   streetPaint: boolean;
+  /** R2 roof dressing's fine detail (drains, hatches, walkways, lightning
+   * rods, dishes, braces, gondola cables). Structures are solid and stay. */
+  roofDetail: boolean;
 }
 
 export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
@@ -142,6 +145,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     facadeLife: true,
     streetDetail: 1,
     streetPaint: true,
+    roofDetail: true,
   },
   medium: {
     maxPixelRatio: 1.5,
@@ -167,6 +171,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     facadeLife: true,
     streetDetail: 1,
     streetPaint: true,
+    roofDetail: true,
   },
   low: {
     maxPixelRatio: 1,
@@ -192,6 +197,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     facadeLife: false,
     streetDetail: 0.7,
     streetPaint: true,
+    roofDetail: false,
   },
   mobile: {
     maxPixelRatio: 1,
@@ -217,6 +223,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     facadeLife: false,
     streetDetail: 0.4,
     streetPaint: false,
+    roofDetail: false,
   },
 };
 
@@ -499,6 +506,23 @@ export const FEATURE_TIERS: readonly {
     low: "full",
     mobile: "off",
     note: "uniform guard: the room's mean colour (G1 lobbies too)",
+  },
+  {
+    feature:
+      "R2 roof structures (penthouses, towers, tanks, billboards, masts)",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "solid",
+  },
+  {
+    feature: "R2 roof dressing — fine detail (drains, hatches, rods, dishes)",
+    high: "full",
+    medium: "full",
+    low: "off",
+    mobile: "off",
+    note: "instance count only; HVAC, ducts, solar, davits, lamps stay",
   },
 ];
 

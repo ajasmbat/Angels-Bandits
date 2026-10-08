@@ -5,6 +5,7 @@
 // GPU, exactly like the traffic and freelook seams.
 
 import { type Building, mulberry32 } from "@angels-bandits/common/city";
+import { roofTopAt } from "@angels-bandits/common/city/roof-structures";
 import {
   CLOUD_BASE,
   EMISSIVE_TRACER,
@@ -378,7 +379,8 @@ export class StormRenderer {
         Math.abs(x - b.x) <= b.width / 2 &&
         Math.abs(z - b.z) <= b.depth / 2
       ) {
-        return b.height;
+        // R2: a bolt over a mast or penthouse strikes its top.
+        return roofTopAt(b, x - b.x, z - b.z);
       }
     }
     return 0;

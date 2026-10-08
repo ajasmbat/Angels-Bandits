@@ -42,7 +42,7 @@ import {
   segmentWorldMs,
   warmupWorldMs,
 } from "./segments.mjs";
-import { analyseTrace, describe } from "./trace-spikes.mjs";
+import { analyseTrace, describe, mainThread } from "./trace-spikes.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
@@ -704,7 +704,7 @@ function flyWarmupLap(page) {
  * It costs one extra pass per arm, which is the cheapest honest option.
  */
 async function warmArm(browser, url) {
-  await measure(browser, url);
+  await measure(browser, url, { trace: false });
 }
 
 /**
@@ -883,10 +883,13 @@ cost: ${b.label} vs ${a.label} (GPU-independent proxies)`);
 let traceDir = null;
 let tracePass = 0;
 const TRACE_CATEGORIES = [
+  "toplevel",
   "devtools.timeline",
   "v8",
   "disabled-by-default-v8.gc",
   "blink.user_timing",
+  // Samples, so a frame blocked inside a WebGL call is told from script.
+  "disabled-by-default-v8.cpu_profiler",
 ].join(",");
 
 /** Start a CDP trace on `page`; resolves once Chrome is recording. */
@@ -911,14 +914,29 @@ async function stopTrace({ cdp, events, done }, name) {
   await cdp.detach().catch(() => {});
   mkdirSync(traceDir, { recursive: true });
   const file = resolve(traceDir, `${tracePass}-${name}.json`);
-  writeFileSync(file, JSON.stringify({ traceEvents: events }));
-  const r = analyseTrace(events);
+  // Only the page's main thread (and the window marks) is kept, one event
+  // per line: the whole browser's trace of a SwiftShader segment runs past
+  // the longest string V8 can build.
+  const main = mainThread(events);
+  const kept = events.filter(
+    (e) =>
+      `${e.pid}:${e.tid}` === main ||
+      e.name === "abWindowStart" ||
+      e.name === "abWindowEnd" ||
+      e.name === "ProfileChunk",
+  );
+  writeFileSync(
+    file,
+    `{"traceEvents":[\n${kept.map((e) => JSON.stringify(e)).join(",\n")}\n]}\n`,
+  );
+  const r = analyseTrace(kept);
   console.log(describe(`trace ${tracePass}-${name}`, r));
   return { file, ...r };
 }
 
-async function measure(browser, url) {
-  tracePass++;
+async function measure(browser, url, { trace = true } = {}) {
+  if (trace) tracePass++;
+  const tracing = trace ? traceDir : null;
   const page = await newProbedPage(browser);
   const errors = await joinGame(page, url);
   await flyWarmupLap(page);
@@ -954,14 +972,14 @@ async function measure(browser, url) {
         : await startPilots(port, seg.pilots, { x: seg.x, z: seg.z });
     try {
       if (pilots) await sleep(PILOT_SETTLE_MS);
-      const tracing = traceDir ? await startTrace(page) : null;
+      const recording = tracing ? await startTrace(page) : null;
       const flown = await flySegment(
         page,
         seg,
         SAMPLE_MS,
         segmentWorldMs(SEGMENTS.indexOf(seg)),
       );
-      if (tracing) flown.trace = await stopTrace(tracing, seg.name);
+      if (recording) flown.trace = await stopTrace(recording, seg.name);
       segments.push(flown);
     } finally {
       pilots?.stop();

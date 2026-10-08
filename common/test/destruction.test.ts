@@ -46,7 +46,11 @@ import {
   RUBBLE_REACH,
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
-import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
+import {
+  type Vec3,
+  wrapDelta,
+  wrapDeltaAxis,
+} from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
 
 const city = generateCity(CITY_SEED);
@@ -297,6 +301,17 @@ describe("D2 solids() subtract destroyed chunks", () => {
 
   it("rubble stays on open ground: never in another footprint or a hole mouth, within RUBBLE_REACH", () => {
     let piles = 0;
+    // Each building's neighbours: anything whose footprint could reach a
+    // pile (within a block's pitch), so the overlap test stays cheap.
+    const near = damaged.map((b, i) =>
+      damaged.flatMap((o, j) =>
+        j !== i &&
+        Math.abs(wrapDeltaAxis(b.x, o.x)) < 200 &&
+        Math.abs(wrapDeltaAxis(b.z, o.z)) < 200
+          ? [j]
+          : [],
+      ),
+    );
     damaged.forEach((b, i) => {
       for (const s of solids(b)) {
         if ((s.cut & CUT_RUBBLE) === 0) continue;
@@ -308,22 +323,20 @@ describe("D2 solids() subtract destroyed chunks", () => {
         expect(Math.abs(s.dz) + s.depth / 2).toBeLessThanOrEqual(
           b.depth / 2 + RUBBLE_REACH + 1e-9,
         );
-        damaged.forEach((o, j) => {
-          if (j === i) return;
+        for (const j of near[i] as number[]) {
+          const o = damaged[j] as Building;
           const t = o.tiers[0];
-          if (!t) return;
-          const d = wrapDelta(
-            { x: b.x, y: 0, z: b.z },
-            { x: o.x, y: 0, z: o.z },
-          );
+          if (!t) continue;
+          const dx = wrapDeltaAxis(b.x, o.x);
+          const dz = wrapDeltaAxis(b.z, o.z);
           const ox =
-            Math.min(s.dx + s.width / 2, d.x + t.width / 2) -
-            Math.max(s.dx - s.width / 2, d.x - t.width / 2);
+            Math.min(s.dx + s.width / 2, dx + t.width / 2) -
+            Math.max(s.dx - s.width / 2, dx - t.width / 2);
           const oz =
-            Math.min(s.dz + s.depth / 2, d.z + t.depth / 2) -
-            Math.max(s.dz - s.depth / 2, d.z - t.depth / 2);
+            Math.min(s.dz + s.depth / 2, dz + t.depth / 2) -
+            Math.max(s.dz - s.depth / 2, dz - t.depth / 2);
           expect(ox > 1e-6 && oz > 1e-6).toBe(false);
-        });
+        }
         const mouth = b.holes?.find((h) => h.tierIndex === 0);
         if (mouth) {
           const onMouthFace =

@@ -350,6 +350,7 @@ export function bridgeSpans(): HoleSpan[] {
     const wrap = (v: number) => ((v % WORLD_SIZE) + WORLD_SIZE) % WORLD_SIZE;
     out.push({
       building: deck,
+      hosts: [], // a bridge cuts no building
       hole: {
         kind: "bridge",
         axis: "x",

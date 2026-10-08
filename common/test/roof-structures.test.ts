@@ -2,7 +2,12 @@
 // collision parity it exists for — what the client draws from Building.roof
 // is what collideCity, losClear and the bot probes hit.
 
-import { type Building, generateCity } from "@angels-bandits/common/city";
+import {
+  type Building,
+  clearAirSpans,
+  generateCity,
+  inHoleAir,
+} from "@angels-bandits/common/city";
 import {
   BILLBOARD_LIFT,
   ROOF_STRUCTURE_INSET,
@@ -46,12 +51,18 @@ const withStructures = (cities: Building[][]) =>
 
 describe("roofStructuresFor: layout", () => {
   it("is deterministic, and generateCity stores exactly it on Building.roof", () => {
-    for (const b of ALL) {
-      expect(JSON.stringify(roofStructuresFor(b))).toBe(
-        JSON.stringify(roofStructuresFor(b)),
-      );
-      const fresh = roofStructuresFor(b);
-      expect(b.roof ?? []).toEqual(fresh);
+    for (const c of CITIES) {
+      // H2: minus exactly what stands in a hole's clear air (clearHoleAir).
+      const spans = clearAirSpans(c);
+      for (const b of c) {
+        expect(JSON.stringify(roofStructuresFor(b))).toBe(
+          JSON.stringify(roofStructuresFor(b)),
+        );
+        const fresh = roofStructuresFor(b).filter(
+          (r) => !inHoleAir(b, r, spans),
+        );
+        expect(b.roof ?? []).toEqual(fresh);
+      }
     }
     // …and a real city has plenty of them, of every kind.
     const kinds = new Set(withStructures(CITIES).map(({ s }) => s.kind));

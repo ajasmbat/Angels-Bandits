@@ -161,10 +161,11 @@ export function roofStructuresFor(b: Building): RoofStructure[] {
   const id = top.depth / 2 - ROOF_STRUCTURE_INSET;
   const y = b.height;
   const taken: Rect[] = [];
-  // Never over a sky hole: it runs the top tier's full length under a
-  // lintel; the strip above it stays bare deck.
+  // Never over a sky hole (or an H2 gate in the top tier): it runs the top
+  // tier's full length under a lintel; the strip above it stays bare deck.
   for (const h of b.holes ?? []) {
-    if (h.kind !== "sky" || h.tierIndex !== b.tiers.length - 1) continue;
+    if (h.kind !== "sky" && h.kind !== "gate") continue;
+    if (h.tierIndex !== b.tiers.length - 1) continue;
     taken.push(
       h.axis === "x"
         ? { x: 0, z: h.offset, hw: top.width, hd: h.width / 2 }

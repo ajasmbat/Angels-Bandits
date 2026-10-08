@@ -315,6 +315,7 @@ describe("per-feature table — Mobile is defined and cheapest", () => {
       Bloom: ["bloom"],
       "Final grade": ["grade"],
       "Window interiors": ["windowInteriors"],
+      "H2 hole interiors": ["holeDecor"],
     };
     const behaviour = (t: QualityTier, ks: (keyof QualityProfile)[]) => {
       const shares = ks.map(

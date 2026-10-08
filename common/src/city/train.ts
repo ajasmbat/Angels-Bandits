@@ -779,7 +779,8 @@ export function trainExclusions(spans: readonly HoleSpan[]): Area[] {
       hx: x ? along : across,
       hz: x ? across : along,
     });
-    if (hole.kind === "sky") continue;
+    // Sky holes and gates are only ever followed, never staged for (B2).
+    if (hole.kind === "sky" || hole.kind === "gate") continue;
     for (const edge of holeEdges([span])) {
       if (hole.kind === "arch") {
         // Staged along the CROSS street through the node, either way.

@@ -5,6 +5,7 @@ import {
   EMISSIVE_BEACON,
   EMISSIVE_EXHAUST,
   EMISSIVE_HAZARD,
+  EMISSIVE_HOLE_LED,
   EMISSIVE_LAMP,
   EMISSIVE_NAVLIGHT,
   EMISSIVE_SIGN,
@@ -54,7 +55,8 @@ describe("world constants invariants", () => {
 describe("emissive ladder", () => {
   it("is strictly increasing: window < trail < sign < exhaust < hazard < lamp < navlight < beacon < strobe < tracer", () => {
     expect(EMISSIVE_WINDOW).toBeLessThan(EMISSIVE_TRAIL);
-    expect(EMISSIVE_TRAIL).toBeLessThan(EMISSIVE_SIGN);
+    expect(EMISSIVE_TRAIL).toBeLessThan(EMISSIVE_HOLE_LED);
+    expect(EMISSIVE_HOLE_LED).toBeLessThan(EMISSIVE_SIGN);
     expect(EMISSIVE_SIGN).toBeLessThan(EMISSIVE_EXHAUST);
     expect(EMISSIVE_EXHAUST).toBeLessThan(EMISSIVE_HAZARD);
     expect(EMISSIVE_HAZARD).toBeLessThan(EMISSIVE_LAMP);

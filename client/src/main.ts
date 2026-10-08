@@ -98,6 +98,14 @@ import { createFreeLook, shapeInput, stepFreeLook } from "./game/freelook";
 import { Guns } from "./game/guns";
 import { bulletHitsSphere } from "./game/hitdetect";
 import {
+  ASSIST_AIM_RANGE,
+  type AssistWorld,
+  assistStick,
+  createHoleAssist,
+  holeAssistTarget,
+  stepHoleAssist,
+} from "./game/hole-assist";
+import {
   type AimError,
   CONVERGED_RAD,
   aimError,
@@ -134,6 +142,7 @@ import { Explosions, Sparks } from "./render/fx";
 import { GpuTimer } from "./render/gputimer";
 import { createGradePass } from "./render/grade";
 import { Headlights } from "./render/headlights";
+import { HoleDecorRenderer } from "./render/hole-decor";
 import { lookPasses } from "./render/lookup";
 import { MoverLights, Movers } from "./render/movers";
 import { NatureRenderer } from "./render/nature";
@@ -615,6 +624,17 @@ const cornerWorld: CornerWorld = {
     ...bridgeSpans(),
   ]),
 };
+// H2 hole assist: the silent centering nudge reads every hole (and river
+// underpass) and the same city the crash check does. State is per frame.
+const assistWorld: AssistWorld = {
+  spans: [...cityHoles(city.cityBuildings), ...bridgeSpans()],
+  buildings: city.cityBuildings,
+  index: city.cityIndex,
+};
+const holeAssist = createHoleAssist();
+const holeAssistWant = createHoleAssist();
+const assistDir: Vec3 = { x: 0, y: 0, z: 0 };
+const assistStickOut = { turn: 0, pitch: 0 };
 const natureRenderer = new NatureRenderer(nature);
 scene.add(natureRenderer.group);
 // L11 river: embankment walls, bridges, the reflecting water and the boats.
@@ -659,6 +679,9 @@ const cityLife = new CityLife(city.cityBuildings, welcome.seed);
 scene.add(cityLife.mesh);
 const facadeLife = new FacadeLifeRenderer(city.cityBuildings, welcome.seed);
 scene.add(facadeLife.mesh);
+// H2 hole decor: interiors and approach chevrons for every hole, one draw.
+const holeDecor = new HoleDecorRenderer(city.cityBuildings);
+scene.add(holeDecor.mesh);
 // G1 street-level detail: benches, bins, hydrants, shelters, racks, booths,
 // carts and parked cars in ONE instanced rig (+1 draw call); the fine road
 // and sidewalk paint lives in the ground shader (street-paint.ts). All of it
@@ -960,12 +983,31 @@ function flashFade(): void {
   );
 }
 
+/** H2: refresh the hole assist's target for this frame (zero while it is
+ * stood down) and glide the applied bias toward it. */
+function stepAssist(off: boolean, dt: number): void {
+  if (off) {
+    holeAssistWant.yaw = 0;
+    holeAssistWant.pitch = 0;
+  } else {
+    holeAssistTarget(flight.pos, assistDir, assistWorld, holeAssistWant);
+  }
+  stepHoleAssist(holeAssist, holeAssistWant, dt);
+}
+
+/** A fresh plane starts with no assist bias. */
+function resetAssist(): void {
+  holeAssist.yaw = 0;
+  holeAssist.pitch = 0;
+}
+
 /** Freeze into the kill-cam; the server's respawn message ends it. */
 function enterDeath(killerId: string | null, cause?: "storm"): void {
   // Kill-cam owns the camera — force-exit free-look and the zoom instantly.
   freelook = createFreeLook();
   zoom = createZoom();
   instructor = createInstructor();
+  resetAssist();
   hud.setFreeLook(false);
   killCamTargetId = killerId;
   hud.showKillCam(killerId === null ? null : nameOf(killerId), cause);
@@ -986,6 +1028,7 @@ function respawnSelf(spawn: SpawnState): void {
   cornerCap = MAX_SPEED; // a fresh plane starts unbraked
   chase.snapTo(flight);
   instructor = createInstructor();
+  resetAssist();
   alive = true;
   killCamTargetId = null;
   plane.visible = true;
@@ -1227,6 +1270,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   pedestrians.setQuality(tier);
   cityLife.setQuality(tier); // A1
   facadeLife.setQuality(tier); // A1
+  holeDecor.setQuality(tier); // H2
   // M3: steam, signals and construction sparks stream in the tier's radius.
   steam.setQuality(tier);
   streetFurniture.setQuality(tier); // G1
@@ -1483,6 +1527,24 @@ declare global {
       };
       aimAt: (x: number, z: number, y?: number) => void;
       setFiring: (held: boolean) => void;
+      /** H2 QA: every hole span (merged runs) and the decor mesh's counts,
+       * plus the live assist bias — the gallery's hole views read these. */
+      holes: () => {
+        spans: {
+          kind: string;
+          axis: "x" | "z";
+          center: Vec3;
+          entry: Vec3;
+          exit: Vec3;
+          length: number;
+          width: number;
+          height: number;
+          y0: number;
+          hosts: number;
+        }[];
+        decor: { holes: number; quads: number; vertices: number };
+        assist: { yaw: number; pitch: number };
+      };
       freelook: () => ReturnType<typeof createFreeLook>;
       /** M1 QA: the aim point and whether the pipper sits on it (F1). */
       aim: () => {
@@ -1776,6 +1838,24 @@ window.__ab = {
     chase.snapTo(flight);
   },
   setFiring: (held) => guns.setTrigger(held),
+  holes: () => ({
+    spans: assistWorld.spans
+      .filter((s) => s.hole.kind !== "bridge")
+      .map((s) => ({
+        kind: s.hole.kind,
+        axis: s.hole.axis,
+        center: s.center,
+        entry: s.entry,
+        exit: s.exit,
+        length: s.length,
+        width: s.hole.width,
+        height: s.hole.height,
+        y0: s.hole.y0,
+        hosts: s.hosts.length,
+      })),
+    decor: holeDecor.counts,
+    assist: { yaw: holeAssist.yaw, pitch: holeAssist.pitch },
+  }),
   // B2 QA: current free-look state (drive it with real key/mouse events).
   freelook: () => freelook,
   aim: () => ({
@@ -2113,6 +2193,24 @@ const frame = (now: number): void => {
     // reaches flight state. Authority is the product of both costs.
     const steer = freelook.steer * zoomSteer(zoom.z);
     let command = input.read();
+    // H2 hole assist: stands down while the pilot shoots, free-looks or the
+    // view is reframing (zoom easing) — then glides back to zero.
+    const assistOff =
+      guns.triggerHeld ||
+      freelook.held ||
+      freelook.yaw !== 0 ||
+      freelook.pitch !== 0 ||
+      (zoom.z > 0 && zoom.z < 1);
+    // Classic mode means to fly along the nose; the instructor sets the aim
+    // ray's direction below.
+    // (flightForward's formula, written in place: no per-frame allocation.)
+    const cosP = Math.cos(flight.pitch);
+    assistDir.x = -Math.sin(flight.yaw) * cosP;
+    assistDir.y = Math.sin(flight.pitch);
+    assistDir.z = -Math.cos(flight.yaw) * cosP;
+    /** The pilot's own turn command, assist excluded — the corner manager's
+     * intent, so the nudge can never make it brake for a turn. */
+    let intentTurn = 0;
     if (aimMode === "instructor") {
       // The cursor is the aim point: fly the pipper onto it. The view is the
       // un-orbited chase frame at THIS frame's (already stepped) zoom, with
@@ -2120,13 +2218,20 @@ const frame = (now: number): void => {
       // camera.fov itself is never read or written here.
       const cursor = input.cursorNdc();
       const aimFov = viewFov(zoom.z, overspeedOf(flight.speed), flight.speed);
-      const view = aimView(
-        flight,
-        chase.aimFrame(flight, zoom.z),
-        aimFov,
-        camera.aspect,
-        cursor,
-      );
+      const aimFrame = chase.aimFrame(flight, zoom.z);
+      const view = aimView(flight, aimFrame, aimFov, camera.aspect, cursor);
+      // H2: where the pilot means to go — from the PLANE to the world point
+      // the cursor marks ASSIST_AIM_RANGE out (the chase eye sits ~9° off
+      // the gun line, so the eye ray's own angle would read misaligned).
+      const aimLen = Math.hypot(view.aimDir.x, view.aimDir.y, view.aimDir.z);
+      const k = ASSIST_AIM_RANGE / (aimLen || 1);
+      const ax = aimFrame.eye.x + view.aimDir.x * k;
+      const ay = aimFrame.eye.y + view.aimDir.y * k;
+      const az = aimFrame.eye.z + view.aimDir.z * k;
+      const an = Math.hypot(ax, ay, az) || 1;
+      assistDir.x = ax / an;
+      assistDir.y = ay / an;
+      assistDir.z = az / an;
       const err = aimError(flight, view.aimDir, view.pipperDir);
       // Latch only what the VIEW changed this frame — the zoom easing, the
       // boost FOV kick, or the cursor moving while free-look owns the mouse
@@ -2151,14 +2256,29 @@ const frame = (now: number): void => {
         latch = { yaw: err.yaw - e0.yaw, pitch: err.pitch - e0.pitch };
       }
       const reframing = looking || (zoom.z > 0 && zoom.z < 1);
+      const rates = handlingRates(flight.speed, boost.active);
+      stepAssist(assistOff, dt);
+      // The assist biases the instructor's error toward the centreline (+yaw
+      // is a right turn, i.e. less of the leftward error) — a stick nudge
+      // would just be flown back out by the instructor's own loop.
+      const assisting = holeAssist.yaw !== 0 || holeAssist.pitch !== 0;
+      const unbiased = assisting
+        ? instructorInput(err, latch, reframing, dt, instructor, rates)
+        : null;
       instructor = instructorInput(
-        err,
+        assisting
+          ? {
+              yaw: err.yaw - holeAssist.yaw,
+              pitch: err.pitch + holeAssist.pitch,
+            }
+          : err,
         latch,
         reframing,
         dt,
         instructor,
-        handlingRates(flight.speed, boost.active),
+        rates,
       );
+      intentTurn = (unbiased ?? instructor).turn * input.presence();
       // Off-window the presence fades the instructor out too: attitude hold.
       const presence = input.presence();
       command = {
@@ -2166,9 +2286,26 @@ const frame = (now: number): void => {
         turn: instructor.turn * presence,
         pitch: instructor.pitch * presence,
       };
+      // The reticle reads the unbiased view: the assist never shows.
       aimGap = angleBetween(view.aimDir, view.pipperDir);
       aimConverged = aimGap < CONVERGED_RAD;
       aimFovPrev = aimFov;
+    } else {
+      stepAssist(assistOff, dt);
+      intentTurn = command.turn;
+      if (holeAssist.yaw !== 0 || holeAssist.pitch !== 0) {
+        assistStick(
+          holeAssist,
+          command,
+          handlingRates(flight.speed, boost.active),
+          assistStickOut,
+        );
+        command = {
+          ...command,
+          turn: assistStickOut.turn,
+          pitch: assistStickOut.pitch,
+        };
+      }
     }
     // F5 corner speed manager: silently cap the commanded speed so the
     // turn the pilot is committing to (or the wall ahead) is makeable. Intent
@@ -2176,7 +2313,7 @@ const frame = (now: number): void => {
     // the movers are drawn (and crash-checked) at.
     cornerCap = stepCornerCap(
       cornerCap,
-      cornerSpeed(flight, cornerWorld, command.turn, renderMs),
+      cornerSpeed(flight, cornerWorld, intentTurn, renderMs),
       dt,
     );
     const shaped = {
@@ -2452,6 +2589,7 @@ const frame = (now: number): void => {
     microOn,
   );
   facadeLife.update(renderMs ?? now, microOn);
+  holeDecor.update(renderMs ?? now); // H2: fans and chevron sweep
   // Phase-only subsystems fall back to local time before the first snapshot
   // (the signage policy): a plume or a signal in the wrong part of its cycle
   // is invisible, where hiding every one of them until clock sync would not be.

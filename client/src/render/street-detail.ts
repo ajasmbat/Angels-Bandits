@@ -60,6 +60,7 @@ import {
 } from "@angels-bandits/common/city/street";
 import {
   BLOCK_PITCH,
+  HOLE_CLEARANCE,
   HOLE_CORRIDOR_MARGIN,
   HOLE_RUN_OUT,
   STREET_TREE_CANOPY_MAX,
@@ -449,8 +450,9 @@ export interface Footprint {
 
 /** What the live city vetoes. Built once by the caller (renderer or test). */
 export interface StreetDetailContext {
-  /** Every fly-through hole — its corridor (the mouth plus HOLE_RUN_OUT on
-   * each side) stays empty, so nothing parks or stands in a hole approach. */
+  /** Every fly-through hole — a low one's corridor (the mouth plus
+   * HOLE_RUN_OUT on each side; vetoesStreet) stays empty, so nothing parks
+   * or stands in a hole approach. */
   holes: readonly HoleSpan[];
   /** Ground-reaching static solids (the train's pillars) to stay clear of. */
   keepOut: readonly Footprint[];
@@ -470,6 +472,14 @@ export interface StreetDetailContext {
 
 /** Clearance around keep-out footprints, meters. */
 const KEEP_OUT_MARGIN = 1;
+
+/** Does this hole's corridor clear the street under it? Only a hole whose
+ * floor is low enough for a ≤ ITEM_MAX_HEIGHT street item to matter — under
+ * ITEM_MAX_HEIGHT + HOLE_CLEARANCE, i.e. the landmark arches (H2: the new
+ * row tunnels, gates and sky holes all sit over the roofs, and vetoing their
+ * corridors would strip whole streets of G1's cars and furniture). */
+export const vetoesStreet = (span: HoleSpan): boolean =>
+  span.hole.y0 < ITEM_MAX_HEIGHT + HOLE_CLEARANCE;
 
 /** Plan-view footprint of a hole's corridor: the hole itself plus
  * HOLE_RUN_OUT beyond each mouth, HOLE_CORRIDOR_MARGIN either side. */
@@ -502,7 +512,7 @@ const corridorCache = new WeakMap<readonly HoleSpan[], Footprint[]>();
 function corridorsOf(holes: readonly HoleSpan[]): Footprint[] {
   let c = corridorCache.get(holes);
   if (!c) {
-    c = holes.map(holeCorridor);
+    c = holes.filter(vetoesStreet).map(holeCorridor);
     corridorCache.set(holes, c);
   }
   return c;

@@ -45,6 +45,7 @@ import {
   edgeFrame,
   holeEdges,
   mulberry32,
+  opensOnStreets,
   segmentThroughHole,
 } from "@angels-bandits/common/city";
 import {
@@ -1261,9 +1262,13 @@ export class RoomBots {
     streetAxis: "x" | "z",
   ): boolean | null {
     const { kind, axis } = edge.span.hole;
-    // Sky holes and L11 bridge underpasses are only ever FOLLOWED: a dive
-    // from the canyon band into the river is worth it only after a target.
-    if (kind === "sky" || kind === "bridge") return null;
+    // Sky holes, gates (H2: high in a tower, like a sky hole) and L11 bridge
+    // underpasses are only ever FOLLOWED: a climb out of the canyon band, or
+    // a dive into the river, is worth it only after a target.
+    if (kind === "sky" || kind === "gate" || kind === "bridge") return null;
+    // H2: so is a tunnel whose mouths open mid-block over the roofs — the
+    // patrol would leave its street for the whole run-out over a block.
+    if (kind === "tunnel" && !opensOnStreets(edge.span)) return null;
     const pos = bot.flight.pos;
     const fwd = flightForward({ yaw: bot.flight.yaw, pitch: 0 });
     if (kind === "arch") {
@@ -1397,7 +1402,8 @@ export class RoomBots {
    * stepFlight in between, and every step is tested against the city (holes
    * OPEN), the trees, the ground and the movers (posed when the bot gets
    * there) with BOT_HOLE_MARGIN to spare. Steps are 2-4.5 m apart, under
-   * the 6 m thinnest hole wall, so no wall or lintel falls between two.
+   * the 5 m thinnest hole wall (HOLE_WALL_MIN), so no wall or lintel falls
+   * between two.
    * True only if the pass ends (hands back) clean inside the horizon.
    */
   private rolloutThread(bot: Bot, thread: Thread, now: number): boolean {

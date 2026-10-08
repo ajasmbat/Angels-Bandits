@@ -62,6 +62,7 @@ import {
   streetFurnitureFor,
   treePits,
   vehicleBoxes,
+  vetoesStreet,
 } from "../src/render/street-detail";
 import { buildStreetDetailContext } from "../src/render/street-furniture";
 import { VEHICLES } from "../src/render/traffic";
@@ -257,7 +258,9 @@ describe("streetFurnitureFor", () => {
         if (!near) {
           const f = { x: stop.x, z: stop.z, hx: 2.4, hz: 2.4 };
           const vetoed =
-            holes.some((h) => overlaps(f, holeCorridor(h))) ||
+            holes.some(
+              (h) => vetoesStreet(h) && overlaps(f, holeCorridor(h)),
+            ) ||
             ctx.keepOut.some((k) => overlaps(f, k, 1)) ||
             ctx
               .ventsFor(bx, bz)
@@ -464,16 +467,33 @@ describe("the live city's vetoes", () => {
     ),
   ];
 
-  it("leaves every hole mouth and its run-out corridor empty", () => {
-    expect(holes.length).toBeGreaterThan(0);
+  it("leaves every low hole's mouth and its run-out corridor empty", () => {
+    expect(holes.filter(vetoesStreet).length).toBeGreaterThan(0);
     const bad: string[] = [];
-    for (const h of holes) {
+    for (const h of holes.filter(vetoesStreet)) {
       const c = holeCorridor(h);
       for (const { f, what } of everything) {
         if (overlaps(f, c)) bad.push(`${what} in a hole corridor`);
       }
     }
     expect(bad).toEqual([]);
+  });
+
+  it("H2: drops no more street items to hole corridors than main did (216 on seed 42)", () => {
+    // Main (0868c79) vetoed every hole's corridor; H2 vetoes only the holes
+    // low enough for a street item to matter (vetoesStreet), so 3× the holes
+    // must not strip G1's streets. Items lost to new mouths on facades are a
+    // different count (furniture never stood in a facade).
+    const open = buildStreetDetailContext(SEED, byBlock, [], trains);
+    let all = 0;
+    for (const [bx, bz] of blocks) {
+      all +=
+        streetFurnitureFor(SEED, bx, bz, open).length +
+        blockParking(SEED, bx, bz, open).length;
+    }
+    const dropped = all - allItems.length - allParked.length;
+    expect(dropped).toBeGreaterThan(0); // the arches still clear their run-in
+    expect(dropped).toBeLessThanOrEqual(216);
   });
 
   it("stays clear of the train's pillars", () => {

@@ -198,29 +198,29 @@ const ROOF_REFLECTION_GLSL = /* glsl */ `
   // Fades out with distance before the 6 m puddles go sub-pixel (aliasing).
   float wxRoofFade = 1.0 - smoothstep(160.0, 420.0, length(vViewPosition));
   if (roofUp > 0.5 && wxRoofFade > 0.0) {
-    vec2 wxRp = vBWorldPos.xz;
+    vec2 wxRfRp = vBWorldPos.xz;
     // Puddles: two octaves of value noise, spreading as the roof soaks.
-    vec2 wxI = floor(wxRp * 0.17);
-    vec2 wxF = fract(wxRp * 0.17);
-    vec2 wxU = wxF * wxF * (3.0 - 2.0 * wxF);
-    float wxN = mix(mix(abWxHash(wxI), abWxHash(wxI + vec2(1.0, 0.0)), wxU.x),
-      mix(abWxHash(wxI + vec2(0.0, 1.0)), abWxHash(wxI + vec2(1.0, 1.0)), wxU.x), wxU.y);
-    float wxPud = smoothstep(0.62 - 0.2 * uWeather.x, 0.72 - 0.1 * uWeather.x, wxN);
-    if (wxPud > 0.0) {
+    vec2 wxRfI = floor(wxRfRp * 0.17);
+    vec2 wxRfF = fract(wxRfRp * 0.17);
+    vec2 wxRfU = wxRfF * wxRfF * (3.0 - 2.0 * wxRfF);
+    float wxRfN = mix(mix(abWxHash(wxRfI), abWxHash(wxRfI + vec2(1.0, 0.0)), wxRfU.x),
+      mix(abWxHash(wxRfI + vec2(0.0, 1.0)), abWxHash(wxRfI + vec2(1.0, 1.0)), wxRfU.x), wxRfU.y);
+    float wxRfPud = smoothstep(0.62 - 0.2 * uWeather.x, 0.72 - 0.1 * uWeather.x, wxRfN);
+    if (wxRfPud > 0.0) {
       // One sign's smear per cell, stretched along the ground view ray.
-      vec2 wxCell = floor(wxRp / ${ROOF_REFLECTION_CELL.toFixed(1)});
-      float wxH = abWxHash(wxCell + 31.7);
-      vec2 wxD = wxRp - (wxCell + 0.5) * ${ROOF_REFLECTION_CELL.toFixed(1)};
-      vec2 wxV = vBWorldPos.xz - cameraPosition.xz;
-      wxV = wxV / max(length(wxV), 1e-3);
-      float wxAlong = dot(wxD, wxV);
-      float wxAcross = wxD.x * wxV.y - wxD.y * wxV.x;
-      float wxSmear = exp(-wxAcross * wxAcross * 1.6 - wxAlong * wxAlong * 0.09)
-        * step(wxH, ${ROOF_REFLECTION_SHARE.toFixed(2)});
-      int wxIdx = int(floor(abWxHash(wxCell + 5.3) * ${SIGN_PALETTE.length.toFixed(1)}));
-      vec3 wxSign = ${ROOF_REFLECTION_PALETTE}[wxIdx];
-      float wxGraze = 0.3 + 0.7 * pow(1.0 - saturate(dot(normal, normalize(vViewPosition))), 2.0);
-      totalEmissiveRadiance += wxSign * (wxSmear * wxPud * wxGraze * wxRoofFade * uWeather.x);
+      vec2 wxRfCell = floor(wxRfRp / ${ROOF_REFLECTION_CELL.toFixed(1)});
+      float wxRfH = abWxHash(wxRfCell + 31.7);
+      vec2 wxRfD = wxRfRp - (wxRfCell + 0.5) * ${ROOF_REFLECTION_CELL.toFixed(1)};
+      vec2 wxRfV = vBWorldPos.xz - cameraPosition.xz;
+      wxRfV = wxRfV / max(length(wxRfV), 1e-3);
+      float wxRfAlong = dot(wxRfD, wxRfV);
+      float wxRfAcross = wxRfD.x * wxRfV.y - wxRfD.y * wxRfV.x;
+      float wxRfSmear = exp(-wxRfAcross * wxRfAcross * 1.6 - wxRfAlong * wxRfAlong * 0.09)
+        * step(wxRfH, ${ROOF_REFLECTION_SHARE.toFixed(2)});
+      int wxRfIdx = int(floor(abWxHash(wxRfCell + 5.3) * ${SIGN_PALETTE.length.toFixed(1)}));
+      vec3 wxRfSign = ${ROOF_REFLECTION_PALETTE}[wxRfIdx];
+      float wxRfGraze = 0.3 + 0.7 * pow(1.0 - saturate(dot(normal, normalize(vViewPosition))), 2.0);
+      totalEmissiveRadiance += wxRfSign * (wxRfSmear * wxRfPud * wxRfGraze * wxRoofFade * uWeather.x);
     }
   }
 `;

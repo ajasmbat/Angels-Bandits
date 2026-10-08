@@ -22,6 +22,7 @@ import type { Vec3 } from "@angels-bandits/common/world";
 import type * as THREE from "three";
 import { nearestImage } from "../render/wrapPlacement";
 import { orbitOffset } from "./freelook";
+import { leadLookAt, stepLead } from "./jet-camera";
 import { zoomLookAt, zoomOffset } from "./zoom";
 
 /** Does a sphere of radius `r` at `p` (render space: any torus image)
@@ -59,6 +60,8 @@ export class ChaseCamera {
   private arm = 1;
   /** Last frame's plane velocity, for the arm's lookahead. */
   private lastVel: Vec3 | null = null;
+  /** Eased look-into-the-turn angle, rad, + = left (F6, jet-camera.ts). */
+  private lead = 0;
   /** What the spring arm may not pass through; unset = no arm. */
   solid: SolidQuery | null = null;
 
@@ -72,6 +75,7 @@ export class ChaseCamera {
     this.pos = this.desired(state);
     this.arm = 1;
     this.lastVel = null;
+    this.lead = 0;
   }
 
   /**
@@ -79,6 +83,7 @@ export class ChaseCamera {
    * look-at as offsets from the plane, at zoom `zoom`, built from the
    * smoothed chase state with the same dolly/look-at the render uses but
    * BEFORE any free-look orbit or turbulence shake — neither may steer.
+   * The turn lead (F6) IS in it: it is part of what the cursor sits on.
    * Computed on demand (any zoom, so main can diff two of them), from the
    * chase position as last updated or snapped, so it is never stale.
    */
@@ -89,7 +94,11 @@ export class ChaseCamera {
     const fwd = flightForward(state);
     const chase = { x: p.x - plane.x, y: p.y - plane.y, z: p.z - plane.z };
     const eye = zoom !== 0 ? zoomOffset(chase, fwd, zoom) : chase;
-    const at = zoomLookAt({ x: 0, y: 0, z: 0 }, fwd, zoom);
+    const at = leadLookAt(
+      eye,
+      zoomLookAt({ x: 0, y: 0, z: 0 }, fwd, zoom),
+      this.lead * (1 - zoom),
+    );
     return { eye, at };
   }
 
@@ -109,9 +118,13 @@ export class ChaseCamera {
     look?: { yaw: number; pitch: number },
     shake?: Vec3,
     zoom = 0,
+    yawRate = 0,
   ): void {
     if (!this.pos) this.snapTo(state);
     else this.pos = nearestImage(state.pos, this.pos); // seam re-alignment
+    // F6: the view leans into the turn the pilot is commanding (yawRate,
+    // rad/s, + = left); out at full zoom, where the view axis is the gun line.
+    this.lead = stepLead(this.lead, yawRate, dt);
 
     // From here on this is viewer-local math on already-aligned images, not
     // entity-to-entity world math — plain arithmetic is correct.
@@ -164,7 +177,11 @@ export class ChaseCamera {
       view = this.springArm(aim, view, leads, dt, this.solid);
     }
     camera.position.set(view.x, view.y, view.z);
-    const at = zoomLookAt(aim, fwd, zoom);
+    const at = leadLookAt(
+      view,
+      zoomLookAt(aim, fwd, zoom),
+      this.lead * (1 - zoom),
+    );
     camera.lookAt(at.x, at.y, at.z);
   }
 

@@ -376,7 +376,9 @@ const mintResumeToken = (): string => randomBytes(16).toString("base64url");
  * drop before this server did: that stale socket is terminated and left
  * first, which writes the record this resume then takes.
  */
-function takeResume(token: unknown): { id: string; record: ResumeRecord } | null {
+function takeResume(
+  token: unknown,
+): { id: string; record: ResumeRecord } | null {
   if (!isResumeToken(token)) return null;
   const id = resumeIds.get(token);
   if (id === undefined) return null;

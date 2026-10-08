@@ -479,8 +479,7 @@ describe("resume tokens (W2)", () => {
     await nextMsg(
       pilot,
       (m): m is ScoreMsg =>
-        m.type === "score" &&
-        scoreOf(m.scores, pilot.welcome.id)?.deaths === 1,
+        m.type === "score" && scoreOf(m.scores, pilot.welcome.id)?.deaths === 1,
     );
     pilot.ws.close();
     await pilot.closed;

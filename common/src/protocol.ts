@@ -296,6 +296,11 @@ export interface DeathMsg {
   victimId: string;
   killerId: string | null;
   cause: "shot" | "crash" | "storm";
+  /** S1: the server's kill site — the victim's on-record position,
+   * canonical and rounded to whole meters — so every client's jumbotron
+   * headline names the same place. Absent when the server had no pose. */
+  x?: number;
+  z?: number;
 }
 
 /**

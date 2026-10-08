@@ -46,6 +46,7 @@ import {
   RESUME_WINDOW_MS,
   SPAWN_PROTECTION_MS,
   TICK_DOWN_HZ,
+  WORLD_SIZE,
 } from "@angels-bandits/common/constants";
 import {
   clampInterpDelay,
@@ -57,7 +58,7 @@ import type {
   SpawnState,
   WireSnapshotMsg,
 } from "@angels-bandits/common/protocol";
-import type { Vec3 } from "@angels-bandits/common/world";
+import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import { type WebSocket, WebSocketServer } from "ws";
 import {
   type BotContact,
@@ -67,7 +68,12 @@ import {
   poseVelocity,
 } from "./bots";
 import { CityEventLog, nearBuildingProbe } from "./cityevents";
-import { Combat, type HitResult, type SpeedCapFn } from "./combat";
+import {
+  Combat,
+  type Death,
+  type HitResult,
+  type SpeedCapFn,
+} from "./combat";
 import {
   type ClientEnvelope,
   isClientMsg,
@@ -614,18 +620,10 @@ function handleHitClaim(
     botsFor(client.room).onDamaged(targetId, now);
   }
   if (verdict.death) {
-    noteKillSite(client.room, targetId);
     if (client.room.members.get(targetId)?.isBot) {
       botsFor(client.room).setDead(targetId);
     }
-    sendToRoom(client.room, {
-      type: "death",
-      victimId: verdict.death.victimId,
-      killerId: verdict.death.killerId,
-      cause: verdict.death.cause,
-    });
-    offerCityEvent(client.room, "death", verdict.death.victimId, now);
-    broadcastScores(client.room);
+    sendDeath(client.room, verdict.death, now);
   }
 }
 
@@ -652,11 +650,30 @@ function handleSetBots(client: Client, count: unknown, now: number): void {
  * news heli (L10). Call BEFORE bots.setDead — a dead bot has no pose — though
  * lastPosOf also covers bots that crashed inside the sim tick.
  */
-function noteKillSite(room: Room, victimId: string): void {
-  const pos = room.members.get(victimId)?.isBot
-    ? botsFor(room).lastPosOf(victimId)
-    : clients.get(victimId)?.pose.pos;
+/**
+ * Announce a server-declared death: the news heli's pending kill site, the
+ * `death` itself carrying its canonical site (S1 jumbotron headlines), the
+ * city event and the new tallies. Every death goes through here. Invariant
+ * the clients rely on: the death is sent BEFORE its score broadcast, so the
+ * tallies a client holds when a death lands are the pre-death ones (S1 seeds
+ * each headline's verb from them, identically on every client).
+ */
+function sendDeath(room: Room, death: Death, now: number): void {
+  const pos = lastPosOf(room, death.victimId);
   if (pos) pendingKillByRoom.set(room.id, { x: pos.x, z: pos.z });
+  const site = pos ? canonicalize(pos) : null;
+  sendToRoom(room, {
+    type: "death",
+    victimId: death.victimId,
+    killerId: death.killerId,
+    cause: death.cause,
+    ...(site && {
+      x: Math.round(site.x) % WORLD_SIZE,
+      z: Math.round(site.z) % WORLD_SIZE,
+    }),
+  });
+  offerCityEvent(room, "death", death.victimId, now);
+  broadcastScores(room);
 }
 
 /** Once the heli is free (arrived + dwelt), send it to the newest kill. */
@@ -673,15 +690,7 @@ function updateNewsHeli(room: Room, now: number): void {
 function handleCrash(client: Client, now: number): void {
   const death = combat.crash(client.id, now);
   if (!death) return;
-  noteKillSite(client.room, client.id);
-  sendToRoom(client.room, {
-    type: "death",
-    victimId: death.victimId,
-    killerId: death.killerId,
-    cause: death.cause,
-  });
-  offerCityEvent(client.room, "death", death.victimId, now);
-  broadcastScores(client.room);
+  sendDeath(client.room, death, now);
 }
 
 /** Kill-cams that just ended: place each player (human or bot) near, not
@@ -789,15 +798,7 @@ function tickRoomBots(room: Room, now: number): void {
   for (const id of crashes) {
     const death = combat.crash(id, now);
     if (!death) continue;
-    noteKillSite(room, id);
-    sendToRoom(room, {
-      type: "death",
-      victimId: death.victimId,
-      killerId: death.killerId,
-      cause: death.cause,
-    });
-    offerCityEvent(room, "death", death.victimId, now);
-    broadcastScores(room);
+    sendDeath(room, death, now);
   }
 
   // Rounds that landed this tick first (they were swept before anyone
@@ -836,18 +837,10 @@ function routeBotHit(
     bots.onDamaged(shot.targetId, now);
   }
   if (hit.death) {
-    noteKillSite(room, shot.targetId);
     if (room.members.get(shot.targetId)?.isBot) {
       bots.setDead(shot.targetId);
     }
-    sendToRoom(room, {
-      type: "death",
-      victimId: hit.death.victimId,
-      killerId: hit.death.killerId,
-      cause: hit.death.cause,
-    });
-    offerCityEvent(room, "death", hit.death.victimId, now);
-    broadcastScores(room);
+    sendDeath(room, hit.death, now);
   }
 }
 
@@ -862,17 +855,9 @@ function enforceStormCeiling(room: Room, now: number): void {
     if (storm.observe(member.id, pose.pos.y, now) !== "kill") continue;
     const death = combat.stormKill(member.id, now);
     if (!death) continue;
-    noteKillSite(room, member.id);
     storm.forget(member.id);
     if (member.isBot) botsFor(room).setDead(member.id);
-    sendToRoom(room, {
-      type: "death",
-      victimId: death.victimId,
-      killerId: death.killerId,
-      cause: death.cause,
-    });
-    offerCityEvent(room, "death", death.victimId, now);
-    broadcastScores(room);
+    sendDeath(room, death, now);
   }
 }
 

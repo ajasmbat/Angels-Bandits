@@ -649,3 +649,310 @@ export function losClear(
   }
   return true;
 }
+
+// --- D1 bullet impacts: where a segment first enters the city ---
+
+/** Entry faces, by outward normal. FACE_SIDE is a round roof structure's
+ * curved wall (no axis-aligned normal). */
+export const FACE_PX = 0;
+export const FACE_NX = 1;
+export const FACE_PY = 2;
+export const FACE_NY = 3;
+export const FACE_PZ = 4;
+export const FACE_NZ = 5;
+export const FACE_SIDE = 6;
+
+/**
+ * The first solid a segment enters (firstSolidHit). `building` is an index
+ * into the queried array (-1 = no hit); exactly one of `solid` (an index
+ * into solids(b)) and `structure` (an index into b.roof) is ≥ 0. `t` is the
+ * entry along the segment in (0, 1], `face` the entry face's outward normal
+ * (FACE_*). Caller-owned: the query writes into it and allocates nothing.
+ */
+export interface SegmentHit {
+  building: number;
+  solid: number;
+  structure: number;
+  t: number;
+  face: number;
+}
+
+export function createSegmentHit(): SegmentHit {
+  return { building: -1, solid: -1, structure: -1, t: 1, face: -1 };
+}
+
+/** firstSolidHit's sight vector, building centre and offset — scratch. */
+const hitSeg: Vec3 = { x: 0, y: 0, z: 0 };
+const hitCentre: Vec3 = { x: 0, y: 0, z: 0 };
+const hitOff: Vec3 = { x: 0, y: 0, z: 0 };
+/** One box clip's result: entry t and face (scratch, one box at a time). */
+let clipT = 0;
+let clipFace = -1;
+
+/**
+ * Slab-clip segment (0 → d) against a box in the segment's local frame and
+ * keep the ENTRY: the same clip losClear runs, plus which pair of planes the
+ * entry crossed. False when it misses, or when the segment STARTS inside or
+ * on the box (entry t = 0) — a round already in a wall has nothing to enter.
+ */
+function clipEntry(d: Vec3, box: SegmentBox): boolean {
+  let t0 = 0;
+  let t1 = 1;
+  let face = -1;
+  for (let axis = 0; axis < 3; axis++) {
+    const dv = axis === 0 ? d.x : axis === 1 ? d.y : d.z;
+    const lo = axis === 0 ? box.minX : axis === 1 ? box.minY : box.minZ;
+    const hi = axis === 0 ? box.maxX : axis === 1 ? box.maxY : box.maxZ;
+    if (dv === 0) {
+      if (lo > 0 || hi < 0) return false;
+      continue;
+    }
+    const inv = 1 / dv;
+    const a = lo * inv;
+    const b = hi * inv;
+    // Entering through the min plane when moving +, the max plane when −;
+    // the face's outward normal points against the motion.
+    const enter = a < b ? a : b;
+    const exit = a < b ? b : a;
+    if (enter > t0) {
+      t0 = enter;
+      face = axis * 2 + (dv > 0 ? 1 : 0);
+    }
+    if (exit < t1) t1 = exit;
+    if (t0 > t1) return false;
+  }
+  if (face < 0 || t0 <= 0) return false;
+  clipT = t0;
+  clipFace = face;
+  return true;
+}
+
+/** Entry of segment (0 → d) into a vertical cylinder: the smaller root of
+ * the XZ quadratic, clipped to [0, 1] and the y slab. Same start-inside
+ * rule as clipEntry. */
+function cylinderEntry(d: Vec3, cyl: SegmentCylinder): boolean {
+  const { cx, cz, r, minY, maxY } = cyl;
+  let t0 = 0;
+  let t1 = 1;
+  let face = -1;
+  const a = d.x * d.x + d.z * d.z;
+  const c = cx * cx + cz * cz - r * r;
+  if (a === 0) {
+    if (c > 0) return false;
+  } else {
+    const b = -2 * (d.x * cx + d.z * cz);
+    const disc = b * b - 4 * a * c;
+    if (disc < 0) return false;
+    const s = Math.sqrt(disc);
+    const enter = (-b - s) / (2 * a);
+    const exit = (-b + s) / (2 * a);
+    if (enter > t0) {
+      t0 = enter;
+      face = FACE_SIDE;
+    }
+    if (exit < t1) t1 = exit;
+    if (t0 > t1) return false;
+  }
+  if (d.y === 0) {
+    if (minY > 0 || maxY < 0) return false;
+  } else {
+    const ya = minY / d.y;
+    const yb = maxY / d.y;
+    const enter = ya < yb ? ya : yb;
+    const exit = ya < yb ? yb : ya;
+    if (enter > t0) {
+      t0 = enter;
+      face = d.y > 0 ? FACE_NY : FACE_PY;
+    }
+    if (exit < t1) t1 = exit;
+    if (t0 > t1) return false;
+  }
+  if (face < 0 || t0 <= 0) return false;
+  clipT = t0;
+  clipFace = face;
+  return true;
+}
+
+/**
+ * The FIRST solid the segment `from → to` enters, written into `out`;
+ * false (and `out.building` −1) when it enters none. D1's bullet-impact
+ * query: a bullet's frame step against exactly what is drawn and collided —
+ * solids() with holes cut, plus the R2 roof structures (the river is not
+ * cover here; it has no facade to mark).
+ *
+ * The same clip losClear runs, so for any segment that does not start
+ * inside a solid or graze a face, `firstSolidHit` hits ⇔ `losClear` (river
+ * aside) is blocked. Bucketed by `index` like collideCity: only the blocks
+ * the segment's XZ bounds touch are visited, so a bullet's ≤ 20 m step tests
+ * a handful of lots, never the whole city. Allocation-free (O5); torus-safe
+ * — every building centre enters the segment's wrapDelta frame. Valid while
+ * |segment| + the largest footprint stays under WORLD_SIZE / 2.
+ */
+export function firstSolidHit(
+  from: Vec3,
+  to: Vec3,
+  buildings: readonly Building[],
+  index: CityIndex,
+  out: SegmentHit,
+): boolean {
+  out.building = -1;
+  out.solid = -1;
+  out.structure = -1;
+  out.t = 1;
+  out.face = -1;
+  const d = wrapDeltaInto(from, to, hitSeg);
+  if (d.x === 0 && d.y === 0 && d.z === 0) return false;
+  const loX = Math.min(0, d.x);
+  const hiX = Math.max(0, d.x);
+  const loZ = Math.min(0, d.z);
+  const hiZ = Math.max(0, d.z);
+  const loY = Math.min(from.y, from.y + d.y);
+  const linear = index.buildings !== buildings;
+  const x0 = spanFirst(from.x + loX, from.x + hiX);
+  const nx = linear ? 1 : spanCount(from.x + loX, from.x + hiX);
+  const z0 = spanFirst(from.z + loZ, from.z + hiZ);
+  const nz = linear ? 1 : spanCount(from.z + loZ, from.z + hiZ);
+  for (let ix = 0; ix < nx; ix++) {
+    for (let iz = 0; iz < nz; iz++) {
+      const cell = linear
+        ? null
+        : index.cells[wrapBlock(x0 + ix) * CITY_GRID + wrapBlock(z0 + iz)];
+      const count = linear ? buildings.length : (cell?.length ?? 0);
+      for (let k = 0; k < count; k++) {
+        const i = linear ? k : (cell?.[k] as number);
+        const b = buildings[i];
+        if (!b) continue;
+        const roof = b.roof;
+        if (
+          loY > b.height &&
+          (!roof || loY > b.height + ROOF_STRUCTURE_MAX_HEIGHT)
+        ) {
+          continue;
+        }
+        hitCentre.x = b.x;
+        hitCentre.z = b.z;
+        const c = wrapDeltaInto(from, hitCentre, hitOff);
+        const cx = c.x;
+        const cz = c.z;
+        if (
+          cx - b.width / 2 > hiX ||
+          cx + b.width / 2 < loX ||
+          cz - b.depth / 2 > hiZ ||
+          cz + b.depth / 2 < loZ
+        ) {
+          continue;
+        }
+        if (loY <= b.height) {
+          const boxes = solids(b);
+          for (let s = 0; s < boxes.length; s++) {
+            const box = boxes[s] as SolidBox;
+            segBox.minX = cx + box.dx - box.width / 2;
+            segBox.maxX = cx + box.dx + box.width / 2;
+            segBox.minY = box.baseY - from.y;
+            segBox.maxY = box.baseY + box.height - from.y;
+            segBox.minZ = cz + box.dz - box.depth / 2;
+            segBox.maxZ = cz + box.dz + box.depth / 2;
+            if (clipEntry(d, segBox) && clipT < out.t) {
+              out.building = i;
+              out.solid = s;
+              out.structure = -1;
+              out.t = clipT;
+              out.face = clipFace;
+            }
+          }
+        }
+        const structures = roof ?? NO_ROOF;
+        for (let s = 0; s < structures.length; s++) {
+          const st = structures[s] as RoofStructure;
+          if (loY > st.baseY + st.height) continue;
+          let hit: boolean;
+          if (st.round) {
+            segCyl.cx = cx + st.dx;
+            segCyl.cz = cz + st.dz;
+            segCyl.r = st.width / 2;
+            segCyl.minY = st.baseY - from.y;
+            segCyl.maxY = st.baseY + st.height - from.y;
+            hit = cylinderEntry(d, segCyl);
+          } else {
+            segBox.minX = cx + st.dx - st.width / 2;
+            segBox.maxX = cx + st.dx + st.width / 2;
+            segBox.minY = st.baseY - from.y;
+            segBox.maxY = st.baseY + st.height - from.y;
+            segBox.minZ = cz + st.dz - st.depth / 2;
+            segBox.maxZ = cz + st.dz + st.depth / 2;
+            hit = clipEntry(d, segBox);
+          }
+          if (hit && clipT < out.t) {
+            out.building = i;
+            out.solid = -1;
+            out.structure = s;
+            out.t = clipT;
+            out.face = clipFace;
+          }
+        }
+      }
+    }
+  }
+  return out.building >= 0;
+}
+
+/** forEachBuildingNear's per-index visit stamps: a building in several
+ * blocks is visited once per query without a per-query Set (O5). */
+const nearStamps = new WeakMap<CityIndex, { gen: number; seen: Uint32Array }>();
+
+/** forEachBuildingNear's building centre and offset — scratch. */
+const nearCentre: Vec3 = { x: 0, y: 0, z: 0 };
+const nearOff: Vec3 = { x: 0, y: 0, z: 0 };
+
+/**
+ * Visit every building whose tier-1 footprint comes within `r` (XZ) of
+ * `centre`, once each, through the block index — D1's blast query. The
+ * visitor gets the building's index and its wrapDelta offset from `centre`
+ * (scratch — read it before returning). Allocation-free after the first
+ * call per index.
+ */
+export function forEachBuildingNear(
+  index: CityIndex,
+  centre: Vec3,
+  r: number,
+  visit: (building: number, offset: Vec3) => void,
+): void {
+  const buildings = index.buildings;
+  let stamp = nearStamps.get(index);
+  if (!stamp) {
+    stamp = { gen: 0, seen: new Uint32Array(buildings.length) };
+    nearStamps.set(index, stamp);
+  }
+  stamp.gen = (stamp.gen + 1) >>> 0;
+  if (stamp.gen === 0) {
+    stamp.seen.fill(0);
+    stamp.gen = 1;
+  }
+  const gen = stamp.gen;
+  const seen = stamp.seen;
+  const x0 = spanFirst(centre.x - r, centre.x + r);
+  const nx = spanCount(centre.x - r, centre.x + r);
+  const z0 = spanFirst(centre.z - r, centre.z + r);
+  const nz = spanCount(centre.z - r, centre.z + r);
+  for (let ix = 0; ix < nx; ix++) {
+    const bx = wrapBlock(x0 + ix);
+    for (let iz = 0; iz < nz; iz++) {
+      const cell = index.cells[bx * CITY_GRID + wrapBlock(z0 + iz)];
+      if (!cell) continue;
+      for (let k = 0; k < cell.length; k++) {
+        const i = cell[k] as number;
+        if (seen[i] === gen) continue;
+        seen[i] = gen;
+        const b = buildings[i];
+        if (!b) continue;
+        nearCentre.x = b.x;
+        nearCentre.z = b.z;
+        const o = wrapDeltaInto(centre, nearCentre, nearOff);
+        const gx = Math.max(Math.abs(o.x) - b.width / 2, 0);
+        const gz = Math.max(Math.abs(o.z) - b.depth / 2, 0);
+        if (gx * gx + gz * gz > r * r) continue;
+        visit(i, o);
+      }
+    }
+  }
+}

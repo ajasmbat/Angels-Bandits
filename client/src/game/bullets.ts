@@ -24,6 +24,12 @@ export interface Bullet {
   age: number;
   /** True for another player's tracer: render only, never hit-test. */
   cosmetic: boolean;
+  /**
+   * D1: this round already struck a building (one impact per round). Its
+   * tracer stops drawing at the wall; hit detection is untouched — a spent
+   * own round can still score exactly as it could before (cosmetic only).
+   */
+  spent: boolean;
 }
 
 export class Bullets {
@@ -45,6 +51,7 @@ export class Bullets {
       origin: { ...pos },
       age: 0,
       cosmetic,
+      spent: false,
     });
   }
 

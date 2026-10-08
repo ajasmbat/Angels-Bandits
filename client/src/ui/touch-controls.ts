@@ -9,9 +9,9 @@
 // steer() — lifting leaves it where it is in the world, so the plane settles
 // onto it and flies straight, and recentring puts it on the gun line (the
 // pipper), never screen centre. In classic mode (where the point is the
-// stick) a lifted thumb springs the stick back to centre. No avoidance-assist
-// icon: main dropped the assist (#66), so the small icons are scoreboard,
-// aim mode, sensitivity.
+// stick) a lifted thumb springs the stick back to centre. One small icon, the
+// scoreboard: aim mode and sensitivity are settings-screen only (M9), so a
+// stray tap mid-fight can't flip them.
 
 import type { FlightState } from "@angels-bandits/common/flight";
 import type { Vec3 } from "@angels-bandits/common/world";
@@ -38,7 +38,6 @@ import {
   gateLook,
   loadSensitivity,
   nearControl,
-  nextSensitivity,
   saveSensitivity,
   speedSlider,
   springBack,
@@ -51,8 +50,10 @@ import type { Scoreboard } from "./scoreboard";
  * thumb's side: throttle, FIRE, BOOST). */
 const AIM_ZONE_LEFT = 0.4;
 /** Controls a touch landing near never aims (M8 hit-slop): the touch
- * buttons and icons, the settings gear, the minimap. */
-const CONTROL_SELECTOR = "#touch-ui .tc, #settings-btn, #minimap";
+ * buttons and icons, the settings gear, the fullscreen icon and chips, the
+ * minimap. */
+const CONTROL_SELECTOR =
+  "#touch-ui .tc, #settings-btn, #fs-btn, #fs-chips button, #minimap";
 /** Free-look px per finger px: thumbs travel less than a mouse does. */
 const TOUCH_LOOK_GAIN = 1.5;
 /** A ZOOM press shorter than this toggles the latch; longer is a hold. */
@@ -114,15 +115,6 @@ function holdButton(
   };
 }
 
-/** A small HUD icon: click-based like M2's minimap, and its emulated
- * mousedown/up never reach the window (the gun trigger's rule). */
-function iconButton(el: HTMLElement, onTap: () => void): void {
-  const swallow = (e: MouseEvent) => e.stopPropagation();
-  el.addEventListener("mousedown", swallow);
-  el.addEventListener("mouseup", swallow);
-  el.addEventListener("click", onTap);
-}
-
 export class TouchControls {
   private aim: TouchAimState;
   /** M8: a second finger only free-looks after a deliberate drag. */
@@ -151,13 +143,12 @@ export class TouchControls {
   /** M6: the settings panel is open — every control is released and every
    * handler ignores new touches until it closes. */
   private suspended = false;
-  private knobCss = ""; // last-written knob position / aim icon: the frame
-  private aimGlyph = ""; // loop only touches the DOM when they change
+  /** Last-written knob position: the frame loop only touches the DOM when
+   * it changes. */
+  private knobCss = "";
   private readonly root = byId("touch-ui");
   private readonly throttle = byId("touch-throttle");
   private readonly knob = byId("touch-knob");
-  private readonly aimIcon = byId("touch-aim-mode");
-  private readonly sensIcon = byId("touch-sens");
   private readonly releases: Array<() => void> = [];
 
   constructor(private readonly t: TouchTargets) {
@@ -176,12 +167,6 @@ export class TouchControls {
       ),
     );
     t.scoreboard.bindTapToggle(byId("touch-score"));
-    iconButton(this.aimIcon, () => t.input.toggleAimMode());
-    iconButton(this.sensIcon, () => {
-      this.sensitivity = nextSensitivity(this.sensitivity, window);
-      this.paintSensitivity();
-    });
-    this.paintSensitivity();
 
     // Anything that can swallow a touchend must not leave a control stuck
     // down: the app backgrounded, a system gesture, a rotation.
@@ -250,11 +235,6 @@ export class TouchControls {
         this.t.input.setTouchAim(s.aimX, s.aimY);
       }
     }
-    const glyph = mode === "instructor" ? "◎" : "✛";
-    if (glyph !== this.aimGlyph) {
-      this.aimGlyph = glyph;
-      this.aimIcon.textContent = glyph;
-    }
   }
 
   /**
@@ -315,7 +295,6 @@ export class TouchControls {
   setSensitivity(value: number): void {
     saveSensitivity(value, window);
     this.sensitivity = value;
-    this.paintSensitivity();
   }
 
   /** QA view (`__ab.touch`). */
@@ -508,9 +487,5 @@ export class TouchControls {
     if (this.t.input.aimMode() === "classic") {
       this.t.input.setTouchAim(v.w / 2, v.h / 2);
     }
-  }
-
-  private paintSensitivity(): void {
-    this.sensIcon.textContent = `${this.sensitivity}×`;
   }
 }

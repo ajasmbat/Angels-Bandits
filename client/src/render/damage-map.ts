@@ -431,13 +431,13 @@ uniform float uDamageOn;
 flat varying highp float vDmgWord;
 // Smooth value noise (bilinear over abHash lattice values, smoothstep-eased).
 float abVNoise(vec2 p) {
-  vec2 i = floor(p);
-  vec2 f = p - i;
-  f = f * f * (3.0 - 2.0 * f);
+  vec2 vnI = floor(p);
+  vec2 vnF = p - vnI;
+  vnF = vnF * vnF * (3.0 - 2.0 * vnF);
   return mix(
-    mix(abHash(i, 5.0), abHash(i + vec2(1.0, 0.0), 5.0), f.x),
-    mix(abHash(i + vec2(0.0, 1.0), 5.0), abHash(i + vec2(1.0, 1.0), 5.0), f.x),
-    f.y);
+    mix(abHash(vnI, 5.0), abHash(vnI + vec2(1.0, 0.0), 5.0), vnF.x),
+    mix(abHash(vnI + vec2(0.0, 1.0), 5.0), abHash(vnI + vec2(1.0, 1.0), 5.0), vnF.x),
+    vnF.y);
 }
 `;
 

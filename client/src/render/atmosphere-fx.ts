@@ -145,7 +145,10 @@ export class AtmosphereFx {
   private updateShafts(f: AtmosphereFrame): void {
     if (!this.shafts) return;
     const cam = f.camera;
-    const [mx = 0, my = 0, mz = 0] = f.moonDir;
+    // Indexed, not destructured: no iterator per frame.
+    const mx = f.moonDir[0] ?? 0;
+    const my = f.moonDir[1] ?? 0;
+    const mz = f.moonDir[2] ?? 0;
     cam.getWorldDirection(this.w);
     const facing = this.w.x * mx + this.w.y * my + this.w.z * mz;
     let strength = 0;

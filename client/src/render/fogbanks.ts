@@ -38,7 +38,7 @@ import { wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { RENDER_ORDER } from "./render-order";
 import { SIGN_PALETTE } from "./signage";
-import { nearestImageInto } from "./wrapPlacement";
+import { nearestImageInto, uploadPrefix } from "./wrapPlacement";
 
 /** Banks in the world (the torus is 4 km²; ~half are inside the fog). */
 export const FOG_BANK_COUNT = 40;
@@ -260,6 +260,8 @@ export class FogBanks {
   private readonly puffAttr: THREE.InstancedBufferAttribute;
   private readonly tintAttr: THREE.InstancedBufferAttribute;
   private readonly geometry: THREE.InstancedBufferGeometry;
+  /** Both per-instance attributes, for uploadPrefix (one array, reused). */
+  private readonly uploads: THREE.BufferAttribute[];
   private readonly planesU: THREE.Vector3[] = Array.from(
     { length: MAX_FADE_PLANES },
     () => new THREE.Vector3(),
@@ -287,6 +289,7 @@ export class FogBanks {
     );
     this.puffAttr.setUsage(THREE.DynamicDrawUsage);
     this.tintAttr.setUsage(THREE.DynamicDrawUsage);
+    this.uploads = [this.puffAttr, this.tintAttr];
     geometry.setAttribute("aPuff", this.puffAttr);
     geometry.setAttribute("aTint", this.tintAttr);
     geometry.instanceCount = 0;
@@ -372,13 +375,7 @@ export class FogBanks {
     }
     this.drawn = k;
     this.geometry.instanceCount = k;
-    for (const attr of [this.puffAttr, this.tintAttr]) {
-      attr.clearUpdateRanges();
-      if (k > 0) {
-        attr.addUpdateRange(0, k * 4);
-        attr.needsUpdate = true;
-      }
-    }
+    uploadPrefix(this.uploads, k);
   }
 
   /** Puffs drawn last frame (QA, perf). */

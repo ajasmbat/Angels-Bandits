@@ -228,26 +228,33 @@ function segmentHitsBox(
   minZ: number,
   maxZ: number,
 ): boolean {
-  let t0 = 0;
-  let t1 = 1;
-  const axes: [number, number, number, number][] = [
-    [ox, d.x, minX, maxX],
-    [oy, d.y, minY, maxY],
-    [oz, d.z, minZ, maxZ],
-  ];
-  for (const [o, dv, lo, hi] of axes) {
-    if (dv === 0) {
-      if (o < lo || o > hi) return false;
-      continue;
-    }
-    const a = (lo - o) / dv;
-    const b = (hi - o) / dv;
-    t0 = Math.max(t0, Math.min(a, b));
-    t1 = Math.min(t1, Math.max(a, b));
-    if (t0 > t1) return false;
-  }
-  return true;
+  // x, then y, then z — no per-call tuples (O5: losClear runs per bot
+  // sight line and must allocate nothing).
+  slab.t0 = 0;
+  slab.t1 = 1;
+  return (
+    clipSlab(ox, d.x, minX, maxX) &&
+    clipSlab(oy, d.y, minY, maxY) &&
+    clipSlab(oz, d.z, minZ, maxZ)
+  );
 }
+
+/** segmentHitsBox's running [t0, t1] — module scratch. */
+const slab = { t0: 0, t1: 1 };
+
+/** Clip slab.[t0, t1] by one axis; false once the interval is empty. */
+function clipSlab(o: number, dv: number, lo: number, hi: number): boolean {
+  if (dv === 0) return !(o < lo || o > hi);
+  const a = (lo - o) / dv;
+  const b = (hi - o) / dv;
+  slab.t0 = Math.max(slab.t0, Math.min(a, b));
+  slab.t1 = Math.min(slab.t1, Math.max(a, b));
+  return !(slab.t0 > slab.t1);
+}
+
+/** Is the point `t` along the segment outside the channel (into the bank)? */
+const outsideAt = (offFrom: number, dz: number, t: number): boolean =>
+  Math.abs(offFrom + dz * t) >= RIVER_HALF_WIDTH;
 
 /**
  * Is the straight segment from `from` along `d` (a wrapDelta, so it may run
@@ -267,14 +274,14 @@ export function riverSegmentClear(from: Vec3, d: Vec3): boolean {
   // The water: an end at or below it is already inside a solid.
   if (Math.min(from.y, toY) <= RIVER_WATER_Y) return false;
   const offFrom = riverOffset(from.z);
-  const outside = (t: number) =>
-    Math.abs(offFrom + d.z * t) >= RIVER_HALF_WIDTH;
   // The bank: solid below street level outside the channel. y is monotonic
   // and the channel band convex, so checking both ends plus the one point
   // where the segment crosses street level covers every way into the bank.
-  if (from.y < 0 && outside(0)) return false;
-  if (toY < 0 && outside(1)) return false;
-  if (from.y < 0 !== toY < 0 && outside(-from.y / d.y)) return false;
+  if (from.y < 0 && outsideAt(offFrom, d.z, 0)) return false;
+  if (toY < 0 && outsideAt(offFrom, d.z, 1)) return false;
+  if (from.y < 0 !== toY < 0 && outsideAt(offFrom, d.z, -from.y / d.y)) {
+    return false;
+  }
   // Bridges and railings near the segment, in a frame with `from` at the
   // origin (x, z) — the segment's own frame, so the seam needs no care.
   const cz = -offFrom; // channel centreline, local z
@@ -285,20 +292,17 @@ export function riverSegmentClear(from: Vec3, d: Vec3): boolean {
   const px = BRIDGE_HALF_WIDTH - PARAPET_THICKNESS / 2;
   const t2 = PARAPET_THICKNESS / 2;
   const rail = RIVER_HALF_WIDTH + t2;
-  const hit = (
-    x0: number,
-    x1: number,
-    y0: number,
-    y1: number,
-    z0: number,
-    z1: number,
-  ) => segmentHitsBox(0, from.y, 0, d, x0, x1, y0, y1, z0, z1);
+  const oy = from.y;
   for (let k = first; k <= last; k++) {
     const b = k * BLOCK_PITCH - from.x; // this bridge's centre, local x
     const z0 = cz - DECK_HALF_LENGTH;
     const z1 = cz + DECK_HALF_LENGTH;
     if (
-      hit(
+      segmentHitsBox(
+        0,
+        oy,
+        0,
+        d,
         b - BRIDGE_HALF_WIDTH,
         b + BRIDGE_HALF_WIDTH,
         -BRIDGE_DECK_DEPTH,
@@ -306,17 +310,44 @@ export function riverSegmentClear(from: Vec3, d: Vec3): boolean {
         z0,
         z1,
       ) ||
-      hit(b - px - t2, b - px + t2, 0, PARAPET_HEIGHT, z0, z1) ||
-      hit(b + px - t2, b + px + t2, 0, PARAPET_HEIGHT, z0, z1)
+      segmentHitsBox(
+        0,
+        oy,
+        0,
+        d,
+        b - px - t2,
+        b - px + t2,
+        0,
+        PARAPET_HEIGHT,
+        z0,
+        z1,
+      ) ||
+      segmentHitsBox(
+        0,
+        oy,
+        0,
+        d,
+        b + px - t2,
+        b + px + t2,
+        0,
+        PARAPET_HEIGHT,
+        z0,
+        z1,
+      )
     ) {
       return false;
     }
-    // The embankment railings from this bridge to the next one.
+    // The embankment railings from this bridge to the next one, the -z
+    // side first.
     const r0 = b + BRIDGE_HALF_WIDTH;
     const r1 = b + BLOCK_PITCH - BRIDGE_HALF_WIDTH;
-    for (const side of [-1, 1]) {
+    for (let side = -1; side <= 1; side += 2) {
       const zc = cz + side * rail;
-      if (hit(r0, r1, 0, PARAPET_HEIGHT, zc - t2, zc + t2)) return false;
+      if (
+        segmentHitsBox(0, oy, 0, d, r0, r1, 0, PARAPET_HEIGHT, zc - t2, zc + t2)
+      ) {
+        return false;
+      }
     }
   }
   return true;

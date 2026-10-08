@@ -7,7 +7,7 @@
 // the expanded-AABB approximation (box grown by the radius), which is within
 // ~radius·0.41 at corners — plenty for an arcade crash check.
 
-import { type Building, CITY_GRID, solids } from "./city/index";
+import { type Building, CITY_GRID, type SolidBox, solids } from "./city/index";
 import {
   type Nature,
   type NatureBox,
@@ -21,7 +21,7 @@ import {
   CANOPY_COLLISION_SLACK,
   PLAYER_RADIUS,
 } from "./constants";
-import { type Vec3, wrapDelta, wrapDeltaAxis } from "./world/index";
+import { type Vec3, wrapDeltaAxis, wrapDeltaInto } from "./world/index";
 
 /**
  * A block-lattice bucket index over one `Building[]`, built once and reused.
@@ -90,6 +90,27 @@ function blockSpan(lo: number, hi: number): number[] {
 }
 
 /**
+ * blockSpan without the array, for the per-probe queries (O5: the shared
+ * collision path runs per frame on the client and per probe on the server's
+ * bots, so it must allocate nothing). The span is `spanCount(lo, hi)` blocks
+ * from `spanFirst(lo, hi)`, each wrapped by `wrapBlock` — the same blocks in
+ * the same order as blockSpan(lo, hi), its non-finite case included.
+ */
+function spanFirst(lo: number, hi: number): number {
+  const first = Math.floor(lo / BLOCK_PITCH);
+  const width = Math.floor(hi / BLOCK_PITCH) - first + 1;
+  return Number.isFinite(width) ? first : 0;
+}
+
+function spanCount(lo: number, hi: number): number {
+  const width = Math.floor(hi / BLOCK_PITCH) - Math.floor(lo / BLOCK_PITCH) + 1;
+  return Number.isFinite(width) ? Math.min(width, CITY_GRID) : CITY_GRID;
+}
+
+const wrapBlock = (n: number): number =>
+  ((n % CITY_GRID) + CITY_GRID) % CITY_GRID;
+
+/**
  * How a query treats H1 fly-through holes. "open" is the truth — the plane
  * crashes into exactly what is drawn. "solid" fills every hole back in, for
  * AVOIDANCE probes only: a bot's point-sampled probes can straddle a thin
@@ -116,7 +137,8 @@ export function collideCity(
   if (index && index.buildings === buildings) {
     return collideIndexed(pos, radius, buildings, index, holes);
   }
-  for (const b of buildings) {
+  for (let i = 0; i < buildings.length; i++) {
+    const b = buildings[i] as Building;
     if (hits(pos, radius, b, holes)) return b;
   }
   return null;
@@ -130,23 +152,26 @@ function hits(
   holes: HoleMode,
 ): boolean {
   if (pos.y - radius > b.height) return false;
-  const d = wrapDelta({ x: b.x, y: 0, z: b.z }, { x: pos.x, y: 0, z: pos.z });
+  // Scalars, not wrapDelta's object: this runs per building per probe.
+  const dx = wrapDeltaAxis(b.x, pos.x);
+  const dz = wrapDeltaAxis(b.z, pos.z);
   // Tier-1 footprint bounds the whole stack — cheap whole-building reject.
   if (
-    Math.abs(d.x) > b.width / 2 + radius ||
-    Math.abs(d.z) > b.depth / 2 + radius
+    Math.abs(dx) > b.width / 2 + radius ||
+    Math.abs(dz) > b.depth / 2 + radius
   ) {
     return false;
   }
   if (holes === "solid" || !b.holes) {
     let base = 0;
-    for (const t of b.tiers) {
+    for (let k = 0; k < b.tiers.length; k++) {
+      const t = b.tiers[k] as Building["tiers"][number];
       const top = base + t.height;
       if (
         pos.y - radius <= top &&
         pos.y + radius >= base &&
-        Math.abs(d.x) <= t.width / 2 + radius &&
-        Math.abs(d.z) <= t.depth / 2 + radius
+        Math.abs(dx) <= t.width / 2 + radius &&
+        Math.abs(dz) <= t.depth / 2 + radius
       ) {
         return true;
       }
@@ -154,12 +179,14 @@ function hits(
     }
     return false;
   }
-  for (const s of solids(b)) {
+  const boxes = solids(b);
+  for (let k = 0; k < boxes.length; k++) {
+    const s = boxes[k] as SolidBox;
     if (
       pos.y - radius <= s.baseY + s.height &&
       pos.y + radius >= s.baseY &&
-      Math.abs(d.x - s.dx) <= s.width / 2 + radius &&
-      Math.abs(d.z - s.dz) <= s.depth / 2 + radius
+      Math.abs(dx - s.dx) <= s.width / 2 + radius &&
+      Math.abs(dz - s.dz) <= s.depth / 2 + radius
     ) {
       return true;
     }
@@ -181,11 +208,17 @@ function collideIndexed(
   holes: HoleMode,
 ): Building | null {
   let best = -1;
-  for (const bx of blockSpan(pos.x - radius, pos.x + radius)) {
-    for (const bz of blockSpan(pos.z - radius, pos.z + radius)) {
-      const cell = index.cells[bx * CITY_GRID + bz];
+  const x0 = spanFirst(pos.x - radius, pos.x + radius);
+  const nx = spanCount(pos.x - radius, pos.x + radius);
+  const z0 = spanFirst(pos.z - radius, pos.z + radius);
+  const nz = spanCount(pos.z - radius, pos.z + radius);
+  for (let ix = 0; ix < nx; ix++) {
+    const bx = wrapBlock(x0 + ix);
+    for (let iz = 0; iz < nz; iz++) {
+      const cell = index.cells[bx * CITY_GRID + wrapBlock(z0 + iz)];
       if (!cell) continue;
-      for (const i of cell) {
+      for (let k = 0; k < cell.length; k++) {
+        const i = cell[k] as number;
         // Cells are ascending, so once we pass the best hit this cell is done.
         if (best >= 0 && i >= best) break;
         const b = buildings[i];
@@ -202,6 +235,8 @@ function collideIndexed(
 /** One solid tree as the index stores it: its treeBoxes(), computed once. */
 interface IndexedTree {
   readonly tree: Tree;
+  /** The tree's base as a Vec3, for wrapDeltaInto. */
+  readonly at: Vec3;
   readonly trunk: NatureBox;
   readonly canopy: NatureBox;
 }
@@ -238,7 +273,7 @@ export function buildNatureIndex(nature: Pick<Nature, "trees">): NatureIndex {
     if (!treeCollides(tree)) continue;
     const { trunk, canopy } = treeBoxes(tree);
     const i = trees.length;
-    trees.push({ tree, trunk, canopy });
+    trees.push({ tree, at: { x: tree.x, y: 0, z: tree.z }, trunk, canopy });
     const reach = Math.max(trunk.hx, canopy.hx);
     for (const bx of blockSpan(tree.x - reach, tree.x + reach)) {
       for (const bz of blockSpan(tree.z - reach, tree.z + reach)) {
@@ -256,11 +291,17 @@ export function buildNatureIndex(nature: Pick<Nature, "trees">): NatureIndex {
  * SLACK, which covers the few cm that approximation misses at oblique
  * angles). No empty-air deaths at the box's corners.
  */
+/** hitsTree's torus delta — module scratch (one probe at a time). */
+const treeDelta: Vec3 = { x: 0, y: 0, z: 0 };
+
 function hitsTree(pos: Vec3, radius: number, t: IndexedTree): boolean {
   const { trunk, canopy } = t;
   if (pos.y - radius > canopy.y1) return false;
-  const dx = wrapDeltaAxis(t.tree.x, pos.x);
-  const dz = wrapDeltaAxis(t.tree.z, pos.z);
+  // Into scratch: a float returned from a call that is not inlined is boxed,
+  // and this runs per tree per probe.
+  const d = wrapDeltaInto(t.at, pos, treeDelta);
+  const dx = d.x;
+  const dz = d.z;
   const reach = Math.max(trunk.hx, canopy.hx) + radius;
   if (Math.abs(dx) > reach || Math.abs(dz) > reach) return false;
 
@@ -291,12 +332,17 @@ export function collideNature(
   index: NatureIndex,
 ): Tree | null {
   if (index.trees.length === 0) return null;
-  for (const bx of blockSpan(pos.x - radius, pos.x + radius)) {
-    for (const bz of blockSpan(pos.z - radius, pos.z + radius)) {
-      const cell = index.cells[bx * CITY_GRID + bz];
+  const x0 = spanFirst(pos.x - radius, pos.x + radius);
+  const nx = spanCount(pos.x - radius, pos.x + radius);
+  const z0 = spanFirst(pos.z - radius, pos.z + radius);
+  const nz = spanCount(pos.z - radius, pos.z + radius);
+  for (let ix = 0; ix < nx; ix++) {
+    const bx = wrapBlock(x0 + ix);
+    for (let iz = 0; iz < nz; iz++) {
+      const cell = index.cells[bx * CITY_GRID + wrapBlock(z0 + iz)];
       if (!cell) continue;
-      for (const i of cell) {
-        const t = index.trees[i];
+      for (let k = 0; k < cell.length; k++) {
+        const t = index.trees[cell[k] as number];
         if (t && hitsTree(pos, radius, t)) return t.tree;
       }
     }
@@ -311,47 +357,6 @@ export function collideNature(
  */
 export function hitsGround(pos: Vec3, radius: number = PLAYER_RADIUS): boolean {
   return riverHit(pos, radius);
-}
-
-/**
- * Segment vs one axis-aligned box, both already in the sight line's local
- * frame (origin = the viewer). The standard slab clip: keep the interval of
- * t in [0, 1] that lies inside every axis's pair of planes; empty ⇒ no hit.
- */
-function segmentHitsBox(
-  d: Vec3,
-  minX: number,
-  maxX: number,
-  minY: number,
-  maxY: number,
-  minZ: number,
-  maxZ: number,
-): boolean {
-  let t0 = 0;
-  let t1 = 1;
-  for (const [dv, lo, hi] of [
-    [d.x, minX, maxX],
-    [d.y, minY, maxY],
-    [d.z, minZ, maxZ],
-  ] as const) {
-    if (dv === 0) {
-      // Parallel to this slab: inside it for all t, or never.
-      if (lo > 0 || hi < 0) return false;
-      continue;
-    }
-    const inv = 1 / dv;
-    const a = lo * inv;
-    const b = hi * inv;
-    if (a < b) {
-      if (a > t0) t0 = a;
-      if (b < t1) t1 = b;
-    } else {
-      if (b > t0) t0 = b;
-      if (a < t1) t1 = a;
-    }
-    if (t0 > t1) return false;
-  }
-  return true;
 }
 
 /**
@@ -371,50 +376,91 @@ function segmentHitsBox(
  * (500 m) leaves 415 m of margin — since no second image of a building can
  * then be near enough to matter.
  */
+/** losClear's sight vector, handed to riverSegmentClear (which keeps no
+ * reference) — module scratch, so a sight-line test allocates nothing. */
+const sight: Vec3 = { x: 0, y: 0, z: 0 };
+
 export function losClear(
   from: Vec3,
   to: Vec3,
   buildings: readonly Building[] = [],
 ): boolean {
-  const d = wrapDelta(from, to);
-  if (d.x === 0 && d.y === 0 && d.z === 0) return true;
+  const dx = wrapDeltaAxis(from.x, to.x);
+  const dy = to.y - from.y;
+  const dz = wrapDeltaAxis(from.z, to.z);
+  if (dx === 0 && dy === 0 && dz === 0) return true;
   // L11: the river's decks and embankments are cover like any facade.
-  if (!riverSegmentClear(from, d)) return false;
-  const loX = Math.min(0, d.x);
-  const hiX = Math.max(0, d.x);
-  const loZ = Math.min(0, d.z);
-  const hiZ = Math.max(0, d.z);
+  sight.x = dx;
+  sight.y = dy;
+  sight.z = dz;
+  if (!riverSegmentClear(from, sight)) return false;
+  const loX = Math.min(0, dx);
+  const hiX = Math.max(0, dx);
+  const loZ = Math.min(0, dz);
+  const hiZ = Math.max(0, dz);
   // Altitude is monotonic along the segment, so its lower end bounds it.
   const loY = Math.min(from.y, to.y);
-  for (const b of buildings) {
+  for (let i = 0; i < buildings.length; i++) {
+    const b = buildings[i] as Building;
     // Whole sight line above the roof — the strong reject for high patrols.
     if (loY > b.height) continue;
-    const c = wrapDelta(from, { x: b.x, y: 0, z: b.z });
+    const cx = wrapDeltaAxis(from.x, b.x);
+    const cz = wrapDeltaAxis(from.z, b.z);
     // Tier-1 footprint vs the segment's XZ bounds — cheap whole-building reject.
     if (
-      c.x - b.width / 2 > hiX ||
-      c.x + b.width / 2 < loX ||
-      c.z - b.depth / 2 > hiZ ||
-      c.z + b.depth / 2 < loZ
+      cx - b.width / 2 > hiX ||
+      cx + b.width / 2 < loX ||
+      cz - b.depth / 2 > hiZ ||
+      cz + b.depth / 2 < loZ
     ) {
       continue;
     }
-    for (const t of solids(b)) {
-      const x = c.x + t.dx;
-      const z = c.z + t.dz;
-      if (
-        segmentHitsBox(
-          d,
-          x - t.width / 2,
-          x + t.width / 2,
-          t.baseY - from.y,
-          t.baseY + t.height - from.y,
-          z - t.depth / 2,
-          z + t.depth / 2,
-        )
-      ) {
-        return false;
+    const boxes = solids(b);
+    for (let k = 0; k < boxes.length; k++) {
+      const t = boxes[k] as SolidBox;
+      const x = cx + t.dx;
+      const z = cz + t.dz;
+      // Segment (0 → d) vs this box in the sight line's local frame (origin
+      // = the viewer): the standard slab clip, keeping the interval of t in
+      // [0, 1] inside every axis's pair of planes — x, then y, then z. Inline
+      // rather than a call: doubles handed to a call that is not inlined are
+      // boxed, and this runs per solid per sight line (O5: allocation-free).
+      let t0 = 0;
+      let t1 = 1;
+      let hit = true;
+      for (let axis = 0; axis < 3 && hit; axis++) {
+        const dv = axis === 0 ? dx : axis === 1 ? dy : dz;
+        const lo =
+          axis === 0
+            ? x - t.width / 2
+            : axis === 1
+              ? t.baseY - from.y
+              : z - t.depth / 2;
+        const hi =
+          axis === 0
+            ? x + t.width / 2
+            : axis === 1
+              ? t.baseY + t.height - from.y
+              : z + t.depth / 2;
+        if (dv === 0) {
+          // Parallel to this slab: inside it for all t, or never.
+          if (lo > 0 || hi < 0) hit = false;
+          continue;
+        }
+        const inv = 1 / dv;
+        const a = lo * inv;
+        const b = hi * inv;
+        if (a < b) {
+          if (a > t0) t0 = a;
+          if (b < t1) t1 = b;
+        } else {
+          if (b > t0) t0 = b;
+          if (a < t1) t1 = a;
+        }
+        if (t0 > t1) hit = false;
       }
+      // The boxes are closed: a line exactly tangent to a face is blocked.
+      if (hit) return false;
     }
   }
   return true;

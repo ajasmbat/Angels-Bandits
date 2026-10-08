@@ -214,15 +214,18 @@ export function assistStick(
   rates: { turnRate: number; pitchRate: number },
   out: { turn: number; pitch: number },
 ): void {
-  const axis = (cmd: number, rad: number, rate: number) => {
-    const n = clamp(
-      (STICK_GAIN * rad) / rate,
-      -ASSIST_STICK_MAX,
-      ASSIST_STICK_MAX,
-    );
-    if (cmd * n < 0 && Math.abs(cmd) > ASSIST_YIELD) return cmd;
-    return clamp(cmd + n, -1, 1);
-  };
-  out.turn = axis(pilot.turn, bias.yaw, rates.turnRate);
-  out.pitch = axis(pilot.pitch, bias.pitch, rates.pitchRate);
+  out.turn = assistAxis(pilot.turn, bias.yaw, rates.turnRate);
+  out.pitch = assistAxis(pilot.pitch, bias.pitch, rates.pitchRate);
+}
+
+/** One stick axis of assistStick — a module function, not a per-frame
+ * closure (O5: no per-frame allocations). */
+function assistAxis(cmd: number, rad: number, rate: number): number {
+  const n = clamp(
+    (STICK_GAIN * rad) / rate,
+    -ASSIST_STICK_MAX,
+    ASSIST_STICK_MAX,
+  );
+  if (cmd * n < 0 && Math.abs(cmd) > ASSIST_YIELD) return cmd;
+  return clamp(cmd + n, -1, 1);
 }

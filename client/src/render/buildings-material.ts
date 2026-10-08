@@ -20,6 +20,7 @@
 
 import { EMISSIVE_WINDOW } from "@angels-bandits/common/constants";
 import * as THREE from "three";
+import { DAMAGE_GLSL, DAMAGE_ON_UNIFORM, DAMAGE_PARS_GLSL } from "./damage-map";
 import { luminance } from "./emissive";
 import { LIVE_ON_UNIFORM, livingParsGlsl } from "./living-windows";
 import { WAKE_PARS_GLSL, wakeWindowGlsl, windowWakeUniform } from "./reactions";
@@ -100,7 +101,8 @@ export const BOUNCE_TINTS = {
 export const BOUNCE_NEON_MIX = 0.55;
 
 const VERTEX_PARS = /* glsl */ `
-attribute float aArchetype;
+attribute vec2 aArchetype; // x: facade archetype, y: D1 damage slot word
+flat varying highp float vDmgWord;
 attribute vec4 aRoof;
 attribute vec3 aLed;
 attribute vec3 aCrown;
@@ -149,7 +151,10 @@ vBSeed = fract(sin(dot(bScale.xz, vec2(12.9898, 78.233)) + bScale.y) * 43758.545
 // L13: the window pitch jitter's seed, bit-exact with window-pattern.ts
 // pitchSeed() so facade detail can sit on the drawn rows.
 vPitchSeed = abPitchSeed(bScale);
-vArch = aArchetype;
+vArch = aArchetype.x;
+// D1: the tier's packed facade-damage slots — flat + highp, so the 24-bit
+// word reaches the fragment stage exact (damage-map.ts DAMAGE_GLSL).
+vDmgWord = aArchetype.y;
 // This instance's own height, so weathering scales with the building rather
 // than with a constant written for one tower size.
 vBHeight = bScale.y;
@@ -194,7 +199,7 @@ float abHash(vec2 p, float s) {
 float abSafeDiv(float d) {
   return abs(d) < 1e-4 ? (d < 0.0 ? -1e-4 : 1e-4) : d;
 }
-${roofParsGlsl()}${WAKE_PARS_GLSL}${livingParsGlsl()}${WEATHER_PARS_GLSL}`;
+${DAMAGE_PARS_GLSL}${roofParsGlsl()}${WAKE_PARS_GLSL}${livingParsGlsl()}${WEATHER_PARS_GLSL}`;
 
 /** Injected after color_fragment: derives the shared window-grid locals
  * (in scope for the emissive block below — same main body), modulates the
@@ -204,6 +209,7 @@ ${roofParsGlsl()}${WAKE_PARS_GLSL}${livingParsGlsl()}${WEATHER_PARS_GLSL}`;
  * comes last, over whatever the facade pass left inside a hole. */
 const FRAGMENT_COLOR =
   windowGridGlsl() +
+  DAMAGE_GLSL +
   weatheringGlsl() +
   roofSurfaceGlsl() +
   holeSurfaceGlsl() +
@@ -365,6 +371,7 @@ export interface LiveTimeUniform {
  * writes it once per frame. */
 export function createBuildingsMaterial(
   liveTime: LiveTimeUniform = { value: 0 },
+  damage: THREE.Texture | null = null,
 ): THREE.MeshStandardMaterial {
   const material = new THREE.MeshStandardMaterial({
     roughness: 0.85,
@@ -381,6 +388,9 @@ export function createBuildingsMaterial(
     shader.uniforms.uWinInterior = WIN_INTERIOR_UNIFORM;
     // L4: the shared weather uniform (render/weather.ts), by reference.
     shader.uniforms.uWeather = WEATHER_UNIFORM;
+    // D1: the facade damage atlas and its switch (damage-map.ts).
+    shader.uniforms.uDamage = { value: damage };
+    shader.uniforms.uDamageOn = DAMAGE_ON_UNIFORM;
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", `#include <common>\n${VERTEX_PARS}`)
       .replace(
@@ -409,6 +419,6 @@ export function createBuildingsMaterial(
   // Distinct compiled program per patch (V3 rule: three keys programs on
   // onBeforeCompile.toString(), and sibling materials collide silently).
   material.customProgramCacheKey = () =>
-    "ab-buildings-h1-holes-l1-wake-l3-live-l4-wet-g1-lobbies";
+    "ab-buildings-h1-holes-l1-wake-l3-live-l4-wet-g1-lobbies-d1-damage";
   return material;
 }

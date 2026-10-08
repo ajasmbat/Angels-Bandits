@@ -21,6 +21,7 @@ import {
   sirenGain,
   streetDistance,
 } from "./ambient-mix";
+import { BAR_S, PROGRESSION_LENGTH, barIndex, nextGrid } from "./music-model";
 import { type MixBus, OWN_ENGINE_LEVEL } from "./sound";
 import { spatialize } from "./spatial";
 
@@ -54,8 +55,8 @@ const NOISE_SECONDS = 6;
 const HORN_MIN_GAP_S = 1.5;
 const HORN_GAP_SPREAD_S = 5;
 const HORN_AUDIBLE = 0.05;
-/** Plaza pad: Am – F – C – G, one bar each at 120 bpm. */
-const BAR_S = 2;
+/** Plaza pad: Am – F – C – G, one bar each on the S2 soundtrack's 120 bpm
+ * grid (BAR_S) — the same chord on the same bar as the score. */
 const CHORDS: readonly (readonly [number, number, number])[] = [
   [220, 261.63, 329.63],
   [174.61, 220, 261.63],
@@ -137,7 +138,6 @@ export class CityAmbience {
   private readonly hornRng: () => number;
   private nextHornAt = 0;
   private nextBarAt = 0;
-  private bar = 0;
   // Last frame's inputs, for the QA hook.
   private streetDist = 0;
   private plazaDist = 0;
@@ -217,18 +217,18 @@ export class CityAmbience {
         now + HORN_MIN_GAP_S + this.hornRng() * HORN_GAP_SPREAD_S;
       if (m.horn > HORN_AUDIBLE) this.honk(g, now);
     }
-    // Schedule each bar's chord just ahead of its downbeat; after a hidden
-    // tab the clock has run on, so pick the beat back up from now.
-    if (now > this.nextBarAt + BAR_S) this.nextBarAt = now;
+    // Schedule each bar's chord just ahead of its downbeat, on the shared
+    // grid; after a hidden tab pick the beat back up at the next bar line.
+    if (now > this.nextBarAt) this.nextBarAt = nextGrid(now, BAR_S);
     if (now + 0.1 >= this.nextBarAt) {
-      const chord = CHORDS[this.bar % CHORDS.length] ?? CHORDS[0];
+      const chord =
+        CHORDS[barIndex(this.nextBarAt) % PROGRESSION_LENGTH] ?? CHORDS[0];
       if (chord) {
         for (const [i, osc] of g.pad.entries()) {
           osc.frequency.setValueAtTime(chord[i] ?? chord[0], this.nextBarAt);
         }
         g.bass.frequency.setValueAtTime(chord[0] / 2, this.nextBarAt);
       }
-      this.bar++;
       this.nextBarAt += BAR_S;
     }
   }
@@ -438,7 +438,7 @@ export class CityAmbience {
       .connect(rainRoar)
       .connect(sfx);
 
-    this.nextBarAt = now;
+    this.nextBarAt = nextGrid(now, BAR_S);
     this.nextHornAt = now + HORN_MIN_GAP_S;
     return {
       ctx,

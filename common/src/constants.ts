@@ -124,17 +124,24 @@ export const TIER_SPLIT_MAX = 0.7;
 /** Landmark podium archway, across × tall, meters. */
 export const ARCH_WIDTH = 30;
 export const ARCH_HEIGHT = 24;
-/** Street tunnel through a lot that spans its whole block, meters. */
-export const TUNNEL_WIDTH = 22;
-export const TUNNEL_HEIGHT = 16;
+/** Row tunnel (H2) through every lot one straight line crosses in a block,
+ * across × tall, meters — the mouth a pilot lines up on from a street. */
+export const TUNNEL_WIDTH = 26;
+export const TUNNEL_HEIGHT = 20;
 /** Sky hole through the top tier of a tall tower, meters (the hard one). */
-export const SKY_HOLE_WIDTH = 18;
-export const SKY_HOLE_HEIGHT = 14;
+export const SKY_HOLE_WIDTH = 22;
+export const SKY_HOLE_HEIGHT = 18;
+/** Gate (H2): the big opening through a tall slab tower, meters. */
+export const GATE_WIDTH = 30;
+export const GATE_HEIGHT = 26;
 /** Lowest hole floor above the street, meters (arches sit exactly here). */
 export const HOLE_MIN_FLOOR = 8;
 /** Thinnest side wall / lintel a hole may leave, and a sky hole's minimum
- * sill above its tier base, meters. */
-export const HOLE_WALL_MIN = 6;
+ * sill above its tier base, meters. H2 took the wall from 6 to 5 m so the
+ * 36–37 m wide block-spanning lots still take the 26 m tunnel mouth; it stays
+ * over the bots' 4.5 m rollout step (bots.ts), so no wall falls between two
+ * samples. */
+export const HOLE_WALL_MIN = 5;
 export const HOLE_LINTEL_MIN = 6;
 export const HOLE_SILL_MIN = 4;
 /** Clear air beyond each mouth, meters: the MAX_SPEED turn radius plus a
@@ -144,15 +151,20 @@ export const HOLE_RUN_OUT = 140;
 export const HOLE_CLEARANCE = 6;
 /** The run-out corridor's half-width beyond the hole's own, meters. Kept
  * under HOLE_WALL_MIN so party-wall neighbours beside the host stay out. */
-export const HOLE_CORRIDOR_MARGIN = 5;
+export const HOLE_CORRIDOR_MARGIN = 4.5;
 /** Towers at least this tall may get a sky hole, meters. */
 export const SKY_HOLE_MIN_HEIGHT = 120;
-/** Roll per eligible candidate: a block's first winning lot gets its one
- * tunnel; a tower that wins its roll gets a sky hole. Tunnels always win —
- * clear air above the facing streetwall is already the scarce filter (0–2
- * per seed); sky holes are thinned to ~6–10 per city. */
-export const TUNNEL_CHANCE = 1;
-export const SKY_HOLE_CHANCE = 0.22;
+/** Towers at least this tall may get a gate, meters. */
+export const GATE_MIN_HEIGHT = 100;
+/** Roll per candidate. A block gets at most one row tunnel (its longest-cut
+ * line that fits); a tower that wins its gate roll gets a gate, else one that
+ * wins its sky roll gets a sky hole. Clear air above the facing streetwall is
+ * the scarce filter. Measured (H2): seed 42 has 4 arches, 23 tunnels (3 of
+ * them street to street, one a two-lot block-through at street level), 12
+ * gates and 5 sky holes — 44 against H1's 12; seeds 1–20 median 36. */
+export const ROW_TUNNEL_CHANCE = 0.7;
+export const GATE_CHANCE = 0.35;
+export const SKY_HOLE_CHANCE = 0.5;
 
 // --- Flight (tuned by T2) ---
 /** Minimum airspeed, m/s. At MIN_SPEED you mush, never stall. */

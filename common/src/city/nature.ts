@@ -29,6 +29,9 @@ import {
   CROSSWALK_DEPTH,
   FORECOURT_TREE_HEIGHT_MAX,
   FORECOURT_TREE_HEIGHT_MIN,
+  HOLE_CLEARANCE,
+  HOLE_CORRIDOR_MARGIN,
+  HOLE_RUN_OUT,
   LANDMARK_FOOTPRINT,
   PARK_TREE_HEIGHT_MAX,
   PARK_TREE_HEIGHT_MIN,
@@ -39,7 +42,7 @@ import {
   STREET_TREE_TRUNK_MIN,
 } from "../constants";
 import { canonicalize, wrapDeltaAxis } from "../world/index";
-import { type Building, CITY_GRID, mulberry32 } from "./index";
+import { type Building, CITY_GRID, cityHoles, mulberry32 } from "./index";
 import { CONSTRUCTION_BLOCKS, LANDMARK_BLOCKS, PLAZA_BLOCKS } from "./layout";
 import { isRiverRow, overChannel } from "./river";
 import {
@@ -593,8 +596,59 @@ export function natureFor(
   streetTrees(seed, candidates);
 
   const byBlock = bucketBuildings(buildings);
+  const corridors = lowHoleCorridors(buildings);
   for (const t of candidates) {
-    if (!overlapsBuilding(t, byBlock)) nature.trees.push(t);
+    if (overlapsBuilding(t, byBlock)) continue;
+    if (corridors.some((c) => inCorridor(t, c))) continue;
+    nature.trees.push(t);
   }
   return nature;
+}
+
+/** A hole's clear-air corridor in plan, with the roof height it allows. */
+interface Corridor {
+  x: number;
+  z: number;
+  hx: number;
+  hz: number;
+  /** Nothing in the corridor may stand taller than this, m. */
+  top: number;
+}
+
+/**
+ * H2: the clear-air rule for trees. holes.ts keeps every roof in a hole's
+ * run-out corridor HOLE_CLEARANCE under its floor, but trees are not
+ * Buildings, so a hole low enough for a tree to reach (the street-level row
+ * tunnels) drops the trees that would stand in its corridor — like the G1
+ * street veto. Arches keep their hand-placed H1 approach; bridges are not
+ * holes in a Building.
+ */
+function lowHoleCorridors(buildings: readonly Building[]): Corridor[] {
+  const out: Corridor[] = [];
+  for (const s of cityHoles(buildings)) {
+    const { kind, axis, y0, width } = s.hole;
+    if (kind === "arch" || kind === "bridge") continue;
+    const top = y0 - HOLE_CLEARANCE;
+    if (top >= PARK_TREE_HEIGHT_MAX) continue;
+    const along = s.length / 2 + HOLE_RUN_OUT;
+    const across = width / 2 + HOLE_CORRIDOR_MARGIN;
+    out.push({
+      x: s.center.x,
+      z: s.center.z,
+      hx: axis === "x" ? along : across,
+      hz: axis === "x" ? across : along,
+      top,
+    });
+  }
+  return out;
+}
+
+/** Does tree `t` (crown and all) rise into corridor `c`? */
+function inCorridor(t: Tree, c: Corridor): boolean {
+  const reach = Math.max(t.canopyR, t.trunkR);
+  return (
+    t.trunkH + t.canopyH > c.top &&
+    Math.abs(wrapDeltaAxis(c.x, t.x)) < c.hx + reach &&
+    Math.abs(wrapDeltaAxis(c.z, t.z)) < c.hz + reach
+  );
 }

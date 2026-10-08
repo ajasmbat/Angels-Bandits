@@ -1,11 +1,13 @@
 // H1 fly-through holes — the one seam every consumer of a hole reads.
 //
 // A hole is a rectangular tunnel that runs the full length of one tier along
-// one street axis. Three kinds share the shape:
+// one street axis. Four kinds share the shape:
 //   - arch:   through each landmark's 90 m podium, hand-placed axis;
-//   - tunnel: through tier 0 of a lot that spans its whole block along the
-//             axis, so both mouths sit on lot lines facing streets (never a
-//             party wall into a neighbour);
+//   - tunnel: (H2) a ROW tunnel — one straight line through tier 0 of every
+//             lot it crosses in a block, so the run's outer mouths open on
+//             clear air (never a party wall into a neighbour); each lot it
+//             cuts carries its own Hole, tied together by `run`;
+//   - gate:   (H2) the big opening through a tall slab tower;
 //   - sky:    through the top tier of a tall tower, under a lintel, so the
 //             roof (and everything that dresses it) stays intact.
 //
@@ -20,6 +22,10 @@ import {
   ARCH_WIDTH,
   BLOCK_PITCH,
   CRANE_JIB_MAX,
+  GATE_CHANCE,
+  GATE_HEIGHT,
+  GATE_MIN_HEIGHT,
+  GATE_WIDTH,
   HOLE_CLEARANCE,
   HOLE_CORRIDOR_MARGIN,
   HOLE_LINTEL_MIN,
@@ -28,13 +34,14 @@ import {
   HOLE_SILL_MIN,
   HOLE_WALL_MIN,
   LANDMARK_HEIGHT,
+  ROW_TUNNEL_CHANCE,
   SKY_HOLE_CHANCE,
   SKY_HOLE_HEIGHT,
   SKY_HOLE_MIN_HEIGHT,
   SKY_HOLE_WIDTH,
-  TUNNEL_CHANCE,
   TUNNEL_HEIGHT,
   TUNNEL_WIDTH,
+  WORLD_SIZE,
 } from "../constants";
 import { type Vec3, canonicalize, wrapDelta } from "../world/index";
 import type { Building, Tier } from "./index";
@@ -44,7 +51,7 @@ import { LOT_LINE, nextIntersection } from "./street";
 /** "bridge" is L11's underpass under a river bridge (city/river.ts
  * bridgeSpans) — never a hole in a Building, only an edge of the bots'
  * street graph. */
-export type HoleKind = "arch" | "tunnel" | "sky" | "bridge";
+export type HoleKind = "arch" | "tunnel" | "gate" | "sky" | "bridge";
 /** The axis a plane TRAVELS along to fly through the hole. */
 export type HoleAxis = "x" | "z";
 
@@ -62,6 +69,9 @@ export interface Hole {
   width: number;
   /** Clear height, meters. */
   height: number;
+  /** H2 row tunnels: the id every lot cut by the same line shares (its
+   * block's key). cityHoles() merges a run into one HoleSpan. */
+  run?: number;
 }
 
 /** One solid box of a building, offset from its (x, z) center. */
@@ -201,10 +211,15 @@ export function solids(b: Building): readonly SolidBox[] {
   return out;
 }
 
-/** A hole in world space — the surface bots and dressing route by. */
+/** A hole in world space — the surface bots and dressing route by. A row
+ * tunnel is ONE span over its whole run: `hole` is its first host's (same
+ * axis, floor and size on every host), the mouths are the run's outer ones. */
 export interface HoleSpan {
   building: Building;
   hole: Hole;
+  /** Every building the hole cuts: one, several for a row tunnel, none for
+   * an L11 bridge underpass. */
+  hosts: readonly Building[];
   /** Centre of the hole's clear volume, canonical world coordinates. */
   center: Vec3;
   /** Mouth centres on the low- and high-coordinate side of `axis`. */
@@ -214,30 +229,95 @@ export interface HoleSpan {
   length: number;
 }
 
-/** Every hole in the city, with its world centreline. */
+/** One hole's world extent along its axis and its world centreline across. */
+function holeExtent(building: Building, hole: Hole) {
+  const tier = building.tiers[hole.tierIndex];
+  if (!tier) return null;
+  const half = alongAcross(tier, hole.axis).along / 2;
+  const x = hole.axis === "x";
+  const along = x ? building.x : building.z;
+  return {
+    lo: along - half,
+    hi: along + half,
+    across: (x ? building.z : building.x) + hole.offset,
+  };
+}
+
+/**
+ * Every hole in the city, with its world centreline. A row tunnel's hosts
+ * merge into one span from the low edge of its first host to the high edge
+ * of its last — lots never cross a block edge, so a run never wraps and its
+ * extent is plain arithmetic in canonical coordinates.
+ */
 export function cityHoles(buildings: readonly Building[]): HoleSpan[] {
   const out: HoleSpan[] = [];
+  const runs = new Map<number, { span: HoleSpan; lo: number; hi: number }>();
   for (const building of buildings) {
     for (const hole of building.holes ?? []) {
-      const tier = building.tiers[hole.tierIndex];
-      if (!tier) continue;
-      const length = alongAcross(tier, hole.axis).along;
-      const x = building.x + (hole.axis === "z" ? hole.offset : 0);
-      const z = building.z + (hole.axis === "x" ? hole.offset : 0);
-      const y = hole.y0 + hole.height / 2;
-      const ux = hole.axis === "x" ? length / 2 : 0;
-      const uz = hole.axis === "z" ? length / 2 : 0;
-      out.push({
+      const e = holeExtent(building, hole);
+      if (!e) continue;
+      const run = hole.run === undefined ? undefined : runs.get(hole.run);
+      if (run) {
+        run.lo = Math.min(run.lo, e.lo);
+        run.hi = Math.max(run.hi, e.hi);
+        (run.span.hosts as Building[]).push(building);
+        continue;
+      }
+      const span: HoleSpan = {
         building,
         hole,
-        center: canonicalize({ x, y, z }),
-        entry: canonicalize({ x: x - ux, y, z: z - uz }),
-        exit: canonicalize({ x: x + ux, y, z: z + uz }),
-        length,
-      });
+        hosts: [building],
+        center: { x: 0, y: 0, z: 0 },
+        entry: { x: 0, y: 0, z: 0 },
+        exit: { x: 0, y: 0, z: 0 },
+        length: 0,
+      };
+      out.push(span);
+      if (hole.run !== undefined)
+        runs.set(hole.run, { span, lo: e.lo, hi: e.hi });
+      setSpanExtent(span, e.lo, e.hi, e.across);
     }
   }
+  for (const r of runs.values()) {
+    const e = holeExtent(r.span.building, r.span.hole);
+    if (e) setSpanExtent(r.span, r.lo, r.hi, e.across);
+  }
   return out;
+}
+
+/** Fill a span's centre, mouths and length from its along extent [lo, hi]. */
+function setSpanExtent(
+  span: HoleSpan,
+  lo: number,
+  hi: number,
+  across: number,
+): void {
+  const { axis, y0, height } = span.hole;
+  const y = y0 + height / 2;
+  const at = (along: number): Vec3 =>
+    canonicalize(
+      axis === "x" ? { x: along, y, z: across } : { x: across, y, z: along },
+    );
+  span.center = at((lo + hi) / 2);
+  span.entry = at(lo);
+  span.exit = at(hi);
+  span.length = hi - lo;
+}
+
+/**
+ * Do both of the span's mouths open on a street — its run spans the block's
+ * whole buildable extent, lot line to lot line? (A tunnel whose mouths open
+ * over low roofs mid-block is threaded from above the roofs, like a sky hole.)
+ */
+export function opensOnStreets(span: HoleSpan): boolean {
+  const x = span.hole.axis === "x";
+  const inBlock = (v: number) =>
+    ((v % BLOCK_PITCH) + BLOCK_PITCH) % BLOCK_PITCH;
+  const a = inBlock(x ? span.entry.x : span.entry.z);
+  const b = inBlock(x ? span.exit.x : span.exit.z);
+  return (
+    Math.abs(a - LOT_LINE) < 0.5 && Math.abs(b - (BLOCK_PITCH - LOT_LINE)) < 0.5
+  );
 }
 
 // --- Bot routing (B2): holes as edges of the street graph ---------------
@@ -340,14 +420,15 @@ export function segmentThroughHole(
 // --- Placement: the city-level pass -------------------------------------
 
 /**
- * True when the run-out corridor of a hole through `host` (centred on its
- * footprint, half-length `halfLength` along `axis`, half-width `halfWidth`)
- * comes within a crane's reach of a construction block. Crane jibs sweep
- * CRANE_JIB_MAX around a mast somewhere inside the block, so the whole block
- * grown by that reach is off limits — conservative on purpose.
+ * True when the run-out corridor of a hole centred on (cx, cz), half-length
+ * `halfLength` along `axis`, half-width `halfWidth`, comes within a crane's
+ * reach of a construction block. Crane jibs sweep CRANE_JIB_MAX around a mast
+ * somewhere inside the block, so the whole block grown by that reach is off
+ * limits — conservative on purpose.
  */
 function nearCrane(
-  host: Building,
+  cx: number,
+  cz: number,
   axis: HoleAxis,
   halfLength: number,
   halfWidth: number,
@@ -357,7 +438,7 @@ function nearCrane(
   const hz = axis === "x" ? halfWidth : reach;
   return CONSTRUCTION_BLOCKS.some(([bx, bz]) => {
     const d = wrapDelta(
-      { x: host.x, y: 0, z: host.z },
+      { x: cx, y: 0, z: cz },
       { x: (bx + 0.5) * BLOCK_PITCH, y: 0, z: (bz + 0.5) * BLOCK_PITCH },
     );
     const gx = Math.max(0, Math.abs(d.x) - hx - BLOCK_PITCH / 2);
@@ -367,38 +448,52 @@ function nearCrane(
 }
 
 /**
- * The lowest floor at which a hole through `host` has clear air on both
- * sides: HOLE_CLEARANCE over the tallest OTHER building whose footprint
- * strictly overlaps the run-out corridor — the hole's width plus
- * HOLE_CORRIDOR_MARGIN either side, out to HOLE_RUN_OUT beyond each mouth.
- * Torus-correct via wrapDelta. Whole-building heights, so a setback tower's
- * slim top counts as its full footprint (conservative). Never below
- * HOLE_MIN_FLOOR.
+ * The lowest floor at which a hole centred on (cx, cz) has clear air on both
+ * sides: HOLE_CLEARANCE over the tallest building, other than its own hosts,
+ * whose footprint strictly overlaps the run-out corridor — the hole's width
+ * plus HOLE_CORRIDOR_MARGIN either side, out to HOLE_RUN_OUT beyond each
+ * mouth (and so every lot a row tunnel passes over, too). Torus-correct via
+ * wrapDelta. Each tier is tested on its own footprint, so a setback tower
+ * only counts as tall where its upper tiers actually stand (H2 — whole
+ * footprints threw away most tunnel lines). Never below HOLE_MIN_FLOOR.
  */
 function clearFloor(
-  host: Building,
+  cx: number,
+  cz: number,
   axis: HoleAxis,
   halfLength: number,
   holeWidth: number,
+  hosts: readonly Building[],
   buildings: readonly Building[],
 ): number {
   const band = holeWidth / 2 + HOLE_CORRIDOR_MARGIN;
   let tallest = 0;
   for (const o of buildings) {
-    if (o === host) continue;
-    const d = wrapDelta(
-      { x: host.x, y: 0, z: host.z },
-      { x: o.x, y: 0, z: o.z },
-    );
+    if (hosts.includes(o)) continue;
+    const d = wrapDelta({ x: cx, y: 0, z: cz }, { x: o.x, y: 0, z: o.z });
     const along = axis === "x" ? d.x : d.z;
     const across = axis === "x" ? d.z : d.x;
-    const oAlong = (axis === "x" ? o.width : o.depth) / 2;
-    const oAcross = (axis === "x" ? o.depth : o.width) / 2;
-    if (Math.abs(across) >= band + oAcross) continue;
-    if (Math.abs(along) - oAlong >= halfLength + HOLE_RUN_OUT) continue;
-    if (o.height > tallest) tallest = o.height;
+    // Tiers are centred, so test each tier's own footprint: a setback
+    // tower's slim top only counts where it actually stands.
+    let top = 0;
+    for (const t of o.tiers) {
+      const oAlong = (axis === "x" ? t.width : t.depth) / 2;
+      const oAcross = (axis === "x" ? t.depth : t.width) / 2;
+      const inside =
+        Math.abs(across) < band + oAcross &&
+        Math.abs(along) - oAlong < halfLength + HOLE_RUN_OUT;
+      top += t.height;
+      if (inside && top > tallest) tallest = top;
+    }
   }
   return Math.max(HOLE_MIN_FLOOR, tallest + HOLE_CLEARANCE);
+}
+
+/** Ground height of tier `tierIndex`'s base, meters. */
+function tierBase(b: Building, tierIndex: number): number {
+  let base = 0;
+  for (let i = 0; i < tierIndex; i++) base += b.tiers[i]?.height ?? 0;
+  return base;
 }
 
 /**
@@ -421,103 +516,304 @@ function fitHole(
   if (!tier) return null;
   const { along, across } = alongAcross(tier, axis);
   if ((across - width) / 2 < HOLE_WALL_MIN) return null;
-  let base = 0;
-  for (let i = 0; i < tierIndex; i++) base += host.tiers[i]?.height ?? 0;
+  const base = tierBase(host, tierIndex);
   const y0 = Math.max(
     minFloor,
-    clearFloor(host, axis, along / 2, width, buildings),
+    clearFloor(host.x, host.z, axis, along / 2, width, [host], buildings),
   );
   if (y0 + height + HOLE_LINTEL_MIN > base + tier.height) return null;
-  if (nearCrane(host, axis, along / 2, width / 2 + HOLE_CORRIDOR_MARGIN)) {
+  if (
+    nearCrane(host.x, host.z, axis, along / 2, width / 2 + HOLE_CORRIDOR_MARGIN)
+  ) {
     return null;
   }
   return { kind, axis, tierIndex, offset: 0, y0, width, height };
 }
 
-/** The axes along which `b` spans its whole block's buildable extent — both
- * mouths of a tunnel along such an axis open onto a street. */
-function spanningAxes(b: Building): HoleAxis[] {
-  const fits = (center: number, size: number) => {
-    const block = Math.floor(center / BLOCK_PITCH) * BLOCK_PITCH;
-    return (
-      Math.abs(center - size / 2 - (block + LOT_LINE)) < 0.01 &&
-      Math.abs(center + size / 2 - (block + BLOCK_PITCH - LOT_LINE)) < 0.01
-    );
-  };
-  const out: HoleAxis[] = [];
-  if (fits(b.x, b.width)) out.push("x");
-  if (fits(b.z, b.depth)) out.push("z");
-  return out;
+/** One lot a row tunnel cuts, and the tier it cuts through. */
+interface RowHost {
+  b: Building;
+  tier: number;
+}
+
+/** One candidate row tunnel: the lots it cuts, its line and its floor. */
+interface RowFit {
+  axis: HoleAxis;
+  /** World across coordinate of the centreline. */
+  line: number;
+  y0: number;
+  hosts: RowHost[];
+}
+
+/** A footprint's (along centre, along half, across centre, across half). */
+const frame = (b: Building, axis: HoleAxis) =>
+  axis === "x"
+    ? { a: b.x, ha: b.width / 2, c: b.z, hc: b.depth / 2 }
+    : { a: b.z, ha: b.depth / 2, c: b.x, hc: b.width / 2 };
+
+/** Does tier `t` of `b` (centred) keep HOLE_WALL_MIN walls round [lo, hi]? */
+function tierWalls(
+  b: Building,
+  t: number,
+  axis: HoleAxis,
+  lo: number,
+  hi: number,
+): boolean {
+  const tier = b.tiers[t];
+  if (!tier) return false;
+  const c = axis === "x" ? b.z : b.x;
+  const half = alongAcross(tier, axis).across / 2;
+  return c - half <= lo - HOLE_WALL_MIN && c + half >= hi + HOLE_WALL_MIN;
 }
 
 /**
- * The city-level pass: street tunnels and sky holes, assigned in place.
+ * The tier of `b` a row tunnel with floor `y0` cuts: it keeps HOLE_WALL_MIN
+ * walls round the band and a HOLE_LINTEL_MIN lintel, its base is at or under
+ * the floor (a sill fills any gap), and — above tier 0 — the roof of the tier
+ * below sits HOLE_CLEARANCE under the floor, like any roof the run passes
+ * over (the setback terrace either side of the cut tier is open air). Lowest
+ * such tier, or -1.
+ */
+function hostTier(
+  b: Building,
+  axis: HoleAxis,
+  lo: number,
+  hi: number,
+  y0: number,
+): number {
+  let base = 0;
+  for (let t = 0; t < b.tiers.length; t++) {
+    const tier = b.tiers[t] as Tier;
+    const top = base + tier.height;
+    if (
+      (t === 0 || base <= y0 - HOLE_CLEARANCE) &&
+      top >= y0 + TUNNEL_HEIGHT + HOLE_LINTEL_MIN &&
+      tierWalls(b, t, axis, lo, hi)
+    ) {
+      return t;
+    }
+    base = top;
+  }
+  return -1;
+}
+
+/**
+ * Fit a TUNNEL_WIDTH × TUNNEL_HEIGHT row tunnel along `axis` at world across
+ * coordinate `line` through the lots of one block. Every lot the hole band
+ * crosses is either
+ *   (i)   passed over — its roof sits HOLE_CLEARANCE under the floor (it is
+ *         in the run-out corridor, so clearFloor already put the floor there):
+ *         an open-sky slot in the run;
+ *   (ii)  a host — one of its tiers keeps HOLE_WALL_MIN walls either side and
+ *         a HOLE_LINTEL_MIN lintel round the hole (hostTier), and is cut;
+ *   (iii) or else the whole line is rejected.
+ * The run spans its hosts' cut tiers; the floor is the clear floor over the
+ * whole run from its OUTER mouths. Hosts and floor depend on each other (a lot
+ * passed over moves the mouths in), so they are settled by a short fixed
+ * point.
+ */
+function fitRow(
+  block: readonly Building[],
+  axis: HoleAxis,
+  line: number,
+  buildings: readonly Building[],
+): RowFit | null {
+  const w = TUNNEL_WIDTH;
+  const lo = line - w / 2;
+  const hi = line + w / 2;
+  const crossing = block.filter((b) => {
+    const f = frame(b, axis);
+    return f.c - f.hc < hi && f.c + f.hc > lo;
+  });
+  // Lots with a tier that could carry walls round the band are host
+  // candidates; any other lot the band crosses must end up under the floor.
+  let cand = crossing.filter(
+    (b) => !b.holes && b.tiers.some((_, t) => tierWalls(b, t, axis, lo, hi)),
+  );
+  let y0 = 0;
+  let hosts: RowHost[] = [];
+  for (let pass = 0; ; pass++) {
+    if (cand.length === 0 || pass === 4) return null;
+    // The run's extent: each candidate's widest wall-keeping tier for now.
+    let aLo = Number.POSITIVE_INFINITY;
+    let aHi = Number.NEGATIVE_INFINITY;
+    for (const b of cand) {
+      const t = b.tiers.findIndex((_, k) => tierWalls(b, k, axis, lo, hi));
+      const half = alongAcross(b.tiers[t] as Tier, axis).along / 2;
+      const a = axis === "x" ? b.x : b.z;
+      aLo = Math.min(aLo, a - half);
+      aHi = Math.max(aHi, a + half);
+    }
+    const mid = (aLo + aHi) / 2;
+    const cx = axis === "x" ? mid : line;
+    const cz = axis === "x" ? line : mid;
+    y0 = clearFloor(cx, cz, axis, (aHi - aLo) / 2, w, cand, buildings);
+    // A candidate whose whole roof is under the floor is passed over.
+    const next = cand.filter((b) => b.height > y0 - HOLE_CLEARANCE);
+    if (next.length < cand.length) {
+      cand = next;
+      continue;
+    }
+    hosts = [];
+    for (const b of cand) {
+      const tier = hostTier(b, axis, lo, hi, y0);
+      if (tier < 0) return null; // (iii)
+      hosts.push({ b, tier });
+    }
+    if (
+      nearCrane(cx, cz, axis, (aHi - aLo) / 2, w / 2 + HOLE_CORRIDOR_MARGIN)
+    ) {
+      return null;
+    }
+    break;
+  }
+  for (const b of crossing) {
+    if (hosts.some((h) => h.b === b)) continue;
+    if (b.height > y0 - HOLE_CLEARANCE) return null; // (iii)
+  }
+  return { axis, line, y0, hosts };
+}
+
+/** Meters of a fit's run that are actually cut (tunnel, not open slot). */
+const cutLength = (r: RowFit) =>
+  r.hosts.reduce(
+    (n, h) => n + alongAcross(h.b.tiers[h.tier] as Tier, r.axis).along,
+    0,
+  );
+
+/** More tunnel first, then the lower floor. */
+const better = (a: RowFit, b: RowFit) => {
+  const d = cutLength(a) - cutLength(b);
+  return d > 1e-6 || (d > -1e-6 && a.y0 < b.y0);
+};
+
+/** The best row tunnel for one block over every candidate line (each lot's
+ * across centre, and ± a quarter of its wall slack), on the axes in `order`:
+ * the most tunnel actually cut, then the lowest floor. Ties keep the first,
+ * so the result is order-stable. */
+function bestRow(
+  block: readonly Building[],
+  order: readonly HoleAxis[],
+  buildings: readonly Building[],
+): RowFit | null {
+  let best: RowFit | null = null;
+  for (const axis of order) {
+    for (const b of block) {
+      const f = frame(b, axis);
+      const slack = f.hc - TUNNEL_WIDTH / 2 - HOLE_WALL_MIN;
+      if (slack < 0) continue;
+      for (const k of [0, -0.25, 0.25]) {
+        const fit = fitRow(block, axis, f.c + k * slack, buildings);
+        if (fit && (!best || better(fit, best))) best = fit;
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * The city-level pass: row tunnels, gates and sky holes, assigned in place.
  *
  * Runs after every block is built because clear air is a property of the
  * NEIGHBOURS (the ticket's "above every neighbour along the axis"), so unlike
  * lots, holes are not a pure function of their own block. Randomness still
- * comes from a separately salted stream per block (`streamFor`), with a fixed
- * three draws per non-landmark building in array order, so no gate shifts
- * another building's roll and the lot streams are untouched. A block keeps at
- * most one tunnel (its first lot that wins the roll AND fits); a building
- * keeps at most one hole.
+ * comes from separately salted streams per block: `rowStreamFor` draws a
+ * fixed two per block (the row tunnel's roll and axis order), `streamFor` a
+ * fixed three per non-landmark building in array order, so no gate shifts
+ * another building's roll and the lot streams are untouched. A block keeps
+ * at most one row tunnel; a building keeps at most one hole.
  */
 export function assignHoles(
   buildings: Building[],
   streamFor: (bx: number, bz: number) => () => number,
+  rowStreamFor: (bx: number, bz: number) => () => number,
 ): void {
-  const streams = new Map<string, () => number>();
-  const tunnelled = new Set<string>();
+  // Buildings are generated block by block, so a block is a contiguous run.
+  const blocks = new Map<number, Building[]>();
   for (const b of buildings) {
-    if (b.height >= LANDMARK_HEIGHT || b.holes) continue;
     const bx = Math.floor(b.x / BLOCK_PITCH);
     const bz = Math.floor(b.z / BLOCK_PITCH);
-    const key = `${bx},${bz}`;
-    let rand = streams.get(key);
-    if (!rand) {
-      rand = streamFor(bx, bz);
-      streams.set(key, rand);
+    const key = bx * (WORLD_SIZE / BLOCK_PITCH) + bz;
+    let list = blocks.get(key);
+    if (!list) {
+      list = [];
+      blocks.set(key, list);
     }
-    const rTunnel = rand();
-    const rSky = rand();
-    const rAxis = rand();
+    list.push(b);
+  }
 
-    let hole: Hole | null = null;
-    if (!tunnelled.has(key) && rTunnel < TUNNEL_CHANCE) {
-      for (const axis of spanningAxes(b)) {
-        hole = fitHole(
-          "tunnel",
-          b,
-          axis,
-          0,
-          TUNNEL_WIDTH,
-          TUNNEL_HEIGHT,
-          HOLE_MIN_FLOOR,
-          buildings,
-        );
-        if (hole) break;
+  for (const [key, block] of blocks) {
+    if (block.some((b) => b.height >= LANDMARK_HEIGHT || b.holes)) continue;
+    const bx = Math.floor(key / (WORLD_SIZE / BLOCK_PITCH));
+    const bz = key % (WORLD_SIZE / BLOCK_PITCH);
+    const rowRand = rowStreamFor(bx, bz);
+    const rRow = rowRand();
+    const rRowAxis = rowRand();
+    if (rRow < ROW_TUNNEL_CHANCE) {
+      const order: HoleAxis[] = rRowAxis < 0.5 ? ["x", "z"] : ["z", "x"];
+      const row = bestRow(block, order, buildings);
+      if (row) {
+        for (const { b, tier } of row.hosts) {
+          const f = frame(b, row.axis);
+          b.holes = [
+            {
+              kind: "tunnel",
+              axis: row.axis,
+              tierIndex: tier,
+              offset: row.line - f.c,
+              y0: row.y0,
+              width: TUNNEL_WIDTH,
+              height: TUNNEL_HEIGHT,
+              run: key,
+            },
+          ];
+        }
       }
-      if (hole) tunnelled.add(key);
     }
-    if (!hole && b.height >= SKY_HOLE_MIN_HEIGHT && rSky < SKY_HOLE_CHANCE) {
-      const top = b.tiers.length - 1;
-      let base = 0;
-      for (let i = 0; i < top; i++) base += b.tiers[i]?.height ?? 0;
+
+    const rand = streamFor(bx, bz);
+    for (const b of block) {
+      const rGate = rand();
+      const rSky = rand();
+      const rAxis = rand();
+      if (b.holes) continue;
       const axes: HoleAxis[] = rAxis < 0.5 ? ["x", "z"] : ["z", "x"];
-      for (const axis of axes) {
-        hole = fitHole(
-          "sky",
-          b,
-          axis,
-          top,
-          SKY_HOLE_WIDTH,
-          SKY_HOLE_HEIGHT,
-          base + HOLE_SILL_MIN,
-          buildings,
-        );
-        if (hole) break;
+      let hole: Hole | null = null;
+      if (b.height >= GATE_MIN_HEIGHT && rGate < GATE_CHANCE) {
+        // The lowest tier that takes it: a big opening low in the slab.
+        for (let t = 0; t < b.tiers.length && !hole; t++) {
+          for (const axis of axes) {
+            hole = fitHole(
+              "gate",
+              b,
+              axis,
+              t,
+              GATE_WIDTH,
+              GATE_HEIGHT,
+              tierBase(b, t) + HOLE_SILL_MIN,
+              buildings,
+            );
+            if (hole) break;
+          }
+        }
       }
+      if (!hole && b.height >= SKY_HOLE_MIN_HEIGHT && rSky < SKY_HOLE_CHANCE) {
+        const top = b.tiers.length - 1;
+        for (const axis of axes) {
+          hole = fitHole(
+            "sky",
+            b,
+            axis,
+            top,
+            SKY_HOLE_WIDTH,
+            SKY_HOLE_HEIGHT,
+            tierBase(b, top) + HOLE_SILL_MIN,
+            buildings,
+          );
+          if (hole) break;
+        }
+      }
+      if (hole) b.holes = [hole];
     }
-    if (hole) b.holes = [hole];
   }
 }

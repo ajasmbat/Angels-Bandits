@@ -223,13 +223,18 @@ const EMPTY = (): RooftopLife => ({
 });
 
 /** Why a roof stays bare: landmarks (the beacon is the read), helipads (the
- * pad must stay clear) and towers whose top tier has a sky hole. */
+ * pad must stay clear) and towers whose top tier has a sky hole or gate. */
 export function rooftopLifeAllowed(b: Building): boolean {
   if (b.height >= LANDMARK_HEIGHT) return false;
   const topIndex = b.tiers.length - 1;
   if (topIndex < 0) return false;
   if (roofStyleFor(b).tierKinds[topIndex] === RoofKind.HELIPAD) return false;
-  if (b.holes?.some((h) => h.kind === "sky" && h.tierIndex === topIndex)) {
+  if (
+    b.holes?.some(
+      (h) =>
+        (h.kind === "sky" || h.kind === "gate") && h.tierIndex === topIndex,
+    )
+  ) {
     return false;
   }
   return true;

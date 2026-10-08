@@ -44,6 +44,7 @@ export {
   cityHoles,
   edgeFrame,
   holeEdges,
+  opensOnStreets,
   segmentThroughHole,
   solids,
 } from "./holes";
@@ -286,6 +287,9 @@ const blockSeed = (seed: number, bx: number, bz: number) =>
  * idiom), so adding holes moved no lot, and hole rolls never correlate with
  * lot rolls. */
 const HOLE_SALT = 0x4f1bbcdc;
+/** Salt for the H2 row-tunnel stream: its own per-block draws, so the row
+ * pass never shifts a gate or sky roll. */
+const ROW_SALT = 0x2c9277b5;
 
 /**
  * Generate the full city for a seed. Every block of the CITY_GRID×CITY_GRID
@@ -371,8 +375,10 @@ export function generateCity(seed: number): Building[] {
   // Tunnels and sky holes need their neighbours' heights (clear air beyond
   // both mouths), so they are cut once the whole city stands. Lots above
   // stay a pure function of (seed, bx, bz); holes do not.
-  assignHoles(buildings, (bx, bz) =>
-    mulberry32((blockSeed(seed, bx, bz) ^ HOLE_SALT) >>> 0),
+  assignHoles(
+    buildings,
+    (bx, bz) => mulberry32((blockSeed(seed, bx, bz) ^ HOLE_SALT) >>> 0),
+    (bx, bz) => mulberry32((blockSeed(seed, bx, bz) ^ ROW_SALT) >>> 0),
   );
   return buildings;
 }

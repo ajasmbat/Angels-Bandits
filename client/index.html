@@ -153,6 +153,52 @@
       #hitmarker.kill span:nth-child(4) {
         transform: translate(8px, 5px) rotate(-45deg);
       }
+      /* U1 damage feedback (ui/damage-indicator.ts drives both opacities
+         per frame): a red edge vignette scaled by the hit, and up to four
+         thin arcs on a ring round the screen centre, each rotated toward a
+         shooter. The ring's radius is min(40vw, 40vh) from the centre, so
+         it stays clear of the notch / home-bar safe areas on any phone. */
+      #damage-flash {
+        position: fixed;
+        inset: 0;
+        opacity: 0;
+        pointer-events: none;
+        background: radial-gradient(
+          ellipse at center,
+          transparent 55%,
+          rgba(255, 50, 80, 0.45) 82%,
+          rgba(255, 50, 80, 0.85) 100%
+        );
+        will-change: opacity;
+      }
+      #damage-arcs {
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        width: 0;
+        height: 0;
+        pointer-events: none;
+      }
+      #damage-arcs .arc {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 0;
+        height: 0;
+        opacity: 0;
+        will-change: transform, opacity;
+      }
+      #damage-arcs .arc::before {
+        content: "";
+        position: absolute;
+        left: -64px;
+        top: calc(-1 * min(40vw, 40vh));
+        width: 128px;
+        height: 22px;
+        border-top: 3px solid #ff4d6d;
+        border-radius: 50% 50% 0 0 / 100% 100% 0 0;
+        filter: drop-shadow(0 0 6px #ff4d6d);
+      }
       body.freelook #hitmarker {
         opacity: 0.3;
       }
@@ -1582,6 +1628,8 @@
       <line class="tick" x1="11" y1="24" x2="15" y2="24" />
       <line class="tick" x1="33" y1="24" x2="37" y2="24" />
     </svg>
+    <div id="damage-flash"></div>
+    <div id="damage-arcs"></div>
     <div id="hitmarker"><span></span><span></span><span></span><span></span></div>
     <svg id="aim-cursor" viewBox="0 0 40 40" aria-hidden="true">
       <circle class="ring" cx="20" cy="20" r="12" />

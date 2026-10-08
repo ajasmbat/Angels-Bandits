@@ -24,6 +24,7 @@ import { buildNatureIndex } from "@angels-bandits/common/collision";
 import {
   BLOCK_PITCH,
   BOOST_MAX_SPEED,
+  BULLET_DAMAGE,
   BULLET_SPEED,
   CLOUD_BASE,
   FOG_DISTANCE,
@@ -242,6 +243,7 @@ import { BotBar } from "./ui/botbar";
 import { CommsTicker } from "./ui/comms";
 import { initFullscreenUi } from "./ui/fullscreen";
 import { HPBAR_ALTITUDE, HpBarSprite, HpBarTracker } from "./ui/hpbar";
+import { DamageIndicator } from "./ui/damage-indicator";
 import { Hud } from "./ui/hud";
 import { requestName, showJoinError, showSignalLost } from "./ui/join";
 import { KillFeed } from "./ui/killfeed";
@@ -854,6 +856,11 @@ const leadIndicator = new LeadIndicator();
 // One soft tick on ACQUIRING a firing solution, never while it holds.
 const solutionTone = new SolutionTone();
 const markerScratch = new THREE.Vector3();
+// U1: getting shot — red edge flash, a thud, and an arc toward the shooter.
+const damageIndicator = new DamageIndicator();
+const viewDir = new THREE.Vector3();
+/** A shooter's live position for their arc; null once they're gone. */
+const shooterLivePos = (id: string) => remotes.poseOf(id)?.pos;
 const hpBar = new HpBarTracker();
 const hpBarSprite = new HpBarSprite();
 scene.add(hpBarSprite.sprite);
@@ -1048,6 +1055,7 @@ function enterDeath(killerId: string | null, cause?: "storm"): void {
   killCamTargetId = killerId;
   hud.showKillCam(killerId === null ? null : nameOf(killerId), cause);
   setBoostBurning(false, performance.now());
+  damageIndicator.clear();
   if (!alive) return;
   alive = false;
   plane.visible = false;
@@ -1069,6 +1077,7 @@ function respawnSelf(spawn: SpawnState): void {
   killCamTargetId = null;
   plane.visible = true;
   hud.hideKillCam();
+  damageIndicator.clear();
   guns.reset(performance.now());
   boost = createBoost(performance.now()); // fresh plane, full gauge
   lowHpArmed = true; // fresh plane, fresh "I'm hit" edge
@@ -1157,8 +1166,21 @@ socket.events.onDamage = (msg) => {
     }
   }
   if (msg.targetId === socket.selfId) {
+    // Read before the write below: the flash scales by what this hit took.
+    const lost = selfHp - msg.hp;
     selfHp = msg.hp;
     hud.setHp(msg.hp);
+    if (alive) {
+      const now = performance.now();
+      // A snapshot (or regen) can land between hits and eat the difference.
+      const dmg = lost > 0 ? lost : BULLET_DAMAGE;
+      const shooterPos =
+        msg.shooterId === socket.selfId
+          ? null
+          : remotes.poseOf(msg.shooterId)?.pos;
+      damageIndicator.hit(msg.shooterId, shooterPos, dmg, now);
+      audio.damageThud(now);
+    }
     radio.noteCombat(performance.now());
     if (lowHpArmed && msg.hp < LOW_HP_CALLOUT) {
       lowHpArmed = false;
@@ -2779,6 +2801,15 @@ const frame = (now: number): void => {
   hud.setHeat(heat.heat, heat.locked);
   hud.setBoost(boost.energy, boost.active);
   hud.update(now);
+  // The camera's real heading (free-look included) — the arcs are screen-
+  // relative, so they follow where the player is LOOKING, not the nose.
+  camera.getWorldDirection(viewDir);
+  damageIndicator.update(
+    now,
+    flight.pos,
+    Math.atan2(-viewDir.x, -viewDir.z),
+    shooterLivePos,
+  );
   const contacts = remotes.contacts();
   minimap.update(flight.pos, flight.yaw, contacts, reveals.pings(now));
   // 0 at ≤ MAX_SPEED, 1 at full boost speed: drives the engine pitch rise and

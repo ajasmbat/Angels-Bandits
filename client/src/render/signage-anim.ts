@@ -108,8 +108,9 @@ export const STUTTER_WINDOW_MS = 8_500;
  * next one cannot start before 30 s: ≥ 20 s between bursts by construction. */
 export const STUTTER_BURST_MAX_MS = 1_500;
 export const STUTTER_BURST_MIN_MS = 600;
-/** Share of slots that carry a burst ("occasionally"). */
-export const STUTTER_CHANCE = 0.45;
+/** Share of slots that carry a burst ("occasionally" — O5 made it rarer:
+ * at 0.45 a busy street always had one tube mid-stutter in view). */
+export const STUTTER_CHANCE = 0.3;
 /** Inside a burst the tube dips to this, never to black … */
 export const STUTTER_DIP = 0.35;
 /** … in dips of this length, no faster than 3 per second (photosensitivity
@@ -117,6 +118,20 @@ export const STUTTER_DIP = 0.35;
 export const STUTTER_FLASH_MS = 1000 / 3;
 /** Share of each flash period spent dipped. */
 const STUTTER_DUTY = 0.5;
+
+/**
+ * The dip `into` ms after a burst started: a raised-cosine trough over the
+ * first STUTTER_DUTY of each flash period, down to STUTTER_DIP and back, 1
+ * for the rest. O5: the dips used to be a square wave — a whole-tube step
+ * between two frames, which reads as render flicker rather than a failing
+ * tube. Same depth, same ≤ 3 dips per second, no hard edge.
+ */
+function stutterDip(into: number): number {
+  const phase = (into % STUTTER_FLASH_MS) / STUTTER_FLASH_MS;
+  if (phase >= STUTTER_DUTY) return 1;
+  const w = Math.sin((Math.PI * phase) / STUTTER_DUTY);
+  return 1 - (1 - STUTTER_DIP) * w * w;
+}
 
 /** Buzz audible inside this torus distance, meters. */
 export const BUZZ_RANGE_M = 45;
@@ -324,16 +339,15 @@ export function burstIn(
 }
 
 /** Broken tube's brightness multiplier at synced `ms`: 1 outside a burst;
- * inside one, STUTTER_DIP for the first half of each ≤ 3 Hz flash period. */
+ * inside one, a smooth trough to STUTTER_DIP over the first half of each
+ * ≤ 3 Hz flash period (stutterDip). */
 export function stutterAt(seed: number, ms: number): number {
   const slot = Math.floor(ms / STUTTER_SLOT_MS);
   const burst = burstIn(seed, slot);
   if (!burst) return 1;
   const into = ms - slot * STUTTER_SLOT_MS - burst.start;
   if (into < 0 || into >= burst.duration) return 1;
-  return (into % STUTTER_FLASH_MS) / STUTTER_FLASH_MS < STUTTER_DUTY
-    ? STUTTER_DIP
-    : 1;
+  return stutterDip(into);
 }
 
 /** Is the tube inside a burst at `ms` (drives the louder buzz)? */
@@ -420,9 +434,7 @@ export class BrokenNeon {
   level(i: number, ms: number): number {
     const into = this.into(i, ms);
     if (into < 0) return 1;
-    return (into % STUTTER_FLASH_MS) / STUTTER_FLASH_MS < STUTTER_DUTY
-      ? STUTTER_DIP
-      : 1;
+    return stutterDip(into);
   }
 
   /** Nearest tube to the listener (torus distance) and its buzz level. The
@@ -449,7 +461,8 @@ export class BrokenNeon {
     const lvl = this.level(best, ms);
     const burst = this.into(best, ms) >= 0;
     // Hum between bursts; crackle through the burst, peaking on the dips.
-    this.result.gain = near * (burst ? (lvl < 1 ? 1 : 0.6) : BUZZ_HUM);
+    this.result.gain =
+      near * (burst ? 0.6 + (0.4 * (1 - lvl)) / (1 - STUTTER_DIP) : BUZZ_HUM);
     return this.result;
   }
 

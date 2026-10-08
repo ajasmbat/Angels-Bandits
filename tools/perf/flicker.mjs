@@ -3,6 +3,7 @@
 //
 //     node tools/perf/flicker.mjs [--ref <git-ref>] [--frames 30] [--no-build]
 //                                 [--shots <dir>] [--out <file>] [--repeat N]
+//                                 [--grid] [--only name,name]
 //
 // Captures FRAMES consecutive frames on a FIXED 1/60 s clock and scores the
 // mean per-pixel frame-to-frame luminance change (0–255 units; lower is
@@ -38,6 +39,15 @@
 // AND dry (late in
 // the clear phase, wetness 0): a ref older than L4 has no weather at all,
 // so anything else would score rain streaks as flicker.
+//
+// `--grid` (O5) scores a GRID instead of the one midtown pair: every static
+// gallery view plus 20 seeded poses at 10–300 m (flicker-grid.mjs), each at
+// its own world instant (`__ab.pinWorld`, in a storm gap), FROZEN and then
+// PANNING sideways. Per view it reports the mean |Δluma| and `hot`, the
+// share of pixels whose luma moved more than HOT_DELTA in a step: shimmer
+// that a mean over a mostly-dark frame would average away. `--ref` then
+// prints the per-view before/after table. `--only` restricts it to named
+// views (e.g. to re-shoot one with --shots).
 //
 // Same browser knobs as run.mjs: AB_CHROME / AB_CHROME_ARGS.
 
@@ -100,6 +110,33 @@ const SCENES = {
   pan: { eye: { x: 900, y: 300, z: 1500 }, at: { x: 900, y: 40, z: 1150 } },
 };
 
+/** --grid: frames per view (frozen) and pan frames per view. */
+const GRID_FRAMES = 10;
+const GRID_PAN_FRAMES = 8;
+/** --grid: frames with camera AND world frozen. */
+const GRID_STILL_FRAMES = 4;
+/** --grid: steps on a new view before the first captured frame — time for
+ * the streamed detail around a teleported camera to land. */
+const GRID_SETTLE = 30;
+/** A pixel whose luma moved more than this in one step is `hot`. */
+const HOT_DELTA = 8;
+/**
+ * `jitter`: the share of pixels whose step changes SIGN at least twice in
+ * a capture (brighter, darker, brighter …), counting steps over this many
+ * luma units. A thing moving through a pixel at 60 fps brightens it then
+ * darkens it — one reversal; shimmer, z-fighting, a popping LOD or a
+ * strobing light keep reversing. It separates flicker from the city's own
+ * motion (traffic, trains, sweeps), which `score` and `hot` cannot.
+ */
+const JITTER_DELTA = 2;
+/**
+ * --grid: the verdict's absolute ceiling for a frozen view, O1's merged
+ * threshold: the O3 gate's limit for the midtown frozen view against main
+ * (0.041, tools/perf/README.md "Shimmer") — the calmest any frozen view
+ * of the game has been required to be.
+ */
+export const GRID_CEILING = 0.041;
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function parseArgs(argv) {
@@ -110,6 +147,8 @@ function parseArgs(argv) {
     out: null,
     shots: null,
     repeat: 1,
+    grid: false,
+    only: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -119,6 +158,8 @@ function parseArgs(argv) {
     else if (a === "--out") opts.out = resolve(process.cwd(), argv[++i]);
     else if (a === "--shots") opts.shots = resolve(process.cwd(), argv[++i]);
     else if (a === "--repeat") opts.repeat = Number(argv[++i]);
+    else if (a === "--grid") opts.grid = true;
+    else if (a === "--only") opts.only = argv[++i].split(",");
     else throw new Error(`unknown flag ${a}`);
   }
   if (!(opts.frames >= 3)) throw new Error("--frames must be >= 3");
@@ -208,67 +249,202 @@ function initScript() {
   };
 }
 
-/** Point the page at one scene: frame `i`'s view is `__flickerView(i)`. */
-function aimScene(page, scene) {
+/**
+ * Point the page at one view: frame `i` looks from `eye` at `at`, slid
+ * `i × panM` metres along `right` (horizontal) when `right` is given.
+ * The plane is held 330 m over the eye (see measureBuild).
+ */
+function aimView(page, spec, panM) {
   return page.evaluate(
-    ({ scene, panM }) => {
-      const s = window.__flickerScenes[scene];
+    ({ spec, panM }) => {
       window.__flickerView = (i) => {
-        const dx = scene === "pan" ? i * panM : 0;
+        const k = spec.right ? i * panM : 0;
+        const dx = spec.right ? spec.right.x * k : 0;
+        const dz = spec.right ? spec.right.z * k : 0;
         return {
-          eye: { x: s.eye.x + dx, y: s.eye.y, z: s.eye.z },
-          at: { x: s.at.x + dx, y: s.at.y, z: s.at.z },
+          eye: { x: spec.eye.x + dx, y: spec.eye.y, z: spec.eye.z + dz },
+          at: { x: spec.at.x + dx, y: spec.at.y, z: spec.at.z + dz },
         };
       };
       window.__flickerPrev = null;
-      window.__flickerPin = { x: s.eye.x, z: s.eye.z };
+      window.__flickerHeat?.fill(0);
+      window.__flickerPin = spec.plane ?? { x: spec.eye.x, z: spec.eye.z };
       window.__ab.qaCamera(window.__flickerView(0));
     },
-    { scene, panM: PAN_M },
+    { spec, panM },
   );
 }
 
+/** The classic pair as aimView specs (the pan slides +X, O1's). */
+const sceneSpec = (scene) => ({
+  eye: SCENES[scene].eye,
+  at: SCENES[scene].at,
+  right: scene === "pan" ? { x: 1, z: 0 } : null,
+});
+
 /** Read the canvas, luminance it, diff against the previous frame. */
 function readFrame(page) {
-  return page.evaluate(() => {
-    // The renderer's canvas: a WebGL one that is in the page (a capability
-    // probe's detached canvas never is), the largest if several are.
-    const src = (window.__flickerGls ?? [])
-      .filter((c) => c.isConnected)
-      .sort((a, b) => b.width * b.height - a.width * a.height)[0];
-    const w = src.width;
-    const h = src.height;
-    let c = window.__flickerCanvas;
-    if (!c || c.width !== w || c.height !== h) {
-      c = document.createElement("canvas");
-      c.width = w;
-      c.height = h;
-      window.__flickerCanvas = c;
-    }
-    const ctx = c.getContext("2d", { willReadFrequently: true });
-    ctx.drawImage(src, 0, 0);
-    const px = ctx.getImageData(0, 0, w, h).data;
-    const lum = new Float32Array(w * h);
-    let mean = 0;
-    for (let i = 0, j = 0; j < lum.length; i += 4, j++) {
-      // Rec. 709 luma on the display-referred (sRGB) bytes — what the eye
-      // sees change, which is what flicker is.
-      lum[j] = 0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2];
-      mean += lum[j];
-    }
-    const prev = window.__flickerPrev;
-    let delta = null;
-    if (prev) {
-      let sum = 0;
-      for (let j = 0; j < lum.length; j++) sum += Math.abs(lum[j] - prev[j]);
-      delta = sum / lum.length;
-    }
-    window.__flickerPrev = lum;
-    return { delta, mean: mean / lum.length };
-  });
+  return page.evaluate(
+    ([hotDelta, jitterDelta]) => {
+      // The renderer's canvas: a WebGL one that is in the page (a capability
+      // probe's detached canvas never is), the largest if several are.
+      const src = (window.__flickerGls ?? [])
+        .filter((c) => c.isConnected)
+        .sort((a, b) => b.width * b.height - a.width * a.height)[0];
+      const w = src.width;
+      const h = src.height;
+      let c = window.__flickerCanvas;
+      if (!c || c.width !== w || c.height !== h) {
+        c = document.createElement("canvas");
+        c.width = w;
+        c.height = h;
+        window.__flickerCanvas = c;
+      }
+      const ctx = c.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(src, 0, 0);
+      const px = ctx.getImageData(0, 0, w, h).data;
+      const lum = new Float32Array(w * h);
+      let mean = 0;
+      for (let i = 0, j = 0; j < lum.length; i += 4, j++) {
+        // Rec. 709 luma on the display-referred (sRGB) bytes — what the eye
+        // sees change, which is what flicker is.
+        lum[j] = 0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2];
+        mean += lum[j];
+      }
+      const prev = window.__flickerPrev;
+      let delta = null;
+      let hot = null;
+      if (prev) {
+        let sum = 0;
+        let n = 0;
+        // Per-pixel |Δ| summed over the capture: the --shots heat map.
+        let heat = window.__flickerHeat;
+        if (!heat || heat.length !== lum.length) {
+          heat = new Float32Array(lum.length);
+          window.__flickerHeat = heat;
+        }
+        // Jitter: per-pixel sign reversals of the step (see JITTER_DELTA).
+        let jit = window.__flickerJit;
+        if (!jit || jit.sign.length !== lum.length) {
+          jit = {
+            sign: new Int8Array(lum.length),
+            rev: new Uint8Array(lum.length),
+          };
+          window.__flickerJit = jit;
+        }
+        for (let j = 0; j < lum.length; j++) {
+          const s = lum[j] - prev[j];
+          const d = Math.abs(s);
+          sum += d;
+          heat[j] += d;
+          if (d > hotDelta) n++;
+          if (d > jitterDelta) {
+            const sg = s > 0 ? 1 : -1;
+            if (jit.sign[j] === -sg && jit.rev[j] < 255) jit.rev[j]++;
+            jit.sign[j] = sg;
+          }
+        }
+        delta = sum / lum.length;
+        hot = n / lum.length;
+      }
+      window.__flickerPrev = lum;
+      return { delta, hot, mean: mean / lum.length };
+    },
+    [HOT_DELTA, JITTER_DELTA],
+  );
 }
 
-async function measureBuild(browser, label, cwd, frames, shots) {
+/**
+ * Step and read `frames` frames of the aimed view (`__flickerView(i)`).
+ * `flash`: a step far above the view's own typical step — a storm strike's
+ * sky flash, which must never be scored as shimmer.
+ */
+async function captureFrames(page, frames, shots, tag) {
+  const deltas = [];
+  const hots = [];
+  const means = [];
+  // Each capture's heat map and jitter count are its own.
+  await page.evaluate(() => {
+    window.__flickerHeat?.fill(0);
+    window.__flickerJit?.sign.fill(0);
+    window.__flickerJit?.rev.fill(0);
+  });
+  for (let i = 0; i < frames; i++) {
+    await page.evaluate((i) => {
+      window.__ab.qaCamera(window.__flickerView(i));
+      if (window.__flickerStill != null)
+        window.__ab.pinWorld(window.__flickerStill);
+    }, i);
+    await page.clock.runFor(STEP_MS);
+    const f = await readFrame(page);
+    // --shots: the first and last captured frame, to look at before
+    // trusting a score (a wrong view scores as well as a right one).
+    // Written after the read, so it never perturbs the clock.
+    if (shots && (i === 0 || i === frames - 1)) {
+      const png = await page.evaluate(() =>
+        window.__flickerCanvas.toDataURL("image/png"),
+      );
+      mkdirSync(shots, { recursive: true });
+      writeFileSync(
+        resolve(shots, `${tag.replace(/\W+/g, "-")}-${i}.png`),
+        Buffer.from(png.split(",")[1], "base64"),
+      );
+    }
+    // --shots: where it moved — the summed |Δ| of the whole capture over a
+    // dimmed copy of the last frame (red = moved), to find what flickers.
+    if (shots && i === frames - 1) {
+      const png = await page.evaluate(() => {
+        const c = window.__flickerCanvas;
+        const ctx = c.getContext("2d", { willReadFrequently: true });
+        const img = ctx.getImageData(0, 0, c.width, c.height);
+        const heat = window.__flickerHeat;
+        for (let j = 0, k = 0; j < heat.length; j++, k += 4) {
+          const h = Math.min(255, heat[j] * 8);
+          img.data[k] = Math.max(img.data[k] * 0.35, h);
+          img.data[k + 1] *= 0.35;
+          img.data[k + 2] *= 0.35;
+        }
+        const out = document.createElement("canvas");
+        out.width = c.width;
+        out.height = c.height;
+        out.getContext("2d").putImageData(img, 0, 0);
+        return out.toDataURL("image/png");
+      });
+      writeFileSync(
+        resolve(shots, `${tag.replace(/\W+/g, "-")}-heat.png`),
+        Buffer.from(png.split(",")[1], "base64"),
+      );
+    }
+    means.push(f.mean);
+    if (f.delta !== null) {
+      deltas.push(f.delta);
+      hots.push(f.hot);
+    }
+  }
+  const avg = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
+  const jitter = await page.evaluate(() => {
+    const rev = window.__flickerJit?.rev;
+    if (!rev) return 0;
+    let n = 0;
+    for (let j = 0; j < rev.length; j++) if (rev[j] >= 2) n++;
+    return n / rev.length;
+  });
+  // Relative to the view's own typical step: a pan moves ~6 a step by
+  // itself, a frozen view ~0.1, and a flash jumps far above either.
+  const typical = [...deltas].sort((x, y) => x - y)[
+    Math.floor(deltas.length / 2)
+  ];
+  return {
+    score: Math.round(avg(deltas) * 1000) / 1000,
+    hot: Math.round(avg(hots) * 1e5) / 1e5,
+    jitter: Math.round(jitter * 1e5) / 1e5,
+    deltas: deltas.map((d) => Math.round(d * 1000) / 1000),
+    meanLuma: Math.round(avg(means) * 10) / 10,
+    flash: deltas.some((d) => d > Math.max(FLASH_DELTA, 3 * typical)),
+  };
+}
+
+async function measureBuild(browser, label, cwd, frames, shots, grid) {
   const { proc, port } = await startServer(cwd);
   const page = await browser.newPage({
     viewport: VIEWPORT,
@@ -301,7 +477,7 @@ async function measureBuild(browser, label, cwd, frames, shots) {
       window.__flickerPin = { x: 1000, z: 1500 };
       const pin = () => {
         const p = window.__flickerPin;
-        window.__ab.teleport(p.x, p.z, 330, 0);
+        window.__ab.teleport(p.x, p.z, p.y ?? 330, 0);
         requestAnimationFrame(pin);
       };
       pin();
@@ -368,59 +544,95 @@ async function measureBuild(browser, label, cwd, frames, shots) {
       errors,
       capturedAt: await page.evaluate(() => window.__ab.net().renderTime),
     };
-    for (const scene of Object.keys(SCENES)) {
-      await aimScene(page, scene);
-      // Two settle steps on the new view before the first captured frame.
-      for (let i = 0; i < 2; i++) await page.clock.runFor(STEP_MS);
-      const deltas = [];
-      const means = [];
-      for (let i = 0; i < frames; i++) {
-        await page.evaluate(
-          (i) => window.__ab.qaCamera(window.__flickerView(i)),
-          i,
+    if (grid) {
+      result.views = [];
+      for (const v of grid) {
+        // Its own world instant, sky phase and clear-dry weather, then the
+        // plane over its eye (the city streams around the plane).
+        const wx = await page.evaluate((v) => {
+          const ab = window.__ab;
+          ab.pinWorld(v.timeMs);
+          ab.sky(v.sky);
+          if (typeof ab.weather !== "function") return { phase: "none" };
+          const mid = ab.weather("clear");
+          return ab.weather(mid.timeMs + 90_000);
+        }, v);
+        const still = { eye: v.eye, at: v.at, right: null, plane: v.plane };
+        await aimView(page, still, PAN_M);
+        for (let i = 0; i < GRID_SETTLE; i++) await page.clock.runFor(STEP_MS);
+        const frozen = await captureFrames(
+          page,
+          GRID_FRAMES,
+          shots,
+          `${label}-${v.name}-frozen`,
         );
-        await page.clock.runFor(STEP_MS);
-        const f = await readFrame(page);
-        // --shots: the first and last captured frame of each scene, to look
-        // at before trusting a score (a wrong view scores as well as a right
-        // one). Written after the read, so it never perturbs the clock.
-        if (shots && (i === 0 || i === frames - 1)) {
-          const png = await page.evaluate(() =>
-            window.__flickerCanvas.toDataURL("image/png"),
-          );
-          mkdirSync(shots, { recursive: true });
-          writeFileSync(
-            resolve(shots, `${label.replace(/\W+/g, "-")}-${scene}-${i}.png`),
-            Buffer.from(png.split(",")[1], "base64"),
+        // STILL: camera AND world frozen (the world re-pinned to one instant
+        // every frame), so anything that still moves is not animation at
+        // all — per-frame noise, a scaler step, a frame-time-driven state.
+        const stillAt = await page.evaluate(() => window.__ab.net().renderTime);
+        const stillMs = v.timeMs + (GRID_SETTLE + GRID_FRAMES) * STEP_MS;
+        await page.evaluate((t) => {
+          window.__flickerStill = t;
+        }, stillMs);
+        const frozenWorld = await captureFrames(
+          page,
+          GRID_STILL_FRAMES,
+          shots,
+          `${label}-${v.name}-still`,
+        );
+        await page.evaluate(() => {
+          window.__flickerStill = null;
+        });
+        await aimView(
+          page,
+          { eye: v.eye, at: v.at, right: v.right, plane: v.plane },
+          PAN_M,
+        );
+        for (let i = 0; i < 2; i++) await page.clock.runFor(STEP_MS);
+        const pan = await captureFrames(
+          page,
+          GRID_PAN_FRAMES,
+          shots,
+          `${label}-${v.name}-pan`,
+        );
+        const alive = await page.evaluate(() => window.__ab.combat().alive);
+        result.views.push({
+          name: v.name,
+          timeMs: v.timeMs,
+          weather: { phase: wx.phase, wetness: wx.wetness ?? 0 },
+          alive,
+          frozen,
+          still: frozenWorld,
+          pan,
+          rt: stillAt,
+        });
+        console.log(
+          `  ${label} ${v.name.padEnd(18)} frozen ${frozen.score.toFixed(3)} hot ${(frozen.hot * 100).toFixed(2)}% jitter ${(frozen.jitter * 100).toFixed(3)}% (pan ${(pan.jitter * 100).toFixed(2)}%)  still ${frozenWorld.score.toFixed(3)}  pan ${pan.score.toFixed(3)}${frozen.flash || pan.flash ? "  FLASH" : ""}${frozen.meanLuma < 2 ? "  BLACK" : ""}`,
+        );
+      }
+    } else {
+      for (const scene of Object.keys(SCENES)) {
+        await aimView(page, sceneSpec(scene), PAN_M);
+        // Two settle steps on the new view before the first captured frame.
+        for (let i = 0; i < 2; i++) await page.clock.runFor(STEP_MS);
+        result[scene] = await captureFrames(
+          page,
+          frames,
+          shots,
+          `${label}-${scene}`,
+        );
+        if (result[scene].flash) {
+          throw new Error(
+            `${label} ${scene}: a storm flash landed in the capture (max step ${Math.max(...result[scene].deltas).toFixed(2)}) — move CAPTURE_AT_MS`,
           );
         }
-        means.push(f.mean);
-        if (f.delta !== null) deltas.push(f.delta);
-      }
-      const mean = deltas.reduce((a, b) => a + b, 0) / deltas.length;
-      result[scene] = {
-        score: Math.round(mean * 1000) / 1000,
-        deltas: deltas.map((d) => Math.round(d * 1000) / 1000),
-        meanLuma:
-          Math.round((means.reduce((a, b) => a + b, 0) / means.length) * 10) /
-          10,
-      };
-      // Relative to the scene's own typical step: a pan moves ~6 a step by
-      // itself, a frozen view ~0.1, and a flash jumps far above either.
-      const typical = [...deltas].sort((x, y) => x - y)[
-        Math.floor(deltas.length / 2)
-      ];
-      if (deltas.some((d) => d > Math.max(FLASH_DELTA, 3 * typical))) {
-        throw new Error(
-          `${label} ${scene}: a storm flash landed in the capture (max step ${Math.max(...deltas).toFixed(2)}) — move CAPTURE_AT_MS`,
-        );
-      }
-      // A black or blank capture scores 0 — the calmest possible — and would
-      // pass any verdict. Refuse it instead.
-      if (result[scene].meanLuma < 2) {
-        throw new Error(
-          `${label} ${scene}: frames are black (mean luma ${result[scene].meanLuma})`,
-        );
+        // A black or blank capture scores 0 — the calmest possible — and
+        // would pass any verdict. Refuse it instead.
+        if (result[scene].meanLuma < 2) {
+          throw new Error(
+            `${label} ${scene}: frames are black (mean luma ${result[scene].meanLuma})`,
+          );
+        }
       }
     }
     result.alive = await page.evaluate(() => window.__ab.combat().alive);
@@ -431,10 +643,73 @@ async function measureBuild(browser, label, cwd, frames, shots) {
   }
 }
 
+/** A run's frozen score: the classic view's, or the grid's sum. */
+const runScore = (r) =>
+  r.views ? r.views.reduce((a, v) => a + v.frozen.score, 0) : r.frozen.score;
+
 /** The run whose frozen score is the median (a whole run, never a mix). */
 function medianRun(runs) {
-  const sorted = [...runs].sort((a, b) => a.frozen.score - b.frozen.score);
+  const sorted = [...runs].sort((a, b) => runScore(a) - runScore(b));
   return sorted[Math.floor(sorted.length / 2)];
+}
+
+/**
+ * The O5 per-view verdict, frozen camera: a view that shimmered before
+ * (ref above the tool's own resolution, TOLERANCE.abs) must at least halve;
+ * a calm one must stay calm (verdict() — not worse). Every view must also
+ * sit under GRID_CEILING. A view whose capture caught a flash or came back
+ * black is not judged (and fails the run: it measured nothing).
+ */
+export function gridViewVerdict(head, ref) {
+  const halved = ref > TOLERANCE.abs ? head <= ref * 0.5 : true;
+  const notWorse = verdict(head, ref).pass;
+  const ceiling = head <= GRID_CEILING;
+  return { pass: halved && notWorse && ceiling, halved, notWorse, ceiling };
+}
+
+function printGrid(report) {
+  const head = report.head;
+  const ref = report.ref ?? null;
+  const pct = (h) => `${(h * 100).toFixed(2)}%`.padStart(7);
+  console.log(
+    `\nflicker grid — mean |Δluma| per pixel per 1/60 s step (hot = share of pixels moving > ${HOT_DELTA}), ${VIEWPORT.width}x${VIEWPORT.height}`,
+  );
+  console.log(
+    ref
+      ? `${"view".padEnd(18)} ${"frozen ref".padStart(10)} ${"→ HEAD".padStart(7)}  ${"hot ref".padStart(7)} ${"→ HEAD".padStart(7)}  ${"jit ref".padStart(7)} ${"→ HEAD".padStart(7)}  ${"panjit".padStart(7)} ${"→ HEAD".padStart(7)}  ${"still ref".padStart(9)} ${"→ HEAD".padStart(7)}  ${"pan ref".padStart(7)} ${"→ HEAD".padStart(7)}  verdict`
+      : `${"view".padEnd(18)} ${"frozen".padStart(7)} ${"hot".padStart(7)} ${"jitter".padStart(7)} ${"panjit".padStart(7)} ${"still".padStart(7)} ${"pan".padStart(7)}`,
+  );
+  let pass = true;
+  const rows = [];
+  for (const h of head.views) {
+    const r = ref?.views.find((v) => v.name === h.name) ?? null;
+    const bad = (v) =>
+      v.frozen.flash || v.pan.flash || v.frozen.meanLuma < 2 || !v.alive;
+    if (!r) {
+      console.log(
+        `${h.name.padEnd(18)} ${h.frozen.score.toFixed(3).padStart(7)} ${pct(h.frozen.hot)} ${pct(h.frozen.jitter ?? 0)} ${pct(h.pan.jitter ?? 0)} ${h.still.score.toFixed(3).padStart(7)} ${h.pan.score.toFixed(3).padStart(7)}${bad(h) ? "  INVALID" : ""}`,
+      );
+      continue;
+    }
+    const v = gridViewVerdict(h.frozen.score, r.frozen.score);
+    const invalid = bad(h) || bad(r);
+    if (invalid || !v.pass) pass = false;
+    rows.push({ name: h.name, ...v, invalid });
+    const why = invalid
+      ? "INVALID (flash/black/dead)"
+      : v.pass
+        ? "PASS"
+        : `FAIL${v.halved ? "" : " (not halved)"}${v.notWorse ? "" : " (worse)"}${v.ceiling ? "" : " (over ceiling)"}`;
+    console.log(
+      `${h.name.padEnd(18)} ${r.frozen.score.toFixed(3).padStart(10)} ${h.frozen.score.toFixed(3).padStart(7)}  ${pct(r.frozen.hot)} ${pct(h.frozen.hot)}  ${pct(r.frozen.jitter ?? 0)} ${pct(h.frozen.jitter ?? 0)}  ${pct(r.pan.jitter ?? 0)} ${pct(h.pan.jitter ?? 0)}  ${r.still.score.toFixed(3).padStart(9)} ${h.still.score.toFixed(3).padStart(7)}  ${r.pan.score.toFixed(3).padStart(7)} ${h.pan.score.toFixed(3).padStart(7)}  ${why}`,
+    );
+  }
+  if (ref) {
+    report.gridVerdict = { pass, rows };
+    console.log(
+      `\ngrid: ${rows.filter((r) => r.pass && !r.invalid).length}/${rows.length} views pass — ${pass ? "PASS" : "FAIL"} (frozen: halve any view over ${TOLERANCE.abs}, never worse, none over ${GRID_CEILING}; pan is indicative)`,
+    );
+  }
 }
 
 export function verdict(head, ref) {
@@ -472,9 +747,25 @@ async function main() {
     // Interleaved (HEAD, ref, HEAD, ref, …) so any drift on the box lands
     // in both builds; the verdict is taken on the medians.
     const runs = { head: [], ref: [] };
+    // --grid: the views and their world instants, identical for both builds.
+    let grid = null;
+    if (opts.grid) {
+      const { gridViews } = await import("./flicker-grid.mjs");
+      grid = gridViews(EPOCH_MS + CAPTURE_AT_MS + 60_000).filter(
+        (v) => opts.only === null || opts.only.includes(v.name),
+      );
+      report.grid = grid;
+    }
     for (let r = 0; r < opts.repeat; r++) {
       runs.head.push(
-        await measureBuild(browser, "HEAD", REPO, opts.frames, opts.shots),
+        await measureBuild(
+          browser,
+          "HEAD",
+          REPO,
+          opts.frames,
+          opts.shots,
+          grid,
+        ),
       );
       if (ref !== null) {
         runs.ref.push(
@@ -484,6 +775,7 @@ async function main() {
             ref.dir,
             opts.frames,
             opts.shots,
+            grid,
           ),
         );
       }
@@ -493,6 +785,15 @@ async function main() {
     if (ref !== null) report.ref = medianRun(runs.ref);
   } finally {
     await browser.close().catch(() => {});
+  }
+  if (opts.grid) {
+    printGrid(report);
+    const out = opts.out ?? resolve(HERE, "flicker-grid-last.json");
+    mkdirSync(dirname(out), { recursive: true });
+    writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`);
+    console.log(`wrote ${out}`);
+    if (report.gridVerdict && !report.gridVerdict.pass) process.exitCode = 1;
+    return;
   }
 
   const line = (r) =>

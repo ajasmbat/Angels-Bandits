@@ -331,7 +331,9 @@ function frameAt(
 ): Frame {
   const s = mod(u, length);
   let seg = segments[segments.length - 1] as Segment;
-  for (const candidate of segments) {
+  // Indexed, not for…of: this runs per car per probe (O5).
+  for (let i = 0; i < segments.length; i++) {
+    const candidate = segments[i] as Segment;
     if (s < candidate.s0 + candidate.len) {
       seg = candidate;
       break;

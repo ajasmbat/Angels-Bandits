@@ -220,6 +220,11 @@ export const BANK_ANGLE = 1.0;
  * critically damped spring — it leans in from a standing start and rolls
  * out without overshoot, ~0.55 s to 90% either way. */
 export const BANK_FREQ = 7;
+/** Cap on the bank target, rad (~80°, F7). Full turn plus same-side A/D
+ * asked for 2 rad (~115°) — the model drawn past knife-edge while it flies a
+ * flat turn. The bank spring never overshoots its target, so roll itself
+ * stays inside ±this. Roll is visual only, so bots fly exactly as before. */
+export const MAX_VISUAL_BANK = 1.4;
 /** Pitch is clamped to ±this, rad (~85° — arcade mouse-aim never goes vertical). */
 export const PITCH_LIMIT = 1.48;
 /** Player collision-sphere radius, meters. */

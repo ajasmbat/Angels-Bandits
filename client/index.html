@@ -943,12 +943,13 @@
       }
 
       /* Compact touch HUD: everything in a thin top band, the bottom of the
-         screen is the thumbs' (M1). */
+         screen is the thumbs' (M1). The band ends under the stats line
+         (12 px text below the minimap). */
       body.touch {
         --gut-x: 10px;
         --gut-y: 8px;
         --mini: 96px;
-        --hud-top-band: calc(var(--safe-t) + var(--gut-y) + var(--mini) + 18px);
+        --hud-top-band: calc(var(--safe-t) + var(--gut-y) + var(--mini) + 26px);
       }
       body.touch #minimap {
         pointer-events: auto;
@@ -956,7 +957,7 @@
       body.touch #hud {
         top: calc(var(--gut-y) + var(--safe-t) + var(--mini) + 4px);
         bottom: auto;
-        font-size: 10px;
+        font-size: 12px;
         line-height: 1.4;
         white-space: nowrap;
       }
@@ -978,34 +979,46 @@
       body.touch .gauge .bar {
         height: 8px;
       }
+      body.touch .gauge label {
+        font-size: 11px;
+      }
       body.touch .gauge .key {
         display: none;
       }
-      body.touch #protected-badge,
-      body.touch #radio-toggle,
-      body.touch #quality-toggle {
+      body.touch #protected-badge {
+        flex: 1 0 auto;
         margin-top: 6px;
         text-align: left;
       }
-      body.touch #protected-badge {
-        flex: 1 0 auto;
-      }
+      /* M9: no stray tap mid-flight changes the radio voice or the quality
+         tier — on touch both live on the settings screen only. */
       body.touch #radio-toggle,
       body.touch #quality-toggle {
-        flex: 0 0 auto;
-        padding: 4px 0;
-        margin-top: 2px;
+        display: none;
       }
+      /* Fullscreen and settings side by side in the top-right corner: 28 px
+         icons, each with a 44 px hit area (::before, below) that only meets
+         its neighbour's edge. */
       body.touch #fs-btn {
         top: calc(var(--gut-y) + var(--safe-t));
         bottom: auto;
-        width: 26px;
-        height: 26px;
+        right: calc(var(--gut-x) + var(--safe-r) + 44px);
+        width: 28px;
+        height: 28px;
         opacity: 0.6;
       }
+      body.touch #fs-btn::before,
+      body.touch #settings-btn::before {
+        content: "";
+        position: absolute;
+        left: calc(50% - 22px);
+        top: calc(50% - 22px);
+        width: 44px;
+        height: 44px;
+      }
       body.touch #killfeed {
-        right: calc(var(--gut-x) + var(--safe-r) + 36px);
-        font-size: 11px;
+        right: calc(var(--gut-x) + var(--safe-r) + 88px);
+        font-size: 12px;
         line-height: 1.5;
       }
       /* Long callsigns ellipsize rather than run into the gauges. */
@@ -1024,9 +1037,9 @@
         display: none;
       }
       body.touch #comms {
-        top: calc(var(--gut-y) + var(--safe-t) + 54px);
-        right: calc(var(--gut-x) + var(--safe-r) + 36px);
-        font-size: 10px;
+        top: calc(var(--gut-y) + var(--safe-t) + 58px);
+        right: calc(var(--gut-x) + var(--safe-r) + 88px);
+        font-size: 11px;
         line-height: 1.5;
       }
       body.touch #freelook-hint,
@@ -1039,7 +1052,9 @@
       body.touch #perfhud {
         top: calc(var(--hud-top-band) + 4px);
       }
+      /* Over M5's chips (z-index 6): they sit where the panel opens. */
       body.touch #scoreboard {
+        z-index: 7;
         padding: 8px 14px;
         min-width: 280px;
         max-height: calc(
@@ -1052,6 +1067,12 @@
         margin-bottom: 4px;
       }
       body.touch #scoreboard table {
+        font-size: 13px;
+      }
+      body.touch #scoreboard th,
+      body.touch #bots-control .head label,
+      body.touch #bots-by,
+      body.touch #bots-control .scale {
         font-size: 11px;
       }
       body.touch #scoreboard th,
@@ -1062,8 +1083,14 @@
         margin-top: 8px;
         padding-top: 6px;
       }
+      /* M9: the strip is one 44 px tall control (notchAt reads x only);
+         the cells inside it are 36 px. */
+      body.touch #bots-cells {
+        padding: 4px 0;
+      }
       body.touch #bots-cells .cell {
-        height: 22px;
+        height: 36px;
+        box-sizing: border-box;
       }
 
       /* Join card vs the on-screen keyboard: the card spans what is actually
@@ -1189,14 +1216,14 @@
         bottom: calc(var(--safe-b) + 128px);
         width: 60px;
         height: 60px;
-        font-size: 10px;
+        font-size: 11px;
       }
       #touch-zoom {
         right: calc(var(--safe-r) + 18px);
         bottom: calc(var(--safe-b) + 18px);
         width: 64px;
         height: 64px;
-        font-size: 10px;
+        font-size: 11px;
       }
       /* Kill-cam: nothing to fire, boost or zoom. */
       #touch-ui.dead #touch-fire,
@@ -1214,11 +1241,71 @@
       }
       #touch-icons .tc {
         position: static;
-        width: 38px;
-        height: 34px;
+        width: 44px;
+        height: 44px;
         border-radius: 6px;
-        font-size: 12px;
+        font-size: 13px;
         letter-spacing: 0;
+      }
+      /* ===== M9 short screens ================================================
+         Safari tabs (~320-350 px tall), windowed Android (~300 px), in-app
+         browsers: a smaller minimap (so a shorter top band — 80 px keeps the
+         chips row clear of the PROTECTED badge above it), BOOST beside FIRE
+         instead of above it, a smaller ZOOM, and fewer killfeed / comms lines
+         so they end above the chips. */
+      @media (max-height: 340px) {
+        body.touch {
+          --mini: 80px;
+        }
+        #touch-fire {
+          bottom: calc(var(--safe-b) + 14px);
+          width: 84px;
+          height: 84px;
+        }
+        #touch-boost {
+          left: calc(var(--safe-l) + 182px);
+          bottom: calc(var(--safe-b) + 30px);
+          width: 56px;
+          height: 56px;
+        }
+        #touch-zoom {
+          bottom: calc(var(--safe-b) + 14px);
+          width: 56px;
+          height: 56px;
+        }
+        body.touch #killfeed,
+        body.touch #comms {
+          max-width: calc((100vw - var(--safe-l) - var(--safe-r)) * 0.25);
+        }
+        body.touch #killfeed .entry:nth-last-child(n + 3),
+        body.touch #comms .entry:nth-last-child(n + 2) {
+          display: none;
+        }
+        body.touch #comms {
+          top: calc(var(--gut-y) + var(--safe-t) + 38px);
+          line-height: 1.4;
+        }
+        /* Roster | bot control side by side: the control is never clipped
+           off the bottom of a short screen (the roster's tail may be). */
+        body.touch #scoreboard.open {
+          display: grid;
+          grid-template-columns: auto 200px;
+          column-gap: 18px;
+          align-items: start;
+        }
+        body.touch #scoreboard h2 {
+          grid-column: 1 / -1;
+        }
+        body.touch #scoreboard td {
+          white-space: nowrap;
+        }
+        body.touch #bots-control {
+          grid-column: 2;
+          grid-row: 2;
+          margin-top: 0;
+          padding-top: 0;
+          border-top: none;
+        }
       }
 
       /* Back from the background with a dead socket (server liveness) or a
@@ -1467,9 +1554,9 @@
       body.touch #settings-btn {
         left: auto;
         right: calc(var(--gut-x) + var(--safe-r));
-        top: calc(var(--gut-y) + var(--safe-t) + 34px);
-        width: 26px;
-        height: 26px;
+        top: calc(var(--gut-y) + var(--safe-t));
+        width: 28px;
+        height: 28px;
         opacity: 0.6;
       }
       /* ===== end M6 settings panel ========================================== */
@@ -1485,8 +1572,8 @@
         display: none;
         position: fixed;
         left: calc(var(--gut-x) + var(--safe-l) + var(--mini) + 10px);
-        /* Bottom-aligned with the minimap (2 px up): clear of the gauges'
-           second row above and the #hud stats line below it. */
+        /* Level with the minimap's bottom edge (2 px past it): clear of the
+           gauges' second row above and the #hud stats line below it. */
         top: calc(var(--gut-y) + var(--safe-t) + var(--mini) - 26px);
         gap: 6px;
         z-index: 6;
@@ -1501,10 +1588,11 @@
       #fs-chips button {
         appearance: none;
         -webkit-appearance: none;
+        position: relative;
         display: inline-flex;
         align-items: center;
         gap: 5px;
-        height: 24px;
+        height: 28px;
         margin: 0;
         padding: 0 10px;
         background: #0c0b18cc;
@@ -1512,13 +1600,22 @@
         border-radius: 12px;
         color: #9fd8e8;
         font: inherit;
-        font-size: 9px;
+        font-size: 11px;
         letter-spacing: 0.12em;
         white-space: nowrap;
         cursor: pointer;
         pointer-events: auto;
         touch-action: manipulation;
         -webkit-tap-highlight-color: transparent;
+      }
+      /* M9: a 44 px tall hit area around the 28 px chip. */
+      #fs-chips button::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: calc(50% - 22px);
+        width: 100%;
+        height: 44px;
       }
       #fs-chips svg {
         width: 12px;
@@ -1536,6 +1633,8 @@
         border-right: none;
       }
       #install-chip #install-dismiss {
+        justify-content: center;
+        min-width: 44px;
         padding: 0 8px;
         border-radius: 0 12px 12px 0;
       }
@@ -1663,10 +1762,10 @@
       <div id="touch-fire" class="tc">FIRE</div>
       <div id="touch-boost" class="tc">BOOST</div>
       <div id="touch-zoom" class="tc">ZOOM</div>
+      <!-- M9: aim mode and sensitivity are on the settings screen only —
+           a stray tap mid-fight must not flip them. -->
       <div id="touch-icons">
         <div id="touch-score" class="tc" title="Scoreboard">≡</div>
-        <div id="touch-aim-mode" class="tc" title="Aim mode">◎</div>
-        <div id="touch-sens" class="tc" title="Aim sensitivity">1.5×</div>
       </div>
     </div>
     <svg id="crosshair" viewBox="0 0 48 48" aria-hidden="true">

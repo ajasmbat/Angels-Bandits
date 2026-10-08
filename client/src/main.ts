@@ -96,7 +96,7 @@ import {
   holeCorridors,
   stepCornerCap,
 } from "./game/corner-speed";
-import { FlightInputSource } from "./game/flight-input";
+import { type AimMode, FlightInputSource } from "./game/flight-input";
 import { createFreeLook, shapeInput, stepFreeLook } from "./game/freelook";
 import { Guns } from "./game/guns";
 import { bulletImpact, impactKind } from "./game/hitdetect";
@@ -259,7 +259,12 @@ import { KillFeed } from "./ui/killfeed";
 import { LeadIndicator, SolutionTone } from "./ui/lead";
 import { EdgeMarkers } from "./ui/markers";
 import { Minimap } from "./ui/minimap";
-import { coarsePointer, initMobileShell, whenTouch } from "./ui/mobile";
+import {
+  coarsePointer,
+  initMobileShell,
+  isTouch,
+  whenTouch,
+} from "./ui/mobile";
 import { PerfHud, bindPerfHudKey, perfHudKeyEnabled } from "./ui/perfhud";
 import { initPhoneFullscreen } from "./ui/phone-fullscreen";
 import { Scoreboard } from "./ui/scoreboard";
@@ -1844,11 +1849,14 @@ declare global {
 }
 // --- M6 settings panel ---------------------------------------------------
 // Portrait on a phone, or the gear / Esc anywhere: graphics, resolution,
-// controls, sound — all applied live through the same seams G, M, the HUD
-// toggles and M1's icons use. While it is open the touch controls are
+// controls, sound — all applied live through the same seams G, M and the HUD
+// toggles use. While it is open the touch controls are
 // suspended, every held key and the trigger are dropped, and the autopilot
 // (ui/settings.ts) flies the plane level and out of the skyline.
 let settingsOpen = false;
+/** The aim as the settings screen opened: what changed is toasted when it
+ * closes (M9), since the screen covers the HUD while it is open. */
+let aimAtOpen: { mode: AimMode; sensitivity: number | null } | null = null;
 const settingsPanel = new SettingsPanel(
   {
     quality: () => ({ setting: qualitySetting, tier: qualityTier }),
@@ -1891,7 +1899,20 @@ const settingsPanel = new SettingsPanel(
       // Resuming recentres the touch aim onto the gun line (M7), so the
       // instructor picks up flying straight rather than from a stale point.
       touchControls?.setSuspended(open);
-      if (!open) return;
+      const sensitivity = touchControls?.debug().sensitivity ?? null;
+      if (!open) {
+        if (aimAtOpen) {
+          const mode = input.aimMode();
+          hud.showAimChanges(
+            mode !== aimAtOpen.mode ? mode : null,
+            sensitivity !== aimAtOpen.sensitivity ? sensitivity : null,
+            isTouch(),
+          );
+        }
+        aimAtOpen = null;
+        return;
+      }
+      aimAtOpen = { mode: input.aimMode(), sensitivity };
       input.releaseKeys();
       guns.setTrigger(false);
       guns.setAutoTrigger(false);
@@ -2339,7 +2360,8 @@ const frame = (now: number): void => {
     // command from the other mode ever reaches the plane.
     aimMode = input.aimMode();
     instructor = createInstructor();
-    hud.showAimMode(aimMode);
+    // Changed on the settings screen: toasted when it closes.
+    if (!settingsOpen) hud.showAimMode(aimMode, isTouch());
   }
   // Step the zoom OUTSIDE the alive gate: chase.update() only runs while
   // alive, so a death mid-zoom would otherwise freeze the FOV narrowed for
@@ -3043,9 +3065,13 @@ const frame = (now: number): void => {
     perf.fps = 1000 / perf.frameMs;
     perf.frames = 0;
     perf.ms = 0;
-    hudEl.textContent =
+    const stats =
       `SPD ${flight.speed.toFixed(0)} m/s  THR ${flight.targetSpeed.toFixed(0)}  ` +
-      `ALT ${flight.pos.y.toFixed(0)} m  PLR ${remotes.count + 1}  FPS ${perf.fps.toFixed(0)}`;
+      `ALT ${flight.pos.y.toFixed(0)} m`;
+    // Touch (M9): a short line for the top band — no player count or FPS.
+    hudEl.textContent = isTouch()
+      ? stats
+      : `${stats}  PLR ${remotes.count + 1}  FPS ${perf.fps.toFixed(0)}`;
   }
 };
 renderer.setAnimationLoop(frame);

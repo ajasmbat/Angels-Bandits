@@ -12,7 +12,10 @@
 // sees every snapshot land on the local clock.
 
 import type { CityEvent } from "@angels-bandits/common/cityevents";
-import { TICK_UP_HZ } from "@angels-bandits/common/constants";
+import {
+  CONNECT_TIMEOUT_MS,
+  TICK_UP_HZ,
+} from "@angels-bandits/common/constants";
 import { decodeSnapshotEntry } from "@angels-bandits/common/net";
 import type {
   BotsConfigMsg,
@@ -99,22 +102,35 @@ export class GameSocket {
     ws.addEventListener("close", () => this.events.onClose?.());
   }
 
-  /** Connect and join; resolves once the server's welcome arrives. */
+  /** Connect and join; resolves once the server's welcome arrives. Always
+   * settles (W1): an error, a close before the welcome, or no welcome within
+   * CONNECT_TIMEOUT_MS all reject — a join never hangs on a silent socket. */
   static connect(name: string): Promise<GameSocket> {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(socketUrl());
+      let settled = false;
+      const fail = (): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        ws.close();
+        reject(new Error("Can't reach the server"));
+      };
+      const timer = setTimeout(fail, CONNECT_TIMEOUT_MS);
       ws.addEventListener("open", () =>
         ws.send(JSON.stringify({ type: "join", name })),
       );
-      ws.addEventListener("error", () =>
-        reject(new Error("could not reach the game server")),
-      );
+      ws.addEventListener("error", fail);
+      ws.addEventListener("close", fail);
       ws.addEventListener(
         "message",
         (ev) => {
+          if (settled) return;
           const msg = JSON.parse(ev.data as string) as ServerMsg;
-          if (msg.type === "welcome") resolve(new GameSocket(ws, msg));
-          else reject(new Error(`expected welcome, got ${msg.type}`));
+          if (msg.type !== "welcome") return fail();
+          settled = true;
+          clearTimeout(timer);
+          resolve(new GameSocket(ws, msg));
         },
         { once: true },
       );
@@ -140,6 +156,11 @@ export class GameSocket {
           : { type: "pose", pose, t: Math.round(t) },
       ),
     );
+  }
+
+  /** Boot keepalive (W1): "still here" while nothing else is being sent. */
+  sendPing(): void {
+    this.send({ type: "ping" });
   }
 
   /** Announce one shot (seq = bullet id future hit claims will reference). */

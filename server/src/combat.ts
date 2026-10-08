@@ -124,6 +124,13 @@ export class Combat {
     });
   }
 
+  /** Restart a living player's spawn protection from `now` (W1: a joiner's
+   * window starts at its first pose, not at the join it spent loading). */
+  protectFrom(id: string, now: number): void {
+    const p = this.players.get(id);
+    if (p?.alive) p.protectedUntil = now + SPAWN_PROTECTION_MS;
+  }
+
   removePlayer(id: string): void {
     this.players.delete(id);
   }

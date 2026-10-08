@@ -121,8 +121,18 @@ export interface SetBotsMsg {
   count: number;
 }
 
+/**
+ * Keepalive (W1): sent while the client boots (city build, shader pre-warm)
+ * and nothing else is flowing yet. It only refreshes the server's liveness
+ * clock — it never extends a pending player's boot deadline.
+ */
+export interface PingMsg {
+  type: "ping";
+}
+
 export type ClientMsg =
   | JoinMsg
+  | PingMsg
   | PoseMsg
   | FireMsg
   | BoostMsg

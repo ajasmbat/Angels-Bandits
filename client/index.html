@@ -657,7 +657,35 @@
         min-height: 1.2em;
         margin: 12px 0 0;
         font-size: 12px;
+        letter-spacing: 0.15em;
+        color: #9fd8e8;
+      }
+      #join-status.error {
+        letter-spacing: normal;
         color: #ff7a9a;
+      }
+      /* W1: after FLY the card is the loading screen — the spent form
+         (input locked, FLY gone) stays as a header over the status line. */
+      #join form.busy button[type="submit"] {
+        display: none;
+      }
+      #join form.busy input {
+        opacity: 0.6;
+      }
+      #join-retry {
+        display: block;
+        margin: 14px auto 0;
+        background: #27e0c0;
+        border: none;
+        color: #0c0b18;
+        font: inherit;
+        font-size: 14px;
+        letter-spacing: 0.15em;
+        padding: 9px 26px;
+        cursor: pointer;
+      }
+      #join-retry[hidden] {
+        display: none;
       }
       #minimap {
         position: fixed;
@@ -1805,7 +1833,8 @@
           spellcheck="false"
         />
         <button type="submit">FLY</button>
-        <p id="join-status"></p>
+        <p id="join-status" role="status" aria-live="polite"></p>
+        <button id="join-retry" type="button" hidden>RETRY</button>
         <!-- ui/fullscreen.ts unhides it where pages can't go fullscreen
              (iPhone) and the game isn't already a home-screen app. -->
         <p id="pwa-hint" hidden>

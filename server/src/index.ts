@@ -33,6 +33,7 @@ import {
 } from "@angels-bandits/common/collision";
 import {
   BOOST_VALIDATION_SLACK,
+  BOOT_TIMEOUT_MS,
   CITY_SEED,
   JOIN_DEADLINE_MS,
   LIVENESS_TIMEOUT_MS,
@@ -74,6 +75,9 @@ const PORT = Number(process.env.PORT ?? 8080);
 /** How long a socket may stay open without sending `join` (S1). The env
  * override exists for tests; production always uses the shared constant. */
 const JOIN_DEADLINE = Number(process.env.JOIN_DEADLINE_MS) || JOIN_DEADLINE_MS;
+/** How long a joined player may stay pending (no pose yet) — W1. Same env
+ * override pattern, for the same reason. */
+const BOOT_TIMEOUT = Number(process.env.BOOT_TIMEOUT_MS) || BOOT_TIMEOUT_MS;
 
 /** Test-only introspection of the per-room maps (`GET /debug/rooms`). */
 const DEBUG_ROOMS = process.env.AB_DEBUG_ROOMS === "1";
@@ -94,6 +98,12 @@ interface Client {
   poseTime: number;
   lastMsgAt: number;
   lastPoseAt: number;
+  /** W1: joined but still booting — no pose sent yet. A pending player is in
+   * the roster but not in the air: absent from snapshots, never a target,
+   * can't fire, and its spawn protection hasn't started. Ends on the first
+   * shape-valid pose, accepted or not. */
+  pending: boolean;
+  joinedAt: number;
   rejectStreak: number;
   /** Mirror of the client's boost energy (F2), stepped from its edges with
    * BOOST_VALIDATION_SLACK — the only thing that makes boost speed legal. */
@@ -197,7 +207,9 @@ const memberPose = (room: Room, id: string): Pose | null => {
   const member = room.members.get(id);
   if (!member || !combat.isAlive(id)) return null;
   if (member.isBot) return botsFor(room).poseOf(id);
-  return clients.get(id)?.pose ?? null;
+  // A pending human (W1) is still loading: not in the air for anyone yet.
+  const client = clients.get(id);
+  return client && !client.pending ? client.pose : null;
 };
 
 /** How long before `time` a member's on-record pose was taken, ms (O2).
@@ -328,6 +340,8 @@ function handleJoin(ws: WebSocket, rawName: unknown, id: string): Client {
     poseTime: now,
     lastMsgAt: now,
     lastPoseAt: now,
+    pending: true,
+    joinedAt: now,
     rejectStreak: 0,
     boost: createBoost(now),
   };
@@ -393,6 +407,14 @@ function handlePose(client: Client, pose: Pose, t: unknown, now: number): void {
       client.rejectStreak = 0;
     }
   }
+}
+
+/** The first pose (W1): the plane is in the air now, so it joins snapshots
+ * and targeting, and its spawn protection starts from this moment rather
+ * than from a join it spent loading. */
+function goLive(client: Client, now: number): void {
+  client.pending = false;
+  combat.protectFrom(client.id, now);
 }
 
 /** A human's boost window cap as of `now` (see SpeedCapFn); bots never
@@ -753,14 +775,20 @@ wss.on("connection", (ws) => {
       client = handleJoin(ws, msg.name, joinedId);
     } else if (!client) {
       return;
+    } else if (msg.type === "ping") {
+      // W1 boot keepalive: arriving already refreshed lastMsgAt.
     } else if (msg.type === "pose") {
-      if (isPose(msg.pose)) handlePose(client, msg.pose, msg.t, now);
+      if (!isPose(msg.pose)) return;
+      if (client.pending) goLive(client, now);
+      handlePose(client, msg.pose, msg.t, now);
     } else if (msg.type === "boost") {
       handleBoost(client, msg.on, now);
     } else if (msg.type === "fire") {
-      handleFire(client, msg.seq, now);
+      // Not in the air yet: no shot, and no early end to a protection
+      // window that hasn't started.
+      if (!client.pending) handleFire(client, msg.seq, now);
     } else if (msg.type === "hit") {
-      handleHitClaim(client, msg, now);
+      if (!client.pending) handleHitClaim(client, msg, now);
     } else if (msg.type === "crash") {
       handleCrash(client, now);
     } else if (msg.type === "setBots") {
@@ -867,10 +895,16 @@ scheduleTick();
 syncRoomBots(rooms.ensureRoom());
 
 // --- Liveness: joined clients stream at TICK_UP_HZ; prolonged silence = gone ---
+// A pending client (W1) is booting and may legitimately be silent for
+// seconds, so it gets a deadline counted from its join instead — fixed, so
+// no keepalive can hold its seat forever.
 setInterval(() => {
   const now = Date.now();
   for (const client of clients.values()) {
-    if (now - client.lastMsgAt > LIVENESS_TIMEOUT_MS) client.ws.terminate();
+    const gone = client.pending
+      ? now - client.joinedAt > BOOT_TIMEOUT
+      : now - client.lastMsgAt > LIVENESS_TIMEOUT_MS;
+    if (gone) client.ws.terminate();
   }
 }, 2000);
 

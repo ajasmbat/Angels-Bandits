@@ -304,6 +304,15 @@ export const LIVENESS_TIMEOUT_MS = 4000;
 /** Server drops a socket that has not sent `join` within this long, ms (S1).
  * The client joins on `open`, so this only ever catches idle or hostile sockets. */
 export const JOIN_DEADLINE_MS = 10000;
+/** A joined player is PENDING until its first pose (W1): left out of
+ * snapshots and targeting while its client boots. Past this long after the
+ * join with no pose, the server drops it — measured from the join, so a
+ * keepalive can never hold a room seat open forever. ms. */
+export const BOOT_TIMEOUT_MS = 30000;
+/** The client gives up on reaching the server (no welcome) after this, ms. */
+export const CONNECT_TIMEOUT_MS = 10000;
+/** Boot keepalive cadence while nothing else is being sent (W1), ms. */
+export const BOOT_PING_INTERVAL_MS = 1000;
 
 // --- Storm (ST1) --- schedule shared client/server; the ceiling is a hidden
 // server rule — no constant here feeds a warning UI, by design.

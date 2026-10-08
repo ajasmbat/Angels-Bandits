@@ -14,6 +14,7 @@ import {
   BOOST_RESPONSE,
   BOOST_TURN_MULT,
   CEILING_FADE,
+  CORNER_BRAKE_DECEL,
   ENERGY_GAIN,
   MAX_SPEED,
   MIN_SPEED,
@@ -26,6 +27,7 @@ import {
   THROTTLE_RATE,
   TURN_BLEED,
   TURN_RATE,
+  TURN_RATE_SLOW,
 } from "./constants";
 import { type Vec3, canonicalize } from "./world/index";
 
@@ -44,7 +46,8 @@ export interface FlightState {
   /** Current airspeed, m/s. In [MIN_SPEED, MAX_SPEED], or up to
    * BOOST_MAX_SPEED while boosting and through the post-boost tail. */
   speed: number;
-  /** Throttle-commanded speed, m/s, set by W/S. In [MIN_SPEED, MAX_SPEED]. */
+  /** Throttle-commanded speed, m/s, set by W/S. In [MIN_SPEED, MAX_SPEED].
+   * Spawns at MAX_SPEED (full throttle, F5). */
   targetSpeed: number;
 }
 
@@ -57,9 +60,17 @@ export interface FlightInput {
   /** SPACE boost (F2) is burning. Optional: bots never boost and simply
    * leave it out — absent is bit-identical to the pre-boost model. */
   boost?: boolean;
+  /** F5 corner speed manager's ceiling on the commanded speed, m/s. The
+   * throttle command stays the pilot's (`targetSpeed`); the plane flies
+   * min(targetSpeed, cornerCap), and above the cap the CORNER_BRAKE_DECEL
+   * airbrake bleeds it. Boost ignores it — a burn is the pilot overriding.
+   * Optional: bots and remotes leave it out, bit-identical to before. */
+  cornerCap?: number;
 }
 
-/** Fresh level flight state at `pos` (canonicalized): spawn / respawn shape. */
+/** Fresh level flight state at `pos` (canonicalized): spawn / respawn shape.
+ * Airspeed is RESPAWN_SPEED; the throttle is FULL (F5), so the plane spools
+ * up out of every spawn and respawn. */
 export function createFlightState(pos: Vec3, yaw = 0): FlightState {
   return {
     pos: canonicalize(pos),
@@ -67,7 +78,7 @@ export function createFlightState(pos: Vec3, yaw = 0): FlightState {
     pitch: 0,
     roll: 0,
     speed: RESPAWN_SPEED,
-    targetSpeed: RESPAWN_SPEED,
+    targetSpeed: MAX_SPEED,
   };
 }
 
@@ -82,10 +93,37 @@ export function flightForward(state: Pick<FlightState, "yaw" | "pitch">): Vec3 {
 }
 
 /**
- * Full-deflection turn and pitch rates, rad/s, at `speed`. Boost sharpens
+ * Base full-deflection yaw rate at `speed`, rad/s (F5): TURN_RATE_SLOW at
+ * MIN_SPEED easing linearly to TURN_RATE at MAX_SPEED, flat outside that.
+ */
+export function turnRateAt(speed: number): number {
+  const u = clamp((speed - MIN_SPEED) / (MAX_SPEED - MIN_SPEED), 0, 1);
+  return TURN_RATE_SLOW + (TURN_RATE - TURN_RATE_SLOW) * u;
+}
+
+/** Full-deflection (un-boosted) turn radius at `speed`, meters. */
+export function turnRadius(speed: number): number {
+  return speed / turnRateAt(speed);
+}
+
+/**
+ * The fastest speed in [MIN_SPEED, MAX_SPEED] whose full-deflection turn
+ * radius is at most `radius` — turnRadius's inverse, closed form because the
+ * rate is linear in speed: v = a·R / (1 + b·R) for rate(v) = a − b·v.
+ */
+export function speedForRadius(radius: number): number {
+  const b = (TURN_RATE_SLOW - TURN_RATE) / (MAX_SPEED - MIN_SPEED);
+  const a = TURN_RATE_SLOW + b * MIN_SPEED;
+  const r = Math.max(0, radius);
+  return clamp((a * r) / (1 + b * r), MIN_SPEED, MAX_SPEED);
+}
+
+/**
+ * Full-deflection turn and pitch rates, rad/s, at `speed`. The base turn
+ * rate is speed-dependent (turnRateAt: tighter when slow, F5). Boost sharpens
  * handling: the full multipliers while burning, and after release they ride
  * the speed back down, so the post-boost tail never turns wider than the burn
- * did (86.8 m at 125 m/s). Exactly TURN_RATE/PITCH_RATE at ≤ MAX_SPEED.
+ * did (86.8 m at 125 m/s). Exactly turnRateAt/PITCH_RATE at ≤ MAX_SPEED.
  * Exported so the client's mouse-aim instructor normalises by the rates
  * stepFlight will actually apply.
  */
@@ -97,7 +135,7 @@ export function handlingRates(
     ? 1
     : clamp((speed - MAX_SPEED) / (BOOST_MAX_SPEED - MAX_SPEED), 0, 1);
   return {
-    turnRate: TURN_RATE * (1 + (BOOST_TURN_MULT - 1) * excess),
+    turnRate: turnRateAt(speed) * (1 + (BOOST_TURN_MULT - 1) * excess),
     pitchRate: PITCH_RATE * (1 + (BOOST_PITCH_MULT - 1) * excess),
   };
 }
@@ -147,7 +185,13 @@ export function stepFlight(
   // Clamped: at MIN_SPEED you mush, never stall. Boost commands
   // BOOST_MAX_SPEED with a harder pull, through the same ceiling fade — a
   // burn is never a way to climb out past the soft ceiling.
-  const commanded = boost ? BOOST_MAX_SPEED : targetSpeed;
+  // F5: the corner manager caps the commanded speed, never the throttle.
+  const cap = boost || input.cornerCap === undefined ? null : input.cornerCap;
+  const commanded = boost
+    ? BOOST_MAX_SPEED
+    : cap === null
+      ? targetSpeed
+      : Math.min(targetSpeed, Math.max(MIN_SPEED, cap));
   const effectiveTarget = MIN_SPEED + (commanded - MIN_SPEED) * power;
   const maneuver = Math.min(1, Math.abs(turnIn) + Math.abs(pitchIn));
   const dSpeed =
@@ -161,7 +205,16 @@ export function stepFlight(
   const topSpeed = boost
     ? BOOST_MAX_SPEED
     : Math.max(MAX_SPEED, Math.min(state.speed, BOOST_MAX_SPEED));
-  const speed = clamp(state.speed + dSpeed * dt, MIN_SPEED, topSpeed);
+  let speed = clamp(state.speed + dSpeed * dt, MIN_SPEED, topSpeed);
+  // F5 airbrake: above the corner cap airspeed falls at least
+  // CORNER_BRAKE_DECEL (a constant deceleration, so stopping distances are
+  // closed-form), but the brake itself never takes it below the cap.
+  if (cap !== null && speed > cap) {
+    speed = Math.max(
+      Math.max(MIN_SPEED, cap),
+      Math.min(speed, state.speed - CORNER_BRAKE_DECEL * dt),
+    );
+  }
 
   // Always moving forward along the nose — but above the ceiling, climb fades
   // with power and a sink sets in: the plane mushes back down, no wall.

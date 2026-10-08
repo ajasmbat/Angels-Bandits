@@ -175,8 +175,19 @@ export const ENERGY_GAIN = 8;
 export const TURN_BLEED = 8;
 /** Max pitch rate at full mouse deflection, rad/s. */
 export const PITCH_RATE = 1.0;
-/** Max yaw (turn) rate at full mouse deflection, rad/s. */
+/** Max yaw (turn) rate at full mouse deflection AT MAX_SPEED, rad/s. */
 export const TURN_RATE = 0.9;
+/** Max yaw rate at full deflection at MIN_SPEED, rad/s (F5). The base rate
+ * eases linearly from this at MIN_SPEED to TURN_RATE at MAX_SPEED
+ * (flight.ts turnRateAt), so a slow plane turns tighter: full-deflection
+ * radius 29.6 m at MIN_SPEED (was 44.4 m) and still 100 m at MAX_SPEED —
+ * a 90° street corner is makeable at the slow end. */
+export const TURN_RATE_SLOW = 1.35;
+/** F5 corner speed manager's airbrake, m/s²: while airspeed is above the
+ * client's corner cap (FlightInput.cornerCap) it falls at least this fast —
+ * a CONSTANT deceleration, so a stopping distance is the closed form
+ * (v² − v_cap²) / 2a. Larger than ENERGY_GAIN, so a dive cannot outrun it. */
+export const CORNER_BRAKE_DECEL = 22;
 /** Bank angle the plane leans into at full turn deflection, rad (~57°). */
 export const BANK_ANGLE = 1.0;
 /** Exponential response of roll toward its target, 1/s. */
@@ -187,7 +198,8 @@ export const PITCH_LIMIT = 1.48;
 export const PLAYER_RADIUS = 2;
 /** Respawn altitude, meters — above every rooftop (tallest landmark is 250 m). */
 export const RESPAWN_ALTITUDE = 300;
-/** Respawn airspeed, m/s — combat speed, mid-throttle. */
+/** Respawn airspeed, m/s — combat speed. The THROTTLE spawns full (F5:
+ * createFlightState), so the plane accelerates out of a respawn. */
 export const RESPAWN_SPEED = 65;
 
 // --- Chase camera (client-only feel, kept here with the rest of the tuning) ---

@@ -157,8 +157,11 @@ export class TouchControls {
    * zoom latch / recentre the aim around a death.
    */
   frame(targetSpeed: number, alive: boolean, dt: number): void {
+    // Released (or dead): null, and the auto throttle rides it back to full.
     this.t.input.setTouchThrottle(
-      alive ? throttleCommand(this.slider, targetSpeed, dt) : 0,
+      alive && this.slider !== null
+        ? throttleCommand(this.slider, targetSpeed, dt)
+        : null,
     );
     const knob = this.slider ?? speedSlider(targetSpeed);
     const knobCss = `${(knob * 100).toFixed(1)}%`;

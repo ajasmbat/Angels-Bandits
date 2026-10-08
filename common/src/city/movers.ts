@@ -53,7 +53,12 @@ import {
   PLAYER_RADIUS,
   WORLD_SIZE,
 } from "../constants";
-import { type Vec3, canonicalize, wrapDeltaAxis } from "../world/index";
+import {
+  type Vec3,
+  canonicalize,
+  wrapCoord,
+  wrapDeltaAxis,
+} from "../world/index";
 import { type Building, mulberry32 } from "./index";
 import { CONSTRUCTION_BLOCKS } from "./layout";
 import {
@@ -447,12 +452,23 @@ export function craneBoxes(site: CraneSite, timeMs: number): MoverBox[] {
   });
 }
 
-/** One aircraft's box at a time, canonicalized. */
+/** One aircraft's box at a time, canonicalized. Allocates — the rendering
+ * and testing entry point; collision uses aircraftBoxInto with a scratch. */
 export function aircraftBox(route: AircraftRoute, timeMs: number): MoverBox {
+  return aircraftBoxInto(route, timeMs, blankBox());
+}
+
+/**
+ * THE definition of where an aircraft is: writes its canonical box into
+ * `out` and returns it (O5: the collision path reuses one scratch box and
+ * allocates nothing, while sharing this single derivation with the renderer).
+ */
+export function aircraftBoxInto(
+  route: AircraftRoute,
+  timeMs: number,
+  out: MoverBox,
+): MoverBox {
   const s = route.phase + route.dir * route.speed * (timeMs / 1000);
-  const along =
-    route.axis === "x" ? { x: s, z: route.cross } : { x: route.cross, z: s };
-  const p = canonicalize({ x: along.x, y: 0, z: along.z });
   // Local +X must point along travel: world (cos yaw, -sin yaw) = the heading.
   // +x → 0, -x → PI, +z → -PI/2, -z → PI/2.
   const yaw =
@@ -463,17 +479,16 @@ export function aircraftBox(route: AircraftRoute, timeMs: number): MoverBox {
       : route.dir === 1
         ? -Math.PI / 2
         : Math.PI / 2;
-  return {
-    x: p.x,
-    y: route.y,
-    z: p.z,
-    hx: route.hx,
-    hy: route.hy,
-    hz: route.hz,
-    yaw,
-    kind: route.kind,
-    id: route.id,
-  };
+  out.x = wrapCoord(route.axis === "x" ? s : route.cross);
+  out.y = route.y;
+  out.z = wrapCoord(route.axis === "x" ? route.cross : s);
+  out.hx = route.hx;
+  out.hy = route.hy;
+  out.hz = route.hz;
+  out.yaw = yaw;
+  out.kind = route.kind;
+  out.id = route.id;
+  return out;
 }
 
 /**
@@ -530,7 +545,8 @@ function hitsCrane(
   if (pos.y + radius < 0) return null;
 
   const theta = slewAngle(site, timeMs);
-  for (const part of CRANE_PARTS) {
+  for (let i = 0; i < CRANE_PARTS.length; i++) {
+    const part = CRANE_PARTS[i] as CranePart;
     if (sphereHitsBox(partBox(site, part, theta, scratch), pos, radius)) {
       return part;
     }
@@ -563,12 +579,14 @@ export function collideMovers(
   field: MoverField,
   timeMs: number,
 ): MoverHit | null {
-  for (const site of field.cranes) {
+  for (let i = 0; i < field.cranes.length; i++) {
+    const site = field.cranes[i] as CraneSite;
     const kind = hitsCrane(site, pos, radius, timeMs);
     if (kind) return { kind, id: site.id };
   }
-  for (const route of field.aircraft) {
-    if (sphereHitsBox(aircraftBox(route, timeMs), pos, radius)) {
+  for (let i = 0; i < field.aircraft.length; i++) {
+    const route = field.aircraft[i] as AircraftRoute;
+    if (sphereHitsBox(aircraftBoxInto(route, timeMs, scratch), pos, radius)) {
       return { kind: route.kind, id: route.id };
     }
   }
@@ -605,13 +623,15 @@ export function collideBotMovers(
   field: MoverField,
   timeMs: number,
 ): MoverHit | null {
-  for (const site of field.cranes) {
+  for (let i = 0; i < field.cranes.length; i++) {
+    const site = field.cranes[i] as CraneSite;
     const kind = hitsCrane(site, pos, radius, timeMs);
     if (kind) return { kind, id: site.id };
   }
-  for (const route of field.aircraft) {
+  for (let i = 0; i < field.aircraft.length; i++) {
+    const route = field.aircraft[i] as AircraftRoute;
     if (route.kind !== "blimp") continue;
-    if (sphereHitsBox(aircraftBox(route, timeMs), pos, radius)) {
+    if (sphereHitsBox(aircraftBoxInto(route, timeMs, scratch), pos, radius)) {
       return { kind: route.kind, id: route.id };
     }
   }

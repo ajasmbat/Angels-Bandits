@@ -191,6 +191,16 @@ export const BEAM_NEAR_OUT = 3;
 export const BEAM_RHO_IN = 1;
 export const BEAM_RHO_OUT = 3;
 export const BEAM_INSIDE_FLOOR = 0.25;
+/** Sides of the beam's open cone. */
+export const BEAM_SEGMENTS = 18;
+/**
+ * The silhouette fade starts here, in |facing|. O5: the cone is an
+ * 18-gon, so where its outline is drawn the TRUE radial normal still faces
+ * the eye by up to sin(π/18) ≈ 0.17 — fading from 0 left ~12 % of the
+ * beam's alpha on the polygon edge, a hard line that crawled as the beam
+ * swept. From just past sin(π/SEGMENTS) the edge is 0 wherever it is drawn.
+ */
+export const BEAM_EDGE_IN = Math.sin(Math.PI / BEAM_SEGMENTS) + 0.01;
 
 const smoothstep = (e0: number, e1: number, x: number): number => {
   const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
@@ -263,7 +273,7 @@ export interface BeamFragment {
 export function beamAlpha(f: BeamFragment): number {
   const fade = (1 - f.t) ** 1.5;
   const hot = 0.4 + 0.6 * Math.exp(-f.t * 6);
-  const edge = smoothstep(0, 0.8, f.facing);
+  const edge = smoothstep(BEAM_EDGE_IN, 0.8, f.facing);
   return (
     BEAM_OPACITY *
     fade *
@@ -297,7 +307,7 @@ float abBeamAlpha(float peak, float t, float facing, float viewDist,
                   float localRadius, float cameraFade) {
   float fade = pow(1.0 - t, 1.5);
   float hot = 0.4 + 0.6 * exp(-t * 6.0);
-  float edge = abBeamSmooth(0.0, 0.8, facing);
+  float edge = abBeamSmooth(${glslFloat(BEAM_EDGE_IN)}, 0.8, facing);
   float near = abBeamSmooth(${glslFloat(BEAM_NEAR_IN)}, ${glslFloat(BEAM_NEAR_OUT)},
     viewDist / max(localRadius, ${glslFloat(BEAM_MIN_RADIUS)}));
   return peak * fade * hot * edge * near * cameraFade;
@@ -442,7 +452,7 @@ export class Searchlights {
     this.stations = searchlightStations(buildings);
     // Open-ended cone, apex at the origin, opening along +Y. ConeGeometry
     // puts its apex at +height/2, so it is flipped and then lifted.
-    const cone = new THREE.ConeGeometry(1, 1, 18, 1, true);
+    const cone = new THREE.ConeGeometry(1, 1, BEAM_SEGMENTS, 1, true);
     cone.rotateX(Math.PI);
     cone.translate(0, 0.5, 0);
     const capacity = this.stations.length + SPOT_CAPACITY;

@@ -63,6 +63,20 @@ export function wrapDelta(from: Vec3, to: Vec3): Vec3 {
   };
 }
 
+/**
+ * wrapDelta written into `out` (and returned) instead of a new object — for
+ * the per-frame and per-probe hot paths that must allocate nothing (O5: the
+ * shared collision code runs per frame on the client and per probe on the
+ * server's bots). The same values as wrapDelta, bit for bit. `out` may not
+ * alias `from` or `to`.
+ */
+export function wrapDeltaInto(from: Vec3, to: Vec3, out: Vec3): Vec3 {
+  out.x = wrapDeltaAxis(from.x, to.x);
+  out.y = to.y - from.y;
+  out.z = wrapDeltaAxis(from.z, to.z);
+  return out;
+}
+
 /** Euclidean length of the shortest torus vector between `a` and `b` (altitude included). */
 export function wrapDistance(a: Vec3, b: Vec3): number {
   const d = wrapDelta(a, b);

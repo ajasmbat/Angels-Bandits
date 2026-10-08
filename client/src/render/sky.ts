@@ -43,6 +43,7 @@ import {
 import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { AB_AA_GLSL } from "./aa-glsl";
+import { applyPointFloor } from "./point-floor";
 import { RENDER_ORDER } from "./render-order";
 import { RIVER_GROUND_PARS } from "./river";
 import { SIGN_PALETTE } from "./signage";
@@ -316,6 +317,38 @@ const STAR_ELEVATION_MIN = (0.5 - SKY_FOG_STOP) * Math.PI;
 /** Brightest star, as a multiplier on white: sub-bloom (luminance < 0.72). */
 export const STAR_PEAK = 0.62;
 
+/** A star's true size, drawing-buffer pixels (no attenuation). */
+const STAR_SIZE_PX = 1.6;
+/** Stars are drawn at least this big (applyPointFloor pays the alpha). */
+const STAR_FLOOR_PX = 2.5;
+/** The star dot's profile, 1 − r⁴ inside the point's disc: flat-topped, so
+ * a small point's samples read near full, and 0 at the rim, so a sample
+ * crossing it fades instead of switching. */
+const starDot = (r: number): number => (r < 1 ? 1 - r ** 4 : 0);
+/** Mean of starDot over the point's square: (1/4)·2π∫(1 − r⁴) r dr = π/6. */
+const STAR_DOT_MEAN = Math.PI / 6;
+
+/** starDot as a small white-with-alpha texture (no canvas: tests run in
+ * node). Linear filtering between its texels keeps the profile smooth. */
+function starDotTexture(): THREE.DataTexture {
+  const n = 16;
+  const data = new Uint8Array(n * n * 4);
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      const dx = ((x + 0.5) / n) * 2 - 1;
+      const dy = ((y + 0.5) / n) * 2 - 1;
+      const i = (y * n + x) * 4;
+      data[i] = data[i + 1] = data[i + 2] = 255;
+      data[i + 3] = Math.round(255 * starDot(Math.hypot(dx, dy)));
+    }
+  }
+  const tex = new THREE.DataTexture(data, n, n, THREE.RGBAFormat);
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
+
 /**
  * A seeded star field, as a child of the dome so it follows the camera and
  * hides with it. NOT additive over emissives — stars are drawn first (the
@@ -354,18 +387,28 @@ function starField(seed: number): THREE.Points {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
   geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-  const points = new THREE.Points(
-    geometry,
-    new THREE.PointsMaterial({
-      size: 1.6,
-      sizeAttenuation: false,
-      vertexColors: true,
-      transparent: true,
-      opacity: 1,
-      depthWrite: false,
-      fog: false,
-    }),
-  );
+  const material = new THREE.PointsMaterial({
+    size: STAR_SIZE_PX,
+    sizeAttenuation: false,
+    // O5: a soft round dot instead of a hard square, drawn at the floor
+    // (applyPointFloor): a 1.6 px square covers one pixel, then two, as
+    // the view turns — every star twinkled with the camera. The dot's
+    // samples slide smoothly instead. `color` pays back the profile's
+    // mean, so a star keeps its old total light (and its centre pixel
+    // stays dimmer than the old square: still sub-bloom).
+    map: starDotTexture(),
+    color: new THREE.Color().setScalar(1 / STAR_DOT_MEAN),
+    vertexColors: true,
+    transparent: true,
+    opacity: 1,
+    depthWrite: false,
+    fog: false,
+  });
+  material.customProgramCacheKey = () => "ab-stars";
+  material.onBeforeCompile = (shader) => {
+    applyPointFloor(shader, STAR_FLOOR_PX);
+  };
+  const points = new THREE.Points(geometry, material);
   points.renderOrder = RENDER_ORDER.sky;
   points.frustumCulled = false;
   return points;

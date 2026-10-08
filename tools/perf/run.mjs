@@ -43,6 +43,7 @@ import {
   segmentWorldMs,
   warmupWorldMs,
 } from "./segments.mjs";
+import { analyseTrace, describe, mainThread } from "./trace-spikes.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
@@ -140,6 +141,8 @@ function parseArgs(argv) {
     quiet: false,
     strict: false,
     samples: false,
+    /** O5: a directory for one Chrome trace per measured segment. */
+    trace: null,
     quality: "high",
     abRef: null,
     soak: null,
@@ -232,6 +235,9 @@ function parseArgs(argv) {
         break;
       case "--samples":
         opts.samples = true;
+        break;
+      case "--trace":
+        opts.trace = resolve(process.cwd(), next());
         break;
       case "--soak":
         opts.soak = Number(next());
@@ -356,11 +362,20 @@ async function joinGame(page, url) {
   // POSES depend on wall-clock timing, so they would smear every segment.
   // An empty room is the only reproducible room.
   await page.evaluate(() => window.__ab.setBots(0));
-  await page.waitForFunction(
-    () => window.__ab.combat().targets.length === 0,
-    null,
-    { timeout: 30_000 },
-  );
+  try {
+    await page.waitForFunction(
+      () => window.__ab.combat().targets.length === 0,
+      null,
+      { timeout: 30_000 },
+    );
+  } catch (err) {
+    const left = await page.evaluate(() => ({
+      targets: window.__ab.combat().targets.map((t) => t.id),
+      remotes: window.__ab.net().remotes,
+    }));
+    console.error("joinGame: room never emptied:", JSON.stringify(left));
+    throw err;
+  }
   // P2: the click on Join leaves the cursor parked on the button, and the
   // mouse-aim instructor flies the pipper onto the cursor — so every flown
   // segment dived toward it (core lost 7 m, canyon 7 m, and `street` sank
@@ -517,7 +532,10 @@ async function flySegment(page, seg, sampleMs, worldMs) {
       const planesNow = () => (ab.combat().targets?.length ?? 0) + 1;
       const planesBefore = planesNow();
       ab.perfReset();
+      // O5 --trace: the measured window, for trace-spikes.mjs.
+      performance.mark("abWindowStart");
       await waitMs(s.sampleMs);
+      performance.mark("abWindowEnd");
       const planes = Math.min(planesBefore, planesNow());
       const glAtEnd = gl();
       const workloadStable = workload() === workloadBefore;
@@ -756,7 +774,7 @@ function flyWarmupLap(page) {
  * It costs one extra pass per arm, which is the cheapest honest option.
  */
 async function warmArm(browser, url) {
-  await measure(browser, url);
+  await measure(browser, url, { trace: false });
 }
 
 /**
@@ -931,7 +949,64 @@ cost: ${b.label} vs ${a.label} (GPU-independent proxies)`);
   }
 }
 
-async function measure(browser, url) {
+/** O5 `--trace`: where traces go (null = off), and how many passes so far. */
+let traceDir = null;
+let tracePass = 0;
+const TRACE_CATEGORIES = [
+  "toplevel",
+  "devtools.timeline",
+  "v8",
+  "disabled-by-default-v8.gc",
+  "blink.user_timing",
+  // Samples, so a frame blocked inside a WebGL call is told from script.
+  "disabled-by-default-v8.cpu_profiler",
+].join(",");
+
+/** Start a CDP trace on `page`; resolves once Chrome is recording. */
+async function startTrace(page) {
+  const cdp = await page.context().newCDPSession(page);
+  const events = [];
+  cdp.on("Tracing.dataCollected", (e) => {
+    for (const ev of e.value) events.push(ev);
+  });
+  const done = new Promise((ok) => cdp.once("Tracing.tracingComplete", ok));
+  await cdp.send("Tracing.start", {
+    categories: TRACE_CATEGORIES,
+    transferMode: "ReportEvents",
+  });
+  return { cdp, events, done };
+}
+
+/** Stop, write <dir>/<pass>-<segment>.json, and attribute its spikes. */
+async function stopTrace({ cdp, events, done }, name) {
+  await cdp.send("Tracing.end");
+  await done;
+  await cdp.detach().catch(() => {});
+  mkdirSync(traceDir, { recursive: true });
+  const file = resolve(traceDir, `${tracePass}-${name}.json`);
+  // Only the page's main thread (and the window marks) is kept, one event
+  // per line: the whole browser's trace of a SwiftShader segment runs past
+  // the longest string V8 can build.
+  const main = mainThread(events);
+  const kept = events.filter(
+    (e) =>
+      `${e.pid}:${e.tid}` === main ||
+      e.name === "abWindowStart" ||
+      e.name === "abWindowEnd" ||
+      e.name === "ProfileChunk",
+  );
+  writeFileSync(
+    file,
+    `{"traceEvents":[\n${kept.map((e) => JSON.stringify(e)).join(",\n")}\n]}\n`,
+  );
+  const r = analyseTrace(kept);
+  console.log(describe(`trace ${tracePass}-${name}`, r));
+  return { file, ...r };
+}
+
+async function measure(browser, url, { trace = true } = {}) {
+  if (trace) tracePass++;
+  const tracing = trace ? traceDir : null;
   const page = await newProbedPage(browser);
   const errors = await joinGame(page, url);
   await flyWarmupLap(page);
@@ -967,14 +1042,15 @@ async function measure(browser, url) {
         : await startPilots(port, seg.pilots, { x: seg.x, z: seg.z });
     try {
       if (pilots) await sleep(PILOT_SETTLE_MS);
-      segments.push(
-        await flySegment(
-          page,
-          seg,
-          SAMPLE_MS,
-          segmentWorldMs(SEGMENTS.indexOf(seg)),
-        ),
+      const recording = tracing ? await startTrace(page) : null;
+      const flown = await flySegment(
+        page,
+        seg,
+        SAMPLE_MS,
+        segmentWorldMs(SEGMENTS.indexOf(seg)),
       );
+      if (recording) flown.trace = await stopTrace(recording, seg.name);
+      segments.push(flown);
     } finally {
       pilots?.stop();
     }
@@ -1744,6 +1820,7 @@ async function main() {
   device = DEVICES[opts.device];
   cpuThrottle = opts.cpuThrottle;
   segmentFilter = opts.segments === null ? null : new Set(opts.segments);
+  traceDir = opts.trace;
   if (opts.build) {
     console.log("building client…");
     await run("npm", ["run", "build", "-w", "client"], {

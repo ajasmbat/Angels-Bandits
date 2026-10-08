@@ -38,7 +38,11 @@ import {
   vehicleBoxes,
 } from "./street-detail";
 import { STREET_PAINT_UNIFORM } from "./street-paint";
-import { BLOCK_WINDOW_RADIUS, blockWindow } from "./streetlife";
+import {
+  BLOCK_WINDOW_RADIUS,
+  type BlockIndex,
+  blockWindowInto,
+} from "./streetlife";
 
 /** Parked cars stay at full density up to this camera altitude, m, and are
  * gone above PARKED_GATE_OFF — a 4 m car is a 2 px speck from there. They
@@ -312,6 +316,9 @@ export class StreetFurniture {
   cartSteamVents = (bx: number, bz: number): readonly SteamVent[] =>
     this.block(bx, bz).carts;
 
+  /** O5: the block window, reused every frame (blockWindowInto). */
+  private readonly windowScratch: BlockIndex[] = [];
+
   /**
    * Show the window around the camera. `gate` is the L1 micro gate (or 0 to
    * hide the furniture); parked cars take their own, later gate.
@@ -327,7 +334,7 @@ export class StreetFurniture {
     this.keep.set(keepF, keepC);
 
     // Re-pack only when the window or a block's torus image changes.
-    const win = blockWindow(cameraPos, this.radius);
+    const win = blockWindowInto(cameraPos, this.radius, this.windowScratch);
     let changed = win.length !== this.packedKeys.length;
     for (let i = 0; i < win.length && !changed; i++) {
       const w = win[i] as { bx: number; bz: number };

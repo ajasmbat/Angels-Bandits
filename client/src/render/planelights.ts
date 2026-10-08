@@ -20,6 +20,7 @@ import {
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
+import { applyPointFloor } from "./point-floor";
 import { DUSK, MOON_DIR } from "./sky";
 import type { QuatLike } from "./trails";
 
@@ -200,6 +201,8 @@ export class PlaneLights {
           "uniform float size;\nattribute float aSize;",
         )
         .replace("gl_PointSize = size;", "gl_PointSize = size * aSize;");
+      // O5: never drawn under 2 px, alpha-paid, faded below 1 px.
+      applyPointFloor(shader);
     };
     this.points = new THREE.Points(this.geometry, material);
     this.points.frustumCulled = false;

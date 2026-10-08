@@ -253,6 +253,7 @@ Everything else is pinned.
 | `--segments <a,b>`   | all                | M3: fly only these segments (by name; the report matches them by name) |
 | `--soak <seconds>`   | —                  | instead of the path: hold the full-room `furball` that long and report the tier Auto ended on (exit 1 if it stepped down) |
 | `--ab-ref <git-ref>` | —                  | second arm is **another build**: that commit, checked out to its own worktree with its own `npm ci`, built and served on its own port, interleaved like `--ab` |
+| `--trace <dir>`      | —                  | O5: one Chrome trace per measured segment (`<pass>-<segment>.json`, page main thread + V8 CPU samples), and every wall spike over 4× the window's median split into **gc / script / GL wait / outside JS** (`trace-spikes.mjs`; the warm-up pass is never traced) |
 
 `--ab` takes a URL **query**. A bare commit hash there fails fast and names
 `--ab-ref` — it used to be read as the query `86e5982=`, an arm identical to
@@ -1062,6 +1063,130 @@ node tools/perf/flicker.mjs --ref a487412
 node tools/perf/run.mjs --soak 600 --quality auto --res auto
 ```
 
+## O5: flicker hunt and smoothness
+
+### The flicker grid (`flicker.mjs --grid`)
+
+O1's metric looked at one view. The grid scores **38 views**: every static
+gallery view (`gallery-views.mjs`, now shared with `gallery.mjs`) plus 20
+`mulberry32`-seeded poses at 10–300 m, skewed low (`flicker-grid.mjs`; a pose
+is kept only if its eye clears every shared solid by 6 m and the first 60 m
+of the view are open). Each view is captured on one page at **its own world
+instant** — `__ab.pinWorld`, ~37 s apart, each in a gap of the storm
+schedule — with the plane held 18 m behind the eye at its height (so the
+street tier streams and the atmosphere is the eye's), three ways:
+
+- **frozen** — camera pinned, world advancing 1/60 s a frame (10 frames);
+- **still** — camera AND world pinned (the world re-pinned every frame, 4
+  frames): what still moves is not animation at all;
+- **pan** — sliding sideways 1.5 m a frame (8 frames), indicative.
+
+Per capture it reports `score` (mean |Δluma|), `hot` (share of pixels moving
+> 8 in a step) and **`jitter`**: the share of pixels whose step reverses sign
+at least twice (brighter, darker, brighter). That last one is the flicker
+number. A car, a train, a sweeping beam brightens a pixel and darkens it —
+one reversal; shimmer, z-fighting, a strobing sub-pixel light or a popping
+LOD keeps reversing. `score` and `hot` cannot tell the city's motion from
+flicker, and on the frozen views the heat maps (`--shots`: a `*-heat.png`
+per capture, red = moved) show the motion is most of it: traffic and its
+headlights, the T2 trains, searchlight sweeps, helicopters and airliners,
+fountains.
+
+`--ref <commit>` captures another build on the same views and instants,
+interleaved, and prints the per-view table and verdict (frozen: halve any
+view over the tool's resolution, never worse, none over 0.041 — O3's
+recorded limit for the midtown frozen view).
+
+### What O5 changed
+
+- **Point-light size floor** (`client/src/render/point-floor.ts`): every
+  glowing GL point — MoverLights (aviation, helicopter, blimp, drones),
+  plane nav lights, rooftop bulbs (reconciling their old 2.5 px floor),
+  airliners — is drawn at ≥ 2 px with alpha paying for the floor (true area
+  / drawn area) and fading linearly below 1 px. Stars became a soft round
+  dot at ≥ 2.5 px with the same rule (they were 1.6 px hard squares that
+  twinkled whenever the view turned).
+- **Rain streaks** never thinner than 1.5 px, alpha-paid.
+- **Searchlight beams**: the silhouette fade now reaches 0 *on* the 18-gon
+  cone's drawn outline (it left ~12 % alpha there — a hard line that crawled
+  with the sweep).
+- **Broken neon**: raised-cosine dips instead of a square wave (same depth,
+  still ≤ 3 per second), and rarer (`STUTTER_CHANCE` 0.45 → 0.3). **TV
+  windows**: scene crossfade 1 s → 1.5 s. Living-window toggles were already
+  3 s (`LIVE.fade`).
+- **Audited, unchanged**: the plane LOD band (5 % hysteresis), the micro gate
+  (linear 100–140 m), facade detail (GPU shrink 260–380 m), the resolution
+  scaler (600 ms down / 6 s up cooldowns, quarter rungs).
+- **Allocation-free shared collision** (`common/src/collision.ts`,
+  `city/movers.ts`, `city/river.ts`, `world`'s new `wrapDeltaInto`): no
+  per-probe arrays, temporaries or closures; byte-identical on 120 000
+  seeded probes against main (R2's roof structures included). Per call,
+  warmed, ESM (what the server and the client bundle run), heap delta, main
+  at `91c89ab`:
+
+  | query            | main     | O5      |
+  | ---------------- | -------- | ------- |
+  | collideCity      | 185 B    | 0       |
+  | collideNature    | 373 B    | 0       |
+  | collideMovers    | 387 B    | ~9 B    |
+  | collideBotMovers | 219 B    | ~9 B    |
+  | losClear         | 36 B     | ~5 B    |
+  | hitsGround       | 0        | 0       |
+
+  Two V8 rules carried it. A double handed to — or returned from — a call
+  V8 does not inline is boxed, so the hot paths pass objects (scratch boxes,
+  `wrapDeltaInto`) rather than freshly computed coordinates. And the loads
+  must stay monomorphic: R2 added `roof` to only the buildings that have
+  structures, which split `Building` into two shapes and cost ~56 B a
+  collideCity call in boxed field loads; `generateCity` now sets `roof` on
+  every building (`undefined` when bare). The movers' residue is the same
+  boxing inside the crane and train math (`train.ts`, T2's), ~1 HeapNumber
+  a call; nothing is built per call.
+- **Per-frame**: the street systems (pedestrians, signals, steam, street
+  furniture) reuse their block window (`blockWindowInto`) instead of 25 new
+  objects a frame each; steam places its vents without per-vent objects.
+
+### Wall spikes (`run.mjs --trace`)
+
+`--trace <dir>` records each measured segment (page main thread plus V8 CPU
+samples) and `trace-spikes.mjs` splits every interval over 4× the window's
+median frame into gc / script / **GL wait** (busy time whose samples sit
+inside a WebGL call) / outside JS. On the runner (SwiftShader, load ~20–40)
+pass 1 of `--runs 3 --samples --res 0.75` gave 48 spikes over 7 segments:
+**0 caused by GC**, 41 GL wait / outside JS (the software rasteriser's queue
+draining, 0.4–2.3 s), 7 counted as script (1 in plaza, 6 in the furball)
+that sit within a loaded box's descheduling noise; passes 2–3 could not join
+(the page boots slower than the server's 4 s liveness on a box this busy).
+
+Re-run after merging H2, on a quiet 16-core runner, all three passes joined
+(`--runs 3 --samples --res 0.75 --trace`): the run's own spike table —
+frames over 4× their segment's p50 — reads **none, in any segment**, p99/p50
+1.06–1.25, and the traces show **0 spikes caused by GC** in 21 segment
+traces (GC 0–35 ms per segment in total). trace-spikes labels every
+SwiftShader frame (350–750 ms of software rasterising inside the rAF task)
+"script" against the short gaps between frames, so on this runner its
+per-interval split says nothing about JS; `joinGame` now prints who is left
+in the room when it times out. The M3 is where this is decided.
+
+### Commands for the M3 (O5)
+
+```sh
+# 1. The flicker grid against main before O5 (the merge of main + the tool
+#    only): per-view table, verdict, heat maps to look at.
+node tools/perf/flicker.mjs --grid --ref 7ebd93a --shots /tmp/o5-shots
+
+# 2. Wall spikes with attribution: every spike row must read "GL wait" or
+#    "outside JS", none "gc"; a "script" row names its top functions.
+node tools/perf/run.mjs --runs 3 --samples --trace /tmp/o5-traces
+
+# 3. The same on the phone stand-in (the mobile tier, a 4x slower CPU).
+node tools/perf/run.mjs --runs 3 --device phone --quality mobile \
+  --cpu-throttle 4 --trace /tmp/o5-traces-phone
+
+# 4. The render cost of the floors (should be inside the noise): paired.
+node tools/perf/run.mjs --runs 3 --label O5 --ab-ref 7ebd93a
+```
+
 ---
 
 ## P2: the Realism batch gate — trains, holes, streets, roofs, life
@@ -1151,8 +1276,10 @@ node tools/perf/run.mjs --runs 3 --device phone --res 2 --label high --ab "quali
 #    of the full-room furball with the scaler live.
 node tools/perf/run.mjs --soak 600 --quality auto --res auto
 
-# 4. Flicker not worse than O4's merge (exits 1 on a FAIL).
-node tools/perf/flicker.mjs --ref d23d23a
+# 4. Flicker: O5's grid, not worse than O5's merge (0371335; P2 changes no
+#    render code, so this should read inside the noise everywhere). O5's
+#    own grid against 7ebd93a (above) is the batch-wide flicker number.
+node tools/perf/flicker.mjs --grid --ref 0371335
 
 # 5. Determinism and first sight: draw calls identical in every pinned
 #    segment, the first-sight table 0/0/0 in every window, and "0 in the

@@ -383,7 +383,10 @@ export function generateCity(seed: number): Building[] {
   // each is a pure function of its own building.
   for (const b of buildings) {
     const roof = roofStructuresFor(b);
-    if (roof.length > 0) b.roof = roof;
+    // O5: set on EVERY building (undefined when bare), so all buildings share
+    // one shape: with `roof` on only some, the per-probe collision loads went
+    // polymorphic and boxed their doubles (~56 B a collideCity call).
+    b.roof = roof.length > 0 ? roof : undefined;
   }
   // H2: and nothing on a roof rises into a hole's clear air.
   clearHoleAir(buildings);

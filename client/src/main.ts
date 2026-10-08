@@ -1236,6 +1236,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   headlights.setQuality(tier);
   signage.setQuality(tier);
   rooftopLife.setQuality(tier);
+  roofClutter.setQuality(tier); // R2: fine roof dressing only
   natureRenderer.setQuality(tier);
   fountains.setQuality(tier);
   birds.setQuality(tier);

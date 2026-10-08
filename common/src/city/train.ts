@@ -92,6 +92,7 @@ import { type Building, mulberry32 } from "./index";
 import { CONSTRUCTION_BLOCKS } from "./layout";
 import { type MoverBox, type MoverHit, sphereHitsBox } from "./movers";
 import { RIVER_CENTER_Z, RIVER_HALF_WIDTH } from "./river";
+import { roofTop } from "./roof-structures";
 
 /** One piece of a track's centreline, in the line's own unwrapped frame
  * (origin at its first corner intersection). */
@@ -839,7 +840,7 @@ function buriedInCity(
     const ex = (extents[i * 2] ?? 0) + pad;
     const ez = (extents[i * 2 + 1] ?? 0) + pad;
     for (const o of buildings) {
-      if (b.y - b.hy > o.height) continue;
+      if (b.y - b.hy > roofTop(o)) continue; // R2: roof structures too
       if (Math.abs(wrapDeltaAxis(o.x, b.x)) >= ex + o.width / 2) continue;
       if (Math.abs(wrapDeltaAxis(o.z, b.z)) >= ez + o.depth / 2) continue;
       return true;

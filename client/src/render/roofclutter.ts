@@ -1,164 +1,35 @@
-// Roof clutter + landmark beacons (V2, client-only dressing). Layout is the
-// pure seam roofClutterFor(): deterministic per building from its position
-// and dimensions via the shared mulberry32 — no Math.random, so every client
-// dresses identical roofs. The THREE instancing below is a thin adapter, same
-// pattern as Streetlights: canonical positions, re-placed every frame at the
-// torus image nearest the camera. Clutter is the plan's ONE sanctioned
-// visual-without-collision exception (small enough that clipping it is
-// forgivable); beacons pulse on server-synced time so all clients pulse
-// together.
+// Roof clutter + landmark beacons (V2, R2): the renderer. Layout is pure and
+// lives elsewhere — roof-layout.ts (roofClutterFor: HVAC units, the solid
+// structures' masts, the beacon) and roof-details.ts (roofDetailsFor: every
+// structure body 1:1 with its collider, and the ≤ 2.5 m dressing). The THREE
+// instancing below is a thin adapter, same pattern as Streetlights: canonical
+// positions, re-placed only when an instance's torus image flips. Clutter
+// (≤ ROOF_CLUTTER_MAX_HEIGHT) is the plan's sanctioned visual-without-
+// collision exception; everything taller is a solid roof structure from the
+// shared seam (common/src/city/roof-structures.ts). Beacons pulse on
+// server-synced time so all clients pulse together.
+//
+// Draw calls: boxes, cylinders, masts, mast tips, beacons (V2), plus ONE lit
+// box batch for door lamps and billboard faces and frames (R2).
 
-import { type Building, mulberry32 } from "@angels-bandits/common/city";
-import {
-  EMISSIVE_BEACON,
-  LANDMARK_HEIGHT,
-} from "@angels-bandits/common/constants";
+import type { Building } from "@angels-bandits/common/city";
+import { EMISSIVE_BEACON } from "@angels-bandits/common/constants";
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
-import { RoofKind, roofStyleFor } from "./roofs";
+import { QUALITY_PROFILES, type QualityTier } from "./quality";
+import { type RoofPart, roofDetailsFor } from "./roof-details";
+import { type Mast, roofClutterFor } from "./roof-layout";
 import { ImageCache, InstanceUploads } from "./wrapPlacement";
 
-/** Buildings at least this tall grow antenna masts (with red tips). */
-const MAST_MIN_HEIGHT = 120;
-/** Smallest top-roof side that fits a water tower, meters. */
-const TOWER_MIN_ROOF = 24;
-/** How far a helipad roof's corner units may wander in from the corner, m —
- * small enough that the smallest pad roof (34 m) keeps them off the pad. */
-const HELIPAD_CORNER_SPAN = 2;
-/** Beacon hover above the landmark crown, meters. */
-const BEACON_LIFT = 3;
-
-export interface WaterTower {
-  x: number;
-  z: number;
-  /** Roof height the item stands on (== building height). */
-  y: number;
-  radius: number;
-  height: number;
-}
-
-export interface AcBox {
-  x: number;
-  z: number;
-  y: number;
-  width: number;
-  depth: number;
-  height: number;
-}
-
-export interface Mast {
-  x: number;
-  z: number;
-  y: number;
-  height: number;
-}
-
-export interface RoofClutter {
-  waterTowers: WaterTower[];
-  acBoxes: AcBox[];
-  /** Every mast carries a tiny red emissive tip. */
-  masts: Mast[];
-  /** Pulsing red beacon — landmarks only. */
-  beacon: { x: number; z: number; y: number } | null;
-}
-
-/**
- * Deterministic clutter for one building's TOP tier roof. Landmarks get a
- * beacon and stay otherwise clean (the crown is the read); everything else
- * rolls water towers, AC boxes, and (when tall) antenna masts from a PRNG
- * seeded by the building itself.
- */
-export function roofClutterFor(b: Building): RoofClutter {
-  const none: RoofClutter = {
-    waterTowers: [],
-    acBoxes: [],
-    masts: [],
-    beacon: null,
-  };
-  if (b.height >= LANDMARK_HEIGHT) {
-    return { ...none, beacon: { x: b.x, z: b.z, y: b.height + BEACON_LIFT } };
-  }
-
-  const rand = mulberry32(
-    (Math.imul(b.x, 73856093) ^
-      Math.imul(b.z, 19349663) ^
-      Math.imul(b.height, 83492791)) >>>
-      0,
-  );
-  const top = b.tiers[b.tiers.length - 1];
-  if (!top) return none;
-  const halfW = top.width / 2;
-  const halfD = top.depth / 2;
-  /** Uniform offset keeping an item of half-extent `e` fully on the roof. */
-  const offset = (half: number, e: number) =>
-    (rand() * 2 - 1) * Math.max(0, half - e - 1);
-
-  const clutter: RoofClutter = { ...none };
-
-  // VO3 helipad roofs take their OWN placement path (so every other roof's
-  // stream, and the steam vents that follow acBoxes[0], stay byte-identical):
-  // no water tower, a few units pushed into the corners, clear of the pad
-  // circle and its perimeter lights. Helipads only exist under the mast
-  // height (roofs.ts), so there are no masts to place.
-  if (roofStyleFor(b).tierKinds[b.tiers.length - 1] === RoofKind.HELIPAD) {
-    const units = 1 + Math.floor(rand() * 3);
-    for (let i = 0; i < units; i++) {
-      const width = 1.6 + rand() * 2.4;
-      const depth = 1.6 + rand() * 2.4;
-      const sx = rand() < 0.5 ? -1 : 1;
-      const sz = rand() < 0.5 ? -1 : 1;
-      clutter.acBoxes.push({
-        x: b.x + sx * (halfW - width / 2 - 1 - rand() * HELIPAD_CORNER_SPAN),
-        z: b.z + sz * (halfD - depth / 2 - 1 - rand() * HELIPAD_CORNER_SPAN),
-        y: b.height,
-        width,
-        depth,
-        height: 1.2 + rand() * 1.6,
-      });
-    }
-    return clutter;
-  }
-
-  if (Math.min(top.width, top.depth) >= TOWER_MIN_ROOF && rand() < 0.55) {
-    const radius = 2.2 + rand() * 1.3;
-    clutter.waterTowers.push({
-      x: b.x + offset(halfW, radius),
-      z: b.z + offset(halfD, radius),
-      y: b.height,
-      radius,
-      height: 5 + rand() * 2,
-    });
-  }
-
-  const boxes = 1 + Math.floor(rand() * 3);
-  for (let i = 0; i < boxes; i++) {
-    const width = 1.6 + rand() * 2.4;
-    const depth = 1.6 + rand() * 2.4;
-    clutter.acBoxes.push({
-      x: b.x + offset(halfW, width / 2),
-      z: b.z + offset(halfD, depth / 2),
-      y: b.height,
-      width,
-      depth,
-      height: 1.2 + rand() * 1.6,
-    });
-  }
-
-  if (b.height >= MAST_MIN_HEIGHT) {
-    const masts = rand() < 0.35 ? 2 : 1;
-    for (let i = 0; i < masts; i++) {
-      clutter.masts.push({
-        x: b.x + offset(halfW, 0),
-        z: b.z + offset(halfD, 0),
-        y: b.height,
-        height: 8 + rand() * 8,
-      });
-    }
-  }
-
-  return clutter;
-}
+// The layout seam's long-standing import site.
+export {
+  type AcBox,
+  type Mast,
+  type RoofClutter,
+  type WaterTower,
+  roofClutterFor,
+} from "./roof-layout";
 
 // --- Emissive rungs (V1 bloom ladder: threshold 0.72, tracers ~1.5) ---
 /** Beacon red pushed to its ladder rung at pulse PEAK — above lamp heads,
@@ -175,48 +46,108 @@ const TIP_BOOST = 1.5;
  * weathered timber tanks — so roofs read as working decks, not black holes.
  * The material is WHITE and every instance carries its tone in instanceColor
  * (three multiplies the two, so a dark material colour could never be
- * lightened per instance). sRGB hex, converted to linear by THREE.Color. */
+ * lightened per instance). Tones are sRGB hex (roof-details.ts), converted
+ * to linear by THREE.Color. */
 const CLUTTER_MATERIAL_COLOR = 0xffffff;
-const TOWER_TONES = [0x7a6552, 0x6e7680, 0x86705a] as const; // timber / steel
-const BOX_TONES = [0x9aa1aa, 0x9c9585, 0x8a929c, 0xa7a49b] as const; // plant
 const MAST_TONE = 0x737a85;
-/** Stable per-item pick from its canonical position (never a torus image). */
-const toneOf = <T>(tones: readonly T[], x: number, z: number): T =>
-  tones[
-    ((Math.imul(Math.round(x * 8), 73856093) ^
-      Math.imul(Math.round(z * 8), 19349663)) >>>
-      0) %
-      tones.length
-  ] as T;
 
-/** The instanced roof-clutter renderer + pulsing landmark beacons. */
+/**
+ * One instanced batch of roof parts. Each part's rotation × scale is
+ * composed ONCE here into a per-instance base matrix; the frame loop only
+ * writes the translation of the instances whose torus image flipped (O2), so
+ * nothing is allocated or recomposed per frame. Fine detail is sorted last,
+ * so a quality tier drops it by instance count alone (no recompile).
+ */
+class PartBatch {
+  readonly mesh: THREE.InstancedMesh;
+  /** Instances that are not fine detail (they come first). */
+  readonly coarse: number;
+  private readonly base: Float32Array;
+  private readonly ys: Float32Array;
+  private readonly images: ImageCache;
+  private readonly uploads: InstanceUploads;
+  private readonly scratch = new THREE.Matrix4();
+
+  constructor(
+    geometry: THREE.BufferGeometry,
+    material: THREE.Material,
+    parts: readonly RoofPart[],
+  ) {
+    const sorted = [
+      ...parts.filter((p) => !p.fine),
+      ...parts.filter((p) => p.fine),
+    ];
+    this.coarse = parts.length - parts.filter((p) => p.fine).length;
+    this.mesh = new THREE.InstancedMesh(geometry, material, sorted.length);
+    this.base = new Float32Array(sorted.length * 16);
+    this.ys = new Float32Array(sorted.length);
+    const yaw = new THREE.Matrix4();
+    const tilt = new THREE.Matrix4();
+    const scale = new THREE.Matrix4();
+    const color = new THREE.Color();
+    sorted.forEach((p, i) => {
+      yaw.makeRotationY(p.yaw);
+      tilt.makeRotationX(p.tilt);
+      scale.makeScale(p.sx, p.sy, p.sz);
+      this.scratch.multiplyMatrices(yaw, tilt).multiply(scale);
+      this.scratch.toArray(this.base, i * 16);
+      this.ys[i] = p.y;
+      color.setHex(p.tone);
+      if (p.boost > 0) color.multiplyScalar(p.boost);
+      this.mesh.setColorAt(i, color);
+    });
+    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.mesh.frustumCulled = false; // instances move relative to the camera every frame
+    this.images = new ImageCache(
+      sorted.map((p) => p.x),
+      sorted.map((p) => p.z),
+    );
+    this.uploads = new InstanceUploads([this.mesh.instanceMatrix]);
+  }
+
+  private readonly place = (i: number, x: number, z: number): void => {
+    this.scratch.fromArray(this.base, i * 16);
+    const e = this.scratch.elements;
+    e[12] = x;
+    e[13] = this.ys[i] as number;
+    e[14] = z;
+    this.mesh.setMatrixAt(i, this.scratch);
+    this.uploads.mark(i);
+  };
+
+  update(cameraPos: Vec3): void {
+    this.images.update(cameraPos, this.place);
+    this.uploads.flush();
+  }
+
+  /** Draw everything, or only the coarse parts (Low / Mobile). */
+  setFine(on: boolean): void {
+    this.mesh.count = on ? this.images.length : this.coarse;
+  }
+}
+
+/** The instanced roof renderer: structures, clutter, masts, beacons. */
 export class RoofClutterRenderer {
   readonly group = new THREE.Group();
-  private readonly towers: WaterTower[];
-  private readonly boxes: AcBox[];
+  private readonly boxes: PartBatch;
+  private readonly cylinders: PartBatch;
+  private readonly lit: PartBatch;
   private readonly masts: Mast[];
   private readonly beacons: { x: number; z: number; y: number }[];
-  private readonly towerMesh: THREE.InstancedMesh;
-  private readonly boxMesh: THREE.InstancedMesh;
   private readonly mastMesh: THREE.InstancedMesh;
   private readonly tipMesh: THREE.InstancedMesh;
   private readonly beaconMesh: THREE.InstancedMesh;
   private readonly beaconMaterial: THREE.MeshBasicMaterial;
   private readonly scratch = new THREE.Matrix4();
   /** O2: per-kind torus-image caches — only flipped instances re-upload. */
-  private readonly towerImages: ImageCache;
-  private readonly boxImages: ImageCache;
   private readonly mastImages: ImageCache;
   private readonly beaconImages: ImageCache;
-  private readonly towerUploads: InstanceUploads;
-  private readonly boxUploads: InstanceUploads;
   private readonly mastUploads: InstanceUploads;
   private readonly beaconUploads: InstanceUploads;
 
   constructor(buildings: readonly Building[]) {
     const layouts = buildings.map(roofClutterFor);
-    this.towers = layouts.flatMap((c) => c.waterTowers);
-    this.boxes = layouts.flatMap((c) => c.acBoxes);
+    const details = buildings.map(roofDetailsFor);
     this.masts = layouts.flatMap((c) => c.masts);
     this.beacons = layouts.flatMap((c) => (c.beacon ? [c.beacon] : []));
 
@@ -227,22 +158,30 @@ export class RoofClutterRenderer {
 
     // Unit shapes with their base at y=0 so a scale matrix stands them on
     // the roof (same idiom as the city's unit box).
-    const towerGeometry = new THREE.CylinderGeometry(1, 1, 1, 8);
-    towerGeometry.translate(0, 0.5, 0);
-    this.towerMesh = new THREE.InstancedMesh(
-      towerGeometry,
-      dark,
-      this.towers.length,
-    );
-
     const boxGeometry = new THREE.BoxGeometry(1, 1, 1);
     boxGeometry.translate(0, 0.5, 0);
-    this.boxMesh = new THREE.InstancedMesh(
+    this.boxes = new PartBatch(
       boxGeometry,
       dark,
-      this.boxes.length,
+      details.flatMap((d) => d.boxes),
+    );
+    // Twelve sides: a round tank's flats sit within 3.5 % of its collider.
+    const cylinderGeometry = new THREE.CylinderGeometry(1, 1, 1, 12);
+    cylinderGeometry.translate(0, 0.5, 0);
+    this.cylinders = new PartBatch(
+      cylinderGeometry,
+      dark,
+      details.flatMap((d) => d.cylinders),
+    );
+    // R2: lamps and billboard art. Unlit, white × the per-instance emissive
+    // colour (roof-details.ts lifts each to its rung, all under SIGN).
+    this.lit = new PartBatch(
+      boxGeometry,
+      new THREE.MeshBasicMaterial({ color: 0xffffff }),
+      details.flatMap((d) => d.lit),
     );
 
+    // Masts: the drawn base radius IS the collider's (MAST_RADIUS).
     const mastGeometry = new THREE.CylinderGeometry(0.08, 0.14, 1, 5);
     mastGeometry.translate(0, 0.5, 0);
     this.mastMesh = new THREE.InstancedMesh(
@@ -266,62 +205,36 @@ export class RoofClutterRenderer {
       this.beacons.length,
     );
 
-    // Per-instance tones (static — set once, before the first compile).
     const tone = new THREE.Color();
-    this.towers.forEach((t, i) => {
-      this.towerMesh.setColorAt(i, tone.setHex(toneOf(TOWER_TONES, t.x, t.z)));
-    });
-    this.boxes.forEach((box, i) => {
-      this.boxMesh.setColorAt(i, tone.setHex(toneOf(BOX_TONES, box.x, box.z)));
-    });
     this.masts.forEach((_, i) => {
       this.mastMesh.setColorAt(i, tone.setHex(MAST_TONE));
     });
 
-    for (const mesh of [
-      this.towerMesh,
-      this.boxMesh,
+    for (const mesh of [this.mastMesh, this.tipMesh, this.beaconMesh]) {
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      mesh.frustumCulled = false; // instances move relative to the camera every frame
+    }
+    this.group.add(
+      this.boxes.mesh,
+      this.cylinders.mesh,
+      this.lit.mesh,
       this.mastMesh,
       this.tipMesh,
       this.beaconMesh,
-    ]) {
-      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      mesh.frustumCulled = false; // instances move relative to the camera every frame
-      this.group.add(mesh);
-    }
+    );
     const cache = (items: { x: number; z: number }[]): ImageCache =>
       new ImageCache(
         items.map((t) => t.x),
         items.map((t) => t.z),
       );
-    this.towerImages = cache(this.towers);
-    this.boxImages = cache(this.boxes);
     this.mastImages = cache(this.masts);
     this.beaconImages = cache(this.beacons);
-    this.towerUploads = new InstanceUploads([this.towerMesh.instanceMatrix]);
-    this.boxUploads = new InstanceUploads([this.boxMesh.instanceMatrix]);
     this.mastUploads = new InstanceUploads([
       this.mastMesh.instanceMatrix,
       this.tipMesh.instanceMatrix,
     ]);
     this.beaconUploads = new InstanceUploads([this.beaconMesh.instanceMatrix]);
   }
-
-  private readonly placeTower = (i: number, x: number, z: number): void => {
-    const t = this.towers[i] as WaterTower;
-    this.scratch.makeScale(t.radius, t.height, t.radius);
-    this.scratch.setPosition(x, t.y, z);
-    this.towerMesh.setMatrixAt(i, this.scratch);
-    this.towerUploads.mark(i);
-  };
-
-  private readonly placeBox = (i: number, x: number, z: number): void => {
-    const box = this.boxes[i] as AcBox;
-    this.scratch.makeScale(box.width, box.height, box.depth);
-    this.scratch.setPosition(x, box.y, z);
-    this.boxMesh.setMatrixAt(i, this.scratch);
-    this.boxUploads.mark(i);
-  };
 
   private readonly placeMast = (i: number, x: number, z: number): void => {
     const m = this.masts[i] as Mast;
@@ -340,14 +253,25 @@ export class RoofClutterRenderer {
     this.beaconUploads.mark(i);
   };
 
-  /** Total clutter+beacon instances drawn — perf reporting/QA. */
+  /** Total roof instances drawn (all tiers' worth) — perf reporting/QA. */
   get instanceCount(): number {
     return (
-      this.towers.length +
-      this.boxes.length +
+      this.boxes.mesh.count +
+      this.cylinders.mesh.count +
+      this.lit.mesh.count +
       this.masts.length * 2 +
       this.beacons.length
     );
+  }
+
+  /** O3: Low and Mobile drop the fine detail (drains, hatches, walkways,
+   * rods, dishes, braces, cables). Every structure body stays on every tier
+   * — it is solid. */
+  setQuality(tier: QualityTier): void {
+    const fine = QUALITY_PROFILES[tier].roofDetail;
+    this.boxes.setFine(fine);
+    this.cylinders.setFine(fine);
+    this.lit.setFine(fine);
   }
 
   /**
@@ -355,12 +279,11 @@ export class RoofClutterRenderer {
    * server-synced time so every client's beacons pulse in phase.
    */
   update(cameraPos: Vec3, timeMs: number): void {
-    this.towerImages.update(cameraPos, this.placeTower);
-    this.boxImages.update(cameraPos, this.placeBox);
+    this.boxes.update(cameraPos);
+    this.cylinders.update(cameraPos);
+    this.lit.update(cameraPos);
     this.mastImages.update(cameraPos, this.placeMast);
     this.beaconImages.update(cameraPos, this.placeBeacon);
-    this.towerUploads.flush();
-    this.boxUploads.flush();
     this.mastUploads.flush();
     this.beaconUploads.flush();
 

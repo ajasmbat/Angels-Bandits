@@ -19,6 +19,7 @@
     "./city/train": "./src/city/train.ts",
     "./city/nature": "./src/city/nature.ts",
     "./city/river": "./src/city/river.ts",
+    "./city/roof-structures": "./src/city/roof-structures.ts",
     "./storm": "./src/storm.ts",
     "./weather": "./src/weather.ts",
     "./wind": "./src/wind.ts",

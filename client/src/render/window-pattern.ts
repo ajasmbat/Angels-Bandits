@@ -21,6 +21,7 @@
 // distributions and invariants (lit fraction, clustering, convexity, finite
 // pitch), never a specific window's on/off state on a specific GPU.
 
+import { EMISSIVE_HOLE_LED } from "@angels-bandits/common/constants";
 import * as THREE from "three";
 import { AB_AA_GLSL } from "./aa-glsl";
 import { FacadeArchetype } from "./archetypes";
@@ -829,7 +830,10 @@ totalEmissiveRadiance = mix(totalEmissiveRadiance, vLed, led);
 // A holed tier is drawn as walls + lintel + sill (city.ts), all painted in the
 // PARENT tier's frame, and every one of them carries the tier's hole as
 // `vHole` = (across offset, half width, floor above the tier base, ±height —
-// + travels along x, − along z; 0 = no hole). From that one vec4 each
+// + travels along x, − along z; 0 = no hole), and `vRun` = the whole run's
+// along extent in the same frame (H2: a row tunnel cuts several lots, and
+// its depth, rim and mouth frame belong to the run, not to each lot — no
+// reset at an internal lot line). From those each
 // fragment knows whether it lines the hole or frames its mouth, so the
 // pattern needs no per-face flags and an unholed tier pays one branchless
 // mask that comes out 0.
@@ -838,9 +842,13 @@ totalEmissiveRadiance = mix(totalEmissiveRadiance, vLed, led);
 export const HOLE = {
   /** Windows stop this far short of a mouth opening — no half-cut panes. */
   reveal: 2.4,
-  /** LED frame line: centred this far outside the opening, half-width. */
+  /** LED frame line: centred this far outside the opening, half-width —
+   * H2 widened it and added a thinner second line further out, so a mouth
+   * reads as a lit gate from a block away. */
   frameOffset: 0.9,
-  frameHalf: 0.22,
+  frameHalf: 0.34,
+  frame2Offset: 1.95,
+  frame2Half: 0.16,
   /** Rim ring just inside each mouth, on the lining. */
   rimDepth: 0.6,
   rimHalf: 0.2,
@@ -857,8 +865,8 @@ export const HOLE = {
 
 /** Tunnel-lining albedo, linear: weathered board-formed concrete. */
 export const HOLE_LINING = new THREE.Color(0.11, 0.105, 0.1);
-/** The mouth frame's luminance — the VO3 LED rung, under EMISSIVE_SIGN. */
-export const HOLE_LED_LUMINANCE = 0.9;
+/** The mouth frame's luminance — the H2 guidance rung, under EMISSIVE_SIGN. */
+export const HOLE_LED_LUMINANCE = EMISSIVE_HOLE_LED;
 /** Mouth frame colour: a cool white that reads against every facade hue,
  * boosted to exactly HOLE_LED_LUMINANCE. */
 export const HOLE_LED_COLOR = new THREE.Color(0.7, 0.9, 1.0).multiplyScalar(
@@ -879,7 +887,6 @@ float holeOn = step(1e-3, holeH);
 float holeX = step(0.0, vHole.w);              // 1: travels along x
 float holeAlong = mix(vMeters.z, vMeters.x, holeX);
 float holeAcross = mix(vMeters.x, vMeters.z, holeX);
-float holeHalfLen = mix(vHalfXZ.y, vHalfXZ.x, holeX);
 // Normal along the travel axis = a mouth face (the tier's end facades).
 float holeMouthFace = step(0.5, abs(mix(vObjNormal.z, vObjNormal.x, holeX)));
 // Signed distance to the opening's rectangle (across, height); < 0 inside.
@@ -888,10 +895,12 @@ vec2 holeQ = vec2(abs(holeAcross - vHole.x) - vHole.y,
 float holeSd = max(holeQ.x, holeQ.y);
 // Lining: the walls, floor and ceiling of the hole itself.
 float holeLining = holeOn * (1.0 - holeMouthFace) * step(holeSd, 0.02);
-// Reveal: the band of mouth facade around the opening.
-float holeReveal = holeOn * holeMouthFace * step(holeSd, ${glslFloat(HOLE.reveal)});
-// Meters in from the nearer mouth.
-float holeDepth = holeHalfLen - abs(holeAlong);
+// Meters in from the run's nearer OUTER mouth.
+float holeDepth = min(holeAlong - vRun.x, vRun.y - holeAlong);
+// Reveal: the band of mouth facade around the opening — outer mouths only
+// (a face inside a run, seen across a light well, stays plain facade).
+float holeReveal = holeOn * holeMouthFace * step(holeSd, ${glslFloat(HOLE.reveal)})
+  * step(holeDepth, 0.5);
 facade *= 1.0 - max(holeLining, holeReveal);
 `;
 }
@@ -908,7 +917,9 @@ vec3 holeAlbedo = ${glslVec3(HOLE_LINING)} * (0.85 + 0.3 * holePanel) * (1.0 - 0
 diffuseColor.rgb = mix(diffuseColor.rgb, holeAlbedo, holeLining);
 // The frame strip IS the light: no diffuse under it (the VO3 LED rule).
 float holePix = max(rPix, max(mAA.y, 1e-4));
-float holeFrame = holeReveal * abLine(abs(holeSd - ${glslFloat(HOLE.frameOffset)}), ${glslFloat(HOLE.frameHalf)}, holePix);
+float holeFrame = holeReveal * max(
+  abLine(abs(holeSd - ${glslFloat(HOLE.frameOffset)}), ${glslFloat(HOLE.frameHalf)}, holePix),
+  abLine(abs(holeSd - ${glslFloat(HOLE.frame2Offset)}), ${glslFloat(HOLE.frame2Half)}, holePix));
 float holeRim = holeLining * abLine(abs(holeDepth - ${glslFloat(HOLE.rimDepth)}), ${glslFloat(HOLE.rimHalf)}, holePix);
 float holeCeil = holeLining * step(vObjNormal.y, -0.5)
   * abLine(abs(holeAcross - vHole.x), ${glslFloat(HOLE.ceilingHalf)}, holePix)

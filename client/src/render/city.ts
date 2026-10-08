@@ -9,6 +9,8 @@
 
 import {
   type Building,
+  type HoleSpan,
+  cityHoles,
   generateCity,
   solids,
 } from "@angels-bandits/common/city";
@@ -17,7 +19,7 @@ import {
   buildCityIndex,
 } from "@angels-bandits/common/collision";
 import { LANDMARK_HEIGHT } from "@angels-bandits/common/constants";
-import type { Vec3 } from "@angels-bandits/common/world";
+import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { FacadeArchetype, archetypeFor } from "./archetypes";
 import { createBuildingsMaterial } from "./buildings-material";
@@ -210,6 +212,25 @@ export class CityRenderer {
       new THREE.InstancedBufferAttribute(parent, 3),
     );
     geometry.setAttribute("aHole", new THREE.InstancedBufferAttribute(hole, 4));
+
+    // H2: aRun = the hole's whole run along its axis, (lo, hi) in the parent
+    // tier's frame — a row tunnel's span covers every lot it cuts, so the
+    // lining's depth, rim and mouth frame are the run's (window-pattern.ts).
+    const run = new Float32Array(this.instances.length * 2);
+    const spanOf = new Map<Building, HoleSpan>();
+    for (const s of cityHoles(this.buildings)) {
+      for (const h of s.hosts) spanOf.set(h, s);
+    }
+    this.instances.forEach((inst, i) => {
+      const b = inst.building;
+      const s = spanOf.get(b);
+      if (!s || !b.holes?.some((h) => h.tierIndex === inst.tierIndex)) return;
+      const x = s.hole.axis === "x";
+      // Tiers are centred on the building, so its (x, z) is the tier origin.
+      const lo = wrapDeltaAxis(x ? b.x : b.z, x ? s.entry.x : s.entry.z);
+      run.set([lo, lo + s.length], i * 2);
+    });
+    geometry.setAttribute("aRun", new THREE.InstancedBufferAttribute(run, 2));
 
     // L3 cleaning crew: aCrew = (visit start, duration, block cycle, 0) in
     // live-clock seconds, the same on every solid of a building; cycle 0 =

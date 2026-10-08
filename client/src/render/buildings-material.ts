@@ -106,6 +106,7 @@ attribute vec3 aCrown;
 attribute vec3 aSubOff;
 attribute vec3 aParent;
 attribute vec4 aHole;
+attribute vec2 aRun;
 attribute vec4 aCrew;
 varying vec3 vMeters;
 varying vec3 vObjNormal;
@@ -120,6 +121,7 @@ varying vec3 vLed;
 varying vec3 vCrown;
 varying vec2 vHalfXZ;
 varying vec4 vHole;
+varying vec2 vRun;
 varying vec4 vCrew;
 ${pitchSeedGlsl()}`;
 
@@ -163,6 +165,7 @@ vLed = aLed;
 vCrown = aCrown;
 vHalfXZ = bScale.xz * 0.5;
 vHole = aHole;
+vRun = aRun;
 // L3 cleaning crew: this building's visit slot (living-windows.ts).
 vCrew = aCrew;
 `;
@@ -183,6 +186,7 @@ varying vec3 vLed;
 varying vec3 vCrown;
 varying vec2 vHalfXZ;
 varying vec4 vHole;
+varying vec2 vRun;
 
 float abHash(vec2 p, float s) {
   return fract(sin(dot(p + s * 61.0, vec2(127.1, 311.7))) * 43758.5453);

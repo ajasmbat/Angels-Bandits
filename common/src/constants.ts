@@ -28,6 +28,9 @@ export const CROSSWALK_DEPTH = 4;
 export const EMISSIVE_WINDOW = 0.88;
 /** Wingtip ribbon trails at full turn hardness — streaks, not neon. */
 export const EMISSIVE_TRAIL = 0.9;
+/** H2 hole guidance LEDs — a mouth's frame, the approach chevrons and the
+ * tunnel's light strips: brighter than H1's 0.9 frame, still under signs. */
+export const EMISSIVE_HOLE_LED = 0.92;
 /** Reserved for S2 neon signage — between windows and lamp heads. */
 export const EMISSIVE_SIGN = 0.93;
 /** Engine exhaust flicker at full throttle — a warm ember, below the lamps. */

@@ -46,6 +46,13 @@ export interface RosterEntry {
 export interface JoinMsg {
   type: "join";
   name: string;
+  /**
+   * W2: the `resumeToken` from this player's last welcome. A live token
+   * restores the same id, name and kills/deaths (back in the same room when
+   * it still has a seat); an unknown, spent or expired one is ignored and the
+   * join is an ordinary fresh one — never an error.
+   */
+  resume?: string;
 }
 
 /** Streamed at TICK_UP_HZ once joined. */
@@ -130,9 +137,22 @@ export interface PingMsg {
   type: "ping";
 }
 
+/**
+ * W2: the tab went hidden (`on: true`) or came back (`on: false`). Away, the
+ * plane leaves snapshots and targeting, can't be hit or score, and keeps its
+ * room seat. The server applies `on: true` only once the plane has gone
+ * AWAY_COMBAT_LOCK_MS without taking damage (a burst already landing can't
+ * be dodged), and answers the return of a living plane with a `respawn`.
+ */
+export interface AwayMsg {
+  type: "away";
+  on: boolean;
+}
+
 export type ClientMsg =
   | JoinMsg
   | PingMsg
+  | AwayMsg
   | PoseMsg
   | FireMsg
   | BoostMsg
@@ -169,6 +189,10 @@ export interface WelcomeMsg {
    * late joiner flies the same heli as everyone else. Welcome-only — live
    * changes arrive as NewsHeliMsg, so snapshots pay nothing for it. */
   newsHeli?: NewsHeliSlot;
+  /** W2: single-use secret that lets this player's next `join` resume the
+   * session (same id and score) within RESUME_WINDOW_MS of a drop. Fresh on
+   * every welcome; never logged. */
+  resumeToken: string;
 }
 
 export interface PlayerJoinedMsg {
@@ -324,8 +348,19 @@ export interface NewsHeliMsg {
   target: NewsHeliTarget;
 }
 
+/**
+ * W2: the player's own `away: true` has taken effect (sent to that player
+ * only — to everyone else the plane just leaves snapshots). From here its
+ * return is answered with a `respawn`, which the client waits for before
+ * posing again.
+ */
+export interface AwayStartedMsg {
+  type: "awayStarted";
+}
+
 export type ServerMsg =
   | WelcomeMsg
+  | AwayStartedMsg
   | NewsHeliMsg
   | BotsConfigMsg
   | PlayerJoinedMsg

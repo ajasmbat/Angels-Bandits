@@ -88,9 +88,13 @@ export class RoomManager {
     return this.list;
   }
 
-  /** Put `id` in the first non-full room, spawning a new room if all are full. */
-  join(id: string, name: string): Room {
-    const room = this.list.find((r) => !r.full) ?? this.spawnRoom();
+  /** Put `id` in the first non-full room, spawning a new room if all are
+   * full. `preferRoomId` (a W2 resume) wins when that room still exists and
+   * has a seat. */
+  join(id: string, name: string, preferRoomId?: string): Room {
+    const preferred = this.list.find((r) => r.id === preferRoomId && !r.full);
+    const room =
+      preferred ?? this.list.find((r) => !r.full) ?? this.spawnRoom();
     room.members.set(id, { id, name });
     this.byMember.set(id, room);
     return room;

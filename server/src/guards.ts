@@ -37,3 +37,8 @@ export const isQuat = (v: unknown): v is Quat =>
  * quaternion norm) is validatePose's job, not this one's. */
 export const isPose = (v: unknown): v is Pose =>
   isObject(v) && isVec3(v.pos) && isQuat(v.quat) && Number.isFinite(v.speed);
+
+/** A W2 resume token as the server mints it: 16 random bytes, base64url —
+ * exactly 22 characters. Anything else never reaches a lookup. */
+export const isResumeToken = (v: unknown): v is string =>
+  typeof v === "string" && /^[A-Za-z0-9_-]{22}$/.test(v);

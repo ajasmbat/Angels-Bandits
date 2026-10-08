@@ -33,6 +33,21 @@ describe("RoomManager", () => {
     expect(mgr.rooms).toHaveLength(2);
   });
 
+  it("a resume (W2) prefers its old room while that room has a seat", () => {
+    const mgr = new RoomManager();
+    fill(mgr, 13); // room-1 full, p13 in room-2
+    mgr.leave("p3");
+    // room-1 has a seat again, but the resume asked for room-2.
+    expect(mgr.join("p3", "Pilot 3", "room-2").id).toBe("room-2");
+  });
+
+  it("a resume into a full or vanished room falls back to a normal join", () => {
+    const mgr = new RoomManager();
+    fill(mgr, 12); // room-1 full
+    expect(mgr.join("p13", "Pilot 13", "room-1").id).toBe("room-2");
+    expect(mgr.join("p14", "Pilot 14", "room-99").id).toBe("room-2");
+  });
+
   it("removes a room once its last member leaves", () => {
     const mgr = new RoomManager();
     fill(mgr, 13);

@@ -131,6 +131,21 @@ export class Combat {
     if (p?.alive) p.protectedUntil = now + SPAWN_PROTECTION_MS;
   }
 
+  /** W2: put a resumed player's tally back. Call AFTER addPlayer, which
+   * starts every player at 0/0. */
+  restoreScore(id: string, kills: number, deaths: number): void {
+    const p = this.players.get(id);
+    if (!p) return;
+    p.kills = kills;
+    p.deaths = deaths;
+  }
+
+  /** W2: did `id` take damage in the last `ms`? (Away waits this out.) */
+  damagedWithin(id: string, now: number, ms: number): boolean {
+    const p = this.players.get(id);
+    return p !== undefined && now - p.lastDamagedAt < ms;
+  }
+
   removePlayer(id: string): void {
     this.players.delete(id);
   }
@@ -319,6 +334,17 @@ export class Combat {
   respawned(id: string, now: number): void {
     const p = this.players.get(id);
     if (!p || p.alive) return;
+    this.freshPlane(p, now);
+  }
+
+  /** W2: a LIVING player back from away gets a fresh plane — its local
+   * flight state is stale, so it re-enters like a respawn (no death). */
+  returned(id: string, now: number): void {
+    const p = this.players.get(id);
+    if (p?.alive) this.freshPlane(p, now);
+  }
+
+  private freshPlane(p: PlayerCombat, now: number): void {
     p.alive = true;
     p.hp = MAX_HP;
     p.protectedUntil = now + SPAWN_PROTECTION_MS;

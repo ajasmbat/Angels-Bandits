@@ -5,7 +5,7 @@
 // run is the backfill bots (B1): RoomBots advances them with the shared
 // stepFlight inside the same TICK_DOWN_HZ snapshot tick.
 
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import {
   type Boost,
@@ -32,6 +32,10 @@ import {
   buildNatureIndex,
 } from "@angels-bandits/common/collision";
 import {
+  AWAY_COMBAT_LOCK_MS,
+  AWAY_MIN_MS,
+  AWAY_SILENCE_MS,
+  AWAY_TIMEOUT_MS,
   BOOST_VALIDATION_SLACK,
   BOOT_TIMEOUT_MS,
   CITY_SEED,
@@ -39,6 +43,7 @@ import {
   LIVENESS_TIMEOUT_MS,
   NAME_MAX_LENGTH,
   POSE_AGE_MAX_MS,
+  RESUME_WINDOW_MS,
   SPAWN_PROTECTION_MS,
   TICK_DOWN_HZ,
 } from "@angels-bandits/common/constants";
@@ -63,7 +68,13 @@ import {
 } from "./bots";
 import { CityEventLog, nearBuildingProbe } from "./cityevents";
 import { Combat, type HitResult, type SpeedCapFn } from "./combat";
-import { type ClientEnvelope, isClientMsg, isPose, isVec3 } from "./guards";
+import {
+  type ClientEnvelope,
+  isClientMsg,
+  isPose,
+  isResumeToken,
+  isVec3,
+} from "./guards";
 import { type RespawnEnemy, pickBotRespawn, pickRespawn } from "./respawn";
 import { type Room, RoomManager } from "./room";
 import { createStaticHandler } from "./statics";
@@ -78,6 +89,10 @@ const JOIN_DEADLINE = Number(process.env.JOIN_DEADLINE_MS) || JOIN_DEADLINE_MS;
 /** How long a joined player may stay pending (no pose yet) — W1. Same env
  * override pattern, for the same reason. */
 const BOOT_TIMEOUT = Number(process.env.BOOT_TIMEOUT_MS) || BOOT_TIMEOUT_MS;
+/** W2 windows, same env override pattern (tests shorten them). */
+const RESUME_WINDOW = Number(process.env.RESUME_WINDOW_MS) || RESUME_WINDOW_MS;
+const AWAY_TIMEOUT = Number(process.env.AWAY_TIMEOUT_MS) || AWAY_TIMEOUT_MS;
+const AWAY_SILENCE = Number(process.env.AWAY_SILENCE_MS) || AWAY_SILENCE_MS;
 
 /** Test-only introspection of the per-room maps (`GET /debug/rooms`). */
 const DEBUG_ROOMS = process.env.AB_DEBUG_ROOMS === "1";
@@ -108,10 +123,38 @@ interface Client {
   /** Mirror of the client's boost energy (F2), stepped from its edges with
    * BOOST_VALIDATION_SLACK — the only thing that makes boost speed legal. */
   boost: Boost;
+  /** W2: this session's secret for resuming after a drop (in its welcome). */
+  resumeToken: string;
+  /** W2: the token this session was resumed WITH. Still honoured until the
+   * session's first frame, so a resume whose welcome was lost in flight can
+   * simply be retried; dropped after that (tokens are single use). */
+  prevToken: string | null;
+  /** W2: the tab asked to be away. `away` is whether it has taken effect
+   * (settleAway: not while the plane is still taking damage), since `awayAt`.
+   * An away player keeps its seat but is absent from snapshots and
+   * targeting, and its own pose/fire/hit/crash/boost frames are ignored. */
+  wantsAway: boolean;
+  away: boolean;
+  awayAt: number;
+}
+
+/** W2: what a dropped session leaves behind for RESUME_WINDOW: enough to
+ * come back as the same player with the same score. Never holds a seat. */
+interface ResumeRecord {
+  name: string;
+  kills: number;
+  deaths: number;
+  roomId: string;
+  expiresAt: number;
 }
 
 const rooms = new RoomManager();
 const clients = new Map<string, Client>();
+/** W2: resume token → player id. Covers live sessions (a resume can take one
+ * over) and dropped ones (→ resumeRecords). Swept with the records. */
+const resumeIds = new Map<string, string>();
+/** W2: player id → its dropped session, until it expires or is resumed. */
+const resumeRecords = new Map<string, ResumeRecord>();
 /** Server-authoritative combat state (HP/kills/respawns). Keyed by the same
  * globally-unique player ids as `clients`; hit claims are gated to one room.
  * Bots are registered here too — identical rules, no special cases. */
@@ -207,9 +250,10 @@ const memberPose = (room: Room, id: string): Pose | null => {
   const member = room.members.get(id);
   if (!member || !combat.isAlive(id)) return null;
   if (member.isBot) return botsFor(room).poseOf(id);
-  // A pending human (W1) is still loading: not in the air for anyone yet.
+  // A pending human (W1) is still loading and an away one (W2) has its tab
+  // hidden: neither is in the air for anyone.
   const client = clients.get(id);
-  return client && !client.pending ? client.pose : null;
+  return client && !client.pending && !client.away ? client.pose : null;
 };
 
 /** How long before `time` a member's on-record pose was taken, ms (O2).
@@ -322,13 +366,49 @@ function sendToRoom(room: Room, msg: ServerMsg, exceptId?: string): void {
   }
 }
 
+/** 128 random bits, base64url (22 chars) — unguessable, and never logged. */
+const mintResumeToken = (): string => randomBytes(16).toString("base64url");
+
+/**
+ * W2: the session a `join`'s resume token restores, or null for an ordinary
+ * fresh join (no, malformed, unknown, spent or expired token — never an
+ * error). A token whose session is still OPEN means the client noticed the
+ * drop before this server did: that stale socket is terminated and left
+ * first, which writes the record this resume then takes.
+ */
+function takeResume(token: unknown): { id: string; record: ResumeRecord } | null {
+  if (!isResumeToken(token)) return null;
+  const id = resumeIds.get(token);
+  if (id === undefined) return null;
+  const live = clients.get(id);
+  if (live) {
+    live.ws.terminate();
+    handleLeave(id);
+  }
+  const record = resumeRecords.get(id);
+  if (!record || record.expiresAt <= Date.now()) return null;
+  resumeRecords.delete(id);
+  return { id, record };
+}
+
 /** `id` is minted by the caller before any side effect, so a join that
- * throws half-way can still be undone by handleLeave(id). */
-function handleJoin(ws: WebSocket, rawName: unknown, id: string): Client {
-  const name = sanitizeName(rawName);
-  const room = rooms.join(id, name);
+ * throws half-way can still be undone by handleLeave(id). `resumed` (W2)
+ * restores a dropped session: same id (the caller's), name and score, in
+ * its old room when that still has a seat. */
+function handleJoin(
+  ws: WebSocket,
+  rawName: unknown,
+  id: string,
+  resumed: { record: ResumeRecord; token: string } | null,
+): Client {
+  const name = resumed ? resumed.record.name : sanitizeName(rawName);
+  const room = rooms.join(id, name, resumed?.record.roomId);
   const now = Date.now();
   combat.addPlayer(id, now);
+  // After addPlayer, which starts every tally at 0/0.
+  if (resumed) {
+    combat.restoreScore(id, resumed.record.kills, resumed.record.deaths);
+  }
   // Joiners get the same near-the-fight placement as respawns.
   const spawn = pickRespawn(livingEnemies(room, id));
   const client: Client = {
@@ -344,8 +424,14 @@ function handleJoin(ws: WebSocket, rawName: unknown, id: string): Client {
     joinedAt: now,
     rejectStreak: 0,
     boost: createBoost(now),
+    resumeToken: mintResumeToken(),
+    prevToken: resumed?.token ?? null,
+    wantsAway: false,
+    away: false,
+    awayAt: 0,
   };
   clients.set(id, client);
+  resumeIds.set(client.resumeToken, id);
 
   const welcome: ServerMsg = {
     type: "welcome",
@@ -358,9 +444,12 @@ function handleJoin(ws: WebSocket, rawName: unknown, id: string): Client {
     botTarget: room.botTarget,
     cityEvents: cityEvents.recent(room.id, now),
     newsHeli: roomMovers(room).news,
+    resumeToken: client.resumeToken,
   };
   ws.send(JSON.stringify(welcome));
   sendToRoom(room, { type: "playerJoined", player: { id, name } }, id);
+  // Everyone else's board seeded this row at 0/0 from playerJoined.
+  if (resumed) broadcastScores(room);
   // The human takes a seat: one bot yields (idle first) after the welcome so
   // the joiner sees a consistent roster then a normal playerLeft.
   syncRoomBots(room);
@@ -436,6 +525,18 @@ function handleBoost(client: Client, on: unknown, now: number): void {
 
 /** Idempotent: every step tolerates an id that never fully joined. */
 function handleLeave(id: string): void {
+  const client = clients.get(id);
+  if (client) {
+    // W2: read the score BEFORE removePlayer forgets it.
+    const { kills, deaths } = combat.scoreOf(id);
+    resumeRecords.set(id, {
+      name: client.name,
+      kills,
+      deaths,
+      roomId: client.room.id,
+      expiresAt: Date.now() + RESUME_WINDOW,
+    });
+  }
   clients.delete(id);
   combat.removePlayer(id);
   storm.forget(id);
@@ -602,15 +703,59 @@ function issueRespawns(due: string[], now: number): void {
       const client = clients.get(id);
       if (!client) continue;
       combat.respawned(id, now);
-      client.pose = poseFromSpawn(spawn);
-      client.poseTime = now;
-      client.rejectStreak = 0;
-      client.lastPoseAt = now;
-      client.boost = createBoost(now); // fresh plane, full gauge, no tail
+      resetOnRecord(client, spawn, now);
     }
     sendToRoom(room, {
       type: "respawn",
       id,
+      spawn,
+      protectedUntil: now + SPAWN_PROTECTION_MS,
+    });
+  }
+}
+
+/** A human's server-side plane starts over at `spawn` (respawn, W2 return). */
+function resetOnRecord(client: Client, spawn: SpawnState, now: number): void {
+  client.pose = poseFromSpawn(spawn);
+  client.poseTime = now;
+  client.rejectStreak = 0;
+  client.lastPoseAt = now;
+  client.boost = createBoost(now); // fresh plane, full gauge, no tail
+}
+
+/**
+ * W2: move a client's away state toward what its tab asked for. Going away
+ * waits until the plane has gone AWAY_COMBAT_LOCK_MS without damage — until
+ * then it stays in snapshots, hittable, so hiding never dodges a burst that
+ * is already landing. Coming back waits out AWAY_MIN_MS, then a living plane
+ * re-enters with a fresh spawn and protection: its local flight state froze
+ * with the tab. (A dead one just keeps its kill-cam respawn.)
+ */
+function settleAway(client: Client, now: number): void {
+  if (client.wantsAway && !client.away) {
+    if (combat.damagedWithin(client.id, now, AWAY_COMBAT_LOCK_MS)) return;
+    client.away = true;
+    client.awayAt = now;
+    storm.forget(client.id);
+    // Only the player needs to know: to everyone else it just drops out of
+    // snapshots. The client holds its poses for the return respawn on this.
+    if (client.ws.readyState === client.ws.OPEN) {
+      const started: ServerMsg = { type: "awayStarted" };
+      client.ws.send(JSON.stringify(started));
+    }
+  } else if (
+    !client.wantsAway &&
+    client.away &&
+    now - client.awayAt >= AWAY_MIN_MS
+  ) {
+    client.away = false;
+    if (!combat.isAlive(client.id)) return;
+    const spawn = pickRespawn(livingEnemies(client.room, client.id));
+    combat.returned(client.id, now);
+    resetOnRecord(client, spawn, now);
+    sendToRoom(client.room, {
+      type: "respawn",
+      id: client.id,
       spawn,
       protectedUntil: now + SPAWN_PROTECTION_MS,
     });
@@ -771,12 +916,35 @@ wss.on("connection", (ws) => {
   const dispatch = (msg: ClientEnvelope, now: number): void => {
     if (msg.type === "join" && !joinedId) {
       clearTimeout(joinDeadline);
-      joinedId = randomUUID();
-      client = handleJoin(ws, msg.name, joinedId);
-    } else if (!client) {
+      const resumed = takeResume(msg.resume);
+      joinedId = resumed?.id ?? randomUUID();
+      client = handleJoin(
+        ws,
+        msg.name,
+        joinedId,
+        resumed && { record: resumed.record, token: msg.resume as string },
+      );
       return;
-    } else if (msg.type === "ping") {
-      // W1 boot keepalive: arriving already refreshed lastMsgAt.
+    }
+    if (!client) return;
+    if (client.prevToken !== null) {
+      // The resumed session spoke, so its welcome (and new token) arrived:
+      // the token it was resumed with is spent now.
+      resumeIds.delete(client.prevToken);
+      client.prevToken = null;
+    }
+    if (msg.type === "ping") {
+      // W1 boot keepalive / W2 hidden-tab heartbeat: arriving already
+      // refreshed lastMsgAt.
+    } else if (msg.type === "away") {
+      // A booting client isn't in the air to leave it; settleAway does the rest.
+      if (typeof msg.on === "boolean" && !client.pending) {
+        client.wantsAway = msg.on;
+      }
+    } else if (client.away) {
+      // Away (W2): the plane is out of the world — its pose, shots, hit
+      // claims, crashes and boost edges don't exist until it returns.
+      if (msg.type === "setBots") handleSetBots(client, msg.count, now);
     } else if (msg.type === "pose") {
       if (!isPose(msg.pose)) return;
       if (client.pending) goLive(client, now);
@@ -827,7 +995,10 @@ wss.on("connection", (ws) => {
 
   ws.on("close", () => {
     clearTimeout(joinDeadline);
-    if (joinedId) handleLeave(joinedId);
+    // A resume that took this session over (W2) already left it, and the id
+    // now belongs to the new socket: this late close must not evict it.
+    const owner = joinedId === null ? undefined : clients.get(joinedId);
+    if (joinedId && (!owner || owner.ws === ws)) handleLeave(joinedId);
     client = null;
     joinedId = null;
   });
@@ -839,6 +1010,7 @@ wss.on("connection", (ws) => {
 // into a tuple of integers, which is what pays for the 20 Hz cadence.
 function tick(): void {
   const time = Date.now();
+  for (const client of clients.values()) settleAway(client, time);
   issueRespawns(combat.tick(time).respawnsDue, time);
   for (const room of rooms.rooms) {
     tickRoomBots(room, time);
@@ -898,13 +1070,26 @@ syncRoomBots(rooms.ensureRoom());
 // A pending client (W1) is booting and may legitimately be silent for
 // seconds, so it gets a deadline counted from its join instead — fixed, so
 // no keepalive can hold its seat forever.
+// An away client (W2) heartbeats from a hidden tab: it is held to the away
+// window counted from going away (never extended by pings) and to a looser
+// silence bound, since a phone may freeze the page outright.
 setInterval(() => {
   const now = Date.now();
   for (const client of clients.values()) {
     const gone = client.pending
       ? now - client.joinedAt > BOOT_TIMEOUT
-      : now - client.lastMsgAt > LIVENESS_TIMEOUT_MS;
+      : client.away
+        ? now - client.awayAt > AWAY_TIMEOUT ||
+          now - client.lastMsgAt > AWAY_SILENCE
+        : now - client.lastMsgAt > LIVENESS_TIMEOUT_MS;
     if (gone) client.ws.terminate();
+  }
+  // W2: dropped sessions expire, and tokens pointing at nothing go with them.
+  for (const [id, record] of resumeRecords) {
+    if (record.expiresAt <= now) resumeRecords.delete(id);
+  }
+  for (const [token, id] of resumeIds) {
+    if (!clients.has(id) && !resumeRecords.has(id)) resumeIds.delete(token);
   }
 }, 2000);
 

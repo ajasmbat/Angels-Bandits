@@ -141,26 +141,71 @@ export function aimView(
   };
 }
 
-const yawOf = (d: Vec3): number => Math.atan2(-d.x, -d.z);
-const elevOf = (d: Vec3): number => Math.atan2(d.y, Math.hypot(d.x, d.z));
+/** Heading authority is full up to this pipper elevation… (F7) */
+const COS_FADE_START = Math.cos((55 * Math.PI) / 180);
+/** …and gone from this one on, where world yaw only spins the view. */
+const COS_FADE_END = Math.cos((80 * Math.PI) / 180);
+/** Nose-ease gain: rad of pitch toward the horizon per rad of side error
+ * the fade took away. 1 left a dead zone at the limit — (0.15, 0.35) hung
+ * at 83° with no turn; 3 made a cursor 0.1 off-centre pirouette at 74°. */
+const EASE = 2;
 
 /**
  * How far to turn and pitch the plane so the pipper ray (`pipperDir`, from the
- * eye to the gun line's far point) lands on `aimDir`. The target nose
- * elevation is clamped to ±PITCH_LIMIT, so a cursor near the zenith never
- * asks for a pitch the model refuses.
+ * eye to the gun line's far point) lands on `aimDir`.
+ *
+ * F7: measured in the pipper's own frame (right = its horizontal right, up =
+ * right × pipper), not as world heading/elevation differences — those flip
+ * 180° as the cursor ray crosses the zenith, which is exactly where a cursor
+ * held above the pipper ends up once the nose stops at PITCH_LIMIT and the
+ * lagging eye keeps rising: the turn saturated and, the eye following the
+ * heading, never came back (a flat spin). Here a cursor straight above or
+ * below the pipper has zero side error at any pitch, and the error is
+ * continuous everywhere, so the zoom/free-look latch (a difference of two
+ * calls) can't jump either.
+ *
+ * Near vertical a world yaw barely moves the pipper on screen, so heading
+ * authority fades out between 55° and 80° of pipper elevation (its cosine is
+ * the pipper's horizontal length, `ph`). The share of side error the fade
+ * takes away eases the nose toward the horizon instead, until the plane can
+ * turn again: no pirouette, and no lock at the limit. Below 55° the yaw
+ * error equals the old heading difference for a level step (|yaw| stays
+ * under π/2 / cos 55° < π, so wrapAngle never reverses it). The target nose
+ * elevation is clamped to ±PITCH_LIMIT.
  */
 export function aimError(
   flight: Pick<FlightState, "pitch">,
   aimDir: Vec3,
   pipperDir: Vec3,
 ): AimError {
-  const yaw = wrapAngle(yawOf(aimDir) - yawOf(pipperDir));
-  const want = clamp(
-    flight.pitch + elevOf(aimDir) - elevOf(pipperDir),
-    -PITCH_LIMIT,
-    PITCH_LIMIT,
+  const pl = Math.hypot(pipperDir.x, pipperDir.y, pipperDir.z) || 1;
+  const px = pipperDir.x / pl;
+  const py = pipperDir.y / pl;
+  const pz = pipperDir.z / pl;
+  // PITCH_LIMIT keeps the pipper ≥ ~5° off vertical; the guard is belt only.
+  const ph = Math.hypot(px, pz) || 1e-9;
+  const rx = -pz / ph;
+  const rz = px / ph;
+  const ux = -rz * py;
+  const uy = rz * px - rx * pz;
+  const uz = rx * py;
+  const along = aimDir.x * px + aimDir.y * py + aimDir.z * pz;
+  const half = Math.PI / 2;
+  const side = clamp(
+    Math.atan2(aimDir.x * rx + aimDir.z * rz, along),
+    -half,
+    half,
   );
+  const vert = Math.atan2(aimDir.x * ux + aimDir.y * uy + aimDir.z * uz, along);
+  const fade = clamp(
+    (ph - COS_FADE_END) / (COS_FADE_START - COS_FADE_END),
+    0,
+    1,
+  );
+  // turn +1 is right and DEcreases yaw, so a cursor to the right is −yaw.
+  const yaw = (-side / ph) * fade;
+  const ease = Math.sign(py) * EASE * (1 - fade) * Math.abs(side);
+  const want = clamp(flight.pitch + vert - ease, -PITCH_LIMIT, PITCH_LIMIT);
   return { yaw, pitch: want - flight.pitch };
 }
 

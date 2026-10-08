@@ -467,6 +467,18 @@ export interface LowPass {
   t: number;
 }
 
+/** A1: a plane passing near the buildings (snapshot-derived, like LowPass,
+ * but with its height): what crowds look up at and pigeons flutter from. */
+export interface NearPass extends LowPass {
+  y: number;
+}
+/** A plane below this altitude is recorded as a near pass, meters. */
+export const NEAR_PASS_ALT = 280;
+/** Near passes are kept this long, ms (the longest reaction they drive). */
+export const NEAR_PASS_LIFE_MS = 14_000;
+/** Near passes held at once (12 planes × 2/s × 14 s, with room). */
+export const MAX_NEAR_PASSES = 400;
+
 /** How far along the sidewalk a scattered walker has run `age` ms after a
  * pass, as a 0..1 fraction of SCATTER_RUN: out fast, hold, drift back. */
 export function scatterProfile(age: number): number {
@@ -655,6 +667,7 @@ export class CityReactor {
   private readonly buildings: readonly Building[];
   private events: PreparedEvent[] = [];
   private readonly passes: LowPass[] = [];
+  private readonly nearList: NearPass[] = [];
   /** Last low-pass bucket recorded per plane (one pass per bucket). */
   private readonly passBucket = new Map<string, number>();
   private readonly selfTrack: { t: number; pos: Vec3 }[] = [];
@@ -736,11 +749,21 @@ export class CityReactor {
         this.selfTrack.push({ t: snap.time, pos: { ...p.pose.pos } });
         if (this.selfTrack.length > 8) this.selfTrack.shift();
       }
-      if (p.pose.pos.y >= LOW_PASS_ALT) continue;
+      if (p.pose.pos.y >= NEAR_PASS_ALT) continue;
       const bucket = Math.floor(snap.time / LOW_PASS_BUCKET_MS);
       if (this.passBucket.get(p.id) === bucket) continue;
       this.passBucket.set(p.id, bucket);
-      this.passes.push({ x: p.pose.pos.x, z: p.pose.pos.z, t: snap.time });
+      const { x, y, z } = p.pose.pos;
+      // A1: same buckets, a higher ceiling — the near list carries height.
+      this.nearList.push({ x, y, z, t: snap.time });
+      if (y >= LOW_PASS_ALT) continue;
+      this.passes.push({ x, z, t: snap.time });
+    }
+    while (
+      this.nearList.length > MAX_NEAR_PASSES ||
+      (this.nearList[0] && snap.time - this.nearList[0].t > NEAR_PASS_LIFE_MS)
+    ) {
+      this.nearList.shift();
     }
     // Old passes are over; bound the set by the same horizon.
     while (
@@ -768,6 +791,11 @@ export class CityReactor {
   /** Respawn / death: the on-record track jumps, forget it. */
   clearSelfTrack(): void {
     this.selfTrack.length = 0;
+  }
+
+  /** A1: near passes (any plane under NEAR_PASS_ALT), oldest first. */
+  get nearPasses(): readonly NearPass[] {
+    return this.nearList;
   }
 
   /** Low passes still scattering, for the pedestrian renderer. */

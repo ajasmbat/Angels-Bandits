@@ -1,4 +1,4 @@
-// pickRespawn seam: torus-aware farthest-from-enemies spawn sampling.
+// pickRespawn seam: torus-aware near-the-fight spawn sampling (U2 band).
 // The RNG is injected, so candidate points are chosen by the test and the
 // expected winner is worked out by hand with wrapDistance in mind.
 
@@ -17,40 +17,39 @@ const seq = (values: number[]): (() => number) => {
 };
 
 describe("pickRespawn", () => {
-  it("scores a candidate near x=0 as CLOSE to an enemy at x=1990 (the seam is not distance)", () => {
-    // Candidates (x, z as fractions of WORLD_SIZE = 2000):
-    //   A = (10, 1000)  — raw |Δx| to the enemy is 1980, but on the torus it
-    //                     is only 20 m away: A must lose.
-    //   B = (1000, 1000) — 990 m from the enemy: B must win.
+  it("measures the band across the seam (the seam is not distance)", () => {
+    // Candidates (x, z as fractions of WORLD_SIZE = 2000), band middle 500 m:
+    //   A = (490, 1000)  — raw |Δx| to the enemy is 1500, but on the torus it
+    //                      is 500 m away, dead on the band: A must win.
+    //   B = (1000, 1000) — 990 m from the enemy either way (raw would win).
     // pickRespawn draws x,z per candidate, then one final yaw draw.
-    const enemy = { x: 1990, y: 300, z: 1000 };
+    const enemy = { pos: { x: 1990, y: 300, z: 1000 }, fwd: null };
     const rand = seq([
-      10 / WORLD_SIZE,
+      490 / WORLD_SIZE,
       1000 / WORLD_SIZE, // candidate A
       1000 / WORLD_SIZE,
       1000 / WORLD_SIZE, // candidate B
       // remaining candidate draws repeat B's z → duplicates of B, harmless
     ]);
     const spawn = pickRespawn([enemy], rand);
-    expect(spawn.pos.x).toBeCloseTo(1000, 6);
+    expect(spawn.pos.x).toBeCloseTo(490, 6);
     expect(spawn.pos.z).toBeCloseTo(1000, 6);
   });
 
-  it("maximizes the MINIMUM enemy distance, not the average", () => {
-    // Enemies at x=200 and x=1000 (z=1000). Candidates:
-    //   A = (600, 1000): min(400, 400) = 400
-    //   B = (1800, 1000): distances 400 (torus: 200←1800 wraps) and 800 → min 400
-    //   C = (100, 1000): min(100, 900) = 100 — closest approach, must lose
-    // A and B tie on the min; the first best (A) wins. C never can.
+  it("scores the NEAREST enemy against the band, not the average", () => {
+    // Enemies at x=200 and x=1000 (z=1000), band middle 500 m. Candidates:
+    //   W = (1100, 1000): distances 900 and 100 → average 500 (perfect), but
+    //       the nearest is 100 m — far inside the band: W must lose.
+    //   X = (600, 1000): distances 400 and 400 → nearest 400, 100 m off.
     const enemies = [
-      { x: 200, y: 300, z: 1000 },
-      { x: 1000, y: 300, z: 1000 },
+      { pos: { x: 200, y: 300, z: 1000 }, fwd: null },
+      { pos: { x: 1000, y: 300, z: 1000 }, fwd: null },
     ];
     const rand = seq([
-      100 / WORLD_SIZE,
-      1000 / WORLD_SIZE, // C first
+      1100 / WORLD_SIZE,
+      1000 / WORLD_SIZE, // W first
       600 / WORLD_SIZE,
-      1000 / WORLD_SIZE, // then A
+      1000 / WORLD_SIZE, // then X
     ]);
     const spawn = pickRespawn(enemies, rand);
     expect(spawn.pos.x).toBeCloseTo(600, 6);

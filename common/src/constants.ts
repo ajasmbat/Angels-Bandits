@@ -610,8 +610,20 @@ export const DAMAGE_MEMORY_MS = 8000;
 export const REGEN_DELAY_MS = 5000;
 /** Regen rate once it starts, HP per second (MAX_HP / 10). */
 export const REGEN_RATE = MAX_HP / 10;
-/** Random points sampled when picking a farthest-from-enemies respawn. */
+/** Street candidates sampled for a bot's (re)spawn (pickBotRespawn). */
 export const RESPAWN_SAMPLES = 24;
+/** Random points sampled for a pilot's respawn (U2): twice the bots' — the
+ * band and the nose cones reject more candidates than max-min ever did. */
+export const RESPAWN_BAND_SAMPLES = 48;
+/** U2: a respawn aims for its nearest enemy at this torus distance, m —
+ * inside the fog (800 m) and bot detection (500 m) reach, outside guns
+ * (350 m), so the fight starts a few seconds after the spawn, not 10–20. */
+export const RESPAWN_BAND_MIN = 400;
+export const RESPAWN_BAND_MAX = 600;
+/** U2: never spawn inside an enemy's forward cone — this half-angle, rad
+ * (30°, a 60° cone) — within RESPAWN_NOSE_RANGE of it. */
+export const RESPAWN_NOSE_CONE = Math.PI / 6;
+export const RESPAWN_NOSE_RANGE = 700;
 
 // --- Rooms ---
 /** Players per FFA room; rooms auto-spawn when full. */

@@ -63,7 +63,7 @@ import {
 import { CityEventLog, nearBuildingProbe } from "./cityevents";
 import { Combat, type HitResult, type SpeedCapFn } from "./combat";
 import { type ClientEnvelope, isClientMsg, isPose, isVec3 } from "./guards";
-import { pickBotRespawn, pickRespawn } from "./respawn";
+import { type RespawnEnemy, pickBotRespawn, pickRespawn } from "./respawn";
 import { type Room, RoomManager } from "./room";
 import { createStaticHandler } from "./statics";
 import { StormCeiling } from "./storm";
@@ -233,16 +233,24 @@ function offerCityEvent(
   if (event) sendToRoom(room, { type: "cityEvent", event });
 }
 
-/** On-record positions of living roommates other than `exceptId` — the
- * enemies a farthest-from-enemies spawn keeps away from. */
-const livingEnemyPositions = (room: Room, exceptId: string): Vec3[] => {
-  const positions: Vec3[] = [];
+/** Living roommates other than `exceptId` as the respawn picker sees them:
+ * on-record position plus nose direction (U2: a spawn lands near the fight
+ * but never in front of anyone's guns). */
+const livingEnemies = (room: Room, exceptId: string): RespawnEnemy[] => {
+  const enemies: RespawnEnemy[] = [];
   for (const { id } of room.members.values()) {
     if (id === exceptId) continue;
     const pose = memberPose(room, id);
-    if (pose) positions.push(pose.pos);
+    if (pose) enemies.push({ pos: pose.pos, fwd: noseOf(pose) });
   }
-  return positions;
+  return enemies;
+};
+
+/** Unit nose vector of a wire pose; null for a degenerate quaternion. */
+const noseOf = (pose: Pose): Vec3 | null => {
+  const v = poseVelocity({ ...pose, speed: 1 });
+  const len = Math.hypot(v.x, v.y, v.z);
+  return len > 1e-6 ? { x: v.x / len, y: v.y / len, z: v.z / len } : null;
 };
 
 /** Sync a room's bot population to the backfill target: spawn/despawn bots,
@@ -251,7 +259,7 @@ function syncRoomBots(room: Room): void {
   const bots = botsFor(room);
   const now = Date.now();
   const { spawned, despawned } = bots.syncTo(rooms.desiredBots(room), () =>
-    pickBotRespawn(livingEnemyPositions(room, ""), (pos, yaw) =>
+    pickBotRespawn(livingEnemies(room, ""), (pos, yaw) =>
       bots.spawnClear(pos, yaw, now),
     ),
   );
@@ -309,8 +317,8 @@ function handleJoin(ws: WebSocket, rawName: unknown, id: string): Client {
   const room = rooms.join(id, name);
   const now = Date.now();
   combat.addPlayer(id, now);
-  // Joiners get the same farthest-from-enemies placement as respawns.
-  const spawn = pickRespawn(livingEnemyPositions(room, id));
+  // Joiners get the same near-the-fight placement as respawns.
+  const spawn = pickRespawn(livingEnemies(room, id));
   const client: Client = {
     id,
     name,
@@ -551,13 +559,13 @@ function handleCrash(client: Client, now: number): void {
   broadcastScores(client.room);
 }
 
-/** Kill-cams that just ended: place each player (human or bot) far from
- * living enemies, reset their on-record pose, and announce the respawn. */
+/** Kill-cams that just ended: place each player (human or bot) near, not
+ * in front of, living enemies, reset their on-record pose, and announce the respawn. */
 function issueRespawns(due: string[], now: number): void {
   for (const id of due) {
     const room = rooms.roomOf(id);
     if (!room) continue;
-    const enemies = livingEnemyPositions(room, id);
+    const enemies = livingEnemies(room, id);
     let spawn: SpawnState;
     if (room.members.get(id)?.isBot) {
       // Bots respawn down in a street (B1); humans keep the high spawn.

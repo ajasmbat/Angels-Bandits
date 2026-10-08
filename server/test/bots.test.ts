@@ -389,11 +389,14 @@ describe("applyBotFire — bots use human combat rules", () => {
     expect(bots.poseOf(entry.id)).toBeNull();
 
     // Kill-cam beat elapses → Combat marks the respawn due; the sampler
-    // places it far from enemies and RoomBots reseeds the flight there.
+    // places it near the fight and RoomBots reseeds the flight there.
     expect(combat.tick(5000 + KILL_CAM_MS - 1).respawnsDue).toEqual([]);
     const due = combat.tick(5000 + KILL_CAM_MS).respawnsDue;
     expect(due).toEqual([entry.id]);
-    const spawn = pickRespawn([{ x: 1000, y: 300, z: 1000 }], () => 0.25);
+    const spawn = pickRespawn(
+      [{ pos: { x: 1000, y: 300, z: 1000 }, fwd: null }],
+      () => 0.25,
+    );
     combat.respawned(entry.id, 5000 + KILL_CAM_MS);
     bots.respawn(entry.id, spawn);
     expect(combat.isAlive(entry.id)).toBe(true);

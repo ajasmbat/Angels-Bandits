@@ -21,11 +21,12 @@
 import { EMISSIVE_WINDOW } from "@angels-bandits/common/constants";
 import * as THREE from "three";
 import {
-  DAMAGE_COLOR_GLSL,
-  DAMAGE_DETAIL_UNIFORM,
-  DAMAGE_EMISSIVE_GLSL,
-  DAMAGE_VERTEX_GLSL,
-} from "./damage-shading";
+  BROKEN_COLOR_GLSL,
+  BROKEN_DETAIL_UNIFORM,
+  BROKEN_EMISSIVE_GLSL,
+  BROKEN_VERTEX_GLSL,
+} from "./broken-shading";
+import { DAMAGE_GLSL, DAMAGE_ON_UNIFORM, DAMAGE_PARS_GLSL } from "./damage-map";
 import { luminance } from "./emissive";
 import { LIVE_ON_UNIFORM, livingParsGlsl } from "./living-windows";
 import { WAKE_PARS_GLSL, wakeWindowGlsl, windowWakeUniform } from "./reactions";
@@ -106,11 +107,12 @@ export const BOUNCE_TINTS = {
 export const BOUNCE_NEON_MIX = 0.55;
 
 const VERTEX_PARS = /* glsl */ `
-attribute float aArchetype;
+attribute vec2 aArchetype; // x: facade archetype, y: D1 damage slot word
+flat varying highp float vDmgWord;
 attribute vec4 aRoof;
 attribute vec3 aLed;
 attribute vec3 aCrown;
-attribute vec4 aSubOff; // .w: D2 CUT_* mask (damage-shading.ts)
+attribute vec4 aSubOff; // .w: D2 CUT_* mask (broken-shading.ts)
 attribute vec3 aParent;
 attribute vec4 aHole;
 attribute vec4 aCrew;
@@ -129,7 +131,7 @@ varying vec2 vHalfXZ;
 varying vec4 vHole;
 varying vec2 vRun;
 varying vec4 vCrew;
-varying vec4 vDamage;
+varying vec4 vBroken;
 ${pitchSeedGlsl()}${UNPACK_RUN_GLSL}`;
 
 const VERTEX_MAIN = /* glsl */ `
@@ -156,7 +158,10 @@ vBSeed = fract(sin(dot(bScale.xz, vec2(12.9898, 78.233)) + bScale.y) * 43758.545
 // L13: the window pitch jitter's seed, bit-exact with window-pattern.ts
 // pitchSeed() so facade detail can sit on the drawn rows.
 vPitchSeed = abPitchSeed(bScale);
-vArch = aArchetype;
+vArch = aArchetype.x;
+// D1: the tier's packed facade-damage slots — flat + highp, so the 24-bit
+// word reaches the fragment stage exact (damage-map.ts DAMAGE_GLSL).
+vDmgWord = aArchetype.y;
 // This instance's own height, so weathering scales with the building rather
 // than with a constant written for one tower size.
 vBHeight = bScale.y;
@@ -175,7 +180,7 @@ vHole = aHole;
 vRun = abUnpackRun(aCrew.w); // H2: the hole's run (city.ts packRun)
 // L3 cleaning crew: this building's visit slot (living-windows.ts).
 vCrew = aCrew;
-${DAMAGE_VERTEX_GLSL}`;
+${BROKEN_VERTEX_GLSL}`;
 
 const FRAGMENT_PARS = /* glsl */ `
 uniform float uOccupancy; // L12 sky cycle: window occupancy, 0..1
@@ -194,8 +199,8 @@ varying vec3 vCrown;
 varying vec2 vHalfXZ;
 varying vec4 vHole;
 varying vec2 vRun;
-varying vec4 vDamage;
-uniform float uDamageDetail; // D2 quality: rebar + jagged rims on (1)
+varying vec4 vBroken;
+uniform float uBrokenDetail; // D2 quality: rebar + jagged rims on (1)
 
 float abHash(vec2 p, float s) {
   return fract(sin(dot(p + s * 61.0, vec2(127.1, 311.7))) * 43758.5453);
@@ -203,7 +208,7 @@ float abHash(vec2 p, float s) {
 float abSafeDiv(float d) {
   return abs(d) < 1e-4 ? (d < 0.0 ? -1e-4 : 1e-4) : d;
 }
-${roofParsGlsl()}${WAKE_PARS_GLSL}${livingParsGlsl()}${WEATHER_PARS_GLSL}`;
+${DAMAGE_PARS_GLSL}${roofParsGlsl()}${WAKE_PARS_GLSL}${livingParsGlsl()}${WEATHER_PARS_GLSL}`;
 
 /** Injected after color_fragment: derives the shared window-grid locals
  * (in scope for the emissive block below — same main body), modulates the
@@ -213,10 +218,11 @@ ${roofParsGlsl()}${WAKE_PARS_GLSL}${livingParsGlsl()}${WEATHER_PARS_GLSL}`;
  * comes last, over whatever the facade pass left inside a hole. */
 const FRAGMENT_COLOR =
   windowGridGlsl() +
+  DAMAGE_GLSL +
   weatheringGlsl() +
   roofSurfaceGlsl() +
   holeSurfaceGlsl() +
-  DAMAGE_COLOR_GLSL +
+  BROKEN_COLOR_GLSL +
   BUILDING_WET_COLOR_GLSL;
 
 /** G1 lit lobbies: what a storefront's room averages to over its walls,
@@ -341,7 +347,7 @@ const FRAGMENT_EMISSIVE = `${windowEmissiveGlsl(
   glslVec3(WINDOW_WARM),
   glslVec3(WINDOW_COOL),
   WINDOW_EMISSIVE_INTENSITY,
-)}${wakeWindowGlsl(WINDOW_EMISSIVE_INTENSITY)}${SHOP_BAND_GLSL}${roofLightGlsl()}${holeLightGlsl()}${BUILDING_WET_EMISSIVE_GLSL}${DAMAGE_EMISSIVE_GLSL}`;
+)}${wakeWindowGlsl(WINDOW_EMISSIVE_INTENSITY)}${SHOP_BAND_GLSL}${roofLightGlsl()}${holeLightGlsl()}${BUILDING_WET_EMISSIVE_GLSL}${BROKEN_EMISSIVE_GLSL}`;
 
 /**
  * VO2: cap the grazing-angle Fresnel. Standard materials reflect 100% at
@@ -376,6 +382,7 @@ export interface LiveTimeUniform {
  * writes it once per frame. */
 export function createBuildingsMaterial(
   liveTime: LiveTimeUniform = { value: 0 },
+  damage: THREE.Texture | null = null,
 ): THREE.MeshStandardMaterial {
   const material = new THREE.MeshStandardMaterial({
     roughness: 0.85,
@@ -393,7 +400,10 @@ export function createBuildingsMaterial(
     // L4: the shared weather uniform (render/weather.ts), by reference.
     shader.uniforms.uWeather = WEATHER_UNIFORM;
     // D2: the quality tier's broken-edge detail switch, by reference.
-    shader.uniforms.uDamageDetail = DAMAGE_DETAIL_UNIFORM;
+    shader.uniforms.uBrokenDetail = BROKEN_DETAIL_UNIFORM;
+    // D1: the facade damage atlas and its switch (damage-map.ts).
+    shader.uniforms.uDamage = { value: damage };
+    shader.uniforms.uDamageOn = DAMAGE_ON_UNIFORM;
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", `#include <common>\n${VERTEX_PARS}`)
       .replace(
@@ -422,6 +432,6 @@ export function createBuildingsMaterial(
   // Distinct compiled program per patch (V3 rule: three keys programs on
   // onBeforeCompile.toString(), and sibling materials collide silently).
   material.customProgramCacheKey = () =>
-    "ab-buildings-h1-holes-l1-wake-l3-live-l4-wet-g1-lobbies-d2-damage";
+    "ab-buildings-h1-holes-l1-wake-l3-live-l4-wet-g1-lobbies-d1-damage-d2-broken";
   return material;
 }

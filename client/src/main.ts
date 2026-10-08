@@ -42,6 +42,13 @@ import {
   MIN_SPEED,
 } from "@angels-bandits/common/constants";
 import {
+  type Course,
+  CourseRunner,
+  type GhostTrack,
+  decodeGhost,
+  generateCourses,
+} from "@angels-bandits/common/courses";
+import {
   type FlightState,
   createFlightState,
   handlingRates,
@@ -49,6 +56,7 @@ import {
 } from "@angels-bandits/common/flight";
 import { hitRangeBudgetFor } from "@angels-bandits/common/net";
 import type {
+  CourseStanding,
   DeathMsg,
   ScoreEntry,
   SpawnState,
@@ -64,6 +72,7 @@ import {
 import {
   type Vec3,
   wrapDelta,
+  wrapDeltaAxis,
   wrapDistance,
 } from "@angels-bandits/common/world";
 import * as THREE from "three";
@@ -74,6 +83,7 @@ import { SMAAPass } from "three/examples/jsm/postprocessing/SMAAPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { CityAmbience } from "./audio/ambience";
 import { Busker } from "./audio/busker";
+import { Music, type MusicMoment } from "./audio/music";
 import { RadioQueue, RadioVoice } from "./audio/radio";
 import { GameAudio } from "./audio/sound";
 import { NEAR_MISS_RADIUS, closestApproach, spatialize } from "./audio/spatial";
@@ -81,6 +91,15 @@ import { ThunderSchedule } from "./audio/thunder";
 import { TrainAudio } from "./audio/train-audio";
 import { createAutoFire, stepAutoFire } from "./game/auto-fire";
 import { BoostKey } from "./game/boost-key";
+import {
+  type BulletImpact,
+  classifyBulletStep,
+  closestApproachT,
+  createBulletImpact,
+  facadeCellCentre,
+  tierBase,
+  tierPitch,
+} from "./game/bullet-impact";
 import { Bullets } from "./game/bullets";
 import {
   AmbientChatter,
@@ -138,6 +157,7 @@ import {
 } from "./game/zoom";
 import { GameSocket } from "./net/socket";
 import { Airliners } from "./render/airliners";
+import { archetypeFor } from "./render/archetypes";
 import { Birds } from "./render/birds";
 import { CityRenderer } from "./render/city";
 import { PICKUP_TAXIS } from "./render/citylife";
@@ -151,10 +171,12 @@ import { Fireworks } from "./render/fireworks";
 import { installHeightFog } from "./render/fog";
 import { Fountains } from "./render/fountains";
 import { Explosions, Sparks } from "./render/fx";
+import { CourseGhost } from "./render/ghost";
 import { GpuTimer } from "./render/gputimer";
 import { createGradePass } from "./render/grade";
 import { Headlights } from "./render/headlights";
 import { HoleDecorRenderer } from "./render/hole-decor";
+import { BlastLedger, Impacts, burnCapFor } from "./render/impacts";
 import { lookPasses } from "./render/lookup";
 import { MoverLights, Movers } from "./render/movers";
 import { NatureRenderer } from "./render/nature";
@@ -212,6 +234,7 @@ import {
   missShare,
   stepResolution,
 } from "./render/resolution";
+import { CourseRings } from "./render/rings";
 import { RiverRenderer } from "./render/river";
 import { RoofClutterRenderer } from "./render/roofclutter";
 import { RooftopLifeRenderer } from "./render/rooftop-life";
@@ -249,9 +272,12 @@ import { Traffic } from "./render/traffic";
 import { PlaneTrails } from "./render/trails";
 import { TrainRenderer } from "./render/train";
 import { WeatherClock, setWeatherUniform } from "./render/weather";
+import { buildingSeed, isWindowLit } from "./render/window-pattern";
 import { nearestImage } from "./render/wrapPlacement";
 import { BotBar } from "./ui/botbar";
+import { Coach, renderPrimer } from "./ui/coach";
 import { CommsTicker } from "./ui/comms";
+import { CourseBoard } from "./ui/course-board";
 import { DamageIndicator } from "./ui/damage-indicator";
 import { initFullscreenUi } from "./ui/fullscreen";
 import { Haptics } from "./ui/haptics";
@@ -277,12 +303,14 @@ import {
 } from "./ui/mobile";
 import { PerfHud, bindPerfHudKey, perfHudKeyEnabled } from "./ui/perfhud";
 import { initPhoneFullscreen } from "./ui/phone-fullscreen";
+import { RaceHud, formatCourseTime } from "./ui/race-hud";
 import { Scoreboard } from "./ui/scoreboard";
 import {
   type Settings,
   type SettingsStore,
   autopilotInput,
   loadSettings,
+  musicGain,
   scaleLimits,
   volumeGain,
 } from "./ui/settings";
@@ -300,6 +328,10 @@ initMobileShell();
 // before the name prompt (the JOIN tap is its gesture; the iPhone sheet
 // greets the join card). No-op on desktop.
 const phoneFullscreen = initPhoneFullscreen();
+// U3: the join card's controls primer — after the shell (body.touch picks
+// the variant), switching to touch if the first real touch comes later.
+renderPrimer(isTouch());
+whenTouch(() => renderPrimer(true));
 
 // --- Join flow: name → server welcome (identity, seed, spawn) ---
 const name = await requestName(phoneFullscreen.onJoinGesture);
@@ -680,6 +712,29 @@ const hornPlanes: Vec3[] = [];
 // exactly where it is drawn (street trees excepted — lamp-pole height).
 const nature = natureFor(welcome.seed, city.cityBuildings);
 const natureIndex = buildNatureIndex(nature);
+// S3 stunt courses: the same rings the server times runs against, generated
+// from the same city, trees and STATIC movers (common/src/courses.ts) — no
+// ring ever crosses the wire. Two draws in all: every ring in one instanced
+// mesh, and the record ghost (off on MOBILE).
+const courses: Course[] = generateCourses(welcome.seed, {
+  buildings: city.cityBuildings,
+  index: city.cityIndex,
+  nature: natureIndex,
+  movers: moverField,
+});
+const courseRings = new CourseRings(courses);
+scene.add(courseRings.mesh);
+const courseGhost = new CourseGhost();
+scene.add(courseGhost.mesh);
+/** Each course's decoded record ghost (welcome, then courseBoard). */
+const courseGhosts: (GhostTrack | null)[] = courses.map(() => null);
+/** The LOCAL run: instant HUD feedback only — the server's courseResult is
+ * the official time (exact ring radius here, generous there). */
+const courseRunner = new CourseRunner(courses);
+/** Where the plane was at the last course step, and when (−1: no step yet,
+ * e.g. right after a respawn — a teleport is never a move). */
+const coursePrev: Vec3 = { x: 0, y: 0, z: 0 };
+let coursePrevMs = -1;
 // F5 corner speed manager: the same solids the crash check reads, plus every
 // hole's clear corridor (H1 holes and the river underpasses), built once.
 const cornerWorld: CornerWorld = {
@@ -790,6 +845,70 @@ const shieldSparks = new Sparks(0xbfe8ff);
 scene.add(shieldSparks.points);
 const smoke = new SmokeTrails();
 scene.add(smoke.points);
+// D1 bullet impacts: sparks, dust, chips, glass and burning patches in ONE
+// Points draw; shattered panes, bullet holes and scorch in the building
+// shader's damage map (city.damage). Cosmetic only — nothing here collides.
+const impacts = new Impacts();
+scene.add(impacts.points);
+/** The classifier's reusable result (allocation-free bullet loop). */
+const impactHit: BulletImpact = createBulletImpact();
+/** QA: the last city impact by a LOCAL round (own guns or __ab.qaFireAt —
+ * never a remote tracer, which would race a QA check), and this frame's
+ * classifier time. */
+let lastImpact: {
+  /** The round's seq (QA rounds are QA_ROUND_SEQ, remote tracers −1). */
+  seq: number;
+  building: number;
+  tier: number;
+  face: number;
+  surface: string;
+  cellX: number;
+  cellY: number;
+  pane: boolean;
+} | null = null;
+let classifyMs = 0;
+/** The last frame's world clock (server ms) — QA blasts are stamped on it. */
+let lastRenderMs: number | null = null;
+/** The seq __ab.qaFireAt stamps its rounds with, so QA can tell its own
+ * impact from a stray remote tracer's. */
+const QA_ROUND_SEQ = -2;
+/** The seq every remote tracer is spawned with (fireRemote). */
+const REMOTE_ROUND_SEQ = -1;
+/** Facade scorch one round leaves around its hole (accumulates, 0..255). */
+const BULLET_SCORCH = 10;
+
+/** A round struck the city: one impact, its decal, and the round is spent. */
+function strikeCity(
+  bullet: { spent: boolean; seq: number },
+  now: number,
+): void {
+  bullet.spent = true;
+  impacts.bullet(impactHit, now);
+  const h = impactHit;
+  if (bullet.seq !== REMOTE_ROUND_SEQ) {
+    lastImpact = {
+      seq: bullet.seq,
+      building: h.building,
+      tier: h.tier,
+      face: h.face,
+      surface: h.surface,
+      cellX: h.cellX,
+      cellY: h.cellY,
+      pane: h.pane,
+    };
+  }
+  if (h.surface !== "facade") return;
+  if (h.pane) city.damage.shatter(h.building, h.tier, h.face, h.cellX, h.cellY);
+  else city.damage.bulletHole(h.building, h.tier, h.face, h.cellX, h.cellY);
+  city.damage.scorch(
+    h.building,
+    h.tier,
+    h.face,
+    h.cellX,
+    h.cellY,
+    BULLET_SCORCH,
+  );
+}
 // --- L1 reactive city (ANGE-WCQNFJ) ---
 // Server-accepted city events (gunfire near buildings, deaths — coalesced on
 // the server, replayed in the welcome) drive car alarms, woken windows, smoke
@@ -800,7 +919,22 @@ scene.add(smoke.points);
 const reactor = new CityReactor(city.cityBuildings);
 scene.add(reactor.points);
 reactor.ingest(welcome.cityEvents ?? []);
-socket.events.onCityEvent = (event) => reactor.ingest([event]);
+// D1 big impacts: the SERVER's death events (with their 60 s welcome
+// replay) blow out windows, scorch facades and start burning patches — the
+// same ring on every client, late joiners included. Replays are applied
+// silently; a live death also showers glass.
+const blastLedger = new BlastLedger(
+  city.damage,
+  city.cityBuildings,
+  city.cityIndex,
+);
+blastLedger.ingest(welcome.cityEvents ?? []);
+socket.events.onCityEvent = (event) => {
+  reactor.ingest([event]);
+  for (const site of blastLedger.ingest([event])) {
+    impacts.blast(site, performance.now());
+  }
+};
 /** Planes the searchlights track this frame (reused, no per-frame array). */
 const trackedPlanes: { x: number; y: number; z: number }[] = [];
 /** QA-only fixed camera (`__ab.qaCamera`): canonical eye + look-at, applied
@@ -878,14 +1012,21 @@ const bullets = new Bullets();
 const tracers = new Tracers();
 scene.add(tracers.group);
 const audio = new GameAudio();
+// S2 dynamic soundtrack: procedural, intensity-driven, on its own ducked
+// music input; built once on the first running frame, like the city.
+const music = new Music(audio, welcome.seed);
 /** M6: the players' volume sliders, as gains (stored before the context
- * exists; GameAudio applies them as its buses are built). */
-const applyVolumes = (): void =>
+ * exists; GameAudio applies them as its buses are built). Music OFF or at 0
+ * also idles the score's scheduler. */
+const applyVolumes = (): void => {
   audio.setVolumes({
     master: volumeGain(settings.master),
     engine: volumeGain(settings.engine),
     voice: volumeGain(settings.voice),
+    music: musicGain(settings),
   });
+  music.setEnabled(musicGain(settings) > 0);
+};
 applyVolumes();
 // L2 city soundscape: traffic, horns, sirens, plaza music, wind and tunnel
 // echo — procedural, built once into GameAudio's ducked sfx bus.
@@ -935,6 +1076,12 @@ botBar.onClaim = (count) => socket.sendSetBots(count);
 scoreboard.bindBotBar(botBar);
 // M2: no Tab key on a phone — a minimap tap pins the scoreboard (touch only).
 scoreboard.bindTapToggle(document.getElementById("minimap") as HTMLElement);
+// U3: first-life hints, the touch coach marks and the storm notice. Starts
+// with the first rendered frame (bottom of the file).
+const coach = new Coach(isTouch);
+whenTouch(() =>
+  coach.bindTouchAim(document.getElementById("touch-layer") as HTMLElement),
+);
 
 /** id → name/isBot for feed + radio lines (self included; remotes tracks the
  * others too). isBot gates whether the VOICE may speak the callsign. */
@@ -962,6 +1109,20 @@ const radioAssetUrls = Object.fromEntries(
 const radio = new RadioQueue();
 const radioVoice = new RadioVoice(audio, radioAssetUrls);
 const comms = new CommsTicker();
+// S3: the race readout and the course leaderboards (Tab panel).
+const raceHud = new RaceHud();
+const courseBoard = new CourseBoard(courses, name);
+/** Take a welcome's course standings: boards and record ghosts. */
+function applyCourseStandings(standings: CourseStanding[] | undefined): void {
+  for (const standing of standings ?? []) {
+    courseBoard.set(standing.course, standing.board);
+    if (standing.course >= courseGhosts.length) continue;
+    courseGhosts[standing.course] = standing.ghost
+      ? decodeGhost(standing.ghost)
+      : null;
+  }
+}
+applyCourseStandings(welcome.courses);
 const ambient = new AmbientChatter(welcome.seed, performance.now());
 const RADIO_VOICE_KEY = "ab-radio-voice";
 let radioVoiceOn = readStored(RADIO_VOICE_KEY) !== "off";
@@ -1109,6 +1270,56 @@ function resetAssist(): void {
   holeAssist.pitch = 0;
 }
 
+/** S3: drop the local run (death, respawn, resume) — the server drops its
+ * own the same way — and forget the last position: a teleport is no move. */
+function endCourseRun(): void {
+  courseRunner.abort();
+  courseGhost.stop();
+  raceHud.aborted();
+  coursePrevMs = -1;
+}
+
+/** S3: step the local run over this frame's move and react to what it did. */
+function stepCourse(now: number): void {
+  if (!alive) return;
+  if (coursePrevMs >= 0) {
+    const step = courseRunner.step(coursePrev, flight.pos, coursePrevMs, now);
+    if (step === "start") {
+      const ghost = courseGhosts[courseRunner.course];
+      if (ghost) courseGhost.play(ghost, courseRunner.atMs);
+      else courseGhost.stop();
+    } else if (step === "finish") {
+      const course = courses[courseRunner.subject];
+      if (course) {
+        raceHud.finished(course, courseRunner.timeMs, courseRunner.missed, now);
+      }
+    } else if (step === "abort") {
+      courseGhost.stop();
+      raceHud.aborted();
+    }
+  }
+  coursePrev.x = flight.pos.x;
+  coursePrev.y = flight.pos.y;
+  coursePrev.z = flight.pos.z;
+  coursePrevMs = now;
+}
+
+/** S3: the course whose start ring is within hint range ahead, or null. */
+const HINT_RANGE = 260;
+function startRingNear(): Course | null {
+  for (const course of courses) {
+    const ring = course.rings[0];
+    if (!ring) continue;
+    const dx = wrapDeltaAxis(flight.pos.x, ring.pos.x);
+    const dy = ring.pos.y - flight.pos.y;
+    const dz = wrapDeltaAxis(flight.pos.z, ring.pos.z);
+    if (dx * dx + dy * dy + dz * dz > HINT_RANGE * HINT_RANGE) continue;
+    // Only rings still ahead of us along their own normal.
+    if (dx * ring.n.x + dy * ring.n.y + dz * ring.n.z > 0) return course;
+  }
+  return null;
+}
+
 /** Freeze into the kill-cam; the server's respawn message ends it. A local
  * crash enters first; the server's death message then refines the headline
  * (credit, storm) on the same countdown. */
@@ -1126,6 +1337,7 @@ function enterDeath(killerId: string | null, cause: DeathMsg["cause"]): void {
   );
   setBoostBurning(false, performance.now());
   damageIndicator.clear();
+  endCourseRun(); // S3: a death ends the run
   if (!alive) return;
   alive = false;
   haptics.death(); // after the guard: a crash + its death message buzz once
@@ -1137,6 +1349,7 @@ function enterDeath(killerId: string | null, cause: DeathMsg["cause"]): void {
 
 function respawnSelf(spawn: SpawnState): void {
   planeTrails.clear(socket.selfId); // respawn teleports — no streak
+  endCourseRun(); // S3: …and no ring pass
   interruptQuality(); // O3: a transient
   flight = createFlightState(spawn.pos, spawn.yaw);
   flight = { ...flight, speed: spawn.speed }; // throttle stays FULL (F5)
@@ -1192,7 +1405,7 @@ function remoteFired(id: string): void {
     z: pose.pos.z + muzzle.z,
   };
   bullets.spawn(
-    -1,
+    REMOTE_ROUND_SEQ,
     origin,
     { x: fwd.x * speed, y: fwd.y * speed, z: fwd.z * speed },
     true,
@@ -1257,6 +1470,7 @@ socket.events.onDamage = (msg) => {
       haptics.damage(now);
     }
     radio.noteCombat(performance.now());
+    music.noteCombat(performance.now()); // being fired at
     if (lowHpArmed && msg.hp < LOW_HP_CALLOUT) {
       lowHpArmed = false;
       say(hitCallout(name));
@@ -1298,10 +1512,13 @@ socket.events.onDeath = (msg) => {
     hud.killConfirm(performance.now());
     haptics.kill();
     audio.killConfirm();
+    music.moment("victory");
   }
   hpBar.clear(msg.victimId); // never float a stale bar over a respawn
   if (msg.victimId === socket.selfId) {
     enterDeath(msg.killerId, msg.cause);
+    // U3: the first storm death earns one "stay below" notice on respawn.
+    if (msg.cause === "storm") coach.noteStormDeath();
     // M5: the first life is over ("after the first match" in a drop-in
     // game) — the kill-cam pause is when an install offer intrudes least.
     phoneFullscreen.onFirstLifeOver();
@@ -1330,6 +1547,34 @@ socket.events.onRespawn = (msg) => {
       awaitingReturn = null;
     }
   } else remotes.respawn(msg.id);
+};
+// S3: the official result of our own run, and board changes for everyone.
+socket.events.onCourseResult = (msg) => {
+  const course = courses[msg.course];
+  if (!course) return;
+  raceHud.official(
+    course,
+    msg.timeMs,
+    msg.missed,
+    msg.medal,
+    msg.rank,
+    msg.record,
+    performance.now(),
+  );
+};
+socket.events.onCourseBoard = (msg) => {
+  courseBoard.set(msg.course, msg.board);
+  if (msg.ghost && msg.course < courseGhosts.length) {
+    courseGhosts[msg.course] = decodeGhost(msg.ghost);
+  }
+  const course = courses[msg.course];
+  // A record falling is a headline (S1's jumbotrons can take it from here).
+  if (msg.record && course) {
+    comms.add(
+      "RACE",
+      `${msg.record.name} set the ${course.name} record: ${formatCourseTime(msg.record.timeMs)}`,
+    );
+  }
 };
 socket.events.onAwayStarted = () => {
   awayStarted = true;
@@ -1361,11 +1606,13 @@ function applyResume(w: WelcomeMsg): void {
   }
   lastScores = w.scores;
   scoreboard.setScores(w.scores);
+  applyCourseStandings(w.courses); // S3: boards moved on meanwhile
   showOwnScore(w.scores);
   botBar.resync(w.botTarget);
   if (w.roomId !== currentRoomId) {
     currentRoomId = w.roomId;
     reactor.ingest(w.cityEvents ?? []);
+    blastLedger.ingest(w.cityEvents ?? []); // D1: already-seen ones are skipped
     if (moverField.news && w.newsHeli) {
       moverField.news.target = w.newsHeli.target;
       moverField.news.prev = w.newsHeli.prev;
@@ -1465,6 +1712,9 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   qualityTier = tier;
   city.setQuality(tier);
   reactor.setQuality(tier);
+  // D1: particle budget and burning patches (counts only).
+  impacts.setShare(QUALITY_PROFILES[tier].impacts);
+  blastLedger.setBurnCap(burnCapFor(QUALITY_PROFILES[tier].impacts));
   pedestrians.setQuality(tier);
   cityLife.setQuality(tier); // A1
   facadeLife.setQuality(tier); // A1
@@ -1485,6 +1735,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   airliners.setQuality(tier);
   facadeDetail.setQuality(tier);
   train.setQuality(tier); // T2: platform people, sparks, light range
+  courseGhost.setQuality(tier); // S3: MOBILE keeps the rings, drops the ghost
   applyPostQuality();
   resLimits = limitsFor(tier);
   if (resAuto) {
@@ -1695,7 +1946,7 @@ declare global {
         open: boolean;
         autopilot: boolean;
         values: Settings;
-        gains: { master: number; voice: number } | null;
+        gains: { master: number; voice: number; music: number } | null;
       };
       /** Claim the room's shared bot count (QA: 0 makes a scene reproducible). */
       setBots: (count: number) => void;
@@ -1763,6 +2014,8 @@ declare global {
       boost: () => { energy: number; active: boolean };
       /** M1 QA: touch-control state; null off touch. */
       touch: () => ReturnType<TouchControls["debug"]> | null;
+      /** U3 QA: the hint on screen, the queue left, the touch overlay. */
+      coach: () => ReturnType<Coach["debug"]>;
       zoom: () => { held: boolean; z: number; fov: number };
       lampImage: (x: number, z: number) => { x: number; z: number } | null;
       traffic: (at?: number | null) => ReturnType<Traffic["debug"]>;
@@ -1881,6 +2134,12 @@ declare global {
       };
       /** L2 QA: the city soundscape's per-layer gains and their inputs. */
       ambience: () => ReturnType<CityAmbience["debug"]>;
+      /** S2 QA: the soundtrack's state (wanted and playing), layer mix and
+       * fixed node count. */
+      music: () => ReturnType<Music["debug"]>;
+      /** S2 QA: fire a sting by hand (`swell` stands in for the D3/D5
+       * collapse and S4 boss events until they exist). */
+      musicMoment: (kind: MusicMoment) => void;
       /** A1 QA: what the city-life tier drew and holds. */
       cityLife: () => {
         drawn: number;
@@ -1914,6 +2173,46 @@ declare global {
       ) => void;
       /** QA-only: pin the reaction clock to a server time (null = live). */
       qaReactionClock: (serverTimeMs: number | null) => void;
+      /** D1: impact particles, burns and facade damage — live counts and
+       * caps, this frame's classifier time, and the last city impact. */
+      impacts: () => {
+        live: number;
+        cap: number;
+        burns: number;
+        burnCap: number;
+        faceSlots: number;
+        slotCap: number;
+        classifyMs: number;
+        lastImpact: typeof lastImpact;
+      };
+      /** D1 QA: fire `n` local cosmetic rounds at canonical (x, y, z) from
+       * up to 60 m back along the rendered camera's line (the real bullet
+       * loop), never from behind the eye. */
+      qaFireAt: (x: number, y: number, z: number, n?: number) => void;
+      /** D1 QA: hide the impacts Points (draw-call A/B). */
+      qaImpactsHidden: (hidden: boolean) => void;
+      /** D1 QA: up to `max` pane centres on a tier's facade face that the JS
+       * lit mirror reports LIT, nearest the face's middle first — canonical,
+       * nudged 0.5 m off the wall — with their cells. */
+      qaLitCells: (
+        building: number,
+        tier: number,
+        face: number,
+        max?: number,
+      ) => {
+        point: { x: number; y: number; z: number };
+        cellX: number;
+        cellY: number;
+      }[];
+      /** D1 QA: a canonical point → CSS pixels on screen (null = behind). */
+      qaProject: (p: { x: number; y: number; z: number }) => {
+        x: number;
+        y: number;
+      } | null;
+      /** D1 QA: a local blast as if a server death event landed here. */
+      qaBlast: (x: number, y: number, z: number) => boolean;
+      /** QA: pin the L3 living-windows clock (live seconds; null = server). */
+      pinLiveWindows: (sec: number | null) => void;
       /**
        * O4 perf-harness pin: render the WORLD at this server time from now
        * on, advancing with the sim's step (null = the synced clock). Returns the
@@ -2163,6 +2462,7 @@ window.__ab = {
   }),
   boost: () => ({ energy: boost.energy, active: boost.active }),
   touch: () => touchControls?.debug() ?? null,
+  coach: () => coach.debug(),
   // ANGE-G9CPCV QA: aim-zoom state plus the FOV it is actually driving
   // (drive it with real button-2 mouse events).
   zoom: () => ({ held: zoom.held, z: zoom.z, fov: camera.fov }),
@@ -2290,6 +2590,8 @@ window.__ab = {
     log: radioLog.map((l) => ({ ...l })),
   }),
   ambience: () => ambience.debug(),
+  music: () => music.debug(),
+  musicMoment: (kind) => music.moment(kind),
   cityLife: () => ({
     drawn: cityLife.count,
     statics: cityLife.staticDrawn,
@@ -2341,6 +2643,84 @@ window.__ab = {
     }
     return { building, destroyed: damage.destroyedCount - before };
   },
+  impacts: () => ({
+    live: impacts.liveCount,
+    cap: impacts.cap,
+    burns: blastLedger.burns.length,
+    burnCap: blastLedger.cap,
+    faceSlots: city.damage.slotsUsed,
+    slotCap: city.damage.slotCap,
+    classifyMs,
+    lastImpact,
+  }),
+  qaFireAt: (x, y, z, n = 1) => {
+    // From the RENDERED camera (a qaCamera eye when one is held), so the
+    // round flies the line the screenshot looks along.
+    const target = { x, y, z };
+    const eye = camera.position;
+    const d = wrapDelta({ x: eye.x, y: eye.y, z: eye.z }, target);
+    const len = Math.hypot(d.x, d.y, d.z) || 1;
+    const u = { x: d.x / len, y: d.y / len, z: d.z / len };
+    // Start at most 60 m back and never behind the eye, so the round flies
+    // only the sight line the camera already has clear.
+    const back = Math.min(60, Math.max(1, len - 1));
+    for (let k = 0; k < n; k++) {
+      bullets.spawn(
+        QA_ROUND_SEQ,
+        { x: x - u.x * back, y: y - u.y * back, z: z - u.z * back },
+        { x: u.x * BULLET_SPEED, y: u.y * BULLET_SPEED, z: u.z * BULLET_SPEED },
+        true,
+      );
+    }
+  },
+  qaImpactsHidden: (hidden) => {
+    impacts.points.visible = !hidden;
+  },
+  qaLitCells: (building, tier, face, max = 8) => {
+    const b = city.cityBuildings[building];
+    const t = b?.tiers[tier];
+    if (!b || !t) return [];
+    const [px, py] = tierPitch(b, tier);
+    const runHalf = (face < 2 ? t.depth : t.width) / 2;
+    const seed = buildingSeed(t.width, t.height, t.depth);
+    const arch = archetypeFor(b);
+    const base = tierBase(b, tier);
+    const found: { cx: number; cy: number; score: number }[] = [];
+    for (let cy = 0; (cy + 1) * py <= t.height - 0.6; cy++) {
+      if (base + cy * py < 4) continue; // the shop band
+      for (
+        let cx = Math.ceil(-runHalf / px);
+        cx < Math.floor(runHalf / px);
+        cx++
+      ) {
+        if (!isWindowLit(arch, seed, cx, cy)) continue;
+        found.push({ cx, cy, score: Math.abs(cx + 0.5) + Math.abs(cy - 4) });
+      }
+    }
+    found.sort((a, b2) => a.score - b2.score);
+    return found.slice(0, max).map((c) => ({
+      point: facadeCellCentre(b, tier, face, c.cx, c.cy, 0.5),
+      cellX: c.cx,
+      cellY: c.cy,
+    }));
+  },
+  qaProject: (p) => {
+    const at = nearestImage(chase.position, p);
+    const v = new THREE.Vector3(at.x, at.y, at.z).project(camera);
+    if (v.z > 1) return null;
+    const r = renderer.domElement.getBoundingClientRect();
+    return {
+      x: r.left + ((v.x + 1) / 2) * r.width,
+      y: r.top + ((1 - v.y) / 2) * r.height,
+    };
+  },
+  qaBlast: (x, y, z) => {
+    const t = (lastRenderMs ?? 0) + Math.random();
+    const sites = blastLedger.ingest([{ kind: "death", x, y, z, t }]);
+    for (const site of sites) impacts.blast(site, performance.now());
+    return sites.length > 0;
+  },
+  pinLiveWindows: (sec) => city.pinLiveWindows(sec),
   qaReactionClock: (serverTimeMs) => {
     qaReactAt = serverTimeMs;
   },
@@ -2444,6 +2824,7 @@ let last = performance.now();
 // moment a hitch is noticed. Each subsystem's update() then owns visibility.
 fadeEl.classList.add("dead");
 socket.sendPing(); // W1: the rest of the boot was built synchronously
+renderer.initTexture(city.damageAtlas); // D1: never a first-hit upload hitch
 await prewarmScene(renderer, scene, camera, composer);
 socket.sendPing();
 flashFade();
@@ -2478,6 +2859,7 @@ const frame = (now: number): void => {
     qaWorld.frameMs = now;
   }
   const renderMs = qaWorld !== null ? qaWorld.ms : frameClock.time;
+  lastRenderMs = renderMs;
   planeLights.begin(); // own + remote lights re-append every frame
   moverLights.begin(); // crane/aircraft lights + firework sparks, same deal
   // Cursor smoothing + the leave-the-window fade run alive or dead, so
@@ -2692,6 +3074,7 @@ const frame = (now: number): void => {
       enterDeath(null, "crash");
     }
   }
+  stepCourse(now); // S3: ring passes over this frame's move
 
   // M8 auto-fire, stepped dead or alive so a death drops it at once. It
   // never pulls under our own spawn protection (only FIRE may spend it), on
@@ -2737,6 +3120,7 @@ const frame = (now: number): void => {
       tracers.flash(shot.origin, now);
       audio.gunshot();
       radio.noteCombat(now); // firing = combat radio discipline
+      music.noteCombat(now);
     }
 
     // In-cloud turbulence (ST2): pure offsets applied to the DISPLAYED
@@ -2789,10 +3173,26 @@ const frame = (now: number): void => {
   // Backwards, so a hit's bullets.remove() never skips the next bullet
   // (and no per-frame copy of the list — O4).
   const live = bullets.all;
+  let classifyTotal = 0;
   for (let i = live.length - 1; i >= 0; i--) {
     const bullet = live[i];
     if (bullet === undefined) continue;
+    // D1: every live round — own AND remote tracers — against the city, once
+    // (a spent round already struck a wall). Cosmetic: hits are unaffected.
+    let wall = false;
+    if (!bullet.spent) {
+      const c0 = performance.now();
+      wall = classifyBulletStep(
+        bullet.prev,
+        bullet.pos,
+        city.cityBuildings,
+        city.cityIndex,
+        impactHit,
+      );
+      classifyTotal += performance.now() - c0;
+    }
     if (bullet.cosmetic) {
+      if (wall) strikeCity(bullet, now);
       // An enemy bullet shaving past this frame → panned near-miss whoosh.
       if (
         alive &&
@@ -2800,11 +3200,20 @@ const frame = (now: number): void => {
       ) {
         audio.whoosh(spatialize(flight.pos, flight.yaw, bullet.pos).pan, now);
         radio.noteCombat(now);
+        music.noteCombat(now); // fired at
         say(nearMissCallout(name));
       }
       continue;
     }
     const target = bulletImpact(bullet.prev, bullet.pos, targets);
+    // A wall entered before the plane's closest approach was struck first.
+    if (
+      wall &&
+      (!target ||
+        impactHit.t < closestApproachT(bullet.prev, bullet.pos, target.pos))
+    ) {
+      strikeCity(bullet, now);
+    }
     if (!target) continue;
     bullets.remove(bullet);
     if (impactKind(target) === "shield") {
@@ -2828,6 +3237,8 @@ const frame = (now: number): void => {
     audio.hitThunk();
     sparks.burst(bullet.pos, now);
   }
+
+  classifyMs = classifyTotal;
 
   remotes.update(frameClock, chase.position, dt, now, (id) =>
     reveals.levelOf(id, now),
@@ -2914,6 +3325,10 @@ const frame = (now: number): void => {
   if (alive) hornPlanes.push(flight.pos);
   for (const target of targets) hornPlanes.push(target.pos);
   train.update(chase.position, renderMs, moverLights, hornPlanes);
+  // S3: rings (state colours change only with the run) and the ghost.
+  courseRings.setRun(courseRunner.course, courseRunner.next);
+  courseRings.update(chase.position, now);
+  courseGhost.update(chase.position, now);
   fireworks.update(chase.position, renderMs, moverLights);
   // After movers.update: the helicopters' belly spots are this frame's, and
   // the lamp heads land in the same point cloud before commit().
@@ -3019,6 +3434,10 @@ const frame = (now: number): void => {
   explosions.update(chase.position, now, dt);
   sparks.update(chase.position, now);
   shieldSparks.update(chase.position, now);
+  // D1: burning patches age on the synced server clock; particles fly.
+  if (renderMs !== null) blastLedger.prune(renderMs);
+  impacts.burn(blastLedger.burns, renderMs, now);
+  impacts.update(chase.position, now);
   tracers.update(bullets.all, chase.position, now);
 
   // Target HP bar: over the plane WE damaged in the last 3 s (fading).
@@ -3039,6 +3458,21 @@ const frame = (now: number): void => {
   hud.setHeat(heat.heat, heat.locked);
   hud.setBoost(boost.energy, boost.active);
   hud.update(now);
+  // S3 race readout: the live clock while racing, a hint near a start ring.
+  const racing = courses[courseRunner.course];
+  if (racing && alive) {
+    raceHud.run(
+      racing,
+      courseRunner.next,
+      courseRunner.missed,
+      now - courseRunner.startMs,
+    );
+  } else {
+    const near = alive ? startRingNear() : null;
+    raceHud.hint(near, near ? courseBoard.recordOf(near.id) : null);
+  }
+  raceHud.update(now);
+  if (scoreboard.isOpen) courseBoard.render();
   // The camera's real heading (free-look included) — the arcs are screen-
   // relative, so they follow where the player is LOOKING, not the nose.
   camera.getWorldDirection(viewDir);
@@ -3073,6 +3507,16 @@ const frame = (now: number): void => {
     serverTimeMs: renderMs,
     rain: rain.level, // L4 weather
   });
+  // S2 soundtrack: the nearest living remote (torus distance) is the threat;
+  // dead, there is none — the kill-cam plays calm.
+  let threatDist: number | null = null;
+  if (alive) {
+    for (const c of contacts) {
+      const d = wrapDistance(flight.pos, c.pos);
+      if (threatDist === null || d < threatDist) threatDist = d;
+    }
+  }
+  music.update({ nowMs: now, threatDist, hp: selfHp, alive });
   // A1: the nearest busker within earshot of the plane (silent if none).
   busker.update(
     flight.pos,
@@ -3119,6 +3563,7 @@ const frame = (now: number): void => {
   // packing. The render call is NOT included — a driver can block in it
   // waiting on the GPU, which would read a GPU-bound frame as CPU-bound.
   const preRenderMs = performance.now() - frameStart;
+  city.flushDamage(renderer); // D1: dirty damage slots + slot words, pre-draw
   renderer.info.reset();
   gpuTimer?.begin();
   composer.render();
@@ -3149,7 +3594,23 @@ const frame = (now: number): void => {
     alive && aimMode === "instructor" ? input.cursorPx() : null,
     aimConverged,
   );
-  cursorPrev = input.cursorNdc();
+  const cursorNow = input.cursorNdc();
+  // U3: the first-life hints watch for each control being used — by hand:
+  // auto-fire's trigger is not the player firing.
+  const flying = alive && !settingsOpen;
+  if (flying && !isTouch()) {
+    coach.noteCursor(
+      cursorNow.x - cursorPrev.x,
+      cursorNow.y - cursorPrev.y,
+      camera.fov,
+      camera.aspect,
+    );
+  }
+  if (flying && guns.triggerHeld) coach.note("fire");
+  if (flying && boost.active) coach.note("boost");
+  if (flying && scoreboard.isOpen) coach.note("scores");
+  coach.frame(Math.min(rawMs, 250), alive, settingsOpen || document.hidden);
+  cursorPrev = cursorNow;
   if (solutionTone.shouldPlay(alive && aimResult.solution, now)) {
     audio.solutionTick();
   }
@@ -3216,6 +3677,7 @@ renderer.setAnimationLoop(frame);
 requestAnimationFrame(() => {
   clearInterval(bootPing);
   closeJoin();
+  coach.start(); // U3: hints and the touch coach marks greet the first spawn
 });
 
 // --- M2: backgrounded tab → pause; back with a dead session → rejoin ---

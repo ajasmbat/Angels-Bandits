@@ -31,8 +31,14 @@ import { LANDMARK_HEIGHT, WORLD_SIZE } from "@angels-bandits/common/constants";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { FacadeArchetype, archetypeFor } from "./archetypes";
+import { BROKEN_DETAIL_UNIFORM } from "./broken-shading";
 import { createBuildingsMaterial } from "./buildings-material";
-import { DAMAGE_DETAIL_UNIFORM } from "./damage-shading";
+import {
+  DamageTexture,
+  FacadeDamage,
+  faceSlotsFor,
+  tierKey,
+} from "./damage-map";
 import {
   type CrewSlot,
   LIVE_ON_UNIFORM,
@@ -98,7 +104,7 @@ interface InstanceArrays {
 
 function allocArrays(n: number): InstanceArrays {
   return {
-    archetype: new Float32Array(n),
+    archetype: new Float32Array(n * 2),
     roof: new Float32Array(n * 4),
     led: new Float32Array(n * 3),
     crown: new Float32Array(n * 3),
@@ -128,7 +134,11 @@ function cityMesh(
   const attr = (a: Float32Array, size: number) =>
     new THREE.InstancedBufferAttribute(a, size);
   // Static per-instance data — see writeSolid for what each one carries.
-  geometry.setAttribute("aArchetype", attr(arrays.archetype, 1));
+  // .x the facade archetype; .y D1's packed facade-damage slot word for the
+  // box's tier (damage-map.ts), rewritten by flushDamage when it changes.
+  const archetype = attr(arrays.archetype, 2);
+  archetype.setUsage(THREE.DynamicDrawUsage);
+  geometry.setAttribute("aArchetype", archetype);
   geometry.setAttribute("aRoof", attr(arrays.roof, 4));
   geometry.setAttribute("aLed", attr(arrays.led, 3));
   geometry.setAttribute("aCrown", attr(arrays.crown, 3));
@@ -160,7 +170,8 @@ interface BuildingLook {
  * so a recycled slot of the damaged mesh carries nothing from its last
  * tenant.
  *
- *   aArchetype  facade archetype (all tiers of a building agree)
+ *   aArchetype  facade archetype (all tiers of a building agree), and in .y
+ *               D1's facade-damage slot word for the box's tier (`word`)
  *   aRoof       VO3: (roof kind, crown depth on the top tier else 0, tone, 0)
  *   aLed        VO3: boosted LED outline colour (0 = none)
  *   aCrown      VO3: crown wash tint × gain (top tier only)
@@ -180,12 +191,14 @@ function writeSolid(
   b: Building,
   s: SolidBox,
   look: BuildingLook,
+  word: number,
 ): void {
   const tier = b.tiers[s.tierIndex] as Building["tiers"][number];
   let tierBase = 0;
   for (let k = 0; k < s.tierIndex; k++) tierBase += b.tiers[k]?.height ?? 0;
   const isTop = s.tierIndex === b.tiers.length - 1;
-  a.archetype[i] = look.arch;
+  a.archetype[i * 2] = look.arch;
+  a.archetype[i * 2 + 1] = word;
   a.roof[i * 4] = look.style.tierKinds[s.tierIndex] ?? 0;
   a.roof[i * 4 + 1] = isTop && look.style.crown ? look.style.crown.depth : 0;
   a.roof[i * 4 + 2] = look.style.tone;
@@ -245,8 +258,17 @@ export class CityRenderer {
   private readonly liveTime = { value: 0 };
   private readonly material: THREE.Material;
 
+  /** D1: the facade damage map (scorch, dark windows) and its GPU atlas. */
+  readonly damage = new FacadeDamage();
+  private readonly damageTexture = new DamageTexture(this.damage);
+  /** D1: each building's index in `buildings` — the damage map's id. */
+  private readonly buildingIndex = new Map<Building, number>();
+  /** D1: base instance indices per tier (tierKey), for the slot-word
+   * re-pack. */
+  private readonly tierInstances = new Map<number, number[]>();
+
   // --- D2: damaged buildings ---
-  private damage: CityDamage | null = null;
+  private cityDamage: CityDamage | null = null;
   private damageVersion = -1;
   /** 1 while a base instance is hidden (its building is drawn damaged). */
   private readonly hidden: Uint8Array;
@@ -275,6 +297,7 @@ export class CityRenderer {
 
   constructor(seed: number) {
     this.buildings = generateCity(seed);
+    this.buildings.forEach((b, i) => this.buildingIndex.set(b, i));
     // Built once, beside the array it describes, so the per-frame crash probe
     // costs a couple of block lookups instead of a scan of the whole city.
     this.index = buildCityIndex(this.buildings);
@@ -324,7 +347,10 @@ export class CityRenderer {
 
     // Night-neon material with procedural emissive window grids (T5 art pass),
     // branching per instance on the facade archetype.
-    this.material = createBuildingsMaterial(this.liveTime);
+    this.material = createBuildingsMaterial(
+      this.liveTime,
+      this.damageTexture.texture,
+    );
     const arrays = allocArrays(this.instances.length);
     this.instances.forEach((s, i) => {
       const b = this.owner[i] as number;
@@ -334,7 +360,15 @@ export class CityRenderer {
         this.buildings[b] as Building,
         s,
         this.looks[b] as BuildingLook,
+        this.damage.packedWord(b, s.tierIndex),
       );
+      const key = tierKey(b, s.tierIndex);
+      let list = this.tierInstances.get(key);
+      if (!list) {
+        list = [];
+        this.tierInstances.set(key, list);
+      }
+      list.push(i);
     });
     this.mesh = cityMesh(this.material, arrays, this.instances.length);
     this.images = new ImageCache(
@@ -386,7 +420,7 @@ export class CityRenderer {
    * the room's destroyed set. Binds it to this city's buildings. */
   attachDamage(damage: CityDamage): void {
     damage.bind(this.buildings);
-    this.damage = damage;
+    this.cityDamage = damage;
     this.damageVersion = -1;
   }
 
@@ -394,8 +428,8 @@ export class CityRenderer {
    * rewriting and uploading only the solids whose image flipped — after
    * bringing damaged buildings up to the current destroyed set. */
   update(cameraPos: Vec3): void {
-    if (this.damage && this.damage.version !== this.damageVersion) {
-      this.damageVersion = this.damage.version;
+    if (this.cityDamage && this.cityDamage.version !== this.damageVersion) {
+      this.damageVersion = this.cityDamage.version;
       this.syncDamage();
     }
     this.images.update(cameraPos, this.place);
@@ -512,7 +546,9 @@ export class CityRenderer {
     const start = this.slotStart[b] as number;
     const look = this.looks[b] as BuildingLook;
     for (let k = 0; k < boxes.length; k++) {
-      writeSolid(this.dArrays, start + k, building, boxes[k] as SolidBox, look);
+      const s = boxes[k] as SolidBox;
+      const word = this.damage.packedWord(b, s.tierIndex);
+      writeSolid(this.dArrays, start + k, building, s, look, word);
     }
     for (let k = boxes.length; k < (this.slotCap[b] as number); k++) {
       this.damaged.setMatrixAt(start + k, HIDDEN);
@@ -663,6 +699,56 @@ export class CityRenderer {
     return this.hidden[i] === 1;
   }
 
+  /**
+   * D1: push this frame's facade damage to the GPU — the dirty atlas slots
+   * as sub-rectangles, and the packed slot word of every tier whose slots
+   * changed: its base instances, and (D2) its boxes in the damaged mesh.
+   * Only those instances' ranges are re-uploaded.
+   */
+  flushDamage(renderer: THREE.WebGLRenderer): void {
+    const base = this.mesh.geometry.getAttribute(
+      "aArchetype",
+    ) as THREE.InstancedBufferAttribute;
+    const data = base.array as Float32Array;
+    const dData = this.dArrays.archetype;
+    let any = false;
+    this.damage.takeDirtyTiers((key) => {
+      const building = Math.floor(key / 8);
+      const tier = key % 8;
+      const word = this.damage.packedWord(building, tier);
+      const list = this.tierInstances.get(key);
+      if (list) {
+        if (!any) base.clearUpdateRanges();
+        any = true;
+        for (const i of list) {
+          data[i * 2 + 1] = word;
+          base.addUpdateRange(i * 2 + 1, 1);
+        }
+      }
+      const start = this.slotStart[building] ?? -1;
+      if (start < 0) return;
+      const boxes = solids(this.buildings[building] as Building);
+      const used = this.slotUsed[building] as number;
+      for (let k = 0; k < used; k++) {
+        if ((boxes[k] as SolidBox).tierIndex !== tier) continue;
+        dData[(start + k) * 2 + 1] = word;
+      }
+      this.markDirty(this.dirtyAttr, start, start + used);
+    });
+    if (any) base.needsUpdate = true;
+    this.damageTexture.flush(renderer);
+  }
+
+  /** D1: the damage atlas the shader samples (prewarm uploads it). */
+  get damageAtlas(): THREE.Texture {
+    return this.damageTexture.texture;
+  }
+
+  /** D1: the building's id in the damage map (its generateCity index). */
+  indexOf(b: Building): number {
+    return this.buildingIndex.get(b) ?? -1;
+  }
+
   /** L3: advance the living-windows clock (server ms, null before the first
    * snapshot; `nowMs` = the frame's performance.now()). */
   updateLiveWindows(serverMs: number | null, nowMs: number): void {
@@ -673,9 +759,11 @@ export class CityRenderer {
    * M3: Mobile also drops the parallax window rooms, the same way. D2: Low
    * and Mobile drop the rebar and jagged rims of broken faces. */
   setQuality(tier: QualityTier): void {
+    // D1: fewer facade damage slots on the cheaper tiers (a count only).
+    this.damage.setSlotCap(faceSlotsFor(QUALITY_PROFILES[tier].impacts));
     LIVE_ON_UNIFORM.value = QUALITY_PROFILES[tier].livingWindows ? 1 : 0;
     WIN_INTERIOR_UNIFORM.value = QUALITY_PROFILES[tier].windowInteriors ? 1 : 0;
-    DAMAGE_DETAIL_UNIFORM.value = QUALITY_PROFILES[tier].destructionDetail
+    BROKEN_DETAIL_UNIFORM.value = QUALITY_PROFILES[tier].destructionDetail
       ? 1
       : 0;
   }

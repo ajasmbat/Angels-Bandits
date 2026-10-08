@@ -201,6 +201,11 @@ export class Scoreboard {
     return row;
   }
 
+  /** The panel is up (Tab held, pinned by a tap, or lingering for a drag). */
+  get isOpen(): boolean {
+    return this.panel.classList.contains("open");
+  }
+
   private setOpen(open: boolean): void {
     if (open && !this.panel.classList.contains("open")) {
       this.openedAt = performance.now();

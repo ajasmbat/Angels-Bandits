@@ -68,12 +68,7 @@ import {
   poseVelocity,
 } from "./bots";
 import { CityEventLog, nearBuildingProbe } from "./cityevents";
-import {
-  Combat,
-  type Death,
-  type HitResult,
-  type SpeedCapFn,
-} from "./combat";
+import { Combat, type Death, type HitResult, type SpeedCapFn } from "./combat";
 import {
   type ClientEnvelope,
   isClientMsg,

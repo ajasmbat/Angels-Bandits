@@ -100,6 +100,9 @@ export interface QualityProfile {
   microRadius: number;
   /** L7 sign animation (tickers, chases, video). Off = each sign's static art. */
   signAnimation: boolean;
+  /** S1 the jumbotrons' LAST KILL shot (one small render pass per kill).
+   * Off = the static livery card painted on the screen. */
+  jumbotronReplay: boolean;
   /** Fake window interiors (the per-pane parallax room raycast). Off = the
    * room's mean colour, the same value the distance fade already ends on.
    * G1: the lit lobbies / shop rooms behind the street-level glass too. */
@@ -144,6 +147,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     steamDensity: 1,
     microRadius: 2,
     signAnimation: true,
+    jumbotronReplay: true,
     windowInteriors: true,
     cityLife: 1,
     facadeLife: true,
@@ -171,6 +175,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     steamDensity: 1,
     microRadius: 2,
     signAnimation: true,
+    jumbotronReplay: true,
     windowInteriors: true,
     cityLife: 0.7,
     facadeLife: true,
@@ -198,6 +203,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     steamDensity: 1,
     microRadius: 2,
     signAnimation: true,
+    jumbotronReplay: true,
     windowInteriors: true,
     cityLife: 0.45,
     facadeLife: false,
@@ -225,6 +231,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     steamDensity: 0.5,
     microRadius: 1,
     signAnimation: false,
+    jumbotronReplay: false,
     windowInteriors: false,
     cityLife: 0.3,
     facadeLife: false,
@@ -394,6 +401,30 @@ export const FEATURE_TIERS: readonly {
     low: "off",
     mobile: "off",
     note: "additive ground decals",
+  },
+  {
+    feature: "S1 jumbotrons + headline tickers",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "one instanced draw; canvases repaint on events only; the ticker crawl follows L7 sign animation",
+  },
+  {
+    feature: "S1 LAST KILL replay shot",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "off",
+    note: "one 256×144 pass per kill; Mobile: uniform flip to the static livery card",
+  },
+  {
+    feature: "S1 leader follow spot",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "it points at the leader, so it is identical on every tier (visibility parity); a beam slot, no draw",
   },
   {
     feature: "L8 rooftop props (pools, fans, flags)",

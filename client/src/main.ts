@@ -102,6 +102,14 @@ import {
 import { type AimMode, FlightInputSource } from "./game/flight-input";
 import { createFreeLook, shapeInput, stepFreeLook } from "./game/freelook";
 import { Guns } from "./game/guns";
+import {
+  feedLine,
+  killHeadline,
+  pilotLabel,
+  replaySubject,
+  stormWarning,
+  topPilot,
+} from "./game/headlines";
 import { bulletImpact, impactKind } from "./game/hitdetect";
 import {
   ASSIST_AIM_RANGE,
@@ -149,6 +157,7 @@ import { GpuTimer } from "./render/gputimer";
 import { createGradePass } from "./render/grade";
 import { Headlights } from "./render/headlights";
 import { HoleDecorRenderer } from "./render/hole-decor";
+import { Jumbotrons } from "./render/jumbotrons";
 import { lookPasses } from "./render/lookup";
 import { MoverLights, Movers } from "./render/movers";
 import { NatureRenderer } from "./render/nature";
@@ -160,6 +169,7 @@ import {
   animatePlane,
   buildPlaneMesh,
   inputControls,
+  liveryFor,
   spinPropeller,
 } from "./render/plane";
 import { PlaneLights } from "./render/planelights";
@@ -713,6 +723,10 @@ scene.add(fountains.points);
 const fireworks = new Fireworks(welcome.seed);
 const searchlights = new Searchlights(city.cityBuildings);
 scene.add(searchlights.mesh);
+// S1: the city's jumbotrons + headline tickers (one draw), told what to say
+// by game/headlines.ts from the room's broadcasts (fed in onDeath/onScores).
+const jumbotrons = new Jumbotrons(city.cityBuildings, renderer);
+scene.add(jumbotrons.mesh);
 // L10 drone show: points in the shared MoverLights cloud (zero draw calls).
 const droneShow = new DroneShowRenderer(welcome.seed);
 const birds = new Birds(welcome.seed);
@@ -944,6 +958,9 @@ const players = new Map<string, { name: string; isBot: boolean }>(
 );
 const nameOf = (id: string): string => players.get(id)?.name ?? "???";
 const isBotOf = (id: string): boolean => players.get(id)?.isBot ?? false;
+/** S1: the name-guarded label a WORLD screen may show (bot callsign or the
+ * pilot's alias — never free text; see game/headlines.ts). */
+const screenLabel = (id: string): string => pilotLabel(id, players.get(id));
 
 // --- Radio comms: one channel, priority queue, voice + ticker (client-only) ---
 // The pre-rendered voice bundle (tools/gen-radio-voices.sh): asset id → url,
@@ -1074,6 +1091,24 @@ let awaitingReturn: number | null = null;
 /** Longest the hold may last before posing resumes anyway, ms. */
 const RETURN_HOLD_MAX_MS = AWAY_MIN_MS + 2000;
 let lastScores: ScoreEntry[] = welcome.scores;
+/** S1: the TOP PILOT the leader spot follows (null: nobody has a kill). */
+let leaderId: string | null = null;
+/** S1: crown the TOP PILOT from the room's tallies (identical on every
+ * client) and hand the jumbotrons their card. Runs on events only. */
+function refreshLeader(): void {
+  const top = topPilot(lastScores);
+  leaderId = top?.id ?? null;
+  jumbotrons.setLeader(
+    top && {
+      id: top.id,
+      label: screenLabel(top.id),
+      livery: liveryFor(top.id),
+      kills: top.kills,
+      deaths: top.deaths,
+    },
+  );
+}
+refreshLeader();
 let lastDeath: {
   victimId: string;
   killerId: string | null;
@@ -1224,6 +1259,7 @@ socket.events.onPlayerJoined = (player) => {
   remotes.playerJoined(player);
   scoreboard.playerJoined(player);
   say(checkInCallout(player.name, player.isBot ?? false));
+  refreshLeader(); // a bot's callsign label needs its roster entry
 };
 socket.events.onPlayerLeft = (id) => {
   say(offStationCallout(nameOf(id), isBotOf(id)));
@@ -1289,6 +1325,21 @@ socket.events.onDeath = (msg) => {
       );
     }
   }
+  // S1: the city's screens. The tallies held here are the pre-death ones
+  // (the server sends each death before its scores), the same on every
+  // client — the headline's verb seeds from them.
+  const subject = replaySubject(msg);
+  jumbotrons.addKill({
+    headline: killHeadline(
+      msg,
+      screenLabel,
+      lastScores.find((e) => e.id === msg.victimId)?.deaths ?? 0,
+    ),
+    feed: feedLine(msg, screenLabel),
+    caption: subject.caption,
+    subjectLabel: screenLabel(subject.id),
+    livery: liveryFor(subject.id),
+  });
   killFeed.add(
     msg.killerId === null ? null : nameOf(msg.killerId),
     nameOf(msg.victimId),
@@ -1363,6 +1414,7 @@ function applyResume(w: WelcomeMsg): void {
     scoreboard.playerJoined(r);
   }
   lastScores = w.scores;
+  refreshLeader();
   scoreboard.setScores(w.scores);
   showOwnScore(w.scores);
   botBar.resync(w.botTarget);
@@ -1390,6 +1442,7 @@ function showOwnScore(scores: ScoreEntry[]): void {
 }
 socket.events.onScores = (scores) => {
   lastScores = scores;
+  refreshLeader();
   scoreboard.setScores(scores);
   showOwnScore(scores);
 };
@@ -1480,6 +1533,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   rain.setQuality(tier);
   headlights.setQuality(tier);
   signage.setQuality(tier);
+  jumbotrons.setQuality(tier); // S1: Mobile shows the static LAST KILL card
   rooftopLife.setQuality(tier);
   roofClutter.setQuality(tier); // R2: fine roof dressing only
   natureRenderer.setQuality(tier);
@@ -1813,6 +1867,8 @@ declare global {
         birds: number;
       };
       signage: () => Signage["counts"];
+      jumbotron: () => Jumbotrons["stats"];
+      jumbotronView: (i: number) => ReturnType<Jumbotrons["view"]>;
       signImage: (x: number, z: number) => { x: number; z: number } | null;
       /** L7: broken neon tubes and their next stutter burst (synced ms). */
       signBroken: (at?: number) => ReturnType<Signage["brokenTubes"]>;
@@ -2221,6 +2277,10 @@ window.__ab = {
   }),
   // S2 QA: signage instance counts + drawn-position read-back (seam checks).
   signage: () => signage.counts,
+  // S1 QA: what the jumbotrons say, the replay pass count/draws, and a
+  // canonical view square on screen `i` (feed it to qaCamera).
+  jumbotron: () => jumbotrons.stats,
+  jumbotronView: (i) => jumbotrons.view(i),
   signImage: (x, z) => signage.imageOf(x, z),
   signBroken: (at) =>
     signage.brokenTubes(at ?? worldTime() ?? performance.now()),
@@ -2855,6 +2915,9 @@ const frame = (now: number): void => {
   fountains.update(chase.position, renderMs);
   // Neon pulses on the same synced clock as the beacons.
   signage.update(chase.position, renderMs ?? now);
+  // S1: the screens, their ticker crawl, and — only on the frame after a
+  // kill — the LAST KILL pass (it renders before the main pass below).
+  jumbotrons.update(chase.position, renderMs);
   // L7: the nearest broken neon tube buzzes, crackling through its stutter;
   // silent while dead or with the tab hidden.
   const neonBuzz = signage.buzz(flight.pos, renderMs ?? now);
@@ -2885,12 +2948,22 @@ const frame = (now: number): void => {
   const selfOnRecord = renderMs === null ? null : reactor.selfAt(renderMs);
   if (selfOnRecord) trackedPlanes.push(selfOnRecord);
   for (const target of targets) trackedPlanes.push(target.pos);
+  // S1: the landmark lamp follows the TOP PILOT's drawn plane (none while
+  // the leader is dead — targets() lists the living only).
+  let leaderPos: Vec3 | null = null;
+  if (leaderId === socket.selfId) leaderPos = alive ? flight.pos : null;
+  else {
+    for (const target of targets) {
+      if (target.id === leaderId) leaderPos = target.pos;
+    }
+  }
   searchlights.update(
     chase.position,
     renderMs,
     movers.spots,
     moverLights,
     trackedPlanes,
+    leaderPos,
   );
   // L9: flocks scatter from any plane this client sees within ~60 m.
   birdPlanes.length = 0;
@@ -2976,6 +3049,7 @@ const frame = (now: number): void => {
   const wxMs = renderMs === null ? null : renderMs + weatherShift;
   const wx = weather.at(wxMs);
   setWeatherUniform(wx, wxMs);
+  jumbotrons.setWarning(wxMs === null ? null : stormWarning(wx)); // S1 banner
   rain.update(wx, wxMs, camera.position, dt);
   const sky = storm.atmosphere(scene, chase.position.y, now, wx);
   skyDome.tint(sky.tint);

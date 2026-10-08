@@ -234,6 +234,21 @@ const STORM_APPROACH_T = 0.6;
 /** Share of the clearing phase the all-clear stays up. */
 const STORM_CLEARING_T = 0.3;
 
+/** The storm banners — fixed objects, so the per-frame weather check never
+ * allocates (and the screens compare them by identity). */
+export const STORM_INBOUND: MatchWarning = {
+  kind: "storm",
+  text: "STORM WARNING — DOWNPOUR INBOUND",
+};
+export const STORM_OVERHEAD: MatchWarning = {
+  kind: "storm",
+  text: "STORM WARNING — LIGHTNING OVER THE CITY",
+};
+export const STORM_CLEARING: MatchWarning = {
+  kind: "storm",
+  text: "STORM CLEARING",
+};
+
 /**
  * The storm banner for the shared weather. It reports the WEATHER only —
  * never the hidden death ceiling, which is discovered, not announced.
@@ -243,15 +258,11 @@ const STORM_CLEARING_T = 0.3;
 export function stormWarning(weather: Weather): MatchWarning | null {
   switch (weather.phase) {
     case "drizzle":
-      return weather.phaseT >= STORM_APPROACH_T
-        ? { kind: "storm", text: "STORM WARNING — DOWNPOUR INBOUND" }
-        : null;
+      return weather.phaseT >= STORM_APPROACH_T ? STORM_INBOUND : null;
     case "downpour":
-      return { kind: "storm", text: "STORM WARNING — LIGHTNING OVER THE CITY" };
+      return STORM_OVERHEAD;
     case "clearing":
-      return weather.phaseT < STORM_CLEARING_T
-        ? { kind: "storm", text: "STORM CLEARING" }
-        : null;
+      return weather.phaseT < STORM_CLEARING_T ? STORM_CLEARING : null;
     default:
       return null;
   }

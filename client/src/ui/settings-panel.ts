@@ -45,6 +45,9 @@ export interface SettingsHooks {
   /** Haptics on/off, or null where the device can't vibrate (row hidden). */
   haptics: () => boolean | null;
   setHaptics: (on: boolean) => void;
+  /** M8 AUTO FIRE on/off (every pointer; the default is touch's). */
+  autoFire: () => boolean;
+  setAutoFire: (on: boolean) => void;
   /** The resolution scale changed (debounced while a slider drags). */
   setResScale: (scale: number) => void;
   /** Any volume changed. */
@@ -119,6 +122,13 @@ const MARKUP = `
       <div class="row" data-row="haptics">
         <span>HAPTICS</span>
         ${seg("haptics", "Haptics", [
+          ["on", "ON"],
+          ["off", "OFF"],
+        ])}
+      </div>
+      <div class="row">
+        <span>AUTO FIRE</span>
+        ${seg("autoFire", "Auto fire", [
           ["on", "ON"],
           ["off", "OFF"],
         ])}
@@ -308,6 +318,11 @@ export class SettingsPanel {
       this.values = clampSettings({ ...this.values, haptics: v === "on" });
       saveSettings(this.store, this.values);
       h.setHaptics(v === "on");
+    } else if (group === "autoFire") {
+      // Same rule as haptics: null (the device default) until picked.
+      this.values = clampSettings({ ...this.values, autoFire: v === "on" });
+      saveSettings(this.store, this.values);
+      h.setAutoFire(v === "on");
     }
   }
 
@@ -344,6 +359,7 @@ export class SettingsPanel {
       aimMode: h.aimMode(),
       radioVoice: h.radioVoice() ? "on" : "off",
       haptics: haptics ? "on" : "off",
+      autoFire: h.autoFire() ? "on" : "off",
     };
     for (const group of this.root.querySelectorAll<HTMLElement>(".seg")) {
       const want = marks[group.dataset.key ?? ""];

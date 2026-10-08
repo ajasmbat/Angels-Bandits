@@ -69,6 +69,7 @@ import { GameAudio } from "./audio/sound";
 import { NEAR_MISS_RADIUS, closestApproach, spatialize } from "./audio/spatial";
 import { ThunderSchedule } from "./audio/thunder";
 import { TrainAudio } from "./audio/train-audio";
+import { createAutoFire, stepAutoFire } from "./game/auto-fire";
 import { BoostKey } from "./game/boost-key";
 import { Bullets } from "./game/bullets";
 import {
@@ -865,6 +866,12 @@ const damageIndicator = new DamageIndicator();
 // U1 haptics: Android vibrates, iOS has no API (feature-detected no-op).
 // A never-touched setting (null) means "on for a touch device".
 const haptics = new Haptics(navigator, settings.haptics ?? coarsePointer());
+// M8 auto-fire: pulls its own trigger on the lead computer's firing
+// solution. Same never-touched rule: on for a touch device, off for a mouse.
+let autoFireOn = settings.autoFire ?? coarsePointer();
+const autoFire = createAutoFire();
+/** Last frame's lead solution (the lead computer runs after the render). */
+let leadSolution = false;
 const viewDir = new THREE.Vector3();
 /** A shooter's live position for their arc; null once they're gone. */
 const shooterLivePos = (id: string) => remotes.poseOf(id)?.pos;
@@ -1093,6 +1100,9 @@ function respawnSelf(spawn: SpawnState): void {
   hud.hideKillCam();
   damageIndicator.clear();
   guns.reset(performance.now());
+  // A fresh plane is protected until a snapshot says otherwise: the last
+  // life's `false` must not let auto-fire spend the new protection.
+  selfProt = true;
   boost = createBoost(performance.now()); // fresh plane, full gauge
   lowHpArmed = true; // fresh plane, fresh "I'm hit" edge
   flashFade();
@@ -1842,6 +1852,10 @@ const settingsPanel = new SettingsPanel(
     radioVoice: () => radioVoiceOn,
     haptics: () => (haptics.available ? haptics.enabled : null),
     setHaptics: (on) => haptics.setEnabled(on),
+    autoFire: () => autoFireOn,
+    setAutoFire: (on) => {
+      autoFireOn = on;
+    },
     setRadioVoice: (on) => {
       saveRadioVoice(on);
       paintRadioToggle(on);
@@ -1871,6 +1885,7 @@ const settingsPanel = new SettingsPanel(
       if (!open) return;
       input.releaseKeys();
       guns.setTrigger(false);
+      guns.setAutoTrigger(false);
       boostKey.setHeld(false);
     },
   },
@@ -2349,7 +2364,7 @@ const frame = (now: number): void => {
     // H2 hole assist: stands down while the pilot shoots, free-looks or the
     // view is reframing (zoom easing) — then glides back to zero.
     const assistOff =
-      guns.triggerHeld ||
+      guns.firing ||
       freelook.held ||
       freelook.yaw !== 0 ||
       freelook.pitch !== 0 ||
@@ -2515,6 +2530,22 @@ const frame = (now: number): void => {
     }
   }
 
+  // M8 auto-fire, stepped dead or alive so a death drops it at once. It
+  // never pulls under our own spawn protection (only FIRE may spend it), on
+  // an overheat lock, or where the guns are blocked (free-look, settings).
+  guns.setAutoTrigger(
+    stepAutoFire(
+      autoFire,
+      {
+        enabled: autoFireOn,
+        flying: alive && !freelook.held && !settingsOpen,
+        solution: leadSolution,
+        locked: guns.locked,
+        protectedSelf: selfProt,
+      },
+      now,
+    ),
+  );
   if (alive) {
     // Stream our pose up (fixed TICK_UP_HZ cadence inside the socket,
     // stamped with this frame's time — the pose is the one simulated for it).
@@ -2942,6 +2973,7 @@ const frame = (now: number): void => {
   // The pipper is the gun line's own vanishing point, so it only means
   // anything while we are flying it — the kill-cam gets no aim chrome.
   hud.setAimPoint(alive ? aimResult.aim : null);
+  leadSolution = alive && aimResult.solution;
   // The instructor's cursor marker: only while flying in that mode (the
   // kill-cam and classic mode keep the plain OS cursor).
   hud.setAimCursor(

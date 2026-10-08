@@ -19,6 +19,7 @@ import {
 } from "@angels-bandits/common/city/movers";
 import { natureFor } from "@angels-bandits/common/city/nature";
 import { setNewsTarget } from "@angels-bandits/common/city/newsheli";
+import { bridgeSpans } from "@angels-bandits/common/city/river";
 import { buildNatureIndex } from "@angels-bandits/common/collision";
 import {
   BLOCK_PITCH,
@@ -82,6 +83,13 @@ import {
 } from "./game/callouts";
 import { ChaseCamera } from "./game/camera";
 import { detectCrash, touchesSolid } from "./game/collision";
+import {
+  type CornerWorld,
+  cornerCapInput,
+  cornerSpeed,
+  holeCorridors,
+  stepCornerCap,
+} from "./game/corner-speed";
 import { FlightInputSource } from "./game/flight-input";
 import { createFreeLook, shapeInput, stepFreeLook } from "./game/freelook";
 import { Guns } from "./game/guns";
@@ -578,6 +586,18 @@ scene.add(train.mesh);
 // exactly where it is drawn (street trees excepted — lamp-pole height).
 const nature = natureFor(welcome.seed, city.cityBuildings);
 const natureIndex = buildNatureIndex(nature);
+// F5 corner speed manager: the same solids the crash check reads, plus every
+// hole's clear corridor (H1 holes and the river underpasses), built once.
+const cornerWorld: CornerWorld = {
+  buildings: city.cityBuildings,
+  index: city.cityIndex,
+  nature: natureIndex,
+  movers: moverField,
+  corridors: holeCorridors([
+    ...cityHoles(city.cityBuildings),
+    ...bridgeSpans(),
+  ]),
+};
 const natureRenderer = new NatureRenderer(nature);
 scene.add(natureRenderer.group);
 // L11 river: embankment walls, bridges, the reflecting water and the boats.
@@ -851,13 +871,12 @@ let flight: FlightState = createFlightState(
   welcome.spawn.pos,
   welcome.spawn.yaw,
 );
-flight = {
-  ...flight,
-  speed: welcome.spawn.speed,
-  targetSpeed: welcome.spawn.speed,
-};
+// Server's spawn airspeed; the throttle stays FULL (F5, createFlightState).
+flight = { ...flight, speed: welcome.spawn.speed };
 chase.snapTo(flight);
 
+/** F5: the corner manager's rate-limited speed ceiling, m/s (MAX = none). */
+let cornerCap = MAX_SPEED;
 let alive = true;
 let killCamTargetId: string | null = null;
 // Server-said combat state about self (snapshots), kept for HUD + QA.
@@ -906,7 +925,8 @@ function respawnSelf(spawn: SpawnState): void {
   planeTrails.clear(socket.selfId); // respawn teleports — no streak
   interruptQuality(); // O3: a transient
   flight = createFlightState(spawn.pos, spawn.yaw);
-  flight = { ...flight, speed: spawn.speed, targetSpeed: spawn.speed };
+  flight = { ...flight, speed: spawn.speed }; // throttle stays FULL (F5)
+  cornerCap = MAX_SPEED; // a fresh plane starts unbraked
   chase.snapTo(flight);
   instructor = createInstructor();
   alive = true;
@@ -2033,7 +2053,20 @@ const frame = (now: number): void => {
       aimConverged = angleBetween(view.aimDir, view.pipperDir) < CONVERGED_RAD;
       aimFovPrev = aimFov;
     }
-    const shaped = { ...shapeInput(command, { steer }), boost: boost.active };
+    // F5 corner speed manager: silently cap the commanded speed so the
+    // turn the pilot is committing to (or the wall ahead) is makeable. Intent
+    // is the turn command before free-look/zoom shaping; the clock is the one
+    // the movers are drawn (and crash-checked) at.
+    cornerCap = stepCornerCap(
+      cornerCap,
+      cornerSpeed(flight, cornerWorld, command.turn, renderMs),
+      dt,
+    );
+    const shaped = {
+      ...shapeInput(command, { steer }),
+      boost: boost.active,
+      cornerCap: cornerCapInput(cornerCap),
+    };
     flight = stepFlight(flight, shaped, dt);
     // Own control surfaces follow what the stick is commanding (F3).
     ownControls = inputControls(shaped, flight);
@@ -2099,7 +2132,7 @@ const frame = (now: number): void => {
     );
     plane.rotation.set(flight.pitch, flight.yaw, flight.roll, "YXZ");
     // Prop speed tracks the commanded throttle (same factor as remotes').
-    spinPropeller(plane, dt * flight.targetSpeed * 0.7);
+    spinPropeller(plane, dt * Math.min(flight.targetSpeed, cornerCap) * 0.7);
     animatePlane(plane, ownControls, flight.speed, selfHp, dt);
     // Own aviation lights + wingtip trails (strobe on the synced clock so
     // every client sees this plane blink at the same instant).
@@ -2355,7 +2388,9 @@ const frame = (now: number): void => {
   // 0 at ≤ MAX_SPEED, 1 at full boost speed: drives the engine pitch rise and
   // the FOV kick, and eases out with the post-boost tail on its own.
   const overspeed = alive ? overspeedOf(flight.speed) : 0;
-  audio.setEngine(flight.targetSpeed, alive, overspeed);
+  // The engine note follows the EFFECTIVE command — throttle under the F5
+  // corner cap — the manager's only cue, and an audio one.
+  audio.setEngine(Math.min(flight.targetSpeed, cornerCap), alive, overspeed);
   audio.syncRemotes(contacts, flight.pos, flight.yaw);
   // In-cloud static bed: quiet crackle ramping in over the deck's first
   // 60 m. The only audio cue for the hidden ceiling — no HUD, by design.

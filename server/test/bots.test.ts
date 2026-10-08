@@ -1128,17 +1128,19 @@ describe("bots vs the L2 movers", () => {
     // eight bots dogfighting through a crane's sweep died to it 42-46 times
     // per seed while a third of them flew straight lines up high. Since B1
     // every bot keeps to the streets, so the decoy moved onto the street the
-    // jib oversails and the run is summed over five seeds of four minutes:
+    // jib oversails and the run is summed over eight seeds of four minutes:
     // blind it is ~30 deaths, with the probe on 0. This asserts the gap, not
-    // a fragile exact count.
+    // a fragile exact count. (Five seeds until F5: the tighter low-speed turn
+    // rate dodges ~3.9 jibs a seed blind instead of ~6, so three more seeds
+    // keep the same > 20 bar meaningful.)
     //
-    // Ten runs of a few seconds each, with a yield to the event loop between
+    // Sixteen runs of a few seconds each, with a yield to the event loop between
     // them: as one synchronous 40 s block (on a loaded box) it starved the
     // vitest worker's RPC, whose fixed 60 s timeout then failed the whole
     // `npm test` with "Timeout calling onTaskUpdate" though every test passed.
     const sum = async (probe: boolean) => {
       const total = { moverDeaths: 0, sweepTicks: 0 };
-      for (const seed of [1234, 7, 20260826, 99, 5]) {
+      for (const seed of [1234, 7, 20260826, 99, 5, 42, 2024, 31337]) {
         const r = orbitCrane(seed, probe);
         total.moverDeaths += r.moverDeaths;
         total.sweepTicks += r.sweepTicks;
@@ -1148,7 +1150,8 @@ describe("bots vs the L2 movers", () => {
     };
     const seeing = await sum(true);
     const blind = await sum(false);
-    // Five seeds' worth of the single-seed 800-tick vacuity guard.
+    // Five seeds' worth of the single-seed 800-tick vacuity guard (a floor;
+    // eight seeds clear it comfortably).
     expect(blind.sweepTicks).toBeGreaterThan(4000);
     expect(seeing.sweepTicks).toBeGreaterThan(4000);
     expect(blind.moverDeaths).toBeGreaterThan(20);

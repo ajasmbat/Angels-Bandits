@@ -4,7 +4,11 @@
 //   onto it;
 // - classic: the cursor's offset from screen centre is a direct rate stick
 //   (deadzone + expo, read()).
-// W/S drive throttle, A/D the roll assist. No pointer lock — the HUD needs
+// W/S drive throttle, A/D the roll assist. The throttle lives at FULL (F5):
+// with no W/S held and no finger on the touch slider the axis reads
+// AUTO_THROTTLE, so the command rides back to full after any change — S
+// slows only while held. (The corner speed manager, not the throttle, is
+// what slows the plane for a corner.) No pointer lock — the HUD needs
 // the visible cursor. On a touch device (M1) ui/touch-controls.ts feeds the
 // same state through the setTouch* seams: the thumb's aim point IS the
 // cursor, so nothing downstream knows which one is steering.
@@ -20,6 +24,9 @@ const EXPO = 0.5;
 const CURSOR_SMOOTH_S = 0.04;
 /** Once the cursor leaves the window, steering fades out over this, s. */
 const PRESENCE_FADE_S = 0.25;
+/** Throttle axis with nothing commanding it, −1..1 (F5): the commanded
+ * speed climbs back to full at AUTO_THROTTLE × THROTTLE_RATE = 18 m/s². */
+export const AUTO_THROTTLE = 0.6;
 /** The aim-mode key, hardcoded like FREELOOK_KEY (no keybinding UI yet). */
 export const AIM_MODE_KEY = "KeyM";
 const AIM_MODE_STORAGE = "ab-aim-mode";
@@ -50,7 +57,7 @@ export class FlightInputSource {
   private aim = false; // right button held: the aim-zoom command (ANGE-G9CPCV)
   private readonly keys = new Set<string>();
   // Touch controls (M1): all neutral on a desktop, so read() is unchanged.
-  private touchThrottle = 0; // −1..1, the throttle slider's servo command
+  private touchThrottle: number | null = null; // slider servo, null = released
   private touchZoom = false; // ZOOM button held or latched
   private touchLook = false; // two fingers on the aim zone
 
@@ -143,8 +150,9 @@ export class FlightInputSource {
     this.presenceK = 1;
   }
 
-  /** The throttle slider's command, −1..1, added to W/S. */
-  setTouchThrottle(v: number): void {
+  /** The throttle slider's command, −1..1, added to W/S; null when no
+   * finger is on it (the auto throttle then takes over). */
+  setTouchThrottle(v: number | null): void {
     this.touchThrottle = v;
   }
 
@@ -222,9 +230,14 @@ export class FlightInputSource {
   }
 
   read(): FlightInput {
-    const keys =
-      (this.keys.has("KeyW") ? 1 : 0) + (this.keys.has("KeyS") ? -1 : 0);
-    const throttle = Math.max(-1, Math.min(1, keys + this.touchThrottle));
+    const w = this.keys.has("KeyW");
+    const s = this.keys.has("KeyS");
+    const keys = (w ? 1 : 0) + (s ? -1 : 0);
+    // Nothing on the throttle: ride back to full (F5).
+    const throttle =
+      !w && !s && this.touchThrottle === null
+        ? AUTO_THROTTLE
+        : Math.max(-1, Math.min(1, keys + (this.touchThrottle ?? 0)));
     // A rolls left (positive roll = left wing down), D rolls right.
     const roll =
       (this.keys.has("KeyA") ? 1 : 0) + (this.keys.has("KeyD") ? -1 : 0);

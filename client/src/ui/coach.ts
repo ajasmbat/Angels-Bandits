@@ -206,6 +206,8 @@ export class Coach {
   private finished: boolean;
   private shown: Shown = null;
   private started = false;
+  /** Time since start(), ms (capped once past FIRST_DELAY_MS). */
+  private sinceStartMs = 0;
   /** A storm death is waiting for its respawn to show the notice. */
   private stormPending = false;
   /** The notice was queued this session (once even with storage blocked). */
@@ -214,6 +216,8 @@ export class Coach {
   /** Aim travel so far, degrees (desktop cursor). */
   private aimDeg = 0;
   private overlayOpen = false;
+  /** QA: how each hint left the screen, `id:action|timeout|paused`. */
+  private readonly ended: string[] = [];
   /** Last-written overlay pause (no per-frame class writes). */
   private overlayPaused = false;
   private readonly hint = document.getElementById("coach-hint") as HTMLElement;
@@ -281,7 +285,10 @@ export class Coach {
 
   /** Desktop: the cursor moved by (dx, dy) NDC through this view. */
   noteCursor(dx: number, dy: number, fovDeg: number, aspect: number): void {
-    if (this.finished || (dx === 0 && dy === 0)) return;
+    // Not before the first hint is due: the cursor's smoothing catching up
+    // to wherever FLY left the mouse is not the player aiming.
+    if (this.finished || this.sinceStartMs < FIRST_DELAY_MS) return;
+    if (dx === 0 && dy === 0) return;
     this.aimDeg += cursorTravelDeg(dx, dy, fovDeg, aspect);
     if (this.aimDeg >= AIM_DONE_DEG) this.note("aim");
   }
@@ -289,6 +296,7 @@ export class Coach {
   /** The player did `id` (cheap to call every frame). */
   note(id: HintId): void {
     if (this.finished) return;
+    if (this.state.showing === id) this.ended.push(`${id}:action`);
     this.state = noteAction(this.state, id);
   }
 
@@ -306,6 +314,7 @@ export class Coach {
    */
   frame(dtMs: number, alive: boolean, paused: boolean): void {
     if (!this.started) return;
+    if (this.sinceStartMs < FIRST_DELAY_MS) this.sinceStartMs += dtMs;
     if (!alive) this.closeOverlay();
     if (paused !== this.overlayPaused) {
       this.overlayPaused = paused;
@@ -319,11 +328,17 @@ export class Coach {
     }
     if (this.stormMs > 0) this.stormMs = live ? this.stormMs - dtMs : 0;
     if (!this.finished) {
+      const was = this.state.showing;
       this.state = stepCoach(
         this.state,
         dtMs,
         live && !this.overlayOpen && this.stormMs <= 0,
       );
+      if (was !== null && this.state.showing === null) {
+        this.ended.push(
+          `${was}:${this.state.queue[0] === was ? "paused" : "timeout"}`,
+        );
+      }
       if (coachFinished(this.state)) this.finish();
     }
     this.show(this.stormMs > 0 ? "storm" : this.state.showing);
@@ -340,11 +355,17 @@ export class Coach {
   }
 
   /** QA view (`__ab.coach`). */
-  debug(): { shown: Shown; queue: readonly HintId[]; overlay: boolean } {
+  debug(): {
+    shown: Shown;
+    queue: readonly HintId[];
+    overlay: boolean;
+    ended: readonly string[];
+  } {
     return {
       shown: this.shown,
       queue: this.state.queue,
       overlay: this.overlayOpen,
+      ended: this.ended,
     };
   }
 

@@ -65,6 +65,7 @@ export type FireResult =
 
 export type HitReject =
   | "unknown"
+  | "self"
   | "shooter-dead"
   | "target-dead"
   | "protected"
@@ -146,10 +147,6 @@ export class Combat {
     return { id, kills: p?.kills ?? 0, deaths: p?.deaths ?? 0 };
   }
 
-  scores(): ScoreEntry[] {
-    return [...this.players.keys()].map((id) => this.scoreOf(id));
-  }
-
   /**
    * Validate one shot (seq is the client's bullet id). Accepting registers
    * the bullet for later hit claims and cancels spawn protection — firing
@@ -216,6 +213,8 @@ export class Combat {
     const shooter = this.players.get(shooterId);
     const target = this.players.get(targetId);
     if (!shooter || !target) return { ok: false, reason: "unknown" };
+    // A self-hit would kill() with killer === victim and credit the kill.
+    if (shooterId === targetId) return { ok: false, reason: "self" };
     if (!shooter.alive) return { ok: false, reason: "shooter-dead" };
     if (!target.alive) return { ok: false, reason: "target-dead" };
     if (now < target.protectedUntil) return { ok: false, reason: "protected" };

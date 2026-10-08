@@ -166,6 +166,19 @@ describe("hit claim validation", () => {
 });
 
 describe("damage, death, and kill credit", () => {
+  it("rejects a self-hit: no damage, no death, no score — however many are claimed (S1)", () => {
+    const combat = arena(1);
+    for (let i = 0; i < 30; i++) {
+      const now = T + i * 110;
+      expect(combat.fire("p0", i, now).ok).toBe(true);
+      const res = combat.hit("p0", "p0", i, P, P, P, now);
+      expect(!res.ok && res.reason).toBe("self");
+    }
+    expect(combat.hpOf("p0")).toBe(100);
+    expect(combat.isAlive("p0")).toBe(true);
+    expect(combat.scoreOf("p0")).toEqual({ id: "p0", kills: 0, deaths: 0 });
+  });
+
   it("applies BULLET_DAMAGE per hit and reports server-owned hp (100 − 7 = 93)", () => {
     const combat = arena(2);
     const res = shoot(combat, "p0", "p1", 0, T);

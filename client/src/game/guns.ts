@@ -58,6 +58,12 @@ export class Guns {
     this.trigger = held;
   }
 
+  /** Whether the trigger is held — the H2 hole assist stands down while
+   * the pilot is shooting. */
+  get triggerHeld(): boolean {
+    return this.trigger;
+  }
+
   /** HUD state: heat 0..1 and whether the guns are overheat-locked. */
   get state(): { heat: number; locked: boolean } {
     return { heat: Math.min(1, this.heat.heat), locked: this.heat.locked };

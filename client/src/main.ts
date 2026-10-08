@@ -97,6 +97,14 @@ import { createFreeLook, shapeInput, stepFreeLook } from "./game/freelook";
 import { Guns } from "./game/guns";
 import { bulletHitsSphere } from "./game/hitdetect";
 import {
+  ASSIST_AIM_RANGE,
+  type AssistWorld,
+  assistStick,
+  createHoleAssist,
+  holeAssistTarget,
+  stepHoleAssist,
+} from "./game/hole-assist";
+import {
   type AimError,
   CONVERGED_RAD,
   aimError,
@@ -613,6 +621,17 @@ const cornerWorld: CornerWorld = {
     ...bridgeSpans(),
   ]),
 };
+// H2 hole assist: the silent centering nudge reads every hole (and river
+// underpass) and the same city the crash check does. State is per frame.
+const assistWorld: AssistWorld = {
+  spans: [...cityHoles(city.cityBuildings), ...bridgeSpans()],
+  buildings: city.cityBuildings,
+  index: city.cityIndex,
+};
+const holeAssist = createHoleAssist();
+const holeAssistWant = createHoleAssist();
+const assistDir: Vec3 = { x: 0, y: 0, z: 0 };
+const assistStickOut = { turn: 0, pitch: 0 };
 const natureRenderer = new NatureRenderer(nature);
 scene.add(natureRenderer.group);
 // L11 river: embankment walls, bridges, the reflecting water and the boats.
@@ -952,12 +971,31 @@ function flashFade(): void {
   );
 }
 
+/** H2: refresh the hole assist's target for this frame (zero while it is
+ * stood down) and glide the applied bias toward it. */
+function stepAssist(off: boolean, dt: number): void {
+  if (off) {
+    holeAssistWant.yaw = 0;
+    holeAssistWant.pitch = 0;
+  } else {
+    holeAssistTarget(flight.pos, assistDir, assistWorld, holeAssistWant);
+  }
+  stepHoleAssist(holeAssist, holeAssistWant, dt);
+}
+
+/** A fresh plane starts with no assist bias. */
+function resetAssist(): void {
+  holeAssist.yaw = 0;
+  holeAssist.pitch = 0;
+}
+
 /** Freeze into the kill-cam; the server's respawn message ends it. */
 function enterDeath(killerId: string | null, cause?: "storm"): void {
   // Kill-cam owns the camera — force-exit free-look and the zoom instantly.
   freelook = createFreeLook();
   zoom = createZoom();
   instructor = createInstructor();
+  resetAssist();
   hud.setFreeLook(false);
   killCamTargetId = killerId;
   hud.showKillCam(killerId === null ? null : nameOf(killerId), cause);
@@ -978,6 +1016,7 @@ function respawnSelf(spawn: SpawnState): void {
   cornerCap = MAX_SPEED; // a fresh plane starts unbraked
   chase.snapTo(flight);
   instructor = createInstructor();
+  resetAssist();
   alive = true;
   killCamTargetId = null;
   plane.visible = true;
@@ -2100,6 +2139,24 @@ const frame = (now: number): void => {
     // reaches flight state. Authority is the product of both costs.
     const steer = freelook.steer * zoomSteer(zoom.z);
     let command = input.read();
+    // H2 hole assist: stands down while the pilot shoots, free-looks or the
+    // view is reframing (zoom easing) — then glides back to zero.
+    const assistOff =
+      guns.triggerHeld ||
+      freelook.held ||
+      freelook.yaw !== 0 ||
+      freelook.pitch !== 0 ||
+      (zoom.z > 0 && zoom.z < 1);
+    // Classic mode means to fly along the nose; the instructor sets the aim
+    // ray's direction below.
+    // (flightForward's formula, written in place: no per-frame allocation.)
+    const cosP = Math.cos(flight.pitch);
+    assistDir.x = -Math.sin(flight.yaw) * cosP;
+    assistDir.y = Math.sin(flight.pitch);
+    assistDir.z = -Math.cos(flight.yaw) * cosP;
+    /** The pilot's own turn command, assist excluded — the corner manager's
+     * intent, so the nudge can never make it brake for a turn. */
+    let intentTurn = 0;
     if (aimMode === "instructor") {
       // The cursor is the aim point: fly the pipper onto it. The view is the
       // un-orbited chase frame at THIS frame's (already stepped) zoom, with
@@ -2107,13 +2164,20 @@ const frame = (now: number): void => {
       // camera.fov itself is never read or written here.
       const cursor = input.cursorNdc();
       const aimFov = viewFov(zoom.z, overspeedOf(flight.speed));
-      const view = aimView(
-        flight,
-        chase.aimFrame(flight, zoom.z),
-        aimFov,
-        camera.aspect,
-        cursor,
-      );
+      const aimFrame = chase.aimFrame(flight, zoom.z);
+      const view = aimView(flight, aimFrame, aimFov, camera.aspect, cursor);
+      // H2: where the pilot means to go — from the PLANE to the world point
+      // the cursor marks ASSIST_AIM_RANGE out (the chase eye sits ~9° off
+      // the gun line, so the eye ray's own angle would read misaligned).
+      const aimLen = Math.hypot(view.aimDir.x, view.aimDir.y, view.aimDir.z);
+      const k = ASSIST_AIM_RANGE / (aimLen || 1);
+      const ax = aimFrame.eye.x + view.aimDir.x * k;
+      const ay = aimFrame.eye.y + view.aimDir.y * k;
+      const az = aimFrame.eye.z + view.aimDir.z * k;
+      const an = Math.hypot(ax, ay, az) || 1;
+      assistDir.x = ax / an;
+      assistDir.y = ay / an;
+      assistDir.z = az / an;
       const err = aimError(flight, view.aimDir, view.pipperDir);
       // Latch only what the VIEW changed this frame — the zoom easing, the
       // boost FOV kick, or the cursor moving while free-look owns the mouse
@@ -2138,14 +2202,29 @@ const frame = (now: number): void => {
         latch = { yaw: err.yaw - e0.yaw, pitch: err.pitch - e0.pitch };
       }
       const reframing = looking || (zoom.z > 0 && zoom.z < 1);
+      const rates = handlingRates(flight.speed, boost.active);
+      stepAssist(assistOff, dt);
+      // The assist biases the instructor's error toward the centreline (+yaw
+      // is a right turn, i.e. less of the leftward error) — a stick nudge
+      // would just be flown back out by the instructor's own loop.
+      const assisting = holeAssist.yaw !== 0 || holeAssist.pitch !== 0;
+      const unbiased = assisting
+        ? instructorInput(err, latch, reframing, dt, instructor, rates)
+        : null;
       instructor = instructorInput(
-        err,
+        assisting
+          ? {
+              yaw: err.yaw - holeAssist.yaw,
+              pitch: err.pitch + holeAssist.pitch,
+            }
+          : err,
         latch,
         reframing,
         dt,
         instructor,
-        handlingRates(flight.speed, boost.active),
+        rates,
       );
+      intentTurn = (unbiased ?? instructor).turn * input.presence();
       // Off-window the presence fades the instructor out too: attitude hold.
       const presence = input.presence();
       command = {
@@ -2153,8 +2232,25 @@ const frame = (now: number): void => {
         turn: instructor.turn * presence,
         pitch: instructor.pitch * presence,
       };
+      // The reticle reads the unbiased view: the assist never shows.
       aimConverged = angleBetween(view.aimDir, view.pipperDir) < CONVERGED_RAD;
       aimFovPrev = aimFov;
+    } else {
+      stepAssist(assistOff, dt);
+      intentTurn = command.turn;
+      if (holeAssist.yaw !== 0 || holeAssist.pitch !== 0) {
+        assistStick(
+          holeAssist,
+          command,
+          handlingRates(flight.speed, boost.active),
+          assistStickOut,
+        );
+        command = {
+          ...command,
+          turn: assistStickOut.turn,
+          pitch: assistStickOut.pitch,
+        };
+      }
     }
     // F5 corner speed manager: silently cap the commanded speed so the
     // turn the pilot is committing to (or the wall ahead) is makeable. Intent
@@ -2162,7 +2258,7 @@ const frame = (now: number): void => {
     // the movers are drawn (and crash-checked) at.
     cornerCap = stepCornerCap(
       cornerCap,
-      cornerSpeed(flight, cornerWorld, command.turn, renderMs),
+      cornerSpeed(flight, cornerWorld, intentTurn, renderMs),
       dt,
     );
     const shaped = {

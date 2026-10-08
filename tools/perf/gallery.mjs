@@ -115,11 +115,110 @@ const VIEWS = [
     pitch: -0.32,
     leadMs: 0,
   },
+  // T2: a train standing at a station with its doors open, a train rounding
+  // a curve, and two trains passing on the double track. Each is found on the
+  // pure schedule (__ab.train / __ab.trainMeeting at future times), then the
+  // world clock is pinned to that moment and a fixed QA camera frames it.
+  { name: "train-station", dyn: "trainStation" },
+  { name: "train-curve", dyn: "trainCurve" },
+  { name: "trains-passing", dyn: "trainsPassing" },
+  { name: "train-cab", dyn: "trainCab" },
 ];
 /** Yaw that points the nose along (dx, dz): yaw 0 faces -Z. */
 const yawTo = (dx, dz) => Math.atan2(-dx, -dz);
+/** T2: a fixed eye/look-at framing of the trains at a pinned world time. */
+async function placeTrain(page, v) {
+  return page.evaluate((kind) => {
+    const now = window.__ab.train()?.time ?? 0;
+    const info = window.__ab.train(now);
+    const line0 = info.lines[0];
+    const centre = (l) => ({ x: l.ox + l.w / 2, z: l.oz + l.d / 2 });
+    const wrap = (d) => d - Math.round(d / 2000) * 2000;
+    // The side of (x, z) away from the line's middle: the outside of the loop.
+    const outward = (l, x, z, nx, nz) => {
+      const c = centre(l);
+      return wrap(x - c.x) * nx + wrap(z - c.z) * nz >= 0 ? 1 : -1;
+    };
+    for (let s = 2; s < 240; s += 0.5) {
+      const t = now + s * 1000;
+      if (kind === "trainsPassing") {
+        const m = window.__ab.trainMeeting(0, t);
+        if (!m) break;
+        const hx = Math.cos(m.yaw);
+        const hz = -Math.sin(m.yaw);
+        const side = outward(line0, m.x, m.z, hz, -hx);
+        return {
+          timeMs: m.timeMs - 250,
+          trainEye: {
+            x: m.x + side * hz * 15 - hx * 36,
+            y: 44,
+            z: m.z - side * hx * 15 - hz * 36,
+          },
+          trainAt: { x: m.x, y: 27.2, z: m.z },
+        };
+      }
+      const trains = window.__ab.train(t).trains;
+      for (const tr of trains) {
+        const line = info.lines[tr.line];
+        const hx = Math.cos(tr.yaw);
+        const hz = -Math.sin(tr.yaw);
+        if (kind === "trainStation" && tr.station >= 0 && tr.doors >= 1) {
+          const st = line.stations[tr.station];
+          const nx = st.uz;
+          const nz = -st.ux;
+          const side = tr.track === 0 ? 1 : -1;
+          return {
+            timeMs: t,
+            trainEye: {
+              x: st.x + side * nx * 13 - st.ux * 36,
+              y: 31.5,
+              z: st.z + side * nz * 13 - st.uz * 36,
+            },
+            trainAt: {
+              x: st.x + side * nx * 3,
+              y: 27.5,
+              z: st.z + side * nz * 3,
+            },
+          };
+        }
+        if (kind === "trainCab" && tr.station >= 0 && tr.doors >= 1) {
+          // Nose on to the lead car: the cab, its lamps and the LED sign.
+          const lx = tr.x + hx * 17.5;
+          const lz = tr.z + hz * 17.5;
+          return {
+            timeMs: t,
+            trainEye: {
+              x: lx + hx * 16 + hz * 3,
+              y: 28.6,
+              z: lz + hz * 16 - hx * 3,
+            },
+            trainAt: { x: lx, y: 27.6, z: lz },
+          };
+        }
+        if (kind === "trainCurve" && tr.curve && tr.v > 12) {
+          const side = outward(line, tr.x, tr.z, hz, -hx);
+          return {
+            timeMs: t,
+            trainEye: {
+              x: tr.x + side * hz * 42 - hx * 30,
+              y: 46,
+              z: tr.z - side * hx * 42 - hz * 30,
+            },
+            trainAt: { x: tr.x, y: 27, z: tr.z },
+          };
+        }
+      }
+    }
+    return null;
+  }, v.dyn);
+}
 /** Resolve an L10 view against the live world. */
 async function place(page, v) {
+  if (v.dyn?.startsWith("train")) {
+    const shot = await placeTrain(page, v);
+    if (!shot) throw new Error(`no ${v.dyn} moment found`);
+    return { ...v, ...shot };
+  }
   if (v.dyn === "airliner") {
     // Wait for one well up in the sky, then look straight at it.
     for (let i = 0; i < 120; i++) {
@@ -226,6 +325,15 @@ try {
     const v = view.dyn ? await place(page, view) : view;
     const pin = async () =>
       page.evaluate((v) => {
+        if (v.trainEye) {
+          // T2: the world held at the chosen moment, a fixed camera on it,
+          // the plane parked high above (out of shot, out of the way).
+          window.__ab.pinWorld(v.timeMs);
+          window.__ab.weather("clear");
+          window.__ab.qaCamera({ eye: v.trainEye, at: v.trainAt });
+          window.__ab.teleport(v.trainEye.x, v.trainEye.z, 300, 0);
+          return;
+        }
         if (v.train) {
           // Behind the last car, facing its heading (box yaw -> flight yaw is
           // a quarter turn: flight yaw 0 faces -Z).
@@ -268,6 +376,23 @@ try {
       await sleep(90);
     }
     await page.screenshot({ path: `${OUT}/${v.name}.png`, timeout: 180000 });
+    if (v.trainEye) {
+      console.log(
+        "train",
+        v.name,
+        JSON.stringify(
+          await page.evaluate(() => {
+            const d = window.__ab.train();
+            return { people: d.people, lights: d.lights, time: d.time };
+          }),
+        ),
+      );
+      await page.evaluate(() => {
+        window.__ab.weather(null);
+        window.__ab.qaCamera(null);
+        window.__ab.pinWorld(null);
+      });
+    }
     if (v.eye) await page.evaluate(() => window.__ab.qaCamera(null));
     if (v.orbit) {
       await page.keyboard.up("KeyE");

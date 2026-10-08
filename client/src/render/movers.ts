@@ -60,8 +60,10 @@ import { nearestImage, nearestImageInto } from "./wrapPlacement";
  * rooftops + 4 spots), and FIREWORK_BURSTS x FIREWORK_SPARKS = 240 — 291 —
  * plus L10: the news heli (5 + its spot pool + spot head = 7) and the drone
  * show (DRONE_COUNT = 200), which writes LAST so it is what a full cloud
- * drops. 498 at the worst instant. Fixed cap, never grown per frame. */
-const LIGHT_CAPACITY = 640;
+ * drops. 498 at the worst instant; T2 trains add at most
+ * TRAIN_LIGHT_BUDGET = 300 (head/tail lamps, canopy lights, sparks) — 798.
+ * Fixed cap, never grown per frame. */
+const LIGHT_CAPACITY = 1024;
 
 /**
  * Program cache keys for the two patched materials here.

@@ -454,12 +454,15 @@ export class GameAudio implements VoiceSink {
 
   /** The L5 train's rumble (and curve squeal) from `source`, the nearest
    * car's position, or silence with null. Call every frame; both loops idle
-   * at zero gain and are ramped like the engine. */
+   * at zero gain and are ramped like the engine. T2: `speed01` (that train's
+   * speed over its cruise) scales the rumble — a train standing at a
+   * station only hums. */
   setTrainRumble(
     source: Vec3 | null,
     squeal: boolean,
     listenerPos: Vec3,
     listenerYaw: number,
+    speed01 = 1,
   ): void {
     const ctx = this.ensure();
     if (!ctx || !this.sfx || !this.noise) return;
@@ -492,7 +495,7 @@ export class GameAudio implements VoiceSink {
     const level = Math.min(1, s.gain * TRAIN_FALLOFF);
     const now = ctx.currentTime;
     this.train.rumble.gain.setTargetAtTime(
-      level * TRAIN_RUMBLE_LEVEL,
+      level * TRAIN_RUMBLE_LEVEL * (0.2 + 0.8 * speed01),
       now,
       0.2,
     );

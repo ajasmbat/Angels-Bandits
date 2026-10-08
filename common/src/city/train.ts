@@ -1364,23 +1364,30 @@ export interface TrainMeeting {
 
 /**
  * The next time at or after `fromMs` (within `withinMs`) that a train on
- * each track of `line` passes the other, middles abreast — QA and gallery
- * framing. Steps the clock; allocates only its answer.
+ * each track of `line` passes the other, middles abreast, both doing at
+ * least `minSpeed` — QA and gallery framing. Steps the clock.
  */
 export function nextMeeting(
   line: TrainLine,
   fromMs: number,
   withinMs = 120_000,
+  minSpeed = 0,
 ): TrainMeeting | null {
   const [outer, inner] = line.tracks;
   const mid = ((line.cars - 1) / 2) * CAR_PITCH;
   const a = blankCar();
   const b = blankCar();
+  const sa: TrainState = { q: 0, v: 0, doors: 0, station: -1 };
+  const sb: TrainState = { q: 0, v: 0, doors: 0, station: -1 };
   for (let t = fromMs; t <= fromMs + withinMs; t += 100) {
     for (let j = 0; j < outer.trains; j++) {
-      carBoxAt(line, outer, trainHead(outer, j, t) - mid, 0, 0, a);
+      trainState(outer, j, t, sa);
+      if (sa.v < minSpeed) continue;
+      carBoxAt(line, outer, sa.q - mid, 0, 0, a);
       for (let k = 0; k < inner.trains; k++) {
-        carBoxAt(line, inner, trainHead(inner, k, t) - mid, 0, 0, b);
+        trainState(inner, k, t, sb);
+        if (sb.v < minSpeed) continue;
+        carBoxAt(line, inner, sb.q - mid, 0, 0, b);
         const dx = wrapDeltaAxis(a.x, b.x);
         const dz = wrapDeltaAxis(a.z, b.z);
         // Abreast: the tracks' spacing across, within a 100 ms step along

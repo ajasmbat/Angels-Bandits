@@ -88,9 +88,10 @@ const BODY_COLOR = new THREE.Color(0xb3bbc4);
 const BOGIE_COLOR = new THREE.Color(0x26272a);
 const ROOF_UNIT_COLOR = new THREE.Color(0x8b9197);
 const PANTOGRAPH_COLOR = new THREE.Color(0x34363a);
-/** Coats on the platform: dark and muted, a few with colour. */
+/** Coats on the platform: muted mid-tones, so a figure reads against the
+ * concrete under the canopy at night. */
 const PEOPLE_COLORS = [
-  0x2b2d33, 0x3a3026, 0x1f2a36, 0x4a2a2a, 0x353535, 0x2c3b2e,
+  0x6b5a4a, 0x4a5a6b, 0x7a3b3b, 0x5d6b4a, 0x8a7a6a, 0x3f4a5f,
 ].map((c) => new THREE.Color(c));
 /** Line liveries: line A red, line B blue (the stripe and the cab band). */
 const LIVERY = [new THREE.Color(0xc0302a), new THREE.Color(0x2a62c0)];
@@ -401,6 +402,7 @@ export class TrainRenderer {
   private sparkShare = 1;
   private lightRange = FOG_DISTANCE + 100;
   private lightsPlaced = 0;
+  private peopleShown = 0;
 
   private readonly matrix = new THREE.Matrix4();
   private readonly quat = new THREE.Quaternion();
@@ -663,6 +665,7 @@ export class TrainRenderer {
 
     // Waiting people: the platform empties as a train boards and fills
     // again until the next one is due.
+    this.peopleShown = 0;
     for (let k = 0; k < this.people.length; k++) {
       const p = this.people[k] as Person;
       let fill = 0;
@@ -685,7 +688,9 @@ export class TrainRenderer {
       this.car.hy = 0.85;
       this.car.hz = 0.2;
       this.car.yaw = p.yaw;
-      this.put(this.statics + k, this.car, camera, p.rank >= fill);
+      const hidden = p.rank >= fill;
+      if (!hidden) this.peopleShown++;
+      this.put(this.statics + k, this.car, camera, hidden);
     }
 
     let best = Number.POSITIVE_INFINITY;
@@ -918,6 +923,7 @@ export class TrainRenderer {
     }[];
     drawnAt: Vec3 | null;
     lights: number;
+    people: { shown: number; total: number };
   } | null {
     const first = this.lines[0];
     if (!first) return null;
@@ -999,12 +1005,14 @@ export class TrainRenderer {
       trains,
       drawnAt,
       lights: this.lightsPlaced,
+      people: { shown: this.peopleShown, total: this.people.length },
     };
   }
 
-  /** QA: the next time two trains pass each other on line `line`. */
+  /** QA: the next time two trains pass each other at speed on line `line`
+   * (meetings at a station, one set standing, are not "passing"). */
   meeting(line: number, fromMs: number): ReturnType<typeof nextMeeting> {
     const l = this.lines[line];
-    return l ? nextMeeting(l, fromMs) : null;
+    return l ? nextMeeting(l, fromMs, 120_000, 10) : null;
   }
 }

@@ -77,9 +77,11 @@ export function touchesSolid(
   if (!movers) return false;
   if (serverTimeMs === null || serverTimeMs === undefined) {
     // No clock yet: the moving parts are hidden and not solid, but the L5
-    // viaducts and stations are static scenery — drawn from the first frame, so solid too.
+    // viaducts and stations are static scenery — drawn from the first
+    // frame, so solid too.
     return (
-      !!movers.trains && collideTrains(movers.trains, pos, radius, null) !== null
+      !!movers.trains &&
+      collideTrains(movers.trains, pos, radius, null) !== null
     );
   }
   return collideMovers(pos, radius, movers, serverTimeMs) !== null;

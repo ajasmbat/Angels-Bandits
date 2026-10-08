@@ -64,6 +64,7 @@ import { RadioQueue, RadioVoice } from "./audio/radio";
 import { GameAudio } from "./audio/sound";
 import { NEAR_MISS_RADIUS, closestApproach, spatialize } from "./audio/spatial";
 import { ThunderSchedule } from "./audio/thunder";
+import { TrainAudio } from "./audio/train-audio";
 import { BoostKey } from "./game/boost-key";
 import { Bullets } from "./game/bullets";
 import {
@@ -567,12 +568,15 @@ scene.add(movers.rig, movers.hulls, movers.rotors);
 // L2 spectacle inside its draw-call budget.
 const moverLights = new MoverLights();
 scene.add(moverLights.points);
-// L5 elevated train: the viaduct and its lit cars, from the same movers field
-// the crash check and the bots use (one InstancedMesh; lamps and curve sparks
-// go into moverLights). The viaduct is static and drawn from frame one; the
-// cars wait for the server clock like every mover.
-const train = new TrainRenderer(moverField.train ?? null);
+// L5/T2 elevated trains: every line's viaduct, stations and trains on both
+// tracks, from the same movers field the crash check and the bots use (one
+// InstancedMesh; lamps, canopy lights and sparks go into moverLights). The
+// viaducts are static and drawn from frame one; the cars wait for the server
+// clock like every mover.
+const train = new TrainRenderer(moverField.trains ?? []);
 scene.add(train.mesh);
+/** T2: planes that can draw a train's horn this frame (yours + remotes). */
+const hornPlanes: Vec3[] = [];
 // N1 nature: night parks, landmark forecourts, street trees, hoardings. One
 // pure seam feeds this renderer AND the crash check, so a tree is solid
 // exactly where it is drawn (street trees excepted — lamp-pole height).
@@ -724,6 +728,8 @@ const ambience = new CityAmbience(
   welcome.seed,
   cityHoles(city.cityBuildings),
 );
+// T2: wheel clatter over the rail joints and the horn, on the same mix bus.
+const trainAudio = new TrainAudio(audio);
 const hud = new Hud();
 const minimap = new Minimap(city.cityBuildings);
 const edgeMarkers = new EdgeMarkers();
@@ -1161,6 +1167,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   birds.setQuality(tier);
   airliners.setQuality(tier);
   facadeDetail.setQuality(tier);
+  train.setQuality(tier); // T2: platform people, sparks, light range
   applyPostQuality();
   resLimits = qualityLimits(window.devicePixelRatio, tier, thermal.level);
   if (resAuto) {
@@ -1426,6 +1433,11 @@ declare global {
       ) => ReturnType<Signals["sample"]>;
       movers: (at?: number | null) => ReturnType<Movers["debug"]>;
       train: (at?: number | null) => ReturnType<TrainRenderer["debug"]>;
+      /** T2 QA: the next time two trains pass each other on a line. */
+      trainMeeting: (
+        line: number,
+        fromMs?: number,
+      ) => ReturnType<TrainRenderer["meeting"]>;
       fireworks: (at?: number | null) => ReturnType<Fireworks["debug"]>;
       windowClock: (sec: number | null) => void;
       /** L9 QA: flock centres at the render clock, and which are scattered. */
@@ -1700,6 +1712,8 @@ window.__ab = {
   movers: (at) => movers.debug(at === undefined ? worldTime() : at),
   // L5 QA: the route, the cars' poses at a server time and the drawn read-back.
   train: (at) => train.debug(at === undefined ? worldTime() : at),
+  trainMeeting: (line, fromMs) =>
+    train.meeting(line, fromMs ?? worldTime() ?? 0),
   fireworks: (at) => fireworks.debug(at === undefined ? worldTime() : at),
   // L3 QA: pin the living-windows clock (live seconds) for t / t+60 s
   // captures; null follows the server clock again.
@@ -2244,7 +2258,11 @@ const frame = (now: number): void => {
   headlights.update(chase.position, traffic); // L6: after traffic.update
   // Every L2 system takes the SAME latched clock the crash check used.
   movers.update(chase.position, renderMs, moverLights);
-  train.update(chase.position, renderMs, moverLights); // L5, same latched clock
+  // L5/T2, same latched clock; any plane passing close draws a horn.
+  hornPlanes.length = 0;
+  if (alive) hornPlanes.push(flight.pos);
+  for (const target of targets) hornPlanes.push(target.pos);
+  train.update(chase.position, renderMs, moverLights, hornPlanes);
   fireworks.update(chase.position, renderMs, moverLights);
   // After movers.update: the helicopters' belly spots are this frame's, and
   // the lamp heads land in the same point cloud before commit().
@@ -2373,8 +2391,23 @@ const frame = (now: number): void => {
     serverTimeMs: renderMs,
     rain: rain.level, // L4 weather
   });
-  // L5: the train's rumble from its nearest car, squealing on a curve.
-  audio.setTrainRumble(train.rumbleAt, train.squeal, flight.pos, flight.yaw);
+  // L5/T2: the rumble from the nearest car (quieter standing at a station),
+  // squealing on a curve, clattering over the joints, and the horn.
+  audio.setTrainRumble(
+    train.sound.at,
+    train.sound.squeal,
+    flight.pos,
+    flight.yaw,
+    train.sound.speed01,
+  );
+  trainAudio.update({
+    listener: flight.pos,
+    yaw: flight.yaw,
+    at: train.sound.at,
+    speed: train.sound.speed,
+    horn: train.sound.horn,
+    alive,
+  });
 
   // FOV must land BEFORE the render: the lead reticle and edge markers below
   // read camera.projectionMatrix directly, so writing it after would project

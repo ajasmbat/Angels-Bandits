@@ -30,6 +30,9 @@ export interface Settings {
   /** U1 haptics: on/off as the player chose, or null = the device default
    * (on for a coarse pointer), resolved at boot and never written back. */
   haptics: boolean | null;
+  /** M8 AUTO FIRE: on/off as the player chose, or null = the device default
+   * (on for a coarse pointer), resolved at boot and never written back. */
+  autoFire: boolean | null;
 }
 
 export const DEFAULT_SETTINGS: Readonly<Settings> = {
@@ -38,6 +41,7 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = {
   engine: 1,
   voice: 1,
   haptics: null,
+  autoFire: null,
 };
 
 const clamp = (v: number, lo: number, hi: number) =>
@@ -63,6 +67,7 @@ export function clampSettings(raw: unknown): Settings {
     engine: num(o.engine, 0, 1, d.engine),
     voice: num(o.voice, 0, 1, d.voice),
     haptics: typeof o.haptics === "boolean" ? o.haptics : d.haptics,
+    autoFire: typeof o.autoFire === "boolean" ? o.autoFire : d.autoFire,
   };
 }
 

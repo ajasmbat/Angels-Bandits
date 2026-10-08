@@ -35,6 +35,9 @@ const scratchOffset = new THREE.Vector3();
 export class Guns {
   private heat: GunHeat = createGunHeat();
   private trigger = false;
+  /** M8 auto-fire's own trigger: separate, so its release never drops a
+   * FIRE held by hand. */
+  private auto = false;
   private nextSeq = 0;
   private side = 1; // +1 / −1: alternate wingtips
 
@@ -58,10 +61,25 @@ export class Guns {
     this.trigger = held;
   }
 
-  /** Whether the trigger is held — the H2 hole assist stands down while
-   * the pilot is shooting. */
+  /** Hold/release auto-fire's trigger (M8, game/auto-fire.ts). */
+  setAutoTrigger(held: boolean): void {
+    this.auto = held;
+  }
+
+  /** Whether the trigger is held by hand (mouse, touch FIRE, QA). */
   get triggerHeld(): boolean {
     return this.trigger;
+  }
+
+  /** Overheat-locked — auto-fire's per-frame read (no allocation). */
+  get locked(): boolean {
+    return this.heat.locked;
+  }
+
+  /** Whether either trigger is held — the H2 hole assist stands down while
+   * the pilot is shooting, and touch free-look never opens (M8). */
+  get firing(): boolean {
+    return this.trigger || this.auto;
   }
 
   /** HUD state: heat 0..1 and whether the guns are overheat-locked. */
@@ -72,6 +90,7 @@ export class Guns {
   /** Drop the trigger and reset heat (death → respawn). */
   reset(now: number): void {
     this.heat = createGunHeat(now);
+    this.auto = false;
   }
 
   /**
@@ -82,7 +101,7 @@ export class Guns {
    */
   update(now: number, flight: FlightState, allowFire = true): Shot | null {
     this.heat = cooledGunHeat(this.heat, now);
-    if (!this.trigger || !allowFire || !canFire(this.heat, now)) return null;
+    if (!this.firing || !allowFire || !canFire(this.heat, now)) return null;
     this.heat = firedGunHeat(this.heat, now);
     this.side = -this.side;
 

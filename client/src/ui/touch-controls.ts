@@ -22,16 +22,22 @@ import { cursorRay } from "../game/instructor";
 import {
   aimDirFromRay,
   aimDirNdc,
+  aimFriction,
   createAimDir,
   dragAimDir,
   recentreAimDir,
   stepAimDir,
 } from "../game/touch-aim-dir";
 import {
+  BUTTON_SLOP_PX,
+  type LookGate,
   type TouchAimState,
   type TouchPoint,
+  createLookGate,
   createTouchAim,
+  gateLook,
   loadSensitivity,
+  nearControl,
   nextSensitivity,
   saveSensitivity,
   speedSlider,
@@ -44,6 +50,9 @@ import type { Scoreboard } from "./scoreboard";
 /** Touches starting left of this share of the width never aim (the left
  * thumb's side: throttle, FIRE, BOOST). */
 const AIM_ZONE_LEFT = 0.4;
+/** Controls a touch landing near never aims (M8 hit-slop): the touch
+ * buttons and icons, the settings gear, the minimap. */
+const CONTROL_SELECTOR = "#touch-ui .tc, #settings-btn, #minimap";
 /** Free-look px per finger px: thumbs travel less than a mouse does. */
 const TOUCH_LOOK_GAIN = 1.5;
 /** A ZOOM press shorter than this toggles the latch; longer is a hold. */
@@ -116,6 +125,8 @@ function iconButton(el: HTMLElement, onTap: () => void): void {
 
 export class TouchControls {
   private aim: TouchAimState;
+  /** M8: a second finger only free-looks after a deliberate drag. */
+  private gate: LookGate = createLookGate();
   /** The instructor mode's world-anchored aim (M7). */
   private readonly dir = createAimDir();
   /** Put `dir` on the gun line at the next steer() (it needs the plane). */
@@ -123,6 +134,9 @@ export class TouchControls {
   /** A touch took the aim over from a mouse: seed `dir` from its cursor. */
   private pickupPending = false;
   private readonly ndc = { x: 0, y: 0 };
+  /** The lead reticle, screen px, as last drawn (M8 aim friction). */
+  private readonly reticle = { x: 0, y: 0 };
+  private reticleShown = false;
   /** Reused viewport for the per-frame classic spring (no allocation). */
   private readonly view = { w: 0, h: 0 };
   private aimModeSeen: AimMode;
@@ -287,6 +301,16 @@ export class TouchControls {
     else this.recentre();
   }
 
+  /** Once a frame, after the lead computer: where its reticle sits (null:
+   * hidden, or dead) — aim drags slow down near it (M8). */
+  setLeadReticle(px: { x: number; y: number } | null): void {
+    this.reticleShown = px !== null;
+    if (px) {
+      this.reticle.x = px.x;
+      this.reticle.y = px.y;
+    }
+  }
+
   /** M6 settings panel: pick a sensitivity step (persisted). */
   setSensitivity(value: number): void {
     saveSensitivity(value, window);
@@ -298,6 +322,7 @@ export class TouchControls {
   debug(): {
     fingers: number;
     looking: boolean;
+    lookGate: "idle" | "judging" | "missed" | "open";
     aim: { x: number; y: number };
     aimDir: { x: number; y: number; z: number };
     touchOwnsCursor: boolean;
@@ -308,6 +333,13 @@ export class TouchControls {
     return {
       fingers: this.aim.fingers.length,
       looking: this.aim.looking,
+      lookGate: this.gate.open
+        ? "open"
+        : this.gate.missed
+          ? "missed"
+          : this.gate.pair
+            ? "judging"
+            : "idle",
       aim: { x: this.aim.aimX, y: this.aim.aimY },
       aimDir: { ...this.dir.dir },
       touchOwnsCursor: this.t.input.touchOwnsCursor(),
@@ -322,15 +354,27 @@ export class TouchControls {
   }
 
   private bindAimLayer(el: HTMLElement): void {
-    // Which fingers aim is decided at touchstart, by where they land.
+    // Which fingers aim is decided at touchstart, by where they land: right
+    // of the left thumb's side, and not a near-miss on a control (M8).
     const aimers = new Set<number>();
+    const controls = Array.from(
+      document.querySelectorAll<HTMLElement>(CONTROL_SELECTOR),
+    );
     const update = (e: TouchEvent) => {
       e.preventDefault(); // no emulated mouse, no click, no scroll/zoom
       if (this.suspended) return;
       const v = this.viewport();
       if (e.type === "touchstart") {
+        // Measured per touchstart, so a resize or the dead layout is never
+        // stale.
+        const rects = controls.map((c) => c.getBoundingClientRect());
         for (const t of Array.from(e.changedTouches)) {
-          if (t.clientX >= v.w * AIM_ZONE_LEFT) aimers.add(t.identifier);
+          if (
+            t.clientX >= v.w * AIM_ZONE_LEFT &&
+            !nearControl(t.clientX, t.clientY, rects, BUTTON_SLOP_PX)
+          ) {
+            aimers.add(t.identifier);
+          }
         }
       } else if (e.type !== "touchmove") {
         for (const t of Array.from(e.changedTouches)) {
@@ -338,19 +382,23 @@ export class TouchControls {
         }
       }
       const touches = points(e.targetTouches).filter((p) => aimers.has(p.id));
-      this.step(touches);
+      this.step(touches, e.timeStamp);
     };
     for (const type of ["touchstart", "touchmove", "touchend", "touchcancel"]) {
       el.addEventListener(type, update as EventListener, { passive: false });
     }
     this.releases.push(() => {
       aimers.clear();
-      this.step([]);
+      this.step([], performance.now());
     });
   }
 
-  /** Run the pure mapping and hand its results to the input seams. */
-  private step(touches: TouchPoint[]): void {
+  /** Run the pure mapping and hand its results to the input seams. `now`
+   * is the event's timeStamp (the look gate's clock). */
+  private step(all: TouchPoint[], now: number): void {
+    const gated = gateLook(this.gate, all, now, this.t.guns.firing);
+    this.gate = gated.gate;
+    const touches = gated.touches;
     let s = this.aim;
     if (s.fingers.length === 0 && touches.length > 0) {
       // Pick up wherever the cursor is (a hybrid laptop's mouse may have
@@ -373,7 +421,12 @@ export class TouchControls {
     }
     if (this.t.input.aimMode() === "instructor") {
       // The drag turns the world-anchored direction; steer() projects it.
-      dragAimDir(this.dir, s.aimDx, s.aimDy, this.sensitivity);
+      // Near the lead reticle it turns slower (M8 aim friction).
+      const friction = aimFriction(
+        this.t.input.cursorPx(),
+        this.reticleShown ? this.reticle : null,
+      );
+      dragAimDir(this.dir, s.aimDx, s.aimDy, this.sensitivity * friction);
     } else if (touches.length > 0) {
       this.t.input.setTouchAim(s.aimX, s.aimY);
     }

@@ -28,6 +28,26 @@ export const TOUCH_AIM_IDLE_S = 1;
 /** …onto the gun line with this time constant, s. */
 export const TOUCH_AIM_RECENTRE_TAU = 1.5;
 
+/** While the aim cursor is within this of the lead reticle, px… */
+export const AIM_FRICTION_PX = 48;
+/** …a drag turns the aim this much as far (M8): a thumb settles onto the
+ * shot instead of skating past it. Magnetism is untouched, so a mouse and a
+ * thumb get the same pull. */
+export const AIM_FRICTION_GAIN = 0.5;
+
+/** The drag-gain factor for the cursor and the lead reticle (screen px;
+ * null reticle: no target, no friction). */
+export function aimFriction(
+  cursor: { x: number; y: number },
+  reticle: { x: number; y: number } | null,
+): number {
+  if (!reticle) return 1;
+  return Math.hypot(cursor.x - reticle.x, cursor.y - reticle.y) <=
+    AIM_FRICTION_PX
+    ? AIM_FRICTION_GAIN
+    : 1;
+}
+
 export interface AimDirState {
   /** World-frame unit vector the nose is flown onto. Mutated in place. */
   dir: Vec3;

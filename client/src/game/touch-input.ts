@@ -4,7 +4,8 @@
 // touch-aim-dir.ts), and as an aim point in screen pixels, which classic
 // mode hands to FlightInputSource as its stick — springing back to centre
 // once the thumb lifts (springBack).
-// Two fingers on the aim zone are free-look instead. Renderer- and DOM-free
+// Two fingers on the aim zone are free-look instead, once gateLook (M8) has
+// seen both make a deliberate drag. Renderer- and DOM-free
 // (same pattern as freelook.ts / zoom.ts); ui/touch-controls.ts is the thin
 // DOM adapter. CLIENT-ONLY — nothing here touches the wire or common/.
 
@@ -115,6 +116,128 @@ export function touchInput(
     lookDx,
     lookDy,
   };
+}
+
+// --- Free-look gate (M8) --------------------------------------------------
+// A resting second finger (a missed ZOOM, a palm) must never swing the
+// camera and block the guns: two fingers only free-look once BOTH make a
+// deliberate drag right after the second lands. Until then the second is
+// ignored and the first keeps aiming.
+
+/** Each finger of a pair must travel this far, px… */
+export const LOOK_MIN_PX = 16;
+/** …within this long of the second finger landing, ms, to free-look. */
+export const LOOK_WINDOW_MS = 150;
+
+export interface LookGate {
+  /** The finger that aims (the first down), or null with none down. */
+  primary: number | null;
+  /** The pair being judged: when the second finger landed (the event's
+   * timeStamp, ms) and where both fingers were then. */
+  pair: { at: number; a: TouchPoint; b: TouchPoint } | null;
+  /** This pair missed its window (or FIRE dropped it): no free-look until
+   * fewer than two fingers are down. */
+  missed: boolean;
+  /** The pair passed: free-look until FIRE or a lift. */
+  open: boolean;
+}
+
+export function createLookGate(): LookGate {
+  return { primary: null, pair: null, missed: false, open: false };
+}
+
+const travelled = (from: TouchPoint, now: TouchPoint | undefined): boolean =>
+  now !== undefined &&
+  Math.hypot(now.x - from.x, now.y - from.y) >= LOOK_MIN_PX;
+
+/**
+ * Which aim-zone fingers reach touchInput this event (`now`: its timeStamp).
+ * One finger always does. With two or more, only the aiming finger does
+ * until both fingers of the pair have moved LOOK_MIN_PX from where they were
+ * when the second landed, within LOOK_WINDOW_MS of it — then every finger
+ * does, which touchInput reads as free-look. `firing` (FIRE held, by hand or
+ * auto-fire) closes the gate and drops the pair: the guns are blocked while
+ * looking. If the aiming finger lifts, the survivor takes over (touchInput
+ * re-baselines it, so the aim never jumps).
+ */
+export function gateLook(
+  g: LookGate,
+  touches: readonly TouchPoint[],
+  now: number,
+  firing: boolean,
+): { gate: LookGate; touches: readonly TouchPoint[] } {
+  const primary = touches.find((t) => t.id === g.primary) ?? touches[0];
+  if (!primary) return { gate: createLookGate(), touches };
+  if (touches.length < 2) {
+    return {
+      gate: { primary: primary.id, pair: null, missed: false, open: false },
+      touches,
+    };
+  }
+  const aiming = [primary];
+  if (firing) {
+    return {
+      gate: { primary: primary.id, pair: null, missed: true, open: false },
+      touches: aiming,
+    };
+  }
+  if (g.open) return { gate: { ...g, primary: primary.id }, touches };
+  if (g.missed) return { gate: { ...g, primary: primary.id }, touches: aiming };
+  let pair = g.pair;
+  if (!pair) {
+    const second = touches.find((t) => t.id !== primary.id) as TouchPoint;
+    pair = { at: now, a: { ...primary }, b: { ...second } };
+  }
+  const { a, b } = pair;
+  const pa = touches.find((t) => t.id === a.id);
+  const pb = touches.find((t) => t.id === b.id);
+  if (!pa || !pb || now - pair.at > LOOK_WINDOW_MS) {
+    return {
+      gate: { primary: primary.id, pair: null, missed: true, open: false },
+      touches: aiming,
+    };
+  }
+  if (travelled(a, pa) && travelled(b, pb)) {
+    return {
+      gate: { primary: primary.id, pair: null, missed: false, open: true },
+      touches,
+    };
+  }
+  return {
+    gate: { primary: primary.id, pair, missed: false, open: false },
+    touches: aiming,
+  };
+}
+
+// --- Button hit-slop (M8) -------------------------------------------------
+
+/** A touch landing this close to a control, px, is a missed press — never
+ * an aim finger. */
+export const BUTTON_SLOP_PX = 24;
+
+/** The slice of DOMRect the slop reads. */
+export interface Rect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/** Whether (x, y) is within `slop` px of any rect; empty (hidden) rects
+ * never count. */
+export function nearControl(
+  x: number,
+  y: number,
+  rects: Iterable<Rect>,
+  slop: number,
+): boolean {
+  for (const r of rects) {
+    if (r.right <= r.left || r.bottom <= r.top) continue;
+    const dx = Math.max(r.left - x, 0, x - r.right);
+    const dy = Math.max(r.top - y, 0, y - r.bottom);
+    if (Math.hypot(dx, dy) <= slop) return true;
+  }
+  return false;
 }
 
 /** Classic stick's spring-back time constant once the thumb lifts, s. */

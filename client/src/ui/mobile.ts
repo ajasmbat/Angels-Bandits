@@ -44,6 +44,11 @@ export function keyboardUp(
 const isEditable = (t: EventTarget | null): boolean =>
   t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement;
 
+/** Inside M6's settings panel, which scrolls on its own (touch-action:
+ * pan-y on the panel) when a short landscape screen can't fit it. */
+const inScroller = (t: EventTarget | null): boolean =>
+  t instanceof Element && t.closest("#rotate .settings") !== null;
+
 /** `lock()` is missing from TS's DOM lib (and from iOS); type it locally. */
 type LockableOrientation = ScreenOrientation & {
   lock?: (orientation: "landscape") => Promise<void>;
@@ -81,7 +86,9 @@ function enableTouch(): void {
   document.addEventListener(
     "touchmove",
     (e) => {
-      if (e.cancelable && !isEditable(e.target)) e.preventDefault();
+      if (e.cancelable && !isEditable(e.target) && !inScroller(e.target)) {
+        e.preventDefault();
+      }
     },
     { passive: false },
   );

@@ -18,6 +18,7 @@ import {
   createTouchAim,
   loadSensitivity,
   nextSensitivity,
+  saveSensitivity,
   speedSlider,
   throttleCommand,
   touchInput,
@@ -54,6 +55,7 @@ const points = (list: Iterable<Touch>): TouchPoint[] =>
 function holdButton(
   el: HTMLElement,
   onChange: (down: boolean, at: number) => void,
+  enabled: () => boolean,
 ) {
   const fingers = new Set<number>();
   // `at` is the input's own time (Event.timeStamp, performance.now's
@@ -66,6 +68,7 @@ function holdButton(
     "touchstart",
     (e) => {
       e.preventDefault();
+      if (!enabled()) return;
       const was = fingers.size > 0;
       for (const t of Array.from(e.changedTouches)) fingers.add(t.identifier);
       if (!was) set(true, e.timeStamp);
@@ -105,6 +108,9 @@ export class TouchControls {
   private zoomDownAt = 0;
   private zoomWasLatched = false;
   private wasAlive = true;
+  /** M6: the settings panel is open — every control is released and every
+   * handler ignores new touches until it closes. */
+  private suspended = false;
   private knobCss = ""; // last-written knob position / aim icon: the frame
   private aimGlyph = ""; // loop only touches the DOM when they change
   private readonly root = byId("touch-ui");
@@ -118,10 +124,15 @@ export class TouchControls {
     this.aim = createTouchAim(this.viewport());
     this.bindAimLayer(byId("touch-layer"));
     this.bindSlider(this.throttle);
+    const live = () => !this.suspended;
     this.releases.push(
-      holdButton(byId("touch-fire"), (down) => t.guns.setTrigger(down)),
-      holdButton(byId("touch-boost"), (down) => t.boostKey.setHeld(down)),
-      holdButton(byId("touch-zoom"), (down, at) => this.zoomPress(down, at)),
+      holdButton(byId("touch-fire"), (down) => t.guns.setTrigger(down), live),
+      holdButton(byId("touch-boost"), (down) => t.boostKey.setHeld(down), live),
+      holdButton(
+        byId("touch-zoom"),
+        (down, at) => this.zoomPress(down, at),
+        live,
+      ),
     );
     t.scoreboard.bindTapToggle(byId("touch-score"));
     iconButton(this.aimIcon, () => t.input.toggleAimMode());
@@ -185,6 +196,23 @@ export class TouchControls {
     }
   }
 
+  /** M6 settings panel: suspend (releasing everything held — a FIRE held
+   * while the phone turns upright must not keep shooting) or resume (on a
+   * centred aim, like a fresh plane). */
+  setSuspended(on: boolean): void {
+    if (on === this.suspended) return;
+    this.suspended = on;
+    if (on) this.releaseAll();
+    else this.recentre();
+  }
+
+  /** M6 settings panel: pick a sensitivity step (persisted). */
+  setSensitivity(value: number): void {
+    saveSensitivity(value, window);
+    this.sensitivity = value;
+    this.paintSensitivity();
+  }
+
   /** QA view (`__ab.touch`). */
   debug(): {
     fingers: number;
@@ -213,6 +241,7 @@ export class TouchControls {
     const aimers = new Set<number>();
     const update = (e: TouchEvent) => {
       e.preventDefault(); // no emulated mouse, no click, no scroll/zoom
+      if (this.suspended) return;
       const v = this.viewport();
       if (e.type === "touchstart") {
         for (const t of Array.from(e.changedTouches)) {
@@ -271,7 +300,7 @@ export class TouchControls {
       "touchstart",
       (e) => {
         e.preventDefault();
-        if (this.sliderId !== null) return;
+        if (this.suspended || this.sliderId !== null) return;
         const t = e.changedTouches[0];
         if (!t) return;
         this.sliderId = t.identifier;

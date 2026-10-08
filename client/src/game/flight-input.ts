@@ -133,12 +133,25 @@ export class FlightInputSource {
 
   /** Flip the aim mode — the M key and the touch aim-mode icon. */
   toggleAimMode(): void {
-    this.aimModeV = this.aimModeV === "instructor" ? "classic" : "instructor";
+    this.setAimMode(this.aimModeV === "instructor" ? "classic" : "instructor");
+  }
+
+  /** Pick the aim mode (M6 settings panel), persisted like the toggle. */
+  setAimMode(mode: AimMode): void {
+    this.aimModeV = mode;
     try {
       this.target.localStorage.setItem(AIM_MODE_STORAGE, this.aimModeV);
     } catch {
       // Private mode / blocked storage: the toggle still works this visit.
     }
+  }
+
+  /** Drop every held key and the zoom button — the M6 settings panel
+   * opening, where a W/S/A/D held at that moment would never see its keyup
+   * reach the flight command again. */
+  releaseKeys(): void {
+    this.keys.clear();
+    this.aim = false;
   }
 
   /** Touch aim point, client px — exactly what a mousemove would report.

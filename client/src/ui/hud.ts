@@ -100,7 +100,10 @@ export class Hud {
    * Guns hold their trigger from a window-level mousedown, so pointer events
    * on the toggle must never bubble — clicking it can't mean "fire".
    */
-  bindRadioToggle(initial: boolean, onToggle: (on: boolean) => void): void {
+  bindRadioToggle(
+    initial: boolean,
+    onToggle: (on: boolean) => void,
+  ): (on: boolean) => void {
     let on = initial;
     const render = () => {
       this.radioToggle.textContent = on ? "RADIO VOICE ON" : "RADIO VOICE OFF";
@@ -119,6 +122,11 @@ export class Hud {
       render();
       onToggle(on);
     });
+    // The M6 settings panel flips it too: keep this entry truthful.
+    return (next) => {
+      on = next;
+      render();
+    };
   }
 
   /**

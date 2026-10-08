@@ -168,12 +168,31 @@ const faceYaw = (face: number): number =>
         ? 0
         : Math.PI;
 
+/** Buildings are immutable once generated, so their details are too: the
+ * renderer lays every roof out at boot, and the block-streamed readers
+ * (steam vents, terrace people) then pay a lookup, not a layout, when the
+ * plane enters a block. Callers must not mutate the result. */
+const detailCache = new WeakMap<Building, RoofDetails>();
+
 /**
- * Every part the roof renderer draws for one building's top roof. Every roll
- * is drawn for every building in a fixed order, so one rule's gate never
- * shifts another rule's outcome; variable-length detail uses a sub-stream.
+ * Every part the roof renderer draws for one building's top roof (cached
+ * per building — see detailCache).
  */
 export function roofDetailsFor(b: Building): RoofDetails {
+  let details = detailCache.get(b);
+  if (!details) {
+    details = layoutDetails(b);
+    detailCache.set(b, details);
+  }
+  return details;
+}
+
+/**
+ * The layout itself. Every roll is drawn for every building in a fixed
+ * order, so one rule's gate never shifts another rule's outcome;
+ * variable-length detail uses a sub-stream.
+ */
+function layoutDetails(b: Building): RoofDetails {
   const out: RoofDetails = {
     boxes: [],
     cylinders: [],

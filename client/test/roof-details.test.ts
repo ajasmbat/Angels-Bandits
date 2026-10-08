@@ -124,11 +124,13 @@ describe("R2 roofs: the height rule", () => {
     }
   });
 
-  it("is deterministic", () => {
-    for (const b of CITIES[0] as Building[]) {
-      expect(JSON.stringify(roofDetailsFor(b))).toBe(
+  it("is deterministic: two independently generated cities dress alike", () => {
+    // Fresh Building objects, so the per-building cache cannot answer twice.
+    const again = generateCity(CITY_SEED);
+    (CITIES[0] as Building[]).forEach((b, i) => {
+      expect(JSON.stringify(roofDetailsFor(again[i] as Building))).toBe(
         JSON.stringify(roofDetailsFor(b)),
       );
-    }
+    });
   });
 });

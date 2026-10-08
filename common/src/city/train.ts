@@ -117,6 +117,9 @@ type Segment =
       r: number;
       /** Start angle; the point is (cx + r cos a, cz + r sin a), a grows. */
       a0: number;
+      /** (cos a0, sin a0), exactly (a0 is a multiple of a quarter turn). */
+      c0: number;
+      s0a: number;
     };
 
 /** One phase of the schedule profile: from `t` (s into the cycle) the lead
@@ -205,6 +208,8 @@ export interface TrainLine {
   roles: readonly StaticRole[];
   /** Plan-view AABB half-extents of viaduct[i], as [ex0, ez0, ex1, ...]. */
   extents: readonly number[];
+  /** viaduct, bucketed along the loop for collision queries. */
+  bins: StaticBins;
 }
 
 /** Car centre-to-centre spacing along the line, m. */
@@ -291,7 +296,9 @@ function buildSegments(w: number, d: number, e: number): Segment[] {
   };
   const arc = (cx: number, cz: number, a0: number) => {
     const len = (Math.PI / 2) * r;
-    out.push({ kind: "arc", s0: s, len, cx, cz, r, a0 });
+    const c0 = Math.round(Math.cos(a0));
+    const s0a = Math.round(Math.sin(a0));
+    out.push({ kind: "arc", s0: s, len, cx, cz, r, a0, c0, s0a });
     s += len;
   };
   line(R, -e, 1, 0, w - 2 * R);
@@ -347,34 +354,109 @@ function frameAt(
   return out;
 }
 
-/** Arclength of the point on `segments` nearest (lx, lz), loop frame. */
+/** Where the last projectS landed: segment index and distance along it. */
+const proj = { seg: 0, k: 0 };
+
+/**
+ * Arclength of the point on `segments` nearest (lx, lz), loop frame; also
+ * leaves the segment and the distance along it in `proj`. Straights clamp to
+ * their ends; an arc only competes inside its own quarter (its ends are the
+ * straights' ends), so the one atan2 is for the winner alone.
+ */
 function projectS(segments: readonly Segment[], lx: number, lz: number) {
   let best = Number.POSITIVE_INFINITY;
-  let bestS = 0;
-  for (const seg of segments) {
-    let px: number;
-    let pz: number;
-    let k: number;
+  let bestSeg = 0;
+  let bestK = 0;
+  let arcA = 0;
+  let arcB = 0;
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i] as Segment;
     if (seg.kind === "line") {
-      k = (lx - seg.x0) * seg.ux + (lz - seg.z0) * seg.uz;
+      let k = (lx - seg.x0) * seg.ux + (lz - seg.z0) * seg.uz;
       k = Math.min(seg.len, Math.max(0, k));
-      px = seg.x0 + seg.ux * k;
-      pz = seg.z0 + seg.uz * k;
-    } else {
-      let da = Math.atan2(lz - seg.cz, lx - seg.cx) - seg.a0;
-      da = mod(da + Math.PI, 2 * Math.PI) - Math.PI;
-      da = Math.min(Math.PI / 2, Math.max(0, da));
-      k = da * seg.r;
-      px = seg.cx + seg.r * Math.cos(seg.a0 + da);
-      pz = seg.cz + seg.r * Math.sin(seg.a0 + da);
+      const d2 =
+        (lx - seg.x0 - seg.ux * k) ** 2 + (lz - seg.z0 - seg.uz * k) ** 2;
+      if (d2 < best) {
+        best = d2;
+        bestSeg = i;
+        bestK = k;
+      }
+      continue;
     }
-    const d2 = (lx - px) ** 2 + (lz - pz) ** 2;
-    if (d2 < best) {
-      best = d2;
-      bestS = seg.s0 + k;
+    const rx = lx - seg.cx;
+    const rz = lz - seg.cz;
+    // Components along the quarter's start and end directions.
+    const a = rx * seg.c0 + rz * seg.s0a;
+    const b = -rx * seg.s0a + rz * seg.c0;
+    if (a < 0 || b < 0) continue;
+    const d = Math.sqrt(rx * rx + rz * rz) - seg.r;
+    if (d * d < best) {
+      best = d * d;
+      bestSeg = i;
+      bestK = -1;
+      arcA = a;
+      arcB = b;
     }
   }
-  return bestS;
+  const seg = segments[bestSeg] as Segment;
+  if (seg.kind === "arc" && bestK < 0) bestK = seg.r * Math.atan2(arcB, arcA);
+  proj.seg = bestSeg;
+  proj.k = bestK;
+  return seg.s0 + bestK;
+}
+
+/** The same place on another track: same segment, arcs scaled by radius. */
+function onTrack(track: TrainTrack, seg: number, k: number): number {
+  const t = track.segments[seg] as Segment;
+  return t.s0 + (t.kind === "arc" ? (k * t.r) / TRAIN_CORNER_RADIUS : k);
+}
+
+/** Static boxes bucketed by centreline arclength, so a collision query
+ * tests the handful near its own projection, not every box of the line. */
+export interface StaticBins {
+  /** Bucket length, m. */
+  size: number;
+  /** Bucket b's items are items[start[b] .. start[b + 1]). */
+  start: Int32Array;
+  items: Int32Array;
+}
+/** Bucket length, and how far a box's span is grown when bucketed (the
+ * projection of a nearby point onto a curve is stretched), m. */
+const BIN_SIZE = 50;
+const BIN_PAD = 10;
+
+function binStatics(
+  boxes: readonly MoverBox[],
+  segments: readonly Segment[],
+  length: number,
+  ox: number,
+  oz: number,
+  w: number,
+  d: number,
+): StaticBins {
+  const n = Math.ceil(length / BIN_SIZE);
+  const lists: number[][] = Array.from({ length: n }, () => []);
+  boxes.forEach((b, i) => {
+    const s = projectS(
+      segments,
+      wrapDeltaAxis(ox + w / 2, b.x) + w / 2,
+      wrapDeltaAxis(oz + d / 2, b.z) + d / 2,
+    );
+    const h = Math.hypot(b.hx, b.hz) + BIN_PAD;
+    const b0 = Math.floor((s - h) / BIN_SIZE);
+    const b1 = Math.floor((s + h) / BIN_SIZE);
+    for (let k = b0; k <= Math.min(b1, b0 + n - 1); k++) {
+      (lists[mod(k, n)] as number[]).push(i);
+    }
+  });
+  const start = new Int32Array(n + 1);
+  const items: number[] = [];
+  lists.forEach((l, k) => {
+    start[k] = items.length;
+    items.push(...l);
+  });
+  start[n] = items.length;
+  return { size: BIN_SIZE, start, items: Int32Array.from(items) };
 }
 
 const box = (
@@ -973,6 +1055,7 @@ function tryLine(
       viaduct: boxes,
       roles: boxRoles,
       extents: boxExtents,
+      bins: binStatics(boxes, segments, length, ox, oz, w, d),
     };
   }
   return null;
@@ -1249,9 +1332,10 @@ const PROJECT_SLACK = 12;
  * First part of a line the sphere touches, or null. `timeMs` null tests the
  * static viaduct and stations alone (the clock is not known yet, so the cars
  * are not drawn and not solid; the rest always is). Allocation-free until a
- * hit, and two compares for a query away from the line. Cars are found by
- * projecting the query onto each track and testing only the trains whose
- * span of arclength is within reach.
+ * hit, and two compares for a query away from the line. The query is
+ * projected once onto the street centreline: static boxes come from that
+ * arclength's buckets, and cars only from the trains whose span of
+ * arclength (on each track) is within reach.
  */
 export function collideTrain(
   line: TrainLine,
@@ -1261,36 +1345,49 @@ export function collideTrain(
 ): MoverHit | null {
   if (pos.y - radius > TRAIN_STATION_TOP) return null;
   if (!nearRing(line, pos, radius)) return null;
-  const { viaduct, extents } = line;
-  for (let i = 0; i < viaduct.length; i++) {
-    const b = viaduct[i] as MoverBox;
-    if (pos.y + radius < b.y - b.hy || pos.y - radius > b.y + b.hy) continue;
-    if (Math.abs(wrapDeltaAxis(b.x, pos.x)) > (extents[i * 2] ?? 0) + radius) {
-      continue;
+  // One projection onto the street centreline serves the static buckets and
+  // (mapped onto each track) the cars' broad phase.
+  const sc = projectS(line.segments, loopX(line, pos.x), loopZ(line, pos.z));
+  const seg = proj.seg;
+  const along = proj.k;
+  const pad = radius + PROJECT_SLACK;
+  const { viaduct, extents, bins } = line;
+  const n = bins.start.length - 1;
+  const b1 = Math.floor((sc + pad) / bins.size);
+  for (let bb = Math.floor((sc - pad) / bins.size); bb <= b1; bb++) {
+    const bin = mod(bb, n);
+    const end = bins.start[bin + 1] as number;
+    for (let m = bins.start[bin] as number; m < end; m++) {
+      const i = bins.items[m] as number;
+      const b = viaduct[i] as MoverBox;
+      if (pos.y + radius < b.y - b.hy || pos.y - radius > b.y + b.hy) continue;
+      if (
+        Math.abs(wrapDeltaAxis(b.x, pos.x)) >
+        (extents[i * 2] ?? 0) + radius
+      ) {
+        continue;
+      }
+      if (
+        Math.abs(wrapDeltaAxis(b.z, pos.z)) >
+        (extents[i * 2 + 1] ?? 0) + radius
+      ) {
+        continue;
+      }
+      if (sphereHitsBox(b, pos, radius)) return { kind: "viaduct", id: b.id };
     }
-    if (
-      Math.abs(wrapDeltaAxis(b.z, pos.z)) >
-      (extents[i * 2 + 1] ?? 0) + radius
-    ) {
-      continue;
-    }
-    if (sphereHitsBox(b, pos, radius)) return { kind: "viaduct", id: b.id };
   }
   if (timeMs === null) return null;
   if (pos.y + radius < CAR_BOTTOM || pos.y - radius > CAR_TOP) return null;
-  const lx = loopX(line, pos.x);
-  const lz = loopZ(line, pos.z);
   const span = (line.cars - 1) * CAR_PITCH + TRAIN_CAR_LENGTH;
   const slack = radius + TRAIN_CAR_WIDTH + PROJECT_SLACK;
   for (const track of line.tracks) {
-    const s = projectS(track.segments, lx, lz);
+    const s = onTrack(track, seg, along);
     const qp = track.dir === 1 ? s : -s;
     for (let j = 0; j < track.trains; j++) {
       const head = trainHead(track, j, timeMs);
       // Arclength from the set's rear end forward to the query, wrapped.
       const from = head - (line.cars - 1) * CAR_PITCH - TRAIN_CAR_LENGTH / 2;
-      const along = mod(qp - from + slack, track.length);
-      if (along > span + 2 * slack) continue;
+      if (mod(qp - from + slack, track.length) > span + 2 * slack) continue;
       for (let i = 0; i < line.cars; i++) {
         const b = carBoxAt(
           line,

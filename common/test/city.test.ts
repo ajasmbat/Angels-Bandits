@@ -476,14 +476,16 @@ describe("generateCity block independence", () => {
    * Lots of one block, keyed so two cities can be compared block by block.
    * H1 holes are left out on purpose: they are a city-level pass whose clear-
    * air rule reads the NEIGHBOURS' heights, so a new plaza next door can
-   * legitimately open or close a sky hole. Every lot's footprint, height and
-   * tier stack must still be byte-identical.
+   * legitimately open or close a sky hole. R2 roof structures go with them:
+   * they keep off holes (a lot's own sky hole, and since H2 every hole's
+   * clear air), so they inherit the holes' city-level dependence. Every lot's
+   * footprint, height and tier stack must still be byte-identical.
    */
   const byBlock = (city: ReturnType<typeof generateCity>) => {
     const out = new Map<string, string>();
     for (const b of city) {
       const key = `${Math.floor(b.x / BLOCK_PITCH)},${Math.floor(b.z / BLOCK_PITCH)}`;
-      const { holes: _holes, ...lot } = b;
+      const { holes: _holes, roof: _roof, ...lot } = b;
       out.set(key, (out.get(key) ?? "") + JSON.stringify(lot));
     }
     return out;

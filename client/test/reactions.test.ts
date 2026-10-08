@@ -9,6 +9,7 @@ import {
   generateCity,
   mulberry32,
 } from "@angels-bandits/common/city";
+import { structureCovers } from "@angels-bandits/common/city/roof-structures";
 import { isInRoadway, nearestStreet } from "@angels-bandits/common/city/street";
 import {
   ALARM_LIFE_MS,
@@ -305,7 +306,13 @@ describe("smokeBase", () => {
   });
 
   it("rises from the roof for a death above a building", () => {
-    const b = city.find((x) => !x.holes && x.tiers.length === 1);
+    // R2: a centre not under a penthouse or tank (those smoke from on top).
+    const b = city.find(
+      (x) =>
+        !x.holes &&
+        x.tiers.length === 1 &&
+        !(x.roof ?? []).some((s) => structureCovers(s, 0, 0, 0)),
+    );
     expect(b).toBeDefined();
     if (!b) return;
     expect(smokeBase(city, b.x, b.height + 40, b.z)).toBeCloseTo(b.height, 6);

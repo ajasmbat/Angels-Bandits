@@ -26,9 +26,15 @@ import type { Vec3 } from "@angels-bandits/common/world";
  * enough that a bandit crossing at ~15°/s is tracked within ~1.5° (rate/K),
  * inside the hit sphere at gun range; 6 lagged it by ~2.5° and mostly missed. */
 const GAIN = 10;
-/** Command lag, s. GAIN × LAG = 0.25 is critical damping on the plant
- * (yaw/pitch integrate the rate command), so the pipper never overshoots. */
-const LAG = 1 / (4 * GAIN);
+/** Command lag, s. GAIN × LAG = 0.25 would be exactly critical damping on
+ * the plant (yaw/pitch integrate the rate command) — the stability edge,
+ * where any extra delay (the chase eye's own lag, a slow frame) tips it into
+ * overshoot. F6 keeps a margin: GAIN × LAG = 1/6, ζ ≈ 1.22. Measured with the
+ * camera in the loop, a 30° step settles as fast as at the edge, and the
+ * pipper's run-on past an aim snapped mid-turn drops ~25% at 144 fps and
+ * ~8% at 30 fps. (Sub-stepping the loop inside a frame was tried: it reads
+ * the chase eye only once a frame, so at 30 fps it overshot MORE.) */
+const LAG = 1 / (6 * GAIN);
 /** Exp fade of a latched reframe offset, s (~0.6 s to 5%). */
 const LATCH_FADE = 0.2;
 /** Pipper-to-cursor angle under which the reticle reads as converged. */

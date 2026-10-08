@@ -46,6 +46,7 @@ import {
 import { type Vec3, canonicalize, wrapDelta } from "../world/index";
 import type { Building, Tier } from "./index";
 import { CONSTRUCTION_BLOCKS } from "./layout";
+import type { RoofStructure } from "./roof-structures";
 import { LOT_LINE, nextIntersection } from "./street";
 
 /** "bridge" is L11's underpass under a river bridge (city/river.ts
@@ -318,6 +319,58 @@ export function opensOnStreets(span: HoleSpan): boolean {
   return (
     Math.abs(a - LOT_LINE) < 0.5 && Math.abs(b - (BLOCK_PITCH - LOT_LINE)) < 0.5
   );
+}
+
+/**
+ * H2 × R2: drop every roof structure that would stand in a hole's clear air.
+ * Holes are cut before roofs are dressed, and clearFloor only knows roofs, so
+ * a mast or penthouse on a roof in a run-out corridor could rise past the
+ * HOLE_CLEARANCE margin into it. A structure on a building OTHER than the
+ * hole's hosts, overlapping the corridor (the hole plus HOLE_RUN_OUT beyond
+ * each outer mouth, HOLE_CORRIDOR_MARGIN either side) and topping out above
+ * half the clearance under the floor, goes. Hosts keep theirs: their roofs
+ * sit over the lintel. Arches keep their hand-placed H1 approach.
+ */
+export function clearHoleAir(buildings: readonly Building[]): void {
+  const spans = clearAirSpans(buildings);
+  if (spans.length === 0) return;
+  for (const b of buildings) {
+    if (!b.roof) continue;
+    const kept = b.roof.filter((r) => !inHoleAir(b, r, spans));
+    if (kept.length === b.roof.length) continue;
+    b.roof = kept.length > 0 ? kept : undefined;
+  }
+}
+
+/** The spans whose clear air clearHoleAir keeps (every hole but the arches
+ * and river underpasses). */
+export function clearAirSpans(buildings: readonly Building[]): HoleSpan[] {
+  return cityHoles(buildings).filter(
+    (s) => s.hole.kind !== "arch" && s.hole.kind !== "bridge",
+  );
+}
+
+/** Would roof structure `r` of `b` stand in one of `spans`' clear air? */
+export function inHoleAir(
+  b: Building,
+  r: RoofStructure,
+  spans: readonly HoleSpan[],
+): boolean {
+  return spans.some((s) => {
+    if (s.hosts.includes(b)) return false;
+    if (r.baseY + r.height <= s.hole.y0 - HOLE_CLEARANCE / 2) return false;
+    const x = s.hole.axis === "x";
+    const d = wrapDelta(
+      { x: s.center.x, y: 0, z: s.center.z },
+      { x: b.x + r.dx, y: 0, z: b.z + r.dz },
+    );
+    const along = Math.abs(x ? d.x : d.z) - (x ? r.width : r.depth) / 2;
+    const across = Math.abs(x ? d.z : d.x) - (x ? r.depth : r.width) / 2;
+    return (
+      along < s.length / 2 + HOLE_RUN_OUT &&
+      across < s.hole.width / 2 + HOLE_CORRIDOR_MARGIN
+    );
+  });
 }
 
 // --- Bot routing (B2): holes as edges of the street graph ---------------

@@ -38,7 +38,6 @@ import {
   PARAPET_INSET,
   ROOF_ALBEDO,
   RoofKind,
-  SKYLIGHT_COLOR,
 } from "./roofs";
 
 /** Per-archetype facade look: window grid, occupancy and light colour. */
@@ -441,6 +440,10 @@ vec2 paneAA = wAA / winPitch;            // cell fraction per pixel
 vec2 paneD = abs(winF - 0.5) - winPane * 0.5;
 vec2 paneCov = 1.0 - smoothstep(-0.5 * paneAA, 0.5 * paneAA, paneD);
 float pane = mix(winPane.x * winPane.y, paneCov.x * paneCov.y, winDetail);
+// R2: no window row that a tier's roof edge would cut — the band under
+// every roof is blank spandrel, so no window ever paints at the roof line.
+float winRow = step((winCell.y + 1.0) * winPitch.y, vBHeight - ${glslFloat(ROOF.windowBand)});
+pane *= winRow;
 
 // --- CLUSTERED occupancy: floor state, then tenant zone, then the window ---
 // Real towers do not scatter their lit windows independently: a floor has
@@ -469,7 +472,7 @@ float litMean = ${glslFloat(FACADE.darkFloor * FACADE.darkFloorLit + FACADE.brig
   + ${glslFloat(1 - FACADE.darkFloor - FACADE.brightFloor)} * min(winLit * ${glslFloat(FACADE.zoneLo + 0.5 * FACADE.zoneHi)}, 0.97);
 float floorDetail = min(abCellDetail(winPitch.y, wAA.y), abCellDetail(winPitch.x * ${glslFloat(FACADE.zoneW)}, wAA.x));
 float pLitAA = mix(litMean, pLit, floorDetail);
-lit = mix(pLitAA * clamp(uOccupancy, 0.0, 1.0) * facade, lit, winDetail);
+lit = mix(pLitAA * clamp(uOccupancy, 0.0, 1.0) * facade, lit, winDetail) * winRow;
 `;
 }
 
@@ -586,7 +589,7 @@ float surround = mix(
   surroundCov.x * surroundCov.y,
   winDetail
 );
-diffuseColor.rgb *= 1.0 - winInset * surround * facade * 0.6;
+diffuseColor.rgb *= 1.0 - winInset * surround * facade * winRow * 0.6;
 // Per-face tone jitter: each box face gets a slightly different value (and
 // opposite faces differ), so corners read even in flat night light.
 float faceId = abs(vObjNormal.x) > 0.5 ? (vObjNormal.x > 0.0 ? 0.0 : 1.0)
@@ -636,14 +639,9 @@ export const ROOF = {
   /** Gravel blotch scale, and the broad stain scale every roof shares. */
   gravelScale: 1.6,
   stainScale: 9,
-  /** Skylight grid: pitch and glazing half-size (x, z), frame width. */
-  skyPitch: [7.0, 9.5] as const,
-  skyHalf: [1.5, 2.6] as const,
-  skyFrame: 0.25,
-  /** Skylights keep this far from the roof edge. */
-  skyMargin: 3,
-  /** Share of skylights glowing from the floor below. */
-  skyLit: 0.7,
+  /** R2: a window row whose top comes within this of its tier's roof edge
+   * is left blank (the parapet and LED strip own that band). */
+  windowBand: 0.6,
   /** Garden: bed pitch and half-size (x, z), bed margin from the edge. */
   bedPitch: [6.0, 4.2] as const,
   bedHalf: [2.3, 1.4] as const,
@@ -688,7 +686,7 @@ ${AB_AA_GLSL}`;
  * Roof surface (diffuse) + the LED/crown masks the emissive block consumes.
  * Emitted AFTER weatheringGlsl() into the colour slot: it reads the window
  * grid locals (`facade`, `winGrid`, `pane`, `lit`) and declares the roof
- * locals the emissive half reads (`roofUp`, `skyGlow`, `padLight`,
+ * locals the emissive half reads (`roofUp`, `padLight`,
  * `bollard`, `led`, `crownK`). Derivatives are taken at the top level only —
  * never inside a branch (undefined in non-uniform control flow).
  */
@@ -705,7 +703,6 @@ float rPix = max(max(mAA.x, mAA.z), 1e-4);
 vec2 rP = vMeters.xz;
 float rEdge = min(vHalfXZ.x - abs(rP.x), vHalfXZ.y - abs(rP.y));
 float rKind = vRoof.x;
-float skyGlow = 0.0;
 float padLight = 0.0;
 float bollard = 0.0;
 vec3 roofAlbedo = ${glslVec3(A.membrane)};
@@ -720,25 +717,13 @@ if (roofUp > 0.5) {
     float sTone = abHash(vec2(floor(sU), 3.0), vBSeed * 13.0) * 2.0 - 1.0;
     roofAlbedo = ${glslVec3(A.membrane)} * (1.0 + 0.06 * sTone * abDetail(${glslFloat(ROOF.stripWidth)}, rPix))
       * (1.0 - 0.2 * sSeam) * (0.86 + 0.28 * rStain);
-  } else if (rKind < ${glslFloat(RoofKind.SKYLIGHTS - 0.5)}) {
-    // Gravel ballast: blotchy fine grain over broad drifts.
+  } else if (rKind < ${glslFloat(RoofKind.GARDEN - 0.5)}) {
+    // Gravel ballast: blotchy fine grain over broad drifts. (R2 retired the
+    // VO3 skylight grid that sat between GRAVEL and GARDEN: from the air it
+    // read as one more window grid.)
     float gN = abNoise(rP / ${glslFloat(ROOF.gravelScale)}, vBSeed * 23.0) - 0.5;
     roofAlbedo = ${glslVec3(A.gravel)} * (1.0 + 0.3 * gN * abDetail(${glslFloat(ROOF.gravelScale)}, rPix))
       * (0.84 + 0.32 * rStain);
-  } else if (rKind < ${glslFloat(RoofKind.GARDEN - 0.5)}) {
-    // Skylights: a grid of framed glazing over membrane, kept off the edge.
-    vec2 kPitch = ${vec2Lit(ROOF.skyPitch)};
-    vec2 kHalf = ${vec2Lit(ROOF.skyHalf)};
-    vec2 kId = floor(rP / kPitch + 0.5);
-    vec2 kLocal = rP - kId * kPitch;
-    vec2 kRoom = vHalfXZ - ${glslFloat(ROOF.skyMargin)} - kHalf;
-    float kFits = step(abs(kId.x * kPitch.x), kRoom.x) * step(abs(kId.y * kPitch.y), kRoom.y);
-    float kFrame = abBox(kLocal, kHalf + ${glslFloat(ROOF.skyFrame)}, rPix) * kFits;
-    float kGlass = abBox(kLocal, kHalf, rPix) * kFits;
-    roofAlbedo = mix(${glslVec3(A.membrane)} * (0.86 + 0.28 * rStain), ${glslVec3(A.coping)}, kFrame);
-    roofAlbedo = mix(roofAlbedo, ${glslVec3(A.skyGlass)}, kGlass);
-    skyGlow = kGlass * step(abHash(kId + 5.0, vBSeed * 37.0), ${glslFloat(ROOF.skyLit)})
-      * (0.75 + 0.25 * abHash(kId + 9.0, vBSeed * 41.0));
   } else if (rKind < ${glslFloat(RoofKind.HELIPAD - 0.5)}) {
     // Roof garden: planted beds on a paver grid, bollards at the crossings.
     vec2 gPitch = ${vec2Lit(ROOF.bedPitch)};
@@ -813,15 +798,15 @@ float crownK = step(0.5, crownD) * facade * smoothstep(0.0, 1.5, crownZ)
 /**
  * Architectural light, appended to the emissive slot AFTER the VO2 bounce
  * (so the LED replacement also overrides the bounce): crown wash (light ×
- * the facade's own albedo), skylight/pad/bollard glow, then the LED outline
+ * the facade's own albedo), pad/bollard glow, then the LED outline
  * replacing whatever the pixel emitted — a convex mix, so the brightest
  * pixel is max(existing rung, LED rung), never their sum.
  */
 export function roofLightGlsl(): string {
   return /* glsl */ `
 totalEmissiveRadiance += diffuseColor.rgb * vCrown * crownK;
-totalEmissiveRadiance += roofUp * (skyGlow * ${glslVec3(SKYLIGHT_COLOR)}
-  + padLight * ${glslVec3(PAD_LIGHT_COLOR)} + bollard * ${glslVec3(GARDEN_LIGHT_COLOR)});
+totalEmissiveRadiance += roofUp * (padLight * ${glslVec3(PAD_LIGHT_COLOR)}
+  + bollard * ${glslVec3(GARDEN_LIGHT_COLOR)});
 totalEmissiveRadiance = mix(totalEmissiveRadiance, vLed, led);
 `;
 }

@@ -8,13 +8,15 @@
 
 import {
   BANK_ANGLE,
-  BANK_RESPONSE,
+  BANK_FREQ,
   BOOST_MAX_SPEED,
   BOOST_PITCH_MULT,
   BOOST_RESPONSE,
   BOOST_TURN_MULT,
   CEILING_FADE,
+  CLIMB_FREE_ANGLE,
   CORNER_BRAKE_DECEL,
+  DIVE_FADE_BAND,
   ENERGY_GAIN,
   MAX_SPEED,
   MIN_SPEED,
@@ -43,6 +45,10 @@ export interface FlightState {
   pitch: number;
   /** Radians, bank angle (visual + assist). */
   roll: number;
+  /** Roll rate, rad/s — the bank spring's velocity (F6). Optional: a state
+   * built without it (bots' spawn literals, tests) starts the spring at
+   * rest; stepFlight always returns it. */
+  rollRate?: number;
   /** Current airspeed, m/s. In [MIN_SPEED, MAX_SPEED], or up to
    * BOOST_MAX_SPEED while boosting and through the post-boost tail. */
   speed: number;
@@ -77,6 +83,7 @@ export function createFlightState(pos: Vec3, yaw = 0): FlightState {
     yaw,
     pitch: 0,
     roll: 0,
+    rollRate: 0,
     speed: RESPAWN_SPEED,
     targetSpeed: MAX_SPEED,
   };
@@ -164,9 +171,17 @@ export function stepFlight(
 
   // Roll: banks into the turn on its own; A/D deflect it further; releasing
   // everything eases the wings level (roll is visual, it steers nothing).
+  // F6: a critically damped spring (natural frequency BANK_FREQ) toward the
+  // target, stepped in closed form — exact for any dt while the target holds
+  // — so it leans in from rest and rolls out with no overshoot at every
+  // frame rate. x is roll minus its target, v the roll rate.
   const rollTarget = -turnIn * BANK_ANGLE + rollIn * BANK_ANGLE;
-  const rollBlend = 1 - Math.exp(-BANK_RESPONSE * dt);
-  const roll = state.roll + (rollTarget - state.roll) * rollBlend;
+  const rx = state.roll - rollTarget;
+  const rv = state.rollRate ?? 0;
+  const rDecay = Math.exp(-BANK_FREQ * dt);
+  const rc = rv + BANK_FREQ * rx;
+  const roll = rollTarget + (rx + rc * dt) * rDecay;
+  const rollRate = (rv - BANK_FREQ * rc * dt) * rDecay;
 
   // W/S move the commanded speed within [MIN_SPEED, MAX_SPEED].
   const targetSpeed = clamp(
@@ -194,17 +209,17 @@ export function stepFlight(
       : Math.min(targetSpeed, Math.max(MIN_SPEED, cap));
   const effectiveTarget = MIN_SPEED + (commanded - MIN_SPEED) * power;
   const maneuver = Math.min(1, Math.abs(turnIn) + Math.abs(pitchIn));
-  const dSpeed =
-    (boost ? BOOST_RESPONSE : SPEED_RESPONSE) *
-      (effectiveTarget - state.speed) -
-    ENERGY_GAIN * Math.sin(pitch) -
-    TURN_BLEED * maneuver;
   // Above MAX_SPEED without boost (the post-boost tail) speed may only fall:
   // a dive can't hold boost speed. The wall-clock tail envelope itself is
   // boostSpeedCap in boost.ts, which the client clamps to every frame.
   const topSpeed = boost
     ? BOOST_MAX_SPEED
     : Math.max(MAX_SPEED, Math.min(state.speed, BOOST_MAX_SPEED));
+  const dSpeed =
+    (boost ? BOOST_RESPONSE : SPEED_RESPONSE) *
+      (effectiveTarget - state.speed) -
+    energyRate(pitch, state.speed, topSpeed) -
+    TURN_BLEED * maneuver;
   let speed = clamp(state.speed + dSpeed * dt, MIN_SPEED, topSpeed);
   // F5 airbrake: above the corner cap airspeed falls at least
   // CORNER_BRAKE_DECEL (a constant deceleration, so stopping distances are
@@ -228,5 +243,24 @@ export function stepFlight(
     z: state.pos.z + fwd.z * speed * dt,
   });
 
-  return { pos, yaw, pitch, roll, speed, targetSpeed };
+  return { pos, yaw, pitch, roll, rollRate, speed, targetSpeed };
+}
+
+const SIN_CLIMB_FREE = Math.sin(CLIMB_FREE_ANGLE);
+
+/**
+ * Speed lost to the attitude, m/s² (negative = gained) — the energy rule's
+ * pitch term (F6). A climb costs nothing up to CLIMB_FREE_ANGLE (thrust
+ * carries it), then ramps to ENERGY_GAIN at vertical. A dive gains the full
+ * ENERGY_GAIN·|sin(pitch)|, faded out linearly over the last DIVE_FADE_BAND
+ * below `topSpeed`, so it eases onto the cap rather than hitting the clamp.
+ */
+function energyRate(pitch: number, speed: number, topSpeed: number): number {
+  const s = Math.sin(pitch);
+  if (s >= 0) {
+    return (
+      (ENERGY_GAIN * Math.max(0, s - SIN_CLIMB_FREE)) / (1 - SIN_CLIMB_FREE)
+    );
+  }
+  return ENERGY_GAIN * s * clamp((topSpeed - speed) / DIVE_FADE_BAND, 0, 1);
 }

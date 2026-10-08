@@ -184,8 +184,19 @@ export const MUSH_SINK = 25;
 export const THROTTLE_RATE = 30;
 /** Proportional pull of airspeed toward the commanded speed, 1/s. */
 export const SPEED_RESPONSE = 0.6;
-/** Energy rule strength: speed gain at a straight-down dive, m/s² (loss when climbing). */
+/** Energy rule strength: speed gain at a straight-down dive, m/s², and the
+ * loss in a vertical climb (F6: shallower climbs lose less, see
+ * CLIMB_FREE_ANGLE). */
 export const ENERGY_GAIN = 8;
+/** Climb angle the engine carries for free, rad (20°) — F6, a climb is easy.
+ * Above it the climb bleed ramps from 0 to ENERGY_GAIN at vertical, linear
+ * in sin(pitch), so a full-throttle 30° climb holds ~87 m/s and only a
+ * near-vertical zoom trades real speed for height. */
+export const CLIMB_FREE_ANGLE = 0.35;
+/** Speed band below the top speed over which a dive's energy gain fades
+ * out, m/s (F6): the dive eases onto MAX_SPEED (or the boost cap) instead of
+ * slamming into a hard clamp. */
+export const DIVE_FADE_BAND = 12;
 /** Speed bleed at full turn/pitch deflection, m/s². */
 export const TURN_BLEED = 8;
 /** Max pitch rate at full mouse deflection, rad/s. */
@@ -205,8 +216,10 @@ export const TURN_RATE_SLOW = 1.35;
 export const CORNER_BRAKE_DECEL = 22;
 /** Bank angle the plane leans into at full turn deflection, rad (~57°). */
 export const BANK_ANGLE = 1.0;
-/** Exponential response of roll toward its target, 1/s. */
-export const BANK_RESPONSE = 4;
+/** Natural frequency of the bank, rad/s (F6): roll follows its target as a
+ * critically damped spring — it leans in from a standing start and rolls
+ * out without overshoot, ~0.55 s to 90% either way. */
+export const BANK_FREQ = 7;
 /** Pitch is clamped to ±this, rad (~85° — arcade mouse-aim never goes vertical). */
 export const PITCH_LIMIT = 1.48;
 /** Player collision-sphere radius, meters. */

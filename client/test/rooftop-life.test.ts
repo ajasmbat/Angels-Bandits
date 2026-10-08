@@ -5,6 +5,7 @@
 // against their TS mirrors.
 
 import { type Building, generateCity } from "@angels-bandits/common/city";
+import { COOLING_SHROUD } from "@angels-bandits/common/city/roof-structures";
 import {
   EMISSIVE_SIGN,
   EMISSIVE_TRACER,
@@ -190,6 +191,16 @@ describe("rooftopLifeFor", () => {
       for (const f of rooftopLifeFor(b).fans) {
         if (f.body > 0) {
           expect(f.y).toBe(b.height);
+          continue;
+        }
+        // R2: the big fans on top of the solid cooling towers.
+        if (
+          (b.roof ?? []).some(
+            (s) =>
+              s.kind === "coolingTower" &&
+              f.y === s.baseY + s.height - COOLING_SHROUD,
+          )
+        ) {
           continue;
         }
         const i = boxes.findIndex(

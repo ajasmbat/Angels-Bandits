@@ -3,10 +3,24 @@
 exports[`generateCity determinism > matches the committed fingerprint for seed 42 (client and server must agree exactly) 1`] = `
 {
   "count": 559,
-  "digest": "9d8457fc",
+  "digest": "12115e53",
   "first": {
     "depth": 85,
     "height": 24,
+    "roof": [
+      {
+        "baseY": 24,
+        "depth": 4.128524650260806,
+        "dx": -0.43762463571934596,
+        "dz": 0.5400470751901763,
+        "face": 1,
+        "height": 3.8794549780664966,
+        "kind": "penthouse",
+        "round": false,
+        "seed": 0.2830631183460355,
+        "width": 3.9507266392931344,
+      },
+    ],
     "tiers": [
       {
         "depth": 85,
@@ -21,6 +35,32 @@ exports[`generateCity determinism > matches the committed fingerprint for seed 4
   "last": {
     "depth": 30,
     "height": 40,
+    "roof": [
+      {
+        "baseY": 40,
+        "depth": 5.529268157295883,
+        "dx": -3.0672319822118763,
+        "dz": 4.2927793709012425,
+        "face": 3,
+        "height": 4.46112453667447,
+        "kind": "penthouse",
+        "round": false,
+        "seed": 0.4018352343700826,
+        "width": 5.0996933927759525,
+      },
+      {
+        "baseY": 40,
+        "depth": 4.25000522248447,
+        "dx": 32.18593188746686,
+        "dz": -5.8614551189079265,
+        "face": 0,
+        "height": 4.652001465298236,
+        "kind": "coolingTower",
+        "round": false,
+        "seed": 0.3930692046415061,
+        "width": 5.297808510949835,
+      },
+    ],
     "tiers": [
       {
         "depth": 30,

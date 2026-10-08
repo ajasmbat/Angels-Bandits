@@ -16,16 +16,22 @@
 // clock, the L5 viaduct) — but never the ground, so a strafing dive is never
 // braked. All positions are wrap-safe: every collider measures through
 // wrapDelta, so a probe that runs past the seam needs no canonicalising.
-//   1. Wall ahead: march the nose to WALL_HORIZON; a hit at D caps speed to
-//      the braking envelope — the fastest speed that can brake (closed form,
-//      constant deceleration) and still turn parallel to the wall it hit.
-//      Every solid in the city is an axis-aligned box, so which face was hit
-//      (and so the incidence angle) falls out of one extra sample: a nose a
-//      few degrees off a long avenue only has to cancel those degrees.
+//   1. Wall ahead: march the nose to WALL_HORIZON; on a hit at D, fan a few
+//      rays to find the smallest heading correction φ that clears it, and
+//      cap speed to the braking envelope (wallEnvelope) for "brake, then
+//      turn φ inside D". A wall met head-on needs a real turn, so the plane
+//      brakes early enough to make it even if the pilot holds straight; a
+//      nose a few degrees off a long avenue, or about to clip a block corner,
+//      only needs those few degrees, so it never brakes.
 //   2. Steering arc (intent): only while the pilot commands a hard turn, the
 //      fastest speed whose full-deflection 90° arc from here is clear.
 // Inside a hole's clear corridor, aligned with it, probe 2 is skipped and
-// probe 1 runs along the hole's axis — threading a hole never slows you.
+// probe 1 runs along the hole's axis — the hole's own jambs and lintel never
+// slow you; only a real wall beyond its far mouth can.
+//
+// Movers cost ~5x a building lookup, so each ray or arc first asks the
+// movers once with a sphere enclosing the whole probe; only when something
+// moving is that close does every sample test them.
 
 import type { Building, HoleSpan } from "@angels-bandits/common/city";
 import {
@@ -45,11 +51,7 @@ import {
   MIN_SPEED,
   PLAYER_RADIUS,
 } from "@angels-bandits/common/constants";
-import {
-  type FlightState,
-  speedForRadius,
-  turnRadius,
-} from "@angels-bandits/common/flight";
+import { type FlightState, turnRadius } from "@angels-bandits/common/flight";
 import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
 
 /** Probe sphere radius, m: the plane's own sphere plus a little air. */
@@ -57,17 +59,31 @@ export const PROBE_RADIUS = PLAYER_RADIUS + 1.5;
 /** Spacing of probe samples along a ray or arc, m (< 2 × PROBE_RADIUS, so
  * consecutive spheres overlap and no wall thicker than ~1 m slips between). */
 const PROBE_STEP = 6;
-/** How far ahead probe 1 looks, m — past the 106 m a 90 m/s plane needs to
- * turn away from a wall without braking at all. */
+/** How far ahead probe 1 looks, m — past the ~206 m a 90 m/s plane needs to
+ * brake to MIN_SPEED and still turn away from a wall met head-on. */
 export const WALL_HORIZON = 220;
-/** Clear air kept between the turn-away arc and the wall, m. */
-const WALL_MARGIN = 6;
+/** Clear air kept between the turn-away arc and the wall, m — on top of
+ * PROBE_RADIUS's own 1.5 m. */
+const WALL_MARGIN = 2;
+/** Heading corrections probe 1 tries on a hit, rad, smallest first; none
+ * clear ⇒ a real turn (90°). */
+const ESCAPES = [4, 8, 12, 18, 25, 35, 50].map((d) => (d * Math.PI) / 180);
+/** cos of the steepest escape: its forward reach costs the most ray. */
+const ESCAPE_COS_MIN = Math.cos((50 * Math.PI) / 180);
+/** How far past the hit an escape ray must stay clear, m — far enough to be
+ * past a block corner, not just past the sample that hit. */
+const ESCAPE_PAST = 24;
 /** Probe 1 only runs this close to level, rad (30°): a steep dive or climb
  * is escaped with the elevator, not the turn the envelope assumes. */
 const WALL_PITCH_MAX = Math.PI / 6;
 /** The envelope designs for this fraction of the airbrake, so the plane
  * (which brakes at the full CORNER_BRAKE_DECEL) always leads the cap. */
-const BRAKE_DESIGN = 0.75;
+const BRAKE_DESIGN = 0.85;
+/** Band of needed correction φ, rad, over which an obstacle goes from "a
+ * correction" (turn-now envelope, below 20°) to "a real turn" (brake-first
+ * envelope, above 40°). */
+const GLANCE_LO = (20 * Math.PI) / 180;
+const GLANCE_HI = (40 * Math.PI) / 180;
 /** Probe 2 engages at this much commanded turn, |turn| ∈ [0, 1]: a hard
  * turn. Small corrections in a canyon never brake. */
 export const ARC_INTENT = 0.5;
@@ -122,6 +138,35 @@ export function holeCorridors(spans: readonly HoleSpan[]): HoleCorridor[] {
 // Scratch sample — the colliders read it and never keep it, so one object
 // serves every probe (no per-frame allocation in the march itself).
 const probe: Vec3 = { x: 0, y: 0, z: 0 };
+/** Whether the current ray/arc has a mover near enough to test (armMovers). */
+let moversNear = false;
+
+/** detectCrash's mover rules for one sphere: no clock ⇒ only the static
+ * viaduct is drawn, so only it is solid. */
+function moverAt(
+  movers: MoverField,
+  p: Vec3,
+  radius: number,
+  timeMs: number | null,
+): boolean {
+  if (timeMs === null) {
+    return (
+      !!movers.train && collideTrain(movers.train, p, radius, null) !== null
+    );
+  }
+  return collideMovers(p, radius, movers, timeMs) !== null;
+}
+
+/** Ask the movers once whether anything moving touches the sphere of
+ * `radius` around `probe` — one enclosing every sample of the coming ray or
+ * arc. The colliders are generic sphere tests, so this is conservative. */
+function armMovers(
+  world: CornerWorld,
+  radius: number,
+  timeMs: number | null,
+): void {
+  moversNear = !!world.movers && moverAt(world.movers, probe, radius, timeMs);
+}
 
 /** Does a PROBE_RADIUS sphere at `probe` touch anything the plane can hit? */
 function blocked(world: CornerWorld, timeMs: number | null): boolean {
@@ -129,25 +174,57 @@ function blocked(world: CornerWorld, timeMs: number | null): boolean {
     return true;
   if (world.nature && collideNature(probe, PROBE_RADIUS, world.nature) !== null)
     return true;
-  const movers = world.movers;
-  if (!movers) return false;
-  // detectCrash's clock rules: no clock ⇒ only the static viaduct is drawn.
-  if (timeMs === null) {
-    return (
-      !!movers.train &&
-      collideTrain(movers.train, probe, PROBE_RADIUS, null) !== null
-    );
+  return (
+    moversNear &&
+    !!world.movers &&
+    moverAt(world.movers, probe, PROBE_RADIUS, timeMs)
+  );
+}
+
+/** Bisection steps that refine probe 1's hit: 6 m / 2⁶ < 0.1 m. Without it
+ * the 6 m sample grid sliding along the ray makes the distance a sawtooth,
+ * and the cap twitches up as the plane closes. */
+const HIT_REFINE = 6;
+
+/** Clear distance along a ray from `pos` (unit dx, dy, dz) before the first
+ * blocked sample within `horizon` (refined to < 0.1 m when `refine`);
+ * Infinity when all clear. */
+function clearRun(
+  world: CornerWorld,
+  pos: Vec3,
+  dx: number,
+  dy: number,
+  dz: number,
+  horizon: number,
+  timeMs: number | null,
+  refine = false,
+): number {
+  for (let s = PROBE_STEP; s <= horizon; s += PROBE_STEP) {
+    probe.x = pos.x + dx * s;
+    probe.y = pos.y + dy * s;
+    probe.z = pos.z + dz * s;
+    if (!blocked(world, timeMs)) continue;
+    let lo = s - PROBE_STEP; // clear (or the plane itself)
+    let hi = s; // blocked
+    for (let i = 0; refine && i < HIT_REFINE; i++) {
+      const mid = (lo + hi) / 2;
+      probe.x = pos.x + dx * mid;
+      probe.y = pos.y + dy * mid;
+      probe.z = pos.z + dz * mid;
+      if (blocked(world, timeMs)) hi = mid;
+      else lo = mid;
+    }
+    return lo;
   }
-  return collideMovers(probe, PROBE_RADIUS, movers, timeMs) !== null;
+  return Number.POSITIVE_INFINITY;
 }
 
 /**
  * Probe 1 for one ray from `pos` along unit (dx, dy, dz): MAX_SPEED when the
- * first `horizon` meters are clear, else wallEnvelope at the hit with the
- * incidence of the face it hit. The face comes from one extra sample: if the
- * last clear point moved only along z is already blocked, the z step crossed
- * the face, so it is a z-normal wall — and the plane's angle to it is the
- * angle between the nose and the x axis.
+ * first `horizon` meters are clear, else wallEnvelope at the hit for the
+ * smallest heading correction (either way, from ESCAPES) whose ray stays
+ * clear ESCAPE_PAST beyond it — a measured "how much turn does this need",
+ * which handles faces, corners and movers alike.
  */
 function rayCap(
   world: CornerWorld,
@@ -158,49 +235,78 @@ function rayCap(
   horizon: number,
   timeMs: number | null,
 ): number {
-  for (let s = PROBE_STEP; s <= horizon; s += PROBE_STEP) {
-    probe.x = pos.x + dx * s;
-    probe.y = pos.y + dy * s;
-    probe.z = pos.z + dz * s;
-    if (!blocked(world, timeMs)) continue;
-    const clear = s - PROBE_STEP;
-    // Hit: back x up to the last clear sample, keep z where it hit.
-    probe.x = pos.x + dx * clear;
-    probe.y = pos.y + dy * clear;
-    const zFace = blocked(world, timeMs);
-    const h = Math.hypot(dx, dz);
-    const sinPhi = h > 0 ? Math.abs(zFace ? dz : dx) / h : 1;
-    return wallEnvelope(clear, sinPhi);
+  // One movers query for every ray this probe may cast from `pos` — the
+  // slanted escape rays included.
+  probe.x = pos.x;
+  probe.y = pos.y;
+  probe.z = pos.z;
+  armMovers(world, horizon / ESCAPE_COS_MIN + PROBE_RADIUS, timeMs);
+  const d = clearRun(world, pos, dx, dy, dz, horizon, timeMs, true);
+  if (!Number.isFinite(d)) return MAX_SPEED;
+  // An escape must stay clear to `reach` measured FORWARD — along the
+  // slanted ray that is reach / cos φ. (Measured along the ray, a wide wall
+  // looks escapable at a steep φ simply because the slant meets it later.)
+  const reach = Math.min(horizon, d + PROBE_STEP + ESCAPE_PAST);
+  let sinPhi = 1;
+  for (const phi of ESCAPES) {
+    const c = Math.cos(phi);
+    const sn = Math.sin(phi);
+    const run = reach / c;
+    // Rotate the nose about world-up both ways (pitch component kept).
+    const ax = dx * c + dz * sn;
+    const az = dz * c - dx * sn;
+    const bx = dx * c - dz * sn;
+    const bz = dz * c + dx * sn;
+    if (
+      clearRun(world, pos, ax, dy, az, run, timeMs) >= run - PROBE_STEP ||
+      clearRun(world, pos, bx, dy, bz, run, timeMs) >= run - PROBE_STEP
+    ) {
+      sinPhi = sn;
+      break;
+    }
   }
-  return MAX_SPEED;
+  return wallEnvelope(d, sinPhi);
 }
 
 /**
- * The braking envelope: the fastest speed that can brake (constant
- * deceleration BRAKE_DESIGN × CORNER_BRAKE_DECEL) to some v_t and then turn
- * at full deflection until parallel to a wall `distance` meters ahead along
- * the nose, met at incidence φ (sinPhi; 1 = head-on). Braking for s meters
- * closes on the wall by s·sinφ, and turning φ away costs R(v_t)·(1 − cos φ)
- * of the remaining normal gap, so
- *   v² = v_t² + 2a · (D·sinφ − WALL_MARGIN − R(v_t)(1 − cos φ)) / sinφ,
- * maximised over v_t. Head-on that is the plain "brake, then a 90° turn
- * inside D"; a few degrees off a long avenue it is never binding.
- * MIN_SPEED when no v_t fits (the wall is already too close to help).
+ * The braking envelope for an obstacle `distance` meters ahead along the
+ * nose that a heading correction φ (sinPhi; 1 = a full 90° turn) clears, in
+ * [MIN_SPEED, MAX_SPEED].
+ *
+ * A full-deflection turn through φ at speed v_t covers R(v_t)·sinφ of
+ * forward distance, so braking (constant a = BRAKE_DESIGN ×
+ * CORNER_BRAKE_DECEL) to v_t and then turning φ fits inside the distance
+ * from
+ *   v(v_t)² = v_t² + 2a · (D − WALL_MARGIN − R(v_t)·sinφ).
+ * - Turn-now (max over v_t): survivable if the pilot turns NOW. Right for a
+ *   correction of a few degrees.
+ * - Brake-first (v_t = MIN_SPEED): survivable even if the pilot holds
+ *   straight until the last moment. Right for a real turn — and the only
+ *   version the airbrake can follow: head-on, the turn-now curve collapses
+ *   from 90 to 40 m/s over the last ~70 m, faster than any brake.
+ * Blended across GLANCE_LO..GLANCE_HI of φ. MIN_SPEED when nothing fits
+ * (already too close to help); MAX_SPEED for φ = 0; never NaN.
  */
 export function wallEnvelope(distance: number, sinPhi = 1): number {
-  if (!Number.isFinite(distance) || sinPhi <= 0) return MAX_SPEED;
-  const s = Math.min(1, sinPhi);
-  const cosPhi = Math.sqrt(1 - s * s);
-  const normal = distance * s - WALL_MARGIN;
+  if (!Number.isFinite(distance)) return MAX_SPEED;
+  const s = sinPhi > 0 ? Math.min(1, sinPhi) : 0;
   const a = BRAKE_DESIGN * CORNER_BRAKE_DECEL;
-  let best = MIN_SPEED;
-  for (let vt = MIN_SPEED; vt <= MAX_SPEED; vt += 2.5) {
-    const room = normal - turnRadius(vt) * (1 - cosPhi);
-    if (room < 0) continue;
-    const v = Math.sqrt(vt * vt + (2 * a * room) / s);
-    if (v > best) best = v;
+  const reach = (vt: number): number => {
+    const room = distance - WALL_MARGIN - turnRadius(vt) * s;
+    return room < 0
+      ? MIN_SPEED
+      : Math.min(MAX_SPEED, Math.sqrt(vt * vt + 2 * a * room));
+  };
+  const brakeFirst = reach(MIN_SPEED);
+  let turnNow = brakeFirst;
+  for (let vt = MIN_SPEED + 2.5; vt <= MAX_SPEED; vt += 2.5) {
+    turnNow = Math.max(turnNow, reach(vt));
   }
-  return Math.min(MAX_SPEED, best);
+  const w = Math.min(
+    1,
+    Math.max(0, (Math.asin(s) - GLANCE_LO) / (GLANCE_HI - GLANCE_LO)),
+  );
+  return turnNow - w * (turnNow - brakeFirst);
 }
 
 /** Is the full-deflection 90° arc of `radius`, turning `dir` (+1 right), from
@@ -237,6 +343,12 @@ function arcSpeed(
   dir: 1 | -1,
   timeMs: number | null,
 ): number {
+  // Every arc point lies within its chord R·√2 of the start: one sphere at
+  // the plane covers all of them, the widest (MAX_SPEED) arc included.
+  probe.x = flight.pos.x;
+  probe.y = flight.pos.y;
+  probe.z = flight.pos.z;
+  armMovers(world, turnRadius(MAX_SPEED) * Math.SQRT2 + PROBE_RADIUS, timeMs);
   if (arcClear(world, flight, turnRadius(MAX_SPEED), dir, timeMs))
     return MAX_SPEED;
   if (!arcClear(world, flight, turnRadius(MIN_SPEED), dir, timeMs))
@@ -294,8 +406,8 @@ export function cornerSpeed(
   let cap = MAX_SPEED;
 
   // Probe 1 — wall ahead. In a corridor it runs straight down the hole's
-  // axis instead: the H1 run-out guarantees that air, and an approach a few
-  // degrees off the axis must not read the hole's own jamb as a wall.
+  // axis instead: an approach a few degrees off the axis must not read the
+  // hole's own jamb as a wall (a real wall past the far mouth still counts).
   if (corridor) {
     const sx = corridor.axis === "x" ? Math.sign(fx) : 0;
     const sz = corridor.axis === "z" ? Math.sign(fz) : 0;

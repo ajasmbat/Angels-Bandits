@@ -1061,3 +1061,101 @@ node tools/perf/run.mjs --runs 3 --samples --strict
 node tools/perf/flicker.mjs --ref a487412
 node tools/perf/run.mjs --soak 600 --quality auto --res auto
 ```
+
+---
+
+## P2: the Realism batch gate — trains, holes, streets, roofs, life
+
+P2 measures the game after the Realism & Feel batch (F5/F6 flight feel, T2
+trains, G1 street detail, R2 roofs, H2 holes, A1 city life) on the same
+GPU-less runner as O3/O4. It can count draws, liveness, determinism and GL
+allocations; **milliseconds are for the M3** (commands at the end).
+
+### Three new segments
+
+Appended after `furball`, so the seven older segments keep their index and
+their measured world instants (the warm-up lap's instants shift, since
+`warmupWorldMs` counts the path). Each spot was checked offline against the
+shared collision (`touchesSolid`: ground, buildings and their holes, trees,
+viaducts and stations, and every mover sampled every 100 ms over 15 minutes
+of world time around `WORLD_EPOCH_MS`): clear.
+
+| segment | what | how it stays repeatable |
+| --- | --- | --- |
+| `station` | line 0's station at (1300, 1000), two trains side by side in it — one standing, one pulling in or out on the other track — platforms, canopy, doors, platform people | the world clock slides from the segment's own instant to the first moment two trains on opposite tracks are both within 8 m of the station's centre, found on the pure schedule (`__ab.train(t)`). It lands at +2.25 s; the harness prints the moment and refuses a slide past `TRAINS_SLIDE_MAX_MS`. The plane is held 80 m east, 44 m up, nose down the line |
+| `hole` | a glide through the street-level row tunnel (x = 303.5, mouths at z = 1220 and 1380) — chevrons, the lit mouth, LED strips, murals, fans | re-teleported every frame along the tunnel's axis at 42 m/s of **wall** time from 63 m out, so the path is the same length on any machine; three quarters of the window is inside. Clear from 120 m before the entry to 150 m past the exit; the glide stops 107 m past it |
+| `sidewalk` | G1's curb skim at (810, 8, 1380): furniture, parked cars, road paint, lit lobbies, the crowd | held every frame (at 8 m an unpiloted plane would sink into the street) |
+
+Each has a draw-call budget in `BUDGETS` (runner High + ~10 %): station 90,
+hole 92, sidewalk 90. An `--ab-ref` build that cannot fly one of them (no
+two-train read-back before T2, no tunnel before H2, so it dies) prints
+**no baseline** for that segment instead of a delta.
+
+### Two harness bugs the batch exposed
+
+- **Every flown segment was diving.** The click on Join left the cursor
+  parked on the button, and the mouse-aim instructor flies the pipper onto
+  the cursor. Core lost 7 m and canyon 7 m inside the runner's ~1 s of sim
+  time; on the M3's ~6 s, `street` sank onto T2's new x = 600 viaduct and
+  crashed (it read `alive: NO` on main). After joining, the harness now
+  tells the page the pointer left the window, which is the input's
+  attitude hold: each segment flies level from its teleport, as P1 laid the
+  path out (core holds 89.7 m, canyon 45.0, street 32.0). Positions now
+  differ from O4-era reports for the flown segments.
+- **The furball's bullets leaked into the next segment.** Its pilots leave
+  ~200 bullets in flight, and a bullet ages by the sim step, which is
+  clamped at 50 ms a frame. On a 3 fps renderer their tracers (one draw
+  each) crossed `station`'s view for tens of seconds: 88/86/83 draws over
+  three passes against 82 when it was flown alone. The harness now waits for
+  the room and the sky to empty after any segment with pilots (a new
+  read-only `__ab.combat().bullets`). On the M3 the bullets expire inside
+  the 0.9 s settle, but only just.
+
+### What the runner measured (P2)
+
+{{P2_MEASURED}}
+
+### Quality tiers
+
+Every batch module with a render cost has a `setQuality` hook and a row in
+`FEATURE_TIERS` (the tier table above now lists them): A1 city life and
+facade life, G1 furniture and fine paint (its lit lobbies ride the window
+interiors switch), H2 hole interiors and guidance, R2 structures and fine
+dressing, T2 stations, platform people and sparks. A1's look-up reaction
+(`lookup.ts`) is a GLSL chunk inside the figure meshes, so it costs what the
+crowd costs and thins with it. F5/F6 change flight feel only: no render
+cost, no row.
+
+### Commands for the M3 (P2)
+
+Run on main after this merges, with the machine otherwise idle.
+`d23d23a` is O4's merge, the last measured state before the batch.
+
+```sh
+npm run perf:setup   # once
+
+# 1. The gate: every segment against O4's merge. Read the 60fps / hitch /
+#    draws / room verdicts and the delta table. station and hole print
+#    "no baseline" (O4's build has no two-train read-back and no tunnel);
+#    judge them on their own verdicts. sidewalk's delta is G1 + A1's cost.
+node tools/perf/run.mjs --runs 3 --label P2 --ab-ref d23d23a
+
+# 2. Tiers. Low vs High, each at its own ratio, then features only (both at
+#    ratio 2); then Mobile as a phone at its own ceiling vs High (GPU p50
+#    <= 5 ms on Mobile is the assumed phone proxy, as in M3).
+node tools/perf/run.mjs --runs 3 --res 2 --label high --ab "quality=low&res=1"
+node tools/perf/run.mjs --runs 3 --res 2 --label high --ab "quality=low"
+node tools/perf/run.mjs --runs 3 --device phone --res 2 --label high --ab "quality=mobile&res=1"
+
+# 3. Soak: Auto never steps down on the M3 (exits 1 if it does), 10 minutes
+#    of the full-room furball with the scaler live.
+node tools/perf/run.mjs --soak 600 --quality auto --res auto
+
+# 4. Flicker not worse than O4's merge (exits 1 on a FAIL).
+node tools/perf/flicker.mjs --ref d23d23a
+
+# 5. Determinism and first sight: draw calls identical in every pinned
+#    segment, the first-sight table 0/0/0 in every window, and "0 in the
+#    first 10%" on every spike row.
+node tools/perf/run.mjs --runs 3 --samples --strict
+```

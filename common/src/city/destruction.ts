@@ -787,7 +787,8 @@ export interface RayHit {
 }
 
 /** Slab-clip entry distance of the ray (origin 0, unit `dir`) into a box in
- * the ray's frame, or -1 for a miss within [0, range]. */
+ * the ray's frame, or -1 for a miss within [0, range] (or a box the ray only
+ * touches as it leaves). */
 function rayEntry(
   dir: Vec3,
   range: number,
@@ -814,7 +815,9 @@ function rayEntry(
     t1 = Math.min(t1, Math.max(a, b));
     if (t0 > t1) return -1;
   }
-  return t0;
+  // A ray starting on a face and leaving the box at once (a plane hugging a
+  // wall, firing away from it) does not hit that box.
+  return t1 <= 1e-6 ? -1 : t0;
 }
 
 /**

@@ -211,8 +211,11 @@ function hold(
 
 describe("no flat spin near vertical (F7)", () => {
   for (const fps of FPS) {
-    it(`cursor just above the pipper (0, 0.27) climbs, no turn — ${fps} fps`, () => {
-      const { swept, extreme } = hold({ x: 0, y: 0.27 }, 200, 6, fps);
+    // The pipper sits at NDC y ≈ 0.26 in level flight at 90 m/s (C1's chase
+    // geometry; ≈ 0.10 behind the old lagging eye), so "just above" it is
+    // 0.43 — the same margin as before.
+    it(`cursor just above the pipper (0, 0.43) climbs, no turn — ${fps} fps`, () => {
+      const { swept, extreme } = hold({ x: 0, y: 0.43 }, 200, 6, fps);
       expect(swept).toBeLessThan(10 * DEG);
       expect(extreme).toBeGreaterThan(60 * DEG);
     });

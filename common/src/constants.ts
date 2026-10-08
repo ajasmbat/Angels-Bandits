@@ -236,11 +236,18 @@ export const RESPAWN_ALTITUDE = 300;
 export const RESPAWN_SPEED = 65;
 
 // --- Chase camera (client-only feel, kept here with the rest of the tuning) ---
-/** Camera distance behind the plane, meters. */
-export const CHASE_DISTANCE = 22;
-/** Camera height above the plane, meters. */
-export const CHASE_HEIGHT = 6;
-/** Exponential response of the camera toward its chase position, 1/s — the lag. */
+/** Eye-to-plane (slant) distance at MIN_SPEED, meters. The chase distance is
+ * an explicit function of airspeed (C1): D(v) = CHASE_BASE + CHASE_STRETCH ·
+ * max(0, v − MIN_SPEED) — ~26 m at 40 m/s, 32 at 90, 36 at full boost — not a
+ * by-product of smoothing lag. */
+export const CHASE_BASE = 26;
+/** Extra chase distance per m/s above MIN_SPEED, seconds. */
+export const CHASE_STRETCH = 0.12;
+/** Eye rise per meter behind the plane: the arm's elevation (~15°), the old
+ * 22 m back / 6 m up shape. */
+export const CHASE_RISE = 6 / 22;
+/** Exponential response of the chase arm's direction and length toward their
+ * targets, 1/s — the swing in turns and the ease on speed changes. */
 export const CAMERA_RESPONSE = 3.5;
 
 // --- Networking rates ---

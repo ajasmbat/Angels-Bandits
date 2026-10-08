@@ -2386,7 +2386,7 @@ const frame = (now: number): void => {
       const cursor = input.cursorNdc();
       const view = aimView(flight, aimFrame, aimFov, camera.aspect, cursor);
       // H2: where the pilot means to go — from the PLANE to the world point
-      // the cursor marks ASSIST_AIM_RANGE out (the chase eye sits ~9° off
+      // the cursor marks ASSIST_AIM_RANGE out (the chase eye sits ~10° off
       // the gun line, so the eye ray's own angle would read misaligned).
       const aimLen = Math.hypot(view.aimDir.x, view.aimDir.y, view.aimDir.z);
       const k = ASSIST_AIM_RANGE / (aimLen || 1);

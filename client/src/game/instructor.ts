@@ -11,7 +11,7 @@
 // the view swings and reads as a smooth turn whose rate grows with the offset.
 // A cursor KEPT on something in the world — a bandit, a gap between towers —
 // converges the pipper onto it, critically damped. Neutral is "cursor on the
-// pipper", never screen centre: the chase eye looks ~9° below the gun line.
+// pipper", never screen centre: the chase eye looks ~10° below the gun line.
 
 import {
   BULLET_RANGE,
@@ -121,7 +121,8 @@ export interface AimView {
  * Both rays for one view: `frame` is ChaseCamera.aimFrame (eye/look-at as
  * offsets from the plane), `ndc` the smoothed cursor (+y up). The pipper ray
  * starts at the eye, not the plane, so "cursor on the pipper" is exactly
- * neutral on screen — the parallax of a 22 m eye offset included.
+ * neutral on screen — the parallax of the 26–36 m chase eye offset (C1's
+ * D(v)) included.
  */
 export function aimView(
   flight: Pick<FlightState, "yaw" | "pitch">,

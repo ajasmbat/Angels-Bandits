@@ -344,26 +344,29 @@ export const BLIMP_SPEED = 12;
 /** Blimp hull half-extents, m: half-length, half-height, half-width. */
 export const BLIMP_HULL = [46, 14, 14] as const;
 
-// --- Elevated train (L5) --- a lit train looping a rectangle of streets on a
-// viaduct, in common/src/city/train.ts. Same rule as the movers above: every
-// dimension is a collision dimension, so the deck, the pillars and the cars
-// are exactly as solid as they look.
+// --- Elevated train (L5, T2) --- lit trains on a double-track viaduct
+// looping a rectangle of streets, in common/src/city/train.ts. Same rule as
+// the movers above: every dimension is a collision dimension, so the deck,
+// the pillars, the stations and the cars are exactly as solid as they look.
 /** Top of the viaduct deck (the rail level), m above the street. */
 export const TRAIN_DECK_TOP = 25;
 /** Deck slab thickness, m — its underside is the ceiling you fly under. */
 export const TRAIN_DECK_THICK = 2;
-/** Deck half-width, m. Wide enough to cover a car's ~1 m overhang on a
- * corner, narrow enough to stay far inside the 20 m lot lines. */
-export const TRAIN_DECK_HALF_WIDTH = 5;
+/** Deck half-width, m (T2: two tracks). Wide enough to cover a car's ~1 m
+ * overhang on a corner of the outer track, far inside the 20 m lot lines. */
+export const TRAIN_DECK_HALF_WIDTH = 6.5;
+/** Each track's centreline sits this far either side of the street
+ * centreline, m: the outer track runs one way, the inner track the other. */
+export const TRAIN_TRACK_OFFSET = 2.7;
 /** Square pillar side, m. Pillars stand on the street centreline, between
- * the ±5 m traffic lanes. */
+ * the ±5 m traffic lanes (and between the two tracks above). */
 export const TRAIN_PILLAR_SIDE = 2.4;
 /** Pillar spacing along a straight, m (a divisor of BLOCK_PITCH). */
 export const TRAIN_PILLAR_SPACING = 40;
 /** No pillar within this of a crossing street's centreline, m: the
  * intersection square, its crosswalk and a margin stay clear for traffic. */
 export const TRAIN_PILLAR_CLEAR = 23;
-/** Corner radius where the loop turns from one street onto another, m. */
+/** Corner radius of the street centreline where the loop turns, m. */
 export const TRAIN_CORNER_RADIUS = 32;
 /** One car, m: length, height, width; and the coupling gap between cars. */
 export const TRAIN_CAR_LENGTH = 16;
@@ -372,13 +375,37 @@ export const TRAIN_CAR_WIDTH = 3.2;
 export const TRAIN_CAR_GAP = 1.5;
 /** Daylight between the deck top and a car's floor (bogies), m. */
 export const TRAIN_CAR_LIFT = 0.3;
-/** Seeded car count band. */
-export const TRAIN_CARS_MIN = 4;
-export const TRAIN_CARS_MAX = 6;
-/** Constant line speed, m/s. */
+/** Cars per articulated set (T2). Every train on a track runs the same
+ * profile TRAIN_HEADWAY apart; around a dwell the lead cars close to
+ * a·((H − D)/2)² = 66 m, so a 51 m 3-car set leaves a 15 m gap. */
+export const TRAIN_CARS = 3;
+/** Cruise speed the schedule is solved from, m/s (the solved speed is a
+ * little lower, so the lap is a whole number of headways). */
 export const TRAIN_SPEED = 22;
-/** Top of a car's roof — the highest solid the train line owns, m. */
+/** Service acceleration and braking, m/s² — brisk for a metro, the price of
+ * a ≤ 20 s headway with 8 s dwells. */
+export const TRAIN_ACCEL = 2;
+/** Doors-open dwell at every station, s. */
+export const TRAIN_DWELL = 8;
+/** Time between trains on a track, s: every point on every track sees a
+ * train exactly this often. */
+export const TRAIN_HEADWAY = 19.5;
+/** The slowest a solved cruise speed may be, m/s. */
+export const TRAIN_SPEED_MIN = 15;
+/** Most lines in a city (the route search stops when none fits). */
+export const TRAIN_LINES_MAX = 2;
+/** Station platform length along the street, m (a 51 m set plus margin). */
+export const TRAIN_PLATFORM_LENGTH = 60;
+/** Platform width, m; it starts this far outside the car's side face. */
+export const TRAIN_PLATFORM_WIDTH = 4;
+export const TRAIN_PLATFORM_GAP = 0.15;
+/** Platform walking surface, m: the car's floor height. */
+export const TRAIN_PLATFORM_TOP = TRAIN_DECK_TOP + TRAIN_CAR_LIFT + 0.65;
+/** Top of a car's roof, m — the hole-headroom rule and the bot floor key on it. */
 export const TRAIN_TOP = TRAIN_DECK_TOP + TRAIN_CAR_LIFT + TRAIN_CAR_HEIGHT;
+/** Station canopy: underside and top, m — the highest solid a line owns. */
+export const TRAIN_CANOPY_BOTTOM = TRAIN_TOP + 0.9;
+export const TRAIN_STATION_TOP = TRAIN_CANOPY_BOTTOM + 0.4;
 /** Canyon bots near the line hold at least TRAIN_TOP + this, m. */
 export const TRAIN_BOT_CLEAR = 16;
 /** "Near the line" for that floor, plan-view m: far enough out that a bot at

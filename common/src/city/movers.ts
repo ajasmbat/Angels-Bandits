@@ -64,7 +64,7 @@ import {
   newsTargetAt,
 } from "./newsheli";
 import { type Boat, collideBoats, riverBoats } from "./river";
-import { type TrainLine, collideTrain, generateTrain } from "./train";
+import { type TrainLine, collideTrains, generateTrains } from "./train";
 
 /** Which part of which mover a collision landed on. */
 export type MoverKind =
@@ -163,9 +163,9 @@ export interface MoverField {
    * field (withNewsHeli), never on the seed-shared one. The slot is mutated
    * in place when the server issues a new target. */
   readonly news?: NewsHeliSlot;
-  /** L5's elevated train, or null when no loop fits the city. Optional so a
-   * hand-built field (tests, EMPTY_MOVERS) need not mention it. */
-  readonly train?: TrainLine | null;
+  /** L5/T2's elevated train lines (0-2, none when no loop fits the city).
+   * Optional so a hand-built field (tests, EMPTY_MOVERS) need not mention it. */
+  readonly trains?: readonly TrainLine[];
 }
 
 /** A room's field: the seed's shared cranes and aircraft plus its own news
@@ -328,7 +328,7 @@ export function generateMovers(
     cranes,
     aircraft,
     boats: riverBoats(seed),
-    train: generateTrain(seed, buildings),
+    trains: generateTrains(seed, buildings),
   };
 }
 
@@ -569,9 +569,9 @@ export function collideMovers(
   if (field.news && hitsNewsHeli(field.news, pos, radius, timeMs)) {
     return { kind: "newsHeli", id: NEWS_HELI_ID };
   }
-  // L5: the viaduct and the cars.
-  if (field.train) {
-    const hit = collideTrain(field.train, pos, radius, timeMs);
+  // L5/T2: the viaducts, stations and cars.
+  if (field.trains) {
+    const hit = collideTrains(field.trains, pos, radius, timeMs);
     if (hit) return hit;
   }
   return hitBoat(pos, radius, field, timeMs);
@@ -614,8 +614,8 @@ export function collideBotMovers(
   }
   // L5: the viaduct and the train are solid for bots too — they sit right in
   // the canyon band, so a bot that could not see them would die to them.
-  if (field.train) {
-    const hit = collideTrain(field.train, pos, radius, timeMs);
+  if (field.trains) {
+    const hit = collideTrains(field.trains, pos, radius, timeMs);
     if (hit) return hit;
   }
   // Boats are solid for bots too: a chaser following a target under a bridge

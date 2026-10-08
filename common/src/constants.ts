@@ -596,6 +596,33 @@ export const BULLET_LIFETIME_S = BULLET_RANGE / BULLET_SPEED;
  * bot-gunnery test both read it. 7.5 since F1 (easy-to-fly aim help). */
 export const HIT_RADIUS = 7.5;
 
+// --- D2 breakable buildings (common/src/city/destruction.ts) ---
+/** Target facade bay / depth slice of a chunk, meters: a tier of width w gets
+ * max(1, round(w / CHUNK_BAY)) bays (≈13–27 m each). */
+export const CHUNK_BAY = 20;
+/** Target floor band of a chunk, meters (≈ three storeys). */
+export const CHUNK_FLOOR = 12;
+/** Hit points of one chunk: 9 rounds of BULLET_DAMAGE, ~0.9 s on target. */
+export const CHUNK_HP = 60;
+/** Once this share of the city's chunks is gone nothing more breaks (no
+ * regeneration until D5, so the always-on bot arena must not rot away). */
+export const DESTROY_CAP = 0.25;
+/** A plane's death blows a hole: chunks within this radius of the death site
+ * (point-to-box) take DEATH_BLAST_DAMAGE, falling off linearly to 0. */
+export const DEATH_BLAST_RADIUS = 14;
+export const DEATH_BLAST_DAMAGE = 220;
+/** Rubble piles on the street in front of a broken facade: at most this far
+ * out from the facade, m — the sidewalk minus the furniture strip, with
+ * 0.5 m to spare in front of the lamps and street trees. */
+export const RUBBLE_REACH = 3.5;
+/** Pile height per chunk that fell into a slot, m, and its cap (well under
+ * HOLE_MIN_FLOOR, and under BOT_MIN_ALT with a plane's radius to spare). */
+export const RUBBLE_STEP = 1.2;
+export const RUBBLE_MAX_HEIGHT = 4;
+/** A chunk drops its rubble on the nearest open tier-0 face within this
+ * distance of its centre, m; further in, it makes none. */
+export const RUBBLE_FALL_RANGE = 30;
+
 // --- Guns / heat model (heat is a 0..1 meter; overheating locks the guns) ---
 /** Minimum time between shots, ms (10 rounds/s, alternating wingtips). */
 export const FIRE_INTERVAL_MS = 100;

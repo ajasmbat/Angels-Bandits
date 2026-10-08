@@ -5,8 +5,10 @@ exports[`generateCity determinism > matches the committed fingerprint for seed 4
   "count": 559,
   "digest": "12115e53",
   "first": {
+    "damage": undefined,
     "depth": 85,
     "height": 24,
+    "holes": undefined,
     "roof": [
       {
         "baseY": 24,
@@ -33,8 +35,10 @@ exports[`generateCity determinism > matches the committed fingerprint for seed 4
     "z": 62.5,
   },
   "last": {
+    "damage": undefined,
     "depth": 30,
     "height": 40,
+    "holes": undefined,
     "roof": [
       {
         "baseY": 40,

@@ -8,15 +8,18 @@ const MAX_ENTRIES = 6;
 export class KillFeed {
   private readonly root = document.getElementById("killfeed") as HTMLDivElement;
 
-  /** `killerName` null = un-credited crash ("☠ B"); a storm kill renders as
-   * the bolt's own line ("⚡ took down B") whoever got the credit. */
+  /** `killerName` null = un-credited crash ("☠ B"); a credited crash is
+   * "A ✕ B" — not the shoot-down's "A ▸ B" (U2); a storm kill renders as the
+   * bolt's own line ("⚡ took down B") whoever got the credit. `self` marks
+   * a line the local pilot is in (decided by id — names aren't unique). */
   add(
     killerName: string | null,
     victimName: string,
     cause?: "shot" | "crash" | "storm",
+    self = false,
   ): void {
     const entry = document.createElement("div");
-    entry.className = "entry";
+    entry.className = self ? "entry self" : "entry";
 
     const victim = document.createElement("span");
     victim.className = "victim";
@@ -30,7 +33,15 @@ export class KillFeed {
       const killer = document.createElement("span");
       killer.className = "killer";
       killer.textContent = killerName;
-      entry.append(killer, " ▸ ", victim);
+      if (cause === "crash") {
+        const glyph = document.createElement("span");
+        glyph.className = "crash";
+        glyph.title = "crashed — credited kill";
+        glyph.textContent = " ✕ ";
+        entry.append(killer, glyph, victim);
+      } else {
+        entry.append(killer, " ▸ ", victim);
+      }
     }
 
     this.root.append(entry);

@@ -242,7 +242,7 @@ import { BotBar } from "./ui/botbar";
 import { CommsTicker } from "./ui/comms";
 import { initFullscreenUi } from "./ui/fullscreen";
 import { HPBAR_ALTITUDE, HpBarSprite, HpBarTracker } from "./ui/hpbar";
-import { Hud } from "./ui/hud";
+import { Hud, deathLabel } from "./ui/hud";
 import { requestName, showJoinError, showSignalLost } from "./ui/join";
 import { KillFeed } from "./ui/killfeed";
 import { LeadIndicator, SolutionTone } from "./ui/lead";
@@ -861,6 +861,7 @@ const killFeed = new KillFeed();
 const scoreboard = new Scoreboard(socket.selfId);
 scoreboard.setRoster(welcome.roster);
 scoreboard.setScores(welcome.scores);
+showOwnScore(welcome.scores);
 // The room's shared bot count (ANGE-6STDNN): seeded from the welcome so a
 // late joiner's bar opens where the room already is.
 const botBar = new BotBar(welcome.botTarget);
@@ -1037,8 +1038,10 @@ function resetAssist(): void {
   holeAssist.pitch = 0;
 }
 
-/** Freeze into the kill-cam; the server's respawn message ends it. */
-function enterDeath(killerId: string | null, cause?: "storm"): void {
+/** Freeze into the kill-cam; the server's respawn message ends it. A local
+ * crash enters first; the server's death message then refines the headline
+ * (credit, storm) on the same countdown. */
+function enterDeath(killerId: string | null, cause: DeathMsg["cause"]): void {
   // Kill-cam owns the camera — force-exit free-look and the zoom instantly.
   freelook = createFreeLook();
   zoom = createZoom();
@@ -1046,7 +1049,10 @@ function enterDeath(killerId: string | null, cause?: "storm"): void {
   resetAssist();
   hud.setFreeLook(false);
   killCamTargetId = killerId;
-  hud.showKillCam(killerId === null ? null : nameOf(killerId), cause);
+  hud.showKillCam(
+    deathLabel(cause, killerId === null ? null : nameOf(killerId)),
+    performance.now(),
+  );
   setBoostBurning(false, performance.now());
   if (!alive) return;
   alive = false;
@@ -1195,6 +1201,7 @@ socket.events.onDeath = (msg) => {
     msg.killerId === null ? null : nameOf(msg.killerId),
     nameOf(msg.victimId),
     msg.cause,
+    msg.killerId === socket.selfId || msg.victimId === socket.selfId,
   );
   if (msg.killerId === socket.selfId && msg.victimId !== socket.selfId) {
     hud.killConfirm(performance.now());
@@ -1202,7 +1209,7 @@ socket.events.onDeath = (msg) => {
   }
   hpBar.clear(msg.victimId); // never float a stale bar over a respawn
   if (msg.victimId === socket.selfId) {
-    enterDeath(msg.killerId, msg.cause === "storm" ? "storm" : undefined);
+    enterDeath(msg.killerId, msg.cause);
     // M5: the first life is over ("after the first match" in a drop-in
     // game) — the kill-cam pause is when an install offer intrudes least.
     phoneFullscreen.onFirstLifeOver();
@@ -1224,9 +1231,15 @@ socket.events.onRespawn = (msg) => {
   if (msg.id === socket.selfId) respawnSelf(msg.spawn);
   else remotes.respawn(msg.id);
 };
+/** U2: the own row of a `score` broadcast drives the HUD's K/D readout. */
+function showOwnScore(scores: ScoreEntry[]): void {
+  const own = scores.find((e) => e.id === socket.selfId);
+  hud.setScore(own?.kills ?? 0, own?.deaths ?? 0);
+}
 socket.events.onScores = (scores) => {
   lastScores = scores;
   scoreboard.setScores(scores);
+  showOwnScore(scores);
 };
 socket.events.onBotsConfig = (msg) => {
   // The server is the only authority on this value — including for the
@@ -2456,7 +2469,7 @@ const frame = (now: number): void => {
     ) {
       // Report and freeze; the server decides credit and the respawn.
       socket.sendCrash();
-      enterDeath(null);
+      enterDeath(null, "crash");
     }
   }
 

@@ -3,7 +3,29 @@
 // the chrome in index.html (same split as ui/join.ts) — the values shown are
 // whatever the server said, never a client-side simulation of them.
 
-import { BOOST_MIN_START, MAX_HP } from "@angels-bandits/common/constants";
+import {
+  BOOST_MIN_START,
+  KILL_CAM_MS,
+  MAX_HP,
+} from "@angels-bandits/common/constants";
+import type { DeathMsg } from "@angels-bandits/common/protocol";
+
+/**
+ * The kill-cam headline (U2): how you died and who gets the credit. A
+ * credited crash keeps saying CRASHED — the server's death message refines
+ * the local crash display, it never turns a crash into a shoot-down. The
+ * storm's bolt names itself (discovery is the design, so no more than that).
+ */
+export function deathLabel(
+  cause: DeathMsg["cause"],
+  killerName: string | null,
+): string {
+  if (cause === "storm") return "⚡ STRUCK BY THE STORM";
+  if (killerName === null) return "CRASHED";
+  return cause === "shot"
+    ? `SHOT DOWN BY ${killerName}`
+    : `CRASHED — CREDIT TO ${killerName}`;
+}
 
 /** Last value written per element per style property (O2): the HUD setters
  * run every frame, and an unchanged write still costs a style parse and can
@@ -43,6 +65,13 @@ export class Hud {
   private readonly killcam = document.getElementById(
     "killcam",
   ) as HTMLDivElement;
+  private readonly killcamCause = document.getElementById(
+    "killcam-cause",
+  ) as HTMLDivElement;
+  private readonly killcamCount = document.getElementById(
+    "killcam-count",
+  ) as HTMLDivElement;
+  private readonly kd = document.getElementById("kd") as HTMLSpanElement;
   private readonly crosshair = document.getElementById(
     "crosshair",
   ) as unknown as SVGSVGElement;
@@ -64,6 +93,9 @@ export class Hud {
   private hitBlipUntil = 0;
   private aimModeTimer: ReturnType<typeof setTimeout> | undefined;
   private markerUntil = 0;
+  /** performance.now() the server's respawn is due; 0 = kill-cam closed. */
+  private respawnAt = 0;
+  private countShown = -1;
 
   /** Server-owned HP (snapshots / damage events). */
   setHp(hp: number): void {
@@ -89,6 +121,12 @@ export class Hud {
     setStyle(this.boostFill, "width", `${(frac * 100).toFixed(1)}%`);
     this.boostEl.classList.toggle("low", !burning && frac < BOOST_MIN_START);
     document.body.classList.toggle("boost", burning);
+  }
+
+  /** Own kills and deaths from the server's `score` broadcast (U2). */
+  setScore(kills: number, deaths: number): void {
+    const text = `K ${kills} · D ${deaths}`;
+    if (this.kd.textContent !== text) this.kd.textContent = text;
   }
 
   setProtected(on: boolean): void {
@@ -227,20 +265,32 @@ export class Hud {
     );
   }
 
-  /** Kill-cam overlay: who got you (null = you crashed clean; the storm's
-   * bolt names itself — discovery is the design, so no more than that). */
-  showKillCam(killerName: string | null, cause?: "storm"): void {
-    this.killcam.textContent =
-      cause === "storm"
-        ? "⚡ STRUCK BY THE STORM"
-        : killerName === null
-          ? "YOU CRASHED"
-          : `ELIMINATED BY ${killerName}`;
+  /** Kill-cam overlay: the deathLabel headline plus a respawn countdown.
+   * Called again when the server's death message lands after a local crash:
+   * the headline upgrades, but the countdown keeps the clock it started on
+   * (`now`, performance.now()) — the respawn comes KILL_CAM_MS after death. */
+  showKillCam(label: string, now: number): void {
+    this.killcamCause.textContent = label;
+    if (this.respawnAt === 0) {
+      this.respawnAt = now + KILL_CAM_MS;
+      this.countShown = -1;
+      this.tickCountdown(now);
+    }
     this.killcam.classList.add("open");
   }
 
   hideKillCam(): void {
     this.killcam.classList.remove("open");
+    this.respawnAt = 0;
+  }
+
+  /** Whole seconds left to the respawn, written only when it changes. Never
+   * below 1: the server's respawn message, not this clock, ends the beat. */
+  private tickCountdown(now: number): void {
+    const left = Math.max(1, Math.ceil((this.respawnAt - now) / 1000));
+    if (left === this.countShown) return;
+    this.countShown = left;
+    this.killcamCount.textContent = `RESPAWN IN ${left}`;
   }
 
   /** One frame's worth of hit-confirm: flash the crosshair briefly. */
@@ -268,6 +318,7 @@ export class Hud {
 
   /** Call every frame to age the hit blip and hitmarker out. */
   update(now: number): void {
+    if (this.respawnAt !== 0) this.tickCountdown(now);
     if (this.hitBlipUntil !== 0 && now > this.hitBlipUntil) {
       this.crosshair.classList.remove("hit");
       this.hitBlipUntil = 0;

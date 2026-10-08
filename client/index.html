@@ -378,6 +378,15 @@
       #killfeed .victim {
         color: #ff7a9a;
       }
+      #killfeed .crash {
+        color: #ffc46b;
+      }
+      /* U2: lines the local pilot is in — the accent bar, a faint wash. */
+      #killfeed .entry.self {
+        padding-right: 6px;
+        border-right: 2px solid #27e0c0;
+        background: linear-gradient(to left, #27e0c033, transparent);
+      }
       #comms {
         position: fixed;
         top: 158px;
@@ -539,6 +548,18 @@
       }
       #killcam.open {
         display: block;
+      }
+      #killcam-count {
+        margin-top: 8px;
+        color: #9fd8e8;
+        font-size: 12px;
+        letter-spacing: 0.2em;
+      }
+      /* U2: own K/D, right-aligned on the HULL gauge's label line. */
+      #kd {
+        float: right;
+        color: #e8f6fa;
+        letter-spacing: 0.1em;
       }
       #join {
         position: fixed;
@@ -1600,7 +1621,7 @@
     <div id="hud"></div>
     <div id="gauges">
       <div class="gauge" id="hp">
-        <label for="hp-fill">HULL</label>
+        <label for="hp-fill">HULL<span id="kd">K 0 · D 0</span></label>
         <div class="bar"><div class="fill" id="hp-fill"></div></div>
       </div>
       <div class="gauge" id="heat">
@@ -1701,7 +1722,10 @@
         <div class="scale"><span>0</span><span id="bots-max">11</span></div>
       </div>
     </div>
-    <div id="killcam"></div>
+    <div id="killcam">
+      <div id="killcam-cause"></div>
+      <div id="killcam-count"></div>
+    </div>
     <div id="fade"></div>
     <div id="join">
       <button

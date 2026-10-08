@@ -1902,6 +1902,7 @@ declare global {
         eye: { x: number; y: number; z: number },
         at: { x: number; y: number; z: number },
         rounds?: number,
+        spread?: number,
       ) => { building: number; destroyed: number };
       /** QA-only: hold the camera at a canonical eye looking at `at`
        * (null restores the chase camera). */
@@ -2308,7 +2309,7 @@ window.__ab = {
   qaCamera: (view) => {
     qaView = view;
   },
-  chew: (eye, at, rounds = 1200) => {
+  chew: (eye, at, rounds = 1200, spread = 1) => {
     const damage = socket.cityDamage;
     const buildings = city.cityBuildings;
     const before = damage.destroyedCount;
@@ -2328,9 +2329,9 @@ window.__ab = {
     for (let k = 0; k < rounds; k++) {
       // Aim at a random point of the target's box, as a gunner sweeping it.
       const aim = {
-        x: target.x + (rand() - 0.5) * target.width,
-        y: rand() * target.height,
-        z: target.z + (rand() - 0.5) * target.depth,
+        x: at.x + (target.x - at.x + (rand() - 0.5) * target.width) * spread,
+        y: at.y + (rand() * target.height - at.y) * spread,
+        z: at.z + (target.z - at.z + (rand() - 0.5) * target.depth) * spread,
       };
       const d = wrapDelta(eye, aim);
       const len = Math.hypot(d.x, d.y, d.z) || 1;

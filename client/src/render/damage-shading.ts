@@ -41,10 +41,11 @@ const KIND_STRIDE = "4096.0";
  * are the same at all four corners, so they interpolate to constants. */
 export const DAMAGE_VERTEX_GLSL = /* glsl */ `
 // D2: which face is this vertex on, and is it one destruction exposed?
-int abMask = int(aSubOff.w + 0.5);
-int abFace = normal.x < -0.5 ? 1 : normal.x > 0.5 ? 2 : normal.y < -0.5 ? 4
-  : normal.y > 0.5 ? 8 : normal.z < -0.5 ? 16 : 32;
-float abKind = (abMask & 64) != 0 ? 2.0 : ((abMask & abFace) != 0 ? 1.0 : 0.0);
+// Float bit tests, not int bitwise ops (portable to every GLSL ES driver).
+float abMask = floor(aSubOff.w + 0.5);
+float abFace = normal.x < -0.5 ? 1.0 : normal.x > 0.5 ? 2.0 : normal.y < -0.5 ? 4.0
+  : normal.y > 0.5 ? 8.0 : normal.z < -0.5 ? 16.0 : 32.0;
+float abKind = abMask >= 64.0 ? 2.0 : mod(floor(abMask / abFace), 2.0);
 // Box-centred meters (the unit box's y runs 0..1).
 vec3 abLocal = (position - vec3(0.0, 0.5, 0.0)) * sScale;
 vec2 abUV = abs(normal.x) > 0.5 ? abLocal.zy : abs(normal.z) > 0.5 ? abLocal.xy : abLocal.xz;

@@ -245,6 +245,7 @@ import { TrainRenderer } from "./render/train";
 import { WeatherClock, setWeatherUniform } from "./render/weather";
 import { nearestImage } from "./render/wrapPlacement";
 import { BotBar } from "./ui/botbar";
+import { Coach, renderPrimer } from "./ui/coach";
 import { CommsTicker } from "./ui/comms";
 import { DamageIndicator } from "./ui/damage-indicator";
 import { initFullscreenUi } from "./ui/fullscreen";
@@ -294,6 +295,10 @@ initMobileShell();
 // before the name prompt (the JOIN tap is its gesture; the iPhone sheet
 // greets the join card). No-op on desktop.
 const phoneFullscreen = initPhoneFullscreen();
+// U3: the join card's controls primer — after the shell (body.touch picks
+// the variant), switching to touch if the first real touch comes later.
+renderPrimer(isTouch());
+whenTouch(() => renderPrimer(true));
 
 // --- Join flow: name → server welcome (identity, seed, spawn) ---
 const name = await requestName(phoneFullscreen.onJoinGesture);
@@ -925,6 +930,12 @@ botBar.onClaim = (count) => socket.sendSetBots(count);
 scoreboard.bindBotBar(botBar);
 // M2: no Tab key on a phone — a minimap tap pins the scoreboard (touch only).
 scoreboard.bindTapToggle(document.getElementById("minimap") as HTMLElement);
+// U3: first-life hints, the touch coach marks and the storm notice. Starts
+// with the first rendered frame (bottom of the file).
+const coach = new Coach(isTouch);
+whenTouch(() =>
+  coach.bindTouchAim(document.getElementById("touch-layer") as HTMLElement),
+);
 
 /** id → name/isBot for feed + radio lines (self included; remotes tracks the
  * others too). isBot gates whether the VOICE may speak the callsign. */
@@ -1292,6 +1303,8 @@ socket.events.onDeath = (msg) => {
   hpBar.clear(msg.victimId); // never float a stale bar over a respawn
   if (msg.victimId === socket.selfId) {
     enterDeath(msg.killerId, msg.cause);
+    // U3: the first storm death earns one "stay below" notice on respawn.
+    if (msg.cause === "storm") coach.noteStormDeath();
     // M5: the first life is over ("after the first match" in a drop-in
     // game) — the kill-cam pause is when an install offer intrudes least.
     phoneFullscreen.onFirstLifeOver();
@@ -1753,6 +1766,8 @@ declare global {
       boost: () => { energy: number; active: boolean };
       /** M1 QA: touch-control state; null off touch. */
       touch: () => ReturnType<TouchControls["debug"]> | null;
+      /** U3 QA: the hint on screen, the queue left, the touch overlay. */
+      coach: () => ReturnType<Coach["debug"]>;
       zoom: () => { held: boolean; z: number; fov: number };
       lampImage: (x: number, z: number) => { x: number; z: number } | null;
       traffic: (at?: number | null) => ReturnType<Traffic["debug"]>;
@@ -2143,6 +2158,7 @@ window.__ab = {
   }),
   boost: () => ({ energy: boost.energy, active: boost.active }),
   touch: () => touchControls?.debug() ?? null,
+  coach: () => coach.debug(),
   // ANGE-G9CPCV QA: aim-zoom state plus the FOV it is actually driving
   // (drive it with real button-2 mouse events).
   zoom: () => ({ held: zoom.held, z: zoom.z, fov: camera.fov }),
@@ -3097,7 +3113,23 @@ const frame = (now: number): void => {
     alive && aimMode === "instructor" ? input.cursorPx() : null,
     aimConverged,
   );
-  cursorPrev = input.cursorNdc();
+  const cursorNow = input.cursorNdc();
+  // U3: the first-life hints watch for each control being used — by hand:
+  // auto-fire's trigger is not the player firing.
+  const flying = alive && !settingsOpen;
+  if (flying && !isTouch()) {
+    coach.noteCursor(
+      cursorNow.x - cursorPrev.x,
+      cursorNow.y - cursorPrev.y,
+      camera.fov,
+      camera.aspect,
+    );
+  }
+  if (flying && guns.triggerHeld) coach.note("fire");
+  if (flying && boost.active) coach.note("boost");
+  if (flying && scoreboard.isOpen) coach.note("scores");
+  coach.frame(Math.min(rawMs, 250), alive, settingsOpen || document.hidden);
+  cursorPrev = cursorNow;
   if (solutionTone.shouldPlay(alive && aimResult.solution, now)) {
     audio.solutionTick();
   }
@@ -3164,6 +3196,7 @@ renderer.setAnimationLoop(frame);
 requestAnimationFrame(() => {
   clearInterval(bootPing);
   closeJoin();
+  coach.start(); // U3: hints and the touch coach marks greet the first spawn
 });
 
 // --- M2: backgrounded tab → pause; back with a dead session → rejoin ---

@@ -158,12 +158,22 @@ export function nextSensitivity(
   const next =
     SENSITIVITY_STEPS[(i + 1) % SENSITIVITY_STEPS.length] ??
     DEFAULT_SENSITIVITY;
+  saveSensitivity(next, target);
+  return next;
+}
+
+/** Persist a step (the M6 settings panel picks one directly); off-step
+ * values are ignored. */
+export function saveSensitivity(
+  value: number,
+  target: Pick<Window, "localStorage">,
+): void {
+  if (!(SENSITIVITY_STEPS as readonly number[]).includes(value)) return;
   try {
-    target.localStorage.setItem(SENSITIVITY_STORAGE, String(next));
+    target.localStorage.setItem(SENSITIVITY_STORAGE, String(value));
   } catch {
     // Private mode / blocked storage: the step still applies this visit.
   }
-  return next;
 }
 
 // --- Emulated-mouse guard -------------------------------------------------

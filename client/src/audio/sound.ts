@@ -64,6 +64,15 @@ export interface MixBus {
   master: GainNode;
 }
 
+/** Player volume multipliers (M6 settings), each a gain 0..1. */
+export interface Volumes {
+  master: number;
+  /** Own and remote engine loops. */
+  engine: number;
+  /** The radio voice bus. */
+  voice: number;
+}
+
 interface RemoteEngine {
   osc: OscillatorNode;
   gain: GainNode;
@@ -89,6 +98,9 @@ export class GameAudio implements VoiceSink {
   } | null = null;
   private readonly remotes = new Map<string, RemoteEngine>();
   private lastWhooshAt = 0;
+  /** M6 settings: gain multipliers (already curved), applied to the buses
+   * as they are built and to the engine levels every frame. */
+  private volumes: Volumes = { master: 1, engine: 1, voice: 1 };
 
   /** Backgrounded (M2): the context is suspended on purpose, and the
    * per-frame ensure() must not wake it back up. */
@@ -141,12 +153,12 @@ export class GameAudio implements VoiceSink {
         return null; // no WebAudio (headless QA) — stay silent
       }
       this.master = this.ctx.createGain();
-      this.master.gain.value = MASTER_LEVEL;
+      this.master.gain.value = MASTER_LEVEL * this.volumes.master;
       this.master.connect(this.ctx.destination);
       this.sfx = this.ctx.createGain();
       this.sfx.connect(this.master);
       this.voice = this.ctx.createGain();
-      this.voice.gain.value = VOICE_LEVEL;
+      this.voice.gain.value = VOICE_LEVEL * this.volumes.voice;
       this.voice.connect(this.master);
       // 1 s of shared white noise for every burst-shaped sound.
       const len = this.ctx.sampleRate;
@@ -161,6 +173,22 @@ export class GameAudio implements VoiceSink {
       void this.ctx.resume();
     }
     return this.ctx.state === "running" ? this.ctx : null;
+  }
+
+  /** M6 settings: the player's volumes, as gains. Stored first, so a call
+   * before the first gesture (no context, no buses yet) still takes effect
+   * when they are built; the engine loops read theirs every frame. */
+  setVolumes(v: Volumes): void {
+    this.volumes = { ...v };
+    if (this.master) this.master.gain.value = MASTER_LEVEL * v.master;
+    if (this.voice) this.voice.gain.value = VOICE_LEVEL * v.voice;
+  }
+
+  /** QA (`__ab.settings`): the live master and voice bus gains, or null
+   * before the audio context exists. */
+  busGains(): { master: number; voice: number } | null {
+    if (!this.master || !this.voice) return null;
+    return { master: this.master.gain.value, voice: this.voice.gain.value };
   }
 
   /** The buses an add-on layer mixes into; null until the context runs
@@ -205,7 +233,11 @@ export class GameAudio implements VoiceSink {
       0.08,
     );
     this.ownGain.gain.setTargetAtTime(
-      alive ? OWN_ENGINE_LEVEL * (0.55 + 0.45 * t + 0.3 * boost01) : 0,
+      alive
+        ? OWN_ENGINE_LEVEL *
+            this.volumes.engine *
+            (0.55 + 0.45 * t + 0.3 * boost01)
+        : 0,
       now,
       0.1,
     );
@@ -245,7 +277,11 @@ export class GameAudio implements VoiceSink {
         now,
         0.08,
       );
-      engine.gain.gain.setTargetAtTime(s.gain * REMOTE_ENGINE_LEVEL, now, 0.1);
+      engine.gain.gain.setTargetAtTime(
+        s.gain * REMOTE_ENGINE_LEVEL * this.volumes.engine,
+        now,
+        0.1,
+      );
       engine.pan.pan.setTargetAtTime(s.pan, now, 0.05);
     }
     for (const [id, engine] of this.remotes) {

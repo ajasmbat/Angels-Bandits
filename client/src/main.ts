@@ -77,6 +77,7 @@ import { SMAAPass } from "three/examples/jsm/postprocessing/SMAAPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { CityAmbience } from "./audio/ambience";
 import { Busker } from "./audio/busker";
+import { Music, type MusicMoment } from "./audio/music";
 import { RadioQueue, RadioVoice } from "./audio/radio";
 import { GameAudio } from "./audio/sound";
 import { NEAR_MISS_RADIUS, closestApproach, spatialize } from "./audio/spatial";
@@ -291,6 +292,7 @@ import {
   type SettingsStore,
   autopilotInput,
   loadSettings,
+  musicGain,
   scaleLimits,
   volumeGain,
 } from "./ui/settings";
@@ -909,14 +911,21 @@ const bullets = new Bullets();
 const tracers = new Tracers();
 scene.add(tracers.group);
 const audio = new GameAudio();
+// S2 dynamic soundtrack: procedural, intensity-driven, on its own ducked
+// music input; built once on the first running frame, like the city.
+const music = new Music(audio, welcome.seed);
 /** M6: the players' volume sliders, as gains (stored before the context
- * exists; GameAudio applies them as its buses are built). */
-const applyVolumes = (): void =>
+ * exists; GameAudio applies them as its buses are built). Music OFF or at 0
+ * also idles the score's scheduler. */
+const applyVolumes = (): void => {
   audio.setVolumes({
     master: volumeGain(settings.master),
     engine: volumeGain(settings.engine),
     voice: volumeGain(settings.voice),
+    music: musicGain(settings),
   });
+  music.setEnabled(musicGain(settings) > 0);
+};
 applyVolumes();
 // L2 city soundscape: traffic, horns, sirens, plaza music, wind and tunnel
 // echo — procedural, built once into GameAudio's ducked sfx bus.
@@ -1360,6 +1369,7 @@ socket.events.onDamage = (msg) => {
       haptics.damage(now);
     }
     radio.noteCombat(performance.now());
+    music.noteCombat(performance.now()); // being fired at
     if (lowHpArmed && msg.hp < LOW_HP_CALLOUT) {
       lowHpArmed = false;
       say(hitCallout(name));
@@ -1401,6 +1411,7 @@ socket.events.onDeath = (msg) => {
     hud.killConfirm(performance.now());
     haptics.kill();
     audio.killConfirm();
+    music.moment("victory");
   }
   hpBar.clear(msg.victimId); // never float a stale bar over a respawn
   if (msg.victimId === socket.selfId) {
@@ -1830,7 +1841,7 @@ declare global {
         open: boolean;
         autopilot: boolean;
         values: Settings;
-        gains: { master: number; voice: number } | null;
+        gains: { master: number; voice: number; music: number } | null;
       };
       /** Claim the room's shared bot count (QA: 0 makes a scene reproducible). */
       setBots: (count: number) => void;
@@ -2018,6 +2029,12 @@ declare global {
       };
       /** L2 QA: the city soundscape's per-layer gains and their inputs. */
       ambience: () => ReturnType<CityAmbience["debug"]>;
+      /** S2 QA: the soundtrack's state (wanted and playing), layer mix and
+       * fixed node count. */
+      music: () => ReturnType<Music["debug"]>;
+      /** S2 QA: fire a sting by hand (`swell` stands in for the D3/D5
+       * collapse and S4 boss events until they exist). */
+      musicMoment: (kind: MusicMoment) => void;
       /** A1 QA: what the city-life tier drew and holds. */
       cityLife: () => {
         drawn: number;
@@ -2418,6 +2435,8 @@ window.__ab = {
     log: radioLog.map((l) => ({ ...l })),
   }),
   ambience: () => ambience.debug(),
+  music: () => music.debug(),
+  musicMoment: (kind) => music.moment(kind),
   cityLife: () => ({
     drawn: cityLife.count,
     statics: cityLife.staticDrawn,
@@ -2834,6 +2853,7 @@ const frame = (now: number): void => {
       tracers.flash(shot.origin, now);
       audio.gunshot();
       radio.noteCombat(now); // firing = combat radio discipline
+      music.noteCombat(now);
     }
 
     // In-cloud turbulence (ST2): pure offsets applied to the DISPLAYED
@@ -2897,6 +2917,7 @@ const frame = (now: number): void => {
       ) {
         audio.whoosh(spatialize(flight.pos, flight.yaw, bullet.pos).pan, now);
         radio.noteCombat(now);
+        music.noteCombat(now); // fired at
         say(nearMissCallout(name));
       }
       continue;
@@ -3189,6 +3210,16 @@ const frame = (now: number): void => {
     serverTimeMs: renderMs,
     rain: rain.level, // L4 weather
   });
+  // S2 soundtrack: the nearest living remote (torus distance) is the threat;
+  // dead, there is none — the kill-cam plays calm.
+  let threatDist: number | null = null;
+  if (alive) {
+    for (const c of contacts) {
+      const d = wrapDistance(flight.pos, c.pos);
+      if (threatDist === null || d < threatDist) threatDist = d;
+    }
+  }
+  music.update({ nowMs: now, threatDist, hp: selfHp, alive });
   // A1: the nearest busker within earshot of the plane (silent if none).
   busker.update(
     flight.pos,

@@ -29,6 +29,7 @@ import {
 } from "@angels-bandits/common/city/newsheli";
 import {
   type NatureIndex,
+  buildCityIndex,
   buildNatureIndex,
 } from "@angels-bandits/common/collision";
 import {
@@ -47,6 +48,11 @@ import {
   SPAWN_PROTECTION_MS,
   TICK_DOWN_HZ,
 } from "@angels-bandits/common/constants";
+import {
+  COURSES_MIN,
+  type Course,
+  generateCourses,
+} from "@angels-bandits/common/courses";
 import {
   clampInterpDelay,
   encodeSnapshotEntry,
@@ -68,6 +74,12 @@ import {
 } from "./bots";
 import { CityEventLog, nearBuildingProbe } from "./cityevents";
 import { Combat, type HitResult, type SpeedCapFn } from "./combat";
+import {
+  CourseBook,
+  CourseTracker,
+  type FinishedRun,
+  type SweepWorld,
+} from "./courses";
 import {
   type ClientEnvelope,
   isClientMsg,
@@ -136,6 +148,8 @@ interface Client {
   wantsAway: boolean;
   away: boolean;
   awayAt: number;
+  /** S3: this pilot's official course timing, fed from accepted poses. */
+  course: CourseTracker;
 }
 
 /** W2: what a dropped session leaves behind for RESUME_WINDOW: enough to
@@ -223,6 +237,42 @@ const roomMovers = (room: Room): MoverField => {
 };
 /** The newest kill site per room that the news heli has not taken yet. */
 const pendingKillByRoom = new Map<string, { x: number; z: number }>();
+
+/**
+ * S3 stunt courses per city seed, memoised like `moversFor`: the courses
+ * (generated from exactly the city, trees and static movers every client
+ * generates them from), the process-wide boards, and what the solid sweep
+ * tests. Boards live in this process's memory only.
+ */
+interface CourseSet {
+  courses: Course[];
+  book: CourseBook;
+  world: SweepWorld;
+}
+const courseSetsBySeed = new Map<number, CourseSet>();
+const courseSetFor = (seed: number): CourseSet => {
+  let set = courseSetsBySeed.get(seed);
+  if (!set) {
+    const buildings = seed === CITY_SEED ? city : generateCity(seed);
+    const index = buildCityIndex(buildings);
+    const courses = generateCourses(seed, {
+      buildings,
+      index,
+      nature: natureIndexFor(seed),
+      movers: moversFor(seed),
+    });
+    const names = courses.map((c) => c.name).join(", ");
+    const log = courses.length < COURSES_MIN ? console.warn : console.log;
+    log(`stunt courses for seed ${seed}: ${courses.length} (${names})`);
+    set = {
+      courses,
+      book: new CourseBook(courses),
+      world: { buildings, index },
+    };
+    courseSetsBySeed.set(seed, set);
+  }
+  return set;
+};
 
 /** Per-room bot pilots. Created lazily; seeded from the room's number so
  * bot behavior is deterministic per room. */
@@ -431,6 +481,10 @@ function handleJoin(
     wantsAway: false,
     away: false,
     awayAt: 0,
+    course: new CourseTracker(
+      courseSetFor(room.seed).courses,
+      courseSetFor(room.seed).world,
+    ),
   };
   clients.set(id, client);
   resumeIds.set(client.resumeToken, id);
@@ -447,6 +501,7 @@ function handleJoin(
     cityEvents: cityEvents.recent(room.id, now),
     newsHeli: roomMovers(room).news,
     resumeToken: client.resumeToken,
+    courses: courseSetFor(room.seed).book.standings(),
   };
   ws.send(JSON.stringify(welcome));
   sendToRoom(room, { type: "playerJoined", player: { id, name } }, id);
@@ -482,9 +537,12 @@ function handlePose(client: Client, pose: Pose, t: unknown, now: number): void {
   client.lastPoseAt = now;
   const verdict = validatePose(client.pose, pose, dt, cap);
   if (verdict.ok) {
+    const rejects = client.rejectStreak;
     client.pose = verdict.pose;
     client.poseTime = poseTimeOf(t, now);
     client.rejectStreak = 0;
+    // S3: course timing reads accepted poses only, on the ARRIVAL clock.
+    observeCourse(client, verdict.pose.pos, now, rejects);
     return;
   }
   client.rejectStreak++;
@@ -496,7 +554,68 @@ function handlePose(client: Client, pose: Pose, t: unknown, now: number): void {
       client.pose = resync.pose;
       client.poseTime = poseTimeOf(t, now);
       client.rejectStreak = 0;
+      // A teleport is never part of a run: start the course stream over.
+      client.course.reset();
+      client.course.observe(resync.pose.pos, now);
     }
+  }
+}
+
+/**
+ * S3: one accepted pose into the pilot's course tracker. A finished run goes
+ * on the board; the runner gets the official result, and everyone on the
+ * same city seed gets the board when it changed — with the ghost when the
+ * record fell.
+ */
+function observeCourse(
+  client: Client,
+  pos: Vec3,
+  now: number,
+  rejects: number,
+): void {
+  const run = client.course.observe(pos, now, rejects);
+  if (!run) return;
+  const seed = client.room.seed;
+  const outcome = courseSetFor(seed).book.submit(client.name, run);
+  if (client.ws.readyState === client.ws.OPEN) {
+    const result: ServerMsg = {
+      type: "courseResult",
+      course: run.course,
+      timeMs: run.timeMs,
+      missed: run.missed,
+      medal: outcome.medal,
+      rank: outcome.rank,
+      record: outcome.record,
+    };
+    client.ws.send(JSON.stringify(result));
+  }
+  if (outcome.changed) {
+    broadcastCourseBoard(seed, run, outcome.record ? client.name : null);
+  }
+}
+
+/** S3: a course board changed — tell every client on that city seed. */
+function broadcastCourseBoard(
+  seed: number,
+  run: FinishedRun,
+  recordBy: string | null,
+): void {
+  const standing = courseSetFor(seed).book.standing(run.course);
+  const msg: ServerMsg = {
+    type: "courseBoard",
+    course: run.course,
+    board: standing.board,
+    ...(recordBy !== null && standing.ghost
+      ? {
+          ghost: standing.ghost,
+          record: { name: recordBy, timeMs: run.timeMs },
+        }
+      : {}),
+  };
+  const data = JSON.stringify(msg);
+  for (const member of clients.values()) {
+    if (member.room.seed !== seed) continue;
+    if (member.ws.readyState === member.ws.OPEN) member.ws.send(data);
   }
 }
 
@@ -723,6 +842,7 @@ function resetOnRecord(client: Client, spawn: SpawnState, now: number): void {
   client.rejectStreak = 0;
   client.lastPoseAt = now;
   client.boost = createBoost(now); // fresh plane, full gauge, no tail
+  client.course.reset(); // a respawn is never part of a run (S3)
 }
 
 /**
@@ -739,6 +859,7 @@ function settleAway(client: Client, now: number): void {
     client.away = true;
     client.awayAt = now;
     storm.forget(client.id);
+    client.course.reset(); // out of the world: no run survives it (S3)
     // Only the player needs to know: to everyone else it just drops out of
     // snapshots. The client holds its poses for the return respawn on this.
     if (client.ws.readyState === client.ws.OPEN) {
@@ -1063,6 +1184,9 @@ const scheduleTick = (): void => {
   );
 };
 scheduleTick();
+
+// S3: generate (and log) the city's stunt courses before the first join.
+courseSetFor(CITY_SEED);
 
 // The standing arena: bots fly the first room even before anyone joins, so
 // the first joiner drops into a live dogfight instead of an empty sky.

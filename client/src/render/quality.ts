@@ -122,6 +122,9 @@ export interface QualityProfile {
   /** R2 roof dressing's fine detail (drains, hatches, walkways, lightning
    * rods, dishes, braces, gondola cables). Structures are solid and stay. */
   roofDetail: boolean;
+  /** S3 the record ghost replayed beside a course run (one translucent
+   * draw). The rings themselves are guidance and stay on every tier. */
+  courseGhost: boolean;
   /** D1 bullet impacts: share of the full budget — impact particles
    * (1200 × share), facade damage slots (16 + 32 × share) and burning
    * patches (2 + 4 × share). Counts only; the shaders never change. */
@@ -155,6 +158,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     streetPaint: true,
     holeDecor: 1,
     roofDetail: true,
+    courseGhost: true,
     impacts: 1,
   },
   medium: {
@@ -183,6 +187,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     streetPaint: true,
     holeDecor: 1,
     roofDetail: true,
+    courseGhost: true,
     impacts: 0.75,
   },
   low: {
@@ -211,6 +216,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     streetPaint: true,
     holeDecor: 1,
     roofDetail: false,
+    courseGhost: true,
     impacts: 0.5,
   },
   mobile: {
@@ -239,6 +245,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     streetPaint: false,
     holeDecor: 0,
     roofDetail: false,
+    courseGhost: false,
     impacts: 0.25,
   },
 };
@@ -547,6 +554,22 @@ export const FEATURE_TIERS: readonly {
     low: "full",
     mobile: "full",
     note: "solid",
+  },
+  {
+    feature: "S3 stunt course rings",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "guidance: one instanced draw, non-collidable",
+  },
+  {
+    feature: "S3 course record ghost",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "off",
+    note: "one translucent draw; MOBILE keeps the rings only",
   },
   {
     feature: "R2 roof dressing — fine detail (drains, hatches, rods, dishes)",

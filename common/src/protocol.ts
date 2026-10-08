@@ -193,6 +193,74 @@ export interface WelcomeMsg {
    * session (same id and score) within RESUME_WINDOW_MS of a drop. Fresh on
    * every welcome; never logged. */
   resumeToken: string;
+  /** S3: every stunt course's leaderboard and record ghost, in course id
+   * order (common/src/courses.ts generateCourses for this seed). The rings
+   * themselves are never sent — both sides generate them from the seed. */
+  courses?: CourseStanding[];
+}
+
+// --- S3 stunt courses ---
+
+export type Medal = "gold" | "silver" | "bronze";
+
+/**
+ * A recorded flight path (S3 ghost), recorded by the SERVER from a run's
+ * accepted poses. `d` is flat integers in POS_SCALE units: the first sample
+ * absolute (x, y, z), every later one a wrap-safe delta from the one before.
+ * Sample k is at min(k / hz, durMs) seconds after the start ring — the last
+ * sample is the finish crossing, which may fall between two grid instants.
+ * Positions only: playback derives attitude from the path itself.
+ */
+export interface GhostPath {
+  hz: number;
+  durMs: number;
+  d: number[];
+}
+
+/** One row of a course leaderboard. `timeMs` includes miss penalties. */
+export interface CourseBoardEntry {
+  name: string;
+  timeMs: number;
+  missed: number;
+  medal: Medal | null;
+}
+
+/** A course's leaderboard (best first, at most COURSE_BOARD_SIZE rows) and
+ * the record holder's ghost, null until anyone finishes. */
+export interface CourseStanding {
+  course: number;
+  board: CourseBoardEntry[];
+  ghost: GhostPath | null;
+}
+
+/**
+ * S3: the server's OFFICIAL result of the runner's own finished run, timed
+ * from its accepted pose history (the client's HUD time is provisional).
+ * Sent to the runner only. `rank` is the board position (1-based), or null
+ * when the time did not make the board.
+ */
+export interface CourseResultMsg {
+  type: "courseResult";
+  course: number;
+  timeMs: number;
+  missed: number;
+  medal: Medal | null;
+  rank: number | null;
+  record: boolean;
+}
+
+/**
+ * S3: a course leaderboard changed. Sent to every client on the same city
+ * seed (records are process-wide, not per room). `ghost` and `record` are
+ * present only when the record itself fell — receivers keep the ghost they
+ * have otherwise.
+ */
+export interface CourseBoardMsg {
+  type: "courseBoard";
+  course: number;
+  board: CourseBoardEntry[];
+  ghost?: GhostPath;
+  record?: { name: string; timeMs: number };
 }
 
 export interface PlayerJoinedMsg {
@@ -360,6 +428,8 @@ export interface AwayStartedMsg {
 
 export type ServerMsg =
   | WelcomeMsg
+  | CourseResultMsg
+  | CourseBoardMsg
   | AwayStartedMsg
   | NewsHeliMsg
   | BotsConfigMsg

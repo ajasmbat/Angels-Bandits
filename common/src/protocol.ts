@@ -193,6 +193,11 @@ export interface WelcomeMsg {
    * session (same id and score) within RESUME_WINDOW_MS of a drop. Fresh on
    * every welcome; never logged. */
   resumeToken: string;
+  /** D2: the room's whole destroyed-chunk set, delta-encoded
+   * (city/destruction.ts encodeChunkIds), so a late joiner — or a resume
+   * into another room — sees and collides with the same broken city. The
+   * client RESETS to it: the set may be smaller than what it held. */
+  destroyed: number[];
 }
 
 export interface PlayerJoinedMsg {
@@ -349,6 +354,17 @@ export interface NewsHeliMsg {
 }
 
 /**
+ * D2: chunks the server destroyed since the last tick, delta-encoded
+ * (encodeChunkIds). At most one per room per TICK_DOWN_HZ tick, and only
+ * when something broke. Every client adds them to its CityDamage, so its
+ * collision and rendering subtract exactly what everyone else's do.
+ */
+export interface ChunksMsg {
+  type: "chunks";
+  d: number[];
+}
+
+/**
  * W2: the player's own `away: true` has taken effect (sent to that player
  * only — to everyone else the plane just leaves snapshots). From here its
  * return is answered with a `respawn`, which the client waits for before
@@ -360,6 +376,7 @@ export interface AwayStartedMsg {
 
 export type ServerMsg =
   | WelcomeMsg
+  | ChunksMsg
   | AwayStartedMsg
   | NewsHeliMsg
   | BotsConfigMsg

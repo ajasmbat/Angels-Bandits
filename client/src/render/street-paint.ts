@@ -17,7 +17,7 @@
 //  - the scattered fine detail (patches, trenches, stains, manholes, drains,
 //    arrows, words, bike icons, tiles, grates) sits inside ONE coherent
 //    branch, `abAA < STREET_PAINT_FAR_AA`. That threshold is half the
-//    largest faded size (a 6 m patch), so at the branch boundary every
+//    largest faded size (a patch, faded on 3 m), so at the boundary every
 //    feature has already resolved to its MEAN — and the else-path multiplies
 //    exactly those means in, so the average tone is continuous across the
 //    cut (no ring). Long lines that must survive distance (stop bars, bike
@@ -56,8 +56,9 @@ import {
 export const STREET_PAINT_UNIFORM = { value: 1 };
 
 /** m per pixel beyond which the fine detail is skipped (see the header):
- * half the largest faded feature size, the 6 m patch. */
-export const STREET_PAINT_FAR_AA = 3.0;
+ * half the largest faded feature size, the patch (faded on 3 m — its
+ * seam and its edge, the visible part of a 3–9 m rectangle). */
+export const STREET_PAINT_FAR_AA = 1.5;
 
 // The means the fine detail resolves to — and the else-path applies. Each is
 // 1 − coverage × (1 − tone), with the expected coverage written down so a
@@ -358,7 +359,7 @@ if (abGOn && abAA < ${G.far}) {
     float abGD = length((abGP - abGSC) * vec2(0.7, 1.0));
     abGStain = 1.0 - 0.45 * (1.0 - smoothstep(abGR * 0.4, abGR, abGD));
   }
-  float abGWearF = mix(${num(PATCH_MEAN)}, abGPatch, abDetail(6.0, abAA))
+  float abGWearF = mix(${num(PATCH_MEAN)}, abGPatch, abDetail(3.0, abAA))
     * mix(${num(TRENCH_MEAN)}, abGTrench, abDetail(1.8, abAA))
     * mix(${num(STAIN_MEAN)}, abGStain, abDetail(2.4, abAA));
   abPaint *= abGWearF;
@@ -425,12 +426,17 @@ if (abGOn) {
   if (abAA < ${G.far}) {
     vec2 abGKA = vec2(abGKeyLine * 2.0 + (abGSide > 0.0 ? 1.0 : 0.0), mod(abGSeg, ${G.gridF})) + 30.0;
     // Approach markings: arrows, ONLY, STOP — one layout per approach.
-    if (abGApproach && abGOff > ${G.xwalkOut}) {
+    // Only the lane band 19–36 m before the stop line can hold one, so the
+    // hash and the glyph work run on a sliver of the road, not all of it.
+    if (abGApproach && abGOff > ${G.xwalkOut} && abGAhead < 36.5 && abGAcr < ${G.lane} + 2.5) {
       float abGKind = abHash(abGKA);
       float abGGx = ${G.lane} - abGAcr; // the driver's right (curb on the left)
       if (abGKind < 0.7) {
         int abGArrowK = abGKind < 0.35 ? 0 : abGKind < 0.55 ? 1 : 2;
-        abGWhite = max(abGWhite, abArrow(vec2(abGGx, 29.0 - abGAhead), abGArrowK, abAA) * abDetail(3.0, abAA) * abWear);
+        vec2 abGArrowP = vec2(abGGx, 29.0 - abGAhead);
+        if (abs(abGArrowP.y) < 2.6 && abs(abGArrowP.x) < 2.2) {
+          abGWhite = max(abGWhite, abArrow(abGArrowP, abGArrowK, abAA) * abDetail(3.0, abAA) * abWear);
+        }
         if (abGArrowK > 0) {
           abGWhite = max(abGWhite, abRoadWord(1, 4, vec2(abGGx, 34.4 - abGAhead), vec2(0.26, 0.5), abAA) * abWear);
         }
@@ -442,7 +448,10 @@ if (abGOn) {
     if (abGBikeOn) {
       float abGStation = 40.0 + 60.0 * floor((abGLa - 10.0) / 60.0 + 0.5);
       vec2 abGG = vec2((${G.bikeIn} + ${G.bikeOut}) * 0.5 - abGAcr, abGDir * (abGLa - abGStation));
-      abGWhite = max(abGWhite, abBikeIcon(abGG, abAA) * abDetail(2.0, abAA) * abWear);
+      // The icon's box first: nine segment distances only where it can be.
+      if (abs(abGG.x) < 1.0 && abs(abGG.y - 0.4) < 1.2) {
+        abGWhite = max(abGWhite, abBikeIcon(abGG, abAA) * abDetail(2.0, abAA) * abWear);
+      }
     }
     // Parking bay ticks at every slot boundary (street-detail.ts SLOT).
     if (abGPark > 0.5) {
@@ -496,7 +505,7 @@ if (uStreetPaint > 0.5) {
   // Worn walking line: the middle of the pavement is polished a shade
   // lighter, broken by a world-periodic swell (seam-safe).
   float abWWorn = 1.0 - smoothstep(0.4, 1.6, abs(abWOff - 18.0));
-  abPaint *= 1.0 + 0.07 * abWWorn * (0.6 + 0.4 * sin(abWAlong * 0.0942 + abWKeyLine));
+  abPaint *= 1.0 + 0.12 * abWWorn * (0.6 + 0.4 * sin(abWAlong * 0.0942 + abWKeyLine));
   // Curb colours: red along a hydrant, yellow along a bus stop.
   float abWCurb = 1.0 - abEdge(${G.curb} + 0.5, abWOff, abAA);
   if ((abWCode & 8) != 0) {
@@ -532,7 +541,7 @@ if (uStreetPaint > 0.5) {
       abLine(abPeriodic(abWOff, 0.0, abWT), ${num(TILE_JOINT)}, abAA));
     vec2 abWF = fract(abWTile) * abWT;
     float abWCrack = abWH < 0.03 ? abLine(abs(abWF.x - abWF.y) * 0.7071, 0.012, abAA) : 0.0;
-    float abWFlag = (1.0 + 0.2 * (abWH - 0.5)) * (1.0 - ${num(JOINT_DARK)} * abWJ) * (1.0 - 0.5 * abWCrack);
+    float abWFlag = (1.0 + 0.32 * (abWH - 0.5)) * (1.0 - ${num(JOINT_DARK)} * abWJ) * (1.0 - 0.5 * abWCrack);
     vec3 abWBase = mix(abPaint, ${C.paver} * (1.0 + (abNoiseV - 0.5) * 0.3), abWStrip * (1.0 - abWRamp) * (1.0 - abWCurb));
     abPaint = abWBase * mix(${num(TILE_MEAN)}, abWFlag, abDetail(${num(TILE)}, abAA) * (1.0 - abWRamp));
     // Tree grates at every candidate pit (street-detail.ts treePits), except

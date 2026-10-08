@@ -10,6 +10,9 @@ import {
   GUST_K1,
   SWAY_ACROSS,
   SWAY_LEAN,
+  WIND_BASE_HEADING,
+  airDrift,
+  airVelocity,
   crownSway,
   swayPhases,
   windAt,
@@ -156,5 +159,68 @@ describe("wind is deterministic and torus-periodic", () => {
     expect(CROWN_BEGIN_VERTEX_GLSL).toContain(
       "crownSway(instanceMatrix[3].xz, position.y)",
     );
+  });
+});
+
+describe("airDrift — the shared air that fog banks and litter ride (S5)", () => {
+  /** Shortest signed difference of two wrapped coordinates. */
+  const wrap = (d: number) => d - Math.round(d / WORLD_SIZE) * WORLD_SIZE;
+
+  it("is deterministic, wrapped into [0, WORLD_SIZE), and allocation-free with out", () => {
+    const out = { x: 0, z: 0 };
+    for (const t of TIMES) {
+      const a = airDrift(t);
+      const b = airDrift(t, out);
+      expect(b).toBe(out);
+      expect(b.x).toBe(a.x);
+      expect(b.z).toBe(a.z);
+      for (const c of [a.x, a.z]) {
+        expect(Number.isFinite(c)).toBe(true);
+        expect(c).toBeGreaterThanOrEqual(0);
+        expect(c).toBeLessThan(WORLD_SIZE);
+      }
+    }
+  });
+
+  it("is the exact integral of its velocity (finite difference to 1e-4 m/s)", () => {
+    for (const t of [0, 1234, 33_333, 97_000, 500_000, 3_600_000]) {
+      const h = 20; // ms
+      const a = airDrift(t - h);
+      const b = airDrift(t + h);
+      const v = airVelocity(t);
+      expect(wrap(b.x - a.x) / ((2 * h) / 1000)).toBeCloseTo(v.x, 4);
+      expect(wrap(b.z - a.z) / ((2 * h) / 1000)).toBeCloseTo(v.z, 4);
+    }
+  });
+
+  it("blows the way windAt() blows: within 0.11 rad of its heading, faster in stronger wind", () => {
+    let worst = 0;
+    for (let t = 0; t < 400_000; t += 997) {
+      const v = airVelocity(t);
+      const w = windAt(t);
+      const d = Math.atan2(v.z, v.x) - Math.atan2(w.z, w.x);
+      worst = Math.max(worst, Math.abs(Math.atan2(Math.sin(d), Math.cos(d))));
+      // The speed is the strength's, up to the linearised heading's
+      // √(1 + δ²) ≤ 1.25 overshoot.
+      const speed = Math.hypot(v.x, v.z);
+      const base = 3 * w.strength;
+      expect(speed).toBeGreaterThanOrEqual(base * 0.999);
+      expect(speed).toBeLessThanOrEqual(base * 1.26);
+    }
+    expect(worst).toBeLessThan(0.11);
+    // And downwind on average: the prevailing heading over a long window.
+    const a = airDrift(0);
+    const b = airDrift(600_000);
+    const heading = Math.atan2(wrap(b.z - a.z), wrap(b.x - a.x));
+    expect(Math.abs(heading - WIND_BASE_HEADING)).toBeLessThan(0.3);
+  });
+
+  it("stays smooth at today's epoch (no float32 freeze, no wrap jump)", () => {
+    const t = 1.8e12 + 12_345;
+    const a = airDrift(t);
+    const b = airDrift(t + 100);
+    const step = Math.hypot(wrap(b.x - a.x), wrap(b.z - a.z));
+    expect(step).toBeGreaterThan(0.01);
+    expect(step).toBeLessThan(0.5);
   });
 });

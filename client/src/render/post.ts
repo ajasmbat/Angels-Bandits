@@ -36,6 +36,12 @@ import {
 } from "three/examples/jsm/postprocessing/Pass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputShader } from "three/examples/jsm/shaders/OutputShader.js";
+import {
+  FINAL_ATMO_PARS_GLSL,
+  SHAFT_FRAGMENT,
+  SHIMMER_PERIOD_S,
+  SHIMMER_SLOTS,
+} from "./atmo-post";
 import { GRADE_GLSL, GRADE_PARS_GLSL, gradeUniforms } from "./grade";
 
 /** UnrealBloomPass's blur directions (static there, untyped in @types). */
@@ -244,7 +250,109 @@ export class DiscardDepthPass extends Pass {
   }
 }
 
-/** The final pass's fragment shader: OutputShader's, plus bloom and grade. */
+/**
+ * S5 light shafts: a quarter-CSS-res radial march of the scene toward the
+ * moon (atmo-post.ts), left in `texture` for FinalPass to add. ONE draw, and
+ * none at all while inactive (no moon in view, the tier has no shafts, or
+ * the camera is in the deck) — FinalPass then adds nothing, the way it
+ * treats a disabled bloom. It never writes back into the scene.
+ */
+export class ShaftsPass extends Pass {
+  /** The tier's switch (Mobile drops shafts). */
+  tierOn = true;
+  /** Prewarm: render once even while inactive, so the program is linked
+   * at boot (a tier pick or the moon rising must never compile). */
+  forceOnce = false;
+  private density = 1;
+  private readonly bufferSize = new THREE.Vector2(1, 1);
+  private readonly target = new THREE.WebGLRenderTarget(1, 1, {
+    type: THREE.HalfFloatType,
+    depthBuffer: false,
+  });
+  readonly uniforms = {
+    tDiffuse: { value: null as THREE.Texture | null },
+    uSun: { value: new THREE.Vector2(0.5, 0.5) },
+    uAspect: { value: 1 },
+    uStrength: { value: 0 },
+  };
+  private readonly quad = new FullScreenQuad(
+    new THREE.ShaderMaterial({
+      name: "AbShaftsShader",
+      uniforms: this.uniforms,
+      vertexShader: /* glsl */ `
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`,
+      fragmentShader: SHAFT_FRAGMENT,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  );
+  /** Whether last frame's texture holds shafts FinalPass should add. */
+  private drew = false;
+
+  constructor() {
+    super();
+    this.needsSwap = false;
+  }
+
+  /** The moon this frame: screen UV, aspect, and strength (0 = none). */
+  setSource(u: number, v: number, aspect: number, strength: number): void {
+    this.uniforms.uSun.value.set(u, v);
+    this.uniforms.uAspect.value = aspect;
+    this.uniforms.uStrength.value = strength;
+  }
+
+  /** True when FinalPass should add `texture` this frame. */
+  get active(): boolean {
+    return this.tierOn && this.uniforms.uStrength.value > 0.001;
+  }
+
+  /** What FinalPass adds, or null while nothing was drawn this frame. */
+  get texture(): THREE.Texture | null {
+    return this.drew ? this.target.texture : null;
+  }
+
+  /** The renderer's pixel ratio (the pass runs at CSS density above 1). */
+  setPixelRatio(ratio: number): void {
+    this.density = Math.max(1, ratio);
+    this.setSize(this.bufferSize.x, this.bufferSize.y);
+  }
+
+  /** `width`/`height` are DRAWING-BUFFER pixels (EffectComposer's). */
+  override setSize(width: number, height: number): void {
+    this.bufferSize.set(width, height);
+    const k = 4 * this.density;
+    this.target.setSize(
+      Math.max(1, Math.round(width / k)),
+      Math.max(1, Math.round(height / k)),
+    );
+  }
+
+  override render(
+    renderer: THREE.WebGLRenderer,
+    _writeBuffer: THREE.WebGLRenderTarget,
+    readBuffer: THREE.WebGLRenderTarget,
+  ): void {
+    const force = this.forceOnce;
+    this.forceOnce = false;
+    this.drew = this.active;
+    if (!this.drew && !force) return;
+    this.uniforms.tDiffuse.value = readBuffer.texture;
+    renderer.setRenderTarget(this.target);
+    this.quad.render(renderer);
+  }
+
+  override dispose(): void {
+    this.target.dispose();
+    this.quad.dispose();
+  }
+}
+
+/** The final pass's fragment shader: OutputShader's, plus bloom and grade
+ * (and S5's shimmer, glare and shafts — uniforms, never defines). */
 function finalFragmentShader(grade: boolean): string {
   const read = "gl_FragColor = texture2D( tDiffuse, vUv );";
   const src = OutputShader.fragmentShader;
@@ -259,12 +367,21 @@ function finalFragmentShader(grade: boolean): string {
     .slice(0, tail)
     .replace(
       "#include <colorspace_pars_fragment>",
-      `#include <colorspace_pars_fragment>\nuniform sampler2D tBloom;\n${grade ? `uniform float uGradeOn;\n${GRADE_PARS_GLSL}` : ""}`,
+      `#include <colorspace_pars_fragment>\nuniform sampler2D tBloom;\n${FINAL_ATMO_PARS_GLSL}${grade ? `uniform float uGradeOn;\n${GRADE_PARS_GLSL}` : ""}`,
     )
     .replace(
       read,
-      // The old additive blend, exactly: SRC_ALPHA, ONE on a float target.
-      `${read}\nvec4 abBloom = texture2D( tBloom, vUv );\ngl_FragColor.rgb += abBloom.rgb * abBloom.a;`,
+      // S5 heat shimmer bends the scene read (never the bloom, never the HUD).
+      // Then the old additive blend, exactly: SRC_ALPHA, ONE on a float
+      // target; then S5's glare (off the bloom) and light shafts.
+      [
+        "vec2 abUv = vUv + abShimmer( vUv );",
+        "gl_FragColor = texture2D( tDiffuse, abUv );",
+        "vec4 abBloom = texture2D( tBloom, vUv );",
+        "gl_FragColor.rgb += abBloom.rgb * abBloom.a;",
+        "if ( uGlare > 0.0 ) gl_FragColor.rgb += uGlare * abGlare( vUv );",
+        "gl_FragColor.rgb += texture2D( tShafts, vUv ).rgb * uShaftTint;",
+      ].join("\n"),
     );
   // M3's tiers switch the grade off (Mobile): a uniform, so the switch never
   // compiles a program.
@@ -288,12 +405,27 @@ export class FinalPass extends Pass {
   constructor(
     private readonly bloom: AbBloomPass,
     grade: boolean,
+    private readonly shafts: ShaftsPass | null = null,
   ) {
     super();
     this.uniforms = {
       tDiffuse: { value: null },
       tBloom: { value: null },
       toneMappingExposure: { value: 1 },
+      // S5 (atmo-post.ts): written by AtmosphereFx each frame.
+      tShafts: { value: null },
+      uShaftTint: { value: new THREE.Vector3() },
+      uShimA: {
+        value: Array.from({ length: SHIMMER_SLOTS }, () => new THREE.Vector4()),
+      },
+      uShimB: {
+        value: Array.from({ length: SHIMMER_SLOTS }, () => new THREE.Vector4()),
+      },
+      uShimCount: { value: 0 },
+      uShimTime: { value: 0 },
+      uTexel: { value: new THREE.Vector2(1, 1) },
+      uAspect: { value: 1 },
+      uGlare: { value: 0 },
       ...(grade ? { uGradeOn: { value: 1 }, ...gradeUniforms() } : {}),
     };
     this.material = new THREE.RawShaderMaterial({
@@ -333,6 +465,14 @@ export class FinalPass extends Pass {
       : null;
     (this.uniforms.toneMappingExposure as THREE.IUniform).value =
       renderer.toneMappingExposure;
+    // S5: shafts only when their pass drew this frame (else three's empty
+    // texture: zero), and the shimmer's pixel size from the read target.
+    (this.uniforms.tShafts as THREE.IUniform).value =
+      this.shafts?.texture ?? null;
+    (this.uniforms.uTexel?.value as THREE.Vector2).set(
+      1 / Math.max(1, readBuffer.width),
+      1 / Math.max(1, readBuffer.height),
+    );
     // OutputPass's define rebuild, verbatim in effect.
     if (
       this.colorSpace !== renderer.outputColorSpace ||
@@ -372,6 +512,11 @@ export class FinalPass extends Pass {
     this.quad.dispose();
   }
 }
+
+/** S5: wrap a world clock (s) onto the shimmer's period, in doubles — a
+ * raw epoch would reach the shader as a float32 with no fraction left. */
+export const shimmerClock = (worldS: number): number =>
+  ((worldS % SHIMMER_PERIOD_S) + SHIMMER_PERIOD_S) % SHIMMER_PERIOD_S;
 
 const TONE_MAPPING_DEFINES: Partial<Record<THREE.ToneMapping, string>> = {
   [THREE.LinearToneMapping]: "LINEAR_TONE_MAPPING",

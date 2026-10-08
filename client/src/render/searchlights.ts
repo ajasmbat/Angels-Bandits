@@ -410,6 +410,18 @@ void main() {
   float facing = abs(dot(normal_w, toEye / max(viewDist, 1e-4)));
   float a = abBeamAlpha(uOpacity, vT, facing, viewDist, vTipRadius * vT,
     vCameraFade) * vShimmer;
+  // S5 god rays: the throw breaks into shafts as it scatters through the
+  // haze — fixed in the beam's own frame (the angle about its axis), so they
+  // ride the sweep and never crawl, stronger down the throw and in the low,
+  // thick air. Only ever scales the alpha down (the beam stays sub-bloom).
+  vec3 abRef = abs(vAxis.z) < 0.95 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+  vec3 abB1 = normalize(cross(vAxis, abRef));
+  vec3 abB2 = cross(vAxis, abB1);
+  float abAng = rlen > 1e-4 ? atan(dot(radial, abB2), dot(radial, abB1)) : 0.0;
+  float abRays = 0.55 + 0.45 * (0.5 + 0.5 * sin(abAng * 7.0 + vApex.x * 0.013))
+    * (0.6 + 0.4 * sin(abAng * 13.0 + vApex.z * 0.017));
+  float abScatter = exp(-max(vWorldY, 0.0) / AB_HAZE_H) * (1.0 + abWeather.x);
+  a *= mix(1.0, abRays, smoothstep(0.04, 0.35, vT) * (0.55 + 0.35 * min(abScatter, 1.0)));
   // Fog, the additive way: a beam in the distance ATTENUATES to nothing,
   // exactly as the buildings behind it dissolve — it never lerps toward the
   // fog colour (that would brighten the sky). Both layers: the linear fog

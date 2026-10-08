@@ -378,3 +378,55 @@ describe("hit claims at the new cadence", () => {
     target.ws.close();
   }, 30000);
 });
+
+describe("malformed messages (S1)", () => {
+  /** Open a raw socket, send `payload` without joining, and resolve with the
+   * close code the server answers with. */
+  const sendUnjoined = (payload: string): Promise<number> =>
+    new Promise((resolve, reject) => {
+      const ws = new WebSocket(url);
+      ws.on("error", reject);
+      ws.on("open", () => ws.send(payload));
+      ws.on("close", (code) => resolve(code));
+    });
+
+  it("closes only the sender on a parsed non-message, and the server keeps serving", async () => {
+    for (const payload of ["null", "[]", '"x"', "{}", "42", '{"type":7}']) {
+      expect(await sendUnjoined(payload)).toBe(1003);
+    }
+    expect(child.exitCode).toBeNull();
+    const fresh = await connect("AfterJunk");
+    expect(fresh.welcome.type).toBe("welcome");
+    fresh.ws.close();
+  }, 20000);
+
+  it("drops malformed poses and hits from a joined, alive client without crashing", async () => {
+    const peer = await connect("Junk");
+    const { pos, speed } = peer.welcome.spawn;
+    const bad: unknown[] = [
+      { type: "pose", pose: {} },
+      { type: "pose", pose: 1 },
+      { type: "pose", pose: null },
+      { type: "pose", pose: { pos: null, quat: IDENTITY, speed } },
+      { type: "pose", pose: { pos, speed } },
+      { type: "pose", pose: { pos, quat: null, speed } },
+      { type: "pose", pose: { pos: { x: "a", y: 1, z: 1 }, quat: IDENTITY } },
+      { type: "hit" },
+      { type: "hit", targetId: "x", seq: 1, bulletOrigin: null },
+      { type: "boost", on: "yes" },
+      { type: "fire", seq: "1" },
+      { type: "setBots", count: null },
+      { type: "join", name: { evil: true } },
+    ];
+    for (const msg of bad) peer.ws.send(JSON.stringify(msg));
+    await wait(SNAPSHOT_INTERVAL_MS * 4);
+    expect(child.exitCode).toBeNull();
+    // A known type with bad fields is dropped, not punished: still connected.
+    expect(peer.ws.readyState).toBe(WebSocket.OPEN);
+
+    const fresh = await connect("AfterBadPose");
+    expect(fresh.welcome.type).toBe("welcome");
+    peer.ws.close();
+    fresh.ws.close();
+  }, 20000);
+});

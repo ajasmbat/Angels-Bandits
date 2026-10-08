@@ -51,6 +51,25 @@ describe("validatePose", () => {
     expect(validatePose(prev, claim, DT).ok).toBe(false);
   });
 
+  it("rejects a malformed claim instead of throwing, keeping the last pose (S1)", () => {
+    const prev = pose(1000, 300, 1000);
+    const { pos, speed } = pose(1001, 300, 1000);
+    for (const claim of [
+      {},
+      1,
+      null,
+      undefined,
+      { pos: null, quat: IDENTITY, speed },
+      { pos, speed },
+      { pos, quat: null, speed },
+      { pos: { x: "a", y: 300, z: 1000 }, quat: IDENTITY, speed },
+    ]) {
+      const verdict = validatePose(prev, claim, DT);
+      expect(verdict.ok).toBe(false);
+      expect(verdict.pose).toBe(prev);
+    }
+  });
+
   it("rejects a garbage quaternion and renormalizes a slightly drifted one", () => {
     const prev = pose(1000, 300, 1000);
     const garbage = pose(1001, 300, 1000);

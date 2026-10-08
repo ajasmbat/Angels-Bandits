@@ -195,6 +195,9 @@ export interface AimResult {
   aim: { x: number; y: number } | null;
   /** Whether the shot is on — the lead reticle is hot this frame. */
   solution: boolean;
+  /** Where the lead reticle sits on screen, or null when hidden (M8's aim
+   * friction). */
+  lead: { x: number; y: number } | null;
 }
 
 /** DOM reticle over the intercept point of the best on-aim target. */
@@ -238,10 +241,10 @@ export class LeadIndicator {
     if (!px) {
       // No target, or behind the camera — no reticle.
       this.el.style.display = "none";
-      return { aim, solution: false };
+      return { aim, solution: false, lead: null };
     }
     this.el.style.transform = `translate(${px.x.toFixed(1)}px, ${px.y.toFixed(1)}px)`;
     this.el.style.display = "block";
-    return { aim, solution };
+    return { aim, solution, lead: px };
   }
 }

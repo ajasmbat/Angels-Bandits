@@ -22,6 +22,7 @@ import { cursorRay } from "../game/instructor";
 import {
   aimDirFromRay,
   aimDirNdc,
+  aimFriction,
   createAimDir,
   dragAimDir,
   recentreAimDir,
@@ -133,6 +134,9 @@ export class TouchControls {
   /** A touch took the aim over from a mouse: seed `dir` from its cursor. */
   private pickupPending = false;
   private readonly ndc = { x: 0, y: 0 };
+  /** The lead reticle, screen px, as last drawn (M8 aim friction). */
+  private readonly reticle = { x: 0, y: 0 };
+  private reticleShown = false;
   /** Reused viewport for the per-frame classic spring (no allocation). */
   private readonly view = { w: 0, h: 0 };
   private aimModeSeen: AimMode;
@@ -297,6 +301,16 @@ export class TouchControls {
     else this.recentre();
   }
 
+  /** Once a frame, after the lead computer: where its reticle sits (null:
+   * hidden, or dead) — aim drags slow down near it (M8). */
+  setLeadReticle(px: { x: number; y: number } | null): void {
+    this.reticleShown = px !== null;
+    if (px) {
+      this.reticle.x = px.x;
+      this.reticle.y = px.y;
+    }
+  }
+
   /** M6 settings panel: pick a sensitivity step (persisted). */
   setSensitivity(value: number): void {
     saveSensitivity(value, window);
@@ -407,7 +421,12 @@ export class TouchControls {
     }
     if (this.t.input.aimMode() === "instructor") {
       // The drag turns the world-anchored direction; steer() projects it.
-      dragAimDir(this.dir, s.aimDx, s.aimDy, this.sensitivity);
+      // Near the lead reticle it turns slower (M8 aim friction).
+      const friction = aimFriction(
+        this.t.input.cursorPx(),
+        this.reticleShown ? this.reticle : null,
+      );
+      dragAimDir(this.dir, s.aimDx, s.aimDy, this.sensitivity * friction);
     } else if (touches.length > 0) {
       this.t.input.setTouchAim(s.aimX, s.aimY);
     }

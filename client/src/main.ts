@@ -2974,6 +2974,7 @@ const frame = (now: number): void => {
   // anything while we are flying it — the kill-cam gets no aim chrome.
   hud.setAimPoint(alive ? aimResult.aim : null);
   leadSolution = alive && aimResult.solution;
+  touchControls?.setLeadReticle(alive ? aimResult.lead : null);
   // The instructor's cursor marker: only while flying in that mode (the
   // kill-cam and classic mode keep the plain OS cursor).
   hud.setAimCursor(

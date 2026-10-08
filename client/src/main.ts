@@ -24,6 +24,7 @@ import { buildNatureIndex } from "@angels-bandits/common/collision";
 import {
   BLOCK_PITCH,
   BOOST_MAX_SPEED,
+  BOOT_PING_INTERVAL_MS,
   BULLET_DAMAGE,
   BULLET_SPEED,
   CLOUD_BASE,
@@ -246,7 +247,13 @@ import { initFullscreenUi } from "./ui/fullscreen";
 import { Haptics } from "./ui/haptics";
 import { HPBAR_ALTITUDE, HpBarSprite, HpBarTracker } from "./ui/hpbar";
 import { Hud, deathLabel } from "./ui/hud";
-import { requestName, showJoinError, showSignalLost } from "./ui/join";
+import {
+  closeJoin,
+  requestName,
+  showJoinError,
+  showJoinProgress,
+  showSignalLost,
+} from "./ui/join";
 import { KillFeed } from "./ui/killfeed";
 import { LeadIndicator, SolutionTone } from "./ui/lead";
 import { EdgeMarkers } from "./ui/markers";
@@ -264,6 +271,7 @@ import {
   volumeGain,
 } from "./ui/settings";
 import { SettingsPanel } from "./ui/settings-panel";
+import { readStored, writeStored } from "./ui/storage";
 import { TouchControls } from "./ui/touch-controls";
 
 // Fullscreen chrome first — the join overlay carries its own toggle button,
@@ -283,14 +291,27 @@ let socket: GameSocket;
 try {
   socket = await GameSocket.connect(name);
 } catch (err) {
-  showJoinError(
-    err instanceof Error ? err.message : "could not reach the game server",
-  );
+  showJoinError(err instanceof Error ? err.message : "Can't reach the server");
   throw err;
 }
 // Only once connected: a failed join must not grow a pill over its error.
 phoneFullscreen.onJoined();
 const { welcome } = socket;
+// W1: the boot below (synchronous city build, then the shader pre-warm) can
+// run for seconds on a slow phone. A drop at ANY point of it must still end
+// on SIGNAL LOST — remembered here, shown the moment the boot can show it
+// (the full handler is wired once the loop runs, at the bottom).
+let droppedDuringBoot = false;
+socket.events.onClose = () => {
+  droppedDuringBoot = true;
+};
+// Keepalive until the first pose: the interval covers the async stretches,
+// the explicit pings below bracket the synchronous ones (no timer fires
+// inside them). The server holds this player pending — invisible, untargeted,
+// protection not yet started — until that first pose.
+const bootPing = setInterval(() => socket.sendPing(), BOOT_PING_INTERVAL_MS);
+await showJoinProgress("LOADING CITY…");
+socket.sendPing();
 
 // --- Scene & renderer ---
 const scene = new THREE.Scene();
@@ -321,15 +342,11 @@ const renderOpts = readRenderOptions(
 // O3 graphics quality: the URL wins (QA links, the perf harness), then the
 // player's saved pick (G / the HUD entry), then the shipped default, Auto.
 // Auto starts at High and only ever steps down (render/quality.ts).
-const readSavedQuality = (): QualitySetting | null => {
-  try {
-    return parseQualitySetting(localStorage.getItem(QUALITY_STORAGE_KEY));
-  } catch {
-    return null; // storage blocked: the default is fine
-  }
-};
+// Storage blocked reads as no pick: the default is fine.
 let qualitySetting: QualitySetting =
-  renderOpts.quality ?? readSavedQuality() ?? DEFAULT_QUALITY;
+  renderOpts.quality ??
+  parseQualitySetting(readStored(QUALITY_STORAGE_KEY)) ??
+  DEFAULT_QUALITY;
 // M3: Auto starts at Mobile on a coarse-pointer device (M2's touch rule),
 // at High everywhere else. Read once: the device does not change mid-session.
 const autoStart = autoStartTier(coarsePointer());
@@ -817,6 +834,7 @@ scene.add(planeLights.points);
 const planeTrails = new PlaneTrails();
 scene.add(planeTrails.mesh);
 
+socket.sendPing(); // W1: the city and its dressing are built
 // --- Remote planes ---
 const remotes = new RemotePlanes(
   scene,
@@ -912,14 +930,10 @@ const radioVoice = new RadioVoice(audio, radioAssetUrls);
 const comms = new CommsTicker();
 const ambient = new AmbientChatter(welcome.seed, performance.now());
 const RADIO_VOICE_KEY = "ab-radio-voice";
-let radioVoiceOn = localStorage.getItem(RADIO_VOICE_KEY) !== "off";
+let radioVoiceOn = readStored(RADIO_VOICE_KEY) !== "off";
 const saveRadioVoice = (on: boolean): void => {
   radioVoiceOn = on;
-  try {
-    localStorage.setItem(RADIO_VOICE_KEY, on ? "on" : "off");
-  } catch {
-    // Storage blocked: the switch still applies this visit.
-  }
+  writeStored(RADIO_VOICE_KEY, on ? "on" : "off");
 };
 // The HUD entry and the M6 settings panel both flip it; the setter keeps
 // the HUD entry truthful when the panel does.
@@ -1407,13 +1421,8 @@ function setQualitySetting(setting: QualitySetting, persist: boolean): void {
   if (setting === "auto") {
     autoQuality = createAutoQuality(performance.now(), autoStart);
   }
-  if (persist) {
-    try {
-      localStorage.setItem(QUALITY_STORAGE_KEY, setting);
-    } catch {
-      /* storage blocked: the pick still applies for this session */
-    }
-  }
+  // Storage blocked: the pick still applies for this session.
+  if (persist) writeStored(QUALITY_STORAGE_KEY, setting);
   applyQualityTier(setting === "auto" ? autoQuality.tier : setting);
 }
 
@@ -2268,7 +2277,9 @@ let last = performance.now();
 // otherwise compile on the frame it first appears, which is exactly the
 // moment a hitch is noticed. Each subsystem's update() then owns visibility.
 fadeEl.classList.add("dead");
+socket.sendPing(); // W1: the rest of the boot was built synchronously
 await prewarmScene(renderer, scene, camera, composer);
+socket.sendPing();
 flashFade();
 
 // Named (M2) so the visibility pause at the bottom can stop and restore it.
@@ -3005,6 +3016,13 @@ const frame = (now: number): void => {
   }
 };
 renderer.setAnimationLoop(frame);
+// W1: the loading card comes down with the first rendered frame — this rAF
+// was queued after the loop's own, so it runs right after frame() has drawn.
+// From here the pose stream is the keepalive.
+requestAnimationFrame(() => {
+  clearInterval(bootPing);
+  closeJoin();
+});
 
 // --- M2: backgrounded tab → pause; back with a dead session → rejoin ---
 // Browsers already throttle rAF in a hidden tab; stop the loop outright so a
@@ -3045,6 +3063,7 @@ window.addEventListener("pageshow", (e) => {
   signalLost();
 });
 socket.events.onClose = signalLost;
+if (droppedDuringBoot) signalLost();
 renderer.domElement.addEventListener("webglcontextlost", () => {
   glLost = true;
   renderer.setAnimationLoop(null);

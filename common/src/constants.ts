@@ -327,6 +327,9 @@ export const AWAY_SILENCE_MS = 10000;
  * taking damage — hiding the tab is never a way out of a burst that is
  * already landing. Until then the plane stays in snapshots, hittable. ms. */
 export const AWAY_COMBAT_LOCK_MS = 3000;
+/** W2: a hidden tab's heartbeat interval, ms (browsers clamp hidden timers
+ * to about 1 Hz anyway). Comfortably inside AWAY_SILENCE_MS. */
+export const AWAY_PING_INTERVAL_MS = 1000;
 /** W2: shortest effective away, ms. A return sooner than this is held until
  * it elapses, bounding how often away/return can buy a fresh protected spawn. */
 export const AWAY_MIN_MS = 1000;

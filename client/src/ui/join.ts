@@ -13,6 +13,22 @@ const STORAGE_KEY = "ab:name";
 /** One-shot (M2): set by the signal-lost card right before it reloads, so
  * the rejoin is one tap — the remembered name flies straight back in. */
 const REJOIN_KEY = "ab:rejoin";
+/** W2, the same one-shot shape: the session's resume token, written only
+ * right before a reload (never kept mirrored — a duplicated tab would copy
+ * it and take the live session over), so the reload comes back as the same
+ * player with the same score. */
+const RESUME_KEY = "ab:resume";
+
+/** Read-and-clear the resume token a reload left behind, if any. */
+export function takeResumeToken(): string | undefined {
+  try {
+    const token = sessionStorage.getItem(RESUME_KEY) ?? undefined;
+    sessionStorage.removeItem(RESUME_KEY);
+    return token;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Read-and-clear the rejoin flag (storage may be blocked: then no flag). */
 function takeRejoin(): boolean {
@@ -110,27 +126,29 @@ export function showJoinError(message: string): void {
   status.classList.add("error");
   status.textContent = message;
   retry.hidden = false;
-  retry.addEventListener("click", rejoin, { once: true });
+  retry.addEventListener("click", () => rejoin(), { once: true });
   overlay.classList.add("open");
 }
 
-/** Reload straight back into a join under the same name. */
-function rejoin(): void {
+/** Reload straight back into a join under the same name — and, with a
+ * `resumeToken` (W2), as the same player if the server still holds them. */
+function rejoin(resumeToken?: string): void {
   try {
     sessionStorage.setItem(REJOIN_KEY, "1");
+    if (resumeToken) sessionStorage.setItem(RESUME_KEY, resumeToken);
   } catch {
     // Storage blocked: the reload just shows the join card as usual.
   }
   location.reload();
 }
 
-/** Back from the background to a dead socket (the server's liveness sweep
- * drops a tab that stopped posing) or a lost GL context (M2): the game
- * can't recover in place, so one tap reloads and rejoins under the same
- * name. Idempotent. */
-export function showSignalLost(): void {
+/** A session that couldn't be resumed in place (W2), a page restored from
+ * the back/forward cache, or a lost GL context (M2): one tap reloads and
+ * rejoins under the same name, resuming through `resumeToken` when the
+ * server still holds the session. Idempotent. */
+export function showSignalLost(resumeToken?: string): void {
   const card = document.getElementById("signal-lost") as HTMLDivElement;
   if (card.classList.contains("open")) return;
   card.classList.add("open");
-  card.addEventListener("click", rejoin, { once: true });
+  card.addEventListener("click", () => rejoin(resumeToken), { once: true });
 }

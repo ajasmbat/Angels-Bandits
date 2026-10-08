@@ -51,6 +51,14 @@ export class BotBar {
     this.setter = byName;
   }
 
+  /** W2: the room's count from a resume's welcome. A change made while we
+   * were gone has no setter we heard of, so it carries no attribution. */
+  resync(count: number): void {
+    if (clamp(count) === this.server) return;
+    this.server = clamp(count);
+    this.setter = null;
+  }
+
   /** The pointer moved to `count` with the button down. Preview only — see
    * release() for why nothing is claimed until the player lets go. */
   dragTo(count: number): void {

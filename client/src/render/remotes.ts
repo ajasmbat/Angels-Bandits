@@ -80,6 +80,8 @@ interface Remote {
   /** How much staler this remote's image is than the server's on-record
    * pose of it, beyond the shared delay, ms (hit-claim budget). */
   extraDelay: number;
+  /** `time` of the last snapshot this remote was in (W2: absence hides it). */
+  seenAt: number;
 }
 
 export class RemotePlanes {
@@ -150,6 +152,7 @@ export class RemotePlanes {
           lagPeak: 0,
           lastAge: 0,
           extraDelay: 0,
+          seenAt: snap.time,
         };
         remote.mesh.visible = false; // until the first sampled pose
         remote.tag.visible = false;
@@ -158,6 +161,7 @@ export class RemotePlanes {
       }
       // Presence in a snapshot IS being alive — dead planes are omitted.
       remote.alive = true;
+      remote.seenAt = snap.time;
       remote.prot = prot;
       remote.hp = hp;
       remote.lagPeak =
@@ -167,12 +171,18 @@ export class RemotePlanes {
       remote.lastAge = age;
       remote.buffer.push(snap.time - age, pose);
     }
+    // ...and absence is not: dead, still loading, or away (W2, tab hidden).
+    // Hide it with its samples dropped, so it never hangs frozen in the sky
+    // or glides in from where it vanished.
+    for (const [id, remote] of this.remotes) {
+      if (remote.alive && remote.seenAt !== snap.time) this.setDead(id);
+    }
   }
 
   /** Death event: hide the plane and drop stale samples until it respawns. */
   setDead(id: string): void {
     const remote = this.remotes.get(id);
-    if (!remote) return;
+    if (!remote?.alive) return; // already hidden (death event, or absence)
     remote.alive = false;
     remote.buffer = new InterpolationBuffer();
     remote.lastPos = null;

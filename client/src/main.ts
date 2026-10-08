@@ -22,6 +22,8 @@ import { setNewsTarget } from "@angels-bandits/common/city/newsheli";
 import { bridgeSpans } from "@angels-bandits/common/city/river";
 import { buildNatureIndex } from "@angels-bandits/common/collision";
 import {
+  AWAY_MIN_MS,
+  AWAY_PING_INTERVAL_MS,
   BLOCK_PITCH,
   BOOST_MAX_SPEED,
   BOOT_PING_INTERVAL_MS,
@@ -44,6 +46,7 @@ import type {
   DeathMsg,
   ScoreEntry,
   SpawnState,
+  WelcomeMsg,
 } from "@angels-bandits/common/protocol";
 import { airlinerOffsetInto } from "@angels-bandits/common/skytraffic";
 import { strikesInWindow } from "@angels-bandits/common/storm";
@@ -254,6 +257,7 @@ import {
   showJoinError,
   showJoinProgress,
   showSignalLost,
+  takeResumeToken,
 } from "./ui/join";
 import { KillFeed } from "./ui/killfeed";
 import { LeadIndicator, SolutionTone } from "./ui/lead";
@@ -290,7 +294,9 @@ const phoneFullscreen = initPhoneFullscreen();
 const name = await requestName(phoneFullscreen.onJoinGesture);
 let socket: GameSocket;
 try {
-  socket = await GameSocket.connect(name);
+  // W2: a SIGNAL LOST reload hands its session over, so it comes back as
+  // the same player (same id and score) when the server still holds it.
+  socket = await GameSocket.connect(name, takeResumeToken());
 } catch (err) {
   showJoinError(err instanceof Error ? err.message : "Can't reach the server");
   throw err;
@@ -305,6 +311,12 @@ const { welcome } = socket;
 let droppedDuringBoot = false;
 socket.events.onClose = () => {
   droppedDuringBoot = true;
+};
+// W2: a drop during the boot usually resumes in the background — its fresh
+// welcome (roster, scores, spawn) is applied once the handlers exist.
+let resumedDuringBoot: WelcomeMsg | null = null;
+socket.events.onResumed = (w) => {
+  resumedDuringBoot = w;
 };
 // Keepalive until the first pose: the interval covers the async stretches,
 // the explicit pings below bracket the synchronous ones (no timer fires
@@ -1036,6 +1048,15 @@ let selfHp = MAX_HP;
 /** The own plane's control-surface commands, from the last flight step. */
 let ownControls: ControlDeflection = NEUTRAL_CONTROLS;
 let selfProt = true;
+/** W2: our away took effect server-side (awayStarted) — its return is
+ * answered with a respawn. */
+let awayStarted = false;
+/** W2: since when (performance.now()) poses are held for that return
+ * respawn, or null. Stale poses from where the tab froze would only trip the
+ * server's re-sync against the new spawn. */
+let awaitingReturn: number | null = null;
+/** Longest the hold may last before posing resumes anyway, ms. */
+const RETURN_HOLD_MAX_MS = AWAY_MIN_MS + 2000;
 let lastScores: ScoreEntry[] = welcome.scores;
 let lastDeath: {
   victimId: string;
@@ -1284,9 +1305,66 @@ socket.events.onRespawn = (msg) => {
   // Fresh spawn, fresh trail — a rebased teleport would smear smoke 1 km.
   smoke.clear(msg.id);
   if (msg.id === socket.selfId) reactor.clearSelfTrack(); // L1: track jumps
-  if (msg.id === socket.selfId) respawnSelf(msg.spawn);
-  else remotes.respawn(msg.id);
+  if (msg.id === socket.selfId) {
+    respawnSelf(msg.spawn);
+    // W2: once visible, this is (or supersedes) the return respawn poses
+    // were held for. A kill-cam respawn landing while still hidden is not:
+    // the server's own return respawn follows the away.
+    if (!document.hidden) {
+      awayStarted = false;
+      awaitingReturn = null;
+    }
+  } else remotes.respawn(msg.id);
 };
+socket.events.onAwayStarted = () => {
+  awayStarted = true;
+  // Already back (the ack crossed our `away: false`): hold for the respawn.
+  if (!document.hidden) awaitingReturn = performance.now();
+};
+
+/**
+ * W2: back as the same player after a dropped socket. The room moved on
+ * meanwhile: reconcile who is here (silently — the radio already heard
+ * nothing of the gap), take the server's scores and bot count, and fly the
+ * fresh spawn, since the session restarted server-side. City events and the
+ * news heli belong to the room, so they are re-seeded only if it changed.
+ */
+let currentRoomId = welcome.roomId;
+function applyResume(w: WelcomeMsg): void {
+  const here = new Set(w.roster.map((r) => r.id));
+  for (const id of [...players.keys()]) {
+    if (id === socket.selfId || here.has(id)) continue;
+    remotes.playerLeft(id);
+    scoreboard.playerLeft(id);
+    players.delete(id);
+  }
+  for (const r of w.roster) {
+    if (players.has(r.id)) continue;
+    players.set(r.id, { name: r.name, isBot: r.isBot ?? false });
+    remotes.playerJoined(r);
+    scoreboard.playerJoined(r);
+  }
+  lastScores = w.scores;
+  scoreboard.setScores(w.scores);
+  showOwnScore(w.scores);
+  botBar.resync(w.botTarget);
+  if (w.roomId !== currentRoomId) {
+    currentRoomId = w.roomId;
+    reactor.ingest(w.cityEvents ?? []);
+    if (moverField.news && w.newsHeli) {
+      moverField.news.target = w.newsHeli.target;
+      moverField.news.prev = w.newsHeli.prev;
+    }
+  }
+  smoke.clear(socket.selfId);
+  reactor.clearSelfTrack();
+  respawnSelf(w.spawn);
+  awayStarted = false;
+  awaitingReturn = null;
+  hud.setReconnecting(false);
+}
+socket.events.onReconnecting = () => hud.setReconnecting(true);
+socket.events.onResumed = applyResume;
 /** U2: the own row of a `score` broadcast drives the HUD's K/D readout. */
 function showOwnScore(scores: ScoreEntry[]): void {
   const own = scores.find((e) => e.id === socket.selfId);
@@ -1978,7 +2056,7 @@ window.__ab = {
   setBots: (count) => socket.sendSetBots(count),
   net: () => ({
     selfId: socket.selfId,
-    roomId: welcome.roomId,
+    roomId: currentRoomId,
     remotes: remotes.debug(),
     renderTime: socket.renderTime(),
     // O4: what the world renders at (= renderTime unless pinWorld is set).
@@ -2562,14 +2640,19 @@ const frame = (now: number): void => {
     // stamped with this frame's time — the pose is the one simulated for it).
     poseEuler.set(flight.pitch, flight.yaw, flight.roll, "YXZ");
     poseQuat.setFromEuler(poseEuler);
-    socket.sendPose(
-      {
-        pos: flight.pos,
-        quat: { x: poseQuat.x, y: poseQuat.y, z: poseQuat.z, w: poseQuat.w },
-        speed: flight.speed,
-      },
-      now,
-    );
+    if (awaitingReturn !== null && now - awaitingReturn > RETURN_HOLD_MAX_MS) {
+      awaitingReturn = null;
+    }
+    if (awaitingReturn === null) {
+      socket.sendPose(
+        {
+          pos: flight.pos,
+          quat: { x: poseQuat.x, y: poseQuat.y, z: poseQuat.z, w: poseQuat.w },
+          speed: flight.speed,
+        },
+        now,
+      );
+    }
 
     // Guns: at most one shot a frame; the same seq goes to server and sim.
     // Free-look suppresses shots (heat keeps cooling, none builds).
@@ -3061,21 +3144,39 @@ requestAnimationFrame(() => {
 // Browsers already throttle rAF in a hidden tab; stop the loop outright so a
 // phone app-switch burns nothing (GameAudio suspends itself on the same
 // event). On return, a fresh `last` keeps the first dt from spanning the gap.
+//
+// W2: hidden also means AWAY — the server takes the plane out of the world
+// (keeping its seat) instead of leaving it frozen as a free kill, and a 1 Hz
+// heartbeat keeps the socket. Back, the server answers with a fresh spawn,
+// which poses wait for: the local flight state froze with the tab.
 let glLost = false;
+let hiddenPing: ReturnType<typeof setInterval> | undefined;
 document.addEventListener("visibilitychange", () => {
   interruptQuality(); // O3: a transient
   if (document.hidden) {
     renderer.setAnimationLoop(null);
-  } else if (!glLost) {
-    last = performance.now();
-    renderer.setAnimationLoop(frame);
+    // The server's boost mirror restarts idle on return: stop our burn now
+    // so the next start edge is actually sent.
+    setBoostBurning(false, performance.now());
+    socket.sendAway(true);
+    clearInterval(hiddenPing);
+    hiddenPing = setInterval(() => socket.sendPing(), AWAY_PING_INTERVAL_MS);
+  } else {
+    clearInterval(hiddenPing);
+    socket.sendAway(false);
+    if (awayStarted) awaitingReturn = performance.now();
+    if (!glLost) {
+      last = performance.now();
+      renderer.setAnimationLoop(frame);
+    }
   }
 });
-// More than LIVENESS_TIMEOUT_MS without poses (any real app-switch) and the
-// server drops the socket; iOS also tends to drop the GL context. Neither
-// recovers in place, so offer a one-tap rejoin — never during an unload,
-// and only once the tab is visible again (wired after the welcome, so a
-// rejected join keeps its own showJoinError).
+// A session the socket couldn't resume (W2: refused, or the window ran out)
+// is over; iOS also tends to drop the GL context. Neither recovers in place,
+// so offer a one-tap rejoin — carrying the resume token, so a reload whose
+// session the server still holds comes back as the same player. Never
+// during an unload, and only once the tab is visible again (wired after the
+// welcome, so a rejected join keeps its own showJoinError).
 let unloading = false;
 const signalLost = (): void => {
   if (unloading) return;
@@ -3083,7 +3184,8 @@ const signalLost = (): void => {
     document.addEventListener("visibilitychange", signalLost, { once: true });
     return;
   }
-  showSignalLost();
+  hud.setReconnecting(false);
+  showSignalLost(socket.resumeToken);
 };
 window.addEventListener("pagehide", () => {
   unloading = true;
@@ -3097,6 +3199,7 @@ window.addEventListener("pageshow", (e) => {
 });
 socket.events.onClose = signalLost;
 if (droppedDuringBoot) signalLost();
+else if (resumedDuringBoot) applyResume(resumedDuringBoot);
 renderer.domElement.addEventListener("webglcontextlost", () => {
   glLost = true;
   renderer.setAnimationLoop(null);

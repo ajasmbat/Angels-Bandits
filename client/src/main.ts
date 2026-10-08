@@ -893,6 +893,8 @@ let aimMode = input.aimMode();
 let cursorPrev = input.cursorNdc();
 /** Whether the pipper sits on the cursor this frame (HUD converged state). */
 let aimConverged = false;
+/** The pipper-to-cursor angle this frame, rad (F6 QA). */
+let aimGap = 0;
 /** The FOV the instructor last read the cursor through (latch reference). */
 let aimFovPrev = BASE_FOV;
 // Hold-SPACE boost (F2): the local half of the shared energy model. The
@@ -1485,6 +1487,8 @@ declare global {
       aim: () => {
         mode: "instructor" | "classic";
         converged: boolean;
+        /** F6 QA: the pipper-to-cursor angle, rad. */
+        gap: number;
         cursor: { x: number; y: number };
         ndc: { x: number; y: number };
       };
@@ -1776,6 +1780,7 @@ window.__ab = {
   aim: () => ({
     mode: aimMode,
     converged: aimConverged,
+    gap: aimGap,
     cursor: input.cursorPx(),
     ndc: input.cursorNdc(),
   }),
@@ -2160,7 +2165,8 @@ const frame = (now: number): void => {
         turn: instructor.turn * presence,
         pitch: instructor.pitch * presence,
       };
-      aimConverged = angleBetween(view.aimDir, view.pipperDir) < CONVERGED_RAD;
+      aimGap = angleBetween(view.aimDir, view.pipperDir);
+      aimConverged = aimGap < CONVERGED_RAD;
       aimFovPrev = aimFov;
     }
     // F5 corner speed manager: silently cap the commanded speed so the

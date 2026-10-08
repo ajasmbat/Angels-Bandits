@@ -140,6 +140,7 @@ import { Explosions, Sparks } from "./render/fx";
 import { GpuTimer } from "./render/gputimer";
 import { createGradePass } from "./render/grade";
 import { Headlights } from "./render/headlights";
+import { HoleDecorRenderer } from "./render/hole-decor";
 import { lookPasses } from "./render/lookup";
 import { MoverLights, Movers } from "./render/movers";
 import { NatureRenderer } from "./render/nature";
@@ -676,6 +677,9 @@ const cityLife = new CityLife(city.cityBuildings, welcome.seed);
 scene.add(cityLife.mesh);
 const facadeLife = new FacadeLifeRenderer(city.cityBuildings, welcome.seed);
 scene.add(facadeLife.mesh);
+// H2 hole decor: interiors and approach chevrons for every hole, one draw.
+const holeDecor = new HoleDecorRenderer(city.cityBuildings);
+scene.add(holeDecor.mesh);
 // G1 street-level detail: benches, bins, hydrants, shelters, racks, booths,
 // carts and parked cars in ONE instanced rig (+1 draw call); the fine road
 // and sidewalk paint lives in the ground shader (street-paint.ts). All of it
@@ -1258,6 +1262,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   pedestrians.setQuality(tier);
   cityLife.setQuality(tier); // A1
   facadeLife.setQuality(tier); // A1
+  holeDecor.setQuality(tier); // H2
   // M3: steam, signals and construction sparks stream in the tier's radius.
   steam.setQuality(tier);
   streetFurniture.setQuality(tier); // G1
@@ -1513,6 +1518,24 @@ declare global {
       };
       aimAt: (x: number, z: number, y?: number) => void;
       setFiring: (held: boolean) => void;
+      /** H2 QA: every hole span (merged runs) and the decor mesh's counts,
+       * plus the live assist bias — the gallery's hole views read these. */
+      holes: () => {
+        spans: {
+          kind: string;
+          axis: "x" | "z";
+          center: Vec3;
+          entry: Vec3;
+          exit: Vec3;
+          length: number;
+          width: number;
+          height: number;
+          y0: number;
+          hosts: number;
+        }[];
+        decor: { holes: number; quads: number; vertices: number };
+        assist: { yaw: number; pitch: number };
+      };
       freelook: () => ReturnType<typeof createFreeLook>;
       /** M1 QA: the aim point and whether the pipper sits on it (F1). */
       aim: () => {
@@ -1803,6 +1826,24 @@ window.__ab = {
     chase.snapTo(flight);
   },
   setFiring: (held) => guns.setTrigger(held),
+  holes: () => ({
+    spans: assistWorld.spans
+      .filter((s) => s.hole.kind !== "bridge")
+      .map((s) => ({
+        kind: s.hole.kind,
+        axis: s.hole.axis,
+        center: s.center,
+        entry: s.entry,
+        exit: s.exit,
+        length: s.length,
+        width: s.hole.width,
+        height: s.hole.height,
+        y0: s.hole.y0,
+        hosts: s.hosts.length,
+      })),
+    decor: holeDecor.counts,
+    assist: { yaw: holeAssist.yaw, pitch: holeAssist.pitch },
+  }),
   // B2 QA: current free-look state (drive it with real key/mouse events).
   freelook: () => freelook,
   aim: () => ({
@@ -2532,6 +2573,7 @@ const frame = (now: number): void => {
     microOn,
   );
   facadeLife.update(renderMs ?? now, microOn);
+  holeDecor.update(renderMs ?? now); // H2: fans and chevron sweep
   // Phase-only subsystems fall back to local time before the first snapshot
   // (the signage policy): a plume or a signal in the wrong part of its cycle
   // is invisible, where hiding every one of them until clock sync would not be.

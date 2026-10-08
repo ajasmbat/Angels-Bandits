@@ -115,6 +115,10 @@ export interface QualityProfile {
   /** G1 fine ground paint (wear, patches, manholes, drains, arrows, words,
    * bike lanes, ramps, tiles, grates). Off = the S1/VO5 paint alone. */
   streetPaint: boolean;
+  /** H2 hole interiors (murals, signs, fans, trays, lane paint, lobby
+   * glass): 1 drawn, 0 folded away by a uniform. The approach chevrons and
+   * the tunnel's LED strips are guidance and stay on every tier. */
+  holeDecor: number;
 }
 
 export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
@@ -142,6 +146,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     facadeLife: true,
     streetDetail: 1,
     streetPaint: true,
+    holeDecor: 1,
   },
   medium: {
     maxPixelRatio: 1.5,
@@ -167,6 +172,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     facadeLife: true,
     streetDetail: 1,
     streetPaint: true,
+    holeDecor: 1,
   },
   low: {
     maxPixelRatio: 1,
@@ -192,6 +198,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     facadeLife: false,
     streetDetail: 0.7,
     streetPaint: true,
+    holeDecor: 1,
   },
   mobile: {
     maxPixelRatio: 1,
@@ -217,6 +224,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     facadeLife: false,
     streetDetail: 0.4,
     streetPaint: false,
+    holeDecor: 0,
   },
 };
 
@@ -475,6 +483,22 @@ export const FEATURE_TIERS: readonly {
     low: "full",
     mobile: "off",
     note: "one full-screen pass",
+  },
+  {
+    feature: "H2 hole interiors — murals, signs, fans, lobby glass",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "off",
+    note: "not solid; folded by a uniform in the one baked decor mesh",
+  },
+  {
+    feature: "H2 hole guidance — chevrons, LED strips, mouth frame",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "how a pilot finds a hole; one draw call shared with the interiors",
   },
   {
     feature: "G1 street furniture, parked cars",

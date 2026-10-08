@@ -27,6 +27,13 @@ export function deathLabel(
     : `CRASHED — CREDIT TO ${killerName}`;
 }
 
+/** The aim mode as a toast names it. Touch (M9) has no M key and no mouse,
+ * so its wording carries neither. */
+function aimModeLabel(mode: "instructor" | "classic", touch: boolean): string {
+  if (touch) return mode === "instructor" ? "INSTRUCTOR" : "CLASSIC STICK";
+  return mode === "instructor" ? "MOUSE INSTRUCTOR (M)" : "CLASSIC STICK (M)";
+}
+
 /** Last value written per element per style property (O2): the HUD setters
  * run every frame, and an unchanged write still costs a style parse and can
  * dirty layout — so only a CHANGED value reaches the DOM. */
@@ -253,15 +260,29 @@ export class Hud {
   }
 
   /** Brief toast naming the aim mode M just switched to. */
-  showAimMode(mode: "instructor" | "classic"): void {
-    this.toast(
-      mode === "instructor"
-        ? "◇ AIM: MOUSE INSTRUCTOR (M) ◇"
-        : "◇ AIM: CLASSIC STICK (M) ◇",
-    );
+  showAimMode(mode: "instructor" | "classic", touch: boolean): void {
+    this.toast(`◇ AIM: ${aimModeLabel(mode, touch)} ◇`);
   }
 
-  /** The shared top-centre toast (aim mode). */
+  /**
+   * The settings screen closed after changing the aim (M9). It covers the
+   * HUD while open, so the toast waits for it; null means unchanged, and
+   * both changes share one toast.
+   */
+  showAimChanges(
+    mode: "instructor" | "classic" | null,
+    sensitivity: number | null,
+    touch: boolean,
+  ): void {
+    const parts: string[] = [];
+    if (mode !== null) parts.push(`AIM: ${aimModeLabel(mode, touch)}`);
+    if (sensitivity !== null) {
+      parts.push(`${mode === null ? "AIM " : ""}SENSITIVITY ${sensitivity}×`);
+    }
+    if (parts.length > 0) this.toast(`◇ ${parts.join(" · ")} ◇`);
+  }
+
+  /** The shared top-centre toast (aim mode, aim settings). */
   private toast(text: string): void {
     this.aimModeToast.textContent = text;
     this.aimModeToast.classList.add("on");

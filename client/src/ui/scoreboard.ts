@@ -6,6 +6,10 @@ import { BOT_TARGET_MAX } from "@angels-bandits/common/constants";
 import type { RosterEntry, ScoreEntry } from "@angels-bandits/common/protocol";
 import type { BotBar } from "./botbar";
 
+/** Touch (M9): taps on the bot cells this soon after the panel opens are
+ * ignored — a double-tap on the minimap must not change the room's bots. */
+const BOT_TAP_GUARD_MS = 300;
+
 interface Row {
   name: string;
   kills: number;
@@ -29,6 +33,8 @@ export class Scoreboard {
   /** Touch (M2): there is no Tab key, so a minimap tap pins the panel open
    * until the next tap — see bindTapToggle. */
   private pinned = false;
+  /** performance.now() of the last closed → open (the bot-tap guard). */
+  private openedAt = Number.NEGATIVE_INFINITY;
 
   constructor(
     private readonly selfId: string,
@@ -94,6 +100,16 @@ export class Scoreboard {
       return Math.ceil(Math.min(Math.max(frac, 0), 1) * BOT_TARGET_MAX);
     };
 
+    // A touch cancelled at touchstart never sends its emulated mousedown /
+    // mouseup / click, so the drag below never starts and nothing is
+    // claimed. Event.timeStamp is performance.now()'s clock.
+    cells.addEventListener(
+      "touchstart",
+      (e: TouchEvent) => {
+        if (e.timeStamp - this.openedAt < BOT_TAP_GUARD_MS) e.preventDefault();
+      },
+      { passive: false },
+    );
     cells.addEventListener("mousedown", (e: MouseEvent) => {
       // Right-click is the aim zoom, not a grab — let it reach the window.
       if (e.button === 2) return;
@@ -186,6 +202,9 @@ export class Scoreboard {
   }
 
   private setOpen(open: boolean): void {
+    if (open && !this.panel.classList.contains("open")) {
+      this.openedAt = performance.now();
+    }
     if (open && this.dirty) this.render();
     this.panel.classList.toggle("open", open);
   }

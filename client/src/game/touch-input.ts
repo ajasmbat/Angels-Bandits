@@ -297,7 +297,8 @@ export function throttleCommand(
   return clamp(error / (THROTTLE_RATE * dt), -1, 1);
 }
 
-/** Aim-drag sensitivity steps the icon cycles through; DEFAULT is index 2. */
+/** Aim-drag sensitivity steps (the settings screen offers them); DEFAULT is
+ * index 2. */
 export const SENSITIVITY_STEPS = [0.75, 1, 1.5, 2, 3] as const;
 const DEFAULT_SENSITIVITY = 1.5;
 const SENSITIVITY_STORAGE = "ab-touch-sens";

@@ -60,6 +60,7 @@ export class FlightInputSource {
   private touchThrottle: number | null = null; // slider servo, null = released
   private touchZoom = false; // ZOOM button held or latched
   private touchLook = false; // two fingers on the aim zone
+  private touchAimed = false; // a touch, not a mouse, placed the cursor last
 
   constructor(private readonly target: Window = window) {
     this.aimModeV = loadAimMode(target);
@@ -71,6 +72,7 @@ export class FlightInputSource {
       // tick(), so a resize can never leave a stale aim behind.
       this.rawX = e.clientX;
       this.rawY = e.clientY;
+      this.touchAimed = false;
       this.inside = true;
       this.presenceK = 1;
       this.lookDx += e.movementX;
@@ -159,8 +161,27 @@ export class FlightInputSource {
   setTouchAim(x: number, y: number): void {
     this.rawX = x;
     this.rawY = y;
+    this.touchAimed = true;
     this.inside = true;
     this.presenceK = 1;
+  }
+
+  /** The instructor mode's world-anchored touch aim (M7), already projected
+   * to NDC (+y up) through the view the instructor reads this frame. Sets
+   * the cursor outright: the direction is smooth already, and smoothing
+   * lag inside the loop would only stand the nose off it. */
+  setTouchAimNdc(x: number, y: number): void {
+    const hw = this.target.innerWidth / 2;
+    const hh = this.target.innerHeight / 2;
+    this.mouseX = Math.max(-1, Math.min(1, x));
+    this.mouseY = -Math.max(-1, Math.min(1, y));
+    this.setTouchAim(hw + this.mouseX * hw, hh + this.mouseY * hh);
+  }
+
+  /** Whether a touch placed the cursor last — false again once a real
+   * mouse moves it (a hybrid laptop), so the touch aim never fights it. */
+  touchOwnsCursor(): boolean {
+    return this.touchAimed;
   }
 
   /** The throttle slider's command, −1..1, added to W/S; null when no

@@ -14,8 +14,9 @@ import {
   POSE_DISTANCE_SLACK,
   SPEED_TOLERANCE,
 } from "@angels-bandits/common/constants";
-import type { Pose, Quat, SpawnState } from "@angels-bandits/common/protocol";
+import type { Pose, SpawnState } from "@angels-bandits/common/protocol";
 import { canonicalize, wrapDistance } from "@angels-bandits/common/world";
+import { isPose } from "./guards";
 
 export interface PoseVerdict {
   /** Was the claim accepted? */
@@ -23,12 +24,6 @@ export interface PoseVerdict {
   /** The pose now on record: the sanitized claim, or `prev` on reject. */
   pose: Pose;
 }
-
-const finiteQuat = (q: Quat) =>
-  Number.isFinite(q.x) &&
-  Number.isFinite(q.y) &&
-  Number.isFinite(q.z) &&
-  Number.isFinite(q.w);
 
 /**
  * Judge `claim` against the last accepted `prev`, `dt` seconds apart.
@@ -40,22 +35,16 @@ const finiteQuat = (q: Quat) =>
  */
 export function validatePose(
   prev: Pose,
-  claim: Pose,
+  claim: unknown,
   dt: number,
   maxSpeed: number = MAX_SPEED,
 ): PoseVerdict {
   const reject: PoseVerdict = { ok: false, pose: prev };
 
+  // The claim came off the wire: check its shape (every field present and
+  // finite) before touching a single field of it.
+  if (!isPose(claim)) return reject;
   const { pos, quat, speed } = claim;
-  if (
-    !Number.isFinite(pos.x) ||
-    !Number.isFinite(pos.y) ||
-    !Number.isFinite(pos.z) ||
-    !Number.isFinite(speed) ||
-    !finiteQuat(quat)
-  ) {
-    return reject;
-  }
 
   if (speed > maxSpeed * SPEED_TOLERANCE || speed < 0) return reject;
 

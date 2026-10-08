@@ -173,13 +173,14 @@ describe("beamAlpha: the falloff", () => {
     // Midway, every term partial:
     //   fade (1 − 0.5)^1.5        = 0.3535534
     //   hot  0.4 + 0.6·e^−3        = 0.4298722
-    //   edge smoothstep(0, .8, .4) = 0.5
+    //   edge smoothstep(sin(π/18) + .01 = 0.1836482, .8, .4)
+    //        x = 0.3510200 → 0.2831432
     //   near q = 20 / 8 = 2.5 → x = 0.8 → 0.896
     //   cam  rho 2 → x = 0.5 → 0.25 + 0.75 · 0.5 = 0.625
-    //   0.4 · 0.3535534 · 0.4298722 · 0.5 · 0.896 · 0.625 = 0.0170221
+    //   0.4 · 0.3535534 · 0.4298722 · 0.2831432 · 0.896 · 0.625 = 0.0096394
     expect(
       beamAlpha({ t: 0.5, facing: 0.4, viewDist: 20, localRadius: 8, rho: 2 }),
-    ).toBeCloseTo(0.0170221, 6);
+    ).toBeCloseTo(0.0096394, 6);
     // The tip has thinned to nothing.
     expect(
       beamAlpha({ t: 1, facing: 1, viewDist: 500, localRadius: 34, rho: 10 }),

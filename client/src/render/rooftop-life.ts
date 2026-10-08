@@ -33,6 +33,7 @@ import {
 } from "@angels-bandits/common/constants";
 import * as THREE from "three";
 import { emissiveBoost, luminance } from "./emissive";
+import { applyPointFloor } from "./point-floor";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { roofClutterFor } from "./roofclutter";
 import { RoofKind, roofStyleFor } from "./roofs";
@@ -1000,7 +1001,9 @@ export const ROOFTOP_PROPS_CACHE_KEY = "ab-rooftop-props";
 /** Bulbs fade out over this camera distance (aviation lights never do). */
 const LIGHT_FADE_NEAR = 520;
 const LIGHT_FADE_FAR = 900;
-/** Far points never shrink below this many drawing-buffer pixels. */
+/** Far points are never drawn below this many drawing-buffer pixels — and
+ * since O5 their alpha pays for it (applyPointFloor), so a far bulb keeps
+ * its true brightness instead of growing into a shimmering blob. */
 const LIGHT_MIN_PX = 2.5;
 
 const glsl = (n: number) => n.toFixed(4);
@@ -1228,11 +1231,8 @@ export class RooftopLifeRenderer {
           "#include <begin_vertex>",
           `#include <begin_vertex>\n${LIGHTS_VERTEX_MAIN}`,
         )
-        .replace("gl_PointSize = size;", "gl_PointSize = size * aSize;")
-        .replace(
-          "#include <logdepthbuf_vertex>",
-          `gl_PointSize = max(gl_PointSize, ${glsl(LIGHT_MIN_PX)});\n#include <logdepthbuf_vertex>`,
-        );
+        .replace("gl_PointSize = size;", "gl_PointSize = size * aSize;");
+      applyPointFloor(shader, LIGHT_MIN_PX);
     };
     this.lights = new THREE.Points(lightGeometry, lightMaterial);
     // Positions are canonical; the shader moves them next to the camera.

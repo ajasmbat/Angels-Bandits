@@ -112,7 +112,7 @@ const SCENES = {
 
 /** --grid: frames per view (frozen) and pan frames per view. */
 const GRID_FRAMES = 10;
-const GRID_PAN_FRAMES = 6;
+const GRID_PAN_FRAMES = 8;
 /** --grid: frames with camera AND world frozen. */
 const GRID_STILL_FRAMES = 4;
 /** --grid: steps on a new view before the first captured frame — time for
@@ -120,6 +120,15 @@ const GRID_STILL_FRAMES = 4;
 const GRID_SETTLE = 30;
 /** A pixel whose luma moved more than this in one step is `hot`. */
 const HOT_DELTA = 8;
+/**
+ * `jitter`: the share of pixels whose step changes SIGN at least twice in
+ * a capture (brighter, darker, brighter …), counting steps over this many
+ * luma units. A thing moving through a pixel at 60 fps brightens it then
+ * darkens it — one reversal; shimmer, z-fighting, a popping LOD or a
+ * strobing light keep reversing. It separates flicker from the city's own
+ * motion (traffic, trains, sweeps), which `score` and `hot` cannot.
+ */
+const JITTER_DELTA = 2;
 /**
  * --grid: the verdict's absolute ceiling for a frozen view, O1's merged
  * threshold: the O3 gate's limit for the midtown frozen view against main
@@ -258,6 +267,7 @@ function aimView(page, spec, panM) {
         };
       };
       window.__flickerPrev = null;
+      window.__flickerHeat?.fill(0);
       window.__flickerPin = spec.plane ?? { x: spec.eye.x, z: spec.eye.z };
       window.__ab.qaCamera(window.__flickerView(0));
     },
@@ -274,49 +284,74 @@ const sceneSpec = (scene) => ({
 
 /** Read the canvas, luminance it, diff against the previous frame. */
 function readFrame(page) {
-  return page.evaluate((hotDelta) => {
-    // The renderer's canvas: a WebGL one that is in the page (a capability
-    // probe's detached canvas never is), the largest if several are.
-    const src = (window.__flickerGls ?? [])
-      .filter((c) => c.isConnected)
-      .sort((a, b) => b.width * b.height - a.width * a.height)[0];
-    const w = src.width;
-    const h = src.height;
-    let c = window.__flickerCanvas;
-    if (!c || c.width !== w || c.height !== h) {
-      c = document.createElement("canvas");
-      c.width = w;
-      c.height = h;
-      window.__flickerCanvas = c;
-    }
-    const ctx = c.getContext("2d", { willReadFrequently: true });
-    ctx.drawImage(src, 0, 0);
-    const px = ctx.getImageData(0, 0, w, h).data;
-    const lum = new Float32Array(w * h);
-    let mean = 0;
-    for (let i = 0, j = 0; j < lum.length; i += 4, j++) {
-      // Rec. 709 luma on the display-referred (sRGB) bytes — what the eye
-      // sees change, which is what flicker is.
-      lum[j] = 0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2];
-      mean += lum[j];
-    }
-    const prev = window.__flickerPrev;
-    let delta = null;
-    let hot = null;
-    if (prev) {
-      let sum = 0;
-      let n = 0;
-      for (let j = 0; j < lum.length; j++) {
-        const d = Math.abs(lum[j] - prev[j]);
-        sum += d;
-        if (d > hotDelta) n++;
+  return page.evaluate(
+    ([hotDelta, jitterDelta]) => {
+      // The renderer's canvas: a WebGL one that is in the page (a capability
+      // probe's detached canvas never is), the largest if several are.
+      const src = (window.__flickerGls ?? [])
+        .filter((c) => c.isConnected)
+        .sort((a, b) => b.width * b.height - a.width * a.height)[0];
+      const w = src.width;
+      const h = src.height;
+      let c = window.__flickerCanvas;
+      if (!c || c.width !== w || c.height !== h) {
+        c = document.createElement("canvas");
+        c.width = w;
+        c.height = h;
+        window.__flickerCanvas = c;
       }
-      delta = sum / lum.length;
-      hot = n / lum.length;
-    }
-    window.__flickerPrev = lum;
-    return { delta, hot, mean: mean / lum.length };
-  }, HOT_DELTA);
+      const ctx = c.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(src, 0, 0);
+      const px = ctx.getImageData(0, 0, w, h).data;
+      const lum = new Float32Array(w * h);
+      let mean = 0;
+      for (let i = 0, j = 0; j < lum.length; i += 4, j++) {
+        // Rec. 709 luma on the display-referred (sRGB) bytes — what the eye
+        // sees change, which is what flicker is.
+        lum[j] = 0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2];
+        mean += lum[j];
+      }
+      const prev = window.__flickerPrev;
+      let delta = null;
+      let hot = null;
+      if (prev) {
+        let sum = 0;
+        let n = 0;
+        // Per-pixel |Δ| summed over the capture: the --shots heat map.
+        let heat = window.__flickerHeat;
+        if (!heat || heat.length !== lum.length) {
+          heat = new Float32Array(lum.length);
+          window.__flickerHeat = heat;
+        }
+        // Jitter: per-pixel sign reversals of the step (see JITTER_DELTA).
+        let jit = window.__flickerJit;
+        if (!jit || jit.sign.length !== lum.length) {
+          jit = {
+            sign: new Int8Array(lum.length),
+            rev: new Uint8Array(lum.length),
+          };
+          window.__flickerJit = jit;
+        }
+        for (let j = 0; j < lum.length; j++) {
+          const s = lum[j] - prev[j];
+          const d = Math.abs(s);
+          sum += d;
+          heat[j] += d;
+          if (d > hotDelta) n++;
+          if (d > jitterDelta) {
+            const sg = s > 0 ? 1 : -1;
+            if (jit.sign[j] === -sg && jit.rev[j] < 255) jit.rev[j]++;
+            jit.sign[j] = sg;
+          }
+        }
+        delta = sum / lum.length;
+        hot = n / lum.length;
+      }
+      window.__flickerPrev = lum;
+      return { delta, hot, mean: mean / lum.length };
+    },
+    [HOT_DELTA, JITTER_DELTA],
+  );
 }
 
 /**
@@ -328,6 +363,12 @@ async function captureFrames(page, frames, shots, tag) {
   const deltas = [];
   const hots = [];
   const means = [];
+  // Each capture's heat map and jitter count are its own.
+  await page.evaluate(() => {
+    window.__flickerHeat?.fill(0);
+    window.__flickerJit?.sign.fill(0);
+    window.__flickerJit?.rev.fill(0);
+  });
   for (let i = 0; i < frames; i++) {
     await page.evaluate((i) => {
       window.__ab.qaCamera(window.__flickerView(i));
@@ -349,6 +390,31 @@ async function captureFrames(page, frames, shots, tag) {
         Buffer.from(png.split(",")[1], "base64"),
       );
     }
+    // --shots: where it moved — the summed |Δ| of the whole capture over a
+    // dimmed copy of the last frame (red = moved), to find what flickers.
+    if (shots && i === frames - 1) {
+      const png = await page.evaluate(() => {
+        const c = window.__flickerCanvas;
+        const ctx = c.getContext("2d", { willReadFrequently: true });
+        const img = ctx.getImageData(0, 0, c.width, c.height);
+        const heat = window.__flickerHeat;
+        for (let j = 0, k = 0; j < heat.length; j++, k += 4) {
+          const h = Math.min(255, heat[j] * 8);
+          img.data[k] = Math.max(img.data[k] * 0.35, h);
+          img.data[k + 1] *= 0.35;
+          img.data[k + 2] *= 0.35;
+        }
+        const out = document.createElement("canvas");
+        out.width = c.width;
+        out.height = c.height;
+        out.getContext("2d").putImageData(img, 0, 0);
+        return out.toDataURL("image/png");
+      });
+      writeFileSync(
+        resolve(shots, `${tag.replace(/\W+/g, "-")}-heat.png`),
+        Buffer.from(png.split(",")[1], "base64"),
+      );
+    }
     means.push(f.mean);
     if (f.delta !== null) {
       deltas.push(f.delta);
@@ -356,6 +422,13 @@ async function captureFrames(page, frames, shots, tag) {
     }
   }
   const avg = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
+  const jitter = await page.evaluate(() => {
+    const rev = window.__flickerJit?.rev;
+    if (!rev) return 0;
+    let n = 0;
+    for (let j = 0; j < rev.length; j++) if (rev[j] >= 2) n++;
+    return n / rev.length;
+  });
   // Relative to the view's own typical step: a pan moves ~6 a step by
   // itself, a frozen view ~0.1, and a flash jumps far above either.
   const typical = [...deltas].sort((x, y) => x - y)[
@@ -364,6 +437,7 @@ async function captureFrames(page, frames, shots, tag) {
   return {
     score: Math.round(avg(deltas) * 1000) / 1000,
     hot: Math.round(avg(hots) * 1e5) / 1e5,
+    jitter: Math.round(jitter * 1e5) / 1e5,
     deltas: deltas.map((d) => Math.round(d * 1000) / 1000),
     meanLuma: Math.round(avg(means) * 10) / 10,
     flash: deltas.some((d) => d > Math.max(FLASH_DELTA, 3 * typical)),
@@ -503,7 +577,7 @@ async function measureBuild(browser, label, cwd, frames, shots, grid) {
         const frozenWorld = await captureFrames(
           page,
           GRID_STILL_FRAMES,
-          null,
+          shots,
           `${label}-${v.name}-still`,
         );
         await page.evaluate(() => {
@@ -533,7 +607,7 @@ async function measureBuild(browser, label, cwd, frames, shots, grid) {
           rt: stillAt,
         });
         console.log(
-          `  ${label} ${v.name.padEnd(18)} frozen ${frozen.score.toFixed(3)} hot ${(frozen.hot * 100).toFixed(2)}%  still ${frozenWorld.score.toFixed(3)}  pan ${pan.score.toFixed(3)}${frozen.flash || pan.flash ? "  FLASH" : ""}${frozen.meanLuma < 2 ? "  BLACK" : ""}`,
+          `  ${label} ${v.name.padEnd(18)} frozen ${frozen.score.toFixed(3)} hot ${(frozen.hot * 100).toFixed(2)}% jitter ${(frozen.jitter * 100).toFixed(3)}% (pan ${(pan.jitter * 100).toFixed(2)}%)  still ${frozenWorld.score.toFixed(3)}  pan ${pan.score.toFixed(3)}${frozen.flash || pan.flash ? "  FLASH" : ""}${frozen.meanLuma < 2 ? "  BLACK" : ""}`,
         );
       }
     } else {
@@ -602,8 +676,8 @@ function printGrid(report) {
   );
   console.log(
     ref
-      ? `${"view".padEnd(18)} ${"frozen ref".padStart(10)} ${"→ HEAD".padStart(7)}  ${"hot ref".padStart(7)} ${"→ HEAD".padStart(7)}  ${"still ref".padStart(9)} ${"→ HEAD".padStart(7)}  ${"pan ref".padStart(7)} ${"→ HEAD".padStart(7)}  verdict`
-      : `${"view".padEnd(18)} ${"frozen".padStart(7)} ${"hot".padStart(7)} ${"still".padStart(7)} ${"pan".padStart(7)}`,
+      ? `${"view".padEnd(18)} ${"frozen ref".padStart(10)} ${"→ HEAD".padStart(7)}  ${"hot ref".padStart(7)} ${"→ HEAD".padStart(7)}  ${"jit ref".padStart(7)} ${"→ HEAD".padStart(7)}  ${"panjit".padStart(7)} ${"→ HEAD".padStart(7)}  ${"still ref".padStart(9)} ${"→ HEAD".padStart(7)}  ${"pan ref".padStart(7)} ${"→ HEAD".padStart(7)}  verdict`
+      : `${"view".padEnd(18)} ${"frozen".padStart(7)} ${"hot".padStart(7)} ${"jitter".padStart(7)} ${"panjit".padStart(7)} ${"still".padStart(7)} ${"pan".padStart(7)}`,
   );
   let pass = true;
   const rows = [];
@@ -613,7 +687,7 @@ function printGrid(report) {
       v.frozen.flash || v.pan.flash || v.frozen.meanLuma < 2 || !v.alive;
     if (!r) {
       console.log(
-        `${h.name.padEnd(18)} ${h.frozen.score.toFixed(3).padStart(7)} ${pct(h.frozen.hot)} ${h.still.score.toFixed(3).padStart(7)} ${h.pan.score.toFixed(3).padStart(7)}${bad(h) ? "  INVALID" : ""}`,
+        `${h.name.padEnd(18)} ${h.frozen.score.toFixed(3).padStart(7)} ${pct(h.frozen.hot)} ${pct(h.frozen.jitter ?? 0)} ${pct(h.pan.jitter ?? 0)} ${h.still.score.toFixed(3).padStart(7)} ${h.pan.score.toFixed(3).padStart(7)}${bad(h) ? "  INVALID" : ""}`,
       );
       continue;
     }
@@ -627,7 +701,7 @@ function printGrid(report) {
         ? "PASS"
         : `FAIL${v.halved ? "" : " (not halved)"}${v.notWorse ? "" : " (worse)"}${v.ceiling ? "" : " (over ceiling)"}`;
     console.log(
-      `${h.name.padEnd(18)} ${r.frozen.score.toFixed(3).padStart(10)} ${h.frozen.score.toFixed(3).padStart(7)}  ${pct(r.frozen.hot)} ${pct(h.frozen.hot)}  ${r.still.score.toFixed(3).padStart(9)} ${h.still.score.toFixed(3).padStart(7)}  ${r.pan.score.toFixed(3).padStart(7)} ${h.pan.score.toFixed(3).padStart(7)}  ${why}`,
+      `${h.name.padEnd(18)} ${r.frozen.score.toFixed(3).padStart(10)} ${h.frozen.score.toFixed(3).padStart(7)}  ${pct(r.frozen.hot)} ${pct(h.frozen.hot)}  ${pct(r.frozen.jitter ?? 0)} ${pct(h.frozen.jitter ?? 0)}  ${pct(r.pan.jitter ?? 0)} ${pct(h.pan.jitter ?? 0)}  ${r.still.score.toFixed(3).padStart(9)} ${h.still.score.toFixed(3).padStart(7)}  ${r.pan.score.toFixed(3).padStart(7)} ${h.pan.score.toFixed(3).padStart(7)}  ${why}`,
     );
   }
   if (ref) {

@@ -799,8 +799,12 @@ const impacts = new Impacts();
 scene.add(impacts.points);
 /** The classifier's reusable result (allocation-free bullet loop). */
 const impactHit: BulletImpact = createBulletImpact();
-/** QA: the last classified city impact, and this frame's classifier time. */
+/** QA: the last city impact by a LOCAL round (own guns or __ab.qaFireAt —
+ * never a remote tracer, which would race a QA check), and this frame's
+ * classifier time. */
 let lastImpact: {
+  /** The round's seq (QA rounds are QA_ROUND_SEQ, remote tracers −1). */
+  seq: number;
   building: number;
   tier: number;
   face: number;
@@ -812,23 +816,34 @@ let lastImpact: {
 let classifyMs = 0;
 /** The last frame's world clock (server ms) — QA blasts are stamped on it. */
 let lastRenderMs: number | null = null;
+/** The seq __ab.qaFireAt stamps its rounds with, so QA can tell its own
+ * impact from a stray remote tracer's. */
+const QA_ROUND_SEQ = -2;
+/** The seq every remote tracer is spawned with (fireRemote). */
+const REMOTE_ROUND_SEQ = -1;
 /** Facade scorch one round leaves around its hole (accumulates, 0..255). */
 const BULLET_SCORCH = 10;
 
 /** A round struck the city: one impact, its decal, and the round is spent. */
-function strikeCity(bullet: { spent: boolean }, now: number): void {
+function strikeCity(
+  bullet: { spent: boolean; seq: number },
+  now: number,
+): void {
   bullet.spent = true;
   impacts.bullet(impactHit, now);
   const h = impactHit;
-  lastImpact = {
-    building: h.building,
-    tier: h.tier,
-    face: h.face,
-    surface: h.surface,
-    cellX: h.cellX,
-    cellY: h.cellY,
-    pane: h.pane,
-  };
+  if (bullet.seq !== REMOTE_ROUND_SEQ) {
+    lastImpact = {
+      seq: bullet.seq,
+      building: h.building,
+      tier: h.tier,
+      face: h.face,
+      surface: h.surface,
+      cellX: h.cellX,
+      cellY: h.cellY,
+      pane: h.pane,
+    };
+  }
   if (h.surface !== "facade") return;
   if (h.pane) city.damage.shatter(h.building, h.tier, h.face, h.cellX, h.cellY);
   else city.damage.bulletHole(h.building, h.tier, h.face, h.cellX, h.cellY);
@@ -1258,7 +1273,7 @@ function remoteFired(id: string): void {
     z: pose.pos.z + muzzle.z,
   };
   bullets.spawn(
-    -1,
+    REMOTE_ROUND_SEQ,
     origin,
     { x: fwd.x * speed, y: fwd.y * speed, z: fwd.z * speed },
     true,
@@ -1987,7 +2002,8 @@ declare global {
         lastImpact: typeof lastImpact;
       };
       /** D1 QA: fire `n` local cosmetic rounds at canonical (x, y, z) from
-       * 60 m back along the camera's line (through the real bullet loop). */
+       * up to 60 m back along the rendered camera's line (the real bullet
+       * loop), never from behind the eye. */
       qaFireAt: (x: number, y: number, z: number, n?: number) => void;
       /** D1 QA: hide the impacts Points (draw-call A/B). */
       qaImpactsHidden: (hidden: boolean) => void;
@@ -2419,14 +2435,20 @@ window.__ab = {
     lastImpact,
   }),
   qaFireAt: (x, y, z, n = 1) => {
+    // From the RENDERED camera (a qaCamera eye when one is held), so the
+    // round flies the line the screenshot looks along.
     const target = { x, y, z };
-    const d = wrapDelta(chase.position, target);
+    const eye = camera.position;
+    const d = wrapDelta({ x: eye.x, y: eye.y, z: eye.z }, target);
     const len = Math.hypot(d.x, d.y, d.z) || 1;
     const u = { x: d.x / len, y: d.y / len, z: d.z / len };
+    // Start at most 60 m back and never behind the eye, so the round flies
+    // only the sight line the camera already has clear.
+    const back = Math.min(60, Math.max(1, len - 1));
     for (let k = 0; k < n; k++) {
       bullets.spawn(
-        -1,
-        { x: x - u.x * 60, y: y - u.y * 60, z: z - u.z * 60 },
+        QA_ROUND_SEQ,
+        { x: x - u.x * back, y: y - u.y * back, z: z - u.z * back },
         { x: u.x * BULLET_SPEED, y: u.y * BULLET_SPEED, z: u.z * BULLET_SPEED },
         true,
       );
@@ -3188,7 +3210,7 @@ const frame = (now: number): void => {
   shieldSparks.update(chase.position, now);
   // D1: burning patches age on the synced server clock; particles fly.
   if (renderMs !== null) blastLedger.prune(renderMs);
-  impacts.burn(blastLedger.burns, renderMs, dt, now);
+  impacts.burn(blastLedger.burns, renderMs, now);
   impacts.update(chase.position, now);
   tracers.update(bullets.all, chase.position, now);
 

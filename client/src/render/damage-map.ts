@@ -429,6 +429,16 @@ export const DAMAGE_PARS_GLSL = /* glsl */ `
 uniform highp sampler2D uDamage;
 uniform float uDamageOn;
 flat varying highp float vDmgWord;
+// Smooth value noise (bilinear over abHash lattice values, smoothstep-eased).
+float abVNoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = p - i;
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(abHash(i, 5.0), abHash(i + vec2(1.0, 0.0), 5.0), f.x),
+    mix(abHash(i + vec2(0.0, 1.0), 5.0), abHash(i + vec2(1.0, 1.0), 5.0), f.x),
+    f.y);
+}
 `;
 
 /**
@@ -478,9 +488,10 @@ if (uDamageOn > 0.5 && facade > 0.0 && vDmgWord > 0.5) {
     float dmgS01 = texelFetch(uDamage, dmgO + clamp(dmgB + ivec2(0, 1), ivec2(0), dmgHi), 0).g;
     float dmgS11 = texelFetch(uDamage, dmgO + clamp(dmgB + ivec2(1, 1), ivec2(0), dmgHi), 0).g;
     dmgScorch = mix(mix(dmgS00, dmgS10, dmgGf.x), mix(dmgS01, dmgS11, dmgGf.x), dmgGf.y);
-    // Charred, not airbrushed: break the soft edge up with a 0.5 m hash.
-    float dmgN = abHash(floor(winGrid * 2.0), 7.0);
-    dmgScorch = smoothstep(0.08, 0.85, dmgScorch * (0.7 + 0.6 * dmgN));
+    // Charred, not airbrushed: two octaves of smooth value noise (1.6 m and
+    // 0.5 m) break the soft edge into licks and blotches.
+    float dmgN = 0.65 * abVNoise(winGrid / 1.6) + 0.35 * abVNoise(winGrid / 0.5 + 17.0);
+    dmgScorch = smoothstep(0.1, 0.8, dmgScorch * (0.45 + 1.1 * dmgN));
   }
 }
 if (dmgGlass + dmgHoles + dmgScorch > 0.0) {

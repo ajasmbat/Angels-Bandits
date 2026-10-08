@@ -66,8 +66,8 @@ export const PER_HIT = { sparks: 8, dust: 3, chips: 4, glass: 10 } as const;
 /** A blast's glass shower, at full share. */
 export const BLAST_GLASS = 48;
 /** A burning patch's emission, particles/s at full share. */
-const BURN_FIRE_RATE = 16;
-const BURN_SMOKE_RATE = 5;
+const BURN_FIRE_RATE = 24;
+const BURN_SMOKE_RATE = 7;
 /** The last stretch of a burn tapers its flames to nothing, ms. */
 const BURN_TAPER_MS = 15_000;
 
@@ -320,6 +320,7 @@ export class Impacts {
   private readonly sizes: THREE.BufferAttribute;
   private share = 1;
   private lastLive = 0;
+  private lastBurnMs = Number.POSITIVE_INFINITY;
   private readonly v: Vec3 = { x: 0, y: 0, z: 0 };
   private readonly at: Vec3 = { x: 0, y: 0, z: 0 };
   private readonly rand = Math.random;
@@ -397,7 +398,7 @@ export class Impacts {
         v.y,
         v.z,
         220 + 200 * rand(),
-        0.5,
+        0.75,
         sr,
         sg,
         sb,
@@ -487,13 +488,12 @@ export class Impacts {
   }
 
   /** Feed every live burn's flames and smoke for this frame. `serverMs` is
-   * the synced clock the burns age on (null before the first snapshot). */
-  burn(
-    burns: readonly Burn[],
-    serverMs: number | null,
-    dt: number,
-    now: number,
-  ): void {
+   * the synced clock the burns age on (null before the first snapshot);
+   * emission runs on the REAL frame time (`now`, ms), not the clamped sim
+   * step, so a slow frame never starves the fire. */
+  burn(burns: readonly Burn[], serverMs: number | null, now: number): void {
+    const dt = Math.min(0.25, Math.max(0, (now - this.lastBurnMs) / 1000));
+    this.lastBurnMs = now;
     if (serverMs === null) return;
     const rand = this.rand;
     for (const b of burns) {
@@ -514,7 +514,7 @@ export class Impacts {
           1.5 + rand() * 2,
           s.normal.z * 0.6 + (rand() - 0.5),
           500 + 500 * rand(),
-          1.4 + 1.6 * rand() * k,
+          2 + 2.5 * rand() * k,
           fr,
           fg * (0.8 + 0.4 * rand()),
           fb,

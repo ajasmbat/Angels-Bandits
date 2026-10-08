@@ -352,6 +352,19 @@ export function roofTopAt(b: Building, dx: number, dz: number): number {
 
 /** Is the building-relative (dx, dz) within `pad` of the structure's
  * footprint (a disc for round structures)? */
+/**
+ * structureCovers for an offset held in an object (only x and z are read)
+ * — the per-probe collision path's form (O5): a double handed to a call V8
+ * does not inline is boxed, an object is not. Same test, same answer.
+ */
+export function structureCoversAt(
+  s: RoofStructure,
+  d: { readonly x: number; readonly z: number },
+  pad: number,
+): boolean {
+  return structureCovers(s, d.x, d.z, pad);
+}
+
 export function structureCovers(
   s: RoofStructure,
   dx: number,

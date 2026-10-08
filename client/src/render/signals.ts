@@ -26,9 +26,10 @@ import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { type CityReactions, alarmBlinkOn, alarmed } from "./reactions";
 import {
   BLOCK_WINDOW_RADIUS,
+  type BlockIndex,
   TAG_SIGNAL,
   blockStream,
-  blockWindow,
+  blockWindowInto,
 } from "./streetlife";
 import { nearestImageInto, uploadPrefix } from "./wrapPlacement";
 
@@ -407,6 +408,9 @@ export class Signals {
     return masts;
   }
 
+  /** O5: the block window, reused every frame (blockWindowInto). */
+  private readonly windowScratch: BlockIndex[] = [];
+
   /** Phase-only, so a missing clock falls back to local time. `reactions`
    * (L1): vehicle heads inside an alarm radius flash amber instead. */
   update(
@@ -429,7 +433,11 @@ export class Signals {
       ? ASPECT_COLORS.amber
       : WALK_COLORS.dont;
     let n = 0;
-    for (const { bx, bz } of blockWindow(cameraPos, this.radius)) {
+    for (const { bx, bz } of blockWindowInto(
+      cameraPos,
+      this.radius,
+      this.windowScratch,
+    )) {
       const aspects = signalPhase(bx, bz, t, this.seed);
       const masts = this.mastsFor(bx, bz);
       for (const mast of masts) {

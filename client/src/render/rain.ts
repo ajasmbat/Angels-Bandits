@@ -47,6 +47,14 @@ const STREAK_MIN = 1.2;
 const STREAK_MAX = 4;
 /** Streak half-width, m (widens a little with distance against shimmer). */
 const STREAK_HALF_WIDTH = 0.02;
+/**
+ * O5: a streak is never drawn thinner than this many drawing-buffer pixels;
+ * its alpha pays for the widening (true width / drawn width), so a far
+ * streak keeps its light. A 0.04 m streak is under a pixel past ~40 m at
+ * 720p — thinner, it rasterised as a broken dashed line that crawled and
+ * sparkled as drops fell through pixel rows.
+ */
+const STREAK_MIN_PX = 1.5;
 /** Drops nearer than this collapse — the lens never fills with rain. */
 const NEAR_CUT = 3;
 /** Peak streak alpha (low: tracers and planes must read through rain). */
@@ -68,6 +76,9 @@ const VERTEX = /* glsl */ `
 uniform vec3 uOffset;
 uniform vec3 uVel;
 uniform float uFade;
+// Half the drawing buffer's height, px (set per draw): with
+// projectionMatrix[1][1] it turns metres at a distance into pixels.
+uniform float uHalfHeight;
 attribute vec4 aSeed;
 varying float vAlpha;
 varying float vSide;
@@ -88,9 +99,13 @@ void main() {
   side = sl > 1e-4 ? side / sl : vec3(1.0, 0.0, 0.0);
   // k == 0 collapses all four corners onto the head: a zero-area quad.
   float on = step(1e-3, k);
+  // Width floor (STREAK_MIN_PX): widen to it, and pay for it in alpha.
+  float halfW = ${STREAK_HALF_WIDTH.toFixed(3)} * (1.0 + dist * 0.03);
+  float widthPx = 2.0 * halfW * projectionMatrix[1][1] * uHalfHeight / max(dist, 1e-3);
+  float widen = max(1.0, ${STREAK_MIN_PX.toFixed(2)} / max(widthPx, 1e-4));
   vec3 pos = head - dir * (len * position.y * on)
-    + side * (position.x * on * ${STREAK_HALF_WIDTH.toFixed(3)} * (1.0 + dist * 0.03));
-  vAlpha = k * uFade * (0.6 + 0.4 * aSeed.w) * mix(1.0, 0.15, position.y);
+    + side * (position.x * on * halfW * widen);
+  vAlpha = k * uFade * (0.6 + 0.4 * aSeed.w) * mix(1.0, 0.15, position.y) / widen;
   vSide = position.x;
   gl_Position = projectionMatrix * viewMatrix * vec4(pos, 1.0);
 }
@@ -114,6 +129,9 @@ export class Rain {
   private readonly offset = new THREE.Vector3();
   private readonly vel = new THREE.Vector3();
   private readonly fade = { value: 0 };
+  /** Half the drawing buffer's height, px — refreshed on every draw. */
+  private readonly halfHeight = { value: 360 };
+  private readonly bufferSize = new THREE.Vector2();
   private readonly lastCam = new THREE.Vector3();
   private hasLastCam = false;
   private heard = 0;
@@ -151,6 +169,7 @@ export class Rain {
           uOffset: { value: this.offset },
           uVel: { value: this.vel },
           uFade: this.fade,
+          uHalfHeight: this.halfHeight,
           uColor: { value: new THREE.Color(RAIN_COLOR) },
         },
         vertexShader: VERTEX,
@@ -165,6 +184,11 @@ export class Rain {
       }),
     );
     this.mesh.frustumCulled = false; // drawn around the camera by the shader
+    // The pixel scale follows the resolution scaler's every rung.
+    this.mesh.onBeforeRender = (renderer) => {
+      renderer.getDrawingBufferSize(this.bufferSize);
+      this.halfHeight.value = this.bufferSize.y / 2;
+    };
     this.mesh.renderOrder = RENDER_ORDER.rain;
     this.mesh.visible = false;
   }

@@ -26,6 +26,7 @@ import {
 } from "@angels-bandits/common/skytraffic";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
+import { applyPointFloor } from "./point-floor";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
 
 /** Inside the dome (FOG_DISTANCE + 60) and in front of the stars (+40). */
@@ -120,6 +121,8 @@ export class Airliners {
           "uniform float size;\nattribute float aSize;",
         )
         .replace("gl_PointSize = size;", "gl_PointSize = size * aSize;");
+      // O5: never drawn under 2 px, alpha-paid, faded below 1 px.
+      applyPointFloor(shader);
     };
     this.points = new THREE.Points(this.geometry, material);
     this.points.frustumCulled = false;

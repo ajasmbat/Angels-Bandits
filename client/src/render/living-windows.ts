@@ -53,8 +53,12 @@ export const LIVE = {
   /** TV gain: base + slow scene level + two sines, all ≤ 2 Hz (no strobe). */
   tvBase: 0.55,
   tvScene: 0.2,
-  /** Seconds per TV "scene" (a slow level change, crossfaded over 1 s). */
+  /** Seconds per TV "scene" (a slow level change, crossfaded over
+   * tvSceneFade s). */
   tvSceneLength: 4,
+  /** TV scene crossfade, seconds — O5: ≥ 1.5 s like every other living
+   * change, so a scene step never reads as a flicker (it was 1 s). */
+  tvSceneFade: 1.5,
   tvWobble: [
     [0.12, 0.9],
     [0.08, 1.7],
@@ -217,7 +221,8 @@ export function tvGain(
   const wrap = LIVE.period / LIVE.tvSceneLength;
   const a = abHash(cellX + modPos(k - 1, wrap) * 0.37, cellY + 47, s);
   const b = abHash(cellX + modPos(k, wrap) * 0.37, cellY + 47, s);
-  const scene = a + (b - a) * smooth01((q - k) * LIVE.tvSceneLength);
+  const scene =
+    a + (b - a) * smooth01(((q - k) * LIVE.tvSceneLength) / LIVE.tvSceneFade);
   let g = LIVE.tvBase + LIVE.tvScene * scene;
   for (const [amp, hz] of LIVE.tvWobble) {
     g += amp * Math.sin(2 * Math.PI * (hz * t + ph));
@@ -449,7 +454,7 @@ if (uLiveOn > 0.5 && abHash(winCell + 61.0, vBSeed * 83.0) < ${glslFloat(u.tvSha
   float liveScene = mix(
     abHash(vec2(winCell.x + mod(liveSk - 1.0, liveSw) * 0.37, winCell.y + 47.0), vBSeed * 83.0),
     abHash(vec2(winCell.x + mod(liveSk, liveSw) * 0.37, winCell.y + 47.0), vBSeed * 83.0),
-    liveSmooth((liveSq - liveSk) * ${glslFloat(u.tvSceneLength)}));
+    liveSmooth((liveSq - liveSk) * ${glslFloat(u.tvSceneLength / u.tvSceneFade)}));
   winColor = ${tv} * (${glslFloat(u.tvBase)} + ${glslFloat(u.tvScene)} * liveScene${wobble});
 }
 `;

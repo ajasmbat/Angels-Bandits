@@ -41,13 +41,13 @@ function cruiseAt(
 }
 
 describe("createFlightState (spawn)", () => {
-  it("spawns level at mid altitude and combat speed, position canonicalized", () => {
+  it("spawns level at mid altitude and combat speed at FULL throttle (F5), position canonicalized", () => {
     const s = createFlightState({ x: -5, y: RESPAWN_ALTITUDE, z: 2005 });
     expect(s.pos).toEqual({ x: 1995, y: RESPAWN_ALTITUDE, z: 5 });
     expect(s.pitch).toBe(0);
     expect(s.roll).toBe(0);
     expect(s.speed).toBe(RESPAWN_SPEED);
-    expect(s.targetSpeed).toBe(RESPAWN_SPEED);
+    expect(s.targetSpeed).toBe(MAX_SPEED);
   });
 });
 

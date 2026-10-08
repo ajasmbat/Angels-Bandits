@@ -978,6 +978,21 @@ async function measure(browser, url) {
     } finally {
       pilots?.stop();
     }
+    // P2: the furball's aftermath must not leak into the next segment. Its
+    // pilots' last bursts leave ~200 bullets in flight, and a bullet ages by
+    // the sim step (clamped at 50 ms a frame), so on a slow renderer their
+    // tracers crossed the next view for tens of seconds and moved its draw
+    // count by up to +7. Wait for the room and the sky to empty. An older
+    // build has no `bullets` read-back and only waits for the room.
+    if (pilots) {
+      await page.waitForFunction(
+        () =>
+          window.__ab.combat().targets.length === 0 &&
+          (window.__ab.combat().bullets ?? 0) === 0,
+        null,
+        { timeout: 120_000, polling: 250 },
+      );
+    }
   }
   const env = await page.evaluate(() => {
     const canvas = document.createElement("canvas");

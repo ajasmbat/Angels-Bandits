@@ -81,10 +81,11 @@ export const TRAINS_SLIDE_MAX_MS = WORLD_STEP_MS - SETTLE_MS - SAMPLE_MS;
 export const BUDGETS = {
   gpuP50Ms: 14,
   hitchRatio: 2,
-  // P2: the Realism batch's three views get their own ceilings (the runner's
-  // measured High draws + ~10 %), so a later ticket that piles onto a train
-  // station, a tunnel or a sidewalk is caught here and not only in `core`.
-  drawCalls: { core: 120, station: 999, hole: 999, sidewalk: 999 },
+  // P2: the Realism batch's three views get their own ceilings — the
+  // runner's measured High draws (station 82, hole 83, sidewalk 82) plus
+  // ~10 % — so a later ticket that piles onto a train station, a tunnel or
+  // a sidewalk is caught here and not only in `core`.
+  drawCalls: { core: 120, station: 90, hole: 92, sidewalk: 90 },
 };
 
 export const SEGMENTS = [

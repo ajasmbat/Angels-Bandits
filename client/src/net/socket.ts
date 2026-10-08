@@ -26,6 +26,8 @@ import {
 import { decodeSnapshotEntry } from "@angels-bandits/common/net";
 import type {
   BotsConfigMsg,
+  CourseBoardMsg,
+  CourseResultMsg,
   DamageMsg,
   DeathMsg,
   NewsHeliMsg,
@@ -57,6 +59,10 @@ export interface GameSocketEvents {
   onNewsHeli?: (msg: NewsHeliMsg) => void;
   /** W2: our `away` took effect — the return will come with a respawn. */
   onAwayStarted?: () => void;
+  /** S3: the official result of our own finished course run. */
+  onCourseResult?: (msg: CourseResultMsg) => void;
+  /** S3: a course leaderboard changed (ghost attached when a record fell). */
+  onCourseBoard?: (msg: CourseBoardMsg) => void;
   /** W2: the socket dropped; reconnecting in the background. */
   onReconnecting?: () => void;
   /** W2: back as the same player. `welcome` is the fresh one: roster,
@@ -451,6 +457,12 @@ export class GameSocket {
         break;
       case "awayStarted":
         this.events.onAwayStarted?.();
+        break;
+      case "courseResult":
+        this.events.onCourseResult?.(msg);
+        break;
+      case "courseBoard":
+        this.events.onCourseBoard?.(msg);
         break;
       case "welcome":
         break; // already consumed by open()

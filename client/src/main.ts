@@ -36,6 +36,13 @@ import {
   MIN_SPEED,
 } from "@angels-bandits/common/constants";
 import {
+  type Course,
+  CourseRunner,
+  type GhostTrack,
+  decodeGhost,
+  generateCourses,
+} from "@angels-bandits/common/courses";
+import {
   type FlightState,
   createFlightState,
   handlingRates,
@@ -43,6 +50,7 @@ import {
 } from "@angels-bandits/common/flight";
 import { hitRangeBudgetFor } from "@angels-bandits/common/net";
 import type {
+  CourseStanding,
   DeathMsg,
   ScoreEntry,
   SpawnState,
@@ -58,6 +66,7 @@ import {
 import {
   type Vec3,
   wrapDelta,
+  wrapDeltaAxis,
   wrapDistance,
 } from "@angels-bandits/common/world";
 import * as THREE from "three";
@@ -145,6 +154,7 @@ import { Fireworks } from "./render/fireworks";
 import { installHeightFog } from "./render/fog";
 import { Fountains } from "./render/fountains";
 import { Explosions, Sparks } from "./render/fx";
+import { CourseGhost } from "./render/ghost";
 import { GpuTimer } from "./render/gputimer";
 import { createGradePass } from "./render/grade";
 import { Headlights } from "./render/headlights";
@@ -206,6 +216,7 @@ import {
   missShare,
   stepResolution,
 } from "./render/resolution";
+import { CourseRings } from "./render/rings";
 import { RiverRenderer } from "./render/river";
 import { RoofClutterRenderer } from "./render/roofclutter";
 import { RooftopLifeRenderer } from "./render/rooftop-life";
@@ -247,6 +258,7 @@ import { nearestImage } from "./render/wrapPlacement";
 import { BotBar } from "./ui/botbar";
 import { Coach, renderPrimer } from "./ui/coach";
 import { CommsTicker } from "./ui/comms";
+import { CourseBoard } from "./ui/course-board";
 import { DamageIndicator } from "./ui/damage-indicator";
 import { initFullscreenUi } from "./ui/fullscreen";
 import { Haptics } from "./ui/haptics";
@@ -272,6 +284,7 @@ import {
 } from "./ui/mobile";
 import { PerfHud, bindPerfHudKey, perfHudKeyEnabled } from "./ui/perfhud";
 import { initPhoneFullscreen } from "./ui/phone-fullscreen";
+import { RaceHud, formatCourseTime } from "./ui/race-hud";
 import { Scoreboard } from "./ui/scoreboard";
 import {
   type Settings,
@@ -675,6 +688,29 @@ const hornPlanes: Vec3[] = [];
 // exactly where it is drawn (street trees excepted — lamp-pole height).
 const nature = natureFor(welcome.seed, city.cityBuildings);
 const natureIndex = buildNatureIndex(nature);
+// S3 stunt courses: the same rings the server times runs against, generated
+// from the same city, trees and STATIC movers (common/src/courses.ts) — no
+// ring ever crosses the wire. Two draws in all: every ring in one instanced
+// mesh, and the record ghost (off on MOBILE).
+const courses: Course[] = generateCourses(welcome.seed, {
+  buildings: city.cityBuildings,
+  index: city.cityIndex,
+  nature: natureIndex,
+  movers: moverField,
+});
+const courseRings = new CourseRings(courses);
+scene.add(courseRings.mesh);
+const courseGhost = new CourseGhost();
+scene.add(courseGhost.mesh);
+/** Each course's decoded record ghost (welcome, then courseBoard). */
+const courseGhosts: (GhostTrack | null)[] = courses.map(() => null);
+/** The LOCAL run: instant HUD feedback only — the server's courseResult is
+ * the official time (exact ring radius here, generous there). */
+const courseRunner = new CourseRunner(courses);
+/** Where the plane was at the last course step, and when (−1: no step yet,
+ * e.g. right after a respawn — a teleport is never a move). */
+const coursePrev: Vec3 = { x: 0, y: 0, z: 0 };
+let coursePrevMs = -1;
 // F5 corner speed manager: the same solids the crash check reads, plus every
 // hole's clear corridor (H1 holes and the river underpasses), built once.
 const cornerWorld: CornerWorld = {
@@ -963,6 +999,20 @@ const radioAssetUrls = Object.fromEntries(
 const radio = new RadioQueue();
 const radioVoice = new RadioVoice(audio, radioAssetUrls);
 const comms = new CommsTicker();
+// S3: the race readout and the course leaderboards (Tab panel).
+const raceHud = new RaceHud();
+const courseBoard = new CourseBoard(courses, name);
+/** Take a welcome's course standings: boards and record ghosts. */
+function applyCourseStandings(standings: CourseStanding[] | undefined): void {
+  for (const standing of standings ?? []) {
+    courseBoard.set(standing.course, standing.board);
+    if (standing.course >= courseGhosts.length) continue;
+    courseGhosts[standing.course] = standing.ghost
+      ? decodeGhost(standing.ghost)
+      : null;
+  }
+}
+applyCourseStandings(welcome.courses);
 const ambient = new AmbientChatter(welcome.seed, performance.now());
 const RADIO_VOICE_KEY = "ab-radio-voice";
 let radioVoiceOn = readStored(RADIO_VOICE_KEY) !== "off";
@@ -1110,6 +1160,56 @@ function resetAssist(): void {
   holeAssist.pitch = 0;
 }
 
+/** S3: drop the local run (death, respawn, resume) — the server drops its
+ * own the same way — and forget the last position: a teleport is no move. */
+function endCourseRun(): void {
+  courseRunner.abort();
+  courseGhost.stop();
+  raceHud.aborted();
+  coursePrevMs = -1;
+}
+
+/** S3: step the local run over this frame's move and react to what it did. */
+function stepCourse(now: number): void {
+  if (!alive) return;
+  if (coursePrevMs >= 0) {
+    const step = courseRunner.step(coursePrev, flight.pos, coursePrevMs, now);
+    if (step === "start") {
+      const ghost = courseGhosts[courseRunner.course];
+      if (ghost) courseGhost.play(ghost, courseRunner.atMs);
+      else courseGhost.stop();
+    } else if (step === "finish") {
+      const course = courses[courseRunner.subject];
+      if (course) {
+        raceHud.finished(course, courseRunner.timeMs, courseRunner.missed, now);
+      }
+    } else if (step === "abort") {
+      courseGhost.stop();
+      raceHud.aborted();
+    }
+  }
+  coursePrev.x = flight.pos.x;
+  coursePrev.y = flight.pos.y;
+  coursePrev.z = flight.pos.z;
+  coursePrevMs = now;
+}
+
+/** S3: the course whose start ring is within hint range ahead, or null. */
+const HINT_RANGE = 260;
+function startRingNear(): Course | null {
+  for (const course of courses) {
+    const ring = course.rings[0];
+    if (!ring) continue;
+    const dx = wrapDeltaAxis(flight.pos.x, ring.pos.x);
+    const dy = ring.pos.y - flight.pos.y;
+    const dz = wrapDeltaAxis(flight.pos.z, ring.pos.z);
+    if (dx * dx + dy * dy + dz * dz > HINT_RANGE * HINT_RANGE) continue;
+    // Only rings still ahead of us along their own normal.
+    if (dx * ring.n.x + dy * ring.n.y + dz * ring.n.z > 0) return course;
+  }
+  return null;
+}
+
 /** Freeze into the kill-cam; the server's respawn message ends it. A local
  * crash enters first; the server's death message then refines the headline
  * (credit, storm) on the same countdown. */
@@ -1127,6 +1227,7 @@ function enterDeath(killerId: string | null, cause: DeathMsg["cause"]): void {
   );
   setBoostBurning(false, performance.now());
   damageIndicator.clear();
+  endCourseRun(); // S3: a death ends the run
   if (!alive) return;
   alive = false;
   haptics.death(); // after the guard: a crash + its death message buzz once
@@ -1138,6 +1239,7 @@ function enterDeath(killerId: string | null, cause: DeathMsg["cause"]): void {
 
 function respawnSelf(spawn: SpawnState): void {
   planeTrails.clear(socket.selfId); // respawn teleports — no streak
+  endCourseRun(); // S3: …and no ring pass
   interruptQuality(); // O3: a transient
   flight = createFlightState(spawn.pos, spawn.yaw);
   flight = { ...flight, speed: spawn.speed }; // throttle stays FULL (F5)
@@ -1334,6 +1436,34 @@ socket.events.onRespawn = (msg) => {
     }
   } else remotes.respawn(msg.id);
 };
+// S3: the official result of our own run, and board changes for everyone.
+socket.events.onCourseResult = (msg) => {
+  const course = courses[msg.course];
+  if (!course) return;
+  raceHud.official(
+    course,
+    msg.timeMs,
+    msg.missed,
+    msg.medal,
+    msg.rank,
+    msg.record,
+    performance.now(),
+  );
+};
+socket.events.onCourseBoard = (msg) => {
+  courseBoard.set(msg.course, msg.board);
+  if (msg.ghost && msg.course < courseGhosts.length) {
+    courseGhosts[msg.course] = decodeGhost(msg.ghost);
+  }
+  const course = courses[msg.course];
+  // A record falling is a headline (S1's jumbotrons can take it from here).
+  if (msg.record && course) {
+    comms.add(
+      "RACE",
+      `${msg.record.name} set the ${course.name} record: ${formatCourseTime(msg.record.timeMs)}`,
+    );
+  }
+};
 socket.events.onAwayStarted = () => {
   awayStarted = true;
   // Already back (the ack crossed our `away: false`): hold for the respawn.
@@ -1364,6 +1494,7 @@ function applyResume(w: WelcomeMsg): void {
   }
   lastScores = w.scores;
   scoreboard.setScores(w.scores);
+  applyCourseStandings(w.courses); // S3: boards moved on meanwhile
   showOwnScore(w.scores);
   botBar.resync(w.botTarget);
   if (w.roomId !== currentRoomId) {
@@ -1488,6 +1619,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   airliners.setQuality(tier);
   facadeDetail.setQuality(tier);
   train.setQuality(tier); // T2: platform people, sparks, light range
+  courseGhost.setQuality(tier); // S3: MOBILE keeps the rings, drops the ghost
   applyPostQuality();
   resLimits = limitsFor(tier);
   if (resAuto) {
@@ -2656,6 +2788,7 @@ const frame = (now: number): void => {
       enterDeath(null, "crash");
     }
   }
+  stepCourse(now); // S3: ring passes over this frame's move
 
   // M8 auto-fire, stepped dead or alive so a death drops it at once. It
   // never pulls under our own spawn protection (only FIRE may spend it), on
@@ -2878,6 +3011,10 @@ const frame = (now: number): void => {
   if (alive) hornPlanes.push(flight.pos);
   for (const target of targets) hornPlanes.push(target.pos);
   train.update(chase.position, renderMs, moverLights, hornPlanes);
+  // S3: rings (state colours change only with the run) and the ghost.
+  courseRings.setRun(courseRunner.course, courseRunner.next);
+  courseRings.update(chase.position, now);
+  courseGhost.update(chase.position, now);
   fireworks.update(chase.position, renderMs, moverLights);
   // After movers.update: the helicopters' belly spots are this frame's, and
   // the lamp heads land in the same point cloud before commit().
@@ -3003,6 +3140,21 @@ const frame = (now: number): void => {
   hud.setHeat(heat.heat, heat.locked);
   hud.setBoost(boost.energy, boost.active);
   hud.update(now);
+  // S3 race readout: the live clock while racing, a hint near a start ring.
+  const racing = courses[courseRunner.course];
+  if (racing && alive) {
+    raceHud.run(
+      racing,
+      courseRunner.next,
+      courseRunner.missed,
+      now - courseRunner.startMs,
+    );
+  } else {
+    const near = alive ? startRingNear() : null;
+    raceHud.hint(near, near ? courseBoard.recordOf(near.id) : null);
+  }
+  raceHud.update(now);
+  if (scoreboard.isOpen) courseBoard.render();
   // The camera's real heading (free-look included) — the arcs are screen-
   // relative, so they follow where the player is LOOKING, not the nose.
   camera.getWorldDirection(viewDir);

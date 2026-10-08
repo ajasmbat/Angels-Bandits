@@ -9,6 +9,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { chromium } from "playwright";
+import { VIEWS } from "./gallery-views.mjs";
 const OUT = resolve(process.argv[2] ?? "gallery");
 const PORT = Number(process.argv[3] ?? 8099);
 const ONLY = process.argv[4] ? process.argv[4].split(",") : null;
@@ -18,79 +19,6 @@ const server = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
   env: { ...process.env, PORT: String(PORT) },
   stdio: "ignore",
 });
-const VIEWS = [
-  // name, x, z, y, yaw, extra
-  { name: "chase-rooftops", x: 300, z: 900, y: 175, yaw: 0.6 },
-  { name: "chase-canyon", x: 400, z: 1100, y: 70, yaw: 0 },
-  { name: "high-overview", x: 100, z: 1500, y: 380, yaw: 0.9, pitch: -0.35 },
-  { name: "plane-side", x: 600, z: 700, y: 200, yaw: 1.2, orbit: 260 },
-  { name: "plane-front", x: 800, z: 300, y: 160, yaw: -0.4, orbit: 620 },
-  { name: "street-low", x: 1000, z: 1300, y: 35, yaw: 0 },
-  { name: "rooftop-skim", x: 1210, z: 500, y: 140, yaw: 1.57, pitch: -0.15 },
-  // N1: plaza (4,4) as a night park — pond, paths, lamps, tree clusters.
-  { name: "plaza-park", x: 900, z: 1030, y: 120, yaw: 0, pitch: -0.6 },
-  { name: "moon", x: 700, z: 1000, y: 260, yaw: -0.61, pitch: 0.2 }, // faces MOON_DIR
-  // L12 sky cycle: each phase toward its own horizon (dusk glow in the west,
-  // the night moon, the dawn glow in the east) and over the same rooftops.
-  {
-    name: "sky-dusk",
-    x: 700,
-    z: 1000,
-    y: 230,
-    yaw: 2.5,
-    pitch: 0.12,
-    sky: "dusk",
-  },
-  {
-    name: "sky-night",
-    x: 700,
-    z: 1000,
-    y: 230,
-    yaw: -0.61,
-    pitch: 0.12,
-    sky: "night",
-  },
-  {
-    name: "sky-predawn",
-    x: 700,
-    z: 1000,
-    y: 230,
-    yaw: -0.66,
-    pitch: 0.12,
-    sky: "predawn",
-  },
-  { name: "sky-dusk-city", x: 300, z: 900, y: 175, yaw: 0.6, sky: "dusk" },
-  { name: "sky-night-city", x: 300, z: 900, y: 175, yaw: 0.6, sky: "night" },
-  {
-    name: "sky-predawn-city",
-    x: 300,
-    z: 900,
-    y: 175,
-    yaw: 0.6,
-    sky: "predawn",
-  },
-  // L10 sky traffic: placed at capture time from the live __ab read-backs,
-  // since all three move on the synced clock.
-  { name: "sky-airliner", dyn: "airliner" },
-  { name: "news-heli", dyn: "newsHeli" },
-  { name: "drone-show", dyn: "drones" },
-  // L5: the elevated train running down its canyon. x/z/yaw are recomputed
-  // from the live train pose at every pin (it moves 22 m/s): the plane sits
-  // `behind` m back from the last car and `side` m off its track, `y` m up,
-  // nose `dyaw` off the train's heading so the plane does not hide it.
-  // `leadMs` poses the train that far ahead of now (a slow software renderer
-  // shows a frame seconds after it was pinned).
-  {
-    name: "train-canyon",
-    train: true,
-    behind: 38,
-    side: -5,
-    dyaw: 0.4,
-    y: 40,
-    pitch: -0.32,
-    leadMs: 0,
-  },
-];
 /** Yaw that points the nose along (dx, dz): yaw 0 faces -Z. */
 const yawTo = (dx, dz) => Math.atan2(-dx, -dz);
 /** Resolve an L10 view against the live world. */

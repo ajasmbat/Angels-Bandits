@@ -3,6 +3,7 @@
 //
 //     node tools/perf/flicker.mjs [--ref <git-ref>] [--frames 30] [--no-build]
 //                                 [--shots <dir>] [--out <file>] [--repeat N]
+//                                 [--grid] [--only name,name]
 //
 // Captures FRAMES consecutive frames on a FIXED 1/60 s clock and scores the
 // mean per-pixel frame-to-frame luminance change (0–255 units; lower is
@@ -38,6 +39,15 @@
 // AND dry (late in
 // the clear phase, wetness 0): a ref older than L4 has no weather at all,
 // so anything else would score rain streaks as flicker.
+//
+// `--grid` (O5) scores a GRID instead of the one midtown pair: every static
+// gallery view plus 20 seeded poses at 10–300 m (flicker-grid.mjs), each at
+// its own world instant (`__ab.pinWorld`, in a storm gap), FROZEN and then
+// PANNING sideways. Per view it reports the mean |Δluma| and `hot`, the
+// share of pixels whose luma moved more than HOT_DELTA in a step: shimmer
+// that a mean over a mostly-dark frame would average away. `--ref` then
+// prints the per-view before/after table. `--only` restricts it to named
+// views (e.g. to re-shoot one with --shots).
 //
 // Same browser knobs as run.mjs: AB_CHROME / AB_CHROME_ARGS.
 
@@ -100,6 +110,22 @@ const SCENES = {
   pan: { eye: { x: 900, y: 300, z: 1500 }, at: { x: 900, y: 40, z: 1150 } },
 };
 
+/** --grid: frames per view (frozen) and pan frames per view. */
+const GRID_FRAMES = 10;
+const GRID_PAN_FRAMES = 6;
+/** --grid: steps on a new view before the first captured frame — time for
+ * the streamed detail around a teleported camera to land. */
+const GRID_SETTLE = 30;
+/** A pixel whose luma moved more than this in one step is `hot`. */
+const HOT_DELTA = 8;
+/**
+ * --grid: the verdict's absolute ceiling for a frozen view, O1's merged
+ * threshold: the O3 gate's limit for the midtown frozen view against main
+ * (0.041, tools/perf/README.md "Shimmer") — the calmest any frozen view
+ * of the game has been required to be.
+ */
+export const GRID_CEILING = 0.041;
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function parseArgs(argv) {
@@ -110,6 +136,8 @@ function parseArgs(argv) {
     out: null,
     shots: null,
     repeat: 1,
+    grid: false,
+    only: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -119,6 +147,8 @@ function parseArgs(argv) {
     else if (a === "--out") opts.out = resolve(process.cwd(), argv[++i]);
     else if (a === "--shots") opts.shots = resolve(process.cwd(), argv[++i]);
     else if (a === "--repeat") opts.repeat = Number(argv[++i]);
+    else if (a === "--grid") opts.grid = true;
+    else if (a === "--only") opts.only = argv[++i].split(",");
     else throw new Error(`unknown flag ${a}`);
   }
   if (!(opts.frames >= 3)) throw new Error("--frames must be >= 3");
@@ -208,29 +238,41 @@ function initScript() {
   };
 }
 
-/** Point the page at one scene: frame `i`'s view is `__flickerView(i)`. */
-function aimScene(page, scene) {
+/**
+ * Point the page at one view: frame `i` looks from `eye` at `at`, slid
+ * `i × panM` metres along `right` (horizontal) when `right` is given.
+ * The plane is held 330 m over the eye (see measureBuild).
+ */
+function aimView(page, spec, panM) {
   return page.evaluate(
-    ({ scene, panM }) => {
-      const s = window.__flickerScenes[scene];
+    ({ spec, panM }) => {
       window.__flickerView = (i) => {
-        const dx = scene === "pan" ? i * panM : 0;
+        const k = spec.right ? i * panM : 0;
+        const dx = spec.right ? spec.right.x * k : 0;
+        const dz = spec.right ? spec.right.z * k : 0;
         return {
-          eye: { x: s.eye.x + dx, y: s.eye.y, z: s.eye.z },
-          at: { x: s.at.x + dx, y: s.at.y, z: s.at.z },
+          eye: { x: spec.eye.x + dx, y: spec.eye.y, z: spec.eye.z + dz },
+          at: { x: spec.at.x + dx, y: spec.at.y, z: spec.at.z + dz },
         };
       };
       window.__flickerPrev = null;
-      window.__flickerPin = { x: s.eye.x, z: s.eye.z };
+      window.__flickerPin = { x: spec.eye.x, z: spec.eye.z };
       window.__ab.qaCamera(window.__flickerView(0));
     },
-    { scene, panM: PAN_M },
+    { spec, panM },
   );
 }
 
+/** The classic pair as aimView specs (the pan slides +X, O1's). */
+const sceneSpec = (scene) => ({
+  eye: SCENES[scene].eye,
+  at: SCENES[scene].at,
+  right: scene === "pan" ? { x: 1, z: 0 } : null,
+});
+
 /** Read the canvas, luminance it, diff against the previous frame. */
 function readFrame(page) {
-  return page.evaluate(() => {
+  return page.evaluate((hotDelta) => {
     // The renderer's canvas: a WebGL one that is in the page (a capability
     // probe's detached canvas never is), the largest if several are.
     const src = (window.__flickerGls ?? [])
@@ -258,17 +300,74 @@ function readFrame(page) {
     }
     const prev = window.__flickerPrev;
     let delta = null;
+    let hot = null;
     if (prev) {
       let sum = 0;
-      for (let j = 0; j < lum.length; j++) sum += Math.abs(lum[j] - prev[j]);
+      let n = 0;
+      for (let j = 0; j < lum.length; j++) {
+        const d = Math.abs(lum[j] - prev[j]);
+        sum += d;
+        if (d > hotDelta) n++;
+      }
       delta = sum / lum.length;
+      hot = n / lum.length;
     }
     window.__flickerPrev = lum;
-    return { delta, mean: mean / lum.length };
-  });
+    return { delta, hot, mean: mean / lum.length };
+  }, HOT_DELTA);
 }
 
-async function measureBuild(browser, label, cwd, frames, shots) {
+/**
+ * Step and read `frames` frames of the aimed view (`__flickerView(i)`).
+ * `flash`: a step far above the view's own typical step — a storm strike's
+ * sky flash, which must never be scored as shimmer.
+ */
+async function captureFrames(page, frames, shots, tag) {
+  const deltas = [];
+  const hots = [];
+  const means = [];
+  for (let i = 0; i < frames; i++) {
+    await page.evaluate(
+      (i) => window.__ab.qaCamera(window.__flickerView(i)),
+      i,
+    );
+    await page.clock.runFor(STEP_MS);
+    const f = await readFrame(page);
+    // --shots: the first and last captured frame, to look at before
+    // trusting a score (a wrong view scores as well as a right one).
+    // Written after the read, so it never perturbs the clock.
+    if (shots && (i === 0 || i === frames - 1)) {
+      const png = await page.evaluate(() =>
+        window.__flickerCanvas.toDataURL("image/png"),
+      );
+      mkdirSync(shots, { recursive: true });
+      writeFileSync(
+        resolve(shots, `${tag.replace(/\W+/g, "-")}-${i}.png`),
+        Buffer.from(png.split(",")[1], "base64"),
+      );
+    }
+    means.push(f.mean);
+    if (f.delta !== null) {
+      deltas.push(f.delta);
+      hots.push(f.hot);
+    }
+  }
+  const avg = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
+  // Relative to the view's own typical step: a pan moves ~6 a step by
+  // itself, a frozen view ~0.1, and a flash jumps far above either.
+  const typical = [...deltas].sort((x, y) => x - y)[
+    Math.floor(deltas.length / 2)
+  ];
+  return {
+    score: Math.round(avg(deltas) * 1000) / 1000,
+    hot: Math.round(avg(hots) * 1e5) / 1e5,
+    deltas: deltas.map((d) => Math.round(d * 1000) / 1000),
+    meanLuma: Math.round(avg(means) * 10) / 10,
+    flash: deltas.some((d) => d > Math.max(FLASH_DELTA, 3 * typical)),
+  };
+}
+
+async function measureBuild(browser, label, cwd, frames, shots, grid) {
   const { proc, port } = await startServer(cwd);
   const page = await browser.newPage({
     viewport: VIEWPORT,
@@ -368,59 +467,71 @@ async function measureBuild(browser, label, cwd, frames, shots) {
       errors,
       capturedAt: await page.evaluate(() => window.__ab.net().renderTime),
     };
-    for (const scene of Object.keys(SCENES)) {
-      await aimScene(page, scene);
-      // Two settle steps on the new view before the first captured frame.
-      for (let i = 0; i < 2; i++) await page.clock.runFor(STEP_MS);
-      const deltas = [];
-      const means = [];
-      for (let i = 0; i < frames; i++) {
-        await page.evaluate(
-          (i) => window.__ab.qaCamera(window.__flickerView(i)),
-          i,
+    if (grid) {
+      result.views = [];
+      for (const v of grid) {
+        // Its own world instant, sky phase and clear-dry weather, then the
+        // plane over its eye (the city streams around the plane).
+        const wx = await page.evaluate((v) => {
+          const ab = window.__ab;
+          ab.pinWorld(v.timeMs);
+          ab.sky(v.sky);
+          if (typeof ab.weather !== "function") return { phase: "none" };
+          const mid = ab.weather("clear");
+          return ab.weather(mid.timeMs + 90_000);
+        }, v);
+        await aimView(page, { eye: v.eye, at: v.at, right: null }, PAN_M);
+        for (let i = 0; i < GRID_SETTLE; i++) await page.clock.runFor(STEP_MS);
+        const frozen = await captureFrames(
+          page,
+          GRID_FRAMES,
+          shots,
+          `${label}-${v.name}-frozen`,
         );
-        await page.clock.runFor(STEP_MS);
-        const f = await readFrame(page);
-        // --shots: the first and last captured frame of each scene, to look
-        // at before trusting a score (a wrong view scores as well as a right
-        // one). Written after the read, so it never perturbs the clock.
-        if (shots && (i === 0 || i === frames - 1)) {
-          const png = await page.evaluate(() =>
-            window.__flickerCanvas.toDataURL("image/png"),
-          );
-          mkdirSync(shots, { recursive: true });
-          writeFileSync(
-            resolve(shots, `${label.replace(/\W+/g, "-")}-${scene}-${i}.png`),
-            Buffer.from(png.split(",")[1], "base64"),
+        await aimView(page, { eye: v.eye, at: v.at, right: v.right }, PAN_M);
+        for (let i = 0; i < 2; i++) await page.clock.runFor(STEP_MS);
+        const pan = await captureFrames(
+          page,
+          GRID_PAN_FRAMES,
+          shots,
+          `${label}-${v.name}-pan`,
+        );
+        const alive = await page.evaluate(() => window.__ab.combat().alive);
+        result.views.push({
+          name: v.name,
+          timeMs: v.timeMs,
+          weather: { phase: wx.phase, wetness: wx.wetness ?? 0 },
+          alive,
+          frozen,
+          pan,
+        });
+        console.log(
+          `  ${label} ${v.name.padEnd(18)} frozen ${frozen.score.toFixed(3)} hot ${(frozen.hot * 100).toFixed(2)}%  pan ${pan.score.toFixed(3)}${frozen.flash || pan.flash ? "  FLASH" : ""}${frozen.meanLuma < 2 ? "  BLACK" : ""}`,
+        );
+      }
+    } else {
+      for (const scene of Object.keys(SCENES)) {
+        await aimView(page, sceneSpec(scene), PAN_M);
+        // Two settle steps on the new view before the first captured frame.
+        for (let i = 0; i < 2; i++) await page.clock.runFor(STEP_MS);
+        result[scene] = await captureFrames(
+          page,
+          frames,
+          shots,
+          `${label}-${scene}`,
+        );
+        if (result[scene].flash) {
+          throw new Error(
+            `${label} ${scene}: a storm flash landed in the capture (max step ${Math.max(...result[scene].deltas).toFixed(2)}) — move CAPTURE_AT_MS`,
           );
         }
-        means.push(f.mean);
-        if (f.delta !== null) deltas.push(f.delta);
-      }
-      const mean = deltas.reduce((a, b) => a + b, 0) / deltas.length;
-      result[scene] = {
-        score: Math.round(mean * 1000) / 1000,
-        deltas: deltas.map((d) => Math.round(d * 1000) / 1000),
-        meanLuma:
-          Math.round((means.reduce((a, b) => a + b, 0) / means.length) * 10) /
-          10,
-      };
-      // Relative to the scene's own typical step: a pan moves ~6 a step by
-      // itself, a frozen view ~0.1, and a flash jumps far above either.
-      const typical = [...deltas].sort((x, y) => x - y)[
-        Math.floor(deltas.length / 2)
-      ];
-      if (deltas.some((d) => d > Math.max(FLASH_DELTA, 3 * typical))) {
-        throw new Error(
-          `${label} ${scene}: a storm flash landed in the capture (max step ${Math.max(...deltas).toFixed(2)}) — move CAPTURE_AT_MS`,
-        );
-      }
-      // A black or blank capture scores 0 — the calmest possible — and would
-      // pass any verdict. Refuse it instead.
-      if (result[scene].meanLuma < 2) {
-        throw new Error(
-          `${label} ${scene}: frames are black (mean luma ${result[scene].meanLuma})`,
-        );
+        // A black or blank capture scores 0 — the calmest possible — and
+        // would pass any verdict. Refuse it instead.
+        if (result[scene].meanLuma < 2) {
+          throw new Error(
+            `${label} ${scene}: frames are black (mean luma ${result[scene].meanLuma})`,
+          );
+        }
       }
     }
     result.alive = await page.evaluate(() => window.__ab.combat().alive);

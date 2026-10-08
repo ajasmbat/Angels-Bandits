@@ -172,11 +172,11 @@ roughnessFactor = mix(roughnessFactor, 0.45, uWeather.x * (0.6 * facade + 0.8 * 
 
 /** S5 wet roofs: peak luminance of a sign's reflection in a roof puddle
  * (before Fresnel and wetness) — sub-bloom, like the ground's neon smear. */
-export const ROOF_REFLECTION_LUM = 0.3;
+export const ROOF_REFLECTION_LUM = 0.24;
 /** Reflection cells on the roof, m: one possible sign smear per cell. */
-const ROOF_REFLECTION_CELL = 7;
+const ROOF_REFLECTION_CELL = 12;
 /** Share of the cells that carry a reflection. */
-const ROOF_REFLECTION_SHARE = 0.4;
+const ROOF_REFLECTION_SHARE = 0.3;
 /** The signs' palette at equal luminance ROOF_REFLECTION_LUM (GLSL array). */
 const ROOF_REFLECTION_PALETTE = `vec3[${SIGN_PALETTE.length}](${SIGN_PALETTE.map(
   (c) => {
@@ -199,9 +199,9 @@ const ROOF_REFLECTION_GLSL = /* glsl */ `
   float wxRoofFade = 1.0 - smoothstep(160.0, 420.0, length(vViewPosition));
   if (roofUp > 0.5 && wxRoofFade > 0.0) {
     vec2 wxRfRp = vBWorldPos.xz;
-    // Puddles: two octaves of value noise, spreading as the roof soaks.
-    vec2 wxRfI = floor(wxRfRp * 0.17);
-    vec2 wxRfF = fract(wxRfRp * 0.17);
+    // Puddles: value noise (~9 m blobs), spreading as the roof soaks.
+    vec2 wxRfI = floor(wxRfRp * 0.11);
+    vec2 wxRfF = fract(wxRfRp * 0.11);
     vec2 wxRfU = wxRfF * wxRfF * (3.0 - 2.0 * wxRfF);
     float wxRfN = mix(mix(abWxHash(wxRfI), abWxHash(wxRfI + vec2(1.0, 0.0)), wxRfU.x),
       mix(abWxHash(wxRfI + vec2(0.0, 1.0)), abWxHash(wxRfI + vec2(1.0, 1.0)), wxRfU.x), wxRfU.y);
@@ -215,7 +215,7 @@ const ROOF_REFLECTION_GLSL = /* glsl */ `
       wxRfV = wxRfV / max(length(wxRfV), 1e-3);
       float wxRfAlong = dot(wxRfD, wxRfV);
       float wxRfAcross = wxRfD.x * wxRfV.y - wxRfD.y * wxRfV.x;
-      float wxRfSmear = exp(-wxRfAcross * wxRfAcross * 1.6 - wxRfAlong * wxRfAlong * 0.09)
+      float wxRfSmear = exp(-wxRfAcross * wxRfAcross * 0.35 - wxRfAlong * wxRfAlong * 0.04)
         * step(wxRfH, ${ROOF_REFLECTION_SHARE.toFixed(2)});
       int wxRfIdx = int(floor(abWxHash(wxRfCell + 5.3) * ${SIGN_PALETTE.length.toFixed(1)}));
       vec3 wxRfSign = ${ROOF_REFLECTION_PALETTE}[wxRfIdx];

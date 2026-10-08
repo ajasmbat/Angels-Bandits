@@ -238,9 +238,9 @@ export function litterPoseInto(
 
 /** Linear colours: dim — litter is lit by the street, never self-lit. */
 const KIND_COLORS: readonly THREE.Color[] = [
-  new THREE.Color(0.3, 0.29, 0.26), // newspaper, receipts
-  new THREE.Color(0.17, 0.1, 0.04), // dry leaves
-  new THREE.Color(0.24, 0.07, 0.16), // a magenta wrapper
+  new THREE.Color(0.42, 0.41, 0.37), // newspaper, receipts
+  new THREE.Color(0.26, 0.15, 0.06), // dry leaves
+  new THREE.Color(0.34, 0.1, 0.24), // a magenta wrapper
 ];
 
 /** Most recent passes considered per frame (the kick's source pool). */

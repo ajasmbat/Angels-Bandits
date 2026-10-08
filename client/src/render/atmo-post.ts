@@ -33,6 +33,9 @@ export const SHAFT_DECAY = 0.955;
 export const SHAFT_GAIN = 0.45;
 /** Disc around the moon the shafts live in, screen heights (radius). */
 export const SHAFT_DISC = 0.45;
+/** Only light within this of the moon scatters, screen heights: the moon
+ * and its halo are the source, never a lit facade that shares the disc. */
+export const SHAFT_SOURCE = 0.09;
 
 /** Peak luminance the shafts can add to a pixel (all samples at the cap). */
 export const shaftPeak = (): number => (SHAFT_CAP - SHAFT_FLOOR) * SHAFT_GAIN;
@@ -66,7 +69,9 @@ void main() {
     // Only light above the floor scatters, and never more than the cap: a
     // tracer, a window or the moon disc counts as bright sky, no brighter.
     float lk = clamp(l - ${SHAFT_FLOOR.toFixed(3)}, 0.0, ${(SHAFT_CAP - SHAFT_FLOOR).toFixed(3)});
-    c *= lk / max(l, 1e-4);
+    float src = 1.0 - smoothstep(${(SHAFT_SOURCE * 0.5).toFixed(3)}, ${SHAFT_SOURCE.toFixed(3)},
+      length((uSun - uv) * vec2(uAspect, 1.0)));
+    c *= lk * src / max(l, 1e-4);
     acc += c * w;
     wsum += w;
     w *= ${SHAFT_DECAY.toFixed(4)};

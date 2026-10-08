@@ -18,7 +18,7 @@
 //
 // Readability contract (planes and tracers):
 //  - A puff's alpha is capped so a whole bank is at most BANK_OPACITY_MAX
-//    along any ray (1 − (1 − a)^PUFFS ≤ 0.35).
+//    along any ray (1 − (1 − a)^PUFFS ≤ 0.45).
 //  - Puffs fade out within FADE_CLEAR (+ their radius) of the camera and of
 //    every plane, so a bank never sits between the chase camera and its own
 //    plane, nor on top of an enemy.
@@ -41,11 +41,11 @@ import { SIGN_PALETTE } from "./signage";
 import { nearestImageInto } from "./wrapPlacement";
 
 /** Banks in the world (the torus is 4 km²; ~half are inside the fog). */
-export const FOG_BANK_COUNT = 26;
+export const FOG_BANK_COUNT = 40;
 /** Puffs per bank. */
 export const PUFFS_PER_BANK = 5;
 /** Most a whole bank may obscure along any ray. */
-export const BANK_OPACITY_MAX = 0.35;
+export const BANK_OPACITY_MAX = 0.45;
 /** Per-puff alpha cap: PUFFS_PER_BANK of them stack to BANK_OPACITY_MAX. */
 export const PUFF_ALPHA = 1 - (1 - BANK_OPACITY_MAX) ** (1 / PUFFS_PER_BANK);
 /** Bank radius (horizontal), m. */
@@ -55,7 +55,7 @@ export const BANK_RADIUS_MAX = 85;
 export const BANK_ALT_MIN = 25;
 export const BANK_ALT_MAX = 115;
 /** Banks' centres keep at least this × the sum of their radii apart. */
-export const BANK_SPACING = 1.25;
+export const BANK_SPACING = 1.1;
 /** A bank's puffs sit inside this share of its radius (vertically ×0.45). */
 const PUFF_SPREAD = 0.55;
 /** A puff's centre sits at least this × its diameter above the street. */
@@ -237,7 +237,7 @@ varying vec4 vTint;
 void main() {
   // A soft round puff: a Gaussian core that reaches exactly 0 at the rim.
   float r2 = dot(vUv, vUv) * 4.0;
-  float shape = exp(-r2 * 2.2) * (1.0 - smoothstep(0.6, 1.0, r2));
+  float shape = exp(-r2 * 1.1) * (1.0 - smoothstep(0.45, 1.0, r2));
   if (vTint.a * shape < 0.002) discard;
   #ifdef USE_FOG
     // The haze it is made of (fog.ts's haze colour), lit from below.
@@ -251,7 +251,7 @@ void main() {
 `;
 
 /** How much brighter than the bare haze the lit underside reads. */
-const LIGHT_GAIN = 1.5;
+const LIGHT_GAIN = 2.6;
 
 /** Every drawn puff as ONE instanced quad mesh — one draw call. */
 export class FogBanks {

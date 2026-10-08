@@ -1569,6 +1569,8 @@ declare global {
         } | null;
         targets: { id: string; pos: { x: number; y: number; z: number } }[];
         hpBarTarget: string | null;
+        /** P2 QA: bullets still in flight (each one a tracer draw). */
+        bullets: number;
       };
       aimAt: (x: number, z: number, y?: number) => void;
       setFiring: (held: boolean) => void;
@@ -1926,6 +1928,7 @@ window.__ab = {
     targets: remotes.targets(),
     // Gun-feel QA: whose HP bar is showing right now (null = faded/none).
     hpBarTarget: hpBar.current(performance.now())?.targetId ?? null,
+    bullets: bullets.all.length,
   }),
   // Point the nose at a canonical world position (torus-aware, QA only).
   aimAt: (x, z, y = flight.pos.y) => {

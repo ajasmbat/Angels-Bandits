@@ -634,7 +634,16 @@ Two rules every tier obeys:
 | L13 facade detail | full | full | off (dressing, not solid) | off |
 | bloom | full | full | full | half-res chain (cheaper via the ceiling); off from thermal level 1 |
 | final grade | full | full | full | off |
-| window interiors (parallax rooms) | full | full | full | off: the room's mean light (uniform guard) |
+| window interiors (parallax rooms; G1 lit lobbies) | full | full | full | off: the room's mean light (uniform guard) |
+| A1 city life (riders, crossers, groups, performers, stations, balconies) | full | 70 % | 45 % | 30 %, one block out |
+| A1 facade life (laundry, facade flags, pigeons) | full | full | off | off |
+| G1 street furniture, parked cars | full | full | 70 % | 40 %, one block out |
+| G1 fine street paint (wear, manholes, words, ramps) | full | full | full | off: the S1 paint alone (uniform guard) |
+| H2 hole interiors (murals, signs, fans, lobby glass) | full | full | full | off (folded by a uniform) |
+| H2 hole guidance (chevrons, LED strips, mouth frame) | full | full | full | full (how a pilot finds a hole) |
+| R2 roof structures (penthouses, tanks, billboards, masts) | full | full | full (solid) | full (solid) |
+| R2 roof dressing, fine detail (drains, hatches, rods, dishes) | full | full | off | off (HVAC, ducts, solar, davits stay) |
+| F5/F6 flight feel | — | — | — | — (no render cost: no row in `FEATURE_TIERS`) |
 
 **Auto** starts at High and only ever steps **down**: a feature popping back
 in is far more visible than one resolution rung, and a player who wants it
@@ -1176,4 +1185,166 @@ node tools/perf/run.mjs --runs 3 --device phone --quality mobile \
 
 # 4. The render cost of the floors (should be inside the noise): paired.
 node tools/perf/run.mjs --runs 3 --label O5 --ab-ref 7ebd93a
+```
+
+---
+
+## P2: the Realism batch gate — trains, holes, streets, roofs, life
+
+P2 measures the game after the Realism & Feel batch (F5/F6 flight feel, T2
+trains, G1 street detail, R2 roofs, H2 holes, A1 city life) on the same
+GPU-less runner as O3/O4. It can count draws, liveness, determinism and GL
+allocations; **milliseconds are for the M3** (commands at the end).
+
+### Three new segments
+
+Appended after `furball`, so the seven older segments keep their index and
+their measured world instants (the warm-up lap's instants shift, since
+`warmupWorldMs` counts the path). Each spot was checked offline against the
+shared collision (`touchesSolid`: ground, buildings and their holes, trees,
+viaducts and stations, and every mover sampled every 100 ms over 15 minutes
+of world time around `WORLD_EPOCH_MS`): clear.
+
+| segment | what | how it stays repeatable |
+| --- | --- | --- |
+| `station` | line 0's station at (1300, 1000), two trains side by side in it — one standing, one pulling in or out on the other track — platforms, canopy, doors, platform people | the world clock slides from the segment's own instant to the first moment two trains on opposite tracks are both within 8 m of the station's centre, found on the pure schedule (`__ab.train(t)`). It lands at +2.25 s; the harness prints the moment and refuses a slide past `TRAINS_SLIDE_MAX_MS`. The plane is held 80 m east, 44 m up, nose down the line |
+| `hole` | a glide through the street-level row tunnel (x = 303.5, mouths at z = 1220 and 1380) — chevrons, the lit mouth, LED strips, murals, fans | re-teleported every frame along the tunnel's axis at 42 m/s of **wall** time from 63 m out, so the path is the same length on any machine; three quarters of the window is inside. Clear from 120 m before the entry to 150 m past the exit; the glide stops 107 m past it |
+| `sidewalk` | G1's curb skim at (810, 8, 1380): furniture, parked cars, road paint, lit lobbies, the crowd | held every frame (at 8 m an unpiloted plane would sink into the street) |
+
+Each has a draw-call budget in `BUDGETS` (runner High + ~10 %): station 90,
+hole 92, sidewalk 90. An `--ab-ref` build that cannot fly one of them (no
+two-train read-back before T2, no tunnel before H2, so it dies) prints
+**no baseline** for that segment instead of a delta.
+
+### Two harness bugs the batch exposed
+
+- **Every flown segment was diving.** The click on Join left the cursor
+  parked on the button, and the mouse-aim instructor flies the pipper onto
+  the cursor. Core lost 7 m and canyon 7 m inside the runner's ~1 s of sim
+  time; on the M3's ~6 s, `street` sank onto T2's new x = 600 viaduct and
+  crashed (it read `alive: NO` on main). After joining, the harness now
+  tells the page the pointer left the window, which is the input's
+  attitude hold: each segment flies level from its teleport, as P1 laid the
+  path out (core holds 89.7 m, canyon 45.0, street 32.0). Positions now
+  differ from O4-era reports for the flown segments.
+- **The furball's bullets leaked into the next segment.** Its pilots leave
+  ~200 bullets in flight, and a bullet ages by the sim step, which is
+  clamped at 50 ms a frame. On a 3 fps renderer their tracers (one draw
+  each) crossed `station`'s view for tens of seconds: 88/86/83 draws over
+  three passes against 82 when it was flown alone. The harness now waits for
+  the room and the sky to empty after any segment with pilots (a new
+  read-only `__ab.combat().bullets`), and prints how long that took; if it
+  never empties it says what was left and measures on. On the M3 the
+  bullets expire inside the 0.9 s settle, but only just.
+
+### What the runner measured (P2)
+
+GPU-less Linux box, SwiftShader (Vulkan), `--res 0.75` unless stated, on
+main after O5 merged (load average ~14, another ticket's harness sharing
+the box). SwiftShader's GPU and wall times are the CPU rasterising, so only
+the GPU-independent rows below are claims; the `60fps` and `hitch` verdicts
+all read FAIL here for that reason and say nothing about the M3.
+
+**The gate, `--runs 3`, High:**
+
+| segment | draws (3 passes) | budget | alive | first sight (window) |
+| --- | --- | --- | --- | --- |
+| core | 82 / 82 / 82 | 120 | yes | 0p 0t 0b |
+| plaza | 79 / 79 / 79 | — | yes | 0p 0t 0b |
+| sky | 70 / 70 / 70 | — | yes | 0p 0t 0b |
+| canyon | 83 / 83 / 83 | — | yes | 0p 0t 0b |
+| storm | 75 / 75 / 75 | — | yes | 0p 0t 0b |
+| street | 83 / 83 / 83 | — | yes | 0p 0t 0b |
+| furball (not asserted) | 228 / 229 / 235 | — | yes, 12 planes | 0p 0t 15b (per-plane scarves, as in O4) |
+| station | 82 / 82 / 82 | 90 | yes | 0p 0t 0b |
+| hole | 83 / 83 / 83 | 92 | yes | 0p 0t 0b |
+| sidewalk | 82 / 82 / 82 | 90 | yes | 0p 0t 0b |
+
+Determinism **PASS**: draw calls identical in every pinned segment, GPU
+p50 within 8.4 %. No page errors, no deaths. The station found its moment
+at +2.25 s on every pass (trains `0#2` and `1#2`). The furball's bullets
+took 7–10 s of this box's time to drain before `station`. `core` sits at 82
+draws against O4's 77 (+5 for the whole batch) and the 120 budget; nothing
+breached, so nothing was cut.
+
+One residue to know about: `plaza` read 79 / 79 / 78 on an earlier run
+(the same harness, before O5's merge). Something comes into view at a fixed point along its flight
+(78 → 79), and at 3 fps the share of the window before that point moves
+from pass to pass, so the median can land on either side. That is O4's
+documented runner limit; on the M3 a window holds hundreds of frames.
+
+**Fragment proxy, High at ratio 2** (`--res 2 --quality high --segments
+core`): 3,686,400 px × **2.292** pass-equivalents, the same as O4's 2.29.
+The proxy prices the post chain's passes × pixels. Scene overdraw (the
+crowd, tunnel glass, platform people) is not in it; that is a GPU-time
+question for the M3.
+
+**Mobile.** One `--quality mobile` pass flew every segment alive, with 0/0/0
+first sight outside the furball. Draws: core 76, plaza 72, sky 67, canyon
+76, storm 70, street 77, furball 229, station 76, hole 76, sidewalk 76.
+The phone proxy (`--device phone --cpu-throttle 4 --segments core`, High
+at ratio 2 vs Mobile at ratio 1, `--runs 3`):
+
+| core view | High, ratio 2 | Mobile, ratio 1 | Mobile cheaper by |
+| --- | --- | --- | --- |
+| fragment proxy | 3.02 Mpx·passes | 1.04 Mpx·passes | 2.90× |
+| draw calls | 82 | 76 | |
+| draws × pixels | | | **4.32×** (M3: 4.33×) |
+| pre-render JS p50 (4× throttled) | 12.9 ms | 16.1 ms | — |
+
+The JS row is not game code. A CDP CPU profile of the same view puts the
+game bundle's own self time level across the tiers (High 20.5–23.0 ms a
+frame, Mobile 23.3–24.3 ms, 4× throttled), while SwiftShader's GL calls
+(buffer and uniform uploads blocking on the rasteriser) take hundreds of ms
+a frame and run more often at Mobile's lighter frames. A sampling heap
+profile finds ~1–2 KB a frame allocated on either tier, nearly all inside
+three's uniform upload, so there is no per-frame garbage from the batch.
+The phone's real JS and GPU cost come from the M3 commands below (and O5's
+`--trace` run on the phone stand-in).
+
+### Quality tiers
+
+Every batch module with a render cost has a `setQuality` hook and a row in
+`FEATURE_TIERS` (the tier table above now lists them): A1 city life and
+facade life, G1 furniture and fine paint (its lit lobbies ride the window
+interiors switch), H2 hole interiors and guidance, R2 structures and fine
+dressing, T2 stations, platform people and sparks. A1's look-up reaction
+(`lookup.ts`) is a GLSL chunk inside the figure meshes, so it costs what the
+crowd costs and thins with it. F5/F6 change flight feel only: no render
+cost, no row.
+
+### Commands for the M3 (P2)
+
+Run on main after this merges, with the machine otherwise idle.
+`d23d23a` is O4's merge, the last measured state before the batch.
+
+```sh
+npm run perf:setup   # once
+
+# 1. The gate: every segment against O4's merge. Read the 60fps / hitch /
+#    draws / room verdicts and the delta table. station and hole print
+#    "no baseline" (O4's build has no two-train read-back and no tunnel);
+#    judge them on their own verdicts. sidewalk's delta is G1 + A1's cost.
+node tools/perf/run.mjs --runs 3 --label P2 --ab-ref d23d23a
+
+# 2. Tiers. Low vs High, each at its own ratio, then features only (both at
+#    ratio 2); then Mobile as a phone at its own ceiling vs High (GPU p50
+#    <= 5 ms on Mobile is the assumed phone proxy, as in M3).
+node tools/perf/run.mjs --runs 3 --res 2 --label high --ab "quality=low&res=1"
+node tools/perf/run.mjs --runs 3 --res 2 --label high --ab "quality=low"
+node tools/perf/run.mjs --runs 3 --device phone --res 2 --label high --ab "quality=mobile&res=1"
+
+# 3. Soak: Auto never steps down on the M3 (exits 1 if it does), 10 minutes
+#    of the full-room furball with the scaler live.
+node tools/perf/run.mjs --soak 600 --quality auto --res auto
+
+# 4. Flicker: O5's grid, not worse than O5's merge (0371335; P2 changes no
+#    render code, so this should read inside the noise everywhere). O5's
+#    own grid against 7ebd93a (above) is the batch-wide flicker number.
+node tools/perf/flicker.mjs --grid --ref 0371335
+
+# 5. Determinism and first sight: draw calls identical in every pinned
+#    segment, the first-sight table 0/0/0 in every window, and "0 in the
+#    first 10%" on every spike row.
+node tools/perf/run.mjs --runs 3 --samples --strict
 ```

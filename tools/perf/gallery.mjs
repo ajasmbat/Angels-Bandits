@@ -26,6 +26,31 @@ const VIEWS = [
   { name: "plane-side", x: 600, z: 700, y: 200, yaw: 1.2, orbit: 260 },
   { name: "plane-front", x: 800, z: 300, y: 160, yaw: -0.4, orbit: 620 },
   { name: "street-low", x: 1000, z: 1300, y: 35, yaw: 0 },
+  // A1 city life: a crossing seen from a corner (crossers waiting for WALK,
+  // riders in the bike lanes, groups and carts) and a balcony stack across a
+  // street (people on balconies, laundry, pigeons). Both hold the QA camera
+  // at `eye` looking at `at` while the plane is pinned behind it (it keeps
+  // the micro tier streaming around the spot), in clear weather.
+  {
+    name: "intersection",
+    x: 600,
+    z: 1520,
+    y: 22,
+    yaw: 0,
+    eye: [572, 26, 1452],
+    at: [600, 0, 1400],
+    weather: "clear",
+  },
+  {
+    name: "balcony",
+    x: 1995,
+    z: 560,
+    y: 14,
+    yaw: Math.PI,
+    eye: [1990, 16, 500],
+    at: [19.4, 12, 472],
+    weather: "clear",
+  },
   { name: "rooftop-skim", x: 1210, z: 500, y: 140, yaw: 1.57, pitch: -0.15 },
   // N1: plaza (4,4) as a night park — pond, paths, lamps, tree clusters.
   { name: "plaza-park", x: 900, z: 1030, y: 120, yaw: 0, pitch: -0.6 },
@@ -124,12 +149,12 @@ async function placeTrain(page, v) {
         const side = outward(line0, m.x, m.z, hz, -hx);
         return {
           timeMs: m.timeMs - 250,
-          eye: {
+          trainEye: {
             x: m.x + side * hz * 15 - hx * 36,
             y: 44,
             z: m.z - side * hx * 15 - hz * 36,
           },
-          at: { x: m.x, y: 27.2, z: m.z },
+          trainAt: { x: m.x, y: 27.2, z: m.z },
         };
       }
       const trains = window.__ab.train(t).trains;
@@ -144,12 +169,16 @@ async function placeTrain(page, v) {
           const side = tr.track === 0 ? 1 : -1;
           return {
             timeMs: t,
-            eye: {
+            trainEye: {
               x: st.x + side * nx * 13 - st.ux * 36,
               y: 31.5,
               z: st.z + side * nz * 13 - st.uz * 36,
             },
-            at: { x: st.x + side * nx * 3, y: 27.5, z: st.z + side * nz * 3 },
+            trainAt: {
+              x: st.x + side * nx * 3,
+              y: 27.5,
+              z: st.z + side * nz * 3,
+            },
           };
         }
         if (kind === "trainCab" && tr.station >= 0 && tr.doors >= 1) {
@@ -158,24 +187,24 @@ async function placeTrain(page, v) {
           const lz = tr.z + hz * 17.5;
           return {
             timeMs: t,
-            eye: {
+            trainEye: {
               x: lx + hx * 16 + hz * 3,
               y: 28.6,
               z: lz + hz * 16 - hx * 3,
             },
-            at: { x: lx, y: 27.6, z: lz },
+            trainAt: { x: lx, y: 27.6, z: lz },
           };
         }
         if (kind === "trainCurve" && tr.curve && tr.v > 12) {
           const side = outward(line, tr.x, tr.z, hz, -hx);
           return {
             timeMs: t,
-            eye: {
+            trainEye: {
               x: tr.x + side * hz * 42 - hx * 30,
               y: 46,
               z: tr.z - side * hx * 42 - hz * 30,
             },
-            at: { x: tr.x, y: 27, z: tr.z },
+            trainAt: { x: tr.x, y: 27, z: tr.z },
           };
         }
       }
@@ -289,16 +318,20 @@ try {
     if (ONLY && !ONLY.includes(view.name)) continue;
     // L12: each view at its own time of night (deep night unless it says).
     await page.evaluate((s) => window.__ab.sky(s ?? "night"), view.sky);
+    // A1: a view (or AB_GALLERY_WEATHER, for paired before/after runs) may
+    // pin the weather phase; otherwise the live weather stands.
+    const wx = view.weather ?? process.env.AB_GALLERY_WEATHER;
+    if (wx) await page.evaluate((w) => window.__ab.weather(w), wx);
     const v = view.dyn ? await place(page, view) : view;
     const pin = async () =>
       page.evaluate((v) => {
-        if (v.eye) {
+        if (v.trainEye) {
           // T2: the world held at the chosen moment, a fixed camera on it,
           // the plane parked high above (out of shot, out of the way).
           window.__ab.pinWorld(v.timeMs);
           window.__ab.weather("clear");
-          window.__ab.qaCamera({ eye: v.eye, at: v.at });
-          window.__ab.teleport(v.eye.x, v.eye.z, 300, 0);
+          window.__ab.qaCamera({ eye: v.trainEye, at: v.trainAt });
+          window.__ab.teleport(v.trainEye.x, v.trainEye.z, 300, 0);
           return;
         }
         if (v.train) {
@@ -320,6 +353,14 @@ try {
           const s = window.__ab.state();
           s.pitch = v.pitch;
         }
+        if (v.eye) {
+          const [ex, ey, ez] = v.eye;
+          const [ax, ay, az] = v.at;
+          window.__ab.qaCamera({
+            eye: { x: ex, y: ey, z: ez },
+            at: { x: ax, y: ay, z: az },
+          });
+        }
       }, v);
     await pin();
     if (v.orbit) {
@@ -335,7 +376,7 @@ try {
       await sleep(90);
     }
     await page.screenshot({ path: `${OUT}/${v.name}.png`, timeout: 180000 });
-    if (v.eye) {
+    if (v.trainEye) {
       console.log(
         "train",
         v.name,
@@ -352,6 +393,7 @@ try {
         window.__ab.pinWorld(null);
       });
     }
+    if (v.eye) await page.evaluate(() => window.__ab.qaCamera(null));
     if (v.orbit) {
       await page.keyboard.up("KeyE");
       await sleep(600);

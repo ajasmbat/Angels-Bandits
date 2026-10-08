@@ -27,6 +27,9 @@ export interface Settings {
   master: number;
   engine: number;
   voice: number;
+  /** U1 haptics: on/off as the player chose, or null = the device default
+   * (on for a coarse pointer), resolved at boot and never written back. */
+  haptics: boolean | null;
 }
 
 export const DEFAULT_SETTINGS: Readonly<Settings> = {
@@ -34,6 +37,7 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = {
   master: 1,
   engine: 1,
   voice: 1,
+  haptics: null,
 };
 
 const clamp = (v: number, lo: number, hi: number) =>
@@ -58,6 +62,7 @@ export function clampSettings(raw: unknown): Settings {
     master: num(o.master, 0, 1, d.master),
     engine: num(o.engine, 0, 1, d.engine),
     voice: num(o.voice, 0, 1, d.voice),
+    haptics: typeof o.haptics === "boolean" ? o.haptics : d.haptics,
   };
 }
 

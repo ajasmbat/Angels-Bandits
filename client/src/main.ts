@@ -24,6 +24,7 @@ import { buildNatureIndex } from "@angels-bandits/common/collision";
 import {
   BLOCK_PITCH,
   BOOST_MAX_SPEED,
+  BULLET_DAMAGE,
   BULLET_SPEED,
   CLOUD_BASE,
   FOG_DISTANCE,
@@ -96,7 +97,7 @@ import {
 import { FlightInputSource } from "./game/flight-input";
 import { createFreeLook, shapeInput, stepFreeLook } from "./game/freelook";
 import { Guns } from "./game/guns";
-import { bulletHitsSphere } from "./game/hitdetect";
+import { bulletImpact, impactKind } from "./game/hitdetect";
 import {
   ASSIST_AIM_RANGE,
   type AssistWorld,
@@ -240,7 +241,9 @@ import { WeatherClock, setWeatherUniform } from "./render/weather";
 import { nearestImage } from "./render/wrapPlacement";
 import { BotBar } from "./ui/botbar";
 import { CommsTicker } from "./ui/comms";
+import { DamageIndicator } from "./ui/damage-indicator";
 import { initFullscreenUi } from "./ui/fullscreen";
+import { Haptics } from "./ui/haptics";
 import { HPBAR_ALTITUDE, HpBarSprite, HpBarTracker } from "./ui/hpbar";
 import { Hud } from "./ui/hud";
 import { requestName, showJoinError, showSignalLost } from "./ui/join";
@@ -737,6 +740,9 @@ const explosions = new Explosions();
 scene.add(explosions.group);
 const sparks = new Sparks();
 scene.add(sparks.points);
+// U1: a round glancing off a spawn shield — blue-white, never the hit spray.
+const shieldSparks = new Sparks(0xbfe8ff);
+scene.add(shieldSparks.points);
 const smoke = new SmokeTrails();
 scene.add(smoke.points);
 // --- L1 reactive city (ANGE-WCQNFJ) ---
@@ -854,6 +860,14 @@ const leadIndicator = new LeadIndicator();
 // One soft tick on ACQUIRING a firing solution, never while it holds.
 const solutionTone = new SolutionTone();
 const markerScratch = new THREE.Vector3();
+// U1: getting shot — red edge flash, a thud, and an arc toward the shooter.
+const damageIndicator = new DamageIndicator();
+// U1 haptics: Android vibrates, iOS has no API (feature-detected no-op).
+// A never-touched setting (null) means "on for a touch device".
+const haptics = new Haptics(navigator, settings.haptics ?? coarsePointer());
+const viewDir = new THREE.Vector3();
+/** A shooter's live position for their arc; null once they're gone. */
+const shooterLivePos = (id: string) => remotes.poseOf(id)?.pos;
 const hpBar = new HpBarTracker();
 const hpBarSprite = new HpBarSprite();
 scene.add(hpBarSprite.sprite);
@@ -1048,8 +1062,10 @@ function enterDeath(killerId: string | null, cause?: "storm"): void {
   killCamTargetId = killerId;
   hud.showKillCam(killerId === null ? null : nameOf(killerId), cause);
   setBoostBurning(false, performance.now());
+  damageIndicator.clear();
   if (!alive) return;
   alive = false;
+  haptics.death(); // after the guard: a crash + its death message buzz once
   plane.visible = false;
   planeTrails.clear(socket.selfId);
   bullets.clearOwn();
@@ -1069,6 +1085,7 @@ function respawnSelf(spawn: SpawnState): void {
   killCamTargetId = null;
   plane.visible = true;
   hud.hideKillCam();
+  damageIndicator.clear();
   guns.reset(performance.now());
   boost = createBoost(performance.now()); // fresh plane, full gauge
   lowHpArmed = true; // fresh plane, fresh "I'm hit" edge
@@ -1157,8 +1174,22 @@ socket.events.onDamage = (msg) => {
     }
   }
   if (msg.targetId === socket.selfId) {
+    // Read before the write below: the flash scales by what this hit took.
+    const lost = selfHp - msg.hp;
     selfHp = msg.hp;
     hud.setHp(msg.hp);
+    if (alive) {
+      const now = performance.now();
+      // A snapshot (or regen) can land between hits and eat the difference.
+      const dmg = lost > 0 ? lost : BULLET_DAMAGE;
+      const shooterPos =
+        msg.shooterId === socket.selfId
+          ? null
+          : remotes.poseOf(msg.shooterId)?.pos;
+      damageIndicator.hit(msg.shooterId, shooterPos, dmg, now);
+      audio.damageThud(now);
+      haptics.damage(now);
+    }
     radio.noteCombat(performance.now());
     if (lowHpArmed && msg.hp < LOW_HP_CALLOUT) {
       lowHpArmed = false;
@@ -1198,6 +1229,7 @@ socket.events.onDeath = (msg) => {
   );
   if (msg.killerId === socket.selfId && msg.victimId !== socket.selfId) {
     hud.killConfirm(performance.now());
+    haptics.kill();
     audio.killConfirm();
   }
   hpBar.clear(msg.victimId); // never float a stale bar over a respawn
@@ -1795,6 +1827,8 @@ const settingsPanel = new SettingsPanel(
     aimMode: () => input.aimMode(),
     setAimMode: (mode) => input.setAimMode(mode),
     radioVoice: () => radioVoiceOn,
+    haptics: () => (haptics.available ? haptics.enabled : null),
+    setHaptics: (on) => haptics.setEnabled(on),
     setRadioVoice: (on) => {
       saveRadioVoice(on);
       paintRadioToggle(on);
@@ -2558,24 +2592,29 @@ const frame = (now: number): void => {
       }
       continue;
     }
-    for (const target of targets) {
-      if (bulletHitsSphere(bullet.prev, bullet.pos, target.pos)) {
-        socket.sendHit(
-          target.id,
-          bullet.origin,
-          bullet.seq,
-          remotes.extraDelayOf(target.id),
-        );
-        bullets.remove(bullet);
-        // Instant shooter-side feedback (marker + thunk + sparks at the
-        // impact point); the server's damage broadcast stays the
-        // authoritative confirm (crosshair blip).
-        hud.hitMarker(now);
-        audio.hitThunk();
-        sparks.burst(bullet.pos, now);
-        break;
-      }
+    const target = bulletImpact(bullet.prev, bullet.pos, targets);
+    if (!target) continue;
+    bullets.remove(bullet);
+    if (impactKind(target) === "shield") {
+      // U1: the server rejects hits on a spawn-protected plane, so a round
+      // that meets one glances off — no claim, no marker, no thunk.
+      shieldSparks.burst(bullet.pos, now);
+      audio.shieldPing(now);
+      continue;
     }
+    socket.sendHit(
+      target.id,
+      bullet.origin,
+      bullet.seq,
+      remotes.extraDelayOf(target.id),
+    );
+    // Instant shooter-side feedback (marker + thunk + sparks at the
+    // impact point); the server's damage broadcast stays the
+    // authoritative confirm (crosshair blip).
+    hud.hitMarker(now);
+    haptics.hit(now);
+    audio.hitThunk();
+    sparks.burst(bullet.pos, now);
   }
 
   remotes.update(frameClock, chase.position, dt, now, (id) =>
@@ -2767,6 +2806,7 @@ const frame = (now: number): void => {
   skyDome.mesh.visible = sky.domeVisible;
   explosions.update(chase.position, now, dt);
   sparks.update(chase.position, now);
+  shieldSparks.update(chase.position, now);
   tracers.update(bullets.all, chase.position, now);
 
   // Target HP bar: over the plane WE damaged in the last 3 s (fading).
@@ -2787,6 +2827,15 @@ const frame = (now: number): void => {
   hud.setHeat(heat.heat, heat.locked);
   hud.setBoost(boost.energy, boost.active);
   hud.update(now);
+  // The camera's real heading (free-look included) — the arcs are screen-
+  // relative, so they follow where the player is LOOKING, not the nose.
+  camera.getWorldDirection(viewDir);
+  damageIndicator.update(
+    now,
+    flight.pos,
+    Math.atan2(-viewDir.x, -viewDir.z),
+    shooterLivePos,
+  );
   const contacts = remotes.contacts();
   minimap.update(flight.pos, flight.yaw, contacts, reveals.pings(now));
   // 0 at ≤ MAX_SPEED, 1 at full boost speed: drives the engine pitch rise and

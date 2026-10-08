@@ -42,6 +42,9 @@ export interface SettingsHooks {
   setAimMode: (mode: AimMode) => void;
   radioVoice: () => boolean;
   setRadioVoice: (on: boolean) => void;
+  /** Haptics on/off, or null where the device can't vibrate (row hidden). */
+  haptics: () => boolean | null;
+  setHaptics: (on: boolean) => void;
   /** The resolution scale changed (debounced while a slider drags). */
   setResScale: (scale: number) => void;
   /** Any volume changed. */
@@ -49,6 +52,9 @@ export interface SettingsHooks {
   /** The panel opened or closed: the autopilot and the touch controls. */
   onOpenChange: (open: boolean) => void;
 }
+
+/** The Settings values a range slider drives. */
+type SliderKey = "resScale" | "master" | "engine" | "voice";
 
 /** While open, every value is re-read this often (FPS, Auto's tier, and
  * anything the G key, M key or a HUD toggle changed behind the panel). */
@@ -108,6 +114,13 @@ const MARKUP = `
         ${seg("aimMode", "Aim mode", [
           ["instructor", "INSTRUCTOR"],
           ["classic", "CLASSIC"],
+        ])}
+      </div>
+      <div class="row" data-row="haptics">
+        <span>HAPTICS</span>
+        ${seg("haptics", "Haptics", [
+          ["on", "ON"],
+          ["off", "OFF"],
         ])}
       </div>
     </section>
@@ -260,7 +273,7 @@ export class SettingsPanel {
     for (const input of this.root.querySelectorAll<HTMLInputElement>(
       "input[type=range]",
     )) {
-      const key = input.dataset.key as keyof Settings;
+      const key = input.dataset.key as SliderKey;
       const grab = () => {
         this.dragging = input;
       };
@@ -289,10 +302,17 @@ export class SettingsPanel {
     else if (group === "sensitivity") h.setSensitivity(Number(v));
     else if (group === "aimMode") h.setAimMode(v as AimMode);
     else if (group === "radioVoice") h.setRadioVoice(v === "on");
+    else if (group === "haptics") {
+      // Stored only once the player picks: until then it stays null, the
+      // device default.
+      this.values = clampSettings({ ...this.values, haptics: v === "on" });
+      saveSettings(this.store, this.values);
+      h.setHaptics(v === "on");
+    }
   }
 
   /** A slider moved (`done` on release). */
-  private slide(key: keyof Settings, v: number, done: boolean): void {
+  private slide(key: SliderKey, v: number, done: boolean): void {
     this.values = clampSettings({ ...this.values, [key]: v });
     saveSettings(this.store, this.values);
     this.paintOutputs();
@@ -317,11 +337,13 @@ export class SettingsPanel {
     const h = this.hooks;
     const q = h.quality();
     const sens = h.sensitivity();
+    const haptics = h.haptics();
     const marks: Record<string, string> = {
       quality: q.setting,
       sensitivity: String(sens),
       aimMode: h.aimMode(),
       radioVoice: h.radioVoice() ? "on" : "off",
+      haptics: haptics ? "on" : "off",
     };
     for (const group of this.root.querySelectorAll<HTMLElement>(".seg")) {
       const want = marks[group.dataset.key ?? ""];
@@ -335,6 +357,9 @@ export class SettingsPanel {
       "[data-row=sensitivity]",
     );
     if (sensRow) sensRow.hidden = sens === null;
+    const hapticsRow =
+      this.root.querySelector<HTMLElement>("[data-row=haptics]");
+    if (hapticsRow) hapticsRow.hidden = haptics === null;
     const tier = q.tier.toUpperCase();
     this.out("tier", q.setting === "auto" ? `AUTO · ${tier}` : tier);
     this.out("fps", `${Math.round(h.fps())} FPS`);
@@ -344,7 +369,7 @@ export class SettingsPanel {
       if (input === this.dragging || input === document.activeElement) {
         continue;
       }
-      const v = this.values[input.dataset.key as keyof Settings];
+      const v = this.values[input.dataset.key as SliderKey];
       input.value = String(Math.round(v * 100));
     }
     this.paintOutputs();

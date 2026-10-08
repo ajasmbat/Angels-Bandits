@@ -25,6 +25,8 @@ const EXPLOSION_LEVEL = 1.0;
 const HIT_LEVEL = 0.55;
 const KILL_LEVEL = 0.4;
 const SOLUTION_LEVEL = 0.13;
+const DAMAGE_LEVEL = 0.6;
+const SHIELD_LEVEL = 0.12;
 // Radio voice bus: pre-rendered lines are loudness-normalized to −18 LUFS,
 // so one level rules them all; while a line is on air the rest of the mix
 // ducks under it so the call reads through combat.
@@ -98,6 +100,8 @@ export class GameAudio implements VoiceSink {
   } | null = null;
   private readonly remotes = new Map<string, RemoteEngine>();
   private lastWhooshAt = 0;
+  private lastThudAt = Number.NEGATIVE_INFINITY;
+  private lastPingAt = Number.NEGATIVE_INFINITY;
   /** M6 settings: gain multipliers (already curved), applied to the buses
    * as they are built and to the engine levels every frame. */
   private volumes: Volumes = { master: 1, engine: 1, voice: 1 };
@@ -350,6 +354,48 @@ export class GameAudio implements VoiceSink {
   hitThunk(): void {
     const jitter = 0.9 + Math.random() * 0.2;
     this.burst("bandpass", 750 * jitter, 210 * jitter, 0.08, HIT_LEVEL, 0);
+  }
+
+  /** We took a round (U1): a dull centered body thud — low noise knock
+   * plus a falling sub, nothing like the outgoing hit thunk. ≤ 1 / 120 ms. */
+  damageThud(nowMs: number): void {
+    if (nowMs - this.lastThudAt < 120) return;
+    this.lastThudAt = nowMs;
+    this.burst("lowpass", 420, 90, 0.16, DAMAGE_LEVEL, 0);
+    const ctx = this.ensure();
+    if (!ctx || !this.sfx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(110, now);
+    osc.frequency.exponentialRampToValueAtTime(45, now + 0.14);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(DAMAGE_LEVEL, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
+    osc.connect(gain).connect(this.sfx);
+    osc.start(now);
+    osc.stop(now + 0.18);
+  }
+
+  /** Our round glanced off a spawn shield (U1): a soft glassy ping, so it
+   * never reads as a hit. ≤ 1 / 80 ms. */
+  shieldPing(nowMs: number): void {
+    if (nowMs - this.lastPingAt < 80) return;
+    this.lastPingAt = nowMs;
+    const ctx = this.ensure();
+    if (!ctx || !this.sfx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(1760, now);
+    osc.frequency.exponentialRampToValueAtTime(1320, now + 0.12);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(SHIELD_LEVEL, now + 0.006);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
+    osc.connect(gain).connect(this.sfx);
+    osc.start(now);
+    osc.stop(now + 0.16);
   }
 
   /** Firing solution acquired: one soft, short blip — a nudge, not an alarm.

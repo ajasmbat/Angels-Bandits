@@ -173,6 +173,37 @@ describe("stepFlight: steering", () => {
     expect(end.roll).toBeGreaterThan(0.4);
   });
 
+  it("turn plus same-side A/D caps the bank at 1.4 rad, never past (F7)", () => {
+    // Left turn (turn −1 banks left = +roll) with left A/D asked for 2 rad.
+    for (const fps of [30, 60, 144]) {
+      let s = cruiseAt(65, { x: 500, y: 300, z: 500 });
+      let peak = 0;
+      for (let i = 0; i < 3 * fps; i++) {
+        s = stepFlight(s, { ...NEUTRAL, turn: -1, roll: 1 }, 1 / fps);
+        peak = Math.max(peak, Math.abs(s.roll));
+      }
+      expect(peak).toBeLessThanOrEqual(1.4);
+      expect(s.roll).toBeCloseTo(1.4, 3); // it does get there
+    }
+  });
+
+  it("flipping turn + A/D side to side at the bank spring's period never exceeds 1.4 rad", () => {
+    // The worst case for a spring is a target reversed while it is moving:
+    // flip every half period of BANK_FREQ (7 rad/s ⇒ ~0.45 s).
+    for (const fps of [30, 60, 144]) {
+      let s = cruiseAt(65, { x: 500, y: 300, z: 500 });
+      let peak = 0;
+      const half = Math.round((Math.PI / 7) * fps);
+      for (let i = 0; i < 6 * fps; i++) {
+        const side = Math.floor(i / half) % 2 === 0 ? 1 : -1;
+        s = stepFlight(s, { ...NEUTRAL, turn: -side, roll: side }, 1 / fps);
+        peak = Math.max(peak, Math.abs(s.roll));
+      }
+      expect(peak).toBeLessThanOrEqual(1.4 + 1e-9);
+      expect(peak).toBeGreaterThan(1); // it really swung hard
+    }
+  });
+
   it("attitude holds when input is neutral (mouse-aim: no auto-level of pitch)", () => {
     const start: FlightState = {
       ...cruiseAt(65, { x: 500, y: 500, z: 500 }),

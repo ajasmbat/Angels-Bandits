@@ -19,6 +19,7 @@ import {
   DIVE_FADE_BAND,
   ENERGY_GAIN,
   MAX_SPEED,
+  MAX_VISUAL_BANK,
   MIN_SPEED,
   MUSH_SINK,
   PITCH_LIMIT,
@@ -174,8 +175,14 @@ export function stepFlight(
   // F6: a critically damped spring (natural frequency BANK_FREQ) toward the
   // target, stepped in closed form — exact for any dt while the target holds
   // — so it leans in from rest and rolls out with no overshoot at every
-  // frame rate. x is roll minus its target, v the roll rate.
-  const rollTarget = -turnIn * BANK_ANGLE + rollIn * BANK_ANGLE;
+  // frame rate. x is roll minus its target, v the roll rate. F7: the target
+  // is capped at ±MAX_VISUAL_BANK, so turn + same-side A/D can't draw the
+  // plane past knife-edge.
+  const rollTarget = clamp(
+    -turnIn * BANK_ANGLE + rollIn * BANK_ANGLE,
+    -MAX_VISUAL_BANK,
+    MAX_VISUAL_BANK,
+  );
   const rx = state.roll - rollTarget;
   const rv = state.rollRate ?? 0;
   const rDecay = Math.exp(-BANK_FREQ * dt);

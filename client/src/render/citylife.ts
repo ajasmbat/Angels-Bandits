@@ -49,6 +49,7 @@ import { RoofKind, roofStyleFor } from "./roofs";
 import { LIFE_MAX_HEIGHT, ROOF_INSET, rooftopLifeFor } from "./rooftop-life";
 import { blockHeat } from "./signage";
 import { GO_WINDOW, GREEN, SIGNAL_CYCLE, goWindowStart } from "./signals";
+import { curbPlanFor, sideAt } from "./street-detail";
 import {
   PED_BAND_MAX,
   PED_BAND_MIN,
@@ -1213,10 +1214,19 @@ export function blockStations(bx: number, bz: number, seed: number): Stations {
   for (const s of blockSides(bx, bz)) {
     // Facing the street from this side (toward the centreline).
     const toStreet = yawOf(-s.nx, -s.nz);
+    // G1: bus stops are the street's seed-free curb plan (street-detail.ts)
+    // — a shelter, a BUS STOP box on the road and a yellow curb — so the
+    // waiters stand at the shelter. Its stations are a subset of ours.
+    const shelterAt = curbPlanFor(
+      sideAt(s.ax === 0 ? "z" : "x", s.x0, s.z0, (s.nx + s.nz) as 1 | -1),
+    ).bus;
     for (const a of s.stations) {
       const roll = rand();
       const count = rand();
-      if (!bus && roll < BUS_STOP_CHANCE) {
+      if (shelterAt === a) {
+        // A shelter holds the station: never a cart or a performer. The
+        // first one on the block gets the waiters (at most one stop each).
+        if (bus) continue;
         bus = true;
         busStops.push({ ...sidePoint(s, a, STATION_LINE), yaw: toStreet });
         const n = 3 + Math.floor(count * 4);

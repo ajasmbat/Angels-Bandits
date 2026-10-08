@@ -10,6 +10,8 @@
 //   ?perf=1               open the dev perf HUD (default closed)
 //   ?gputime=1            measure GPU frame cost   (default off)
 //   ?micro=0              disable the L1 micro tier (default on)
+//   ?street=0             disable G1 street detail: furniture, parked cars
+//                         and the fine ground paint (default on)
 //   ?grade=0              disable the final vignette/saturation grade (default on)
 //   ?post=legacy          the pre-O4 post chain (default: the fused one)
 //   ?quality=auto|high|medium|low|mobile   graphics tier (default: the
@@ -80,6 +82,11 @@ export interface RenderOptions {
    */
   micro: boolean;
   /**
+   * Whether G1 street detail (furniture, parked cars, the fine ground paint)
+   * is drawn. On in the shipped game; `?street=0` is its perf A/B control.
+   */
+  street: boolean;
+  /**
    * Whether the final grade pass (vignette + a touch of saturation) runs.
    * On in the shipped game; `?grade=0` is the perf harness's A/B control for
    * the cost of that one fullscreen pass.
@@ -110,6 +117,7 @@ export const DEFAULT_RENDER_OPTIONS: RenderOptions = {
   perfHud: false,
   gpuTimer: false,
   micro: true,
+  street: true,
   grade: true,
   quality: null,
   post: "fused",
@@ -171,6 +179,9 @@ export function readRenderOptions(
 
   const micro = params.get("micro");
   if (micro !== null) opts.micro = micro !== "0" && micro !== "false";
+
+  const street = params.get("street");
+  if (street !== null) opts.street = street !== "0" && street !== "false";
 
   const grade = params.get("grade");
   if (grade !== null) opts.grade = grade !== "0" && grade !== "false";

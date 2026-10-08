@@ -58,6 +58,11 @@ export class CityEventLog {
     return log.map((e) => ({ ...e }));
   }
 
+  /** Rooms that currently hold a log (test introspection). */
+  roomIds(): string[] {
+    return [...this.byRoom.keys()];
+  }
+
   /** A room wound down: drop its log. */
   forget(roomId: string): void {
     this.byRoom.delete(roomId);

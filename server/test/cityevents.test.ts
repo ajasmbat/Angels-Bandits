@@ -94,7 +94,9 @@ let child: ChildProcess;
 let url: string;
 
 beforeAll(async () => {
-  child = spawn("npx", ["tsx", entry], {
+  // node itself (tsx as a loader), not `npx tsx`: kill() in afterAll must
+  // reach the server, or it outlives the test and keeps flying its bots.
+  child = spawn(process.execPath, ["--import", "tsx", entry], {
     env: { ...process.env, PORT: "0" },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -112,8 +114,11 @@ beforeAll(async () => {
   });
 }, 30000);
 
-afterAll(() => {
-  child?.kill();
+afterAll(async () => {
+  if (!child || child.exitCode !== null) return;
+  const exited = new Promise((r) => child.once("exit", r));
+  child.kill();
+  await exited;
 });
 
 interface Peer {

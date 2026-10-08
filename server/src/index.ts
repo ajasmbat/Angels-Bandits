@@ -34,6 +34,7 @@ import {
 import {
   BOOST_VALIDATION_SLACK,
   CITY_SEED,
+  JOIN_DEADLINE_MS,
   LIVENESS_TIMEOUT_MS,
   NAME_MAX_LENGTH,
   POSE_AGE_MAX_MS,
@@ -45,7 +46,6 @@ import {
   encodeSnapshotEntry,
 } from "@angels-bandits/common/net";
 import type {
-  ClientMsg,
   Pose,
   ServerMsg,
   SpawnState,
@@ -62,6 +62,7 @@ import {
 } from "./bots";
 import { CityEventLog, nearBuildingProbe } from "./cityevents";
 import { Combat, type HitResult, type SpeedCapFn } from "./combat";
+import { type ClientEnvelope, isClientMsg, isPose, isVec3 } from "./guards";
 import { type RespawnEnemy, pickBotRespawn, pickRespawn } from "./respawn";
 import { type Room, RoomManager } from "./room";
 import { createStaticHandler } from "./statics";
@@ -69,6 +70,13 @@ import { StormCeiling } from "./storm";
 import { poseFromSpawn, validatePose } from "./validate";
 
 const PORT = Number(process.env.PORT ?? 8080);
+
+/** How long a socket may stay open without sending `join` (S1). The env
+ * override exists for tests; production always uses the shared constant. */
+const JOIN_DEADLINE = Number(process.env.JOIN_DEADLINE_MS) || JOIN_DEADLINE_MS;
+
+/** Test-only introspection of the per-room maps (`GET /debug/rooms`). */
+const DEBUG_ROOMS = process.env.AB_DEBUG_ROOMS === "1";
 
 /** After this many consecutive snap-rejects, accept the claim as a re-sync —
  * a client-side respawn (crash death) legitimately teleports across the map. */
@@ -267,12 +275,21 @@ function syncRoomBots(room: Room): void {
     sendToRoom(room, { type: "playerLeft", id });
   }
   // A wound-down room (no humans, no bots) is gone — drop its pilots too.
-  if (!rooms.rooms.includes(room)) {
-    botsByRoom.delete(room.id);
-    cityEvents.forget(room.id);
-    roomMoversById.delete(room.id);
-    pendingKillByRoom.delete(room.id);
-  }
+  disposeRoom(room);
+}
+
+/**
+ * Free everything kept per room id once `room` is gone from the manager.
+ * Liveness is the only test — never botTarget: a room still listed keeps its
+ * state, and a dead id is never reused (room ids only count up), so the lazy
+ * getters can't resurrect it either — only listed rooms are ever ticked.
+ */
+function disposeRoom(room: Room): void {
+  if (rooms.rooms.includes(room)) return;
+  botsByRoom.delete(room.id);
+  cityEvents.forget(room.id);
+  roomMoversById.delete(room.id);
+  pendingKillByRoom.delete(room.id);
 }
 
 const sanitizeName = (raw: unknown): string => {
@@ -293,8 +310,9 @@ function sendToRoom(room: Room, msg: ServerMsg, exceptId?: string): void {
   }
 }
 
-function handleJoin(ws: WebSocket, rawName: unknown): Client {
-  const id = randomUUID();
+/** `id` is minted by the caller before any side effect, so a join that
+ * throws half-way can still be undone by handleLeave(id). */
+function handleJoin(ws: WebSocket, rawName: unknown, id: string): Client {
   const name = sanitizeName(rawName);
   const room = rooms.join(id, name);
   const now = Date.now();
@@ -394,15 +412,18 @@ function handleBoost(client: Client, on: unknown, now: number): void {
     : stopBoost(client.boost, now, BOOST_VALIDATION_SLACK);
 }
 
-function handleLeave(client: Client): void {
-  clients.delete(client.id);
-  combat.removePlayer(client.id);
-  storm.forget(client.id);
-  const room = rooms.leave(client.id);
+/** Idempotent: every step tolerates an id that never fully joined. */
+function handleLeave(id: string): void {
+  clients.delete(id);
+  combat.removePlayer(id);
+  storm.forget(id);
+  const room = rooms.leave(id);
   if (room) {
-    sendToRoom(room, { type: "playerLeft", id: client.id });
-    // Refill the vacated seat (or wind the bots down if the room is done).
+    sendToRoom(room, { type: "playerLeft", id });
+    // Refill the vacated seat (or wind the bots down if the room is done);
+    // a room the last member just left is already gone — free its state.
     if (rooms.rooms.includes(room)) syncRoomBots(room);
+    else disposeRoom(room);
   }
 }
 
@@ -427,25 +448,14 @@ function handleFire(client: Client, seq: unknown, now: number): void {
 
 function handleHitClaim(
   client: Client,
-  msg: {
-    targetId?: unknown;
-    bulletOrigin?: unknown;
-    seq?: unknown;
-    delay?: unknown;
-  },
+  msg: ClientEnvelope,
   now: number,
 ): void {
-  const { targetId, bulletOrigin, seq, delay } = msg;
+  const { targetId, bulletOrigin: origin, seq, delay } = msg;
   if (typeof targetId !== "string" || typeof seq !== "number") return;
-  const origin = bulletOrigin as Vec3 | undefined;
-  if (
-    !origin ||
-    !Number.isFinite(origin.x) ||
-    !Number.isFinite(origin.y) ||
-    !Number.isFinite(origin.z)
-  ) {
-    return;
-  }
+  // You can't shoot yourself down: a self-claim would credit its own kill.
+  if (targetId === client.id) return;
+  if (!isVec3(origin)) return;
   // Bots are valid targets too: their on-record pose comes from the sim.
   const targetPose = memberPose(client.room, targetId);
   if (!targetPose) return;
@@ -705,6 +715,19 @@ const server = createServer((req, res) => {
     res.end(JSON.stringify({ ok: true }));
     return;
   }
+  if (DEBUG_ROOMS && req.url === "/debug/rooms") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(
+      JSON.stringify({
+        rooms: rooms.rooms.map((r) => r.id),
+        botsByRoom: [...botsByRoom.keys()],
+        cityEvents: cityEvents.roomIds(),
+        roomMoversById: [...roomMoversById.keys()],
+        pendingKillByRoom: [...pendingKillByRoom.keys()],
+      }),
+    );
+    return;
+  }
   if (statics?.(req, res)) return;
   res.writeHead(404, { "content-type": "text/plain" });
   res.end("not found");
@@ -715,37 +738,70 @@ const wss = new WebSocketServer({ server, maxPayload: 16 * 1024 });
 
 wss.on("connection", (ws) => {
   let client: Client | null = null;
+  /** Minted on the join frame, before handleJoin's side effects. */
+  let joinedId: string | null = null;
+  // A socket that never says `join` is not a player: no liveness sweep sees
+  // it, so without this it would hold its slot open forever.
+  const joinDeadline = setTimeout(() => ws.terminate(), JOIN_DEADLINE);
+
+  /** Route one validated envelope. A known type with bad fields is dropped
+   * by its guard, exactly like an unknown type. */
+  const dispatch = (msg: ClientEnvelope, now: number): void => {
+    if (msg.type === "join" && !joinedId) {
+      clearTimeout(joinDeadline);
+      joinedId = randomUUID();
+      client = handleJoin(ws, msg.name, joinedId);
+    } else if (!client) {
+      return;
+    } else if (msg.type === "pose") {
+      if (isPose(msg.pose)) handlePose(client, msg.pose, msg.t, now);
+    } else if (msg.type === "boost") {
+      handleBoost(client, msg.on, now);
+    } else if (msg.type === "fire") {
+      handleFire(client, msg.seq, now);
+    } else if (msg.type === "hit") {
+      handleHitClaim(client, msg, now);
+    } else if (msg.type === "crash") {
+      handleCrash(client, now);
+    } else if (msg.type === "setBots") {
+      handleSetBots(client, msg.count, now);
+    }
+  };
 
   ws.on("message", (data) => {
-    let msg: ClientMsg;
+    // Frames already parsed off a socket we just terminated still arrive.
+    if (ws.readyState !== ws.OPEN) return;
+    let msg: unknown;
     try {
-      msg = JSON.parse(data.toString()) as ClientMsg;
+      msg = JSON.parse(data.toString());
     } catch {
+      ws.close(1003, "malformed message");
+      return;
+    }
+    if (!isClientMsg(msg)) {
       ws.close(1003, "malformed message");
       return;
     }
     const now = Date.now();
     if (client) client.lastMsgAt = now;
-    if (msg.type === "join" && !client) {
-      client = handleJoin(ws, msg.name);
-    } else if (msg.type === "pose" && client && msg.pose) {
-      handlePose(client, msg.pose, msg.t, now);
-    } else if (msg.type === "boost" && client) {
-      handleBoost(client, msg.on, now);
-    } else if (msg.type === "fire" && client) {
-      handleFire(client, msg.seq, now);
-    } else if (msg.type === "hit" && client) {
-      handleHitClaim(client, msg, now);
-    } else if (msg.type === "crash" && client) {
-      handleCrash(client, now);
-    } else if (msg.type === "setBots" && client) {
-      handleSetBots(client, msg.count, now);
+    try {
+      dispatch(msg, now);
+    } catch (err) {
+      // Never let one socket take the process (and every room) down: drop
+      // just this connection; its close handler cleans the player up.
+      console.error(
+        `message handler failed for ${joinedId ?? "unjoined socket"}:`,
+        err,
+      );
+      ws.terminate();
     }
   });
 
   ws.on("close", () => {
-    if (client) handleLeave(client);
+    clearTimeout(joinDeadline);
+    if (joinedId) handleLeave(joinedId);
     client = null;
+    joinedId = null;
   });
   ws.on("error", () => ws.terminate());
 });

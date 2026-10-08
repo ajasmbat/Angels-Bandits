@@ -1831,8 +1831,8 @@ const settingsPanel = new SettingsPanel(
     },
     onOpenChange: (open) => {
       settingsOpen = open;
-      // Resuming recentres the touch aim, so the instructor picks up from
-      // the middle of the screen rather than a stale point.
+      // Resuming recentres the touch aim onto the gun line (M7), so the
+      // instructor picks up flying straight rather than from a stale point.
       touchControls?.setSuspended(open);
       if (!open) return;
       input.releaseKeys();
@@ -2342,9 +2342,14 @@ const frame = (now: number): void => {
       // un-orbited chase frame at THIS frame's (already stepped) zoom, with
       // the same FOV formula the render writes (boost kick included) —
       // camera.fov itself is never read or written here.
-      const cursor = input.cursorNdc();
       const aimFov = viewFov(zoom.z, overspeedOf(flight.speed), flight.speed);
       const aimFrame = chase.aimFrame(flight, zoom.z);
+      // M7: a touch aim is a direction anchored in the world — project it
+      // through this very view, so the cursor read just below IS it.
+      const anchored =
+        touchControls?.steer(flight, aimFrame, aimFov, camera.aspect, dt) ??
+        false;
+      const cursor = input.cursorNdc();
       const view = aimView(flight, aimFrame, aimFov, camera.aspect, cursor);
       // H2: where the pilot means to go — from the PLANE to the world point
       // the cursor marks ASSIST_AIM_RANGE out (the chase eye sits ~9° off
@@ -2365,11 +2370,14 @@ const frame = (now: number): void => {
       // smoothing catching up on the drag) — by re-reading the error with
       // last frame's zoom/FOV/cursor at the same attitude. The plane's own
       // turn is never latched, so a zoom pressed mid-turn keeps the turn.
+      // An anchored touch aim latches nothing: it stays put in the world
+      // when the view reframes (and aimFrame never sees the free-look orbit),
+      // so its error is already free of any view change.
       let latch: AimError = { yaw: 0, pitch: 0 };
       const zoomMoved = zoom.z !== zoomPrev;
       const looking =
         freelook.held || freelook.yaw !== 0 || freelook.pitch !== 0;
-      if (zoomMoved || aimFov !== aimFovPrev || looking) {
+      if (!anchored && (zoomMoved || aimFov !== aimFovPrev || looking)) {
         const z0 = zoomMoved ? zoomPrev : zoom.z;
         const before = aimView(
           flight,

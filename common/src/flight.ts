@@ -113,6 +113,11 @@ export function turnRadius(speed: number): number {
   return speed / turnRateAt(speed);
 }
 
+/** Full-deflection (un-boosted) pull-up radius at `speed`, meters (F8). */
+export function pitchRadius(speed: number): number {
+  return speed / PITCH_RATE;
+}
+
 /**
  * The fastest speed in [MIN_SPEED, MAX_SPEED] whose full-deflection turn
  * radius is at most `radius` — turnRadius's inverse, closed form because the

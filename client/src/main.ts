@@ -12,7 +12,12 @@ import {
   startBoost,
   stopBoost,
 } from "@angels-bandits/common/boost";
-import { type Building, cityHoles } from "@angels-bandits/common/city";
+import {
+  type Building,
+  cityHoles,
+  mulberry32,
+  raycastChunk,
+} from "@angels-bandits/common/city";
 import {
   generateMovers,
   withNewsHeli,
@@ -28,6 +33,7 @@ import {
   BOOST_MAX_SPEED,
   BOOT_PING_INTERVAL_MS,
   BULLET_DAMAGE,
+  BULLET_RANGE,
   BULLET_SPEED,
   CLOUD_BASE,
   FOG_DISTANCE,
@@ -614,6 +620,10 @@ window.addEventListener("resize", () => {
 // --- World (city seed comes from the server so every roommate agrees) ---
 const city = new CityRenderer(welcome.seed);
 scene.add(city.mesh);
+// D2: the room's destroyed chunks, held by the socket since the welcome (and
+// grown by every `chunks` batch since, booting or not), now drive this
+// city's solids — the crash check, sight lines and the renderer alike.
+city.attachDamage(socket.cityDamage);
 // Roof clutter + landmark beacons dress the same shared Building[] (V2).
 const roofClutter = new RoofClutterRenderer(city.cityBuildings);
 scene.add(roofClutter.group);
@@ -2143,6 +2153,16 @@ declare global {
         busker: number;
         near: ReturnType<CityLife["sampleNear"]>;
       };
+      /** QA-only (D2 gallery): chew the building nearest `at` with
+       * `rounds` simulated rounds of sustained fire from `eye`, sprayed over
+       * the facade it faces, through the shared ray + CityDamage — the
+       * server's own damage path, applied to this client only. */
+      chew: (
+        eye: { x: number; y: number; z: number },
+        at: { x: number; y: number; z: number },
+        rounds?: number,
+        spread?: number,
+      ) => { building: number; destroyed: number };
       /** QA-only: hold the camera at a canonical eye looking at `at`
        * (null restores the chase camera). */
       qaCamera: (
@@ -2590,6 +2610,38 @@ window.__ab = {
   }),
   qaCamera: (view) => {
     qaView = view;
+  },
+  chew: (eye, at, rounds = 1200, spread = 1) => {
+    const damage = socket.cityDamage;
+    const buildings = city.cityBuildings;
+    const before = damage.destroyedCount;
+    let building = -1;
+    let best = Number.POSITIVE_INFINITY;
+    buildings.forEach((b, i) => {
+      const d = wrapDelta(at, { x: b.x, y: at.y, z: b.z });
+      const r = Math.hypot(d.x, d.z);
+      if (r < best) {
+        best = r;
+        building = i;
+      }
+    });
+    const target = buildings[building];
+    if (!target) return { building, destroyed: 0 };
+    const rand = mulberry32(building + 1);
+    for (let k = 0; k < rounds; k++) {
+      // Aim at a random point of the target's box, as a gunner sweeping it.
+      const aim = {
+        x: at.x + (target.x - at.x + (rand() - 0.5) * target.width) * spread,
+        y: at.y + (rand() * target.height - at.y) * spread,
+        z: at.z + (target.z - at.z + (rand() - 0.5) * target.depth) * spread,
+      };
+      const d = wrapDelta(eye, aim);
+      const len = Math.hypot(d.x, d.y, d.z) || 1;
+      const dir = { x: d.x / len, y: d.y / len, z: d.z / len };
+      const hit = raycastChunk(buildings, eye, dir, BULLET_RANGE);
+      if (hit && hit.chunk >= 0) damage.damageChunk(hit.chunk, BULLET_DAMAGE);
+    }
+    return { building, destroyed: damage.destroyedCount - before };
   },
   impacts: () => ({
     live: impacts.liveCount,

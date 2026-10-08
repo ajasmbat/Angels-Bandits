@@ -44,6 +44,7 @@ import {
   WORLD_SIZE,
 } from "../constants";
 import { type Vec3, canonicalize, wrapDelta } from "../world/index";
+import { damagedSolids } from "./destruction";
 import type { Building, Tier } from "./index";
 import { CONSTRUCTION_BLOCKS } from "./layout";
 import type { RoofStructure } from "./roof-structures";
@@ -86,6 +87,9 @@ export interface SolidBox {
   depth: number;
   /** The tier this box belongs to (its parent, for rendering). */
   tierIndex: number;
+  /** D2: the faces destruction exposed (city/destruction.ts CUT_* bits), or
+   * CUT_RUBBLE for a debris pile; 0 on every box of an intact tier. */
+  cut: number;
 }
 
 /**
@@ -151,6 +155,7 @@ function splitTier(
           height: h,
           depth: size,
           tierIndex,
+          cut: 0,
         }
       : {
           dx: c,
@@ -160,6 +165,7 @@ function splitTier(
           height: h,
           depth: along,
           tierIndex,
+          cut: 0,
         };
   const out = [
     box((-across / 2 + lo) / 2, lo + across / 2, baseY, t.height),
@@ -188,6 +194,7 @@ function computeSolids(b: Building): SolidBox[] {
         height: t.height,
         depth: t.depth,
         tierIndex,
+        cut: 0,
       });
     }
     baseY += t.height;
@@ -195,21 +202,45 @@ function computeSolids(b: Building): SolidBox[] {
   return out;
 }
 
-/** Buildings are immutable once generated, so their solids are too. */
+/** A building's shape never changes once generated, so its base solids
+ * don't either. */
 const solidCache = new WeakMap<Building, readonly SolidBox[]>();
 
 /**
- * Every solid box of a building, bottom-up: one per unholed tier, and two
- * walls + lintel (+ sill) per holed tier. All boxes stay inside the tier-1
- * footprint, so footprint-keyed indexes and rejects remain valid.
+ * The solids of the building as generated, ignoring destruction: one box
+ * per unholed tier, and two walls + lintel (+ sill) per holed tier. All stay
+ * inside the tier-1 footprint.
  */
-export function solids(b: Building): readonly SolidBox[] {
+export function baseSolids(b: Building): readonly SolidBox[] {
   let out = solidCache.get(b);
   if (!out) {
     out = computeSolids(b);
     solidCache.set(b, out);
   }
   return out;
+}
+
+/** A damaged building's solids, keyed on its damage version. */
+const damagedCache = new WeakMap<
+  Building,
+  { version: number; boxes: readonly SolidBox[] }
+>();
+
+/**
+ * Every solid box of a building as it stands, bottom-up: its base solids
+ * with D2's destroyed chunks subtracted (city/destruction.ts), plus the
+ * rubble they dropped. An undamaged building's boxes stay inside the tier-1
+ * footprint; a damaged one's rubble reaches up to RUBBLE_REACH beyond it,
+ * which collision's rejects and index allow for.
+ */
+export function solids(b: Building): readonly SolidBox[] {
+  const dmg = b.damage;
+  if (!dmg) return baseSolids(b);
+  const hit = damagedCache.get(b);
+  if (hit && hit.version === dmg.version) return hit.boxes;
+  const boxes = damagedSolids(b, dmg);
+  damagedCache.set(b, { version: dmg.version, boxes });
+  return boxes;
 }
 
 /** A hole in world space — the surface bots and dressing route by. A row

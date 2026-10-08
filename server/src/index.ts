@@ -15,7 +15,7 @@ import {
   startBoost,
   stopBoost,
 } from "@angels-bandits/common/boost";
-import { generateCity } from "@angels-bandits/common/city";
+import { encodeChunkIds, generateCity } from "@angels-bandits/common/city";
 import {
   type MoverField,
   generateMovers,
@@ -80,6 +80,13 @@ import {
   type FinishedRun,
   type SweepWorld,
 } from "./courses";
+import {
+  type RoomCity,
+  applyDeathBlast,
+  applyShotDamage,
+  createRoomCity,
+  noseOf as wireNose,
+} from "./destruction";
 import {
   type ClientEnvelope,
   isClientMsg,
@@ -239,6 +246,42 @@ const roomMovers = (room: Room): MoverField => {
 const pendingKillByRoom = new Map<string, { x: number; z: number }>();
 
 /**
+ * Each room's OWN breakable city (D2): a clone of its seed's city and the
+ * room's damage state. Bots fly it, bullets and deaths break it, and its
+ * destroyed set is what every member's client subtracts. Created lazily,
+ * dropped with the room. (The L1 city-event probe keeps reading the seed
+ * city on purpose: "near a building" is about where the fight is.)
+ */
+const roomCityById = new Map<string, RoomCity>();
+const roomCity = (room: Room): RoomCity => {
+  let rc = roomCityById.get(room.id);
+  if (!rc) {
+    rc = createRoomCity(
+      room.seed === CITY_SEED ? city : generateCity(room.seed),
+    );
+    roomCityById.set(room.id, rc);
+  }
+  return rc;
+};
+
+/**
+ * Destruction applies only while the room has a human member (pending and
+ * away ones count). The standing bot arena never empties, nothing
+ * regenerates until D5, and nobody would see it — so an empty room stays
+ * whole, and handleLeave clears it when its last human goes.
+ */
+const breakable = (room: Room): RoomCity | null =>
+  room.humanCount > 0 ? roomCity(room) : null;
+
+/** A plane died: blast the city at its last on-record position (alive or
+ * dead — lastPosOf covers both). Call after the death is decided. */
+function deathBlast(room: Room, victimId: string): void {
+  const rc = breakable(room);
+  const pos = rc && lastPosOf(room, victimId);
+  if (rc && pos) applyDeathBlast(rc, pos);
+}
+
+/**
  * S3 stunt courses per city seed, memoised like `moversFor`: the courses
  * (generated from exactly the city, trees and static movers every client
  * generates them from), the process-wide boards, and what the solid sweep
@@ -284,7 +327,7 @@ const botsFor = (room: Room): RoomBots => {
     bots = new RoomBots(
       room.id,
       CITY_SEED ^ (n * 0x9e3779b9),
-      city,
+      roomCity(room).buildings,
       roomMovers(room),
       true,
       natureIndexFor(room.seed),
@@ -396,6 +439,7 @@ function disposeRoom(room: Room): void {
   cityEvents.forget(room.id);
   roomMoversById.delete(room.id);
   pendingKillByRoom.delete(room.id);
+  roomCityById.delete(room.id);
 }
 
 const sanitizeName = (raw: unknown): string => {
@@ -501,6 +545,7 @@ function handleJoin(
     cityEvents: cityEvents.recent(room.id, now),
     newsHeli: roomMovers(room).news,
     resumeToken: client.resumeToken,
+    destroyed: encodeChunkIds(roomCity(room).damage.destroyedIds()),
     courses: courseSetFor(room.seed).book.standings(),
   };
   ws.send(JSON.stringify(welcome));
@@ -664,6 +709,8 @@ function handleLeave(id: string): void {
   const room = rooms.leave(id);
   if (room) {
     sendToRoom(room, { type: "playerLeft", id });
+    // D2: the last human out takes the damage with them (see breakable).
+    if (room.humanCount === 0) roomCityById.get(room.id)?.damage.reset([]);
     // Refill the vacated seat (or wind the bots down if the room is done);
     // a room the last member just left is already gone — free its state.
     if (rooms.rooms.includes(room)) syncRoomBots(room);
@@ -687,6 +734,9 @@ function handleFire(client: Client, seq: unknown, now: number): void {
   if (verdict.ok) {
     sendToRoom(client.room, { type: "fired", id: client.id }, client.id);
     offerCityEvent(client.room, "gunfire", client.id, now);
+    // D2: the round flies from the shooter's on-record pose along its nose.
+    const rc = breakable(client.room);
+    if (rc) applyShotDamage(rc, client.pose.pos, wireNose(client.pose.quat));
   }
 }
 
@@ -734,6 +784,7 @@ function handleHitClaim(
   }
   if (verdict.death) {
     noteKillSite(client.room, targetId);
+    deathBlast(client.room, targetId);
     if (client.room.members.get(targetId)?.isBot) {
       botsFor(client.room).setDead(targetId);
     }
@@ -793,6 +844,7 @@ function handleCrash(client: Client, now: number): void {
   const death = combat.crash(client.id, now);
   if (!death) return;
   noteKillSite(client.room, client.id);
+  deathBlast(client.room, client.id);
   sendToRoom(client.room, {
     type: "death",
     victimId: death.victimId,
@@ -911,6 +963,7 @@ function tickRoomBots(room: Room, now: number): void {
     const death = combat.crash(id, now);
     if (!death) continue;
     noteKillSite(room, id);
+    deathBlast(room, id);
     sendToRoom(room, {
       type: "death",
       victimId: death.victimId,
@@ -931,6 +984,8 @@ function tickRoomBots(room: Room, now: number): void {
     if (!combat.isAlive(shot.botId)) continue;
     if (!applyBotFire(combat, shot, now)) continue;
     bots.launch(shot, now);
+    const rc = breakable(room);
+    if (rc) applyShotDamage(rc, shot.origin, shot.dir);
     // Same cosmetic path as human fire: everyone renders the tracer.
     sendToRoom(room, { type: "fired", id: shot.botId });
     offerCityEvent(room, "gunfire", shot.botId, now);
@@ -958,6 +1013,7 @@ function routeBotHit(
   }
   if (hit.death) {
     noteKillSite(room, shot.targetId);
+    deathBlast(room, shot.targetId);
     if (room.members.get(shot.targetId)?.isBot) {
       bots.setDead(shot.targetId);
     }
@@ -1014,6 +1070,7 @@ const server = createServer((req, res) => {
         cityEvents: cityEvents.roomIds(),
         roomMoversById: [...roomMoversById.keys()],
         pendingKillByRoom: [...pendingKillByRoom.keys()],
+        roomCityById: [...roomCityById.keys()],
       }),
     );
     return;
@@ -1139,6 +1196,11 @@ function tick(): void {
     tickRoomBots(room, time);
     enforceStormCeiling(room, time);
     updateNewsHeli(room, time);
+    // D2: everything that broke this tick, as ONE batch.
+    const broke = roomCityById.get(room.id)?.damage.takeDestroyed();
+    if (broke && broke.length > 0) {
+      sendToRoom(room, { type: "chunks", d: encodeChunkIds(broke) });
+    }
     const snapshot: WireSnapshotMsg = {
       type: "snapshot",
       time,

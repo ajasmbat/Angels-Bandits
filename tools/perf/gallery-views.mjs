@@ -121,4 +121,43 @@ export const VIEWS = [
   // a fixed QA camera, the plane pinned every frame out of shot above.
   { name: "hole-approach", dyn: "holeApproach", raf: true },
   { name: "hole-inside", dyn: "holeInside", raf: true },
+  // D2: sustained fire on a setback tower's west facade (seed building 176,
+  // facade on the lot line at x = 620) from a gunner in the street —
+  // __ab.chew fires `rounds` through the shared ray + CityDamage, aimed
+  // round `at` with `spread` (0 = every round at the point, 1 = anywhere on
+  // the building) — then a fixed QA camera frames the result: broken
+  // floors, exposed slabs and rebar, rubble on the sidewalk. The close-up
+  // looks straight into one shot-through row of a plain mid-rise.
+  {
+    name: "destruction-chewed",
+    x: 585,
+    z: 300,
+    y: 300,
+    yaw: 0,
+    eye: [588, 34, 382],
+    at: [626, 58, 452],
+    weather: "clear",
+    chew: {
+      eye: [598, 34, 440],
+      at: [620, 58, 445.5],
+      rounds: 700,
+      spread: 0.45,
+    },
+  },
+  {
+    name: "destruction-closeup",
+    x: 1990,
+    z: 100,
+    y: 300,
+    yaw: 0,
+    eye: [1992, 20, 118],
+    at: [40, 17, 135],
+    weather: "clear",
+    chew: {
+      eye: [1995, 17.7, 133],
+      at: [21, 17.7, 133],
+      rounds: 27,
+      spread: 0,
+    },
+  },
 ];

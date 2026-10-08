@@ -129,6 +129,10 @@ export interface QualityProfile {
    * (1200 × share), facade damage slots (16 + 32 × share) and burning
    * patches (2 + 4 × share). Counts only; the shaders never change. */
   impacts: number;
+  /** D2 broken-edge detail: rebar and jagged-edge noise on the faces
+   * destruction exposed. Off = flat concrete slabs and dark rooms, by a
+   * uniform. The broken geometry itself is solid and identical everywhere. */
+  destructionDetail: boolean;
 }
 
 export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
@@ -160,6 +164,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     roofDetail: true,
     courseGhost: true,
     impacts: 1,
+    destructionDetail: true,
   },
   medium: {
     maxPixelRatio: 1.5,
@@ -189,6 +194,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     roofDetail: true,
     courseGhost: true,
     impacts: 0.75,
+    destructionDetail: true,
   },
   low: {
     maxPixelRatio: 1,
@@ -218,6 +224,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     roofDetail: false,
     courseGhost: true,
     impacts: 0.5,
+    destructionDetail: false,
   },
   mobile: {
     maxPixelRatio: 1,
@@ -247,6 +254,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     roofDetail: false,
     courseGhost: false,
     impacts: 0.25,
+    destructionDetail: false,
   },
 };
 
@@ -537,6 +545,14 @@ export const FEATURE_TIERS: readonly {
     low: "full",
     mobile: "off",
     note: "uniform guard: the S1 paint alone",
+  },
+  {
+    feature: "D2 broken edges — rebar, jagged concrete",
+    high: "full",
+    medium: "full",
+    low: "off",
+    mobile: "off",
+    note: "uniform guard: flat slabs and dark rooms; the holes and rubble are solid on every tier",
   },
   {
     feature: "Window interiors (parallax rooms)",

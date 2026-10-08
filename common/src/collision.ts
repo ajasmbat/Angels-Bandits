@@ -7,7 +7,13 @@
 // the expanded-AABB approximation (box grown by the radius), which is within
 // ~radius·0.41 at corners — plenty for an arcade crash check.
 
-import { type Building, CITY_GRID, type SolidBox, solids } from "./city/index";
+import {
+  type Building,
+  CITY_GRID,
+  CUT_RUBBLE,
+  type SolidBox,
+  solids,
+} from "./city/index";
 import {
   type Nature,
   type NatureBox,
@@ -25,6 +31,7 @@ import {
   BLOCK_PITCH,
   CANOPY_COLLISION_SLACK,
   PLAYER_RADIUS,
+  RUBBLE_REACH,
 } from "./constants";
 import { type Vec3, wrapDeltaInto } from "./world/index";
 
@@ -52,7 +59,9 @@ export interface CityIndex {
  * Bucket `buildings` by the blocks their footprints touch. A building is
  * inserted into EVERY block its (possibly seam-straddling) footprint AABB
  * overlaps, so the index is correct for any array — hand-built test towers
- * included — not only for lattice-aligned generated lots.
+ * included — not only for lattice-aligned generated lots. D2: the footprint
+ * is grown by RUBBLE_REACH, since a damaged building's rubble piles stand
+ * that far in front of it (the index is built once; damage comes later).
  */
 export function buildCityIndex(buildings: readonly Building[]): CityIndex {
   const cells: number[][] = Array.from(
@@ -64,8 +73,10 @@ export function buildCityIndex(buildings: readonly Building[]): CityIndex {
     if (!b) continue;
     // Ascending insertion order per cell is what preserves the linear scan's
     // "first building in array order wins" tie-break.
-    for (const bx of blockSpan(b.x - b.width / 2, b.x + b.width / 2)) {
-      for (const bz of blockSpan(b.z - b.depth / 2, b.z + b.depth / 2)) {
+    const hw = b.width / 2 + RUBBLE_REACH;
+    const hd = b.depth / 2 + RUBBLE_REACH;
+    for (const bx of blockSpan(b.x - hw, b.x + hw)) {
+      for (const bz of blockSpan(b.z - hd, b.z + hd)) {
         cells[bx * CITY_GRID + bz]?.push(i);
       }
     }
@@ -178,10 +189,15 @@ function hits(
   hitAt.x = b.x;
   hitAt.z = b.z;
   const d = wrapDeltaInto(hitAt, pos, hitDelta);
+  // D2: a damaged building's rubble stands up to RUBBLE_REACH in front of it.
+  // (Written as a sum, not a ternary of two sums: V8 boxed that phi — 16 B
+  // per probe.)
+  const damaged = b.damage !== undefined;
+  const reach = radius + (damaged ? RUBBLE_REACH : 0);
   // Tier-1 footprint bounds the whole stack — cheap whole-building reject.
   if (
-    Math.abs(d.x) > b.width / 2 + radius ||
-    Math.abs(d.z) > b.depth / 2 + radius
+    Math.abs(d.x) > b.width / 2 + reach ||
+    Math.abs(d.z) > b.depth / 2 + reach
   ) {
     return false;
   }
@@ -189,7 +205,29 @@ function hits(
     return true;
   }
   if (above) return false;
-  if (holes === "solid" || !b.holes) {
+  // "solid" fills holes AND destroyed chunks back in (avoidance probes stay
+  // conservative), but rubble on the street is real either way: then only
+  // the CUT_RUBBLE boxes of solids() are tested, before the whole tiers.
+  const fill = holes === "solid" || (!b.holes && !damaged);
+  if (!fill || damaged) {
+    const only = fill ? CUT_RUBBLE : 0;
+    // Inline, not a helper: doubles handed to a call V8 does not inline are
+    // boxed, and this runs per building per probe (O5: allocation-free).
+    const boxes = solids(b);
+    for (let k = 0; k < boxes.length; k++) {
+      const s = boxes[k] as SolidBox;
+      if (only !== 0 && (s.cut & only) === 0) continue;
+      if (
+        pos.y - radius <= s.baseY + s.height &&
+        pos.y + radius >= s.baseY &&
+        Math.abs(d.x - s.dx) <= s.width / 2 + radius &&
+        Math.abs(d.z - s.dz) <= s.depth / 2 + radius
+      ) {
+        return true;
+      }
+    }
+  }
+  if (fill) {
     let base = 0;
     for (let k = 0; k < b.tiers.length; k++) {
       const t = b.tiers[k] as Building["tiers"][number];
@@ -205,18 +243,6 @@ function hits(
       base = top;
     }
     return false;
-  }
-  const boxes = solids(b);
-  for (let k = 0; k < boxes.length; k++) {
-    const s = boxes[k] as SolidBox;
-    if (
-      pos.y - radius <= s.baseY + s.height &&
-      pos.y + radius >= s.baseY &&
-      Math.abs(d.x - s.dx) <= s.width / 2 + radius &&
-      Math.abs(d.z - s.dz) <= s.depth / 2 + radius
-    ) {
-      return true;
-    }
   }
   return false;
 }
@@ -564,13 +590,12 @@ export function losClear(
     const c = wrapDeltaInto(from, sightAt, sightC);
     const cx = c.x;
     const cz = c.z;
-    // Tier-1 footprint vs the segment's XZ bounds — cheap whole-building reject.
-    if (
-      cx - b.width / 2 > hiX ||
-      cx + b.width / 2 < loX ||
-      cz - b.depth / 2 > hiZ ||
-      cz + b.depth / 2 < loZ
-    ) {
+    // Tier-1 footprint vs the segment's XZ bounds — cheap whole-building
+    // reject (D2: grown by RUBBLE_REACH on a damaged building).
+    const grow = b.damage ? RUBBLE_REACH : 0;
+    const hw = b.width / 2 + grow;
+    const hd = b.depth / 2 + grow;
+    if (cx - hw > hiX || cx + hw < loX || cz - hd > hiZ || cz + hd < loZ) {
       continue;
     }
     const boxes = solids(b);
@@ -834,12 +859,11 @@ export function firstSolidHit(
         const c = wrapDeltaInto(from, hitCentre, hitOff);
         const cx = c.x;
         const cz = c.z;
-        if (
-          cx - b.width / 2 > hiX ||
-          cx + b.width / 2 < loX ||
-          cz - b.depth / 2 > hiZ ||
-          cz + b.depth / 2 < loZ
-        ) {
+        // D2: a damaged building's rubble stands RUBBLE_REACH beyond it.
+        const grow = b.damage ? RUBBLE_REACH : 0;
+        const hw = b.width / 2 + grow;
+        const hd = b.depth / 2 + grow;
+        if (cx - hw > hiX || cx + hw < loX || cz - hd > hiZ || cz + hd < loZ) {
           continue;
         }
         if (loY <= b.height) {

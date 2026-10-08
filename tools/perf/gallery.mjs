@@ -26,6 +26,31 @@ const VIEWS = [
   { name: "plane-side", x: 600, z: 700, y: 200, yaw: 1.2, orbit: 260 },
   { name: "plane-front", x: 800, z: 300, y: 160, yaw: -0.4, orbit: 620 },
   { name: "street-low", x: 1000, z: 1300, y: 35, yaw: 0 },
+  // A1 city life: a crossing seen from a corner (crossers waiting for WALK,
+  // riders in the bike lanes, groups and carts) and a balcony stack across a
+  // street (people on balconies, laundry, pigeons). Both hold the QA camera
+  // at `eye` looking at `at` while the plane is pinned behind it (it keeps
+  // the micro tier streaming around the spot), in clear weather.
+  {
+    name: "intersection",
+    x: 600,
+    z: 1520,
+    y: 22,
+    yaw: 0,
+    eye: [572, 26, 1452],
+    at: [600, 0, 1400],
+    weather: "clear",
+  },
+  {
+    name: "balcony",
+    x: 1995,
+    z: 560,
+    y: 14,
+    yaw: Math.PI,
+    eye: [1990, 16, 500],
+    at: [19.4, 12, 472],
+    weather: "clear",
+  },
   { name: "rooftop-skim", x: 1210, z: 500, y: 140, yaw: 1.57, pitch: -0.15 },
   // N1: plaza (4,4) as a night park — pond, paths, lamps, tree clusters.
   { name: "plaza-park", x: 900, z: 1030, y: 120, yaw: 0, pitch: -0.6 },
@@ -194,6 +219,10 @@ try {
     if (ONLY && !ONLY.includes(view.name)) continue;
     // L12: each view at its own time of night (deep night unless it says).
     await page.evaluate((s) => window.__ab.sky(s ?? "night"), view.sky);
+    // A1: a view (or AB_GALLERY_WEATHER, for paired before/after runs) may
+    // pin the weather phase; otherwise the live weather stands.
+    const wx = view.weather ?? process.env.AB_GALLERY_WEATHER;
+    if (wx) await page.evaluate((w) => window.__ab.weather(w), wx);
     const v = view.dyn ? await place(page, view) : view;
     const pin = async () =>
       page.evaluate((v) => {
@@ -216,6 +245,14 @@ try {
           const s = window.__ab.state();
           s.pitch = v.pitch;
         }
+        if (v.eye) {
+          const [ex, ey, ez] = v.eye;
+          const [ax, ay, az] = v.at;
+          window.__ab.qaCamera({
+            eye: { x: ex, y: ey, z: ez },
+            at: { x: ax, y: ay, z: az },
+          });
+        }
       }, v);
     await pin();
     if (v.orbit) {
@@ -231,6 +268,7 @@ try {
       await sleep(90);
     }
     await page.screenshot({ path: `${OUT}/${v.name}.png`, timeout: 180000 });
+    if (v.eye) await page.evaluate(() => window.__ab.qaCamera(null));
     if (v.orbit) {
       await page.keyboard.up("KeyE");
       await sleep(600);

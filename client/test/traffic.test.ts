@@ -26,6 +26,7 @@ import {
   CLEAR_MARGIN,
   EMERGENCY_CARS,
   EMERGENCY_SLOTS,
+  FIRE_TRUCKS,
   MIN_PASS_WINDOW,
   QUEUE_GAP,
   SIREN_BEAT,
@@ -223,12 +224,27 @@ describe("trafficFleet", () => {
     }
   });
 
-  it("mixes buses, taxis and cars, plus the emergency vehicles", () => {
+  it("mixes buses, taxis, cars and police patrols, plus the emergency vehicles", () => {
     const kinds = new Set(fleet.vehicles.map((v) => v.kind));
-    expect([...kinds].sort()).toEqual(["bus", "car", "emergency", "taxi"]);
+    expect([...kinds].sort()).toEqual([
+      "bus",
+      "car",
+      "emergency",
+      "fire",
+      "police",
+      "taxi",
+    ]);
     expect(fleet.vehicles.filter((v) => v.kind === "emergency")).toHaveLength(
       EMERGENCY_CARS,
     );
+    // A1: the fire engines run the centrelines like the ambulances; police
+    // patrols ride inside lane platoons (so the red-light sweep covers them).
+    const fire = fleet.vehicles.filter((v) => v.kind === "fire");
+    expect(fire).toHaveLength(FIRE_TRUCKS);
+    for (const v of fire) expect(v.runner).not.toBeNull();
+    const police = fleet.vehicles.filter((v) => v.kind === "police");
+    expect(police.length).toBeGreaterThan(0);
+    for (const v of police) expect(v.runner).toBeNull();
   });
 });
 
@@ -454,9 +470,10 @@ describe("queues", () => {
 // --- Emergency vehicles: which streets, and when they flash ------------------
 
 describe("emergencyCars", () => {
-  it("picks EMERGENCY_CARS on distinct streets, deterministically from the seed", () => {
+  it("picks EMERGENCY_CARS + FIRE_TRUCKS on distinct streets, deterministically from the seed", () => {
     const a = emergencyCars(SEED);
-    expect(a).toHaveLength(EMERGENCY_CARS);
+    expect(a).toHaveLength(EMERGENCY_CARS + FIRE_TRUCKS);
+    expect(a.filter((c) => c.kind === "fire")).toHaveLength(FIRE_TRUCKS);
     expect(emergencyCars(SEED)).toEqual(a);
     expect(new Set(a.map((c) => c.laneId >> 1)).size).toBe(a.length);
     expect(emergencyCars(SEED + 1)).not.toEqual(a);

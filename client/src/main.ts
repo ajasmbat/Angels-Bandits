@@ -61,6 +61,7 @@ import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { SMAAPass } from "three/examples/jsm/postprocessing/SMAAPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { CityAmbience } from "./audio/ambience";
+import { Busker } from "./audio/busker";
 import { RadioQueue, RadioVoice } from "./audio/radio";
 import { GameAudio } from "./audio/sound";
 import { NEAR_MISS_RADIUS, closestApproach, spatialize } from "./audio/spatial";
@@ -116,10 +117,13 @@ import { GameSocket } from "./net/socket";
 import { Airliners } from "./render/airliners";
 import { Birds } from "./render/birds";
 import { CityRenderer } from "./render/city";
+import { PICKUP_TAXIS } from "./render/citylife";
+import { CityLife } from "./render/citylife-render";
 import { ConstructionSparks } from "./render/construction";
 import { DroneShowRenderer } from "./render/drones";
 import { FacadeDetailRenderer } from "./render/facade-detail";
 import { FacadeGarnishRenderer } from "./render/facade-garnish";
+import { FacadeLifeRenderer } from "./render/facade-life";
 import { Fireworks } from "./render/fireworks";
 import { installHeightFog } from "./render/fog";
 import { Fountains } from "./render/fountains";
@@ -127,6 +131,7 @@ import { Explosions, Sparks } from "./render/fx";
 import { GpuTimer } from "./render/gputimer";
 import { createGradePass } from "./render/grade";
 import { Headlights } from "./render/headlights";
+import { lookPasses } from "./render/lookup";
 import { MoverLights, Movers } from "./render/movers";
 import { NatureRenderer } from "./render/nature";
 import { Pedestrians } from "./render/pedestrians";
@@ -546,7 +551,8 @@ const signage = new Signage(city.cityBuildings, welcome.seed);
 scene.add(signage.group);
 // Cosmetic street traffic — pure function of the synced server clock, so
 // every client (late joiners included) sees identical cars. Zero netcode.
-const traffic = new Traffic(welcome.seed);
+// A1: plus the pickup taxis' slots (posed by CityLife below), same draw.
+const traffic = new Traffic(welcome.seed, PICKUP_TAXIS);
 scene.add(traffic.mesh);
 // L6 headlights: soft cones in the haze + warm pools on the asphalt, lit from
 // the cars Traffic placed this frame. Two additive draws for the whole city.
@@ -634,6 +640,14 @@ for (const b of city.cityBuildings) {
 }
 const pedestrians = new Pedestrians(welcome.seed);
 scene.add(pedestrians.mesh);
+// A1 "full of life": riders, hailers, crossers, groups, joggers, dogs, carts,
+// bus stops, performers, balcony and terrace people — ONE instanced draw —
+// and laundry, facade flags and pigeons — ONE baked draw. Pure functions of
+// (seed, server clock); see citylife.ts and facade-life.ts.
+const cityLife = new CityLife(city.cityBuildings, welcome.seed);
+scene.add(cityLife.mesh);
+const facadeLife = new FacadeLifeRenderer(city.cityBuildings, welcome.seed);
+scene.add(facadeLife.mesh);
 const steam = new Steam(buildingsByBlock, welcome.seed);
 scene.add(steam.points);
 const signals = new Signals(welcome.seed);
@@ -744,6 +758,9 @@ const ambience = new CityAmbience(
   welcome.seed,
   cityHoles(city.cityBuildings),
 );
+// A1: the nearest street performer's guitar, on the same city bus.
+const busker = new Busker(ambience);
+const buskerAt = { x: 0, y: 0, z: 0 };
 const hud = new Hud();
 const minimap = new Minimap(city.cityBuildings);
 const edgeMarkers = new EdgeMarkers();
@@ -1168,6 +1185,8 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   city.setQuality(tier);
   reactor.setQuality(tier);
   pedestrians.setQuality(tier);
+  cityLife.setQuality(tier); // A1
+  facadeLife.setQuality(tier); // A1
   // M3: steam, signals and construction sparks stream in the tier's radius.
   steam.setQuality(tier);
   signals.setQuality(tier);
@@ -1540,6 +1559,19 @@ declare global {
       };
       /** L2 QA: the city soundscape's per-layer gains and their inputs. */
       ambience: () => ReturnType<CityAmbience["debug"]>;
+      /** A1 QA: what the city-life tier drew and holds. */
+      cityLife: () => {
+        drawn: number;
+        statics: number;
+        riders: number;
+        taxis: { x: number; z: number; hazard: boolean }[];
+        facade: FacadeLifeRenderer["counts"];
+        facadeVisible: boolean;
+        nearPasses: number;
+        lookPasses: number;
+        busker: number;
+        near: ReturnType<CityLife["sampleNear"]>;
+      };
       /** QA-only: hold the camera at a canonical eye looking at `at`
        * (null restores the chase camera). */
       qaCamera: (
@@ -1814,6 +1846,22 @@ window.__ab = {
     log: radioLog.map((l) => ({ ...l })),
   }),
   ambience: () => ambience.debug(),
+  cityLife: () => ({
+    drawn: cityLife.count,
+    statics: cityLife.staticDrawn,
+    riders: cityLife.riders.riders.length,
+    taxis: cityLife.taxiPoses.map((t) => ({
+      x: t.x,
+      z: t.z,
+      hazard: t.hazard,
+    })),
+    facade: facadeLife.counts,
+    facadeVisible: facadeLife.mesh.visible,
+    nearPasses: reactor.nearPasses.length,
+    lookPasses: lookPasses.uniforms.uAbPassCount.value,
+    busker: busker.gain,
+    near: cityLife.sampleNear(chase.position, 60),
+  }),
   qaCamera: (view) => {
     qaView = view;
   },
@@ -2273,7 +2321,11 @@ const frame = (now: number): void => {
   // L1 reactive city: evaluate once on the latched clock, then hand the view
   // to traffic (responders + hazards), signals, pedestrians, searchlights.
   const cityReact = reactor.update(chase.position, qaReactAt ?? renderMs);
-  traffic.update(chase.position, renderMs, cityReact);
+  // A1: the passes the crowds look up at (and pigeons flutter from), fed to
+  // every figure shader once a frame; then the pickup taxis Traffic draws.
+  lookPasses.update(chase.position, reactor.nearPasses, renderMs);
+  cityLife.updateTaxis(renderMs);
+  traffic.update(chase.position, renderMs, cityReact, cityLife.taxiPoses);
   headlights.update(chase.position, traffic); // L6: after traffic.update
   // Every L2 system takes the SAME latched clock the crash check used.
   movers.update(chase.position, renderMs, moverLights);
@@ -2309,7 +2361,22 @@ const frame = (now: number): void => {
   // beat the gate reads a frozen camera altitude. That is correct — the view
   // is frozen too.
   const microK = microOn ? microGate(chase.position.y) : 0;
-  pedestrians.update(chase.position, renderMs, microK, reactor.lowPasses);
+  pedestrians.update(
+    chase.position,
+    renderMs,
+    microK,
+    reactor.lowPasses,
+    reactor.nearPasses,
+  );
+  // A1 city life: statics stream on block change, movers every frame.
+  cityLife.update(
+    chase.position,
+    renderMs,
+    microK,
+    reactor.nearPasses,
+    microOn,
+  );
+  facadeLife.update(renderMs ?? now, microOn);
   // Phase-only subsystems fall back to local time before the first snapshot
   // (the signage policy): a plume or a signal in the wrong part of its cycle
   // is invisible, where hiding every one of them until clock sync would not be.
@@ -2408,6 +2475,14 @@ const frame = (now: number): void => {
     serverTimeMs: renderMs,
     rain: rain.level, // L4 weather
   });
+  // A1: the nearest busker within earshot of the plane (silent if none).
+  busker.update(
+    flight.pos,
+    flight.yaw,
+    alive && cityLife.nearestPerformer(flight.pos, buskerAt) < 120
+      ? buskerAt
+      : null,
+  );
   // L5: the train's rumble from its nearest car, squealing on a curve.
   audio.setTrainRumble(train.rumbleAt, train.squeal, flight.pos, flight.yaw);
 

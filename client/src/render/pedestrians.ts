@@ -22,8 +22,25 @@ import type { Vec3 } from "@angels-bandits/common/world";
 import { wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import {
+  LOOK_GLSL_APPLY,
+  LOOK_GLSL_PARS,
+  LOOK_RADIUS,
+  type Look,
+  POINT_SHARE,
+  WATCH_SHARE,
+  lookAt,
+  lookPasses,
+  watchHold,
+  whoHash,
+} from "./lookup";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
-import { type LowPass, SCATTER_RADIUS, scatterShift } from "./reactions";
+import {
+  type LowPass,
+  type NearPass,
+  SCATTER_RADIUS,
+  scatterShift,
+} from "./reactions";
 import { blockHeat } from "./signage";
 import {
   BLOCK_WINDOW_RADIUS,
@@ -220,10 +237,11 @@ function blockNearPass(
   bx: number,
   bz: number,
   passes: readonly LowPass[],
+  radius = SCATTER_RADIUS,
 ): boolean {
   const cx = (bx + 0.5) * BLOCK_PITCH;
   const cz = (bz + 0.5) * BLOCK_PITCH;
-  const reach = BLOCK_PITCH / 2 + SCATTER_RADIUS;
+  const reach = BLOCK_PITCH / 2 + radius;
   for (const p of passes) {
     if (
       Math.abs(wrapDeltaAxis(cx, p.x)) <= reach &&
@@ -254,11 +272,33 @@ const PED_LAMP = 3.4;
 
 const VERTEX_PARS = /* glsl */ `
 attribute float aHead;
+attribute float aArm01;
+attribute float aWho;
 varying float vHead;
 varying vec2 vWorldXZ;
+${LOOK_GLSL_PARS}
+${LOOK_GLSL_APPLY}
+`;
+
+/** A1: watchers turn toward a close pass and lean back; pointers raise an
+ * arm (the arm part collapses to its shoulder otherwise). Shared maths with
+ * the A1 city life (lookup.ts). Computed once, in beginnormal. */
+const BEGIN_NORMAL = /* glsl */ `
+vec4 abL = vec4(0.0, 1.0, 0.0, 0.0);
+if (aWho < ${WATCH_SHARE.toFixed(3)} && uAbPassCount > 0.5) {
+  abL = abLook((modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz);
+}
+float abRaise = aWho < ${POINT_SHARE.toFixed(3)} ? abL.w : 0.0;
+if (aArm01 > 0.5) objectNormal = abTilt(objectNormal, -2.5 * abRaise);
+objectNormal = abApplyLook(objectNormal, abL.w, abL.xyz);
 `;
 
 const VERTEX_MAIN = /* glsl */ `
+if (aArm01 > 0.5) {
+  transformed = abTilt(transformed, -2.5 * abRaise) * step(0.02, abRaise);
+  transformed += vec3(0.21, 1.31, 0.03);
+}
+transformed = abApplyLook(transformed, abL.w, abL.xyz);
 vHead = aHead;
 vWorldXZ = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xz;
 `;
@@ -301,24 +341,38 @@ function pedestrianGeometry(): THREE.BufferGeometry {
   body.translate(0, BODY.height / 2, 0);
   const head = new THREE.BoxGeometry(HEAD, HEAD, HEAD);
   head.translate(0, BODY.height + HEAD / 2, 0);
+  // A1: a pointing arm, hanging from its shoulder pivot at the origin (the
+  // shader swings it up and moves it to the shoulder, or collapses it).
+  const arm = new THREE.BoxGeometry(0.09, 0.62, 0.09);
+  arm.translate(0, -0.31, 0);
   const bodyVerts = body.getAttribute("position").count;
-  const parts = [body, head];
+  const headVerts = head.getAttribute("position").count;
+  const parts = [body, head, arm];
   const merged = mergeGeometries(parts) ?? new THREE.BufferGeometry();
   for (const part of parts) part.dispose();
-  // aHead marks the head vertices so one material can tint two body parts.
+  // aHead marks the head vertices so one material can tint two body parts;
+  // aArm01 marks the arm.
   const count = merged.getAttribute("position").count;
   const head01 = new Float32Array(count);
-  for (let i = bodyVerts; i < count; i++) head01[i] = 1;
+  const arm01 = new Float32Array(count);
+  for (let i = bodyVerts; i < bodyVerts + headVerts; i++) head01[i] = 1;
+  for (let i = bodyVerts + headVerts; i < count; i++) arm01[i] = 1;
   merged.setAttribute("aHead", new THREE.BufferAttribute(head01, 1));
+  merged.setAttribute("aArm01", new THREE.BufferAttribute(arm01, 1));
   return merged;
 }
 
 function createPedestrianMaterial(): THREE.MeshLambertMaterial {
   const material = new THREE.MeshLambertMaterial({ color: 0xffffff });
-  material.customProgramCacheKey = () => "ab-pedestrian";
+  material.customProgramCacheKey = () => "ab-pedestrian-a1-look";
   material.onBeforeCompile = (shader) => {
+    lookPasses.attach(shader);
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", `#include <common>\n${VERTEX_PARS}`)
+      .replace(
+        "#include <beginnormal_vertex>",
+        `#include <beginnormal_vertex>\n${BEGIN_NORMAL}`,
+      )
       .replace(
         "#include <begin_vertex>",
         `#include <begin_vertex>\n${VERTEX_MAIN}`,
@@ -348,6 +402,9 @@ export class Pedestrians {
   private readonly color = new THREE.Color();
   private readonly image = { x: 0, y: 0, z: 0 };
   private drawn = 0;
+  /** A1: per-instance identity hash (who watches, who points). */
+  private readonly who: THREE.InstancedBufferAttribute;
+  private readonly look: Look = { weight: 0, age: -1 };
   /** O3 quality tier: share of the crowd kept. */
   private density = 1;
   /** M3 quality tier: block-window radius (capacity stays sized for the max). */
@@ -356,8 +413,15 @@ export class Pedestrians {
   constructor(seed: number) {
     this.seed = seed;
     const capacity = (2 * BLOCK_WINDOW_RADIUS + 1) ** 2 * PED_MAX;
+    const geometry = pedestrianGeometry();
+    this.who = new THREE.InstancedBufferAttribute(
+      new Float32Array(capacity).fill(1),
+      1,
+    );
+    this.who.setUsage(THREE.DynamicDrawUsage);
+    geometry.setAttribute("aWho", this.who);
     this.mesh = new THREE.InstancedMesh(
-      pedestrianGeometry(),
+      geometry,
       createPedestrianMaterial(),
       capacity,
     );
@@ -411,6 +475,8 @@ export class Pedestrians {
     serverTimeMs: number | null,
     gate: number,
     passes: readonly LowPass[] = [],
+    /** A1: near passes — watchers stop and look instead of running. */
+    near: readonly NearPass[] = [],
   ): void {
     if (serverTimeMs === null || gate <= 0) {
       this.mesh.visible = false;
@@ -427,16 +493,43 @@ export class Pedestrians {
     // Allocated in the constructor (every slot is coloured there once).
     const colors = (this.mesh.instanceColor as THREE.InstancedBufferAttribute)
       .array as Float32Array;
+    const whoArr = this.who.array as Float32Array;
     let n = 0;
     for (const { bx, bz } of blockWindow(cameraPos, this.radius)) {
       const specs = this.specsFor(bx, bz);
       // L1 scatter: only blocks a live pass can reach pay the per-walker test.
       const scatter = passes.length > 0 && blockNearPass(bx, bz, passes);
+      // A1: likewise for the look-up (a wider reach: any near pass).
+      const watchable =
+        near.length > 0 && blockNearPass(bx, bz, near, LOOK_RADIUS);
       for (let i = 0; i < specs.length; i++) {
         if (!microKeep(i, keep)) continue;
         const spec = specs[i] as PedestrianSpec;
+        const who = whoHash(spec.base);
+        whoArr[n] = who;
         pedestrianPoseInto(spec, t, this.pose);
-        if (scatter) this.scatter(spec, t, serverTimeMs, passes);
+        // A1: a watcher stops where it stands while it looks up (the shader
+        // turns it toward the plane), then catches back up; everyone else
+        // keeps the L1 scatter run.
+        if (watchable && who < WATCH_SHARE && spec.speed > 0) {
+          lookAt(
+            near,
+            this.pose.pos.x,
+            0,
+            this.pose.pos.z,
+            serverTimeMs,
+            this.look,
+          );
+          if (this.look.age >= 0) {
+            const hold = watchHold(this.look.age, spec.speed);
+            if (hold > 0) {
+              pedestrianPoseInto(spec, t, this.pose, -spec.dir * hold);
+              this.pose.bob = 0;
+            }
+          }
+        } else if (scatter) {
+          this.scatter(spec, t, serverTimeMs, passes);
+        }
         const p = nearestImageInto(this.image, cameraPos, this.pose.pos);
         // A yaw about +Y, a height scale and a translation, written straight
         // into the instance buffers: the same matrix compose() builds from
@@ -470,7 +563,10 @@ export class Pedestrians {
     }
     this.drawn = n;
     this.mesh.count = n;
-    uploadPrefix([this.mesh.instanceMatrix, this.mesh.instanceColor], n);
+    uploadPrefix(
+      [this.mesh.instanceMatrix, this.mesh.instanceColor, this.who],
+      n,
+    );
   }
 
   /** Re-pose a walker shifted along its ring away from nearby passes, facing

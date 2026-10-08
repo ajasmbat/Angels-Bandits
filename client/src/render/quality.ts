@@ -103,6 +103,11 @@ export interface QualityProfile {
   /** Fake window interiors (the per-pane parallax room raycast). Off = the
    * room's mean colour, the same value the distance fade already ends on. */
   windowInteriors: boolean;
+  /** A1 city life: share of the new figures kept (riders, crossers, groups,
+   * stations, balcony and terrace people). Instance counts only. */
+  cityLife: number;
+  /** A1 facade life: laundry lines, facade flags and banners, pigeons. */
+  facadeLife: boolean;
 }
 
 export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
@@ -126,6 +131,8 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     microRadius: 2,
     signAnimation: true,
     windowInteriors: true,
+    cityLife: 1,
+    facadeLife: true,
   },
   medium: {
     maxPixelRatio: 1.5,
@@ -147,6 +154,8 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     microRadius: 2,
     signAnimation: true,
     windowInteriors: true,
+    cityLife: 0.7,
+    facadeLife: true,
   },
   low: {
     maxPixelRatio: 1,
@@ -168,6 +177,8 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     microRadius: 2,
     signAnimation: true,
     windowInteriors: true,
+    cityLife: 0.45,
+    facadeLife: false,
   },
   mobile: {
     maxPixelRatio: 1,
@@ -189,6 +200,8 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     microRadius: 1,
     signAnimation: false,
     windowInteriors: false,
+    cityLife: 0.3,
+    facadeLife: false,
   },
 };
 
@@ -231,6 +244,22 @@ export const FEATURE_TIERS: readonly {
     low: "reduced",
     mobile: "reduced",
     note: "70 % / 40 % / 30 % of the crowd",
+  },
+  {
+    feature: "A1 city life — riders, crossers, groups, stations, balconies",
+    high: "full",
+    medium: "reduced",
+    low: "reduced",
+    mobile: "reduced",
+    note: "70 % / 45 % / 30 % of the figures; Mobile streams one block out",
+  },
+  {
+    feature: "A1 facade life — laundry, facade flags, pigeons",
+    high: "full",
+    medium: "full",
+    low: "off",
+    mobile: "off",
+    note: "not solid; one baked mesh hidden",
   },
   {
     feature: "L1 street life — steam, signals, sparks",

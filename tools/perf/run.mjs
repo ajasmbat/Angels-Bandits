@@ -361,11 +361,20 @@ async function joinGame(page, url) {
   // POSES depend on wall-clock timing, so they would smear every segment.
   // An empty room is the only reproducible room.
   await page.evaluate(() => window.__ab.setBots(0));
-  await page.waitForFunction(
-    () => window.__ab.combat().targets.length === 0,
-    null,
-    { timeout: 30_000 },
-  );
+  try {
+    await page.waitForFunction(
+      () => window.__ab.combat().targets.length === 0,
+      null,
+      { timeout: 30_000 },
+    );
+  } catch (err) {
+    const left = await page.evaluate(() => ({
+      targets: window.__ab.combat().targets.map((t) => t.id),
+      remotes: window.__ab.net().remotes,
+    }));
+    console.error("joinGame: room never emptied:", JSON.stringify(left));
+    throw err;
+  }
   return errors;
 }
 

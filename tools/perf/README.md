@@ -1148,7 +1148,16 @@ pass 1 of `--runs 3 --samples --res 0.75` gave 48 spikes over 7 segments:
 draining, 0.4–2.3 s), 7 counted as script (1 in plaza, 6 in the furball)
 that sit within a loaded box's descheduling noise; passes 2–3 could not join
 (the page boots slower than the server's 4 s liveness on a box this busy).
-The M3 is where this is decided.
+
+Re-run after merging H2, on a quiet 16-core runner, all three passes joined
+(`--runs 3 --samples --res 0.75 --trace`): the run's own spike table —
+frames over 4× their segment's p50 — reads **none, in any segment**, p99/p50
+1.06–1.25, and the traces show **0 spikes caused by GC** in 21 segment
+traces (GC 0–35 ms per segment in total). trace-spikes labels every
+SwiftShader frame (350–750 ms of software rasterising inside the rAF task)
+"script" against the short gaps between frames, so on this runner its
+per-interval split says nothing about JS; `joinGame` now prints who is left
+in the room when it times out. The M3 is where this is decided.
 
 ### Commands for the M3 (O5)
 

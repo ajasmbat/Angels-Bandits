@@ -24,6 +24,7 @@ import type { TrainLine } from "@angels-bandits/common/city/train";
 import { BLOCK_PITCH, WORLD_SIZE } from "@angels-bandits/common/constants";
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { LifeKind, blockStations } from "./citylife";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { type SteamVent, steamVentsForBlock } from "./steam";
 import {
@@ -55,32 +56,55 @@ export const parkedGate = (cameraY: number): number =>
   );
 
 /**
- * The live city's vetoes for the layout seam: every hole's corridor, the
- * train's ground-reaching boxes (its pillars) and each block's gutter vents.
- * Shared by the renderer and the tests, so both veto exactly the same.
+ * The live city's vetoes for the layout seam: every hole's corridor, every
+ * train line's ground-reaching boxes (pillars, station stairs and posts),
+ * each block's gutter vents, and A1's street stations (citylife.ts). Shared
+ * by the renderer and the tests, so both veto exactly the same.
  */
 export function buildStreetDetailContext(
   seed: number,
   buildingsByBlock: Map<number, Building[]>,
   holes: readonly HoleSpan[],
-  train: TrainLine | null,
+  trains: readonly TrainLine[],
 ): StreetDetailContext {
   const keepOut: { x: number; z: number; hx: number; hz: number }[] = [];
-  if (train) {
-    train.viaduct.forEach((b, i) => {
+  for (const line of trains) {
+    line.viaduct.forEach((b, i) => {
       if (b.y - b.hy > ITEM_MAX_HEIGHT + 1) return; // deck: far overhead
       keepOut.push({
         x: b.x,
         z: b.z,
-        hx: train.extents[2 * i] ?? b.hx,
-        hz: train.extents[2 * i + 1] ?? b.hz,
+        hx: line.extents[2 * i] ?? b.hx,
+        hz: line.extents[2 * i + 1] ?? b.hz,
       });
     });
   }
   const vents = new Map<number, { x: number; z: number }[]>();
+  const stations = new Map<
+    number,
+    { carts: { x: number; z: number }[]; crowds: { x: number; z: number }[] }
+  >();
   return {
     holes,
     keepOut,
+    stationsFor: (bx, bz) => {
+      const key = bx * 1000 + bz;
+      let st = stations.get(key);
+      if (!st) {
+        const s = blockStations(bx, bz, seed);
+        st = {
+          carts: s.figures
+            .filter((f) => f.kind === LifeKind.CART)
+            .map((f) => ({ x: f.x, z: f.z })),
+          crowds: [...s.busStops, ...s.performers].map((p) => ({
+            x: p.x,
+            z: p.z,
+          })),
+        };
+        stations.set(key, st);
+      }
+      return st;
+    },
     ventsFor: (bx, bz) => {
       const key = bx * 1000 + bz;
       let v = vents.get(key);
@@ -249,13 +273,14 @@ export class StreetFurniture {
       count: n,
       items: items.length,
       parked: parked.length,
-      carts: cartVents(items).map((c, i) => ({
+      carts: cartVents(bx, bz, this.ctx).map((c, i) => ({
         x: c.x,
         z: c.z,
         y: CART_STEAM.y,
         rise: CART_STEAM.rise,
         spread: CART_STEAM.spread,
-        phase: (c.variant * 7.13 + i * 0.37) % 1,
+        // Seeded by position (stable on every client), never by Math.random.
+        phase: (Math.abs(c.x * 0.137 + c.z * 0.311) + i * 0.37) % 1,
         roof: false,
         scale: CART_STEAM.scale,
       })),

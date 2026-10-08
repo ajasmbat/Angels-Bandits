@@ -1,6 +1,7 @@
 // G1 street-level detail: the pure layout seam (street-detail.ts) — the
 // seed-free curb plan, the seeded furniture and parked cars — against the
-// street contract and the live seed-42 city (its real holes, train and vents).
+// street contract and the live seed-42 city (its real holes, trains, vents
+// and A1's street stations).
 
 import {
   type Building,
@@ -18,10 +19,11 @@ import {
   isInIntersection,
   isInRoadway,
 } from "@angels-bandits/common/city/street";
-import { generateTrain } from "@angels-bandits/common/city/train";
+import { generateTrains } from "@angels-bandits/common/city/train";
 import { BLOCK_PITCH, CROSSWALK_DEPTH } from "@angels-bandits/common/constants";
 import { wrapDeltaAxis } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
+import { blockStations } from "../src/render/citylife";
 import {
   BIKE_LANE_OUT,
   CORNER_CLEAR,
@@ -67,7 +69,7 @@ import { VEHICLES } from "../src/render/traffic";
 const SEED = 42;
 const city = generateCity(SEED);
 const holes = cityHoles(city);
-const train = generateTrain(SEED, city);
+const trains = generateTrains(SEED, city);
 const byBlock = (() => {
   const map = new Map<number, Building[]>();
   for (const b of city) {
@@ -83,7 +85,7 @@ const ctx: StreetDetailContext = buildStreetDetailContext(
   SEED,
   byBlock,
   holes,
-  train,
+  trains,
 );
 
 const blocks: [number, number][] = [];
@@ -222,19 +224,51 @@ describe("streetFurnitureFor", () => {
       "bollards",
       "planter",
       "booth",
-      "cart",
     ]) {
       expect(kinds.has(k as StreetItem["kind"]), k).toBe(true);
     }
   });
 
   it("caps every block inside the pure function", () => {
-    for (const items of furniture.values()) {
+    for (const [key, items] of furniture) {
+      const [bx, bz] = key.split(",").map(Number) as [number, number];
       expect(items.length).toBeLessThanOrEqual(MAX_FURNITURE_PER_BLOCK);
-      expect(cartVents(items).length).toBeLessThanOrEqual(
+      expect(cartVents(bx, bz, ctx).length).toBeLessThanOrEqual(
         MAX_CART_VENTS_PER_BLOCK,
       );
     }
+  });
+
+  it("puts A1's bus-stop waiters under a G1 shelter, and steams A1's carts", () => {
+    let stops = 0;
+    let steamed = 0;
+    const shelters = allItems.filter((it) => it.kind === "shelter");
+    for (const [bx, bz] of blocks) {
+      for (const stop of blockStations(bx, bz, SEED).busStops) {
+        stops++;
+        const near = shelters.some(
+          (sh) =>
+            Math.abs(wrapDeltaAxis(sh.x, stop.x)) < 0.01 &&
+            Math.abs(wrapDeltaAxis(sh.z, stop.z)) < 0.01,
+        );
+        // A stop whose shelter a hole corridor, a pillar or a gutter steam
+        // vent vetoed is the one allowed exception (paint and waiters, no
+        // roof).
+        if (!near) {
+          const f = { x: stop.x, z: stop.z, hx: 2.4, hz: 2.4 };
+          const vetoed =
+            holes.some((h) => overlaps(f, holeCorridor(h))) ||
+            ctx.keepOut.some((k) => overlaps(f, k, 1)) ||
+            ctx
+              .ventsFor(bx, bz)
+              .some((v) => overlaps(f, { x: v.x, z: v.z, hx: 2, hz: 2 }));
+          expect(vetoed, `stop at ${stop.x},${stop.z}`).toBe(true);
+        }
+      }
+      steamed += cartVents(bx, bz, ctx).length;
+    }
+    expect(stops).toBeGreaterThan(20);
+    expect(steamed).toBeGreaterThan(20);
   });
 
   it("stands every box on the furniture strip, ≤ 3 m, never on a roadway", () => {
@@ -281,7 +315,7 @@ describe("streetFurnitureFor", () => {
     expect(bad).toEqual([]);
   });
 
-  it("never overlaps another item, a lamp, a tree pit or a gutter vent", () => {
+  it("never overlaps another item, a lamp, a tree pit, a gutter vent or an A1 cart", () => {
     const bad: string[] = [];
     for (const [key, items] of furniture) {
       const [bx, bz] = key.split(",").map(Number) as [number, number];
@@ -325,6 +359,10 @@ describe("streetFurnitureFor", () => {
       }
       for (const v of ctx.ventsFor(bx, bz)) {
         fixed.push({ x: v.x, z: v.z, hx: 0.6, hz: 0.6 });
+      }
+      // A1's carts (with the vendor beside them).
+      for (const c of ctx.stationsFor(bx, bz).carts) {
+        fixed.push({ x: c.x, z: c.z, hx: 1.2, hz: 1.2 });
       }
       for (const list of fps) {
         for (const a of list) {
@@ -439,7 +477,7 @@ describe("the live city's vetoes", () => {
   });
 
   it("stays clear of the train's pillars", () => {
-    expect(train).not.toBeNull();
+    expect(trains.length).toBeGreaterThan(0);
     expect(ctx.keepOut.length).toBeGreaterThan(0);
     const bad: string[] = [];
     for (const k of ctx.keepOut) {

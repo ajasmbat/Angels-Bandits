@@ -614,6 +614,9 @@ Two rules every tier obeys:
 | L4 rain streaks | full | 50 % | 35 % (haze unchanged) | 25 % |
 | L4 wet streets, puddles | full | full | full (uniforms) | full |
 | L5 train + viaduct | full | full | full (solid) | full |
+| T2 stations, cars, signs, doors | full | full | full (solid; shader skin) | full |
+| T2 platform people | full | full | off | off |
+| T2 train sparks + lights | full | full | sparks 50 %, lamps ≤ 500 m | sparks off, lamps ≤ 500 m |
 | L6 traffic | full | full | full (feeds audio and reactions) | full |
 | L6 headlight cones | full | full | off (ground pools stay) | off |
 | L7 signage animation | full | full | full (a uniform clock) | off: each sign's static art (uniform guard) |

@@ -19,6 +19,7 @@ import {
 } from "@angels-bandits/common/city/movers";
 import { natureFor } from "@angels-bandits/common/city/nature";
 import { setNewsTarget } from "@angels-bandits/common/city/newsheli";
+import { bridgeSpans } from "@angels-bandits/common/city/river";
 import { buildNatureIndex } from "@angels-bandits/common/collision";
 import {
   BLOCK_PITCH,
@@ -60,10 +61,12 @@ import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { SMAAPass } from "three/examples/jsm/postprocessing/SMAAPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { CityAmbience } from "./audio/ambience";
+import { Busker } from "./audio/busker";
 import { RadioQueue, RadioVoice } from "./audio/radio";
 import { GameAudio } from "./audio/sound";
 import { NEAR_MISS_RADIUS, closestApproach, spatialize } from "./audio/spatial";
 import { ThunderSchedule } from "./audio/thunder";
+import { TrainAudio } from "./audio/train-audio";
 import { BoostKey } from "./game/boost-key";
 import { Bullets } from "./game/bullets";
 import {
@@ -82,6 +85,13 @@ import {
 } from "./game/callouts";
 import { ChaseCamera } from "./game/camera";
 import { detectCrash, touchesSolid } from "./game/collision";
+import {
+  type CornerWorld,
+  cornerCapInput,
+  cornerSpeed,
+  holeCorridors,
+  stepCornerCap,
+} from "./game/corner-speed";
 import { FlightInputSource } from "./game/flight-input";
 import { createFreeLook, shapeInput, stepFreeLook } from "./game/freelook";
 import { Guns } from "./game/guns";
@@ -108,10 +118,13 @@ import { GameSocket } from "./net/socket";
 import { Airliners } from "./render/airliners";
 import { Birds } from "./render/birds";
 import { CityRenderer } from "./render/city";
+import { PICKUP_TAXIS } from "./render/citylife";
+import { CityLife } from "./render/citylife-render";
 import { ConstructionSparks } from "./render/construction";
 import { DroneShowRenderer } from "./render/drones";
 import { FacadeDetailRenderer } from "./render/facade-detail";
 import { FacadeGarnishRenderer } from "./render/facade-garnish";
+import { FacadeLifeRenderer } from "./render/facade-life";
 import { Fireworks } from "./render/fireworks";
 import { installHeightFog } from "./render/fog";
 import { Fountains } from "./render/fountains";
@@ -119,6 +132,7 @@ import { Explosions, Sparks } from "./render/fx";
 import { GpuTimer } from "./render/gputimer";
 import { createGradePass } from "./render/grade";
 import { Headlights } from "./render/headlights";
+import { lookPasses } from "./render/lookup";
 import { MoverLights, Movers } from "./render/movers";
 import { NatureRenderer } from "./render/nature";
 import { Pedestrians } from "./render/pedestrians";
@@ -543,7 +557,8 @@ const signage = new Signage(city.cityBuildings, welcome.seed);
 scene.add(signage.group);
 // Cosmetic street traffic — pure function of the synced server clock, so
 // every client (late joiners included) sees identical cars. Zero netcode.
-const traffic = new Traffic(welcome.seed);
+// A1: plus the pickup taxis' slots (posed by CityLife below), same draw.
+const traffic = new Traffic(welcome.seed, PICKUP_TAXIS);
 scene.add(traffic.mesh);
 // L6 headlights: soft cones in the haze + warm pools on the asphalt, lit from
 // the cars Traffic placed this frame. Two additive draws for the whole city.
@@ -572,17 +587,32 @@ scene.add(movers.rig, movers.hulls, movers.rotors);
 // L2 spectacle inside its draw-call budget.
 const moverLights = new MoverLights();
 scene.add(moverLights.points);
-// L5 elevated train: the viaduct and its lit cars, from the same movers field
-// the crash check and the bots use (one InstancedMesh; lamps and curve sparks
-// go into moverLights). The viaduct is static and drawn from frame one; the
-// cars wait for the server clock like every mover.
-const train = new TrainRenderer(moverField.train ?? null);
+// L5/T2 elevated trains: every line's viaduct, stations and trains on both
+// tracks, from the same movers field the crash check and the bots use (one
+// InstancedMesh; lamps, canopy lights and sparks go into moverLights). The
+// viaducts are static and drawn from frame one; the cars wait for the server
+// clock like every mover.
+const train = new TrainRenderer(moverField.trains ?? []);
 scene.add(train.mesh);
+/** T2: planes that can draw a train's horn this frame (yours + remotes). */
+const hornPlanes: Vec3[] = [];
 // N1 nature: night parks, landmark forecourts, street trees, hoardings. One
 // pure seam feeds this renderer AND the crash check, so a tree is solid
 // exactly where it is drawn (street trees excepted — lamp-pole height).
 const nature = natureFor(welcome.seed, city.cityBuildings);
 const natureIndex = buildNatureIndex(nature);
+// F5 corner speed manager: the same solids the crash check reads, plus every
+// hole's clear corridor (H1 holes and the river underpasses), built once.
+const cornerWorld: CornerWorld = {
+  buildings: city.cityBuildings,
+  index: city.cityIndex,
+  nature: natureIndex,
+  movers: moverField,
+  corridors: holeCorridors([
+    ...cityHoles(city.cityBuildings),
+    ...bridgeSpans(),
+  ]),
+};
 const natureRenderer = new NatureRenderer(nature);
 scene.add(natureRenderer.group);
 // L11 river: embankment walls, bridges, the reflecting water and the boats.
@@ -619,6 +649,14 @@ for (const b of city.cityBuildings) {
 }
 const pedestrians = new Pedestrians(welcome.seed);
 scene.add(pedestrians.mesh);
+// A1 "full of life": riders, hailers, crossers, groups, joggers, dogs, carts,
+// bus stops, performers, balcony and terrace people — ONE instanced draw —
+// and laundry, facade flags and pigeons — ONE baked draw. Pure functions of
+// (seed, server clock); see citylife.ts and facade-life.ts.
+const cityLife = new CityLife(city.cityBuildings, welcome.seed);
+scene.add(cityLife.mesh);
+const facadeLife = new FacadeLifeRenderer(city.cityBuildings, welcome.seed);
+scene.add(facadeLife.mesh);
 // G1 street-level detail: benches, bins, hydrants, shelters, racks, booths,
 // carts and parked cars in ONE instanced rig (+1 draw call); the fine road
 // and sidewalk paint lives in the ground shader (street-paint.ts). All of it
@@ -630,7 +668,7 @@ const streetFurniture = new StreetFurniture(
     welcome.seed,
     buildingsByBlock,
     cityHoles(city.cityBuildings),
-    moverField.train ?? null,
+    moverField.trains ?? [],
   ),
 );
 scene.add(streetFurniture.mesh);
@@ -750,6 +788,11 @@ const ambience = new CityAmbience(
   welcome.seed,
   cityHoles(city.cityBuildings),
 );
+// T2: wheel clatter over the rail joints and the horn, on the same mix bus.
+const trainAudio = new TrainAudio(audio);
+// A1: the nearest street performer's guitar, on the same city bus.
+const busker = new Busker(ambience);
+const buskerAt = { x: 0, y: 0, z: 0 };
 const hud = new Hud();
 const minimap = new Minimap(city.cityBuildings);
 const edgeMarkers = new EdgeMarkers();
@@ -877,13 +920,12 @@ let flight: FlightState = createFlightState(
   welcome.spawn.pos,
   welcome.spawn.yaw,
 );
-flight = {
-  ...flight,
-  speed: welcome.spawn.speed,
-  targetSpeed: welcome.spawn.speed,
-};
+// Server's spawn airspeed; the throttle stays FULL (F5, createFlightState).
+flight = { ...flight, speed: welcome.spawn.speed };
 chase.snapTo(flight);
 
+/** F5: the corner manager's rate-limited speed ceiling, m/s (MAX = none). */
+let cornerCap = MAX_SPEED;
 let alive = true;
 let killCamTargetId: string | null = null;
 // Server-said combat state about self (snapshots), kept for HUD + QA.
@@ -932,7 +974,8 @@ function respawnSelf(spawn: SpawnState): void {
   planeTrails.clear(socket.selfId); // respawn teleports — no streak
   interruptQuality(); // O3: a transient
   flight = createFlightState(spawn.pos, spawn.yaw);
-  flight = { ...flight, speed: spawn.speed, targetSpeed: spawn.speed };
+  flight = { ...flight, speed: spawn.speed }; // throttle stays FULL (F5)
+  cornerCap = MAX_SPEED; // a fresh plane starts unbraked
   chase.snapTo(flight);
   instructor = createInstructor();
   alive = true;
@@ -1174,6 +1217,8 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   city.setQuality(tier);
   reactor.setQuality(tier);
   pedestrians.setQuality(tier);
+  cityLife.setQuality(tier); // A1
+  facadeLife.setQuality(tier); // A1
   // M3: steam, signals and construction sparks stream in the tier's radius.
   steam.setQuality(tier);
   streetFurniture.setQuality(tier); // G1
@@ -1188,6 +1233,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   birds.setQuality(tier);
   airliners.setQuality(tier);
   facadeDetail.setQuality(tier);
+  train.setQuality(tier); // T2: platform people, sparks, light range
   applyPostQuality();
   resLimits = qualityLimits(window.devicePixelRatio, tier, thermal.level);
   if (resAuto) {
@@ -1453,6 +1499,11 @@ declare global {
       ) => ReturnType<Signals["sample"]>;
       movers: (at?: number | null) => ReturnType<Movers["debug"]>;
       train: (at?: number | null) => ReturnType<TrainRenderer["debug"]>;
+      /** T2 QA: the next time two trains pass each other on a line. */
+      trainMeeting: (
+        line: number,
+        fromMs?: number,
+      ) => ReturnType<TrainRenderer["meeting"]>;
       fireworks: (at?: number | null) => ReturnType<Fireworks["debug"]>;
       windowClock: (sec: number | null) => void;
       /** L9 QA: flock centres at the render clock, and which are scattered. */
@@ -1553,6 +1604,19 @@ declare global {
       };
       /** L2 QA: the city soundscape's per-layer gains and their inputs. */
       ambience: () => ReturnType<CityAmbience["debug"]>;
+      /** A1 QA: what the city-life tier drew and holds. */
+      cityLife: () => {
+        drawn: number;
+        statics: number;
+        riders: number;
+        taxis: { x: number; z: number; hazard: boolean }[];
+        facade: FacadeLifeRenderer["counts"];
+        facadeVisible: boolean;
+        nearPasses: number;
+        lookPasses: number;
+        busker: number;
+        near: ReturnType<CityLife["sampleNear"]>;
+      };
       /** QA-only: hold the camera at a canonical eye looking at `at`
        * (null restores the chase camera). */
       qaCamera: (
@@ -1733,6 +1797,8 @@ window.__ab = {
   movers: (at) => movers.debug(at === undefined ? worldTime() : at),
   // L5 QA: the route, the cars' poses at a server time and the drawn read-back.
   train: (at) => train.debug(at === undefined ? worldTime() : at),
+  trainMeeting: (line, fromMs) =>
+    train.meeting(line, fromMs ?? worldTime() ?? 0),
   fireworks: (at) => fireworks.debug(at === undefined ? worldTime() : at),
   // L3 QA: pin the living-windows clock (live seconds) for t / t+60 s
   // captures; null follows the server clock again.
@@ -1835,6 +1901,22 @@ window.__ab = {
     log: radioLog.map((l) => ({ ...l })),
   }),
   ambience: () => ambience.debug(),
+  cityLife: () => ({
+    drawn: cityLife.count,
+    statics: cityLife.staticDrawn,
+    riders: cityLife.riders.riders.length,
+    taxis: cityLife.taxiPoses.map((t) => ({
+      x: t.x,
+      z: t.z,
+      hazard: t.hazard,
+    })),
+    facade: facadeLife.counts,
+    facadeVisible: facadeLife.mesh.visible,
+    nearPasses: reactor.nearPasses.length,
+    lookPasses: lookPasses.uniforms.uAbPassCount.value,
+    busker: busker.gain,
+    near: cityLife.sampleNear(chase.position, 60),
+  }),
   qaCamera: (view) => {
     qaView = view;
   },
@@ -2074,7 +2156,20 @@ const frame = (now: number): void => {
       aimConverged = angleBetween(view.aimDir, view.pipperDir) < CONVERGED_RAD;
       aimFovPrev = aimFov;
     }
-    const shaped = { ...shapeInput(command, { steer }), boost: boost.active };
+    // F5 corner speed manager: silently cap the commanded speed so the
+    // turn the pilot is committing to (or the wall ahead) is makeable. Intent
+    // is the turn command before free-look/zoom shaping; the clock is the one
+    // the movers are drawn (and crash-checked) at.
+    cornerCap = stepCornerCap(
+      cornerCap,
+      cornerSpeed(flight, cornerWorld, command.turn, renderMs),
+      dt,
+    );
+    const shaped = {
+      ...shapeInput(command, { steer }),
+      boost: boost.active,
+      cornerCap: cornerCapInput(cornerCap),
+    };
     flight = stepFlight(flight, shaped, dt);
     // Own control surfaces follow what the stick is commanding (F3).
     ownControls = inputControls(shaped, flight);
@@ -2140,7 +2235,7 @@ const frame = (now: number): void => {
     );
     plane.rotation.set(flight.pitch, flight.yaw, flight.roll, "YXZ");
     // Prop speed tracks the commanded throttle (same factor as remotes').
-    spinPropeller(plane, dt * flight.targetSpeed * 0.7);
+    spinPropeller(plane, dt * Math.min(flight.targetSpeed, cornerCap) * 0.7);
     animatePlane(plane, ownControls, flight.speed, selfHp, dt);
     // Own aviation lights + wingtip trails (strobe on the synced clock so
     // every client sees this plane blink at the same instant).
@@ -2281,11 +2376,19 @@ const frame = (now: number): void => {
   // L1 reactive city: evaluate once on the latched clock, then hand the view
   // to traffic (responders + hazards), signals, pedestrians, searchlights.
   const cityReact = reactor.update(chase.position, qaReactAt ?? renderMs);
-  traffic.update(chase.position, renderMs, cityReact);
+  // A1: the passes the crowds look up at (and pigeons flutter from), fed to
+  // every figure shader once a frame; then the pickup taxis Traffic draws.
+  lookPasses.update(chase.position, reactor.nearPasses, renderMs);
+  cityLife.updateTaxis(renderMs);
+  traffic.update(chase.position, renderMs, cityReact, cityLife.taxiPoses);
   headlights.update(chase.position, traffic); // L6: after traffic.update
   // Every L2 system takes the SAME latched clock the crash check used.
   movers.update(chase.position, renderMs, moverLights);
-  train.update(chase.position, renderMs, moverLights); // L5, same latched clock
+  // L5/T2, same latched clock; any plane passing close draws a horn.
+  hornPlanes.length = 0;
+  if (alive) hornPlanes.push(flight.pos);
+  for (const target of targets) hornPlanes.push(target.pos);
+  train.update(chase.position, renderMs, moverLights, hornPlanes);
   fireworks.update(chase.position, renderMs, moverLights);
   // After movers.update: the helicopters' belly spots are this frame's, and
   // the lamp heads land in the same point cloud before commit().
@@ -2317,7 +2420,22 @@ const frame = (now: number): void => {
   // beat the gate reads a frozen camera altitude. That is correct — the view
   // is frozen too.
   const microK = microOn ? microGate(chase.position.y) : 0;
-  pedestrians.update(chase.position, renderMs, microK, reactor.lowPasses);
+  pedestrians.update(
+    chase.position,
+    renderMs,
+    microK,
+    reactor.lowPasses,
+    reactor.nearPasses,
+  );
+  // A1 city life: statics stream on block change, movers every frame.
+  cityLife.update(
+    chase.position,
+    renderMs,
+    microK,
+    reactor.nearPasses,
+    microOn,
+  );
+  facadeLife.update(renderMs ?? now, microOn);
   // Phase-only subsystems fall back to local time before the first snapshot
   // (the signage policy): a plume or a signal in the wrong part of its cycle
   // is invisible, where hiding every one of them until clock sync would not be.
@@ -2399,7 +2517,9 @@ const frame = (now: number): void => {
   // 0 at ≤ MAX_SPEED, 1 at full boost speed: drives the engine pitch rise and
   // the FOV kick, and eases out with the post-boost tail on its own.
   const overspeed = alive ? overspeedOf(flight.speed) : 0;
-  audio.setEngine(flight.targetSpeed, alive, overspeed);
+  // The engine note follows the EFFECTIVE command — throttle under the F5
+  // corner cap — the manager's only cue, and an audio one.
+  audio.setEngine(Math.min(flight.targetSpeed, cornerCap), alive, overspeed);
   audio.syncRemotes(contacts, flight.pos, flight.yaw);
   // In-cloud static bed: quiet crackle ramping in over the deck's first
   // 60 m. The only audio cue for the hidden ceiling — no HUD, by design.
@@ -2417,8 +2537,31 @@ const frame = (now: number): void => {
     serverTimeMs: renderMs,
     rain: rain.level, // L4 weather
   });
-  // L5: the train's rumble from its nearest car, squealing on a curve.
-  audio.setTrainRumble(train.rumbleAt, train.squeal, flight.pos, flight.yaw);
+  // A1: the nearest busker within earshot of the plane (silent if none).
+  busker.update(
+    flight.pos,
+    flight.yaw,
+    alive && cityLife.nearestPerformer(flight.pos, buskerAt) < 120
+      ? buskerAt
+      : null,
+  );
+  // L5/T2: the rumble from the nearest car (quieter standing at a station),
+  // squealing on a curve, clattering over the joints, and the horn.
+  audio.setTrainRumble(
+    train.sound.at,
+    train.sound.squeal,
+    flight.pos,
+    flight.yaw,
+    train.sound.speed01,
+  );
+  trainAudio.update({
+    listener: flight.pos,
+    yaw: flight.yaw,
+    at: train.sound.at,
+    speed: train.sound.speed,
+    horn: train.sound.horn,
+    alive,
+  });
 
   // FOV must land BEFORE the render: the lead reticle and edge markers below
   // read camera.projectionMatrix directly, so writing it after would project

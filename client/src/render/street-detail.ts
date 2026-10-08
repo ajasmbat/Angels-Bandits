@@ -56,6 +56,7 @@ import {
   LAMP_STATIONS_MINUS,
   LAMP_STATIONS_PLUS,
   LANE_CENTERS,
+  LOT_LINE,
 } from "@angels-bandits/common/city/street";
 import {
   BLOCK_PITCH,
@@ -107,6 +108,10 @@ const LAMP_CLEAR = 0.7;
 const PIT_CLEAR = 1.1;
 /** Clearance around a gutter steam vent (steam.ts), meters along. */
 const VENT_CLEAR = 1.4;
+/** Clearance around an A1 cart (cart + vendor) and an A1 crowd (bus-stop
+ * waiters, a performer's audience), meters along. */
+const CART_CLEAR = 2.0;
+const CROWD_CLEAR = 3.4;
 /** Minimum gap between two furniture items, meters. */
 const ITEM_GAP = 0.6;
 
@@ -185,11 +190,13 @@ export const sideIndex = (s: StreetSide): number =>
 
 // --- 1. The seed-free curb plan ----------------------------------------------
 
-/** Shelter centres a bus stop may use, per side row: chosen where a 4.8 m
- * shelter clears both lamps and tree pits (asserted by the test). */
+/** Shelter centres a bus stop may use, per side row: two of A1's street
+ * station slots (citylife.ts STATIONS_PLUS / STATIONS_MINUS), so the stop
+ * citylife fills with waiters is always one of these shelters — and each
+ * clears both lamps and tree pits (asserted by the test). */
 const BUS_STATIONS: Readonly<Record<1 | -1, readonly [number, number]>> = {
-  1: [44, 118],
-  [-1]: [106, 144],
+  1: [44, 119],
+  [-1]: [107, 145],
 };
 /** Bus stop zone (no parking, BUS STOP paint) around the shelter, meters
  * before (upstream) and after it. A bus is 11 m. */
@@ -247,6 +254,20 @@ export function curbPlanFor(s: StreetSide): CurbPlan {
     bus: bus ?? null,
     hydrant: HYDRANT_STATION[s.side],
   };
+}
+
+/** The street side a sidewalk run belongs to, from its start corner and
+ * its inward normal (toward the block) — for callers that walk a block's
+ * sides their own way (citylife.ts). Wraps the line and segment. */
+export function sideAt(
+  axis: "x" | "z",
+  x0: number,
+  z0: number,
+  inward: 1 | -1,
+): StreetSide {
+  const line = Math.round((axis === "z" ? x0 : z0) / BLOCK_PITCH);
+  const seg = Math.floor((axis === "z" ? z0 : x0) / BLOCK_PITCH);
+  return { axis, line: wrapGrid(line), seg: wrapGrid(seg), side: inward };
 }
 
 /** True when street `line` on travel axis `axis` carries bike lanes (both
@@ -341,6 +362,8 @@ function g1Stream(seed: number, bx: number, bz: number, tag: number) {
  * (streetlife microKeep): drop rank ≥ k and the survivors stay evenly spread. */
 const rankOf = (i: number): number => (i * 0.618_033_988_749_894_9) % 1;
 
+/** Food carts are A1's (citylife.ts, with vendor and queue); G1 only gives
+ * them steam (cartVents) and keeps its furniture clear of them. */
 export type FurnitureKind =
   | "bench"
   | "bin"
@@ -350,8 +373,7 @@ export type FurnitureKind =
   | "bikerack"
   | "bollards"
   | "planter"
-  | "booth"
-  | "cart";
+  | "booth";
 
 /** Footprint along the street and across it (m), plus where its centre sits
  * off the centreline. Every footprint stays inside [STRIP_IN, STRIP_OUT]. */
@@ -370,7 +392,6 @@ const SPECS: Readonly<Record<FurnitureKind, ItemSpec>> = {
   bollards: { along: 4.6, across: 0.3, off: 15.45 },
   planter: { along: 1.3, across: 1.0, off: 15.95 },
   booth: { along: 1.05, across: 1.05, off: 15.95 },
-  cart: { along: 2.3, across: 1.1, off: 15.95 },
 };
 
 /** Random-fill kinds and their weights, by the owner block's ground kind:
@@ -386,7 +407,6 @@ const FILL: Readonly<
     ["bikerack", 2],
     ["planter", 1.5],
     ["booth", 1],
-    ["cart", 0.8],
     ["bollards", 0.8],
   ],
   open: [
@@ -394,7 +414,6 @@ const FILL: Readonly<
     ["bin", 2.5],
     ["planter", 3],
     ["bollards", 2],
-    ["cart", 1],
     ["bikerack", 1],
   ],
 };
@@ -437,6 +456,16 @@ export interface StreetDetailContext {
   keepOut: readonly Footprint[];
   /** The block's gutter vents (steam.ts street vents), canonical. */
   ventsFor: (bx: number, bz: number) => readonly { x: number; z: number }[];
+  /** A1's street stations on the block (citylife.ts blockStations): its
+   * food carts (steamed by G1), and the bus-stop waiters and performers
+   * whose crowds the furniture stays clear of. */
+  stationsFor: (
+    bx: number,
+    bz: number,
+  ) => {
+    carts: readonly { x: number; z: number }[];
+    crowds: readonly { x: number; z: number }[];
+  };
 }
 
 /** Clearance around keep-out footprints, meters. */
@@ -496,22 +525,35 @@ function itemFootprint(
 function fixedObstacles(
   s: StreetSide,
   vents: readonly { x: number; z: number }[],
+  stations: ReturnType<StreetDetailContext["stationsFor"]>,
+  crowds: boolean,
 ): [number, number][] {
   const out: [number, number][] = [];
-  for (const a of lampStations(s.side))
-    out.push([a - LAMP_CLEAR, a + LAMP_CLEAR]);
-  for (const a of treePits(s.side)) out.push([a - PIT_CLEAR, a + PIT_CLEAR]);
-  // Gutter vents on this side: on the side's ring line, measured along it.
+  if (!crowds) {
+    for (const a of lampStations(s.side))
+      out.push([a - LAMP_CLEAR, a + LAMP_CLEAR]);
+    for (const a of treePits(s.side)) out.push([a - PIT_CLEAR, a + PIT_CLEAR]);
+  }
+  // Points standing on this side's pavement (curb to lot line), measured
+  // along it: gutter vents, A1's carts and crowds.
   const lineCoord = s.line * BLOCK_PITCH;
   const segStart = s.seg * BLOCK_PITCH;
-  for (const v of vents) {
-    const across = s.axis === "z" ? v.x : v.z;
-    const alongW = s.axis === "z" ? v.z : v.x;
+  const along = (p: { x: number; z: number }, clear: number) => {
+    const across = s.axis === "z" ? p.x : p.z;
+    const alongW = s.axis === "z" ? p.z : p.x;
     const off = wrapDeltaAxis(lineCoord, across) * s.side;
-    if (off < CURB_LINE || off > STRIP_OUT + 1) continue;
+    if (off < CURB_LINE || off > LOT_LINE + 0.5) return;
     const a = wrapDeltaAxis(segStart, alongW);
-    if (a < -VENT_CLEAR || a > BLOCK_PITCH + VENT_CLEAR) continue;
-    out.push([a - VENT_CLEAR, a + VENT_CLEAR]);
+    if (a < -clear || a > BLOCK_PITCH + clear) return;
+    out.push([a - clear, a + clear]);
+  };
+  if (crowds) {
+    // Bus-stop waiters and audiences: only the seeded fill avoids them — a
+    // stop's own shelter stands right where its waiters do.
+    for (const c of stations.crowds) along(c, CROWD_CLEAR);
+  } else {
+    for (const v of vents) along(v, VENT_CLEAR);
+    for (const c of stations.carts) along(c, CART_CLEAR);
   }
   return out;
 }
@@ -535,6 +577,7 @@ export function streetFurnitureFor(
   const rand = g1Stream(seed, bx, bz, TAG_FURNITURE);
   const corridors = corridorsOf(ctx.holes);
   const vents = ctx.ventsFor(bx, bz);
+  const stations = ctx.stationsFor(bx, bz);
   const kind = blockGroundKind(bx, bz);
   const open =
     kind === GROUND_PARK || kind === GROUND_FORECOURT || kind === GROUND_RIVER;
@@ -545,7 +588,7 @@ export function streetFurnitureFor(
 
   for (const s of blockSides(bx, bz)) {
     const plan = curbPlanFor(s);
-    const taken: [number, number][] = fixedObstacles(s, vents);
+    const taken: [number, number][] = fixedObstacles(s, vents, stations, false);
     const facing = s.side; // the facade is further from the centreline
     const place = (
       k: FurnitureKind,
@@ -581,6 +624,7 @@ export function streetFurnitureFor(
     // A construction site's sidewalk belongs to its hoarding.
     if (site) continue;
     if (plan.bus !== null) place("shelter", plan.bus, vShelter);
+    for (const iv of fixedObstacles(s, vents, stations, true)) taken.push(iv);
     // Seeded fill: 4 draws per step, always.
     let a = CORNER_CLEAR;
     while (a < BLOCK_PITCH - CORNER_CLEAR) {
@@ -611,12 +655,18 @@ export function streetFurnitureFor(
   return capped;
 }
 
-/** Food-cart steam sources on a block (≤ MAX_CART_VENTS_PER_BLOCK, in item
- * order) — steam.ts draws them in its own Points cloud. */
-export function cartVents(items: readonly StreetItem[]): StreetItem[] {
-  return items
-    .filter((it) => it.kind === "cart")
-    .slice(0, MAX_CART_VENTS_PER_BLOCK);
+/** Food-cart steam sources on a block: A1's carts in citylife's own stable
+ * order, capped at MAX_CART_VENTS_PER_BLOCK here (the pure side), so every
+ * client steams the same carts. */
+export function cartVents(
+  bx: number,
+  bz: number,
+  ctx: StreetDetailContext,
+): { x: number; z: number }[] {
+  return ctx
+    .stationsFor(bx, bz)
+    .carts.slice(0, MAX_CART_VENTS_PER_BLOCK)
+    .map((c) => ({ x: c.x, z: c.z }));
 }
 
 // --- Parked vehicles --------------------------------------------------------
@@ -828,12 +878,11 @@ export interface DetailBox {
   rank: number;
 }
 
-/** Lit surfaces (ad panels, booth light, cart bulbs): peak linear luminance.
+/** Lit surfaces (ad panels, booth light, hazards): peak linear luminance.
  * Sub-bloom on purpose — these are lit posters, not lamps; only the ladder's
  * rungs bloom (threshold 0.72). */
 export const AD_PANEL_LUMA = 0.6;
 export const BOOTH_LIGHT_LUMA = 0.45;
-export const CART_BULB_LUMA = 0.62;
 export const HAZARD_LUMA = 0.5;
 
 /** sRGB hex → linear rgb scaled to a target luminance. */
@@ -989,18 +1038,6 @@ export function itemBoxes(it: StreetItem): DetailBox[] {
         0x101014,
         litColor(0x9fd0ff, AD_PANEL_LUMA),
       ); // sign band
-      break;
-    }
-    case "cart": {
-      const bulb = litColor(0xffc27a, CART_BULB_LUMA);
-      const canopy = v < 0.5 ? 0xb33a3a : 0x2f6fae;
-      box(0, 0, 2.0, 1.0, 0.3, 1.25, 0x9aa3ad); // steel body
-      box(0, 0, 2.1, 1.05, 1.25, 1.3, 0x5c636e); // counter top
-      box(-0.7, 0, 0.5, 1.06, 0.0, 0.5, 0x16171c); // wheels
-      box(0.7, 0, 0.5, 1.06, 0.0, 0.5, 0x16171c);
-      box(0.9, 0, 0.06, 0.06, 1.3, 2.15, 0x5c636e); // canopy pole
-      box(0, 0, 2.2, 1.6, 2.15, 2.3, canopy); // canopy
-      box(0, 0, 1.9, 0.05, 2.05, 2.12, 0x101014, bulb); // bulb string
       break;
     }
   }

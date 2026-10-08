@@ -75,11 +75,18 @@ const [LANE_MINUS, LANE_PLUS] = LANE_CENTERS;
 // Extensible on purpose: L1's responders (and anything after) add a row here
 // and a `code` branch in the shader, nothing else.
 
-export type VehicleKind = "car" | "taxi" | "bus" | "emergency" | "police";
+export type VehicleKind =
+  | "car"
+  | "taxi"
+  | "bus"
+  | "emergency"
+  | "police"
+  | "fire";
 
 export interface VehicleSpec {
   /** Shader selector: 0 car, 1 taxi (roof sign), 2 bus (window band),
-   * 3 emergency (light bar), 4 police (L1 responder; light bar). */
+   * 3 emergency (light bar), 4 police (L1 responder, A1 patrol; light bar),
+   * 5 fire truck (A1; light bar, roof ladder, side stripe). */
   code: number;
   /** Body box, meters; forward is −Z at yaw 0 (the plane convention). */
   length: number;
@@ -114,13 +121,22 @@ export const VEHICLES: Record<VehicleKind, VehicleSpec> = {
     height: 2.3,
     bodies: [0xf2f4f7],
   },
-  // L1 responders only (never drawn into a lane platoon): a dark navy cruiser.
+  // A dark navy cruiser: L1 responders, and (A1) patrols inside lane
+  // platoons, which obey the signals like any car — their bar stays dark.
   police: {
     code: 4,
     length: 4.8,
     width: 1.95,
     height: 1.5,
     bodies: [0x1b2744],
+  },
+  // A1: one or two fire engines among the emergency runners.
+  fire: {
+    code: 5,
+    length: 9,
+    width: 2.5,
+    height: 3.2,
+    bodies: [0x9e1b14],
   },
 };
 
@@ -158,8 +174,12 @@ const PLATOON_SPACING = 2;
 /** Speed searches before the walk accepts a forced anchor stop. */
 const SPEED_TRIES = 8;
 
-/** Emergency vehicles on the road. */
+/** Emergency vehicles on the road (ambulances). */
 export const EMERGENCY_CARS = 2;
+/** A1: fire engines running the centrelines too, after the ambulances. */
+export const FIRE_TRUCKS = 1;
+/** A1: top of the police-patrol slice of a platoon member's kind draw. */
+export const POLICE_PICK = 0.33;
 /** Slots along a centerline an emergency vehicle can start from. */
 export const EMERGENCY_SLOTS = 4;
 /** Emergency cruise speed, m/s — a touch over the fastest lane. */
@@ -304,8 +324,16 @@ function drawPlatoon(rand: () => number, speed: number): Platoon {
     const pick = rand();
     const shade = rand();
     if (j >= size) continue;
+    // A1: police patrols come out of the CAR band only, so the bus and taxi
+    // shares (and every other draw) are exactly what they were.
     const kind: VehicleKind =
-      pick < 0.09 && !bus ? "bus" : pick < 0.31 ? "taxi" : "car";
+      pick < 0.09 && !bus
+        ? "bus"
+        : pick < 0.31
+          ? "taxi"
+          : pick < POLICE_PICK
+            ? "police"
+            : "car";
     if (kind === "bus") bus = true;
     const palette = VEHICLES[kind].bodies;
     kinds.push(kind);
@@ -559,6 +587,8 @@ export function leaderAt(
 export interface EmergencyCar {
   laneId: number;
   carIndex: number;
+  /** A1: ambulances first, then fire engines. */
+  kind: "emergency" | "fire";
 }
 
 /**
@@ -573,12 +603,17 @@ export function emergencyCars(seed: number): EmergencyCar[] {
   const streets = new Set<number>();
   const out: EmergencyCar[] = [];
   // Bounded: the cap makes the loop terminate whatever the PRNG does.
-  for (let guard = 0; guard < 64 && out.length < EMERGENCY_CARS; guard++) {
+  const total = EMERGENCY_CARS + FIRE_TRUCKS;
+  for (let guard = 0; guard < 64 && out.length < total; guard++) {
     const laneId = Math.floor(rand() * laneCount);
     const carIndex = Math.floor(rand() * EMERGENCY_SLOTS);
     if (streets.has(laneId >> 1)) continue;
     streets.add(laneId >> 1);
-    out.push({ laneId, carIndex });
+    out.push({
+      laneId,
+      carIndex,
+      kind: out.length < EMERGENCY_CARS ? "emergency" : "fire",
+    });
   }
   return out;
 }
@@ -636,10 +671,10 @@ export function trafficFleet(seed: number): TrafficFleet {
       }
     });
   }
-  for (const { laneId, carIndex } of emergencyCars(seed)) {
+  for (const { laneId, carIndex, kind } of emergencyCars(seed)) {
     vehicles.push({
-      kind: "emergency",
-      body: VEHICLES.emergency.bodies[0] as number,
+      kind,
+      body: VEHICLES[kind].bodies[0] as number,
       lane: laneId,
       platoon: -1,
       delay: 0,
@@ -896,6 +931,15 @@ if (abBus && abs(vCarNormal.x) > 0.5) {
   float ends = 1.0 - step(vDims.z * 0.5 - 0.6, abs(vCarPos.z));
   totalEmissiveRadiance += band * pane * ends * ${BUS_CABIN};
 }
+// A1 fire engine: a silver ladder down the roof and a pale side stripe.
+if (vKind > 4.5 && vKind < 5.5) {
+  if (vCarNormal.y > 0.5 && abs(vCarPos.x) < 0.45 && abs(vCarPos.z) < vDims.z * 0.5 - 1.2) {
+    diffuseColor.rgb = vec3(0.55, 0.56, 0.58);
+  }
+  if (abs(vCarNormal.x) > 0.5 && vCarPos.y > 1.0 && vCarPos.y < 1.22) {
+    diffuseColor.rgb = vec3(0.8, 0.78, 0.7);
+  }
+}
 if (vCarNormal.y > 0.5) {
   // Taxi: the roof sign.
   if (vKind > 0.5 && vKind < 1.5) {
@@ -928,7 +972,7 @@ function createCarMaterial(): THREE.MeshStandardMaterial {
   // This patch body is TEXTUALLY identical to buildings-material's (same
   // idiom, same local names), so without an explicit key the cars silently
   // reuse the buildings' compiled program and the light dots never appear.
-  material.customProgramCacheKey = () => "ab-traffic-l6-l1-hazard";
+  material.customProgramCacheKey = () => "ab-traffic-l6-l1-hazard-a1-fire";
   material.onBeforeCompile = (shader) => {
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", `#include <common>\n${VERTEX_PARS}`)
@@ -944,6 +988,16 @@ function createCarMaterial(): THREE.MeshStandardMaterial {
       );
   };
   return material;
+}
+
+/** A1: an extra vehicle posed elsewhere (citylife.ts pickup taxis): canonical
+ * body centre, heading (forward −Z at yaw 0), brake and hazard state. */
+export interface ExtraVehicle {
+  x: number;
+  z: number;
+  yaw: number;
+  braking: boolean;
+  hazard: boolean;
 }
 
 /**
@@ -982,10 +1036,15 @@ export class Traffic {
   private static readonly UP = new THREE.Vector3(0, 1, 0);
   private static readonly UNIT = new THREE.Vector3(1, 1, 1);
 
-  constructor(seed: number) {
+  /** A1: extra taxi slots, after the responder slots. */
+  private readonly extraCount: number;
+
+  constructor(seed: number, extraTaxis = 0) {
     this.fleet = trafficFleet(seed);
-    // L1: responder slots ride the end of the same mesh (0 new draws).
-    const capacity = this.fleet.vehicles.length + MAX_RESPONDERS;
+    this.extraCount = extraTaxis;
+    // L1: responder slots ride the end of the same mesh (0 new draws), and
+    // A1's pickup taxis after them.
+    const capacity = this.fleet.vehicles.length + MAX_RESPONDERS + extraTaxis;
     const geometry = new THREE.BoxGeometry(1, 1, 1);
     geometry.translate(0, 0.5, 0); // wheels on the street
 
@@ -997,6 +1056,11 @@ export class Traffic {
       const spec = VEHICLES[v.kind];
       body.set([spec.width, spec.height, spec.length, spec.code], i * 4);
     });
+    const taxi = VEHICLES.taxi;
+    for (let e = 0; e < extraTaxis; e++) {
+      const slot = this.fleet.vehicles.length + MAX_RESPONDERS + e;
+      body.set([taxi.width, taxi.height, taxi.length, taxi.code], slot * 4);
+    }
     this.body = new THREE.InstancedBufferAttribute(body, 4);
     geometry.setAttribute("aBody", this.body);
     this.lamp = new THREE.InstancedBufferAttribute(
@@ -1025,6 +1089,11 @@ export class Traffic {
       this.mesh.setMatrixAt(slot, Traffic.HIDDEN);
       this.mesh.setColorAt(slot, color.setHex(VEHICLES.police.bodies[0] ?? 0));
     }
+    for (let e = 0; e < extraTaxis; e++) {
+      const slot = this.fleet.vehicles.length + MAX_RESPONDERS + e;
+      this.mesh.setMatrixAt(slot, Traffic.HIDDEN);
+      this.mesh.setColorAt(slot, color.setHex(VEHICLES.taxi.bodies[0] ?? 0));
+    }
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
   }
 
@@ -1044,6 +1113,8 @@ export class Traffic {
     cameraPos: Vec3,
     serverTimeMs: number | null,
     reactions?: CityReactions,
+    /** A1: pickup taxis posed by citylife.ts (hazards while they stand). */
+    extras: readonly ExtraVehicle[] = [],
   ): void {
     if (serverTimeMs === null) {
       this.mesh.visible = false;
@@ -1091,8 +1162,41 @@ export class Traffic {
     }
     this.drawnCount = vehicles.length;
     this.placeResponders(cameraPos, flash, reactions);
+    this.placeExtras(cameraPos, serverTimeMs, extras);
     this.mesh.instanceMatrix.needsUpdate = true;
     this.lamp.needsUpdate = true;
+  }
+
+  /** A1: pickup taxis in their own slot range; hazards blink on the shared
+   * alarm beat while a taxi stands at the curb. Unused slots hide. */
+  private placeExtras(
+    cameraPos: Vec3,
+    serverTimeMs: number,
+    extras: readonly ExtraVehicle[],
+  ): void {
+    const base = this.fleet.vehicles.length + MAX_RESPONDERS;
+    const blink = alarmBlinkOn(serverTimeMs);
+    for (let e = 0; e < this.extraCount; e++) {
+      const slot = base + e;
+      const v = extras[e];
+      if (!v) {
+        this.mesh.setMatrixAt(slot, Traffic.HIDDEN);
+        this.lamp.setXY(slot, 0, 0);
+        continue;
+      }
+      this.canonical.x = v.x;
+      this.canonical.z = v.z;
+      const p = nearestImageInto(this.image, cameraPos, this.canonical);
+      this.quat.setFromAxisAngle(Traffic.UP, v.yaw);
+      this.pos.set(p.x, 0, p.z);
+      this.scratch.compose(this.pos, this.quat, Traffic.UNIT);
+      this.mesh.setMatrixAt(slot, this.scratch);
+      this.lamp.setXY(
+        slot,
+        v.braking ? 1 : 0,
+        v.hazard && blink ? HAZARD_ON : 0,
+      );
+    }
   }
 
   /** L1: police + ambulances answering a death, light bars going; idle

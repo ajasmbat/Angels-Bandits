@@ -1,4 +1,6 @@
 import {
+  BOOST_MAX_SPEED,
+  CORNER_BRAKE_DECEL,
   MAX_SPEED,
   MIN_SPEED,
   RESPAWN_ALTITUDE,
@@ -10,7 +12,11 @@ import {
   type FlightInput,
   type FlightState,
   createFlightState,
+  handlingRates,
+  speedForRadius,
   stepFlight,
+  turnRadius,
+  turnRateAt,
 } from "@angels-bandits/common/flight";
 import { describe, expect, it } from "vitest";
 
@@ -41,13 +47,13 @@ function cruiseAt(
 }
 
 describe("createFlightState (spawn)", () => {
-  it("spawns level at mid altitude and combat speed, position canonicalized", () => {
+  it("spawns level at mid altitude and combat speed at FULL throttle (F5), position canonicalized", () => {
     const s = createFlightState({ x: -5, y: RESPAWN_ALTITUDE, z: 2005 });
     expect(s.pos).toEqual({ x: 1995, y: RESPAWN_ALTITUDE, z: 5 });
     expect(s.pitch).toBe(0);
     expect(s.roll).toBe(0);
     expect(s.speed).toBe(RESPAWN_SPEED);
-    expect(s.targetSpeed).toBe(RESPAWN_SPEED);
+    expect(s.targetSpeed).toBe(MAX_SPEED);
   });
 });
 
@@ -253,5 +259,102 @@ describe("stepFlight: level cruise kinematics", () => {
       expect(s.pos.x).toBeGreaterThanOrEqual(0);
       expect(s.pos.x).toBeLessThan(WORLD_SIZE);
     }
+  });
+});
+
+describe("F5: speed-dependent turn rate", () => {
+  it("is TURN_RATE_SLOW (1.35) at MIN_SPEED easing to TURN_RATE (0.9) at MAX_SPEED", () => {
+    expect(turnRateAt(MIN_SPEED)).toBeCloseTo(1.35, 12);
+    expect(turnRateAt(MAX_SPEED)).toBeCloseTo(0.9, 12);
+    expect(turnRateAt(65)).toBeCloseTo(1.125, 12); // halfway
+    expect(turnRateAt(BOOST_MAX_SPEED)).toBeCloseTo(0.9, 12); // flat above
+    expect(turnRateAt(0)).toBeCloseTo(1.35, 12); // flat below
+  });
+
+  it("full-deflection radius: 29.6 m at MIN_SPEED (was 44.4), still 100 m at MAX_SPEED", () => {
+    expect(turnRadius(MIN_SPEED)).toBeCloseTo(29.63, 2);
+    expect(turnRadius(MAX_SPEED)).toBeCloseTo(100, 9);
+  });
+
+  it("speedForRadius inverts turnRadius and clamps to [MIN_SPEED, MAX_SPEED]", () => {
+    for (const v of [40, 47.5, 55, 65, 80, 90]) {
+      expect(speedForRadius(turnRadius(v))).toBeCloseTo(v, 9);
+    }
+    expect(speedForRadius(5)).toBe(MIN_SPEED);
+    expect(speedForRadius(1e6)).toBe(MAX_SPEED);
+  });
+
+  it("stepFlight turns at the slow rate when slow: 90° in ~1.16 s at MIN_SPEED", () => {
+    const end = fly(
+      cruiseAt(MIN_SPEED, { x: 500, y: 300, z: 500 }),
+      { ...NEUTRAL, turn: 1, throttle: -1 },
+      1,
+    );
+    // At least 1.3 rad in 1 s (the old flat 0.9 rad/s gave 0.9).
+    expect(end.yaw).toBeLessThan(-1.3);
+  });
+
+  it("leaves every boost number alone: the burn's rates are unchanged", () => {
+    expect(handlingRates(MAX_SPEED, true).turnRate).toBeCloseTo(0.9 * 1.6, 12);
+    expect(handlingRates(BOOST_MAX_SPEED, false).turnRate).toBeCloseTo(
+      0.9 * 1.6,
+      12,
+    );
+  });
+});
+
+describe("F5: cornerCap airbrake", () => {
+  it("absent is bit-identical to no cap at all (bots, remotes)", () => {
+    const s = cruiseAt(70, { x: 500, y: 300, z: 500 });
+    const input = { ...NEUTRAL, turn: 0.4, pitch: -0.2, throttle: 1 };
+    expect(stepFlight(s, { ...input, cornerCap: undefined }, 1 / 60)).toEqual(
+      stepFlight(s, input, 1 / 60),
+    );
+  });
+
+  it("brakes at CORNER_BRAKE_DECEL down to the cap, never below it", () => {
+    let s = cruiseAt(MAX_SPEED, { x: 500, y: 300, z: 500 });
+    const dt = 1 / 60;
+    s = stepFlight(s, { ...NEUTRAL, throttle: 1, cornerCap: 50 }, dt);
+    // At least the airbrake (the ordinary pull toward the lower command,
+    // SPEED_RESPONSE × 40 m/s, is even stronger on this first step).
+    expect(MAX_SPEED - s.speed).toBeGreaterThanOrEqual(
+      CORNER_BRAKE_DECEL * dt - 1e-9,
+    );
+    // Near the cap the pull fades, but the airbrake still holds 22 m/s².
+    const near = stepFlight(
+      cruiseAt(55, { x: 500, y: 300, z: 500 }),
+      { ...NEUTRAL, throttle: 1, cornerCap: 50 },
+      dt,
+    );
+    expect(55 - near.speed).toBeCloseTo(CORNER_BRAKE_DECEL * dt, 9);
+    s = fly(s, { ...NEUTRAL, throttle: 1, cornerCap: 50 }, 3);
+    expect(s.speed).toBeCloseTo(50, 9);
+    expect(s.targetSpeed).toBe(MAX_SPEED); // the throttle stays the pilot's
+  });
+
+  it("holds the cap even in a full dive (the brake outweighs ENERGY_GAIN)", () => {
+    let s = cruiseAt(70, { x: 500, y: 600, z: 500 });
+    s = { ...s, pitch: -1.4 };
+    s = fly(s, { ...NEUTRAL, throttle: 1, cornerCap: 50 }, 2);
+    expect(s.speed).toBeLessThanOrEqual(50 + 1e-9);
+  });
+
+  it("boost ignores the cap — a burn is the pilot overriding", () => {
+    const s = fly(
+      cruiseAt(MAX_SPEED, { x: 500, y: 300, z: 500 }),
+      { ...NEUTRAL, boost: true, cornerCap: 45 },
+      1,
+    );
+    expect(s.speed).toBeGreaterThan(MAX_SPEED);
+  });
+
+  it("never lets a cap below MIN_SPEED stall the plane", () => {
+    const s = fly(
+      cruiseAt(60, { x: 500, y: 300, z: 500 }),
+      { ...NEUTRAL, cornerCap: 0 },
+      3,
+    );
+    expect(s.speed).toBe(MIN_SPEED);
   });
 });

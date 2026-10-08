@@ -205,10 +205,27 @@ const FRAGMENT_COLOR =
   holeSurfaceGlsl() +
   BUILDING_WET_COLOR_GLSL;
 
+/** G1 lit lobbies: what a storefront's room averages to over its walls,
+ * floor and lit ceiling — the far-field (and Mobile, uWinInterior off) value
+ * the parallax room resolves to. Every room factor is ≤ 1, so the shop band
+ * stays a CONVEX scale of the flat V2 glow and can never pass its rung. */
+export const SHOP_ROOM_MEAN = 0.66;
+/** Room depth behind the glass, meters: a shop, and a deeper lobby. */
+const SHOP_ROOM_DEPTH = { shop: "6.0", lobby: "9.0" } as const;
+/** Ceiling height of the street-level rooms, meters of world height. */
+const SHOP_CEILING = "3.8";
+
 /** The lit-pane emissive, then the V2 street-level shop band: the bottom
  * SHOP_BAND_HEIGHT m of WORLD height (so only tier-1 bases qualify) swaps the
  * window grid for wide, warm storefront glass — brighter life at canyon
- * level. Facades only. */
+ * level. Facades only.
+ *
+ * G1: behind the glass is a ROOM (interior mapping, the window-pattern.ts
+ * raycast at storefront scale): lit ceiling panels, a glossy floor that
+ * catches them, side walls, and a back wall that is shelving (warm shops,
+ * now and then a customer's silhouette) or a lobby (the cool accent: marble,
+ * a reception desk and lift doors with lit indicators). Detail fades to
+ * SHOP_ROOM_MEAN with distance, and Mobile keeps that mean. */
 const SHOP_BAND_GLSL = /* glsl */ `
 float shopBand = (1.0 - step(${SHOP_BAND_HEIGHT}, vWorldY)) * facade;
 float shopH = fract(sin((floor(winGrid.x / ${SHOP_PITCH}) + vBSeed * 47.0) * 12.9898) * 43758.5453);
@@ -220,8 +237,74 @@ float shopMullion = mix(0.12,
 float glass = (1.0 - shopMullion)
             * step(0.5, vWorldY) * (1.0 - step(3.4, vWorldY));
 float shopLit = step(0.12, shopH); // nearly every storefront glows
-vec3 shopColor = mix(vec3(1.0, 0.62, 0.26), vec3(0.45, 0.8, 0.95), step(0.85, shopH));
-vec3 shopGlow = glass * shopLit * shopColor * (0.8 + 0.2 * shopH) * ${SHOP_EMISSIVE_INTENSITY};
+float shopLobby = step(0.85, shopH); // the cool accent is a lit lobby
+vec3 shopColor = mix(vec3(1.0, 0.62, 0.26), vec3(0.45, 0.8, 0.95), shopLobby);
+float shopRoom = ${SHOP_ROOM_MEAN.toFixed(2)};
+float shopNear = abDetail(${SHOP_PITCH}, wAA.x);
+if (shopBand * glass * shopLit > 0.0 && uWinInterior > 0.5 && shopNear > 0.0) {
+  float shopIn = 1.0;
+  vec2 shopUV = vec2(0.0);
+  if (abs(vObjNormal.x) > 0.5) {
+    shopIn = -sign(vObjNormal.x) * viewRay.x;
+    shopUV = vec2(viewRay.z, viewRay.y);
+  } else {
+    shopIn = -sign(vObjNormal.z) * viewRay.z;
+    shopUV = vec2(viewRay.x, viewRay.y);
+  }
+  float shopDepth = mix(${SHOP_ROOM_DEPTH.shop}, ${SHOP_ROOM_DEPTH.lobby}, shopLobby);
+  float shopCu = winGrid.x - floor(winGrid.x / ${SHOP_PITCH}) * ${SHOP_PITCH};
+  float shopTB = shopDepth / max(shopIn, 0.03);
+  float shopTU = ((shopUV.x > 0.0 ? ${SHOP_PITCH} : 0.0) - shopCu) / abSafeDiv(shopUV.x);
+  float shopTV = ((shopUV.y > 0.0 ? ${SHOP_CEILING} : 0.05) - vWorldY) / abSafeDiv(shopUV.y);
+  float shopT = min(shopTB, min(shopTU, shopTV));
+  vec2 shopHit = vec2(shopCu, vWorldY) + shopUV * shopT; // (u, height) at the hit
+  float shopHitD = max(shopIn, 0.03) * shopT;            // depth into the room
+  float shopK = 0.45;
+  if (shopT == shopTB) {
+    if (shopLobby > 0.5) {
+      // Lobby: pale stone, two lift doors with lit floor indicators, a desk.
+      shopK = 0.62;
+      float shopLift = max(
+        (1.0 - smoothstep(0.5, 0.56, abs(shopHit.x - 2.3))) ,
+        (1.0 - smoothstep(0.5, 0.56, abs(shopHit.x - 4.7)))) * (1.0 - smoothstep(2.35, 2.42, shopHit.y));
+      shopK = mix(shopK, 0.3, shopLift);
+      float shopInd = max(
+        1.0 - smoothstep(0.1, 0.16, length(shopHit - vec2(2.3, 2.62))),
+        1.0 - smoothstep(0.1, 0.16, length(shopHit - vec2(4.7, 2.62))));
+      shopK = mix(shopK, 1.0, shopInd);
+      float shopDesk = (1.0 - smoothstep(1.05, 1.1, shopHit.y)) * (1.0 - smoothstep(1.4, 1.5, abs(shopHit.x - 3.5)));
+      shopK = mix(shopK, 0.22, shopDesk);
+    } else {
+      // Shop: shelving bands of goods with dark gaps between the shelves.
+      // The room sits further than the glass, so its detail fades at twice
+      // the facade's metres-per-pixel (O1: no shimmer, resolve to the mean).
+      float shopFine = abDetail(0.45, wAA.x * 2.0);
+      float shopShelf = abLine(abPeriodic(shopHit.y, 0.0, 0.45), 0.05, wAA.x * 2.0) * shopFine;
+      float shopGoods = mix(0.725, 0.55 + 0.35 * abHash(floor(vec2(shopHit.x / 0.35, shopHit.y / 0.45)), vBSeed * 17.0 + shopH), shopFine);
+      shopK = mix(0.35, shopGoods, step(0.3, shopHit.y) * (1.0 - step(2.3, shopHit.y))) * (1.0 - 0.6 * shopShelf);
+      // Now and then a customer, a dark silhouette against the shelves.
+      float shopWho = abHash(vec2(floor(winGrid.x / ${SHOP_PITCH}), 5.0), vBSeed * 13.0);
+      float shopWhoU = 1.5 + 4.0 * fract(shopWho * 7.31);
+      float shopBody = (1.0 - smoothstep(0.2, 0.26, abs(shopHit.x - shopWhoU))) * (1.0 - smoothstep(1.45, 1.5, shopHit.y));
+      float shopHead = 1.0 - smoothstep(0.12, 0.15, length(shopHit - vec2(shopWhoU, 1.62)));
+      shopK = mix(shopK, 0.1, max(shopBody, shopHead) * step(shopWho, 0.35));
+    }
+  } else if (shopT == shopTV) {
+    // Ceiling light panels (3 across a storefront, every 2 m deep); the
+    // glossy floor catches a soft copy of them.
+    float shopLight = mix(0.4,
+      abLine(abPeriodic(shopHit.x, 1.1665, 2.333), 0.58, wAA.x * 2.0) * abLine(abPeriodic(shopHitD, 1.0, 2.0), 0.4, wAA.x * 2.0),
+      abDetail(2.0, wAA.x * 2.0));
+    shopK = shopUV.y > 0.0 ? mix(0.5, 1.0, shopLight) : 0.3 + 0.22 * shopLight;
+  } else {
+    // Side walls: fixtures in shops, plain in lobbies.
+    shopK = 0.4 + (1.0 - shopLobby) * 0.15 * abLine(abPeriodic(shopHit.y, 0.0, 0.45), 0.11, wAA.x * 2.0);
+  }
+  // Light falls off toward the back of the room.
+  shopK *= 1.0 - 0.3 * clamp(shopHitD / (shopDepth * 1.5), 0.0, 1.0);
+  shopRoom = mix(shopRoom, shopK, shopNear);
+}
+vec3 shopGlow = glass * shopLit * shopColor * (0.8 + 0.2 * shopH) * shopRoom * ${SHOP_EMISSIVE_INTENSITY};
 totalEmissiveRadiance += mix(windowGlow, shopGlow, shopBand);
 // VO2 canyon bounce (see BOUNCE_INTENSITY): street light reflected by the
 // facade's own albedo, fading with world height; a third of buildings stand
@@ -322,6 +405,6 @@ export function createBuildingsMaterial(
   // Distinct compiled program per patch (V3 rule: three keys programs on
   // onBeforeCompile.toString(), and sibling materials collide silently).
   material.customProgramCacheKey = () =>
-    "ab-buildings-h1-holes-l1-wake-l3-live-l4-wet";
+    "ab-buildings-h1-holes-l1-wake-l3-live-l4-wet-g1-lobbies";
   return material;
 }

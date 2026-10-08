@@ -2,7 +2,8 @@
 // flicker.mjs --grid (the O5 per-view shimmer grid). A view is a plane pose:
 // x, z, y (meters), yaw (0 faces -Z) and pitch (radians, default level);
 // `sky` forces an L12 phase, `dyn` / `train` views are placed from the live
-// world at capture time (gallery.mjs only).
+// world at capture time (gallery.mjs only); `eye`/`at` views (A1) hold the
+// QA camera there, with the plane pinned at x/y/z.
 export const VIEWS = [
   // name, x, z, y, yaw, extra
   { name: "chase-rooftops", x: 300, z: 900, y: 175, yaw: 0.6 },
@@ -11,6 +12,36 @@ export const VIEWS = [
   { name: "plane-side", x: 600, z: 700, y: 200, yaw: 1.2, orbit: 260 },
   { name: "plane-front", x: 800, z: 300, y: 160, yaw: -0.4, orbit: 620 },
   { name: "street-low", x: 1000, z: 1300, y: 35, yaw: 0 },
+  // A1 city life: a crossing seen from a corner (crossers waiting for WALK,
+  // riders in the bike lanes, groups and carts) and a balcony stack across a
+  // street (people on balconies, laundry, pigeons). Both hold the QA camera
+  // at `eye` looking at `at` while the plane is pinned behind it (it keeps
+  // the micro tier streaming around the spot), in clear weather.
+  {
+    name: "intersection",
+    x: 600,
+    z: 1520,
+    y: 22,
+    yaw: 0,
+    eye: [572, 26, 1452],
+    at: [600, 0, 1400],
+    weather: "clear",
+  },
+  {
+    name: "balcony",
+    x: 1995,
+    z: 560,
+    y: 14,
+    yaw: Math.PI,
+    eye: [1990, 16, 500],
+    at: [19.4, 12, 472],
+    weather: "clear",
+  },
+  // G1: skimming the curb at 8 m, a lane in from the parked cars, looking
+  // down the sidewalk — furniture, parked cars, road wear, lit shopfronts.
+  // At 8 m the plane sinks into the street within one stalled frame, so this
+  // view is pinned every frame in the page (`raf`), not by round trips.
+  { name: "sidewalk-closeup", x: 810, z: 1380, y: 8, yaw: 0.08, raf: true },
   { name: "rooftop-skim", x: 1210, z: 500, y: 140, yaw: 1.57, pitch: -0.15 },
   // N1: plaza (4,4) as a night park — pond, paths, lamps, tree clusters.
   { name: "plaza-park", x: 900, z: 1030, y: 120, yaw: 0, pitch: -0.6 },
@@ -75,4 +106,12 @@ export const VIEWS = [
     pitch: -0.32,
     leadMs: 0,
   },
+  // T2: a train standing at a station with its doors open, a train rounding
+  // a curve, and two trains passing on the double track. Each is found on the
+  // pure schedule (__ab.train / __ab.trainMeeting at future times), then the
+  // world clock is pinned to that moment and a fixed QA camera frames it.
+  { name: "train-station", dyn: "trainStation" },
+  { name: "train-curve", dyn: "trainCurve" },
+  { name: "trains-passing", dyn: "trainsPassing" },
+  { name: "train-cab", dyn: "trainCab" },
 ];

@@ -233,6 +233,13 @@ export class CityAmbience {
     }
   }
 
+  /** A1: the city bus (null until the context runs), so other city layers
+   * — the street performers — ride the same level, combat duck and radio
+   * duck instead of growing a parallel bus. */
+  get bus(): GainNode | null {
+    return this.graph?.bus ?? null;
+  }
+
   /** QA: the mix and its inputs, live whether or not the context runs. */
   debug() {
     return {

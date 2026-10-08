@@ -1703,15 +1703,15 @@ export class RoomBots {
     // RESPAWN_ALTITUDE is a slope down the lattice, not a plunge.
     let targetY = stageY ?? bot.waypoint.y + (slowing ? BOT_CANYON_HOP : 0);
     if (merge) targetY = Math.max(targetY, bot.flight.pos.y);
-    // L5: over the train line — its own streets and every street crossing
+    // L5/T2: over a train line — its own streets and every street crossing
     // them — hold above the deck and the cars. The probes would see them, but
     // dodging a viaduct down in the canyon is exactly the late, hard turn
     // that puts a bot into a facade; climbing early costs nothing.
-    if (this.movers.train) {
+    if (this.movers.trains) {
       targetY = Math.max(
         targetY,
-        trainFloor(this.movers.train, bot.flight.pos, TRAIN_BOT_REACH),
-        trainFloor(this.movers.train, bot.waypoint, 0),
+        trainFloor(this.movers.trains, bot.flight.pos, TRAIN_BOT_REACH),
+        trainFloor(this.movers.trains, bot.waypoint, 0),
       );
     }
     const dy = Math.max(targetY - bot.flight.pos.y, -flat * BOT_CANYON_GLIDE);

@@ -47,6 +47,13 @@ import { RENDER_ORDER } from "./render-order";
 import { RIVER_GROUND_PARS } from "./river";
 import { SIGN_PALETTE } from "./signage";
 import type { SkyState } from "./skycycle";
+import {
+  STREET_PAINT_PARS,
+  STREET_PAINT_UNIFORM,
+  STREET_ROAD_BASE_GLSL,
+  STREET_ROAD_MARK_GLSL,
+  STREET_WALK_GLSL,
+} from "./street-paint";
 import { LAMP_STATIONS_MINUS, LAMP_STATIONS_PLUS } from "./streetlights";
 import {
   GROUND_WET_EMISSIVE_GLSL,
@@ -717,7 +724,7 @@ vec3 abSitePaint(vec2 w, float n) {
 }
 // --- L11 river (render/river.ts owns this paint) ---
 ${RIVER_GROUND_PARS}
-`;
+${STREET_PAINT_PARS}`;
 
 const GROUND_FRAGMENT_MAIN = /* glsl */ `
 // O1: ground meters per pixel, taken HERE at the top level — every marking
@@ -750,7 +757,9 @@ if (abRoad > 0.5) {
   // Value noise at 0.77/m: its gradient is ~1.2 per metre, and ~93 % of it
   // lies above the threshold — what the mask resolves to once sub-pixel.
   float abWear = mix(0.93, abEdge(0.18, abNoise(vWorldXZ * 0.77 + 40.0), abAA * 1.2), abDetail(1.3, abAA));
-  if (abRoadX * abRoadZ < 0.5) { // outside the intersection core
+  // G1 (street-paint.ts): the street frame, tyre tracks, patches, stains,
+  // manholes and drains — under the markings below.
+${STREET_ROAD_BASE_GLSL}  if (abRoadX * abRoadZ < 0.5) { // outside the intersection core
     float abAlong = abRoadX > 0.5 ? vWorldXZ.y : vWorldXZ.x;
     float abCross = abRoadX > 0.5 ? abDx : abDz;
     float abAcr = abs(abCross);
@@ -767,11 +776,14 @@ if (abRoad > 0.5) {
       // Dashed center line (3 m on / 3 m off) + solid lane-edge lines.
       float abDashOn = mix(0.5, abLine(abPeriodic(abAlong, 1.5, 6.0), 1.5, abAA), abDetail(6.0, abAA));
       float abDash = abLine(abAcr, 0.18, abAA) * abDashOn * abWear;
-      float abEdgeLine = abLine(abs(abAcr - (${G.edgeIn} + ${G.edgeOut}) * 0.5), (${G.edgeOut} - ${G.edgeIn}) * 0.5, abAA) * abWear;
+      // G1: a parking side trades the lane-edge line for its parking line.
+      float abEdgeLine = abLine(abs(abAcr - (${G.edgeIn} + ${G.edgeOut}) * 0.5), (${G.edgeOut} - ${G.edgeIn}) * 0.5, abAA) * abWear * (1.0 - abGPark);
       abPaint = mix(abPaint, ${GROUND_COLORS.marking}, abDash * 0.95);
       abPaint = mix(abPaint, ${GROUND_COLORS.edge}, abEdgeLine * 0.85);
       abEmissive += (${GROUND_COLORS.marking} * abDash + ${GROUND_COLORS.edge} * abEdgeLine * 0.6) * ${MARKING_GLOW};
     }
+    // G1 (street-paint.ts): stop bars, arrows, words, bike lanes, parking.
+${STREET_ROAD_MARK_GLSL}
     // Wet sheen: lamp glow smeared into a warm streak under each lamp.
     float abStr =
       abStreak(abStationDist(abAlong, ${G.stationsPlus}), abCross - ${G.streakCross}) +
@@ -800,7 +812,8 @@ if (abRoad > 0.5) {
       abWalkX * (1.0 - abEdge(${G.curb} + 0.5, abAdx, abAA)),
       abWalkZ * (1.0 - abEdge(${G.curb} + 0.5, abAdz, abAA)));
     abPaint = mix(abPaint, ${GROUND_COLORS.curb}, abCurb);
-  } else {
+    // G1 (street-paint.ts): coloured curbs, ramps, flags, tree grates.
+${STREET_WALK_GLSL}  } else {
     abPaint = ${GROUND_COLORS.interior}; // block interiors: darkest
     // N1: parks, landmark forecourts and construction sites paint their own.
     int abKind = abBlockKind(vWorldXZ);
@@ -841,11 +854,13 @@ export class GroundPlane {
     const material = new THREE.MeshStandardMaterial({ roughness: 1 });
     // Three keys its program cache on onBeforeCompile.toString(); an explicit
     // key keeps this patch from colliding with the other patched materials.
-    material.customProgramCacheKey = () => "ab-ground-paint";
+    material.customProgramCacheKey = () => "ab-ground-paint-g1";
     material.onBeforeCompile = (shader) => {
       shader.uniforms.uGroundOrigin = { value: this.origin };
       // L4: the shared weather uniform (render/weather.ts), by reference.
       shader.uniforms.uWeather = WEATHER_UNIFORM;
+      // G1: the quality tier's street-paint switch, shared by reference.
+      shader.uniforms.uStreetPaint = STREET_PAINT_UNIFORM;
       shader.vertexShader = shader.vertexShader
         .replace(
           "#include <common>",
@@ -904,6 +919,15 @@ if (abWater > 0.5) {
         .replace(
           "#include <lights_physical_fragment>",
           `#include <lights_physical_fragment>\n${GROUND_WET_EMISSIVE_GLSL}`,
+        )
+        // G1: per-FRAGMENT fog distance. O1's radial fog takes
+        // length(mvPosition) per VERTEX, and this plane is two 1.8 km
+        // triangles: interpolated from corners ~1.3 km out, every ground
+        // pixel read as far fog and the whole street paint was fogged flat.
+        // vViewPosition is affine, so its per-fragment length is exact.
+        .replace(
+          "#include <fog_fragment>",
+          `#ifdef USE_FOG\nfloat abGroundFogDepth = length(vViewPosition);\n#endif\n${THREE.ShaderChunk.fog_fragment.replaceAll("vFogDepth", "abGroundFogDepth")}`,
         )
         .replace(
           "vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;",

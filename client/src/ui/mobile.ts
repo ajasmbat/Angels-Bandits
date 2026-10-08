@@ -49,8 +49,15 @@ type LockableOrientation = ScreenOrientation & {
   lock?: (orientation: "landscape") => Promise<void>;
 };
 
-/** Best effort: browsers only honour it fullscreen or installed, iOS never. */
-function lockLandscape(on: boolean): void {
+/** A lock is already requested: M5's JOIN chain and the fullscreenchange
+ * watcher below both ask, and a second lock() aborts the first in Chrome. */
+let landscapeLocked = false;
+
+/** Best effort: browsers only honour it fullscreen or installed, iOS never.
+ * Idempotent — the single lock() call site; unlocking re-arms it. */
+export function lockLandscape(on: boolean): void {
+  if (on === landscapeLocked) return;
+  landscapeLocked = on;
   const o = screen.orientation as LockableOrientation | undefined;
   if (!o) return;
   try {

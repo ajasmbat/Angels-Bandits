@@ -101,8 +101,20 @@ export interface QualityProfile {
   /** L7 sign animation (tickers, chases, video). Off = each sign's static art. */
   signAnimation: boolean;
   /** Fake window interiors (the per-pane parallax room raycast). Off = the
-   * room's mean colour, the same value the distance fade already ends on. */
+   * room's mean colour, the same value the distance fade already ends on.
+   * G1: the lit lobbies / shop rooms behind the street-level glass too. */
   windowInteriors: boolean;
+  /** A1 city life: share of the new figures kept (riders, crossers, groups,
+   * stations, balcony and terrace people). Instance counts only. */
+  cityLife: number;
+  /** A1 facade life: laundry lines, facade flags and banners, pigeons. */
+  facadeLife: boolean;
+  /** G1 street furniture + parked cars: share of objects kept (golden-ratio
+   * thinning by a uniform — street-furniture.ts). */
+  streetDetail: number;
+  /** G1 fine ground paint (wear, patches, manholes, drains, arrows, words,
+   * bike lanes, ramps, tiles, grates). Off = the S1/VO5 paint alone. */
+  streetPaint: boolean;
 }
 
 export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
@@ -126,6 +138,10 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     microRadius: 2,
     signAnimation: true,
     windowInteriors: true,
+    cityLife: 1,
+    facadeLife: true,
+    streetDetail: 1,
+    streetPaint: true,
   },
   medium: {
     maxPixelRatio: 1.5,
@@ -147,6 +163,10 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     microRadius: 2,
     signAnimation: true,
     windowInteriors: true,
+    cityLife: 0.7,
+    facadeLife: true,
+    streetDetail: 1,
+    streetPaint: true,
   },
   low: {
     maxPixelRatio: 1,
@@ -168,6 +188,10 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     microRadius: 2,
     signAnimation: true,
     windowInteriors: true,
+    cityLife: 0.45,
+    facadeLife: false,
+    streetDetail: 0.7,
+    streetPaint: true,
   },
   mobile: {
     maxPixelRatio: 1,
@@ -189,6 +213,10 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     microRadius: 1,
     signAnimation: false,
     windowInteriors: false,
+    cityLife: 0.3,
+    facadeLife: false,
+    streetDetail: 0.4,
+    streetPaint: false,
   },
 };
 
@@ -231,6 +259,22 @@ export const FEATURE_TIERS: readonly {
     low: "reduced",
     mobile: "reduced",
     note: "70 % / 40 % / 30 % of the crowd",
+  },
+  {
+    feature: "A1 city life — riders, crossers, groups, stations, balconies",
+    high: "full",
+    medium: "reduced",
+    low: "reduced",
+    mobile: "reduced",
+    note: "70 % / 45 % / 30 % of the figures; Mobile streams one block out",
+  },
+  {
+    feature: "A1 facade life — laundry, facade flags, pigeons",
+    high: "full",
+    medium: "full",
+    low: "off",
+    mobile: "off",
+    note: "not solid; one baked mesh hidden",
   },
   {
     feature: "L1 street life — steam, signals, sparks",
@@ -279,6 +323,30 @@ export const FEATURE_TIERS: readonly {
     low: "full",
     mobile: "full",
     note: "solid",
+  },
+  {
+    feature: "T2 trains: stations, cars, signs, doors",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "solid; skin is shader-only, one instanced draw",
+  },
+  {
+    feature: "T2 platform people",
+    high: "full",
+    medium: "full",
+    low: "off",
+    mobile: "off",
+    note: "scale-0 instances, no draw change",
+  },
+  {
+    feature: "T2 train sparks + lights",
+    high: "full",
+    medium: "full",
+    low: "reduced",
+    mobile: "reduced",
+    note: "sparks 50 % / off; lamps within 500 m (else fog + 100 m)",
   },
   {
     feature: "L6 traffic (cars, buses, responders)",
@@ -409,12 +477,28 @@ export const FEATURE_TIERS: readonly {
     note: "one full-screen pass",
   },
   {
+    feature: "G1 street furniture, parked cars",
+    high: "full",
+    medium: "full",
+    low: "reduced",
+    mobile: "reduced",
+    note: "not solid; 70 % / 40 % kept (Mobile streams one block out)",
+  },
+  {
+    feature: "G1 fine street paint (wear, manholes, words, ramps)",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "off",
+    note: "uniform guard: the S1 paint alone",
+  },
+  {
     feature: "Window interiors (parallax rooms)",
     high: "full",
     medium: "full",
     low: "full",
     mobile: "off",
-    note: "uniform guard: the room's mean colour",
+    note: "uniform guard: the room's mean colour (G1 lobbies too)",
   },
 ];
 

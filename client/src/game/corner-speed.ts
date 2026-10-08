@@ -38,7 +38,7 @@ import {
   type MoverField,
   collideMovers,
 } from "@angels-bandits/common/city/movers";
-import { collideTrain } from "@angels-bandits/common/city/train";
+import { collideTrains } from "@angels-bandits/common/city/train";
 import {
   type CityIndex,
   type NatureIndex,
@@ -142,7 +142,7 @@ const probe: Vec3 = { x: 0, y: 0, z: 0 };
 let moversNear = false;
 
 /** detectCrash's mover rules for one sphere: no clock ⇒ only the static
- * viaduct is drawn, so only it is solid. */
+ * viaducts and stations are drawn, so only they are solid. */
 function moverAt(
   movers: MoverField,
   p: Vec3,
@@ -151,7 +151,7 @@ function moverAt(
 ): boolean {
   if (timeMs === null) {
     return (
-      !!movers.train && collideTrain(movers.train, p, radius, null) !== null
+      !!movers.trains && collideTrains(movers.trains, p, radius, null) !== null
     );
   }
   return collideMovers(p, radius, movers, timeMs) !== null;

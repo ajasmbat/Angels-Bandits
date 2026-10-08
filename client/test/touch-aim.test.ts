@@ -25,10 +25,10 @@ import {
 } from "../src/game/instructor";
 import { speedFov } from "../src/game/jet-camera";
 import {
+  type AimDirState,
   TOUCH_AIM_DEG_PER_PX,
   TOUCH_AIM_MAX_ELEV,
   TOUCH_AIM_MAX_OFF_NOSE,
-  type AimDirState,
   aimDirFromRay,
   aimDirNdc,
   createAimDir,
@@ -105,7 +105,12 @@ class Sim {
     this.leadYawRate = -this.ins.turn * rates.turnRate;
     this.flight = stepFlight(
       this.flight,
-      { turn: this.ins.turn, pitch: this.ins.pitch, roll: 0, throttle: AUTO_THROTTLE },
+      {
+        turn: this.ins.turn,
+        pitch: this.ins.pitch,
+        roll: 0,
+        throttle: AUTO_THROTTLE,
+      },
       dt,
     );
     this.chase.update(

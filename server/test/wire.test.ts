@@ -400,6 +400,11 @@ describe("malformed messages (S1)", () => {
     fresh.ws.close();
   }, 20000);
 
+  it("keeps the test-only /debug/rooms route off unless AB_DEBUG_ROOMS=1", async () => {
+    const res = await fetch(`${url.replace("ws://", "http://")}/debug/rooms`);
+    expect(res.status).toBe(404);
+  });
+
   it("drops malformed poses and hits from a joined, alive client without crashing", async () => {
     const peer = await connect("Junk");
     const { pos, speed } = peer.welcome.spawn;

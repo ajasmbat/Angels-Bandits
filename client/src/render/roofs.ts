@@ -7,13 +7,24 @@
 // client dresses identical roofs and nothing changes when a building wraps.
 //
 // Three decisions per building:
-//  - a roof KIND per tier (membrane / gravel / skylights / garden / helipad),
+//  - a roof KIND per tier (membrane / gravel / garden / helipad — R2 retired
+//    the lit skylight grid, which from the air read as one more window grid),
 //  - an LED edge-outline colour on a seeded subset of tall towers,
 //  - a crown floodlight wash on the top floors of the tallest.
 // The palettes (albedo and emissive) live here too, so the shader emitters
 // in window-pattern.ts and the ladder test read ONE set of numbers.
 
-import { type Building, mulberry32 } from "@angels-bandits/common/city";
+import type { Building } from "@angels-bandits/common/city";
+import {
+  HELIPAD_CHANCE,
+  HELIPAD_MAX_HEIGHT,
+  HELIPAD_MIN_HEIGHT,
+  HELIPAD_MIN_ROOF,
+  PARAPET_INSET,
+  hasHelipad,
+  helipadRadius,
+  roofStyleStream,
+} from "@angels-bandits/common/city/roof-structures";
 import {
   EMISSIVE_SIGN,
   LANDMARK_HEIGHT,
@@ -22,20 +33,28 @@ import * as THREE from "three";
 import { FacadeArchetype, archetypeFor } from "./archetypes";
 import { emissiveBoost } from "./emissive";
 
-/** Roof paint per tier. A const object + union — the repo has no TS enums. */
+/** Roof paint per tier. A const object + union — the repo has no TS enums.
+ * 2 was VO3's SKYLIGHTS, retired by R2; the others keep their numbers (the
+ * shader compares against them). GARDEN is also R2's green roof. */
 export const RoofKind = {
   MEMBRANE: 0,
   GRAVEL: 1,
-  SKYLIGHTS: 2,
   GARDEN: 3,
   HELIPAD: 4,
 } as const;
 export type RoofKind = (typeof RoofKind)[keyof typeof RoofKind];
 
-/** The parapet lip (facade-garnish.ts: 1.1 m thick, centred on the roof
- * edge) covers the outer ~0.55 m of every roof — roof paint that must be
- * SEEN starts this far in. */
-export const PARAPET_INSET = 0.6;
+// The parapet inset and the helipad rule live in the shared R2 seam
+// (common/src/city/roof-structures.ts), which keeps structures off the pads;
+// re-exported here, their long-standing import site.
+export {
+  HELIPAD_CHANCE,
+  HELIPAD_MAX_HEIGHT,
+  HELIPAD_MIN_HEIGHT,
+  HELIPAD_MIN_ROOF,
+  PARAPET_INSET,
+  helipadRadius,
+};
 
 /** Towers at least this tall may carry an LED edge outline… */
 export const LED_MIN_HEIGHT = 100;
@@ -43,20 +62,6 @@ export const LED_MIN_HEIGHT = 100;
 export const LED_CHANCE = 0.4;
 /** Towers at least this tall get the uplit crown (and every landmark). */
 export const CROWN_MIN_HEIGHT = 150;
-/** Helipads: big flat mid-rise roofs only. Under 120 m keeps them off every
- * mast roof (roofclutter MAST_MIN_HEIGHT) and every searchlight station
- * (the ten tallest non-landmarks, all ~190 m+). */
-export const HELIPAD_MIN_HEIGHT = 50;
-export const HELIPAD_MAX_HEIGHT = 120;
-export const HELIPAD_MIN_ROOF = 34;
-export const HELIPAD_CHANCE = 0.18;
-
-/** Touchdown-circle radius on a helipad roof, m — shared by the shader (which
- * derives it from the tier's half extents) and roofClutterFor (which keeps
- * the pad clear). */
-export const helipadRadius = (roofWidth: number, roofDepth: number): number =>
-  0.62 * (Math.min(roofWidth, roofDepth) / 2 - PARAPET_INSET);
-
 // --- Palettes (linear — GLSL space) -------------------------------------
 
 /** Roof albedos. Up-facing roofs catch the whole hemisphere sky plus ~40%
@@ -66,7 +71,6 @@ export const ROOF_ALBEDO = {
   membrane: new THREE.Color(0.3, 0.31, 0.34), // light single-ply, cool grey
   gravel: new THREE.Color(0.24, 0.23, 0.2), // ballast, warm grey
   coping: new THREE.Color(0.35, 0.34, 0.33), // pavers inside the parapet
-  skyGlass: new THREE.Color(0.035, 0.045, 0.065), // skylight glazing
   deck: new THREE.Color(0.08, 0.09, 0.1), // helipad deck
   padWhite: new THREE.Color(0.46, 0.46, 0.44), // the H
   padYellow: new THREE.Color(0.46, 0.34, 0.05), // touchdown circle
@@ -74,11 +78,6 @@ export const ROOF_ALBEDO = {
   path: new THREE.Color(0.2, 0.18, 0.15), // garden paths
 } as const;
 
-/** Skylight interior glow — a sub-bloom read of the floor below. */
-export const SKYLIGHT_LUMINANCE = 0.3;
-export const SKYLIGHT_COLOR = new THREE.Color(1.0, 0.76, 0.46).multiplyScalar(
-  emissiveBoost(new THREE.Color(1.0, 0.76, 0.46), SKYLIGHT_LUMINANCE),
-);
 /** Helipad perimeter lights: steady green, under the SIGN rung. */
 export const PAD_LIGHT_LUMINANCE = 0.9;
 export const PAD_LIGHT_COLOR = new THREE.Color(0.25, 1.0, 0.4).multiplyScalar(
@@ -141,14 +140,9 @@ const pick = <T>(list: readonly T[], r: number): T =>
 /** Deterministic roof style for one building. */
 export function roofStyleFor(b: Building): RoofStyle {
   // Own salt: the clutter stream hashes the same (x, z, height), and a shared
-  // stream would correlate "has a helipad" with "has a water tower".
-  const rand = mulberry32(
-    (Math.imul(b.x, 2654435761) ^
-      Math.imul(b.z, 40503) ^
-      Math.imul(b.height, 2246822519) ^
-      0x7f4a7c15) >>>
-      0,
-  );
+  // stream would correlate "has a helipad" with "has a water tower". The
+  // stream is defined in common, which re-rolls rTop for hasHelipad().
+  const rand = roofStyleStream(b);
   const landmark = b.height >= LANDMARK_HEIGHT;
   const top = b.tiers[b.tiers.length - 1];
   const topMin = top ? Math.min(top.width, top.depth) : 0;
@@ -167,12 +161,7 @@ export function roofStyleFor(b: Building): RoofStyle {
   const base: RoofKind = rBase < 0.55 ? RoofKind.MEMBRANE : RoofKind.GRAVEL;
   let topKind: RoofKind = base;
   if (!landmark) {
-    if (
-      b.height >= HELIPAD_MIN_HEIGHT &&
-      b.height < HELIPAD_MAX_HEIGHT &&
-      topMin >= HELIPAD_MIN_ROOF &&
-      rTop < HELIPAD_CHANCE
-    ) {
+    if (hasHelipad(b)) {
       topKind = RoofKind.HELIPAD;
     } else if (b.height < 90 && rTop > 0.94) {
       topKind = RoofKind.GARDEN;
@@ -181,9 +170,11 @@ export function roofStyleFor(b: Building): RoofStyle {
       topMin >= 24 &&
       arch !== FacadeArchetype.GLASS &&
       rTop > 0.5 &&
-      rTop <= 0.94
+      rTop <= 0.64
     ) {
-      topKind = RoofKind.SKYLIGHTS;
+      // R2: part of what VO3 glazed with skylights is a green roof now; the
+      // rest stays plain membrane or gravel deck for the roof dressing.
+      topKind = RoofKind.GARDEN;
     }
   }
   // Setback terraces: the odd one is planted, the rest match the base deck.

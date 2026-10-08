@@ -10,7 +10,7 @@
 
 import {
   BANK_ANGLE,
-  BANK_RESPONSE,
+  BANK_FREQ,
   MAX_HP,
   PITCH_RATE,
   TURN_RATE,
@@ -77,6 +77,10 @@ export const NEUTRAL_CONTROLS: ControlDeflection = {
 
 const clamp1 = (v: number) => Math.max(-1, Math.min(1, v));
 
+/** Full aileron, rad/s: the bank spring's peak roll rate on a full-bank
+ * change (a critically damped step peaks at ω·Δ/e). */
+const ROLL_RATE_FULL = (BANK_ANGLE * BANK_FREQ) / Math.E;
+
 /**
  * Body-frame angular rates (rad/s; x = pitch up, y = yaw left, z = roll left,
  * game axes) → surface commands, each normalized by the flight model's full
@@ -91,7 +95,7 @@ export function ratesToControls(
   return {
     elevator: clamp1(x / PITCH_RATE),
     rudder: clamp1(-y / TURN_RATE),
-    aileron: clamp1(z / (BANK_ANGLE * BANK_RESPONSE)),
+    aileron: clamp1(z / ROLL_RATE_FULL),
   };
 }
 
@@ -103,14 +107,14 @@ export function ratesToControls(
  */
 export function inputControls(
   input: FlightInput,
-  state: Pick<FlightState, "pitch" | "roll" | "speed">,
+  state: Pick<FlightState, "pitch" | "roll" | "rollRate" | "speed">,
 ): ControlDeflection {
   const rates = handlingRates(state.speed, input.boost === true);
   const turn = clamp1(input.turn);
   const pitchRate = clamp1(input.pitch) * rates.pitchRate;
   const yawRate = -turn * rates.turnRate; // world-up axis
-  const rollTarget = -turn * BANK_ANGLE + clamp1(input.roll) * BANK_ANGLE;
-  const rollRate = BANK_RESPONSE * (rollTarget - state.roll);
+  // The bank spring's own rate (F6) — stepFlight already moved it.
+  const rollRate = state.rollRate ?? 0;
   const sp = Math.sin(state.pitch);
   const cp = Math.cos(state.pitch);
   const sr = Math.sin(state.roll);

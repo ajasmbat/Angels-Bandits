@@ -17,11 +17,16 @@ import {
 } from "./city/nature";
 import { riverHit, riverSegmentClear } from "./city/river";
 import {
+  ROOF_STRUCTURE_MAX_HEIGHT,
+  type RoofStructure,
+  structureCoversAt,
+} from "./city/roof-structures";
+import {
   BLOCK_PITCH,
   CANOPY_COLLISION_SLACK,
   PLAYER_RADIUS,
 } from "./constants";
-import { type Vec3, wrapDeltaAxis, wrapDeltaInto } from "./world/index";
+import { type Vec3, wrapDeltaInto } from "./world/index";
 
 /**
  * A block-lattice bucket index over one `Building[]`, built once and reused.
@@ -145,23 +150,45 @@ export function collideCity(
 }
 
 /** True when the player sphere intersects this building's solids. */
+/** hits()'s building centre and building-to-probe offset (only x and z are
+ * read) — module scratch: one probe at a time, and hitsRoof reads it before
+ * the next building. Objects, not loose doubles: a double handed to (or
+ * returned from) a call V8 does not inline is boxed, and this runs per
+ * building per probe (O5: allocation-free). */
+const hitAt: Vec3 = { x: 0, y: 0, z: 0 };
+const hitDelta: Vec3 = { x: 0, y: 0, z: 0 };
+
 function hits(
   pos: Vec3,
   radius: number,
   b: Building,
   holes: HoleMode,
 ): boolean {
-  if (pos.y - radius > b.height) return false;
-  // Scalars, not wrapDelta's object: this runs per building per probe.
-  const dx = wrapDeltaAxis(b.x, pos.x);
-  const dz = wrapDeltaAxis(b.z, pos.z);
-  // Tier-1 footprint bounds the whole stack — cheap whole-building reject.
+  // R2: above the roof only its structures can be hit, and none stands
+  // taller than ROOF_STRUCTURE_MAX_HEIGHT.
+  const roof = b.roof;
+  const above = pos.y - radius > b.height;
   if (
-    Math.abs(dx) > b.width / 2 + radius ||
-    Math.abs(dz) > b.depth / 2 + radius
+    above &&
+    (!roof || pos.y - radius > b.height + ROOF_STRUCTURE_MAX_HEIGHT)
   ) {
     return false;
   }
+  // Into scratch, not wrapDelta's object: this runs per building per probe.
+  hitAt.x = b.x;
+  hitAt.z = b.z;
+  const d = wrapDeltaInto(hitAt, pos, hitDelta);
+  // Tier-1 footprint bounds the whole stack — cheap whole-building reject.
+  if (
+    Math.abs(d.x) > b.width / 2 + radius ||
+    Math.abs(d.z) > b.depth / 2 + radius
+  ) {
+    return false;
+  }
+  if (roof && pos.y + radius >= b.height && hitsRoof(pos, radius, d, roof)) {
+    return true;
+  }
+  if (above) return false;
   if (holes === "solid" || !b.holes) {
     let base = 0;
     for (let k = 0; k < b.tiers.length; k++) {
@@ -170,8 +197,8 @@ function hits(
       if (
         pos.y - radius <= top &&
         pos.y + radius >= base &&
-        Math.abs(dx) <= t.width / 2 + radius &&
-        Math.abs(dz) <= t.depth / 2 + radius
+        Math.abs(d.x) <= t.width / 2 + radius &&
+        Math.abs(d.z) <= t.depth / 2 + radius
       ) {
         return true;
       }
@@ -185,8 +212,30 @@ function hits(
     if (
       pos.y - radius <= s.baseY + s.height &&
       pos.y + radius >= s.baseY &&
-      Math.abs(dx - s.dx) <= s.width / 2 + radius &&
-      Math.abs(dz - s.dz) <= s.depth / 2 + radius
+      Math.abs(d.x - s.dx) <= s.width / 2 + radius &&
+      Math.abs(d.z - s.dz) <= s.depth / 2 + radius
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Sphere vs the R2 roof structures (boxes, or vertical cylinders for tanks
+ * and masts), `d` the sphere's offset from the building centre. The same
+ * expanded-shape approximation as the tiers. */
+function hitsRoof(
+  pos: Vec3,
+  radius: number,
+  d: Vec3,
+  roof: readonly RoofStructure[],
+): boolean {
+  for (let k = 0; k < roof.length; k++) {
+    const s = roof[k] as RoofStructure;
+    if (
+      pos.y - radius <= s.baseY + s.height &&
+      pos.y + radius >= s.baseY &&
+      structureCoversAt(s, d, radius)
     ) {
       return true;
     }
@@ -360,6 +409,101 @@ export function hitsGround(pos: Vec3, radius: number = PLAYER_RADIUS): boolean {
 }
 
 /**
+ * Segment vs one axis-aligned box, both already in the sight line's local
+ * frame (origin = the viewer). The standard slab clip: keep the interval of
+ * t in [0, 1] that lies inside every axis's pair of planes; empty ⇒ no hit.
+ */
+function segmentHitsBox(d: Vec3, box: SegmentBox): boolean {
+  let t0 = 0;
+  let t1 = 1;
+  // x, then y, then z; bounds read from `box` (O5: no tuples, and no loose
+  // doubles handed to a call V8 might not inline).
+  for (let axis = 0; axis < 3; axis++) {
+    const dv = axis === 0 ? d.x : axis === 1 ? d.y : d.z;
+    const lo = axis === 0 ? box.minX : axis === 1 ? box.minY : box.minZ;
+    const hi = axis === 0 ? box.maxX : axis === 1 ? box.maxY : box.maxZ;
+    if (dv === 0) {
+      // Parallel to this slab: inside it for all t, or never.
+      if (lo > 0 || hi < 0) return false;
+      continue;
+    }
+    const inv = 1 / dv;
+    const a = lo * inv;
+    const b = hi * inv;
+    if (a < b) {
+      if (a > t0) t0 = a;
+      if (b < t1) t1 = b;
+    } else {
+      if (b > t0) t0 = b;
+      if (a < t1) t1 = a;
+    }
+    if (t0 > t1) return false;
+  }
+  return true;
+}
+
+/** An axis-aligned box in the sight line's local frame (segmentHitsBox). */
+interface SegmentBox {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  minZ: number;
+  maxZ: number;
+}
+
+/** A vertical cylinder in the sight line's local frame (segmentHitsCylinder). */
+interface SegmentCylinder {
+  cx: number;
+  cz: number;
+  r: number;
+  minY: number;
+  maxY: number;
+}
+
+/** losClear's roof-structure shapes — module scratch, one at a time. */
+const segBox: SegmentBox = {
+  minX: 0,
+  maxX: 0,
+  minY: 0,
+  maxY: 0,
+  minZ: 0,
+  maxZ: 0,
+};
+const segCyl: SegmentCylinder = { cx: 0, cz: 0, r: 0, minY: 0, maxY: 0 };
+
+/**
+ * Segment vs a vertical cylinder (axis at (cx, cz), radius r, y in
+ * [minY, maxY]), all in the sight line's local frame like segmentHitsBox:
+ * the t interval inside the circle in XZ, clipped to [0, 1] and to the
+ * y slab.
+ */
+function segmentHitsCylinder(d: Vec3, cyl: SegmentCylinder): boolean {
+  const { cx, cz, r, minY, maxY } = cyl;
+  let t0 = 0;
+  let t1 = 1;
+  const a = d.x * d.x + d.z * d.z;
+  const c = cx * cx + cz * cz - r * r;
+  if (a === 0) {
+    if (c > 0) return false;
+  } else {
+    const b = -2 * (d.x * cx + d.z * cz);
+    const disc = b * b - 4 * a * c;
+    if (disc < 0) return false;
+    const s = Math.sqrt(disc);
+    t0 = Math.max(t0, (-b - s) / (2 * a));
+    t1 = Math.min(t1, (-b + s) / (2 * a));
+    if (t0 > t1) return false;
+  }
+  if (d.y === 0) return minY <= 0 && maxY >= 0;
+  const ya = minY / d.y;
+  const yb = maxY / d.y;
+  t0 = Math.max(t0, Math.min(ya, yb));
+  t1 = Math.min(t1, Math.max(ya, yb));
+  return t0 <= t1;
+}
+
+/**
  * True when nothing in the city stands between `from` and `to` — the sight
  * line the bot brain acquires targets on (ANGE-SINI5F). The L11 river's
  * solids (bank ground, bridge decks, parapets, railings) count too.
@@ -376,24 +520,28 @@ export function hitsGround(pos: Vec3, radius: number = PLAYER_RADIUS): boolean {
  * (500 m) leaves 415 m of margin — since no second image of a building can
  * then be near enough to matter.
  */
-/** losClear's sight vector, handed to riverSegmentClear (which keeps no
- * reference) — module scratch, so a sight-line test allocates nothing. */
+/** losClear's sight vector — module scratch, handed to riverSegmentClear
+ * and the roof tests (which keep no reference), so a sight-line test
+ * allocates nothing. */
 const sight: Vec3 = { x: 0, y: 0, z: 0 };
+/** losClear's building centre and viewer-to-centre offset — scratch. */
+const sightAt: Vec3 = { x: 0, y: 0, z: 0 };
+const sightC: Vec3 = { x: 0, y: 0, z: 0 };
+const NO_ROOF: readonly RoofStructure[] = [];
 
 export function losClear(
   from: Vec3,
   to: Vec3,
   buildings: readonly Building[] = [],
 ): boolean {
-  const dx = wrapDeltaAxis(from.x, to.x);
-  const dy = to.y - from.y;
-  const dz = wrapDeltaAxis(from.z, to.z);
+  // Into scratch (riverSegmentClear and segmentHitsBox keep no reference).
+  const d = wrapDeltaInto(from, to, sight);
+  const dx = d.x;
+  const dy = d.y;
+  const dz = d.z;
   if (dx === 0 && dy === 0 && dz === 0) return true;
   // L11: the river's decks and embankments are cover like any facade.
-  sight.x = dx;
-  sight.y = dy;
-  sight.z = dz;
-  if (!riverSegmentClear(from, sight)) return false;
+  if (!riverSegmentClear(from, d)) return false;
   const loX = Math.min(0, dx);
   const hiX = Math.max(0, dx);
   const loZ = Math.min(0, dz);
@@ -402,10 +550,20 @@ export function losClear(
   const loY = Math.min(from.y, to.y);
   for (let i = 0; i < buildings.length; i++) {
     const b = buildings[i] as Building;
-    // Whole sight line above the roof — the strong reject for high patrols.
-    if (loY > b.height) continue;
-    const cx = wrapDeltaAxis(from.x, b.x);
-    const cz = wrapDeltaAxis(from.z, b.z);
+    // Whole sight line above the roof — the strong reject for high patrols
+    // (R2: above the tallest roof structure, when it has any).
+    const roof = b.roof;
+    if (
+      loY > b.height &&
+      (!roof || loY > b.height + ROOF_STRUCTURE_MAX_HEIGHT)
+    ) {
+      continue;
+    }
+    sightAt.x = b.x;
+    sightAt.z = b.z;
+    const c = wrapDeltaInto(from, sightAt, sightC);
+    const cx = c.x;
+    const cz = c.z;
     // Tier-1 footprint vs the segment's XZ bounds — cheap whole-building reject.
     if (
       cx - b.width / 2 > hiX ||
@@ -417,6 +575,7 @@ export function losClear(
     }
     const boxes = solids(b);
     for (let k = 0; k < boxes.length; k++) {
+      if (loY > b.height) break; // only roof structures reach this high
       const t = boxes[k] as SolidBox;
       const x = cx + t.dx;
       const z = cz + t.dz;
@@ -461,6 +620,31 @@ export function losClear(
       }
       // The boxes are closed: a line exactly tangent to a face is blocked.
       if (hit) return false;
+    }
+    const structures = roof ?? NO_ROOF;
+    for (let k = 0; k < structures.length; k++) {
+      const s = structures[k] as RoofStructure;
+      if (loY > s.baseY + s.height) continue;
+      const x = cx + s.dx;
+      const z = cz + s.dz;
+      const minY = s.baseY - from.y;
+      const maxY = s.baseY + s.height - from.y;
+      if (s.round) {
+        segCyl.cx = x;
+        segCyl.cz = z;
+        segCyl.r = s.width / 2;
+        segCyl.minY = minY;
+        segCyl.maxY = maxY;
+        if (segmentHitsCylinder(d, segCyl)) return false;
+      } else {
+        segBox.minX = x - s.width / 2;
+        segBox.maxX = x + s.width / 2;
+        segBox.minY = minY;
+        segBox.maxY = maxY;
+        segBox.minZ = z - s.depth / 2;
+        segBox.maxZ = z + s.depth / 2;
+        if (segmentHitsBox(d, segBox)) return false;
+      }
     }
   }
   return true;

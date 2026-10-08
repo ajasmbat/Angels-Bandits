@@ -202,6 +202,12 @@ const lerp = (lo: number, hi: number, t: number) => lo + t * (hi - lo);
  * Uses each building's TOTAL height and its tier-1 footprint, both of which
  * bound the whole tier stack — deliberately conservative, because being wrong
  * here means a jib buried in a facade. Torus-correct via wrapDeltaAxis.
+ *
+ * R2 roof structures need no term here: a hub tops out at CRANE_MAST_MAX
+ * (96 m) with CRANE_HUB_CLEARANCE (9 m) to spare, so every roof a jib can
+ * reach is under 87 m — below MAST_MIN_HEIGHT (120 m) — and the tallest
+ * structure such a roof carries (a 7.2 m billboard) stays under the jib's
+ * underside (clearance − CRANE_JIB_SIDE / 2 = 7.7 m).
  */
 function tallestWithin(
   buildings: readonly Building[],

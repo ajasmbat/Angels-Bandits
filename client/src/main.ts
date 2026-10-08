@@ -29,6 +29,7 @@ import {
   FOG_DISTANCE,
   MAX_HP,
   MAX_SPEED,
+  MIN_SPEED,
 } from "@angels-bandits/common/constants";
 import {
   type FlightState,
@@ -105,6 +106,7 @@ import {
   createInstructor,
   instructorInput,
 } from "./game/instructor";
+import { speedFov } from "./game/jet-camera";
 import { magnetizeVelocity } from "./game/magnetism";
 import {
   BASE_FOV,
@@ -891,6 +893,8 @@ let aimMode = input.aimMode();
 let cursorPrev = input.cursorNdc();
 /** Whether the pipper sits on the cursor this frame (HUD converged state). */
 let aimConverged = false;
+/** The pipper-to-cursor angle this frame, rad (F6 QA). */
+let aimGap = 0;
 /** The FOV the instructor last read the cursor through (latch reference). */
 let aimFovPrev = BASE_FOV;
 // Hold-SPACE boost (F2): the local half of the shared energy model. The
@@ -912,10 +916,11 @@ const BOOST_FOV_KICK = 9;
 /** 0 at ≤ MAX_SPEED, 1 at full boost speed. */
 const overspeedOf = (speed: number): number =>
   Math.min(1, Math.max(0, (speed - MAX_SPEED) / (BOOST_MAX_SPEED - MAX_SPEED)));
-/** The vertical FOV the render writes: zoom, plus the boost kick un-zoomed.
- * The instructor reads the cursor through the same one. */
-const viewFov = (z: number, overspeed: number): number =>
-  zoomFov(z) + BOOST_FOV_KICK * overspeed * (1 - z);
+/** The vertical FOV the render writes: zoom, plus the boost kick and the F6
+ * speed FOV (jet-camera.ts) un-zoomed. The instructor reads the cursor
+ * through the same one. */
+const viewFov = (z: number, overspeed: number, speed: number): number =>
+  zoomFov(z) + (BOOST_FOV_KICK * overspeed + speedFov(speed)) * (1 - z);
 let flight: FlightState = createFlightState(
   welcome.spawn.pos,
   welcome.spawn.yaw,
@@ -926,6 +931,9 @@ chase.snapTo(flight);
 
 /** F5: the corner manager's rate-limited speed ceiling, m/s (MAX = none). */
 let cornerCap = MAX_SPEED;
+/** F6: the yaw rate this frame's input commands, rad/s (+ = left) — what
+ * the chase camera leans into (jet-camera.ts). */
+let leadYawRate = 0;
 let alive = true;
 let killCamTargetId: string | null = null;
 // Server-said combat state about self (snapshots), kept for HUD + QA.
@@ -1228,6 +1236,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   headlights.setQuality(tier);
   signage.setQuality(tier);
   rooftopLife.setQuality(tier);
+  roofClutter.setQuality(tier); // R2: fine roof dressing only
   natureRenderer.setQuality(tier);
   fountains.setQuality(tier);
   birds.setQuality(tier);
@@ -1479,6 +1488,8 @@ declare global {
       aim: () => {
         mode: "instructor" | "classic";
         converged: boolean;
+        /** F6 QA: the pipper-to-cursor angle, rad. */
+        gap: number;
         cursor: { x: number; y: number };
         ndc: { x: number; y: number };
       };
@@ -1760,6 +1771,7 @@ window.__ab = {
       yaw: Math.atan2(-d.x, -d.z),
       pitch: Math.atan2(d.y, flat),
       roll: 0,
+      rollRate: 0,
     };
     chase.snapTo(flight);
   },
@@ -1769,6 +1781,7 @@ window.__ab = {
   aim: () => ({
     mode: aimMode,
     converged: aimConverged,
+    gap: aimGap,
     cursor: input.cursorPx(),
     ndc: input.cursorNdc(),
   }),
@@ -2106,7 +2119,7 @@ const frame = (now: number): void => {
       // the same FOV formula the render writes (boost kick included) —
       // camera.fov itself is never read or written here.
       const cursor = input.cursorNdc();
-      const aimFov = viewFov(zoom.z, overspeedOf(flight.speed));
+      const aimFov = viewFov(zoom.z, overspeedOf(flight.speed), flight.speed);
       const view = aimView(
         flight,
         chase.aimFrame(flight, zoom.z),
@@ -2153,7 +2166,8 @@ const frame = (now: number): void => {
         turn: instructor.turn * presence,
         pitch: instructor.pitch * presence,
       };
-      aimConverged = angleBetween(view.aimDir, view.pipperDir) < CONVERGED_RAD;
+      aimGap = angleBetween(view.aimDir, view.pipperDir);
+      aimConverged = aimGap < CONVERGED_RAD;
       aimFovPrev = aimFov;
     }
     // F5 corner speed manager: silently cap the commanded speed so the
@@ -2170,6 +2184,8 @@ const frame = (now: number): void => {
       boost: boost.active,
       cornerCap: cornerCapInput(cornerCap),
     };
+    leadYawRate =
+      -shaped.turn * handlingRates(flight.speed, boost.active).turnRate;
     flight = stepFlight(flight, shaped, dt);
     // Own control surfaces follow what the stick is commanding (F3).
     ownControls = inputControls(shaped, flight);
@@ -2226,7 +2242,7 @@ const frame = (now: number): void => {
     const camShake = turbulenceOffset(now, flight.pos.y);
     const planeShake = turbulenceOffset(now + 537, flight.pos.y);
     chaseMoversMs = renderMs;
-    chase.update(camera, flight, dt, freelook, camShake, zoom.z);
+    chase.update(camera, flight, dt, freelook, camShake, zoom.z, leadYawRate);
     const planePos = nearestImage(chase.position, flight.pos);
     plane.position.set(
       planePos.x + planeShake.x * 0.5,
@@ -2567,7 +2583,7 @@ const frame = (now: number): void => {
   // read camera.projectionMatrix directly, so writing it after would project
   // them with last frame's FOV. Guarded so a static FOV costs nothing, and
   // aspect (the resize handler's business) is left alone.
-  const fov = viewFov(zoom.z, overspeed);
+  const fov = viewFov(zoom.z, overspeed, alive ? flight.speed : MIN_SPEED);
   if (camera.fov !== fov) {
     camera.fov = fov;
     camera.updateProjectionMatrix();

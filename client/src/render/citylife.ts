@@ -44,7 +44,8 @@ import { BLOCK_PITCH, WORLD_SIZE } from "@angels-bandits/common/constants";
 import { wrapCoord, wrapDeltaAxis } from "@angels-bandits/common/world";
 import { FacadeArchetype, archetypeFor } from "./archetypes";
 import { facadeDetailFor } from "./facade-detail";
-import { roofClutterFor } from "./roofclutter";
+import { roofDetailsFor } from "./roof-details";
+import { clutterRects, roofClutterFor } from "./roof-layout";
 import { RoofKind, roofStyleFor } from "./roofs";
 import { LIFE_MAX_HEIGHT, ROOF_INSET, rooftopLifeFor } from "./rooftop-life";
 import { blockHeat } from "./signage";
@@ -1440,20 +1441,10 @@ function terrace(b: Building, out: StaticFigure[]): void {
   if (kind !== RoofKind.MEMBRANE && kind !== RoofKind.GRAVEL) return;
   const life = rooftopLifeFor(b);
   const clutter = roofClutterFor(b);
+  // R2: the shared keep-outs (structures, HVAC) and the roof dressing.
   const taken: Rect[] = [
-    ...clutter.waterTowers.map((t) => ({
-      x: t.x,
-      z: t.z,
-      hw: t.radius,
-      hd: t.radius,
-    })),
-    ...clutter.acBoxes.map((a) => ({
-      x: a.x,
-      z: a.z,
-      hw: a.width / 2,
-      hd: a.depth / 2,
-    })),
-    ...clutter.masts.map((m) => ({ x: m.x, z: m.z, hw: 0.3, hd: 0.3 })),
+    ...clutterRects(b, clutter),
+    ...roofDetailsFor(b).rects,
     ...life.fans.map((f) => ({
       x: f.x,
       z: f.z,

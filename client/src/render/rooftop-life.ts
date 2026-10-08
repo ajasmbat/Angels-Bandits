@@ -22,10 +22,12 @@
 // divides, so all clients agree and the fold never jumps.
 //
 // Everything here is the accepted non-collidable rooftop clutter exception:
-// figures and props stand ≤ 2 m above their own base, flag poles are thinner
-// and shorter than the existing antenna masts, and lights are light.
+// figures and props stand ≤ 2 m above their own base, flag poles stay under
+// the R2 2.5 m clutter line, and lights are light. The fans R2 puts on top of
+// the solid cooling towers (common roof structures) only cap what collides.
 
 import { type Building, mulberry32 } from "@angels-bandits/common/city";
+import { COOLING_SHROUD } from "@angels-bandits/common/city/roof-structures";
 import {
   EMISSIVE_BEACON,
   LANDMARK_HEIGHT,
@@ -35,7 +37,12 @@ import * as THREE from "three";
 import { emissiveBoost, luminance } from "./emissive";
 import { applyPointFloor } from "./point-floor";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
-import { roofClutterFor } from "./roofclutter";
+import {
+  type Rect,
+  clutterRects,
+  overlaps,
+  roofClutterFor,
+} from "./roof-layout";
 import { RoofKind, roofStyleFor } from "./roofs";
 
 // --- Layout rules --------------------------------------------------------
@@ -63,7 +70,8 @@ const CLEARANCE = 0.6;
 
 /** Prop height caps, measured from each prop's own base. */
 export const PROP_MAX_HEIGHT = 2;
-export const POLE_MAX_HEIGHT = 4;
+/** R2: flag poles stay at the roof clutter line (ROOF_CLUTTER_MAX_HEIGHT). */
+export const POLE_MAX_HEIGHT = 2.5;
 
 /** String lights hang between these heights over the party deck, m. */
 const STRAND_TOP = 3.4;
@@ -204,17 +212,6 @@ export interface RooftopLife {
   aviation: AviationLight[];
 }
 
-/** An axis-aligned keep-out rectangle in canonical coordinates. */
-interface Rect {
-  x: number;
-  z: number;
-  hw: number;
-  hd: number;
-}
-const overlaps = (a: Rect, b: Rect, margin: number): boolean =>
-  Math.abs(a.x - b.x) < a.hw + b.hw + margin &&
-  Math.abs(a.z - b.z) < a.hd + b.hd + margin;
-
 const EMPTY = (): RooftopLife => ({
   party: null,
   pool: null,
@@ -277,21 +274,8 @@ export function rooftopLifeFor(b: Building): RooftopLife {
   const minSide = Math.min(top.width, top.depth);
   const y = b.height;
 
-  const taken: Rect[] = [
-    ...clutter.waterTowers.map((t) => ({
-      x: t.x,
-      z: t.z,
-      hw: t.radius,
-      hd: t.radius,
-    })),
-    ...clutter.acBoxes.map((a) => ({
-      x: a.x,
-      z: a.z,
-      hw: a.width / 2,
-      hd: a.depth / 2,
-    })),
-    ...clutter.masts.map((m) => ({ x: m.x, z: m.z, hw: 0.3, hd: 0.3 })),
-  ];
+  // R2: the shared keep-outs — solid structures and HVAC units.
+  const taken: Rect[] = clutterRects(b, clutter);
   const free = (r: Rect) => taken.every((t) => !overlaps(r, t, CLEARANCE));
   // Along the roof's LONG axis: the party takes one end, a pool the other.
   const longX = top.width >= top.depth;
@@ -415,10 +399,10 @@ export function rooftopLifeFor(b: Building): RooftopLife {
         x: b.x + sx * innerW,
         z: b.z + sz * innerD,
         y,
-        pole: 3.6 + detail() * 0.4,
+        pole: POLE_MAX_HEIGHT - 0.3 + detail() * 0.3,
         banner,
-        clothW: banner ? 1.0 : 2.0 + detail() * 0.4,
-        clothH: banner ? 2.2 : 1.2 + detail() * 0.2,
+        clothW: banner ? 0.8 : 1.6 + detail() * 0.3,
+        clothH: banner ? 1.1 : 0.9 + detail() * 0.15,
         stripes: [
           Math.floor(detail() * FLAG_COLORS.length),
           Math.floor(detail() * FLAG_COLORS.length),
@@ -433,7 +417,34 @@ export function rooftopLifeFor(b: Building): RooftopLife {
     }
   }
 
-  // --- Aviation lights on every antenna mast (roofclutter's tall roofs).
+  // --- R2: a big fan on top of every solid cooling tower (two side by side
+  // on a long casing) — revs and phase from the structure's own roll, so
+  // the detail stream above is untouched.
+  for (const s of clutter.structures) {
+    if (s.kind !== "coolingTower") continue;
+    const two = Math.max(s.width, s.depth) > 5.5;
+    const alongX = s.width >= s.depth;
+    const radius =
+      (two ? Math.max(s.width, s.depth) / 4 : Math.min(s.width, s.depth) / 2) *
+      0.82;
+    for (let k = 0; k < (two ? 2 : 1); k++) {
+      const off = two ? (k - 0.5) * (Math.max(s.width, s.depth) / 2) : 0;
+      life.fans.push({
+        x: b.x + s.dx + (alongX ? off : 0),
+        z: b.z + s.dz + (alongX ? 0 : off),
+        y: s.baseY + s.height - COOLING_SHROUD,
+        radius: Math.min(radius, Math.min(s.width, s.depth) / 2 - 0.15),
+        body: 0,
+        shroud: COOLING_SHROUD,
+        revs:
+          FAN_REVS_MIN +
+          Math.floor(((s.seed * 7.31 + k * 0.37) % 1) * FAN_REVS_SPAN),
+        phase: (s.seed * 13.7 + k * 0.5) % 1,
+      });
+    }
+  }
+
+  // --- Aviation lights on every antenna mast (the shared roof structures).
   for (const m of clutter.masts) {
     life.aviation.push({ x: m.x, y: m.y + m.height + AVIATION_LIFT, z: m.z });
   }

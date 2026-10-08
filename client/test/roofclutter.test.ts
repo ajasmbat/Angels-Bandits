@@ -4,6 +4,7 @@
 // real seed-42 city pins determinism and containment in aggregate.
 
 import { type Building, generateCity } from "@angels-bandits/common/city";
+import { roofStructuresFor } from "@angels-bandits/common/city/roof-structures";
 import { LANDMARK_HEIGHT } from "@angels-bandits/common/constants";
 import { describe, expect, it } from "vitest";
 import { roofClutterFor } from "../src/render/roofclutter";
@@ -30,6 +31,8 @@ const TALL: Building = {
     { width: 40, depth: 40, height: 70 },
   ],
 };
+// R2: masts are solid roof structures now; a hand-built tower opts in.
+TALL.roof = roofStructuresFor(TALL);
 
 // Landmark supertall (height IS the landmark test everywhere else too).
 const LANDMARK: Building = {

@@ -17,7 +17,7 @@ import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { RENDER_ORDER } from "./render-order";
-import { roofClutterFor } from "./roofclutter";
+import { roofDetailsFor } from "./roof-details";
 import {
   BLOCK_WINDOW_RADIUS,
   type BlockIndex,
@@ -120,14 +120,15 @@ export function steamVentsForBlock(
         0,
     );
     if (rr() > ROOF_VENT_CHANCE) continue;
-    // Anchor on a unit that is actually DRAWN, so steam never rises out of
-    // bare roof deck — the roofClutterFor seam already placed these.
-    const acBox = roofClutterFor(b).acBoxes[0];
-    if (!acBox) continue;
+    // Anchor on a stack that is actually DRAWN, so steam never rises out of
+    // bare roof deck — R2's roof dressing puts an exhaust stack on the first
+    // HVAC unit of every roof (roofDetailsFor().vents).
+    const vent = roofDetailsFor(b).vents[0];
+    if (!vent) continue;
     roof.push({
-      x: acBox.x,
-      z: acBox.z,
-      y: acBox.y + acBox.height,
+      x: vent.x,
+      z: vent.z,
+      y: vent.y,
       rise: STREET_RISE * 0.7,
       spread: STREET_SPREAD * 0.8,
       phase: rr(),

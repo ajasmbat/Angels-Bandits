@@ -1119,8 +1119,8 @@ recorded limit for the midtown frozen view).
   | ---------------- | -------- | ------- |
   | collideCity      | 185 B    | 0       |
   | collideNature    | 373 B    | 0       |
-  | collideMovers    | 387 B    | ~11 B   |
-  | collideBotMovers | 219 B    | ~20 B   |
+  | collideMovers    | 387 B    | ~9 B    |
+  | collideBotMovers | 219 B    | ~9 B    |
   | losClear         | 36 B     | ~5 B    |
   | hitsGround       | 0        | 0       |
 

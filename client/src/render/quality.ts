@@ -122,6 +122,10 @@ export interface QualityProfile {
   /** R2 roof dressing's fine detail (drains, hatches, walkways, lightning
    * rods, dishes, braces, gondola cables). Structures are solid and stay. */
   roofDetail: boolean;
+  /** D2 broken-edge detail: rebar and jagged-edge noise on the faces
+   * destruction exposed. Off = flat concrete slabs and dark rooms, by a
+   * uniform. The broken geometry itself is solid and identical everywhere. */
+  destructionDetail: boolean;
 }
 
 export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
@@ -151,6 +155,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     streetPaint: true,
     holeDecor: 1,
     roofDetail: true,
+    destructionDetail: true,
   },
   medium: {
     maxPixelRatio: 1.5,
@@ -178,6 +183,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     streetPaint: true,
     holeDecor: 1,
     roofDetail: true,
+    destructionDetail: true,
   },
   low: {
     maxPixelRatio: 1,
@@ -205,6 +211,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     streetPaint: true,
     holeDecor: 1,
     roofDetail: false,
+    destructionDetail: false,
   },
   mobile: {
     maxPixelRatio: 1,
@@ -232,6 +239,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     streetPaint: false,
     holeDecor: 0,
     roofDetail: false,
+    destructionDetail: false,
   },
 };
 
@@ -522,6 +530,14 @@ export const FEATURE_TIERS: readonly {
     low: "full",
     mobile: "off",
     note: "uniform guard: the S1 paint alone",
+  },
+  {
+    feature: "D2 broken edges — rebar, jagged concrete",
+    high: "full",
+    medium: "full",
+    low: "off",
+    mobile: "off",
+    note: "uniform guard: flat slabs and dark rooms; the holes and rubble are solid on every tier",
   },
   {
     feature: "Window interiors (parallax rooms)",

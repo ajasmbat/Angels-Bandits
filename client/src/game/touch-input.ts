@@ -1,7 +1,9 @@
 // Touch → input (M1, Mobile Playable) — the pure seam. The right thumb's
-// RELATIVE drag moves an aim point in screen pixels; that point is handed to
-// FlightInputSource exactly as a mouse cursor would be, so the instructor
-// (F1) flies the nose onto it through the one steering seam desktop uses.
+// RELATIVE drag is reported two ways: as raw drag px (aimDx/aimDy), which
+// the instructor mode turns into a world-anchored aim direction (M7,
+// touch-aim-dir.ts), and as an aim point in screen pixels, which classic
+// mode hands to FlightInputSource as its stick — springing back to centre
+// once the thumb lifts (springBack).
 // Two fingers on the aim zone are free-look instead. Renderer- and DOM-free
 // (same pattern as freelook.ts / zoom.ts); ui/touch-controls.ts is the thin
 // DOM adapter. CLIENT-ONLY — nothing here touches the wire or common/.
@@ -31,6 +33,10 @@ export interface TouchAimState {
   aimY: number;
   /** Fingers seen last call (positions are the drag baseline). */
   fingers: readonly TouchPoint[];
+  /** One-finger drag (px, mouse convention, before sensitivity) not yet
+   * taken by the caller — the instructor mode's aim direction (M7). */
+  aimDx: number;
+  aimDy: number;
   /** Two or more fingers down: free-look, aim frozen. */
   looking: boolean;
   /** Free-look drag (px, mouse convention) not yet taken by the caller. */
@@ -44,6 +50,8 @@ export function createTouchAim(v: Viewport): TouchAimState {
     aimX: v.w / 2,
     aimY: v.h / 2,
     fingers: [],
+    aimDx: 0,
+    aimDy: 0,
     looking: false,
     lookDx: 0,
     lookDy: 0,
@@ -56,12 +64,14 @@ const clamp = (v: number, lo: number, hi: number): number =>
 /**
  * Advance on every touch event with the fingers now down on the aim zone.
  * - One finger that was also the ONLY finger last time: the aim point moves
- *   by its drag × sensitivity, clamped to the viewport.
+ *   by its drag × sensitivity, clamped to the viewport, and the raw drag
+ *   accumulates into aimDx/aimDy.
  * - Any other one-finger case (a fresh touch, or the survivor of a lifted
  *   pair) only re-baselines: lifting or adding a finger never jumps the aim.
  * - Two or more: free-look. The mean drag of the fingers seen both times
  *   accumulates into lookDx/lookDy; the aim point holds.
- * - None: everything holds (releasing keeps the last aim).
+ * - None: everything holds here; classic mode's springBack, and the
+ *   instructor mode's world-anchored direction, take it from there.
  */
 export function touchInput(
   s: TouchAimState,
@@ -69,13 +79,15 @@ export function touchInput(
   v: Viewport,
   sensitivity: number,
 ): TouchAimState {
-  let { aimX, aimY, lookDx, lookDy } = s;
+  let { aimX, aimY, aimDx, aimDy, lookDx, lookDy } = s;
   const t = touches.length === 1 ? touches[0] : undefined;
   const p = s.fingers.length === 1 ? s.fingers[0] : undefined;
   if (t && p) {
     if (t.id === p.id) {
       aimX += (t.x - p.x) * sensitivity;
       aimY += (t.y - p.y) * sensitivity;
+      aimDx += t.x - p.x;
+      aimDy += t.y - p.y;
     }
   } else if (touches.length >= 2) {
     let dx = 0;
@@ -97,10 +109,41 @@ export function touchInput(
     aimX: clamp(aimX, 0, v.w),
     aimY: clamp(aimY, 0, v.h),
     fingers: touches.map(({ id, x, y }) => ({ id, x, y })),
+    aimDx,
+    aimDy,
     looking: touches.length >= 2,
     lookDx,
     lookDy,
   };
+}
+
+/** Classic stick's spring-back time constant once the thumb lifts, s. */
+const CLASSIC_SPRING_S = 0.12;
+/** Within this of centre, px, the spring has landed. */
+const SPRING_DONE_PX = 0.5;
+
+/**
+ * Classic mode, no aim finger: the stick (the aim point) springs back to
+ * the viewport's centre, like a sprung stick — a lifted thumb never leaves
+ * a turn held. Returns `s` itself once centred, so a resting stick costs
+ * nothing per frame.
+ */
+export function springBack(
+  s: TouchAimState,
+  v: Viewport,
+  dt: number,
+): TouchAimState {
+  const cx = v.w / 2;
+  const cy = v.h / 2;
+  if (s.aimX === cx && s.aimY === cy) return s;
+  const k = Math.exp(-dt / CLASSIC_SPRING_S);
+  let aimX = cx + (s.aimX - cx) * k;
+  let aimY = cy + (s.aimY - cy) * k;
+  if (Math.hypot(aimX - cx, aimY - cy) < SPRING_DONE_PX) {
+    aimX = cx;
+    aimY = cy;
+  }
+  return { ...s, aimX, aimY };
 }
 
 /** Slider 0..1 (bottom..top) → the commanded speed it stands for, m/s. */

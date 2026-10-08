@@ -4,14 +4,29 @@
 // guns' trigger, BOOST is the SPACE edge, ZOOM is the right button, two
 // fingers are the E free-look. No parallel flight path. Built only on a
 // touch device (main.ts, via M2's whenTouch); chrome lives in index.html.
-// Releasing the aim finger holds the aim point, as a parked mouse does: the
-// instructor keeps the nose on it, and in classic mode (where the point is
-// the stick) the deflection holds. No avoidance-assist icon: main dropped
-// the assist (#66), so the small icons are scoreboard, aim mode, sensitivity.
+// M7: in the instructor mode the thumb steers a direction anchored in the
+// world (game/touch-aim-dir.ts), projected onto the cursor each frame by
+// steer() — lifting leaves it where it is in the world, so the plane settles
+// onto it and flies straight, and recentring puts it on the gun line (the
+// pipper), never screen centre. In classic mode (where the point is the
+// stick) a lifted thumb springs the stick back to centre. No avoidance-assist
+// icon: main dropped the assist (#66), so the small icons are scoreboard,
+// aim mode, sensitivity.
 
+import type { FlightState } from "@angels-bandits/common/flight";
+import type { Vec3 } from "@angels-bandits/common/world";
 import type { BoostKey } from "../game/boost-key";
-import type { FlightInputSource } from "../game/flight-input";
+import type { AimMode, FlightInputSource } from "../game/flight-input";
 import type { Guns } from "../game/guns";
+import { cursorRay } from "../game/instructor";
+import {
+  aimDirFromRay,
+  aimDirNdc,
+  createAimDir,
+  dragAimDir,
+  recentreAimDir,
+  stepAimDir,
+} from "../game/touch-aim-dir";
 import {
   type TouchAimState,
   type TouchPoint,
@@ -20,6 +35,7 @@ import {
   nextSensitivity,
   saveSensitivity,
   speedSlider,
+  springBack,
   throttleCommand,
   touchInput,
 } from "../game/touch-input";
@@ -100,6 +116,16 @@ function iconButton(el: HTMLElement, onTap: () => void): void {
 
 export class TouchControls {
   private aim: TouchAimState;
+  /** The instructor mode's world-anchored aim (M7). */
+  private readonly dir = createAimDir();
+  /** Put `dir` on the gun line at the next steer() (it needs the plane). */
+  private recentrePending = true;
+  /** A touch took the aim over from a mouse: seed `dir` from its cursor. */
+  private pickupPending = false;
+  private readonly ndc = { x: 0, y: 0 };
+  /** Reused viewport for the per-frame classic spring (no allocation). */
+  private readonly view = { w: 0, h: 0 };
+  private aimModeSeen: AimMode;
   private sensitivity = loadSensitivity(window);
   /** Throttle finger's slider value 0..1, null while no finger holds it. */
   private slider: number | null = null;
@@ -122,6 +148,7 @@ export class TouchControls {
 
   constructor(private readonly t: TouchTargets) {
     this.aim = createTouchAim(this.viewport());
+    this.aimModeSeen = t.input.aimMode();
     this.bindAimLayer(byId("touch-layer"));
     this.bindSlider(this.throttle);
     const live = () => !this.suspended;
@@ -189,11 +216,65 @@ export class TouchControls {
       if (alive) this.recentre(); // a fresh plane starts on a centred aim
       this.wasAlive = alive;
     }
-    const glyph = this.t.input.aimMode() === "instructor" ? "◎" : "✛";
+    const mode = this.t.input.aimMode();
+    if (mode !== this.aimModeSeen) {
+      // A mode switch starts on a centred aim, like a fresh instructor.
+      this.aimModeSeen = mode;
+      this.recentre();
+    }
+    if (
+      mode === "classic" &&
+      this.aim.fingers.length === 0 &&
+      this.t.input.touchOwnsCursor()
+    ) {
+      // The thumb lifted: the stick springs back (never a mouse's cursor).
+      this.view.w = window.innerWidth;
+      this.view.h = window.innerHeight;
+      const s = springBack(this.aim, this.view, dt);
+      if (s !== this.aim) {
+        this.aim = s;
+        this.t.input.setTouchAim(s.aimX, s.aimY);
+      }
+    }
+    const glyph = mode === "instructor" ? "◎" : "✛";
     if (glyph !== this.aimGlyph) {
       this.aimGlyph = glyph;
       this.aimIcon.textContent = glyph;
     }
+  }
+
+  /**
+   * Instructor mode, alive, once a frame BEFORE the instructor reads the
+   * cursor: project the world-anchored aim through `frame`/`fovDeg` — the
+   * very view (ChaseCamera.aimFrame, un-orbited) the instructor reads this
+   * frame — and set the cursor to it. Returns whether it did: false while a
+   * hybrid laptop's mouse owns the cursor (it moved since the last touch).
+   */
+  steer(
+    flight: FlightState,
+    frame: { eye: Vec3; at: Vec3 },
+    fovDeg: number,
+    aspect: number,
+    dt: number,
+  ): boolean {
+    let claim = false;
+    if (this.recentrePending) {
+      recentreAimDir(this.dir, flight);
+      this.recentrePending = false;
+      this.pickupPending = false;
+      claim = true;
+    } else if (this.pickupPending) {
+      const c = this.t.input.cursorNdc();
+      const ray = cursorRay(frame.eye, frame.at, fovDeg, aspect, c.x, c.y);
+      aimDirFromRay(this.dir, frame.eye, ray);
+      this.pickupPending = false;
+      claim = true;
+    }
+    if (!claim && !this.t.input.touchOwnsCursor()) return false;
+    stepAimDir(this.dir, flight, this.aim.fingers.length > 0, dt);
+    aimDirNdc(this.dir.dir, frame, fovDeg, aspect, this.ndc);
+    this.t.input.setTouchAimNdc(this.ndc.x, this.ndc.y);
+    return true;
   }
 
   /** M6 settings panel: suspend (releasing everything held — a FIRE held
@@ -218,6 +299,8 @@ export class TouchControls {
     fingers: number;
     looking: boolean;
     aim: { x: number; y: number };
+    aimDir: { x: number; y: number; z: number };
+    touchOwnsCursor: boolean;
     slider: number | null;
     zoomLatched: boolean;
     sensitivity: number;
@@ -226,6 +309,8 @@ export class TouchControls {
       fingers: this.aim.fingers.length,
       looking: this.aim.looking,
       aim: { x: this.aim.aimX, y: this.aim.aimY },
+      aimDir: { ...this.dir.dir },
+      touchOwnsCursor: this.t.input.touchOwnsCursor(),
       slider: this.slider,
       zoomLatched: this.zoomLatched,
       sensitivity: this.sensitivity,
@@ -273,6 +358,9 @@ export class TouchControls {
       // the smoothed one lags by whole frames on a slow phone.
       const c = this.t.input.pointerPx();
       if (c) s = { ...s, aimX: c.x, aimY: c.y };
+      // The instructor's direction picks up the mouse's cursor the same way
+      // (steer() has the view to do it in).
+      if (!this.t.input.touchOwnsCursor()) this.pickupPending = true;
     }
     s = touchInput(s, touches, this.viewport(), this.sensitivity);
     this.t.input.setTouchLook(s.looking);
@@ -283,7 +371,13 @@ export class TouchControls {
       );
       s = { ...s, lookDx: 0, lookDy: 0 };
     }
-    if (touches.length > 0) this.t.input.setTouchAim(s.aimX, s.aimY);
+    if (this.t.input.aimMode() === "instructor") {
+      // The drag turns the world-anchored direction; steer() projects it.
+      dragAimDir(this.dir, s.aimDx, s.aimDy, this.sensitivity);
+    } else if (touches.length > 0) {
+      this.t.input.setTouchAim(s.aimX, s.aimY);
+    }
+    if (s.aimDx !== 0 || s.aimDy !== 0) s = { ...s, aimDx: 0, aimDy: 0 };
     this.aim = s;
   }
 
@@ -352,10 +446,15 @@ export class TouchControls {
     this.t.input.setTouchZoom(false);
   }
 
+  /** A centred aim: the direction onto the gun line (at the next steer()),
+   * the classic stick to screen centre. */
   private recentre(): void {
     const v = this.viewport();
     this.aim = { ...this.aim, aimX: v.w / 2, aimY: v.h / 2 };
-    this.t.input.setTouchAim(v.w / 2, v.h / 2);
+    this.recentrePending = true;
+    if (this.t.input.aimMode() === "classic") {
+      this.t.input.setTouchAim(v.w / 2, v.h / 2);
+    }
   }
 
   private paintSensitivity(): void {

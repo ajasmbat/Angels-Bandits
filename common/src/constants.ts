@@ -301,6 +301,9 @@ export const MAX_ALTITUDE = 800;
 export const NAME_MAX_LENGTH = 16;
 /** Server drops a joined connection silent for this long, ms (clients stream at TICK_UP_HZ). */
 export const LIVENESS_TIMEOUT_MS = 4000;
+/** Server drops a socket that has not sent `join` within this long, ms (S1).
+ * The client joins on `open`, so this only ever catches idle or hostile sockets. */
+export const JOIN_DEADLINE_MS = 10000;
 
 // --- Storm (ST1) --- schedule shared client/server; the ceiling is a hidden
 // server rule — no constant here feeds a warning UI, by design.

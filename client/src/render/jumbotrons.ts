@@ -175,7 +175,8 @@ function plazaSite(
         if (
           best === null ||
           b.height > best.b.height ||
-          (b.height === best.b.height && (b.x < best.b.x || b.z < best.b.z))
+          (b.height === best.b.height &&
+            (b.x < best.b.x || (b.x === best.b.x && b.z < best.b.z)))
         ) {
           best = {
             b,

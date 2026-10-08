@@ -1868,7 +1868,10 @@ declare global {
       };
       signage: () => Signage["counts"];
       jumbotron: () => Jumbotrons["stats"];
-      jumbotronView: (i: number) => ReturnType<Jumbotrons["view"]>;
+      jumbotronView: (
+        i: number,
+        distance?: number,
+      ) => ReturnType<Jumbotrons["view"]>;
       signImage: (x: number, z: number) => { x: number; z: number } | null;
       /** L7: broken neon tubes and their next stutter burst (synced ms). */
       signBroken: (at?: number) => ReturnType<Signage["brokenTubes"]>;
@@ -2280,7 +2283,7 @@ window.__ab = {
   // S1 QA: what the jumbotrons say, the replay pass count/draws, and a
   // canonical view square on screen `i` (feed it to qaCamera).
   jumbotron: () => jumbotrons.stats,
-  jumbotronView: (i) => jumbotrons.view(i),
+  jumbotronView: (i, distance) => jumbotrons.view(i, distance),
   signImage: (x, z) => signage.imageOf(x, z),
   signBroken: (at) =>
     signage.brokenTubes(at ?? worldTime() ?? performance.now()),

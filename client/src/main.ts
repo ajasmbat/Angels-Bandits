@@ -85,6 +85,15 @@ import { ThunderSchedule } from "./audio/thunder";
 import { TrainAudio } from "./audio/train-audio";
 import { createAutoFire, stepAutoFire } from "./game/auto-fire";
 import { BoostKey } from "./game/boost-key";
+import {
+  type BulletImpact,
+  classifyBulletStep,
+  closestApproachT,
+  createBulletImpact,
+  facadeCellCentre,
+  tierBase,
+  tierPitch,
+} from "./game/bullet-impact";
 import { Bullets } from "./game/bullets";
 import {
   AmbientChatter,
@@ -142,6 +151,7 @@ import {
 } from "./game/zoom";
 import { GameSocket } from "./net/socket";
 import { Airliners } from "./render/airliners";
+import { archetypeFor } from "./render/archetypes";
 import { Birds } from "./render/birds";
 import { CityRenderer } from "./render/city";
 import { PICKUP_TAXIS } from "./render/citylife";
@@ -160,6 +170,7 @@ import { GpuTimer } from "./render/gputimer";
 import { createGradePass } from "./render/grade";
 import { Headlights } from "./render/headlights";
 import { HoleDecorRenderer } from "./render/hole-decor";
+import { BlastLedger, Impacts, burnCapFor } from "./render/impacts";
 import { lookPasses } from "./render/lookup";
 import { MoverLights, Movers } from "./render/movers";
 import { NatureRenderer } from "./render/nature";
@@ -255,6 +266,7 @@ import { Traffic } from "./render/traffic";
 import { PlaneTrails } from "./render/trails";
 import { TrainRenderer } from "./render/train";
 import { WeatherClock, setWeatherUniform } from "./render/weather";
+import { buildingSeed, isWindowLit } from "./render/window-pattern";
 import { nearestImage } from "./render/wrapPlacement";
 import { BotBar } from "./ui/botbar";
 import { Coach, renderPrimer } from "./ui/coach";
@@ -823,6 +835,70 @@ const shieldSparks = new Sparks(0xbfe8ff);
 scene.add(shieldSparks.points);
 const smoke = new SmokeTrails();
 scene.add(smoke.points);
+// D1 bullet impacts: sparks, dust, chips, glass and burning patches in ONE
+// Points draw; shattered panes, bullet holes and scorch in the building
+// shader's damage map (city.damage). Cosmetic only — nothing here collides.
+const impacts = new Impacts();
+scene.add(impacts.points);
+/** The classifier's reusable result (allocation-free bullet loop). */
+const impactHit: BulletImpact = createBulletImpact();
+/** QA: the last city impact by a LOCAL round (own guns or __ab.qaFireAt —
+ * never a remote tracer, which would race a QA check), and this frame's
+ * classifier time. */
+let lastImpact: {
+  /** The round's seq (QA rounds are QA_ROUND_SEQ, remote tracers −1). */
+  seq: number;
+  building: number;
+  tier: number;
+  face: number;
+  surface: string;
+  cellX: number;
+  cellY: number;
+  pane: boolean;
+} | null = null;
+let classifyMs = 0;
+/** The last frame's world clock (server ms) — QA blasts are stamped on it. */
+let lastRenderMs: number | null = null;
+/** The seq __ab.qaFireAt stamps its rounds with, so QA can tell its own
+ * impact from a stray remote tracer's. */
+const QA_ROUND_SEQ = -2;
+/** The seq every remote tracer is spawned with (fireRemote). */
+const REMOTE_ROUND_SEQ = -1;
+/** Facade scorch one round leaves around its hole (accumulates, 0..255). */
+const BULLET_SCORCH = 10;
+
+/** A round struck the city: one impact, its decal, and the round is spent. */
+function strikeCity(
+  bullet: { spent: boolean; seq: number },
+  now: number,
+): void {
+  bullet.spent = true;
+  impacts.bullet(impactHit, now);
+  const h = impactHit;
+  if (bullet.seq !== REMOTE_ROUND_SEQ) {
+    lastImpact = {
+      seq: bullet.seq,
+      building: h.building,
+      tier: h.tier,
+      face: h.face,
+      surface: h.surface,
+      cellX: h.cellX,
+      cellY: h.cellY,
+      pane: h.pane,
+    };
+  }
+  if (h.surface !== "facade") return;
+  if (h.pane) city.damage.shatter(h.building, h.tier, h.face, h.cellX, h.cellY);
+  else city.damage.bulletHole(h.building, h.tier, h.face, h.cellX, h.cellY);
+  city.damage.scorch(
+    h.building,
+    h.tier,
+    h.face,
+    h.cellX,
+    h.cellY,
+    BULLET_SCORCH,
+  );
+}
 // --- L1 reactive city (ANGE-WCQNFJ) ---
 // Server-accepted city events (gunfire near buildings, deaths — coalesced on
 // the server, replayed in the welcome) drive car alarms, woken windows, smoke
@@ -833,7 +909,22 @@ scene.add(smoke.points);
 const reactor = new CityReactor(city.cityBuildings);
 scene.add(reactor.points);
 reactor.ingest(welcome.cityEvents ?? []);
-socket.events.onCityEvent = (event) => reactor.ingest([event]);
+// D1 big impacts: the SERVER's death events (with their 60 s welcome
+// replay) blow out windows, scorch facades and start burning patches — the
+// same ring on every client, late joiners included. Replays are applied
+// silently; a live death also showers glass.
+const blastLedger = new BlastLedger(
+  city.damage,
+  city.cityBuildings,
+  city.cityIndex,
+);
+blastLedger.ingest(welcome.cityEvents ?? []);
+socket.events.onCityEvent = (event) => {
+  reactor.ingest([event]);
+  for (const site of blastLedger.ingest([event])) {
+    impacts.blast(site, performance.now());
+  }
+};
 /** Planes the searchlights track this frame (reused, no per-frame array). */
 const trackedPlanes: { x: number; y: number; z: number }[] = [];
 /** QA-only fixed camera (`__ab.qaCamera`): canonical eye + look-at, applied
@@ -1304,7 +1395,7 @@ function remoteFired(id: string): void {
     z: pose.pos.z + muzzle.z,
   };
   bullets.spawn(
-    -1,
+    REMOTE_ROUND_SEQ,
     origin,
     { x: fwd.x * speed, y: fwd.y * speed, z: fwd.z * speed },
     true,
@@ -1511,6 +1602,7 @@ function applyResume(w: WelcomeMsg): void {
   if (w.roomId !== currentRoomId) {
     currentRoomId = w.roomId;
     reactor.ingest(w.cityEvents ?? []);
+    blastLedger.ingest(w.cityEvents ?? []); // D1: already-seen ones are skipped
     if (moverField.news && w.newsHeli) {
       moverField.news.target = w.newsHeli.target;
       moverField.news.prev = w.newsHeli.prev;
@@ -1610,6 +1702,9 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   qualityTier = tier;
   city.setQuality(tier);
   reactor.setQuality(tier);
+  // D1: particle budget and burning patches (counts only).
+  impacts.setShare(QUALITY_PROFILES[tier].impacts);
+  blastLedger.setBurnCap(burnCapFor(QUALITY_PROFILES[tier].impacts));
   pedestrians.setQuality(tier);
   cityLife.setQuality(tier); // A1
   facadeLife.setQuality(tier); // A1
@@ -2058,6 +2153,46 @@ declare global {
       ) => void;
       /** QA-only: pin the reaction clock to a server time (null = live). */
       qaReactionClock: (serverTimeMs: number | null) => void;
+      /** D1: impact particles, burns and facade damage — live counts and
+       * caps, this frame's classifier time, and the last city impact. */
+      impacts: () => {
+        live: number;
+        cap: number;
+        burns: number;
+        burnCap: number;
+        faceSlots: number;
+        slotCap: number;
+        classifyMs: number;
+        lastImpact: typeof lastImpact;
+      };
+      /** D1 QA: fire `n` local cosmetic rounds at canonical (x, y, z) from
+       * up to 60 m back along the rendered camera's line (the real bullet
+       * loop), never from behind the eye. */
+      qaFireAt: (x: number, y: number, z: number, n?: number) => void;
+      /** D1 QA: hide the impacts Points (draw-call A/B). */
+      qaImpactsHidden: (hidden: boolean) => void;
+      /** D1 QA: up to `max` pane centres on a tier's facade face that the JS
+       * lit mirror reports LIT, nearest the face's middle first — canonical,
+       * nudged 0.5 m off the wall — with their cells. */
+      qaLitCells: (
+        building: number,
+        tier: number,
+        face: number,
+        max?: number,
+      ) => {
+        point: { x: number; y: number; z: number };
+        cellX: number;
+        cellY: number;
+      }[];
+      /** D1 QA: a canonical point → CSS pixels on screen (null = behind). */
+      qaProject: (p: { x: number; y: number; z: number }) => {
+        x: number;
+        y: number;
+      } | null;
+      /** D1 QA: a local blast as if a server death event landed here. */
+      qaBlast: (x: number, y: number, z: number) => boolean;
+      /** QA: pin the L3 living-windows clock (live seconds; null = server). */
+      pinLiveWindows: (sec: number | null) => void;
       /**
        * O4 perf-harness pin: render the WORLD at this server time from now
        * on, advancing with the sim's step (null = the synced clock). Returns the
@@ -2456,6 +2591,84 @@ window.__ab = {
   qaCamera: (view) => {
     qaView = view;
   },
+  impacts: () => ({
+    live: impacts.liveCount,
+    cap: impacts.cap,
+    burns: blastLedger.burns.length,
+    burnCap: blastLedger.cap,
+    faceSlots: city.damage.slotsUsed,
+    slotCap: city.damage.slotCap,
+    classifyMs,
+    lastImpact,
+  }),
+  qaFireAt: (x, y, z, n = 1) => {
+    // From the RENDERED camera (a qaCamera eye when one is held), so the
+    // round flies the line the screenshot looks along.
+    const target = { x, y, z };
+    const eye = camera.position;
+    const d = wrapDelta({ x: eye.x, y: eye.y, z: eye.z }, target);
+    const len = Math.hypot(d.x, d.y, d.z) || 1;
+    const u = { x: d.x / len, y: d.y / len, z: d.z / len };
+    // Start at most 60 m back and never behind the eye, so the round flies
+    // only the sight line the camera already has clear.
+    const back = Math.min(60, Math.max(1, len - 1));
+    for (let k = 0; k < n; k++) {
+      bullets.spawn(
+        QA_ROUND_SEQ,
+        { x: x - u.x * back, y: y - u.y * back, z: z - u.z * back },
+        { x: u.x * BULLET_SPEED, y: u.y * BULLET_SPEED, z: u.z * BULLET_SPEED },
+        true,
+      );
+    }
+  },
+  qaImpactsHidden: (hidden) => {
+    impacts.points.visible = !hidden;
+  },
+  qaLitCells: (building, tier, face, max = 8) => {
+    const b = city.cityBuildings[building];
+    const t = b?.tiers[tier];
+    if (!b || !t) return [];
+    const [px, py] = tierPitch(b, tier);
+    const runHalf = (face < 2 ? t.depth : t.width) / 2;
+    const seed = buildingSeed(t.width, t.height, t.depth);
+    const arch = archetypeFor(b);
+    const base = tierBase(b, tier);
+    const found: { cx: number; cy: number; score: number }[] = [];
+    for (let cy = 0; (cy + 1) * py <= t.height - 0.6; cy++) {
+      if (base + cy * py < 4) continue; // the shop band
+      for (
+        let cx = Math.ceil(-runHalf / px);
+        cx < Math.floor(runHalf / px);
+        cx++
+      ) {
+        if (!isWindowLit(arch, seed, cx, cy)) continue;
+        found.push({ cx, cy, score: Math.abs(cx + 0.5) + Math.abs(cy - 4) });
+      }
+    }
+    found.sort((a, b2) => a.score - b2.score);
+    return found.slice(0, max).map((c) => ({
+      point: facadeCellCentre(b, tier, face, c.cx, c.cy, 0.5),
+      cellX: c.cx,
+      cellY: c.cy,
+    }));
+  },
+  qaProject: (p) => {
+    const at = nearestImage(chase.position, p);
+    const v = new THREE.Vector3(at.x, at.y, at.z).project(camera);
+    if (v.z > 1) return null;
+    const r = renderer.domElement.getBoundingClientRect();
+    return {
+      x: r.left + ((v.x + 1) / 2) * r.width,
+      y: r.top + ((1 - v.y) / 2) * r.height,
+    };
+  },
+  qaBlast: (x, y, z) => {
+    const t = (lastRenderMs ?? 0) + Math.random();
+    const sites = blastLedger.ingest([{ kind: "death", x, y, z, t }]);
+    for (const site of sites) impacts.blast(site, performance.now());
+    return sites.length > 0;
+  },
+  pinLiveWindows: (sec) => city.pinLiveWindows(sec),
   qaReactionClock: (serverTimeMs) => {
     qaReactAt = serverTimeMs;
   },
@@ -2559,6 +2772,7 @@ let last = performance.now();
 // moment a hitch is noticed. Each subsystem's update() then owns visibility.
 fadeEl.classList.add("dead");
 socket.sendPing(); // W1: the rest of the boot was built synchronously
+renderer.initTexture(city.damageAtlas); // D1: never a first-hit upload hitch
 await prewarmScene(renderer, scene, camera, composer);
 socket.sendPing();
 flashFade();
@@ -2593,6 +2807,7 @@ const frame = (now: number): void => {
     qaWorld.frameMs = now;
   }
   const renderMs = qaWorld !== null ? qaWorld.ms : frameClock.time;
+  lastRenderMs = renderMs;
   planeLights.begin(); // own + remote lights re-append every frame
   moverLights.begin(); // crane/aircraft lights + firework sparks, same deal
   // Cursor smoothing + the leave-the-window fade run alive or dead, so
@@ -2906,10 +3121,26 @@ const frame = (now: number): void => {
   // Backwards, so a hit's bullets.remove() never skips the next bullet
   // (and no per-frame copy of the list — O4).
   const live = bullets.all;
+  let classifyTotal = 0;
   for (let i = live.length - 1; i >= 0; i--) {
     const bullet = live[i];
     if (bullet === undefined) continue;
+    // D1: every live round — own AND remote tracers — against the city, once
+    // (a spent round already struck a wall). Cosmetic: hits are unaffected.
+    let wall = false;
+    if (!bullet.spent) {
+      const c0 = performance.now();
+      wall = classifyBulletStep(
+        bullet.prev,
+        bullet.pos,
+        city.cityBuildings,
+        city.cityIndex,
+        impactHit,
+      );
+      classifyTotal += performance.now() - c0;
+    }
     if (bullet.cosmetic) {
+      if (wall) strikeCity(bullet, now);
       // An enemy bullet shaving past this frame → panned near-miss whoosh.
       if (
         alive &&
@@ -2923,6 +3154,14 @@ const frame = (now: number): void => {
       continue;
     }
     const target = bulletImpact(bullet.prev, bullet.pos, targets);
+    // A wall entered before the plane's closest approach was struck first.
+    if (
+      wall &&
+      (!target ||
+        impactHit.t < closestApproachT(bullet.prev, bullet.pos, target.pos))
+    ) {
+      strikeCity(bullet, now);
+    }
     if (!target) continue;
     bullets.remove(bullet);
     if (impactKind(target) === "shield") {
@@ -2946,6 +3185,8 @@ const frame = (now: number): void => {
     audio.hitThunk();
     sparks.burst(bullet.pos, now);
   }
+
+  classifyMs = classifyTotal;
 
   remotes.update(frameClock, chase.position, dt, now, (id) =>
     reveals.levelOf(id, now),
@@ -3141,6 +3382,10 @@ const frame = (now: number): void => {
   explosions.update(chase.position, now, dt);
   sparks.update(chase.position, now);
   shieldSparks.update(chase.position, now);
+  // D1: burning patches age on the synced server clock; particles fly.
+  if (renderMs !== null) blastLedger.prune(renderMs);
+  impacts.burn(blastLedger.burns, renderMs, now);
+  impacts.update(chase.position, now);
   tracers.update(bullets.all, chase.position, now);
 
   // Target HP bar: over the plane WE damaged in the last 3 s (fading).
@@ -3266,6 +3511,7 @@ const frame = (now: number): void => {
   // packing. The render call is NOT included — a driver can block in it
   // waiting on the GPU, which would read a GPU-bound frame as CPU-bound.
   const preRenderMs = performance.now() - frameStart;
+  city.flushDamage(renderer); // D1: dirty damage slots + slot words, pre-draw
   renderer.info.reset();
   gpuTimer?.begin();
   composer.render();

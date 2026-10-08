@@ -23,6 +23,12 @@ import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { FacadeArchetype, archetypeFor } from "./archetypes";
 import { createBuildingsMaterial } from "./buildings-material";
+import {
+  DamageTexture,
+  FacadeDamage,
+  faceSlotsFor,
+  tierKey,
+} from "./damage-map";
 import { LIVE_ON_UNIFORM, LiveClock, crewSchedule } from "./living-windows";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { roofStyleFor } from "./roofs";
@@ -99,8 +105,18 @@ export class CityRenderer {
   private readonly liveClock = new LiveClock();
   private readonly liveTime = { value: 0 };
 
+  /** D1: each building's index in `buildings` — the damage map's id. */
+  private readonly buildingIndex = new Map<Building, number>();
+  /** D1: instance indices per tier (tierKey), for the slot-word re-pack. */
+  private readonly tierInstances = new Map<number, number[]>();
+  private readonly archetypeAttr: THREE.InstancedBufferAttribute;
+  /** D1: the facade damage map and its GPU atlas (uDamage). */
+  readonly damage = new FacadeDamage();
+  private readonly damageTexture = new DamageTexture(this.damage);
+
   constructor(seed: number) {
     this.buildings = generateCity(seed);
+    this.buildings.forEach((b, i) => this.buildingIndex.set(b, i));
     // Built once, beside the array it describes, so the per-frame crash probe
     // costs a couple of block lookups instead of a scan of the whole city.
     this.index = buildCityIndex(this.buildings);
@@ -118,7 +134,10 @@ export class CityRenderer {
     geometry.translate(0, 0.5, 0);
     // Night-neon material with procedural emissive window grids (T5 art pass),
     // branching per instance on the facade archetype (set once below).
-    const material = createBuildingsMaterial(this.liveTime);
+    const material = createBuildingsMaterial(
+      this.liveTime,
+      this.damageTexture.texture,
+    );
 
     this.mesh = new THREE.InstancedMesh(
       geometry,
@@ -134,16 +153,28 @@ export class CityRenderer {
     this.mesh.frustumCulled = false; // instances move relative to the camera every frame
 
     // Facade archetype per instance (all tiers of a building agree) — the
-    // shader branches window pitch/pattern/lit-bias on this. Static: set at
-    // construction, never re-uploaded.
-    const archetypes = new Float32Array(this.instances.length);
+    // shader branches window pitch/pattern/lit-bias on .x. D1 rides in .y:
+    // the tier's packed facade-damage slot word (damage-map.ts packedWord) —
+    // a second component of an existing attribute, because the mesh already
+    // sits at WebGL2's 16-location floor. .x is static; .y is rewritten only
+    // for the instances of a tier whose slots changed (ranged uploads).
+    const archetypes = new Float32Array(this.instances.length * 2);
     this.instances.forEach((inst, i) => {
-      archetypes[i] = archetypeFor(inst.building);
+      archetypes[i * 2] = archetypeFor(inst.building);
+      const key = tierKey(
+        this.buildingIndex.get(inst.building) ?? 0,
+        inst.tierIndex,
+      );
+      let list = this.tierInstances.get(key);
+      if (!list) {
+        list = [];
+        this.tierInstances.set(key, list);
+      }
+      list.push(i);
     });
-    geometry.setAttribute(
-      "aArchetype",
-      new THREE.InstancedBufferAttribute(archetypes, 1),
-    );
+    this.archetypeAttr = new THREE.InstancedBufferAttribute(archetypes, 2);
+    this.archetypeAttr.setUsage(THREE.DynamicDrawUsage);
+    geometry.setAttribute("aArchetype", this.archetypeAttr);
 
     // VO3 roofs & crowns (roofs.ts decides, the shader paints): per tier
     // aRoof = (roof kind, crown depth on the top tier else 0, roof tone, 0),
@@ -284,6 +315,40 @@ export class CityRenderer {
     this.uploads.mark(i);
   };
 
+  /**
+   * D1: push this frame's facade damage to the GPU — the dirty atlas slots
+   * as sub-rectangles, and the packed slot word of every tier whose slots
+   * changed (only those instances' ranges are re-uploaded).
+   */
+  flushDamage(renderer: THREE.WebGLRenderer): void {
+    const attr = this.archetypeAttr;
+    const data = attr.array as Float32Array;
+    let any = false;
+    this.damage.takeDirtyTiers((key) => {
+      const list = this.tierInstances.get(key);
+      if (!list) return;
+      const word = this.damage.packedWord(Math.floor(key / 8), key % 8);
+      if (!any) attr.clearUpdateRanges();
+      any = true;
+      for (const i of list) {
+        data[i * 2 + 1] = word;
+        attr.addUpdateRange(i * 2 + 1, 1);
+      }
+    });
+    if (any) attr.needsUpdate = true;
+    this.damageTexture.flush(renderer);
+  }
+
+  /** D1: the damage atlas the shader samples (prewarm uploads it). */
+  get damageAtlas(): THREE.Texture {
+    return this.damageTexture.texture;
+  }
+
+  /** D1: the building's id in the damage map (its generateCity index). */
+  indexOf(b: Building): number {
+    return this.buildingIndex.get(b) ?? -1;
+  }
+
   /** L3: advance the living-windows clock (server ms, null before the first
    * snapshot; `nowMs` = the frame's performance.now()). */
   updateLiveWindows(serverMs: number | null, nowMs: number): void {
@@ -293,6 +358,8 @@ export class CityRenderer {
   /** O3: Low turns the L3 living windows off — a uniform, so no recompile.
    * M3: Mobile also drops the parallax window rooms, the same way. */
   setQuality(tier: QualityTier): void {
+    // D1: fewer facade damage slots on the cheaper tiers (a count only).
+    this.damage.setSlotCap(faceSlotsFor(QUALITY_PROFILES[tier].impacts));
     LIVE_ON_UNIFORM.value = QUALITY_PROFILES[tier].livingWindows ? 1 : 0;
     WIN_INTERIOR_UNIFORM.value = QUALITY_PROFILES[tier].windowInteriors ? 1 : 0;
   }

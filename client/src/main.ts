@@ -192,6 +192,7 @@ import {
 } from "./render/renderopts";
 import {
   RELAX_AFTER_MS,
+  type ResolutionLimits,
   type ResolutionState,
   WINDOW_FRAMES,
   createResolution,
@@ -251,6 +252,15 @@ import { coarsePointer, initMobileShell, whenTouch } from "./ui/mobile";
 import { PerfHud, bindPerfHudKey, perfHudKeyEnabled } from "./ui/perfhud";
 import { initPhoneFullscreen } from "./ui/phone-fullscreen";
 import { Scoreboard } from "./ui/scoreboard";
+import {
+  type Settings,
+  type SettingsStore,
+  autopilotInput,
+  loadSettings,
+  scaleLimits,
+  volumeGain,
+} from "./ui/settings";
+import { SettingsPanel } from "./ui/settings-panel";
 import { TouchControls } from "./ui/touch-controls";
 
 // Fullscreen chrome first — the join overlay carries its own toggle button,
@@ -326,16 +336,30 @@ let autoQuality = createAutoQuality(performance.now(), autoStart);
 let thermal = createThermal(performance.now());
 let qualityTier: QualityTier =
   qualitySetting === "auto" ? autoQuality.tier : qualitySetting;
+// M6 settings (ui/settings.ts): the new values (resolution scale, volumes)
+// load here, before anything sizes a pixel ratio or plays a sound. The rest
+// keep their own homes (quality above, aim mode, sensitivity, radio voice).
+const settingsStore = ((): SettingsStore | undefined => {
+  try {
+    return window.localStorage;
+  } catch {
+    return undefined; // `localStorage` itself throws where storage is blocked
+  }
+})();
+let settings = loadSettings(settingsStore);
+/** O3's scaler limits under a tier and thermal level, with the player's
+ * resolution scale (M6) on top. The one place the scaler's limits are made. */
+const limitsFor = (tier: QualityTier): ResolutionLimits =>
+  scaleLimits(
+    qualityLimits(window.devicePixelRatio, tier, thermal.level),
+    settings.resScale,
+  );
 // Recomputed on resize: browser zoom and dragging the window to another
 // panel both change devicePixelRatio AND fire `resize`, and a stale ceiling
 // either strands the scaler below the panel or lets it burn 4x the pixels.
 // The quality tier caps the ceiling (High 2, Medium 1.5, Low 1, Mobile 1),
 // and a thermal level caps it further (M3).
-let resLimits = qualityLimits(
-  window.devicePixelRatio,
-  qualityTier,
-  thermal.level,
-);
+let resLimits = limitsFor(qualityTier);
 let resAuto = renderOpts.pixelRatio === "auto";
 let resolution =
   renderOpts.pixelRatio === "auto"
@@ -505,11 +529,7 @@ window.addEventListener("resize", () => {
   // the latch is stale: leaving fullscreen must be allowed to win the
   // resolution back. Only the latch is cleared — the current ratio stays,
   // and the controller re-earns anything above it the usual way.
-  resLimits = qualityLimits(
-    window.devicePixelRatio,
-    qualityTier,
-    thermal.level,
-  );
+  resLimits = limitsFor(qualityTier);
   interruptQuality();
   resolution = {
     ...resolution,
@@ -806,6 +826,15 @@ const bullets = new Bullets();
 const tracers = new Tracers();
 scene.add(tracers.group);
 const audio = new GameAudio();
+/** M6: the players' volume sliders, as gains (stored before the context
+ * exists; GameAudio applies them as its buses are built). */
+const applyVolumes = (): void =>
+  audio.setVolumes({
+    master: volumeGain(settings.master),
+    engine: volumeGain(settings.engine),
+    voice: volumeGain(settings.voice),
+  });
+applyVolumes();
 // L2 city soundscape: traffic, horns, sirens, plaza music, wind and tunnel
 // echo — procedural, built once into GameAudio's ducked sfx bus.
 const ambience = new CityAmbience(
@@ -869,10 +898,17 @@ const comms = new CommsTicker();
 const ambient = new AmbientChatter(welcome.seed, performance.now());
 const RADIO_VOICE_KEY = "ab-radio-voice";
 let radioVoiceOn = localStorage.getItem(RADIO_VOICE_KEY) !== "off";
-hud.bindRadioToggle(radioVoiceOn, (on) => {
+const saveRadioVoice = (on: boolean): void => {
   radioVoiceOn = on;
-  localStorage.setItem(RADIO_VOICE_KEY, on ? "on" : "off");
-});
+  try {
+    localStorage.setItem(RADIO_VOICE_KEY, on ? "on" : "off");
+  } catch {
+    // Storage blocked: the switch still applies this visit.
+  }
+};
+// The HUD entry and the M6 settings panel both flip it; the setter keeps
+// the HUD entry truthful when the panel does.
+const paintRadioToggle = hud.bindRadioToggle(radioVoiceOn, saveRadioVoice);
 /** Armed while HP is healthy; fires once per drop below LOW_HP_CALLOUT. */
 let lowHpArmed = true;
 /** Recent on-air lines (QA hook — headless runs can't hear the TTS). */
@@ -1288,7 +1324,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   facadeDetail.setQuality(tier);
   train.setQuality(tier); // T2: platform people, sparks, light range
   applyPostQuality();
-  resLimits = qualityLimits(window.devicePixelRatio, tier, thermal.level);
+  resLimits = limitsFor(tier);
   if (resAuto) {
     const fresh = autoResolution(performance.now());
     resolution = keepRatio
@@ -1495,6 +1531,15 @@ declare global {
       };
       /** O3 QA: pick a setting for this session (never saved). */
       setQuality: (setting: QualitySetting) => void;
+      /** M6 QA: the settings panel — open, whether the autopilot flies,
+       * the stored values, and the live master/voice bus gains (null before
+       * the audio context exists). */
+      settings: () => {
+        open: boolean;
+        autopilot: boolean;
+        values: Settings;
+        gains: { master: number; voice: number } | null;
+      };
       /** Claim the room's shared bot count (QA: 0 makes a scene reproducible). */
       setBots: (count: number) => void;
       net: () => {
@@ -1733,6 +1778,58 @@ declare global {
     };
   }
 }
+// --- M6 settings panel ---------------------------------------------------
+// Portrait on a phone, or the gear / Esc anywhere: graphics, resolution,
+// controls, sound — all applied live through the same seams G, M, the HUD
+// toggles and M1's icons use. While it is open the touch controls are
+// suspended, every held key and the trigger are dropped, and the autopilot
+// (ui/settings.ts) flies the plane level and out of the skyline.
+let settingsOpen = false;
+const settingsPanel = new SettingsPanel(
+  {
+    quality: () => ({ setting: qualitySetting, tier: qualityTier }),
+    setQuality: (setting) => setQualitySetting(setting, true),
+    fps: () => perf.fps,
+    sensitivity: () => touchControls?.debug().sensitivity ?? null,
+    setSensitivity: (value) => touchControls?.setSensitivity(value),
+    aimMode: () => input.aimMode(),
+    setAimMode: (mode) => input.setAimMode(mode),
+    radioVoice: () => radioVoiceOn,
+    setRadioVoice: (on) => {
+      saveRadioVoice(on);
+      paintRadioToggle(on);
+    },
+    setResScale: (scale) => {
+      settings = { ...settings, resScale: scale };
+      resLimits = limitsFor(qualityTier);
+      if (resAuto) {
+        // A fresh state at the new ceiling: the slider is the player
+        // asking for exactly this many pixels, not a rung to re-earn.
+        resolution = autoResolution(performance.now());
+        applyPixelRatio(resolution.ratio);
+      }
+      resFrames.reset();
+      cpuFrames.reset();
+      interruptQuality();
+    },
+    setVolumes: (next) => {
+      settings = { ...settings, ...next };
+      applyVolumes();
+    },
+    onOpenChange: (open) => {
+      settingsOpen = open;
+      // Resuming recentres the touch aim, so the instructor picks up from
+      // the middle of the screen rather than a stale point.
+      touchControls?.setSuspended(open);
+      if (!open) return;
+      input.releaseKeys();
+      guns.setTrigger(false);
+      boostKey.setHeld(false);
+    },
+  },
+  settings,
+  settingsStore,
+);
 window.__ab = {
   state: () => flight,
   teleport: (x, z, y = 300, yaw = 0) => {
@@ -1801,6 +1898,12 @@ window.__ab = {
     budgetMs: tierBudgetMs(qualityTier),
   }),
   setQuality: (setting) => setQualitySetting(setting, false),
+  settings: () => ({
+    open: settingsPanel.isOpen(),
+    autopilot: settingsOpen && alive,
+    values: settingsPanel.current(),
+    gains: audio.busGains(),
+  }),
   setBots: (count) => socket.sendSetBots(count),
   net: () => ({
     selfId: socket.selfId,
@@ -2214,7 +2317,14 @@ const frame = (now: number): void => {
     /** The pilot's own turn command, assist excluded — the corner manager's
      * intent, so the nudge can never make it brake for a turn. */
     let intentTurn = 0;
-    if (aimMode === "instructor") {
+    if (settingsOpen) {
+      // M6: the settings panel is up — the autopilot flies (wings level,
+      // out of the skyline, throttle full). A fresh instructor every frame,
+      // so closing the panel hands back with no lagged command.
+      stepAssist(true, dt);
+      command = autopilotInput(flight.pitch, flight.pos.y);
+      instructor = createInstructor();
+    } else if (aimMode === "instructor") {
       // The cursor is the aim point: fly the pipper onto it. The view is the
       // un-orbited chase frame at THIS frame's (already stepped) zoom, with
       // the same FOV formula the render writes (boost kick included) —
@@ -2366,7 +2476,7 @@ const frame = (now: number): void => {
 
     // Guns: at most one shot a frame; the same seq goes to server and sim.
     // Free-look suppresses shots (heat keeps cooling, none builds).
-    const shot = guns.update(now, flight, !freelook.held);
+    const shot = guns.update(now, flight, !freelook.held && !settingsOpen);
     if (shot) {
       bullets.spawn(shot.seq, shot.origin, shot.vel);
       socket.sendFire(shot.seq);

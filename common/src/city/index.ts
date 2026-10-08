@@ -27,11 +27,14 @@ import {
 import { type Hole, assignHoles, landmarkArch } from "./holes";
 import { CONSTRUCTION_BLOCKS, LANDMARK_BLOCKS, PLAZA_BLOCKS } from "./layout";
 import { isRiverRow } from "./river";
+import { mulberry32 } from "./rng";
+import { type RoofStructure, roofStructuresFor } from "./roof-structures";
 import { LOT_LINE } from "./street";
 
 // Re-exported so the hand-placed lists keep their long-standing import site
 // (client signage, common/storm) while living in their own module.
 export { CONSTRUCTION_BLOCKS, LANDMARK_BLOCKS, PLAZA_BLOCKS };
+export { mulberry32 };
 // H1 fly-through holes: the seam collision, rendering and bots all read.
 export {
   type Hole,
@@ -75,24 +78,18 @@ export interface Building {
    * there once the holes are cut, and every collider/renderer reads that.
    */
   holes?: Hole[];
+  /**
+   * R2 solid roof structures (penthouses, cooling towers, tanks,
+   * billboards, masts), filled by generateCity from roofStructuresFor().
+   * Absent on hand-built buildings. Collision, sight lines and the roof
+   * renderer all read exactly this list.
+   */
+  roof?: RoofStructure[];
 }
 
 /** Blocks per world side (10 for a 2 km world with 200 m blocks). Exported
  * because the collision block index buckets by exactly this lattice. */
 export const CITY_GRID = WORLD_SIZE / BLOCK_PITCH;
-
-/** mulberry32 — tiny seeded PRNG, identical output in Node and the browser.
- * Exported so deterministic client-side dressing (roof clutter, V3 traffic)
- * reuses the same generator instead of growing a parallel one. */
-export function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 const blockKey = (bx: number, bz: number) => bx * CITY_GRID + bz;
 
@@ -374,5 +371,11 @@ export function generateCity(seed: number): Building[] {
   assignHoles(buildings, (bx, bz) =>
     mulberry32((blockSeed(seed, bx, bz) ^ HOLE_SALT) >>> 0),
   );
+  // R2: roof structures keep off sky holes, so they come after the holes;
+  // each is a pure function of its own building.
+  for (const b of buildings) {
+    const roof = roofStructuresFor(b);
+    if (roof.length > 0) b.roof = roof;
+  }
   return buildings;
 }

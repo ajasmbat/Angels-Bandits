@@ -243,6 +243,7 @@ import { BotBar } from "./ui/botbar";
 import { CommsTicker } from "./ui/comms";
 import { DamageIndicator } from "./ui/damage-indicator";
 import { initFullscreenUi } from "./ui/fullscreen";
+import { Haptics } from "./ui/haptics";
 import { HPBAR_ALTITUDE, HpBarSprite, HpBarTracker } from "./ui/hpbar";
 import { Hud } from "./ui/hud";
 import { requestName, showJoinError, showSignalLost } from "./ui/join";
@@ -861,6 +862,9 @@ const solutionTone = new SolutionTone();
 const markerScratch = new THREE.Vector3();
 // U1: getting shot — red edge flash, a thud, and an arc toward the shooter.
 const damageIndicator = new DamageIndicator();
+// U1 haptics: Android vibrates, iOS has no API (feature-detected no-op).
+// A never-touched setting (null) means "on for a touch device".
+const haptics = new Haptics(navigator, settings.haptics ?? coarsePointer());
 const viewDir = new THREE.Vector3();
 /** A shooter's live position for their arc; null once they're gone. */
 const shooterLivePos = (id: string) => remotes.poseOf(id)?.pos;
@@ -1061,6 +1065,7 @@ function enterDeath(killerId: string | null, cause?: "storm"): void {
   damageIndicator.clear();
   if (!alive) return;
   alive = false;
+  haptics.death(); // after the guard: a crash + its death message buzz once
   plane.visible = false;
   planeTrails.clear(socket.selfId);
   bullets.clearOwn();
@@ -1183,6 +1188,7 @@ socket.events.onDamage = (msg) => {
           : remotes.poseOf(msg.shooterId)?.pos;
       damageIndicator.hit(msg.shooterId, shooterPos, dmg, now);
       audio.damageThud(now);
+      haptics.damage(now);
     }
     radio.noteCombat(performance.now());
     if (lowHpArmed && msg.hp < LOW_HP_CALLOUT) {
@@ -1223,6 +1229,7 @@ socket.events.onDeath = (msg) => {
   );
   if (msg.killerId === socket.selfId && msg.victimId !== socket.selfId) {
     hud.killConfirm(performance.now());
+    haptics.kill();
     audio.killConfirm();
   }
   hpBar.clear(msg.victimId); // never float a stale bar over a respawn
@@ -1820,6 +1827,8 @@ const settingsPanel = new SettingsPanel(
     aimMode: () => input.aimMode(),
     setAimMode: (mode) => input.setAimMode(mode),
     radioVoice: () => radioVoiceOn,
+    haptics: () => (haptics.available ? haptics.enabled : null),
+    setHaptics: (on) => haptics.setEnabled(on),
     setRadioVoice: (on) => {
       saveRadioVoice(on);
       paintRadioToggle(on);
@@ -2595,6 +2604,7 @@ const frame = (now: number): void => {
     // impact point); the server's damage broadcast stays the
     // authoritative confirm (crosshair blip).
     hud.hitMarker(now);
+    haptics.hit(now);
     audio.hitThunk();
     sparks.burst(bullet.pos, now);
   }

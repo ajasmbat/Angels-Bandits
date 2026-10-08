@@ -39,7 +39,7 @@ import {
   landBotRound,
 } from "../src/bots";
 import { Combat } from "../src/combat";
-import { pickBotRespawn } from "../src/respawn";
+import { type RespawnEnemy, pickBotRespawn } from "../src/respawn";
 
 const ROOMS = 18;
 /** Two disjoint seed sets. Tuning happens on `tune` (BOT_SIM_SET=tune); the
@@ -167,7 +167,7 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
           exitCorner: number;
         }
       >();
-      const pick = (enemies: Vec3[], now: number): SpawnState => {
+      const pick = (enemies: RespawnEnemy[], now: number): SpawnState => {
         const spawn = pickBotRespawn(
           enemies,
           (pos, yaw) => bots.spawnClear(pos, yaw, now),
@@ -188,7 +188,13 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         for (const id of combat.tick(now).respawnsDue) {
           const enemies = roster.flatMap((e) => {
             const c = e.id === id ? null : bots.contactOf(e.id);
-            return c ? [c.pos] : [];
+            if (!c) return [];
+            const speed = Math.hypot(c.vel.x, c.vel.y, c.vel.z);
+            const fwd =
+              speed > 0
+                ? { x: c.vel.x / speed, y: c.vel.y / speed, z: c.vel.z / speed }
+                : null;
+            return [{ pos: c.pos, fwd }];
           });
           bots.respawn(id, pick(enemies, now));
           combat.respawned(id, now);

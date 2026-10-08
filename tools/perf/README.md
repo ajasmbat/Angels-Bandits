@@ -1111,21 +1111,28 @@ recorded limit for the midtown frozen view).
 - **Allocation-free shared collision** (`common/src/collision.ts`,
   `city/movers.ts`, `city/river.ts`, `world`'s new `wrapDeltaInto`): no
   per-probe arrays, temporaries or closures; byte-identical on 120 000
-  seeded probes against main. Per call, warmed, ESM (what the server and the
-  client bundle run), heap delta:
+  seeded probes against main (R2's roof structures included). Per call,
+  warmed, ESM (what the server and the client bundle run), heap delta, main
+  at `91c89ab`:
 
   | query            | main     | O5      |
   | ---------------- | -------- | ------- |
-  | collideCity      | 372 B    | 0       |
+  | collideCity      | 185 B    | 0       |
   | collideNature    | 373 B    | 0       |
-  | collideMovers    | 387 B    | ~10 B   |
-  | collideBotMovers | 219 B    | ~11 B   |
-  | losClear         | 177 B    | ~5 B    |
+  | collideMovers    | 387 B    | ~11 B   |
+  | collideBotMovers | 219 B    | ~20 B   |
+  | losClear         | 36 B     | ~5 B    |
   | hitsGround       | 0        | 0       |
 
-  The movers' residue is V8 boxing a double returned from a non-inlined
-  helper in the crane and train math (`train.ts`, T2's), ~0.5 HeapNumbers a
-  call; nothing is built per call.
+  Two V8 rules carried it. A double handed to — or returned from — a call
+  V8 does not inline is boxed, so the hot paths pass objects (scratch boxes,
+  `wrapDeltaInto`) rather than freshly computed coordinates. And the loads
+  must stay monomorphic: R2 added `roof` to only the buildings that have
+  structures, which split `Building` into two shapes and cost ~56 B a
+  collideCity call in boxed field loads; `generateCity` now sets `roof` on
+  every building (`undefined` when bare). The movers' residue is the same
+  boxing inside the crane and train math (`train.ts`, T2's), ~1 HeapNumber
+  a call; nothing is built per call.
 - **Per-frame**: the street systems (pedestrians, signals, steam, street
   furniture) reuse their block window (`blockWindowInto`) instead of 25 new
   objects a frame each; steam places its vents without per-vent objects.

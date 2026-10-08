@@ -550,13 +550,22 @@ export const newFigurePose = (): FigurePose => ({
 const ground = { x: 0, z: 0 };
 const routeScratch = newRouteState();
 
+// Scratch for the two direction helpers (written in place: per-frame paths
+// call them, and the result is read before the next call).
+const tvScratch = { x: 0, z: 0 };
+const lvScratch = { x: 0, z: 0 };
 /** Unit travel direction of a lane on the ground. */
-const travelVec = (lane: TrafficLane): { x: number; z: number } =>
-  lane.axis === "z" ? { x: 0, z: lane.dir } : { x: lane.dir, z: 0 };
+const travelVec = (lane: TrafficLane): { x: number; z: number } => {
+  tvScratch.x = lane.axis === "z" ? 0 : lane.dir;
+  tvScratch.z = lane.axis === "z" ? lane.dir : 0;
+  return tvScratch;
+};
 /** Unit direction from the centreline out toward this lane's curb. */
 const outwardVec = (lane: TrafficLane): { x: number; z: number } => {
   const side = lineSide(lane);
-  return lane.axis === "z" ? { x: side, z: 0 } : { x: 0, z: side };
+  lvScratch.x = lane.axis === "z" ? side : 0;
+  lvScratch.z = lane.axis === "z" ? 0 : side;
+  return lvScratch;
 };
 
 /** The heading (figure yaw) of travel along a lane. traffic.ts laneYaw is the

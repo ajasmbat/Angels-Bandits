@@ -24,7 +24,11 @@
 
 import { type Building, CITY_GRID } from "@angels-bandits/common/city";
 import { BLOCK_PITCH } from "@angels-bandits/common/constants";
-import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
+import {
+  type Vec3,
+  wrapCoord,
+  wrapDeltaAxis,
+} from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import {
@@ -603,13 +607,18 @@ export class CityLife {
     uLoop: { value: 0 },
     uKeepStreet: { value: 0 },
     uDensityHigh: { value: 1 },
-    uFar: { value: 420 },
+    uFar: { value: BLOCK_WINDOW_RADIUS * P },
   };
   private readonly pose: FigurePose = newFigurePose();
   private readonly look: Look = { weight: 0, age: -1 };
   /** Pickup-taxi poses this frame (Traffic draws them). */
   readonly taxiPoses: TaxiPose[];
   private staticKey = -1;
+  /** The streamed block window, recomputed only when the camera's block (or
+   * the tier's radius) changes — the frame path allocates nothing. */
+  private window: { bx: number; bz: number }[] = [];
+  private windowKey = -1;
+  private attrs: THREE.BufferAttribute[] = [];
   private staticStreet = false;
   private staticCount = 0;
   private drawn = 0;
@@ -682,6 +691,25 @@ export class CityLife {
     if (this.mesh.instanceColor) {
       this.mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
     }
+    this.attrs = [
+      this.mesh.instanceMatrix,
+      this.mesh.instanceColor as THREE.InstancedBufferAttribute,
+      this.life,
+      this.arms,
+    ];
+  }
+
+  /** Re-derive the block window if the camera changed block (or radius);
+   * returns the camera block's key. */
+  private refreshWindow(cam: Vec3): number {
+    const bx = Math.floor(wrapCoord(cam.x) / P);
+    const bz = Math.floor(wrapCoord(cam.z) / P);
+    const key = (bx * CITY_GRID + bz) * 8 + this.radius;
+    if (key !== this.windowKey) {
+      this.windowKey = key;
+      this.window = blockWindow(cam, this.radius);
+    }
+    return key;
   }
 
   /** O3/M3 tier: share of the new life kept and the window radius. */
@@ -690,7 +718,9 @@ export class CityLife {
     this.density = q.cityLife;
     this.radius = Math.min(BLOCK_WINDOW_RADIUS, q.microRadius);
     // Far fade inside the streamed window (its near edge is r·200 m out).
-    this.uniforms.uFar.value = this.radius >= 2 ? 420 : 240;
+    // The fade ends exactly where the window's nearest edge can be (r blocks
+    // from a camera on its own block's edge), so nothing pops as it streams.
+    this.uniforms.uFar.value = this.radius * P;
     this.uniforms.uDensityHigh.value = this.density;
     this.staticKey = -1; // re-stream with the new radius
   }
@@ -736,8 +766,7 @@ export class CityLife {
 
     // Statics: re-copied only when the camera block (or the street gate's
     // on/off, or the tier) changes.
-    const { bx: cbx, bz: cbz } = blockOf(cameraPos);
-    const key = cbx * CITY_GRID + cbz;
+    const key = this.refreshWindow(cameraPos);
     const street = keep > 0;
     let full = false;
     if (key !== this.staticKey || street !== this.staticStreet) {
@@ -775,12 +804,7 @@ export class CityLife {
     this.drawn = n;
     this.mesh.count = n;
     this.mesh.visible = n > 0;
-    const attrs = [
-      this.mesh.instanceMatrix,
-      this.mesh.instanceColor as THREE.InstancedBufferAttribute,
-      this.life,
-      this.arms,
-    ];
+    const attrs = this.attrs;
     if (full) {
       uploadPrefix(attrs, n);
     } else {
@@ -842,7 +866,14 @@ export class CityLife {
   /** The performer nearest `pos` within the streamed window (busker audio). */
   nearestPerformer(pos: Vec3, out: Vec3): number {
     let best = Number.POSITIVE_INFINITY;
-    for (const { bx, bz } of blockWindow(pos, 1)) {
+    // The camera's 3×3 (inside the cached window, which is never smaller).
+    for (const { bx, bz } of this.window) {
+      if (
+        Math.abs(wrapDeltaAxis(pos.x, (bx + 0.5) * P)) > 1.5 * P ||
+        Math.abs(wrapDeltaAxis(pos.z, (bz + 0.5) * P)) > 1.5 * P
+      ) {
+        continue;
+      }
       const s = this.statics.get(bx * CITY_GRID + bz);
       if (!s) continue;
       for (const p of s.performers) {
@@ -869,7 +900,7 @@ export class CityLife {
     arms: Float32Array,
   ): number {
     let n = 0;
-    for (const { bx, bz } of blockWindow(cam, this.radius)) {
+    for (const { bx, bz } of this.window) {
       const s = this.statics.get(bx * CITY_GRID + bz);
       if (!s) continue;
       const count = street ? s.count : s.high;
@@ -940,7 +971,7 @@ export class CityLife {
     arms: Float32Array,
   ): number {
     let n = n0;
-    for (const { bx, bz } of blockWindow(cam, this.radius)) {
+    for (const { bx, bz } of this.window) {
       const specs = this.ring.get(bx * CITY_GRID + bz);
       if (!specs) continue;
       const watchable =
@@ -991,7 +1022,7 @@ export class CityLife {
     arms: Float32Array,
   ): number {
     let n = n0;
-    for (const { bx, bz } of blockWindow(cam, this.radius)) {
+    for (const { bx, bz } of this.window) {
       const key = bx * CITY_GRID + bz;
       const list = this.crossers.get(key);
       if (!list) continue;

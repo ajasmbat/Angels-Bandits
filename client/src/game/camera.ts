@@ -1,26 +1,31 @@
-// Chase camera with lag. The camera lives in render space: before smoothing,
-// its remembered position is re-aligned to the torus image nearest the plane
-// (via wrapDelta, through nearestImage) — so when the plane's canonical
-// coordinate jumps 2000→0 at the seam, the camera jumps WITH it and nothing
-// moves on screen. That re-alignment is the whole seam trick for the viewer.
+// Chase camera with lag. The chase state is the eye's OFFSET from the plane,
+// not a world position (C1): a direction that swings after the nose in turns
+// and a length that eases toward D(v), the chase distance for the airspeed
+// (constants.ts) — so speed adds no lag, and corner brakes and boosts no
+// longer make the camera breathe. Being relative, the eye always sits next to
+// the plane's own image — when the plane's canonical coordinate jumps
+// 2000→0 at the seam, the camera jumps WITH it and nothing moves on screen.
 //
 // Spring arm (L11b): when something solid sits between the plane and the
 // displayed eye — a bridge deck on a climb-out from the river, a bank wall, a
 // facade in a canyon turn — the eye is pulled in along its own line to the
 // plane — at a steady rate, early enough for the cuts it foresees along the
 // plane's path — let out slowly, and hard-clamped so it is never inside a
-// solid. Like the orbit and the shake it is display-only: neither
-// `position` (the chase state) nor `aimFrame` ever sees it.
+// solid. It never enters the chase state (`position`), and it only
+// translates the view, never turns it (C1). aimFrame takes the same pull-in,
+// so the cursor ray starts from the eye actually shown: the plane flies at
+// what is under the cursor, even with the arm all the way in under a deck.
 
 import {
   CAMERA_RESPONSE,
-  CHASE_DISTANCE,
-  CHASE_HEIGHT,
+  CHASE_BASE,
+  CHASE_RISE,
+  CHASE_STRETCH,
+  MIN_SPEED,
 } from "@angels-bandits/common/constants";
 import { type FlightState, flightForward } from "@angels-bandits/common/flight";
 import type { Vec3 } from "@angels-bandits/common/world";
 import type * as THREE from "three";
-import { nearestImage } from "../render/wrapPlacement";
 import { orbitOffset } from "./freelook";
 import { leadLookAt, stepLead } from "./jet-camera";
 import { zoomLookAt, zoomOffset } from "./zoom";
@@ -55,9 +60,18 @@ const ARM_IN_SPEED = 60;
 const ARM_URGENT_SPEED = 150;
 
 export class ChaseCamera {
-  private pos: Vec3 | null = null;
+  /** Unit direction from the plane to the chase eye; null until snapped. */
+  private dir: Vec3 | null = null;
+  /** The chase eye's eased distance from the plane, m. */
+  private len = 0;
+  /** Plane + chase offset as of the last update or snap — frozen between
+   * them (the kill-cam and the world placement read it while dead). */
+  private pos: Vec3 = { x: 0, y: 0, z: 0 };
   /** The spring arm's eased length, as a fraction of the displayed arm. */
   private arm = 1;
+  /** The pull-in last shown (eased arm or hard clamp), as a fraction of the
+   * displayed arm; 1 = not pulled in. */
+  private armShown = 1;
   /** Last frame's plane velocity, for the arm's lookahead. */
   private lastVel: Vec3 | null = null;
   /** Eased look-into-the-turn angle, rad, + = left (F6, jet-camera.ts). */
@@ -67,13 +81,16 @@ export class ChaseCamera {
 
   /** Smoothed camera position, for placing the world around the viewer. */
   get position(): Vec3 {
-    return this.pos ?? { x: 0, y: 0, z: 0 };
+    return this.pos;
   }
 
   /** Snap directly behind the plane (spawn / respawn — no swoop across town). */
   snapTo(state: FlightState): void {
-    this.pos = this.desired(state);
+    this.dir = chaseDir(flightForward(state));
+    this.len = chaseDistance(state.speed);
+    this.place(state);
     this.arm = 1;
+    this.armShown = 1;
     this.lastVel = null;
     this.lead = 0;
   }
@@ -83,31 +100,47 @@ export class ChaseCamera {
    * look-at as offsets from the plane, at zoom `zoom`, built from the
    * smoothed chase state with the same dolly/look-at the render uses but
    * BEFORE any free-look orbit or turbulence shake — neither may steer.
-   * The turn lead (F6) IS in it: it is part of what the cursor sits on.
+   * The turn lead (F6) IS in it: it is part of what the cursor sits on. So
+   * is the spring arm's last pull-in (C1), applied the way the render does —
+   * the eye moves in along its line, the look direction stays.
    * Computed on demand (any zoom, so main can diff two of them), from the
-   * chase position as last updated or snapped, so it is never stale.
+   * chase offset as last updated or snapped, so it is never stale.
    */
   aimFrame(state: FlightState, zoom: number): { eye: Vec3; at: Vec3 } {
-    if (!this.pos) this.snapTo(state);
-    const plane = nearestImage(this.pos as Vec3, state.pos);
-    const p = this.pos as Vec3;
+    if (!this.dir) this.snapTo(state);
     const fwd = flightForward(state);
-    const chase = { x: p.x - plane.x, y: p.y - plane.y, z: p.z - plane.z };
+    const chase = this.offset();
     const eye = zoom !== 0 ? zoomOffset(chase, fwd, zoom) : chase;
     const at = leadLookAt(
       eye,
       zoomLookAt({ x: 0, y: 0, z: 0 }, fwd, zoom),
       this.lead * (1 - zoom),
     );
-    return { eye, at };
+    const k = this.armShown;
+    if (k === 1) return { eye, at };
+    return {
+      eye: { x: eye.x * k, y: eye.y * k, z: eye.z * k },
+      at: {
+        x: at.x + eye.x * (k - 1),
+        y: at.y + eye.y * (k - 1),
+        z: at.z + eye.z * (k - 1),
+      },
+    };
   }
 
-  private desired(state: FlightState): Vec3 {
-    const fwd = flightForward(state);
-    return {
-      x: state.pos.x - fwd.x * CHASE_DISTANCE,
-      y: state.pos.y - fwd.y * CHASE_DISTANCE + CHASE_HEIGHT,
-      z: state.pos.z - fwd.z * CHASE_DISTANCE,
+  /** The chase eye's offset from the plane. */
+  private offset(): Vec3 {
+    const d = this.dir as Vec3;
+    return { x: d.x * this.len, y: d.y * this.len, z: d.z * this.len };
+  }
+
+  /** Re-place the eye at the plane's position plus the chase offset. */
+  private place(state: FlightState): void {
+    const off = this.offset();
+    this.pos = {
+      x: state.pos.x + off.x,
+      y: state.pos.y + off.y,
+      z: state.pos.z + off.z,
     };
   }
 
@@ -120,34 +153,42 @@ export class ChaseCamera {
     zoom = 0,
     yawRate = 0,
   ): void {
-    if (!this.pos) this.snapTo(state);
-    else this.pos = nearestImage(state.pos, this.pos); // seam re-alignment
+    if (!this.dir) this.snapTo(state);
     // F6: the view leans into the turn the pilot is commanding (yawRate,
     // rad/s, + = left); out at full zoom, where the view axis is the gun line.
     this.lead = stepLead(this.lead, yawRate, dt);
 
-    // From here on this is viewer-local math on already-aligned images, not
-    // entity-to-entity world math — plain arithmetic is correct.
-    const target = this.desired(state);
+    // Direction and length ease separately, so a turn swings the arm without
+    // shortening it (a straight lerp of the offset would cut the chord).
+    const fwd = flightForward(state);
     const blend = 1 - Math.exp(-CAMERA_RESPONSE * dt);
-    const p = this.pos as Vec3;
-    this.pos = {
-      x: p.x + (target.x - p.x) * blend,
-      y: p.y + (target.y - p.y) * blend,
-      z: p.z + (target.z - p.z) * blend,
+    const want = chaseDir(fwd);
+    const d = this.dir as Vec3;
+    const mixed = {
+      x: d.x + (want.x - d.x) * blend,
+      y: d.y + (want.y - d.y) * blend,
+      z: d.z + (want.z - d.z) * blend,
     };
+    const m = Math.hypot(mixed.x, mixed.y, mixed.z);
+    this.dir =
+      m > 1e-6 ? { x: mixed.x / m, y: mixed.y / m, z: mixed.z / m } : want;
+    this.len += (chaseDistance(state.speed) - this.len) * blend;
+    this.place(state);
 
+    // From here on this is viewer-local math around the plane's own image
+    // (the eye is an offset from it), not entity-to-entity world math —
+    // plain arithmetic is correct.
+    //
     // Free-look orbits the DISPLAYED camera around the plane; the chase state
     // itself stays un-orbited, so releasing E always eases back to the exact
     // chase framing and the orbit never feeds back into the smoothing.
-    const aim = nearestImage(this.pos, state.pos);
-    let view = this.pos as Vec3;
+    const aim = { x: state.pos.x, y: state.pos.y, z: state.pos.z };
+    let view = this.pos;
     // Aim zoom (ANGE-G9CPCV) dollies the DISPLAYED eye in toward the nose and
     // swings the look-at out along the gun line. Like the orbit and the shake
     // below it rides `view`, never `this.pos` — so releasing the button eases
     // back to the exact chase framing and the dolly never feeds the smoothing.
     // It runs FIRST so the orbit rotates the shortened offset, not the long one.
-    const fwd = flightForward(state);
     if (zoom !== 0) {
       const off = zoomOffset(
         { x: view.x - aim.x, y: view.y - aim.y, z: view.z - aim.z },
@@ -170,34 +211,56 @@ export class ChaseCamera {
     if (shake) {
       view = { x: view.x + shake.x, y: view.y + shake.y, z: view.z + shake.z };
     }
-    // The spring arm runs LAST, on the eye actually shown, so neither the
-    // orbit nor the shake can push it back into a wall.
-    if (this.solid) {
-      const leads = this.armLeads(state, fwd, aim, target, view, dt);
-      view = this.springArm(aim, view, leads, dt, this.solid);
-    }
-    camera.position.set(view.x, view.y, view.z);
-    const at = leadLookAt(
+    let at = leadLookAt(
       view,
       zoomLookAt(aim, fwd, zoom),
       this.lead * (1 - zoom),
     );
+    // The spring arm runs LAST, on the eye actually shown, so neither the
+    // orbit nor the shake can push it back into a wall. It moves the eye,
+    // never the view direction (C1): the look-at rides along by the same
+    // displacement, so the screen keeps pointing where aimFrame — what the
+    // instructor steers by — says it does.
+    this.armShown = this.solid
+      ? this.springArm(
+          aim,
+          view,
+          this.armLeads(state, fwd, aim, view, dt),
+          dt,
+          this.solid,
+        )
+      : 1;
+    const k = this.armShown;
+    if (k !== 1) {
+      const armed = {
+        x: aim.x + (view.x - aim.x) * k,
+        y: aim.y + (view.y - aim.y) * k,
+        z: aim.z + (view.z - aim.z) * k,
+      };
+      at = {
+        x: at.x + armed.x - view.x,
+        y: at.y + armed.y - view.y,
+        z: at.z + armed.z - view.z,
+      };
+      view = armed;
+    }
+    camera.position.set(view.x, view.y, view.z);
     camera.lookAt(at.x, at.y, at.z);
   }
 
   /**
    * Where the plane and the displayed eye will be ARM_LEADS_S from now: the
    * plane's velocity and acceleration extrapolated (so a pull-up's rise
-   * counts), and the eye by the chase model itself — the desired pose behind
-   * the extrapolated heading, with today's lag decaying at CAMERA_RESPONSE.
-   * The display modifiers' share of the offset (zoom, orbit, shake) is
-   * carried over unchanged.
+   * counts), and the eye by the chase model itself — the arm's direction
+   * behind the extrapolated heading and its length for the extrapolated
+   * speed, with today's lag on each decaying at CAMERA_RESPONSE. The display
+   * modifiers' share of the offset (zoom, orbit, shake) is carried over
+   * unchanged.
    */
   private armLeads(
     state: FlightState,
     fwd: Vec3,
     aim: Vec3,
-    target: Vec3,
     view: Vec3,
     dt: number,
   ): ArmLead[] {
@@ -221,9 +284,12 @@ export class ChaseCamera {
         acc = { x: acc.x * k, y: acc.y * k, z: acc.z * k };
       }
     }
-    const p = this.pos as Vec3;
-    const lag = { x: p.x - target.x, y: p.y - target.y, z: p.z - target.z };
+    const d = this.dir as Vec3;
+    const want = chaseDir(fwd);
+    const dirLag = { x: d.x - want.x, y: d.y - want.y, z: d.z - want.z };
+    const lenLag = this.len - chaseDistance(state.speed);
     // The display modifiers' share of today's offset.
+    const p = this.pos;
     const extra = { x: view.x - p.x, y: view.y - p.y, z: view.z - p.z };
     return ARM_LEADS_S.map((t) => {
       const h = 0.5 * t * t;
@@ -237,31 +303,39 @@ export class ChaseCamera {
         y: vel.y + acc.y * t,
         z: vel.z + acc.z * t,
       };
-      const speed = Math.hypot(v.x, v.y, v.z) || 1;
+      const speed = Math.hypot(v.x, v.y, v.z);
+      const nose =
+        speed > 1e-6 ? { x: v.x / speed, y: v.y / speed, z: v.z / speed } : fwd;
       const decay = Math.exp(-CAMERA_RESPONSE * t);
-      const back = CHASE_DISTANCE / speed;
+      const w = chaseDir(nose);
+      const dx = w.x + dirLag.x * decay;
+      const dy = w.y + dirLag.y * decay;
+      const dz = w.z + dirLag.z * decay;
+      const k =
+        (chaseDistance(speed) + lenLag * decay) / (Math.hypot(dx, dy, dz) || 1);
       const off = {
-        x: -v.x * back + lag.x * decay + extra.x,
-        y: -v.y * back + CHASE_HEIGHT + lag.y * decay + extra.y,
-        z: -v.z * back + lag.z * decay + extra.z,
+        x: dx * k + extra.x,
+        y: dy * k + extra.y,
+        z: dz * k + extra.z,
       };
       return { t, from, off };
     });
   }
 
-  /** `view` pulled in toward `aim` (the plane) so the line between them is
-   * clear of solids: the eased arm, never longer than the clear length now,
-   * and pulled in early enough for the cuts `leads` foresee. */
+  /** How far to pull `view` in toward `aim` (the plane), as a fraction of
+   * the arm, so the line between them is clear of solids: the eased arm,
+   * never longer than the clear length now, and pulled in early enough for
+   * the cuts `leads` foresee. */
   private springArm(
     aim: Vec3,
     view: Vec3,
     leads: readonly ArmLead[],
     dt: number,
     solid: SolidQuery,
-  ): Vec3 {
+  ): number {
     const off = { x: view.x - aim.x, y: view.y - aim.y, z: view.z - aim.z };
     const len = Math.hypot(off.x, off.y, off.z);
-    if (len < 1e-6 || dt <= 0) return view;
+    if (len < 1e-6 || dt <= 0) return 1;
     // The padded sweeps — from the plane now and over the next ARM_LEADS_S —
     // set the eased target as a fraction of the arm, each lead t allowing
     // ARM_IN_SPEED·t of slack; only when the one from now is blocked can the
@@ -286,9 +360,25 @@ export class ChaseCamera {
     } else {
       this.arm += (target - this.arm) * (1 - Math.exp(-dt / ARM_OUT_S));
     }
-    const k = Math.min(this.arm, hard);
-    return { x: aim.x + off.x * k, y: aim.y + off.y * k, z: aim.z + off.z * k };
+    return Math.min(this.arm, hard);
   }
+}
+
+/** The chase eye's distance from the plane at airspeed `speed`, m: D(v),
+ * an explicit function of speed (C1), not a by-product of lag. */
+function chaseDistance(speed: number): number {
+  return CHASE_BASE + CHASE_STRETCH * Math.max(0, speed - MIN_SPEED);
+}
+
+/** Unit direction from the plane to its chase eye for the unit nose `fwd`:
+ * straight back along the nose and CHASE_RISE up (never zero: |fwd| = 1 and
+ * CHASE_RISE < 1). */
+function chaseDir(fwd: Vec3): Vec3 {
+  const x = -fwd.x;
+  const y = CHASE_RISE - fwd.y;
+  const z = -fwd.z;
+  const l = Math.hypot(x, y, z);
+  return { x: x / l, y: y / l, z: z / l };
 }
 
 /** A lookahead sample: the plane `t` s from now, and the eye's offset. */

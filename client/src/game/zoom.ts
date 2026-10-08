@@ -12,9 +12,9 @@ import type { Vec3 } from "@angels-bandits/common/world";
 export const BASE_FOV = 70;
 /** Aimed FOV: 2.5× magnification, tight enough to read a bandit at range. */
 export const ZOOM_FOV = 28;
-/** Eye distance behind the plane at full zoom (chase is 22 m). */
+/** Eye distance behind the plane at full zoom (chase is D(v), 26–36 m). */
 const ZOOM_DISTANCE = 6;
-/** Eye height above the plane at full zoom (chase is 6 m). Tuned by capture,
+/** Eye height above the plane at full zoom (chase is ~7–10 m). Tuned by capture,
  * not by theory: a 9 m span subtends 73 degrees at 6 m, so at a 28-degree FOV
  * the airframe is ALWAYS wider than the frame and the only question is where
  * it sits vertically. 2.2 put the upper wing and struts across the bottom

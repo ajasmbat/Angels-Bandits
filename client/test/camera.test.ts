@@ -1,8 +1,9 @@
 // Chase-camera composition (ANGE-G9CPCV). The aim-zoom dolly is the third
 // DISPLAY modifier on this camera, alongside the free-look orbit and the storm
 // shake — none of them may reach the smoothed chase state. Expected values are
-// hand-worked from the constants (chase 22 m back / 6 m up, zoom 6 m / 2.2 m,
-// look-ahead 350 m), never recomputed the way the implementation does it.
+// hand-worked from the constants (chase D(65) = 26 + 0.12·25 = 29 m along the
+// 22:6 arm — 27.978 m back / 7.630 m up — zoom 6 m / 2.2 m, look-ahead
+// 350 m), never recomputed the way the implementation does it.
 
 import { generateCity } from "@angels-bandits/common/city";
 import { RIVER_CENTER_Z } from "@angels-bandits/common/city/river";
@@ -48,11 +49,11 @@ function framed(zoom: number) {
 }
 
 describe("chase camera at zoom 0", () => {
-  it("sits 22 m behind and 6 m above, looking 2 m over the plane", () => {
+  it("sits 28 m behind and 7.6 m above at 65 m/s, looking 2 m over the plane", () => {
     const { pos, look } = framed(0);
     expect(pos[0]).toBeCloseTo(1000, 3);
-    expect(pos[1]).toBeCloseTo(306, 3);
-    expect(pos[2]).toBeCloseTo(1022, 3);
+    expect(pos[1]).toBeCloseTo(307.6304, 3);
+    expect(pos[2]).toBeCloseTo(1027.9781, 3);
     expect(look).toEqual([1000, 302, 1000]);
   });
 
@@ -73,7 +74,7 @@ describe("chase camera at full zoom", () => {
     expect(pos[2]).toBeCloseTo(1006, 3);
   });
 
-  it("closes the eye-to-plane distance from 22.8 m to 6.5 m", () => {
+  it("closes the eye-to-plane distance from 29 m to 6.5 m", () => {
     const far = framed(0).pos;
     const near = framed(1).pos;
     const range = (p: number[]) =>
@@ -82,7 +83,7 @@ describe("chase camera at full zoom", () => {
         (p[1] as number) - 300,
         (p[2] as number) - 1000,
       );
-    expect(range(far)).toBeCloseTo(22.804, 2);
+    expect(range(far)).toBeCloseTo(29, 2);
     expect(range(near)).toBeCloseTo(6.539, 2);
   });
 
@@ -130,8 +131,8 @@ describe("zoom composes with the other display modifiers", () => {
     for (let i = 0; i < 60; i++)
       chase.update(cam, flight, DT, undefined, undefined, 1);
     chase.update(cam, flight, DT, undefined, undefined, 0);
-    expect(calls.pos[1]).toBeCloseTo(306, 3);
-    expect(calls.pos[2]).toBeCloseTo(1022, 3);
+    expect(calls.pos[1]).toBeCloseTo(307.6304, 3);
+    expect(calls.pos[2]).toBeCloseTo(1027.9781, 3);
   });
 });
 

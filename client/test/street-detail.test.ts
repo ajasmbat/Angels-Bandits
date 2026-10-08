@@ -479,6 +479,23 @@ describe("the live city's vetoes", () => {
     expect(bad).toEqual([]);
   });
 
+  it("H2: drops no more street items to hole corridors than main did (216 on seed 42)", () => {
+    // Main (0868c79) vetoed every hole's corridor; H2 vetoes only the holes
+    // low enough for a street item to matter (vetoesStreet), so 3× the holes
+    // must not strip G1's streets. Items lost to new mouths on facades are a
+    // different count (furniture never stood in a facade).
+    const open = buildStreetDetailContext(SEED, byBlock, [], trains);
+    let all = 0;
+    for (const [bx, bz] of blocks) {
+      all +=
+        streetFurnitureFor(SEED, bx, bz, open).length +
+        blockParking(SEED, bx, bz, open).length;
+    }
+    const dropped = all - allItems.length - allParked.length;
+    expect(dropped).toBeGreaterThan(0); // the arches still clear their run-in
+    expect(dropped).toBeLessThanOrEqual(216);
+  });
+
   it("stays clear of the train's pillars", () => {
     expect(trains.length).toBeGreaterThan(0);
     expect(ctx.keepOut.length).toBeGreaterThan(0);

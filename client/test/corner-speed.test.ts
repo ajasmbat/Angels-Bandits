@@ -300,6 +300,51 @@ describe("cornerSpeed — hole corridors", () => {
     }
     expect(open).toBeGreaterThan(40);
   });
+
+  it("H2: lined up on any clear-air hole from 80 m out, nothing costs speed — the approach, the hole, and 40 m past the exit", () => {
+    let checked = 0;
+    for (const s of cityHoles(buildings)) {
+      if (s.hole.kind === "arch") continue; // hand-placed run-in (H1)
+      const x = s.hole.axis === "x";
+      for (const dir of [1, -1]) {
+        const yaw = x
+          ? dir === 1
+            ? -Math.PI / 2
+            : Math.PI / 2
+          : dir === 1
+            ? Math.PI
+            : 0;
+        const fx = -Math.sin(yaw);
+        const fz = -Math.cos(yaw);
+        for (
+          let along = -(s.length / 2 + 80);
+          along <= s.length / 2 + 40;
+          along += 10
+        ) {
+          const pos = {
+            x: s.center.x + (x ? dir * along : 0),
+            y: s.center.y,
+            z: s.center.z + (x ? 0 : dir * along),
+          };
+          // Only where the whole horizon ahead is open air (a real wall
+          // past the run-out may still, rightly, cost speed).
+          let clear = true;
+          for (let d = 0; d <= 240 && clear; d += 4) {
+            const p = { x: pos.x + fx * d, y: pos.y, z: pos.z + fz * d };
+            if (
+              collideCity(p, 4, buildings, index) ||
+              collideNature(p, 4, nature)
+            )
+              clear = false;
+          }
+          if (!clear) continue;
+          checked++;
+          expect(cornerSpeed(at(pos, yaw), city, 0, T)).toBe(MAX_SPEED);
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(100);
+  });
 });
 
 describe("stepCornerCap — smooth, no oscillation", () => {

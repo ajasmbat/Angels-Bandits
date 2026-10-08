@@ -1233,12 +1233,74 @@ two-train read-back before T2, no tunnel before H2, so it dies) prints
   each) crossed `station`'s view for tens of seconds: 88/86/83 draws over
   three passes against 82 when it was flown alone. The harness now waits for
   the room and the sky to empty after any segment with pilots (a new
-  read-only `__ab.combat().bullets`). On the M3 the bullets expire inside
-  the 0.9 s settle, but only just.
+  read-only `__ab.combat().bullets`), and prints how long that took; if it
+  never empties it says what was left and measures on. On the M3 the
+  bullets expire inside the 0.9 s settle, but only just.
 
 ### What the runner measured (P2)
 
-{{P2_MEASURED}}
+GPU-less Linux box, SwiftShader (Vulkan), `--res 0.75` unless stated, on
+main after O5 merged (load average ~14, another ticket's harness sharing
+the box). SwiftShader's GPU and wall times are the CPU rasterising, so only
+the GPU-independent rows below are claims; the `60fps` and `hitch` verdicts
+all read FAIL here for that reason and say nothing about the M3.
+
+**The gate, `--runs 3`, High:**
+
+| segment | draws (3 passes) | budget | alive | first sight (window) |
+| --- | --- | --- | --- | --- |
+| core | 82 / 82 / 82 | 120 | yes | 0p 0t 0b |
+| plaza | 79 / 79 / 79 | — | yes | 0p 0t 0b |
+| sky | 70 / 70 / 70 | — | yes | 0p 0t 0b |
+| canyon | 83 / 83 / 83 | — | yes | 0p 0t 0b |
+| storm | 75 / 75 / 75 | — | yes | 0p 0t 0b |
+| street | 83 / 83 / 83 | — | yes | 0p 0t 0b |
+| furball (not asserted) | 228 / 229 / 235 | — | yes, 12 planes | 0p 0t 15b (per-plane scarves, as in O4) |
+| station | 82 / 82 / 82 | 90 | yes | 0p 0t 0b |
+| hole | 83 / 83 / 83 | 92 | yes | 0p 0t 0b |
+| sidewalk | 82 / 82 / 82 | 90 | yes | 0p 0t 0b |
+
+Determinism **PASS**: draw calls identical in every pinned segment, GPU
+p50 within 8.4 %. No page errors, no deaths. The station found its moment
+at +2.25 s on every pass (trains `0#2` and `1#2`). The furball's bullets
+took 7–10 s of this box's time to drain before `station`. `core` sits at 82
+draws against O4's 77 (+5 for the whole batch) and the 120 budget; nothing
+breached, so nothing was cut.
+
+One residue to know about: `plaza` read 79 / 79 / 78 on an earlier run
+(the same harness, before O5's merge). Something comes into view at a fixed point along its flight
+(78 → 79), and at 3 fps the share of the window before that point moves
+from pass to pass, so the median can land on either side. That is O4's
+documented runner limit; on the M3 a window holds hundreds of frames.
+
+**Fragment proxy, High at ratio 2** (`--res 2 --quality high --segments
+core`): 3,686,400 px × **2.292** pass-equivalents, the same as O4's 2.29.
+The proxy prices the post chain's passes × pixels. Scene overdraw (the
+crowd, tunnel glass, platform people) is not in it; that is a GPU-time
+question for the M3.
+
+**Mobile.** One `--quality mobile` pass flew every segment alive, with 0/0/0
+first sight outside the furball. Draws: core 76, plaza 72, sky 67, canyon
+76, storm 70, street 77, furball 229, station 76, hole 76, sidewalk 76.
+The phone proxy (`--device phone --cpu-throttle 4 --segments core`, High
+at ratio 2 vs Mobile at ratio 1, `--runs 3`):
+
+| core view | High, ratio 2 | Mobile, ratio 1 | Mobile cheaper by |
+| --- | --- | --- | --- |
+| fragment proxy | 3.02 Mpx·passes | 1.04 Mpx·passes | 2.90× |
+| draw calls | 82 | 76 | |
+| draws × pixels | | | **4.32×** (M3: 4.33×) |
+| pre-render JS p50 (4× throttled) | 12.9 ms | 16.1 ms | — |
+
+The JS row is not game code. A CDP CPU profile of the same view puts the
+game bundle's own self time level across the tiers (High 20.5–23.0 ms a
+frame, Mobile 23.3–24.3 ms, 4× throttled), while SwiftShader's GL calls
+(buffer and uniform uploads blocking on the rasteriser) take hundreds of ms
+a frame and run more often at Mobile's lighter frames. A sampling heap
+profile finds ~1–2 KB a frame allocated on either tier, nearly all inside
+three's uniform upload, so there is no per-frame garbage from the batch.
+The phone's real JS and GPU cost come from the M3 commands below (and O5's
+`--trace` run on the phone stand-in).
 
 ### Quality tiers
 

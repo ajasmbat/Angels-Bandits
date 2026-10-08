@@ -87,7 +87,7 @@ beforeAll(async () => {
   // node itself (tsx as a loader), not `npx tsx`: kill() in afterAll must
   // reach the server, or it outlives the test and keeps flying its bots.
   child = spawn(process.execPath, ["--import", "tsx", entry], {
-    env: { ...process.env, PORT: "0" },
+    env: { ...process.env, PORT: "0", AB_DEBUG_ROOMS: "" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   url = await new Promise<string>((resolve, reject) => {
@@ -402,7 +402,11 @@ describe("malformed messages (S1)", () => {
 
   it("keeps the test-only /debug/rooms route off unless AB_DEBUG_ROOMS=1", async () => {
     const res = await fetch(`${url.replace("ws://", "http://")}/debug/rooms`);
-    expect(res.status).toBe(404);
+    // Not a bare 404: with a built client/dist the SPA fallback answers any
+    // unknown path with index.html. Either answer is fine; room data is not.
+    const answer = `${res.status} ${res.headers.get("content-type")}`;
+    expect(answer).toMatch(/^(404 text\/plain|200 text\/html)/);
+    expect(await res.text()).not.toContain('"botsByRoom"');
   });
 
   it("drops malformed poses and hits from a joined, alive client without crashing", async () => {

@@ -50,14 +50,14 @@ export interface SettingsHooks {
   setAutoFire: (on: boolean) => void;
   /** The resolution scale changed (debounced while a slider drags). */
   setResScale: (scale: number) => void;
-  /** Any volume changed. */
+  /** Any volume changed (the soundtrack's on/off switch too). */
   setVolumes: (s: Settings) => void;
   /** The panel opened or closed: the autopilot and the touch controls. */
   onOpenChange: (open: boolean) => void;
 }
 
 /** The Settings values a range slider drives. */
-type SliderKey = "resScale" | "master" | "engine" | "voice";
+type SliderKey = "resScale" | "master" | "engine" | "voice" | "music";
 
 /** While open, every value is re-read this often (FPS, Auto's tier, and
  * anything the G key, M key or a HUD toggle changed behind the panel). */
@@ -139,9 +139,17 @@ const MARKUP = `
       ${slider("master", "MASTER", 0)}
       ${slider("engine", "ENGINE", 0)}
       ${slider("voice", "RADIO VOICE", 0)}
+      ${slider("music", "MUSIC", 0)}
       <div class="row">
         <span>RADIO VOICE</span>
         ${seg("radioVoice", "Radio voice", [
+          ["on", "ON"],
+          ["off", "OFF"],
+        ])}
+      </div>
+      <div class="row">
+        <span>MUSIC</span>
+        ${seg("musicOn", "Music", [
           ["on", "ON"],
           ["off", "OFF"],
         ])}
@@ -323,6 +331,10 @@ export class SettingsPanel {
       this.values = clampSettings({ ...this.values, autoFire: v === "on" });
       saveSettings(this.store, this.values);
       h.setAutoFire(v === "on");
+    } else if (group === "musicOn") {
+      this.values = clampSettings({ ...this.values, musicOn: v === "on" });
+      saveSettings(this.store, this.values);
+      h.setVolumes(this.values);
     }
   }
 
@@ -360,6 +372,7 @@ export class SettingsPanel {
       radioVoice: h.radioVoice() ? "on" : "off",
       haptics: haptics ? "on" : "off",
       autoFire: h.autoFire() ? "on" : "off",
+      musicOn: this.values.musicOn ? "on" : "off",
     };
     for (const group of this.root.querySelectorAll<HTMLElement>(".seg")) {
       const want = marks[group.dataset.key ?? ""];
@@ -392,7 +405,13 @@ export class SettingsPanel {
   }
 
   private paintOutputs(): void {
-    for (const key of ["resScale", "master", "engine", "voice"] as const) {
+    for (const key of [
+      "resScale",
+      "master",
+      "engine",
+      "voice",
+      "music",
+    ] as const) {
       this.out(key, `${Math.round(this.values[key] * 100)}%`);
     }
   }

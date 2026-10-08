@@ -18,6 +18,8 @@ export interface EngineSource {
 
 const MASTER_LEVEL = 0.5;
 export const OWN_ENGINE_LEVEL = 0.16;
+/** The own engine's share of its level at idle throttle — its quietest. */
+export const OWN_ENGINE_IDLE = 0.55;
 const REMOTE_ENGINE_LEVEL = 0.6;
 const GUN_LEVEL = 0.5;
 const WHOOSH_LEVEL = 0.7;
@@ -33,6 +35,14 @@ const SHIELD_LEVEL = 0.12;
 const VOICE_LEVEL = 0.9;
 const DUCK_LEVEL = 0.55;
 const DUCK_RAMP_S = 0.08;
+// S2 soundtrack: the whole score sums (worst case, every layer and sting at
+// full) to 6 dB under the own engine at idle, so the engine's pitch cue —
+// the F5 corner manager's only cue — always reads through it. Under a radio
+// line it ducks a further −6 dB on top of the sfx duck (≈ −11 dB in all).
+export const MUSIC_LEVEL = OWN_ENGINE_LEVEL * OWN_ENGINE_IDLE * 10 ** (-6 / 20);
+const MUSIC_DUCK_LEVEL = 0.5;
+/** Slider and mute moves glide instead of clicking. */
+const MUSIC_VOLUME_RAMP_S = 0.05;
 // Storm (ST2): thunder rumbles under the explosion level; the in-cloud
 // static bed is diegetic flavor, quieter than everything else.
 const THUNDER_LEVEL = 0.8;
@@ -64,6 +74,9 @@ export interface MixBus {
   sfx: GainNode;
   /** The master, after the duck — where a send off `sfx` returns to. */
   master: GainNode;
+  /** The S2 soundtrack's input: music volume, then its own deeper radio
+   * duck, then `sfx`. */
+  music: GainNode;
 }
 
 /** Player volume multipliers (M6 settings), each a gain 0..1. */
@@ -73,6 +86,8 @@ export interface Volumes {
   engine: number;
   /** The radio voice bus. */
   voice: number;
+  /** The S2 soundtrack (0 = muted). */
+  music: number;
 }
 
 interface RemoteEngine {
@@ -87,6 +102,9 @@ export class GameAudio implements VoiceSink {
   /** Everything except the radio voice — ducked while a line is on air. */
   private sfx: GainNode | null = null;
   private voice: GainNode | null = null;
+  /** S2: the music volume stage, and the radio duck under it. */
+  private music: GainNode | null = null;
+  private musicDuck: GainNode | null = null;
   private noise: AudioBuffer | null = null;
   private ownOsc: OscillatorNode | null = null;
   private ownGain: GainNode | null = null;
@@ -104,7 +122,7 @@ export class GameAudio implements VoiceSink {
   private lastPingAt = Number.NEGATIVE_INFINITY;
   /** M6 settings: gain multipliers (already curved), applied to the buses
    * as they are built and to the engine levels every frame. */
-  private volumes: Volumes = { master: 1, engine: 1, voice: 1 };
+  private volumes: Volumes = { master: 1, engine: 1, voice: 1, music: 1 };
 
   /** Backgrounded (M2): the context is suspended on purpose, and the
    * per-frame ensure() must not wake it back up. */
@@ -164,6 +182,11 @@ export class GameAudio implements VoiceSink {
       this.voice = this.ctx.createGain();
       this.voice.gain.value = VOICE_LEVEL * this.volumes.voice;
       this.voice.connect(this.master);
+      this.musicDuck = this.ctx.createGain();
+      this.musicDuck.connect(this.sfx);
+      this.music = this.ctx.createGain();
+      this.music.gain.value = MUSIC_LEVEL * this.volumes.music;
+      this.music.connect(this.musicDuck);
       // 1 s of shared white noise for every burst-shaped sound.
       const len = this.ctx.sampleRate;
       this.noise = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
@@ -186,21 +209,33 @@ export class GameAudio implements VoiceSink {
     this.volumes = { ...v };
     if (this.master) this.master.gain.value = MASTER_LEVEL * v.master;
     if (this.voice) this.voice.gain.value = VOICE_LEVEL * v.voice;
+    if (this.ctx && this.music) {
+      this.music.gain.setTargetAtTime(
+        MUSIC_LEVEL * v.music,
+        this.ctx.currentTime,
+        MUSIC_VOLUME_RAMP_S,
+      );
+    }
   }
 
-  /** QA (`__ab.settings`): the live master and voice bus gains, or null
-   * before the audio context exists. */
-  busGains(): { master: number; voice: number } | null {
+  /** QA (`__ab.settings`): the live master, voice and music bus gains, or
+   * null before the audio context exists. `music` is the target the slider
+   * set (the live value glides there). */
+  busGains(): { master: number; voice: number; music: number } | null {
     if (!this.master || !this.voice) return null;
-    return { master: this.master.gain.value, voice: this.voice.gain.value };
+    return {
+      master: this.master.gain.value,
+      voice: this.voice.gain.value,
+      music: MUSIC_LEVEL * this.volumes.music,
+    };
   }
 
   /** The buses an add-on layer mixes into; null until the context runs
    * (first user gesture), so nothing downstream starts before the join. */
   mixBus(): MixBus | null {
     const ctx = this.ensure();
-    if (!ctx || !this.sfx || !this.master) return null;
-    return { ctx, sfx: this.sfx, master: this.master };
+    if (!ctx || !this.sfx || !this.master || !this.music) return null;
+    return { ctx, sfx: this.sfx, master: this.master, music: this.music };
   }
 
   /** Throttle fraction 0…1 from a commanded speed. */
@@ -240,7 +275,7 @@ export class GameAudio implements VoiceSink {
       alive
         ? OWN_ENGINE_LEVEL *
             this.volumes.engine *
-            (0.55 + 0.45 * t + 0.3 * boost01)
+            (OWN_ENGINE_IDLE + (1 - OWN_ENGINE_IDLE) * t + 0.3 * boost01)
         : 0,
       now,
       0.1,
@@ -449,6 +484,14 @@ export class GameAudio implements VoiceSink {
     this.sfx.gain.cancelScheduledValues(now);
     this.sfx.gain.setTargetAtTime(DUCK_LEVEL, now, DUCK_RAMP_S);
     this.sfx.gain.setTargetAtTime(1, now + buffer.duration / rate, DUCK_RAMP_S);
+    if (this.musicDuck) {
+      // The score ducks deeper than the effects, on the same timeline; an
+      // overlapping line re-arms the restore from its own end.
+      const duck = this.musicDuck.gain;
+      duck.cancelScheduledValues(now);
+      duck.setTargetAtTime(MUSIC_DUCK_LEVEL, now, DUCK_RAMP_S);
+      duck.setTargetAtTime(1, now + buffer.duration / rate, DUCK_RAMP_S);
+    }
     src.addEventListener("ended", onDone);
     src.start(now);
     return true;

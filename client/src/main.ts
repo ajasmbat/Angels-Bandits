@@ -68,6 +68,7 @@ import { SMAAPass } from "three/examples/jsm/postprocessing/SMAAPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { CityAmbience } from "./audio/ambience";
 import { Busker } from "./audio/busker";
+import { Music, type MusicMoment } from "./audio/music";
 import { RadioQueue, RadioVoice } from "./audio/radio";
 import { GameAudio } from "./audio/sound";
 import { NEAR_MISS_RADIUS, closestApproach, spatialize } from "./audio/spatial";
@@ -257,6 +258,7 @@ import { WeatherClock, setWeatherUniform } from "./render/weather";
 import { buildingSeed, isWindowLit } from "./render/window-pattern";
 import { nearestImage } from "./render/wrapPlacement";
 import { BotBar } from "./ui/botbar";
+import { Coach, renderPrimer } from "./ui/coach";
 import { CommsTicker } from "./ui/comms";
 import { DamageIndicator } from "./ui/damage-indicator";
 import { initFullscreenUi } from "./ui/fullscreen";
@@ -289,6 +291,7 @@ import {
   type SettingsStore,
   autopilotInput,
   loadSettings,
+  musicGain,
   scaleLimits,
   volumeGain,
 } from "./ui/settings";
@@ -306,6 +309,10 @@ initMobileShell();
 // before the name prompt (the JOIN tap is its gesture; the iPhone sheet
 // greets the join card). No-op on desktop.
 const phoneFullscreen = initPhoneFullscreen();
+// U3: the join card's controls primer — after the shell (body.touch picks
+// the variant), switching to touch if the first real touch comes later.
+renderPrimer(isTouch());
+whenTouch(() => renderPrimer(true));
 
 // --- Join flow: name → server welcome (identity, seed, spawn) ---
 const name = await requestName(phoneFullscreen.onJoinGesture);
@@ -959,14 +966,21 @@ const bullets = new Bullets();
 const tracers = new Tracers();
 scene.add(tracers.group);
 const audio = new GameAudio();
+// S2 dynamic soundtrack: procedural, intensity-driven, on its own ducked
+// music input; built once on the first running frame, like the city.
+const music = new Music(audio, welcome.seed);
 /** M6: the players' volume sliders, as gains (stored before the context
- * exists; GameAudio applies them as its buses are built). */
-const applyVolumes = (): void =>
+ * exists; GameAudio applies them as its buses are built). Music OFF or at 0
+ * also idles the score's scheduler. */
+const applyVolumes = (): void => {
   audio.setVolumes({
     master: volumeGain(settings.master),
     engine: volumeGain(settings.engine),
     voice: volumeGain(settings.voice),
+    music: musicGain(settings),
   });
+  music.setEnabled(musicGain(settings) > 0);
+};
 applyVolumes();
 // L2 city soundscape: traffic, horns, sirens, plaza music, wind and tunnel
 // echo — procedural, built once into GameAudio's ducked sfx bus.
@@ -1016,6 +1030,12 @@ botBar.onClaim = (count) => socket.sendSetBots(count);
 scoreboard.bindBotBar(botBar);
 // M2: no Tab key on a phone — a minimap tap pins the scoreboard (touch only).
 scoreboard.bindTapToggle(document.getElementById("minimap") as HTMLElement);
+// U3: first-life hints, the touch coach marks and the storm notice. Starts
+// with the first rendered frame (bottom of the file).
+const coach = new Coach(isTouch);
+whenTouch(() =>
+  coach.bindTouchAim(document.getElementById("touch-layer") as HTMLElement),
+);
 
 /** id → name/isBot for feed + radio lines (self included; remotes tracks the
  * others too). isBot gates whether the VOICE may speak the callsign. */
@@ -1338,6 +1358,7 @@ socket.events.onDamage = (msg) => {
       haptics.damage(now);
     }
     radio.noteCombat(performance.now());
+    music.noteCombat(performance.now()); // being fired at
     if (lowHpArmed && msg.hp < LOW_HP_CALLOUT) {
       lowHpArmed = false;
       say(hitCallout(name));
@@ -1379,10 +1400,13 @@ socket.events.onDeath = (msg) => {
     hud.killConfirm(performance.now());
     haptics.kill();
     audio.killConfirm();
+    music.moment("victory");
   }
   hpBar.clear(msg.victimId); // never float a stale bar over a respawn
   if (msg.victimId === socket.selfId) {
     enterDeath(msg.killerId, msg.cause);
+    // U3: the first storm death earns one "stay below" notice on respawn.
+    if (msg.cause === "storm") coach.noteStormDeath();
     // M5: the first life is over ("after the first match" in a drop-in
     // game) — the kill-cam pause is when an install offer intrudes least.
     phoneFullscreen.onFirstLifeOver();
@@ -1780,7 +1804,7 @@ declare global {
         open: boolean;
         autopilot: boolean;
         values: Settings;
-        gains: { master: number; voice: number } | null;
+        gains: { master: number; voice: number; music: number } | null;
       };
       /** Claim the room's shared bot count (QA: 0 makes a scene reproducible). */
       setBots: (count: number) => void;
@@ -1848,6 +1872,8 @@ declare global {
       boost: () => { energy: number; active: boolean };
       /** M1 QA: touch-control state; null off touch. */
       touch: () => ReturnType<TouchControls["debug"]> | null;
+      /** U3 QA: the hint on screen, the queue left, the touch overlay. */
+      coach: () => ReturnType<Coach["debug"]>;
       zoom: () => { held: boolean; z: number; fov: number };
       lampImage: (x: number, z: number) => { x: number; z: number } | null;
       traffic: (at?: number | null) => ReturnType<Traffic["debug"]>;
@@ -1966,6 +1992,12 @@ declare global {
       };
       /** L2 QA: the city soundscape's per-layer gains and their inputs. */
       ambience: () => ReturnType<CityAmbience["debug"]>;
+      /** S2 QA: the soundtrack's state (wanted and playing), layer mix and
+       * fixed node count. */
+      music: () => ReturnType<Music["debug"]>;
+      /** S2 QA: fire a sting by hand (`swell` stands in for the D3/D5
+       * collapse and S4 boss events until they exist). */
+      musicMoment: (kind: MusicMoment) => void;
       /** A1 QA: what the city-life tier drew and holds. */
       cityLife: () => {
         drawn: number;
@@ -2278,6 +2310,7 @@ window.__ab = {
   }),
   boost: () => ({ energy: boost.energy, active: boost.active }),
   touch: () => touchControls?.debug() ?? null,
+  coach: () => coach.debug(),
   // ANGE-G9CPCV QA: aim-zoom state plus the FOV it is actually driving
   // (drive it with real button-2 mouse events).
   zoom: () => ({ held: zoom.held, z: zoom.z, fov: camera.fov }),
@@ -2405,6 +2438,8 @@ window.__ab = {
     log: radioLog.map((l) => ({ ...l })),
   }),
   ambience: () => ambience.debug(),
+  music: () => music.debug(),
+  musicMoment: (kind) => music.moment(kind),
   cityLife: () => ({
     drawn: cityLife.count,
     statics: cityLife.staticDrawn,
@@ -2900,6 +2935,7 @@ const frame = (now: number): void => {
       tracers.flash(shot.origin, now);
       audio.gunshot();
       radio.noteCombat(now); // firing = combat radio discipline
+      music.noteCombat(now);
     }
 
     // In-cloud turbulence (ST2): pure offsets applied to the DISPLAYED
@@ -2979,6 +3015,7 @@ const frame = (now: number): void => {
       ) {
         audio.whoosh(spatialize(flight.pos, flight.yaw, bullet.pos).pan, now);
         radio.noteCombat(now);
+        music.noteCombat(now); // fired at
         say(nearMissCallout(name));
       }
       continue;
@@ -3266,6 +3303,16 @@ const frame = (now: number): void => {
     serverTimeMs: renderMs,
     rain: rain.level, // L4 weather
   });
+  // S2 soundtrack: the nearest living remote (torus distance) is the threat;
+  // dead, there is none — the kill-cam plays calm.
+  let threatDist: number | null = null;
+  if (alive) {
+    for (const c of contacts) {
+      const d = wrapDistance(flight.pos, c.pos);
+      if (threatDist === null || d < threatDist) threatDist = d;
+    }
+  }
+  music.update({ nowMs: now, threatDist, hp: selfHp, alive });
   // A1: the nearest busker within earshot of the plane (silent if none).
   busker.update(
     flight.pos,
@@ -3343,7 +3390,23 @@ const frame = (now: number): void => {
     alive && aimMode === "instructor" ? input.cursorPx() : null,
     aimConverged,
   );
-  cursorPrev = input.cursorNdc();
+  const cursorNow = input.cursorNdc();
+  // U3: the first-life hints watch for each control being used — by hand:
+  // auto-fire's trigger is not the player firing.
+  const flying = alive && !settingsOpen;
+  if (flying && !isTouch()) {
+    coach.noteCursor(
+      cursorNow.x - cursorPrev.x,
+      cursorNow.y - cursorPrev.y,
+      camera.fov,
+      camera.aspect,
+    );
+  }
+  if (flying && guns.triggerHeld) coach.note("fire");
+  if (flying && boost.active) coach.note("boost");
+  if (flying && scoreboard.isOpen) coach.note("scores");
+  coach.frame(Math.min(rawMs, 250), alive, settingsOpen || document.hidden);
+  cursorPrev = cursorNow;
   if (solutionTone.shouldPlay(alive && aimResult.solution, now)) {
     audio.solutionTick();
   }
@@ -3410,6 +3473,7 @@ renderer.setAnimationLoop(frame);
 requestAnimationFrame(() => {
   clearInterval(bootPing);
   closeJoin();
+  coach.start(); // U3: hints and the touch coach marks greet the first spawn
 });
 
 // --- M2: backgrounded tab → pause; back with a dead session → rejoin ---

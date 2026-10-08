@@ -1767,6 +1767,196 @@
       }
       /* ===== end M5 phone fullscreen ======================================== */
 
+      /* ===== U3 first five minutes ===========================================
+         Built by ui/coach.ts (all copy lives there). The primer sits under
+         FLY and stays through CONNECTING / LOADING; it goes when the
+         keyboard is up or the screen is too short for it. The hint slot is
+         bottom-centre, clear of FIRE / BOOST (left) and ZOOM (right) and of
+         the top-centre aim-mode toast; only its SKIP link takes input. The
+         touch coach marks never take input: the drag that dismisses them
+         still aims. Fades are opacity only. */
+      #join-primer {
+        list-style: none;
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 4px 14px;
+        max-width: 440px;
+        margin: 18px auto 0;
+        padding: 0;
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        line-height: 1.5;
+        color: #9fd8e8;
+        opacity: 0.85;
+      }
+      #join-primer b {
+        font-weight: normal;
+        letter-spacing: 0.12em;
+        color: #e8f6fa;
+      }
+      body.touch #join-primer {
+        max-width: 600px;
+        margin-top: 12px;
+      }
+      body.kbd #join-primer {
+        display: none;
+      }
+      @media (max-height: 300px) {
+        #join-primer {
+          display: none;
+        }
+      }
+      #coach-hint {
+        position: fixed;
+        left: 50%;
+        bottom: calc(var(--safe-b) + 64px);
+        z-index: 5;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        max-width: min(60vw, 560px);
+        padding: 7px 14px;
+        box-sizing: border-box;
+        transform: translateX(-50%);
+        background: #0c0b18b3;
+        border: 1px solid #27e0c066;
+        border-radius: 4px;
+        color: #e8f6fa;
+        font-size: 13px;
+        letter-spacing: 0.15em;
+        text-shadow: 0 1px 2px #000;
+        white-space: nowrap;
+        opacity: 0;
+        visibility: hidden;
+        transition:
+          opacity 0.4s ease-out,
+          visibility 0s 0.4s;
+        pointer-events: none;
+        user-select: none;
+      }
+      #coach-hint.on {
+        opacity: 1;
+        visibility: visible;
+        transition: opacity 0.4s ease-out;
+      }
+      #coach-hint.storm {
+        border-color: #ffc46b88;
+        color: #ffd9a0;
+      }
+      #coach-hint button {
+        appearance: none;
+        -webkit-appearance: none;
+        position: relative;
+        flex: none;
+        margin: 0;
+        padding: 2px 0;
+        background: none;
+        border: none;
+        color: #9fd8e8;
+        font: inherit;
+        font-size: 10px;
+        letter-spacing: 0.12em;
+        text-decoration: underline;
+        opacity: 0.8;
+        cursor: pointer;
+        pointer-events: auto;
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+      }
+      #coach-hint button[hidden] {
+        display: none;
+      }
+      /* M9: a 44 px tall hit area around the small link. */
+      #coach-hint button::before {
+        content: "";
+        position: absolute;
+        left: -8px;
+        right: -8px;
+        top: calc(50% - 22px);
+        height: 44px;
+      }
+      body.touch #coach-hint {
+        bottom: calc(var(--safe-b) + 22px);
+        max-width: 40vw;
+        font-size: 12px;
+        white-space: normal;
+        text-align: center;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #coach-hint,
+        #coach-hint.on {
+          transition: none;
+        }
+      }
+      #touch-coach {
+        display: none;
+        position: fixed;
+        inset: 0;
+        z-index: 4;
+        background: #0c0b1866;
+        color: #e8f6fa;
+        font-size: 11px;
+        letter-spacing: 0.15em;
+        text-shadow: 0 1px 2px #000;
+        pointer-events: none;
+        user-select: none;
+      }
+      #touch-coach.open {
+        display: block;
+      }
+      #touch-coach.paused {
+        visibility: hidden;
+      }
+      #touch-coach .zone,
+      #touch-coach .mark {
+        position: absolute;
+        box-sizing: border-box;
+        border: 2px dashed #27e0c0cc;
+      }
+      #touch-coach .zone {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        border-radius: 12px;
+        text-align: center;
+      }
+      #touch-coach .zone b {
+        font-size: 14px;
+        font-weight: normal;
+        letter-spacing: 0.2em;
+      }
+      #touch-coach .mark {
+        border-radius: 50%;
+      }
+      #touch-coach .mark[data-for="minimap"] {
+        border-radius: 4px;
+      }
+      #touch-coach .mark span {
+        position: absolute;
+        padding: 3px 8px;
+        background: #0c0b18cc;
+        border-radius: 3px;
+        white-space: nowrap;
+      }
+      #touch-coach .mark.right span {
+        left: calc(100% + 8px);
+        top: 50%;
+        transform: translateY(-50%);
+      }
+      #touch-coach .mark.left span {
+        right: calc(100% + 8px);
+        top: 50%;
+        transform: translateY(-50%);
+      }
+      #touch-coach .mark.below span {
+        left: 0;
+        top: calc(100% + 6px);
+      }
+      /* ===== end U3 first five minutes ====================================== */
+
     </style>
   </head>
   <body>
@@ -1888,6 +2078,13 @@
     </div>
     <div id="freelook-hint">◇ FREE LOOK ◇</div>
     <div id="aim-mode-toast"></div>
+    <!-- U3 (ui/coach.ts): first-life hints and the storm notice. -->
+    <div id="coach-hint" role="status" aria-live="polite">
+      <span class="text"></span>
+      <button type="button">SKIP TIPS</button>
+    </div>
+    <!-- U3: the one-time touch coach marks (placed from live rects). -->
+    <div id="touch-coach" aria-hidden="true"></div>
     <div id="killfeed"></div>
     <div id="comms"></div>
     <div id="scoreboard">
@@ -1951,6 +2148,8 @@
           spellcheck="false"
         />
         <button type="submit">FLY</button>
+        <!-- U3 (ui/coach.ts): the controls primer, desktop or touch. -->
+        <ul id="join-primer" aria-label="Controls"></ul>
         <p id="join-status" role="status" aria-live="polite"></p>
         <button id="join-retry" type="button" hidden>RETRY</button>
         <!-- ui/fullscreen.ts unhides it where pages can't go fullscreen

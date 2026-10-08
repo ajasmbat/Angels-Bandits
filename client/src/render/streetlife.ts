@@ -208,6 +208,34 @@ export function blockWindow(
   return out;
 }
 
+/**
+ * blockWindow written into `out` (and returned), reusing its entries — for
+ * the per-frame callers (O5: the street systems each rebuilt 25 `{bx, bz}`
+ * objects and an array every frame). The same blocks in the same order.
+ */
+export function blockWindowInto(
+  cameraPos: Vec3,
+  radius: number,
+  out: BlockIndex[],
+): BlockIndex[] {
+  const { bx, bz } = blockOf(cameraPos);
+  let n = 0;
+  for (let i = -radius; i <= radius; i++) {
+    for (let j = -radius; j <= radius; j++) {
+      let w = out[n];
+      if (!w) {
+        w = { bx: 0, bz: 0 };
+        out[n] = w;
+      }
+      w.bx = (((bx + i) % CITY_GRID) + CITY_GRID) % CITY_GRID;
+      w.bz = (((bz + j) % CITY_GRID) + CITY_GRID) % CITY_GRID;
+      n++;
+    }
+  }
+  out.length = n;
+  return out;
+}
+
 // --- The altitude gate ----------------------------------------------------
 
 /** Camera altitude at or below which the micro tier draws at full density, m. */

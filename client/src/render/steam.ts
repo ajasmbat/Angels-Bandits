@@ -20,15 +20,16 @@ import { RENDER_ORDER } from "./render-order";
 import { roofClutterFor } from "./roofclutter";
 import {
   BLOCK_WINDOW_RADIUS,
+  type BlockIndex,
   GUTTER_LINE,
   type RingPoint,
   TAG_STEAM,
   blockStream,
-  blockWindow,
+  blockWindowInto,
   ringPerimeter,
   ringPointInto,
 } from "./streetlife";
-import { nearestImage, uploadPrefix } from "./wrapPlacement";
+import { nearestImageInto, uploadPrefix } from "./wrapPlacement";
 
 /** Hard per-block vent budget — enforced in the pure function (see header). */
 export const MAX_VENTS_PER_BLOCK = 5;
@@ -308,6 +309,12 @@ export class Steam {
     return vents;
   }
 
+  /** O5: the block window and a vent's position and torus image, reused
+   * every frame (no per-vent objects). */
+  private readonly ventAt: Vec3 = { x: 0, y: 0, z: 0 };
+  private readonly ventImage: Vec3 = { x: 0, y: 0, z: 0 };
+  private readonly windowScratch: BlockIndex[] = [];
+
   /** Phase-only, so a missing clock falls back to local time (the signage
    * policy): a plume in the wrong part of its cycle is invisible, where
    * hiding every vent until the first snapshot would not be. */
@@ -321,9 +328,15 @@ export class Steam {
     this.material.opacity = STEAM_OPACITY * gate;
     const t = timeMs / 1000;
     let i = 0;
-    for (const { bx, bz } of blockWindow(cameraPos, this.radius)) {
+    for (const { bx, bz } of blockWindowInto(
+      cameraPos,
+      this.radius,
+      this.windowScratch,
+    )) {
       for (const vent of this.ventsFor(bx, bz)) {
-        const base = nearestImage(cameraPos, { x: vent.x, y: 0, z: vent.z });
+        this.ventAt.x = vent.x;
+        this.ventAt.z = vent.z;
+        const base = nearestImageInto(this.ventImage, cameraPos, this.ventAt);
         for (let j = 0; j < PUFFS_PER_VENT; j += this.puffStride) {
           puffPoseInto(vent, j, t, this.pose);
           this.positions.setXYZ(

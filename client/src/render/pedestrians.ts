@@ -44,12 +44,13 @@ import {
 import { blockHeat } from "./signage";
 import {
   BLOCK_WINDOW_RADIUS,
+  type BlockIndex,
   PED_BAND_MAX,
   PED_BAND_MIN,
   type RingPoint,
   TAG_PED,
   blockStream,
-  blockWindow,
+  blockWindowInto,
   microKeep,
   ringPerimeter,
   ringPointInto,
@@ -464,6 +465,9 @@ export class Pedestrians {
     );
   }
 
+  /** O5: the block window, reused every frame (blockWindowInto). */
+  private readonly windowScratch: BlockIndex[] = [];
+
   /**
    * Place the crowd for server time `serverTimeMs`. Pedestrians MOVE, so a
    * null clock hides them outright (the Traffic policy) rather than showing a
@@ -495,7 +499,11 @@ export class Pedestrians {
       .array as Float32Array;
     const whoArr = this.who.array as Float32Array;
     let n = 0;
-    for (const { bx, bz } of blockWindow(cameraPos, this.radius)) {
+    for (const { bx, bz } of blockWindowInto(
+      cameraPos,
+      this.radius,
+      this.windowScratch,
+    )) {
       const specs = this.specsFor(bx, bz);
       // L1 scatter: only blocks a live pass can reach pay the per-walker test.
       const scatter = passes.length > 0 && blockNearPass(bx, bz, passes);

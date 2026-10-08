@@ -1061,13 +1061,30 @@ async function measure(browser, url, { trace = true } = {}) {
     // count by up to +7. Wait for the room and the sky to empty. An older
     // build has no `bullets` read-back and only waits for the room.
     if (pilots) {
-      await page.waitForFunction(
-        () =>
-          window.__ab.combat().targets.length === 0 &&
-          (window.__ab.combat().bullets ?? 0) === 0,
-        null,
-        { timeout: 120_000, polling: 250 },
-      );
+      const t0 = Date.now();
+      try {
+        await page.waitForFunction(
+          () =>
+            window.__ab.combat().targets.length === 0 &&
+            (window.__ab.combat().bullets ?? 0) === 0,
+          null,
+          { timeout: 60_000, polling: 250 },
+        );
+        console.log(
+          `  ${seg.name}: room and sky empty after ${Date.now() - t0} ms`,
+        );
+      } catch {
+        // Measure on rather than lose the run; the next segment's draws
+        // will show the leak, and this says what was left.
+        const left = await page.evaluate(() => ({
+          targets: window.__ab.combat().targets.length,
+          remotes: window.__ab.net().remotes.length,
+          bullets: window.__ab.combat().bullets ?? null,
+        }));
+        console.error(
+          `!! ${seg.name}: the room or the sky never emptied: ${JSON.stringify(left)}`,
+        );
+      }
     }
   }
   const env = await page.evaluate(() => {

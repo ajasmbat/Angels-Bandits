@@ -6,7 +6,7 @@ import type { Building } from "@angels-bandits/common/city";
 import { isInRoadway } from "@angels-bandits/common/city/street";
 import { BLOCK_PITCH } from "@angels-bandits/common/constants";
 import { describe, expect, it } from "vitest";
-import { roofClutterFor } from "../src/render/roofclutter";
+import { roofDetailsFor } from "../src/render/roof-details";
 import {
   MAX_VENTS_PER_BLOCK,
   PUFFS_PER_VENT,
@@ -81,7 +81,7 @@ describe("steamVentsForBlock", () => {
     }
   });
 
-  it("anchors every roof vent on a real AC unit of a real building of that block", () => {
+  it("anchors every roof vent on a real exhaust stack of a real building of that block", () => {
     let roofVents = 0;
     for (let bx = 0; bx < 10; bx++) {
       for (let bz = 0; bz < 10; bz++) {
@@ -89,12 +89,13 @@ describe("steamVentsForBlock", () => {
         for (const v of steamVentsForBlock(bx, bz, buildings, SEED)) {
           if (!v.roof) continue;
           roofVents++;
+          // R2: the stack roofDetailsFor draws on the first HVAC unit.
           const onABox = buildings.some((b) =>
-            roofClutterFor(b).acBoxes.some(
-              (box) =>
-                Math.abs(box.x - v.x) < 1e-6 &&
-                Math.abs(box.z - v.z) < 1e-6 &&
-                Math.abs(box.y + box.height - v.y) < 1e-6,
+            roofDetailsFor(b).vents.some(
+              (s) =>
+                Math.abs(s.x - v.x) < 1e-6 &&
+                Math.abs(s.z - v.z) < 1e-6 &&
+                Math.abs(s.y - v.y) < 1e-6,
             ),
           );
           expect(onABox).toBe(true);

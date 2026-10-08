@@ -149,10 +149,25 @@ function cpuSamples(events, key) {
               : !cf.url && GL_CALL.test(fn)
                 ? "gl"
                 : "js";
-      out.push([prof.t, kind]);
+      const where = `${String(cf.url ?? "")
+        .split("/")
+        .pop()}:${(cf.lineNumber ?? -1) + 1}`;
+      out.push([prof.t, kind, `${fn || "(anon)"} ${where}`]);
     }
   }
   return out.sort((a, b) => a[0] - b[0]);
+}
+
+/** The three leaf functions sampled most in a spike's JS samples. */
+function topFunctions(samples) {
+  const n = new Map();
+  for (const [, kind, fn] of samples) {
+    if (kind === "js") n.set(fn, (n.get(fn) ?? 0) + 1);
+  }
+  return [...n]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([fn, c]) => `${fn} ×${c}`);
 }
 
 /** Analyse one trace's events (the array, or {traceEvents}). */
@@ -224,6 +239,8 @@ export function analyseTrace(trace) {
         : gl > outside
           ? "GL wait"
           : "outside JS",
+      // What the JS samples were in, for a JS-caused spike.
+      top: js ? topFunctions(inSpike) : [],
     });
   }
   return {
@@ -244,7 +261,7 @@ export function describe(name, r) {
   ];
   for (const s of r.spikes) {
     lines.push(
-      `    +${s.atMs} ms  ${s.ms} ms = gc ${s.gcMs} + script ${s.scriptMs} + GL wait ${s.glMs} + outside ${s.outsideMs}${s.profiled ? "" : " (unprofiled)"}  → ${s.cause}`,
+      `    +${s.atMs} ms  ${s.ms} ms = gc ${s.gcMs} + script ${s.scriptMs} + GL wait ${s.glMs} + outside ${s.outsideMs}${s.profiled ? "" : " (unprofiled)"}  → ${s.cause}${s.top?.length ? `  [${s.top.join(", ")}]` : ""}`,
     );
   }
   return lines.join("\n");

@@ -253,6 +253,7 @@ Everything else is pinned.
 | `--segments <a,b>`   | all                | M3: fly only these segments (by name; the report matches them by name) |
 | `--soak <seconds>`   | —                  | instead of the path: hold the full-room `furball` that long and report the tier Auto ended on (exit 1 if it stepped down) |
 | `--ab-ref <git-ref>` | —                  | second arm is **another build**: that commit, checked out to its own worktree with its own `npm ci`, built and served on its own port, interleaved like `--ab` |
+| `--trace <dir>`      | —                  | O5: one Chrome trace per measured segment (`<pass>-<segment>.json`, page main thread + V8 CPU samples), and every wall spike over 4× the window's median split into **gc / script / GL wait / outside JS** (`trace-spikes.mjs`; the warm-up pass is never traced) |
 
 `--ab` takes a URL **query**. A bare commit hash there fails fast and names
 `--ab-ref` — it used to be read as the query `86e5982=`, an arm identical to

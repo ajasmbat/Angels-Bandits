@@ -61,6 +61,11 @@ export const segmentWorldMs = (i) => WORLD_EPOCH_MS + i * WORLD_STEP_MS;
 export const warmupWorldMs = (i) =>
   WORLD_EPOCH_MS - (SEGMENTS.length - i + 1) * WORLD_STEP_MS;
 
+/** P2: how far a `trainsAt` segment may slide its world clock to find its
+ * moment — the slide plus the segment must stay inside its own WORLD_STEP_MS
+ * slot, or it would overlap the next segment's world instant. */
+export const TRAINS_SLIDE_MAX_MS = WORLD_STEP_MS - SETTLE_MS - SAMPLE_MS;
+
 /**
  * O3's contract, judged per segment (run.mjs `segmentVerdicts`).
  *
@@ -76,7 +81,10 @@ export const warmupWorldMs = (i) =>
 export const BUDGETS = {
   gpuP50Ms: 14,
   hitchRatio: 2,
-  drawCalls: { core: 120 },
+  // P2: the Realism batch's three views get their own ceilings (the runner's
+  // measured High draws + ~10 %), so a later ticket that piles onto a train
+  // station, a tunnel or a sidewalk is caught here and not only in `core`.
+  drawCalls: { core: 120, station: 999, hole: 999, sidewalk: 999 },
 };
 
 export const SEGMENTS = [
@@ -178,5 +186,67 @@ export const SEGMENTS = [
     weather: "downpour",
     hold: true,
     pilots: 11,
+  },
+  // --- P2: the Realism batch (T2, H2, G1/A1), appended so the seven above
+  // still line up with every older report by index. Appending moves the
+  // warm-up lap's world instants (warmupWorldMs counts SEGMENTS.length);
+  // each segment's MEASURED instant (segmentWorldMs) is unchanged.
+  //
+  // Each spot was checked offline against the shared collision
+  // (client/src/game/collision.ts touchesSolid: ground, buildings and their
+  // holes, trees, the viaducts and stations, and every mover sampled every
+  // 100 ms from 5 min before WORLD_EPOCH_MS to 10 min after it): clear.
+  {
+    name: "station",
+    what: "T2: a station with two trains in it, one per track — platforms, canopy, people, doors",
+    // Line 0's station at (1300, 1000), on the z = 1000 street centreline.
+    // HELD 80 m east of its centre, 44 m up (13.6 m above the canopy's top
+    // at 30.4 m), nose west down the platforms. The trains pass beneath the
+    // plane, never through it.
+    x: 1380,
+    z: 1000,
+    y: 44,
+    yaw: yawToward(-1, 0),
+    hold: true,
+    // The world clock slides forward from this segment's own instant to the
+    // first moment two trains on opposite tracks are both inside `withinM`
+    // of the station's centre — a pure function of the schedule, so the
+    // same moment on every pass (run.mjs refuses a slide past
+    // TRAINS_SLIDE_MAX_MS). Two trains share a platform pair every ~20 s.
+    trainsAt: { line: 0, station: 2, withinM: 8 },
+  },
+  {
+    name: "hole",
+    what: "H2: a glide through the street-level row tunnel — chevrons, mouth frame, LED strips, decor",
+    // The tunnel the gallery's hole views use (the lowest multi-lot row
+    // tunnel): x = 303.5, floor 8 m, 20 m tall, 26 m wide, mouths at
+    // z = 1220 and 1380. The plane is re-teleported every frame along its
+    // axis at the clear volume's middle height, `glide.speed` m/s of WALL
+    // time from 63 m before the entry, so the 5 s window runs from ~25 m
+    // before the entry to ~25 m past the exit (three quarters of it inside).
+    // Clear from 120 m before the entry to 150 m past the exit; the glide
+    // stops at `glide.maxM` (107 m past the exit) however long a slow frame
+    // stretches the window. Wall time, not the pinned world clock, so the
+    // path is the same length on a slow software renderer as on a GPU.
+    x: 303.5,
+    z: 1157,
+    y: 18,
+    yaw: yawToward(0, 1),
+    glide: { speed: 42, maxM: 330 },
+  },
+  {
+    name: "sidewalk",
+    what: "G1/A1: skimming the curb at 8 m — street furniture, parked cars, road paint, lit lobbies, the crowd",
+    // G1's gallery close-up: a lane in from the parked cars at x ~810, 8 m
+    // up, nose a touch toward the sidewalk. HELD (re-teleported every frame;
+    // at 8 m an unpiloted plane would sink into the street). Under the micro
+    // tier's full gate, so every pedestrian, rider and street object in the
+    // tier's radius is drawn. Lamps, benches and parked cars are street-level
+    // dressing (not solid); street trees are solid and none is in reach.
+    x: 810,
+    z: 1380,
+    y: 8,
+    yaw: 0.08,
+    hold: true,
   },
 ];

@@ -38,6 +38,7 @@ import {
   SEGMENTS,
   SETTLE_MS,
   STRIKE_LEAD_MS,
+  TRAINS_SLIDE_MAX_MS,
   WARMUP_MS,
   segmentWorldMs,
   warmupWorldMs,
@@ -360,6 +361,16 @@ async function joinGame(page, url) {
     null,
     { timeout: 30_000 },
   );
+  // P2: the click on Join leaves the cursor parked on the button, and the
+  // mouse-aim instructor flies the pipper onto the cursor — so every flown
+  // segment dived toward it (core lost 7 m, canyon 7 m, and `street` sank
+  // onto T2's x = 600 viaduct and crashed once F6 made the response crisp).
+  // A pointer that has left the window is attitude hold (flight-input.ts
+  // presence fade), which is what an unpiloted fixed path means: level
+  // flight from each teleport, as P1's path was laid out for.
+  await page.evaluate(() =>
+    window.dispatchEvent(new MouseEvent("mouseout", { relatedTarget: null })),
+  );
   return errors;
 }
 
@@ -406,6 +417,35 @@ async function flySegment(page, seg, sampleMs, worldMs) {
           }
         }
       }
+      // P2: a train-station segment slides its world clock forward to the
+      // first moment two trains on opposite tracks both stand inside the
+      // station — searched on the pure schedule (`__ab.train(t)`), so every
+      // pass finds the same moment. Null when the build has no hook or the
+      // moment is further than slideMaxMs away (reported, never guessed).
+      let trains = null;
+      if (s.trainsAt && worldPinned && typeof ab.train === "function") {
+        const { line, station, withinM } = s.trainsAt;
+        const st = ab.train(s.worldMs)?.lines[line]?.stations[station];
+        const wrap = (d) => d - Math.round(d / 2000) * 2000;
+        trains = { offsetMs: null, tracks: null };
+        for (let dt = 0; st && dt <= s.slideMaxMs; dt += 250) {
+          const inside = ab
+            .train(s.worldMs + dt)
+            .trains.filter(
+              (tr) =>
+                tr.line === line &&
+                Math.hypot(wrap(tr.x - st.x), wrap(tr.z - st.z)) <= withinM,
+            );
+          if (new Set(inside.map((tr) => tr.track)).size >= 2) {
+            ab.pinWorld(s.worldMs + dt);
+            trains = {
+              offsetMs: dt,
+              tracks: inside.map((tr) => `${tr.track}#${tr.train}`),
+            };
+            break;
+          }
+        }
+      }
       // O3: pin the segment's weather (O4: every segment — a named phase,
       // else clear). After the world pin: the weather pin is an offset from
       // the world clock. An --ab-ref build from before L4 has no weather
@@ -418,10 +458,28 @@ async function flySegment(page, seg, sampleMs, worldMs) {
       // O3: a HELD view re-teleports every frame instead of flying the
       // street — the furball's fake pilots weave ahead of a fixed point, so
       // the camera has to stay on it.
-      let holding = s.hold === true;
+      // P2: a GLIDE re-teleports every frame too, but along the nose at a
+      // fixed speed of WALL time from the teleport, so the path is the same
+      // on a 3 fps software renderer as on a GPU (the sim's step is clamped,
+      // so a flown plane would cover a fraction of it there).
+      let holding = s.hold === true || s.glide !== undefined;
+      const glideFrom = performance.now();
       const hold = () => {
         if (!holding) return;
-        ab.teleport(s.x, s.z, s.y, s.yaw);
+        if (s.glide) {
+          const d = Math.min(
+            s.glide.maxM,
+            (s.glide.speed * (performance.now() - glideFrom)) / 1000,
+          );
+          ab.teleport(
+            s.x - Math.sin(s.yaw) * d,
+            s.z - Math.cos(s.yaw) * d,
+            s.y,
+            s.yaw,
+          );
+        } else {
+          ab.teleport(s.x, s.z, s.y, s.yaw);
+        }
         requestAnimationFrame(hold);
       };
       if (holding) requestAnimationFrame(hold);
@@ -530,6 +588,8 @@ async function flySegment(page, seg, sampleMs, worldMs) {
           window: diff(glAtWindow, glAtEnd),
         },
         planes,
+        // P2: the train moment a `trainsAt` segment slid to (null otherwise).
+        trains,
       };
     },
     {
@@ -537,6 +597,7 @@ async function flySegment(page, seg, sampleMs, worldMs) {
       sampleMs,
       settleMs: SETTLE_MS,
       strikeLeadMs: STRIKE_LEAD_MS,
+      slideMaxMs: TRAINS_SLIDE_MAX_MS,
       worldMs,
       defaultWeather: DEFAULT_WEATHER,
     },
@@ -1165,6 +1226,20 @@ function printVerdicts(report) {
     console.error(
       `!! ${s.name}: only ${s.planes} plane(s) in the room during the window — the fake pilots did not all make it, so this is not the full-room scene.`,
     );
+  }
+  // P2: where a `trainsAt` segment slid its world clock, and which trains
+  // stood in the station — or a loud line if the schedule had no such moment.
+  for (const s of report.segments) {
+    if (!s.trains) continue;
+    if (s.trains.offsetMs === null) {
+      console.error(
+        `!! ${s.name}: no moment with two trains in the station within ${TRAINS_SLIDE_MAX_MS / 1000} s — the window shows whatever the schedule had.`,
+      );
+    } else {
+      console.log(
+        `${s.name}: trains ${s.trains.tracks.join(", ")} in the station at +${(s.trains.offsetMs / 1000).toFixed(2)} s`,
+      );
+    }
   }
 }
 

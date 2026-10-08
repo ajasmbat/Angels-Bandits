@@ -633,7 +633,16 @@ Two rules every tier obeys:
 | L13 facade detail | full | full | off (dressing, not solid) | off |
 | bloom | full | full | full | half-res chain (cheaper via the ceiling); off from thermal level 1 |
 | final grade | full | full | full | off |
-| window interiors (parallax rooms) | full | full | full | off: the room's mean light (uniform guard) |
+| window interiors (parallax rooms; G1 lit lobbies) | full | full | full | off: the room's mean light (uniform guard) |
+| A1 city life (riders, crossers, groups, performers, stations, balconies) | full | 70 % | 45 % | 30 %, one block out |
+| A1 facade life (laundry, facade flags, pigeons) | full | full | off | off |
+| G1 street furniture, parked cars | full | full | 70 % | 40 %, one block out |
+| G1 fine street paint (wear, manholes, words, ramps) | full | full | full | off: the S1 paint alone (uniform guard) |
+| H2 hole interiors (murals, signs, fans, lobby glass) | full | full | full | off (folded by a uniform) |
+| H2 hole guidance (chevrons, LED strips, mouth frame) | full | full | full | full (how a pilot finds a hole) |
+| R2 roof structures (penthouses, tanks, billboards, masts) | full | full | full (solid) | full (solid) |
+| R2 roof dressing, fine detail (drains, hatches, rods, dishes) | full | full | off | off (HVAC, ducts, solar, davits stay) |
+| F5/F6 flight feel | — | — | — | — (no render cost: no row in `FEATURE_TIERS`) |
 
 **Auto** starts at High and only ever steps **down**: a feature popping back
 in is far more visible than one resolution rung, and a player who wants it

@@ -97,7 +97,7 @@ import {
 import { FlightInputSource } from "./game/flight-input";
 import { createFreeLook, shapeInput, stepFreeLook } from "./game/freelook";
 import { Guns } from "./game/guns";
-import { bulletHitsSphere } from "./game/hitdetect";
+import { bulletImpact, impactKind } from "./game/hitdetect";
 import {
   ASSIST_AIM_RANGE,
   type AssistWorld,
@@ -241,9 +241,9 @@ import { WeatherClock, setWeatherUniform } from "./render/weather";
 import { nearestImage } from "./render/wrapPlacement";
 import { BotBar } from "./ui/botbar";
 import { CommsTicker } from "./ui/comms";
+import { DamageIndicator } from "./ui/damage-indicator";
 import { initFullscreenUi } from "./ui/fullscreen";
 import { HPBAR_ALTITUDE, HpBarSprite, HpBarTracker } from "./ui/hpbar";
-import { DamageIndicator } from "./ui/damage-indicator";
 import { Hud } from "./ui/hud";
 import { requestName, showJoinError, showSignalLost } from "./ui/join";
 import { KillFeed } from "./ui/killfeed";
@@ -739,6 +739,9 @@ const explosions = new Explosions();
 scene.add(explosions.group);
 const sparks = new Sparks();
 scene.add(sparks.points);
+// U1: a round glancing off a spawn shield — blue-white, never the hit spray.
+const shieldSparks = new Sparks(0xbfe8ff);
+scene.add(shieldSparks.points);
 const smoke = new SmokeTrails();
 scene.add(smoke.points);
 // --- L1 reactive city (ANGE-WCQNFJ) ---
@@ -2572,24 +2575,28 @@ const frame = (now: number): void => {
       }
       continue;
     }
-    for (const target of targets) {
-      if (bulletHitsSphere(bullet.prev, bullet.pos, target.pos)) {
-        socket.sendHit(
-          target.id,
-          bullet.origin,
-          bullet.seq,
-          remotes.extraDelayOf(target.id),
-        );
-        bullets.remove(bullet);
-        // Instant shooter-side feedback (marker + thunk + sparks at the
-        // impact point); the server's damage broadcast stays the
-        // authoritative confirm (crosshair blip).
-        hud.hitMarker(now);
-        audio.hitThunk();
-        sparks.burst(bullet.pos, now);
-        break;
-      }
+    const target = bulletImpact(bullet.prev, bullet.pos, targets);
+    if (!target) continue;
+    bullets.remove(bullet);
+    if (impactKind(target) === "shield") {
+      // U1: the server rejects hits on a spawn-protected plane, so a round
+      // that meets one glances off — no claim, no marker, no thunk.
+      shieldSparks.burst(bullet.pos, now);
+      audio.shieldPing(now);
+      continue;
     }
+    socket.sendHit(
+      target.id,
+      bullet.origin,
+      bullet.seq,
+      remotes.extraDelayOf(target.id),
+    );
+    // Instant shooter-side feedback (marker + thunk + sparks at the
+    // impact point); the server's damage broadcast stays the
+    // authoritative confirm (crosshair blip).
+    hud.hitMarker(now);
+    audio.hitThunk();
+    sparks.burst(bullet.pos, now);
   }
 
   remotes.update(frameClock, chase.position, dt, now, (id) =>
@@ -2781,6 +2788,7 @@ const frame = (now: number): void => {
   skyDome.mesh.visible = sky.domeVisible;
   explosions.update(chase.position, now, dt);
   sparks.update(chase.position, now);
+  shieldSparks.update(chase.position, now);
   tracers.update(bullets.all, chase.position, now);
 
   // Target HP bar: over the plane WE damaged in the last 3 s (fading).

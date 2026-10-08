@@ -44,7 +44,8 @@ function interceptOffset(d: Vec3, v: Vec3 | undefined, speed: number): Vec3 {
 }
 
 /**
- * Bend `vel` toward the nearest of `targets` whose intercept point sits
+ * Bend `vel` toward the nearest unprotected one of `targets` (a shielded
+ * plane can't be damaged — U1) whose intercept point sits
  * within MAGNETISM_CONE_DEG of the flight line, by at most
  * MAGNETISM_MAX_DEG_PER_S × `dt` (never past the intercept line). A target
  * without `vel` is treated as still. Speed is preserved; with no target in
@@ -53,7 +54,7 @@ function interceptOffset(d: Vec3, v: Vec3 | undefined, speed: number): Vec3 {
 export function magnetizeVelocity(
   pos: Vec3,
   vel: Vec3,
-  targets: readonly { pos: Vec3; vel?: Vec3 }[],
+  targets: readonly { pos: Vec3; vel?: Vec3; prot?: boolean }[],
   dt: number,
 ): Vec3 {
   const speed = Math.hypot(vel.x, vel.y, vel.z);
@@ -64,6 +65,7 @@ export function magnetizeVelocity(
   let bestDistSq = Number.POSITIVE_INFINITY;
   let bestAngle = 0;
   for (const t of targets) {
+    if (t.prot) continue;
     const d = wrapDelta(pos, t.pos);
     const distSq = d.x * d.x + d.y * d.y + d.z * d.z;
     if (distSq === 0 || distSq >= bestDistSq) continue;

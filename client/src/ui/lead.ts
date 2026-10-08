@@ -30,6 +30,8 @@ const SOLUTION_TONE_COOLDOWN_MS = 400;
 export interface LeadTarget {
   pos: Vec3;
   vel: Vec3;
+  /** Spawn-protected: undamageable, so never a lead or solution (U1). */
+  prot?: boolean;
 }
 
 /**
@@ -162,6 +164,31 @@ export function projectToScreen(
   };
 }
 
+/**
+ * The target nearest the aim direction, inside the cone and lead range, or
+ * null. Protected planes are skipped — the server would reject the hits.
+ */
+export function pickLeadTarget<T extends LeadTarget>(
+  flight: FlightState,
+  targets: readonly T[],
+): T | null {
+  const fwd = flightForward(flight);
+  let best: T | null = null;
+  let bestCos = AIM_CONE_COS;
+  for (const t of targets) {
+    if (t.prot) continue;
+    const d = wrapDelta(flight.pos, t.pos);
+    const dist = Math.hypot(d.x, d.y, d.z);
+    if (dist === 0 || dist > LEAD_MAX_RANGE) continue;
+    const cos = (d.x * fwd.x + d.y * fwd.y + d.z * fwd.z) / dist;
+    if (cos > bestCos) {
+      bestCos = cos;
+      best = t;
+    }
+  }
+  return best;
+}
+
 /** What one frame of aim chrome resolved to. */
 export interface AimResult {
   /** Where the gun line lands on screen, or null when it is behind us. */
@@ -173,24 +200,6 @@ export interface AimResult {
 /** DOM reticle over the intercept point of the best on-aim target. */
 export class LeadIndicator {
   private readonly el = document.getElementById("lead") as HTMLDivElement;
-
-  /** Pick the target nearest the aim direction, inside cone and range. */
-  private pick(flight: FlightState, targets: readonly LeadTarget[]) {
-    const fwd = flightForward(flight);
-    let best: LeadTarget | null = null;
-    let bestCos = AIM_CONE_COS;
-    for (const t of targets) {
-      const d = wrapDelta(flight.pos, t.pos);
-      const dist = Math.hypot(d.x, d.y, d.z);
-      if (dist === 0 || dist > LEAD_MAX_RANGE) continue;
-      const cos = (d.x * fwd.x + d.y * fwd.y + d.z * fwd.z) / dist;
-      if (cos > bestCos) {
-        bestCos = cos;
-        best = t;
-      }
-    }
-    return best;
-  }
 
   /**
    * Recompute and place (or hide) the reticle, and return where the gun line
@@ -215,7 +224,7 @@ export class LeadIndicator {
       w,
       h,
     );
-    const target = this.pick(flight, targets);
+    const target = pickLeadTarget(flight, targets);
     // Bullets inherit the plane's forward speed (guns.ts) — lead with it.
     const point =
       target && leadPoint(flight.pos, BULLET_SPEED + flight.speed, target);

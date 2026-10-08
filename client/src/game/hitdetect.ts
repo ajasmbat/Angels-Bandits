@@ -32,3 +32,33 @@ export function bulletHitsSphere(
   const cz = rel0.z + seg.z * t;
   return cx * cx + cy * cy + cz * cz <= radius * radius;
 }
+
+/** A target as the bullet sweep sees it; `prot` = spawn-protected. */
+export interface ImpactTarget {
+  pos: Vec3;
+  prot?: boolean;
+}
+
+/**
+ * The first of `targets` this frame's bullet step `prev` → `cur` touches,
+ * protected or not (a shielded plane still stops the round), or null.
+ */
+export function bulletImpact<T extends ImpactTarget>(
+  prev: Vec3,
+  cur: Vec3,
+  targets: readonly T[],
+): T | null {
+  for (const target of targets) {
+    if (bulletHitsSphere(prev, cur, target.pos)) return target;
+  }
+  return null;
+}
+
+/**
+ * What an impact means locally (U1). The server rejects hits on a protected
+ * plane, so a round that meets one is a "shield" glance: no hit claim, no
+ * hit marker, no thunk — only a "hit" earns those.
+ */
+export function impactKind(target: ImpactTarget): "hit" | "shield" {
+  return target.prot ? "shield" : "hit";
+}

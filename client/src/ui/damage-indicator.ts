@@ -27,7 +27,11 @@ const scratchDelta: Vec3 = { x: 0, y: 0, z: 0 };
  * (−sin yaw, −cos yaw) on X/Z, so right is (cos yaw, −sin yaw). Altitude is
  * ignored — the arc is a compass, not a pitch ladder.
  */
-export function damageBearing(me: Vec3, shooter: Vec3, viewYaw: number): number {
+export function damageBearing(
+  me: Vec3,
+  shooter: Vec3,
+  viewYaw: number,
+): number {
   const d = wrapDeltaInto(me, shooter, scratchDelta);
   const s = Math.sin(viewYaw);
   const c = Math.cos(viewYaw);

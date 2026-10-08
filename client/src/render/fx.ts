@@ -39,7 +39,9 @@ export class Sparks {
   private readonly bursts: SparkBurst[] = [];
   private readonly positions: THREE.BufferAttribute;
 
-  constructor() {
+  /** `color`: the default is the bullet's own spray; U1's shield glance
+   * gets a second pool in blue-white. */
+  constructor(color: number = SPARK_COLOR) {
     const geometry = new THREE.BufferGeometry();
     this.positions = new THREE.BufferAttribute(
       new Float32Array(SPARK_BURSTS * SPARK_PARTICLES * 3),
@@ -52,7 +54,7 @@ export class Sparks {
     this.points = new THREE.Points(
       geometry,
       new THREE.PointsMaterial({
-        color: SPARK_COLOR,
+        color,
         size: 1.1,
         transparent: true,
         blending: THREE.AdditiveBlending,

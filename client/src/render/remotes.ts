@@ -198,10 +198,17 @@ export class RemotePlanes {
   }
 
   /** Living remotes as hit-test / lead targets: interpolated canonical
-   * positions plus a seam-safe velocity estimate (zero until two samples)
-   * and the last snapshot's HP (wounded-smoke emission). */
-  targets(): { id: string; pos: Vec3; vel: Vec3; hp: number }[] {
-    const out: { id: string; pos: Vec3; vel: Vec3; hp: number }[] = [];
+   * positions plus a seam-safe velocity estimate (zero until two samples),
+   * the last snapshot's HP (wounded-smoke emission) and spawn protection
+   * (U1: hit detection, the lead and magnetism skip a shielded plane). */
+  targets(): { id: string; pos: Vec3; vel: Vec3; hp: number; prot: boolean }[] {
+    const out: {
+      id: string;
+      pos: Vec3;
+      vel: Vec3;
+      hp: number;
+      prot: boolean;
+    }[] = [];
     for (const [id, r] of this.remotes) {
       if (r.alive && r.lastPos) {
         out.push({
@@ -209,6 +216,7 @@ export class RemotePlanes {
           pos: r.lastPos,
           vel: r.buffer.latestVelocity() ?? { x: 0, y: 0, z: 0 },
           hp: r.hp,
+          prot: r.prot,
         });
       }
     }

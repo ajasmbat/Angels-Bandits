@@ -32,6 +32,7 @@ import {
 } from "./weather";
 import {
   OCCUPANCY_UNIFORM,
+  UNPACK_RUN_GLSL,
   WIN_INTERIOR_UNIFORM,
   holeLightGlsl,
   holeSurfaceGlsl,
@@ -106,7 +107,6 @@ attribute vec3 aCrown;
 attribute vec3 aSubOff;
 attribute vec3 aParent;
 attribute vec4 aHole;
-attribute vec2 aRun;
 attribute vec4 aCrew;
 varying vec3 vMeters;
 varying vec3 vObjNormal;
@@ -123,7 +123,7 @@ varying vec2 vHalfXZ;
 varying vec4 vHole;
 varying vec2 vRun;
 varying vec4 vCrew;
-${pitchSeedGlsl()}`;
+${pitchSeedGlsl()}${UNPACK_RUN_GLSL}`;
 
 const VERTEX_MAIN = /* glsl */ `
 // Unit box (x/z in [-0.5, 0.5], y in [0, 1]) times the instance scale =
@@ -165,7 +165,7 @@ vLed = aLed;
 vCrown = aCrown;
 vHalfXZ = bScale.xz * 0.5;
 vHole = aHole;
-vRun = aRun;
+vRun = abUnpackRun(aCrew.w); // H2: the hole's run (city.ts packRun)
 // L3 cleaning crew: this building's visit slot (living-windows.ts).
 vCrew = aCrew;
 `;

@@ -26,7 +26,7 @@ import { createBuildingsMaterial } from "./buildings-material";
 import { LIVE_ON_UNIFORM, LiveClock, crewSchedule } from "./living-windows";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { roofStyleFor } from "./roofs";
-import { WIN_INTERIOR_UNIFORM } from "./window-pattern";
+import { WIN_INTERIOR_UNIFORM, packRun } from "./window-pattern";
 import { ImageCache, InstanceUploads } from "./wrapPlacement";
 
 /**
@@ -213,10 +213,20 @@ export class CityRenderer {
     );
     geometry.setAttribute("aHole", new THREE.InstancedBufferAttribute(hole, 4));
 
-    // H2: aRun = the hole's whole run along its axis, (lo, hi) in the parent
-    // tier's frame — a row tunnel's span covers every lot it cuts, so the
-    // lining's depth, rim and mouth frame are the run's (window-pattern.ts).
-    const run = new Float32Array(this.instances.length * 2);
+    // L3 cleaning crew: aCrew = (visit start, duration, block cycle, run) in
+    // live-clock seconds, the same on every solid of a building; cycle 0 =
+    // no crew this cycle. Static like aArchetype.
+    //
+    // H2 rides in .w (a 17th attribute would not link: WebGL2's floor is 16):
+    // the hole's whole run along its axis, (lo, hi) in the parent tier's
+    // frame, packed by packRun — a row tunnel's span covers every lot it
+    // cuts, so the lining's depth, rim and mouth frame are the run's.
+    const crew = new Float32Array(this.instances.length * 4);
+    const rota = crewSchedule(this.buildings, seed);
+    this.instances.forEach((inst, i) => {
+      const slot = rota.get(inst.building);
+      if (slot) crew.set([slot.start, slot.duration, slot.cycle], i * 4);
+    });
     const spanOf = new Map<Building, HoleSpan>();
     for (const s of cityHoles(this.buildings)) {
       for (const h of s.hosts) spanOf.set(h, s);
@@ -228,18 +238,7 @@ export class CityRenderer {
       const x = s.hole.axis === "x";
       // Tiers are centred on the building, so its (x, z) is the tier origin.
       const lo = wrapDeltaAxis(x ? b.x : b.z, x ? s.entry.x : s.entry.z);
-      run.set([lo, lo + s.length], i * 2);
-    });
-    geometry.setAttribute("aRun", new THREE.InstancedBufferAttribute(run, 2));
-
-    // L3 cleaning crew: aCrew = (visit start, duration, block cycle, 0) in
-    // live-clock seconds, the same on every solid of a building; cycle 0 =
-    // no crew this cycle. Static like aArchetype.
-    const crew = new Float32Array(this.instances.length * 4);
-    const rota = crewSchedule(this.buildings, seed);
-    this.instances.forEach((inst, i) => {
-      const slot = rota.get(inst.building);
-      if (slot) crew.set([slot.start, slot.duration, slot.cycle, 0], i * 4);
+      crew[i * 4 + 3] = packRun(lo, lo + s.length);
     });
     geometry.setAttribute("aCrew", new THREE.InstancedBufferAttribute(crew, 4));
 

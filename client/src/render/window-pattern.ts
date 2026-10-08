@@ -838,6 +838,29 @@ totalEmissiveRadiance = mix(totalEmissiveRadiance, vLed, led);
 // pattern needs no per-face flags and an unholed tier pays one branchless
 // mask that comes out 0.
 
+/** Run extents are multiples of 0.5 m (lot lines are whole meters, tier
+ * sizes whole meters) within ±RUN_PACK_RANGE of the tier centre, so two of
+ * them pack exactly into one float32: (lo, hi) → 2·(lo+R) · 4R + 2·(hi+R),
+ * 22 bits. The buildings shader unpacks it (unpackRunGlsl). */
+export const RUN_PACK_RANGE = 512;
+export function packRun(lo: number, hi: number): number {
+  const q = (v: number) => Math.round((v + RUN_PACK_RANGE) * 2);
+  return q(lo) * (4 * RUN_PACK_RANGE) + q(hi);
+}
+export function unpackRun(v: number): [number, number] {
+  const n = 4 * RUN_PACK_RANGE;
+  return [Math.floor(v / n) / 2 - RUN_PACK_RANGE, (v % n) / 2 - RUN_PACK_RANGE];
+}
+/** GLSL twin of unpackRun, for the vertex shader. */
+export const UNPACK_RUN_GLSL = /* glsl */ `
+vec2 abUnpackRun(float v) {
+  float n = ${glslFloat(4 * RUN_PACK_RANGE)};
+  float hiQ = mod(v, n);
+  float loQ = floor((v - hiQ) / n + 0.5);
+  return vec2(loQ, hiQ) * 0.5 - ${glslFloat(RUN_PACK_RANGE)};
+}
+`;
+
 /** Hole sizes and tuning, meters. */
 export const HOLE = {
   /** Windows stop this far short of a mouth opening — no half-cut panes. */

@@ -14,6 +14,7 @@ import {
 } from "@angels-bandits/common/constants";
 import { wrapDeltaAxis } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
+import { BUILDING_SHADER_SOURCE } from "../src/render/buildings-material";
 import {
   DECOR_DEPTH,
   DECOR_PAINT_GLOW,
@@ -24,6 +25,7 @@ import {
   holeDecorFor,
   linedSegments,
 } from "../src/render/hole-decor";
+import { packRun, unpackRun } from "../src/render/window-pattern";
 
 const city = generateCity(CITY_SEED);
 const spans = cityHoles(city);
@@ -157,5 +159,32 @@ describe("hole decor — seed 42", () => {
       }
       expect(kinds.has(DecorKind.LIGHT)).toBe(true);
     }
+  });
+});
+
+describe("run-level hole lining (city.ts → buildings shader)", () => {
+  it("packs every seed-42 run extent into aCrew.w exactly", () => {
+    let n = 0;
+    for (const s of spans) {
+      const x = s.hole.axis === "x";
+      for (const b of s.hosts) {
+        const lo = wrapDeltaAxis(x ? b.x : b.z, x ? s.entry.x : s.entry.z);
+        const hi = lo + s.length;
+        expect(unpackRun(packRun(lo, hi))).toEqual([lo, hi]);
+        // Exact in float32 too — the attribute's own precision.
+        expect(unpackRun(Math.fround(packRun(lo, hi)))).toEqual([lo, hi]);
+        n++;
+      }
+    }
+    expect(n).toBeGreaterThan(spans.length);
+  });
+
+  it("adds no vertex attribute to the buildings shader (it sits at WebGL2's 16-slot floor)", () => {
+    // Built-ins take 8 slots (position, normal, uv, the 4-slot instance
+    // matrix, instanceColor); a 9th custom attribute fails to link on
+    // SwiftShader ("Too many attributes") and the whole city disappears.
+    const custom =
+      BUILDING_SHADER_SOURCE.vertexPars.match(/^attribute /gm) ?? [];
+    expect(custom.length).toBeLessThanOrEqual(8);
   });
 });

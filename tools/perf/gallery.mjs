@@ -128,6 +128,13 @@ const VIEWS = [
   { name: "train-curve", dyn: "trainCurve" },
   { name: "trains-passing", dyn: "trainsPassing" },
   { name: "train-cab", dyn: "trainCab" },
+  // H2: the street-level row tunnel (the lowest multi-lot tunnel, else the
+  // lowest tunnel) from 110 m out on its approach — runway chevrons, the
+  // lit mouth frame — and from just inside its mouth looking down the run
+  // (strips, lane lines, fans, signs, murals). Found through __ab.holes();
+  // a fixed QA camera, the plane pinned every frame out of shot above.
+  { name: "hole-approach", dyn: "holeApproach", raf: true },
+  { name: "hole-inside", dyn: "holeInside", raf: true },
 ];
 /** Yaw that points the nose along (dx, dz): yaw 0 faces -Z. */
 const yawTo = (dx, dz) => Math.atan2(-dx, -dz);
@@ -217,8 +224,36 @@ async function placeTrain(page, v) {
     return null;
   }, v.dyn);
 }
+/** H2: frame a hole from `__ab.holes()` (see the views above). */
+async function placeHole(page, v) {
+  const h = await page.evaluate(() => window.__ab.holes());
+  const tunnels = h.spans.filter((s) => s.kind === "tunnel");
+  const rows = tunnels.filter((s) => s.hosts > 1);
+  const pick = (rows.length ? rows : tunnels).sort((a, b) => a.y0 - b.y0)[0];
+  if (!pick) throw new Error("no tunnel in __ab.holes()");
+  console.log("hole", v.name, JSON.stringify(pick), JSON.stringify(h.decor));
+  const ax = pick.axis === "x" ? 1 : 0;
+  const az = 1 - ax;
+  const cy = pick.y0 + pick.height / 2;
+  const e = pick.entry;
+  const at = (d, y) => [e.x + ax * d, y, e.z + az * d];
+  const eye = v.dyn === "holeApproach" ? at(-110, cy + 9) : at(6, cy + 2);
+  const look = v.dyn === "holeApproach" ? at(0, cy - 2) : at(60, cy);
+  return {
+    ...v,
+    // The plane hangs well above the run, nose along it, out of shot.
+    x: e.x + ax * 40,
+    z: e.z + az * 40,
+    y: pick.y0 + pick.height + 120,
+    yaw: ax ? -Math.PI / 2 : Math.PI,
+    eye,
+    at: look,
+    weather: "clear",
+  };
+}
 /** Resolve an L10 view against the live world. */
 async function place(page, v) {
+  if (v.dyn?.startsWith("hole")) return placeHole(page, v);
   if (v.dyn?.startsWith("train")) {
     const shot = await placeTrain(page, v);
     if (!shot) throw new Error(`no ${v.dyn} moment found`);

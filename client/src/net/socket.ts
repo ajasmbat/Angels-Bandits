@@ -10,10 +10,17 @@
 // here, so nothing downstream of this file knows the wire got cheaper. This is
 // also where snapshot-arrival jitter is measured: it is the one place that
 // sees every snapshot land on the local clock.
+//
+// W2: a dropped socket is not the end of the session. The GameSocket swaps
+// in a fresh ws behind the same object, rejoining with the welcome's
+// resumeToken on the backoff in ./reconnect.ts, and only reports onClose
+// once that has failed — the server answered as a different player, or the
+// resume window ran out.
 
 import type { CityEvent } from "@angels-bandits/common/cityevents";
 import {
   CONNECT_TIMEOUT_MS,
+  SERVER_SILENCE_MS,
   TICK_UP_HZ,
 } from "@angels-bandits/common/constants";
 import { decodeSnapshotEntry } from "@angels-bandits/common/net";
@@ -33,6 +40,7 @@ import type {
 import type { Vec3 } from "@angels-bandits/common/world";
 import { PoseCadence, RenderClock } from "./clock";
 import { InterpDelay } from "./delay";
+import { reconnectDelayMs } from "./reconnect";
 
 export interface GameSocketEvents {
   onSnapshot?: (snap: SnapshotMsg) => void;
@@ -47,6 +55,14 @@ export interface GameSocketEvents {
   /** L1: a server-accepted event the city reacts to (reactions.ts). */
   onCityEvent?: (event: CityEvent) => void;
   onNewsHeli?: (msg: NewsHeliMsg) => void;
+  /** W2: our `away` took effect — the return will come with a respawn. */
+  onAwayStarted?: () => void;
+  /** W2: the socket dropped; reconnecting in the background. */
+  onReconnecting?: () => void;
+  /** W2: back as the same player. `welcome` is the fresh one: roster,
+   * scores and a new spawn, since the room moved on meanwhile. */
+  onResumed?: (welcome: WelcomeMsg) => void;
+  /** The session is over for good: the resume failed or ran out of time. */
   onClose?: () => void;
 }
 
@@ -65,6 +81,8 @@ export interface FrameClock {
 }
 
 const POSE_INTERVAL_MS = 1000 / TICK_UP_HZ;
+/** W2 dead-socket watchdog cadence, ms. */
+const WATCHDOG_MS = 1000;
 
 /** ws endpoint: dev talks straight to the server port, prod is same-origin. */
 const socketUrl = (): string => {
@@ -74,9 +92,17 @@ const socketUrl = (): string => {
 };
 
 export class GameSocket {
-  readonly welcome: WelcomeMsg;
+  /** The latest welcome — replaced by each resume (same id, fresh token). */
+  welcome: WelcomeMsg;
   readonly events: GameSocketEvents = {};
-  private readonly ws: WebSocket;
+  private ws: WebSocket;
+  /** W2: "open" → "reconnecting" on a drop → back, or "lost" for good. */
+  private state: "open" | "reconnecting" | "lost" = "open";
+  /** When the drop was noticed, and how many resumes have been tried. */
+  private droppedAt = 0;
+  private attempt = 0;
+  /** Last time anything arrived from the server (local clock). */
+  private lastHeardMs = performance.now();
   /** serverTime − performance.now(), estimated from stamped snapshots. */
   private clockOffset: number | null = null;
   /** Fixed 30 Hz pose upload deadline (O2). */
@@ -95,17 +121,45 @@ export class GameSocket {
     serverNow: null,
   };
 
-  private constructor(ws: WebSocket, welcome: WelcomeMsg) {
+  private constructor(
+    ws: WebSocket,
+    welcome: WelcomeMsg,
+    private readonly name: string,
+  ) {
     this.ws = ws;
     this.welcome = welcome;
-    ws.addEventListener("message", (ev) => this.handle(ev));
-    ws.addEventListener("close", () => this.events.onClose?.());
+    this.attach(ws);
+    // W2 watchdog: snapshots arrive at TICK_DOWN_HZ, so a visible tab that
+    // hears nothing for SERVER_SILENCE_MS is on a dead (half-open) socket —
+    // a network change can leave one that never fires `close`. A hidden tab
+    // is skipped, and coming back restarts the clock — as does a check that
+    // itself ran late: after a long main-thread stall (the synchronous city
+    // build, a slow frame) this timer can run before the snapshots that
+    // queued meanwhile, and that silence proves nothing about the socket.
+    let lastCheckMs = performance.now();
+    setInterval(() => {
+      const now = performance.now();
+      const stalled = now - lastCheckMs > WATCHDOG_MS * 2;
+      lastCheckMs = now;
+      if (stalled || document.hidden) this.lastHeardMs = now;
+      if (this.state !== "open") return;
+      if (now - this.lastHeardMs > SERVER_SILENCE_MS) this.dropped();
+    }, WATCHDOG_MS);
   }
 
   /** Connect and join; resolves once the server's welcome arrives. Always
    * settles (W1): an error, a close before the welcome, or no welcome within
-   * CONNECT_TIMEOUT_MS all reject — a join never hangs on a silent socket. */
-  static connect(name: string): Promise<GameSocket> {
+   * CONNECT_TIMEOUT_MS all reject — a join never hangs on a silent socket.
+   * `resume` (W2) is a token handed over a reload, if any. */
+  static async connect(name: string, resume?: string): Promise<GameSocket> {
+    const { ws, welcome } = await GameSocket.open(name, resume);
+    return new GameSocket(ws, welcome, name);
+  }
+
+  private static open(
+    name: string,
+    resume?: string,
+  ): Promise<{ ws: WebSocket; welcome: WelcomeMsg }> {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(socketUrl());
       let settled = false;
@@ -118,7 +172,7 @@ export class GameSocket {
       };
       const timer = setTimeout(fail, CONNECT_TIMEOUT_MS);
       ws.addEventListener("open", () =>
-        ws.send(JSON.stringify({ type: "join", name })),
+        ws.send(JSON.stringify({ type: "join", name, resume })),
       );
       ws.addEventListener("error", fail);
       ws.addEventListener("close", fail);
@@ -130,15 +184,97 @@ export class GameSocket {
           if (msg.type !== "welcome") return fail();
           settled = true;
           clearTimeout(timer);
-          resolve(new GameSocket(ws, msg));
+          resolve({ ws, welcome: msg });
         },
         { once: true },
       );
     });
   }
 
+  /** Route a ws's traffic here — only while it is the CURRENT one, so a
+   * replaced socket's stragglers (and its late close) are ignored. */
+  private attach(ws: WebSocket): void {
+    ws.addEventListener("message", (ev) => {
+      if (ws !== this.ws) return;
+      this.lastHeardMs = performance.now();
+      this.handle(ev);
+    });
+    ws.addEventListener("close", () => {
+      if (ws === this.ws) this.dropped();
+    });
+  }
+
+  /** The current socket is gone (closed, or the watchdog gave up on it):
+   * start resuming. */
+  private dropped(): void {
+    if (this.state !== "open") return;
+    this.state = "reconnecting";
+    this.ws.close();
+    this.droppedAt = performance.now();
+    this.attempt = 0;
+    this.events.onReconnecting?.();
+    this.scheduleResume();
+  }
+
+  private scheduleResume(): void {
+    const delay = reconnectDelayMs(
+      this.attempt,
+      performance.now() - this.droppedAt,
+    );
+    if (delay === null) this.lost();
+    else setTimeout(() => this.tryResume(), delay);
+  }
+
+  /** One resume attempt. A hidden tab waits to be shown first: a resumed
+   * session starts loading again, and nothing would pose it from here. */
+  private async tryResume(): Promise<void> {
+    if (document.hidden) {
+      document.addEventListener("visibilitychange", () => this.tryResume(), {
+        once: true,
+      });
+      return;
+    }
+    let next: { ws: WebSocket; welcome: WelcomeMsg };
+    try {
+      next = await GameSocket.open(this.name, this.welcome.resumeToken);
+    } catch {
+      this.attempt++;
+      this.scheduleResume();
+      return;
+    }
+    if (next.welcome.id !== this.selfId) {
+      // The token was refused (expired, spent, or the server restarted): the
+      // server made us someone new, and that is SIGNAL LOST's job, not ours.
+      next.ws.close();
+      this.lost();
+      return;
+    }
+    this.ws = next.ws;
+    this.welcome = next.welcome;
+    this.attach(next.ws);
+    this.delay.reset(); // the outage's arrival gaps are not jitter
+    this.lastHeardMs = performance.now();
+    this.state = "open";
+    this.events.onResumed?.(next.welcome);
+  }
+
+  private lost(): void {
+    this.state = "lost";
+    this.events.onClose?.();
+  }
+
   get selfId(): string {
     return this.welcome.id;
+  }
+
+  /** The token a reload can resume this session with (W2). */
+  get resumeToken(): string {
+    return this.welcome.resumeToken;
+  }
+
+  /** W2: the tab hid (`true`) or came back (`false`). */
+  sendAway(on: boolean): void {
+    this.send({ type: "away", on });
   }
 
   /** Call every frame with the frame's rAF timestamp — sends one pose per
@@ -313,8 +449,11 @@ export class GameSocket {
       case "newsHeli":
         this.events.onNewsHeli?.(msg);
         break;
+      case "awayStarted":
+        this.events.onAwayStarted?.();
+        break;
       case "welcome":
-        break; // already consumed by connect()
+        break; // already consumed by open()
     }
   }
 }

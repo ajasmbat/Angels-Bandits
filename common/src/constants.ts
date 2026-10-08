@@ -316,6 +316,33 @@ export const JOIN_DEADLINE_MS = 10000;
  * join with no pose, the server drops it — measured from the join, so a
  * keepalive can never hold a room seat open forever. ms. */
 export const BOOT_TIMEOUT_MS = 30000;
+/** W2: an AWAY player (tab hidden) is closed this long after going away —
+ * counted from the away itself, so a heartbeat can never hold its seat
+ * forever. The close leaves a resumable record like any other drop. ms. */
+export const AWAY_TIMEOUT_MS = 60000;
+/** W2: an away player whose heartbeat stops (a phone froze the page) is
+ * closed after this much silence instead of holding its seat a full minute. ms. */
+export const AWAY_SILENCE_MS = 10000;
+/** W2: `away` takes effect only once the plane has gone this long without
+ * taking damage — hiding the tab is never a way out of a burst that is
+ * already landing. Until then the plane stays in snapshots, hittable. ms. */
+export const AWAY_COMBAT_LOCK_MS = 3000;
+/** W2: a hidden tab's heartbeat interval, ms (browsers clamp hidden timers
+ * to about 1 Hz anyway). Comfortably inside AWAY_SILENCE_MS. */
+export const AWAY_PING_INTERVAL_MS = 1000;
+/** W2: shortest effective away, ms. A return sooner than this is held until
+ * it elapses, bounding how often away/return can buy a fresh protected spawn. */
+export const AWAY_MIN_MS = 1000;
+/** W2: how long after a drop a `resumeToken` still restores the session. ms. */
+export const RESUME_WINDOW_MS = 60000;
+/** W2: client reconnect backoff — the delay before attempt n is
+ * RECONNECT_BASE_MS × 2^n, capped at RECONNECT_MAX_MS (0.5, 1, 2, 4, 8 s…). */
+export const RECONNECT_BASE_MS = 500;
+export const RECONNECT_MAX_MS = 8000;
+/** W2: a visible client that has heard nothing from the server for this
+ * long treats the socket as dead (half-open after a network change) and
+ * reconnects. Snapshots arrive at TICK_DOWN_HZ, so this is ~60 missed. ms. */
+export const SERVER_SILENCE_MS = 3000;
 /** The client gives up on reaching the server (no welcome) after this, ms. */
 export const CONNECT_TIMEOUT_MS = 10000;
 /** Boot keepalive cadence while nothing else is being sent (W1), ms. */

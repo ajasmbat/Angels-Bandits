@@ -79,6 +79,9 @@ export class Hud {
     "killcam-count",
   ) as HTMLDivElement;
   private readonly kd = document.getElementById("kd") as HTMLSpanElement;
+  private readonly reconnecting = document.getElementById(
+    "reconnecting",
+  ) as HTMLDivElement;
   private readonly crosshair = document.getElementById(
     "crosshair",
   ) as unknown as SVGSVGElement;
@@ -138,6 +141,11 @@ export class Hud {
 
   setProtected(on: boolean): void {
     this.badge.classList.toggle("on", on);
+  }
+
+  /** W2: the RECONNECTING… banner, up while a dropped socket resumes. */
+  setReconnecting(on: boolean): void {
+    this.reconnecting.classList.toggle("open", on);
   }
 
   /**

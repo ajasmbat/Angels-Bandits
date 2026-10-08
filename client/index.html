@@ -1341,6 +1341,25 @@
         padding: 9px 26px;
         cursor: pointer;
       }
+      /* W2: the socket dropped and is resuming in the background — the game
+         keeps running underneath, so a small banner, not a card. */
+      #reconnecting {
+        position: fixed;
+        top: 12px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: none;
+        z-index: 9;
+        padding: 6px 16px;
+        background: #141225cc;
+        color: #ffc65a;
+        font-size: 13px;
+        letter-spacing: 0.2em;
+        pointer-events: none;
+      }
+      #reconnecting.open {
+        display: block;
+      }
 
       /* Portrait on a touch device: ask for landscape (the manifest and
          ui/mobile.ts lock it where the browser lets them). Not over the join
@@ -1987,6 +2006,7 @@
       <h1 id="signal-lost-h">SIGNAL LOST</h1>
       <button type="button">TAP TO REJOIN</button>
     </div>
+    <div id="reconnecting" role="status">RECONNECTING…</div>
     <div id="rotate" aria-live="polite">
       <div class="phone" aria-hidden="true"></div>
       ROTATE TO LANDSCAPE

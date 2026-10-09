@@ -671,7 +671,16 @@ Two rules every tier obeys:
 | S6 glass reflections — neon skyline in glass, puddles, river | 1 probe face a frame | ½ a face | ⅓ of a face | off (no probe pass; faked reflections) |
 | S7 kill-streak smoke | full | full | 50 % of the puffs | 50 % of the puffs |
 | S7 medals, announcer, streak callouts | full | full | full | full (DOM and audio, no draw) |
+| C2 chaos — meteors, bombs, bombers and their lights, quake shake | full | full | full | full (the telegraphs and the solids) |
+| C2 chaos — meteor fire trails, spreading fires, downed-bomber bursts | full | 75 % | 50 % | 30 % (into the D1 pool, no draw) |
+| U4 tunnels — the concrete shell (walls, ramps, lintels) | full | full | full | full (solid) |
+| U4 tunnels — light fixtures (strips, guide and portal lights) | full | full | full | off |
+| U5 underground life — gardens, vines, glowing plants, fireflies, birds, station people | full | full | core + detail bands | core band (the hall, its glass, panels, waterfalls, the lake) |
+| P3 polish — HUD, menus, hit juice, camera-shake budget | full | full | full | full (DOM, CSS and audio, no draw) |
+| P4 plane fleet — every plane in one set of instanced draws | full | full | full | no windscreen glass, no scarf |
+| P4 name tags — one batched draw | full | full | full | full (identity) |
 | F5/F6 flight feel | — | — | — | — (no render cost: no row in `FEATURE_TIERS`) |
+| F9 effortless controls, B3 smarter bots | — | — | — | — (no render cost: no row in `FEATURE_TIERS`) |
 
 **Auto** starts at High and only ever steps **down**: a feature popping back
 in is far more visible than one resolution rung, and a player who wants it

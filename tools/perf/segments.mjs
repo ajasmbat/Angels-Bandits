@@ -103,6 +103,14 @@ export const BUDGETS = {
     boss: 307,
     rings: 114,
     glass: 112,
+    // P4: the ticket's ceiling for peak chaos — boss, missiles, a collapse,
+    // bombers and a full 12-plane room in one view.
+    chaos: 140,
+  },
+  // P4: ceilings that apply only to a window measured on the Mobile tier
+  // (`--quality mobile`); every other tier is held to `drawCalls` above.
+  drawCallsMobile: {
+    chaos: 90,
   },
   // D6: a collapse segment may cost at most this many draws over the SAME
   // pass's `core` (core itself stays under its 120). A segment not flown
@@ -464,5 +472,118 @@ export const SEGMENTS = [
     yaw: yawToward(80, -100),
     hold: true,
     weather: "clear",
+  },
+  // --- P4: the Amazing batch (C2 constant chaos, U4 tunnels, U5 underground
+  // life), appended after S8's so the sixteen above keep their index and
+  // measured world instants. The server runs D6's quiet city (no chaos is
+  // ever sent: run.mjs asserts it), and every chaos thing on screen is
+  // STAGED on the client through `__ab.qaChaos` (client/src/game/
+  // qa-chaos.ts): strike schedules, a bomber run, a quake and fires, all
+  // pure in the spec and the pinned world clock, through the server's own
+  // planners. `chaos` and `exit` glide/hold on the WORLD clock, so frame n
+  // is the same scene on every pass on any machine. Every spot was checked
+  // offline against the shared collision — touchesSolid with the city, the
+  // trees, every mover, the staged collapse, the staged bombers and the
+  // staged boss hull, every 50 ms over the warm-up's and the pass's settle
+  // and window (README P4): clear.
+  {
+    name: "chaos",
+    what: "C2 peak chaos: 12 planes under the war zeppelin and its flak, a missile a second, meteors, a bomber carpet, a quake, fire and a tower toppling across the street",
+    // D6's `collapse` viewpoint (building 343, 215 m, toppling west across
+    // the x = 1200 street 236 m ahead), HELD at 110 m. 11 fake pilots weave
+    // 70–230 m ahead down the street at 120–200 m — inside the plane LOD's
+    // near band, so every plane is the full airframe all window — and hold
+    // their fire (a tracer is a draw on the pilots' own wall clock). The
+    // zeppelin crosses 520 m out at mid-window (S8's staging); a missile
+    // launches every second (4–5 in the air), a meteor every 2.5 s (1–2),
+    // and a three-ship bomber run crosses the view along z = 400 at 250 m,
+    // its 24-bomb carpet centred ahead 2 s into the segment (bombs falling
+    // through the whole window); a quake shakes all window; building 303's
+    // street face burns.
+    x: 1200,
+    z: 700,
+    y: 110,
+    yaw: 0,
+    hold: true,
+    pilots: 11,
+    pilotFlight: { near: 70, far: 230, yLo: 120, yHi: 200 },
+    pilotFire: false,
+    boss: {
+      ahead: 520,
+      corridor: { near: 70, far: 230, lateral: 25, yLo: 120, yHi: 200 },
+    },
+    stageAtWindow: {
+      fell: [{ b: 343, h: 215, style: "topple", dir: 0, t: -1500 }],
+    },
+    expect: "falling",
+    chaos: {
+      missiles: {
+        every: 1000,
+        leadMs: 5500,
+        aim: { ahead: 220, side: 40, y: 90 },
+        seed: 11,
+      },
+      meteors: {
+        every: 2500,
+        leadMs: 4500,
+        aim: { ahead: 380, side: -120, y: 0 },
+        seed: 12,
+      },
+      bombers: { dir: 0, aim: { ahead: 300, y: 0 }, crossMs: 2000 },
+      quake: { startMs: -500, dur: 7000, mag: 0.8, aim: { ahead: 300, y: 0 } },
+      fires: { b: 303, h: 49, chunks: 12 },
+    },
+  },
+  {
+    name: "tunnel",
+    what: "U4/U5: a glide down Crosstown's deep bore past the metro hall — light panels, vines, gardens, motes, the platform",
+    // Crosstown (tunnel 0) from s = 330, 60 m/s of WORLD time along its
+    // guide line (mid-height of the bore, 12 m off the floor at −64 m) —
+    // past the metro hall at s ≈ 448 — and held at s = 660 (`maxM`), still
+    // deep in the bore. The path is the bore's own centreline
+    // (`__ab.tunnelPose`), the line U4's bots fly.
+    tunnel: { id: 0, s: 330, speed: 60, maxM: 330 },
+    x: 1199,
+    z: 768,
+    y: -52,
+    yaw: 0,
+    weather: "clear",
+  },
+  {
+    name: "exit",
+    what: "U4 into C2: climbing out of Crosstown's east portal into the chaos — the zeppelin, missiles, meteors, a bomber carpet, a quake",
+    // Crosstown from s = L − 90 (under the lintel, on the ramp) at 40 m/s
+    // of WORLD time: out of the cut over plaza (8,2) heading +x, climbing
+    // 40° once past the lip (`climb`), held 60 m past it (`maxM` 150) at
+    // 62 m — 50 m short of building 506 (92 m). The chaos is staged round
+    // the lip, the view ahead: the zeppelin crossing 520 m out, a missile
+    // every second onto the blocks past the plaza, meteors, a bomber run
+    // across the line x = 2000. No pilots.
+    tunnel: { id: 0, s: -90, speed: 40, maxM: 150, climb: 40 },
+    x: 1710,
+    z: 450,
+    y: 12,
+    yaw: yawToward(1, 0),
+    weather: "clear",
+    boss: {
+      ahead: 520,
+      corridor: { near: 150, far: 400, lateral: 60, yLo: 120, yHi: 220 },
+    },
+    chaos: {
+      missiles: {
+        every: 1000,
+        leadMs: 5500,
+        aim: { ahead: 260, side: 0, y: 80 },
+        seed: 21,
+      },
+      meteors: {
+        every: 2500,
+        leadMs: 4500,
+        aim: { ahead: 420, side: 120, y: 0 },
+        seed: 22,
+      },
+      bombers: { dir: 1, aim: { ahead: 300, y: 0 }, crossMs: 2000 },
+      quake: { startMs: -500, dur: 7000, mag: 0.8, aim: { ahead: 200, y: 0 } },
+    },
   },
 ];

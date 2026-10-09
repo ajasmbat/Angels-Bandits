@@ -75,8 +75,14 @@ const REPO = resolve(HERE, "../..");
  *    the S6 reflection probe — the determinism check compares `scene`),
  *    `spectacle` (what was staged, read at both ends of the window),
  *    `verdicts.spectacle`, and `heap` under --heap.
+ * 7: P4 — the `chaos`, `tunnel` and `exit` segments (appended), per
+ *    segment `chaos` (what `__ab.qaChaos` staged, read at both ends of the
+ *    window, and the server chaos messages inside it), `verdicts.chaos`,
+ *    `fleet` (the plane fleet's planes and draws), per-tier draw budgets
+ *    (`verdicts.draws` judges BUDGETS.drawCallsMobile on Mobile), and
+ *    `ledger` (per-system draws) under --ledger.
  */
-const REPORT_VERSION = 6;
+const REPORT_VERSION = 7;
 const VIEWPORT = { width: 1280, height: 720 };
 const DEVICE_SCALE_FACTOR = 2;
 
@@ -155,6 +161,8 @@ function parseArgs(argv) {
     trace: null,
     /** S8: a sampling heap profile over each measured segment. */
     heap: false,
+    /** P4: per-system draw attribution after each measured window. */
+    ledger: false,
     quality: "high",
     abRef: null,
     soak: null,
@@ -253,6 +261,9 @@ function parseArgs(argv) {
         break;
       case "--heap":
         opts.heap = true;
+        break;
+      case "--ledger":
+        opts.ledger = true;
         break;
       case "--soak":
         opts.soak = Number(next());
@@ -564,7 +575,7 @@ async function flySegment(page, seg, sampleMs, worldMs) {
       // flak on the pinned world clock, the record ghost the course run will
       // play. `show` says whether the build has the hook (an --ab-ref from
       // before S8 does not: no baseline) and whether staging took.
-      const show = { boss: null, course: null };
+      const show = { boss: null, course: null, chaos: null };
       if (s.boss && typeof ab.qaBoss === "function") {
         show.boss =
           ab.qaBoss({
@@ -578,13 +589,38 @@ async function flySegment(page, seg, sampleMs, worldMs) {
             corridor: s.boss.corridor,
           }) !== null;
       }
+      // P4: the C2 chaos the segment measures, staged on the pinned world
+      // clock (game/qa-chaos.ts); null when the build has no hook (an
+      // --ab-ref from before P4: no baseline).
+      show.chaos = null;
+      if (s.chaos && typeof ab.qaChaos === "function") {
+        show.chaos =
+          ab.qaChaos({
+            x: s.x,
+            y: s.y,
+            z: s.z,
+            yaw: s.yaw,
+            worldMs: s.worldMs,
+            ...s.chaos,
+          }) !== null;
+      }
       let courseId = null;
       if (s.course && typeof ab.qaCourseGhost === "function") {
         const g = ab.qaCourseGhost(s.course.theme, s.course.ghostSpeed);
         show.course = g !== null && g.count > 0;
         courseId = g?.course ?? null;
       }
-      ab.teleport(s.x, s.z, s.y, s.yaw);
+      // P4: a TUNNEL glide follows a bore's guide line (`__ab.tunnelPose`)
+      // on the WORLD clock: frame n sits at the same point on every pass.
+      const canTunnel = s.tunnel && typeof ab.tunnelPose === "function";
+      const tunnelAt = (d) =>
+        ab.tunnelPose(s.tunnel.id, s.tunnel.s, d, s.tunnel.climb ?? 0);
+      if (canTunnel) {
+        const p = tunnelAt(0);
+        ab.teleport(p.x, p.z, p.y, p.yaw);
+      } else {
+        ab.teleport(s.x, s.z, s.y, s.yaw);
+      }
       // O3: a HELD view re-teleports every frame instead of flying the
       // street — the furball's fake pilots weave ahead of a fixed point, so
       // the camera has to stay on it.
@@ -592,11 +628,25 @@ async function flySegment(page, seg, sampleMs, worldMs) {
       // fixed speed of WALL time from the teleport, so the path is the same
       // on a 3 fps software renderer as on a GPU (the sim's step is clamped,
       // so a flown plane would cover a fraction of it there).
-      let holding = s.hold === true || s.glide !== undefined;
+      let holding = s.hold === true || s.glide !== undefined || canTunnel;
+      /** P4 --ledger: a glide stops where it stands while it is read. */
+      let frozen = false;
+      let frozenD = 0;
       const glideFrom = performance.now();
       const hold = () => {
         if (!holding) return;
-        if (s.glide) {
+        if (canTunnel) {
+          const world = ab.renderMs?.() ?? s.worldMs;
+          const d = frozen
+            ? frozenD
+            : Math.min(
+                s.tunnel.maxM,
+                Math.max(0, (s.tunnel.speed * (world - s.worldMs)) / 1000),
+              );
+          frozenD = d;
+          const p = tunnelAt(d);
+          ab.teleport(p.x, p.z, p.y, p.yaw);
+        } else if (s.glide) {
           const d = Math.min(
             s.glide.maxM,
             (s.glide.speed * (performance.now() - glideFrom)) / 1000,
@@ -694,12 +744,20 @@ async function flySegment(page, seg, sampleMs, worldMs) {
             );
           }
         }
+        const ch = show.chaos ? ab.chaos() : null;
         return {
           boss: b && {
             present: b.present,
             armour: b.drawn.armour,
             shells: b.drawn.shells,
             foreign: b.foreignShells,
+          },
+          chaos: ch && {
+            ...ch.staged,
+            bomberBoxes: ch.drawn.boxes,
+            missilesDrawn: ch.missilesDrawn.bodies,
+            meteorsDrawn: ch.missilesDrawn.meteors,
+            serverChaos: ch.serverChaos,
           },
           course: c && {
             course: c.course,
@@ -724,12 +782,43 @@ async function flySegment(page, seg, sampleMs, worldMs) {
       const spectacleAfter = spectacle();
       const draws = ab.drawSplit?.() ?? null;
       const glAtEnd = gl();
+      const fleet = ab.fleet?.() ?? null;
       const workloadStable = workload() === workloadBefore;
       const destructionAtEnd = destruction();
+      // P4 --ledger: with the scene still staged and held — after every
+      // end-of-window read, and a glide frozen where it stands — each
+      // system's share of the scene's draws: a fresh baseline, the system
+      // hidden alone, both over a few frames, the system put back.
+      let ledger = null;
+      if (s.ledger && typeof ab.qaHide === "function") {
+        frozen = true;
+        const frames = (n) =>
+          new Promise((resolve) => {
+            let k = 0;
+            const tick = () =>
+              ++k >= n ? resolve() : requestAnimationFrame(tick);
+            requestAnimationFrame(tick);
+          });
+        const read = async () => {
+          ab.perfReset();
+          await frames(4);
+          return ab.drawSplit().scene;
+        };
+        ledger = { total: await read(), systems: {} };
+        for (const name of ab.qaSystems()) {
+          if (name.startsWith("city:") || name.startsWith("post:")) continue;
+          const base = await read();
+          ab.qaHide([name]);
+          const without = await read();
+          ab.qaHide([]);
+          if (base - without !== 0) ledger.systems[name] = base - without;
+        }
+      }
       holding = false;
       if (staged !== null) ab.qaDestruction(null);
       if (weatherPinned) ab.weather(null);
       if (show.boss !== null) ab.qaBoss(null);
+      if (show.chaos !== null) ab.qaChaos(null);
       if (show.course !== null) ab.qaCourseGhost(s.course.theme, null);
       const diff = (a, b) =>
         a === null || b === null
@@ -817,8 +906,11 @@ async function flySegment(page, seg, sampleMs, worldMs) {
         // S8: the window's draws split by the reflection probe (null on an
         // older build), and the staged spectacle at both ends of it.
         draws,
+        // P4: the plane fleet at the window's end, and --ledger.
+        fleet,
+        ledger,
         spectacle:
-          s.boss || s.course
+          s.boss || s.course || s.chaos
             ? {
                 staged: show,
                 readyWaitMs,
@@ -837,6 +929,7 @@ async function flySegment(page, seg, sampleMs, worldMs) {
       readyMaxMs: SPECTACLE_READY_MAX_MS,
       worldMs,
       defaultWeather: DEFAULT_WEATHER,
+      ledger: ledgerOn,
     },
   );
   return {
@@ -878,7 +971,7 @@ async function flySegment(page, seg, sampleMs, worldMs) {
  *  - `spectacle` — S8: see spectacleVerdict.
  */
 export function segmentVerdicts(name, stats) {
-  const draws = BUDGETS.drawCalls[name];
+  const draws = drawBudget(name, stats.tier);
   const seg = SEGMENTS.find((s) => s.name === name);
   const d = stats.destruction ?? null;
   const stages = seg?.stage !== undefined || seg?.stageAtWindow !== undefined;
@@ -900,7 +993,56 @@ export function segmentVerdicts(name, stats) {
     quiet: d ? d.serverEventsDelta === 0 : null,
     scene: stages ? sceneStaged(seg, stats) : null,
     spectacle: spectacleVerdict(seg, stats),
+    chaos: chaosVerdict(seg, stats),
   };
+}
+
+/**
+ * P4: a segment's draw budget on the tier it ran at — Mobile's own
+ * ceiling where BUDGETS.drawCallsMobile names one, else the High budget.
+ */
+export function drawBudget(name, tier) {
+  if (tier === "mobile" && BUDGETS.drawCallsMobile[name] !== undefined) {
+    return BUDGETS.drawCallsMobile[name];
+  }
+  return BUDGETS.drawCalls[name];
+}
+
+/** P4: missiles (cruise / artillery) the staged schedule must hold in the
+ * air at both ends of a chaos window. */
+export const CHAOS_MISSILES_MIN = 3;
+
+/**
+ * P4: did a chaos window show what was staged — at BOTH ends of it?
+ * At least CHAOS_MISSILES_MIN missiles and a meteor or bomb in the air, the
+ * bomber run drawn, the quake live, the fires lit (where staged), no strike
+ * from the server, and no server chaos message inside the window (D6's
+ * quiet city sends none). Null when the segment stages no chaos, or the
+ * build has no hook (an --ab-ref from before P4: no baseline).
+ */
+export function chaosVerdict(seg, stats) {
+  if (!seg?.chaos) return null;
+  const sp = stats.spectacle;
+  if (!sp || sp.staged.chaos === null || sp.staged.chaos === undefined) {
+    return null;
+  }
+  if (!sp.staged.chaos) return false;
+  const c = seg.chaos;
+  const ends = [sp.before.chaos, sp.after.chaos];
+  if (ends.some((e) => !e)) return false;
+  const serverChaos = ends[1].serverChaos - ends[0].serverChaos;
+  return (
+    serverChaos === 0 &&
+    ends.every(
+      (e) =>
+        (!c.missiles || e.inAir.missiles >= CHAOS_MISSILES_MIN) &&
+        (!c.meteors || e.inAir.meteors + e.meteorsDrawn > 0) &&
+        (!c.bombers || (e.run && e.bomberBoxes > 0)) &&
+        (!c.quake || e.quake) &&
+        (!c.fires || e.fires > 0) &&
+        e.foreign === 0,
+    )
+  );
 }
 
 /** D6: did a staging segment put its scene on screen, as asked? */
@@ -1064,7 +1206,31 @@ function flyWarmupLap(page) {
         }
         const ghost = s.course && typeof ab.qaCourseGhost === "function";
         if (ghost) ab.qaCourseGhost(s.course.theme, s.course.ghostSpeed);
-        ab.teleport(s.x, s.z, s.y, s.yaw);
+        // P4: its chaos too — missiles, meteors, bombers, bursts and fire
+        // pay their first sight here — and a tunnel segment starts on its
+        // bore's guide line.
+        const chaos = s.chaos && typeof ab.qaChaos === "function";
+        if (chaos) {
+          ab.qaChaos({
+            x: s.x,
+            y: s.y,
+            z: s.z,
+            yaw: s.yaw,
+            worldMs: s.worldMs,
+            ...s.chaos,
+          });
+        }
+        if (s.tunnel && typeof ab.tunnelPose === "function") {
+          const p = ab.tunnelPose(
+            s.tunnel.id,
+            s.tunnel.s,
+            0,
+            s.tunnel.climb ?? 0,
+          );
+          ab.teleport(p.x, p.z, p.y, p.yaw);
+        } else {
+          ab.teleport(s.x, s.z, s.y, s.yaw);
+        }
         await new Promise((resolve) => {
           const t0 = performance.now();
           const tick = () =>
@@ -1075,6 +1241,7 @@ function flyWarmupLap(page) {
         });
         if (staging) ab.qaDestruction(null);
         if (boss) ab.qaBoss(null);
+        if (chaos) ab.qaChaos(null);
         if (ghost) ab.qaCourseGhost(s.course.theme, null);
       }
       if (typeof ab.weather === "function") ab.weather(null);
@@ -1094,6 +1261,8 @@ function flyWarmupLap(page) {
           stageAtWindow,
           boss,
           course,
+          chaos,
+          tunnel,
         }) => ({
           x,
           z,
@@ -1103,6 +1272,8 @@ function flyWarmupLap(page) {
           stageAtWindow,
           boss,
           course,
+          chaos,
+          tunnel,
           weather: weather ?? DEFAULT_WEATHER,
           worldMs: warmupWorldMs(SEGMENTS.findIndex((s) => s.name === name)),
         }),
@@ -1317,6 +1488,8 @@ cost: ${b.label} vs ${a.label} (GPU-independent proxies)`);
 
 /** S8 `--heap`: sample the page's heap over each measured segment. */
 let heapProfile = false;
+/** P4 --ledger: attribute each segment's draws to the scene's systems. */
+let ledgerOn = false;
 
 /**
  * Start V8's sampling heap profiler on `page` (objects later collected
@@ -1506,14 +1679,17 @@ async function measure(browser, url, { trace = true } = {}) {
     // build has no `bullets` read-back and only waits for the room.
     // S8: after the boss, the same for the flak's burst fire and smoke in
     // the D1 particle pool (qaBoss(null) has already stopped the shells).
-    if (pilots || seg.boss) {
+    // P4: after staged chaos, the same for its blasts' particles and the
+    // missiles' smoke trails (qaChaos(null) has already taken its strikes).
+    if (pilots || seg.boss || seg.chaos) {
       const t0 = Date.now();
       try {
         await page.waitForFunction(
           () =>
             window.__ab.combat().targets.length === 0 &&
             (window.__ab.combat().bullets ?? 0) === 0 &&
-            (window.__ab.impacts?.().live ?? 0) === 0,
+            (window.__ab.impacts?.().live ?? 0) === 0 &&
+            (window.__ab.perf().smokePuffs ?? 0) === 0,
           null,
           { timeout: 60_000, polling: 250 },
         );
@@ -1778,15 +1954,18 @@ const mark = (v) => (v === null ? " n/a" : v ? "  ok" : "FAIL");
 
 /** O3: the per-segment budgets, one row per segment (see segmentVerdicts). */
 function printVerdicts(report) {
-  const drawBudgets = Object.entries(BUDGETS.drawCalls)
-    .map(([n, b]) => `${n} <= ${b}`)
-    .join(", ");
+  const drawBudgets = [
+    ...Object.entries(BUDGETS.drawCalls).map(([n, b]) => `${n} <= ${b}`),
+    ...Object.entries(BUDGETS.drawCallsMobile).map(
+      ([n, b]) => `${n} <= ${b} on Mobile`,
+    ),
+  ].join(", ");
   console.log(
     `\nbudgets: GPU p50 <= ${BUDGETS.gpuP50Ms} ms (60 fps at this ratio) · ` +
       `wall p99 <= ${BUDGETS.hitchRatio}x p50 · draw calls ${drawBudgets}`,
   );
   console.log(
-    "segment   60fps   p99/p50  hitch  draws  room    spect.  tier    weather",
+    "segment   60fps   p99/p50  hitch  draws  room    spect.  chaos   tier    weather",
   );
   for (const s of report.segments) {
     const v = s.verdicts ?? segmentVerdicts(s.name, s);
@@ -1801,7 +1980,7 @@ function printVerdicts(report) {
       v.room === null ? " n/a" : `${v.room ? "  ok" : "FAIL"} ${s.planes}`;
     console.log(
       `${s.name.padEnd(8)}  ${mark(v.fps60)}  ${ratio.padStart(8)}  ${mark(v.hitches)}  ` +
-        `${mark(v.draws)}  ${room.padEnd(8)}${mark(v.spectacle ?? null).padEnd(8)}${String(s.tier ?? "—").padEnd(8)}${weather}`,
+        `${mark(v.draws)}  ${room.padEnd(8)}${mark(v.spectacle ?? null).padEnd(8)}${mark(v.chaos ?? null).padEnd(8)}${String(s.tier ?? "—").padEnd(8)}${weather}`,
     );
   }
   // S8: the draws split by the reflection probe, and what was staged.
@@ -1821,6 +2000,8 @@ function printVerdicts(report) {
           `boss ${e.boss.present ? "in the air" : "ABSENT"} (${e.boss.armour} armour boxes), ${e.boss.shells} shells, ${e.boss.foreign} server shells`,
         e.course &&
           `run on course ${e.course.course} (want ${e.course.expected}), next ring ${e.course.next}, ghost ${e.course.ghost ? (e.course.ghostDrawn ? "drawn" : "playing, not drawn (tier)") : "NOT playing"}`,
+        e.chaos &&
+          `missiles ${e.chaos.inAir.missiles} / meteors ${e.chaos.inAir.meteors} / bombs ${e.chaos.inAir.bombs} in the air, bombers ${e.chaos.bomberBoxes} boxes, quake ${e.chaos.quake ? "live" : "OFF"}, fires ${e.chaos.fires}, ${e.chaos.foreign} server strikes`,
         e.pilotRange !== null && `furthest pilot ${e.pilotRange} m`,
       ]
         .filter(Boolean)
@@ -1830,6 +2011,24 @@ function printVerdicts(report) {
       noHooks
         ? `${s.name}: this build cannot stage it (no S8 hooks)`
         : `${s.name}: window start${sp.readyWaitMs > 0 ? ` (waited ${sp.readyWaitMs} ms past the settle for it)` : ""} — ${end(sp.before)}; end — ${end(sp.after)}`,
+    );
+  }
+  // P4: the plane fleet's share, and --ledger's per-system draws.
+  for (const s of report.segments) {
+    if (s.fleet) {
+      console.log(
+        `${s.name.padEnd(8)}  fleet: ${s.fleet.planes} planes (${s.fleet.near} near, ${s.fleet.far} far) in ${s.fleet.draws} draws`,
+      );
+    }
+  }
+  for (const s of report.segments) {
+    if (!s.ledger) continue;
+    const rows = Object.entries(s.ledger.systems)
+      .sort((a, b) => b[1] - a[1])
+      .map(([n, d]) => `${n} ${d}`)
+      .join(", ");
+    console.log(
+      `${s.name.padEnd(8)}  ledger (${s.tier}): ${s.ledger.total} scene draws — ${rows}`,
     );
   }
   for (const s of report.segments) {
@@ -1860,6 +2059,18 @@ function printVerdicts(report) {
   const unstaged = report.segments.filter(
     (s) => (s.verdicts ?? segmentVerdicts(s.name, s)).spectacle === false,
   );
+  for (const s of report.segments) {
+    if ((s.verdicts ?? segmentVerdicts(s.name, s)).chaos === false) {
+      console.error(
+        `!! ${s.name}: the staged chaos did not hold through the window (or the server sent chaos into it) — it measured a calmer scene than it claims.`,
+      );
+    }
+    if ((s.verdicts ?? segmentVerdicts(s.name, s)).draws === false) {
+      console.error(
+        `!! ${s.name}: ${s.drawCalls} draws, over its ${drawBudget(s.name, s.tier)} budget on ${s.tier}.`,
+      );
+    }
+  }
   for (const s of unstaged) {
     console.error(
       `!! ${s.name}: the staged spectacle did not hold through the window — it measured an emptier scene than it claims.`,
@@ -2115,6 +2326,8 @@ export const TOLERANCE = { gpuP50Pct: 10, gpuP50Ms: 1.0 };
  * paired `--ab` delta — they are simply not evidence about the harness.
  */
 export const UNPINNED_SEGMENTS = new Set([
+  // P4: the chaos view's pilots (see UNPINNED_WORLD_PINNED).
+  "chaos",
   "storm",
   "canyon",
   // O3: rain and the crowd on the synced clock, traffic as for canyon.
@@ -2143,7 +2356,15 @@ export const DRAWS_FLOAT = new Set([
  * wall clock. These apply only when EVERY pass of the arm reports its world
  * pinned; an older build (an --ab-ref from before O4) keeps the sets above.
  */
-export const UNPINNED_WORLD_PINNED = new Set(["furball", "ruins", "boss"]);
+export const UNPINNED_WORLD_PINNED = new Set([
+  "furball",
+  "ruins",
+  "boss",
+  // P4: chaos's pilots too — but its DRAWS are asserted: every pilot stays
+  // in the near band and holds fire, and the fleet draws a full room in a
+  // fixed set of draws whatever the pilots do (README P4).
+  "chaos",
+]);
 // S8: `boss` with them — its 11 pilots are drawn at the synced server time,
 // which the world pin does not reach; the staged hull and shells are pinned
 // and checked by the `spectacle` verdict instead.
@@ -2476,6 +2697,7 @@ async function main() {
   segmentFilter = opts.segments === null ? null : new Set(opts.segments);
   traceDir = opts.trace;
   heapProfile = opts.heap;
+  ledgerOn = opts.ledger;
   if (opts.build) {
     console.log("building client…");
     await run("npm", ["run", "build", "-w", "client"], {
@@ -2666,6 +2888,17 @@ async function main() {
     report.segments.some(
       (s) => (s.verdicts ?? segmentVerdicts(s.name, s)).spectacle === false,
     )
+  ) {
+    process.exitCode = 1;
+  }
+  // P4: so is a chaos window that did not hold its staging, and a segment
+  // over its draw budget on the tier it ran at (core <= 120, chaos <= 140,
+  // chaos <= 90 on Mobile, ...).
+  if (
+    report.segments.some((s) => {
+      const v = s.verdicts ?? segmentVerdicts(s.name, s);
+      return v.chaos === false || v.draws === false;
+    })
   ) {
     process.exitCode = 1;
   }

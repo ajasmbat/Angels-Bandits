@@ -46,7 +46,6 @@
 import type { HoleSpan } from "@angels-bandits/common/city";
 import type { Building } from "@angels-bandits/common/city";
 import type { MoverField } from "@angels-bandits/common/city/movers";
-import type { CityIndex, NatureIndex } from "@angels-bandits/common/collision";
 import {
   BORE_HEIGHT,
   BORE_WIDTH,
@@ -56,6 +55,7 @@ import {
   guideY,
   tunnelFrameInto,
 } from "@angels-bandits/common/city/tunnels";
+import type { CityIndex, NatureIndex } from "@angels-bandits/common/collision";
 import { PLAYER_RADIUS, WORLD_SIZE } from "@angels-bandits/common/constants";
 import {
   type FlightInput,
@@ -214,8 +214,7 @@ const tf: TunnelFrame = { s: 0, lat: 0, th: 0 };
 /** A span's clear width and height (a bore's section; a cut's open sky is
  * measured as the bore's height about the guide line). */
 const spanWidth = (s: SaveSpan) => (isTunnel(s) ? BORE_WIDTH : s.hole.width);
-const spanHeight = (s: SaveSpan) =>
-  isTunnel(s) ? BORE_HEIGHT : s.hole.height;
+const spanHeight = (s: SaveSpan) => (isTunnel(s) ? BORE_HEIGHT : s.hole.height);
 
 /** Fill `frame` with `p` in `span`'s frame for travel sign `sg` (+1 along
  * increasing axis coordinate — along increasing arc length for a bore).

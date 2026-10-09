@@ -549,12 +549,26 @@ export function collapseShakeAmount(
 /** The displayed camera's offset for a shake `amount` (0..1) at wall time
  * `nowMs`: a fast irregular jolt, mostly vertical. */
 export function collapseShakeOffset(amount: number, nowMs: number): Vec3 {
-  if (amount <= 0) return { x: 0, y: 0, z: 0 };
+  return collapseShakeOffsetInto({ x: 0, y: 0, z: 0 }, amount, nowMs);
+}
+
+/** collapseShakeOffset into `out` (D6: the frame loop's, no object a
+ * frame). */
+export function collapseShakeOffsetInto(
+  out: Vec3,
+  amount: number,
+  nowMs: number,
+): Vec3 {
+  if (amount <= 0) {
+    out.x = 0;
+    out.y = 0;
+    out.z = 0;
+    return out;
+  }
   const t = nowMs / 1000;
   const a = amount * COLLAPSE_SHAKE_PEAK;
-  return {
-    x: a * 0.5 * (Math.sin(t * 37.1) + 0.5 * Math.sin(t * 71.3 + 1.7)),
-    y: a * (Math.sin(t * 43.7 + 0.4) + 0.5 * Math.sin(t * 89.9 + 2.1)),
-    z: a * 0.5 * (Math.sin(t * 31.3 + 2.9) + 0.5 * Math.sin(t * 67.7 + 0.8)),
-  };
+  out.x = a * 0.5 * (Math.sin(t * 37.1) + 0.5 * Math.sin(t * 71.3 + 1.7));
+  out.y = a * (Math.sin(t * 43.7 + 0.4) + 0.5 * Math.sin(t * 89.9 + 2.1));
+  out.z = a * 0.5 * (Math.sin(t * 31.3 + 2.9) + 0.5 * Math.sin(t * 67.7 + 0.8));
+  return out;
 }

@@ -4,6 +4,8 @@
 // that it never takes an intentional loop or split-S away. The novice-pilot
 // sim (novice-pilot.test.ts) measures what it buys in the city.
 
+import { minAltitude } from "@angels-bandits/common/city/river";
+import { groundFloor } from "@angels-bandits/common/city/tunnels";
 import {
   BANK_ANGLE,
   BULLET_RANGE,
@@ -48,11 +50,13 @@ const DEG = Math.PI / 180;
 const DT = 1 / 60;
 const NORMAL = FEEL_TUNING.normal;
 
-/** Level-ish flight at 300 m, mid-map, with a real roll of `roll` (no
- * cosmetic lean) and `pitch`. */
+/** Level-ish flight at 300 m with a real roll of `roll` (no cosmetic
+ * lean) and `pitch`, heading −Z over dry ground: no L11 channel and no U4
+ * bore anywhere along the way, so the ground is at 0 (asserted below). */
+const DRY = { x: 100, z: 300 };
 function plane(pitch = 0, roll = 0, y = 300): FlightState {
   return {
-    pos: { x: 1000, y, z: 1000 },
+    pos: { x: DRY.x, y, z: DRY.z },
     yaw: 0,
     pitch,
     roll,
@@ -428,6 +432,10 @@ describe("experts keep full aerobatics (F7) with the assist on", () => {
   it("a dive the pull-up can't recover from in time is pulled out", () => {
     // Full nose-down from 120 m at full speed: without the floor it meets
     // the ground; with it, the pull starts in time.
+    for (let dz = -400; dz <= 0; dz += 10) {
+      const z = (DRY.z + dz + 2000) % 2000;
+      expect(groundFloor(DRY.x, z, minAltitude(z))).toBe(0);
+    }
     const dive = { turn: 0, pitch: -1, roll: 0 };
     const floor = (assist: boolean) =>
       Math.min(

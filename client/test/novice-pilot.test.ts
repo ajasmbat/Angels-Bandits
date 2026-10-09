@@ -20,13 +20,17 @@ const ARM_TIMEOUT_MS = 120_000;
 describe("novice pilot, default scheme (F9)", () => {
   const results = new Map<string, Result>();
 
-  it("routes are real: long, low, and some thread a hole", () => {
+  it("routes are real: long, low, through holes and U4 tunnels", () => {
     let holes = 0;
+    let tunnels = 0;
     for (const r of routes) {
       expect(r.points.length).toBeGreaterThan(8);
       holes += r.holes;
+      tunnels += r.tunnels;
     }
+    console.log(`novice routes: ${holes} holes, ${tunnels} tunnel transits`);
     expect(holes).toBeGreaterThan(SEEDS.length);
+    expect(tunnels).toBeGreaterThan(SEEDS.length / 5);
   });
 
   for (const [name, arm] of [

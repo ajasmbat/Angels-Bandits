@@ -4,8 +4,10 @@
 // parallel. Not a test file itself.
 //
 // A scripted novice flies the seed-42 city through waypoint routes — low
-// legs between the towers with clear sight lines (the canyons), and every
-// few legs a hole threaded mouth to mouth — for 30 s per seed, on 50 fixed
+// legs between the towers with clear sight lines (the canyons), every few
+// legs a hole threaded mouth to mouth, and (every third route, plus any
+// that pass close) a U4 tunnel: down a plaza portal's cut or in at a river
+// mouth, along the bore, out a portal — for 30 s per seed, on 50 fixed
 // seeds, at 30 Hz (a phone's frame rate; the pipeline is dt-aware).
 //
 // The hand: the chase eye's view direction lags the nose at the camera's
@@ -15,8 +17,9 @@
 // clamped to the screen. On the instructor the eye sits at the plane (no
 // parallax) and the pipper is the gun line.
 //
-// Everything else is main.ts's pipeline: the H2 hole assist, the F5 corner
-// manager (intent = the pilot's own command, assist excluded), the F9
+// Everything else is main.ts's pipeline, U4 wiring included: the H2 hole
+// assist, the F5 corner manager (intent = the pilot's own command, assist
+// excluded; a bore never brakes), the F9
 // assist when the arm has it on, stepFlight, the H3 hole save, and
 // detectCrash against the static solids (movers are left out of both arms:
 // they are time-dependent, and F5, not F9, owns them). A crash costs what
@@ -30,6 +33,13 @@ import {
 } from "@angels-bandits/common/city";
 import { natureFor } from "@angels-bandits/common/city/nature";
 import { bridgeSpans } from "@angels-bandits/common/city/river";
+import {
+  TUNNELS,
+  type Tunnel,
+  type TunnelPoint,
+  guideY,
+  tunnelPointInto,
+} from "@angels-bandits/common/city/tunnels";
 import {
   buildCityIndex,
   buildNatureIndex,
@@ -115,6 +125,8 @@ const TREMOR_TAU = 0.4;
 /** Where the hand can put the cursor: the screen's half-extents, rad. */
 const SCREEN_YAW = 50 * DEG;
 const SCREEN_PITCH = 32 * DEG;
+/** Waypoint spacing along a bore, m (its bends are 300 m radius). */
+const TUNNEL_STEP = 120;
 /** A waypoint counts as reached inside this, m. */
 const CAPTURE = 22;
 
@@ -128,9 +140,16 @@ const cornerWorld: CornerWorld = {
   index,
   nature,
   corridors: holeCorridors(spans),
+  tunnels: true, // U4, as main.ts: a bore's corridor never brakes
 };
 const assistWorld: AssistWorld = { spans, buildings, index };
-const saveWorld: SaveWorld = { spans, buildings, index, nature };
+const saveWorld: SaveWorld = {
+  spans,
+  tunnels: TUNNELS, // U4, as main.ts
+  buildings,
+  index,
+  nature,
+};
 const effWorld: EffortlessWorld = { buildings, index, nature };
 
 const wrap = (a: number): number => Math.atan2(Math.sin(a), Math.cos(a));
@@ -163,16 +182,36 @@ function clearSegment(a: Vec3, b: Vec3, r: number): boolean {
 export interface Route {
   start: Vec3;
   points: Vec3[];
-  /** How many of its legs thread a hole. */
+  /** How many of its legs thread a hole… */
   holes: number;
+  /** …and how many U4 tunnels it flies through. */
+  tunnels: number;
 }
 
 /** A waypoint route for `seed`: low canyon legs with clear sight lines, and
  * every few legs a hole threaded mouth to mouth when one is reachable. */
-function makeRoute(seed: number): Route {
+function makeRoute(seed: number, i: number): Route {
   const rand = mulberry32(seed ^ 0x5eed_f9);
   let start: Vec3 | null = null;
   let heading = 0;
+  const points: Vec3[] = [];
+  let holes = 0;
+  let tunnels = 0;
+  // Every third route opens with a U4 transit, so the bores are flown.
+  const bore =
+    i % 3 === 0 && TUNNEL_STARTS.length > 0
+      ? (TUNNEL_STARTS[(i / 3) % TUNNEL_STARTS.length] as Vec3[])
+      : null;
+  if (bore !== null) {
+    start = bore[0] as Vec3;
+    points.push(...bore.slice(1));
+    tunnels++;
+    const d = wrapDelta(
+      bore[bore.length - 2] as Vec3,
+      bore[bore.length - 1] as Vec3,
+    );
+    heading = Math.atan2(-d.x, -d.z);
+  }
   while (start === null) {
     // A north–south street centreline, low.
     const p = {
@@ -188,12 +227,14 @@ function makeRoute(seed: number): Route {
     });
     if (clearSegment(p, ahead, 10)) start = p;
   }
-  const points: Vec3[] = [];
-  let holes = 0;
-  let at = start;
+  let at = points.length > 0 ? (points[points.length - 1] as Vec3) : start;
   for (let n = 0; n < 40; n++) {
     let next: Vec3[] | null = null;
-    if (n % 4 === 3) {
+    if (n === 2) {
+      next = tunnelTransit(at);
+      if (next !== null) tunnels++;
+    }
+    if (next === null && n % 4 === 3) {
       // A hole: in through one mouth, out the other.
       for (const s of spans) {
         const d = wrapDelta(at, s.center);
@@ -242,10 +283,94 @@ function makeRoute(seed: number): Route {
       at = p;
     }
   }
-  return { start, points, holes };
+  return { start, points, holes, tunnels };
 }
 
-export const routes = SEEDS.map(makeRoute);
+/** A U4 transit from `at` when one is in reach: in through a plaza portal
+ * (diving down its cut) or a river mouth, along the bore every
+ * TUNNEL_STEP m at its guide height, and out a plaza portal's ramp. */
+function tunnelTransit(at: Vec3): Vec3[] | null {
+  for (const t of TUNNELS) {
+    for (const dir of [1, -1] as const) {
+      const legs = boreLegs(t, dir, 120);
+      if (legs === null) continue;
+      const d = wrapDelta(at, legs[0] as Vec3);
+      const dist = Math.hypot(d.x, d.z);
+      if (dist < 150 || dist > 700) continue;
+      if (clearSegment(at, legs[0] as Vec3, 8)) return legs;
+    }
+  }
+  return null;
+}
+
+const pt: TunnelPoint = { x: 0, z: 0, th: 0 };
+
+/** Waypoints through `t` flying `dir` (+1: s = 0 → L): a clear approach
+ * outside the entrance (up to `lead` m out — over the lawn for a plaza,
+ * at the guide height for a river mouth), then along the guide line as far
+ * apart as a straight leg stays clear (≤ TUNNEL_STEP), and out a plaza
+ * portal; null unless the exit is a plaza and every leg clears a 4 m
+ * sphere. */
+function boreLegs(t: Tunnel, dir: 1 | -1, lead: number): Vec3[] | null {
+  if (t.ends[dir > 0 ? 1 : 0].kind !== "plaza") return null;
+  const point = (s: number, y: number): Vec3 => {
+    tunnelPointInto(t, s, pt);
+    return canon({ x: pt.x, y, z: pt.z });
+  };
+  const sIn = dir > 0 ? 0 : t.length;
+  const sOut = dir > 0 ? t.length : 0;
+  const plaza = t.ends[dir > 0 ? 0 : 1].kind === "plaza";
+  // The guide line, every 30 m, from the entrance to past the exit lip.
+  const line: Vec3[] = [];
+  for (let u = 0; u <= t.length + 60; u += 30) {
+    const sk = sIn + dir * u;
+    line.push(point(sk, guideY(t, sk)));
+  }
+  line.push(point(sOut + dir * 120, 30));
+  // A clear approach onto the first guide point.
+  let approach: Vec3 | null = null;
+  for (let out = lead; out >= 30 && approach === null; out -= 15) {
+    const p = point(sIn - dir * out, plaza ? 30 : guideY(t, sIn));
+    if (clearSegment(p, line[1] as Vec3, 4)) approach = p;
+  }
+  if (approach === null) return null;
+  const legs: Vec3[] = [approach];
+  let from = approach;
+  let i = 1;
+  while (i < line.length) {
+    // The farthest guide point a straight leg still reaches clear.
+    let j = i;
+    let best = -1;
+    while (j < line.length) {
+      const d = wrapDelta(from, line[j] as Vec3);
+      if (j > i && Math.hypot(d.x, d.z) > TUNNEL_STEP) break;
+      if (clearSegment(from, line[j] as Vec3, 4)) best = j;
+      j++;
+    }
+    if (best < 0) {
+      // Only the climb-out beyond the lip may be dropped: the route goes
+      // on from the lawn.
+      if (i === line.length - 1) break;
+      return null;
+    }
+    from = line[best] as Vec3;
+    legs.push(from);
+    i = best + 1;
+  }
+  return legs;
+}
+
+/** Every bore pass that ends out a plaza portal, from just outside its
+ * entrance: the opening every third route flies (makeRoute). */
+const TUNNEL_STARTS: Vec3[][] = TUNNELS.flatMap((t) =>
+  ([1, -1] as const).flatMap((dir) => {
+    const lead = t.ends[dir > 0 ? 0 : 1].kind === "plaza" ? 120 : 60;
+    const legs = boreLegs(t, dir, lead);
+    return legs === null ? [] : [legs];
+  }),
+);
+
+export const routes = SEEDS.map((seed, i) => makeRoute(seed, i));
 
 /** One arm of the comparison: the scheme the novice flies, the assist
  * setting and the feel. */

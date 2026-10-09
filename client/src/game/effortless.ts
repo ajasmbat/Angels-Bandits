@@ -18,7 +18,8 @@
 //   bank spring, flight.ts). With assist on a real roll — A/D — turns it
 //   too, the way it is banked: one input, bank and turn together.
 // - Ground floor. A dive the pull-up radius can no longer recover from at
-//   this height gets a pull and loses its nose-down authority. Input is
+//   this height (over a U4 bore, its floor's) gets a pull and loses its
+//   nose-down authority. Input is
 //   never overridden unless the trajectory would meet the ground, so a loop
 //   or split-S flown with height to spare is untouched.
 // - Soft walls. A building across where the pilot is aiming bends the aim
@@ -26,7 +27,7 @@
 //   flies at their mark, the line just goes round the corner. Behind that,
 //   a guard flies the pilot's own command ahead through the real flight
 //   model and, if it meets a solid, takes the smallest change that clears.
-//   Both stand down while threading a hole (H2/H3 own that).
+//   Both stand down while threading a hole or a U4 bore (H2/H3 own that).
 // - The F5 corner manager plans as much turn as the pilot is aiming
 //   (arcSweep) instead of always a right-angle street corner.
 // Feel presets ride along: the instructor's loop shape and the stick's
@@ -43,6 +44,12 @@
 // caller-owned objects.
 
 import type { Building } from "@angels-bandits/common/city";
+import { minAltitude } from "@angels-bandits/common/city/river";
+import {
+  groundFloor,
+  tunnelAt,
+  tunnelOpen,
+} from "@angels-bandits/common/city/tunnels";
 import {
   type CityIndex,
   type NatureIndex,
@@ -148,6 +155,10 @@ const GUARD_CANDIDATES = [
   0.5, 0, -0.5, 0, 0, 0.5, 1, 0, -1, 0, 0, 1, 0.7, 0.7, -0.7, 0.7, 2, 0, -2, 0,
   2, 1, -2, 1,
 ];
+/** U4 stand-down: how far ahead the nose is checked for a bore's open
+ * volume, m, in how many samples. */
+const BORE_AHEAD = 120;
+const BORE_SAMPLES = 6;
 /** arcSweep: the F5 arc is the aim's offset plus ARC_MARGIN, in
  * [ARC_MIN, ARC_MAX]; past ARC_EDGE (a cursor out toward the screen's
  * edge: "round, and more than I can see") the full corner. */
@@ -351,13 +362,25 @@ export function stepEffortless(
     const drop =
       (v / frame.pitchRate) * (1 - Math.cos(dive)) +
       v * Math.sin(dive) * FLOOR_REACT_S;
-    const bottom = flight.pos.y - drop;
+    // The lowest legal altitude here — the server's own pose clamp: the
+    // water over the L11 channel, a U4 bore's floor over its footprint (a
+    // ramp is flown down into) — so the floor never fights a dive into the
+    // river or a tunnel; the guard below sees the real ramps and walls.
+    const ground = groundFloor(
+      flight.pos.x,
+      flight.pos.z,
+      minAltitude(flight.pos.z),
+    );
+    const bottom = flight.pos.y - drop - ground;
     const need = FLOOR_MARGIN - bottom;
     if (need > 0) out.pitch += clamp(need / FLOOR_BAND, 0, 1) * cr;
     out.softDown = clamp((bottom - FLOOR_MARGIN) / FLOOR_SOFT_BAND, 0, 1);
   }
 
-  if (world === null || frame.threading) return out;
+  if (world === null || frame.threading || boreAhead(flight, frame.aim)) {
+    s.guard = -1;
+    return out;
+  }
 
   // Soft walls, 1: a solid across where the pilot is aiming bends the aim
   // to the nearest clear direction round it — the aim's own side of the
@@ -435,9 +458,39 @@ export function stepEffortless(
 
 const probe: Vec3 = { x: 0, y: 0, z: 0 };
 
-/** 1 − (distance to the first solid along the ray at `yaw`/`pitch`) /
- * `look`; 0 when the ray is clear. Wrap-safe: the colliders measure via
- * wrapDelta. */
+/** U4: in a bore, or the nose — or the aim — about to enter one's open
+ * volume within BORE_AHEAD m: a portal or river mouth is threaded, not a
+ * wall to be steered off (the bores are H3's, like a hole: hole-save.ts). */
+function boreAhead(flight: FlightState, aim: Vec3 | null): boolean {
+  if (tunnelAt(flight.pos) !== null) return true;
+  const cp = Math.cos(flight.pitch);
+  if (
+    rayEntersBore(
+      flight.pos,
+      -Math.sin(flight.yaw) * cp,
+      Math.sin(flight.pitch),
+      -Math.cos(flight.yaw) * cp,
+    )
+  ) {
+    return true;
+  }
+  return aim !== null && rayEntersBore(flight.pos, aim.x, aim.y, aim.z);
+}
+
+function rayEntersBore(pos: Vec3, dx: number, dy: number, dz: number): boolean {
+  for (let k = 1; k <= BORE_SAMPLES; k++) {
+    const d = (BORE_AHEAD * k) / BORE_SAMPLES;
+    probe.x = pos.x + dx * d;
+    probe.y = pos.y + dy * d;
+    probe.z = pos.z + dz * d;
+    if (probe.y < 0 && tunnelOpen(probe, PLAYER_RADIUS)) return true;
+  }
+  return false;
+}
+
+/** 1 − (distance to the first solid — the ground and U4's bore walls
+ * included — along the ray at `yaw`/`pitch`) / `look`; 0 when the ray is
+ * clear. Wrap-safe: the colliders measure via wrapDelta. */
 function closeness(
   world: EffortlessWorld,
   pos: Vec3,
@@ -455,6 +508,7 @@ function closeness(
     probe.y = pos.y + dy * d;
     probe.z = pos.z + dz * d;
     if (
+      hitsGround(probe, AIM_PROBE_RADIUS) ||
       collideCity(probe, AIM_PROBE_RADIUS, world.buildings, world.index) !==
         null ||
       (world.nature !== undefined &&

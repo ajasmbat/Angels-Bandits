@@ -158,7 +158,9 @@ export const needsScaffold = (b: Building): boolean =>
 export class ScaffoldRenderer {
   readonly mesh: THREE.InstancedMesh;
   private maxBuildings: number;
-  private readonly scratch: DressBox[] = [];
+  /** Each building's boxes, placed once (pure in its shape — D6: a
+   * re-dress used to build them all again). */
+  private readonly boxes = new Map<number, readonly DressBox[]>();
   private readonly matrix = new THREE.Matrix4();
   private readonly picks: number[] = [];
   private lastVersion = -1;
@@ -226,19 +228,29 @@ export class ScaffoldRenderer {
       let k = this.picks.length;
       while (k > 0 && (this.pickDist[k - 1] as number) > d) k--;
       if (k >= this.maxBuildings) continue;
-      this.picks.splice(k, 0, i);
-      this.pickDist.splice(k, 0, d);
-      if (this.picks.length > this.maxBuildings) {
-        this.picks.pop();
-        this.pickDist.pop();
+      // Insert at k, dropping the farthest past maxBuildings (D6: in place;
+      // splice returns a fresh array every call).
+      const len = Math.min(this.picks.length + 1, this.maxBuildings);
+      for (let j = len - 1; j > k; j--) {
+        this.picks[j] = this.picks[j - 1] as number;
+        this.pickDist[j] = this.pickDist[j - 1] as number;
       }
+      this.picks[k] = i;
+      this.pickDist[k] = d;
+      this.picks.length = len;
+      this.pickDist.length = len;
     }
     let n = 0;
     for (const i of this.picks) {
       const b = this.buildings[i] as Building;
       const x = cameraPos.x + wrapDeltaAxis(cameraPos.x, b.x);
       const z = cameraPos.z + wrapDeltaAxis(cameraPos.z, b.z);
-      for (const box of scaffoldBoxes(b, this.scratch)) {
+      let boxes = this.boxes.get(i);
+      if (!boxes) {
+        boxes = scaffoldBoxes(b, []);
+        this.boxes.set(i, boxes);
+      }
+      for (const box of boxes) {
         if (n >= this.mesh.instanceMatrix.count) break;
         this.matrix.makeScale(box.w, box.h, box.d);
         this.matrix.setPosition(x + box.x, box.y, z + box.z);

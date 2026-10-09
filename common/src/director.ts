@@ -27,6 +27,7 @@ import {
 import type { Building } from "./city/index";
 import { RIVER_ROW } from "./city/river";
 import { mulberry32 } from "./city/rng";
+import { underCover } from "./city/tunnels";
 import { BLOCK_PITCH, MAX_HP, WORLD_SIZE } from "./constants";
 import { type Vec3, wrapCoord, wrapDeltaAxis } from "./world/index";
 
@@ -235,8 +236,10 @@ export function gasMainNear(seed: number, p: Vec3): Vec3 | null {
 }
 
 /** Distance from `pos` to a gas blast's fireball column standing on
- * `site`, m. */
+ * `site`, m. U4: a plane under a tunnel's ceiling is under metres of rock —
+ * out of reach of any blast in the street (Infinity). */
 export function gasDistance(site: Vec3, pos: Vec3): number {
+  if (pos.y < 0 && underCover(pos)) return Number.POSITIVE_INFINITY;
   const h = Math.hypot(
     wrapDeltaAxis(site.x, pos.x),
     wrapDeltaAxis(site.z, pos.z),

@@ -1084,6 +1084,25 @@ export const BOT_HOLE_LINEUP_MAX = 450;
 export const BOT_HOLE_FOLLOW_MS = 3000;
 export const BOT_HOLE_FOLLOW_RANGE = 400;
 
+// --- Tunnels (U4) — bots fly the underground network too ---
+// A bore is an edge of the bots' graph like a hole: a patrol near a portal
+// or a river mouth rolls once per encounter, a chaser follows a target that
+// went in, and either commits only after a stepFlight rollout of the whole
+// pass (approach, bore, climb-out) against the real geometry.
+/** Chance a patrolling bot takes a tunnel whose entry it is near. */
+export const BOT_TUNNEL_CHANCE = 0.4;
+/** A patrol considers an entry this close (horizontal), m. */
+export const BOT_TUNNEL_RANGE = 420;
+/** A chaser follows a target seen inside a tunnel this recently, ms, from no
+ * further than this from the entry it went in by, m. */
+export const BOT_TUNNEL_FOLLOW_MS = 6000;
+export const BOT_TUNNEL_FOLLOW_RANGE = 520;
+/** A failed tunnel rollout is not retried by the same bot for this long, ms. */
+export const BOT_TUNNEL_RETRY_MS = 1500;
+/** Past the exit, the climb-out runs at least this far before the bot hands
+ * back to its lattice (and only once above BOT_MIN_ALT), m. */
+export const BOT_TUNNEL_RUNOUT = 60;
+
 // --- Sky traffic (L10) --- the news helicopter is a MOVER (solid, shared
 // with the bots); its pose is a pure function of (server-broadcast target,
 // server clock) in common/src/city/newsheli.ts. Airliners and the drone show

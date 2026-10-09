@@ -27,6 +27,7 @@ import {
   type RoofStructure,
   structureCoversAt,
 } from "./city/roof-structures";
+import { boxNearTunnel, tunnelOpen } from "./city/tunnels";
 import {
   BLOCK_PITCH,
   CANOPY_COLLISION_SLACK,
@@ -428,10 +429,70 @@ export function collideNature(
 /**
  * True when the player sphere touches the ground: the street-level plane at
  * y = 0 — or, over the L11 river, the water, the embankment walls and
- * railings, and the bridge decks and parapets (city/river.ts riverHit).
+ * railings, and the bridge decks and parapets (city/river.ts riverHit) —
+ * except inside a U4 tunnel's open volume (city/tunnels.ts tunnelOpen):
+ * its cut, ramp, bore and mouth are air, and their walls are this ground.
  */
 export function hitsGround(pos: Vec3, radius: number = PLAYER_RADIUS): boolean {
-  return riverHit(pos, radius);
+  return riverHit(pos, radius) && !tunnelOpen(pos, radius);
+}
+
+/** losClear's sampled ground test: step along the line, m. Tunnel walls are
+ * solid rock metres thick, so no wall falls between two samples. */
+const GROUND_SAMPLE = 1;
+const groundAt: Vec3 = { x: 0, y: 0, z: 0 };
+
+/**
+ * U4: is the part of the segment from `from` along `d` that runs below
+ * street level clear of the ground, tunnels open? Sampled every
+ * GROUND_SAMPLE m against hitsGround's own point test, so a sight line and a
+ * flight agree on where the rock is. Only asked when that part of the line
+ * is near a bore; the bridge decks and railings stay with riverSegmentClear.
+ */
+function undergroundClear(from: Vec3, d: Vec3): boolean {
+  const toY = from.y + d.y;
+  // The t range below street level (y is monotonic along the segment).
+  let t0 = 0;
+  let t1 = 1;
+  if (d.y !== 0) {
+    const tz = -from.y / d.y;
+    if (from.y >= 0) t0 = Math.max(0, tz);
+    if (toY >= 0) t1 = Math.min(1, tz);
+  }
+  const len = Math.hypot(d.x, d.y, d.z) * (t1 - t0);
+  const n = Math.max(1, Math.ceil(len / GROUND_SAMPLE));
+  for (let i = 0; i <= n; i++) {
+    const t = t0 + ((t1 - t0) * i) / n;
+    groundAt.x = from.x + d.x * t;
+    groundAt.y = Math.min(from.y + d.y * t, -1e-6);
+    groundAt.z = from.z + d.z * t;
+    if (hitsGround(groundAt, 0)) return false;
+  }
+  return true;
+}
+
+/** Does the below-street part of a sight line run near a tunnel? (Else the
+ * river's exact test already has the whole answer.) */
+function undergroundNearTunnel(from: Vec3, d: Vec3): boolean {
+  const toY = from.y + d.y;
+  if (Math.min(from.y, toY) >= 0) return false;
+  let t0 = 0;
+  let t1 = 1;
+  if (d.y !== 0) {
+    const tz = -from.y / d.y;
+    if (from.y >= 0) t0 = Math.max(0, tz);
+    if (toY >= 0) t1 = Math.min(1, tz);
+  }
+  const ax = from.x + d.x * t0;
+  const bx = from.x + d.x * t1;
+  const az = from.z + d.z * t0;
+  const bz = from.z + d.z * t1;
+  return boxNearTunnel(
+    Math.min(ax, bx),
+    Math.max(ax, bx),
+    Math.min(az, bz),
+    Math.max(az, bz),
+  );
 }
 
 /**
@@ -566,8 +627,15 @@ export function losClear(
   const dy = d.y;
   const dz = d.z;
   if (dx === 0 && dy === 0 && dz === 0) return true;
-  // L11: the river's decks and embankments are cover like any facade.
-  if (!riverSegmentClear(from, d)) return false;
+  // L11: the river's decks and embankments are cover like any facade. U4:
+  // below street level near a tunnel the ground is sampled instead (the
+  // bore is a hole in it); the decks and railings stay exact.
+  if (undergroundNearTunnel(from, d)) {
+    if (!undergroundClear(from, d)) return false;
+    if (!riverSegmentClear(from, d, false)) return false;
+  } else if (!riverSegmentClear(from, d)) {
+    return false;
+  }
   const loX = Math.min(0, dx);
   const hiX = Math.max(0, dx);
   const loZ = Math.min(0, dz);

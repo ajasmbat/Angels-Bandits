@@ -880,6 +880,12 @@ export class Signage {
   }
 
   /** Signage instances drawn per kind — perf reporting/QA. */
+  /** S6: the sign faces the reflection probe mirrors (not the spill pools,
+   * which only light the street the probe already sees). */
+  get reflectiveMeshes(): readonly THREE.Object3D[] {
+    return [this.marqueeMesh, this.billboardMesh, this.stripMesh];
+  }
+
   get counts(): {
     marquees: number;
     billboards: number;

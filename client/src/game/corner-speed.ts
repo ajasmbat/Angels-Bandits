@@ -30,6 +30,11 @@
 // probe 1 runs along the hole's axis — the hole's own jambs and lintel never
 // slow you; only a real wall beyond its far mouth can.
 //
+// U4: inside a tunnel (its bore, ramp or cut, below street level) the
+// corridor is clear by construction — gentle 300 m bends, no buildings
+// underground, and the walls are the ground this manager never probes — so
+// the ceiling stays at MAX_SPEED there; H3's save handles the walls.
+//
 // Movers cost ~5x a building lookup, so each ray or arc first asks the
 // movers once with a sphere enclosing the whole probe; only when something
 // moving is that close does every sample test them.
@@ -40,6 +45,7 @@ import {
   collideMovers,
 } from "@angels-bandits/common/city/movers";
 import { collideTrains } from "@angels-bandits/common/city/train";
+import { tunnelAt } from "@angels-bandits/common/city/tunnels";
 import {
   type CityIndex,
   type NatureIndex,
@@ -130,6 +136,8 @@ export interface CornerWorld {
   nature?: NatureIndex;
   movers?: MoverField;
   corridors: readonly HoleCorridor[];
+  /** U4: treat the tunnels' corridors as clear (main.ts sets it). */
+  tunnels?: boolean;
 }
 
 /** Corridors for every hole (cityHoles) and river underpass (bridgeSpans).
@@ -474,6 +482,9 @@ export function cornerSpeed(
   turn = 0,
   timeMs: number | null = null,
 ): number {
+  if (world.tunnels && flight.pos.y < 0 && tunnelAt(flight.pos) !== null) {
+    return MAX_SPEED;
+  }
   const cosP = Math.cos(flight.pitch);
   const fx = -Math.sin(flight.yaw) * cosP;
   const fy = Math.sin(flight.pitch);

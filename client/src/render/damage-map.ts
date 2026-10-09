@@ -266,6 +266,11 @@ export class FacadeDamage {
   }
 
   /** Slots whose cells changed since the last call (then forgotten). */
+  /** D6: slots marked since the last takeDirtySlots (0 = nothing to do). */
+  get dirtySlotCount(): number {
+    return this.dirtySlots.size;
+  }
+
   takeDirtySlots(visit: (slot: number) => void): void {
     for (const s of this.dirtySlots) visit(s);
     this.dirtySlots.clear();
@@ -383,37 +388,76 @@ export function blastFacades(
   return best;
 }
 
-/** THREE half: the GPU atlas, fed dirty slots as sub-rectangles. */
+/**
+ * THREE half: the GPU atlas, fed dirty slots as sub-rectangles.
+ *
+ * D6: straight `texSubImage2D` from the CPU atlas, NOT
+ * `renderer.copyTextureToTexture`. three's copy saves and restores five
+ * pixel-store parameters with `gl.getParameter` on every call, and each one
+ * is a synchronous round trip to the GPU process that waits for every
+ * queued command — per dirty slot, i.e. on every frame a bullet marks a
+ * facade. The perf harness's `ruins` (a furball in a damaged block) stalled
+ * 5–22 s a frame on it on a software rasteriser. Here the pixel store is SET
+ * (three sets flip-Y, premultiply and alignment itself before each of its
+ * own uploads, and never sets row length or skips, which go back to 0).
+ */
 export class DamageTexture {
   /** The texture the building shader samples (uDamage). */
   readonly texture: THREE.DataTexture;
-  /** The CPU atlas wrapped as a copy source — never sampled. */
-  private readonly staging: THREE.DataTexture;
-  private readonly region = new THREE.Box2();
-  private readonly at = new THREE.Vector2();
 
   constructor(readonly model: FacadeDamage) {
     this.texture = makeAtlas(new Uint8Array(model.data.length));
     this.texture.needsUpdate = true; // the zeroed atlas, once, at first bind
-    this.staging = makeAtlas(model.data);
   }
 
   /** Upload the slots marked since last frame, each as one sub-rect. */
   flush(renderer: THREE.WebGLRenderer): void {
-    this.model.takeDirtySlots((slot) => {
-      const x = (slot % DAMAGE.slotsX) * DAMAGE.cols;
-      const y = Math.floor(slot / DAMAGE.slotsX) * DAMAGE.rows;
-      this.region.min.set(x, y);
-      this.region.max.set(x + DAMAGE.cols, y + DAMAGE.rows);
-      this.at.set(x, y);
-      renderer.copyTextureToTexture(
-        this.staging,
-        this.texture,
-        this.region,
-        this.at,
-      );
-    });
+    if (this.model.dirtySlotCount === 0) return;
+    const gl = renderer.getContext() as WebGL2RenderingContext;
+    let props = renderer.properties.get(this.texture) as {
+      __webglTexture?: WebGLTexture;
+    };
+    if (!props.__webglTexture) {
+      renderer.initTexture(this.texture); // allocates and uploads zeros
+      props = renderer.properties.get(this.texture) as typeof props;
+    }
+    const tex = props.__webglTexture;
+    if (!tex) return; // no context: the slots stay dirty for next frame
+    renderer.state.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, ATLAS_WIDTH);
+    this.gl = gl;
+    this.model.takeDirtySlots(this.upload);
+    this.gl = null;
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+    gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+    gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+    renderer.state.unbindTexture();
   }
+
+  private gl: WebGL2RenderingContext | null = null;
+  /** One slot's sub-rect, from the CPU atlas (bound once, not per frame). */
+  private readonly upload = (slot: number): void => {
+    const gl = this.gl;
+    if (!gl) return;
+    const x = (slot % DAMAGE.slotsX) * DAMAGE.cols;
+    const y = Math.floor(slot / DAMAGE.slotsX) * DAMAGE.rows;
+    gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, x);
+    gl.pixelStorei(gl.UNPACK_SKIP_ROWS, y);
+    gl.texSubImage2D(
+      gl.TEXTURE_2D,
+      0,
+      x,
+      y,
+      DAMAGE.cols,
+      DAMAGE.rows,
+      gl.RG,
+      gl.UNSIGNED_BYTE,
+      this.model.data,
+    );
+  };
 }
 
 function makeAtlas(data: Uint8Array<ArrayBuffer>): THREE.DataTexture {

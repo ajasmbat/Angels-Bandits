@@ -268,19 +268,25 @@ const outsideAt = (offFrom: number, dz: number, t: number): boolean =>
  * level at most once — blocked when that crossing lies outside the channel
  * (into the bank) or when an end is under street level outside it.
  */
-export function riverSegmentClear(from: Vec3, d: Vec3): boolean {
+export function riverSegmentClear(from: Vec3, d: Vec3, ground = true): boolean {
   const toY = from.y + d.y;
   if (Math.min(from.y, toY) > PARAPET_HEIGHT) return true;
-  // The water: an end at or below it is already inside a solid.
-  if (Math.min(from.y, toY) <= RIVER_WATER_Y) return false;
   const offFrom = riverOffset(from.z);
-  // The bank: solid below street level outside the channel. y is monotonic
-  // and the channel band convex, so checking both ends plus the one point
-  // where the segment crosses street level covers every way into the bank.
-  if (from.y < 0 && outsideAt(offFrom, d.z, 0)) return false;
-  if (toY < 0 && outsideAt(offFrom, d.z, 1)) return false;
-  if (from.y < 0 !== toY < 0 && outsideAt(offFrom, d.z, -from.y / d.y)) {
-    return false;
+  // U4: `ground` false skips the water and the bank — the caller has
+  // sampled the ground itself (a sight line into a tunnel, where the bank
+  // is not solid). The decks and railings below are tested either way.
+  if (ground) {
+    // The water: an end at or below it is already inside a solid.
+    if (Math.min(from.y, toY) <= RIVER_WATER_Y) return false;
+    // The bank: solid below street level outside the channel. y is
+    // monotonic and the channel band convex, so checking both ends plus the
+    // one point where the segment crosses street level covers every way
+    // into the bank.
+    if (from.y < 0 && outsideAt(offFrom, d.z, 0)) return false;
+    if (toY < 0 && outsideAt(offFrom, d.z, 1)) return false;
+    if (from.y < 0 !== toY < 0 && outsideAt(offFrom, d.z, -from.y / d.y)) {
+      return false;
+    }
   }
   // Bridges and railings near the segment, in a frame with `from` at the
   // origin (x, z) — the segment's own frame, so the seam needs no care.

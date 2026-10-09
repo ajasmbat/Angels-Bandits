@@ -31,6 +31,12 @@ import { luminance } from "./emissive";
 import { LIVE_ON_UNIFORM, livingParsGlsl } from "./living-windows";
 import { WAKE_PARS_GLSL, wakeWindowGlsl, windowWakeUniform } from "./reactions";
 import {
+  REFLECTION_PARS_GLSL,
+  REFL_F0,
+  REFL_GLASS_LOD,
+  bindReflectionUniforms,
+} from "./reflections";
+import {
   BUILDING_WET_COLOR_GLSL,
   BUILDING_WET_EMISSIVE_GLSL,
   BUILDING_WET_ROUGHNESS_GLSL,
@@ -208,7 +214,7 @@ float abHash(vec2 p, float s) {
 float abSafeDiv(float d) {
   return abs(d) < 1e-4 ? (d < 0.0 ? -1e-4 : 1e-4) : d;
 }
-${DAMAGE_PARS_GLSL}${roofParsGlsl()}${WAKE_PARS_GLSL}${livingParsGlsl()}${WEATHER_PARS_GLSL}`;
+${DAMAGE_PARS_GLSL}${roofParsGlsl()}${WAKE_PARS_GLSL}${livingParsGlsl()}${WEATHER_PARS_GLSL}${REFLECTION_PARS_GLSL}`;
 
 /** Injected after color_fragment: derives the shared window-grid locals
  * (in scope for the emissive block below — same main body), modulates the
@@ -339,16 +345,6 @@ vec3 bounceTint = mix(${glslVec3(BOUNCE_TINTS.sodium)},
 totalEmissiveRadiance += diffuseColor.rgb * bounceTint * ${BOUNCE_INTENSITY.toFixed(2)} * bounceK;
 `;
 
-/** Windows, shops and the VO2 bounce, then the VO3 architectural light so its
- * LED replacement overrides everything the pixel emitted before, then the H1
- * hole frame (a convex replacement too — it never stacks on the rest), and
- * D2 last: a face destruction exposed emits only its ember. */
-const FRAGMENT_EMISSIVE = `${windowEmissiveGlsl(
-  glslVec3(WINDOW_WARM),
-  glslVec3(WINDOW_COOL),
-  WINDOW_EMISSIVE_INTENSITY,
-)}${wakeWindowGlsl(WINDOW_EMISSIVE_INTENSITY)}${SHOP_BAND_GLSL}${roofLightGlsl()}${holeLightGlsl()}${BUILDING_WET_EMISSIVE_GLSL}${BROKEN_EMISSIVE_GLSL}`;
-
 /**
  * VO2: cap the grazing-angle Fresnel. Standard materials reflect 100% at
  * grazing (specularF90 = 1), which under the VO1 moon key turned every
@@ -357,6 +353,44 @@ const FRAGMENT_EMISSIVE = `${windowEmissiveGlsl(
  * glass keeps more of its sheen.
  */
 export const GRAZING_REFLECTANCE = { glass: 0.4, solid: 0.2 } as const;
+
+/**
+ * S6 glass reflections (render/reflections.ts): GLASS curtain walls mirror
+ * the camera-centred cube probe along reflect(viewRay, face normal) — the
+ * neon skyline, the signs, the jumbotrons, the moonlit sky. Schlick Fresnel
+ * from REFL_F0 head-on to the glass's own grazing cap (GRAZING_REFLECTANCE),
+ * read at a fixed mip (the roughness blur), and the sample is luminance-
+ * capped, so the term peaks at 0.4 × 0.45 ≈ 0.18: a reflection, never a
+ * ladder rung (client/test/reflections.test.ts sums the whole pixel).
+ *
+ * Masked to INTACT, UNLIT panes: a lit room swamps its glass at night, a
+ * lit shopfront is its own light, and D1 zeroes `pane` on a shattered
+ * window, so broken glass stops mirroring. Placed after the shop band and
+ * before the VO3/H1/D2 convex replacements, so an LED outline, a hole frame
+ * or an exposed face overrides it like everything else. A uniform-led
+ * branch (Mobile: uReflOn 0) and an explicit LOD — no derivatives inside.
+ */
+const GLASS_REFLECTION_GLSL = /* glsl */ `
+if (uReflOn > 0.5 && vArch < 0.5) {
+  float rfMask = pane * (1.0 - lit) * facade * (1.0 - shopBand * glass * shopLit);
+  if (rfMask > 0.0) {
+    float rfCos = clamp(abs(dot(viewRay, vObjNormal)), 0.0, 1.0);
+    float rfF = mix(${REFL_F0.toFixed(3)}, ${GRAZING_REFLECTANCE.glass.toFixed(2)}, pow(1.0 - rfCos, 5.0));
+    totalEmissiveRadiance += abRefl(reflect(viewRay, vObjNormal), ${REFL_GLASS_LOD.toFixed(1)}) * (rfF * rfMask);
+  }
+}
+`;
+
+/** Windows, shops and the VO2 bounce, then the VO3 architectural light so its
+ * LED replacement overrides everything the pixel emitted before, then the H1
+ * hole frame (a convex replacement too — it never stacks on the rest), and
+ * D2 last: a face destruction exposed emits only its ember. */
+const FRAGMENT_EMISSIVE = `${windowEmissiveGlsl(
+  glslVec3(WINDOW_WARM),
+  glslVec3(WINDOW_COOL),
+  WINDOW_EMISSIVE_INTENSITY,
+)}${wakeWindowGlsl(WINDOW_EMISSIVE_INTENSITY)}${SHOP_BAND_GLSL}${GLASS_REFLECTION_GLSL}${roofLightGlsl()}${holeLightGlsl()}${BUILDING_WET_EMISSIVE_GLSL}${BROKEN_EMISSIVE_GLSL}`;
+
 const FRAGMENT_SPECULAR = /* glsl */ `
 material.specularF90 = vArch < 0.5 ? ${GRAZING_REFLECTANCE.glass.toFixed(2)} : ${GRAZING_REFLECTANCE.solid.toFixed(2)};
 `;
@@ -404,6 +438,8 @@ export function createBuildingsMaterial(
     // D1: the facade damage atlas and its switch (damage-map.ts).
     shader.uniforms.uDamage = { value: damage };
     shader.uniforms.uDamageOn = DAMAGE_ON_UNIFORM;
+    // S6: the reflection probe's cubes, blend and switch, by reference.
+    bindReflectionUniforms(shader.uniforms);
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", `#include <common>\n${VERTEX_PARS}`)
       .replace(
@@ -432,6 +468,6 @@ export function createBuildingsMaterial(
   // Distinct compiled program per patch (V3 rule: three keys programs on
   // onBeforeCompile.toString(), and sibling materials collide silently).
   material.customProgramCacheKey = () =>
-    "ab-buildings-h1-holes-l1-wake-l3-live-l4-wet-g1-lobbies-d1-damage-d2-broken";
+    "ab-buildings-h1-holes-l1-wake-l3-live-l4-wet-g1-lobbies-d1-damage-d2-broken-s6-refl";
   return material;
 }

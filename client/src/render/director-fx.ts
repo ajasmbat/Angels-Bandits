@@ -34,6 +34,7 @@ import {
 import {
   type Vec3,
   canonicalize,
+  wrapCoord,
   wrapDeltaAxis,
 } from "@angels-bandits/common/world";
 import { FacadeArchetype } from "./archetypes";
@@ -188,19 +189,23 @@ export class DirectorFx {
           : Math.floor(this.rand() * 4);
       const y = 8 + this.rand() * (b.height - 8);
       let g: TierGrid | null = null;
-      for (const t of grids) if (y >= t.baseY && y < t.baseY + t.height) g = t;
+      for (let k = 0; k < grids.length; k++) {
+        const t = grids[k] as TierGrid;
+        if (y >= t.baseY && y < t.baseY + t.height) g = t;
+      }
       if (!g) continue;
       const nx = FACE_NX[face] as number;
       const nz = FACE_NZ[face] as number;
       const along = (this.rand() * 2 - 1) * 0.9;
-      const p = canonicalize({
-        x: b.x + (nx !== 0 ? nx * (g.width / 2 + 0.5) : (along * g.width) / 2),
-        y: 0,
-        z: b.z + (nz !== 0 ? nz * (g.depth / 2 + 0.5) : (along * g.depth) / 2),
-      });
-      this.at.x = p.x;
+      // D6: canonicalize's arithmetic straight into `at` (it built two
+      // objects per particle).
+      this.at.x = wrapCoord(
+        b.x + (nx !== 0 ? nx * (g.width / 2 + 0.5) : (along * g.width) / 2),
+      );
       this.at.y = y;
-      this.at.z = p.z;
+      this.at.z = wrapCoord(
+        b.z + (nz !== 0 ? nz * (g.depth / 2 + 0.5) : (along * g.depth) / 2),
+      );
       this.n.x = nx;
       this.n.y = -0.7;
       this.n.z = nz;

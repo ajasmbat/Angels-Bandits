@@ -10,6 +10,7 @@ import {
   wrapDeltaAxis,
 } from "@angels-bandits/common/world";
 import type * as THREE from "three";
+import { pushUpdateRange } from "./update-range";
 
 /**
  * The render-space position of `canonical` in the torus image nearest
@@ -309,11 +310,12 @@ export function uploadPrefix(
   attrs: readonly (THREE.BufferAttribute | null | undefined)[],
   count: number,
 ): void {
-  for (const attr of attrs) {
+  for (let k = 0; k < attrs.length; k++) {
+    const attr = attrs[k];
     if (!attr) continue;
     attr.clearUpdateRanges();
     if (count <= 0) continue;
-    attr.addUpdateRange(0, count * attr.itemSize);
+    pushUpdateRange(attr, 0, count * attr.itemSize); // D6: a pooled range
     attr.needsUpdate = true;
   }
 }

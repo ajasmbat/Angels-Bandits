@@ -240,7 +240,10 @@ describe("D8 every per-building layer keeps only what stands on something", () =
         missing.push(f);
       }
     }
-    expect(missing).toEqual([]);
+    expect(
+      missing,
+      "a render module reads building geometry: register its StandingLayer in render/standing-layers.ts (STANDING_LAYERS) or exempt it there with the reason",
+    ).toEqual([]);
     for (const [name, why] of Object.entries(STANDING_EXEMPT)) {
       expect(why.length, name).toBeGreaterThan(10);
     }

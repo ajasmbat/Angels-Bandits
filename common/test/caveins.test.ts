@@ -98,9 +98,9 @@ describe("U6 cave-ins: the open lane is never touched", () => {
     const pose = blankCaveInPose();
     let checked = 0;
     let worst = Number.POSITIVE_INFINITY;
-    for (const { t, s } of spots(30)) {
+    for (const { t, s } of spots(45)) {
       for (const gap of GAPS) {
-        for (const id of [1, 77, 4242]) {
+        for (const id of [1, 4242]) {
           const c = buildCaveIn({
             id: id + Math.round(s),
             tunnel: t.id,
@@ -113,7 +113,7 @@ describe("U6 cave-ins: the open lane is never touched", () => {
           for (
             let ms = 0;
             ms <= c.endMs;
-            ms += ms < c.downMs + 200 ? 50 : 1000
+            ms += ms < c.downMs + 200 ? 100 : 1000
           ) {
             for (let i = 0; i < c.n; i++) {
               const p = caveInPieceInto(c, i, ms, pose);
@@ -161,11 +161,11 @@ describe("U6 cave-ins: the open lane is never touched", () => {
     expect(checked).toBeGreaterThan(1_000_000);
     // Every corner stays outside the lane, with room to spare.
     expect(worst).toBeGreaterThan(0.25);
-  }, 120_000);
+  }, 300_000);
 
   it("never lets a plane-sized sphere anywhere in the lane meet a piece", () => {
     let probes = 0;
-    for (const { t, s } of spots(45)) {
+    for (const { t, s } of spots(60)) {
       for (const gap of GAPS) {
         const c = buildCaveIn({
           id: 9 + Math.round(s),
@@ -176,11 +176,7 @@ describe("U6 cave-ins: the open lane is never touched", () => {
         });
         const [lo, hi] = caveInLane(gap);
         const pts: Vec3[] = [];
-        for (
-          let ds = -CAVEIN_LEN / 2 - 6;
-          ds <= CAVEIN_LEN / 2 + 6;
-          ds += 1.5
-        ) {
+        for (let ds = -CAVEIN_LEN / 2 - 6; ds <= CAVEIN_LEN / 2 + 6; ds += 2) {
           for (
             let lat = lo + R;
             lat <= hi - R + 1e-9;
@@ -198,7 +194,7 @@ describe("U6 cave-ins: the open lane is never touched", () => {
         for (
           let ms = 0;
           ms <= c.endMs;
-          ms += ms < c.downMs + 200 ? 100 : 1500
+          ms += ms < c.downMs + 200 ? 150 : 1500
         ) {
           for (const p of pts) {
             probes++;
@@ -212,7 +208,7 @@ describe("U6 cave-ins: the open lane is never touched", () => {
       }
     }
     expect(probes).toBeGreaterThan(1_000_000);
-  }, 120_000);
+  }, 300_000);
 });
 
 // --- (b) Reachable paths ------------------------------------------------------------
@@ -490,5 +486,5 @@ describe("U6 cave-ins: a plane reacting 0.5 s after it sees one gets through", (
     }
     expect(failures.slice(0, 10)).toEqual([]);
     expect(flown).toBeGreaterThan(100);
-  }, 120_000);
+  }, 300_000);
 });

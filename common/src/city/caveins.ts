@@ -315,6 +315,9 @@ export interface CaveIn extends CaveInEvent {
   readonly fall: Float64Array;
   /** Half height at rest. */
   readonly restHy: Float64Array;
+  /** The piece's reach from its centre whatever its tumble, m (a piece
+   * only ever moves straight down, so this bounds it in plan view). */
+  readonly reach: Float64Array;
   /** Ms after t0: everything down, the rubble starts to settle, gone. */
   readonly downMs: number;
   readonly clearMs: number;
@@ -560,6 +563,7 @@ export function buildCaveIn(e: CaveInEvent): CaveIn {
     start: f64(),
     fall: f64(),
     restHy: f64(),
+    reach: f64(),
     downMs: 0,
     clearMs: 0,
     endMs: 0,
@@ -588,6 +592,7 @@ export function buildCaveIn(e: CaveInEvent): CaveIn {
     out.y0[i] = y0;
     out.yRest[i] = p.yRest;
     out.restHy[i] = p.restHy;
+    out.reach[i] = Math.hypot(p.hx, p.hy, p.hz);
     out.start[i] = p.start;
     out.fall[i] = p.fall;
     down = Math.max(down, p.start + p.fall);
@@ -759,12 +764,14 @@ export function collideCaveIns(
     const reach = ZONE_REACH + radius;
     if (ex * ex + ez * ez > reach * reach) continue;
     for (let i = 0; i < c.n; i++) {
+      // Plan-view reject before any pose: x/z never change.
+      const dx = wrapDeltaAxis(c.px[i] as number, pos.x);
+      const dz = wrapDeltaAxis(c.pz[i] as number, pos.z);
+      const b = (c.reach[i] as number) + radius;
+      if (dx * dx + dz * dz > b * b) continue;
       const p = caveInPieceInto(c, i, tMs, scratchPose);
       if (!p.visible) continue;
-      const dx = wrapDeltaAxis(p.x, pos.x);
       const dy = pos.y - p.y;
-      const dz = wrapDeltaAxis(p.z, pos.z);
-      const b = Math.hypot(p.hx, p.hy, p.hz) + radius;
       if (dx * dx + dy * dy + dz * dz > b * b) continue;
       if (sphereHitsCaveInPiece(p, dx, dy, dz, radius)) {
         return { caveIn: c, piece: i, falling: p.falling };

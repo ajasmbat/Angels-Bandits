@@ -234,18 +234,32 @@ export function boltBranches(strike: Strike, main: readonly Vec3[]): Vec3[][] {
 }
 
 export function turbulenceOffset(tMs: number, altitude: number): Vec3 {
-  if (altitude <= CLOUD_BASE) return { x: 0, y: 0, z: 0 };
+  return turbulenceOffsetInto({ x: 0, y: 0, z: 0 }, tMs, altitude);
+}
+
+/** turbulenceOffset written into `out` (P4: remotes.update runs it per
+ * plane per frame — no object built). The same values. */
+export function turbulenceOffsetInto(
+  out: Vec3,
+  tMs: number,
+  altitude: number,
+): Vec3 {
+  if (altitude <= CLOUD_BASE) {
+    out.x = 0;
+    out.y = 0;
+    out.z = 0;
+    return out;
+  }
   const ramp = Math.min(
     1,
     (altitude - CLOUD_BASE) / (STORM_KILL_ALT - CLOUD_BASE),
   );
   const a = (SHAKE_MAX / 2) * ramp; // two sines per axis → peak = 2a
   const t = (tMs / 1000) * SHAKE_FREQ;
-  return {
-    x: (Math.sin(t * 13) + Math.sin(t * 7.3 + 1.7)) * a,
-    y: (Math.sin(t * 11 + 0.9) + Math.sin(t * 17)) * a * 0.8,
-    z: (Math.sin(t * 15 + 2.4) + Math.sin(t * 6.1)) * a,
-  };
+  out.x = (Math.sin(t * 13) + Math.sin(t * 7.3 + 1.7)) * a;
+  out.y = (Math.sin(t * 11 + 0.9) + Math.sin(t * 17)) * a * 0.8;
+  out.z = (Math.sin(t * 15 + 2.4) + Math.sin(t * 6.1)) * a;
+  return out;
 }
 
 // --- Renderer (Neon Vein, the human-approved concept 2) ---------------------

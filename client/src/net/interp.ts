@@ -6,7 +6,13 @@
 // loop feeds it a render time; it never looks at a clock itself.
 
 import type { Pose } from "@angels-bandits/common/protocol";
-import { type Vec3, wrapDelta, wrapLerp } from "@angels-bandits/common/world";
+import {
+  type Vec3,
+  wrapCoord,
+  wrapDelta,
+  wrapDeltaAxis,
+  wrapLerp,
+} from "@angels-bandits/common/world";
 import * as THREE from "three";
 
 /** Samples older than this before the newest one are dropped, ms. */
@@ -15,6 +21,19 @@ const MAX_SAMPLE_AGE_MS = 1000;
 interface Sample {
   time: number;
   pose: Pose;
+}
+
+/** Copy `from` into `out` field by field (sampleInto at either end). */
+function copyPose(from: Pose, out: Pose): Pose {
+  out.pos.x = from.pos.x;
+  out.pos.y = from.pos.y;
+  out.pos.z = from.pos.z;
+  out.quat.x = from.quat.x;
+  out.quat.y = from.quat.y;
+  out.quat.z = from.quat.z;
+  out.quat.w = from.quat.w;
+  out.speed = from.speed;
+  return out;
 }
 
 const scratchA = new THREE.Quaternion();
@@ -73,7 +92,10 @@ export class InterpolationBuffer {
     // sample before it, b the oldest at-or-after it.
     let a = first;
     let b = last;
-    for (const cur of this.samples) {
+    // P4: an index loop (`for…of` built an iterator per remote per frame).
+    const samples = this.samples;
+    for (let i = 0; i < samples.length; i++) {
+      const cur = samples[i] as (typeof samples)[number];
       if (cur.time < renderTime) {
         a = cur;
       } else {
@@ -92,5 +114,47 @@ export class InterpolationBuffer {
       quat: { x: scratchA.x, y: scratchA.y, z: scratchA.z, w: scratchA.w },
       speed: a.pose.speed + (b.pose.speed - a.pose.speed) * t,
     };
+  }
+
+  /**
+   * P4: `sample`, written into `out` (and returned) — the same values bit
+   * for bit, no object built (remote planes sample every frame). Null, and
+   * `out` untouched, when the buffer is empty. `out` is the caller's own:
+   * it never aliases a buffered pose.
+   */
+  sampleInto(renderTime: number, out: Pose): Pose | null {
+    const samples = this.samples;
+    const first = samples[0];
+    const last = samples[samples.length - 1];
+    if (first === undefined || last === undefined) return null;
+    if (renderTime <= first.time) return copyPose(first.pose, out);
+    if (renderTime >= last.time) return copyPose(last.pose, out);
+    let a = first;
+    let b = last;
+    for (let i = 0; i < samples.length; i++) {
+      const cur = samples[i] as Sample;
+      if (cur.time < renderTime) {
+        a = cur;
+      } else {
+        b = cur;
+        break;
+      }
+    }
+    const t = (renderTime - a.time) / (b.time - a.time);
+    scratchA.set(a.pose.quat.x, a.pose.quat.y, a.pose.quat.z, a.pose.quat.w);
+    scratchB.set(b.pose.quat.x, b.pose.quat.y, b.pose.quat.z, b.pose.quat.w);
+    scratchA.slerp(scratchB, t);
+    // wrapLerp, written in place.
+    const pa = a.pose.pos;
+    const pb = b.pose.pos;
+    out.pos.x = wrapCoord(pa.x + wrapDeltaAxis(pa.x, pb.x) * t);
+    out.pos.y = pa.y + (pb.y - pa.y) * t;
+    out.pos.z = wrapCoord(pa.z + wrapDeltaAxis(pa.z, pb.z) * t);
+    out.quat.x = scratchA.x;
+    out.quat.y = scratchA.y;
+    out.quat.z = scratchA.z;
+    out.quat.w = scratchA.w;
+    out.speed = a.pose.speed + (b.pose.speed - a.pose.speed) * t;
+    return out;
   }
 }

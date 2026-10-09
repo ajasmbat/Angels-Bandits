@@ -56,7 +56,9 @@ export function strobePhaseMs(planeId: string): number {
 export function strobeOn(planeId: string, timeMs: number): boolean {
   const period = STROBE_PERIOD_MS;
   const p = (((timeMs - strobePhaseMs(planeId)) % period) + period) % period;
-  for (const off of STROBE_FLASH_OFFSETS) {
+  // An index loop: this runs per plane per frame (P4 allocation table).
+  for (let i = 0; i < STROBE_FLASH_OFFSETS.length; i++) {
+    const off = STROBE_FLASH_OFFSETS[i] as number;
     if (p >= off && p < off + STROBE_FLASH_MS) return true;
   }
   return false;
@@ -242,8 +244,17 @@ export class PlaneLights {
     this.append(rendered, LIGHT_MOUNTS.navR, greenBoost, NAV_SIZE);
     this.append(rendered, LIGHT_MOUNTS.tail, whiteBoost, TAIL_SIZE);
 
-    // Strobe: synced-clock double flash, phase from the plane id.
-    const lit = strobeOn(planeId, syncedTimeMs);
+    // Strobe: synced-clock double flash, phase from the plane id (strobeOn,
+    // inline: a double handed to a call V8 does not inline is boxed, per
+    // plane per frame — P4's allocation table).
+    const period = STROBE_PERIOD_MS;
+    const phase =
+      (((syncedTimeMs - strobePhaseMs(planeId)) % period) + period) % period;
+    let lit = false;
+    for (let i = 0; i < STROBE_FLASH_OFFSETS.length; i++) {
+      const off = STROBE_FLASH_OFFSETS[i] as number;
+      if (phase >= off && phase < off + STROBE_FLASH_MS) lit = true;
+    }
     this.append(
       rendered,
       LIGHT_MOUNTS.strobe,

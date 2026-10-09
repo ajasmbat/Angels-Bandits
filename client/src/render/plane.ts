@@ -140,6 +140,9 @@ export function poseControls(
   prev: QuatLike,
   curr: QuatLike,
   dtS: number,
+  /** P4: write the result here instead of a new object (remotes.update,
+   * per plane per frame). NEUTRAL_CONTROLS is still returned as itself. */
+  out?: ControlDeflection,
 ): ControlDeflection {
   if (dtS <= 0) return NEUTRAL_CONTROLS;
   qPrev.set(prev.x, prev.y, prev.z, prev.w).invert();
@@ -151,7 +154,15 @@ export function poseControls(
   const s = Math.sqrt(Math.max(0, 1 - w * w));
   if (s < 1e-6) return NEUTRAL_CONTROLS;
   const k = (2 * Math.acos(w)) / s / dtS;
-  return ratesToControls(d.x * sign * k, d.y * sign * k, d.z * sign * k);
+  const x = d.x * sign * k;
+  const y = d.y * sign * k;
+  const z = d.z * sign * k;
+  if (!out) return ratesToControls(x, y, z);
+  // ratesToControls, written in place.
+  out.elevator = clamp1(x / PITCH_RATE);
+  out.rudder = clamp1(-y / TURN_RATE);
+  out.aileron = clamp1(z / ROLL_RATE_FULL);
+  return out;
 }
 
 // --- LOD ---
@@ -182,7 +193,7 @@ class PlaneLOD extends THREE.LOD {
 
 // --- Assembly ---
 
-interface PlaneRig {
+export interface PlaneRig {
   parts: BiplaneParts;
   lod: THREE.LOD;
   damage: { value: number };
@@ -190,7 +201,21 @@ interface PlaneRig {
   smooth: ControlDeflection;
   /** Scarf flutter phase, radians. */
   phase: number;
+  /** P4 (fleet.ts): the LOD's two levels, the spinning prop and the
+   * livery — what the plane fleet reads to draw this plane instanced. */
+  near: THREE.Group;
+  far: THREE.Group;
+  prop: THREE.Object3D;
+  livery: Livery;
+  /** Whether `animatePlane` rewrites the scarf strip on the CPU. Off once
+   * the fleet draws the plane: its vertex shader flutters the scarf from
+   * `phase` (fleet.ts), so the strip is never seen. */
+  cpuScarf: boolean;
 }
+
+/** The rig buildPlaneMesh hung on a plane group (null: not a plane). */
+export const planeRig = (plane: THREE.Object3D): PlaneRig | null =>
+  (plane.userData.rig as PlaneRig | undefined) ?? null;
 
 export const DAMAGE_CACHE_SUFFIX = "-dmg";
 
@@ -209,12 +234,19 @@ export function buildPlaneMesh(livery: Livery = CLASSIC_LIVERY): THREE.Group {
   const damage = { value: 0 };
   applyDamage(lod, damage);
   g.add(lod);
+  const prop = near.getObjectByName("propeller");
+  if (!prop) throw new Error("buildPlaneMesh: the biplane has no propeller");
   const rig: PlaneRig = {
     parts,
     lod,
     damage,
     smooth: { ...NEUTRAL_CONTROLS },
     phase: 0,
+    near,
+    far,
+    prop,
+    livery,
+    cpuScarf: true,
   };
   g.userData.rig = rig;
   return g;
@@ -286,10 +318,12 @@ export function animatePlane(
 
   // Flutter faster with airspeed; skip the CPU rewrite while far.
   rig.phase += dt * (12 + speed * 0.12);
-  if (rig.lod.getCurrentLevel() === 0) flutterScarf(parts.scarf, rig.phase);
+  if (rig.cpuScarf && rig.lod.getCurrentLevel() === 0) {
+    flutterScarf(parts.scarf, rig.phase);
+  }
 }
 
-const SCARF_LENGTH = 0.85;
+export const SCARF_LENGTH = 0.85;
 const scarfAlong = new THREE.Vector3();
 const scarfAcross = new THREE.Vector3();
 const scarfNormal = new THREE.Vector3();

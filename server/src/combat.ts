@@ -75,7 +75,7 @@ export type HitReject =
 export interface Death {
   victimId: string;
   killerId: string | null;
-  cause: "shot" | "crash" | "storm" | "missile";
+  cause: "shot" | "crash" | "storm" | "wreck" | "missile";
 }
 export type HitResult =
   | { ok: true; hp: number; death: Death | null }
@@ -319,6 +319,25 @@ export class Combat {
     p.lastEnvDamagedAt = now;
     const death = p.hp <= 0 ? this.environmentKill(id, "missile", now) : null;
     return { hp: Math.round(Math.max(0, p.hp)), death };
+  }
+
+  /**
+   * D4: `id` flew into the falling wreck `shooterId` shot down. The wreck is
+   * what killed it, so its shooter takes the credit over any last damager —
+   * unless that is `id` itself (no kill for your own death) or has left, in
+   * which case it is an ordinary crash under the environment rule.
+   */
+  wreckKill(id: string, shooterId: string | null, now: number): Death | null {
+    const p = this.players.get(id);
+    if (!p || !p.alive) return null;
+    if (
+      shooterId === null ||
+      shooterId === id ||
+      !this.players.has(shooterId)
+    ) {
+      return this.environmentKill(id, "crash", now);
+    }
+    return this.kill(id, p, shooterId, "wreck", now);
   }
 
   /** An environment-caused death: last damager within DAMAGE_MEMORY_MS gets

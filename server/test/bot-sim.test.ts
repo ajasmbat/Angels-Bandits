@@ -35,10 +35,10 @@ import { generateMovers } from "@angels-bandits/common/city/movers";
 import { natureFor } from "@angels-bandits/common/city/nature";
 import { isInRoadway } from "@angels-bandits/common/city/street";
 import {
+  buildCityIndex,
   buildNatureIndex,
   collideCity,
 } from "@angels-bandits/common/collision";
-import { buildCityIndex } from "@angels-bandits/common/collision";
 import {
   BLOCK_PITCH,
   BOT_SPAWN_GRACE_MS,
@@ -72,6 +72,7 @@ import {
   MissileDirector,
   applyMissileImpact,
 } from "../src/strikes";
+import { RoomWrecks, applyWreckImpact, impactPos } from "../src/wrecks";
 
 const ROOMS = 18;
 /** Two disjoint seed sets. Tuning happens on `tune` (BOT_SIM_SET=tune); the
@@ -179,6 +180,10 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
     let missiles = 0;
     let missileHits = 0;
     let missileKills = 0;
+    /** D4: shot-down bots that fell as wrecks, and bots that flew into one
+     * (counted apart from `crashes` — terrain — so the two compare). */
+    let wrecksSpawned = 0;
+    let wreckKills = 0;
 
     for (let room = 0; room < ROOMS; room++) {
       // One room at a time, then let the event loop turn: the whole sim as a
@@ -214,11 +219,20 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         STRIKES && rc
           ? {
               nearBuilding: nearBuildingProbe(rc.buildings),
-              index: buildCityIndex(rc.buildings),
+              index: rc.index,
               buildings: rc.buildings,
               destroyedShare: 0,
             }
           : null;
+      // D4: wrecks fall and kill in every mode, as on the live server (only
+      // their city damage needs LIVE), swept against this room's city.
+      const wrecks = new RoomWrecks();
+      const wreckWorld = {
+        buildings: roomBuildings,
+        index: rc ? rc.index : buildCityIndex(roomBuildings),
+        nature,
+        movers,
+      };
       const rand = seeded(spawnSeed(room));
       const spawnedAt = new Map<string, number>();
       /** Each bot's state, roadway flag and altitude on its last live tick. */
@@ -346,8 +360,21 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
           }
           const hit = landBotRound(combat, round, now);
           if (hit.ok && hit.death) {
+            // D4: it falls as a wreck — read BEFORE setDead, as index.ts.
+            const c = bots.contactOf(round.shot.targetId);
+            const wreck =
+              c &&
+              wrecks.spawn(
+                round.shot.targetId,
+                round.shot.botId,
+                c.pos,
+                c.vel,
+                now,
+                wreckWorld,
+              );
+            if (wreck) wrecksSpawned++;
             const site = bots.lastPosOf(round.shot.targetId);
-            if (LIVE && rc && site) applyDeathBlast(rc, site);
+            if (!wreck && LIVE && rc && site) applyDeathBlast(rc, site);
             bots.setDead(round.shot.targetId);
             kills++;
           }
@@ -363,6 +390,20 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
           if (applyBotFire(combat, s, now)) {
             bots.launch(s, now);
             if (LIVE && rc) applyShotDamage(rc, s.origin, s.dir);
+          }
+        }
+
+        // D4: landings, then bots that flew into a falling wreck.
+        for (const { params } of wrecks.settle(now)) {
+          if (LIVE && rc) applyWreckImpact(rc, impactPos(params));
+        }
+        for (const e of roster) {
+          if (wrecks.count === 0) break;
+          const c = combat.isAlive(e.id) ? bots.contactOf(e.id) : null;
+          const r = c && wrecks.touching(e.id, c.pos, PLAYER_RADIUS, now);
+          if (r && combat.wreckKill(e.id, r.shooterId, now)) {
+            bots.setDead(e.id);
+            wreckKills++;
           }
         }
 
@@ -436,6 +477,7 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         `street spawns          0/412         ${streetSpawns}/${spawns}`,
         `hits on high human     22892         ${humanHits}`,
         `X1 strikes             ${STRIKES ? `${missiles} missiles, ${missileHits} planes hit, ${missileKills} kills by missile (${(missileKills / botMinutes).toFixed(3)} / bot-min)` : "off"}`,
+        `D4 wrecks              ${wrecksSpawned} fell, ${wreckKills} bots flew into one (not in crashes)`,
         `D2 mode                destroy=${DESTROY} live=${LIVE ? 1 : 0}, ${(100 * destroyedShare).toFixed(1)}% of chunks destroyed at the end (mean over rooms; ${destroyedChunks} chunks in all)`,
         `bots.tick ms           p50 ${tickAt(0.5).toFixed(2)}  p99 ${tickAt(0.99).toFixed(2)}  max ${tickAt(1).toFixed(2)}`,
         "",

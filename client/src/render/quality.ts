@@ -100,6 +100,9 @@ export interface QualityProfile {
   microRadius: number;
   /** L7 sign animation (tickers, chases, video). Off = each sign's static art. */
   signAnimation: boolean;
+  /** S1 the jumbotrons' LAST KILL shot (one small render pass per kill).
+   * Off = the static livery card painted on the screen. */
+  jumbotronReplay: boolean;
   /** Fake window interiors (the per-pane parallax room raycast). Off = the
    * room's mean colour, the same value the distance fade already ends on.
    * G1: the lit lobbies / shop rooms behind the street-level glass too. */
@@ -137,6 +140,10 @@ export interface QualityProfile {
    * destruction exposed. Off = flat concrete slabs and dark rooms, by a
    * uniform. The broken geometry itself is solid and identical everywhere. */
   destructionDetail: boolean;
+  /** D4 falling wrecks: share of the flames and smoke their trail and their
+   * landing fire emit (into the D1 particle pool). The wreck itself, its
+   * explosion and the street scorch are on every tier — the wreck is solid. */
+  wreckFire: number;
 }
 
 export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
@@ -159,6 +166,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     steamDensity: 1,
     microRadius: 2,
     signAnimation: true,
+    jumbotronReplay: true,
     windowInteriors: true,
     cityLife: 1,
     facadeLife: true,
@@ -170,6 +178,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     impacts: 1,
     missileDebris: 1,
     destructionDetail: true,
+    wreckFire: 1,
   },
   medium: {
     maxPixelRatio: 1.5,
@@ -190,6 +199,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     steamDensity: 1,
     microRadius: 2,
     signAnimation: true,
+    jumbotronReplay: true,
     windowInteriors: true,
     cityLife: 0.7,
     facadeLife: true,
@@ -201,6 +211,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     impacts: 0.75,
     missileDebris: 0.75,
     destructionDetail: true,
+    wreckFire: 0.75,
   },
   low: {
     maxPixelRatio: 1,
@@ -221,6 +232,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     steamDensity: 1,
     microRadius: 2,
     signAnimation: true,
+    jumbotronReplay: true,
     windowInteriors: true,
     cityLife: 0.45,
     facadeLife: false,
@@ -232,6 +244,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     impacts: 0.5,
     missileDebris: 0.5,
     destructionDetail: false,
+    wreckFire: 0.5,
   },
   mobile: {
     maxPixelRatio: 1,
@@ -252,6 +265,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     steamDensity: 0.5,
     microRadius: 1,
     signAnimation: false,
+    jumbotronReplay: false,
     windowInteriors: false,
     cityLife: 0.3,
     facadeLife: false,
@@ -263,6 +277,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     impacts: 0.25,
     missileDebris: 0.3,
     destructionDetail: false,
+    wreckFire: 0.35,
   },
 };
 
@@ -425,6 +440,30 @@ export const FEATURE_TIERS: readonly {
     low: "off",
     mobile: "off",
     note: "additive ground decals",
+  },
+  {
+    feature: "S1 jumbotrons + headline tickers",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "one instanced draw; canvases repaint on events only; the ticker crawl follows L7 sign animation",
+  },
+  {
+    feature: "S1 LAST KILL replay shot",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "off",
+    note: "one 256×144 pass per kill; Mobile: uniform flip to the static livery card",
+  },
+  {
+    feature: "S1 leader follow spot",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "it points at the leader, so it is identical on every tier (visibility parity); a beam slot, no draw",
   },
   {
     feature: "L8 rooftop props (pools, fans, flags)",
@@ -610,6 +649,14 @@ export const FEATURE_TIERS: readonly {
     low: "reduced",
     mobile: "reduced",
     note: "1200 / 900 / 600 / 300 particles, 48 / 40 / 32 / 24 facade damage slots, 6 / 5 / 4 / 3 burns; not solid, cosmetic only",
+  },
+  {
+    feature: "D4 falling wrecks — trail flames + smoke, landing fire",
+    high: "full",
+    medium: "reduced",
+    low: "reduced",
+    mobile: "reduced",
+    note: "emission 100 / 75 / 50 / 35 %; the wreck (solid), its explosion and the street scorch stay on every tier",
   },
 ];
 

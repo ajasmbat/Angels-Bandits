@@ -607,6 +607,61 @@ export class Impacts {
     }
   }
 
+  /**
+   * D4: `fire` flames and `smoke` puffs (whole counts — the caller carries
+   * its own fractional emission and quality share) off a burning wreck at
+   * `at`, scattered within `spread` m: its trail as it falls, the fire it
+   * leaves where it lands.
+   */
+  wreckFire(
+    at: Vec3,
+    fire: number,
+    smoke: number,
+    spread: number,
+    now: number,
+  ): void {
+    const rand = this.rand;
+    const [fr, fg, fb] = FIRE_RGB;
+    for (let i = 0; i < fire; i++) {
+      this.at.x = at.x + (rand() * 2 - 1) * spread;
+      this.at.y = at.y + (rand() * 2 - 1) * spread * 0.5;
+      this.at.z = at.z + (rand() * 2 - 1) * spread;
+      this.pool.spawn(
+        Kind.FIRE,
+        this.at,
+        rand() * 2 - 1,
+        1 + rand() * 2.5,
+        rand() * 2 - 1,
+        450 + 450 * rand(),
+        2.5 + 2.5 * rand(),
+        fr,
+        fg * (0.8 + 0.4 * rand()),
+        fb,
+        now,
+        rand() * 6.28,
+      );
+    }
+    const [mr, mg, mb] = SMOKE_RGB;
+    for (let i = 0; i < smoke; i++) {
+      this.at.x = at.x + (rand() * 2 - 1) * spread;
+      this.at.y = at.y + rand() * spread * 0.5;
+      this.at.z = at.z + (rand() * 2 - 1) * spread;
+      this.pool.spawn(
+        Kind.SMOKE,
+        this.at,
+        (rand() - 0.5) * 1.5,
+        2 + rand() * 1.5,
+        (rand() - 0.5) * 1.5,
+        2600 + 1400 * rand(),
+        4 + 3 * rand(),
+        mr,
+        mg,
+        mb,
+        now,
+      );
+    }
+  }
+
   /** A random point on the burning patch, a hair off the wall. */
   private patchPoint(s: BlastSite, r: number, rand: () => number): void {
     const u = (rand() * 2 - 1) * r;

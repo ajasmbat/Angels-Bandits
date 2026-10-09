@@ -8,6 +8,7 @@ import type { NewsHeliSlot, NewsHeliTarget } from "./city/newsheli";
 import type { CityEvent } from "./cityevents";
 import type { WireMissile } from "./strike";
 import type { Vec3 } from "./world/index";
+import type { WreckParams } from "./wreck";
 
 /** Unit quaternion, Three.js component order. Attitude of a plane on the wire. */
 export interface Quat {
@@ -116,6 +117,10 @@ export interface HitClaimMsg {
 /** The client flew into a building or the ground (client-auth movement). */
 export interface CrashMsg {
   type: "crash";
+  /** D4: the falling wreck (its id) this plane flew into — sent only when
+   * the wreck, and no static solid, was what the local check hit. The
+   * server credits the wreck's shooter only if its own geometry agrees. */
+  wreck?: number;
 }
 
 /**
@@ -203,6 +208,9 @@ export interface WelcomeMsg {
    * order (common/src/courses.ts generateCourses for this seed). The rings
    * themselves are never sent — both sides generate them from the seed. */
   courses?: CourseStanding[];
+  /** D4: the room's wrecks still falling, so a late joiner (or a resume)
+   * sees and collides with them too. */
+  wrecks?: WreckParams[];
   /** X1: the room's missiles still in the air (common/src/strike.ts
    * encodeMissile), so a late joiner — or a resume — sees, hears and
    * dodges the same incoming strikes as everyone else. */
@@ -373,13 +381,23 @@ export interface DamageMsg {
  * itself (⚡ environment). `"storm"` is the hidden death ceiling's kill bolt —
  * clients render the bolt at the victim's last snapshot pose; the wire never
  * carries a warning or a timer (the rule is discovered, not announced).
- * `"missile"` (X1) is an incoming strike's blast — environment, credited
- * only by the same last-damager rule a crash follows. */
+ * `"wreck"` (D4): the victim flew into a falling wreck — `killerId` is the
+ * pilot who shot that wreck down. `"missile"` (X1) is an incoming
+ * strike's blast — environment, credited only by the crash rule. */
 export interface DeathMsg {
   type: "death";
   victimId: string;
   killerId: string | null;
-  cause: "shot" | "crash" | "storm" | "missile";
+  cause: "shot" | "crash" | "storm" | "wreck" | "missile";
+  /** S1: the server's kill site — the victim's on-record position,
+   * canonical and rounded to whole meters — so every client's jumbotron
+   * headline names the same place. Absent when the server had no pose. */
+  x?: number;
+  z?: number;
+  /** D4: a shot-down plane falls as this wreck (common/src/wreck.ts) and
+   * hits the city at `wreck.t + wreck.end` instead of exploding in place.
+   * Absent for crash/storm deaths and over the room's WRECKS_MAX. */
+  wreck?: WreckParams;
 }
 
 /**

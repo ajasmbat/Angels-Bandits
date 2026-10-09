@@ -41,6 +41,8 @@ export const KILL_COOLDOWN_MS = 6_000;
 const HIT_COOLDOWN_MS = 8_000;
 const NEAR_MISS_COOLDOWN_MS = 8_000;
 const CHECK_IN_COOLDOWN_MS = 3_000;
+/** X1: one "incoming" per this long — two strikes in a row are one call. */
+const INCOMING_COOLDOWN_MS = 6_000;
 
 /** Pursuer counts as a threat inside this torus range, meters. */
 export const THREAT_RANGE_M = 400;
@@ -173,6 +175,20 @@ export function threatCallout(_selfName: string): Callout {
     expiresMs: 4_000,
     voice: PHRASE.banditSix,
     ticker: "bandit on your six, break!",
+    speaker: "GUARD",
+  };
+}
+
+/** X1: a missile strike is coming down near the local plane. Expires fast:
+ * a late "incoming" after the blast is worse than none. */
+export function incomingCallout(): Callout {
+  return {
+    kind: "threat",
+    key: "incoming",
+    cooldownMs: INCOMING_COOLDOWN_MS,
+    expiresMs: 1_500,
+    voice: PHRASE.incoming,
+    ticker: "INCOMING!",
     speaker: "GUARD",
   };
 }

@@ -484,6 +484,10 @@ function loadTrial(save: HoleSave): void {
 
 /** Switch a committed correction to its ease-out from the current rate. */
 function cancel(save: HoleSave): void {
+  // Already ramping out: let the profile finish. It stops sooner than an
+  // ease from the same rate would, and lands on the totals exactly — an
+  // ease from here would overshoot them (by up to ~2%, past the caps).
+  if (save.t >= SAVE_TIME - SAVE_RAMP) return;
   // The rate falls linearly to zero over SAVE_RAMP (easeProfile, a
   // fraction of the same totals), so what is applied never exceeds them.
   save.easeV = profileRate(save.t);

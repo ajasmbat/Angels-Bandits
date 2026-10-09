@@ -12,6 +12,7 @@ export const PHRASE = {
   banditSix: "Bandit on your six, break!",
   imHit: "I'm hit, I'm hit.",
   thatWasClose: "That was close.",
+  incoming: "Incoming! Incoming!",
   checkIn: "checking in.",
   checkInAnon: "New contact, checking in.",
   offStation: "off station.",

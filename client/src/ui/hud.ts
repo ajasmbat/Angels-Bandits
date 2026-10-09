@@ -22,6 +22,7 @@ export function deathLabel(
 ): string {
   if (cause === "storm") return "⚡ STRUCK BY THE STORM";
   if (killerName === null) return "CRASHED";
+  if (cause === "wreck") return `HIT A WRECK — CREDIT TO ${killerName}`;
   return cause === "shot"
     ? `SHOT DOWN BY ${killerName}`
     : `CRASHED — CREDIT TO ${killerName}`;

@@ -105,6 +105,14 @@ const LIGHT = {
 const lit = (hex: number, k: number): THREE.Color =>
   new THREE.Color(hex).multiplyScalar(k);
 
+/** U5: the bore's mid-height wall and its ceiling as drawn — what thin
+ * dressing (underground.ts) fades into with distance. */
+export const SHELL_WALL_MID = lit(
+  COLORS.concrete,
+  (LIGHT.wallLow + LIGHT.wallHigh) / 2,
+);
+export const SHELL_CEILING = lit(COLORS.ceiling, LIGHT.ceiling);
+
 /** Linear emissive colour that puts `hex` on ladder rung `rung`. */
 function emitOf(hex: number, rung: number): THREE.Color {
   const c = new THREE.Color(hex);

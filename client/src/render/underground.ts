@@ -45,7 +45,7 @@ import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
-import { snapToPeriod } from "./tunnels";
+import { SHELL_CEILING, SHELL_WALL_MID, snapToPeriod } from "./tunnels";
 import {
   BANDS,
   BIRD_BOB,
@@ -77,6 +77,10 @@ export const ANIM = {
   flow: 1,
   /** Bioluminescence: breathes on phase aAnim.y (WINDOW rung at peak). */
   glow: 2,
+  /** Thin dressing (vine strands, leaves, fronds): fades into the surface
+   * behind it — the wall (aAnim.y 0) or the ceiling (1) — with distance,
+   * so a sub-pixel sliver never sparkles (O1's abLine rule, in geometry). */
+  thin: 3,
   /** Falling water: streaks fall down aAnim.y (height), across aAnim.z. */
   fall: 4,
   /** A light panel or a stall lamp (LAMP rung, still). */
@@ -154,6 +158,8 @@ type P3 = [number, number, number];
 type RGBA = readonly [number, number, number, number];
 type Anim = readonly [number, number, number, number];
 const STILL: Anim = [ANIM.still, 0, 0, 0];
+const THIN_WALL: Anim = [ANIM.thin, 0, 0, 0];
+const THIN_CEIL: Anim = [ANIM.thin, 1, 0, 0];
 const rgba = (c: THREE.Color, a = 1): RGBA => [c.r, c.g, c.b, a];
 
 const scratch = { x: 0, z: 0, th: 0 };
@@ -477,6 +483,7 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
         top,
         rgba(C.vineLight),
         rgba(C.vineDark),
+        THIN_WALL,
       );
       // Leaves angled off the wall, still well inside the lining.
       for (let y = top - 1; y > bot + 0.3; y -= 1.1) {
@@ -490,6 +497,7 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
             at(v.t, sm, lo, y - 0.45),
           ],
           rgba(C.leaf),
+          THIN_WALL,
         );
       }
     }
@@ -614,6 +622,7 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
           at(g.t, s - 0.12, l, bot),
         ],
         [rgba(C.frond), rgba(C.frond), rgba(C.vineLight), rgba(C.vineLight)],
+        THIN_CEIL,
       );
       if (i % 2 === 0) {
         const fl = C.flowers[i % C.flowers.length] as THREE.Color;
@@ -624,6 +633,7 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
             at(g.t, s, l + 0.15, bot + 0.2),
           ],
           rgba(fl),
+          THIN_CEIL,
         );
       }
     }
@@ -1344,10 +1354,16 @@ attribute vec4 aAnim;
 uniform float uU5Time;
 varying vec4 vAnim;
 varying float vGlow;
+varying float vThin;
 `;
 const DECOR_VERTEX = /* glsl */ `
 vAnim = aAnim;
 vGlow = 1.0;
+vThin = 0.0;
+if (aAnim.x > 2.5 && aAnim.x < 3.5) {
+  vec4 thinView = modelViewMatrix * vec4(transformed, 1.0);
+  vThin = smoothstep(20.0, 70.0, length(thinView.xyz));
+}
 if (aAnim.x > 1.5 && aAnim.x < 2.5) {
   vGlow = 0.72 + 0.28 * (0.5 + 0.5 * sin(uU5Time * 1.3 + aAnim.y));
 }
@@ -1356,9 +1372,16 @@ const DECOR_FRAGMENT_PARS = /* glsl */ `
 uniform float uU5Time;
 varying vec4 vAnim;
 varying float vGlow;
+varying float vThin;
 `;
+const glslColor = (c: THREE.Color): string =>
+  `vec3(${c.r.toFixed(4)}, ${c.g.toFixed(4)}, ${c.b.toFixed(4)})`;
 const DECOR_FRAGMENT = /* glsl */ `
 diffuseColor.rgb *= vGlow;
+if (vAnim.x > 2.5 && vAnim.x < 3.5) {
+  vec3 behind = vAnim.y > 0.5 ? ${glslColor(SHELL_CEILING)} : ${glslColor(SHELL_WALL_MID)};
+  diffuseColor.rgb = mix(diffuseColor.rgb, behind, vThin);
+}
 if (vAnim.x > 0.5 && vAnim.x < 1.5) {
   float r = sin(vAnim.y * 1.7 - uU5Time * vAnim.z) *
     sin(vAnim.y * 0.63 + uU5Time * vAnim.z * 0.4 + 1.3);

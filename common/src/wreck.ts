@@ -68,12 +68,15 @@ const spiralPhase = (w: WreckPath): number =>
 /**
  * Where the wreck is at server time `ms` (clamped to [t, t + end]):
  * horizontal drift that bleeds off, a fall toward WRECK_TERMINAL under
- * linear drag, and a corkscrew whose radius grows from 0. Canonical x/z.
+ * linear drag, and a corkscrew whose radius eases out from 0 (squared, so
+ * the wreck leaves the death point at exactly the death velocity).
+ * Canonical x/z.
  */
 export function wreckPosAt(w: WreckPath, ms: number, out: Vec3): Vec3 {
   const s = pathSeconds(w, ms);
   const drift = WRECK_DRIFT_TAU_S * (1 - Math.exp(-s / WRECK_DRIFT_TAU_S));
-  const r = WRECK_SPIRAL_RADIUS * (1 - Math.exp(-s / WRECK_SPIRAL_TAU_S));
+  const g = 1 - Math.exp(-s / WRECK_SPIRAL_TAU_S);
+  const r = WRECK_SPIRAL_RADIUS * g * g;
   const a = spiralPhase(w) + w.spin * WRECK_SPIN_RATE * s;
   out.x = wrapCoord(w.p.x + w.v.x * drift + r * Math.cos(a));
   out.z = wrapCoord(w.p.z + w.v.z * drift + r * Math.sin(a));
@@ -95,9 +98,9 @@ export function wreckVelAt(w: WreckPath, ms: number, out: Vec3): Vec3 {
   }
   const s = pathSeconds(w, ms);
   const decay = Math.exp(-s / WRECK_DRIFT_TAU_S);
-  const grow = Math.exp(-s / WRECK_SPIRAL_TAU_S);
-  const r = WRECK_SPIRAL_RADIUS * (1 - grow);
-  const dr = (WRECK_SPIRAL_RADIUS / WRECK_SPIRAL_TAU_S) * grow;
+  const e = Math.exp(-s / WRECK_SPIRAL_TAU_S);
+  const r = WRECK_SPIRAL_RADIUS * (1 - e) * (1 - e);
+  const dr = ((2 * WRECK_SPIRAL_RADIUS) / WRECK_SPIRAL_TAU_S) * (1 - e) * e;
   const omega = w.spin * WRECK_SPIN_RATE;
   const a = spiralPhase(w) + omega * s;
   const c = Math.cos(a);

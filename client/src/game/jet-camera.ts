@@ -53,14 +53,32 @@ export function stepLead(lead: number, yawRate: number, dt: number): number {
  * Swing the look-at `at` about world-up through the eye `eye` by `angle`
  * (rad, + = left, the yaw convention). Any common origin works — main's
  * render space or aimFrame's plane-relative offsets. Returns `at` itself at 0.
+ * F7: with `up` (the chase camera's up, the plane's own through aerobatics)
+ * it swings about that instead, so inverted the lead still leans into the
+ * turn the pilot sees.
  */
-export function leadLookAt(eye: Vec3, at: Vec3, angle: number): Vec3 {
+export function leadLookAt(
+  eye: Vec3,
+  at: Vec3,
+  angle: number,
+  up?: Vec3,
+): Vec3 {
   if (angle === 0) return at;
   const dx = at.x - eye.x;
+  const dy = at.y - eye.y;
   const dz = at.z - eye.z;
   const c = Math.cos(angle);
   const s = Math.sin(angle);
-  return { x: eye.x + dx * c + dz * s, y: at.y, z: eye.z - dx * s + dz * c };
+  if (!up || (up.x === 0 && up.z === 0 && up.y === 1)) {
+    return { x: eye.x + dx * c + dz * s, y: at.y, z: eye.z - dx * s + dz * c };
+  }
+  // Rodrigues about the unit `up`.
+  const k = (up.x * dx + up.y * dy + up.z * dz) * (1 - c);
+  return {
+    x: eye.x + dx * c + (up.y * dz - up.z * dy) * s + up.x * k,
+    y: eye.y + dy * c + (up.z * dx - up.x * dz) * s + up.y * k,
+    z: eye.z + dz * c + (up.x * dy - up.y * dx) * s + up.z * k,
+  };
 }
 
 /** Extra vertical FOV for airspeed, degrees: 0 at MIN_SPEED, SPEED_FOV_KICK

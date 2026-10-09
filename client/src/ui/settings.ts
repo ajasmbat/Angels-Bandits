@@ -195,19 +195,30 @@ const AUTOPILOT_EASE_M = 40;
 /** Pitch command per radian of attitude error, and its clamp. */
 const AUTOPILOT_GAIN = 3;
 const AUTOPILOT_MAX_PITCH = 0.6;
+/** Roll command per radian of real roll (F7): full stick past ~30°. */
+const AUTOPILOT_ROLL_GAIN = 2;
 
 /** The autopilot's command for this frame. Guns are never part of it. */
-export function autopilotInput(pitch: number, altitude: number): FlightInput {
+export function autopilotInput(
+  pitch: number,
+  altitude: number,
+  roll = 0,
+): FlightInput {
   const below = clamp((AUTOPILOT_SAFE_ALT - altitude) / AUTOPILOT_EASE_M, 0, 1);
   const target = AUTOPILOT_CLIMB * below;
+  // F7: `roll` is the airframe's REAL roll (flight.ts realRoll). Roll the
+  // wings level the short way (inverted included), and since pitch input
+  // moves the nose toward the plane's own up, sign it by cos(roll) — rolled
+  // past 90° a pull would head for the ground.
   return {
     turn: 0,
-    roll: 0,
-    pitch: clamp(
-      (target - pitch) * AUTOPILOT_GAIN,
-      -AUTOPILOT_MAX_PITCH,
-      AUTOPILOT_MAX_PITCH,
-    ),
+    roll: clamp(-roll * AUTOPILOT_ROLL_GAIN, -1, 1),
+    pitch:
+      clamp(
+        (target - pitch) * AUTOPILOT_GAIN,
+        -AUTOPILOT_MAX_PITCH,
+        AUTOPILOT_MAX_PITCH,
+      ) * Math.cos(roll),
     throttle: AUTO_THROTTLE,
   };
 }

@@ -225,8 +225,20 @@ export const BANK_FREQ = 7;
  * flat turn. The bank spring never overshoots its target, so roll itself
  * stays inside ±this. Roll is visual only, so bots fly exactly as before. */
 export const MAX_VISUAL_BANK = 1.4;
-/** Pitch is clamped to ±this, rad (~85° — arcade mouse-aim never goes vertical). */
+/** The old pitch clamp, rad (~85°). The flight model no longer clamps (F7
+ * aerobatics: pitch rotates about the plane's own right axis, through
+ * vertical and over the top); this is now the envelope bots fly inside
+ * (flight.ts holdPitchEnvelope) and the bound the corner manager's pull-up
+ * probe plans within. */
 export const PITCH_LIMIT = 1.48;
+/** Full A/D roll rate, rad/s (F7): A/D roll the airframe for real about its
+ * own nose — a 360° aileron roll in ~2.5 s. */
+export const ROLL_RATE = 2.5;
+/** Exponential self-levelling of a REAL roll once A/D is released, 1/s
+ * (F7): the wings ease back to the nearest of upright or inverted (~1 s to
+ * 5%), so a half roll left alone stays inverted and a 360° roll ends level.
+ * Scaled by cos(pitch): at vertical "level" is undefined and it rests. */
+export const ROLL_LEVEL_RATE = 3;
 /** Player collision-sphere radius, meters. */
 export const PLAYER_RADIUS = 2;
 /** Respawn altitude, meters — above every rooftop (tallest landmark is 250 m). */

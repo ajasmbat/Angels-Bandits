@@ -418,6 +418,11 @@ export class ScaffoldRenderer {
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
   }
 
+  /** QA: the dressed buildings, and the restored towers stripping. */
+  get stats(): { dressed: readonly number[]; strips: readonly number[] } {
+    return { dressed: this.picks, strips: this.strips.map((s) => s.b) };
+  }
+
   /** Dress the nearest damaged buildings into slots [0, n); returns n. */
   private dress(cameraPos: Vec3): number {
     // The nearest damaged buildings (insertion into a short sorted list).

@@ -323,13 +323,20 @@ try {
         });
       }, v.stage);
       console.log("stage", v.name, JSON.stringify(r));
-      // A software rasteriser draws ~1 fps: let a few frames take it in.
+      // A software rasteriser draws ~1 fps: let a few frames take it in,
+      // and (D8) every layer re-seat the staged buildings — the standing
+      // work is budgeted per FRAME, so at 1 fps it drains over seconds.
       await page.evaluate(
         () =>
           new Promise((done) => {
             let n = 0;
+            const t0 = performance.now();
             const tick = () =>
-              ++n >= 4 ? done() : requestAnimationFrame(tick);
+              ++n >= 4 &&
+              ((window.__ab.standingPending?.() ?? 0) === 0 ||
+                performance.now() - t0 > 240_000)
+                ? done()
+                : requestAnimationFrame(tick);
             requestAnimationFrame(tick);
           }),
       );

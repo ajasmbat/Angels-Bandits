@@ -358,6 +358,7 @@ import {
   attachStanding,
   setStandingClock,
   standingCost,
+  standingPending,
 } from "./render/standing-watch";
 import { Steam } from "./render/steam";
 import {
@@ -2846,6 +2847,8 @@ declare global {
        * scaffolding; not the impact pool, which bullets feed too). */
       /** D8 QA: the standing filter's per-frame cost (ms, every layer). */
       standingCost: () => ReturnType<typeof standingCost>;
+      /** D8 QA: buildings the layers have yet to re-evaluate (0 = settled). */
+      standingPending: () => number;
       /** D8 QA: the latest building collapses (newest last). */
       recentCollapses: (
         n: number,
@@ -2861,6 +2864,7 @@ declare global {
         wrecksFalling: number;
         scorches: number;
         scaffolds: number;
+        scaffolded: ScaffoldRenderer["stats"];
         staged: boolean;
         stagedDraws: number;
         serverEvents: number;
@@ -3746,6 +3750,7 @@ window.__ab = {
     };
   },
   standingCost: () => standingCost(),
+  standingPending: () => standingPending(),
   recentCollapses: (n) =>
     socket.collapses.records
       .filter((w) => (w.k ?? 0) === 0)
@@ -3772,6 +3777,7 @@ window.__ab = {
       wrecksFalling: w.falling,
       scorches: w.scorches,
       scaffolds,
+      scaffolded: scaffold.stats,
       staged: qaStaged.active,
       stagedDraws:
         on(stats.damagedSlots) +

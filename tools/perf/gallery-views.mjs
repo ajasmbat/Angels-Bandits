@@ -300,14 +300,15 @@ export const VIEWS = [
   // (1240, 464)) felled 15 s before the shot — toppled west across the
   // x = 1200 street, or pancaked — and the seeded 30 % chew of the `ruins`
   // segment's block (18 buildings within 200 m of (400, 780)), its
-  // collapses landed. The plane is parked high over the lot, out of shot (the
-  // scaffold dresses the damaged buildings nearest the plane).
+  // collapses landed. The plane is parked at 240 m over the lot, out of shot
+  // (the scaffold dresses the damaged buildings nearest the plane) and under
+  // the zeppelin's band.
   {
     name: "ruin-felled",
     sky: "dusk",
     x: 1215,
     z: 560,
-    y: 330,
+    y: 240,
     yaw: 0,
     eye: [1192, 64, 590],
     at: [1232, 12, 462],
@@ -319,7 +320,7 @@ export const VIEWS = [
     sky: "dusk",
     x: 1215,
     z: 560,
-    y: 330,
+    y: 240,
     yaw: 0,
     eye: [1186, 42, 552],
     at: [1240, 8, 464],
@@ -331,7 +332,7 @@ export const VIEWS = [
     sky: "dusk",
     x: 330,
     z: 900,
-    y: 330,
+    y: 240,
     yaw: 0,
     eye: [300, 95, 960],
     at: [400, 35, 780],

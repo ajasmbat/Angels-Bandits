@@ -135,6 +135,17 @@ function heldBack(b: number): boolean {
 
 const versionOf = (b: Building): number => b.damage?.version ?? 0;
 
+/** Every live watch (QA: how much standing work is still queued). */
+const watches = new Set<StandingWatch>();
+
+/** D8 QA: buildings still waiting to be re-evaluated, over every layer —
+ * 0 once every hide has landed (a QA shot waits for it). */
+export function standingPending(): number {
+  let n = 0;
+  for (const w of watches) n += w.pending;
+  return n;
+}
+
 /** The wall-clock ms the building being evaluated must yield at (the
  * shared budget's end; +Infinity without a clock attached). */
 let deadline = Number.POSITIVE_INFINITY;
@@ -163,6 +174,15 @@ export class StandingWatch {
       Number.NEGATIVE_INFINITY,
     );
     this.queued = new Uint8Array(buildings.length);
+    // Only the game's watches (a clock is attached before its layers are
+    // built); tests and tools build many and would keep them all alive.
+    if (source) watches.add(this);
+  }
+
+  /** Buildings queued or cut short (QA). A building whose damage moved
+   * since the last poll is not counted until the next poll queues it. */
+  get pending(): number {
+    return this.queue.length + (this.partial >= 0 ? 1 : 0);
   }
 
   /**

@@ -323,6 +323,16 @@ try {
         });
       }, v.stage);
       console.log("stage", v.name, JSON.stringify(r));
+      // A software rasteriser draws ~1 fps: let a few frames take it in.
+      await page.evaluate(
+        () =>
+          new Promise((done) => {
+            let n = 0;
+            const tick = () =>
+              ++n >= 4 ? done() : requestAnimationFrame(tick);
+            requestAnimationFrame(tick);
+          }),
+      );
     }
     if (v.raf) {
       await page.evaluate((v) => {

@@ -282,6 +282,7 @@ const start: FlightState = {
   yaw: 0,
   pitch: 0,
   roll: 0,
+  bank: 0,
   rollRate: 0,
   speed: 0,
   targetSpeed: 0,
@@ -334,6 +335,8 @@ function rollout(
   start.yaw = st.yaw;
   start.pitch = st.pitch;
   start.roll = st.roll;
+  // F7: the cosmetic lean, so the real roll (inverted, A/D) carries over.
+  start.bank = st.bank ?? st.roll;
   start.rollRate = st.rollRate ?? 0;
   start.speed = st.speed;
   start.targetSpeed = st.targetSpeed;

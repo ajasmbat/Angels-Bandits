@@ -8,10 +8,17 @@
 // cursor through the very view the instructor reads (aimDirNdc), so the
 // downstream steering seam is unchanged. Renderer- and DOM-free; every
 // per-frame function writes in place — no allocation. CLIENT-ONLY.
+//
+// F7 aerobatics: a drag rotates the aim in the VIEW's frame (right and up as
+// the pilot sees them), not as world yaw/elevation, and there is no
+// elevation limit — the 60° cone around the nose is the only bound. So a
+// thumb dragged down-the-screen keeps the aim above the nose wherever it
+// points, and the plane follows it over the top and round: touch loops.
 
 import { BULLET_RANGE } from "@angels-bandits/common/constants";
 import type { FlightState } from "@angels-bandits/common/flight";
 import type { Vec3 } from "@angels-bandits/common/world";
+import { type ViewBasis, viewBasis } from "./instructor";
 
 const DEG = Math.PI / 180;
 /** Aim rotation per px of thumb drag at sensitivity 1, degrees. */
@@ -19,10 +26,6 @@ export const TOUCH_AIM_DEG_PER_PX = 0.18;
 /** Most the aim may sit off the gun line, rad: a hard drag is a full-rate
  * turn, never a direction behind the camera. */
 export const TOUCH_AIM_MAX_OFF_NOSE = 60 * DEG;
-/** Most world elevation the aim may take, rad — under PITCH_LIMIT (so the
- * instructor's pitch target is always reachable) and clear of the poles,
- * where yaw is undefined. */
-export const TOUCH_AIM_MAX_ELEV = 75 * DEG;
 /** No aim finger for this long, s, and the aim starts easing home… */
 export const TOUCH_AIM_IDLE_S = 1;
 /** …onto the gun line with this time constant, s. */
@@ -72,6 +75,17 @@ function forwardInto(flight: Pick<FlightState, "yaw" | "pitch">, fwd: Vec3) {
 }
 
 const fwdScratch: Vec3 = { x: 0, y: 0, z: -1 };
+const basis: ViewBasis = {
+  fx: 0,
+  fy: 0,
+  fz: -1,
+  rx: 1,
+  ry: 0,
+  rz: 0,
+  ux: 0,
+  uy: 1,
+  uz: 0,
+};
 
 /** Normalise in place; a zero vector becomes `fallback`. */
 function normalise(v: Vec3, fallback: Vec3): void {
@@ -87,16 +101,7 @@ function normalise(v: Vec3, fallback: Vec3): void {
   v.z /= l;
 }
 
-/** Hold the world elevation inside ±TOUCH_AIM_MAX_ELEV. */
-function clampElevation(d: Vec3): void {
-  const lim = Math.sin(TOUCH_AIM_MAX_ELEV);
-  if (Math.abs(d.y) <= lim) return;
-  const h = Math.hypot(d.x, d.z);
-  const k = Math.cos(TOUCH_AIM_MAX_ELEV) / (h || 1);
-  d.x = h > 1e-12 ? d.x * k : 0;
-  d.z = h > 1e-12 ? d.z * k : -Math.cos(TOUCH_AIM_MAX_ELEV);
-  d.y = Math.sign(d.y) * lim;
-}
+const WORLD_UP: Vec3 = { x: 0, y: 1, z: 0 };
 
 /** Aim on the gun line — respawn, settings closed, rotation, mode change. */
 export function recentreAimDir(
@@ -104,34 +109,61 @@ export function recentreAimDir(
   flight: Pick<FlightState, "yaw" | "pitch">,
 ): void {
   forwardInto(flight, s.dir);
-  clampElevation(s.dir);
   s.idle = 0;
 }
 
 /**
  * A one-finger drag of (dx, dy) px, mouse convention (+x right, +y down):
- * right turns right (yaw decreases, flight.ts), down aims lower. A fixed
- * TOUCH_AIM_DEG_PER_PX × sensitivity per px — no screen size anywhere.
+ * right turns right, down aims lower — as seen through a view whose up is
+ * `up` (the chase camera's: world-up in level flight, the plane's own through
+ * aerobatics). A rotation of the aim along the great circle the drag points
+ * at, TOUCH_AIM_DEG_PER_PX × sensitivity per px — no screen size anywhere,
+ * no poles, no elevation limit.
  */
 export function dragAimDir(
   s: AimDirState,
   dx: number,
   dy: number,
   sensitivity: number,
+  up: Vec3 = WORLD_UP,
 ): void {
   if (dx === 0 && dy === 0) return;
-  const k = TOUCH_AIM_DEG_PER_PX * sensitivity * DEG;
   const d = s.dir;
-  const yaw = Math.atan2(-d.x, -d.z) - dx * k;
-  const elev = clamp(
-    Math.asin(clamp(d.y, -1, 1)) - dy * k,
-    -TOUCH_AIM_MAX_ELEV,
-    TOUCH_AIM_MAX_ELEV,
-  );
-  const c = Math.cos(elev);
-  d.x = -Math.sin(yaw) * c;
-  d.y = Math.sin(elev);
-  d.z = -Math.cos(yaw) * c;
+  // The view's right and up at the aim: right = aim × up, up' = right × aim
+  // (an up along the aim falls back to world-up, then +X).
+  let rx = d.y * up.z - d.z * up.y;
+  let ry = d.z * up.x - d.x * up.z;
+  let rz = d.x * up.y - d.y * up.x;
+  let rl = Math.hypot(rx, ry, rz);
+  if (rl < 1e-9) {
+    rx = -d.z;
+    ry = 0;
+    rz = d.x;
+    rl = Math.hypot(rx, rz);
+    if (rl < 1e-9) {
+      rx = 1;
+      rz = 0;
+      rl = 1;
+    }
+  }
+  rx /= rl;
+  ry /= rl;
+  rz /= rl;
+  const ux = ry * d.z - rz * d.y;
+  const uy = rz * d.x - rx * d.z;
+  const uz = rx * d.y - ry * d.x;
+  const len = Math.hypot(dx, dy);
+  const a = TOUCH_AIM_DEG_PER_PX * sensitivity * DEG * len;
+  // Unit direction of the drag on that tangent plane (screen +y is down).
+  const ox = (rx * dx - ux * dy) / len;
+  const oy = (ry * dx - uy * dy) / len;
+  const oz = (rz * dx - uz * dy) / len;
+  const c = Math.cos(a);
+  const sn = Math.sin(a);
+  d.x = d.x * c + ox * sn;
+  d.y = d.y * c + oy * sn;
+  d.z = d.z * c + oz * sn;
+  normalise(d, fwdScratch);
   s.idle = 0;
 }
 
@@ -170,7 +202,6 @@ export function stepAimDir(
     d.y = fwd.y * c + d.y * sin;
     d.z = fwd.z * c + d.z * sin;
   }
-  clampElevation(d);
 }
 
 /**
@@ -183,28 +214,16 @@ export function stepAimDir(
  */
 export function aimDirNdc(
   dir: Vec3,
-  frame: { eye: Vec3; at: Vec3 },
+  frame: { eye: Vec3; at: Vec3; up?: Vec3 },
   fovDeg: number,
   aspect: number,
   out: { x: number; y: number },
 ): void {
-  const { eye, at } = frame;
+  const { eye } = frame;
   // The camera basis, built exactly as cursorRay builds it.
-  let fx = at.x - eye.x;
-  let fy = at.y - eye.y;
-  let fz = at.z - eye.z;
-  const fl = Math.hypot(fx, fy, fz) || 1;
-  fx /= fl;
-  fy /= fl;
-  fz /= fl;
-  let rx = -fz;
-  let rz = fx;
-  const rl = Math.hypot(rx, rz) || 1;
-  rx /= rl;
-  rz /= rl;
-  const ux = -rz * fy;
-  const uy = rz * fx - rx * fz;
-  const uz = rx * fy;
+  const b = basis;
+  viewBasis(eye, frame.at, frame.up ?? WORLD_UP, b);
+  const { fx, fy, fz, rx, ry, rz, ux, uy, uz } = b;
   const px = dir.x * BULLET_RANGE - eye.x;
   const py = dir.y * BULLET_RANGE - eye.y;
   const pz = dir.z * BULLET_RANGE - eye.z;
@@ -214,7 +233,7 @@ export function aimDirNdc(
     1e-6 * Math.hypot(px, py, pz),
   );
   const t = Math.tan((fovDeg * Math.PI) / 360);
-  out.x = clamp((px * rx + pz * rz) / depth / (t * aspect), -1, 1);
+  out.x = clamp((px * rx + py * ry + pz * rz) / depth / (t * aspect), -1, 1);
   out.y = clamp((px * ux + py * uy + pz * uz) / depth / t, -1, 1);
 }
 
@@ -233,6 +252,5 @@ export function aimDirFromRay(s: AimDirState, eye: Vec3, ray: Vec3): void {
   d.y = eye.y + ray.y * t;
   d.z = eye.z + ray.z * t;
   normalise(d, ray);
-  clampElevation(d);
   s.idle = 0;
 }

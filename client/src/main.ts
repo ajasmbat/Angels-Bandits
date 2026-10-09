@@ -53,6 +53,7 @@ import {
   type FlightState,
   createFlightState,
   handlingRates,
+  realRoll,
   stepFlight,
 } from "@angels-bandits/common/flight";
 import { hitRangeBudgetFor } from "@angels-bandits/common/net";
@@ -785,6 +786,8 @@ const holeAssist = createHoleAssist();
 const holeAssistWant = createHoleAssist();
 const assistDir: Vec3 = { x: 0, y: 0, z: 0 };
 const assistStickOut = { turn: 0, pitch: 0 };
+/** H2 hole assist stands down past this much real roll, rad (~30°, F7). */
+const ASSIST_MAX_ROLL = Math.PI / 6;
 // H3 hole save: the same spans, and every solid the crash check reads — the
 // last-moment pose correction that threads a hole when a crash is imminent.
 const saveWorld: SaveWorld = {
@@ -1413,6 +1416,9 @@ function enterDeath(killerId: string | null, cause: DeathMsg["cause"]): void {
   instructor = createInstructor();
   resetAssist();
   hud.setFreeLook(false);
+  // F7: a death mid-loop leaves the chase up rolled; the kill-cam's lookAt
+  // frames the killer (or wreck) upright.
+  camera.up.set(0, 1, 0);
   killCamTargetId = killerId;
   hud.showKillCam(
     deathLabel(cause, killerId === null ? null : nameOf(killerId)),
@@ -2549,6 +2555,7 @@ window.__ab = {
       yaw: Math.atan2(-d.x, -d.z),
       pitch: Math.atan2(d.y, flat),
       roll: 0,
+      bank: 0,
       rollRate: 0,
     };
     chase.snapTo(flight);
@@ -3032,8 +3039,12 @@ const frame = (now: number): void => {
     const steer = freelook.steer * zoomSteer(zoom.z);
     let command = input.read();
     // H2 hole assist: stands down while the pilot shoots, free-looks or the
-    // view is reframing (zoom easing) — then glides back to zero.
+    // view is reframing (zoom easing) — then glides back to zero. F7: and
+    // while the airframe is rolled past ~30° or inverted — its bias is a
+    // world heading/elevation nudge, which only reads right wings-level.
+    const roll = realRoll(flight);
     const assistOff =
+      Math.abs(roll) > ASSIST_MAX_ROLL ||
       guns.firing ||
       freelook.held ||
       freelook.yaw !== 0 ||
@@ -3054,7 +3065,7 @@ const frame = (now: number): void => {
       // out of the skyline, throttle full). A fresh instructor every frame,
       // so closing the panel hands back with no lagged command.
       stepAssist(true, dt);
-      command = autopilotInput(flight.pitch, flight.pos.y);
+      command = autopilotInput(flight.pitch, flight.pos.y, roll);
       instructor = createInstructor();
     } else if (aimMode === "instructor") {
       // The cursor is the aim point: fly the pipper onto it. The view is the
@@ -3164,9 +3175,12 @@ const frame = (now: number): void => {
     // turn the pilot is committing to (or the wall ahead) is makeable. Intent
     // is the turn command before free-look/zoom shaping; the clock is the one
     // the movers are drawn (and crash-checked) at.
+    // F7: the turn input swings the nose about world-up only when upright —
+    // reversed inverted, about the body's up at knife-edge — so the intent
+    // the manager plans a world-frame turn for is signed by cos(real roll).
     cornerCap = stepCornerCap(
       cornerCap,
-      cornerSpeed(flight, cornerWorld, intentTurn, renderMs),
+      cornerSpeed(flight, cornerWorld, intentTurn * Math.cos(roll), renderMs),
       dt,
     );
     const shaped = {

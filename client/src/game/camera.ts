@@ -15,6 +15,15 @@
 // translates the view, never turns it (C1). aimFrame takes the same pull-in,
 // so the cursor ray starts from the eye actually shown: the plane flies at
 // what is under the cursor, even with the arm all the way in under a deck.
+//
+// Up (F7 aerobatics): the camera's up is eased state too — world-up in
+// ordinary flight, blending onto the plane's own (real-attitude) up as it
+// goes steep, rolls or flies inverted, and back to world-up once level. A
+// continuous target eased by rotate-toward never snaps or flip-flops through
+// a loop or a roll; the chase rise, the zoom offsets and the turn lead are
+// all built on it, and aimFrame hands it to the cursor ray, so the cursor
+// stays where the pilot sees it on screen — held above the pipper it keeps
+// pulling, over the top and round.
 
 import {
   CAMERA_RESPONSE,
@@ -23,7 +32,11 @@ import {
   CHASE_STRETCH,
   MIN_SPEED,
 } from "@angels-bandits/common/constants";
-import { type FlightState, flightForward } from "@angels-bandits/common/flight";
+import {
+  type FlightState,
+  flightAxes,
+  flightForward,
+} from "@angels-bandits/common/flight";
 import type { Vec3 } from "@angels-bandits/common/world";
 import type * as THREE from "three";
 import { orbitOffset } from "./freelook";
@@ -58,6 +71,16 @@ const ARM_IN_SPEED = 60;
 /** The pull-in's top speed once a solid is already within the pad of the
  * arm (the lookahead missed it), m/s: a fast swoop, still not a cut. */
 const ARM_URGENT_SPEED = 150;
+/** The camera up starts leaving world-up when the plane's own up has this
+ * much world-up left (cos ~53°: a steep climb or a hard real roll)… */
+const UP_FOLLOW_START = 0.6;
+/** …and is the plane's own up from this on (cos ~81°, and every inverted
+ * attitude). For an upright climb both lie in the nose's vertical plane, so
+ * the view does not roll — it only keeps lookAt clear of the zenith. */
+const UP_FOLLOW_FULL = 0.15;
+/** Exp response of the camera up toward its target, 1/s: it rolls after the
+ * plane (~0.3 s), never glued to it. */
+const UP_RESPONSE = 6;
 
 export class ChaseCamera {
   /** Unit direction from the plane to the chase eye; null until snapped. */
@@ -76,12 +99,19 @@ export class ChaseCamera {
   private lastVel: Vec3 | null = null;
   /** Eased look-into-the-turn angle, rad, + = left (F6, jet-camera.ts). */
   private lead = 0;
+  /** The camera's eased up, unit (F7). */
+  private upV: Vec3 = { x: 0, y: 1, z: 0 };
   /** What the spring arm may not pass through; unset = no arm. */
   solid: SolidQuery | null = null;
 
   /** Smoothed camera position, for placing the world around the viewer. */
   get position(): Vec3 {
     return this.pos;
+  }
+
+  /** The camera's current (eased) up, unit — world-up in level flight. */
+  get up(): Vec3 {
+    return this.upV;
   }
 
   /** Hold the eye at `eye` (canonical) — a kill-cam that rides something
@@ -94,7 +124,8 @@ export class ChaseCamera {
 
   /** Snap directly behind the plane (spawn / respawn — no swoop across town). */
   snapTo(state: FlightState): void {
-    this.dir = chaseDir(flightForward(state));
+    this.upV = upTarget(state);
+    this.dir = chaseDir(flightForward(state), this.upV);
     this.len = chaseDistance(state.speed);
     this.place(state);
     this.arm = 1;
@@ -114,18 +145,23 @@ export class ChaseCamera {
    * Computed on demand (any zoom, so main can diff two of them), from the
    * chase offset as last updated or snapped, so it is never stale.
    */
-  aimFrame(state: FlightState, zoom: number): { eye: Vec3; at: Vec3 } {
+  aimFrame(
+    state: FlightState,
+    zoom: number,
+  ): { eye: Vec3; at: Vec3; up: Vec3 } {
     if (!this.dir) this.snapTo(state);
     const fwd = flightForward(state);
+    const up = this.upV;
     const chase = this.offset();
-    const eye = zoom !== 0 ? zoomOffset(chase, fwd, zoom) : chase;
+    const eye = zoom !== 0 ? zoomOffset(chase, fwd, zoom, up) : chase;
     const at = leadLookAt(
       eye,
-      zoomLookAt({ x: 0, y: 0, z: 0 }, fwd, zoom),
+      zoomLookAt({ x: 0, y: 0, z: 0 }, fwd, zoom, up),
       this.lead * (1 - zoom),
+      up,
     );
     const k = this.armShown;
-    if (k === 1) return { eye, at };
+    if (k === 1) return { eye, at, up };
     return {
       eye: { x: eye.x * k, y: eye.y * k, z: eye.z * k },
       at: {
@@ -133,6 +169,7 @@ export class ChaseCamera {
         y: at.y + eye.y * (k - 1),
         z: at.z + eye.z * (k - 1),
       },
+      up,
     };
   }
 
@@ -169,8 +206,20 @@ export class ChaseCamera {
     // Direction and length ease separately, so a turn swings the arm without
     // shortening it (a straight lerp of the offset would cut the chord).
     const fwd = flightForward(state);
+    // F7: the up eases first, by rotate-toward (a normalised blend of two
+    // never-opposed unit vectors — the target is continuous and the lag is
+    // well under 90°), so the arm's rise below already rides it.
+    const upWant = upTarget(state);
+    const ub = 1 - Math.exp(-UP_RESPONSE * dt);
+    const u = this.upV;
+    const ux = u.x + (upWant.x - u.x) * ub;
+    const uy = u.y + (upWant.y - u.y) * ub;
+    const uz = u.z + (upWant.z - u.z) * ub;
+    const ul = Math.hypot(ux, uy, uz);
+    this.upV = ul > 1e-6 ? { x: ux / ul, y: uy / ul, z: uz / ul } : upWant;
+    const up = this.upV;
     const blend = 1 - Math.exp(-CAMERA_RESPONSE * dt);
-    const want = chaseDir(fwd);
+    const want = chaseDir(fwd, up);
     const d = this.dir as Vec3;
     const mixed = {
       x: d.x + (want.x - d.x) * blend,
@@ -202,6 +251,7 @@ export class ChaseCamera {
         { x: view.x - aim.x, y: view.y - aim.y, z: view.z - aim.z },
         fwd,
         zoom,
+        up,
       );
       view = { x: aim.x + off.x, y: aim.y + off.y, z: aim.z + off.z };
     }
@@ -221,8 +271,9 @@ export class ChaseCamera {
     }
     let at = leadLookAt(
       view,
-      zoomLookAt(aim, fwd, zoom),
+      zoomLookAt(aim, fwd, zoom, up),
       this.lead * (1 - zoom),
+      up,
     );
     // The spring arm runs LAST, on the eye actually shown, so neither the
     // orbit nor the shake can push it back into a wall. It moves the eye,
@@ -253,6 +304,9 @@ export class ChaseCamera {
       view = armed;
     }
     camera.position.set(view.x, view.y, view.z);
+    // lookAt builds its basis from camera.up — the same up aimFrame hands
+    // the cursor ray. (Test stubs carry no up.)
+    if (camera.up) camera.up.set(up.x, up.y, up.z);
     camera.lookAt(at.x, at.y, at.z);
   }
 
@@ -293,7 +347,7 @@ export class ChaseCamera {
       }
     }
     const d = this.dir as Vec3;
-    const want = chaseDir(fwd);
+    const want = chaseDir(fwd, this.upV);
     const dirLag = { x: d.x - want.x, y: d.y - want.y, z: d.z - want.z };
     const lenLag = this.len - chaseDistance(state.speed);
     // The display modifiers' share of today's offset.
@@ -315,7 +369,7 @@ export class ChaseCamera {
       const nose =
         speed > 1e-6 ? { x: v.x / speed, y: v.y / speed, z: v.z / speed } : fwd;
       const decay = Math.exp(-CAMERA_RESPONSE * t);
-      const w = chaseDir(nose);
+      const w = chaseDir(nose, this.upV);
       const dx = w.x + dirLag.x * decay;
       const dy = w.y + dirLag.y * decay;
       const dz = w.z + dirLag.z * decay;
@@ -379,12 +433,37 @@ function chaseDistance(speed: number): number {
 }
 
 /** Unit direction from the plane to its chase eye for the unit nose `fwd`:
- * straight back along the nose and CHASE_RISE up (never zero: |fwd| = 1 and
+ * straight back along the nose and CHASE_RISE along the camera's `up` (F7:
+ * the plane's own up through aerobatics; never zero: |fwd| = |up| = 1 and
  * CHASE_RISE < 1). */
-function chaseDir(fwd: Vec3): Vec3 {
-  const x = -fwd.x;
-  const y = CHASE_RISE - fwd.y;
-  const z = -fwd.z;
+function chaseDir(fwd: Vec3, up: Vec3): Vec3 {
+  const x = CHASE_RISE * up.x - fwd.x;
+  const y = CHASE_RISE * up.y - fwd.y;
+  const z = CHASE_RISE * up.z - fwd.z;
+  const l = Math.hypot(x, y, z);
+  return { x: x / l, y: y / l, z: z / l };
+}
+
+const axesScratch = {
+  right: { x: 0, y: 0, z: 0 },
+  up: { x: 0, y: 0, z: 0 },
+};
+
+/** Where the camera's up is heading for this attitude (F7): world-up while
+ * the plane's own up keeps UP_FOLLOW_START of it, the plane's own up from
+ * UP_FOLLOW_FULL down (steep, hard-rolled, inverted), blended between —
+ * never zero, since the blend only runs while the plane's up still points
+ * well upward. */
+function upTarget(state: FlightState): Vec3 {
+  const u = flightAxes(state, axesScratch).up;
+  const w = Math.min(
+    1,
+    Math.max(0, (UP_FOLLOW_START - u.y) / (UP_FOLLOW_START - UP_FOLLOW_FULL)),
+  );
+  if (w === 0) return { x: 0, y: 1, z: 0 };
+  const x = u.x * w;
+  const y = 1 - w + u.y * w;
+  const z = u.z * w;
   const l = Math.hypot(x, y, z);
   return { x: x / l, y: y / l, z: z / l };
 }

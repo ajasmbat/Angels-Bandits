@@ -76,29 +76,44 @@ export function zoomSteer(z: number): number {
   return lerp(1, ZOOM_STEER, z);
 }
 
+/** World up — the default up for the dolly and look-at offsets. */
+const WORLD_UP: Vec3 = { x: 0, y: 1, z: 0 };
+
 /**
  * Dolly the DISPLAYED eye offset (camera − plane, images already aligned) in
  * toward the nose. Blending the offset rather than feeding the dolly through
  * the chase target keeps it off the CAMERA_RESPONSE smoothing — zoom responds
  * at its own rate — and preserves camera.ts's invariant that displayed
  * modifiers never re-enter the chase state. Returns `chase` itself at z=0.
+ * `up` is the chase camera's up (F7: the plane's own up through aerobatics).
  */
-export function zoomOffset(chase: Vec3, fwd: Vec3, z: number): Vec3 {
+export function zoomOffset(
+  chase: Vec3,
+  fwd: Vec3,
+  z: number,
+  up: Vec3 = WORLD_UP,
+): Vec3 {
   return {
-    x: lerp(chase.x, -fwd.x * ZOOM_DISTANCE, z),
-    y: lerp(chase.y, -fwd.y * ZOOM_DISTANCE + ZOOM_HEIGHT, z),
-    z: lerp(chase.z, -fwd.z * ZOOM_DISTANCE, z),
+    x: lerp(chase.x, -fwd.x * ZOOM_DISTANCE + up.x * ZOOM_HEIGHT, z),
+    y: lerp(chase.y, -fwd.y * ZOOM_DISTANCE + up.y * ZOOM_HEIGHT, z),
+    z: lerp(chase.z, -fwd.z * ZOOM_DISTANCE + up.z * ZOOM_HEIGHT, z),
   };
 }
 
 /**
  * Swing the look-at target from the plane's shoulder out along the nose, so at
  * full zoom the view axis IS the gun line and the pipper lands mid-frame.
+ * `up` as zoomOffset's.
  */
-export function zoomLookAt(aim: Vec3, fwd: Vec3, z: number): Vec3 {
+export function zoomLookAt(
+  aim: Vec3,
+  fwd: Vec3,
+  z: number,
+  up: Vec3 = WORLD_UP,
+): Vec3 {
   return {
-    x: lerp(aim.x, aim.x + fwd.x * ZOOM_LOOK_AHEAD, z),
-    y: lerp(aim.y + CHASE_LOOK_UP, aim.y + fwd.y * ZOOM_LOOK_AHEAD, z),
-    z: lerp(aim.z, aim.z + fwd.z * ZOOM_LOOK_AHEAD, z),
+    x: lerp(aim.x + up.x * CHASE_LOOK_UP, aim.x + fwd.x * ZOOM_LOOK_AHEAD, z),
+    y: lerp(aim.y + up.y * CHASE_LOOK_UP, aim.y + fwd.y * ZOOM_LOOK_AHEAD, z),
+    z: lerp(aim.z + up.z * CHASE_LOOK_UP, aim.z + fwd.z * ZOOM_LOOK_AHEAD, z),
   };
 }

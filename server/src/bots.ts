@@ -30,6 +30,20 @@
 // stepFlight on the real geometry (see rolloutThread), so a committed thread
 // replays a path already known to be clear and suspends every override.
 //
+// Tactics (B3) shape HOW a bot fights inside those states — see
+// bottactics.ts for the pure rules: every bot flies a seeded style
+// (aggressive / sniper / wingman, from its callsign); boom-and-zoom from
+// height (extend after the pass instead of turning with the target), a
+// two-ship pincer on a shared target, breaking off when hurt and coming back
+// after regen (taking holes out), and a loop or barrel roll when something
+// sits on its six — the one time a bot flies the full F7 envelope, and only
+// after a stepFlight rollout of the whole maneuver comes back clear. Timed
+// hazards (X1 missiles, S4 flak, C2's chaos) are HazardDiscs: a decision
+// whose held stick would fly into one is re-stuck (throttle, then a climb)
+// to a variant that misses it. Aim and reaction scale with each human's
+// rolling K/D against the bots (SkillScaler), and a bot is shy of ganging
+// up on a struggling human.
+//
 // Bots never send hit claims: tick() emits trigger pulls (BotShot) and
 // applyBotFire routes them through the existing Combat seam — same heat
 // model, damage, spawn protection, kill credit, and respawn as humans.
@@ -38,6 +52,13 @@
 // against where its target ACTUALLY went, so a target that jinks inside the
 // bullet's flight time dodges it exactly as it would dodge a human's.
 
+import { BOSS_FLAK_RANGE } from "@angels-bandits/common/boss";
+import {
+  BOT_STYLE_TUNING,
+  type BotStyle,
+  type BotStyleTuning,
+  botStyle,
+} from "@angels-bandits/common/botstyle";
 import {
   type Building,
   type HoleEdge,
@@ -80,6 +101,7 @@ import {
   BOT_ATTACK_COOLDOWN_MS,
   BOT_ATTACK_PASS_MS,
   BOT_ATTACK_YAW,
+  BOT_BOOM_COOLDOWN_MS,
   BOT_BOSS_FIRE_RANGE,
   BOT_BOSS_PASS_MS,
   BOT_BOSS_PASS_RANGE,
@@ -101,6 +123,12 @@ import {
   BOT_CEILING_HYST,
   BOT_CEILING_LOOKAHEAD_S,
   BOT_DECISION_EVERY,
+  BOT_DEFEND_COOLDOWN_MS,
+  BOT_DEFEND_MARGIN,
+  BOT_DEFEND_MAX_ALT,
+  BOT_DEFEND_MAX_S,
+  BOT_DEFEND_MIN_ALT,
+  BOT_DEFEND_TAIL_S,
   BOT_DETECT_RANGE,
   BOT_ENGAGE_CEILING,
   BOT_ENGAGE_OVERHEAD,
@@ -115,6 +143,7 @@ import {
   BOT_FIRE_RANGE,
   BOT_HOLE_CARROT,
   BOT_HOLE_CHANCE,
+  BOT_HOLE_ESCAPE_CHANCE,
   BOT_HOLE_FOLLOW_MS,
   BOT_HOLE_FOLLOW_RANGE,
   BOT_HOLE_LINEUP_MAX,
@@ -128,22 +157,29 @@ import {
   BOT_LOS_TESTS_MAX,
   BOT_MIN_ALT,
   BOT_MOVER_CLEAR,
+  BOT_PINCER_OFFSET,
   BOT_PROBE_RADIUS,
   BOT_PROBE_TIMES,
   BOT_REACTION_MS,
   BOT_RECOVER_CLEAR,
   BOT_RETARGET_MARGIN,
+  BOT_SKILL_GANG_PENALTY,
   BOT_SPAWN_CLEAR_AHEAD,
   BOT_SPAWN_GRACE_MS,
   BOT_SPAWN_SPEED,
   BOT_STEER_GAIN,
   BOT_THREAT_RANGE,
+  BOT_ZOOM_MS,
   BULLET_LIFETIME_S,
   BULLET_SPEED,
   HIT_RADIUS,
   HOLE_RUN_OUT,
+  MAX_HP,
+  MAX_SPEED,
   PITCH_LIMIT,
+  PITCH_RATE,
   PLAYER_RADIUS,
+  ROLL_RATE,
   TICK_DOWN_HZ,
   TRAIN_BOT_REACH,
 } from "@angels-bandits/common/constants";
@@ -156,8 +192,14 @@ import {
   type FlightState,
   createFlightState,
   flightForward,
+  realRoll,
   stepFlight,
 } from "@angels-bandits/common/flight";
+import {
+  type HazardDisc,
+  liveHazards,
+  pointInHazard,
+} from "@angels-bandits/common/hazards";
 import { inHoleSpan } from "@angels-bandits/common/medals";
 import type {
   Pose,
@@ -170,6 +212,14 @@ import {
   wrapDelta,
   wrapDistance,
 } from "@angels-bandits/common/world";
+import {
+  SkillScaler,
+  type Tactic,
+  chooseTactic,
+  pincerOffset,
+  pincerSides,
+  threatOnSix,
+} from "./bottactics";
 import type { Combat, HitResult } from "./combat";
 
 /** Sim step, s — bots advance at snapshot cadence (the server's first sim loop). */
@@ -192,6 +242,9 @@ export interface BotContact {
   /** S4: a sky-boss weak point (`@boss:<k>`), not a plane: ranked, passed
    * at and fired on by its own rules, and never a threat on the six. */
   boss?: boolean;
+  /** B3: current HP (Combat.hpOf). A bot reads its own to break off when
+   * hurt; absent counts as full. */
+  hp?: number;
 }
 
 /** One trigger pull emitted by tick() — index.ts routes it through Combat. */
@@ -423,6 +476,67 @@ function threadInput(f: FlightState, th: Thread): FlightInput | null {
   return steerInput(f, d, 0, 0, -1);
 }
 
+/**
+ * B3 defensive aerobatics: a loop (pull through, the shooter overshoots
+ * under it) or a barrel roll (a corkscrew around the line of flight that
+ * spoils its aim). The one time a bot flies stepFlight WITHOUT the
+ * pitchLimit envelope — the player's full F7 model, at the bots' own
+ * BOT_INPUT_CAP — and only after rolloutManeuver flew the whole thing clear.
+ */
+interface Maneuver {
+  kind: "loop" | "roll";
+  /** Roll direction for a barrel roll. */
+  dir: 1 | -1;
+  /** Ticks flown so far. */
+  ticks: number;
+}
+
+/** The maneuver's own stick holds at least this long, s: most of one full
+ * rotation at the capped rate — then it rolls out (maneuverInput). A loop
+ * is flown at idle: slow is tight, and a tight loop fits under
+ * BOT_DEFEND_MAX_ALT. */
+const LOOP_HOLD_S = (0.8 * 2 * Math.PI) / (PITCH_RATE * BOT_INPUT_CAP);
+const ROLL_HOLD_S = (0.9 * 2 * Math.PI) / (ROLL_RATE * BOT_INPUT_CAP);
+
+/**
+ * One tick of `m` from `f`: the maneuver's own stick, then a roll-out that
+ * keeps pulling while the bot is still inverted and otherwise levels the
+ * nose while the released roll eases upright (stepFlight's own easing) —
+ * null once it is wings-level and near the horizon, or past
+ * BOT_DEFEND_MAX_S. Pure in (f, m.ticks), so rolloutManeuver predicts the
+ * live flight exactly.
+ */
+function maneuverInput(f: FlightState, m: Maneuver): FlightInput | null {
+  const t = m.ticks * BOT_DT;
+  if (t >= BOT_DEFEND_MAX_S) return null;
+  const cap = BOT_INPUT_CAP;
+  const stick: FlightInput =
+    m.kind === "loop"
+      ? { pitch: cap, turn: 0, roll: 0, throttle: -1 }
+      : { pitch: cap * 0.45, turn: 0, roll: m.dir * cap, throttle: 1 };
+  if (t < (m.kind === "loop" ? LOOP_HOLD_S : ROLL_HOLD_S)) return stick;
+  const real = realRoll(f);
+  // Still on the back of the loop or the far side of the roll: carry on.
+  if (Math.abs(real) > Math.PI / 2) return stick;
+  if (m.kind === "roll" && Math.abs(real) > 0.3) return stick;
+  if (Math.abs(real) < 0.02 && Math.abs(f.pitch) < 0.1) return null;
+  return {
+    pitch: clamp(-f.pitch * BOT_STEER_GAIN, -cap, cap),
+    turn: 0,
+    roll: 0,
+    throttle: 1,
+  };
+}
+
+/** B3: below this HP fraction a bot neither starts, presses nor even
+ * chases a pass at the zeppelin. */
+const BOSS_HURT_HP = 0.6;
+
+/** Hazard dodging (B3): how far ahead a held stick is flown against the
+ * discs, s, and the clearance kept beyond PLAYER_RADIUS, m. */
+const HAZARD_LOOK_S = 2.5;
+const HAZARD_MARGIN = 2;
+
 /** A fresh bot's graceUntil: unstamped (NaN) for a spawn in the canyons, none
  * at all for a high one — see Bot.graceUntil. */
 const streetGrace = (spawn: SpawnState): number =>
@@ -500,6 +614,45 @@ interface Bot {
   alive: boolean;
   nextSeq: number;
   rand: () => number;
+  /** B3: the seeded style (from the callsign number) and its tuning. */
+  style: BotStyle;
+  tuning: BotStyleTuning;
+  /** B3: the tactic the last fight decision chose (telemetry, tests). */
+  tactic: Tactic;
+  /** B3: HP as of this tick's contacts, as a fraction of MAX_HP. */
+  hp: number;
+  /** B3: broken off since this time, ms — null while fighting. */
+  breakSince: number | null;
+  /** B3 boom-and-zoom: in a boom pass until, zooming (extending) until, and
+   * no new boom before, ms. */
+  boomUntil: number;
+  zoomUntil: number;
+  boomCooldownUntil: number;
+  /** B3: a committed loop / barrel roll, and no new one before, ms. */
+  maneuver: Maneuver | null;
+  defendCooldownUntil: number;
+  /** B3: holding a hazard-dodge stick until this time, ms (dodgeHazards). */
+  dodgeUntil: number;
+  /** B3: tactics' own seeded stream — salted off the bot's seed like
+   * holeRand, so `rand`'s sequence (patrol turns, jitter) is untouched. */
+  tacticRand: () => number;
+}
+
+/** B3 telemetry (the bot sim's report): what the tactics actually flew. */
+export interface TacticStats {
+  /** Brain decisions taken. */
+  decisions: number;
+  boomPasses: number;
+  zooms: number;
+  /** Decisions flown as one side of a pincer. */
+  pincerDecisions: number;
+  breakOffs: number;
+  /** Defensive breaks: loops and rolls committed (by `${style}:${kind}`),
+   * and the plain break when no maneuver was clear. */
+  maneuvers: Record<string, number>;
+  defendBreaks: number;
+  /** Decisions whose stick was changed to miss a hazard disc. */
+  dodges: number;
 }
 
 export class RoomBots {
@@ -549,6 +702,14 @@ export class RoomBots {
      * see-through, and a canopy is not cover.
      */
     private readonly nature: NatureIndex = EMPTY_NATURE_INDEX,
+    /**
+     * B3 tactics on (styles, boom-and-zoom, pincers, break-offs, defensive
+     * aerobatics, skill scaling). Like `probeMovers`, a knob only for the
+     * negative control: the bot sim with it off must reproduce the pre-B3
+     * numbers exactly. Hazard discs are honoured either way. Never turn it
+     * off in a room.
+     */
+    private readonly tactics = true,
   ) {
     this.rand = mulberry32(seed);
     // Built once per room over the shared city array. Bots are the heaviest
@@ -571,6 +732,28 @@ export class RoomBots {
   private readonly transits = new Map<string, { edge: number; at: number }>();
   /** Rollouts left this tick (BOT_HOLE_ROLLOUTS_PER_TICK). */
   private rolloutsLeft = 0;
+  /** B3: each human's rolling K/D against the bots (fed by noteDeath). */
+  readonly skill = new SkillScaler();
+  /** B3: timed hazards by source (setHazardDiscs), and all of them live. */
+  private readonly hazardSources = new Map<string, HazardDisc[]>();
+  private discs: HazardDisc[] = [];
+  /** B3: who is ENGAGEd on whom as of the start of this tick. */
+  private engaged = new Map<string, string[]>();
+  /** B3: pincer sides — this tick's per-target assignment, and each bot's
+   * last side (what keeps an assignment stable). */
+  private pincerTick = new Map<string, Map<string, -1 | 1>>();
+  private readonly pincerPrev = new Map<string, -1 | 1>();
+  /** B3 telemetry (the bot sim's report). */
+  readonly stats: TacticStats = {
+    decisions: 0,
+    boomPasses: 0,
+    zooms: 0,
+    pincerDecisions: 0,
+    breakOffs: 0,
+    maneuvers: {},
+    defendBreaks: 0,
+    dodges: 0,
+  };
 
   get count(): number {
     return this.bots.size;
@@ -613,6 +796,9 @@ export class RoomBots {
     };
     const botSeed = Math.floor(this.rand() * 0xffffffff);
     const rand = mulberry32(botSeed);
+    // With tactics off every style flies the neutral wingman tuning, which
+    // is never consulted anyway (the pre-B3 brain).
+    const style: BotStyle = this.tactics ? botStyle(n) : "wingman";
     // This bot's slot inside the canyon band — drawn ONCE, so a bot keeps its
     // altitude through every respawn (see respawn()).
     const bandY =
@@ -644,12 +830,25 @@ export class RoomBots {
       alive: true,
       nextSeq: 1,
       rand,
+      style,
+      tuning: BOT_STYLE_TUNING[style],
+      tactic: "turnFight",
+      hp: 1,
+      breakSince: null,
+      boomUntil: Number.NEGATIVE_INFINITY,
+      zoomUntil: Number.NEGATIVE_INFINITY,
+      boomCooldownUntil: Number.NEGATIVE_INFINITY,
+      maneuver: null,
+      defendCooldownUntil: Number.NEGATIVE_INFINITY,
+      dodgeUntil: Number.NEGATIVE_INFINITY,
+      tacticRand: mulberry32((botSeed ^ 0x7ac71c5) >>> 0),
     });
     return entry;
   }
 
   remove(id: string): void {
     this.bots.delete(id);
+    this.pincerPrev.delete(id);
   }
 
   /**
@@ -706,6 +905,53 @@ export class RoomBots {
 
   stateOf(id: string): BotState | undefined {
     return this.bots.get(id)?.state;
+  }
+
+  /** B3: a bot's seeded style, and the tactic its last fight decision chose. */
+  styleOf(id: string): BotStyle | undefined {
+    return this.bots.get(id)?.style;
+  }
+
+  tacticOf(id: string): Tactic | undefined {
+    return this.bots.get(id)?.tactic;
+  }
+
+  /** B3: is the bot flying a committed loop / barrel roll? */
+  maneuverOf(id: string): "loop" | "roll" | null {
+    return this.bots.get(id)?.maneuver?.kind ?? null;
+  }
+
+  /**
+   * B3: one timed-hazard source's discs, replacing that source's last set
+   * (`[]` clears it). Missiles and flak come from index.ts each tick; C2's
+   * chaos events push theirs under their own key. Spent discs drop out on
+   * their own (each carries its end time).
+   */
+  setHazardDiscs(key: string, discs: readonly HazardDisc[]): void {
+    if (discs.length === 0) this.hazardSources.delete(key);
+    else this.hazardSources.set(key, [...discs]);
+    this.discs = [...this.hazardSources.values()].flat();
+  }
+
+  /**
+   * B3 skill scaling: a death settled by Combat. Only gun kills between a
+   * human and a bot move the human's level — crashes, hazards and
+   * bot-vs-bot never do.
+   */
+  noteDeath(victimId: string, killerId: string | null, cause: string): void {
+    if (!this.tactics || cause !== "shot" || killerId === null) return;
+    const killerBot = this.bots.has(killerId);
+    const victimBot = this.bots.has(victimId);
+    if (killerBot && !victimBot && !victimId.startsWith("@")) {
+      this.skill.noteOutcome(victimId, false);
+    } else if (!killerBot && victimBot && !killerId.startsWith("@")) {
+      this.skill.noteOutcome(killerId, true);
+    }
+  }
+
+  /** B3: a human left the room — their skill history goes with them. */
+  forgetHuman(id: string): void {
+    this.skill.forget(id);
   }
 
   targetOf(id: string): string | null {
@@ -776,6 +1022,7 @@ export class RoomBots {
     if (!bot) return;
     bot.alive = false;
     bot.thread = null;
+    bot.maneuver = null;
   }
 
   /** Server-issued respawn (same sampler as humans): fresh flight state. */
@@ -799,6 +1046,16 @@ export class RoomBots {
     bot.streetChase = false;
     bot.thread = null;
     bot.holeRolls.clear();
+    bot.tactic = "turnFight";
+    bot.hp = 1;
+    bot.breakSince = null;
+    bot.boomUntil = Number.NEGATIVE_INFINITY;
+    bot.zoomUntil = Number.NEGATIVE_INFINITY;
+    bot.boomCooldownUntil = Number.NEGATIVE_INFINITY;
+    bot.maneuver = null;
+    bot.defendCooldownUntil = Number.NEGATIVE_INFINITY;
+    bot.dodgeUntil = Number.NEGATIVE_INFINITY;
+    this.pincerPrev.delete(id);
   }
 
   /**
@@ -890,9 +1147,17 @@ export class RoomBots {
     this.rolloutsLeft = BOT_HOLE_ROLLOUTS_PER_TICK;
     this.trackTransits(now, contacts);
     const hits = this.flyRounds(now, contacts);
+    this.beginTick(now, contacts);
 
     for (const bot of this.bots.values()) {
       if (!bot.alive) continue;
+      // B3: a committed loop / roll flies its own stick (its rollout already
+      // flew this exact path clear), then the level tail the rollout also
+      // checked (held like a dodge, below), before the brain takes over.
+      let raw = bot.maneuver ? this.maneuverStep(bot, now) : null;
+      // A hazard dodge (or a maneuver's tail) holds its rollout-checked
+      // stick to its end; only a blocked path cuts it short.
+      const dodging = now < bot.dodgeUntil;
       // Down among the towers the curved probe runs every tick, not just at
       // the 5 Hz decision: a decision is ~8 m of travel at MIN_SPEED, and a
       // wall on the inside of a turn closes that fast. A blocked path pulls
@@ -900,15 +1165,19 @@ export class RoomBots {
       // is exempt: its rollout assumed the plain 5 Hz cadence, and an extra
       // decision would fly a path nobody checked.
       if (
-        decide ||
-        (!bot.thread &&
-          bot.state !== "RECOVER" &&
-          bot.flight.pos.y < BOT_CANYON_PROBE_ALT &&
-          this.pathBlocked(bot, now, 1))
+        !raw &&
+        ((decide && !dodging) ||
+          (!bot.thread &&
+            bot.state !== "RECOVER" &&
+            bot.flight.pos.y < BOT_CANYON_PROBE_ALT &&
+            this.pathBlocked(bot, now, 1)))
       ) {
         this.decide(bot, now, contacts);
+        if (bot.maneuver) raw = this.maneuverStep(bot, now);
       }
-      bot.flight = stepFlight(bot.flight, botInput(bot.input), BOT_DT);
+      // The full F7 envelope only inside a maneuver; otherwise the bots'
+      // pitch-limited, roll-free one.
+      bot.flight = stepFlight(bot.flight, raw ?? botInput(bot.input), BOT_DT);
 
       // Identical geometry to players: solids (H1 holes open) + ground, PLAYER_RADIUS —
       // plus the L2 movers a bot is allowed to hit (crane geometry and the
@@ -933,6 +1202,52 @@ export class RoomBots {
       if (shot) shots.push(shot);
     }
     return { shots, hits, crashes };
+  }
+
+  /**
+   * B3 per-tick bookkeeping, before anyone decides: each bot's HP off the
+   * contact list, who is engaged on whom (pincers, anti-farming), and the
+   * spent hazard discs dropped.
+   */
+  private beginTick(now: number, contacts: readonly BotContact[]): void {
+    for (const c of contacts) {
+      const bot = this.bots.get(c.id);
+      if (bot) bot.hp = c.hp === undefined ? 1 : c.hp / MAX_HP;
+    }
+    this.engaged = new Map();
+    for (const b of this.bots.values()) {
+      if (!b.alive || b.state !== "ENGAGE" || !b.targetId) continue;
+      const list = this.engaged.get(b.targetId);
+      if (list) list.push(b.entry.id);
+      else this.engaged.set(b.targetId, [b.entry.id]);
+    }
+    this.pincerTick = new Map();
+    if (this.discs.length > 0) {
+      for (const [key, list] of this.hazardSources) {
+        const live = liveHazards(list, now);
+        if (live.length === 0) this.hazardSources.delete(key);
+        else this.hazardSources.set(key, live);
+      }
+      this.discs = [...this.hazardSources.values()].flat();
+    }
+  }
+
+  /** One tick of the bot's committed maneuver: the stick to fly, or null
+   * once it has handed back — the maneuver cleared, and the level tail its
+   * rollout flew (BOT_DEFEND_TAIL_S of a neutral stick) held from now. */
+  private maneuverStep(bot: Bot, now: number): FlightInput | null {
+    const m = bot.maneuver;
+    if (!m) return null;
+    const input = maneuverInput(bot.flight, m);
+    if (!input) {
+      bot.maneuver = null;
+      bot.input = NEUTRAL;
+      bot.dodgeUntil = now + BOT_DEFEND_TAIL_S * 1000;
+      return null;
+    }
+    m.ticks++;
+    bot.input = input;
+    return input;
   }
 
   /**
@@ -1042,6 +1357,19 @@ export class RoomBots {
   // --- brain ---
 
   private decide(bot: Bot, now: number, contacts: readonly BotContact[]): void {
+    this.stats.decisions++;
+    bot.dodgeUntil = Number.NEGATIVE_INFINITY;
+    this.decideInner(bot, now, contacts);
+    // B3: whatever the brain chose, a stick that would carry the bot into a
+    // timed hazard is swapped for a variant that misses it.
+    this.dodgeHazards(bot, now);
+  }
+
+  private decideInner(
+    bot: Bot,
+    now: number,
+    contacts: readonly BotContact[],
+  ): void {
     // A committed thread outranks everything, the floor and the probes
     // included: its rollout already flew this exact path clear of the real
     // geometry, and the solid-hole probes would read the hole as a wall.
@@ -1144,6 +1472,63 @@ export class RoomBots {
       return;
     }
 
+    // B3: something on the six is defended first — a loop or a roll when
+    // there is sky for it, the break below otherwise — then a hurt bot
+    // leaves the fight, and a bot zooming out of a boom pass extends.
+    if (this.tactics) {
+      const six = threatOnSix(bot.entry.id, bot.flight.pos, fwd, contacts);
+      const pre = chooseTactic({
+        style: bot.style,
+        hp: bot.hp,
+        breaking: bot.breakSince !== null,
+        breakingFor: bot.breakSince === null ? 0 : now - bot.breakSince,
+        above: 0,
+        onSix: six !== null,
+        pincerSide: 0,
+        boss: false,
+        boomReady: false,
+        skill: bot.targetId ? this.skill.levelOf(bot.targetId) : 0,
+      });
+      if (pre === "defend") {
+        bot.tactic = "defend";
+        if (!blocked && this.tryDefend(bot, now)) return;
+        if (now >= bot.evadeUntil) {
+          bot.evadeUntil = now + BOT_EVADE_MS;
+          bot.breakTurn = bot.tacticRand() < 0.5 ? -1 : 1;
+          this.stats.defendBreaks++;
+        }
+      } else if (pre === "breakOff") {
+        if (bot.breakSince === null) {
+          bot.breakSince = now;
+          this.stats.breakOffs++;
+        }
+        bot.tactic = "breakOff";
+        if (now >= bot.evadeUntil) {
+          if (blocked) {
+            recover(false);
+            return;
+          }
+          this.patrol(
+            bot,
+            now,
+            BOT_HOLE_ESCAPE_CHANCE,
+            this.awayFromBoss(bot, contacts),
+          );
+          return;
+        }
+      } else {
+        bot.breakSince = null;
+      }
+      if (now < bot.zoomUntil && now >= bot.evadeUntil) {
+        if (blocked) {
+          recover(false);
+          return;
+        }
+        this.zoom(bot);
+        return;
+      }
+    }
+
     if (now < bot.evadeUntil) {
       if (blocked) {
         recover(false);
@@ -1178,17 +1563,34 @@ export class RoomBots {
     if (target) {
       if (bot.targetId !== target.id) {
         bot.targetId = target.id;
-        bot.fireAllowedAt = now + BOT_REACTION_MS;
+        bot.fireAllowedAt = now + this.reactionMs(bot, target);
+        bot.boomUntil = Number.NEGATIVE_INFINITY;
       }
       bot.state = "ENGAGE";
       bot.fought = true;
       const d = wrapDelta(bot.flight.pos, target.pos);
       const dist = Math.hypot(d.x, d.y, d.z);
+      const tactic = this.fightTactic(bot, now, target);
+      const side = tactic === "pincer" ? this.pincerSideOf(bot, target) : 0;
 
-      // A threat parked close behind → break off instead of dragging it.
+      // A threat parked close behind → break off instead of dragging it —
+      // or, at the end of a boom pass, ZOOM: extend and climb away instead
+      // of turning with the target.
       const fwd = flightForward(bot.flight);
       const along = d.x * fwd.x + d.y * fwd.y + d.z * fwd.z;
       if (!target.boss && dist < BOT_THREAT_RANGE && along < 0) {
+        if (now < bot.boomUntil) {
+          bot.boomUntil = Number.NEGATIVE_INFINITY;
+          bot.zoomUntil = now + BOT_ZOOM_MS;
+          bot.boomCooldownUntil = bot.zoomUntil + BOT_BOOM_COOLDOWN_MS;
+          this.stats.zooms++;
+          if (blocked) {
+            recover(false);
+            return;
+          }
+          this.zoom(bot);
+          return;
+        }
         bot.evadeUntil = now + BOT_EVADE_MS;
         bot.breakTurn = bot.rand() < 0.5 ? -1 : 1;
         bot.state = "EVADE";
@@ -1202,14 +1604,31 @@ export class RoomBots {
 
       // Lead pursuit: aim where the target will be when a bullet arrives,
       // wandered by the seeded jitter (resampled per decision).
-      bot.aimJitterYaw = (bot.rand() * 2 - 1) * BOT_AIM_JITTER;
-      bot.aimJitterPitch = (bot.rand() * 2 - 1) * BOT_AIM_JITTER;
+      // B3: scaled by style and by the target's skill (the draws are the
+      // same either way, so `rand`'s sequence is untouched).
+      const jitter = BOT_AIM_JITTER * this.jitterScale(bot, target);
+      bot.aimJitterYaw = (bot.rand() * 2 - 1) * jitter;
+      bot.aimJitterPitch = (bot.rand() * 2 - 1) * jitter;
       const t = leadTime(dist, bot.flight.speed);
       const aim: Vec3 = {
         x: d.x + target.vel.x * t,
         y: d.y + target.vel.y * t,
         z: d.z + target.vel.z * t,
       };
+      // B3 pincer: swing out to this bot's side of the target's track,
+      // converging inside gun range.
+      const flank = pincerOffset(
+        target.vel,
+        side,
+        dist,
+        BOT_PINCER_OFFSET,
+        BOT_FIRE_RANGE * 0.7,
+      );
+      if (side !== 0) {
+        aim.x += flank.x;
+        aim.z += flank.z;
+        this.stats.pincerDecisions++;
+      }
       // The fight stays in the city: a brief climbing pass at a high target,
       // otherwise a chase along its ground track down among the towers.
       const passing = this.attackPass(bot, now, target, dist, aim);
@@ -1250,7 +1669,16 @@ export class RoomBots {
           bot.travel = null;
           bot.streetChase = true;
         }
-        this.canyonPatrol(bot, target.pos);
+        this.canyonPatrol(
+          bot,
+          side === 0
+            ? target.pos
+            : canonicalize({
+                x: target.pos.x + flank.x,
+                y: target.pos.y,
+                z: target.pos.z + flank.z,
+              }),
+        );
         return;
       }
       bot.streetChase = false;
@@ -1266,6 +1694,17 @@ export class RoomBots {
         let throttle = heading.direct ? (low ? 0 : 1) : -1;
         if (passing) throttle = 1;
         else if (diving) throttle = -1;
+        // B3: a boom pass dives at full power from above the roofs; a sniper
+        // inside its stand-off holds back rather than closing.
+        if (now < bot.boomUntil && !low && heading.direct) throttle = 1;
+        if (
+          this.tactics &&
+          !target.boss &&
+          bot.tuning.standoff > 0 &&
+          dist < bot.tuning.standoff
+        ) {
+          throttle = -1;
+        }
         // Mid-street, below the roofline, a chase stays IN the street.
         const lane = low && !passing ? this.laneLock(bot, aim) : null;
         if (lane) {
@@ -1292,9 +1731,28 @@ export class RoomBots {
       return;
     }
 
-    // PATROL: the street lattice. Coming back from a fight, re-join the
-    // NEAREST street — the waypoint picked before the chase may now be a
-    // cross-country flight over the blocks.
+    // B3: a hurt bot patrols out from under the zeppelin's flak.
+    const hurt = this.tactics && bot.hp < BOSS_HURT_HP;
+    this.patrol(
+      bot,
+      now,
+      BOT_HOLE_CHANCE,
+      hurt ? this.awayFromBoss(bot, contacts) : undefined,
+    );
+  }
+
+  /** PATROL: the street lattice. Coming back from a fight, re-join the
+   * NEAREST street — the waypoint picked before the chase may now be a
+   * cross-country flight over the blocks. A bot breaking off (B3) takes
+   * the holes it passes far more often: the way out of a fight. */
+  private patrol(
+    bot: Bot,
+    now: number,
+    holeChance = BOT_HOLE_CHANCE,
+    /** Turn the lattice toward this point at each corner (a break-off
+     * leaving the zeppelin's flak), instead of the seeded turns. */
+    toward?: Vec3,
+  ): void {
     bot.state = "PATROL";
     bot.targetId = null;
     if (bot.fought) {
@@ -1302,9 +1760,339 @@ export class RoomBots {
       bot.waypoint = null;
       bot.travel = null;
     }
-    const stageY = this.holeRouting(bot, now);
+    const stageY = this.holeRouting(bot, now, holeChance);
     if (bot.thread) return;
-    this.canyonPatrol(bot, undefined, false, stageY);
+    this.canyonPatrol(bot, toward, false, stageY);
+  }
+
+  /** A point straight away from the nearest zeppelin weak point within its
+   * flak's reach (plus a margin), or undefined when none is near. */
+  private awayFromBoss(
+    bot: Bot,
+    contacts: readonly BotContact[],
+  ): Vec3 | undefined {
+    let near: Vec3 | null = null;
+    let best = BOSS_FLAK_RANGE + 150;
+    for (const c of contacts) {
+      if (!c.boss) continue;
+      const d = wrapDistance(bot.flight.pos, c.pos);
+      if (d < best) {
+        best = d;
+        near = c.pos;
+      }
+    }
+    if (!near) return undefined;
+    const d = wrapDelta(near, bot.flight.pos);
+    const flat = Math.hypot(d.x, d.z) || 1;
+    return canonicalize({
+      x: bot.flight.pos.x + (d.x / flat) * 400,
+      y: bot.flight.pos.y,
+      z: bot.flight.pos.z + (d.z / flat) * 400,
+    });
+  }
+
+  // --- tactics (B3) ---
+
+  /** The tactic for a fight decision against `target` (turnFight with
+   * tactics off), latching a boom pass when one starts. */
+  private fightTactic(bot: Bot, now: number, target: BotContact): Tactic {
+    if (!this.tactics) return "turnFight";
+    const pincer = bot.tuning.pincer && !target.boss;
+    let tactic = chooseTactic({
+      style: bot.style,
+      hp: bot.hp,
+      breaking: false,
+      breakingFor: 0,
+      above: bot.flight.pos.y - target.pos.y,
+      onSix: false,
+      pincerSide: pincer ? this.pincerSideOf(bot, target) : 0,
+      boss: target.boss === true,
+      boomReady:
+        now >= bot.boomCooldownUntil &&
+        now >= bot.zoomUntil &&
+        now >= bot.boomUntil,
+      skill: target.boss ? 0 : this.skill.levelOf(target.id),
+    });
+    // The pre-fight check already ruled on HP (with its own latch).
+    if (tactic === "breakOff" || tactic === "defend") tactic = "turnFight";
+    if (tactic === "boomZoom") {
+      bot.boomUntil = now + BOT_ATTACK_PASS_MS + BOT_ZOOM_MS;
+      this.stats.boomPasses++;
+    }
+    bot.tactic = now < bot.boomUntil ? "boomZoom" : tactic;
+    return tactic;
+  }
+
+  /** This bot's pincer side on `target` this tick (0: none). */
+  private pincerSideOf(bot: Bot, target: BotContact): -1 | 0 | 1 {
+    if (!this.tactics || target.boss || !bot.tuning.pincer) return 0;
+    let sides = this.pincerTick.get(target.id);
+    if (!sides) {
+      const ids = new Set(this.engaged.get(target.id) ?? []);
+      ids.add(bot.entry.id);
+      const attackers: { id: string; pos: Vec3 }[] = [];
+      for (const id of ids) {
+        const b = this.bots.get(id);
+        if (b?.alive && b.tuning.pincer) {
+          attackers.push({ id, pos: b.flight.pos });
+        }
+      }
+      sides = pincerSides(target, attackers, this.pincerPrev);
+      for (const [id, side] of sides) this.pincerPrev.set(id, side);
+      this.pincerTick.set(target.id, sides);
+    }
+    return sides.get(bot.entry.id) ?? 0;
+  }
+
+  /** The zoom after a boom pass: extend straight down the lattice at the
+   * bot's own band, power held — away from the target instead of turning
+   * with it. Measured: climbing the zoom (band + 25 m, still under the
+   * probe split) cost the plain sim ~6 crashes on both seed sets, every one
+   * a slow bot over a block, so the canyon zoom is the extension alone. */
+  private zoom(bot: Bot): void {
+    bot.state = "PATROL";
+    bot.targetId = null;
+    bot.tactic = "boomZoom";
+    if (bot.fought) {
+      bot.fought = false;
+      bot.waypoint = null;
+      bot.travel = null;
+    }
+    this.canyonPatrol(bot, undefined, true);
+  }
+
+  /** Aim-jitter multiplier against `target`: style × the human's skill. */
+  private jitterScale(bot: Bot, target: BotContact): number {
+    if (!this.tactics) return 1;
+    const skill = target.boss ? 1 : this.skill.jitterScale(target.id);
+    return bot.tuning.jitter * skill;
+  }
+
+  /** First-shot reaction delay against `target`, ms. */
+  private reactionMs(bot: Bot, target: BotContact): number {
+    if (!this.tactics) return BOT_REACTION_MS;
+    const skill = target.boss ? 1 : this.skill.reactionScale(target.id);
+    return BOT_REACTION_MS * bot.tuning.reaction * skill;
+  }
+
+  /**
+   * Something sits on the six: commit to a loop or a barrel roll if the bot
+   * has the sky for one — above BOT_DEFEND_MIN_ALT, off cooldown, and with
+   * a rollout of the WHOLE maneuver plus a level tail clear of everything.
+   * The style picks which to try first. False: fly the plain break.
+   */
+  private tryDefend(bot: Bot, now: number): boolean {
+    if (bot.thread || bot.flight.pos.y < BOT_DEFEND_MIN_ALT) return false;
+    if (now < bot.defendCooldownUntil) return false;
+    bot.defendCooldownUntil = now + BOT_DEFEND_COOLDOWN_MS;
+    const dir: 1 | -1 = bot.tacticRand() < 0.5 ? -1 : 1;
+    const kinds: ("loop" | "roll")[] =
+      bot.tuning.defense === "loop" ? ["loop", "roll"] : ["roll", "loop"];
+    for (const kind of kinds) {
+      if (this.rolloutsLeft <= 0) return false;
+      this.rolloutsLeft--;
+      const m: Maneuver = { kind, dir, ticks: 0 };
+      if (!this.rolloutManeuver(bot, m, now)) continue;
+      bot.maneuver = m;
+      bot.state = "EVADE";
+      bot.thread = null;
+      const key = `${bot.style}:${kind}`;
+      this.stats.maneuvers[key] = (this.stats.maneuvers[key] ?? 0) + 1;
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Fly `m` forward from the bot's live state exactly as tick() will
+   * (maneuverInput every tick, the full envelope), then BOT_DEFEND_TAIL_S
+   * of held level flight, against the city, the ground, the trees, the
+   * movers (posed on arrival), the collapse zones and the hazard discs with
+   * BOT_DEFEND_MARGIN to spare — and under BOT_CEILING_ALT the whole way.
+   */
+  private rolloutManeuver(bot: Bot, m: Maneuver, now: number): boolean {
+    const r = PLAYER_RADIUS + BOT_DEFEND_MARGIN;
+    const probe: Maneuver = { ...m };
+    let f = bot.flight;
+    let tail = -1;
+    const maxSteps = Math.ceil((BOT_DEFEND_MAX_S + BOT_DEFEND_TAIL_S) / BOT_DT);
+    for (let k = 1; k <= maxSteps; k++) {
+      let input: FlightInput | null = null;
+      if (tail < 0) {
+        input = maneuverInput(f, probe);
+        if (input) probe.ticks++;
+        else tail = k;
+      }
+      if (tail > 0 && (k - tail) * BOT_DT >= BOT_DEFEND_TAIL_S) return true;
+      f = stepFlight(f, input ?? botInput(NEUTRAL), BOT_DT);
+      const t = now + k * BOT_DT * 1000;
+      if (
+        f.pos.y > BOT_DEFEND_MAX_ALT ||
+        hitsGround(f.pos, r) ||
+        collideCity(f.pos, r, this.buildings, this.cityIndex) ||
+        collideNature(f.pos, r, this.nature) ||
+        collideBotMovers(f.pos, r + BOT_MOVER_CLEAR, this.movers, t) ||
+        this.inCollapseZone(f.pos, r, t, bot.flight.pos) ||
+        pointInHazard(f.pos, r, t - BOT_DT * 1000, t, this.discs)
+      ) {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * B3 hazard dodging: if the bot — holding the stick the brain just chose,
+   * or simply holding its course — would fly into a hazard disc inside
+   * HAZARD_LOOK_S, try variants. Down in the canyon: bleed speed,
+   * firewall it, or climb — re-checked every decision, the brain still
+   * steering, each clear of the city for RECOVER_LOOK_S. Above the roofs:
+   * speed, then dive or turn (never climb) — and the first whose held
+   * flight misses
+   * every disc AND stays clear of the city, trees, movers, collapse zones,
+   * floor and ceiling until the danger is over is committed: held, with no
+   * re-decisions, until then (dodgeUntil) — so the path it was checked on is
+   * the path it flies. None clear: keep the brain's stick (a hazard is
+   * survivable; a wall is not). A committed thread or maneuver, or a
+   * RECOVER, is never second-guessed, and a healthy bot pressing an attack
+   * pass (the zeppelin's, under its flak) only ever changes its throttle —
+   * the nose stays on the target.
+   */
+  private dodgeHazards(bot: Bot, now: number): void {
+    if (this.discs.length === 0) return;
+    if (bot.thread || bot.maneuver || bot.state === "RECOVER") return;
+    const near = this.nearDiscs(bot.flight, now);
+    if (near.length === 0) return;
+    const base = bot.input;
+    if (
+      !this.inputMeetsHazard(bot.flight, base, now, near) &&
+      !this.inputMeetsHazard(
+        bot.flight,
+        { ...NEUTRAL, throttle: base.throttle },
+        now,
+        near,
+      )
+    ) {
+      return;
+    }
+    let until = now;
+    for (const d of near) until = Math.max(until, d.t1);
+    until = Math.min(until, now + HAZARD_LOOK_S * 1000) + BOT_DT * 1000;
+    const cap = BOT_INPUT_CAP;
+    // A healthy bot presses its pass; a hurt one takes any way out.
+    const pressing =
+      bot.state === "ENGAGE" && now < bot.attackUntil && bot.hp >= 0.75;
+    // Down in the canyon the street is the path: speed or a climb only, and
+    // the brain keeps steering (no commit) — a stick held for seconds in a
+    // 40 m street is a facade. Above the roofs the whole sky is open.
+    if (bot.flight.pos.y < BOT_CANYON_PROBE_ALT) {
+      const low: FlightInput[] = [
+        { ...base, throttle: -1 },
+        { ...base, throttle: 1 },
+      ];
+      if (!pressing) {
+        low.push(
+          { ...base, pitch: cap * 0.6 },
+          { ...base, pitch: cap * 0.6, throttle: 1 },
+        );
+      }
+      for (const v of low) {
+        if (this.inputMeetsHazard(bot.flight, v, now, near)) continue;
+        if (this.arcBlocked(bot.flight, v, now, false)) continue;
+        bot.input = v;
+        this.stats.dodges++;
+        return;
+      }
+      return;
+    }
+    const level = { ...NEUTRAL, throttle: base.throttle };
+    const variants: FlightInput[] = [
+      { ...base, throttle: -1 },
+      { ...base, throttle: 1 },
+      { ...level, throttle: -1 },
+      { ...level, throttle: 1 },
+    ];
+    if (!pressing) {
+      // Never a climb up here: the sky above the roofs is the zeppelin's,
+      // and a dodge that ends under its hull ends in RECOVER's pull-up
+      // into it (measured: hull crashes 3 → 11 over 54 rooms).
+      variants.push(
+        { ...level, pitch: -cap * 0.5, throttle: 1 },
+        { ...level, turn: cap, throttle: 1 },
+        { ...level, turn: -cap, throttle: 1 },
+      );
+    }
+    for (const v of variants) {
+      if (this.inputMeetsHazard(bot.flight, v, now, near)) continue;
+      if (this.heldBlocked(bot.flight, v, now, until)) continue;
+      bot.input = v;
+      bot.dodgeUntil = until;
+      this.stats.dodges++;
+      return;
+    }
+  }
+
+  /** Does holding `input` from `flight` until `until` (plus half a second)
+   * meet anything solid, the collapse zones, the floor or the ceiling? */
+  private heldBlocked(
+    flight: FlightState,
+    input: FlightInput,
+    now: number,
+    until: number,
+  ): boolean {
+    const r = PLAYER_RADIUS + HAZARD_MARGIN;
+    let f = flight;
+    const steps = Math.ceil((until - now) / (BOT_DT * 1000) + 0.5 / BOT_DT);
+    for (let k = 1; k <= steps; k++) {
+      f = stepFlight(f, botInput(input), BOT_DT);
+      const t = now + k * BOT_DT * 1000;
+      if (
+        f.pos.y < BOT_MIN_ALT ||
+        f.pos.y > BOT_CEILING_ALT ||
+        hitsGround(f.pos, r) ||
+        collideCity(f.pos, r, this.buildings, this.cityIndex) ||
+        collideNature(f.pos, r, this.nature) ||
+        collideBotMovers(f.pos, r + BOT_MOVER_CLEAR, this.movers, t) ||
+        this.inCollapseZone(f.pos, r, t, flight.pos)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** The discs a bot could reach inside HAZARD_LOOK_S, live in that window. */
+  private nearDiscs(f: FlightState, now: number): HazardDisc[] {
+    const reach = MAX_SPEED * HAZARD_LOOK_S + PLAYER_RADIUS;
+    const end = now + HAZARD_LOOK_S * 1000;
+    const out: HazardDisc[] = [];
+    for (const d of this.discs) {
+      if (d.t1 < now || d.t0 > end) continue;
+      if (wrapDistance(f.pos, d) > reach + d.r) continue;
+      out.push(d);
+    }
+    return out;
+  }
+
+  /** Does holding `input` for HAZARD_LOOK_S from `flight` meet a disc? */
+  private inputMeetsHazard(
+    flight: FlightState,
+    input: FlightInput,
+    now: number,
+    discs: readonly HazardDisc[],
+  ): boolean {
+    let last = now;
+    for (const d of discs) last = Math.max(last, d.t1);
+    const r = PLAYER_RADIUS + HAZARD_MARGIN;
+    let f = flight;
+    const steps = Math.round(HAZARD_LOOK_S / BOT_DT);
+    for (let k = 1; k <= steps; k++) {
+      const t0 = now + (k - 1) * BOT_DT * 1000;
+      if (t0 > last) return false;
+      f = stepFlight(f, botInput(input), BOT_DT);
+      if (pointInHazard(f.pos, r, t0, t0 + BOT_DT * 1000, discs)) return true;
+    }
+    return false;
   }
 
   // --- threads (B2) ---
@@ -1321,7 +2109,11 @@ export class RoomBots {
    * 69-157 m and are never worth a canyon bot's climb — they are only ever
    * followed (followThrough).
    */
-  private holeRouting(bot: Bot, now: number): number | undefined {
+  private holeRouting(
+    bot: Bot,
+    now: number,
+    chance = BOT_HOLE_CHANCE,
+  ): number | undefined {
     if (!bot.travel || this.edges.length === 0) return undefined;
     const axis = this.streetAxis(bot.flight);
     let stage: number | undefined;
@@ -1333,7 +2125,7 @@ export class RoomBots {
       }
       let roll = bot.holeRolls.get(i);
       if (!roll) {
-        roll = { won: bot.holeRand() < BOT_HOLE_CHANCE, retryAt: 0 };
+        roll = { won: bot.holeRand() < chance, retryAt: 0 };
         bot.holeRolls.set(i, roll);
       }
       if (!roll.won || bot.thread) return;
@@ -1520,7 +2312,9 @@ export class RoomBots {
         collideCity(f.pos, r, this.buildings, this.cityIndex) ||
         collideNature(f.pos, r, this.nature) ||
         collideBotMovers(f.pos, r + BOT_MOVER_CLEAR, this.movers, t) ||
-        this.inCollapseZone(f.pos, r, t, bot.flight.pos)
+        this.inCollapseZone(f.pos, r, t, bot.flight.pos) ||
+        // B3: never thread into a missile's or a shell's moment.
+        pointInHazard(f.pos, r, t - BOT_DT * 1000, t, this.discs)
       ) {
         return false;
       }
@@ -1572,7 +2366,10 @@ export class RoomBots {
     // S4: a weak point sits ON the zeppelin's hull — a pass pressed home is
     // a pass flown into it. Inside the stand-off the bot breaks off and
     // dives home like the end of any pass.
-    if (target.boss && dist < BOT_BOSS_STANDOFF) {
+    // B3: …and so is one pressed home hurt — the zeppelin's flak is what
+    // kills a bot that keeps coming back damaged.
+    const hurt = this.tactics && target.boss && bot.hp < BOSS_HURT_HP;
+    if ((target.boss && dist < BOT_BOSS_STANDOFF) || hurt) {
       if (now < bot.attackUntil) {
         bot.attackUntil = now;
         bot.attackCooldownUntil = now + BOT_ATTACK_COOLDOWN_MS;
@@ -1595,7 +2392,12 @@ export class RoomBots {
     if (flat < BOT_ENGAGE_OVERHEAD || yawErr > BOT_ATTACK_YAW) return false;
     bot.attackUntil =
       now + (target.boss ? BOT_BOSS_PASS_MS : BOT_ATTACK_PASS_MS);
-    bot.attackCooldownUntil = bot.attackUntil + BOT_ATTACK_COOLDOWN_MS;
+    // B3: against a human, the cooldown scales with their skill — a
+    // veteran gets passes more often, a novice fewer.
+    const aggression =
+      this.tactics && !target.boss ? this.skill.cooldownScale(target.id) : 1;
+    bot.attackCooldownUntil =
+      bot.attackUntil + BOT_ATTACK_COOLDOWN_MS * aggression;
     return true;
   }
 
@@ -1951,6 +2753,9 @@ export class RoomBots {
     for (const c of contacts) {
       if (c.id === bot.entry.id || c.prot) continue;
       if (c.boss && resting) continue;
+      // B3: a hurt bot leaves the zeppelin to the healthy — chasing its
+      // ground track is chasing its flak.
+      if (c.boss && this.tactics && bot.hp < BOSS_HURT_HP) continue;
       const dist = wrapDistance(bot.flight.pos, c.pos);
       if (dist > BOT_DETECT_RANGE) continue;
       const score =
@@ -1959,7 +2764,8 @@ export class RoomBots {
           ? BOT_BOSS_PREFERENCE
           : Math.max(0, c.pos.y - BOT_ENGAGE_CEILING) *
             BOT_ACQUIRE_ALT_WEIGHT) -
-        (c.id === bot.targetId ? BOT_RETARGET_MARGIN : 0);
+        (c.id === bot.targetId ? BOT_RETARGET_MARGIN : 0) +
+        this.gangPenalty(bot, c);
       inRange.push({ c, score });
     }
     inRange.sort((a, b) => a.score - b.score);
@@ -1988,6 +2794,18 @@ export class RoomBots {
       }
     }
     return null;
+  }
+
+  /** B3 anti-farming: a struggling human (skill level < 0) ranks further
+   * away for every OTHER bot already engaged on them. */
+  private gangPenalty(bot: Bot, c: BotContact): number {
+    if (!this.tactics || c.boss) return 0;
+    const level = this.skill.levelOf(c.id);
+    if (level >= 0) return 0;
+    const on = this.engaged.get(c.id);
+    if (!on) return 0;
+    const others = on.length - (on.includes(bot.entry.id) ? 1 : 0);
+    return -level * BOT_SKILL_GANG_PENALTY * others;
   }
 
   /** steerInput onto the bot (a zero delta holds the stick). Jitter offsets
@@ -2218,6 +3036,18 @@ export class RoomBots {
       const input = { ...climb, pitch };
       if (!this.arcBlocked(bot.flight, input, now, false)) {
         bot.input = input;
+        return;
+      }
+    }
+    // B3: boxed under the zeppelin or a falling tower, the break turn the
+    // other way may still have a way out (measured: every hull and debris
+    // death in the 54-room hazard sim was this pull-up, turning one way).
+    if (!this.tactics) return;
+    for (const pitch of [BOT_INPUT_CAP, 0, -BOT_INPUT_CAP / 2]) {
+      const input = { ...climb, pitch, turn: -climb.turn };
+      if (!this.arcBlocked(bot.flight, input, now, false)) {
+        bot.input = input;
+        bot.breakTurn = bot.breakTurn === 1 ? -1 : 1;
         return;
       }
     }

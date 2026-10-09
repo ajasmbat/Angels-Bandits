@@ -49,6 +49,16 @@
 // applyBossImpact into the room's destruction. The report counts bot damage
 // on the boss, downs, flak hits and kills, and bots that flew into the hull.
 //
+// B3 tactics: every bot reads its HP off the contact list (break-offs) and
+// the room's missiles and flak as hazard discs, as on the server. The report
+// adds what the tactics flew (boom passes, pincers, break-offs, loops/rolls
+// by style, hazard dodges), hazard hits and deaths per bot-minute, and
+// crashes within 2 s of an aerobatic maneuver. BOT_SIM_TACTICS=0 flies the
+// pre-B3 brain (the negative control: main's numbers, exactly);
+// BOT_SIM_SKILL=novice|veteran scripts 30 outcomes for the human through
+// the scaler before the fight, so hits on it compare across skill levels;
+// BOT_SIM_BOTS sets the room size (11 = a full room's worth of bots).
+//
 // MAIN_* are the same harness's numbers on main before B1 (bots mostly high,
 // spawned at RESPAWN_ALTITUDE), same seeds and run length — the bar the
 // review set is crashes per bot-minute within 1.15x of them.
@@ -98,6 +108,7 @@ import {
   EVENT_GAS,
   inDangerZone,
 } from "@angels-bandits/common/director";
+import { flakHazard, missileHazard } from "@angels-bandits/common/hazards";
 import type { SpawnState } from "@angels-bandits/common/protocol";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
@@ -144,7 +155,10 @@ const ROOMS = Number(process.env.BOT_SIM_ROOMS ?? 18);
 const TUNE = process.env.BOT_SIM_SET === "tune";
 const roomSeed = (room: number) => (TUNE ? 2024 + room * 31 : 9001 + room * 97);
 const spawnSeed = (room: number) => (TUNE ? 99 + room : 5003 + room * 7);
-const BOTS = 5;
+const BOTS = Number(process.env.BOT_SIM_BOTS ?? 5);
+/** B3: tactics on (default), and the scripted human's skill. */
+const TACTICS = process.env.BOT_SIM_TACTICS !== "0";
+const SKILL = process.env.BOT_SIM_SKILL;
 /** D2 modes (see the header). */
 const DESTROY = Number(process.env.BOT_SIM_DESTROY ?? 0);
 const LIVE = process.env.BOT_SIM_LIVE === "1";
@@ -276,6 +290,20 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
     let flakKills = 0;
     let hullCrashes = 0;
     let bossLandings = 0;
+    /** B3: what the tactics flew, summed over rooms; crashes within 2 s of
+     * a loop or roll; the scripted human's skill level as primed. */
+    const tactic = {
+      decisions: 0,
+      boomPasses: 0,
+      zooms: 0,
+      pincerDecisions: 0,
+      breakOffs: 0,
+      defendBreaks: 0,
+      dodges: 0,
+    };
+    const maneuvers = new Map<string, number>();
+    let maneuverCrashes = 0;
+    let humanLevel = 0;
 
     for (let room = 0; room < ROOMS; room++) {
       // One room at a time, then let the event loop turn: the whole sim as a
@@ -325,7 +353,10 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         roomMovers,
         true,
         nature,
+        TACTICS,
       );
+      /** B3: when each bot was last seen flying a loop / roll, ms. */
+      const lastManeuver = new Map<string, number>();
       const combat = new Combat();
       const director = STRIKES
         ? new MissileDirector(mulberry32(roomSeed(room) ^ 0x3155))
@@ -415,6 +446,16 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         }
         rc.breakers.set(best, null);
       };
+      // B3: prime the scripted human's skill through the public seam — 30
+      // gun kills one way (enough to saturate the level).
+      const anchorBot = roster[0]?.id;
+      if (SKILL && anchorBot) {
+        for (let k = 0; k < 30; k++) {
+          if (SKILL === "novice") bots.noteDeath("human-1", anchorBot, "shot");
+          else bots.noteDeath(anchorBot, "human-1", "shot");
+        }
+        humanLevel = bots.skill.levelOf("human-1");
+      }
       for (const e of roster) {
         combat.addPlayer(e.id, 0);
         spawnedAt.set(e.id, 0);
@@ -452,6 +493,7 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
               id: e.id,
               ...c,
               prot: combat.isProtected(e.id, now),
+              hp: combat.hpOf(e.id),
             });
         }
         if (boss && bossWorld && rc) {
@@ -567,6 +609,16 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
           bots.setHazards(destruction.pending());
         }
 
+        // B3: the room's timed hazards, as index.ts feeds them.
+        if (director) {
+          bots.setHazardDiscs(
+            "missile",
+            director.missiles().map(missileHazard),
+          );
+        }
+        if (boss) {
+          bots.setHazardDiscs("flak", boss.shellsInFlight().map(flakHazard));
+        }
         const t0 = performance.now();
         const result = bots.tick(now, contacts);
         tickMs.push(performance.now() - t0);
@@ -608,6 +660,12 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
           }
           if (!combat.crash(id, now)) continue;
           crashes++;
+          if (
+            now - (lastManeuver.get(id) ?? Number.NEGATIVE_INFINITY) <=
+            2000
+          ) {
+            maneuverCrashes++;
+          }
           // D5 telemetry: crashes into rubble, into a damaged building, or
           // inside a warned director zone.
           if (rc && site) {
@@ -761,9 +819,16 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
           });
           if (f.pos.y < LOW) below++;
           if (f.pos.y > CLOUD_BASE) ceilingBreaches++;
+          if (bots.maneuverOf(e.id)) lastManeuver.set(e.id, now);
         }
       }
       zoneRefusals += bots.zoneRefusals;
+      for (const k of Object.keys(tactic) as (keyof typeof tactic)[]) {
+        tactic[k] += bots.stats[k];
+      }
+      for (const [k, n] of Object.entries(bots.stats.maneuvers)) {
+        maneuvers.set(k, (maneuvers.get(k) ?? 0) + n);
+      }
       if (rc) {
         destroyedShare +=
           rc.damage.destroyedCount / rc.damage.chunkCount / ROOMS;
@@ -811,6 +876,10 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         `D5 kills by event      ${DIRECTOR ? `demolition ${directorKills.collapse}, crane ${directorKills.crane}, gas ${directorKills.gas}, chain collapse ${directorKills.chain} (${((directorKills.collapse + directorKills.crane + directorKills.gas + directorKills.chain) / botMinutes).toFixed(3)} / bot-min; not in crashes)` : "off"}`,
         `S4 boss                ${BOSS ? `${bossHits} bot hits on weak points (${((100 * bossHits * BULLET_DAMAGE) / Math.max(1, bossHpTotal)).toFixed(1)}% of all boss HP), ${bossDowns}/${ROOMS} downed (at ${bossDownS.map((x) => x.toFixed(0)).join(", ") || "-"} s), ${bossLandings} sections landed` : "off"}`,
         `S4 flak                ${BOSS ? `${flakShells} shells, ${flakHits} bot hits, ${flakKills} kills (${(flakKills / botMinutes).toFixed(3)} / bot-min), ${hullCrashes} bots flew into the hull` : "off"}`,
+        `B3 tactics             ${TACTICS ? `${tactic.boomPasses} boom passes (${tactic.zooms} zooms), ${tactic.pincerDecisions} pincer decisions, ${tactic.breakOffs} break-offs, ${tactic.defendBreaks} defensive breaks, ${tactic.dodges} hazard dodges, ${tactic.decisions} decisions` : "off (pre-B3 brain)"}`,
+        `B3 aerobatics          ${[...maneuvers].map(([k, n]) => `${k} ${n}`).join(", ") || "none"}; ${maneuverCrashes} crashes within 2 s of one`,
+        `B3 hazards             ${((missileHits + flakHits) / botMinutes).toFixed(3)} hits / bot-min, ${((missileKills + flakKills + hullCrashes + collapseKills + directorKills.collapse + directorKills.crane + directorKills.gas + directorKills.chain) / botMinutes).toFixed(3)} deaths / bot-min (missile, flak, hull, collapse, director); with D4 wrecks flown into ${((missileKills + flakKills + hullCrashes + collapseKills + directorKills.collapse + directorKills.crane + directorKills.gas + directorKills.chain + wreckKills) / botMinutes).toFixed(3)}`,
+        `B3 skill               ${SKILL ? `${SKILL} human (level ${humanLevel.toFixed(2)}): ${humanHits} hits` : "neutral"}`,
         `deaths / bot-min       ${((crashes + kills + flakKills + hullCrashes + collapseKills + missileKills + wreckKills + directorKills.collapse + directorKills.crane + directorKills.gas + directorKills.chain) / botMinutes).toFixed(3)} (every cause)`,
         "",
         `crash breakdown (${TUNE ? "tune" : "holdout"} seeds; roofs hit p10/p50/p90 m: ${quantiles(roofsHit)}):`,
@@ -821,6 +890,10 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
     );
 
     expect(stats.belowLow).toBeGreaterThanOrEqual(0.75);
+    // B3: no aerobatic maneuver ends in the scenery, and a primed human's
+    // level is saturated (the skill comparison is between the ends).
+    expect(maneuverCrashes).toBe(0);
+    if (SKILL) expect(Math.abs(humanLevel)).toBeGreaterThanOrEqual(0.95);
     expect(ceilingBreaches).toBe(0);
     expect(graceFights).toBe(0);
     expect(humanHits).toBeGreaterThan(0);

@@ -35,6 +35,8 @@
     "./courses": "./src/courses.ts",
     "./director": "./src/director.ts",
     "./medals": "./src/medals.ts",
-    "./boss": "./src/boss.ts"
+    "./boss": "./src/boss.ts",
+    "./hazards": "./src/hazards.ts",
+    "./botstyle": "./src/botstyle.ts"
   }
 }

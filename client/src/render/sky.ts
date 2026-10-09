@@ -113,6 +113,14 @@ export const EXPOSURE = 1.18;
 export const FOG_NEAR = 140;
 
 const GROUND_SIZE = 2 * FOG_DISTANCE + 200; // fully covers the fog radius
+/**
+ * O6: the ground's grid, per side. Two triangles 1.8 km across interpolate
+ * vWorldXZ too coarsely (and the near plane clips them hard): the street
+ * paint's world mapping wobbled by a fraction of a pixel every time the
+ * plane re-centred under a moving camera, and paint edges swam. ~28 m
+ * cells keep it exact to well under a pixel; still one draw.
+ */
+const GROUND_SEGMENTS = 64;
 
 /** Direction toward the warm rim light (the old dusk sun), world space. The
  * L12 sky cycle swings it to the opposite quarter for pre-dawn. */
@@ -1004,7 +1012,12 @@ outgoingLight *= min(1.0, ${GROUND_LUMA_CAP} / max(luminance(outgoingLight), 1e-
         );
     };
     this.mesh = new THREE.Mesh(
-      new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE),
+      new THREE.PlaneGeometry(
+        GROUND_SIZE,
+        GROUND_SIZE,
+        GROUND_SEGMENTS,
+        GROUND_SEGMENTS,
+      ),
       material,
     );
     this.mesh.rotation.x = -Math.PI / 2;

@@ -78,8 +78,9 @@ export const TRAINS_SLIDE_MAX_MS = WORLD_STEP_MS - SETTLE_MS - SAMPLE_MS;
  *    this order: sign spill pools, rooftop string lights, fountains,
  *    headlight pools (each is one draw, all are dressing).
  */
-/** D6: see BUDGETS.chunkInstances (filled in from the runner, README D6). */
-const CHUNK_INSTANCES_BUDGET = 4000;
+/** D6: see BUDGETS.chunkInstances — the runner's `ruins` (316 damaged-mesh
+ * slots + 667 debris pieces = 983) + 10 % (README D6). */
+const CHUNK_INSTANCES_BUDGET = 1082;
 
 export const BUDGETS = {
   gpuP50Ms: 14,
@@ -308,7 +309,7 @@ export const SEGMENTS = [
     // 30 % of its chunks shot away (seeded); the 21 collapses that leaves
     // owing start every second from 14 s before the segment's instant to
     // 6 s after it, so dust hangs over landed rubble while more comes down.
-    // Four death blasts set its facades burning; a downed plane hit a tower
+    // Four death blasts (two land on a facade) set it burning; a downed plane hit a tower
     // 66 ms before the instant and burns there (D4).
     x: 400,
     z: 1000,

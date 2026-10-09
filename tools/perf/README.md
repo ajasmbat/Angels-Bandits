@@ -1350,3 +1350,254 @@ node tools/perf/flicker.mjs --grid --ref 0371335
 #    first 10%" on every spike row.
 node tools/perf/run.mjs --runs 3 --samples --strict
 ```
+
+---
+
+## D6: the Destruction gate — debris, dust, fire, chunked buildings
+
+D6 measures the game after the Destruction batch (D1 bullet impacts, D2
+breakable buildings, D3 collapses, D4 crashing wrecks, D5 the director, X1
+missiles) on the same GPU-less runner as P2. It can count draws, instances,
+liveness, determinism and allocations; **milliseconds are for the M3**
+(commands at the end).
+
+### A quiet server, staged destruction
+
+Destruction is server-authoritative and timed on the server's wall clock
+(bullets, death blasts, wrecks, missiles, the director's slots, chain
+impacts, rebuilds, S4's raids), which no pin reaches. So the harness runs
+its server with **`AB_QUIET_CITY=1`** (`server/src/index.ts`): no room's
+city ever breaks and no raid starts. It is the same reasoning as the empty
+room (`setBots(0)`). The server refuses the switch under
+`NODE_ENV=production` and warns loudly whenever it is on. An `--ab-ref`
+build from before D6 ignores it, so its arm can carry server destruction;
+its segments read `quiet n/a`.
+
+Each destruction segment then **stages** its scene on the client with
+`__ab.qaDestruction(spec)` (`client/src/game/qa-destruction.ts`). The
+staging runs the server's own steps against the GameSocket's damage and
+collapse state, which is what every renderer, the crash check and the
+camera arm read: chunks break, each touched building gets `planCollapses`
+in index order, each plan becomes a wire whose chunks fall and whose debris
+starts. It honours the same caps (DESTROY_CAP, COLLAPSE_CAP), and a felled
+tower is D5's `demolitionPlan`. Fire is staged as death blasts through the
+D1 `BlastLedger` (burning facades, scorch, dark panes) and a downed plane as
+a D4 wreck (`wreckImpact`). Every `t` in a spec is an offset from the
+segment's world instant. Building indices are `generateCity(CITY_SEED)`'s,
+and every spec states the height or building count it expects, so a
+generator change throws instead of quietly staging another scene. One thing
+is deliberately left out: `collapseImpacts` chains, which the server lands
+later as blasts. `__ab.destruction()` reads back what is on screen and what
+it costs the renderer.
+
+### Three new segments
+
+They are appended after `sidewalk`, so the ten older segments keep their
+index and measured world instants. Each spot was checked offline against
+the **staged** city: damaged solids, D2 rubble, every collapse piece over
+its whole fall, and the wreck. The check ran `touchesSolid` every 50 ms from
+1 s before the segment's instant to 12 s after it, and came back clear.
+
+| segment | what | how it stays repeatable |
+| --- | --- | --- |
+| `collapse` | building 343 (215 m) toppling west across the x = 1200 street, 126 pieces in the air, the dust cloud rising; held 236 m south at 110 m | staged **after the settle** at the window's own world instant −1.5 s (the lead beat over), so the tower is mid-fall when the window opens on any machine's clock; the harness asserts it has **not** all landed by the window's end |
+| `ruins` | the furball's viewpoint, weather and 11 pilots in a heavily damaged block: 18 buildings 30 % shot away, 21 collapses starting from 14 s before the instant to 6 s after it (landed rubble, dust, more coming down), burning facades (four blasts, two land on a facade), a wreck's fire | the staged scene is pinned; the pilots fly on their wall clock as in `furball`, so its total draws float, but its **destruction-only draws** (`stagedDraws`: damaged mesh, debris, dust, falling wrecks, scorch, scaffolding) are asserted identical. `ruins` − `furball` is what the destruction costs that fight |
+| `rubble` | a glide at 20 m down the x = 1200 street, both sides of which toppled into it 56–62 s before the instant (6 collapses, 386 chunks down) | every piece has been at rest for 44 s, asserted (`settled = collapses`); a glide in wall time, like `hole` |
+
+The warm-up lap stages the same scenes at its own instants, and every
+segment clears what it staged at its end.
+
+### Budgets and verdicts
+
+`printDestruction` adds a row per segment under the O3 verdicts:
+
+```
+destruction (D6): draws collapse <= core + 15, rubble <= core + 15 · damaged slots + debris pieces <= 1082, debris never past its boot size · 0 server destruction messages
+segment   chunks  quiet  scene  +core  damaged slots/cap  debris pieces/cap  collapses  dust  impacts  staged draws
+```
+
+- **draws**: `core` ≤ 120 as before. `collapse` and `rubble` may cost at most
+  **core + 15** draws in the same pass (`BUDGETS.drawCallsOverCore`).
+  Destruction is drawn by a fixed set of objects (one damaged mesh, one
+  debris mesh, one dust Points, the D1 particle pool, two wreck meshes, one
+  scaffold mesh), so a heavier scene costs instances, not draws.
+- **chunks**: damaged-mesh slots + debris pieces ≤ `BUDGETS.chunkInstances`
+  (1 082: the runner's `ruins`, 316 + 667, plus 10 %).
+  The debris mesh must also never grow past its **boot size**, which is the
+  derived bound: every chunk COLLAPSE_CAP lets fall, +25 % for hole-split
+  pieces, +64 (`city.ts attachCollapses`, 16 740 on the seed city).
+  Growing would be a buffer reallocation mid-game.
+- **quiet**: the server sent no destruction during the segment
+  (`serverEvents`), so everything on screen was staged.
+- **scene**: the segment staged its scene, and its collapse is still falling
+  at the window's end (`collapse`) or entirely at rest (`rubble`).
+- **determinism**: draw calls identical per pinned segment as before, and
+  `stagedDraws` identical in every staging segment, `ruins` included.
+
+### No per-frame allocations: the allocation table
+
+`tools/destruction-bench.ts` is O5's table for the destruction modules. It
+covers every per-frame entry point of D1–D5 on the staged `ruins` scene
+with a viewer gliding through it, and is measured with V8's sampling heap
+profiler. Objects a later GC collected are included, and a builtin's
+allocation is charged to its caller. `--where` names the sites, and
+`--digest` hashes everything each entry point wrote, so a fix can be shown
+to change no output.
+
+```sh
+node --import tsx tools/destruction-bench.ts            # the table; exits 1 over budget
+node --import tsx tools/destruction-bench.ts --where    # ... and the top allocation sites
+```
+
+Bytes allocated per frame, ruins scene, median of five runs of 3 000 frames:
+
+| entry point | before D6 | D6 |
+| --- | ---: | ---: |
+| `city.update` (damaged mesh) — intact city for reference: ~230 | 200 | ~160 |
+| `city.updateDebris` | 7 587 | ~605 |
+| `dust.update` | 3 014 | ~270 |
+| `dustHaze` | 500 | ~48 |
+| collapse shake | 198 | ~99 |
+| crash check (`touchesSolid`, mostly trains/cranes/river) | 279 | ~200 |
+| wrecks update + touching | 324 | ~113 |
+| impacts burn + update | 1 908 | ~670 |
+| director fx | 549 | ~347 |
+| scaffold | 1 350 | ~190 |
+| **judged, all together** | **~15 900** | **~2 700** |
+| X1 missiles (not judged: the trail is the shared pre-D `smoke.ts`) | 2 700 | 2 700 |
+
+Every `--digest` matched the build before the fixes byte for byte. The
+"before" column is this bench run on the commit before them. What changed:
+
+- `collapse.ts piecePose`: a lerp closure per squashing piece, and a helper
+  call V8 did not inline (each result boxed), written out; `flight`'s time
+  goes through a scratch object (a non-inlined double argument was boxed
+  per falling piece).
+- `dust.ts`: each cloud is worked out once per collapse instead of once per
+  puff per frame (an object and a `Math.hypot` each); the haze rejects on
+  distance squared before its `hypot`.
+- `city.ts` debris and damaged flushes: no closure, name list or merged
+  range array per frame; update ranges come from a per-attribute pool
+  (`render/update-range.ts`, also behind `wrapPlacement`'s `uploadPrefix`).
+- `impacts.ts`: particles written straight into the typed arrays, index
+  loops, no array destructuring, a prebuilt upload list. `wrecks.ts`,
+  `director-fx.ts`, `scaffold.ts`: index loops, no per-particle
+  `canonicalize` objects, scaffold boxes cached per building. `camera.ts`:
+  `collapseShakeOffsetInto`.
+
+**Budget**: 0 is the target. The bench passes at ≤ 1 KB a frame per entry
+point and ≤ 4 KB all together. What remains is V8 boxing doubles handed to
+calls it declines to inline (three's Matrix4/Quaternion setters per falling
+piece, the particle pool's `spawn`), and three's update-range list
+reallocating its backing store each time it is cleared. In the densest
+staged scene that is about one young-generation GC a minute at 60 fps.
+
+### The stall this gate found
+
+The D1 facade-damage atlas uploaded each dirty slot with
+`renderer.copyTextureToTexture`. three saves and restores five pixel-store
+parameters there with `gl.getParameter`, and each call is a synchronous
+round trip to the GPU process that waits for every queued command. It ran
+per dirty slot, so on every frame a bullet marked a facade. On the runner,
+`ruins` (pilots firing into a damaged block) stalled 5–22 s a frame on it,
+long enough for the server's liveness check to drop the page; a CPU profile
+put 83 s of a run in `getParameter`. `DamageTexture.flush` now calls
+`texSubImage2D` from the CPU atlas with the pixel store **set**: three sets
+flip-Y, premultiply and alignment before each of its own uploads and never
+sets row length or skips, so those go back to 0. On the M3 this was a
+hitch, not a freeze, but it was a sync point in the middle of the busiest
+frames.
+
+The gate also found the damaged mesh still drawing its hidden slots after
+the last broken building came back (a D5 rebuild, a reset): +1 draw in
+every later view. It now starts over when nothing is damaged.
+
+### Quality tiers
+
+Every Destruction module already has a `setQuality` hook and a row in
+`FEATURE_TIERS`: `destructionDetail` (D2 broken-edge detail), `collapseDust`
+(D3), `impacts` (D1), `wreckFire` (D4), `directorFx` and `scaffold` (D5),
+`missileDebris` (X1). The solid parts are identical on every tier (the
+damaged solids, debris, wrecks, the dust haze that blocks sight). D6 adds
+no row, and the Mobile pass below found nothing to retune.
+
+### What the runner measured (D6)
+
+GPU-less Linux box, SwiftShader (Vulkan), `--res 0.75`, load average
+37–75 (other tickets' harnesses sharing the box). SwiftShader's GPU and wall
+times are the CPU rasterising, so the `60fps` and `hitch` verdicts all read
+FAIL here and say nothing about the M3. `--strict` exits 1 on the GPU-time
+half of the determinism tolerance (44–124 % spread, which the harness flags
+as a busy machine); only the GPU-independent rows below are claims.
+
+**High, `--runs 3`** (`core,collapse,rubble` and `core,furball,ruins`, two
+invocations):
+
+| segment | draws (3 passes) | budget | staged draws | chunks (slots + pieces) | scene | quiet | alive, resumes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| core | 89 / 89 / 89 | 120 | 0 | 0 + 0 | — | ok | yes, 0 |
+| collapse | 92 / 92 / 92 | core + 15 → **+3** | 4 / 4 / 4 | 7 + 126 | falling (0/1 at rest) | ok | yes, 0 |
+| rubble | 92 / 92 / 92 | core + 15 → **+3** | 3 / 3 / 3 | 186 + 272 | 6/6 at rest | ok | yes, 0 |
+| furball (not asserted) | 260 / 255 / 201 | — | 0 | 0 + 0 | — | ok | yes, 12 planes |
+| ruins (total not asserted) | 263 / 262 / 251 | — | **4 / 4 / 4** | 316 + 667 | 8/21 at rest | ok | yes, 12 planes |
+
+Determinism **PASS on draws**: draw calls are identical per pinned segment
+and the staged tally is identical everywhere. What destruction adds to the
+furball is **4 draws**: the damaged mesh, the debris, the dust and the
+scaffolding. The wreck's fire and the burning facades ride the D1 pool's
+existing draw. The medians read +8, but both totals float by tens with the
+pilots' tracers. Destruction costs instances, not draws, and the
+heaviest scene holds 983 of them against a debris mesh sized for 16 740
+from boot (it never grew). No page errors, no deaths, no resumes, and every
+room emptied after its pilots left (12–52 s of this box's time).
+
+**Mobile, one pass**: core 83, collapse 86 (+3), rubble 86 (+3) draws, each
+6 under High. Dust: 8 puffs against High's 24 in `collapse`, 50 against
+182 in `ruins` (the 0.3 `collapseDust` share, sprites grown to cover the
+same air). The D1 pool held 16 impact particles against High's 342 in
+`ruins`, which had its full 12-plane room in a second Mobile pass (256
+draws against High's 263; the first pass at load 70 lost its pilots).
+Chunks and the staged tally are identical to High, since solids never
+thin. Mobile stays lighter on every count, so `quality.ts` is unchanged.
+
+### Commands for the M3 (D6)
+
+Run on main after this merges, with the machine otherwise idle.
+`8a11472` is main just before D1, the last state without destruction. A
+build that old cannot stage `collapse`, `ruins` or `rubble`, so those print
+**no baseline**; read them on their own verdicts, and read `ruins − furball`
+in the same run as the destruction's cost to that fight.
+
+```sh
+npm run perf:setup   # once
+
+# 1. The gate: all 13 segments, three passes. Read the 60fps / hitch / draws
+#    verdicts, the D6 destruction table (chunks / quiet / scene / +core) and
+#    the determinism line: draws identical, staged draws identical, GPU p50
+#    within 10 % or 1 ms.
+node tools/perf/run.mjs --runs 3 --samples --strict --label D6
+
+# 2. What the Destruction batch costs the views that existed before it,
+#    paired against main before D1 (an empty, quiet city on both arms).
+node tools/perf/run.mjs --runs 3 --label D6 --ab-ref 8a11472
+
+# 3. Tiers on the destruction views: Mobile as a phone at its own ceiling
+#    vs High at ratio 2 (GPU p50 <= 5 ms on Mobile is the assumed phone
+#    proxy, as in M3), then Low.
+node tools/perf/run.mjs --runs 3 --device phone --res 2 --label high \
+  --ab "quality=mobile&res=1" --segments core,collapse,ruins,rubble
+node tools/perf/run.mjs --runs 3 --res 2 --label high \
+  --ab "quality=low&res=1" --segments core,collapse,ruins,rubble
+
+# 4. Where the spikes land in the destruction views: every spike row must
+#    read "GL wait" or "outside JS", none "gc".
+node tools/perf/run.mjs --runs 3 --samples --trace /tmp/d6-traces \
+  --segments collapse,ruins,rubble
+
+# 5. Auto never steps down on the M3 (exits 1 if it does): 10 minutes of the
+#    full-room furball with the scaler live.
+node tools/perf/run.mjs --soak 600 --quality auto --res auto
+
+# 6. The allocation table (CPU only; any machine): exits 1 over budget.
+node --import tsx tools/destruction-bench.ts
+```

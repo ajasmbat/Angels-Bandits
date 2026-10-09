@@ -1374,3 +1374,135 @@ node tools/perf/flicker.mjs --grid --ref 0371335
 #    first 10%" on every spike row.
 node tools/perf/run.mjs --runs 3 --samples --strict
 ```
+
+---
+
+## S8: the Spectacle batch gate — the boss fight, a ring course, a glass close-up
+
+S8 measures the game after the Spectacle batch (S1 jumbotrons and headlines,
+S2 the dynamic score, S3 ring courses and ghosts, S4 the sky boss, S5
+atmosphere, S6 glass reflections, S7 streaks and medals) on the same kind of
+GPU-less runner as O3–P2. It can count draws, staging, liveness, GL
+allocations and JS allocations; **milliseconds are for the M3** (commands at
+the end). Nothing here changes what a plain visit gets.
+
+### Three new segments
+
+Appended after `sidewalk`, so the ten older segments keep their index and
+their measured world instants (the warm-up lap's instants shift, as in P2).
+Each spot was checked offline against the shared collision (`touchesSolid`:
+ground, buildings, trees, viaducts and every mover over 15 min of world time
+around `WORLD_EPOCH_MS`), and `boss` against the staged hull too
+(`collideBoss` over warm-up, settle and window): clear.
+
+| segment | what | how it stays repeatable |
+| --- | --- | --- |
+| `boss` | 12 planes weaving 70–230 m ahead at 262–317 m, the war zeppelin crossing the view 520 m out, its flak bursting among them | held at (1000, 285, 1000). The raid is **staged** on the client (`__ab.qaBoss`, `client/src/game/qa-spectacle.ts`): on station for a minute, its centre crossing the view at mid-window — the pose is the shared `bossPoseAt`, a pure function of the pinned world clock. The flak is a fixed schedule on the same clock (one shell per turret per 1.8 s, aimed by an integer hash into the pilots' corridor) that starts 3 s before the segment's instant, so 5–6 shells are always in the air and the shell draw never toggles. The staged raid is re-applied every frame and any shell the server sends is dropped and counted. The 11 fake pilots (`pilots.mjs`, the furball's weave on a higher, shorter band) stay inside the plane LOD's near band and hold their fire: a tracer is a draw call on the pilots' own wall clock |
+| `rings` | S3's Canyon Run down the x = 1400 street: rings in race colours, the record ghost racing ahead | a wall-clock glide at 60 m/s from 25 m before the start ring (crossed inside the settle), so the page's **own** client run starts and plays a **staged** ghost (`__ab.qaCourseGhost`: 72 m/s through the ring centres, on the wall clock like the glide). The glide stops six rings in, ~700 m short of the finish: no run ever finishes, so the server never records a time or a ghost a later pass would see |
+| `glass` | a close-up on the glass landmark (building 127, 250 m): the probe's neon skyline in its curtain wall at a grazing angle | held 85 m off its north-west corner at 120 m |
+
+The `spectacle` verdict checks, at **both ends** of the window, that the
+staging held: the hull drawn, shells in the air, no server shell, every
+pilot inside the LOD band (≤ 255 m from the plane); the run on the staged
+course with its ghost drawn. A `FAIL` there exits 1 with or without
+`--strict` — it measured an emptier scene than it claims. An `--ab-ref`
+build from before S8 has no staging hooks: those segments print **no
+baseline** for it.
+
+### Two things the batch changed about measuring
+
+- **The S6 probe moves the draw count.** It renders one cube face a frame
+  inside the counted draws, and a face's count depends on which way it
+  looks; a short runner window lands anywhere in the six-face cycle. The
+  frame meter now records the probe's share per frame (`__ab.drawSplit()`):
+  the table prints `draws = scene + probe`, the **determinism check compares
+  the scene's draws**, and the budgets still judge the total. On every view
+  measured here the probe's median is 7 draws.
+- **A dropped session poisoned every later segment.** On a runner this
+  loaded (load average 40–85, frames of 1–8 s) the page sometimes lost its
+  session mid-pass (W2) and rejoined a fresh room with the default five bots,
+  which then flew through every segment after it (`bot:room-3:6` … in the
+  drain after `boss`). Every segment now re-asserts the empty room first, and
+  the table names a window with planes it did not ask for or a room change
+  inside it. (D6, in flight, raises the server's liveness bound for the
+  harness and counts resumes; with it, this should not happen at all.)
+
+### No per-frame allocations: the table (`tools/spectacle-bench.ts`)
+
+O5's table, D6's method, for every per-frame entry point of S1–S7 on the
+harness's own spectacle scenes (the staged boss and its flak, the Canyon Run
+glide with its ghost, twelve planes on kill streaks), in Node under V8's
+sampling heap profiler: bytes allocated per frame by the module's own code,
+1200 warm frames then the median of five 3000-frame runs.
+
+```sh
+node --import tsx tools/spectacle-bench.ts [--where] [--json] [--only=S5]
+```
+
+| entry point | before S8 | after | |
+| --- | --- | --- | --- |
+| S1 jumbotrons.update | 62 B | 45–60 B | ok |
+| S3 rings.setRun + update | 0 | 0 | ok |
+| S3 ghost.update | 0 | 0 | ok |
+| S4 boss.update (zeppelin + flak) | 544 B | 315 B | ok |
+| S7 streak smoke (12 planes) | **63 057 B** | 0 | ok |
+| S5 atmosphere.update (fog banks, litter, shimmer, shafts) | **20 881 B** | 864 B | ok |
+| S6 reflections.update (the probe's schedule) | 240 B | 223 B | ok |
+| S2 music.update (state machine; no WebAudio here) | 62 B | 45–73 B | reported |
+| **judged, all together** | **~85 KB** | **~1.46 KB** | **PASS** |
+
+"Before" is the batch as merged. The boss row leaves out the D1 particle
+pool's own update (D1's code, and D6's to fix); the bursts' spawn into it
+stays in. What the table found and fixed — every rewritten module's output
+byte-identical to before (seeded digests of every buffer and uniform it
+writes):
+
+- **`SmokeTrail`** (S7's streak smoke rides on the wounded-plane model):
+  every puff re-based into a new object and two filtered arrays, every
+  frame, per trail. Now re-based in place, aged out by compaction, dead puffs
+  reused, the trails walked by a pre-bound callback.
+- **S5 fog banks**: the churn angle was recomputed per puff with the world
+  clock (a double) handed to a call per puff, and `Math.hypot` per puff. Now
+  once a frame, with a squared range test. **Litter**: the clock rides in an
+  object (one boxed double a scrap, ~8 KB a frame at street level), a
+  prebuilt upload list, index loops. **Heat shimmer**: the 4 Hz pick built
+  filtered, mapped and sorted copies (`pickShimmerVentsInto` makes the same
+  picks in the same order from scratch arrays); slot vectors written field
+  by field. **Wind**: index loops instead of `for…of` with destructuring.
+- **S4 flak**: the `Map` of shells walked by a pre-bound callback (an
+  iterator and an entry array per shell, every frame).
+- `uploadPrefix` takes D6's pooled update ranges verbatim
+  (`render/update-range.ts`), so the two branches merge clean either way.
+
+**The bar, and what is left.** "No per-frame allocations" means nothing is
+*built* per frame: no object, array, closure or iterator. What remains is
+boxing, and it cannot be written away: in this V8 a plain object's number
+fields are tagged (`%DebugPrint` of a `Vec3` scratch or a shimmer slot shows
+`@ Any`), so every computed double stored into one is a 16 B HeapNumber, as
+is a double handed to a call V8 does not inline — the same residue O5's
+collision table carried. The bar is D6's: ≤ 1 KB a frame an entry, ≤ 4 KB in
+all, about one young-generation GC a minute at 60 fps. Reported beside it
+and not in it: three's update-range list (~900 B a frame on the atmosphere
+row) — three's renderer empties each attribute's `updateRanges` with
+`length = 0` after an upload, which frees the array's store, so the next
+frame's push grows a new one; D6's table carries the same.
+
+`run.mjs --heap` is the in-page complement for the glue the bench cannot
+see (the frame loop in `main.ts`, the DOM HUDs): a sampling heap profile
+over each segment, bytes per frame and the top sites. On the runner it is
+dominated by SwiftShader-driven three internals (uniform uploads), as P2's
+profile found; it is for the M3.
+
+### Quality tiers
+
+Every Spectacle feature has a row in `FEATURE_TIERS` and the tier table
+above (S8 added the five that have no render cost and so had none: the S1
+kill feed and headlines, the S2 score, the S3 course HUD, the S4 boss HUD and
+radio, the S7 medals and announcer). `tools/spectacle-bench.ts` checks it:
+every S1–S7 prefix has a row, and every row is in the README word for word.
+On Mobile the probe renders no face (`reflections` 0), the ghost and the LAST
+KILL pass are off, the shafts, shimmer and glare are off, and the flak,
+litter and streak dressing are thinned; the hull, its weak points, its
+shells, the rings and the fog banks are the same on every tier (solid, the
+telegraph, guidance, visibility parity).
+

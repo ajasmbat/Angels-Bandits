@@ -2240,6 +2240,10 @@ async function main() {
     // Auto can never step down mid-run and change the workload under a
     // measurement. An older build ignores the parameter.
     params.set("quality", opts.quality);
+    // S8: the client's dead-socket watchdog given a software renderer's
+    // multi-second frames (net/socket.ts) — at 3 s it dropped healthy
+    // sessions mid-pass on a loaded runner. Ignored by an older build.
+    params.set("silence", "60000");
     for (const [k, v] of new URLSearchParams(overrides ?? "")) params.set(k, v);
     return `http://127.0.0.1:${at}/?${params}`;
   };

@@ -148,6 +148,23 @@ const POSE_INTERVAL_MS = 1000 / TICK_UP_HZ;
 /** W2 dead-socket watchdog cadence, ms. */
 const WATCHDOG_MS = 1000;
 
+/**
+ * The watchdog's silence bound, ms: SERVER_SILENCE_MS, or a QA `?silence=`
+ * (S8, the perf harness only). On a software renderer at 1–2 s a frame the
+ * check can run between two long frames before the snapshots queued behind
+ * them, read ~4 s of "silence" off a healthy socket without tripping its
+ * own late-check guard, and drop it — the page then rejoins a fresh room
+ * mid-measurement. A plain visit has no such parameter.
+ */
+const serverSilenceMs = (() => {
+  const raw =
+    typeof location === "undefined"
+      ? null
+      : new URLSearchParams(location.search).get("silence");
+  const ms = raw === null ? Number.NaN : Number(raw);
+  return Number.isFinite(ms) && ms > SERVER_SILENCE_MS ? ms : SERVER_SILENCE_MS;
+})();
+
 /** ws endpoint: dev talks straight to the server port, prod is same-origin. */
 const socketUrl = (): string => {
   if (import.meta.env.DEV) return `ws://${location.hostname}:8080`;
@@ -233,7 +250,7 @@ export class GameSocket {
       lastCheckMs = now;
       if (stalled || document.hidden) this.lastHeardMs = now;
       if (this.state !== "open") return;
-      if (now - this.lastHeardMs > SERVER_SILENCE_MS) this.dropped();
+      if (now - this.lastHeardMs > serverSilenceMs) this.dropped();
     }, WATCHDOG_MS);
   }
 

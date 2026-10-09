@@ -2521,6 +2521,8 @@ declare global {
         fires: number;
         strikes: Record<string, number>;
         drawn: BomberRenderer["stats"];
+        /** The render clock the frame loop last drew at. */
+        renderMs: number | null;
       };
       jumbotronView: (
         i: number,
@@ -3028,6 +3030,7 @@ window.__ab = {
       fires: socket.fires.size,
       strikes,
       drawn: bomberRenderer.stats,
+      renderMs: lastRenderMs,
     };
   },
   jumbotronView: (i, distance) => jumbotrons.view(i, distance),

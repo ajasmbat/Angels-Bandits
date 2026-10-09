@@ -51,8 +51,8 @@ import {
   TAG_PED,
   blockStream,
   blockWindowInto,
-  pruneBlockCache,
   microKeep,
+  pruneBlockCache,
   ringPerimeter,
   ringPointInto,
 } from "./streetlife";

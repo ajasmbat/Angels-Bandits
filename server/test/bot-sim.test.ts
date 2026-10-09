@@ -76,6 +76,7 @@ import {
 } from "@angels-bandits/common/city/movers";
 import { natureFor } from "@angels-bandits/common/city/nature";
 import { isInRoadway } from "@angels-bandits/common/city/street";
+import { tunnelAt } from "@angels-bandits/common/city/tunnels";
 import {
   buildCityIndex,
   buildNatureIndex,
@@ -249,6 +250,13 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
     let collapseKills = 0;
     let zoneEntries = 0;
     let zoneRefusals = 0;
+    /** U4: tunnel passes bots committed to / flew end to end, mid-bore
+     * transits by any contact, and crashes in a tunnel (in crashes). */
+    let tunnelRollouts = 0;
+    let tunnelCommits = 0;
+    let tunnelPasses = 0;
+    let tunnelTransits = 0;
+    let tunnelCrashes = 0;
     /** X1: missiles launched, planes hit, and kills by missile. */
     let missiles = 0;
     let missileHits = 0;
@@ -608,6 +616,7 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
           }
           if (!combat.crash(id, now)) continue;
           crashes++;
+          if (site && site.y < 0 && tunnelAt(site)) tunnelCrashes++;
           // D5 telemetry: crashes into rubble, into a damaged building, or
           // inside a warned director zone.
           if (rc && site) {
@@ -764,6 +773,10 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         }
       }
       zoneRefusals += bots.zoneRefusals;
+      tunnelRollouts += bots.tunnelRollouts;
+      tunnelCommits += bots.tunnelCommits;
+      tunnelPasses += bots.tunnelPasses;
+      tunnelTransits += bots.tunnelTransits;
       if (rc) {
         destroyedShare +=
           rc.damage.destroyedCount / rc.damage.chunkCount / ROOMS;
@@ -806,6 +819,7 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         `bots.tick ms           p50 ${tickAt(0.5).toFixed(2)}  p99 ${tickAt(0.99).toFixed(2)}  max ${tickAt(1).toFixed(2)}`,
         `D3 collapses           ${collapses} events (director=${COLLAPSE ? 1 : 0}), kills-by-collapse ${collapseKills} (not in the crash count above)`,
         `D3 collapse zones      ${zoneEntries} bot entries into an active zone, ${zoneRefusals} probe refusals`,
+        `U4 tunnels             ${tunnelRollouts} rollouts, ${tunnelCommits} passes committed, ${tunnelPasses} flown end to end, ${tunnelTransits} mid-bore transits, ${tunnelCrashes} crashes in a tunnel (in crashes)`,
         `D5 director            ${DIRECTOR ? `${directorEvents[EVENT_COLLAPSE]} demolitions, ${directorEvents[EVENT_GAS]} gas mains, ${directorEvents[EVENT_CRANE]} crane falls, ${directorCancelled} called off, ${rebuilds} rebuilds` : "off"}`,
         `D5 crash sites         ${crashCauses.rubble} into collapse rubble/debris, ${crashCauses.damaged} into a damaged building, ${crashCauses.warned} inside a warned zone (all in crashes)`,
         `D5 kills by event      ${DIRECTOR ? `demolition ${directorKills.collapse}, crane ${directorKills.crane}, gas ${directorKills.gas}, chain collapse ${directorKills.chain} (${((directorKills.collapse + directorKills.crane + directorKills.gas + directorKills.chain) / botMinutes).toFixed(3)} / bot-min; not in crashes)` : "off"}`,

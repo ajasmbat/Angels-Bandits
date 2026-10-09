@@ -481,6 +481,8 @@ describe("canyon disposition", () => {
     // ANGE-I5XRNW: every bot is a canyon pilot, so after the descent from
     // RESPAWN_ALTITUDE nobody is left up high.
     for (const { bots, id } of roster) {
+      // U4: a bot mid tunnel pass is below street level on purpose.
+      if (bots.tunnelOf(id)) continue;
       const y = bots.flightOf(id)?.pos.y ?? Number.NaN;
       expect(y).toBeGreaterThan(0);
       expect(y).toBeLessThan(BOT_CANYON_ALT_MAX + 30);
@@ -538,6 +540,9 @@ describe("canyon patrol in the real seeded city", () => {
         const flight = bots.flightOf(e.id);
         // poseOf goes null the moment a bot is dead — only score live flying.
         if (!flight || !bots.poseOf(e.id)) continue;
+        // U4: a tunnel pass is a committed thread under the streets, not
+        // canyon patrol — not scored here.
+        if (bots.tunnelOf(e.id)) continue;
         const s = stat.get(e.id);
         if (!s) throw new Error("bot vanished");
         s.ticks++;

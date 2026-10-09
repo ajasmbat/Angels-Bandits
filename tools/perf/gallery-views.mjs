@@ -43,6 +43,60 @@ export const VIEWS = [
   // view is pinned every frame in the page (`raf`), not by round trips.
   { name: "sidewalk-closeup", x: 810, z: 1380, y: 8, yaw: 0.08, raf: true },
   { name: "rooftop-skim", x: 1210, z: 500, y: 140, yaw: 1.57, pitch: -0.15 },
+  // S6 glass reflections: glass-heavy views (the GLASS archetype clusters of
+  // the seed-42 city), a puddled street and the river — the probe's three
+  // readers. Each holds the QA camera at `eye` (the plane pinned behind it),
+  // in clear weather; `AB_GALLERY_QUERY=refl=0` shoots the before.
+  {
+    name: "glass-landmark",
+    x: 400,
+    z: 520,
+    y: 70,
+    yaw: 0,
+    eye: [400, 70, 560],
+    at: [500, 130, 700],
+    weather: "clear",
+  },
+  {
+    name: "glass-canyon",
+    x: 1200,
+    z: 260,
+    y: 45,
+    yaw: 0,
+    eye: [1200, 45, 300],
+    at: [1200, 70, 600],
+    weather: "clear",
+  },
+  {
+    name: "glass-cluster",
+    x: 1000,
+    z: 260,
+    y: 170,
+    yaw: 0,
+    eye: [1000, 170, 300],
+    at: [1160, 110, 500],
+    weather: "clear",
+  },
+  {
+    name: "puddle-street",
+    x: 1000,
+    z: 1240,
+    y: 25,
+    yaw: 0,
+    eye: [1000, 7, 1300],
+    at: [1000, 0, 1450],
+    weather: "clear",
+  },
+  {
+    name: "river-glass",
+    x: 650,
+    z: 1100,
+    y: 260,
+    yaw: -Math.PI / 2,
+    eye: [700, 10, 1100],
+    at: [1000, -10, 1100],
+    weather: "clear",
+  },
   // N1: plaza (4,4) as a night park — pond, paths, lamps, tree clusters.
   { name: "plaza-park", x: 900, z: 1030, y: 120, yaw: 0, pitch: -0.6 },
   { name: "moon", x: 700, z: 1000, y: 260, yaw: -0.61, pitch: 0.2 }, // faces MOON_DIR
@@ -159,5 +213,49 @@ export const VIEWS = [
       rounds: 27,
       spread: 0,
     },
+  },
+  // U4 tunnels: diving into the plaza (4,4) portal from the west, mid-bore
+  // on the Crosstown S-bend, and climbing out of plaza (8,2)'s cut; plus a
+  // river mouth seen from the channel. Pinned every frame (raf).
+  {
+    name: "tunnel-portal",
+    // The plane level over the lawn (a slow software-GL frame integrates a
+    // whole second between pins: a dive pose would meet the lip first).
+    x: 850,
+    z: 850,
+    y: 30,
+    yaw: -Math.PI / 2,
+    raf: true,
+    eye: [800, 42, 838],
+    at: [935, -18, 850],
+    weather: "clear",
+  },
+  {
+    name: "tunnel-mid",
+    x: 1176,
+    z: 787.2,
+    y: -52,
+    yaw: -0.912,
+    raf: true,
+    weather: "clear",
+  },
+  {
+    name: "tunnel-exit",
+    x: 1625,
+    z: 450,
+    y: -24,
+    yaw: -Math.PI / 2,
+    pitch: 0.3,
+    raf: true,
+    weather: "clear",
+  },
+  {
+    name: "tunnel-river-mouth",
+    x: 1208.4,
+    z: 1084.1,
+    y: -12,
+    yaw: 2.182,
+    raf: true,
+    weather: "clear",
   },
 ];

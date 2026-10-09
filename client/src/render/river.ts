@@ -41,6 +41,7 @@ import {
   riverBoats,
 } from "@angels-bandits/common/city/river";
 import { LOT_LINE } from "@angels-bandits/common/city/street";
+import { RIVER_MOUTHS } from "@angels-bandits/common/city/tunnels";
 import {
   BLOCK_PITCH,
   EMISSIVE_LAMP,
@@ -56,6 +57,11 @@ import {
 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
+import {
+  REFLECTION_PARS_GLSL,
+  REFL_RIVER_LOD,
+  bindReflectionUniforms,
+} from "./reflections";
 import { SIGN_PALETTE } from "./signage";
 import { nearestImage } from "./wrapPlacement";
 
@@ -247,31 +253,23 @@ export function buildRiverStructure(): THREE.BufferGeometry {
 
   for (const side of [-1, 1]) {
     const z = zc + side * RIVER_HALF_WIDTH;
+    // U4: the river mouths are holes in the wall, water to lintel. Over a
+    // mouth only the lintel course stands; elsewhere the full wall.
+    const mouths = riverWallOpenings(side);
+    const course = (y0: number, y1: number, color: THREE.Color) => {
+      for (const [x0, x1, yb] of wallRuns(span, mouths, y0, y1)) {
+        s.quad([x0, yb, z], [x1, yb, z], [x1, y1, z], [x0, y1, z], color);
+      }
+    };
     // The wall in three courses: a slimy waterline, dressed stone, a coping.
-    s.quad(
-      [0, water, z],
-      [span, water, z],
-      [span, -21, z],
-      [0, -21, z],
-      c(COLORS.slime),
-    );
-    s.quad(
-      [0, -21, z],
-      [span, -21, z],
-      [span, -0.6, z],
-      [0, -0.6, z],
-      c(COLORS.stone),
-    );
-    s.quad(
-      [0, -0.6, z],
-      [span, -0.6, z],
-      [span, 0, z],
-      [0, 0, z],
-      c(COLORS.coping),
-    );
-    // Wall lamps just proud of the face, facing the water.
+    course(water, -21, c(COLORS.slime));
+    course(-21, -0.6, c(COLORS.stone));
+    course(-0.6, 0, c(COLORS.coping));
+    // Wall lamps just proud of the face, facing the water — none over a
+    // mouth (its own frame lights it).
     const zl = z - side * 0.06;
     for (let x = WALL_LAMP_STEP / 2; x < span; x += WALL_LAMP_STEP) {
+      if (mouths.some((m) => x > m.x0 - 1 && x < m.x1 + 1)) continue;
       s.quad(
         [x - 0.3, WALL_LAMP_Y - 0.3, zl],
         [x + 0.3, WALL_LAMP_Y - 0.3, zl],
@@ -351,6 +349,52 @@ export function buildRiverStructure(): THREE.BufferGeometry {
     }
   }
   return s.geometry();
+}
+
+/** A U4 mouth in one embankment wall: its x range (both world periods) and
+ * the height its opening reaches. */
+interface WallOpening {
+  x0: number;
+  x1: number;
+  y1: number;
+}
+
+/** The mouths in wall `side` (−1: low z, +1: high z), for both periods. */
+function riverWallOpenings(side: number): WallOpening[] {
+  const out: WallOpening[] = [];
+  for (const m of RIVER_MOUTHS) {
+    if (m.side !== side) continue;
+    for (const period of [0, WORLD_SIZE]) {
+      out.push({ x0: period + m.x0, x1: period + m.x1, y1: m.y1 });
+    }
+  }
+  return out;
+}
+
+/** The runs [x0, x1, bottom] of a wall course [y0, y1] over 0…span: the
+ * course minus every opening it reaches into (an opening spans the water up
+ * to its y1), plus the strip of it left above each opening (the lintel). */
+function wallRuns(
+  span: number,
+  openings: readonly WallOpening[],
+  y0: number,
+  y1: number,
+): [number, number, number][] {
+  const cuts = openings
+    .filter((o) => y0 < o.y1)
+    .map((o) => [o.x0, o.x1] as const)
+    .sort((a, b) => a[0] - b[0]);
+  const runs: [number, number, number][] = [];
+  let x = 0;
+  for (const [a, b] of cuts) {
+    if (a > x) runs.push([x, a, y0]);
+    x = Math.max(x, b);
+  }
+  if (x < span) runs.push([x, span, y0]);
+  for (const o of openings) {
+    if (y0 < o.y1 && y1 > o.y1) runs.push([o.x0, o.x1, o.y1]);
+  }
+  return runs;
 }
 
 /** One boat at unit length and beam (x along the hull, bow at +x). Heights
@@ -458,7 +502,7 @@ varying vec3 vRiverPos;
 const WATER_VERTEX_MAIN = /* glsl */ `
 vRiverPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
 `;
-const WATER_FRAGMENT_PARS = /* glsl */ `
+const WATER_FRAGMENT_PARS = /* glsl */ `${REFLECTION_PARS_GLSL}
 uniform vec2 uRiverShift; // canonical − render, x and z
 uniform float uRiverTime;
 uniform sampler2D uRiverSky;
@@ -475,6 +519,14 @@ const vec3 RV_NEON[${SIGN_PALETTE.length}] = ${NEON};
 // What the mirrored ray from P along rd sees on the bank it heads for.
 vec3 rvReflect(vec3 P, vec3 rd) {
   vec3 sky = vec3(0.10, 0.08, 0.20) * (1.0 - rd.y);
+  // S6: where the ray clears the bank, the reflection probe (reflections.ts)
+  // supplies what is really up there — the moon, the sky and the taller
+  // towers behind the streetwall. The traced wall and streetwall stay the
+  // authority below it, so no silhouette is drawn twice; near the horizon,
+  // where a camera-centred probe disagrees with the water, the fake stays.
+  if (uReflOn > 0.5) {
+    sky = mix(sky, abRefl(rd, ${glsl(REFL_RIVER_LOD)}), abReflElev(rd));
+  }
   if (abs(rd.z) < 1e-3) return sky;
   float side = rd.z > 0.0 ? 1.0 : -1.0;
   float zc = ${glsl(RIVER_CENTER_Z)} - uRiverShift.y;
@@ -576,11 +628,13 @@ export class RiverRenderer {
       roughness: 0.9,
       metalness: 0,
     });
-    material.customProgramCacheKey = () => "ab-river-water";
+    material.customProgramCacheKey = () => "ab-river-water-s6-refl";
     material.onBeforeCompile = (shader) => {
       shader.uniforms.uRiverShift = { value: this.shift };
       shader.uniforms.uRiverTime = this.time;
       shader.uniforms.uRiverSky = { value: sky };
+      // S6: the reflection probe, by reference (the sky over the bank).
+      bindReflectionUniforms(shader.uniforms);
       shader.vertexShader = shader.vertexShader
         .replace("#include <common>", `#include <common>\n${WATER_VERTEX_PARS}`)
         .replace(

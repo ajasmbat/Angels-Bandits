@@ -666,9 +666,16 @@ const rot: Vec3 = { x: 0, y: 0, z: 0 };
 /** Mutable working copy of a Collapse while it is being built. */
 type Draft = { -readonly [K in keyof Collapse]: Collapse[K] };
 
-/** The in-flight pose (before landing) of piece `i` at `tau` s after its
- * start. Writes centre + angle; half extents are the standing ones. */
-function flight(c: Collapse, i: number, tau: number, out: PiecePose): void {
+/** flight()'s time argument. D6: a double handed to a call V8 does not
+ * inline (flight is too big to) is boxed — one HeapNumber per falling piece
+ * per frame — so it travels in this object instead (O5's rule). */
+const flightAt = { tau: 0 };
+
+/** The in-flight pose (before landing) of piece `i` at `flightAt.tau` s
+ * after its start. Writes centre + angle; half extents are the standing
+ * ones. */
+function flight(c: Collapse, i: number, out: PiecePose): void {
+  const tau = flightAt.tau;
   if (c.style === PANCAKE) {
     out.x = c.ox[i] as number;
     out.y = (c.oy[i] as number) - 0.5 * G * tau * tau;
@@ -740,7 +747,8 @@ export function piecePose(
   }
   out.rest = false;
   if (tau < land) {
-    flight(c, i, tau, out);
+    flightAt.tau = tau;
+    flight(c, i, out);
     out.hx = c.hx[i] as number;
     out.hy = c.hy[i] as number;
     out.hz = c.hz[i] as number;
@@ -748,14 +756,23 @@ export function piecePose(
   }
   const u = (tau - land) / SQUASH_S;
   const k = u * u * (3 - 2 * u);
-  const lerp = (a: number, b: number) => a + (b - a) * k;
-  out.x = lerp(c.lx[i] as number, c.rx[i] as number);
-  out.y = lerp(c.ly[i] as number, c.ry[i] as number);
-  out.z = lerp(c.lz[i] as number, c.rz[i] as number);
-  out.hx = lerp(c.hx[i] as number, c.rhx[i] as number);
-  out.hy = lerp(c.hy[i] as number, c.rhy[i] as number);
-  out.hz = lerp(c.hz[i] as number, c.rhz[i] as number);
-  out.phi = lerp(c.lphi[i] as number, c.rphi[i] as number);
+  // D6: the lerp written out — a closure here was an allocation per
+  // squashing piece per frame, and a helper call (not inlined this deep)
+  // boxed each result.
+  const lx = c.lx[i] as number;
+  const ly = c.ly[i] as number;
+  const lz = c.lz[i] as number;
+  const hx = c.hx[i] as number;
+  const hy = c.hy[i] as number;
+  const hz = c.hz[i] as number;
+  const lphi = c.lphi[i] as number;
+  out.x = lx + ((c.rx[i] as number) - lx) * k;
+  out.y = ly + ((c.ry[i] as number) - ly) * k;
+  out.z = lz + ((c.rz[i] as number) - lz) * k;
+  out.hx = hx + ((c.rhx[i] as number) - hx) * k;
+  out.hy = hy + ((c.rhy[i] as number) - hy) * k;
+  out.hz = hz + ((c.rhz[i] as number) - hz) * k;
+  out.phi = lphi + ((c.rphi[i] as number) - lphi) * k;
   return out;
 }
 
@@ -767,7 +784,8 @@ function landingTime(c: Collapse, i: number, floor: number): number {
   const hz = c.hz[i] as number;
   const axis = c.axis[i] as number;
   const gap = (tau: number) => {
-    flight(c, i, tau, pose);
+    flightAt.tau = tau;
+    flight(c, i, pose);
     return pose.y - vertExtent(axis, pose.phi, hx, hy, hz) - floor;
   };
   if (gap(0) <= 0) return 0;
@@ -1076,7 +1094,8 @@ function assembleCollapse(
   for (let i = 0; i < n; i++) {
     const land = landingTime(c, i, floor[i] as number);
     c.land[i] = land;
-    flight(c, i, land, pose);
+    flightAt.tau = land;
+    flight(c, i, pose);
     c.lx[i] = pose.x;
     c.ly[i] = pose.y;
     c.lz[i] = pose.z;

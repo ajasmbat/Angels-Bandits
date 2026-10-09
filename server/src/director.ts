@@ -51,6 +51,7 @@ import {
   demolitionPlan,
 } from "@angels-bandits/common/city/collapse";
 import { type CraneSite, slewAngle } from "@angels-bandits/common/city/movers";
+import { underCover } from "@angels-bandits/common/city/tunnels";
 import {
   DIRECTOR_ACTION_M,
   DIRECTOR_DIRS,
@@ -658,8 +659,13 @@ export class DestructionDirector {
     blocked: (x: number, z: number, zone: DangerZone) => boolean,
   ): DirectorEvent | null {
     const lead = DIRECTOR_WARN_MS / 1000;
+    // U4: never a plane under a tunnel's ceiling — the blast cannot reach it.
     const low = anchors
-      .filter((a) => a.pos.y < GAS_COLUMN_H + GAS_BLAST_M)
+      .filter(
+        (a) =>
+          a.pos.y < GAS_COLUMN_H + GAS_BLAST_M &&
+          !(a.pos.y < 0 && underCover(a.pos)),
+      )
       .sort((a, b) => Number(b.human) - Number(a.human) || a.pos.y - b.pos.y);
     const zone: DangerZone = {
       x0: -GAS_BLAST_M - 10,

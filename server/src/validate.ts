@@ -7,6 +7,7 @@
 // pose stands until a believable one arrives.
 
 import { minAltitude } from "@angels-bandits/common/city/river";
+import { groundFloor } from "@angels-bandits/common/city/tunnels";
 import {
   MAX_ALTITUDE,
   MAX_SPEED,
@@ -54,8 +55,12 @@ export function validatePose(
   const clampedPos = canonicalize({
     x: pos.x,
     // Street level is the floor — except over the L11 river, where a plane
-    // may fly the channel down to the water (and under the bridges).
-    y: Math.min(Math.max(pos.y, minAltitude(pos.z)), MAX_ALTITUDE),
+    // may fly the channel down to the water (and under the bridges), and
+    // over a U4 tunnel, down to the bores' floor.
+    y: Math.min(
+      Math.max(pos.y, groundFloor(pos.x, pos.z, minAltitude(pos.z))),
+      MAX_ALTITUDE,
+    ),
     z: pos.z,
   });
   const maxTravel =

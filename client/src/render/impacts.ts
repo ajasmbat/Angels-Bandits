@@ -323,6 +323,8 @@ export class Impacts {
   private readonly positions: THREE.BufferAttribute;
   private readonly colors: THREE.BufferAttribute;
   private readonly sizes: THREE.BufferAttribute;
+  /** What update() uploads (built once — no per-frame array). */
+  private readonly uploads: readonly THREE.BufferAttribute[];
   private share = 1;
   private lastLive = 0;
   private lastBurnMs = Number.POSITIVE_INFINITY;
@@ -336,6 +338,7 @@ export class Impacts {
     this.positions = new THREE.BufferAttribute(new Float32Array(n * 3), 3);
     this.colors = new THREE.BufferAttribute(new Float32Array(n * 4), 4);
     this.sizes = new THREE.BufferAttribute(new Float32Array(n), 1);
+    this.uploads = [this.positions, this.colors, this.sizes];
     for (const a of [this.positions, this.colors, this.sizes]) {
       a.setUsage(THREE.DynamicDrawUsage);
     }
@@ -607,14 +610,19 @@ export class Impacts {
     this.lastBurnMs = now;
     if (serverMs === null) return;
     const rand = this.rand;
-    for (const b of burns) {
+    // D6: an index loop and indexed colours — the for-of iterator and the
+    // array destructuring each allocated per burn per frame.
+    for (let j = 0; j < burns.length; j++) {
+      const b = burns[j] as Burn;
       const age = serverMs - b.t;
       if (age < 0 || age >= SMOKE_LIFE_MS) continue;
       const k = Math.min(1, (SMOKE_LIFE_MS - age) / BURN_TAPER_MS);
       b.fireAcc += BURN_FIRE_RATE * this.share * k * dt;
       b.smokeAcc += BURN_SMOKE_RATE * this.share * k * dt;
       const s = b.site;
-      const [fr, fg, fb] = FIRE_RGB;
+      const fr = FIRE_RGB[0];
+      const fg = FIRE_RGB[1];
+      const fb = FIRE_RGB[2];
       while (b.fireAcc >= 1) {
         b.fireAcc -= 1;
         this.patchPoint(s, 3.2, rand);
@@ -633,7 +641,9 @@ export class Impacts {
           rand() * 6.28,
         );
       }
-      const [mr, mg, mb] = SMOKE_RGB;
+      const mr = SMOKE_RGB[0];
+      const mg = SMOKE_RGB[1];
+      const mb = SMOKE_RGB[2];
       while (b.smokeAcc >= 1) {
         b.smokeAcc -= 1;
         this.patchPoint(s, 2.5, rand);
@@ -721,6 +731,9 @@ export class Impacts {
   /** Place every live particle around the viewer; pack the live prefix. */
   update(viewer: Vec3, now: number): void {
     const p = this.pool;
+    const pos = this.positions.array as Float32Array;
+    const col = this.colors.array as Float32Array;
+    const sizes = this.sizes.array as Float32Array;
     let n = 0;
     for (let i = 0; i < p.limit; i++) {
       if (!p.isLive(i, now)) continue;
@@ -760,20 +773,22 @@ export class Impacts {
         size *= 1 - 0.6 * u;
         alpha = 1 - u;
       }
-      this.positions.setXYZ(n, x, y, z);
-      this.colors.setXYZW(
-        n,
-        (p.rgb[i * 3] as number) * bright,
-        (p.rgb[i * 3 + 1] as number) * bright,
-        (p.rgb[i * 3 + 2] as number) * bright,
-        alpha,
-      );
-      this.sizes.setX(n, size);
+      // D6: straight into the arrays (none is normalized, so this is what
+      // setXYZ / setXYZW / setX wrote) — five doubles handed to calls V8
+      // did not inline were boxed per particle per frame.
+      pos[n * 3] = x;
+      pos[n * 3 + 1] = y;
+      pos[n * 3 + 2] = z;
+      col[n * 4] = (p.rgb[i * 3] as number) * bright;
+      col[n * 4 + 1] = (p.rgb[i * 3 + 1] as number) * bright;
+      col[n * 4 + 2] = (p.rgb[i * 3 + 2] as number) * bright;
+      col[n * 4 + 3] = alpha;
+      sizes[n] = size;
       n++;
     }
     this.lastLive = n;
     this.points.geometry.setDrawRange(0, n);
-    uploadPrefix([this.positions, this.colors, this.sizes], n);
+    uploadPrefix(this.uploads, n);
   }
 
   /** QA: live particles drawn last frame, and the tier's cap. */

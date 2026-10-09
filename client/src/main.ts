@@ -2437,6 +2437,15 @@ declare global {
       /** M6 QA: the settings panel — open, whether the autopilot flies,
        * the stored values, and the live master/voice bus gains (null before
        * the audio context exists). */
+      /** P3 QA: replay an own kill (and, for "medal", an own award with
+       * medals) through the real death/award handlers — the HUD, killfeed,
+       * sounds and music a real one plays. The victim is a throwaway id. */
+      qaMoment: (kind: "kill" | "medal") => void;
+      /** P3 QA: the soak's leak counters — GPU resources the renderer
+       * holds and the audio engine's live state (null before a context). */
+      qaUi: () => {
+        renderer: { geometries: number; textures: number; programs: number };
+      };
       settings: () => {
         open: boolean;
         autopilot: boolean;
@@ -2989,6 +2998,30 @@ window.__ab = {
     budgetMs: tierBudgetMs(qualityTier),
   }),
   setQuality: (setting) => setQualitySetting(setting, false),
+  qaMoment: (kind) => {
+    const victimId = "qa-victim";
+    players.set(victimId, { name: "VIPER", isBot: true });
+    socket.events.onDeath?.({
+      type: "death",
+      victimId,
+      killerId: socket.selfId,
+      cause: "shot",
+    });
+    socket.events.onAward?.({
+      type: "award",
+      id: socket.selfId,
+      victimId,
+      medals: kind === "medal" ? ["double", "needle"] : [],
+    });
+    players.delete(victimId);
+  },
+  qaUi: () => ({
+    renderer: {
+      geometries: renderer.info.memory.geometries,
+      textures: renderer.info.memory.textures,
+      programs: renderer.info.programs?.length ?? 0,
+    },
+  }),
   settings: () => ({
     open: settingsPanel.isOpen(),
     autopilot: settingsOpen && alive,

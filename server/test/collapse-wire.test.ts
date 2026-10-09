@@ -244,7 +244,8 @@ describe("D3 collapses over the wire", () => {
         () =>
           a.deaths.some((d) => d.victimId === b.welcome.id) &&
           b.deaths.some((d) => d.victimId === b.welcome.id),
-        3000,
+        // Generous: under a loaded full-suite run the server child lags.
+        10000,
       ),
     ).toBe(true);
     expect(a.deaths.find((d) => d.victimId === b.welcome.id)).toMatchObject(

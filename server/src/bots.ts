@@ -77,6 +77,12 @@ import {
   opensOnStreets,
   segmentThroughHole,
 } from "@angels-bandits/common/city";
+import {
+  type CaveIn,
+  caveInGapLat,
+  collideCaveIns,
+  nextCaveInAhead,
+} from "@angels-bandits/common/city/caveins";
 import { collapseZoneHit } from "@angels-bandits/common/city/collapse";
 import {
   EMPTY_MOVERS,
@@ -606,14 +612,24 @@ function beyondEnd(e: TunnelEnd, y0: number, d: number, dive: boolean): number {
 const tunnelFrame: TunnelFrame = { s: 0, lat: 0, th: 0 };
 const tunnelCarrot: TunnelPoint = { x: 0, z: 0, th: 0 };
 
+const NO_CAVEINS: readonly CaveIn[] = [];
+
 /**
  * The tunnel controller: a carrot BOT_HOLE_CARROT ahead on the bore's
  * centreline (its straight extension before the entry and after the exit),
  * at the guide height inside and on the approach / climb-out line outside.
- * Pure in (flight, thread), like threadInput, so a rollout predicts the
- * live flight. Null once the pass is over (hand back to the brain).
+ * U6: with a live cave-in on the bore ahead (nextCaveInAhead — warned,
+ * falling or rubble), the carrot slides across into its open lane, and
+ * back to the centreline once it is behind. Pure in (flight, thread,
+ * cave-ins, clock), like threadInput, so a rollout predicts the live
+ * flight. Null once the pass is over (hand back to the brain).
  */
-function tunnelInput(f: FlightState, th: TunnelThread): FlightInput | null {
+function tunnelInput(
+  f: FlightState,
+  th: TunnelThread,
+  caveins: readonly CaveIn[] = NO_CAVEINS,
+  tMs = 0,
+): FlightInput | null {
   const { edge } = th;
   const t = edge.tunnel;
   const L = t.length;
@@ -631,6 +647,14 @@ function tunnelInput(f: FlightState, th: TunnelThread): FlightInput | null {
   }
   const q = p + BOT_HOLE_CARROT;
   tunnelPointInto(t, edgeArc(edge, q), tunnelCarrot);
+  if (caveins.length > 0 && q > 0 && q < L) {
+    const c = nextCaveInAhead(caveins, t.id, tunnelFrame.s, edge.dir, tMs);
+    if (c) {
+      const lat = caveInGapLat(c.gap);
+      tunnelCarrot.x -= Math.sin(tunnelCarrot.th) * lat;
+      tunnelCarrot.z += Math.cos(tunnelCarrot.th) * lat;
+    }
+  }
   let y: number;
   if (q <= 0) {
     y = beyondEnd(edge.endIn, guideY(t, edgeArc(edge, 0)), -q, true);
@@ -1550,7 +1574,7 @@ export class RoomBots {
     }
     // U4: a committed tunnel pass outranks everything the same way.
     if (bot.tunnel) {
-      const input = tunnelInput(bot.flight, bot.tunnel);
+      const input = tunnelInput(bot.flight, bot.tunnel, this.caveIns(), now);
       if (input) {
         bot.input = input;
         return;
@@ -2334,7 +2358,7 @@ export class RoomBots {
       return false;
     }
     const thread: TunnelThread = { edge, bandY: bot.bandY, out: false };
-    const input = tunnelInput(bot.flight, thread);
+    const input = tunnelInput(bot.flight, thread, this.caveIns(), now);
     if (!input) return false;
     bot.tunnel = thread;
     bot.input = input;
@@ -2361,21 +2385,32 @@ export class RoomBots {
     const steps = Math.round(horizon / BOT_DT);
     for (let k = 0; k < steps; k++) {
       if (k === 0 || (this.tickCount + k) % BOT_DECISION_EVERY === 0) {
-        const next = tunnelInput(f, thread);
+        const next = tunnelInput(
+          f,
+          thread,
+          this.caveIns(),
+          now + k * BOT_DT * 1000,
+        );
         if (!next) return thread.out;
         input = next;
       }
       f = stepFlight(f, botInput(input), BOT_DT);
       if (hitsGround(f.pos, r)) return false;
+      const t = now + k * BOT_DT * 1000;
       // Below street level outside the river channel is a bore: nothing
-      // but its walls (the ground, just tested) is down there.
+      // but its walls (the ground, just tested) — and (U6) its cave-ins —
+      // is down there. Their own margin: BOT_MOVER_CLEAR would need a 20 m
+      // lane, and the lane is CAVEIN_GAP.
       if (
         f.pos.y + r < 0 &&
         Math.abs(riverOffset(f.pos.z)) > RIVER_HALF_WIDTH + r
       ) {
+        const caveins = this.caveIns();
+        if (caveins.length > 0 && collideCaveIns(f.pos, r, caveins, t)) {
+          return false;
+        }
         continue;
       }
-      const t = now + k * BOT_DT * 1000;
       if (
         collideCity(f.pos, r, this.buildings, this.cityIndex) ||
         collideNature(f.pos, r, this.nature) ||
@@ -2386,6 +2421,11 @@ export class RoomBots {
       }
     }
     return false;
+  }
+
+  /** U6: the room's live cave-ins (none without a slot). */
+  private caveIns(): readonly CaveIn[] {
+    return this.movers.caveins?.list ?? NO_CAVEINS;
   }
 
   /** The tunnel pass is over: re-join the nearest street like a bot back

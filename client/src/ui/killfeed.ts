@@ -10,12 +10,13 @@ export class KillFeed {
 
   /** `killerName` null = un-credited crash ("☠ B"); a credited crash is
    * "A ✕ B" — not the shoot-down's "A ▸ B" (U2); a storm kill renders as the
-   * bolt's own line ("⚡ took down B") whoever got the credit. `self` marks
+   * bolt's own line ("⚡ took down B") whoever got the credit, and an X1
+   * missile kill its own ("🚀 missile strike took down B"). `self` marks
    * a line the local pilot is in (decided by id — names aren't unique). */
   add(
     killerName: string | null,
     victimName: string,
-    cause?: "shot" | "crash" | "storm",
+    cause?: "shot" | "crash" | "storm" | "missile",
     self = false,
   ): void {
     const entry = document.createElement("div");
@@ -27,6 +28,8 @@ export class KillFeed {
 
     if (cause === "storm") {
       entry.append("⚡ took down ", victim);
+    } else if (cause === "missile") {
+      entry.append("🚀 missile strike took down ", victim);
     } else if (killerName === null) {
       entry.append("☠ ", victim);
     } else {

@@ -65,6 +65,11 @@ const ENGINE_MAX_HZ = 135;
 /** Engine pitch at full boost speed (F2) — the burn climbs past full throttle. */
 const ENGINE_BOOST_HZ = 185;
 const BOOST_CUE_LEVEL = 0.45;
+/** X1 incoming-missile whistle: a clean rising TONE — nothing like the
+ * storm's filtered-noise thunder, so the two are never confused. */
+const WHISTLE_LEVEL = 0.32;
+const WHISTLE_FROM_HZ = 700;
+const WHISTLE_TO_HZ = 2400;
 
 /** A running context and its buses, for an add-on layer (L2 city ambience)
  * that builds its own nodes once and mixes into the existing chain. */
@@ -642,6 +647,60 @@ export class GameAudio implements VoiceSink {
     if (nowMs - this.lastWhooshAt < 150) return;
     this.lastWhooshAt = nowMs;
     this.burst("bandpass", 2400, 300, 0.3, WHOOSH_LEVEL, pan);
+  }
+
+  /**
+   * X1: an incoming missile's whistle, rising from now until it lands in
+   * `durationS` (≤ MISSILE_WHISTLE_MS), placed at its impact point. Gain
+   * swells as it falls; cut dead at impact, where the blast takes over.
+   */
+  missileWhistle(
+    target: Vec3,
+    listenerPos: Vec3,
+    listenerYaw: number,
+    durationS: number,
+  ): void {
+    const s = spatialize(listenerPos, listenerYaw, target);
+    const level = Math.min(1, s.gain * 8) * WHISTLE_LEVEL;
+    const ctx = this.ensure();
+    if (!ctx || !this.sfx || level <= 0 || durationS <= 0.05) return;
+    const now = ctx.currentTime;
+    const end = now + durationS;
+    // A late start (joined mid-fall) picks the sweep up where it would be.
+    const done = 1 - Math.min(1, durationS / 2);
+    const fromHz =
+      WHISTLE_FROM_HZ * (WHISTLE_TO_HZ / WHISTLE_FROM_HZ) ** done;
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(fromHz, now);
+    osc.frequency.exponentialRampToValueAtTime(WHISTLE_TO_HZ, end);
+    // A slow wobble: falling ordnance, not a test tone.
+    const lfo = ctx.createOscillator();
+    lfo.frequency.value = 7;
+    const lfoDepth = ctx.createGain();
+    lfoDepth.gain.value = 25;
+    lfo.connect(lfoDepth).connect(osc.frequency);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(level * (0.15 + 0.85 * done), now);
+    gain.gain.linearRampToValueAtTime(level, end - 0.02);
+    gain.gain.linearRampToValueAtTime(0, end);
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = s.pan;
+    osc.connect(gain).connect(panner).connect(this.sfx);
+    osc.start(now);
+    lfo.start(now);
+    osc.stop(end + 0.02);
+    lfo.stop(end + 0.02);
+  }
+
+  /** X1: a missile impact — the kill explosion plus a sharper, heavier
+   * crack, so a strike lands harder than a plane going down. */
+  missileBlast(pos: Vec3, listenerPos: Vec3, listenerYaw: number): void {
+    this.explosion(pos, listenerPos, listenerYaw);
+    const s = spatialize(listenerPos, listenerYaw, pos);
+    const level = Math.min(1, s.gain * 6);
+    this.burst("bandpass", 2600, 400, 0.25, EXPLOSION_LEVEL * level, s.pan);
+    this.burst("lowpass", 260, 35, 2.2, EXPLOSION_LEVEL * 0.8 * level, s.pan);
   }
 
   /** Kill explosion at a world position: low boom + rumble tail. */

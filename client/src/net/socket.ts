@@ -22,6 +22,10 @@
 // pre-warm, and a `chunks` batch dropped while booting would leave this
 // client colliding with walls everyone else has shot away for the rest of
 // the session. main.ts binds it to the city once the city exists.
+//
+// X1: the room's missiles in the air live here too (`missiles`), for the
+// same reason — a strike announced while this client boots must still
+// whistle and land on time. main.ts consumes them on the synced clock.
 
 import { CityDamage, decodeChunkIds } from "@angels-bandits/common/city";
 import type { CityEvent } from "@angels-bandits/common/cityevents";
@@ -31,6 +35,10 @@ import {
   TICK_UP_HZ,
 } from "@angels-bandits/common/constants";
 import { decodeSnapshotEntry } from "@angels-bandits/common/net";
+import {
+  type MissileStrike,
+  decodeMissile,
+} from "@angels-bandits/common/strike";
 import type {
   BotsConfigMsg,
   CourseBoardMsg,
@@ -112,6 +120,10 @@ export class GameSocket {
    * welcome (a resume may land in a room with less damage), grown by every
    * `chunks` batch, whether or not anything is listening yet. */
   readonly cityDamage = new CityDamage();
+  /** X1: missiles announced in this room and not yet consumed, by id — from
+   * every welcome and every `missile` event, listening or not. The frame
+   * loop removes each once it has landed (or gone stale). */
+  readonly missiles = new Map<number, MissileStrike>();
   private ws: WebSocket;
   /** W2: "open" → "reconnecting" on a drop → back, or "lost" for good. */
   private state: "open" | "reconnecting" | "lost" = "open";
@@ -146,6 +158,7 @@ export class GameSocket {
     this.ws = ws;
     this.welcome = welcome;
     this.cityDamage.reset(decodeChunkIds(welcome.destroyed));
+    this.addMissiles(welcome.missiles);
     this.attach(ws);
     // W2 watchdog: snapshots arrive at TICK_DOWN_HZ, so a visible tab that
     // hears nothing for SERVER_SILENCE_MS is on a dead (half-open) socket —
@@ -268,13 +281,25 @@ export class GameSocket {
       return;
     }
     this.ws = next.ws;
+    // Missile ids are per room: a resume into another room starts over.
+    if (next.welcome.roomId !== this.welcome.roomId) this.missiles.clear();
     this.welcome = next.welcome;
     this.cityDamage.reset(decodeChunkIds(next.welcome.destroyed));
+    this.addMissiles(next.welcome.missiles);
     this.attach(next.ws);
     this.delay.reset(); // the outage's arrival gaps are not jitter
     this.lastHeardMs = performance.now();
     this.state = "open";
     this.events.onResumed?.(next.welcome);
+  }
+
+  /** Hold every decodable missile of a welcome/event list (dupes are
+   * harmless: same id, same strike). */
+  private addMissiles(list: readonly unknown[] | undefined): void {
+    for (const w of list ?? []) {
+      const m = decodeMissile(w);
+      if (m) this.missiles.set(m.id, m);
+    }
   }
 
   private lost(): void {
@@ -470,6 +495,9 @@ export class GameSocket {
         break;
       case "awayStarted":
         this.events.onAwayStarted?.();
+        break;
+      case "missile":
+        this.addMissiles([msg.m]);
         break;
       case "chunks":
         this.cityDamage.apply(decodeChunkIds(msg.d));

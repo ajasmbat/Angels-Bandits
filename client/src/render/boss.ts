@@ -484,8 +484,10 @@ if (vMat < 0.5) {
     }
     diffuseColor.rgb = mix(diffuseColor.rgb, tc.rgb, tc.a);
   }
-  bRough = 0.55;
-  bMetal = 0.45;
+  // Doped fabric over duralumin: mostly diffuse (a metallic skin mirrors
+  // the warm city glow and reads bronze, not silver).
+  bRough = 0.68;
+  bMetal = 0.12;
 } else if (vMat < 1.5) {
   // --- Painted armour: plate seams and grime ---------------------------------
   float seam = max(bLine(vRest.x / 2.5, 0.02), bLine((vRest.y + vRest.z) / 2.0, 0.02));
@@ -547,11 +549,12 @@ if (vMat < 1.5) {
   float scorch = 0.0;
   for (int k = 0; k < 7; k++) {
     float d = length(vRest - uWeakPos[k]);
-    scorch = max(scorch, uWeakSpent[k] * (1.0 - smoothstep(5.0, 10.0 + 14.0 * uBurn, d - 3.0 * bNoise(vRest.xy * 0.3))));
+    scorch = max(scorch, uWeakSpent[k] * (1.0 - smoothstep(4.0, 7.0 + 7.0 * uBurn, d - 3.0 * bNoise(vRest.xy * 0.3))));
   }
-  diffuseColor.rgb *= 1.0 - 0.75 * scorch;
-  float ember = smoothstep(0.6, 0.85, bNoise(vRest.xz * 0.9 + uTime * 0.6)) * scorch;
-  bEmis += uEmber * 0.5 * ember;
+  diffuseColor.rgb *= 1.0 - 0.7 * scorch;
+  // Embers: sparse glowing flecks in the char, breathing slowly.
+  float ember = smoothstep(0.78, 0.92, bNoise(vRest.xz * 1.7 + vec2(uTime * 0.35, 0.0))) * smoothstep(0.4, 0.9, scorch);
+  bEmis += uEmber * 0.35 * ember;
 }
 `;
 

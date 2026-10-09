@@ -438,7 +438,7 @@ const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
 // --- Colours ------------------------------------------------------------------
 
 /** Silver-grey doped skin, gunmetal armour, near-black guns, brass. */
-export const SKIN = 0x9ea4aa;
+export const SKIN = 0xa9b2bc;
 const ARMOUR = 0x3b4048;
 const PLATE = 0x4a4f57;
 const GUN = 0x1d1f23;

@@ -416,7 +416,9 @@ float bNoise(vec2 p) {
 // q, antialiased by its derivative and faded out before it can alias.
 float bLine(float q, float w) {
   float d = abs(fract(q + 0.5) - 0.5);
-  float fw = fwidth(q);
+  // Never a zero-width smoothstep (undefined: NaN on some drivers — and a
+  // NaN here would bloom into a black box).
+  float fw = max(fwidth(q), 1e-4);
   return (1.0 - smoothstep(w - fw, w + fw, d)) * (1.0 - smoothstep(0.12, 0.3, fw));
 }
 `;
@@ -426,7 +428,9 @@ const HULL_FRAG_SURFACE = /* glsl */ `
 vec3 bEmis = vec3(0.0);
 float bRough = 0.62;
 float bMetal = 0.35;
-float th = atan(vRest.z, vRest.y);
+// The meridian angle; atan(0, 0) is undefined (the lathes' tips sit on
+// the axis), so a point on the axis reads as the top.
+float th = abs(vRest.y) + abs(vRest.z) < 1e-4 ? 0.0 : atan(vRest.z, vRest.y);
 if (vMat < 0.5) {
   // --- The envelope: girders, ring frames, panels, weathering ---------------
   float gi = th * (36.0 / 6.2831853);
@@ -437,7 +441,7 @@ if (vMat < 0.5) {
   float tone = 0.93 + 0.1 * bHash(cell);
   float weather = 0.86 + 0.14 * bNoise(vec2(vRest.x / 9.0, gi / 2.3));
   // Rain and oil streaks run down the lower flanks.
-  float below = smoothstep(0.2, -0.4, cos(th));
+  float below = (1.0 - smoothstep(-0.4, 0.2, cos(th)));
   float streak = bNoise(vec2(vRest.x * 0.9, th * 3.0)) * below;
   diffuseColor.rgb *= tone * weather * (1.0 - 0.18 * streak);
   diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.16, 0.17, 0.19), max(girder * 0.75, max(ring * 0.8, minor * 0.6)));
@@ -445,23 +449,23 @@ if (vMat < 0.5) {
   for (int e = 0; e < 4; e++) {
     vec3 ep = uWeakPos[e];
     float side = step(0.0, ep.z * vRest.z);
-    float aft = smoothstep(ep.x + 2.0, ep.x - 6.0, vRest.x) * smoothstep(ep.x - 46.0, ep.x - 14.0, vRest.x);
+    float aft = (1.0 - smoothstep(ep.x - 6.0, ep.x + 2.0, vRest.x)) * smoothstep(ep.x - 46.0, ep.x - 14.0, vRest.x);
     float band = 1.0 - smoothstep(2.0, 6.0, abs(vRest.y - (ep.y + 4.0)));
     float soot = side * aft * band * (0.55 + 0.45 * bNoise(vec2(vRest.x * 0.35, vRest.y * 1.7)));
     diffuseColor.rgb *= 1.0 - 0.6 * soot;
   }
   // Old scorch from earlier raids.
-  float sc = smoothstep(5.0, 1.5, length(vec2(vRest.x + 70.0, (th - 2.0) * 18.0)) - 2.5 * bNoise(vRest.xy * 0.4));
-  sc += smoothstep(4.0, 1.0, length(vec2(vRest.x - 96.0, (th + 1.1) * 18.0)) - 2.0 * bNoise(vRest.yz * 0.5));
+  float sc = (1.0 - smoothstep(1.5, 5.0, length(vec2(vRest.x + 70.0, (th - 2.0) * 18.0)) - 2.5 * bNoise(vRest.xy * 0.4)));
+  sc += (1.0 - smoothstep(1.0, 4.0, length(vec2(vRest.x - 96.0, (th + 1.1) * 18.0)) - 2.0 * bNoise(vRest.yz * 0.5)));
   diffuseColor.rgb *= 1.0 - 0.55 * clamp(sc, 0.0, 1.0);
   // The promenade: a lit window band along both lower flanks.
   float at = abs(th);
   float wx = (vRest.x - 6.0) / 2.2;
   if (vRest.x > 6.0 && vRest.x < 48.0) {
-    float fwx = fwidth(wx);
+    float fwx = max(fwidth(wx), 1e-4);
     float inX = smoothstep(0.18 - fwx, 0.18 + fwx, fract(wx)) * (1.0 - smoothstep(0.82 - fwx, 0.82 + fwx, fract(wx)));
     float arc = (at - 2.3) * 20.5;
-    float fa = fwidth(arc);
+    float fa = max(fwidth(arc), 1e-4);
     float inY = 1.0 - smoothstep(0.6 - fa, 0.6 + fa, abs(arc));
     float lit = step(0.18, bHash(vec2(floor(wx), sign(th))));
     float w = inX * inY;
@@ -535,7 +539,7 @@ if (vMat < 0.5) {
   bMetal = 0.0;
 } else if (vMat < 9.5) {
   // --- The hangar bay: dark, amber work lights in a row ---------------------
-  float lamp = smoothstep(0.5, 0.2, length(vec2(fract(vRest.x / 3.0) - 0.5, (vRest.z) * 0.6)));
+  float lamp = (1.0 - smoothstep(0.2, 0.5, length(vec2(fract(vRest.x / 3.0) - 0.5, vRest.z * 0.6))));
   bEmis += uWindow * 0.6 * lamp;
   bRough = 0.8;
   bMetal = 0.2;

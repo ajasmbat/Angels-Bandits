@@ -36,6 +36,7 @@
 import {
   type Building,
   type HoleSpan,
+  type LocalBox,
   cityHoles,
 } from "@angels-bandits/common/city";
 import {
@@ -53,6 +54,7 @@ import { emissiveBoost } from "./emissive";
 import { W_GLSL } from "./lookup";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { loopPhase } from "./rooftop-life";
+import { BakedHider, type StandingLayer, StandingMask } from "./standing-watch";
 
 // --- Layout rules ------------------------------------------------------------
 
@@ -797,6 +799,109 @@ export function bakeDecor(quads: readonly DecorQuad[]): BakedDecor {
   return { positions, normals, colors, glows, pivots, decor, vertexCount: n };
 }
 
+// --- D8: what each quad is fixed to ---------------------------------------------
+
+/** A quad's world-axis box: its pivot plus corners, canonical-ish. */
+function quadWorld(q: DecorQuad): LocalBox {
+  const box = {
+    x0: Number.POSITIVE_INFINITY,
+    x1: Number.NEGATIVE_INFINITY,
+    y0: Number.POSITIVE_INFINITY,
+    y1: Number.NEGATIVE_INFINITY,
+    z0: Number.POSITIVE_INFINITY,
+    z1: Number.NEGATIVE_INFINITY,
+  };
+  for (const [x, y, z] of q.corners) {
+    box.x0 = Math.min(box.x0, q.pivot.x + x);
+    box.x1 = Math.max(box.x1, q.pivot.x + x);
+    box.y0 = Math.min(box.y0, q.pivot.y + y);
+    box.y1 = Math.max(box.y1, q.pivot.y + y);
+    box.z0 = Math.min(box.z0, q.pivot.z + z);
+    box.z1 = Math.max(box.z1, q.pivot.z + z);
+  }
+  return box;
+}
+
+/** The hole decor's quads and, per quad, the building it is fixed to: the
+ * one whose footprint (1 m slack) holds the quad's centre under its roof
+ * band — a host's lining and facade chevrons, or the roof an approach
+ * chevron lies on. Street chevrons have none (−1) and always stay. */
+export interface HoleDecorItems {
+  quads: DecorQuad[];
+  owner: Int32Array;
+  /** Per building, its quads' indices in order (its D8 item order). */
+  byBuilding: Map<number, number[]>;
+  layer: StandingLayer;
+}
+
+export function holeDecorItems(buildings: readonly Building[]): HoleDecorItems {
+  const byBlock = bucketByBlock(buildings);
+  const quads = cityHoles(buildings).flatMap((s) => holeDecorFor(s, byBlock));
+  const index = new Map(buildings.map((b, i) => [b, i]));
+  const grid = WORLD_SIZE / BLOCK_PITCH;
+  const owner = new Int32Array(quads.length).fill(-1);
+  const byBuilding = new Map<number, number[]>();
+  const world = quads.map(quadWorld);
+  world.forEach((w, q) => {
+    const cx = wrapCoord((w.x0 + w.x1) / 2);
+    const cy = (w.y0 + w.y1) / 2;
+    const cz = wrapCoord((w.z0 + w.z1) / 2);
+    const bx = Math.floor(cx / BLOCK_PITCH);
+    const bz = Math.floor(cz / BLOCK_PITCH);
+    let best = -1;
+    let bestD = Number.POSITIVE_INFINITY;
+    for (let i = -1; i <= 1; i++) {
+      for (let j = -1; j <= 1; j++) {
+        const key =
+          ((((bx + i) % grid) + grid) % grid) * grid +
+          ((((bz + j) % grid) + grid) % grid);
+        for (const b of byBlock.get(key) ?? []) {
+          if (cy > b.height + 1) continue;
+          const dx = Math.abs(wrapDeltaAxis(b.x, cx)) - b.width / 2;
+          const dz = Math.abs(wrapDeltaAxis(b.z, cz)) - b.depth / 2;
+          const d = Math.max(dx, dz);
+          if (d > 1 || d >= bestD) continue;
+          bestD = d;
+          best = index.get(b) as number;
+        }
+      }
+    }
+    owner[q] = best;
+    if (best < 0) return;
+    const list = byBuilding.get(best) ?? [];
+    list.push(q);
+    byBuilding.set(best, list);
+  });
+  const layer: StandingLayer = {
+    boxes(i) {
+      const b = buildings[i] as Building;
+      return (byBuilding.get(i) ?? []).map((q) => {
+        const w = world[q] as LocalBox;
+        const x = wrapDeltaAxis(b.x, (w.x0 + w.x1) / 2);
+        const z = wrapDeltaAxis(b.z, (w.z0 + w.z1) / 2);
+        const hx = (w.x1 - w.x0) / 2;
+        const hz = (w.z1 - w.z0) / 2;
+        return {
+          x0: x - hx,
+          x1: x + hx,
+          y0: w.y0,
+          y1: w.y1,
+          z0: z - hz,
+          z1: z + hz,
+        };
+      });
+    },
+  };
+  return { quads, owner, byBuilding, layer };
+}
+
+/** D8: the hole decor's items per building — what the renderer masks with. */
+export function holeDecorStandingLayer(
+  buildings: readonly Building[],
+): StandingLayer {
+  return holeDecorItems(buildings).layer;
+}
+
 // --- Shader ---------------------------------------------------------------------
 
 const TAU = "6.28318530718";
@@ -937,11 +1042,14 @@ export class HoleDecorRenderer {
   readonly counts: { holes: number; quads: number; vertices: number };
   private readonly loop = { value: 0 };
   private readonly full = { value: 1 };
+  /** D8: a felled or chewed host's lining goes with its walls. */
+  private readonly standing: StandingMask;
+  private readonly hider: BakedHider;
 
   constructor(buildings: readonly Building[]) {
-    const byBlock = bucketByBlock(buildings);
     const spans = cityHoles(buildings);
-    const quads = spans.flatMap((s) => holeDecorFor(s, byBlock));
+    const items = holeDecorItems(buildings);
+    const quads = items.quads;
     const baked = bakeDecor(quads);
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute(
@@ -991,6 +1099,17 @@ export class HoleDecorRenderer {
       quads: quads.length,
       vertices: baked.vertexCount,
     };
+    // Six vertices per quad (bakeDecor): quad q is vertices 6q..6q+5.
+    this.hider = new BakedHider(
+      geometry.getAttribute("position") as THREE.BufferAttribute,
+      Int32Array.from({ length: quads.length + 1 }, (_, q) => q * 6),
+    );
+    this.standing = new StandingMask(buildings, items.layer, (b) => {
+      const list = items.byBuilding.get(b) ?? [];
+      const flags = this.standing.hiddenOf(b);
+      list.forEach((q, k) => this.hider.setHidden(q, flags?.[k] === 1));
+      this.hider.flush();
+    });
   }
 
   /** O3: interiors on High/Medium/Low; Mobile keeps only the guidance
@@ -1001,6 +1120,7 @@ export class HoleDecorRenderer {
 
   /** Per frame: the synced clock (or local time before the first snapshot). */
   update(timeMs: number): void {
+    this.standing.update(); // D8
     this.loop.value = loopPhase(timeMs);
   }
 }

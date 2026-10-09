@@ -172,6 +172,10 @@ export interface QualityProfile {
   heatShimmer: boolean;
   /** S5 lens flares and streaks on the brightest lights (a FinalPass uniform). */
   glare: boolean;
+  /** S6 glass reflections: cube-probe faces re-rendered per frame (at most
+   * 1; a full refresh every 6 / share frames). 0 = off: no probe renders,
+   * and glass, puddles and the river keep their faked reflections. */
+  reflections: number;
 }
 
 export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
@@ -216,6 +220,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     lightShafts: true,
     heatShimmer: true,
     glare: true,
+    reflections: 1,
   },
   medium: {
     maxPixelRatio: 1.5,
@@ -258,6 +263,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     lightShafts: true,
     heatShimmer: true,
     glare: true,
+    reflections: 0.5,
   },
   low: {
     maxPixelRatio: 1,
@@ -300,6 +306,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     lightShafts: true,
     heatShimmer: true,
     glare: true,
+    reflections: 0.34,
   },
   mobile: {
     maxPixelRatio: 1,
@@ -342,6 +349,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     lightShafts: false,
     heatShimmer: false,
     glare: false,
+    reflections: 0,
   },
 };
 
@@ -817,6 +825,14 @@ export const FEATURE_TIERS: readonly {
     low: "full",
     mobile: "full",
     note: "building shader, wetness uniform only",
+  },
+  {
+    feature: "S6 glass reflections — neon skyline in glass, puddles, river",
+    high: "full",
+    medium: "reduced",
+    low: "reduced",
+    mobile: "off",
+    note: "one 128 px cube probe, 1 / 0.5 / 0.34 faces per frame (a full refresh every 6 / 12 / 18 frames); off = no probe pass and the faked reflections",
   },
 ];
 

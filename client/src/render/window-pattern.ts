@@ -568,9 +568,12 @@ ${livingColorGlsl(glslVec3(TV_COLOR))}
 }
 ${livingShadeGlsl()}vec3 windowGlow = pane * lit * litWindow * ${intensity} * ao;
 // Unlit panes catch a faint grazing-angle sky sheen (far below the bloom
-// threshold — a glassy read, not a light source).
+// threshold — a glassy read, not a light source). S6: on GLASS with the
+// reflection probe on, the real reflection (buildings-material.ts) REPLACES
+// this stand-in rather than stacking on it.
 float sheenF = pow(1.0 - clamp(abs(dot(viewRay, vObjNormal)), 0.0, 1.0), 3.0);
-windowGlow += pane * (1.0 - lit) * facade * vec3(0.35, 0.5, 0.7) * sheenF * 0.05;
+windowGlow += pane * (1.0 - lit) * facade * vec3(0.35, 0.5, 0.7) * sheenF * 0.05
+  * (1.0 - uReflOn * step(vArch, 0.5));
 `;
 }
 

@@ -55,9 +55,9 @@ export const QA_REFILL_STEP = 10;
  * the prev/cur mix. A reflection is never a ladder rung: times the glass
  * F90 it sits far under the 0.72 bloom threshold (client/test/reflections). */
 export const REFL_LUMA_CAP = 0.45;
-/** Glass reflectance head-on (Schlick F0) — a little over real glass's 0.04
+/** Glass reflectance head-on (Schlick F0) — over real glass's 0.04
  * so a dark tower reads as glass at night; F90 is GRAZING_REFLECTANCE.glass. */
-export const REFL_F0 = 0.06;
+export const REFL_F0 = 0.1;
 /** Mip level the glass samples at: the curtain wall's roughness blur. */
 export const REFL_GLASS_LOD = 2.0;
 /** Puddles are smoother than glass, but rippled. */

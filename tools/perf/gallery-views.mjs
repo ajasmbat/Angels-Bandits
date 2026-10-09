@@ -91,7 +91,7 @@ export const VIEWS = [
     name: "river-glass",
     x: 650,
     z: 1100,
-    y: 25,
+    y: 260,
     yaw: -Math.PI / 2,
     eye: [700, 10, 1100],
     at: [1000, -10, 1100],

@@ -75,8 +75,16 @@ export type HitReject =
 export interface Death {
   victimId: string;
   killerId: string | null;
-  cause: "shot" | "crash" | "storm" | "wreck" | "collapse" | "missile";
+  cause: "shot" | "crash" | "storm" | "wreck" | "collapse" | "missile" | "flak";
 }
+/** S4: a fired round claimed by something other than a plane hit (the sky
+ * boss): the bullet existed and came from where the shooter is on record. */
+export type BulletClaim =
+  | { ok: true; firedAt: number; dir: Vec3 | null }
+  | {
+      ok: false;
+      reason: "unknown" | "shooter-dead" | "bullet" | "origin";
+    };
 export type HitResult =
   | { ok: true; hp: number; death: Death | null }
   | { ok: false; reason: HitReject };
@@ -92,8 +100,10 @@ interface PlayerCombat {
    * FIRE_BURST_SLACK, so batched-but-legal shots pass and spam doesn't. */
   allowance: number;
   allowanceAt: number;
-  /** Fired-but-unclaimed bullets: seq → fire time (pruned by claim window). */
-  bullets: Map<number, number>;
+  /** Fired-but-unclaimed bullets: seq → fire time and, when the caller knew
+   * it (S4), the shooter's on-record nose at the shot (pruned by the claim
+   * window). */
+  bullets: Map<number, { at: number; dir: Vec3 | null }>;
   lastDamagerId: string | null;
   lastDamagedAt: number;
   /** X1: the last ENVIRONMENT damage (a missile blast). Kept apart from
@@ -180,9 +190,16 @@ export class Combat {
   /**
    * Validate one shot (seq is the client's bullet id). Accepting registers
    * the bullet for later hit claims and cancels spawn protection — firing
-   * forfeits it (PLAN.md).
+   * forfeits it (PLAN.md). `dir` (S4) is the shooter's on-record nose at
+   * the shot, kept with the bullet for a claim that has to say where the
+   * round went.
    */
-  fire(id: string, seq: number, now: number): FireResult {
+  fire(
+    id: string,
+    seq: number,
+    now: number,
+    dir: Vec3 | null = null,
+  ): FireResult {
     const p = this.players.get(id);
     if (!p || !p.alive) return { ok: false, reason: "dead" };
 
@@ -204,9 +221,9 @@ export class Combat {
     p.allowance -= 1;
 
     p.heat = firedGunHeat(heat, now, OVERHEAT_AT + HEAT_VALIDATION_SLACK);
-    p.bullets.set(seq, now);
-    for (const [s, at] of p.bullets) {
-      if (now - at > CLAIM_WINDOW_MS) p.bullets.delete(s);
+    p.bullets.set(seq, { at: now, dir });
+    for (const [s, b] of p.bullets) {
+      if (now - b.at > CLAIM_WINDOW_MS) p.bullets.delete(s);
     }
 
     const protectionCanceled = now < p.protectedUntil;
@@ -251,21 +268,15 @@ export class Combat {
 
     // The claimed bullet must exist, be young enough, and never have hit
     // before — one bullet, one hit.
-    const firedAt = shooter.bullets.get(seq);
-    if (firedAt === undefined || now - firedAt > CLAIM_WINDOW_MS) {
-      return { ok: false, reason: "bullet" };
-    }
-    shooter.bullets.delete(seq);
-
-    // The origin is the muzzle at FIRE time, but the on-record pose is the
-    // shooter's NOW — it kept flying for the bullet's whole age, at up to its
-    // own legal speed (boost included).
-    const age = Math.min(now - firedAt, ORIGIN_AGE_MAX_MS) / 1000;
-    const originSlack =
-      HIT_ORIGIN_SLACK + shooterCap(firedAt) * SPEED_TOLERANCE * age;
-    if (wrapDistance(bulletOrigin, shooterPos) > originSlack) {
-      return { ok: false, reason: "origin" };
-    }
+    const claim = this.takeBullet(
+      shooter,
+      seq,
+      bulletOrigin,
+      shooterPos,
+      now,
+      shooterCap,
+    );
+    if (!claim.ok) return claim;
     // Both planes keep flying through the delay + flight window; judge the
     // closing speed at each one's own cap over that window.
     const rangeSince =
@@ -287,6 +298,70 @@ export class Combat {
         ? this.kill(targetId, target, shooterId, "shot", now)
         : null;
     return { ok: true, hp: Math.round(Math.max(0, target.hp)), death };
+  }
+
+  /**
+   * S4: claim fired round `seq` for a hit on something that is not a plane
+   * (the sky boss): the bullet's existence, age, one-hit rule and origin are
+   * judged exactly as for a plane hit (and the bullet is spent either way);
+   * what it hit is the caller's to judge. Returns the nose kept at the shot.
+   */
+  claimBullet(
+    shooterId: string,
+    seq: number,
+    bulletOrigin: Vec3,
+    shooterPos: Vec3,
+    now: number,
+    shooterCap: SpeedCapFn = unboosted,
+  ): BulletClaim {
+    const shooter = this.players.get(shooterId);
+    if (!shooter) return { ok: false, reason: "unknown" };
+    if (!shooter.alive) return { ok: false, reason: "shooter-dead" };
+    return this.takeBullet(
+      shooter,
+      seq,
+      bulletOrigin,
+      shooterPos,
+      now,
+      shooterCap,
+    );
+  }
+
+  /** The claimed bullet must exist, be young enough, and never have hit
+   * before — one bullet, one hit — and have left from where the shooter is
+   * on record. Spends it. */
+  private takeBullet(
+    shooter: PlayerCombat,
+    seq: number,
+    bulletOrigin: Vec3,
+    shooterPos: Vec3,
+    now: number,
+    shooterCap: SpeedCapFn,
+  ): BulletClaim {
+    const bullet = shooter.bullets.get(seq);
+    if (bullet === undefined || now - bullet.at > CLAIM_WINDOW_MS) {
+      return { ok: false, reason: "bullet" };
+    }
+    shooter.bullets.delete(seq);
+    const firedAt = bullet.at;
+
+    // The origin is the muzzle at FIRE time, but the on-record pose is the
+    // shooter's NOW — it kept flying for the bullet's whole age, at up to its
+    // own legal speed (boost included).
+    const age = Math.min(now - firedAt, ORIGIN_AGE_MAX_MS) / 1000;
+    const originSlack =
+      HIT_ORIGIN_SLACK + shooterCap(firedAt) * SPEED_TOLERANCE * age;
+    if (wrapDistance(bulletOrigin, shooterPos) > originSlack) {
+      return { ok: false, reason: "origin" };
+    }
+    return { ok: true, firedAt, dir: bullet.dir };
+  }
+
+  /** S4: one kill on `id`'s tally that no death pays for — a credited share
+   * of a downed sky boss. */
+  creditKill(id: string): void {
+    const p = this.players.get(id);
+    if (p) p.kills++;
   }
 
   /** Client-reported crash. Credits the last damager within DAMAGE_MEMORY_MS. */
@@ -317,22 +392,24 @@ export class Combat {
   }
 
   /**
-   * X1 environment damage (a missile blast): take `amount` off a living,
-   * unprotected plane. Nobody is credited for the damage itself — a lethal
-   * blast is an environment death that pays the last damager only by the
-   * crash rule. Null when nothing was applied (dead, protected, unknown).
+   * X1 environment damage (a missile blast; S4 a flak burst, `cause`
+   * "flak"): take `amount` off a living, unprotected plane. Nobody is
+   * credited for the damage itself — a lethal blast is an environment death
+   * that pays the last damager only by the crash rule. Null when nothing
+   * was applied (dead, protected, unknown).
    */
   environmentDamage(
     id: string,
     amount: number,
     now: number,
+    cause: "missile" | "flak" = "missile",
   ): { hp: number; death: Death | null } | null {
     const p = this.players.get(id);
     if (!p || !p.alive || !(amount > 0)) return null;
     if (now < p.protectedUntil) return null;
     p.hp -= amount;
     p.lastEnvDamagedAt = now;
-    const death = p.hp <= 0 ? this.environmentKill(id, "missile", now) : null;
+    const death = p.hp <= 0 ? this.environmentKill(id, cause, now) : null;
     return { hp: Math.round(Math.max(0, p.hp)), death };
   }
 
@@ -359,7 +436,7 @@ export class Combat {
    * the credit (PLAN.md kill-credit rule), else no one. */
   private environmentKill(
     id: string,
-    cause: "crash" | "storm" | "collapse" | "missile",
+    cause: "crash" | "storm" | "collapse" | "missile" | "flak",
     now: number,
   ): Death | null {
     const p = this.players.get(id);

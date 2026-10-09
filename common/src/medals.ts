@@ -159,6 +159,15 @@ export class MedalLedger {
     };
   }
 
+  /**
+   * S4: `id` dealt the most damage to a downed sky boss — SKY-BOSS SLAYER.
+   * The boss is not a pilot: no streak, no double-kill chain, no grudge, and
+   * no record kept for it.
+   */
+  bossKill(id: string): Award {
+    return { medals: ["boss"], tier: null, streak: this.streakOf(id) };
+  }
+
   /** A death ends the victim's streak; a credited one leaves a grudge. */
   death(victimId: string, killerId: string | null): void {
     const v = this.record(victimId);

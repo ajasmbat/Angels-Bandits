@@ -80,6 +80,10 @@ import {
   BOT_ATTACK_COOLDOWN_MS,
   BOT_ATTACK_PASS_MS,
   BOT_ATTACK_YAW,
+  BOT_BOSS_FIRE_RANGE,
+  BOT_BOSS_PASS_MS,
+  BOT_BOSS_PASS_RANGE,
+  BOT_BOSS_PREFERENCE,
   BOT_CANYON_ALT_MAX,
   BOT_CANYON_ALT_MIN,
   BOT_CANYON_GLIDE,
@@ -176,6 +180,9 @@ export interface BotContact {
   vel: Vec3;
   /** Spawn-protected contacts are skipped (their hits would be void anyway). */
   prot: boolean;
+  /** S4: a sky-boss weak point (`@boss:<k>`), not a plane: ranked, passed
+   * at and fired on by its own rules, and never a threat on the six. */
+  boss?: boolean;
 }
 
 /** One trigger pull emitted by tick() — index.ts routes it through Combat. */
@@ -1147,7 +1154,7 @@ export class RoomBots {
       // A threat parked close behind → break off instead of dragging it.
       const fwd = flightForward(bot.flight);
       const along = d.x * fwd.x + d.y * fwd.y + d.z * fwd.z;
-      if (dist < BOT_THREAT_RANGE && along < 0) {
+      if (!target.boss && dist < BOT_THREAT_RANGE && along < 0) {
         bot.evadeUntil = now + BOT_EVADE_MS;
         bot.breakTurn = bot.rand() < 0.5 ? -1 : 1;
         bot.state = "EVADE";
@@ -1530,7 +1537,8 @@ export class RoomBots {
   ): boolean {
     if (now < bot.attackUntil) return true;
     if (now < bot.attackCooldownUntil) return false;
-    if (target.pos.y <= BOT_ENGAGE_CEILING || dist > BOT_FIRE_RANGE) {
+    const reach = target.boss ? BOT_BOSS_PASS_RANGE : BOT_FIRE_RANGE;
+    if (target.pos.y <= BOT_ENGAGE_CEILING || dist > reach) {
       return false;
     }
     // Lined up in plan view — which a target nearly overhead never is: its
@@ -1541,7 +1549,8 @@ export class RoomBots {
       wrapAngle(Math.atan2(-aim.x, -aim.z) - bot.flight.yaw),
     );
     if (flat < BOT_ENGAGE_OVERHEAD || yawErr > BOT_ATTACK_YAW) return false;
-    bot.attackUntil = now + BOT_ATTACK_PASS_MS;
+    bot.attackUntil =
+      now + (target.boss ? BOT_BOSS_PASS_MS : BOT_ATTACK_PASS_MS);
     bot.attackCooldownUntil = bot.attackUntil + BOT_ATTACK_COOLDOWN_MS;
     return true;
   }
@@ -1897,7 +1906,10 @@ export class RoomBots {
       if (dist > BOT_DETECT_RANGE) continue;
       const score =
         dist +
-        Math.max(0, c.pos.y - BOT_ENGAGE_CEILING) * BOT_ACQUIRE_ALT_WEIGHT -
+        (c.boss
+          ? BOT_BOSS_PREFERENCE
+          : Math.max(0, c.pos.y - BOT_ENGAGE_CEILING) *
+            BOT_ACQUIRE_ALT_WEIGHT) -
         (c.id === bot.targetId ? BOT_RETARGET_MARGIN : 0);
       inRange.push({ c, score });
     }
@@ -2239,7 +2251,8 @@ export class RoomBots {
     if (!target) return null;
     const d = wrapDelta(bot.flight.pos, target.pos);
     const dist = Math.hypot(d.x, d.y, d.z);
-    if (dist > BOT_FIRE_RANGE || dist === 0) return null;
+    const range = target.boss ? BOT_BOSS_FIRE_RANGE : BOT_FIRE_RANGE;
+    if (dist > range || dist === 0) return null;
     const t = leadTime(dist, bot.flight.speed);
     const lx = d.x + target.vel.x * t;
     const ly = d.y + target.vel.y * t;
@@ -2291,7 +2304,8 @@ export function applyBotFire(
   shot: BotShot,
   now: number,
 ): boolean {
-  return combat.fire(shot.botId, shot.seq, now).ok;
+  // The nose rides with the bullet: a boss claim (S4) checks the line.
+  return combat.fire(shot.botId, shot.seq, now, shot.dir).ok;
 }
 
 /**

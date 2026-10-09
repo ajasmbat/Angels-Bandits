@@ -79,10 +79,16 @@ const bandScore = (nearest: number): number => Math.abs(nearest - BAND_MID);
  * closest to the RESPAWN_BAND middle, outside every nose cone, facing that
  * enemy. Every candidate in a cone (a crowded sky) falls back to the old
  * farthest-from-enemies rule; no enemies at all is a random spawn and yaw.
+ *
+ * `clear` (S4) vetoes candidates outright — a sky boss's hull crosses the
+ * spawn layer, and spawn protection does not stop a crash. It is asked with
+ * the heading the spawn would get (null: none yet — no enemies to face).
+ * A sky where nothing is clear keeps the unvetoed pick.
  */
 export function pickRespawn(
   enemies: readonly RespawnEnemy[],
   rand: () => number = Math.random,
+  clear?: (pos: Vec3, yaw: number | null) => boolean,
 ): SpawnState {
   let best: Vec3 | null = null;
   let bestScore = Number.POSITIVE_INFINITY;
@@ -95,6 +101,7 @@ export function pickRespawn(
       z: rand() * WORLD_SIZE,
     };
     const nearest = nearestDistance(candidate, enemies);
+    if (clear && !clear(candidate, facing(candidate, enemies))) continue;
     if (nearest > farScore) {
       far = candidate;
       farScore = nearest;
@@ -106,9 +113,28 @@ export function pickRespawn(
       bestScore = score;
     }
   }
-  // RESPAWN_BAND_SAMPLES ≥ 1, so `far` is always set.
+  // Every candidate vetoed (never, in practice): the plain pick instead.
+  if (!best && !far) return pickRespawn(enemies, rand);
+  // RESPAWN_BAND_SAMPLES ≥ 1, so `far` is otherwise always set.
   const pos = best ?? (far as Vec3);
   return { pos, yaw: yawToNearest(pos, enemies, rand), speed: RESPAWN_SPEED };
+}
+
+/** The yaw yawToNearest would give `pos` without drawing from the stream:
+ * null when there is no enemy to face (the yaw would be random). */
+function facing(pos: Vec3, enemies: readonly RespawnEnemy[]): number | null {
+  if (enemies.length === 0) return null;
+  let target: Vec3 | null = null;
+  let nearest = Number.POSITIVE_INFINITY;
+  for (const enemy of enemies) {
+    const dist = wrapDistance(pos, enemy.pos);
+    if (dist < nearest) {
+      nearest = dist;
+      target = enemy.pos;
+    }
+  }
+  const d = wrapDelta(pos, target as Vec3);
+  return Math.atan2(-d.x, -d.z);
 }
 
 /** Yaw that puts the nose on the nearest enemy (yaw 0 flies -Z, so

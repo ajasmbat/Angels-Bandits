@@ -342,6 +342,7 @@ import { RiverRenderer } from "./render/river";
 import { RoofClutterRenderer } from "./render/roofclutter";
 import { RooftopLifeRenderer } from "./render/rooftop-life";
 import { ScaffoldRenderer } from "./render/scaffold";
+import { attachStanding, setStandingClock } from "./render/standing-watch";
 import { Searchlights } from "./render/searchlights";
 import { Signage } from "./render/signage";
 import { Signals } from "./render/signals";
@@ -744,6 +745,9 @@ city.attachDamage(socket.cityDamage);
 // D3: and the room's collapses (debris falling and landed), likewise held by
 // the socket since the welcome — bound to the same buildings.
 city.attachCollapses(socket.collapses);
+// D8: every per-building layer re-seats its dressing to what still stands,
+// holding a building back until its collapse starts on the render clock.
+attachStanding(socket.cityDamage, socket.collapses);
 // Roof clutter + landmark beacons dress the same shared Building[] (V2).
 const roofClutter = new RoofClutterRenderer(city.cityBuildings);
 scene.add(roofClutter.group);
@@ -3906,6 +3910,7 @@ const frame = (now: number): void => {
   }
   const renderMs = qaWorld !== null ? qaWorld.ms : frameClock.time;
   lastRenderMs = renderMs;
+  setStandingClock(renderMs); // D8
   planeLights.begin(); // own + remote lights re-append every frame
   moverLights.begin(); // crane/aircraft lights + firework sparks, same deal
   // Cursor smoothing + the leave-the-window fade run alive or dead, so

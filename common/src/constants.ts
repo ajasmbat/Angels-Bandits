@@ -1084,6 +1084,69 @@ export const BOT_HOLE_LINEUP_MAX = 450;
 export const BOT_HOLE_FOLLOW_MS = 3000;
 export const BOT_HOLE_FOLLOW_RANGE = 400;
 
+// --- Tactics (B3, ANGE-13M8PA) — how a bot fights, not just whether ---
+/** Boom-and-zoom: a bot at least this far above its target dives on it at
+ * full power, m… */
+export const BOT_BOOM_ALT = 35;
+/** …and after the pass extends instead of turning with it (the zoom):
+ * straight down the lattice at its band for this long, ms. */
+export const BOT_ZOOM_MS = 2500;
+/** No new boom pass before the zoom has had this long to land, ms. */
+export const BOT_BOOM_COOLDOWN_MS = 4000;
+/** Pincer: each of two attackers aims this far off its target's track to
+ * its own side, m, shrinking with range so the guns converge inside fire
+ * range. */
+export const BOT_PINCER_OFFSET = 120;
+/** Extra street-settling time after BOT_SPAWN_GRACE_MS before a fresh bot
+ * joins the fight, ms — still inside the BOT_SPAWN_CLEAR_AHEAD run-out
+ * (6 s at BOT_SPAWN_SPEED) spawnClear verified. Measured: fresh-spawn
+ * crashes in the 54-room hazard sim 22/732 → 13/690. */
+export const BOT_SPAWN_SETTLE_MS = 2000;
+/** A broken-off bot comes back after this long whatever its HP, ms — repeated
+ * damage holding regen off must not park it out of the fight forever. */
+export const BOT_BREAK_MAX_MS = 20000;
+/** Hole chance while breaking off — a hole is the best way out of a fight. */
+export const BOT_HOLE_ESCAPE_CHANCE = 0.8;
+/** Defensive aerobatics (F7's loop and roll, flown by bots): only above this
+ * altitude, m — down in the canyon the defense is the street jink… */
+export const BOT_DEFEND_MIN_ALT = 150;
+/** …at most once per this, ms… */
+export const BOT_DEFEND_COOLDOWN_MS = 6000;
+/** …and only after a rollout of the whole maneuver plus this much level
+ * flight after it clears everything solid with PLAYER_RADIUS + this, m. */
+export const BOT_DEFEND_TAIL_S = 2;
+export const BOT_DEFEND_MARGIN = 6;
+/** …and never topping out above this, m: a loop from the floor climbs
+ * ~150 m, and above here is the zeppelin's sky (S4 hull ~280–300 m). */
+export const BOT_DEFEND_MAX_ALT = 240;
+/** The longest maneuver a rollout may fly before it must have ended, s. */
+export const BOT_DEFEND_MAX_S = 9;
+
+// --- Skill scaling (B3) — bots adapt to each human's rolling K/D ---
+/** EMA weight of one fresh outcome (a kill or a death between a human and
+ * a bot) on that human's win share. */
+export const BOT_SKILL_ALPHA = 0.15;
+/** The skill level moves only once the K/D-derived level leaves the current
+ * one by more than this — the hysteresis. */
+export const BOT_SKILL_DEADBAND = 0.3;
+/** Aim-jitter multiplier against the weakest and the strongest human… */
+export const BOT_SKILL_JITTER_NOVICE = 1.6;
+export const BOT_SKILL_JITTER_VETERAN = 0.8;
+/** …and the reaction-delay multiplier: a veteran's bots shoot no sooner
+ * than BOT_REACTION_MS (the F4 fairness floor) — they aim better instead. */
+export const BOT_SKILL_REACTION_NOVICE = 1.4;
+export const BOT_SKILL_REACTION_VETERAN = 1;
+/** K/D at which the level saturates either way (1/this and this). */
+export const BOT_SKILL_KD_SPAN = 3;
+/** …and how long a bot waits between attack passes at them, ×
+ * BOT_ATTACK_COOLDOWN_MS: the aggression half of the scaling. */
+export const BOT_SKILL_COOLDOWN_NOVICE = 1.6;
+export const BOT_SKILL_COOLDOWN_VETERAN = 0.6;
+/** Anti-farming: a human at level −1 ranks this many metres further away
+ * for a bot per OTHER bot already on them — so a struggling pilot meets one
+ * attacker at a time, not the whole room. */
+export const BOT_SKILL_GANG_PENALTY = 150;
+
 // --- Tunnels (U4) — bots fly the underground network too ---
 // A bore is an edge of the bots' graph like a hole: a patrol near a portal
 // or a river mouth rolls once per encounter, a chaser follows a target that

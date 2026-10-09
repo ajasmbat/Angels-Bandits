@@ -4,6 +4,8 @@
 // strictly-validated BANDIT-<n> bot callsigns (see callouts.ts safeCallsign)
 // — free-text player names are a TTS griefing vector and stay ticker-only.
 
+import type { BotStyle } from "@angels-bandits/common/botstyle";
+
 /** Event brevity calls (voice text / ticker text pairs live in callouts.ts). */
 export const PHRASE = {
   splashOne: "Splash one.",
@@ -70,3 +72,32 @@ export const AMBIENT_PHRASES: readonly string[] = [
   "Engaging enemy.",
   "Roger, prepare for medevac.",
 ];
+
+/**
+ * B3 bot personalities on the net: each style's ambient lines — a voiced
+ * subset of AMBIENT_PHRASES (every one already rendered), so a bot's chatter
+ * sounds like its style without a single new line for the TTS bank.
+ */
+export const STYLE_AMBIENT: Readonly<Record<BotStyle, readonly string[]>> = {
+  aggressive: [
+    "Engaging enemy.",
+    "Keeping it low between the towers.",
+    "No bandits this pass, turning back.",
+    "Quiet night so far. Stay sharp.",
+    "Passing the north sector, no joy.",
+  ],
+  sniper: [
+    "Steady heading, scanning low.",
+    "Holding angels three, all quiet.",
+    "Watch the supertall on the east line.",
+    "Rooftop beacons in sight, on course.",
+    "Skyline clear on my side.",
+  ],
+  wingman: [
+    "Copy, holding pattern.",
+    "Copy that, resuming patrol.",
+    "Comm check, loud and clear.",
+    "Two, say fuel. Fuel state green.",
+    "Two circuits done, starting a third.",
+  ],
+};

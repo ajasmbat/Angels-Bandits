@@ -34,7 +34,11 @@ import {
 import { natureFor } from "@angels-bandits/common/city/nature";
 import { setNewsTarget } from "@angels-bandits/common/city/newsheli";
 import { bridgeSpans } from "@angels-bandits/common/city/river";
-import { TUNNELS } from "@angels-bandits/common/city/tunnels";
+import {
+  TUNNELS,
+  guideY,
+  tunnelPointInto,
+} from "@angels-bandits/common/city/tunnels";
 import { buildNatureIndex } from "@angels-bandits/common/collision";
 import {
   AWAY_MIN_MS,
@@ -89,6 +93,7 @@ import {
 } from "@angels-bandits/common/weather";
 import {
   type Vec3,
+  wrapCoord,
   wrapDelta,
   wrapDeltaAxis,
   wrapDistance,
@@ -215,6 +220,14 @@ import { speedFov } from "./game/jet-camera";
 import { magnetizeVelocity } from "./game/magnetism";
 import { MissileFeed, MissileShake } from "./game/missile-feed";
 import {
+  type QaChaosSpec,
+  type QaChaosStage,
+  clearQaChaos,
+  qaChaosFrame,
+  qaStrikesInAir,
+  stageChaos,
+} from "./game/qa-chaos";
+import {
   QA_ID_BASE,
   type QaDestructionSpec,
   stageDestruction,
@@ -262,6 +275,7 @@ import { FacadeGarnishRenderer } from "./render/facade-garnish";
 import { FacadeLifeRenderer } from "./render/facade-life";
 import { FireRenderer } from "./render/fires";
 import { Fireworks } from "./render/fireworks";
+import { PlaneFleet } from "./render/fleet";
 import { installHeightFog } from "./render/fog";
 import { Fountains } from "./render/fountains";
 import { Explosions, Sparks } from "./render/fx";
@@ -275,6 +289,7 @@ import { Jumbotrons } from "./render/jumbotrons";
 import { lookPasses } from "./render/lookup";
 import { MissileRenderer } from "./render/missiles";
 import { MoverLights, Movers } from "./render/movers";
+import { NameTagBatch } from "./render/nametags";
 import { NatureRenderer } from "./render/nature";
 import { Pedestrians } from "./render/pedestrians";
 import { FrameMeter, type FrameStats, percentile } from "./render/perfmeter";
@@ -1205,6 +1220,8 @@ scene.add(bossRenderer.group);
 /** S8 QA (`__ab.qaBoss`): the staged raid and its flak schedule, and how
  * many shells the server sent while it was staged (dropped each frame). */
 let qaBoss: QaBossStage | null = null;
+/** P4 QA (`__ab.qaChaos`): the staged chaos scene (game/qa-chaos.ts). */
+let qaChaos: QaChaosStage | null = null;
 let qaForeignShells = 0;
 /** S4: each weak point's full HP on the current raid (the HUD bar's scale),
  * rebuilt only when the raid changes — never per frame. */
@@ -1357,6 +1374,20 @@ const strikeLog: { timeMs: number; x: number; z: number }[] = [];
 
 const plane = buildPlaneMesh();
 scene.add(plane);
+/** P4: the storm-reveal tint in linear space (the fleet's glow). */
+const REVEAL_LIN = new THREE.Color(REVEAL_COLOR);
+/** P4: the own plane's glow this frame (handed to the fleet). */
+const selfGlow = { r: 0, g: 0, b: 0 };
+// P4: every plane (own + remotes) drawn by one set of instanced draws and
+// every name tag by one (render/fleet.ts, nametags.ts). `?fleet=0` keeps
+// the per-plane meshes and sprites.
+const fleet = renderOpts.fleet ? new PlaneFleet() : null;
+const tagBatch = renderOpts.fleet ? new NameTagBatch() : null;
+if (fleet) {
+  scene.add(fleet.group);
+  fleet.adopt(plane);
+}
+if (tagBatch) scene.add(tagBatch.mesh);
 
 // Night visibility (ANGE-L7F2OS): every plane's aviation lights share one
 // Points draw call, every plane's wingtip ribbons one mesh — planes light
@@ -1373,6 +1404,8 @@ const remotes = new RemotePlanes(
   socket.selfId,
   planeLights,
   planeTrails,
+  fleet,
+  tagBatch,
 );
 remotes.setRoster(welcome.roster);
 
@@ -1598,6 +1631,9 @@ const wreckEye: Vec3 = { x: 0, y: 0, z: 0 };
 const wreckAt: Vec3 = { x: 0, y: 0, z: 0 };
 // Server-said combat state about self (snapshots), kept for HUD + QA.
 let selfHp = MAX_HP;
+/** P4 QA (`__ab.qaPlaneHp`): the HP the own airframe is DRAWN at (battle
+ * damage), for the fleet's visual check; null = the server's. */
+let qaPlaneHp: number | null = null;
 /** The own plane's control-surface commands, from the last flight step. */
 let ownControls: ControlDeflection = NEUTRAL_CONTROLS;
 let selfProt = true;
@@ -2272,6 +2308,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   courseGhost.setQuality(tier); // S3: MOBILE keeps the rings, drops the ghost
   atmosphere.setQuality(tier); // S5
   tunnels.setQuality(tier); // U4: MOBILE drops the fixtures
+  fleet?.setQuality(tier); // P4: MOBILE drops the glass and scarf
   underground.setQuality(tier); // U5: bands thin to the core
   reflections.setQuality(tier); // S6: faces per frame; Mobile off
   applyPostQuality();
@@ -2667,7 +2704,51 @@ declare global {
         drawn: BomberRenderer["stats"];
         /** The render clock the frame loop last drew at. */
         renderMs: number | null;
+        /** P4: a staged chaos scene holds the slots (null: none), what of
+         * it is in the air now, and server strikes dropped while staged. */
+        staged: {
+          strikes: number;
+          inAir: ReturnType<typeof qaStrikesInAir>;
+          run: boolean;
+          quake: boolean;
+          fires: number;
+          foreign: number;
+        } | null;
+        /** P4: the missile and meteor bodies drawn last frame. */
+        missilesDrawn: MissileRenderer["stats"];
+        /** P4: C2 chaos messages the server has sent this session. */
+        serverChaos: number;
       };
+      /** P4: the world clock the frame loop last drew at (null: none yet). */
+      renderMs: () => number | null;
+      /** P4 QA: draw the own airframe at this HP (battle damage) — the
+       * look only, never the server's HP; null restores it. */
+      qaPlaneHp: (hp: number | null) => void;
+      /** P4 QA: the pose `d` m along tunnel `id`'s guide line from arc
+       * length `s0` (negative: from the far end), heading +s; past the far
+       * end it climbs at `climbDeg`. Read-only (the harness's glide). */
+      tunnelPose: (
+        id: number,
+        s0: number,
+        d: number,
+        climbDeg: number,
+      ) => { x: number; y: number; z: number; yaw: number };
+      /** P4: the plane fleet last frame — planes drawn (near / far LOD)
+       * and the draws they cost; null under `?fleet=0`. */
+      fleet: () => {
+        planes: number;
+        near: number;
+        far: number;
+        draws: number;
+      } | null;
+      /** P4 QA: stage a C2 chaos scene around a held view on the pinned
+       * world clock (game/qa-chaos.ts); null clears it. */
+      qaChaos: (spec: QaChaosSpec | null) => {
+        strikes: number;
+        run: boolean;
+        quake: boolean;
+        fires: number;
+      } | null;
       jumbotronView: (
         i: number,
         distance?: number,
@@ -3076,6 +3157,14 @@ function qaSystems(): {
     ["fogBanks", [atmosphere.fogBanks.mesh]],
     ["litter", [atmosphere.litter.points]],
     ["plane", [plane, planeLights.points, planeTrails.mesh]],
+    // P4: every plane's airframe and every name tag (the own plane's and
+    // the remotes' meshes are off every layer while the fleet draws them).
+    ...(fleet && tagBatch
+      ? ([["fleet", [fleet.group, tagBatch.mesh]]] as [
+          string,
+          THREE.Object3D[],
+        ][])
+      : []),
     ["tracers", [tracers.group]],
   ];
   const seen = new Set(named.flatMap(([, objects]) => objects));
@@ -3458,6 +3547,61 @@ window.__ab = {
       strikes,
       drawn: bomberRenderer.stats,
       renderMs: lastRenderMs,
+      staged:
+        qaChaos === null
+          ? null
+          : {
+              strikes: qaChaos.strikes.length,
+              inAir: qaStrikesInAir(socket.missiles, lastRenderMs ?? 0),
+              run: qaChaos.run !== null,
+              quake:
+                qaChaos.quake !== null && socket.quakes.has(qaChaos.quake.id),
+              fires: qaChaos.fires.length,
+              foreign: qaChaos.foreign,
+            },
+      missilesDrawn: missileRenderer.stats,
+      serverChaos: socket.serverChaos,
+    };
+  },
+  renderMs: () => lastRenderMs,
+  qaPlaneHp: (hp) => {
+    qaPlaneHp = hp;
+  },
+  tunnelPose: (id, s0, d, climbDeg) => {
+    const t = TUNNELS[id];
+    if (!t) throw new Error(`tunnelPose: no tunnel ${id}`);
+    const s = (s0 < 0 ? t.length + s0 : s0) + d;
+    const at = tunnelPointInto(t, s, { x: 0, z: 0, th: 0 });
+    const past = Math.max(0, s - t.length);
+    return {
+      x: wrapCoord(at.x),
+      y: guideY(t, s) + past * Math.tan((climbDeg * Math.PI) / 180),
+      z: wrapCoord(at.z),
+      // Heading th points (cos th, sin th); yaw 0 faces −Z.
+      yaw: Math.atan2(-Math.cos(at.th), -Math.sin(at.th)),
+    };
+  },
+  fleet: () =>
+    fleet && tagBatch
+      ? {
+          ...fleet.stats,
+          draws: fleet.drawCount + (tagBatch.mesh.count > 0 ? 1 : 0),
+        }
+      : null,
+  // P4 QA: stage C2's chaos around a held view on the world clock — a
+  // missile schedule, meteors, a bomber run, a quake, fires; null clears it.
+  qaChaos: (spec) => {
+    if (qaChaos !== null) {
+      clearQaChaos(qaChaos, socket);
+      qaChaos = null;
+    }
+    if (spec === null) return null;
+    qaChaos = stageChaos(spec, city.cityIndex, city.cityBuildings);
+    return {
+      strikes: qaChaos.strikes.length,
+      run: qaChaos.run !== null,
+      quake: qaChaos.quake !== null,
+      fires: qaChaos.fires.length,
     };
   },
   jumbotronView: (i, distance) => jumbotrons.view(i, distance),
@@ -3467,7 +3611,9 @@ window.__ab = {
   micro: (at) => {
     const time =
       at === undefined ? (worldTime() ?? performance.now()) : (at ?? 0);
-    const gate = microOn ? microGate(chase.position.y) : 0;
+    const gate = microOn
+      ? microGate(chase.position.y, QUALITY_PROFILES[qualityTier].microGate)
+      : 0;
     return {
       gate,
       cameraY: chase.position.y,
@@ -3610,7 +3756,8 @@ window.__ab = {
     }
   },
   qaImpactsHidden: (hidden) => {
-    impacts.points.visible = !hidden;
+    impacts.qaHidden = hidden;
+    impacts.points.visible = !hidden && impacts.liveCount > 0;
   },
   qaSystems: () => qaSystems().map((s) => s.name),
   qaHide: (names) => {
@@ -3904,7 +4051,13 @@ socket.sendPing(); // W1: the rest of the boot was built synchronously
 renderer.initTexture(city.damageAtlas); // D1: never a first-hit upload hitch
 // S5: the shafts pass links its program now, whatever the tier or the moon.
 if (shaftsPass) shaftsPass.forceOnce = true;
+// P4: the fleet and tag batch draw one parked instance through the warm-up
+// (an instanced mesh with no instance issues no draw to warm).
+fleet?.warm(true);
+tagBatch?.warm(true);
 await prewarmScene(renderer, scene, camera, composer);
+fleet?.warm(false);
+tagBatch?.warm(false);
 // S6: every light joins the probe's layer (same light counts → the probe
 // pass resolves the programs just pre-warmed), then the first full fill —
 // behind the boot fade, and it links the cube targets' framebuffers now.
@@ -4344,10 +4497,12 @@ const frame = (now: number): void => {
             ? warningTremor(socket.director.values(), flight.pos, renderMs)
             : 0,
           socket.quakes.size > 0
-            ? quakeShakeAmount(socket.quakes.values(), flight.pos, renderMs)
+            ? quakeShakeAmount(socket.quakes, flight.pos, renderMs)
             : 0,
         ),
-        now,
+        // P4 QA: on the pinned world clock the jolt's phase is the world's
+        // too, so a staged quake shakes the view identically every pass.
+        qaWorld !== null ? renderMs : now,
       );
       camShake.x += jolt.x;
       camShake.y += jolt.y;
@@ -4370,7 +4525,7 @@ const frame = (now: number): void => {
     plane.rotation.set(flight.pitch, flight.yaw, flight.roll, "YXZ");
     // Prop speed tracks the commanded throttle (same factor as remotes').
     spinPropeller(plane, dt * Math.min(flight.targetSpeed, cornerCap) * 0.7);
-    animatePlane(plane, ownControls, flight.speed, selfHp, dt);
+    animatePlane(plane, ownControls, flight.speed, qaPlaneHp ?? selfHp, dt);
     // Own aviation lights + wingtip trails (strobe on the synced clock so
     // every client sees this plane blink at the same instant).
     planeLights.place(
@@ -4535,23 +4690,34 @@ const frame = (now: number): void => {
 
   classifyMs = classifyTotal;
 
+  fleet?.begin();
+  tagBatch?.begin();
   remotes.update(frameClock, chase.position, dt, now, (id) =>
     reveals.levelOf(id, now),
   );
   // Own rim-flash: the storm lit us up — same tint the remotes wear.
   const selfReveal = alive ? reveals.levelOf(socket.selfId, now) : 0;
-  plane.traverse((child) => {
-    if (child instanceof THREE.Mesh) {
-      const mat = child.material as THREE.MeshStandardMaterial;
-      if (selfReveal > 0) {
-        mat.emissive.setHex(REVEAL_COLOR);
-        mat.emissiveIntensity = selfReveal * REVEAL_INTENSITY;
-      } else if (mat.emissive.getHex() === REVEAL_COLOR) {
-        mat.emissive.setHex(0x000000);
-        mat.emissiveIntensity = 1;
+  if (fleet) {
+    // P4: the fleet draws the own plane too; its glow is the reveal tint.
+    const k = selfReveal * REVEAL_INTENSITY;
+    selfGlow.r = REVEAL_LIN.r * k;
+    selfGlow.g = REVEAL_LIN.g * k;
+    selfGlow.b = REVEAL_LIN.b * k;
+    fleet.add(plane, selfGlow);
+  } else {
+    plane.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        const mat = child.material as THREE.MeshStandardMaterial;
+        if (selfReveal > 0) {
+          mat.emissive.setHex(REVEAL_COLOR);
+          mat.emissiveIntensity = selfReveal * REVEAL_INTENSITY;
+        } else if (mat.emissive.getHex() === REVEAL_COLOR) {
+          mat.emissive.setHex(0x000000);
+          mat.emissiveIntensity = 1;
+        }
       }
-    }
-  });
+    });
+  }
   planeLights.commit();
   planeTrails.update(chase.position, now);
 
@@ -4669,7 +4835,9 @@ const frame = (now: number): void => {
   // Kill-cam note: chase.update() only runs while alive, so during the death
   // beat the gate reads a frozen camera altitude. That is correct — the view
   // is frozen too.
-  const microK = microOn ? microGate(chase.position.y) : 0;
+  const microK = microOn
+    ? microGate(chase.position.y, QUALITY_PROFILES[qualityTier].microGate)
+    : 0;
   pedestrians.update(
     chase.position,
     renderMs,
@@ -4713,6 +4881,11 @@ const frame = (now: number): void => {
   }
   // X1 missiles on the synced clock: whistles, the "incoming" call, impacts,
   // then the bodies and their trails (fed before the smoke pass below).
+  // P4 QA: a staged chaos scene re-applied on the world clock (its strikes
+  // join the socket's map as they launch; server strikes are dropped).
+  if (qaChaos !== null && renderMs !== null) {
+    qaChaosFrame(qaChaos, renderMs, socket);
+  }
   if (renderMs !== null) {
     const mf = missileFeed.poll(
       socket.missiles,
@@ -5003,6 +5176,10 @@ const frame = (now: number): void => {
     camera.position.set(eye.x, eye.y, eye.z);
     camera.lookAt(at.x, at.y, at.z);
   }
+  // P4: the plane fleet, once the camera is final (each plane's LOD level
+  // and matrices are taken now, so none is drawn a frame late).
+  fleet?.commit(camera);
+  tagBatch?.commit();
   // S5 atmosphere, once the camera is final (shimmer and shafts project
   // through it): fog banks clear of every plane, litter kicked by low
   // passes, all on the latched world clock.

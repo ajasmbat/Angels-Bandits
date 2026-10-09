@@ -76,7 +76,7 @@ const FABRIC_SAG = 0.007;
 // Materials (per plane)
 
 /** The material groups static geometry is merged into. */
-type GroupKey =
+export type GroupKey =
   | "body"
   | "trim"
   | "metal"
@@ -687,7 +687,7 @@ function fuselageGeometry(): THREE.BufferGeometry {
 // ---------------------------------------------------------------------------
 // The shared airframe
 
-interface Pivot {
+export interface Pivot {
   position: THREE.Vector3;
   /** Rest rotation (the aileron hinge follows the dihedral). */
   rotation: THREE.Euler;
@@ -1431,6 +1431,27 @@ function scarfGeometry(): THREE.BufferGeometry {
   // Fixed, generous bounds: the strip is rewritten every frame.
   g.boundingSphere = new THREE.Sphere(SCARF_ROOT.clone().setZ(-1.3), 1.2);
   return g;
+}
+
+/**
+ * P4 plane fleet (fleet.ts): the shared airframe every plane draws, a set of
+ * classic-livery materials to read the per-group parameters from, the hinge
+ * pivots and the prop hub's offset. The fleet merges these into its own
+ * instanced draws; nothing here is mutated.
+ */
+export function biplaneSources(): {
+  shared: SharedGeometry;
+  materials: BiplaneMaterials;
+  groupKeys: readonly GroupKey[];
+  propZ: number;
+} {
+  const s = sharedGeometry();
+  return {
+    shared: s,
+    materials: materials(CLASSIC_LIVERY, s),
+    groupKeys: GROUP_KEYS,
+    propZ: PROP_Z,
+  };
 }
 
 export function createBiplane(livery: Livery = CLASSIC_LIVERY): Biplane {

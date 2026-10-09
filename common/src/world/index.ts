@@ -79,8 +79,13 @@ export function wrapDeltaInto(from: Vec3, to: Vec3, out: Vec3): Vec3 {
 
 /** Euclidean length of the shortest torus vector between `a` and `b` (altitude included). */
 export function wrapDistance(a: Vec3, b: Vec3): number {
-  const d = wrapDelta(a, b);
-  return Math.hypot(d.x, d.y, d.z);
+  // P4: the same three components wrapDelta returns, without building it —
+  // this runs per fire, per missile and per probe every frame.
+  return Math.hypot(
+    wrapDeltaAxis(a.x, b.x),
+    b.y - a.y,
+    wrapDeltaAxis(a.z, b.z),
+  );
 }
 
 /**

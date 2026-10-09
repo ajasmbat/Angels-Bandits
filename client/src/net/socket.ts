@@ -163,6 +163,13 @@ export interface FrameClock {
 }
 
 const POSE_INTERVAL_MS = 1000 / TICK_UP_HZ;
+
+/** pruneChaos's quake walk (P4: Map.forEach with a module-level callback —
+ * `for…of` built an iterator and an entry array per quake, per frame). */
+const prune = { quakes: null as Map<number, QuakeEvent> | null, t: 0 };
+const pruneQuake = (q: QuakeEvent, id: number): void => {
+  if (!quakeLive(q, prune.t)) prune.quakes?.delete(id);
+};
 /** W2 dead-socket watchdog cadence, ms. */
 const WATCHDOG_MS = 1000;
 
@@ -215,6 +222,10 @@ export class GameSocket {
    * that carried any. A quiet city (AB_QUIET_CITY) sends none, so a segment
    * that saw this move measured something the harness did not stage. */
   serverDestruction = 0;
+  /** P4: C2 chaos messages received (bombers, downs, called-off bombs,
+   * quakes, fires; meteors arrive as `missile`, counted above) — a quiet
+   * city sends none, so a chaos segment's window must see none. */
+  serverChaos = 0;
   /** D6 (perf harness): sessions resumed after a drop (W2) — a resume
    * respawns the plane and replays the room, so a measured window that saw
    * one is not the scene it set up. */
@@ -487,8 +498,11 @@ export class GameSocket {
         if (downs[j]?.r === r.id) downs.splice(j, 1);
       }
     }
-    for (const [id, q] of this.quakes)
-      if (!quakeLive(q, t)) this.quakes.delete(id);
+    if (this.quakes.size === 0) return;
+    prune.quakes = this.quakes;
+    prune.t = t;
+    this.quakes.forEach(pruneQuake);
+    prune.quakes = null;
   }
 
   /** Hold every decodable missile of a welcome/event list (dupes are
@@ -770,6 +784,7 @@ export class GameSocket {
         this.addMissiles([msg.m]);
         break;
       case "bombers": {
+        this.serverChaos++;
         const r = decodeBomberRun(msg.r);
         if (r && !this.bombers.runs.some((x) => x.id === r.id)) {
           this.bombers.runs.push(r);
@@ -778,6 +793,7 @@ export class GameSocket {
         break;
       }
       case "bomberDown": {
+        this.serverChaos++;
         const d = decodeBomberDown(msg.d);
         if (d) {
           this.bombers.downs.push(d);
@@ -789,11 +805,13 @@ export class GameSocket {
         break;
       }
       case "bombsOff":
+        this.serverChaos++;
         for (const id of Array.isArray(msg.ids) ? msg.ids : []) {
           this.missiles.delete(id);
         }
         break;
       case "quake": {
+        this.serverChaos++;
         const q = decodeQuake(msg.q);
         if (q) {
           this.quakes.set(q.id, q);
@@ -802,6 +820,7 @@ export class GameSocket {
         break;
       }
       case "fires":
+        this.serverChaos++;
         for (const id of decodeChunkIds(msg.on)) this.fires.add(id);
         for (const id of decodeChunkIds(msg.off)) this.fires.delete(id);
         break;

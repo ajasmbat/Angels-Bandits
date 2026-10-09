@@ -17,6 +17,8 @@
 //   ?quality=auto|high|medium|low|mobile   graphics tier (default: the
 //                         player's saved pick, else DEFAULT_QUALITY — see
 //                         quality.ts; Mobile is M3's phone tier)
+//   ?fleet=0              P4: every plane draws its own meshes and tag
+//                         sprite instead of the batched plane fleet (fleet.ts)
 
 import { type QualitySetting, parseQualitySetting } from "./quality";
 import { defaultLimits } from "./resolution";
@@ -113,6 +115,12 @@ export interface RenderOptions {
    * and the gallery's before shots, out of one build.
    */
   reflections: boolean;
+  /**
+   * P4: the plane fleet (render/fleet.ts) — every plane, own and remote, in
+   * one set of instanced draws, and every name tag in one. `?fleet=0` keeps
+   * the per-plane meshes and sprites: the rollback, and a paired A/B.
+   */
+  fleet: boolean;
 }
 
 export type PostMode = "fused" | "legacy";
@@ -128,6 +136,7 @@ export const DEFAULT_RENDER_OPTIONS: RenderOptions = {
   quality: null,
   post: "fused",
   reflections: true,
+  fleet: true,
 };
 
 const AA_MODES: readonly AaMode[] = ["legacy", "off", "msaa", "smaa"];
@@ -199,6 +208,9 @@ export function readRenderOptions(
 
   const refl = params.get("refl");
   if (refl !== null) opts.reflections = refl !== "0" && refl !== "false";
+
+  const fleet = params.get("fleet");
+  if (fleet !== null) opts.fleet = fleet !== "0" && fleet !== "false";
 
   return opts;
 }

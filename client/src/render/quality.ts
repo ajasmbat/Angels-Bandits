@@ -98,6 +98,12 @@ export interface QualityProfile {
    * steam, signals and construction sparks stream in (BLOCK_WINDOW_RADIUS is
    * the ceiling; their buffers stay sized for it, so this only moves counts). */
   microRadius: number;
+  /** P4: the micro tier's altitude gate, scaled (streetlife.ts microGate:
+   * 1 = full up to 100 m of camera height and gone by 140 m). Mobile
+   * fades it out between 75 and 105 m: from there the street life is a few
+   * pixels on a phone, and it was ~7 draws in the peak-chaos view (114 m).
+   * No harness view sits on an edge of the band (`core` flies at ~94 m). */
+  microGate: number;
   /** L7 sign animation (tickers, chases, video). Off = each sign's static art. */
   signAnimation: boolean;
   /** S1 the jumbotrons' LAST KILL shot (one small render pass per kill).
@@ -213,6 +219,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     grade: true,
     steamDensity: 1,
     microRadius: 2,
+    microGate: 1,
     signAnimation: true,
     jumbotronReplay: true,
     windowInteriors: true,
@@ -259,6 +266,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     grade: true,
     steamDensity: 1,
     microRadius: 2,
+    microGate: 1,
     signAnimation: true,
     jumbotronReplay: true,
     windowInteriors: true,
@@ -305,6 +313,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     grade: true,
     steamDensity: 1,
     microRadius: 2,
+    microGate: 1,
     signAnimation: true,
     jumbotronReplay: true,
     windowInteriors: true,
@@ -351,6 +360,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     grade: false,
     steamDensity: 0.5,
     microRadius: 1,
+    microGate: 0.75,
     signAnimation: false,
     jumbotronReplay: false,
     windowInteriors: false,
@@ -943,6 +953,38 @@ export const FEATURE_TIERS: readonly {
     low: "reduced",
     mobile: "off",
     note: "one 128 px cube probe, 1 / 0.5 / 0.34 faces per frame (a full refresh every 6 / 12 / 18 frames); off = no probe pass and the faked reflections",
+  },
+  {
+    feature: "P3 polish — HUD, menus, hit juice, camera-shake budget",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "P4: DOM, CSS and audio, no draw; the shake budget is the same on every tier (reduced motion halves it)",
+  },
+  {
+    feature: "P4 plane fleet — every plane in one set of instanced draws",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "reduced",
+    note: "the own plane and every remote: 6 near draws + 2 impostor draws whatever the room holds (was 15 a plane); airframe, hinges, prop, blur, livery, damage and glow on every tier — Mobile leaves out the windscreen glass and the scarf",
+  },
+  {
+    feature: "P4 street life from altitude — the micro tier's fade height",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "reduced",
+    note: "pedestrians, city life, steam, signals, construction sparks and street furniture fade out between 100 and 140 m of camera height; Mobile between 75 and 105 m (a few pixels on a phone; ~7 draws in the peak-chaos view)",
+  },
+  {
+    feature: "P4 name tags — one batched draw",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "identity: every remote's tag on every tier, one instanced billboard over a canvas atlas (was a sprite draw each)",
   },
 ];
 

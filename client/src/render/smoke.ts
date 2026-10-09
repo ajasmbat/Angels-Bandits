@@ -261,6 +261,8 @@ export class SmokeTrails {
     const i = this.walk.i;
     this.lastPuffCount = i;
     this.points.geometry.setDrawRange(0, i);
+    // P4: three still issues a (counted) draw for an empty range.
+    this.points.visible = i > 0;
     uploadPrefix(this.uploads, i);
   }
 

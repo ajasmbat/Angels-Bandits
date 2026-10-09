@@ -700,5 +700,13 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
     );
     expect(stats.streetSpawnShare).toBeGreaterThanOrEqual(0.9);
     expect(stats.spawnCrashShare).toBeLessThanOrEqual(0.03);
+    if (BOSS) {
+      // S4: bots engage the zeppelin (holdout seeds: 534 rounds on its weak
+      // points), flak wounds far more than it kills (2 kills), and the
+      // stand-off keeps them out of its hull (3).
+      expect(bossHits).toBeGreaterThanOrEqual(300);
+      expect(flakKills / botMinutes).toBeLessThanOrEqual(0.05);
+      expect(hullCrashes).toBeLessThanOrEqual(6);
+    }
   }, 600_000);
 });

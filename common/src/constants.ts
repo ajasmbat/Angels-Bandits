@@ -1003,6 +1003,9 @@ export const BOT_BOSS_PASS_RANGE = 470;
 export const BOT_BOSS_PASS_MS = 5000;
 /** A bot fires at a weak point inside this, m (< BULLET_RANGE). */
 export const BOT_BOSS_FIRE_RANGE = 330;
+/** ...and breaks its pass off inside this, m: the weak point is on a 260 m
+ * hull, and the turn away takes a MAX_SPEED turn radius (~118 m). */
+export const BOT_BOSS_STANDOFF = 170;
 /** A low EVADE breaks along its street toward a point this far ahead, m. */
 export const BOT_EVADE_STREET_LEAD = 150;
 /** …jinking this far either side of its centreline, m, flipping every

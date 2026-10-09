@@ -84,6 +84,7 @@ import {
   BOT_BOSS_PASS_MS,
   BOT_BOSS_PASS_RANGE,
   BOT_BOSS_PREFERENCE,
+  BOT_BOSS_STANDOFF,
   BOT_CANYON_ALT_MAX,
   BOT_CANYON_ALT_MIN,
   BOT_CANYON_GLIDE,
@@ -1535,6 +1536,16 @@ export class RoomBots {
     dist: number,
     aim: Vec3,
   ): boolean {
+    // S4: a weak point sits ON the zeppelin's hull — a pass pressed home is
+    // a pass flown into it. Inside the stand-off the bot breaks off and
+    // dives home like the end of any pass.
+    if (target.boss && dist < BOT_BOSS_STANDOFF) {
+      if (now < bot.attackUntil) {
+        bot.attackUntil = now;
+        bot.attackCooldownUntil = now + BOT_ATTACK_COOLDOWN_MS;
+      }
+      return false;
+    }
     if (now < bot.attackUntil) return true;
     if (now < bot.attackCooldownUntil) return false;
     const reach = target.boss ? BOT_BOSS_PASS_RANGE : BOT_FIRE_RANGE;
@@ -1900,8 +1911,13 @@ export class RoomBots {
     contacts: readonly BotContact[],
   ): BotContact | null {
     const inRange: { c: BotContact; score: number }[] = [];
+    // S4: home from a pass, a bot leaves the zeppelin alone until its
+    // cooldown is over — it comes down through PATROL's descent onto the
+    // street lattice rather than a chase dive across the roofs.
+    const resting = now >= bot.attackUntil && now < bot.attackCooldownUntil;
     for (const c of contacts) {
       if (c.id === bot.entry.id || c.prot) continue;
+      if (c.boss && resting) continue;
       const dist = wrapDistance(bot.flight.pos, c.pos);
       if (dist > BOT_DETECT_RANGE) continue;
       const score =
@@ -1933,7 +1949,7 @@ export class RoomBots {
     // line must not look like a new acquisition.
     if (bot.targetId && now - bot.lastSeenAt <= BOT_LOS_MEMORY_MS) {
       for (const c of contacts) {
-        if (c.id !== bot.targetId || c.prot) continue;
+        if (c.id !== bot.targetId || c.prot || (c.boss && resting)) continue;
         if (wrapDistance(bot.flight.pos, c.pos) > BOT_DETECT_RANGE) break;
         return c;
       }

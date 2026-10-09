@@ -84,6 +84,14 @@ export class ChaseCamera {
     return this.pos;
   }
 
+  /** Hold the eye at `eye` (canonical) — a kill-cam that rides something
+   * other than the plane (D4 wreck); the next snap or update takes over. */
+  holdAt(eye: Vec3): void {
+    this.pos.x = eye.x;
+    this.pos.y = eye.y;
+    this.pos.z = eye.z;
+  }
+
   /** Snap directly behind the plane (spawn / respawn — no swoop across town). */
   snapTo(state: FlightState): void {
     this.dir = chaseDir(flightForward(state));

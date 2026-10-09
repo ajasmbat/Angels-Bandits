@@ -1097,6 +1097,11 @@ export const BOT_BOOM_COOLDOWN_MS = 4000;
  * its own side, m, shrinking with range so the guns converge inside fire
  * range. */
 export const BOT_PINCER_OFFSET = 120;
+/** Extra street-settling time after BOT_SPAWN_GRACE_MS before a fresh bot
+ * joins the fight, ms — still inside the BOT_SPAWN_CLEAR_AHEAD run-out
+ * (6 s at BOT_SPAWN_SPEED) spawnClear verified. Measured: fresh-spawn
+ * crashes in the 54-room hazard sim 22/732 → 13/690. */
+export const BOT_SPAWN_SETTLE_MS = 2000;
 /** A broken-off bot comes back after this long whatever its HP, ms — repeated
  * damage holding regen off must not park it out of the fight forever. */
 export const BOT_BREAK_MAX_MS = 20000;

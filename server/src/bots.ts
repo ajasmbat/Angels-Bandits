@@ -193,6 +193,7 @@ import {
   BOT_SKILL_GANG_PENALTY,
   BOT_SPAWN_CLEAR_AHEAD,
   BOT_SPAWN_GRACE_MS,
+  BOT_SPAWN_SETTLE_MS,
   BOT_SPAWN_SPEED,
   BOT_STEER_GAIN,
   BOT_THREAT_RANGE,
@@ -1634,7 +1635,12 @@ export class RoomBots {
       (!wasRecover && this.pathBlocked(bot, now, 1));
 
     // Fresh off a spawn: fly the street straight before joining the fight.
-    if (Number.isNaN(bot.graceUntil)) bot.graceUntil = now + BOT_SPAWN_GRACE_MS;
+    // B3: with tactics on a fresh bot settles a little longer — still
+    // inside the straight run-out spawnClear cleared for it.
+    if (Number.isNaN(bot.graceUntil)) {
+      bot.graceUntil =
+        now + BOT_SPAWN_GRACE_MS + (this.tactics ? BOT_SPAWN_SETTLE_MS : 0);
+    }
     if (now < bot.graceUntil) {
       if (blocked) {
         recover(false);

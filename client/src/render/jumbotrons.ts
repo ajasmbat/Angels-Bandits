@@ -270,6 +270,7 @@ const REPLAY_BACKDROP = new THREE.Color(0x0a1022);
 const VERTEX_PARS = /* glsl */ `
 attribute vec2 aJumbo;
 varying vec2 vJumbo;
+varying float vFront;
 `;
 const FRAGMENT_PARS = /* glsl */ `
 uniform sampler2D uTicker;
@@ -279,14 +280,18 @@ uniform float uReplayOn;
 uniform float uTickerScroll;
 uniform float uTickerLoop;
 varying vec2 vJumbo;
+varying float vFront;
 `;
-/** Screen: the canvas, with the LAST KILL shot laid into its card (scan
+/** Front face only (the box's sides and top are a dark housing). Screen:
+ * the canvas, with the LAST KILL shot laid into its card (scan
  * lines + a cool grade make it read as a broadcast, not a viewport).
  * Ticker: the headline row, crawled by the synced clock and wrapped on
  * the loop length. */
 const FRAGMENT_MAP = /* glsl */ `
 vec4 jumboTexel;
-if (vJumbo.x > 0.5) {
+if (vFront < 0.5) {
+  jumboTexel = vec4(vec3(0.015), 1.0); // the housing: only the face is lit
+} else if (vJumbo.x > 0.5) {
   float px = vMapUv.x * vJumbo.y * ${(TICKER_PX_PER_M).toFixed(4)} + uTickerScroll;
   jumboTexel = texture2D(uTicker,
     vec2(mod(px, uTickerLoop) / ${TICKER_W.toFixed(1)}, vMapUv.y));
@@ -445,7 +450,7 @@ export class Jumbotrons {
         .replace("#include <common>", `#include <common>\n${VERTEX_PARS}`)
         .replace(
           "#include <uv_vertex>",
-          "#include <uv_vertex>\nvJumbo = aJumbo;",
+          "#include <uv_vertex>\nvJumbo = aJumbo;\nvFront = step(0.5, normal.z);",
         );
       shader.fragmentShader = shader.fragmentShader
         .replace("#include <common>", `#include <common>\n${FRAGMENT_PARS}`)

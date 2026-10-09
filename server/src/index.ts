@@ -66,6 +66,7 @@ import {
   COLLAPSE_CREDIT_SLACK,
   INTERP_DELAY_MAX_MS,
   JOIN_DEADLINE_MS,
+  LAB_FULL_CODE,
   LIVENESS_TIMEOUT_MS,
   NAME_MAX_LENGTH,
   PLAYER_RADIUS,
@@ -181,7 +182,7 @@ import {
   MissileDirector,
   applyMissileImpact,
 } from "./strikes";
-import { poseFromSpawn, validatePose } from "./validate";
+import { poseFromSpawn, roomPoseCap, validatePose } from "./validate";
 import { RoomWrecks, applyWreckImpact, impactPos } from "./wrecks";
 
 const PORT = Number(process.env.PORT ?? 8080);
@@ -409,13 +410,21 @@ const roomCity = (room: Room): RoomCity => {
 };
 
 /**
+ * Is the room's city quiet — no destruction, missiles, chaos, director or
+ * boss raids? A quiet city (D6), a room with no human in it, and (FL1) a
+ * Flight Lab room whose pilot has not turned chaos on.
+ */
+const quiet = (room: Room): boolean =>
+  QUIET_CITY || room.humanCount === 0 || (room.lab && !room.labChaos);
+
+/**
  * Destruction applies only while the room has a human member (pending and
  * away ones count). The standing bot arena never empties and nobody would
  * see it — so an empty room stays whole, and handleLeave clears it when its
- * last human goes.
+ * last human goes. FL1: and never in a lab room with chaos off (quiet).
  */
 const breakable = (room: Room): RoomCity | null =>
-  !QUIET_CITY && room.humanCount > 0 ? roomCity(room) : null;
+  quiet(room) ? null : roomCity(room);
 
 /**
  * Each room's missile director (X1) and the probes it reads, built against
@@ -931,9 +940,19 @@ function handleJoin(
   rawName: unknown,
   id: string,
   resumed: { record: ResumeRecord; token: string } | null,
-): Client {
+  lab = false,
+): Client | null {
   const name = resumed ? resumed.record.name : sanitizeName(rawName);
-  const room = rooms.join(id, name, resumed?.record.roomId);
+  // FL1: a lab join gets a room of its own (never resumed — the caller
+  // passes no record) or, over LAB_ROOM_CAP, nothing at all: refused before
+  // any player state exists.
+  const room = lab
+    ? rooms.joinLab(id, name)
+    : rooms.join(id, name, resumed?.record.roomId);
+  if (!room) {
+    ws.close(LAB_FULL_CODE, "Flight Lab is full");
+    return null;
+  }
   const now = Date.now();
   combat.addPlayer(id, now);
   // After addPlayer, which starts every tally at 0/0.
@@ -978,6 +997,7 @@ function handleJoin(
     type: "welcome",
     id,
     roomId: room.id,
+    ...(room.lab && { lab: true as const }),
     seed: room.seed,
     spawn,
     roster: room.roster(),
@@ -1025,7 +1045,11 @@ function handlePose(client: Client, pose: Pose, t: unknown, now: number): void {
   const dt = Math.min(Math.max((now - client.lastPoseAt) / 1000, 0.02), 1);
   // Fastest the boost model allows since the last claim — levelled to now
   // first, so a burn whose stop edge never comes still runs dry on time.
-  const cap = speedCapOf(client, now)(client.lastPoseAt);
+  // FL1: a lab room judges by its own lab tuning's top speed instead.
+  const cap = roomPoseCap(
+    client.room,
+    speedCapOf(client, now)(client.lastPoseAt),
+  );
   client.lastPoseAt = now;
   const verdict = validatePose(client.pose, pose, dt, cap);
   if (verdict.ok) {
@@ -1038,7 +1062,9 @@ function handlePose(client: Client, pose: Pose, t: unknown, now: number): void {
     return;
   }
   client.rejectStreak++;
-  if (client.rejectStreak >= RESYNC_AFTER_REJECTS) {
+  // FL1: in a lab room a reject is a checkpoint teleport (the lab respawns
+  // locally, never through the server): resync to it at once.
+  if (client.room.lab || client.rejectStreak >= RESYNC_AFTER_REJECTS) {
     // Persistent disagreement = a real discontinuity (client respawn), not
     // jitter. Re-sync to the claim rather than freezing the plane forever.
     const resync = validatePose(pose, pose, dt, cap);
@@ -1065,6 +1091,8 @@ function observeCourse(
   now: number,
   rejects: number,
 ): void {
+  // FL1: lab tuning never times a run onto the shared course board.
+  if (client.room.lab) return;
   const run = client.course.observe(pos, now, rejects);
   if (!run) return;
   const seed = client.room.seed;
@@ -1140,7 +1168,8 @@ function handleBoost(client: Client, on: unknown, now: number): void {
 /** Idempotent: every step tolerates an id that never fully joined. */
 function handleLeave(id: string): void {
   const client = clients.get(id);
-  if (client) {
+  // FL1: a lab session leaves nothing to resume (lab joins never resume).
+  if (client && !client.room.lab) {
     // W2: read the score BEFORE removePlayer (and medals.forget) forget it.
     const { kills, deaths } = combat.scoreOf(id);
     resumeRecords.set(id, {
@@ -1830,7 +1859,7 @@ function tickBoss(room: Room, now: number): void {
   }
   const result = boss.tick(
     now,
-    !QUIET_CITY && room.humanCount > 0, // D6: no raid in a quiet city
+    !quiet(room), // D6: no raid in a quiet city (FL1: nor a calm lab)
     planes,
     bossWorld(room),
   );
@@ -2174,13 +2203,16 @@ wss.on("connection", (ws) => {
   const dispatch = (msg: ClientEnvelope, now: number): void => {
     if (msg.type === "join" && !joinedId) {
       clearTimeout(joinDeadline);
-      const resumed = takeResume(msg.resume);
+      // FL1: a lab join never resumes — its token is not even looked up.
+      const lab = msg.lab === true;
+      const resumed = lab ? null : takeResume(msg.resume);
       joinedId = resumed?.id ?? randomUUID();
       client = handleJoin(
         ws,
         msg.name,
         joinedId,
         resumed && { record: resumed.record, token: msg.resume as string },
+        lab,
       );
       return;
     }
@@ -2223,6 +2255,9 @@ wss.on("connection", (ws) => {
       handleCrash(client, msg.t, msg.wreck, now);
     } else if (msg.type === "setBots") {
       handleSetBots(client, msg.count, now);
+    } else if (msg.type === "lab") {
+      // FL1: ignored outside a lab room (applyLab refuses); newest wins.
+      client.room.applyLab({ tuning: msg.tuning, chaos: msg.chaos });
     }
   };
 

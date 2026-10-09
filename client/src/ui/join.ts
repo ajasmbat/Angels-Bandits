@@ -49,6 +49,26 @@ function takeRejoin(): boolean {
   }
 }
 
+/** FL1: the join card's Flight Lab link. On the ordinary card it leads
+ * into the lab (`?lab`); in the lab the card says it is the lab and the
+ * link leads back to the game. */
+export function initLabLink(lab: boolean): void {
+  if (!lab) return;
+  const link = document.getElementById("join-lab") as HTMLAnchorElement | null;
+  if (link) {
+    link.textContent = "← BACK TO THE GAME";
+    link.href = location.pathname;
+  }
+  const title = document.querySelector("#join h1");
+  if (title) title.textContent = "FLIGHT LAB";
+  const tag = document.querySelector("#join .join-tag");
+  if (tag) tag.textContent = "TUNE THE FLIGHT MODEL, LIVE";
+  const fly = document.querySelector<HTMLButtonElement>(
+    "#join button[type=submit]",
+  );
+  if (fly) fly.textContent = "FLY THE LAB";
+}
+
 /** Show the join overlay and resolve with the pilot's name once they enter.
  * `onGesture` runs synchronously inside the submit (the user gesture) — M5's
  * phone fullscreen request must not wait for anything async. */

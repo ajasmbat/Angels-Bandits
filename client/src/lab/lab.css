@@ -1,0 +1,361 @@
+/* FL1 Flight Lab: the side panel (a slide-out drawer on phones) and the
+   telemetry strip. Built on the P3 tokens (ui/polish.css). Under the join
+   card (z 11) and the settings / rotate sheet (z 10). */
+
+.lab-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 9;
+  display: flex;
+  align-items: flex-start;
+  pointer-events: none;
+  font-family: var(--ab-font);
+  font-size: var(--ab-fs-s);
+  color: var(--ab-text);
+  transform: translateX(var(--lab-w, 320px));
+  transition: transform 0.22s var(--ab-ease);
+  --lab-w: 320px;
+}
+.lab-panel.open {
+  transform: none;
+}
+.lab-panel button {
+  font: inherit;
+}
+
+/* The pull tab: always on screen, hanging off the sheet's left edge. */
+.lab-tab {
+  pointer-events: auto;
+  margin-top: 64px;
+  padding: 10px 7px;
+  writing-mode: vertical-rl;
+  border: 1px solid var(--ab-line);
+  border-right: 0;
+  border-radius: 6px 0 0 6px;
+  background: var(--ab-panel);
+  color: var(--ab-accent);
+  letter-spacing: var(--ab-track);
+  cursor: pointer;
+}
+.lab-panel.open .lab-tab {
+  opacity: 0.55;
+}
+
+.lab-sheet {
+  pointer-events: auto;
+  box-sizing: border-box;
+  width: var(--lab-w);
+  height: 100%;
+  max-height: var(--vv-h, 100vh);
+  display: flex;
+  flex-direction: column;
+  background: var(--ab-panel);
+  border-left: 1px solid var(--ab-line);
+  backdrop-filter: blur(6px);
+}
+
+.lab-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--ab-line);
+}
+.lab-title {
+  flex: 1;
+  color: var(--ab-ink);
+  font-size: var(--ab-fs-m);
+  letter-spacing: var(--ab-track);
+}
+.lab-exit {
+  color: var(--ab-warm);
+  text-decoration: none;
+  font-size: var(--ab-fs-xs);
+  letter-spacing: var(--ab-track);
+}
+.lab-exit:hover {
+  text-decoration: underline;
+}
+.lab-close {
+  border: 0;
+  background: none;
+  color: var(--ab-text);
+  font-size: var(--ab-fs-l);
+  cursor: pointer;
+}
+.lab-close:hover {
+  color: var(--ab-ink);
+}
+
+.lab-body {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px 12px 16px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ab-line) transparent;
+}
+
+.lab-sec {
+  padding: 8px 0;
+  border-bottom: 1px solid #27e0c022;
+}
+.lab-sec-title {
+  margin: 0 0 6px;
+  font-size: var(--ab-fs-xs);
+  font-weight: normal;
+  letter-spacing: var(--ab-track);
+  text-transform: uppercase;
+  color: var(--ab-accent);
+}
+.lab-sec.collapsible .lab-sec-title {
+  cursor: pointer;
+  user-select: none;
+}
+.lab-sec.collapsible .lab-sec-title::before {
+  content: "▾ ";
+}
+.lab-sec.collapsed .lab-sec-title::before {
+  content: "▸ ";
+}
+.lab-sec.collapsed > :not(.lab-sec-title) {
+  display: none;
+}
+
+.lab-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 4px;
+}
+.lab-btn {
+  padding: 4px 8px;
+  border: 1px solid var(--ab-line);
+  border-radius: 4px;
+  background: #27e0c00f;
+  color: var(--ab-text);
+  cursor: pointer;
+}
+.lab-btn:hover {
+  color: var(--ab-ink);
+  border-color: var(--ab-accent);
+}
+.lab-btn.on {
+  border-color: var(--ab-gold);
+  color: var(--ab-gold);
+}
+.lab-primary {
+  color: var(--ab-bg);
+  background: var(--ab-accent);
+  border-color: var(--ab-accent);
+}
+.lab-primary:hover {
+  color: var(--ab-bg);
+  filter: brightness(1.1);
+}
+
+.lab-slots {
+  display: flex;
+  gap: 6px;
+}
+.lab-slot {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  padding: 4px;
+  border: 1px dashed var(--ab-line);
+  border-radius: 4px;
+  text-align: center;
+}
+.lab-slot-name {
+  color: var(--ab-ink);
+}
+.lab-slot.filled {
+  border-style: solid;
+}
+.lab-slot.on {
+  border-color: var(--ab-gold);
+}
+.lab-slot.on .lab-slot-name {
+  color: var(--ab-gold);
+}
+.lab-slot:not(.filled) .lab-btn:first-of-type {
+  opacity: 0.4;
+}
+
+.lab-json {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 4px 0;
+  padding: 4px 6px;
+  resize: vertical;
+  border: 1px solid var(--ab-line);
+  border-radius: 4px;
+  background: #0006;
+  color: var(--ab-ink);
+  font: inherit;
+  font-size: var(--ab-fs-xs);
+}
+.lab-status {
+  min-height: 1.2em;
+  font-size: var(--ab-fs-xs);
+}
+.lab-status.error {
+  color: var(--ab-hot);
+}
+.lab-offscreen {
+  position: fixed;
+  left: -9999px;
+  top: 0;
+}
+
+.lab-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  cursor: pointer;
+}
+
+.lab-row {
+  padding: 5px 0 5px 6px;
+  border-left: 2px solid transparent;
+}
+.lab-row.changed {
+  border-left-color: var(--ab-gold);
+}
+.lab-row-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.lab-label {
+  flex: 1;
+  color: var(--ab-ink);
+}
+.lab-row.changed .lab-label,
+.lab-row.changed .lab-value {
+  color: var(--ab-gold);
+}
+.lab-value {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.lab-reset {
+  width: 20px;
+  border: 0;
+  background: none;
+  color: var(--ab-text);
+  cursor: pointer;
+}
+.lab-reset:disabled {
+  opacity: 0.2;
+  cursor: default;
+}
+.lab-row input[type="range"] {
+  width: 100%;
+  margin: 3px 0 1px;
+  accent-color: var(--ab-accent);
+}
+.lab-row.changed input[type="range"] {
+  accent-color: var(--ab-gold);
+}
+.lab-toggle input[type="checkbox"] {
+  accent-color: var(--ab-accent);
+}
+.lab-hint {
+  color: var(--ab-text);
+  opacity: 0.6;
+  font-size: var(--ab-fs-xs);
+  line-height: 1.35;
+}
+.lab-foot {
+  margin-top: 10px;
+}
+
+/* --- Telemetry strip ------------------------------------------------------ */
+.lab-telemetry {
+  position: fixed;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 8;
+  display: flex;
+  gap: 12px;
+  padding: 4px 12px;
+  max-width: calc(100vw - 32px);
+  box-sizing: border-box;
+  overflow: hidden;
+  white-space: nowrap;
+  border: 1px solid var(--ab-line);
+  border-radius: 6px;
+  background: var(--ab-panel);
+  color: var(--ab-ink);
+  font-family: var(--ab-font);
+  font-size: var(--ab-fs-s);
+  pointer-events: none;
+}
+.lab-tm {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 3.5em;
+}
+.lab-tm i {
+  font-style: normal;
+  font-size: var(--ab-fs-xs);
+  letter-spacing: var(--ab-track);
+  color: var(--ab-accent);
+  opacity: 0.8;
+}
+.lab-tm b {
+  font-weight: normal;
+  font-variant-numeric: tabular-nums;
+}
+.lab-tm-best b {
+  color: var(--ab-gold);
+}
+
+/* --- Phones: a drawer, one-line strip -------------------------------------- */
+body.touch .lab-panel {
+  --lab-w: min(300px, 46vw);
+  bottom: auto;
+  height: var(--vv-h, 100vh);
+}
+body.touch .lab-tab {
+  margin-top: 40%;
+  padding: 14px 9px;
+  font-size: var(--ab-fs-m);
+}
+body.touch .lab-row {
+  padding: 8px 0 8px 6px;
+}
+body.touch .lab-btn {
+  padding: 8px 10px;
+}
+body.touch .lab-row input[type="range"] {
+  height: 26px;
+}
+body.touch .lab-hint {
+  display: none;
+}
+/* Under the phone HUD's hull / gun bars, which own the top edge. */
+body.touch .lab-telemetry {
+  top: 40px;
+  gap: 8px;
+  padding: 2px 8px;
+  font-size: var(--ab-fs-xs);
+}
+body.touch .lab-tm {
+  flex-direction: row;
+  gap: 3px;
+  min-width: 0;
+}
+body.touch .lab-tm-route,
+body.touch .lab-tm-pitch {
+  display: none;
+}

@@ -65,6 +65,25 @@ export interface JoinMsg {
    * join is an ordinary fresh one — never an error.
    */
   resume?: string;
+  /**
+   * FL1: join the Flight Lab — a private solo room of this player's own,
+   * whose pose validation reads the room's lab tuning. A lab join never
+   * resumes (any `resume` is ignored) and never shares a room.
+   */
+  lab?: boolean;
+}
+
+/**
+ * FL1: the Flight Lab's controls, lab rooms only (ignored anywhere else).
+ * `tuning` is a decoded export (`JSON.parse(exportTuning(t))`, common/src/
+ * tuning.ts) — the server re-imports and clamps it, and the room's pose
+ * validation caps speed by it. `chaos` lets the boss, missiles, chaos and
+ * destruction run in the room (off by default). The newest message wins.
+ */
+export interface LabMsg {
+  type: "lab";
+  tuning?: unknown;
+  chaos?: boolean;
 }
 
 /** Streamed at TICK_UP_HZ once joined. */
@@ -213,7 +232,8 @@ export type ClientMsg =
   | BoostMsg
   | HitClaimMsg
   | CrashMsg
-  | SetBotsMsg;
+  | SetBotsMsg
+  | LabMsg;
 
 // --- Server → client ---
 
@@ -232,6 +252,9 @@ export interface WelcomeMsg {
   type: "welcome";
   id: string;
   roomId: string;
+  /** FL1: set only when this is a Flight Lab room — the one place a client
+   * may apply lab tuning. */
+  lab?: true;
   seed: number;
   spawn: SpawnState;
   roster: RosterEntry[];

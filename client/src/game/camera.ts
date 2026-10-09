@@ -26,14 +26,7 @@
 // pulling, over the top and round.
 
 import type { Collapse } from "@angels-bandits/common/city/collapse";
-import {
-  CAMERA_RESPONSE,
-  CHASE_BASE,
-  CHASE_RISE,
-  CHASE_STRETCH,
-  COLLAPSE_LEAD_MS,
-  MIN_SPEED,
-} from "@angels-bandits/common/constants";
+import { COLLAPSE_LEAD_MS } from "@angels-bandits/common/constants";
 import {
   type FlightState,
   flightAxes,
@@ -43,6 +36,7 @@ import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import type * as THREE from "three";
 import { orbitOffset } from "./freelook";
 import { leadLookAt, stepLead } from "./jet-camera";
+import { tuning } from "./tuning";
 import { zoomLookAt, zoomOffset } from "./zoom";
 
 /** Does a sphere of radius `r` at `p` (render space: any torus image)
@@ -220,7 +214,7 @@ export class ChaseCamera {
     const ul = Math.hypot(ux, uy, uz);
     this.upV = ul > 1e-6 ? { x: ux / ul, y: uy / ul, z: uz / ul } : upWant;
     const up = this.upV;
-    const blend = 1 - Math.exp(-CAMERA_RESPONSE * dt);
+    const blend = 1 - Math.exp(-tuning.cameraResponse * dt);
     const want = chaseDir(fwd, up);
     const d = this.dir as Vec3;
     const mixed = {
@@ -317,7 +311,7 @@ export class ChaseCamera {
    * plane's velocity and acceleration extrapolated (so a pull-up's rise
    * counts), and the eye by the chase model itself — the arm's direction
    * behind the extrapolated heading and its length for the extrapolated
-   * speed, with today's lag on each decaying at CAMERA_RESPONSE. The display
+   * speed, with today's lag on each decaying at the cameraResponse. The display
    * modifiers' share of the offset (zoom, orbit, shake) is carried over
    * unchanged.
    */
@@ -370,7 +364,7 @@ export class ChaseCamera {
       const speed = Math.hypot(v.x, v.y, v.z);
       const nose =
         speed > 1e-6 ? { x: v.x / speed, y: v.y / speed, z: v.z / speed } : fwd;
-      const decay = Math.exp(-CAMERA_RESPONSE * t);
+      const decay = Math.exp(-tuning.cameraResponse * t);
       const w = chaseDir(nose, this.upV);
       const dx = w.x + dirLag.x * decay;
       const dy = w.y + dirLag.y * decay;
@@ -431,17 +425,21 @@ export class ChaseCamera {
 /** The chase eye's distance from the plane at airspeed `speed`, m: D(v),
  * an explicit function of speed (C1), not a by-product of lag. */
 function chaseDistance(speed: number): number {
-  return CHASE_BASE + CHASE_STRETCH * Math.max(0, speed - MIN_SPEED);
+  return (
+    tuning.chaseBase +
+    tuning.chaseStretch * Math.max(0, speed - tuning.minSpeed)
+  );
 }
 
 /** Unit direction from the plane to its chase eye for the unit nose `fwd`:
- * straight back along the nose and CHASE_RISE along the camera's `up` (F7:
+ * straight back along the nose and the chaseRise along the camera's `up` (F7:
  * the plane's own up through aerobatics; never zero: |fwd| = |up| = 1 and
- * CHASE_RISE < 1). */
+ * the tuning keeps chaseRise ≤ 0.8 < 1). */
 function chaseDir(fwd: Vec3, up: Vec3): Vec3 {
-  const x = CHASE_RISE * up.x - fwd.x;
-  const y = CHASE_RISE * up.y - fwd.y;
-  const z = CHASE_RISE * up.z - fwd.z;
+  const rise = tuning.chaseRise;
+  const x = rise * up.x - fwd.x;
+  const y = rise * up.y - fwd.y;
+  const z = rise * up.z - fwd.z;
   const l = Math.hypot(x, y, z);
   return { x: x / l, y: y / l, z: z / l };
 }

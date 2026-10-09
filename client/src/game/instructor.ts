@@ -15,7 +15,6 @@
 
 import {
   BULLET_RANGE,
-  PITCH_LIMIT,
   PITCH_RATE,
   TURN_RATE,
 } from "@angels-bandits/common/constants";
@@ -26,6 +25,7 @@ import {
   realRoll,
 } from "@angels-bandits/common/flight";
 import type { Vec3 } from "@angels-bandits/common/world";
+import { tuning as live } from "./tuning";
 
 /** Loop gain, rad/s of commanded rate per rad of error, on both axes. High
  * enough that a bandit crossing at ~15°/s is tracked within ~1.5° (rate/K),
@@ -261,9 +261,9 @@ const EASE = 2;
 /** Vertical error, rad, under which that ease turns from following the
  * cursor's side of the pipper to seeking the horizon (F7). */
 const EASE_VERT = 0.3;
-/** |pitch| from which stepFlight's turn axis blends onto the body's up
- * (flight.ts TURN_AXIS_BLEND) — mirrored here to measure turn authority. */
-const TURN_AXIS_BLEND = PITCH_LIMIT;
+// |pitch| from which stepFlight's turn axis blends onto the body's up is
+// the live tuning's pitchLimit (flight.ts rotateAttitude) — mirrored below to
+// measure turn authority.
 
 const axes = { right: { x: 0, y: 0, z: 0 }, up: { x: 0, y: 0, z: 0 } };
 
@@ -327,8 +327,8 @@ export function aimError(
   const cr = Math.cos(roll);
   const sr = Math.sin(roll);
   const g = clamp(
-    (Math.abs(flight.pitch) - TURN_AXIS_BLEND) /
-      (Math.PI / 2 - TURN_AXIS_BLEND),
+    (Math.abs(flight.pitch) - live.pitchLimit) /
+      (Math.PI / 2 - live.pitchLimit),
     0,
     1,
   );

@@ -39,6 +39,7 @@
     "./medals": "./src/medals.ts",
     "./boss": "./src/boss.ts",
     "./hazards": "./src/hazards.ts",
-    "./botstyle": "./src/botstyle.ts"
+    "./botstyle": "./src/botstyle.ts",
+    "./tuning": "./src/tuning.ts"
   }
 }

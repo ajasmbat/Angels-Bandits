@@ -13,8 +13,14 @@
 // fill and the storm's lightning must not reach it. The shell is a
 // MeshBasicMaterial whose vertex colours carry baked light (brighter under
 // the ceiling strips, toward the wall tops), so the interior reads as a
-// well-lit concrete tunnel on every tier — the fixtures are dressing, which
-// is what MOBILE drops. Fog still applies (fog: true), like everything else.
+// well-lit tunnel on every tier — the fixtures are dressing, which is what
+// MOBILE drops. Fog still applies (fog: true), like everything else.
+//
+// U5: BRIGHT INSIDE. The bore is the night city's opposite — warm
+// sandstone walls lit like daylight and a glowing cream ceiling, every
+// surface still under the bloom threshold (0.72; the tests check every
+// vertex). The station's glass (underground.ts) replaces the left wall
+// along its window: the shell leaves that stretch of wall out.
 //
 // TORUS. The network spans the whole world, so no single nearest-image
 // offset places it. Each triangle is wrapped by its centroid into one
@@ -49,6 +55,7 @@ import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
 import type { QualityTier } from "./quality";
 import { QUALITY_PROFILES } from "./quality";
+import { inStationWindow } from "./underground-layout";
 
 /** Ceiling light strips: lateral offset, width, dash and gap, m. */
 const STRIP_OFFSET = 7;
@@ -69,9 +76,9 @@ const KERB_LIGHT_STEP = 4;
 const FRAME_STEP = 2.5;
 
 const COLORS = {
-  concrete: 0xc2c6cf,
-  floor: 0x5c6069,
-  ceiling: 0x9da2ad,
+  concrete: 0xe2d6bf,
+  floor: 0x8f8574,
+  ceiling: 0xfff0d6,
   stone: 0x8d8579,
   kerb: 0xd9d6cc,
   lane: 0xe8c45a,
@@ -85,10 +92,10 @@ const COLORS = {
  * the strips, the floor toward the middle. Kept under the bloom threshold —
  * a lit wall is never a ladder rung. */
 const LIGHT = {
-  floor: 0.42,
-  wallLow: 0.36,
-  wallHigh: 0.62,
-  ceiling: 0.5,
+  floor: 0.62,
+  wallLow: 0.6,
+  wallHigh: 0.85,
+  ceiling: 0.7,
   cutWallLow: 0.3,
   cutWallHigh: 0.42,
   kerb: 0.55,
@@ -97,6 +104,14 @@ const LIGHT = {
 /** Linear colour of `hex` lit by `k`. */
 const lit = (hex: number, k: number): THREE.Color =>
   new THREE.Color(hex).multiplyScalar(k);
+
+/** U5: the bore's mid-height wall and its ceiling as drawn — what thin
+ * dressing (underground.ts) fades into with distance. */
+export const SHELL_WALL_MID = lit(
+  COLORS.concrete,
+  (LIGHT.wallLow + LIGHT.wallHigh) / 2,
+);
+export const SHELL_CEILING = lit(COLORS.ceiling, LIGHT.ceiling);
 
 /** Linear emissive colour that puts `hex` on ladder rung `rung`. */
 function emitOf(hex: number, rung: number): THREE.Color {
@@ -243,7 +258,10 @@ function buildBore(t: Tunnel, shell: Soup, fix: Soup): void {
     // Walls: concrete in the bore, stone retaining walls over a cut.
     const lo = covered ? wallC : cutLow;
     const hi = covered ? wallTop : cutHigh;
-    shell.quad(lA, lB, [lB[0], lBt, lB[2]], [lA[0], lAt, lA[2]], lo, hi);
+    // U5: the station's glass stands where the left wall would.
+    if (!inStationWindow(t, mid0(a, b), 1)) {
+      shell.quad(lA, lB, [lB[0], lBt, lB[2]], [lA[0], lAt, lA[2]], lo, hi);
+    }
     shell.quad(rA, rB, [rB[0], rBt, rB[2]], [rA[0], rAt, rA[2]], lo, hi);
     if (covered) {
       shell.quad(
@@ -292,6 +310,7 @@ function buildBore(t: Tunnel, shell: Soup, fix: Soup): void {
         [lA, lB, 1],
         [rA, rB, -1],
       ] as const) {
+        if (inStationWindow(t, mid0(a, b), sgn)) continue;
         const ux = (q[0] - p[0]) / Math.max(1e-6, b - a);
         const uz = (q[2] - p[2]) / Math.max(1e-6, b - a);
         // Inward, off the wall face: toward the other wall.
@@ -418,6 +437,8 @@ function buildBore(t: Tunnel, shell: Soup, fix: Soup): void {
   }
 }
 
+const mid0 = (a: number, b: number): number => (a + b) / 2;
+
 const mix = (a: P3, b: P3, f: number): P3 => [
   a[0] + (b[0] - a[0]) * f,
   a[1] + (b[1] - a[1]) * f,
@@ -453,6 +474,14 @@ export function buildTunnelGeometry(): [
   return [shell.geometry(), fix.geometry()];
 }
 
+/** Snap a 2×2-tiled group by whole periods so the camera sits in the
+ * middle of it (every image within the fog radius is present). */
+export function snapToPeriod(group: THREE.Object3D, cameraPos: Vec3): void {
+  const x = Math.floor((cameraPos.x - WORLD_SIZE / 2) / WORLD_SIZE);
+  const z = Math.floor((cameraPos.z - WORLD_SIZE / 2) / WORLD_SIZE);
+  group.position.set(x * WORLD_SIZE, 0, z * WORLD_SIZE);
+}
+
 /** The network's two draws. */
 export class TunnelRenderer {
   readonly group = new THREE.Group();
@@ -482,9 +511,7 @@ export class TunnelRenderer {
 
   /** Snap both meshes by whole periods so the camera sits in the middle. */
   update(cameraPos: Vec3): void {
-    const x = Math.floor((cameraPos.x - WORLD_SIZE / 2) / WORLD_SIZE);
-    const z = Math.floor((cameraPos.z - WORLD_SIZE / 2) / WORLD_SIZE);
-    this.group.position.set(x * WORLD_SIZE, 0, z * WORLD_SIZE);
+    snapToPeriod(this.group, cameraPos);
   }
 
   setQuality(tier: QualityTier): void {

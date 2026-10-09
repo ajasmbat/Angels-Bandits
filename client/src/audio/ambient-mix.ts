@@ -14,6 +14,7 @@ import {
   ROADWAY_HALF,
   offCenterline,
 } from "@angels-bandits/common/city/street";
+import { LINTEL_MIN, underCover } from "@angels-bandits/common/city/tunnels";
 import {
   BLOCK_PITCH,
   BOOST_MAX_SPEED,
@@ -41,8 +42,11 @@ export interface AmbientMix {
   plaza: number;
   /** Air noise: grows with altitude and airspeed, sheltered inside a hole. */
   wind: number;
-  /** Tunnel reverb send: 1 inside an H1 hole, 0 everywhere else. */
+  /** Tunnel reverb send: 1 inside an H1 hole, the cavern level in a U4
+   * bore, 0 everywhere else. */
   reverb: number;
+  /** U5 cavern bed (water, birds, a distant train): the cavern level. */
+  cavern: number;
 }
 
 /** Hermite 0→1 between edges a < b (GLSL smoothstep). */
@@ -73,17 +77,23 @@ const WIND_ALT = 0.45;
 const WIND_SPEED = 0.35;
 /** A hole's walls shelter you from the airstream. */
 const WIND_HOLE_SHELTER = 0.5;
+/** U5: deep in a bore the city above is mostly rock-muffled... */
+const CAVERN_CITY_DUCK = 0.85;
+/** ...and the airstream is sheltered like a hole's. */
+const CAVERN_WIND_SHELTER = 0.5;
 
 /**
  * Per-layer gains for a listener at `cameraPos` flying at `speed` m/s,
  * `nearestStreetDist` meters off the nearest street centerline (streetDistance),
  * `plazaDist` meters from the nearest plaza center (plazaDistance), and
- * `inHole` when inside an H1 hole's clear volume (insideHole).
+ * `inHole` when inside an H1 hole's clear volume (insideHole), and
+ * `cavern` (0..1, cavernLevel) how deep under a bore's cover it is.
  *
  * Invariants (tested): every city layer is non-increasing with altitude and
  * zero at/above CLOUD_BASE; wind is non-decreasing with altitude and speed;
- * reverb is non-zero only inside a hole. Writes into `out` when given, so the
- * frame loop allocates nothing.
+ * reverb is non-zero only inside a hole or a bore; cavern = 0 is exactly
+ * the city mix without U5. Writes into `out` when given, so the frame loop
+ * allocates nothing.
  */
 export function ambientMix(
   cameraPos: Vec3,
@@ -91,6 +101,7 @@ export function ambientMix(
   nearestStreetDist: number,
   plazaDist: number,
   inHole: boolean,
+  cavern = 0,
   out: AmbientMix = {
     traffic: 0,
     horn: 0,
@@ -98,6 +109,7 @@ export function ambientMix(
     plaza: 0,
     wind: 0,
     reverb: 0,
+    cavern: 0,
   },
 ): AmbientMix {
   const y = cameraPos.y;
@@ -117,13 +129,33 @@ export function ambientMix(
     WIND_ALT * smoothstep(0, MAX_ALTITUDE, y) +
     WIND_SPEED * speed01;
 
-  out.traffic = bed * (TRAFFIC_FLOOR + (1 - TRAFFIC_FLOOR) * street * low);
-  out.horn = bed * street * low;
-  out.siren = bed;
-  out.plaza = bed * plaza;
-  out.wind = wind * (inHole ? WIND_HOLE_SHELTER : 1);
-  out.reverb = inHole ? 1 : 0;
+  const cave = Math.max(0, Math.min(1, cavern));
+  const muffle = 1 - CAVERN_CITY_DUCK * cave;
+  out.traffic =
+    bed * (TRAFFIC_FLOOR + (1 - TRAFFIC_FLOOR) * street * low) * muffle;
+  out.horn = bed * street * low * muffle;
+  out.siren = bed * muffle;
+  out.plaza = bed * plaza * muffle;
+  out.wind =
+    wind *
+    (inHole ? WIND_HOLE_SHELTER : 1) *
+    (1 - (1 - CAVERN_WIND_SHELTER) * cave);
+  out.reverb = Math.max(inHole ? 1 : 0, cave);
+  out.cavern = cave;
   return out;
+}
+
+/** The cavern fades in over this much depth under a bore's lintel, m. */
+const CAVERN_FADE = 10;
+
+/**
+ * U5: how deep in the underground `p` is, 0..1 — zero anywhere not under a
+ * bore's cover (a plaza cut's open ramp, a river mouth's channel stretch,
+ * the open air), rising to 1 over CAVERN_FADE m below the lintel.
+ */
+export function cavernLevel(p: Vec3): number {
+  if (!underCover(p)) return 0;
+  return smoothstep(-LINTEL_MIN, -LINTEL_MIN - CAVERN_FADE, p.y);
 }
 
 /** Meters from `p` to the nearest street centerline (either axis). */

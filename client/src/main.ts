@@ -376,6 +376,7 @@ import { Traffic } from "./render/traffic";
 import { PlaneTrails } from "./render/trails";
 import { TrainRenderer } from "./render/train";
 import { TunnelRenderer } from "./render/tunnels";
+import { UndergroundLife } from "./render/underground";
 import { WeatherClock, setWeatherUniform } from "./render/weather";
 import { buildingSeed, isWindowLit } from "./render/window-pattern";
 import { nearestImage } from "./render/wrapPlacement";
@@ -925,6 +926,12 @@ scene.add(river.group);
 // through hitsGround — drawing only, snapped under the camera each frame.
 const tunnels = new TunnelRenderer();
 scene.add(tunnels.group);
+// U5 underground life & light: gardens, waterfalls, the lake, glowing
+// plants, fireflies, birds and the metro hall (four draws; the metro's cars
+// ride in the train's mesh). Dressing only — nothing solid in the clear
+// bore; added before prewarm so its programs compile at boot.
+const underground = new UndergroundLife();
+scene.add(underground.group);
 // L9 moving nature: lit spray from the plaza ponds (pure ballistic function
 // of the synced clock; one Points, drawn only near a pond). Tree sway lives
 // in natureRenderer's crown shader; bird scatter in birds.update below.
@@ -2249,6 +2256,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   courseGhost.setQuality(tier); // S3: MOBILE keeps the rings, drops the ghost
   atmosphere.setQuality(tier); // S5
   tunnels.setQuality(tier); // U4: MOBILE drops the fixtures
+  underground.setQuality(tier); // U5: bands thin to the core
   reflections.setQuality(tier); // S6: faces per frame; Mobile off
   applyPostQuality();
   resLimits = limitsFor(tier);
@@ -4651,6 +4659,7 @@ const frame = (now: number): void => {
   ground.update(chase.position);
   river.update(chase.position, renderMs, now); // L11
   tunnels.update(chase.position); // U4
+  underground.update(chase.position, renderMs ?? now); // U5
   skyDome.update(chase.position);
   airliners.update(renderMs);
   // Wounded smoke: own plane from server-said self HP, every remote (human

@@ -2,7 +2,8 @@
 // synthesized, no external files (PLAN.md's licence rule): filtered noise for
 // traffic, crowd and wind; two detuned squares for horns; an LFO-wailed
 // triangle for the siren; a triangle pad with a pulsing bass for plaza music;
-// a generated-impulse convolver for tunnel echo.
+// a generated-impulse convolver for tunnel echo. U5's cavern bed: running
+// water, birdsong chirps and the metro's rumble, all through the same echo.
 //
 // Every node is built ONCE, on the first frame the context runs (so nothing
 // starts before the join gesture). Per frame this file only automates params,
@@ -12,9 +13,11 @@
 
 import { type HoleSpan, mulberry32 } from "@angels-bandits/common/city";
 import type { Vec3 } from "@angels-bandits/common/world";
+import { metroState } from "../render/underground-layout";
 import {
   type AmbientMix,
   ambientMix,
+  cavernLevel,
   insideHole,
   plazaDistance,
   sirenAt,
@@ -46,6 +49,16 @@ const RAIN_HISS_LEVEL = 0.07;
 const RAIN_ROAR_LEVEL = 0.09;
 const RAIN_DRIZZLE = 0.3;
 const RAIN_TUNNEL_KEEP = 0.2;
+/** U5 cavern bed's share of AMBIENCE_LEVEL. Deep in a bore the city layers
+ * are ducked by 85 % (ambient-mix.ts), which frees far more than this. */
+const CAVERN_WEIGHT = 0.3;
+/** Birdsong: a chirp phrase every so often while the cavern is up. */
+const CHIRP_MIN_GAP_S = 1.2;
+const CHIRP_GAP_SPREAD_S = 3.5;
+const CHIRP_AUDIBLE = 0.2;
+/** The metro's rumble: a far bed, swelling while a train runs. */
+const RUMBLE_IDLE = 0.15;
+const RUMBLE_RUNNING = 0.8;
 /** Tunnel reverb send off the sfx bus, capped: it taps the explosions too. */
 const REVERB_SEND = 0.3;
 const REVERB_SECONDS = 1.3;
@@ -67,6 +80,7 @@ const CHORDS: readonly (readonly [number, number, number])[] = [
 const NOISE_SALT = 0xa3b1e7;
 const IMPULSE_SALT = 0x7e4b09;
 const HORN_SALT = 0x40a2c5;
+const CHIRP_SALT = 0x0b1d50;
 
 /** What the frame loop knows about the listener this frame. */
 export interface AmbienceFrame {
@@ -103,6 +117,11 @@ interface Graph {
   wind: GainNode;
   windFilter: BiquadFilterNode;
   reverbSend: GainNode;
+  cavern: GainNode;
+  rumble: GainNode;
+  chirpEnv: GainNode;
+  chirpOsc: OscillatorNode;
+  chirpPan: StereoPannerNode;
   rainHiss: GainNode;
   rainRoar: GainNode;
 }
@@ -136,11 +155,16 @@ export class CityAmbience {
     plaza: 0,
     wind: 0,
     reverb: 0,
+    cavern: 0,
   };
+  private readonly metro = { s: null as number | null, doors: 0 };
   /** Last target written per param — skip writes that would not move it. */
   private readonly targets = new Map<AudioParam, number>();
   private readonly hornRng: () => number;
+  private readonly chirpRng: () => number;
   private nextHornAt = 0;
+  private nextChirpAt = 0;
+  private cavern = 0;
   private nextBarAt = 0;
   // Last frame's inputs, for the QA hook.
   private streetDist = 0;
@@ -156,6 +180,7 @@ export class CityAmbience {
     private readonly holes: readonly HoleSpan[],
   ) {
     this.hornRng = mulberry32((seed ^ HORN_SALT) >>> 0);
+    this.chirpRng = mulberry32((seed ^ CHIRP_SALT) >>> 0);
   }
 
   /** Call every frame. Computes the mix even without WebAudio (QA reads it). */
@@ -163,12 +188,14 @@ export class CityAmbience {
     this.streetDist = streetDistance(f.pos);
     this.plazaDist = plazaDistance(f.pos);
     this.inHole = insideHole(this.holes, f.pos);
+    this.cavern = cavernLevel(f.pos);
     ambientMix(
       f.pos,
       f.speed,
       this.streetDist,
       this.plazaDist,
       this.inHole,
+      this.cavern,
       this.mix,
     );
     const siren = sirenAt(this.seed, f.serverTimeMs);
@@ -211,6 +238,22 @@ export class CityAmbience {
     // The send is gated BEFORE the convolver, so leaving a tunnel lets the
     // tail ring out instead of cutting the echo dead.
     this.ramp(g.reverbSend.gain, REVERB_SEND * m.reverb, now, 0.15);
+    // U5 cavern: the bed, the metro's rumble on its shared schedule.
+    this.ramp(g.cavern.gain, CAVERN_WEIGHT * m.cavern, now, 0.4);
+    const metro =
+      f.serverTimeMs === null ? null : metroState(f.serverTimeMs, this.metro);
+    const running = metro !== null && metro.s !== null && metro.doors === 0;
+    this.ramp(
+      g.rumble.gain,
+      running ? RUMBLE_RUNNING : RUMBLE_IDLE,
+      now,
+      running ? 1.5 : 2.5,
+    );
+    if (now >= this.nextChirpAt) {
+      this.nextChirpAt =
+        now + CHIRP_MIN_GAP_S + this.chirpRng() * CHIRP_GAP_SPREAD_S;
+      if (m.cavern > CHIRP_AUDIBLE) this.chirp(g, now);
+    }
     // L4 rain: slow ramps — weather swells, it never snaps.
     const rainKeep = 1 - (1 - RAIN_TUNNEL_KEEP) * m.reverb;
     const r = this.rainLevel;
@@ -265,6 +308,7 @@ export class CityAmbience {
       streetDist: this.streetDist,
       plazaDist: this.plazaDist,
       inHole: this.inHole,
+      cavern: this.cavern,
       siren:
         this.sirenDistance === null
           ? null
@@ -304,6 +348,29 @@ export class CityAmbience {
       env.setValueAtTime(1, at + len);
       env.linearRampToValueAtTime(0, at + len + 0.04);
       at += len + 0.12;
+    }
+  }
+
+  /** A bird's phrase: two to four rising chirps on the chirp envelope. */
+  private chirp(g: Graph, now: number): void {
+    const rng = this.chirpRng;
+    const env = g.chirpEnv.gain;
+    const hz = g.chirpOsc.frequency;
+    env.cancelScheduledValues(now);
+    hz.cancelScheduledValues(now);
+    env.setValueAtTime(0, now);
+    g.chirpPan.pan.setValueAtTime(rng() * 1.6 - 0.8, now);
+    const notes = 2 + Math.floor(rng() * 3);
+    const base = 2400 + rng() * 1400;
+    let at = now;
+    for (let i = 0; i < notes; i++) {
+      const len = 0.05 + rng() * 0.07;
+      hz.setValueAtTime(base, at);
+      hz.exponentialRampToValueAtTime(base * (1.3 + rng() * 0.4), at + len);
+      env.setValueAtTime(0, at);
+      env.linearRampToValueAtTime(1, at + 0.01);
+      env.linearRampToValueAtTime(0, at + len);
+      at += len + 0.04 + rng() * 0.08;
     }
   }
 
@@ -440,6 +507,39 @@ export class CityAmbience {
     );
     sfx.connect(reverbSend).connect(convolver).connect(master);
 
+    // U5 cavern: running water (a bandpassed rush and a high trickle), the
+    // metro's low rumble, and a chirp voice — one layer on the city bus, so
+    // it rides the combat and radio ducks and the reverb send above.
+    const cavern = layer();
+    const water = ctx.createGain();
+    water.gain.value = 0.55;
+    noiseSource(0.9, 3.1)
+      .connect(filter("bandpass", 1100, 0.5))
+      .connect(water)
+      .connect(cavern);
+    lfo(0.11, 0.12, water.gain);
+    const trickle = ctx.createGain();
+    trickle.gain.value = 0.12;
+    noiseSource(1.4, 0.5)
+      .connect(filter("highpass", 3200, 0.7))
+      .connect(trickle)
+      .connect(cavern);
+    const rumble = ctx.createGain();
+    rumble.gain.value = 0;
+    noiseSource(0.6, 1.7)
+      .connect(filter("lowpass", 140, 0.8))
+      .connect(rumble)
+      .connect(cavern);
+    const chirpPan = ctx.createStereoPanner();
+    chirpPan.connect(cavern);
+    const chirpEnv = ctx.createGain();
+    chirpEnv.gain.value = 0;
+    const chirpVoice = ctx.createGain();
+    chirpVoice.gain.value = 0.35;
+    chirpEnv.connect(chirpVoice).connect(chirpPan);
+    const chirpOsc = tone("sine", 3000);
+    chirpOsc.connect(chirpEnv);
+
     // L4 rain: two beds off the shared long noise (no audible loop), straight
     // into sfx — under the radio duck, outside the city bus's alive/combat gate.
     const rainHiss = ctx.createGain();
@@ -457,6 +557,7 @@ export class CityAmbience {
 
     this.nextBarAt = nextGrid(now, BAR_S);
     this.nextHornAt = now + HORN_MIN_GAP_S;
+    this.nextChirpAt = now + CHIRP_MIN_GAP_S;
     return {
       ctx,
       bus,
@@ -473,6 +574,11 @@ export class CityAmbience {
       wind,
       windFilter,
       reverbSend,
+      cavern,
+      rumble,
+      chirpEnv,
+      chirpOsc,
+      chirpPan,
       rainHiss,
       rainRoar,
     };

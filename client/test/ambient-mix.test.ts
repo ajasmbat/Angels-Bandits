@@ -1,14 +1,20 @@
 // City soundscape mix (L2): the pure seam behind ambience.ts. Invariants
 // under test: city layers never get louder as you climb and are silent at
 // the cloud base; wind never gets quieter as you climb or speed up; the
-// tunnel reverb is on only inside a hole; the siren schedule is a pure
-// function of (seed, server clock).
+// tunnel reverb is on only inside a hole (or, U5, under a bore's cover);
+// the siren schedule is a pure function of (seed, server clock).
 
 import { cityHoles, generateCity } from "@angels-bandits/common/city";
+import {
+  TUNNELS,
+  guideY,
+  tunnelPointInto,
+} from "@angels-bandits/common/city/tunnels";
 import { CLOUD_BASE } from "@angels-bandits/common/constants";
 import { describe, expect, it } from "vitest";
 import {
   ambientMix,
+  cavernLevel,
   insideHole,
   plazaDistance,
   sirenAt,
@@ -78,6 +84,63 @@ describe("ambientMix", () => {
   it("sends to the tunnel reverb only inside a hole", () => {
     expect(ambientMix(at(30), 60, 50, 300, false).reverb).toBe(0);
     expect(ambientMix(at(30), 60, 50, 300, true).reverb).toBe(1);
+  });
+
+  it("U5: cavern 0 is exactly the city mix; deeper, the city ducks and the echo rises", () => {
+    for (const y of [-50, 0, 30, 200]) {
+      for (const hole of [false, true]) {
+        const city = ambientMix(at(y), 70, 20, 150, hole);
+        expect(ambientMix(at(y), 70, 20, 150, hole, 0)).toEqual(city);
+        expect(city.cavern).toBe(0);
+        let prev = city;
+        for (const cave of [0.25, 0.5, 1]) {
+          const mix = ambientMix(at(y), 70, 20, 150, hole, cave);
+          for (const k of [
+            "traffic",
+            "horn",
+            "siren",
+            "plaza",
+            "wind",
+          ] as const) {
+            expect(mix[k]).toBeLessThanOrEqual(prev[k]);
+          }
+          expect(mix.reverb).toBeGreaterThanOrEqual(cave);
+          expect(mix.cavern).toBe(cave);
+          prev = mix;
+        }
+      }
+    }
+    expect(ambientMix(at(-50), 70, 20, 150, false, 3).cavern).toBe(1);
+  });
+});
+
+describe("U5 cavern level", () => {
+  const t = TUNNELS[0] as (typeof TUNNELS)[number];
+  const on = (s: number, y: number) => {
+    const p = tunnelPointInto(t, s, { x: 0, z: 0, th: 0 });
+    return { x: p.x, y, z: p.z };
+  };
+
+  it("is 1 deep in a bore, 0 in the open air and over a plaza cut's ramp", () => {
+    expect(cavernLevel(on(485, -52))).toBe(1);
+    expect(cavernLevel(on(485, 30))).toBe(0);
+    // Inside the open cut, below street level: open sky, no cavern.
+    expect(cavernLevel(on(40, -8))).toBe(0);
+    // A river mouth's channel stretch is open river.
+    const riverside = TUNNELS[1] as (typeof TUNNELS)[number];
+    const m = tunnelPointInto(riverside, 10, { x: 0, z: 0, th: 0 });
+    expect(cavernLevel({ x: m.x, y: -20, z: m.z })).toBe(0);
+  });
+
+  it("eases in with depth under the lintel", () => {
+    let prev = 0;
+    for (let s = 80; s < 300; s += 5) {
+      const c = cavernLevel(on(s, guideY(t, s)));
+      expect(c).toBeGreaterThanOrEqual(prev - 1e-9);
+      expect(c).toBeLessThanOrEqual(1);
+      prev = c;
+    }
+    expect(prev).toBe(1);
   });
 });
 

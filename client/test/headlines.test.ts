@@ -172,13 +172,19 @@ describe("killHeadline", () => {
       0,
     );
     expect(forced).toMatch(/^BANDIT-3 [A-Z ]+ BANDIT-7$/);
+    const wreck = killHeadline(
+      { victimId: "b7", killerId: "b3", cause: "wreck" },
+      label,
+      0,
+    );
+    expect(wreck).toMatch(/^BANDIT-3 WRECK[A-Z ]* BANDIT-7$/);
   });
 
   it("is built only from guarded labels and fixed words", () => {
     const ids = [...roster.keys(), "gone"];
     for (const killer of [...ids, null]) {
       for (const victim of ids) {
-        for (const cause of ["shot", "crash", "storm"] as const) {
+        for (const cause of ["shot", "crash", "storm", "wreck"] as const) {
           const line = killHeadline(
             { victimId: victim, killerId: killer, cause, x: 500, z: 900 },
             label,
@@ -213,6 +219,9 @@ describe("feed lines and the LAST KILL subject", () => {
     expect(
       replaySubject({ victimId: "v", killerId: null, cause: "crash" }),
     ).toEqual({ id: "v", caption: "WIPEOUT" });
+    expect(
+      replaySubject({ victimId: "v", killerId: "k", cause: "wreck" }),
+    ).toEqual({ id: "k", caption: "LAST KILL" });
     expect(
       replaySubject({ victimId: "v", killerId: "k", cause: "storm" }),
     ).toEqual({ id: "v", caption: "STORM KILL" });

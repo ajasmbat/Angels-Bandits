@@ -43,6 +43,7 @@ import {
   JOIN_DEADLINE_MS,
   LIVENESS_TIMEOUT_MS,
   NAME_MAX_LENGTH,
+  PLAYER_RADIUS,
   POSE_AGE_MAX_MS,
   RESUME_WINDOW_MS,
   SPAWN_PROTECTION_MS,
@@ -65,6 +66,7 @@ import type {
   WireSnapshotMsg,
 } from "@angels-bandits/common/protocol";
 import { type Vec3, canonicalize } from "@angels-bandits/common/world";
+import type { WreckParams, WreckWorld } from "@angels-bandits/common/wreck";
 import { type WebSocket, WebSocketServer } from "ws";
 import {
   type BotContact,
@@ -100,6 +102,7 @@ import { type Room, RoomManager } from "./room";
 import { createStaticHandler } from "./statics";
 import { StormCeiling } from "./storm";
 import { poseFromSpawn, validatePose } from "./validate";
+import { RoomWrecks, applyWreckImpact, impactPos } from "./wrecks";
 
 const PORT = Number(process.env.PORT ?? 8080);
 
@@ -283,6 +286,97 @@ function deathBlast(room: Room, victimId: string): void {
 }
 
 /**
+ * Each room's falling wrecks (D4). They fall, kill and land whether or not
+ * a human is there — only the city damage of a landing is gated by
+ * breakable(). Created lazily, dropped with the room.
+ */
+const wrecksByRoom = new Map<string, RoomWrecks>();
+const roomWrecks = (room: Room): RoomWrecks => {
+  let wrecks = wrecksByRoom.get(room.id);
+  if (!wrecks) {
+    wrecks = new RoomWrecks();
+    wrecksByRoom.set(room.id, wrecks);
+  }
+  return wrecks;
+};
+
+/** What a room's wreck sweeps against: its own breakable city as it stands,
+ * the trees, and the seed's movers — WITHOUT the room's news heli, whose
+ * future route depends on kills that have not happened yet. */
+const wreckWorld = (room: Room): WreckWorld => {
+  const rc = roomCity(room);
+  return {
+    buildings: rc.buildings,
+    index: rc.index,
+    nature: natureIndexFor(room.seed),
+    movers: moversFor(room.seed),
+  };
+};
+
+/**
+ * A plane was shot down: it falls as a wreck from its on-record pose (a
+ * human's validated claim at the time it was taken; a bot's sim state, read
+ * BEFORE bots.setDead). Over WRECKS_MAX — or with no pose on record — it
+ * explodes in place as before D4. Call after the death is decided.
+ */
+function shotDown(
+  room: Room,
+  victimId: string,
+  killerId: string | null,
+  now: number,
+): WreckParams | null {
+  let start: { pos: Vec3; vel: Vec3; t: number } | null = null;
+  if (room.members.get(victimId)?.isBot) {
+    const c = botsFor(room).contactOf(victimId);
+    if (c) start = { pos: c.pos, vel: c.vel, t: now };
+  } else {
+    const client = clients.get(victimId);
+    if (client) {
+      start = {
+        pos: client.pose.pos,
+        vel: poseVelocity(client.pose),
+        t: client.poseTime,
+      };
+    }
+  }
+  const wreck =
+    start &&
+    roomWrecks(room).spawn(
+      victimId,
+      killerId,
+      start.pos,
+      start.vel,
+      start.t,
+      wreckWorld(room),
+    );
+  if (!wreck) deathBlast(room, victimId);
+  return wreck ?? null;
+}
+
+/**
+ * Wrecks that hit by `now`: each lands exactly once — the D2 blast through
+ * the room's city (when breakable) and the city's `death` event at the
+ * impact point (D1 facade blast and burn, L1 reactions, welcome replay).
+ * Call before the tick's chunk batch so the impact's chunks go out with it.
+ */
+function landWrecks(room: Room, now: number): void {
+  const wrecks = wrecksByRoom.get(room.id);
+  if (!wrecks) return;
+  for (const { params } of wrecks.settle(now)) {
+    const pos = impactPos(params);
+    const rc = breakable(room);
+    if (rc) applyWreckImpact(rc, pos);
+    const event = cityEvents.offer(
+      room.id,
+      "death",
+      pos,
+      params.t + params.end,
+    );
+    if (event) sendToRoom(room, { type: "cityEvent", event });
+  }
+}
+
+/**
  * S3 stunt courses per city seed, memoised like `moversFor`: the courses
  * (generated from exactly the city, trees and static movers every client
  * generates them from), the process-wide boards, and what the solid sweep
@@ -441,6 +535,7 @@ function disposeRoom(room: Room): void {
   roomMoversById.delete(room.id);
   pendingKillByRoom.delete(room.id);
   roomCityById.delete(room.id);
+  wrecksByRoom.delete(room.id);
 }
 
 const sanitizeName = (raw: unknown): string => {
@@ -548,6 +643,7 @@ function handleJoin(
     resumeToken: client.resumeToken,
     destroyed: encodeChunkIds(roomCity(room).damage.destroyedIds()),
     courses: courseSetFor(room.seed).book.standings(),
+    wrecks: wrecksByRoom.get(room.id)?.active() ?? [],
   };
   ws.send(JSON.stringify(welcome));
   sendToRoom(room, { type: "playerJoined", player: { id, name } }, id);
@@ -784,11 +880,12 @@ function handleHitClaim(
     botsFor(client.room).onDamaged(targetId, now);
   }
   if (verdict.death) {
-    deathBlast(client.room, targetId);
+    // D4: it falls as a wreck (or, over the cap, explodes in place).
+    const wreck = shotDown(client.room, targetId, client.id, now);
     if (client.room.members.get(targetId)?.isBot) {
       botsFor(client.room).setDead(targetId);
     }
-    sendDeath(client.room, verdict.death, now);
+    sendDeath(client.room, verdict.death, now, wreck);
   }
 }
 
@@ -817,13 +914,19 @@ function handleSetBots(client: Client, count: unknown, now: number): void {
  */
 /**
  * Announce a server-declared death: the news heli's pending kill site, the
- * `death` itself carrying its canonical site (S1 jumbotron headlines), the
- * city event and the new tallies. Every death goes through here. Invariant
+ * `death` itself carrying its canonical site (S1 jumbotron headlines) and,
+ * for a plane shot down, its D4 `wreck`; the city event (a wreck's waits
+ * for its landing) and the new tallies. Every death goes through here. Invariant
  * the clients rely on: the death is sent BEFORE its score broadcast, so the
  * tallies a client holds when a death lands are the pre-death ones (S1 seeds
  * each headline's verb from them, identically on every client).
  */
-function sendDeath(room: Room, death: Death, now: number): void {
+function sendDeath(
+  room: Room,
+  death: Death,
+  now: number,
+  wreck: WreckParams | null = null,
+): void {
   const pos = lastPosOf(room, death.victimId);
   if (pos) pendingKillByRoom.set(room.id, { x: pos.x, z: pos.z });
   const site = pos ? canonicalize(pos) : null;
@@ -836,8 +939,10 @@ function sendDeath(room: Room, death: Death, now: number): void {
       x: Math.round(site.x) % WORLD_SIZE,
       z: Math.round(site.z) % WORLD_SIZE,
     }),
+    ...(wreck && { wreck }),
   });
-  offerCityEvent(room, "death", death.victimId, now);
+  // D4: a wreck's city event comes when it lands, where it lands.
+  if (!wreck) offerCityEvent(room, "death", death.victimId, now);
   broadcastScores(room);
 }
 
@@ -852,8 +957,19 @@ function updateNewsHeli(room: Room, now: number): void {
   sendToRoom(room, { type: "newsHeli", target });
 }
 
-function handleCrash(client: Client, now: number): void {
-  const death = combat.crash(client.id, now);
+/** A crash report. `wreckId` (D4) names the falling wreck the client says
+ * it flew into: credited to that wreck's shooter only if the server's own
+ * geometry agrees, else it is an ordinary crash. */
+function handleCrash(client: Client, wreckId: unknown, now: number): void {
+  const credit = roomWrecks(client.room).creditFor(
+    client.id,
+    wreckId,
+    client.pose.pos,
+    now,
+  );
+  const death = credit
+    ? combat.wreckKill(client.id, credit.shooterId, now)
+    : combat.crash(client.id, now);
   if (!death) return;
   deathBlast(client.room, client.id);
   sendDeath(client.room, death, now);
@@ -963,8 +1079,27 @@ function tickRoomBots(room: Room, now: number): void {
 
   const { shots, hits, crashes } = bots.tick(now, contacts);
 
-  for (const id of crashes) {
-    const death = combat.crash(id, now);
+  // D4: a falling wreck is solid for bots too (they do not probe for it).
+  const wrecks = wrecksByRoom.get(room.id);
+  const struck: { id: string; shooterId: string | null }[] = [];
+  if (wrecks && wrecks.count > 0) {
+    for (const member of room.members.values()) {
+      if (!member.isBot || !combat.isAlive(member.id)) continue;
+      const c = bots.contactOf(member.id);
+      const r = c && wrecks.touching(member.id, c.pos, PLAYER_RADIUS, now);
+      if (r) struck.push({ id: member.id, shooterId: r.shooterId });
+    }
+  }
+  const deaths = [
+    ...crashes.map((id) => ({ id, death: combat.crash(id, now) })),
+    ...struck.map(({ id, shooterId }) => {
+      const death = combat.wreckKill(id, shooterId, now);
+      if (death) bots.setDead(id);
+      return { id, death };
+    }),
+  ];
+
+  for (const { id, death } of deaths) {
     if (!death) continue;
     deathBlast(room, id);
     sendDeath(room, death, now);
@@ -1008,11 +1143,12 @@ function routeBotHit(
     bots.onDamaged(shot.targetId, now);
   }
   if (hit.death) {
-    deathBlast(room, shot.targetId);
+    // D4: it falls as a wreck (or, over the cap, explodes in place).
+    const wreck = shotDown(room, shot.targetId, shot.botId, now);
     if (room.members.get(shot.targetId)?.isBot) {
       bots.setDead(shot.targetId);
     }
-    sendDeath(room, hit.death, now);
+    sendDeath(room, hit.death, now, wreck);
   }
 }
 
@@ -1051,6 +1187,7 @@ const server = createServer((req, res) => {
         roomMoversById: [...roomMoversById.keys()],
         pendingKillByRoom: [...pendingKillByRoom.keys()],
         roomCityById: [...roomCityById.keys()],
+        wrecksByRoom: [...wrecksByRoom.keys()],
       }),
     );
     return;
@@ -1118,7 +1255,7 @@ wss.on("connection", (ws) => {
     } else if (msg.type === "hit") {
       if (!client.pending) handleHitClaim(client, msg, now);
     } else if (msg.type === "crash") {
-      handleCrash(client, now);
+      handleCrash(client, msg.wreck, now);
     } else if (msg.type === "setBots") {
       handleSetBots(client, msg.count, now);
     }
@@ -1176,6 +1313,7 @@ function tick(): void {
     tickRoomBots(room, time);
     enforceStormCeiling(room, time);
     updateNewsHeli(room, time);
+    landWrecks(room, time); // D4: before the batch — its chunks ride along
     // D2: everything that broke this tick, as ONE batch.
     const broke = roomCityById.get(room.id)?.damage.takeDestroyed();
     if (broke && broke.length > 0) {

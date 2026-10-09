@@ -40,6 +40,7 @@ import {
   MAX_HP,
   MAX_SPEED,
   MIN_SPEED,
+  PLAYER_RADIUS,
 } from "@angels-bandits/common/constants";
 import {
   type Course,
@@ -75,6 +76,7 @@ import {
   wrapDeltaAxis,
   wrapDistance,
 } from "@angels-bandits/common/world";
+import { type WreckParams, isWreckParams } from "@angels-bandits/common/wreck";
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
@@ -155,6 +157,7 @@ import {
 } from "./game/instructor";
 import { speedFov } from "./game/jet-camera";
 import { magnetizeVelocity } from "./game/magnetism";
+import { wreckCamView } from "./game/wreck-cam";
 import {
   BASE_FOV,
   createZoom,
@@ -284,6 +287,7 @@ import { TrainRenderer } from "./render/train";
 import { WeatherClock, setWeatherUniform } from "./render/weather";
 import { buildingSeed, isWindowLit } from "./render/window-pattern";
 import { nearestImage } from "./render/wrapPlacement";
+import { Wrecks } from "./render/wrecks";
 import { BotBar } from "./ui/botbar";
 import { Coach, renderPrimer } from "./ui/coach";
 import { CommsTicker } from "./ui/comms";
@@ -864,6 +868,14 @@ scene.add(smoke.points);
 // shader's damage map (city.damage). Cosmetic only — nothing here collides.
 const impacts = new Impacts();
 scene.add(impacts.points);
+// D4: shot-down planes fall as burning wrecks on the server's shared path
+// and blow up where it says they land (the D2 damage arrives as `chunks`).
+const wrecks = new Wrecks(impacts, (_w, at) => {
+  explosions.explode(at, performance.now());
+  audio.explosion(at, flight.pos, flight.yaw);
+});
+scene.add(wrecks.group);
+wrecks.reset((welcome.wrecks ?? []).filter(isWreckParams));
 /** The classifier's reusable result (allocation-free bullet loop). */
 const impactHit: BulletImpact = createBulletImpact();
 /** QA: the last city impact by a LOCAL round (own guns or __ab.qaFireAt —
@@ -1236,6 +1248,10 @@ let cornerCap = MAX_SPEED;
 let leadYawRate = 0;
 let alive = true;
 let killCamTargetId: string | null = null;
+/** D4: our own falling wreck — the kill-cam rides it while it is set. */
+let killCamWreck: WreckParams | null = null;
+const wreckEye: Vec3 = { x: 0, y: 0, z: 0 };
+const wreckAt: Vec3 = { x: 0, y: 0, z: 0 };
 // Server-said combat state about self (snapshots), kept for HUD + QA.
 let selfHp = MAX_HP;
 /** The own plane's control-surface commands, from the last flight step. */
@@ -1394,6 +1410,7 @@ function respawnSelf(spawn: SpawnState): void {
   resetAssist();
   alive = true;
   killCamTargetId = null;
+  killCamWreck = null;
   plane.visible = true;
   hud.hideKillCam();
   damageIndicator.clear();
@@ -1520,14 +1537,19 @@ socket.events.onDeath = (msg) => {
     killerId: msg.killerId,
     cause: msg.cause,
   };
+  // D4: a shot-down plane falls as a wreck — the bang comes where it lands.
+  const wreck = isWreckParams(msg.wreck) ? msg.wreck : null;
+  if (wreck) wrecks.add(wreck);
   // Grab the victim's position before setDead clears it (self = own plane).
   const victimPos =
     msg.victimId === socket.selfId
       ? flight.pos
       : remotes.poseOf(msg.victimId)?.pos;
   if (victimPos) {
-    audio.explosion(victimPos, flight.pos, flight.yaw);
-    explosions.explode(victimPos, performance.now());
+    if (!wreck) {
+      audio.explosion(victimPos, flight.pos, flight.yaw);
+      explosions.explode(victimPos, performance.now());
+    }
     // Storm kill: the bolt comes down ON the victim (kill-cam length) with
     // an immediate hard crack — the one strike that isn't on the schedule.
     if (msg.cause === "storm") {
@@ -1568,6 +1590,7 @@ socket.events.onDeath = (msg) => {
   hpBar.clear(msg.victimId); // never float a stale bar over a respawn
   if (msg.victimId === socket.selfId) {
     enterDeath(msg.killerId, msg.cause);
+    killCamWreck = wreck; // D4: the kill-cam rides our own wreck down
     // U3: the first storm death earns one "stay below" notice on respawn.
     if (msg.cause === "storm") coach.noteStormDeath();
     // M5: the first life is over ("after the first match" in a drop-in
@@ -1665,6 +1688,7 @@ function applyResume(w: WelcomeMsg): void {
     currentRoomId = w.roomId;
     reactor.ingest(w.cityEvents ?? []);
     blastLedger.ingest(w.cityEvents ?? []); // D1: already-seen ones are skipped
+    wrecks.reset((w.wrecks ?? []).filter(isWreckParams)); // D4
     if (moverField.news && w.newsHeli) {
       moverField.news.target = w.newsHeli.target;
       moverField.news.prev = w.newsHeli.prev;
@@ -1768,6 +1792,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   // D1: particle budget and burning patches (counts only).
   impacts.setShare(QUALITY_PROFILES[tier].impacts);
   blastLedger.setBurnCap(burnCapFor(QUALITY_PROFILES[tier].impacts));
+  wrecks.setShare(QUALITY_PROFILES[tier].wreckFire); // D4
   pedestrians.setQuality(tier);
   cityLife.setQuality(tier); // A1
   facadeLife.setQuality(tier); // A1
@@ -3122,18 +3147,22 @@ const frame = (now: number): void => {
     // decay can lag the clock — this keeps every pose inside the mirror.
     const speedCap = boostSpeedCap(boost, now);
     if (flight.speed > speedCap) flight = { ...flight, speed: speedCap };
-    if (
-      detectCrash(
-        flight,
-        city.cityBuildings,
-        city.cityIndex,
-        moverField,
-        renderMs,
-        natureIndex,
-      )
-    ) {
+    const crashed = detectCrash(
+      flight,
+      city.cityBuildings,
+      city.cityIndex,
+      moverField,
+      renderMs,
+      natureIndex,
+    );
+    // D4: a falling wreck is solid too (on the same render clock). Named in
+    // the report only when it, and no static solid, is what we hit.
+    const wreckHit = crashed
+      ? null
+      : wrecks.touching(flight.pos, PLAYER_RADIUS, renderMs);
+    if (crashed || wreckHit !== null) {
       // Report and freeze; the server decides credit and the respawn.
-      socket.sendCrash();
+      socket.sendCrash(wreckHit);
       enterDeath(null, "crash");
     }
   }
@@ -3215,6 +3244,13 @@ const frame = (now: number): void => {
       boost.active ? 1 : 0, // own flame follows the real burn, not speed
     );
     planeTrails.emit(socket.selfId, flight.pos, poseQuat, now, dt);
+  } else if (killCamWreck !== null && renderMs !== null) {
+    // D4 kill-cam: ride behind our own wreck down to where it hits.
+    wreckCamView(killCamWreck, renderMs, wreckEye, wreckAt);
+    chase.holdAt(wreckEye);
+    camera.position.set(wreckEye.x, wreckEye.y, wreckEye.z);
+    const aim = nearestImage(wreckEye, wreckAt);
+    camera.lookAt(aim.x, aim.y, aim.z);
   } else if (killCamTargetId !== null) {
     // Kill-cam beat: hold position, watch the killer if we can see them.
     const killerPose = remotes.poseOf(killCamTargetId);
@@ -3513,6 +3549,7 @@ const frame = (now: number): void => {
   shieldSparks.update(chase.position, now);
   // D1: burning patches age on the synced server clock; particles fly.
   if (renderMs !== null) blastLedger.prune(renderMs);
+  wrecks.update(chase.position, renderMs, now); // D4: before the particles
   impacts.burn(blastLedger.burns, renderMs, now);
   impacts.update(chase.position, now);
   tracers.update(bullets.all, chase.position, now);

@@ -157,6 +157,8 @@ const SHOT_VERBS = ["DOWNS", "SPLASHES", "TAKES OUT", "DROPS", "SMOKES"];
 const FORCED_VERBS = ["FORCES DOWN", "RUNS DOWN", "CHASES DOWN"];
 const CRASH_VERBS = ["CRASHES", "GOES DOWN", "AUGERS IN"];
 const STORM_LEADS = ["LIGHTNING STRIKES", "STORM CLAIMS", "BOLT TAKES"];
+/** D4: the victim flew into a falling wreck; the wreck's shooter is credited. */
+const WRECK_VERBS = ["WRECK TAKES OUT", "WRECKAGE DOWNS", "WRECK CLIPS"];
 
 const pick = (list: readonly string[], seed: number): string =>
   list[seed % list.length] as string;
@@ -183,6 +185,8 @@ export function killHeadline(
     line = `${pick(STORM_LEADS, seed)} ${victim}`;
   } else if (death.killerId === null) {
     line = `${victim} ${pick(CRASH_VERBS, seed)}`;
+  } else if (death.cause === "wreck") {
+    line = `${label(death.killerId)} ${pick(WRECK_VERBS, seed)} ${victim}`;
   } else if (death.cause === "crash") {
     line = `${label(death.killerId)} ${pick(FORCED_VERBS, seed)} ${victim}`;
   } else {
@@ -200,7 +204,8 @@ export function feedLine(
   const victim = label(death.victimId);
   if (death.cause === "storm") return `⚡ ${victim}`;
   if (death.killerId === null) return `☠ ${victim}`;
-  const glyph = death.cause === "crash" ? "✕" : "▸";
+  const glyph =
+    death.cause === "wreck" ? "🔥" : death.cause === "crash" ? "✕" : "▸";
   return `${label(death.killerId)} ${glyph} ${victim}`;
 }
 
@@ -210,8 +215,9 @@ export interface ReplaySubject {
   caption: string;
 }
 
-/** The killer's plane — or, when nobody gets the credit (a storm kill, an
- * un-credited crash), the plane that went down. */
+/** The killer's plane (for a D4 wreck kill: the wreck's shooter) — or, when
+ * nobody gets the credit (a storm kill, an un-credited crash), the plane
+ * that went down. */
 export function replaySubject(death: HeadlineDeath): ReplaySubject {
   if (death.cause === "storm") {
     return { id: death.victimId, caption: "STORM KILL" };

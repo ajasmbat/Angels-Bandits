@@ -136,6 +136,10 @@ export interface QualityProfile {
    * destruction exposed. Off = flat concrete slabs and dark rooms, by a
    * uniform. The broken geometry itself is solid and identical everywhere. */
   destructionDetail: boolean;
+  /** D4 falling wrecks: share of the flames and smoke their trail and their
+   * landing fire emit (into the D1 particle pool). The wreck itself, its
+   * explosion and the street scorch are on every tier — the wreck is solid. */
+  wreckFire: number;
 }
 
 export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
@@ -169,6 +173,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     courseGhost: true,
     impacts: 1,
     destructionDetail: true,
+    wreckFire: 1,
   },
   medium: {
     maxPixelRatio: 1.5,
@@ -200,6 +205,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     courseGhost: true,
     impacts: 0.75,
     destructionDetail: true,
+    wreckFire: 0.75,
   },
   low: {
     maxPixelRatio: 1,
@@ -231,6 +237,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     courseGhost: true,
     impacts: 0.5,
     destructionDetail: false,
+    wreckFire: 0.5,
   },
   mobile: {
     maxPixelRatio: 1,
@@ -262,6 +269,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     courseGhost: false,
     impacts: 0.25,
     destructionDetail: false,
+    wreckFire: 0.35,
   },
 };
 
@@ -633,6 +641,14 @@ export const FEATURE_TIERS: readonly {
     low: "reduced",
     mobile: "reduced",
     note: "1200 / 900 / 600 / 300 particles, 48 / 40 / 32 / 24 facade damage slots, 6 / 5 / 4 / 3 burns; not solid, cosmetic only",
+  },
+  {
+    feature: "D4 falling wrecks — trail flames + smoke, landing fire",
+    high: "full",
+    medium: "reduced",
+    low: "reduced",
+    mobile: "reduced",
+    note: "emission 100 / 75 / 50 / 35 %; the wreck (solid), its explosion and the street scorch stay on every tier",
   },
 ];
 

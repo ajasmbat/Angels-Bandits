@@ -14,6 +14,10 @@ import {
   raycastChunk,
 } from "@angels-bandits/common/city";
 import {
+  type CityIndex,
+  buildCityIndex,
+} from "@angels-bandits/common/collision";
+import {
   BULLET_DAMAGE,
   BULLET_RANGE,
   DEATH_BLAST_DAMAGE,
@@ -36,13 +40,16 @@ export function cloneCity(buildings: readonly Building[]): Building[] {
 export interface RoomCity {
   readonly buildings: Building[];
   readonly damage: CityDamage;
+  /** The block index of `buildings` (valid under damage: footprints never
+   * change, and rubble's reach is already in it). */
+  readonly index: CityIndex;
 }
 
 export function createRoomCity(buildings: readonly Building[]): RoomCity {
   const copy = cloneCity(buildings);
   const damage = new CityDamage();
   damage.bind(copy);
-  return { buildings: copy, damage };
+  return { buildings: copy, damage, index: buildCityIndex(copy) };
 }
 
 /** Unit nose vector of a wire attitude (the same math as bots.poseVelocity

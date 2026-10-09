@@ -108,6 +108,10 @@ export function setJoinStatus(text: string, progress?: number): void {
   const input = document.getElementById("join-name") as HTMLInputElement;
   const status = document.getElementById("join-status") as HTMLParagraphElement;
   form.classList.add("busy");
+  // P3: the skyline freezes for the boot — its animations would compete
+  // with the city build for the frames (4x slower to first frame on a
+  // software compositor); only the bar's shimmer keeps moving.
+  document.getElementById("join")?.classList.add("loading");
   input.disabled = true;
   status.classList.remove("error");
   status.textContent = text;

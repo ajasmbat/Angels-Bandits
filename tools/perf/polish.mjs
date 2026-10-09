@@ -56,6 +56,10 @@ const SHOTS = flag("shots");
 /** --repo: serve another checkout (its own built client/dist) — the BEFORE
  * arm runs from a git worktree of the earlier commit. */
 const SERVE_REPO = resolve(opt("repo", REPO));
+/** --ref: with --ttff, a second checkout booted in alternation with the
+ * served one (ref, served, ref, served…) — on a shared, loaded box only an
+ * interleaved pair compares two builds fairly. */
+const REF_REPO = opt("ref", null) ? resolve(opt("ref")) : null;
 const OVERLAP = flag("overlap");
 mkdirSync(OUT, { recursive: true });
 
@@ -111,14 +115,12 @@ function freePort() {
   });
 }
 
-let liveServer = null;
+const liveServers = [];
 let liveBrowser = null;
 async function killEverything() {
-  const server = liveServer;
   const browser = liveBrowser;
-  liveServer = null;
   liveBrowser = null;
-  if (server !== null) server.kill();
+  for (const server of liveServers.splice(0)) server.kill();
   if (browser !== null) await browser.close().catch(() => {});
 }
 for (const sig of ["SIGINT", "SIGTERM"]) {
@@ -127,10 +129,10 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
   });
 }
 
-async function startServer(port) {
+async function startServer(port, cwd = SERVE_REPO) {
   const log = [];
   const proc = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
-    cwd: SERVE_REPO,
+    cwd,
     env: {
       ...process.env,
       PORT: String(port),
@@ -141,7 +143,7 @@ async function startServer(port) {
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  liveServer = proc;
+  liveServers.push(proc);
   proc.stdout.on("data", (d) => log.push(String(d)));
   proc.stderr.on("data", (d) => log.push(String(d)));
   for (let i = 0; i < 120; i++) {
@@ -212,8 +214,14 @@ const INIT_PROBES = () => {
   if (!watch()) document.addEventListener("DOMContentLoaded", watch);
 };
 
+/** --reduced-motion: the page as a reduced-motion user sees it. */
+const REDUCED = flag("reduced-motion");
+
 async function openPage(browser, device) {
-  const context = await browser.newContext(device);
+  const context = await browser.newContext({
+    ...device,
+    ...(REDUCED ? { reducedMotion: "reduce" } : {}),
+  });
   const page = await context.newPage();
   await page.addInitScript(INIT_PROBES);
   return { context, page };
@@ -245,24 +253,21 @@ const median = (xs) => {
   return s.length === 0 ? null : s[Math.floor((s.length - 1) / 2)];
 };
 
-async function runTtff(browser, url) {
-  const runs = [];
-  for (let i = 0; i < TTFF_RUNS; i++) {
-    const { context, page } = await openPage(browser, DESKTOP);
-    try {
-      const p = await boot(page, url);
-      runs.push({
-        fcpMs: p.fcp,
-        joinReadyMs: p.joinReady,
-        flyToFirstFrameMs: p.firstFrame - p.fly,
-      });
-      console.log(
-        `  ttff run ${i + 1}/${TTFF_RUNS}: ${JSON.stringify(runs.at(-1))}`,
-      );
-    } finally {
-      await context.close();
-    }
+async function bootOnce(browser, url) {
+  const { context, page } = await openPage(browser, DESKTOP);
+  try {
+    const p = await boot(page, url);
+    return {
+      fcpMs: p.fcp,
+      joinReadyMs: p.joinReady,
+      flyToFirstFrameMs: p.firstFrame - p.fly,
+    };
+  } finally {
+    await context.close();
   }
+}
+
+function summarise(runs) {
   const pick = (k) => median(runs.map((r) => r[k]).filter((v) => v !== null));
   return {
     runs,
@@ -272,6 +277,27 @@ async function runTtff(browser, url) {
       flyToFirstFrameMs: pick("flyToFirstFrameMs"),
     },
   };
+}
+
+/** TTFF_RUNS cold boots of `url`, alternated with `refUrl`'s when given. */
+async function runTtff(browser, url, refUrl) {
+  const runs = [];
+  const refRuns = [];
+  for (let i = 0; i < TTFF_RUNS; i++) {
+    if (refUrl) {
+      refRuns.push(await bootOnce(browser, refUrl));
+      console.log(
+        `  ttff ref ${i + 1}/${TTFF_RUNS}: ${JSON.stringify(refRuns.at(-1))}`,
+      );
+    }
+    runs.push(await bootOnce(browser, url));
+    console.log(
+      `  ttff run ${i + 1}/${TTFF_RUNS}: ${JSON.stringify(runs.at(-1))}`,
+    );
+  }
+  const out = summarise(runs);
+  if (refUrl) out.ref = { repo: REF_REPO, ...summarise(refRuns) };
+  return out;
 }
 
 /** Settings open (Esc on desktop, the gear on touch), then closed. */
@@ -722,7 +748,13 @@ async function main() {
   };
   if (TTFF_RUNS > 0) {
     console.log(`ttff × ${TTFF_RUNS}`);
-    report.ttff = await runTtff(liveBrowser, url);
+    let refUrl = null;
+    if (REF_REPO) {
+      const refPort = await freePort();
+      await startServer(refPort, REF_REPO);
+      refUrl = `http://127.0.0.1:${refPort}/`;
+    }
+    report.ttff = await runTtff(liveBrowser, url, refUrl);
   }
   if (SHOTS) {
     console.log("shots");
@@ -741,6 +773,9 @@ async function main() {
   console.log(`report: ${path}`);
   if (report.ttff)
     console.log(`ttff median: ${JSON.stringify(report.ttff.median)}`);
+  if (report.ttff?.ref) {
+    console.log(`ttff ref median: ${JSON.stringify(report.ttff.ref.median)}`);
+  }
   if (report.soak) {
     console.log(
       `soak: ${report.soak.pass ? "PASS" : "FAIL"} ${JSON.stringify(report.soak.verdicts)}`,

@@ -290,6 +290,19 @@ body.kbd #join .join-tag {
     display: none;
   }
 }
+/* After FLY (ui/join.ts adds `loading`) nothing on the card animates: the
+   skyline freezes where it is and the bar's shimmer stops — the bar then
+   moves only on a stage change. A running animation makes the browser
+   composite every frame over the canvas the boot is rendering into (on a
+   software rasteriser that alone made first frame 4x slower). */
+#join.loading .join-bg .layer,
+#join.loading .join-bg .beam,
+#join.loading .join-bg .plane {
+  animation-play-state: paused;
+}
+#join.loading #join-progress::after {
+  display: none;
+}
 @media (prefers-reduced-motion: reduce) {
   #join .join-bg .layer,
   #join .join-bg .beam,

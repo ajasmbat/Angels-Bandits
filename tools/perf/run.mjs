@@ -574,7 +574,7 @@ async function flySegment(page, seg, sampleMs, worldMs) {
         const t0 = performance.now();
         const ready = () =>
           (!show.boss || ab.boss().present) &&
-          (!show.course || ab.course().ghostDrawn);
+          (!show.course || ab.course().ghost);
         while (!ready() && performance.now() - t0 < s.readyMaxMs) {
           await waitMs(0);
         }
@@ -641,7 +641,10 @@ async function flySegment(page, seg, sampleMs, worldMs) {
             course: c.course,
             expected: courseId,
             next: c.next,
-            ghost: c.ghostDrawn,
+            // Playing: the run picked up the staged ghost. Drawn: the tier
+            // shows it (Mobile drops the replay, quality.ts courseGhost).
+            ghost: c.ghost,
+            ghostDrawn: c.ghostDrawn,
           },
           pilotRange: far === null ? null : Math.round(far),
         };
@@ -817,7 +820,8 @@ export const PILOT_RANGE_MAX_M = 255;
  * S8: did the window show what the segment staged — at BOTH ends of it?
  *  - boss: the zeppelin drawn, shells in the air (the shell draw never
  *    toggles), no shell from a real raid, every pilot inside the LOD band;
- *  - course: the client's run on the staged course, its ghost drawn.
+ *  - course: the client's run on the staged course, its ghost playing
+ *    (drawn on every tier but Mobile, which drops the replay).
  * Null when the segment stages nothing, or the build has no hook (an
  * --ab-ref from before S8: that arm is no baseline, not a failure).
  */
@@ -1656,7 +1660,7 @@ function printVerdicts(report) {
         e.boss &&
           `boss ${e.boss.present ? "in the air" : "ABSENT"} (${e.boss.armour} armour boxes), ${e.boss.shells} shells, ${e.boss.foreign} server shells`,
         e.course &&
-          `run on course ${e.course.course} (want ${e.course.expected}), next ring ${e.course.next}, ghost ${e.course.ghost ? "drawn" : "NOT drawn"}`,
+          `run on course ${e.course.course} (want ${e.course.expected}), next ring ${e.course.next}, ghost ${e.course.ghost ? (e.course.ghostDrawn ? "drawn" : "playing, not drawn (tier)") : "NOT playing"}`,
         e.pilotRange !== null && `furthest pilot ${e.pilotRange} m`,
       ]
         .filter(Boolean)
@@ -1900,7 +1904,7 @@ export const UNPINNED_SEGMENTS = new Set([
   "boss",
 ]);
 /** Segments whose draw count may legitimately move between passes. */
-export const DRAWS_FLOAT = new Set(["storm", "street", "furball"]);
+export const DRAWS_FLOAT = new Set(["storm", "street", "furball", "boss"]);
 
 /**
  * O4: with the WORLD clock pinned (`__ab.pinWorld`, segments.mjs
@@ -1911,7 +1915,10 @@ export const DRAWS_FLOAT = new Set(["storm", "street", "furball"]);
  * pinned; an older build (an --ab-ref from before O4) keeps the sets above.
  */
 export const UNPINNED_WORLD_PINNED = new Set(["furball", "boss"]);
-export const DRAWS_FLOAT_WORLD_PINNED = new Set(["furball"]);
+// S8: `boss` with them — its 11 pilots are drawn at the synced server time,
+// which the world pin does not reach; the staged hull and shells are pinned
+// and checked by the `spectacle` verdict instead.
+export const DRAWS_FLOAT_WORLD_PINNED = new Set(["furball", "boss"]);
 
 /** Per-segment agreement between the runs of one invocation. */
 export function determinism(runs) {

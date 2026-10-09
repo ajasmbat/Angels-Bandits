@@ -1404,7 +1404,9 @@ around `WORLD_EPOCH_MS`), and `boss` against the staged hull too
 The `spectacle` verdict checks, at **both ends** of the window, that the
 staging held: the hull drawn, shells in the air, no server shell, every
 pilot inside the LOD band (≤ 255 m from the plane); the run on the staged
-course with its ghost drawn. A `FAIL` there exits 1 with or without
+course with its ghost playing (drawn on every tier but Mobile, which drops
+the replay). On a slow renderer the window waits, at most 10 s past the
+settle, for the staged scene to be on screen, and says how long it waited. A `FAIL` there exits 1 with or without
 `--strict` — it measured an emptier scene than it claims. An `--ab-ref`
 build from before S8 has no staging hooks: those segments print **no
 baseline** for it.
@@ -1424,8 +1426,65 @@ baseline** for it.
   which then flew through every segment after it (`bot:room-3:6` … in the
   drain after `boss`). Every segment now re-asserts the empty room first, and
   the table names a window with planes it did not ask for or a room change
-  inside it. (D6, in flight, raises the server's liveness bound for the
-  harness and counts resumes; with it, this should not happen at all.)
+  inside it. Two things dropped it: the client's 3 s watchdog, which at 1–2 s
+  a frame could read silence off a healthy socket (the harness now passes a
+  QA `?silence=60000`), and the server's 4 s liveness bound once a frame
+  took longer than that — D6 (in flight) raises it for the harness; this
+  gate's runs used D6's override locally, and a run without it on this box
+  dropped three times in two segments.
+
+### What the runner measured (S8)
+
+GPU-less Linux box, SwiftShader (Vulkan), `--res 0.75` (the panel's floor at
+device ratio 2), High, `--runs 3`, on this branch over main at `5d29b26`,
+with D6's server liveness bound (`LIVENESS_TIMEOUT_MS=30000`, in flight)
+applied locally for the run only. **The box was badly oversubscribed** —
+other tickets' harnesses ran beside it, load average 40–110 on 16 cores —
+so frames took 1–8 s and a 5 s window held 1–26 of them. SwiftShader's GPU
+and wall times are the CPU rasterising: every `60fps` and `hitch` verdict
+reads FAIL here and says nothing about the M3.
+
+| segment | draws = scene + probe (median pass) | scene draws, 3 passes | budget | spect. | first sight (window) |
+| --- | --- | --- | --- | --- | --- |
+| core | 102 = 95 + 7 | 94 / 95 / 92 | 120 | — | 0p 0t 0b |
+| station | 100 = 93 + 7 | 93 / 87 / 91 | 110 | — | 0p 0t 0b |
+| hole | 114 = 93 + 21 (a 1-frame window that caught a refill) | 94 / 93 / 96 | 113 | — | 0p 0t 0b |
+| sidewalk | 102 = 95 + 7 | 94 / 95 / 93 | 112 | — | 0p 0t 0b |
+| boss | 278 = 271 + 7 | 270 / 271 / 269 | 300 | ok: hull drawn (16 armour boxes), 5–6 shells, 0 server shells, 12 planes, furthest pilot 206–230 m | 0p 0t 0b |
+| rings | 102 = 95 + 7 | 95 / 97 / 91 | 112 | ok in two passes; one opened before the run had started (fixed since: the window now waits for it) | 0p 0t 0b |
+| glass | 99 = 92 + 7 | 92 / 94 / 92 | 110 | — | 0p 0t 0b |
+
+- **core: 102 draws against its 120** (95 scene + 7 probe), the whole
+  Spectacle and Destruction batches included. Nothing breached `core`, so
+  nothing was cut.
+- **Draw identity could not be shown on this box, for any segment**,
+  including `core`, which this branch does not touch. The pinned world clock
+  advances by the sim step, clamped at 50 ms a frame, so a window of 6 frames
+  and one of 26 cover different slices of world time, and a flown segment
+  ends in a different place. P2's runner (load ~14, ~15 frames a window)
+  held identical draws. On the M3 a window holds hundreds of frames:
+  **`--runs 3 --strict` there is the identity check** (command 1 below).
+  `boss` is measured but, like `furball`, not asserted: its 11 pilots fly on
+  their own wall clock and the page draws them at the synced server time,
+  which the world pin does not reach. Its staged part, the hull and the
+  shells, is pinned, and the `spect.` verdict checks it at both ends.
+- **P2's three tripwires are re-based.** On main their scene draws are
+  87–96, where P2 measured 82–83, and the S6 probe adds 7 a frame. That is
+  the Spectacle and Destruction batches' one-draw systems (jumbotrons, rings,
+  fog banks, litter, the shafts pass, the D-batch's meshes) plus the probe.
+  The new budgets are measured + ~10 %, P2's own rule.
+- **First sight**: 0 programs and 0 textures inside every window. `boss`'s
+  settle uploads 11 textures and 33 buffers: the twelve planes' per-plane
+  buffers, as the furball's do (O4).
+- **Mobile** (`--quality mobile`, `core`, `boss`, `rings`, `glass`, 3
+  passes; even fewer frames a window, 1–5): every segment alive, 0p 0t
+  first sight in every window, the probe draws no face (`probe 0`), and
+  every view is lighter than High: core 81–85 (High 102), boss 260–261
+  (278), rings 83–91 (102), glass 86–91 (99). The ghost plays but is not
+  drawn, as the tier says. That run predates the fix to the `rings` check (it
+  demanded a drawn ghost, which Mobile never shows) and had a session drop
+  in its last pass, so its rings and glass carry five bots. The phone itself
+  is for the M3 (command 4).
 
 ### No per-frame allocations: the table (`tools/spectacle-bench.ts`)
 
@@ -1488,10 +1547,13 @@ row) — three's renderer empties each attribute's `updateRanges` with
 frame's push grows a new one; D6's table carries the same.
 
 `run.mjs --heap` is the in-page complement for the glue the bench cannot
-see (the frame loop in `main.ts`, the DOM HUDs): a sampling heap profile
-over each segment, bytes per frame and the top sites. On the runner it is
-dominated by SwiftShader-driven three internals (uniform uploads), as P2's
-profile found; it is for the M3.
+see (the frame loop in `main.ts`, the DOM HUDs, the socket): a sampling heap
+profile over each segment's settle and window, divided by the frames the
+page drew in it, with the top sites (the bundle is minified: map a site's
+`file:line:column` through the build's source map). On the runner it works
+and says nothing: at 1 s a frame it divides ~6 s of everything — 20 Hz
+snapshot decoding included — by 5 or 6 frames (1–2.7 MB "a frame"). It is
+for the M3, where a window holds hundreds of frames.
 
 ### Quality tiers
 
@@ -1506,3 +1568,50 @@ litter and streak dressing are thinned; the hull, its weak points, its
 shells, the rings and the fog banks are the same on every tier (solid, the
 telegraph, guidance, visibility parity).
 
+
+### Commands for the M3 (S8)
+
+Run on main after this merges, with the machine otherwise idle. Refs:
+`1b19154` is the last commit before the Spectacle batch (S2 was its first
+merge; note that the Destruction batch D1–D5 merged in between too), and
+`5d29b26` is S6's merge, the last state before this gate.
+
+```sh
+npm run perf:setup   # once
+
+# 0. The repo gates and the allocation table (alloc PASS, tiers PASS, exit 0).
+npm run typecheck && npx biome check client common server && npm test
+node --import tsx tools/spectacle-bench.ts
+
+# 1. The gate: every segment, 3 passes, determinism enforced. Read the
+#    60fps / hitch / draws / room / spect. verdicts: boss and rings must
+#    read "ok" under spect., no "uninvited planes" or "changed rooms" line
+#    may appear, and draw calls must be identical per segment (boss and
+#    furball exempt: live pilots). GPU p50 <= 14 ms is 60 fps at ratio 2.
+node tools/perf/run.mjs --runs 3 --samples --strict --label S8
+
+# 2. What the batch cost: paired against the commit before it (boss and
+#    rings print "no baseline" there: that build cannot stage them; judge
+#    them on their own verdicts), and against S6's merge for continuity.
+node tools/perf/run.mjs --runs 3 --label S8 --ab-ref 1b19154
+node tools/perf/run.mjs --runs 3 --label S8 --ab-ref 5d29b26
+
+# 3. The probe's own cost where it matters most: refl on vs off, paired.
+node tools/perf/run.mjs --runs 3 --segments core,rings,glass --label refl --ab "refl=0"
+
+# 4. Tiers. Low vs High at their own ratios; then Mobile as a phone at its
+#    ceiling vs High (GPU p50 <= 5 ms on Mobile is the assumed phone proxy,
+#    as in M3/P2).
+node tools/perf/run.mjs --runs 3 --res 2 --segments core,boss,rings,glass --label high --ab "quality=low&res=1"
+node tools/perf/run.mjs --runs 3 --device phone --res 2 --segments core,boss,rings,glass --label high --ab "quality=mobile&res=1"
+
+# 5. In-page allocations per segment (bytes per frame and the top sites):
+#    boss, rings and glass within +256 B/frame of core on the same run.
+node tools/perf/run.mjs --heap --segments core,boss,rings,glass
+
+# 6. Soak: Auto never steps down on the M3 (exits 1 if it does).
+node tools/perf/run.mjs --soak 600 --quality auto --res auto
+
+# 7. Flicker: O5's grid, not worse than S6's merge.
+node tools/perf/flicker.mjs --grid --ref 5d29b26
+```

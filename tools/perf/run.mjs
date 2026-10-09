@@ -473,7 +473,7 @@ async function ensureEmptyRoom(page, name) {
  * which is exactly the kind of silent drift a determinism claim has to not
  * have.
  */
-async function flySegment(page, seg, sampleMs, worldMs) {
+async function flySegment(page, seg, sampleMs, worldMs, ledger = false) {
   const stats = await page.evaluate(
     async (s) => {
       const ab = window.__ab;
@@ -929,7 +929,7 @@ async function flySegment(page, seg, sampleMs, worldMs) {
       readyMaxMs: SPECTACLE_READY_MAX_MS,
       worldMs,
       defaultWeather: DEFAULT_WEATHER,
-      ledger: ledgerOn,
+      ledger,
     },
   );
   return {
@@ -1311,7 +1311,9 @@ function flyWarmupLap(page) {
  * It costs one extra pass per arm, which is the cheapest honest option.
  */
 async function warmArm(browser, url) {
-  await measure(browser, url, { trace: false });
+  // P4: and no --ledger — it is minutes of frames, and the warm-up's
+  // numbers are thrown away.
+  await measure(browser, url, { trace: false, ledger: false });
 }
 
 /**
@@ -1604,7 +1606,7 @@ async function stopTrace({ cdp, events, done }, name) {
   return { file, ...r };
 }
 
-async function measure(browser, url, { trace = true } = {}) {
+async function measure(browser, url, { trace = true, ledger = true } = {}) {
   if (trace) tracePass++;
   const tracing = trace ? traceDir : null;
   const page = await newProbedPage(browser);
@@ -1664,6 +1666,7 @@ async function measure(browser, url, { trace = true } = {}) {
         seg,
         SAMPLE_MS,
         segmentWorldMs(SEGMENTS.indexOf(seg)),
+        ledger && ledgerOn,
       );
       if (sampling) flown.heap = await stopHeap(sampling);
       if (recording) flown.trace = await stopTrace(recording, seg.name);

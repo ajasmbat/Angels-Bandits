@@ -3584,7 +3584,9 @@ window.__ab = {
   micro: (at) => {
     const time =
       at === undefined ? (worldTime() ?? performance.now()) : (at ?? 0);
-    const gate = microOn ? microGate(chase.position.y) : 0;
+    const gate = microOn
+      ? microGate(chase.position.y, QUALITY_PROFILES[qualityTier].microGate)
+      : 0;
     return {
       gate,
       cameraY: chase.position.y,
@@ -4793,7 +4795,9 @@ const frame = (now: number): void => {
   // Kill-cam note: chase.update() only runs while alive, so during the death
   // beat the gate reads a frozen camera altitude. That is correct — the view
   // is frozen too.
-  const microK = microOn ? microGate(chase.position.y) : 0;
+  const microK = microOn
+    ? microGate(chase.position.y, QUALITY_PROFILES[qualityTier].microGate)
+    : 0;
   pedestrians.update(
     chase.position,
     renderMs,

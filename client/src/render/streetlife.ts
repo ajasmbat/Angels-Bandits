@@ -267,13 +267,18 @@ export const MICRO_GATE_OFF = 140;
  * A fade band rather than a hard cut: at 100–140 m a 1.8 m figure is 16–11 px
  * on a 1080 px screen at FOV 70, so a uniformly thinning crowd is an
  * invisible transition where a pop would be obvious.
+ *
+ * P4: `scale` (the tier's `microGate`) moves the whole band — Mobile's 0.65
+ * fades the micro tier out between 65 and 91 m, where on a phone a figure
+ * is a few pixels and every draw counts (tools/perf/README.md, P4).
  */
-export const microGate = (cameraY: number): number =>
+export const microGate = (cameraY: number, scale = 1): number =>
   Math.min(
     1,
     Math.max(
       0,
-      (MICRO_GATE_OFF - cameraY) / (MICRO_GATE_OFF - MICRO_GATE_FULL),
+      (MICRO_GATE_OFF * scale - cameraY) /
+        ((MICRO_GATE_OFF - MICRO_GATE_FULL) * scale),
     ),
   );
 

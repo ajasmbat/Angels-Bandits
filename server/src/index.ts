@@ -87,6 +87,7 @@ import {
   encodeDirectorEvent,
   inDangerZone,
 } from "@angels-bandits/common/director";
+import { flakHazard, missileHazard } from "@angels-bandits/common/hazards";
 import {
   MedalLedger,
   NEEDLE_WINDOW_MS,
@@ -1160,6 +1161,7 @@ function handleLeave(id: string): void {
   if (room) directorsByRoom.get(room.id)?.forget(id);
   if (room) {
     bossByRoom.get(room.id)?.forget(id);
+    botsByRoom.get(room.id)?.forgetHuman(id);
     budgetsByRoom.get(room.id)?.forget(id);
     sendToRoom(room, { type: "playerLeft", id });
     // D2: the last human out takes the damage with them (see breakable) —
@@ -1434,6 +1436,10 @@ function sendDeath(
     offerCityEvent(room, "death", death.victimId, now);
   }
   creditMedals(room, death, now);
+  // B3: human-vs-bot gun kills move the human's skill level.
+  botsByRoom
+    .get(room.id)
+    ?.noteDeath(death.victimId, death.killerId, death.cause);
   broadcastScores(room);
 }
 
@@ -1632,12 +1638,22 @@ function tickRoomBots(room: Room, now: number): void {
         ? (bots.contactOf(member.id)?.vel ?? { x: 0, y: 0, z: 0 })
         : poseVelocity(pose),
       prot: combat.isProtected(member.id, now),
+      // B3: a hurt bot breaks off and comes back after regen.
+      hp: combat.hpOf(member.id),
     });
   }
   // S4: the sky boss's live weak points are contacts too — bots engage it.
   for (const c of roomBoss(room).contacts(now)) {
     contacts.push({ ...c, prot: false, boss: true });
   }
+  // B3: the timed hazards every client has already been told about — X1
+  // missiles from their launch, S4 flak from its firing — for the bots to
+  // fly around.
+  bots.setHazardDiscs(
+    "missile",
+    missilesFor(room).director.missiles().map(missileHazard),
+  );
+  bots.setHazardDiscs("flak", roomBoss(room).shellsInFlight().map(flakHazard));
 
   const { shots, hits, crashes } = bots.tick(now, contacts);
 

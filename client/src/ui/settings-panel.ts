@@ -9,6 +9,7 @@
 // Built once the join has completed (main.ts), but the panel's markup is
 // only built on first open: settings never cost the boot anything.
 
+import { FEELS, type Feel } from "../game/effortless";
 import type { AimMode } from "../game/flight-input";
 import { SENSITIVITY_STEPS } from "../game/touch-input";
 import {
@@ -48,6 +49,9 @@ export interface SettingsHooks {
   /** M8 AUTO FIRE on/off (every pointer; the default is touch's). */
   autoFire: () => boolean;
   setAutoFire: (on: boolean) => void;
+  /** F9 FLIGHT ASSIST on/off and the FEEL preset — applied live. */
+  setAssist: (on: boolean) => void;
+  setFeel: (feel: Feel) => void;
   /** The resolution scale changed (debounced while a slider drags). */
   setResScale: (scale: number) => void;
   /** Any volume changed (the soundtrack's on/off switch too). */
@@ -65,6 +69,12 @@ const REFRESH_MS = 500;
 /** Trailing debounce on the resolution slider: a drag must not reset the
  * scaler on every input event. `change` (release) applies at once. */
 const RES_DEBOUNCE_MS = 150;
+
+const FEEL_LABEL: Record<Feel, string> = {
+  relaxed: "RELAXED",
+  normal: "NORMAL",
+  sharp: "SHARP",
+};
 
 const QUALITY_LABEL: Record<QualitySetting, string> = {
   auto: "AUTO",
@@ -104,6 +114,21 @@ const MARKUP = `
     </section>
     <section>
       <h3>CONTROLS</h3>
+      <div class="row">
+        <span>FLIGHT ASSIST</span>
+        ${seg("assist", "Flight assist", [
+          ["on", "ON"],
+          ["off", "OFF"],
+        ])}
+      </div>
+      <div class="row">
+        <span>FEEL</span>
+        ${seg(
+          "feel",
+          "Feel",
+          FEELS.map((f) => [f, FEEL_LABEL[f]]),
+        )}
+      </div>
       <div class="row" data-row="sensitivity">
         <span>AIM SENSITIVITY</span>
         ${seg(
@@ -331,6 +356,14 @@ export class SettingsPanel {
       this.values = clampSettings({ ...this.values, autoFire: v === "on" });
       saveSettings(this.store, this.values);
       h.setAutoFire(v === "on");
+    } else if (group === "assist") {
+      this.values = clampSettings({ ...this.values, assist: v === "on" });
+      saveSettings(this.store, this.values);
+      h.setAssist(v === "on");
+    } else if (group === "feel") {
+      this.values = clampSettings({ ...this.values, feel: v });
+      saveSettings(this.store, this.values);
+      h.setFeel(this.values.feel);
     } else if (group === "musicOn") {
       this.values = clampSettings({ ...this.values, musicOn: v === "on" });
       saveSettings(this.store, this.values);
@@ -372,6 +405,8 @@ export class SettingsPanel {
       radioVoice: h.radioVoice() ? "on" : "off",
       haptics: haptics ? "on" : "off",
       autoFire: h.autoFire() ? "on" : "off",
+      assist: this.values.assist ? "on" : "off",
+      feel: this.values.feel,
       musicOn: this.values.musicOn ? "on" : "off",
     };
     for (const group of this.root.querySelectorAll<HTMLElement>(".seg")) {

@@ -22,8 +22,11 @@ import {
 import type { Vec3 } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
 import { ChaseCamera } from "../src/game/camera";
+import { FEELS, FEEL_TUNING } from "../src/game/effortless";
 import {
   type InstructorState,
+  type InstructorTuning,
+  SHARP_TUNING,
   aimError,
   aimView,
   angleBetween,
@@ -71,7 +74,11 @@ class Loop {
    * pirouette's signature. */
   steepSwept = 0;
 
-  constructor(public f: FlightState) {
+  constructor(
+    public f: FlightState,
+    /** The feel's loop (F9); today's Sharp loop by default. */
+    readonly tuning: InstructorTuning = SHARP_TUNING,
+  ) {
     this.chase.snapTo(f);
   }
 
@@ -86,7 +93,15 @@ class Loop {
     const err = aimError(this.f, view.aimDir, view.pipperDir);
     const rates = handlingRates(this.f.speed, false);
     const none = { yaw: 0, pitch: 0 };
-    this.ins = instructorInput(err, none, false, dt, this.ins, rates);
+    this.ins = instructorInput(
+      err,
+      none,
+      false,
+      dt,
+      this.ins,
+      rates,
+      this.tuning,
+    );
     const turn = this.ins.turn;
     const wing0 = wingHeading(this.f);
     this.f = stepFlight(
@@ -152,9 +167,10 @@ function stepResponse(
   speed: number,
   fps: number,
   pitch0 = 0,
+  tuning: InstructorTuning = SHARP_TUNING,
 ): { overshoot: number; settle: number } {
   const dt = 1 / fps;
-  const loop = new Loop(plane(200, speed, pitch0));
+  const loop = new Loop(plane(200, speed, pitch0), tuning);
   const D = 3000;
   const step = 30 * DEG;
   const target = {
@@ -214,6 +230,86 @@ describe("instructor step response (F6, camera in the loop)", () => {
         expect(settle).toBeLessThan(0.8);
       });
     }
+  }
+});
+
+/**
+ * Cursor kept on a bandit crossing at `rate` rad/s, 300 m out, from level
+ * flight at `speed`: the pipper's worst lag behind it over the last second
+ * of a 3 s track (the loop has long since settled onto the crossing).
+ */
+function trackingLag(
+  speed: number,
+  fps: number,
+  rate: number,
+  tuning: InstructorTuning,
+): number {
+  const dt = 1 / fps;
+  const loop = new Loop(plane(200, speed), tuning);
+  const R = 300;
+  let worst = 0;
+  const frames = Math.round(3 / dt);
+  for (let i = 0; i < frames; i++) {
+    // Bearing from the plane, sweeping left at `rate` (yaw's + sense).
+    const b = rate * i * dt;
+    const at = (f: FlightState) => {
+      const fr = loop.frame();
+      const eye = {
+        x: f.pos.x + fr.eye.x,
+        y: f.pos.y + fr.eye.y,
+        z: f.pos.z + fr.eye.z,
+      };
+      const target = {
+        x: f.pos.x - Math.sin(b) * R,
+        y: f.pos.y,
+        z: f.pos.z - Math.cos(b) * R,
+      };
+      const dir = {
+        x: target.x - eye.x,
+        y: target.y - eye.y,
+        z: target.z - eye.z,
+      };
+      return { fr, ndc: project(dir, fr) };
+    };
+    loop.step(at(loop.f).ndc, dt, 0);
+    loop.f = { ...loop.f, speed, targetSpeed: speed };
+    if (i * dt >= 2) {
+      const { fr, ndc } = at(loop.f);
+      const v = aimView(loop.f, fr, BASE_FOV, ASPECT, ndc);
+      worst = Math.max(worst, angleBetween(v.aimDir, v.pipperDir));
+    }
+  }
+  return worst;
+}
+
+// F9 feel presets (game/effortless.ts): every feel flies the same 30° step
+// without wobbling past it, and Normal keeps the fine aim a crossing
+// bandit needs — its loop is Sharp's within 2° of the aim.
+describe("instructor feel presets (F9, camera in the loop)", () => {
+  for (const feel of FEELS) {
+    for (const fps of FPS) {
+      it(`${feel}: 30° step at ${fps} fps overshoots < 5% (1.5°) and settles < 1.5 s`, () => {
+        const { overshoot, settle } = stepResponse(
+          65,
+          fps,
+          0,
+          FEEL_TUNING[feel],
+        );
+        expect(overshoot).toBeLessThan(1.5 * DEG);
+        expect(settle).toBeLessThan(1.5);
+      });
+    }
+  }
+
+  for (const fps of FPS) {
+    it(`normal holds a 15°/s crossing within 3° at ${fps} fps (sharp within 2°)`, () => {
+      expect(trackingLag(65, fps, 15 * DEG, FEEL_TUNING.normal)).toBeLessThan(
+        3 * DEG,
+      );
+      expect(trackingLag(65, fps, 15 * DEG, FEEL_TUNING.sharp)).toBeLessThan(
+        2 * DEG,
+      );
+    });
   }
 });
 

@@ -7,6 +7,7 @@
 import type { CollapseWire } from "./city/collapse";
 import type { NewsHeliSlot, NewsHeliTarget } from "./city/newsheli";
 import type { CityEvent } from "./cityevents";
+import type { MedalKind, StreakTier } from "./medals";
 import type { WireMissile } from "./strike";
 import type { Vec3 } from "./world/index";
 import type { WreckParams } from "./wreck";
@@ -179,6 +180,9 @@ export interface ScoreEntry {
   id: string;
   kills: number;
   deaths: number;
+  /** S7: the pilot's current kill streak — the one source of truth for the
+   * scoreboard glow and the streak smoke. Omitted while 0. */
+  streak?: number;
 }
 
 /** Reply to a join: identity, room, shared city seed, spawn, current roster. */
@@ -444,6 +448,23 @@ export interface BotsConfigMsg {
   byName: string;
 }
 
+/**
+ * S7: the server's credit for one kill (common/src/medals.ts MedalLedger).
+ * Sent to the whole room for EVERY credited kill — right after its `death`
+ * and before its `score` — so every client shows the same medals and the
+ * killer's client picks the kill's sting in one place. `medals` may be
+ * empty; clients drop kinds they do not know. `tier` is present only on
+ * the kill that crossed into a streak tier (the announcer's trigger); the
+ * streak itself rides `score`.
+ */
+export interface AwardMsg {
+  type: "award";
+  id: string;
+  victimId: string;
+  medals: MedalKind[];
+  tier?: StreakTier;
+}
+
 /** L1: a server-accepted moment the city reacts to (gunfire near buildings,
  * a death). Sent right after the `death` it belongs to, same server `now`. */
 export interface CityEventMsg {
@@ -523,4 +544,5 @@ export type ServerMsg =
   | DeathMsg
   | RespawnMsg
   | ScoreMsg
-  | CityEventMsg;
+  | CityEventMsg
+  | AwardMsg;

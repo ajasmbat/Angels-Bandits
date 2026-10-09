@@ -3,6 +3,7 @@
 // the client never counts kills itself.
 
 import { BOT_TARGET_MAX } from "@angels-bandits/common/constants";
+import { streakTier } from "@angels-bandits/common/medals";
 import type { RosterEntry, ScoreEntry } from "@angels-bandits/common/protocol";
 import type { BotBar } from "./botbar";
 
@@ -15,6 +16,8 @@ interface Row {
   kills: number;
   deaths: number;
   isBot: boolean;
+  /** S7: current kill streak (server-owned, from the score rows). */
+  streak: number;
 }
 
 export class Scoreboard {
@@ -184,10 +187,11 @@ export class Scoreboard {
 
   /** Apply a server scoreboard (welcome or a score broadcast). */
   setScores(scores: ScoreEntry[]): void {
-    for (const { id, kills, deaths } of scores) {
+    for (const { id, kills, deaths, streak } of scores) {
       const row = this.upsert(id);
       row.kills = kills;
       row.deaths = deaths;
+      row.streak = streak ?? 0;
     }
     this.dirty = true;
   }
@@ -195,7 +199,7 @@ export class Scoreboard {
   private upsert(id: string): Row {
     let row = this.rows.get(id);
     if (!row) {
-      row = { name: "???", kills: 0, deaths: 0, isBot: false };
+      row = { name: "???", kills: 0, deaths: 0, isBot: false, streak: 0 };
       this.rows.set(id, row);
     }
     return row;
@@ -223,6 +227,12 @@ export class Scoreboard {
         const tr = document.createElement("tr");
         if (id === this.selfId) tr.className = "self";
         else if (row.isBot) tr.className = "bot";
+        // S7: a pilot on a streak glows, brighter per tier.
+        const tier = streakTier(row.streak);
+        if (tier > 0) {
+          tr.classList.add("streak", `streak-${tier}`);
+          tr.title = `${row.streak}-kill streak`;
+        }
         for (const text of [row.name, `${row.kills}`, `${row.deaths}`]) {
           const td = document.createElement("td");
           td.textContent = text;

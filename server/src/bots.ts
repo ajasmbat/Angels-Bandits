@@ -149,6 +149,7 @@ import {
   flightForward,
   stepFlight,
 } from "@angels-bandits/common/flight";
+import { inHoleSpan } from "@angels-bandits/common/medals";
 import type {
   Pose,
   RosterEntry,
@@ -553,6 +554,29 @@ export class RoomBots {
 
   get count(): number {
     return this.bots.size;
+  }
+
+  /**
+   * S7 THREAD THE NEEDLE: is `id` flying a hole — through one within
+   * `windowMs` (the transits every contact's track already records), or
+   * inside one's clear volume at `pos` right now? River bridge underpasses
+   * are street-graph edges, not holes, and never count.
+   */
+  threading(id: string, pos: Vec3, now: number, windowMs: number): boolean {
+    const transit = this.transits.get(id);
+    if (
+      transit &&
+      now - transit.at <= windowMs &&
+      this.edges[transit.edge]?.span.hole.kind !== "bridge"
+    ) {
+      return true;
+    }
+    for (const edge of this.edges) {
+      // Both directions share a span: test it once, on its +1 edge.
+      if (edge.dir !== 1 || edge.span.hole.kind === "bridge") continue;
+      if (inHoleSpan(edge.span, pos)) return true;
+    }
+    return false;
   }
 
   ids(): string[] {

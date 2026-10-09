@@ -42,8 +42,10 @@ import {
   SERVER_SILENCE_MS,
   TICK_UP_HZ,
 } from "@angels-bandits/common/constants";
+import { STREAK_TIERS, isMedalKind } from "@angels-bandits/common/medals";
 import { decodeSnapshotEntry } from "@angels-bandits/common/net";
 import type {
+  AwardMsg,
   BotsConfigMsg,
   CourseBoardMsg,
   CourseResultMsg,
@@ -76,6 +78,8 @@ export interface GameSocketEvents {
   onDeath?: (msg: DeathMsg) => void;
   onRespawn?: (msg: RespawnMsg) => void;
   onScores?: (scores: ScoreEntry[]) => void;
+  /** S7: the server's credit for one kill — medals, and a tier crossing. */
+  onAward?: (msg: AwardMsg) => void;
   onBotsConfig?: (msg: BotsConfigMsg) => void;
   /** L1: a server-accepted event the city reacts to (reactions.ts). */
   onCityEvent?: (event: CityEvent) => void;
@@ -548,8 +552,38 @@ export class GameSocket {
       case "courseBoard":
         this.events.onCourseBoard?.(msg);
         break;
+      case "award": {
+        const award = sanitizeAward(msg);
+        if (award) this.events.onAward?.(award);
+        break;
+      }
       case "welcome":
         break; // already consumed by open()
     }
   }
+}
+
+/**
+ * S7: an `award` as this build understands it, or null when its shape is
+ * junk. Medal kinds this build does not know (a later D3/S4 addition seen
+ * by an old tab) are dropped rather than rendered as nonsense, and an
+ * unknown tier is dropped the same way.
+ */
+export function sanitizeAward(msg: AwardMsg): AwardMsg | null {
+  if (typeof msg.id !== "string" || typeof msg.victimId !== "string") {
+    return null;
+  }
+  const medals = Array.isArray(msg.medals)
+    ? msg.medals.filter(isMedalKind)
+    : [];
+  const tier = (STREAK_TIERS as readonly unknown[]).includes(msg.tier)
+    ? msg.tier
+    : undefined;
+  return {
+    type: "award",
+    id: msg.id,
+    victimId: msg.victimId,
+    medals: [...new Set(medals)],
+    ...(tier !== undefined && { tier }),
+  };
 }

@@ -190,6 +190,21 @@ export class Wrecks {
     for (const w of list) this.add(w);
   }
 
+  /** D6 (perf harness): forget wreck `id` — a staged one, cleared. */
+  remove(id: number): void {
+    const at = this.entries.findIndex((e) => e.w.id === id);
+    if (at >= 0) this.entries.splice(at, 1);
+  }
+
+  /** D6 perf/QA: wrecks held, and the instances each mesh drew last frame. */
+  get drawStats(): { held: number; falling: number; scorches: number } {
+    return {
+      held: this.entries.length,
+      falling: this.mesh.count,
+      scorches: this.scorch.count,
+    };
+  }
+
   /** The announced wreck `id`, while this client still holds it. */
   get(id: number): WreckParams | null {
     return this.entries.find((e) => e.w.id === id)?.w ?? null;

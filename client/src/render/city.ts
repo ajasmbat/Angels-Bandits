@@ -322,6 +322,9 @@ export class CityRenderer {
   private debris: THREE.InstancedMesh | null = null;
   private bArrays: InstanceArrays | null = null;
   private bCapacity = 0;
+  /** D6: the debris mesh's size at attach — the derived bound (every chunk
+   * COLLAPSE_CAP lets fall, +25 % for hole-split pieces, +64). */
+  private bBootCapacity = 0;
   /** The collapses drawn, in field order, and each one's first slot. */
   private readonly drawn: Collapse[] = [];
   private readonly drawnStart: number[] = [];
@@ -483,7 +486,8 @@ export class CityRenderer {
       for (const mask of chunkMask(b)) for (const v of mask) chunks += v;
     }
     // A hole can split a chunk into up to three pieces; most are one.
-    this.growDebris(Math.ceil(chunks * COLLAPSE_CAP * 1.25) + 64);
+    this.bBootCapacity = Math.ceil(chunks * COLLAPSE_CAP * 1.25) + 64;
+    this.growDebris(this.bBootCapacity);
   }
 
   /**
@@ -674,6 +678,47 @@ export class CityRenderer {
     }
     this.bMatLo = this.bAttrLo = Number.POSITIVE_INFINITY;
     this.bMatHi = this.bAttrHi = 0;
+  }
+
+  /**
+   * D6 perf/QA: what destruction costs this renderer right now — the damaged
+   * mesh's live boxes (`used`), the slots it draws (`slots`, hidden spares
+   * and abandoned ranges included) and its size; the debris mesh's drawn
+   * pieces, size and boot size (a size past boot means it grew: a buffer
+   * reallocation mid-game); and how many collapses lay fully at rest when
+   * last posed.
+   */
+  get destructionStats(): {
+    damagedBuildings: number;
+    damagedUsed: number;
+    damagedSlots: number;
+    damagedCapacity: number;
+    debrisPieces: number;
+    debrisCapacity: number;
+    debrisBootCapacity: number;
+    collapses: number;
+    settled: number;
+  } {
+    let used = 0;
+    for (const b of this.damagedList) used += this.slotUsed[b] as number;
+    let collapses = 0;
+    let settled = 0;
+    for (let k = 0; k < this.drawn.length; k++) {
+      if ((this.drawn[k] as Collapse).kind !== KIND_BUILDING) continue;
+      collapses++;
+      if (this.drawnSettled[k]) settled++;
+    }
+    return {
+      damagedBuildings: this.damagedList.length,
+      damagedUsed: used,
+      damagedSlots: this.damaged.count,
+      damagedCapacity: this.dCapacity,
+      debrisPieces: this.debris?.count ?? 0,
+      debrisCapacity: this.bCapacity,
+      debrisBootCapacity: this.bBootCapacity,
+      collapses,
+      settled,
+    };
   }
 
   /** QA/tests: the debris mesh, and collapse `id`'s first slot (−1: not

@@ -175,6 +175,11 @@ export class GameSocket {
    * `directorWarn`, listening or not. The frame loop drops each once it has
    * happened. */
   readonly director = new Map<number, DirectorEvent>();
+  /** D6 (perf harness): destruction the SERVER sent — `chunks`, `collapse`,
+   * `directorWarn`, `rebuild`, `missile` and `boss` messages, plus a welcome
+   * that carried any. A quiet city (AB_QUIET_CITY) sends none, so a segment
+   * that saw this move measured something the harness did not stage. */
+  serverDestruction = 0;
   /** S4: the room's sky boss — its raid and break-up (the mover field holds
    * this very slot, so the crash check sees it), every weak point's HP, and
    * the shells in the air by id (the renderer drops each once it bursts).
@@ -359,6 +364,13 @@ export class GameSocket {
   /** A welcome's whole destruction: the broken set, then every collapse —
    * and (D5) the director's warnings still to happen. */
   private replayDestruction(welcome: WelcomeMsg): void {
+    if (
+      (welcome.destroyed?.length ?? 0) > 0 ||
+      (welcome.collapses?.length ?? 0) > 0 ||
+      (welcome.director?.length ?? 0) > 0
+    ) {
+      this.serverDestruction++;
+    }
     this.cityDamage.reset(decodeChunkIds(welcome.destroyed));
     const records = Array.isArray(welcome.collapses) ? welcome.collapses : [];
     this.collapses.reset(records);
@@ -618,6 +630,7 @@ export class GameSocket {
         this.events.onAwayStarted?.();
         break;
       case "boss": {
+        this.serverDestruction++;
         const raid = decodeRaid(msg.r);
         if (!raid) break;
         this.boss.raid = raid;
@@ -650,15 +663,19 @@ export class GameSocket {
         }
         break;
       case "missile":
+        this.serverDestruction++;
         this.addMissiles([msg.m]);
         break;
       case "chunks":
+        this.serverDestruction++;
         this.cityDamage.apply(decodeChunkIds(msg.d));
         break;
       case "collapse":
+        this.serverDestruction++;
         this.applyCollapse(msg.c);
         break;
       case "directorWarn": {
+        this.serverDestruction++;
         const e = decodeDirectorEvent(msg.e);
         if (e) {
           this.director.set(e.id, e);
@@ -667,6 +684,7 @@ export class GameSocket {
         break;
       }
       case "rebuild":
+        this.serverDestruction++;
         this.applyRebuild(msg.r);
         break;
       case "courseResult":

@@ -92,7 +92,11 @@ import {
   wrapDeltaAxis,
   wrapDistance,
 } from "@angels-bandits/common/world";
-import { type WreckParams, isWreckParams } from "@angels-bandits/common/wreck";
+import {
+  type WreckParams,
+  isWreckParams,
+  wreckImpact,
+} from "@angels-bandits/common/wreck";
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
@@ -192,6 +196,11 @@ import {
 import { speedFov } from "./game/jet-camera";
 import { magnetizeVelocity } from "./game/magnetism";
 import { MissileFeed, MissileShake } from "./game/missile-feed";
+import {
+  QA_ID_BASE,
+  type QaDestructionSpec,
+  stageDestruction,
+} from "./game/qa-destruction";
 import { SessionStats } from "./game/session-stats";
 import { wreckCamView } from "./game/wreck-cam";
 import {
@@ -2598,6 +2607,38 @@ declare global {
       } | null;
       /** D1 QA: a local blast as if a server death event landed here. */
       qaBlast: (x: number, y: number, z: number) => boolean;
+      /**
+       * D6 perf-harness staging: break, collapse, burn and crash into the
+       * city as the server would (game/qa-destruction.ts), on this client
+       * only — meant for a quiet room (AB_QUIET_CITY). Null (or a spec
+       * without `keep`) first clears everything staged back to intact.
+       */
+      qaDestruction: (spec: QaDestructionSpec | null) => {
+        collapses: number;
+        broken: number;
+        touched: number;
+        blasts: number;
+        wrecks: { id: number; end: number; hit: string }[];
+      } | null;
+      /** D6 perf/QA: what destruction is on this client and what it costs
+       * the renderer — `stagedDraws` counts the draws only destruction
+       * adds (damaged mesh, debris, dust, falling wrecks, scorch,
+       * scaffolding; not the impact pool, which bullets feed too). */
+      destruction: () => CityRenderer["destructionStats"] & {
+        destroyed: number;
+        fallen: number;
+        chunks: number;
+        dustPuffs: number;
+        impactParticles: number;
+        burns: number;
+        wrecks: number;
+        wrecksFalling: number;
+        scorches: number;
+        scaffolds: number;
+        staged: boolean;
+        stagedDraws: number;
+        serverEvents: number;
+      };
       /** QA: pin the L3 living-windows clock (live seconds; null = server). */
       pinLiveWindows: (sec: number | null) => void;
       /**
@@ -2706,6 +2747,33 @@ const settingsPanel = new SettingsPanel(
   settings,
   settingsStore,
 );
+// D6 perf harness: what `__ab.qaDestruction` staged, so a clear takes back
+// exactly that — the destroyed set and collapses (all of them: the harness
+// stages into a quiet room), the facades its blasts marked, its burns and
+// its wrecks.
+const qaStaged = {
+  ids: { next: QA_ID_BASE },
+  buildings: new Set<number>(),
+  burns: new Set<string>(),
+  wrecks: [] as number[],
+  active: false,
+};
+function clearQaDestruction(): void {
+  socket.cityDamage.reset([]);
+  socket.collapses.reset([]);
+  for (const b of qaStaged.buildings) city.damage.clearBuilding(b);
+  const burns = blastLedger.burns;
+  let kept = 0;
+  for (const b of burns) {
+    if (!qaStaged.burns.has(`${b.t}:${b.x}:${b.z}`)) burns[kept++] = b;
+  }
+  burns.length = kept;
+  for (const id of qaStaged.wrecks) wrecks.remove(id);
+  qaStaged.buildings.clear();
+  qaStaged.burns.clear();
+  qaStaged.wrecks.length = 0;
+  qaStaged.active = false;
+}
 window.__ab = {
   state: () => flight,
   teleport: (x, z, y = 300, yaw = 0) => {
@@ -3131,6 +3199,86 @@ window.__ab = {
     const sites = blastLedger.ingest([{ kind: "death", x, y, z, t }]);
     for (const site of sites) impacts.blast(site, performance.now());
     return sites.length > 0;
+  },
+  qaDestruction: (spec) => {
+    if (spec === null || !spec.keep) clearQaDestruction();
+    if (spec === null) return null;
+    const staged = stageDestruction(
+      city.cityBuildings,
+      socket.cityDamage,
+      socket.collapses,
+      spec,
+      qaStaged.ids,
+    );
+    // The socket's arrival listener, as for a server collapse (audio).
+    for (const w of staged.wires) socket.events.onCollapse?.(w);
+    let blasts = 0;
+    for (const b of spec.blasts ?? []) {
+      const sites = blastLedger.ingest([{ kind: "death", ...b }]);
+      for (const site of sites) {
+        qaStaged.buildings.add(site.building);
+        impacts.blast(site, performance.now());
+      }
+      if (sites.length > 0) {
+        qaStaged.burns.add(`${b.t}:${b.x}:${b.z}`);
+        blasts++;
+      }
+    }
+    const crashed: { id: number; end: number; hit: string }[] = [];
+    for (const w of spec.wrecks ?? []) {
+      const path = { p: w.p, v: w.v, t: w.t, spin: w.spin };
+      const hit = wreckImpact(path, {
+        buildings: city.cityBuildings,
+        index: city.cityIndex,
+        movers: moverField,
+      });
+      if (hit.hit !== w.hit) {
+        throw new Error(
+          `qaDestruction: the wreck hits "${hit.hit}", the spec expects "${w.hit}" — the city changed`,
+        );
+      }
+      const id = qaStaged.ids.next++;
+      wrecks.add({ id, ...path, end: hit.end, hit: hit.hit });
+      qaStaged.wrecks.push(id);
+      crashed.push({ id, end: hit.end, hit: hit.hit });
+    }
+    qaStaged.active = true;
+    return {
+      collapses: staged.wires.length,
+      broken: staged.broken,
+      touched: staged.touched.length,
+      blasts,
+      wrecks: crashed,
+    };
+  },
+  destruction: () => {
+    const stats = city.destructionStats;
+    const w = wrecks.drawStats;
+    const dustPuffs = dust.puffCount;
+    const scaffolds = scaffold.mesh.count;
+    const on = (n: number): number => (n > 0 ? 1 : 0);
+    return {
+      ...stats,
+      destroyed: socket.cityDamage.destroyedCount,
+      fallen: socket.cityDamage.fallenCount,
+      chunks: socket.cityDamage.chunkCount,
+      dustPuffs,
+      impactParticles: impacts.liveCount,
+      burns: blastLedger.burns.length,
+      wrecks: w.held,
+      wrecksFalling: w.falling,
+      scorches: w.scorches,
+      scaffolds,
+      staged: qaStaged.active,
+      stagedDraws:
+        on(stats.damagedSlots) +
+        on(stats.debrisPieces) +
+        on(dustPuffs) +
+        on(w.falling) +
+        on(w.scorches) +
+        on(scaffolds),
+      serverEvents: socket.serverDestruction,
+    };
   },
   pinLiveWindows: (sec) => city.pinLiveWindows(sec),
   qaReactionClock: (serverTimeMs) => {

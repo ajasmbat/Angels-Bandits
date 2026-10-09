@@ -1409,7 +1409,8 @@ transformed += aMote.y * vec3(
   0.6 * sin(moteT * 0.47 + moteP * 1.7),
   cos(moteT * 0.27 + moteP * 2.3));
 vMote = aMote.w > 0.5
-  ? 0.25 + 0.75 * pow(0.5 + 0.5 * sin(moteT * 2.1 + moteP * 3.0), 3.0)
+  // O7: max() — a GPU sin() may round below -1, and pow(<0) is NaN.
+  ? 0.25 + 0.75 * pow(max(0.5 + 0.5 * sin(moteT * 2.1 + moteP * 3.0), 0.0), 3.0)
   : 0.8;
 `;
 /** After size attenuation: never a sub-pixel point (it would sparkle as it

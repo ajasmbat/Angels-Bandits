@@ -756,7 +756,8 @@ if (roofUp > 0.5) {
     roofAlbedo = mix(roofAlbedo, ${glslVec3(A.padYellow)}, hRing);
     roofAlbedo = mix(roofAlbedo, ${glslVec3(A.padWhite)}, hH);
     float hRl = hR + ${glslFloat(ROOF.padLightOffset)};
-    float hSeg = (fract(atan(rP.y, rP.x) / 6.2831853 * ${glslFloat(ROOF.padLights)}) - 0.5)
+    // O7: + 1e-6 — atan(0, 0) is NaN on some GPUs (the pad's centre).
+    float hSeg = (fract(atan(rP.y, rP.x + 1e-6) / 6.2831853 * ${glslFloat(ROOF.padLights)}) - 0.5)
       * 6.2831853 * hRl / ${glslFloat(ROOF.padLights)};
     float hLr = ${glslFloat(ROOF.padLightRadius)};
     padLight = (1.0 - smoothstep(hLr - rPix, hLr + rPix, length(vec2(hSeg, hRr - hRl))))

@@ -808,6 +808,8 @@ export class Signage {
   private readonly animUniforms: SignUniforms;
   private readonly broken: BrokenNeon;
   private readonly brokenSigns: SignPlacement[];
+  /** D8: each broken tube's kind (0 marquee, 2 strip) and instance. */
+  private readonly brokenRef: { kind: number; index: number }[];
   /** D8: signs (and the pools they light) on floors that are gone hide. */
   private readonly standing: StandingMask;
   private readonly spillOwner: Int32Array;
@@ -885,6 +887,10 @@ export class Signage {
       this.strips,
       seed,
     );
+    this.brokenRef = anim.broken.map((t) => ({
+      kind: t.kind === "marquee" ? 0 : 2,
+      index: t.index,
+    }));
     this.brokenSigns = anim.broken.map(
       (t) =>
         (t.kind === "marquee" ? this.marquees : this.strips)[
@@ -1152,6 +1158,17 @@ export class Signage {
     for (let i = f[b] as number; i < (f[b + 1] as number); i++) {
       this.spillImages.dirty(i);
     }
+    // A hidden broken tube stops buzzing too.
+    this.brokenRef.forEach((r, i) => {
+      const kind = this.kinds[r.kind] as SignKind;
+      if (kind.owner[r.index] !== b) return;
+      this.broken.muted[i] = this.standing.isHidden(
+        b,
+        kind.slot[r.index] as number,
+      )
+        ? 1
+        : 0;
+    });
   };
 
   private readonly placeSpill = (i: number, x: number, z: number): void => {

@@ -5007,7 +5007,8 @@ const frame = (now: number): void => {
     socket.boss,
     socket.bossHp,
     socket.flak,
-    chase.position,
+    // S9: its detail LOD reads the viewer — the QA eye when one is held.
+    qaView ? qaView.eye : chase.position,
     renderMs,
     now,
   );

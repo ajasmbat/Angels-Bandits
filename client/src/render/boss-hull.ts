@@ -306,12 +306,13 @@ function lathe(
         nrm.push(-k / l, cyc / l, czc / l);
         uv.push(x, t);
       };
+      // Counter-clockwise seen from outside (three's front face).
       v(a[0], a[1], t0, ka);
+      v(b[0], b[1], t1, kb);
       v(b[0], b[1], t0, kb);
-      v(b[0], b[1], t1, kb);
       v(a[0], a[1], t0, ka);
-      v(b[0], b[1], t1, kb);
       v(a[0], a[1], t1, ka);
+      v(b[0], b[1], t1, kb);
     }
   }
   if (caps) {

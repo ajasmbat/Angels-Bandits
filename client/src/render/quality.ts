@@ -132,6 +132,10 @@ export interface QualityProfile {
    * (1200 × share), facade damage slots (16 + 32 × share) and burning
    * patches (2 + 4 × share). Counts only; the shaders never change. */
   impacts: number;
+  /** X1 missile impacts: share of the debris throw (sparks, dust, chunks).
+   * The missile, its glint and smoke trail — the telegraph — and the blast
+   * itself are identical on every tier. */
+  missileDebris: number;
   /** D2 broken-edge detail: rebar and jagged-edge noise on the faces
    * destruction exposed. Off = flat concrete slabs and dark rooms, by a
    * uniform. The broken geometry itself is solid and identical everywhere. */
@@ -172,6 +176,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     roofDetail: true,
     courseGhost: true,
     impacts: 1,
+    missileDebris: 1,
     destructionDetail: true,
     wreckFire: 1,
   },
@@ -204,6 +209,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     roofDetail: true,
     courseGhost: true,
     impacts: 0.75,
+    missileDebris: 0.75,
     destructionDetail: true,
     wreckFire: 0.75,
   },
@@ -236,6 +242,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     roofDetail: false,
     courseGhost: true,
     impacts: 0.5,
+    missileDebris: 0.5,
     destructionDetail: false,
     wreckFire: 0.5,
   },
@@ -268,6 +275,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     roofDetail: false,
     courseGhost: false,
     impacts: 0.25,
+    missileDebris: 0.3,
     destructionDetail: false,
     wreckFire: 0.35,
   },

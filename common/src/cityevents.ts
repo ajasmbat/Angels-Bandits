@@ -11,8 +11,13 @@
 import { type Vec3, wrapDistance } from "./world/index";
 
 /** What happened. Gunfire wakes the block; a death also smokes and calls
- * the responders. */
-export type CityEventKind = "gunfire" | "death";
+ * the responders, and so does an X1 missile impact (`isBlastEvent`). */
+export type CityEventKind = "gunfire" | "death" | "missile";
+
+/** A death or a missile impact: blows out windows, burns, smokes and calls
+ * the responders. Gunfire only wakes the block. */
+export const isBlastEvent = (e: { kind: CityEventKind }): boolean =>
+  e.kind !== "gunfire";
 
 /** One server-stamped event the city reacts to. Canonical world position;
  * `t` is the server clock (the snapshot clock), ms. */
@@ -42,7 +47,7 @@ const posOf = (e: CityEvent): Vec3 => ({ x: e.x, y: e.y, z: e.z });
 
 /**
  * Should `ev` join the log, given the events already accepted (`recent`,
- * any order)? Deaths always count. Gunfire must be near a building (the
+ * any order)? Deaths and missile impacts always count. Gunfire must be near a building (the
  * caller supplies that verdict — the server owns the city index) and is
  * dropped when an accepted event within GUNFIRE_COALESCE_M started in the
  * GUNFIRE_COALESCE_MS before it: a sustained burst is one alarm, not ten
@@ -54,7 +59,7 @@ export function acceptCityEvent(
   ev: CityEvent,
   nearBuilding: boolean,
 ): boolean {
-  if (ev.kind === "death") return true;
+  if (isBlastEvent(ev)) return true;
   if (!nearBuilding) return false;
   const p = posOf(ev);
   for (const r of recent) {

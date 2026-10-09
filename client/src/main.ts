@@ -66,6 +66,10 @@ import type {
 import { airlinerOffsetInto } from "@angels-bandits/common/skytraffic";
 import { strikesInWindow } from "@angels-bandits/common/storm";
 import {
+  MISSILE_SHOOTER_ID,
+  missileImpactAt,
+} from "@angels-bandits/common/strike";
+import {
   WEATHER_PHASES,
   type WeatherPhase,
   phaseWindow,
@@ -109,6 +113,7 @@ import {
   LOW_HP_CALLOUT,
   checkInCallout,
   hitCallout,
+  incomingCallout,
   maydayCallout,
   nearMissCallout,
   offStationCallout,
@@ -163,6 +168,7 @@ import {
 } from "./game/instructor";
 import { speedFov } from "./game/jet-camera";
 import { magnetizeVelocity } from "./game/magnetism";
+import { MissileFeed, MissileShake } from "./game/missile-feed";
 import { wreckCamView } from "./game/wreck-cam";
 import {
   BASE_FOV,
@@ -196,6 +202,7 @@ import { HoleDecorRenderer } from "./render/hole-decor";
 import { BlastLedger, Impacts, burnCapFor } from "./render/impacts";
 import { Jumbotrons } from "./render/jumbotrons";
 import { lookPasses } from "./render/lookup";
+import { MissileRenderer } from "./render/missiles";
 import { MoverLights, Movers } from "./render/movers";
 import { NatureRenderer } from "./render/nature";
 import { Pedestrians } from "./render/pedestrians";
@@ -892,6 +899,14 @@ const wrecks = new Wrecks(impacts, (_w, at) => {
 });
 scene.add(wrecks.group);
 wrecks.reset((welcome.wrecks ?? []).filter(isWreckParams));
+// X1 missile strikes: the server's announced missiles (held in the socket,
+// so none is lost while booting) fly the shared arc on the synced clock —
+// body, red glint, smoke trail — then whistle, land and shake the camera.
+// Their damage arrives as chunks, damage/death and a `missile` city event.
+const missileRenderer = new MissileRenderer(smoke, impacts);
+scene.add(missileRenderer.group);
+const missileFeed = new MissileFeed();
+const missileShake = new MissileShake();
 /** The classifier's reusable result (allocation-free bullet loop). */
 const impactHit: BulletImpact = createBulletImpact();
 /** QA: the last city impact by a LOCAL round (own guns or __ab.qaFireAt —
@@ -1531,10 +1546,13 @@ socket.events.onDamage = (msg) => {
       const now = performance.now();
       // A snapshot (or regen) can land between hits and eat the difference.
       const dmg = lost > 0 ? lost : BULLET_DAMAGE;
+      // X1: missile damage points at the blast, not at a shooter.
       const shooterPos =
         msg.shooterId === socket.selfId
           ? null
-          : remotes.poseOf(msg.shooterId)?.pos;
+          : msg.shooterId === MISSILE_SHOOTER_ID
+            ? msg.from
+            : remotes.poseOf(msg.shooterId)?.pos;
       damageIndicator.hit(msg.shooterId, shooterPos, dmg, now);
       audio.damageThud(now);
       haptics.damage(now);
@@ -1808,6 +1826,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   reactor.setQuality(tier);
   // D1: particle budget and burning patches (counts only).
   impacts.setShare(QUALITY_PROFILES[tier].impacts);
+  missileRenderer.setQuality(QUALITY_PROFILES[tier].missileDebris);
   blastLedger.setBurnCap(burnCapFor(QUALITY_PROFILES[tier].impacts));
   wrecks.setShare(QUALITY_PROFILES[tier].wreckFire); // D4
   pedestrians.setQuality(tier);
@@ -3252,6 +3271,7 @@ const frame = (now: number): void => {
     // the flight model never sees any of this. Different time phases keep
     // the camera and the airframe from moving in lockstep.
     const camShake = turbulenceOffset(now, flight.pos.y);
+    missileShake.addInto(camShake, now); // X1 impacts: display camera only
     const planeShake = turbulenceOffset(now + 537, flight.pos.y);
     chaseMoversMs = renderMs;
     chase.update(camera, flight, dt, freelook, camShake, zoom.z, leadYawRate);
@@ -3542,6 +3562,34 @@ const frame = (now: number): void => {
   }
   for (const target of targets) {
     smoke.sync(target.id, target.pos, now, smokeActive(target.hp));
+  }
+  // X1 missiles on the synced clock: whistles, the "incoming" call, impacts,
+  // then the bodies and their trails (fed before the smoke pass below).
+  if (renderMs !== null) {
+    const mf = missileFeed.poll(
+      socket.missiles,
+      renderMs,
+      alive ? flight.pos : null,
+    );
+    for (const m of mf.whistles) {
+      audio.missileWhistle(
+        m.to,
+        flight.pos,
+        flight.yaw,
+        (missileImpactAt(m) - renderMs) / 1000,
+      );
+    }
+    if (mf.announces.length > 0) say(incomingCallout());
+    for (const m of mf.impacts) {
+      explosions.explode(m.to, now);
+      sparks.burst(m.to, now);
+      audio.missileBlast(m.to, flight.pos, flight.yaw);
+      missileRenderer.impact(m, now);
+      missileShake.add(wrapDistance(m.to, flight.pos), now);
+      radio.noteCombat(now);
+      music.noteCombat(now);
+    }
+    missileRenderer.update(mf.flying, chase.position, renderMs, now);
   }
   smoke.update(chase.position, now);
   // Storm: consume this frame's scheduled strikes, then age/place the bolts

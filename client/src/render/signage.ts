@@ -11,6 +11,7 @@
 import {
   type Building,
   LANDMARK_BLOCKS,
+  type LocalBox,
   PLAZA_BLOCKS,
   mulberry32,
 } from "@angels-bandits/common/city";
@@ -24,6 +25,7 @@ import {
   type Vec3,
   canonicalize,
   wrapDelta,
+  wrapDeltaAxis,
 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
@@ -44,6 +46,7 @@ import {
   patchSignMaterial,
   writeStutter,
 } from "./signage-shader";
+import { type StandingLayer, StandingMask } from "./standing-watch";
 import { ImageCache, InstanceUploads } from "./wrapPlacement";
 
 // --- Tunables (Concept 4: steep density gradient, everything on) ---
@@ -433,6 +436,85 @@ export function signageFor(b: Building, seed: number): BuildingSignage {
   return out;
 }
 
+// --- D8: what each sign hangs on ---
+
+/** A sign panel's box in its building's frame (≤ 0.6 m proud of the face). */
+function signBox(b: Building, s: SignPlacement): LocalBox {
+  const x = wrapDeltaAxis(b.x, s.x);
+  const z = wrapDeltaAxis(b.z, s.z);
+  const hx = (s.axis === "x" ? s.depth : s.width) / 2;
+  const hz = (s.axis === "x" ? s.width : s.depth) / 2;
+  return {
+    x0: x - hx,
+    x1: x + hx,
+    y0: s.y,
+    y1: s.y + s.height,
+    z0: z - hz,
+    z1: z + hz,
+  };
+}
+
+/** A spill pool lies on the sidewalk, metres off the face: its ANCHOR is the
+ * storefront band of the facade behind it — the signs that light it. */
+function spillAnchor(b: Building, sp: SpillPool): LocalBox {
+  const t1 = b.tiers[0] as Building["tiers"][number];
+  const hw = t1.width / 2;
+  const hd = t1.depth / 2;
+  const x = wrapDeltaAxis(b.x, sp.x);
+  const z = wrapDeltaAxis(b.z, sp.z);
+  const y0 = STRIP_BOTTOM;
+  const y1 = STRIP_BOTTOM + STRIP_HEIGHT;
+  if (Math.abs(x) - hw > Math.abs(z) - hd) {
+    const px = Math.sign(x) * hw;
+    const z0 = Math.max(-hd, z - sp.radius);
+    const z1 = Math.min(hd, z + sp.radius);
+    return { x0: px, x1: px, y0, y1, z0, z1 };
+  }
+  const pz = Math.sign(z) * hd;
+  const x0 = Math.max(-hw, x - sp.radius);
+  const x1 = Math.min(hw, x + sp.radius);
+  return { x0, x1, y0, y1, z0: pz, z1: pz };
+}
+
+/** One building's items in D8 order: marquees, billboards, strips, spills. */
+function signageBoxes(b: Building, s: BuildingSignage): LocalBox[] {
+  return [
+    ...s.marquees.map((m) => signBox(b, m)),
+    ...s.billboards.map((m) => signBox(b, m)),
+    ...s.strips.map((m) => signBox(b, m)),
+    ...s.spills.map((sp) => spillAnchor(b, sp)),
+  ];
+}
+
+function signageLayer(
+  buildings: readonly Building[],
+  layoutOf: (i: number) => BuildingSignage,
+): StandingLayer {
+  const cache = new Map<number, LocalBox[]>();
+  return {
+    boxes(index) {
+      let boxes = cache.get(index);
+      if (!boxes) {
+        const b = buildings[index] as Building;
+        boxes = signageBoxes(b, layoutOf(index));
+        cache.set(index, boxes);
+      }
+      return boxes;
+    },
+  };
+}
+
+/** D8: the signage's items per building, in its frame — what the renderer
+ * masks with, from the same pure signageFor(). */
+export function signageStandingLayer(
+  buildings: readonly Building[],
+  seed: number,
+): StandingLayer {
+  return signageLayer(buildings, (i) =>
+    signageFor(buildings[i] as Building, seed),
+  );
+}
+
 // --- Renderer (consumes the pure layout above; untested, like Streetlights) ---
 
 /** Synced hue-pulse: period of the shimmer, ms of server time. */
@@ -650,11 +732,34 @@ interface SignKind {
    * tint loop was one of the costliest JS paths in the city).
    */
   boosted: Float32Array;
+  /** D8: each sign's building, and its item index on that building. */
+  owner: Int32Array;
+  slot: Int32Array;
+}
+
+/** D8: each item's building and its index in that building's D8 order,
+ * for one kind (`base(i)` = the kind's first slot on building i). */
+function owners(
+  counts: readonly number[],
+  base: (i: number) => number,
+): { owner: Int32Array; slot: Int32Array } {
+  const n = counts.reduce((a, c) => a + c, 0);
+  const owner = new Int32Array(n);
+  const slot = new Int32Array(n);
+  let j = 0;
+  counts.forEach((c, i) => {
+    for (let k = 0; k < c; k++, j++) {
+      owner[j] = i;
+      slot[j] = base(i) + k;
+    }
+  });
+  return { owner, slot };
 }
 
 const signKind = (
   mesh: THREE.InstancedMesh,
   signs: SignPlacement[],
+  own: { owner: Int32Array; slot: Int32Array },
 ): SignKind => {
   const boosted = new Float32Array(signs.length * 3);
   const c = new THREE.Color();
@@ -675,6 +780,8 @@ const signKind = (
     ),
     uploads: new InstanceUploads([mesh.instanceMatrix]),
     boosted,
+    owner: own.owner,
+    slot: own.slot,
   };
 };
 
@@ -701,9 +808,22 @@ export class Signage {
   private readonly animUniforms: SignUniforms;
   private readonly broken: BrokenNeon;
   private readonly brokenSigns: SignPlacement[];
+  /** D8: each broken tube's kind (0 marquee, 2 strip) and instance. */
+  private readonly brokenRef: { kind: number; index: number }[];
+  /** D8: signs (and the pools they light) on floors that are gone hide. */
+  private readonly standing: StandingMask;
+  private readonly spillOwner: Int32Array;
+  private readonly spillSlot: Int32Array;
+  /** D8: each kind's first instance on each building (prefix sums). */
+  private readonly firsts: Int32Array[];
 
   constructor(buildings: readonly Building[], seed: number) {
     const layouts = buildings.map((b) => signageFor(b, seed));
+    this.standing = new StandingMask(
+      buildings,
+      signageLayer(buildings, (i) => layouts[i] as BuildingSignage),
+      this.onStanding,
+    );
     this.marquees = layouts.flatMap((s) => s.marquees);
     this.billboards = layouts.flatMap((s) => s.billboards);
     this.strips = layouts.flatMap((s) => s.strips);
@@ -767,6 +887,10 @@ export class Signage {
       this.strips,
       seed,
     );
+    this.brokenRef = anim.broken.map((t) => ({
+      kind: t.kind === "marquee" ? 0 : 2,
+      index: t.index,
+    }));
     this.brokenSigns = anim.broken.map(
       (t) =>
         (t.kind === "marquee" ? this.marquees : this.strips)[
@@ -831,11 +955,42 @@ export class Signage {
       mesh.frustumCulled = false; // instances move relative to the camera every frame
       this.group.add(mesh);
     }
+    const counts = (pick: (s: BuildingSignage) => readonly unknown[]) =>
+      layouts.map((l) => pick(l).length);
+    const nm = counts((l) => l.marquees);
+    const nb = counts((l) => l.billboards);
+    const ns = counts((l) => l.strips);
+    const np = counts((l) => l.spills);
     this.kinds = [
-      signKind(this.marqueeMesh, this.marquees),
-      signKind(this.billboardMesh, this.billboards),
-      signKind(this.stripMesh, this.strips),
+      signKind(
+        this.marqueeMesh,
+        this.marquees,
+        owners(nm, () => 0),
+      ),
+      signKind(
+        this.billboardMesh,
+        this.billboards,
+        owners(nb, (i) => nm[i] as number),
+      ),
+      signKind(
+        this.stripMesh,
+        this.strips,
+        owners(ns, (i) => (nm[i] as number) + (nb[i] as number)),
+      ),
     ];
+    const spillOwn = owners(
+      np,
+      (i) => (nm[i] as number) + (nb[i] as number) + (ns[i] as number),
+    );
+    this.spillOwner = spillOwn.owner;
+    this.spillSlot = spillOwn.slot;
+    this.firsts = [nm, nb, ns, np].map((c) => {
+      const f = new Int32Array(c.length + 1);
+      c.forEach((v, i) => {
+        f[i + 1] = (f[i] as number) + v;
+      });
+      return f;
+    });
     this.spillImages = new ImageCache(
       this.spills.map((sp) => sp.x),
       this.spills.map((sp) => sp.z),
@@ -918,9 +1073,15 @@ export class Signage {
     const { mesh, signs } = kind;
     kind.images.update(cameraPos, (i, x, z) => {
       const s = signs[i] as SignPlacement;
+      // D8: a sign whose facade is gone is written at zero scale.
+      const gone = this.standing.isHidden(
+        kind.owner[i] as number,
+        kind.slot[i] as number,
+      );
       this.quat.setFromAxisAngle(Signage.UP, panelYaw(s));
       this.pos.set(x, s.y, z);
-      this.scale.set(s.width, s.height, s.depth);
+      if (gone) this.scale.set(0, 0, 0);
+      else this.scale.set(s.width, s.height, s.depth);
       this.scratch.compose(this.pos, this.quat, this.scale);
       mesh.setMatrixAt(i, this.scratch);
       kind.uploads.mark(i);
@@ -950,6 +1111,7 @@ export class Signage {
    * as the landmark beacons).
    */
   update(cameraPos: Vec3, timeMs: number): void {
+    this.standing.update(); // D8
     // L7: the shader clock and the broken tubes' stutter, same synced time.
     this.animUniforms.uSignTime.value = signClock(timeMs);
     for (let i = 0; i < this.broken.count; i++) {
@@ -984,9 +1146,39 @@ export class Signage {
     SIGN_ANIM_ON_UNIFORM.value = QUALITY_PROFILES[tier].signAnimation ? 1 : 0;
   }
 
+  /** D8: building `b`'s standing moved — re-place all of its instances. */
+  private readonly onStanding = (b: number): void => {
+    this.kinds.forEach((kind, k) => {
+      const f = this.firsts[k] as Int32Array;
+      for (let i = f[b] as number; i < (f[b + 1] as number); i++) {
+        kind.images.dirty(i);
+      }
+    });
+    const f = this.firsts[3] as Int32Array;
+    for (let i = f[b] as number; i < (f[b + 1] as number); i++) {
+      this.spillImages.dirty(i);
+    }
+    // A hidden broken tube stops buzzing too.
+    this.brokenRef.forEach((r, i) => {
+      const kind = this.kinds[r.kind] as SignKind;
+      if (kind.owner[r.index] !== b) return;
+      this.broken.muted[i] = this.standing.isHidden(
+        b,
+        kind.slot[r.index] as number,
+      )
+        ? 1
+        : 0;
+    });
+  };
+
   private readonly placeSpill = (i: number, x: number, z: number): void => {
     const sp = this.spills[i] as SpillPool;
-    this.scratch.makeScale(sp.radius, 1, sp.radius);
+    const gone = this.standing.isHidden(
+      this.spillOwner[i] as number,
+      this.spillSlot[i] as number,
+    );
+    if (gone) this.scratch.makeScale(0, 0, 0);
+    else this.scratch.makeScale(sp.radius, 1, sp.radius);
     this.scratch.setPosition(x, SPILL_LIFT, z);
     this.spillMesh.setMatrixAt(i, this.scratch);
     this.spillUploads.mark(i);

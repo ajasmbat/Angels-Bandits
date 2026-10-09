@@ -22,6 +22,7 @@
 import {
   type Building,
   LANDMARK_BLOCKS,
+  type LocalBox,
   PLAZA_BLOCKS,
 } from "@angels-bandits/common/city";
 import {
@@ -33,6 +34,7 @@ import {
   type Vec3,
   canonicalize,
   wrapDelta,
+  wrapDeltaAxis,
 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import type { MatchWarning } from "../game/headlines";
@@ -40,6 +42,7 @@ import { CLASSIC_LIVERY, type Livery, createBiplane } from "./biplane";
 import { emissiveBoost } from "./emissive";
 import { applyHeroLight } from "./planelights";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
+import { type StandingLayer, StandingMask } from "./standing-watch";
 import { ImageCache, InstanceUploads } from "./wrapPlacement";
 
 // --- Layout (pure) ---
@@ -73,6 +76,8 @@ export interface JumbotronSite {
   height: number;
   axis: "x" | "z";
   dir: -1 | 1;
+  /** D8: the index of the building it hangs on. */
+  building: number;
 }
 
 const GRID = WORLD_SIZE / BLOCK_PITCH;
@@ -92,6 +97,7 @@ function mount(
   along: number,
   y: number,
   width: number,
+  building: number,
 ): JumbotronSite {
   const perp = plane + (dir * SCREEN_DEPTH) / 2;
   const c = canonicalize(
@@ -105,11 +111,12 @@ function mount(
     height: (width * 9) / 16,
     axis,
     dir,
+    building,
   };
 }
 
 /** The landmark's shaft face that looks toward its nearest plaza. */
-function landmarkSite(b: Building): JumbotronSite | null {
+function landmarkSite(b: Building, index: number): JumbotronSite | null {
   const shaft = b.tiers[1];
   const podium = b.tiers[0];
   if (!shaft || !podium) return null;
@@ -139,6 +146,7 @@ function landmarkSite(b: Building): JumbotronSite | null {
     axis === "x" ? b.z : b.x,
     bottom,
     width,
+    index,
   );
 }
 
@@ -151,7 +159,8 @@ function plazaSite(
   pz: number,
 ): JumbotronSite | null {
   let best: { b: Building; site: JumbotronSite } | null = null;
-  for (const b of buildings) {
+  for (let i = 0; i < buildings.length; i++) {
+    const b = buildings[i] as Building;
     if (landmarks.has(b)) continue;
     const t1 = b.tiers[0];
     if (!t1) continue;
@@ -180,7 +189,7 @@ function plazaSite(
         ) {
           best = {
             b,
-            site: mount(axis, dir, plane, along, PLAZA_SCREEN_BOTTOM, width),
+            site: mount(axis, dir, plane, along, PLAZA_SCREEN_BOTTOM, width, i),
           };
         }
       }
@@ -201,10 +210,11 @@ export function jumbotronSites(
   const landmarks = new Set<Building>();
   for (const block of LANDMARK_BLOCKS) {
     const c = blockCenter(block);
-    const b = buildings.find((o) => o.x === c.x && o.z === c.z);
+    const index = buildings.findIndex((o) => o.x === c.x && o.z === c.z);
+    const b = buildings[index];
     if (!b) continue;
     landmarks.add(b);
-    const site = landmarkSite(b);
+    const site = landmarkSite(b, index);
     if (site) sites.push(site);
   }
   for (const [px, pz] of PLAZA_BLOCKS) {
@@ -212,6 +222,48 @@ export function jumbotronSites(
     if (site) sites.push(site);
   }
   return sites.slice(0, JUMBOTRON_MAX);
+}
+
+/** D8: site `s`'s screen (or its ticker) box in its building's frame. */
+function siteBox(b: Building, s: JumbotronSite, ticker: boolean): LocalBox {
+  const x = wrapDeltaAxis(b.x, s.x);
+  const z = wrapDeltaAxis(b.z, s.z);
+  const hx = (s.axis === "x" ? SCREEN_DEPTH : s.width) / 2;
+  const hz = (s.axis === "x" ? s.width : SCREEN_DEPTH) / 2;
+  const y0 = ticker ? s.y - TICKER_GAP - TICKER_HEIGHT : s.y;
+  const y1 = ticker ? s.y - TICKER_GAP : s.y + s.height;
+  return { x0: x - hx, x1: x + hx, y0, y1, z0: z - hz, z1: z + hz };
+}
+
+/** D8: each building's screens and tickers (site order, screen then
+ * ticker) — the instances' own order, so item k of a building is instance
+ * `slots[k]`. */
+function jumbotronLayer(
+  buildings: readonly Building[],
+  sites: readonly JumbotronSite[],
+): StandingLayer & { instances(index: number): readonly number[] } {
+  const per = new Map<number, number[]>();
+  sites.forEach((s, i) => {
+    const list = per.get(s.building) ?? [];
+    list.push(i * 2, i * 2 + 1);
+    per.set(s.building, list);
+  });
+  return {
+    boxes(index) {
+      const b = buildings[index] as Building;
+      return (per.get(index) ?? []).map((n) =>
+        siteBox(b, sites[n >> 1] as JumbotronSite, (n & 1) === 1),
+      );
+    },
+    instances: (index) => per.get(index) ?? [],
+  };
+}
+
+/** D8: the jumbotrons' items per building — what the renderer masks with. */
+export function jumbotronStandingLayer(
+  buildings: readonly Building[],
+): StandingLayer {
+  return jumbotronLayer(buildings, jumbotronSites(buildings));
 }
 
 // --- Content (what the screens are told) ---
@@ -382,6 +434,11 @@ export class Jumbotrons {
   private readonly studio = new ReplayStudio();
   private readonly images: ImageCache;
   private readonly uploads: InstanceUploads;
+  /** D8: a screen on a facade that is gone goes with it. */
+  private readonly standing: StandingMask;
+  private readonly layer: ReturnType<typeof jumbotronLayer>;
+  /** D8: each instance's item index on its building. */
+  private readonly slot: Int32Array;
   private readonly uniforms = {
     uTicker: { value: null as THREE.Texture | null },
     uReplay: { value: null as THREE.Texture | null },
@@ -414,6 +471,16 @@ export class Jumbotrons {
     private readonly renderer: THREE.WebGLRenderer,
   ) {
     this.sites = jumbotronSites(buildings);
+    this.layer = jumbotronLayer(buildings, this.sites);
+    this.slot = new Int32Array(this.sites.length * 2);
+    for (const s of this.sites) {
+      this.layer.instances(s.building).forEach((n, k) => {
+        this.slot[n] = k;
+      });
+    }
+    this.standing = new StandingMask(buildings, this.layer, (b) => {
+      for (const n of this.layer.instances(b)) this.images.dirty(n);
+    });
     this.screenCanvas.width = SCREEN_W;
     this.screenCanvas.height = SCREEN_H;
     this.tickerCanvas.width = TICKER_W;
@@ -549,6 +616,7 @@ export class Jumbotrons {
    * and run the LAST KILL pass if a kill landed since the last frame.
    */
   update(cameraPos: Vec3, timeMs: number | null): void {
+    this.standing.update(); // D8
     this.images.update(cameraPos, this.place);
     this.uploads.flush();
     const loop = this.uniforms.uTickerLoop.value;
@@ -577,6 +645,10 @@ export class Jumbotrons {
       ticker ? TICKER_HEIGHT : site.height,
       SCREEN_DEPTH,
     );
+    // D8: hanging on a facade that is gone — zero scale.
+    if (this.standing.isHidden(site.building, this.slot[i] as number)) {
+      this.scale.set(0, 0, 0);
+    }
     this.matrix.compose(this.pos, this.quat, this.scale);
     this.mesh.setMatrixAt(i, this.matrix);
     this.uploads.mark(i);

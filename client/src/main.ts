@@ -341,6 +341,7 @@ import { CourseRings } from "./render/rings";
 import { RiverRenderer } from "./render/river";
 import { RoofClutterRenderer } from "./render/roofclutter";
 import { RooftopLifeRenderer } from "./render/rooftop-life";
+import { RuinSmoke } from "./render/ruins";
 import { ScaffoldRenderer } from "./render/scaffold";
 import { Searchlights } from "./render/searchlights";
 import { Signage } from "./render/signage";
@@ -353,6 +354,13 @@ import {
   skyPhase,
 } from "./render/skycycle";
 import { STREAK_SMOKE_COLORS, SmokeTrails, smokeActive } from "./render/smoke";
+import {
+  attachStanding,
+  setStandingBudget,
+  setStandingClock,
+  standingCost,
+  standingPending,
+} from "./render/standing-watch";
 import { Steam } from "./render/steam";
 import {
   CloudDeck,
@@ -744,6 +752,9 @@ city.attachDamage(socket.cityDamage);
 // D3: and the room's collapses (debris falling and landed), likewise held by
 // the socket since the welcome — bound to the same buildings.
 city.attachCollapses(socket.collapses);
+// D8: every per-building layer re-seats its dressing to what still stands,
+// holding a building back until its collapse starts on the render clock.
+attachStanding(socket.cityDamage, socket.collapses);
 // Roof clutter + landmark beacons dress the same shared Building[] (V2).
 const roofClutter = new RoofClutterRenderer(city.cityBuildings);
 scene.add(roofClutter.group);
@@ -1092,6 +1103,8 @@ socket.events.onRebuild = (r, restored) => {
     directorFx.rebuildPop(restored, now);
     // D1's marks (dark panes, holes, scorch) go with the damage.
     if (r.k === 0) city.damage.clearBuilding(r.b);
+    // D8: a dressed tower lands inside its scaffold, which strips away.
+    if (r.k === 0) scaffold.rebuilt(r.b, now);
   } else {
     const serverMs = socket.renderTime();
     directorFx.rebuildAnnounced(
@@ -1146,6 +1159,8 @@ const bomberRenderer = new BomberRenderer(impacts, (at) => {
 });
 scene.add(bomberRenderer.group);
 const fireRenderer = new FireRenderer(impacts, city.cityBuildings);
+// D8: fresh ruins smoulder (smoke + embers off the stump and rubble).
+const ruinSmoke = new RuinSmoke(impacts, city.cityBuildings);
 // C2: a quake announced — the ground starts to rumble now (the shake rides
 // the camera path below, on the render clock).
 socket.events.onQuake = (q) => {
@@ -2226,6 +2241,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   );
   bomberRenderer.setQuality(QUALITY_PROFILES[tier].chaosFx); // C2
   fireRenderer.setQuality(QUALITY_PROFILES[tier].chaosFx); // C2
+  ruinSmoke.setQuality(QUALITY_PROFILES[tier].chaosFx); // D8
   blastLedger.setBurnCap(burnCapFor(QUALITY_PROFILES[tier].impacts));
   wrecks.setShare(QUALITY_PROFILES[tier].wreckFire); // D4
   bossRenderer.setQuality(QUALITY_PROFILES[tier].bossFx); // S4
@@ -2830,6 +2846,16 @@ declare global {
        * the renderer — `stagedDraws` counts the draws only destruction
        * adds (damaged mesh, debris, dust, falling wrecks, scorch,
        * scaffolding; not the impact pool, which bullets feed too). */
+      /** D8 QA: the standing filter's per-frame cost (ms, every layer). */
+      standingCost: () => ReturnType<typeof standingCost>;
+      /** D8 QA: buildings the layers have yet to re-evaluate (0 = settled). */
+      standingPending: () => number;
+      /** D8 QA: lift (ms) or restore (null) the standing work's budget. */
+      standingBudget: (ms: number | null) => void;
+      /** D8 QA: the latest building collapses (newest last). */
+      recentCollapses: (
+        n: number,
+      ) => { b: number; t: number; x: number; z: number; s: number }[];
       destruction: () => CityRenderer["destructionStats"] & {
         destroyed: number;
         fallen: number;
@@ -2841,6 +2867,7 @@ declare global {
         wrecksFalling: number;
         scorches: number;
         scaffolds: number;
+        scaffolded: ScaffoldRenderer["stats"];
         staged: boolean;
         stagedDraws: number;
         serverEvents: number;
@@ -3725,6 +3752,17 @@ window.__ab = {
       wrecks: crashed,
     };
   },
+  standingCost: () => standingCost(),
+  standingPending: () => standingPending(),
+  standingBudget: (ms) => setStandingBudget(ms),
+  recentCollapses: (n) =>
+    socket.collapses.records
+      .filter((w) => (w.k ?? 0) === 0)
+      .slice(-n)
+      .map((w) => {
+        const b = city.cityBuildings[w.b];
+        return { b: w.b, t: w.t, x: b?.x ?? 0, z: b?.z ?? 0, s: w.s };
+      }),
   destruction: () => {
     const stats = city.destructionStats;
     const w = wrecks.drawStats;
@@ -3743,6 +3781,7 @@ window.__ab = {
       wrecksFalling: w.falling,
       scorches: w.scorches,
       scaffolds,
+      scaffolded: scaffold.stats,
       staged: qaStaged.active,
       stagedDraws:
         on(stats.damagedSlots) +
@@ -3906,6 +3945,7 @@ const frame = (now: number): void => {
   }
   const renderMs = qaWorld !== null ? qaWorld.ms : frameClock.time;
   lastRenderMs = renderMs;
+  setStandingClock(renderMs); // D8
   planeLights.begin(); // own + remote lights re-append every frame
   moverLights.begin(); // crane/aircraft lights + firework sparks, same deal
   // Cursor smoothing + the leave-the-window fade run alive or dead, so
@@ -4769,6 +4809,7 @@ const frame = (now: number): void => {
   }
   streakSmoke.update(chase.position, now);
   dust.update(socket.collapses.list, chase.position, renderMs);
+  ruinSmoke.update(socket.collapses.list, chase.position, renderMs, now);
   // D5: the director's warnings (dust, steam, sparks) and the rebuilds'
   // welders; an event is forgotten once its alarm has died away.
   if (socket.director.size > 0 && renderMs !== null) {

@@ -29,6 +29,8 @@ const SLAB_SHARE = 0.1;
 /** Linear albedo of the slabs, the gutted rooms and the rubble. */
 const SLAB_ALBEDO = 0.2;
 const ROOM_ALBEDO = 0.03;
+/** D8 scorch: how dark the soot patches get (share of albedo removed). */
+const SOOT = 0.7;
 /** Ember: share of gutted rooms that smoulder, and its linear colour. */
 const EMBER_SHARE = 0.14;
 const EMBER = "vec3(0.42, 0.13, 0.03)";
@@ -96,6 +98,10 @@ if (brkDmg > 0.5) {
     }
     brkEmber = (1.0 - brkSlab) * step(brkRoom, ${EMBER_SHARE.toFixed(2)});
   }
+  // D8 scorch: soot-blackened patches over everything destruction exposed —
+  // the stump's cut faces and the rubble alike.
+  float brkSoot = smoothstep(0.5, 0.85, abHash(floor(brkW * 0.45), vBSeed * 5.0));
+  diffuseColor.rgb *= 1.0 - ${SOOT.toFixed(2)} * brkSoot;
 }
 `;
 

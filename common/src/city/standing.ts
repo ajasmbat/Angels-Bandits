@@ -53,21 +53,31 @@ function cellStands(
 ): boolean {
   const mask = masks[k] as Uint8Array;
   const gone = b.damage?.cells[k];
-  const at = (jx: number, jy: number, jz: number): boolean => {
-    if (jx < 0 || jx >= g.nx || jy < 0 || jy >= g.ny || jz < 0 || jz >= g.nz)
-      return false;
-    const c = (jy * g.nz + jz) * g.nx + jx;
-    return mask[c] === 1 && !gone?.[c];
-  };
   const c = (iy * g.nz + iz) * g.nx + ix;
   if (mask[c] === 1) return !gone?.[c];
   return (
-    at(ix, iy + 1, iz) ||
-    at(ix - 1, iy, iz) ||
-    at(ix + 1, iy, iz) ||
-    at(ix, iy, iz - 1) ||
-    at(ix, iy, iz + 1)
+    chunkUp(mask, gone, g, ix, iy + 1, iz) ||
+    chunkUp(mask, gone, g, ix - 1, iy, iz) ||
+    chunkUp(mask, gone, g, ix + 1, iy, iz) ||
+    chunkUp(mask, gone, g, ix, iy, iz - 1) ||
+    chunkUp(mask, gone, g, ix, iy, iz + 1)
   );
+}
+
+/** Is (jx, jy, jz) a chunk that still stands? (No closure: allocation-free
+ * for per-particle callers.) */
+function chunkUp(
+  mask: Uint8Array,
+  gone: Uint8Array | undefined,
+  g: TierGrid,
+  jx: number,
+  jy: number,
+  jz: number,
+): boolean {
+  if (jx < 0 || jx >= g.nx || jy < 0 || jy >= g.ny || jz < 0 || jz >= g.nz)
+    return false;
+  const c = (jy * g.nz + jz) * g.nx + jx;
+  return mask[c] === 1 && !gone?.[c];
 }
 
 const clampI = (v: number, n: number): number =>
@@ -223,19 +233,18 @@ export function standingTopAt(b: Building, x: number, z: number): number {
   const grids = tierGrids(b);
   const masks = chunkMask(b);
   let top = 0;
-  grids.forEach((g, k) => {
-    if (Math.abs(x) > g.width / 2 || Math.abs(z) > g.depth / 2) return;
+  for (let k = 0; k < grids.length; k++) {
+    const g = grids[k] as TierGrid;
+    if (Math.abs(x) > g.width / 2 || Math.abs(z) > g.depth / 2) continue;
     const ix = clampI((x + g.width / 2) / g.cw, g.nx);
     const iz = clampI((z + g.depth / 2) / g.cd, g.nz);
     for (let iy = g.ny - 1; iy >= 0; iy--) {
       if (!cellStands(b, masks, g, k, ix, iy, iz)) continue;
-      top = Math.max(
-        top,
-        iy + 1 >= g.ny ? g.baseY + g.height : g.baseY + (iy + 1) * g.ch,
-      );
+      const t = iy + 1 >= g.ny ? g.baseY + g.height : g.baseY + (iy + 1) * g.ch;
+      if (t > top) top = t;
       break;
     }
-  });
+  }
   return top;
 }
 

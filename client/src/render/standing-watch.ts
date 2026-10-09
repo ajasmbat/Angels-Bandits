@@ -135,6 +135,12 @@ function heldBack(b: number): boolean {
 
 const versionOf = (b: Building): number => b.damage?.version ?? 0;
 
+/** The wall-clock ms the building being evaluated must yield at (the
+ * shared budget's end; +Infinity without a clock attached). */
+let deadline = Number.POSITIVE_INFINITY;
+/** A starving layer's minimum slice, ms. */
+const STARVE_SLICE_MS = 0.1;
+
 /**
  * Which buildings' damage moved since this watch last looked — one watch
  * per layer (each keeps its own "applied" versions).
@@ -148,6 +154,8 @@ export class StandingWatch {
   private lastSource = Number.NaN;
   /** The frame (frameAt) this watch last handed a building out. */
   private servedAt = Number.NEGATIVE_INFINITY;
+  /** A building whose evaluation ran out of budget mid-way (−1: none). */
+  private partial = -1;
 
   constructor(private readonly buildings: readonly Building[]) {
     this.seen = new Float64Array(buildings.length);
@@ -158,13 +166,21 @@ export class StandingWatch {
   }
 
   /**
-   * Hand `fn` the buildings to re-evaluate this frame. `now` is a wall
-   * clock in ms (performance.now() by default) for the rate limit. Returns
-   * how many it handed out.
+   * Hand `fn` the buildings to re-evaluate this frame. `fn` returns false
+   * when it ran out of budget mid-building (it resumes first next frame);
+   * anything else means done.
+   * `now` is a wall clock in ms (performance.now() by default) for the rate
+   * limit. Returns how many buildings it finished.
    */
-  poll(fn: (b: number) => void, now = performance.now()): number {
+  poll(fn: (b: number) => unknown, now = performance.now()): number {
     const v = source ? source.version : Number.NaN;
-    if (source && v === this.lastSource && this.queue.length === 0) return 0;
+    if (
+      source &&
+      v === this.lastSource &&
+      this.queue.length === 0 &&
+      this.partial < 0
+    )
+      return 0;
     const t0 = performance.now();
     const n = this.handOut(fn, v, now, t0);
     costNow += performance.now() - t0;
@@ -172,8 +188,26 @@ export class StandingWatch {
     return n;
   }
 
+  /** May this watch work now? Sets the deadline its work yields at. */
+  private budget(t0: number, n: number): boolean {
+    if (!source) {
+      deadline = Number.POSITIVE_INFINITY;
+      return true;
+    }
+    const end = t0 + STANDING_BUDGET_MS - costNow;
+    if (performance.now() < end) {
+      deadline = end;
+      return true;
+    }
+    if (n === 0 && frameAt - this.servedAt > STARVE_FRAMES) {
+      deadline = performance.now() + STARVE_SLICE_MS;
+      return true;
+    }
+    return false;
+  }
+
   private handOut(
-    fn: (b: number) => void,
+    fn: (b: number) => unknown,
     v: number,
     now: number,
     t0: number,
@@ -188,8 +222,16 @@ export class StandingWatch {
         this.queue.push(i);
       }
     }
-    if (this.queue.length === 0) return 0;
     let n = 0;
+    // A building cut short last frame resumes first.
+    if (this.partial >= 0) {
+      if (!this.budget(t0, n)) return n;
+      this.servedAt = frameAt;
+      if (fn(this.partial) === false) return n;
+      this.partial = -1;
+      n++;
+    }
+    if (this.queue.length === 0) return n;
     // Rebuilds first: a tower that is back is never held back or throttled.
     for (let pass = 0; pass < 2 && n < STANDING_PER_FRAME; pass++) {
       for (let q = 0; q < this.queue.length && n < STANDING_PER_FRAME; q++) {
@@ -204,21 +246,18 @@ export class StandingWatch {
         }
         // The shared frame budget (only with a clock attached: tests and
         // tools without one take everything at once).
-        if (
-          source &&
-          costNow + performance.now() - t0 > STANDING_BUDGET_MS &&
-          !(n === 0 && frameAt - this.servedAt > STARVE_FRAMES)
-        ) {
-          return n;
-        }
+        if (!this.budget(t0, n)) return n;
         this.servedAt = frameAt;
         this.queue.splice(q, 1);
         q--;
         this.queued[i] = 0;
         this.seen[i] = ver;
         this.lastAt[i] = now;
+        if (fn(i) === false) {
+          this.partial = i;
+          return n;
+        }
         n++;
-        fn(i);
       }
     }
     return n;
@@ -229,6 +268,7 @@ export class StandingWatch {
   reset(): void {
     this.seen.fill(0);
     this.lastSource = Number.NaN;
+    this.partial = -1;
   }
 }
 
@@ -247,6 +287,10 @@ export interface StandingLayer {
 export class StandingMask {
   private readonly watch: StandingWatch;
   private readonly hidden = new Map<number, Uint8Array>();
+  /** The building being evaluated across frames, and how far it got. */
+  private job = -1;
+  private jobAt = 0;
+  private jobFlags: Uint8Array | null = null;
 
   constructor(
     private readonly buildings: readonly Building[],
@@ -293,13 +337,41 @@ export class StandingMask {
   reset(): void {
     this.hidden.clear();
     this.watch.reset();
+    this.job = -1;
   }
 
-  private readonly apply = (b: number): void => {
+  /** The watch's callback: evaluate `b` until the frame's budget runs out
+   * (false: resume next frame), then publish its flags at once — a layer
+   * never sees a half-evaluated building. */
+  private readonly apply = (b: number): boolean => {
+    const building = this.buildings[b];
+    if (this.job !== b) {
+      this.job = b;
+      this.jobAt = 0;
+      this.jobFlags = null;
+    }
+    if (building?.damage) {
+      const boxes = this.layer.boxes(b);
+      for (let k = this.jobAt; k < boxes.length; k++) {
+        if ((k & 7) === 7 && performance.now() > deadline) {
+          this.jobAt = k;
+          return false;
+        }
+        if (decorStands(building, boxes[k] as LocalBox)) continue;
+        if (!this.jobFlags) this.jobFlags = new Uint8Array(boxes.length);
+        this.jobFlags[k] = 1;
+      }
+    } else {
+      this.jobFlags = null;
+    }
     const before = this.hidden.get(b) ?? null;
-    const after = this.evaluate(b);
-    if (before === null && after === null) return;
-    this.onChange(b);
+    const after = this.jobFlags;
+    this.job = -1;
+    this.jobFlags = null;
+    if (after) this.hidden.set(b, after);
+    else this.hidden.delete(b);
+    if (before !== null || after !== null) this.onChange(b);
+    return true;
   };
 }
 

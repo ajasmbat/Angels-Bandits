@@ -344,7 +344,27 @@ async function runShots(browser, url) {
       await sleep(800);
       await page.evaluate(() => window.__ab.qaMoment("kill"));
       await sleep(250);
+      // Freeze the moment at its peak: at seconds per software frame the
+      // CSS animations would otherwise be on their first (invisible) frame.
+      // Entrances jump to their end; the kill's edge glow holds at its
+      // brightest (18 % of 550 ms). Released right after the shot.
+      await page.evaluate(() => {
+        for (const a of document.getAnimations()) {
+          const name = a.animationName ?? "";
+          if (name === "ab-kill-pulse") {
+            a.pause();
+            a.currentTime = 100;
+          } else if (Number.isFinite(a.effect?.getTiming().iterations)) {
+            a.finish();
+          }
+        }
+      });
       await snap(page, `kill-${suffix}`);
+      await page.evaluate(() => {
+        for (const a of document.getAnimations()) {
+          if (a.playState === "paused") a.play();
+        }
+      });
       await sleep(4500);
       await page.evaluate(() => window.__ab.qaMoment("medal"));
       // Long enough for the pop-in to settle at a software frame rate.

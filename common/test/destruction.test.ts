@@ -42,6 +42,7 @@ import {
   CHUNK_HP,
   CITY_SEED,
   DESTROY_CAP,
+  DESTROY_CAP_D2,
   HOLE_CORRIDOR_MARGIN,
   RUBBLE_REACH,
   WORLD_SIZE,
@@ -76,6 +77,8 @@ const inBox = (p: Vec3, b: LocalBox) =>
 function chew(buildings: Building[], share: number, seed: number): CityDamage {
   const dmg = new CityDamage();
   dmg.bind(buildings);
+  // A heavily chewed fixture: D2's 25 % cap, not C2's tighter live one.
+  dmg.setCap(DESTROY_CAP_D2);
   const rand = mulberry32(seed);
   buildings.forEach((b, i) => {
     for (const id of chunksOf(b, i)) if (rand() < share) dmg.destroyChunk(id);
@@ -210,7 +213,7 @@ describe("D2 solids() subtract destroyed chunks", () => {
   it("destroyed 20% of the chunks and touched most buildings", () => {
     expect(dmg.destroyedCount / dmg.chunkCount).toBeGreaterThan(0.18);
     expect(dmg.destroyedCount / dmg.chunkCount).toBeLessThanOrEqual(
-      DESTROY_CAP,
+      DESTROY_CAP_D2,
     );
     expect(damaged.filter((b) => b.damage).length).toBeGreaterThan(400);
   });

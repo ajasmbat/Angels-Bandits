@@ -41,6 +41,7 @@ import {
   riverBoats,
 } from "@angels-bandits/common/city/river";
 import { LOT_LINE } from "@angels-bandits/common/city/street";
+import { RIVER_MOUTHS } from "@angels-bandits/common/city/tunnels";
 import {
   BLOCK_PITCH,
   EMISSIVE_LAMP,
@@ -252,31 +253,23 @@ export function buildRiverStructure(): THREE.BufferGeometry {
 
   for (const side of [-1, 1]) {
     const z = zc + side * RIVER_HALF_WIDTH;
+    // U4: the river mouths are holes in the wall, water to lintel. Over a
+    // mouth only the lintel course stands; elsewhere the full wall.
+    const mouths = riverWallOpenings(side);
+    const course = (y0: number, y1: number, color: THREE.Color) => {
+      for (const [x0, x1, yb] of wallRuns(span, mouths, y0, y1)) {
+        s.quad([x0, yb, z], [x1, yb, z], [x1, y1, z], [x0, y1, z], color);
+      }
+    };
     // The wall in three courses: a slimy waterline, dressed stone, a coping.
-    s.quad(
-      [0, water, z],
-      [span, water, z],
-      [span, -21, z],
-      [0, -21, z],
-      c(COLORS.slime),
-    );
-    s.quad(
-      [0, -21, z],
-      [span, -21, z],
-      [span, -0.6, z],
-      [0, -0.6, z],
-      c(COLORS.stone),
-    );
-    s.quad(
-      [0, -0.6, z],
-      [span, -0.6, z],
-      [span, 0, z],
-      [0, 0, z],
-      c(COLORS.coping),
-    );
-    // Wall lamps just proud of the face, facing the water.
+    course(water, -21, c(COLORS.slime));
+    course(-21, -0.6, c(COLORS.stone));
+    course(-0.6, 0, c(COLORS.coping));
+    // Wall lamps just proud of the face, facing the water — none over a
+    // mouth (its own frame lights it).
     const zl = z - side * 0.06;
     for (let x = WALL_LAMP_STEP / 2; x < span; x += WALL_LAMP_STEP) {
+      if (mouths.some((m) => x > m.x0 - 1 && x < m.x1 + 1)) continue;
       s.quad(
         [x - 0.3, WALL_LAMP_Y - 0.3, zl],
         [x + 0.3, WALL_LAMP_Y - 0.3, zl],
@@ -356,6 +349,52 @@ export function buildRiverStructure(): THREE.BufferGeometry {
     }
   }
   return s.geometry();
+}
+
+/** A U4 mouth in one embankment wall: its x range (both world periods) and
+ * the height its opening reaches. */
+interface WallOpening {
+  x0: number;
+  x1: number;
+  y1: number;
+}
+
+/** The mouths in wall `side` (−1: low z, +1: high z), for both periods. */
+function riverWallOpenings(side: number): WallOpening[] {
+  const out: WallOpening[] = [];
+  for (const m of RIVER_MOUTHS) {
+    if (m.side !== side) continue;
+    for (const period of [0, WORLD_SIZE]) {
+      out.push({ x0: period + m.x0, x1: period + m.x1, y1: m.y1 });
+    }
+  }
+  return out;
+}
+
+/** The runs [x0, x1, bottom] of a wall course [y0, y1] over 0…span: the
+ * course minus every opening it reaches into (an opening spans the water up
+ * to its y1), plus the strip of it left above each opening (the lintel). */
+function wallRuns(
+  span: number,
+  openings: readonly WallOpening[],
+  y0: number,
+  y1: number,
+): [number, number, number][] {
+  const cuts = openings
+    .filter((o) => y0 < o.y1)
+    .map((o) => [o.x0, o.x1] as const)
+    .sort((a, b) => a[0] - b[0]);
+  const runs: [number, number, number][] = [];
+  let x = 0;
+  for (const [a, b] of cuts) {
+    if (a > x) runs.push([x, a, y0]);
+    x = Math.max(x, b);
+  }
+  if (x < span) runs.push([x, span, y0]);
+  for (const o of openings) {
+    if (y0 < o.y1 && y1 > o.y1) runs.push([o.x0, o.x1, o.y1]);
+  }
+  return runs;
 }
 
 /** One boat at unit length and beam (x along the hull, bow at +x). Heights

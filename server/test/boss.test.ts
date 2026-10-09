@@ -16,6 +16,7 @@ import {
   blankPose,
   bossPoseAt,
   breakUp,
+  raidEnd,
   raidMaxHp,
   weakPointInto,
 } from "@angels-bandits/common/boss";
@@ -94,15 +95,19 @@ describe("raid schedule (server)", () => {
     if (!started) throw new Error("no raid");
     expect(started.t0 - arrived).toBeGreaterThanOrEqual(BOSS_TUNING.firstMinMs);
     expect(boss.state(t)?.hp).toEqual(raidMaxHp(started));
-    // The next one is a period after this one's START — not before.
+    // C2: the next one comes period ± jitter after this one ENDS (its
+    // run-out done) — never while it is still up.
     let second: BossRaid | null = null;
-    for (t += TICK; t < started.t0 + 20 * 60_000; t += 1000) {
+    for (t += TICK; t < started.t0 + 40 * 60_000; t += 1000) {
       second = boss.tick(t, true, [], world).started;
       if (second) break;
     }
     if (!second) throw new Error("no second raid");
-    expect(second.t0 - started.t0).toBeGreaterThanOrEqual(
+    expect(second.t0 - raidEnd(started)).toBeGreaterThanOrEqual(
       BOSS_TUNING.periodMs - BOSS_TUNING.periodJitterMs,
+    );
+    expect(second.t0 - raidEnd(started)).toBeLessThanOrEqual(
+      BOSS_TUNING.periodMs + BOSS_TUNING.periodJitterMs + 1000,
     );
     expect(second.id).toBe(started.id + 1);
   });

@@ -3,7 +3,8 @@
 // index.ts and the bot-sim harness both drive exactly this.
 //
 // The event, per slot (common/src/director.ts directorSlotsInWindow — a
-// pure function of (seed, server time), 2–4 min apart):
+// pure function of (seed, server time), 2–4 min apart — C2's slotScale of
+// 1/12 makes that 10–20 s, constant chaos):
 //
 //   slot → ARMED (a pick is tried every retryMs for slotPatienceMs)
 //        → WARNED (`directorWarn` broadcast; it happens DIRECTOR_WARN_MS on)
@@ -51,6 +52,7 @@ import {
   demolitionPlan,
 } from "@angels-bandits/common/city/collapse";
 import { type CraneSite, slewAngle } from "@angels-bandits/common/city/movers";
+import { underCover } from "@angels-bandits/common/city/tunnels";
 import {
   DIRECTOR_ACTION_M,
   DIRECTOR_DIRS,
@@ -83,6 +85,7 @@ import {
   wrapDeltaAxis,
   wrapDistance,
 } from "@angels-bandits/common/world";
+import type { DangerBudget, DangerPlane } from "./danger";
 import {
   type RoomCity,
   rebuildBuilding,
@@ -128,7 +131,36 @@ export interface DestructionTuning {
   rebuildQuietMs: number;
 }
 
+/** C2 constant chaos: a staged collapse, gas main or crane near the action
+ * every 10–20 s (the slots of directorSlotsInWindow, scaled by 1/12), a
+ * short cooldown so it keeps happening around the same fight, and a rebuild
+ * fast enough to keep up: 20–40 s after the first damage, 15 s after the
+ * building's last collapse. */
 export const DESTRUCTION_TUNING: DestructionTuning = {
+  slotScale: 1 / 12,
+  retryMs: 1000,
+  slotPatienceMs: 8000,
+  craneShare: 0.2,
+  gasShare: 0.3,
+  cooldownMs: 12_000,
+  cooldownMarginM: 50,
+  freshMs: 5000,
+  freshMarginM: 30,
+  stopShare: 0.18,
+  towerMinM: 60,
+  rebuildMinMs: 20_000,
+  rebuildMaxMs: 40_000,
+  rebuildAfterCollapseMs: 15_000,
+  rebuildSettleMs: 10_000,
+  rebuildLeadMs: 2000,
+  rebuildMarginM: 25,
+  rebuildCheckMs: 1000,
+  rebuildQuietMs: 8000,
+};
+
+/** D5 as it shipped, before C2 (AB_CHAOS=0 restores it): an event every
+ * 2–4 min, rebuilds 3–5 min after the damage. */
+export const D5_TUNING: DestructionTuning = {
   slotScale: 1,
   retryMs: 1000,
   slotPatienceMs: 60_000,
@@ -150,16 +182,16 @@ export const DESTRUCTION_TUNING: DestructionTuning = {
   rebuildQuietMs: 30_000,
 };
 
-/** AB_DIRECTOR_FAST=1 (tests and QA only): an event every ~20–40 s and a
- * rebuild ~30–50 s after the damage. */
+/** AB_DIRECTOR_FAST=1 (tests and QA only): an event every ~5–10 s and a
+ * rebuild ~10–15 s after the damage. */
 export const DESTRUCTION_FAST: DestructionTuning = {
   ...DESTRUCTION_TUNING,
-  slotScale: 1 / 6,
-  slotPatienceMs: 15_000,
-  cooldownMs: 10_000,
-  rebuildMinMs: 30_000,
-  rebuildMaxMs: 50_000,
-  rebuildAfterCollapseMs: 20_000,
+  slotScale: 1 / 24,
+  slotPatienceMs: 4000,
+  cooldownMs: 6000,
+  rebuildMinMs: 10_000,
+  rebuildMaxMs: 15_000,
+  rebuildAfterCollapseMs: 8000,
 };
 
 /** One plane as the director sees it this tick (the caller leaves out
@@ -181,6 +213,9 @@ export interface DestructionWorld {
   city: RoomCity;
   /** The room's crane sites (its movers). */
   cranes: readonly CraneSite[];
+  /** C2: the room's danger budget (absent: none — D5 as it shipped). A
+   * warning is staged only when it allows the event's zone, and charges it. */
+  budget?: DangerBudget;
 }
 
 /** A fired event and what it did to the city. */
@@ -257,6 +292,27 @@ export function gasVictims(
   }
   return out;
 }
+
+/** A warned event's zone as budget sample points: its centre and the four
+ * corners of its plan-view rect at half its top (a topple's strip is long). */
+function zonePoints(e: Pick<DirectorEvent, "x" | "z" | "zone">): Vec3[] {
+  const y = e.zone.top / 2;
+  const at = (dx: number, dz: number): Vec3 => ({
+    x: e.x + dx,
+    y,
+    z: e.z + dz,
+  });
+  return [
+    at((e.zone.x0 + e.zone.x1) / 2, (e.zone.z0 + e.zone.z1) / 2),
+    at(e.zone.x0, e.zone.z0),
+    at(e.zone.x0, e.zone.z1),
+    at(e.zone.x1, e.zone.z0),
+    at(e.zone.x1, e.zone.z1),
+  ];
+}
+
+const budgetPlanes = (planes: readonly DestructionPlane[]): DangerPlane[] =>
+  planes.map((p) => ({ id: p.id, pos: p.pos, vel: p.vel, prot: p.protected }));
 
 export class DestructionDirector {
   private scanFrom: number | null = null;
@@ -367,10 +423,21 @@ export class DestructionDirector {
       if (now > this.armed.until) {
         this.armed = null;
       } else {
-        const e =
+        let e =
           this.goneShare(world) < t.stopShare
             ? this.pick(now, planes, world)
             : null;
+        // C2: the danger budget has the last word on a lethal event near a
+        // plane — its whole zone, landing at `at`.
+        if (e && world.budget) {
+          const pts = zonePoints(e);
+          const bp = budgetPlanes(planes);
+          if (world.budget.allows("director", pts, e.at - now, now, bp)) {
+            world.budget.charge("director", pts, e.at - now, now, bp);
+          } else {
+            e = null;
+          }
+        }
         if (e) {
           this.warned.push(e);
           out.warned.push(e);
@@ -438,12 +505,24 @@ export class DestructionDirector {
           humans.some((h) => wrapDistance(h.pos, p.pos) <= DIRECTOR_ACTION_M)),
     );
     if (anchors.length === 0) return null;
+    // C2: a zone the danger budget refuses is blocked like a cooled-down
+    // plane's, so the pick moves on to a tower clear of the planes whose
+    // share is spent instead of losing the slot.
+    const bp = world.budget ? budgetPlanes(planes) : null;
     const blocked = (x: number, z: number, zone: DangerZone): boolean =>
       planes.some(
         (p) =>
           (this.fresh(p, now) || this.cooldown.has(p.id)) &&
           inDangerZone({ x, z, zone }, p.pos, t.cooldownMarginM),
-      );
+      ) ||
+      (bp !== null &&
+        !world.budget?.allows(
+          "director",
+          zonePoints({ x, z, zone }),
+          DIRECTOR_WARN_MS,
+          now,
+          bp,
+        ));
     const roll = this.rand();
     const order =
       roll < t.craneShare
@@ -658,8 +737,13 @@ export class DestructionDirector {
     blocked: (x: number, z: number, zone: DangerZone) => boolean,
   ): DirectorEvent | null {
     const lead = DIRECTOR_WARN_MS / 1000;
+    // U4: never a plane under a tunnel's ceiling — the blast cannot reach it.
     const low = anchors
-      .filter((a) => a.pos.y < GAS_COLUMN_H + GAS_BLAST_M)
+      .filter(
+        (a) =>
+          a.pos.y < GAS_COLUMN_H + GAS_BLAST_M &&
+          !(a.pos.y < 0 && underCover(a.pos)),
+      )
       .sort((a, b) => Number(b.human) - Number(a.human) || a.pos.y - b.pos.y);
     const zone: DangerZone = {
       x0: -GAS_BLAST_M - 10,

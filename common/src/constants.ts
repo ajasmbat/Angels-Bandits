@@ -616,9 +616,17 @@ export const CHUNK_BAY = 20;
 export const CHUNK_FLOOR = 12;
 /** Hit points of one chunk: 9 rounds of BULLET_DAMAGE, ~0.9 s on target. */
 export const CHUNK_HP = 60;
-/** Once this share of the city's chunks is gone nothing more breaks (no
- * regeneration until D5, so the always-on bot arena must not rot away). */
-export const DESTROY_CAP = 0.25;
+/** Once this share of the city's chunks is broken nothing more breaks (C2:
+ * 0.18 — with the gone-share hold and the fast rebuild, the city stays well
+ * under ~20 % gone). */
+export const DESTROY_CAP = 0.18;
+/** D2's cap before C2 (AB_CHAOS=0 restores it via CityDamage.setCap). */
+export const DESTROY_CAP_D2 = 0.25;
+/** C2 backstop: while (broken + fallen) / chunks is at or over this, the
+ * room's CityDamage holds every chunk at 1 HP (CityDamage.hold) — impacts
+ * still land and look the same, they just break nothing more until the
+ * rebuilds bring the share back under. */
+export const GONE_HOLD_SHARE = 0.18;
 /** A plane's death blows a hole: chunks within this radius of the death site
  * (point-to-box) take DEATH_BLAST_DAMAGE, falling off linearly to 0. */
 export const DEATH_BLAST_RADIUS = 14;
@@ -1075,6 +1083,25 @@ export const BOT_HOLE_LINEUP_MAX = 450;
  * recently, ms, from no further than this before the mouth, m. */
 export const BOT_HOLE_FOLLOW_MS = 3000;
 export const BOT_HOLE_FOLLOW_RANGE = 400;
+
+// --- Tunnels (U4) — bots fly the underground network too ---
+// A bore is an edge of the bots' graph like a hole: a patrol near a portal
+// or a river mouth rolls once per encounter, a chaser follows a target that
+// went in, and either commits only after a stepFlight rollout of the whole
+// pass (approach, bore, climb-out) against the real geometry.
+/** Chance a patrolling bot takes a tunnel whose entry it is near. */
+export const BOT_TUNNEL_CHANCE = 0.4;
+/** A patrol considers an entry this close (horizontal), m. */
+export const BOT_TUNNEL_RANGE = 420;
+/** A chaser follows a target seen inside a tunnel this recently, ms, from no
+ * further than this from the entry it went in by, m. */
+export const BOT_TUNNEL_FOLLOW_MS = 6000;
+export const BOT_TUNNEL_FOLLOW_RANGE = 520;
+/** A failed tunnel rollout is not retried by the same bot for this long, ms. */
+export const BOT_TUNNEL_RETRY_MS = 1500;
+/** Past the exit, the climb-out runs at least this far before the bot hands
+ * back to its lattice (and only once above BOT_MIN_ALT), m. */
+export const BOT_TUNNEL_RUNOUT = 60;
 
 // --- Sky traffic (L10) --- the news helicopter is a MOVER (solid, shared
 // with the bots); its pose is a pure function of (server-broadcast target,

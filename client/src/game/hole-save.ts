@@ -24,6 +24,12 @@
 //     pilot notices — and starts and stops without a rate step. A slice that
 //     would put the plane inside a solid is dropped and the save stops.
 //
+// U4 tunnels ride the same machinery: a bore is a corridor too, measured in
+// its own path frame (arc length, lateral off the centreline, height off
+// the guide line, alignment against the path's heading AND its ramp grade)
+// instead of an axis — so the save threads a portal's lintel, a river
+// mouth, or a bend's wall exactly as it threads a hole.
+//
 // Every save in one pass through the holes shares one budget (SAVE_MAX_OFFSET
 // and SAVE_MAX_ANGLE in total), re-armed only once the plane has left every
 // corridor: it threads a hole, it never flies one for you.
@@ -40,6 +46,15 @@
 import type { HoleSpan } from "@angels-bandits/common/city";
 import type { Building } from "@angels-bandits/common/city";
 import type { MoverField } from "@angels-bandits/common/city/movers";
+import {
+  BORE_HEIGHT,
+  BORE_WIDTH,
+  type Tunnel,
+  type TunnelFrame,
+  guideSlope,
+  guideY,
+  tunnelFrameInto,
+} from "@angels-bandits/common/city/tunnels";
 import type { CityIndex, NatureIndex } from "@angels-bandits/common/collision";
 import { PLAYER_RADIUS, WORLD_SIZE } from "@angels-bandits/common/constants";
 import {
@@ -80,9 +95,16 @@ const RADIUS = PLAYER_RADIUS;
  * 1): the rate the correction slides at, as a fraction of it per second. */
 const V_PEAK = 1 / (SAVE_TIME - SAVE_RAMP);
 
+/** A corridor the save threads: an H1 hole / river underpass, or a U4 bore. */
+export type SaveSpan = HoleSpan | Tunnel;
+
+const isTunnel = (s: SaveSpan): s is Tunnel => "segs" in s;
+
 /** Everything the save reads — the same solids the crash check does. */
 export interface SaveWorld {
   spans: readonly HoleSpan[];
+  /** U4: the bores (common/city/tunnels TUNNELS); none when omitted. */
+  tunnels?: readonly Tunnel[];
   buildings: readonly Building[];
   index?: CityIndex;
   nature?: NatureIndex;
@@ -105,7 +127,7 @@ export interface HoleSave {
   easeV: number;
   easeT: number;
   /** The span the committed correction threads. */
-  span: HoleSpan | null;
+  span: SaveSpan | null;
   /** This pass's spent budget, m and rad. */
   usedPos: number;
   usedAng: number;
@@ -177,14 +199,36 @@ function easeProfile(v: number, e: number): number {
 
 const clamp = (v: number, lo: number, hi: number) =>
   v < lo ? lo : v > hi ? hi : v;
+const wrapAngle = (a: number): number => {
+  const m = (((a + Math.PI) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+  return m - Math.PI;
+};
 const wrap = (v: number) => ((v % WORLD_SIZE) + WORLD_SIZE) % WORLD_SIZE;
 
-/** The last frame of `spanFrame`: the point in the span's own frame. */
-const frame = { along: 0, lateral: 0, up: 0, sg: 1 };
+/** The last frame of `spanFrame`: the point in the span's own frame (and,
+ * for a bore, its heading there). */
+const frame = { along: 0, lateral: 0, up: 0, sg: 1, th: 0 };
+/** The bore frame scratch (tunnelFrameInto). */
+const tf: TunnelFrame = { s: 0, lat: 0, th: 0 };
+
+/** A span's clear width and height (a bore's section; a cut's open sky is
+ * measured as the bore's height about the guide line). */
+const spanWidth = (s: SaveSpan) => (isTunnel(s) ? BORE_WIDTH : s.hole.width);
+const spanHeight = (s: SaveSpan) => (isTunnel(s) ? BORE_HEIGHT : s.hole.height);
 
 /** Fill `frame` with `p` in `span`'s frame for travel sign `sg` (+1 along
- * increasing axis coordinate). Torus-correct (wrapDeltaAxis). */
-function spanFrame(span: HoleSpan, p: Vec3, sg: number): void {
+ * increasing axis coordinate — along increasing arc length for a bore).
+ * Torus-correct (wrapDeltaAxis / tunnelFrameInto). */
+function spanFrame(span: SaveSpan, p: Vec3, sg: number): void {
+  frame.sg = sg;
+  if (isTunnel(span)) {
+    tunnelFrameInto(span, p, tf);
+    frame.along = (tf.s - span.length / 2) * sg;
+    frame.lateral = tf.lat;
+    frame.up = p.y - guideY(span, tf.s);
+    frame.th = tf.th;
+    return;
+  }
   const x = span.hole.axis === "x";
   frame.sg = sg;
   frame.along =
@@ -198,8 +242,26 @@ function spanFrame(span: HoleSpan, p: Vec3, sg: number): void {
 }
 
 /** The travel sign along `span`'s axis, or 0 when the nose is more than
- * SAVE_ALIGN_MAX off the axis (heading or elevation). */
-function travelSign(span: HoleSpan, yaw: number, pitch: number): number {
+ * SAVE_ALIGN_MAX off the axis (heading or elevation). A bore's axis is its
+ * path at `pos` — heading and ramp grade both. */
+function travelSign(
+  span: SaveSpan,
+  pos: Vec3,
+  yaw: number,
+  pitch: number,
+): number {
+  if (isTunnel(span)) {
+    tunnelFrameInto(span, pos, tf);
+    // flightForward's horizontal heading, as an angle in x/z.
+    const head = Math.atan2(-Math.cos(yaw), -Math.sin(yaw));
+    const off = wrapAngle(head - tf.th);
+    const sg = Math.abs(off) < Math.PI / 2 ? 1 : -1;
+    const dev = sg === 1 ? off : wrapAngle(off - Math.PI);
+    if (Math.abs(dev) >= SAVE_ALIGN_MAX) return 0;
+    const climb = Math.atan(guideSlope(span, tf.s) * sg);
+    if (Math.abs(pitch - climb) >= SAVE_ALIGN_MAX) return 0;
+    return sg;
+  }
   if (Math.abs(pitch) >= SAVE_ALIGN_MAX) return 0;
   // flightForward's horizontal part, in place: (−sin yaw, −cos yaw).
   const fx = -Math.sin(yaw);
@@ -213,17 +275,17 @@ function travelSign(span: HoleSpan, yaw: number, pitch: number): number {
 
 /** How far before the near mouth the plane is (≤ 0 inside), when it is in
  * `span`'s corridor and lined up on it — else NaN. Leaves `frame` filled. */
-function corridorDistance(span: HoleSpan, st: FlightState): number {
-  const sg = travelSign(span, st.yaw, st.pitch);
+function corridorDistance(span: SaveSpan, st: FlightState): number {
+  const sg = travelSign(span, st.pos, st.yaw, st.pitch);
   if (sg === 0) return Number.NaN;
   spanFrame(span, st.pos, sg);
   const half = span.length / 2;
   const toMouth = -frame.along - half;
   if (toMouth > SAVE_APPROACH || frame.along > half) return Number.NaN;
-  if (Math.abs(frame.lateral) > span.hole.width / 2 + SAVE_CAPTURE) {
+  if (Math.abs(frame.lateral) > spanWidth(span) / 2 + SAVE_CAPTURE) {
     return Number.NaN;
   }
-  if (Math.abs(frame.up) > span.hole.height / 2 + SAVE_CAPTURE) {
+  if (Math.abs(frame.up) > spanHeight(span) / 2 + SAVE_CAPTURE) {
     return Number.NaN;
   }
   return toMouth;
@@ -234,29 +296,42 @@ function corridorDistance(span: HoleSpan, st: FlightState): number {
 export function saveCorridor(
   world: SaveWorld,
   st: FlightState,
-): HoleSpan | null {
-  let best: HoleSpan | null = null;
+): SaveSpan | null {
+  let best: SaveSpan | null = null;
   let bestD = Number.POSITIVE_INFINITY;
-  for (const s of world.spans) {
+  const consider = (s: SaveSpan) => {
     const d = corridorDistance(s, st);
-    if (Number.isNaN(d)) continue;
+    if (Number.isNaN(d)) return;
     const dd = Math.max(0, d);
     if (dd < bestD) {
       bestD = dd;
       best = s;
     }
-  }
+  };
+  for (const s of world.spans) consider(s);
+  for (const t of world.tunnels ?? NO_TUNNELS) consider(t);
   return best;
 }
+
+const NO_TUNNELS: readonly Tunnel[] = [];
 
 /** Does an impact at `q` (travel sign `sg`) land on `span`'s own hole
  * surfaces? Building holes: the walls, lintel and sill round and inside the
  * mouth. River underpasses: only the deck's underside or the water beneath
  * it, inside the channel — never a bank wall or the open river. */
-function onHoleSurface(span: HoleSpan, q: Vec3, sg: number): boolean {
+function onHoleSurface(span: SaveSpan, q: Vec3, sg: number): boolean {
   spanFrame(span, q, sg);
-  const { width, height, kind } = span.hole;
   if (Math.abs(frame.along) > span.length / 2 + RADIUS) return false;
+  if (isTunnel(span)) {
+    // A bore's own walls, floor, ceiling and lintel faces: inside its
+    // section, grown like a hole's. A street-level wall beyond a portal's
+    // lip is outside the section and still kills.
+    return (
+      Math.abs(frame.lateral) <= BORE_WIDTH / 2 + SAVE_CAPTURE + RADIUS &&
+      Math.abs(frame.up) <= BORE_HEIGHT / 2 + SAVE_CAPTURE + RADIUS
+    );
+  }
+  const { width, height, kind } = span.hole;
   if (kind === "bridge") {
     if (Math.abs(frame.lateral) > width / 2 - RADIUS) return false;
     const reach = height / 2 - RADIUS - SAVE_MAX_STEP;
@@ -402,8 +477,26 @@ export const SAVE_CANDIDATES: readonly Candidate[] = (() => {
 })();
 
 /** Fill `trial` with candidate `c` for `span` from state `st`. */
-function setTrial(c: Candidate, span: HoleSpan, st: FlightState): void {
+function setTrial(c: Candidate, span: SaveSpan, st: FlightState): void {
   spanFrame(span, st.pos, 1);
+  if (isTunnel(span)) {
+    // Across = the path's left normal at the plane, (−sin th, cos th).
+    const nx = -Math.sin(frame.th);
+    const nz = Math.cos(frame.th);
+    const sL = frame.lateral > 0 ? -1 : 1;
+    const sV = frame.up > 0 ? -1 : 1;
+    // A +yaw swings the nose's across component by sin(th + yaw).
+    const sA = (Math.sin(frame.th + st.yaw) >= 0 ? 1 : -1) * sL;
+    const lat = c.l * sL * SAVE_MAX_OFFSET;
+    trial.dx = nx * lat;
+    trial.dz = nz * lat;
+    trial.dy = c.v * sV * SAVE_MAX_OFFSET;
+    trial.dyaw = c.a * sA * SAVE_MAX_ANGLE;
+    trial.dpitch = c.p * sV * SAVE_MAX_ANGLE;
+    trial.t0 = 0;
+    trial.ease = false;
+    return;
+  }
   const x = span.hole.axis === "x";
   const sL = frame.lateral > 0 ? -1 : 1; // across, toward the centreline
   const sV = frame.up > 0 ? -1 : 1; // up, toward the centreline
@@ -497,7 +590,7 @@ function cancel(save: HoleSave): void {
 
 function search(
   save: HoleSave,
-  span: HoleSpan,
+  span: SaveSpan,
   st: FlightState,
   input: FlightInput,
   world: SaveWorld,
@@ -507,9 +600,9 @@ function search(
   clearTrial();
   const tHit = rollout(st, input, SAVE_HORIZON, world, clockMs);
   if (!(tHit < SAVE_HORIZON)) return; // clear, or out of budget
-  const sg = travelSign(span, st.yaw, st.pitch);
+  const sg = travelSign(span, st.pos, st.yaw, st.pitch);
   if (sg === 0 || !onHoleSurface(span, hit, sg)) return;
-  const bridge = span.hole.kind === "bridge";
+  const bridge = !isTunnel(span) && span.hole.kind === "bridge";
   const posLeft = SAVE_MAX_OFFSET - save.usedPos;
   const angLeft = SAVE_MAX_ANGLE - save.usedAng;
   for (const c of SAVE_CANDIDATES) {

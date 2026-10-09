@@ -1,7 +1,9 @@
 // VO gallery: fixed viewpoints -> PNGs, for before/after visual review.
 //   npm run build -w client && node tools/perf/gallery.mjs <outDir> [port] [view,view]
 // Uses the cached chromium headless shell on Metal (see tools/perf/README.md;
-// AB_CHROME / AB_CHROME_ARGS point it elsewhere, e.g. SwiftShader on Linux).
+// AB_CHROME / AB_CHROME_ARGS point it elsewhere, e.g. SwiftShader on Linux;
+// AB_GALLERY_QUALITY pins a quality tier; AB_GALLERY_QUERY appends raw query
+// params, e.g. `refl=0` for S6's before shots out of the same build).
 // The sky is pinned to deep night (`?sky=night`, L12) so shots never depend
 // on the server's time of night; views with a `sky` field force their own
 // phase through __ab.sky.
@@ -229,8 +231,16 @@ try {
     if (m.type() === "error") console.error("CONSOLE", m.text());
   });
   // AB_GALLERY_RES: a software-GL box cannot draw 1.5x in time.
+  // AB_GALLERY_QUALITY: pin a tier (on a slow box Auto steps down mid-run,
+  // so a before/after pair would compare two tiers).
+  const quality = process.env.AB_GALLERY_QUALITY
+    ? `&quality=${process.env.AB_GALLERY_QUALITY}`
+    : "";
+  const extra = process.env.AB_GALLERY_QUERY
+    ? `&${process.env.AB_GALLERY_QUERY}`
+    : "";
   await page.goto(
-    `http://127.0.0.1:${PORT}/?res=${process.env.AB_GALLERY_RES ?? 1.5}&sky=night`,
+    `http://127.0.0.1:${PORT}/?res=${process.env.AB_GALLERY_RES ?? 1.5}&sky=night${quality}${extra}`,
   );
   await page.fill("#join-name", "SHOT");
   await page.click('#join button[type="submit"]');
@@ -324,6 +334,16 @@ try {
       await pin();
       await sleep(90);
     }
+    // S6: rebuild the reflection probe at this exact pose and let two frames
+    // draw with it, so no shot catches the glass mid-crossfade (a build
+    // without the hook just skips it).
+    await page.evaluate(() => window.__ab.reflections?.({ refill: true }));
+    await page.evaluate(
+      () =>
+        new Promise((r) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => r())),
+        ),
+    );
     await page.screenshot({ path: `${OUT}/${v.name}.png`, timeout: 180000 });
     if (v.trainEye) {
       console.log(

@@ -537,3 +537,82 @@ describe("closed loop: 90° street corners from full speed (seed 42)", () => {
     },
   );
 });
+
+describe("F8 roof hops keep their speed — a pull-up counts as an escape", () => {
+  /** A 600 m-wide face `gap` m ahead of a plane level at y 60, its roof
+   * `above` m over the plane — far wider than any yaw escape can clear, so
+   * only a pull-up (or a real turn) gets past it. */
+  const wall = (gap: number, above: number) =>
+    worldOf([tower(500, 400 - gap - 100, 600, 200, 60 + above)]);
+  const plane = () => at({ x: 500, y: 60, z: 400 });
+
+  it("a roof a few degrees over the nose costs nothing: full speed, above the head-on envelope", () => {
+    for (const gap of [100, 150]) {
+      for (const above of [5, 20]) {
+        const v = cornerSpeed(plane(), wall(gap, above));
+        expect(v, `${gap} m out, ${above} m up`).toBeGreaterThanOrEqual(88);
+        expect(v).toBeGreaterThan(wallEnvelope(gap));
+      }
+    }
+  });
+
+  it("a wall no pull-up can clear still brakes to the head-on envelope; a taller roof never costs less", () => {
+    for (const gap of [100, 150]) {
+      expect(cornerSpeed(plane(), wall(gap, 500))).toBeLessThanOrEqual(
+        wallEnvelope(gap),
+      );
+      let prev = MAX_SPEED;
+      for (const above of [5, 20, 40, 80, 500]) {
+        const v = cornerSpeed(plane(), wall(gap, above));
+        expect(v).toBeLessThanOrEqual(prev);
+        prev = v;
+      }
+    }
+  });
+
+  /** Fly level at MAX_SPEED toward the wall, pull up hard `pullAt` m out
+   * until 25 m over the roof, then level off; the slowest speed of the hop
+   * (the climb itself bleeds speed — that is physics, not the manager). */
+  const hop = (height: number, pullAt: number, managed: boolean): number => {
+    const w = worldOf([tower(500, 50, 600, 200, height)]); // face at z 150
+    let f: FlightState = at({ x: 500, y: 60, z: 400 });
+    let cap = MAX_SPEED;
+    let slowest = f.speed;
+    for (let i = 0; i < 600 && f.pos.z > -50; i++) {
+      const climbing = f.pos.z - 150 < pullAt && f.pos.y < height + 25;
+      const pitch = climbing ? 1 : f.pitch > 0.02 ? -1 : 0;
+      if (managed) cap = stepCornerCap(cap, cornerSpeed(f, w), DT);
+      f = stepFlight(
+        f,
+        {
+          turn: 0,
+          pitch,
+          roll: 0,
+          throttle: 0,
+          cornerCap: managed ? cornerCapInput(cap) : undefined,
+        },
+        DT,
+      );
+      // Over the block the plane must be above its roof.
+      if (f.pos.z < 150 && f.pos.z > -50) {
+        expect(f.pos.y, `${height} m wall`).toBeGreaterThan(height);
+      }
+      slowest = Math.min(slowest, f.speed);
+    }
+    return slowest;
+  };
+
+  it("closed loop: a pilot hopping an 80 m or 110 m block loses no more speed than with the manager off", () => {
+    for (const [height, pullAt] of [
+      [80, 150],
+      [80, 100],
+      [110, 200],
+    ] as const) {
+      const off = hop(height, pullAt, false);
+      expect(
+        hop(height, pullAt, true),
+        `${height} m, pull at ${pullAt} m`,
+      ).toBeGreaterThanOrEqual(off - 0.5);
+    }
+  });
+});

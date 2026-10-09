@@ -35,7 +35,18 @@ export const CROWN_DRAW_SCALE = 0.9;
 export const CROWN_SWAY_MAX = 1 - CROWN_DRAW_SCALE;
 
 /** Prevailing wind heading (rad, from +x toward +z) the veer swings about. */
-const WIND_BASE_HEADING = 0.7;
+export const WIND_BASE_HEADING = 0.7;
+/** The heading's veer about the prevailing one: [amplitude rad, period s]. */
+const VEER: readonly (readonly [number, number])[] = [
+  [0.5, 173],
+  [0.25, 61],
+];
+/** The strength's mean and its breathing terms: [amplitude, period s]. */
+const STRENGTH_MEAN = 0.55;
+const BREATH: readonly (readonly [number, number])[] = [
+  [0.25, 47],
+  [0.2, 13.7],
+];
 /** Gust fronts: two lattice waves rolling across the city. Wavelengths
  * WORLD_SIZE/|k| ≈ 630 m and 890 m; one gust cycle every GUST_PERIOD_S. */
 export const GUST_K1: readonly [number, number] = [3, 1];
@@ -82,19 +93,99 @@ const cycle = (t: number, period: number): number =>
  */
 export function windAt(serverMs: number, out?: Wind): Wind {
   const t = serverMs / 1000;
-  const heading =
-    WIND_BASE_HEADING +
-    0.5 * Math.sin(TAU * cycle(t, 173)) +
-    0.25 * Math.sin(TAU * cycle(t, 61));
-  const strength =
-    0.55 +
-    0.25 * Math.sin(TAU * cycle(t, 47)) +
-    0.2 * Math.sin(TAU * cycle(t, 13.7));
+  let heading = WIND_BASE_HEADING;
+  for (const [a, p] of VEER) heading += a * Math.sin(TAU * cycle(t, p));
+  let strength = STRENGTH_MEAN;
+  for (const [a, p] of BREATH) strength += a * Math.sin(TAU * cycle(t, p));
   const w = out ?? { x: 0, z: 0, strength: 0 };
   w.x = Math.cos(heading);
   w.z = Math.sin(heading);
   w.strength = strength;
   return w;
+}
+
+// --- Air drift (S5) ----------------------------------------------------------
+// Where the air itself has carried something by `serverMs`: the fog banks
+// slide on it and the litter hops along it, so everything the wind moves
+// moves the way windAt() blows. It is the EXACT time integral of
+//
+//   v(t) = AIR_DRIFT_MPS · s(t) · (ĥ0 + δ(t)·n̂0)
+//
+// — windAt's strength s and veer δ about the prevailing heading ĥ0 (n̂0 its
+// left normal), i.e. the heading linearised about ĥ0. Both s and δ are sums
+// of sines, so s·δ expands to sums of cosines and the integral is closed
+// form: any instant is O(1), every client computes the same drift. The
+// linearisation points v within atan(δ) − δ ≤ 0.11 rad of windAt's heading
+// (|δ| ≤ 0.75) and runs up to √(1 + δ²) ≈ 1.25× fast at the veer extremes —
+// accepted for cosmetic drift (AIR_DRIFT_MPS is set for the mean).
+
+/** Air speed at full wind strength, m/s. */
+export const AIR_DRIFT_MPS = 3;
+
+/** The drift's velocity, m/s, at `serverMs` — the integrand above (tests). */
+export function airVelocity(
+  serverMs: number,
+  out: { x: number; z: number } = { x: 0, z: 0 },
+): { x: number; z: number } {
+  const t = serverMs / 1000;
+  let s = STRENGTH_MEAN;
+  for (const [a, p] of BREATH) s += a * Math.sin(TAU * cycle(t, p));
+  let d = 0;
+  for (const [b, p] of VEER) d += b * Math.sin(TAU * cycle(t, p));
+  const hx = Math.cos(WIND_BASE_HEADING);
+  const hz = Math.sin(WIND_BASE_HEADING);
+  out.x = AIR_DRIFT_MPS * s * (hx - d * hz);
+  out.z = AIR_DRIFT_MPS * s * (hz + d * hx);
+  return out;
+}
+
+/** ∫ sin(ω t) dt and ∫ cos(ω t) dt, with ω = 2π / period, at `t` seconds. */
+const intSin = (t: number, period: number): number =>
+  (-period / TAU) * Math.cos(TAU * cycle(t, period));
+const intCos = (t: number, period: number): number =>
+  (period / TAU) * Math.sin(TAU * cycle(t, period));
+/** sin(a)·sin(b) = ½[cos(a − b) − cos(a + b)]: ∫ of the product of two
+ * sines of periods p and q, as two cosines of the sum/difference periods. */
+function intSinSin(t: number, p: number, q: number): number {
+  const fDiff = 1 / p - 1 / q;
+  const fSum = 1 / p + 1 / q;
+  // The difference cosine: frequency 0 would be a constant ½ (never the
+  // case for these periods, but keep the integral honest).
+  const diff = fDiff === 0 ? t : intCos(t, 1 / Math.abs(fDiff));
+  return 0.5 * (diff - intCos(t, 1 / fSum));
+}
+
+/** Wrap a metre coordinate into [0, WORLD_SIZE). */
+const wrapWorld = (v: number): number =>
+  ((v % WORLD_SIZE) + WORLD_SIZE) % WORLD_SIZE;
+
+/**
+ * How far the shared air has carried a parcel by `serverMs` (m, wrapped to
+ * [0, WORLD_SIZE) per axis — add it to a canonical position, then take the
+ * nearest image). Pure; allocation-free with `out`.
+ */
+export function airDrift(
+  serverMs: number,
+  out: { x: number; z: number } = { x: 0, z: 0 },
+): { x: number; z: number } {
+  const t = serverMs / 1000;
+  // Along the prevailing heading: ∫ s. The mean term grows without bound
+  // (~5e9 m at today's epoch), still resolved to ~1e-6 m in doubles; the
+  // wrap below brings it home.
+  let along = STRENGTH_MEAN * t;
+  for (const [a, p] of BREATH) along += a * intSin(t, p);
+  // Across it: ∫ s·δ.
+  let across = 0;
+  for (const [b, q] of VEER) {
+    across += STRENGTH_MEAN * b * intSin(t, q);
+    for (const [a, p] of BREATH) across += a * b * intSinSin(t, p, q);
+  }
+  const hx = Math.cos(WIND_BASE_HEADING);
+  const hz = Math.sin(WIND_BASE_HEADING);
+  const u = AIR_DRIFT_MPS;
+  out.x = wrapWorld(u * (along * hx - across * hz));
+  out.z = wrapWorld(u * (along * hz + across * hx));
+  return out;
 }
 
 /** The sway waves' time phases at `serverMs`. */

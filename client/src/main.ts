@@ -214,6 +214,7 @@ import {
 import { GameSocket } from "./net/socket";
 import { Airliners } from "./render/airliners";
 import { archetypeFor } from "./render/archetypes";
+import { AtmosphereFx } from "./render/atmosphere-fx";
 import { Birds } from "./render/birds";
 import { BossRenderer } from "./render/boss";
 import { CityRenderer } from "./render/city";
@@ -258,7 +259,12 @@ import {
   spinPropeller,
 } from "./render/plane";
 import { PlaneLights } from "./render/planelights";
-import { AbBloomPass, DiscardDepthPass, FinalPass } from "./render/post";
+import {
+  AbBloomPass,
+  DiscardDepthPass,
+  FinalPass,
+  ShaftsPass,
+} from "./render/post";
 import { prewarmScene } from "./render/prewarm";
 import {
   type AutoQualityState,
@@ -285,6 +291,7 @@ import {
 } from "./render/quality";
 import { Rain } from "./render/rain";
 import { CityReactor } from "./render/reactions";
+import { ReflectionProbe } from "./render/reflections";
 import { RemotePlanes } from "./render/remotes";
 import {
   MSAA_SAMPLES,
@@ -602,6 +609,10 @@ composer.addPass(new DiscardDepthPass());
 // OutputPass and a separate grade pass) out of the same build, so the
 // harness can measure the difference as a paired --ab.
 const legacyPost = renderOpts.post === "legacy";
+// S5: the moon's light shafts, a quarter-res pass FinalPass adds (it skips
+// itself while the moon is out of view or the tier has no shafts).
+const shaftsPass = legacyPost ? null : new ShaftsPass();
+if (shaftsPass) composer.addPass(shaftsPass);
 const bloomPass = legacyPost
   ? new UnrealBloomPass(
       new THREE.Vector2(window.innerWidth, window.innerHeight),
@@ -617,17 +628,20 @@ let gradePass: {
   uniforms: Record<string, THREE.IUniform>;
   enabled: boolean;
 } | null = null;
+/** The fused final pass (null on the legacy chain): S5's shimmer and glare. */
+let finalPass: FinalPass | null = null;
 if (bloomPass instanceof AbBloomPass) {
-  const finalPass = new FinalPass(bloomPass, renderOpts.grade);
+  finalPass = new FinalPass(bloomPass, renderOpts.grade, shaftsPass);
+  const fp = finalPass;
   composer.addPass(finalPass);
   if (renderOpts.grade) {
     gradePass = {
       uniforms: finalPass.uniforms,
       get enabled() {
-        return finalPass.gradeEnabled;
+        return fp.gradeEnabled;
       },
       set enabled(on: boolean) {
-        finalPass.gradeEnabled = on;
+        fp.gradeEnabled = on;
       },
     };
   }
@@ -662,6 +676,7 @@ function applyPixelRatio(ratio: number): void {
   composer.setPixelRatio(ratio);
   // The bloom chain is anchored to CSS pixels (render/post.ts).
   if (bloomPass instanceof AbBloomPass) bloomPass.setPixelRatio(ratio);
+  shaftsPass?.setPixelRatio(ratio);
 }
 applyPixelRatio(resolution.ratio);
 
@@ -872,6 +887,17 @@ scene.add(searchlights.mesh);
 // by game/headlines.ts from the room's broadcasts (fed in onDeath/onScores).
 const jumbotrons = new Jumbotrons(city.cityBuildings, renderer);
 scene.add(jumbotrons.mesh);
+// S6 glass reflections: one camera-centred cube probe that glass towers,
+// puddles and the river sample (render/reflections.ts). It mirrors what is
+// worth seeing in glass — the sky dome and moon, the towers, the signs, the
+// screens, the street — drawn into its own layer; the lights join it once
+// the scene is built (below, before the pre-warm).
+const reflections = new ReflectionProbe(renderOpts.reflections, camera.far);
+reflections.tag(skyDome.mesh);
+reflections.tag(city.mesh);
+for (const m of signage.reflectiveMeshes) reflections.tag(m);
+reflections.tag(jumbotrons.mesh);
+reflections.tag(ground.mesh);
 // L10 drone show: points in the shared MoverLights cloud (zero draw calls).
 const droneShow = new DroneShowRenderer(welcome.seed);
 const birds = new Birds(welcome.seed);
@@ -927,6 +953,16 @@ const steam = new Steam(
   MAX_CART_VENTS_PER_BLOCK,
 );
 scene.add(steam.points);
+// S5 atmosphere: fog banks + wind litter (one draw each), and the post
+// chain's shafts, shimmer and glare (render/atmosphere-fx.ts).
+const atmosphere = new AtmosphereFx(
+  welcome.seed,
+  city.cityBuildings,
+  buildingsByBlock,
+  finalPass,
+  shaftsPass,
+);
+scene.add(...atmosphere.objects);
 const signals = new Signals(welcome.seed);
 scene.add(signals.mesh);
 const constructionSparks = new ConstructionSparks(welcome.seed);
@@ -2116,6 +2152,8 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   facadeDetail.setQuality(tier);
   train.setQuality(tier); // T2: platform people, sparks, light range
   courseGhost.setQuality(tier); // S3: MOBILE keeps the rings, drops the ghost
+  atmosphere.setQuality(tier); // S5
+  reflections.setQuality(tier); // S6: faces per frame; Mobile off
   applyPostQuality();
   resLimits = limitsFor(tier);
   if (resAuto) {
@@ -2444,6 +2482,11 @@ declare global {
       };
       signage: () => Signage["counts"];
       jumbotron: () => Jumbotrons["stats"];
+      /** S6 QA: the reflection probe — faces and draws this frame, totals,
+       * the program count (must not move when the probe first fills or the
+       * tier switches) and whether every light is in the probe's layer.
+       * `{ refill: true }` rebuilds all six faces on the next frame. */
+      reflections: (opts?: { refill?: boolean }) => ReflectionProbe["stats"];
       /** S4 QA: the room's sky boss as this client holds it — the raid, its
        * HP, whether it flies (or falls) at the render clock, where, the
        * shells in the air and what the renderer drew. */
@@ -2525,6 +2568,8 @@ declare global {
         flash: number;
         drops: number;
       };
+      /** S5 QA: what the atmosphere drew last frame. */
+      atmosphere: () => ReturnType<AtmosphereFx["debug"]>;
       /** L12 QA: force the sky cycle to a fraction (0..1) or a named
        * moment, or release it to the synced clock with null. */
       sky: (t?: number | "dusk" | "night" | "predawn" | null) => {
@@ -2990,6 +3035,10 @@ window.__ab = {
   // S1 QA: what the jumbotrons say, the replay pass count/draws, and a
   // canonical view square on screen `i` (feed it to qaCamera).
   jumbotron: () => jumbotrons.stats,
+  reflections: (opts) => {
+    if (opts?.refill) reflections.requestRefill(true);
+    return reflections.stats;
+  },
   boss: () => {
     const t = lastRenderMs;
     const raid = socket.boss.raid;
@@ -3325,6 +3374,7 @@ window.__ab = {
       },
     };
   },
+  atmosphere: () => atmosphere.debug(),
   sky: (t) => {
     if (t === null) skyCycle.forced = null;
     else if (typeof t === "string") skyCycle.forced = SKY_MOMENTS[t];
@@ -3390,7 +3440,15 @@ let last = performance.now();
 fadeEl.classList.add("dead");
 socket.sendPing(); // W1: the rest of the boot was built synchronously
 renderer.initTexture(city.damageAtlas); // D1: never a first-hit upload hitch
+// S5: the shafts pass links its program now, whatever the tier or the moon.
+if (shaftsPass) shaftsPass.forceOnce = true;
 await prewarmScene(renderer, scene, camera, composer);
+// S6: every light joins the probe's layer (same light counts → the probe
+// pass resolves the programs just pre-warmed), then the first full fill —
+// behind the boot fade, and it links the cube targets' framebuffers now.
+reflections.tagLights(scene);
+reflections.requestRefill(true);
+reflections.update(renderer, scene, camera);
 socket.sendPing();
 flashFade();
 
@@ -4327,6 +4385,21 @@ const frame = (now: number): void => {
     camera.position.set(eye.x, eye.y, eye.z);
     camera.lookAt(at.x, at.y, at.z);
   }
+  // S5 atmosphere, once the camera is final (shimmer and shafts project
+  // through it): fog banks clear of every plane, litter kicked by low
+  // passes, all on the latched world clock.
+  atmosphere.update({
+    camera,
+    cameraPos: chase.position,
+    worldMs: renderMs,
+    now,
+    planes: birdPlanes,
+    passes: reactor.nearPasses,
+    haze: wx.haze,
+    microK,
+    moonDir: skyCycle.state.moonDir,
+    moonVis: skyCycle.state.moonVis,
+  });
   // Everything up to here is this frame's JS: sim, streaming, instance
   // packing. The render call is NOT included — a driver can block in it
   // waiting on the GPU, which would read a GPU-bound frame as CPU-bound.
@@ -4335,6 +4408,11 @@ const frame = (now: number): void => {
   renderer.info.reset();
   gpuTimer?.begin();
   composer.render();
+  // S6: this frame's probe face(s), after the main pass (fresh matrices) and
+  // inside the GPU timer and the draw count, so both report what it costs.
+  // A QA camera that moved refills at once (a capture never starts mid-fade).
+  reflections.observeQaEye(qaView ? qaView.eye : null);
+  reflections.update(renderer, scene, camera);
   gpuTimer?.end();
 
   // Matrices are fresh after the render — project the screen-space UI now.

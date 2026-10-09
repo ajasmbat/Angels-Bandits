@@ -25,6 +25,9 @@ export const RENDER_ORDER = {
   cloudCeilingAbove: -0.7,
   cloudPuffs: -0.6,
   cloudCeilingBelow: -0.5,
+  /** S5 fog banks: mid-air haze between the towers, in front of the deck,
+   * behind the street-level steam and everything nearer. */
+  fogBanks: -0.4,
   steam: -0.3,
   birds: -0.2,
   /** L1 smoke columns over kill sites: on the ground, beyond the trails. */
@@ -34,6 +37,9 @@ export const RENDER_ORDER = {
    * within 40 m of the camera — so after the smoke, still before the 0 group
    * (tracers, planes, tags), which therefore always paints over the rain. */
   rain: -0.05,
+  /** S5 wind litter: street-level scraps — before the 0 group, so tracers,
+   * planes and tags always paint over them. */
+  litter: -0.04,
   /** Searchlight beams: additive, after the opaque city and the sky. */
   beams: 2,
 } as const;

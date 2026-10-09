@@ -18,6 +18,7 @@ import {
   BOSS_ORBIT_R,
   BOSS_PARTS,
   BOSS_PIECES,
+  type BossPart,
   BOSS_REACH_X,
   BOSS_REACH_Y,
   BOSS_REACH_Z,
@@ -33,6 +34,7 @@ import {
   bossCredit,
   bossHitValid,
   bossPartBoxInto,
+  bossPartSdfAt,
   bossPiecePartBoxInto,
   bossPoseAt,
   bossPresent,
@@ -225,16 +227,22 @@ describe("draw == collide for the hull", () => {
   const pose = bossPoseAt(r, t, blankPose());
   const boxes = BOSS_PARTS.map((_, i) => bossPartBoxInto(pose, i, blank()));
 
-  it("solid exactly inside the boxes the renderer instances", () => {
+  it("solid exactly inside the shapes the renderer builds", () => {
     const rand = mulberry32(17);
     let hits = 0;
     for (let n = 0; n < 4000; n++) {
       const p: Vec3 = {
         x: pose.x + (rand() * 2 - 1) * 150,
-        y: pose.y + (rand() * 2 - 1) * 45,
+        y: pose.y + (rand() * 2 - 1) * 32,
         z: pose.z + (rand() * 2 - 1) * 150,
       };
-      const drawn = boxes.some((b) => sphereHitsBox(b, p, 2));
+      // S9: each part is its exact shape (a solid of revolution or a box)
+      // inside its bounding box.
+      const drawn = boxes.some(
+        (b, i) =>
+          sphereHitsBox(b, p, 2) &&
+          bossPartSdfAt(BOSS_PARTS[i] as BossPart, b, p) <= 2,
+      );
       const solid = collideBoss(slot, p, 2, t) !== null;
       expect(solid).toBe(drawn);
       if (solid) hits++;
@@ -583,7 +591,15 @@ describe("respawns stay out of its way", () => {
     for (let k = 0; k < BOSS_TURRETS.length; k++) {
       const m = turretMuzzleInto(pose, k, { x: 0, y: 0, z: 0 });
       const up = (BOSS_TURRETS[k] as { up: number }).up;
-      expect(up * (m.y - BOSS_ALT)).toBeGreaterThan(25);
+      expect(up * (m.y - BOSS_ALT)).toBeGreaterThan(18);
+      // S9: and outside the envelope (every section of it) — the gun is
+      // on the skin, never inside the gas.
+      for (const i of [0, 1, 3]) {
+        const b = bossPartBoxInto(pose, i, blank());
+        expect(bossPartSdfAt(BOSS_PARTS[i] as BossPart, b, m)).toBeGreaterThan(
+          0,
+        );
+      }
     }
   });
 });

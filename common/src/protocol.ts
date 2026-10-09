@@ -6,6 +6,7 @@
 
 import type { NewsHeliSlot, NewsHeliTarget } from "./city/newsheli";
 import type { CityEvent } from "./cityevents";
+import type { WireMissile } from "./strike";
 import type { Vec3 } from "./world/index";
 
 /** Unit quaternion, Three.js component order. Attitude of a plane on the wire. */
@@ -202,6 +203,10 @@ export interface WelcomeMsg {
    * order (common/src/courses.ts generateCourses for this seed). The rings
    * themselves are never sent — both sides generate them from the seed. */
   courses?: CourseStanding[];
+  /** X1: the room's missiles still in the air (common/src/strike.ts
+   * encodeMissile), so a late joiner — or a resume — sees, hears and
+   * dodges the same incoming strikes as everyone else. */
+  missiles?: WireMissile[];
 }
 
 // --- S3 stunt courses ---
@@ -352,23 +357,29 @@ export interface FiredMsg {
   id: string;
 }
 
-/** A validated hit landed: the target's new server-owned HP. */
+/** A validated hit landed: the target's new server-owned HP. X1 missile
+ * damage carries `shooterId` MISSILE_SHOOTER_ID (common/src/strike.ts —
+ * never a plane's id) and the impact point in `from`, so the damage
+ * indicator points at the blast rather than at a shooter. */
 export interface DamageMsg {
   type: "damage";
   targetId: string;
   shooterId: string;
   hp: number;
+  from?: Vec3;
 }
 
 /** Server-declared death. `killerId` null = un-credited crash or the storm
  * itself (⚡ environment). `"storm"` is the hidden death ceiling's kill bolt —
  * clients render the bolt at the victim's last snapshot pose; the wire never
- * carries a warning or a timer (the rule is discovered, not announced). */
+ * carries a warning or a timer (the rule is discovered, not announced).
+ * `"missile"` (X1) is an incoming strike's blast — environment, credited
+ * only by the same last-damager rule a crash follows. */
 export interface DeathMsg {
   type: "death";
   victimId: string;
   killerId: string | null;
-  cause: "shot" | "crash" | "storm";
+  cause: "shot" | "crash" | "storm" | "missile";
 }
 
 /**
@@ -433,6 +444,18 @@ export interface ChunksMsg {
 }
 
 /**
+ * X1: the server launched a missile strike. Everything about its flight —
+ * the arc, the whistle, the impact instant — is a pure function of this
+ * event and the synced clock (common/src/strike.ts), so every client sees
+ * the same missile. Its damage arrives the usual ways: `chunks`, `damage`,
+ * `death` and a `missile` city event.
+ */
+export interface MissileMsg {
+  type: "missile";
+  m: WireMissile;
+}
+
+/**
  * W2: the player's own `away: true` has taken effect (sent to that player
  * only — to everyone else the plane just leaves snapshots). From here its
  * return is answered with a `respawn`, which the client waits for before
@@ -445,6 +468,7 @@ export interface AwayStartedMsg {
 export type ServerMsg =
   | WelcomeMsg
   | ChunksMsg
+  | MissileMsg
   | CourseResultMsg
   | CourseBoardMsg
   | AwayStartedMsg

@@ -15,7 +15,11 @@ import {
   startBoost,
   stopBoost,
 } from "@angels-bandits/common/boost";
-import { encodeChunkIds, generateCity } from "@angels-bandits/common/city";
+import {
+  encodeChunkIds,
+  generateCity,
+  mulberry32,
+} from "@angels-bandits/common/city";
 import {
   type MoverField,
   generateMovers,
@@ -63,7 +67,12 @@ import type {
   SpawnState,
   WireSnapshotMsg,
 } from "@angels-bandits/common/protocol";
-import type { Vec3 } from "@angels-bandits/common/world";
+import {
+  MISSILE_SHOOTER_ID,
+  type MissileStrike,
+  encodeMissile,
+} from "@angels-bandits/common/strike";
+import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import { type WebSocket, WebSocketServer } from "ws";
 import {
   type BotContact,
@@ -98,6 +107,13 @@ import { type RespawnEnemy, pickBotRespawn, pickRespawn } from "./respawn";
 import { type Room, RoomManager } from "./room";
 import { createStaticHandler } from "./statics";
 import { StormCeiling } from "./storm";
+import {
+  DEFAULT_TUNING,
+  type DirectorPlane,
+  FAST_TUNING,
+  MissileDirector,
+  applyMissileImpact,
+} from "./strikes";
 import { poseFromSpawn, validatePose } from "./validate";
 
 const PORT = Number(process.env.PORT ?? 8080);
@@ -112,6 +128,10 @@ const BOOT_TIMEOUT = Number(process.env.BOOT_TIMEOUT_MS) || BOOT_TIMEOUT_MS;
 const RESUME_WINDOW = Number(process.env.RESUME_WINDOW_MS) || RESUME_WINDOW_MS;
 const AWAY_TIMEOUT = Number(process.env.AWAY_TIMEOUT_MS) || AWAY_TIMEOUT_MS;
 const AWAY_SILENCE = Number(process.env.AWAY_SILENCE_MS) || AWAY_SILENCE_MS;
+
+/** X1: AB_MISSILE_FAST=1 (tests and QA only) makes strikes come quickly. */
+const MISSILE_TUNING =
+  process.env.AB_MISSILE_FAST === "1" ? FAST_TUNING : DEFAULT_TUNING;
 
 /** Test-only introspection of the per-room maps (`GET /debug/rooms`). */
 const DEBUG_ROOMS = process.env.AB_DEBUG_ROOMS === "1";
@@ -273,6 +293,35 @@ const roomCity = (room: Room): RoomCity => {
 const breakable = (room: Room): RoomCity | null =>
   room.humanCount > 0 ? roomCity(room) : null;
 
+/**
+ * Each room's missile director (X1) and the probes it reads, built against
+ * that room's own breakable buildings. Created lazily, dropped with the
+ * room; the stream is seeded from the room's number like its bots.
+ */
+interface RoomMissiles {
+  director: MissileDirector;
+  near: (pos: Vec3) => boolean;
+  index: ReturnType<typeof buildCityIndex>;
+}
+const missilesByRoom = new Map<string, RoomMissiles>();
+const missilesFor = (room: Room): RoomMissiles => {
+  let rm = missilesByRoom.get(room.id);
+  if (!rm) {
+    const n = Number(room.id.split("-")[1] ?? 0);
+    const buildings = roomCity(room).buildings;
+    rm = {
+      director: new MissileDirector(
+        mulberry32((CITY_SEED ^ Math.imul(n + 1, 0x51ed27)) >>> 0),
+        MISSILE_TUNING,
+      ),
+      near: nearBuildingProbe(buildings),
+      index: buildCityIndex(buildings),
+    };
+    missilesByRoom.set(room.id, rm);
+  }
+  return rm;
+};
+
 /** A plane died: blast the city at its last on-record position (alive or
  * dead — lastPosOf covers both). Call after the death is decided. */
 function deathBlast(room: Room, victimId: string): void {
@@ -415,6 +464,8 @@ function syncRoomBots(room: Room): void {
   for (const entry of spawned) {
     rooms.addBot(room, entry.id, entry.name);
     combat.addPlayer(entry.id, now);
+    const at = bots.lastPosOf(entry.id);
+    if (at) missilesFor(room).director.noteSpawn(entry.id, at, now);
     sendToRoom(room, { type: "playerJoined", player: entry });
   }
   for (const id of despawned) {
@@ -440,6 +491,7 @@ function disposeRoom(room: Room): void {
   roomMoversById.delete(room.id);
   pendingKillByRoom.delete(room.id);
   roomCityById.delete(room.id);
+  missilesByRoom.delete(room.id);
 }
 
 const sanitizeName = (raw: unknown): string => {
@@ -547,6 +599,7 @@ function handleJoin(
     resumeToken: client.resumeToken,
     destroyed: encodeChunkIds(roomCity(room).damage.destroyedIds()),
     courses: courseSetFor(room.seed).book.standings(),
+    missiles: missilesFor(room).director.missiles().map(encodeMissile),
   };
   ws.send(JSON.stringify(welcome));
   sendToRoom(room, { type: "playerJoined", player: { id, name } }, id);
@@ -670,6 +723,7 @@ function broadcastCourseBoard(
 function goLive(client: Client, now: number): void {
   client.pending = false;
   combat.protectFrom(client.id, now);
+  missilesFor(client.room).director.noteSpawn(client.id, client.pose.pos, now);
 }
 
 /** A human's boost window cap as of `now` (see SpeedCapFn); bots never
@@ -878,6 +932,7 @@ function issueRespawns(due: string[], now: number): void {
       combat.respawned(id, now);
       resetOnRecord(client, spawn, now);
     }
+    missilesFor(room).director.noteSpawn(id, spawn.pos, now);
     sendToRoom(room, {
       type: "respawn",
       id,
@@ -928,6 +983,7 @@ function settleAway(client: Client, now: number): void {
     const spawn = pickRespawn(livingEnemies(client.room, client.id));
     combat.returned(client.id, now);
     resetOnRecord(client, spawn, now);
+    missilesFor(client.room).director.noteSpawn(client.id, spawn.pos, now);
     sendToRoom(client.room, {
       type: "respawn",
       id: client.id,
@@ -1053,6 +1109,104 @@ function enforceStormCeiling(room: Room, now: number): void {
   }
 }
 
+/** A member's on-record velocity: bots from the sim, humans from the pose. */
+const velocityOf = (room: Room, id: string, pose: Pose): Vec3 =>
+  room.members.get(id)?.isBot
+    ? (botsFor(room).contactOf(id)?.vel ?? { x: 0, y: 0, z: 0 })
+    : poseVelocity(pose);
+
+/**
+ * X1 missile strikes for one room tick: land what is due (chunks, the
+ * `missile` city event, plane damage), then let the director launch — only
+ * while a human is in the room, like all destruction (see breakable).
+ */
+function tickMissiles(room: Room, now: number): void {
+  const rm = missilesFor(room);
+  for (const m of rm.director.settle(now)) landMissile(room, rm, m, now);
+  const rc = breakable(room);
+  if (!rc) return;
+  const planes: DirectorPlane[] = [];
+  for (const member of room.members.values()) {
+    const pose = memberPose(room, member.id);
+    if (!pose) continue;
+    planes.push({
+      id: member.id,
+      pos: pose.pos,
+      vel: velocityOf(room, member.id, pose),
+      human: !member.isBot,
+      // A timed course run (S3) never draws fire: luck is not a lap time.
+      eligible: !clients.get(member.id)?.course.running,
+    });
+  }
+  const launched = rm.director.tick(now, planes, {
+    nearBuilding: rm.near,
+    index: rm.index,
+    buildings: rc.buildings,
+    destroyedShare: rc.damage.destroyedCount / Math.max(1, rc.damage.chunkCount),
+  });
+  if (launched) {
+    sendToRoom(room, { type: "missile", m: encodeMissile(launched) });
+  }
+}
+
+/**
+ * One missile lands: D2 chunk damage, the city's blast reaction (fire,
+ * blown windows, smoke — replayed to joiners), then every plane in the
+ * blast radius by distance from its on-record pose EXTRAPOLATED to now.
+ * A missile death is the plane's only blast: no deathBlast or death city
+ * event on top of the missile's own.
+ */
+function landMissile(
+  room: Room,
+  rm: RoomMissiles,
+  m: MissileStrike,
+  now: number,
+): void {
+  const rc = breakable(room);
+  if (rc) applyMissileImpact(rc, m);
+  const event = cityEvents.offer(room.id, "missile", m.to, now);
+  if (event) sendToRoom(room, { type: "cityEvent", event });
+  const planes: { id: string; pos: Vec3 }[] = [];
+  for (const member of room.members.values()) {
+    const pose = memberPose(room, member.id);
+    if (!pose) continue;
+    const age = poseAgeOf(member.id, now) / 1000;
+    const v = velocityOf(room, member.id, pose);
+    planes.push({
+      id: member.id,
+      pos: canonicalize({
+        x: pose.pos.x + v.x * age,
+        y: pose.pos.y + v.y * age,
+        z: pose.pos.z + v.z * age,
+      }),
+    });
+  }
+  for (const victim of rm.director.blastVictims(m, planes, now)) {
+    const hit = combat.environmentDamage(victim.id, victim.damage, now);
+    if (!hit) continue;
+    const isBot = room.members.get(victim.id)?.isBot ?? false;
+    sendToRoom(room, {
+      type: "damage",
+      targetId: victim.id,
+      shooterId: MISSILE_SHOOTER_ID,
+      hp: hit.hp,
+      from: m.to,
+    });
+    if (isBot) botsFor(room).onDamaged(victim.id, now);
+    if (!hit.death) continue;
+    noteKillSite(room, victim.id);
+    if (isBot) botsFor(room).setDead(victim.id);
+    rm.director.forget(victim.id);
+    sendToRoom(room, {
+      type: "death",
+      victimId: hit.death.victimId,
+      killerId: hit.death.killerId,
+      cause: hit.death.cause,
+    });
+    broadcastScores(room);
+  }
+}
+
 // --- HTTP: health + production statics ---
 const statics = createStaticHandler();
 const server = createServer((req, res) => {
@@ -1071,6 +1225,7 @@ const server = createServer((req, res) => {
         roomMoversById: [...roomMoversById.keys()],
         pendingKillByRoom: [...pendingKillByRoom.keys()],
         roomCityById: [...roomCityById.keys()],
+        missilesByRoom: [...missilesByRoom.keys()],
       }),
     );
     return;
@@ -1196,6 +1351,7 @@ function tick(): void {
     tickRoomBots(room, time);
     enforceStormCeiling(room, time);
     updateNewsHeli(room, time);
+    tickMissiles(room, time);
     // D2: everything that broke this tick, as ONE batch.
     const broke = roomCityById.get(room.id)?.damage.takeDestroyed();
     if (broke && broke.length > 0) {

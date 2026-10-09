@@ -17,7 +17,10 @@
 import { mulberry32 } from "@angels-bandits/common/city";
 import type { Building } from "@angels-bandits/common/city";
 import type { CityEvent } from "@angels-bandits/common/cityevents";
-import { SMOKE_LIFE_MS } from "@angels-bandits/common/cityevents";
+import {
+  SMOKE_LIFE_MS,
+  isBlastEvent,
+} from "@angels-bandits/common/cityevents";
 import type { CityIndex } from "@angels-bandits/common/collision";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
@@ -233,7 +236,7 @@ export class BlastLedger {
   /** Apply every not-yet-seen `death` event. Returns the blasts applied. */
   ingest(events: readonly CityEvent[]): BlastSite[] {
     const fresh = events
-      .filter((e) => e.kind === "death")
+      .filter(isBlastEvent)
       .slice()
       .sort((a, b) => a.t - b.t || a.x - b.x || a.z - b.z);
     const out: BlastSite[] = [];

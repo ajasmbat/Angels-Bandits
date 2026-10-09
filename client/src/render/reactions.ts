@@ -27,6 +27,7 @@ import {
   ALARM_LIFE_MS,
   type CityEvent,
   SMOKE_LIFE_MS,
+  isBlastEvent,
 } from "@angels-bandits/common/cityevents";
 import { BLOCK_PITCH, WORLD_SIZE } from "@angels-bandits/common/constants";
 import type { SnapshotMsg } from "@angels-bandits/common/protocol";
@@ -232,7 +233,7 @@ export function cityReactionsInto(
       w.z = ev.z;
       w.strength = wakeStrength(age);
     }
-    if (ev.kind !== "death") continue;
+    if (!isBlastEvent(ev)) continue;
     if (out.smokeCount < MAX_SMOKES) {
       const s = out.smokes[out.smokeCount++] as SmokeSite;
       s.x = ev.x;
@@ -271,9 +272,9 @@ export function prepareEvent(
 ): PreparedEvent {
   return {
     ev,
-    base: ev.kind === "death" ? smokeBase(buildings, ev.x, ev.y, ev.z) : 0,
+    base: isBlastEvent(ev) ? smokeBase(buildings, ev.x, ev.y, ev.z) : 0,
     routes:
-      ev.kind === "death"
+      isBlastEvent(ev)
         ? [responderRoute(ev, "police"), responderRoute(ev, "ambulance")]
         : [],
   };

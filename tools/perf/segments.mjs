@@ -298,15 +298,15 @@ export const SEGMENTS = [
     // street from z = 500 heading −Z (wrapping) — a weave ±6 m and 24/34 m
     // high, so the centreline at 29 m passes inside every ring. Re-teleported
     // every frame at `glide.speed` m/s of WALL time from 25 m before the
-    // start ring — crossed ~0.4 s in, inside the settle even at 3 fps, so
-    // the ghost is drawn from the window's first frame: the client's own run
-    // starts at the ring, plays the staged
-    // ghost (`__ab.qaCourseGhost`, `ghostSpeed` m/s through the ring
-    // centres, wall clock like the glide) and the rings go to race colours.
-    // The glide stops at `glide.maxM`, three rings short of the finish, so
-    // no run ever finishes and the server never records a time or a ghost
-    // that a later pass would see. Clear from 60 m before the start to 460 m
-    // past it.
+    // start ring — crossed ~0.4 s in, inside the settle even at 3 fps — so
+    // the client's own run starts there, plays the staged ghost
+    // (`__ab.qaCourseGhost`: `ghostSpeed` m/s through the ring centres, on
+    // the wall clock like the glide) from the window's first frame, and the
+    // rings go to race colours. The glide stops at `glide.maxM`, six rings
+    // in and some 700 m short of the finish, so no run ever finishes and the
+    // server never records a time or a ghost a later pass would see (each
+    // pass is a new page, and the server drops the old page's run when it
+    // leaves). Clear from 60 m before the start to 460 m past it.
     x: 1400,
     z: 525,
     y: 29,

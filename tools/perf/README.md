@@ -254,6 +254,7 @@ Everything else is pinned.
 | `--soak <seconds>`   | —                  | instead of the path: hold the full-room `furball` that long and report the tier Auto ended on (exit 1 if it stepped down) |
 | `--ab-ref <git-ref>` | —                  | second arm is **another build**: that commit, checked out to its own worktree with its own `npm ci`, built and served on its own port, interleaved like `--ab` |
 | `--trace <dir>`      | —                  | O5: one Chrome trace per measured segment (`<pass>-<segment>.json`, page main thread + V8 CPU samples), and every wall spike over 4× the window's median split into **gc / script / GL wait / outside JS** (`trace-spikes.mjs`; the warm-up pass is never traced) |
+| `--heap`             | off                | S8: a V8 sampling heap profile over each measured segment (settle + window): bytes allocated per frame, and the top sites, in the table and the JSON (`heap`) |
 
 `--ab` takes a URL **query**. A bare commit hash there fails fast and names
 `--ab-ref` — it used to be read as the query `86e5982=`, an arm identical to
@@ -311,7 +312,7 @@ npm run perf -- --res auto --label scaler
 
 ## The client hooks it uses
 
-All read-only except the QA writes (`teleport`, `setPixelRatio`, `setBots`, `weather`, `pinWorld`), all on `window.__ab`:
+All read-only except the QA writes (`teleport`, `setPixelRatio`, `setBots`, `weather`, `pinWorld`, `qaBoss`, `qaCourseGhost`), all on `window.__ab`:
 
 | hook                             | used for                                    |
 | -------------------------------- | ------------------------------------------- |
@@ -325,6 +326,10 @@ All read-only except the QA writes (`teleport`, `setPixelRatio`, `setBots`, `wea
 | `storm()` / `net()` / `combat()` | strike timing, clock, alive check, death cause |
 | `pinWorld(t \| null)` (O4)       | render the world at server time `t` (a QA write) |
 | `weather(phase)` / `quality()`   | the pinned weather, the tier the window ran at |
+| `drawSplit()` (S8)               | the window's median draws without, and of, the S6 reflection probe |
+| `qaBoss(spec \| null)` (S8)      | stage a boss raid + flak on the pinned world clock (a QA write) |
+| `qaCourseGhost(theme, speed \| null)` (S8) | stage the record ghost a course run plays (a QA write) |
+| `boss()` / `course()` (S8)       | what was staged and drawn, read at both ends of a window |
 
 The same `FrameMeter` (`client/src/render/perfmeter.ts`) feeds `perfStats()`,
 the in-game dev HUD and the adaptive resolution controller, so the number in

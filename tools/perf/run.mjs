@@ -1240,6 +1240,8 @@ async function measure(browser, url, { trace = true } = {}) {
 
   const segments = [];
   const port = Number(new URL(url).port);
+  /** S8: the page's room as the segment started (the drain names a change). */
+  let roomBefore = null;
   for (const seg of activeSegments()) {
     // O3 furball: fake pilots join for this segment only, and get time to
     // re-sync on the server and fill the page's interpolation buffer before
@@ -1255,6 +1257,7 @@ async function measure(browser, url, { trace = true } = {}) {
           );
     try {
       if (pilots) await sleep(PILOT_SETTLE_MS);
+      roomBefore = await page.evaluate(() => window.__ab.net().roomId);
       const recording = tracing ? await startTrace(page) : null;
       const sampling = heapProfile ? await startHeap(page) : null;
       const flown = await flySegment(
@@ -1299,10 +1302,34 @@ async function measure(browser, url, { trace = true } = {}) {
           remotes: window.__ab.net().remotes.length,
           bullets: window.__ab.combat().bullets ?? null,
           particles: window.__ab.impacts?.().live ?? null,
+          room: window.__ab.net().roomId,
         }));
+        // S8: a room id that changed means the page lost its session and
+        // rejoined a fresh room (with its default bots) — not leftovers.
+        left.roomBefore = roomBefore;
         console.error(
           `!! ${seg.name}: the room or the sky never emptied: ${JSON.stringify(left)}`,
         );
+        // S8: planes still here are not the pilots (they leave at once): a
+        // page that lost its session and rejoined lands in a fresh room with
+        // the default bots. Restore joinGame's empty room before the next
+        // segment, or every segment after this one draws them.
+        if (left.targets > 0) {
+          await page.evaluate(() => window.__ab.setBots(0));
+          const emptied = await page
+            .waitForFunction(
+              () => window.__ab.combat().targets.length === 0,
+              null,
+              { timeout: 30_000, polling: 250 },
+            )
+            .then(
+              () => true,
+              () => false,
+            );
+          console.error(
+            `   ${emptied ? "re-emptied the room (setBots 0)" : "!! the room would not empty again"} before the next segment`,
+          );
+        }
       }
     }
   }

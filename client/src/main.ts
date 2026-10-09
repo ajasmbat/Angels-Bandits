@@ -49,6 +49,7 @@ import {
   decodeGhost,
   generateCourses,
 } from "@angels-bandits/common/courses";
+import { type DirectorEvent, EVENT_GAS } from "@angels-bandits/common/director";
 import {
   type FlightState,
   createFlightState,
@@ -194,6 +195,12 @@ import { CityRenderer } from "./render/city";
 import { PICKUP_TAXIS } from "./render/citylife";
 import { CityLife } from "./render/citylife-render";
 import { ConstructionSparks } from "./render/construction";
+import {
+  ALARM_TAIL_MS as DIRECTOR_ALARM_TAIL_MS,
+  DirectorFx,
+  alarmAt,
+  warningTremor,
+} from "./render/director-fx";
 import { DroneShowRenderer } from "./render/drones";
 import { DustClouds, dustHaze } from "./render/dust";
 import { FacadeDetailRenderer } from "./render/facade-detail";
@@ -273,6 +280,7 @@ import { CourseRings } from "./render/rings";
 import { RiverRenderer } from "./render/river";
 import { RoofClutterRenderer } from "./render/roofclutter";
 import { RooftopLifeRenderer } from "./render/rooftop-life";
+import { ScaffoldRenderer } from "./render/scaffold";
 import { Searchlights } from "./render/searchlights";
 import { Signage } from "./render/signage";
 import { Signals } from "./render/signals";
@@ -729,6 +737,8 @@ const moverField = {
   ),
   collapses: socket.collapses,
 };
+// D5: crane-fall records name the room's crane sites — these.
+socket.collapses.bindCranes(moverField.cranes);
 if (moverField.news && welcome.newsHeli) {
   moverField.news.target = welcome.newsHeli.target;
   moverField.news.prev = welcome.newsHeli.prev;
@@ -934,6 +944,49 @@ socket.events.onCollapse = (c) => {
 // shader's damage map (city.damage). Cosmetic only — nothing here collides.
 const impacts = new Impacts();
 scene.add(impacts.points);
+// D5 destruction director: the warnings before its events and the
+// rebuild's construction effects, into the D1 pool above; the rumble,
+// groan and siren are audio (below and in the ambience update).
+const directorFx = new DirectorFx(
+  impacts,
+  explosions,
+  city.cityBuildings,
+  moverField.cranes,
+);
+socket.events.onDirectorWarn = (e) => {
+  const serverMs = socket.renderTime();
+  const left = (e.at - (serverMs ?? e.w)) / 1000;
+  audio.directorWarning(
+    e.k === EVENT_GAS,
+    { x: e.x, y: 10, z: e.z },
+    flight.pos,
+    flight.yaw,
+    left,
+  );
+  music.noteCombat(performance.now());
+};
+socket.events.onRebuild = (r, restored) => {
+  const now = performance.now();
+  if (r.go) {
+    directorFx.rebuildPop(restored, now);
+    // D1's marks (dark panes, holes, scorch) go with the damage.
+    if (r.k === 0) city.damage.clearBuilding(r.b);
+  } else {
+    const serverMs = socket.renderTime();
+    directorFx.rebuildAnnounced(
+      r,
+      serverMs === null ? 2000 : r.at - serverMs,
+      now,
+    );
+  }
+};
+// D5 rebuild dressing: scaffolding + a rebuild crane on damaged buildings.
+const scaffold = new ScaffoldRenderer(city.cityBuildings, qualityTier);
+scene.add(scaffold.mesh);
+/** No warned events (the common frame — no iterator allocated). */
+const NO_EVENTS: readonly DirectorEvent[] = [];
+/** The director alarm's position this frame (reused). */
+const alarmScratch = { x: 0, y: 0, z: 0 };
 // D4: shot-down planes fall as burning wrecks on the server's shared path
 // and blow up where it says they land (the D2 damage arrives as `chunks`).
 const wrecks = new Wrecks(impacts, (_w, at) => {
@@ -1030,6 +1083,13 @@ const blastLedger = new BlastLedger(
 );
 blastLedger.ingest(welcome.cityEvents ?? []);
 socket.events.onCityEvent = (event) => {
+  // D5: a gas main blew in the street — the fireball, the bang, the jolt.
+  if (event.kind === "gas") {
+    const now = performance.now();
+    directorFx.gasBlast(event, now);
+    audio.missileBlast(event, flight.pos, flight.yaw);
+    missileShake.add(wrapDistance(event, flight.pos), now);
+  }
   reactor.ingest([event]);
   for (const site of blastLedger.ingest([event])) {
     impacts.blast(site, performance.now());
@@ -1934,6 +1994,8 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   missileRenderer.setQuality(QUALITY_PROFILES[tier].missileDebris);
   blastLedger.setBurnCap(burnCapFor(QUALITY_PROFILES[tier].impacts));
   wrecks.setShare(QUALITY_PROFILES[tier].wreckFire); // D4
+  directorFx.setShare(QUALITY_PROFILES[tier].directorFx); // D5
+  scaffold.setQuality(tier); // D5
   streakSmoke.setShare(QUALITY_PROFILES[tier].streakSmoke); // S7
   pedestrians.setQuality(tier);
   cityLife.setQuality(tier); // A1
@@ -3387,10 +3449,19 @@ const frame = (now: number): void => {
     // the camera and the airframe from moving in lockstep.
     const camShake = turbulenceOffset(now, flight.pos.y);
     missileShake.addInto(camShake, now); // X1 impacts: display camera only
-    // D3: the ground shakes under a collapse coming down nearby.
-    if (renderMs !== null && socket.collapses.list.length > 0) {
+    // D3: the ground shakes under a collapse coming down nearby — D5: and
+    // trembles under a tower the director has warned about.
+    if (
+      renderMs !== null &&
+      (socket.collapses.list.length > 0 || socket.director.size > 0)
+    ) {
       const jolt = collapseShakeOffset(
-        collapseShakeAmount(socket.collapses.list, flight.pos, renderMs),
+        Math.max(
+          collapseShakeAmount(socket.collapses.list, flight.pos, renderMs),
+          socket.director.size > 0
+            ? warningTremor(socket.director.values(), flight.pos, renderMs)
+            : 0,
+        ),
         now,
       );
       camShake.x += jolt.x;
@@ -3730,6 +3801,20 @@ const frame = (now: number): void => {
   }
   streakSmoke.update(chase.position, now);
   dust.update(socket.collapses.list, chase.position, renderMs);
+  // D5: the director's warnings (dust, steam, sparks) and the rebuilds'
+  // welders; an event is forgotten once its alarm has died away.
+  if (socket.director.size > 0 && renderMs !== null) {
+    for (const [id, e] of socket.director) {
+      if (renderMs > e.at + DIRECTOR_ALARM_TAIL_MS) socket.director.delete(id);
+    }
+  }
+  directorFx.update(
+    socket.director.size > 0 ? socket.director.values() : NO_EVENTS,
+    renderMs,
+    now,
+    dt,
+  );
+  scaffold.update(chase.position, socket.cityDamage.version);
   // Storm: consume this frame's scheduled strikes, then age/place the bolts
   // and drive the sky-flash pulse (fog stain + dome tint + violet ambient).
   for (const s of strikeFeed.poll(renderMs)) {
@@ -3846,6 +3931,11 @@ const frame = (now: number): void => {
     combat: radio.inCombat(now),
     serverTimeMs: renderMs,
     rain: rain.level, // L4 weather
+    // D5: the alarm at a warned (or just-happened) director event.
+    alarm:
+      socket.director.size > 0 && renderMs !== null
+        ? alarmAt(socket.director.values(), flight.pos, renderMs, alarmScratch)
+        : null,
   });
   // S2 soundtrack: the nearest living remote (torus distance) is the threat;
   // dead, there is none — the kill-cam plays calm.

@@ -75,7 +75,14 @@ export type HitReject =
 export interface Death {
   victimId: string;
   killerId: string | null;
-  cause: "shot" | "crash" | "storm" | "wreck" | "collapse" | "missile";
+  cause:
+    | "shot"
+    | "crash"
+    | "storm"
+    | "wreck"
+    | "collapse"
+    | "missile"
+    | "blast";
 }
 export type HitResult =
   | { ok: true; hp: number; death: Death | null }
@@ -317,22 +324,24 @@ export class Combat {
   }
 
   /**
-   * X1 environment damage (a missile blast): take `amount` off a living,
-   * unprotected plane. Nobody is credited for the damage itself — a lethal
-   * blast is an environment death that pays the last damager only by the
-   * crash rule. Null when nothing was applied (dead, protected, unknown).
+   * X1 environment damage (a missile blast; D5 a gas main, cause "blast"):
+   * take `amount` off a living, unprotected plane. Nobody is credited for
+   * the damage itself — a lethal blast is an environment death that pays
+   * the last damager only by the crash rule. Null when nothing was applied
+   * (dead, protected, unknown).
    */
   environmentDamage(
     id: string,
     amount: number,
     now: number,
+    cause: "missile" | "blast" = "missile",
   ): { hp: number; death: Death | null } | null {
     const p = this.players.get(id);
     if (!p || !p.alive || !(amount > 0)) return null;
     if (now < p.protectedUntil) return null;
     p.hp -= amount;
     p.lastEnvDamagedAt = now;
-    const death = p.hp <= 0 ? this.environmentKill(id, "missile", now) : null;
+    const death = p.hp <= 0 ? this.environmentKill(id, cause, now) : null;
     return { hp: Math.round(Math.max(0, p.hp)), death };
   }
 
@@ -359,7 +368,7 @@ export class Combat {
    * the credit (PLAN.md kill-credit rule), else no one. */
   private environmentKill(
     id: string,
-    cause: "crash" | "storm" | "collapse" | "missile",
+    cause: "crash" | "storm" | "collapse" | "missile" | "blast",
     now: number,
   ): Death | null {
     const p = this.players.get(id);

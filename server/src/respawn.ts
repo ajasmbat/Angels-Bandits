@@ -83,6 +83,7 @@ const bandScore = (nearest: number): number => Math.abs(nearest - BAND_MID);
 export function pickRespawn(
   enemies: readonly RespawnEnemy[],
   rand: () => number = Math.random,
+  avoid: (pos: Vec3) => boolean = () => false,
 ): SpawnState {
   let best: Vec3 | null = null;
   let bestScore = Number.POSITIVE_INFINITY;
@@ -100,6 +101,8 @@ export function pickRespawn(
       farScore = nearest;
     }
     if (inNoseCone(candidate, enemies)) continue;
+    // D5: never into a warned director event's danger zone.
+    if (avoid(candidate)) continue;
     const score = bandScore(nearest);
     if (score < bestScore) {
       best = candidate;

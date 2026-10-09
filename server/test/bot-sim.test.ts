@@ -30,6 +30,16 @@
 // it (the live server needs one within 400 m). Kills by missile are counted
 // apart from crashes and gun kills.
 //
+// D5 destruction director: BOT_SIM_DIRECTOR=1 runs each room's
+// DestructionDirector at its real cadence (an event every 2–4 min) with the
+// rebuild cycle, and lands its events through the same paths index.ts uses
+// — demolitions and crane falls as collapse records, gas mains through
+// Combat.environmentDamage. Worst case again: every bot counts as a human
+// (the live director only stages events around a human). Kills are
+// reported per event kind and by chain reaction, apart from crashes.
+// BOT_SIM_SECONDS / BOT_SIM_ROOMS stretch or shrink the run (e.g. a 20-min
+// room).
+//
 // MAIN_* are the same harness's numbers on main before B1 (bots mostly high,
 // spawned at RESPAWN_ALTITUDE), same seeds and run length — the bar the
 // review set is crashes per bot-minute within 1.15x of them.
@@ -42,7 +52,10 @@ import {
   mulberry32,
   tierGrids,
 } from "@angels-bandits/common/city";
-import { collapseZoneHit } from "@angels-bandits/common/city/collapse";
+import {
+  collapseZoneHit,
+  collideCollapses,
+} from "@angels-bandits/common/city/collapse";
 import {
   type MoverField,
   generateMovers,
@@ -64,6 +77,12 @@ import {
   TICK_DOWN_HZ,
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
+import {
+  EVENT_COLLAPSE,
+  EVENT_CRANE,
+  EVENT_GAS,
+  inDangerZone,
+} from "@angels-bandits/common/director";
 import type { SpawnState } from "@angels-bandits/common/protocol";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
@@ -83,6 +102,12 @@ import {
   createRoomCity,
   tickDestruction,
 } from "../src/destruction";
+import {
+  DESTRUCTION_TUNING,
+  DestructionDirector,
+  type DestructionPlane,
+  gasVictims,
+} from "../src/director";
 import { type RespawnEnemy, pickBotRespawn } from "../src/respawn";
 import {
   type DirectorPlane,
@@ -91,7 +116,7 @@ import {
 } from "../src/strikes";
 import { RoomWrecks, applyWreckImpact, impactPos } from "../src/wrecks";
 
-const ROOMS = 18;
+const ROOMS = Number(process.env.BOT_SIM_ROOMS ?? 18);
 /** Two disjoint seed sets. Tuning happens on `tune` (BOT_SIM_SET=tune); the
  * assertions run on the HOLDOUT set, so a knob fitted to one set's ±7-crash
  * Poisson noise cannot pass by luck. */
@@ -106,7 +131,8 @@ const LIVE = process.env.BOT_SIM_LIVE === "1";
 const COLLAPSE = process.env.BOT_SIM_COLLAPSE === "1";
 const COLLAPSE_EVERY_S = 20;
 const STRIKES = process.env.BOT_SIM_STRIKES === "1";
-const SECONDS = 200;
+const DIRECTOR = process.env.BOT_SIM_DIRECTOR === "1";
+const SECONDS = Number(process.env.BOT_SIM_SECONDS ?? 200);
 const DT_MS = 1000 / TICK_DOWN_HZ;
 /** The low layer: under the probe split, among the towers. */
 const LOW = 110;
@@ -209,6 +235,14 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
      * (counted apart from `crashes` — terrain — so the two compare). */
     let wrecksSpawned = 0;
     let wreckKills = 0;
+    /** D5: director events by kind, call-offs, rebuilds, and kills by
+     * event: its own demolitions, crane falls and gas mains, and collapses
+     * their debris set off further down the chain. */
+    const directorEvents = [0, 0, 0];
+    let directorCancelled = 0;
+    let rebuilds = 0;
+    const directorKills = { collapse: 0, crane: 0, gas: 0, chain: 0 };
+    const crashCauses = { rubble: 0, damaged: 0, warned: 0 };
 
     for (let room = 0; room < ROOMS; room++) {
       // One room at a time, then let the event loop turn: the whole sim as a
@@ -218,8 +252,8 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
       if (room > 0) await new Promise<void>((r) => setImmediate(r));
       // D2: a breakable copy per room when a damage mode is on.
       let rc: RoomCity | null = null;
-      if (DESTROY > 0 || LIVE || COLLAPSE || STRIKES) {
-        rc = createRoomCity(city);
+      if (DESTROY > 0 || LIVE || COLLAPSE || STRIKES || DIRECTOR) {
+        rc = createRoomCity(city, movers.cranes);
         const rand = mulberry32(roomSeed(room) ^ 0x5eed);
         rc.buildings.forEach((b, i) => {
           for (const id of chunksOf(b, i)) {
@@ -244,6 +278,15 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
       const director = STRIKES
         ? new MissileDirector(mulberry32(roomSeed(room) ^ 0x3155))
         : null;
+      const destruction = DIRECTOR
+        ? new DestructionDirector(
+            roomSeed(room),
+            mulberry32(roomSeed(room) ^ 0xd5d5),
+            DESTRUCTION_TUNING,
+          )
+        : null;
+      /** D5: the collapse records the director staged (by id → kind). */
+      const directorCollapses = new Map<number, number>();
       const strikeWorld =
         STRIKES && rc
           ? {
@@ -325,6 +368,7 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         spawnedAt.set(e.id, 0);
         const at = bots.lastPosOf(e.id);
         if (director && at) director.noteSpawn(e.id, at, 0);
+        destruction?.noteSpawn(e.id, 0);
       }
 
       for (let i = 1; i <= SECONDS * TICK_DOWN_HZ; i++) {
@@ -345,6 +389,7 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
           combat.respawned(id, now);
           spawnedAt.set(id, now);
           director?.noteSpawn(id, spawn.pos, now);
+          destruction?.noteSpawn(id, now);
         }
         const hi = human(now);
         const contacts: BotContact[] = [hi];
@@ -388,6 +433,56 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
           if (director.tick(now, planes, strikeWorld)) missiles++;
         }
 
+        // D5: the director fires and warns before the bots fly (index.ts
+        // order); its warned zones are their no-fly zones this tick.
+        const dPlanes: DestructionPlane[] = [];
+        if (destruction && rc) {
+          for (const e of roster) {
+            const c = bots.contactOf(e.id);
+            if (!c || !bots.poseOf(e.id)) continue;
+            dPlanes.push({
+              id: e.id,
+              pos: c.pos,
+              vel: c.vel,
+              human: true,
+              protected: combat.isProtected(e.id, now),
+              ageMs: 0,
+            });
+          }
+          const d = destruction.tick(now, dPlanes, {
+            city: rc,
+            cranes: movers.cranes,
+          });
+          directorCancelled += d.cancelled.length;
+          for (const f of d.fired) {
+            directorEvents[f.event.k] = (directorEvents[f.event.k] ?? 0) + 1;
+            if (f.collapse) directorCollapses.set(f.collapse.id, f.event.k);
+            if (f.event.k !== EVENT_GAS) continue;
+            const victims = gasVictims(
+              f.event,
+              dPlanes.map((p) => ({
+                id: p.id,
+                pos: p.pos,
+                fresh: p.protected,
+              })),
+            );
+            for (const v of victims) {
+              const hit = combat.environmentDamage(
+                v.id,
+                v.damage,
+                now,
+                "blast",
+              );
+              if (!hit) continue;
+              if (hit.death) {
+                bots.setDead(v.id);
+                directorKills.gas++;
+              } else bots.onDamaged(v.id, now);
+            }
+          }
+          bots.setHazards(destruction.pending());
+        }
+
         const t0 = performance.now();
         const result = bots.tick(now, contacts);
         tickMs.push(performance.now() - t0);
@@ -406,6 +501,13 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
             const death = combat.collapseKill(id, by, now);
             if (!death) continue;
             collapseKills++;
+            // D5: whose debris was it?
+            const kind = directorCollapses.get(culprit.id);
+            if (kind === EVENT_CRANE) directorKills.crane++;
+            else if (kind === EVENT_COLLAPSE) directorKills.collapse++;
+            else if ((rc?.collapseDepth.get(culprit.id) ?? 0) > 0) {
+              directorKills.chain++;
+            }
             if ((LIVE || COLLAPSE) && rc && site) {
               applyDeathBlast(rc, site, death.killerId);
             }
@@ -413,6 +515,22 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
           }
           if (!combat.crash(id, now)) continue;
           crashes++;
+          // D5 telemetry: crashes into rubble, into a damaged building, or
+          // inside a warned director zone.
+          if (rc && site) {
+            if (
+              collideCollapses(site, PLAYER_RADIUS + 2, rc.collapses.list, now)
+            ) {
+              crashCauses.rubble++;
+            } else if (
+              collideCity(site, PLAYER_RADIUS + 2, roomBuildings)?.damage
+            ) {
+              crashCauses.damaged++;
+            }
+            if (destruction?.pending().some((e) => inDangerZone(e, site))) {
+              crashCauses.warned++;
+            }
+          }
           if (LIVE && rc && site) applyDeathBlast(rc, site);
           const fresh = now - (spawnedAt.get(id) ?? 0) < SPAWN_WINDOW_MS;
           if (fresh) spawnCrashes++;
@@ -487,11 +605,19 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
           }
         }
         // D3: the server's destruction tick (plus the director's knock-down).
-        if (rc && (LIVE || COLLAPSE)) {
+        if (rc && (LIVE || COLLAPSE || DIRECTOR)) {
           if (COLLAPSE && i % (COLLAPSE_EVERY_S * TICK_DOWN_HZ) === 0) {
             knockDown();
           }
           collapses += tickDestruction(rc, now).collapses.length;
+        }
+        if (destruction && rc) {
+          for (const r of destruction.rebuild(now, dPlanes, {
+            city: rc,
+            cranes: movers.cranes,
+          })) {
+            if (r.go) rebuilds++;
+          }
         }
 
         for (const e of roster) {
@@ -576,6 +702,9 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         `bots.tick ms           p50 ${tickAt(0.5).toFixed(2)}  p99 ${tickAt(0.99).toFixed(2)}  max ${tickAt(1).toFixed(2)}`,
         `D3 collapses           ${collapses} events (director=${COLLAPSE ? 1 : 0}), kills-by-collapse ${collapseKills} (not in the crash count above)`,
         `D3 collapse zones      ${zoneEntries} bot entries into an active zone, ${zoneRefusals} probe refusals`,
+        `D5 director            ${DIRECTOR ? `${directorEvents[EVENT_COLLAPSE]} demolitions, ${directorEvents[EVENT_GAS]} gas mains, ${directorEvents[EVENT_CRANE]} crane falls, ${directorCancelled} called off, ${rebuilds} rebuilds` : "off"}`,
+        `D5 crash sites         ${crashCauses.rubble} into collapse rubble/debris, ${crashCauses.damaged} into a damaged building, ${crashCauses.warned} inside a warned zone (all in crashes)`,
+        `D5 kills by event      ${DIRECTOR ? `demolition ${directorKills.collapse}, crane ${directorKills.crane}, gas ${directorKills.gas}, chain collapse ${directorKills.chain} (${((directorKills.collapse + directorKills.crane + directorKills.gas + directorKills.chain) / botMinutes).toFixed(3)} / bot-min; not in crashes)` : "off"}`,
         "",
         `crash breakdown (${TUNE ? "tune" : "holdout"} seeds; roofs hit p10/p50/p90 m: ${quantiles(roofsHit)}):`,
         ...[...crashKinds]

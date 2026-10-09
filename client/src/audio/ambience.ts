@@ -81,6 +81,10 @@ export interface AmbienceFrame {
   serverTimeMs: number | null;
   /** L4 weather: rain heard at the camera, 0..1 (0 above the cloud base). */
   rain?: number;
+  /** D5: where the city's alarm is wailing — a director event warned or
+   * just happened — or null. Louder than the patrol siren nearby, it takes
+   * the siren voice over. */
+  alarm?: Vec3 | null;
 }
 
 interface Graph {
@@ -168,9 +172,17 @@ export class CityAmbience {
       this.mix,
     );
     const siren = sirenAt(this.seed, f.serverTimeMs);
-    const sp = siren ? spatialize(f.pos, f.yaw, siren.pos) : null;
+    let sp = siren ? spatialize(f.pos, f.yaw, siren.pos) : null;
     this.sirenDistance = sp ? sp.distance : null;
     this.sirenLevel = siren && sp ? siren.level * sirenGain(sp.distance) : 0;
+    // D5: the alarm at a director event, when it is the louder of the two.
+    const alarm = f.alarm ? spatialize(f.pos, f.yaw, f.alarm) : null;
+    const alarmLevel = alarm ? Math.min(1, 1.5 * sirenGain(alarm.distance)) : 0;
+    if (alarm && alarmLevel > this.sirenLevel) {
+      sp = alarm;
+      this.sirenDistance = alarm.distance;
+      this.sirenLevel = alarmLevel;
+    }
     this.rainLevel = Math.max(0, Math.min(1, f.rain ?? 0));
 
     const mixBus = this.audio.mixBus();
@@ -185,7 +197,12 @@ export class CityAmbience {
     this.ramp(g.bus.gain, busLevel, now, 0.4, 0.0005);
     this.ramp(g.traffic.gain, WEIGHTS.traffic * m.traffic, now, 0.3);
     this.ramp(g.horn.gain, WEIGHTS.horn * m.horn, now, 0.3);
-    this.ramp(g.siren.gain, WEIGHTS.siren * m.siren, now, 0.3);
+    this.ramp(
+      g.siren.gain,
+      WEIGHTS.siren * (alarm ? Math.max(m.siren, 1) : m.siren),
+      now,
+      0.3,
+    );
     this.ramp(g.sirenSrc.gain, this.sirenLevel, now, 0.2);
     if (sp) this.ramp(g.sirenPan.pan, sp.pan, now, 0.1, 0.02);
     this.ramp(g.plaza.gain, WEIGHTS.plaza * m.plaza, now, 0.3);

@@ -810,6 +810,68 @@ export class CityDamage {
     return out;
   }
 
+  /**
+   * D5 rebuild: building `index` is whole again. Every broken or fallen
+   * chunk of it is restored, its partial HP forgotten and its not-yet-sent
+   * breaks dropped (so no later `chunks` batch names a chunk that is back),
+   * and its Building's `damage` record cleared — solids(b) is the generated
+   * base boxes again. Works before bind (bare ids filtered by building).
+   * Returns the restored ids, ascending. The caller drops the building's
+   * collapse records (CollapseField.removeBuilding) in the same step.
+   */
+  restoreBuilding(index: number): number[] {
+    const out: number[] = [];
+    for (const set of [this.destroyed, this.fallen]) {
+      for (const id of [...set]) {
+        if (chunkBuilding(id) !== index) continue;
+        set.delete(id);
+        out.push(id);
+      }
+    }
+    let changed = out.length > 0;
+    for (const id of [...this.hp.keys()]) {
+      if (chunkBuilding(id) !== index) continue;
+      this.hp.delete(id);
+      changed = true;
+    }
+    this.pending = this.pending.filter((id) => chunkBuilding(id) !== index);
+    const b = this.buildings?.[index];
+    if (b?.damage) {
+      b.damage = undefined;
+      changed = true;
+    }
+    if (changed) this.version++;
+    return out.sort((a, c) => a - c);
+  }
+
+  /**
+   * D5: how worn each damaged building is, in chunks — its gone chunks
+   * plus the HP its standing chunks have lost, in chunks' worth — and that
+   * as a share of its chunk count. Buildings with no damage at all are
+   * absent. One pass over the state.
+   */
+  wear(): Map<number, { lost: number; share: number }> {
+    const lost = new Map<number, number>();
+    const add = (id: number, v: number) => {
+      const b = chunkBuilding(id);
+      lost.set(b, (lost.get(b) ?? 0) + v);
+    };
+    for (const id of this.destroyed) add(id, 1);
+    for (const id of this.fallen) add(id, 1);
+    for (const [id, hp] of this.hp) add(id, 1 - hp / CHUNK_HP);
+    const out = new Map<number, { lost: number; share: number }>();
+    const buildings = this.buildings;
+    if (!buildings) return out;
+    for (const [i, v] of lost) {
+      const b = buildings[i];
+      if (!b) continue;
+      let n = 0;
+      for (const mask of chunkMask(b)) for (const m of mask) n += m;
+      if (n > 0) out.set(i, { lost: v, share: Math.min(1, v / n) });
+    }
+    return out;
+  }
+
   /** Record `id` as gone (`kind`) and write it through to its building. */
   private mark(id: number, kind: number): void {
     (kind === CELL_FALLEN ? this.fallen : this.destroyed).add(id);

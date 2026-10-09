@@ -344,20 +344,30 @@ export class FogBanks {
     const reach = FOG_DISTANCE + BANK_RADIUS_MAX;
     const puffs = this.puffAttr.array as Float32Array;
     const tints = this.tintAttr.array as Float32Array;
+    // S8: puffCentreInto's churn, once a frame rather than once a puff (the
+    // same arithmetic, so the same centres), and a squared range test — a
+    // double handed to a call per puff, and Math.hypot's result, were boxed.
+    const a = ((serverMs / 1000) * CHURN_RATE) % (Math.PI * 2);
+    const c = Math.cos(a);
+    const s = Math.sin(a);
+    const dxAir = this.drift.x * BANK_DRIFT;
+    const dzAir = this.drift.z * BANK_DRIFT;
+    const canon = this.canon;
     let k = 0;
-    for (const bank of this.banks) {
+    for (let b = 0; b < this.banks.length; b++) {
+      const bank = this.banks[b] as FogBank;
       const density = bankDensity(bank, serverMs, haze);
       if (density <= 0.001) continue;
-      for (const puff of bank.puffs) {
-        puffCentreInto(bank, puff, serverMs, this.drift, this.canon);
-        if (
-          Math.hypot(
-            wrapDeltaAxis(cameraPos.x, this.canon.x),
-            wrapDeltaAxis(cameraPos.z, this.canon.z),
-          ) > reach
-        ) {
-          continue;
-        }
+      for (let q = 0; q < bank.puffs.length; q++) {
+        const puff = bank.puffs[q] as FogPuff;
+        const x = bank.x + dxAir + c * puff.ox - s * puff.oz;
+        const z = bank.z + dzAir + s * puff.ox + c * puff.oz;
+        canon.x = ((x % WORLD_SIZE) + WORLD_SIZE) % WORLD_SIZE;
+        canon.y = bank.y + puff.oy;
+        canon.z = ((z % WORLD_SIZE) + WORLD_SIZE) % WORLD_SIZE;
+        const ex = wrapDeltaAxis(cameraPos.x, canon.x);
+        const ez = wrapDeltaAxis(cameraPos.z, canon.z);
+        if (ex * ex + ez * ez > reach * reach) continue;
         const p = nearestImageInto(this.img, cameraPos, this.canon);
         puffs[k * 4] = p.x;
         puffs[k * 4 + 1] = p.y;

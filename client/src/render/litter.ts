@@ -202,6 +202,24 @@ export function litterPoseInto(
   sources: readonly KickSource[],
   out: LitterPose,
 ): LitterPose {
+  poseClock.tSec = tSec;
+  return litterPoseAt(p, poseClock, wind, sources, out);
+}
+const poseClock = { tSec: 0 };
+
+/**
+ * litterPoseInto with the time in an object (S8): the renderer calls this
+ * for every piece every frame, and a double handed to a call V8 does not
+ * inline is boxed — one HeapNumber a piece, ~8 KB a frame at street level.
+ */
+function litterPoseAt(
+  p: LitterPiece,
+  clock: { tSec: number },
+  wind: Wind,
+  sources: readonly KickSource[],
+  out: LitterPose,
+): LitterPose {
+  const tSec = clock.tSec;
   let age = (tSec / p.period + p.phase) % 1;
   if (age < 0) age += 1;
   const s = wind.strength;
@@ -265,6 +283,9 @@ export class Litter {
     () => ({ x: 0, y: 0, z: 0, tSec: 0 }),
   );
   private readonly live: KickSource[] = [];
+  /** S8: update()'s clock and upload list, built once (no per-frame array). */
+  private readonly clock = { tSec: 0 };
+  private readonly uploads: readonly THREE.BufferAttribute[];
   private drawn = 0;
   /** Quality: every Nth piece of a block is drawn (1 = all). */
   private stride = 1;
@@ -282,6 +303,7 @@ export class Litter {
     geometry.setAttribute("aSize", this.sizes);
     geometry.setAttribute("aAlpha", this.alphas);
     geometry.setAttribute("color", this.colors);
+    this.uploads = [this.positions, this.sizes, this.alphas, this.colors];
     geometry.setDrawRange(0, 0);
     this.material = new THREE.PointsMaterial({
       size: 1, // per-point aSize carries the real size
@@ -373,15 +395,14 @@ export class Litter {
       this.live.push(s);
     }
     let i = 0;
-    for (const { bx, bz } of blockWindowInto(
-      cameraPos,
-      this.radius,
-      this.windowScratch,
-    )) {
-      const pieces = this.piecesFor(bx, bz);
+    const blocks = blockWindowInto(cameraPos, this.radius, this.windowScratch);
+    this.clock.tSec = tSec;
+    for (let w = 0; w < blocks.length; w++) {
+      const block = blocks[w] as BlockIndex;
+      const pieces = this.piecesFor(block.bx, block.bz);
       for (let j = 0; j < pieces.length; j += this.stride) {
         const p = pieces[j] as LitterPiece;
-        litterPoseInto(p, tSec, wind, this.live, this.pose);
+        litterPoseAt(p, this.clock, wind, this.live, this.pose);
         if (this.pose.alpha <= 0) continue;
         this.home.x = p.x;
         this.home.z = p.z;
@@ -401,7 +422,7 @@ export class Litter {
     }
     this.drawn = i;
     this.points.geometry.setDrawRange(0, i);
-    uploadPrefix([this.positions, this.sizes, this.alphas, this.colors], i);
+    uploadPrefix(this.uploads, i);
   }
 
   /** Quality: the tier's share of each block's pieces, and how far out the

@@ -452,6 +452,12 @@ export class ReflectionProbe {
     );
   }
 
+  /** Draws the probe's faces cost this frame (S8: the frame meter's split —
+   * a plain read, unlike `stats`, which walks the scene). */
+  get lastFrameDraws(): number {
+    return this.drawsLastFrame;
+  }
+
   get stats(): ReflectionStats {
     let lightsTagged = true;
     this.scene?.traverse((o) => {

@@ -1954,7 +1954,7 @@ socket.events.onDeath = (msg) => {
   } else if (msg.killerId === socket.selfId) {
     say(ownKillCallout(name));
   } else if (msg.killerId !== null) {
-    say(splashCallout(nameOf(msg.killerId), isBotOf(msg.killerId)));
+    say(splashCallout(nameOf(msg.killerId), isBotOf(msg.killerId), true));
   }
 };
 /**

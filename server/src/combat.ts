@@ -83,7 +83,9 @@ export interface Death {
     | "collapse"
     | "missile"
     | "blast"
-    | "flak";
+    | "flak"
+    | "meteor"
+    | "bomb";
 }
 /** S4: a fired round claimed by something other than a plane hit (the sky
  * boss): the bullet existed and came from where the shooter is on record. */
@@ -410,7 +412,7 @@ export class Combat {
     id: string,
     amount: number,
     now: number,
-    cause: "missile" | "blast" | "flak" = "missile",
+    cause: "missile" | "blast" | "flak" | "meteor" | "bomb" = "missile",
   ): { hp: number; death: Death | null } | null {
     const p = this.players.get(id);
     if (!p || !p.alive || !(amount > 0)) return null;
@@ -444,7 +446,15 @@ export class Combat {
    * the credit (PLAN.md kill-credit rule), else no one. */
   private environmentKill(
     id: string,
-    cause: "crash" | "storm" | "collapse" | "missile" | "blast" | "flak",
+    cause:
+      | "crash"
+      | "storm"
+      | "collapse"
+      | "missile"
+      | "blast"
+      | "flak"
+      | "meteor"
+      | "bomb",
     now: number,
   ): Death | null {
     const p = this.players.get(id);

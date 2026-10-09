@@ -5,9 +5,10 @@
 //
 // The rules:
 //  - a raid starts only while a human is in the room: the first one
-//    tuning.firstMin..firstMax after a human arrived, then every period ± jitter
-//    after the last START (common/src/boss.ts nextRaidAt). A room left to its
-//    bots finishes a raid in progress but never starts one;
+//    tuning.firstMin..firstMax after a human arrived, then (C2) period ±
+//    jitter after the last raid ENDED — flew off, or its last section came
+//    down (common/src/boss.ts nextRaidAt) — so one is nearly always up. A
+//    room left to its bots finishes a raid in progress but never starts one;
 //  - each turret fires at most every BOSS_FLAK_INTERVAL_MS, at the nearest
 //    plane in its range, traverse and line of sight — never a spawn-protected
 //    plane or one that (re)spawned in the last respawnQuietMs — and only
@@ -43,6 +44,7 @@ import {
   flakDamage,
   flakSolution,
   nextRaidAt,
+  periodFromStart,
   planRaid,
   raidEnd,
   raidMaxHp,
@@ -247,7 +249,7 @@ export class BossDirector {
     if (this.busy(now)) return;
     if (this.nextAt === null) {
       this.nextAt = nextRaidAt(
-        this.lastStart,
+        periodFromStart(this.tuning) ? this.lastStart : this.lastEnd(),
         this.humanSince,
         this.rand,
         this.tuning,
@@ -270,6 +272,18 @@ export class BossDirector {
     this.lastStart = now;
     this.nextAt = null;
     out.started = raid;
+  }
+
+  /** When the last raid was over: its run-out done or, once it went down,
+   * its last section landed. Null before the first raid. */
+  private lastEnd(): number | null {
+    const r = this.slot.raid;
+    if (!r) return null;
+    const d = this.slot.down;
+    if (d && d.id === r.id) {
+      return d.t + Math.max(0, ...d.pieces.map((p) => p.end));
+    }
+    return raidEnd(r);
   }
 
   private fireTurrets(

@@ -229,8 +229,10 @@ const ROOF_REFLECTION_GLSL = /* glsl */ `
 export const BUILDING_WET_EMISSIVE_GLSL = /* glsl */ `
 if (uWeather.x > 0.0) {
   float wxFres = pow(1.0 - saturate(dot(normal, normalize(vViewPosition))), 5.0);
+  // S6: a GLASS pane under the reflection probe already mirrors at its own
+  // Fresnel (buildings-material.ts) — the wet sheen skips it, never doubles.
   totalEmissiveRadiance += ${WET_SHEEN_COLOR} * (${FACADE_SHEEN_GAIN} * wxFres * uWeather.x
-    * (facade * (1.0 - pane * lit) + roofUp));
+    * (facade * (1.0 - pane * lit) * (1.0 - uReflOn * step(vArch, 0.5) * pane) + roofUp));
   float wxFade = 1.0 - smoothstep(${RIPPLE_FADE.near}, ${RIPPLE_FADE.far}, length(vViewPosition));
   if (uWeather.y > 0.0 && roofUp > 0.5 && wxFade > 0.0) {
     totalEmissiveRadiance += ${WET_SHEEN_COLOR} * (${RIPPLE_GAIN} * wxFade * uWeather.x

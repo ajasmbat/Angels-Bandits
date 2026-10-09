@@ -16,6 +16,7 @@
 
 import { BOSS_FLAK_DAMAGE_R, type BossFlak } from "./boss";
 import {
+  METEOR_BLAST_RADIUS,
   MISSILE_BLAST_RADIUS,
   type MissileStrike,
   missileImpactAt,
@@ -40,14 +41,16 @@ export const HAZARD_SLOP_MS = 60;
  * m (the burst as drawn is a little bigger, and a shell's wander is real). */
 export const FLAK_HAZARD_PAD = 4;
 
-/** An X1 strike as a disc: its whole blast sphere at impact. */
+/** An X1 strike as a disc: its whole blast sphere at impact. C2's meteors
+ * and bombs ride the same strike list, so they come through here too — a
+ * meteor with its own, wider blast. */
 export function missileHazard(m: MissileStrike): HazardDisc {
   const at = missileImpactAt(m);
   return {
     x: m.to.x,
     y: m.to.y,
     z: m.to.z,
-    r: MISSILE_BLAST_RADIUS,
+    r: m.kind === "meteor" ? METEOR_BLAST_RADIUS : MISSILE_BLAST_RADIUS,
     t0: at - HAZARD_SLOP_MS,
     t1: at + HAZARD_SLOP_MS,
   };

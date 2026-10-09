@@ -177,6 +177,18 @@ const GAS_LEADS = [
   "FIREBALL DOWNS",
 ];
 
+/** C2: a meteor's or a bomb run's blast (environment, like a missile). */
+const METEOR_LEADS = [
+  "METEOR FLATTENS",
+  "FIREBALL FROM THE SKY DOWNS",
+  "METEOR CATCHES",
+];
+const BOMB_LEADS = [
+  "BOMB RUN CATCHES",
+  "CARPET BOMBING DOWNS",
+  "BOMBERS TAKE OUT",
+];
+
 /** S4: brought down by the sky boss's flak (environment, like a missile). */
 const FLAK_LEADS = ["FLAK CATCHES", "FLAK BRINGS DOWN", "ZEPPELIN GUNS DOWN"];
 /** S4: the zeppelin falls — the top dealer's headline. */
@@ -215,6 +227,10 @@ export function killHeadline(
     line = `${pick(GAS_LEADS, seed)} ${victim}`;
   } else if (death.cause === "flak") {
     line = `${pick(FLAK_LEADS, seed)} ${victim}`;
+  } else if (death.cause === "meteor") {
+    line = `${pick(METEOR_LEADS, seed)} ${victim}`;
+  } else if (death.cause === "bomb") {
+    line = `${pick(BOMB_LEADS, seed)} ${victim}`;
   } else if (death.killerId === null) {
     line = `${victim} ${pick(CRASH_VERBS, seed)}`;
   } else if (death.cause === "wreck") {
@@ -238,6 +254,8 @@ export function feedLine(
   if (death.cause === "missile") return `🚀 ${victim}`;
   if (death.cause === "blast") return `💥 ${victim}`;
   if (death.cause === "flak") return `💥 ${victim}`;
+  if (death.cause === "meteor") return `☄ ${victim}`;
+  if (death.cause === "bomb") return `💣 ${victim}`;
   if (death.killerId === null) return `☠ ${victim}`;
   const glyph =
     death.cause === "wreck" ? "🔥" : death.cause === "crash" ? "✕" : "▸";
@@ -265,6 +283,12 @@ export function replaySubject(death: HeadlineDeath): ReplaySubject {
   }
   if (death.cause === "flak") {
     return { id: death.victimId, caption: "FLAK" };
+  }
+  if (death.cause === "meteor") {
+    return { id: death.victimId, caption: "METEOR" };
+  }
+  if (death.cause === "bomb") {
+    return { id: death.victimId, caption: "BOMB RUN" };
   }
   if (death.killerId === null) {
     return { id: death.victimId, caption: "WIPEOUT" };

@@ -107,6 +107,12 @@ export interface RenderOptions {
    * out of one build — the same idea as `?aa=legacy`.
    */
   post: PostMode;
+  /**
+   * S6: the glass/puddle/river reflection probe. `?refl=0` turns it off for
+   * the whole session on every tier — a paired A/B (`run.mjs --ab "refl=0"`)
+   * and the gallery's before shots, out of one build.
+   */
+  reflections: boolean;
 }
 
 export type PostMode = "fused" | "legacy";
@@ -121,6 +127,7 @@ export const DEFAULT_RENDER_OPTIONS: RenderOptions = {
   grade: true,
   quality: null,
   post: "fused",
+  reflections: true,
 };
 
 const AA_MODES: readonly AaMode[] = ["legacy", "off", "msaa", "smaa"];
@@ -189,6 +196,9 @@ export function readRenderOptions(
   opts.quality = parseQualitySetting(params.get("quality"));
 
   if (params.get("post") === "legacy") opts.post = "legacy";
+
+  const refl = params.get("refl");
+  if (refl !== null) opts.reflections = refl !== "0" && refl !== "false";
 
   return opts;
 }

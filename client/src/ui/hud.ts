@@ -50,6 +50,8 @@ export function deathLabel(
   }
   if (cause === "missile") return "🚀 CAUGHT IN A MISSILE STRIKE";
   if (cause === "blast") return "💥 CAUGHT IN A GAS MAIN BLAST";
+  if (cause === "meteor") return "☄ HIT BY A METEOR";
+  if (cause === "bomb") return "💣 CAUGHT IN A BOMB RUN";
   if (cause === "flak") {
     return killerName === null
       ? "💥 SHOT DOWN BY FLAK"

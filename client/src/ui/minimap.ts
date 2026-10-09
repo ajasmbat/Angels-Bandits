@@ -12,6 +12,12 @@ import {
   RIVER_HALF_WIDTH,
 } from "@angels-bandits/common/city/river";
 import {
+  PORTAL_CUTS,
+  RIVER_MOUTHS,
+  TUNNELS,
+  tunnelPointInto,
+} from "@angels-bandits/common/city/tunnels";
+import {
   BLOCK_PITCH,
   BUILDING_MAX_HEIGHT,
   LANDMARK_HEIGHT,
@@ -126,7 +132,52 @@ function renderCityTile(
     ctx.lineTo(h.exit.x * s, h.exit.z * s);
     ctx.stroke();
   }
+  drawTunnels(ctx, s);
   return tile;
+}
+
+/** Portal accent: the tunnels' own cyan (render/tunnels.ts kerb lights). */
+const PORTAL_COLOR = "#62e6ff";
+
+/**
+ * U4: every tunnel as a faint dashed line (it runs under the blocks, so it
+ * is drawn over them, quietly), and its portals and river mouths as bright
+ * marks — where to dive in. Pieces are drawn canonical and a piece that
+ * crosses the seam is skipped (the next one starts on the other side).
+ */
+function drawTunnels(ctx: CanvasRenderingContext2D, s: number): void {
+  const pt = { x: 0, z: 0, th: 0 };
+  const wrap = (v: number) => mod(v, WORLD_SIZE);
+  ctx.save();
+  ctx.strokeStyle = "rgba(98, 230, 255, 0.45)";
+  ctx.lineWidth = 2;
+  ctx.setLineDash([4, 4]);
+  for (const t of TUNNELS) {
+    let px = Number.NaN;
+    let pz = Number.NaN;
+    for (let d = 0; d <= t.length; d += 10) {
+      tunnelPointInto(t, Math.min(d, t.length), pt);
+      const x = wrap(pt.x);
+      const z = wrap(pt.z);
+      if (Math.abs(x - px) < 100 && Math.abs(z - pz) < 100) {
+        ctx.beginPath();
+        ctx.moveTo(px * s, pz * s);
+        ctx.lineTo(x * s, z * s);
+        ctx.stroke();
+      }
+      px = x;
+      pz = z;
+    }
+  }
+  ctx.restore();
+  ctx.fillStyle = PORTAL_COLOR;
+  for (const c of PORTAL_CUTS) {
+    ctx.fillRect(c.x0 * s, c.z0 * s, (c.x1 - c.x0) * s, (c.z1 - c.z0) * s);
+  }
+  for (const m of RIVER_MOUTHS) {
+    const z = RIVER_CENTER_Z + m.side * RIVER_HALF_WIDTH;
+    ctx.fillRect(m.x0 * s, z * s - 2, (m.x1 - m.x0) * s, 4);
+  }
 }
 
 export class Minimap {

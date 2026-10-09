@@ -44,6 +44,13 @@
 // rolling K/D against the bots (SkillScaler), and a bot is shy of ganging
 // up on a struggling human.
 //
+// Tunnels (U4) are threads too, through the underground network: a bore's
+// two directed edges join the graph (common/city/tunnels tunnelEdges), a
+// patrol near a portal or river mouth rolls once per encounter, a chaser
+// follows a target it saw go in, and both commit only after a stepFlight
+// rollout of the whole pass — dive in, the bore, the climb out. The
+// controller is a carrot on the bore's centreline at its guide height.
+//
 // Bots never send hit claims: tick() emits trigger pulls (BotShot) and
 // applyBotFire routes them through the existing Combat seam — same heat
 // model, damage, spawn protection, kill credit, and respawn as humans.
@@ -75,7 +82,11 @@ import {
   type MoverField,
   collideBotMovers,
 } from "@angels-bandits/common/city/movers";
-import { bridgeSpans } from "@angels-bandits/common/city/river";
+import {
+  RIVER_HALF_WIDTH,
+  bridgeSpans,
+  riverOffset,
+} from "@angels-bandits/common/city/river";
 import {
   LOT_LINE,
   ROADWAY_HALF,
@@ -83,6 +94,21 @@ import {
   offCenterline,
 } from "@angels-bandits/common/city/street";
 import { trainFloor } from "@angels-bandits/common/city/train";
+import {
+  TUNNELS,
+  type Tunnel,
+  type TunnelEdge,
+  type TunnelEnd,
+  type TunnelFrame,
+  type TunnelPoint,
+  edgeArc,
+  edgeProgress,
+  guideY,
+  tunnelEdges,
+  tunnelFrameInto,
+  tunnelPointInto,
+  tunnelTransit,
+} from "@angels-bandits/common/city/tunnels";
 import {
   type CityIndex,
   EMPTY_NATURE_INDEX,
@@ -169,6 +195,12 @@ import {
   BOT_SPAWN_SPEED,
   BOT_STEER_GAIN,
   BOT_THREAT_RANGE,
+  BOT_TUNNEL_CHANCE,
+  BOT_TUNNEL_FOLLOW_MS,
+  BOT_TUNNEL_FOLLOW_RANGE,
+  BOT_TUNNEL_RANGE,
+  BOT_TUNNEL_RETRY_MS,
+  BOT_TUNNEL_RUNOUT,
   BOT_ZOOM_MS,
   BULLET_LIFETIME_S,
   BULLET_SPEED,
@@ -176,6 +208,7 @@ import {
   HOLE_RUN_OUT,
   MAX_HP,
   MAX_SPEED,
+  MIN_SPEED,
   PITCH_LIMIT,
   PITCH_RATE,
   PLAYER_RADIUS,
@@ -210,6 +243,7 @@ import {
   type Vec3,
   canonicalize,
   wrapDelta,
+  wrapDeltaAxis,
   wrapDistance,
 } from "@angels-bandits/common/world";
 import {
@@ -537,6 +571,81 @@ const BOSS_HURT_HP = 0.6;
 const HAZARD_LOOK_S = 2.5;
 const HAZARD_MARGIN = 2;
 
+/** One committed (or candidate) pass through a tunnel (U4). */
+interface TunnelThread {
+  edge: TunnelEdge;
+  /** The bot's band altitude: the climb-out heads back toward it. */
+  bandY: number;
+  /** Past the far end (sticky). */
+  out: boolean;
+}
+
+/** The dive into a plaza portal from beyond its lip, and the climb out of
+ * one, as slopes (rise per metre along the carrot) — steeper than the 22°
+ * ramp, so a bot in the canyon band reaches the cut over the lawn. */
+const PORTAL_DIVE = Math.tan((38 * Math.PI) / 180);
+const PORTAL_CLIMB = Math.tan((32 * Math.PI) / 180);
+/** A river mouth's approach and climb-out across the channel: level with the
+ * guide line for this long, then this slope. */
+const MOUTH_LEVEL = 30;
+const MOUTH_SLOPE = 0.5;
+/** Ticks between a room's tunnel rollouts (0.5 s at 20 Hz). */
+const TUNNEL_ROLLOUT_EVERY = 10;
+/** A tunnel pass hands back no later than this far past the exit, m. */
+const TUNNEL_RUNOUT_MAX = 400;
+
+/** The carrot's height `d` m beyond end `e` (whose guide height is `y0`):
+ * the approach line before an entry, the climb-out after an exit. */
+function beyondEnd(e: TunnelEnd, y0: number, d: number, dive: boolean): number {
+  if (e.kind === "plaza") return y0 + d * (dive ? PORTAL_DIVE : PORTAL_CLIMB);
+  return y0 + Math.max(0, d - MOUTH_LEVEL) * MOUTH_SLOPE;
+}
+
+const tunnelFrame: TunnelFrame = { s: 0, lat: 0, th: 0 };
+const tunnelCarrot: TunnelPoint = { x: 0, z: 0, th: 0 };
+
+/**
+ * The tunnel controller: a carrot BOT_HOLE_CARROT ahead on the bore's
+ * centreline (its straight extension before the entry and after the exit),
+ * at the guide height inside and on the approach / climb-out line outside.
+ * Pure in (flight, thread), like threadInput, so a rollout predicts the
+ * live flight. Null once the pass is over (hand back to the brain).
+ */
+function tunnelInput(f: FlightState, th: TunnelThread): FlightInput | null {
+  const { edge } = th;
+  const t = edge.tunnel;
+  const L = t.length;
+  tunnelFrameInto(t, f.pos, tunnelFrame);
+  const p = edgeProgress(edge, tunnelFrame.s);
+  if (p >= L) th.out = true;
+  if (th.out) {
+    const past = p - L;
+    if (
+      (past >= BOT_TUNNEL_RUNOUT && f.pos.y >= BOT_MIN_ALT + 5) ||
+      past >= TUNNEL_RUNOUT_MAX
+    ) {
+      return null;
+    }
+  }
+  const q = p + BOT_HOLE_CARROT;
+  tunnelPointInto(t, edgeArc(edge, q), tunnelCarrot);
+  let y: number;
+  if (q <= 0) {
+    y = beyondEnd(edge.endIn, guideY(t, edgeArc(edge, 0)), -q, true);
+  } else if (q >= L) {
+    y = beyondEnd(edge.endOut, guideY(t, edgeArc(edge, L)), q - L, false);
+    if (th.out) y = Math.min(y, Math.max(th.bandY, BOT_MIN_ALT + 10));
+  } else {
+    y = guideY(t, edgeArc(edge, q));
+  }
+  const d = {
+    x: wrapDeltaAxis(f.pos.x, tunnelCarrot.x),
+    y: y - f.pos.y,
+    z: wrapDeltaAxis(f.pos.z, tunnelCarrot.z),
+  };
+  return steerInput(f, d, 0, 0, 0);
+}
+
 /** A fresh bot's graceUntil: unstamped (NaN) for a spawn in the canyons, none
  * at all for a high one — see Bot.graceUntil. */
 const streetGrace = (spawn: SpawnState): number =>
@@ -599,6 +708,12 @@ interface Bot {
   streetChase: boolean;
   /** The hole pass this bot is committed to (B2), or null. */
   thread: Thread | null;
+  /** The tunnel pass this bot is committed to (U4), or null. */
+  tunnel: TunnelThread | null;
+  /** Patrol tunnel encounters by edge index: the roll's outcome. */
+  tunnelRolls: Map<number, boolean>;
+  /** No tunnel rollout for this bot before this time, ms. */
+  tunnelRetryAt: number;
   /** Hole routing's own seeded stream — salted off the bot's seed so B1's
    * `rand` sequence (patrol turns, jitter, break turns) is untouched. */
   holeRand: () => number;
@@ -754,6 +869,21 @@ export class RoomBots {
     defendBreaks: 0,
     dodges: 0,
   };
+  /** U4: every tunnel as two directed edges (+1 then −1 per bore). */
+  private readonly tunnelEdgeList: readonly TunnelEdge[] = tunnelEdges();
+  /** U4: the tunnel edge each contact was last seen inside, and when. */
+  private readonly tunnelSeen = new Map<string, { edge: number; at: number }>();
+  /** U4: the next tick a tunnel rollout may run. They are long (a whole
+   * bore, up to ~600 flight steps), so a room runs at most one every
+   * TUNNEL_ROLLOUT_EVERY ticks. */
+  private tunnelRolloutTick = 0;
+  /** U4 telemetry (bot sim): tunnel passes bots committed to, flew to the
+   * far end, and contacts' mid-bore transits by direction-agnostic count;
+   * rollouts flown to decide. */
+  tunnelRollouts = 0;
+  tunnelCommits = 0;
+  tunnelPasses = 0;
+  tunnelTransits = 0;
 
   get count(): number {
     return this.bots.size;
@@ -822,6 +952,9 @@ export class RoomBots {
       graceUntil: streetGrace(spawn),
       streetChase: false,
       thread: null,
+      tunnel: null,
+      tunnelRolls: new Map(),
+      tunnelRetryAt: 0,
       holeRand: mulberry32((botSeed ^ 0x2545f491) >>> 0),
       holeRolls: new Map(),
       breakTurn: 1,
@@ -896,6 +1029,11 @@ export class RoomBots {
       if (!best || rank(b) < rank(best)) best = b;
     }
     return best?.entry.id ?? null;
+  }
+
+  /** The tunnel a bot is flying (U4), or null — read-only, for the sim. */
+  tunnelOf(id: string): TunnelEdge | null {
+    return this.bots.get(id)?.tunnel?.edge ?? null;
   }
 
   /** The hole edge a bot is threading, or null — read-only, for the sim. */
@@ -1023,6 +1161,7 @@ export class RoomBots {
     bot.alive = false;
     bot.thread = null;
     bot.maneuver = null;
+    bot.tunnel = null;
   }
 
   /** Server-issued respawn (same sampler as humans): fresh flight state. */
@@ -1045,6 +1184,8 @@ export class RoomBots {
     bot.graceUntil = streetGrace(spawn);
     bot.streetChase = false;
     bot.thread = null;
+    bot.tunnel = null;
+    bot.tunnelRolls.clear();
     bot.holeRolls.clear();
     bot.tactic = "turnFight";
     bot.hp = 1;
@@ -1168,6 +1309,7 @@ export class RoomBots {
         !raw &&
         ((decide && !dodging) ||
           (!bot.thread &&
+            !bot.tunnel &&
             bot.state !== "RECOVER" &&
             bot.flight.pos.y < BOT_CANYON_PROBE_ALT &&
             this.pathBlocked(bot, now, 1)))
@@ -1346,11 +1488,33 @@ export class RoomBots {
           this.transits.set(c.id, { edge: dir === 1 ? i : i + 1, at: now });
         }
       });
+      this.trackTunnels(now, c.id, prev, c.pos);
     }
     for (const id of this.contactPrev.keys()) {
       if (seen.has(id)) continue;
       this.contactPrev.delete(id);
       this.transits.delete(id);
+      this.tunnelSeen.delete(id);
+    }
+  }
+
+  /**
+   * U4: note a contact inside a bore (below street level, within its
+   * section), with the edge its motion along the bore says it is flying —
+   * what a chaser follows. A mid-bore crossing counts as a transit.
+   */
+  private trackTunnels(now: number, id: string, prev: Vec3, pos: Vec3): void {
+    if (pos.y >= 0) return;
+    for (let k = 0; k < TUNNELS.length; k++) {
+      const t = TUNNELS[k] as Tunnel;
+      if (tunnelTransit(t, prev, pos) !== 0) this.tunnelTransits++;
+      tunnelFrameInto(t, pos, tunnelFrame);
+      const s = tunnelFrame.s;
+      if (s < 0 || s > t.length || Math.abs(tunnelFrame.lat) > 20) continue;
+      tunnelFrameInto(t, prev, tunnelFrame);
+      const ds = s - tunnelFrame.s;
+      if (ds === 0) continue;
+      this.tunnelSeen.set(id, { edge: 2 * k + (ds > 0 ? 0 : 1), at: now });
     }
   }
 
@@ -1381,6 +1545,15 @@ export class RoomBots {
         return;
       }
       this.endThread(bot);
+    }
+    // U4: a committed tunnel pass outranks everything the same way.
+    if (bot.tunnel) {
+      const input = tunnelInput(bot.flight, bot.tunnel);
+      if (input) {
+        bot.input = input;
+        return;
+      }
+      this.endTunnel(bot);
     }
     // RECOVER keeps its hysteresis: once in it, only a WIDE clearance releases
     // it, or the brain flaps back to PATROL/ENGAGE and immediately re-steers
@@ -1601,6 +1774,8 @@ export class RoomBots {
       // it through rather than around. A committed follow holds ENGAGE and
       // the target (guns stay live) for the few seconds of the pass.
       if (this.followThrough(bot, now, target)) return;
+      // U4: or into the tunnel it dived into.
+      if (this.followTunnel(bot, now, target)) return;
 
       // Lead pursuit: aim where the target will be when a bullet arrives,
       // wandered by the seeded jitter (resampled per decision).
@@ -1762,6 +1937,7 @@ export class RoomBots {
     }
     const stageY = this.holeRouting(bot, now, holeChance);
     if (bot.thread) return;
+    if (this.tunnelRouting(bot, now)) return;
     this.canyonPatrol(bot, toward, false, stageY);
   }
 
@@ -1882,7 +2058,8 @@ export class RoomBots {
    * The style picks which to try first. False: fly the plain break.
    */
   private tryDefend(bot: Bot, now: number): boolean {
-    if (bot.thread || bot.flight.pos.y < BOT_DEFEND_MIN_ALT) return false;
+    if (bot.thread || bot.tunnel) return false;
+    if (bot.flight.pos.y < BOT_DEFEND_MIN_ALT) return false;
     if (now < bot.defendCooldownUntil) return false;
     bot.defendCooldownUntil = now + BOT_DEFEND_COOLDOWN_MS;
     const dir: 1 | -1 = bot.tacticRand() < 0.5 ? -1 : 1;
@@ -1944,23 +2121,23 @@ export class RoomBots {
   /**
    * B3 hazard dodging: if the bot — holding the stick the brain just chose,
    * or simply holding its course — would fly into a hazard disc inside
-   * HAZARD_LOOK_S, try variants. Down in the canyon: bleed speed,
-   * firewall it, or climb — re-checked every decision, the brain still
-   * steering, each clear of the city for RECOVER_LOOK_S. Above the roofs:
-   * speed, then dive or turn (never climb) — and the first whose held
-   * flight misses
+   * HAZARD_LOOK_S, try variants. Down in the canyon only one: bleed
+   * speed, re-checked every decision with the brain still steering. Above
+   * the roofs: speed, then dive or turn (never climb) — and the first whose
+   * held flight misses
    * every disc AND stays clear of the city, trees, movers, collapse zones,
    * floor and ceiling until the danger is over is committed: held, with no
    * re-decisions, until then (dodgeUntil) — so the path it was checked on is
    * the path it flies. None clear: keep the brain's stick (a hazard is
-   * survivable; a wall is not). A committed thread or maneuver, or a
-   * RECOVER, is never second-guessed, and a healthy bot pressing an attack
+   * survivable; a wall is not). A committed thread, tunnel pass or
+   * maneuver, or a RECOVER, is never second-guessed, and a healthy bot pressing an attack
    * pass (the zeppelin's, under its flak) only ever changes its throttle —
    * the nose stays on the target.
    */
   private dodgeHazards(bot: Bot, now: number): void {
     if (this.discs.length === 0) return;
-    if (bot.thread || bot.maneuver || bot.state === "RECOVER") return;
+    if (bot.thread || bot.tunnel || bot.maneuver) return;
+    if (bot.state === "RECOVER") return;
     const near = this.nearDiscs(bot.flight, now);
     if (near.length === 0) return;
     const base = bot.input;
@@ -1982,27 +2159,18 @@ export class RoomBots {
     // A healthy bot presses its pass; a hurt one takes any way out.
     const pressing =
       bot.state === "ENGAGE" && now < bot.attackUntil && bot.hp >= 0.75;
-    // Down in the canyon the street is the path: speed or a climb only, and
-    // the brain keeps steering (no commit) — a stick held for seconds in a
-    // 40 m street is a facade. Above the roofs the whole sky is open.
+    // Down in the canyon the street is the path, and the one safe change
+    // is to arrive later: bleed speed, the brain still steering (no
+    // commit). Measured over 54 rooms of C2 chaos, every bolder canyon dodge
+    // — firewalling it, climbing, a climb only over a roadway checked to the
+    // end of the danger — traded blasts for facades: total bot deaths
+    // (crashes, hazards, wrecks) 205 / 194 against 162 for this, main 222.
     if (bot.flight.pos.y < BOT_CANYON_PROBE_ALT) {
-      const low: FlightInput[] = [
-        { ...base, throttle: -1 },
-        { ...base, throttle: 1 },
-      ];
-      if (!pressing) {
-        low.push(
-          { ...base, pitch: cap * 0.6 },
-          { ...base, pitch: cap * 0.6, throttle: 1 },
-        );
-      }
-      for (const v of low) {
-        if (this.inputMeetsHazard(bot.flight, v, now, near)) continue;
-        if (this.arcBlocked(bot.flight, v, now, false)) continue;
-        bot.input = v;
-        this.stats.dodges++;
-        return;
-      }
+      const slow = { ...base, throttle: -1 };
+      if (slow.throttle === base.throttle) return;
+      if (this.inputMeetsHazard(bot.flight, slow, now, near)) return;
+      bot.input = slow;
+      this.stats.dodges++;
       return;
     }
     const level = { ...NEUTRAL, throttle: base.throttle };
@@ -2093,6 +2261,135 @@ export class RoomBots {
       if (pointInHazard(f.pos, r, t0, t0 + BOT_DT * 1000, discs)) return true;
     }
     return false;
+  }
+
+  // --- tunnels (U4) ---
+
+  /**
+   * A patrol's opportunistic tunnel: an entry (portal lip or river mouth)
+   * within BOT_TUNNEL_RANGE, ahead of the nose and facing roughly the way
+   * the bore goes in. Rolled once per encounter; a won roll tries a rollout
+   * (at most one per tick, and not again for BOT_TUNNEL_RETRY_MS).
+   */
+  private tunnelRouting(bot: Bot, now: number): boolean {
+    const pos = bot.flight.pos;
+    const fwd = flightForward({ yaw: bot.flight.yaw, pitch: 0 });
+    for (let i = 0; i < this.tunnelEdgeList.length; i++) {
+      const edge = this.tunnelEdgeList[i] as TunnelEdge;
+      const dx = wrapDeltaAxis(pos.x, edge.mouthIn.x);
+      const dz = wrapDeltaAxis(pos.z, edge.mouthIn.z);
+      const dist = Math.hypot(dx, dz);
+      if (dist > BOT_TUNNEL_RANGE || dist < BOT_HOLE_CARROT) {
+        bot.tunnelRolls.delete(i);
+        continue;
+      }
+      // Ahead, and the bore's way in roughly along the nose.
+      if ((dx * fwd.x + dz * fwd.z) / dist < 0.5) continue;
+      tunnelPointInto(edge.tunnel, edgeArc(edge, 0), tunnelCarrot);
+      const inX = Math.cos(tunnelCarrot.th) * edge.dir;
+      const inZ = Math.sin(tunnelCarrot.th) * edge.dir;
+      if (inX * fwd.x + inZ * fwd.z < 0.3) continue;
+      let won = bot.tunnelRolls.get(i);
+      if (won === undefined) {
+        won = bot.holeRand() < BOT_TUNNEL_CHANCE;
+        bot.tunnelRolls.set(i, won);
+      }
+      if (!won || now < bot.tunnelRetryAt) continue;
+      if (this.tryTunnel(bot, edge, now)) return true;
+    }
+    return false;
+  }
+
+  /** A chaser's tunnel follow: its target was seen inside a bore within
+   * BOT_TUNNEL_FOLLOW_MS and the bot is short of the entry it went in by. */
+  private followTunnel(bot: Bot, now: number, target: BotContact): boolean {
+    const seen = this.tunnelSeen.get(target.id);
+    if (!seen || now - seen.at > BOT_TUNNEL_FOLLOW_MS) return false;
+    if (now < bot.tunnelRetryAt) return false;
+    const edge = this.tunnelEdgeList[seen.edge];
+    if (!edge) return false;
+    tunnelFrameInto(edge.tunnel, bot.flight.pos, tunnelFrame);
+    if (edgeProgress(edge, tunnelFrame.s) > -BOT_HOLE_CARROT) return false;
+    if (wrapDistance(bot.flight.pos, edge.mouthIn) > BOT_TUNNEL_FOLLOW_RANGE) {
+      return false;
+    }
+    return this.tryTunnel(bot, edge, now);
+  }
+
+  /** Commit to `edge` if a rollout of the whole pass flies clean. */
+  private tryTunnel(bot: Bot, edge: TunnelEdge, now: number): boolean {
+    if (this.tickCount < this.tunnelRolloutTick) return false;
+    this.tunnelRolloutTick = this.tickCount + TUNNEL_ROLLOUT_EVERY;
+    this.tunnelRollouts++;
+    const probe: TunnelThread = { edge, bandY: bot.bandY, out: false };
+    if (!this.rolloutTunnel(bot, probe, now)) {
+      bot.tunnelRetryAt = now + BOT_TUNNEL_RETRY_MS;
+      return false;
+    }
+    const thread: TunnelThread = { edge, bandY: bot.bandY, out: false };
+    const input = tunnelInput(bot.flight, thread);
+    if (!input) return false;
+    bot.tunnel = thread;
+    bot.input = input;
+    this.tunnelCommits++;
+    return true;
+  }
+
+  /**
+   * Fly `thread` forward exactly as tick() will (rolloutThread's rules, the
+   * same margins), out to a horizon sized to the pass: the approach, the
+   * whole bore and the climb-out at a conservative speed. Under a tunnel's
+   * ceiling only the ground can be met — no building, tree, mover or
+   * collapse is underground — so those samples test the ground alone.
+   */
+  private rolloutTunnel(bot: Bot, thread: TunnelThread, now: number): boolean {
+    const r = PLAYER_RADIUS + BOT_HOLE_MARGIN;
+    const { edge } = thread;
+    tunnelFrameInto(edge.tunnel, bot.flight.pos, tunnelFrame);
+    const before = Math.max(0, -edgeProgress(edge, tunnelFrame.s));
+    const span = before + edge.tunnel.length + TUNNEL_RUNOUT_MAX;
+    const horizon = span / Math.max(MIN_SPEED, bot.flight.speed * 0.75);
+    let f = bot.flight;
+    let input: FlightInput = NEUTRAL;
+    const steps = Math.round(horizon / BOT_DT);
+    for (let k = 0; k < steps; k++) {
+      if (k === 0 || (this.tickCount + k) % BOT_DECISION_EVERY === 0) {
+        const next = tunnelInput(f, thread);
+        if (!next) return thread.out;
+        input = next;
+      }
+      f = stepFlight(f, botInput(input), BOT_DT);
+      if (hitsGround(f.pos, r)) return false;
+      // Below street level outside the river channel is a bore: nothing
+      // but its walls (the ground, just tested) is down there.
+      if (
+        f.pos.y + r < 0 &&
+        Math.abs(riverOffset(f.pos.z)) > RIVER_HALF_WIDTH + r
+      ) {
+        continue;
+      }
+      const t = now + k * BOT_DT * 1000;
+      if (
+        collideCity(f.pos, r, this.buildings, this.cityIndex) ||
+        collideNature(f.pos, r, this.nature) ||
+        collideBotMovers(f.pos, r + BOT_MOVER_CLEAR, this.movers, t) ||
+        this.inCollapseZone(f.pos, r, t, bot.flight.pos)
+      ) {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  /** The tunnel pass is over: re-join the nearest street like a bot back
+   * from a fight. */
+  private endTunnel(bot: Bot): void {
+    if (bot.tunnel?.out) this.tunnelPasses++;
+    bot.tunnel = null;
+    bot.streetChase = false;
+    bot.fought = true;
+    bot.waypoint = null;
+    bot.travel = null;
   }
 
   // --- threads (B2) ---

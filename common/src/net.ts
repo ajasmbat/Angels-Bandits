@@ -18,7 +18,7 @@
 // whole number of wire units), so a rounded position can never land one unit
 // past the seam and read as 2000 m instead of 0.
 
-import { RIVER_WATER_Y } from "./city/river";
+import { BORE_FLOOR_Y } from "./city/tunnels";
 import {
   BULLET_LIFETIME_S,
   BULLET_RANGE,
@@ -48,9 +48,10 @@ export const SPEED_SCALE = 10;
  * what makes integer-space canonicalisation exact. */
 const WORLD_UNITS = WORLD_SIZE * POS_SCALE;
 const MAX_ALTITUDE_UNITS = MAX_ALTITUDE * POS_SCALE;
-/** The lowest encodable altitude: the L11 river's water (a plane under a
- * bridge is below street level). Negative units are plain JSON ints. */
-const MIN_ALTITUDE_UNITS = RIVER_WATER_Y * POS_SCALE;
+/** The lowest encodable altitude: the U4 tunnels' floor, the lowest point a
+ * plane can fly (the L11 river's water is above it). Negative units are
+ * plain JSON ints. */
+const MIN_ALTITUDE_UNITS = BORE_FLOOR_Y * POS_SCALE;
 
 /** Canonicalise a position already expressed in integer wire units. */
 const wrapUnits = (n: number): number => {

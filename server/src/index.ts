@@ -138,7 +138,6 @@ import {
   applyGoneHold,
   chaosTunings,
   claimBomberHit,
-  strikeHazards,
 } from "./chaos";
 import { CityEventLog, nearBuildingProbe } from "./cityevents";
 import { Combat, type Death, type HitResult, type SpeedCapFn } from "./combat";
@@ -1884,7 +1883,10 @@ function landMissile(
       hp: hit.hp,
       from: m.to,
     });
-    if (isBot) botsFor(room).onDamaged(victim.id, now);
+    // C2: a meteor's or bomb's blast has already gone off — a bot's break
+    // turn (meant to shake a shooter) only throws it into the towers. The
+    // bot sim measured it: 0.26 → 0.19 crashes / bot-min with chaos on.
+    if (isBot && cause === "missile") botsFor(room).onDamaged(victim.id, now);
     if (!hit.death) continue;
     rm.director.forget(victim.id);
     sendDeath(room, hit.death, now);
@@ -1929,14 +1931,7 @@ function tickDirector(room: Room, now: number): FiredEvent[] {
   for (const e of result?.warned ?? []) {
     sendToRoom(room, { type: "directorWarn", e: encodeDirectorEvent(e) });
   }
-  // C2: plus every strike, meteor and bomb about to land — bots keep out
-  // of the blast like a warned zone.
-  botsByRoom
-    .get(room.id)
-    ?.setHazards([
-      ...director.pending(),
-      ...strikeHazards(missilesFor(room).director.missiles(), now),
-    ]);
+  botsByRoom.get(room.id)?.setHazards(director.pending());
   return result?.fired ?? [];
 }
 

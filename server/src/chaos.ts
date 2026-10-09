@@ -86,14 +86,10 @@ import {
   DESTROY_CAP_D2,
   GONE_HOLD_SHARE,
 } from "@angels-bandits/common/constants";
-import { type DirectorEvent, EVENT_GAS } from "@angels-bandits/common/director";
 import {
   BOMB_FALL_MS,
-  METEOR_BLAST_RADIUS,
   METEOR_FLIGHT_MS,
-  MISSILE_BLAST_RADIUS,
   type MissileStrike,
-  missileImpactAt,
   pickMissileTarget,
   predictedPos,
 } from "@angels-bandits/common/strike";
@@ -837,41 +833,6 @@ function groundFloor(b: Building, index: number): number[] {
   return chunksOf(b, index).filter(
     (id) => id < chunkId(index, 0, band) && id >= chunkId(index, 0, 0),
   );
-}
-
-/** In-flight strikes (missiles, meteors, bombs) landing within this, ms,
- * are hazards bots keep out of. */
-const HAZARD_LEAD_MS = 5000;
-
-/** The strikes about to land as warned-zone hazards for the bots
- * (RoomBots.setHazards): a box the blast reaches round each impact, from
- * HAZARD_LEAD_MS before it lands. Ids are negative so they never collide
- * with a director event's. */
-export function strikeHazards(
-  strikes: readonly MissileStrike[],
-  now: number,
-): DirectorEvent[] {
-  const out: DirectorEvent[] = [];
-  for (const m of strikes) {
-    const at = missileImpactAt(m);
-    if (at - now > HAZARD_LEAD_MS || at < now) continue;
-    const r =
-      (m.kind === "meteor" ? METEOR_BLAST_RADIUS : MISSILE_BLAST_RADIUS) + 10;
-    out.push({
-      id: -m.id,
-      k: EVENT_GAS,
-      b: -1,
-      x: m.to.x,
-      y: m.to.y,
-      z: m.to.z,
-      s: 0,
-      d: 0,
-      w: at - HAZARD_LEAD_MS,
-      at,
-      zone: { x0: -r, x1: r, z0: -r, z1: r, top: m.to.y + r },
-    });
-  }
-  return out;
 }
 
 /** A round claimed on a bomber (the claim's line and time). */

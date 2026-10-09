@@ -43,14 +43,18 @@ import {
   flakDamage,
   flakSolution,
   nextRaidAt,
-  pieceImpactPoint,
   planRaid,
   raidEnd,
   raidMaxHp,
   turretMuzzleInto,
   weakPointInto,
 } from "@angels-bandits/common/boss";
-import { chunkBuilding } from "@angels-bandits/common/city";
+import {
+  type Building,
+  chunkBuilding,
+  chunkId,
+  tierGrids,
+} from "@angels-bandits/common/city";
 import { losClear } from "@angels-bandits/common/collision";
 import {
   BULLET_DAMAGE,
@@ -82,8 +86,9 @@ export interface BossTickResult {
   flak: BossFlak[];
   /** Shells that burst this tick and who they hurt. */
   bursts: { flak: BossFlak; victims: { id: string; damage: number }[] }[];
-  /** Falling sections that hit this tick: where, for the city's damage. */
-  landed: { piece: BossPiece; at: Vec3 }[];
+  /** Falling sections that hit this tick: where, and the building they hit
+   * (null: the street), for the city's damage. */
+  landed: { piece: BossPiece; at: Vec3; building: Building | null }[];
 }
 
 /** No flak for this long after a (re)spawn, ms (X1's respawn quiet rule). */
@@ -223,7 +228,7 @@ export class BossDirector {
     const raid = this.activeRaid(now);
     if (raid) this.fireTurrets(now, raid, planes, world, out);
     this.settleShells(now, planes, out);
-    this.settlePieces(now, out);
+    this.settlePieces(now, out, world);
     return out;
   }
 
@@ -352,13 +357,23 @@ export class BossDirector {
     return damage;
   }
 
-  private settlePieces(now: number, out: BossTickResult): void {
+  private settlePieces(
+    now: number,
+    out: BossTickResult,
+    world: BossWorld,
+  ): void {
     const d = this.slot.down;
     if (!d) return;
     d.pieces.forEach((piece, i) => {
       if (this.settledPieces.has(i) || now < d.t + piece.end) return;
       this.settledPieces.add(i);
-      out.landed.push({ piece, at: pieceImpactPoint(d, piece) });
+      // Where and what it hit were swept at the down, against the city as
+      // it stood then (an earlier section's landing must not move them).
+      out.landed.push({
+        piece,
+        at: piece.at,
+        building: piece.b >= 0 ? (world.buildings[piece.b] ?? null) : null,
+      });
     });
   }
 
@@ -500,16 +515,59 @@ export function landBotBossRound(
 }
 
 /** D2/D3: one falling section hit at `at`: blow out the room city's chunks
- * around it, a collapse it sets off credited to `by` (the top dealer).
- * Returns the chunks destroyed. */
+ * around it, and — when it came down on a building — shear the floor band
+ * BOSS_CRUSH_DEPTH floors under the hit, so the floors above it pancake
+ * (D3's planner does the rest on the next destruction tick). A collapse it
+ * sets off is credited to `by` (the top dealer). Returns the chunks
+ * destroyed. Deterministic in the city and the point. */
 export const BOSS_IMPACT_RADIUS = 34;
 export const BOSS_IMPACT_DAMAGE = 1400;
+export const BOSS_CRUSH_DEPTH = 3;
 export function applyBossImpact(
   city: RoomCity,
   at: Vec3,
   by: string | null,
+  building: Building | null = null,
 ): number[] {
   const out = city.damage.damageAt(at, BOSS_IMPACT_RADIUS, BOSS_IMPACT_DAMAGE);
+  if (building) out.push(...crushUnder(city, building, at));
   for (const id of out) city.breakers.set(chunkBuilding(id), by);
+  return out;
+}
+
+/** The floor band BOSS_CRUSH_DEPTH floors under where a section hit
+ * building `b` at `at` — counted down through the tiers, so a squat crown
+ * shears the tier under it — destroyed across that tier's footprint.
+ * Nothing when there are not that many floors under the hit. */
+function crushUnder(city: RoomCity, b: Building, at: Vec3): number[] {
+  const index = city.buildings.indexOf(b);
+  const grids = tierGrids(b);
+  // The tier at the height it was hit (the highest one starting under it).
+  let tier = -1;
+  grids.forEach((g, k) => {
+    if (g.baseY <= at.y + 1) tier = k;
+  });
+  const g = grids[tier];
+  if (!g) return [];
+  let band = Math.min(
+    g.ny - 1,
+    Math.max(0, Math.floor((at.y + 1 - g.baseY) / g.ch)),
+  );
+  for (let n = 0; n < BOSS_CRUSH_DEPTH; n++) {
+    band--;
+    if (band < 0) {
+      tier--;
+      const under = grids[tier];
+      if (!under) return [];
+      band = under.ny - 1;
+    }
+  }
+  const crushed = grids[tier] as (typeof grids)[number];
+  const out: number[] = [];
+  const per = crushed.nx * crushed.nz;
+  for (let c = band * per; c < (band + 1) * per; c++) {
+    const id = chunkId(index, tier, c);
+    if (city.damage.destroyChunk(id)) out.push(id);
+  }
   return out;
 }

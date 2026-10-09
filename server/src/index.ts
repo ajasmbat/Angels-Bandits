@@ -1617,9 +1617,9 @@ function tickBoss(room: Room, now: number): void {
   if (result.landed.length > 0) {
     const top = bossCredit(boss.damageLedger()).top;
     const by = top !== null && room.members.has(top) ? top : null;
-    for (const { at } of result.landed) {
+    for (const { at, building } of result.landed) {
       const rc = breakable(room);
-      if (rc) applyBossImpact(rc, at, by);
+      if (rc) applyBossImpact(rc, at, by, building);
       const event = cityEvents.offer(room.id, "death", at, now);
       if (event) sendToRoom(room, { type: "cityEvent", event });
     }

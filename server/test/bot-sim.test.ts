@@ -433,9 +433,9 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
               } else bots.onDamaged(v.id, now);
             }
           }
-          for (const { at } of out.landed) {
+          for (const { at, building } of out.landed) {
             bossLandings++;
-            applyBossImpact(rc, at, null);
+            applyBossImpact(rc, at, null, building);
           }
           for (const c of boss.contacts(now)) {
             contacts.push({ ...c, prot: false, boss: true });

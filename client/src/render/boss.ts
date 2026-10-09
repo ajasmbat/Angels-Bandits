@@ -29,7 +29,6 @@ import {
   bossPoseAt,
   bossPresent,
   flakPosAt,
-  pieceImpactPoint,
   piecePoseAt,
 } from "@angels-bandits/common/boss";
 import type { MoverBox } from "@angels-bandits/common/city/movers";
@@ -381,7 +380,7 @@ export class BossRenderer {
       if (renderMs >= t + piece.end) {
         if (!this.landed[piece.k]) {
           this.landed[piece.k] = true;
-          const at = pieceImpactPoint({ id: 0, t, pieces: [] }, piece);
+          const at = piece.at;
           this.burns.push({ at, since: now, fireAcc: 0, smokeAcc: 0 });
           this.onLand(at);
         }

@@ -419,9 +419,9 @@ describe("the wreck falls via D4 and triggers D3 deterministically", () => {
         buildings: rc.buildings,
         index: rc.index,
       });
-      for (const { at } of out.landed) {
+      for (const { at, building } of out.landed) {
         landed++;
-        chunks.push(...applyBossImpact(rc, at, "top"));
+        chunks.push(...applyBossImpact(rc, at, "top", building));
       }
       collapses.push(...tickDestruction(rc, now).collapses);
     }

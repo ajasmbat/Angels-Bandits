@@ -431,6 +431,14 @@ export interface BossPiece {
   /** ms after the down when it hits (server-swept), ≤ WRECK_MAX_MS. */
   end: number;
   hit: WreckHit;
+  /** Where it hits: the bottom of the sweep sphere that touched first (an
+   * air burst: the bottom of its main box), canonical. Swept once against
+   * the city as it stood at the down — never re-derived after other
+   * sections have broken it. */
+  at: Vec3;
+  /** The building it came down on (index into the city, the chunk-id
+   * order), or -1: the street, the river, the air. */
+  b: number;
 }
 
 /** The boss went down: when, and its three sections. */
@@ -543,16 +551,21 @@ const sweepBox: MoverBox = {
 const sweepPose = blankPose();
 const sweepAt: Vec3 = { x: 0, y: 0, z: 0 };
 
-/** Does section `piece` (posed at `ms`) touch the ground or the city? Each
- * sweep box is a chain of spheres down its length (radius = its smaller
- * cross-section half-extent) — the box's bottom face lands where the
- * spheres' do. */
-function pieceTouches(
+/** What touched at `ms`: the sphere of the chain that did (its centre, in
+ * `contactAt`, and radius), what it hit, and the building when it was one. */
+interface Contact {
+  hit: WreckHit;
+  r: number;
+  building: Building | null;
+}
+const contactAt: Vec3 = { x: 0, y: 0, z: 0 };
+
+function pieceContactAt(
   piece: BossPiecePath,
   t: number,
   ms: number,
   world: BossSweepWorld,
-): WreckHit | null {
+): Contact | null {
   piecePoseAt(piece, t, WRECK_MAX_MS, ms, sweepPose);
   for (const i of (BOSS_PIECES[piece.k] as { sweep: readonly number[] })
     .sweep) {
@@ -566,11 +579,12 @@ function pieceTouches(
         n === 1
           ? 0
           : -sweepBox.hx + r + ((2 * sweepBox.hx - 2 * r) * j) / (n - 1);
-      sweepAt.x = wrapCoord(sweepBox.x + lx * c);
-      sweepAt.y = sweepBox.y;
-      sweepAt.z = wrapCoord(sweepBox.z - lx * s);
-      if (hitsGround(sweepAt, r)) return "ground";
-      if (collideCity(sweepAt, r, world.buildings, world.index)) return "city";
+      contactAt.x = wrapCoord(sweepBox.x + lx * c);
+      contactAt.y = sweepBox.y;
+      contactAt.z = wrapCoord(sweepBox.z - lx * s);
+      if (hitsGround(contactAt, r)) return { hit: "ground", r, building: null };
+      const b = collideCity(contactAt, r, world.buildings, world.index);
+      if (b) return { hit: "city", r, building: b };
     }
   }
   return null;
@@ -585,26 +599,50 @@ export function bossPieceImpact(
   piece: BossPiecePath,
   t: number,
   world: BossSweepWorld,
-): { end: number; hit: WreckHit } {
+): { end: number; hit: WreckHit; at: Vec3; b: number } {
   let lo = 0;
   for (let ms = WRECK_STEP_MS; ms <= WRECK_MAX_MS; ms += WRECK_STEP_MS) {
-    let hit = pieceTouches(piece, t, t + ms, world);
-    if (!hit) {
+    let c = pieceContactAt(piece, t, t + ms, world);
+    if (!c) {
       lo = ms;
       continue;
     }
     let hi = ms;
+    // The contact (and contactAt) of the latest touching time is the one
+    // reported: keep a copy, bisection overwrites the scratch.
+    let at = { ...contactAt };
     for (let i = 0; i < 6; i++) {
       const mid = (lo + hi) / 2;
-      const h = pieceTouches(piece, t, t + mid, world);
+      const h = pieceContactAt(piece, t, t + mid, world);
       if (h) {
         hi = mid;
-        hit = h;
+        c = h;
+        at = { ...contactAt };
       } else lo = mid;
     }
-    return { end: Math.round(hi * 10) / 10, hit };
+    return {
+      end: Math.round(hi * 10) / 10,
+      hit: c.hit,
+      at: { x: at.x, y: Math.max(0, at.y - c.r), z: at.z },
+      b: c.building ? world.buildings.indexOf(c.building) : -1,
+    };
   }
-  return { end: WRECK_MAX_MS, hit: "air" };
+  const pose = piecePoseAt(
+    piece,
+    t,
+    WRECK_MAX_MS,
+    t + WRECK_MAX_MS,
+    blankPose(),
+  );
+  const main = (BOSS_PIECES[piece.k] as { sweep: readonly number[] })
+    .sweep[0] as number;
+  const box = bossPiecePartBoxInto(piece, pose, main, { ...sweepBox });
+  return {
+    end: WRECK_MAX_MS,
+    hit: "air",
+    at: { x: box.x, y: Math.max(0, box.y - box.hy), z: box.z },
+    b: -1,
+  };
 }
 
 /**
@@ -637,21 +675,6 @@ export function breakUp(
     pieces.push({ ...path, ...bossPieceImpact(path, t, world) });
   }
   return { id: r.id, t, pieces };
-}
-
-/** Where section `piece` comes down: the bottom of its main box, ms after. */
-export function pieceImpactPoint(down: BossDown, piece: BossPiece): Vec3 {
-  const pose = piecePoseAt(
-    piece,
-    down.t,
-    piece.end,
-    down.t + piece.end,
-    blankPose(),
-  );
-  const main = (BOSS_PIECES[piece.k] as { sweep: readonly number[] })
-    .sweep[0] as number;
-  const box = bossPiecePartBoxInto(piece, pose, main, { ...sweepBox });
-  return { x: box.x, y: Math.max(0, box.y - box.hy), z: box.z };
 }
 
 // --- The room's boss, as both sides hold it ------------------------------------
@@ -1226,7 +1249,10 @@ export function isBossDown(d: unknown): d is BossDown {
       finite(q.end) &&
       (q.end as number) >= 0 &&
       (q.end as number) <= WRECK_MAX_MS &&
-      HITS.includes(q.hit as WreckHit)
+      HITS.includes(q.hit as WreckHit) &&
+      isVec(q.at) &&
+      Number.isInteger(q.b) &&
+      (q.b as number) >= -1
     );
   });
 }

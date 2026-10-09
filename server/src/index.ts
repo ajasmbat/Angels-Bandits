@@ -179,6 +179,10 @@ const BOOT_TIMEOUT = Number(process.env.BOOT_TIMEOUT_MS) || BOOT_TIMEOUT_MS;
 const RESUME_WINDOW = Number(process.env.RESUME_WINDOW_MS) || RESUME_WINDOW_MS;
 const AWAY_TIMEOUT = Number(process.env.AWAY_TIMEOUT_MS) || AWAY_TIMEOUT_MS;
 const AWAY_SILENCE = Number(process.env.AWAY_SILENCE_MS) || AWAY_SILENCE_MS;
+/** D6: the liveness bound, same pattern — the perf harness raises it, since
+ * a software-rendered page can go seconds between frames and a dropped,
+ * resumed session respawns mid-measurement. */
+const LIVENESS = Number(process.env.LIVENESS_TIMEOUT_MS) || LIVENESS_TIMEOUT_MS;
 
 /** D5: AB_DIRECTOR_FAST=1 (tests and QA only) makes director events and
  * rebuilds come quickly. */
@@ -2114,7 +2118,7 @@ setInterval(() => {
       : client.away
         ? now - client.awayAt > AWAY_TIMEOUT ||
           now - client.lastMsgAt > AWAY_SILENCE
-        : now - client.lastMsgAt > LIVENESS_TIMEOUT_MS;
+        : now - client.lastMsgAt > LIVENESS;
     if (gone) client.ws.terminate();
   }
   // W2: dropped sessions expire, and tokens pointing at nothing go with them.

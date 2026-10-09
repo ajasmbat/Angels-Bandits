@@ -2343,6 +2343,8 @@ declare global {
         jitterMs: number;
         /** The hit-claim range budget the server will judge us against, m. */
         hitRangeBudget: number;
+        /** D6: sessions resumed after a drop since boot (W2). */
+        resumes: number;
       };
       combat: () => {
         alive: boolean;
@@ -2864,6 +2866,7 @@ window.__ab = {
     interpDelayMs: socket.interpDelayMs,
     jitterMs: socket.jitterMs,
     hitRangeBudget: hitRangeBudgetFor(socket.interpDelayMs),
+    resumes: socket.resumes,
   }),
   combat: () => ({
     alive,

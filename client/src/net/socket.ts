@@ -180,6 +180,10 @@ export class GameSocket {
    * that carried any. A quiet city (AB_QUIET_CITY) sends none, so a segment
    * that saw this move measured something the harness did not stage. */
   serverDestruction = 0;
+  /** D6 (perf harness): sessions resumed after a drop (W2) — a resume
+   * respawns the plane and replays the room, so a measured window that saw
+   * one is not the scene it set up. */
+  resumes = 0;
   /** S4: the room's sky boss — its raid and break-up (the mover field holds
    * this very slot, so the crash check sees it), every weak point's HP, and
    * the shells in the air by id (the renderer drops each once it bursts).
@@ -358,6 +362,7 @@ export class GameSocket {
     this.delay.reset(); // the outage's arrival gaps are not jitter
     this.lastHeardMs = performance.now();
     this.state = "open";
+    this.resumes++;
     this.events.onResumed?.(next.welcome);
   }
 

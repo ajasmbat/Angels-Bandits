@@ -303,7 +303,15 @@ async function startServer(port, cwd = REPO) {
     // server/src/index.ts QUIET_CITY). The destruction segments stage their
     // own on the client; every other segment flies an intact city. A build
     // from before D6 ignores the variable, and its arm reports `quiet` n/a.
-    env: { ...process.env, PORT: String(port), AB_QUIET_CITY: "1" },
+    // D6: and a liveness bound a software-rendered page can keep: at the
+    // server's 4 s, a seconds-long frame dropped the page, and the resume
+    // respawned it mid-segment (each segment reports `resumed`).
+    env: {
+      ...process.env,
+      PORT: String(port),
+      AB_QUIET_CITY: "1",
+      LIVENESS_TIMEOUT_MS: "30000",
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   proc.stdout.on("data", (d) => log.push(String(d)));
@@ -499,6 +507,7 @@ async function flySegment(page, seg, sampleMs, worldMs) {
         );
       const canStage = typeof ab.qaDestruction === "function";
       const destructionAtStart = destruction();
+      const resumesAtStart = ab.net().resumes ?? null;
       let staged = null;
       const stage = (spec, base, keep) => {
         const r = ab.qaDestruction({ ...stageAt(spec, base), keep });
@@ -666,6 +675,8 @@ async function flySegment(page, seg, sampleMs, worldMs) {
         // P2: the train moment a `trainsAt` segment slid to (null otherwise).
         trains,
         // D6.
+        resumed:
+          resumesAtStart === null ? null : ab.net().resumes - resumesAtStart,
         staged,
         destruction:
           destructionAtEnd === null
@@ -1578,6 +1589,14 @@ function printFirstSight(report) {
   if (late.length > 0) {
     console.error(
       `!! first sight inside the measured window: ${late.map((s) => s.name).join(", ")} — a program or texture the pre-warm and warm-up lap missed.`,
+    );
+  }
+  // D6: a dropped and resumed session respawns the plane and replays the
+  // room (staged destruction included) — that window is not the scene.
+  const resumed = report.segments.filter((s) => s.resumed > 0);
+  if (resumed.length > 0) {
+    console.error(
+      `!! the page lost and resumed its session inside: ${resumed.map((s) => s.name).join(", ")} — those windows are not the scene they set up.`,
     );
   }
   const changed = report.segments.filter((s) => s.workloadStable === false);

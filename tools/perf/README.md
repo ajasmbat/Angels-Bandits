@@ -1756,15 +1756,15 @@ node --import tsx tools/spectacle-bench.ts [--where] [--json] [--only=S5]
 
 | entry point | before S8 | after | |
 | --- | --- | --- | --- |
-| S1 jumbotrons.update | 62 B | 45–60 B | ok |
+| S1 jumbotrons.update | 62 B | 45–62 B | ok |
 | S3 rings.setRun + update | 0 | 0 | ok |
 | S3 ghost.update | 0 | 0 | ok |
-| S4 boss.update (zeppelin + flak) | 544 B | 315 B | ok |
+| S4 boss.update (zeppelin + flak) | 544 B | 315–317 B | ok |
 | S7 streak smoke (12 planes) | **63 057 B** | 0 | ok |
-| S5 atmosphere.update (fog banks, litter, shimmer, shafts) | **20 881 B** | 864 B | ok |
-| S6 reflections.update (the probe's schedule) | 240 B | 223 B | ok |
-| S2 music.update (state machine; no WebAudio here) | 62 B | 45–73 B | reported |
-| **judged, all together** | **~85 KB** | **~1.46 KB** | **PASS** |
+| S5 atmosphere.update (fog banks, litter, shimmer, shafts) | **20 881 B** | 864–877 B | ok |
+| S6 reflections.update (the probe's schedule) | 240 B | 223–237 B | ok |
+| S2 music.update (state machine; no WebAudio here) | 62 B | 35–73 B | reported |
+| **judged, all together** | **~85 KB** | **~1.5 KB** | **PASS** |
 
 "Before" is the batch as merged. The boss row leaves out the D1 particle
 pool's own update (D1's code, and D6's to fix); the bursts' spawn into it

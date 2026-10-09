@@ -16,15 +16,23 @@ import {
   stopBoost,
 } from "@angels-bandits/common/boost";
 import {
-  BOSS_FAST_TUNING,
   BOSS_ID,
-  BOSS_TUNING,
   type BossDown,
   bossCredit,
   bossSpawnClear,
   encodeFlak,
   encodeRaid,
 } from "@angels-bandits/common/boss";
+import {
+  type BomberSlot,
+  blankBomberPose,
+  bomberPoseInto,
+  bomberSpawnClear,
+  emptyBomberSlot,
+  encodeBomberDown,
+  encodeBomberRun,
+  encodeQuake,
+} from "@angels-bandits/common/chaos";
 import {
   encodeChunkIds,
   generateCity,
@@ -79,6 +87,7 @@ import {
   encodeDirectorEvent,
   inDangerZone,
 } from "@angels-bandits/common/director";
+import { flakHazard, missileHazard } from "@angels-bandits/common/hazards";
 import {
   MedalLedger,
   NEEDLE_WINDOW_MS,
@@ -101,7 +110,11 @@ import {
   type MissileStrike,
   encodeMissile,
 } from "@angels-bandits/common/strike";
-import { type Vec3, canonicalize } from "@angels-bandits/common/world";
+import {
+  type Vec3,
+  canonicalize,
+  wrapDeltaAxis,
+} from "@angels-bandits/common/world";
 import type { WreckParams, WreckWorld } from "@angels-bandits/common/wreck";
 import { type WebSocket, WebSocketServer } from "ws";
 import {
@@ -120,6 +133,13 @@ import {
   landBotRound,
   poseVelocity,
 } from "./bots";
+import {
+  ChaosDirector,
+  type ChaosPlane,
+  applyGoneHold,
+  chaosTunings,
+  claimBomberHit,
+} from "./chaos";
 import { CityEventLog, nearBuildingProbe } from "./cityevents";
 import { Combat, type Death, type HitResult, type SpeedCapFn } from "./combat";
 import {
@@ -128,6 +148,7 @@ import {
   type FinishedRun,
   type SweepWorld,
 } from "./courses";
+import { DangerBudget } from "./danger";
 import {
   type RoomCity,
   applyDeathBlast,
@@ -139,8 +160,6 @@ import {
   noseOf as wireNose,
 } from "./destruction";
 import {
-  DESTRUCTION_FAST,
-  DESTRUCTION_TUNING,
   DestructionDirector,
   type DestructionPlane,
   type FiredEvent,
@@ -158,9 +177,7 @@ import { type Room, RoomManager } from "./room";
 import { createStaticHandler } from "./statics";
 import { StormCeiling } from "./storm";
 import {
-  DEFAULT_TUNING,
   type DirectorPlane,
-  FAST_TUNING,
   MissileDirector,
   applyMissileImpact,
 } from "./strikes";
@@ -184,19 +201,15 @@ const AWAY_SILENCE = Number(process.env.AWAY_SILENCE_MS) || AWAY_SILENCE_MS;
  * resumed session respawns mid-measurement. */
 const LIVENESS = Number(process.env.LIVENESS_TIMEOUT_MS) || LIVENESS_TIMEOUT_MS;
 
-/** D5: AB_DIRECTOR_FAST=1 (tests and QA only) makes director events and
- * rebuilds come quickly. */
-const DIRECTOR_TUNING =
-  process.env.AB_DIRECTOR_FAST === "1" ? DESTRUCTION_FAST : DESTRUCTION_TUNING;
-
-/** X1: AB_MISSILE_FAST=1 (tests and QA only) makes strikes come quickly. */
-const MISSILE_TUNING =
-  process.env.AB_MISSILE_FAST === "1" ? FAST_TUNING : DEFAULT_TUNING;
-
-/** S4: AB_BOSS_FAST=1 (tests and QA only): a small boss, seconds after a
- * human joins. Production never sets it. */
-const BOSS_RAID_TUNING =
-  process.env.AB_BOSS_FAST === "1" ? BOSS_FAST_TUNING : BOSS_TUNING;
+/** Every chaos tuning, from the environment (server/src/chaos.ts
+ * chaosTunings): C2's constant chaos by default; `AB_CHAOS=0` restores the
+ * pre-C2 schedules and switches the C2 layers off (production rollback);
+ * AB_DIRECTOR_FAST / AB_MISSILE_FAST / AB_BOSS_FAST / AB_CHAOS_FAST=1 (tests
+ * and QA only) make each layer come quickly. */
+const TUNINGS = chaosTunings(process.env);
+const DIRECTOR_TUNING = TUNINGS.director;
+const MISSILE_TUNING = TUNINGS.missile;
+const BOSS_RAID_TUNING = TUNINGS.boss;
 
 /** Test-only introspection of the per-room maps (`GET /debug/rooms`). */
 const DEBUG_ROOMS = process.env.AB_DEBUG_ROOMS === "1";
@@ -364,6 +377,8 @@ const roomMovers = (room: Room): MoverField => {
       collapses: roomCity(room).collapses,
       // S4: and its sky boss — the director's own slot, mutated in place.
       boss: roomBoss(room).slot,
+      // C2: and its bomber runs — the chaos director's slot, the same way.
+      bombers: roomBombers(room),
     };
     roomMoversById.set(room.id, field);
   }
@@ -387,6 +402,7 @@ const roomCity = (room: Room): RoomCity => {
       room.seed === CITY_SEED ? city : generateCity(room.seed),
       moversFor(room.seed).cranes,
     );
+    rc.damage.setCap(TUNINGS.destroyCap);
     roomCityById.set(room.id, rc);
   }
   return rc;
@@ -456,11 +472,13 @@ const bossWorld = (room: Room): BossWorld => {
   return { buildings: rc.buildings, index: rc.index };
 };
 
-/** S4: a human (re)spawn must never be pointed into the zeppelin's path. */
+/** S4: a human (re)spawn must never be pointed into the zeppelin's path —
+ * C2: nor into a bomber formation's. */
 const spawnClearOfBoss =
   (room: Room, now: number) =>
   (pos: Vec3, yaw: number | null): boolean =>
-    bossSpawnClear(roomBoss(room).slot, pos, yaw, RESPAWN_SPEED, now);
+    bossSpawnClear(roomBoss(room).slot, pos, yaw, RESPAWN_SPEED, now) &&
+    bomberSpawnClear(roomBombers(room), pos, yaw, RESPAWN_SPEED, now);
 
 /**
  * Each room's destruction director (D5): timed events near the fight and
@@ -484,21 +502,78 @@ const directorFor = (room: Room): DestructionDirector => {
   return d;
 };
 
+/**
+ * C2: each room's danger budget (server/src/danger.ts) — the per-player cap
+ * on lethal events the missile, chaos and destruction directors share.
+ * Null under AB_CHAOS=0. Created lazily, dropped with the room.
+ */
+const budgetsByRoom = new Map<string, DangerBudget>();
+const budgetFor = (room: Room): DangerBudget | undefined => {
+  if (!TUNINGS.danger) return undefined;
+  let b = budgetsByRoom.get(room.id);
+  if (!b) {
+    b = new DangerBudget(TUNINGS.danger);
+    budgetsByRoom.set(room.id, b);
+  }
+  return b;
+};
+
+/**
+ * C2: each room's chaos director (server/src/chaos.ts) — meteors, bomber
+ * runs, quakes, spreading fire. Seeded from the room's number like the
+ * other directors; null under AB_CHAOS=0. Its bomber slot rides the room's
+ * mover field. Created lazily, reset with the room's city, dropped with it.
+ */
+const chaosByRoom = new Map<string, ChaosDirector>();
+const chaosFor = (room: Room): ChaosDirector | null => {
+  if (!TUNINGS.chaos) return null;
+  let c = chaosByRoom.get(room.id);
+  if (!c) {
+    const n = Number(room.id.split("-")[1] ?? 0);
+    c = new ChaosDirector(
+      (room.seed ^ Math.imul(n + 1, 0x7c2ac0d5)) >>> 0,
+      TUNINGS.chaos,
+    );
+    chaosByRoom.set(room.id, c);
+  }
+  return c;
+};
+/** The room's bomber slot (an empty one forever with chaos off). */
+const noBombers: BomberSlot = emptyBomberSlot();
+const roomBombers = (room: Room): BomberSlot =>
+  chaosFor(room)?.slot ?? noBombers;
+
 /** A plane (re)spawned or came back at `pos`: the missile and destruction
- * directors (and S4's turrets) keep their quiet rules around it. */
+ * directors (and S4's turrets, and C2's budget) keep their quiet rules
+ * around it. */
 function noteSpawn(room: Room, id: string, pos: Vec3, now: number): void {
   missilesFor(room).director.noteSpawn(id, pos, now);
   directorFor(room).noteSpawn(id, now);
   roomBoss(room).noteSpawn(id, now); // S4: no flak at it for a beat
+  budgetFor(room)?.noteSpawn(id, now); // C2: nothing lethal near it for 5 s
 }
 
-/** D5: a spawn never lands inside a warned director event's danger zone. */
+/** C2: a spawn stays this far from where a strike, meteor or bomb is about
+ * to land, m (its blast radius and a margin). */
+const SPAWN_STRIKE_CLEAR_M = 120;
+
+/** D5: a spawn never lands inside a warned director event's danger zone —
+ * C2: nor next to an incoming strike, meteor or bomb. */
 const spawnAvoid =
   (room: Room) =>
   (pos: Vec3): boolean =>
     directorFor(room)
       .pending()
-      .some((e) => inDangerZone(e, pos, 60));
+      .some((e) => inDangerZone(e, pos, 60)) ||
+    missilesFor(room)
+      .director.missiles()
+      .some(
+        (m) =>
+          Math.hypot(
+            wrapDeltaAxis(m.to.x, pos.x),
+            wrapDeltaAxis(m.to.z, pos.z),
+          ) < SPAWN_STRIKE_CLEAR_M,
+      );
 
 /** A plane died: blast the city at its last on-record position (alive or
  * dead — lastPosOf covers both). Call after the death is decided. A collapse
@@ -798,6 +873,8 @@ function disposeRoom(room: Room): void {
   bossByRoom.delete(room.id);
   wrecksByRoom.delete(room.id);
   directorsByRoom.delete(room.id);
+  chaosByRoom.delete(room.id);
+  budgetsByRoom.delete(room.id);
 }
 
 const sanitizeName = (raw: unknown): string => {
@@ -916,6 +993,7 @@ function handleJoin(
     wrecks: wrecksByRoom.get(room.id)?.active() ?? [],
     director: directorFor(room).pending().map(encodeDirectorEvent),
     boss: roomBoss(room).state(now),
+    ...(chaosFor(room) && { chaos: chaosFor(room)?.state(now) }),
   };
   ws.send(JSON.stringify(welcome));
   sendToRoom(room, { type: "playerJoined", player: { id, name } }, id);
@@ -1083,14 +1161,19 @@ function handleLeave(id: string): void {
   if (room) directorsByRoom.get(room.id)?.forget(id);
   if (room) {
     bossByRoom.get(room.id)?.forget(id);
+    botsByRoom.get(room.id)?.forgetHuman(id);
+    budgetsByRoom.get(room.id)?.forget(id);
     sendToRoom(room, { type: "playerLeft", id });
     // D2: the last human out takes the damage with them (see breakable) —
     // D3: and the collapses, in the same reset.
     if (room.humanCount === 0) {
       const rc = roomCityById.get(room.id);
       if (rc) resetRoomCity(rc);
-      // D5: and the director's warnings, cooldowns and rebuilds with it.
+      // D5: and the director's warnings, cooldowns and rebuilds with it —
+      // C2: and the chaos (runs, quakes, fires) and the budget.
       directorsByRoom.get(room.id)?.reset();
+      chaosByRoom.get(room.id)?.reset();
+      budgetsByRoom.get(room.id)?.reset();
     }
     // Refill the vacated seat (or wind the bots down if the room is done);
     // a room the last member just left is already gone — free its state.
@@ -1207,6 +1290,61 @@ function handleBossHit(client: Client, msg: ClientEnvelope, now: number): void {
 }
 
 /**
+ * C2: a shooter-side hit on a bomber. The round's whole line is re-judged
+ * against the formation's own pose (server/src/chaos.ts claimBomberHit);
+ * the ship that runs out of HP goes down at once: its undropped bombs are
+ * called off, its shooter credited with a kill.
+ */
+function handleBomberHit(
+  client: Client,
+  msg: ClientEnvelope,
+  now: number,
+): void {
+  const chaos = chaosFor(client.room);
+  if (!chaos) return;
+  const { run, k, seq, bulletOrigin, dir, t } = msg;
+  if (typeof run !== "number" || typeof k !== "number") return;
+  if (typeof seq !== "number" || typeof t !== "number") return;
+  if (!Number.isFinite(t) || !isVec3(bulletOrigin) || !isVec3(dir)) return;
+  const hit = claimBomberHit(
+    combat,
+    chaos,
+    missilesFor(client.room).director,
+    client.id,
+    { run, k, seq, origin: bulletOrigin, dir, t },
+    client.pose.pos,
+    now,
+    speedCapOf(client, now),
+  );
+  if (hit?.down) bomberDowned(client.room, hit.down, client.id, hit.cancelled);
+}
+
+/** C2: a bomber is down — everyone sees it go (and its bombs that will no
+ * longer drop vanish), its shooter takes a kill, the news heli comes. */
+function bomberDowned(
+  room: Room,
+  down: { r: number; k: number; t: number },
+  by: string | null,
+  off: number[],
+): void {
+  sendToRoom(room, {
+    type: "bomberDown",
+    d: encodeBomberDown(down),
+    by,
+    off,
+  });
+  if (by !== null && room.members.has(by)) {
+    combat.creditKill(by);
+    broadcastScores(room);
+  }
+  const run = roomBombers(room).runs.find((r) => r.id === down.r);
+  if (run) {
+    const at = bomberPoseInto(run, down.k, down.t, blankBomberPose());
+    pendingKillByRoom.set(room.id, { x: at.x, z: at.z });
+  }
+}
+
+/**
  * S4: the sky boss is down. Credit by damage share (common/src/boss.ts
  * bossCredit, pilots still in the room): +1 kill for each dealer with
  * BOSS_CREDIT_MIN_SHARE, SKY-BOSS SLAYER for the top one (no streak, no
@@ -1298,6 +1436,10 @@ function sendDeath(
     offerCityEvent(room, "death", death.victimId, now);
   }
   creditMedals(room, death, now);
+  // B3: human-vs-bot gun kills move the human's skill level.
+  botsByRoom
+    .get(room.id)
+    ?.noteDeath(death.victimId, death.killerId, death.cause);
   broadcastScores(room);
 }
 
@@ -1496,12 +1638,22 @@ function tickRoomBots(room: Room, now: number): void {
         ? (bots.contactOf(member.id)?.vel ?? { x: 0, y: 0, z: 0 })
         : poseVelocity(pose),
       prot: combat.isProtected(member.id, now),
+      // B3: a hurt bot breaks off and comes back after regen.
+      hp: combat.hpOf(member.id),
     });
   }
   // S4: the sky boss's live weak points are contacts too — bots engage it.
   for (const c of roomBoss(room).contacts(now)) {
     contacts.push({ ...c, prot: false, boss: true });
   }
+  // B3: the timed hazards every client has already been told about — X1
+  // missiles from their launch, S4 flak from its firing — for the bots to
+  // fly around.
+  bots.setHazardDiscs(
+    "missile",
+    missilesFor(room).director.missiles().map(missileHazard),
+  );
+  bots.setHazardDiscs("flak", roomBoss(room).shellsInFlight().map(flakHazard));
 
   const { shots, hits, crashes } = bots.tick(now, contacts);
 
@@ -1633,6 +1785,7 @@ function tickMissiles(room: Room, now: number): void {
       human: !member.isBot,
       // A timed course run (S3) never draws fire: luck is not a lap time.
       eligible: !clients.get(member.id)?.course.running,
+      prot: combat.isProtected(member.id, now),
     });
   }
   const launched = rm.director.tick(now, planes, {
@@ -1641,6 +1794,7 @@ function tickMissiles(room: Room, now: number): void {
     buildings: rc.buildings,
     destroyedShare:
       rc.damage.destroyedCount / Math.max(1, rc.damage.chunkCount),
+    budget: budgetFor(room),
   });
   if (launched) {
     sendToRoom(room, { type: "missile", m: encodeMissile(launched) });
@@ -1740,7 +1894,11 @@ function landMissile(
   now: number,
 ): void {
   const rc = breakable(room);
-  if (rc) applyMissileImpact(rc, m);
+  if (rc) {
+    const broke = applyMissileImpact(rc, m);
+    // C2: what it broke catches fire.
+    chaosFor(room)?.ignite(broke, now, rc);
+  }
   const event = cityEvents.offer(room.id, "missile", m.to, now);
   if (event) sendToRoom(room, { type: "cityEvent", event });
   const planes: { id: string; pos: Vec3 }[] = [];
@@ -1758,8 +1916,10 @@ function landMissile(
       }),
     });
   }
+  const cause =
+    m.kind === "meteor" ? "meteor" : m.kind === "bomb" ? "bomb" : "missile";
   for (const victim of rm.director.blastVictims(m, planes, now)) {
-    const hit = combat.environmentDamage(victim.id, victim.damage, now);
+    const hit = combat.environmentDamage(victim.id, victim.damage, now, cause);
     if (!hit) continue;
     const isBot = room.members.get(victim.id)?.isBot ?? false;
     sendToRoom(room, {
@@ -1769,7 +1929,10 @@ function landMissile(
       hp: hit.hp,
       from: m.to,
     });
-    if (isBot) botsFor(room).onDamaged(victim.id, now);
+    // C2: a meteor's or bomb's blast has already gone off — a bot's break
+    // turn (meant to shake a shooter) only throws it into the towers. The
+    // bot sim measured it: 0.26 → 0.19 crashes / bot-min with chaos on.
+    if (isBot && cause === "missile") botsFor(room).onDamaged(victim.id, now);
     if (!hit.death) continue;
     rm.director.forget(victim.id);
     sendDeath(room, hit.death, now);
@@ -1808,6 +1971,7 @@ function tickDirector(room: Room, now: number): FiredEvent[] {
     ? director.tick(now, directorPlanes(room, now), {
         city: rc,
         cranes: moversFor(room.seed).cranes,
+        budget: budgetFor(room),
       })
     : null;
   for (const e of result?.warned ?? []) {
@@ -1825,8 +1989,93 @@ function tickRebuilds(room: Room, now: number): void {
     city: rc,
     cranes: moversFor(room.seed).cranes,
   });
-  for (const r of wires) sendToRoom(room, { type: "rebuild", r });
+  for (const r of wires) {
+    sendToRoom(room, { type: "rebuild", r });
+    // C2: a rebuilt building's fires are out (the next `fires` batch).
+    if (r.go && r.k === 0) chaosFor(room)?.rebuilt(r.b);
+  }
 }
+
+/**
+ * C2 chaos for one room tick — only while a human is in the room, like all
+ * destruction (see breakable): meteors launched (as `missile`), bomber runs
+ * (one `bombers` each, every bomb in it), bombs called off, quakes warned,
+ * and the tick's fires batch. What quakes and fire break rides the tick's
+ * `chunks` batch.
+ */
+function tickChaos(room: Room, now: number): void {
+  const chaos = chaosFor(room);
+  const rc = breakable(room);
+  const budget = budgetFor(room);
+  if (!chaos || !rc || !budget) return;
+  const planes: ChaosPlane[] = [];
+  for (const member of room.members.values()) {
+    const pose = memberPose(room, member.id);
+    if (!pose) continue;
+    const age = poseAgeOf(member.id, now) / 1000;
+    const v = velocityOf(room, member.id, pose);
+    planes.push({
+      id: member.id,
+      pos: canonicalize({
+        x: pose.pos.x + v.x * age,
+        y: pose.pos.y + v.y * age,
+        z: pose.pos.z + v.z * age,
+      }),
+      vel: v,
+      human: !member.isBot,
+      prot: combat.isProtected(member.id, now),
+    });
+  }
+  const rm = missilesFor(room);
+  const out = chaos.tick(now, planes, {
+    city: rc,
+    missiles: rm.director,
+    budget,
+    index: rm.index,
+    obstacles: craneTops(room.seed),
+  });
+  for (const m of out.meteors) {
+    sendToRoom(room, { type: "missile", m: encodeMissile(m) });
+  }
+  for (const { run, bombs } of out.runs) {
+    sendToRoom(room, {
+      type: "bombers",
+      r: encodeBomberRun(run),
+      b: bombs.map(encodeMissile),
+    });
+  }
+  if (out.bombsOff.length > 0) {
+    sendToRoom(room, { type: "bombsOff", ids: out.bombsOff });
+  }
+  for (const q of out.quakes) {
+    sendToRoom(room, { type: "quake", q: encodeQuake(q) });
+  }
+  if (out.firesOn.length > 0 || out.firesOff.length > 0) {
+    sendToRoom(room, {
+      type: "fires",
+      on: encodeChunkIds([...out.firesOn].sort((a, b) => a - b)),
+      off: encodeChunkIds([...out.firesOff].sort((a, b) => a - b)),
+    });
+  }
+}
+
+/** C2: what a bomber line must clear besides roofs — the crane hubs. */
+const craneTopsBySeed = new Map<
+  number,
+  { x: number; z: number; top: number }[]
+>();
+const craneTops = (seed: number) => {
+  let tops = craneTopsBySeed.get(seed);
+  if (!tops) {
+    tops = moversFor(seed).cranes.map((c) => ({
+      x: c.x,
+      z: c.z,
+      top: c.hubY + 3,
+    }));
+    craneTopsBySeed.set(seed, tops);
+  }
+  return tops;
+};
 
 /**
  * D5: a gas main blew: the city's blast reaction (`gas` city event — fire,
@@ -1898,6 +2147,8 @@ const server = createServer((req, res) => {
         wrecksByRoom: [...wrecksByRoom.keys()],
         directorsByRoom: [...directorsByRoom.keys()],
         bossByRoom: [...bossByRoom.keys()],
+        chaosByRoom: [...chaosByRoom.keys()],
+        budgetsByRoom: [...budgetsByRoom.keys()],
       }),
     );
     return;
@@ -1966,6 +2217,8 @@ wss.on("connection", (ws) => {
       if (!client.pending) handleHitClaim(client, msg, now);
     } else if (msg.type === "bossHit") {
       if (!client.pending) handleBossHit(client, msg, now);
+    } else if (msg.type === "bomberHit") {
+      if (!client.pending) handleBomberHit(client, msg, now);
     } else if (msg.type === "crash") {
       handleCrash(client, msg.t, msg.wreck, now);
     } else if (msg.type === "setBots") {
@@ -2025,8 +2278,13 @@ function tick(): void {
     tickRoomBots(room, time);
     enforceStormCeiling(room, time);
     updateNewsHeli(room, time);
+    // C2: the gone-share backstop — at GONE_HOLD_SHARE nothing breaks this
+    // tick (strikes still land) until rebuilds catch up.
+    const held = roomCityById.get(room.id);
+    if (held && TUNINGS.hold) applyGoneHold(held);
     landWrecks(room, time); // D4: before the batch — its chunks ride along
     tickMissiles(room, time);
+    tickChaos(room, time); // C2: before the batch — quakes' and fires' chunks
     tickBoss(room, time); // S4: before the batch — a landing's chunks ride it
     // D5: the director fires what is due (a gas main's chunks join the
     // batch; a demolition's record goes out after it) and warns what is next.

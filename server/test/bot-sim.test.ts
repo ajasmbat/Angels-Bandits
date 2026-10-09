@@ -49,15 +49,37 @@
 // applyBossImpact into the room's destruction. The report counts bot damage
 // on the boss, downs, flak hits and kills, and bots that flew into the hull.
 //
+// B3 tactics: every bot reads its HP off the contact list (break-offs) and
+// the room's missiles and flak as hazard discs, as on the server. The report
+// adds what the tactics flew (boom passes, pincers, break-offs, loops/rolls
+// by style, hazard dodges), hazard hits and deaths per bot-minute, and
+// crashes within 2 s of an aerobatic maneuver. BOT_SIM_TACTICS=0 flies the
+// pre-B3 brain (the negative control: main's numbers, exactly);
+// BOT_SIM_SKILL=novice|veteran scripts 30 outcomes for the human through
+// the scaler before the fight, so hits on it compare across skill levels;
+// BOT_SIM_BOTS sets the room size (11 = a full room's worth of bots).
+//
+// C2 constant chaos: BOT_SIM_CHAOS=1 runs EVERY layer at production cadence
+// — X1 strikes, the D5 director and its rebuilds, the S4 boss on its real
+// schedule, and the C2 chaos director (meteors, bomber runs, quakes,
+// spreading fire) — with the room's DangerBudget shared between them, the
+// gone-share hold and the bombers in the room's mover field (solid for
+// bots, probed): the paths index.ts uses. Every bot counts as a watched
+// human (the worst case).
+// The report counts deaths by cause — missile, meteor, bomb, into a bomber,
+// flak, collapse by origin, crash — and the chaos tick's cost.
+//
 // MAIN_* are the same harness's numbers on main before B1 (bots mostly high,
 // spawned at RESPAWN_ALTITUDE), same seeds and run length — the bar the
 // review set is crashes per bot-minute within 1.15x of them.
 
 import {
   BOSS_FAST_TUNING,
+  BOSS_TUNING,
   collideBoss,
   raidMaxHp,
 } from "@angels-bandits/common/boss";
+import { collideBombers } from "@angels-bandits/common/chaos";
 import {
   type Building,
   chunkId,
@@ -99,6 +121,7 @@ import {
   EVENT_GAS,
   inDangerZone,
 } from "@angels-bandits/common/director";
+import { flakHazard, missileHazard } from "@angels-bandits/common/hazards";
 import type { SpawnState } from "@angels-bandits/common/protocol";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
@@ -114,8 +137,15 @@ import {
   applyBotFire,
   landBotRound,
 } from "../src/bots";
+import {
+  CHAOS_TUNING,
+  ChaosDirector,
+  type ChaosPlane,
+  applyGoneHold,
+} from "../src/chaos";
 import { nearBuildingProbe } from "../src/cityevents";
 import { Combat } from "../src/combat";
+import { DangerBudget } from "../src/danger";
 import {
   type RoomCity,
   applyDeathBlast,
@@ -145,15 +175,20 @@ const ROOMS = Number(process.env.BOT_SIM_ROOMS ?? 18);
 const TUNE = process.env.BOT_SIM_SET === "tune";
 const roomSeed = (room: number) => (TUNE ? 2024 + room * 31 : 9001 + room * 97);
 const spawnSeed = (room: number) => (TUNE ? 99 + room : 5003 + room * 7);
-const BOTS = 5;
+const BOTS = Number(process.env.BOT_SIM_BOTS ?? 5);
+/** B3: tactics on (default), and the scripted human's skill. */
+const TACTICS = process.env.BOT_SIM_TACTICS !== "0";
+const SKILL = process.env.BOT_SIM_SKILL;
 /** D2 modes (see the header). */
 const DESTROY = Number(process.env.BOT_SIM_DESTROY ?? 0);
 const LIVE = process.env.BOT_SIM_LIVE === "1";
 /** D3: bring a tower down next to the fight every COLLAPSE_EVERY_S. */
 const COLLAPSE = process.env.BOT_SIM_COLLAPSE === "1";
 const COLLAPSE_EVERY_S = 20;
-const STRIKES = process.env.BOT_SIM_STRIKES === "1";
-const DIRECTOR = process.env.BOT_SIM_DIRECTOR === "1";
+/** C2: every chaos layer at production cadence (see the header). */
+const CHAOS = process.env.BOT_SIM_CHAOS === "1";
+const STRIKES = process.env.BOT_SIM_STRIKES === "1" || CHAOS;
+const DIRECTOR = process.env.BOT_SIM_DIRECTOR === "1" || CHAOS;
 const BOSS = process.env.BOT_SIM_BOSS === "1";
 const SECONDS = Number(process.env.BOT_SIM_SECONDS ?? 200);
 const DT_MS = 1000 / TICK_DOWN_HZ;
@@ -284,6 +319,27 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
     let flakKills = 0;
     let hullCrashes = 0;
     let bossLandings = 0;
+    /** B3: what the tactics flew, summed over rooms; crashes within 2 s of
+     * a loop or roll; the scripted human's skill level as primed. */
+    const tactic = {
+      decisions: 0,
+      boomPasses: 0,
+      zooms: 0,
+      pincerDecisions: 0,
+      breakOffs: 0,
+      defendBreaks: 0,
+      dodges: 0,
+    };
+    const maneuvers = new Map<string, number>();
+    let maneuverCrashes = 0;
+    let humanLevel = 0;
+    /** C2: kills by meteor and by bomb (the rest of missileKills are X1's),
+     * bots that flew into a bomber, what the chaos staged, and its cost. */
+    let meteorKills = 0;
+    let bombKills = 0;
+    let bomberCrashes = 0;
+    const chaosStaged = { meteors: 0, runs: 0, quakes: 0, broke: 0 };
+    const chaosMs: number[] = [];
 
     for (let room = 0; room < ROOMS; room++) {
       // One room at a time, then let the event loop turn: the whole sim as a
@@ -293,7 +349,15 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
       if (room > 0) await new Promise<void>((r) => setImmediate(r));
       // D2: a breakable copy per room when a damage mode is on.
       let rc: RoomCity | null = null;
-      if (DESTROY > 0 || LIVE || COLLAPSE || STRIKES || DIRECTOR || BOSS) {
+      if (
+        DESTROY > 0 ||
+        LIVE ||
+        COLLAPSE ||
+        STRIKES ||
+        DIRECTOR ||
+        BOSS ||
+        CHAOS
+      ) {
         rc = createRoomCity(city, movers.cranes);
         const rand = mulberry32(roomSeed(room) ^ 0x5eed);
         rc.buildings.forEach((b, i) => {
@@ -313,6 +377,13 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
             orbitMs: SECONDS * 1000,
             hpScale: 1,
           })
+        : CHAOS
+          ? new BossDirector(mulberry32(roomSeed(room) ^ 0xb055), BOSS_TUNING)
+          : null;
+      // C2: the room's danger budget and chaos director.
+      const budget = CHAOS ? new DangerBudget() : undefined;
+      const chaos = CHAOS
+        ? new ChaosDirector(roomSeed(room) ^ 0xc4a05, CHAOS_TUNING)
         : null;
       const bossWorld = rc
         ? { buildings: rc.buildings, index: rc.index }
@@ -324,6 +395,7 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
             ...movers,
             collapses: rc.collapses,
             ...(boss && { boss: boss.slot }),
+            ...(chaos && { bombers: chaos.slot }),
           }
         : movers;
       const bots = new RoomBots(
@@ -333,7 +405,10 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         roomMovers,
         true,
         nature,
+        TACTICS,
       );
+      /** B3: when each bot was last seen flying a loop / roll, ms. */
+      const lastManeuver = new Map<string, number>();
       const combat = new Combat();
       const director = STRIKES
         ? new MissileDirector(mulberry32(roomSeed(room) ^ 0x3155))
@@ -354,6 +429,7 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
               index: rc.index,
               buildings: rc.buildings,
               destroyedShare: 0,
+              budget,
             }
           : null;
       // D4: wrecks fall and kill in every mode, as on the live server (only
@@ -423,12 +499,23 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         }
         rc.breakers.set(best, null);
       };
+      // B3: prime the scripted human's skill through the public seam — 30
+      // gun kills one way (enough to saturate the level).
+      const anchorBot = roster[0]?.id;
+      if (SKILL && anchorBot) {
+        for (let k = 0; k < 30; k++) {
+          if (SKILL === "novice") bots.noteDeath("human-1", anchorBot, "shot");
+          else bots.noteDeath(anchorBot, "human-1", "shot");
+        }
+        humanLevel = bots.skill.levelOf("human-1");
+      }
       for (const e of roster) {
         combat.addPlayer(e.id, 0);
         spawnedAt.set(e.id, 0);
         const at = bots.lastPosOf(e.id);
         if (director && at) director.noteSpawn(e.id, at, 0);
         destruction?.noteSpawn(e.id, 0);
+        budget?.noteSpawn(e.id, 0);
       }
 
       for (let i = 1; i <= SECONDS * TICK_DOWN_HZ; i++) {
@@ -450,6 +537,7 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
           spawnedAt.set(id, now);
           director?.noteSpawn(id, spawn.pos, now);
           destruction?.noteSpawn(id, now);
+          budget?.noteSpawn(id, now);
         }
         const hi = human(now);
         const contacts: BotContact[] = [hi];
@@ -460,6 +548,7 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
               id: e.id,
               ...c,
               prot: combat.isProtected(e.id, now),
+              hp: combat.hpOf(e.id),
             });
         }
         if (boss && bossWorld && rc) {
@@ -497,8 +586,10 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
 
         if (director && strikeWorld && rc) {
           // Land what is due first (index.ts order), then maybe launch.
+          if (CHAOS) applyGoneHold(rc);
           for (const m of director.settle(now)) {
-            applyMissileImpact(rc, m);
+            const broke = applyMissileImpact(rc, m);
+            chaos?.ignite(broke, now, rc);
             const planes: { id: string; pos: Vec3 }[] = [];
             for (const e of roster) {
               const c = bots.contactOf(e.id);
@@ -510,19 +601,57 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
               missileHits++;
               if (hit.death) {
                 bots.setDead(v.id);
-                missileKills++;
-              } else bots.onDamaged(v.id, now);
+                if (m.kind === "meteor") meteorKills++;
+                else if (m.kind === "bomb") bombKills++;
+                else missileKills++;
+              } else if (m.kind !== "meteor" && m.kind !== "bomb") {
+                // index.ts landMissile: no break turn for a C2 blast.
+                bots.onDamaged(v.id, now);
+              }
             }
           }
           const planes: DirectorPlane[] = [];
           for (const e of roster) {
             const c = bots.contactOf(e.id);
             if (!c || !bots.poseOf(e.id)) continue;
-            planes.push({ id: e.id, ...c, human: true, eligible: true });
+            planes.push({
+              id: e.id,
+              ...c,
+              human: true,
+              eligible: true,
+              prot: combat.isProtected(e.id, now),
+            });
           }
           strikeWorld.destroyedShare =
             rc.damage.destroyedCount / Math.max(1, rc.damage.chunkCount);
           if (director.tick(now, planes, strikeWorld)) missiles++;
+          if (chaos && budget) {
+            // C2: the chaos director's tick (index.ts tickChaos).
+            const cPlanes: ChaosPlane[] = planes.map((p) => ({
+              id: p.id,
+              pos: p.pos,
+              vel: p.vel,
+              human: true,
+              prot: p.prot ?? false,
+            }));
+            const c0 = performance.now();
+            const out = chaos.tick(now, cPlanes, {
+              city: rc,
+              missiles: director,
+              budget,
+              index: rc.index,
+              obstacles: movers.cranes.map((c) => ({
+                x: c.x,
+                z: c.z,
+                top: c.hubY + 3,
+              })),
+            });
+            chaosMs.push(performance.now() - c0);
+            chaosStaged.meteors += out.meteors.length;
+            chaosStaged.runs += out.runs.length;
+            chaosStaged.quakes += out.quakes.length;
+            chaosStaged.broke += out.broke.length;
+          }
         }
 
         // D5: the director fires and warns before the bots fly (index.ts
@@ -544,6 +673,7 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
           const d = destruction.tick(now, dPlanes, {
             city: rc,
             cranes: movers.cranes,
+            budget,
           });
           directorCancelled += d.cancelled.length;
           for (const f of d.fired) {
@@ -575,6 +705,16 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
           bots.setHazards(destruction.pending());
         }
 
+        // B3: the room's timed hazards, as index.ts feeds them.
+        if (director) {
+          bots.setHazardDiscs(
+            "missile",
+            director.missiles().map(missileHazard),
+          );
+        }
+        if (boss) {
+          bots.setHazardDiscs("flak", boss.shellsInFlight().map(flakHazard));
+        }
         const t0 = performance.now();
         const result = bots.tick(now, contacts);
         tickMs.push(performance.now() - t0);
@@ -587,6 +727,15 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
             collideBoss(boss.slot, site, PLAYER_RADIUS + 1, now)
           ) {
             if (combat.crash(id, now)) hullCrashes++;
+            continue;
+          }
+          // C2: flown into a bomber (counted apart from the city).
+          if (
+            chaos &&
+            site &&
+            collideBombers(chaos.slot, site, PLAYER_RADIUS + 1, now)
+          ) {
+            if (combat.crash(id, now)) bomberCrashes++;
             continue;
           }
           // D3: crushed by falling debris is a collapse kill, not a crash.
@@ -616,6 +765,12 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
           }
           if (!combat.crash(id, now)) continue;
           crashes++;
+          if (
+            now - (lastManeuver.get(id) ?? Number.NEGATIVE_INFINITY) <=
+            2000
+          ) {
+            maneuverCrashes++;
+          }
           if (site && site.y < 0 && tunnelAt(site)) tunnelCrashes++;
           // D5 telemetry: crashes into rubble, into a damaged building, or
           // inside a warned director zone.
@@ -718,7 +873,7 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
           }
         }
         // D3: the server's destruction tick (plus the director's knock-down).
-        if (rc && (LIVE || COLLAPSE || DIRECTOR || BOSS)) {
+        if (rc && (LIVE || COLLAPSE || DIRECTOR || BOSS || CHAOS)) {
           if (COLLAPSE && i % (COLLAPSE_EVERY_S * TICK_DOWN_HZ) === 0) {
             knockDown();
           }
@@ -728,8 +883,10 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
           for (const r of destruction.rebuild(now, dPlanes, {
             city: rc,
             cranes: movers.cranes,
+            budget,
           })) {
             if (r.go) rebuilds++;
+            if (r.go && r.k === 0) chaos?.rebuilt(r.b);
           }
         }
 
@@ -770,9 +927,16 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
           });
           if (f.pos.y < LOW) below++;
           if (f.pos.y > CLOUD_BASE) ceilingBreaches++;
+          if (bots.maneuverOf(e.id)) lastManeuver.set(e.id, now);
         }
       }
       zoneRefusals += bots.zoneRefusals;
+      for (const k of Object.keys(tactic) as (keyof typeof tactic)[]) {
+        tactic[k] += bots.stats[k];
+      }
+      for (const [k, n] of Object.entries(bots.stats.maneuvers)) {
+        maneuvers.set(k, (maneuvers.get(k) ?? 0) + n);
+      }
       tunnelRollouts += bots.tunnelRollouts;
       tunnelCommits += bots.tunnelCommits;
       tunnelPasses += bots.tunnelPasses;
@@ -783,6 +947,13 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         destroyedChunks += rc.damage.destroyedCount;
       }
     }
+    /** Quantile of a timing sample, ms. */
+    const q = (xs: number[], at: number): number => {
+      const sorted = [...xs].sort((a, b) => a - b);
+      return (
+        sorted[Math.min(sorted.length - 1, Math.floor(at * sorted.length))] ?? 0
+      );
+    };
     const sortedTicks = [...tickMs].sort((a, b) => a - b);
     const tickAt = (q: number) =>
       sortedTicks[
@@ -823,9 +994,14 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         `D5 director            ${DIRECTOR ? `${directorEvents[EVENT_COLLAPSE]} demolitions, ${directorEvents[EVENT_GAS]} gas mains, ${directorEvents[EVENT_CRANE]} crane falls, ${directorCancelled} called off, ${rebuilds} rebuilds` : "off"}`,
         `D5 crash sites         ${crashCauses.rubble} into collapse rubble/debris, ${crashCauses.damaged} into a damaged building, ${crashCauses.warned} inside a warned zone (all in crashes)`,
         `D5 kills by event      ${DIRECTOR ? `demolition ${directorKills.collapse}, crane ${directorKills.crane}, gas ${directorKills.gas}, chain collapse ${directorKills.chain} (${((directorKills.collapse + directorKills.crane + directorKills.gas + directorKills.chain) / botMinutes).toFixed(3)} / bot-min; not in crashes)` : "off"}`,
-        `S4 boss                ${BOSS ? `${bossHits} bot hits on weak points (${((100 * bossHits * BULLET_DAMAGE) / Math.max(1, bossHpTotal)).toFixed(1)}% of all boss HP), ${bossDowns}/${ROOMS} downed (at ${bossDownS.map((x) => x.toFixed(0)).join(", ") || "-"} s), ${bossLandings} sections landed` : "off"}`,
-        `S4 flak                ${BOSS ? `${flakShells} shells, ${flakHits} bot hits, ${flakKills} kills (${(flakKills / botMinutes).toFixed(3)} / bot-min), ${hullCrashes} bots flew into the hull` : "off"}`,
-        `deaths / bot-min       ${((crashes + kills + flakKills + hullCrashes + collapseKills + missileKills + wreckKills + directorKills.collapse + directorKills.crane + directorKills.gas + directorKills.chain) / botMinutes).toFixed(3)} (every cause)`,
+        `S4 boss                ${BOSS || CHAOS ? `${bossHits} bot hits on weak points (${((100 * bossHits * BULLET_DAMAGE) / Math.max(1, bossHpTotal)).toFixed(1)}% of all boss HP), ${bossDowns}/${ROOMS} downed (at ${bossDownS.map((x) => x.toFixed(0)).join(", ") || "-"} s), ${bossLandings} sections landed` : "off"}`,
+        `S4 flak                ${BOSS || CHAOS ? `${flakShells} shells, ${flakHits} bot hits, ${flakKills} kills (${(flakKills / botMinutes).toFixed(3)} / bot-min), ${hullCrashes} bots flew into the hull` : "off"}`,
+        `C2 chaos               ${CHAOS ? `${chaosStaged.meteors} meteors, ${chaosStaged.runs} bomber runs, ${chaosStaged.quakes} quakes, ${chaosStaged.broke} chunks broken by quakes/fire; kills: meteor ${meteorKills}, bomb ${bombKills}, into a bomber ${bomberCrashes} (${((meteorKills + bombKills + bomberCrashes) / botMinutes).toFixed(3)} / bot-min); chaos tick ms p50 ${q(chaosMs, 0.5).toFixed(3)} p99 ${q(chaosMs, 0.99).toFixed(3)} max ${q(chaosMs, 1).toFixed(3)}` : "off"}`,
+        `B3 tactics             ${TACTICS ? `${tactic.boomPasses} boom passes (${tactic.zooms} zooms), ${tactic.pincerDecisions} pincer decisions, ${tactic.breakOffs} break-offs, ${tactic.defendBreaks} defensive breaks, ${tactic.dodges} hazard dodges, ${tactic.decisions} decisions` : "off (pre-B3 brain)"}`,
+        `B3 aerobatics          ${[...maneuvers].map(([k, n]) => `${k} ${n}`).join(", ") || "none"}; ${maneuverCrashes} crashes within 2 s of one`,
+        `B3 hazards             ${((missileHits + flakHits) / botMinutes).toFixed(3)} hits / bot-min, ${((missileKills + flakKills + hullCrashes + collapseKills + directorKills.collapse + directorKills.crane + directorKills.gas + directorKills.chain + meteorKills + bombKills + bomberCrashes) / botMinutes).toFixed(3)} deaths / bot-min (missile, meteor, bomb, flak, hull, bomber, collapse, director); with D4 wrecks flown into ${((missileKills + flakKills + hullCrashes + collapseKills + directorKills.collapse + directorKills.crane + directorKills.gas + directorKills.chain + meteorKills + bombKills + bomberCrashes + wreckKills) / botMinutes).toFixed(3)}`,
+        `B3 skill               ${SKILL ? `${SKILL} human (level ${humanLevel.toFixed(2)}): ${humanHits} hits` : "neutral"}`,
+        `deaths / bot-min       ${((crashes + kills + flakKills + hullCrashes + collapseKills + missileKills + wreckKills + directorKills.collapse + directorKills.crane + directorKills.gas + directorKills.chain + meteorKills + bombKills + bomberCrashes) / botMinutes).toFixed(3)} (every cause)`,
         "",
         `crash breakdown (${TUNE ? "tune" : "holdout"} seeds; roofs hit p10/p50/p90 m: ${quantiles(roofsHit)}):`,
         ...[...crashKinds]
@@ -835,6 +1011,10 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
     );
 
     expect(stats.belowLow).toBeGreaterThanOrEqual(0.75);
+    // B3: no aerobatic maneuver ends in the scenery, and a primed human's
+    // level is saturated (the skill comparison is between the ends).
+    expect(maneuverCrashes).toBe(0);
+    if (SKILL) expect(Math.abs(humanLevel)).toBeGreaterThanOrEqual(0.95);
     expect(ceilingBreaches).toBe(0);
     expect(graceFights).toBe(0);
     expect(humanHits).toBeGreaterThan(0);
@@ -843,6 +1023,10 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
     );
     expect(stats.streetSpawnShare).toBeGreaterThanOrEqual(0.9);
     expect(stats.spawnCrashShare).toBeLessThanOrEqual(0.03);
+    if (CHAOS) {
+      // C2: the chaos tick stays cheap (a room's whole tick budget is 50 ms).
+      expect(q(chaosMs, 0.99)).toBeLessThanOrEqual(2);
+    }
     if (BOSS) {
       // S4: bots engage the zeppelin (holdout seeds: 534 rounds on its weak
       // points), flak wounds far more than it kills (2 kills), and the

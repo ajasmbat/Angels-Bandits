@@ -113,6 +113,7 @@ import { NEAR_MISS_RADIUS, closestApproach, spatialize } from "./audio/spatial";
 import { ThunderSchedule } from "./audio/thunder";
 import { TrainAudio } from "./audio/train-audio";
 import { createAutoFire, stepAutoFire } from "./game/auto-fire";
+import { bomberBulletHit } from "./game/bomber-hits";
 import { BoostKey } from "./game/boost-key";
 import { bossBulletHit } from "./game/boss-hits";
 import {
@@ -156,7 +157,21 @@ import {
   cornerSpeed,
   holeCorridors,
   stepCornerCap,
+  threadingCorridor,
 } from "./game/corner-speed";
+import {
+  ASSIST_MAX_ROLL,
+  type EffortlessWorld,
+  FEEL_TUNING,
+  arcSweep,
+  createEffortless,
+  createEffortlessOut,
+  effortlessCommand,
+  effortlessError,
+  effortlessStick,
+  resetEffortless,
+  stepEffortless,
+} from "./game/effortless";
 import { type AimMode, FlightInputSource } from "./game/flight-input";
 import { createFreeLook, shapeInput, stepFreeLook } from "./game/freelook";
 import { Guns } from "./game/guns";
@@ -182,6 +197,7 @@ import {
 import {
   type SaveWorld,
   createHoleSave,
+  holeSaveActive,
   resetHoleSave,
   stepHoleSave,
 } from "./game/hole-save";
@@ -202,6 +218,7 @@ import {
   type QaDestructionSpec,
   stageDestruction,
 } from "./game/qa-destruction";
+import { quakeShakeAmount } from "./game/quake";
 import { SessionStats } from "./game/session-stats";
 import { wreckCamView } from "./game/wreck-cam";
 import {
@@ -217,6 +234,7 @@ import { Airliners } from "./render/airliners";
 import { archetypeFor } from "./render/archetypes";
 import { AtmosphereFx } from "./render/atmosphere-fx";
 import { Birds } from "./render/birds";
+import { BomberRenderer } from "./render/bombers";
 import { BossRenderer } from "./render/boss";
 import { CityRenderer } from "./render/city";
 import { PICKUP_TAXIS } from "./render/citylife";
@@ -233,6 +251,7 @@ import { DustClouds, dustHaze } from "./render/dust";
 import { FacadeDetailRenderer } from "./render/facade-detail";
 import { FacadeGarnishRenderer } from "./render/facade-garnish";
 import { FacadeLifeRenderer } from "./render/facade-life";
+import { FireRenderer } from "./render/fires";
 import { Fireworks } from "./render/fireworks";
 import { installHeightFog } from "./render/fog";
 import { Fountains } from "./render/fountains";
@@ -782,6 +801,8 @@ const moverField = {
   // S4: and the room's sky boss — the socket's slot, kept from every welcome
   // and message, so the zeppelin is solid exactly where it is drawn.
   boss: socket.boss,
+  // C2: and its bomber formations, the same way.
+  bombers: socket.bombers,
 };
 // D5: crane-fall records name the room's crane sites — these.
 socket.collapses.bindCranes(moverField.cranes);
@@ -860,8 +881,6 @@ const holeAssist = createHoleAssist();
 const holeAssistWant = createHoleAssist();
 const assistDir: Vec3 = { x: 0, y: 0, z: 0 };
 const assistStickOut = { turn: 0, pitch: 0 };
-/** H2 hole assist stands down past this much real roll, rad (~30°, F7). */
-const ASSIST_MAX_ROLL = Math.PI / 6;
 // H3 hole save: the same spans, and every solid the crash check reads — the
 // last-moment pose correction that threads a hole when a crash is imminent.
 const saveWorld: SaveWorld = {
@@ -873,6 +892,18 @@ const saveWorld: SaveWorld = {
   movers: moverField,
 };
 const holeSave = createHoleSave();
+// F9 effortless assist (game/effortless.ts): the settings' FLIGHT ASSIST and
+// FEEL, its state and its per-frame output (written in place), and the
+// static solids its soft walls probe — the crash check's.
+let assistOn = settings.assist;
+let feelTuning = FEEL_TUNING[settings.feel];
+const effortless = createEffortless();
+const effOut = createEffortlessOut();
+const effWorld: EffortlessWorld = {
+  buildings: city.cityBuildings,
+  index: city.cityIndex,
+  nature: natureIndex,
+};
 const natureRenderer = new NatureRenderer(nature);
 scene.add(natureRenderer.group);
 // L11 river: embankment walls, bridges, the reflecting water and the boats.
@@ -1084,6 +1115,37 @@ const missileRenderer = new MissileRenderer(smoke, impacts);
 scene.add(missileRenderer.group);
 const missileFeed = new MissileFeed();
 const missileShake = new MissileShake();
+/** C2: whistles sounding at once, at most (a bomb carpet must not become a
+ * wall of sine), and how far a bomb's whistle carries, m. */
+const WHISTLE_VOICES = 3;
+const BOMB_WHISTLE_M = 350;
+const whistleEnds: number[] = [];
+// C2 bomber formations (the socket's slot, render clock — drawn == collided)
+// and the spreading fires (the socket's burning chunks, into the D1 pool).
+const bomberRenderer = new BomberRenderer(impacts, (at) => {
+  const t = performance.now();
+  explosions.explode(at, t);
+  sparks.burst(at, t);
+  audio.missileBlast(at, flight.pos, flight.yaw);
+  missileShake.add(wrapDistance(at, flight.pos), t);
+});
+scene.add(bomberRenderer.group);
+const fireRenderer = new FireRenderer(impacts, city.cityBuildings);
+// C2: a quake announced — the ground starts to rumble now (the shake rides
+// the camera path below, on the render clock).
+socket.events.onQuake = (q) => {
+  const at = lastRenderMs;
+  if (at === null) return;
+  const lead = Math.max(0.5, (q.t - at) / 1000);
+  audio.directorWarning(
+    false,
+    flight.pos,
+    flight.pos,
+    flight.yaw,
+    lead + (q.dur / 1000) * 0.6,
+  );
+  radio.noteCombat(performance.now());
+};
 // S4 sky boss: the room's war zeppelin (the socket's slot) on the render
 // clock — hull, glowing weak points, running lights, flak shells — its
 // bursts and its falling sections' fire through the D1 particle pool. A
@@ -1586,6 +1648,7 @@ function resetAssist(): void {
   holeAssist.yaw = 0;
   holeAssist.pitch = 0;
   resetHoleSave(holeSave); // H3: and no save mid-slide
+  resetEffortless(effortless); // F9: and no idle, no guard escape
 }
 
 /** S3: drop the local run (death, respawn, resume) — the server drops its
@@ -1886,7 +1949,7 @@ socket.events.onDeath = (msg) => {
   } else if (msg.killerId === socket.selfId) {
     say(ownKillCallout(name));
   } else if (msg.killerId !== null) {
-    say(splashCallout(nameOf(msg.killerId), isBotOf(msg.killerId)));
+    say(splashCallout(nameOf(msg.killerId), isBotOf(msg.killerId), true));
   }
 };
 /**
@@ -2138,7 +2201,12 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   reactor.setQuality(tier);
   // D1: particle budget and burning patches (counts only).
   impacts.setShare(QUALITY_PROFILES[tier].impacts);
-  missileRenderer.setQuality(QUALITY_PROFILES[tier].missileDebris);
+  missileRenderer.setQuality(
+    QUALITY_PROFILES[tier].missileDebris,
+    QUALITY_PROFILES[tier].chaosFx, // C2: meteor fire trails
+  );
+  bomberRenderer.setQuality(QUALITY_PROFILES[tier].chaosFx); // C2
+  fireRenderer.setQuality(QUALITY_PROFILES[tier].chaosFx); // C2
   blastLedger.setBurnCap(burnCapFor(QUALITY_PROFILES[tier].impacts));
   wrecks.setShare(QUALITY_PROFILES[tier].wreckFire); // D4
   bossRenderer.setQuality(QUALITY_PROFILES[tier].bossFx); // S4
@@ -2517,6 +2585,19 @@ declare global {
         flak: number;
         drawn: BossRenderer["stats"];
       };
+      /** C2 QA: the room's chaos as this client holds it — bomber runs and
+       * downs, quakes, burning chunks, strikes held by kind, and the ships
+       * and fireballs drawn last frame. */
+      chaos: () => {
+        runs: typeof socket.bombers.runs;
+        downs: typeof socket.bombers.downs;
+        quakes: number[];
+        fires: number;
+        strikes: Record<string, number>;
+        drawn: BomberRenderer["stats"];
+        /** The render clock the frame loop last drew at. */
+        renderMs: number | null;
+      };
       jumbotronView: (
         i: number,
         distance?: number,
@@ -2763,6 +2844,13 @@ const settingsPanel = new SettingsPanel(
     autoFire: () => autoFireOn,
     setAutoFire: (on) => {
       autoFireOn = on;
+    },
+    setAssist: (on) => {
+      assistOn = on;
+      resetEffortless(effortless);
+    },
+    setFeel: (feel) => {
+      feelTuning = FEEL_TUNING[feel];
     },
     setRadioVoice: (on) => {
       saveRadioVoice(on);
@@ -3073,6 +3161,21 @@ window.__ab = {
       pos: pose && { x: pose.x, y: pose.y, z: pose.z, yaw: pose.yaw },
       flak: socket.flak.size,
       drawn: bossRenderer.stats,
+    };
+  },
+  chaos: () => {
+    const strikes: Record<string, number> = {};
+    for (const m of socket.missiles.values()) {
+      strikes[m.kind] = (strikes[m.kind] ?? 0) + 1;
+    }
+    return {
+      runs: [...socket.bombers.runs],
+      downs: [...socket.bombers.downs],
+      quakes: [...socket.quakes.keys()],
+      fires: socket.fires.size,
+      strikes,
+      drawn: bomberRenderer.stats,
+      renderMs: lastRenderMs,
     };
   },
   jumbotronView: (i, distance) => jumbotrons.view(i, distance),
@@ -3512,6 +3615,7 @@ const frame = (now: number): void => {
     // command from the other mode ever reaches the plane.
     aimMode = input.aimMode();
     instructor = createInstructor();
+    resetEffortless(effortless);
     // Changed on the settings screen: toasted when it closes.
     if (!settingsOpen) hud.showAimMode(aimMode, isTouch());
   }
@@ -3565,9 +3669,18 @@ const frame = (now: number): void => {
     assistDir.x = -Math.sin(flight.yaw) * cosP;
     assistDir.y = Math.sin(flight.pitch);
     assistDir.z = -Math.cos(flight.yaw) * cosP;
-    /** The pilot's own turn command, assist excluded — the corner manager's
-     * intent, so the nudge can never make it brake for a turn. */
+    /** The pilot's own command, every assist excluded — the corner
+     * manager's intent (so a nudge can never make it brake for a turn) and
+     * what the F9 guard flies ahead. */
     let intentTurn = 0;
+    let intentPitch = 0;
+    const rates = handlingRates(flight.speed, boost.active);
+    /** Instructor only: this frame's aim error, view latch and reframing. */
+    let err: AimError = { yaw: 0, pitch: 0 };
+    let latch: AimError = { yaw: 0, pitch: 0 };
+    let reframing = false;
+    let anchored = false;
+    const instructorMode = !settingsOpen && aimMode === "instructor";
     if (settingsOpen) {
       // M6: the settings panel is up — the autopilot flies (wings level,
       // out of the skyline, throttle full). A fresh instructor every frame,
@@ -3575,7 +3688,8 @@ const frame = (now: number): void => {
       stepAssist(true, dt);
       command = autopilotInput(flight.pitch, flight.pos.y, roll);
       instructor = createInstructor();
-    } else if (aimMode === "instructor") {
+      resetEffortless(effortless);
+    } else if (instructorMode) {
       // The cursor is the aim point: fly the pipper onto it. The view is the
       // un-orbited chase frame at THIS frame's (already stepped) zoom, with
       // the same FOV formula the render writes (boost kick included) —
@@ -3584,7 +3698,7 @@ const frame = (now: number): void => {
       const aimFrame = chase.aimFrame(flight, zoom.z);
       // M7: a touch aim is a direction anchored in the world — project it
       // through this very view, so the cursor read just below IS it.
-      const anchored =
+      anchored =
         touchControls?.steer(flight, aimFrame, aimFov, camera.aspect, dt) ??
         false;
       const cursor = input.cursorNdc();
@@ -3601,7 +3715,7 @@ const frame = (now: number): void => {
       assistDir.x = ax / an;
       assistDir.y = ay / an;
       assistDir.z = az / an;
-      const err = aimError(flight, view.aimDir, view.pipperDir);
+      err = aimError(flight, view.aimDir, view.pipperDir);
       // Latch only what the VIEW changed this frame — the zoom easing, the
       // boost FOV kick, or the cursor moving while free-look owns the mouse
       // (held, or its orbit still easing back, which also covers the
@@ -3611,7 +3725,6 @@ const frame = (now: number): void => {
       // An anchored touch aim latches nothing: it stays put in the world
       // when the view reframes (and aimFrame never sees the free-look orbit),
       // so its error is already free of any view change.
-      let latch: AimError = { yaw: 0, pitch: 0 };
       const zoomMoved = zoom.z !== zoomPrev;
       const looking =
         freelook.held || freelook.yaw !== 0 || freelook.pitch !== 0;
@@ -3627,70 +3740,146 @@ const frame = (now: number): void => {
         const e0 = aimError(flight, before.aimDir, before.pipperDir);
         latch = { yaw: err.yaw - e0.yaw, pitch: err.pitch - e0.pitch };
       }
-      const reframing = looking || (zoom.z > 0 && zoom.z < 1);
-      const rates = handlingRates(flight.speed, boost.active);
+      reframing = looking || (zoom.z > 0 && zoom.z < 1);
       stepAssist(assistOff, dt);
-      // The assist biases the instructor's error toward the centreline (+yaw
-      // is a right turn, i.e. less of the leftward error) — a stick nudge
-      // would just be flown back out by the instructor's own loop.
-      const assisting = holeAssist.yaw !== 0 || holeAssist.pitch !== 0;
-      const unbiased = assisting
-        ? instructorInput(err, latch, reframing, dt, instructor, rates)
-        : null;
-      instructor = instructorInput(
-        assisting
-          ? {
-              yaw: err.yaw - holeAssist.yaw,
-              pitch: err.pitch + holeAssist.pitch,
-            }
-          : err,
+      const pilot = instructorInput(
+        err,
         latch,
         reframing,
         dt,
         instructor,
         rates,
+        feelTuning,
       );
-      intentTurn = (unbiased ?? instructor).turn * input.presence();
-      // Off-window the presence fades the instructor out too: attitude hold.
-      const presence = input.presence();
-      command = {
-        ...command,
-        turn: instructor.turn * presence,
-        pitch: instructor.pitch * presence,
-      };
-      // The reticle reads the unbiased view: the assist never shows.
+      intentTurn = pilot.turn * input.presence();
+      intentPitch = pilot.pitch * input.presence();
+      // The reticle reads the unbiased view: no assist ever shows.
       aimGap = angleBetween(view.aimDir, view.pipperDir);
       aimConverged = aimGap < CONVERGED_RAD;
       aimFovPrev = aimFov;
     } else {
       stepAssist(assistOff, dt);
       intentTurn = command.turn;
-      if (holeAssist.yaw !== 0 || holeAssist.pitch !== 0) {
-        assistStick(
-          holeAssist,
-          command,
-          handlingRates(flight.speed, boost.active),
-          assistStickOut,
+      intentPitch = command.pitch;
+    }
+    // F5 corner speed manager: silently cap the commanded speed so the
+    // turn the pilot is committing to (or the wall ahead) is makeable. The
+    // clock is the one the movers are drawn (and crash-checked) at.
+    // F7: the turn input swings the nose about world-up only when upright —
+    // reversed inverted, about the body's up at knife-edge — so the intent
+    // the manager plans a world-frame turn for is signed by cos(real roll).
+    // F9: with assist on it plans as much turn as the pilot is aiming.
+    cornerCap = stepCornerCap(
+      cornerCap,
+      cornerSpeed(
+        flight,
+        cornerWorld,
+        intentTurn * Math.cos(roll),
+        renderMs,
+        assistOn
+          ? arcSweep(flight, instructorMode ? assistDir : null)
+          : undefined,
+      ),
+      dt,
+    );
+    // F9 effortless assist: auto-level, coordinated turns, the ground floor
+    // and the soft walls, from the pilot's activity and this pose.
+    const touchAiming = touchControls?.aiming() ?? false;
+    stepEffortless(
+      effortless,
+      flight,
+      {
+        enabled: assistOn && !settingsOpen,
+        active:
+          input.takeActivity() ||
+          touchAiming ||
+          command.roll !== 0 ||
+          (!instructorMode && (command.turn !== 0 || command.pitch !== 0)),
+        gap: instructorMode ? aimGap : 0,
+        // A still cursor on the desktop instructor is a command (a held
+        // climb); the nose levels only with the pointer gone or the thumb
+        // lifted. A centred stick is no command at all.
+        levelPitch:
+          !instructorMode ||
+          input.presence() < 0.5 ||
+          (anchored && !touchAiming),
+        firing: guns.firing,
+        threading:
+          holeAssist.yaw !== 0 ||
+          holeAssist.pitch !== 0 ||
+          holeSaveActive(holeSave) ||
+          threadingCorridor(cornerWorld, flight, assistDir.x, assistDir.z) !==
+            null,
+        pilotTurn: intentTurn,
+        pilotPitch: intentPitch,
+        cornerCap: cornerCapInput(cornerCap),
+        aim: instructorMode ? assistDir : null,
+        turnRate: rates.turnRate,
+        pitchRate: rates.pitchRate,
+      },
+      effWorld,
+      dt,
+      effOut,
+    );
+    // A lifted thumb's anchored aim follows the nose while F9 levels.
+    if (effortless.weight > 0 && anchored && !touchAiming) {
+      touchControls?.followNose();
+    }
+    if (instructorMode) {
+      // The hole assist and F9's gentle part bias the instructor's error
+      // (+yaw is a right turn for the hole assist, i.e. less of the leftward
+      // error) — a stick nudge would just be flown back out by its loop.
+      const biased = {
+        yaw: err.yaw - holeAssist.yaw,
+        pitch: err.pitch + holeAssist.pitch,
+      };
+      if (assistOn) {
+        effortlessError(
+          effOut,
+          feelTuning,
+          rates.turnRate,
+          rates.pitchRate,
+          biased,
         );
+      }
+      instructor = instructorInput(
+        biased,
+        latch,
+        reframing,
+        dt,
+        instructor,
+        rates,
+        feelTuning,
+      );
+      // Off-window the presence fades the instructor out too: attitude
+      // hold — and there F9's level bias is handed over as stick instead.
+      const presence = input.presence();
+      command = {
+        ...command,
+        turn: instructor.turn * presence + effOut.biasTurn * (1 - presence),
+        pitch: instructor.pitch * presence + effOut.biasPitch * (1 - presence),
+      };
+      if (assistOn) effortlessCommand(effOut, roll, command);
+    } else if (!settingsOpen) {
+      if (holeAssist.yaw !== 0 || holeAssist.pitch !== 0) {
+        assistStick(holeAssist, command, rates, assistStickOut);
         command = {
           ...command,
           turn: assistStickOut.turn,
           pitch: assistStickOut.pitch,
         };
       }
+      // The feel's stick authority applies with the assist off too (Sharp:
+      // exactly the stick); stepEffortless's identity output adds nothing.
+      effortlessStick(
+        effOut,
+        feelTuning,
+        roll,
+        rates.turnRate,
+        rates.pitchRate,
+        command,
+      );
     }
-    // F5 corner speed manager: silently cap the commanded speed so the
-    // turn the pilot is committing to (or the wall ahead) is makeable. Intent
-    // is the turn command before free-look/zoom shaping; the clock is the one
-    // the movers are drawn (and crash-checked) at.
-    // F7: the turn input swings the nose about world-up only when upright —
-    // reversed inverted, about the body's up at knife-edge — so the intent
-    // the manager plans a world-frame turn for is signed by cos(real roll).
-    cornerCap = stepCornerCap(
-      cornerCap,
-      cornerSpeed(flight, cornerWorld, intentTurn * Math.cos(roll), renderMs),
-      dt,
-    );
     const shaped = {
       ...shapeInput(command, { steer }),
       boost: boost.active,
@@ -3797,9 +3986,12 @@ const frame = (now: number): void => {
     missileShake.addInto(camShake, now); // X1 impacts: display camera only
     // D3: the ground shakes under a collapse coming down nearby — D5: and
     // trembles under a tower the director has warned about.
+    // C2: and shakes city-wide under a quake.
     if (
       renderMs !== null &&
-      (socket.collapses.list.length > 0 || socket.director.size > 0)
+      (socket.collapses.list.length > 0 ||
+        socket.director.size > 0 ||
+        socket.quakes.size > 0)
     ) {
       const jolt = collapseShakeOffsetInto(
         joltScratch,
@@ -3807,6 +3999,9 @@ const frame = (now: number): void => {
           collapseShakeAmount(socket.collapses.list, flight.pos, renderMs),
           socket.director.size > 0
             ? warningTremor(socket.director.values(), flight.pos, renderMs)
+            : 0,
+          socket.quakes.size > 0
+            ? quakeShakeAmount(socket.quakes.values(), flight.pos, renderMs)
             : 0,
         ),
         now,
@@ -3906,6 +4101,33 @@ const frame = (now: number): void => {
             onBoss.weak,
             bullet.origin,
             onBoss.dir,
+            bullet.seq,
+            renderMs,
+          );
+          hud.hitMarker(now);
+          haptics.hit(now);
+          audio.hitThunk();
+        }
+        continue;
+      }
+    }
+    // C2: the bombers. Any round stops on a ship; our own claim it.
+    if (socket.bombers.runs.length > 0) {
+      const onBomber = bomberBulletHit(
+        socket.bombers,
+        bullet.prev,
+        bullet.pos,
+        renderMs,
+      );
+      if (onBomber) {
+        bullets.remove(bullet);
+        sparks.burst(onBomber.at, now);
+        if (!bullet.cosmetic && renderMs !== null) {
+          socket.sendBomberHit(
+            onBomber.run,
+            onBomber.k,
+            bullet.origin,
+            onBomber.dir,
             bullet.seq,
             renderMs,
           );
@@ -4150,12 +4372,20 @@ const frame = (now: number): void => {
       alive ? flight.pos : null,
     );
     for (const m of mf.whistles) {
-      audio.missileWhistle(
-        m.to,
-        flight.pos,
-        flight.yaw,
-        (missileImpactAt(m) - renderMs) / 1000,
-      );
+      // C2: a capped number of voices, and bombs only close by.
+      for (let i = whistleEnds.length - 1; i >= 0; i--) {
+        if ((whistleEnds[i] as number) <= now) whistleEnds.splice(i, 1);
+      }
+      if (whistleEnds.length >= WHISTLE_VOICES) continue;
+      if (
+        m.kind === "bomb" &&
+        wrapDistance(m.to, flight.pos) > BOMB_WHISTLE_M
+      ) {
+        continue;
+      }
+      const left = (missileImpactAt(m) - renderMs) / 1000;
+      whistleEnds.push(now + left * 1000);
+      audio.missileWhistle(m.to, flight.pos, flight.yaw, left);
     }
     if (mf.announces.length > 0) say(incomingCallout());
     for (const m of mf.impacts) {
@@ -4168,7 +4398,11 @@ const frame = (now: number): void => {
       music.noteCombat(now);
     }
     missileRenderer.update(mf.flying, chase.position, renderMs, now);
+    socket.pruneChaos(renderMs); // C2: runs and quakes long over
   }
+  // C2: the bomber formations and the fires.
+  bomberRenderer.update(socket.bombers, chase.position, renderMs, now);
+  fireRenderer.update(socket.fires, chase.position, now);
   // S4: the zeppelin, its flak and its fall; the HUD bar while it flies;
   // "it got away" once, when a raid runs out still flying.
   bossRenderer.update(

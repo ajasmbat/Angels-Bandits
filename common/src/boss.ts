@@ -129,9 +129,11 @@ export const BOSS_PARTS: readonly BossPart[] = [
 
 /** Furthest any part reaches from the hull centre, per axis, m (reject
  * tests: the hull is never further than this from its centre). */
-export const BOSS_REACH_X = 134;
+export const BOSS_REACH_X = 136;
 export const BOSS_REACH_Y = 36;
 export const BOSS_REACH_Z = 38;
+/** Plan-view reach of the hull from its centre (its length and beam), m. */
+export const BOSS_REACH_XZ = Math.hypot(BOSS_REACH_X, BOSS_REACH_Z);
 /** Bounding radius of the whole hull about its centre, m. */
 export const BOSS_RADIUS = Math.hypot(BOSS_REACH_X, BOSS_REACH_Y, BOSS_REACH_Z);
 
@@ -498,6 +500,25 @@ export const PIECE_PARTS: readonly (readonly number[])[] = [0, 1, 2].map((k) =>
   BOSS_PARTS.flatMap((p, i) => (p.piece === k ? [i] : [])),
 );
 
+/** How far any box of section `k` reaches from its anchor, m (its reject
+ * radius while it falls). */
+export const PIECE_REACH: readonly number[] = PIECE_PARTS.map((parts, k) => {
+  const ax = (BOSS_PIECES[k] as { ax: number }).ax;
+  let reach = 0;
+  for (const i of parts) {
+    const p = BOSS_PARTS[i] as BossPart;
+    reach = Math.max(
+      reach,
+      Math.hypot(
+        Math.abs(p.x - ax) + p.hx,
+        Math.abs(p.y) + p.hy,
+        Math.abs(p.z) + p.hz,
+      ),
+    );
+  }
+  return reach;
+});
+
 /** Spin of section `k` of raid `id`: from the ids, never from where. */
 const pieceSpin = (id: number, k: number): 1 | -1 =>
   (id + k) % 2 === 0 ? 1 : -1;
@@ -680,7 +701,7 @@ export function collideBoss(
       const pose = bossPoseAt(r, t, hitPose);
       const dx = wrapDeltaAxis(pose.x, pos.x);
       const dz = wrapDeltaAxis(pose.z, pos.z);
-      const reach = BOSS_REACH_X + radius;
+      const reach = BOSS_REACH_XZ + radius;
       if (dx * dx + dz * dz <= reach * reach) {
         for (let i = 0; i < BOSS_PARTS.length; i++) {
           if (sphereHitsBox(bossPartBoxInto(pose, i, hitBox), pos, radius)) {
@@ -698,7 +719,7 @@ export function collideBoss(
     const dx = wrapDeltaAxis(pose.x, pos.x);
     const dz = wrapDeltaAxis(pose.z, pos.z);
     const dy = pos.y - pose.y;
-    const reach = 70 + radius;
+    const reach = (PIECE_REACH[piece.k] as number) + radius;
     if (dx * dx + dy * dy + dz * dz > reach * reach) continue;
     for (const i of PIECE_PARTS[piece.k] as readonly number[]) {
       if (

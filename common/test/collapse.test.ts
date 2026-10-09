@@ -9,6 +9,7 @@ import {
   chunkId,
   chunkMask,
   generateCity,
+  makeBuilding,
   mulberry32,
   tierGrids,
 } from "@angels-bandits/common/city";
@@ -37,9 +38,12 @@ import {
 import { canonicalize } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
 
-/** A fresh, bound city to break. */
+const SEED_CITY = generateCity(CITY_SEED);
+
+/** A fresh, bound city to break: a clone of the seed city (new Building
+ * objects sharing the immutable shape, as a server room makes). */
 function freshCity(): { city: Building[]; damage: CityDamage } {
-  const city = generateCity(CITY_SEED);
+  const city = SEED_CITY.map((b) => makeBuilding({ ...b, damage: undefined }));
   const damage = new CityDamage();
   damage.bind(city);
   return { city, damage };

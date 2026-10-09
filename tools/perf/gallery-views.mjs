@@ -292,4 +292,57 @@ export const VIEWS = [
     raf: true,
     weather: "clear",
   },
+  // D8 ruins: what a felled lot looks like once the debris is down — the
+  // jagged stump, rubble across the street, smoke and soot, and NOTHING left
+  // in the air where the tower was (no scaffold cage, crane mast, signs or
+  // roof structures). Staged through __ab.qaDestruction (`stage`, times
+  // relative to the render clock at staging): building 343 (215 m, at
+  // (1240, 464)) felled 15 s before the shot — toppled west across the
+  // x = 1200 street, or pancaked — and the seeded 30 % chew of the `ruins`
+  // segment's block (18 buildings within 200 m of (400, 780)), its
+  // collapses landed. The plane is parked high out of shot.
+  {
+    name: "ruin-felled",
+    x: 1150,
+    z: 760,
+    y: 320,
+    yaw: 0,
+    eye: [1150, 90, 640],
+    at: [1240, 30, 464],
+    weather: "clear",
+    stage: { fell: [{ b: 343, h: 215, style: "topple", dir: 0, t: -15_000 }] },
+  },
+  {
+    name: "ruin-pancake",
+    x: 1150,
+    z: 760,
+    y: 320,
+    yaw: 0,
+    eye: [1200, 30, 520],
+    at: [1240, 15, 464],
+    weather: "clear",
+    stage: { fell: [{ b: 343, h: 215, style: "pancake", dir: 0, t: -15_000 }] },
+  },
+  {
+    name: "ruin-chewed",
+    x: 300,
+    z: 1000,
+    y: 320,
+    yaw: 0,
+    eye: [300, 95, 960],
+    at: [400, 35, 780],
+    weather: "clear",
+    stage: {
+      area: {
+        x: 400,
+        z: 780,
+        r: 200,
+        share: 0.3,
+        seed: 6,
+        t: -60_000,
+        stepMs: 1000,
+        buildings: 18,
+      },
+    },
+  },
 ];

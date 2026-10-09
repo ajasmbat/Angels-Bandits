@@ -343,7 +343,6 @@ import { RoofClutterRenderer } from "./render/roofclutter";
 import { RooftopLifeRenderer } from "./render/rooftop-life";
 import { RuinSmoke } from "./render/ruins";
 import { ScaffoldRenderer } from "./render/scaffold";
-import { attachStanding, setStandingClock } from "./render/standing-watch";
 import { Searchlights } from "./render/searchlights";
 import { Signage } from "./render/signage";
 import { Signals } from "./render/signals";
@@ -355,6 +354,7 @@ import {
   skyPhase,
 } from "./render/skycycle";
 import { STREAK_SMOKE_COLORS, SmokeTrails, smokeActive } from "./render/smoke";
+import { attachStanding, setStandingClock } from "./render/standing-watch";
 import { Steam } from "./render/steam";
 import {
   CloudDeck,

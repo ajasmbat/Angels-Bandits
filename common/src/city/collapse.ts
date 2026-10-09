@@ -1168,6 +1168,20 @@ export const craneFallDir = (site: CraneSite, tMs: number): number =>
   CRANE_DIRS[slewQuarter(slewAngle(site, tMs))] as number;
 
 /**
+ * The first server time ≥ `fromMs` at which `site`'s jib lies along a street
+ * axis (its slew angle a multiple of π/2), whole ms. A crane only goes over
+ * then, so its debris (axis-aligned boxes) matches the crane exactly.
+ */
+export function craneAlignAfter(site: CraneSite, fromMs: number): number {
+  const a = slewAngle(site, fromMs);
+  const w = site.omega;
+  if (w === 0) return Number.POSITIVE_INFINITY;
+  const q = a / HALF_PI;
+  const next = w > 0 ? Math.ceil(q) * HALF_PI - a : a - Math.floor(q) * HALF_PI;
+  return Math.round(fromMs + (next / Math.abs(w)) * 1000);
+}
+
+/**
  * D5: the debris of a crane fall — the crane's own boxes (craneBoxesAt, the
  * shapes it collides as) at the wire's instant, its slew snapped to the
  * nearest quarter turn (the server only fells a crane while its jib lies

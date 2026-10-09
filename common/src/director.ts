@@ -107,9 +107,10 @@ const bucketRand = (seed: number, n: number): (() => number) =>
 
 /**
  * Every director slot in the half-open window [tStartMs, tEndMs), ascending.
- * One slot per BUCKET_MS bucket at a seeded 0..2·JITTER offset, so
- * consecutive slots are DIRECTOR_INTERVAL_MIN_MS..MAX_MS apart and abutting
- * windows partition the timeline. Pure in (seed, window).
+ * One slot per BUCKET_MS bucket at a seeded 0..JITTER offset, so the gap
+ * between consecutive slots is BUCKET + (offset(n+1) − offset(n)) —
+ * DIRECTOR_INTERVAL_MIN_MS..MAX_MS by construction — and abutting windows
+ * partition the timeline. Pure in (seed, window).
  */
 export function directorSlotsInWindow(
   seed: number,
@@ -117,9 +118,9 @@ export function directorSlotsInWindow(
   tEndMs: number,
 ): number[] {
   const out: number[] = [];
-  const first = Math.max(0, Math.floor((tStartMs - 2 * JITTER_MS) / BUCKET_MS));
+  const first = Math.max(0, Math.floor((tStartMs - JITTER_MS) / BUCKET_MS));
   for (let n = first; n * BUCKET_MS < tEndMs; n++) {
-    const t = n * BUCKET_MS + bucketRand(seed, n)() * 2 * JITTER_MS;
+    const t = n * BUCKET_MS + bucketRand(seed, n)() * JITTER_MS;
     if (t >= tStartMs && t < tEndMs) out.push(t);
   }
   return out;

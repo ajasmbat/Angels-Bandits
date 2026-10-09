@@ -845,11 +845,12 @@ export class CityDamage {
   }
 
   /**
-   * D5: how worn each damaged building is — (gone chunks + the HP its
-   * standing chunks have lost, in chunks) / its chunk count, in [0, 1].
-   * Buildings with no damage at all are absent. One pass over the state.
+   * D5: how worn each damaged building is, in chunks — its gone chunks
+   * plus the HP its standing chunks have lost, in chunks' worth — and that
+   * as a share of its chunk count. Buildings with no damage at all are
+   * absent. One pass over the state.
    */
-  wear(): Map<number, number> {
+  wear(): Map<number, { lost: number; share: number }> {
     const lost = new Map<number, number>();
     const add = (id: number, v: number) => {
       const b = chunkBuilding(id);
@@ -858,7 +859,7 @@ export class CityDamage {
     for (const id of this.destroyed) add(id, 1);
     for (const id of this.fallen) add(id, 1);
     for (const [id, hp] of this.hp) add(id, 1 - hp / CHUNK_HP);
-    const out = new Map<number, number>();
+    const out = new Map<number, { lost: number; share: number }>();
     const buildings = this.buildings;
     if (!buildings) return out;
     for (const [i, v] of lost) {
@@ -866,7 +867,7 @@ export class CityDamage {
       if (!b) continue;
       let n = 0;
       for (const mask of chunkMask(b)) for (const m of mask) n += m;
-      if (n > 0) out.set(i, Math.min(1, v / n));
+      if (n > 0) out.set(i, { lost: v, share: Math.min(1, v / n) });
     }
     return out;
   }

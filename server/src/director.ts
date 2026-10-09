@@ -45,6 +45,7 @@ import {
   buildCollapse,
   buildCraneCollapse,
   collapseWire,
+  craneAlignAfter,
   craneDown,
   craneFallDir,
   demolitionPlan,
@@ -199,7 +200,9 @@ export interface DirectorTick {
   cancelled: DirectorEvent[];
 }
 
-const HALF_PI = Math.PI / 2;
+/** Chunks' worth of damage that makes a tower fully "softened" (an X1
+ * strike breaks ~2–4 and chips more). */
+const SOFT_CHUNKS = 4;
 
 /** Plan-view gap from `p` to building `b`'s footprint, m. */
 function gapTo(b: Building, p: Vec3): number {
@@ -523,8 +526,8 @@ export class DestructionDirector {
       if (b.height < t.towerMinM || busy.has(i)) continue;
       const g = tierGrids(b)[0];
       if (!g || g.ny < 3) continue;
-      const worn = wear.get(i) ?? 0;
-      if (worn >= 0.5) continue; // already a wreck
+      const worn = wear.get(i);
+      if (worn && worn.share >= 0.5) continue; // already a wreck
       let action = Number.POSITIVE_INFINITY;
       for (const a of anchors) action = Math.min(action, gapTo(b, a.pos));
       if (action > DIRECTOR_ACTION_M) continue;
@@ -543,15 +546,31 @@ export class DestructionDirector {
           near = p;
         }
       }
+      // Softened: a missile strike (or a burst of gunfire) knocks out a few
+      // chunks — SOFT_CHUNKS of them make a tower fully "softened".
+      const soft = Math.min(1, (worn?.lost ?? 0) / SOFT_CHUNKS);
       const score =
         (near ? (near.human ? 8 : 4) : 1) +
-        6 * worn +
+        8 * soft +
         (1 - action / DIRECTOR_ACTION_M);
       scored.push({ i, score, near });
     }
-    scored.sort((a, b) => b.score - a.score || a.i - b.i);
+    // Near a plane first, then by score.
+    scored.sort(
+      (a, b) =>
+        Number(!!b.near) - Number(!!a.near) || b.score - a.score || a.i - b.i,
+    );
     // The real debris of the best few, each way it could fall.
-    const options: { e: DirectorEvent; score: number }[] = [];
+    const options: {
+      i: number;
+      style: number;
+      dir: number;
+      zone: DangerZone;
+      score: number;
+      /** 2: a plane within NEAR and the topple crosses its path; 1: a
+       * plane within NEAR; 0: near the action only. */
+      rank: number;
+    }[] = [];
     const warnAt = now + DIRECTOR_WARN_MS;
     for (const cand of scored.slice(0, 4)) {
       const b = city.buildings[cand.i] as Building;
@@ -596,31 +615,40 @@ export class DestructionDirector {
       const zone = zoneOf(c, 10);
       if (blocked(b.x, b.z, zone)) continue;
       options.push({
-        e: this.event(
-          EVENT_COLLAPSE,
-          cand.i,
-          { x: b.x, y: 0, z: b.z },
-          style,
-          dir,
-          now,
-          warnAt,
-          zone,
-        ),
-        score: cand.score + (best ? 4 : 0),
+        i: cand.i,
+        style,
+        dir,
+        zone,
+        score: cand.score,
+        rank: best ? 2 : cand.near ? 1 : 0,
       });
     }
-    if (options.length === 0) {
-      return null;
-    }
-    // Weighted by score², so the preferred tower usually wins.
+    if (options.length === 0) return null;
+    // Only the best rank competes — a tower with a plane alongside whose
+    // fall crosses its path beats any other — weighted by score² within it.
+    let top = 0;
+    for (const o of options) top = Math.max(top, o.rank);
     let total = 0;
-    for (const o of options) total += o.score * o.score;
+    for (const o of options) if (o.rank === top) total += o.score * o.score;
     let r = this.rand() * total;
+    let pick = options[0] as (typeof options)[number];
     for (const o of options) {
+      if (o.rank !== top) continue;
+      pick = o;
       r -= o.score * o.score;
-      if (r <= 0) return o.e;
+      if (r <= 0) break;
     }
-    return (options[options.length - 1] as { e: DirectorEvent }).e;
+    const b = city.buildings[pick.i] as Building;
+    return this.event(
+      EVENT_COLLAPSE,
+      pick.i,
+      { x: b.x, y: 0, z: b.z },
+      pick.style,
+      pick.dir,
+      now,
+      warnAt,
+      pick.zone,
+    );
   }
 
   private pickGas(
@@ -832,18 +860,4 @@ export class DestructionDirector {
     }
     return true;
   }
-}
-
-/**
- * The first server time ≥ `fromMs` at which `site`'s jib lies along a street
- * axis (its slew angle a multiple of π/2), whole ms. A crane only goes over
- * then, so its debris (axis-aligned boxes) matches the crane exactly.
- */
-export function craneAlignAfter(site: CraneSite, fromMs: number): number {
-  const a = slewAngle(site, fromMs);
-  const w = site.omega;
-  if (w === 0) return Number.POSITIVE_INFINITY;
-  const q = a / HALF_PI;
-  const next = w > 0 ? Math.ceil(q) * HALF_PI - a : a - Math.floor(q) * HALF_PI;
-  return Math.round(fromMs + (next / Math.abs(w)) * 1000);
 }

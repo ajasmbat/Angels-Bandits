@@ -30,6 +30,7 @@
     "./net": "./src/net.ts",
     "./wreck": "./src/wreck.ts",
     "./cityevents": "./src/cityevents.ts",
-    "./courses": "./src/courses.ts"
+    "./courses": "./src/courses.ts",
+    "./medals": "./src/medals.ts"
   }
 }

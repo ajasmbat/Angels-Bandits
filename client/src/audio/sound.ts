@@ -68,6 +68,24 @@ const BOOST_CUE_LEVEL = 0.45;
 /** X1 incoming-missile whistle: a clean rising TONE — nothing like the
  * storm's filtered-noise thunder, so the two are never confused. */
 const WHISTLE_LEVEL = 0.32;
+/** P3: the master limiter — a brick wall just under full scale, so a
+ * pile-up of chaos (C2: a quake under a missile under a collapse) squashes
+ * instead of clipping. Fast attack, short release: transparent until it
+ * has to act. */
+const LIMIT_THRESHOLD_DB = -3;
+const LIMIT_RATIO = 20;
+const LIMIT_ATTACK_S = 0.003;
+const LIMIT_RELEASE_S = 0.1;
+/** P3: at most this many chaos one-shots (explosions, blasts, flak,
+ * collapses, director warnings) sound at once. A louder newcomer steals the
+ * quietest — a near blast always plays; a far one under a full stack
+ * doesn't. */
+const CHAOS_VOICES = 6;
+/** How long a collapse sounds after the crash lands (its grumbling tail). */
+const COLLAPSE_TAIL_S = 6;
+/** P3: the air rush as the plane rolls or loops through inverted. */
+const AERO_WHOOSH_LEVEL = 0.28;
+const AERO_WHOOSH_MIN_MS = 1200;
 const WHISTLE_FROM_HZ = 700;
 const WHISTLE_TO_HZ = 2400;
 
@@ -95,6 +113,14 @@ export interface Volumes {
   music: number;
 }
 
+/** One live chaos one-shot (P3's voice cap): its own output stage, how loud
+ * it was asked to be, and when (audio clock) it will have finished. */
+interface ChaosVoice {
+  gain: GainNode;
+  level: number;
+  until: number;
+}
+
 interface RemoteEngine {
   osc: OscillatorNode;
   gain: GainNode;
@@ -104,6 +130,16 @@ interface RemoteEngine {
 export class GameAudio implements VoiceSink {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
+  /** P3: master → limiter → destination. */
+  private limiter: DynamicsCompressorNode | null = null;
+  /** P3 QA: peak taps either side of the limiter, built on first read. */
+  private taps: {
+    pre: AnalyserNode;
+    post: AnalyserNode;
+    buf: Float32Array<ArrayBuffer>;
+  } | null = null;
+  private readonly chaos: ChaosVoice[] = [];
+  private lastAeroAt = Number.NEGATIVE_INFINITY;
   /** Everything except the radio voice — ducked while a line is on air. */
   private sfx: GainNode | null = null;
   private voice: GainNode | null = null;
@@ -181,7 +217,13 @@ export class GameAudio implements VoiceSink {
       }
       this.master = this.ctx.createGain();
       this.master.gain.value = MASTER_LEVEL * this.volumes.master;
-      this.master.connect(this.ctx.destination);
+      this.limiter = this.ctx.createDynamicsCompressor();
+      this.limiter.threshold.value = LIMIT_THRESHOLD_DB;
+      this.limiter.knee.value = 0;
+      this.limiter.ratio.value = LIMIT_RATIO;
+      this.limiter.attack.value = LIMIT_ATTACK_S;
+      this.limiter.release.value = LIMIT_RELEASE_S;
+      this.master.connect(this.limiter).connect(this.ctx.destination);
       this.sfx = this.ctx.createGain();
       this.sfx.connect(this.master);
       this.voice = this.ctx.createGain();
@@ -233,6 +275,81 @@ export class GameAudio implements VoiceSink {
       voice: this.voice.gain.value,
       music: MUSIC_LEVEL * this.volumes.music,
     };
+  }
+
+  /** P3 QA (`__ab.qaUi`): the context state, live chaos voices, the
+   * limiter's current gain reduction (dB, ≤ 0) and the instantaneous peak
+   * (dBFS) going into and out of it. The taps are built on the first call —
+   * nothing of this runs in a session no harness reads. */
+  qaStats(): {
+    state: string;
+    chaosVoices: number;
+    reductionDb: number;
+    preDb: number;
+    postDb: number;
+  } | null {
+    const ctx = this.ctx;
+    if (!ctx || !this.master || !this.limiter) return null;
+    if (!this.taps) {
+      const pre = ctx.createAnalyser();
+      const post = ctx.createAnalyser();
+      pre.fftSize = post.fftSize = 2048;
+      this.master.connect(pre);
+      this.limiter.connect(post);
+      this.taps = { pre, post, buf: new Float32Array(2048) };
+    }
+    const peakDb = (a: AnalyserNode, buf: Float32Array<ArrayBuffer>) => {
+      a.getFloatTimeDomainData(buf);
+      let m = 0;
+      for (const v of buf) m = Math.max(m, Math.abs(v));
+      return m > 0 ? 20 * Math.log10(m) : Number.NEGATIVE_INFINITY;
+    };
+    this.pruneChaos(ctx.currentTime);
+    return {
+      state: ctx.state,
+      chaosVoices: this.chaos.length,
+      reductionDb: this.limiter.reduction,
+      preDb: peakDb(this.taps.pre, this.taps.buf),
+      postDb: peakDb(this.taps.post, this.taps.buf),
+    };
+  }
+
+  /** Drop finished chaos voices (their sources have stopped). */
+  private pruneChaos(now: number): void {
+    for (let i = this.chaos.length - 1; i >= 0; i--) {
+      const v = this.chaos[i];
+      if (!v || v.until > now) continue;
+      v.gain.disconnect();
+      this.chaos.splice(i, 1);
+    }
+  }
+
+  /**
+   * P3: an output stage for one chaos one-shot of `level` lasting
+   * `durationS`, or null when CHAOS_VOICES louder ones are already playing.
+   * Over the cap the quietest live voice is faded out (20 ms, no click) to
+   * make room.
+   */
+  private chaosVoice(level: number, durationS: number): GainNode | null {
+    const ctx = this.ctx;
+    if (!ctx || !this.sfx || level <= 0) return null;
+    const now = ctx.currentTime;
+    this.pruneChaos(now);
+    if (this.chaos.length >= CHAOS_VOICES) {
+      let quietest: ChaosVoice | null = null;
+      for (const v of this.chaos) {
+        if (!quietest || v.level < quietest.level) quietest = v;
+      }
+      if (!quietest || quietest.level >= level) return null;
+      // Its sources stop on their own schedule; silenced, it is just a
+      // short tail of zeros until they do.
+      quietest.gain.gain.setTargetAtTime(0, now, 0.02);
+      this.chaos.splice(this.chaos.indexOf(quietest), 1);
+    }
+    const gain = ctx.createGain();
+    gain.connect(this.sfx);
+    this.chaos.push({ gain, level, until: now + durationS + 0.1 });
+    return gain;
   }
 
   /** The buses an add-on layer mixes into; null until the context runs
@@ -344,9 +461,10 @@ export class GameAudio implements VoiceSink {
     duration: number,
     level: number,
     pan: number,
+    out: AudioNode | null = this.sfx,
   ): void {
     const ctx = this.ensure();
-    if (!ctx || !this.sfx || !this.noise || level <= 0) return;
+    if (!ctx || !out || !this.noise || level <= 0) return;
     const now = ctx.currentTime;
     const src = ctx.createBufferSource();
     src.buffer = this.noise;
@@ -364,7 +482,7 @@ export class GameAudio implements VoiceSink {
     gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
     const panner = ctx.createStereoPanner();
     panner.pan.value = pan;
-    src.connect(filter).connect(gain).connect(panner).connect(this.sfx);
+    src.connect(filter).connect(gain).connect(panner).connect(out);
     src.start(now, Math.random());
     src.stop(now + duration + 0.05);
   }
@@ -511,7 +629,7 @@ export class GameAudio implements VoiceSink {
     if (!hard) return;
     this.burst("bandpass", 1400, 320, 0.16, level * 0.9, 0);
     const ctx = this.ensure();
-    if (!ctx || !this.master) return;
+    if (!ctx || !this.sfx) return;
     const now = ctx.currentTime;
     const sub = ctx.createOscillator();
     sub.type = "sine";
@@ -520,7 +638,9 @@ export class GameAudio implements VoiceSink {
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(0.6 * level, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 1.2);
-    sub.connect(gain).connect(this.master);
+    // P3: on the ducked bus with the rest of the strike — a callout reads
+    // through thunder too.
+    sub.connect(gain).connect(this.sfx);
     sub.start(now);
     sub.stop(now + 1.3);
   }
@@ -529,7 +649,7 @@ export class GameAudio implements VoiceSink {
    * engine loop. Silent at 0 — the loop idles at zero gain. */
   setStatic(level: number): void {
     const ctx = this.ensure();
-    if (!ctx || !this.master || !this.noise) return;
+    if (!ctx || !this.sfx || !this.noise) return;
     if (!this.staticGain) {
       const src = ctx.createBufferSource();
       src.buffer = this.noise;
@@ -539,7 +659,7 @@ export class GameAudio implements VoiceSink {
       filter.frequency.value = 2600;
       this.staticGain = ctx.createGain();
       this.staticGain.gain.value = 0;
-      src.connect(filter).connect(this.staticGain).connect(this.master);
+      src.connect(filter).connect(this.staticGain).connect(this.sfx);
       src.start();
     }
     this.staticGain.gain.setTargetAtTime(
@@ -642,6 +762,14 @@ export class GameAudio implements VoiceSink {
     this.burst("bandpass", 500, 2600, 0.5, BOOST_CUE_LEVEL, 0);
   }
 
+  /** P3: the air rush of rolling or looping through inverted — a soft,
+   * slow band sweep, well under the near-miss whoosh. Rate-limited. */
+  aeroWhoosh(nowMs: number): void {
+    if (nowMs - this.lastAeroAt < AERO_WHOOSH_MIN_MS) return;
+    this.lastAeroAt = nowMs;
+    this.burst("bandpass", 380, 1500, 0.55, AERO_WHOOSH_LEVEL, 0);
+  }
+
   /** Near-miss whoosh: an enemy bullet just shaved past. Rate-limited. */
   whoosh(pan: number, nowMs: number): void {
     if (nowMs - this.lastWhooshAt < 150) return;
@@ -670,9 +798,11 @@ export class GameAudio implements VoiceSink {
     if (!ctx || !this.sfx || !this.noise || level <= 0) return;
     const now = ctx.currentTime;
     const crashAt = now + Math.max(0.3, fallS);
+    const out = this.chaosVoice(level, Math.max(0.3, fallS) + COLLAPSE_TAIL_S);
+    if (!out) return;
     const panner = ctx.createStereoPanner();
     panner.pan.value = s.pan;
-    panner.connect(this.sfx);
+    panner.connect(out);
     // Rumble: low-passed noise, swelling to the crash, then fading.
     const rumble = ctx.createBufferSource();
     rumble.buffer = this.noise;
@@ -741,9 +871,11 @@ export class GameAudio implements VoiceSink {
     }
     const now = ctx.currentTime;
     const end = now + durationS;
+    const out = this.chaosVoice(level * 0.5, durationS + 0.5);
+    if (!out) return;
     const panner = ctx.createStereoPanner();
     panner.pan.value = s.pan;
-    panner.connect(this.sfx);
+    panner.connect(out);
     // Rumble: low-passed noise swelling to the event.
     const rumble = ctx.createBufferSource();
     rumble.buffer = this.noise;
@@ -848,11 +980,15 @@ export class GameAudio implements VoiceSink {
   /** X1: a missile impact — the kill explosion plus a sharper, heavier
    * crack, so a strike lands harder than a plane going down. */
   missileBlast(pos: Vec3, listenerPos: Vec3, listenerYaw: number): void {
-    this.explosion(pos, listenerPos, listenerYaw);
     const s = spatialize(listenerPos, listenerYaw, pos);
     const level = Math.min(1, s.gain * 6);
-    this.burst("bandpass", 2600, 400, 0.25, EXPLOSION_LEVEL * level, s.pan);
-    this.burst("lowpass", 260, 35, 2.2, EXPLOSION_LEVEL * 0.8 * level, s.pan);
+    this.ensure();
+    const out = this.chaosVoice(level, 2.25);
+    if (!out) return;
+    this.explosionInto(out, level, s.pan);
+    const crack = EXPLOSION_LEVEL * level;
+    this.burst("bandpass", 2600, 400, 0.25, crack, s.pan, out);
+    this.burst("lowpass", 260, 35, 2.2, crack * 0.8, s.pan, out);
   }
 
   /** S4: a flak shell bursting — a sharp, papery crack and a short thump,
@@ -861,24 +997,28 @@ export class GameAudio implements VoiceSink {
     const s = spatialize(listenerPos, listenerYaw, pos);
     const level = Math.min(1, s.gain * 4);
     if (level <= 0.01) return;
-    this.burst(
-      "bandpass",
-      1900,
-      500,
-      0.16,
-      EXPLOSION_LEVEL * 0.45 * level,
-      s.pan,
-    );
-    this.burst("lowpass", 320, 60, 0.4, EXPLOSION_LEVEL * 0.35 * level, s.pan);
+    this.ensure();
+    const out = this.chaosVoice(level * 0.45, 0.4);
+    if (!out) return;
+    const crack = EXPLOSION_LEVEL * 0.45 * level;
+    this.burst("bandpass", 1900, 500, 0.16, crack, s.pan, out);
+    this.burst("lowpass", 320, 60, 0.4, crack * (0.35 / 0.45), s.pan, out);
   }
 
   /** Kill explosion at a world position: low boom + rumble tail. */
   explosion(pos: Vec3, listenerPos: Vec3, listenerYaw: number): void {
     const s = spatialize(listenerPos, listenerYaw, pos);
     const level = Math.min(1, s.gain * 6); // audible well past engine range
-    this.burst("lowpass", 500, 50, 1.1, EXPLOSION_LEVEL * level, s.pan);
-    const ctx = this.ensure();
-    if (!ctx || !this.sfx || level <= 0) return;
+    this.ensure();
+    const out = this.chaosVoice(level, 1.1);
+    if (out) this.explosionInto(out, level, s.pan);
+  }
+
+  /** The kill explosion's boom and sub into `out` (one chaos voice). */
+  private explosionInto(out: AudioNode, level: number, pan: number): void {
+    this.burst("lowpass", 500, 50, 1.1, EXPLOSION_LEVEL * level, pan, out);
+    const ctx = this.ctx;
+    if (!ctx || level <= 0) return;
     const now = ctx.currentTime;
     const sub = ctx.createOscillator();
     sub.type = "sine";
@@ -888,8 +1028,8 @@ export class GameAudio implements VoiceSink {
     gain.gain.setValueAtTime(0.7 * level, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.9);
     const panner = ctx.createStereoPanner();
-    panner.pan.value = s.pan;
-    sub.connect(gain).connect(panner).connect(this.sfx);
+    panner.pan.value = pan;
+    sub.connect(gain).connect(panner).connect(out);
     sub.start(now);
     sub.stop(now + 1);
   }

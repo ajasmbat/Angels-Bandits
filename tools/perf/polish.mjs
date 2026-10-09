@@ -87,6 +87,8 @@ const WARN_ALLOW = [
   /Automatic fallback to software WebGL/i,
   // three.js noting the rasteriser lacks an optional extension.
   /KHR_parallel_shader_compile extension not supported/i,
+  // ANGLE's own performance notes about its command queue.
+  /GL Driver Message \(OpenGL, Performance/i,
 ];
 
 /** Seconds a UI state may stay up before the soak calls it stuck. */
@@ -297,9 +299,17 @@ async function closeSettings(page) {
 
 async function runShots(browser, url) {
   const shots = [];
-  const snap = async (page, name, timeout = 60000) => {
+  // Generous: on a loaded software rasteriser one frame can take seconds,
+  // and a screenshot waits for a fresh one.
+  // `settle`: finish CSS entrance animations first — at a software frame
+  // rate a 0.2 s fade can still be on its first frame when the shot lands.
+  const snap = async (page, name, timeout = 180000, settle = false) => {
     const path = resolve(OUT, `${LABEL}-${name}.png`);
-    await page.screenshot({ path, timeout });
+    await page.screenshot({
+      path,
+      timeout,
+      ...(settle ? { animations: "disabled" } : {}),
+    });
     shots.push(path);
     console.log(`  shot ${name}`);
   };
@@ -329,7 +339,7 @@ async function runShots(browser, url) {
       await snap(page, `hud-${suffix}`);
       await openSettings(page, touch);
       await sleep(700);
-      await snap(page, `settings-${suffix}`);
+      await snap(page, `settings-${suffix}`, undefined, true);
       await closeSettings(page);
       await sleep(800);
       await page.evaluate(() => window.__ab.qaMoment("kill"));
@@ -339,7 +349,7 @@ async function runShots(browser, url) {
       await page.evaluate(() => window.__ab.qaMoment("medal"));
       // Long enough for the pop-in to settle at a software frame rate.
       await sleep(1500);
-      await snap(page, `medal-${suffix}`);
+      await snap(page, `medal-${suffix}`, undefined, true);
       if (touch) {
         // The join tap took the phone fullscreen (M5): leave it to rotate.
         await page.evaluate(() => document.exitFullscreen?.().catch(() => {}));
@@ -516,6 +526,7 @@ async function runSoak(browser, url) {
   const stuck = [];
   const since = {};
   let settingsCycles = 0;
+  let forcedCrashes = 0;
   let moments = 0;
   let killcams = 0;
   let wasKillcam = false;
@@ -582,6 +593,16 @@ async function runSoak(browser, url) {
         await sleep(1500);
         await page.evaluate(() => window.__ab.qaMoment?.("medal"));
         moments += 2;
+        // Every third minute, fly into the street: a real crash, kill-cam
+        // and respawn, whatever the random stick did meanwhile.
+        if ((minutes.length + 1) % 3 === 0) {
+          await page.evaluate(() => {
+            const p = window.__ab.state().pos;
+            window.__ab.teleport(p.x, p.z, 1);
+          });
+          forcedCrashes++;
+          await sleep(1000);
+        }
         if (
           !(await page.evaluate(() =>
             document.getElementById("killcam")?.classList.contains("open"),
@@ -659,6 +680,7 @@ async function runSoak(browser, url) {
     allowedWarnings: Object.fromEntries(allowedWarnings),
     stuck,
     settingsCycles,
+    forcedCrashes,
     moments,
     killcams,
     samples: minutes,

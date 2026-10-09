@@ -147,6 +147,7 @@ import {
 } from "./game/callouts";
 import {
   ChaseCamera,
+  budgetShake,
   collapseShakeAmount,
   collapseShakeOffsetInto,
 } from "./game/camera";
@@ -414,6 +415,8 @@ import {
 import { SettingsPanel } from "./ui/settings-panel";
 import { readStored, writeStored } from "./ui/storage";
 import { TouchControls } from "./ui/touch-controls";
+// P3: tokens, join card / loading screen, pause menu, HUD refinements.
+import "./ui/polish.css";
 
 // Fullscreen chrome first — the join overlay carries its own toggle button,
 // so it must be live before the name prompt (hidden where unsupported).
@@ -463,7 +466,7 @@ socket.events.onResumed = (w) => {
 // inside them). The server holds this player pending — invisible, untargeted,
 // protection not yet started — until that first pose.
 const bootPing = setInterval(() => socket.sendPing(), BOOT_PING_INTERVAL_MS);
-await showJoinProgress("LOADING CITY…");
+await showJoinProgress("BUILDING THE CITY…", 0.45);
 socket.sendPing();
 
 // --- Scene & renderer ---
@@ -1108,6 +1111,10 @@ const missileRenderer = new MissileRenderer(smoke, impacts);
 scene.add(missileRenderer.group);
 const missileFeed = new MissileFeed();
 const missileShake = new MissileShake();
+/** P3: the player's motion preference halves every camera shake. */
+const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+/** P3: last frame's attitude, for the aero whoosh's upright → inverted edge. */
+let wasInverted = false;
 /** C2: whistles sounding at once, at most (a bomb carpet must not become a
  * wall of sine), and how far a bomb's whistle carries, m. */
 const WHISTLE_VOICES = 3;
@@ -2445,6 +2452,7 @@ declare global {
        * holds and the audio engine's live state (null before a context). */
       qaUi: () => {
         renderer: { geometries: number; textures: number; programs: number };
+        audio: ReturnType<GameAudio["qaStats"]>;
       };
       settings: () => {
         open: boolean;
@@ -3021,6 +3029,7 @@ window.__ab = {
       textures: renderer.info.memory.textures,
       programs: renderer.info.programs?.length ?? 0,
     },
+    audio: audio.qaStats(),
   }),
   settings: () => ({
     open: settingsPanel.isOpen(),
@@ -3582,6 +3591,9 @@ let last = performance.now();
 // birds, movers, traffic, the prop blur, the HP sprite, name tags. Each would
 // otherwise compile on the frame it first appears, which is exactly the
 // moment a hitch is noticed. Each subsystem's update() then owns visibility.
+// P3: the loading card's last stage — painted before the pre-warm blocks
+// (every handler is wired by now, so the yield drops no message).
+await showJoinProgress("WARMING UP SHADERS…", 0.8);
 fadeEl.classList.add("dead");
 socket.sendPing(); // W1: the rest of the boot was built synchronously
 renderer.initTexture(city.damageAtlas); // D1: never a first-hit upload hitch
@@ -4035,6 +4047,11 @@ const frame = (now: number): void => {
       camShake.y += jolt.y;
       camShake.z += jolt.z;
     }
+    budgetShake(camShake, reducedMotion.matches ? 0.5 : 1); // P3
+    // P3: rolling or looping through inverted rushes air past the canopy.
+    const inverted = Math.cos(flight.pitch) * Math.cos(flight.roll) < -0.2;
+    if (inverted && !wasInverted && alive) audio.aeroWhoosh(now);
+    wasInverted = inverted;
     const planeShake = turbulenceOffset(now + 537, flight.pos.y);
     chaseMoversMs = renderMs;
     chase.update(camera, flight, dt, freelook, camShake, zoom.z, leadYawRate);

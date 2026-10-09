@@ -572,3 +572,22 @@ export function collapseShakeOffsetInto(
   out.z = a * 0.5 * (Math.sin(t * 31.3 + 2.9) + 0.5 * Math.sin(t * 67.7 + 0.8));
   return out;
 }
+
+/** P3: the one budget every displayed-camera shake shares, m — turbulence,
+ * missile impacts, collapses, director tremors and quakes sum, and under
+ * C2's constant chaos they stack: past this the total is squashed (soft
+ * knee, so a lone jolt passes untouched) instead of shaking the view off
+ * the plane. */
+export const SHAKE_BUDGET_M = 1.6;
+
+/** Scale the summed shake `v` in place by `scale` (0.5 under reduced
+ * motion), then soft-limit its length to SHAKE_BUDGET_M. */
+export function budgetShake(v: Vec3, scale: number): Vec3 {
+  const m = Math.hypot(v.x, v.y, v.z) * scale;
+  if (m <= 0) return v;
+  const k = (scale * SHAKE_BUDGET_M * Math.tanh(m / SHAKE_BUDGET_M)) / m;
+  v.x *= k;
+  v.y *= k;
+  v.z *= k;
+  return v;
+}

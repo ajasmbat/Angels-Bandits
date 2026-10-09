@@ -2397,7 +2397,22 @@
     <!-- S7: own medals pop in here (ui/hud.ts showMedals). -->
     <div id="medal-toast" aria-live="polite"></div>
     <div id="fade"></div>
-    <div id="join">
+    <!-- P3: open from the first paint in its `booting` state (the loading
+         screen while the bundle downloads); ui/join.ts takes it from there.
+         The skyline behind it is CSS only (ui/polish.css). -->
+    <div id="join" class="open booting">
+      <div class="join-bg" aria-hidden="true">
+        <div class="beam a"></div>
+        <div class="beam b"></div>
+        <div class="plane">
+          <svg viewBox="0 0 46 14">
+            <path d="M2 7 9 5.2 30 4.8 40 5.8 45 7 40 8.2 30 9.2 9 8.8ZM17 .8h11v1.6H17ZM17 11.6h11v1.6H17ZM19.6 2h1.3v10h-1.3ZM25.6 2h1.3v10h-1.3ZM1 2.6h3.2L7 6.4H2.4Z" />
+          </svg>
+        </div>
+        <div class="layer far"></div>
+        <div class="layer mid"></div>
+        <div class="layer near"></div>
+      </div>
       <button
         id="join-fs"
         class="fs-toggle"
@@ -2415,7 +2430,15 @@
         </svg>
       </button>
       <form id="join-form">
+        <svg class="join-logo" viewBox="0 0 76 52" aria-hidden="true">
+          <ellipse cx="38" cy="6" rx="11" ry="3.2" fill="none" stroke="currentColor" stroke-width="2" />
+          <path d="M38 14 45 29 38 46 31 29Z" fill="currentColor" />
+          <path id="join-wing" d="M31 25C23 16 11 13 1 15c9 4 15 8 19 14-6-1-12 0-17 2 9 3 18 4 28 1Z" fill="currentColor" opacity="0.8" />
+          <use href="#join-wing" transform="matrix(-1 0 0 1 76 0)" />
+          <path d="M38 27 41 30 38 40 35 30Z" fill="#ff7a9a" />
+        </svg>
         <h1>ANGELS &amp; BANDITS</h1>
+        <p class="join-tag">DOGFIGHTS OVER THE ENDLESS CITY</p>
         <input
           id="join-name"
           type="text"
@@ -2429,7 +2452,8 @@
         <button type="submit">FLY</button>
         <!-- U3 (ui/coach.ts): the controls primer, desktop or touch. -->
         <ul id="join-primer" aria-label="Controls"></ul>
-        <p id="join-status" role="status" aria-live="polite"></p>
+        <div id="join-progress" aria-hidden="true"><div class="fill"></div></div>
+        <p id="join-status" role="status" aria-live="polite">LOADING…</p>
         <button id="join-retry" type="button" hidden>RETRY</button>
         <!-- ui/fullscreen.ts unhides it where pages can't go fullscreen
              (iPhone) and the game isn't already a home-screen app. -->

@@ -65,8 +65,13 @@ const REPO = resolve(HERE, "../..");
  * 4: M3 — `harness.device` / `cpuThrottle` / `segments`, per-segment
  *    `jsP50`, and `config.fragmentProxy`. With `--segments`, `segments`
  *    holds only the named ones, so match them by name, not index.
+ * 5: D6 — the `collapse`, `ruins` and `rubble` segments (appended), and per
+ *    segment `destruction` (the `__ab.destruction()` read-back at the
+ *    window's end, plus `serverEventsDelta`), `staged` (what
+ *    `__ab.qaDestruction` put on screen, null when nothing or no hook),
+ *    `drawsOverCore`, and the verdicts `chunks`, `quiet` and `scene`.
  */
-const REPORT_VERSION = 4;
+const REPORT_VERSION = 5;
 const VIEWPORT = { width: 1280, height: 720 };
 const DEVICE_SCALE_FACTOR = 2;
 
@@ -473,6 +478,34 @@ async function flySegment(page, seg, sampleMs, worldMs) {
       const weatherName = s.weather ?? s.defaultWeather;
       const weatherPinned = typeof ab.weather === "function";
       if (weatherPinned) ab.weather(weatherName);
+      // D6: the destruction read-back at the segment's start (null on a
+      // build before D6), and the segment's staged destruction — every `t`
+      // in a stage spec is an offset from the world instant it is staged
+      // at. An arm without `qaDestruction` flies the city intact, and its
+      // `staged` stays null ("no baseline" for a delta).
+      const destruction = () =>
+        typeof ab.destruction === "function" ? ab.destruction() : null;
+      const stageAt = (spec, base) =>
+        JSON.parse(JSON.stringify(spec), (k, v) =>
+          k === "t" && typeof v === "number" ? base + v : v,
+        );
+      const canStage = typeof ab.qaDestruction === "function";
+      const destructionAtStart = destruction();
+      let staged = null;
+      const stage = (spec, base, keep) => {
+        const r = ab.qaDestruction({ ...stageAt(spec, base), keep });
+        staged =
+          staged === null
+            ? r
+            : {
+                collapses: staged.collapses + r.collapses,
+                broken: staged.broken + r.broken,
+                touched: staged.touched + r.touched,
+                blasts: staged.blasts + r.blasts,
+                wrecks: [...staged.wrecks, ...r.wrecks],
+              };
+      };
+      if (canStage && s.stage) stage(s.stage, s.worldMs, false);
       ab.teleport(s.x, s.z, s.y, s.yaw);
       // O3: a HELD view re-teleports every frame instead of flying the
       // street — the furball's fake pilots weave ahead of a fixed point, so
@@ -520,6 +553,16 @@ async function flySegment(page, seg, sampleMs, worldMs) {
         }
       }
 
+      // D6: a collapse timed to the WINDOW's world instant, staged now that
+      // the settle is over (so it is mid-fall on any machine's clock).
+      if (canStage && s.stageAtWindow) {
+        stage(
+          s.stageAtWindow,
+          ab.net().worldTime ?? s.worldMs,
+          s.stage !== undefined,
+        );
+      }
+
       // O4: the workload must not change under the window — a ratio step
       // reallocates every full-res and bloom target, a tier step changes
       // the scene. Read at both ends.
@@ -543,7 +586,9 @@ async function flySegment(page, seg, sampleMs, worldMs) {
       const planes = Math.min(planesBefore, planesNow());
       const glAtEnd = gl();
       const workloadStable = workload() === workloadBefore;
+      const destructionAtEnd = destruction();
       holding = false;
+      if (staged !== null) ab.qaDestruction(null);
       if (weatherPinned) ab.weather(null);
       const diff = (a, b) =>
         a === null || b === null
@@ -612,6 +657,17 @@ async function flySegment(page, seg, sampleMs, worldMs) {
         planes,
         // P2: the train moment a `trainsAt` segment slid to (null otherwise).
         trains,
+        // D6.
+        staged,
+        destruction:
+          destructionAtEnd === null
+            ? null
+            : {
+                ...destructionAtEnd,
+                serverEventsDelta:
+                  destructionAtEnd.serverEvents -
+                  (destructionAtStart?.serverEvents ?? 0),
+              },
       };
     },
     {
@@ -649,10 +705,23 @@ async function flySegment(page, seg, sampleMs, worldMs) {
  *  - `draws`   — median draw calls within the segment's own budget, if any.
  *  - `room`    — a segment that asks for fake pilots really had the full
  *                room in view for the whole window.
+ *  - `chunks`  — D6: the debris mesh never grew past its boot size (the
+ *                derived bound) and damaged-mesh slots + debris pieces are
+ *                within BUDGETS.chunkInstances. Null on a build before D6.
+ *  - `quiet`   — D6: the server sent no destruction during the segment, so
+ *                everything destroyed on screen was staged.
+ *  - `scene`   — D6: a staging segment really staged (a build without the
+ *                hook fails it), and its collapse is still falling at the
+ *                window's end (`expect: "falling"`) or entirely at rest
+ *                (`expect: "settled"`).
+ * `draws` for a BUDGETS.drawCallsOverCore segment is judged per pass by
+ * `relativeDrawVerdicts`, against that pass's own `core`.
  */
 export function segmentVerdicts(name, stats) {
   const draws = BUDGETS.drawCalls[name];
   const seg = SEGMENTS.find((s) => s.name === name);
+  const d = stats.destruction ?? null;
+  const stages = seg?.stage !== undefined || seg?.stageAtWindow !== undefined;
   return {
     fps60:
       typeof stats.gpuP50 === "number" && stats.gpuP50 > 0
@@ -664,7 +733,41 @@ export function segmentVerdicts(name, stats) {
       seg?.pilots === undefined
         ? null
         : typeof stats.planes === "number" && stats.planes >= seg.pilots + 1,
+    chunks: d
+      ? d.debrisCapacity <= d.debrisBootCapacity &&
+        d.damagedSlots + d.debrisPieces <= BUDGETS.chunkInstances
+      : null,
+    quiet: d ? d.serverEventsDelta === 0 : null,
+    scene: stages ? sceneStaged(seg, stats) : null,
   };
+}
+
+/** D6: did a staging segment put its scene on screen, as asked? */
+function sceneStaged(seg, stats) {
+  const d = stats.destruction;
+  if (!stats.staged || !d) return false;
+  if (seg.expect === "falling") return d.collapses > d.settled;
+  if (seg.expect === "settled")
+    return d.collapses > 0 && d.settled === d.collapses;
+  return d.collapses > 0;
+}
+
+/**
+ * D6: the collapse segments' draw budget is relative — at most
+ * BUDGETS.drawCallsOverCore[name] over the core view's draws IN THE SAME
+ * PASS (the same build, tier and machine). Sets `drawsOverCore` and the
+ * `draws` verdict on each such segment of `segments` (one pass); n/a when
+ * the pass did not fly core.
+ */
+export function relativeDrawVerdicts(segments) {
+  const core = segments.find((s) => s.name === "core");
+  for (const s of segments) {
+    const over = BUDGETS.drawCallsOverCore[s.name];
+    if (over === undefined) continue;
+    s.drawsOverCore = core ? s.drawCalls - core.drawCalls : null;
+    s.verdicts.draws = core ? s.drawsOverCore <= over : null;
+  }
+  return segments;
 }
 
 /**
@@ -716,12 +819,28 @@ function flyWarmupLap(page) {
   return page.evaluate(
     async ([segs, ms]) => {
       const ab = window.__ab;
+      const stageAt = (spec, base) =>
+        JSON.parse(JSON.stringify(spec), (k, v) =>
+          k === "t" && typeof v === "number" ? base + v : v,
+        );
       for (const s of segs) {
         // O4: the same world pin and weather the measured segment will use,
         // earlier on the world clock — so first sight of the segment's
         // weather (the downpour) and world state is paid for here.
         ab.pinWorld?.(s.worldMs);
         if (typeof ab.weather === "function") ab.weather(s.weather);
+        // D6: and its destruction, at the lap's instant — collapse debris,
+        // dust, fire and the damaged mesh's first uploads land here.
+        const staging =
+          typeof ab.qaDestruction === "function" &&
+          (s.stage || s.stageAtWindow);
+        if (staging && s.stage) ab.qaDestruction(stageAt(s.stage, s.worldMs));
+        if (staging && s.stageAtWindow) {
+          ab.qaDestruction({
+            ...stageAt(s.stageAtWindow, s.worldMs),
+            keep: s.stage !== undefined,
+          });
+        }
         ab.teleport(s.x, s.z, s.y, s.yaw);
         await new Promise((resolve) => {
           const t0 = performance.now();
@@ -731,20 +850,25 @@ function flyWarmupLap(page) {
               : requestAnimationFrame(tick);
           requestAnimationFrame(tick);
         });
+        if (staging) ab.qaDestruction(null);
       }
       if (typeof ab.weather === "function") ab.weather(null);
     },
     [
       // World times key on the segment's place in SEGMENTS, not in the
       // --segments selection, so a filtered run pins the same instants.
-      activeSegments().map(({ name, x, z, y, yaw, weather }) => ({
-        x,
-        z,
-        y,
-        yaw,
-        weather: weather ?? DEFAULT_WEATHER,
-        worldMs: warmupWorldMs(SEGMENTS.findIndex((s) => s.name === name)),
-      })),
+      activeSegments().map(
+        ({ name, x, z, y, yaw, weather, stage, stageAtWindow }) => ({
+          x,
+          z,
+          y,
+          yaw,
+          stage,
+          stageAtWindow,
+          weather: weather ?? DEFAULT_WEATHER,
+          worldMs: warmupWorldMs(SEGMENTS.findIndex((s) => s.name === name)),
+        }),
+      ),
       WARMUP_MS,
     ],
   );
@@ -1091,6 +1215,7 @@ async function measure(browser, url, { trace = true } = {}) {
       }
     }
   }
+  relativeDrawVerdicts(segments);
   const env = await page.evaluate(() => {
     const canvas = document.createElement("canvas");
     const gl = canvas.getContext("webgl2");
@@ -1293,6 +1418,7 @@ function printTable(report) {
     );
   }
   printVerdicts(report);
+  printDestruction(report);
   printFirstSight(report);
   printSpikes(report);
   console.log(
@@ -1350,6 +1476,59 @@ function printVerdicts(report) {
     } else {
       console.log(
         `${s.name}: trains ${s.trains.tracks.join(", ")} in the station at +${(s.trains.offsetMs / 1000).toFixed(2)} s`,
+      );
+    }
+  }
+}
+
+/**
+ * D6: what destruction each segment held at its window's end, and the
+ * destruction verdicts (segmentVerdicts / relativeDrawVerdicts). One row
+ * per segment of a build with the read-back; nothing on an older build.
+ */
+function printDestruction(report) {
+  const rows = report.segments.filter((s) => s.destruction);
+  if (rows.length === 0) return;
+  const over = Object.entries(BUDGETS.drawCallsOverCore)
+    .map(([n, b]) => `${n} <= core + ${b}`)
+    .join(", ");
+  console.log(
+    `
+destruction (D6): draws ${over} · damaged slots + debris pieces <= ${BUDGETS.chunkInstances}, debris never past its boot size · 0 server destruction messages`,
+  );
+  console.log(
+    "segment   chunks  quiet  scene  +core  damaged slots/cap  debris pieces/cap  collapses  dust  impacts  staged draws",
+  );
+  for (const s of rows) {
+    const d = s.destruction;
+    const v = s.verdicts ?? segmentVerdicts(s.name, s);
+    const plus =
+      s.drawsOverCore === undefined || s.drawsOverCore === null
+        ? "—"
+        : `${s.drawsOverCore >= 0 ? "+" : ""}${s.drawsOverCore}`;
+    console.log(
+      `${s.name.padEnd(8)}  ${mark(v.chunks)}    ${mark(v.quiet)}   ${mark(v.scene)}  ${plus.padStart(5)}  ` +
+        `${`${d.damagedSlots}/${d.damagedCapacity}`.padStart(17)}  ` +
+        `${`${d.debrisPieces}/${d.debrisCapacity}`.padStart(17)}  ` +
+        `${`${d.settled}/${d.collapses}`.padStart(9)}  ${String(d.dustPuffs).padStart(4)}  ` +
+        `${String(d.impactParticles).padStart(7)}  ${String(d.stagedDraws).padStart(12)}`,
+    );
+  }
+  for (const s of rows) {
+    const v = s.verdicts ?? {};
+    if (v.chunks === false) {
+      console.error(
+        `!! ${s.name}: destruction instances over budget, or the debris mesh grew past its boot size (${s.destruction.debrisCapacity} > ${s.destruction.debrisBootCapacity}).`,
+      );
+    }
+    if (v.quiet === false) {
+      console.error(
+        `!! ${s.name}: the server sent ${s.destruction.serverEventsDelta} destruction message(s) — this window shows destruction the harness did not stage (is the server quiet? AB_QUIET_CITY).`,
+      );
+    }
+    if (v.scene === false) {
+      console.error(
+        `!! ${s.name}: its destruction scene was not staged as asked (${s.staged ? `collapses ${s.destruction.settled}/${s.destruction.collapses} at rest` : "this build has no __ab.qaDestruction"}).`,
       );
     }
   }
@@ -1528,9 +1707,11 @@ export const UNPINNED_SEGMENTS = new Set([
   "street",
   // O3: fake pilots fly on THEIR wall clock (tools/perf/pilots.mjs).
   "furball",
+  // D6: the same pilots, in staged ruins.
+  "ruins",
 ]);
 /** Segments whose draw count may legitimately move between passes. */
-export const DRAWS_FLOAT = new Set(["storm", "street", "furball"]);
+export const DRAWS_FLOAT = new Set(["storm", "street", "furball", "ruins"]);
 
 /**
  * O4: with the WORLD clock pinned (`__ab.pinWorld`, segments.mjs
@@ -1540,8 +1721,8 @@ export const DRAWS_FLOAT = new Set(["storm", "street", "furball"]);
  * wall clock. These apply only when EVERY pass of the arm reports its world
  * pinned; an older build (an --ab-ref from before O4) keeps the sets above.
  */
-export const UNPINNED_WORLD_PINNED = new Set(["furball"]);
-export const DRAWS_FLOAT_WORLD_PINNED = new Set(["furball"]);
+export const UNPINNED_WORLD_PINNED = new Set(["furball", "ruins"]);
+export const DRAWS_FLOAT_WORLD_PINNED = new Set(["furball", "ruins"]);
 
 /** Per-segment agreement between the runs of one invocation. */
 export function determinism(runs) {
@@ -1569,6 +1750,12 @@ export function determinism(runs) {
     const p50s = runs.map((r) => r.segments[i].p50);
     const gpuP50s = runs.map((r) => r.segments[i].gpuP50 ?? 0);
     const draws = runs.map((r) => r.segments[i].drawCalls);
+    // D6: the draws only destruction adds (`__ab.destruction().stagedDraws`)
+    // are pinned in EVERY staging segment — `ruins` included, whose total
+    // floats with its pilots' tracers. Absent on a build before D6.
+    const staged = runs.map((r) => r.segments[i].destruction?.stagedDraws);
+    const stagedDrawsAgree =
+      staged.some((v) => v === undefined) || new Set(staged).size === 1;
     return {
       name: seg.name,
       p50s,
@@ -1578,6 +1765,8 @@ export function determinism(runs) {
       gpuP50SpreadMs: spreadMs(gpuP50s),
       drawCalls: draws,
       drawCallsAgree: new Set(draws).size === 1,
+      stagedDraws: staged,
+      stagedDrawsAgree,
       pinned: !unpinned.has(seg.name),
     };
   });
@@ -1598,7 +1787,9 @@ export function determinism(runs) {
   // and go with it, and `furball` draws fake pilots' tracer bursts whose
   // timing is wall-clock. Their draw counts are reported, not asserted.
   const drawCallsAgreeEverywhere = perSegment.every(
-    (s) => s.drawCallsAgree || drawsFloat.has(s.name),
+    (s) =>
+      (s.drawCallsAgree || drawsFloat.has(s.name)) &&
+      s.stagedDrawsAgree !== false,
   );
   // A driver with no timer-query extension reports `null`, which lands here
   // as a column of zeros — a MISSING measurement, not a passing one. Require
@@ -1654,6 +1845,12 @@ function printDelta(report, baseline) {
     // before H2 has no tunnel to glide through) — is not a baseline.
     const unreproduced = (s) =>
       s.alive === false ||
+      // D6: an arm that could not stage the segment's destruction (a build
+      // before D6) flew an intact city there.
+      (SEGMENTS.find((g) => g.name === s.name)?.stage !== undefined &&
+        !s.staged) ||
+      (SEGMENTS.find((g) => g.name === s.name)?.stageAtWindow !== undefined &&
+        !s.staged) ||
       (SEGMENTS.find((g) => g.name === s.name)?.trainsAt !== undefined &&
         typeof s.trains?.offsetMs !== "number");
     if (!base) {
@@ -1661,7 +1858,7 @@ function printDelta(report, baseline) {
     } else if (unreproduced(seg) || unreproduced(base)) {
       const which = unreproduced(seg) ? report.label : baseline.label;
       console.log(
-        `${seg.name.padEnd(8)}  no baseline (${which} could not fly this scene: dead, or no two-train moment)`,
+        `${seg.name.padEnd(8)}  no baseline (${which} could not fly this scene: dead, no two-train moment, or no staged destruction)`,
       );
     } else if (
       seg.weather != null &&

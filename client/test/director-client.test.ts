@@ -6,12 +6,19 @@
 // something solid first.
 
 import {
+  CityDamage,
   chunkId,
   encodeChunkIds,
   generateCity,
   makeBuilding,
+  standingProfile,
   tierGrids,
 } from "@angels-bandits/common/city";
+import {
+  PANCAKE,
+  TOPPLE,
+  demolitionPlan,
+} from "@angels-bandits/common/city/collapse";
 import { CITY_SEED } from "@angels-bandits/common/constants";
 import {
   type DirectorEvent,
@@ -19,12 +26,15 @@ import {
   encodeDirectorEvent,
 } from "@angels-bandits/common/director";
 import type { ServerMsg, WelcomeMsg } from "@angels-bandits/common/protocol";
+import * as THREE from "three";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GameSocket } from "../src/net/socket";
 import {
   CRANE_ABOVE_ROOF,
   type DressBox,
   SCAFFOLD_OUT,
+  STRIP_MS,
+  ScaffoldRenderer,
   scaffoldBoxes,
 } from "../src/render/scaffold";
 
@@ -222,5 +232,77 @@ describe("D5 scaffolding and the rebuild crane", () => {
       }
     }
     expect(holed).toBeGreaterThan(0);
+  });
+});
+
+describe("D8 scaffolding follows what stands", () => {
+  const top = (box: DressBox) => box.y + box.h / 2;
+
+  it("wraps only a felled tower's stump, and its crane stands sized to it", () => {
+    for (const style of [TOPPLE, PANCAKE]) {
+      const fresh = generateCity(CITY_SEED);
+      const damage = new CityDamage();
+      damage.bind(fresh);
+      const b = fresh[tower] as (typeof fresh)[number];
+      const plan = demolitionPlan(b, tower, style, 1);
+      expect(plan).not.toBeNull();
+      damage.collapse((plan as NonNullable<typeof plan>).chunks);
+      const stump = Math.max(0, ...standingProfile(b).stump);
+      const out = scaffoldBoxes(b, []);
+      const crane = out.filter((x) => x.part === 2);
+      expect(crane.length).toBeGreaterThan(0);
+      for (const box of out) {
+        expect(box.y - box.h / 2).toBeGreaterThanOrEqual(-1e-6);
+        if (box.part === 2) {
+          expect(top(box)).toBeLessThanOrEqual(stump + CRANE_ABOVE_ROOF + 1e-6);
+        } else {
+          expect(top(box)).toBeLessThanOrEqual(stump + 1e-6);
+        }
+      }
+      // The generated tower's cage and mast are gone.
+      expect(Math.max(...out.map(top))).toBeLessThan(b.height * 0.6);
+      if (style === PANCAKE) {
+        expect(out.every((x) => x.part === 2)).toBe(true);
+      }
+    }
+  });
+
+  it("lands a rebuilt tower inside its scaffold, then strips it top-down", () => {
+    const fresh = generateCity(CITY_SEED);
+    const damage = new CityDamage();
+    damage.bind(fresh);
+    const b = fresh[tower] as (typeof fresh)[number];
+    const plan = demolitionPlan(b, tower, TOPPLE, 1);
+    damage.collapse((plan as NonNullable<typeof plan>).chunks);
+    const r = new ScaffoldRenderer(fresh, "high");
+    const cam = { x: b.x + 120, y: 60, z: b.z };
+    r.update(cam, damage.version, 0);
+    const dressed = r.mesh.count;
+    expect(dressed).toBeGreaterThan(0);
+    const highest = (): number => {
+      let hi = 0;
+      const m = new THREE.Matrix4();
+      for (let i = 0; i < r.mesh.count; i++) {
+        r.mesh.getMatrixAt(i, m);
+        const e = m.elements;
+        hi = Math.max(hi, (e[13] as number) + (e[5] as number) / 2);
+      }
+      return hi;
+    };
+    const before = highest();
+    damage.restoreBuilding(tower);
+    r.rebuilt(tower, 1000);
+    let last = Number.POSITIVE_INFINITY;
+    for (const t of [1000, 1800, 2600, 3400]) {
+      r.update(cam, damage.version, t);
+      const hi = highest();
+      expect(hi).toBeLessThanOrEqual(last + 1e-6);
+      last = hi;
+    }
+    // At the restore it stands around the whole tower, not the stump.
+    r.update(cam, damage.version, 1000);
+    expect(highest()).toBeGreaterThan(before);
+    r.update(cam, damage.version, 1000 + STRIP_MS + 1);
+    expect(r.mesh.count).toBe(0);
   });
 });

@@ -1096,6 +1096,8 @@ socket.events.onRebuild = (r, restored) => {
     directorFx.rebuildPop(restored, now);
     // D1's marks (dark panes, holes, scorch) go with the damage.
     if (r.k === 0) city.damage.clearBuilding(r.b);
+    // D8: a dressed tower lands inside its scaffold, which strips away.
+    if (r.k === 0) scaffold.rebuilt(r.b, now);
   } else {
     const serverMs = socket.renderTime();
     directorFx.rebuildAnnounced(

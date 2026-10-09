@@ -3553,6 +3553,10 @@ const frame = (now: number): void => {
       dt,
       effOut,
     );
+    // A lifted thumb's anchored aim follows the nose while F9 levels.
+    if (effortless.weight > 0 && anchored && !touchAiming) {
+      touchControls?.followNose();
+    }
     if (instructorMode) {
       // The hole assist and F9's gentle part bias the instructor's error
       // (+yaw is a right turn for the hole assist, i.e. less of the leftward

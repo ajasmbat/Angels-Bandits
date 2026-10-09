@@ -294,6 +294,13 @@ export class TouchControls {
     return this.aim.fingers.length > 0 && !this.aim.looking;
   }
 
+  /** F9 auto-level with the thumb lifted: put the anchored aim back on
+   * the gun line at the next steer(), every frame it levels — so the nose
+   * comes down to the horizon instead of being held on a stale direction. */
+  followNose(): void {
+    if (this.aim.fingers.length === 0) this.recentrePending = true;
+  }
+
   /** M6 settings panel: suspend (releasing everything held — a FIRE held
    * while the phone turns upright must not keep shooting) or resume (on a
    * centred aim, like a fresh plane). */

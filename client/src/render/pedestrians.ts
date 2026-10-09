@@ -51,6 +51,7 @@ import {
   TAG_PED,
   blockStream,
   blockWindowInto,
+  pruneBlockCache,
   microKeep,
   ringPerimeter,
   ringPointInto,
@@ -499,6 +500,8 @@ export class Pedestrians {
       .array as Float32Array;
     const whoArr = this.who.array as Float32Array;
     let n = 0;
+    // P3: keep the cache to last frame's window (about to be refilled).
+    pruneBlockCache(this.byBlock, this.windowScratch);
     for (const { bx, bz } of blockWindowInto(
       cameraPos,
       this.radius,

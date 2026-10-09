@@ -248,6 +248,8 @@ export class AtmosphereFx {
       const bx = Math.floor(wrap(f.cameraPos.x) / BLOCK_PITCH);
       const bz = Math.floor(wrap(f.cameraPos.z) / BLOCK_PITCH);
       const grid = CITY_GRID;
+      // P3: the 3×3 window refills in one pick; never the whole city.
+      if (this.ventsByBlock.size > 36) this.ventsByBlock.clear();
       for (let i = -1; i <= 1; i++) {
         for (let j = -1; j <= 1; j++) {
           const cx = (((bx + i) % grid) + grid) % grid;

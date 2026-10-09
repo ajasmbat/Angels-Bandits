@@ -235,7 +235,13 @@ const damagedCache = new WeakMap<
  */
 export function solids(b: Building): readonly SolidBox[] {
   const dmg = b.damage;
-  if (!dmg) return baseSolids(b);
+  if (!dmg) {
+    // P3: a rebuilt building's damaged boxes go with its damage — under C2's
+    // constant chaos every building is damaged and rebuilt in turn, and the
+    // stale entries grew the client heap for the whole session.
+    damagedCache.delete(b);
+    return baseSolids(b);
+  }
   const hit = damagedCache.get(b);
   if (hit && hit.version === dmg.version) return hit.boxes;
   const boxes = damagedSolids(b, dmg);

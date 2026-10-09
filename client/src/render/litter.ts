@@ -37,6 +37,7 @@ import {
   type RingPoint,
   blockStream,
   blockWindowInto,
+  pruneBlockCache,
   ringPerimeter,
   ringPointInto,
 } from "./streetlife";
@@ -373,6 +374,8 @@ export class Litter {
       this.live.push(s);
     }
     let i = 0;
+    // P3: keep the cache to last frame's window (about to be refilled).
+    pruneBlockCache(this.byBlock, this.windowScratch);
     for (const { bx, bz } of blockWindowInto(
       cameraPos,
       this.radius,

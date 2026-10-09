@@ -236,6 +236,23 @@ export function blockWindowInto(
   return out;
 }
 
+/**
+ * P3: drop a per-block cache's entries (keyed `bx * 1000 + bz`) outside
+ * `window` once it holds more than twice the window. Without it, a cache
+ * filled "on first sight" grows towards the whole city over a long session
+ * (the soak's heap growth). The window refills in a frame from the pure
+ * per-block generator. Allocates only on the rare call that prunes.
+ */
+export function pruneBlockCache<T>(
+  cache: Map<number, T>,
+  window: readonly BlockIndex[],
+): void {
+  if (window.length === 0 || cache.size <= window.length * 2) return;
+  const keep = new Set<number>();
+  for (const w of window) keep.add(w.bx * 1000 + w.bz);
+  for (const key of cache.keys()) if (!keep.has(key)) cache.delete(key);
+}
+
 // --- The altitude gate ----------------------------------------------------
 
 /** Camera altitude at or below which the micro tier draws at full density, m. */

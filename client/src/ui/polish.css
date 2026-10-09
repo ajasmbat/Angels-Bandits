@@ -554,10 +554,15 @@ body.touch #medal-toast {
   }
 }
 
-/* Phone: the K/D shares the HULL label's ~95 px — tighter tracking keeps it
-   on that line instead of wrapping over the bar. */
+/* Phone: the K/D shares the HULL label — the HULL gauge takes the larger
+   share of the row and the K/D tightens, so it stays on that line, apart
+   from the word, instead of wrapping over the bar. */
+body.touch #hp {
+  flex: 1.5 1 0;
+}
 body.touch #kd {
-  letter-spacing: 0.02em;
+  margin-left: 6px;
+  letter-spacing: 0.04em;
 }
 body.touch .gauge label {
   white-space: nowrap;

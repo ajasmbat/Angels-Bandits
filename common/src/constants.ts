@@ -635,6 +635,39 @@ export const RUBBLE_MAX_HEIGHT = 4;
  * distance of its centre, m; further in, it makes none. */
 export const RUBBLE_FALL_RANGE = 30;
 
+// --- D4 downed planes (common/src/wreck.ts) ---
+/** A shot-down plane's wreck: the sphere it falls as, m — solid while it
+ * falls, and what its sweep stops on. */
+export const WRECK_RADIUS = 5;
+/** The fall: gravity toward a terminal sink rate (linear drag), m/s², m/s. */
+export const WRECK_GRAVITY = 20;
+export const WRECK_TERMINAL = 75;
+/** The death velocity's horizontal part bleeds off over this, s. */
+export const WRECK_DRIFT_TAU_S = 2.2;
+/** The corkscrew: radius it grows to (over WRECK_SPIRAL_TAU_S), m, and its
+ * turn rate, rad/s. */
+export const WRECK_SPIRAL_RADIUS = 14;
+export const WRECK_SPIRAL_TAU_S = 1.5;
+export const WRECK_SPIN_RATE = 2.4;
+/** The server's impact sweep step, ms (then bisected). */
+export const WRECK_STEP_MS = 20;
+/** Longest fall, ms: a wreck that has hit nothing by then explodes in the
+ * air (800 m ceiling ≈ 11.6 s of fall). */
+export const WRECK_MAX_MS = 12000;
+/** Falling wrecks a room holds at once; a shot death over the cap explodes
+ * in place (the D2 death blast), as before D4. */
+export const WRECKS_MAX = 8;
+/** The impact blows out chunks within this radius (point-to-box), taking
+ * WRECK_BLAST_DAMAGE falling off to 0 — well past the 14 m death blast. */
+export const WRECK_BLAST_RADIUS = 24;
+export const WRECK_BLAST_DAMAGE = 420;
+/** Wreck kill credit: a crash naming a wreck counts when the crasher's
+ * on-record position came within WRECK_RADIUS + PLAYER_RADIUS + this, m, of
+ * the wreck over the last WRECK_CREDIT_LOOKBACK_MS (the client collides on
+ * its delayed render clock). */
+export const WRECK_CREDIT_SLACK = 8;
+export const WRECK_CREDIT_LOOKBACK_MS = 1200;
+
 // --- Guns / heat model (heat is a 0..1 meter; overheating locks the guns) ---
 /** Minimum time between shots, ms (10 rounds/s, alternating wingtips). */
 export const FIRE_INTERVAL_MS = 100;

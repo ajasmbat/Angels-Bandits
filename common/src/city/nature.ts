@@ -45,6 +45,7 @@ import { canonicalize, wrapDeltaAxis } from "../world/index";
 import { type Building, CITY_GRID, cityHoles, mulberry32 } from "./index";
 import { CONSTRUCTION_BLOCKS, LANDMARK_BLOCKS, PLAZA_BLOCKS } from "./layout";
 import { isRiverRow, overChannel } from "./river";
+import { PORTAL_CUTS, inPortalCut } from "./tunnels";
 import {
   FURNITURE_LINE,
   INTERSECTION_HALF,
@@ -563,6 +564,8 @@ export function natureFor(
     for (let k = 0; k < PARK_LAMP_COUNT; k++) {
       const l = parkLampLocal(k);
       const p = canon(cx + l.lx, cz + l.lz);
+      // U4: no lamp stands over a portal's open cut (or on its kerb).
+      if (inPortalCut(p.x, p.z, PORTAL_KERB)) continue;
       nature.lamps.push({ x: p.x, z: p.z, height: PARK_LAMP_HEIGHT });
     }
     parkTrees(seed, bx, bz, candidates);
@@ -599,10 +602,44 @@ export function natureFor(
   const corridors = lowHoleCorridors(buildings);
   for (const t of candidates) {
     if (overlapsBuilding(t, byBlock)) continue;
+    if (inPortalAir(t)) continue;
     if (corridors.some((c) => inCorridor(t, c))) continue;
     nature.trees.push(t);
   }
   return nature;
+}
+
+/** U4: the kerb round a portal's open cut, m — nothing stands on it. */
+const PORTAL_KERB = 3;
+/** U4: a portal's approach corridor runs this far back from its lip, m —
+ * the lawn a plane glides in over (and climbs out over) before the cut. */
+const PORTAL_APPROACH = 70;
+
+/**
+ * U4: would tree `t` stand in a portal's cut or over its approach? The cut
+ * itself, grown by the kerb, and the lawn behind the lip out to
+ * PORTAL_APPROACH, the cut's width plus a crown either side: no tree there,
+ * so the dive in and the climb out never meet a canopy.
+ */
+function inPortalAir(t: Tree): boolean {
+  const reach = Math.max(t.canopyR, t.trunkR) + PORTAL_KERB;
+  for (const c of PORTAL_CUTS) {
+    const cx = (c.x0 + c.x1) / 2;
+    const cz = (c.z0 + c.z1) / 2;
+    // The corridor: the cut extended back past its lip along its axis.
+    const bx = -Math.cos(c.inHeading) * PORTAL_APPROACH;
+    const bz = -Math.sin(c.inHeading) * PORTAL_APPROACH;
+    const x0 = Math.min(c.x0, c.x0 + bx) - reach;
+    const x1 = Math.max(c.x1, c.x1 + bx) + reach;
+    const z0 = Math.min(c.z0, c.z0 + bz) - reach;
+    const z1 = Math.max(c.z1, c.z1 + bz) + reach;
+    const dx = wrapDeltaAxis(cx, t.x);
+    const dz = wrapDeltaAxis(cz, t.z);
+    if (dx >= x0 - cx && dx <= x1 - cx && dz >= z0 - cz && dz <= z1 - cz) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** A hole's clear-air corridor in plan, with the roof height it allows. */

@@ -148,6 +148,14 @@ export interface QualityProfile {
    * landing fire emit (into the D1 particle pool). The wreck itself, its
    * explosion and the street scorch are on every tier — the wreck is solid. */
   wreckFire: number;
+  /** D5 director warnings and rebuilds: share of the dust spilling from a
+   * warned tower, a gas main's steam, a crane's sparks, the welders and the
+   * rebuild's pop (into the D1 pool). The warning's sound, siren and tremor
+   * — the telegraph — are identical on every tier. */
+  directorFx: number;
+  /** D5 rebuild dressing: how many damaged buildings near the camera wear
+   * scaffolding and a rebuild crane at once (cosmetic, never solid). */
+  scaffold: number;
 }
 
 export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
@@ -184,6 +192,8 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     destructionDetail: true,
     collapseDust: 1,
     wreckFire: 1,
+    directorFx: 1,
+    scaffold: 8,
   },
   medium: {
     maxPixelRatio: 1.5,
@@ -218,6 +228,8 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     destructionDetail: true,
     collapseDust: 0.75,
     wreckFire: 0.75,
+    directorFx: 0.75,
+    scaffold: 6,
   },
   low: {
     maxPixelRatio: 1,
@@ -252,6 +264,8 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     destructionDetail: false,
     collapseDust: 0.5,
     wreckFire: 0.5,
+    directorFx: 0.5,
+    scaffold: 4,
   },
   mobile: {
     maxPixelRatio: 1,
@@ -286,6 +300,8 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     destructionDetail: false,
     collapseDust: 0.3,
     wreckFire: 0.35,
+    directorFx: 0.35,
+    scaffold: 2,
   },
 };
 

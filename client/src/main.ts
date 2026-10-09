@@ -2578,6 +2578,11 @@ declare global {
       qaFireAt: (x: number, y: number, z: number, n?: number) => void;
       /** D1 QA: hide the impacts Points (draw-call A/B). */
       qaImpactsHidden: (hidden: boolean) => void;
+      /** O6 QA: the scene systems `qaHide` can name. */
+      qaSystems: () => string[];
+      /** O6 QA: draw everything except these systems (flicker attribution;
+       * `[]` restores all). Returns the names it matched. */
+      qaHide: (names: string[]) => string[];
       /** D1 QA: up to `max` pane centres on a tier's facade face that the JS
        * lit mirror reports LIT, nearest the face's middle first — canonical,
        * nudged 0.5 m off the wall — with their cells. */
@@ -2706,6 +2711,74 @@ const settingsPanel = new SettingsPanel(
   settings,
   settingsStore,
 );
+/**
+ * O6 flicker attribution (`__ab.qaHide`): the scene's top-level systems by
+ * name. Anything in the scene not named here (remote planes, pooled FX,
+ * whatever a later ticket adds) is listed as `other:<index>`, so hiding
+ * every named system still leaves "everything else" measurable.
+ */
+function qaSystems(): { name: string; objects: THREE.Object3D[] }[] {
+  const named: [string, THREE.Object3D[]][] = [
+    ["city", [city.mesh]],
+    ["roofClutter", [roofClutter.group]],
+    ["rooftopLife", [rooftopLife.group]],
+    ["facadeGarnish", [facadeGarnish.group]],
+    ["facadeDetail", [facadeDetail.group]],
+    ["ground", [ground.mesh]],
+    ["sky", [skyDome.mesh]],
+    ["streetlights", [streetlights.group]],
+    ["signage", [signage.group]],
+    ["traffic", [traffic.mesh]],
+    ["headlightCones", [headlights.cones]],
+    ["headlightPools", [headlights.pools]],
+    ["movers", [movers.rig, movers.hulls, movers.rotors]],
+    ["moverLights", [moverLights.points]],
+    ["train", [train.mesh]],
+    ["courses", [courseRings.mesh, courseGhost.mesh]],
+    ["nature", [natureRenderer.group]],
+    ["river", [river.group]],
+    ["fountains", [fountains.points]],
+    ["searchlights", [searchlights.mesh]],
+    ["jumbotrons", [jumbotrons.mesh]],
+    ["birds", [birds.points]],
+    ["pedestrians", [pedestrians.mesh]],
+    ["cityLife", [cityLife.mesh]],
+    ["facadeLife", [facadeLife.mesh]],
+    ["holeDecor", [holeDecor.mesh]],
+    ["streetFurniture", [streetFurniture.mesh]],
+    ["steam", [steam.points]],
+    ["signals", [signals.mesh]],
+    ["constructionSparks", [constructionSparks.points]],
+    [
+      "fx",
+      [
+        explosions.group,
+        sparks.points,
+        shieldSparks.points,
+        smoke.points,
+        streakSmoke.points,
+        dust.points,
+      ],
+    ],
+    ["impacts", [impacts.points]],
+    ["scaffold", [scaffold.mesh]],
+    ["wrecks", [wrecks.group]],
+    ["missiles", [missileRenderer.group]],
+    ["boss", [bossRenderer.group]],
+    ["reactions", [reactor.points]],
+    ["storm", [storm.group, storm.flashLight]],
+    ["clouds", [clouds.group]],
+    ["rain", [rain.mesh]],
+    ["plane", [plane, planeLights.points, planeTrails.mesh]],
+    ["tracers", [tracers.group]],
+  ];
+  const seen = new Set(named.flatMap(([, objects]) => objects));
+  const out = named.map(([name, objects]) => ({ name, objects }));
+  scene.children.forEach((o, i) => {
+    if (!seen.has(o)) out.push({ name: `other:${i}`, objects: [o] });
+  });
+  return out;
+}
 window.__ab = {
   state: () => flight,
   teleport: (x, z, y = 300, yaw = 0) => {
@@ -3087,6 +3160,23 @@ window.__ab = {
   },
   qaImpactsHidden: (hidden) => {
     impacts.points.visible = !hidden;
+  },
+  qaSystems: () => qaSystems().map((s) => s.name),
+  qaHide: (names) => {
+    // Off every camera layer, not `visible = false`: several systems drive
+    // their own visibility each frame and would quietly undo it.
+    const hide = new Set(names);
+    for (const s of qaSystems()) {
+      for (const o of s.objects) {
+        o.traverse((c) => {
+          if (hide.has(s.name)) c.layers.disableAll();
+          else c.layers.set(0);
+        });
+      }
+    }
+    return qaSystems()
+      .filter((s) => hide.has(s.name))
+      .map((s) => s.name);
   },
   qaLitCells: (building, tier, face, max = 8) => {
     const b = city.cityBuildings[building];

@@ -400,6 +400,33 @@ async function joinGame(page, url) {
 }
 
 /**
+ * S8: re-assert joinGame's empty room before a segment — `setBots(0)` and
+ * wait — if anything is flying in it. Says so, and names the room: a room
+ * id different from the one the page joined is a session that dropped and
+ * rejoined (W2), which is the machine, not the build.
+ */
+async function ensureEmptyRoom(page, name) {
+  const now = await page.evaluate(() => ({
+    room: window.__ab.net().roomId,
+    targets: window.__ab.combat().targets.length,
+  }));
+  if (now.targets === 0) return;
+  await page.evaluate(() => window.__ab.setBots(0));
+  const emptied = await page
+    .waitForFunction(() => window.__ab.combat().targets.length === 0, null, {
+      timeout: 30_000,
+      polling: 250,
+    })
+    .then(
+      () => true,
+      () => false,
+    );
+  console.error(
+    `!! before ${name}: ${now.targets} plane(s) in ${now.room} — ${emptied ? "emptied it (setBots 0)" : "it would not empty; this segment draws them"}`,
+  );
+}
+
+/**
  * Fly one segment and return its FrameStats plus where it was flown.
  *
  * The ENTIRE segment runs inside one page.evaluate, and its waits are driven
@@ -604,6 +631,7 @@ async function flySegment(page, seg, sampleMs, worldMs) {
         };
       };
       const spectacleBefore = spectacle();
+      const roomAtWindow = ab.net().roomId;
       ab.perfReset();
       // O5 --trace: the measured window, for trace-spikes.mjs.
       performance.mark("abWindowStart");
@@ -683,6 +711,9 @@ async function flySegment(page, seg, sampleMs, worldMs) {
           window: diff(glAtWindow, glAtEnd),
         },
         planes,
+        // S8: the page's room at both ends of the window (a change is a
+        // dropped session that rejoined).
+        rooms: [roomAtWindow, ab.net().roomId],
         // P2: the train moment a `trainsAt` segment slid to (null otherwise).
         trains,
         // S8: the window's draws split by the reflection probe (null on an
@@ -1234,6 +1265,9 @@ async function measure(browser, url, { trace = true } = {}) {
   // pixel count is the workload, so a run whose ratio was quietly changed is
   // not comparable to one whose was not. Storing both is what makes that
   // visible instead of a mystery in a delta table.
+  // S8: where the page joined — a drain that later finds it elsewhere (or
+  // with planes that will not leave) says the session dropped in between.
+  console.log(`  page joined ${config.roomId}`);
   config.requestedPixelRatio = new URL(url).searchParams.get("res");
   config.pixelRatioHonoured = ratioHonoured(config);
   config.fragmentProxy = fragmentProxy(config);
@@ -1243,6 +1277,10 @@ async function measure(browser, url, { trace = true } = {}) {
   /** S8: the page's room as the segment started (the drain names a change). */
   let roomBefore = null;
   for (const seg of activeSegments()) {
+    // S8: every segment starts in joinGame's empty room. A page that lost
+    // its session mid-pass (W2) rejoins a fresh room with the default bots,
+    // and they would fly through every segment after it.
+    await ensureEmptyRoom(page, seg.name);
     // O3 furball: fake pilots join for this segment only, and get time to
     // re-sync on the server and fill the page's interpolation buffer before
     // the segment's own settle starts.
@@ -1303,6 +1341,7 @@ async function measure(browser, url, { trace = true } = {}) {
           bullets: window.__ab.combat().bullets ?? null,
           particles: window.__ab.impacts?.().live ?? null,
           room: window.__ab.net().roomId,
+          ids: window.__ab.combat().targets.map((t) => t.id),
         }));
         // S8: a room id that changed means the page lost its session and
         // rejoined a fresh room (with its default bots) — not leftovers.
@@ -1610,6 +1649,21 @@ function printVerdicts(report) {
           .slice(0, 3)
           .map((t) => `${t.site} ${t.bytesPerFrame} B`)
           .join("; ")}`,
+      );
+    }
+  }
+  // S8: a window that drew planes it did not ask for, or whose page changed
+  // rooms (a dropped session that rejoined) — not the scene it set up.
+  for (const s of report.segments) {
+    const asked = (SEGMENTS.find((g) => g.name === s.name)?.pilots ?? 0) + 1;
+    if (typeof s.planes === "number" && s.planes > asked) {
+      console.error(
+        `!! ${s.name}: ${s.planes} planes in the window, ${asked} asked for — the room had uninvited planes (bots after a rejoin).`,
+      );
+    }
+    if (s.rooms && s.rooms[0] !== s.rooms[1]) {
+      console.error(
+        `!! ${s.name}: the page changed rooms inside the window (${s.rooms.join(" → ")}).`,
       );
     }
   }

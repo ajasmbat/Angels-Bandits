@@ -89,16 +89,20 @@ export const BUDGETS = {
   // runner's measured High draws (station 82, hole 83, sidewalk 82) plus
   // ~10 % — so a later ticket that piles onto a train station, a tunnel or
   // a sidewalk is caught here and not only in `core`.
-  // S8: the spectacle views get theirs the same way (the runner's measured
-  // High draws, probe included, plus ~10 %; README S8).
+  // S8: the spectacle views get theirs the same way — the runner's measured
+  // High draws on a quiet server, probe included, plus ~10 % (boss 279,
+  // rings 101–104, glass 102) — and P2's three are re-based on what main
+  // draws after the Spectacle, Destruction, C2 and U4 batches: their scene
+  // draws went from 82–83 to 94–96, and the S6 probe adds 7 a frame
+  // (README S8). core keeps 120.
   drawCalls: {
     core: 120,
-    station: 90,
-    hole: 92,
-    sidewalk: 90,
-    boss: 300,
-    rings: 112,
-    glass: 110,
+    station: 111,
+    hole: 113,
+    sidewalk: 113,
+    boss: 307,
+    rings: 114,
+    glass: 112,
   },
   // D6: a collapse segment may cost at most this many draws over the SAME
   // pass's `core` (core itself stays under its 120). A segment not flown

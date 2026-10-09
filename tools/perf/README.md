@@ -1644,8 +1644,10 @@ the end). Nothing here changes what a plain visit gets.
 
 ### Three new segments
 
-Appended after `sidewalk`, so the ten older segments keep their index and
-their measured world instants (the warm-up lap's instants shift, as in P2).
+Appended after D6's `rubble`, so the thirteen older segments keep their
+index and their measured world instants (the warm-up lap's instants shift,
+as in P2). The server runs D6's quiet city, so no real raid ever starts in
+the harness's room; the staged one does not depend on that, though.
 Each spot was checked offline against the shared collision (`touchesSolid`:
 ground, buildings, trees, viaducts and every mover over 15 min of world time
 around `WORLD_EPOCH_MS`), and `boss` against the staged hull too
@@ -1677,70 +1679,68 @@ baseline** for it.
   the scene's draws**, and the budgets still judge the total. On every view
   measured here the probe's median is 7 draws.
 - **A dropped session poisoned every later segment.** On a runner this
-  loaded (load average 40–85, frames of 1–8 s) the page sometimes lost its
-  session mid-pass (W2) and rejoined a fresh room with the default five bots,
-  which then flew through every segment after it (`bot:room-3:6` … in the
-  drain after `boss`). Every segment now re-asserts the empty room first, and
-  the table names a window with planes it did not ask for or a room change
-  inside it. Two things dropped it: the client's 3 s watchdog, which at 1–2 s
-  a frame could read silence off a healthy socket (the harness now passes a
-  QA `?silence=60000`), and the server's 4 s liveness bound once a frame
-  took longer than that — D6 (in flight) raises it for the harness; this
-  gate's runs used D6's override locally, and a run without it on this box
-  dropped three times in two segments.
+  loaded (load average 40–110, frames of 1–8 s) the page lost its session
+  mid-pass (W2) and rejoined a fresh room with the default five bots, which
+  then flew through every segment after it (`bot:room-3:6` … in the drain
+  after `boss`). Two things dropped it: the client's 3 s watchdog, which at
+  1–2 s a frame could read silence off a healthy socket — the harness now
+  passes a QA `?silence=60000` (net/socket.ts; it only ever raises the
+  bound) — and the server's 4 s liveness bound once one frame took longer,
+  which D6's harness raises to 30 s. Every segment also re-asserts the empty
+  room before it starts, and the table names a window with planes it did not
+  ask for or a room change inside it.
 
 ### What the runner measured (S8)
 
 GPU-less Linux box, SwiftShader (Vulkan), `--res 0.75` (the panel's floor at
-device ratio 2), High, `--runs 3`, on this branch over main at `5d29b26`,
-with D6's server liveness bound (`LIVENESS_TIMEOUT_MS=30000`, in flight)
-applied locally for the run only. **The box was badly oversubscribed** —
-other tickets' harnesses ran beside it, load average 40–110 on 16 cores —
-so frames took 1–8 s and a 5 s window held 1–26 of them. SwiftShader's GPU
-and wall times are the CPU rasterising: every `60fps` and `hitch` verdict
-reads FAIL here and says nothing about the M3.
+device ratio 2), High, `--runs 3`, `core,station,hole,sidewalk,boss,rings,glass`,
+on this branch merged with main after D6, C2, U4 and F9 (quiet city, D6's
+liveness bound, the `?silence=` knob). **The box was badly oversubscribed** —
+other tickets' harnesses beside it, load average 90–100 on 16 cores — so
+frames took 1–8 s and a 5 s window held 1–7 of them. SwiftShader's GPU and
+wall times are the CPU rasterising: every `60fps` and `hitch` verdict reads
+FAIL here and says nothing about the M3.
 
 | segment | draws = scene + probe (median pass) | scene draws, 3 passes | budget | spect. | first sight (window) |
 | --- | --- | --- | --- | --- | --- |
-| core | 102 = 95 + 7 | 94 / 95 / 92 | 120 | — | 0p 0t 0b |
-| station | 100 = 93 + 7 | 93 / 87 / 91 | 110 | — | 0p 0t 0b |
-| hole | 114 = 93 + 21 (a 1-frame window that caught a refill) | 94 / 93 / 96 | 113 | — | 0p 0t 0b |
-| sidewalk | 102 = 95 + 7 | 94 / 95 / 93 | 112 | — | 0p 0t 0b |
-| boss | 278 = 271 + 7 | 270 / 271 / 269 | 300 | ok: hull drawn (16 armour boxes), 5–6 shells, 0 server shells, 12 planes, furthest pilot 206–230 m | 0p 0t 0b |
-| rings | 102 = 95 + 7 | 95 / 97 / 91 | 112 | ok in two passes; one opened before the run had started (fixed since: the window now waits for it) | 0p 0t 0b |
-| glass | 99 = 92 + 7 | 92 / 94 / 92 | 110 | — | 0p 0t 0b |
+| core | 103 = 96 + 7 | **96 / 96 / 96** | 120 | — | 0p 0t 0b |
+| station | 101 = 94 + 7 | **94 / 94 / 94** | 111 (was 90) | — | 0p 0t 0b |
+| hole | 117 = 96 + 21 (a 1-frame window that caught a probe refill) | **96 / 96 / 96** | 113 (was 92) | — | 0p 0t 0b |
+| sidewalk | 103 = 96 + 7 | **96 / 96 / 96** | 113 (was 90) | — | 0p 0t 0b |
+| boss | 279 = 272 + 7 | **272 / 272 / 272** (not asserted: live pilots) | 307 | ok: hull drawn (16 armour boxes), 5–6 shells, 0 server shells, 12 planes, every pilot ≤ 255 m | 0p 0t 0b |
+| rings | 101 = 94 + 7 | 94 / 94 / 97 | 114 | ok: the run on Canyon Run, the ghost drawn, at both ends | 0p 0t 0b |
+| glass | 116 = 95 + 21 (a 1-frame window that caught a probe refill) | **95 / 95 / 95** | 112 | — | 0p 0t 0b |
 
-- **core: 102 draws against its 120** (95 scene + 7 probe), the whole
-  Spectacle and Destruction batches included. Nothing breached `core`, so
-  nothing was cut.
-- **Draw identity could not be shown on this box, for any segment**,
-  including `core`, which this branch does not touch. The pinned world clock
-  advances by the sim step, clamped at 50 ms a frame, so a window of 6 frames
-  and one of 26 cover different slices of world time, and a flown segment
-  ends in a different place. P2's runner (load ~14, ~15 frames a window)
-  held identical draws. On the M3 a window holds hundreds of frames:
+- **core: 103 draws against its 120** (96 scene + 7 probe), with every batch
+  since P2 included. Nothing breached `core`, so nothing was cut.
+- **Draws identical across passes in six of the seven segments**, `boss`
+  among them, at 1–7 frames a window. **`rings` read 94 / 94 / 97**: its
+  glide runs on the wall clock (so it covers the same canyon on any
+  machine), and on this box one pass waited 4.5 s past the settle for the
+  run to start, then drew its 3 frames further down the street. On the M3
+  the run starts inside the settle and a window holds hundreds of frames;
   **`--runs 3 --strict` there is the identity check** (command 1 below).
-  `boss` is measured but, like `furball`, not asserted: its 11 pilots fly on
-  their own wall clock and the page draws them at the synced server time,
-  which the world pin does not reach. Its staged part, the hull and the
-  shells, is pinned, and the `spect.` verdict checks it at both ends.
-- **P2's three tripwires are re-based.** On main their scene draws are
-  87–96, where P2 measured 82–83, and the S6 probe adds 7 a frame. That is
-  the Spectacle and Destruction batches' one-draw systems (jumbotrons, rings,
-  fog banks, litter, the shafts pass, the D-batch's meshes) plus the probe.
-  The new budgets are measured + ~10 %, P2's own rule.
-- **First sight**: 0 programs and 0 textures inside every window. `boss`'s
-  settle uploads 11 textures and 33 buffers: the twelve planes' per-plane
-  buffers, as the furball's do (O4).
+  `boss` is measured but not asserted, like `furball` and `ruins`: its
+  pilots are drawn at the synced server time, which the world pin does not
+  reach (here they agreed anyway). Its staged part, the hull and the shells,
+  is pinned, and the `spect.` verdict checks it.
+- **P2's three tripwires are re-based**, by P2's own rule (measured +
+  ~10 %). Their scene draws are 94–96 now, where P2 measured 82–83: the
+  Spectacle batch's one-draw systems (jumbotrons, rings, fog banks, litter,
+  the shafts pass), the Destruction, C2 and U4 batches' meshes and lights,
+  and the S6 probe's 7 a frame on top. (Before the merge with D6's quiet
+  city, raids, missiles and collapses landing on the wall clock had also
+  moved these counts between passes; they no longer can.)
+- **First sight**: 0 programs, 0 textures and 0 buffers inside every window.
 - **Mobile** (`--quality mobile`, `core`, `boss`, `rings`, `glass`, 3
-  passes; even fewer frames a window, 1–5): every segment alive, 0p 0t
-  first sight in every window, the probe draws no face (`probe 0`), and
-  every view is lighter than High: core 81–85 (High 102), boss 260–261
-  (278), rings 83–91 (102), glass 86–91 (99). The ghost plays but is not
-  drawn, as the tier says. That run predates the fix to the `rings` check (it
-  demanded a drawn ghost, which Mobile never shows) and had a session drop
-  in its last pass, so its rings and glass carry five bots. The phone itself
-  is for the M3 (command 4).
+  passes, measured before the merge with D6, so on a server that was not
+  quiet): every segment alive, 0p 0t first sight in every window, the probe
+  draws no face (`probe 0`), and every view is lighter than High: core 81–85
+  (High 102 in that run), boss 260–261 (278), rings 83–91 (102), glass 86–91
+  (99). The ghost plays but is not drawn, as the tier says. That run
+  predates the fix to the `rings` check (which demanded a drawn ghost, and
+  Mobile never shows one) and saw a session drop in its last pass, so its
+  rings and glass carry five bots. The phone itself is for the M3 (command 4).
 
 ### No per-frame allocations: the table (`tools/spectacle-bench.ts`)
 
@@ -1842,8 +1842,9 @@ node --import tsx tools/spectacle-bench.ts
 # 1. The gate: every segment, 3 passes, determinism enforced. Read the
 #    60fps / hitch / draws / room / spect. verdicts: boss and rings must
 #    read "ok" under spect., no "uninvited planes" or "changed rooms" line
-#    may appear, and draw calls must be identical per segment (boss and
-#    furball exempt: live pilots). GPU p50 <= 14 ms is 60 fps at ratio 2.
+#    may appear, and draw calls must be identical per segment (boss,
+#    furball and ruins exempt: live pilots; D6's destruction table and its
+#    staged draws as D6 says). GPU p50 <= 14 ms is 60 fps at ratio 2.
 node tools/perf/run.mjs --runs 3 --samples --strict --label S8
 
 # 2. What the batch cost: paired against the commit before it (boss and

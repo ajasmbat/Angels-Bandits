@@ -164,6 +164,14 @@ export interface QualityProfile {
    * zeppelin (solid), its weak points, running lights and the flak shells
    * themselves (the telegraph) are identical on every tier. */
   bossFx: number;
+  /** S5 wind litter: share of each block's scraps kept (stride thinning). */
+  litter: number;
+  /** S5 moon light shafts (the quarter-res ShaftsPass; off skips it). */
+  lightShafts: boolean;
+  /** S5 heat shimmer over roof exhaust stacks (a FinalPass uniform). */
+  heatShimmer: boolean;
+  /** S5 lens flares and streaks on the brightest lights (a FinalPass uniform). */
+  glare: boolean;
 }
 
 export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
@@ -204,6 +212,10 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     scaffold: 8,
     streakSmoke: 1,
     bossFx: 1,
+    litter: 1,
+    lightShafts: true,
+    heatShimmer: true,
+    glare: true,
   },
   medium: {
     maxPixelRatio: 1.5,
@@ -242,6 +254,10 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     scaffold: 6,
     streakSmoke: 1,
     bossFx: 0.75,
+    litter: 1,
+    lightShafts: true,
+    heatShimmer: true,
+    glare: true,
   },
   low: {
     maxPixelRatio: 1,
@@ -280,6 +296,10 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     scaffold: 4,
     streakSmoke: 0.5,
     bossFx: 0.5,
+    litter: 0.5,
+    lightShafts: true,
+    heatShimmer: true,
+    glare: true,
   },
   mobile: {
     maxPixelRatio: 1,
@@ -318,6 +338,10 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     scaffold: 2,
     streakSmoke: 0.5,
     bossFx: 0.35,
+    litter: 0.34,
+    lightShafts: false,
+    heatShimmer: false,
+    glare: false,
   },
 };
 
@@ -737,6 +761,62 @@ export const FEATURE_TIERS: readonly {
     low: "reduced",
     mobile: "reduced",
     note: "emission 100 / 75 / 50 / 35 % into the D1 particle pool (no extra draw); the bursts' damage and the sections themselves are the same everywhere",
+  },
+  {
+    feature: "S5 fog banks (drifting haze between the towers)",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "visibility parity: haze is the same on every tier; one instanced draw",
+  },
+  {
+    feature: "S5 wind litter (paper, leaves, wrappers; low-pass kick)",
+    high: "full",
+    medium: "full",
+    low: "reduced",
+    mobile: "reduced",
+    note: "half / a third of the scraps (Mobile streams one block out); one Points draw",
+  },
+  {
+    feature: "S5 moon light shafts",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "off",
+    note: "quarter-res pass, skipped when off or the moon is out of view",
+  },
+  {
+    feature: "S5 searchlight rays (haze striations in the beams)",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "beam shader only; no draw",
+  },
+  {
+    feature: "S5 heat shimmer over exhaust stacks",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "off",
+    note: "FinalPass uniform; no draw",
+  },
+  {
+    feature: "S5 glare — lens flares and streaks",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "off",
+    note: "FinalPass uniform (low-res bloom taps); no draw",
+  },
+  {
+    feature: "S5 wet-roof sign reflections",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "building shader, wetness uniform only",
   },
 ];
 

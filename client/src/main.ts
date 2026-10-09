@@ -205,6 +205,7 @@ import {
 import { GameSocket } from "./net/socket";
 import { Airliners } from "./render/airliners";
 import { archetypeFor } from "./render/archetypes";
+import { AtmosphereFx } from "./render/atmosphere-fx";
 import { Birds } from "./render/birds";
 import { BossRenderer } from "./render/boss";
 import { CityRenderer } from "./render/city";
@@ -249,7 +250,12 @@ import {
   spinPropeller,
 } from "./render/plane";
 import { PlaneLights } from "./render/planelights";
-import { AbBloomPass, DiscardDepthPass, FinalPass } from "./render/post";
+import {
+  AbBloomPass,
+  DiscardDepthPass,
+  FinalPass,
+  ShaftsPass,
+} from "./render/post";
 import { prewarmScene } from "./render/prewarm";
 import {
   type AutoQualityState,
@@ -593,6 +599,10 @@ composer.addPass(new DiscardDepthPass());
 // OutputPass and a separate grade pass) out of the same build, so the
 // harness can measure the difference as a paired --ab.
 const legacyPost = renderOpts.post === "legacy";
+// S5: the moon's light shafts, a quarter-res pass FinalPass adds (it skips
+// itself while the moon is out of view or the tier has no shafts).
+const shaftsPass = legacyPost ? null : new ShaftsPass();
+if (shaftsPass) composer.addPass(shaftsPass);
 const bloomPass = legacyPost
   ? new UnrealBloomPass(
       new THREE.Vector2(window.innerWidth, window.innerHeight),
@@ -608,17 +618,20 @@ let gradePass: {
   uniforms: Record<string, THREE.IUniform>;
   enabled: boolean;
 } | null = null;
+/** The fused final pass (null on the legacy chain): S5's shimmer and glare. */
+let finalPass: FinalPass | null = null;
 if (bloomPass instanceof AbBloomPass) {
-  const finalPass = new FinalPass(bloomPass, renderOpts.grade);
+  finalPass = new FinalPass(bloomPass, renderOpts.grade, shaftsPass);
+  const fp = finalPass;
   composer.addPass(finalPass);
   if (renderOpts.grade) {
     gradePass = {
       uniforms: finalPass.uniforms,
       get enabled() {
-        return finalPass.gradeEnabled;
+        return fp.gradeEnabled;
       },
       set enabled(on: boolean) {
-        finalPass.gradeEnabled = on;
+        fp.gradeEnabled = on;
       },
     };
   }
@@ -653,6 +666,7 @@ function applyPixelRatio(ratio: number): void {
   composer.setPixelRatio(ratio);
   // The bloom chain is anchored to CSS pixels (render/post.ts).
   if (bloomPass instanceof AbBloomPass) bloomPass.setPixelRatio(ratio);
+  shaftsPass?.setPixelRatio(ratio);
 }
 applyPixelRatio(resolution.ratio);
 
@@ -918,6 +932,16 @@ const steam = new Steam(
   MAX_CART_VENTS_PER_BLOCK,
 );
 scene.add(steam.points);
+// S5 atmosphere: fog banks + wind litter (one draw each), and the post
+// chain's shafts, shimmer and glare (render/atmosphere-fx.ts).
+const atmosphere = new AtmosphereFx(
+  welcome.seed,
+  city.cityBuildings,
+  buildingsByBlock,
+  finalPass,
+  shaftsPass,
+);
+scene.add(...atmosphere.objects);
 const signals = new Signals(welcome.seed);
 scene.add(signals.mesh);
 const constructionSparks = new ConstructionSparks(welcome.seed);
@@ -2105,6 +2129,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   facadeDetail.setQuality(tier);
   train.setQuality(tier); // T2: platform people, sparks, light range
   courseGhost.setQuality(tier); // S3: MOBILE keeps the rings, drops the ghost
+  atmosphere.setQuality(tier); // S5
   applyPostQuality();
   resLimits = limitsFor(tier);
   if (resAuto) {
@@ -2512,6 +2537,8 @@ declare global {
         flash: number;
         drops: number;
       };
+      /** S5 QA: what the atmosphere drew last frame. */
+      atmosphere: () => ReturnType<AtmosphereFx["debug"]>;
       /** L12 QA: force the sky cycle to a fraction (0..1) or a named
        * moment, or release it to the synced clock with null. */
       sky: (t?: number | "dusk" | "night" | "predawn" | null) => {
@@ -3172,6 +3199,7 @@ window.__ab = {
       },
     };
   },
+  atmosphere: () => atmosphere.debug(),
   sky: (t) => {
     if (t === null) skyCycle.forced = null;
     else if (typeof t === "string") skyCycle.forced = SKY_MOMENTS[t];
@@ -3237,6 +3265,8 @@ let last = performance.now();
 fadeEl.classList.add("dead");
 socket.sendPing(); // W1: the rest of the boot was built synchronously
 renderer.initTexture(city.damageAtlas); // D1: never a first-hit upload hitch
+// S5: the shafts pass links its program now, whatever the tier or the moon.
+if (shaftsPass) shaftsPass.forceOnce = true;
 await prewarmScene(renderer, scene, camera, composer);
 socket.sendPing();
 flashFade();
@@ -4173,6 +4203,21 @@ const frame = (now: number): void => {
     camera.position.set(eye.x, eye.y, eye.z);
     camera.lookAt(at.x, at.y, at.z);
   }
+  // S5 atmosphere, once the camera is final (shimmer and shafts project
+  // through it): fog banks clear of every plane, litter kicked by low
+  // passes, all on the latched world clock.
+  atmosphere.update({
+    camera,
+    cameraPos: chase.position,
+    worldMs: renderMs,
+    now,
+    planes: birdPlanes,
+    passes: reactor.nearPasses,
+    haze: wx.haze,
+    microK,
+    moonDir: skyCycle.state.moonDir,
+    moonVis: skyCycle.state.moonVis,
+  });
   // Everything up to here is this frame's JS: sim, streaming, instance
   // packing. The render call is NOT included — a driver can block in it
   // waiting on the GPU, which would read a GPU-bound frame as CPU-bound.

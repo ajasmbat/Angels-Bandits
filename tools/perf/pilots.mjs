@@ -31,24 +31,34 @@ const FIRE_SHOTS = 6;
 const FIRE_GAP_MS = 90;
 
 /**
+ * The furball's weave: 80–380 m ahead of the view, 42–97 m up (between the
+ * street lamps and the roofs).
+ */
+export const FURBALL_FLIGHT = { near: 80, far: 380, yLo: 42, yHi: 97 };
+
+/**
  * Pilot `i`'s canonical pose at `t` seconds: a weave down the corridor of
  * the street the held view looks along (−Z from `center`), staying inside
- * the street band laterally and between the street lamps and the roofs in
- * height. Ground speed peaks ~65 m/s, inside every server speed cap; the
- * CLAIMED speed is floored at MIN_SPEED (40), since no real plane flies
- * slower and remotes draw their prop and trail from it.
+ * the street band laterally and inside `flight`'s ahead and height bands
+ * (S8: the boss segment's pilots weave at altitude, inside the plane LOD's
+ * near band). Ground speed peaks ~65 m/s on the furball's band, inside every
+ * server speed cap; the CLAIMED speed is floored at MIN_SPEED (40), since no
+ * real plane flies slower and remotes draw their prop and trail from it.
  */
-export function pilotPose(i, t, center) {
+export function pilotPose(i, t, center, flight = FURBALL_FLIGHT) {
   const ph = i * 2.399; // golden angle: no two pilots share a phase
   const w = 0.32 + (i % 4) * 0.03; // rad/s along the street
-  const ahead = 230 + 150 * Math.sin(w * t + ph); // 80..380 m in front
+  const mid = (flight.near + flight.far) / 2;
+  const half = (flight.far - flight.near) / 2;
+  const span = flight.yHi - flight.yLo;
+  const ahead = mid + half * Math.sin(w * t + ph);
   const z = center.z - ahead;
   const x = center.x + 9 * Math.sin(2 * w * t + ph * 1.7);
-  const y = 42 + 55 * (0.5 + 0.5 * Math.sin(0.5 * w * t + ph * 0.6));
+  const y = flight.yLo + span * (0.5 + 0.5 * Math.sin(0.5 * w * t + ph * 0.6));
   // Velocity (derivative of the above) gives heading and speed.
-  const vz = -150 * w * Math.cos(w * t + ph);
+  const vz = -half * w * Math.cos(w * t + ph);
   const vx = 18 * w * Math.cos(2 * w * t + ph * 1.7);
-  const vy = 27.5 * 0.5 * w * Math.cos(0.5 * w * t + ph * 0.6);
+  const vy = span * 0.5 * 0.5 * w * Math.cos(0.5 * w * t + ph * 0.6);
   const flat = Math.hypot(vx, vz) || 1;
   const yaw = Math.atan2(-vx, -vz);
   const pitch = Math.atan2(vy, flat);
@@ -68,8 +78,16 @@ export function pilotPose(i, t, center) {
 /**
  * Join `count` pilots to the server at `port`, weaving ahead of `center`.
  * Resolves once every pilot has its welcome; `stop()` closes them all.
+ * `flight` (S8) sets the weave's bands and whether they fire: the boss
+ * segment's pilots hold their fire, because every tracer is a draw call and
+ * their bursts land on the pilots' own wall clock.
  */
-export async function startPilots(port, count, center) {
+export async function startPilots(
+  port,
+  count,
+  center,
+  { flight = FURBALL_FLIGHT, fire = true } = {},
+) {
   const sockets = [];
   const join = (i) =>
     new Promise((resolve, reject) => {
@@ -101,10 +119,12 @@ export async function startPilots(port, count, center) {
     const t = (performance.now() - t0) / 1000;
     sockets.forEach((ws, i) => {
       if (ws.readyState !== WebSocket.OPEN) return;
-      ws.send(JSON.stringify({ type: "pose", pose: pilotPose(i, t, center) }));
+      ws.send(
+        JSON.stringify({ type: "pose", pose: pilotPose(i, t, center, flight) }),
+      );
     });
   }, 1000 / POSE_HZ);
-  const fireTimers = sockets.map((ws, i) =>
+  const fireTimers = (fire ? sockets : []).map((ws, i) =>
     setInterval(
       () => {
         for (let k = 0; k < FIRE_SHOTS; k++) {

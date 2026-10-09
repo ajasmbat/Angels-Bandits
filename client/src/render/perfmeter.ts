@@ -59,6 +59,8 @@ export const EMPTY_STATS: FrameStats = {
 export class FrameMeter {
   private readonly times: Float64Array;
   private readonly calls: Float64Array;
+  /** S8: of each frame's draws, how many were the S6 reflection probe's. */
+  private readonly probe: Float64Array;
   private head = 0;
   private filled = 0;
   /**
@@ -79,6 +81,7 @@ export class FrameMeter {
   constructor(readonly capacity = 4096) {
     this.times = new Float64Array(capacity);
     this.calls = new Float64Array(capacity);
+    this.probe = new Float64Array(capacity);
   }
 
   /** Frames currently held. */
@@ -86,10 +89,12 @@ export class FrameMeter {
     return this.filled;
   }
 
-  /** Record one frame. Allocation-free by construction. */
-  push(frameMs: number, drawCalls: number): void {
+  /** Record one frame. Allocation-free by construction. `probeDraws` (S8)
+   * is the share of `drawCalls` the reflection probe's face pass drew. */
+  push(frameMs: number, drawCalls: number, probeDraws = 0): void {
     this.times[this.head] = frameMs;
     this.calls[this.head] = drawCalls;
+    this.probe[this.head] = probeDraws;
     this.head = (this.head + 1) % this.capacity;
     if (this.filled < this.capacity) this.filled++;
   }
@@ -146,6 +151,29 @@ export class FrameMeter {
       fps: p50 > 0 ? 1000 / p50 : 0,
       drawCalls: Math.round(percentile(calls, 0.5)),
       drawCallsMax: Math.round(calls[calls.length - 1] as number),
+    };
+  }
+
+  /**
+   * S8: the window's median draws WITHOUT the reflection probe (`scene`),
+   * and the probe's own median. The probe draws one cube face a frame and a
+   * face's draw count depends on which way it looks, so `drawCalls` (main +
+   * probe) moves with where a short window lands in the 6-face cycle; the
+   * scene's draws do not. Sorts copies — a few-Hz call, like stats().
+   */
+  drawSplit(): { scene: number; probe: number } {
+    const scene: number[] = [];
+    const probe: number[] = [];
+    for (let i = 0; i < this.filled; i++) {
+      const p = this.probe[i] as number;
+      scene.push((this.calls[i] as number) - p);
+      probe.push(p);
+    }
+    scene.sort((a, b) => a - b);
+    probe.sort((a, b) => a - b);
+    return {
+      scene: Math.round(percentile(scene, 0.5)),
+      probe: Math.round(percentile(probe, 0.5)),
     };
   }
 }

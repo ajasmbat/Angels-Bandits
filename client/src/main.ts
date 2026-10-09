@@ -219,6 +219,14 @@ import {
   type QaDestructionSpec,
   stageDestruction,
 } from "./game/qa-destruction";
+import {
+  type QaBossSpec,
+  type QaBossStage,
+  isQaShell,
+  qaFlakDue,
+  qaGhostTrack,
+  stageBoss,
+} from "./game/qa-spectacle";
 import { quakeShakeAmount } from "./game/quake";
 import { SessionStats } from "./game/session-stats";
 import { wreckCamView } from "./game/wreck-cam";
@@ -312,7 +320,7 @@ import {
 } from "./render/quality";
 import { Rain } from "./render/rain";
 import { CityReactor } from "./render/reactions";
-import { ReflectionProbe } from "./render/reflections";
+import { REFLECTION_UNIFORMS, ReflectionProbe } from "./render/reflections";
 import { RemotePlanes } from "./render/remotes";
 import {
   MSAA_SAMPLES,
@@ -1172,6 +1180,10 @@ const bossRenderer = new BossRenderer(
   },
 );
 scene.add(bossRenderer.group);
+/** S8 QA (`__ab.qaBoss`): the staged raid and its flak schedule, and how
+ * many shells the server sent while it was staged (dropped each frame). */
+let qaBoss: QaBossStage | null = null;
+let qaForeignShells = 0;
 /** S4: each weak point's full HP on the current raid (the HUD bar's scale),
  * rebuilt only when the raid changes — never per frame. */
 let bossMaxFor = -1;
@@ -1949,7 +1961,7 @@ socket.events.onDeath = (msg) => {
   } else if (msg.killerId === socket.selfId) {
     say(ownKillCallout(name));
   } else if (msg.killerId !== null) {
-    say(splashCallout(nameOf(msg.killerId), isBotOf(msg.killerId)));
+    say(splashCallout(nameOf(msg.killerId), isBotOf(msg.killerId), true));
   }
 };
 /**
@@ -2377,6 +2389,8 @@ declare global {
       };
       /** P1: the full frame-time window — p50/p95/p99/worst + draw calls. */
       perfStats: () => FrameStats;
+      /** S8: the window's median draws without / of the reflection probe. */
+      drawSplit: () => { scene: number; probe: number };
       /** M3: the same window's pre-render JS cost per frame (sim, streaming,
        * instance packing — the render call itself is not in it). */
       jsStats: () => FrameStats;
@@ -2597,6 +2611,25 @@ declare global {
         pos: { x: number; y: number; z: number; yaw: number } | null;
         flak: number;
         drawn: BossRenderer["stats"];
+        /** S8: a staged raid holds the slot; server shells dropped since. */
+        staged: boolean;
+        foreignShells: number;
+      };
+      /** S8 QA: stage a raid crossing a held view (null clears). */
+      qaBoss: (spec: QaBossSpec | null) => typeof socket.boss.raid;
+      /** S8 QA: a synthetic record ghost for the first course of `theme`
+       * (speed null: none). Null when the city has no such course. */
+      qaCourseGhost: (
+        theme: string,
+        speed: number | null,
+      ) => { course: number; count: number } | null;
+      /** S8: the local run and its ghost. */
+      course: () => {
+        course: number;
+        next: number;
+        theme: string | null;
+        ghost: boolean;
+        ghostDrawn: boolean;
       };
       /** C2 QA: the room's chaos as this client holds it — bomber runs and
        * downs, quakes, burning chunks, strikes held by kind, and the ships
@@ -2747,6 +2780,11 @@ declare global {
       qaFireAt: (x: number, y: number, z: number, n?: number) => void;
       /** D1 QA: hide the impacts Points (draw-call A/B). */
       qaImpactsHidden: (hidden: boolean) => void;
+      /** O6 QA: the scene systems `qaHide` can name. */
+      qaSystems: () => string[];
+      /** O6 QA: draw everything except these systems (flicker attribution;
+       * `[]` restores all). Returns the names it matched. */
+      qaHide: (names: string[]) => string[];
       /** D1 QA: up to `max` pane centres on a tier's facade face that the JS
        * lit mirror reports LIT, nearest the face's middle first — canonical,
        * nudged 0.5 m off the wall — with their cells. */
@@ -2914,6 +2952,114 @@ const settingsPanel = new SettingsPanel(
   settings,
   settingsStore,
 );
+/**
+ * O6 flicker attribution (`__ab.qaHide`): the scene's top-level systems by
+ * name. Anything in the scene not named here (remote planes, pooled FX,
+ * whatever a later ticket adds) is listed as `other:<index>`, so hiding
+ * every named system still leaves "everything else" measurable.
+ */
+const QA_POST = [
+  "post:shimmer",
+  "post:shafts",
+  "post:glare",
+  "post:reflections",
+] as const;
+/** Post effects `qaHide` holds off (applyQaPost, every frame). */
+const qaPostOff = new Set<string>();
+/** uReflOn as it was before `post:reflections` was hidden. */
+let qaReflOn = 0;
+/** Layer masks of the objects `qaHide` has hidden, to put back. */
+const qaLayerMasks = new WeakMap<THREE.Object3D, number>();
+/** Hold the hidden post effects off; runs after they are set each frame. */
+function applyQaPost(): void {
+  const u = finalPass?.uniforms;
+  if (qaPostOff.has("post:shimmer") && u?.uShimCount) u.uShimCount.value = 0;
+  if (qaPostOff.has("post:glare") && u?.uGlare) u.uGlare.value = 0;
+  if (qaPostOff.has("post:shafts"))
+    shaftsPass?.setSource(0.5, 0.5, camera.aspect, 0);
+  if (qaPostOff.has("post:reflections")) REFLECTION_UNIFORMS.uReflOn.value = 0;
+}
+function qaSystems(): {
+  name: string;
+  objects: THREE.Object3D[];
+  /** Just these objects, not their children (`city:main`). */
+  shallow?: boolean;
+}[] {
+  const named: [string, THREE.Object3D[]][] = [
+    ["city", [city.mesh]],
+    ["roofClutter", [roofClutter.group]],
+    ["rooftopLife", [rooftopLife.group]],
+    ["facadeGarnish", [facadeGarnish.group]],
+    ["facadeDetail", [facadeDetail.group]],
+    ["ground", [ground.mesh]],
+    ["sky", [skyDome.mesh]],
+    ["streetlights", [streetlights.group]],
+    ["signage", [signage.group]],
+    ["traffic", [traffic.mesh]],
+    ["headlightCones", [headlights.cones]],
+    ["headlightPools", [headlights.pools]],
+    ["movers", [movers.rig, movers.hulls, movers.rotors]],
+    ["moverLights", [moverLights.points]],
+    ["train", [train.mesh]],
+    ["courses", [courseRings.mesh, courseGhost.mesh]],
+    ["nature", [natureRenderer.group]],
+    ["river", [river.group]],
+    ["tunnels", [tunnels.group]],
+    ["fountains", [fountains.points]],
+    ["searchlights", [searchlights.mesh]],
+    ["jumbotrons", [jumbotrons.mesh]],
+    ["birds", [birds.points]],
+    ["pedestrians", [pedestrians.mesh]],
+    ["cityLife", [cityLife.mesh]],
+    ["facadeLife", [facadeLife.mesh]],
+    ["holeDecor", [holeDecor.mesh]],
+    ["streetFurniture", [streetFurniture.mesh]],
+    ["steam", [steam.points]],
+    ["signals", [signals.mesh]],
+    ["constructionSparks", [constructionSparks.points]],
+    [
+      "fx",
+      [
+        explosions.group,
+        sparks.points,
+        shieldSparks.points,
+        smoke.points,
+        streakSmoke.points,
+        dust.points,
+      ],
+    ],
+    ["impacts", [impacts.points]],
+    ["scaffold", [scaffold.mesh]],
+    ["wrecks", [wrecks.group]],
+    ["missiles", [missileRenderer.group]],
+    ["boss", [bossRenderer.group]],
+    ["bombers", [bomberRenderer.group]],
+    ["reactions", [reactor.points]],
+    ["storm", [storm.group, storm.flashLight]],
+    ["clouds", [clouds.group]],
+    ["rain", [rain.mesh]],
+    ["fogBanks", [atmosphere.fogBanks.mesh]],
+    ["litter", [atmosphere.litter.points]],
+    ["plane", [plane, planeLights.points, planeTrails.mesh]],
+    ["tracers", [tracers.group]],
+  ];
+  const seen = new Set(named.flatMap(([, objects]) => objects));
+  const out: ReturnType<typeof qaSystems> = named.map(([name, objects]) => ({
+    name,
+    objects,
+  }));
+  // The city's own parts: its base mesh alone, and each child mesh (D2's
+  // damaged buildings, D3's debris) — finer than `city` for attribution.
+  out.push({ name: "city:main", objects: [city.mesh], shallow: true });
+  city.mesh.children.forEach((c, i) => {
+    out.push({ name: `city:${i}`, objects: [c] });
+  });
+  for (const name of QA_POST) out.push({ name, objects: [] });
+  scene.children.forEach((o, i) => {
+    if (!seen.has(o)) out.push({ name: `other:${i}`, objects: [o] });
+  });
+  return out;
+}
 // D6 perf harness: what `__ab.qaDestruction` staged, so a clear takes back
 // exactly that — the destroyed set and collapses (all of them: the harness
 // stages into a quiet room), the facades its blasts marked, its burns and
@@ -2957,6 +3103,8 @@ window.__ab = {
   }),
   // P1 harness surface: percentiles over the window since the last reset.
   perfStats: () => frames.stats(),
+  // S8: the window's draws split into the scene's and the S6 probe's.
+  drawSplit: () => frames.drawSplit(),
   jsStats: () => jsFrames.stats(),
   perfSamples: () => frames.samples(),
   gpuStats: () => (gpuTimer === null ? null : gpuFrames.stats()),
@@ -3225,8 +3373,43 @@ window.__ab = {
       pos: pose && { x: pose.x, y: pose.y, z: pose.z, yaw: pose.yaw },
       flak: socket.flak.size,
       drawn: bossRenderer.stats,
+      staged: qaBoss !== null,
+      foreignShells: qaForeignShells,
     };
   },
+  // S8 QA: stage a boss raid crossing a held view, with its flak schedule
+  // on the world clock (game/qa-spectacle.ts); null clears it.
+  qaBoss: (spec) => {
+    if (spec === null) {
+      qaBoss = null;
+      socket.boss.raid = null;
+      socket.boss.down = null;
+      socket.bossHp = [];
+      socket.flak.clear();
+      return null;
+    }
+    qaBoss = stageBoss(spec);
+    qaForeignShells = 0;
+    socket.flak.clear();
+    return qaBoss.raid;
+  },
+  // S8 QA: the record ghost the next run of the first course of `theme`
+  // plays — a constant `speed` through its ring centres — or null for none.
+  qaCourseGhost: (theme, speed) => {
+    const c = courses.find((k) => k.theme === theme);
+    if (!c) return null;
+    const track = speed === null ? null : qaGhostTrack(c, speed);
+    courseGhosts[c.id] = track;
+    return { course: c.id, count: track?.count ?? 0 };
+  },
+  // S8: the local course run and the ghost beside it.
+  course: () => ({
+    course: courseRunner.course,
+    next: courseRunner.next,
+    theme: courses[courseRunner.course]?.theme ?? null,
+    ghost: courseGhost.playing,
+    ghostDrawn: courseGhost.mesh.visible,
+  }),
   chaos: () => {
     const strikes: Record<string, number> = {};
     for (const m of socket.missiles.values()) {
@@ -3393,6 +3576,51 @@ window.__ab = {
   },
   qaImpactsHidden: (hidden) => {
     impacts.points.visible = !hidden;
+  },
+  qaSystems: () => qaSystems().map((s) => s.name),
+  qaHide: (names) => {
+    // Off every camera layer, not `visible = false`: several systems drive
+    // their own visibility each frame and would quietly undo it. Each
+    // object's own mask (S6 tags reflection layers) comes back on unhide.
+    const hide = new Set(names);
+    const systems = qaSystems();
+    // Systems overlap (`city` holds `city:main`): settle each object once.
+    const hidden = new Set<THREE.Object3D>();
+    const all = new Set<THREE.Object3D>();
+    for (const s of systems) {
+      for (const o of s.objects) {
+        const add = (c: THREE.Object3D) => {
+          all.add(c);
+          if (hide.has(s.name)) hidden.add(c);
+        };
+        if (s.shallow) add(o);
+        else o.traverse(add);
+      }
+    }
+    for (const c of all) {
+      const saved = qaLayerMasks.get(c);
+      if (hidden.has(c)) {
+        if (saved === undefined) qaLayerMasks.set(c, c.layers.mask);
+        c.layers.disableAll();
+      } else if (saved !== undefined) {
+        c.layers.mask = saved;
+        qaLayerMasks.delete(c);
+      }
+    }
+    // Post effects have no object to hide: held off every frame instead.
+    if (qaPostOff.has("post:glare") && !hide.has("post:glare")) {
+      const glare = finalPass?.uniforms.uGlare;
+      if (glare) glare.value = QUALITY_PROFILES[qualityTier].glare ? 1 : 0;
+    }
+    if (qaPostOff.has("post:reflections") && !hide.has("post:reflections")) {
+      REFLECTION_UNIFORMS.uReflOn.value = qaReflOn;
+    }
+    if (!qaPostOff.has("post:reflections") && hide.has("post:reflections")) {
+      qaReflOn = REFLECTION_UNIFORMS.uReflOn.value;
+    }
+    qaPostOff.clear();
+    for (const n of QA_POST) if (hide.has(n)) qaPostOff.add(n);
+    return systems.filter((s) => hide.has(s.name)).map((s) => s.name);
   },
   qaLitCells: (building, tier, face, max = 8) => {
     const b = city.cityBuildings[building];
@@ -4471,6 +4699,21 @@ const frame = (now: number): void => {
     missileRenderer.update(mf.flying, chase.position, renderMs, now);
     socket.pruneChaos(renderMs); // C2: runs and quakes long over
   }
+  // S8 QA: a staged raid holds the slot (a real `boss` message cannot
+  // replace it mid-window) and only staged shells fly.
+  if (qaBoss !== null && renderMs !== null) {
+    if (socket.boss.raid !== qaBoss.raid) {
+      socket.boss.raid = qaBoss.raid;
+      socket.boss.down = null;
+      socket.bossHp = raidMaxHp(qaBoss.raid);
+    }
+    for (const id of socket.flak.keys()) {
+      if (isQaShell(id)) continue;
+      socket.flak.delete(id);
+      qaForeignShells++;
+    }
+    qaFlakDue(qaBoss, renderMs, socket.flak);
+  }
   // C2: the bomber formations and the fires.
   bomberRenderer.update(socket.bombers, chase.position, renderMs, now);
   fireRenderer.update(socket.fires, chase.position, now);
@@ -4602,6 +4845,7 @@ const frame = (now: number): void => {
   const heat = guns.state;
   hud.setHeat(heat.heat, heat.locked);
   hud.setBoost(boost.energy, boost.active);
+  hud.setRainOnLens(rain.lens); // R3: beads on the canopy rim
   hud.update(now);
   // S3 race readout: the live clock while racing, a hint near a start ring.
   const racing = courses[courseRunner.course];
@@ -4724,6 +4968,7 @@ const frame = (now: number): void => {
     moonDir: skyCycle.state.moonDir,
     moonVis: skyCycle.state.moonVis,
   });
+  if (qaPostOff.size > 0) applyQaPost(); // O6 QA: post effects held off
   // Everything up to here is this frame's JS: sim, streaming, instance
   // packing. The render call is NOT included — a driver can block in it
   // waiting on the GPU, which would read a GPU-bound frame as CPU-bound.
@@ -4756,6 +5001,8 @@ const frame = (now: number): void => {
   // The pipper is the gun line's own vanishing point, so it only means
   // anything while we are flying it — the kill-cam gets no aim chrome.
   hud.setAimPoint(alive ? aimResult.aim : null);
+  // R3: the rain keeps the pipper's neighbourhood clear (next frame's draw).
+  rain.setAim(aimResult.aim, window.innerWidth, window.innerHeight);
   leadSolution = alive && aimResult.solution;
   touchControls?.setLeadReticle(alive ? aimResult.lead : null);
   // The instructor's cursor marker: only while flying in that mode (the
@@ -4790,7 +5037,7 @@ const frame = (now: number): void => {
   // hitch is exactly the number this ticket exists to surface, and the sim
   // clamp is there to keep flight stable, not to flatter the report.
   const drawCalls = renderer.info.render.calls;
-  frames.push(rawMs, drawCalls);
+  frames.push(rawMs, drawCalls, reflections.lastFrameDraws);
   jsFrames.push(preRenderMs, drawCalls);
   resFrames.push(rawMs, drawCalls);
   cpuFrames.push(preRenderMs, drawCalls);

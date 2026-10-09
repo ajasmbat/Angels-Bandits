@@ -3,6 +3,7 @@
 // the chrome in index.html (same split as ui/join.ts) — the values shown are
 // whatever the server said, never a client-side simulation of them.
 
+import { mulberry32 } from "@angels-bandits/common/city";
 import {
   BOOST_MIN_START,
   KILL_CAM_MS,
@@ -78,7 +79,7 @@ const written = new WeakMap<HTMLElement | SVGElement, Map<string, string>>();
 
 function setStyle(
   el: HTMLElement | SVGElement,
-  prop: "width" | "transform" | "display",
+  prop: "width" | "transform" | "display" | "opacity",
   value: string,
 ): void {
   let props = written.get(el);
@@ -89,6 +90,33 @@ function setStyle(
   if (props.get(prop) === value) return;
   props.set(prop, value);
   el.style[prop] = value;
+}
+
+/** R3: drops beaded on the canopy rim. */
+const LENS_DROPS = 28;
+
+/**
+ * The lens drops as one CSS background: small beads laid along the screen's
+ * four edges, inset 1–8 % (index.html's mask keeps them off the middle).
+ * Sized in vmin, so on any screen they cover ~0.1 % of it — far inside the
+ * 0.5 % the rain coverage budget leaves them (rain-look.ts). Seeded: the
+ * same beads every session.
+ */
+export function lensDropsBackground(): string {
+  const rand = mulberry32(0x0d40b1e5);
+  const layers: string[] = [];
+  for (let i = 0; i < LENS_DROPS; i++) {
+    const along = 4 + rand() * 92;
+    const inset = 1 + rand() * 7;
+    const edge = Math.floor(rand() * 4);
+    const x = edge < 2 ? along : edge === 2 ? inset : 100 - inset;
+    const y = edge < 2 ? (edge === 0 ? inset : 100 - inset) : along;
+    const r = 0.25 + rand() * 0.35;
+    layers.push(
+      `radial-gradient(circle at ${x.toFixed(1)}% ${y.toFixed(1)}%, #eef6ff66 0, #c8dcff2e ${r.toFixed(2)}vmin, #0000 ${(r + 0.15).toFixed(2)}vmin)`,
+    );
+  }
+  return layers.join(", ");
 }
 
 export class Hud {
@@ -103,6 +131,10 @@ export class Hud {
   private readonly boostFill = document.getElementById(
     "boost-fill",
   ) as HTMLDivElement;
+  private readonly raindrops = document.getElementById(
+    "raindrops",
+  ) as HTMLDivElement | null;
+  private raindropsLaid = false;
   private readonly badge = document.getElementById(
     "protected-badge",
   ) as HTMLDivElement;
@@ -198,6 +230,19 @@ export class Hud {
     setStyle(this.boostFill, "width", `${(frac * 100).toFixed(1)}%`);
     this.boostEl.classList.toggle("low", !burning && frac < BOOST_MIN_START);
     document.body.classList.toggle("boost", burning);
+  }
+
+  /** R3: rain on the lens, 0..1 — beads on the screen's rim. Laid out on
+   * the first rain; the opacity moves in 0.05 steps, so it is written only
+   * on a change. */
+  setRainOnLens(level: number): void {
+    if (!this.raindrops) return;
+    const q = Math.round(Math.min(1, Math.max(0, level)) * 20) / 20;
+    if (q > 0 && !this.raindropsLaid) {
+      this.raindrops.style.backgroundImage = lensDropsBackground();
+      this.raindropsLaid = true;
+    }
+    setStyle(this.raindrops, "opacity", q.toFixed(2));
   }
 
   /** Own kills and deaths from the server's `score` broadcast (U2). */

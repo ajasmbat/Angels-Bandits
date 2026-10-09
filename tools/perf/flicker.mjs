@@ -4,12 +4,14 @@
 //     node tools/perf/flicker.mjs [--ref <git-ref>] [--frames 30] [--no-build]
 //                                 [--shots <dir>] [--out <file>] [--repeat N]
 //                                 [--grid] [--only name,name]
+//                                 [--ablate [all|name,name]] [--hide name,name]
+//                                 [--breathe]
 //
-// Captures FRAMES consecutive frames on a FIXED 1/60 s clock and scores the
+// Captures FRAMES consecutive frames on a FIXED 16 ms clock and scores the
 // mean per-pixel frame-to-frame luminance change (0–255 units; lower is
 // calmer). Two scenes:
 //
-//  - `frozen` — the camera pinned, the world advancing 1/60 s a frame. With
+//  - `frozen` — the camera pinned, the world advancing 16 ms a frame. With
 //    nothing moving on screen beyond 16 ms of animation, what changes from
 //    frame to frame is shimmer: aliasing patterns, popping LODs, resolution
 //    steps, z-fighting. THIS is the pass/fail number.
@@ -49,6 +51,31 @@
 // prints the per-view before/after table. `--only` restricts it to named
 // views (e.g. to re-shoot one with --shots).
 //
+// `--ablate` (O6, with --grid) attributes a view's frozen score to the
+// scene's systems: after the normal captures it re-shoots the SAME frozen
+// capture (same world instant, same steps) once with nothing hidden, once
+// per system with only that system hidden (`__ab.qaHide`, re-applied every
+// frame so streamed children stay hidden), and once with every named
+// system hidden — what is left is "everything else". A system's share is
+// how far the score falls without it. Shares are not additive: hiding an
+// opaque mesh reveals what was behind it.
+//
+// `--hide` (O6, with --grid) keeps the named systems out of EVERY capture
+// (and every ablation row): a view's score without, say, the train that
+// happens to cross it, to see what else moves there.
+//
+// `--breathe` (O6, with --grid) ramps the held airspeed through every
+// capture (BREATHE: +0.06 m/s a frame from 70 m/s), so the speed-driven FOV
+// widens ~0.005° a frame — what the harness did by accident before O6, now
+// on purpose and identical in every arm. A truly frozen camera cannot see
+// anything that is stable while still but re-rolls under ANY change of
+// projection (O6's facade speckle); a breathing one can.
+//
+// `FLICKER_WEATHER=<phase>` (R3) pins the middle of that weather phase
+// instead of clear-and-dry, e.g. `downpour` to score the rain against the
+// same views in clear weather — run it against the SAME build twice, never a
+// ref older than L4.
+//
 // Same browser knobs as run.mjs: AB_CHROME / AB_CHROME_ARGS.
 
 import { spawn } from "node:child_process";
@@ -69,8 +96,15 @@ const VIEWPORT = { width: 640, height: 360 };
  * strike flash or a shimmering pattern lands in whole units.
  */
 export const TOLERANCE = { pct: 5, abs: 0.01 };
-/** Frame step, ms — the fake clock ticks exactly this per captured frame. */
-const STEP_MS = 1000 / 60;
+/**
+ * Frame step, ms — the fake clock ticks exactly this per captured frame.
+ * 16, not 1000/60 (O6): Playwright's fake clock fires requestAnimationFrame
+ * on a 16 ms grid, so a 16.67 ms step crossed TWO frame boundaries once
+ * every 24 steps. That step rendered two frames, the world moved twice as
+ * far, and a third of all captures carried one step ~1.6x its neighbours
+ * (pose-19: 0.75 → 1.24 → 0.75, on a different step every run).
+ */
+const STEP_MS = 16;
 /**
  * A step this large — and over 3x the scene's own median step — is a storm
  * strike's full-sky flash, not shimmer (a frozen city moves ~0.1 a step, a
@@ -99,6 +133,12 @@ const EPOCH_MS = 1_800_000_000_000;
  */
 const CAPTURE_AT_MS = 120_000;
 const FIXED_EPOCH = resolve(HERE, "fixed-epoch.mjs");
+/** The held plane's airspeed, m/s: MAX_SPEED, full-throttle cruise (O6 —
+ * any one value works; what matters is that it never changes). */
+const PIN_SPEED = 90;
+/** --breathe: the held airspeed at a capture's first frame, and its rise
+ * per frame, m/s — a plane spooling up toward cruise. */
+const BREATHE = { from: 70, step: 0.06 };
 /** Pan speed, metres per frame (90 m/s, a slow cruise). */
 const PAN_M = 1.5;
 /** Where the scenes look: midtown from 300 m, toward the dense core. */
@@ -118,6 +158,9 @@ const GRID_STILL_FRAMES = 4;
 /** --grid: steps on a new view before the first captured frame — time for
  * the streamed detail around a teleported camera to land. */
 const GRID_SETTLE = 30;
+/** --ablate: steps before each re-shot capture (the view is already
+ * streamed in; these only let a hidden system's last frame clear). */
+const ABLATE_SETTLE = 4;
 /** A pixel whose luma moved more than this in one step is `hot`. */
 const HOT_DELTA = 8;
 /**
@@ -138,6 +181,8 @@ const JITTER_DELTA = 2;
 export const GRID_CEILING = 0.041;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** FLICKER_WEATHER: a phase to pin instead of clear-and-dry (null: clear). */
+const WEATHER = process.env.FLICKER_WEATHER || null;
 
 function parseArgs(argv) {
   const opts = {
@@ -149,6 +194,9 @@ function parseArgs(argv) {
     repeat: 1,
     grid: false,
     only: null,
+    ablate: null,
+    hide: [],
+    breathe: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -160,9 +208,22 @@ function parseArgs(argv) {
     else if (a === "--repeat") opts.repeat = Number(argv[++i]);
     else if (a === "--grid") opts.grid = true;
     else if (a === "--only") opts.only = argv[++i].split(",");
-    else throw new Error(`unknown flag ${a}`);
+    else if (a === "--hide") opts.hide = argv[++i].split(",");
+    else if (a === "--breathe") opts.breathe = true;
+    else if (a === "--ablate") {
+      const next = argv[i + 1];
+      opts.ablate =
+        next === undefined || next.startsWith("--") || next === "all"
+          ? "all"
+          : next.split(",");
+      if (next !== undefined && !next.startsWith("--")) i++;
+    } else throw new Error(`unknown flag ${a}`);
   }
   if (!(opts.frames >= 3)) throw new Error("--frames must be >= 3");
+  if (opts.ablate && !opts.grid) throw new Error("--ablate needs --grid");
+  if (opts.breathe && !opts.grid) throw new Error("--breathe needs --grid");
+  if (opts.hide.length > 0 && !opts.grid)
+    throw new Error("--hide needs --grid");
   return opts;
 }
 
@@ -256,7 +317,7 @@ function initScript() {
  */
 function aimView(page, spec, panM) {
   return page.evaluate(
-    ({ spec, panM }) => {
+    ({ spec, panM, breathe }) => {
       window.__flickerView = (i) => {
         const k = spec.right ? i * panM : 0;
         const dx = spec.right ? spec.right.x * k : 0;
@@ -268,10 +329,16 @@ function aimView(page, spec, panM) {
       };
       window.__flickerPrev = null;
       window.__flickerHeat?.fill(0);
+      // --breathe: every view's ramp starts here, so its settle steps hold
+      // `from` and a re-shot (--ablate) breathes exactly like the original.
+      if (window.__flickerBreathe) {
+        window.__flickerBreatheN = 0;
+        window.__flickerSpeed = breathe.from;
+      }
       window.__flickerPin = spec.plane ?? { x: spec.eye.x, z: spec.eye.z };
       window.__ab.qaCamera(window.__flickerView(0));
     },
-    { spec, panM },
+    { spec, panM, breathe: BREATHE },
   );
 }
 
@@ -370,11 +437,22 @@ async function captureFrames(page, frames, shots, tag) {
     window.__flickerJit?.rev.fill(0);
   });
   for (let i = 0; i < frames; i++) {
-    await page.evaluate((i) => {
-      window.__ab.qaCamera(window.__flickerView(i));
-      if (window.__flickerStill != null)
-        window.__ab.pinWorld(window.__flickerStill);
-    }, i);
+    await page.evaluate(
+      ([i, breathe]) => {
+        window.__ab.qaCamera(window.__flickerView(i));
+        if (window.__flickerHide) window.__ab.qaHide(window.__flickerHide);
+        if (window.__flickerStill != null)
+          window.__ab.pinWorld(window.__flickerStill);
+        // --breathe: one more step up the ramp aimView started (the pin
+        // applies it from the next frame, so frame 0 draws at `from`).
+        if (window.__flickerBreathe) {
+          window.__flickerBreatheN += 1;
+          window.__flickerSpeed =
+            breathe.from + breathe.step * window.__flickerBreatheN;
+        }
+      },
+      [i, BREATHE],
+    );
     await page.clock.runFor(STEP_MS);
     const f = await readFrame(page);
     // --shots: the first and last captured frame, to look at before
@@ -444,7 +522,46 @@ async function captureFrames(page, frames, shots, tag) {
   };
 }
 
-async function measureBuild(browser, label, cwd, frames, shots, grid) {
+/**
+ * --ablate: the view's frozen capture again, from the same world instant,
+ * with `hide` taken out of the scene (re-applied every step), then back to
+ * hiding only `--hide`'s `base`.
+ */
+async function ablatedFrozen(page, v, hide, base, shots, tag) {
+  await page.evaluate(
+    ({ v, hide, lead }) => {
+      window.__flickerHide = hide;
+      window.__ab.qaHide(hide);
+      // The frozen capture's own first instant, a few steps early: the
+      // camera is already here, so nothing has to stream in again.
+      window.__ab.pinWorld(v.timeMs + lead);
+    },
+    { v, hide, lead: (GRID_SETTLE - ABLATE_SETTLE) * STEP_MS },
+  );
+  await aimView(page, { eye: v.eye, at: v.at, right: null, plane: v.plane });
+  for (let i = 0; i < ABLATE_SETTLE; i++) {
+    await page.evaluate(() => window.__ab.qaHide(window.__flickerHide));
+    await page.clock.runFor(STEP_MS);
+  }
+  const r = await captureFrames(page, GRID_FRAMES, shots, tag);
+  await page.evaluate((base) => {
+    window.__flickerHide = base;
+    window.__ab.qaHide(base);
+  }, base);
+  return r;
+}
+
+async function measureBuild(
+  browser,
+  label,
+  cwd,
+  frames,
+  shots,
+  grid,
+  ablate,
+  hide,
+  breathe,
+) {
   const { proc, port } = await startServer(cwd);
   const page = await browser.newPage({
     viewport: VIEWPORT,
@@ -473,15 +590,24 @@ async function measureBuild(browser, label, cwd, frames, shots, grid) {
     // comes from qaCamera. 330 m: crash-proof (over every roof) and well
     // under the cloud deck — the atmosphere is computed from the PLANE's
     // altitude, and inside the deck its fog hides the whole city.
-    await page.evaluate(() => {
+    // And at ONE airspeed (O6): the view's FOV widens with airspeed, and
+    // teleport keeps whatever speed the plane had, so a plane still spooling
+    // up toward cruise zoomed every "frozen" frame a hair wider than the
+    // last — moiré crawling over any fine facade near the eye (intersection
+    // read 1.26 with the WORLD pinned too), and a score that swung with how
+    // far the spool-up had got (the same view 1.46 one run, 4.6 the next).
+    // Set on the state rather than passed to teleport, so a --ref build
+    // from before O6 is held the same way.
+    await page.evaluate((speed) => {
       window.__flickerPin = { x: 1000, z: 1500 };
       const pin = () => {
         const p = window.__flickerPin;
         window.__ab.teleport(p.x, p.z, p.y ?? 330, 0);
+        window.__ab.state().speed = window.__flickerSpeed ?? speed;
         requestAnimationFrame(pin);
       };
       pin();
-    });
+    }, PIN_SPEED);
     await page.waitForFunction(
       () =>
         window.__ab.net().renderTime !== null &&
@@ -491,14 +617,19 @@ async function measureBuild(browser, label, cwd, frames, shots, grid) {
     );
     // Clear AND dry (wetness lags rain and dries through the first 60 % of
     // the clear phase): 90 s past mid-clear is past that on any cycle.
-    const weather = await page.evaluate(() => {
+    const weather = await page.evaluate((pin) => {
       const ab = window.__ab;
       if (typeof ab.weather !== "function")
         return { phase: "none", wetness: 0 };
+      if (pin) return ab.weather(pin);
       const mid = ab.weather("clear");
       return ab.weather(mid.timeMs + 90_000);
-    });
+    }, WEATHER);
+    if (WEATHER && weather.phase !== WEATHER) {
+      throw new Error(`could not pin ${WEATHER}: ${JSON.stringify(weather)}`);
+    }
     if (
+      !WEATHER &&
       weather.phase !== "none" &&
       (weather.phase !== "clear" || weather.wetness > 0)
     ) {
@@ -546,17 +677,40 @@ async function measureBuild(browser, label, cwd, frames, shots, grid) {
     };
     if (grid) {
       result.views = [];
+      if (breathe) {
+        await page.evaluate(() => {
+          window.__flickerBreathe = true;
+        });
+      }
+      if (hide.length > 0) {
+        const all = await page.evaluate(
+          () => window.__ab.qaSystems?.() ?? null,
+        );
+        if (all === null) throw new Error(`${label} has no __ab.qaHide`);
+        const unknown = hide.filter((n) => !all.includes(n));
+        if (unknown.length > 0)
+          throw new Error(`--hide: no system ${unknown.join(", ")}`);
+        // captureFrames re-applies it every step.
+        await page.evaluate((hide) => {
+          window.__flickerHide = hide;
+          window.__ab.qaHide(hide);
+        }, hide);
+      }
       for (const v of grid) {
         // Its own world instant, sky phase and clear-dry weather, then the
         // plane over its eye (the city streams around the plane).
-        const wx = await page.evaluate((v) => {
-          const ab = window.__ab;
-          ab.pinWorld(v.timeMs);
-          ab.sky(v.sky);
-          if (typeof ab.weather !== "function") return { phase: "none" };
-          const mid = ab.weather("clear");
-          return ab.weather(mid.timeMs + 90_000);
-        }, v);
+        const wx = await page.evaluate(
+          ({ v, pin }) => {
+            const ab = window.__ab;
+            ab.pinWorld(v.timeMs);
+            ab.sky(v.sky);
+            if (typeof ab.weather !== "function") return { phase: "none" };
+            if (pin) return ab.weather(pin);
+            const mid = ab.weather("clear");
+            return ab.weather(mid.timeMs + 90_000);
+          },
+          { v, pin: WEATHER },
+        );
         const still = { eye: v.eye, at: v.at, right: null, plane: v.plane };
         await aimView(page, still, PAN_M);
         for (let i = 0; i < GRID_SETTLE; i++) await page.clock.runFor(STEP_MS);
@@ -595,8 +749,66 @@ async function measureBuild(browser, label, cwd, frames, shots, grid) {
           shots,
           `${label}-${v.name}-pan`,
         );
+        let ablation = null;
+        if (ablate) {
+          const all = await page.evaluate(() =>
+            typeof window.__ab.qaSystems === "function"
+              ? window.__ab.qaSystems()
+              : null,
+          );
+          if (all === null) throw new Error(`${label} has no __ab.qaHide`);
+          const named = all.filter((n) => !n.startsWith("other:"));
+          const systems = ablate === "all" ? all : ablate;
+          const unknown = systems.filter((n) => !all.includes(n));
+          if (unknown.length > 0)
+            throw new Error(`--ablate: no system ${unknown.join(", ")}`);
+          const tag = (n) => `${label}-${v.name}-ablate-${n}`;
+          const base = await ablatedFrozen(
+            page,
+            v,
+            hide,
+            hide,
+            shots,
+            tag("none"),
+          );
+          ablation = { none: base.score, deltas: base.deltas, systems: [] };
+          for (const n of systems.filter((n) => !hide.includes(n))) {
+            const r = await ablatedFrozen(
+              page,
+              v,
+              [...hide, n],
+              hide,
+              shots,
+              tag(n),
+            );
+            ablation.systems.push({
+              name: n,
+              score: r.score,
+              jitter: r.jitter,
+              deltas: r.deltas,
+              share: Math.round((base.score - r.score) * 1000) / 1000,
+            });
+          }
+          const rest = await ablatedFrozen(
+            page,
+            v,
+            [...new Set([...hide, ...named])],
+            hide,
+            shots,
+            tag("rest"),
+          );
+          ablation.everythingElse = rest.score;
+          ablation.systems.sort((a, b) => b.share - a.share);
+          console.log(
+            `  ${label} ${v.name} ablation: none ${base.score.toFixed(3)}, everything else ${rest.score.toFixed(3)}; top: ${ablation.systems
+              .slice(0, 6)
+              .map((s) => `${s.name} ${s.share.toFixed(3)}`)
+              .join(", ")}`,
+          );
+        }
         const alive = await page.evaluate(() => window.__ab.combat().alive);
         result.views.push({
+          ablation,
           name: v.name,
           timeMs: v.timeMs,
           weather: { phase: wx.phase, wetness: wx.wetness ?? 0 },
@@ -667,12 +879,32 @@ export function gridViewVerdict(head, ref) {
   return { pass: halved && notWorse && ceiling, halved, notWorse, ceiling };
 }
 
+/** --ablate: each view's per-system table, largest share first. */
+function printAblation(report) {
+  for (const h of report.head.views) {
+    const a = h.ablation;
+    if (!a) continue;
+    console.log(
+      `\nablation — ${h.name}: frozen ${a.none.toFixed(3)} with everything drawn; ${a.everythingElse.toFixed(3)} with every named system hidden ("everything else")`,
+    );
+    console.log(
+      `${"system".padEnd(20)} ${"hidden".padStart(7)} ${"share".padStart(7)} ${"jitter".padStart(7)}`,
+    );
+    for (const s of a.systems) {
+      if (s.share < TOLERANCE.abs && a.systems.indexOf(s) >= 8) continue;
+      console.log(
+        `${s.name.padEnd(20)} ${s.score.toFixed(3).padStart(7)} ${s.share.toFixed(3).padStart(7)} ${`${(s.jitter * 100).toFixed(2)}%`.padStart(7)}`,
+      );
+    }
+  }
+}
+
 function printGrid(report) {
   const head = report.head;
   const ref = report.ref ?? null;
   const pct = (h) => `${(h * 100).toFixed(2)}%`.padStart(7);
   console.log(
-    `\nflicker grid — mean |Δluma| per pixel per 1/60 s step (hot = share of pixels moving > ${HOT_DELTA}), ${VIEWPORT.width}x${VIEWPORT.height}`,
+    `\nflicker grid — mean |Δluma| per pixel per 16 ms step (hot = share of pixels moving > ${HOT_DELTA}), ${VIEWPORT.width}x${VIEWPORT.height}`,
   );
   console.log(
     ref
@@ -765,6 +997,9 @@ async function main() {
           opts.frames,
           opts.shots,
           grid,
+          opts.ablate,
+          opts.hide,
+          opts.breathe,
         ),
       );
       if (ref !== null) {
@@ -776,6 +1011,9 @@ async function main() {
             opts.frames,
             opts.shots,
             grid,
+            opts.ablate,
+            opts.hide,
+            opts.breathe,
           ),
         );
       }
@@ -788,6 +1026,7 @@ async function main() {
   }
   if (opts.grid) {
     printGrid(report);
+    printAblation(report);
     const out = opts.out ?? resolve(HERE, "flicker-grid-last.json");
     mkdirSync(dirname(out), { recursive: true });
     writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`);
@@ -800,7 +1039,7 @@ async function main() {
     `${r.label.padEnd(12)} frozen ${r.frozen.score.toFixed(3).padStart(7)}   pan ${r.pan.score.toFixed(3).padStart(7)}   ` +
     `(luma ${r.frozen.meanLuma}/${r.pan.meanLuma}, alive ${r.alive ? "yes" : "NO"})`;
   console.log(
-    `\nflicker — mean |Δluma| per pixel per 1/60 s step, ${opts.frames} frames, ${VIEWPORT.width}x${VIEWPORT.height}`,
+    `\nflicker — mean |Δluma| per pixel per 16 ms step, ${opts.frames} frames, ${VIEWPORT.width}x${VIEWPORT.height}`,
   );
   if (opts.repeat > 1) {
     for (const r of report.runs.head) console.log(`  run  ${line(r)}`);

@@ -154,6 +154,11 @@ export class BossDirector {
     for (const t of this.turrets) if (t.targetId === id) t.targetId = null;
   }
 
+  /** Shells in the air (B3: the bots dodge their bursts). Read-only. */
+  shellsInFlight(): readonly BossFlak[] {
+    return this.shells;
+  }
+
   /** The raid on, intact and in the air at `t`. */
   activeRaid(t: number): BossRaid | null {
     return bossPresent(this.slot, t) ? this.slot.raid : null;

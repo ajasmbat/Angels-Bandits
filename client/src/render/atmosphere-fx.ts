@@ -34,7 +34,7 @@ import {
   SHIMMER_RANGE,
   SHIMMER_SLOTS,
   type ShimmerVent,
-  pickShimmerVents,
+  pickShimmerVentsInto,
 } from "./atmo-post";
 import { FogBanks } from "./fogbanks";
 import { Litter } from "./litter";
@@ -80,6 +80,14 @@ export interface AtmosphereFrame {
   moonVis: number;
 }
 
+/** A metre coordinate into [0, WORLD_SIZE) (module level: no closure a pick). */
+const wrap = (c: number): number =>
+  ((c % WORLD_SIZE) + WORLD_SIZE) % WORLD_SIZE;
+
+/** Shimmer slots, wanted first, then strongest (no closure a frame). */
+const bySlotRank = (a: ShimmerSlot, b: ShimmerSlot): number =>
+  Number(b.on) - Number(a.on) || b.level - a.level;
+
 export class AtmosphereFx {
   readonly fogBanks: FogBanks;
   readonly litter: Litter;
@@ -88,6 +96,9 @@ export class AtmosphereFx {
   private readonly buildingsByBlock: Map<number, Building[]>;
   private readonly ventsByBlock = new Map<number, ShimmerVent[]>();
   private readonly candidates: ShimmerVent[] = [];
+  /** The shimmer pick's id lists (scratch, reused each pick). */
+  private readonly prevIds: number[] = [];
+  private readonly wantedIds: number[] = [];
   private slots: ShimmerSlot[] = [];
   private pickTick = Number.NaN;
   private lastWorldMs: number | null = null;
@@ -155,11 +166,12 @@ export class AtmosphereFx {
     let u = 0.5;
     let v = 0.5;
     if (facing > 0.05 && f.moonVis > 0) {
-      this.v
-        .set(mx, my, mz)
-        .multiplyScalar(1000)
-        .add(cam.position)
-        .project(cam);
+      // Fields written directly (S8): `set(mx, my, mz)` boxed its doubles.
+      const p = this.v;
+      p.x = mx * 1000 + cam.position.x;
+      p.y = my * 1000 + cam.position.y;
+      p.z = mz * 1000 + cam.position.z;
+      p.project(cam);
       u = this.v.x * 0.5 + 0.5;
       v = this.v.y * 0.5 + 0.5;
       // Fade as the moon leaves the frame (its disc of shafts still reaches
@@ -244,7 +256,6 @@ export class AtmosphereFx {
     if (tick !== this.pickTick) {
       this.pickTick = tick;
       this.candidates.length = 0;
-      const wrap = (c: number) => ((c % WORLD_SIZE) + WORLD_SIZE) % WORLD_SIZE;
       const bx = Math.floor(wrap(f.cameraPos.x) / BLOCK_PITCH);
       const bz = Math.floor(wrap(f.cameraPos.z) / BLOCK_PITCH);
       const grid = CITY_GRID;
@@ -254,24 +265,53 @@ export class AtmosphereFx {
         for (let j = -1; j <= 1; j++) {
           const cx = (((bx + i) % grid) + grid) % grid;
           const cz = (((bz + j) % grid) + grid) % grid;
-          for (const v of this.ventsFor(cx, cz)) this.candidates.push(v);
+          const vents = this.ventsFor(cx, cz);
+          for (let q = 0; q < vents.length; q++) {
+            this.candidates.push(vents[q] as ShimmerVent);
+          }
         }
       }
-      const wanted = pickShimmerVents(
+      // S8: allocation-free — scratch id lists and plain loops (the pick
+      // used to build a filtered, mapped and sorted copy each tick).
+      const prev = this.prevIds;
+      prev.length = 0;
+      for (let q = 0; q < this.slots.length; q++) {
+        const s = this.slots[q] as ShimmerSlot;
+        if (s.on) prev.push(s.vent.id);
+      }
+      const wanted = pickShimmerVentsInto(
         this.candidates,
-        this.slots.filter((s) => s.on).map((s) => s.vent.id),
+        prev,
         this.ventDist,
         this.ventVisible,
+        this.wantedIds,
       );
-      for (const s of this.slots) s.on = wanted.includes(s.vent.id);
-      for (const id of wanted) {
-        if (this.slots.some((s) => s.vent.id === id)) continue;
-        const vent = this.candidates.find((c) => c.id === id);
-        if (vent) this.slots.push({ vent, level: 0, on: true });
+      for (let q = 0; q < this.slots.length; q++) {
+        const s = this.slots[q] as ShimmerSlot;
+        let on = false;
+        for (let w = 0; w < wanted.length; w++) {
+          if (wanted[w] === s.vent.id) on = true;
+        }
+        s.on = on;
+      }
+      for (let w = 0; w < wanted.length; w++) {
+        const id = wanted[w] as number;
+        let have = false;
+        for (let q = 0; q < this.slots.length; q++) {
+          if ((this.slots[q] as ShimmerSlot).vent.id === id) have = true;
+        }
+        if (have) continue;
+        for (let q = 0; q < this.candidates.length; q++) {
+          const vent = this.candidates[q] as ShimmerVent;
+          if (vent.id !== id) continue;
+          this.slots.push({ vent, level: 0, on: true });
+          break;
+        }
       }
     }
     // Fades on the world clock; a column fully faded out frees its slot.
-    for (const s of this.slots) {
+    for (let q = 0; q < this.slots.length; q++) {
+      const s = this.slots[q] as ShimmerSlot;
       s.level = Math.min(
         1,
         Math.max(0, s.level + ((s.on ? 1 : -1) * dt) / SHIMMER_FADE_S),
@@ -279,37 +319,55 @@ export class AtmosphereFx {
     }
     // In place (per frame: no new array).
     let kept = 0;
-    for (const s of this.slots) if (s.on || s.level > 0) this.slots[kept++] = s;
+    for (let q = 0; q < this.slots.length; q++) {
+      const s = this.slots[q] as ShimmerSlot;
+      if (s.on || s.level > 0) this.slots[kept++] = s;
+    }
     this.slots.length = kept;
     if (this.slots.length > SHIMMER_SLOTS) {
-      this.slots.sort(
-        (a, b) => Number(b.on) - Number(a.on) || b.level - a.level,
-      );
+      this.slots.sort(bySlotRank);
       this.slots.length = SHIMMER_SLOTS;
     }
     const a = u.uShimA?.value as THREE.Vector4[];
     const b = u.uShimB?.value as THREE.Vector4[];
     const tanHalf = Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2);
     let n = 0;
-    for (const s of this.slots) {
-      const d = this.ventDist(s.vent);
+    for (let q = 0; q < this.slots.length; q++) {
+      const s = this.slots[q] as ShimmerSlot;
+      // ventDist, inline: a double returned from the arrow was boxed.
+      const d = Math.hypot(
+        wrapDeltaAxis(this.eye.x, s.vent.x),
+        s.vent.y - this.eye.y,
+        wrapDeltaAxis(this.eye.z, s.vent.z),
+      );
       const level =
         s.level * (1 - smooth(SHIMMER_FULL, SHIMMER_RANGE * 1.1, d));
       if (level <= 0.001 || d < 4) continue;
       const base = nearestImageInto(this.img, cam.position, s.vent);
-      this.v.set(base.x, base.y, base.z).project(cam);
-      this.w.set(base.x, base.y + SHIMMER_HEIGHT, base.z).project(cam);
-      if (this.v.z > 1 || this.w.z > 1) continue; // behind the camera
-      if (Math.abs(this.v.x) > 1.3 || Math.abs(this.v.y) > 1.3) continue;
+      // Fields written directly (S8): `set(...)` takes its doubles as
+      // arguments, and V8 boxed every one — ~1.3 KB a frame over six slots.
+      const v = this.v;
+      const w = this.w;
+      v.x = base.x;
+      v.y = base.y;
+      v.z = base.z;
+      v.project(cam);
+      w.x = base.x;
+      w.y = base.y + SHIMMER_HEIGHT;
+      w.z = base.z;
+      w.project(cam);
+      if (v.z > 1 || w.z > 1) continue; // behind the camera
+      if (Math.abs(v.x) > 1.3 || Math.abs(v.y) > 1.3) continue;
       const slotA = a[n] as THREE.Vector4;
       const slotB = b[n] as THREE.Vector4;
-      slotA.set(
-        (this.v.x * 0.5 + 0.5) * cam.aspect,
-        this.v.y * 0.5 + 0.5,
-        (this.w.x * 0.5 + 0.5) * cam.aspect,
-        this.w.y * 0.5 + 0.5,
-      );
-      slotB.set(SHIMMER_HALF_WIDTH / (2 * d * tanHalf), level, 0, 0);
+      slotA.x = (v.x * 0.5 + 0.5) * cam.aspect;
+      slotA.y = v.y * 0.5 + 0.5;
+      slotA.z = (w.x * 0.5 + 0.5) * cam.aspect;
+      slotA.w = w.y * 0.5 + 0.5;
+      slotB.x = SHIMMER_HALF_WIDTH / (2 * d * tanHalf);
+      slotB.y = level;
+      slotB.z = 0;
+      slotB.w = 0;
       n++;
     }
     (u.uShimCount as THREE.IUniform).value = n;

@@ -89,7 +89,21 @@ export const BUDGETS = {
   // runner's measured High draws (station 82, hole 83, sidewalk 82) plus
   // ~10 % — so a later ticket that piles onto a train station, a tunnel or
   // a sidewalk is caught here and not only in `core`.
-  drawCalls: { core: 120, station: 90, hole: 92, sidewalk: 90 },
+  // S8: the spectacle views get theirs the same way — the runner's measured
+  // High draws on a quiet server, probe included, plus ~10 % (boss 279,
+  // rings 101–104, glass 102) — and P2's three are re-based on what main
+  // draws after the Spectacle, Destruction, C2 and U4 batches: their scene
+  // draws went from 82–83 to 94–96, and the S6 probe adds 7 a frame
+  // (README S8). core keeps 120.
+  drawCalls: {
+    core: 120,
+    station: 111,
+    hole: 113,
+    sidewalk: 113,
+    boss: 307,
+    rings: 114,
+    glass: 112,
+  },
   // D6: a collapse segment may cost at most this many draws over the SAME
   // pass's `core` (core itself stays under its 120). A segment not flown
   // beside core in the run reads n/a.
@@ -380,5 +394,75 @@ export const SEGMENTS = [
       ],
     },
     expect: "settled",
+  },
+  // --- S8: the Spectacle batch (S1–S7), appended after D6's so the
+  // thirteen above still line up with every older report by index. Every spot was checked offline
+  // against the shared collision (`touchesSolid`: ground, buildings, trees,
+  // viaducts and every mover sampled every 100–250 ms over 15 min of world
+  // time around WORLD_EPOCH_MS), and the boss's against the staged hull too
+  // (`collideBoss`, over warm-up, settle and window): clear.
+  {
+    name: "boss",
+    what: "S4: a full 12-plane room weaving under the war zeppelin and its flak, at altitude",
+    // HELD at 285 m (over every roof, under the hull's 268–337 m band only
+    // where the hull is 380+ m away) while 11 fake pilots weave 70–230 m
+    // ahead at 262–317 m — inside the plane LOD's near band (300 m) from
+    // the camera, so every plane is the full airframe all window — and hold
+    // their fire (a tracer is a draw call, timed on the pilots' wall clock).
+    // The zeppelin is STAGED on the client (`__ab.qaBoss`,
+    // client/src/game/qa-spectacle.ts): a raid on station, crossing the view
+    // `boss.ahead` m out at mid-window, its flak a fixed schedule on the
+    // pinned world clock aimed into the pilots' corridor, from 3 s before
+    // the segment's instant so shells are always in the air.
+    x: 1000,
+    z: 1000,
+    y: 285,
+    yaw: 0,
+    hold: true,
+    pilots: 11,
+    pilotFlight: { near: 70, far: 230, yLo: 262, yHi: 317 },
+    pilotFire: false,
+    boss: {
+      ahead: 520,
+      corridor: { near: 70, far: 230, lateral: 25, yLo: 262, yHi: 317 },
+    },
+  },
+  {
+    name: "rings",
+    what: "S3: a glide down Canyon Run's street canyon through its rings, the record ghost racing ahead",
+    // S3's Canyon Run for the city seed: 13 rings (r 9 m) down the x = 1400
+    // street from z = 500 heading −Z (wrapping) — a weave ±6 m and 24/34 m
+    // high, so the centreline at 29 m passes inside every ring. Re-teleported
+    // every frame at `glide.speed` m/s of WALL time from 25 m before the
+    // start ring — crossed ~0.4 s in, inside the settle even at 3 fps — so
+    // the client's own run starts there, plays the staged ghost
+    // (`__ab.qaCourseGhost`: `ghostSpeed` m/s through the ring centres, on
+    // the wall clock like the glide) from the window's first frame, and the
+    // rings go to race colours. The glide stops at `glide.maxM`, six rings
+    // in and some 700 m short of the finish, so no run ever finishes and the
+    // server never records a time or a ghost a later pass would see (each
+    // pass is a new page, and the server drops the old page's run when it
+    // leaves). Clear from 60 m before the start to 460 m past it.
+    x: 1400,
+    z: 525,
+    y: 29,
+    yaw: 0,
+    glide: { speed: 60, maxM: 480 },
+    course: { theme: "canyon", ghostSpeed: 72 },
+  },
+  {
+    name: "glass",
+    what: "S6: a close-up on the glass landmark — the probe's neon skyline in its curtain wall",
+    // Building 127, the 250 m glass landmark at (500, 700) the gallery's
+    // glass-landmark view frames. HELD 85 m off its north-west corner at
+    // 120 m, nose toward (500, 700): the frame is curtain wall at a grazing
+    // angle, where the Fresnel term makes the reflection strongest. A held
+    // view moves the probe 0 m a frame, so it never refills mid-window.
+    x: 420,
+    z: 800,
+    y: 120,
+    yaw: yawToward(80, -100),
+    hold: true,
+    weather: "clear",
   },
 ];

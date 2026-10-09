@@ -7,11 +7,23 @@
 // ~30 s of CPU, so it is opt-in: `BOT_SIM=1 npx vitest run
 // server/test/bot-sim.test.ts`. Plain `npm test` skips it.
 //
+// D2 breakable buildings: BOT_SIM_DESTROY=<share> gives every room its own
+// copy of the city with that share of its chunks destroyed before the fight
+// (the rubble included), and BOT_SIM_LIVE=1 lets the fight break it as the
+// server does — the same applyShotDamage / applyDeathBlast index.ts calls.
+// (The harness has no humans, so it skips the server's "only while a human
+// is in the room" gate.) Without either, every room flies the one intact
+// seed city exactly as before.
+//
 // MAIN_* are the same harness's numbers on main before B1 (bots mostly high,
 // spawned at RESPAWN_ALTITUDE), same seeds and run length — the bar the
 // review set is crashes per bot-minute within 1.15x of them.
 
-import { generateCity } from "@angels-bandits/common/city";
+import {
+  chunksOf,
+  generateCity,
+  mulberry32,
+} from "@angels-bandits/common/city";
 import { generateMovers } from "@angels-bandits/common/city/movers";
 import { natureFor } from "@angels-bandits/common/city/nature";
 import { isInRoadway } from "@angels-bandits/common/city/street";
@@ -39,6 +51,12 @@ import {
   landBotRound,
 } from "../src/bots";
 import { Combat } from "../src/combat";
+import {
+  type RoomCity,
+  applyDeathBlast,
+  applyShotDamage,
+  createRoomCity,
+} from "../src/destruction";
 import { type RespawnEnemy, pickBotRespawn } from "../src/respawn";
 
 const ROOMS = 18;
@@ -49,6 +67,9 @@ const TUNE = process.env.BOT_SIM_SET === "tune";
 const roomSeed = (room: number) => (TUNE ? 2024 + room * 31 : 9001 + room * 97);
 const spawnSeed = (room: number) => (TUNE ? 99 + room : 5003 + room * 7);
 const BOTS = 5;
+/** D2 modes (see the header). */
+const DESTROY = Number(process.env.BOT_SIM_DESTROY ?? 0);
+const LIVE = process.env.BOT_SIM_LIVE === "1";
 const SECONDS = 200;
 const DT_MS = 1000 / TICK_DOWN_HZ;
 /** The low layer: under the probe split, among the towers. */
@@ -135,6 +156,10 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
     const roofsHit: number[] = [];
     /** Live ticks a bot spent fighting inside its post-spawn grace. */
     let graceFights = 0;
+    /** D2: wall time of every bots.tick, ms, and the share destroyed. */
+    const tickMs: number[] = [];
+    let destroyedShare = 0;
+    let destroyedChunks = 0;
 
     for (let room = 0; room < ROOMS; room++) {
       // One room at a time, then let the event loop turn: the whole sim as a
@@ -142,10 +167,22 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
       // worker's RPC, whose fixed 60 s timeout failed the run with
       // "Timeout calling onTaskUpdate" even though the assertions passed.
       if (room > 0) await new Promise<void>((r) => setImmediate(r));
+      // D2: a breakable copy per room when a damage mode is on.
+      let rc: RoomCity | null = null;
+      if (DESTROY > 0 || LIVE) {
+        rc = createRoomCity(city);
+        const rand = mulberry32(roomSeed(room) ^ 0x5eed);
+        rc.buildings.forEach((b, i) => {
+          for (const id of chunksOf(b, i)) {
+            if (rand() < DESTROY) rc?.damage.destroyChunk(id);
+          }
+        });
+      }
+      const roomBuildings = rc ? rc.buildings : city;
       const bots = new RoomBots(
         `room-${room}`,
         roomSeed(room),
-        city,
+        roomBuildings,
         movers,
         true,
         nature,
@@ -212,10 +249,14 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
             });
         }
 
+        const t0 = performance.now();
         const result = bots.tick(now, contacts);
+        tickMs.push(performance.now() - t0);
         for (const id of result.crashes) {
           if (!combat.crash(id, now)) continue;
           crashes++;
+          const site = bots.lastPosOf(id);
+          if (LIVE && rc && site) applyDeathBlast(rc, site);
           const fresh = now - (spawnedAt.get(id) ?? 0) < SPAWN_WINDOW_MS;
           if (fresh) spawnCrashes++;
           const l = last.get(id);
@@ -228,7 +269,9 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
             : "unknown";
           crashKinds.set(kind, (crashKinds.get(kind) ?? 0) + 1);
           const wreck = bots.flightOf(id)?.pos;
-          const hit = wreck ? collideCity(wreck, PLAYER_RADIUS, city) : null;
+          const hit = wreck
+            ? collideCity(wreck, PLAYER_RADIUS, roomBuildings)
+            : null;
           if (hit) roofsHit.push(hit.height);
         }
         for (const round of result.hits) {
@@ -238,6 +281,8 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
           }
           const hit = landBotRound(combat, round, now);
           if (hit.ok && hit.death) {
+            const site = bots.lastPosOf(round.shot.targetId);
+            if (LIVE && rc && site) applyDeathBlast(rc, site);
             bots.setDead(round.shot.targetId);
             kills++;
           }
@@ -250,7 +295,10 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
             continue;
           }
           if (!combat.isAlive(s.botId)) continue;
-          if (applyBotFire(combat, s, now)) bots.launch(s, now);
+          if (applyBotFire(combat, s, now)) {
+            bots.launch(s, now);
+            if (LIVE && rc) applyShotDamage(rc, s.origin, s.dir);
+          }
         }
 
         for (const e of roster) {
@@ -286,7 +334,17 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
           if (f.pos.y > CLOUD_BASE) ceilingBreaches++;
         }
       }
+      if (rc) {
+        destroyedShare +=
+          rc.damage.destroyedCount / rc.damage.chunkCount / ROOMS;
+        destroyedChunks += rc.damage.destroyedCount;
+      }
     }
+    const sortedTicks = [...tickMs].sort((a, b) => a - b);
+    const tickAt = (q: number) =>
+      sortedTicks[
+        Math.min(sortedTicks.length - 1, Math.floor(q * sortedTicks.length))
+      ] ?? 0;
 
     const botMinutes = (ROOMS * BOTS * SECONDS) / 60;
     const stats = {
@@ -312,6 +370,8 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         `spawn crashes <20 s    11/412        ${spawnCrashes}/${spawns}`,
         `street spawns          0/412         ${streetSpawns}/${spawns}`,
         `hits on high human     22892         ${humanHits}`,
+        `D2 mode                destroy=${DESTROY} live=${LIVE ? 1 : 0}, ${(100 * destroyedShare).toFixed(1)}% of chunks destroyed at the end (mean over rooms; ${destroyedChunks} chunks in all)`,
+        `bots.tick ms           p50 ${tickAt(0.5).toFixed(2)}  p99 ${tickAt(0.99).toFixed(2)}  max ${tickAt(1).toFixed(2)}`,
         "",
         `crash breakdown (${TUNE ? "tune" : "holdout"} seeds; roofs hit p10/p50/p90 m: ${quantiles(roofsHit)}):`,
         ...[...crashKinds]

@@ -16,7 +16,14 @@
 // resumeToken on the backoff in ./reconnect.ts, and only reports onClose
 // once that has failed — the server answered as a different player, or the
 // resume window ran out.
+//
+// D2: the room's destroyed-chunk set lives HERE, in `cityDamage`, not in the
+// game loop's handlers: those attach only after the city build and shader
+// pre-warm, and a `chunks` batch dropped while booting would leave this
+// client colliding with walls everyone else has shot away for the rest of
+// the session. main.ts binds it to the city once the city exists.
 
+import { CityDamage, decodeChunkIds } from "@angels-bandits/common/city";
 import type { CityEvent } from "@angels-bandits/common/cityevents";
 import {
   CONNECT_TIMEOUT_MS,
@@ -26,6 +33,8 @@ import {
 import { decodeSnapshotEntry } from "@angels-bandits/common/net";
 import type {
   BotsConfigMsg,
+  CourseBoardMsg,
+  CourseResultMsg,
   DamageMsg,
   DeathMsg,
   NewsHeliMsg,
@@ -57,6 +66,10 @@ export interface GameSocketEvents {
   onNewsHeli?: (msg: NewsHeliMsg) => void;
   /** W2: our `away` took effect — the return will come with a respawn. */
   onAwayStarted?: () => void;
+  /** S3: the official result of our own finished course run. */
+  onCourseResult?: (msg: CourseResultMsg) => void;
+  /** S3: a course leaderboard changed (ghost attached when a record fell). */
+  onCourseBoard?: (msg: CourseBoardMsg) => void;
   /** W2: the socket dropped; reconnecting in the background. */
   onReconnecting?: () => void;
   /** W2: back as the same player. `welcome` is the fresh one: roster,
@@ -95,6 +108,10 @@ export class GameSocket {
   /** The latest welcome — replaced by each resume (same id, fresh token). */
   welcome: WelcomeMsg;
   readonly events: GameSocketEvents = {};
+  /** D2: what the server has destroyed in this room — reset from every
+   * welcome (a resume may land in a room with less damage), grown by every
+   * `chunks` batch, whether or not anything is listening yet. */
+  readonly cityDamage = new CityDamage();
   private ws: WebSocket;
   /** W2: "open" → "reconnecting" on a drop → back, or "lost" for good. */
   private state: "open" | "reconnecting" | "lost" = "open";
@@ -128,6 +145,7 @@ export class GameSocket {
   ) {
     this.ws = ws;
     this.welcome = welcome;
+    this.cityDamage.reset(decodeChunkIds(welcome.destroyed));
     this.attach(ws);
     // W2 watchdog: snapshots arrive at TICK_DOWN_HZ, so a visible tab that
     // hears nothing for SERVER_SILENCE_MS is on a dead (half-open) socket —
@@ -251,6 +269,7 @@ export class GameSocket {
     }
     this.ws = next.ws;
     this.welcome = next.welcome;
+    this.cityDamage.reset(decodeChunkIds(next.welcome.destroyed));
     this.attach(next.ws);
     this.delay.reset(); // the outage's arrival gaps are not jitter
     this.lastHeardMs = performance.now();
@@ -451,6 +470,15 @@ export class GameSocket {
         break;
       case "awayStarted":
         this.events.onAwayStarted?.();
+        break;
+      case "chunks":
+        this.cityDamage.apply(decodeChunkIds(msg.d));
+        break;
+      case "courseResult":
+        this.events.onCourseResult?.(msg);
+        break;
+      case "courseBoard":
+        this.events.onCourseBoard?.(msg);
         break;
       case "welcome":
         break; // already consumed by open()

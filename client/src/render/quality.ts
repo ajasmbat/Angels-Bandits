@@ -125,6 +125,17 @@ export interface QualityProfile {
   /** R2 roof dressing's fine detail (drains, hatches, walkways, lightning
    * rods, dishes, braces, gondola cables). Structures are solid and stay. */
   roofDetail: boolean;
+  /** S3 the record ghost replayed beside a course run (one translucent
+   * draw). The rings themselves are guidance and stay on every tier. */
+  courseGhost: boolean;
+  /** D1 bullet impacts: share of the full budget — impact particles
+   * (1200 × share), facade damage slots (16 + 32 × share) and burning
+   * patches (2 + 4 × share). Counts only; the shaders never change. */
+  impacts: number;
+  /** D2 broken-edge detail: rebar and jagged-edge noise on the faces
+   * destruction exposed. Off = flat concrete slabs and dark rooms, by a
+   * uniform. The broken geometry itself is solid and identical everywhere. */
+  destructionDetail: boolean;
 }
 
 export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
@@ -155,6 +166,9 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     streetPaint: true,
     holeDecor: 1,
     roofDetail: true,
+    courseGhost: true,
+    impacts: 1,
+    destructionDetail: true,
   },
   medium: {
     maxPixelRatio: 1.5,
@@ -183,6 +197,9 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     streetPaint: true,
     holeDecor: 1,
     roofDetail: true,
+    courseGhost: true,
+    impacts: 0.75,
+    destructionDetail: true,
   },
   low: {
     maxPixelRatio: 1,
@@ -211,6 +228,9 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     streetPaint: true,
     holeDecor: 1,
     roofDetail: false,
+    courseGhost: true,
+    impacts: 0.5,
+    destructionDetail: false,
   },
   mobile: {
     maxPixelRatio: 1,
@@ -239,6 +259,9 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     streetPaint: false,
     holeDecor: 0,
     roofDetail: false,
+    courseGhost: false,
+    impacts: 0.25,
+    destructionDetail: false,
   },
 };
 
@@ -555,6 +578,14 @@ export const FEATURE_TIERS: readonly {
     note: "uniform guard: the S1 paint alone",
   },
   {
+    feature: "D2 broken edges — rebar, jagged concrete",
+    high: "full",
+    medium: "full",
+    low: "off",
+    mobile: "off",
+    note: "uniform guard: flat slabs and dark rooms; the holes and rubble are solid on every tier",
+  },
+  {
     feature: "Window interiors (parallax rooms)",
     high: "full",
     medium: "full",
@@ -572,12 +603,36 @@ export const FEATURE_TIERS: readonly {
     note: "solid",
   },
   {
+    feature: "S3 stunt course rings",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "guidance: one instanced draw, non-collidable",
+  },
+  {
+    feature: "S3 course record ghost",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "off",
+    note: "one translucent draw; MOBILE keeps the rings only",
+  },
+  {
     feature: "R2 roof dressing — fine detail (drains, hatches, rods, dishes)",
     high: "full",
     medium: "full",
     low: "off",
     mobile: "off",
     note: "instance count only; HVAC, ducts, solar, davits, lamps stay",
+  },
+  {
+    feature: "D1 bullet impacts — sparks, dust, glass, decals, burning patches",
+    high: "full",
+    medium: "reduced",
+    low: "reduced",
+    mobile: "reduced",
+    note: "1200 / 900 / 600 / 300 particles, 48 / 40 / 32 / 24 facade damage slots, 6 / 5 / 4 / 3 burns; not solid, cosmetic only",
   },
 ];
 

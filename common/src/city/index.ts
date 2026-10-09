@@ -24,6 +24,7 @@ import {
   TIER_TWO_MIN_HEIGHT,
   WORLD_SIZE,
 } from "../constants";
+import type { BuildingDamage } from "./destruction";
 import { type Hole, assignHoles, clearHoleAir, landmarkArch } from "./holes";
 import { CONSTRUCTION_BLOCKS, LANDMARK_BLOCKS, PLAZA_BLOCKS } from "./layout";
 import { isRiverRow } from "./river";
@@ -35,6 +36,37 @@ import { LOT_LINE } from "./street";
 // (client signage, common/storm) while living in their own module.
 export { CONSTRUCTION_BLOCKS, LANDMARK_BLOCKS, PLAZA_BLOCKS };
 export { mulberry32 };
+// D2 breakable buildings: the chunk model and the damage state.
+export {
+  type BuildingDamage,
+  type ChunkSupport,
+  type LocalBox,
+  type RayHit,
+  type TierGrid,
+  CUT_NEG_X,
+  CUT_NEG_Y,
+  CUT_NEG_Z,
+  CUT_POS_X,
+  CUT_POS_Y,
+  CUT_POS_Z,
+  CUT_RUBBLE,
+  CityDamage,
+  cellBox,
+  chunkAt,
+  chunkBox,
+  chunkBuilding,
+  chunkCell,
+  chunkId,
+  chunkMask,
+  chunkTier,
+  chunksOf,
+  decodeChunkIds,
+  encodeChunkIds,
+  isChunk,
+  raycastChunk,
+  supportGraph,
+  tierGrids,
+} from "./destruction";
 // H1 fly-through holes: the seam collision, rendering and bots all read.
 export {
   type Hole,
@@ -44,6 +76,7 @@ export {
   type HoleKind,
   type HoleSpan,
   type SolidBox,
+  baseSolids,
   cityHoles,
   clearAirSpans,
   edgeFrame,
@@ -88,6 +121,33 @@ export interface Building {
    * renderer all read exactly this list.
    */
   roof?: RoofStructure[];
+  /**
+   * D2 destruction, written ONLY by a CityDamage (city/destruction.ts) bound
+   * to this city: undefined while the building is intact. `solids()`
+   * subtracts what it records, so everything that reads solids agrees.
+   */
+  damage?: BuildingDamage;
+}
+
+/**
+ * Every Building is built through here, with every key present in one fixed
+ * order, so all buildings — the generator's, a server room's clones, a
+ * test's hand-built towers that go through it — share ONE object shape, and
+ * the per-probe collision loads stay monomorphic (O5). Undefined keys don't
+ * serialise, so the city's JSON digest is unchanged by the absent ones.
+ */
+export function makeBuilding(b: Building): Building {
+  return {
+    x: b.x,
+    z: b.z,
+    width: b.width,
+    depth: b.depth,
+    height: b.height,
+    tiers: b.tiers,
+    holes: b.holes,
+    roof: b.roof,
+    damage: b.damage,
+  };
 }
 
 /** Blocks per world side (10 for a 2 km world with 200 m blocks). Exported
@@ -390,5 +450,7 @@ export function generateCity(seed: number): Building[] {
   }
   // H2: and nothing on a roof rises into a hole's clear air.
   clearHoleAir(buildings);
-  return buildings;
+  // One object shape for every building (makeBuilding), now that holes and
+  // roofs are settled.
+  return buildings.map(makeBuilding);
 }

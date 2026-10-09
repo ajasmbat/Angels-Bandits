@@ -1343,6 +1343,121 @@
       }
       /* W2: the socket dropped and is resuming in the background — the game
          keeps running underneath, so a small banner, not a card. */
+      /* S3 race readout (ui/race-hud.ts): top centre, under the reconnect
+         banner's slot. Hidden until a hint, a run or a result. */
+      #race {
+        position: fixed;
+        top: 44px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: none;
+        text-align: center;
+        pointer-events: none;
+        user-select: none;
+        color: #e8f6fa;
+        text-shadow: 0 1px 2px #000;
+        letter-spacing: 0.15em;
+      }
+      #race.open {
+        display: block;
+      }
+      #race .title {
+        font-size: 11px;
+        color: #9fd8e8;
+      }
+      #race .clock {
+        font-size: 26px;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 0.05em;
+      }
+      #race .detail {
+        font-size: 10px;
+        color: #9fd8e8;
+      }
+      #race.hint .clock {
+        font-size: 13px;
+        color: #3dff8a;
+        letter-spacing: 0.2em;
+      }
+      #race.run .clock {
+        color: #ffc43d;
+      }
+      #race.gold .clock,
+      #race.gold .title {
+        color: #ffd24a;
+      }
+      #race.silver .clock,
+      #race.silver .title {
+        color: #d8e4ee;
+      }
+      #race.bronze .clock,
+      #race.bronze .title {
+        color: #e0995a;
+      }
+      #race.record .detail {
+        color: #ff4fd8;
+      }
+      body.touch #race {
+        top: calc(var(--safe-t, 0px) + 36px);
+      }
+      body.touch #race .clock {
+        font-size: 20px;
+      }
+      /* S3 course leaderboards under the roster (ui/course-board.ts). */
+      #course-board {
+        margin-top: 12px;
+        border-top: 1px solid #27e0c044;
+        padding-top: 8px;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px 18px;
+        font-size: 11px;
+      }
+      #course-board .course .head {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        color: #9fd8e8;
+        font-size: 10px;
+        letter-spacing: 0.12em;
+      }
+      #course-board .course .cuts {
+        color: #5a8a98;
+        white-space: nowrap;
+      }
+      #course-board .row {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        font-variant-numeric: tabular-nums;
+      }
+      #course-board .row span:first-child {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #course-board .row.empty {
+        color: #5a6b78;
+      }
+      #course-board .row.gold span:last-child {
+        color: #ffd24a;
+      }
+      #course-board .row.silver span:last-child {
+        color: #d8e4ee;
+      }
+      #course-board .row.bronze span:last-child {
+        color: #e0995a;
+      }
+      #course-board .row.self {
+        color: #27e0c0;
+      }
+      #course-board .note {
+        grid-column: 1 / -1;
+        color: #5a6b78;
+        font-size: 9px;
+        letter-spacing: 0.12em;
+        text-align: center;
+      }
       #reconnecting {
         position: fixed;
         top: 12px;
@@ -2087,6 +2202,7 @@
     <div id="touch-coach" aria-hidden="true"></div>
     <div id="killfeed"></div>
     <div id="comms"></div>
+    <div id="race"></div>
     <div id="scoreboard">
       <h2>SCOREBOARD</h2>
       <table>
@@ -2112,6 +2228,8 @@
         ></div>
         <div class="scale"><span>0</span><span id="bots-max">11</span></div>
       </div>
+      <!-- S3: stunt course leaderboards, built by ui/course-board.ts. -->
+      <div id="course-board"></div>
     </div>
     <div id="killcam">
       <div id="killcam-cause"></div>

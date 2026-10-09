@@ -354,7 +354,11 @@ import {
   skyPhase,
 } from "./render/skycycle";
 import { STREAK_SMOKE_COLORS, SmokeTrails, smokeActive } from "./render/smoke";
-import { attachStanding, setStandingClock } from "./render/standing-watch";
+import {
+  attachStanding,
+  setStandingClock,
+  standingCost,
+} from "./render/standing-watch";
 import { Steam } from "./render/steam";
 import {
   CloudDeck,
@@ -2840,6 +2844,12 @@ declare global {
        * the renderer — `stagedDraws` counts the draws only destruction
        * adds (damaged mesh, debris, dust, falling wrecks, scorch,
        * scaffolding; not the impact pool, which bullets feed too). */
+      /** D8 QA: the standing filter's per-frame cost (ms, every layer). */
+      standingCost: () => ReturnType<typeof standingCost>;
+      /** D8 QA: the latest building collapses (newest last). */
+      recentCollapses: (
+        n: number,
+      ) => { b: number; t: number; x: number; z: number; s: number }[];
       destruction: () => CityRenderer["destructionStats"] & {
         destroyed: number;
         fallen: number;
@@ -3735,6 +3745,15 @@ window.__ab = {
       wrecks: crashed,
     };
   },
+  standingCost: () => standingCost(),
+  recentCollapses: (n) =>
+    socket.collapses.records
+      .filter((w) => (w.k ?? 0) === 0)
+      .slice(-n)
+      .map((w) => {
+        const b = city.cityBuildings[w.b];
+        return { b: w.b, t: w.t, x: b?.x ?? 0, z: b?.z ?? 0, s: w.s };
+      }),
   destruction: () => {
     const stats = city.destructionStats;
     const w = wrecks.drawStats;

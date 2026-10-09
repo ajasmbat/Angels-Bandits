@@ -75,6 +75,37 @@ export function attachStanding(
  * nothing is held back. */
 export function setStandingClock(renderMs: number | null): void {
   clockMs = renderMs;
+  // D8 QA: close the frame's cost (every watch's work since the last call).
+  frameCost[frameAt++ % frameCost.length] = costNow;
+  costNow = 0;
+}
+
+/** D8 QA: the standing updates' cost per frame (ms, summed over every
+ * layer) over the last COST_FRAMES frames, and the most buildings any one
+ * poll handed out. */
+const COST_FRAMES = 1200;
+const frameCost = new Float64Array(COST_FRAMES);
+let frameAt = 0;
+let costNow = 0;
+let maxPerPoll = 0;
+
+export function standingCost(): {
+  frames: number;
+  p50: number;
+  p99: number;
+  max: number;
+  maxBuildingsPerPoll: number;
+} {
+  const n = Math.min(frameAt, COST_FRAMES);
+  const sorted = Array.from(frameCost.subarray(0, n)).sort((a, b) => a - b);
+  const at = (q: number) => sorted[Math.min(n - 1, Math.floor(q * n))] ?? 0;
+  return {
+    frames: n,
+    p50: at(0.5),
+    p99: at(0.99),
+    max: sorted[n - 1] ?? 0,
+    maxBuildingsPerPoll: maxPerPoll,
+  };
 }
 
 /** True while building `b`'s latest collapse has not started on the render
@@ -124,6 +155,15 @@ export class StandingWatch {
    */
   poll(fn: (b: number) => void, now = performance.now()): number {
     const v = source ? source.version : Number.NaN;
+    if (source && v === this.lastSource && this.queue.length === 0) return 0;
+    const t0 = performance.now();
+    const n = this.handOut(fn, v, now);
+    costNow += performance.now() - t0;
+    if (n > maxPerPoll) maxPerPoll = n;
+    return n;
+  }
+
+  private handOut(fn: (b: number) => void, v: number, now: number): number {
     // No source attached (tests, tools): look every call.
     if (!source || v !== this.lastSource) {
       this.lastSource = v;

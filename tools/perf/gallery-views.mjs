@@ -300,34 +300,38 @@ export const VIEWS = [
   // (1240, 464)) felled 15 s before the shot — toppled west across the
   // x = 1200 street, or pancaked — and the seeded 30 % chew of the `ruins`
   // segment's block (18 buildings within 200 m of (400, 780)), its
-  // collapses landed. The plane is parked high out of shot.
+  // collapses landed. The plane is parked high over the lot, out of shot (the
+  // scaffold dresses the damaged buildings nearest the plane).
   {
     name: "ruin-felled",
-    x: 1150,
-    z: 760,
-    y: 320,
+    sky: "dusk",
+    x: 1215,
+    z: 560,
+    y: 330,
     yaw: 0,
-    eye: [1150, 90, 640],
-    at: [1240, 30, 464],
+    eye: [1192, 64, 590],
+    at: [1232, 12, 462],
     weather: "clear",
     stage: { fell: [{ b: 343, h: 215, style: "topple", dir: 0, t: -15_000 }] },
   },
   {
     name: "ruin-pancake",
-    x: 1150,
-    z: 760,
-    y: 320,
+    sky: "dusk",
+    x: 1215,
+    z: 560,
+    y: 330,
     yaw: 0,
-    eye: [1200, 30, 520],
-    at: [1240, 15, 464],
+    eye: [1186, 42, 552],
+    at: [1240, 8, 464],
     weather: "clear",
     stage: { fell: [{ b: 343, h: 215, style: "pancake", dir: 0, t: -15_000 }] },
   },
   {
     name: "ruin-chewed",
-    x: 300,
-    z: 1000,
-    y: 320,
+    sky: "dusk",
+    x: 330,
+    z: 900,
+    y: 330,
     yaw: 0,
     eye: [300, 95, 960],
     at: [400, 35, 780],

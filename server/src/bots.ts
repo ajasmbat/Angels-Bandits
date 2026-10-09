@@ -39,8 +39,9 @@
 // sits on its six — the one time a bot flies the full F7 envelope, and only
 // after a stepFlight rollout of the whole maneuver comes back clear. Timed
 // hazards (X1 missiles, S4 flak, C2's chaos) are HazardDiscs: a decision
-// whose held stick would fly into one is re-stuck (throttle, then a climb)
-// to a variant that misses it. Aim and reaction scale with each human's
+// whose held stick would fly into one is re-stuck to a variant that misses
+// it (in a street: slower; above the roofs: speed, a dive or a turn, held
+// to the end of the danger). Aim and reaction scale with each human's
 // rolling K/D against the bots (SkillScaler), and a bot is shy of ganging
 // up on a struggling human.
 //

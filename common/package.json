@@ -22,6 +22,7 @@
     "./city/nature": "./src/city/nature.ts",
     "./city/river": "./src/city/river.ts",
     "./city/tunnels": "./src/city/tunnels.ts",
+    "./city/caveins": "./src/city/caveins.ts",
     "./city/roof-structures": "./src/city/roof-structures.ts",
     "./storm": "./src/storm.ts",
     "./strike": "./src/strike.ts",

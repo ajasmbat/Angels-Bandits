@@ -23,6 +23,7 @@ import {
 import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 import {
   type WreckPath,
+  type WreckWorld,
   isWreckParams,
   wreckImpact,
   wreckNear,
@@ -116,7 +117,7 @@ describe("wreck sweep (first solid)", () => {
    * `end`, touching at it. */
   const sweep = (
     start: Omit<WreckPath, "end">,
-    world = { buildings: city, index, movers },
+    world: WreckWorld = { buildings: city, index, movers },
   ) => {
     const impact = wreckImpact(start, world);
     const full = { ...start, end: WRECK_MAX_MS };
@@ -174,7 +175,7 @@ describe("wreck sweep (first solid)", () => {
         t: 0,
         spin: 1,
       },
-      { buildings: [], index: undefined, movers: undefined },
+      { buildings: [] },
     );
     expect(impact.hit).toBe("ground");
     expect(at.y).toBeLessThanOrEqual(WRECK_RADIUS + 1e-6);
@@ -192,7 +193,7 @@ describe("wreck sweep (first solid)", () => {
         t: 0,
         spin: 1,
       },
-      { buildings: [], index: undefined, movers: undefined },
+      { buildings: [] },
     );
     expect(impact.hit).toBe("river");
     expect(at.y).toBeLessThan(0);

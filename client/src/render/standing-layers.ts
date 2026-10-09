@@ -83,6 +83,9 @@ export const STANDING_LAYERS: readonly StandingProbe[] = [
 
 /** Building-reading render modules that need no standing filter, and why. */
 export const STANDING_EXEMPT: Readonly<Record<string, string>> = {
+  scaffold:
+    "sizes its cage and crane to standingProfile itself (director-client.test.ts)",
+  "standing-layers": "this registry",
   city: "draws every damaged building 1:1 from its live solids() (D2) — the source of truth",
   "living-windows":
     "a shader schedule on city.ts's facades, which are the live solids",

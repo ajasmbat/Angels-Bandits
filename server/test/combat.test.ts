@@ -224,6 +224,34 @@ describe("damage, death, and kill credit", () => {
     const death = combat.crash("p1", T + 8100);
     expect(death?.killerId).toBeNull();
   });
+
+  it("D3: crushed by a collapse credits who brought it down, else the last damager, else nobody", () => {
+    const combat = arena(4);
+    // p2 brought the building down; p1, winged by p0, is crushed: p2 wins.
+    shoot(combat, "p0", "p1", 0, T);
+    expect(combat.collapseKill("p1", "p2", T + 1000)).toEqual({
+      victimId: "p1",
+      killerId: "p2",
+      cause: "collapse",
+    });
+    expect(combat.scoreOf("p2").kills).toBe(1);
+    expect(combat.scoreOf("p0").kills).toBe(0);
+    // Crushed by your own collapse: the crash rule (last damager) applies.
+    shoot(combat, "p0", "p3", 1, T + 200);
+    expect(combat.collapseKill("p3", "p3", T + 2000)?.killerId).toBe("p0");
+    // Nobody to credit (no causer, never damaged): the environment.
+    expect(combat.collapseKill("p0", null, T)).toEqual({
+      victimId: "p0",
+      killerId: null,
+      cause: "collapse",
+    });
+    // A causer who has left the fight is nobody.
+    const c2 = arena(2);
+    c2.removePlayer("p0");
+    expect(c2.collapseKill("p1", "p0", T)?.killerId).toBeNull();
+    // The dead are not killed twice.
+    expect(combat.collapseKill("p1", "p2", T + 3000)).toBeNull();
+  });
 });
 
 describe("regen, respawn scheduling, and score persistence", () => {

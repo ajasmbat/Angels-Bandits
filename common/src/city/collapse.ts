@@ -1082,6 +1082,25 @@ function sphereHitsPiece(
   return ex * ex + ey * ey + ez * ez <= radius * radius;
 }
 
+/** Does a sphere at `pos` touch piece `i` of `c` at `tMs`? (The per-piece
+ * test collideCollapses runs; tests check the drawn boxes against it.) */
+export function collidePiece(
+  c: Collapse,
+  i: number,
+  pos: Vec3,
+  radius: number,
+  tMs: number,
+): boolean {
+  const p = piecePose(c, i, tMs, scratchPose);
+  return sphereHitsPiece(
+    p,
+    wrapDeltaAxis(c.x, pos.x) - p.x,
+    pos.y - p.y,
+    wrapDeltaAxis(c.z, pos.z) - p.z,
+    radius,
+  );
+}
+
 const outside = (
   box: LocalBox,
   x: number,

@@ -2271,7 +2271,7 @@ node --import tsx tools/chaos-bench.ts [--where] [--json] [--only=fleet]
 | X1/C2 missile feed + missiles.update | 594 B | 143 B | ok |
 | C2 quake shake | 20 B | 31 B | ok |
 | C2 pruneChaos | 29 B | 0 | ok |
-| P4 explosions + sparks (a blast every 20 frames) | 103 B | 104 B | ok |
+| P4 explosions + sparks (blast / 20 frames) | 103 B | 104 B | ok |
 | U4 tunnels.update (Crosstown glide) | 0 | 0 | ok |
 | U5 underground.update (Crosstown glide) | 0 | 0 | ok |
 | remote planes: remotes.update + trails (11) | **~13 600 B** (with the fleet commit) | 733 B | ok |
@@ -2411,6 +2411,16 @@ Every window was alive with no resumes, and the `chaos`, `spect.` and
   - the dressing its earlier tiers already thinned.
 - The only page error was U5's `compileAsync … isReady` on join. It is
   ANGE-FPSV0I's to fix (U5b) and is not this change's.
+
+**Re-run on the tree merged with main after D8** (#125), `--runs 3` on
+both tiers, every number reads the same:
+
+- **High** (`core,chaos,tunnel,exit,boss`): 90 / 107 / 91 / 102 / 92.
+- **Mobile** (`core,chaos,tunnel,exit`): 73 / 85 / 73 / 85.
+
+Scene draws are identical across passes, every verdict is ok, and both
+runs exit 0. D8's smouldering ruins go through the D1 pool, which costs no
+new draw.
 
 `boss` lost 187 draws to the fleet, and its scene draws are now identical
 across passes: its pilots stay in the near band and hold their fire.

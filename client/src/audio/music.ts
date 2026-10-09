@@ -41,8 +41,9 @@ import {
 import type { MixBus } from "./sound";
 
 /** A moment the score marks with a sting. `swell` is for D3/D5 building
- * collapses and the S4 sky boss's entrance. */
-export type MusicMoment = "victory" | "drop" | "swell";
+ * collapses and the S4 sky boss's entrance. `medal` (S7) is a kill that
+ * earned a medal — it plays INSTEAD of that kill's `victory`. */
+export type MusicMoment = "victory" | "drop" | "swell" | "medal";
 
 /** What the frame loop knows this frame. */
 export interface MusicFrame {
@@ -112,6 +113,7 @@ export class Music {
     victory: 0,
     drop: 0,
     swell: 0,
+    medal: 0,
   };
   /** Last bar line scheduled, and how many nodes the graph holds (QA). */
   private lastBarAt: number | null = null;
@@ -176,6 +178,7 @@ export class Music {
     this.stingFree[kind] = now + STING_GAP_S;
     const at = nextGrid(now + 0.02, EIGHTH_S);
     if (kind === "victory") this.victory(g, at);
+    else if (kind === "medal") this.medal(g, at);
     else if (kind === "drop") this.drop(g, at);
     else this.swell(g, at);
   }
@@ -285,6 +288,20 @@ export class Music {
       const last = i === notes.length - 1;
       g.winOsc.frequency.setValueAtTime(hz, t);
       hit(env, t, last ? 1 : 0.8, last ? 0.35 : 0.06);
+    }
+  }
+
+  /** S7 medal: the victory run an octave up and doubled into a fanfare —
+   * the same oscillator, so it can never stack on a victory sting. */
+  private medal(g: Graph, at: number): void {
+    const env = g.winEnv.gain;
+    env.cancelScheduledValues(at);
+    const notes = [880, 1046.5, 1318.5, 1760, 1318.5, 1760];
+    for (const [i, hz] of notes.entries()) {
+      const t = at + i * STEP_S;
+      const last = i === notes.length - 1;
+      g.winOsc.frequency.setValueAtTime(hz, t);
+      hit(env, t, last ? 1 : 0.8, last ? 0.45 : 0.06);
     }
   }
 

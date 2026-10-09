@@ -7,6 +7,10 @@
 // seam-crossing plane drags a 10 m trail, not a 2 km streak. The pure
 // model (smokeActive, SmokeTrail) is the tested seam; SmokeTrails is the
 // thin THREE half: ONE shared Points for every plane's smoke (1 draw call).
+//
+// S7 reuses the same model for the kill-streak trail: a SECOND SmokeTrails
+// built `tinted` carries a per-puff colour attribute, so every streaking
+// plane's smoke — whatever its tier colour — is still one draw.
 
 import { MAX_HP, SMOKE_HP_FRAC } from "@angels-bandits/common/constants";
 import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
@@ -31,6 +35,14 @@ const SIZE_MAX = 7;
  * night sky, so the trail reads against sky glow AND over city lights. */
 const SMOKE_COLOR = 0x332e3a;
 const SMOKE_OPACITY = 0.55;
+/** S7 streak smoke: airshow colours per tier — bright enough to read at
+ * range, but plain (non-emissive) smoke, so tracers stay the brightest. */
+export const STREAK_SMOKE_COLORS: Readonly<Record<3 | 5 | 10, number>> = {
+  3: 0xffa424,
+  5: 0xff3c9c,
+  10: 0x36e2ff,
+};
+const STREAK_OPACITY = 0.7;
 
 /** Does a plane at this HP trail wounded smoke? Dead planes never smoke. */
 export function smokeActive(hp: number): boolean {
@@ -58,7 +70,12 @@ export class SmokeTrail {
    * anchor (torus-aware), age out dead puffs, and — while `emitting` and the
    * cadence allows — drop a fresh puff at the anchor.
    */
-  update(anchor: Vec3, now: number, emitting: boolean): void {
+  update(
+    anchor: Vec3,
+    now: number,
+    emitting: boolean,
+    emitMs = SMOKE_EMIT_MS,
+  ): void {
     if (this.anchorPos) {
       // Old puff position = oldAnchor + offset; new offset re-bases it onto
       // the new anchor by the shortest torus path between the two anchors.
@@ -73,7 +90,7 @@ export class SmokeTrail {
     }
     this.anchorPos = { ...anchor };
     this.list = this.list.filter((p) => now - p.bornAt <= SMOKE_LIFE_MS);
-    if (emitting && now - this.lastEmitAt >= SMOKE_EMIT_MS) {
+    if (emitting && now - this.lastEmitAt >= emitMs) {
       this.lastEmitAt = now;
       this.list.push({ offset: { x: 0, y: 0, z: 0 }, bornAt: now });
     }
@@ -96,15 +113,30 @@ export class SmokeTrails {
   private readonly trails = new Map<string, SmokeTrail>();
   private readonly positions: THREE.BufferAttribute;
   private readonly sizes: THREE.BufferAttribute;
+  /** Tinted mode only: per-puff colour, and each trail's tint. */
+  private readonly colors: THREE.BufferAttribute | null;
+  private readonly tints = new Map<string, number>();
+  private readonly scratchColor = new THREE.Color();
+  /** What update() re-uploads each frame (built once — no per-frame array). */
+  private readonly uploads: readonly (THREE.BufferAttribute | null)[];
+  /** Emission cadence, ms; Infinity = emission off (quality share 0). */
+  private emitMs = SMOKE_EMIT_MS;
   private lastPuffCount = 0;
 
-  constructor() {
+  /** `tinted` (S7): white material + a per-puff colour from each trail's
+   * tint — the streak smoke. Untinted is the wounded-plane smoke. */
+  constructor({ tinted = false }: { tinted?: boolean } = {}) {
     const budget = MAX_PLANES * MAX_PUFFS;
     const geometry = new THREE.BufferGeometry();
     this.positions = new THREE.BufferAttribute(new Float32Array(budget * 3), 3);
     this.sizes = new THREE.BufferAttribute(new Float32Array(budget), 1);
     geometry.setAttribute("position", this.positions);
     geometry.setAttribute("aSize", this.sizes);
+    this.colors = tinted
+      ? new THREE.BufferAttribute(new Float32Array(budget * 3), 3)
+      : null;
+    if (this.colors) geometry.setAttribute("color", this.colors);
+    this.uploads = [this.positions, this.sizes, this.colors];
     geometry.setDrawRange(0, 0);
     // Soft round puff sprite — a bare PointsMaterial renders hard squares.
     const canvas = document.createElement("canvas");
@@ -120,11 +152,12 @@ export class SmokeTrails {
       ctx.fillRect(0, 0, 64, 64);
     }
     const material = new THREE.PointsMaterial({
-      color: SMOKE_COLOR,
+      color: tinted ? 0xffffff : SMOKE_COLOR,
+      vertexColors: tinted,
       map: new THREE.CanvasTexture(canvas),
       size: 1, // per-point aSize carries the real size
       transparent: true,
-      opacity: SMOKE_OPACITY,
+      opacity: tinted ? STREAK_OPACITY : SMOKE_OPACITY,
       depthWrite: false,
     });
     // Per-point size: multiply gl_PointSize by the aSize attribute. Distinct
@@ -143,20 +176,36 @@ export class SmokeTrails {
     this.points.renderOrder = RENDER_ORDER.smoke;
   }
 
-  /** Per-frame per-plane: advance/emit that plane's trail (torus anchor). */
-  sync(id: string, anchor: Vec3, now: number, emitting: boolean): void {
+  /** Per-frame per-plane: advance/emit that plane's trail (torus anchor).
+   * `tint` colours its new puffs in tinted mode (ignored otherwise). */
+  sync(
+    id: string,
+    anchor: Vec3,
+    now: number,
+    emitting: boolean,
+    tint = 0xffffff,
+  ): void {
+    const emit = emitting && Number.isFinite(this.emitMs);
     let trail = this.trails.get(id);
     if (!trail) {
-      if (!emitting) return; // nothing to age, nothing to start
+      if (!emit) return; // nothing to age, nothing to start
       trail = new SmokeTrail();
       this.trails.set(id, trail);
     }
-    trail.update(anchor, now, emitting);
+    if (emit && this.colors) this.tints.set(id, tint);
+    trail.update(anchor, now, emit, this.emitMs);
   }
 
   /** Respawn/leave: drop the trail so the teleport can't smear it. */
   clear(id: string): void {
     this.trails.delete(id);
+    this.tints.delete(id);
+  }
+
+  /** Quality share of the emission rate (1 = full, 0 = none): fewer puffs,
+   * same lifetime — the trail thins, it never shortens. */
+  setShare(share: number): void {
+    this.emitMs = share > 0 ? SMOKE_EMIT_MS / share : Number.POSITIVE_INFINITY;
   }
 
   /** Re-project every live puff around the viewer. Call once per frame. */
@@ -168,10 +217,13 @@ export class SmokeTrails {
       const puffs = anchor ? trail.puffs(now) : [];
       if (puffs.length === 0) {
         this.trails.delete(id); // fully faded (death clouds age out here)
+        this.tints.delete(id);
         continue;
       }
       if (!anchor) continue;
       const base = nearestImageInto(scratchImage, viewer, anchor);
+      // One tint per trail (a tier change recolours the whole streak).
+      if (this.colors) this.scratchColor.setHex(this.tints.get(id) ?? 0xffffff);
       for (const p of puffs) {
         if (i >= budget) break;
         const rise = p.age01 * (SMOKE_LIFE_MS / 1000) * SMOKE_RISE;
@@ -188,12 +240,16 @@ export class SmokeTrails {
             ? SIZE_MAX * (1 - (p.age01 - 0.85) / 0.15)
             : SIZE_MIN + (SIZE_MAX - SIZE_MIN) * (p.age01 / 0.85);
         this.sizes.setX(i, size);
+        if (this.colors) {
+          const c = this.scratchColor;
+          this.colors.setXYZ(i, c.r, c.g, c.b);
+        }
         i++;
       }
     }
     this.lastPuffCount = i;
     this.points.geometry.setDrawRange(0, i);
-    uploadPrefix([this.positions, this.sizes], i);
+    uploadPrefix(this.uploads, i);
   }
 
   /** QA: live puff count last frame (perf reporting). */

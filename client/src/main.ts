@@ -55,6 +55,7 @@ import {
   handlingRates,
   stepFlight,
 } from "@angels-bandits/common/flight";
+import { MEDAL_LABEL, streakTier } from "@angels-bandits/common/medals";
 import { hitRangeBudgetFor } from "@angels-bandits/common/net";
 import type {
   CourseStanding,
@@ -114,6 +115,7 @@ import {
   offStationCallout,
   ownKillCallout,
   splashCallout,
+  streakCallout,
   threatCallout,
   threatOnSix,
 } from "./game/callouts";
@@ -157,6 +159,7 @@ import {
 } from "./game/instructor";
 import { speedFov } from "./game/jet-camera";
 import { magnetizeVelocity } from "./game/magnetism";
+import { SessionStats } from "./game/session-stats";
 import { wreckCamView } from "./game/wreck-cam";
 import {
   BASE_FOV,
@@ -261,7 +264,7 @@ import {
   parseSkyParam,
   skyPhase,
 } from "./render/skycycle";
-import { SmokeTrails, smokeActive } from "./render/smoke";
+import { STREAK_SMOKE_COLORS, SmokeTrails, smokeActive } from "./render/smoke";
 import { Steam } from "./render/steam";
 import {
   CloudDeck,
@@ -863,6 +866,9 @@ const shieldSparks = new Sparks(0xbfe8ff);
 scene.add(shieldSparks.points);
 const smoke = new SmokeTrails();
 scene.add(smoke.points);
+// S7: kill-streak smoke — every streaking plane's coloured trail, one draw.
+const streakSmoke = new SmokeTrails({ tinted: true });
+scene.add(streakSmoke.points);
 // D1 bullet impacts: sparks, dust, chips, glass and burning patches in ONE
 // Points draw; shattered panes, bullet holes and scorch in the building
 // shader's damage map (city.damage). Cosmetic only — nothing here collides.
@@ -1267,6 +1273,24 @@ let awaitingReturn: number | null = null;
 /** Longest the hold may last before posing resumes anyway, ms. */
 const RETURN_HOLD_MAX_MS = AWAY_MIN_MS + 2000;
 let lastScores: ScoreEntry[] = welcome.scores;
+/** S7: each pilot's kill streak, from the score rows (server-owned). */
+const streaks = new Map<string, number>();
+/** S7: the local pilot's life and session numbers for the kill-cam card. */
+const sessionStats = new SessionStats();
+/** Take a score broadcast's (or a welcome's) streaks. */
+function applyStreaks(scores: ScoreEntry[]): void {
+  streaks.clear();
+  for (const e of scores) if (e.streak) streaks.set(e.id, e.streak);
+  sessionStats.streak(streaks.get(socket.selfId) ?? 0);
+  const card = sessionStats.card;
+  if (card) hud.showLifeCard(card);
+}
+applyStreaks(welcome.scores);
+/** The streak smoke a plane trails: its tier's colour, or null. */
+function streakTint(id: string): number | null {
+  const tier = streakTier(streaks.get(id) ?? 0);
+  return tier === 0 ? null : STREAK_SMOKE_COLORS[tier];
+}
 /** S1: the TOP PILOT the leader spot follows (null: nobody has a kill). */
 let leaderId: string | null = null;
 /** S1: crown the TOP PILOT from the room's tallies (identical on every
@@ -1413,6 +1437,7 @@ function respawnSelf(spawn: SpawnState): void {
   killCamWreck = null;
   plane.visible = true;
   hud.hideKillCam();
+  sessionStats.respawned(); // S7: the card came down with the kill-cam
   damageIndicator.clear();
   guns.reset(performance.now());
   // A fresh plane is protected until a snapshot says otherwise: the last
@@ -1500,6 +1525,7 @@ socket.events.onFired = (id) => remoteFired(id);
 socket.events.onDamage = (msg) => {
   if (msg.shooterId === socket.selfId) {
     hud.hitConfirm(performance.now());
+    if (msg.targetId !== socket.selfId) sessionStats.hit(); // S7 accuracy
     // OUR damage only — another player's hits never raise our target bar.
     if (msg.targetId !== socket.selfId) {
       hpBar.recordDamage(msg.targetId, msg.hp, performance.now());
@@ -1580,16 +1606,23 @@ socket.events.onDeath = (msg) => {
     nameOf(msg.victimId),
     msg.cause,
     msg.killerId === socket.selfId || msg.victimId === socket.selfId,
+    msg.victimId,
   );
   if (msg.killerId === socket.selfId && msg.victimId !== socket.selfId) {
     hud.killConfirm(performance.now());
     haptics.kill();
     audio.killConfirm();
-    music.moment("victory");
+    // The sting waits for this kill's `award` (S7): victory, or a medal's.
+    sessionStats.kill();
+    const card = sessionStats.card; // a posthumous kill joins its card
+    if (card) hud.showLifeCard(card);
   }
   hpBar.clear(msg.victimId); // never float a stale bar over a respawn
   if (msg.victimId === socket.selfId) {
     enterDeath(msg.killerId, msg.cause);
+    // S7: the life's card, built once from the server's death (a local
+    // crash entered the kill-cam first without one).
+    hud.showLifeCard(sessionStats.endLife());
     killCamWreck = wreck; // D4: the kill-cam rides our own wreck down
     // U3: the first storm death earns one "stay below" notice on respawn.
     if (msg.cause === "storm") coach.noteStormDeath();
@@ -1607,9 +1640,37 @@ socket.events.onDeath = (msg) => {
     say(splashCallout(nameOf(msg.killerId), isBotOf(msg.killerId)));
   }
 };
+/**
+ * S7: the server's credit for a kill, sent to the whole room right after
+ * its death. Every client badges the kill's feed line and announces a
+ * streak tier the same way; the killer's own client also plays the kill's
+ * sting (a medal's fanfare INSTEAD of the victory run), pops the toast and
+ * counts the medals for its card.
+ */
+socket.events.onAward = (msg) => {
+  const own = msg.id === socket.selfId;
+  killFeed.addMedals(
+    msg.victimId,
+    msg.medals.map((m) => MEDAL_LABEL[m]),
+  );
+  if (own && msg.victimId !== socket.selfId) {
+    music.moment(msg.medals.length > 0 ? "medal" : "victory");
+    if (msg.medals.length > 0) {
+      hud.showMedals(msg.medals, performance.now());
+      sessionStats.award(msg.medals);
+      const card = sessionStats.card;
+      if (card) hud.showLifeCard(card);
+    }
+  }
+  if (msg.tier !== undefined) {
+    killFeed.addStreak(nameOf(msg.id), msg.tier, own);
+    say(streakCallout(msg.tier, own, nameOf(msg.id)));
+  }
+};
 socket.events.onRespawn = (msg) => {
   // Fresh spawn, fresh trail — a rebased teleport would smear smoke 1 km.
   smoke.clear(msg.id);
+  streakSmoke.clear(msg.id);
   if (msg.id === socket.selfId) reactor.clearSelfTrack(); // L1: track jumps
   if (msg.id === socket.selfId) {
     respawnSelf(msg.spawn);
@@ -1679,6 +1740,7 @@ function applyResume(w: WelcomeMsg): void {
     scoreboard.playerJoined(r);
   }
   lastScores = w.scores;
+  applyStreaks(w.scores);
   refreshLeader();
   scoreboard.setScores(w.scores);
   applyCourseStandings(w.courses); // S3: boards moved on meanwhile
@@ -1695,6 +1757,7 @@ function applyResume(w: WelcomeMsg): void {
     }
   }
   smoke.clear(socket.selfId);
+  streakSmoke.clear(socket.selfId);
   reactor.clearSelfTrack();
   respawnSelf(w.spawn);
   awayStarted = false;
@@ -1710,6 +1773,7 @@ function showOwnScore(scores: ScoreEntry[]): void {
 }
 socket.events.onScores = (scores) => {
   lastScores = scores;
+  applyStreaks(scores);
   refreshLeader();
   scoreboard.setScores(scores);
   showOwnScore(scores);
@@ -1793,6 +1857,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   impacts.setShare(QUALITY_PROFILES[tier].impacts);
   blastLedger.setBurnCap(burnCapFor(QUALITY_PROFILES[tier].impacts));
   wrecks.setShare(QUALITY_PROFILES[tier].wreckFire); // D4
+  streakSmoke.setShare(QUALITY_PROFILES[tier].streakSmoke); // S7
   pedestrians.setQuality(tier);
   cityLife.setQuality(tier); // A1
   facadeLife.setQuality(tier); // A1
@@ -3209,6 +3274,7 @@ const frame = (now: number): void => {
     if (shot) {
       bullets.spawn(shot.seq, shot.origin, shot.vel);
       socket.sendFire(shot.seq);
+      sessionStats.fired(); // S7 accuracy
       tracers.flash(shot.origin, now);
       audio.gunshot();
       radio.noteCombat(now); // firing = combat radio discipline
@@ -3512,6 +3578,16 @@ const frame = (now: number): void => {
     smoke.sync(target.id, target.pos, now, smokeActive(target.hp));
   }
   smoke.update(chase.position, now);
+  // S7 streak smoke: every living plane on a streak, tinted by its tier.
+  if (alive) {
+    const tint = streakTint(socket.selfId);
+    streakSmoke.sync(socket.selfId, flight.pos, now, tint !== null, tint ?? 0);
+  }
+  for (const target of targets) {
+    const tint = streakTint(target.id);
+    streakSmoke.sync(target.id, target.pos, now, tint !== null, tint ?? 0);
+  }
+  streakSmoke.update(chase.position, now);
   // Storm: consume this frame's scheduled strikes, then age/place the bolts
   // and drive the sky-flash pulse (fog stain + dome tint + violet ambient).
   for (const s of strikeFeed.poll(renderMs)) {

@@ -2,8 +2,11 @@
 // every kill through one MedalLedger, so whatever it says here is what every
 // client shows — and a medal or a tier must never be awarded twice.
 
-import { generateCity } from "@angels-bandits/common/city";
-import type { Hole, HoleSpan } from "@angels-bandits/common/city/holes";
+import {
+  type Hole,
+  type HoleSpan,
+  generateCity,
+} from "@angels-bandits/common/city";
 import {
   blankCar,
   carBox,

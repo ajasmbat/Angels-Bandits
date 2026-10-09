@@ -56,11 +56,18 @@ import {
   generateCourses,
 } from "@angels-bandits/common/courses";
 import {
+  MedalLedger,
+  NEEDLE_WINDOW_MS,
+  TRAIN_SURFER_RANGE,
+  nearTrainCar,
+} from "@angels-bandits/common/medals";
+import {
   clampInterpDelay,
   encodeSnapshotEntry,
 } from "@angels-bandits/common/net";
 import type {
   Pose,
+  ScoreEntry,
   ServerMsg,
   SpawnState,
   WireSnapshotMsg,
@@ -169,6 +176,9 @@ interface ResumeRecord {
   name: string;
   kills: number;
   deaths: number;
+  /** S7: a drop is not a death — the streak survives the resume. */
+  streak: number;
+  best: number;
   roomId: string;
   expiresAt: number;
 }
@@ -187,6 +197,17 @@ const combat = new Combat();
 /** The hidden death ceiling (ST1): continuous-time-above-600 m bookkeeping.
  * Nothing about it is ever sent to clients — only the resulting death. */
 const storm = new StormCeiling();
+/** S7 kill streaks and medals (common/src/medals.ts): the server's credit,
+ * keyed by the same globally-unique ids as `combat`. Every credited death
+ * goes through it in sendDeath. */
+const medals = new MedalLedger();
+
+/** A pilot's scoreboard row: Combat's tally plus the S7 streak (omitted
+ * while 0). Every score that leaves the server is built here. */
+function scoreEntryOf(id: string): ScoreEntry {
+  const streak = medals.streakOf(id);
+  return { ...combat.scoreOf(id), ...(streak > 0 && { streak }) };
+}
 
 /** The seeded city, generated once — bot collision probes fly against the
  * exact Building[] every client renders and collides with. */
@@ -514,6 +535,7 @@ function syncRoomBots(room: Room): void {
   }
   for (const id of despawned) {
     combat.removePlayer(id);
+    medals.forget(id);
     storm.forget(id);
     rooms.leave(id);
     sendToRoom(room, { type: "playerLeft", id });
@@ -600,6 +622,7 @@ function handleJoin(
   // After addPlayer, which starts every tally at 0/0.
   if (resumed) {
     combat.restoreScore(id, resumed.record.kills, resumed.record.deaths);
+    medals.restore(id, resumed.record.streak, resumed.record.best);
   }
   // Joiners get the same near-the-fight placement as respawns.
   const spawn = pickRespawn(livingEnemies(room, id));
@@ -636,7 +659,7 @@ function handleJoin(
     seed: room.seed,
     spawn,
     roster: room.roster(),
-    scores: room.roster().map(({ id: rid }) => combat.scoreOf(rid)),
+    scores: room.roster().map(({ id: rid }) => scoreEntryOf(rid)),
     botTarget: room.botTarget,
     cityEvents: cityEvents.recent(room.id, now),
     newsHeli: roomMovers(room).news,
@@ -790,18 +813,21 @@ function handleBoost(client: Client, on: unknown, now: number): void {
 function handleLeave(id: string): void {
   const client = clients.get(id);
   if (client) {
-    // W2: read the score BEFORE removePlayer forgets it.
+    // W2: read the score BEFORE removePlayer (and medals.forget) forget it.
     const { kills, deaths } = combat.scoreOf(id);
     resumeRecords.set(id, {
       name: client.name,
       kills,
       deaths,
+      streak: medals.streakOf(id),
+      best: medals.bestOf(id),
       roomId: client.room.id,
       expiresAt: Date.now() + RESUME_WINDOW,
     });
   }
   clients.delete(id);
   combat.removePlayer(id);
+  medals.forget(id);
   storm.forget(id);
   const room = rooms.leave(id);
   if (room) {
@@ -819,7 +845,7 @@ function handleLeave(id: string): void {
 function broadcastScores(room: Room): void {
   sendToRoom(room, {
     type: "score",
-    scores: room.roster().map(({ id }) => combat.scoreOf(id)),
+    scores: room.roster().map(({ id }) => scoreEntryOf(id)),
   });
 }
 
@@ -943,7 +969,47 @@ function sendDeath(
   });
   // D4: a wreck's city event comes when it lands, where it lands.
   if (!wreck) offerCityEvent(room, "death", death.victimId, now);
+  creditMedals(room, death, now);
   broadcastScores(room);
+}
+
+/**
+ * S7: run one death through the medal ledger. A credited kill (by a pilot
+ * still in the room) is announced to the whole room as an `award` — after
+ * its `death`, before its `score`, so the streak the score carries already
+ * counts it. The context is judged at the killer's on-record position on the
+ * server clock: through a hole (the bots' transit tracking covers every
+ * living member), beside a train car. A dead killer is threading nothing.
+ */
+function creditMedals(room: Room, death: Death, now: number): void {
+  const { victimId, killerId } = death;
+  if (
+    killerId !== null &&
+    killerId !== victimId &&
+    room.members.has(killerId)
+  ) {
+    const pos = memberPose(room, killerId)?.pos ?? null;
+    const trains = moversFor(room.seed).trains ?? [];
+    const award = medals.kill({
+      killerId,
+      victimId,
+      cause: death.cause,
+      now,
+      killerAlive: combat.isAlive(killerId),
+      needle:
+        pos !== null &&
+        botsFor(room).threading(killerId, pos, now, NEEDLE_WINDOW_MS),
+      train: pos !== null && nearTrainCar(trains, pos, TRAIN_SURFER_RANGE, now),
+    });
+    sendToRoom(room, {
+      type: "award",
+      id: killerId,
+      victimId,
+      medals: award.medals,
+      ...(award.tier !== null && { tier: award.tier }),
+    });
+  }
+  medals.death(victimId, killerId);
 }
 
 /** Once the heli is free (arrived + dwelt), send it to the newest kill. */

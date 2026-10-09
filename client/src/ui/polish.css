@@ -554,16 +554,41 @@ body.touch #medal-toast {
   }
 }
 
-/* Phone: the K/D shares the HULL label — the HULL gauge takes the larger
-   share of the row and the K/D tightens, so it stays on that line, apart
-   from the word, instead of wrapping over the bar. */
+/* Phone: the K/D shares the HULL label. Every gauge sizes from a zero
+   basis and HULL takes the larger share of the row; its label is a flex
+   row (not a float), so the K/D sits right of the word and can never wrap
+   over the bar or spill out of the gauge. */
+body.touch .gauge {
+  flex: 1 1 0;
+}
 body.touch #hp {
-  flex: 1.5 1 0;
+  flex-grow: 1.6;
+}
+body.touch #hp label {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
 }
 body.touch #kd {
-  margin-left: 6px;
+  float: none;
   letter-spacing: 0.04em;
 }
 body.touch .gauge label {
   white-space: nowrap;
+}
+
+/* Phone with a stunt course's readout up (#race, under the gauges): the
+   killfeed keeps its newest line only, the boss bar drops below the readout
+   as a bare track, and the medal toast follows it down. */
+body.touch:has(#race.open) #killfeed .entry:not(:last-child) {
+  display: none;
+}
+body.touch #race.open ~ #boss-bar {
+  top: calc(var(--gut-y) + var(--safe-t) + 80px);
+}
+body.touch #race.open ~ #boss-bar .name {
+  display: none;
+}
+body.touch #race.open ~ #medal-toast {
+  top: calc(var(--gut-y) + var(--safe-t) + 104px);
 }

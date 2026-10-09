@@ -2446,8 +2446,10 @@ declare global {
        * the audio context exists). */
       /** P3 QA: replay an own kill (and, for "medal", an own award with
        * medals) through the real death/award handlers — the HUD, killfeed,
-       * sounds and music a real one plays. The victim is a throwaway id. */
-      qaMoment: (kind: "kill" | "medal") => void;
+       * sounds and music a real one plays. The victim is a throwaway id.
+       * "course": put the plane 60 m short of the first stunt course's
+       * start ring, facing it, so the race readout shows. */
+      qaMoment: (kind: "kill" | "medal" | "course") => void;
       /** P3 QA: the soak's leak counters — GPU resources the renderer
        * holds and the audio engine's live state (null before a context). */
       qaUi: () => {
@@ -3007,6 +3009,18 @@ window.__ab = {
   }),
   setQuality: (setting) => setQualitySetting(setting, false),
   qaMoment: (kind) => {
+    if (kind === "course") {
+      const ring = courses[0]?.rings[0];
+      if (!ring) return;
+      const { pos, n } = ring;
+      window.__ab?.teleport(
+        pos.x - n.x * 60,
+        pos.z - n.z * 60,
+        pos.y - n.y * 60,
+        Math.atan2(-n.x, -n.z),
+      );
+      return;
+    }
     const victimId = "qa-victim";
     players.set(victimId, { name: "VIPER", isBot: true });
     socket.events.onDeath?.({

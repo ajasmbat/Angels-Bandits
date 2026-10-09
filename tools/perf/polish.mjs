@@ -53,6 +53,8 @@ const LABEL = opt("label", "run");
 const TTFF_RUNS = Number(opt("ttff", "0"));
 const SOAK_MIN = Number(opt("soak", "0"));
 const SHOTS = flag("shots");
+/** --course: the overlap probe also checks the race readout state. */
+const COURSE = flag("course");
 /** --repo: serve another checkout (its own built client/dist) — the BEFORE
  * arm runs from a git worktree of the earlier commit. */
 const SERVE_REPO = resolve(opt("repo", REPO));
@@ -508,9 +510,22 @@ async function runOverlap(browser, url) {
       await page.evaluate(() => window.__ab.qaMoment("medal"));
       await sleep(700);
       const moment = await page.evaluate(OVERLAP_PROBE, OVERLAP_EXEMPT);
-      results.push({ name, idle, moment });
+      // The busiest top band: a stunt course's readout under the gauges,
+      // the boss bar, a medal and a full killfeed at once (--course: the
+      // P3 build's qaMoment("course"); an older build has no such kind).
+      let course = null;
+      if (COURSE) {
+        await page.evaluate(() => window.__ab.qaMoment("course"));
+        await page.waitForSelector("#race.open", { timeout: 30000 });
+        for (let k = 0; k < 3; k++) {
+          await page.evaluate(() => window.__ab.qaMoment("medal"));
+        }
+        await sleep(700);
+        course = await page.evaluate(OVERLAP_PROBE, OVERLAP_EXEMPT);
+      }
+      results.push({ name, idle, moment, course });
       console.log(
-        `  overlap ${name}: idle ${idle.overlaps.length} overlaps / ${idle.offscreen.length} off; medal ${moment.overlaps.length} / ${moment.offscreen.length}`,
+        `  overlap ${name}: idle ${idle.overlaps.length} overlaps / ${idle.offscreen.length} off; medal ${moment.overlaps.length} / ${moment.offscreen.length}${course ? `; course ${course.overlaps.length} / ${course.offscreen.length}` : ""}`,
       );
     } finally {
       await context.close();

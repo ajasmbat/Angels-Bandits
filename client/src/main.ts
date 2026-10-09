@@ -192,6 +192,14 @@ import {
 import { speedFov } from "./game/jet-camera";
 import { magnetizeVelocity } from "./game/magnetism";
 import { MissileFeed, MissileShake } from "./game/missile-feed";
+import {
+  type QaBossSpec,
+  type QaBossStage,
+  isQaShell,
+  qaFlakDue,
+  qaGhostTrack,
+  stageBoss,
+} from "./game/qa-spectacle";
 import { SessionStats } from "./game/session-stats";
 import { wreckCamView } from "./game/wreck-cam";
 import {
@@ -1084,6 +1092,10 @@ const bossRenderer = new BossRenderer(
   },
 );
 scene.add(bossRenderer.group);
+/** S8 QA (`__ab.qaBoss`): the staged raid and its flak schedule, and how
+ * many shells the server sent while it was staged (dropped each frame). */
+let qaBoss: QaBossStage | null = null;
+let qaForeignShells = 0;
 /** S4: each weak point's full HP on the current raid (the HUD bar's scale),
  * rebuilt only when the raid changes — never per frame. */
 let bossMaxFor = -1;
@@ -2282,6 +2294,8 @@ declare global {
       };
       /** P1: the full frame-time window — p50/p95/p99/worst + draw calls. */
       perfStats: () => FrameStats;
+      /** S8: the window's median draws without / of the reflection probe. */
+      drawSplit: () => { scene: number; probe: number };
       /** M3: the same window's pre-render JS cost per frame (sim, streaming,
        * instance packing — the render call itself is not in it). */
       jsStats: () => FrameStats;
@@ -2486,6 +2500,25 @@ declare global {
         pos: { x: number; y: number; z: number; yaw: number } | null;
         flak: number;
         drawn: BossRenderer["stats"];
+        /** S8: a staged raid holds the slot; server shells dropped since. */
+        staged: boolean;
+        foreignShells: number;
+      };
+      /** S8 QA: stage a raid crossing a held view (null clears). */
+      qaBoss: (spec: QaBossSpec | null) => typeof socket.boss.raid;
+      /** S8 QA: a synthetic record ghost for the first course of `theme`
+       * (speed null: none). Null when the city has no such course. */
+      qaCourseGhost: (
+        theme: string,
+        speed: number | null,
+      ) => { course: number; count: number } | null;
+      /** S8: the local run and its ghost. */
+      course: () => {
+        course: number;
+        next: number;
+        theme: string | null;
+        ghost: boolean;
+        ghostDrawn: boolean;
       };
       jumbotronView: (
         i: number,
@@ -2767,6 +2800,8 @@ window.__ab = {
   }),
   // P1 harness surface: percentiles over the window since the last reset.
   perfStats: () => frames.stats(),
+  // S8: the window's draws split into the scene's and the S6 probe's.
+  drawSplit: () => frames.drawSplit(),
   jsStats: () => jsFrames.stats(),
   perfSamples: () => frames.samples(),
   gpuStats: () => (gpuTimer === null ? null : gpuFrames.stats()),
@@ -2983,8 +3018,43 @@ window.__ab = {
       pos: pose && { x: pose.x, y: pose.y, z: pose.z, yaw: pose.yaw },
       flak: socket.flak.size,
       drawn: bossRenderer.stats,
+      staged: qaBoss !== null,
+      foreignShells: qaForeignShells,
     };
   },
+  // S8 QA: stage a boss raid crossing a held view, with its flak schedule
+  // on the world clock (game/qa-spectacle.ts); null clears it.
+  qaBoss: (spec) => {
+    if (spec === null) {
+      qaBoss = null;
+      socket.boss.raid = null;
+      socket.boss.down = null;
+      socket.bossHp = [];
+      socket.flak.clear();
+      return null;
+    }
+    qaBoss = stageBoss(spec);
+    qaForeignShells = 0;
+    socket.flak.clear();
+    return qaBoss.raid;
+  },
+  // S8 QA: the record ghost the next run of the first course of `theme`
+  // plays — a constant `speed` through its ring centres — or null for none.
+  qaCourseGhost: (theme, speed) => {
+    const c = courses.find((k) => k.theme === theme);
+    if (!c) return null;
+    const track = speed === null ? null : qaGhostTrack(c, speed);
+    courseGhosts[c.id] = track;
+    return { course: c.id, count: track?.count ?? 0 };
+  },
+  // S8: the local course run and the ghost beside it.
+  course: () => ({
+    course: courseRunner.course,
+    next: courseRunner.next,
+    theme: courses[courseRunner.course]?.theme ?? null,
+    ghost: courseGhost.playing,
+    ghostDrawn: courseGhost.mesh.visible,
+  }),
   jumbotronView: (i, distance) => jumbotrons.view(i, distance),
   signImage: (x, z) => signage.imageOf(x, z),
   signBroken: (at) =>
@@ -3996,6 +4066,21 @@ const frame = (now: number): void => {
     }
     missileRenderer.update(mf.flying, chase.position, renderMs, now);
   }
+  // S8 QA: a staged raid holds the slot (a real `boss` message cannot
+  // replace it mid-window) and only staged shells fly.
+  if (qaBoss !== null && renderMs !== null) {
+    if (socket.boss.raid !== qaBoss.raid) {
+      socket.boss.raid = qaBoss.raid;
+      socket.boss.down = null;
+      socket.bossHp = raidMaxHp(qaBoss.raid);
+    }
+    for (const id of socket.flak.keys()) {
+      if (isQaShell(id)) continue;
+      socket.flak.delete(id);
+      qaForeignShells++;
+    }
+    qaFlakDue(qaBoss, renderMs, socket.flak);
+  }
   // S4: the zeppelin, its flak and its fall; the HUD bar while it flies;
   // "it got away" once, when a raid runs out still flying.
   bossRenderer.update(
@@ -4312,7 +4397,7 @@ const frame = (now: number): void => {
   // hitch is exactly the number this ticket exists to surface, and the sim
   // clamp is there to keep flight stable, not to flatter the report.
   const drawCalls = renderer.info.render.calls;
-  frames.push(rawMs, drawCalls);
+  frames.push(rawMs, drawCalls, reflections.lastFrameDraws);
   jsFrames.push(preRenderMs, drawCalls);
   resFrames.push(rawMs, drawCalls);
   cpuFrames.push(preRenderMs, drawCalls);

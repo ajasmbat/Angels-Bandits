@@ -65,8 +65,13 @@ const REPO = resolve(HERE, "../..");
  * 4: M3 — `harness.device` / `cpuThrottle` / `segments`, per-segment
  *    `jsP50`, and `config.fragmentProxy`. With `--segments`, `segments`
  *    holds only the named ones, so match them by name, not index.
+ * 5: S8 — the `boss`, `rings` and `glass` segments (appended), per-segment
+ *    `draws` ({ scene, probe }: the window's median draws without, and of,
+ *    the S6 reflection probe — the determinism check compares `scene`),
+ *    `spectacle` (what was staged, read at both ends of the window),
+ *    `verdicts.spectacle`, and `heap` under --heap.
  */
-const REPORT_VERSION = 4;
+const REPORT_VERSION = 5;
 const VIEWPORT = { width: 1280, height: 720 };
 const DEVICE_SCALE_FACTOR = 2;
 
@@ -143,6 +148,8 @@ function parseArgs(argv) {
     samples: false,
     /** O5: a directory for one Chrome trace per measured segment. */
     trace: null,
+    /** S8: a sampling heap profile over each measured segment. */
+    heap: false,
     quality: "high",
     abRef: null,
     soak: null,
@@ -238,6 +245,9 @@ function parseArgs(argv) {
         break;
       case "--trace":
         opts.trace = resolve(process.cwd(), next());
+        break;
+      case "--heap":
+        opts.heap = true;
         break;
       case "--soak":
         opts.soak = Number(next());
@@ -469,6 +479,30 @@ async function flySegment(page, seg, sampleMs, worldMs) {
       const weatherName = s.weather ?? s.defaultWeather;
       const weatherPinned = typeof ab.weather === "function";
       if (weatherPinned) ab.weather(weatherName);
+      // S8: stage the spectacle the segment measures — the boss raid and its
+      // flak on the pinned world clock, the record ghost the course run will
+      // play. `show` says whether the build has the hook (an --ab-ref from
+      // before S8 does not: no baseline) and whether staging took.
+      const show = { boss: null, course: null };
+      if (s.boss && typeof ab.qaBoss === "function") {
+        show.boss =
+          ab.qaBoss({
+            x: s.x,
+            y: s.y,
+            z: s.z,
+            yaw: s.yaw,
+            ahead: s.boss.ahead,
+            worldMs: s.worldMs,
+            crossMs: s.settleMs + s.sampleMs / 2,
+            corridor: s.boss.corridor,
+          }) !== null;
+      }
+      let courseId = null;
+      if (s.course && typeof ab.qaCourseGhost === "function") {
+        const g = ab.qaCourseGhost(s.course.theme, s.course.ghostSpeed);
+        show.course = g !== null && g.count > 0;
+        courseId = g?.course ?? null;
+      }
       ab.teleport(s.x, s.z, s.y, s.yaw);
       // O3: a HELD view re-teleports every frame instead of flying the
       // street — the furball's fake pilots weave ahead of a fixed point, so
@@ -531,16 +565,59 @@ async function flySegment(page, seg, sampleMs, worldMs) {
       // very window being measured.
       const planesNow = () => (ab.combat().targets?.length ?? 0) + 1;
       const planesBefore = planesNow();
+      // S8: what the window shows of the staged spectacle, and the furthest
+      // fake pilot from the plane (the LOD band) — at both ends, never per
+      // frame.
+      const wrapM = (d) => d - Math.round(d / 2000) * 2000;
+      const spectacle = () => {
+        const b = show.boss ? ab.boss() : null;
+        const c = show.course ? ab.course() : null;
+        let far = null;
+        if (s.pilots !== undefined) {
+          const me = ab.state().pos;
+          far = 0;
+          for (const t of ab.combat().targets ?? []) {
+            far = Math.max(
+              far,
+              Math.hypot(
+                wrapM(t.pos.x - me.x),
+                t.pos.y - me.y,
+                wrapM(t.pos.z - me.z),
+              ),
+            );
+          }
+        }
+        return {
+          boss: b && {
+            present: b.present,
+            armour: b.drawn.armour,
+            shells: b.drawn.shells,
+            foreign: b.foreignShells,
+          },
+          course: c && {
+            course: c.course,
+            expected: courseId,
+            next: c.next,
+            ghost: c.ghostDrawn,
+          },
+          pilotRange: far === null ? null : Math.round(far),
+        };
+      };
+      const spectacleBefore = spectacle();
       ab.perfReset();
       // O5 --trace: the measured window, for trace-spikes.mjs.
       performance.mark("abWindowStart");
       await waitMs(s.sampleMs);
       performance.mark("abWindowEnd");
       const planes = Math.min(planesBefore, planesNow());
+      const spectacleAfter = spectacle();
+      const draws = ab.drawSplit?.() ?? null;
       const glAtEnd = gl();
       const workloadStable = workload() === workloadBefore;
       holding = false;
       if (weatherPinned) ab.weather(null);
+      if (show.boss !== null) ab.qaBoss(null);
+      if (show.course !== null) ab.qaCourseGhost(s.course.theme, null);
       const diff = (a, b) =>
         a === null || b === null
           ? null
@@ -608,6 +685,13 @@ async function flySegment(page, seg, sampleMs, worldMs) {
         planes,
         // P2: the train moment a `trainsAt` segment slid to (null otherwise).
         trains,
+        // S8: the window's draws split by the reflection probe (null on an
+        // older build), and the staged spectacle at both ends of it.
+        draws,
+        spectacle:
+          s.boss || s.course
+            ? { staged: show, before: spectacleBefore, after: spectacleAfter }
+            : null,
       };
     },
     {
@@ -645,6 +729,7 @@ async function flySegment(page, seg, sampleMs, worldMs) {
  *  - `draws`   — median draw calls within the segment's own budget, if any.
  *  - `room`    — a segment that asks for fake pilots really had the full
  *                room in view for the whole window.
+ *  - `spectacle` — S8: see spectacleVerdict.
  */
 export function segmentVerdicts(name, stats) {
   const draws = BUDGETS.drawCalls[name];
@@ -660,7 +745,47 @@ export function segmentVerdicts(name, stats) {
       seg?.pilots === undefined
         ? null
         : typeof stats.planes === "number" && stats.planes >= seg.pilots + 1,
+    spectacle: spectacleVerdict(seg, stats),
   };
+}
+
+/**
+ * S8: how far a fake pilot may be from the plane. The plane LOD switches at
+ * 300 m from the CAMERA (−5 % hysteresis), which rides ~15–25 m behind the
+ * plane: under this every pilot is the full airframe all window.
+ */
+export const PILOT_RANGE_MAX_M = 255;
+
+/**
+ * S8: did the window show what the segment staged — at BOTH ends of it?
+ *  - boss: the zeppelin drawn, shells in the air (the shell draw never
+ *    toggles), no shell from a real raid, every pilot inside the LOD band;
+ *  - course: the client's run on the staged course, its ghost drawn.
+ * Null when the segment stages nothing, or the build has no hook (an
+ * --ab-ref from before S8: that arm is no baseline, not a failure).
+ */
+export function spectacleVerdict(seg, stats) {
+  if (!seg || (!seg.boss && !seg.course)) return null;
+  const sp = stats.spectacle;
+  if (!sp) return null;
+  if (seg.boss && sp.staged.boss === null) return null;
+  if (seg.course && sp.staged.course === null) return null;
+  if ((seg.boss && !sp.staged.boss) || (seg.course && !sp.staged.course)) {
+    return false;
+  }
+  return [sp.before, sp.after].every(
+    (e) =>
+      (!seg.boss ||
+        (e.boss?.present === true &&
+          e.boss.armour > 0 &&
+          e.boss.shells > 0 &&
+          e.boss.foreign === 0)) &&
+      (!seg.course ||
+        (e.course !== null &&
+          e.course.course === e.course.expected &&
+          e.course.ghost === true)) &&
+      (e.pilotRange === null || e.pilotRange <= PILOT_RANGE_MAX_M),
+  );
 }
 
 /**
@@ -700,6 +825,7 @@ function installGlProbe() {
 async function newProbedPage(browser) {
   const page = await openPage(browser);
   await page.addInitScript(installGlProbe);
+  if (heapProfile) await page.addInitScript(installFrameCounter);
   return page;
 }
 
@@ -718,6 +844,23 @@ function flyWarmupLap(page) {
         // weather (the downpour) and world state is paid for here.
         ab.pinWorld?.(s.worldMs);
         if (typeof ab.weather === "function") ab.weather(s.weather);
+        // S8: the staged boss and ghost too, so their first sight (the
+        // hull, the shells, the burst particles) is paid for here.
+        const boss = s.boss && typeof ab.qaBoss === "function";
+        if (boss) {
+          ab.qaBoss({
+            x: s.x,
+            y: s.y,
+            z: s.z,
+            yaw: s.yaw,
+            ahead: s.boss.ahead,
+            worldMs: s.worldMs,
+            crossMs: ms / 2,
+            corridor: s.boss.corridor,
+          });
+        }
+        const ghost = s.course && typeof ab.qaCourseGhost === "function";
+        if (ghost) ab.qaCourseGhost(s.course.theme, s.course.ghostSpeed);
         ab.teleport(s.x, s.z, s.y, s.yaw);
         await new Promise((resolve) => {
           const t0 = performance.now();
@@ -727,17 +870,21 @@ function flyWarmupLap(page) {
               : requestAnimationFrame(tick);
           requestAnimationFrame(tick);
         });
+        if (boss) ab.qaBoss(null);
+        if (ghost) ab.qaCourseGhost(s.course.theme, null);
       }
       if (typeof ab.weather === "function") ab.weather(null);
     },
     [
       // World times key on the segment's place in SEGMENTS, not in the
       // --segments selection, so a filtered run pins the same instants.
-      activeSegments().map(({ name, x, z, y, yaw, weather }) => ({
+      activeSegments().map(({ name, x, z, y, yaw, weather, boss, course }) => ({
         x,
         z,
         y,
         yaw,
+        boss,
+        course,
         weather: weather ?? DEFAULT_WEATHER,
         worldMs: warmupWorldMs(SEGMENTS.findIndex((s) => s.name === name)),
       })),
@@ -949,6 +1096,67 @@ cost: ${b.label} vs ${a.label} (GPU-independent proxies)`);
   }
 }
 
+/** S8 `--heap`: sample the page's heap over each measured segment. */
+let heapProfile = false;
+
+/**
+ * Start V8's sampling heap profiler on `page` (objects later collected
+ * INCLUDED, so a GC inside the segment hides nothing) and note the page's
+ * frame count. Covers the segment's settle and window: the whole segment is
+ * one page.evaluate, so the profiler cannot be started at the window's edge.
+ */
+async function startHeap(page) {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("HeapProfiler.enable");
+  await cdp.send("HeapProfiler.startSampling", {
+    samplingInterval: 256,
+    includeObjectsCollectedByMajorGC: true,
+    includeObjectsCollectedByMinorGC: true,
+  });
+  const frames = await page.evaluate(() => window.__abFrames ?? 0);
+  return { cdp, page, frames };
+}
+
+/** Stop; bytes allocated per frame over the segment, and the top sites. */
+async function stopHeap({ cdp, page, frames }) {
+  const frameCount =
+    (await page.evaluate(() => window.__abFrames ?? 0)) - frames;
+  const { profile } = await cdp.send("HeapProfiler.stopSampling");
+  await cdp.detach().catch(() => {});
+  const sites = new Map();
+  let total = 0;
+  const walk = (n) => {
+    if (n.selfSize > 0) {
+      total += n.selfSize;
+      const f = n.callFrame;
+      const file = f.url.replace(/^.*\//, "");
+      const key = `${f.functionName || "(anonymous)"} ${file}:${f.lineNumber + 1}:${f.columnNumber + 1}`;
+      sites.set(key, (sites.get(key) ?? 0) + n.selfSize);
+    }
+    for (const c of n.children) walk(c);
+  };
+  walk(profile.head);
+  const per = (b) => (frameCount > 0 ? Math.round(b / frameCount) : null);
+  return {
+    frames: frameCount,
+    bytesPerFrame: per(total),
+    top: [...sites]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([site, bytes]) => ({ site, bytesPerFrame: per(bytes) })),
+  };
+}
+
+/** --heap: a frame counter the profile is divided by (an init script). */
+function installFrameCounter() {
+  window.__abFrames = 0;
+  const tick = () => {
+    window.__abFrames++;
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
 /** O5 `--trace`: where traces go (null = off), and how many passes so far. */
 let traceDir = null;
 let tracePass = 0;
@@ -1039,16 +1247,23 @@ async function measure(browser, url, { trace = true } = {}) {
     const pilots =
       seg.pilots === undefined
         ? null
-        : await startPilots(port, seg.pilots, { x: seg.x, z: seg.z });
+        : await startPilots(
+            port,
+            seg.pilots,
+            { x: seg.x, z: seg.z },
+            { flight: seg.pilotFlight, fire: seg.pilotFire ?? true },
+          );
     try {
       if (pilots) await sleep(PILOT_SETTLE_MS);
       const recording = tracing ? await startTrace(page) : null;
+      const sampling = heapProfile ? await startHeap(page) : null;
       const flown = await flySegment(
         page,
         seg,
         SAMPLE_MS,
         segmentWorldMs(SEGMENTS.indexOf(seg)),
       );
+      if (sampling) flown.heap = await stopHeap(sampling);
       if (recording) flown.trace = await stopTrace(recording, seg.name);
       segments.push(flown);
     } finally {
@@ -1060,18 +1275,21 @@ async function measure(browser, url, { trace = true } = {}) {
     // tracers crossed the next view for tens of seconds and moved its draw
     // count by up to +7. Wait for the room and the sky to empty. An older
     // build has no `bullets` read-back and only waits for the room.
-    if (pilots) {
+    // S8: after the boss, the same for the flak's burst fire and smoke in
+    // the D1 particle pool (qaBoss(null) has already stopped the shells).
+    if (pilots || seg.boss) {
       const t0 = Date.now();
       try {
         await page.waitForFunction(
           () =>
             window.__ab.combat().targets.length === 0 &&
-            (window.__ab.combat().bullets ?? 0) === 0,
+            (window.__ab.combat().bullets ?? 0) === 0 &&
+            (window.__ab.impacts?.().live ?? 0) === 0,
           null,
           { timeout: 60_000, polling: 250 },
         );
         console.log(
-          `  ${seg.name}: room and sky empty after ${Date.now() - t0} ms`,
+          `  ${seg.name}: room, sky and particle pool empty after ${Date.now() - t0} ms`,
         );
       } catch {
         // Measure on rather than lose the run; the next segment's draws
@@ -1080,6 +1298,7 @@ async function measure(browser, url, { trace = true } = {}) {
           targets: window.__ab.combat().targets.length,
           remotes: window.__ab.net().remotes.length,
           bullets: window.__ab.combat().bullets ?? null,
+          particles: window.__ab.impacts?.().live ?? null,
         }));
         console.error(
           `!! ${seg.name}: the room or the sky never emptied: ${JSON.stringify(left)}`,
@@ -1311,7 +1530,7 @@ function printVerdicts(report) {
       `wall p99 <= ${BUDGETS.hitchRatio}x p50 · draw calls ${drawBudgets}`,
   );
   console.log(
-    "segment   60fps   p99/p50  hitch  draws  room    tier    weather",
+    "segment   60fps   p99/p50  hitch  draws  room    spect.  tier    weather",
   );
   for (const s of report.segments) {
     const v = s.verdicts ?? segmentVerdicts(s.name, s);
@@ -1326,7 +1545,53 @@ function printVerdicts(report) {
       v.room === null ? " n/a" : `${v.room ? "  ok" : "FAIL"} ${s.planes}`;
     console.log(
       `${s.name.padEnd(8)}  ${mark(v.fps60)}  ${ratio.padStart(8)}  ${mark(v.hitches)}  ` +
-        `${mark(v.draws)}  ${room.padEnd(8)}${String(s.tier ?? "—").padEnd(8)}${weather}`,
+        `${mark(v.draws)}  ${room.padEnd(8)}${mark(v.spectacle ?? null).padEnd(8)}${String(s.tier ?? "—").padEnd(8)}${weather}`,
+    );
+  }
+  // S8: the draws split by the reflection probe, and what was staged.
+  for (const s of report.segments) {
+    if (s.draws) {
+      console.log(
+        `${s.name.padEnd(8)}  draws ${s.drawCalls} = scene ${s.draws.scene} + probe ${s.draws.probe} (medians)`,
+      );
+    }
+  }
+  for (const s of report.segments) {
+    const sp = s.spectacle;
+    if (!sp) continue;
+    const end = (e) =>
+      [
+        e.boss &&
+          `boss ${e.boss.present ? "in the air" : "ABSENT"} (${e.boss.armour} armour boxes), ${e.boss.shells} shells, ${e.boss.foreign} server shells`,
+        e.course &&
+          `run on course ${e.course.course} (want ${e.course.expected}), next ring ${e.course.next}, ghost ${e.course.ghost ? "drawn" : "NOT drawn"}`,
+        e.pilotRange !== null && `furthest pilot ${e.pilotRange} m`,
+      ]
+        .filter(Boolean)
+        .join(", ");
+    const noHooks = Object.values(sp.staged).every((v) => v === null);
+    console.log(
+      noHooks
+        ? `${s.name}: this build cannot stage it (no S8 hooks)`
+        : `${s.name}: window start — ${end(sp.before)}; end — ${end(sp.after)}`,
+    );
+  }
+  for (const s of report.segments) {
+    if (s.heap) {
+      console.log(
+        `${s.name.padEnd(8)}  heap ${s.heap.bytesPerFrame ?? "n/a"} B/frame over ${s.heap.frames} frames — top: ${s.heap.top
+          .slice(0, 3)
+          .map((t) => `${t.site} ${t.bytesPerFrame} B`)
+          .join("; ")}`,
+      );
+    }
+  }
+  const unstaged = report.segments.filter(
+    (s) => (s.verdicts ?? segmentVerdicts(s.name, s)).spectacle === false,
+  );
+  for (const s of unstaged) {
+    console.error(
+      `!! ${s.name}: the staged spectacle did not hold through the window — it measured an emptier scene than it claims.`,
     );
   }
   const failed = report.segments.filter((s) => s.verdicts?.room === false);
@@ -1524,6 +1789,8 @@ export const UNPINNED_SEGMENTS = new Set([
   "street",
   // O3: fake pilots fly on THEIR wall clock (tools/perf/pilots.mjs).
   "furball",
+  // S8: the same pilots, under the boss.
+  "boss",
 ]);
 /** Segments whose draw count may legitimately move between passes. */
 export const DRAWS_FLOAT = new Set(["storm", "street", "furball"]);
@@ -1536,7 +1803,7 @@ export const DRAWS_FLOAT = new Set(["storm", "street", "furball"]);
  * wall clock. These apply only when EVERY pass of the arm reports its world
  * pinned; an older build (an --ab-ref from before O4) keeps the sets above.
  */
-export const UNPINNED_WORLD_PINNED = new Set(["furball"]);
+export const UNPINNED_WORLD_PINNED = new Set(["furball", "boss"]);
 export const DRAWS_FLOAT_WORLD_PINNED = new Set(["furball"]);
 
 /** Per-segment agreement between the runs of one invocation. */
@@ -1564,7 +1831,12 @@ export function determinism(runs) {
   const perSegment = flown.map((seg, i) => {
     const p50s = runs.map((r) => r.segments[i].p50);
     const gpuP50s = runs.map((r) => r.segments[i].gpuP50 ?? 0);
-    const draws = runs.map((r) => r.segments[i].drawCalls);
+    // S8: the scene's draws, without the reflection probe's (whose count
+    // depends on which cube face a frame drew — see FrameMeter.drawSplit);
+    // an older build has no split and is compared on its total.
+    const draws = runs.map(
+      (r) => r.segments[i].draws?.scene ?? r.segments[i].drawCalls,
+    );
     return {
       name: seg.name,
       p50s,
@@ -1648,16 +1920,22 @@ function printDelta(report, baseline) {
     // P2: an arm that could not fly the scene — an older build with no
     // two-train read-back, or one that died in the window (a build from
     // before H2 has no tunnel to glide through) — is not a baseline.
+    // S8: nor is one without the staging hooks (before S8), or one whose
+    // staged spectacle did not hold through the window.
     const unreproduced = (s) =>
       s.alive === false ||
       (SEGMENTS.find((g) => g.name === s.name)?.trainsAt !== undefined &&
-        typeof s.trains?.offsetMs !== "number");
+        typeof s.trains?.offsetMs !== "number") ||
+      (s.spectacle !== undefined &&
+        (s.verdicts ?? segmentVerdicts(s.name, s)).spectacle !== true &&
+        (SEGMENTS.find((g) => g.name === s.name)?.boss !== undefined ||
+          SEGMENTS.find((g) => g.name === s.name)?.course !== undefined));
     if (!base) {
       console.log(`${seg.name.padEnd(8)}  no baseline (segment absent)`);
     } else if (unreproduced(seg) || unreproduced(base)) {
       const which = unreproduced(seg) ? report.label : baseline.label;
       console.log(
-        `${seg.name.padEnd(8)}  no baseline (${which} could not fly this scene: dead, or no two-train moment)`,
+        `${seg.name.padEnd(8)}  no baseline (${which} could not fly this scene: dead, no two-train moment, or nothing staged)`,
       );
     } else if (
       seg.weather != null &&
@@ -1838,6 +2116,7 @@ async function main() {
   cpuThrottle = opts.cpuThrottle;
   segmentFilter = opts.segments === null ? null : new Set(opts.segments);
   traceDir = opts.trace;
+  heapProfile = opts.heap;
   if (opts.build) {
     console.log("building client…");
     await run("npm", ["run", "build", "-w", "client"], {
@@ -2016,6 +2295,15 @@ async function main() {
   // "report, don't gate": the baseline needs a few PRs of trust first, and
   // a check that fails on a busy laptop gets disabled and then ignored.
   if (opts.strict && report.determinism && !report.determinism.pass) {
+    process.exitCode = 1;
+  }
+  // S8: a segment that staged nothing (or lost it mid-window) is a broken
+  // measurement, not a slow one — always an exit code, --strict or not.
+  if (
+    report.segments.some(
+      (s) => (s.verdicts ?? segmentVerdicts(s.name, s)).spectacle === false,
+    )
+  ) {
     process.exitCode = 1;
   }
 }

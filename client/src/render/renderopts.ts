@@ -19,7 +19,11 @@
 //                         quality.ts; Mobile is M3's phone tier)
 //   ?fleet=0              P4: every plane draws its own meshes and tag
 //                         sprite instead of the batched plane fleet (fleet.ts)
+//   ?nanprobe[=count|paint]  O7: classify every HDR scene pixel as NaN/Inf
+//                         before bloom (nanprobe.ts); `paint` also paints
+//                         them magenta. QA only (default off: no pass at all)
 
+import type { NanProbeMode } from "./nanprobe";
 import { type QualitySetting, parseQualitySetting } from "./quality";
 import { defaultLimits } from "./resolution";
 
@@ -121,6 +125,12 @@ export interface RenderOptions {
    * the per-plane meshes and sprites: the rollback, and a paired A/B.
    */
   fleet: boolean;
+  /**
+   * O7: the NaN/Inf probe (render/nanprobe.ts). `off` ships — the pass is
+   * never built; `?nanprobe` (or `=count`) counts non-finite HDR pixels
+   * without touching the image, `=paint` also paints them magenta.
+   */
+  nanProbe: NanProbeMode;
 }
 
 export type PostMode = "fused" | "legacy";
@@ -137,6 +147,7 @@ export const DEFAULT_RENDER_OPTIONS: RenderOptions = {
   post: "fused",
   reflections: true,
   fleet: true,
+  nanProbe: "off",
 };
 
 const AA_MODES: readonly AaMode[] = ["legacy", "off", "msaa", "smaa"];
@@ -211,6 +222,12 @@ export function readRenderOptions(
 
   const fleet = params.get("fleet");
   if (fleet !== null) opts.fleet = fleet !== "0" && fleet !== "false";
+
+  const probe = params.get("nanprobe");
+  if (probe === "paint") opts.nanProbe = "paint";
+  else if (probe !== null && probe !== "0" && probe !== "false") {
+    opts.nanProbe = "count";
+  }
 
   return opts;
 }

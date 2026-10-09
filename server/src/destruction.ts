@@ -29,6 +29,10 @@ import {
   planCollapses,
 } from "@angels-bandits/common/city/collapse";
 import {
+  type CityIndex,
+  buildCityIndex,
+} from "@angels-bandits/common/collision";
+import {
   BULLET_DAMAGE,
   BULLET_RANGE,
   COLLAPSE_CAP,
@@ -66,6 +70,9 @@ export interface RoomCity {
    * COLLAPSE_TICK_LIMIT is reached). */
   readonly dirty: Set<number>;
   nextCollapseId: number;
+  /** The block index of `buildings` (valid under damage: footprints never
+   * change, and rubble's reach is already in it). */
+  readonly index: CityIndex;
 }
 
 export function createRoomCity(buildings: readonly Building[]): RoomCity {
@@ -77,6 +84,7 @@ export function createRoomCity(buildings: readonly Building[]): RoomCity {
   return {
     buildings: copy,
     damage,
+    index: buildCityIndex(copy),
     collapses,
     breakers: new Map(),
     collapseBy: new Map(),

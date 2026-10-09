@@ -383,10 +383,16 @@ export class GameSocket {
     });
   }
 
-  /** Report flying into a building or the ground; `t` (D3) is the server
-   * time the movers — and collapse debris — were posed at for the check. */
-  sendCrash(t: number | null = null): void {
-    this.send(t === null ? { type: "crash" } : { type: "crash", t });
+  /** Report flying into a building or the ground — or (D4) into the
+   * falling wreck `wreck` (its id), which the server may credit. `t` (D3) is
+   * the server time the movers — and collapse debris — were posed at for
+   * the check. */
+  sendCrash(wreck: number | null = null, t: number | null = null): void {
+    this.send({
+      type: "crash",
+      ...(wreck !== null && { wreck }),
+      ...(t !== null && { t }),
+    });
   }
 
   /** Claim the room's shared bot count. The server may clamp or silently

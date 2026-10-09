@@ -10,14 +10,15 @@ export class KillFeed {
 
   /** `killerName` null = un-credited crash ("☠ B"); a credited crash is
    * "A ✕ B" — not the shoot-down's "A ▸ B" (U2); a storm kill renders as the
-   * bolt's own line ("⚡ took down B") whoever got the credit. A collapse
-   * kill (D3) is "A ▼ B" (credited: A brought the building down) or
-   * "▼ crushed B". `self` marks
+   * bolt's own line ("⚡ took down B") whoever got the credit; a D4 wreck
+   * kill is "A 🔥 B" — A shot down the wreck B flew into; a D3 collapse
+   * kill is "A ▼ B" (A brought the building down) or "▼ crushed B". `self`
+   * marks
    * a line the local pilot is in (decided by id — names aren't unique). */
   add(
     killerName: string | null,
     victimName: string,
-    cause?: "shot" | "crash" | "storm" | "collapse",
+    cause?: "shot" | "crash" | "storm" | "wreck" | "collapse",
     self = false,
   ): void {
     const entry = document.createElement("div");
@@ -42,6 +43,12 @@ export class KillFeed {
         glyph.className = "crash";
         glyph.title = "crushed by a collapse they caused";
         glyph.textContent = " ▼ ";
+        entry.append(killer, glyph, victim);
+      } else if (cause === "wreck") {
+        const glyph = document.createElement("span");
+        glyph.className = "crash";
+        glyph.title = "flew into a wreck — credited to its shooter";
+        glyph.textContent = " 🔥 ";
         entry.append(killer, glyph, victim);
       } else if (cause === "crash") {
         const glyph = document.createElement("span");

@@ -8,10 +8,13 @@
 //    timed course run) that has stayed within 60 m of buildings (the L1
 //    nearBuildingProbe) for more than MISSILE_DWELL_MS; a bot is a subject
 //    only with a human near it — strikes are for the fight someone watches;
-//  - each AREA (a 250 m cell) fires at most every 20–40 s, the first one
-//    4–12 s after it goes active, stretched as the city nears DESTROY_CAP;
-//  - city-wide, at most MAX_IN_FLIGHT missiles in the air and a gap between
-//    launches;
+//  - each AREA (a 250 m cell) fires every 4–8 s (C2 constant chaos; X1
+//    shipped 20–40 s), the first one 1–4 s after it goes active;
+//  - city-wide, at most maxInFlight missiles in the air and a gap between
+//    launches (meteors and bombs the C2 chaos director injects ride the same
+//    settle/landing path but never count against either);
+//  - C2: the room's DangerBudget (server/src/danger.ts) must allow it — at
+//    most two missiles near one plane per 30 s, among four lethal events;
 //  - no target near a respawn from the last 5 s, and no plane takes missile
 //    damage within 5 s of (re)spawning — whichever came first;
 //  - the target itself is never a plane (common/src/strike.ts picker), and
@@ -19,18 +22,19 @@
 
 import { type Building, chunkBuilding } from "@angels-bandits/common/city";
 import type { CityIndex } from "@angels-bandits/common/collision";
-import { DESTROY_CAP, WORLD_SIZE } from "@angels-bandits/common/constants";
+import { DESTROY_CAP_D2, WORLD_SIZE } from "@angels-bandits/common/constants";
 import {
-  MISSILE_CHUNK_DAMAGE,
-  MISSILE_CHUNK_RADIUS,
   type MissilePlane,
   type MissileStrike,
+  missileChunkDamage,
   missileDamage,
+  missileFlightMs,
   missileImpactAt,
   pickMissileTarget,
   planMissile,
 } from "@angels-bandits/common/strike";
 import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
+import type { DangerBudget } from "./danger";
 import type { RoomCity } from "./destruction";
 
 export interface DirectorTuning {
@@ -54,7 +58,24 @@ export interface DirectorTuning {
   respawnQuietMs: number;
 }
 
+/** C2 constant chaos: roughly one strike every 4–8 s per active area. */
 export const DEFAULT_TUNING: DirectorTuning = {
+  dwellMs: 3000,
+  firstMinMs: 1000,
+  firstMaxMs: 4000,
+  areaMinMs: 4000,
+  areaMaxMs: 8000,
+  areaIdleMs: 30_000,
+  maxInFlight: 8,
+  minGapMs: 750,
+  botHumanRangeM: 400,
+  respawnClearM: 150,
+  respawnQuietMs: 5000,
+};
+
+/** X1 as it shipped, before C2 (AB_CHAOS=0 restores it): one per area every
+ * 20–40 s, three in the air, 4 s apart, slowing as the city erodes. */
+export const X1_TUNING: DirectorTuning & { erosion: true } = {
   dwellMs: 3000,
   firstMinMs: 4000,
   firstMaxMs: 12_000,
@@ -66,6 +87,7 @@ export const DEFAULT_TUNING: DirectorTuning = {
   botHumanRangeM: 400,
   respawnClearM: 150,
   respawnQuietMs: 5000,
+  erosion: true,
 };
 
 /** AB_MISSILE_FAST=1 (tests and QA only): strikes come quickly. */
@@ -74,9 +96,9 @@ export const FAST_TUNING: DirectorTuning = {
   dwellMs: 1000,
   firstMinMs: 0,
   firstMaxMs: 500,
-  areaMinMs: 6000,
-  areaMaxMs: 8000,
-  minGapMs: 1000,
+  areaMinMs: 2000,
+  areaMaxMs: 3000,
+  minGapMs: 500,
 };
 
 /** Area cells per world side (250 m cells). */
@@ -86,8 +108,17 @@ const areaOf = (p: Vec3): number =>
   (Math.floor(p.x / AREA_M) % AREA_CELLS) * AREA_CELLS +
   (Math.floor(p.z / AREA_M) % AREA_CELLS);
 
-/** No launches once the destroyed share reaches this part of DESTROY_CAP. */
+/** X1_TUNING only: no launches once the destroyed share reaches this part
+ * of D2's DESTROY_CAP, and gaps stretched on the way there. C2 drops it — the
+ * room's gone-share hold (CityDamage.hold) is the brake, so strikes keep
+ * coming and simply break nothing more. */
 const EROSION_STOP = 0.8;
+const erodes = (t: DirectorTuning): boolean =>
+  (t as { erosion?: boolean }).erosion === true;
+
+/** Strikes the director launched itself (meteors and bombs are injected). */
+const launched = (m: MissileStrike): boolean =>
+  m.kind === "cruise" || m.kind === "artillery";
 
 /** One plane as the director sees it this tick. */
 export interface DirectorPlane extends MissilePlane {
@@ -96,6 +127,8 @@ export interface DirectorPlane extends MissilePlane {
   /** May draw fire: not on a timed course run (the caller already left
    * out pending, away and dead planes). */
   eligible: boolean;
+  /** Spawn-protected right now (the danger budget leaves it alone). */
+  prot?: boolean;
 }
 
 /** The room's world as the director reads it. */
@@ -108,6 +141,8 @@ export interface DirectorWorld {
   buildings: readonly Building[];
   /** Destroyed chunks / all chunks in the room's city. */
   destroyedShare: number;
+  /** C2: the room's danger budget (absent: none — X1 as it shipped). */
+  budget?: DangerBudget;
 }
 
 interface Area {
@@ -131,6 +166,31 @@ export class MissileDirector {
   /** Missiles in the air, oldest first (the welcome's replay). */
   missiles(): readonly MissileStrike[] {
     return this.inFlight;
+  }
+
+  /** C2: a fresh id from the room's ONE strike id space — meteors and bombs
+   * share it, so a client's missile map never confuses two strikes. */
+  allocId(): number {
+    return this.nextId++;
+  }
+
+  /** C2: a meteor or bomb the chaos director planned (its id from
+   * allocId): it lands through settle() like any missile, but never counts
+   * against maxInFlight or the launch gap. */
+  inject(strike: MissileStrike): void {
+    this.inFlight.push(strike);
+  }
+
+  /** C2: drop strikes that will no longer land (a downed bomber's bombs, a
+   * bomb called off at its drop). Returns the ids actually dropped. */
+  cancel(ids: ReadonlySet<number>): number[] {
+    const out: number[] = [];
+    this.inFlight = this.inFlight.filter((m) => {
+      if (!ids.has(m.id)) return true;
+      out.push(m.id);
+      return false;
+    });
+    return out;
   }
 
   /** A plane (re)spawned or came back at `pos`: its area stays quiet and it
@@ -206,9 +266,13 @@ export class MissileDirector {
         active.push({ area: key, subject: p });
     }
 
-    if (this.inFlight.length >= t.maxInFlight) return null;
+    let flying = 0;
+    for (const m of this.inFlight) if (launched(m)) flying++;
+    if (flying >= t.maxInFlight) return null;
     if (now - this.lastLaunch < t.minGapMs) return null;
-    const erosion = world.destroyedShare / (DESTROY_CAP * EROSION_STOP);
+    const erosion = erodes(t)
+      ? world.destroyedShare / (DESTROY_CAP_D2 * EROSION_STOP)
+      : 0;
     if (erosion >= 1) return null;
 
     for (const { area: key, subject } of active) {
@@ -253,7 +317,7 @@ export class MissileDirector {
     const out: { id: string; damage: number }[] = [];
     for (const p of planes) {
       if (this.freshlySpawned(p.id, now)) continue;
-      const damage = missileDamage(wrapDistance(p.pos, m.to));
+      const damage = missileDamage(wrapDistance(p.pos, m.to), m.kind);
       if (damage > 0) out.push({ id: p.id, damage });
     }
     return out;
@@ -272,6 +336,11 @@ export class MissileDirector {
         return null;
       }
     }
+    // C2: the danger budget, asked before the (costlier) path sweep.
+    const lead = missileFlightMs("cruise");
+    if (world.budget && !world.budget.allows("missile", [target.to], lead, now, planes)) {
+      return null;
+    }
     const strike = planMissile(
       this.rand,
       this.nextId,
@@ -279,7 +348,10 @@ export class MissileDirector {
       now,
       world.buildings,
     );
-    if (strike) this.nextId++;
+    if (strike) {
+      this.nextId++;
+      world.budget?.charge("missile", [strike.to], lead, now, planes);
+    }
     return strike;
   }
 }
@@ -288,11 +360,8 @@ export class MissileDirector {
  * (D2's damage API, so D3 collapses ride the same destroyed set). Returns
  * the chunks destroyed. Call once per settled missile. */
 export function applyMissileImpact(city: RoomCity, m: MissileStrike): number[] {
-  const out = city.damage.damageAt(
-    m.to,
-    MISSILE_CHUNK_RADIUS,
-    MISSILE_CHUNK_DAMAGE,
-  );
+  const { radius, damage } = missileChunkDamage(m.kind);
+  const out = city.damage.damageAt(m.to, radius, damage);
   // D3: a collapse a missile sets off is the environment's — nobody's.
   for (const id of out) city.breakers.set(chunkBuilding(id), null);
   return out;

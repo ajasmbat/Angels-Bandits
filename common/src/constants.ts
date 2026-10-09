@@ -616,9 +616,17 @@ export const CHUNK_BAY = 20;
 export const CHUNK_FLOOR = 12;
 /** Hit points of one chunk: 9 rounds of BULLET_DAMAGE, ~0.9 s on target. */
 export const CHUNK_HP = 60;
-/** Once this share of the city's chunks is gone nothing more breaks (no
- * regeneration until D5, so the always-on bot arena must not rot away). */
-export const DESTROY_CAP = 0.25;
+/** Once this share of the city's chunks is broken nothing more breaks (C2:
+ * 0.18 — with the gone-share hold and the fast rebuild, the city stays well
+ * under ~20 % gone). */
+export const DESTROY_CAP = 0.18;
+/** D2's cap before C2 (AB_CHAOS=0 restores it via CityDamage.setCap). */
+export const DESTROY_CAP_D2 = 0.25;
+/** C2 backstop: while (broken + fallen) / chunks is at or over this, the
+ * room's CityDamage holds every chunk at 1 HP (CityDamage.hold) — impacts
+ * still land and look the same, they just break nothing more until the
+ * rebuilds bring the share back under. */
+export const GONE_HOLD_SHARE = 0.18;
 /** A plane's death blows a hole: chunks within this radius of the death site
  * (point-to-box) take DEATH_BLAST_DAMAGE, falling off linearly to 0. */
 export const DEATH_BLAST_RADIUS = 14;

@@ -22,6 +22,11 @@ import {
 
 /** Launch → impact, ms. The broadcast leads the impact by all of it. */
 export const MISSILE_FLIGHT_MS = 5000;
+/** C2: a meteor's streak from high over the city to its impact, ms. */
+export const METEOR_FLIGHT_MS = 4500;
+/** C2: a bomb's fall from its bomber to the city, ms. Its run (and so every
+ * bomb in it) is announced long before the drop. */
+export const BOMB_FALL_MS = 2600;
 /** The rising whistle starts this long before impact, ms. */
 export const MISSILE_WHISTLE_MS = 2000;
 /** The fairness floor: no missile is ever announced later than this before
@@ -50,8 +55,45 @@ const LAUNCH_MAX_M = 900;
  * are UUIDs and bots `bot:<room>:<n>`, so this can never name a plane. */
 export const MISSILE_SHOOTER_ID = "@missile";
 
-/** A cruise missile skims in low; an artillery round lobs in from on high. */
-export type MissileKind = "cruise" | "artillery";
+/** A cruise missile skims in low; an artillery round lobs in from on high.
+ * C2 adds two more things that fall on the city along the same pipeline: a
+ * meteor (a straight fiery streak from ~900 m up) and a bomb (dropped by a
+ * bomber run, common/src/chaos.ts). */
+export type MissileKind = "cruise" | "artillery" | "meteor" | "bomb";
+
+/** Launch (or drop) → impact for each kind, ms. Every one of them is at
+ * least MISSILE_TELEGRAPH_MIN_MS. */
+export function missileFlightMs(kind: MissileKind): number {
+  return kind === "meteor"
+    ? METEOR_FLIGHT_MS
+    : kind === "bomb"
+      ? BOMB_FALL_MS
+      : MISSILE_FLIGHT_MS;
+}
+
+/** A meteor hits harder and wider than a missile. */
+export const METEOR_BLAST_RADIUS = 55;
+export const METEOR_LETHAL_RADIUS = 14;
+export const METEOR_CHUNK_RADIUS = 16;
+export const METEOR_CHUNK_DAMAGE = 360;
+/** A bomb is lighter than a missile: one floor's worth of chunks. */
+export const BOMB_CHUNK_RADIUS = 10;
+export const BOMB_CHUNK_DAMAGE = 240;
+
+/** D2 chunk damage an impact of `kind` deals: radius (point-to-box), m,
+ * and amount. */
+export function missileChunkDamage(kind: MissileKind): {
+  radius: number;
+  damage: number;
+} {
+  if (kind === "meteor") {
+    return { radius: METEOR_CHUNK_RADIUS, damage: METEOR_CHUNK_DAMAGE };
+  }
+  if (kind === "bomb") {
+    return { radius: BOMB_CHUNK_RADIUS, damage: BOMB_CHUNK_DAMAGE };
+  }
+  return { radius: MISSILE_CHUNK_RADIUS, damage: MISSILE_CHUNK_DAMAGE };
+}
 
 /** One strike, exactly as broadcast. Positions are canonical and already on
  * the wire's 0.1 m grid, so the server and every client hold equal values. */
@@ -65,15 +107,20 @@ export interface MissileStrike {
 }
 
 /** Arc height over the straight launch → target line, by kind, m. */
-const APEX: Record<MissileKind, number> = { cruise: 45, artillery: 480 };
+const APEX: Record<MissileKind, number> = {
+  cruise: 45,
+  artillery: 480,
+  meteor: 0,
+  bomb: 0,
+};
 
 /** Server time the missile lands, ms. */
 export const missileImpactAt = (s: MissileStrike): number =>
-  s.t0 + MISSILE_FLIGHT_MS;
+  s.t0 + missileFlightMs(s.kind);
 
-/** When the whistle starts, ms. */
+/** When the whistle starts, ms (never before launch). */
 export const missileWhistleAt = (s: MissileStrike): number =>
-  missileImpactAt(s) - MISSILE_WHISTLE_MS;
+  missileImpactAt(s) - Math.min(MISSILE_WHISTLE_MS, missileFlightMs(s.kind));
 
 const wrap = wrapCoord;
 
@@ -84,7 +131,7 @@ const wrap = wrapCoord;
  * `out` (allocation-free per frame) and returns it.
  */
 export function missilePosAt(s: MissileStrike, t: number, out: Vec3): Vec3 {
-  const u = Math.min(1, Math.max(0, (t - s.t0) / MISSILE_FLIGHT_MS));
+  const u = Math.min(1, Math.max(0, (t - s.t0) / missileFlightMs(s.kind)));
   if (u <= 0) {
     out.x = s.from.x;
     out.y = s.from.y;
@@ -99,6 +146,15 @@ export function missilePosAt(s: MissileStrike, t: number, out: Vec3): Vec3 {
   }
   const dx = wrapDeltaAxis(s.from.x, s.to.x);
   const dz = wrapDeltaAxis(s.from.z, s.to.z);
+  if (s.kind === "bomb") {
+    // A dropped bomb: it keeps (most of) its bomber's way, slowing as drag
+    // takes it, and falls faster and faster — u(2 − u) across, u² down.
+    const h = u * (2 - u);
+    out.x = wrap(s.from.x + dx * h);
+    out.z = wrap(s.from.z + dz * h);
+    out.y = s.from.y + (s.to.y - s.from.y) * u * u;
+    return out;
+  }
   out.x = wrap(s.from.x + dx * u);
   out.z = wrap(s.from.z + dz * u);
   out.y = s.from.y + (s.to.y - s.from.y) * u + 4 * APEX[s.kind] * u * (1 - u);
@@ -106,16 +162,18 @@ export function missilePosAt(s: MissileStrike, t: number, out: Vec3): Vec3 {
 }
 
 /** Damage a plane `d` meters from the impact takes: lethal (MAX_HP) inside
- * MISSILE_LETHAL_RADIUS, then MISSILE_EDGE_DAMAGE falling linearly to 0 at
- * MISSILE_BLAST_RADIUS. */
-export function missileDamage(d: number): number {
+ * the lethal radius, then MISSILE_EDGE_DAMAGE falling linearly to 0 at the
+ * blast radius — MISSILE_* for missiles and bombs, METEOR_* for a meteor. */
+export function missileDamage(
+  d: number,
+  kind: MissileKind = "cruise",
+): number {
   if (!(d >= 0)) return 0;
-  if (d <= MISSILE_LETHAL_RADIUS) return MAX_HP;
-  if (d >= MISSILE_BLAST_RADIUS) return 0;
-  return (
-    (MISSILE_EDGE_DAMAGE * (MISSILE_BLAST_RADIUS - d)) /
-    (MISSILE_BLAST_RADIUS - MISSILE_LETHAL_RADIUS)
-  );
+  const lethal = kind === "meteor" ? METEOR_LETHAL_RADIUS : MISSILE_LETHAL_RADIUS;
+  const blast = kind === "meteor" ? METEOR_BLAST_RADIUS : MISSILE_BLAST_RADIUS;
+  if (d <= lethal) return MAX_HP;
+  if (d >= blast) return 0;
+  return (MISSILE_EDGE_DAMAGE * (blast - d)) / (blast - lethal);
 }
 
 /** A plane as the target picker sees it: position and velocity (m/s). */
@@ -124,9 +182,13 @@ export interface MissilePlane {
   vel: Vec3;
 }
 
-/** Where `p` will be when a missile launched now lands, flying straight. */
-export function predictedPos(p: MissilePlane): Vec3 {
-  const s = MISSILE_FLIGHT_MS / 1000;
+/** Where `p` will be when a strike launched now lands (`flightMs` on —
+ * a missile's by default), flying straight. */
+export function predictedPos(
+  p: MissilePlane,
+  flightMs: number = MISSILE_FLIGHT_MS,
+): Vec3 {
+  const s = flightMs / 1000;
   return {
     x: wrap(p.pos.x + p.vel.x * s),
     y: Math.max(0, p.pos.y + p.vel.y * s),
@@ -279,7 +341,7 @@ export function missilePathClear(
   const b = { x: 0, y: 0, z: 0 };
   missilePosAt(s, s.t0, a);
   for (let i = 1; i <= SWEEP_STEPS; i++) {
-    missilePosAt(s, s.t0 + (MISSILE_FLIGHT_MS * i) / SWEEP_STEPS, b);
+    missilePosAt(s, s.t0 + (missileFlightMs(s.kind) * i) / SWEEP_STEPS, b);
     const left = wrapDistance(b, s.to);
     if (left < SWEEP_STANDOFF_M) {
       // Shorten the last segment to stop short of the surface.
@@ -340,11 +402,19 @@ export function planMissile(
 
 // --- Wire --------------------------------------------------------------------
 
-/** A strike on the wire: [id, kind (0 cruise, 1 artillery), from ×10,
- * to ×10, t0] — integers only, exactly reconstructible. */
+/** Wire kind codes, in order. */
+const WIRE_KINDS: readonly MissileKind[] = [
+  "cruise",
+  "artillery",
+  "meteor",
+  "bomb",
+];
+
+/** A strike on the wire: [id, kind (0 cruise, 1 artillery, 2 meteor,
+ * 3 bomb), from ×10, to ×10, t0] — integers only, exactly reconstructible. */
 export type WireMissile = [
   id: number,
-  kind: 0 | 1,
+  kind: 0 | 1 | 2 | 3,
   fx: number,
   fy: number,
   fz: number,
@@ -358,7 +428,7 @@ export function encodeMissile(s: MissileStrike): WireMissile {
   const i = (v: number) => Math.round(v * 10);
   return [
     s.id,
-    s.kind === "cruise" ? 0 : 1,
+    WIRE_KINDS.indexOf(s.kind) as 0 | 1 | 2 | 3,
     i(s.from.x),
     i(s.from.y),
     i(s.from.z),
@@ -369,16 +439,19 @@ export function encodeMissile(s: MissileStrike): WireMissile {
   ];
 }
 
-/** Inverse of encodeMissile; null for anything malformed. */
+/** Inverse of encodeMissile; null for anything malformed — an unknown
+ * kind included (its flight time, so its impact instant, would be a guess). */
 export function decodeMissile(w: unknown): MissileStrike | null {
   if (!Array.isArray(w) || w.length !== 9) return null;
   if (!w.every((v) => typeof v === "number" && Number.isFinite(v))) {
     return null;
   }
-  const [id, kind, fx, fy, fz, tx, ty, tz, t0] = w as number[];
+  const [id, code, fx, fy, fz, tx, ty, tz, t0] = w as number[];
+  const kind = WIRE_KINDS[code as number];
+  if (kind === undefined) return null;
   return {
     id: id as number,
-    kind: kind === 0 ? "cruise" : "artillery",
+    kind,
     from: {
       x: (fx as number) / 10,
       y: (fy as number) / 10,

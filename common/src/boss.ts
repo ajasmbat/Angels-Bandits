@@ -1,5 +1,6 @@
-// S4 sky boss — the shared, pure half. Every ~15 minutes the SERVER sends an
-// armoured war zeppelin over a room (server/src/boss.ts): it broadcasts one
+// S4 sky boss — the shared, pure half. The SERVER keeps an armoured war
+// zeppelin over a room whenever a human is in it (C2: the next raid comes a
+// minute or so after the last one ends or goes down) (server/src/boss.ts): it broadcasts one
 // raid (id, start time, orbit centre, entry angle), and from there the
 // zeppelin's pose is a pure function of (raid, synced clock) — the L2 movers'
 // trick — so every client draws, collides with and shoots at the same hull at
@@ -275,27 +276,44 @@ export interface BossTuning {
   /** First raid this long after a human is in the room, ms. */
   firstMinMs: number;
   firstMaxMs: number;
-  /** Start to start, ms, ± jitter. */
+  /** C2: the gap from the previous raid's END (its run-out done, or its last
+   * falling section down) to the next raid's start, ms, ± jitter. */
   periodMs: number;
   periodJitterMs: number;
   orbitMs: number;
   hpScale: number;
 }
 
+/** C2 constant chaos: the first raid ~30 s after a human arrives, then the
+ * next one 60–90 s after each raid ends — on station 15 min, so the
+ * zeppelin is up > 90 % of a session nobody shoots it down in. */
 export const BOSS_TUNING: BossTuning = {
+  firstMinMs: 25_000,
+  firstMaxMs: 35_000,
+  periodMs: 75_000,
+  periodJitterMs: 15_000,
+  orbitMs: 900_000,
+  hpScale: 1,
+};
+
+/** The S4 schedule before C2 (AB_CHAOS=0 restores it): first raid 4–6 min
+ * after a human arrives, then every 15 min ± 1.5 START to start, 5 min on
+ * station. `periodFromStart` marks the old start-to-start rule. */
+export const BOSS_TUNING_S4: BossTuning & { periodFromStart: true } = {
   firstMinMs: 240_000,
   firstMaxMs: 360_000,
   periodMs: 900_000,
   periodJitterMs: 90_000,
   orbitMs: BOSS_ORBIT_MS,
   hpScale: 1,
+  periodFromStart: true,
 };
 
 /** AB_BOSS_FAST=1 (tests and QA only): a small boss, right away. */
 export const BOSS_FAST_TUNING: BossTuning = {
   firstMinMs: 2000,
   firstMaxMs: 3000,
-  periodMs: 120_000,
+  periodMs: 20_000,
   periodJitterMs: 0,
   orbitMs: 90_000,
   hpScale: 0.1,
@@ -303,16 +321,17 @@ export const BOSS_FAST_TUNING: BossTuning = {
 
 /**
  * When the next raid starts: the first one firstMin..firstMax after a human
- * arrived (`humanSince`), every later one periodMs ± periodJitterMs after the
- * previous START. Pure in its inputs and `rand`; whole ms.
+ * arrived (`humanSince`), every later one periodMs ± periodJitterMs after
+ * `prev` — the previous raid's END (C2), or its START under a tuning with
+ * `periodFromStart` (the S4 rule). Pure in its inputs and `rand`; whole ms.
  */
 export function nextRaidAt(
-  prevStart: number | null,
+  prev: number | null,
   humanSince: number,
   rand: () => number,
   tuning: BossTuning = BOSS_TUNING,
 ): number {
-  if (prevStart === null) {
+  if (prev === null) {
     return Math.round(
       humanSince +
         tuning.firstMinMs +
@@ -320,9 +339,13 @@ export function nextRaidAt(
     );
   }
   return Math.round(
-    prevStart + tuning.periodMs + (rand() * 2 - 1) * tuning.periodJitterMs,
+    prev + tuning.periodMs + (rand() * 2 - 1) * tuning.periodJitterMs,
   );
 }
+
+/** Does `tuning` space raids start to start (S4) rather than end to start? */
+export const periodFromStart = (tuning: BossTuning): boolean =>
+  (tuning as { periodFromStart?: boolean }).periodFromStart === true;
 
 /** The raid itself: a seeded centre and entry angle, quantised to the wire. */
 export function planRaid(

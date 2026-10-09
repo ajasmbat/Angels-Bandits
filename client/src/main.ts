@@ -34,6 +34,7 @@ import {
 import { natureFor } from "@angels-bandits/common/city/nature";
 import { setNewsTarget } from "@angels-bandits/common/city/newsheli";
 import { bridgeSpans } from "@angels-bandits/common/city/river";
+import { TUNNELS } from "@angels-bandits/common/city/tunnels";
 import { buildNatureIndex } from "@angels-bandits/common/collision";
 import {
   AWAY_MIN_MS,
@@ -346,6 +347,7 @@ import { Tracers } from "./render/tracers";
 import { Traffic } from "./render/traffic";
 import { PlaneTrails } from "./render/trails";
 import { TrainRenderer } from "./render/train";
+import { TunnelRenderer } from "./render/tunnels";
 import { WeatherClock, setWeatherUniform } from "./render/weather";
 import { buildingSeed, isWindowLit } from "./render/window-pattern";
 import { nearestImage } from "./render/wrapPlacement";
@@ -844,6 +846,7 @@ const cornerWorld: CornerWorld = {
     ...cityHoles(city.cityBuildings),
     ...bridgeSpans(),
   ]),
+  tunnels: true, // U4: a bore's corridor never brakes
 };
 // H2 hole assist: the silent centering nudge reads every hole (and river
 // underpass) and the same city the crash check does. State is per frame.
@@ -862,6 +865,7 @@ const ASSIST_MAX_ROLL = Math.PI / 6;
 // last-moment pose correction that threads a hole when a crash is imminent.
 const saveWorld: SaveWorld = {
   spans: assistWorld.spans,
+  tunnels: TUNNELS, // U4: portals, mouths and bore walls
   buildings: city.cityBuildings,
   index: city.cityIndex,
   nature: natureIndex,
@@ -875,6 +879,10 @@ scene.add(natureRenderer.group);
 // this is drawing only — updated on the same latched clock as the movers.
 const river = new RiverRenderer(welcome.seed, city.cityBuildings);
 scene.add(river.group);
+// U4 tunnels: the concrete shell and its light fixtures (two draws). Solid
+// through hitsGround — drawing only, snapped under the camera each frame.
+const tunnels = new TunnelRenderer();
+scene.add(tunnels.group);
 // L9 moving nature: lit spray from the plaza ponds (pure ballistic function
 // of the synced clock; one Points, drawn only near a pond). Tree sway lives
 // in natureRenderer's crown shader; bird scatter in birds.update below.
@@ -2153,6 +2161,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   train.setQuality(tier); // T2: platform people, sparks, light range
   courseGhost.setQuality(tier); // S3: MOBILE keeps the rings, drops the ghost
   atmosphere.setQuality(tier); // S5
+  tunnels.setQuality(tier); // U4: MOBILE drops the fixtures
   reflections.setQuality(tier); // S6: faces per frame; Mobile off
   applyPostQuality();
   resLimits = limitsFor(tier);
@@ -4111,6 +4120,7 @@ const frame = (now: number): void => {
   constructionSparks.update(chase.position, renderMs ?? now, microK);
   ground.update(chase.position);
   river.update(chase.position, renderMs, now); // L11
+  tunnels.update(chase.position); // U4
   skyDome.update(chase.position);
   airliners.update(renderMs);
   // Wounded smoke: own plane from server-said self HP, every remote (human

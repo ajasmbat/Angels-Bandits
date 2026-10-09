@@ -172,6 +172,11 @@ export interface QualityProfile {
   heatShimmer: boolean;
   /** S5 lens flares and streaks on the brightest lights (a FinalPass uniform). */
   glare: boolean;
+  /** U4 tunnel light fixtures (ceiling strips, guide lights, portal kerb
+   * lights, river mouth frames): one draw. The concrete shell is solid and
+   * identical on every tier, and carries its own baked light, so a tunnel
+   * stays lit without them. */
+  tunnelFixtures: boolean;
   /** S6 glass reflections: cube-probe faces re-rendered per frame (at most
    * 1; a full refresh every 6 / share frames). 0 = off: no probe renders,
    * and glass, puddles and the river keep their faked reflections. */
@@ -220,6 +225,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     lightShafts: true,
     heatShimmer: true,
     glare: true,
+    tunnelFixtures: true,
     reflections: 1,
   },
   medium: {
@@ -263,6 +269,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     lightShafts: true,
     heatShimmer: true,
     glare: true,
+    tunnelFixtures: true,
     reflections: 0.5,
   },
   low: {
@@ -306,6 +313,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     lightShafts: true,
     heatShimmer: true,
     glare: true,
+    tunnelFixtures: true,
     reflections: 0.34,
   },
   mobile: {
@@ -349,6 +357,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     lightShafts: false,
     heatShimmer: false,
     glare: false,
+    tunnelFixtures: false,
     reflections: 0,
   },
 };
@@ -600,6 +609,22 @@ export const FEATURE_TIERS: readonly {
     low: "full",
     mobile: "full",
     note: "solid",
+  },
+  {
+    feature: "U4 tunnels — the concrete shell (walls, ramps, lintels)",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "solid: the crash check, the camera arm and the bots collide with it; baked light",
+  },
+  {
+    feature: "U4 tunnels — light fixtures (strips, guide and portal lights)",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "off",
+    note: "one draw; dressing only — the shell keeps its baked light",
   },
   {
     feature: "L12 sky cycle",

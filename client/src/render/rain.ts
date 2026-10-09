@@ -22,6 +22,7 @@
 // paint over it.
 
 import { mulberry32 } from "@angels-bandits/common/city";
+import { underCover } from "@angels-bandits/common/city/tunnels";
 import { CLOUD_BASE, WORLD_SIZE } from "@angels-bandits/common/constants";
 import type { Weather } from "@angels-bandits/common/weather";
 import { type Wind, windAt } from "@angels-bandits/common/wind";
@@ -234,7 +235,9 @@ export class Rain {
     // No rain above the deck: it falls FROM the cloud base.
     const altK =
       1 - Math.min(1, Math.max(0, (camera.y - (CLOUD_BASE - 40)) / 40));
-    const k = wx.rain * altK;
+    // U4: and none under a tunnel's ceiling (an open portal cut still gets
+    // it — that is sky).
+    const k = underCover(camera) ? 0 : wx.rain * altK;
     this.heard = k;
     const count = Math.round(MAX_DROPS * Math.min(1, k / 0.9) * this.density);
     if (count === 0 || syncedMs === null) {

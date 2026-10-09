@@ -146,7 +146,9 @@ function px(value: string, vp: Viewport, vars: Map<string, string>): number {
     "safe-area-inset-left": vp.safe[3],
   };
   const tokens =
-    value.match(/\d*\.?\d+(px|vw|vh)?|[a-z-]+\(|[a-z][\w-]*|--[\w-]+|[-+*/(),]|\S/g) ?? [];
+    value.match(
+      /\d*\.?\d+(px|vw|vh)?|[a-z-]+\(|[a-z][\w-]*|--[\w-]+|[-+*/(),]|\S/g,
+    ) ?? [];
   let k = 0;
   const peek = () => tokens[k];
   const next = () => {

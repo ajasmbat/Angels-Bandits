@@ -1453,18 +1453,21 @@ Bytes allocated per frame, ruins scene, median of five runs of 3 000 frames:
 
 | entry point | before D6 | D6 |
 | --- | ---: | ---: |
-| `city.update` (damaged mesh) — intact city for reference: ~230 | 200 | ~160 |
-| `city.updateDebris` | 7 587 | ~605 |
-| `dust.update` | 3 014 | ~270 |
-| `dustHaze` | 500 | ~48 |
-| collapse shake | 198 | ~99 |
-| crash check (`touchesSolid`, mostly trains/cranes/river) | 279 | ~200 |
-| wrecks update + touching | 324 | ~113 |
-| impacts burn + update | 1 908 | ~670 |
-| director fx | 549 | ~347 |
-| scaffold | 1 350 | ~190 |
-| **judged, all together** | **~15 900** | **~2 700** |
-| X1 missiles (not judged: the trail is the shared pre-D `smoke.ts`) | 2 700 | 2 700 |
+| `city.update` (damaged mesh) — the intact city's own: ~50–230 | 200 | 48 |
+| `city.updateDebris` | 7 587 | 615 |
+| `dust.update` | 3 014 | 270 |
+| `dustHaze` | 500 | 48 |
+| collapse shake | 198 | 99 |
+| crash check (`touchesSolid`, mostly trains/cranes/river) | 279 | 54 |
+| wrecks update + touching | 324 | 0 |
+| impacts burn + update | 1 908 | 585 |
+| director fx | 549 | 103 |
+| scaffold | 1 350 | 29 |
+| **judged, all together** | **~15 900** | **1 851** |
+| X1 missiles (not judged: the trail is the shared pre-D `smoke.ts`) | 2 700 | 2 515 |
+
+Rows move run to run by up to ~150 B as V8 re-optimises; an earlier run of
+the same build read ~2 700 in all.
 
 Every `--digest` matched the build before the fixes byte for byte. The
 "before" column is this bench run on the commit before them. What changed:

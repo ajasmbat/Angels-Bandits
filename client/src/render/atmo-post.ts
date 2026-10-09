@@ -176,8 +176,9 @@ export const STREAK_GAIN = 0.16;
 /** Ghosts: mirrored through the centre at these scales. */
 export const GHOST_SCALES: readonly number[] = [0.55, 1.4];
 export const GHOST_GAIN = 0.06;
-/** Only bloom above this (linear) makes a ghost — the brightest lights. */
-export const GHOST_FLOOR = 0.12;
+/** Only bloom above this (linear) streaks or makes a ghost — the brightest
+ * lights (lamps, beacons, strobes, tracers), never a lit window grid. */
+export const GLARE_FLOOR = 0.12;
 
 /**
  * Most the flare can add to one pixel, as a share of the brightest bloom
@@ -233,11 +234,16 @@ vec3 abBloomAt(vec2 uv) {
   vec4 b = texture2D(tBloom, uv);
   return b.rgb * b.a;
 }
+// Only the brightest lights flare: the bloom above GLARE_FLOOR. A window
+// grid's glow (and its living-window toggles) never streaks.
+vec3 abHot(vec2 uv) {
+  return max(abBloomAt(uv) - ${f(GLARE_FLOOR)}, 0.0);
+}
 vec3 abGlare(vec2 uv) {
   vec3 streak = vec3(0.0);
 ${STREAK_WEIGHTS.map(
   (w, i) =>
-    `  streak += ${f(w)} * (abBloomAt(uv + vec2(${f(STREAK_STEP * (i + 1))}, 0.0)) + abBloomAt(uv - vec2(${f(STREAK_STEP * (i + 1))}, 0.0)));`,
+    `  streak += ${f(w)} * (abHot(uv + vec2(${f(STREAK_STEP * (i + 1))}, 0.0)) + abHot(uv - vec2(${f(STREAK_STEP * (i + 1))}, 0.0)));`,
 ).join("\n")}
   vec3 glare = streak * ${f(STREAK_GAIN)} * vec3(0.72, 0.86, 1.0);
   vec2 mirror = vec2(1.0) - uv;
@@ -245,7 +251,7 @@ ${GHOST_SCALES.map(
   (s, i) => `  {
     vec2 g = 0.5 + (mirror - 0.5) * ${f(s)};
     float edge = 1.0 - smoothstep(0.25, 0.7, length(g - 0.5));
-    vec3 b = max(abBloomAt(g) - ${f(GHOST_FLOOR)}, 0.0);
+    vec3 b = abHot(g);
     glare += b * edge * ${f(GHOST_GAIN)} * ${i === 0 ? "vec3(1.0, 0.7, 0.4)" : "vec3(0.45, 0.8, 1.0)"};
   }`,
 ).join("\n")}

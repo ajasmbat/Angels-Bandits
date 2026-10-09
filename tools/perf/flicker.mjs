@@ -5,6 +5,7 @@
 //                                 [--shots <dir>] [--out <file>] [--repeat N]
 //                                 [--grid] [--only name,name]
 //                                 [--ablate [all|name,name]] [--hide name,name]
+//                                 [--breathe]
 //
 // Captures FRAMES consecutive frames on a FIXED 16 ms clock and scores the
 // mean per-pixel frame-to-frame luminance change (0–255 units; lower is
@@ -62,6 +63,13 @@
 // `--hide` (O6, with --grid) keeps the named systems out of EVERY capture
 // (and every ablation row): a view's score without, say, the train that
 // happens to cross it, to see what else moves there.
+//
+// `--breathe` (O6, with --grid) ramps the held airspeed through every
+// capture (BREATHE: +0.06 m/s a frame from 70 m/s), so the speed-driven FOV
+// widens ~0.005° a frame — what the harness did by accident before O6, now
+// on purpose and identical in every arm. A truly frozen camera cannot see
+// anything that is stable while still but re-rolls under ANY change of
+// projection (O6's facade speckle); a breathing one can.
 //
 // Same browser knobs as run.mjs: AB_CHROME / AB_CHROME_ARGS.
 
@@ -123,6 +131,9 @@ const FIXED_EPOCH = resolve(HERE, "fixed-epoch.mjs");
 /** The held plane's airspeed, m/s: MAX_SPEED, full-throttle cruise (O6 —
  * any one value works; what matters is that it never changes). */
 const PIN_SPEED = 90;
+/** --breathe: the held airspeed at a capture's first frame, and its rise
+ * per frame, m/s — a plane spooling up toward cruise. */
+const BREATHE = { from: 70, step: 0.06 };
 /** Pan speed, metres per frame (90 m/s, a slow cruise). */
 const PAN_M = 1.5;
 /** Where the scenes look: midtown from 300 m, toward the dense core. */
@@ -178,6 +189,7 @@ function parseArgs(argv) {
     only: null,
     ablate: null,
     hide: [],
+    breathe: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -190,6 +202,7 @@ function parseArgs(argv) {
     else if (a === "--grid") opts.grid = true;
     else if (a === "--only") opts.only = argv[++i].split(",");
     else if (a === "--hide") opts.hide = argv[++i].split(",");
+    else if (a === "--breathe") opts.breathe = true;
     else if (a === "--ablate") {
       const next = argv[i + 1];
       opts.ablate =
@@ -201,6 +214,7 @@ function parseArgs(argv) {
   }
   if (!(opts.frames >= 3)) throw new Error("--frames must be >= 3");
   if (opts.ablate && !opts.grid) throw new Error("--ablate needs --grid");
+  if (opts.breathe && !opts.grid) throw new Error("--breathe needs --grid");
   if (opts.hide.length > 0 && !opts.grid)
     throw new Error("--hide needs --grid");
   return opts;
@@ -296,7 +310,7 @@ function initScript() {
  */
 function aimView(page, spec, panM) {
   return page.evaluate(
-    ({ spec, panM }) => {
+    ({ spec, panM, breathe }) => {
       window.__flickerView = (i) => {
         const k = spec.right ? i * panM : 0;
         const dx = spec.right ? spec.right.x * k : 0;
@@ -308,10 +322,16 @@ function aimView(page, spec, panM) {
       };
       window.__flickerPrev = null;
       window.__flickerHeat?.fill(0);
+      // --breathe: every view's ramp starts here, so its settle steps hold
+      // `from` and a re-shot (--ablate) breathes exactly like the original.
+      if (window.__flickerBreathe) {
+        window.__flickerBreatheN = 0;
+        window.__flickerSpeed = breathe.from;
+      }
       window.__flickerPin = spec.plane ?? { x: spec.eye.x, z: spec.eye.z };
       window.__ab.qaCamera(window.__flickerView(0));
     },
-    { spec, panM },
+    { spec, panM, breathe: BREATHE },
   );
 }
 
@@ -410,12 +430,22 @@ async function captureFrames(page, frames, shots, tag) {
     window.__flickerJit?.rev.fill(0);
   });
   for (let i = 0; i < frames; i++) {
-    await page.evaluate((i) => {
-      window.__ab.qaCamera(window.__flickerView(i));
-      if (window.__flickerHide) window.__ab.qaHide(window.__flickerHide);
-      if (window.__flickerStill != null)
-        window.__ab.pinWorld(window.__flickerStill);
-    }, i);
+    await page.evaluate(
+      ([i, breathe]) => {
+        window.__ab.qaCamera(window.__flickerView(i));
+        if (window.__flickerHide) window.__ab.qaHide(window.__flickerHide);
+        if (window.__flickerStill != null)
+          window.__ab.pinWorld(window.__flickerStill);
+        // --breathe: one more step up the ramp aimView started (the pin
+        // applies it from the next frame, so frame 0 draws at `from`).
+        if (window.__flickerBreathe) {
+          window.__flickerBreatheN += 1;
+          window.__flickerSpeed =
+            breathe.from + breathe.step * window.__flickerBreatheN;
+        }
+      },
+      [i, BREATHE],
+    );
     await page.clock.runFor(STEP_MS);
     const f = await readFrame(page);
     // --shots: the first and last captured frame, to look at before
@@ -523,6 +553,7 @@ async function measureBuild(
   grid,
   ablate,
   hide,
+  breathe,
 ) {
   const { proc, port } = await startServer(cwd);
   const page = await browser.newPage({
@@ -565,7 +596,7 @@ async function measureBuild(
       const pin = () => {
         const p = window.__flickerPin;
         window.__ab.teleport(p.x, p.z, p.y ?? 330, 0);
-        window.__ab.state().speed = speed;
+        window.__ab.state().speed = window.__flickerSpeed ?? speed;
         requestAnimationFrame(pin);
       };
       pin();
@@ -634,6 +665,11 @@ async function measureBuild(
     };
     if (grid) {
       result.views = [];
+      if (breathe) {
+        await page.evaluate(() => {
+          window.__flickerBreathe = true;
+        });
+      }
       if (hide.length > 0) {
         const all = await page.evaluate(
           () => window.__ab.qaSystems?.() ?? null,
@@ -947,6 +983,7 @@ async function main() {
           grid,
           opts.ablate,
           opts.hide,
+          opts.breathe,
         ),
       );
       if (ref !== null) {
@@ -960,6 +997,7 @@ async function main() {
             grid,
             opts.ablate,
             opts.hide,
+            opts.breathe,
           ),
         );
       }

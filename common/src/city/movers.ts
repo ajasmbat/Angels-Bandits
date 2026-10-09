@@ -61,6 +61,7 @@ import {
   wrapCoord,
   wrapDeltaAxis,
 } from "../world/index";
+import { type CaveInSlot, collideCaveIns } from "./caveins";
 import { type CollapseField, collideCollapses, craneDown } from "./collapse";
 import { type Building, mulberry32 } from "./index";
 import { CONSTRUCTION_BLOCKS } from "./layout";
@@ -96,7 +97,10 @@ export type MoverKind =
   | "boss"
   | "bossDebris"
   // C2 bomber runs (chaos.ts): a ship of the formation.
-  | "bomber";
+  | "bomber"
+  // U6 cave-ins (city/caveins.ts): falling rock, or the rubble it became.
+  | "cavein"
+  | "caveRubble";
 
 /**
  * An oriented box. `x`/`z` are canonical in [0, WORLD_SIZE); `y` is the
@@ -193,6 +197,9 @@ export interface MoverField {
   /** C2: the room's bomber runs (chaos.ts, pure in each run and the clock).
    * PER ROOM like `boss`; the slot is mutated in place as runs come. */
   readonly bombers?: BomberSlot;
+  /** U6: the room's cave-ins (caveins.ts, pure in each event and the
+   * clock). PER ROOM like `bombers`; the slot is mutated in place. */
+  readonly caveins?: CaveInSlot;
 }
 
 /** A room's field: the seed's shared cranes and aircraft plus its own news
@@ -638,8 +645,25 @@ export function collideMovers(
   }
   return (
     hitBoat(pos, radius, field, timeMs) ??
-    hitCollapse(pos, radius, field, timeMs)
+    hitCollapse(pos, radius, field, timeMs) ??
+    hitCaveIn(pos, radius, field, timeMs)
   );
+}
+
+/** U6: the cave-in piece the sphere touches, as a mover hit (id = the
+ * cave-in's id). Players and bots alike: it is underground, where bots fly
+ * committed tunnel passes that steer into its open lane. */
+function hitCaveIn(
+  pos: Vec3,
+  radius: number,
+  field: MoverField,
+  timeMs: number,
+): MoverHit | null {
+  if (!field.caveins || field.caveins.list.length === 0) return null;
+  const hit = collideCaveIns(pos, radius, field.caveins.list, timeMs);
+  return hit
+    ? { kind: hit.falling ? "cavein" : "caveRubble", id: hit.caveIn.id }
+    : null;
 }
 
 /** D3: the collapse piece the sphere touches, as a mover hit (id = the
@@ -718,9 +742,11 @@ export function collideBotMovers(
   // flies the boats' height band, and bots must never die to scenery.
   // D3 debris and rubble too: bots probe them at arrival time, so they dodge
   // a falling chunk where it WILL be, and route round the rubble after.
+  // U6: and the cave-ins, the same way.
   return (
     hitBoat(pos, radius, field, timeMs) ??
-    hitCollapse(pos, radius, field, timeMs)
+    hitCollapse(pos, radius, field, timeMs) ??
+    hitCaveIn(pos, radius, field, timeMs)
   );
 }
 

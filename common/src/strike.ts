@@ -164,12 +164,10 @@ export function missilePosAt(s: MissileStrike, t: number, out: Vec3): Vec3 {
 /** Damage a plane `d` meters from the impact takes: lethal (MAX_HP) inside
  * the lethal radius, then MISSILE_EDGE_DAMAGE falling linearly to 0 at the
  * blast radius — MISSILE_* for missiles and bombs, METEOR_* for a meteor. */
-export function missileDamage(
-  d: number,
-  kind: MissileKind = "cruise",
-): number {
+export function missileDamage(d: number, kind: MissileKind = "cruise"): number {
   if (!(d >= 0)) return 0;
-  const lethal = kind === "meteor" ? METEOR_LETHAL_RADIUS : MISSILE_LETHAL_RADIUS;
+  const lethal =
+    kind === "meteor" ? METEOR_LETHAL_RADIUS : MISSILE_LETHAL_RADIUS;
   const blast = kind === "meteor" ? METEOR_BLAST_RADIUS : MISSILE_BLAST_RADIUS;
   if (d <= lethal) return MAX_HP;
   if (d >= blast) return 0;
@@ -232,10 +230,12 @@ export function pickMissileTarget(
   planes: readonly MissilePlane[],
   index: CityIndex,
   tries = 24,
+  /** C2: the strike's flight time (a meteor's is shorter), ms. */
+  flightMs: number = MISSILE_FLIGHT_MS,
 ): MissileTarget | null {
-  const aim = predictedPos(subject);
+  const aim = predictedPos(subject, flightMs);
   const keepClear: Vec3[] = [];
-  for (const p of planes) keepClear.push(p.pos, predictedPos(p));
+  for (const p of planes) keepClear.push(p.pos, predictedPos(p, flightMs));
   const buildings = index.buildings;
   for (let n = 0; n < tries; n++) {
     const a = rand() * Math.PI * 2;

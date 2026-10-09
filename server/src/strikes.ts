@@ -338,7 +338,10 @@ export class MissileDirector {
     }
     // C2: the danger budget, asked before the (costlier) path sweep.
     const lead = missileFlightMs("cruise");
-    if (world.budget && !world.budget.allows("missile", [target.to], lead, now, planes)) {
+    if (
+      world.budget &&
+      !world.budget.allows("missile", [target.to], lead, now, planes)
+    ) {
       return null;
     }
     const strike = planMissile(

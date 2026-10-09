@@ -157,7 +157,10 @@ export class DangerBudget {
         this.charges.set(p.id, list);
       }
       // Drop what has left the window, so the list stays a few long.
-      while (list.length > 0 && now - (list[0] as Charge).t >= this.tuning.windowMs) {
+      while (
+        list.length > 0 &&
+        now - (list[0] as Charge).t >= this.tuning.windowMs
+      ) {
         list.shift();
       }
       list.push({ t: now, layer });

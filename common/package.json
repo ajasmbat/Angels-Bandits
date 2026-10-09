@@ -24,6 +24,7 @@
     "./city/roof-structures": "./src/city/roof-structures.ts",
     "./storm": "./src/storm.ts",
     "./strike": "./src/strike.ts",
+    "./chaos": "./src/chaos.ts",
     "./weather": "./src/weather.ts",
     "./wind": "./src/wind.ts",
     "./fireworks": "./src/fireworks.ts",

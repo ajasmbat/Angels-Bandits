@@ -85,9 +85,13 @@ export class Tracers {
 
   /** Place streaks over `bullets` and age the flashes. Call every frame. */
   update(bullets: readonly Bullet[], viewer: Vec3, now: number): void {
+    // D1: a spent round (it struck a building) stops drawing at the wall, so
+    // the streaks walk the live list with their own counter.
+    let b = 0;
     for (let i = 0; i < this.streaks.length; i++) {
       const mesh = this.streaks[i] as THREE.Mesh;
-      const bullet = bullets[i];
+      let bullet = bullets[b++];
+      while (bullet?.spent) bullet = bullets[b++];
       if (!bullet) {
         mesh.visible = false;
         continue;

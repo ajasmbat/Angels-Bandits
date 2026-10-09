@@ -15,7 +15,11 @@ import {
   startBoost,
   stopBoost,
 } from "@angels-bandits/common/boost";
-import { generateCity } from "@angels-bandits/common/city";
+import {
+  encodeChunkIds,
+  generateCity,
+  mulberry32,
+} from "@angels-bandits/common/city";
 import {
   type MoverField,
   generateMovers,
@@ -28,7 +32,9 @@ import {
   setNewsTarget,
 } from "@angels-bandits/common/city/newsheli";
 import {
+  type CityIndex,
   type NatureIndex,
+  buildCityIndex,
   buildNatureIndex,
 } from "@angels-bandits/common/collision";
 import {
@@ -39,25 +45,47 @@ import {
   BOOST_VALIDATION_SLACK,
   BOOT_TIMEOUT_MS,
   CITY_SEED,
+  COLLAPSE_CREDIT_SLACK,
+  INTERP_DELAY_MAX_MS,
   JOIN_DEADLINE_MS,
   LIVENESS_TIMEOUT_MS,
   NAME_MAX_LENGTH,
+  PLAYER_RADIUS,
   POSE_AGE_MAX_MS,
   RESUME_WINDOW_MS,
   SPAWN_PROTECTION_MS,
   TICK_DOWN_HZ,
+  WORLD_SIZE,
 } from "@angels-bandits/common/constants";
+import {
+  COURSES_MIN,
+  type Course,
+  generateCourses,
+} from "@angels-bandits/common/courses";
+import {
+  MedalLedger,
+  NEEDLE_WINDOW_MS,
+  TRAIN_SURFER_RANGE,
+  nearTrainCar,
+} from "@angels-bandits/common/medals";
 import {
   clampInterpDelay,
   encodeSnapshotEntry,
 } from "@angels-bandits/common/net";
 import type {
   Pose,
+  ScoreEntry,
   ServerMsg,
   SpawnState,
   WireSnapshotMsg,
 } from "@angels-bandits/common/protocol";
-import type { Vec3 } from "@angels-bandits/common/world";
+import {
+  MISSILE_SHOOTER_ID,
+  type MissileStrike,
+  encodeMissile,
+} from "@angels-bandits/common/strike";
+import { type Vec3, canonicalize } from "@angels-bandits/common/world";
+import type { WreckParams, WreckWorld } from "@angels-bandits/common/wreck";
 import { type WebSocket, WebSocketServer } from "ws";
 import {
   type BotContact,
@@ -67,7 +95,23 @@ import {
   poseVelocity,
 } from "./bots";
 import { CityEventLog, nearBuildingProbe } from "./cityevents";
-import { Combat, type HitResult, type SpeedCapFn } from "./combat";
+import { Combat, type Death, type HitResult, type SpeedCapFn } from "./combat";
+import {
+  CourseBook,
+  CourseTracker,
+  type FinishedRun,
+  type SweepWorld,
+} from "./courses";
+import {
+  type RoomCity,
+  applyDeathBlast,
+  applyShotDamage,
+  collapseCulprit,
+  createRoomCity,
+  resetRoomCity,
+  tickDestruction,
+  noseOf as wireNose,
+} from "./destruction";
 import {
   type ClientEnvelope,
   isClientMsg,
@@ -79,7 +123,15 @@ import { type RespawnEnemy, pickBotRespawn, pickRespawn } from "./respawn";
 import { type Room, RoomManager } from "./room";
 import { createStaticHandler } from "./statics";
 import { StormCeiling } from "./storm";
+import {
+  DEFAULT_TUNING,
+  type DirectorPlane,
+  FAST_TUNING,
+  MissileDirector,
+  applyMissileImpact,
+} from "./strikes";
 import { poseFromSpawn, validatePose } from "./validate";
+import { RoomWrecks, applyWreckImpact, impactPos } from "./wrecks";
 
 const PORT = Number(process.env.PORT ?? 8080);
 
@@ -93,6 +145,10 @@ const BOOT_TIMEOUT = Number(process.env.BOOT_TIMEOUT_MS) || BOOT_TIMEOUT_MS;
 const RESUME_WINDOW = Number(process.env.RESUME_WINDOW_MS) || RESUME_WINDOW_MS;
 const AWAY_TIMEOUT = Number(process.env.AWAY_TIMEOUT_MS) || AWAY_TIMEOUT_MS;
 const AWAY_SILENCE = Number(process.env.AWAY_SILENCE_MS) || AWAY_SILENCE_MS;
+
+/** X1: AB_MISSILE_FAST=1 (tests and QA only) makes strikes come quickly. */
+const MISSILE_TUNING =
+  process.env.AB_MISSILE_FAST === "1" ? FAST_TUNING : DEFAULT_TUNING;
 
 /** Test-only introspection of the per-room maps (`GET /debug/rooms`). */
 const DEBUG_ROOMS = process.env.AB_DEBUG_ROOMS === "1";
@@ -136,6 +192,8 @@ interface Client {
   wantsAway: boolean;
   away: boolean;
   awayAt: number;
+  /** S3: this pilot's official course timing, fed from accepted poses. */
+  course: CourseTracker;
 }
 
 /** W2: what a dropped session leaves behind for RESUME_WINDOW: enough to
@@ -144,6 +202,9 @@ interface ResumeRecord {
   name: string;
   kills: number;
   deaths: number;
+  /** S7: a drop is not a death — the streak survives the resume. */
+  streak: number;
+  best: number;
   roomId: string;
   expiresAt: number;
 }
@@ -162,6 +223,17 @@ const combat = new Combat();
 /** The hidden death ceiling (ST1): continuous-time-above-600 m bookkeeping.
  * Nothing about it is ever sent to clients — only the resulting death. */
 const storm = new StormCeiling();
+/** S7 kill streaks and medals (common/src/medals.ts): the server's credit,
+ * keyed by the same globally-unique ids as `combat`. Every credited death
+ * goes through it in sendDeath. */
+const medals = new MedalLedger();
+
+/** A pilot's scoreboard row: Combat's tally plus the S7 streak (omitted
+ * while 0). Every score that leaves the server is built here. */
+function scoreEntryOf(id: string): ScoreEntry {
+  const streak = medals.streakOf(id);
+  return { ...combat.scoreOf(id), ...(streak > 0 && { streak }) };
+}
 
 /** The seeded city, generated once — bot collision probes fly against the
  * exact Building[] every client renders and collides with. */
@@ -210,19 +282,246 @@ const natureIndexFor = (seed: number): NatureIndex => {
  * Each room's OWN mover field (L10): the seed's shared cranes and aircraft
  * plus that room's news heli, whose route follows that room's kills. The bots
  * fly against this field, so they see the heli exactly where clients draw it.
+ * D3: and that room's collapses — the room city's own field (reset in place,
+ * so this reference stays good for the room's life).
  * Created lazily, dropped with the room's bots.
  */
 const roomMoversById = new Map<string, MoverField>();
 const roomMovers = (room: Room): MoverField => {
   let field = roomMoversById.get(room.id);
   if (!field) {
-    field = withNewsHeli(moversFor(room.seed), room.seed);
+    field = {
+      ...withNewsHeli(moversFor(room.seed), room.seed),
+      collapses: roomCity(room).collapses,
+    };
     roomMoversById.set(room.id, field);
   }
   return field;
 };
 /** The newest kill site per room that the news heli has not taken yet. */
 const pendingKillByRoom = new Map<string, { x: number; z: number }>();
+
+/**
+ * Each room's OWN breakable city (D2): a clone of its seed's city and the
+ * room's damage state. Bots fly it, bullets and deaths break it, and its
+ * destroyed set is what every member's client subtracts. Created lazily,
+ * dropped with the room. (The L1 city-event probe keeps reading the seed
+ * city on purpose: "near a building" is about where the fight is.)
+ */
+const roomCityById = new Map<string, RoomCity>();
+const roomCity = (room: Room): RoomCity => {
+  let rc = roomCityById.get(room.id);
+  if (!rc) {
+    rc = createRoomCity(
+      room.seed === CITY_SEED ? city : generateCity(room.seed),
+    );
+    roomCityById.set(room.id, rc);
+  }
+  return rc;
+};
+
+/**
+ * Destruction applies only while the room has a human member (pending and
+ * away ones count). The standing bot arena never empties, nothing
+ * regenerates until D5, and nobody would see it — so an empty room stays
+ * whole, and handleLeave clears it when its last human goes.
+ */
+const breakable = (room: Room): RoomCity | null =>
+  room.humanCount > 0 ? roomCity(room) : null;
+
+/**
+ * Each room's missile director (X1) and the probes it reads, built against
+ * that room's own breakable buildings. Created lazily, dropped with the
+ * room; the stream is seeded from the room's number like its bots.
+ */
+interface RoomMissiles {
+  director: MissileDirector;
+  near: (pos: Vec3) => boolean;
+  index: CityIndex;
+}
+const missilesByRoom = new Map<string, RoomMissiles>();
+const missilesFor = (room: Room): RoomMissiles => {
+  let rm = missilesByRoom.get(room.id);
+  if (!rm) {
+    const n = Number(room.id.split("-")[1] ?? 0);
+    const rc = roomCity(room);
+    rm = {
+      director: new MissileDirector(
+        mulberry32((CITY_SEED ^ Math.imul(n + 1, 0x51ed27)) >>> 0),
+        MISSILE_TUNING,
+      ),
+      near: nearBuildingProbe(rc.buildings),
+      index: rc.index,
+    };
+    missilesByRoom.set(room.id, rm);
+  }
+  return rm;
+};
+
+/** A plane died: blast the city at its last on-record position (alive or
+ * dead — lastPosOf covers both). Call after the death is decided. A collapse
+ * the blast sets off is credited to the death's killer (D3). */
+function deathBlast(
+  room: Room,
+  victimId: string,
+  killerId: string | null,
+): void {
+  const rc = breakable(room);
+  const pos = rc && lastPosOf(room, victimId);
+  if (rc && pos) applyDeathBlast(rc, pos, killerId);
+}
+
+/**
+ * D3: the death of `id`, who crashed at `pos` at server time `at`. Falling
+ * collapse debris there makes it a collapse kill — credited to whoever
+ * brought the building down if they are still in the room — else it is a
+ * plain crash.
+ */
+function crashDeath(
+  room: Room,
+  id: string,
+  pos: Vec3 | null,
+  at: number,
+  now: number,
+): Death | null {
+  const rc = roomCityById.get(room.id);
+  const culprit =
+    rc && pos
+      ? collapseCulprit(rc, pos, PLAYER_RADIUS + COLLAPSE_CREDIT_SLACK, at)
+      : null;
+  if (!culprit) return combat.crash(id, now);
+  const by =
+    culprit.by !== null && room.members.has(culprit.by) ? culprit.by : null;
+  return combat.collapseKill(id, by, now);
+}
+
+/**
+ * Each room's falling wrecks (D4). They fall, kill and land whether or not
+ * a human is there — only the city damage of a landing is gated by
+ * breakable(). Created lazily, dropped with the room.
+ */
+const wrecksByRoom = new Map<string, RoomWrecks>();
+const roomWrecks = (room: Room): RoomWrecks => {
+  let wrecks = wrecksByRoom.get(room.id);
+  if (!wrecks) {
+    wrecks = new RoomWrecks();
+    wrecksByRoom.set(room.id, wrecks);
+  }
+  return wrecks;
+};
+
+/** What a room's wreck sweeps against: its own breakable city as it stands,
+ * the trees, and the seed's movers — WITHOUT the room's news heli, whose
+ * future route depends on kills that have not happened yet. */
+const wreckWorld = (room: Room): WreckWorld => {
+  const rc = roomCity(room);
+  return {
+    buildings: rc.buildings,
+    index: rc.index,
+    nature: natureIndexFor(room.seed),
+    movers: moversFor(room.seed),
+  };
+};
+
+/**
+ * A plane was shot down: it falls as a wreck from its on-record pose (a
+ * human's validated claim at the time it was taken; a bot's sim state, read
+ * BEFORE bots.setDead). Over WRECKS_MAX — or with no pose on record — it
+ * explodes in place as before D4. Call after the death is decided.
+ */
+function shotDown(
+  room: Room,
+  victimId: string,
+  killerId: string | null,
+  now: number,
+): WreckParams | null {
+  let start: { pos: Vec3; vel: Vec3; t: number } | null = null;
+  if (room.members.get(victimId)?.isBot) {
+    const c = botsFor(room).contactOf(victimId);
+    if (c) start = { pos: c.pos, vel: c.vel, t: now };
+  } else {
+    const client = clients.get(victimId);
+    if (client) {
+      start = {
+        pos: client.pose.pos,
+        vel: poseVelocity(client.pose),
+        t: client.poseTime,
+      };
+    }
+  }
+  const wreck =
+    start &&
+    roomWrecks(room).spawn(
+      victimId,
+      killerId,
+      start.pos,
+      start.vel,
+      start.t,
+      wreckWorld(room),
+    );
+  if (!wreck) deathBlast(room, victimId, killerId);
+  return wreck ?? null;
+}
+
+/**
+ * Wrecks that hit by `now`: each lands exactly once — the D2 blast through
+ * the room's city (when breakable) and the city's `death` event at the
+ * impact point (D1 facade blast and burn, L1 reactions, welcome replay).
+ * Call before the tick's chunk batch so the impact's chunks go out with it.
+ */
+function landWrecks(room: Room, now: number): void {
+  const wrecks = wrecksByRoom.get(room.id);
+  if (!wrecks) return;
+  for (const { params, shooterId } of wrecks.settle(now)) {
+    const pos = impactPos(params);
+    const rc = breakable(room);
+    // D3: a collapse the impact sets off is the shooter's.
+    if (rc) applyWreckImpact(rc, pos, shooterId);
+    const event = cityEvents.offer(
+      room.id,
+      "death",
+      pos,
+      params.t + params.end,
+    );
+    if (event) sendToRoom(room, { type: "cityEvent", event });
+  }
+}
+
+/**
+ * S3 stunt courses per city seed, memoised like `moversFor`: the courses
+ * (generated from exactly the city, trees and static movers every client
+ * generates them from), the process-wide boards, and what the solid sweep
+ * tests. Boards live in this process's memory only.
+ */
+interface CourseSet {
+  courses: Course[];
+  book: CourseBook;
+  world: SweepWorld;
+}
+const courseSetsBySeed = new Map<number, CourseSet>();
+const courseSetFor = (seed: number): CourseSet => {
+  let set = courseSetsBySeed.get(seed);
+  if (!set) {
+    const buildings = seed === CITY_SEED ? city : generateCity(seed);
+    const index = buildCityIndex(buildings);
+    const courses = generateCourses(seed, {
+      buildings,
+      index,
+      nature: natureIndexFor(seed),
+      movers: moversFor(seed),
+    });
+    const names = courses.map((c) => c.name).join(", ");
+    const log = courses.length < COURSES_MIN ? console.warn : console.log;
+    log(`stunt courses for seed ${seed}: ${courses.length} (${names})`);
+    set = {
+      courses,
+      book: new CourseBook(courses),
+      world: { buildings, index },
+    };
+    courseSetsBySeed.set(seed, set);
+  }
+  return set;
+};
 
 /** Per-room bot pilots. Created lazily; seeded from the room's number so
  * bot behavior is deterministic per room. */
@@ -234,7 +533,7 @@ const botsFor = (room: Room): RoomBots => {
     bots = new RoomBots(
       room.id,
       CITY_SEED ^ (n * 0x9e3779b9),
-      city,
+      roomCity(room).buildings,
       roomMovers(room),
       true,
       natureIndexFor(room.seed),
@@ -322,10 +621,13 @@ function syncRoomBots(room: Room): void {
   for (const entry of spawned) {
     rooms.addBot(room, entry.id, entry.name);
     combat.addPlayer(entry.id, now);
+    const at = bots.lastPosOf(entry.id);
+    if (at) missilesFor(room).director.noteSpawn(entry.id, at, now);
     sendToRoom(room, { type: "playerJoined", player: entry });
   }
   for (const id of despawned) {
     combat.removePlayer(id);
+    medals.forget(id);
     storm.forget(id);
     rooms.leave(id);
     sendToRoom(room, { type: "playerLeft", id });
@@ -346,6 +648,9 @@ function disposeRoom(room: Room): void {
   cityEvents.forget(room.id);
   roomMoversById.delete(room.id);
   pendingKillByRoom.delete(room.id);
+  roomCityById.delete(room.id);
+  missilesByRoom.delete(room.id);
+  wrecksByRoom.delete(room.id);
 }
 
 const sanitizeName = (raw: unknown): string => {
@@ -410,6 +715,7 @@ function handleJoin(
   // After addPlayer, which starts every tally at 0/0.
   if (resumed) {
     combat.restoreScore(id, resumed.record.kills, resumed.record.deaths);
+    medals.restore(id, resumed.record.streak, resumed.record.best);
   }
   // Joiners get the same near-the-fight placement as respawns.
   const spawn = pickRespawn(livingEnemies(room, id));
@@ -431,6 +737,10 @@ function handleJoin(
     wantsAway: false,
     away: false,
     awayAt: 0,
+    course: new CourseTracker(
+      courseSetFor(room.seed).courses,
+      courseSetFor(room.seed).world,
+    ),
   };
   clients.set(id, client);
   resumeIds.set(client.resumeToken, id);
@@ -442,11 +752,16 @@ function handleJoin(
     seed: room.seed,
     spawn,
     roster: room.roster(),
-    scores: room.roster().map(({ id: rid }) => combat.scoreOf(rid)),
+    scores: room.roster().map(({ id: rid }) => scoreEntryOf(rid)),
     botTarget: room.botTarget,
     cityEvents: cityEvents.recent(room.id, now),
     newsHeli: roomMovers(room).news,
     resumeToken: client.resumeToken,
+    destroyed: encodeChunkIds(roomCity(room).damage.destroyedIds()),
+    collapses: [...roomCity(room).collapses.records],
+    courses: courseSetFor(room.seed).book.standings(),
+    missiles: missilesFor(room).director.missiles().map(encodeMissile),
+    wrecks: wrecksByRoom.get(room.id)?.active() ?? [],
   };
   ws.send(JSON.stringify(welcome));
   sendToRoom(room, { type: "playerJoined", player: { id, name } }, id);
@@ -482,9 +797,12 @@ function handlePose(client: Client, pose: Pose, t: unknown, now: number): void {
   client.lastPoseAt = now;
   const verdict = validatePose(client.pose, pose, dt, cap);
   if (verdict.ok) {
+    const rejects = client.rejectStreak;
     client.pose = verdict.pose;
     client.poseTime = poseTimeOf(t, now);
     client.rejectStreak = 0;
+    // S3: course timing reads accepted poses only, on the ARRIVAL clock.
+    observeCourse(client, verdict.pose.pos, now, rejects);
     return;
   }
   client.rejectStreak++;
@@ -496,7 +814,68 @@ function handlePose(client: Client, pose: Pose, t: unknown, now: number): void {
       client.pose = resync.pose;
       client.poseTime = poseTimeOf(t, now);
       client.rejectStreak = 0;
+      // A teleport is never part of a run: start the course stream over.
+      client.course.reset();
+      client.course.observe(resync.pose.pos, now);
     }
+  }
+}
+
+/**
+ * S3: one accepted pose into the pilot's course tracker. A finished run goes
+ * on the board; the runner gets the official result, and everyone on the
+ * same city seed gets the board when it changed — with the ghost when the
+ * record fell.
+ */
+function observeCourse(
+  client: Client,
+  pos: Vec3,
+  now: number,
+  rejects: number,
+): void {
+  const run = client.course.observe(pos, now, rejects);
+  if (!run) return;
+  const seed = client.room.seed;
+  const outcome = courseSetFor(seed).book.submit(client.name, run);
+  if (client.ws.readyState === client.ws.OPEN) {
+    const result: ServerMsg = {
+      type: "courseResult",
+      course: run.course,
+      timeMs: run.timeMs,
+      missed: run.missed,
+      medal: outcome.medal,
+      rank: outcome.rank,
+      record: outcome.record,
+    };
+    client.ws.send(JSON.stringify(result));
+  }
+  if (outcome.changed) {
+    broadcastCourseBoard(seed, run, outcome.record ? client.name : null);
+  }
+}
+
+/** S3: a course board changed — tell every client on that city seed. */
+function broadcastCourseBoard(
+  seed: number,
+  run: FinishedRun,
+  recordBy: string | null,
+): void {
+  const standing = courseSetFor(seed).book.standing(run.course);
+  const msg: ServerMsg = {
+    type: "courseBoard",
+    course: run.course,
+    board: standing.board,
+    ...(recordBy !== null && standing.ghost
+      ? {
+          ghost: standing.ghost,
+          record: { name: recordBy, timeMs: run.timeMs },
+        }
+      : {}),
+  };
+  const data = JSON.stringify(msg);
+  for (const member of clients.values()) {
+    if (member.room.seed !== seed) continue;
+    if (member.ws.readyState === member.ws.OPEN) member.ws.send(data);
   }
 }
 
@@ -506,6 +885,7 @@ function handlePose(client: Client, pose: Pose, t: unknown, now: number): void {
 function goLive(client: Client, now: number): void {
   client.pending = false;
   combat.protectFrom(client.id, now);
+  missilesFor(client.room).director.noteSpawn(client.id, client.pose.pos, now);
 }
 
 /** A human's boost window cap as of `now` (see SpeedCapFn); bots never
@@ -529,22 +909,31 @@ function handleBoost(client: Client, on: unknown, now: number): void {
 function handleLeave(id: string): void {
   const client = clients.get(id);
   if (client) {
-    // W2: read the score BEFORE removePlayer forgets it.
+    // W2: read the score BEFORE removePlayer (and medals.forget) forget it.
     const { kills, deaths } = combat.scoreOf(id);
     resumeRecords.set(id, {
       name: client.name,
       kills,
       deaths,
+      streak: medals.streakOf(id),
+      best: medals.bestOf(id),
       roomId: client.room.id,
       expiresAt: Date.now() + RESUME_WINDOW,
     });
   }
   clients.delete(id);
   combat.removePlayer(id);
+  medals.forget(id);
   storm.forget(id);
   const room = rooms.leave(id);
   if (room) {
     sendToRoom(room, { type: "playerLeft", id });
+    // D2: the last human out takes the damage with them (see breakable) —
+    // D3: and the collapses, in the same reset.
+    if (room.humanCount === 0) {
+      const rc = roomCityById.get(room.id);
+      if (rc) resetRoomCity(rc);
+    }
     // Refill the vacated seat (or wind the bots down if the room is done);
     // a room the last member just left is already gone — free its state.
     if (rooms.rooms.includes(room)) syncRoomBots(room);
@@ -556,7 +945,7 @@ function handleLeave(id: string): void {
 function broadcastScores(room: Room): void {
   sendToRoom(room, {
     type: "score",
-    scores: room.roster().map(({ id }) => combat.scoreOf(id)),
+    scores: room.roster().map(({ id }) => scoreEntryOf(id)),
   });
 }
 
@@ -568,6 +957,16 @@ function handleFire(client: Client, seq: unknown, now: number): void {
   if (verdict.ok) {
     sendToRoom(client.room, { type: "fired", id: client.id }, client.id);
     offerCityEvent(client.room, "gunfire", client.id, now);
+    // D2: the round flies from the shooter's on-record pose along its nose.
+    const rc = breakable(client.room);
+    if (rc) {
+      applyShotDamage(
+        rc,
+        client.pose.pos,
+        wireNose(client.pose.quat),
+        client.id,
+      );
+    }
   }
 }
 
@@ -614,18 +1013,12 @@ function handleHitClaim(
     botsFor(client.room).onDamaged(targetId, now);
   }
   if (verdict.death) {
-    noteKillSite(client.room, targetId);
+    // D4: it falls as a wreck (or, over the cap, explodes in place).
+    const wreck = shotDown(client.room, targetId, client.id, now);
     if (client.room.members.get(targetId)?.isBot) {
       botsFor(client.room).setDead(targetId);
     }
-    sendToRoom(client.room, {
-      type: "death",
-      victimId: verdict.death.victimId,
-      killerId: verdict.death.killerId,
-      cause: verdict.death.cause,
-    });
-    offerCityEvent(client.room, "death", verdict.death.victimId, now);
-    broadcastScores(client.room);
+    sendDeath(client.room, verdict.death, now, wreck);
   }
 }
 
@@ -652,11 +1045,81 @@ function handleSetBots(client: Client, count: unknown, now: number): void {
  * news heli (L10). Call BEFORE bots.setDead — a dead bot has no pose — though
  * lastPosOf also covers bots that crashed inside the sim tick.
  */
-function noteKillSite(room: Room, victimId: string): void {
-  const pos = room.members.get(victimId)?.isBot
-    ? botsFor(room).lastPosOf(victimId)
-    : clients.get(victimId)?.pose.pos;
+/**
+ * Announce a server-declared death: the news heli's pending kill site, the
+ * `death` itself carrying its canonical site (S1 jumbotron headlines) and,
+ * for a plane shot down, its D4 `wreck`; the city event (a wreck's waits
+ * for its landing) and the new tallies. Every death goes through here. Invariant
+ * the clients rely on: the death is sent BEFORE its score broadcast, so the
+ * tallies a client holds when a death lands are the pre-death ones (S1 seeds
+ * each headline's verb from them, identically on every client).
+ */
+function sendDeath(
+  room: Room,
+  death: Death,
+  now: number,
+  wreck: WreckParams | null = null,
+): void {
+  const pos = lastPosOf(room, death.victimId);
   if (pos) pendingKillByRoom.set(room.id, { x: pos.x, z: pos.z });
+  const site = pos ? canonicalize(pos) : null;
+  sendToRoom(room, {
+    type: "death",
+    victimId: death.victimId,
+    killerId: death.killerId,
+    cause: death.cause,
+    ...(site && {
+      x: Math.round(site.x) % WORLD_SIZE,
+      z: Math.round(site.z) % WORLD_SIZE,
+    }),
+    ...(wreck && { wreck }),
+  });
+  // D4: a wreck's city event comes when it lands, where it lands. X1: a
+  // missile death's blast IS the missile's own event — never a second one.
+  if (!wreck && death.cause !== "missile") {
+    offerCityEvent(room, "death", death.victimId, now);
+  }
+  creditMedals(room, death, now);
+  broadcastScores(room);
+}
+
+/**
+ * S7: run one death through the medal ledger. A credited kill (by a pilot
+ * still in the room) is announced to the whole room as an `award` — after
+ * its `death`, before its `score`, so the streak the score carries already
+ * counts it. The context is judged at the killer's on-record position on the
+ * server clock: through a hole (the bots' transit tracking covers every
+ * living member), beside a train car. A dead killer is threading nothing.
+ */
+function creditMedals(room: Room, death: Death, now: number): void {
+  const { victimId, killerId } = death;
+  if (
+    killerId !== null &&
+    killerId !== victimId &&
+    room.members.has(killerId)
+  ) {
+    const pos = memberPose(room, killerId)?.pos ?? null;
+    const trains = moversFor(room.seed).trains ?? [];
+    const award = medals.kill({
+      killerId,
+      victimId,
+      cause: death.cause,
+      now,
+      killerAlive: combat.isAlive(killerId),
+      needle:
+        pos !== null &&
+        botsFor(room).threading(killerId, pos, now, NEEDLE_WINDOW_MS),
+      train: pos !== null && nearTrainCar(trains, pos, TRAIN_SURFER_RANGE, now),
+    });
+    sendToRoom(room, {
+      type: "award",
+      id: killerId,
+      victimId,
+      medals: award.medals,
+      ...(award.tier !== null && { tier: award.tier }),
+    });
+  }
+  medals.death(victimId, killerId);
 }
 
 /** Once the heli is free (arrived + dwelt), send it to the newest kill. */
@@ -670,18 +1133,38 @@ function updateNewsHeli(room: Room, now: number): void {
   sendToRoom(room, { type: "newsHeli", target });
 }
 
-function handleCrash(client: Client, now: number): void {
-  const death = combat.crash(client.id, now);
+/** A crash report. `wreckId` (D4) names the falling wreck the client says
+ * it flew into: credited to that wreck's shooter only if the server's own
+ * geometry agrees. `t` (D3) is the server time the client's check ran at —
+ * held to the window the on-record pose can be from, so a crash cannot be
+ * backdated onto debris long gone — for telling a collapse kill from a
+ * plain crash. */
+function handleCrash(
+  client: Client,
+  t: unknown,
+  wreckId: unknown,
+  now: number,
+): void {
+  const credit = roomWrecks(client.room).creditFor(
+    client.id,
+    wreckId,
+    client.pose.pos,
+    now,
+  );
+  let death: Death | null;
+  if (credit) {
+    death = combat.wreckKill(client.id, credit.shooterId, now);
+  } else {
+    const earliest = now - POSE_AGE_MAX_MS - INTERP_DELAY_MAX_MS;
+    const at =
+      typeof t === "number" && Number.isFinite(t)
+        ? Math.min(now, Math.max(earliest, t))
+        : now;
+    death = crashDeath(client.room, client.id, client.pose.pos, at, now);
+  }
   if (!death) return;
-  noteKillSite(client.room, client.id);
-  sendToRoom(client.room, {
-    type: "death",
-    victimId: death.victimId,
-    killerId: death.killerId,
-    cause: death.cause,
-  });
-  offerCityEvent(client.room, "death", death.victimId, now);
-  broadcastScores(client.room);
+  deathBlast(client.room, client.id, death.killerId);
+  sendDeath(client.room, death, now);
 }
 
 /** Kill-cams that just ended: place each player (human or bot) near, not
@@ -707,6 +1190,7 @@ function issueRespawns(due: string[], now: number): void {
       combat.respawned(id, now);
       resetOnRecord(client, spawn, now);
     }
+    missilesFor(room).director.noteSpawn(id, spawn.pos, now);
     sendToRoom(room, {
       type: "respawn",
       id,
@@ -723,6 +1207,7 @@ function resetOnRecord(client: Client, spawn: SpawnState, now: number): void {
   client.rejectStreak = 0;
   client.lastPoseAt = now;
   client.boost = createBoost(now); // fresh plane, full gauge, no tail
+  client.course.reset(); // a respawn is never part of a run (S3)
 }
 
 /**
@@ -739,6 +1224,7 @@ function settleAway(client: Client, now: number): void {
     client.away = true;
     client.awayAt = now;
     storm.forget(client.id);
+    client.course.reset(); // out of the world: no run survives it (S3)
     // Only the player needs to know: to everyone else it just drops out of
     // snapshots. The client holds its poses for the return respawn on this.
     if (client.ws.readyState === client.ws.OPEN) {
@@ -755,6 +1241,7 @@ function settleAway(client: Client, now: number): void {
     const spawn = pickRespawn(livingEnemies(client.room, client.id));
     combat.returned(client.id, now);
     resetOnRecord(client, spawn, now);
+    missilesFor(client.room).director.noteSpawn(client.id, spawn.pos, now);
     sendToRoom(client.room, {
       type: "respawn",
       id: client.id,
@@ -786,18 +1273,34 @@ function tickRoomBots(room: Room, now: number): void {
 
   const { shots, hits, crashes } = bots.tick(now, contacts);
 
-  for (const id of crashes) {
-    const death = combat.crash(id, now);
+  // D4: a falling wreck is solid for bots too (they do not probe for it).
+  const wrecks = wrecksByRoom.get(room.id);
+  const struck: { id: string; shooterId: string | null }[] = [];
+  if (wrecks && wrecks.count > 0) {
+    for (const member of room.members.values()) {
+      if (!member.isBot || !combat.isAlive(member.id)) continue;
+      const c = bots.contactOf(member.id);
+      const r = c && wrecks.touching(member.id, c.pos, PLAYER_RADIUS, now);
+      if (r) struck.push({ id: member.id, shooterId: r.shooterId });
+    }
+  }
+  const deaths = [
+    // D3: crushed by collapse debris is a collapse kill, not a crash.
+    ...crashes.map((id) => ({
+      id,
+      death: crashDeath(room, id, bots.lastPosOf(id), now, now),
+    })),
+    ...struck.map(({ id, shooterId }) => {
+      const death = combat.wreckKill(id, shooterId, now);
+      if (death) bots.setDead(id);
+      return { id, death };
+    }),
+  ];
+
+  for (const { id, death } of deaths) {
     if (!death) continue;
-    noteKillSite(room, id);
-    sendToRoom(room, {
-      type: "death",
-      victimId: death.victimId,
-      killerId: death.killerId,
-      cause: death.cause,
-    });
-    offerCityEvent(room, "death", death.victimId, now);
-    broadcastScores(room);
+    deathBlast(room, id, death.killerId);
+    sendDeath(room, death, now);
   }
 
   // Rounds that landed this tick first (they were swept before anyone
@@ -810,6 +1313,8 @@ function tickRoomBots(room: Room, now: number): void {
     if (!combat.isAlive(shot.botId)) continue;
     if (!applyBotFire(combat, shot, now)) continue;
     bots.launch(shot, now);
+    const rc = breakable(room);
+    if (rc) applyShotDamage(rc, shot.origin, shot.dir, shot.botId);
     // Same cosmetic path as human fire: everyone renders the tracer.
     sendToRoom(room, { type: "fired", id: shot.botId });
     offerCityEvent(room, "gunfire", shot.botId, now);
@@ -836,18 +1341,12 @@ function routeBotHit(
     bots.onDamaged(shot.targetId, now);
   }
   if (hit.death) {
-    noteKillSite(room, shot.targetId);
+    // D4: it falls as a wreck (or, over the cap, explodes in place).
+    const wreck = shotDown(room, shot.targetId, shot.botId, now);
     if (room.members.get(shot.targetId)?.isBot) {
       bots.setDead(shot.targetId);
     }
-    sendToRoom(room, {
-      type: "death",
-      victimId: hit.death.victimId,
-      killerId: hit.death.killerId,
-      cause: hit.death.cause,
-    });
-    offerCityEvent(room, "death", hit.death.victimId, now);
-    broadcastScores(room);
+    sendDeath(room, hit.death, now, wreck);
   }
 }
 
@@ -862,17 +1361,101 @@ function enforceStormCeiling(room: Room, now: number): void {
     if (storm.observe(member.id, pose.pos.y, now) !== "kill") continue;
     const death = combat.stormKill(member.id, now);
     if (!death) continue;
-    noteKillSite(room, member.id);
     storm.forget(member.id);
     if (member.isBot) botsFor(room).setDead(member.id);
-    sendToRoom(room, {
-      type: "death",
-      victimId: death.victimId,
-      killerId: death.killerId,
-      cause: death.cause,
+    sendDeath(room, death, now);
+  }
+}
+
+/** A member's on-record velocity: bots from the sim, humans from the pose. */
+const velocityOf = (room: Room, id: string, pose: Pose): Vec3 =>
+  room.members.get(id)?.isBot
+    ? (botsFor(room).contactOf(id)?.vel ?? { x: 0, y: 0, z: 0 })
+    : poseVelocity(pose);
+
+/**
+ * X1 missile strikes for one room tick: land what is due (chunks, the
+ * `missile` city event, plane damage), then let the director launch — only
+ * while a human is in the room, like all destruction (see breakable).
+ */
+function tickMissiles(room: Room, now: number): void {
+  const rm = missilesFor(room);
+  for (const m of rm.director.settle(now)) landMissile(room, rm, m, now);
+  const rc = breakable(room);
+  if (!rc) return;
+  const planes: DirectorPlane[] = [];
+  for (const member of room.members.values()) {
+    const pose = memberPose(room, member.id);
+    if (!pose) continue;
+    planes.push({
+      id: member.id,
+      pos: pose.pos,
+      vel: velocityOf(room, member.id, pose),
+      human: !member.isBot,
+      // A timed course run (S3) never draws fire: luck is not a lap time.
+      eligible: !clients.get(member.id)?.course.running,
     });
-    offerCityEvent(room, "death", death.victimId, now);
-    broadcastScores(room);
+  }
+  const launched = rm.director.tick(now, planes, {
+    nearBuilding: rm.near,
+    index: rm.index,
+    buildings: rc.buildings,
+    destroyedShare:
+      rc.damage.destroyedCount / Math.max(1, rc.damage.chunkCount),
+  });
+  if (launched) {
+    sendToRoom(room, { type: "missile", m: encodeMissile(launched) });
+  }
+}
+
+/**
+ * One missile lands: D2 chunk damage, the city's blast reaction (fire,
+ * blown windows, smoke — replayed to joiners), then every plane in the
+ * blast radius by distance from its on-record pose EXTRAPOLATED to now.
+ * A missile death is the plane's only blast: no deathBlast or death city
+ * event on top of the missile's own.
+ */
+function landMissile(
+  room: Room,
+  rm: RoomMissiles,
+  m: MissileStrike,
+  now: number,
+): void {
+  const rc = breakable(room);
+  if (rc) applyMissileImpact(rc, m);
+  const event = cityEvents.offer(room.id, "missile", m.to, now);
+  if (event) sendToRoom(room, { type: "cityEvent", event });
+  const planes: { id: string; pos: Vec3 }[] = [];
+  for (const member of room.members.values()) {
+    const pose = memberPose(room, member.id);
+    if (!pose) continue;
+    const age = poseAgeOf(member.id, now) / 1000;
+    const v = velocityOf(room, member.id, pose);
+    planes.push({
+      id: member.id,
+      pos: canonicalize({
+        x: pose.pos.x + v.x * age,
+        y: pose.pos.y + v.y * age,
+        z: pose.pos.z + v.z * age,
+      }),
+    });
+  }
+  for (const victim of rm.director.blastVictims(m, planes, now)) {
+    const hit = combat.environmentDamage(victim.id, victim.damage, now);
+    if (!hit) continue;
+    const isBot = room.members.get(victim.id)?.isBot ?? false;
+    sendToRoom(room, {
+      type: "damage",
+      targetId: victim.id,
+      shooterId: MISSILE_SHOOTER_ID,
+      hp: hit.hp,
+      from: m.to,
+    });
+    if (isBot) botsFor(room).onDamaged(victim.id, now);
+    if (!hit.death) continue;
+    rm.director.forget(victim.id);
+    sendDeath(room, hit.death, now);
+    if (isBot) botsFor(room).setDead(victim.id);
   }
 }
 
@@ -893,6 +1476,9 @@ const server = createServer((req, res) => {
         cityEvents: cityEvents.roomIds(),
         roomMoversById: [...roomMoversById.keys()],
         pendingKillByRoom: [...pendingKillByRoom.keys()],
+        roomCityById: [...roomCityById.keys()],
+        missilesByRoom: [...missilesByRoom.keys()],
+        wrecksByRoom: [...wrecksByRoom.keys()],
       }),
     );
     return;
@@ -960,7 +1546,7 @@ wss.on("connection", (ws) => {
     } else if (msg.type === "hit") {
       if (!client.pending) handleHitClaim(client, msg, now);
     } else if (msg.type === "crash") {
-      handleCrash(client, now);
+      handleCrash(client, msg.t, msg.wreck, now);
     } else if (msg.type === "setBots") {
       handleSetBots(client, msg.count, now);
     }
@@ -1018,6 +1604,18 @@ function tick(): void {
     tickRoomBots(room, time);
     enforceStormCeiling(room, time);
     updateNewsHeli(room, time);
+    landWrecks(room, time); // D4: before the batch — its chunks ride along
+    tickMissiles(room, time);
+    // D2: everything that broke this tick, as ONE batch — then (D3) every
+    // collapse it set off, after it, so a client applies them in order.
+    const rc = roomCityById.get(room.id);
+    if (rc) {
+      const { broke, collapses } = tickDestruction(rc, time);
+      if (broke.length > 0) {
+        sendToRoom(room, { type: "chunks", d: encodeChunkIds(broke) });
+      }
+      for (const c of collapses) sendToRoom(room, { type: "collapse", c });
+    }
     const snapshot: WireSnapshotMsg = {
       type: "snapshot",
       time,
@@ -1063,6 +1661,9 @@ const scheduleTick = (): void => {
   );
 };
 scheduleTick();
+
+// S3: generate (and log) the city's stunt courses before the first join.
+courseSetFor(CITY_SEED);
 
 // The standing arena: bots fly the first room even before anyone joins, so
 // the first joiner drops into a live dogfight instead of an empty sky.

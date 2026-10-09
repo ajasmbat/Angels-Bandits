@@ -75,7 +75,7 @@ export type HitReject =
 export interface Death {
   victimId: string;
   killerId: string | null;
-  cause: "shot" | "crash" | "storm";
+  cause: "shot" | "crash" | "storm" | "wreck" | "collapse" | "missile";
 }
 export type HitResult =
   | { ok: true; hp: number; death: Death | null }
@@ -96,6 +96,10 @@ interface PlayerCombat {
   bullets: Map<number, number>;
   lastDamagerId: string | null;
   lastDamagedAt: number;
+  /** X1: the last ENVIRONMENT damage (a missile blast). Kept apart from
+   * lastDamagedAt on purpose: it holds off regen and the away lock like any
+   * hit, but must never stretch an earlier shooter's kill credit window. */
+  lastEnvDamagedAt: number;
   /** When a dead player's kill-cam ends and the respawn is due, ms. */
   respawnAt: number;
   /** Regen bookkeeping: end of the last window regen was applied over. */
@@ -119,6 +123,7 @@ export class Combat {
       bullets: new Map(),
       lastDamagerId: null,
       lastDamagedAt: Number.NEGATIVE_INFINITY,
+      lastEnvDamagedAt: Number.NEGATIVE_INFINITY,
       respawnAt: Number.POSITIVE_INFINITY,
       regenAt: now,
     });
@@ -143,7 +148,10 @@ export class Combat {
   /** W2: did `id` take damage in the last `ms`? (Away waits this out.) */
   damagedWithin(id: string, now: number, ms: number): boolean {
     const p = this.players.get(id);
-    return p !== undefined && now - p.lastDamagedAt < ms;
+    return (
+      p !== undefined &&
+      now - Math.max(p.lastDamagedAt, p.lastEnvDamagedAt) < ms
+    );
   }
 
   removePlayer(id: string): void {
@@ -293,11 +301,65 @@ export class Combat {
     return this.environmentKill(id, "storm", now);
   }
 
+  /**
+   * D3: crushed by falling collapse debris. Credit, in order: `by` — whoever
+   * brought the building down — while they are still in the fight and are
+   * not the victim; else the crash rule (last damager within
+   * DAMAGE_MEMORY_MS); else nobody (the environment).
+   */
+  collapseKill(id: string, by: string | null, now: number): Death | null {
+    const p = this.players.get(id);
+    if (!p || !p.alive) return null;
+    if (by !== null && by !== id && this.players.has(by)) {
+      return this.kill(id, p, by, "collapse", now);
+    }
+    return this.environmentKill(id, "collapse", now);
+  }
+
+  /**
+   * X1 environment damage (a missile blast): take `amount` off a living,
+   * unprotected plane. Nobody is credited for the damage itself — a lethal
+   * blast is an environment death that pays the last damager only by the
+   * crash rule. Null when nothing was applied (dead, protected, unknown).
+   */
+  environmentDamage(
+    id: string,
+    amount: number,
+    now: number,
+  ): { hp: number; death: Death | null } | null {
+    const p = this.players.get(id);
+    if (!p || !p.alive || !(amount > 0)) return null;
+    if (now < p.protectedUntil) return null;
+    p.hp -= amount;
+    p.lastEnvDamagedAt = now;
+    const death = p.hp <= 0 ? this.environmentKill(id, "missile", now) : null;
+    return { hp: Math.round(Math.max(0, p.hp)), death };
+  }
+
+  /**
+   * D4: `id` flew into the falling wreck `shooterId` shot down. The wreck is
+   * what killed it, so its shooter takes the credit over any last damager —
+   * unless that is `id` itself (no kill for your own death) or has left, in
+   * which case it is an ordinary crash under the environment rule.
+   */
+  wreckKill(id: string, shooterId: string | null, now: number): Death | null {
+    const p = this.players.get(id);
+    if (!p || !p.alive) return null;
+    if (
+      shooterId === null ||
+      shooterId === id ||
+      !this.players.has(shooterId)
+    ) {
+      return this.environmentKill(id, "crash", now);
+    }
+    return this.kill(id, p, shooterId, "wreck", now);
+  }
+
   /** An environment-caused death: last damager within DAMAGE_MEMORY_MS gets
    * the credit (PLAN.md kill-credit rule), else no one. */
   private environmentKill(
     id: string,
-    cause: "crash" | "storm",
+    cause: "crash" | "storm" | "collapse" | "missile",
     now: number,
   ): Death | null {
     const p = this.players.get(id);
@@ -321,7 +383,8 @@ export class Combat {
       }
       // Regen: REGEN_RATE from REGEN_DELAY_MS after the last damage, exact
       // over the [regenAt, now] window so tick cadence never changes the rate.
-      const from = Math.max(p.regenAt, p.lastDamagedAt + REGEN_DELAY_MS);
+      const hurtAt = Math.max(p.lastDamagedAt, p.lastEnvDamagedAt);
+      const from = Math.max(p.regenAt, hurtAt + REGEN_DELAY_MS);
       if (now > from && p.hp < MAX_HP) {
         p.hp = Math.min(MAX_HP, p.hp + (REGEN_RATE * (now - from)) / 1000);
       }
@@ -354,6 +417,7 @@ export class Combat {
     p.bullets.clear();
     p.lastDamagerId = null;
     p.lastDamagedAt = Number.NEGATIVE_INFINITY;
+    p.lastEnvDamagedAt = Number.NEGATIVE_INFINITY;
     p.respawnAt = Number.POSITIVE_INFINITY;
     p.regenAt = now;
   }

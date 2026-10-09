@@ -366,10 +366,12 @@ describe("resume tokens (W2)", () => {
     expect(
       back.welcome.roster.find((r) => r.id === back.welcome.id)?.name,
     ).toBe("Ace");
+    // S7: a drop is not a death, so the one-kill streak comes back too.
     expect(scoreOf(back.welcome.scores, back.welcome.id)).toEqual({
       id: shooter.welcome.id,
       kills: 1,
       deaths: 0,
+      streak: 1,
     });
     // Everyone else's board seeded the rejoined row at 0/0: the restored
     // tally has to reach them too.

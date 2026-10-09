@@ -27,7 +27,6 @@ import { speedFov } from "../src/game/jet-camera";
 import {
   type AimDirState,
   TOUCH_AIM_DEG_PER_PX,
-  TOUCH_AIM_MAX_ELEV,
   TOUCH_AIM_MAX_OFF_NOSE,
   aimDirFromRay,
   aimDirNdc,
@@ -207,10 +206,13 @@ describe("drag → direction", () => {
     expect(aim.dir.y).toBeLessThan(0);
   });
 
-  it("clamps the elevation short of the poles", () => {
+  it("drags straight over the pole, no elevation limit (F7 loops)", () => {
+    // Was: clamped short of the poles. A drag now rotates the aim in the
+    // view's frame, so 120° of drag up from level north is 60° up, south.
     const aim = createAimDir();
-    dragAimDir(aim, 0, -10000, 3);
-    expect(Math.asin(aim.dir.y)).toBeCloseTo(TOUCH_AIM_MAX_ELEV, 6);
+    dragAimDir(aim, 0, -120 / TOUCH_AIM_DEG_PER_PX, 1);
+    expect(Math.asin(aim.dir.y)).toBeCloseTo(60 * DEG, 6);
+    expect(aim.dir.z).toBeGreaterThan(0);
   });
 });
 

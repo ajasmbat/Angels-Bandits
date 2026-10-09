@@ -35,7 +35,7 @@ export function nearestImageInto(
 
 /** Which whole-world shift nearestImage applies to coordinate `c` along one
  * axis for a viewer at `v`: the image is c + k·WORLD_SIZE. */
-const imageIndex = (v: number, c: number): number =>
+export const imageIndex = (v: number, c: number): number =>
   Math.round((v + wrapDeltaAxis(v, c) - c) / WORLD_SIZE);
 
 /** No image yet — forces every instance's first write. */

@@ -8,7 +8,29 @@ import {
   KILL_CAM_MS,
   MAX_HP,
 } from "@angels-bandits/common/constants";
+import { MEDAL_LABEL, type MedalKind } from "@angels-bandits/common/medals";
 import type { DeathMsg } from "@angels-bandits/common/protocol";
+import type { LifeCard } from "../game/session-stats";
+
+/** How long a medal toast stays up, ms (S7). */
+const MEDAL_TOAST_MS = 2600;
+
+/**
+ * The S7 end-of-life card's two lines: the numbers, then the medals (a
+ * repeat shown once with its count). Pure, for the card and its QA hook.
+ */
+export function lifeCardLines(card: LifeCard): [string, string] {
+  const accuracy = card.accuracy === null ? "—" : `${card.accuracy}%`;
+  const stats =
+    `KILLS ${card.kills} · ACCURACY ${accuracy} · ` +
+    `BEST STREAK ${card.bestStreak}`;
+  const counts = new Map<MedalKind, number>();
+  for (const m of card.medals) counts.set(m, (counts.get(m) ?? 0) + 1);
+  const medals = [...counts]
+    .map(([m, n]) => (n > 1 ? `${MEDAL_LABEL[m]} ×${n}` : MEDAL_LABEL[m]))
+    .join(" · ");
+  return [stats, medals];
+}
 
 /**
  * The kill-cam headline (U2): how you died and who gets the credit. A
@@ -21,7 +43,14 @@ export function deathLabel(
   killerName: string | null,
 ): string {
   if (cause === "storm") return "⚡ STRUCK BY THE STORM";
+  if (cause === "collapse") {
+    return killerName === null
+      ? "CRUSHED BY A COLLAPSE"
+      : `CRUSHED — ${killerName} BROUGHT IT DOWN`;
+  }
+  if (cause === "missile") return "🚀 CAUGHT IN A MISSILE STRIKE";
   if (killerName === null) return "CRASHED";
+  if (cause === "wreck") return `HIT A WRECK — CREDIT TO ${killerName}`;
   return cause === "shot"
     ? `SHOT DOWN BY ${killerName}`
     : `CRASHED — CREDIT TO ${killerName}`;
@@ -100,6 +129,13 @@ export class Hud {
   private readonly aimModeToast = document.getElementById(
     "aim-mode-toast",
   ) as HTMLDivElement;
+  private readonly medalToast = document.getElementById(
+    "medal-toast",
+  ) as HTMLDivElement;
+  private readonly killcamCard = document.getElementById(
+    "killcam-card",
+  ) as HTMLDivElement;
+  private medalUntil = 0;
   private hitBlipUntil = 0;
   private aimModeTimer: ReturnType<typeof setTimeout> | undefined;
   private markerUntil = 0;
@@ -311,6 +347,42 @@ export class Hud {
   hideKillCam(): void {
     this.killcam.classList.remove("open");
     this.respawnAt = 0;
+    this.showLifeCard(null);
+  }
+
+  /** S7: the life that just ended, under the kill-cam headline (null
+   * clears it). Re-called when a posthumous kill or medal lands. */
+  showLifeCard(card: LifeCard | null): void {
+    if (!card) {
+      this.killcamCard.replaceChildren();
+      return;
+    }
+    const [stats, medals] = lifeCardLines(card);
+    const statsEl = document.createElement("div");
+    statsEl.textContent = stats;
+    const medalsEl = document.createElement("div");
+    medalsEl.className = "medals";
+    medalsEl.textContent = medals;
+    this.killcamCard.replaceChildren(statsEl, medalsEl);
+  }
+
+  /** S7: own medals pop in at the top of the screen, stacked, held
+   * MEDAL_TOAST_MS. A new award replaces the stack and re-pops it. */
+  showMedals(medals: readonly MedalKind[], now: number): void {
+    if (medals.length === 0) return;
+    this.medalToast.replaceChildren(
+      ...medals.map((m) => {
+        const row = document.createElement("div");
+        row.className = "medal";
+        row.textContent = MEDAL_LABEL[m];
+        return row;
+      }),
+    );
+    // Restart the pop-in: the class must be off for a reflow to replay it.
+    this.medalToast.classList.remove("on");
+    void this.medalToast.offsetWidth;
+    this.medalToast.classList.add("on");
+    this.medalUntil = now + MEDAL_TOAST_MS;
   }
 
   /** Whole seconds left to the respawn, written only when it changes. Never
@@ -348,6 +420,10 @@ export class Hud {
   /** Call every frame to age the hit blip and hitmarker out. */
   update(now: number): void {
     if (this.respawnAt !== 0) this.tickCountdown(now);
+    if (this.medalUntil !== 0 && now > this.medalUntil) {
+      this.medalToast.classList.remove("on"); // CSS fades it out
+      this.medalUntil = 0;
+    }
     if (this.hitBlipUntil !== 0 && now > this.hitBlipUntil) {
       this.crosshair.classList.remove("hit");
       this.hitBlipUntil = 0;

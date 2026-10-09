@@ -5,6 +5,7 @@
 // respawn all come back from the server (authority split).
 
 import type { Building } from "@angels-bandits/common/city";
+import { collideCollapses } from "@angels-bandits/common/city/collapse";
 import {
   type MoverField,
   collideMovers,
@@ -78,10 +79,17 @@ export function touchesSolid(
   if (serverTimeMs === null || serverTimeMs === undefined) {
     // No clock yet: the moving parts are hidden and not solid, but the L5
     // viaducts and stations are static scenery — drawn from the first
-    // frame, so solid too.
+    // frame, so solid too. So is D3 debris, drawn (and solid) at rest.
     return (
-      !!movers.trains &&
-      collideTrains(movers.trains, pos, radius, null) !== null
+      (!!movers.trains &&
+        collideTrains(movers.trains, pos, radius, null) !== null) ||
+      (!!movers.collapses &&
+        collideCollapses(
+          pos,
+          radius,
+          movers.collapses.list,
+          Number.POSITIVE_INFINITY,
+        ) !== null)
     );
   }
   return collideMovers(pos, radius, movers, serverTimeMs) !== null;

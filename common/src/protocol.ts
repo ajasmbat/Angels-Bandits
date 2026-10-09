@@ -4,9 +4,13 @@
 // keeping every shape in this one file is what makes a binary encoder a later
 // drop-in swap.
 
+import type { CollapseWire } from "./city/collapse";
 import type { NewsHeliSlot, NewsHeliTarget } from "./city/newsheli";
 import type { CityEvent } from "./cityevents";
+import type { MedalKind, StreakTier } from "./medals";
+import type { WireMissile } from "./strike";
 import type { Vec3 } from "./world/index";
+import type { WreckParams } from "./wreck";
 
 /** Unit quaternion, Three.js component order. Attitude of a plane on the wire. */
 export interface Quat {
@@ -115,6 +119,15 @@ export interface HitClaimMsg {
 /** The client flew into a building or the ground (client-auth movement). */
 export interface CrashMsg {
   type: "crash";
+  /** D3: the server-clock time the crash was detected at — the movers'
+   * render time, which falling collapse debris is posed at. The server
+   * clamps it to the pose-age window and uses it only to tell a collapse
+   * kill from a plain crash; absent means "now". */
+  t?: number;
+  /** D4: the falling wreck (its id) this plane flew into — sent only when
+   * the wreck, and no static solid, was what the local check hit. The
+   * server credits the wreck's shooter only if its own geometry agrees. */
+  wreck?: number;
 }
 
 /**
@@ -167,6 +180,9 @@ export interface ScoreEntry {
   id: string;
   kills: number;
   deaths: number;
+  /** S7: the pilot's current kill streak — the one source of truth for the
+   * scoreboard glow and the streak smoke. Omitted while 0. */
+  streak?: number;
 }
 
 /** Reply to a join: identity, room, shared city seed, spawn, current roster. */
@@ -193,6 +209,91 @@ export interface WelcomeMsg {
    * session (same id and score) within RESUME_WINDOW_MS of a drop. Fresh on
    * every welcome; never logged. */
   resumeToken: string;
+  /** D2: the room's whole destroyed-chunk set, delta-encoded
+   * (city/destruction.ts encodeChunkIds), so a late joiner — or a resume
+   * into another room — sees and collides with the same broken city. The
+   * client RESETS to it: the set may be smaller than what it held. */
+  destroyed: number[];
+  /** D3: every collapse event in the room, in order (city/collapse.ts
+   * CollapseWire). The client rebuilds each one's debris — falling or long
+   * since landed — and its fallen chunks from exactly these, so a late
+   * joiner sees and collides with what everyone else does. */
+  collapses: CollapseWire[];
+  /** S3: every stunt course's leaderboard and record ghost, in course id
+   * order (common/src/courses.ts generateCourses for this seed). The rings
+   * themselves are never sent — both sides generate them from the seed. */
+  courses?: CourseStanding[];
+  /** D4: the room's wrecks still falling, so a late joiner (or a resume)
+   * sees and collides with them too. */
+  wrecks?: WreckParams[];
+  /** X1: the room's missiles still in the air (common/src/strike.ts
+   * encodeMissile), so a late joiner — or a resume — sees, hears and
+   * dodges the same incoming strikes as everyone else. */
+  missiles?: WireMissile[];
+}
+
+// --- S3 stunt courses ---
+
+export type Medal = "gold" | "silver" | "bronze";
+
+/**
+ * A recorded flight path (S3 ghost), recorded by the SERVER from a run's
+ * accepted poses. `d` is flat integers in POS_SCALE units: the first sample
+ * absolute (x, y, z), every later one a wrap-safe delta from the one before.
+ * Sample k is at min(k / hz, durMs) seconds after the start ring — the last
+ * sample is the finish crossing, which may fall between two grid instants.
+ * Positions only: playback derives attitude from the path itself.
+ */
+export interface GhostPath {
+  hz: number;
+  durMs: number;
+  d: number[];
+}
+
+/** One row of a course leaderboard. `timeMs` includes miss penalties. */
+export interface CourseBoardEntry {
+  name: string;
+  timeMs: number;
+  missed: number;
+  medal: Medal | null;
+}
+
+/** A course's leaderboard (best first, at most COURSE_BOARD_SIZE rows) and
+ * the record holder's ghost, null until anyone finishes. */
+export interface CourseStanding {
+  course: number;
+  board: CourseBoardEntry[];
+  ghost: GhostPath | null;
+}
+
+/**
+ * S3: the server's OFFICIAL result of the runner's own finished run, timed
+ * from its accepted pose history (the client's HUD time is provisional).
+ * Sent to the runner only. `rank` is the board position (1-based), or null
+ * when the time did not make the board.
+ */
+export interface CourseResultMsg {
+  type: "courseResult";
+  course: number;
+  timeMs: number;
+  missed: number;
+  medal: Medal | null;
+  rank: number | null;
+  record: boolean;
+}
+
+/**
+ * S3: a course leaderboard changed. Sent to every client on the same city
+ * seed (records are process-wide, not per room). `ghost` and `record` are
+ * present only when the record itself fell — receivers keep the ghost they
+ * have otherwise.
+ */
+export interface CourseBoardMsg {
+  type: "courseBoard";
+  course: number;
+  board: CourseBoardEntry[];
+  ghost?: GhostPath;
+  record?: { name: string; timeMs: number };
 }
 
 export interface PlayerJoinedMsg {
@@ -279,23 +380,40 @@ export interface FiredMsg {
   id: string;
 }
 
-/** A validated hit landed: the target's new server-owned HP. */
+/** A validated hit landed: the target's new server-owned HP. X1 missile
+ * damage carries `shooterId` MISSILE_SHOOTER_ID (common/src/strike.ts —
+ * never a plane's id) and the impact point in `from`, so the damage
+ * indicator points at the blast rather than at a shooter. */
 export interface DamageMsg {
   type: "damage";
   targetId: string;
   shooterId: string;
   hp: number;
+  from?: Vec3;
 }
 
 /** Server-declared death. `killerId` null = un-credited crash or the storm
- * itself (⚡ environment). `"storm"` is the hidden death ceiling's kill bolt —
+ * itself (⚡ environment). `"collapse"` (D3) = crushed by falling debris:
+ * the credit goes to whoever brought the building down. `"storm"` is the hidden death ceiling's kill bolt —
  * clients render the bolt at the victim's last snapshot pose; the wire never
- * carries a warning or a timer (the rule is discovered, not announced). */
+ * carries a warning or a timer (the rule is discovered, not announced).
+ * `"wreck"` (D4): the victim flew into a falling wreck — `killerId` is the
+ * pilot who shot that wreck down. `"missile"` (X1) is an incoming
+ * strike's blast — environment, credited only by the crash rule. */
 export interface DeathMsg {
   type: "death";
   victimId: string;
   killerId: string | null;
-  cause: "shot" | "crash" | "storm";
+  cause: "shot" | "crash" | "storm" | "wreck" | "collapse" | "missile";
+  /** S1: the server's kill site — the victim's on-record position,
+   * canonical and rounded to whole meters — so every client's jumbotron
+   * headline names the same place. Absent when the server had no pose. */
+  x?: number;
+  z?: number;
+  /** D4: a shot-down plane falls as this wreck (common/src/wreck.ts) and
+   * hits the city at `wreck.t + wreck.end` instead of exploding in place.
+   * Absent for crash/storm deaths and over the room's WRECKS_MAX. */
+  wreck?: WreckParams;
 }
 
 /**
@@ -330,6 +448,23 @@ export interface BotsConfigMsg {
   byName: string;
 }
 
+/**
+ * S7: the server's credit for one kill (common/src/medals.ts MedalLedger).
+ * Sent to the whole room for EVERY credited kill — right after its `death`
+ * and before its `score` — so every client shows the same medals and the
+ * killer's client picks the kill's sting in one place. `medals` may be
+ * empty; clients drop kinds they do not know. `tier` is present only on
+ * the kill that crossed into a streak tier (the announcer's trigger); the
+ * streak itself rides `score`.
+ */
+export interface AwardMsg {
+  type: "award";
+  id: string;
+  victimId: string;
+  medals: MedalKind[];
+  tier?: StreakTier;
+}
+
 /** L1: a server-accepted moment the city reacts to (gunfire near buildings,
  * a death). Sent right after the `death` it belongs to, same server `now`. */
 export interface CityEventMsg {
@@ -349,6 +484,29 @@ export interface NewsHeliMsg {
 }
 
 /**
+ * D2: chunks the server destroyed since the last tick, delta-encoded
+ * (encodeChunkIds). At most one per room per TICK_DOWN_HZ tick, and only
+ * when something broke. Every client adds them to its CityDamage, so its
+ * collision and rendering subtract exactly what everyone else's do.
+ */
+export interface ChunksMsg {
+  type: "chunks";
+  d: number[];
+}
+
+/**
+ * X1: the server launched a missile strike. Everything about its flight —
+ * the arc, the whistle, the impact instant — is a pure function of this
+ * event and the synced clock (common/src/strike.ts), so every client sees
+ * the same missile. Its damage arrives the usual ways: `chunks`, `damage`,
+ * `death` and a `missile` city event.
+ */
+export interface MissileMsg {
+  type: "missile";
+  m: WireMissile;
+}
+
+/**
  * W2: the player's own `away: true` has taken effect (sent to that player
  * only — to everyone else the plane just leaves snapshots). From here its
  * return is answered with a `respawn`, which the client waits for before
@@ -358,8 +516,23 @@ export interface AwayStartedMsg {
   type: "awayStarted";
 }
 
+/**
+ * D3: a section of a building collapses. Sent once, the tick it happens;
+ * every client marks `c.c`'s chunks fallen and builds the same debris from
+ * `c` alone (pure in the event and the clock). Old clients ignore it.
+ */
+export interface CollapseMsg {
+  type: "collapse";
+  c: CollapseWire;
+}
+
 export type ServerMsg =
   | WelcomeMsg
+  | ChunksMsg
+  | CollapseMsg
+  | MissileMsg
+  | CourseResultMsg
+  | CourseBoardMsg
   | AwayStartedMsg
   | NewsHeliMsg
   | BotsConfigMsg
@@ -371,4 +544,5 @@ export type ServerMsg =
   | DeathMsg
   | RespawnMsg
   | ScoreMsg
-  | CityEventMsg;
+  | CityEventMsg
+  | AwardMsg;

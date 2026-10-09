@@ -100,6 +100,9 @@ export interface QualityProfile {
   microRadius: number;
   /** L7 sign animation (tickers, chases, video). Off = each sign's static art. */
   signAnimation: boolean;
+  /** S1 the jumbotrons' LAST KILL shot (one small render pass per kill).
+   * Off = the static livery card painted on the screen. */
+  jumbotronReplay: boolean;
   /** Fake window interiors (the per-pane parallax room raycast). Off = the
    * room's mean colour, the same value the distance fade already ends on.
    * G1: the lit lobbies / shop rooms behind the street-level glass too. */
@@ -122,6 +125,32 @@ export interface QualityProfile {
   /** R2 roof dressing's fine detail (drains, hatches, walkways, lightning
    * rods, dishes, braces, gondola cables). Structures are solid and stay. */
   roofDetail: boolean;
+  /** S3 the record ghost replayed beside a course run (one translucent
+   * draw). The rings themselves are guidance and stay on every tier. */
+  courseGhost: boolean;
+  /** D1 bullet impacts: share of the full budget — impact particles
+   * (1200 × share), facade damage slots (16 + 32 × share) and burning
+   * patches (2 + 4 × share). Counts only; the shaders never change. */
+  impacts: number;
+  /** X1 missile impacts: share of the debris throw (sparks, dust, chunks).
+   * The missile, its glint and smoke trail — the telegraph — and the blast
+   * itself are identical on every tier. */
+  missileDebris: number;
+  /** D2 broken-edge detail: rebar and jagged-edge noise on the faces
+   * destruction exposed. Off = flat concrete slabs and dark rooms, by a
+   * uniform. The broken geometry itself is solid and identical everywhere. */
+  destructionDetail: boolean;
+  /** D3 collapse dust: share of each cloud's puffs (sprites grow to cover
+   * the same air). The sight-blocking haze and the debris itself — solid —
+   * are identical on every tier. */
+  collapseDust: number;
+  /** D4 falling wrecks: share of the flames and smoke their trail and their
+   * landing fire emit (into the D1 particle pool). The wreck itself, its
+   * explosion and the street scorch are on every tier — the wreck is solid. */
+  wreckFire: number;
+  /** S7 kill-streak smoke: share of its puff emission rate (the trail
+   * thins, never shortens). Cosmetic — the streak is on the scoreboard too. */
+  streakSmoke: number;
   /** S5 wind litter: share of each block's scraps kept (stride thinning). */
   litter: number;
   /** S5 moon light shafts (the quarter-res ShaftsPass; off skips it). */
@@ -152,6 +181,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     steamDensity: 1,
     microRadius: 2,
     signAnimation: true,
+    jumbotronReplay: true,
     windowInteriors: true,
     cityLife: 1,
     facadeLife: true,
@@ -159,6 +189,13 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     streetPaint: true,
     holeDecor: 1,
     roofDetail: true,
+    courseGhost: true,
+    impacts: 1,
+    missileDebris: 1,
+    destructionDetail: true,
+    collapseDust: 1,
+    wreckFire: 1,
+    streakSmoke: 1,
     litter: 1,
     lightShafts: true,
     heatShimmer: true,
@@ -183,6 +220,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     steamDensity: 1,
     microRadius: 2,
     signAnimation: true,
+    jumbotronReplay: true,
     windowInteriors: true,
     cityLife: 0.7,
     facadeLife: true,
@@ -190,6 +228,13 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     streetPaint: true,
     holeDecor: 1,
     roofDetail: true,
+    courseGhost: true,
+    impacts: 0.75,
+    missileDebris: 0.75,
+    destructionDetail: true,
+    collapseDust: 0.75,
+    wreckFire: 0.75,
+    streakSmoke: 1,
     litter: 1,
     lightShafts: true,
     heatShimmer: true,
@@ -214,6 +259,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     steamDensity: 1,
     microRadius: 2,
     signAnimation: true,
+    jumbotronReplay: true,
     windowInteriors: true,
     cityLife: 0.45,
     facadeLife: false,
@@ -221,6 +267,13 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     streetPaint: true,
     holeDecor: 1,
     roofDetail: false,
+    courseGhost: true,
+    impacts: 0.5,
+    missileDebris: 0.5,
+    destructionDetail: false,
+    collapseDust: 0.5,
+    wreckFire: 0.5,
+    streakSmoke: 0.5,
     litter: 0.5,
     lightShafts: true,
     heatShimmer: true,
@@ -245,6 +298,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     steamDensity: 0.5,
     microRadius: 1,
     signAnimation: false,
+    jumbotronReplay: false,
     windowInteriors: false,
     cityLife: 0.3,
     facadeLife: false,
@@ -252,6 +306,13 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     streetPaint: false,
     holeDecor: 0,
     roofDetail: false,
+    courseGhost: false,
+    impacts: 0.25,
+    missileDebris: 0.3,
+    destructionDetail: false,
+    collapseDust: 0.3,
+    wreckFire: 0.35,
+    streakSmoke: 0.5,
     litter: 0.34,
     lightShafts: false,
     heatShimmer: false,
@@ -420,6 +481,30 @@ export const FEATURE_TIERS: readonly {
     note: "additive ground decals",
   },
   {
+    feature: "S1 jumbotrons + headline tickers",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "one instanced draw; canvases repaint on events only; the ticker crawl follows L7 sign animation",
+  },
+  {
+    feature: "S1 LAST KILL replay shot",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "off",
+    note: "one 256×144 pass per kill; Mobile: uniform flip to the static livery card",
+  },
+  {
+    feature: "S1 leader follow spot",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "it points at the leader, so it is identical on every tier (visibility parity); a beam slot, no draw",
+  },
+  {
     feature: "L8 rooftop props (pools, fans, flags)",
     high: "full",
     medium: "full",
@@ -548,6 +633,14 @@ export const FEATURE_TIERS: readonly {
     note: "uniform guard: the S1 paint alone",
   },
   {
+    feature: "D2 broken edges — rebar, jagged concrete",
+    high: "full",
+    medium: "full",
+    low: "off",
+    mobile: "off",
+    note: "uniform guard: flat slabs and dark rooms; the holes and rubble are solid on every tier",
+  },
+  {
     feature: "Window interiors (parallax rooms)",
     high: "full",
     medium: "full",
@@ -565,12 +658,68 @@ export const FEATURE_TIERS: readonly {
     note: "solid",
   },
   {
+    feature: "S3 stunt course rings",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "guidance: one instanced draw, non-collidable",
+  },
+  {
+    feature: "S3 course record ghost",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "off",
+    note: "one translucent draw; MOBILE keeps the rings only",
+  },
+  {
     feature: "R2 roof dressing — fine detail (drains, hatches, rods, dishes)",
     high: "full",
     medium: "full",
     low: "off",
     mobile: "off",
     note: "instance count only; HVAC, ducts, solar, davits, lamps stay",
+  },
+  {
+    feature: "D3 collapse debris and rubble",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "solid: the crash check, the camera arm and the bots collide with every falling chunk and rubble slab",
+  },
+  {
+    feature: "D3 collapse dust — puffs",
+    high: "full",
+    medium: "reduced",
+    low: "reduced",
+    mobile: "reduced",
+    note: "40 / 30 / 20 / 12 puffs per cloud, each bigger to cover the same air; the sight-blocking haze is the same on every tier",
+  },
+  {
+    feature: "D1 bullet impacts — sparks, dust, glass, decals, burning patches",
+    high: "full",
+    medium: "reduced",
+    low: "reduced",
+    mobile: "reduced",
+    note: "1200 / 900 / 600 / 300 particles, 48 / 40 / 32 / 24 facade damage slots, 6 / 5 / 4 / 3 burns; not solid, cosmetic only",
+  },
+  {
+    feature: "D4 falling wrecks — trail flames + smoke, landing fire",
+    high: "full",
+    medium: "reduced",
+    low: "reduced",
+    mobile: "reduced",
+    note: "emission 100 / 75 / 50 / 35 %; the wreck (solid), its explosion and the street scorch stay on every tier",
+  },
+  {
+    feature: "S7 kill-streak smoke",
+    high: "full",
+    medium: "full",
+    low: "reduced",
+    mobile: "reduced",
+    note: "puff emission 100 / 100 / 50 / 50 %; one tinted Points draw for every streaking plane; the scoreboard glow carries the streak on every tier",
   },
   {
     feature: "S5 fog banks (drifting haze between the towers)",

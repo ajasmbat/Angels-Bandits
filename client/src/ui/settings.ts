@@ -27,6 +27,10 @@ export interface Settings {
   master: number;
   engine: number;
   voice: number;
+  /** S2 soundtrack volume (slider position, like the others)… */
+  music: number;
+  /** …and its on/off switch: off mutes the score and idles its scheduler. */
+  musicOn: boolean;
   /** U1 haptics: on/off as the player chose, or null = the device default
    * (on for a coarse pointer), resolved at boot and never written back. */
   haptics: boolean | null;
@@ -40,6 +44,10 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = {
   master: 1,
   engine: 1,
   voice: 1,
+  // The score sits under the game: it starts below full, the player can
+  // bring it up.
+  music: 0.7,
+  musicOn: true,
   haptics: null,
   autoFire: null,
 };
@@ -66,6 +74,8 @@ export function clampSettings(raw: unknown): Settings {
     master: num(o.master, 0, 1, d.master),
     engine: num(o.engine, 0, 1, d.engine),
     voice: num(o.voice, 0, 1, d.voice),
+    music: num(o.music, 0, 1, d.music),
+    musicOn: typeof o.musicOn === "boolean" ? o.musicOn : d.musicOn,
     haptics: typeof o.haptics === "boolean" ? o.haptics : d.haptics,
     autoFire: typeof o.autoFire === "boolean" ? o.autoFire : d.autoFire,
   };
@@ -110,6 +120,11 @@ export function saveSettings(
 export function volumeGain(position: number): number {
   const p = clamp(position, 0, 1);
   return p * p;
+}
+
+/** The soundtrack's gain: the slider's, or 0 (muted) when switched off. */
+export function musicGain(s: Pick<Settings, "music" | "musicOn">): number {
+  return s.musicOn ? volumeGain(s.music) : 0;
 }
 
 /**
@@ -180,19 +195,30 @@ const AUTOPILOT_EASE_M = 40;
 /** Pitch command per radian of attitude error, and its clamp. */
 const AUTOPILOT_GAIN = 3;
 const AUTOPILOT_MAX_PITCH = 0.6;
+/** Roll command per radian of real roll (F7): full stick past ~30°. */
+const AUTOPILOT_ROLL_GAIN = 2;
 
 /** The autopilot's command for this frame. Guns are never part of it. */
-export function autopilotInput(pitch: number, altitude: number): FlightInput {
+export function autopilotInput(
+  pitch: number,
+  altitude: number,
+  roll = 0,
+): FlightInput {
   const below = clamp((AUTOPILOT_SAFE_ALT - altitude) / AUTOPILOT_EASE_M, 0, 1);
   const target = AUTOPILOT_CLIMB * below;
+  // F7: `roll` is the airframe's REAL roll (flight.ts realRoll). Roll the
+  // wings level the short way (inverted included), and since pitch input
+  // moves the nose toward the plane's own up, sign it by cos(roll) — rolled
+  // past 90° a pull would head for the ground.
   return {
     turn: 0,
-    roll: 0,
-    pitch: clamp(
-      (target - pitch) * AUTOPILOT_GAIN,
-      -AUTOPILOT_MAX_PITCH,
-      AUTOPILOT_MAX_PITCH,
-    ),
+    roll: clamp(-roll * AUTOPILOT_ROLL_GAIN, -1, 1),
+    pitch:
+      clamp(
+        (target - pitch) * AUTOPILOT_GAIN,
+        -AUTOPILOT_MAX_PITCH,
+        AUTOPILOT_MAX_PITCH,
+      ) * Math.cos(roll),
     throttle: AUTO_THROTTLE,
   };
 }

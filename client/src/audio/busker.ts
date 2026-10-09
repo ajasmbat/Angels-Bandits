@@ -9,6 +9,13 @@
 // One voice at a time, by design: the nearest busker is the one you hear.
 
 import type { Vec3 } from "@angels-bandits/common/world";
+import {
+  BAR_S,
+  EIGHTH_S,
+  PROGRESSION_LENGTH,
+  barIndex,
+  nextGrid,
+} from "./music-model";
 import { spatialize } from "./spatial";
 
 /** Share of the city bus at the performer's feet. */
@@ -16,9 +23,10 @@ const BUSKER_WEIGHT = 0.55;
 /** Full level inside this distance, silent past BUSKER_FAR (3D), meters. */
 const BUSKER_NEAR = 10;
 export const BUSKER_FAR = 75;
-/** Eighth notes at 100 bpm. */
-const NOTE_S = 0.3;
-/** Am – F – C – G, four bars of eight plucks: root, fifth, octave, third… */
+/** Eighth notes on the S2 soundtrack's 120 bpm grid. */
+const NOTE_S = EIGHTH_S;
+/** Am – F – C – G, four bars of eight plucks: root, fifth, octave, third…
+ * — the same chord on the same bar as the score and the plaza pad. */
 const CHORDS: readonly (readonly number[])[] = [
   [110, 164.81, 220, 261.63, 329.63, 261.63, 220, 164.81],
   [87.31, 130.81, 174.61, 220, 261.63, 220, 174.61, 130.81],
@@ -47,7 +55,6 @@ export const buskerGain = (d: number): number =>
 export class Busker {
   private voice: Voice | null = null;
   private nextNoteAt = 0;
-  private note = 0;
   private level = 0;
 
   constructor(private readonly city: { readonly bus: GainNode | null }) {}
@@ -66,24 +73,21 @@ export class Busker {
     const now = v.ctx.currentTime;
     v.out.gain.setTargetAtTime(BUSKER_WEIGHT * this.level, now, 0.25);
     if (sp) v.pan.pan.setTargetAtTime(sp.pan, now, 0.1);
-    if (this.level <= 0.001) {
-      this.nextNoteAt = now;
-      return;
-    }
-    // Schedule each pluck just ahead of its beat (after a hidden tab, pick
-    // the beat back up from now rather than firing a backlog).
-    if (now > this.nextNoteAt + NOTE_S) this.nextNoteAt = now;
+    if (this.level <= 0.001) return;
+    // Schedule each pluck just ahead of its beat, on the shared grid (after
+    // a hidden tab, pick the beat back up rather than firing a backlog).
+    if (now > this.nextNoteAt) this.nextNoteAt = nextGrid(now, NOTE_S);
     while (now + 0.12 >= this.nextNoteAt) {
-      const bar = CHORDS[Math.floor(this.note / 8) % CHORDS.length] ?? [];
-      const f = bar[this.note % 8] ?? 220;
       const at = this.nextNoteAt;
+      const barAt = Math.floor(at / BAR_S + 1e-6) * BAR_S;
+      const bar = CHORDS[barIndex(barAt) % PROGRESSION_LENGTH] ?? [];
+      const f = bar[Math.round((at - barAt) / NOTE_S) % 8] ?? 220;
       v.body.frequency.setValueAtTime(f, at);
       v.shimmer.frequency.setValueAtTime(f * 2, at);
       v.env.gain.cancelScheduledValues(at);
       v.env.gain.setValueAtTime(0.0001, at);
       v.env.gain.linearRampToValueAtTime(1, at + 0.006);
       v.env.gain.exponentialRampToValueAtTime(0.02, at + NOTE_S * 1.6);
-      this.note++;
       this.nextNoteAt += NOTE_S;
     }
   }

@@ -16,16 +16,39 @@
 // resumeToken on the backoff in ./reconnect.ts, and only reports onClose
 // once that has failed — the server answered as a different player, or the
 // resume window ran out.
+//
+// D2: the room's destroyed-chunk set lives HERE, in `cityDamage`, not in the
+// game loop's handlers: those attach only after the city build and shader
+// pre-warm, and a `chunks` batch dropped while booting would leave this
+// client colliding with walls everyone else has shot away for the rest of
+// the session. main.ts binds it to the city once the city exists.
+// D3: so do the room's collapses (`collapses`), for the same reason: a
+// collapse dropped while booting would leave a building standing here that
+// everyone else saw fall.
+//
+// X1: the room's missiles in the air live here too (`missiles`), for the
+// same reason — a strike announced while this client boots must still
+// whistle and land on time. main.ts consumes them on the synced clock.
 
+import { CityDamage, decodeChunkIds } from "@angels-bandits/common/city";
+import {
+  CollapseField,
+  type CollapseWire,
+  collapseChunks,
+} from "@angels-bandits/common/city/collapse";
 import type { CityEvent } from "@angels-bandits/common/cityevents";
 import {
   CONNECT_TIMEOUT_MS,
   SERVER_SILENCE_MS,
   TICK_UP_HZ,
 } from "@angels-bandits/common/constants";
+import { STREAK_TIERS, isMedalKind } from "@angels-bandits/common/medals";
 import { decodeSnapshotEntry } from "@angels-bandits/common/net";
 import type {
+  AwardMsg,
   BotsConfigMsg,
+  CourseBoardMsg,
+  CourseResultMsg,
   DamageMsg,
   DeathMsg,
   NewsHeliMsg,
@@ -37,6 +60,10 @@ import type {
   SnapshotMsg,
   WelcomeMsg,
 } from "@angels-bandits/common/protocol";
+import {
+  type MissileStrike,
+  decodeMissile,
+} from "@angels-bandits/common/strike";
 import type { Vec3 } from "@angels-bandits/common/world";
 import { PoseCadence, RenderClock } from "./clock";
 import { InterpDelay } from "./delay";
@@ -51,12 +78,21 @@ export interface GameSocketEvents {
   onDeath?: (msg: DeathMsg) => void;
   onRespawn?: (msg: RespawnMsg) => void;
   onScores?: (scores: ScoreEntry[]) => void;
+  /** S7: the server's credit for one kill — medals, and a tier crossing. */
+  onAward?: (msg: AwardMsg) => void;
   onBotsConfig?: (msg: BotsConfigMsg) => void;
   /** L1: a server-accepted event the city reacts to (reactions.ts). */
   onCityEvent?: (event: CityEvent) => void;
   onNewsHeli?: (msg: NewsHeliMsg) => void;
   /** W2: our `away` took effect — the return will come with a respawn. */
   onAwayStarted?: () => void;
+  /** D3: a building section started to collapse (already applied to
+   * `cityDamage` and `collapses`) — audio, shake, dust. */
+  onCollapse?: (c: CollapseWire) => void;
+  /** S3: the official result of our own finished course run. */
+  onCourseResult?: (msg: CourseResultMsg) => void;
+  /** S3: a course leaderboard changed (ghost attached when a record fell). */
+  onCourseBoard?: (msg: CourseBoardMsg) => void;
   /** W2: the socket dropped; reconnecting in the background. */
   onReconnecting?: () => void;
   /** W2: back as the same player. `welcome` is the fresh one: roster,
@@ -95,6 +131,18 @@ export class GameSocket {
   /** The latest welcome — replaced by each resume (same id, fresh token). */
   welcome: WelcomeMsg;
   readonly events: GameSocketEvents = {};
+  /** D2: what the server has destroyed in this room — reset from every
+   * welcome (a resume may land in a room with less damage), grown by every
+   * `chunks` batch, whether or not anything is listening yet. */
+  readonly cityDamage = new CityDamage();
+  /** D3: the room's collapse records and their debris — replayed from every
+   * welcome, grown by every `collapse` message. Its fallen chunks are marked
+   * in `cityDamage` from the records alone (never the welcome's set). */
+  readonly collapses = new CollapseField();
+  /** X1: missiles announced in this room and not yet consumed, by id — from
+   * every welcome and every `missile` event, listening or not. The frame
+   * loop removes each once it has landed (or gone stale). */
+  readonly missiles = new Map<number, MissileStrike>();
   private ws: WebSocket;
   /** W2: "open" → "reconnecting" on a drop → back, or "lost" for good. */
   private state: "open" | "reconnecting" | "lost" = "open";
@@ -128,6 +176,8 @@ export class GameSocket {
   ) {
     this.ws = ws;
     this.welcome = welcome;
+    this.replayDestruction(welcome);
+    this.addMissiles(welcome.missiles);
     this.attach(ws);
     // W2 watchdog: snapshots arrive at TICK_DOWN_HZ, so a visible tab that
     // hears nothing for SERVER_SILENCE_MS is on a dead (half-open) socket —
@@ -250,12 +300,40 @@ export class GameSocket {
       return;
     }
     this.ws = next.ws;
+    // Missile ids are per room: a resume into another room starts over.
+    if (next.welcome.roomId !== this.welcome.roomId) this.missiles.clear();
     this.welcome = next.welcome;
+    this.replayDestruction(next.welcome);
+    this.addMissiles(next.welcome.missiles);
     this.attach(next.ws);
     this.delay.reset(); // the outage's arrival gaps are not jitter
     this.lastHeardMs = performance.now();
     this.state = "open";
     this.events.onResumed?.(next.welcome);
+  }
+
+  /** A welcome's whole destruction: the broken set, then every collapse. */
+  private replayDestruction(welcome: WelcomeMsg): void {
+    this.cityDamage.reset(decodeChunkIds(welcome.destroyed));
+    const records = Array.isArray(welcome.collapses) ? welcome.collapses : [];
+    this.collapses.reset(records);
+    for (const c of records) this.cityDamage.collapse(collapseChunks(c));
+  }
+
+  /** One live collapse: its chunks fall, its debris starts. */
+  private applyCollapse(c: CollapseWire): void {
+    this.cityDamage.collapse(collapseChunks(c));
+    this.collapses.add(c);
+    this.events.onCollapse?.(c);
+  }
+
+  /** Hold every decodable missile of a welcome/event list (dupes are
+   * harmless: same id, same strike). */
+  private addMissiles(list: readonly unknown[] | undefined): void {
+    for (const w of list ?? []) {
+      const m = decodeMissile(w);
+      if (m) this.missiles.set(m.id, m);
+    }
   }
 
   private lost(): void {
@@ -334,9 +412,16 @@ export class GameSocket {
     });
   }
 
-  /** Report flying into a building or the ground. */
-  sendCrash(): void {
-    this.send({ type: "crash" });
+  /** Report flying into a building or the ground — or (D4) into the
+   * falling wreck `wreck` (its id), which the server may credit. `t` (D3) is
+   * the server time the movers — and collapse debris — were posed at for
+   * the check. */
+  sendCrash(wreck: number | null = null, t: number | null = null): void {
+    this.send({
+      type: "crash",
+      ...(wreck !== null && { wreck }),
+      ...(t !== null && { t }),
+    });
   }
 
   /** Claim the room's shared bot count. The server may clamp or silently
@@ -452,8 +537,53 @@ export class GameSocket {
       case "awayStarted":
         this.events.onAwayStarted?.();
         break;
+      case "missile":
+        this.addMissiles([msg.m]);
+        break;
+      case "chunks":
+        this.cityDamage.apply(decodeChunkIds(msg.d));
+        break;
+      case "collapse":
+        this.applyCollapse(msg.c);
+        break;
+      case "courseResult":
+        this.events.onCourseResult?.(msg);
+        break;
+      case "courseBoard":
+        this.events.onCourseBoard?.(msg);
+        break;
+      case "award": {
+        const award = sanitizeAward(msg);
+        if (award) this.events.onAward?.(award);
+        break;
+      }
       case "welcome":
         break; // already consumed by open()
     }
   }
+}
+
+/**
+ * S7: an `award` as this build understands it, or null when its shape is
+ * junk. Medal kinds this build does not know (a later D3/S4 addition seen
+ * by an old tab) are dropped rather than rendered as nonsense, and an
+ * unknown tier is dropped the same way.
+ */
+export function sanitizeAward(msg: AwardMsg): AwardMsg | null {
+  if (typeof msg.id !== "string" || typeof msg.victimId !== "string") {
+    return null;
+  }
+  const medals = Array.isArray(msg.medals)
+    ? msg.medals.filter(isMedalKind)
+    : [];
+  const tier = (STREAK_TIERS as readonly unknown[]).includes(msg.tier)
+    ? msg.tier
+    : undefined;
+  return {
+    type: "award",
+    id: msg.id,
+    victimId: msg.victimId,
+    medals: [...new Set(medals)],
+    ...(tier !== undefined && { tier }),
+  };
 }

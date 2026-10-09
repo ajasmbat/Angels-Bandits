@@ -427,6 +427,18 @@
       #killfeed .crash {
         color: #ffc46b;
       }
+      /* S7: a kill's medals ride its own line; a streak tier gets one. */
+      #killfeed .medal {
+        margin-left: 6px;
+        padding: 0 4px;
+        color: #1a1420;
+        background: #ffd36b;
+        font-size: 10px;
+        letter-spacing: 0.1em;
+      }
+      #killfeed .entry.streak {
+        color: #ffd36b;
+      }
       /* U2: lines the local pilot is in — the accent bar, a faint wash. */
       #killfeed .entry.self {
         padding-right: 6px;
@@ -522,6 +534,24 @@
       #scoreboard tr.bot td {
         color: #ffa26b;
       }
+      /* S7: a pilot on a kill streak glows in their streak-smoke colour. */
+      #scoreboard tr.streak td:first-child {
+        font-weight: bold;
+      }
+      #scoreboard tr.streak-3 td:first-child {
+        text-shadow: 0 0 6px #ffa424;
+      }
+      #scoreboard tr.streak-5 td:first-child {
+        text-shadow:
+          0 0 6px #ff3c9c,
+          0 0 12px #ff3c9c;
+      }
+      #scoreboard tr.streak-10 td:first-child {
+        text-shadow:
+          0 0 6px #36e2ff,
+          0 0 14px #36e2ff,
+          0 0 22px #36e2ff;
+      }
       /* Shared bot-count control (approved concept 2 "Segment Bar"): eleven
          notches under the roster, one per bot seat, filled in the same orange
          the bot rows use — the bar literally counts the BANDIT rows the room
@@ -594,6 +624,64 @@
       }
       #killcam.open {
         display: block;
+      }
+      /* S7: the end-of-life card — kills, accuracy, best streak, medals. */
+      #killcam-card {
+        margin-top: 10px;
+        color: #e8f6fa;
+        font-size: 11px;
+        letter-spacing: 0.18em;
+        line-height: 1.8;
+      }
+      #killcam-card .medals {
+        color: #ffd36b;
+      }
+      /* S7: own medals, stacked under the top edge; each row pops in. */
+      #medal-toast {
+        position: fixed;
+        left: 50%;
+        top: 18%;
+        transform: translateX(-50%);
+        text-align: center;
+        pointer-events: none;
+        user-select: none;
+        opacity: 0;
+        transition: opacity 0.5s ease-out;
+      }
+      #medal-toast.on {
+        opacity: 1;
+        transition: none;
+      }
+      #medal-toast .medal {
+        color: #ffd36b;
+        font-size: 22px;
+        font-weight: bold;
+        letter-spacing: 0.3em;
+        text-shadow:
+          0 0 10px #ffb02088,
+          0 1px 3px #000;
+      }
+      #medal-toast.on .medal {
+        animation: medal-pop 0.35s cubic-bezier(0.2, 1.6, 0.4, 1) both;
+      }
+      #medal-toast.on .medal:nth-child(2) {
+        animation-delay: 0.12s;
+      }
+      #medal-toast.on .medal:nth-child(3) {
+        animation-delay: 0.24s;
+      }
+      #medal-toast.on .medal:nth-child(n + 4) {
+        animation-delay: 0.36s;
+      }
+      @keyframes medal-pop {
+        from {
+          opacity: 0;
+          transform: scale(1.8);
+        }
+        to {
+          opacity: 1;
+          transform: scale(1);
+        }
       }
       #killcam-count {
         margin-top: 8px;
@@ -1049,6 +1137,13 @@
       body.touch #aim-mode-toast {
         margin-top: 18px;
       }
+      /* S7: under the top band, smaller — a phone's middle is the fight. */
+      body.touch #medal-toast {
+        top: calc(var(--hud-top-band) + 44px);
+      }
+      body.touch #medal-toast .medal {
+        font-size: 15px;
+      }
       body.touch #perfhud {
         top: calc(var(--hud-top-band) + 4px);
       }
@@ -1343,6 +1438,121 @@
       }
       /* W2: the socket dropped and is resuming in the background — the game
          keeps running underneath, so a small banner, not a card. */
+      /* S3 race readout (ui/race-hud.ts): top centre, under the reconnect
+         banner's slot. Hidden until a hint, a run or a result. */
+      #race {
+        position: fixed;
+        top: 44px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: none;
+        text-align: center;
+        pointer-events: none;
+        user-select: none;
+        color: #e8f6fa;
+        text-shadow: 0 1px 2px #000;
+        letter-spacing: 0.15em;
+      }
+      #race.open {
+        display: block;
+      }
+      #race .title {
+        font-size: 11px;
+        color: #9fd8e8;
+      }
+      #race .clock {
+        font-size: 26px;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 0.05em;
+      }
+      #race .detail {
+        font-size: 10px;
+        color: #9fd8e8;
+      }
+      #race.hint .clock {
+        font-size: 13px;
+        color: #3dff8a;
+        letter-spacing: 0.2em;
+      }
+      #race.run .clock {
+        color: #ffc43d;
+      }
+      #race.gold .clock,
+      #race.gold .title {
+        color: #ffd24a;
+      }
+      #race.silver .clock,
+      #race.silver .title {
+        color: #d8e4ee;
+      }
+      #race.bronze .clock,
+      #race.bronze .title {
+        color: #e0995a;
+      }
+      #race.record .detail {
+        color: #ff4fd8;
+      }
+      body.touch #race {
+        top: calc(var(--safe-t, 0px) + 36px);
+      }
+      body.touch #race .clock {
+        font-size: 20px;
+      }
+      /* S3 course leaderboards under the roster (ui/course-board.ts). */
+      #course-board {
+        margin-top: 12px;
+        border-top: 1px solid #27e0c044;
+        padding-top: 8px;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px 18px;
+        font-size: 11px;
+      }
+      #course-board .course .head {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        color: #9fd8e8;
+        font-size: 10px;
+        letter-spacing: 0.12em;
+      }
+      #course-board .course .cuts {
+        color: #5a8a98;
+        white-space: nowrap;
+      }
+      #course-board .row {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        font-variant-numeric: tabular-nums;
+      }
+      #course-board .row span:first-child {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #course-board .row.empty {
+        color: #5a6b78;
+      }
+      #course-board .row.gold span:last-child {
+        color: #ffd24a;
+      }
+      #course-board .row.silver span:last-child {
+        color: #d8e4ee;
+      }
+      #course-board .row.bronze span:last-child {
+        color: #e0995a;
+      }
+      #course-board .row.self {
+        color: #27e0c0;
+      }
+      #course-board .note {
+        grid-column: 1 / -1;
+        color: #5a6b78;
+        font-size: 9px;
+        letter-spacing: 0.12em;
+        text-align: center;
+      }
       #reconnecting {
         position: fixed;
         top: 12px;
@@ -2087,6 +2297,7 @@
     <div id="touch-coach" aria-hidden="true"></div>
     <div id="killfeed"></div>
     <div id="comms"></div>
+    <div id="race"></div>
     <div id="scoreboard">
       <h2>SCOREBOARD</h2>
       <table>
@@ -2112,11 +2323,17 @@
         ></div>
         <div class="scale"><span>0</span><span id="bots-max">11</span></div>
       </div>
+      <!-- S3: stunt course leaderboards, built by ui/course-board.ts. -->
+      <div id="course-board"></div>
     </div>
     <div id="killcam">
       <div id="killcam-cause"></div>
+      <!-- S7: the life that just ended (ui/hud.ts showLifeCard). -->
+      <div id="killcam-card"></div>
       <div id="killcam-count"></div>
     </div>
+    <!-- S7: own medals pop in here (ui/hud.ts showMedals). -->
+    <div id="medal-toast" aria-live="polite"></div>
     <div id="fade"></div>
     <div id="join">
       <button

@@ -5,6 +5,17 @@
 // Conventions (match Three.js so the client can feed angles straight into an
 // Euler of order "YXZ"): yaw 0 faces -Z, positive pitch is nose-up, positive
 // roll is left-wing-down. `turn` input +1 is a right-hand turn (yaw decreases).
+//
+// F7 aerobatics: the attitude is integrated as a quaternion every step —
+// pitch about the plane's OWN right axis, A/D a real roll about its own nose,
+// the turn about world-up (reversed when inverted) — and stored back as the
+// YXZ Euler above, pitch in [−π/2, π/2]. Euler YXZ covers every attitude, so
+// a loop is simply pitch running up to vertical and back down with yaw and
+// roll both flipped by π (the gimbal flip), and every reader of yaw/pitch
+// (flightForward, the pose quat, plane.rotation) stays valid unchanged. The
+// quaternion is rebuilt each step rather than stored, so no new field has to
+// survive every spread of a FlightState, and level flight with the wings
+// level takes an exact Euler fast path — bit-identical to the old model.
 
 import {
   BANK_ANGLE,
@@ -25,6 +36,8 @@ import {
   PITCH_LIMIT,
   PITCH_RATE,
   RESPAWN_SPEED,
+  ROLL_LEVEL_RATE,
+  ROLL_RATE,
   SOFT_CEILING,
   SPEED_RESPONSE,
   THROTTLE_RATE,
@@ -42,10 +55,17 @@ export interface FlightState {
   pos: Vec3;
   /** Heading, radians. 0 faces -Z; decreases in a right-hand turn. */
   yaw: number;
-  /** Radians, positive = nose up. */
+  /** Radians, positive = nose up. In [−π/2, π/2]: past vertical the attitude
+   * reads as yaw + π, roll + π (F7). */
   pitch: number;
-  /** Radians, bank angle (visual + assist). */
+  /** Radians, the drawn roll in (−π, π]: the airframe's REAL roll (A/D, and
+   * π when inverted — F7) plus the cosmetic turn lean `bank`. */
   roll: number;
+  /** The cosmetic turn lean, rad — the bank spring's position (F6). It steers
+   * nothing. Optional: absent means ALL of `roll` is cosmetic (real roll 0),
+   * the shape of bots' spawn literals and older states; stepFlight always
+   * returns it. */
+  bank?: number;
   /** Roll rate, rad/s — the bank spring's velocity (F6). Optional: a state
    * built without it (bots' spawn literals, tests) starts the spring at
    * rest; stepFlight always returns it. */
@@ -73,6 +93,9 @@ export interface FlightInput {
    * airbrake bleeds it. Boost ignores it — a burn is the pilot overriding.
    * Optional: bots and remotes leave it out, bit-identical to before. */
   cornerCap?: number;
+  /** Clamp pitch to ±this, rad — the pre-F7 envelope. Bots fly with
+   * PITCH_LIMIT (they never loop); absent = full aerobatics. */
+  pitchLimit?: number;
 }
 
 /** Fresh level flight state at `pos` (canonicalized): spawn / respawn shape.
@@ -84,6 +107,7 @@ export function createFlightState(pos: Vec3, yaw = 0): FlightState {
     yaw,
     pitch: 0,
     roll: 0,
+    bank: 0,
     rollRate: 0,
     speed: RESPAWN_SPEED,
     targetSpeed: MAX_SPEED,
@@ -168,32 +192,56 @@ export function stepFlight(
 
   // Mouse-aim steering: inputs are rate commands at capped rates; neutral
   // input holds the current attitude (no auto-level of pitch or yaw).
-  const yaw = state.yaw - turnIn * turnRate * dt;
-  const pitch = clamp(
-    state.pitch + pitchIn * pitchRate * dt,
-    -PITCH_LIMIT,
-    PITCH_LIMIT,
-  );
+  const bank0 = state.bank ?? state.roll;
+  const real0 = wrapAngle(state.roll - bank0);
+  const dYaw = -turnIn * turnRate * dt;
+  const dPitch = pitchIn * pitchRate * dt;
+  const limit = input.pitchLimit;
+  let yaw: number;
+  let pitch: number;
+  let real: number;
+  if (limit !== undefined) {
+    // The pre-F7 model, exactly (bots): world-yaw turn, clamped pitch. Bots
+    // never roll, so their real roll stays 0.
+    yaw = state.yaw + dYaw;
+    pitch = clamp(state.pitch + dPitch, -limit, limit);
+    real = real0;
+  } else if (
+    real0 === 0 &&
+    rollIn === 0 &&
+    Math.abs(state.pitch + dPitch) <= PITCH_LIMIT
+  ) {
+    // Wings level, upright, well clear of vertical: the quaternion step below
+    // reduces to exactly this Euler update — taken directly, cheap and exact.
+    yaw = state.yaw + dYaw;
+    pitch = state.pitch + dPitch;
+    real = 0;
+  } else {
+    rotateAttitude(state.yaw, state.pitch, real0, dYaw, dPitch, rollIn, dt);
+    yaw = att.yaw;
+    pitch = att.pitch;
+    real = att.roll;
+  }
 
-  // Roll: banks into the turn on its own; A/D deflect it further; releasing
-  // everything eases the wings level (roll is visual, it steers nothing).
-  // F6: a critically damped spring (natural frequency BANK_FREQ) toward the
-  // target, stepped in closed form — exact for any dt while the target holds
-  // — so it leans in from rest and rolls out with no overshoot at every
-  // frame rate. x is roll minus its target, v the roll rate. F7: the target
-  // is capped at ±MAX_VISUAL_BANK, so turn + same-side A/D can't draw the
-  // plane past knife-edge.
-  const rollTarget = clamp(
-    -turnIn * BANK_ANGLE + rollIn * BANK_ANGLE,
+  // Cosmetic lean: banks into the turn on its own; releasing the stick eases
+  // it out (it steers nothing). F6: a critically damped spring (natural
+  // frequency BANK_FREQ) toward the target, stepped in closed form — exact
+  // for any dt while the target holds — so it leans in from rest and rolls
+  // out with no overshoot at every frame rate. x is the lean minus its
+  // target, v its rate. Capped at ±MAX_VISUAL_BANK. F7: A/D no longer feed
+  // it — they roll the airframe for real (rotateAttitude).
+  const bankTarget = clamp(
+    -turnIn * BANK_ANGLE,
     -MAX_VISUAL_BANK,
     MAX_VISUAL_BANK,
   );
-  const rx = state.roll - rollTarget;
+  const rx = bank0 - bankTarget;
   const rv = state.rollRate ?? 0;
   const rDecay = Math.exp(-BANK_FREQ * dt);
   const rc = rv + BANK_FREQ * rx;
-  const roll = rollTarget + (rx + rc * dt) * rDecay;
+  const bank = bankTarget + (rx + rc * dt) * rDecay;
   const rollRate = (rv - BANK_FREQ * rc * dt) * rDecay;
+  const roll = real === 0 ? bank : wrapAngle(real + bank);
 
   // W/S move the commanded speed within [MIN_SPEED, MAX_SPEED].
   const targetSpeed = clamp(
@@ -255,7 +303,198 @@ export function stepFlight(
     z: state.pos.z + fwd.z * speed * dt,
   });
 
-  return { pos, yaw, pitch, roll, rollRate, speed, targetSpeed };
+  return { pos, yaw, pitch, roll, bank, rollRate, speed, targetSpeed };
+}
+
+/** Wrap an angle to (−π, π]. */
+function wrapAngle(a: number): number {
+  if (a > -Math.PI && a <= Math.PI) return a;
+  const w = Math.atan2(Math.sin(a), Math.cos(a));
+  return w === -Math.PI ? Math.PI : w;
+}
+
+/** The airframe's REAL roll, rad in (−π, π]: the drawn roll minus the
+ * cosmetic lean. 0 = wings level upright, ±π = inverted (F7). */
+export function realRoll(state: Pick<FlightState, "roll" | "bank">): number {
+  return wrapAngle(state.roll - (state.bank ?? state.roll));
+}
+
+/**
+ * The airframe's right and up axes (unit, world frame) for its REAL attitude
+ * — the cosmetic lean left out: the frame pitch input rotates about (right)
+ * and toward (up), and the one the chase camera and the instructor read.
+ * Writes into `out` (no allocation).
+ */
+export function flightAxes(
+  state: Pick<FlightState, "yaw" | "pitch" | "roll" | "bank">,
+  out: { right: Vec3; up: Vec3 },
+): { right: Vec3; up: Vec3 } {
+  const r = realRoll(state);
+  const sy = Math.sin(state.yaw);
+  const cy = Math.cos(state.yaw);
+  const sp = Math.sin(state.pitch);
+  const cp = Math.cos(state.pitch);
+  const sr = Math.sin(r);
+  const cr = Math.cos(r);
+  // Columns of Ry(yaw)·Rx(pitch)·Rz(roll): body +X and +Y.
+  out.right.x = cr * cy + sr * sp * sy;
+  out.right.y = sr * cp;
+  out.right.z = -cr * sy + sr * sp * cy;
+  out.up.x = -sr * cy + cr * sp * sy;
+  out.up.y = cr * cp;
+  out.up.z = sr * sy + cr * sp * cy;
+  return out;
+}
+
+/** Where rotateAttitude leaves its result (module scratch: no allocation). */
+const att = { yaw: 0, pitch: 0, roll: 0 };
+
+/** |pitch| from which the turn axis blends from world-up to the body's own
+ * up, reaching it at vertical, rad. At vertical a world-up turn only spins
+ * the plane about its nose — and the Euler flip there reverses which way —
+ * while the body up is continuous through the flip. */
+const TURN_AXIS_BLEND = PITCH_LIMIT;
+
+/**
+ * One attitude step as a quaternion (F7), into `att`. q = Ry(yaw)·Rx(pitch)·
+ * Rz(roll); then
+ * - the turn rotates about a WORLD axis: world-up when upright (the old
+ *   flat turn), world-down when inverted (so the nose still goes to the
+ *   pilot's right), the body's own up toward knife-edge (weights cos²/sin²
+ *   of the roll) and toward vertical (TURN_AXIS_BLEND);
+ * - pitch rotates about the body's right axis, A/D about its nose;
+ * and, decomposed back to YXZ, a released roll eases to the nearest of
+ * upright or inverted at ROLL_LEVEL_RATE, scaled by cos(pitch) (at vertical
+ * "level" is undefined). `prevYaw` keeps yaw continuous (unwrapped) except
+ * for the π of a gimbal flip.
+ */
+function rotateAttitude(
+  prevYaw: number,
+  pitch: number,
+  roll: number,
+  dYaw: number,
+  dPitch: number,
+  rollIn: number,
+  dt: number,
+): void {
+  const hy = prevYaw / 2;
+  const hp = pitch / 2;
+  const hr = roll / 2;
+  const cy = Math.cos(hy);
+  const sy = Math.sin(hy);
+  const cp = Math.cos(hp);
+  const sp = Math.sin(hp);
+  const cr = Math.cos(hr);
+  const sr = Math.sin(hr);
+  // Ry·Rx·Rz (Three.js "YXZ").
+  let x = sy * cp * sr + cy * sp * cr;
+  let y = sy * cp * cr - cy * sp * sr;
+  let z = cy * cp * sr - sy * sp * cr;
+  let w = cy * cp * cr + sy * sp * sr;
+
+  // Turn axis: world-up · cos|cos| + body-up · sin² of the roll, blended to
+  // body-up near vertical. Never zero: both terms lean onto body-up.
+  if (dYaw !== 0) {
+    const cRoll = Math.cos(roll);
+    const sRoll = Math.sin(roll);
+    const sYaw = Math.sin(prevYaw);
+    const cYaw = Math.cos(prevYaw);
+    const sPit = Math.sin(pitch);
+    const cPit = Math.cos(pitch);
+    const ux = -sRoll * cYaw + cRoll * sPit * sYaw;
+    const uy = cRoll * cPit;
+    const uz = sRoll * sYaw + cRoll * sPit * cYaw;
+    const g = clamp(
+      (Math.abs(pitch) - TURN_AXIS_BLEND) / (Math.PI / 2 - TURN_AXIS_BLEND),
+      0,
+      1,
+    );
+    const kw = cRoll * Math.abs(cRoll) * (1 - g);
+    const ku = sRoll * sRoll * (1 - g) + g;
+    let ax = ku * ux;
+    let ay = kw + ku * uy;
+    let az = ku * uz;
+    const al = Math.hypot(ax, ay, az) || 1;
+    ax /= al;
+    ay /= al;
+    az /= al;
+    const s = Math.sin(dYaw / 2);
+    const c = Math.cos(dYaw / 2);
+    // q = (axis, dYaw) ⊗ q — a world-frame rotation.
+    const qx = ax * s;
+    const qy = ay * s;
+    const qz = az * s;
+    const nx = c * x + qx * w + qy * z - qz * y;
+    const ny = c * y - qx * z + qy * w + qz * x;
+    const nz = c * z + qx * y - qy * x + qz * w;
+    const nw = c * w - qx * x - qy * y - qz * z;
+    x = nx;
+    y = ny;
+    z = nz;
+    w = nw;
+  }
+  // q = q ⊗ Rx(dPitch) — about the body's right axis.
+  if (dPitch !== 0) {
+    const s = Math.sin(dPitch / 2);
+    const c = Math.cos(dPitch / 2);
+    const nx = x * c + w * s;
+    const ny = y * c + z * s;
+    const nz = z * c - y * s;
+    const nw = w * c - x * s;
+    x = nx;
+    y = ny;
+    z = nz;
+    w = nw;
+  }
+  // q = q ⊗ Rz(dRoll) — about the body's nose. Works at any pitch.
+  const dRoll = rollIn * ROLL_RATE * dt;
+  if (dRoll !== 0) {
+    const s = Math.sin(dRoll / 2);
+    const c = Math.cos(dRoll / 2);
+    const nx = x * c + y * s;
+    const ny = y * c - x * s;
+    const nz = z * c + w * s;
+    const nw = w * c - z * s;
+    x = nx;
+    y = ny;
+    z = nz;
+    w = nw;
+  }
+  const n = Math.hypot(x, y, z, w) || 1;
+  x /= n;
+  y /= n;
+  z /= n;
+  w /= n;
+
+  // Back to YXZ (Three.js Euler.setFromRotationMatrix, same branches).
+  const m23 = 2 * (y * z - w * x);
+  let outYaw: number;
+  let outRoll: number;
+  const outPitch = Math.asin(-clamp(m23, -1, 1));
+  if (Math.abs(m23) < 0.9999999) {
+    outYaw = Math.atan2(2 * (x * z + w * y), 1 - 2 * (x * x + y * y));
+    outRoll = Math.atan2(2 * (x * y + w * z), 1 - 2 * (x * x + z * z));
+  } else {
+    outYaw = Math.atan2(-2 * (x * z - w * y), 1 - 2 * (y * y + z * z));
+    outRoll = 0;
+  }
+
+  // Self-levelling of a released roll toward the nearest of 0 or ±π.
+  const hold = 1 - Math.min(1, Math.abs(rollIn));
+  if (hold > 0) {
+    const target =
+      Math.abs(outRoll) <= Math.PI / 2 ? 0 : outRoll > 0 ? Math.PI : -Math.PI;
+    const err = target - outRoll;
+    const k = (1 - Math.exp(-ROLL_LEVEL_RATE * dt)) * hold * Math.cos(outPitch);
+    outRoll += err * k;
+    // Snap the last hair so the exact fast path takes over again.
+    if (Math.abs(target - outRoll) < 1e-6) outRoll = target === 0 ? 0 : target;
+    if (outRoll === -Math.PI) outRoll = Math.PI;
+  }
+
+  att.yaw = prevYaw + wrapAngle(outYaw - prevYaw);
+  att.pitch = outPitch;
+  att.roll = outRoll;
 }
 
 const SIN_CLIMB_FREE = Math.sin(CLIMB_FREE_ANGLE);

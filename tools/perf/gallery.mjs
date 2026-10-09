@@ -292,6 +292,20 @@ try {
         }
       }, v);
     await pin();
+    if (v.chew) {
+      // D2: break the building once, before the frames settle.
+      const r = await page.evaluate((c) => {
+        const [ex, ey, ez] = c.eye;
+        const [ax, ay, az] = c.at;
+        return window.__ab.chew(
+          { x: ex, y: ey, z: ez },
+          { x: ax, y: ay, z: az },
+          c.rounds,
+          c.spread,
+        );
+      }, v.chew);
+      console.log("chew", v.name, JSON.stringify(r));
+    }
     if (v.raf) {
       await page.evaluate((v) => {
         const hold = () => {

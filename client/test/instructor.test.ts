@@ -14,6 +14,8 @@ import { RESPAWN_SPEED } from "@angels-bandits/common/constants";
 import {
   type FlightState,
   createFlightState,
+  flightAxes,
+  flightForward,
   handlingRates,
   stepFlight,
 } from "@angels-bandits/common/flight";
@@ -28,6 +30,13 @@ import {
   createInstructor,
   instructorInput,
 } from "../src/game/instructor";
+import {
+  aimDirNdc,
+  createAimDir,
+  dragAimDir,
+  recentreAimDir,
+  stepAimDir,
+} from "../src/game/touch-aim-dir";
 import { BASE_FOV } from "../src/game/zoom";
 
 const DEG = Math.PI / 180;
@@ -41,13 +50,26 @@ const stubCamera = () =>
     lookAt: () => {},
   }) as unknown as import("three").PerspectiveCamera;
 
+const axes = { right: { x: 0, y: 0, z: 0 }, up: { x: 0, y: 0, z: 0 } };
+/** Heading of the airframe's wing line (its right axis), rad. */
+function wingHeading(f: FlightState): number {
+  const r = flightAxes(f, axes).right;
+  return Math.atan2(r.z, r.x);
+}
+
 /** One player: plane, chase eye and instructor, stepped like main.ts does. */
 class Loop {
   readonly cam = stubCamera();
   readonly chase = new ChaseCamera();
   ins: InstructorState = createInstructor();
-  /** Heading swept so far, rad (sum of |Δyaw|, so a spin can't cancel out). */
+  /** Heading swept so far, rad (sum of |Δ|, so a spin can't cancel out).
+   * F7: the heading of the WING LINE (the airframe's right axis) — the
+   * nose's yaw flips by π over the top and is undefined at vertical, while
+   * the wings keep their heading through a loop and turn with any spin. */
   swept = 0;
+  /** The same, counted only while the nose is steeper than 70°: a
+   * pirouette's signature. */
+  steepSwept = 0;
 
   constructor(public f: FlightState) {
     this.chase.snapTo(f);
@@ -66,13 +88,16 @@ class Loop {
     const none = { yaw: 0, pitch: 0 };
     this.ins = instructorInput(err, none, false, dt, this.ins, rates);
     const turn = this.ins.turn;
-    const yaw0 = this.f.yaw;
+    const wing0 = wingHeading(this.f);
     this.f = stepFlight(
       this.f,
       { turn, pitch: this.ins.pitch, roll: 0, throttle },
       dt,
     );
-    this.swept += Math.abs(this.f.yaw - yaw0);
+    const dWing = wingHeading(this.f) - wing0;
+    const swing = Math.abs(Math.atan2(Math.sin(dWing), Math.cos(dWing)));
+    this.swept += swing;
+    if (Math.abs(this.f.pitch) > 70 * DEG) this.steepSwept += swing;
     // The turn lead reads the commanded yaw rate, as main's leadYawRate does.
     const lead = -turn * rates.turnRate;
     this.chase.update(this.cam, this.f, dt, undefined, undefined, 0, lead);
@@ -206,7 +231,53 @@ function hold(
     loop.step(ndc, dt);
     if (Math.abs(loop.f.pitch) > Math.abs(extreme)) extreme = loop.f.pitch;
   }
-  return { swept: loop.swept, extreme };
+  return { swept: loop.swept, steepSwept: loop.steepSwept, extreme };
+}
+
+/** The nose's angle in the vertical plane of heading 0 (+ = climbing). */
+function noseAngle(f: FlightState): number {
+  const fw = flightForward(f);
+  return Math.atan2(fw.y, -fw.z);
+}
+
+/**
+ * Fly at full throttle from level flight at 90 m/s, heading 0, with the
+ * cursor at `ndc(loop)` each frame, until the nose has swept a full circle in
+ * the vertical plane (or 20 s). Returns the time, the airframe's up (world y)
+ * over the top and at the end, the final heading, and the wing-line sweeps.
+ */
+function loopWith(
+  ndc: (loop: Loop) => { x: number; y: number },
+  fps: number,
+  init?: (loop: Loop) => void,
+) {
+  const dt = 1 / fps;
+  const loop = new Loop(plane(200, 90));
+  init?.(loop);
+  let t = 0;
+  let turned = 0;
+  let a = noseAngle(loop.f);
+  let upAtTop = Number.NaN;
+  while (turned < 2 * Math.PI && t < 20) {
+    loop.step(ndc(loop), dt, 1);
+    t += dt;
+    const a1 = noseAngle(loop.f);
+    const before = turned;
+    turned += Math.atan2(Math.sin(a1 - a), Math.cos(a1 - a));
+    a = a1;
+    if (before < Math.PI && turned >= Math.PI) {
+      upAtTop = flightAxes(loop.f, axes).up.y;
+    }
+  }
+  const fw = flightForward(loop.f);
+  return {
+    t,
+    upAtTop,
+    up: flightAxes(loop.f, axes).up.y,
+    heading: Math.atan2(-fw.x, -fw.z),
+    swept: loop.swept,
+    steepSwept: loop.steepSwept,
+  };
 }
 
 describe("no flat spin near vertical (F7)", () => {
@@ -220,6 +291,7 @@ describe("no flat spin near vertical (F7)", () => {
       expect(extreme).toBeGreaterThan(60 * DEG);
     });
 
+    // F7: there is no limit any more — held there it pulls over the top.
     it(`cursor held high (0, 0.5) climbs to the limit, no turn — ${fps} fps`, () => {
       const { swept, extreme } = hold({ x: 0, y: 0.5 }, 200, 6, fps);
       expect(swept).toBeLessThan(10 * DEG);
@@ -234,30 +306,108 @@ describe("no flat spin near vertical (F7)", () => {
   }
 
   it("a cursor a hair off-centre while vertical drifts, it doesn't pirouette", () => {
-    // Was ~330° in 6 s; heading authority now fades out near vertical.
-    expect(hold({ x: 0.1, y: 0.5 }, 200, 6).swept).toBeLessThan(150 * DEG);
-    expect(hold({ x: 0.1, y: -0.5 }, 590, 6).swept).toBeLessThan(150 * DEG);
+    // Was ~330° in 6 s, all of it at vertical; heading authority now fades
+    // out near vertical. F7: the nose no longer stops there — it goes over
+    // the top and the cursor's right offset is an honest turn once it can
+    // turn again — so the spin is counted while the nose is steep.
+    expect(hold({ x: 0.1, y: 0.5 }, 200, 6).steepSwept).toBeLessThan(90 * DEG);
+    expect(hold({ x: 0.1, y: -0.5 }, 590, 6).steepSwept).toBeLessThan(90 * DEG);
   });
 
   for (const ndc of [
     { x: 0.3, y: 0.35 },
     { x: 0.6, y: 0.35 },
   ]) {
-    it(`at the pitch limit, a cursor up and right (${ndc.x}, ${ndc.y}) brings the nose off it and turns right`, () => {
+    it(`near vertical, a cursor up and right (${ndc.x}, ${ndc.y}) brings the nose off it and turns right`, () => {
+      // F7: there is no pitch limit to sit at any more; start the eye
+      // settled behind an 82° climb instead.
       const dt = 1 / 60;
-      const loop = new Loop(plane(100, 90));
-      for (let i = 0; i < 4 / dt; i++) loop.step({ x: 0, y: 0.5 }, dt);
-      expect(loop.f.pitch).toBeGreaterThan(80 * DEG);
-      const yaw0 = loop.f.yaw;
+      const loop = new Loop(plane(100, 90, 82 * DEG));
+      for (let i = 0; i < 1 / dt; i++) {
+        loop.f = stepFlight(
+          loop.f,
+          { turn: 0, pitch: 0, roll: 0, throttle: 0 },
+          dt,
+        );
+        loop.chase.update(loop.cam, loop.f, dt);
+      }
       let off = -1;
+      let turn = 0;
       for (let i = 0; i < 2 / dt; i++) {
         loop.step(ndc, dt);
-        if (off < 0 && loop.f.pitch < 75 * DEG) off = (i + 1) * dt;
+        turn += loop.ins.turn * dt;
+        if (off < 0 && Math.abs(loop.f.pitch) < 75 * DEG) off = (i + 1) * dt;
       }
       expect(off).toBeGreaterThan(0);
       expect(off).toBeLessThan(2);
-      expect(loop.f.yaw).toBeLessThan(yaw0 - 10 * DEG); // right = yaw down
+      // The pilot's right, upright or (over the top) inverted, and no
+      // pirouette on the way.
+      expect(turn).toBeGreaterThan(0.2);
+      expect(loop.steepSwept).toBeLessThan(90 * DEG);
     });
+  }
+
+  // F7b (ANGE-EGBXX6): the loops themselves, flown through the camera.
+  for (const fps of FPS) {
+    for (const [y, maxT] of [
+      [0.9, 8],
+      [0.5, 16],
+    ]) {
+      it(`a cursor held above the pipper (0, ${y}) flies a complete loop, straight — ${fps} fps`, () => {
+        const run = loopWith(() => ({ x: 0, y }), fps);
+        expect(run.t).toBeLessThan(maxT);
+        expect(run.upAtTop).toBeLessThan(-0.95); // inverted over the top
+        expect(run.up).toBeGreaterThan(0.95); // upright out of it
+        expect(Math.abs(run.heading)).toBeLessThan(10 * DEG);
+        expect(run.swept).toBeLessThan(10 * DEG);
+      });
+    }
+
+    for (const [x, maxSteep] of [
+      [0.1, 45],
+      [-0.1, 45],
+      [0.2, 70],
+    ]) {
+      it(`a mouse pull-through a little off-centre (${x}, 0.9) loops without a pirouette — ${fps} fps`, () => {
+        // The offset is an honest turn wherever the turn has authority, but
+        // the wing line must not spin while the nose is steep (pre-F7:
+        // ~330°). A full pull crosses the steep band in ~1.4 s, so even a
+        // full-rate spin there sweeps only ~70–80° (measured with a
+        // world-up turn axis at vertical and no fade) — about twice what an
+        // honest pull-through sweeps (~30° at 0.1, ~57° at 0.2).
+        const run = loopWith(() => ({ x, y: 0.9 }), fps);
+        expect(run.t).toBeLessThan(8);
+        expect(run.steepSwept).toBeLessThan(maxSteep * DEG);
+        expect(run.up).toBeGreaterThan(0.95);
+      });
+    }
+
+    for (const dx of [0, 60]) {
+      it(`a touch drag held up the screen (${dx} px/s across) flies a complete loop — ${fps} fps`, () => {
+        // M7's world-anchored aim, dragged at 600 px/s through the view the
+        // pilot sees (F7: the drag turns in the camera's own frame).
+        const dt = 1 / fps;
+        const aim = createAimDir();
+        const ndc = { x: 0, y: 0 };
+        const run = loopWith(
+          (loop) => {
+            const fr = loop.chase.aimFrame(loop.f, 0);
+            dragAimDir(aim, dx * dt, -600 * dt, 1, fr.up);
+            stepAimDir(aim, loop.f, true, dt);
+            aimDirNdc(aim.dir, fr, BASE_FOV, ASPECT, ndc);
+            return ndc;
+          },
+          fps,
+          (loop) => recentreAimDir(aim, loop.f),
+        );
+        expect(run.t).toBeLessThan(8);
+        expect(run.upAtTop).toBeLessThan(-0.95);
+        expect(run.up).toBeGreaterThan(0.95);
+        // ~42° honest at 60 px/s across; ~70° with the spin mutant above.
+        expect(run.steepSwept).toBeLessThan((dx === 0 ? 10 : 60) * DEG);
+        if (dx === 0) expect(Math.abs(run.heading)).toBeLessThan(10 * DEG);
+      });
+    }
   }
 
   for (const pitchDeg of [65, 75]) {

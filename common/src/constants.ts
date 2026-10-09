@@ -225,8 +225,20 @@ export const BANK_FREQ = 7;
  * flat turn. The bank spring never overshoots its target, so roll itself
  * stays inside ±this. Roll is visual only, so bots fly exactly as before. */
 export const MAX_VISUAL_BANK = 1.4;
-/** Pitch is clamped to ±this, rad (~85° — arcade mouse-aim never goes vertical). */
+/** The old pitch clamp, rad (~85°). The flight model no longer clamps (F7
+ * aerobatics: pitch rotates about the plane's own right axis, through
+ * vertical and over the top); this is now the envelope bots fly inside
+ * (flight.ts holdPitchEnvelope) and the bound the corner manager's pull-up
+ * probe plans within. */
 export const PITCH_LIMIT = 1.48;
+/** Full A/D roll rate, rad/s (F7): A/D roll the airframe for real about its
+ * own nose — a 360° aileron roll in ~2.5 s. */
+export const ROLL_RATE = 2.5;
+/** Exponential self-levelling of a REAL roll once A/D is released, 1/s
+ * (F7): the wings ease back to the nearest of upright or inverted (~1 s to
+ * 5%), so a half roll left alone stays inverted and a 360° roll ends level.
+ * Scaled by cos(pitch): at vertical "level" is undefined and it rests. */
+export const ROLL_LEVEL_RATE = 3;
 /** Player collision-sphere radius, meters. */
 export const PLAYER_RADIUS = 2;
 /** Respawn altitude, meters — above every rooftop (tallest landmark is 250 m). */
@@ -595,6 +607,112 @@ export const BULLET_LIFETIME_S = BULLET_RANGE / BULLET_SPEED;
  * the shooter. Symmetric: client hit detection on human shots AND the server's
  * bot-gunnery test both read it. 7.5 since F1 (easy-to-fly aim help). */
 export const HIT_RADIUS = 7.5;
+
+// --- D2 breakable buildings (common/src/city/destruction.ts) ---
+/** Target facade bay / depth slice of a chunk, meters: a tier of width w gets
+ * max(1, round(w / CHUNK_BAY)) bays (≈13–27 m each). */
+export const CHUNK_BAY = 20;
+/** Target floor band of a chunk, meters (≈ three storeys). */
+export const CHUNK_FLOOR = 12;
+/** Hit points of one chunk: 9 rounds of BULLET_DAMAGE, ~0.9 s on target. */
+export const CHUNK_HP = 60;
+/** Once this share of the city's chunks is gone nothing more breaks (no
+ * regeneration until D5, so the always-on bot arena must not rot away). */
+export const DESTROY_CAP = 0.25;
+/** A plane's death blows a hole: chunks within this radius of the death site
+ * (point-to-box) take DEATH_BLAST_DAMAGE, falling off linearly to 0. */
+export const DEATH_BLAST_RADIUS = 14;
+export const DEATH_BLAST_DAMAGE = 220;
+/** Rubble piles on the street in front of a broken facade: at most this far
+ * out from the facade, m — the sidewalk minus the furniture strip, with
+ * 0.5 m to spare in front of the lamps and street trees. */
+export const RUBBLE_REACH = 3.5;
+/** Pile height per chunk that fell into a slot, m, and its cap (well under
+ * HOLE_MIN_FLOOR, and under BOT_MIN_ALT with a plane's radius to spare). */
+export const RUBBLE_STEP = 1.2;
+export const RUBBLE_MAX_HEIGHT = 4;
+/** A chunk drops its rubble on the nearest open tier-0 face within this
+ * distance of its centre, m; further in, it makes none. */
+export const RUBBLE_FALL_RANGE = 30;
+
+// --- D3 collapses (common/src/city/collapse.ts) ---
+/** A floor band with fewer than this share of its chunks standing can no
+ * longer carry what is above it: everything over it collapses. */
+export const COLLAPSE_BAND_MIN = 0.5;
+/** Survivors of a failed band this close to its centre (share of the band's
+ * width/depth) carry the section straight down — a pancake; further off
+ * centre it topples toward the missing side. */
+export const COLLAPSE_SYMMETRY = 0.12;
+/** Gravity for falling debris, m/s². */
+export const COLLAPSE_GRAVITY = 9.81;
+/** The beat between the collapse event and the first movement, ms: the
+ * rumble starts, dust sifts down, and a pilot has a moment to pull away. */
+export const COLLAPSE_LEAD_MS = 600;
+/** Pancake: each floor band above the lowest starts this much later, ms, so
+ * floors drop in a cascade and none overtakes the one under it. */
+export const COLLAPSE_BAND_STAGGER_MS = 90;
+/** Pancake: largest tilt a falling chunk reaches, rad (under π/4, so it
+ * always comes to rest flat). */
+export const COLLAPSE_PANCAKE_TILT = 0.3;
+/** Topple: angular acceleration = K · g / section height (a rod tipping
+ * over its base edge), clamped to [MIN, MAX] rad/s². */
+export const COLLAPSE_TOPPLE_K = 1.5;
+export const COLLAPSE_TOPPLE_ALPHA_MIN = 0.08;
+export const COLLAPSE_TOPPLE_ALPHA_MAX = 1.5;
+/** Topple: tilt at which the section breaks into separate chunks, rad. */
+export const COLLAPSE_TOPPLE_BREAK = 0.9;
+/** A landed chunk squashes into a rubble slab this share of its height
+ * (≈1.4 m for a 12 m floor band) over COLLAPSE_SQUASH_MS. */
+export const COLLAPSE_RUBBLE_RATIO = 0.12;
+export const COLLAPSE_SQUASH_MS = 400;
+/** No new collapse starts once this share of the room's chunks is broken or
+ * fallen (a bound on debris, the welcome and the renderer). */
+export const COLLAPSE_CAP = 0.5;
+/** At most this many collapse events start per room per tick; buildings
+ * left over are evaluated on the next one. */
+export const COLLAPSE_TICK_LIMIT = 4;
+/** Bots refuse to fly into an active collapse's zone until this long after
+ * its last chunk has come to rest, ms. */
+export const COLLAPSE_ZONE_TAIL_MS = 1500;
+/** Kill credit: a crash counts as crushed by falling debris when debris is
+ * within this much more than PLAYER_RADIUS of the on-record pose at the
+ * claimed crash time, m (the pose is up to POSE_AGE_MAX_MS old). */
+export const COLLAPSE_CREDIT_SLACK = 8;
+/** The dust cloud's life, ms (sight-blocking haze in the canyon). */
+export const COLLAPSE_DUST_MS = 20_000;
+
+// --- D4 downed planes (common/src/wreck.ts) ---
+/** A shot-down plane's wreck: the sphere it falls as, m — solid while it
+ * falls, and what its sweep stops on. */
+export const WRECK_RADIUS = 5;
+/** The fall: gravity toward a terminal sink rate (linear drag), m/s², m/s. */
+export const WRECK_GRAVITY = 20;
+export const WRECK_TERMINAL = 75;
+/** The death velocity's horizontal part bleeds off over this, s. */
+export const WRECK_DRIFT_TAU_S = 2.2;
+/** The corkscrew: radius it grows to (over WRECK_SPIRAL_TAU_S), m, and its
+ * turn rate, rad/s. */
+export const WRECK_SPIRAL_RADIUS = 14;
+export const WRECK_SPIRAL_TAU_S = 1.5;
+export const WRECK_SPIN_RATE = 2.4;
+/** The server's impact sweep step, ms (then bisected). */
+export const WRECK_STEP_MS = 20;
+/** Longest fall, ms: a wreck that has hit nothing by then explodes in the
+ * air (800 m ceiling ≈ 11.6 s of fall). */
+export const WRECK_MAX_MS = 12000;
+/** Falling wrecks a room holds at once; a shot death over the cap explodes
+ * in place (the D2 death blast), as before D4. */
+export const WRECKS_MAX = 8;
+/** The impact blows out chunks within this radius (point-to-box), taking
+ * WRECK_BLAST_DAMAGE falling off to 0 — well past the 14 m death blast. */
+export const WRECK_BLAST_RADIUS = 24;
+export const WRECK_BLAST_DAMAGE = 420;
+/** Wreck kill credit: a crash naming a wreck counts when the crasher's
+ * on-record position came within WRECK_RADIUS + PLAYER_RADIUS + this, m, of
+ * the wreck over the last WRECK_CREDIT_LOOKBACK_MS (the client collides on
+ * its delayed render clock). */
+export const WRECK_CREDIT_SLACK = 8;
+export const WRECK_CREDIT_LOOKBACK_MS = 1200;
 
 // --- Guns / heat model (heat is a 0..1 meter; overheating locks the guns) ---
 /** Minimum time between shots, ms (10 rounds/s, alternating wingtips). */

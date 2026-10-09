@@ -1,4 +1,5 @@
 import {
+  BANK_ANGLE,
   BOOST_MAX_SPEED,
   CORNER_BRAKE_DECEL,
   MAX_SPEED,
@@ -13,6 +14,7 @@ import {
   type FlightState,
   createFlightState,
   handlingRates,
+  realRoll,
   speedForRadius,
   stepFlight,
   turnRadius,
@@ -143,14 +145,20 @@ describe("stepFlight: steering", () => {
     expect(end.yaw).toBeGreaterThan(-2.5); // ...but nowhere near instant
   });
 
-  it("holding full pull-up caps pitch below vertical (no flip past 90°)", () => {
-    const end = fly(
-      cruiseAt(65, { x: 500, y: 300, z: 500 }),
-      { ...NEUTRAL, pitch: 1 },
-      10,
-    );
-    expect(end.pitch).toBeGreaterThan(1); // steep climb reached
-    expect(end.pitch).toBeLessThan(Math.PI / 2); // never vertical
+  it("holding full pull-up loops over the top: pitch reads within ±90°, inverted past vertical (F7)", () => {
+    // F7: no pitch cap — a held pull goes through vertical; YXZ stores that
+    // as pitch coming back down with yaw and roll flipped by π.
+    let s = cruiseAt(65, { x: 500, y: 300, z: 500 });
+    let peak = 0;
+    let inverted = false;
+    for (let i = 0; i < 4 * 60; i++) {
+      s = stepFlight(s, { ...NEUTRAL, pitch: 1 }, 1 / 60);
+      peak = Math.max(peak, s.pitch);
+      expect(Math.abs(s.pitch)).toBeLessThanOrEqual(Math.PI / 2);
+      if (Math.abs(realRoll(s)) > 3) inverted = true;
+    }
+    expect(peak).toBeGreaterThan(1.5); // reached vertical
+    expect(inverted).toBe(true); // and went over the top
   });
 
   it("a right turn auto-banks into the turn, and the bank levels out after release", () => {
@@ -173,21 +181,23 @@ describe("stepFlight: steering", () => {
     expect(end.roll).toBeGreaterThan(0.4);
   });
 
-  it("turn plus same-side A/D caps the bank at 1.4 rad, never past (F7)", () => {
-    // Left turn (turn −1 banks left = +roll) with left A/D asked for 2 rad.
+  it("turn plus same-side A/D caps the cosmetic lean at 1.4 rad, never past (F7)", () => {
+    // Left turn (turn −1 banks left = +roll) with left A/D. Since F7 (loops)
+    // A/D roll the airframe for real, so only the cosmetic lean (`bank`) is
+    // capped; it leans the full BANK_ANGLE into the turn.
     for (const fps of [30, 60, 144]) {
       let s = cruiseAt(65, { x: 500, y: 300, z: 500 });
       let peak = 0;
       for (let i = 0; i < 3 * fps; i++) {
         s = stepFlight(s, { ...NEUTRAL, turn: -1, roll: 1 }, 1 / fps);
-        peak = Math.max(peak, Math.abs(s.roll));
+        peak = Math.max(peak, Math.abs(s.bank ?? 0));
       }
       expect(peak).toBeLessThanOrEqual(1.4);
-      expect(s.roll).toBeCloseTo(1.4, 3); // it does get there
+      expect(s.bank).toBeCloseTo(1, 3); // it does get there
     }
   });
 
-  it("flipping turn + A/D side to side at the bank spring's period never exceeds 1.4 rad", () => {
+  it("flipping turn + A/D side to side at the bank spring's period never leans past 1.4 rad", () => {
     // The worst case for a spring is a target reversed while it is moving:
     // flip every half period of BANK_FREQ (7 rad/s ⇒ ~0.45 s).
     for (const fps of [30, 60, 144]) {
@@ -197,10 +207,12 @@ describe("stepFlight: steering", () => {
       for (let i = 0; i < 6 * fps; i++) {
         const side = Math.floor(i / half) % 2 === 0 ? 1 : -1;
         s = stepFlight(s, { ...NEUTRAL, turn: -side, roll: side }, 1 / fps);
-        peak = Math.max(peak, Math.abs(s.roll));
+        peak = Math.max(peak, Math.abs(s.bank ?? 0));
       }
       expect(peak).toBeLessThanOrEqual(1.4 + 1e-9);
-      expect(peak).toBeGreaterThan(1); // it really swung hard
+      // It really swung hard: the old bound was > 1 of a 1.4 target (71%); the
+      // lean now only follows the turn, so its target is BANK_ANGLE.
+      expect(peak).toBeGreaterThan(0.7 * BANK_ANGLE);
     }
   });
 

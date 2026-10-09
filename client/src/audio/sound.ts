@@ -18,6 +18,8 @@ export interface EngineSource {
 
 const MASTER_LEVEL = 0.5;
 export const OWN_ENGINE_LEVEL = 0.16;
+/** The own engine's share of its level at idle throttle — its quietest. */
+export const OWN_ENGINE_IDLE = 0.55;
 const REMOTE_ENGINE_LEVEL = 0.6;
 const GUN_LEVEL = 0.5;
 const WHOOSH_LEVEL = 0.7;
@@ -33,6 +35,14 @@ const SHIELD_LEVEL = 0.12;
 const VOICE_LEVEL = 0.9;
 const DUCK_LEVEL = 0.55;
 const DUCK_RAMP_S = 0.08;
+// S2 soundtrack: the whole score sums (worst case, every layer and sting at
+// full) to 6 dB under the own engine at idle, so the engine's pitch cue —
+// the F5 corner manager's only cue — always reads through it. Under a radio
+// line it ducks a further −6 dB on top of the sfx duck (≈ −11 dB in all).
+export const MUSIC_LEVEL = OWN_ENGINE_LEVEL * OWN_ENGINE_IDLE * 10 ** (-6 / 20);
+const MUSIC_DUCK_LEVEL = 0.5;
+/** Slider and mute moves glide instead of clicking. */
+const MUSIC_VOLUME_RAMP_S = 0.05;
 // Storm (ST2): thunder rumbles under the explosion level; the in-cloud
 // static bed is diegetic flavor, quieter than everything else.
 const THUNDER_LEVEL = 0.8;
@@ -55,6 +65,11 @@ const ENGINE_MAX_HZ = 135;
 /** Engine pitch at full boost speed (F2) — the burn climbs past full throttle. */
 const ENGINE_BOOST_HZ = 185;
 const BOOST_CUE_LEVEL = 0.45;
+/** X1 incoming-missile whistle: a clean rising TONE — nothing like the
+ * storm's filtered-noise thunder, so the two are never confused. */
+const WHISTLE_LEVEL = 0.32;
+const WHISTLE_FROM_HZ = 700;
+const WHISTLE_TO_HZ = 2400;
 
 /** A running context and its buses, for an add-on layer (L2 city ambience)
  * that builds its own nodes once and mixes into the existing chain. */
@@ -64,6 +79,9 @@ export interface MixBus {
   sfx: GainNode;
   /** The master, after the duck — where a send off `sfx` returns to. */
   master: GainNode;
+  /** The S2 soundtrack's input: music volume, then its own deeper radio
+   * duck, then `sfx`. */
+  music: GainNode;
 }
 
 /** Player volume multipliers (M6 settings), each a gain 0..1. */
@@ -73,6 +91,8 @@ export interface Volumes {
   engine: number;
   /** The radio voice bus. */
   voice: number;
+  /** The S2 soundtrack (0 = muted). */
+  music: number;
 }
 
 interface RemoteEngine {
@@ -87,6 +107,9 @@ export class GameAudio implements VoiceSink {
   /** Everything except the radio voice — ducked while a line is on air. */
   private sfx: GainNode | null = null;
   private voice: GainNode | null = null;
+  /** S2: the music volume stage, and the radio duck under it. */
+  private music: GainNode | null = null;
+  private musicDuck: GainNode | null = null;
   private noise: AudioBuffer | null = null;
   private ownOsc: OscillatorNode | null = null;
   private ownGain: GainNode | null = null;
@@ -104,7 +127,7 @@ export class GameAudio implements VoiceSink {
   private lastPingAt = Number.NEGATIVE_INFINITY;
   /** M6 settings: gain multipliers (already curved), applied to the buses
    * as they are built and to the engine levels every frame. */
-  private volumes: Volumes = { master: 1, engine: 1, voice: 1 };
+  private volumes: Volumes = { master: 1, engine: 1, voice: 1, music: 1 };
 
   /** Backgrounded (M2): the context is suspended on purpose, and the
    * per-frame ensure() must not wake it back up. */
@@ -164,6 +187,11 @@ export class GameAudio implements VoiceSink {
       this.voice = this.ctx.createGain();
       this.voice.gain.value = VOICE_LEVEL * this.volumes.voice;
       this.voice.connect(this.master);
+      this.musicDuck = this.ctx.createGain();
+      this.musicDuck.connect(this.sfx);
+      this.music = this.ctx.createGain();
+      this.music.gain.value = MUSIC_LEVEL * this.volumes.music;
+      this.music.connect(this.musicDuck);
       // 1 s of shared white noise for every burst-shaped sound.
       const len = this.ctx.sampleRate;
       this.noise = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
@@ -186,21 +214,33 @@ export class GameAudio implements VoiceSink {
     this.volumes = { ...v };
     if (this.master) this.master.gain.value = MASTER_LEVEL * v.master;
     if (this.voice) this.voice.gain.value = VOICE_LEVEL * v.voice;
+    if (this.ctx && this.music) {
+      this.music.gain.setTargetAtTime(
+        MUSIC_LEVEL * v.music,
+        this.ctx.currentTime,
+        MUSIC_VOLUME_RAMP_S,
+      );
+    }
   }
 
-  /** QA (`__ab.settings`): the live master and voice bus gains, or null
-   * before the audio context exists. */
-  busGains(): { master: number; voice: number } | null {
+  /** QA (`__ab.settings`): the live master, voice and music bus gains, or
+   * null before the audio context exists. `music` is the target the slider
+   * set (the live value glides there). */
+  busGains(): { master: number; voice: number; music: number } | null {
     if (!this.master || !this.voice) return null;
-    return { master: this.master.gain.value, voice: this.voice.gain.value };
+    return {
+      master: this.master.gain.value,
+      voice: this.voice.gain.value,
+      music: MUSIC_LEVEL * this.volumes.music,
+    };
   }
 
   /** The buses an add-on layer mixes into; null until the context runs
    * (first user gesture), so nothing downstream starts before the join. */
   mixBus(): MixBus | null {
     const ctx = this.ensure();
-    if (!ctx || !this.sfx || !this.master) return null;
-    return { ctx, sfx: this.sfx, master: this.master };
+    if (!ctx || !this.sfx || !this.master || !this.music) return null;
+    return { ctx, sfx: this.sfx, master: this.master, music: this.music };
   }
 
   /** Throttle fraction 0…1 from a commanded speed. */
@@ -240,7 +280,7 @@ export class GameAudio implements VoiceSink {
       alive
         ? OWN_ENGINE_LEVEL *
             this.volumes.engine *
-            (0.55 + 0.45 * t + 0.3 * boost01)
+            (OWN_ENGINE_IDLE + (1 - OWN_ENGINE_IDLE) * t + 0.3 * boost01)
         : 0,
       now,
       0.1,
@@ -449,6 +489,14 @@ export class GameAudio implements VoiceSink {
     this.sfx.gain.cancelScheduledValues(now);
     this.sfx.gain.setTargetAtTime(DUCK_LEVEL, now, DUCK_RAMP_S);
     this.sfx.gain.setTargetAtTime(1, now + buffer.duration / rate, DUCK_RAMP_S);
+    if (this.musicDuck) {
+      // The score ducks deeper than the effects, on the same timeline; an
+      // overlapping line re-arms the restore from its own end.
+      const duck = this.musicDuck.gain;
+      duck.cancelScheduledValues(now);
+      duck.setTargetAtTime(MUSIC_DUCK_LEVEL, now, DUCK_RAMP_S);
+      duck.setTargetAtTime(1, now + buffer.duration / rate, DUCK_RAMP_S);
+    }
     src.addEventListener("ended", onDone);
     src.start(now);
     return true;
@@ -599,6 +647,130 @@ export class GameAudio implements VoiceSink {
     if (nowMs - this.lastWhooshAt < 150) return;
     this.lastWhooshAt = nowMs;
     this.burst("bandpass", 2400, 300, 0.3, WHOOSH_LEVEL, pan);
+  }
+
+  /**
+   * D3 collapse at a world position: a deep rumble that swells through the
+   * `fallS` seconds the building takes to come down, then the crash of the
+   * bulk landing (sub thump + a broadband roar) and a long grumbling tail.
+   * `size01` (how much fell) scales both; distance attenuates like an
+   * explosion, but the rumble carries further.
+   */
+  collapse(
+    pos: Vec3,
+    listenerPos: Vec3,
+    listenerYaw: number,
+    fallS: number,
+    size01: number,
+  ): void {
+    const s = spatialize(listenerPos, listenerYaw, pos);
+    const level =
+      Math.min(1, s.gain * 10) * (0.55 + 0.45 * Math.min(1, size01));
+    const ctx = this.ensure();
+    if (!ctx || !this.sfx || !this.noise || level <= 0) return;
+    const now = ctx.currentTime;
+    const crashAt = now + Math.max(0.3, fallS);
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = s.pan;
+    panner.connect(this.sfx);
+    // Rumble: low-passed noise, swelling to the crash, then fading.
+    const rumble = ctx.createBufferSource();
+    rumble.buffer = this.noise;
+    rumble.loop = true;
+    const low = ctx.createBiquadFilter();
+    low.type = "lowpass";
+    low.frequency.setValueAtTime(90, now);
+    low.frequency.linearRampToValueAtTime(160, crashAt);
+    low.frequency.exponentialRampToValueAtTime(50, crashAt + 4);
+    low.Q.value = 0.8;
+    const rg = ctx.createGain();
+    rg.gain.setValueAtTime(0.001, now);
+    rg.gain.linearRampToValueAtTime(0.6 * level, now + 0.8);
+    rg.gain.linearRampToValueAtTime(0.9 * level, crashAt);
+    rg.gain.exponentialRampToValueAtTime(0.001, crashAt + 4.5);
+    rumble.connect(low).connect(rg).connect(panner);
+    rumble.start(now, Math.random());
+    rumble.stop(crashAt + 4.6);
+    // Crash: a broadband roar collapsing to a growl.
+    const roar = ctx.createBufferSource();
+    roar.buffer = this.noise;
+    roar.loop = true;
+    const band = ctx.createBiquadFilter();
+    band.type = "lowpass";
+    band.frequency.setValueAtTime(1400, crashAt);
+    band.frequency.exponentialRampToValueAtTime(70, crashAt + 2);
+    const cg = ctx.createGain();
+    cg.gain.setValueAtTime(0.001, now);
+    cg.gain.setValueAtTime(EXPLOSION_LEVEL * level, crashAt);
+    cg.gain.exponentialRampToValueAtTime(0.001, crashAt + 2.2);
+    roar.connect(band).connect(cg).connect(panner);
+    roar.start(now, Math.random());
+    roar.stop(crashAt + 2.3);
+    // Sub thump under the crash.
+    const sub = ctx.createOscillator();
+    sub.type = "sine";
+    sub.frequency.setValueAtTime(70, crashAt);
+    sub.frequency.exponentialRampToValueAtTime(22, crashAt + 1.2);
+    const sg = ctx.createGain();
+    sg.gain.setValueAtTime(0.001, now);
+    sg.gain.setValueAtTime(0.9 * level, crashAt);
+    sg.gain.exponentialRampToValueAtTime(0.001, crashAt + 1.4);
+    sub.connect(sg).connect(panner);
+    sub.start(now);
+    sub.stop(crashAt + 1.5);
+  }
+
+  /**
+   * X1: an incoming missile's whistle, rising from now until it lands in
+   * `durationS` (≤ MISSILE_WHISTLE_MS), placed at its impact point. Gain
+   * swells as it falls; cut dead at impact, where the blast takes over.
+   */
+  missileWhistle(
+    target: Vec3,
+    listenerPos: Vec3,
+    listenerYaw: number,
+    durationS: number,
+  ): void {
+    const s = spatialize(listenerPos, listenerYaw, target);
+    const level = Math.min(1, s.gain * 8) * WHISTLE_LEVEL;
+    const ctx = this.ensure();
+    if (!ctx || !this.sfx || level <= 0 || durationS <= 0.05) return;
+    const now = ctx.currentTime;
+    const end = now + durationS;
+    // A late start (joined mid-fall) picks the sweep up where it would be.
+    const done = 1 - Math.min(1, durationS / 2);
+    const fromHz = WHISTLE_FROM_HZ * (WHISTLE_TO_HZ / WHISTLE_FROM_HZ) ** done;
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(fromHz, now);
+    osc.frequency.exponentialRampToValueAtTime(WHISTLE_TO_HZ, end);
+    // A slow wobble: falling ordnance, not a test tone.
+    const lfo = ctx.createOscillator();
+    lfo.frequency.value = 7;
+    const lfoDepth = ctx.createGain();
+    lfoDepth.gain.value = 25;
+    lfo.connect(lfoDepth).connect(osc.frequency);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(level * (0.15 + 0.85 * done), now);
+    gain.gain.linearRampToValueAtTime(level, end - 0.02);
+    gain.gain.linearRampToValueAtTime(0, end);
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = s.pan;
+    osc.connect(gain).connect(panner).connect(this.sfx);
+    osc.start(now);
+    lfo.start(now);
+    osc.stop(end + 0.02);
+    lfo.stop(end + 0.02);
+  }
+
+  /** X1: a missile impact — the kill explosion plus a sharper, heavier
+   * crack, so a strike lands harder than a plane going down. */
+  missileBlast(pos: Vec3, listenerPos: Vec3, listenerYaw: number): void {
+    this.explosion(pos, listenerPos, listenerYaw);
+    const s = spatialize(listenerPos, listenerYaw, pos);
+    const level = Math.min(1, s.gain * 6);
+    this.burst("bandpass", 2600, 400, 0.25, EXPLOSION_LEVEL * level, s.pan);
+    this.burst("lowpass", 260, 35, 2.2, EXPLOSION_LEVEL * 0.8 * level, s.pan);
   }
 
   /** Kill explosion at a world position: low boom + rumble tail. */

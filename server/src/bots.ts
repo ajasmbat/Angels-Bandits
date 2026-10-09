@@ -48,6 +48,7 @@ import {
   opensOnStreets,
   segmentThroughHole,
 } from "@angels-bandits/common/city";
+import { collapseZoneHit } from "@angels-bandits/common/city/collapse";
 import {
   EMPTY_MOVERS,
   type MoverField,
@@ -148,6 +149,7 @@ import {
   flightForward,
   stepFlight,
 } from "@angels-bandits/common/flight";
+import { inHoleSpan } from "@angels-bandits/common/medals";
 import type {
   Pose,
   RosterEntry,
@@ -276,6 +278,15 @@ const wrapAngle = (a: number): number => {
 };
 
 const NEUTRAL: FlightInput = { pitch: 0, turn: 0, roll: 0, throttle: 0 };
+
+/** What a bot hands stepFlight: its stick inside the pre-F7 pitch envelope
+ * (the old ±PITCH_LIMIT clamp, exactly). Bots fly the shared model but never
+ * loop — their recovery holds a pull for seconds, which would now go over
+ * the top — and they never roll, so they stay on its exact Euler path. */
+const botInput = (input: FlightInput): FlightInput => ({
+  ...input,
+  pitchLimit: PITCH_LIMIT,
+});
 
 /** Proportional rate steering toward the (torus) delta `d`, inputs capped
  * below the player envelope; null for a zero delta (hold the stick). */
@@ -484,6 +495,9 @@ export class RoomBots {
   private contactPos = new Map<string, Vec3>();
   private nextIndex = 1;
   private tickCount = 0;
+  /** D3 telemetry (bot sim): probes refused because they would have
+   * entered an active collapse zone. */
+  zoneRefusals = 0;
   /** Room-level stream: mints per-bot seeds so bots stay deterministic. */
   private readonly rand: () => number;
 
@@ -540,6 +554,29 @@ export class RoomBots {
 
   get count(): number {
     return this.bots.size;
+  }
+
+  /**
+   * S7 THREAD THE NEEDLE: is `id` flying a hole — through one within
+   * `windowMs` (the transits every contact's track already records), or
+   * inside one's clear volume at `pos` right now? River bridge underpasses
+   * are street-graph edges, not holes, and never count.
+   */
+  threading(id: string, pos: Vec3, now: number, windowMs: number): boolean {
+    const transit = this.transits.get(id);
+    if (
+      transit &&
+      now - transit.at <= windowMs &&
+      this.edges[transit.edge]?.span.hole.kind !== "bridge"
+    ) {
+      return true;
+    }
+    for (const edge of this.edges) {
+      // Both directions share a span: test it once, on its +1 edge.
+      if (edge.dir !== 1 || edge.span.hole.kind === "bridge") continue;
+      if (inHoleSpan(edge.span, pos)) return true;
+    }
+    return false;
   }
 
   ids(): string[] {
@@ -745,6 +782,21 @@ export class RoomBots {
   }
 
   /**
+   * D3: would a probe sphere at `p` (posed at `t`) enter an active collapse
+   * zone that `from` — where the bot is now — is not already inside? Probes
+   * only: a bot steers clear of a collapse coming down, but the zone is not
+   * solid (the debris itself is, via collideBotMovers), and a bot caught
+   * inside one is never boxed in by it.
+   */
+  private inCollapseZone(p: Vec3, r: number, t: number, from?: Vec3): boolean {
+    const field = this.movers.collapses;
+    if (!field || field.list.length === 0) return false;
+    if (!collapseZoneHit(p, r, field.list, t, from)) return false;
+    this.zoneRefusals++;
+    return true;
+  }
+
+  /**
    * Is a (re)spawn at `pos` heading `yaw` (level) safe for a bot? The spawn
    * point and BOT_SPAWN_CLEAR_AHEAD of straight-ahead flight must miss the
    * city, the trees and the L2 movers — pickBotRespawn's predicate, so a
@@ -765,14 +817,17 @@ export class RoomBots {
       }
       // The overlapping spheres already tile the run, so trees need no sweep.
       if (collideNature(p, BOT_PROBE_RADIUS, this.nature)) return false;
+      const at = now + (s / BOT_SPAWN_SPEED) * 1000;
       if (
         collideBotMovers(
           p,
           BOT_PROBE_RADIUS + BOT_MOVER_CLEAR,
           this.movers,
           // Posed when the bot gets there, like blockedAlong: a jib slews.
-          now + (s / BOT_SPAWN_SPEED) * 1000,
-        )
+          at,
+        ) ||
+        // D3: never spawn into an active collapse.
+        this.inCollapseZone(p, BOT_PROBE_RADIUS, at)
       ) {
         return false;
       }
@@ -812,7 +867,7 @@ export class RoomBots {
       ) {
         this.decide(bot, now, contacts);
       }
-      bot.flight = stepFlight(bot.flight, bot.input, BOT_DT);
+      bot.flight = stepFlight(bot.flight, botInput(bot.input), BOT_DT);
 
       // Identical geometry to players: solids (H1 holes open) + ground, PLAYER_RADIUS —
       // plus the L2 movers a bot is allowed to hit (crane geometry and the
@@ -1417,13 +1472,14 @@ export class RoomBots {
         if (!next) return true;
         input = next;
       }
-      f = stepFlight(f, input, BOT_DT);
+      f = stepFlight(f, botInput(input), BOT_DT);
       const t = now + k * BOT_DT * 1000;
       if (
         hitsGround(f.pos, r) ||
         collideCity(f.pos, r, this.buildings, this.cityIndex) ||
         collideNature(f.pos, r, this.nature) ||
-        collideBotMovers(f.pos, r + BOT_MOVER_CLEAR, this.movers, t)
+        collideBotMovers(f.pos, r + BOT_MOVER_CLEAR, this.movers, t) ||
+        this.inCollapseZone(f.pos, r, t, bot.flight.pos)
       ) {
         return false;
       }
@@ -2037,6 +2093,10 @@ export class RoomBots {
       if (collideBotMovers(p, swept, this.movers, now + t * 1000)) {
         return true;
       }
+      // D3: an active collapse is a no-fly zone — entering it, not leaving.
+      if (this.inCollapseZone(p, radius, now + t * 1000, flight.pos)) {
+        return true;
+      }
     }
     return false;
   }
@@ -2058,7 +2118,7 @@ export class RoomBots {
     let next = 0;
     const times = BOT_CANYON_PROBE_TIMES;
     while (next < times.length) {
-      f = stepFlight(f, bot.input, BOT_DT);
+      f = stepFlight(f, botInput(bot.input), BOT_DT);
       t += BOT_DT;
       if (t + 1e-9 < (times[next] ?? 0)) continue;
       next++;
@@ -2068,12 +2128,13 @@ export class RoomBots {
       if (collideNature(p, radius, this.nature)) return true;
       if (
         this.probeMovers &&
-        collideBotMovers(
+        (collideBotMovers(
           p,
           radius + BOT_MOVER_CLEAR,
           this.movers,
           now + t * 1000,
-        )
+        ) ||
+          this.inCollapseZone(p, radius, now + t * 1000, bot.flight.pos))
       ) {
         return true;
       }
@@ -2112,9 +2173,13 @@ export class RoomBots {
     let f = flight;
     const steps = Math.round(RECOVER_LOOK_S / BOT_DT);
     for (let k = 1; k <= steps; k++) {
-      f = stepFlight(f, input, BOT_DT);
+      f = stepFlight(f, botInput(input), BOT_DT);
       const r = PLAYER_RADIUS + BOT_MOVER_CLEAR;
-      if (collideBotMovers(f.pos, r, this.movers, now + k * BOT_DT * 1000)) {
+      const at = now + k * BOT_DT * 1000;
+      if (
+        collideBotMovers(f.pos, r, this.movers, at) ||
+        this.inCollapseZone(f.pos, PLAYER_RADIUS, at, flight.pos)
+      ) {
         return true;
       }
       if (moversOnly) continue;

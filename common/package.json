@@ -13,6 +13,8 @@
     "./boost": "./src/boost.ts",
     "./city": "./src/city/index.ts",
     "./city/layout": "./src/city/layout.ts",
+    "./city/destruction": "./src/city/destruction.ts",
+    "./city/collapse": "./src/city/collapse.ts",
     "./city/street": "./src/city/street.ts",
     "./city/movers": "./src/city/movers.ts",
     "./city/newsheli": "./src/city/newsheli.ts",
@@ -21,12 +23,16 @@
     "./city/river": "./src/city/river.ts",
     "./city/roof-structures": "./src/city/roof-structures.ts",
     "./storm": "./src/storm.ts",
+    "./strike": "./src/strike.ts",
     "./weather": "./src/weather.ts",
     "./wind": "./src/wind.ts",
     "./fireworks": "./src/fireworks.ts",
     "./skytraffic": "./src/skytraffic.ts",
     "./protocol": "./src/protocol.ts",
     "./net": "./src/net.ts",
-    "./cityevents": "./src/cityevents.ts"
+    "./wreck": "./src/wreck.ts",
+    "./cityevents": "./src/cityevents.ts",
+    "./courses": "./src/courses.ts",
+    "./medals": "./src/medals.ts"
   }
 }

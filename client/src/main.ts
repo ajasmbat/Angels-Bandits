@@ -282,6 +282,7 @@ import {
 } from "./render/quality";
 import { Rain } from "./render/rain";
 import { CityReactor } from "./render/reactions";
+import { ReflectionProbe } from "./render/reflections";
 import { RemotePlanes } from "./render/remotes";
 import {
   MSAA_SAMPLES,
@@ -877,6 +878,17 @@ scene.add(searchlights.mesh);
 // by game/headlines.ts from the room's broadcasts (fed in onDeath/onScores).
 const jumbotrons = new Jumbotrons(city.cityBuildings, renderer);
 scene.add(jumbotrons.mesh);
+// S6 glass reflections: one camera-centred cube probe that glass towers,
+// puddles and the river sample (render/reflections.ts). It mirrors what is
+// worth seeing in glass — the sky dome and moon, the towers, the signs, the
+// screens, the street — drawn into its own layer; the lights join it once
+// the scene is built (below, before the pre-warm).
+const reflections = new ReflectionProbe(renderOpts.reflections, camera.far);
+reflections.tag(skyDome.mesh);
+reflections.tag(city.mesh);
+for (const m of signage.reflectiveMeshes) reflections.tag(m);
+reflections.tag(jumbotrons.mesh);
+reflections.tag(ground.mesh);
 // L10 drone show: points in the shared MoverLights cloud (zero draw calls).
 const droneShow = new DroneShowRenderer(welcome.seed);
 const birds = new Birds(welcome.seed);
@@ -2130,6 +2142,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   train.setQuality(tier); // T2: platform people, sparks, light range
   courseGhost.setQuality(tier); // S3: MOBILE keeps the rings, drops the ghost
   atmosphere.setQuality(tier); // S5
+  reflections.setQuality(tier); // S6: faces per frame; Mobile off
   applyPostQuality();
   resLimits = limitsFor(tier);
   if (resAuto) {
@@ -2456,6 +2469,11 @@ declare global {
       };
       signage: () => Signage["counts"];
       jumbotron: () => Jumbotrons["stats"];
+      /** S6 QA: the reflection probe — faces and draws this frame, totals,
+       * the program count (must not move when the probe first fills or the
+       * tier switches) and whether every light is in the probe's layer.
+       * `{ refill: true }` rebuilds all six faces on the next frame. */
+      reflections: (opts?: { refill?: boolean }) => ReflectionProbe["stats"];
       /** S4 QA: the room's sky boss as this client holds it — the raid, its
        * HP, whether it flies (or falls) at the render clock, where, the
        * shells in the air and what the renderer drew. */
@@ -2944,6 +2962,10 @@ window.__ab = {
   // S1 QA: what the jumbotrons say, the replay pass count/draws, and a
   // canonical view square on screen `i` (feed it to qaCamera).
   jumbotron: () => jumbotrons.stats,
+  reflections: (opts) => {
+    if (opts?.refill) reflections.requestRefill(true);
+    return reflections.stats;
+  },
   boss: () => {
     const t = lastRenderMs;
     const raid = socket.boss.raid;
@@ -3268,6 +3290,12 @@ renderer.initTexture(city.damageAtlas); // D1: never a first-hit upload hitch
 // S5: the shafts pass links its program now, whatever the tier or the moon.
 if (shaftsPass) shaftsPass.forceOnce = true;
 await prewarmScene(renderer, scene, camera, composer);
+// S6: every light joins the probe's layer (same light counts → the probe
+// pass resolves the programs just pre-warmed), then the first full fill —
+// behind the boot fade, and it links the cube targets' framebuffers now.
+reflections.tagLights(scene);
+reflections.requestRefill(true);
+reflections.update(renderer, scene, camera);
 socket.sendPing();
 flashFade();
 
@@ -4226,6 +4254,11 @@ const frame = (now: number): void => {
   renderer.info.reset();
   gpuTimer?.begin();
   composer.render();
+  // S6: this frame's probe face(s), after the main pass (fresh matrices) and
+  // inside the GPU timer and the draw count, so both report what it costs.
+  // A QA camera that moved refills at once (a capture never starts mid-fade).
+  reflections.observeQaEye(qaView ? qaView.eye : null);
+  reflections.update(renderer, scene, camera);
   gpuTimer?.end();
 
   // Matrices are fresh after the render — project the screen-space UI now.

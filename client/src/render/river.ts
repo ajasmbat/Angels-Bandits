@@ -56,6 +56,11 @@ import {
 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
+import {
+  REFLECTION_PARS_GLSL,
+  REFL_RIVER_LOD,
+  bindReflectionUniforms,
+} from "./reflections";
 import { SIGN_PALETTE } from "./signage";
 import { nearestImage } from "./wrapPlacement";
 
@@ -458,7 +463,7 @@ varying vec3 vRiverPos;
 const WATER_VERTEX_MAIN = /* glsl */ `
 vRiverPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
 `;
-const WATER_FRAGMENT_PARS = /* glsl */ `
+const WATER_FRAGMENT_PARS = /* glsl */ `${REFLECTION_PARS_GLSL}
 uniform vec2 uRiverShift; // canonical − render, x and z
 uniform float uRiverTime;
 uniform sampler2D uRiverSky;
@@ -475,6 +480,14 @@ const vec3 RV_NEON[${SIGN_PALETTE.length}] = ${NEON};
 // What the mirrored ray from P along rd sees on the bank it heads for.
 vec3 rvReflect(vec3 P, vec3 rd) {
   vec3 sky = vec3(0.10, 0.08, 0.20) * (1.0 - rd.y);
+  // S6: where the ray clears the bank, the reflection probe (reflections.ts)
+  // supplies what is really up there — the moon, the sky and the taller
+  // towers behind the streetwall. The traced wall and streetwall stay the
+  // authority below it, so no silhouette is drawn twice; near the horizon,
+  // where a camera-centred probe disagrees with the water, the fake stays.
+  if (uReflOn > 0.5) {
+    sky = mix(sky, abRefl(rd, ${glsl(REFL_RIVER_LOD)}), abReflElev(rd));
+  }
   if (abs(rd.z) < 1e-3) return sky;
   float side = rd.z > 0.0 ? 1.0 : -1.0;
   float zc = ${glsl(RIVER_CENTER_Z)} - uRiverShift.y;
@@ -576,11 +589,13 @@ export class RiverRenderer {
       roughness: 0.9,
       metalness: 0,
     });
-    material.customProgramCacheKey = () => "ab-river-water";
+    material.customProgramCacheKey = () => "ab-river-water-s6-refl";
     material.onBeforeCompile = (shader) => {
       shader.uniforms.uRiverShift = { value: this.shift };
       shader.uniforms.uRiverTime = this.time;
       shader.uniforms.uRiverSky = { value: sky };
+      // S6: the reflection probe, by reference (the sky over the bank).
+      bindReflectionUniforms(shader.uniforms);
       shader.vertexShader = shader.vertexShader
         .replace("#include <common>", `#include <common>\n${WATER_VERTEX_PARS}`)
         .replace(

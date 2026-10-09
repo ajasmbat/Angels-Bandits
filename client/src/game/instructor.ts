@@ -31,7 +31,7 @@ import type { Vec3 } from "@angels-bandits/common/world";
  * enough that a bandit crossing at ~15°/s is tracked within ~1.5° (rate/K),
  * inside the hit sphere at gun range; 6 lagged it by ~2.5° and mostly missed. */
 const GAIN = 10;
-/** Command lag, s. GAIN × LAG = 0.25 would be exactly critical damping on
+/** Command lag × gain (the lag, s, is this / the gain). GAIN × LAG = 0.25 would be exactly critical damping on
  * the plant (yaw/pitch integrate the rate command) — the stability edge,
  * where any extra delay (the chase eye's own lag, a slow frame) tips it into
  * overshoot. F6 keeps a margin: GAIN × LAG = 1/6, ζ ≈ 1.22. Measured with the
@@ -39,7 +39,43 @@ const GAIN = 10;
  * pipper's run-on past an aim snapped mid-turn drops ~25% at 144 fps and
  * ~8% at 30 fps. (Sub-stepping the loop inside a frame was tried: it reads
  * the chase eye only once a frame, so at 30 fps it overshot MORE.) */
-const LAG = 1 / (6 * GAIN);
+const GAIN_LAG = 1 / 6;
+/** The loop's tuning (F9 feel presets, game/effortless.ts). `gain` is the
+ * slope at the aim — what holds a crossing bandit — and the command lag
+ * follows it so gain × lag stays 1/6, the same damping at every feel. A
+ * feel may soften the loop beyond `band` rad of error to the `steer` slope:
+ * a big re-aim (a turn) is flown gently, and a hand that reacts late can't
+ * whip it into a wobble, while the fine aim stays as crisp as Sharp's. */
+export interface InstructorTuning {
+  gain: number;
+  band?: number;
+  steer?: number;
+}
+/** Today's crisp loop — the default, so every caller without a feel is
+ * bit-identical to before F9. */
+export const SHARP_TUNING: InstructorTuning = { gain: GAIN };
+
+/** Commanded rate, rad/s, for `e` rad of aim error at `tuning`. */
+export function instructorRate(e: number, tuning: InstructorTuning): number {
+  const { gain, band, steer } = tuning;
+  if (band === undefined || steer === undefined) return gain * e;
+  const a = Math.abs(e);
+  if (a <= band) return gain * e;
+  return Math.sign(e) * (gain * band + steer * (a - band));
+}
+
+/** instructorRate's inverse: the aim error that commands `rate` rad/s —
+ * how the F9 assist turns a stick nudge into an error bias. */
+export function instructorErrorFor(
+  rate: number,
+  tuning: InstructorTuning,
+): number {
+  const { gain, band, steer } = tuning;
+  if (band === undefined || steer === undefined) return rate / gain;
+  const a = Math.abs(rate);
+  if (a <= gain * band) return rate / gain;
+  return Math.sign(rate) * (band + (a - gain * band) / steer);
+}
 /** Exp fade of a latched reframe offset, s (~0.6 s to 5%). */
 const LATCH_FADE = 0.2;
 /** Pipper-to-cursor angle under which the reticle reads as converged. */
@@ -352,6 +388,7 @@ export function angleBetween(a: Vec3, b: Vec3): number {
  * latched, so a zoom pressed mid-turn keeps the turn. `rates` are the
  * full-deflection rates stepFlight will apply this frame (handlingRates —
  * boost raises them), so the loop gain, and the damping, never change.
+ * `tuning` is the feel's loop gain (F9); the default is today's Sharp loop.
  */
 export function instructorInput(
   err: AimError,
@@ -363,22 +400,25 @@ export function instructorInput(
     turnRate: TURN_RATE,
     pitchRate: PITCH_RATE,
   },
+  tuning: InstructorTuning = SHARP_TUNING,
 ): InstructorState {
+  const gain = tuning.gain;
+  const lag = GAIN_LAG / gain;
   const keep = reframing ? 1 : Math.exp(-dt / LATCH_FADE);
   const offYaw = wrapAngle(s.offYaw + latch.yaw) * keep;
   const offPitch = (s.offPitch + latch.pitch) * keep;
   // turn +1 is a right-hand turn, which DEcreases yaw (flight.ts).
   const turnCmd = clamp(
-    (-GAIN * wrapAngle(err.yaw - offYaw)) / rates.turnRate,
+    -instructorRate(wrapAngle(err.yaw - offYaw), tuning) / rates.turnRate,
     -1,
     1,
   );
   const pitchCmd = clamp(
-    (GAIN * (err.pitch - offPitch)) / rates.pitchRate,
+    instructorRate(err.pitch - offPitch, tuning) / rates.pitchRate,
     -1,
     1,
   );
-  const blend = 1 - Math.exp(-dt / LAG);
+  const blend = 1 - Math.exp(-dt / lag);
   return {
     turn: s.turn + (turnCmd - s.turn) * blend,
     pitch: s.pitch + (pitchCmd - s.pitch) * blend,

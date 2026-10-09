@@ -104,7 +104,7 @@ const GLANCE_HI = (40 * Math.PI) / 180;
  * turn. Small corrections in a canyon never brake. */
 export const ARC_INTENT = 0.5;
 /** Probe 2's arc sweep, rad: a full street corner. */
-const ARC_SWEEP = Math.PI / 2;
+export const ARC_SWEEP = Math.PI / 2;
 /** Bisection steps between the slowest clear arc and the fastest blocked
  * one — 50 m/s / 2⁴ ≈ 3 m/s of resolution. */
 const ARC_BISECT = 4;
@@ -393,7 +393,8 @@ export function wallEnvelope(
   return turnNow - w * (turnNow - brakeFirst);
 }
 
-/** Is the full-deflection 90° arc of `radius`, turning `dir` (+1 right), from
+/** Is the full-deflection arc of `radius` (`sweep` rad of it, 90° unless
+ * the F9 assist knows the pilot's real turn), turning `dir` (+1 right), from
  * the plane's position and heading, clear? Flown level at its altitude. */
 function arcClear(
   world: CornerWorld,
@@ -401,14 +402,15 @@ function arcClear(
   radius: number,
   dir: 1 | -1,
   timeMs: number | null,
+  sweep: number,
 ): boolean {
   const { pos, yaw } = flight;
   const c0 = Math.cos(yaw);
   const s0 = Math.sin(yaw);
-  const n = Math.max(2, Math.ceil((radius * ARC_SWEEP) / PROBE_STEP));
+  const n = Math.max(2, Math.ceil((radius * sweep) / PROBE_STEP));
   probe.y = pos.y;
   for (let i = 1; i <= n; i++) {
-    const th = (ARC_SWEEP * i) / n;
+    const th = (sweep * i) / n;
     // ∫ forward(yaw − dir·t) dt, forward(y) = (−sin y, −cos y): the closed
     // form of flying the arc (turn +1 is right, yaw decreases).
     const a = yaw - dir * th;
@@ -419,13 +421,14 @@ function arcClear(
   return true;
 }
 
-/** Fastest speed in [MIN_SPEED, MAX_SPEED] whose 90° arc turning `dir` is
- * clear; MIN_SPEED when even the tightest arc is blocked. */
+/** Fastest speed in [MIN_SPEED, MAX_SPEED] whose `sweep` arc turning `dir`
+ * is clear; MIN_SPEED when even the tightest arc is blocked. */
 function arcSpeed(
   world: CornerWorld,
   flight: FlightState,
   dir: 1 | -1,
   timeMs: number | null,
+  sweep: number,
 ): number {
   // Every arc point lies within its chord R·√2 of the start: one sphere at
   // the plane covers all of them, the widest (MAX_SPEED) arc included.
@@ -433,15 +436,15 @@ function arcSpeed(
   probe.y = flight.pos.y;
   probe.z = flight.pos.z;
   armMovers(world, turnRadius(MAX_SPEED) * Math.SQRT2 + PROBE_RADIUS, timeMs);
-  if (arcClear(world, flight, turnRadius(MAX_SPEED), dir, timeMs))
+  if (arcClear(world, flight, turnRadius(MAX_SPEED), dir, timeMs, sweep))
     return MAX_SPEED;
-  if (!arcClear(world, flight, turnRadius(MIN_SPEED), dir, timeMs))
+  if (!arcClear(world, flight, turnRadius(MIN_SPEED), dir, timeMs, sweep))
     return MIN_SPEED;
   let lo = MIN_SPEED; // clear
   let hi = MAX_SPEED; // blocked
   for (let i = 0; i < ARC_BISECT; i++) {
     const mid = (lo + hi) / 2;
-    if (arcClear(world, flight, turnRadius(mid), dir, timeMs)) lo = mid;
+    if (arcClear(world, flight, turnRadius(mid), dir, timeMs, sweep)) lo = mid;
     else hi = mid;
   }
   return lo;
@@ -475,12 +478,16 @@ export function threadingCorridor(
  * MAX_SPEED in open air. `turn` is the pilot's commanded turn (−1..1, +1
  * right) — the intent probe 2 reads. `timeMs` is the clock the movers are
  * rendered at (detectCrash's rule: null ⇒ only the viaduct is solid).
+ * `sweep` is how much turn probe 2 plans for, rad: a full street corner
+ * (90°) unless the F9 assist knows how far the pilot is actually aiming
+ * off the nose (game/effortless.ts arcSweep).
  */
 export function cornerSpeed(
   flight: FlightState,
   world: CornerWorld,
   turn = 0,
   timeMs: number | null = null,
+  sweep: number = ARC_SWEEP,
 ): number {
   if (world.tunnels && flight.pos.y < 0 && tunnelAt(flight.pos) !== null) {
     return MAX_SPEED;
@@ -510,7 +517,10 @@ export function cornerSpeed(
 
   // Probe 2 — the pilot is committing to a hard turn: make it makeable.
   if (Math.abs(turn) >= ARC_INTENT) {
-    cap = Math.min(cap, arcSpeed(world, flight, turn > 0 ? 1 : -1, timeMs));
+    cap = Math.min(
+      cap,
+      arcSpeed(world, flight, turn > 0 ? 1 : -1, timeMs, sweep),
+    );
   }
   return cap;
 }

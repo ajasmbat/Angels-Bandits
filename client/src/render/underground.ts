@@ -7,7 +7,8 @@
 //                 mushrooms and ferns, hanging gardens, waterfall vents,
 //                 channels, the lake, and the metro hall (floor, walls,
 //                 platform, rails, stalls, mullions). Water flow, glow
-//                 pulse and vine sway run in its shader.
+//                 pulse run in its shader. Vines and fronds hang still:
+//                 thin leaves creeping across pixels read as shimmer (O5).
 //   2. veil     — transparent: the hall's glass, the waterfall sheets.
 //   3. motes    — Points: fireflies and pollen drifting in the shader.
 //   4. critters — birds looping under the ceiling and people walking the
@@ -76,8 +77,6 @@ export const ANIM = {
   flow: 1,
   /** Bioluminescence: breathes on phase aAnim.y (WINDOW rung at peak). */
   glow: 2,
-  /** Sway along heading aAnim.w by aAnim.y m on phase aAnim.z. */
-  sway: 3,
   /** Falling water: streaks fall down aAnim.y (height), across aAnim.z. */
   fall: 4,
   /** A light panel or a stall lamp (LAMP rung, still). */
@@ -467,9 +466,6 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
       const off = 0.08 + 0.05 * j;
       const top = DEEP_CEIL;
       const bot = top - len;
-      boreXZ(v.t, v.s, 0, scratch);
-      const th = scratch.th;
-      const phase = v.shade * 6.283 + j;
       wallStrip(
         soup,
         v.t,
@@ -481,13 +477,10 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
         top,
         rgba(C.vineLight),
         rgba(C.vineDark),
-        (_s, y) => [ANIM.sway, 0.18 * ((top - y) / len), phase, th],
       );
       // Leaves angled off the wall, still well inside the lining.
       for (let y = top - 1; y > bot + 0.3; y -= 1.1) {
         const sm = (s0 + s1) / 2 + (((y * 3.1) % 1) - 0.5) * 0.4;
-        const w = ((top - y) / len) * 0.18;
-        const a: Anim = [ANIM.sway, w, phase, th];
         const lw = v.side * (H - off);
         const lo = v.side * (H - 0.6);
         soup.tri(
@@ -497,7 +490,6 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
             at(v.t, sm, lo, y - 0.45),
           ],
           rgba(C.leaf),
-          a,
         );
       }
     }
@@ -607,8 +599,6 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
       DEEP_CEIL - 0.02,
       rgba(C.planter),
     );
-    boreXZ(g.t, g.s, 0, scratch);
-    const th = scratch.th;
     for (let i = 0; i < g.fronds; i++) {
       const f = (i + 0.5) / g.fronds;
       const s = g.s - g.hl + 2 * g.hl * f;
@@ -616,8 +606,6 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
       const top = DEEP_CEIL - 0.5;
       const bot = Math.max(DEEP_CEIL - LINING + 0.02, top - len);
       const l = g.lat + ((i % 3) - 1) * 0.35;
-      const a: Anim = [ANIM.sway, 0, i, th];
-      const b: Anim = [ANIM.sway, 0.12, i, th];
       soup.quad(
         [
           at(g.t, s - 0.18, l, top),
@@ -626,7 +614,6 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
           at(g.t, s - 0.12, l, bot),
         ],
         [rgba(C.frond), rgba(C.frond), rgba(C.vineLight), rgba(C.vineLight)],
-        [a, a, b, b],
       );
       if (i % 2 === 0) {
         const fl = C.flowers[i % C.flowers.length] as THREE.Color;
@@ -637,7 +624,6 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
             at(g.t, s, l + 0.15, bot + 0.2),
           ],
           rgba(fl),
-          b,
         );
       }
     }
@@ -725,7 +711,7 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
       Math.max(wa, wb),
       F + 0.25,
       rgba(C.water),
-      (s) => [ANIM.flow, s, 2.2, 0],
+      (s) => [ANIM.flow, s, 1.2, 0],
     );
     // End caps where a channel meets the lake.
     for (const s of [ch.s0, ch.s1])
@@ -765,7 +751,7 @@ function buildLake(bands: Soup[]): void {
     H - 0.02,
     y,
     rgba(C.lake),
-    (s) => [ANIM.flow, s, 0.6, 0],
+    (s) => [ANIM.flow, s, 0.3, 0],
   );
   // Lily pads and glowing buds (detail).
   const detail = bands[1] as Soup;
@@ -1362,11 +1348,6 @@ varying float vGlow;
 const DECOR_VERTEX = /* glsl */ `
 vAnim = aAnim;
 vGlow = 1.0;
-if (aAnim.x > 2.5 && aAnim.x < 3.5) {
-  float w = aAnim.y * sin(uU5Time * 0.9 + aAnim.z);
-  transformed.x += cos(aAnim.w) * w;
-  transformed.z += sin(aAnim.w) * w;
-}
 if (aAnim.x > 1.5 && aAnim.x < 2.5) {
   vGlow = 0.72 + 0.28 * (0.5 + 0.5 * sin(uU5Time * 1.3 + aAnim.y));
 }
@@ -1381,14 +1362,14 @@ diffuseColor.rgb *= vGlow;
 if (vAnim.x > 0.5 && vAnim.x < 1.5) {
   float r = sin(vAnim.y * 1.7 - uU5Time * vAnim.z) *
     sin(vAnim.y * 0.63 + uU5Time * vAnim.z * 0.4 + 1.3);
-  diffuseColor.rgb *= 0.88 + 0.2 * smoothstep(0.35, 0.95, r);
+  diffuseColor.rgb *= 0.92 + 0.12 * smoothstep(0.2, 1.0, r);
 }
 if (vAnim.x > 3.5 && vAnim.x < 4.5) {
   float n = 0.5 + 0.5 * sin(vAnim.z * 7.3);
   float f = fract((vAnim.y + uU5Time * 4.0 * (0.7 + 0.6 * n)) * 0.35);
-  float streak = smoothstep(0.65, 1.0, f);
-  diffuseColor.rgb *= 0.82 + 0.22 * streak;
-  diffuseColor.a *= 0.75 + 0.25 * streak;
+  float streak = smoothstep(0.4, 1.0, f) * (1.0 - smoothstep(0.9, 1.0, f));
+  diffuseColor.rgb *= 0.9 + 0.14 * streak;
+  diffuseColor.a *= 0.85 + 0.15 * streak;
 }
 `;
 
@@ -1407,6 +1388,15 @@ transformed += aMote.y * vec3(
 vMote = aMote.w > 0.5
   ? 0.25 + 0.75 * pow(0.5 + 0.5 * sin(moteT * 2.1 + moteP * 3.0), 3.0)
   : 0.8;
+`;
+/** After size attenuation: never a sub-pixel point (it would sparkle as it
+ * drifts across pixels) — under 1.5 px it holds that size and dims instead;
+ * and the motes fade out well inside the haze (they are not fogged). */
+const MOTES_SIZE = /* glsl */ `
+float motePx = gl_PointSize;
+gl_PointSize = max(motePx, 1.5);
+vMote *= min(1.0, motePx / 1.5) *
+  (1.0 - smoothstep(50.0, 120.0, -mvPosition.z));
 `;
 const MOTES_FRAGMENT = /* glsl */ `
 float d = length(gl_PointCoord - 0.5);
@@ -1444,6 +1434,11 @@ if (aMisc.x < 1.5) {
 vec2 side = vec2(-fwd.y, fwd.x);
 transformed = at + vec3(fwd.x * loc.x + side.x * loc.z, loc.y,
   fwd.y * loc.x + side.y * loc.z);
+// Far off, a critter shrinks to nothing rather than sparkle as a sub-pixel
+// sliver (O5); the haze would have taken it anyway.
+vec4 critterView = modelViewMatrix * vec4(at, 1.0);
+transformed = mix(transformed, at,
+  smoothstep(90.0, 140.0, length(critterView.xyz)));
 `;
 
 function patch(
@@ -1571,10 +1566,12 @@ export class UndergroundLife {
     const onMotes = motesMat.onBeforeCompile;
     motesMat.onBeforeCompile = (shader, renderer) => {
       onMotes(shader, renderer);
-      shader.vertexShader = shader.vertexShader.replace(
-        "gl_PointSize = size;",
-        "gl_PointSize = size * aMote.z / 0.3;",
-      );
+      shader.vertexShader = shader.vertexShader
+        .replace("gl_PointSize = size;", "gl_PointSize = size * aMote.z / 0.3;")
+        .replace(
+          "#include <logdepthbuf_vertex>",
+          `${MOTES_SIZE}\n#include <logdepthbuf_vertex>`,
+        );
     };
     this.motes = new THREE.Points(this.buffers.motes.geometry, motesMat);
 

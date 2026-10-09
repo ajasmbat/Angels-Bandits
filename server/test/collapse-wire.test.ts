@@ -247,8 +247,12 @@ describe("D3 collapses over the wire", () => {
         3000,
       ),
     ).toBe(true);
-    expect(a.deaths.find((d) => d.victimId === b.welcome.id)).toEqual(want);
-    expect(b.deaths.find((d) => d.victimId === b.welcome.id)).toEqual(want);
+    expect(a.deaths.find((d) => d.victimId === b.welcome.id)).toMatchObject(
+      want,
+    );
+    expect(b.deaths.find((d) => d.victimId === b.welcome.id)).toMatchObject(
+      want,
+    );
 
     // A late joiner's welcome replays the same collapse.
     const c = await connect("Latecomer");

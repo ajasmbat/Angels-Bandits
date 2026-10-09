@@ -137,6 +137,12 @@ import {
   stepHoleAssist,
 } from "./game/hole-assist";
 import {
+  type SaveWorld,
+  createHoleSave,
+  resetHoleSave,
+  stepHoleSave,
+} from "./game/hole-save";
+import {
   type AimError,
   CONVERGED_RAD,
   aimError,
@@ -758,6 +764,16 @@ const holeAssist = createHoleAssist();
 const holeAssistWant = createHoleAssist();
 const assistDir: Vec3 = { x: 0, y: 0, z: 0 };
 const assistStickOut = { turn: 0, pitch: 0 };
+// H3 hole save: the same spans, and every solid the crash check reads — the
+// last-moment pose correction that threads a hole when a crash is imminent.
+const saveWorld: SaveWorld = {
+  spans: assistWorld.spans,
+  buildings: city.cityBuildings,
+  index: city.cityIndex,
+  nature: natureIndex,
+  movers: moverField,
+};
+const holeSave = createHoleSave();
 const natureRenderer = new NatureRenderer(nature);
 scene.add(natureRenderer.group);
 // L11 river: embankment walls, bridges, the reflecting water and the boats.
@@ -1268,6 +1284,7 @@ function stepAssist(off: boolean, dt: number): void {
 function resetAssist(): void {
   holeAssist.yaw = 0;
   holeAssist.pitch = 0;
+  resetHoleSave(holeSave); // H3: and no save mid-slide
 }
 
 /** S3: drop the local run (death, respawn, resume) — the server drops its
@@ -2325,6 +2342,7 @@ window.__ab = {
     interruptQuality(); // O3: a transient
     flight = { ...createFlightState({ x, y, z }, yaw), speed: flight.speed };
     chase.snapTo(flight);
+    resetHoleSave(holeSave);
   },
   perf: () => ({
     fps: perf.fps,
@@ -3059,6 +3077,20 @@ const frame = (now: number): void => {
     // decay can lag the clock — this keeps every pose inside the mirror.
     const speedCap = boostSpeedCap(boost, now);
     if (flight.speed > speedCap) flight = { ...flight, speed: speedCap };
+    // H3: about to clip a hole's mouth or a bridge deck? Slide the fresh pose
+    // (stepFlight's own object, corrected in place) onto a line that clears,
+    // before anything reads it — crash check, course, pose stream, camera.
+    // After input shaping, so every input mode benefits; the instructor
+    // modes get position offsets only (it would fly an attitude tweak out).
+    stepHoleSave(
+      holeSave,
+      flight,
+      shaped,
+      dt,
+      saveWorld,
+      renderMs,
+      aimMode !== "instructor",
+    );
     if (
       detectCrash(
         flight,

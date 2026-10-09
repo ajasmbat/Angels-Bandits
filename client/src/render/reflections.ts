@@ -263,7 +263,9 @@ export class ProbeSchedule {
       this.blend = 0;
       this.rotations++;
     } else {
-      this.blend = this.face / 6;
+      // Fully on cur by the 5th face, so the rotation that the 6th face
+      // triggers (prev ← cur, blend 0) shows the very same image.
+      this.blend = Math.min(1, this.face / 5);
     }
     return this.frameOut;
   }

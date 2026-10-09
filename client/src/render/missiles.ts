@@ -7,6 +7,14 @@
 //
 // Visibility parity (quality.ts rule 2): the body, glint and trail are the
 // telegraph — identical on every tier. Only the debris throw scales.
+//
+// C2: meteors and bombs fly the same pipeline. A meteor is a glowing
+// fireball (its own instanced mesh, 1 draw) with a big orange glint that
+// reads from anywhere in the city (fog-free, 1 draw) and a fire trail
+// through the D1 particle pool (the tier's `chaosFx` share — cosmetic; the
+// fireball and glint are the telegraph, on every tier). A bomb is a short,
+// fat body with the red glint and no smoke trail (a carpet of 24 trails
+// would starve the planes' wound smoke).
 
 import { EMISSIVE_BEACON } from "@angels-bandits/common/constants";
 import {
@@ -20,9 +28,23 @@ import type { Impacts } from "./impacts";
 import type { SmokeTrails } from "./smoke";
 import { nearestImageInto } from "./wrapPlacement";
 
-/** Most missiles drawn at once (the server caps the air at 3; a welcome
- * replay can briefly hold a few more). */
-export const MISSILE_POOL = 6;
+/** Most strikes drawn at once: C2's worst case is 8 missiles, a couple of
+ * meteors and a formation's falling bombs (three ships, ~3 each in the air)
+ * — 48 leaves a welcome replay room to spare. Past it a strike is skipped
+ * for that frame only (its glint first: never in practice). */
+export const MISSILE_POOL = 48;
+/** Meteor fireballs drawn at once. */
+export const METEOR_POOL = 8;
+const METEOR_RADIUS = 2.6;
+/** The fireball's core and its glint: hot orange on the beacon rung. */
+const METEOR_COLOR = new THREE.Color(0xff8a2a);
+const METEOR_GLINT_SIZE_PX = 18;
+/** Fire particles a meteor sheds per second at full share. */
+const METEOR_FIRE = 70;
+const METEOR_SMOKE = 18;
+/** A bomb's body: the missile cylinder squashed short and fat. */
+const BOMB_SCALE_XY = 1.6;
+const BOMB_SCALE_Z = 0.5;
 const BODY_LENGTH = 4.2;
 const BODY_RADIUS = 0.32;
 const BODY_COLOR = 0x26262c;
@@ -63,6 +85,13 @@ export class MissileRenderer {
   private readonly trailKeys = new Map<number, string>();
   /** The quality row's debris share (missileDebris). */
   private debris = 1;
+  /** C2: the meteors' fireballs and glints, and the tier's chaosFx share. */
+  private readonly meteors: THREE.InstancedMesh;
+  private readonly meteorGlints: THREE.Points;
+  private readonly meteorGlintPos: THREE.BufferAttribute;
+  private chaosFx = 1;
+  private readonly fireAcc = new Map<number, number>();
+  private lastMs = Number.NaN;
 
   constructor(
     private readonly smoke: SmokeTrails,
@@ -111,11 +140,50 @@ export class MissileRenderer {
     );
     this.glints.frustumCulled = false;
     this.group.add(this.glints);
+
+    // C2 meteors: a fireball and a big fog-free glint.
+    const core = METEOR_COLOR.clone().multiplyScalar(
+      emissiveBoost(METEOR_COLOR, EMISSIVE_BEACON),
+    );
+    this.meteors = new THREE.InstancedMesh(
+      new THREE.IcosahedronGeometry(METEOR_RADIUS, 1),
+      new THREE.MeshBasicMaterial({ color: core }),
+      METEOR_POOL,
+    );
+    this.meteors.count = 0;
+    this.meteors.frustumCulled = false;
+    this.group.add(this.meteors);
+    const mg = new THREE.BufferGeometry();
+    this.meteorGlintPos = new THREE.BufferAttribute(
+      new Float32Array(METEOR_POOL * 3),
+      3,
+    );
+    for (let i = 0; i < METEOR_POOL; i++) {
+      this.meteorGlintPos.setXYZ(i, 0, PARKED_Y, 0);
+    }
+    mg.setAttribute("position", this.meteorGlintPos);
+    this.meteorGlints = new THREE.Points(
+      mg,
+      new THREE.PointsMaterial({
+        color: core,
+        size: METEOR_GLINT_SIZE_PX,
+        sizeAttenuation: false,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        // Visible city-wide, on every tier: the meteor's telegraph.
+        fog: false,
+      }),
+    );
+    this.meteorGlints.frustumCulled = false;
+    this.group.add(this.meteorGlints);
   }
 
-  /** Quality row (missileDebris): share of the impact debris throw. */
-  setQuality(debris: number): void {
+  /** Quality rows: missileDebris (share of the impact debris throw) and
+   * C2's chaosFx (share of a meteor's fire trail). */
+  setQuality(debris: number, chaosFx = 1): void {
     this.debris = Math.max(0, Math.min(1, debris));
+    this.chaosFx = Math.max(0, Math.min(1, chaosFx));
   }
 
   /** Place every flying missile for this frame and feed its smoke trail. */
@@ -125,9 +193,16 @@ export class MissileRenderer {
     renderMs: number,
     now: number,
   ): void {
-    const n = Math.min(flying.length, MISSILE_POOL);
-    for (let i = 0; i < n; i++) {
-      const m = flying[i] as MissileStrike;
+    const dt = Number.isFinite(this.lastMs)
+      ? Math.min(0.1, Math.max(0, (now - this.lastMs) / 1000))
+      : 0;
+    this.lastMs = now;
+    let n = 0;
+    let nm = 0;
+    for (let f = 0; f < flying.length; f++) {
+      const m = flying[f] as MissileStrike;
+      const meteor = m.kind === "meteor";
+      if (meteor ? nm >= METEOR_POOL : n >= MISSILE_POOL) continue;
       missilePosAt(m, renderMs, this.pos);
       missilePosAt(m, renderMs + 40, this.ahead);
       nearestImageInto(this.img, viewer, this.pos);
@@ -138,27 +213,66 @@ export class MissileRenderer {
         this.img.y + this.dir.y,
         this.img.z + this.dir.z,
       );
+      if (meteor) {
+        this.dummy.scale.set(1, 1, 1.6); // stretched along its streak
+        this.dummy.updateMatrix();
+        this.meteors.setMatrixAt(nm, this.dummy.matrix);
+        this.meteorGlintPos.setXYZ(nm, this.img.x, this.img.y, this.img.z);
+        nm++;
+        // The fire trail, through the D1 pool (cosmetic: scales).
+        const acc =
+          (this.fireAcc.get(m.id) ?? 0) + METEOR_FIRE * this.chaosFx * dt;
+        const fire = Math.floor(acc);
+        this.fireAcc.set(m.id, acc - fire);
+        if (fire > 0) {
+          this.impacts.wreckFire(
+            this.pos,
+            fire,
+            Math.round((fire * METEOR_SMOKE) / METEOR_FIRE),
+            METEOR_RADIUS,
+            now,
+          );
+        }
+        continue;
+      }
+      const bomb = m.kind === "bomb";
+      if (bomb)
+        this.dummy.scale.set(BOMB_SCALE_XY, BOMB_SCALE_XY, BOMB_SCALE_Z);
+      else this.dummy.scale.set(1, 1, 1);
       this.dummy.updateMatrix();
-      this.bodies.setMatrixAt(i, this.dummy.matrix);
-      this.glintPos.setXYZ(i, this.img.x, this.img.y, this.img.z);
-      this.smoke.sync(this.trailKey(m.id), this.pos, now, true);
+      this.bodies.setMatrixAt(n, this.dummy.matrix);
+      this.glintPos.setXYZ(n, this.img.x, this.img.y, this.img.z);
+      n++;
+      if (!bomb) this.smoke.sync(this.trailKey(m.id), this.pos, now, true);
     }
+    this.dummy.scale.set(1, 1, 1);
     for (let i = n; i < MISSILE_POOL; i++) {
       if (this.glintPos.getY(i) !== PARKED_Y) {
         this.glintPos.setXYZ(i, 0, PARKED_Y, 0);
       }
     }
+    for (let i = nm; i < METEOR_POOL; i++) {
+      if (this.meteorGlintPos.getY(i) !== PARKED_Y) {
+        this.meteorGlintPos.setXYZ(i, 0, PARKED_Y, 0);
+      }
+    }
     this.bodies.count = n;
     this.bodies.instanceMatrix.needsUpdate = true;
     this.glintPos.needsUpdate = true;
+    this.meteors.count = nm;
+    this.meteors.instanceMatrix.needsUpdate = true;
+    this.meteorGlintPos.needsUpdate = true;
   }
 
   /** A missile landed: its trail stops feeding (and fades on its own), and
    * the debris throws out of the struck surface. */
   impact(m: MissileStrike, now: number): void {
-    const key = this.trailKey(m.id);
-    this.smoke.sync(key, m.to, now, false);
-    this.trailKeys.delete(m.id);
+    this.fireAcc.delete(m.id);
+    if (m.kind === "cruise" || m.kind === "artillery") {
+      const key = this.trailKey(m.id);
+      this.smoke.sync(key, m.to, now, false);
+      this.trailKeys.delete(m.id);
+    }
     if (this.debris > 0) {
       this.impacts.missileDebris(
         m.to,
@@ -167,6 +281,13 @@ export class MissileRenderer {
         now,
       );
     }
+  }
+
+  /** C2: a strike that will not land (a downed bomber's bomb, one called
+   * off): forget its per-strike state. */
+  drop(id: number): void {
+    this.fireAcc.delete(id);
+    this.trailKeys.delete(id);
   }
 
   /** One stable trail id per missile (no per-frame string building). */

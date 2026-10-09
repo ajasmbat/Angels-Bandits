@@ -631,6 +631,10 @@ export class CityDamage {
   /** Real chunks in the bound city, and how many may be destroyed. */
   private total = 0;
   private limit = Number.POSITIVE_INFINITY;
+  private capShare = DESTROY_CAP;
+  /** C2 backstop (server): while true nothing breaks — a chunk bottoms out
+   * at 1 HP, as at the cap. The room sets it from its gone share. */
+  hold = false;
   /** Bumped on every change to the destroyed set. */
   version = 0;
 
@@ -643,7 +647,7 @@ export class CityDamage {
       for (const mask of chunkMask(b)) for (const v of mask) total += v;
     }
     this.total = total;
-    this.limit = Math.floor(total * DESTROY_CAP);
+    this.limit = Math.floor(total * this.capShare);
     const held = [...this.destroyed];
     const fell = [...this.fallen];
     this.destroyed.clear();
@@ -652,6 +656,19 @@ export class CityDamage {
     for (const id of held) this.mark(id, CELL_BROKEN);
     for (const id of fell) this.mark(id, CELL_FALLEN);
     this.version++;
+  }
+
+  /** The share of chunks that may be broken (DESTROY_CAP by default). */
+  setCap(share: number): void {
+    this.capShare = share;
+    if (this.buildings) this.limit = Math.floor(this.total * share);
+  }
+
+  /** (broken + fallen) / chunks of the bound city (0 before bind). */
+  get goneShare(): number {
+    return this.total > 0
+      ? (this.destroyed.size + this.fallen.size) / this.total
+      : 0;
   }
 
   /** Chunks in the bound city (0 before bind). */
@@ -737,11 +754,11 @@ export class CityDamage {
   }
 
   /** Destroy one chunk outright. False if it was already gone, is not a
-   * chunk, or the city is at DESTROY_CAP. */
+   * chunk, the city is at DESTROY_CAP, or the room holds (C2). */
   destroyChunk(id: number): boolean {
     if (!this.buildings || this.isGone(id)) return false;
     if (!isChunk(this.buildings, id)) return false;
-    if (this.destroyed.size >= this.limit) return false;
+    if (this.destroyed.size >= this.limit || this.hold) return false;
     this.mark(id, CELL_BROKEN);
     this.hp.delete(id);
     this.pending.push(id);

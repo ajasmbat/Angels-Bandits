@@ -643,11 +643,27 @@ Two rules every tier obeys:
 | H2 hole guidance (chevrons, LED strips, mouth frame) | full | full | full | full (how a pilot finds a hole) |
 | R2 roof structures (penthouses, tanks, billboards, masts) | full | full | full (solid) | full (solid) |
 | R2 roof dressing, fine detail (drains, hatches, rods, dishes) | full | full | off | off (HVAC, ducts, solar, davits stay) |
+| S1 jumbotrons + headline tickers | full | full | full | full (ticker crawl off with sign animation) |
+| S1 LAST KILL replay shot | full | full | full | off: the static livery card (uniform flip) |
+| S1 leader follow spot | full | full | full | full (visibility parity) |
+| S1 kill feed + match headlines (HUD) | full | full | full | full (DOM, no draw) |
+| S2 dynamic soundtrack (procedural score) | full | full | full | full (audio, no draw) |
+| S3 stunt course rings | full | full | full | full (guidance) |
+| S3 course record ghost | full | full | full | off |
+| S3 course HUD — run timer, splits, records board | full | full | full | full (DOM, no draw) |
+| S4 sky boss — the zeppelin, weak points, lights, flak shells | full | full | full | full (solid; the flak's telegraph) |
+| S4 sky boss — flak bursts, falling-section fire and smoke | full | 75 % | 50 % | 35 % |
+| S4 boss HUD — weak-point bar, radio calls, warning screens | full | full | full | full (DOM and audio, no draw) |
 | S5 fog banks (drifting haze between the towers) | full | full | full | full (visibility parity; one instanced draw) |
 | S5 wind litter (paper, leaves, wrappers; low-pass kick) | full | full | 50 % | 34 %, one block out |
-| S5 moon light shafts (quarter-res pass) | full | full | full | off (pass skipped) |
-| S5 searchlight rays, wet-roof sign reflections | full | full | full | full (shader only) |
-| S5 heat shimmer, glare (FinalPass uniforms) | full | full | full | off |
+| S5 moon light shafts | full | full | full | off (pass skipped) |
+| S5 searchlight rays (haze striations in the beams) | full | full | full | full (shader only) |
+| S5 heat shimmer over exhaust stacks | full | full | full | off |
+| S5 glare — lens flares and streaks | full | full | full | off |
+| S5 wet-roof sign reflections | full | full | full | full (shader only) |
+| S6 glass reflections — neon skyline in glass, puddles, river | 1 probe face a frame | ½ a face | ⅓ of a face | off (no probe pass; faked reflections) |
+| S7 kill-streak smoke | full | full | 50 % of the puffs | 50 % of the puffs |
+| S7 medals, announcer, streak callouts | full | full | full | full (DOM and audio, no draw) |
 | F5/F6 flight feel | — | — | — | — (no render cost: no row in `FEATURE_TIERS`) |
 
 **Auto** starts at High and only ever steps **down**: a feature popping back

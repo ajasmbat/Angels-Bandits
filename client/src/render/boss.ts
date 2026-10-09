@@ -21,6 +21,7 @@ import {
   type BossFlak,
   type BossPart,
   type BossPiece,
+  type BossRaid,
   type BossSlot,
   PIECE_PARTS,
   blankPose,
@@ -440,7 +441,9 @@ export class BossRenderer {
     this.lights.visible = true;
   }
 
-  /** Shell heads in flight; each burst once, then dropped from `flak`. */
+  /** Shell heads in flight; each burst once, then dropped from `flak`.
+   * S8: walked by one pre-bound callback — a `for…of` over the Map built an
+   * iterator and an entry array per shell, every frame. */
   private updateFlak(
     raid: NonNullable<BossSlot["raid"]>,
     flak: Map<number, BossFlak>,
@@ -448,32 +451,59 @@ export class BossRenderer {
     renderMs: number,
     now: number,
   ): void {
-    let n = 0;
-    for (const [id, f] of flak) {
-      if (renderMs >= f.t0 + f.fuse) {
-        flak.delete(id);
-        const share = this.share;
-        this.impacts.wreckFire(
-          f.to,
-          Math.max(1, Math.round(BURST_FIRE * share)),
-          Math.max(1, Math.round(BURST_SMOKE * share)),
-          4,
-          now,
-        );
-        this.onBurst(f.to, f);
-        continue;
-      }
-      if (renderMs < f.t0 || n >= SHELL_POOL) continue;
-      flakPosAt(raid, f, renderMs, this.at);
-      nearestImageInto(scratchImage, viewer, this.at);
-      this.shellPos.setXYZ(n++, scratchImage.x, scratchImage.y, scratchImage.z);
-    }
+    const w = this.flakWalk;
+    w.raid = raid;
+    w.flak = flak;
+    w.viewer = viewer;
+    w.renderMs = renderMs;
+    w.now = now;
+    w.n = 0;
+    flak.forEach(this.placeShell);
+    const n = w.n;
     for (let i = n; i < SHELL_POOL; i++)
       this.shellPos.setXYZ(i, 0, PARKED_Y, 0);
     this.shellPos.needsUpdate = true;
     this.shells.visible = n > 0;
     this.shellCount = n;
   }
+
+  /** updateFlak's frame, for placeShell. */
+  private readonly flakWalk: {
+    raid: BossRaid | null;
+    flak: Map<number, BossFlak> | null;
+    viewer: Vec3;
+    renderMs: number;
+    now: number;
+    n: number;
+  } = {
+    raid: null,
+    flak: null,
+    viewer: scratchImage,
+    renderMs: 0,
+    now: 0,
+    n: 0,
+  };
+
+  private readonly placeShell = (f: BossFlak, id: number): void => {
+    const w = this.flakWalk;
+    if (w.renderMs >= f.t0 + f.fuse) {
+      w.flak?.delete(id);
+      const share = this.share;
+      this.impacts.wreckFire(
+        f.to,
+        Math.max(1, Math.round(BURST_FIRE * share)),
+        Math.max(1, Math.round(BURST_SMOKE * share)),
+        4,
+        w.now,
+      );
+      this.onBurst(f.to, f);
+      return;
+    }
+    if (w.renderMs < f.t0 || w.n >= SHELL_POOL || w.raid === null) return;
+    flakPosAt(w.raid, f, w.renderMs, this.at);
+    nearestImageInto(scratchImage, w.viewer, this.at);
+    this.shellPos.setXYZ(w.n++, scratchImage.x, scratchImage.y, scratchImage.z);
+  };
 
   /** Landed sections keep burning, tapering to nothing over BURN_MS. */
   private updateBurns(now: number, dt: number): void {

@@ -538,6 +538,22 @@ export const FEATURE_TIERS: readonly {
     note: "it points at the leader, so it is identical on every tier (visibility parity); a beam slot, no draw",
   },
   {
+    feature: "S1 kill feed + match headlines (HUD)",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "S8: DOM text, written on kills and score changes only; no draw, no per-frame cost worth trading",
+  },
+  {
+    feature: "S2 dynamic soundtrack (procedural score)",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "S8: audio, no draw — the score is scheduled a bar at a time on its own ducked bus; MUSIC OFF or the slider at 0 idles the scheduler on any tier",
+  },
+  {
     feature: "L8 rooftop props (pools, fans, flags)",
     high: "full",
     medium: "full",
@@ -707,6 +723,14 @@ export const FEATURE_TIERS: readonly {
     note: "one translucent draw; MOBILE keeps the rings only",
   },
   {
+    feature: "S3 course HUD — run timer, splits, records board",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "S8: DOM, updated on ring passes and board messages; no draw",
+  },
+  {
     feature: "R2 roof dressing — fine detail (drains, hatches, rods, dishes)",
     high: "full",
     medium: "full",
@@ -755,6 +779,14 @@ export const FEATURE_TIERS: readonly {
     note: "puff emission 100 / 100 / 50 / 50 %; one tinted Points draw for every streaking plane; the scoreboard glow carries the streak on every tier",
   },
   {
+    feature: "S7 medals, announcer, streak callouts",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "S8: DOM toasts and voice lines on events; no draw",
+  },
+  {
     feature: "S4 sky boss — the zeppelin, weak points, lights, flak shells",
     high: "full",
     medium: "full",
@@ -769,6 +801,14 @@ export const FEATURE_TIERS: readonly {
     low: "reduced",
     mobile: "reduced",
     note: "emission 100 / 75 / 50 / 35 % into the D1 particle pool (no extra draw); the bursts' damage and the sections themselves are the same everywhere",
+  },
+  {
+    feature: "S4 boss HUD — weak-point bar, radio calls, warning screens",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "S8: DOM and audio, no draw; the warning is the telegraph, so it is on every tier",
   },
   {
     feature: "S5 fog banks (drifting haze between the towers)",

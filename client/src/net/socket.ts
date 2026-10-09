@@ -65,6 +65,7 @@ import {
 import type { CityEvent } from "@angels-bandits/common/cityevents";
 import {
   CONNECT_TIMEOUT_MS,
+  LAB_FULL_CODE,
   SERVER_SILENCE_MS,
   TICK_UP_HZ,
 } from "@angels-bandits/common/constants";
@@ -302,32 +303,48 @@ export class GameSocket {
   /** Connect and join; resolves once the server's welcome arrives. Always
    * settles (W1): an error, a close before the welcome, or no welcome within
    * CONNECT_TIMEOUT_MS all reject — a join never hangs on a silent socket.
-   * `resume` (W2) is a token handed over a reload, if any. */
-  static async connect(name: string, resume?: string): Promise<GameSocket> {
-    const { ws, welcome } = await GameSocket.open(name, resume);
+   * `resume` (W2) is a token handed over a reload, if any. `lab` (FL1) joins
+   * the Flight Lab: a solo room of this player's own; the server ignores
+   * `resume` for it, and a full lab rejects with "Flight Lab is full". */
+  static async connect(
+    name: string,
+    resume?: string,
+    lab = false,
+  ): Promise<GameSocket> {
+    const { ws, welcome } = await GameSocket.open(name, resume, lab);
     return new GameSocket(ws, welcome, name);
   }
 
   private static open(
     name: string,
     resume?: string,
+    lab = false,
   ): Promise<{ ws: WebSocket; welcome: WelcomeMsg }> {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(socketUrl());
       let settled = false;
-      const fail = (): void => {
+      const fail = (message = "Can't reach the server"): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         ws.close();
-        reject(new Error("Can't reach the server"));
+        reject(new Error(message));
       };
-      const timer = setTimeout(fail, CONNECT_TIMEOUT_MS);
+      const timer = setTimeout(() => fail(), CONNECT_TIMEOUT_MS);
       ws.addEventListener("open", () =>
-        ws.send(JSON.stringify({ type: "join", name, resume })),
+        ws.send(
+          JSON.stringify(
+            lab
+              ? { type: "join", name, lab: true }
+              : { type: "join", name, resume },
+          ),
+        ),
       );
-      ws.addEventListener("error", fail);
-      ws.addEventListener("close", fail);
+      ws.addEventListener("error", () => fail());
+      // FL1: a refused lab join (4001) says why; any other close is generic.
+      ws.addEventListener("close", (ev: CloseEvent) =>
+        fail(ev.code === LAB_FULL_CODE && ev.reason ? ev.reason : undefined),
+      );
       ws.addEventListener(
         "message",
         (ev) => {
@@ -360,6 +377,15 @@ export class GameSocket {
    * start resuming. */
   private dropped(): void {
     if (this.state !== "open") return;
+    // FL1: a lab session can't be resumed (the server never resumes one), so
+    // a drop is SIGNAL LOST at once; its reload keeps `?lab` and comes back
+    // to a fresh lab room — whose welcome the lab answers with its tuning.
+    // (A reconnect may never land lab tuning in a normal room.)
+    if (this.lab) {
+      this.ws.close();
+      this.lost();
+      return;
+    }
     this.state = "reconnecting";
     this.ws.close();
     this.droppedAt = performance.now();
@@ -528,6 +554,12 @@ export class GameSocket {
     return this.welcome.resumeToken;
   }
 
+  /** FL1: is this a Flight Lab room? True only when the server's welcome
+   * says so — the one gate for applying lab tuning on this client. */
+  get lab(): boolean {
+    return this.welcome.lab === true;
+  }
+
   /** W2: the tab hid (`true`) or came back (`false`). */
   sendAway(on: boolean): void {
     this.send({ type: "away", on });
@@ -637,6 +669,13 @@ export class GameSocket {
    * drop it (rate limit) — only the botsConfig it answers with is real. */
   sendSetBots(count: number): void {
     this.send({ type: "setBots", count });
+  }
+
+  /** FL1: the lab's tuning (a decoded export: JSON.parse(exportTuning(t)))
+   * and/or its chaos toggle. Ignored by the server outside a lab room; the
+   * newest wins, so send the whole tuning each time. */
+  sendLab(msg: { tuning?: unknown; chaos?: boolean }): void {
+    this.send({ type: "lab", ...msg });
   }
 
   private send(msg: object): void {

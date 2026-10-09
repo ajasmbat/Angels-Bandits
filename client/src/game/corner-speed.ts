@@ -52,19 +52,15 @@ import {
   collideCity,
   collideNature,
 } from "@angels-bandits/common/collision";
-import {
-  CORNER_BRAKE_DECEL,
-  MAX_SPEED,
-  MIN_SPEED,
-  PITCH_LIMIT,
-  PLAYER_RADIUS,
-} from "@angels-bandits/common/constants";
+import { PLAYER_RADIUS } from "@angels-bandits/common/constants";
 import {
   type FlightState,
   pitchRadius,
   turnRadius,
 } from "@angels-bandits/common/flight";
+import { DEFAULT_TUNING } from "@angels-bandits/common/tuning";
 import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
+import { tuning } from "./tuning";
 
 /** Probe sphere radius, m: the plane's own sphere plus a little air. */
 export const PROBE_RADIUS = PLAYER_RADIUS + 1.5;
@@ -73,7 +69,7 @@ export const PROBE_RADIUS = PLAYER_RADIUS + 1.5;
 const PROBE_STEP = 6;
 /** How far ahead probe 1 looks, m — past the ~206 m a 90 m/s plane needs to
  * brake to MIN_SPEED and still turn away from a wall met head-on. */
-export const WALL_HORIZON = 220;
+export const WALL_HORIZON = DEFAULT_TUNING.wallHorizon;
 /** Clear air kept between the turn-away arc and the wall, m — on top of
  * PROBE_RADIUS's own 1.5 m. */
 const WALL_MARGIN = 2;
@@ -85,9 +81,9 @@ const ESCAPE_COS_MIN = Math.cos((50 * Math.PI) / 180);
 /** How far past the hit an escape ray must stay clear, m — far enough to be
  * past a block corner, not just past the sample that hit. */
 const ESCAPE_PAST = 24;
-/** A pull-up escape is flown on this arc, m: the widest un-boosted pull-up,
- * so a late pull is never credited with a nose that jumps up instantly. */
-const PULL_RADIUS = pitchRadius(MAX_SPEED);
+// A pull-up escape is flown on the widest un-boosted pull-up arc (the live
+// tuning's pitchRadius at maxSpeed), so a late pull is never credited with
+// a nose that jumps up instantly.
 /** Probe 1 only runs this close to level, rad (30°): a steep dive or climb
  * is already the elevator's business, not the correction the envelope
  * assumes. */
@@ -115,8 +111,16 @@ const CORRIDOR_ALIGN = Math.cos(Math.PI / 6);
 /** stepCornerCap: how fast the ceiling may fall / recover, m/s². Falling is
  * effectively instant (the airbrake is the smoothing); recovering is slow so
  * a probe that clears for a frame never lets the plane surge. */
-export const CAP_FALL_RATE = 250;
-export const CAP_RISE_RATE = 12;
+export const CAP_FALL_RATE = DEFAULT_TUNING.capFallRate;
+export const CAP_RISE_RATE = DEFAULT_TUNING.capRiseRate;
+
+// FL1: the speeds, the airbrake, the pitch envelope, the look-ahead and the
+// cap rates are read from the client's live `tuning` (defaults re-exported
+// above under their old names) — only the Flight Lab changes it.
+/** The full-deflection radii under the live tuning (module functions, not
+ * per-call closures: no allocation). */
+const turnRadiusLive = (speed: number): number => turnRadius(speed, tuning);
+const pitchRadiusLive = (speed: number): number => pitchRadius(speed, tuning);
 
 /** One hole's clear corridor: the hole's box, extended along its axis. */
 export interface HoleCorridor {
@@ -255,19 +259,20 @@ function pullUpClear(
   reach: number,
   timeMs: number | null,
 ): boolean {
-  if (Math.asin(dy) + phi > PITCH_LIMIT) return false;
+  if (Math.asin(dy) + phi > tuning.pitchLimit) return false;
+  const pullRadius = pitchRadius(tuning.maxSpeed, tuning);
   // Unit up perpendicular to the nose, in its vertical plane. Probe 1 runs
   // within 30° of level, so the nose is never vertical (h > 0.86).
   const h = Math.hypot(dx, dz);
   const ux = (-dx / h) * dy;
   const uz = (-dz / h) * dy;
-  const n = Math.ceil((PULL_RADIUS * phi) / PROBE_STEP);
+  const n = Math.ceil((pullRadius * phi) / PROBE_STEP);
   let ahead = 0;
   let up = 0;
   for (let i = 1; i <= n; i++) {
     const th = (phi * i) / n;
-    ahead = PULL_RADIUS * Math.sin(th);
-    up = PULL_RADIUS * (1 - Math.cos(th));
+    ahead = pullRadius * Math.sin(th);
+    up = pullRadius * (1 - Math.cos(th));
     probe.x = pos.x + dx * ahead + ux * up;
     probe.y = pos.y + dy * ahead + h * up;
     probe.z = pos.z + dz * ahead + uz * up;
@@ -318,7 +323,7 @@ function rayCap(
   probe.z = pos.z;
   armMovers(world, horizon / ESCAPE_COS_MIN + PROBE_RADIUS, timeMs);
   const d = clearRun(world, pos, dx, dy, dz, horizon, timeMs, true);
-  if (!Number.isFinite(d)) return MAX_SPEED;
+  if (!Number.isFinite(d)) return tuning.maxSpeed;
   // An escape must stay clear to `reach` measured FORWARD — along the
   // slanted ray that is reach / cos φ. (Measured along the ray, a wide wall
   // looks escapable at a steep φ simply because the slant meets it later.)
@@ -341,7 +346,7 @@ function rayCap(
     const climb = pullUpClear(world, pos, dx, dy, dz, phi, reach, timeMs);
     // Both clear ⇒ the faster of the two.
     if (turn) cap = Math.max(cap, wallEnvelope(d, sn));
-    if (climb) cap = Math.max(cap, wallEnvelope(d, sn, pitchRadius));
+    if (climb) cap = Math.max(cap, wallEnvelope(d, sn, pitchRadiusLive));
     if (turn || climb) break;
   }
   return cap;
@@ -370,20 +375,21 @@ function rayCap(
 export function wallEnvelope(
   distance: number,
   sinPhi = 1,
-  radius: (speed: number) => number = turnRadius,
+  radius: (speed: number) => number = turnRadiusLive,
 ): number {
-  if (!Number.isFinite(distance)) return MAX_SPEED;
+  const { minSpeed, maxSpeed } = tuning;
+  if (!Number.isFinite(distance)) return maxSpeed;
   const s = sinPhi > 0 ? Math.min(1, sinPhi) : 0;
-  const a = BRAKE_DESIGN * CORNER_BRAKE_DECEL;
+  const a = BRAKE_DESIGN * tuning.cornerBrakeDecel;
   const reach = (vt: number): number => {
     const room = distance - WALL_MARGIN - radius(vt) * s;
     return room < 0
-      ? MIN_SPEED
-      : Math.min(MAX_SPEED, Math.sqrt(vt * vt + 2 * a * room));
+      ? minSpeed
+      : Math.min(maxSpeed, Math.sqrt(vt * vt + 2 * a * room));
   };
-  const brakeFirst = reach(MIN_SPEED);
+  const brakeFirst = reach(minSpeed);
   let turnNow = brakeFirst;
-  for (let vt = MIN_SPEED + 2.5; vt <= MAX_SPEED; vt += 2.5) {
+  for (let vt = minSpeed + 2.5; vt <= maxSpeed; vt += 2.5) {
     turnNow = Math.max(turnNow, reach(vt));
   }
   const w = Math.min(
@@ -435,16 +441,18 @@ function arcSpeed(
   probe.x = flight.pos.x;
   probe.y = flight.pos.y;
   probe.z = flight.pos.z;
-  armMovers(world, turnRadius(MAX_SPEED) * Math.SQRT2 + PROBE_RADIUS, timeMs);
-  if (arcClear(world, flight, turnRadius(MAX_SPEED), dir, timeMs, sweep))
-    return MAX_SPEED;
-  if (!arcClear(world, flight, turnRadius(MIN_SPEED), dir, timeMs, sweep))
-    return MIN_SPEED;
-  let lo = MIN_SPEED; // clear
-  let hi = MAX_SPEED; // blocked
+  const { minSpeed, maxSpeed } = tuning;
+  const wide = turnRadiusLive(maxSpeed);
+  armMovers(world, wide * Math.SQRT2 + PROBE_RADIUS, timeMs);
+  if (arcClear(world, flight, wide, dir, timeMs, sweep)) return maxSpeed;
+  if (!arcClear(world, flight, turnRadiusLive(minSpeed), dir, timeMs, sweep))
+    return minSpeed;
+  let lo = minSpeed; // clear
+  let hi = maxSpeed; // blocked
   for (let i = 0; i < ARC_BISECT; i++) {
     const mid = (lo + hi) / 2;
-    if (arcClear(world, flight, turnRadius(mid), dir, timeMs, sweep)) lo = mid;
+    if (arcClear(world, flight, turnRadiusLive(mid), dir, timeMs, sweep))
+      lo = mid;
     else hi = mid;
   }
   return lo;
@@ -489,15 +497,19 @@ export function cornerSpeed(
   timeMs: number | null = null,
   sweep: number = ARC_SWEEP,
 ): number {
+  const maxSpeed = tuning.maxSpeed;
+  // FL1: the lab can switch the corner manager off outright.
+  if (tuning.autoSlow === 0) return maxSpeed;
   if (world.tunnels && flight.pos.y < 0 && tunnelAt(flight.pos) !== null) {
-    return MAX_SPEED;
+    return maxSpeed;
   }
   const cosP = Math.cos(flight.pitch);
   const fx = -Math.sin(flight.yaw) * cosP;
   const fy = Math.sin(flight.pitch);
   const fz = -Math.cos(flight.yaw) * cosP;
   const corridor = threadingCorridor(world, flight, fx, fz);
-  let cap = MAX_SPEED;
+  let cap = maxSpeed;
+  const horizon = tuning.wallHorizon;
 
   // Probe 1 — wall ahead. In a corridor it runs straight down the hole's
   // axis instead: an approach a few degrees off the axis must not read the
@@ -505,14 +517,11 @@ export function cornerSpeed(
   if (corridor) {
     const sx = corridor.axis === "x" ? Math.sign(fx) : 0;
     const sz = corridor.axis === "z" ? Math.sign(fz) : 0;
-    const c = rayCap(world, flight.pos, sx, 0, sz, WALL_HORIZON, timeMs);
+    const c = rayCap(world, flight.pos, sx, 0, sz, horizon, timeMs);
     return Math.min(cap, c);
   }
   if (Math.abs(flight.pitch) < WALL_PITCH_MAX) {
-    cap = Math.min(
-      cap,
-      rayCap(world, flight.pos, fx, fy, fz, WALL_HORIZON, timeMs),
-    );
+    cap = Math.min(cap, rayCap(world, flight.pos, fx, fy, fz, horizon, timeMs));
   }
 
   // Probe 2 — the pilot is committing to a hard turn: make it makeable.
@@ -528,12 +537,12 @@ export function cornerSpeed(
 /** Advance the rate-limited ceiling toward `raw`: falls at CAP_FALL_RATE,
  * recovers at CAP_RISE_RATE. Monotone toward `raw`, never overshoots it. */
 export function stepCornerCap(prev: number, raw: number, dt: number): number {
-  if (raw < prev) return Math.max(raw, prev - CAP_FALL_RATE * dt);
-  return Math.min(raw, prev + CAP_RISE_RATE * dt);
+  if (raw < prev) return Math.max(raw, prev - tuning.capFallRate * dt);
+  return Math.min(raw, prev + tuning.capRiseRate * dt);
 }
 
 /** What main hands stepFlight: no cap at all once the ceiling is back at
  * MAX_SPEED, so the post-boost tail above MAX_SPEED is never airbraked. */
 export function cornerCapInput(cap: number): number | undefined {
-  return cap < MAX_SPEED ? cap : undefined;
+  return cap < tuning.maxSpeed ? cap : undefined;
 }

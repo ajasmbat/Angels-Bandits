@@ -13,15 +13,26 @@
 // last-write-wins plus a per-player rate limit, both enforced HERE so the
 // socket layer only has to relay; the value is per-room and in-memory, dying
 // with the room.
+//
+// FL1 Flight Lab: a lab joiner gets a room of their own (`Room.lab`). Normal
+// joins never land in one, the standing (bot-kept-alive) room is never one,
+// and only a lab room ever holds a tuning other than DEFAULT_TUNING — which
+// its pose validation (validate.ts roomPoseCap) is the only reader of.
 
 import {
   BOT_TARGET_DEFAULT,
   BOT_TARGET_MAX,
   BOT_TARGET_RATE_MS,
   CITY_SEED,
+  LAB_ROOM_CAP,
   ROOM_CAP,
 } from "@angels-bandits/common/constants";
 import type { RosterEntry } from "@angels-bandits/common/protocol";
+import {
+  DEFAULT_TUNING,
+  type FlightTuning,
+  importTuningObject,
+} from "@angels-bandits/common/tuning";
 
 export class Room {
   readonly members = new Map<string, RosterEntry>();
@@ -30,12 +41,39 @@ export class Room {
   private target = BOT_TARGET_DEFAULT;
   /** setterId → when their last accepted change landed (rate-limit clock). */
   private readonly lastSetAt = new Map<string, number>();
+  /** FL1: the lab tuning this room's pose validation reads. Stays exactly
+   * DEFAULT_TUNING's values in every non-lab room (applyLab refuses). */
+  labTuning: FlightTuning = { ...DEFAULT_TUNING };
+  /** FL1: boss, missiles, chaos and destruction run in a lab room only when
+   * its pilot turns them on. */
+  labChaos = false;
 
   constructor(
     readonly id: string,
     /** City seed every member must generate from (shared by all rooms for now). */
     readonly seed: number,
-  ) {}
+    /** FL1: a Flight Lab room — one pilot's private sandbox. */
+    readonly lab = false,
+  ) {
+    // The lab starts alone in the city: bots only when the pilot asks.
+    if (lab) this.target = 0;
+  }
+
+  /**
+   * FL1: apply a `lab` message's fields. A tuning is re-imported through the
+   * shared importer (unknown keys and non-finite values dropped, ranges
+   * clamped); one that fails to import is ignored. Returns false — and
+   * changes nothing — in a non-lab room.
+   */
+  applyLab(msg: { tuning?: unknown; chaos?: unknown }): boolean {
+    if (!this.lab) return false;
+    if (msg.tuning !== undefined) {
+      const imported = importTuningObject(msg.tuning);
+      if (imported.ok) this.labTuning = imported.tuning;
+    }
+    if (typeof msg.chaos === "boolean") this.labChaos = msg.chaos;
+    return true;
+  }
 
   get botTarget(): number {
     return this.target;
@@ -92,18 +130,35 @@ export class RoomManager {
    * full. `preferRoomId` (a W2 resume) wins when that room still exists and
    * has a seat. */
   join(id: string, name: string, preferRoomId?: string): Room {
-    const preferred = this.list.find((r) => r.id === preferRoomId && !r.full);
+    const preferred = this.list.find(
+      (r) => r.id === preferRoomId && !r.full && !r.lab,
+    );
     const room =
-      preferred ?? this.list.find((r) => !r.full) ?? this.spawnRoom();
+      preferred ?? this.list.find((r) => !r.full && !r.lab) ?? this.spawnRoom();
     room.members.set(id, { id, name });
     this.byMember.set(id, room);
     return room;
   }
 
-  /** The standing room: the first one, created empty if none exists yet —
-   * the arena bots keep alive so the first joiner never sees a dead sky. */
+  /** FL1: a fresh lab room of `id`'s own, or null when LAB_ROOM_CAP lab
+   * rooms are already open. Never shared, never resumed into. */
+  joinLab(id: string, name: string): Room | null {
+    if (this.list.filter((r) => r.lab).length >= LAB_ROOM_CAP) return null;
+    const room = this.spawnRoom(true);
+    room.members.set(id, { id, name });
+    this.byMember.set(id, room);
+    return room;
+  }
+
+  /** The standing room: the first non-lab one, created empty if none exists
+   * yet — the arena bots keep alive so the first joiner never sees a dead
+   * sky. A lab room is never it. */
   ensureRoom(): Room {
-    return this.list[0] ?? this.spawnRoom();
+    return this.standing() ?? this.spawnRoom();
+  }
+
+  private standing(): Room | undefined {
+    return this.list.find((r) => !r.lab);
   }
 
   /** Register a server-flown bot as an ordinary member of `room`. */
@@ -123,7 +178,7 @@ export class RoomManager {
    */
   desiredBots(room: Room): number {
     const humans = room.humanCount;
-    if (humans === 0 && this.list[0] !== room) return 0;
+    if (humans === 0 && this.standing() !== room) return 0;
     return Math.max(0, Math.min(room.botTarget, ROOM_CAP - humans));
   }
 
@@ -144,8 +199,8 @@ export class RoomManager {
     return this.byMember.get(id);
   }
 
-  private spawnRoom(): Room {
-    const room = new Room(`room-${this.nextRoomId++}`, CITY_SEED);
+  private spawnRoom(lab = false): Room {
+    const room = new Room(`room-${this.nextRoomId++}`, CITY_SEED, lab);
     this.list.push(room);
     return room;
   }

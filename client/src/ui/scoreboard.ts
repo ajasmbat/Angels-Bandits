@@ -42,16 +42,18 @@ export class Scoreboard {
   constructor(
     private readonly selfId: string,
     target: Window = window,
+    /** FL1: false in the Flight Lab, where Tab opens the lab panel. */
+    tabKey = true,
   ) {
     target.addEventListener("keydown", (e: KeyboardEvent) => {
-      if (e.code === "Tab") {
+      if (tabKey && e.code === "Tab") {
         e.preventDefault(); // don't tab focus around the page
         this.tabHeld = true;
         this.setOpen(true);
       }
     });
     target.addEventListener("keyup", (e: KeyboardEvent) => {
-      if (e.code === "Tab") {
+      if (tabKey && e.code === "Tab") {
         this.tabHeld = false;
         if (!this.dragging && !this.pinned) this.setOpen(false);
       }

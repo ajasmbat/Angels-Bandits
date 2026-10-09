@@ -4,14 +4,11 @@
 // whatever the server said, never a client-side simulation of them.
 
 import { mulberry32 } from "@angels-bandits/common/city";
-import {
-  BOOST_MIN_START,
-  KILL_CAM_MS,
-  MAX_HP,
-} from "@angels-bandits/common/constants";
+import { KILL_CAM_MS, MAX_HP } from "@angels-bandits/common/constants";
 import { MEDAL_LABEL, type MedalKind } from "@angels-bandits/common/medals";
 import type { DeathMsg } from "@angels-bandits/common/protocol";
 import type { LifeCard } from "../game/session-stats";
+import { tuning } from "../game/tuning";
 
 /** How long a medal toast stays up, ms (S7). */
 const MEDAL_TOAST_MS = 2600;
@@ -228,7 +225,11 @@ export class Hud {
   setBoost(energy: number, burning: boolean): void {
     const frac = Math.min(1, Math.max(0, energy));
     setStyle(this.boostFill, "width", `${(frac * 100).toFixed(1)}%`);
-    this.boostEl.classList.toggle("low", !burning && frac < BOOST_MIN_START);
+    // FL1: the live tuning's start rule (the lab can move it).
+    this.boostEl.classList.toggle(
+      "low",
+      !burning && frac < tuning.boostMinStart,
+    );
     document.body.classList.toggle("boost", burning);
   }
 

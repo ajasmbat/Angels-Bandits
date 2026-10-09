@@ -812,6 +812,13 @@ export const RESPAWN_NOSE_RANGE = 700;
 // --- Rooms ---
 /** Players per FFA room; rooms auto-spawn when full. */
 export const ROOM_CAP = 12;
+/** FL1 Flight Lab: solo lab rooms one server process holds at once. Each is
+ * a whole room (city state, director, boss), so a lab join past this is
+ * refused with "Flight Lab is full" rather than starving the real rooms. */
+export const LAB_ROOM_CAP = 8;
+/** WebSocket close code for a refused lab join (reason "Flight Lab is
+ * full"), in the 4000–4999 application range. */
+export const LAB_FULL_CODE = 4001;
 
 // --- Bots (B1) — every knob for the server-side backfill pilots ---
 /** Bot count a fresh room starts at, before anyone touches the slider. */

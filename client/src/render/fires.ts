@@ -19,7 +19,6 @@ import {
   type Vec3,
   wrapCoord,
   wrapDeltaAxis,
-  wrapDistance,
 } from "@angels-bandits/common/world";
 import type { Impacts } from "./impacts";
 

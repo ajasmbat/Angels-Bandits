@@ -52,7 +52,10 @@ import {
   mulberry32,
   tierGrids,
 } from "@angels-bandits/common/city";
-import { collapseZoneHit } from "@angels-bandits/common/city/collapse";
+import {
+  collapseZoneHit,
+  collideCollapses,
+} from "@angels-bandits/common/city/collapse";
 import {
   type MoverField,
   generateMovers,
@@ -78,6 +81,7 @@ import {
   EVENT_COLLAPSE,
   EVENT_CRANE,
   EVENT_GAS,
+  inDangerZone,
 } from "@angels-bandits/common/director";
 import type { SpawnState } from "@angels-bandits/common/protocol";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
@@ -238,6 +242,7 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
     let directorCancelled = 0;
     let rebuilds = 0;
     const directorKills = { collapse: 0, crane: 0, gas: 0, chain: 0 };
+    const crashCauses = { rubble: 0, damaged: 0, warned: 0 };
 
     for (let room = 0; room < ROOMS; room++) {
       // One room at a time, then let the event loop turn: the whole sim as a
@@ -510,6 +515,22 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
           }
           if (!combat.crash(id, now)) continue;
           crashes++;
+          // D5 telemetry: crashes into rubble, into a damaged building, or
+          // inside a warned director zone.
+          if (rc && site) {
+            if (
+              collideCollapses(site, PLAYER_RADIUS + 2, rc.collapses.list, now)
+            ) {
+              crashCauses.rubble++;
+            } else if (
+              collideCity(site, PLAYER_RADIUS + 2, roomBuildings)?.damage
+            ) {
+              crashCauses.damaged++;
+            }
+            if (destruction?.pending().some((e) => inDangerZone(e, site))) {
+              crashCauses.warned++;
+            }
+          }
           if (LIVE && rc && site) applyDeathBlast(rc, site);
           const fresh = now - (spawnedAt.get(id) ?? 0) < SPAWN_WINDOW_MS;
           if (fresh) spawnCrashes++;
@@ -682,6 +703,7 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         `D3 collapses           ${collapses} events (director=${COLLAPSE ? 1 : 0}), kills-by-collapse ${collapseKills} (not in the crash count above)`,
         `D3 collapse zones      ${zoneEntries} bot entries into an active zone, ${zoneRefusals} probe refusals`,
         `D5 director            ${DIRECTOR ? `${directorEvents[EVENT_COLLAPSE]} demolitions, ${directorEvents[EVENT_GAS]} gas mains, ${directorEvents[EVENT_CRANE]} crane falls, ${directorCancelled} called off, ${rebuilds} rebuilds` : "off"}`,
+        `D5 crash sites         ${crashCauses.rubble} into collapse rubble/debris, ${crashCauses.damaged} into a damaged building, ${crashCauses.warned} inside a warned zone (all in crashes)`,
         `D5 kills by event      ${DIRECTOR ? `demolition ${directorKills.collapse}, crane ${directorKills.crane}, gas ${directorKills.gas}, chain collapse ${directorKills.chain} (${((directorKills.collapse + directorKills.crane + directorKills.gas + directorKills.chain) / botMinutes).toFixed(3)} / bot-min; not in crashes)` : "off"}`,
         "",
         `crash breakdown (${TUNE ? "tune" : "holdout"} seeds; roofs hit p10/p50/p90 m: ${quantiles(roofsHit)}):`,

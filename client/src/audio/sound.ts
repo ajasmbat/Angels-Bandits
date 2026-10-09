@@ -855,6 +855,23 @@ export class GameAudio implements VoiceSink {
     this.burst("lowpass", 260, 35, 2.2, EXPLOSION_LEVEL * 0.8 * level, s.pan);
   }
 
+  /** S4: a flak shell bursting — a sharp, papery crack and a short thump,
+   * far lighter than a kill (a turret volley must not drown the fight). */
+  flakBurst(pos: Vec3, listenerPos: Vec3, listenerYaw: number): void {
+    const s = spatialize(listenerPos, listenerYaw, pos);
+    const level = Math.min(1, s.gain * 4);
+    if (level <= 0.01) return;
+    this.burst(
+      "bandpass",
+      1900,
+      500,
+      0.16,
+      EXPLOSION_LEVEL * 0.45 * level,
+      s.pan,
+    );
+    this.burst("lowpass", 320, 60, 0.4, EXPLOSION_LEVEL * 0.35 * level, s.pan);
+  }
+
   /** Kill explosion at a world position: low boom + rumble tail. */
   explosion(pos: Vec3, listenerPos: Vec3, listenerYaw: number): void {
     const s = spatialize(listenerPos, listenerYaw, pos);

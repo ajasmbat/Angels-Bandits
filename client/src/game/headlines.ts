@@ -14,6 +14,11 @@
 // real names; it renders them inert and only to the local player.
 
 import {
+  type BossSlot,
+  bossPresent,
+  piecesFalling,
+} from "@angels-bandits/common/boss";
+import {
   CONSTRUCTION_BLOCKS,
   LANDMARK_BLOCKS,
   PLAZA_BLOCKS,
@@ -172,6 +177,15 @@ const GAS_LEADS = [
   "FIREBALL DOWNS",
 ];
 
+/** S4: brought down by the sky boss's flak (environment, like a missile). */
+const FLAK_LEADS = ["FLAK CATCHES", "FLAK BRINGS DOWN", "ZEPPELIN GUNS DOWN"];
+/** S4: the zeppelin falls — the top dealer's headline. */
+const BOSS_VERBS = [
+  "BRINGS DOWN THE WAR ZEPPELIN",
+  "SENDS THE ZEPPELIN DOWN IN FLAMES",
+  "BURSTS THE WAR ZEPPELIN",
+];
+
 const pick = (list: readonly string[], seed: number): string =>
   list[seed % list.length] as string;
 
@@ -199,6 +213,8 @@ export function killHeadline(
     line = `${pick(MISSILE_LEADS, seed)} ${victim}`;
   } else if (death.cause === "blast") {
     line = `${pick(GAS_LEADS, seed)} ${victim}`;
+  } else if (death.cause === "flak") {
+    line = `${pick(FLAK_LEADS, seed)} ${victim}`;
   } else if (death.killerId === null) {
     line = `${victim} ${pick(CRASH_VERBS, seed)}`;
   } else if (death.cause === "wreck") {
@@ -221,6 +237,7 @@ export function feedLine(
   if (death.cause === "storm") return `⚡ ${victim}`;
   if (death.cause === "missile") return `🚀 ${victim}`;
   if (death.cause === "blast") return `💥 ${victim}`;
+  if (death.cause === "flak") return `💥 ${victim}`;
   if (death.killerId === null) return `☠ ${victim}`;
   const glyph =
     death.cause === "wreck" ? "🔥" : death.cause === "crash" ? "✕" : "▸";
@@ -246,17 +263,64 @@ export function replaySubject(death: HeadlineDeath): ReplaySubject {
   if (death.cause === "blast") {
     return { id: death.victimId, caption: "GAS MAIN BLAST" };
   }
+  if (death.cause === "flak") {
+    return { id: death.victimId, caption: "FLAK" };
+  }
   if (death.killerId === null) {
     return { id: death.victimId, caption: "WIPEOUT" };
   }
   return { id: death.killerId, caption: "LAST KILL" };
 }
 
-/** A banner the screens carry above everything else. D5 (destruction) will
- * add its own kind; today the storm is the only source. */
+/** A banner the screens carry above everything else: the storm, and (S4)
+ * a sky-boss raid. D5 (destruction) will add its own kind. */
 export interface MatchWarning {
-  kind: "storm";
+  kind: "storm" | "boss";
   text: string;
+}
+
+/** The raid banners (fixed objects, compared by identity like the storm's). */
+export const BOSS_OVERHEAD: MatchWarning = {
+  kind: "boss",
+  text: "AIR RAID — WAR ZEPPELIN OVER THE CITY",
+};
+export const BOSS_FALLING: MatchWarning = {
+  kind: "boss",
+  text: "ZEPPELIN GOING DOWN — CLEAR THE AREA",
+};
+
+/** S4: the raid banner at render time `t` (null: no raid on). A raid
+ * outranks the weather on the screens. */
+export function bossWarning(
+  slot: BossSlot,
+  t: number | null,
+): MatchWarning | null {
+  if (t === null) return null;
+  if (bossPresent(slot, t)) return BOSS_OVERHEAD;
+  return piecesFalling(slot, t) ? BOSS_FALLING : null;
+}
+
+/** S4: the screens' headline and feed line when the zeppelin goes down —
+ * credited to the top dealer (`label`ed like every pilot), placed where its
+ * middle section was. The same on every client. */
+export function bossHeadline(
+  top: string | null,
+  label: (id: string) => string,
+  raidId: number,
+  x: number,
+  z: number,
+): { headline: string; feed: string } {
+  const place = placePhrase(Math.round(x), Math.round(z));
+  if (top === null) {
+    const line = "THE WAR ZEPPELIN GOES DOWN";
+    return { headline: place ? `${line} ${place}` : line, feed: "💥 ZEPPELIN" };
+  }
+  const who = label(top);
+  const line = `${who} ${pick(BOSS_VERBS, hash(`${top}|${raidId}`))}`;
+  return {
+    headline: place ? `${line} ${place}` : line,
+    feed: `${who} ▸ ZEPPELIN`,
+  };
 }
 
 /** Share of the drizzle phase after which the storm is announced. */

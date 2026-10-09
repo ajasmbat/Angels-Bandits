@@ -34,6 +34,7 @@
     "./cityevents": "./src/cityevents.ts",
     "./courses": "./src/courses.ts",
     "./director": "./src/director.ts",
-    "./medals": "./src/medals.ts"
+    "./medals": "./src/medals.ts",
+    "./boss": "./src/boss.ts"
   }
 }

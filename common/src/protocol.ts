@@ -4,6 +4,7 @@
 // keeping every shape in this one file is what makes a binary encoder a later
 // drop-in swap.
 
+import type { BossDown, WireBossRaid, WireBossState, WireFlak } from "./boss";
 import type { CollapseWire } from "./city/collapse";
 import type { NewsHeliSlot, NewsHeliTarget } from "./city/newsheli";
 import type { CityEvent } from "./cityevents";
@@ -163,8 +164,26 @@ export interface AwayMsg {
   on: boolean;
 }
 
+/**
+ * S4: a shooter-side hit claim on the sky boss's weak point `wp` (an index
+ * into common/src/boss.ts BOSS_WEAK_POINTS). Unlike a plane, the boss's pose
+ * is the server's own, so the claim carries the round's whole line — the
+ * muzzle `bulletOrigin`, the unit `dir` it flew and the server-clock time
+ * `t` it met the weak point (the render time) — and the server re-runs the
+ * ray against the armour itself (bossHitValid).
+ */
+export interface BossHitMsg {
+  type: "bossHit";
+  wp: number;
+  seq: number;
+  bulletOrigin: Vec3;
+  dir: Vec3;
+  t: number;
+}
+
 export type ClientMsg =
   | JoinMsg
+  | BossHitMsg
   | PingMsg
   | AwayMsg
   | PoseMsg
@@ -236,6 +255,11 @@ export interface WelcomeMsg {
    * and sees the same dust. Applied rebuilds need nothing here: `destroyed`
    * and `collapses` already leave them out. */
   director?: WireDirectorEvent[];
+  /** S4: the room's sky boss — the raid (in the air, falling or long gone),
+   * every weak point's HP and its break-up once it went down. Explicitly
+   * null when the room has none, so a resume into another room clears the
+   * old room's boss. */
+  boss?: WireBossState | null;
 }
 
 // --- S3 stunt courses ---
@@ -410,6 +434,8 @@ export interface DeathMsg {
   type: "death";
   victimId: string;
   killerId: string | null;
+  /** `"flak"` (S4): a sky-boss flak burst — environment, credited only by
+   * the crash rule, like a missile. */
   cause:
     | "shot"
     | "crash"
@@ -417,7 +443,8 @@ export interface DeathMsg {
     | "wreck"
     | "collapse"
     | "missile"
-    | "blast";
+    | "blast"
+    | "flak";
   /** S1: the server's kill site — the victim's on-record position,
    * canonical and rounded to whole meters — so every client's jumbotron
    * headline names the same place. Absent when the server had no pose. */
@@ -540,6 +567,45 @@ export interface CollapseMsg {
 }
 
 /**
+ * S4: a sky-boss raid begins (common/src/boss.ts). Everything about the
+ * zeppelin's flight is a pure function of this and the synced clock; its
+ * weak points start at full HP.
+ */
+export interface BossMsg {
+  type: "boss";
+  r: WireBossRaid;
+}
+
+/** S4: the boss's weak points' HP after this tick's hits (one per tick at
+ * most, only when something changed). `id` is the raid's. */
+export interface BossHpMsg {
+  type: "bossHp";
+  id: number;
+  hp: number[];
+}
+
+/** S4: the shells the boss's turrets fired this tick (boss.ts BossFlak):
+ * each flies from its turret's muzzle at its firing to its burst point. */
+export interface FlakMsg {
+  type: "flak";
+  f: WireFlak[];
+}
+
+/**
+ * S4: the boss is down. `d` is its break-up — three sections on the D4 wreck
+ * path to impacts the server already swept; `dealers` every pilot who hurt
+ * it with their share in thousandths, most first; `top` the pilot who dealt
+ * the most (null: nobody — it can only come down to damage, so never in
+ * practice). The credited dealers' kills ride the `score` after it.
+ */
+export interface BossDownMsg {
+  type: "bossDown";
+  d: BossDown;
+  dealers: [id: string, permille: number][];
+  top: string | null;
+}
+
+/**
  * D5: the destruction director staged an event (common/src/director.ts):
  * a demolition, a gas main or a crane, happening at `e.at` — at least
  * DIRECTOR_WARN_MIN_MS after this is sent. Clients rumble, groan, sound the
@@ -569,6 +635,10 @@ export type ServerMsg =
   | WelcomeMsg
   | DirectorWarnMsg
   | RebuildMsg
+  | BossMsg
+  | BossHpMsg
+  | FlakMsg
+  | BossDownMsg
   | ChunksMsg
   | CollapseMsg
   | MissileMsg

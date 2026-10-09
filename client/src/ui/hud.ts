@@ -50,6 +50,11 @@ export function deathLabel(
   }
   if (cause === "missile") return "🚀 CAUGHT IN A MISSILE STRIKE";
   if (cause === "blast") return "💥 CAUGHT IN A GAS MAIN BLAST";
+  if (cause === "flak") {
+    return killerName === null
+      ? "💥 SHOT DOWN BY FLAK"
+      : `💥 FLAK — CREDIT TO ${killerName}`;
+  }
   if (killerName === null) return "CRASHED";
   if (cause === "wreck") return `HIT A WRECK — CREDIT TO ${killerName}`;
   return cause === "shot"
@@ -137,6 +142,20 @@ export class Hud {
     "killcam-card",
   ) as HTMLDivElement;
   private medalUntil = 0;
+  /** S4: the boss bar's nodes, the HP it last drew, and its hit flash. */
+  private readonly bossBar = document.getElementById(
+    "boss-bar",
+  ) as HTMLDivElement;
+  private readonly bossFill = this.bossBar.querySelector(
+    ".fill",
+  ) as HTMLDivElement;
+  private readonly bossCells = this.bossBar.querySelector(
+    ".cells",
+  ) as HTMLDivElement;
+  /** The HP the bar last drew (null: hidden). Compared in place — the
+   * bar is checked every frame while the boss flies. */
+  private bossShown: number[] | null = null;
+  private bossFlashUntil = 0;
   private hitBlipUntil = 0;
   private aimModeTimer: ReturnType<typeof setTimeout> | undefined;
   private markerUntil = 0;
@@ -367,6 +386,57 @@ export class Hud {
     this.killcamCard.replaceChildren(statsEl, medalsEl);
   }
 
+  /**
+   * S4: the sky boss's shared health bar — the sum of its weak points over
+   * their full HP, one cell per weak point under it. `hp` null hides it.
+   * Writes the DOM only when what it shows changed.
+   */
+  setBoss(
+    hp: readonly number[] | null,
+    max: readonly number[],
+    now: number,
+  ): void {
+    if (hp === null || hp.length === 0) {
+      if (this.bossShown !== null) {
+        this.bossBar.classList.remove("open");
+        this.bossShown = null;
+      }
+      return;
+    }
+    const was = this.bossShown;
+    if (was !== null && was.length === hp.length) {
+      let same = true;
+      for (let k = 0; k < hp.length && same; k++) same = hp[k] === was[k];
+      if (same) return;
+    }
+    let left = 0;
+    let full = 0;
+    for (let k = 0; k < max.length; k++) {
+      left += Math.max(0, hp[k] ?? 0);
+      full += max[k] ?? 0;
+    }
+    this.bossShown = [...hp];
+    this.bossFill.style.width = `${(100 * left) / Math.max(1, full)}%`;
+    if (this.bossCells.children.length !== max.length) {
+      this.bossCells.replaceChildren(
+        ...max.map(() => {
+          const cell = document.createElement("div");
+          cell.className = "cell";
+          return cell;
+        }),
+      );
+    }
+    hp.forEach((v, k) => {
+      this.bossCells.children[k]?.classList.toggle("spent", v <= 0);
+    });
+    this.bossBar.classList.add("open");
+    if (was !== null) {
+      // A hit since the last change: a white tick on the bar.
+      this.bossBar.classList.add("hit");
+      this.bossFlashUntil = now + 90;
+    }
+  }
+
   /** S7: own medals pop in at the top of the screen, stacked, held
    * MEDAL_TOAST_MS. A new award replaces the stack and re-pops it. */
   showMedals(medals: readonly MedalKind[], now: number): void {
@@ -421,6 +491,10 @@ export class Hud {
   /** Call every frame to age the hit blip and hitmarker out. */
   update(now: number): void {
     if (this.respawnAt !== 0) this.tickCountdown(now);
+    if (this.bossFlashUntil !== 0 && now > this.bossFlashUntil) {
+      this.bossBar.classList.remove("hit");
+      this.bossFlashUntil = 0;
+    }
     if (this.medalUntil !== 0 && now > this.medalUntil) {
       this.medalToast.classList.remove("on"); // CSS fades it out
       this.medalUntil = 0;

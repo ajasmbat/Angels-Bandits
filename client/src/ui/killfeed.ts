@@ -26,7 +26,8 @@ export class KillFeed {
       | "wreck"
       | "collapse"
       | "missile"
-      | "blast",
+      | "blast"
+      | "flak",
     self = false,
     victimId?: string,
   ): void {
@@ -44,6 +45,8 @@ export class KillFeed {
       entry.append("🚀 missile strike took down ", victim);
     } else if (cause === "blast") {
       entry.append("💥 gas main took down ", victim);
+    } else if (cause === "flak" && killerName === null) {
+      entry.append("💥 flak took down ", victim);
     } else if (cause === "collapse" && killerName === null) {
       entry.append("▼ crushed ", victim);
     } else if (killerName === null) {
@@ -97,6 +100,34 @@ export class KillFeed {
       }
       return;
     }
+  }
+
+  /**
+   * S4: the sky boss is down — its own line, credited to the top dealer
+   * (null: nobody — never, in practice) and how many more shared the kill.
+   * Tagged with the boss's id so the top dealer's medal badges this line.
+   */
+  addBossDown(
+    topName: string | null,
+    others: number,
+    bossId: string,
+    self = false,
+  ): void {
+    const entry = document.createElement("div");
+    entry.className = self ? "entry self" : "entry";
+    entry.dataset.victim = bossId;
+    const victim = document.createElement("span");
+    victim.className = "victim";
+    victim.textContent = "WAR ZEPPELIN";
+    if (topName === null) {
+      entry.append("💥 ", victim, " is down");
+    } else {
+      const killer = document.createElement("span");
+      killer.className = "killer";
+      killer.textContent = topName;
+      entry.append(killer, others > 0 ? ` +${others} ▸ ` : " ▸ ", victim);
+    }
+    this.push(entry);
   }
 
   /** S7: a pilot crossed a kill-streak tier — its own line. */

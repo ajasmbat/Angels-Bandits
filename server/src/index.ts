@@ -16,6 +16,16 @@ import {
   stopBoost,
 } from "@angels-bandits/common/boost";
 import {
+  BOSS_FAST_TUNING,
+  BOSS_ID,
+  BOSS_TUNING,
+  type BossDown,
+  bossCredit,
+  bossSpawnClear,
+  encodeFlak,
+  encodeRaid,
+} from "@angels-bandits/common/boss";
+import {
   encodeChunkIds,
   generateCity,
   mulberry32,
@@ -52,6 +62,7 @@ import {
   NAME_MAX_LENGTH,
   PLAYER_RADIUS,
   POSE_AGE_MAX_MS,
+  RESPAWN_SPEED,
   RESUME_WINDOW_MS,
   SPAWN_PROTECTION_MS,
   TICK_DOWN_HZ,
@@ -93,6 +104,15 @@ import {
 import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import type { WreckParams, WreckWorld } from "@angels-bandits/common/wreck";
 import { type WebSocket, WebSocketServer } from "ws";
+import {
+  BossDirector,
+  type BossPlane,
+  type BossWorld,
+  applyBossImpact,
+  bossContactIndex,
+  claimBossHit,
+  landBotBossRound,
+} from "./boss";
 import {
   type BotContact,
   RoomBots,
@@ -168,6 +188,11 @@ const DIRECTOR_TUNING =
 /** X1: AB_MISSILE_FAST=1 (tests and QA only) makes strikes come quickly. */
 const MISSILE_TUNING =
   process.env.AB_MISSILE_FAST === "1" ? FAST_TUNING : DEFAULT_TUNING;
+
+/** S4: AB_BOSS_FAST=1 (tests and QA only): a small boss, seconds after a
+ * human joins. Production never sets it. */
+const BOSS_RAID_TUNING =
+  process.env.AB_BOSS_FAST === "1" ? BOSS_FAST_TUNING : BOSS_TUNING;
 
 /** Test-only introspection of the per-room maps (`GET /debug/rooms`). */
 const DEBUG_ROOMS = process.env.AB_DEBUG_ROOMS === "1";
@@ -312,6 +337,8 @@ const roomMovers = (room: Room): MoverField => {
     field = {
       ...withNewsHeli(moversFor(room.seed), room.seed),
       collapses: roomCity(room).collapses,
+      // S4: and its sky boss — the director's own slot, mutated in place.
+      boss: roomBoss(room).slot,
     };
     roomMoversById.set(room.id, field);
   }
@@ -379,6 +406,38 @@ const missilesFor = (room: Room): RoomMissiles => {
 };
 
 /**
+ * Each room's sky boss (S4): its schedule, HP, turrets and break-up. Created
+ * lazily, dropped with the room; seeded from the room's number like its
+ * bots. Its slot rides the room's mover field (bots, crash checks, wrecks).
+ */
+const bossByRoom = new Map<string, BossDirector>();
+const roomBoss = (room: Room): BossDirector => {
+  let boss = bossByRoom.get(room.id);
+  if (!boss) {
+    const n = Number(room.id.split("-")[1] ?? 0);
+    boss = new BossDirector(
+      mulberry32((CITY_SEED ^ Math.imul(n + 1, 0x2b05d1)) >>> 0),
+      BOSS_RAID_TUNING,
+    );
+    bossByRoom.set(room.id, boss);
+  }
+  return boss;
+};
+
+/** What the boss sweeps its break-up against and its turrets look past:
+ * the room's city as it stands. */
+const bossWorld = (room: Room): BossWorld => {
+  const rc = roomCity(room);
+  return { buildings: rc.buildings, index: rc.index };
+};
+
+/** S4: a human (re)spawn must never be pointed into the zeppelin's path. */
+const spawnClearOfBoss =
+  (room: Room, now: number) =>
+  (pos: Vec3, yaw: number | null): boolean =>
+    bossSpawnClear(roomBoss(room).slot, pos, yaw, RESPAWN_SPEED, now);
+
+/**
  * Each room's destruction director (D5): timed events near the fight and
  * the rebuild cycle, against that room's own breakable city. Created
  * lazily, reset with the room's city, dropped with the room; seeded from
@@ -401,10 +460,11 @@ const directorFor = (room: Room): DestructionDirector => {
 };
 
 /** A plane (re)spawned or came back at `pos`: the missile and destruction
- * directors keep their quiet rules around it. */
+ * directors (and S4's turrets) keep their quiet rules around it. */
 function noteSpawn(room: Room, id: string, pos: Vec3, now: number): void {
   missilesFor(room).director.noteSpawn(id, pos, now);
   directorFor(room).noteSpawn(id, now);
+  roomBoss(room).noteSpawn(id, now); // S4: no flak at it for a beat
 }
 
 /** D5: a spawn never lands inside a warned director event's danger zone. */
@@ -476,7 +536,9 @@ const wreckWorld = (room: Room): WreckWorld => {
     buildings: rc.buildings,
     index: rc.index,
     nature: natureIndexFor(room.seed),
-    movers: moversFor(room.seed),
+    // S4: plus the sky boss's hull — its path is pure, so a wreck falling
+    // into it hits it (a later break-up is not foreseen; it hits the air).
+    movers: { ...moversFor(room.seed), boss: roomBoss(room).slot },
   };
 };
 
@@ -685,6 +747,7 @@ function syncRoomBots(room: Room): void {
   for (const id of despawned) {
     combat.removePlayer(id);
     medals.forget(id);
+    bossByRoom.get(room.id)?.forget(id);
     storm.forget(id);
     rooms.leave(id);
     sendToRoom(room, { type: "playerLeft", id });
@@ -707,6 +770,7 @@ function disposeRoom(room: Room): void {
   pendingKillByRoom.delete(room.id);
   roomCityById.delete(room.id);
   missilesByRoom.delete(room.id);
+  bossByRoom.delete(room.id);
   wrecksByRoom.delete(room.id);
   directorsByRoom.delete(room.id);
 }
@@ -780,6 +844,7 @@ function handleJoin(
     livingEnemies(room, id),
     Math.random,
     spawnAvoid(room),
+    spawnClearOfBoss(room, now),
   );
   const client: Client = {
     id,
@@ -825,6 +890,7 @@ function handleJoin(
     missiles: missilesFor(room).director.missiles().map(encodeMissile),
     wrecks: wrecksByRoom.get(room.id)?.active() ?? [],
     director: directorFor(room).pending().map(encodeDirectorEvent),
+    boss: roomBoss(room).state(now),
   };
   ws.send(JSON.stringify(welcome));
   sendToRoom(room, { type: "playerJoined", player: { id, name } }, id);
@@ -991,6 +1057,7 @@ function handleLeave(id: string): void {
   const room = rooms.leave(id);
   if (room) directorsByRoom.get(room.id)?.forget(id);
   if (room) {
+    bossByRoom.get(room.id)?.forget(id);
     sendToRoom(room, { type: "playerLeft", id });
     // D2: the last human out takes the damage with them (see breakable) —
     // D3: and the collapses, in the same reset.
@@ -1017,7 +1084,8 @@ function broadcastScores(room: Room): void {
 
 function handleFire(client: Client, seq: unknown, now: number): void {
   if (typeof seq !== "number" || !Number.isFinite(seq)) return;
-  const verdict = combat.fire(client.id, seq, now);
+  // S4: the on-record nose rides with the bullet (a boss claim's line).
+  const verdict = combat.fire(client.id, seq, now, wireNose(client.pose.quat));
   // Others render the muzzle flash/tracer; the shooter already did (favor
   // the shooter — a rejected shot just doesn't exist to anyone else).
   if (verdict.ok) {
@@ -1086,6 +1154,64 @@ function handleHitClaim(
     }
     sendDeath(client.room, verdict.death, now, wreck);
   }
+}
+
+/**
+ * S4: a shooter-side hit on the sky boss's weak point. The round's whole
+ * line is re-judged against the zeppelin's own pose (server/src/boss.ts
+ * claimBossHit); the HP change goes out with the tick's `bossHp`, a kill
+ * at once.
+ */
+function handleBossHit(client: Client, msg: ClientEnvelope, now: number): void {
+  const { wp, seq, bulletOrigin, dir, t } = msg;
+  if (typeof wp !== "number" || typeof seq !== "number") return;
+  if (typeof t !== "number" || !Number.isFinite(t)) return;
+  if (!isVec3(bulletOrigin) || !isVec3(dir)) return;
+  const boss = roomBoss(client.room);
+  const hit = claimBossHit(
+    combat,
+    boss,
+    client.id,
+    { wp, seq, origin: bulletOrigin, dir, t },
+    client.pose.pos,
+    now,
+    bossWorld(client.room),
+    speedCapOf(client, now),
+  );
+  if (hit?.down) bossDowned(client.room, hit.down);
+}
+
+/**
+ * S4: the sky boss is down. Credit by damage share (common/src/boss.ts
+ * bossCredit, pilots still in the room): +1 kill for each dealer with
+ * BOSS_CREDIT_MIN_SHARE, SKY-BOSS SLAYER for the top one (no streak, no
+ * death — the boss is not a pilot), then the break-up, the award and the
+ * new tallies. The news heli goes to cover the crash.
+ */
+function bossDowned(room: Room, down: BossDown): void {
+  const ledger = new Map(
+    [...roomBoss(room).damageLedger()].filter(([id]) => room.members.has(id)),
+  );
+  const credit = bossCredit(ledger);
+  for (const id of credit.credited) combat.creditKill(id);
+  sendToRoom(room, {
+    type: "bossDown",
+    d: down,
+    dealers: credit.dealers.map((d) => [d.id, Math.round(d.share * 1000)]),
+    top: credit.top,
+  });
+  if (credit.top !== null) {
+    const award = medals.bossKill(credit.top);
+    sendToRoom(room, {
+      type: "award",
+      id: credit.top,
+      victimId: BOSS_ID,
+      medals: award.medals,
+    });
+  }
+  broadcastScores(room);
+  const mid = down.pieces[1];
+  if (mid) pendingKillByRoom.set(room.id, { x: mid.p.x, z: mid.p.z });
 }
 
 /**
@@ -1251,7 +1377,12 @@ function issueRespawns(due: string[], now: number): void {
       combat.respawned(id, now);
       bots.respawn(id, spawn);
     } else {
-      spawn = pickRespawn(enemies, Math.random, spawnAvoid(room));
+      spawn = pickRespawn(
+        enemies,
+        Math.random,
+        spawnAvoid(room),
+        spawnClearOfBoss(room, now),
+      );
       const client = clients.get(id);
       if (!client) continue;
       combat.respawned(id, now);
@@ -1309,6 +1440,7 @@ function settleAway(client: Client, now: number): void {
       livingEnemies(client.room, client.id),
       Math.random,
       spawnAvoid(client.room),
+      spawnClearOfBoss(client.room, now),
     );
     combat.returned(client.id, now);
     resetOnRecord(client, spawn, now);
@@ -1340,6 +1472,10 @@ function tickRoomBots(room: Room, now: number): void {
         : poseVelocity(pose),
       prot: combat.isProtected(member.id, now),
     });
+  }
+  // S4: the sky boss's live weak points are contacts too — bots engage it.
+  for (const c of roomBoss(room).contacts(now)) {
+    contacts.push({ ...c, prot: false, boss: true });
   }
 
   const { shots, hits, crashes } = bots.tick(now, contacts);
@@ -1377,6 +1513,13 @@ function tickRoomBots(room: Room, now: number): void {
   // Rounds that landed this tick first (they were swept before anyone
   // moved), then this tick's fresh trigger pulls go into the air.
   for (const round of hits) {
+    if (bossContactIndex(round.shot.targetId) >= 0) {
+      // S4: a weak point — judged on the round's line like a player's claim.
+      const boss = roomBoss(room);
+      const hit = landBotBossRound(combat, boss, round, now, bossWorld(room));
+      if (hit?.down) bossDowned(room, hit.down);
+      continue;
+    }
     routeBotHit(room, bots, landBotRound(combat, round, now), round.shot, now);
   }
 
@@ -1476,6 +1619,80 @@ function tickMissiles(room: Room, now: number): void {
   });
   if (launched) {
     sendToRoom(room, { type: "missile", m: encodeMissile(launched) });
+  }
+}
+
+/**
+ * S4 sky boss for one room tick: the schedule (a raid only starts with a
+ * human in the room), the turrets' shells, the bursts due — flak damage
+ * through Combat like a missile's, a kill falling as a D4 wreck — and the
+ * falling sections that hit: D2 chunk damage (when breakable) credited to
+ * the top dealer for D3, and the city's death reaction where each lands.
+ * Then the tick's HP change, once.
+ */
+function tickBoss(room: Room, now: number): void {
+  const boss = roomBoss(room);
+  const planes: BossPlane[] = [];
+  for (const member of room.members.values()) {
+    const pose = memberPose(room, member.id);
+    if (!pose) continue;
+    const age = poseAgeOf(member.id, now) / 1000;
+    const v = velocityOf(room, member.id, pose);
+    planes.push({
+      id: member.id,
+      pos: canonicalize({
+        x: pose.pos.x + v.x * age,
+        y: pose.pos.y + v.y * age,
+        z: pose.pos.z + v.z * age,
+      }),
+      vel: v,
+      prot: combat.isProtected(member.id, now),
+    });
+  }
+  const result = boss.tick(now, room.humanCount > 0, planes, bossWorld(room));
+  if (result.started) {
+    sendToRoom(room, { type: "boss", r: encodeRaid(result.started) });
+  }
+  if (result.flak.length > 0) {
+    sendToRoom(room, { type: "flak", f: result.flak.map(encodeFlak) });
+  }
+  for (const { flak, victims } of result.bursts) {
+    for (const victim of victims) {
+      const hit = combat.environmentDamage(
+        victim.id,
+        victim.damage,
+        now,
+        "flak",
+      );
+      if (!hit) continue;
+      const isBot = room.members.get(victim.id)?.isBot ?? false;
+      sendToRoom(room, {
+        type: "damage",
+        targetId: victim.id,
+        shooterId: BOSS_ID,
+        hp: hit.hp,
+        from: flak.to,
+      });
+      if (isBot) botsFor(room).onDamaged(victim.id, now);
+      if (!hit.death) continue;
+      // Shot down by flak: it falls as a wreck like any shot-down plane.
+      const wreck = shotDown(room, victim.id, hit.death.killerId, now);
+      if (isBot) botsFor(room).setDead(victim.id);
+      sendDeath(room, hit.death, now, wreck);
+    }
+  }
+  if (result.landed.length > 0) {
+    const top = bossCredit(boss.damageLedger()).top;
+    const by = top !== null && room.members.has(top) ? top : null;
+    for (const { at, building } of result.landed) {
+      const rc = breakable(room);
+      if (rc) applyBossImpact(rc, at, by, building);
+      const event = cityEvents.offer(room.id, "death", at, now);
+      if (event) sendToRoom(room, { type: "cityEvent", event });
+    }
+  }
+  if (boss.takeHpChanged() && boss.slot.raid) {
+    sendToRoom(room, { type: "bossHp", id: boss.slot.raid.id, hp: boss.hp });
   }
 }
 
@@ -1650,6 +1867,7 @@ const server = createServer((req, res) => {
         missilesByRoom: [...missilesByRoom.keys()],
         wrecksByRoom: [...wrecksByRoom.keys()],
         directorsByRoom: [...directorsByRoom.keys()],
+        bossByRoom: [...bossByRoom.keys()],
       }),
     );
     return;
@@ -1716,6 +1934,8 @@ wss.on("connection", (ws) => {
       if (!client.pending) handleFire(client, msg.seq, now);
     } else if (msg.type === "hit") {
       if (!client.pending) handleHitClaim(client, msg, now);
+    } else if (msg.type === "bossHit") {
+      if (!client.pending) handleBossHit(client, msg, now);
     } else if (msg.type === "crash") {
       handleCrash(client, msg.t, msg.wreck, now);
     } else if (msg.type === "setBots") {
@@ -1777,6 +1997,7 @@ function tick(): void {
     updateNewsHeli(room, time);
     landWrecks(room, time); // D4: before the batch — its chunks ride along
     tickMissiles(room, time);
+    tickBoss(room, time); // S4: before the batch — a landing's chunks ride it
     // D5: the director fires what is due (a gas main's chunks join the
     // batch; a demolition's record goes out after it) and warns what is next.
     const fired = tickDirector(room, time);

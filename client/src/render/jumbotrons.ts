@@ -523,6 +523,16 @@ export class Jumbotrons {
     this.dirty = true;
   }
 
+  /** S4: a headline and a feed line with no LAST KILL shot (the sky boss
+   * going down is not a plane's kill). */
+  addHeadline(headline: string, feed: string): void {
+    this.headlines.unshift(headline);
+    this.headlines.length = Math.min(this.headlines.length, TICKER_HEADLINES);
+    this.feed.unshift(feed);
+    this.feed.length = Math.min(this.feed.length, FEED_LINES);
+    this.dirty = true;
+  }
+
   /** Mobile: the static livery card instead of the rendered shot. The
    * ticker crawls with the rest of the L7 sign animation. */
   setQuality(tier: QualityTier): void {

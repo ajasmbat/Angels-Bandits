@@ -151,7 +151,9 @@ export class Hud {
   private readonly bossCells = this.bossBar.querySelector(
     ".cells",
   ) as HTMLDivElement;
-  private bossShown: string | null = null;
+  /** The HP the bar last drew (null: hidden). Compared in place — the
+   * bar is checked every frame while the boss flies. */
+  private bossShown: number[] | null = null;
   private bossFlashUntil = 0;
   private hitBlipUntil = 0;
   private aimModeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -400,16 +402,19 @@ export class Hud {
       }
       return;
     }
-    const key = hp.join(",");
-    if (key === this.bossShown) return;
+    const was = this.bossShown;
+    if (was !== null && was.length === hp.length) {
+      let same = true;
+      for (let k = 0; k < hp.length && same; k++) same = hp[k] === was[k];
+      if (same) return;
+    }
     let left = 0;
     let full = 0;
     for (let k = 0; k < max.length; k++) {
       left += Math.max(0, hp[k] ?? 0);
       full += max[k] ?? 0;
     }
-    const was = this.bossShown;
-    this.bossShown = key;
+    this.bossShown = [...hp];
     this.bossFill.style.width = `${(100 * left) / Math.max(1, full)}%`;
     if (this.bossCells.children.length !== max.length) {
       this.bossCells.replaceChildren(

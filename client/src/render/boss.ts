@@ -339,10 +339,10 @@ export class BossRenderer {
   private drawIntact(hp: readonly number[], viewer: Vec3, now: number): void {
     this.armour.count = ARMOUR_PARTS.length;
     this.weak.count = BOSS_WEAK_POINTS.length;
-    ARMOUR_PARTS.forEach((i, n) => {
-      bossPartBoxInto(this.pose, i, this.box);
+    for (let n = 0; n < ARMOUR_PARTS.length; n++) {
+      bossPartBoxInto(this.pose, ARMOUR_PARTS[n] as number, this.box);
       this.armour.setMatrixAt(n, boxMatrixInto(this.box, viewer, this.matrix));
-    });
+    }
     // A slow, shared throb: the weak points read as alive, and as targets.
     const throb = 0.78 + 0.22 * Math.sin(now / 260);
     for (let k = 0; k < BOSS_WEAK_POINTS.length; k++) {
@@ -424,7 +424,8 @@ export class BossRenderer {
     const c = Math.cos(this.pose.yaw);
     const s = Math.sin(this.pose.yaw);
     const strobeOn = now % STROBE_PERIOD_MS < STROBE_ON_MS;
-    NAV_LIGHTS.forEach((l, n) => {
+    for (let n = 0; n < NAV_LIGHTS.length; n++) {
+      const l = NAV_LIGHTS[n] as NavLight;
       this.at.x = this.pose.x + l.x * c + l.z * s;
       this.at.y = this.pose.y + l.y;
       this.at.z = this.pose.z - l.x * s + l.z * c;
@@ -433,7 +434,7 @@ export class BossRenderer {
       const on = !l.strobe || strobeOn;
       const k = on ? emissiveBoost(l.color, l.rung) : 0;
       this.lightCol.setXYZ(n, l.color.r * k, l.color.g * k, l.color.b * k);
-    });
+    }
     this.lightPos.needsUpdate = true;
     this.lightCol.needsUpdate = true;
     this.lights.visible = true;

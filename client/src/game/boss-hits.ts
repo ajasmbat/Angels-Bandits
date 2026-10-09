@@ -28,6 +28,7 @@ export interface BossBulletHit {
 const pose: BossPose = blankPose();
 const step: Vec3 = { x: 0, y: 0, z: 0 };
 const toBoss: Vec3 = { x: 0, y: 0, z: 0 };
+const unitStep: Vec3 = { x: 0, y: 0, z: 0 };
 
 /**
  * The first thing on the zeppelin this frame's bullet step meets, or null.
@@ -49,9 +50,12 @@ export function bossBulletHit(
   // Far from the hull: no box test at all.
   wrapDeltaInto(prev, pose, toBoss);
   if (Math.hypot(toBoss.x, toBoss.y, toBoss.z) > BOSS_RADIUS + len) return null;
-  const dir = { x: step.x / len, y: step.y / len, z: step.z / len };
-  const hit = bossRayHit(pose, prev, dir, len, alive);
+  unitStep.x = step.x / len;
+  unitStep.y = step.y / len;
+  unitStep.z = step.z / len;
+  const hit = bossRayHit(pose, prev, unitStep, len, alive);
   if (!hit) return null;
+  const dir = { ...unitStep };
   return {
     weak: hit.weak,
     dir,

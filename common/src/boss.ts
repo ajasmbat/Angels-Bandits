@@ -794,6 +794,26 @@ const spawnAt: Vec3 = { x: 0, y: 0, z: 0 };
 
 // --- Hits ---------------------------------------------------------------------
 
+/** rayBox's running interval (module scratch: the hit test allocates
+ * nothing — it runs per round per frame near the zeppelin). */
+let slabT0 = 0;
+let slabT1 = 0;
+
+/** Clip the running interval to one axis's slab; false once it is empty. */
+function slab(o: number, d: number, h: number): boolean {
+  if (Math.abs(d) < 1e-12) return Math.abs(o) <= h;
+  let a = (-h - o) / d;
+  let b = (h - o) / d;
+  if (a > b) {
+    const t = a;
+    a = b;
+    b = t;
+  }
+  if (a > slabT0) slabT0 = a;
+  if (b < slabT1) slabT1 = b;
+  return slabT0 <= slabT1;
+}
+
 /** Distance along a unit ray from `o` to an oriented box, or Infinity.
  * `o` is a delta from the box centre in world axes. */
 function rayBox(
@@ -813,21 +833,12 @@ function rayBox(
   const loz = s * ox + c * oz;
   const ldx = c * dx - s * dz;
   const ldz = s * dx + c * dz;
-  let t0 = 0;
-  let t1 = maxDist;
-  const slab = (o: number, d: number, h: number): boolean => {
-    if (Math.abs(d) < 1e-12) return Math.abs(o) <= h;
-    let a = (-h - o) / d;
-    let b = (h - o) / d;
-    if (a > b) [a, b] = [b, a];
-    if (a > t0) t0 = a;
-    if (b < t1) t1 = b;
-    return t0 <= t1;
-  };
+  slabT0 = 0;
+  slabT1 = maxDist;
   if (!slab(lox, ldx, box.hx)) return Number.POSITIVE_INFINITY;
   if (!slab(oy, dy, box.hy)) return Number.POSITIVE_INFINITY;
   if (!slab(loz, ldz, box.hz)) return Number.POSITIVE_INFINITY;
-  return t0;
+  return slabT0;
 }
 
 /** Distance along a unit ray from `o` (a delta from the centre) to a sphere,
@@ -874,32 +885,26 @@ export function bossRayHit(
   maxDist: number,
   alive: readonly boolean[],
 ): BossRayHit | null {
-  let best: BossRayHit | null = null;
-  const consider = (weak: number, dist: number) => {
-    if (dist === Number.POSITIVE_INFINITY) return;
-    if (!best || dist < best.dist) best = { weak, dist };
-  };
+  let bestWeak = -1;
+  let bestDist = Number.POSITIVE_INFINITY;
   for (let i = 0; i < BOSS_PARTS.length; i++) {
     bossPartBoxInto(pose, i, rayBoxScratch);
     wrapDeltaInto(rayBoxScratch, origin, rayOff);
     const k = BOSS_WEAK_POINTS.indexOf(i);
     const live = k >= 0 && alive[k] === true;
-    consider(
-      live ? k : -1,
-      rayBox(
-        rayOff.x,
-        rayOff.y,
-        rayOff.z,
-        dir.x,
-        dir.y,
-        dir.z,
-        rayBoxScratch,
-        maxDist,
-      ),
+    let d = rayBox(
+      rayOff.x,
+      rayOff.y,
+      rayOff.z,
+      dir.x,
+      dir.y,
+      dir.z,
+      rayBoxScratch,
+      maxDist,
     );
     if (live) {
-      consider(
-        k,
+      d = Math.min(
+        d,
         raySphere(
           rayOff.x,
           rayOff.y,
@@ -912,8 +917,14 @@ export function bossRayHit(
         ),
       );
     }
+    if (d < bestDist) {
+      bestDist = d;
+      bestWeak = live ? k : -1;
+    }
   }
-  return best;
+  return bestDist === Number.POSITIVE_INFINITY
+    ? null
+    : { weak: bestWeak, dist: bestDist };
 }
 
 /** How far past a weak point's own sphere the server's ray test still

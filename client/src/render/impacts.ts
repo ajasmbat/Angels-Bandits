@@ -327,6 +327,8 @@ export class Impacts {
   private readonly uploads: readonly THREE.BufferAttribute[];
   private share = 1;
   private lastLive = 0;
+  /** QA (`__ab.qaImpactsHidden`): the pool is not drawn at all. */
+  qaHidden = false;
   private lastBurnMs = Number.POSITIVE_INFINITY;
   private readonly v: Vec3 = { x: 0, y: 0, z: 0 };
   private readonly at: Vec3 = { x: 0, y: 0, z: 0 };
@@ -678,7 +680,11 @@ export class Impacts {
     now: number,
   ): void {
     const rand = this.rand;
-    const [fr, fg, fb] = FIRE_RGB;
+    // P4: indexed, not destructured (an iterator per call, per fire, per
+    // frame — C2's spreading fires call this every frame).
+    const fr = FIRE_RGB[0];
+    const fg = FIRE_RGB[1];
+    const fb = FIRE_RGB[2];
     for (let i = 0; i < fire; i++) {
       this.at.x = at.x + (rand() * 2 - 1) * spread;
       this.at.y = at.y + (rand() * 2 - 1) * spread * 0.5;
@@ -698,7 +704,9 @@ export class Impacts {
         rand() * 6.28,
       );
     }
-    const [mr, mg, mb] = SMOKE_RGB;
+    const mr = SMOKE_RGB[0];
+    const mg = SMOKE_RGB[1];
+    const mb = SMOKE_RGB[2];
     for (let i = 0; i < smoke; i++) {
       this.at.x = at.x + (rand() * 2 - 1) * spread;
       this.at.y = at.y + rand() * spread * 0.5;
@@ -788,6 +796,8 @@ export class Impacts {
     }
     this.lastLive = n;
     this.points.geometry.setDrawRange(0, n);
+    // P4: three still issues a (counted) draw for an empty range.
+    this.points.visible = n > 0 && !this.qaHidden;
     uploadPrefix(this.uploads, n);
   }
 

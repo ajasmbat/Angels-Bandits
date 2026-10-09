@@ -34,14 +34,23 @@ const SPREAD = 3;
 
 interface Emitter {
   at: Vec3;
-  acc: number;
+  /** Flames owed, carried frame to frame (a typed slot: storing a double
+   * into a plain field boxes it every frame — P4's allocation table). */
+  acc: Float64Array;
 }
 
 export class FireRenderer {
   private readonly emitters = new Map<number, Emitter>();
   private share = 1;
   private lastMs = Number.NaN;
-  private readonly near: { id: number; d: number }[] = [];
+  /** The fires within FIRE_DRAW_M this frame: ids and squared distances, grown
+   * (rarely) past the room's FIRE_MAX, never per frame. */
+  private nearId = new Float64Array(64);
+  private nearD = new Float64Array(64);
+  private count = 0;
+  /** update()'s state for the pre-bound walks (no iterator per frame). */
+  private fires: ReadonlySet<number> = new Set();
+  private viewer: Vec3 = { x: 0, y: 0, z: 0 };
 
   constructor(
     private readonly impacts: Impacts,
@@ -60,49 +69,75 @@ export class FireRenderer {
       : 0;
     this.lastMs = now;
     // Forget the fires that went out.
-    for (const id of this.emitters.keys()) {
-      if (!fires.has(id)) this.emitters.delete(id);
-    }
+    this.fires = fires;
+    this.emitters.forEach(this.forgetOut);
     if (fires.size === 0 || this.share <= 0) return;
-    // The near list reuses its entries frame to frame (no allocation once
-    // it has grown to the room's FIRE_MAX).
-    const near = this.near;
-    let count = 0;
-    for (const id of fires) {
-      const e = this.emitter(id);
-      if (!e) continue;
-      const d = wrapDistance(e.at, viewer);
-      if (d > FIRE_DRAW_M) continue;
-      const slot = near[count] ?? { id: 0, d: 0 };
-      slot.id = id;
-      slot.d = d;
-      near[count++] = slot;
-    }
+    // The near list is two typed arrays (no allocation once they have grown
+    // to the room's FIRE_MAX).
+    this.viewer = viewer;
+    this.count = 0;
+    fires.forEach(this.collect);
+    const count = this.count;
+    const ids = this.nearId;
+    const ds = this.nearD;
     if (count > FIRES_DRAWN) {
       // Partial selection of the nearest FIRES_DRAWN (count ≤ FIRE_MAX).
       for (let i = 0; i < FIRES_DRAWN; i++) {
         let best = i;
         for (let j = i + 1; j < count; j++) {
-          if ((near[j] as { d: number }).d < (near[best] as { d: number }).d) {
-            best = j;
-          }
+          if ((ds[j] as number) < (ds[best] as number)) best = j;
         }
-        const t = near[i] as { id: number; d: number };
-        near[i] = near[best] as { id: number; d: number };
-        near[best] = t;
+        const tid = ids[i] as number;
+        const td = ds[i] as number;
+        ids[i] = ids[best] as number;
+        ds[i] = ds[best] as number;
+        ids[best] = tid;
+        ds[best] = td;
       }
     }
     const n = Math.min(count, FIRES_DRAWN);
     for (let i = 0; i < n; i++) {
-      const e = this.emitters.get((near[i] as { id: number }).id) as Emitter;
-      e.acc += FIRE_RATE * this.share * dt;
-      const fire = Math.floor(e.acc);
+      const e = this.emitters.get(ids[i] as number) as Emitter;
+      const acc = e.acc;
+      acc[0] = (acc[0] as number) + FIRE_RATE * this.share * dt;
+      const fire = Math.floor(acc[0] as number);
       if (fire <= 0) continue;
-      e.acc -= fire;
+      acc[0] = (acc[0] as number) - fire;
       const smoke = Math.round((fire * SMOKE_RATE) / FIRE_RATE);
       this.impacts.wreckFire(e.at, fire, smoke, SPREAD, now);
     }
   }
+
+  /** update()'s prune step (pre-bound). */
+  private readonly forgetOut = (_e: Emitter, id: number): void => {
+    if (!this.fires.has(id)) this.emitters.delete(id);
+  };
+
+  /** update()'s near-list step (pre-bound). */
+  private readonly collect = (id: number): void => {
+    const e = this.emitter(id);
+    if (!e) return;
+    // wrapDistance's components, compared squared: the same ordering and
+    // cut without a double boxed per call (P4 allocation table).
+    const v = this.viewer;
+    const dx = wrapDeltaAxis(e.at.x, v.x);
+    const dy = v.y - e.at.y;
+    const dz = wrapDeltaAxis(e.at.z, v.z);
+    const d = dx * dx + dy * dy + dz * dz;
+    if (d > FIRE_DRAW_M * FIRE_DRAW_M) return;
+    if (this.count >= this.nearId.length) {
+      const grow = (a: Float64Array) => {
+        const b = new Float64Array(a.length * 2);
+        b.set(a);
+        return b;
+      };
+      this.nearId = grow(this.nearId);
+      this.nearD = grow(this.nearD);
+    }
+    this.nearId[this.count] = id;
+    this.nearD[this.count] = d;
+    this.count++;
+  };
 
   /** The emitter of chunk `id`: its outer face, once. */
   private emitter(id: number): Emitter | null {
@@ -123,7 +158,7 @@ export class FireRenderer {
     } else {
       at.z = wrapCoord(b.z + Math.sign(dz || 1) * (hd + 0.6));
     }
-    e = { at, acc: 0 };
+    e = { at, acc: new Float64Array(1) };
     this.emitters.set(id, e);
     return e;
   }

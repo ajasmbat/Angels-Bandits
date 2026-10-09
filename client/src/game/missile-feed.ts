@@ -58,33 +58,51 @@ export class MissileFeed {
     f.whistles.length = 0;
     f.announces.length = 0;
     f.impacts.length = 0;
-    for (const [id, m] of held) {
-      const impactAt = missileImpactAt(m);
-      if (renderMs >= impactAt) {
-        if (renderMs - impactAt <= MISSILE_STALE_MS) f.impacts.push(m);
-        held.delete(id);
-        this.whistled.delete(id);
-        this.announced.delete(id);
-        continue;
-      }
-      if (renderMs < m.t0) continue; // launched on a clock we're behind
-      f.flying.push(m);
-      if (renderMs >= missileWhistleAt(m) && !this.whistled.has(id)) {
-        this.whistled.add(id);
-        f.whistles.push(m);
-      }
-      if (
-        self !== null &&
-        !this.announced.has(id) &&
-        impactAt - renderMs >= MISSILE_TELEGRAPH_MIN_MS &&
-        wrapDistance(self, m.to) <= MISSILE_ANNOUNCE_M
-      ) {
-        this.announced.add(id);
-        f.announces.push(m);
-      }
-    }
+    // P4: a pre-bound walk — `for (const [id, m] of held)` built an
+    // iterator and an entry array per strike, per frame.
+    this.held = held;
+    this.renderMs = renderMs;
+    this.self = self;
+    held.forEach(this.step);
+    this.held = null;
     return f;
   }
+
+  /** poll()'s state for `step`. */
+  private held: Map<number, MissileStrike> | null = null;
+  private renderMs = 0;
+  private self: Vec3 | null = null;
+
+  /** One held strike at poll()'s render time (deleting the current entry
+   * inside Map.forEach is safe: the walk continues with the next). */
+  private readonly step = (m: MissileStrike, id: number): void => {
+    const f = this.frame;
+    const renderMs = this.renderMs;
+    const impactAt = missileImpactAt(m);
+    if (renderMs >= impactAt) {
+      if (renderMs - impactAt <= MISSILE_STALE_MS) f.impacts.push(m);
+      this.held?.delete(id);
+      this.whistled.delete(id);
+      this.announced.delete(id);
+      return;
+    }
+    if (renderMs < m.t0) return; // launched on a clock we're behind
+    f.flying.push(m);
+    if (renderMs >= missileWhistleAt(m) && !this.whistled.has(id)) {
+      this.whistled.add(id);
+      f.whistles.push(m);
+    }
+    const self = this.self;
+    if (
+      self !== null &&
+      !this.announced.has(id) &&
+      impactAt - renderMs >= MISSILE_TELEGRAPH_MIN_MS &&
+      wrapDistance(self, m.to) <= MISSILE_ANNOUNCE_M
+    ) {
+      this.announced.add(id);
+      f.announces.push(m);
+    }
+  };
 }
 
 /** Peak camera shake right at an impact, m, and how it fades. */

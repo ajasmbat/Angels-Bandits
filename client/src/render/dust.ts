@@ -285,6 +285,8 @@ export class DustClouds {
       }
     }
     this.points.geometry.setDrawRange(0, i);
+    // P4: three still issues a (counted) draw for an empty range.
+    this.points.visible = i > 0;
     if (i > 0) {
       // D6: three calls, not a loop over a fresh array every frame.
       markRange(this.positions, i);

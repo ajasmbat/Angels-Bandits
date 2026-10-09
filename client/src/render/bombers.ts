@@ -167,6 +167,8 @@ export class BomberRenderer {
       }
     }
     this.hulls.count = parts;
+    // P4: no ship, no light draw (its parked points drew every frame).
+    this.lights.visible = lights > 0;
     this.stats.boxes = parts;
     this.stats.lights = lights;
     this.hulls.instanceMatrix.needsUpdate = true;

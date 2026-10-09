@@ -944,6 +944,30 @@ export const FEATURE_TIERS: readonly {
     mobile: "off",
     note: "one 128 px cube probe, 1 / 0.5 / 0.34 faces per frame (a full refresh every 6 / 12 / 18 frames); off = no probe pass and the faked reflections",
   },
+  {
+    feature: "P3 polish — HUD, menus, hit juice, camera-shake budget",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "P4: DOM, CSS and audio, no draw; the shake budget is the same on every tier (reduced motion halves it)",
+  },
+  {
+    feature: "P4 plane fleet — every plane in one set of instanced draws",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "reduced",
+    note: "the own plane and every remote: 6 near draws + 2 impostor draws whatever the room holds (was 15 a plane); airframe, hinges, prop, blur, livery, damage and glow on every tier — Mobile leaves out the windscreen glass and the scarf",
+  },
+  {
+    feature: "P4 name tags — one batched draw",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "identity: every remote's tag on every tier, one instanced billboard over a canvas atlas (was a sprite draw each)",
+  },
 ];
 
 /**

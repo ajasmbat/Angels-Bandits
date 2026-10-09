@@ -91,6 +91,8 @@ export class MissileRenderer {
   private readonly meteorGlintPos: THREE.BufferAttribute;
   private chaosFx = 1;
   private readonly fireAcc = new Map<number, number>();
+  /** QA (__ab.chaos): missile/bomb bodies and meteors drawn last frame. */
+  readonly stats = { bodies: 0, meteors: 0 };
   private lastMs = Number.NaN;
 
   constructor(
@@ -258,10 +260,18 @@ export class MissileRenderer {
     }
     this.bodies.count = n;
     this.bodies.instanceMatrix.needsUpdate = true;
+    // P4: the glint pools draw their live prefix only — nothing at rest.
+    this.glints.geometry.setDrawRange(0, n);
+    // three still issues a (counted) draw for an empty range: hide instead.
+    this.glints.visible = n > 0;
     this.glintPos.needsUpdate = true;
     this.meteors.count = nm;
     this.meteors.instanceMatrix.needsUpdate = true;
+    this.meteorGlints.geometry.setDrawRange(0, nm);
+    this.meteorGlints.visible = nm > 0;
     this.meteorGlintPos.needsUpdate = true;
+    this.stats.bodies = n;
+    this.stats.meteors = nm;
   }
 
   /** A missile landed: its trail stops feeding (and fades on its own), and

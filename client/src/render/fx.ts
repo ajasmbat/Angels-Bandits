@@ -7,7 +7,7 @@
 
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
-import { nearestImage } from "./wrapPlacement";
+import { nearestImageInto } from "./wrapPlacement";
 
 const POOL = 6;
 const LIFE_MS = 1100;
@@ -26,6 +26,8 @@ const SPARK_GRAVITY = 30; // m/s² pull-down
 const SPARK_COLOR = 0xffc46b; // matches tracer rounds — the bullet's spray
 /** Parked altitude for particles of idle burst slots (never on screen). */
 const SPARK_PARKED_Y = -9999;
+
+const scratchImage: Vec3 = { x: 0, y: 0, z: 0 };
 
 interface SparkBurst {
   center: Vec3;
@@ -90,10 +92,13 @@ export class Sparks {
 
   /** Fly live sparks ballistically around the viewer; park expired ones. */
   update(viewer: Vec3, now: number): void {
+    // P4: draw up to the last live burst's slot only — nothing at rest.
+    let end = 0;
     for (let s = 0; s < this.bursts.length; s++) {
       const burst = this.bursts[s] as SparkBurst;
       const age = now - burst.bornAt;
       const base = s * SPARK_PARTICLES;
+      if (age <= SPARK_LIFE_MS) end = base + SPARK_PARTICLES;
       if (age > SPARK_LIFE_MS) {
         if (this.positions.getY(base) !== SPARK_PARKED_Y) {
           for (let i = 0; i < SPARK_PARTICLES; i++) {
@@ -102,7 +107,7 @@ export class Sparks {
         }
         continue;
       }
-      const p = nearestImage(viewer, burst.center);
+      const p = nearestImageInto(scratchImage, viewer, burst.center);
       const t = age / 1000; // seconds since burst — analytic, no integration
       for (let i = 0; i < SPARK_PARTICLES; i++) {
         const vx = burst.velocities[i * 3] ?? 0;
@@ -116,58 +121,88 @@ export class Sparks {
         );
       }
     }
+    // three still issues a (counted) draw for an empty range: hide instead.
+    this.points.geometry.setDrawRange(0, end);
+    this.points.visible = end > 0;
     this.positions.needsUpdate = true;
   }
 }
 
 interface Explosion {
-  group: THREE.Group;
-  shell: THREE.Mesh;
-  points: THREE.Points;
+  /** Ember positions relative to the centre, integrated per frame. */
+  local: Float32Array;
   velocities: Float32Array;
   center: Vec3;
   bornAt: number;
 }
 
+const scratchShell = new THREE.Matrix4();
+const scratchTint = new THREE.Color();
+const SHELL_LIT = new THREE.Color(SHELL_COLOR);
+const EMBER_LIT = new THREE.Color(EMBER_COLOR);
+
+/**
+ * P4: every live explosion in TWO draws however many there are — the shells
+ * one InstancedMesh, the embers one Points (each slot was its own shell and
+ * Points before: 2 draws an explosion, up to 12 when a bomb carpet lands).
+ * Both are additive, so each one's fade rides its colour (instance colour,
+ * vertex colour) instead of a per-object opacity: src × α + dst with the
+ * colour pre-multiplied is the same sum. Live slots are packed to the front
+ * each frame, so nothing is drawn at rest.
+ */
 export class Explosions {
   readonly group = new THREE.Group();
   private readonly pool: Explosion[] = [];
+  private readonly shells: THREE.InstancedMesh;
+  private readonly embers: THREE.Points;
+  private readonly emberPos: THREE.BufferAttribute;
+  private readonly emberCol: THREE.BufferAttribute;
 
   constructor() {
-    const shellGeometry = new THREE.IcosahedronGeometry(1, 1);
-    const particleGeometry = new THREE.BufferGeometry();
-    particleGeometry.setAttribute(
-      "position",
-      new THREE.BufferAttribute(new Float32Array(PARTICLES * 3), 3),
+    this.shells = new THREE.InstancedMesh(
+      new THREE.IcosahedronGeometry(1, 1),
+      new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      }),
+      POOL,
     );
+    this.shells.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    for (let i = 0; i < POOL; i++) this.shells.setColorAt(i, SHELL_LIT);
+    this.shells.instanceColor?.setUsage(THREE.DynamicDrawUsage);
+    // Placed at the torus image nearest the viewer every frame.
+    this.shells.frustumCulled = false;
+    const geometry = new THREE.BufferGeometry();
+    this.emberPos = new THREE.BufferAttribute(
+      new Float32Array(POOL * PARTICLES * 3),
+      3,
+    );
+    this.emberPos.setUsage(THREE.DynamicDrawUsage);
+    this.emberCol = new THREE.BufferAttribute(
+      new Float32Array(POOL * PARTICLES * 3),
+      3,
+    );
+    this.emberCol.setUsage(THREE.DynamicDrawUsage);
+    geometry.setAttribute("position", this.emberPos);
+    geometry.setAttribute("color", this.emberCol);
+    this.embers = new THREE.Points(
+      geometry,
+      new THREE.PointsMaterial({
+        color: 0xffffff,
+        vertexColors: true,
+        size: 1.6,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      }),
+    );
+    this.embers.frustumCulled = false;
+    this.group.add(this.shells, this.embers);
     for (let i = 0; i < POOL; i++) {
-      const shell = new THREE.Mesh(
-        shellGeometry,
-        new THREE.MeshBasicMaterial({
-          color: SHELL_COLOR,
-          transparent: true,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-        }),
-      );
-      const points = new THREE.Points(
-        particleGeometry.clone(),
-        new THREE.PointsMaterial({
-          color: EMBER_COLOR,
-          size: 1.6,
-          transparent: true,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-        }),
-      );
-      const group = new THREE.Group();
-      group.add(shell, points);
-      group.visible = false;
-      this.group.add(group);
       this.pool.push({
-        group,
-        shell,
-        points,
+        local: new Float32Array(PARTICLES * 3),
         velocities: new Float32Array(PARTICLES * 3),
         center: { x: 0, y: 0, z: 0 },
         bornAt: Number.NEGATIVE_INFINITY,
@@ -177,12 +212,12 @@ export class Explosions {
 
   /** Fire an explosion at a canonical world position. */
   explode(center: Vec3, now: number): void {
-    const slot = this.pool.reduce((a, b) => (a.bornAt <= b.bornAt ? a : b));
+    let slot = this.pool[0] as Explosion;
+    for (const fx of this.pool) if (fx.bornAt < slot.bornAt) slot = fx;
     slot.bornAt = now;
-    slot.center = { ...center };
-    const positions = slot.points.geometry.getAttribute(
-      "position",
-    ) as THREE.BufferAttribute;
+    slot.center.x = center.x;
+    slot.center.y = center.y;
+    slot.center.z = center.z;
     for (let i = 0; i < PARTICLES; i++) {
       // Uniform-ish sphere spray, biased slightly upward for the fireball read.
       const theta = Math.random() * Math.PI * 2;
@@ -192,43 +227,67 @@ export class Explosions {
       slot.velocities[i * 3] = Math.cos(theta) * sinPhi * speed;
       slot.velocities[i * 3 + 1] = (cosPhi * 0.8 + 0.35) * speed;
       slot.velocities[i * 3 + 2] = Math.sin(theta) * sinPhi * speed;
-      positions.setXYZ(i, 0, 0, 0);
     }
-    positions.needsUpdate = true;
-    slot.group.visible = true;
+    slot.local.fill(0);
+  }
+
+  /** Explosions drawn last frame (QA). */
+  get liveCount(): number {
+    return this.shells.count;
   }
 
   /** Age shells/particles and re-place every live explosion. Call per frame. */
   update(viewer: Vec3, now: number, dt: number): void {
-    for (const fx of this.pool) {
+    let live = 0;
+    const pos = this.emberPos.array as Float32Array;
+    const col = this.emberCol.array as Float32Array;
+    for (let s = 0; s < this.pool.length; s++) {
+      const fx = this.pool[s] as Explosion;
       const age = now - fx.bornAt;
-      if (age > LIFE_MS) {
-        fx.group.visible = false;
-        continue;
-      }
+      if (age > LIFE_MS) continue;
       const t = age / LIFE_MS;
-      const p = nearestImage(viewer, fx.center);
-      fx.group.position.set(p.x, p.y, p.z);
+      const p = nearestImageInto(scratchImage, viewer, fx.center);
       // Shell: fast expansion easing out, fading to nothing.
       const ease = 1 - (1 - t) * (1 - t);
-      fx.shell.scale.setScalar(0.5 + SHELL_MAX_RADIUS * ease);
-      (fx.shell.material as THREE.MeshBasicMaterial).opacity = 0.85 * (1 - t);
-      // Embers: ballistic drift in the group's local frame.
-      const positions = fx.points.geometry.getAttribute(
-        "position",
-      ) as THREE.BufferAttribute;
-      for (let i = 0; i < PARTICLES; i++) {
-        const vy = (fx.velocities[i * 3 + 1] ?? 0) - PARTICLE_GRAVITY * dt;
-        fx.velocities[i * 3 + 1] = vy;
-        positions.setXYZ(
-          i,
-          positions.getX(i) + (fx.velocities[i * 3] ?? 0) * dt,
-          positions.getY(i) + vy * dt,
-          positions.getZ(i) + (fx.velocities[i * 3 + 2] ?? 0) * dt,
-        );
+      const r = 0.5 + SHELL_MAX_RADIUS * ease;
+      scratchShell.makeScale(r, r, r).setPosition(p.x, p.y, p.z);
+      this.shells.setMatrixAt(live, scratchShell);
+      this.shells.setColorAt(
+        live,
+        scratchTint.copy(SHELL_LIT).multiplyScalar(0.85 * (1 - t)),
+      );
+      // Embers: ballistic drift about the centre, faded through the colour.
+      const fade = 1 - t * t;
+      const er = EMBER_LIT.r * fade;
+      const eg = EMBER_LIT.g * fade;
+      const eb = EMBER_LIT.b * fade;
+      const local = fx.local;
+      const vel = fx.velocities;
+      const base = live * PARTICLES * 3;
+      for (let i = 0; i < PARTICLES * 3; i += 3) {
+        const vy = (vel[i + 1] as number) - PARTICLE_GRAVITY * dt;
+        vel[i + 1] = vy;
+        const lx = (local[i] as number) + (vel[i] as number) * dt;
+        const ly = (local[i + 1] as number) + vy * dt;
+        const lz = (local[i + 2] as number) + (vel[i + 2] as number) * dt;
+        local[i] = lx;
+        local[i + 1] = ly;
+        local[i + 2] = lz;
+        pos[base + i] = p.x + lx;
+        pos[base + i + 1] = p.y + ly;
+        pos[base + i + 2] = p.z + lz;
+        col[base + i] = er;
+        col[base + i + 1] = eg;
+        col[base + i + 2] = eb;
       }
-      positions.needsUpdate = true;
-      (fx.points.material as THREE.PointsMaterial).opacity = 1 - t * t;
+      live++;
     }
+    this.shells.count = live;
+    this.shells.instanceMatrix.needsUpdate = true;
+    if (this.shells.instanceColor) this.shells.instanceColor.needsUpdate = true;
+    this.embers.geometry.setDrawRange(0, live * PARTICLES);
+    this.emberPos.needsUpdate = true;
+    this.emberCol.needsUpdate = true;
+    this.group.visible = live > 0;
   }
 }

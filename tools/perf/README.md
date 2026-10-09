@@ -2027,6 +2027,11 @@ breathing:
 | `pose-09` | 0.586 → **0.078** | 7.98 % → 0.13 % |
 | `pose-19` | 4.738 → **0.206** | 29.93 % → 0.63 % |
 
+Re-run after merging main again (`d206dd2`: C2's chaos, U4's tunnels, F9,
+B3, D6, S8, R3 — the poses' instants moved once more with U4's gallery
+views), same breathe, same four views: 4.619 → 1.472, 0.673 → 0.101,
+0.610 → 0.077, 4.653 → 0.182.
+
 The verdict column `--breathe` prints is O5's frozen rule and does not
 apply to a camera that moves on purpose; read the before/after. The
 intersection's breathing 1.488 is its train (frozen, 1.399) plus 0.09.

@@ -151,6 +151,11 @@ export interface QualityProfile {
   /** S7 kill-streak smoke: share of its puff emission rate (the trail
    * thins, never shortens). Cosmetic — the streak is on the scoreboard too. */
   streakSmoke: number;
+  /** S4 sky boss: share of the particle dressing — the flak bursts' flames
+   * and smoke, and the falling sections' fire trails and landing fires. The
+   * zeppelin (solid), its weak points, running lights and the flak shells
+   * themselves (the telegraph) are identical on every tier. */
+  bossFx: number;
 }
 
 export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
@@ -188,6 +193,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     collapseDust: 1,
     wreckFire: 1,
     streakSmoke: 1,
+    bossFx: 1,
   },
   medium: {
     maxPixelRatio: 1.5,
@@ -223,6 +229,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     collapseDust: 0.75,
     wreckFire: 0.75,
     streakSmoke: 1,
+    bossFx: 0.75,
   },
   low: {
     maxPixelRatio: 1,
@@ -258,6 +265,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     collapseDust: 0.5,
     wreckFire: 0.5,
     streakSmoke: 0.5,
+    bossFx: 0.5,
   },
   mobile: {
     maxPixelRatio: 1,
@@ -293,6 +301,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     collapseDust: 0.3,
     wreckFire: 0.35,
     streakSmoke: 0.5,
+    bossFx: 0.35,
   },
 };
 
@@ -696,6 +705,22 @@ export const FEATURE_TIERS: readonly {
     low: "reduced",
     mobile: "reduced",
     note: "puff emission 100 / 100 / 50 / 50 %; one tinted Points draw for every streaking plane; the scoreboard glow carries the streak on every tier",
+  },
+  {
+    feature: "S4 sky boss — the zeppelin, weak points, lights, flak shells",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "solid (crash check, camera arm, bots) and the flak's telegraph: two instanced draws + two Points on every tier",
+  },
+  {
+    feature: "S4 sky boss — flak bursts, falling-section fire and smoke",
+    high: "full",
+    medium: "reduced",
+    low: "reduced",
+    mobile: "reduced",
+    note: "emission 100 / 75 / 50 / 35 % into the D1 particle pool (no extra draw); the bursts' damage and the sections themselves are the same everywhere",
   },
 ];
 

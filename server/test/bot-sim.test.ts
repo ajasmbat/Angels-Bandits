@@ -30,10 +30,24 @@
 // it (the live server needs one within 400 m). Kills by missile are counted
 // apart from crashes and gun kills.
 //
+// S4 sky boss: BOT_SIM_BOSS=1 runs each room's BossDirector with a raid
+// overhead from the first second (full HP, on station the whole run), the
+// boss's weak points in every bot's contacts, its slot in the room's mover
+// field (the hull is solid for bots, and probed), flak bursts through
+// Combat.environmentDamage and bot rounds on weak points through
+// landBotBossRound — the paths index.ts uses. Its sections land through
+// applyBossImpact into the room's destruction. The report counts bot damage
+// on the boss, downs, flak hits and kills, and bots that flew into the hull.
+//
 // MAIN_* are the same harness's numbers on main before B1 (bots mostly high,
 // spawned at RESPAWN_ALTITUDE), same seeds and run length — the bar the
 // review set is crashes per bot-minute within 1.15x of them.
 
+import {
+  BOSS_FAST_TUNING,
+  collideBoss,
+  raidMaxHp,
+} from "@angels-bandits/common/boss";
 import {
   type Building,
   chunkId,
@@ -57,6 +71,7 @@ import {
 import {
   BLOCK_PITCH,
   BOT_SPAWN_GRACE_MS,
+  BULLET_DAMAGE,
   CITY_SEED,
   CLOUD_BASE,
   PLAYER_RADIUS,
@@ -67,6 +82,12 @@ import {
 import type { SpawnState } from "@angels-bandits/common/protocol";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
+import {
+  BossDirector,
+  applyBossImpact,
+  bossContactIndex,
+  landBotBossRound,
+} from "../src/boss";
 import {
   type BotContact,
   RoomBots,
@@ -106,6 +127,7 @@ const LIVE = process.env.BOT_SIM_LIVE === "1";
 const COLLAPSE = process.env.BOT_SIM_COLLAPSE === "1";
 const COLLAPSE_EVERY_S = 20;
 const STRIKES = process.env.BOT_SIM_STRIKES === "1";
+const BOSS = process.env.BOT_SIM_BOSS === "1";
 const SECONDS = 200;
 const DT_MS = 1000 / TICK_DOWN_HZ;
 /** The low layer: under the probe split, among the towers. */
@@ -209,6 +231,17 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
      * (counted apart from `crashes` — terrain — so the two compare). */
     let wrecksSpawned = 0;
     let wreckKills = 0;
+    /** S4: bot rounds that landed on a weak point, HP dealt, downs (and
+     * when), flak shells / planes hit / kills, and bots into the hull. */
+    let bossHits = 0;
+    let bossHpTotal = 0;
+    let bossDowns = 0;
+    const bossDownS: number[] = [];
+    let flakShells = 0;
+    let flakHits = 0;
+    let flakKills = 0;
+    let hullCrashes = 0;
+    let bossLandings = 0;
 
     for (let room = 0; room < ROOMS; room++) {
       // One room at a time, then let the event loop turn: the whole sim as a
@@ -218,7 +251,7 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
       if (room > 0) await new Promise<void>((r) => setImmediate(r));
       // D2: a breakable copy per room when a damage mode is on.
       let rc: RoomCity | null = null;
-      if (DESTROY > 0 || LIVE || COLLAPSE || STRIKES) {
+      if (DESTROY > 0 || LIVE || COLLAPSE || STRIKES || BOSS) {
         rc = createRoomCity(city);
         const rand = mulberry32(roomSeed(room) ^ 0x5eed);
         rc.buildings.forEach((b, i) => {
@@ -228,9 +261,28 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         });
       }
       const roomBuildings = rc ? rc.buildings : city;
-      // D3: the room's collapses are movers, as on the server.
+      // S4: a raid overhead the whole run (first tick, full HP, on station
+      // past the run's end), seeded per room like the live server's.
+      const boss = BOSS
+        ? new BossDirector(mulberry32(roomSeed(room) ^ 0xb055), {
+            ...BOSS_FAST_TUNING,
+            firstMinMs: 0,
+            firstMaxMs: 0,
+            orbitMs: SECONDS * 1000,
+            hpScale: 1,
+          })
+        : null;
+      const bossWorld = rc
+        ? { buildings: rc.buildings, index: rc.index }
+        : null;
+      // D3: the room's collapses are movers, as on the server — S4: and its
+      // sky boss.
       const roomMovers: MoverField = rc
-        ? { ...movers, collapses: rc.collapses }
+        ? {
+            ...movers,
+            collapses: rc.collapses,
+            ...(boss && { boss: boss.slot }),
+          }
         : movers;
       const bots = new RoomBots(
         `room-${room}`,
@@ -357,6 +409,38 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
               prot: combat.isProtected(e.id, now),
             });
         }
+        if (boss && bossWorld && rc) {
+          // S4: the director's tick (index.ts tickBoss), then its weak
+          // points join the contacts.
+          const planes = roster.flatMap((e) => {
+            const c = bots.poseOf(e.id) ? bots.contactOf(e.id) : null;
+            return c
+              ? [{ id: e.id, ...c, prot: combat.isProtected(e.id, now) }]
+              : [];
+          });
+          const out = boss.tick(now, true, planes, bossWorld);
+          if (out.started)
+            bossHpTotal += raidMaxHp(out.started).reduce((a, b) => a + b, 0);
+          flakShells += out.flak.length;
+          for (const b of out.bursts) {
+            for (const v of b.victims) {
+              const hit = combat.environmentDamage(v.id, v.damage, now, "flak");
+              if (!hit) continue;
+              flakHits++;
+              if (hit.death) {
+                bots.setDead(v.id);
+                flakKills++;
+              } else bots.onDamaged(v.id, now);
+            }
+          }
+          for (const { at } of out.landed) {
+            bossLandings++;
+            applyBossImpact(rc, at, null);
+          }
+          for (const c of boss.contacts(now)) {
+            contacts.push({ ...c, prot: false, boss: true });
+          }
+        }
 
         if (director && strikeWorld && rc) {
           // Land what is due first (index.ts order), then maybe launch.
@@ -393,6 +477,15 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         tickMs.push(performance.now() - t0);
         for (const id of result.crashes) {
           const site = bots.lastPosOf(id);
+          // S4: flown into the zeppelin (counted apart from the city).
+          if (
+            boss &&
+            site &&
+            collideBoss(boss.slot, site, PLAYER_RADIUS + 1, now)
+          ) {
+            if (combat.crash(id, now)) hullCrashes++;
+            continue;
+          }
           // D3: crushed by falling debris is a collapse kill, not a crash.
           const culprit =
             rc && site
@@ -434,6 +527,17 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         for (const round of result.hits) {
           if (round.shot.targetId === hi.id) {
             humanHits++;
+            continue;
+          }
+          if (bossContactIndex(round.shot.targetId) >= 0) {
+            if (!boss || !bossWorld) continue;
+            const hit = landBotBossRound(combat, boss, round, now, bossWorld);
+            if (!hit) continue;
+            bossHits++;
+            if (hit.down) {
+              bossDowns++;
+              bossDownS.push(now / 1000);
+            }
             continue;
           }
           const hit = landBotRound(combat, round, now);
@@ -487,7 +591,7 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
           }
         }
         // D3: the server's destruction tick (plus the director's knock-down).
-        if (rc && (LIVE || COLLAPSE)) {
+        if (rc && (LIVE || COLLAPSE || BOSS)) {
           if (COLLAPSE && i % (COLLAPSE_EVERY_S * TICK_DOWN_HZ) === 0) {
             knockDown();
           }
@@ -576,6 +680,9 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         `bots.tick ms           p50 ${tickAt(0.5).toFixed(2)}  p99 ${tickAt(0.99).toFixed(2)}  max ${tickAt(1).toFixed(2)}`,
         `D3 collapses           ${collapses} events (director=${COLLAPSE ? 1 : 0}), kills-by-collapse ${collapseKills} (not in the crash count above)`,
         `D3 collapse zones      ${zoneEntries} bot entries into an active zone, ${zoneRefusals} probe refusals`,
+        `S4 boss                ${BOSS ? `${bossHits} bot hits on weak points (${((100 * bossHits * BULLET_DAMAGE) / Math.max(1, bossHpTotal)).toFixed(1)}% of all boss HP), ${bossDowns}/${ROOMS} downed (at ${bossDownS.map((x) => x.toFixed(0)).join(", ") || "-"} s), ${bossLandings} sections landed` : "off"}`,
+        `S4 flak                ${BOSS ? `${flakShells} shells, ${flakHits} bot hits, ${flakKills} kills (${(flakKills / botMinutes).toFixed(3)} / bot-min), ${hullCrashes} bots flew into the hull` : "off"}`,
+        `deaths / bot-min       ${((crashes + kills + flakKills + hullCrashes + collapseKills + missileKills + wreckKills) / botMinutes).toFixed(3)} (every cause)`,
         "",
         `crash breakdown (${TUNE ? "tune" : "holdout"} seeds; roofs hit p10/p50/p90 m: ${quantiles(roofsHit)}):`,
         ...[...crashKinds]

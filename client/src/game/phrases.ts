@@ -25,6 +25,11 @@ export const PHRASE = {
   enemyStreakThree: "Heads up, enemy on a three kill streak.",
   enemyStreakFive: "Enemy on a five kill streak. Take them down.",
   enemyStreakTen: "Enemy ace, ten kills. All stations, engage.",
+  // S4 sky boss: the raid's arrival, its flak, its end either way.
+  bossInbound: "All stations, enemy war zeppelin inbound. Hit the engines.",
+  flak: "Flak, flak! Break!",
+  bossDown: "The zeppelin is going down! Clear the area!",
+  bossEscaped: "The zeppelin is pulling out. It got away.",
 } as const;
 
 /**

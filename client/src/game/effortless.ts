@@ -57,13 +57,14 @@ import {
   collideNature,
   hitsGround,
 } from "@angels-bandits/common/collision";
-import { BANK_ANGLE, PLAYER_RADIUS } from "@angels-bandits/common/constants";
+import { PLAYER_RADIUS } from "@angels-bandits/common/constants";
 import {
   type FlightInput,
   type FlightState,
   realRoll,
   stepFlight,
 } from "@angels-bandits/common/flight";
+import { DEFAULT_TUNING, feelFromTuning } from "@angels-bandits/common/tuning";
 import type { Vec3 } from "@angels-bandits/common/world";
 import {
   type InstructorTuning,
@@ -71,6 +72,7 @@ import {
   instructorErrorFor,
   instructorRate,
 } from "./instructor";
+import { tuning } from "./tuning";
 
 const DEG = Math.PI / 180;
 
@@ -94,19 +96,23 @@ export interface FeelTuning extends InstructorTuning {
  */
 export const FEEL_TUNING: Readonly<Record<Feel, Readonly<FeelTuning>>> = {
   relaxed: { gain: 6, band: 2 * DEG, steer: 2.5, stick: 0.7 },
-  normal: { gain: 8, band: 2 * DEG, steer: 3.5, stick: 0.85 },
+  // The shipped default (FL1: its single home is DEFAULT_TUNING).
+  normal: feelFromTuning(DEFAULT_TUNING),
   sharp: { gain: SHARP_TUNING.gain, stick: 1 },
 };
 
 // --- Tunables ---------------------------------------------------------------
+// FL1: the pilot-facing ones live in the shared FlightTuning (their defaults
+// in common/src/tuning.ts, re-exported here under their old names); the
+// code reads the client's live `tuning`, which only the Flight Lab changes.
 
 /** The hole assist (and the soft walls) stand down past this much real
  * roll, rad (~30°, F7): their nudges are world heading/elevation biases. */
-export const ASSIST_MAX_ROLL = Math.PI / 6;
+export const ASSIST_MAX_ROLL = DEFAULT_TUNING.assistMaxRoll;
 /** No pilot activity for this long, s, before auto-level may take over… */
-export const IDLE_S = 0.3;
+export const IDLE_S = DEFAULT_TUNING.idleS;
 /** …and only with the aim settled within this of the pipper, rad. */
-export const IDLE_GAP = 3 * DEG;
+export const IDLE_GAP = DEFAULT_TUNING.idleGap;
 /** Auto-level weight ramp in / drop out, s (no hard cut either way). */
 const IDLE_RAMP_S = 0.35;
 const IDLE_DROP_S = 0.1;
@@ -115,14 +121,14 @@ const LEVEL_PITCH_RATE = 3;
 const LEVEL_PITCH_MAX = 0.6;
 /** Roll-level stick per rad of real roll (full stick past ~30°). */
 const LEVEL_ROLL_GAIN = 2;
-/** Real roll at which A/D's coordinated turn is full stick (the shared
- * lean's own full bank), and where it fades out toward knife-edge. */
-const COORD_FULL = BANK_ANGLE;
+/** Real roll at which A/D's coordinated turn is full stick is the shared
+ * lean's own full bank (the tuning's bankAngle); it fades out toward
+ * knife-edge here. */
 const COORD_FADE_START = 75 * DEG;
 const COORD_FADE_END = 90 * DEG;
 /** Ground floor: the predicted bottom of the dive must stay this far over
  * the ground, m; a full pull is reached FLOOR_BAND under that. */
-export const FLOOR_MARGIN = 10;
+export const FLOOR_MARGIN = DEFAULT_TUNING.floorMargin;
 const FLOOR_BAND = 12;
 /** Reaction allowance before the pull-up bites, s. */
 const FLOOR_REACT_S = 0.15;
@@ -310,7 +316,9 @@ export function stepEffortless(
     s.idle = false;
   } else {
     s.quiet += dt;
-    if (!s.idle && s.quiet >= IDLE_S && frame.gap < IDLE_GAP) s.idle = true;
+    if (!s.idle && s.quiet >= tuning.idleS && frame.gap < tuning.idleGap) {
+      s.idle = true;
+    }
   }
   const want = s.idle && !frame.firing ? 1 : 0;
   s.weight =
@@ -351,7 +359,8 @@ export function stepEffortless(
       0,
       1,
     );
-    out.biasTurn = clamp(-Math.sin(r) / Math.sin(COORD_FULL), -1, 1) * fade;
+    out.biasTurn =
+      clamp(-Math.sin(r) / Math.sin(tuning.bankAngle), -1, 1) * fade;
   }
 
   // Ground floor (upright only: inverted, a pull heads for the ground —
@@ -372,9 +381,10 @@ export function stepEffortless(
       minAltitude(flight.pos.z),
     );
     const bottom = flight.pos.y - drop - ground;
-    const need = FLOOR_MARGIN - bottom;
+    const margin = tuning.floorMargin;
+    const need = margin - bottom;
     if (need > 0) out.pitch += clamp(need / FLOOR_BAND, 0, 1) * cr;
-    out.softDown = clamp((bottom - FLOOR_MARGIN) / FLOOR_SOFT_BAND, 0, 1);
+    out.softDown = clamp((bottom - margin) / FLOOR_SOFT_BAND, 0, 1);
   }
 
   if (world === null || frame.threading || boreAhead(flight, frame.aim)) {
@@ -387,7 +397,7 @@ export function stepEffortless(
   // nose first, then the other, then over the top — weighted by how close
   // it is. A hole's mouth is air, so an aim a few degrees off a hole finds
   // the hole itself.
-  if (Math.abs(flight.pitch) < AIM_MAX_PITCH && ar < ASSIST_MAX_ROLL) {
+  if (Math.abs(flight.pitch) < AIM_MAX_PITCH && ar < tuning.assistMaxRoll) {
     const { pos, yaw, pitch } = flight;
     const aim = frame.aim;
     const ay = aim === null ? yaw : Math.atan2(-aim.x, -aim.z);
@@ -540,7 +550,7 @@ function rollout(
   guardInput.cornerCap = frame.cornerCap;
   let st = flight;
   for (let t = GUARD_STEP; t <= GUARD_HORIZON + 1e-9; t += GUARD_STEP) {
-    st = stepFlight(st, guardInput, GUARD_STEP);
+    st = stepFlight(st, guardInput, GUARD_STEP, tuning);
     const p = st.pos;
     if (
       hitsGround(p, GUARD_RADIUS) ||

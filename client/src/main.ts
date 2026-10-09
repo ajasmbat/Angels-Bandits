@@ -48,7 +48,6 @@ import {
   AWAY_MIN_MS,
   AWAY_PING_INTERVAL_MS,
   BLOCK_PITCH,
-  BOOST_MAX_SPEED,
   BOOT_PING_INTERVAL_MS,
   BULLET_DAMAGE,
   BULLET_RANGE,
@@ -56,9 +55,8 @@ import {
   CLOUD_BASE,
   FOG_DISTANCE,
   MAX_HP,
-  MAX_SPEED,
-  MIN_SPEED,
   PLAYER_RADIUS,
+  RESPAWN_SPEED,
 } from "@angels-bandits/common/constants";
 import {
   type Course,
@@ -90,6 +88,7 @@ import {
   MISSILE_SHOOTER_ID,
   missileImpactAt,
 } from "@angels-bandits/common/strike";
+import { feelFromTuning } from "@angels-bandits/common/tuning";
 import {
   WEATHER_PHASES,
   type WeatherPhase,
@@ -247,6 +246,7 @@ import {
 } from "./game/qa-spectacle";
 import { quakeShakeAmount } from "./game/quake";
 import { SessionStats } from "./game/session-stats";
+import { resetTuning, tuning } from "./game/tuning";
 import { wreckCamView } from "./game/wreck-cam";
 import {
   BASE_FOV,
@@ -256,6 +256,8 @@ import {
   zoomHeld,
   zoomSteer,
 } from "./game/zoom";
+import { FlightLab } from "./lab/lab";
+import { buildLabRoutes } from "./lab/routes";
 import { GameSocket } from "./net/socket";
 import { Airliners } from "./render/airliners";
 import { archetypeFor } from "./render/archetypes";
@@ -420,6 +422,7 @@ import { HPBAR_ALTITUDE, HpBarSprite, HpBarTracker } from "./ui/hpbar";
 import { Hud, deathLabel } from "./ui/hud";
 import {
   closeJoin,
+  initLabLink,
   requestName,
   showJoinError,
   showJoinProgress,
@@ -470,13 +473,25 @@ const phoneFullscreen = initPhoneFullscreen();
 renderPrimer(isTouch());
 whenTouch(() => renderPrimer(true));
 
+// FL1: `?lab` (or `?lab=<share code>`) flies the Flight Lab — a solo lab
+// room on the server, the tuning panel, the test routes. The join card says
+// so and links back; the ordinary card links into it.
+const LAB_URL = new URLSearchParams(window.location.search).has("lab");
+initLabLink(LAB_URL);
+
 // --- Join flow: name → server welcome (identity, seed, spawn) ---
 const name = await requestName(phoneFullscreen.onJoinGesture);
 let socket: GameSocket;
 try {
   // W2: a SIGNAL LOST reload hands its session over, so it comes back as
   // the same player (same id and score) when the server still holds it.
-  socket = await GameSocket.connect(name, takeResumeToken());
+  // A lab join never resumes (a lab room dies with its pilot).
+  const resume = takeResumeToken();
+  socket = await GameSocket.connect(
+    name,
+    LAB_URL ? undefined : resume,
+    LAB_URL,
+  );
 } catch (err) {
   showJoinError(err instanceof Error ? err.message : "Can't reach the server");
   throw err;
@@ -484,6 +499,10 @@ try {
 // Only once connected: a failed join must not grow a pill over its error.
 phoneFullscreen.onJoined();
 const { welcome } = socket;
+// FL1: lab values only ever fly in a lab room — anything else is the
+// shipped tuning, whatever this tab held before.
+const labMode = socket.lab;
+if (!labMode) resetTuning();
 // W1: the boot below (synchronous city build, then the shader pre-warm) can
 // run for seconds on a slow phone. A drop at ANY point of it must still end
 // on SIGNAL LOST — remembered here, shown the moment the boot can show it
@@ -887,7 +906,8 @@ const courses: Course[] = generateCourses(welcome.seed, {
   movers: moverField,
 });
 const courseRings = new CourseRings(courses);
-scene.add(courseRings.mesh);
+// FL1: the lab draws its own routes' rings instead.
+if (!labMode) scene.add(courseRings.mesh);
 const courseGhost = new CourseGhost();
 scene.add(courseGhost.mesh);
 /** Each course's decoded record ghost (welcome, then courseBoard). */
@@ -1497,7 +1517,8 @@ const hpBar = new HpBarTracker();
 const hpBarSprite = new HpBarSprite();
 scene.add(hpBarSprite.sprite);
 const killFeed = new KillFeed();
-const scoreboard = new Scoreboard(socket.selfId);
+// FL1: in the lab, Tab is the lab panel's — the scoreboard skips its key.
+const scoreboard = new Scoreboard(socket.selfId, window, !labMode);
 scoreboard.setRoster(welcome.roster);
 scoreboard.setScores(welcome.scores);
 showOwnScore(welcome.scores);
@@ -1630,25 +1651,32 @@ whenTouch(() => {
   touchControls = new TouchControls({ input, guns, boostKey, scoreboard });
 });
 /** Extra vertical FOV at full boost speed, degrees — the speed kick. */
-const BOOST_FOV_KICK = 9;
-/** 0 at ≤ MAX_SPEED, 1 at full boost speed. */
+// FL1: the boost FOV kick (9° at full boost) is the live tuning's.
+/** 0 at ≤ the top speed, 1 at full boost speed. */
 const overspeedOf = (speed: number): number =>
-  Math.min(1, Math.max(0, (speed - MAX_SPEED) / (BOOST_MAX_SPEED - MAX_SPEED)));
+  Math.min(
+    1,
+    Math.max(
+      0,
+      (speed - tuning.maxSpeed) / (tuning.boostMaxSpeed - tuning.maxSpeed),
+    ),
+  );
 /** The vertical FOV the render writes: zoom, plus the boost kick and the F6
  * speed FOV (jet-camera.ts) un-zoomed. The instructor reads the cursor
  * through the same one. */
 const viewFov = (z: number, overspeed: number, speed: number): number =>
-  zoomFov(z) + (BOOST_FOV_KICK * overspeed + speedFov(speed)) * (1 - z);
+  zoomFov(z) + (tuning.boostFovKick * overspeed + speedFov(speed)) * (1 - z);
 let flight: FlightState = createFlightState(
   welcome.spawn.pos,
   welcome.spawn.yaw,
+  tuning,
 );
 // Server's spawn airspeed; the throttle stays FULL (F5, createFlightState).
 flight = { ...flight, speed: welcome.spawn.speed };
 chase.snapTo(flight);
 
 /** F5: the corner manager's rate-limited speed ceiling, m/s (MAX = none). */
-let cornerCap = MAX_SPEED;
+let cornerCap = tuning.maxSpeed;
 /** F6: the yaw rate this frame's input commands, rad/s (+ = left) — what
  * the chase camera leans into (jet-camera.ts). */
 let leadYawRate = 0;
@@ -1834,9 +1862,9 @@ function respawnSelf(spawn: SpawnState): void {
   planeTrails.clear(socket.selfId); // respawn teleports — no streak
   endCourseRun(); // S3: …and no ring pass
   interruptQuality(); // O3: a transient
-  flight = createFlightState(spawn.pos, spawn.yaw);
+  flight = createFlightState(spawn.pos, spawn.yaw, tuning);
   flight = { ...flight, speed: spawn.speed }; // throttle stays FULL (F5)
-  cornerCap = MAX_SPEED; // a fresh plane starts unbraked
+  cornerCap = tuning.maxSpeed; // a fresh plane starts unbraked
   chase.snapTo(flight);
   instructor = createInstructor();
   resetAssist();
@@ -1859,7 +1887,9 @@ function respawnSelf(spawn: SpawnState): void {
 /** Start or end the local burn and tell the server's mirror on any change.
  * A start the energy can't pay for leaves `boost` idle — nothing is sent. */
 function setBoostBurning(on: boolean, now: number): void {
-  boost = on ? startBoost(boost, now) : stopBoost(boost, now);
+  boost = on
+    ? startBoost(boost, now, 0, tuning)
+    : stopBoost(boost, now, 0, tuning);
   if (boost.active === boostSent) return;
   boostSent = boost.active;
   socket.sendBoost(boostSent);
@@ -2475,6 +2505,12 @@ declare global {
   interface Window {
     __ab?: {
       state: () => FlightState;
+      /** FL1 QA: the Flight Lab's state and live tuning (null outside it). */
+      lab: () =>
+        | (ReturnType<FlightLab["debug"]> & {
+            tuning: Record<string, number>;
+          })
+        | null;
       teleport: (x: number, z: number, y?: number, yaw?: number) => void;
       perf: () => {
         fps: number;
@@ -3051,12 +3087,13 @@ const settingsPanel = new SettingsPanel(
     setAutoFire: (on) => {
       autoFireOn = on;
     },
+    // FL1: in the lab the panel's tuning owns assist and feel.
     setAssist: (on) => {
-      assistOn = on;
+      assistOn = labMode ? tuning.assist === 1 : on;
       resetEffortless(effortless);
     },
     setFeel: (feel) => {
-      feelTuning = FEEL_TUNING[feel];
+      feelTuning = labMode ? feelFromTuning(tuning) : FEEL_TUNING[feel];
     },
     setRadioVoice: (on) => {
       saveRadioVoice(on);
@@ -3252,9 +3289,13 @@ function clearQaDestruction(): void {
 }
 window.__ab = {
   state: () => flight,
+  lab: () => (lab ? { ...lab.debug(), tuning: { ...tuning } } : null),
   teleport: (x, z, y = 300, yaw = 0) => {
     interruptQuality(); // O3: a transient
-    flight = { ...createFlightState({ x, y, z }, yaw), speed: flight.speed };
+    flight = {
+      ...createFlightState({ x, y, z }, yaw, tuning),
+      speed: flight.speed,
+    };
     chase.snapTo(flight);
     resetHoleSave(holeSave);
   },
@@ -4105,6 +4146,49 @@ let last = performance.now();
 // birds, movers, traffic, the prop blur, the HP sprite, name tags. Each would
 // otherwise compile on the frame it first appears, which is exactly the
 // moment a hitch is noticed. Each subsystem's update() then owns visibility.
+// FL1 Flight Lab (lab rooms only): the panel, the telemetry strip, the test
+// routes and the drone — built before the pre-warm so their programs
+// compile behind the boot fade like everything else.
+const lab: FlightLab | null = labMode
+  ? new FlightLab({
+      scene,
+      tuning,
+      routes: buildLabRoutes(city.cityBuildings, courses),
+      teleport: labTeleport,
+      onTuning: () => {
+        feelTuning = feelFromTuning(tuning);
+        assistOn = tuning.assist === 1;
+        // A shorter top speed must not leave the corner cap above it.
+        cornerCap = Math.min(cornerCap, tuning.maxSpeed);
+      },
+      sendLab: (msg) => socket.sendLab(msg),
+      setBots: (count) => socket.sendSetBots(count),
+    })
+  : null;
+// The room's copy of the tuning starts at the defaults: hand it ours.
+lab?.syncNow();
+
+/** FL1: a lab respawn — a fresh plane at `pos` along (yaw, pitch), no
+ * death, no kill-cam, nothing sent but the next pose (the lab room resyncs
+ * at once). Ignored while dead (a bot or the boss downed us: the server's
+ * respawn comes as usual). */
+function labTeleport(pos: Vec3, yaw: number, pitch: number): void {
+  if (!alive) return;
+  planeTrails.clear(socket.selfId);
+  const speed = Math.min(
+    tuning.maxSpeed,
+    Math.max(tuning.minSpeed, RESPAWN_SPEED),
+  );
+  flight = { ...createFlightState(pos, yaw, tuning), pitch, speed };
+  cornerCap = tuning.maxSpeed;
+  chase.snapTo(flight);
+  instructor = createInstructor();
+  resetAssist();
+  setBoostBurning(false, performance.now());
+  boost = createBoost(performance.now());
+  flashFade();
+}
+
 // P3: the loading card's last stage — painted before the pre-warm blocks
 // (every handler is wired by now, so the yield drops no message).
 await showJoinProgress("WARMING UP SHADERS…", 0.8);
@@ -4187,7 +4271,7 @@ const frame = (now: number): void => {
   // too, so a press during the kill-cam can't fire after respawn) and ends on
   // release or an empty gauge — each edge reaches the server's mirror.
   const boostPressed = boostKey.takePress();
-  boost = boostLevel(boost, now);
+  boost = boostLevel(boost, now, 0, tuning);
   if (alive) {
     if (boostPressed && boostKey.isHeld()) setBoostBurning(true, now);
     else if (!boostKey.isHeld()) setBoostBurning(false, now);
@@ -4232,14 +4316,17 @@ const frame = (now: number): void => {
      * what the F9 guard flies ahead. */
     let intentTurn = 0;
     let intentPitch = 0;
-    const rates = handlingRates(flight.speed, boost.active);
+    const rates = handlingRates(flight.speed, boost.active, tuning);
     /** Instructor only: this frame's aim error, view latch and reframing. */
     let err: AimError = { yaw: 0, pitch: 0 };
     let latch: AimError = { yaw: 0, pitch: 0 };
     let reframing = false;
     let anchored = false;
-    const instructorMode = !settingsOpen && aimMode === "instructor";
-    if (settingsOpen) {
+    // FL1: the pointer on the lab panel flies the same autopilot, so
+    // reaching for a slider never steers the plane.
+    const autopilot = settingsOpen || (lab?.holdsStick() ?? false);
+    const instructorMode = !autopilot && aimMode === "instructor";
+    if (autopilot) {
       // M6: the settings panel is up — the autopilot flies (wings level,
       // out of the skyline, throttle full). A fresh instructor every frame,
       // so closing the panel hands back with no lagged command.
@@ -4347,7 +4434,7 @@ const frame = (now: number): void => {
       effortless,
       flight,
       {
-        enabled: assistOn && !settingsOpen,
+        enabled: assistOn && !autopilot,
         active:
           input.takeActivity() ||
           touchAiming ||
@@ -4418,7 +4505,7 @@ const frame = (now: number): void => {
         pitch: instructor.pitch * presence + effOut.biasPitch * (1 - presence),
       };
       if (assistOn) effortlessCommand(effOut, roll, command);
-    } else if (!settingsOpen) {
+    } else if (!autopilot) {
       if (holeAssist.yaw !== 0 || holeAssist.pitch !== 0) {
         assistStick(holeAssist, command, rates, assistStickOut);
         command = {
@@ -4444,14 +4531,14 @@ const frame = (now: number): void => {
       cornerCap: cornerCapInput(cornerCap),
     };
     leadYawRate =
-      -shaped.turn * handlingRates(flight.speed, boost.active).turnRate;
-    flight = stepFlight(flight, shaped, dt);
+      -shaped.turn * handlingRates(flight.speed, boost.active, tuning).turnRate;
+    flight = stepFlight(flight, shaped, dt, tuning);
     // Own control surfaces follow what the stick is commanding (F3).
     ownControls = inputControls(shaped, flight);
     // Hold the post-boost tail to the wall-clock envelope the server checks
     // (boostSpeedCap): a slow or hidden frame clamps dt, so the sim's own
     // decay can lag the clock — this keeps every pose inside the mirror.
-    const speedCap = boostSpeedCap(boost, now);
+    const speedCap = boostSpeedCap(boost, now, tuning);
     if (flight.speed > speedCap) flight = { ...flight, speed: speedCap };
     // H3: about to clip a hole's mouth or a bridge deck? Slide the fresh pose
     // (stepFlight's own object, corrected in place) onto a line that clears,
@@ -4480,13 +4567,20 @@ const frame = (now: number): void => {
     const wreckHit = crashed
       ? null
       : wrecks.touching(flight.pos, PLAYER_RADIUS, renderMs);
-    if (crashed || wreckHit !== null) {
+    if ((crashed || wreckHit !== null) && lab) {
+      // FL1: no deaths in the lab — straight back to the last checkpoint.
+      // The server never hears of it.
+      lab.crash(flight);
+    } else if (crashed || wreckHit !== null) {
       // Report and freeze; the server decides credit and the respawn.
       socket.sendCrash(wreckHit, renderMs);
       enterDeath(null, "crash");
     }
   }
-  stepCourse(now); // S3: ring passes over this frame's move
+  // S3: ring passes over this frame's move. FL1: the lab times its own
+  // routes instead (lab.frame below) — a lab run is never a course run.
+  if (lab) lab.frame(flight, alive, dt, now, chase.position);
+  else stepCourse(now);
 
   // M8 auto-fire, stepped dead or alive so a death drops it at once. It
   // never pulls under our own spawn protection (only FIRE may spend it), on
@@ -4854,8 +4948,10 @@ const frame = (now: number): void => {
   for (const target of targets) hornPlanes.push(target.pos);
   train.update(chase.position, renderMs, moverLights, hornPlanes);
   // S3: rings (state colours change only with the run) and the ghost.
-  courseRings.setRun(courseRunner.course, courseRunner.next);
-  courseRings.update(chase.position, now);
+  if (!lab) {
+    courseRings.setRun(courseRunner.course, courseRunner.next);
+    courseRings.update(chase.position, now);
+  }
   courseGhost.update(chase.position, now);
   fireworks.update(chase.position, renderMs, moverLights);
   // After movers.update: the helicopters' belly spots are this frame's, and
@@ -5143,7 +5239,7 @@ const frame = (now: number): void => {
       now - courseRunner.startMs,
     );
   } else {
-    const near = alive ? startRingNear() : null;
+    const near = alive && !lab ? startRingNear() : null;
     raceHud.hint(near, near ? courseBoard.recordOf(near.id) : null);
   }
   raceHud.update(now);
@@ -5159,7 +5255,7 @@ const frame = (now: number): void => {
   );
   const contacts = remotes.contacts();
   minimap.update(flight.pos, flight.yaw, contacts, reveals.pings(now));
-  // 0 at ≤ MAX_SPEED, 1 at full boost speed: drives the engine pitch rise and
+  // 0 at ≤ top speed, 1 at full boost speed: drives the engine pitch rise and
   // the FOV kick, and eases out with the post-boost tail on its own.
   const overspeed = alive ? overspeedOf(flight.speed) : 0;
   // The engine note follows the EFFECTIVE command — throttle under the F5
@@ -5229,7 +5325,11 @@ const frame = (now: number): void => {
   // read camera.projectionMatrix directly, so writing it after would project
   // them with last frame's FOV. Guarded so a static FOV costs nothing, and
   // aspect (the resize handler's business) is left alone.
-  const fov = viewFov(zoom.z, overspeed, alive ? flight.speed : MIN_SPEED);
+  const fov = viewFov(
+    zoom.z,
+    overspeed,
+    alive ? flight.speed : tuning.minSpeed,
+  );
   if (camera.fov !== fov) {
     camera.fov = fov;
     camera.updateProjectionMatrix();

@@ -7,13 +7,10 @@
 // Two fingers on the aim zone are free-look instead, once gateLook (M8) has
 // seen both make a deliberate drag. Renderer- and DOM-free
 // (same pattern as freelook.ts / zoom.ts); ui/touch-controls.ts is the thin
-// DOM adapter. CLIENT-ONLY — nothing here touches the wire or common/.
+// DOM adapter. CLIENT-ONLY — nothing here touches the wire or common/ (FL1: the slider's
+// speed range and rate are the client's live flight tuning).
 
-import {
-  MAX_SPEED,
-  MIN_SPEED,
-  THROTTLE_RATE,
-} from "@angels-bandits/common/constants";
+import { tuning } from "./tuning";
 
 /** One finger on the aim zone, client px. `id` is Touch.identifier. */
 export interface TouchPoint {
@@ -271,18 +268,20 @@ export function springBack(
 
 /** Slider 0..1 (bottom..top) → the commanded speed it stands for, m/s. */
 export function sliderSpeed(slider: number): number {
-  return MIN_SPEED + clamp(slider, 0, 1) * (MAX_SPEED - MIN_SPEED);
+  const { minSpeed, maxSpeed } = tuning; // FL1: the live tuning's range
+  return minSpeed + clamp(slider, 0, 1) * (maxSpeed - minSpeed);
 }
 
 /** Commanded speed, m/s → where the released knob should sit, 0..1. */
 export function speedSlider(targetSpeed: number): number {
-  return clamp((targetSpeed - MIN_SPEED) / (MAX_SPEED - MIN_SPEED), 0, 1);
+  const { minSpeed, maxSpeed } = tuning;
+  return clamp((targetSpeed - minSpeed) / (maxSpeed - minSpeed), 0, 1);
 }
 
 /**
  * The positional slider, through the same −1..1 throttle axis W/S drive:
  * while held, the command that moves the commanded speed onto the knob in
- * this frame's step (stepFlight adds throttle × THROTTLE_RATE × dt), so it
+ * this frame's step (stepFlight adds throttle × throttleRate × dt), so it
  * lands exactly instead of overshooting — at most full W/S rate. Released
  * (null) it commands nothing, so the speed holds exactly like letting go of
  * W, and the knob follows the commanded speed (speedSlider).
@@ -294,7 +293,7 @@ export function throttleCommand(
 ): number {
   if (slider === null || dt <= 0) return 0;
   const error = sliderSpeed(slider) - targetSpeed;
-  return clamp(error / (THROTTLE_RATE * dt), -1, 1);
+  return clamp(error / (tuning.throttleRate * dt), -1, 1);
 }
 
 /** Aim-drag sensitivity steps (the settings screen offers them); DEFAULT is

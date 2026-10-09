@@ -79,7 +79,10 @@ export const ANIM = {
   glow: 2,
   /** Thin dressing (vine strands, leaves, fronds): fades into the surface
    * behind it — the wall (aAnim.y 0) or the ceiling (1) — with distance,
-   * so a sub-pixel sliver never sparkles (O1's abLine rule, in geometry). */
+   * so a sub-pixel sliver never sparkles (O1's abLine rule, in geometry).
+   * U5b: and at its edges — aAnim.zw are edge coordinates (0 on an edge;
+   * aAnim.y + 2 on a triangle, whose third is 1 − z − w), so its outer
+   * pixel fades into that surface too: an edge never pops on or off. */
   thin: 3,
   /** Falling water: streaks fall down aAnim.y (height), across aAnim.z. */
   fall: 4,
@@ -158,8 +161,27 @@ type P3 = [number, number, number];
 type RGBA = readonly [number, number, number, number];
 type Anim = readonly [number, number, number, number];
 const STILL: Anim = [ANIM.still, 0, 0, 0];
-const THIN_WALL: Anim = [ANIM.thin, 0, 0, 0];
-const THIN_CEIL: Anim = [ANIM.thin, 1, 0, 0];
+/** Thin dressing over the wall (0) or the ceiling (1), at edge
+ * coordinates (e1, e2) — see ANIM.thin. */
+const thin = (behind: 0 | 1, e1: number, e2: number, tri = false): Anim => [
+  ANIM.thin,
+  behind + (tri ? 2 : 0),
+  e1,
+  e2,
+];
+/** A thin triangle's corners: two barycentrics each (the third implied). */
+const thinTri = (behind: 0 | 1): readonly [Anim, Anim, Anim] => [
+  thin(behind, 1, 0, true),
+  thin(behind, 0, 1, true),
+  thin(behind, 0, 0, true),
+];
+/** A thin quad a→b→c→d whose long edges are a–d and b–c. */
+const thinQuad = (behind: 0 | 1): readonly [Anim, Anim, Anim, Anim] => [
+  thin(behind, 0, 1),
+  thin(behind, 1, 0),
+  thin(behind, 1, 0),
+  thin(behind, 0, 1),
+];
 const rgba = (c: THREE.Color, a = 1): RGBA => [c.r, c.g, c.b, a];
 
 const scratch = { x: 0, z: 0, th: 0 };
@@ -194,8 +216,13 @@ class Soup {
     }
   }
 
-  tri(p: readonly [P3, P3, P3], c: RGBA, a: Anim = STILL): void {
-    for (const v of p) this.vertex(v, c, a);
+  tri(
+    p: readonly [P3, P3, P3],
+    c: RGBA,
+    a: Anim | readonly [Anim, Anim, Anim] = STILL,
+  ): void {
+    const as = (typeof a[0] === "number" ? [a, a, a] : a) as readonly Anim[];
+    for (let i = 0; i < 3; i++) this.vertex(p[i] as P3, c, as[i] as Anim);
   }
 }
 
@@ -472,6 +499,11 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
       const off = 0.08 + 0.05 * j;
       const top = DEEP_CEIL;
       const bot = top - len;
+      // Edge coordinates across the whole strand, not per split piece.
+      const across = (s: number): Anim => {
+        const u = (s - s0) / (s1 - s0);
+        return thin(0, u, 1 - u);
+      };
       wallStrip(
         soup,
         v.t,
@@ -483,7 +515,7 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
         top,
         rgba(C.vineLight),
         rgba(C.vineDark),
-        THIN_WALL,
+        across,
       );
       // Leaves angled off the wall, still well inside the lining.
       for (let y = top - 1; y > bot + 0.3; y -= 1.1) {
@@ -497,7 +529,7 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
             at(v.t, sm, lo, y - 0.45),
           ],
           rgba(C.leaf),
-          THIN_WALL,
+          thinTri(0),
         );
       }
     }
@@ -622,7 +654,7 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
           at(g.t, s - 0.12, l, bot),
         ],
         [rgba(C.frond), rgba(C.frond), rgba(C.vineLight), rgba(C.vineLight)],
-        THIN_CEIL,
+        thinQuad(1),
       );
       if (i % 2 === 0) {
         const fl = C.flowers[i % C.flowers.length] as THREE.Color;
@@ -633,7 +665,7 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
             at(g.t, s, l + 0.15, bot + 0.2),
           ],
           rgba(fl),
-          THIN_CEIL,
+          thinTri(1),
         );
       }
     }
@@ -1378,9 +1410,19 @@ const glslColor = (c: THREE.Color): string =>
   `vec3(${c.r.toFixed(4)}, ${c.g.toFixed(4)}, ${c.b.toFixed(4)})`;
 const DECOR_FRAGMENT = /* glsl */ `
 diffuseColor.rgb *= vGlow;
+// Derivatives outside any branch (undefined in non-uniform control flow).
+vec3 thinEdge = vec3(vAnim.zw, 1.0 - vAnim.z - vAnim.w);
+vec3 thinEdgeW = max(fwidth(thinEdge), vec3(1e-5));
 if (vAnim.x > 2.5 && vAnim.x < 3.5) {
-  vec3 behind = vAnim.y > 0.5 ? ${glslColor(SHELL_CEILING)} : ${glslColor(SHELL_WALL_MID)};
-  diffuseColor.rgb = mix(diffuseColor.rgb, behind, vThin);
+  // aAnim.y is 0..3 exactly; rounded, as an interpolated constant may
+  // arrive an ulp off.
+  float thinY = floor(vAnim.y + 0.5);
+  vec3 behind = mod(thinY, 2.0) > 0.5 ? ${glslColor(SHELL_CEILING)} : ${glslColor(SHELL_WALL_MID)};
+  // Pixels from the nearest edge; a quad has no third edge.
+  vec3 px = thinEdge / thinEdgeW;
+  float edgePx = min(px.x, thinY > 1.5 ? min(px.y, px.z) : px.y);
+  float cover = clamp(edgePx, 0.0, 1.0);
+  diffuseColor.rgb = mix(diffuseColor.rgb, behind, max(vThin, 1.0 - cover));
 }
 if (vAnim.x > 0.5 && vAnim.x < 1.5) {
   float r = sin(vAnim.y * 1.7 - uU5Time * vAnim.z) *

@@ -16,6 +16,7 @@ import {
   SPEED_TOLERANCE,
 } from "@angels-bandits/common/constants";
 import type { Pose, SpawnState } from "@angels-bandits/common/protocol";
+import { type FlightTuning, labSpeedCap } from "@angels-bandits/common/tuning";
 import { canonicalize, wrapDistance } from "@angels-bandits/common/world";
 import { isPose } from "./guards";
 
@@ -80,6 +81,20 @@ export function validatePose(
       speed,
     },
   };
+}
+
+/**
+ * The `maxSpeed` validatePose judges a room's poses by (FL1). A normal room
+ * uses `boostCap`, the boost mirror's window cap, exactly as before — its
+ * lab fields are never read. A Flight Lab room uses its own lab tuning's top
+ * speed instead (labSpeedCap): the lab's boost gauge is tunable, so the
+ * mirror no longer describes it.
+ */
+export function roomPoseCap(
+  room: { readonly lab: boolean; readonly labTuning: FlightTuning },
+  boostCap: number,
+): number {
+  return room.lab ? labSpeedCap(room.labTuning) : boostCap;
 }
 
 /** The Pose a freshly spawned player is on record with (attitude = yaw only). */

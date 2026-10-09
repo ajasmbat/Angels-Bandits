@@ -28,7 +28,7 @@ import {
   EMISSIVE_BEACON,
   LANDMARK_HEIGHT,
 } from "@angels-bandits/common/constants";
-import type { Vec3 } from "@angels-bandits/common/world";
+import { type Vec3, wrapDeltaInto } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
 import { AB_FOG_DISTANCE_GLSL, AB_FOG_GLSL } from "./fog";
@@ -36,7 +36,7 @@ import type { MoverLights } from "./movers";
 import { trackPlanesInto } from "./reactions";
 import { RENDER_ORDER } from "./render-order";
 import { glslFloat } from "./window-pattern";
-import { nearestImage } from "./wrapPlacement";
+import { nearestImage, nearestImageInto } from "./wrapPlacement";
 
 /** How many rooftops carry a light. */
 export const SEARCHLIGHT_COUNT = 10;
@@ -55,6 +55,14 @@ const SPOT_RADIUS = 20;
 const SPOT_LEAD = 0.42;
 const SPOT_WANDER = 0.16;
 const SPOT_WANDER_PERIOD_S = 7.3;
+
+/** S1 leader spot: the throw reaches the leader up to this far, m. */
+const LEADER_RANGE = 900;
+/** …overshooting them by this much, so the plane sits inside the beam. */
+const LEADER_OVERSHOOT = 40;
+/** Its radius at the tip, as a share of the throw (~2.3° half-angle —
+ * tighter than the rooftop sweeps: a follow spot, not a sweep). */
+const LEADER_SPREAD = 0.04;
 
 /** One rooftop light: where it stands and where in the cycle it starts. */
 export interface SearchlightStation {
@@ -109,6 +117,20 @@ export function searchlightStations(
 }
 
 /**
+ * S1: the lamp that follows the TOP PILOT — on the roof of one landmark (the
+ * first in (x, z) order, so every client picks the same tower). Landmarks
+ * carry no sweep station of their own, so this lamp stands alone.
+ */
+export function leaderStation(
+  buildings: readonly Building[],
+): SearchlightStation | null {
+  const tower = buildings
+    .filter((b) => b.height >= LANDMARK_HEIGHT)
+    .sort((a, b) => a.x - b.x || a.z - b.z)[0];
+  return tower ? { x: tower.x, y: tower.height, z: tower.z, phase: 0 } : null;
+}
+
+/**
  * A station's beam direction at a server time — a unit vector pointing up and
  * away. The sweep is a slow cone: the beam leans SWEEP_TILT off vertical and
  * rotates, so from the ground it scythes across the sky.
@@ -160,6 +182,9 @@ export const BEAM_COLOR = new THREE.Color(0.62, 0.72, 0.9);
 export const BEAM_OPACITY = 0.4;
 /** A helicopter's spot is a warmer, whiter lamp than the rooftop arcs. */
 const SPOT_COLOR = new THREE.Color(0.8, 0.76, 0.64);
+/** S1: the leader's follow spot — "subtle": a warm gold at a little over
+ * half the rooftop arcs' strength (and so still sub-bloom). */
+export const LEADER_BEAM_COLOR = new THREE.Color(0.5, 0.43, 0.26);
 
 // --- Camera falloff (V1, ANGE-6OM7QM) ---------------------------------------
 // From INSIDE a cone (or right beside its wall) the beam drew as a flat pale
@@ -431,6 +456,10 @@ const UP = new THREE.Vector3(0, 1, 0);
 export class Searchlights {
   readonly mesh: THREE.InstancedMesh;
   private readonly stations: SearchlightStation[];
+  /** S1: the leader lamp, and its fixed instance slot (after the stations,
+   * so its tint never moves). */
+  private readonly leaderLamp: SearchlightStation | null;
+  private readonly leaderSlot: number;
   private readonly tints: THREE.InstancedBufferAttribute;
   private readonly capacity: number;
   private readonly uniforms = THREE.UniformsUtils.merge([
@@ -445,21 +474,32 @@ export class Searchlights {
   /** L1 tracking scratch: the canonical lamp and the biased direction. */
   private readonly lamp = { x: 0, y: 0, z: 0 };
   private readonly tracked = { x: 0, y: 1, z: 0 };
+  /** S1 leader-spot scratch: the lamp's drawn image and the aim. */
+  private readonly leaderImage = { x: 0, y: 0, z: 0 };
+  private readonly leaderAim = { x: 0, y: 0, z: 0 };
   /** Beams drawn last frame — for the perf report. */
   private drawn = 0;
 
   constructor(buildings: readonly Building[]) {
     this.stations = searchlightStations(buildings);
+    this.leaderLamp = leaderStation(buildings);
+    this.leaderSlot = this.leaderLamp ? this.stations.length : -1;
+    const fixed = this.stations.length + (this.leaderLamp ? 1 : 0);
     // Open-ended cone, apex at the origin, opening along +Y. ConeGeometry
     // puts its apex at +height/2, so it is flipped and then lifted.
     const cone = new THREE.ConeGeometry(1, 1, BEAM_SEGMENTS, 1, true);
     cone.rotateX(Math.PI);
     cone.translate(0, 0.5, 0);
-    const capacity = this.stations.length + SPOT_CAPACITY;
+    const capacity = fixed + SPOT_CAPACITY;
     this.capacity = capacity;
     const tints = new Float32Array(capacity * 3);
     for (let i = 0; i < capacity; i++) {
-      const c = i < this.stations.length ? BEAM_COLOR : SPOT_COLOR;
+      const c =
+        i === this.leaderSlot
+          ? LEADER_BEAM_COLOR
+          : i < this.stations.length
+            ? BEAM_COLOR
+            : SPOT_COLOR;
       tints[i * 3] = c.r;
       tints[i * 3 + 1] = c.g;
       tints[i * 3 + 2] = c.b;
@@ -492,6 +532,33 @@ export class Searchlights {
     this.mesh.renderOrder = RENDER_ORDER.beams;
   }
 
+  /** The leader lamp's beam into `index`: from the camera-nearest lamp
+   * image along the torus-shortest line to the leader; scaled to nothing
+   * when there is nobody to follow (the slot keeps its tint). */
+  private placeLeader(
+    index: number,
+    cameraPos: Vec3,
+    leader: Vec3 | null,
+    lights?: MoverLights,
+  ): void {
+    const lamp = this.leaderLamp as SearchlightStation;
+    this.lamp.x = lamp.x;
+    this.lamp.y = lamp.y + 1.5;
+    this.lamp.z = lamp.z;
+    const p = nearestImageInto(this.leaderImage, cameraPos, this.lamp);
+    this.pos.set(p.x, p.y, p.z);
+    const d = leader ? wrapDeltaInto(this.lamp, leader, this.leaderAim) : null;
+    const dist = d ? Math.hypot(d.x, d.y, d.z) : 0;
+    if (!d || dist < 1) {
+      this.matrix.makeScale(0, 0, 0);
+      this.mesh.setMatrixAt(index, this.matrix);
+      return;
+    }
+    const length = Math.min(LEADER_RANGE, dist + LEADER_OVERSHOOT);
+    this.place(index, d, length, Math.max(4, length * LEADER_SPREAD));
+    lights?.place(p, headBoost, HEAD_SIZE);
+  }
+
   /** Beams drawn — for the perf report. */
   get beamCount(): number {
     return this.drawn;
@@ -511,6 +578,9 @@ export class Searchlights {
    * `spots` are the helicopters' lamps for this frame, already nearest-image
    * placed by the mover renderer. `lights` takes the lamp heads — call this
    * between MoverLights.begin() and commit(), like the movers themselves.
+   *
+   * S1: `leader` is the TOP PILOT's rendered position (null: no leader, or
+   * the leader is dead) — the landmark lamp follows it.
    */
   update(
     cameraPos: Vec3,
@@ -518,6 +588,7 @@ export class Searchlights {
     spots: readonly SpotBeam[] = [],
     lights?: MoverLights,
     planes: readonly Vec3[] = [],
+    leader: Vec3 | null = null,
   ): void {
     if (serverTimeMs === null) {
       this.mesh.visible = false;
@@ -552,6 +623,7 @@ export class Searchlights {
       );
       lights?.place({ x: p.x, y: p.y + 1.5, z: p.z }, headBoost, HEAD_SIZE);
     }
+    if (this.leaderLamp) this.placeLeader(index++, cameraPos, leader, lights);
     for (const spot of spots) {
       if (index >= this.capacity) break;
       this.pos.set(spot.x, spot.y, spot.z);

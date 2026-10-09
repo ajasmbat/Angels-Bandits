@@ -353,9 +353,10 @@ export class GameSocket {
     });
   }
 
-  /** Report flying into a building or the ground. */
-  sendCrash(): void {
-    this.send({ type: "crash" });
+  /** Report flying into a building or the ground — or (D4) into the
+   * falling wreck `wreck` (its id), which the server may credit. */
+  sendCrash(wreck: number | null = null): void {
+    this.send(wreck === null ? { type: "crash" } : { type: "crash", wreck });
   }
 
   /** Claim the room's shared bot count. The server may clamp or silently

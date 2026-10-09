@@ -28,6 +28,7 @@
     "./skytraffic": "./src/skytraffic.ts",
     "./protocol": "./src/protocol.ts",
     "./net": "./src/net.ts",
+    "./wreck": "./src/wreck.ts",
     "./cityevents": "./src/cityevents.ts",
     "./courses": "./src/courses.ts"
   }

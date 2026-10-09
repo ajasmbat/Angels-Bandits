@@ -285,6 +285,14 @@ const IN_CLOUD_FOG_COLOR = 0x3a3c52;
  * RAIN_DARKEN (darken-only, so the horizon seam stays invisible). */
 const RAIN_FOG_NEAR = 70;
 const RAIN_HAZE_EXTRA = 0.6;
+/** D3: inside a collapse's dust cloud (render/dust.ts dustHaze, 0..1) the
+ * haze thickens by up to this and the fog closes to DUST_FOG_NEAR/FAR, m —
+ * a sight-blocking brown-out that is the same on every quality tier. */
+const DUST_HAZE_EXTRA = 6;
+const DUST_FOG_NEAR = 4;
+const DUST_FOG_FAR = 140;
+/** Concrete dust: the fog colour the brown-out pulls toward (sRGB). */
+const DUST_FOG_COLOR = 0x4a443e;
 const RAIN_DARKEN = 0.15;
 
 /** The slice of the shared weather (common/src/weather.ts) the sky reads. */
@@ -325,6 +333,7 @@ export class StormRenderer {
   private flashAt = Number.NEGATIVE_INFINITY;
   private readonly fogBase = new THREE.Color(DUSK.sky);
   private readonly cloudFogColor = new THREE.Color(IN_CLOUD_FOG_COLOR);
+  private readonly dustFogColor = new THREE.Color(DUST_FOG_COLOR);
   private readonly flashColor = new THREE.Color(FLASH_COLOR);
   private readonly scratch = new THREE.Color();
 
@@ -473,22 +482,33 @@ export class StormRenderer {
     cameraY: number,
     nowMs: number,
     wx: SkyWeather = DRY_SKY,
+    dust = 0,
   ): { tint: THREE.Color; domeVisible: boolean } {
     const f = this.flashLevel(nowMs) * wx.flash;
     // 0 below the deck → 1 fully inside; a 30 m ramp kills boundary flicker.
     const inK = Math.min(1, Math.max(0, (cameraY - CLOUD_BASE) / 30));
     this.flashLight.intensity = f * FLASH_PEAK * (1 + inK * 0.6);
-    HAZE_WEATHER.x = RAIN_HAZE_EXTRA * wx.haze;
+    HAZE_WEATHER.x = RAIN_HAZE_EXTRA * wx.haze + DUST_HAZE_EXTRA * dust;
     const dim = 1 - RAIN_DARKEN * wx.haze;
     if (scene.fog instanceof THREE.Fog) {
       const near = FOG_NEAR + (RAIN_FOG_NEAR - FOG_NEAR) * wx.haze;
-      scene.fog.near = near + (IN_CLOUD_FOG_NEAR - near) * inK;
-      scene.fog.far = FOG_DISTANCE + (IN_CLOUD_FOG_FAR - FOG_DISTANCE) * inK;
+      const clearNear = near + (IN_CLOUD_FOG_NEAR - near) * inK;
+      const clearFar = FOG_DISTANCE + (IN_CLOUD_FOG_FAR - FOG_DISTANCE) * inK;
+      // D3 dust only ever closes the fog in (never past the in-cloud soup).
+      scene.fog.near = Math.min(
+        clearNear,
+        clearNear + (DUST_FOG_NEAR - clearNear) * dust,
+      );
+      scene.fog.far = Math.min(
+        clearFar,
+        clearFar + (DUST_FOG_FAR - clearFar) * dust,
+      );
       scene.fog.color
         .copy(this.fogBase)
         .multiplyScalar(dim)
         .lerp(this.cloudFogColor, inK * 0.85)
-        .lerp(this.flashColor, f * FLASH_TINT * (1 + inK));
+        .lerp(this.flashColor, f * FLASH_TINT * (1 + inK))
+        .lerp(this.dustFogColor, dust * 0.8);
       if (scene.background instanceof THREE.Color) {
         scene.background.copy(scene.fog.color);
       }

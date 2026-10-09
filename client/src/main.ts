@@ -123,7 +123,11 @@ import {
   threatCallout,
   threatOnSix,
 } from "./game/callouts";
-import { ChaseCamera } from "./game/camera";
+import {
+  ChaseCamera,
+  collapseShakeAmount,
+  collapseShakeOffset,
+} from "./game/camera";
 import { detectCrash, touchesSolid } from "./game/collision";
 import {
   type CornerWorld,
@@ -188,6 +192,7 @@ import { PICKUP_TAXIS } from "./render/citylife";
 import { CityLife } from "./render/citylife-render";
 import { ConstructionSparks } from "./render/construction";
 import { DroneShowRenderer } from "./render/drones";
+import { DustClouds, dustHaze } from "./render/dust";
 import { FacadeDetailRenderer } from "./render/facade-detail";
 import { FacadeGarnishRenderer } from "./render/facade-garnish";
 import { FacadeLifeRenderer } from "./render/facade-life";
@@ -652,6 +657,9 @@ scene.add(city.mesh);
 // grown by every `chunks` batch since, booting or not), now drive this
 // city's solids — the crash check, sight lines and the renderer alike.
 city.attachDamage(socket.cityDamage);
+// D3: and the room's collapses (debris falling and landed), likewise held by
+// the socket since the welcome — bound to the same buildings.
+city.attachCollapses(socket.collapses);
 // Roof clutter + landmark beacons dress the same shared Building[] (V2).
 const roofClutter = new RoofClutterRenderer(city.cityBuildings);
 scene.add(roofClutter.group);
@@ -708,10 +716,16 @@ scene.add(headlights.cones, headlights.pools);
 // can hit — and nothing about them is ever streamed.
 // L10: plus this room's news heli — the server authors its route from kill
 // sites; the welcome hands a late joiner the current one, `newsHeli` the rest.
-const moverField = withNewsHeli(
-  generateMovers(welcome.seed, city.cityBuildings),
-  welcome.seed,
-);
+// D3: plus the room's collapses — falling debris and rubble are movers too
+// (pure in each event and the clock), so the crash check, the camera arm
+// and the corner-speed probe all collide with exactly what is drawn.
+const moverField = {
+  ...withNewsHeli(
+    generateMovers(welcome.seed, city.cityBuildings),
+    welcome.seed,
+  ),
+  collapses: socket.collapses,
+};
 if (moverField.news && welcome.newsHeli) {
   moverField.news.target = welcome.newsHeli.target;
   moverField.news.prev = welcome.newsHeli.prev;
@@ -889,6 +903,26 @@ const shieldSparks = new Sparks(0xbfe8ff);
 scene.add(shieldSparks.points);
 const smoke = new SmokeTrails();
 scene.add(smoke.points);
+// D3: collapse dust clouds (one Points; added at boot so prewarm compiles it).
+const dust = new DustClouds();
+scene.add(dust.points);
+socket.events.onCollapse = (c) => {
+  const debris = socket.collapses.list.find((d) => d.id === c.id);
+  if (!debris) return;
+  const site = {
+    x: debris.x + (debris.restBounds.x0 + debris.restBounds.x1) / 2,
+    y: 20,
+    z: debris.z + (debris.restBounds.z0 + debris.restBounds.z1) / 2,
+  };
+  audio.collapse(
+    site,
+    flight.pos,
+    flight.yaw,
+    debris.endMs / 1000 - 0.8,
+    debris.n / 120,
+  );
+  music.noteCombat(performance.now());
+};
 // D1 bullet impacts: sparks, dust, chips, glass and burning patches in ONE
 // Points draw; shattered panes, bullet holes and scorch in the building
 // shader's damage map (city.damage). Cosmetic only — nothing here collides.
@@ -1829,6 +1863,7 @@ const cpuFrames = new FrameMeter(WINDOW_FRAMES * 3);
 function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   qualityTier = tier;
   city.setQuality(tier);
+  dust.setQuality(tier); // D3: puffs only; the haze is the same everywhere
   reactor.setQuality(tier);
   // D1: particle budget and burning patches (counts only).
   impacts.setShare(QUALITY_PROFILES[tier].impacts);
@@ -3227,7 +3262,7 @@ const frame = (now: number): void => {
       : wrecks.touching(flight.pos, PLAYER_RADIUS, renderMs);
     if (crashed || wreckHit !== null) {
       // Report and freeze; the server decides credit and the respawn.
-      socket.sendCrash(wreckHit);
+      socket.sendCrash(wreckHit, renderMs);
       enterDeath(null, "crash");
     }
   }
@@ -3286,6 +3321,16 @@ const frame = (now: number): void => {
     // the camera and the airframe from moving in lockstep.
     const camShake = turbulenceOffset(now, flight.pos.y);
     missileShake.addInto(camShake, now); // X1 impacts: display camera only
+    // D3: the ground shakes under a collapse coming down nearby.
+    if (renderMs !== null && socket.collapses.list.length > 0) {
+      const jolt = collapseShakeOffset(
+        collapseShakeAmount(socket.collapses.list, flight.pos, renderMs),
+        now,
+      );
+      camShake.x += jolt.x;
+      camShake.y += jolt.y;
+      camShake.z += jolt.z;
+    }
     const planeShake = turbulenceOffset(now + 537, flight.pos.y);
     chaseMoversMs = renderMs;
     chase.update(camera, flight, dt, freelook, camShake, zoom.z, leadYawRate);
@@ -3452,6 +3497,8 @@ const frame = (now: number): void => {
   }
 
   city.update(chase.position);
+  // D3: debris posed at the render clock — the one the crash check uses.
+  city.updateDebris(chase.position, renderMs);
   // L3 living windows: slow on/off, TV glow, silhouettes and the cleaning
   // crew all run off this one shared-clock uniform (living-windows.ts).
   city.updateLiveWindows(renderMs, now);
@@ -3606,6 +3653,7 @@ const frame = (now: number): void => {
     missileRenderer.update(mf.flying, chase.position, renderMs, now);
   }
   smoke.update(chase.position, now);
+  dust.update(socket.collapses.list, chase.position, renderMs);
   // Storm: consume this frame's scheduled strikes, then age/place the bolts
   // and drive the sky-flash pulse (fog stain + dome tint + violet ambient).
   for (const s of strikeFeed.poll(renderMs)) {
@@ -3635,7 +3683,15 @@ const frame = (now: number): void => {
   setWeatherUniform(wx, wxMs);
   jumbotrons.setWarning(wxMs === null ? null : stormWarning(wx)); // S1 banner
   rain.update(wx, wxMs, camera.position, dt);
-  const sky = storm.atmosphere(scene, chase.position.y, now, wx);
+  const sky = storm.atmosphere(
+    scene,
+    chase.position.y,
+    now,
+    wx,
+    renderMs === null
+      ? 0
+      : dustHaze(socket.collapses.list, chase.position, renderMs),
+  );
   skyDome.tint(sky.tint);
   skyDome.mesh.visible = sky.domeVisible;
   explosions.update(chase.position, now, dt);

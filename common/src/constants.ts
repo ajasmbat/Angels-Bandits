@@ -635,6 +635,52 @@ export const RUBBLE_MAX_HEIGHT = 4;
  * distance of its centre, m; further in, it makes none. */
 export const RUBBLE_FALL_RANGE = 30;
 
+// --- D3 collapses (common/src/city/collapse.ts) ---
+/** A floor band with fewer than this share of its chunks standing can no
+ * longer carry what is above it: everything over it collapses. */
+export const COLLAPSE_BAND_MIN = 0.5;
+/** Survivors of a failed band this close to its centre (share of the band's
+ * width/depth) carry the section straight down — a pancake; further off
+ * centre it topples toward the missing side. */
+export const COLLAPSE_SYMMETRY = 0.12;
+/** Gravity for falling debris, m/s². */
+export const COLLAPSE_GRAVITY = 9.81;
+/** The beat between the collapse event and the first movement, ms: the
+ * rumble starts, dust sifts down, and a pilot has a moment to pull away. */
+export const COLLAPSE_LEAD_MS = 600;
+/** Pancake: each floor band above the lowest starts this much later, ms, so
+ * floors drop in a cascade and none overtakes the one under it. */
+export const COLLAPSE_BAND_STAGGER_MS = 90;
+/** Pancake: largest tilt a falling chunk reaches, rad (under π/4, so it
+ * always comes to rest flat). */
+export const COLLAPSE_PANCAKE_TILT = 0.3;
+/** Topple: angular acceleration = K · g / section height (a rod tipping
+ * over its base edge), clamped to [MIN, MAX] rad/s². */
+export const COLLAPSE_TOPPLE_K = 1.5;
+export const COLLAPSE_TOPPLE_ALPHA_MIN = 0.08;
+export const COLLAPSE_TOPPLE_ALPHA_MAX = 1.5;
+/** Topple: tilt at which the section breaks into separate chunks, rad. */
+export const COLLAPSE_TOPPLE_BREAK = 0.9;
+/** A landed chunk squashes into a rubble slab this share of its height
+ * (≈1.4 m for a 12 m floor band) over COLLAPSE_SQUASH_MS. */
+export const COLLAPSE_RUBBLE_RATIO = 0.12;
+export const COLLAPSE_SQUASH_MS = 400;
+/** No new collapse starts once this share of the room's chunks is broken or
+ * fallen (a bound on debris, the welcome and the renderer). */
+export const COLLAPSE_CAP = 0.5;
+/** At most this many collapse events start per room per tick; buildings
+ * left over are evaluated on the next one. */
+export const COLLAPSE_TICK_LIMIT = 4;
+/** Bots refuse to fly into an active collapse's zone until this long after
+ * its last chunk has come to rest, ms. */
+export const COLLAPSE_ZONE_TAIL_MS = 1500;
+/** Kill credit: a crash counts as crushed by falling debris when debris is
+ * within this much more than PLAYER_RADIUS of the on-record pose at the
+ * claimed crash time, m (the pose is up to POSE_AGE_MAX_MS old). */
+export const COLLAPSE_CREDIT_SLACK = 8;
+/** The dust cloud's life, ms (sight-blocking haze in the canyon). */
+export const COLLAPSE_DUST_MS = 20_000;
+
 // --- D4 downed planes (common/src/wreck.ts) ---
 /** A shot-down plane's wreck: the sphere it falls as, m — solid while it
  * falls, and what its sweep stops on. */

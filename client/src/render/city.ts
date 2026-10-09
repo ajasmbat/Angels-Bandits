@@ -12,22 +12,41 @@
 // child InstancedMesh with the same material (so the same program). Each
 // damaged building owns a slot range there, rewritten only when its damage
 // version or its torus image changes.
+//
+// D3: collapse debris is a third InstancedMesh, again a child with the same
+// material: a falling chunk keeps the facade it fell from (the hand-off from
+// the damaged mesh is seamless) and paints as broken concrete once it lands.
+// Each collapse owns a slot range, posed every frame by the shared
+// piecePose while anything in it moves — the pose the crash check collides
+// with — and left alone once it is all rubble (until its image flips).
 
 import {
   type Building,
+  CUT_RUBBLE,
   type CityDamage,
   type HoleSpan,
   type SolidBox,
   baseSolids,
+  chunkMask,
   cityHoles,
   generateCity,
   solids,
 } from "@angels-bandits/common/city";
 import {
+  type Collapse,
+  type CollapseField,
+  blankPose,
+  piecePose,
+} from "@angels-bandits/common/city/collapse";
+import {
   type CityIndex,
   buildCityIndex,
 } from "@angels-bandits/common/collision";
-import { LANDMARK_HEIGHT, WORLD_SIZE } from "@angels-bandits/common/constants";
+import {
+  COLLAPSE_CAP,
+  LANDMARK_HEIGHT,
+  WORLD_SIZE,
+} from "@angels-bandits/common/constants";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { FacadeArchetype, archetypeFor } from "./archetypes";
@@ -39,6 +58,7 @@ import {
   faceSlotsFor,
   tierKey,
 } from "./damage-map";
+import { pieceMatrix } from "./debris";
 import {
   type CrewSlot,
   LIVE_ON_UNIFORM,
@@ -295,6 +315,30 @@ export class CityRenderer {
   private readonly dirtyAttr: number[] = [];
   private readonly dirtyMat: number[] = [];
 
+  // --- D3: collapse debris ---
+  private collapseField: CollapseField | null = null;
+  private collapseVersion = -1;
+  private debris: THREE.InstancedMesh | null = null;
+  private bArrays: InstanceArrays | null = null;
+  private bCapacity = 0;
+  /** The collapses drawn, in field order, and each one's first slot. */
+  private readonly drawn: Collapse[] = [];
+  private readonly drawnStart: number[] = [];
+  /** Each collapse's drawn torus image, and whether it was last written
+   * fully at rest there (nothing left to move). */
+  private readonly drawnKx: number[] = [];
+  private readonly drawnKz: number[] = [];
+  private readonly drawnSettled: boolean[] = [];
+  /** Per slot: 1 while drawn as rubble (its cut word says CUT_RUBBLE). */
+  private bRest = new Uint8Array(0);
+  private bNext = 0;
+  /** Slots whose matrices / attributes changed this frame: [lo, hi). */
+  private bMatLo = Number.POSITIVE_INFINITY;
+  private bMatHi = 0;
+  private bAttrLo = Number.POSITIVE_INFINITY;
+  private bAttrHi = 0;
+  private readonly bPose = blankPose();
+
   constructor(seed: number) {
     this.buildings = generateCity(seed);
     this.buildings.forEach((b, i) => this.buildingIndex.set(b, i));
@@ -422,6 +466,218 @@ export class CityRenderer {
     damage.bind(this.buildings);
     this.cityDamage = damage;
     this.damageVersion = -1;
+  }
+
+  /**
+   * D3: draw `field`'s debris — the GameSocket's collapse records. Binds it
+   * to this city's buildings (the same array collision reads) and sizes the
+   * debris mesh once for everything COLLAPSE_CAP lets fall.
+   */
+  attachCollapses(field: CollapseField): void {
+    field.bind(this.buildings);
+    this.collapseField = field;
+    this.collapseVersion = -1;
+    let chunks = 0;
+    for (const b of this.buildings) {
+      for (const mask of chunkMask(b)) for (const v of mask) chunks += v;
+    }
+    // A hole can split a chunk into up to three pieces; most are one.
+    this.growDebris(Math.ceil(chunks * COLLAPSE_CAP * 1.25) + 64);
+  }
+
+  /**
+   * D3: pose every collapse's debris at the server time `serverMs` — the
+   * render clock the crash check uses (null: no clock yet, so the rest
+   * state, which is what collides then too) — at its torus image nearest
+   * the camera.
+   */
+  updateDebris(cameraPos: Vec3, serverMs: number | null): void {
+    const field = this.collapseField;
+    const debris = this.debris;
+    if (!field || !debris) return;
+    if (field.version !== this.collapseVersion) {
+      this.collapseVersion = field.version;
+      this.syncCollapses(field);
+    }
+    const t = serverMs ?? Number.POSITIVE_INFINITY;
+    const subOff = debris.geometry.getAttribute(
+      "aSubOff",
+    ) as THREE.BufferAttribute;
+    for (let k = 0; k < this.drawn.length; k++) {
+      const c = this.drawn[k] as Collapse;
+      const kx = imageIndex(cameraPos.x, c.x);
+      const kz = imageIndex(cameraPos.z, c.z);
+      const settled = t >= c.t0 + c.endMs;
+      if (
+        settled &&
+        this.drawnSettled[k] &&
+        kx === this.drawnKx[k] &&
+        kz === this.drawnKz[k]
+      ) {
+        continue;
+      }
+      this.drawnKx[k] = kx;
+      this.drawnKz[k] = kz;
+      this.drawnSettled[k] = settled;
+      const start = this.drawnStart[k] as number;
+      const ox = c.x + kx * WORLD_SIZE;
+      const oz = c.z + kz * WORLD_SIZE;
+      for (let i = 0; i < c.n; i++) {
+        const pose = piecePose(c, i, t, this.bPose);
+        debris.setMatrixAt(start + i, pieceMatrix(pose, ox, oz, this.scratch));
+        const rest = pose.rest ? 1 : 0;
+        if (this.bRest[start + i] !== rest) {
+          this.bRest[start + i] = rest;
+          subOff.setW(start + i, rest ? CUT_RUBBLE : (c.cut[i] as number));
+          this.bAttrLo = Math.min(this.bAttrLo, start + i);
+          this.bAttrHi = Math.max(this.bAttrHi, start + i + 1);
+        }
+      }
+      this.bMatLo = Math.min(this.bMatLo, start);
+      this.bMatHi = Math.max(this.bMatHi, start + c.n);
+    }
+    this.flushDebris();
+  }
+
+  /** Bring the drawn collapses in line with the field: append new ones; on
+   * a reset (or any other change to what is already drawn) start over. */
+  private syncCollapses(field: CollapseField): void {
+    const list = field.list;
+    let same = list.length >= this.drawn.length;
+    for (let k = 0; same && k < this.drawn.length; k++) {
+      same = list[k] === this.drawn[k];
+    }
+    if (!same) {
+      const debris = this.debris as THREE.InstancedMesh;
+      for (let i = 0; i < this.bNext; i++) debris.setMatrixAt(i, HIDDEN);
+      this.bMatLo = 0;
+      this.bMatHi = Math.max(this.bMatHi, this.bNext);
+      this.bRest.fill(0);
+      this.bNext = 0;
+      this.drawn.length = 0;
+      this.drawnStart.length = 0;
+      this.drawnKx.length = 0;
+      this.drawnKz.length = 0;
+      this.drawnSettled.length = 0;
+    }
+    for (let k = this.drawn.length; k < list.length; k++) {
+      const c = list[k] as Collapse;
+      if (this.bNext + c.n > this.bCapacity) {
+        this.growDebris(Math.max(this.bCapacity * 2, this.bNext + c.n));
+      }
+      this.drawn.push(c);
+      this.drawnStart.push(this.bNext);
+      this.drawnKx.push(UNSET);
+      this.drawnKz.push(UNSET);
+      this.drawnSettled.push(false);
+      this.writeCollapse(c, this.bNext);
+      this.bNext += c.n;
+    }
+    (this.debris as THREE.InstancedMesh).count = this.bNext;
+  }
+
+  /** Write collapse `c`'s per-piece attributes from slot `start`: each piece
+   * as the solid it was in its building (its tier frame, its facade). */
+  private writeCollapse(c: Collapse, start: number): void {
+    const arrays = this.bArrays as InstanceArrays;
+    const building = this.buildings[c.building] as Building;
+    const look = this.looks[c.building] as BuildingLook;
+    for (let i = 0; i < c.n; i++) {
+      const hy = c.hy[i] as number;
+      const solid: SolidBox = {
+        dx: c.ox[i] as number,
+        dz: c.oz[i] as number,
+        baseY: (c.oy[i] as number) - hy,
+        width: 2 * (c.hx[i] as number),
+        height: 2 * hy,
+        depth: 2 * (c.hz[i] as number),
+        tierIndex: c.tier[i] as number,
+        cut: c.cut[i] as number,
+      };
+      const word = this.damage.packedWord(c.building, solid.tierIndex);
+      writeSolid(arrays, start + i, building, solid, look, word);
+      this.bRest[start + i] = 0;
+    }
+    this.bAttrLo = Math.min(this.bAttrLo, start);
+    this.bAttrHi = Math.max(this.bAttrHi, start + c.n);
+  }
+
+  /** A debris mesh of `capacity` slots, every drawn collapse rewritten. */
+  private growDebris(capacity: number): void {
+    this.bCapacity = capacity;
+    this.bArrays = allocArrays(capacity);
+    const rest = new Uint8Array(capacity);
+    rest.set(this.bRest.subarray(0, Math.min(this.bRest.length, capacity)));
+    this.bRest = rest;
+    if (this.debris) {
+      this.debris.removeFromParent();
+      this.debris.geometry.dispose();
+    }
+    const mesh = cityMesh(this.material, this.bArrays, capacity);
+    for (let i = 0; i < capacity; i++) mesh.setMatrixAt(i, HIDDEN);
+    mesh.count = this.bNext;
+    this.mesh.add(mesh);
+    this.debris = mesh;
+    const subOff = mesh.geometry.getAttribute(
+      "aSubOff",
+    ) as THREE.BufferAttribute;
+    this.drawn.forEach((c, k) => {
+      const start = this.drawnStart[k] as number;
+      this.writeCollapse(c, start);
+      for (let i = 0; i < c.n; i++) {
+        if (this.bRest[start + i]) subOff.setW(start + i, CUT_RUBBLE);
+      }
+      this.drawnKx[k] = UNSET;
+    });
+    this.bMatLo = this.bAttrLo = 0;
+    this.bMatHi = this.bAttrHi = capacity;
+  }
+
+  /** Upload this frame's debris changes: one range per kind. */
+  private flushDebris(): void {
+    const debris = this.debris;
+    if (!debris) return;
+    const upload = (
+      attr: THREE.BufferAttribute | THREE.InterleavedBufferAttribute | null,
+      lo: number,
+      hi: number,
+    ) => {
+      if (!attr || !(attr instanceof THREE.BufferAttribute)) return;
+      attr.clearUpdateRanges();
+      attr.addUpdateRange(lo * attr.itemSize, (hi - lo) * attr.itemSize);
+      attr.needsUpdate = true;
+    };
+    if (this.bAttrHi > this.bAttrLo) {
+      const geo = debris.geometry;
+      for (const name of [
+        "aArchetype",
+        "aRoof",
+        "aLed",
+        "aCrown",
+        "aSubOff",
+        "aParent",
+        "aHole",
+        "aCrew",
+      ]) {
+        upload(geo.getAttribute(name), this.bAttrLo, this.bAttrHi);
+      }
+      upload(debris.instanceColor, this.bAttrLo, this.bAttrHi);
+    }
+    if (this.bMatHi > this.bMatLo) {
+      upload(debris.instanceMatrix, this.bMatLo, this.bMatHi);
+    }
+    this.bMatLo = this.bAttrLo = Number.POSITIVE_INFINITY;
+    this.bMatHi = this.bAttrHi = 0;
+  }
+
+  /** QA/tests: the debris mesh, and collapse `id`'s first slot (−1: not
+   * drawn). */
+  debrisSlots(id: number): { mesh: THREE.InstancedMesh | null; start: number } {
+    const k = this.drawn.findIndex((c) => c.id === id);
+    return {
+      mesh: this.debris,
+      start: k < 0 ? -1 : (this.drawnStart[k] as number),
+    };
   }
 
   /** Place every solid at its building's torus image nearest the camera —

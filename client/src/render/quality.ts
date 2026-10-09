@@ -140,6 +140,10 @@ export interface QualityProfile {
    * destruction exposed. Off = flat concrete slabs and dark rooms, by a
    * uniform. The broken geometry itself is solid and identical everywhere. */
   destructionDetail: boolean;
+  /** D3 collapse dust: share of each cloud's puffs (sprites grow to cover
+   * the same air). The sight-blocking haze and the debris itself — solid —
+   * are identical on every tier. */
+  collapseDust: number;
   /** D4 falling wrecks: share of the flames and smoke their trail and their
    * landing fire emit (into the D1 particle pool). The wreck itself, its
    * explosion and the street scorch are on every tier — the wreck is solid. */
@@ -178,6 +182,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     impacts: 1,
     missileDebris: 1,
     destructionDetail: true,
+    collapseDust: 1,
     wreckFire: 1,
   },
   medium: {
@@ -211,6 +216,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     impacts: 0.75,
     missileDebris: 0.75,
     destructionDetail: true,
+    collapseDust: 0.75,
     wreckFire: 0.75,
   },
   low: {
@@ -244,6 +250,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     impacts: 0.5,
     missileDebris: 0.5,
     destructionDetail: false,
+    collapseDust: 0.5,
     wreckFire: 0.5,
   },
   mobile: {
@@ -277,6 +284,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     impacts: 0.25,
     missileDebris: 0.3,
     destructionDetail: false,
+    collapseDust: 0.3,
     wreckFire: 0.35,
   },
 };
@@ -641,6 +649,22 @@ export const FEATURE_TIERS: readonly {
     low: "off",
     mobile: "off",
     note: "instance count only; HVAC, ducts, solar, davits, lamps stay",
+  },
+  {
+    feature: "D3 collapse debris and rubble",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "solid: the crash check, the camera arm and the bots collide with every falling chunk and rubble slab",
+  },
+  {
+    feature: "D3 collapse dust — puffs",
+    high: "full",
+    medium: "reduced",
+    low: "reduced",
+    mobile: "reduced",
+    note: "40 / 30 / 20 / 12 puffs per cloud, each bigger to cover the same air; the sight-blocking haze is the same on every tier",
   },
   {
     feature: "D1 bullet impacts — sparks, dust, glass, decals, burning patches",

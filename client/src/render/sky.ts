@@ -44,6 +44,12 @@ import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { AB_AA_GLSL } from "./aa-glsl";
 import { applyPointFloor } from "./point-floor";
+import {
+  REFLECTION_PARS_GLSL,
+  REFL_PUDDLE_CAM_Y,
+  REFL_PUDDLE_LOD,
+  bindReflectionUniforms,
+} from "./reflections";
 import { RENDER_ORDER } from "./render-order";
 import { RIVER_GROUND_PARS } from "./river";
 import { SIGN_PALETTE } from "./signage";
@@ -903,13 +909,15 @@ export class GroundPlane {
     const material = new THREE.MeshStandardMaterial({ roughness: 1 });
     // Three keys its program cache on onBeforeCompile.toString(); an explicit
     // key keeps this patch from colliding with the other patched materials.
-    material.customProgramCacheKey = () => "ab-ground-paint-g1";
+    material.customProgramCacheKey = () => "ab-ground-paint-g1-s6-refl";
     material.onBeforeCompile = (shader) => {
       shader.uniforms.uGroundOrigin = { value: this.origin };
       // L4: the shared weather uniform (render/weather.ts), by reference.
       shader.uniforms.uWeather = WEATHER_UNIFORM;
       // G1: the quality tier's street-paint switch, shared by reference.
       shader.uniforms.uStreetPaint = STREET_PAINT_UNIFORM;
+      // S6: the reflection probe, by reference (puddles and ponds).
+      bindReflectionUniforms(shader.uniforms);
       shader.vertexShader = shader.vertexShader
         .replace(
           "#include <common>",
@@ -922,7 +930,7 @@ export class GroundPlane {
       shader.fragmentShader = shader.fragmentShader
         .replace(
           "#include <common>",
-          `#include <common>\n${GROUND_FRAGMENT_PARS}${WEATHER_PARS_GLSL}`,
+          `#include <common>\n${GROUND_FRAGMENT_PARS}${WEATHER_PARS_GLSL}${REFLECTION_PARS_GLSL}`,
         )
         .replace(
           "vec4 diffuseColor = vec4( diffuse, opacity );",
@@ -944,8 +952,25 @@ roughnessFactor = mix(roughnessFactor, mix(${ROADWAY_ROUGHNESS}, ${POND_ROUGHNES
           // way a wet street lights up toward the horizon.
           `#include <emissivemap_fragment>
 float abFres = 0.02 + 0.98 * pow(1.0 - saturate(dot(normal, normalize(vViewPosition))), 5.0);
+// S6: puddles and ponds mirror the reflection probe (reflections.ts) where
+// a camera-centred probe agrees with the street — the reflected ray well
+// above the horizon, the camera low enough that the puddle is not just sky —
+// and hand back to the faked sheen everywhere else.
+float abRfK = 0.0;
+vec3 abRfD = vec3(0.0, 1.0, 0.0);
+if (uReflOn > 0.5) {
+  abRfK = max(abPud, abWater) * abNear
+    * (1.0 - smoothstep(${glslNum(REFL_PUDDLE_CAM_Y.near)}, ${glslNum(REFL_PUDDLE_CAM_Y.far)}, cameraPosition.y));
+  if (abRfK > 0.0) {
+    abRfD = inverseTransformDirection(reflect(normalize(-vViewPosition), normal), viewMatrix);
+    abRfK *= abReflElev(abRfD);
+  }
+}
+if (abRfK > 0.0) {
+  totalEmissiveRadiance += abRefl(abRfD, ${glslNum(REFL_PUDDLE_LOD)}) * (abFres * abRfK);
+}
 totalEmissiveRadiance += abEmissive
-  + ${SHEEN_COLOR} * (${SHEEN_GAIN} * abFres * abWet)
+  + ${SHEEN_COLOR} * (${SHEEN_GAIN} * abFres * abWet * (1.0 - abRfK))
   + abNeon * (0.5 + 0.5 * abWet) * (0.55 + 0.45 * abFres);
 if (abWater > 0.5) {
   // Faked moon reflection: the view ray mirrored off a gently rippled pond,

@@ -68,6 +68,7 @@ import {
 } from "./living-windows";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { type RoofStyle, roofStyleFor } from "./roofs";
+import { pushUpdateRange } from "./update-range";
 import { WIN_INTERIOR_UNIFORM, packRun } from "./window-pattern";
 import { ImageCache, InstanceUploads, imageIndex } from "./wrapPlacement";
 
@@ -261,6 +262,30 @@ const RANGE_SLACK = 6;
 /** Past this many dirty ranges a frame uploads the used prefix once. */
 const MAX_DIRTY = 32;
 
+/** The per-instance attributes the damaged and debris meshes upload. */
+const INSTANCE_ATTRS = [
+  "aArchetype",
+  "aRoof",
+  "aLed",
+  "aCrown",
+  "aSubOff",
+  "aParent",
+  "aHole",
+  "aCrew",
+] as const;
+
+/** Upload [lo, hi) instances of `attr` this frame (D6: a pooled range). */
+function uploadRange(
+  attr: THREE.BufferAttribute | THREE.InterleavedBufferAttribute | null,
+  lo: number,
+  hi: number,
+): void {
+  if (!attr || !(attr instanceof THREE.BufferAttribute)) return;
+  attr.clearUpdateRanges();
+  pushUpdateRange(attr, lo * attr.itemSize, (hi - lo) * attr.itemSize);
+  attr.needsUpdate = true;
+}
+
 export class CityRenderer {
   readonly mesh: THREE.InstancedMesh;
   private readonly buildings: Building[];
@@ -322,6 +347,9 @@ export class CityRenderer {
   private debris: THREE.InstancedMesh | null = null;
   private bArrays: InstanceArrays | null = null;
   private bCapacity = 0;
+  /** D6: the debris mesh's size at attach — the derived bound (every chunk
+   * COLLAPSE_CAP lets fall, +25 % for hole-split pieces, +64). */
+  private bBootCapacity = 0;
   /** The collapses drawn, in field order, and each one's first slot. */
   private readonly drawn: Collapse[] = [];
   private readonly drawnStart: number[] = [];
@@ -483,7 +511,8 @@ export class CityRenderer {
       for (const mask of chunkMask(b)) for (const v of mask) chunks += v;
     }
     // A hole can split a chunk into up to three pieces; most are one.
-    this.growDebris(Math.ceil(chunks * COLLAPSE_CAP * 1.25) + 64);
+    this.bBootCapacity = Math.ceil(chunks * COLLAPSE_CAP * 1.25) + 64;
+    this.growDebris(this.bBootCapacity);
   }
 
   /**
@@ -639,41 +668,68 @@ export class CityRenderer {
     this.bMatHi = this.bAttrHi = capacity;
   }
 
-  /** Upload this frame's debris changes: one range per kind. */
+  /** Upload this frame's debris changes: one range per kind. D6: no
+   * closure, name list or range object built per frame. */
   private flushDebris(): void {
     const debris = this.debris;
     if (!debris) return;
-    const upload = (
-      attr: THREE.BufferAttribute | THREE.InterleavedBufferAttribute | null,
-      lo: number,
-      hi: number,
-    ) => {
-      if (!attr || !(attr instanceof THREE.BufferAttribute)) return;
-      attr.clearUpdateRanges();
-      attr.addUpdateRange(lo * attr.itemSize, (hi - lo) * attr.itemSize);
-      attr.needsUpdate = true;
-    };
     if (this.bAttrHi > this.bAttrLo) {
       const geo = debris.geometry;
-      for (const name of [
-        "aArchetype",
-        "aRoof",
-        "aLed",
-        "aCrown",
-        "aSubOff",
-        "aParent",
-        "aHole",
-        "aCrew",
-      ]) {
-        upload(geo.getAttribute(name), this.bAttrLo, this.bAttrHi);
+      for (let n = 0; n < INSTANCE_ATTRS.length; n++) {
+        uploadRange(
+          geo.getAttribute(INSTANCE_ATTRS[n] as string),
+          this.bAttrLo,
+          this.bAttrHi,
+        );
       }
-      upload(debris.instanceColor, this.bAttrLo, this.bAttrHi);
+      uploadRange(debris.instanceColor, this.bAttrLo, this.bAttrHi);
     }
     if (this.bMatHi > this.bMatLo) {
-      upload(debris.instanceMatrix, this.bMatLo, this.bMatHi);
+      uploadRange(debris.instanceMatrix, this.bMatLo, this.bMatHi);
     }
     this.bMatLo = this.bAttrLo = Number.POSITIVE_INFINITY;
     this.bMatHi = this.bAttrHi = 0;
+  }
+
+  /**
+   * D6 perf/QA: what destruction costs this renderer right now — the damaged
+   * mesh's live boxes (`used`), the slots it draws (`slots`, hidden spares
+   * and abandoned ranges included) and its size; the debris mesh's drawn
+   * pieces, size and boot size (a size past boot means it grew: a buffer
+   * reallocation mid-game); and how many collapses lay fully at rest when
+   * last posed.
+   */
+  get destructionStats(): {
+    damagedBuildings: number;
+    damagedUsed: number;
+    damagedSlots: number;
+    damagedCapacity: number;
+    debrisPieces: number;
+    debrisCapacity: number;
+    debrisBootCapacity: number;
+    collapses: number;
+    settled: number;
+  } {
+    let used = 0;
+    for (const b of this.damagedList) used += this.slotUsed[b] as number;
+    let collapses = 0;
+    let settled = 0;
+    for (let k = 0; k < this.drawn.length; k++) {
+      if ((this.drawn[k] as Collapse).kind !== KIND_BUILDING) continue;
+      collapses++;
+      if (this.drawnSettled[k]) settled++;
+    }
+    return {
+      damagedBuildings: this.damagedList.length,
+      damagedUsed: used,
+      damagedSlots: this.damaged.count,
+      damagedCapacity: this.dCapacity,
+      debrisPieces: this.debris?.count ?? 0,
+      debrisCapacity: this.bCapacity,
+      debrisBootCapacity: this.bBootCapacity,
+      collapses,
+      settled,
+    };
   }
 
   /** QA/tests: the debris mesh, and collapse `id`'s first slot (−1: not
@@ -749,6 +805,10 @@ export class CityRenderer {
       if (v === 0) this.release(b);
       else this.redraw(b);
     }
+    // D6: nothing damaged any more (a D5 rebuild of the last broken
+    // building, a reset): every range is abandoned and hidden, so start the
+    // mesh over instead of drawing those hidden slots until the next grow.
+    if (this.damagedList.length === 0) this.dNext = 0;
     this.damaged.count = this.dNext;
   }
 
@@ -895,37 +955,17 @@ export class CityRenderer {
     ) {
       return; // the common frame: nothing broke, nothing flipped
     }
+    // D6: no attribute list, closure or merged range array per flush.
     const geo = this.damaged.geometry;
-    const attrs = [
-      geo.getAttribute("aArchetype"),
-      geo.getAttribute("aRoof"),
-      geo.getAttribute("aLed"),
-      geo.getAttribute("aCrown"),
-      geo.getAttribute("aSubOff"),
-      geo.getAttribute("aParent"),
-      geo.getAttribute("aHole"),
-      geo.getAttribute("aCrew"),
-      this.damaged.instanceColor,
-    ];
-    const upload = (
-      attr: THREE.BufferAttribute | THREE.InterleavedBufferAttribute | null,
-      ranges: number[],
-    ) => {
-      if (!attr || !(attr instanceof THREE.BufferAttribute)) return;
-      attr.clearUpdateRanges();
-      if (!this.dirtyAll && ranges.length <= MAX_DIRTY * 2) {
-        for (let r = 0; r < ranges.length; r += 2) {
-          const s = ranges[r] as number;
-          attr.addUpdateRange(
-            s * attr.itemSize,
-            ((ranges[r + 1] as number) - s) * attr.itemSize,
-          );
-        }
-      }
-      attr.needsUpdate = true;
-    };
     if (this.dirtyAll || this.dirtyAttr.length > 0) {
-      for (const attr of attrs) upload(attr, this.dirtyAttr);
+      for (let n = 0; n < INSTANCE_ATTRS.length; n++) {
+        this.uploadDamaged(
+          geo.getAttribute(INSTANCE_ATTRS[n] as string),
+          this.dirtyAttr,
+          null,
+        );
+      }
+      this.uploadDamaged(this.damaged.instanceColor, this.dirtyAttr, null);
     }
     if (
       this.dirtyAll ||
@@ -933,14 +973,46 @@ export class CityRenderer {
       this.dirtyAttr.length > 0
     ) {
       // Attribute rewrites also re-place their slots (dkx was reset).
-      upload(this.damaged.instanceMatrix, [
-        ...this.dirtyMat,
-        ...this.dirtyAttr,
-      ]);
+      this.uploadDamaged(
+        this.damaged.instanceMatrix,
+        this.dirtyMat,
+        this.dirtyAttr,
+      );
     }
     this.dirtyAttr.length = 0;
     this.dirtyMat.length = 0;
     this.dirtyAll = false;
+  }
+
+  /** Upload `ranges` (and `more`) of one damaged-mesh attribute — all of
+   * it after a grow, or when there are too many ranges to be worth it. */
+  private uploadDamaged(
+    attr: THREE.BufferAttribute | THREE.InterleavedBufferAttribute | null,
+    ranges: readonly number[],
+    more: readonly number[] | null,
+  ): void {
+    if (!attr || !(attr instanceof THREE.BufferAttribute)) return;
+    attr.clearUpdateRanges();
+    const n = ranges.length + (more?.length ?? 0);
+    if (!this.dirtyAll && n <= MAX_DIRTY * 2) {
+      for (let r = 0; r < ranges.length; r += 2) {
+        const s = ranges[r] as number;
+        pushUpdateRange(
+          attr,
+          s * attr.itemSize,
+          ((ranges[r + 1] as number) - s) * attr.itemSize,
+        );
+      }
+      for (let r = 0; more && r < more.length; r += 2) {
+        const s = more[r] as number;
+        pushUpdateRange(
+          attr,
+          s * attr.itemSize,
+          ((more[r + 1] as number) - s) * attr.itemSize,
+        );
+      }
+    }
+    attr.needsUpdate = true;
   }
 
   /** QA/tests: the damaged mesh, and building `b`'s slot range in it. */

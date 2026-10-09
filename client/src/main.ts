@@ -93,7 +93,11 @@ import {
   wrapDeltaAxis,
   wrapDistance,
 } from "@angels-bandits/common/world";
-import { type WreckParams, isWreckParams } from "@angels-bandits/common/wreck";
+import {
+  type WreckParams,
+  isWreckParams,
+  wreckImpact,
+} from "@angels-bandits/common/wreck";
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
@@ -143,7 +147,7 @@ import {
 import {
   ChaseCamera,
   collapseShakeAmount,
-  collapseShakeOffset,
+  collapseShakeOffsetInto,
 } from "./game/camera";
 import { detectCrash, touchesSolid } from "./game/collision";
 import {
@@ -193,6 +197,11 @@ import {
 import { speedFov } from "./game/jet-camera";
 import { magnetizeVelocity } from "./game/magnetism";
 import { MissileFeed, MissileShake } from "./game/missile-feed";
+import {
+  QA_ID_BASE,
+  type QaDestructionSpec,
+  stageDestruction,
+} from "./game/qa-destruction";
 import { SessionStats } from "./game/session-stats";
 import { wreckCamView } from "./game/wreck-cam";
 import {
@@ -283,6 +292,7 @@ import {
 } from "./render/quality";
 import { Rain } from "./render/rain";
 import { CityReactor } from "./render/reactions";
+import { ReflectionProbe } from "./render/reflections";
 import { RemotePlanes } from "./render/remotes";
 import {
   MSAA_SAMPLES,
@@ -885,6 +895,17 @@ scene.add(searchlights.mesh);
 // by game/headlines.ts from the room's broadcasts (fed in onDeath/onScores).
 const jumbotrons = new Jumbotrons(city.cityBuildings, renderer);
 scene.add(jumbotrons.mesh);
+// S6 glass reflections: one camera-centred cube probe that glass towers,
+// puddles and the river sample (render/reflections.ts). It mirrors what is
+// worth seeing in glass — the sky dome and moon, the towers, the signs, the
+// screens, the street — drawn into its own layer; the lights join it once
+// the scene is built (below, before the pre-warm).
+const reflections = new ReflectionProbe(renderOpts.reflections, camera.far);
+reflections.tag(skyDome.mesh);
+reflections.tag(city.mesh);
+for (const m of signage.reflectiveMeshes) reflections.tag(m);
+reflections.tag(jumbotrons.mesh);
+reflections.tag(ground.mesh);
 // L10 drone show: points in the shared MoverLights cloud (zero draw calls).
 const droneShow = new DroneShowRenderer(welcome.seed);
 const birds = new Birds(welcome.seed);
@@ -1036,6 +1057,8 @@ const scaffold = new ScaffoldRenderer(city.cityBuildings, qualityTier);
 scene.add(scaffold.mesh);
 /** No warned events (the common frame — no iterator allocated). */
 const NO_EVENTS: readonly DirectorEvent[] = [];
+/** D3/D6: the collapse jolt this frame (reused). */
+const joltScratch = { x: 0, y: 0, z: 0 };
 /** The director alarm's position this frame (reused). */
 const alarmScratch = { x: 0, y: 0, z: 0 };
 // D4: shot-down planes fall as burning wrecks on the server's shared path
@@ -2139,6 +2162,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   courseGhost.setQuality(tier); // S3: MOBILE keeps the rings, drops the ghost
   atmosphere.setQuality(tier); // S5
   tunnels.setQuality(tier); // U4: MOBILE drops the fixtures
+  reflections.setQuality(tier); // S6: faces per frame; Mobile off
   applyPostQuality();
   resLimits = limitsFor(tier);
   if (resAuto) {
@@ -2366,6 +2390,8 @@ declare global {
         jitterMs: number;
         /** The hit-claim range budget the server will judge us against, m. */
         hitRangeBudget: number;
+        /** D6: sessions resumed after a drop since boot (W2). */
+        resumes: number;
       };
       combat: () => {
         alive: boolean;
@@ -2465,6 +2491,11 @@ declare global {
       };
       signage: () => Signage["counts"];
       jumbotron: () => Jumbotrons["stats"];
+      /** S6 QA: the reflection probe — faces and draws this frame, totals,
+       * the program count (must not move when the probe first fills or the
+       * tier switches) and whether every light is in the probe's layer.
+       * `{ refill: true }` rebuilds all six faces on the next frame. */
+      reflections: (opts?: { refill?: boolean }) => ReflectionProbe["stats"];
       /** S4 QA: the room's sky boss as this client holds it — the raid, its
        * HP, whether it flies (or falls) at the render clock, where, the
        * shells in the air and what the renderer drew. */
@@ -2634,6 +2665,38 @@ declare global {
       } | null;
       /** D1 QA: a local blast as if a server death event landed here. */
       qaBlast: (x: number, y: number, z: number) => boolean;
+      /**
+       * D6 perf-harness staging: break, collapse, burn and crash into the
+       * city as the server would (game/qa-destruction.ts), on this client
+       * only — meant for a quiet room (AB_QUIET_CITY). Null (or a spec
+       * without `keep`) first clears everything staged back to intact.
+       */
+      qaDestruction: (spec: QaDestructionSpec | null) => {
+        collapses: number;
+        broken: number;
+        touched: number;
+        blasts: number;
+        wrecks: { id: number; end: number; hit: string }[];
+      } | null;
+      /** D6 perf/QA: what destruction is on this client and what it costs
+       * the renderer — `stagedDraws` counts the draws only destruction
+       * adds (damaged mesh, debris, dust, falling wrecks, scorch,
+       * scaffolding; not the impact pool, which bullets feed too). */
+      destruction: () => CityRenderer["destructionStats"] & {
+        destroyed: number;
+        fallen: number;
+        chunks: number;
+        dustPuffs: number;
+        impactParticles: number;
+        burns: number;
+        wrecks: number;
+        wrecksFalling: number;
+        scorches: number;
+        scaffolds: number;
+        staged: boolean;
+        stagedDraws: number;
+        serverEvents: number;
+      };
       /** QA: pin the L3 living-windows clock (live seconds; null = server). */
       pinLiveWindows: (sec: number | null) => void;
       /**
@@ -2742,6 +2805,33 @@ const settingsPanel = new SettingsPanel(
   settings,
   settingsStore,
 );
+// D6 perf harness: what `__ab.qaDestruction` staged, so a clear takes back
+// exactly that — the destroyed set and collapses (all of them: the harness
+// stages into a quiet room), the facades its blasts marked, its burns and
+// its wrecks.
+const qaStaged = {
+  ids: { next: QA_ID_BASE },
+  buildings: new Set<number>(),
+  burns: new Set<string>(),
+  wrecks: [] as number[],
+  active: false,
+};
+function clearQaDestruction(): void {
+  socket.cityDamage.reset([]);
+  socket.collapses.reset([]);
+  for (const b of qaStaged.buildings) city.damage.clearBuilding(b);
+  const burns = blastLedger.burns;
+  let kept = 0;
+  for (const b of burns) {
+    if (!qaStaged.burns.has(`${b.t}:${b.x}:${b.z}`)) burns[kept++] = b;
+  }
+  burns.length = kept;
+  for (const id of qaStaged.wrecks) wrecks.remove(id);
+  qaStaged.buildings.clear();
+  qaStaged.burns.clear();
+  qaStaged.wrecks.length = 0;
+  qaStaged.active = false;
+}
 window.__ab = {
   state: () => flight,
   teleport: (x, z, y = 300, yaw = 0) => {
@@ -2830,6 +2920,7 @@ window.__ab = {
     interpDelayMs: socket.interpDelayMs,
     jitterMs: socket.jitterMs,
     hitRangeBudget: hitRangeBudgetFor(socket.interpDelayMs),
+    resumes: socket.resumes,
   }),
   combat: () => ({
     alive,
@@ -2953,6 +3044,10 @@ window.__ab = {
   // S1 QA: what the jumbotrons say, the replay pass count/draws, and a
   // canonical view square on screen `i` (feed it to qaCamera).
   jumbotron: () => jumbotrons.stats,
+  reflections: (opts) => {
+    if (opts?.refill) reflections.requestRefill(true);
+    return reflections.stats;
+  },
   boss: () => {
     const t = lastRenderMs;
     const raid = socket.boss.raid;
@@ -3168,6 +3263,86 @@ window.__ab = {
     for (const site of sites) impacts.blast(site, performance.now());
     return sites.length > 0;
   },
+  qaDestruction: (spec) => {
+    if (spec === null || !spec.keep) clearQaDestruction();
+    if (spec === null) return null;
+    const staged = stageDestruction(
+      city.cityBuildings,
+      socket.cityDamage,
+      socket.collapses,
+      spec,
+      qaStaged.ids,
+    );
+    // The socket's arrival listener, as for a server collapse (audio).
+    for (const w of staged.wires) socket.events.onCollapse?.(w);
+    let blasts = 0;
+    for (const b of spec.blasts ?? []) {
+      const sites = blastLedger.ingest([{ kind: "death", ...b }]);
+      for (const site of sites) {
+        qaStaged.buildings.add(site.building);
+        impacts.blast(site, performance.now());
+      }
+      if (sites.length > 0) {
+        qaStaged.burns.add(`${b.t}:${b.x}:${b.z}`);
+        blasts++;
+      }
+    }
+    const crashed: { id: number; end: number; hit: string }[] = [];
+    for (const w of spec.wrecks ?? []) {
+      const path = { p: w.p, v: w.v, t: w.t, spin: w.spin };
+      const hit = wreckImpact(path, {
+        buildings: city.cityBuildings,
+        index: city.cityIndex,
+        movers: moverField,
+      });
+      if (hit.hit !== w.hit) {
+        throw new Error(
+          `qaDestruction: the wreck hits "${hit.hit}", the spec expects "${w.hit}" — the city changed`,
+        );
+      }
+      const id = qaStaged.ids.next++;
+      wrecks.add({ id, ...path, end: hit.end, hit: hit.hit });
+      qaStaged.wrecks.push(id);
+      crashed.push({ id, end: hit.end, hit: hit.hit });
+    }
+    qaStaged.active = true;
+    return {
+      collapses: staged.wires.length,
+      broken: staged.broken,
+      touched: staged.touched.length,
+      blasts,
+      wrecks: crashed,
+    };
+  },
+  destruction: () => {
+    const stats = city.destructionStats;
+    const w = wrecks.drawStats;
+    const dustPuffs = dust.puffCount;
+    const scaffolds = scaffold.mesh.count;
+    const on = (n: number): number => (n > 0 ? 1 : 0);
+    return {
+      ...stats,
+      destroyed: socket.cityDamage.destroyedCount,
+      fallen: socket.cityDamage.fallenCount,
+      chunks: socket.cityDamage.chunkCount,
+      dustPuffs,
+      impactParticles: impacts.liveCount,
+      burns: blastLedger.burns.length,
+      wrecks: w.held,
+      wrecksFalling: w.falling,
+      scorches: w.scorches,
+      scaffolds,
+      staged: qaStaged.active,
+      stagedDraws:
+        on(stats.damagedSlots) +
+        on(stats.debrisPieces) +
+        on(dustPuffs) +
+        on(w.falling) +
+        on(w.scorches) +
+        on(scaffolds),
+      serverEvents: socket.serverDestruction,
+    };
+  },
   pinLiveWindows: (sec) => city.pinLiveWindows(sec),
   qaReactionClock: (serverTimeMs) => {
     qaReactAt = serverTimeMs;
@@ -3277,6 +3452,12 @@ renderer.initTexture(city.damageAtlas); // D1: never a first-hit upload hitch
 // S5: the shafts pass links its program now, whatever the tier or the moon.
 if (shaftsPass) shaftsPass.forceOnce = true;
 await prewarmScene(renderer, scene, camera, composer);
+// S6: every light joins the probe's layer (same light counts → the probe
+// pass resolves the programs just pre-warmed), then the first full fill —
+// behind the boot fade, and it links the cube targets' framebuffers now.
+reflections.tagLights(scene);
+reflections.requestRefill(true);
+reflections.update(renderer, scene, camera);
 socket.sendPing();
 flashFade();
 
@@ -3612,7 +3793,8 @@ const frame = (now: number): void => {
       renderMs !== null &&
       (socket.collapses.list.length > 0 || socket.director.size > 0)
     ) {
-      const jolt = collapseShakeOffset(
+      const jolt = collapseShakeOffsetInto(
+        joltScratch,
         Math.max(
           collapseShakeAmount(socket.collapses.list, flight.pos, renderMs),
           socket.director.size > 0
@@ -4236,6 +4418,11 @@ const frame = (now: number): void => {
   renderer.info.reset();
   gpuTimer?.begin();
   composer.render();
+  // S6: this frame's probe face(s), after the main pass (fresh matrices) and
+  // inside the GPU timer and the draw count, so both report what it costs.
+  // A QA camera that moved refills at once (a capture never starts mid-fade).
+  reflections.observeQaEye(qaView ? qaView.eye : null);
+  reflections.update(renderer, scene, camera);
   gpuTimer?.end();
 
   // Matrices are fresh after the render — project the screen-space UI now.

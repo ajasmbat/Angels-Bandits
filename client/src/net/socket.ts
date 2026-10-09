@@ -22,12 +22,20 @@
 // pre-warm, and a `chunks` batch dropped while booting would leave this
 // client colliding with walls everyone else has shot away for the rest of
 // the session. main.ts binds it to the city once the city exists.
+// D3: so do the room's collapses (`collapses`), for the same reason: a
+// collapse dropped while booting would leave a building standing here that
+// everyone else saw fall.
 //
 // X1: the room's missiles in the air live here too (`missiles`), for the
 // same reason — a strike announced while this client boots must still
 // whistle and land on time. main.ts consumes them on the synced clock.
 
 import { CityDamage, decodeChunkIds } from "@angels-bandits/common/city";
+import {
+  CollapseField,
+  type CollapseWire,
+  collapseChunks,
+} from "@angels-bandits/common/city/collapse";
 import type { CityEvent } from "@angels-bandits/common/cityevents";
 import {
   CONNECT_TIMEOUT_MS,
@@ -78,6 +86,9 @@ export interface GameSocketEvents {
   onNewsHeli?: (msg: NewsHeliMsg) => void;
   /** W2: our `away` took effect — the return will come with a respawn. */
   onAwayStarted?: () => void;
+  /** D3: a building section started to collapse (already applied to
+   * `cityDamage` and `collapses`) — audio, shake, dust. */
+  onCollapse?: (c: CollapseWire) => void;
   /** S3: the official result of our own finished course run. */
   onCourseResult?: (msg: CourseResultMsg) => void;
   /** S3: a course leaderboard changed (ghost attached when a record fell). */
@@ -124,6 +135,10 @@ export class GameSocket {
    * welcome (a resume may land in a room with less damage), grown by every
    * `chunks` batch, whether or not anything is listening yet. */
   readonly cityDamage = new CityDamage();
+  /** D3: the room's collapse records and their debris — replayed from every
+   * welcome, grown by every `collapse` message. Its fallen chunks are marked
+   * in `cityDamage` from the records alone (never the welcome's set). */
+  readonly collapses = new CollapseField();
   /** X1: missiles announced in this room and not yet consumed, by id — from
    * every welcome and every `missile` event, listening or not. The frame
    * loop removes each once it has landed (or gone stale). */
@@ -161,7 +176,7 @@ export class GameSocket {
   ) {
     this.ws = ws;
     this.welcome = welcome;
-    this.cityDamage.reset(decodeChunkIds(welcome.destroyed));
+    this.replayDestruction(welcome);
     this.addMissiles(welcome.missiles);
     this.attach(ws);
     // W2 watchdog: snapshots arrive at TICK_DOWN_HZ, so a visible tab that
@@ -288,13 +303,28 @@ export class GameSocket {
     // Missile ids are per room: a resume into another room starts over.
     if (next.welcome.roomId !== this.welcome.roomId) this.missiles.clear();
     this.welcome = next.welcome;
-    this.cityDamage.reset(decodeChunkIds(next.welcome.destroyed));
+    this.replayDestruction(next.welcome);
     this.addMissiles(next.welcome.missiles);
     this.attach(next.ws);
     this.delay.reset(); // the outage's arrival gaps are not jitter
     this.lastHeardMs = performance.now();
     this.state = "open";
     this.events.onResumed?.(next.welcome);
+  }
+
+  /** A welcome's whole destruction: the broken set, then every collapse. */
+  private replayDestruction(welcome: WelcomeMsg): void {
+    this.cityDamage.reset(decodeChunkIds(welcome.destroyed));
+    const records = Array.isArray(welcome.collapses) ? welcome.collapses : [];
+    this.collapses.reset(records);
+    for (const c of records) this.cityDamage.collapse(collapseChunks(c));
+  }
+
+  /** One live collapse: its chunks fall, its debris starts. */
+  private applyCollapse(c: CollapseWire): void {
+    this.cityDamage.collapse(collapseChunks(c));
+    this.collapses.add(c);
+    this.events.onCollapse?.(c);
   }
 
   /** Hold every decodable missile of a welcome/event list (dupes are
@@ -383,9 +413,15 @@ export class GameSocket {
   }
 
   /** Report flying into a building or the ground — or (D4) into the
-   * falling wreck `wreck` (its id), which the server may credit. */
-  sendCrash(wreck: number | null = null): void {
-    this.send(wreck === null ? { type: "crash" } : { type: "crash", wreck });
+   * falling wreck `wreck` (its id), which the server may credit. `t` (D3) is
+   * the server time the movers — and collapse debris — were posed at for
+   * the check. */
+  sendCrash(wreck: number | null = null, t: number | null = null): void {
+    this.send({
+      type: "crash",
+      ...(wreck !== null && { wreck }),
+      ...(t !== null && { t }),
+    });
   }
 
   /** Claim the room's shared bot count. The server may clamp or silently
@@ -506,6 +542,9 @@ export class GameSocket {
         break;
       case "chunks":
         this.cityDamage.apply(decodeChunkIds(msg.d));
+        break;
+      case "collapse":
+        this.applyCollapse(msg.c);
         break;
       case "courseResult":
         this.events.onCourseResult?.(msg);

@@ -75,7 +75,7 @@ export type HitReject =
 export interface Death {
   victimId: string;
   killerId: string | null;
-  cause: "shot" | "crash" | "storm" | "wreck" | "missile";
+  cause: "shot" | "crash" | "storm" | "wreck" | "collapse" | "missile";
 }
 export type HitResult =
   | { ok: true; hp: number; death: Death | null }
@@ -302,6 +302,21 @@ export class Combat {
   }
 
   /**
+   * D3: crushed by falling collapse debris. Credit, in order: `by` — whoever
+   * brought the building down — while they are still in the fight and are
+   * not the victim; else the crash rule (last damager within
+   * DAMAGE_MEMORY_MS); else nobody (the environment).
+   */
+  collapseKill(id: string, by: string | null, now: number): Death | null {
+    const p = this.players.get(id);
+    if (!p || !p.alive) return null;
+    if (by !== null && by !== id && this.players.has(by)) {
+      return this.kill(id, p, by, "collapse", now);
+    }
+    return this.environmentKill(id, "collapse", now);
+  }
+
+  /**
    * X1 environment damage (a missile blast): take `amount` off a living,
    * unprotected plane. Nobody is credited for the damage itself — a lethal
    * blast is an environment death that pays the last damager only by the
@@ -344,7 +359,7 @@ export class Combat {
    * the credit (PLAN.md kill-credit rule), else no one. */
   private environmentKill(
     id: string,
-    cause: "crash" | "storm" | "missile",
+    cause: "crash" | "storm" | "collapse" | "missile",
     now: number,
   ): Death | null {
     const p = this.players.get(id);

@@ -650,6 +650,77 @@ export class GameAudio implements VoiceSink {
   }
 
   /**
+   * D3 collapse at a world position: a deep rumble that swells through the
+   * `fallS` seconds the building takes to come down, then the crash of the
+   * bulk landing (sub thump + a broadband roar) and a long grumbling tail.
+   * `size01` (how much fell) scales both; distance attenuates like an
+   * explosion, but the rumble carries further.
+   */
+  collapse(
+    pos: Vec3,
+    listenerPos: Vec3,
+    listenerYaw: number,
+    fallS: number,
+    size01: number,
+  ): void {
+    const s = spatialize(listenerPos, listenerYaw, pos);
+    const level =
+      Math.min(1, s.gain * 10) * (0.55 + 0.45 * Math.min(1, size01));
+    const ctx = this.ensure();
+    if (!ctx || !this.sfx || !this.noise || level <= 0) return;
+    const now = ctx.currentTime;
+    const crashAt = now + Math.max(0.3, fallS);
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = s.pan;
+    panner.connect(this.sfx);
+    // Rumble: low-passed noise, swelling to the crash, then fading.
+    const rumble = ctx.createBufferSource();
+    rumble.buffer = this.noise;
+    rumble.loop = true;
+    const low = ctx.createBiquadFilter();
+    low.type = "lowpass";
+    low.frequency.setValueAtTime(90, now);
+    low.frequency.linearRampToValueAtTime(160, crashAt);
+    low.frequency.exponentialRampToValueAtTime(50, crashAt + 4);
+    low.Q.value = 0.8;
+    const rg = ctx.createGain();
+    rg.gain.setValueAtTime(0.001, now);
+    rg.gain.linearRampToValueAtTime(0.6 * level, now + 0.8);
+    rg.gain.linearRampToValueAtTime(0.9 * level, crashAt);
+    rg.gain.exponentialRampToValueAtTime(0.001, crashAt + 4.5);
+    rumble.connect(low).connect(rg).connect(panner);
+    rumble.start(now, Math.random());
+    rumble.stop(crashAt + 4.6);
+    // Crash: a broadband roar collapsing to a growl.
+    const roar = ctx.createBufferSource();
+    roar.buffer = this.noise;
+    roar.loop = true;
+    const band = ctx.createBiquadFilter();
+    band.type = "lowpass";
+    band.frequency.setValueAtTime(1400, crashAt);
+    band.frequency.exponentialRampToValueAtTime(70, crashAt + 2);
+    const cg = ctx.createGain();
+    cg.gain.setValueAtTime(0.001, now);
+    cg.gain.setValueAtTime(EXPLOSION_LEVEL * level, crashAt);
+    cg.gain.exponentialRampToValueAtTime(0.001, crashAt + 2.2);
+    roar.connect(band).connect(cg).connect(panner);
+    roar.start(now, Math.random());
+    roar.stop(crashAt + 2.3);
+    // Sub thump under the crash.
+    const sub = ctx.createOscillator();
+    sub.type = "sine";
+    sub.frequency.setValueAtTime(70, crashAt);
+    sub.frequency.exponentialRampToValueAtTime(22, crashAt + 1.2);
+    const sg = ctx.createGain();
+    sg.gain.setValueAtTime(0.001, now);
+    sg.gain.setValueAtTime(0.9 * level, crashAt);
+    sg.gain.exponentialRampToValueAtTime(0.001, crashAt + 1.4);
+    sub.connect(sg).connect(panner);
+    sub.start(now);
+    sub.stop(crashAt + 1.5);
+  }
+
+  /**
    * X1: an incoming missile's whistle, rising from now until it lands in
    * `durationS` (≤ MISSILE_WHISTLE_MS), placed at its impact point. Gain
    * swells as it falls; cut dead at impact, where the blast takes over.

@@ -12,13 +12,14 @@ export class KillFeed {
    * "A ✕ B" — not the shoot-down's "A ▸ B" (U2); a storm kill renders as the
    * bolt's own line ("⚡ took down B") whoever got the credit; a D4 wreck
    * kill is "A 🔥 B" — A shot down the wreck B flew into; an X1 missile
-   * kill is its own line ("🚀 missile strike took down B"). `self` marks
-   * a line the local pilot is in (decided by id — names aren't unique).
-   * `victimId` tags the line so the kill's S7 medals can join it. */
+   * kill is its own line ("🚀 missile strike took down B"); a D3 collapse
+   * kill is "A ▼ B" (A brought the building down) or "▼ crushed B". `self`
+   * marks a line the local pilot is in (decided by id — names aren't
+   * unique). `victimId` tags the line so the kill's S7 medals can join it. */
   add(
     killerName: string | null,
     victimName: string,
-    cause?: "shot" | "crash" | "storm" | "wreck" | "missile",
+    cause?: "shot" | "crash" | "storm" | "wreck" | "collapse" | "missile",
     self = false,
     victimId?: string,
   ): void {
@@ -34,13 +35,21 @@ export class KillFeed {
       entry.append("⚡ took down ", victim);
     } else if (cause === "missile") {
       entry.append("🚀 missile strike took down ", victim);
+    } else if (cause === "collapse" && killerName === null) {
+      entry.append("▼ crushed ", victim);
     } else if (killerName === null) {
       entry.append("☠ ", victim);
     } else {
       const killer = document.createElement("span");
       killer.className = "killer";
       killer.textContent = killerName;
-      if (cause === "wreck") {
+      if (cause === "collapse") {
+        const glyph = document.createElement("span");
+        glyph.className = "crash";
+        glyph.title = "crushed by a collapse they caused";
+        glyph.textContent = " ▼ ";
+        entry.append(killer, glyph, victim);
+      } else if (cause === "wreck") {
         const glyph = document.createElement("span");
         glyph.className = "crash";
         glyph.title = "flew into a wreck — credited to its shooter";

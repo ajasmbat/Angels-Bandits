@@ -26,6 +26,7 @@ import {
   TAG_STEAM,
   blockStream,
   blockWindowInto,
+  pruneBlockCache,
   ringPerimeter,
   ringPointInto,
 } from "./streetlife";
@@ -329,6 +330,8 @@ export class Steam {
     this.material.opacity = STEAM_OPACITY * gate;
     const t = timeMs / 1000;
     let i = 0;
+    // P3: keep the cache to last frame's window (about to be refilled).
+    pruneBlockCache(this.byBlock, this.windowScratch);
     for (const { bx, bz } of blockWindowInto(
       cameraPos,
       this.radius,

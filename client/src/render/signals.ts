@@ -30,6 +30,7 @@ import {
   TAG_SIGNAL,
   blockStream,
   blockWindowInto,
+  pruneBlockCache,
 } from "./streetlife";
 import { nearestImageInto, uploadPrefix } from "./wrapPlacement";
 
@@ -433,6 +434,8 @@ export class Signals {
       ? ASPECT_COLORS.amber
       : WALK_COLORS.dont;
     let n = 0;
+    // P3: keep the cache to last frame's window (about to be refilled).
+    pruneBlockCache(this.byBlock, this.windowScratch);
     for (const { bx, bz } of blockWindowInto(
       cameraPos,
       this.radius,

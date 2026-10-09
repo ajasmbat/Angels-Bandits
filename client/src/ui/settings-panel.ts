@@ -8,6 +8,10 @@
 //
 // Built once the join has completed (main.ts), but the panel's markup is
 // only built on first open: settings never cost the boot anything.
+//
+// P3: it is also the pause menu. A shared room never pauses — the autopilot
+// flies the plane while it is up (main.ts), which the header says — and
+// RESUME (or Esc, or ✕) puts the controls back.
 
 import { FEELS, type Feel } from "../game/effortless";
 import type { AimMode } from "../game/flight-input";
@@ -98,7 +102,10 @@ const slider = (key: string, label: string, min: number): string =>
 const MARKUP = `
 <div class="settings" role="dialog" aria-modal="true" aria-labelledby="settings-h" tabindex="-1">
   <header>
-    <h2 id="settings-h">SETTINGS</h2>
+    <div class="settings-title">
+      <h2 id="settings-h">MENU</h2>
+      <span class="settings-autopilot">AUTOPILOT FLYING</span>
+    </div>
     <button type="button" class="settings-close" aria-label="Close settings" tabindex="-1">✕</button>
   </header>
   <div class="settings-body">
@@ -181,6 +188,10 @@ const MARKUP = `
       </div>
     </section>
   </div>
+  <footer class="settings-foot">
+    <span class="hint">ESC TO RESUME</span>
+    <button type="button" class="settings-resume" tabindex="-1">RESUME</button>
+  </footer>
   <footer class="settings-rotate"><span>ROTATE TO LANDSCAPE TO FLY ↻</span></footer>
 </div>`;
 
@@ -302,7 +313,7 @@ export class SettingsPanel {
     });
     this.root.addEventListener("click", (e) => {
       const t = e.target as HTMLElement;
-      if (t.closest(".settings-close")) {
+      if (t.closest(".settings-close, .settings-resume")) {
         this.event("close");
         return;
       }

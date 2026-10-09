@@ -1,0 +1,594 @@
+/* P3 polish pass: the shared tokens, the join card / loading screen, the
+   pause menu and the HUD refinements. Imported by main.ts, so Vite emits it
+   as a render-blocking <link> in the built page's head: everything here is
+   in place for the first paint, before any game code runs. It loads after
+   index.html's inline sheet, so a rule here wins over one there of the same
+   specificity — new values live here instead of rewriting that sheet. */
+
+:root {
+  /* One type stack everywhere (ui-monospace is Apple-only; the rest keep
+     Windows, Linux and Android in the same voice). */
+  --ab-font: ui-monospace, SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono",
+    "Liberation Mono", monospace;
+  --ab-bg: #141225;
+  --ab-panel: #0c0b18d9;
+  --ab-ink: #e8f6fa;
+  --ab-text: #9fd8e8;
+  --ab-accent: #27e0c0;
+  --ab-warm: #ffc46b;
+  --ab-gold: #ffd36b;
+  --ab-hot: #ff7a9a;
+  --ab-line: #27e0c059;
+  --ab-fs-xs: 10px;
+  --ab-fs-s: 11px;
+  --ab-fs-m: 13px;
+  --ab-fs-l: 15px;
+  --ab-track: 0.15em;
+  --ab-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ab-pop: cubic-bezier(0.2, 1.5, 0.4, 1);
+  /* The join card's skyline (generated: three parallax layers, each one
+     1600 px tile of buildings; the near two carry lit-window patterns). */
+  --sky-far: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1600' height='260'%3E%3Cdefs%3E%3C/defs%3E%3Cpath d='M0 260V19h70V260ZM74 260V10h100V260ZM180 260V104h100V260ZM205 104v-19h50v19ZM283 260V30h109V260ZM393 260V132h69V260ZM467 260V154h41V260ZM485 154v-28h4V154ZM477 154v-20h20v20ZM508 260V49h74V260ZM585 260V69h94V260ZM680 260V146h86V260ZM721 146v-25h4V146ZM701 146v-18h43v18ZM769 260V63h78V260ZM849 260V21h108V260ZM876 21v-13h54v13ZM962 260V99h43V260ZM1006 260V32h81V260ZM1092 260V24h67V260ZM1108 24v-15h33v15ZM1165 260V148h101V260ZM1190 148v-10h50v10ZM1266 260V61h77V260ZM1343 260V74h45V260ZM1390 260V110h104V260ZM1494 260V17h53V260ZM1550 260V14h50V260Z' fill='%232a2152'/%3E%3C/svg%3E");
+  --sky-mid: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1600' height='200'%3E%3Cdefs%3E%3Cpattern id='a' width='9' height='11' patternUnits='userSpaceOnUse'%3E%3Crect x='2' y='3' width='3' height='4' fill='%23ffb86b2e'/%3E%3C/pattern%3E%3Cpattern id='b' width='23' height='17' patternUnits='userSpaceOnUse'%3E%3Crect x='6' y='5' width='3' height='4' fill='%2327e0c02a'/%3E%3Crect x='15' y='12' width='3' height='4' fill='%2327e0c02a'/%3E%3C/pattern%3E%3CclipPath id='c'%3E%3Cpath d='M0 200V102h91V200ZM22 102v-16h45v16ZM91 200V126h96V200ZM115 126v-9h48v9ZM190 200V123h103V200ZM293 200V83h65V200ZM358 200V128h100V200ZM383 128v-10h50v10ZM460 200V104h103V200ZM567 200V114h73V200ZM642 200V124h62V200ZM707 200V31h118V200ZM828 200V64h96V200ZM852 64v-20h48v20ZM925 200V64h60V200ZM990 200V67h107V200ZM1016 67v-16h53v16ZM1100 200V53h71V200ZM1133 53v-25h4V53ZM1176 200V60h59V200ZM1238 200V123h108V200ZM1349 200V125h58V200ZM1411 200V68h107V200ZM1520 200V22h52V200ZM1575 200V85h25V200ZM1581 85v-11h12v11Z'/%3E%3C/clipPath%3E%3C/defs%3E%3Cpath d='M0 200V102h91V200ZM22 102v-16h45v16ZM91 200V126h96V200ZM115 126v-9h48v9ZM190 200V123h103V200ZM293 200V83h65V200ZM358 200V128h100V200ZM383 128v-10h50v10ZM460 200V104h103V200ZM567 200V114h73V200ZM642 200V124h62V200ZM707 200V31h118V200ZM828 200V64h96V200ZM852 64v-20h48v20ZM925 200V64h60V200ZM990 200V67h107V200ZM1016 67v-16h53v16ZM1100 200V53h71V200ZM1133 53v-25h4V53ZM1176 200V60h59V200ZM1238 200V123h108V200ZM1349 200V125h58V200ZM1411 200V68h107V200ZM1520 200V22h52V200ZM1575 200V85h25V200ZM1581 85v-11h12v11Z' fill='%231c1739'/%3E%3Cg clip-path='url%28%23c%29'%3E%3Crect width='1600' height='200' fill='url%28%23a%29'/%3E%3Crect width='1600' height='200' fill='url%28%23b%29'/%3E%3C/g%3E%3C/svg%3E");
+  --sky-near: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1600' height='140'%3E%3Cdefs%3E%3Cpattern id='a' width='9' height='11' patternUnits='userSpaceOnUse'%3E%3Crect x='2' y='3' width='3' height='4' fill='%23ffc46b8c'/%3E%3C/pattern%3E%3Cpattern id='b' width='23' height='17' patternUnits='userSpaceOnUse'%3E%3Crect x='6' y='5' width='3' height='4' fill='%23ff7a9a66'/%3E%3Crect x='15' y='12' width='3' height='4' fill='%23ff7a9a66'/%3E%3C/pattern%3E%3CclipPath id='c'%3E%3Cpath d='M0 140V29h117V140ZM120 140V25h125V140ZM248 140V22h140V140ZM283 22v-12h70v12ZM389 140V32h71V140ZM460 140V50h136V140ZM600 140V21h80V140ZM638 21v-26h4V21ZM620 21v-8h40v8ZM681 140V24h90V140ZM724 24v-24h4V24ZM775 140V34h85V140ZM796 34v-8h42v8ZM865 140V42h70V140ZM939 140V10h70V140ZM1013 140V97h96V140ZM1059 97v-13h4V97ZM1115 140V51h97V140ZM1161 51v-10h4V51ZM1212 140V74h87V140ZM1233 74v-14h43v14ZM1304 140V47h110V140ZM1357 47v-30h4V47ZM1331 47v-18h55v18ZM1416 140V89h103V140ZM1441 89v-14h51v14ZM1525 140V83h75V140ZM1543 83v-8h37v8Z'/%3E%3C/clipPath%3E%3C/defs%3E%3Cpath d='M0 140V29h117V140ZM120 140V25h125V140ZM248 140V22h140V140ZM283 22v-12h70v12ZM389 140V32h71V140ZM460 140V50h136V140ZM600 140V21h80V140ZM638 21v-26h4V21ZM620 21v-8h40v8ZM681 140V24h90V140ZM724 24v-24h4V24ZM775 140V34h85V140ZM796 34v-8h42v8ZM865 140V42h70V140ZM939 140V10h70V140ZM1013 140V97h96V140ZM1059 97v-13h4V97ZM1115 140V51h97V140ZM1161 51v-10h4V51ZM1212 140V74h87V140ZM1233 74v-14h43v14ZM1304 140V47h110V140ZM1357 47v-30h4V47ZM1331 47v-18h55v18ZM1416 140V89h103V140ZM1441 89v-14h51v14ZM1525 140V83h75V140ZM1543 83v-8h37v8Z' fill='%230e0c1f'/%3E%3Cg clip-path='url%28%23c%29'%3E%3Crect width='1600' height='140' fill='url%28%23a%29'/%3E%3Crect width='1600' height='140' fill='url%28%23b%29'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+html,
+body {
+  font-family: var(--ab-font);
+}
+
+/* ===== Join card & loading screen ========================================
+   index.html opens the card in its `booting` state, so the very first
+   paint is the logo, the skyline and a moving progress bar — never a blank
+   screen while the bundle downloads. ui/join.ts drops `booting` when the
+   name prompt is live, and drives the bar (--p) through the boot stages.
+   The bar's shimmer is a transform animation: it runs on the compositor and
+   keeps moving while the synchronous city build holds the main thread. */
+#join {
+  overflow: hidden;
+  background: radial-gradient(
+      120% 70% at 50% 108%,
+      #4a2470 0%,
+      #2a1a4f 32%,
+      var(--ab-bg) 68%
+    )
+    var(--ab-bg);
+}
+#join .join-bg {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+#join .join-bg .layer {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: calc(100% + 1600px);
+  background-repeat: repeat-x;
+  background-position: left bottom;
+  will-change: transform;
+  animation: ab-pan linear infinite;
+}
+#join .join-bg .far {
+  height: 260px;
+  background-image: var(--sky-far);
+  background-size: 1600px 260px;
+  animation-duration: 180s;
+  opacity: 0.85;
+}
+#join .join-bg .mid {
+  height: 200px;
+  background-image: var(--sky-mid);
+  background-size: 1600px 200px;
+  animation-duration: 110s;
+}
+#join .join-bg .near {
+  height: 140px;
+  background-image: var(--sky-near);
+  background-size: 1600px 140px;
+  animation-duration: 60s;
+}
+@keyframes ab-pan {
+  to {
+    transform: translateX(-1600px);
+  }
+}
+#join .join-bg .beam {
+  position: absolute;
+  bottom: 60px;
+  width: 140px;
+  height: 110vh;
+  margin-left: -70px;
+  transform-origin: 50% 100%;
+  background: linear-gradient(to top, #9fd8e830, #9fd8e800 85%);
+  clip-path: polygon(46% 100%, 54% 100%, 100% 0, 0 0);
+  animation: ab-sweep 9s ease-in-out infinite alternate;
+}
+#join .join-bg .beam.a {
+  left: 18%;
+}
+#join .join-bg .beam.b {
+  left: 76%;
+  animation-duration: 12s;
+  animation-delay: -5s;
+  background: linear-gradient(to top, #ff7a9a26, #ff7a9a00 85%);
+}
+@keyframes ab-sweep {
+  from {
+    transform: rotate(-28deg);
+  }
+  to {
+    transform: rotate(24deg);
+  }
+}
+#join .join-bg .plane {
+  position: absolute;
+  left: 0;
+  top: 24%;
+  width: 46px;
+  height: 14px;
+  color: var(--ab-hot);
+  opacity: 0.8;
+  will-change: transform;
+  animation: ab-fly 16s linear infinite;
+  animation-delay: 1.5s;
+  transform: translateX(-120px);
+}
+#join .join-bg .plane::before {
+  /* the contrail, behind the silhouette */
+  content: "";
+  position: absolute;
+  right: 40px;
+  top: 6px;
+  width: 160px;
+  height: 2px;
+  background: linear-gradient(to left, #ff7a9a99, #ff7a9a00);
+}
+#join .join-bg .plane svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: currentColor;
+}
+@keyframes ab-fly {
+  from {
+    transform: translate(-120px, 30px);
+  }
+  to {
+    transform: translate(calc(100vw + 220px), -40px);
+  }
+}
+#join form {
+  position: relative;
+  z-index: 1;
+  min-width: 280px;
+  padding: 26px 34px 22px;
+  background: #0c0b18b8;
+  border: 1px solid var(--ab-line);
+  box-shadow: 0 0 40px #27e0c01a, 0 18px 50px #0008;
+}
+#join .join-logo {
+  display: block;
+  width: 76px;
+  height: 52px;
+  margin: 0 auto 10px;
+  color: var(--ab-accent);
+  filter: drop-shadow(0 0 8px #27e0c088);
+}
+#join h1 {
+  margin: 0 0 4px;
+  color: var(--ab-ink);
+  font-size: 24px;
+  letter-spacing: 0.26em;
+  text-shadow: 0 0 18px #27e0c066;
+}
+#join .join-tag {
+  margin: 0 0 20px;
+  color: var(--ab-hot);
+  font-size: var(--ab-fs-xs);
+  letter-spacing: 0.32em;
+}
+#join input {
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+#join input:focus {
+  box-shadow: 0 0 0 3px #27e0c033;
+}
+#join button[type="submit"] {
+  transition: transform 0.12s var(--ab-ease), box-shadow 0.15s ease, background
+    0.15s ease;
+  box-shadow: 0 0 18px #27e0c055;
+}
+#join button[type="submit"]:hover {
+  background: #5bf0d6;
+  box-shadow: 0 0 26px #27e0c099;
+}
+#join button[type="submit"]:active {
+  transform: scale(0.96);
+}
+#join button[type="submit"]:focus-visible,
+#join-retry:focus-visible {
+  outline: 2px solid var(--ab-ink);
+  outline-offset: 3px;
+}
+#join-progress {
+  display: none;
+  position: relative;
+  width: 220px;
+  height: 3px;
+  margin: 16px auto 0;
+  overflow: hidden;
+  background: #27e0c022;
+}
+#join.booting #join-progress,
+#join form.busy #join-progress {
+  display: block;
+}
+#join form.failed #join-progress {
+  display: none;
+}
+#join-progress .fill {
+  height: 100%;
+  background: var(--ab-accent);
+  box-shadow: 0 0 8px var(--ab-accent);
+  transform-origin: left center;
+  transform: scaleX(var(--p, 0.06));
+  transition: transform 0.45s var(--ab-ease);
+}
+#join-progress::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 35%;
+  height: 100%;
+  background: linear-gradient(90deg, #fff0, #ffffffaa, #fff0);
+  animation: ab-shimmer 1.2s linear infinite;
+}
+@keyframes ab-shimmer {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(320%);
+  }
+}
+/* Booting: the card without its form — logo, title, the bar and LOADING. */
+#join.booting #join-name,
+#join.booting button[type="submit"],
+#join.booting #join-primer,
+#join.booting #join-fs {
+  visibility: hidden;
+}
+/* Touch: the card is smaller and the second searchlight stays dark (the
+   landscape phone has no room for both, and fewer blended layers). */
+body.touch #join form {
+  padding: 16px 24px 14px;
+}
+body.touch #join .join-logo {
+  width: 56px;
+  height: 38px;
+  margin-bottom: 6px;
+}
+body.touch #join h1 {
+  font-size: 20px;
+}
+body.touch #join .join-tag {
+  margin-bottom: 12px;
+}
+body.touch #join .join-bg .beam.b {
+  display: none;
+}
+body.kbd #join .join-logo,
+body.kbd #join .join-tag {
+  display: none;
+}
+@media (max-height: 420px) {
+  #join .join-logo {
+    display: none;
+  }
+}
+/* After FLY (ui/join.ts adds `loading`) nothing on the card animates: the
+   skyline freezes where it is and the bar's shimmer stops — the bar then
+   moves only on a stage change. A running animation makes the browser
+   composite every frame over the canvas the boot is rendering into (on a
+   software rasteriser that alone made first frame 4x slower). */
+#join.loading .join-bg .layer,
+#join.loading .join-bg .beam,
+#join.loading .join-bg .plane {
+  animation-play-state: paused;
+}
+#join.loading #join-progress::after {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  #join .join-bg .layer,
+  #join .join-bg .beam,
+  #join .join-bg .plane {
+    animation: none;
+  }
+  #join .join-bg .plane {
+    display: none;
+  }
+}
+
+/* ===== Pause menu (the settings panel) ====================================
+   The server never pauses a multiplayer room: while the menu is up the
+   autopilot flies the plane (main.ts), and the header says so. RESUME and
+   Esc close it; a phone held upright keeps it (and hides RESUME). */
+#rotate.open {
+  background: #0c0b1880;
+}
+#rotate .settings {
+  background: var(--ab-panel);
+  box-shadow: 0 0 40px #27e0c014, 0 20px 60px #000a;
+  animation: ab-menu-in 0.22s var(--ab-ease);
+}
+@keyframes ab-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+}
+#rotate .settings header .settings-title {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+}
+#rotate .settings-autopilot {
+  color: var(--ab-warm);
+  font-size: var(--ab-fs-xs);
+  letter-spacing: 0.2em;
+}
+#rotate .settings-autopilot::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 6px currentColor;
+  vertical-align: 1px;
+  animation: ab-blink 1.2s ease-in-out infinite;
+}
+@keyframes ab-blink {
+  50% {
+    opacity: 0.25;
+  }
+}
+#rotate .seg button,
+#rotate .settings-close {
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+#rotate .seg button:hover,
+#rotate .settings-close:hover {
+  border-color: #9fd8e8aa;
+  color: var(--ab-ink);
+}
+#rotate .seg button.on:hover {
+  border-color: var(--ab-accent);
+}
+#rotate .settings-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #9fd8e826;
+}
+#rotate .settings-foot .hint {
+  font-size: var(--ab-fs-xs);
+  opacity: 0.7;
+}
+#rotate .settings .settings-resume {
+  height: 36px;
+  padding: 0 26px;
+  background: var(--ab-accent);
+  border: none;
+  color: #0c0b18;
+  font-size: var(--ab-fs-m);
+  letter-spacing: 0.2em;
+  box-shadow: 0 0 18px #27e0c055;
+  transition: transform 0.12s var(--ab-ease), background 0.15s ease;
+}
+#rotate .settings .settings-resume:hover {
+  background: #5bf0d6;
+}
+#rotate .settings .settings-resume:active {
+  transform: scale(0.96);
+}
+#rotate.portrait .settings-foot,
+body.touch #rotate .settings-foot .hint {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  #rotate .settings,
+  #rotate .settings-autopilot::before {
+    animation: none;
+  }
+}
+
+/* ===== HUD layout fixes (the overlap probe, tools/perf/polish.mjs) ========
+   Desktop: the fullscreen toggle sat inside the gauges block (over the GUNS
+   bar's end); it joins the gear in the free strip right of the minimap.
+   Phone: the boss bar spanned the gauges and the killfeed in the top row;
+   it drops to its own row under the gauges (clear of a protection badge's
+   second row), and the medal toast sits under it, above the reticle. */
+#fs-btn {
+  left: calc(var(--gut-x) + var(--safe-l) + var(--mini) + 40px);
+  top: calc(var(--gut-y) + var(--safe-t));
+  right: auto;
+  bottom: auto;
+}
+body.touch #fs-btn {
+  left: auto;
+}
+body.touch #boss-bar {
+  top: calc(var(--gut-y) + var(--safe-t) + 54px);
+  width: min(300px, 36vw);
+}
+body.touch #boss-bar .name {
+  font-size: var(--ab-fs-xs);
+}
+body.touch #medal-toast {
+  top: calc(var(--gut-y) + var(--safe-t) + 92px);
+}
+
+/* ===== Feedback juice =====================================================
+   The hitmarker pops in (the `scale` property composes with the transform
+   ui/hud.ts writes every frame); a kill pops bigger and washes the screen
+   edges gold for a beat (#kill-pulse, built by ui/hud.ts). */
+#hitmarker.on {
+  animation: ab-hit-pop 0.14s var(--ab-pop);
+}
+#hitmarker.kill.on {
+  animation: ab-kill-pop 0.32s var(--ab-pop);
+}
+@keyframes ab-hit-pop {
+  from {
+    scale: 1.35;
+  }
+}
+@keyframes ab-kill-pop {
+  from {
+    scale: 1.9;
+  }
+}
+#kill-pulse {
+  position: fixed;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse at center,
+    #ffd36b00 58%,
+    #ffc46b40 84%,
+    #ff7a9a8c 100%
+  );
+}
+#kill-pulse.on {
+  animation: ab-kill-pulse 0.55s ease-out;
+}
+@keyframes ab-kill-pulse {
+  0% {
+    opacity: 0;
+  }
+  18% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+/* Medals pop with the sting and settle with a soft glow. */
+#medal-toast .medal {
+  text-shadow: 0 0 14px #ffb020aa, 0 1px 3px #000;
+}
+@media (prefers-reduced-motion: reduce) {
+  #hitmarker.on,
+  #hitmarker.kill.on {
+    animation: none;
+  }
+  #kill-pulse.on {
+    animation-duration: 0.3s;
+  }
+}
+
+/* ===== HUD transitions ====================================================
+   Every arrival animates in on transform/opacity only (compositor work, no
+   layout), each from its own edge; departures keep their existing fades. */
+#killfeed .entry,
+#comms .entry {
+  animation: ab-slide-in 0.28s var(--ab-ease);
+}
+@keyframes ab-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+}
+#killfeed .medal {
+  animation: ab-badge-in 0.3s var(--ab-pop);
+}
+@keyframes ab-badge-in {
+  from {
+    opacity: 0;
+    scale: 1.6;
+  }
+}
+#boss-bar.open {
+  animation: ab-drop-in 0.4s var(--ab-ease);
+}
+@keyframes ab-drop-in {
+  from {
+    opacity: 0;
+    translate: 0 -10px;
+  }
+}
+#killcam.open {
+  animation: ab-fade-up 0.35s var(--ab-ease);
+}
+@keyframes ab-fade-up {
+  from {
+    opacity: 0;
+    translate: 0 8px;
+  }
+}
+#protected-badge {
+  letter-spacing: var(--ab-track);
+}
+.gauge label {
+  letter-spacing: var(--ab-track);
+}
+@media (prefers-reduced-motion: reduce) {
+  #killfeed .entry,
+  #comms .entry,
+  #killfeed .medal,
+  #boss-bar.open,
+  #killcam.open {
+    animation: none;
+  }
+}
+
+/* Phone: the K/D shares the HULL label. Every gauge sizes from a zero
+   basis and HULL takes the larger share of the row; its label is a flex
+   row (not a float), so the K/D sits right of the word and can never wrap
+   over the bar or spill out of the gauge. */
+body.touch .gauge {
+  flex: 1 1 0;
+}
+body.touch #hp {
+  flex-grow: 1.6;
+}
+body.touch #hp label {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+}
+body.touch #kd {
+  float: none;
+  letter-spacing: 0.04em;
+}
+body.touch .gauge label {
+  white-space: nowrap;
+}
+
+/* Phone with a stunt course's readout up (#race, under the gauges): the
+   killfeed keeps its newest line only, the boss bar drops below the readout
+   as a bare track, and the medal toast follows it down. */
+body.touch:has(#race.open) #killfeed .entry:not(:last-child) {
+  display: none;
+}
+body.touch #race.open ~ #boss-bar {
+  top: calc(var(--gut-y) + var(--safe-t) + 80px);
+}
+body.touch #race.open ~ #boss-bar .name {
+  display: none;
+}
+body.touch #race.open ~ #medal-toast {
+  top: calc(var(--gut-y) + var(--safe-t) + 104px);
+}

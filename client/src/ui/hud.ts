@@ -176,6 +176,15 @@ export class Hud {
     "killcam-card",
   ) as HTMLDivElement;
   private medalUntil = 0;
+  /** P3: the kill's edge glow (built here, styled in ui/polish.css) — one
+   * element, replayed by a class restart, never rebuilt. */
+  private readonly killPulse = ((): HTMLDivElement => {
+    const el = document.createElement("div");
+    el.id = "kill-pulse";
+    el.setAttribute("aria-hidden", "true");
+    document.body.appendChild(el);
+    return el;
+  })();
   /** S4: the boss bar's nodes, the HP it last drew, and its hit flash. */
   private readonly bossBar = document.getElementById(
     "boss-bar",
@@ -532,7 +541,13 @@ export class Hud {
   /** Kill confirm: the marker grows into a pink X held ~400 ms. */
   killConfirm(now: number): void {
     this.markerUntil = now + 400;
+    // P3: replay the pop and the edge glow (the class must be off for a
+    // reflow to restart a CSS animation — once per kill, never per frame).
+    this.hitmarker.classList.remove("kill", "on");
+    this.killPulse.classList.remove("on");
+    void this.hitmarker.offsetWidth;
     this.hitmarker.classList.add("kill", "on");
+    this.killPulse.classList.add("on");
   }
 
   /** Call every frame to age the hit blip and hitmarker out. */

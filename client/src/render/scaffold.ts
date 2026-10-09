@@ -240,6 +240,15 @@ export class ScaffoldRenderer {
       this.picks.length = len;
       this.pickDist.length = len;
     }
+    // P3: only the dressed buildings' boxes stay cached. Under C2's constant
+    // chaos nearly every building is damaged sooner or later, and caching
+    // each one ever dressed grew the heap for the whole session (the soak).
+    // Re-dressing one is pure and cheap. Runs only on a re-dress.
+    if (this.boxes.size > this.picks.length * 2) {
+      for (const i of this.boxes.keys()) {
+        if (!this.picks.includes(i)) this.boxes.delete(i);
+      }
+    }
     let n = 0;
     for (const i of this.picks) {
       const b = this.buildings[i] as Building;

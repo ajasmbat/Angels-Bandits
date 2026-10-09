@@ -23,6 +23,7 @@ import {
   BOSS_REACH_Z,
   BOSS_SPEED,
   BOSS_TUNING,
+  BOSS_TUNING_S4,
   BOSS_TURRETS,
   BOSS_WEAK_POINTS,
   type BossRaid,
@@ -46,6 +47,7 @@ import {
   flakDamage,
   flakSolution,
   nextRaidAt,
+  periodFromStart,
   piecePoseAt,
   planRaid,
   raidEgressAt,
@@ -113,15 +115,24 @@ describe("schedule and path are pure", () => {
     expect(first).toBe(nextRaidAt(null, T0, mulberry32(9)));
     expect(first - T0).toBeGreaterThanOrEqual(BOSS_TUNING.firstMinMs);
     expect(first - T0).toBeLessThanOrEqual(BOSS_TUNING.firstMaxMs);
+    // C2: `prev` is the last raid's END; the next comes period ± jitter on.
+    const ended = first + 1_000_000;
     for (let i = 0; i < 50; i++) {
-      const next = nextRaidAt(first, T0, mulberry32(i));
-      expect(Math.abs(next - first - BOSS_TUNING.periodMs)).toBeLessThanOrEqual(
+      const next = nextRaidAt(ended, T0, mulberry32(i));
+      expect(Math.abs(next - ended - BOSS_TUNING.periodMs)).toBeLessThanOrEqual(
         BOSS_TUNING.periodJitterMs,
       );
       expect(Number.isInteger(next)).toBe(true);
     }
-    // ~15 minutes, start to start.
-    expect(BOSS_TUNING.periodMs).toBe(15 * 60_000);
+    // C2: ~30 s after a human arrives, then 60–90 s after each raid ends.
+    expect(BOSS_TUNING.firstMinMs).toBeGreaterThanOrEqual(25_000);
+    expect(BOSS_TUNING.firstMaxMs).toBeLessThanOrEqual(35_000);
+    expect(BOSS_TUNING.periodMs - BOSS_TUNING.periodJitterMs).toBe(60_000);
+    expect(BOSS_TUNING.periodMs + BOSS_TUNING.periodJitterMs).toBe(90_000);
+    expect(periodFromStart(BOSS_TUNING)).toBe(false);
+    // The S4 schedule AB_CHAOS=0 restores: ~15 minutes, start to start.
+    expect(BOSS_TUNING_S4.periodMs).toBe(15 * 60_000);
+    expect(periodFromStart(BOSS_TUNING_S4)).toBe(true);
     // The QA schedule is only ever faster.
     expect(BOSS_FAST_TUNING.firstMaxMs).toBeLessThan(BOSS_TUNING.firstMinMs);
   });

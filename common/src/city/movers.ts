@@ -25,6 +25,7 @@
 //   - One blimp, circling below the cloud deck with a lit banner.
 
 import { type BossSlot, collideBoss } from "../boss";
+import { type BomberSlot, collideBombers } from "../chaos";
 import {
   BLIMP_ALT,
   BLIMP_HULL,
@@ -93,7 +94,9 @@ export type MoverKind =
   | "rubble"
   // S4 sky boss (boss.ts): the zeppelin's hull, and its falling sections.
   | "boss"
-  | "bossDebris";
+  | "bossDebris"
+  // C2 bomber runs (chaos.ts): a ship of the formation.
+  | "bomber";
 
 /**
  * An oriented box. `x`/`z` are canonical in [0, WORLD_SIZE); `y` is the
@@ -187,6 +190,9 @@ export interface MoverField {
    * its falling sections (boss.ts, pure in the slot and the clock). PER
    * ROOM like `news`; the slot is mutated in place as raids come and go. */
   readonly boss?: BossSlot;
+  /** C2: the room's bomber runs (chaos.ts, pure in each run and the clock).
+   * PER ROOM like `boss`; the slot is mutated in place as runs come. */
+  readonly bombers?: BomberSlot;
 }
 
 /** A room's field: the seed's shared cranes and aircraft plus its own news
@@ -620,6 +626,11 @@ export function collideMovers(
     const hit = collideBoss(field.boss, pos, radius, timeMs);
     if (hit) return hit;
   }
+  // C2: the bomber formations.
+  if (field.bombers) {
+    const hit = collideBombers(field.bombers, pos, radius, timeMs);
+    if (hit) return hit;
+  }
   // L5/T2: the viaducts, stations and cars.
   if (field.trains) {
     const hit = collideTrains(field.trains, pos, radius, timeMs);
@@ -689,6 +700,12 @@ export function collideBotMovers(
   // the band a bot's attack pass climbs into. Altitude-rejected first.
   if (field.boss) {
     const hit = collideBoss(field.boss, pos, radius, timeMs);
+    if (hit) return hit;
+  }
+  // C2: and the bombers — a formation crosses the band bots fight in, so
+  // they probe it at arrival time like the boss.
+  if (field.bombers) {
+    const hit = collideBombers(field.bombers, pos, radius, timeMs);
     if (hit) return hit;
   }
   // L5: the viaduct and the train are solid for bots too — they sit right in

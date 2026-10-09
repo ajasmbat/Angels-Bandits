@@ -113,6 +113,7 @@ import { NEAR_MISS_RADIUS, closestApproach, spatialize } from "./audio/spatial";
 import { ThunderSchedule } from "./audio/thunder";
 import { TrainAudio } from "./audio/train-audio";
 import { createAutoFire, stepAutoFire } from "./game/auto-fire";
+import { bomberBulletHit } from "./game/bomber-hits";
 import { BoostKey } from "./game/boost-key";
 import { bossBulletHit } from "./game/boss-hits";
 import {
@@ -217,6 +218,7 @@ import {
   type QaDestructionSpec,
   stageDestruction,
 } from "./game/qa-destruction";
+import { quakeShakeAmount } from "./game/quake";
 import { SessionStats } from "./game/session-stats";
 import { wreckCamView } from "./game/wreck-cam";
 import {
@@ -232,6 +234,7 @@ import { Airliners } from "./render/airliners";
 import { archetypeFor } from "./render/archetypes";
 import { AtmosphereFx } from "./render/atmosphere-fx";
 import { Birds } from "./render/birds";
+import { BomberRenderer } from "./render/bombers";
 import { BossRenderer } from "./render/boss";
 import { CityRenderer } from "./render/city";
 import { PICKUP_TAXIS } from "./render/citylife";
@@ -248,6 +251,7 @@ import { DustClouds, dustHaze } from "./render/dust";
 import { FacadeDetailRenderer } from "./render/facade-detail";
 import { FacadeGarnishRenderer } from "./render/facade-garnish";
 import { FacadeLifeRenderer } from "./render/facade-life";
+import { FireRenderer } from "./render/fires";
 import { Fireworks } from "./render/fireworks";
 import { installHeightFog } from "./render/fog";
 import { Fountains } from "./render/fountains";
@@ -796,6 +800,8 @@ const moverField = {
   // S4: and the room's sky boss — the socket's slot, kept from every welcome
   // and message, so the zeppelin is solid exactly where it is drawn.
   boss: socket.boss,
+  // C2: and its bomber formations, the same way.
+  bombers: socket.bombers,
 };
 // D5: crane-fall records name the room's crane sites — these.
 socket.collapses.bindCranes(moverField.cranes);
@@ -1102,6 +1108,37 @@ const missileRenderer = new MissileRenderer(smoke, impacts);
 scene.add(missileRenderer.group);
 const missileFeed = new MissileFeed();
 const missileShake = new MissileShake();
+/** C2: whistles sounding at once, at most (a bomb carpet must not become a
+ * wall of sine), and how far a bomb's whistle carries, m. */
+const WHISTLE_VOICES = 3;
+const BOMB_WHISTLE_M = 350;
+const whistleEnds: number[] = [];
+// C2 bomber formations (the socket's slot, render clock — drawn == collided)
+// and the spreading fires (the socket's burning chunks, into the D1 pool).
+const bomberRenderer = new BomberRenderer(impacts, (at) => {
+  const t = performance.now();
+  explosions.explode(at, t);
+  sparks.burst(at, t);
+  audio.missileBlast(at, flight.pos, flight.yaw);
+  missileShake.add(wrapDistance(at, flight.pos), t);
+});
+scene.add(bomberRenderer.group);
+const fireRenderer = new FireRenderer(impacts, city.cityBuildings);
+// C2: a quake announced — the ground starts to rumble now (the shake rides
+// the camera path below, on the render clock).
+socket.events.onQuake = (q) => {
+  const at = lastRenderMs;
+  if (at === null) return;
+  const lead = Math.max(0.5, (q.t - at) / 1000);
+  audio.directorWarning(
+    false,
+    flight.pos,
+    flight.pos,
+    flight.yaw,
+    lead + (q.dur / 1000) * 0.6,
+  );
+  radio.noteCombat(performance.now());
+};
 // S4 sky boss: the room's war zeppelin (the socket's slot) on the render
 // clock — hull, glowing weak points, running lights, flak shells — its
 // bursts and its falling sections' fire through the D1 particle pool. A
@@ -2157,7 +2194,12 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   reactor.setQuality(tier);
   // D1: particle budget and burning patches (counts only).
   impacts.setShare(QUALITY_PROFILES[tier].impacts);
-  missileRenderer.setQuality(QUALITY_PROFILES[tier].missileDebris);
+  missileRenderer.setQuality(
+    QUALITY_PROFILES[tier].missileDebris,
+    QUALITY_PROFILES[tier].chaosFx, // C2: meteor fire trails
+  );
+  bomberRenderer.setQuality(QUALITY_PROFILES[tier].chaosFx); // C2
+  fireRenderer.setQuality(QUALITY_PROFILES[tier].chaosFx); // C2
   blastLedger.setBurnCap(burnCapFor(QUALITY_PROFILES[tier].impacts));
   wrecks.setShare(QUALITY_PROFILES[tier].wreckFire); // D4
   bossRenderer.setQuality(QUALITY_PROFILES[tier].bossFx); // S4
@@ -2534,6 +2576,19 @@ declare global {
         pos: { x: number; y: number; z: number; yaw: number } | null;
         flak: number;
         drawn: BossRenderer["stats"];
+      };
+      /** C2 QA: the room's chaos as this client holds it — bomber runs and
+       * downs, quakes, burning chunks, strikes held by kind, and the ships
+       * and fireballs drawn last frame. */
+      chaos: () => {
+        runs: typeof socket.bombers.runs;
+        downs: typeof socket.bombers.downs;
+        quakes: number[];
+        fires: number;
+        strikes: Record<string, number>;
+        drawn: BomberRenderer["stats"];
+        /** The render clock the frame loop last drew at. */
+        renderMs: number | null;
       };
       jumbotronView: (
         i: number,
@@ -3098,6 +3153,21 @@ window.__ab = {
       pos: pose && { x: pose.x, y: pose.y, z: pose.z, yaw: pose.yaw },
       flak: socket.flak.size,
       drawn: bossRenderer.stats,
+    };
+  },
+  chaos: () => {
+    const strikes: Record<string, number> = {};
+    for (const m of socket.missiles.values()) {
+      strikes[m.kind] = (strikes[m.kind] ?? 0) + 1;
+    }
+    return {
+      runs: [...socket.bombers.runs],
+      downs: [...socket.bombers.downs],
+      quakes: [...socket.quakes.keys()],
+      fires: socket.fires.size,
+      strikes,
+      drawn: bomberRenderer.stats,
+      renderMs: lastRenderMs,
     };
   },
   jumbotronView: (i, distance) => jumbotrons.view(i, distance),
@@ -3908,9 +3978,12 @@ const frame = (now: number): void => {
     missileShake.addInto(camShake, now); // X1 impacts: display camera only
     // D3: the ground shakes under a collapse coming down nearby — D5: and
     // trembles under a tower the director has warned about.
+    // C2: and shakes city-wide under a quake.
     if (
       renderMs !== null &&
-      (socket.collapses.list.length > 0 || socket.director.size > 0)
+      (socket.collapses.list.length > 0 ||
+        socket.director.size > 0 ||
+        socket.quakes.size > 0)
     ) {
       const jolt = collapseShakeOffsetInto(
         joltScratch,
@@ -3918,6 +3991,9 @@ const frame = (now: number): void => {
           collapseShakeAmount(socket.collapses.list, flight.pos, renderMs),
           socket.director.size > 0
             ? warningTremor(socket.director.values(), flight.pos, renderMs)
+            : 0,
+          socket.quakes.size > 0
+            ? quakeShakeAmount(socket.quakes.values(), flight.pos, renderMs)
             : 0,
         ),
         now,
@@ -4017,6 +4093,33 @@ const frame = (now: number): void => {
             onBoss.weak,
             bullet.origin,
             onBoss.dir,
+            bullet.seq,
+            renderMs,
+          );
+          hud.hitMarker(now);
+          haptics.hit(now);
+          audio.hitThunk();
+        }
+        continue;
+      }
+    }
+    // C2: the bombers. Any round stops on a ship; our own claim it.
+    if (socket.bombers.runs.length > 0) {
+      const onBomber = bomberBulletHit(
+        socket.bombers,
+        bullet.prev,
+        bullet.pos,
+        renderMs,
+      );
+      if (onBomber) {
+        bullets.remove(bullet);
+        sparks.burst(onBomber.at, now);
+        if (!bullet.cosmetic && renderMs !== null) {
+          socket.sendBomberHit(
+            onBomber.run,
+            onBomber.k,
+            bullet.origin,
+            onBomber.dir,
             bullet.seq,
             renderMs,
           );
@@ -4260,12 +4363,20 @@ const frame = (now: number): void => {
       alive ? flight.pos : null,
     );
     for (const m of mf.whistles) {
-      audio.missileWhistle(
-        m.to,
-        flight.pos,
-        flight.yaw,
-        (missileImpactAt(m) - renderMs) / 1000,
-      );
+      // C2: a capped number of voices, and bombs only close by.
+      for (let i = whistleEnds.length - 1; i >= 0; i--) {
+        if ((whistleEnds[i] as number) <= now) whistleEnds.splice(i, 1);
+      }
+      if (whistleEnds.length >= WHISTLE_VOICES) continue;
+      if (
+        m.kind === "bomb" &&
+        wrapDistance(m.to, flight.pos) > BOMB_WHISTLE_M
+      ) {
+        continue;
+      }
+      const left = (missileImpactAt(m) - renderMs) / 1000;
+      whistleEnds.push(now + left * 1000);
+      audio.missileWhistle(m.to, flight.pos, flight.yaw, left);
     }
     if (mf.announces.length > 0) say(incomingCallout());
     for (const m of mf.impacts) {
@@ -4278,7 +4389,11 @@ const frame = (now: number): void => {
       music.noteCombat(now);
     }
     missileRenderer.update(mf.flying, chase.position, renderMs, now);
+    socket.pruneChaos(renderMs); // C2: runs and quakes long over
   }
+  // C2: the bomber formations and the fires.
+  bomberRenderer.update(socket.bombers, chase.position, renderMs, now);
+  fireRenderer.update(socket.fires, chase.position, now);
   // S4: the zeppelin, its flak and its fall; the HUD bar while it flies;
   // "it got away" once, when a raid runs out still flying.
   bossRenderer.update(

@@ -382,6 +382,8 @@ const wrapAngle = (a: number): number => {
   return m > Math.PI ? m - twoPi : m;
 };
 
+/** S9: the longest a launched bot settles before it may fight, ms. */
+const LAUNCH_SETTLE_MS = 25_000;
 const NEUTRAL: FlightInput = { pitch: 0, turn: 0, roll: 0, throttle: 0 };
 
 /** What a bot hands stepFlight: its stick inside the pre-F7 pitch envelope
@@ -705,6 +707,10 @@ interface Bot {
    * settling into the street before the fight, and a high (fallback) spawn
    * has no street to settle into. */
   graceUntil: number;
+  /** S9: launched from the boss carrier — until this time, ms, it flies its
+   * launch run stick-neutral (the run launchClear cleared) and its own
+   * carrier is not solid to it. */
+  carrierUntil: number;
   /** Is the current ENGAGE chasing along the street lattice (pursuit line
    * blocked) rather than flying straight at the target? */
   streetChase: boolean;
@@ -952,6 +958,7 @@ export class RoomBots {
       escapeYaw: null,
       fought: false,
       graceUntil: streetGrace(spawn),
+      carrierUntil: Number.NEGATIVE_INFINITY,
       streetChase: false,
       thread: null,
       tunnel: null,
@@ -1166,12 +1173,20 @@ export class RoomBots {
     bot.tunnel = null;
   }
 
-  /** Server-issued respawn (same sampler as humans): fresh flight state. */
-  respawn(id: string, spawn: SpawnState): void {
+  /** Server-issued respawn (same sampler as humans): fresh flight state.
+   * S9: `launch` — released from the boss carrier: its pitch off the rig,
+   * and when its launch run (carrier grace) ends, ms. */
+  respawn(
+    id: string,
+    spawn: SpawnState,
+    launch?: { pitch: number; until: number },
+  ): void {
     const bot = this.bots.get(id);
     if (!bot) return;
     bot.alive = true;
     bot.flight = this.flightFromSpawn(spawn);
+    bot.flight.pitch = launch?.pitch ?? 0;
+    bot.carrierUntil = launch?.until ?? Number.NEGATIVE_INFINITY;
     bot.input = NEUTRAL;
     bot.state = "PATROL";
     bot.targetId = null;
@@ -1276,6 +1291,49 @@ export class RoomBots {
     return true;
   }
 
+  /** S9: the mover field with the boss carrier left out — what a bot on its
+   * launch run collides with (its own carrier is not solid to it yet). */
+  private withoutCarrier(): MoverField {
+    return { ...this.movers, boss: undefined };
+  }
+
+  /**
+   * S9: is a carrier launch released at `pos` / `yaw` / `pitch` / `speed`
+   * at `at` (ms) safe? Its launch run — `graceMs` of stick-neutral flight,
+   * stepped exactly as tick() will fly it — must miss the ground, the
+   * city, the trees and every mover but its carrier; then BOT_SPAWN_CLEAR_AHEAD
+   * more of straight flight must miss everything, the carrier included, by
+   * the probe margin (it is solid again by then).
+   */
+  launchClear(
+    spawn: SpawnState,
+    pitch: number,
+    graceMs: number,
+    at: number,
+  ): boolean {
+    let f = this.flightFromSpawn(spawn);
+    f.pitch = pitch;
+    const free = this.withoutCarrier();
+    const runOut = (BOT_SPAWN_CLEAR_AHEAD / spawn.speed) * 1000;
+    for (let ms = 0; ms <= graceMs + runOut; ms += BOT_DT * 1000) {
+      f = stepFlight(f, botInput(NEUTRAL), BOT_DT);
+      const t = at + ms + BOT_DT * 1000;
+      const p = f.pos;
+      const after = ms >= graceMs;
+      const r = after ? BOT_PROBE_RADIUS : PLAYER_RADIUS;
+      if (
+        hitsGround(p, r) ||
+        collideCity(p, r, this.buildings, this.cityIndex) ||
+        collideNature(p, r, this.nature) ||
+        collideBotMovers(p, r, after ? this.movers : free, t) ||
+        this.inCollapseZone(p, r, t)
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   /**
    * Advance every living bot one sim tick: brain every BOT_DECISION_EVERY-th
    * call, shared stepFlight always, then the same collision geometry players
@@ -1298,6 +1356,9 @@ export class RoomBots {
       // flew this exact path clear), then the level tail the rollout also
       // checked (held like a dodge, below), before the brain takes over.
       let raw = bot.maneuver ? this.maneuverStep(bot, now) : null;
+      // S9: a launch run off the carrier flies stick-neutral, as cleared.
+      const launched = now < bot.carrierUntil;
+      if (launched) raw = botInput(NEUTRAL);
       // A hazard dodge (or a maneuver's tail) holds its rollout-checked
       // stick to its end; only a blocked path cuts it short.
       const dodging = now < bot.dodgeUntil;
@@ -1334,7 +1395,12 @@ export class RoomBots {
           this.buildings,
           this.cityIndex,
         ) ||
-        collideBotMovers(bot.flight.pos, PLAYER_RADIUS, this.movers, now) ||
+        collideBotMovers(
+          bot.flight.pos,
+          PLAYER_RADIUS,
+          launched ? this.withoutCarrier() : this.movers,
+          now,
+        ) ||
         collideNature(bot.flight.pos, PLAYER_RADIUS, this.nature)
       ) {
         bot.alive = false;
@@ -1641,7 +1707,13 @@ export class RoomBots {
       bot.graceUntil =
         now + BOT_SPAWN_GRACE_MS + (this.tactics ? BOT_SPAWN_SETTLE_MS : 0);
     }
-    if (now < bot.graceUntil) {
+    // S9: off the boss carrier, settle down the lattice into the band
+    // before the first fight — a fight joined from the carrier's ~270 m
+    // dives onto the roofs (the bot sim: 2× the crashes).
+    const settling =
+      bot.flight.pos.y > BOT_CANYON_PROBE_ALT &&
+      now < bot.carrierUntil + LAUNCH_SETTLE_MS;
+    if (now < bot.graceUntil || settling) {
       if (blocked) {
         recover(false);
         return;

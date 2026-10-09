@@ -258,4 +258,38 @@ export const VIEWS = [
     raf: true,
     weather: "clear",
   },
+  // U5 underground life: the metro hall seen through its glass from
+  // Crosstown's middle straight (the world pinned 24 s into a metro cycle:
+  // the train stands at the platform, doors open), the Seam Line garden
+  // looking down the bore to its lake, and the Riverside grotto low over
+  // its glowing mushrooms. Poses from tunnelPointInto (s 448 lat -4 turned
+  // 35° to the hall; s 770; s 300 lat -3).
+  {
+    name: "tunnel-station",
+    x: 1273,
+    z: 676,
+    y: -54,
+    yaw: -1.309,
+    raf: true,
+    timeMs: 60_024_000,
+    weather: "clear",
+  },
+  {
+    name: "tunnel-garden",
+    x: 720,
+    z: 384.9,
+    y: -53,
+    yaw: 0,
+    raf: true,
+    weather: "clear",
+  },
+  {
+    name: "tunnel-grotto",
+    x: 898.8,
+    z: 1304.5,
+    y: -57,
+    yaw: 2.356,
+    raf: true,
+    weather: "clear",
+  },
 ];

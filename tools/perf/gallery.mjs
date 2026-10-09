@@ -281,6 +281,8 @@ try {
             v.yaw = tail.yaw - Math.PI / 2 + v.dyaw;
           }
         }
+        // U5: a static view may hold the world clock at a chosen moment.
+        if (v.timeMs !== undefined) window.__ab.pinWorld(v.timeMs);
         window.__ab.teleport(v.x, v.z, v.y, v.yaw);
         if (v.pitch) {
           const s = window.__ab.state();
@@ -363,6 +365,9 @@ try {
       });
     }
     if (v.eye) await page.evaluate(() => window.__ab.qaCamera(null));
+    if (v.timeMs !== undefined && !v.trainEye) {
+      await page.evaluate(() => window.__ab.pinWorld(null));
+    }
     if (v.raf) {
       await page.evaluate(() => {
         window.__abPin = false;

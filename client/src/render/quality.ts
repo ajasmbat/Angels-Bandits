@@ -177,6 +177,11 @@ export interface QualityProfile {
    * identical on every tier, and carries its own baked light, so a tunnel
    * stays lit without them. */
   tunnelFixtures: boolean;
+  /** U5 underground life: how many of the dressing's bands are drawn —
+   * 3 = core + detail + fine, 1 = core only (the metro hall, its glass,
+   * the panels, the waterfalls, the lake). A drawRange prefix on four
+   * draws; the shell and the hall's glass are identical on every tier. */
+  tunnelLife: number;
   /** S6 glass reflections: cube-probe faces re-rendered per frame (at most
    * 1; a full refresh every 6 / share frames). 0 = off: no probe renders,
    * and glass, puddles and the river keep their faked reflections. */
@@ -226,6 +231,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     heatShimmer: true,
     glare: true,
     tunnelFixtures: true,
+    tunnelLife: 3,
     reflections: 1,
   },
   medium: {
@@ -270,6 +276,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     heatShimmer: true,
     glare: true,
     tunnelFixtures: true,
+    tunnelLife: 3,
     reflections: 0.5,
   },
   low: {
@@ -314,6 +321,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     heatShimmer: true,
     glare: true,
     tunnelFixtures: true,
+    tunnelLife: 2,
     reflections: 0.34,
   },
   mobile: {
@@ -358,6 +366,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     heatShimmer: false,
     glare: false,
     tunnelFixtures: false,
+    tunnelLife: 1,
     reflections: 0,
   },
 };
@@ -625,6 +634,15 @@ export const FEATURE_TIERS: readonly {
     low: "full",
     mobile: "off",
     note: "one draw; dressing only — the shell keeps its baked light",
+  },
+  {
+    feature:
+      "U5 underground life — gardens, vines, glowing plants, fireflies, birds, station people",
+    high: "full",
+    medium: "full",
+    low: "reduced",
+    mobile: "reduced",
+    note: "four draws; bands thinned by drawRange — the metro hall, its glass, panels, waterfalls and the lake stay on every tier",
   },
   {
     feature: "L12 sky cycle",

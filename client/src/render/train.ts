@@ -22,6 +22,15 @@
 // detectCrash, solid) from the first frame. The cars wait for the server
 // clock like every other mover: a train you cannot see must never be able to
 // kill you. People are the accepted non-solid exception (they are people).
+//
+// U5: the underground metro reuses this car rendering — METRO_CARS more
+// cars at the end of the same InstancedMesh (no draw call of its own),
+// posed from underground-layout.ts's pure schedule. They run in the metro
+// hall, in the rock behind the station's glass, so they are never solid;
+// they stay out of the sound cues, the horns and the MoverLights, and wait
+// for the server clock like every other car. They keep this lit material
+// (no new program): the scene's moon and fill reach them as they reach the
+// platform people — a deviation from the tunnel shell's unlit rule.
 
 import type { MoverBox } from "@angels-bandits/common/city/movers";
 import {
@@ -69,6 +78,7 @@ import {
   signRow,
   signText,
 } from "./train-sign";
+import { METRO_CARS, metroCarBox, metroState } from "./underground-layout";
 
 /** Program cache key for the patched train material — distinct from every
  * other key in the repo (three keys programs on onBeforeCompile.toString()
@@ -396,6 +406,9 @@ export class TrainRenderer {
   private readonly lamps: Lamp[] = [];
   private readonly slots: TrainSlot[] = [];
   private readonly count: number;
+  /** U5: the first instance of the metro's parts. */
+  private readonly metroBase: number;
+  private readonly metro = { s: null as number | null, doors: 0 };
   private readonly trainAttr: THREE.InstancedBufferAttribute;
   private readonly time = { value: 0 };
   private showPeople = true;
@@ -433,6 +446,8 @@ export class TrainRenderer {
         }
       }
     }
+    this.metroBase = next;
+    next += METRO_CARS * PARTS_PER_CAR;
     this.count = Math.max(1, next);
 
     const geometry = new THREE.BoxGeometry(1, 1, 1);
@@ -449,6 +464,12 @@ export class TrainRenderer {
               : PART_BODY;
         attr[body * 3 + 1] = row;
       }
+    }
+    for (let i = 0; i < METRO_CARS; i++) {
+      const body = this.metroBase + i * PARTS_PER_CAR + 2;
+      attr[body * 3] =
+        i === 0 ? PART_LEAD : i === METRO_CARS - 1 ? PART_TAIL : PART_BODY;
+      attr[body * 3 + 1] = signRow(0, 0);
     }
     this.trainAttr = new THREE.InstancedBufferAttribute(attr, 3);
     this.trainAttr.setUsage(THREE.DynamicDrawUsage);
@@ -488,6 +509,13 @@ export class TrainRenderer {
       const p = slot.base + slot.line.cars * PARTS_PER_CAR;
       this.mesh.setColorAt(p, PANTOGRAPH_COLOR);
       this.mesh.setColorAt(p + 1, PANTOGRAPH_COLOR);
+    }
+    for (let c = 0; c < METRO_CARS; c++) {
+      const b = this.metroBase + c * PARTS_PER_CAR;
+      this.mesh.setColorAt(b, BOGIE_COLOR);
+      this.mesh.setColorAt(b + 1, BOGIE_COLOR);
+      this.mesh.setColorAt(b + 2, BODY_COLOR);
+      this.mesh.setColorAt(b + 3, ROOF_UNIT_COLOR);
     }
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
   }
@@ -876,8 +904,43 @@ export class TrainRenderer {
         }
       }
     }
+    this.poseMetro(camera, serverTimeMs, doors);
     this.mesh.instanceMatrix.needsUpdate = true;
     this.trainAttr.needsUpdate = true;
+  }
+
+  /** U5: the metro's cars — hidden before the clock, between trains and
+   * wherever a car is wholly beyond the hall's end walls. */
+  private poseMetro(
+    camera: Vec3,
+    serverTimeMs: number | null,
+    doors: Float32Array,
+  ): void {
+    const m =
+      serverTimeMs === null ? null : metroState(serverTimeMs, this.metro);
+    for (let i = 0; i < METRO_CARS; i++) {
+      const base = this.metroBase + i * PARTS_PER_CAR;
+      const b = this.car;
+      if (m === null || m.s === null || !metroCarBox(m.s, i, b)) {
+        for (let k = 0; k < PARTS_PER_CAR; k++) this.hide(base + k);
+        continue;
+      }
+      const bogieY = -HALF_H + BOGIE_H / 2;
+      this.putPart(base, b, 5.4, bogieY, 2.8, BOGIE_H, 2.5, camera);
+      this.putPart(base + 1, b, -5.4, bogieY, 2.8, BOGIE_H, 2.5, camera);
+      this.putPart(
+        base + 2,
+        b,
+        0,
+        BODY_Y,
+        TRAIN_CAR_LENGTH,
+        BODY_H,
+        TRAIN_CAR_WIDTH,
+        camera,
+      );
+      this.putPart(base + 3, b, 0, HALF_H - ROOF_H + 0.15, 4, 0.3, 2.2, camera);
+      doors[(base + 2) * 3 + 2] = m.doors;
+    }
   }
 
   /** Train lights placed this frame — the perf report's handle. */

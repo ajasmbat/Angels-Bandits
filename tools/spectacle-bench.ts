@@ -389,8 +389,11 @@ const isBench = (file: string): boolean =>
  * push grows a fresh one (~150 B per attribute). That is three's list, not
  * the module's work; D6's table carries the same residue.
  */
-const isRangeList = (file: string): boolean =>
-  file === "client/src/render/update-range.ts";
+const isRangeList = (file: string, fn: string): boolean =>
+  file === "client/src/render/update-range.ts" ||
+  // V8 may inline pushUpdateRange into its one caller; uploadPrefix itself
+  // allocates nothing else (it loops a prebuilt list and sets flags).
+  (file === "client/src/render/wrapPlacement.ts" && fn === "uploadPrefix");
 
 async function profileRun(e: (typeof ENTRIES)[number]): Promise<{
   perFrame: number;
@@ -413,19 +416,20 @@ async function profileRun(e: (typeof ENTRIES)[number]): Promise<{
   const sites = new Map<string, number>();
   let total = 0;
   let rangeList = 0;
-  const walk = (n: ProfileNode, owner: string) => {
+  const walk = (n: ProfileNode, owner: string, ownerFn: string) => {
     const file = fileOf(n.callFrame.url);
     const here = file === "" ? owner : file;
-    if (n.selfSize > 0 && isRangeList(here)) {
+    const hereFn = file === "" ? ownerFn : n.callFrame.functionName;
+    if (n.selfSize > 0 && isRangeList(here, hereFn)) {
       rangeList += n.selfSize;
     } else if (n.selfSize > 0 && !isBench(here)) {
       total += n.selfSize;
       const key = `${n.callFrame.functionName || "(anonymous)"} ${file ? `${file}:${n.callFrame.lineNumber + 1}` : `(builtin, from ${here})`}`;
       sites.set(key, (sites.get(key) ?? 0) + n.selfSize);
     }
-    for (const c of n.children) walk(c, here);
+    for (const c of n.children) walk(c, here, hereFn);
   };
-  walk(profile.head as ProfileNode, "node:");
+  walk(profile.head as ProfileNode, "node:", "");
   return {
     perFrame: total / FRAMES,
     rangeList: rangeList / FRAMES,

@@ -46,6 +46,12 @@ import { pushUpdateRange } from "./update-range";
 export const STANDING_MIN_MS = 250;
 /** At most this many buildings re-filter per layer per frame. */
 export const STANDING_PER_FRAME = 8;
+/** Every layer's standing work shares this much of a frame, ms: past it
+ * the rest waits for the next frame (a hide lands a frame or two later). */
+export const STANDING_BUDGET_MS = 0.3;
+/** …except that a layer handed nothing for this many frames still gets one
+ * building, so the last layers polled never starve under constant chaos. */
+const STARVE_FRAMES = 6;
 
 /** What the watch reads: anything whose version moves when damage does. */
 export interface StandingSource {
@@ -75,7 +81,8 @@ export function attachStanding(
  * nothing is held back. */
 export function setStandingClock(renderMs: number | null): void {
   clockMs = renderMs;
-  // D8 QA: close the frame's cost (every watch's work since the last call).
+  // Close the frame's cost (every watch's work since the last call): the
+  // shared budget starts over, and the QA ring keeps it.
   frameCost[frameAt++ % frameCost.length] = costNow;
   costNow = 0;
 }
@@ -139,6 +146,8 @@ export class StandingWatch {
   private readonly queued: Uint8Array;
   private readonly queue: number[] = [];
   private lastSource = Number.NaN;
+  /** The frame (frameAt) this watch last handed a building out. */
+  private servedAt = Number.NEGATIVE_INFINITY;
 
   constructor(private readonly buildings: readonly Building[]) {
     this.seen = new Float64Array(buildings.length);
@@ -157,13 +166,18 @@ export class StandingWatch {
     const v = source ? source.version : Number.NaN;
     if (source && v === this.lastSource && this.queue.length === 0) return 0;
     const t0 = performance.now();
-    const n = this.handOut(fn, v, now);
+    const n = this.handOut(fn, v, now, t0);
     costNow += performance.now() - t0;
     if (n > maxPerPoll) maxPerPoll = n;
     return n;
   }
 
-  private handOut(fn: (b: number) => void, v: number, now: number): number {
+  private handOut(
+    fn: (b: number) => void,
+    v: number,
+    now: number,
+    t0: number,
+  ): number {
     // No source attached (tests, tools): look every call.
     if (!source || v !== this.lastSource) {
       this.lastSource = v;
@@ -188,6 +202,16 @@ export class StandingWatch {
           if (now - (this.lastAt[i] as number) < STANDING_MIN_MS) continue;
           if (heldBack(i)) continue;
         }
+        // The shared frame budget (only with a clock attached: tests and
+        // tools without one take everything at once).
+        if (
+          source &&
+          costNow + performance.now() - t0 > STANDING_BUDGET_MS &&
+          !(n === 0 && frameAt - this.servedAt > STARVE_FRAMES)
+        ) {
+          return n;
+        }
+        this.servedAt = frameAt;
         this.queue.splice(q, 1);
         q--;
         this.queued[i] = 0;

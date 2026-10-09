@@ -151,12 +151,70 @@ const sy: number[] = [];
 const sz: number[] = [];
 
 /**
+ * Fast path (sound: it implies every sample passes): the box lies within one
+ * tier's height (± STAND_EPS), or within STAND_ROOF_RISE over one tier's
+ * ORIGINAL deck, no further than STAND_OUT off its footprint — and every
+ * cell its clamped, eps-grown extent touches stands. Most items on a
+ * damaged building hang on standing cells, so they skip the sampling.
+ */
+function wholeStands(b: Building, box: LocalBox): boolean {
+  const grids = tierGrids(b);
+  const masks = chunkMask(b);
+  for (let k = 0; k < grids.length; k++) {
+    const g = grids[k] as TierGrid;
+    const hw = g.width / 2;
+    const hd = g.depth / 2;
+    if (
+      Math.max(Math.abs(box.x0), Math.abs(box.x1)) - hw > STAND_OUT ||
+      Math.max(Math.abs(box.z0), Math.abs(box.z1)) - hd > STAND_OUT
+    )
+      continue;
+    const top = g.baseY + g.height;
+    let y0: number;
+    let y1: number;
+    if (box.y0 >= g.baseY - STAND_EPS && box.y1 <= top + STAND_EPS) {
+      y0 = clampI((box.y0 - g.baseY - STAND_EPS) / g.ch, g.ny);
+      y1 = clampI((box.y1 - g.baseY + STAND_EPS) / g.ch, g.ny);
+    } else if (box.y0 > top + STAND_EPS && box.y1 <= top + STAND_ROOF_RISE) {
+      // Over the deck: an original one only (outside the next tier).
+      const up = grids[k + 1];
+      if (
+        up &&
+        Math.min(Math.abs(box.x0), Math.abs(box.x1)) <
+          up.width / 2 + STAND_EPS &&
+        Math.min(Math.abs(box.z0), Math.abs(box.z1)) < up.depth / 2 + STAND_EPS
+      )
+        return false;
+      y0 = g.ny - 1;
+      y1 = g.ny - 1;
+    } else {
+      continue;
+    }
+    const cx0 = Math.max(-hw, Math.min(hw, box.x0)) + hw;
+    const cx1 = Math.max(-hw, Math.min(hw, box.x1)) + hw;
+    const cz0 = Math.max(-hd, Math.min(hd, box.z0)) + hd;
+    const cz1 = Math.max(-hd, Math.min(hd, box.z1)) + hd;
+    const x0 = clampI((cx0 - STAND_EPS) / g.cw, g.nx);
+    const x1 = clampI((cx1 + STAND_EPS) / g.cw, g.nx);
+    const z0 = clampI((cz0 - STAND_EPS) / g.cd, g.nz);
+    const z1 = clampI((cz1 + STAND_EPS) / g.cd, g.nz);
+    for (let iy = y0; iy <= y1; iy++)
+      for (let iz = z0; iz <= z1; iz++)
+        for (let ix = x0; ix <= x1; ix++)
+          if (!cellStands(b, masks, g, k, ix, iy, iz)) return false;
+    return true;
+  }
+  return false;
+}
+
+/**
  * Does a decoration occupying `box` (in `b`'s frame) still stand? Every
  * sample of the box — its corners, and every ≤ 6 m along each edge and
  * through it — must pass pointStands. An intact building keeps everything.
  */
 export function decorStands(b: Building, box: LocalBox): boolean {
   if (!b.damage) return true;
+  if (wholeStands(b, box)) return true;
   samples(box.x0, box.x1, sx);
   samples(box.y0, box.y1, sy);
   samples(box.z0, box.z1, sz);

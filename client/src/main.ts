@@ -53,6 +53,7 @@ import {
   type FlightState,
   createFlightState,
   handlingRates,
+  realRoll,
   stepFlight,
 } from "@angels-bandits/common/flight";
 import { MEDAL_LABEL, streakTier } from "@angels-bandits/common/medals";
@@ -66,6 +67,10 @@ import type {
 } from "@angels-bandits/common/protocol";
 import { airlinerOffsetInto } from "@angels-bandits/common/skytraffic";
 import { strikesInWindow } from "@angels-bandits/common/storm";
+import {
+  MISSILE_SHOOTER_ID,
+  missileImpactAt,
+} from "@angels-bandits/common/strike";
 import {
   WEATHER_PHASES,
   type WeatherPhase,
@@ -110,6 +115,7 @@ import {
   LOW_HP_CALLOUT,
   checkInCallout,
   hitCallout,
+  incomingCallout,
   maydayCallout,
   nearMissCallout,
   offStationCallout,
@@ -149,6 +155,12 @@ import {
   stepHoleAssist,
 } from "./game/hole-assist";
 import {
+  type SaveWorld,
+  createHoleSave,
+  resetHoleSave,
+  stepHoleSave,
+} from "./game/hole-save";
+import {
   type AimError,
   CONVERGED_RAD,
   aimError,
@@ -159,6 +171,7 @@ import {
 } from "./game/instructor";
 import { speedFov } from "./game/jet-camera";
 import { magnetizeVelocity } from "./game/magnetism";
+import { MissileFeed, MissileShake } from "./game/missile-feed";
 import { SessionStats } from "./game/session-stats";
 import { wreckCamView } from "./game/wreck-cam";
 import {
@@ -193,6 +206,7 @@ import { HoleDecorRenderer } from "./render/hole-decor";
 import { BlastLedger, Impacts, burnCapFor } from "./render/impacts";
 import { Jumbotrons } from "./render/jumbotrons";
 import { lookPasses } from "./render/lookup";
+import { MissileRenderer } from "./render/missiles";
 import { MoverLights, Movers } from "./render/movers";
 import { NatureRenderer } from "./render/nature";
 import { Pedestrians } from "./render/pedestrians";
@@ -775,6 +789,18 @@ const holeAssist = createHoleAssist();
 const holeAssistWant = createHoleAssist();
 const assistDir: Vec3 = { x: 0, y: 0, z: 0 };
 const assistStickOut = { turn: 0, pitch: 0 };
+/** H2 hole assist stands down past this much real roll, rad (~30°, F7). */
+const ASSIST_MAX_ROLL = Math.PI / 6;
+// H3 hole save: the same spans, and every solid the crash check reads — the
+// last-moment pose correction that threads a hole when a crash is imminent.
+const saveWorld: SaveWorld = {
+  spans: assistWorld.spans,
+  buildings: city.cityBuildings,
+  index: city.cityIndex,
+  nature: natureIndex,
+  movers: moverField,
+};
+const holeSave = createHoleSave();
 const natureRenderer = new NatureRenderer(nature);
 scene.add(natureRenderer.group);
 // L11 river: embankment walls, bridges, the reflecting water and the boats.
@@ -882,6 +908,14 @@ const wrecks = new Wrecks(impacts, (_w, at) => {
 });
 scene.add(wrecks.group);
 wrecks.reset((welcome.wrecks ?? []).filter(isWreckParams));
+// X1 missile strikes: the server's announced missiles (held in the socket,
+// so none is lost while booting) fly the shared arc on the synced clock —
+// body, red glint, smoke trail — then whistle, land and shake the camera.
+// Their damage arrives as chunks, damage/death and a `missile` city event.
+const missileRenderer = new MissileRenderer(smoke, impacts);
+scene.add(missileRenderer.group);
+const missileFeed = new MissileFeed();
+const missileShake = new MissileShake();
 /** The classifier's reusable result (allocation-free bullet loop). */
 const impactHit: BulletImpact = createBulletImpact();
 /** QA: the last city impact by a LOCAL round (own guns or __ab.qaFireAt —
@@ -1343,6 +1377,7 @@ function stepAssist(off: boolean, dt: number): void {
 function resetAssist(): void {
   holeAssist.yaw = 0;
   holeAssist.pitch = 0;
+  resetHoleSave(holeSave); // H3: and no save mid-slide
 }
 
 /** S3: drop the local run (death, respawn, resume) — the server drops its
@@ -1405,6 +1440,9 @@ function enterDeath(killerId: string | null, cause: DeathMsg["cause"]): void {
   instructor = createInstructor();
   resetAssist();
   hud.setFreeLook(false);
+  // F7: a death mid-loop leaves the chase up rolled; the kill-cam's lookAt
+  // frames the killer (or wreck) upright.
+  camera.up.set(0, 1, 0);
   killCamTargetId = killerId;
   hud.showKillCam(
     deathLabel(cause, killerId === null ? null : nameOf(killerId)),
@@ -1540,10 +1578,13 @@ socket.events.onDamage = (msg) => {
       const now = performance.now();
       // A snapshot (or regen) can land between hits and eat the difference.
       const dmg = lost > 0 ? lost : BULLET_DAMAGE;
+      // X1: missile damage points at the blast, not at a shooter.
       const shooterPos =
         msg.shooterId === socket.selfId
           ? null
-          : remotes.poseOf(msg.shooterId)?.pos;
+          : msg.shooterId === MISSILE_SHOOTER_ID
+            ? msg.from
+            : remotes.poseOf(msg.shooterId)?.pos;
       damageIndicator.hit(msg.shooterId, shooterPos, dmg, now);
       audio.damageThud(now);
       haptics.damage(now);
@@ -1855,6 +1896,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   reactor.setQuality(tier);
   // D1: particle budget and burning patches (counts only).
   impacts.setShare(QUALITY_PROFILES[tier].impacts);
+  missileRenderer.setQuality(QUALITY_PROFILES[tier].missileDebris);
   blastLedger.setBurnCap(burnCapFor(QUALITY_PROFILES[tier].impacts));
   wrecks.setShare(QUALITY_PROFILES[tier].wreckFire); // D4
   streakSmoke.setShare(QUALITY_PROFILES[tier].streakSmoke); // S7
@@ -2474,6 +2516,7 @@ window.__ab = {
     interruptQuality(); // O3: a transient
     flight = { ...createFlightState({ x, y, z }, yaw), speed: flight.speed };
     chase.snapTo(flight);
+    resetHoleSave(holeSave);
   },
   perf: () => ({
     fps: perf.fps,
@@ -2577,6 +2620,7 @@ window.__ab = {
       yaw: Math.atan2(-d.x, -d.z),
       pitch: Math.atan2(d.y, flat),
       roll: 0,
+      bank: 0,
       rollRate: 0,
     };
     chase.snapTo(flight);
@@ -3060,8 +3104,12 @@ const frame = (now: number): void => {
     const steer = freelook.steer * zoomSteer(zoom.z);
     let command = input.read();
     // H2 hole assist: stands down while the pilot shoots, free-looks or the
-    // view is reframing (zoom easing) — then glides back to zero.
+    // view is reframing (zoom easing) — then glides back to zero. F7: and
+    // while the airframe is rolled past ~30° or inverted — its bias is a
+    // world heading/elevation nudge, which only reads right wings-level.
+    const roll = realRoll(flight);
     const assistOff =
+      Math.abs(roll) > ASSIST_MAX_ROLL ||
       guns.firing ||
       freelook.held ||
       freelook.yaw !== 0 ||
@@ -3082,7 +3130,7 @@ const frame = (now: number): void => {
       // out of the skyline, throttle full). A fresh instructor every frame,
       // so closing the panel hands back with no lagged command.
       stepAssist(true, dt);
-      command = autopilotInput(flight.pitch, flight.pos.y);
+      command = autopilotInput(flight.pitch, flight.pos.y, roll);
       instructor = createInstructor();
     } else if (aimMode === "instructor") {
       // The cursor is the aim point: fly the pipper onto it. The view is the
@@ -3192,9 +3240,12 @@ const frame = (now: number): void => {
     // turn the pilot is committing to (or the wall ahead) is makeable. Intent
     // is the turn command before free-look/zoom shaping; the clock is the one
     // the movers are drawn (and crash-checked) at.
+    // F7: the turn input swings the nose about world-up only when upright —
+    // reversed inverted, about the body's up at knife-edge — so the intent
+    // the manager plans a world-frame turn for is signed by cos(real roll).
     cornerCap = stepCornerCap(
       cornerCap,
-      cornerSpeed(flight, cornerWorld, intentTurn, renderMs),
+      cornerSpeed(flight, cornerWorld, intentTurn * Math.cos(roll), renderMs),
       dt,
     );
     const shaped = {
@@ -3212,6 +3263,20 @@ const frame = (now: number): void => {
     // decay can lag the clock — this keeps every pose inside the mirror.
     const speedCap = boostSpeedCap(boost, now);
     if (flight.speed > speedCap) flight = { ...flight, speed: speedCap };
+    // H3: about to clip a hole's mouth or a bridge deck? Slide the fresh pose
+    // (stepFlight's own object, corrected in place) onto a line that clears,
+    // before anything reads it — crash check, course, pose stream, camera.
+    // After input shaping, so every input mode benefits; the instructor
+    // modes get position offsets only (it would fly an attitude tweak out).
+    stepHoleSave(
+      holeSave,
+      flight,
+      shaped,
+      dt,
+      saveWorld,
+      renderMs,
+      aimMode !== "instructor",
+    );
     const crashed = detectCrash(
       flight,
       city.cityBuildings,
@@ -3286,6 +3351,7 @@ const frame = (now: number): void => {
     // the flight model never sees any of this. Different time phases keep
     // the camera and the airframe from moving in lockstep.
     const camShake = turbulenceOffset(now, flight.pos.y);
+    missileShake.addInto(camShake, now); // X1 impacts: display camera only
     const planeShake = turbulenceOffset(now + 537, flight.pos.y);
     chaseMoversMs = renderMs;
     chase.update(camera, flight, dt, freelook, camShake, zoom.z, leadYawRate);
@@ -3576,6 +3642,34 @@ const frame = (now: number): void => {
   }
   for (const target of targets) {
     smoke.sync(target.id, target.pos, now, smokeActive(target.hp));
+  }
+  // X1 missiles on the synced clock: whistles, the "incoming" call, impacts,
+  // then the bodies and their trails (fed before the smoke pass below).
+  if (renderMs !== null) {
+    const mf = missileFeed.poll(
+      socket.missiles,
+      renderMs,
+      alive ? flight.pos : null,
+    );
+    for (const m of mf.whistles) {
+      audio.missileWhistle(
+        m.to,
+        flight.pos,
+        flight.yaw,
+        (missileImpactAt(m) - renderMs) / 1000,
+      );
+    }
+    if (mf.announces.length > 0) say(incomingCallout());
+    for (const m of mf.impacts) {
+      explosions.explode(m.to, now);
+      sparks.burst(m.to, now);
+      audio.missileBlast(m.to, flight.pos, flight.yaw);
+      missileRenderer.impact(m, now);
+      missileShake.add(wrapDistance(m.to, flight.pos), now);
+      radio.noteCombat(now);
+      music.noteCombat(now);
+    }
+    missileRenderer.update(mf.flying, chase.position, renderMs, now);
   }
   smoke.update(chase.position, now);
   // S7 streak smoke: every living plane on a streak, tinted by its tier.

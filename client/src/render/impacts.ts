@@ -17,7 +17,7 @@
 import { mulberry32 } from "@angels-bandits/common/city";
 import type { Building } from "@angels-bandits/common/city";
 import type { CityEvent } from "@angels-bandits/common/cityevents";
-import { SMOKE_LIFE_MS } from "@angels-bandits/common/cityevents";
+import { SMOKE_LIFE_MS, isBlastEvent } from "@angels-bandits/common/cityevents";
 import type { CityIndex } from "@angels-bandits/common/collision";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
@@ -65,6 +65,8 @@ const GRAVITY: Record<Kind, number> = {
 export const PER_HIT = { sparks: 8, dust: 3, chips: 4, glass: 10 } as const;
 /** A blast's glass shower, at full share. */
 export const BLAST_GLASS = 48;
+/** X1 missile impact debris, at full share. */
+export const MISSILE_DEBRIS = { sparks: 40, dust: 24, chips: 60 } as const;
 /** A burning patch's emission, particles/s at full share. */
 const BURN_FIRE_RATE = 24;
 const BURN_SMOKE_RATE = 7;
@@ -233,7 +235,7 @@ export class BlastLedger {
   /** Apply every not-yet-seen `death` event. Returns the blasts applied. */
   ingest(events: readonly CityEvent[]): BlastSite[] {
     const fresh = events
-      .filter((e) => e.kind === "death")
+      .filter(isBlastEvent)
       .slice()
       .sort((a, b) => a.t - b.t || a.x - b.x || a.z - b.z);
     const out: BlastSite[] = [];
@@ -457,6 +459,68 @@ export class Impacts {
           rand() * 6.28,
         );
       }
+    }
+  }
+
+  /**
+   * X1: a missile's debris throw at its impact point — sparks, a cloud of
+   * concrete dust and a spray of chunks out along the struck surface's
+   * normal. `scale` is the quality row's share (on top of this pool's own).
+   */
+  missileDebris(point: Vec3, normal: Vec3, scale: number, now: number): void {
+    const p = this.pool;
+    const rand = this.rand;
+    const n = (k: number) => this.count(Math.max(1, Math.round(k * scale)));
+    const [sr, sg, sb] = SPARK_RGB;
+    for (let i = 0; i < n(MISSILE_DEBRIS.sparks); i++) {
+      const v = sprayInto(this.v, normal, 14 + 26 * rand(), 1.2, rand);
+      p.spawn(
+        Kind.SPARK,
+        point,
+        v.x,
+        v.y,
+        v.z,
+        300 + 400 * rand(),
+        0.9,
+        sr,
+        sg,
+        sb,
+        now,
+      );
+    }
+    const [dr, dg, db] = DUST_RGB[FacadeArchetype.OFFICE];
+    for (let i = 0; i < n(MISSILE_DEBRIS.dust); i++) {
+      const v = sprayInto(this.v, normal, 2 + 5 * rand(), 1.4, rand);
+      p.spawn(
+        Kind.DUST,
+        point,
+        v.x,
+        v.y,
+        v.z,
+        2000 + 1800 * rand(),
+        4 + 4 * rand(),
+        dr,
+        dg,
+        db,
+        now,
+      );
+    }
+    for (let i = 0; i < n(MISSILE_DEBRIS.chips); i++) {
+      const v = sprayInto(this.v, normal, 6 + 14 * rand(), 1.1, rand);
+      p.spawn(
+        Kind.CHIP,
+        point,
+        v.x,
+        v.y + 4,
+        v.z,
+        1400 + 1200 * rand(),
+        0.6 + 0.6 * rand(),
+        dr * 0.55,
+        dg * 0.55,
+        db * 0.55,
+        now,
+        rand() * 6.28,
+      );
     }
   }
 

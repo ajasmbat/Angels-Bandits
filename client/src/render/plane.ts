@@ -13,6 +13,7 @@ import {
   BANK_FREQ,
   MAX_HP,
   PITCH_RATE,
+  ROLL_RATE,
   TURN_RATE,
 } from "@angels-bandits/common/constants";
 import {
@@ -113,8 +114,9 @@ export function inputControls(
   const turn = clamp1(input.turn);
   const pitchRate = clamp1(input.pitch) * rates.pitchRate;
   const yawRate = -turn * rates.turnRate; // world-up axis
-  // The bank spring's own rate (F6) — stepFlight already moved it.
-  const rollRate = state.rollRate ?? 0;
+  // The bank spring's own rate (F6) — stepFlight already moved it — plus
+  // the real A/D roll (F7).
+  const rollRate = (state.rollRate ?? 0) + clamp1(input.roll) * ROLL_RATE;
   const sp = Math.sin(state.pitch);
   const cp = Math.cos(state.pitch);
   const sr = Math.sin(state.roll);

@@ -126,6 +126,9 @@ export class TouchControls {
   /** A touch took the aim over from a mouse: seed `dir` from its cursor. */
   private pickupPending = false;
   private readonly ndc = { x: 0, y: 0 };
+  /** The chase camera's up as of the last steer() (F7): drags turn the aim
+   * the way the view shows it. */
+  private readonly viewUp: Vec3 = { x: 0, y: 1, z: 0 };
   /** The lead reticle, screen px, as last drawn (M8 aim friction). */
   private readonly reticle = { x: 0, y: 0 };
   private reticleShown = false;
@@ -246,11 +249,17 @@ export class TouchControls {
    */
   steer(
     flight: FlightState,
-    frame: { eye: Vec3; at: Vec3 },
+    frame: { eye: Vec3; at: Vec3; up?: Vec3 },
     fovDeg: number,
     aspect: number,
     dt: number,
   ): boolean {
+    // F7: the next drags turn the aim as this view shows it.
+    if (frame.up) {
+      this.viewUp.x = frame.up.x;
+      this.viewUp.y = frame.up.y;
+      this.viewUp.z = frame.up.z;
+    }
     let claim = false;
     if (this.recentrePending) {
       recentreAimDir(this.dir, flight);
@@ -259,7 +268,15 @@ export class TouchControls {
       claim = true;
     } else if (this.pickupPending) {
       const c = this.t.input.cursorNdc();
-      const ray = cursorRay(frame.eye, frame.at, fovDeg, aspect, c.x, c.y);
+      const ray = cursorRay(
+        frame.eye,
+        frame.at,
+        fovDeg,
+        aspect,
+        c.x,
+        c.y,
+        frame.up,
+      );
       aimDirFromRay(this.dir, frame.eye, ray);
       this.pickupPending = false;
       claim = true;
@@ -405,7 +422,13 @@ export class TouchControls {
         this.t.input.cursorPx(),
         this.reticleShown ? this.reticle : null,
       );
-      dragAimDir(this.dir, s.aimDx, s.aimDy, this.sensitivity * friction);
+      dragAimDir(
+        this.dir,
+        s.aimDx,
+        s.aimDy,
+        this.sensitivity * friction,
+        this.viewUp,
+      );
     } else if (touches.length > 0) {
       this.t.input.setTouchAim(s.aimX, s.aimY);
     }

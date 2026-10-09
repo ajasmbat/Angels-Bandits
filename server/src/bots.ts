@@ -278,6 +278,15 @@ const wrapAngle = (a: number): number => {
 
 const NEUTRAL: FlightInput = { pitch: 0, turn: 0, roll: 0, throttle: 0 };
 
+/** What a bot hands stepFlight: its stick inside the pre-F7 pitch envelope
+ * (the old ±PITCH_LIMIT clamp, exactly). Bots fly the shared model but never
+ * loop — their recovery holds a pull for seconds, which would now go over
+ * the top — and they never roll, so they stay on its exact Euler path. */
+const botInput = (input: FlightInput): FlightInput => ({
+  ...input,
+  pitchLimit: PITCH_LIMIT,
+});
+
 /** Proportional rate steering toward the (torus) delta `d`, inputs capped
  * below the player envelope; null for a zero delta (hold the stick). */
 function steerInput(
@@ -836,7 +845,7 @@ export class RoomBots {
       ) {
         this.decide(bot, now, contacts);
       }
-      bot.flight = stepFlight(bot.flight, bot.input, BOT_DT);
+      bot.flight = stepFlight(bot.flight, botInput(bot.input), BOT_DT);
 
       // Identical geometry to players: solids (H1 holes open) + ground, PLAYER_RADIUS —
       // plus the L2 movers a bot is allowed to hit (crane geometry and the
@@ -1441,7 +1450,7 @@ export class RoomBots {
         if (!next) return true;
         input = next;
       }
-      f = stepFlight(f, input, BOT_DT);
+      f = stepFlight(f, botInput(input), BOT_DT);
       const t = now + k * BOT_DT * 1000;
       if (
         hitsGround(f.pos, r) ||
@@ -2082,7 +2091,7 @@ export class RoomBots {
     let next = 0;
     const times = BOT_CANYON_PROBE_TIMES;
     while (next < times.length) {
-      f = stepFlight(f, bot.input, BOT_DT);
+      f = stepFlight(f, botInput(bot.input), BOT_DT);
       t += BOT_DT;
       if (t + 1e-9 < (times[next] ?? 0)) continue;
       next++;
@@ -2136,7 +2145,7 @@ export class RoomBots {
     let f = flight;
     const steps = Math.round(RECOVER_LOOK_S / BOT_DT);
     for (let k = 1; k <= steps; k++) {
-      f = stepFlight(f, input, BOT_DT);
+      f = stepFlight(f, botInput(input), BOT_DT);
       const r = PLAYER_RADIUS + BOT_MOVER_CLEAR;
       if (collideBotMovers(f.pos, r, this.movers, now + k * BOT_DT * 1000)) {
         return true;

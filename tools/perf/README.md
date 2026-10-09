@@ -2047,6 +2047,19 @@ signage's `vAnim`, which is floored or rounded). One more of the same
 pattern is outside both views: hole decor's `vDecor.x` (kind + seed)
 feeds its `abH` hash; the decor only draws inside tunnels.
 
+**The frozen grid against main** (`--grid --ref 5d29b26`, O6 as of
+`e92c359`, both arms on the fixed harness): no view worse except two,
+and those two are not O6. pose-06 read 0.035 → 0.065 and pose-17
+0.039 → 0.134; re-shot twice more, O6 alone read pose-06 0.034 then
+0.074 and pose-17 0.182 then 0.039, and main read O6's first numbers
+exactly. Their `still` (world AND camera pinned) moves with them (pose-17
+0.049 ↔ 0.012), so something in those scenes differs from one page load
+to the next — server-driven state a pinned world clock does not reach.
+Everywhere else frozen is equal or lower, and the pan jitter — the
+camera moving — fell almost everywhere: chase-rooftops 32.9 → 23.4 %,
+street-low 64.8 → 42.2 %, pose-07 76.6 → 37.4 %, destruction-closeup
+78.8 → 21.5 %.
+
 **Static audit for M3-only causes:** every shader runs `highp` (three.js
 default; FinalPass's raw shader inherits OutputShader's `precision highp
 float`); no shader declares `mediump` or `lowp`; the time-driven uniforms

@@ -26,6 +26,14 @@
 //     everything shown and frustum culling off, behind the boot fade. Every
 //     object's `visible` and `frustumCulled`, and every LOD's `autoUpdate`,
 //     is restored exactly afterwards.
+//
+// U5b: three's own compileAsync() polls `currentProgram.isReady()` on every
+// compiled material and THROWS (inside a setTimeout, so its promise never
+// settles) once one is disposed mid-wait — its program is gone with it.
+// window.__ab and every socket handler are live during this await: the
+// bot that yields to a joining human (or a QA `setBots(0)`) arrives as
+// `playerLeft` and disposes that plane's materials, and boot sat out the
+// whole timeout. The wait below drops a disposed material instead.
 
 import * as THREE from "three";
 import type { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -77,7 +85,7 @@ export async function prewarmScene(
     // The target RenderPass draws into: the program variant the game uses.
     renderer.setRenderTarget(composer.readBuffer);
     await Promise.race([
-      renderer.compileAsync(scene, camera).catch(() => undefined),
+      programsReady(renderer, renderer.compile(scene, camera)),
       new Promise<void>((resolve) => setTimeout(resolve, PREWARM_TIMEOUT_MS)),
     ]);
     renderer.setRenderTarget(previousTarget);
@@ -96,4 +104,30 @@ export async function prewarmScene(
     scene.remove(tag);
     disposeNameTag(tag);
   }
+}
+
+/** Resolves once every material's program has linked (compileAsync's
+ * wait, minus its crash): a material disposed meanwhile has no program
+ * left to wait for and is dropped. Without KHR_parallel_shader_compile
+ * there is no non-blocking status to wait on — the real frame links. */
+function programsReady(
+  renderer: THREE.WebGLRenderer,
+  materials: Set<THREE.Material>,
+): Promise<void> {
+  if (!renderer.extensions.has("KHR_parallel_shader_compile")) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const check = (): void => {
+      for (const m of materials) {
+        const { currentProgram: program } = renderer.properties.get(m) as {
+          currentProgram?: { isReady(): boolean };
+        };
+        if (!program || program.isReady()) materials.delete(m);
+      }
+      if (materials.size === 0) resolve();
+      else setTimeout(check, 10);
+    };
+    check();
+  });
 }

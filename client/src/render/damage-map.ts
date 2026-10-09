@@ -177,6 +177,18 @@ export class FacadeDamage {
     this.dirtySlots.add(slot);
   }
 
+  /** D5 rebuild: `building` is whole again — every mark on it (shattered
+   * panes, bullet holes, scorch) goes with the damage. (faceKey's building
+   * prefix: 8 tiers × 4 faces.) */
+  clearBuilding(building: number): void {
+    for (let s = 0; s < MAX_FACE_SLOTS; s++) {
+      const key = this.slotFace[s] as number;
+      if (key !== -1 && Math.floor(key / 32) === building) {
+        this.evict(s);
+      }
+    }
+  }
+
   /** A pane shatters (it goes dark for good). False when off-grid. */
   shatter(
     building: number,

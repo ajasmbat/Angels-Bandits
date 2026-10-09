@@ -961,8 +961,11 @@ socket.events.onDirectorWarn = (e) => {
 };
 socket.events.onRebuild = (r, restored) => {
   const now = performance.now();
-  if (r.go) directorFx.rebuildPop(restored, now);
-  else {
+  if (r.go) {
+    directorFx.rebuildPop(restored, now);
+    // D1's marks (dark panes, holes, scorch) go with the damage.
+    if (r.k === 0) city.damage.clearBuilding(r.b);
+  } else {
     const serverMs = socket.renderTime();
     directorFx.rebuildAnnounced(
       r,

@@ -575,7 +575,7 @@ async function flySegment(page, seg, sampleMs, worldMs, ledger = false) {
       // flak on the pinned world clock, the record ghost the course run will
       // play. `show` says whether the build has the hook (an --ab-ref from
       // before S8 does not: no baseline) and whether staging took.
-      const show = { boss: null, course: null, chaos: null };
+      const show = { boss: null, course: null, chaos: null, caveIn: null };
       if (s.boss && typeof ab.qaBoss === "function") {
         show.boss =
           ab.qaBoss({
@@ -603,6 +603,13 @@ async function flySegment(page, seg, sampleMs, worldMs, ledger = false) {
             worldMs: s.worldMs,
             ...s.chaos,
           }) !== null;
+      }
+      // U6: a cave-in staged on the pinned world clock (`caveIn.t` ms from
+      // the segment's instant); null when the build has no hook.
+      show.caveIn = null;
+      if (s.caveIn && typeof ab.qaCaveIn === "function") {
+        show.caveIn =
+          ab.qaCaveIn([{ ...s.caveIn, t0: s.worldMs + s.caveIn.t }]).length > 0;
       }
       let courseId = null;
       if (s.course && typeof ab.qaCourseGhost === "function") {
@@ -819,6 +826,7 @@ async function flySegment(page, seg, sampleMs, worldMs, ledger = false) {
       if (weatherPinned) ab.weather(null);
       if (show.boss !== null) ab.qaBoss(null);
       if (show.chaos !== null) ab.qaChaos(null);
+      if (show.caveIn !== null) ab.qaCaveIn(null);
       if (show.course !== null) ab.qaCourseGhost(s.course.theme, null);
       const diff = (a, b) =>
         a === null || b === null
@@ -910,7 +918,7 @@ async function flySegment(page, seg, sampleMs, worldMs, ledger = false) {
         fleet,
         ledger,
         spectacle:
-          s.boss || s.course || s.chaos
+          s.boss || s.course || s.chaos || s.caveIn
             ? {
                 staged: show,
                 readyWaitMs,
@@ -1209,6 +1217,8 @@ function flyWarmupLap(page) {
         // P4: its chaos too — missiles, meteors, bombers, bursts and fire
         // pay their first sight here — and a tunnel segment starts on its
         // bore's guide line.
+        const caveIn = s.caveIn && typeof ab.qaCaveIn === "function";
+        if (caveIn) ab.qaCaveIn([{ ...s.caveIn, t0: s.worldMs + s.caveIn.t }]);
         const chaos = s.chaos && typeof ab.qaChaos === "function";
         if (chaos) {
           ab.qaChaos({
@@ -1242,6 +1252,7 @@ function flyWarmupLap(page) {
         if (staging) ab.qaDestruction(null);
         if (boss) ab.qaBoss(null);
         if (chaos) ab.qaChaos(null);
+        if (caveIn) ab.qaCaveIn(null);
         if (ghost) ab.qaCourseGhost(s.course.theme, null);
       }
       if (typeof ab.weather === "function") ab.weather(null);
@@ -1263,6 +1274,7 @@ function flyWarmupLap(page) {
           course,
           chaos,
           tunnel,
+          caveIn,
         }) => ({
           x,
           z,
@@ -1274,6 +1286,7 @@ function flyWarmupLap(page) {
           course,
           chaos,
           tunnel,
+          caveIn,
           weather: weather ?? DEFAULT_WEATHER,
           worldMs: warmupWorldMs(SEGMENTS.findIndex((s) => s.name === name)),
         }),

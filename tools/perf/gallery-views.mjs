@@ -292,6 +292,111 @@ export const VIEWS = [
     raf: true,
     weather: "clear",
   },
+  // U6 cave-ins: Riverside's grotto straight, the ceiling coming down at
+  // s 380, the right-wall lane left open — the QA camera in that lane 42 m
+  // short of it (the plane parked behind it at s 300) — staged on this client
+  // through `__ab.qaCaveIn` at a pinned world time (`caveIn.ago` ms into
+  // its life): the warning (dust streaming from the cracks over the
+  // blocked lanes, lamps stuttering), the fall, and the rubble after.
+  {
+    name: "tunnel-cavein-warning",
+    x: 897.1,
+    z: 1302.1,
+    y: -52,
+    yaw: 2.182,
+    raf: true,
+    eye: [872.9, -55, 1333.7],
+    at: [829.8, -54, 1345.5],
+    timeMs: 60_000_000,
+    caveIn: { tunnel: 1, s: 380, gap: 1, ago: 1300 },
+    weather: "clear",
+  },
+  {
+    name: "tunnel-cavein-fall",
+    x: 897.1,
+    z: 1302.1,
+    y: -52,
+    yaw: 2.182,
+    raf: true,
+    eye: [872.9, -55, 1333.7],
+    at: [829.8, -54, 1345.5],
+    timeMs: 60_000_000,
+    caveIn: { tunnel: 1, s: 380, gap: 1, ago: 3100 },
+    weather: "clear",
+  },
+  {
+    name: "tunnel-cavein-rubble",
+    x: 897.1,
+    z: 1302.1,
+    y: -52,
+    yaw: 2.182,
+    raf: true,
+    eye: [872.9, -55, 1333.7],
+    at: [829.8, -54, 1345.5],
+    timeMs: 60_000_000,
+    caveIn: { tunnel: 1, s: 380, gap: 1, ago: 9000 },
+    weather: "clear",
+  },
+  // U6 tunnel life, a view per section's character: the Crosstown mine
+  // (timber sets, the rail line and its cart, workers, machinery, signs),
+  // the Seam Line works (pipe runs leaking steam, a grate's light shaft),
+  // the Riverside grotto (dripstone, crystals, roots, bats stirring off
+  // the ceiling), the garden's lake (fish, deer and foxes at the
+  // channels) and the metro platform (passengers waiting at its edge).
+  // Poses from tunnelPointInto (Crosstown s 196, Seam Line s 1290,
+  // Riverside s 240; the lake from a camera low over its shore at s 826).
+  {
+    name: "tunnel-life-mine",
+    x: 1084.5,
+    z: 835.5,
+    y: -56,
+    yaw: -1.258,
+    raf: true,
+    timeMs: 60_010_000,
+    weather: "clear",
+  },
+  {
+    name: "tunnel-life-works",
+    x: 720,
+    z: 1864.9,
+    y: -54,
+    yaw: 0,
+    raf: true,
+    timeMs: 60_010_000,
+    weather: "clear",
+  },
+  {
+    name: "tunnel-life-grotto",
+    x: 946.2,
+    z: 1267.7,
+    y: -55,
+    yaw: 2.182,
+    raf: true,
+    timeMs: 60_010_000,
+    weather: "clear",
+  },
+  {
+    name: "tunnel-life-lake",
+    x: 720,
+    z: 364.9,
+    y: -52,
+    yaw: 0,
+    raf: true,
+    eye: [715, -60.5, 328.9],
+    at: [724, -63.6, 304.9],
+    timeMs: 60_013_000,
+    weather: "clear",
+  },
+  {
+    name: "tunnel-life-platform",
+    x: 1273,
+    z: 676,
+    y: -56,
+    yaw: -1.1,
+    raf: true,
+    timeMs: 60_024_000,
+    weather: "clear",
+  },
   // D8 ruins: what a felled lot looks like once the debris is down — the
   // jagged stump, rubble across the street, smoke and soot, and NOTHING left
   // in the air where the tower was (no scaffold cage, crane mast, signs or

@@ -42,9 +42,12 @@ export const CAVEIN_INSTANCES = CAVEIN_MAX * CAVEIN_PIECES_MAX;
 /** Warning dust and pebbles per event, particles/s (at full share). */
 const WARN_DUST_RATE = 28;
 const WARN_PEBBLE_RATE = 12;
-/** Particles per landing / settling puff, at most (full share). */
-const PUFF_DUST = 14;
-const PUFF_CHIPS = 10;
+/** Particles per landing / settling puff, at most (full share) — one
+ * puff per PUFF_EVERY pieces, so a 48-piece fall throws ~170 into the
+ * shared pool, not the whole pool. */
+const PUFF_DUST = 8;
+const PUFF_CHIPS = 6;
+const PUFF_EVERY = 4;
 
 /** Linear tints (unlit; the baked face light multiplies them). */
 const TINT: Record<number, THREE.Color> = {
@@ -150,12 +153,14 @@ export class CaveInRenderer {
           n++;
           if (!p.falling && !(fx.landed[i] as number)) {
             fx.landed[i] = 1;
-            this.puff(p.x, p.y - p.hy, p.z, c.kind[i] as number, now);
+            if (i % PUFF_EVERY === 0) {
+              this.puff(p.x, p.y - p.hy, p.z, c.kind[i] as number, now);
+            }
           }
         }
         if (!fx.settled && renderMs >= c.t0 + c.clearMs) {
           fx.settled = true;
-          for (let i = 0; i < c.n; i += 3) {
+          for (let i = 0; i < c.n; i += 2 * PUFF_EVERY) {
             this.puff(
               c.px[i] as number,
               (c.yRest[i] as number) - (c.restHy[i] as number),
@@ -224,8 +229,8 @@ export class CaveInRenderer {
   ): void {
     const ms = renderMs - c.t0;
     if (ms > CAVEIN_WARN_MS + 400 || c.n === 0) return;
-    fx.dust += WARN_DUST_RATE * Math.min(0.1, dt);
-    fx.pebbles += WARN_PEBBLE_RATE * Math.min(0.1, dt);
+    fx.dust += WARN_DUST_RATE * Math.min(0.25, dt);
+    fx.pebbles += WARN_PEBBLE_RATE * Math.min(0.25, dt);
     while (fx.dust >= 1) {
       fx.dust -= 1;
       this.crack(c, Math.floor(Math.random() * c.n));

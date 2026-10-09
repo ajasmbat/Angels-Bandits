@@ -64,7 +64,7 @@ import {
 /** The warning, ms: rumble, dust and flicker before anything falls. */
 export const CAVEIN_WARN_MS = 2000;
 /** Pieces let go over this, ms after the warning (bottom of a pile first). */
-export const CAVEIN_STAGGER_MS = 600;
+export const CAVEIN_STAGGER_MS = 1000;
 /** Rubble lies this long, ms, then settles into the floor over SINK. */
 export const CAVEIN_RUBBLE_MS = 18_000;
 export const CAVEIN_SINK_MS = 3000;
@@ -89,7 +89,7 @@ export const CAVEIN_SEPARATION = 200;
 /** Live cave-ins in a room, at most (the renderer's capacity). */
 export const CAVEIN_MAX = 6;
 /** Pieces per cave-in, at most. */
-export const CAVEIN_PIECES_MAX = 14;
+export const CAVEIN_PIECES_MAX = 48;
 
 /** The open lane: 0 along the left wall (lat > 0), 1 along the right wall,
  * 2 down the middle. */
@@ -104,6 +104,12 @@ const PROUD = 0.3;
 /** Lanes are drawn from the walls; the zone's piles in the rest. */
 const ALONG_CELLS = 4;
 const CELL_LAT = 5.8;
+/** A cell's pile: at least PILE_MIN m, plus up to PILE_RAND, plus up to
+ * PILE_WALL toward the wall; at most PILE_LAYERS pieces. */
+const PILE_MIN = 3;
+const PILE_RAND = 6;
+const PILE_WALL = 5;
+const PILE_LAYERS = 4;
 const WARN_S = CAVEIN_WARN_MS / 1000;
 const STAGGER_S = CAVEIN_STAGGER_MS / 1000;
 
@@ -375,7 +381,8 @@ export function buildCaveIn(e: CaveInEvent): CaveIn {
   const ca = CAVEIN_LEN / ALONG_CELLS;
   const [laneLo, laneHi] = caveInLane(e.gap);
   const pieces: RawPiece[] = [];
-  for (const [la, lb] of caveInDebris(e.gap)) {
+  const regions = caveInDebris(e.gap);
+  for (const [la, lb] of regions) {
     const nl = Math.max(1, Math.round((lb - la) / CELL_LAT));
     const cw = (lb - la) / nl;
     const heights = new Float64Array(ALONG_CELLS * nl);
@@ -399,7 +406,9 @@ export function buildCaveIn(e: CaveInEvent): CaveIn {
       return toLane - CAVEIN_LANE_MARGIN - 0.1;
     };
     // One beam per region, half the time: across two cells along a column.
-    if (rand() < 0.6 && pieces.length < CAVEIN_PIECES_MAX) {
+    // This region's share of the pieces.
+    const cap = pieces.length + Math.floor(CAVEIN_PIECES_MAX / regions.length);
+    if (rand() < 0.6 && pieces.length < cap) {
       const il = Math.floor(rand() * nl);
       const ia = rand() < 0.5 ? 0 : 2;
       let hx = ca - 0.35;
@@ -447,13 +456,21 @@ export function buildCaveIn(e: CaveInEvent): CaveIn {
       heights[ia * nl + il] = top + 2 * rest[1];
       heights[(ia + 1) * nl + il] = top + 2 * rest[1];
     }
+    // Each cell piles up toward a seeded height — higher toward the wall,
+    // as rock slides off a fall — so the rubble narrows the bore at the
+    // height planes fly, not just underfoot.
     for (let ia = 0; ia < ALONG_CELLS; ia++) {
       for (let il = 0; il < nl; il++) {
-        const r = rand();
-        const count = r < 0.25 ? 0 : r < 0.72 ? 1 : 2;
-        for (let layer = 0; layer < count; layer++) {
-          if (pieces.length >= CAVEIN_PIECES_MAX) break;
-          const slab = rand() < 0.3;
+        const toLane = Math.min(
+          Math.abs(cellLat(il) - laneLo),
+          Math.abs(cellLat(il) - laneHi),
+        );
+        const target =
+          PILE_MIN + rand() * PILE_RAND + (toLane / (lb - la)) * PILE_WALL;
+        for (let layer = 0; layer < PILE_LAYERS; layer++) {
+          if (pieces.length >= cap) break;
+          if ((heights[ia * nl + il] as number) >= target) break;
+          const slab = rand() < 0.25;
           let hx: number;
           let hy: number;
           let hz: number;
@@ -462,9 +479,9 @@ export function buildCaveIn(e: CaveInEvent): CaveIn {
             hy = 0.3 + rand() * 0.15;
             hz = 1.5 + rand() * 0.8;
           } else {
-            hx = 0.9 + rand() * 0.9;
-            hy = 0.8 + rand() * 0.8;
-            hz = 0.9 + rand() * 0.9;
+            hx = 1 + rand() * 1.1;
+            hy = 0.9 + rand() * 0.8;
+            hz = 1 + rand() * 1.2;
           }
           const j = (rand() - 0.5) * 0.4;
           const axis = rand() < 0.5 ? 0 : 1;

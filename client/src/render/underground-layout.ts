@@ -894,7 +894,7 @@ function lifeU6(out: UndergroundLayout): void {
         out.timbers.push({ t: crosstown, s, band: k % 6 === 0 ? 0 : 1 });
       }
       // Machinery on the far wall from the rails, never on a timber.
-      if (r() < 0.07 && k % TIMBER_EVERY === 1) {
+      if (r() < 0.22 && k % TIMBER_EVERY === 1) {
         out.machines.push({
           t: crosstown,
           s,

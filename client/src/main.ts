@@ -31,6 +31,8 @@ import {
   CAVEIN_CEIL,
   CAVEIN_FLOOR,
   CAVEIN_WARN_MS,
+  type CaveIn,
+  addCaveIn,
 } from "@angels-bandits/common/city/caveins";
 import {
   generateMovers,
@@ -986,6 +988,9 @@ scene.add(tunnels.group);
 // bore; added before prewarm so its programs compile at boot.
 const underground = new UndergroundLife();
 scene.add(underground.group);
+/** U6 QA (`__ab.qaCaveIn`): staged cave-ins are numbered from here, far
+ * above any the server hands out. */
+const QA_CAVEIN_BASE = 900_000_000;
 /** U6: our plane's render-space position for the bats (reused). */
 const batPlane = { x: 0, y: 0, z: 0 };
 // L9 moving nature: lit spray from the plaza ponds (pure ballistic function
@@ -2798,6 +2803,18 @@ declare global {
         d: number,
         climbDeg: number,
       ) => { x: number; y: number; z: number; yaw: number };
+      /** U6 QA: stage cave-ins on this client only — straight into the
+       * socket's slot, so they draw, collide, dust, shake and flicker
+       * exactly as a server one would — each warning at world time `t0`.
+       * Null (or a new list) first clears every staged one. Returns the
+       * staged ids. */
+      qaCaveIn: (
+        list:
+          | { tunnel: number; s: number; gap: 0 | 1 | 2; t0: number }[]
+          | null,
+      ) => number[];
+      /** U6: live cave-ins held, and the pieces and events drawn last frame. */
+      caveIns: () => { live: number; pieces: number; events: number };
       /** P4: the plane fleet last frame — planes drawn (near / far LOD)
        * and the draws they cost; null under `?fleet=0`. */
       fleet: () => {
@@ -3651,6 +3668,22 @@ window.__ab = {
       yaw: Math.atan2(-Math.cos(at.th), -Math.sin(at.th)),
     };
   },
+  qaCaveIn: (list) => {
+    const held = socket.caveIns.list;
+    for (let i = held.length - 1; i >= 0; i--) {
+      if ((held[i] as CaveIn).id >= QA_CAVEIN_BASE) held.splice(i, 1);
+    }
+    const ids: number[] = [];
+    (list ?? []).forEach((c, k) => {
+      const id = QA_CAVEIN_BASE + k;
+      if (addCaveIn(socket.caveIns, { id, ...c })) ids.push(id);
+    });
+    return ids;
+  },
+  caveIns: () => ({
+    live: socket.caveIns.list.length,
+    ...caveInRenderer.stats,
+  }),
   fleet: () =>
     fleet && tagBatch
       ? {

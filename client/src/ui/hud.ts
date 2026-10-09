@@ -26,6 +26,7 @@ export function deathLabel(
       ? "CRUSHED BY A COLLAPSE"
       : `CRUSHED — ${killerName} BROUGHT IT DOWN`;
   }
+  if (cause === "missile") return "🚀 CAUGHT IN A MISSILE STRIKE";
   if (killerName === null) return "CRASHED";
   if (cause === "wreck") return `HIT A WRECK — CREDIT TO ${killerName}`;
   return cause === "shot"

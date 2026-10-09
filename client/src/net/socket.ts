@@ -25,6 +25,10 @@
 // D3: so do the room's collapses (`collapses`), for the same reason: a
 // collapse dropped while booting would leave a building standing here that
 // everyone else saw fall.
+//
+// X1: the room's missiles in the air live here too (`missiles`), for the
+// same reason — a strike announced while this client boots must still
+// whistle and land on time. main.ts consumes them on the synced clock.
 
 import { CityDamage, decodeChunkIds } from "@angels-bandits/common/city";
 import {
@@ -54,6 +58,10 @@ import type {
   SnapshotMsg,
   WelcomeMsg,
 } from "@angels-bandits/common/protocol";
+import {
+  type MissileStrike,
+  decodeMissile,
+} from "@angels-bandits/common/strike";
 import type { Vec3 } from "@angels-bandits/common/world";
 import { PoseCadence, RenderClock } from "./clock";
 import { InterpDelay } from "./delay";
@@ -127,6 +135,10 @@ export class GameSocket {
    * welcome, grown by every `collapse` message. Its fallen chunks are marked
    * in `cityDamage` from the records alone (never the welcome's set). */
   readonly collapses = new CollapseField();
+  /** X1: missiles announced in this room and not yet consumed, by id — from
+   * every welcome and every `missile` event, listening or not. The frame
+   * loop removes each once it has landed (or gone stale). */
+  readonly missiles = new Map<number, MissileStrike>();
   private ws: WebSocket;
   /** W2: "open" → "reconnecting" on a drop → back, or "lost" for good. */
   private state: "open" | "reconnecting" | "lost" = "open";
@@ -161,6 +173,7 @@ export class GameSocket {
     this.ws = ws;
     this.welcome = welcome;
     this.replayDestruction(welcome);
+    this.addMissiles(welcome.missiles);
     this.attach(ws);
     // W2 watchdog: snapshots arrive at TICK_DOWN_HZ, so a visible tab that
     // hears nothing for SERVER_SILENCE_MS is on a dead (half-open) socket —
@@ -283,8 +296,11 @@ export class GameSocket {
       return;
     }
     this.ws = next.ws;
+    // Missile ids are per room: a resume into another room starts over.
+    if (next.welcome.roomId !== this.welcome.roomId) this.missiles.clear();
     this.welcome = next.welcome;
     this.replayDestruction(next.welcome);
+    this.addMissiles(next.welcome.missiles);
     this.attach(next.ws);
     this.delay.reset(); // the outage's arrival gaps are not jitter
     this.lastHeardMs = performance.now();
@@ -305,6 +321,15 @@ export class GameSocket {
     this.cityDamage.collapse(collapseChunks(c));
     this.collapses.add(c);
     this.events.onCollapse?.(c);
+  }
+
+  /** Hold every decodable missile of a welcome/event list (dupes are
+   * harmless: same id, same strike). */
+  private addMissiles(list: readonly unknown[] | undefined): void {
+    for (const w of list ?? []) {
+      const m = decodeMissile(w);
+      if (m) this.missiles.set(m.id, m);
+    }
   }
 
   private lost(): void {
@@ -507,6 +532,9 @@ export class GameSocket {
         break;
       case "awayStarted":
         this.events.onAwayStarted?.();
+        break;
+      case "missile":
+        this.addMissiles([msg.m]);
         break;
       case "chunks":
         this.cityDamage.apply(decodeChunkIds(msg.d));

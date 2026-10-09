@@ -8,12 +8,15 @@
 
 import { BUILDING_MAX_HEIGHT } from "@angels-bandits/common/constants";
 import type { FlightInput } from "@angels-bandits/common/flight";
+import { FEELS, type Feel } from "../game/effortless";
 import { AUTO_THROTTLE } from "../game/flight-input";
 import type { ResolutionLimits } from "../render/resolution";
 
 /** localStorage key for the values below (same `ab-` prefix as the rest). */
 export const SETTINGS_KEY = "ab-settings";
-/** Bumped when the stored shape changes; a mismatch reads as defaults. */
+/** Bumped when the stored shape changes; a mismatch reads as defaults.
+ * Adding a field with a clampSettings fallback is NOT a change of shape
+ * (F9's assist/feel): a v1 blob without it keeps every value it has. */
 export const SETTINGS_VERSION = 1;
 
 /** Resolution scale range: a share of the tier's pixel-ratio ceiling. */
@@ -37,6 +40,11 @@ export interface Settings {
   /** M8 AUTO FIRE: on/off as the player chose, or null = the device default
    * (on for a coarse pointer), resolved at boot and never written back. */
   autoFire: boolean | null;
+  /** F9 FLIGHT ASSIST (game/effortless.ts): on by default. */
+  assist: boolean;
+  /** F9 FEEL preset: the instructor's loop shape and the stick's
+   * authority. Orthogonal to touch's AIM SENSITIVITY (px → aim). */
+  feel: Feel;
 }
 
 export const DEFAULT_SETTINGS: Readonly<Settings> = {
@@ -50,6 +58,8 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = {
   musicOn: true,
   haptics: null,
   autoFire: null,
+  assist: true,
+  feel: "normal",
 };
 
 const clamp = (v: number, lo: number, hi: number) =>
@@ -78,6 +88,8 @@ export function clampSettings(raw: unknown): Settings {
     musicOn: typeof o.musicOn === "boolean" ? o.musicOn : d.musicOn,
     haptics: typeof o.haptics === "boolean" ? o.haptics : d.haptics,
     autoFire: typeof o.autoFire === "boolean" ? o.autoFire : d.autoFire,
+    assist: typeof o.assist === "boolean" ? o.assist : d.assist,
+    feel: FEELS.includes(o.feel as Feel) ? (o.feel as Feel) : d.feel,
   };
 }
 

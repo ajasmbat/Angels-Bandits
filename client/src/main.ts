@@ -4607,6 +4607,7 @@ const frame = (now: number): void => {
   const heat = guns.state;
   hud.setHeat(heat.heat, heat.locked);
   hud.setBoost(boost.energy, boost.active);
+  hud.setRainOnLens(rain.lens); // R3: beads on the canopy rim
   hud.update(now);
   // S3 race readout: the live clock while racing, a hint near a start ring.
   const racing = courses[courseRunner.course];
@@ -4761,6 +4762,8 @@ const frame = (now: number): void => {
   // The pipper is the gun line's own vanishing point, so it only means
   // anything while we are flying it — the kill-cam gets no aim chrome.
   hud.setAimPoint(alive ? aimResult.aim : null);
+  // R3: the rain keeps the pipper's neighbourhood clear (next frame's draw).
+  rain.setAim(aimResult.aim, window.innerWidth, window.innerHeight);
   leadSolution = alive && aimResult.solution;
   touchControls?.setLeadReticle(alive ? aimResult.lead : null);
   // The instructor's cursor marker: only while flying in that mode (the

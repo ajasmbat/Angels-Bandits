@@ -2448,8 +2448,10 @@ declare global {
        * medals) through the real death/award handlers — the HUD, killfeed,
        * sounds and music a real one plays. The victim is a throwaway id.
        * "course": put the plane 60 m short of the first stunt course's
-       * start ring, facing it, so the race readout shows. */
-      qaMoment: (kind: "kill" | "medal" | "course") => void;
+       * start ring, facing it, so the race readout shows. "loud": the
+       * mix's worst case — three missile blasts and an explosion right by
+       * the plane, the kill sting and a callout on air at once. */
+      qaMoment: (kind: "kill" | "medal" | "course" | "loud") => void;
       /** P3 QA: the soak's leak counters — GPU resources the renderer
        * holds and the audio engine's live state (null before a context). */
       qaUi: () => {
@@ -3009,6 +3011,20 @@ window.__ab = {
   }),
   setQuality: (setting) => setQualitySetting(setting, false),
   qaMoment: (kind) => {
+    if (kind === "loud") {
+      const p = flight.pos;
+      for (let i = 0; i < 3; i++) {
+        audio.missileBlast(
+          { x: p.x + 20 * i, y: p.y, z: p.z + 15 },
+          flight.pos,
+          flight.yaw,
+        );
+      }
+      audio.explosion({ x: p.x, y: p.y, z: p.z - 20 }, flight.pos, flight.yaw);
+      audio.killConfirm();
+      say(ownKillCallout(name));
+      return;
+    }
     if (kind === "course") {
       const ring = courses[0]?.rings[0];
       if (!ring) return;

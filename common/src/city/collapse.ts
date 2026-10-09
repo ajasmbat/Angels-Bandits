@@ -152,7 +152,7 @@ export function standingOf(b: Building): Uint8Array[] {
     const gone = cells?.[k];
     const out = new Uint8Array(mask.length);
     for (let c = 0; c < mask.length; c++) {
-      out[c] = mask[c] && !(gone && gone[c]) ? 1 : 0;
+      out[c] = mask[c] && !gone?.[c] ? 1 : 0;
     }
     return out;
   });
@@ -268,7 +268,8 @@ function failingBand(
         up += st[c] as number;
       }
       if (exist === 0 || up >= COLLAPSE_BAND_MIN * exist) continue;
-      if (anyStandingAbove(grids, standing, k, iy)) return { tier: k, band: iy };
+      if (anyStandingAbove(grids, standing, k, iy))
+        return { tier: k, band: iy };
     }
   }
   return null;
@@ -749,7 +750,8 @@ export function buildCollapse(
   const masks = chunkMask(b);
   const chunks = decodeChunkIds(wire.c).filter(
     (id) =>
-      chunkBuilding(id) === wire.b && masks[chunkTier(id)]?.[chunkCell(id)] === 1,
+      chunkBuilding(id) === wire.b &&
+      masks[chunkTier(id)]?.[chunkCell(id)] === 1,
   );
   if (chunks.length === 0) return null;
   const style: CollapseStyle = wire.s === TOPPLE ? TOPPLE : PANCAKE;
@@ -1008,7 +1010,11 @@ export function buildCollapse(
   };
   const step = 0.05;
   for (let i = 0; i < n; i++) {
-    const r = Math.hypot(c.hx[i] as number, c.hy[i] as number, c.hz[i] as number);
+    const r = Math.hypot(
+      c.hx[i] as number,
+      c.hy[i] as number,
+      c.hz[i] as number,
+    );
     const last = (c.start[i] as number) + (c.land[i] as number) + SQUASH_S;
     for (let t = 0; t <= last + step; t += step) {
       piecePose(c, i, c.t0 + t * 1000, pose);
@@ -1232,7 +1238,6 @@ export class CollapseField {
     for (const w of wires) this.add(w);
     this.version++;
   }
-
 }
 
 /** The chunk ids a record drops (for CityDamage.collapse). */

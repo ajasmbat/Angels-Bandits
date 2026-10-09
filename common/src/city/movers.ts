@@ -606,7 +606,10 @@ export function collideMovers(
     const hit = collideTrains(field.trains, pos, radius, timeMs);
     if (hit) return hit;
   }
-  return hitBoat(pos, radius, field, timeMs) ?? hitCollapse(pos, radius, field, timeMs);
+  return (
+    hitBoat(pos, radius, field, timeMs) ??
+    hitCollapse(pos, radius, field, timeMs)
+  );
 }
 
 /** D3: the collapse piece the sphere touches, as a mover hit (id = the
@@ -671,7 +674,10 @@ export function collideBotMovers(
   // flies the boats' height band, and bots must never die to scenery.
   // D3 debris and rubble too: bots probe them at arrival time, so they dodge
   // a falling chunk where it WILL be, and route round the rubble after.
-  return hitBoat(pos, radius, field, timeMs) ?? hitCollapse(pos, radius, field, timeMs);
+  return (
+    hitBoat(pos, radius, field, timeMs) ??
+    hitCollapse(pos, radius, field, timeMs)
+  );
 }
 
 /** The L11 boat the sphere touches, as a mover hit (id = fleet index). */

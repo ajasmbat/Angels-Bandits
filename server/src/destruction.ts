@@ -21,8 +21,8 @@ import {
   raycastChunk,
 } from "@angels-bandits/common/city";
 import {
-  type CollapseWire,
   CollapseField,
+  type CollapseWire,
   collapseChunks,
   collapseWire,
   collideCollapses,
@@ -193,5 +193,8 @@ export function collapseCulprit(
 ): { id: number; by: string | null } | null {
   const hit = collideCollapses(pos, radius, city.collapses.list, t, true);
   if (!hit) return null;
-  return { id: hit.collapse.id, by: city.collapseBy.get(hit.collapse.id) ?? null };
+  return {
+    id: hit.collapse.id,
+    by: city.collapseBy.get(hit.collapse.id) ?? null,
+  };
 }

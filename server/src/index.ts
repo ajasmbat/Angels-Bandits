@@ -76,12 +76,7 @@ import {
   poseVelocity,
 } from "./bots";
 import { CityEventLog, nearBuildingProbe } from "./cityevents";
-import {
-  Combat,
-  type Death,
-  type HitResult,
-  type SpeedCapFn,
-} from "./combat";
+import { Combat, type Death, type HitResult, type SpeedCapFn } from "./combat";
 import {
   CourseBook,
   CourseTracker,
@@ -787,7 +782,12 @@ function handleFire(client: Client, seq: unknown, now: number): void {
     // D2: the round flies from the shooter's on-record pose along its nose.
     const rc = breakable(client.room);
     if (rc) {
-      applyShotDamage(rc, client.pose.pos, wireNose(client.pose.quat), client.id);
+      applyShotDamage(
+        rc,
+        client.pose.pos,
+        wireNose(client.pose.quat),
+        client.id,
+      );
     }
   }
 }

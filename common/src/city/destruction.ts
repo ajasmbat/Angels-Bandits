@@ -384,7 +384,11 @@ function pushPiece(
  * up to three around a hole), each tagged with the faces that lay inside
  * the tier — what D3 drops when the chunk falls. Pure in the geometry.
  */
-export function cellSolids(b: Building, tier: number, cell: number): SolidBox[] {
+export function cellSolids(
+  b: Building,
+  tier: number,
+  cell: number,
+): SolidBox[] {
   const g = tierGrids(b)[tier];
   if (!g || cell < 0 || cell >= g.nx * g.ny * g.nz) return [];
   const region = cellBox(g, cell);

@@ -69,6 +69,9 @@ export interface TunnelEnd {
   /** Open cut (no ceiling) from this end, m: CUT_LENGTH at a plaza, 0 at a
    * river mouth. */
   cut: number;
+  /** River mouths: how far in from this end the centreline crosses the
+   * embankment wall, m (0 at a plaza). */
+  wall: number;
 }
 
 /** One leg of a centreline, precomputed. Lines use (x0, z0, th0); arcs add
@@ -249,12 +252,20 @@ function buildEnd(
   z: number,
   heading: number,
 ): TunnelEnd {
-  if (kind === "plaza") return { kind, top: 0, flat: 0, cut: CUT_LENGTH };
+  if (kind === "plaza") {
+    return { kind, top: 0, flat: 0, cut: CUT_LENGTH, wall: 0 };
+  }
   // How far from this end the bore crosses the embankment wall: it runs
   // straight (first/last legs are lines), heading away from the centreline.
   const off = Math.abs(riverOffset(z));
-  const wall = (RIVER_HALF_WIDTH - off) / Math.abs(Math.sin(heading));
-  return { kind, top: RIVER_WATER_Y, flat: wall + MOUTH_SILL, cut: 0 };
+  const sin = Math.abs(Math.sin(heading));
+  const wall = (RIVER_HALF_WIDTH - off) / sin;
+  // The bore meets the wall obliquely: its far side wall crosses the wall
+  // plane (BORE_WIDTH / 2)·|cot| later than the centreline. The floor holds
+  // at the water until BOTH sides are past it — never an open volume under
+  // the river's water.
+  const far = wall + ((BORE_WIDTH / 2) * Math.abs(Math.cos(heading))) / sin;
+  return { kind, top: RIVER_WATER_Y, flat: far + MOUTH_SILL, cut: 0, wall };
 }
 
 /** The network. Pure and seed-free: every client and server builds the same. */
@@ -595,8 +606,7 @@ function buildMouths(): { cuts: PortalCut[]; mouths: RiverMouth[] } {
           inHeading,
         });
       } else {
-        const sWall =
-          end === 0 ? e.flat - MOUTH_SILL : t.length - e.flat + MOUTH_SILL;
+        const sWall = end === 0 ? e.wall : t.length - e.wall;
         const w = tunnelPointInto(t, sWall, { x: 0, z: 0, th: 0 });
         const half = BORE_WIDTH / 2 / Math.abs(Math.sin(w.th));
         const x = wrap(w.x);
@@ -755,8 +765,8 @@ export function underCover(p: Vec3): boolean {
     if (p.y > ceilingAt(t, fa.s) + 1 || p.y < floorAt(t, fa.s) - 1) continue;
     // A river mouth's in-channel stretch is open river, not cover.
     const e = t.ends;
-    if (e[0].kind === "river" && fa.s < e[0].flat - MOUTH_SILL) continue;
-    if (e[1].kind === "river" && fa.s > t.length - e[1].flat + MOUTH_SILL) {
+    if (e[0].kind === "river" && fa.s < e[0].wall) continue;
+    if (e[1].kind === "river" && fa.s > t.length - e[1].wall) {
       continue;
     }
     return true;
@@ -775,7 +785,8 @@ export function underCover(p: Vec3): boolean {
 export function wallStart(t: Tunnel, end: 0 | 1, side: 1 | -1): number {
   const e = t.ends[end];
   if (e.kind !== "river") return end === 0 ? 0 : t.length;
-  // Bisect on |riverOffset| crossing the wall line, inside the sill.
+  // Bisect on |riverOffset| crossing the wall line, inside the sill (where
+  // the floor still holds at the water, both sides past the wall).
   const flat = e.flat;
   let lo = end === 0 ? 0 : t.length;
   let hi = end === 0 ? flat : t.length - flat;

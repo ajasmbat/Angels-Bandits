@@ -156,6 +156,9 @@ export interface QualityProfile {
   /** D5 rebuild dressing: how many damaged buildings near the camera wear
    * scaffolding and a rebuild crane at once (cosmetic, never solid). */
   scaffold: number;
+  /** S7 kill-streak smoke: share of its puff emission rate (the trail
+   * thins, never shortens). Cosmetic — the streak is on the scoreboard too. */
+  streakSmoke: number;
 }
 
 export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
@@ -194,6 +197,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     wreckFire: 1,
     directorFx: 1,
     scaffold: 8,
+    streakSmoke: 1,
   },
   medium: {
     maxPixelRatio: 1.5,
@@ -230,6 +234,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     wreckFire: 0.75,
     directorFx: 0.75,
     scaffold: 6,
+    streakSmoke: 1,
   },
   low: {
     maxPixelRatio: 1,
@@ -266,6 +271,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     wreckFire: 0.5,
     directorFx: 0.5,
     scaffold: 4,
+    streakSmoke: 0.5,
   },
   mobile: {
     maxPixelRatio: 1,
@@ -302,6 +308,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     wreckFire: 0.35,
     directorFx: 0.35,
     scaffold: 2,
+    streakSmoke: 0.5,
   },
 };
 
@@ -697,6 +704,14 @@ export const FEATURE_TIERS: readonly {
     low: "reduced",
     mobile: "reduced",
     note: "emission 100 / 75 / 50 / 35 %; the wreck (solid), its explosion and the street scorch stay on every tier",
+  },
+  {
+    feature: "S7 kill-streak smoke",
+    high: "full",
+    medium: "full",
+    low: "reduced",
+    mobile: "reduced",
+    note: "puff emission 100 / 100 / 50 / 50 %; one tinted Points draw for every streaking plane; the scoreboard glow carries the streak on every tier",
   },
 ];
 

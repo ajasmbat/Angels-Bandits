@@ -427,6 +427,18 @@
       #killfeed .crash {
         color: #ffc46b;
       }
+      /* S7: a kill's medals ride its own line; a streak tier gets one. */
+      #killfeed .medal {
+        margin-left: 6px;
+        padding: 0 4px;
+        color: #1a1420;
+        background: #ffd36b;
+        font-size: 10px;
+        letter-spacing: 0.1em;
+      }
+      #killfeed .entry.streak {
+        color: #ffd36b;
+      }
       /* U2: lines the local pilot is in — the accent bar, a faint wash. */
       #killfeed .entry.self {
         padding-right: 6px;
@@ -522,6 +534,24 @@
       #scoreboard tr.bot td {
         color: #ffa26b;
       }
+      /* S7: a pilot on a kill streak glows in their streak-smoke colour. */
+      #scoreboard tr.streak td:first-child {
+        font-weight: bold;
+      }
+      #scoreboard tr.streak-3 td:first-child {
+        text-shadow: 0 0 6px #ffa424;
+      }
+      #scoreboard tr.streak-5 td:first-child {
+        text-shadow:
+          0 0 6px #ff3c9c,
+          0 0 12px #ff3c9c;
+      }
+      #scoreboard tr.streak-10 td:first-child {
+        text-shadow:
+          0 0 6px #36e2ff,
+          0 0 14px #36e2ff,
+          0 0 22px #36e2ff;
+      }
       /* Shared bot-count control (approved concept 2 "Segment Bar"): eleven
          notches under the roster, one per bot seat, filled in the same orange
          the bot rows use — the bar literally counts the BANDIT rows the room
@@ -594,6 +624,64 @@
       }
       #killcam.open {
         display: block;
+      }
+      /* S7: the end-of-life card — kills, accuracy, best streak, medals. */
+      #killcam-card {
+        margin-top: 10px;
+        color: #e8f6fa;
+        font-size: 11px;
+        letter-spacing: 0.18em;
+        line-height: 1.8;
+      }
+      #killcam-card .medals {
+        color: #ffd36b;
+      }
+      /* S7: own medals, stacked under the top edge; each row pops in. */
+      #medal-toast {
+        position: fixed;
+        left: 50%;
+        top: 18%;
+        transform: translateX(-50%);
+        text-align: center;
+        pointer-events: none;
+        user-select: none;
+        opacity: 0;
+        transition: opacity 0.5s ease-out;
+      }
+      #medal-toast.on {
+        opacity: 1;
+        transition: none;
+      }
+      #medal-toast .medal {
+        color: #ffd36b;
+        font-size: 22px;
+        font-weight: bold;
+        letter-spacing: 0.3em;
+        text-shadow:
+          0 0 10px #ffb02088,
+          0 1px 3px #000;
+      }
+      #medal-toast.on .medal {
+        animation: medal-pop 0.35s cubic-bezier(0.2, 1.6, 0.4, 1) both;
+      }
+      #medal-toast.on .medal:nth-child(2) {
+        animation-delay: 0.12s;
+      }
+      #medal-toast.on .medal:nth-child(3) {
+        animation-delay: 0.24s;
+      }
+      #medal-toast.on .medal:nth-child(n + 4) {
+        animation-delay: 0.36s;
+      }
+      @keyframes medal-pop {
+        from {
+          opacity: 0;
+          transform: scale(1.8);
+        }
+        to {
+          opacity: 1;
+          transform: scale(1);
+        }
       }
       #killcam-count {
         margin-top: 8px;
@@ -1048,6 +1136,13 @@
       }
       body.touch #aim-mode-toast {
         margin-top: 18px;
+      }
+      /* S7: under the top band, smaller — a phone's middle is the fight. */
+      body.touch #medal-toast {
+        top: calc(var(--hud-top-band) + 44px);
+      }
+      body.touch #medal-toast .medal {
+        font-size: 15px;
       }
       body.touch #perfhud {
         top: calc(var(--hud-top-band) + 4px);
@@ -2233,8 +2328,12 @@
     </div>
     <div id="killcam">
       <div id="killcam-cause"></div>
+      <!-- S7: the life that just ended (ui/hud.ts showLifeCard). -->
+      <div id="killcam-card"></div>
       <div id="killcam-count"></div>
     </div>
+    <!-- S7: own medals pop in here (ui/hud.ts showMedals). -->
+    <div id="medal-toast" aria-live="polite"></div>
     <div id="fade"></div>
     <div id="join">
       <button

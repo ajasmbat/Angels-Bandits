@@ -15,6 +15,7 @@ import {
   type FlightState,
   createFlightState,
   flightAxes,
+  flightForward,
   handlingRates,
   stepFlight,
 } from "@angels-bandits/common/flight";
@@ -29,6 +30,13 @@ import {
   createInstructor,
   instructorInput,
 } from "../src/game/instructor";
+import {
+  aimDirNdc,
+  createAimDir,
+  dragAimDir,
+  recentreAimDir,
+  stepAimDir,
+} from "../src/game/touch-aim-dir";
 import { BASE_FOV } from "../src/game/zoom";
 
 const DEG = Math.PI / 180;
@@ -226,6 +234,52 @@ function hold(
   return { swept: loop.swept, steepSwept: loop.steepSwept, extreme };
 }
 
+/** The nose's angle in the vertical plane of heading 0 (+ = climbing). */
+function noseAngle(f: FlightState): number {
+  const fw = flightForward(f);
+  return Math.atan2(fw.y, -fw.z);
+}
+
+/**
+ * Fly at full throttle from level flight at 90 m/s, heading 0, with the
+ * cursor at `ndc(loop)` each frame, until the nose has swept a full circle in
+ * the vertical plane (or 20 s). Returns the time, the airframe's up (world y)
+ * over the top and at the end, the final heading, and the wing-line sweeps.
+ */
+function loopWith(
+  ndc: (loop: Loop) => { x: number; y: number },
+  fps: number,
+  init?: (loop: Loop) => void,
+) {
+  const dt = 1 / fps;
+  const loop = new Loop(plane(200, 90));
+  init?.(loop);
+  let t = 0;
+  let turned = 0;
+  let a = noseAngle(loop.f);
+  let upAtTop = Number.NaN;
+  while (turned < 2 * Math.PI && t < 20) {
+    loop.step(ndc(loop), dt, 1);
+    t += dt;
+    const a1 = noseAngle(loop.f);
+    const before = turned;
+    turned += Math.atan2(Math.sin(a1 - a), Math.cos(a1 - a));
+    a = a1;
+    if (before < Math.PI && turned >= Math.PI) {
+      upAtTop = flightAxes(loop.f, axes).up.y;
+    }
+  }
+  const fw = flightForward(loop.f);
+  return {
+    t,
+    upAtTop,
+    up: flightAxes(loop.f, axes).up.y,
+    heading: Math.atan2(-fw.x, -fw.z),
+    swept: loop.swept,
+    steepSwept: loop.steepSwept,
+  };
+}
+
 describe("no flat spin near vertical (F7)", () => {
   for (const fps of FPS) {
     // The pipper sits at NDC y ≈ 0.26 in level flight at 90 m/s (C1's chase
@@ -291,6 +345,69 @@ describe("no flat spin near vertical (F7)", () => {
       expect(turn).toBeGreaterThan(0.2);
       expect(loop.steepSwept).toBeLessThan(90 * DEG);
     });
+  }
+
+  // F7b (ANGE-EGBXX6): the loops themselves, flown through the camera.
+  for (const fps of FPS) {
+    for (const [y, maxT] of [
+      [0.9, 8],
+      [0.5, 16],
+    ]) {
+      it(`a cursor held above the pipper (0, ${y}) flies a complete loop, straight — ${fps} fps`, () => {
+        const run = loopWith(() => ({ x: 0, y }), fps);
+        expect(run.t).toBeLessThan(maxT);
+        expect(run.upAtTop).toBeLessThan(-0.95); // inverted over the top
+        expect(run.up).toBeGreaterThan(0.95); // upright out of it
+        expect(Math.abs(run.heading)).toBeLessThan(10 * DEG);
+        expect(run.swept).toBeLessThan(10 * DEG);
+      });
+    }
+
+    for (const [x, maxSteep] of [
+      [0.1, 45],
+      [-0.1, 45],
+      [0.2, 70],
+    ]) {
+      it(`a mouse pull-through a little off-centre (${x}, 0.9) loops without a pirouette — ${fps} fps`, () => {
+        // The offset is an honest turn wherever the turn has authority, but
+        // the wing line must not spin while the nose is steep (pre-F7:
+        // ~330°). A full pull crosses the steep band in ~1.4 s, so even a
+        // full-rate spin there sweeps only ~70–80° (measured with a
+        // world-up turn axis at vertical and no fade) — about twice what an
+        // honest pull-through sweeps (~30° at 0.1, ~57° at 0.2).
+        const run = loopWith(() => ({ x, y: 0.9 }), fps);
+        expect(run.t).toBeLessThan(8);
+        expect(run.steepSwept).toBeLessThan(maxSteep * DEG);
+        expect(run.up).toBeGreaterThan(0.95);
+      });
+    }
+
+    for (const dx of [0, 60]) {
+      it(`a touch drag held up the screen (${dx} px/s across) flies a complete loop — ${fps} fps`, () => {
+        // M7's world-anchored aim, dragged at 600 px/s through the view the
+        // pilot sees (F7: the drag turns in the camera's own frame).
+        const dt = 1 / fps;
+        const aim = createAimDir();
+        const ndc = { x: 0, y: 0 };
+        const run = loopWith(
+          (loop) => {
+            const fr = loop.chase.aimFrame(loop.f, 0);
+            dragAimDir(aim, dx * dt, -600 * dt, 1, fr.up);
+            stepAimDir(aim, loop.f, true, dt);
+            aimDirNdc(aim.dir, fr, BASE_FOV, ASPECT, ndc);
+            return ndc;
+          },
+          fps,
+          (loop) => recentreAimDir(aim, loop.f),
+        );
+        expect(run.t).toBeLessThan(8);
+        expect(run.upAtTop).toBeLessThan(-0.95);
+        expect(run.up).toBeGreaterThan(0.95);
+        // ~42° honest at 60 px/s across; ~70° with the spin mutant above.
+        expect(run.steepSwept).toBeLessThan((dx === 0 ? 10 : 60) * DEG);
+        if (dx === 0) expect(Math.abs(run.heading)).toBeLessThan(10 * DEG);
+      });
+    }
   }
 
   for (const pitchDeg of [65, 75]) {

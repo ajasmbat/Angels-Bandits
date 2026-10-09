@@ -179,6 +179,53 @@ export function threatCallout(_selfName: string): Callout {
   };
 }
 
+/** Enemy streak lines share this cooldown: a full bot room crosses tiers
+ * often, and the channel is for the fight, not the scoreboard. */
+export const ENEMY_STREAK_COOLDOWN_MS = 10_000;
+
+const OWN_STREAK_VOICE = {
+  3: PHRASE.streakThree,
+  5: PHRASE.streakFive,
+  10: PHRASE.streakTen,
+} as const;
+const ENEMY_STREAK_VOICE = {
+  3: PHRASE.enemyStreakThree,
+  5: PHRASE.enemyStreakFive,
+  10: PHRASE.enemyStreakTen,
+} as const;
+
+/**
+ * S7 announcer: a pilot crossed a kill-streak tier. The local pilot's own
+ * streak is an `own` line that always airs; anyone else's is a `kill` line
+ * on a shared cooldown. The voice is fixed bank text — it never names the
+ * pilot; the ticker does (real names are safe there).
+ */
+export function streakCallout(
+  tier: 3 | 5 | 10,
+  own: boolean,
+  pilotName: string,
+): Callout {
+  return own
+    ? {
+        kind: "own",
+        key: "ownstreak",
+        cooldownMs: 0,
+        expiresMs: 8_000,
+        voice: OWN_STREAK_VOICE[tier],
+        ticker: `${tier} in a row — you're on a streak`,
+        speaker: "CONTROL",
+      }
+    : {
+        kind: "kill",
+        key: "streak",
+        cooldownMs: ENEMY_STREAK_COOLDOWN_MS,
+        expiresMs: 8_000,
+        voice: ENEMY_STREAK_VOICE[tier],
+        ticker: `${pilotName} is on a ${tier}-kill streak`,
+        speaker: "CONTROL",
+      };
+}
+
 /** X1: a missile strike is coming down near the local plane. Expires fast:
  * a late "incoming" after the blast is worse than none. */
 export function incomingCallout(): Callout {

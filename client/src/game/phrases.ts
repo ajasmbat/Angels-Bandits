@@ -17,6 +17,14 @@ export const PHRASE = {
   checkInAnon: "New contact, checking in.",
   offStation: "off station.",
   offStationAnon: "Contact off station.",
+  // S7 announcer: kill-streak tiers. Fixed text only — a streak line never
+  // names its pilot (the ticker does that, inert).
+  streakThree: "Three in a row. You're on a streak.",
+  streakFive: "Five kills. Unstoppable.",
+  streakTen: "Ten kills. You're the ace of the sky.",
+  enemyStreakThree: "Heads up, enemy on a three kill streak.",
+  enemyStreakFive: "Enemy on a five kill streak. Take them down.",
+  enemyStreakTen: "Enemy ace, ten kills. All stations, engage.",
 } as const;
 
 /**

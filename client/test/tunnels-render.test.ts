@@ -6,8 +6,10 @@
 
 import { hitsGround } from "@angels-bandits/common/collision";
 import { WORLD_SIZE } from "@angels-bandits/common/constants";
+import * as THREE from "three";
 import { describe, expect, it } from "vitest";
-import { buildTunnelGeometry } from "../src/render/tunnels";
+import { QUALITY_PROFILES } from "../src/render/quality";
+import { TunnelRenderer, buildTunnelGeometry } from "../src/render/tunnels";
 
 describe("the tunnel shell", () => {
   const [shell, fixtures] = buildTunnelGeometry();
@@ -81,5 +83,27 @@ describe("the tunnel shell", () => {
     }
     expect(tested).toBeGreaterThan(5000);
     expect(bad).toBe(0);
+  });
+});
+
+describe("the tunnel renderer's budget", () => {
+  it("is two draws for the whole network, and MOBILE drops the fixtures", () => {
+    const r = new TunnelRenderer();
+    const meshes: THREE.Object3D[] = [];
+    r.group.traverse((o) => {
+      if (o instanceof THREE.Mesh) meshes.push(o);
+    });
+    expect(meshes.length).toBe(2);
+    for (const tier of ["high", "medium", "low"] as const) {
+      expect(QUALITY_PROFILES[tier].tunnelFixtures).toBe(true);
+      r.setQuality(tier);
+      expect(r.fixtures.visible).toBe(true);
+      expect(r.shell.visible).toBe(true);
+    }
+    expect(QUALITY_PROFILES.mobile.tunnelFixtures).toBe(false);
+    r.setQuality("mobile");
+    expect(r.fixtures.visible).toBe(false);
+    // The shell is solid: identical on every tier.
+    expect(r.shell.visible).toBe(true);
   });
 });

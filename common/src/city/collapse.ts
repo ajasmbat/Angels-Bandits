@@ -35,6 +35,9 @@
 // under it — never on something that could later be shot away.
 
 import {
+  CHAIN_COALESCE_M,
+  CHAIN_IMPACTS_MAX,
+  CHAIN_IMPACTS_PER_BUILDING,
   CHUNK_FLOOR,
   COLLAPSE_BAND_MIN,
   COLLAPSE_BAND_STAGGER_MS,
@@ -49,14 +52,16 @@ import {
   COLLAPSE_TOPPLE_BREAK,
   COLLAPSE_TOPPLE_K,
   COLLAPSE_ZONE_TAIL_MS,
+  CRANE_MAST_SIDE,
 } from "../constants";
-import { type Vec3, wrapDeltaAxis } from "../world/index";
+import { type Vec3, canonicalize, wrapDeltaAxis } from "../world/index";
 import {
   type LocalBox,
   type TierGrid,
   cellBox,
   cellIndex,
   cellSolids,
+  chunkAt,
   chunkBuilding,
   chunkCell,
   chunkId,
@@ -68,11 +73,21 @@ import {
   tierGrids,
 } from "./destruction";
 import type { Building } from "./index";
+// movers.ts ↔ collapse.ts is a module cycle (collideMovers reads the field;
+// a crane fall reads the crane's boxes). Every use is at call time.
+import { type CraneSite, craneBoxesAt, slewAngle } from "./movers";
 import { mulberry32 } from "./rng";
 
 export const PANCAKE = 0;
 export const TOPPLE = 1;
 export type CollapseStyle = typeof PANCAKE | typeof TOPPLE;
+
+/** What came down (CollapseWire.k): a building section, or (D5) a tower
+ * crane. A crane wire's `b` is the crane SITE id — a separate namespace from
+ * building indices, so every consumer that reads `buildings[c.building]`
+ * filters on the kind first. */
+export const KIND_BUILDING = 0;
+export const KIND_CRANE = 1;
 
 /** Topple directions, D2's face order: −x, +x, −z, +z. */
 export const DIR_NEG_X = 0;
@@ -96,9 +111,16 @@ export interface CollapseWire {
   s: number;
   /** Topple direction (DIR_*); 0 for a pancake. */
   d: number;
-  /** The chunks that fall, encodeChunkIds. */
+  /** The chunks that fall, encodeChunkIds ([] for a crane). */
   c: number[];
+  /** D5: KIND_CRANE for a falling tower crane (b = its site id); absent for
+   * a building section, so D3 records are unchanged on the wire. */
+  k?: number;
 }
+
+/** A wire's kind (absent = a building section). */
+export const wireKind = (w: CollapseWire): number =>
+  w.k === KIND_CRANE ? KIND_CRANE : KIND_BUILDING;
 
 /** What planCollapses decided for one event. */
 export interface CollapsePlan {
@@ -440,6 +462,38 @@ export function planCollapses(b: Building, index: number): CollapsePlan[] {
   return plans;
 }
 
+/**
+ * D5 demolition: a charge line under tier 0's second floor band. Every
+ * standing chunk above tier 0's bottom band (and every upper tier) falls as
+ * ONE event — TOPPLE in `dir`, or a PANCAKE that also crushes what stands
+ * under it. What stays is a supported stump, so nothing is left floating.
+ * Null when nothing above the bottom band still stands. Pure in (shape,
+ * damage).
+ */
+export function demolitionPlan(
+  b: Building,
+  index: number,
+  style: CollapseStyle,
+  dir: number,
+): CollapsePlan | null {
+  const grids = tierGrids(b);
+  const standing = standingOf(b);
+  let set: number[] = [];
+  standing.forEach((st, k) => {
+    const g = grids[k] as TierGrid;
+    const first = k === 0 ? g.nx * g.nz : 0;
+    for (let c = first; c < st.length; c++) if (st[c]) set.push(k, c);
+  });
+  if (set.length === 0) return null;
+  if (style === PANCAKE) set = set.concat(crushedUnder(grids, standing, set));
+  const chunks: number[] = [];
+  for (let j = 0; j < set.length; j += 2) {
+    chunks.push(chunkId(index, set[j] as number, set[j + 1] as number));
+  }
+  chunks.sort((x, y) => x - y);
+  return { style, dir: style === TOPPLE ? dir : 0, chunks };
+}
+
 /** A plan as the wire event `id` at server time `t`. */
 export function collapseWire(
   plan: CollapsePlan,
@@ -467,6 +521,9 @@ export function collapseWire(
  */
 export interface Collapse {
   readonly id: number;
+  /** KIND_BUILDING or KIND_CRANE. */
+  readonly kind: number;
+  /** Building index — or, for KIND_CRANE, the crane's site id. */
   readonly building: number;
   /** Event time, ms (server clock). */
   readonly t0: number;
@@ -745,6 +802,9 @@ export function buildCollapse(
   buildings: readonly Building[],
   wire: CollapseWire,
 ): Collapse | null {
+  // A crane wire names a crane site, not a building: CollapseField routes it
+  // to buildCraneCollapse.
+  if (wireKind(wire) !== KIND_BUILDING) return null;
   const b = buildings[wire.b];
   if (!b || !Number.isFinite(wire.t)) return null;
   const masks = chunkMask(b);
@@ -758,17 +818,7 @@ export function buildCollapse(
   const dir = style === TOPPLE ? Math.min(3, Math.max(0, wire.d | 0)) : 0;
 
   // Pieces: each chunk's generated solid volume.
-  const raw: {
-    chunk: number;
-    tier: number;
-    cut: number;
-    x: number;
-    y: number;
-    z: number;
-    hx: number;
-    hy: number;
-    hz: number;
-  }[] = [];
+  const raw: RawPiece[] = [];
   for (const id of chunks) {
     for (const s of cellSolids(b, chunkTier(id), chunkCell(id))) {
       raw.push({
@@ -784,18 +834,76 @@ export function buildCollapse(
       });
     }
   }
+  return assembleCollapse(
+    raw,
+    {
+      id: wire.id,
+      kind: KIND_BUILDING,
+      building: wire.b,
+      t0: wire.t,
+      style,
+      dir,
+      x: b.x,
+      z: b.z,
+      chunks,
+    },
+    null,
+  );
+}
+
+/** One piece as it stood: the chunk it came from, its tier and exposed
+ * faces, centre (relative to the collapse's centre) and half extents. */
+interface RawPiece {
+  chunk: number;
+  tier: number;
+  cut: number;
+  x: number;
+  y: number;
+  z: number;
+  hx: number;
+  hy: number;
+  hz: number;
+}
+
+/** What a Collapse is besides its pieces. */
+interface CollapseMeta {
+  id: number;
+  kind: number;
+  building: number;
+  t0: number;
+  style: CollapseStyle;
+  dir: number;
+  x: number;
+  z: number;
+  chunks: readonly number[];
+}
+
+/**
+ * Trajectories, landings, rest boxes and bounds for `raw` — the shared
+ * second half of a building section's and (D5) a crane's debris. A topple
+ * pivots on the base edge of the pieces on the fall side, or on
+ * `pivotEdge` (the fall-axis coordinate) when given: a crane tips over its
+ * mast foot, not the tip of its jib.
+ */
+function assembleCollapse(
+  raw: readonly RawPiece[],
+  meta: CollapseMeta,
+  pivotEdge: number | null,
+): Collapse | null {
+  const { style, dir } = meta;
   const n = raw.length;
   if (n === 0) return null;
   const f64 = () => new Float64Array(n);
   const c: Draft = {
-    id: wire.id,
-    building: wire.b,
-    t0: wire.t,
+    id: meta.id,
+    kind: meta.kind,
+    building: meta.building,
+    t0: meta.t0,
     style,
     dir,
-    x: b.x,
-    z: b.z,
-    chunks,
+    x: meta.x,
+    z: meta.z,
+    chunks: meta.chunks,
     n,
     chunk: Int32Array.from(raw, (p) => p.chunk),
     tier: Uint8Array.from(raw, (p) => p.tier),
@@ -855,7 +963,7 @@ export function buildCollapse(
     // Floors drop in a cascade: a later start the higher a piece's base,
     // so nothing overtakes what is under it.
     for (let i = 0; i < n; i++) {
-      const rand = pieceRand(wire.id, c.chunk[i] as number);
+      const rand = pieceRand(meta.id, c.chunk[i] as number);
       c.axis[i] = rand() < 0.5 ? 0 : 1;
       c.tilt[i] = (rand() * 2 - 1) * COLLAPSE_PANCAKE_TILT;
       const bottom = (c.oy[i] as number) - (c.hy[i] as number);
@@ -909,11 +1017,12 @@ export function buildCollapse(
     const xAxisFall = dir === DIR_NEG_X || dir === DIR_POS_X;
     const positive = dir === DIR_POS_X || dir === DIR_POS_Z;
     let edge = positive ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY;
-    for (let i = 0; i < n; i++) {
+    for (let i = 0; i < n && pivotEdge === null; i++) {
       const o = (xAxisFall ? c.ox[i] : c.oz[i]) as number;
       const h = (xAxisFall ? c.hx[i] : c.hz[i]) as number;
       edge = positive ? Math.max(edge, o + h) : Math.min(edge, o - h);
     }
+    if (pivotEdge !== null) edge = pivotEdge;
     // Falling along x turns about z, along z about x. Signs: +φ about z
     // tips the top toward −x; +φ about x tips it toward +z.
     const axis = xAxisFall ? 1 : 0;
@@ -1038,6 +1147,177 @@ export function buildCollapse(
   grow(all, rest.x0, rest.y0, rest.z0, 0);
   grow(all, rest.x1, rest.y1, rest.z1, 0);
   return c;
+}
+
+// --- D5 crane falls ----------------------------------------------------------
+
+/** A crane's mast and booms break into pieces at most this long, m. */
+const CRANE_SEGMENT = 12;
+
+/** Topple direction of a crane whose jib is slewed to quarter turn `q`:
+ * the jib points along (cos θ, −sin θ), so θ = 0 is +x, π/2 is −z, π is −x,
+ * 3π/2 is +z. A tower crane goes over jib first. */
+const CRANE_DIRS = [DIR_POS_X, DIR_NEG_Z, DIR_NEG_X, DIR_POS_Z] as const;
+
+/** The quarter turn (0..3) nearest a slew angle. */
+export const slewQuarter = (theta: number): number =>
+  (((Math.round(theta / HALF_PI) % 4) + 4) % 4) as number;
+
+/** The direction a crane falls when it goes over at `tMs`. */
+export const craneFallDir = (site: CraneSite, tMs: number): number =>
+  CRANE_DIRS[slewQuarter(slewAngle(site, tMs))] as number;
+
+/**
+ * D5: the debris of a crane fall — the crane's own boxes (craneBoxesAt, the
+ * shapes it collides as) at the wire's instant, its slew snapped to the
+ * nearest quarter turn (the server only fells a crane while its jib lies
+ * along a street axis, so the snap is sub-millimetre), cut into segments
+ * and tipped over the mast foot jib first. Pure in (site, wire). Null for a
+ * wire that is not this crane's.
+ */
+export function buildCraneCollapse(
+  site: CraneSite,
+  wire: CollapseWire,
+): Collapse | null {
+  if (wireKind(wire) !== KIND_CRANE || wire.b !== site.id) return null;
+  if (!Number.isFinite(wire.t)) return null;
+  const q = slewQuarter(slewAngle(site, wire.t));
+  const alongX = q % 2 === 0;
+  const raw: RawPiece[] = [];
+  for (const box of craneBoxesAt(site, q * HALF_PI)) {
+    if (box.kind === "cable") continue;
+    const x = wrapDeltaAxis(site.x, box.x);
+    const z = wrapDeltaAxis(site.z, box.z);
+    // A quarter-turn yaw only swaps the local x/z extents.
+    const hx = alongX ? box.hx : box.hz;
+    const hz = alongX ? box.hz : box.hx;
+    const hy = box.hy;
+    const axis = hy >= Math.max(hx, hz) ? 1 : hx >= hz ? 0 : 2;
+    const half = axis === 1 ? hy : axis === 0 ? hx : hz;
+    const k = Math.max(1, Math.ceil((2 * half) / CRANE_SEGMENT));
+    const seg = half / k;
+    for (let j = 0; j < k; j++) {
+      const off = -half + (2 * j + 1) * seg;
+      raw.push({
+        chunk: -1,
+        tier: 0,
+        cut: 0,
+        x: x + (axis === 0 ? off : 0),
+        y: box.y + (axis === 1 ? off : 0),
+        z: z + (axis === 2 ? off : 0),
+        hx: axis === 0 ? seg : hx,
+        hy: axis === 1 ? seg : hy,
+        hz: axis === 2 ? seg : hz,
+      });
+    }
+  }
+  const dir = CRANE_DIRS[q] as number;
+  const positive = dir === DIR_POS_X || dir === DIR_POS_Z;
+  return assembleCollapse(
+    raw,
+    {
+      id: wire.id,
+      kind: KIND_CRANE,
+      building: site.id,
+      t0: wire.t,
+      style: TOPPLE,
+      dir,
+      x: site.x,
+      z: site.z,
+      chunks: [],
+    },
+    ((positive ? 1 : -1) * CRANE_MAST_SIDE) / 2,
+  );
+}
+
+// --- D5 chain reactions ------------------------------------------------------
+
+/** Falling debris entering another building: when (server ms), which
+ * building, and where (canonical world position). */
+export interface CollapseImpact {
+  t: number;
+  building: number;
+  x: number;
+  y: number;
+  z: number;
+}
+
+/** Trajectory sampling step for collapseImpacts, s. */
+const IMPACT_STEP_S = 0.1;
+
+/**
+ * D5: where collapse `c`'s falling pieces first drive into ANOTHER
+ * building's standing chunks (a crane's debris: any building) — the instant
+ * a piece's centre enters a chunk of it that still stands. A per-building
+ * AABB reject against the debris' swept bounds, then each piece sampled
+ * every IMPACT_STEP_S until it lands. Coalesced: per building at most
+ * CHAIN_IMPACTS_PER_BUILDING impacts at least CHAIN_COALESCE_M apart, and
+ * CHAIN_IMPACTS_MAX in all, earliest first. Pure in (c, buildings' shape
+ * and damage); the server lands each one as a D2 blast at its instant.
+ */
+export function collapseImpacts(
+  c: Collapse,
+  buildings: readonly Building[],
+): CollapseImpact[] {
+  const near: { i: number; dx: number; dz: number }[] = [];
+  const box = c.bounds;
+  for (let i = 0; i < buildings.length; i++) {
+    if (c.kind === KIND_BUILDING && i === c.building) continue;
+    const b = buildings[i] as Building;
+    const dx = wrapDeltaAxis(c.x, b.x);
+    const dz = wrapDeltaAxis(c.z, b.z);
+    if (dx + b.width / 2 < box.x0 || dx - b.width / 2 > box.x1) continue;
+    if (dz + b.depth / 2 < box.z0 || dz - b.depth / 2 > box.z1) continue;
+    if (box.y0 > b.height) continue;
+    near.push({ i, dx, dz });
+  }
+  if (near.length === 0) return [];
+  const found: CollapseImpact[] = [];
+  const pose = blankPose();
+  const hit = new Set<number>();
+  const local: Vec3 = { x: 0, y: 0, z: 0 };
+  for (let p = 0; p < c.n; p++) {
+    hit.clear();
+    const start = c.start[p] as number;
+    const land = c.land[p] as number;
+    for (let tau = IMPACT_STEP_S; tau < land; tau += IMPACT_STEP_S) {
+      const tMs = c.t0 + (start + tau) * 1000;
+      piecePose(c, p, tMs, pose);
+      for (const n of near) {
+        if (hit.has(n.i)) continue;
+        const b = buildings[n.i] as Building;
+        local.x = pose.x - n.dx;
+        local.y = pose.y;
+        local.z = pose.z - n.dz;
+        const at = chunkAt(b, local);
+        if (!at || chunkMask(b)[at.tier]?.[at.cell] !== 1) continue;
+        if (b.damage?.cells[at.tier]?.[at.cell]) continue;
+        hit.add(n.i);
+        const w = canonicalize({ x: c.x + pose.x, y: 0, z: c.z + pose.z });
+        found.push({ t: tMs, building: n.i, x: w.x, y: pose.y, z: w.z });
+      }
+    }
+  }
+  found.sort((a, b) => a.t - b.t || a.building - b.building);
+  const out: CollapseImpact[] = [];
+  for (const f of found) {
+    if (out.length >= CHAIN_IMPACTS_MAX) break;
+    let same = 0;
+    let close = false;
+    for (const o of out) {
+      if (o.building !== f.building) continue;
+      same++;
+      const d = Math.hypot(
+        wrapDeltaAxis(o.x, f.x),
+        f.y - o.y,
+        wrapDeltaAxis(o.z, f.z),
+      );
+      if (d < CHAIN_COALESCE_M) close = true;
+    }
+    if (close || same >= CHAIN_IMPACTS_PER_BUILDING) continue;
+    out.push(f);
+  }
+  return out;
 }
 
 // --- Collision -------------------------------------------------------------
@@ -1217,21 +1497,29 @@ export function collapseZoneHit(
  */
 export class CollapseField {
   private buildings: readonly Building[] | null = null;
+  /** D5: the room's crane sites (a crane fall's wire names one by id). */
+  private cranes: readonly CraneSite[] = [];
   private readonly wires: CollapseWire[] = [];
   /** Built debris, in event order (empty until bound). */
   readonly list: Collapse[] = [];
+  /** D5: felled crane site id → the instant it went over (its earliest
+   * fall record). A crane stands for any time before that — render clocks
+   * trail the server — and is debris from then on. */
+  readonly felled = new Map<number, number>();
   /** Bumped on every change. */
   version = 0;
 
   /** Attach to the city the records name; builds every held record. */
   bind(buildings: readonly Building[]): void {
     this.buildings = buildings;
-    this.list.length = 0;
-    for (const w of this.wires) {
-      const c = buildCollapse(buildings, w);
-      if (c) this.list.push(c);
-    }
-    this.version++;
+    this.rebuild();
+  }
+
+  /** D5: the crane sites crane-fall records name (the room's movers). Re-
+   * builds every record, so it may come before or after bind(). */
+  bindCranes(cranes: readonly CraneSite[]): void {
+    this.cranes = cranes;
+    if (this.buildings) this.rebuild();
   }
 
   /** Every record, in event order — the welcome's replay. */
@@ -1244,8 +1532,9 @@ export class CollapseField {
   add(wire: CollapseWire): Collapse | null {
     this.wires.push(wire);
     this.version++;
+    this.noteFelled(wire);
     if (!this.buildings) return null;
-    const c = buildCollapse(this.buildings, wire);
+    const c = this.build(wire);
     if (c) this.list.push(c);
     return c;
   }
@@ -1254,14 +1543,80 @@ export class CollapseField {
   reset(wires: readonly CollapseWire[]): void {
     this.wires.length = 0;
     this.list.length = 0;
+    this.felled.clear();
     for (const w of wires) this.add(w);
     this.version++;
   }
+
+  /** D5 rebuild: drop every record (and its debris and rubble) of building
+   * `index`. Returns the dropped records' ids. */
+  removeBuilding(index: number): number[] {
+    return this.remove(KIND_BUILDING, index);
+  }
+
+  /** D5 rebuild: the crane at site `id` stands again. Returns the dropped
+   * records' ids. */
+  removeCrane(id: number): number[] {
+    return this.remove(KIND_CRANE, id);
+  }
+
+  private remove(kind: number, target: number): number[] {
+    const ids: number[] = [];
+    const keep = this.wires.filter((w) => {
+      const drop = wireKind(w) === kind && w.b === target;
+      if (drop) ids.push(w.id);
+      return !drop;
+    });
+    if (ids.length === 0) return ids;
+    this.wires.length = 0;
+    this.wires.push(...keep);
+    for (let k = this.list.length - 1; k >= 0; k--) {
+      const c = this.list[k] as Collapse;
+      if (c.kind === kind && c.building === target) this.list.splice(k, 1);
+    }
+    if (kind === KIND_CRANE) this.felled.delete(target);
+    this.version++;
+    return ids;
+  }
+
+  private rebuild(): void {
+    this.list.length = 0;
+    for (const w of this.wires) {
+      const c = this.build(w);
+      if (c) this.list.push(c);
+    }
+    this.version++;
+  }
+
+  private build(wire: CollapseWire): Collapse | null {
+    if (wireKind(wire) === KIND_CRANE) {
+      const site = this.cranes.find((s) => s.id === wire.b);
+      return site ? buildCraneCollapse(site, wire) : null;
+    }
+    return buildCollapse(this.buildings as readonly Building[], wire);
+  }
+
+  private noteFelled(wire: CollapseWire): void {
+    if (wireKind(wire) !== KIND_CRANE || !Number.isFinite(wire.t)) return;
+    const at = this.felled.get(wire.b);
+    if (at === undefined || wire.t < at) this.felled.set(wire.b, wire.t);
+  }
+}
+
+/** D5: is crane site `id` down at server time `tMs`? */
+export function craneDown(
+  field: CollapseField | undefined,
+  id: number,
+  tMs: number,
+): boolean {
+  if (!field || field.felled.size === 0) return false;
+  const at = field.felled.get(id);
+  return at !== undefined && tMs >= at;
 }
 
 /** The chunk ids a record drops (for CityDamage.collapse). */
 export const collapseChunks = (wire: CollapseWire): number[] =>
-  decodeChunkIds(wire.c);
+  wireKind(wire) === KIND_BUILDING ? decodeChunkIds(wire.c) : [];
 
 /** Grid helper for tests and tools: chunk id of (tier, ix, iy, iz). */
 export function chunkAtCell(

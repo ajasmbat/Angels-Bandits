@@ -1,0 +1,849 @@
+// D5 destruction director, server side: WHAT the city does to the fight,
+// WHERE and WHEN — and how it heals. One DestructionDirector per room;
+// index.ts and the bot-sim harness both drive exactly this.
+//
+// The event, per slot (common/src/director.ts directorSlotsInWindow — a
+// pure function of (seed, server time), 2–4 min apart):
+//
+//   slot → ARMED (a pick is tried every retryMs for slotPatienceMs)
+//        → WARNED (`directorWarn` broadcast; it happens DIRECTOR_WARN_MS on)
+//        → FIRED at `at` — or CANCELLED (implicitly: no event follows) when a
+//          freshly spawned plane is inside its danger zone by then.
+//
+// The pick: only around a fight a human is in (an anchor is a human, or a
+// bot within DIRECTOR_ACTION_M of one); targets within DIRECTOR_ACTION_M of
+// an anchor; a tower with a plane within DIRECTOR_NEAR_M is PREFERRED and
+// topples across that plane's projected DIRECTOR_PATH_S path (scored on the
+// candidate's REAL debris, buildCollapse); worn towers (X1 strikes, gunfire)
+// are preferred too. Never with a fresh (spawn-protected or just-respawned)
+// plane or a plane on its post-event cooldown inside the zone; never on a
+// building whose rebuild is about to come; never once the room's destroyed
+// share reaches stopShare (director demolitions skip DESTROY_CAP and
+// COLLAPSE_CAP, so this is their bound).
+//
+// The rebuild, per damaged building (and felled crane):
+//
+//   damaged (firstDamageAt) → due at firstDamageAt + a seeded 3–5 min, and
+//   ≥ rebuildAfterCollapseMs after its last collapse → DEFERRED while its
+//   debris still falls, a warning or a queued chain impact targets it, or a
+//   plane's projected path enters its volume → ANNOUNCED (`rebuild` go:false,
+//   cosmetic, at = now + rebuildLeadMs) → APPLIED at the first check ≥ `at`
+//   that still passes (`rebuild` go:true, applied by clients on arrival).
+
+import {
+  type Building,
+  chunkBuilding,
+  mulberry32,
+  tierGrids,
+} from "@angels-bandits/common/city";
+import {
+  type Collapse,
+  type CollapseWire,
+  KIND_CRANE,
+  PANCAKE,
+  TOPPLE,
+  buildCollapse,
+  buildCraneCollapse,
+  collapseWire,
+  craneDown,
+  craneFallDir,
+  demolitionPlan,
+} from "@angels-bandits/common/city/collapse";
+import { type CraneSite, slewAngle } from "@angels-bandits/common/city/movers";
+import {
+  DIRECTOR_ACTION_M,
+  DIRECTOR_DIRS,
+  DIRECTOR_NEAR_M,
+  DIRECTOR_PATH_S,
+  DIRECTOR_WARN_MS,
+  type DangerZone,
+  type DirectorEvent,
+  EVENT_COLLAPSE,
+  EVENT_CRANE,
+  EVENT_GAS,
+  GAS_BLAST_M,
+  GAS_CHUNK_DAMAGE,
+  GAS_CHUNK_RADIUS,
+  GAS_CHUNK_Y,
+  GAS_COLUMN_H,
+  type RebuildWire,
+  decodeDirectorEvent,
+  directorSlotsInWindow,
+  encodeDirectorEvent,
+  fallFootprint,
+  gasDamage,
+  gasDistance,
+  gasMainNear,
+  inDangerZone,
+  pathCrossing,
+} from "@angels-bandits/common/director";
+import {
+  type Vec3,
+  wrapDeltaAxis,
+  wrapDistance,
+} from "@angels-bandits/common/world";
+import {
+  type RoomCity,
+  rebuildBuilding,
+  rebuildCrane,
+  stageCollapse,
+  stageCraneFall,
+} from "./destruction";
+
+export interface DestructionTuning {
+  /** Slot times are directorSlotsInWindow's, scaled by this (QA: < 1). */
+  slotScale: number;
+  /** An armed slot retries its pick this often, for this long, ms. */
+  retryMs: number;
+  slotPatienceMs: number;
+  /** Kind roll: a crane this often, a gas main this often, else a tower. */
+  craneShare: number;
+  gasShare: number;
+  /** Planes inside a fired event's zone + cooldownMarginM sit out the next
+   * events for cooldownMs. */
+  cooldownMs: number;
+  cooldownMarginM: number;
+  /** A plane respawned within this is fresh (besides spawn protection). */
+  freshMs: number;
+  /** Fresh planes this close to a zone call an event off, m. */
+  freshMarginM: number;
+  /** No new warning at or above this destroyed share of the room's city. */
+  stopShare: number;
+  /** A tower is at least this tall, m. */
+  towerMinM: number;
+  /** Rebuild: seeded delay after first damage, ms. */
+  rebuildMinMs: number;
+  rebuildMaxMs: number;
+  /** ...and never sooner than this after the building's last collapse, ms. */
+  rebuildAfterCollapseMs: number;
+  /** Debris must have rested this long, ms. */
+  rebuildSettleMs: number;
+  /** The announce leads the apply by this, ms. */
+  rebuildLeadMs: number;
+  /** A plane's projected path this close to the volume defers it, m. */
+  rebuildMarginM: number;
+  rebuildCheckMs: number;
+  /** No warning on a building whose rebuild is due within this, ms. */
+  rebuildQuietMs: number;
+}
+
+export const DESTRUCTION_TUNING: DestructionTuning = {
+  slotScale: 1,
+  retryMs: 1000,
+  slotPatienceMs: 60_000,
+  craneShare: 0.2,
+  gasShare: 0.3,
+  cooldownMs: 30_000,
+  cooldownMarginM: 50,
+  freshMs: 3000,
+  freshMarginM: 30,
+  stopShare: 0.1,
+  towerMinM: 60,
+  rebuildMinMs: 180_000,
+  rebuildMaxMs: 300_000,
+  rebuildAfterCollapseMs: 60_000,
+  rebuildSettleMs: 10_000,
+  rebuildLeadMs: 2000,
+  rebuildMarginM: 25,
+  rebuildCheckMs: 1000,
+  rebuildQuietMs: 30_000,
+};
+
+/** AB_DIRECTOR_FAST=1 (tests and QA only): an event every ~20–40 s and a
+ * rebuild ~30–50 s after the damage. */
+export const DESTRUCTION_FAST: DestructionTuning = {
+  ...DESTRUCTION_TUNING,
+  slotScale: 1 / 6,
+  slotPatienceMs: 15_000,
+  cooldownMs: 10_000,
+  rebuildMinMs: 30_000,
+  rebuildMaxMs: 50_000,
+  rebuildAfterCollapseMs: 20_000,
+};
+
+/** One plane as the director sees it this tick (the caller leaves out
+ * pending, away and dead planes). */
+export interface DestructionPlane {
+  id: string;
+  pos: Vec3;
+  /** m/s. */
+  vel: Vec3;
+  human: boolean;
+  /** Spawn-protected right now (Combat.isProtected). */
+  protected: boolean;
+  /** How old the on-record pose is, ms (humans; 0 for bots). */
+  ageMs: number;
+}
+
+/** What the director reads besides the planes. */
+export interface DestructionWorld {
+  city: RoomCity;
+  /** The room's crane sites (its movers). */
+  cranes: readonly CraneSite[];
+}
+
+/** A fired event and what it did to the city. */
+export interface FiredEvent {
+  event: DirectorEvent;
+  /** A demolition's or a crane fall's collapse record (already in the
+   * room's field — broadcast it). */
+  collapse: CollapseWire | null;
+  /** A gas main: the chunks it broke (already pending in the damage — the
+   * tick's `chunks` batch carries them). */
+  broke: number[];
+}
+
+export interface DirectorTick {
+  warned: DirectorEvent[];
+  fired: FiredEvent[];
+  cancelled: DirectorEvent[];
+}
+
+const HALF_PI = Math.PI / 2;
+
+/** Plan-view gap from `p` to building `b`'s footprint, m. */
+function gapTo(b: Building, p: Vec3): number {
+  return Math.hypot(
+    Math.max(Math.abs(wrapDeltaAxis(b.x, p.x)) - b.width / 2, 0),
+    Math.max(Math.abs(wrapDeltaAxis(b.z, p.z)) - b.depth / 2, 0),
+  );
+}
+
+/** A Collapse's swept plan-view bounds grown by `m`, as a danger zone. */
+function zoneOf(c: Collapse, m: number): DangerZone {
+  return {
+    x0: c.bounds.x0 - m,
+    x1: c.bounds.x1 + m,
+    z0: c.bounds.z0 - m,
+    z1: c.bounds.z1 + m,
+    top: c.bounds.y1 + m,
+  };
+}
+
+/** Seeded rebuild delay for (kind, id, first damage time), ms. */
+function rebuildDelay(
+  seed: number,
+  kind: number,
+  id: number,
+  first: number,
+  t: DestructionTuning,
+): number {
+  const r = mulberry32(
+    (seed ^
+      0x7eb1d ^
+      Math.imul(kind + 1, 0x85ebca6b) ^
+      Math.imul(id + 1, 0x9e3779b1) ^
+      Math.imul(Math.floor(first / 1000), 0xc2b2ae35)) >>>
+      0,
+  )();
+  return t.rebuildMinMs + (t.rebuildMaxMs - t.rebuildMinMs) * r;
+}
+
+/** Gas victims: every plane within GAS_BLAST_M of the column (by `pos` —
+ * the caller extrapolates on-record poses to the fire instant) that is not
+ * fresh. */
+export function gasVictims(
+  e: DirectorEvent,
+  planes: readonly { id: string; pos: Vec3; fresh: boolean }[],
+): { id: string; damage: number }[] {
+  const out: { id: string; damage: number }[] = [];
+  for (const p of planes) {
+    if (p.fresh) continue;
+    const damage = gasDamage(gasDistance(e, p.pos));
+    if (damage > 0) out.push({ id: p.id, damage });
+  }
+  return out;
+}
+
+export class DestructionDirector {
+  private scanFrom: number | null = null;
+  private armed: { slot: number; until: number } | null = null;
+  private nextTry = 0;
+  private warned: DirectorEvent[] = [];
+  private readonly cooldown = new Map<string, number>();
+  private readonly spawns = new Map<string, number>();
+  /** Announced rebuilds: key (kind · 1e6 + id) → apply time. */
+  private readonly announced = new Map<number, RebuildWire>();
+  private nextRebuildCheck = 0;
+  private nextId = 1;
+
+  constructor(
+    private readonly seed: number,
+    private readonly rand: () => number,
+    private readonly tuning: DestructionTuning = DESTRUCTION_TUNING,
+  ) {}
+
+  /** Warned events still to happen, oldest first (the welcome's replay and
+   * the bots' no-fly zones). */
+  pending(): readonly DirectorEvent[] {
+    return this.warned;
+  }
+
+  /** Rebuilds announced and not yet applied. */
+  announcedRebuilds(): RebuildWire[] {
+    return [...this.announced.values()];
+  }
+
+  /** A plane (re)spawned at `now`: fresh for freshMs. */
+  noteSpawn(id: string, now: number): void {
+    this.spawns.set(id, now);
+  }
+
+  /** A plane left the room. */
+  forget(id: string): void {
+    this.spawns.delete(id);
+    this.cooldown.delete(id);
+  }
+
+  /** The room's city went back to whole (its last human left). */
+  reset(): void {
+    this.scanFrom = null;
+    this.armed = null;
+    this.warned = [];
+    this.cooldown.clear();
+    this.spawns.clear();
+    this.announced.clear();
+  }
+
+  private fresh(p: DestructionPlane, now: number): boolean {
+    const at = this.spawns.get(p.id);
+    return p.protected || (at !== undefined && now - at < this.tuning.freshMs);
+  }
+
+  /**
+   * One tick: fire what is due, then (inside a slot's patience) try to warn
+   * the next event. `planes` are the living planes in the air.
+   */
+  tick(
+    now: number,
+    planes: readonly DestructionPlane[],
+    world: DestructionWorld,
+  ): DirectorTick {
+    const t = this.tuning;
+    const out: DirectorTick = { warned: [], fired: [], cancelled: [] };
+    for (const [id, until] of this.cooldown) {
+      if (now >= until) this.cooldown.delete(id);
+    }
+    for (const [id, at] of this.spawns) {
+      if (now - at >= t.freshMs) this.spawns.delete(id);
+    }
+
+    // Fire (or call off) what is due.
+    const due = this.warned.filter((e) => e.at <= now);
+    if (due.length > 0) {
+      this.warned = this.warned.filter((e) => e.at > now);
+      for (const e of due) {
+        const blocked = planes.some(
+          (p) => this.fresh(p, now) && inDangerZone(e, p.pos, t.freshMarginM),
+        );
+        const fired = blocked ? null : this.fire(e, world);
+        if (!fired) {
+          out.cancelled.push(e);
+          continue;
+        }
+        out.fired.push(fired);
+        for (const p of planes) {
+          if (inDangerZone(e, p.pos, t.cooldownMarginM)) {
+            this.cooldown.set(p.id, now + t.cooldownMs);
+          }
+        }
+      }
+    }
+
+    // Arm the latest slot that came round.
+    if (this.scanFrom === null) this.scanFrom = now;
+    const s = t.slotScale;
+    const slots = directorSlotsInWindow(this.seed, this.scanFrom / s, now / s);
+    this.scanFrom = now;
+    const last = slots[slots.length - 1];
+    if (last !== undefined) {
+      this.armed = { slot: last * s, until: last * s + t.slotPatienceMs };
+      this.nextTry = 0;
+    }
+    if (this.armed && now >= this.nextTry) {
+      if (now > this.armed.until) {
+        this.armed = null;
+      } else {
+        const e =
+          this.goneShare(world) < t.stopShare
+            ? this.pick(now, planes, world)
+            : null;
+        if (e) {
+          this.warned.push(e);
+          out.warned.push(e);
+          this.armed = null;
+        } else {
+          this.nextTry = now + t.retryMs;
+        }
+      }
+    }
+    return out;
+  }
+
+  /** (destroyed + fallen) / chunks of the room's city. */
+  private goneShare(world: DestructionWorld): number {
+    const d = world.city.damage;
+    return (d.destroyedCount + d.fallenCount) / Math.max(1, d.chunkCount);
+  }
+
+  private fire(e: DirectorEvent, world: DestructionWorld): FiredEvent | null {
+    const city = world.city;
+    if (e.k === EVENT_COLLAPSE) {
+      const b = city.buildings[e.b];
+      const plan =
+        b && demolitionPlan(b, e.b, e.s === TOPPLE ? TOPPLE : PANCAKE, e.d);
+      if (!plan) return null;
+      return {
+        event: e,
+        collapse: stageCollapse(city, plan, e.b, e.at, null),
+        broke: [],
+      };
+    }
+    if (e.k === EVENT_CRANE) {
+      const site = world.cranes.find((c) => c.id === e.b);
+      if (!site || craneDown(city.collapses, site.id, e.at)) return null;
+      return {
+        event: e,
+        collapse: stageCraneFall(city, site, e.at),
+        broke: [],
+      };
+    }
+    const broke = city.damage.damageAt(
+      { x: e.x, y: GAS_CHUNK_Y, z: e.z },
+      GAS_CHUNK_RADIUS,
+      GAS_CHUNK_DAMAGE,
+    );
+    // A collapse a gas main sets off is the environment's — nobody's.
+    for (const id of broke) city.breakers.set(chunkBuilding(id), null);
+    return { event: e, collapse: null, broke };
+  }
+
+  // --- The pick -------------------------------------------------------------
+
+  /** Pick and build the next event, or null when nothing fits right now. */
+  pick(
+    now: number,
+    planes: readonly DestructionPlane[],
+    world: DestructionWorld,
+  ): DirectorEvent | null {
+    const t = this.tuning;
+    const humans = planes.filter((p) => p.human);
+    const anchors = planes.filter(
+      (p) =>
+        !this.fresh(p, now) &&
+        (p.human ||
+          humans.some((h) => wrapDistance(h.pos, p.pos) <= DIRECTOR_ACTION_M)),
+    );
+    if (anchors.length === 0) return null;
+    const blocked = (x: number, z: number, zone: DangerZone): boolean =>
+      planes.some(
+        (p) =>
+          (this.fresh(p, now) || this.cooldown.has(p.id)) &&
+          inDangerZone({ x, z, zone }, p.pos, t.cooldownMarginM),
+      );
+    const roll = this.rand();
+    const order =
+      roll < t.craneShare
+        ? [EVENT_CRANE, EVENT_COLLAPSE, EVENT_GAS]
+        : roll < t.craneShare + t.gasShare
+          ? [EVENT_GAS, EVENT_COLLAPSE]
+          : [EVENT_COLLAPSE, EVENT_GAS];
+    for (const kind of order) {
+      const e =
+        kind === EVENT_COLLAPSE
+          ? this.pickTower(now, anchors, planes, world, blocked)
+          : kind === EVENT_GAS
+            ? this.pickGas(now, anchors, planes, blocked)
+            : this.pickCrane(now, anchors, world, blocked);
+      if (e) return e;
+    }
+    return null;
+  }
+
+  private event(
+    k: number,
+    b: number,
+    at: Vec3,
+    s: number,
+    d: number,
+    now: number,
+    fireAt: number,
+    zone: DangerZone,
+  ): DirectorEvent {
+    // Through the wire codec, so the server holds exactly what clients do.
+    return decodeDirectorEvent(
+      encodeDirectorEvent({
+        id: this.nextId++,
+        k,
+        b,
+        x: at.x,
+        y: at.y,
+        z: at.z,
+        s,
+        d,
+        w: now,
+        at: fireAt,
+        zone,
+      }),
+    ) as DirectorEvent;
+  }
+
+  /** Is building `i` due a rebuild within rebuildQuietMs of `now`? */
+  private rebuildSoon(
+    world: DestructionWorld,
+    i: number,
+    now: number,
+  ): boolean {
+    const first = world.city.firstDamageAt.get(i);
+    if (first === undefined) return false;
+    const due = first + rebuildDelay(this.seed, 0, i, first, this.tuning);
+    return due - now < this.tuning.rebuildQuietMs + DIRECTOR_WARN_MS;
+  }
+
+  private pickTower(
+    now: number,
+    anchors: readonly DestructionPlane[],
+    planes: readonly DestructionPlane[],
+    world: DestructionWorld,
+    blocked: (x: number, z: number, zone: DangerZone) => boolean,
+  ): DirectorEvent | null {
+    const t = this.tuning;
+    const city = world.city;
+    const wear = city.damage.wear();
+    const busy = new Set(
+      this.warned.filter((e) => e.k === EVENT_COLLAPSE).map((e) => e.b),
+    );
+    const scored: {
+      i: number;
+      score: number;
+      near: DestructionPlane | null;
+    }[] = [];
+    for (let i = 0; i < city.buildings.length; i++) {
+      const b = city.buildings[i] as Building;
+      if (b.height < t.towerMinM || busy.has(i)) continue;
+      const g = tierGrids(b)[0];
+      if (!g || g.ny < 3) continue;
+      const worn = wear.get(i) ?? 0;
+      if (worn >= 0.5) continue; // already a wreck
+      let action = Number.POSITIVE_INFINITY;
+      for (const a of anchors) action = Math.min(action, gapTo(b, a.pos));
+      if (action > DIRECTOR_ACTION_M) continue;
+      if (this.rebuildSoon(world, i, now)) continue;
+      // The plane the topple aims across: the nearest within NEAR (humans
+      // count double).
+      let near: DestructionPlane | null = null;
+      let nearScore = Number.POSITIVE_INFINITY;
+      for (const p of planes) {
+        if (this.fresh(p, now)) continue;
+        const gap = gapTo(b, p.pos);
+        if (gap > DIRECTOR_NEAR_M) continue;
+        const s = gap / (p.human ? 2 : 1);
+        if (s < nearScore) {
+          nearScore = s;
+          near = p;
+        }
+      }
+      const score =
+        (near ? (near.human ? 8 : 4) : 1) +
+        6 * worn +
+        (1 - action / DIRECTOR_ACTION_M);
+      scored.push({ i, score, near });
+    }
+    scored.sort((a, b) => b.score - a.score || a.i - b.i);
+    // The real debris of the best few, each way it could fall.
+    const options: { e: DirectorEvent; score: number }[] = [];
+    const warnAt = now + DIRECTOR_WARN_MS;
+    for (const cand of scored.slice(0, 4)) {
+      const b = city.buildings[cand.i] as Building;
+      let best: { c: Collapse; dir: number; cross: number } | null = null;
+      if (cand.near) {
+        for (const dir of DIRECTOR_DIRS) {
+          const plan = demolitionPlan(b, cand.i, TOPPLE, dir);
+          if (!plan) continue;
+          const c = buildCollapse(
+            city.buildings,
+            collapseWire(plan, cand.i, 0, warnAt),
+          );
+          const fp = c && fallFootprint(c, b);
+          if (!c || !fp) continue;
+          const cross = pathCrossing(
+            fp,
+            b.x,
+            b.z,
+            cand.near.pos,
+            cand.near.vel,
+            DIRECTOR_PATH_S,
+          );
+          if (cross > 0 && (!best || cross > best.cross)) {
+            best = { c, dir, cross };
+          }
+        }
+      }
+      let style = TOPPLE;
+      let c = best?.c ?? null;
+      let dir = best?.dir ?? 0;
+      if (!c) {
+        const plan = demolitionPlan(b, cand.i, PANCAKE, 0);
+        if (!plan) continue;
+        c = buildCollapse(
+          city.buildings,
+          collapseWire(plan, cand.i, 0, warnAt),
+        );
+        style = PANCAKE;
+        dir = 0;
+        if (!c) continue;
+      }
+      const zone = zoneOf(c, 10);
+      if (blocked(b.x, b.z, zone)) continue;
+      options.push({
+        e: this.event(
+          EVENT_COLLAPSE,
+          cand.i,
+          { x: b.x, y: 0, z: b.z },
+          style,
+          dir,
+          now,
+          warnAt,
+          zone,
+        ),
+        score: cand.score + (best ? 4 : 0),
+      });
+    }
+    if (options.length === 0) {
+      return null;
+    }
+    // Weighted by score², so the preferred tower usually wins.
+    let total = 0;
+    for (const o of options) total += o.score * o.score;
+    let r = this.rand() * total;
+    for (const o of options) {
+      r -= o.score * o.score;
+      if (r <= 0) return o.e;
+    }
+    return (options[options.length - 1] as { e: DirectorEvent }).e;
+  }
+
+  private pickGas(
+    now: number,
+    anchors: readonly DestructionPlane[],
+    planes: readonly DestructionPlane[],
+    blocked: (x: number, z: number, zone: DangerZone) => boolean,
+  ): DirectorEvent | null {
+    const lead = DIRECTOR_WARN_MS / 1000;
+    const low = anchors
+      .filter((a) => a.pos.y < GAS_COLUMN_H + GAS_BLAST_M)
+      .sort((a, b) => Number(b.human) - Number(a.human) || a.pos.y - b.pos.y);
+    const zone: DangerZone = {
+      x0: -GAS_BLAST_M - 10,
+      x1: GAS_BLAST_M + 10,
+      z0: -GAS_BLAST_M - 10,
+      z1: GAS_BLAST_M + 10,
+      top: GAS_COLUMN_H + GAS_BLAST_M,
+    };
+    for (const a of low) {
+      const ahead = (s: number): Vec3 => ({
+        x: a.pos.x + a.vel.x * s,
+        y: Math.max(0, a.pos.y + a.vel.y * s),
+        z: a.pos.z + a.vel.z * s,
+      });
+      const there = ahead(lead);
+      for (const dt of [0, 0.4, -0.4, 0.8, -0.8, 1.2]) {
+        const site = gasMainNear(this.seed, ahead(lead + dt));
+        if (!site) continue;
+        const d = gasDistance(site, there);
+        if (d < 20 || d > 60) continue;
+        // Never right on top of another plane either.
+        if (
+          planes.some((p) => {
+            const at = {
+              x: p.pos.x + p.vel.x * lead,
+              y: p.pos.y + p.vel.y * lead,
+              z: p.pos.z + p.vel.z * lead,
+            };
+            return gasDistance(site, at) < 20;
+          })
+        ) {
+          continue;
+        }
+        if (blocked(site.x, site.z, zone)) continue;
+        return this.event(
+          EVENT_GAS,
+          -1,
+          { x: site.x, y: 0, z: site.z },
+          0,
+          0,
+          now,
+          now + DIRECTOR_WARN_MS,
+          zone,
+        );
+      }
+    }
+    return null;
+  }
+
+  private pickCrane(
+    now: number,
+    anchors: readonly DestructionPlane[],
+    world: DestructionWorld,
+    blocked: (x: number, z: number, zone: DangerZone) => boolean,
+  ): DirectorEvent | null {
+    const field = world.city.collapses;
+    for (const site of world.cranes) {
+      if (craneDown(field, site.id, now)) continue;
+      if (this.warned.some((e) => e.k === EVENT_CRANE && e.b === site.id)) {
+        continue;
+      }
+      const near = anchors.some(
+        (a) =>
+          Math.hypot(
+            wrapDeltaAxis(site.x, a.pos.x),
+            wrapDeltaAxis(site.z, a.pos.z),
+          ) <=
+          DIRECTOR_NEAR_M + site.jibLength,
+      );
+      if (!near) continue;
+      const at = craneAlignAfter(site, now + DIRECTOR_WARN_MS);
+      if (at - now > DIRECTOR_WARN_MS + 20_000) continue;
+      const c = buildCraneCollapse(site, {
+        id: 0,
+        b: site.id,
+        t: at,
+        s: TOPPLE,
+        d: craneFallDir(site, at),
+        c: [],
+        k: KIND_CRANE,
+      });
+      if (!c) continue;
+      const zone = zoneOf(c, 10);
+      if (blocked(site.x, site.z, zone)) continue;
+      return this.event(
+        EVENT_CRANE,
+        site.id,
+        { x: site.x, y: 0, z: site.z },
+        TOPPLE,
+        c.dir,
+        now,
+        at,
+        zone,
+      );
+    }
+    return null;
+  }
+
+  // --- The rebuild ----------------------------------------------------------
+
+  /**
+   * The rebuild cycle for one tick: apply announced rebuilds that are due
+   * (and still clear), then announce new ones. Returns the wires to
+   * broadcast, in order. The caller runs this AFTER the tick's destruction
+   * (tickDestruction), so nothing broken earlier in the tick is pending.
+   */
+  rebuild(
+    now: number,
+    planes: readonly DestructionPlane[],
+    world: DestructionWorld,
+  ): RebuildWire[] {
+    const t = this.tuning;
+    if (now < this.nextRebuildCheck) return [];
+    this.nextRebuildCheck = now + t.rebuildCheckMs;
+    const city = world.city;
+    const out: RebuildWire[] = [];
+    for (const [key, r] of [...this.announced]) {
+      if (r.at > now || !this.clearToRebuild(r.k, r.b, now, planes, world)) {
+        continue;
+      }
+      this.announced.delete(key);
+      if (r.k === 0) rebuildBuilding(city, r.b);
+      else rebuildCrane(city, r.b);
+      out.push({ k: r.k, b: r.b, at: now, go: true });
+    }
+    const announce = (k: 0 | 1, b: number) => {
+      const key = k * 1e6 + b;
+      if (this.announced.has(key)) return;
+      if (!this.clearToRebuild(k, b, now, planes, world)) return;
+      const r: RebuildWire = { k, b, at: now + t.rebuildLeadMs, go: false };
+      this.announced.set(key, r);
+      out.push(r);
+    };
+    for (const [i, first] of city.firstDamageAt) {
+      if (now < first + rebuildDelay(this.seed, 0, i, first, t)) continue;
+      const last = city.lastStructuralAt.get(i);
+      if (last !== undefined && now < last + t.rebuildAfterCollapseMs) continue;
+      announce(0, i);
+    }
+    for (const [id, fell] of city.collapses.felled) {
+      if (now < fell + rebuildDelay(this.seed, 1, id, fell, t)) continue;
+      if (now < fell + t.rebuildAfterCollapseMs) continue;
+      announce(1, id);
+    }
+    return out;
+  }
+
+  /** May target (k, b) be rebuilt right now? */
+  private clearToRebuild(
+    k: 0 | 1,
+    b: number,
+    now: number,
+    planes: readonly DestructionPlane[],
+    world: DestructionWorld,
+  ): boolean {
+    const t = this.tuning;
+    const city = world.city;
+    const kind = k === 0 ? 0 : KIND_CRANE;
+    for (const c of city.collapses.list) {
+      if (c.kind !== kind || c.building !== b) continue;
+      if (now < c.t0 + c.endMs + t.rebuildSettleMs) return false;
+    }
+    const ek = k === 0 ? EVENT_COLLAPSE : EVENT_CRANE;
+    if (this.warned.some((e) => e.k === ek && e.b === b)) return false;
+    let cx: number;
+    let cz: number;
+    let hx: number;
+    let hz: number;
+    let top: number;
+    if (k === 0) {
+      if (city.impacts.some((i) => i.building === b)) return false;
+      const bd = city.buildings[b];
+      if (!bd) return false;
+      cx = bd.x;
+      cz = bd.z;
+      hx = bd.width / 2;
+      hz = bd.depth / 2;
+      top = bd.height;
+    } else {
+      const site = world.cranes.find((c) => c.id === b);
+      if (!site) return true; // nothing to stand back up
+      cx = site.x;
+      cz = site.z;
+      hx = hz = Math.max(site.jibLength, site.counterLength) + 3;
+      top = site.hubY + 3;
+    }
+    const m = t.rebuildMarginM;
+    for (const p of planes) {
+      const span = (p.ageMs + t.rebuildLeadMs) / 1000;
+      for (let s = 0; s <= span + 1e-9; s += 0.25) {
+        const x = wrapDeltaAxis(cx, p.pos.x + p.vel.x * s);
+        const z = wrapDeltaAxis(cz, p.pos.z + p.vel.z * s);
+        const y = p.pos.y + p.vel.y * s;
+        if (Math.abs(x) <= hx + m && Math.abs(z) <= hz + m && y <= top + m) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+}
+
+/**
+ * The first server time ≥ `fromMs` at which `site`'s jib lies along a street
+ * axis (its slew angle a multiple of π/2), whole ms. A crane only goes over
+ * then, so its debris (axis-aligned boxes) matches the crane exactly.
+ */
+export function craneAlignAfter(site: CraneSite, fromMs: number): number {
+  const a = slewAngle(site, fromMs);
+  const w = site.omega;
+  if (w === 0) return Number.POSITIVE_INFINITY;
+  const q = a / HALF_PI;
+  const next = w > 0 ? Math.ceil(q) * HALF_PI - a : a - Math.floor(q) * HALF_PI;
+  return Math.round(fromMs + (next / Math.abs(w)) * 1000);
+}

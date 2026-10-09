@@ -681,6 +681,21 @@ export const COLLAPSE_CREDIT_SLACK = 8;
 /** The dust cloud's life, ms (sight-blocking haze in the canyon). */
 export const COLLAPSE_DUST_MS = 20_000;
 
+// --- D5 chain reactions (city/collapse.ts collapseImpacts) ---
+/** Falling debris that enters another building blasts its chunks there:
+ * at most this many impacts per collapse, this many per struck building,
+ * and two impacts on one building at least this far apart, m. */
+export const CHAIN_IMPACTS_MAX = 16;
+export const CHAIN_IMPACTS_PER_BUILDING = 4;
+export const CHAIN_COALESCE_M = 8;
+/** Each impact's D2 blast: radius (point-to-box), m, and damage — enough to
+ * break the chunk it lands in and bite its neighbours. */
+export const CHAIN_BLAST_RADIUS = 10;
+export const CHAIN_BLAST_DAMAGE = 240;
+/** A collapse set off by debris is one link further down the chain; past
+ * this many links debris no longer breaks anything (no city-wide domino). */
+export const CHAIN_DEPTH_MAX = 3;
+
 // --- D4 downed planes (common/src/wreck.ts) ---
 /** A shot-down plane's wreck: the sphere it falls as, m — solid while it
  * falls, and what its sweep stops on. */

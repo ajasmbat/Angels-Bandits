@@ -19,7 +19,14 @@ export class KillFeed {
   add(
     killerName: string | null,
     victimName: string,
-    cause?: "shot" | "crash" | "storm" | "wreck" | "collapse" | "missile",
+    cause?:
+      | "shot"
+      | "crash"
+      | "storm"
+      | "wreck"
+      | "collapse"
+      | "missile"
+      | "blast",
     self = false,
   ): void {
     const entry = document.createElement("div");
@@ -33,6 +40,8 @@ export class KillFeed {
       entry.append("⚡ took down ", victim);
     } else if (cause === "missile") {
       entry.append("🚀 missile strike took down ", victim);
+    } else if (cause === "blast") {
+      entry.append("💥 gas main took down ", victim);
     } else if (cause === "collapse" && killerName === null) {
       entry.append("▼ crushed ", victim);
     } else if (killerName === null) {

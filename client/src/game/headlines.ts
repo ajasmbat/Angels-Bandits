@@ -165,6 +165,12 @@ const MISSILE_LEADS = [
   "STRIKE TAKES OUT",
   "BLAST DOWNS",
 ];
+/** D5 gas main blasts (cause "blast"). */
+const GAS_LEADS = [
+  "GAS MAIN BLAST CATCHES",
+  "STREET ERUPTS UNDER",
+  "FIREBALL DOWNS",
+];
 
 const pick = (list: readonly string[], seed: number): string =>
   list[seed % list.length] as string;
@@ -191,6 +197,8 @@ export function killHeadline(
     line = `${pick(STORM_LEADS, seed)} ${victim}`;
   } else if (death.cause === "missile") {
     line = `${pick(MISSILE_LEADS, seed)} ${victim}`;
+  } else if (death.cause === "blast") {
+    line = `${pick(GAS_LEADS, seed)} ${victim}`;
   } else if (death.killerId === null) {
     line = `${victim} ${pick(CRASH_VERBS, seed)}`;
   } else if (death.cause === "wreck") {
@@ -212,6 +220,7 @@ export function feedLine(
   const victim = label(death.victimId);
   if (death.cause === "storm") return `⚡ ${victim}`;
   if (death.cause === "missile") return `🚀 ${victim}`;
+  if (death.cause === "blast") return `💥 ${victim}`;
   if (death.killerId === null) return `☠ ${victim}`;
   const glyph =
     death.cause === "wreck" ? "🔥" : death.cause === "crash" ? "✕" : "▸";
@@ -233,6 +242,9 @@ export function replaySubject(death: HeadlineDeath): ReplaySubject {
   }
   if (death.cause === "missile") {
     return { id: death.victimId, caption: "MISSILE STRIKE" };
+  }
+  if (death.cause === "blast") {
+    return { id: death.victimId, caption: "GAS MAIN BLAST" };
   }
   if (death.killerId === null) {
     return { id: death.victimId, caption: "WIPEOUT" };

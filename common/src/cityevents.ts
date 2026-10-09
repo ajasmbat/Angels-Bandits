@@ -11,8 +11,9 @@
 import { type Vec3, wrapDistance } from "./world/index";
 
 /** What happened. Gunfire wakes the block; a death also smokes and calls
- * the responders, and so does an X1 missile impact (`isBlastEvent`). */
-export type CityEventKind = "gunfire" | "death" | "missile";
+ * the responders, and so does an X1 missile impact and a D5 gas main
+ * blowing in a street (`isBlastEvent`). */
+export type CityEventKind = "gunfire" | "death" | "missile" | "gas";
 
 /** A death or a missile impact: blows out windows, burns, smokes and calls
  * the responders. Gunfire only wakes the block. */

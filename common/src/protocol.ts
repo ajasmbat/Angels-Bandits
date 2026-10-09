@@ -7,6 +7,7 @@
 import type { CollapseWire } from "./city/collapse";
 import type { NewsHeliSlot, NewsHeliTarget } from "./city/newsheli";
 import type { CityEvent } from "./cityevents";
+import type { RebuildWire, WireDirectorEvent } from "./director";
 import type { WireMissile } from "./strike";
 import type { Vec3 } from "./world/index";
 import type { WreckParams } from "./wreck";
@@ -226,6 +227,11 @@ export interface WelcomeMsg {
    * encodeMissile), so a late joiner — or a resume — sees, hears and
    * dodges the same incoming strikes as everyone else. */
   missiles?: WireMissile[];
+  /** D5: the director's events warned and not yet happened (common/src/
+   * director.ts encodeDirectorEvent), so a late joiner hears the same rumble
+   * and sees the same dust. Applied rebuilds need nothing here: `destroyed`
+   * and `collapses` already leave them out. */
+  director?: WireDirectorEvent[];
 }
 
 // --- S3 stunt courses ---
@@ -400,7 +406,14 @@ export interface DeathMsg {
   type: "death";
   victimId: string;
   killerId: string | null;
-  cause: "shot" | "crash" | "storm" | "wreck" | "collapse" | "missile";
+  cause:
+    | "shot"
+    | "crash"
+    | "storm"
+    | "wreck"
+    | "collapse"
+    | "missile"
+    | "blast";
   /** S1: the server's kill site — the victim's on-record position,
    * canonical and rounded to whole meters — so every client's jumbotron
    * headline names the same place. Absent when the server had no pose. */
@@ -505,8 +518,36 @@ export interface CollapseMsg {
   c: CollapseWire;
 }
 
+/**
+ * D5: the destruction director staged an event (common/src/director.ts):
+ * a demolition, a gas main or a crane, happening at `e.at` — at least
+ * DIRECTOR_WARN_MIN_MS after this is sent. Clients rumble, groan, sound the
+ * sirens and spill dust; the event itself arrives the usual way (`collapse`,
+ * or a `gas` city event with `chunks` and damage). A warning with no event
+ * after it was called off (a fresh spawn walked into it). Old clients
+ * ignore it.
+ */
+export interface DirectorWarnMsg {
+  type: "directorWarn";
+  e: WireDirectorEvent;
+}
+
+/**
+ * D5: a building (or a felled crane) is rebuilt. `go: false` is the 2 s
+ * announce — scaffolding sparks, nothing changes; `go: true` applies it on
+ * arrival: every chunk of the building is whole again and its collapse
+ * records (debris, rubble) are gone — in message order, so a `chunks` batch
+ * sent after it is applied after it everywhere.
+ */
+export interface RebuildMsg {
+  type: "rebuild";
+  r: RebuildWire;
+}
+
 export type ServerMsg =
   | WelcomeMsg
+  | DirectorWarnMsg
+  | RebuildMsg
   | ChunksMsg
   | CollapseMsg
   | MissileMsg

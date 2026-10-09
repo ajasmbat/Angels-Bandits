@@ -59,7 +59,7 @@ import {
   wrapCoord,
   wrapDeltaAxis,
 } from "../world/index";
-import { type CollapseField, collideCollapses } from "./collapse";
+import { type CollapseField, collideCollapses, craneDown } from "./collapse";
 import { type Building, mulberry32 } from "./index";
 import { CONSTRUCTION_BLOCKS } from "./layout";
 import {
@@ -450,7 +450,12 @@ const blankBox = (): MoverBox => ({
  * The collision path uses the same partBox with a scratch box instead.
  */
 export function craneBoxes(site: CraneSite, timeMs: number): MoverBox[] {
-  const theta = slewAngle(site, timeMs);
+  return craneBoxesAt(site, slewAngle(site, timeMs));
+}
+
+/** Every box of one crane slewed to `theta` (rad), canonicalized — D5's
+ * crane fall builds its debris from exactly these boxes. */
+export function craneBoxesAt(site: CraneSite, theta: number): MoverBox[] {
   return CRANE_PARTS.map((part) => {
     const box = partBox(site, part, theta, blankBox());
     const p = canonicalize({ x: box.x, y: 0, z: box.z });
@@ -589,6 +594,8 @@ export function collideMovers(
 ): MoverHit | null {
   for (let i = 0; i < field.cranes.length; i++) {
     const site = field.cranes[i] as CraneSite;
+    // D5: a felled crane is debris (hitCollapse) from the instant it fell.
+    if (craneDown(field.collapses, site.id, timeMs)) continue;
     const kind = hitsCrane(site, pos, radius, timeMs);
     if (kind) return { kind, id: site.id };
   }
@@ -651,6 +658,8 @@ export function collideBotMovers(
 ): MoverHit | null {
   for (let i = 0; i < field.cranes.length; i++) {
     const site = field.cranes[i] as CraneSite;
+    // D5: a felled crane is debris (hitCollapse) from the instant it fell.
+    if (craneDown(field.collapses, site.id, timeMs)) continue;
     const kind = hitsCrane(site, pos, radius, timeMs);
     if (kind) return { kind, id: site.id };
   }

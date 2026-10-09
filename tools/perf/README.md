@@ -1872,3 +1872,224 @@ node tools/perf/run.mjs --soak 600 --quality auto --res auto
 # 7. Flicker: O5's grid, not worse than S6's merge.
 node tools/perf/flicker.mjs --grid --ref 5d29b26
 ```
+
+---
+
+## O6: the frozen-view flicker — two harness bugs, two vehicles, and two shimmers a frozen camera cannot see
+
+The planner's Metal grid read two views far over O5's 0.041 frozen ceiling
+on main: `intersection` 1.40 (jitter 6.6 %) and `pose-19` 0.78–0.85. The
+runner reproduces both within a few percent (1.46 and 0.84 under
+SwiftShader), so everything below was measured there; scores are relative,
+but a view this far over moves the same way on any rasteriser.
+
+### Two harness defects, fixed first
+
+Neither changes what the game draws; both changed what the tool measured.
+
+- **The camera zoomed during a "frozen" capture.** The FOV widens with
+  airspeed (`speedFov`), and the held plane was re-teleported every frame
+  at whatever speed it had, so a view captured while the plane was still
+  spooling up toward cruise zoomed a hair wider every frame (70.06 →
+  70.68 m/s over one capture). That re-rolled the facade speckle below on
+  every frame: with the WORLD pinned as well, `still` read 1.26 where it
+  should read ~0, and the same view's frozen score swung 1.46 → 4.6
+  between runs with how far the spool-up had got. The pin now
+  sets one airspeed (`PIN_SPEED`, MAX_SPEED) on the flight state every
+  frame — on the state, not through `teleport`, so a `--ref` build from
+  before O6 is held exactly the same way.
+- **One step in 24 rendered two frames.** Playwright's fake clock fires
+  `requestAnimationFrame` on a 16 ms grid; a 1000/60 ms step crosses two
+  grid lines once every 24 steps, so that step's world moved twice as far
+  and a third of all captures carried one step ~1.6× its neighbours
+  (pose-19: 0.75 → 1.24 → 0.75, on a different step every run). The step
+  is now 16 ms.
+
+With both fixed, a capture is **byte-identical run to run** (three
+repeats: every per-step delta equal), where the same view used to vary
+by ±0.05 — larger than the effects being looked for.
+
+### Attribution: `--ablate` and `--hide`
+
+`__ab.qaSystems()` names the scene's systems (every top-level scene
+object of note, the S5 fog banks and litter, the city split finer as
+`city:main` — its base mesh alone — and `city:<i>`, each child mesh, plus
+four post effects: `post:shimmer`, `post:shafts`, `post:glare`,
+`post:reflections`); anything unnamed is listed as `other:<index>` (the
+lights and the HUD sprite). `__ab.qaHide(names)` takes those systems off every camera layer
+(restoring each object's own mask afterwards — S6 tags reflection layers)
+or holds the post effect off every frame.
+
+`flicker.mjs --grid --ablate [all|a,b]` re-shoots each view's frozen
+capture at the same world instant once with nothing hidden, once per
+system with only that system hidden, and once with every named system
+hidden ("everything else" — what no named system accounts for). A
+system's **share** is how far the score falls without it. Shares are not
+additive and can be negative: hiding an opaque mesh or a light reveals or
+relights what is behind it. `--hide a,b` keeps systems out of every
+capture (and every ablation row) — a view's score without, say, the
+train that crosses it. `--breathe` (below) works with both.
+
+### What each view's score is
+
+Frozen camera, world advancing; share = score drop with the system hidden
+(runner, deterministic to ~0.002; every row below 0.003 omitted):
+
+| view (instant) | frozen | share | system |
+| --- | --- | --- | --- |
+| `intersection` (main, `5d29b26`) | 1.399 | **1.280** | `train` — the T2 elevated train crossing the top of the frame |
+| | | 0.015 | `signage` — the vertical glyph ticker scrolling (L7) |
+| | | 0.003 | `facadeDetail` |
+| | | ≤ 0 | everything else; "everything else" row 0.000 |
+| `pose-19` (the planner's instant, `031713f`) | 0.725 | **0.590** | `traffic` — a bus driving at the camera |
+| | | 0.033 | `signage` — a storefront LED ticker crawling (L7), video billboard pan |
+| | | 0.024 | `headlightPools` — the bus's own pool on the road |
+| | | 0.011 | `headlightCones`, `cityLife` (riders, taxis) |
+| | | 0.005 | `pedestrians` |
+
+Every listed suspect was in the run (`--ablate all`: L6 signals and
+headlight cones/pools, L7 signage and broken neon, L3 living windows/TV
+(the `city` mesh), D1 impacts and damage (`impacts`, `city`), L1
+reactions, S1 jumbotrons, streetlights, L4 rain, A1 pedestrians and
+city life, S5 fog banks, litter, shimmer, shafts and glare, S6
+reflections): none of them moves either view by more than the rows above.
+
+**The frozen scores are motion, not flicker.** The train and the bus are
+the world's own motion: the train slides ~5 px a frame past a ~30 px
+window pitch near the camera (both shrink together with distance, so ~6
+frames per window everywhere — far from the wagon-wheel limit of 2), and
+a lit window strip crossing a pixel brightens and darkens it every few
+frames, which is exactly what `jitter` counts. With the train hidden,
+intersection's jitter falls from 6.76 % to 0.11 % and its frozen score to
+0.117, of which `signage` is 0.070 (the glyph ticker, and the signs the
+train had been covering — a mipmapped `textureGrad` scroll, one stack
+height per 6–10 s) and `moverLights` 0.035 (the train's own running
+lights, still sliding past); nothing else reaches 0.003. The signage
+shares are slow, filtered scrolls (signage-only captures: jitter 0.05 %
+and 0.00 %).
+
+`pose-19`'s instant moved when S6 added gallery views (each view's
+instant follows its index in the list): on main it is captured 195.5 s
+later, with no bus in frame, and reads 0.047 (jitter 0.003 %).
+
+### The flicker that was real: interpolation that was not exact
+
+The harness's accidental zoom was the clue. A 0.005° FOV step a frame
+moves the frame edge ~0.015 px, which changes a filtered image by almost
+nothing — yet it moved the train-hidden intersection from 0.117 to
+**4.97** (jitter 28.5 %), and `--ablate` put **4.25** of that on the
+city's base mesh alone (`city:main`; D2's damaged and debris meshes
+nothing). Read pixel by pixel, a facade pixel was not drifting but
+snapping between discrete colours — wall, wall-in-window-surround, an
+unlit pane — a per-pixel random pick of window *decisions*, static while
+the camera is perfectly still and re-rolled by any change of projection.
+
+The cause: every per-window decision in the building shader (lit or not,
+blinds, tone, temperature, TV, crew, shopfront goods) hashes
+`abHash(winCell, vBSeed * k)` — `fract(sin(dot(…)) * 43758.5453)` with a
+`sin()` argument of 1e4–1e6 — and `vBSeed`, a per-building constant, was
+an ordinary *interpolated* varying. Interpolating a constant is not
+bit-exact (the barycentric weights do not sum to exactly 1), so at some
+pixels it arrives one ulp off, which inside that `sin()` is a different
+window. L13 had already met this for `vPitchSeed` and made it `flat`;
+`vBSeed` is now `flat` too. The T2 train had the same bug twice in its
+passenger hash — `vTrainId = float(gl_InstanceID)` interpolated, and the
+interpolated normal's z as the side — so seats sparkled under any camera
+move: `vTrainId` is `flat` and the side is an exact ±1.
+
+Neither change alters the intended look (at every pixel where the old
+value happened to arrive exact, the new one is the same); both remove a
+speckle that sparkled on every facade in view through every frame of
+real flight, where the camera never holds still.
+
+**And the street paint swam.** Breathing, the ground was most of what
+was left — `ground` 1.007 of pose-19's 1.154, in pops (5.2, then ~2.0 every
+few steps, 0.2 between) where the whole road's markings shifted a pixel
+against buildings that did not move. The ground was two triangles
+1.8 km across, re-centred under the chase camera every frame: `vWorldXZ`
+interpolated over triangles that size, hard-clipped by the near plane,
+is not exact, so each re-centre (here a millimetre, from the airspeed
+moving the held plane; in flight, every frame) shifted the paint's world
+mapping by a fraction of a pixel and its edges popped. The plane is now a
+64×64 grid (~28 m cells, still one draw); the paint is the same paint.
+
+`--breathe` makes the harness's accident deliberate: the held airspeed
+ramps 70 → 70.6 m/s through every capture (~0.005° of FOV a frame, and
+the plane — so the ground — a millimetre further each frame), identical
+in every arm, so a camera that is otherwise frozen can see what re-rolls
+or swims when the view changes. HEAD against main (`5d29b26`), both arms
+breathing:
+
+| view | breathing, main → O6 | jitter main → O6 |
+| --- | --- | --- |
+| `intersection` (train in frame) | 4.369 → **1.488** | 25.15 % → 6.45 % |
+| `pose-00` | 0.738 → **0.158** | 9.19 % → 0.34 % |
+| `pose-09` | 0.586 → **0.078** | 7.98 % → 0.13 % |
+| `pose-19` | 4.738 → **0.206** | 29.93 % → 0.63 % |
+
+Re-run after merging main again (`d206dd2`: C2's chaos, U4's tunnels, F9,
+B3, D6, S8, R3 — the poses' instants moved once more with U4's gallery
+views), same breathe, same four views: 4.619 → 1.472, 0.673 → 0.101,
+0.610 → 0.077, 4.653 → 0.182.
+
+The verdict column `--breathe` prints is O5's frozen rule and does not
+apply to a camera that moves on purpose; read the before/after. The
+intersection's breathing 1.488 is its train (frozen, 1.399) plus 0.09.
+With the train hidden it breathes at 0.263 (4.97 before either fix,
+0.600 with the facades fixed and the ground not): `signage` 0.123 (the
+glyph ticker scrolling, and sign edges under the zoom), the train's
+lights 0.033, `ground` 0.013, nothing else over 0.005; jitter 0.45 %.
+
+Audited the same way and clean: every other `fract(sin(…))` hash in the
+client takes a genuinely varying input (world or surface position, then
+`floor`ed), or a varying that only feeds thresholds (`vKind`, `vArch`,
+signage's `vAnim`, which is floored or rounded). One more of the same
+pattern is outside both views: hole decor's `vDecor.x` (kind + seed)
+feeds its `abH` hash; the decor only draws inside tunnels.
+
+**The frozen grid against main** (`--grid --ref 5d29b26`, O6 as of
+`e92c359`, both arms on the fixed harness): no view worse except two,
+and those two are not O6. pose-06 read 0.035 → 0.065 and pose-17
+0.039 → 0.134; re-shot twice more, O6 alone read pose-06 0.034 then
+0.074 and pose-17 0.182 then 0.039, and main read O6's first numbers
+exactly. Their `still` (world AND camera pinned) moves with them (pose-17
+0.049 ↔ 0.012), so something in those scenes differs from one page load
+to the next — server-driven state a pinned world clock does not reach.
+Everywhere else frozen is equal or lower, and the pan jitter — the
+camera moving — fell almost everywhere: chase-rooftops 32.9 → 23.4 %,
+street-low 64.8 → 42.2 %, pose-07 76.6 → 37.4 %, destruction-closeup
+78.8 → 21.5 %.
+
+**Static audit for M3-only causes:** every shader runs `highp` (three.js
+default; FinalPass's raw shader inherits OutputShader's `precision highp
+float`); no shader declares `mediump` or `lowp`; the time-driven uniforms
+are wrapped (`SIGN_LOOP_S`, `LIVE.period`, the shimmer clock). The M3
+read the same numbers as SwiftShader to within ~5 %, which a precision
+or derivative difference would not.
+
+### Commands for the M3 (O6)
+
+Run on main after this merges, with the machine otherwise idle.
+`d206dd2` is main just before O6 (the numbers above were measured against
+`5d29b26`, main when O6 branched; C2, U4, F9, B3, D6, S8 and R3 landed
+between). Both arms run on O6's harness (one airspeed, 16 ms steps), so
+the comparison is fair to the older build.
+
+```sh
+# 1. The frozen grid against main: per-view table and verdict. Every view
+#    must read "not worse". intersection still reads ~1.4 — the train
+#    crossing it (see above), which no fix should remove.
+node tools/perf/flicker.mjs --grid --ref d206dd2 --shots /tmp/o6-shots
+
+# 2. The speckle fix, on Metal: the same views with the camera breathing.
+#    Every view should fall several-fold against main (the table above).
+node tools/perf/flicker.mjs --grid --breathe --ref d206dd2 --shots /tmp/o6-breathe
+
+# 3. The attribution, on Metal: per-system shares for both views.
+node tools/perf/flicker.mjs --grid --only intersection,pose-19 --ablate all
+
+# 4. The intersection without its train: the number O5's 0.041 ceiling is
+#    meant for in this view (runner: 0.117 — signage 0.070, the train's
+#    lights 0.035).
+node tools/perf/flicker.mjs --grid --only intersection --hide train --ablate all
+```

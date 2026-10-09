@@ -319,7 +319,7 @@ import {
 } from "./render/quality";
 import { Rain } from "./render/rain";
 import { CityReactor } from "./render/reactions";
-import { ReflectionProbe } from "./render/reflections";
+import { REFLECTION_UNIFORMS, ReflectionProbe } from "./render/reflections";
 import { RemotePlanes } from "./render/remotes";
 import {
   MSAA_SAMPLES,
@@ -2759,6 +2759,11 @@ declare global {
       qaFireAt: (x: number, y: number, z: number, n?: number) => void;
       /** D1 QA: hide the impacts Points (draw-call A/B). */
       qaImpactsHidden: (hidden: boolean) => void;
+      /** O6 QA: the scene systems `qaHide` can name. */
+      qaSystems: () => string[];
+      /** O6 QA: draw everything except these systems (flicker attribution;
+       * `[]` restores all). Returns the names it matched. */
+      qaHide: (names: string[]) => string[];
       /** D1 QA: up to `max` pane centres on a tier's facade face that the JS
        * lit mirror reports LIT, nearest the face's middle first — canonical,
        * nudged 0.5 m off the wall — with their cells. */
@@ -2926,6 +2931,114 @@ const settingsPanel = new SettingsPanel(
   settings,
   settingsStore,
 );
+/**
+ * O6 flicker attribution (`__ab.qaHide`): the scene's top-level systems by
+ * name. Anything in the scene not named here (remote planes, pooled FX,
+ * whatever a later ticket adds) is listed as `other:<index>`, so hiding
+ * every named system still leaves "everything else" measurable.
+ */
+const QA_POST = [
+  "post:shimmer",
+  "post:shafts",
+  "post:glare",
+  "post:reflections",
+] as const;
+/** Post effects `qaHide` holds off (applyQaPost, every frame). */
+const qaPostOff = new Set<string>();
+/** uReflOn as it was before `post:reflections` was hidden. */
+let qaReflOn = 0;
+/** Layer masks of the objects `qaHide` has hidden, to put back. */
+const qaLayerMasks = new WeakMap<THREE.Object3D, number>();
+/** Hold the hidden post effects off; runs after they are set each frame. */
+function applyQaPost(): void {
+  const u = finalPass?.uniforms;
+  if (qaPostOff.has("post:shimmer") && u?.uShimCount) u.uShimCount.value = 0;
+  if (qaPostOff.has("post:glare") && u?.uGlare) u.uGlare.value = 0;
+  if (qaPostOff.has("post:shafts"))
+    shaftsPass?.setSource(0.5, 0.5, camera.aspect, 0);
+  if (qaPostOff.has("post:reflections")) REFLECTION_UNIFORMS.uReflOn.value = 0;
+}
+function qaSystems(): {
+  name: string;
+  objects: THREE.Object3D[];
+  /** Just these objects, not their children (`city:main`). */
+  shallow?: boolean;
+}[] {
+  const named: [string, THREE.Object3D[]][] = [
+    ["city", [city.mesh]],
+    ["roofClutter", [roofClutter.group]],
+    ["rooftopLife", [rooftopLife.group]],
+    ["facadeGarnish", [facadeGarnish.group]],
+    ["facadeDetail", [facadeDetail.group]],
+    ["ground", [ground.mesh]],
+    ["sky", [skyDome.mesh]],
+    ["streetlights", [streetlights.group]],
+    ["signage", [signage.group]],
+    ["traffic", [traffic.mesh]],
+    ["headlightCones", [headlights.cones]],
+    ["headlightPools", [headlights.pools]],
+    ["movers", [movers.rig, movers.hulls, movers.rotors]],
+    ["moverLights", [moverLights.points]],
+    ["train", [train.mesh]],
+    ["courses", [courseRings.mesh, courseGhost.mesh]],
+    ["nature", [natureRenderer.group]],
+    ["river", [river.group]],
+    ["tunnels", [tunnels.group]],
+    ["fountains", [fountains.points]],
+    ["searchlights", [searchlights.mesh]],
+    ["jumbotrons", [jumbotrons.mesh]],
+    ["birds", [birds.points]],
+    ["pedestrians", [pedestrians.mesh]],
+    ["cityLife", [cityLife.mesh]],
+    ["facadeLife", [facadeLife.mesh]],
+    ["holeDecor", [holeDecor.mesh]],
+    ["streetFurniture", [streetFurniture.mesh]],
+    ["steam", [steam.points]],
+    ["signals", [signals.mesh]],
+    ["constructionSparks", [constructionSparks.points]],
+    [
+      "fx",
+      [
+        explosions.group,
+        sparks.points,
+        shieldSparks.points,
+        smoke.points,
+        streakSmoke.points,
+        dust.points,
+      ],
+    ],
+    ["impacts", [impacts.points]],
+    ["scaffold", [scaffold.mesh]],
+    ["wrecks", [wrecks.group]],
+    ["missiles", [missileRenderer.group]],
+    ["boss", [bossRenderer.group]],
+    ["bombers", [bomberRenderer.group]],
+    ["reactions", [reactor.points]],
+    ["storm", [storm.group, storm.flashLight]],
+    ["clouds", [clouds.group]],
+    ["rain", [rain.mesh]],
+    ["fogBanks", [atmosphere.fogBanks.mesh]],
+    ["litter", [atmosphere.litter.points]],
+    ["plane", [plane, planeLights.points, planeTrails.mesh]],
+    ["tracers", [tracers.group]],
+  ];
+  const seen = new Set(named.flatMap(([, objects]) => objects));
+  const out: ReturnType<typeof qaSystems> = named.map(([name, objects]) => ({
+    name,
+    objects,
+  }));
+  // The city's own parts: its base mesh alone, and each child mesh (D2's
+  // damaged buildings, D3's debris) — finer than `city` for attribution.
+  out.push({ name: "city:main", objects: [city.mesh], shallow: true });
+  city.mesh.children.forEach((c, i) => {
+    out.push({ name: `city:${i}`, objects: [c] });
+  });
+  for (const name of QA_POST) out.push({ name, objects: [] });
+  scene.children.forEach((o, i) => {
+    if (!seen.has(o)) out.push({ name: `other:${i}`, objects: [o] });
+  });
+  return out;
+}
 // D6 perf harness: what `__ab.qaDestruction` staged, so a clear takes back
 // exactly that — the destroyed set and collapses (all of them: the harness
 // stages into a quiet room), the facades its blasts marked, its burns and
@@ -3391,6 +3504,51 @@ window.__ab = {
   },
   qaImpactsHidden: (hidden) => {
     impacts.points.visible = !hidden;
+  },
+  qaSystems: () => qaSystems().map((s) => s.name),
+  qaHide: (names) => {
+    // Off every camera layer, not `visible = false`: several systems drive
+    // their own visibility each frame and would quietly undo it. Each
+    // object's own mask (S6 tags reflection layers) comes back on unhide.
+    const hide = new Set(names);
+    const systems = qaSystems();
+    // Systems overlap (`city` holds `city:main`): settle each object once.
+    const hidden = new Set<THREE.Object3D>();
+    const all = new Set<THREE.Object3D>();
+    for (const s of systems) {
+      for (const o of s.objects) {
+        const add = (c: THREE.Object3D) => {
+          all.add(c);
+          if (hide.has(s.name)) hidden.add(c);
+        };
+        if (s.shallow) add(o);
+        else o.traverse(add);
+      }
+    }
+    for (const c of all) {
+      const saved = qaLayerMasks.get(c);
+      if (hidden.has(c)) {
+        if (saved === undefined) qaLayerMasks.set(c, c.layers.mask);
+        c.layers.disableAll();
+      } else if (saved !== undefined) {
+        c.layers.mask = saved;
+        qaLayerMasks.delete(c);
+      }
+    }
+    // Post effects have no object to hide: held off every frame instead.
+    if (qaPostOff.has("post:glare") && !hide.has("post:glare")) {
+      const glare = finalPass?.uniforms.uGlare;
+      if (glare) glare.value = QUALITY_PROFILES[qualityTier].glare ? 1 : 0;
+    }
+    if (qaPostOff.has("post:reflections") && !hide.has("post:reflections")) {
+      REFLECTION_UNIFORMS.uReflOn.value = qaReflOn;
+    }
+    if (!qaPostOff.has("post:reflections") && hide.has("post:reflections")) {
+      qaReflOn = REFLECTION_UNIFORMS.uReflOn.value;
+    }
+    qaPostOff.clear();
+    for (const n of QA_POST) if (hide.has(n)) qaPostOff.add(n);
+    return systems.filter((s) => hide.has(s.name)).map((s) => s.name);
   },
   qaLitCells: (building, tier, face, max = 8) => {
     const b = city.cityBuildings[building];
@@ -4730,6 +4888,7 @@ const frame = (now: number): void => {
     moonDir: skyCycle.state.moonDir,
     moonVis: skyCycle.state.moonVis,
   });
+  if (qaPostOff.size > 0) applyQaPost(); // O6 QA: post effects held off
   // Everything up to here is this frame's JS: sim, streaming, instance
   // packing. The render call is NOT included — a driver can block in it
   // waiting on the GPU, which would read a GPU-bound frame as CPU-bound.

@@ -151,7 +151,9 @@ const TRAIN_PARS = /* glsl */ `
 varying vec3 vTrainPos;
 varying vec3 vTrainNormal;
 varying vec3 vTrain;
-varying float vTrainId;
+// O6: flat — it seeds the passenger hash (see trainSkin), where an
+// interpolated copy one ulp off re-rolled the seats per pixel.
+flat varying float vTrainId;
 `;
 
 const TRAIN_VERTEX = /* glsl */ `
@@ -193,7 +195,11 @@ vec4 trainSkin() {
     float cx = (cell + 0.5) * 1.6 - 8.0;
     float pane = step(abs(lx - cx), 0.62) * band * (1.0 - inDoor);
     // Passengers: about half the seats taken, head and shoulders.
-    float h = trainHash(cell + vTrainId * 17.0, vTrainNormal.z);
+    // The side as an exact ±1, not the interpolated normal: a sin() hash
+    // turns one ulp of its input into another seat, so the passengers
+    // sparkled per pixel under any camera move (O6).
+    float side = vTrainNormal.z > 0.0 ? 1.0 : -1.0;
+    float h = trainHash(cell + vTrainId * 17.0, side);
     float px = cx + (h - 0.5) * 0.6;
     float head = 1.0 - step(0.16, length(vec2(lx - px, ly - 0.5)));
     float torso = step(abs(lx - px), 0.27) * step(ly, 0.28);

@@ -124,7 +124,13 @@ attribute vec4 aHole;
 attribute vec4 aCrew;
 varying vec3 vMeters;
 varying vec3 vObjNormal;
-varying float vBSeed;
+// O6: flat, like vPitchSeed. Every per-window hash multiplies this into a
+// sin() argument of 1e4–1e6, so an interpolated copy that is off by one ulp
+// at some pixels (barycentric weights never sum to exactly 1) picks another
+// window's lit/blind/tone there: a static per-pixel speckle over every
+// facade that re-rolled with ANY change of projection — a 0.005° FOV step,
+// a sub-pixel camera move — and sparkled under every frame of flight.
+flat varying float vBSeed;
 flat varying float vPitchSeed;
 varying float vWorldY;
 varying float vArch;
@@ -193,7 +199,7 @@ uniform float uOccupancy; // L12 sky cycle: window occupancy, 0..1
 uniform float uWinInterior; // M3 tier: parallax rooms on (1) or mean light (0)
 varying vec3 vMeters;
 varying vec3 vObjNormal;
-varying float vBSeed;
+flat varying float vBSeed;
 flat varying float vPitchSeed;
 varying float vWorldY;
 varying float vArch;

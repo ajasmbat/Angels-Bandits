@@ -197,6 +197,27 @@ const BOSS_RAID_TUNING =
 /** Test-only introspection of the per-room maps (`GET /debug/rooms`). */
 const DEBUG_ROOMS = process.env.AB_DEBUG_ROOMS === "1";
 
+/**
+ * D6: AB_QUIET_CITY=1 (the perf harness only — tools/perf/run.mjs): no room's
+ * city ever breaks (`breakable` is null: no bullet, blast, wreck, missile,
+ * director, chain or rebuild damage) and no boss raid starts. All of that is
+ * timed on the wall clock, which the harness cannot pin, so the destruction a
+ * measured window shows is only what the harness stages on the client — the
+ * same reasoning as its empty room (`setBots(0)`). Never in production.
+ */
+const QUIET_CITY = process.env.AB_QUIET_CITY === "1";
+if (QUIET_CITY && process.env.NODE_ENV === "production") {
+  console.error(
+    "AB_QUIET_CITY=1 is a perf-harness switch: refusing to run in production",
+  );
+  process.exit(1);
+}
+if (QUIET_CITY) {
+  console.warn(
+    "!! AB_QUIET_CITY=1: destruction and boss raids are OFF in every room (perf harness only)",
+  );
+}
+
 /** After this many consecutive snap-rejects, accept the claim as a re-sync —
  * a client-side respawn (crash death) legitimately teleports across the map. */
 const RESYNC_AFTER_REJECTS = 10;
@@ -374,7 +395,7 @@ const roomCity = (room: Room): RoomCity => {
  * last human goes.
  */
 const breakable = (room: Room): RoomCity | null =>
-  room.humanCount > 0 ? roomCity(room) : null;
+  !QUIET_CITY && room.humanCount > 0 ? roomCity(room) : null;
 
 /**
  * Each room's missile director (X1) and the probes it reads, built against
@@ -1649,7 +1670,12 @@ function tickBoss(room: Room, now: number): void {
       prot: combat.isProtected(member.id, now),
     });
   }
-  const result = boss.tick(now, room.humanCount > 0, planes, bossWorld(room));
+  const result = boss.tick(
+    now,
+    !QUIET_CITY && room.humanCount > 0, // D6: no raid in a quiet city
+    planes,
+    bossWorld(room),
+  );
   if (result.started) {
     sendToRoom(room, { type: "boss", r: encodeRaid(result.started) });
   }

@@ -294,7 +294,11 @@ async function startServer(port, cwd = REPO) {
   const log = [];
   const proc = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
     cwd,
-    env: { ...process.env, PORT: String(port) },
+    // D6: a quiet city — no server-timed destruction or boss raid (see
+    // server/src/index.ts QUIET_CITY). The destruction segments stage their
+    // own on the client; every other segment flies an intact city. A build
+    // from before D6 ignores the variable, and its arm reports `quiet` n/a.
+    env: { ...process.env, PORT: String(port), AB_QUIET_CITY: "1" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   proc.stdout.on("data", (d) => log.push(String(d)));

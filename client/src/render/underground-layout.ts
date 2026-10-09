@@ -15,6 +15,21 @@
 // Every deep stretch also gets warm daylight panels at the crown, vines,
 // moss and drifting pollen.
 //
+// U6 gives every section its own character on top (lifeU6, below), all in
+// the same four draws:
+//   - Crosstown either side of the station is the MINE: timber sets, a
+//     rail line with a maintenance cart running it, workers with lamps, old
+//     machinery, cables and signs, a few stalactites and bats;
+//   - Seam Line either side of the garden is the WORKS: pipe runs leaking
+//     steam, cable runs, ceiling grates throwing shafts of light, machinery,
+//     signs and workers;
+//   - the GROTTO adds stalactites and stalagmites, glowing crystals, hanging
+//     roots, roosting bats that swarm off the ceiling as a plane passes, and
+//     deer and foxes on the moss banks;
+//   - the GARDEN adds fish in the lake, deer and foxes, mist off the
+//     waterfalls and hanging roots;
+//   - the STATION's platform gets passengers waiting at its edge.
+//
 // DRAW == COLLIDE. Every SOLID item sits in the LINING: within LINING of
 // the wall, floor or ceiling it hangs on — under PLAYER_RADIUS, so the
 // crash sphere meets the bore's own surface before its centre could reach
@@ -137,7 +152,7 @@ export const LAKE = { tunnel: 2, s0: 820, s1: 900, rise: 0.3 } as const;
 /** Riverside's deep run: the grotto. */
 export const GROTTO = { tunnel: 1 } as const;
 
-export type Zone = "station" | "garden" | "grotto" | "plain";
+export type Zone = "station" | "garden" | "grotto" | "mine" | "works";
 
 export function zoneAt(t: Tunnel, s: number): Zone {
   if (t.id === STATION.tunnel && s > STATION.s0 - 24 && s < STATION.s1 + 24) {
@@ -147,7 +162,8 @@ export function zoneAt(t: Tunnel, s: number): Zone {
     return "garden";
   }
   if (t.id === GROTTO.tunnel) return "grotto";
-  return "plain";
+  // U6: what was plain bore — Crosstown's is the mine, Seam Line's the works.
+  return t.id === STATION.tunnel ? "mine" : "works";
 }
 
 /** True where the station's glass replaces the bore's `side` wall. */
@@ -258,7 +274,9 @@ export interface Mote {
   x: number;
   y: number;
   z: number;
-  kind: "firefly" | "pollen";
+  /** U6 adds steam (puffs rising off a pipe leak), mist (off a waterfall)
+   * and shaft (dust in a grate's light). */
+  kind: "firefly" | "pollen" | "steam" | "mist" | "shaft";
   /** Drift amplitude, m (stays inside the bore). */
   amp: number;
   phase: number;
@@ -309,6 +327,175 @@ export interface UndergroundLayout {
   motes: Mote[];
   birds: Bird[];
   walkers: Walker[];
+  // --- U6 ---
+  timbers: Timber[];
+  rails: Rail[];
+  machines: Machine[];
+  cables: Cable[];
+  signs: Sign[];
+  pipes: Pipe[];
+  grates: Grate[];
+  drips: Drip[];
+  crystals: Crystal[];
+  roots: Root[];
+  bats: Bat[];
+  fish: Fish[];
+  grazers: Grazer[];
+  /** People and the cart move like U5's walkers (there and back). */
+  workers: Walker[];
+  passengers: Walker[];
+  carts: Walker[];
+}
+
+// --- U6 items -------------------------------------------------------------------
+
+/** A mine timber set: a post against each wall and a cap under the
+ * ceiling, at `s`. */
+export interface Timber {
+  t: Tunnel;
+  s: number;
+  band: Band;
+}
+
+/** A rail line at the foot of the `side` wall, s0 → s1. */
+export interface Rail {
+  t: Tunnel;
+  s0: number;
+  s1: number;
+  side: 1 | -1;
+}
+
+/** Old machinery against a wall: a housing `hl` half long, `depth` deep
+ * (≤ LINING), `height` tall; kind 0 a generator, 1 a winch. */
+export interface Machine {
+  t: Tunnel;
+  s: number;
+  side: 1 | -1;
+  hl: number;
+  depth: number;
+  height: number;
+  kind: 0 | 1;
+  hue: number;
+  band: Band;
+}
+
+/** A cable run along a wall, slung between brackets every CABLE_SPAN. */
+export interface Cable {
+  t: Tunnel;
+  s0: number;
+  s1: number;
+  side: 1 | -1;
+  /** Bracket height over the floor, m. */
+  y: number;
+}
+
+/** A wall sign: a lit panel with an arrow along the bore (+1: +s). */
+export interface Sign {
+  t: Tunnel;
+  s: number;
+  side: 1 | -1;
+  hue: number;
+  arrow: 1 | -1;
+  band: Band;
+}
+
+/** A pipe run along a wall at height `y`, `r` half its section. */
+export interface Pipe {
+  t: Tunnel;
+  s0: number;
+  s1: number;
+  side: 1 | -1;
+  y: number;
+  r: number;
+}
+
+/** A grate in the ceiling with daylight behind it. */
+export interface Grate {
+  t: Tunnel;
+  s: number;
+  lat: number;
+  band: Band;
+}
+
+/** A stalactite (from the ceiling) or a stalagmite (`up`, from the floor). */
+export interface Drip {
+  t: Tunnel;
+  s: number;
+  lat: number;
+  len: number;
+  r: number;
+  up: boolean;
+  shade: number;
+  band: Band;
+}
+
+/** A glowing crystal cluster at a wall's foot. */
+export interface Crystal {
+  t: Tunnel;
+  s: number;
+  side: 1 | -1;
+  inset: number;
+  height: number;
+  size: number;
+  hue: number;
+  phase: number;
+  band: Band;
+}
+
+/** A hanging root strand from the ceiling. */
+export interface Root {
+  t: Tunnel;
+  s: number;
+  lat: number;
+  len: number;
+  width: number;
+  shade: number;
+  band: Band;
+}
+
+/** A roosting bat: its roost under the ceiling, the bore's way (unit), the
+ * radius it swarms at, its wingbeat way round (sign) and phase. */
+export interface Bat {
+  x: number;
+  y: number;
+  z: number;
+  ux: number;
+  uz: number;
+  r: number;
+  speed: number;
+  phase: number;
+  band: Band;
+}
+
+/** A fish in the lake: an ellipse just under the surface, a jump now and
+ * then. */
+export interface Fish {
+  x: number;
+  y: number;
+  z: number;
+  ux: number;
+  uz: number;
+  a: number;
+  b: number;
+  speed: number;
+  phase: number;
+  jump: number;
+  hue: number;
+  band: Band;
+}
+
+/** A deer or a fox on a moss bank, grazing to and fro along the wall. */
+export interface Grazer {
+  x: number;
+  y: number;
+  z: number;
+  ux: number;
+  uz: number;
+  length: number;
+  speed: number;
+  phase: number;
+  kind: "deer" | "fox";
+  band: Band;
 }
 
 /** Panel spacing along the crown, m. */
@@ -336,6 +523,22 @@ export function undergroundLayout(): UndergroundLayout {
     motes: [],
     birds: [],
     walkers: [],
+    timbers: [],
+    rails: [],
+    machines: [],
+    cables: [],
+    signs: [],
+    pipes: [],
+    grates: [],
+    drips: [],
+    crystals: [],
+    roots: [],
+    bats: [],
+    fish: [],
+    grazers: [],
+    workers: [],
+    passengers: [],
+    carts: [],
   };
   for (const t of TUNNELS) {
     const [d0, d1] = deepRange(t);
@@ -561,7 +764,411 @@ export function undergroundLayout(): UndergroundLayout {
       });
     }
   }
+  lifeU6(out);
   return out;
+}
+
+// --- U6: a character per section ------------------------------------------------
+
+const SALT6 = {
+  mine: 0x6d1e0b,
+  works: 0x3e4b52,
+  grotto: 0x9407e3,
+  garden: 0x6a2d17,
+  people: 0x9e0913,
+  fish: 0xf15b0a,
+} as const;
+
+/** Cable brackets every this many m (the run sags between them). */
+export const CABLE_SPAN = 6;
+/** Mine timber sets every this many slots (12 m). */
+const TIMBER_EVERY = 3;
+/** A worker's walkway keeps this far from any machine along the bore, m. */
+const MACHINE_CLEAR = 4;
+
+/** The contiguous stretches of `t`'s deep run in `zone`, [s0, s1]. */
+export function zoneRuns(t: Tunnel, zone: Zone): [number, number][] {
+  const [d0, d1] = deepRange(t);
+  const out: [number, number][] = [];
+  let open: number | null = null;
+  for (let s = d0; s <= d1; s += SLOT) {
+    const inZone = zoneAt(t, s) === zone && s + SLOT <= d1;
+    if (inZone && open === null) open = s;
+    if (!inZone && open !== null) {
+      out.push([open, s]);
+      open = null;
+    }
+  }
+  if (open !== null) out.push([open, d1]);
+  return out;
+}
+
+const pick = (r: () => number): 1 | -1 => (r() < 0.5 ? 1 : -1);
+
+/** U6 dressing and life, appended to `out`. Pure (seeded per slot). */
+function lifeU6(out: UndergroundLayout): void {
+  const p0 = { x: 0, z: 0, th: 0 };
+  const crosstown = TUNNELS[STATION.tunnel] as Tunnel;
+  const seam = TUNNELS[GARDEN.tunnel] as Tunnel;
+  const grotto = TUNNELS[GROTTO.tunnel] as Tunnel;
+
+  const stalactite = (t: Tunnel, s: number, r: () => number, b: Band) => {
+    out.drips.push({
+      t,
+      s,
+      lat: (r() * 2 - 1) * (HALF - 1),
+      len: 0.45 + r() * 0.95,
+      r: 0.1 + r() * 0.2,
+      up: false,
+      shade: r(),
+      band: b,
+    });
+  };
+  const roost = (t: Tunnel, s: number, r: () => number, n: number) => {
+    const lat = (r() * 2 - 1) * (HALF - 8);
+    for (let i = 0; i < n; i++) {
+      boreXZ(t, s + (r() - 0.5) * 3, lat + (r() - 0.5) * 3, p0);
+      out.bats.push({
+        x: p0.x,
+        y: DEEP_CEIL - 0.25,
+        z: p0.z,
+        ux: Math.cos(p0.th),
+        uz: Math.sin(p0.th),
+        r: 2.5 + r() * 3.5,
+        speed: (0.8 + r() * 0.6) * pick(r),
+        phase: r() * Math.PI * 2,
+        band: i < 2 ? 0 : band(r(), 0.2, 0.5),
+      });
+    }
+  };
+  /** People walking the foot of the `side` wall, clear of the machines. */
+  const workers = (
+    t: Tunnel,
+    a: number,
+    b: number,
+    side: 1 | -1,
+    n: number,
+  ) => {
+    const r = stream(SALT6.people, t.id, Math.round(a));
+    for (let i = 0; i < n; i++) {
+      const len = 12 + r() * 14;
+      const from = a + 6 + r() * Math.max(0, b - a - 12 - len);
+      const shade = r();
+      const speed = 0.8 + r() * 0.5;
+      const phase = r();
+      const height = 1.7 + r() * 0.15;
+      const blocked = out.machines.some(
+        (m) =>
+          m.t === t &&
+          m.side === side &&
+          m.s + m.hl + MACHINE_CLEAR > from &&
+          m.s - m.hl - MACHINE_CLEAR < from + len,
+      );
+      if (blocked) continue;
+      boreXZ(t, from, side * (HALF - 0.85), p0);
+      out.workers.push({
+        x: p0.x,
+        y: BORE_FLOOR_Y,
+        z: p0.z,
+        ux: Math.cos(p0.th),
+        uz: Math.sin(p0.th),
+        length: len,
+        speed,
+        phase,
+        height,
+        shade,
+        band: i === 0 ? 0 : 1,
+      });
+    }
+  };
+
+  // The MINE: Crosstown either side of the station.
+  for (const [a, b] of zoneRuns(crosstown, "mine")) {
+    out.rails.push({ t: crosstown, s0: a + 2, s1: b - 2, side: 1 });
+    out.cables.push({ t: crosstown, s0: a, s1: b, side: -1, y: 21.6 });
+    const k0 = Math.ceil(a / SLOT);
+    for (let k = k0; k * SLOT + SLOT <= b; k++) {
+      const s = k * SLOT + SLOT / 2;
+      const r = stream(SALT6.mine, crosstown.id, k);
+      if (k % TIMBER_EVERY === 0) {
+        out.timbers.push({ t: crosstown, s, band: k % 6 === 0 ? 0 : 1 });
+      }
+      // Machinery on the far wall from the rails, never on a timber.
+      if (r() < 0.07 && k % TIMBER_EVERY === 1) {
+        out.machines.push({
+          t: crosstown,
+          s,
+          side: -1,
+          hl: 1.1 + r() * 0.6,
+          depth: 0.9 + r() * 0.3,
+          height: 1.2 + r() * 0.8,
+          kind: r() < 0.5 ? 0 : 1,
+          hue: r(),
+          band: 0,
+        });
+      }
+      if (r() < 0.16) stalactite(crosstown, s, r, band(r(), 0.2, 0.4));
+      if (k % 18 === 5) {
+        out.signs.push({
+          t: crosstown,
+          s,
+          side: -1,
+          hue: r(),
+          arrow: pick(r),
+          band: 0,
+        });
+      }
+      if (r() < 0.035) roost(crosstown, s, r, 3 + Math.floor(r() * 3));
+    }
+    // The maintenance cart, to and fro along the rails.
+    const rc = stream(SALT6.people, crosstown.id, 5000 + Math.round(a));
+    boreXZ(crosstown, a + 6, HALF - 0.85, p0);
+    out.carts.push({
+      x: p0.x,
+      y: BORE_FLOOR_Y + 0.12,
+      z: p0.z,
+      ux: Math.cos(p0.th),
+      uz: Math.sin(p0.th),
+      length: b - a - 12,
+      speed: 3 + rc() * 1.5,
+      phase: rc(),
+      height: 0.9,
+      shade: rc(),
+      band: 0,
+    });
+    workers(crosstown, a, b, -1, 4);
+  }
+
+  // The WORKS: Seam Line either side of the garden.
+  for (const [a, b] of zoneRuns(seam, "works")) {
+    out.pipes.push({ t: seam, s0: a + 2, s1: b - 2, side: -1, y: 3, r: 0.26 });
+    out.pipes.push({
+      t: seam,
+      s0: a + 2,
+      s1: b - 2,
+      side: -1,
+      y: 3.9,
+      r: 0.17,
+    });
+    out.cables.push({ t: seam, s0: a, s1: b, side: 1, y: 21.6 });
+    const k0 = Math.ceil(a / SLOT);
+    for (let k = k0; k * SLOT + SLOT <= b; k++) {
+      const s = k * SLOT + SLOT / 2;
+      const r = stream(SALT6.works, seam.id, k);
+      if (k % 20 === 6) {
+        const lat = k % 40 === 6 ? -7 : 7;
+        out.grates.push({ t: seam, s, lat, band: 0 });
+        // The shaft: dust hanging in its light, floor to ceiling.
+        for (let i = 0; i < 26; i++) {
+          boreXZ(seam, s + (r() - 0.5) * 2.4, lat + (r() - 0.5) * 2.4, p0);
+          out.motes.push({
+            x: p0.x,
+            y: BORE_FLOOR_Y + 1.6 + r() * (DEEP_CEIL - BORE_FLOOR_Y - 3.2),
+            z: p0.z,
+            kind: "shaft",
+            amp: 0.5,
+            phase: r() * Math.PI * 2,
+            band: i < 12 ? 0 : 1,
+          });
+        }
+      }
+      if (r() < 0.07) {
+        // A leaking flange: puffs of steam off the lower pipe.
+        for (let i = 0; i < 6; i++) {
+          boreXZ(seam, s + (r() - 0.5) * 0.4, -(HALF - 1.9), p0);
+          out.motes.push({
+            x: p0.x,
+            y: BORE_FLOOR_Y + 3.1,
+            z: p0.z,
+            kind: "steam",
+            amp: 1.2,
+            phase: (i / 6) * Math.PI * 2,
+            band: i < 3 ? 0 : 1,
+          });
+        }
+      }
+      if (r() < 0.05 && k % 20 !== 6) {
+        out.machines.push({
+          t: seam,
+          s,
+          side: 1,
+          hl: 1 + r() * 0.8,
+          depth: 0.8 + r() * 0.4,
+          height: 1.3 + r() * 1,
+          kind: r() < 0.5 ? 0 : 1,
+          hue: r(),
+          band: 0,
+        });
+      }
+      if (k % 22 === 9) {
+        out.signs.push({
+          t: seam,
+          s,
+          side: 1,
+          hue: r(),
+          arrow: pick(r),
+          band: 0,
+        });
+      }
+      if (r() < 0.06) stalactite(seam, s, r, 2);
+    }
+    workers(seam, a, b, 1, 2);
+  }
+
+  // The GROTTO: dripstone, crystals, roots, bats, grazers.
+  {
+    const [d0, d1] = deepRange(grotto);
+    for (let k = Math.ceil(d0 / SLOT); k * SLOT + SLOT <= d1; k++) {
+      const s = k * SLOT + SLOT / 2;
+      const r = stream(SALT6.grotto, grotto.id, k);
+      if (r() < 0.55) stalactite(grotto, s, r, band(r(), 0.35, 0.35));
+      if (r() < 0.22) {
+        out.drips.push({
+          t: grotto,
+          s: s + (r() - 0.5) * 2,
+          lat: (r() * 2 - 1) * (HALF - 1),
+          len: 0.4 + r() * 0.95,
+          r: 0.14 + r() * 0.22,
+          up: true,
+          shade: r(),
+          band: band(r(), 0.3, 0.4),
+        });
+      }
+      for (const side of [1, -1] as const) {
+        if (r() < 0.3) {
+          const size = 0.18 + r() * 0.17;
+          out.crystals.push({
+            t: grotto,
+            s: s + (r() - 0.5) * SLOT * 0.8,
+            side,
+            inset: size + 0.05 + r() * (LINING - 2 * size - 0.1),
+            height: 0.4 + r() * 0.7,
+            size,
+            hue: r(),
+            phase: r() * Math.PI * 2,
+            band: band(r(), 0.35, 0.35),
+          });
+        }
+      }
+      if (r() < 0.45) {
+        out.roots.push({
+          t: grotto,
+          s: s + (r() - 0.5) * SLOT,
+          lat: (r() * 2 - 1) * (HALF - 0.6),
+          len: 0.5 + r() * 0.9,
+          width: 0.07 + r() * 0.07,
+          shade: r(),
+          band: band(r(), 0.25, 0.4),
+        });
+      }
+      if (r() < 0.07) roost(grotto, s, r, 4 + Math.floor(r() * 4));
+      if (k % 23 === 11) grazer(out, grotto, s, pick(r), r, p0);
+    }
+  }
+
+  // The GARDEN: roots, fish in the lake, mist off the falls, grazers
+  // drinking at the channels.
+  for (let k = Math.ceil(GARDEN.s0 / SLOT); k * SLOT + SLOT <= GARDEN.s1; k++) {
+    const s = k * SLOT + SLOT / 2;
+    const r = stream(SALT6.garden, seam.id, k);
+    if (r() < 0.3) {
+      out.roots.push({
+        t: seam,
+        s: s + (r() - 0.5) * SLOT,
+        lat: (r() * 2 - 1) * (HALF - 0.6),
+        len: 0.5 + r() * 0.9,
+        width: 0.07 + r() * 0.07,
+        shade: r(),
+        band: band(r(), 0.2, 0.4),
+      });
+    }
+    const lakeSide = s > LAKE.s0 - 6 && s < LAKE.s1 + 6;
+    if (k % 31 === 17 && !lakeSide) grazer(out, seam, s, pick(r), r, p0);
+  }
+  for (const w of out.waterfalls) {
+    const r = stream(SALT6.garden, w.t.id, 9000 + Math.round(w.s));
+    for (let i = 0; i < 8; i++) {
+      boreXZ(w.t, w.s + (r() - 0.5) * 2 * w.hw, w.side * (HALF - 2.4), p0);
+      out.motes.push({
+        x: p0.x,
+        y: BORE_FLOOR_Y + 1.3 + r() * 1.2,
+        z: p0.z,
+        kind: "mist",
+        amp: 1.1,
+        phase: r() * Math.PI * 2,
+        band: i < 4 ? 0 : 1,
+      });
+    }
+  }
+  for (let i = 0; i < 26; i++) {
+    const r = stream(SALT6.fish, seam.id, i);
+    const a = 3 + r() * 6;
+    const bb = 1.5 + r() * 3.5;
+    const s = LAKE.s0 + 2 + a + r() * (LAKE.s1 - LAKE.s0 - 4 - 2 * a);
+    const lat = (r() * 2 - 1) * (HALF - 2 - bb);
+    boreXZ(seam, s, lat, p0);
+    out.fish.push({
+      x: p0.x,
+      y: BORE_FLOOR_Y + LAKE.rise + 0.04,
+      z: p0.z,
+      ux: Math.cos(p0.th),
+      uz: Math.sin(p0.th),
+      a,
+      b: bb,
+      speed: (0.25 + r() * 0.3) * pick(r),
+      phase: r() * Math.PI * 2,
+      jump: r(),
+      hue: r(),
+      band: band(r(), 0.5, 0.3),
+    });
+  }
+
+  // The STATION: passengers waiting at the platform's edge.
+  const st = TUNNELS[STATION.tunnel] as Tunnel;
+  for (let i = 0; i < 16; i++) {
+    const r = stream(SALT6.people, st.id, 7000 + i);
+    const s = STATION.s0 + 30 + r() * (STATION.s1 - STATION.s0 - 60);
+    const lat = STATION.edge - 1.1 - r() * 0.8;
+    boreXZ(st, s, STATION.side * lat, p0);
+    out.passengers.push({
+      x: p0.x,
+      y: BORE_FLOOR_Y + STATION.platformH,
+      z: p0.z,
+      ux: Math.cos(p0.th),
+      uz: Math.sin(p0.th),
+      length: 0.6 + r() * 0.6,
+      speed: 0.08 + r() * 0.1,
+      phase: r(),
+      height: 1.5 + r() * 0.35,
+      shade: r(),
+      band: band(r(), 0.5, 0.3),
+    });
+  }
+}
+
+/** A deer or a fox at a wall's foot at `s`, grazing a few metres along it. */
+function grazer(
+  out: UndergroundLayout,
+  t: Tunnel,
+  s: number,
+  side: 1 | -1,
+  r: () => number,
+  p0: { x: number; z: number; th: number },
+): void {
+  const deer = r() < 0.55;
+  boreXZ(t, s, side * (HALF - 0.75), p0);
+  out.grazers.push({
+    x: p0.x,
+    y: BORE_FLOOR_Y,
+    z: p0.z,
+    ux: Math.cos(p0.th),
+    uz: Math.sin(p0.th),
+    length: 1.5 + r() * 2.5,
+    speed: 0.15 + r() * 0.15,
+    phase: r(),
+    kind: deer ? "deer" : "fox",
+    band: 0,
+  });
 }
 
 /** The tallest bird bob and wing reach over its loop height, m (the shader

@@ -295,6 +295,23 @@ export function flakCallout(): Callout {
   };
 }
 
+/** S9: one carrier-launch call per this long — a raid launches a bot every
+ * few seconds; the radio names it, it does not narrate each one. */
+const CARRIER_LAUNCH_COOLDOWN_MS = 20_000;
+
+/** S9: bandits launching off the boss carrier. */
+export function carrierLaunchCallout(): Callout {
+  return {
+    kind: "threat",
+    key: "carrier",
+    cooldownMs: CARRIER_LAUNCH_COOLDOWN_MS,
+    expiresMs: 4_000,
+    voice: PHRASE.carrierLaunch,
+    ticker: "BANDITS LAUNCHING FROM THE CARRIER",
+    speaker: "CONTROL",
+  };
+}
+
 /** S4: the zeppelin is down (`own`: we dealt the most), or it got away. */
 export function bossEndCallout(down: boolean): Callout {
   return {

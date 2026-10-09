@@ -58,6 +58,10 @@ const NEON_BUZZ_HZ = 120;
 const TRAIN_RUMBLE_LEVEL = 0.45;
 const TRAIN_SQUEAL_LEVEL = 0.07;
 const TRAIN_FALLOFF = 3;
+/** S9: the boss carrier's engine drone — four big diesels, a beating low
+ * hum — its level at full, and how far it carries (spatial gain ×). */
+const BOSS_DRONE_LEVEL = 0.32;
+const BOSS_DRONE_FALLOFF = 9;
 
 /** Engine pitch band: idle throttle → full throttle, Hz. */
 const ENGINE_MIN_HZ = 55;
@@ -150,6 +154,8 @@ export class GameAudio implements VoiceSink {
   private ownOsc: OscillatorNode | null = null;
   private ownGain: GainNode | null = null;
   private staticGain: GainNode | null = null;
+  /** S9: the boss drone's loop (built on first use) and its panner. */
+  private drone: { gain: GainNode; pan: StereoPannerNode } | null = null;
   private buzzGain: GainNode | null = null;
   private buzzPan: StereoPannerNode | null = null;
   private train: {
@@ -989,6 +995,117 @@ export class GameAudio implements VoiceSink {
     const crack = EXPLOSION_LEVEL * level;
     this.burst("bandpass", 2600, 400, 0.25, crack, s.pan, out);
     this.burst("lowpass", 260, 35, 2.2, crack * 0.8, s.pan, out);
+  }
+
+  /** S9: the carrier's engine drone from `source` (its hull's centre), or
+   * silence with null. Call every frame; the loop idles at zero gain. Two
+   * detuned saws through a low-pass beat like four diesels out of step. */
+  setBossDrone(
+    source: Vec3 | null,
+    listenerPos: Vec3,
+    listenerYaw: number,
+  ): void {
+    if (!source && !this.drone) return;
+    const ctx = this.ensure();
+    if (!ctx || !this.sfx) return;
+    if (!this.drone) {
+      const low = ctx.createBiquadFilter();
+      low.type = "lowpass";
+      low.frequency.value = 180;
+      low.Q.value = 1.4;
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      const pan = ctx.createStereoPanner();
+      for (const hz of [41, 43.5, 82.3]) {
+        const osc = ctx.createOscillator();
+        osc.type = "sawtooth";
+        osc.frequency.value = hz;
+        osc.connect(low);
+        osc.start();
+      }
+      low.connect(gain).connect(pan).connect(this.sfx);
+      this.drone = { gain, pan };
+    }
+    const s = source
+      ? spatialize(listenerPos, listenerYaw, source)
+      : { gain: 0, pan: 0 };
+    const now = ctx.currentTime;
+    this.drone.gain.gain.setTargetAtTime(
+      Math.min(1, s.gain * BOSS_DRONE_FALLOFF) * BOSS_DRONE_LEVEL,
+      now,
+      0.4,
+    );
+    this.drone.pan.pan.setTargetAtTime(s.pan, now, 0.2);
+  }
+
+  /** S9: the belly hangar's door klaxon — a two-tone horn, three blasts. */
+  bossKlaxon(pos: Vec3, listenerPos: Vec3, listenerYaw: number): void {
+    const s = spatialize(listenerPos, listenerYaw, pos);
+    const level = Math.min(1, s.gain * 7);
+    if (level <= 0.01) return;
+    const ctx = this.ensure();
+    const out = this.chaosVoice(level * 0.35, 1.9);
+    if (!ctx || !out) return;
+    const now = ctx.currentTime;
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = s.pan;
+    pan.connect(out);
+    for (let b = 0; b < 3; b++) {
+      const t = now + b * 0.6;
+      const osc = ctx.createOscillator();
+      osc.type = "square";
+      osc.frequency.setValueAtTime(b % 2 ? 392 : 466, t);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(0.12 * level, t + 0.03);
+      g.gain.setValueAtTime(0.12 * level, t + 0.38);
+      g.gain.linearRampToValueAtTime(0, t + 0.45);
+      const f = ctx.createBiquadFilter();
+      f.type = "bandpass";
+      f.frequency.value = 900;
+      f.Q.value = 0.9;
+      osc.connect(f).connect(g).connect(pan);
+      osc.start(t);
+      osc.stop(t + 0.5);
+    }
+  }
+
+  /** S9: catapult steam — a long falling hiss; `slam` adds the shuttle
+   * hitting its stops at the release. */
+  catapultHiss(
+    pos: Vec3,
+    listenerPos: Vec3,
+    listenerYaw: number,
+    slam: boolean,
+  ): void {
+    const s = spatialize(listenerPos, listenerYaw, pos);
+    const level = Math.min(1, s.gain * 6);
+    if (level <= 0.01) return;
+    this.ensure();
+    const out = this.chaosVoice(level * 0.4, slam ? 1.4 : 1.2);
+    if (!out) return;
+    this.burst(
+      "highpass",
+      5200,
+      1800,
+      slam ? 1.3 : 1.1,
+      0.5 * level,
+      s.pan,
+      out,
+    );
+    if (slam) this.burst("lowpass", 420, 60, 0.35, 0.7 * level, s.pan, out);
+  }
+
+  /** S9: the trapeze hook letting go — a short metallic clunk. */
+  hookClunk(pos: Vec3, listenerPos: Vec3, listenerYaw: number): void {
+    const s = spatialize(listenerPos, listenerYaw, pos);
+    const level = Math.min(1, s.gain * 6);
+    if (level <= 0.01) return;
+    this.ensure();
+    const out = this.chaosVoice(level * 0.35, 0.4);
+    if (!out) return;
+    this.burst("bandpass", 1400, 700, 0.12, 0.6 * level, s.pan, out);
+    this.burst("lowpass", 300, 80, 0.3, 0.5 * level, s.pan, out);
   }
 
   /** S4: a flak shell bursting — a sharp, papery crack and a short thump,

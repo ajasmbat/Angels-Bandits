@@ -4,8 +4,15 @@
 // consume these outputs, so the torus math and timing are testable without a
 // GPU, exactly like the traffic and freelook seams.
 
-import { type Building, mulberry32 } from "@angels-bandits/common/city";
-import { roofTopAt } from "@angels-bandits/common/city/roof-structures";
+import {
+  type Building,
+  mulberry32,
+  standingTopAt,
+} from "@angels-bandits/common/city";
+import {
+  roofTopAt,
+  structureCovers,
+} from "@angels-bandits/common/city/roof-structures";
 import {
   CLOUD_BASE,
   EMISSIVE_TRACER,
@@ -403,7 +410,16 @@ export class StormRenderer {
         Math.abs(z - b.z) <= b.depth / 2
       ) {
         // R2: a bolt over a mast or penthouse strikes its top.
-        return roofTopAt(b, x - b.x, z - b.z);
+        if (!b.damage) return roofTopAt(b, x - b.x, z - b.z);
+        // D8: a broken tower is struck where it still stands (its stump,
+        // the street of a felled lot) — never at the old roof's height.
+        let top = standingTopAt(b, x - b.x, z - b.z);
+        for (const s of b.roof ?? []) {
+          if (structureCovers(s, x - b.x, z - b.z, 0)) {
+            top = Math.max(top, s.baseY + s.height);
+          }
+        }
+        return top;
       }
     }
     return 0;

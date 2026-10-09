@@ -14,8 +14,11 @@
 //
 // Purely cosmetic: nothing here collides (D2 owns structural damage).
 
-import { mulberry32 } from "@angels-bandits/common/city";
-import type { Building } from "@angels-bandits/common/city";
+import {
+  type Building,
+  mulberry32,
+  pointStands,
+} from "@angels-bandits/common/city";
 import type { CityEvent } from "@angels-bandits/common/cityevents";
 import { SMOKE_LIFE_MS, isBlastEvent } from "@angels-bandits/common/cityevents";
 import type { CityIndex } from "@angels-bandits/common/collision";
@@ -201,6 +204,11 @@ export interface Burn {
   /** Fractional emission carried between frames. */
   fireAcc: number;
   smokeAcc: number;
+  /** D8: the facade under the patch fell (a collapse, gunfire) — it burns
+   * no more, rather than in the air where the floor was. `ver` is the
+   * building's damage version that was checked. */
+  gone?: boolean;
+  ver?: number;
 }
 
 /** Event order, the same on every client: time, then x, then z. */
@@ -269,13 +277,30 @@ export class BlastLedger {
     return out;
   }
 
-  /** Forget burns that have burnt out by server time `now`. */
+  /** Forget burns that have burnt out by server time `now` — and (D8)
+   * mark those whose facade no longer stands. */
   prune(now: number): void {
     let kept = 0;
     for (const b of this.burns) {
       if (now - b.t < SMOKE_LIFE_MS) this.burns[kept++] = b;
     }
     this.burns.length = kept;
+    for (const burn of this.burns) {
+      const b = this.buildings[burn.site.building];
+      if (!b) continue;
+      const ver = b.damage?.version ?? 0;
+      if (burn.ver === ver) continue;
+      burn.ver = ver;
+      const p = burn.site.point;
+      const n = burn.site.normal;
+      // Half a metre into the facade: the wall the patch burns on.
+      burn.gone = !pointStands(
+        b,
+        wrapDeltaAxis(b.x, p.x) - n.x * 0.5,
+        p.y,
+        wrapDeltaAxis(b.z, p.z) - n.z * 0.5,
+      );
+    }
   }
 
   private trim(): void {
@@ -617,7 +642,7 @@ export class Impacts {
     for (let j = 0; j < burns.length; j++) {
       const b = burns[j] as Burn;
       const age = serverMs - b.t;
-      if (age < 0 || age >= SMOKE_LIFE_MS) continue;
+      if (age < 0 || age >= SMOKE_LIFE_MS || b.gone) continue;
       const k = Math.min(1, (SMOKE_LIFE_MS - age) / BURN_TAPER_MS);
       b.fireAcc += BURN_FIRE_RATE * this.share * k * dt;
       b.smokeAcc += BURN_SMOKE_RATE * this.share * k * dt;

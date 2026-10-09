@@ -8,14 +8,20 @@
 // Garnish is visual-only with no collision — the plan's sanctioned
 // exception, same as roof clutter.
 
-import { type Building, mulberry32 } from "@angels-bandits/common/city";
+import {
+  type Building,
+  type LocalBox,
+  STAND_OUT,
+  mulberry32,
+} from "@angels-bandits/common/city";
 import {
   facadeClearances,
   nearestStreet,
 } from "@angels-bandits/common/city/street";
 import { BLOCK_PITCH } from "@angels-bandits/common/constants";
-import type { Vec3 } from "@angels-bandits/common/world";
+import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { type StandingLayer, StandingMask } from "./standing-watch";
 import { ImageCache, InstanceUploads } from "./wrapPlacement";
 
 /** Parapet lip thickness across the edge, meters. */
@@ -151,6 +157,63 @@ function canopyFor(b: Building): Canopy | null {
   };
 }
 
+// --- D8: what still stands ------------------------------------------------
+
+/**
+ * Building `index`'s garnish as building-local boxes for the standing
+ * filter: its parapet lips in facadeGarnishFor order, then its canopy. A
+ * canopy can stand proud of its facade by more than STAND_OUT, so it is
+ * judged by its ANCHOR — the strip of slab within STAND_OUT of the wall.
+ */
+export function facadeGarnishStandingLayer(
+  buildings: readonly Building[],
+): StandingLayer {
+  const cache = new Map<number, LocalBox[]>();
+  return {
+    boxes(index) {
+      let out = cache.get(index);
+      if (out) return out;
+      const b = buildings[index] as Building;
+      const g = facadeGarnishFor(b);
+      out = g.parapets.map((p) => {
+        const x = wrapDeltaAxis(b.x, p.x);
+        const z = wrapDeltaAxis(b.z, p.z);
+        return {
+          x0: x - p.width / 2,
+          x1: x + p.width / 2,
+          y0: p.y - LIP_SINK,
+          y1: p.y - LIP_SINK + PARAPET_HEIGHT,
+          z0: z - p.depth / 2,
+          z1: z + p.depth / 2,
+        };
+      });
+      const c = g.canopy;
+      if (c) {
+        const x = wrapDeltaAxis(b.x, c.x);
+        const z = wrapDeltaAxis(b.z, c.z);
+        const box = {
+          x0: x - c.sizeX / 2,
+          x1: x + c.sizeX / 2,
+          y0: c.y,
+          y1: c.y + CANOPY_THICKNESS,
+          z0: z - c.sizeZ / 2,
+          z1: z + c.sizeZ / 2,
+        };
+        // The anchor: clip the slab to STAND_OUT past the tier-1 wall.
+        const hw = b.width / 2 + STAND_OUT;
+        const hd = b.depth / 2 + STAND_OUT;
+        box.x0 = Math.max(box.x0, -hw);
+        box.x1 = Math.min(box.x1, hw);
+        box.z0 = Math.max(box.z0, -hd);
+        box.z1 = Math.min(box.z1, hd);
+        out.push(box);
+      }
+      cache.set(index, out);
+      return out;
+    },
+  };
+}
+
 // --- Renderer (RoofClutter idiom: canonical layout, re-placed each frame) ---
 
 /** VO3: precast coping, light enough that every roof edge reads as a clean
@@ -173,11 +236,52 @@ export class FacadeGarnishRenderer {
   private readonly canopyImages: ImageCache;
   private readonly parapetUploads: InstanceUploads;
   private readonly canopyUploads: InstanceUploads;
+  /** D8: each instance's building, its item index there, and each
+   * building's first parapet / canopy slot (−1 = none). */
+  private readonly parapetB: Int32Array;
+  private readonly parapetK: Int32Array;
+  private readonly canopyB: Int32Array;
+  private readonly canopyK: Int32Array;
+  private readonly firstParapet: Int32Array;
+  private readonly canopyOf: Int32Array;
+  private readonly standing: StandingMask;
 
   constructor(buildings: readonly Building[]) {
     const layouts = buildings.map(facadeGarnishFor);
     this.parapets = layouts.flatMap((g) => g.parapets);
     this.canopies = layouts.flatMap((g) => (g.canopy ? [g.canopy] : []));
+    this.parapetB = new Int32Array(this.parapets.length);
+    this.parapetK = new Int32Array(this.parapets.length);
+    this.canopyB = new Int32Array(this.canopies.length);
+    this.canopyK = new Int32Array(this.canopies.length);
+    this.firstParapet = new Int32Array(buildings.length + 1);
+    this.canopyOf = new Int32Array(buildings.length).fill(-1);
+    let p = 0;
+    let c = 0;
+    layouts.forEach((g, b) => {
+      this.firstParapet[b] = p;
+      g.parapets.forEach((_, k) => {
+        this.parapetB[p] = b;
+        this.parapetK[p++] = k;
+      });
+      if (g.canopy) {
+        this.canopyOf[b] = c;
+        this.canopyB[c] = b;
+        this.canopyK[c++] = g.parapets.length;
+      }
+    });
+    this.firstParapet[buildings.length] = p;
+    this.standing = new StandingMask(
+      buildings,
+      facadeGarnishStandingLayer(buildings),
+      (b) => {
+        const to = this.firstParapet[b + 1] as number;
+        for (let i = this.firstParapet[b] as number; i < to; i++)
+          this.parapetImages.dirty(i);
+        const j = this.canopyOf[b] as number;
+        if (j >= 0) this.canopyImages.dirty(j);
+      },
+    );
 
     // Unit box with its base at y=0 so a scale matrix stands it up
     // (same idiom as the city's unit box).
@@ -241,6 +345,7 @@ export class FacadeGarnishRenderer {
   /** Place everything at its torus image nearest the camera — rewriting
    * and uploading only what flipped image (O2). */
   update(cameraPos: Vec3): void {
+    this.standing.update(); // D8: hides re-place through the image caches
     this.parapetImages.update(cameraPos, this.placeParapet);
     this.canopyImages.update(cameraPos, this.placeCanopy);
     this.parapetUploads.flush();
@@ -249,7 +354,12 @@ export class FacadeGarnishRenderer {
 
   private readonly placeParapet = (i: number, x: number, z: number): void => {
     const p = this.parapets[i] as ParapetLip;
-    this.scratch.makeScale(p.width, PARAPET_HEIGHT, p.depth);
+    const gone = this.standing.isHidden(
+      this.parapetB[i] as number,
+      this.parapetK[i] as number,
+    );
+    if (gone) this.scratch.makeScale(0, 0, 0);
+    else this.scratch.makeScale(p.width, PARAPET_HEIGHT, p.depth);
     this.scratch.setPosition(x, p.y - LIP_SINK, z);
     this.parapetMesh.setMatrixAt(i, this.scratch);
     this.parapetUploads.mark(i);
@@ -257,7 +367,12 @@ export class FacadeGarnishRenderer {
 
   private readonly placeCanopy = (i: number, x: number, z: number): void => {
     const c = this.canopies[i] as Canopy;
-    this.scratch.makeScale(c.sizeX, CANOPY_THICKNESS, c.sizeZ);
+    const gone = this.standing.isHidden(
+      this.canopyB[i] as number,
+      this.canopyK[i] as number,
+    );
+    if (gone) this.scratch.makeScale(0, 0, 0);
+    else this.scratch.makeScale(c.sizeX, CANOPY_THICKNESS, c.sizeZ);
     this.scratch.setPosition(x, c.y, z);
     this.canopyMesh.setMatrixAt(i, this.scratch);
     this.canopyUploads.mark(i);

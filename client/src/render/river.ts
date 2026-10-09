@@ -22,7 +22,7 @@
 // camera in x like the ground plane. In z both sit at the channel's nearest
 // image. Boats are placed per frame at nearestImage(camera, pose).
 
-import type { Building } from "@angels-bandits/common/city";
+import { type Building, standingProfile } from "@angels-bandits/common/city";
 import {
   BOAT_CABIN_HEIGHT,
   BOAT_HULL_HEIGHT,
@@ -63,6 +63,7 @@ import {
   bindReflectionUniforms,
 } from "./reflections";
 import { SIGN_PALETTE } from "./signage";
+import { StandingWatch } from "./standing-watch";
 import { nearestImage } from "./wrapPlacement";
 
 /** Embankment wall lamps: spacing along the wall and height on it, m. */
@@ -470,7 +471,10 @@ export function bakeRiverSkyline(
     const row = Math.floor(b.z / BLOCK_PITCH);
     const channel = row === south ? 0 : row === north ? 1 : -1;
     if (channel < 0) return;
-    const h = Math.min(255, Math.round(b.height / HEIGHT_SCALE));
+    // D8: the height that STANDS — a felled bank tower leaves no lit ghost
+    // of itself in the water.
+    const top = b.damage ? standingProfile(b).top : b.height;
+    const h = Math.min(255, Math.round(top / HEIGHT_SCALE));
     const hash = (Math.imul(i + 1, 2654435761) >>> 24) & 0xff;
     const x0 = Math.floor(b.x - b.width / 2);
     const x1 = Math.ceil(b.x + b.width / 2);
@@ -603,8 +607,21 @@ export class RiverRenderer {
   private readonly p = new THREE.Vector3();
   private readonly s = new THREE.Vector3();
   private static readonly UP = new THREE.Vector3(0, 1, 0);
+  /** D8: the skyline is re-baked when a bank building breaks or is rebuilt. */
+  private readonly sky: THREE.DataTexture;
+  private readonly watch: StandingWatch;
+  private readonly bank: Uint8Array;
+  private skyDirty = false;
 
-  constructor(seed: number, buildings: readonly Building[]) {
+  constructor(
+    seed: number,
+    private readonly buildings: readonly Building[],
+  ) {
+    this.watch = new StandingWatch(buildings);
+    this.bank = Uint8Array.from(buildings, (b) => {
+      const row = Math.floor(b.z / BLOCK_PITCH);
+      return row === RIVER_ROW - 1 || row === RIVER_ROW + 1 ? 1 : 0;
+    });
     this.structure = new THREE.Mesh(
       buildRiverStructure(),
       vertexEmissiveMaterial("ab-river-structure"),
@@ -621,6 +638,7 @@ export class RiverRenderer {
     sky.minFilter = THREE.NearestFilter;
     sky.wrapS = THREE.RepeatWrapping;
     sky.needsUpdate = true;
+    this.sky = sky;
     const material = new THREE.MeshStandardMaterial({
       color: COLORS.water,
       // Rough on purpose: the reflection is the faked one below. A smooth
@@ -672,12 +690,22 @@ outgoingLight *= min(1.0, ${WATER_LUMA_CAP} / max(luminance(outgoingLight), 1e-4
     this.group.add(this.structure, this.water, this.boats);
   }
 
+  private readonly markSky = (i: number): void => {
+    if (this.bank[i]) this.skyDirty = true;
+  };
+
   /**
    * Place everything for this frame. `serverTimeMs` MUST be the clock the
    * crash check poses movers at (boats are solid movers): null hides them,
    * exactly as it makes them non-solid.
    */
   update(cameraPos: Vec3, serverTimeMs: number | null, nowMs: number): void {
+    this.watch.poll(this.markSky);
+    if (this.skyDirty) {
+      this.skyDirty = false;
+      (this.sky.image.data as Uint8Array).set(bakeRiverSkyline(this.buildings));
+      this.sky.needsUpdate = true;
+    }
     const dz = wrapDeltaAxis(cameraPos.z, RIVER_CENTER_Z);
     this.group.visible = Math.abs(dz) < HIDE_BEYOND;
     if (!this.group.visible) return;

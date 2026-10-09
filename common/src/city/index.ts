@@ -67,6 +67,19 @@ export {
   supportGraph,
   tierGrids,
 } from "./destruction";
+// D8 what still stands: the seam every per-building layer asks.
+export {
+  type StandingProfile,
+  STAND_EPS,
+  STAND_OUT,
+  STAND_ROOF_RISE,
+  decorStands,
+  generatedRoof,
+  pointStands,
+  standingProfile,
+  standingTopAt,
+  syncRoof,
+} from "./standing";
 // H1 fly-through holes: the seam collision, rendering and bots all read.
 export {
   type Hole,

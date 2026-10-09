@@ -99,6 +99,11 @@ export interface PreparedEvent {
   ev: CityEvent;
   /** Height the smoke column rises from: the solid top under the point. */
   base: number;
+  /** D8: the building under the point (-1 over a street) and its damage
+   * version when `base` was taken — a collapse under a burning wreck drops
+   * its column to what still stands instead of leaving it in the air. */
+  under: number;
+  underVersion: number;
   /** Responder routes (deaths only), precomputed — never per frame. */
   routes: ResponderRoute[];
 }
@@ -270,13 +275,34 @@ export function prepareEvent(
   ev: CityEvent,
   buildings: readonly Building[],
 ): PreparedEvent {
+  const under = isBlastEvent(ev) ? buildingUnder(buildings, ev.x, ev.z) : -1;
   return {
     ev,
     base: isBlastEvent(ev) ? smokeBase(buildings, ev.x, ev.y, ev.z) : 0,
+    under,
+    underVersion: buildings[under]?.damage?.version ?? 0,
     routes: isBlastEvent(ev)
       ? [responderRoute(ev, "police"), responderRoute(ev, "ambulance")]
       : [],
   };
+}
+
+/** The index of the building whose footprint holds (x, z), or -1. */
+export function buildingUnder(
+  buildings: readonly Building[],
+  x: number,
+  z: number,
+): number {
+  for (let i = 0; i < buildings.length; i++) {
+    const b = buildings[i] as Building;
+    if (
+      Math.abs(wrapDeltaAxis(b.x, x)) <= b.width / 2 &&
+      Math.abs(wrapDeltaAxis(b.z, z)) <= b.depth / 2
+    ) {
+      return i;
+    }
+  }
+  return -1;
 }
 
 /**
@@ -864,6 +890,15 @@ export class CityReactor {
         drop++;
       }
       if (drop > 0) this.events.splice(0, drop);
+      // D8: the ground under a column moved (a collapse, a rebuild) — take
+      // its base again from what stands now (live solids and roof).
+      for (const p of this.events) {
+        if (p.under < 0) continue;
+        const v = this.buildings[p.under]?.damage?.version ?? 0;
+        if (v === p.underVersion) continue;
+        p.underVersion = v;
+        p.base = smokeBase(this.buildings, p.ev.x, p.ev.y, p.ev.z);
+      }
       cityReactionsInto(r, this.events, serverTimeMs);
     }
     // Window wake uniform, render space (the facade's own frame).

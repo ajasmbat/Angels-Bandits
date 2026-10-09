@@ -33,6 +33,8 @@ import { type Vec3, wrapDelta } from "../world/index";
 import { type SolidBox, baseSolids, solids } from "./holes";
 import type { Building } from "./index";
 import { ROOF_STRUCTURE_MAX_HEIGHT } from "./roof-structures";
+// standing.ts reads this module back at call time only (the holes.ts idiom).
+import { syncRoof } from "./standing";
 
 /** SolidBox.cut bits: the box faces exposed by destruction (−x, +x, −y, +y,
  * −z, +z), and RUBBLE for a debris pile on the street. */
@@ -637,6 +639,8 @@ export class CityDamage {
   hold = false;
   /** Bumped on every change to the destroyed set. */
   version = 0;
+  /** D8: buildings whose cells changed since the last roof sync. */
+  private readonly roofDirty = new Set<number>();
 
   /** Attach to the city these ids name; replays everything held so far. */
   bind(buildings: readonly Building[]): void {
@@ -655,6 +659,7 @@ export class CityDamage {
     for (const b of buildings) b.damage = undefined;
     for (const id of held) this.mark(id, CELL_BROKEN);
     for (const id of fell) this.mark(id, CELL_FALLEN);
+    this.syncAllRoofs();
     this.version++;
   }
 
@@ -716,6 +721,7 @@ export class CityDamage {
       this.mark(id, CELL_BROKEN);
       changed = true;
     }
+    this.flushRoofs();
     if (changed) this.version++;
   }
 
@@ -731,6 +737,7 @@ export class CityDamage {
       if (this.buildings && !isChunk(this.buildings, id)) continue;
       if (!this.destroyed.has(id)) this.mark(id, CELL_BROKEN);
     }
+    this.syncAllRoofs();
     this.version++;
   }
 
@@ -750,6 +757,7 @@ export class CityDamage {
       if (this.buildings) this.writeCell(id, CELL_FALLEN);
       changed = true;
     }
+    this.flushRoofs();
     if (changed) this.version++;
   }
 
@@ -762,6 +770,7 @@ export class CityDamage {
     this.mark(id, CELL_BROKEN);
     this.hp.delete(id);
     this.pending.push(id);
+    this.flushRoofs();
     this.version++;
     return true;
   }
@@ -857,6 +866,7 @@ export class CityDamage {
       b.damage = undefined;
       changed = true;
     }
+    if (b) syncRoof(b);
     if (changed) this.version++;
     return out.sort((a, c) => a - c);
   }
@@ -889,6 +899,20 @@ export class CityDamage {
     return out;
   }
 
+  /** D8: bring the touched buildings' roof structures up to their cells. */
+  private flushRoofs(): void {
+    const buildings = this.buildings;
+    if (!buildings) return;
+    for (const i of this.roofDirty) syncRoof(buildings[i] as Building);
+    this.roofDirty.clear();
+  }
+
+  /** D8: every building's roof from scratch (bind / reset cleared all). */
+  private syncAllRoofs(): void {
+    this.roofDirty.clear();
+    for (const b of this.buildings ?? []) syncRoof(b);
+  }
+
   /** Record `id` as gone (`kind`) and write it through to its building. */
   private mark(id: number, kind: number): void {
     (kind === CELL_FALLEN ? this.fallen : this.destroyed).add(id);
@@ -919,6 +943,7 @@ export class CityDamage {
     if (!cells[chunkCell(id)]) dmg.count++;
     cells[chunkCell(id)] = kind;
     dmg.version = ++damageVersion;
+    this.roofDirty.add(index);
   }
 }
 

@@ -9,7 +9,11 @@
 // on Building.roof) — the water tanks and antenna masts moved there. What is
 // left here is the ≤ 2.5 m HVAC units and the landmark beacon.
 
-import { type Building, mulberry32 } from "@angels-bandits/common/city";
+import {
+  type Building,
+  generatedRoof,
+  mulberry32,
+} from "@angels-bandits/common/city";
 import {
   BILLBOARD_CATWALK,
   BILLBOARD_THICKNESS,
@@ -114,7 +118,9 @@ export function clutterRects(b: Building, c: RoofClutter): Rect[] {
  * solid structures.
  */
 export function roofClutterFor(b: Building): RoofClutter {
-  const structures = b.roof ?? [];
+  // D8: as generated — a damaged roof loses structures (b.roof follows the
+  // stump), and the clutter laid out around them must not shift.
+  const structures = generatedRoof(b) ?? [];
   const none: RoofClutter = {
     structures,
     waterTowers: [],

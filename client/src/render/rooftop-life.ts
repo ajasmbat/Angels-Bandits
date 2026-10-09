@@ -21,18 +21,28 @@
 // synced server clock folded into a LOOP_MS loop that every frequency below
 // divides, so all clients agree and the fold never jumps.
 //
+// D8: a damaged roof sheds its life — each prop and light is one item of the
+// rooftop-life StandingLayer, and a building whose deck no longer carries an
+// item drops that item's baked vertices out of sight (BakedHider) until the
+// rebuild brings them back.
+//
 // Everything here is the accepted non-collidable rooftop clutter exception:
 // figures and props stand ≤ 2 m above their own base, flag poles stay under
 // the R2 2.5 m clutter line, and lights are light. The fans R2 puts on top of
 // the solid cooling towers (common roof structures) only cap what collides.
 
-import { type Building, mulberry32 } from "@angels-bandits/common/city";
+import {
+  type Building,
+  type LocalBox,
+  mulberry32,
+} from "@angels-bandits/common/city";
 import { COOLING_SHROUD } from "@angels-bandits/common/city/roof-structures";
 import {
   EMISSIVE_BEACON,
   LANDMARK_HEIGHT,
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
+import { wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost, luminance } from "./emissive";
 import { applyPointFloor } from "./point-floor";
@@ -44,6 +54,7 @@ import {
   roofClutterFor,
 } from "./roof-layout";
 import { RoofKind, roofStyleFor } from "./roofs";
+import { BakedHider, type StandingLayer, StandingMask } from "./standing-watch";
 
 // --- Layout rules --------------------------------------------------------
 
@@ -661,6 +672,10 @@ export interface BakedProps {
   /** part, phase, a, b (meaning depends on the part). */
   anims: Float32Array;
   vertexCount: number;
+  /** D8: item i's vertices are itemStarts[i]..itemStarts[i + 1]; a roof's
+   * items (pool, dancers, fans, flags) are lifeItems[k]..lifeItems[k + 1]. */
+  itemStarts: Int32Array;
+  lifeItems: Int32Array;
 }
 
 class Baker {
@@ -731,9 +746,14 @@ const hex = (h: number) => new THREE.Color(h);
 export function bakeRooftopProps(lives: readonly RooftopLife[]): BakedProps {
   const k = new Baker();
   const still = [PropPart.STATIC, 0, 0, 0] as const;
+  const itemStarts: number[] = [];
+  const lifeItems: number[] = [];
+  const item = () => itemStarts.push(k.p.length / 3);
 
   for (const life of lives) {
+    lifeItems.push(itemStarts.length);
     if (life.pool) {
+      item();
       const pool = life.pool;
       k.pivot = { x: pool.x, y: pool.y, z: pool.z, fold: FOLD_NEVER };
       const ww = pool.halfW * 2;
@@ -763,6 +783,7 @@ export function bakeRooftopProps(lives: readonly RooftopLife[]): BakedProps {
     }
 
     for (const d of life.party?.dancers ?? []) {
+      item();
       k.pivot = { x: d.x, y: d.y, z: d.z, fold: FOLD_DANCER };
       const anim = [PropPart.DANCER, d.phase, d.yaw, 0] as const;
       const shirt = hex(DANCER_TONES[d.tone] ?? DANCER_TONES[0]);
@@ -783,6 +804,7 @@ export function bakeRooftopProps(lives: readonly RooftopLife[]): BakedProps {
     }
 
     for (const f of life.fans) {
+      item();
       k.pivot = { x: f.x, y: f.y, z: f.z, fold: FOLD_SMALL };
       if (f.body > 0) {
         k.add(
@@ -815,6 +837,7 @@ export function bakeRooftopProps(lives: readonly RooftopLife[]): BakedProps {
     }
 
     for (const f of life.flags) {
+      item();
       k.pivot = { x: f.x, y: f.y, z: f.z, fold: FOLD_SMALL };
       k.add(
         new THREE.CylinderGeometry(0.05, 0.07, f.pole, 5, 1, true).translate(
@@ -836,6 +859,8 @@ export function bakeRooftopProps(lives: readonly RooftopLife[]): BakedProps {
     pivots: new Float32Array(k.pv),
     anims: new Float32Array(k.an),
     vertexCount: k.p.length / 3,
+    itemStarts: Int32Array.from([...itemStarts, k.p.length / 3]),
+    lifeItems: Int32Array.from([...lifeItems, itemStarts.length]),
   };
 }
 
@@ -910,6 +935,9 @@ export interface BakedLights {
   /** mode, phase. */
   modes: Float32Array;
   count: number;
+  /** D8: one point per item; a roof's lights (bulbs, haze, pool rim,
+   * aviation) are points lifeItems[k]..lifeItems[k + 1]. */
+  lifeItems: Int32Array;
 }
 
 const BULB_SIZE = 1.0;
@@ -945,7 +973,9 @@ export function bakeRooftopLights(lives: readonly RooftopLife[]): BakedLights {
     size.push(s);
     mode.push(m, phase);
   };
+  const lifeItems: number[] = [];
   for (const life of lives) {
+    lifeItems.push(pos.length / 3);
     const party = life.party;
     if (party) {
       for (const bulb of party.bulbs) {
@@ -1004,6 +1034,92 @@ export function bakeRooftopLights(lives: readonly RooftopLife[]): BakedLights {
     sizes: new Float32Array(size),
     modes: new Float32Array(mode),
     count: pos.length / 3,
+    lifeItems: Int32Array.from([...lifeItems, pos.length / 3]),
+  };
+}
+
+// --- D8: what still stands ------------------------------------------------
+
+/** A light's box: a point, a hand's breadth round. */
+const LIGHT_HALF = 0.1;
+
+/**
+ * Building `b`'s rooftop items as boxes in its frame, in bake order: the
+ * props (pool, dancers, fans, flags — bakeRooftopProps' items), then the
+ * lights (bulbs, the party haze over its deck, pool rim lights, aviation
+ * lights from the deck up — bakeRooftopLights' points).
+ */
+export function rooftopItemBoxes(b: Building, life: RooftopLife): LocalBox[] {
+  const out: LocalBox[] = [];
+  const at = (
+    x: number,
+    z: number,
+    hx: number,
+    hz: number,
+    y0: number,
+    y1: number,
+  ) => {
+    const cx = wrapDeltaAxis(b.x, x);
+    const cz = wrapDeltaAxis(b.z, z);
+    out.push({ x0: cx - hx, x1: cx + hx, y0, y1, z0: cz - hz, z1: cz + hz });
+  };
+  const pool = life.pool;
+  if (pool) {
+    const cw = POOL_COPING_WIDTH;
+    at(
+      pool.x,
+      pool.z,
+      pool.halfW + cw,
+      pool.halfD + cw,
+      pool.y,
+      pool.y + POOL_COPING_HEIGHT,
+    );
+  }
+  for (const d of life.party?.dancers ?? [])
+    at(d.x, d.z, 0.35, 0.35, d.y, d.y + PROP_MAX_HEIGHT);
+  for (const f of life.fans) {
+    const r = f.radius * 1.19;
+    at(f.x, f.z, r, r, f.y, f.y + f.body + f.shroud);
+  }
+  for (const f of life.flags) {
+    const r = f.clothW + 0.1;
+    at(f.x, f.z, r, r, f.y, f.y + f.pole);
+  }
+  const party = life.party;
+  if (party) {
+    for (const l of party.bulbs)
+      at(l.x, l.z, LIGHT_HALF, LIGHT_HALF, l.y - LIGHT_HALF, l.y + LIGHT_HALF);
+    at(
+      party.x,
+      party.z,
+      party.halfW,
+      party.halfD,
+      party.y,
+      party.y + HAZE_LIFT,
+    );
+  }
+  for (const l of life.pool?.rimLights ?? [])
+    at(l.x, l.z, LIGHT_HALF, LIGHT_HALF, l.y - LIGHT_HALF, l.y + LIGHT_HALF);
+  for (const a of life.aviation)
+    at(a.x, a.z, LIGHT_HALF, LIGHT_HALF, b.height, a.y + LIGHT_HALF);
+  return out;
+}
+
+/** D8: the rooftop-life StandingLayer (the same items the renderer bakes). */
+export function rooftopLifeStandingLayer(
+  buildings: readonly Building[],
+): StandingLayer {
+  const cache = new Map<number, LocalBox[]>();
+  return {
+    boxes(index: number): readonly LocalBox[] {
+      let out = cache.get(index);
+      if (!out) {
+        const b = buildings[index];
+        out = b ? rooftopItemBoxes(b, rooftopLifeFor(b)) : [];
+        cache.set(index, out);
+      }
+      return out;
+    },
   };
 }
 
@@ -1202,6 +1318,12 @@ export class RooftopLifeRenderer {
     propVertices: number;
   };
   private readonly loop = { value: 0 };
+  /** D8: hide a damaged roof's props and lights. */
+  private readonly mask: StandingMask;
+  private readonly propHider: BakedHider;
+  private readonly lightHider: BakedHider;
+  private readonly propItems: Int32Array;
+  private readonly lightItems: Int32Array;
 
   constructor(buildings: readonly Building[]) {
     const lives = buildings.map(rooftopLifeFor);
@@ -1251,6 +1373,12 @@ export class RooftopLifeRenderer {
       applyPointFloor(shader, LIGHT_MIN_PX);
     };
     this.lights = new THREE.Points(lightGeometry, lightMaterial);
+    this.lightItems = lit.lifeItems;
+    // One point per light: item i is vertex i.
+    this.lightHider = new BakedHider(
+      lightGeometry.getAttribute("position") as THREE.BufferAttribute,
+      Int32Array.from({ length: lit.count + 1 }, (_, i) => i),
+    );
     // Positions are canonical; the shader moves them next to the camera.
     this.lights.frustumCulled = false;
 
@@ -1309,6 +1437,16 @@ export class RooftopLifeRenderer {
     // so lighting and fog read the wrapped position.
     this.props = new THREE.Mesh(propGeometry, propMaterial);
     this.props.frustumCulled = false;
+    this.propItems = baked.lifeItems;
+    this.propHider = new BakedHider(
+      propGeometry.getAttribute("position") as THREE.BufferAttribute,
+      baked.itemStarts,
+    );
+    this.mask = new StandingMask(
+      buildings,
+      rooftopLifeStandingLayer(buildings),
+      this.restand,
+    );
 
     this.group.add(this.props, this.lights);
 
@@ -1328,7 +1466,26 @@ export class RooftopLifeRenderer {
   /** `timeMs` is synced server time, so every client animates in phase. */
   update(timeMs: number): void {
     this.loop.value = loopPhase(timeMs);
+    this.mask.update();
   }
+
+  /** D8: building `b`'s standing moved — drop or restore its items (props
+   * first, then lights: the StandingLayer's order). */
+  private readonly restand = (b: number): void => {
+    const flags = this.mask.hiddenOf(b);
+    const p0 = this.propItems[b] as number;
+    const p1 = this.propItems[b + 1] as number;
+    for (let i = p0; i < p1; i++) {
+      this.propHider.setHidden(i, flags?.[i - p0] === 1);
+    }
+    const l0 = this.lightItems[b] as number;
+    const l1 = this.lightItems[b + 1] as number;
+    for (let i = l0; i < l1; i++) {
+      this.lightHider.setHidden(i, flags?.[p1 - p0 + i - l0] === 1);
+    }
+    this.propHider.flush();
+    this.lightHider.flush();
+  };
 
   /** O3: Low drops the string-light sprites; pools, fans and flags stay. */
   setQuality(tier: QualityTier): void {

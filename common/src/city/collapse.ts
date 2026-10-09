@@ -462,13 +462,51 @@ export function planCollapses(b: Building, index: number): CollapsePlan[] {
   return plans;
 }
 
+/** D8: share of a TOPPLE stump's back-most row that keeps a third band. */
+const STUMP_SPIKE_SHARE = 0.6;
+
+/**
+ * D8: how many of tier 0's bands column (ix, iz) keeps when the tower over
+ * it topples in `dir` — a stepped, broken stump instead of one flat cut.
+ * Fall-side columns keep the bottom band; the back half (away from the fall
+ * edge — at least half of band 1, so it never fails COLLAPSE_BAND_MIN) keeps
+ * two; a hashed share of the back-most row keeps three. Kept height never
+ * drops going away from the fall edge, so nothing that tips over the edge
+ * swings through the stump.
+ */
+function stumpBands(
+  g: TierGrid,
+  index: number,
+  dir: number,
+  ix: number,
+  iz: number,
+): number {
+  const alongX = dir === DIR_NEG_X || dir === DIR_POS_X;
+  const n = alongX ? g.nx : g.nz;
+  const i = alongX ? ix : iz;
+  // Distance (in columns) from the fall edge.
+  const r = dir === DIR_POS_X || dir === DIR_POS_Z ? n - 1 - i : i;
+  if (n < 2 || r < Math.floor(n / 2)) return 1;
+  let bands = 2;
+  if (n >= 3 && r === n - 1) {
+    const across = alongX ? iz : ix;
+    const roll = mulberry32(
+      (Math.imul(index + 1, 0x9e3779b1) ^ Math.imul(across + 7, 0x85ebca6b)) >>>
+        0,
+    )();
+    if (roll < STUMP_SPIKE_SHARE) bands = 3;
+  }
+  return Math.min(bands, g.ny);
+}
+
 /**
  * D5 demolition: a charge line under tier 0's second floor band. Every
  * standing chunk above tier 0's bottom band (and every upper tier) falls as
  * ONE event — TOPPLE in `dir`, or a PANCAKE that also crushes what stands
  * under it. What stays is a supported stump, so nothing is left floating.
- * Null when nothing above the bottom band still stands. Pure in (shape,
- * damage).
+ * D8: a TOPPLE leaves a stepped, broken stump (stumpBands) when that stump
+ * owes no collapse of its own; otherwise the flat one. Null when nothing
+ * above the bottom band still stands. Pure in (shape, damage).
  */
 export function demolitionPlan(
   b: Building,
@@ -478,13 +516,37 @@ export function demolitionPlan(
 ): CollapsePlan | null {
   const grids = tierGrids(b);
   const standing = standingOf(b);
-  let set: number[] = [];
-  standing.forEach((st, k) => {
-    const g = grids[k] as TierGrid;
-    const first = k === 0 ? g.nx * g.nz : 0;
-    for (let c = first; c < st.length; c++) if (st[c]) set.push(k, c);
-  });
+  const g0 = grids[0] as TierGrid;
+  const pick = (jagged: boolean): number[] => {
+    const out: number[] = [];
+    standing.forEach((st, k) => {
+      const g = grids[k] as TierGrid;
+      const band = g.nx * g.nz;
+      for (let c = k === 0 ? band : 0; c < st.length; c++) {
+        if (!st[c]) continue;
+        if (k === 0 && jagged) {
+          const ix = c % g.nx;
+          const iz = Math.floor(c / g.nx) % g.nz;
+          if (Math.floor(c / band) < stumpBands(g, index, dir, ix, iz))
+            continue;
+        }
+        out.push(k, c);
+      }
+    });
+    return out;
+  };
+  let set = pick(false);
   if (set.length === 0) return null;
+  if (style === TOPPLE && g0) {
+    const jagged = pick(true);
+    // Keep the broken stump only if, with the section gone, it owes nothing
+    // (no band under COLLAPSE_BAND_MIN with chunks above, nothing unheld).
+    const after = standing.map((st) => st.slice());
+    for (let j = 0; j < jagged.length; j += 2) {
+      (after[jagged[j] as number] as Uint8Array)[jagged[j + 1] as number] = 0;
+    }
+    if (jagged.length > 0 && !nextPlan(b, index, after)) set = jagged;
+  }
   if (style === PANCAKE) set = set.concat(crushedUnder(grids, standing, set));
   const chunks: number[] = [];
   for (let j = 0; j < set.length; j += 2) {
@@ -805,6 +867,9 @@ function landingTime(c: Collapse, i: number, floor: number): number {
   return hi;
 }
 
+/** D8: gap between a toppled building's fall-side face and its rubble, m. */
+const REST_CLEAR = 0.3;
+
 /** Per-event deterministic stream: the event id and the chunk, never a
  * position. */
 const pieceRand = (id: number, chunk: number) =>
@@ -1119,6 +1184,23 @@ function assembleCollapse(
     c.ax[i] = odd && axis === 1 ? hy : (c.rhx[i] as number);
     c.ay[i] = slab / 2;
     c.az[i] = odd && axis === 0 ? hy : (c.rhz[i] as number);
+    // D8: a toppled building's rubble never comes to rest back over its own
+    // footprint (behind the pivot edge) — the stump stands there, and rubble
+    // lying on a chunk that can later be shot away would float. A slow piece
+    // that drops short slides off over the edge as it squashes.
+    if (style === TOPPLE && pivotEdge === null) {
+      const xFall = dir === DIR_NEG_X || dir === DIR_POS_X;
+      const pos = dir === DIR_POS_X || dir === DIR_POS_Z;
+      const half = (xFall ? c.ax[i] : c.az[i]) as number;
+      const at = (xFall ? c.rx[i] : c.rz[i]) as number;
+      const edge = xFall ? c.px : c.pz;
+      const back = pos ? at - half : at + half;
+      if (pos ? back < edge + REST_CLEAR : back > edge - REST_CLEAR) {
+        const moved = pos ? edge + REST_CLEAR + half : edge - REST_CLEAR - half;
+        if (xFall) c.rx[i] = moved;
+        else c.rz[i] = moved;
+      }
+    }
     end = Math.max(end, (c.start[i] as number) + land + SQUASH_S);
   }
   c.endMs = end * 1000;

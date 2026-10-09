@@ -78,6 +78,10 @@ export const TRAINS_SLIDE_MAX_MS = WORLD_STEP_MS - SETTLE_MS - SAMPLE_MS;
  *    this order: sign spill pools, rooftop string lights, fountains,
  *    headlight pools (each is one draw, all are dressing).
  */
+/** D6: see BUDGETS.chunkInstances — the runner's `ruins` (316 damaged-mesh
+ * slots + 667 debris pieces = 983) + 10 % (README D6). */
+const CHUNK_INSTANCES_BUDGET = 1082;
+
 export const BUDGETS = {
   gpuP50Ms: 14,
   hitchRatio: 2,
@@ -85,7 +89,31 @@ export const BUDGETS = {
   // runner's measured High draws (station 82, hole 83, sidewalk 82) plus
   // ~10 % — so a later ticket that piles onto a train station, a tunnel or
   // a sidewalk is caught here and not only in `core`.
-  drawCalls: { core: 120, station: 90, hole: 92, sidewalk: 90 },
+  // S8: the spectacle views get theirs the same way — the runner's measured
+  // High draws on a quiet server, probe included, plus ~10 % (boss 279,
+  // rings 101–104, glass 102) — and P2's three are re-based on what main
+  // draws after the Spectacle, Destruction, C2 and U4 batches: their scene
+  // draws went from 82–83 to 94–96, and the S6 probe adds 7 a frame
+  // (README S8). core keeps 120.
+  drawCalls: {
+    core: 120,
+    station: 111,
+    hole: 113,
+    sidewalk: 113,
+    boss: 307,
+    rings: 114,
+    glass: 112,
+  },
+  // D6: a collapse segment may cost at most this many draws over the SAME
+  // pass's `core` (core itself stays under its 120). A segment not flown
+  // beside core in the run reads n/a.
+  drawCallsOverCore: { collapse: 15, rubble: 15 },
+  // D6: the destruction instances a segment may hold — damaged-mesh slots
+  // plus debris pieces — set from the runner's measured maximum + 10 %
+  // (README D6). The debris mesh must also never grow past its boot size
+  // (city.ts: every chunk COLLAPSE_CAP lets fall, +25 %, +64): growing is a
+  // buffer reallocation mid-game, and the boot size is the derived bound.
+  chunkInstances: CHUNK_INSTANCES_BUDGET,
 };
 
 export const SEGMENTS = [
@@ -249,5 +277,192 @@ export const SEGMENTS = [
     y: 8,
     yaw: 0.08,
     hold: true,
+  },
+  // --- D6: the Destruction batch (D1–D5, X1), appended so the ten above
+  // keep their index and measured world instants. The server runs quiet
+  // (AB_QUIET_CITY: nothing breaks on the wall clock), and each segment
+  // STAGES its destruction on the client through `__ab.qaDestruction` — the
+  // server's own steps and caps (client/src/game/qa-destruction.ts) — at
+  // world times relative to the segment's own instant (`stage`: every `t`
+  // is an offset from it) or to the window's (`stageAtWindow`, staged after
+  // the settle). Building indices are generateCity(CITY_SEED)'s; each spec
+  // states the height / building count it expects, and staging throws if
+  // the city changed under it. Each spot was checked offline against the
+  // STAGED city — damaged solids, D2 rubble, every collapse piece over the
+  // whole fall (collideCollapses) and the wreck — with touchesSolid, every
+  // 50 ms from 1 s before the segment's instant to 12 s after: clear.
+  {
+    name: "collapse",
+    what: "D3/D5: a 215 m tower toppling across the street ahead — debris in the air, the dust cloud rising",
+    // Building 343 (1240, 464), west face on the x = 1200 street. HELD on
+    // that street's centreline 236 m south, 110 m up, nose north. It
+    // topples west (−x) across the street: 126 pieces, 8.7 s from the
+    // charge to the last landing, its rubble 20–281 m west of its centre —
+    // never near the camera.
+    x: 1200,
+    z: 700,
+    y: 110,
+    yaw: 0,
+    hold: true,
+    // Staged after the settle, its charge 1.5 s of WORLD time before the
+    // window's first frame: the lead beat (0.6 s) is over and the tower is
+    // falling when the window opens — on a 3 fps runner (whose window holds
+    // ~0.75 s of world time) and on the M3 (~5 s of it) alike. The harness
+    // asserts it has NOT all landed by the window's end.
+    stageAtWindow: {
+      fell: [{ b: 343, h: 215, style: "topple", dir: 0, t: -1500 }],
+    },
+    expect: "falling",
+  },
+  {
+    name: "ruins",
+    what: "D1–D4: the 12-plane furball in a heavily damaged block — broken towers, collapses still coming, dust, burning facades, a wreck's fire",
+    // The furball's own viewpoint, weather and 11 pilots, so `ruins` −
+    // `furball` is what the destruction costs that fight. The block around
+    // the pilots' corridor (18 buildings within 200 m of (400, 780)) has
+    // 30 % of its chunks shot away (seeded); the 21 collapses that leaves
+    // owing start every second from 14 s before the segment's instant to
+    // 6 s after it, so dust hangs over landed rubble while more comes down.
+    // Four death blasts (two land on a facade) set it burning; a downed plane hit a tower
+    // 66 ms before the instant and burns there (D4).
+    x: 400,
+    z: 1000,
+    y: 34,
+    yaw: 0,
+    weather: "downpour",
+    hold: true,
+    pilots: 11,
+    stage: {
+      area: {
+        x: 400,
+        z: 780,
+        r: 200,
+        share: 0.3,
+        seed: 6,
+        t: -14_000,
+        stepMs: 1000,
+        buildings: 18,
+      },
+      blasts: [
+        { x: 382, y: 55, z: 720, t: -2000 },
+        { x: 418, y: 70, z: 800, t: -1500 },
+        { x: 382, y: 40, z: 870, t: -1000 },
+        { x: 418, y: 50, z: 660, t: -500 },
+      ],
+      wrecks: [
+        {
+          p: { x: 400, y: 120, z: 900 },
+          v: { x: 40, y: -10, z: -30 },
+          t: -3000,
+          spin: 1,
+          hit: "city",
+        },
+      ],
+    },
+  },
+  {
+    name: "rubble",
+    what: "D2/D3: a glide down a street both sides of which came down into it — every piece at rest",
+    // The x = 1200 street, from z = 1880 north at 20 m (the x = 800 street
+    // has a viaduct over it). Buildings 332 and 325 (west) and 375 and 374
+    // (east) toppled across it 56–62 s before the segment's instant, after
+    // 25 % of the chunks of the five buildings within 120 m of (1200, 1700)
+    // were shot away: 6 collapses, 386 chunks down, the last landed 44 s
+    // before the instant — no dust, nothing moving; the harness asserts
+    // every collapse is at rest. A glide in WALL time, like `hole`.
+    x: 1200,
+    z: 1880,
+    y: 20,
+    yaw: 0,
+    glide: { speed: 42, maxM: 330 },
+    stage: {
+      area: {
+        x: 1200,
+        z: 1700,
+        r: 120,
+        share: 0.25,
+        seed: 9,
+        t: -75_000,
+        stepMs: 500,
+        buildings: 5,
+      },
+      fell: [
+        { b: 332, h: 117, style: "topple", dir: 1, t: -62_000 },
+        { b: 375, h: 168, style: "topple", dir: 0, t: -60_000 },
+        { b: 374, h: 135, style: "topple", dir: 0, t: -58_000 },
+        { b: 325, h: 107, style: "topple", dir: 1, t: -56_000 },
+      ],
+    },
+    expect: "settled",
+  },
+  // --- S8: the Spectacle batch (S1–S7), appended after D6's so the
+  // thirteen above still line up with every older report by index. Every spot was checked offline
+  // against the shared collision (`touchesSolid`: ground, buildings, trees,
+  // viaducts and every mover sampled every 100–250 ms over 15 min of world
+  // time around WORLD_EPOCH_MS), and the boss's against the staged hull too
+  // (`collideBoss`, over warm-up, settle and window): clear.
+  {
+    name: "boss",
+    what: "S4: a full 12-plane room weaving under the war zeppelin and its flak, at altitude",
+    // HELD at 285 m (over every roof, under the hull's 268–337 m band only
+    // where the hull is 380+ m away) while 11 fake pilots weave 70–230 m
+    // ahead at 262–317 m — inside the plane LOD's near band (300 m) from
+    // the camera, so every plane is the full airframe all window — and hold
+    // their fire (a tracer is a draw call, timed on the pilots' wall clock).
+    // The zeppelin is STAGED on the client (`__ab.qaBoss`,
+    // client/src/game/qa-spectacle.ts): a raid on station, crossing the view
+    // `boss.ahead` m out at mid-window, its flak a fixed schedule on the
+    // pinned world clock aimed into the pilots' corridor, from 3 s before
+    // the segment's instant so shells are always in the air.
+    x: 1000,
+    z: 1000,
+    y: 285,
+    yaw: 0,
+    hold: true,
+    pilots: 11,
+    pilotFlight: { near: 70, far: 230, yLo: 262, yHi: 317 },
+    pilotFire: false,
+    boss: {
+      ahead: 520,
+      corridor: { near: 70, far: 230, lateral: 25, yLo: 262, yHi: 317 },
+    },
+  },
+  {
+    name: "rings",
+    what: "S3: a glide down Canyon Run's street canyon through its rings, the record ghost racing ahead",
+    // S3's Canyon Run for the city seed: 13 rings (r 9 m) down the x = 1400
+    // street from z = 500 heading −Z (wrapping) — a weave ±6 m and 24/34 m
+    // high, so the centreline at 29 m passes inside every ring. Re-teleported
+    // every frame at `glide.speed` m/s of WALL time from 25 m before the
+    // start ring — crossed ~0.4 s in, inside the settle even at 3 fps — so
+    // the client's own run starts there, plays the staged ghost
+    // (`__ab.qaCourseGhost`: `ghostSpeed` m/s through the ring centres, on
+    // the wall clock like the glide) from the window's first frame, and the
+    // rings go to race colours. The glide stops at `glide.maxM`, six rings
+    // in and some 700 m short of the finish, so no run ever finishes and the
+    // server never records a time or a ghost a later pass would see (each
+    // pass is a new page, and the server drops the old page's run when it
+    // leaves). Clear from 60 m before the start to 460 m past it.
+    x: 1400,
+    z: 525,
+    y: 29,
+    yaw: 0,
+    glide: { speed: 60, maxM: 480 },
+    course: { theme: "canyon", ghostSpeed: 72 },
+  },
+  {
+    name: "glass",
+    what: "S6: a close-up on the glass landmark — the probe's neon skyline in its curtain wall",
+    // Building 127, the 250 m glass landmark at (500, 700) the gallery's
+    // glass-landmark view frames. HELD 85 m off its north-west corner at
+    // 120 m, nose toward (500, 700): the frame is curtain wall at a grazing
+    // angle, where the Fresnel term makes the reflection strongest. A held
+    // view moves the probe 0 m a frame, so it never refills mid-window.
+    x: 420,
+    z: 800,
+    y: 120,
+    yaw: yawToward(80, -100),
+    hold: true,
+    weather: "clear",
   },
 ];

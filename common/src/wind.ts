@@ -93,10 +93,18 @@ const cycle = (t: number, period: number): number =>
  */
 export function windAt(serverMs: number, out?: Wind): Wind {
   const t = serverMs / 1000;
+  // Index loops, not `for…of` with destructuring (S8: no per-frame
+  // iterator or tuple reads — this runs every frame on the client).
   let heading = WIND_BASE_HEADING;
-  for (const [a, p] of VEER) heading += a * Math.sin(TAU * cycle(t, p));
+  for (let i = 0; i < VEER.length; i++) {
+    const v = VEER[i] as readonly [number, number];
+    heading += v[0] * Math.sin(TAU * cycle(t, v[1]));
+  }
   let strength = STRENGTH_MEAN;
-  for (const [a, p] of BREATH) strength += a * Math.sin(TAU * cycle(t, p));
+  for (let i = 0; i < BREATH.length; i++) {
+    const v = BREATH[i] as readonly [number, number];
+    strength += v[0] * Math.sin(TAU * cycle(t, v[1]));
+  }
   const w = out ?? { x: 0, z: 0, strength: 0 };
   w.x = Math.cos(heading);
   w.z = Math.sin(heading);
@@ -173,12 +181,21 @@ export function airDrift(
   // (~5e9 m at today's epoch), still resolved to ~1e-6 m in doubles; the
   // wrap below brings it home.
   let along = STRENGTH_MEAN * t;
-  for (const [a, p] of BREATH) along += a * intSin(t, p);
+  for (let i = 0; i < BREATH.length; i++) {
+    const v = BREATH[i] as readonly [number, number];
+    along += v[0] * intSin(t, v[1]);
+  }
   // Across it: ∫ s·δ.
   let across = 0;
-  for (const [b, q] of VEER) {
+  for (let j = 0; j < VEER.length; j++) {
+    const w = VEER[j] as readonly [number, number];
+    const b = w[0];
+    const q = w[1];
     across += STRENGTH_MEAN * b * intSin(t, q);
-    for (const [a, p] of BREATH) across += a * b * intSinSin(t, p, q);
+    for (let i = 0; i < BREATH.length; i++) {
+      const v = BREATH[i] as readonly [number, number];
+      across += v[0] * b * intSinSin(t, v[1], q);
+    }
   }
   const hx = Math.cos(WIND_BASE_HEADING);
   const hz = Math.sin(WIND_BASE_HEADING);

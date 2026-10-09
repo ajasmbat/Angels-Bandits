@@ -4,6 +4,7 @@
 // previous position so hit detection can sweep the frame's segment.
 // Cosmetic bullets are other players' tracers — rendered, never claimed.
 
+import { hitsGround } from "@angels-bandits/common/collision";
 import { BULLET_LIFETIME_S } from "@angels-bandits/common/constants";
 import {
   type Vec3,
@@ -65,6 +66,9 @@ export class Bullets {
   step(dt: number): void {
     let kept = 0;
     for (const b of this.list) {
+      // U4: a round that went into the ground last step stops there — the
+      // rock over a tunnel is cover (its last segment was still swept).
+      if (b.pos.y < 0 && hitsGround(b.pos, 0)) continue;
       const next = b.prev;
       next.x = wrapCoord(b.pos.x + b.vel.x * dt);
       next.y = b.pos.y + b.vel.y * dt;

@@ -22,6 +22,7 @@ import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { RENDER_ORDER } from "./render-order";
+import { pushUpdateRange } from "./update-range";
 
 /** Puffs per cloud at full quality. */
 export const DUST_PUFFS = 40;
@@ -54,17 +55,31 @@ function envelope(age: number): number {
   return swell * tail;
 }
 
+interface Cloud {
+  x: number;
+  z: number;
+  r: number;
+  h: number;
+}
+/** Each collapse's cloud, worked out once (D6: it is pure in the collapse,
+ * and was recomputed per puff per frame — an object and a hypot each). */
+const clouds = new WeakMap<Collapse, Cloud>();
+
 /** Where a collapse's cloud sits (centre-relative x/z) and how far it
  * reaches: the middle of where its debris comes to rest. */
-function cloudOf(c: Collapse): { x: number; z: number; r: number; h: number } {
+function cloudOf(c: Collapse): Cloud {
+  let cloud = clouds.get(c);
+  if (cloud) return cloud;
   const b = c.restBounds;
   const all = c.bounds;
-  return {
+  cloud = {
     x: (b.x0 + b.x1) / 2,
     z: (b.z0 + b.z1) / 2,
     r: Math.max(20, Math.hypot(b.x1 - b.x0, b.z1 - b.z0) / 2),
     h: Math.min(90, Math.max(25, 0.35 * all.y1)),
   };
+  clouds.set(c, cloud);
+  return cloud;
 }
 
 /** Small integer hash → [0, 1) (puff seeds from the collapse id and the
@@ -88,11 +103,22 @@ export function dustPuff(
   tMs: number,
   out: DustPuff,
 ): boolean {
+  return puffOf(c, cloudOf(c), k, tMs, out);
+}
+
+/** dustPuff with `c`'s cloud already worked out (D6: once per cloud per
+ * frame, not once per puff — the same numbers). */
+function puffOf(
+  c: Collapse,
+  cloud: Cloud,
+  k: number,
+  tMs: number,
+  out: DustPuff,
+): boolean {
   const birth = COLLAPSE_LEAD_MS * 0.5 + hash01(c.id, k, 1) * 2500;
   const age = tMs - c.t0 - birth;
   const env = envelope(age);
   if (env <= 0) return false;
-  const cloud = cloudOf(c);
   const s = age / 1000;
   const angle = hash01(c.id, k, 2) * Math.PI * 2;
   // Rolls outward fast, then hangs: the canyon fills, it doesn't drift off.
@@ -130,6 +156,8 @@ export function dustHaze(
     const r = cloud.r + 45 * (1 - Math.exp(-age / 4000));
     const dx = wrapDeltaAxis(c.x + cloud.x, cam.x);
     const dz = wrapDeltaAxis(c.z + cloud.z, cam.z);
+    // D6: the cheap reject first — most clouds are nowhere near the camera.
+    if (dx * dx + dz * dz >= r * r) continue;
     const d = Math.hypot(dx, dz);
     if (d >= r) continue;
     const top = cloud.h + 10;
@@ -139,6 +167,13 @@ export function dustHaze(
     best = Math.max(best, env * radial * vertical);
   }
   return best;
+}
+
+/** Upload items [0, n) of `a` this frame. */
+function markRange(a: THREE.BufferAttribute, n: number): void {
+  a.clearUpdateRanges();
+  pushUpdateRange(a, 0, n * a.itemSize);
+  a.needsUpdate = true;
 }
 
 /** THREE half: every cloud's puffs in one Points (per-point size + alpha). */
@@ -234,8 +269,9 @@ export class DustClouds {
         clouds++;
         const ox = viewer.x + wrapDeltaAxis(viewer.x, c.x);
         const oz = viewer.z + wrapDeltaAxis(viewer.z, c.z);
+        const cloud = cloudOf(c);
         for (let k = 0; k < per; k++) {
-          if (!dustPuff(c, k, serverMs, this.puff)) continue;
+          if (!puffOf(c, cloud, k, serverMs, this.puff)) continue;
           this.positions.setXYZ(
             i,
             ox + this.puff.x,
@@ -250,11 +286,10 @@ export class DustClouds {
     }
     this.points.geometry.setDrawRange(0, i);
     if (i > 0) {
-      for (const a of [this.positions, this.sizes, this.alphas]) {
-        a.clearUpdateRanges();
-        a.addUpdateRange(0, i * a.itemSize);
-        a.needsUpdate = true;
-      }
+      // D6: three calls, not a loop over a fresh array every frame.
+      markRange(this.positions, i);
+      markRange(this.sizes, i);
+      markRange(this.alphas, i);
     }
   }
 

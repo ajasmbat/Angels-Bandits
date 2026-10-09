@@ -71,6 +71,11 @@
 // anything that is stable while still but re-rolls under ANY change of
 // projection (O6's facade speckle); a breathing one can.
 //
+// `FLICKER_WEATHER=<phase>` (R3) pins the middle of that weather phase
+// instead of clear-and-dry, e.g. `downpour` to score the rain against the
+// same views in clear weather — run it against the SAME build twice, never a
+// ref older than L4.
+//
 // Same browser knobs as run.mjs: AB_CHROME / AB_CHROME_ARGS.
 
 import { spawn } from "node:child_process";
@@ -176,6 +181,8 @@ const JITTER_DELTA = 2;
 export const GRID_CEILING = 0.041;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** FLICKER_WEATHER: a phase to pin instead of clear-and-dry (null: clear). */
+const WEATHER = process.env.FLICKER_WEATHER || null;
 
 function parseArgs(argv) {
   const opts = {
@@ -610,14 +617,19 @@ async function measureBuild(
     );
     // Clear AND dry (wetness lags rain and dries through the first 60 % of
     // the clear phase): 90 s past mid-clear is past that on any cycle.
-    const weather = await page.evaluate(() => {
+    const weather = await page.evaluate((pin) => {
       const ab = window.__ab;
       if (typeof ab.weather !== "function")
         return { phase: "none", wetness: 0 };
+      if (pin) return ab.weather(pin);
       const mid = ab.weather("clear");
       return ab.weather(mid.timeMs + 90_000);
-    });
+    }, WEATHER);
+    if (WEATHER && weather.phase !== WEATHER) {
+      throw new Error(`could not pin ${WEATHER}: ${JSON.stringify(weather)}`);
+    }
     if (
+      !WEATHER &&
       weather.phase !== "none" &&
       (weather.phase !== "clear" || weather.wetness > 0)
     ) {
@@ -687,14 +699,18 @@ async function measureBuild(
       for (const v of grid) {
         // Its own world instant, sky phase and clear-dry weather, then the
         // plane over its eye (the city streams around the plane).
-        const wx = await page.evaluate((v) => {
-          const ab = window.__ab;
-          ab.pinWorld(v.timeMs);
-          ab.sky(v.sky);
-          if (typeof ab.weather !== "function") return { phase: "none" };
-          const mid = ab.weather("clear");
-          return ab.weather(mid.timeMs + 90_000);
-        }, v);
+        const wx = await page.evaluate(
+          ({ v, pin }) => {
+            const ab = window.__ab;
+            ab.pinWorld(v.timeMs);
+            ab.sky(v.sky);
+            if (typeof ab.weather !== "function") return { phase: "none" };
+            if (pin) return ab.weather(pin);
+            const mid = ab.weather("clear");
+            return ab.weather(mid.timeMs + 90_000);
+          },
+          { v, pin: WEATHER },
+        );
         const still = { eye: v.eye, at: v.at, right: null, plane: v.plane };
         await aimView(page, still, PAN_M);
         for (let i = 0; i < GRID_SETTLE; i++) await page.clock.runFor(STEP_MS);

@@ -9,9 +9,10 @@
 // they are a TTS griefing vector. The `ticker`/`speaker` fields MAY carry
 // real names; the ticker renders them inert via textContent.
 
+import { type BotStyle, botStyleOfName } from "@angels-bandits/common/botstyle";
 import { mulberry32 } from "@angels-bandits/common/city";
 import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
-import { AMBIENT_PHRASES, PHRASE } from "./phrases";
+import { AMBIENT_PHRASES, PHRASE, STYLE_AMBIENT } from "./phrases";
 
 /** Radio traffic classes, highest priority first (see RADIO_PRIORITY). */
 export type RadioKind = "threat" | "own" | "kill" | "ambient";
@@ -98,18 +99,42 @@ export function safeCallsign(name: string, isBot: boolean): string | null {
   return isBot && BOT_CALLSIGN.test(name) ? name : null;
 }
 
-/** Another pilot scored a kill: their "Splash one." on the net. */
+/** B3: how each bot style signs off a kill on the ticker (the voice stays
+ * the fixed "Splash one."). */
+const STYLE_SPLASH: Readonly<Record<BotStyle, string>> = {
+  aggressive: "splash one — who's next?",
+  sniper: "splash one. Clean shot.",
+  wingman: "splash one, rejoining",
+};
+
+/** B3: a bot's style as its check-in ticker reads it. */
+const STYLE_TAG: Readonly<Record<BotStyle, string>> = {
+  aggressive: "aggressive, guns hot",
+  sniper: "sniper, long shots",
+  wingman: "wingman, looking for a lead",
+};
+
+/** The style of a voice-safe bot callsign, else null (humans, spoofs). */
+function styleOf(name: string, isBot: boolean): BotStyle | null {
+  const callsign = safeCallsign(name, isBot);
+  return callsign ? botStyleOfName(callsign) : null;
+}
+
+/** Another pilot scored a kill: their "Splash one." on the net. With
+ * `styled`, a bot killer's ticker line carries its style (B3). */
 export function splashCallout(
   killerName: string,
   killerIsBot: boolean,
+  styled = false,
 ): Callout {
+  const style = styled ? styleOf(killerName, killerIsBot) : null;
   return {
     kind: "kill",
     key: "kill",
     cooldownMs: KILL_COOLDOWN_MS,
     expiresMs: 15_000,
     voice: PHRASE.splashOne,
-    ticker: "splash one",
+    ticker: style ? STYLE_SPLASH[style] : "splash one",
     speaker: killerName,
   };
 }
@@ -285,16 +310,19 @@ export function bossEndCallout(down: boolean): Callout {
   };
 }
 
-/** Roster join: bots check in by callsign, humans generically. */
+/** Roster join: bots check in by callsign, humans generically. A bot's
+ * ticker line names its flying style (B3) — the voice never changes, so it
+ * still resolves to the rendered "BANDIT-<n>, checking in." asset. */
 export function checkInCallout(name: string, isBot: boolean): Callout {
   const callsign = safeCallsign(name, isBot);
+  const style = styleOf(name, isBot);
   return {
     kind: "ambient",
     key: "checkin",
     cooldownMs: CHECK_IN_COOLDOWN_MS,
     expiresMs: 10_000,
     voice: callsign ? `${callsign}, ${PHRASE.checkIn}` : PHRASE.checkInAnon,
-    ticker: PHRASE.checkIn,
+    ticker: style ? `${PHRASE.checkIn} ${STYLE_TAG[style]}.` : PHRASE.checkIn,
     speaker: name,
   };
 }
@@ -350,9 +378,12 @@ export class AmbientChatter {
   poll(now: number, botCallsigns: readonly string[]): Callout | null {
     if (now < this.nextAt) return null;
     this.nextAt = now + this.gap();
-    const phrase =
-      AMBIENT_PHRASES[Math.floor(this.rand() * AMBIENT_PHRASES.length)];
+    const pick = this.rand();
     const speaker = botCallsigns[Math.floor(this.rand() * botCallsigns.length)];
+    // B3: a bot speaks in its style — its own voiced subset of the bank.
+    const style = speaker === undefined ? null : botStyleOfName(speaker);
+    const bank = style ? STYLE_AMBIENT[style] : AMBIENT_PHRASES;
+    const phrase = bank[Math.floor(pick * bank.length)];
     if (phrase === undefined || speaker === undefined) return null;
     return {
       kind: "ambient",

@@ -267,37 +267,45 @@
         background: #e8f6ff;
         box-shadow: 0 0 8px #7ad8ff;
       }
+      /* R3: short, faint streaks on the screen's rim only — the ellipse mask
+         keeps the middle (the city, the pipper, the tracers) untouched, and
+         there is no rotate/scale rush: the old one read as a "warp" fan.
+         They switch off at once when the burn ends. */
       #speedlines {
         position: fixed;
-        inset: -10%;
+        inset: 0;
         pointer-events: none;
         opacity: 0;
-        transition: opacity 0.35s ease-out;
         background: repeating-conic-gradient(
           from 0deg,
           #ffffff00 0deg 3.1deg,
-          #dff4ff2e 3.4deg 3.6deg,
+          #dff4ff1c 3.4deg 3.6deg,
           #ffffff00 3.9deg 7.3deg
         );
         -webkit-mask-image: radial-gradient(
-          circle,
-          transparent 30%,
-          #000 75%
+          ellipse,
+          transparent 58%,
+          #000 72%
         );
-        mask-image: radial-gradient(circle, transparent 30%, #000 75%);
+        mask-image: radial-gradient(ellipse, transparent 58%, #000 72%);
       }
       body.boost #speedlines {
         opacity: 1;
         transition: opacity 0.12s ease-in;
-        animation: speedlines-rush 0.18s steps(3) infinite;
       }
-      @keyframes speedlines-rush {
-        from {
-          transform: rotate(0deg) scale(1);
-        }
-        to {
-          transform: rotate(2.4deg) scale(1.04);
-        }
+      /* R3: rain beading on the canopy — small static drops on the screen's
+         rim (hud.ts lays them out; opacity follows the rain and the speed). */
+      #raindrops {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        opacity: 0;
+        -webkit-mask-image: radial-gradient(
+          ellipse,
+          transparent 60%,
+          #000 78%
+        );
+        mask-image: radial-gradient(ellipse, transparent 60%, #000 78%);
       }
       @keyframes prot-pulse {
         from {
@@ -1274,10 +1282,10 @@
          Built by ui/touch-controls.ts, shown only under body.touch. Lives
          in M1's zone of the M2 contract above: everything below
          --hud-top-band, inset by --safe-*. #touch-ui sits right after
-         #speedlines, so every later HUD element paints over it — the
-         interactive ones (#minimap, #fs-btn, the toggles, the bots cells)
-         keep their taps; the pointer-events:none ones let touches through to
-         the full-screen layer. The buttons and icons are SIBLINGS of the
+         #speedlines and #raindrops, so every later HUD element paints over
+         them — the interactive ones (#minimap, #fs-btn, the toggles, the
+         bots cells) keep their taps; the pointer-events:none ones let
+         touches through to the full-screen layer. The buttons and icons are SIBLINGS of the
          layer, never inside it: its preventDefault would eat their taps. */
       #touch-ui {
         display: none;
@@ -2226,8 +2234,10 @@
     </style>
   </head>
   <body>
-    <!-- First child: every other fixed HUD element paints over the streaks. -->
+    <!-- First children: every other fixed HUD element paints over the
+         streaks and the lens drops. -->
     <div id="speedlines"></div>
+    <div id="raindrops"></div>
     <!-- M1 touch controls (ui/touch-controls.ts); hidden off touch. -->
     <div id="touch-ui" aria-hidden="true">
       <div id="touch-layer"></div>

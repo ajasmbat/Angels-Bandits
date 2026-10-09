@@ -21,9 +21,11 @@
     "./city/train": "./src/city/train.ts",
     "./city/nature": "./src/city/nature.ts",
     "./city/river": "./src/city/river.ts",
+    "./city/tunnels": "./src/city/tunnels.ts",
     "./city/roof-structures": "./src/city/roof-structures.ts",
     "./storm": "./src/storm.ts",
     "./strike": "./src/strike.ts",
+    "./chaos": "./src/chaos.ts",
     "./weather": "./src/weather.ts",
     "./wind": "./src/wind.ts",
     "./fireworks": "./src/fireworks.ts",
@@ -35,6 +37,8 @@
     "./courses": "./src/courses.ts",
     "./director": "./src/director.ts",
     "./medals": "./src/medals.ts",
-    "./boss": "./src/boss.ts"
+    "./boss": "./src/boss.ts",
+    "./hazards": "./src/hazards.ts",
+    "./botstyle": "./src/botstyle.ts"
   }
 }

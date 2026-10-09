@@ -27,7 +27,9 @@ export class KillFeed {
       | "collapse"
       | "missile"
       | "blast"
-      | "flak",
+      | "flak"
+      | "meteor"
+      | "bomb",
     self = false,
     victimId?: string,
   ): void {
@@ -45,6 +47,10 @@ export class KillFeed {
       entry.append("🚀 missile strike took down ", victim);
     } else if (cause === "blast") {
       entry.append("💥 gas main took down ", victim);
+    } else if (cause === "meteor") {
+      entry.append("☄ meteor took down ", victim);
+    } else if (cause === "bomb") {
+      entry.append("💣 bomb run took down ", victim);
     } else if (cause === "flak" && killerName === null) {
       entry.append("💥 flak took down ", victim);
     } else if (cause === "collapse" && killerName === null) {

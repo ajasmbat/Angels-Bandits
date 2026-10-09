@@ -148,22 +148,75 @@ export function pickShimmerVents(
   dist: (v: ShimmerVent) => number,
   visible: (v: ShimmerVent) => boolean,
 ): number[] {
-  const kept: number[] = [];
-  for (const id of previous) {
-    if (kept.length >= SHIMMER_SLOTS) break;
-    const v = candidates.find((c) => c.id === id);
+  return pickShimmerVentsInto(candidates, previous, dist, visible, []);
+}
+
+/** pickShimmerVentsInto's scratch: each candidate's distance, and whether
+ * it is still in the running. Grown, never shrunk. */
+let pickDist = new Float64Array(64);
+let pickOpen = new Uint8Array(64);
+
+/**
+ * pickShimmerVents into `out` (cleared first), allocation-free (S8): the
+ * same picks in the same order — the kept ones, then newcomers nearest
+ * first (ties by id) — found by repeated minimum selection over a distance
+ * scratch instead of a filtered, sorted copy of the candidates.
+ */
+export function pickShimmerVentsInto(
+  candidates: readonly ShimmerVent[],
+  previous: readonly number[],
+  dist: (v: ShimmerVent) => number,
+  visible: (v: ShimmerVent) => boolean,
+  out: number[],
+): number[] {
+  out.length = 0;
+  for (let p = 0; p < previous.length; p++) {
+    if (out.length >= SHIMMER_SLOTS) break;
+    const id = previous[p] as number;
+    let v: ShimmerVent | null = null;
+    for (let c = 0; c < candidates.length; c++) {
+      if ((candidates[c] as ShimmerVent).id === id) {
+        v = candidates[c] as ShimmerVent;
+        break;
+      }
+    }
     if (v && dist(v) <= SHIMMER_RANGE * SHIMMER_KEEP && visible(v)) {
-      kept.push(id);
+      out.push(id);
     }
   }
-  const fresh = candidates
-    .filter((c) => !kept.includes(c.id) && dist(c) <= SHIMMER_RANGE)
-    .sort((a, b) => dist(a) - dist(b) || a.id - b.id);
-  for (const v of fresh) {
-    if (kept.length >= SHIMMER_SLOTS) break;
-    if (visible(v)) kept.push(v.id);
+  const n = candidates.length;
+  if (pickDist.length < n) {
+    pickDist = new Float64Array(n * 2);
+    pickOpen = new Uint8Array(n * 2);
   }
-  return kept;
+  for (let c = 0; c < n; c++) {
+    const v = candidates[c] as ShimmerVent;
+    let kept = false;
+    for (let k = 0; k < out.length; k++) if (out[k] === v.id) kept = true;
+    const d = kept ? Number.POSITIVE_INFINITY : dist(v);
+    pickDist[c] = d;
+    pickOpen[c] = !kept && d <= SHIMMER_RANGE ? 1 : 0;
+  }
+  while (out.length < SHIMMER_SLOTS) {
+    let best = -1;
+    for (let c = 0; c < n; c++) {
+      if (pickOpen[c] === 0) continue;
+      if (
+        best < 0 ||
+        (pickDist[c] as number) < (pickDist[best] as number) ||
+        ((pickDist[c] as number) === (pickDist[best] as number) &&
+          (candidates[c] as ShimmerVent).id <
+            (candidates[best] as ShimmerVent).id)
+      ) {
+        best = c;
+      }
+    }
+    if (best < 0) break;
+    pickOpen[best] = 0;
+    const v = candidates[best] as ShimmerVent;
+    if (visible(v)) out.push(v.id);
+  }
+  return out;
 }
 
 // --- Glare ----------------------------------------------------------------------

@@ -34,6 +34,7 @@ import {
 import { natureFor } from "@angels-bandits/common/city/nature";
 import { setNewsTarget } from "@angels-bandits/common/city/newsheli";
 import { bridgeSpans } from "@angels-bandits/common/city/river";
+import { TUNNELS } from "@angels-bandits/common/city/tunnels";
 import { buildNatureIndex } from "@angels-bandits/common/collision";
 import {
   AWAY_MIN_MS,
@@ -92,7 +93,11 @@ import {
   wrapDeltaAxis,
   wrapDistance,
 } from "@angels-bandits/common/world";
-import { type WreckParams, isWreckParams } from "@angels-bandits/common/wreck";
+import {
+  type WreckParams,
+  isWreckParams,
+  wreckImpact,
+} from "@angels-bandits/common/wreck";
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
@@ -108,6 +113,7 @@ import { NEAR_MISS_RADIUS, closestApproach, spatialize } from "./audio/spatial";
 import { ThunderSchedule } from "./audio/thunder";
 import { TrainAudio } from "./audio/train-audio";
 import { createAutoFire, stepAutoFire } from "./game/auto-fire";
+import { bomberBulletHit } from "./game/bomber-hits";
 import { BoostKey } from "./game/boost-key";
 import { bossBulletHit } from "./game/boss-hits";
 import {
@@ -142,7 +148,7 @@ import {
 import {
   ChaseCamera,
   collapseShakeAmount,
-  collapseShakeOffset,
+  collapseShakeOffsetInto,
 } from "./game/camera";
 import { detectCrash, touchesSolid } from "./game/collision";
 import {
@@ -151,7 +157,21 @@ import {
   cornerSpeed,
   holeCorridors,
   stepCornerCap,
+  threadingCorridor,
 } from "./game/corner-speed";
+import {
+  ASSIST_MAX_ROLL,
+  type EffortlessWorld,
+  FEEL_TUNING,
+  arcSweep,
+  createEffortless,
+  createEffortlessOut,
+  effortlessCommand,
+  effortlessError,
+  effortlessStick,
+  resetEffortless,
+  stepEffortless,
+} from "./game/effortless";
 import { type AimMode, FlightInputSource } from "./game/flight-input";
 import { createFreeLook, shapeInput, stepFreeLook } from "./game/freelook";
 import { Guns } from "./game/guns";
@@ -177,6 +197,7 @@ import {
 import {
   type SaveWorld,
   createHoleSave,
+  holeSaveActive,
   resetHoleSave,
   stepHoleSave,
 } from "./game/hole-save";
@@ -192,6 +213,20 @@ import {
 import { speedFov } from "./game/jet-camera";
 import { magnetizeVelocity } from "./game/magnetism";
 import { MissileFeed, MissileShake } from "./game/missile-feed";
+import {
+  QA_ID_BASE,
+  type QaDestructionSpec,
+  stageDestruction,
+} from "./game/qa-destruction";
+import {
+  type QaBossSpec,
+  type QaBossStage,
+  isQaShell,
+  qaFlakDue,
+  qaGhostTrack,
+  stageBoss,
+} from "./game/qa-spectacle";
+import { quakeShakeAmount } from "./game/quake";
 import { SessionStats } from "./game/session-stats";
 import { wreckCamView } from "./game/wreck-cam";
 import {
@@ -207,6 +242,7 @@ import { Airliners } from "./render/airliners";
 import { archetypeFor } from "./render/archetypes";
 import { AtmosphereFx } from "./render/atmosphere-fx";
 import { Birds } from "./render/birds";
+import { BomberRenderer } from "./render/bombers";
 import { BossRenderer } from "./render/boss";
 import { CityRenderer } from "./render/city";
 import { PICKUP_TAXIS } from "./render/citylife";
@@ -223,6 +259,7 @@ import { DustClouds, dustHaze } from "./render/dust";
 import { FacadeDetailRenderer } from "./render/facade-detail";
 import { FacadeGarnishRenderer } from "./render/facade-garnish";
 import { FacadeLifeRenderer } from "./render/facade-life";
+import { FireRenderer } from "./render/fires";
 import { Fireworks } from "./render/fireworks";
 import { installHeightFog } from "./render/fog";
 import { Fountains } from "./render/fountains";
@@ -337,6 +374,7 @@ import { Tracers } from "./render/tracers";
 import { Traffic } from "./render/traffic";
 import { PlaneTrails } from "./render/trails";
 import { TrainRenderer } from "./render/train";
+import { TunnelRenderer } from "./render/tunnels";
 import { WeatherClock, setWeatherUniform } from "./render/weather";
 import { buildingSeed, isWindowLit } from "./render/window-pattern";
 import { nearestImage } from "./render/wrapPlacement";
@@ -770,6 +808,8 @@ const moverField = {
   // S4: and the room's sky boss — the socket's slot, kept from every welcome
   // and message, so the zeppelin is solid exactly where it is drawn.
   boss: socket.boss,
+  // C2: and its bomber formations, the same way.
+  bombers: socket.bombers,
 };
 // D5: crane-fall records name the room's crane sites — these.
 socket.collapses.bindCranes(moverField.cranes);
@@ -835,6 +875,7 @@ const cornerWorld: CornerWorld = {
     ...cityHoles(city.cityBuildings),
     ...bridgeSpans(),
   ]),
+  tunnels: true, // U4: a bore's corridor never brakes
 };
 // H2 hole assist: the silent centering nudge reads every hole (and river
 // underpass) and the same city the crash check does. State is per frame.
@@ -847,18 +888,29 @@ const holeAssist = createHoleAssist();
 const holeAssistWant = createHoleAssist();
 const assistDir: Vec3 = { x: 0, y: 0, z: 0 };
 const assistStickOut = { turn: 0, pitch: 0 };
-/** H2 hole assist stands down past this much real roll, rad (~30°, F7). */
-const ASSIST_MAX_ROLL = Math.PI / 6;
 // H3 hole save: the same spans, and every solid the crash check reads — the
 // last-moment pose correction that threads a hole when a crash is imminent.
 const saveWorld: SaveWorld = {
   spans: assistWorld.spans,
+  tunnels: TUNNELS, // U4: portals, mouths and bore walls
   buildings: city.cityBuildings,
   index: city.cityIndex,
   nature: natureIndex,
   movers: moverField,
 };
 const holeSave = createHoleSave();
+// F9 effortless assist (game/effortless.ts): the settings' FLIGHT ASSIST and
+// FEEL, its state and its per-frame output (written in place), and the
+// static solids its soft walls probe — the crash check's.
+let assistOn = settings.assist;
+let feelTuning = FEEL_TUNING[settings.feel];
+const effortless = createEffortless();
+const effOut = createEffortlessOut();
+const effWorld: EffortlessWorld = {
+  buildings: city.cityBuildings,
+  index: city.cityIndex,
+  nature: natureIndex,
+};
 const natureRenderer = new NatureRenderer(nature);
 scene.add(natureRenderer.group);
 // L11 river: embankment walls, bridges, the reflecting water and the boats.
@@ -866,6 +918,10 @@ scene.add(natureRenderer.group);
 // this is drawing only — updated on the same latched clock as the movers.
 const river = new RiverRenderer(welcome.seed, city.cityBuildings);
 scene.add(river.group);
+// U4 tunnels: the concrete shell and its light fixtures (two draws). Solid
+// through hitsGround — drawing only, snapped under the camera each frame.
+const tunnels = new TunnelRenderer();
+scene.add(tunnels.group);
 // L9 moving nature: lit spray from the plaza ponds (pure ballistic function
 // of the synced clock; one Points, drawn only near a pond). Tree sway lives
 // in natureRenderer's crown shader; bird scatter in birds.update below.
@@ -1040,6 +1096,8 @@ const scaffold = new ScaffoldRenderer(city.cityBuildings, qualityTier);
 scene.add(scaffold.mesh);
 /** No warned events (the common frame — no iterator allocated). */
 const NO_EVENTS: readonly DirectorEvent[] = [];
+/** D3/D6: the collapse jolt this frame (reused). */
+const joltScratch = { x: 0, y: 0, z: 0 };
 /** The director alarm's position this frame (reused). */
 const alarmScratch = { x: 0, y: 0, z: 0 };
 // D4: shot-down planes fall as burning wrecks on the server's shared path
@@ -1058,6 +1116,37 @@ const missileRenderer = new MissileRenderer(smoke, impacts);
 scene.add(missileRenderer.group);
 const missileFeed = new MissileFeed();
 const missileShake = new MissileShake();
+/** C2: whistles sounding at once, at most (a bomb carpet must not become a
+ * wall of sine), and how far a bomb's whistle carries, m. */
+const WHISTLE_VOICES = 3;
+const BOMB_WHISTLE_M = 350;
+const whistleEnds: number[] = [];
+// C2 bomber formations (the socket's slot, render clock — drawn == collided)
+// and the spreading fires (the socket's burning chunks, into the D1 pool).
+const bomberRenderer = new BomberRenderer(impacts, (at) => {
+  const t = performance.now();
+  explosions.explode(at, t);
+  sparks.burst(at, t);
+  audio.missileBlast(at, flight.pos, flight.yaw);
+  missileShake.add(wrapDistance(at, flight.pos), t);
+});
+scene.add(bomberRenderer.group);
+const fireRenderer = new FireRenderer(impacts, city.cityBuildings);
+// C2: a quake announced — the ground starts to rumble now (the shake rides
+// the camera path below, on the render clock).
+socket.events.onQuake = (q) => {
+  const at = lastRenderMs;
+  if (at === null) return;
+  const lead = Math.max(0.5, (q.t - at) / 1000);
+  audio.directorWarning(
+    false,
+    flight.pos,
+    flight.pos,
+    flight.yaw,
+    lead + (q.dur / 1000) * 0.6,
+  );
+  radio.noteCombat(performance.now());
+};
 // S4 sky boss: the room's war zeppelin (the socket's slot) on the render
 // clock — hull, glowing weak points, running lights, flak shells — its
 // bursts and its falling sections' fire through the D1 particle pool. A
@@ -1084,6 +1173,10 @@ const bossRenderer = new BossRenderer(
   },
 );
 scene.add(bossRenderer.group);
+/** S8 QA (`__ab.qaBoss`): the staged raid and its flak schedule, and how
+ * many shells the server sent while it was staged (dropped each frame). */
+let qaBoss: QaBossStage | null = null;
+let qaForeignShells = 0;
 /** S4: each weak point's full HP on the current raid (the HUD bar's scale),
  * rebuilt only when the raid changes — never per frame. */
 let bossMaxFor = -1;
@@ -1560,6 +1653,7 @@ function resetAssist(): void {
   holeAssist.yaw = 0;
   holeAssist.pitch = 0;
   resetHoleSave(holeSave); // H3: and no save mid-slide
+  resetEffortless(effortless); // F9: and no idle, no guard escape
 }
 
 /** S3: drop the local run (death, respawn, resume) — the server drops its
@@ -1860,7 +1954,7 @@ socket.events.onDeath = (msg) => {
   } else if (msg.killerId === socket.selfId) {
     say(ownKillCallout(name));
   } else if (msg.killerId !== null) {
-    say(splashCallout(nameOf(msg.killerId), isBotOf(msg.killerId)));
+    say(splashCallout(nameOf(msg.killerId), isBotOf(msg.killerId), true));
   }
 };
 /**
@@ -2112,7 +2206,12 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   reactor.setQuality(tier);
   // D1: particle budget and burning patches (counts only).
   impacts.setShare(QUALITY_PROFILES[tier].impacts);
-  missileRenderer.setQuality(QUALITY_PROFILES[tier].missileDebris);
+  missileRenderer.setQuality(
+    QUALITY_PROFILES[tier].missileDebris,
+    QUALITY_PROFILES[tier].chaosFx, // C2: meteor fire trails
+  );
+  bomberRenderer.setQuality(QUALITY_PROFILES[tier].chaosFx); // C2
+  fireRenderer.setQuality(QUALITY_PROFILES[tier].chaosFx); // C2
   blastLedger.setBurnCap(burnCapFor(QUALITY_PROFILES[tier].impacts));
   wrecks.setShare(QUALITY_PROFILES[tier].wreckFire); // D4
   bossRenderer.setQuality(QUALITY_PROFILES[tier].bossFx); // S4
@@ -2142,6 +2241,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   train.setQuality(tier); // T2: platform people, sparks, light range
   courseGhost.setQuality(tier); // S3: MOBILE keeps the rings, drops the ghost
   atmosphere.setQuality(tier); // S5
+  tunnels.setQuality(tier); // U4: MOBILE drops the fixtures
   reflections.setQuality(tier); // S6: faces per frame; Mobile off
   applyPostQuality();
   resLimits = limitsFor(tier);
@@ -2282,6 +2382,8 @@ declare global {
       };
       /** P1: the full frame-time window — p50/p95/p99/worst + draw calls. */
       perfStats: () => FrameStats;
+      /** S8: the window's median draws without / of the reflection probe. */
+      drawSplit: () => { scene: number; probe: number };
       /** M3: the same window's pre-render JS cost per frame (sim, streaming,
        * instance packing — the render call itself is not in it). */
       jsStats: () => FrameStats;
@@ -2370,6 +2472,8 @@ declare global {
         jitterMs: number;
         /** The hit-claim range budget the server will judge us against, m. */
         hitRangeBudget: number;
+        /** D6: sessions resumed after a drop since boot (W2). */
+        resumes: number;
       };
       combat: () => {
         alive: boolean;
@@ -2486,6 +2590,38 @@ declare global {
         pos: { x: number; y: number; z: number; yaw: number } | null;
         flak: number;
         drawn: BossRenderer["stats"];
+        /** S8: a staged raid holds the slot; server shells dropped since. */
+        staged: boolean;
+        foreignShells: number;
+      };
+      /** S8 QA: stage a raid crossing a held view (null clears). */
+      qaBoss: (spec: QaBossSpec | null) => typeof socket.boss.raid;
+      /** S8 QA: a synthetic record ghost for the first course of `theme`
+       * (speed null: none). Null when the city has no such course. */
+      qaCourseGhost: (
+        theme: string,
+        speed: number | null,
+      ) => { course: number; count: number } | null;
+      /** S8: the local run and its ghost. */
+      course: () => {
+        course: number;
+        next: number;
+        theme: string | null;
+        ghost: boolean;
+        ghostDrawn: boolean;
+      };
+      /** C2 QA: the room's chaos as this client holds it — bomber runs and
+       * downs, quakes, burning chunks, strikes held by kind, and the ships
+       * and fireballs drawn last frame. */
+      chaos: () => {
+        runs: typeof socket.bombers.runs;
+        downs: typeof socket.bombers.downs;
+        quakes: number[];
+        fires: number;
+        strikes: Record<string, number>;
+        drawn: BomberRenderer["stats"];
+        /** The render clock the frame loop last drew at. */
+        renderMs: number | null;
       };
       jumbotronView: (
         i: number,
@@ -2648,6 +2784,38 @@ declare global {
       } | null;
       /** D1 QA: a local blast as if a server death event landed here. */
       qaBlast: (x: number, y: number, z: number) => boolean;
+      /**
+       * D6 perf-harness staging: break, collapse, burn and crash into the
+       * city as the server would (game/qa-destruction.ts), on this client
+       * only — meant for a quiet room (AB_QUIET_CITY). Null (or a spec
+       * without `keep`) first clears everything staged back to intact.
+       */
+      qaDestruction: (spec: QaDestructionSpec | null) => {
+        collapses: number;
+        broken: number;
+        touched: number;
+        blasts: number;
+        wrecks: { id: number; end: number; hit: string }[];
+      } | null;
+      /** D6 perf/QA: what destruction is on this client and what it costs
+       * the renderer — `stagedDraws` counts the draws only destruction
+       * adds (damaged mesh, debris, dust, falling wrecks, scorch,
+       * scaffolding; not the impact pool, which bullets feed too). */
+      destruction: () => CityRenderer["destructionStats"] & {
+        destroyed: number;
+        fallen: number;
+        chunks: number;
+        dustPuffs: number;
+        impactParticles: number;
+        burns: number;
+        wrecks: number;
+        wrecksFalling: number;
+        scorches: number;
+        scaffolds: number;
+        staged: boolean;
+        stagedDraws: number;
+        serverEvents: number;
+      };
       /** QA: pin the L3 living-windows clock (live seconds; null = server). */
       pinLiveWindows: (sec: number | null) => void;
       /**
@@ -2706,6 +2874,13 @@ const settingsPanel = new SettingsPanel(
     autoFire: () => autoFireOn,
     setAutoFire: (on) => {
       autoFireOn = on;
+    },
+    setAssist: (on) => {
+      assistOn = on;
+      resetEffortless(effortless);
+    },
+    setFeel: (feel) => {
+      feelTuning = FEEL_TUNING[feel];
     },
     setRadioVoice: (on) => {
       saveRadioVoice(on);
@@ -2808,6 +2983,7 @@ function qaSystems(): {
     ["courses", [courseRings.mesh, courseGhost.mesh]],
     ["nature", [natureRenderer.group]],
     ["river", [river.group]],
+    ["tunnels", [tunnels.group]],
     ["fountains", [fountains.points]],
     ["searchlights", [searchlights.mesh]],
     ["jumbotrons", [jumbotrons.mesh]],
@@ -2836,6 +3012,7 @@ function qaSystems(): {
     ["wrecks", [wrecks.group]],
     ["missiles", [missileRenderer.group]],
     ["boss", [bossRenderer.group]],
+    ["bombers", [bomberRenderer.group]],
     ["reactions", [reactor.points]],
     ["storm", [storm.group, storm.flashLight]],
     ["clouds", [clouds.group]],
@@ -2862,6 +3039,33 @@ function qaSystems(): {
   });
   return out;
 }
+// D6 perf harness: what `__ab.qaDestruction` staged, so a clear takes back
+// exactly that — the destroyed set and collapses (all of them: the harness
+// stages into a quiet room), the facades its blasts marked, its burns and
+// its wrecks.
+const qaStaged = {
+  ids: { next: QA_ID_BASE },
+  buildings: new Set<number>(),
+  burns: new Set<string>(),
+  wrecks: [] as number[],
+  active: false,
+};
+function clearQaDestruction(): void {
+  socket.cityDamage.reset([]);
+  socket.collapses.reset([]);
+  for (const b of qaStaged.buildings) city.damage.clearBuilding(b);
+  const burns = blastLedger.burns;
+  let kept = 0;
+  for (const b of burns) {
+    if (!qaStaged.burns.has(`${b.t}:${b.x}:${b.z}`)) burns[kept++] = b;
+  }
+  burns.length = kept;
+  for (const id of qaStaged.wrecks) wrecks.remove(id);
+  qaStaged.buildings.clear();
+  qaStaged.burns.clear();
+  qaStaged.wrecks.length = 0;
+  qaStaged.active = false;
+}
 window.__ab = {
   state: () => flight,
   teleport: (x, z, y = 300, yaw = 0) => {
@@ -2878,6 +3082,8 @@ window.__ab = {
   }),
   // P1 harness surface: percentiles over the window since the last reset.
   perfStats: () => frames.stats(),
+  // S8: the window's draws split into the scene's and the S6 probe's.
+  drawSplit: () => frames.drawSplit(),
   jsStats: () => jsFrames.stats(),
   perfSamples: () => frames.samples(),
   gpuStats: () => (gpuTimer === null ? null : gpuFrames.stats()),
@@ -2950,6 +3156,7 @@ window.__ab = {
     interpDelayMs: socket.interpDelayMs,
     jitterMs: socket.jitterMs,
     hitRangeBudget: hitRangeBudgetFor(socket.interpDelayMs),
+    resumes: socket.resumes,
   }),
   combat: () => ({
     alive,
@@ -3094,6 +3301,56 @@ window.__ab = {
       pos: pose && { x: pose.x, y: pose.y, z: pose.z, yaw: pose.yaw },
       flak: socket.flak.size,
       drawn: bossRenderer.stats,
+      staged: qaBoss !== null,
+      foreignShells: qaForeignShells,
+    };
+  },
+  // S8 QA: stage a boss raid crossing a held view, with its flak schedule
+  // on the world clock (game/qa-spectacle.ts); null clears it.
+  qaBoss: (spec) => {
+    if (spec === null) {
+      qaBoss = null;
+      socket.boss.raid = null;
+      socket.boss.down = null;
+      socket.bossHp = [];
+      socket.flak.clear();
+      return null;
+    }
+    qaBoss = stageBoss(spec);
+    qaForeignShells = 0;
+    socket.flak.clear();
+    return qaBoss.raid;
+  },
+  // S8 QA: the record ghost the next run of the first course of `theme`
+  // plays — a constant `speed` through its ring centres — or null for none.
+  qaCourseGhost: (theme, speed) => {
+    const c = courses.find((k) => k.theme === theme);
+    if (!c) return null;
+    const track = speed === null ? null : qaGhostTrack(c, speed);
+    courseGhosts[c.id] = track;
+    return { course: c.id, count: track?.count ?? 0 };
+  },
+  // S8: the local course run and the ghost beside it.
+  course: () => ({
+    course: courseRunner.course,
+    next: courseRunner.next,
+    theme: courses[courseRunner.course]?.theme ?? null,
+    ghost: courseGhost.playing,
+    ghostDrawn: courseGhost.mesh.visible,
+  }),
+  chaos: () => {
+    const strikes: Record<string, number> = {};
+    for (const m of socket.missiles.values()) {
+      strikes[m.kind] = (strikes[m.kind] ?? 0) + 1;
+    }
+    return {
+      runs: [...socket.bombers.runs],
+      downs: [...socket.bombers.downs],
+      quakes: [...socket.quakes.keys()],
+      fires: socket.fires.size,
+      strikes,
+      drawn: bomberRenderer.stats,
+      renderMs: lastRenderMs,
     };
   },
   jumbotronView: (i, distance) => jumbotrons.view(i, distance),
@@ -3337,6 +3594,86 @@ window.__ab = {
     for (const site of sites) impacts.blast(site, performance.now());
     return sites.length > 0;
   },
+  qaDestruction: (spec) => {
+    if (spec === null || !spec.keep) clearQaDestruction();
+    if (spec === null) return null;
+    const staged = stageDestruction(
+      city.cityBuildings,
+      socket.cityDamage,
+      socket.collapses,
+      spec,
+      qaStaged.ids,
+    );
+    // The socket's arrival listener, as for a server collapse (audio).
+    for (const w of staged.wires) socket.events.onCollapse?.(w);
+    let blasts = 0;
+    for (const b of spec.blasts ?? []) {
+      const sites = blastLedger.ingest([{ kind: "death", ...b }]);
+      for (const site of sites) {
+        qaStaged.buildings.add(site.building);
+        impacts.blast(site, performance.now());
+      }
+      if (sites.length > 0) {
+        qaStaged.burns.add(`${b.t}:${b.x}:${b.z}`);
+        blasts++;
+      }
+    }
+    const crashed: { id: number; end: number; hit: string }[] = [];
+    for (const w of spec.wrecks ?? []) {
+      const path = { p: w.p, v: w.v, t: w.t, spin: w.spin };
+      const hit = wreckImpact(path, {
+        buildings: city.cityBuildings,
+        index: city.cityIndex,
+        movers: moverField,
+      });
+      if (hit.hit !== w.hit) {
+        throw new Error(
+          `qaDestruction: the wreck hits "${hit.hit}", the spec expects "${w.hit}" — the city changed`,
+        );
+      }
+      const id = qaStaged.ids.next++;
+      wrecks.add({ id, ...path, end: hit.end, hit: hit.hit });
+      qaStaged.wrecks.push(id);
+      crashed.push({ id, end: hit.end, hit: hit.hit });
+    }
+    qaStaged.active = true;
+    return {
+      collapses: staged.wires.length,
+      broken: staged.broken,
+      touched: staged.touched.length,
+      blasts,
+      wrecks: crashed,
+    };
+  },
+  destruction: () => {
+    const stats = city.destructionStats;
+    const w = wrecks.drawStats;
+    const dustPuffs = dust.puffCount;
+    const scaffolds = scaffold.mesh.count;
+    const on = (n: number): number => (n > 0 ? 1 : 0);
+    return {
+      ...stats,
+      destroyed: socket.cityDamage.destroyedCount,
+      fallen: socket.cityDamage.fallenCount,
+      chunks: socket.cityDamage.chunkCount,
+      dustPuffs,
+      impactParticles: impacts.liveCount,
+      burns: blastLedger.burns.length,
+      wrecks: w.held,
+      wrecksFalling: w.falling,
+      scorches: w.scorches,
+      scaffolds,
+      staged: qaStaged.active,
+      stagedDraws:
+        on(stats.damagedSlots) +
+        on(stats.debrisPieces) +
+        on(dustPuffs) +
+        on(w.falling) +
+        on(w.scorches) +
+        on(scaffolds),
+      serverEvents: socket.serverDestruction,
+    };
+  },
   pinLiveWindows: (sec) => city.pinLiveWindows(sec),
   qaReactionClock: (serverTimeMs) => {
     qaReactAt = serverTimeMs;
@@ -3498,6 +3835,7 @@ const frame = (now: number): void => {
     // command from the other mode ever reaches the plane.
     aimMode = input.aimMode();
     instructor = createInstructor();
+    resetEffortless(effortless);
     // Changed on the settings screen: toasted when it closes.
     if (!settingsOpen) hud.showAimMode(aimMode, isTouch());
   }
@@ -3551,9 +3889,18 @@ const frame = (now: number): void => {
     assistDir.x = -Math.sin(flight.yaw) * cosP;
     assistDir.y = Math.sin(flight.pitch);
     assistDir.z = -Math.cos(flight.yaw) * cosP;
-    /** The pilot's own turn command, assist excluded — the corner manager's
-     * intent, so the nudge can never make it brake for a turn. */
+    /** The pilot's own command, every assist excluded — the corner
+     * manager's intent (so a nudge can never make it brake for a turn) and
+     * what the F9 guard flies ahead. */
     let intentTurn = 0;
+    let intentPitch = 0;
+    const rates = handlingRates(flight.speed, boost.active);
+    /** Instructor only: this frame's aim error, view latch and reframing. */
+    let err: AimError = { yaw: 0, pitch: 0 };
+    let latch: AimError = { yaw: 0, pitch: 0 };
+    let reframing = false;
+    let anchored = false;
+    const instructorMode = !settingsOpen && aimMode === "instructor";
     if (settingsOpen) {
       // M6: the settings panel is up — the autopilot flies (wings level,
       // out of the skyline, throttle full). A fresh instructor every frame,
@@ -3561,7 +3908,8 @@ const frame = (now: number): void => {
       stepAssist(true, dt);
       command = autopilotInput(flight.pitch, flight.pos.y, roll);
       instructor = createInstructor();
-    } else if (aimMode === "instructor") {
+      resetEffortless(effortless);
+    } else if (instructorMode) {
       // The cursor is the aim point: fly the pipper onto it. The view is the
       // un-orbited chase frame at THIS frame's (already stepped) zoom, with
       // the same FOV formula the render writes (boost kick included) —
@@ -3570,7 +3918,7 @@ const frame = (now: number): void => {
       const aimFrame = chase.aimFrame(flight, zoom.z);
       // M7: a touch aim is a direction anchored in the world — project it
       // through this very view, so the cursor read just below IS it.
-      const anchored =
+      anchored =
         touchControls?.steer(flight, aimFrame, aimFov, camera.aspect, dt) ??
         false;
       const cursor = input.cursorNdc();
@@ -3587,7 +3935,7 @@ const frame = (now: number): void => {
       assistDir.x = ax / an;
       assistDir.y = ay / an;
       assistDir.z = az / an;
-      const err = aimError(flight, view.aimDir, view.pipperDir);
+      err = aimError(flight, view.aimDir, view.pipperDir);
       // Latch only what the VIEW changed this frame — the zoom easing, the
       // boost FOV kick, or the cursor moving while free-look owns the mouse
       // (held, or its orbit still easing back, which also covers the
@@ -3597,7 +3945,6 @@ const frame = (now: number): void => {
       // An anchored touch aim latches nothing: it stays put in the world
       // when the view reframes (and aimFrame never sees the free-look orbit),
       // so its error is already free of any view change.
-      let latch: AimError = { yaw: 0, pitch: 0 };
       const zoomMoved = zoom.z !== zoomPrev;
       const looking =
         freelook.held || freelook.yaw !== 0 || freelook.pitch !== 0;
@@ -3613,70 +3960,146 @@ const frame = (now: number): void => {
         const e0 = aimError(flight, before.aimDir, before.pipperDir);
         latch = { yaw: err.yaw - e0.yaw, pitch: err.pitch - e0.pitch };
       }
-      const reframing = looking || (zoom.z > 0 && zoom.z < 1);
-      const rates = handlingRates(flight.speed, boost.active);
+      reframing = looking || (zoom.z > 0 && zoom.z < 1);
       stepAssist(assistOff, dt);
-      // The assist biases the instructor's error toward the centreline (+yaw
-      // is a right turn, i.e. less of the leftward error) — a stick nudge
-      // would just be flown back out by the instructor's own loop.
-      const assisting = holeAssist.yaw !== 0 || holeAssist.pitch !== 0;
-      const unbiased = assisting
-        ? instructorInput(err, latch, reframing, dt, instructor, rates)
-        : null;
-      instructor = instructorInput(
-        assisting
-          ? {
-              yaw: err.yaw - holeAssist.yaw,
-              pitch: err.pitch + holeAssist.pitch,
-            }
-          : err,
+      const pilot = instructorInput(
+        err,
         latch,
         reframing,
         dt,
         instructor,
         rates,
+        feelTuning,
       );
-      intentTurn = (unbiased ?? instructor).turn * input.presence();
-      // Off-window the presence fades the instructor out too: attitude hold.
-      const presence = input.presence();
-      command = {
-        ...command,
-        turn: instructor.turn * presence,
-        pitch: instructor.pitch * presence,
-      };
-      // The reticle reads the unbiased view: the assist never shows.
+      intentTurn = pilot.turn * input.presence();
+      intentPitch = pilot.pitch * input.presence();
+      // The reticle reads the unbiased view: no assist ever shows.
       aimGap = angleBetween(view.aimDir, view.pipperDir);
       aimConverged = aimGap < CONVERGED_RAD;
       aimFovPrev = aimFov;
     } else {
       stepAssist(assistOff, dt);
       intentTurn = command.turn;
-      if (holeAssist.yaw !== 0 || holeAssist.pitch !== 0) {
-        assistStick(
-          holeAssist,
-          command,
-          handlingRates(flight.speed, boost.active),
-          assistStickOut,
+      intentPitch = command.pitch;
+    }
+    // F5 corner speed manager: silently cap the commanded speed so the
+    // turn the pilot is committing to (or the wall ahead) is makeable. The
+    // clock is the one the movers are drawn (and crash-checked) at.
+    // F7: the turn input swings the nose about world-up only when upright —
+    // reversed inverted, about the body's up at knife-edge — so the intent
+    // the manager plans a world-frame turn for is signed by cos(real roll).
+    // F9: with assist on it plans as much turn as the pilot is aiming.
+    cornerCap = stepCornerCap(
+      cornerCap,
+      cornerSpeed(
+        flight,
+        cornerWorld,
+        intentTurn * Math.cos(roll),
+        renderMs,
+        assistOn
+          ? arcSweep(flight, instructorMode ? assistDir : null)
+          : undefined,
+      ),
+      dt,
+    );
+    // F9 effortless assist: auto-level, coordinated turns, the ground floor
+    // and the soft walls, from the pilot's activity and this pose.
+    const touchAiming = touchControls?.aiming() ?? false;
+    stepEffortless(
+      effortless,
+      flight,
+      {
+        enabled: assistOn && !settingsOpen,
+        active:
+          input.takeActivity() ||
+          touchAiming ||
+          command.roll !== 0 ||
+          (!instructorMode && (command.turn !== 0 || command.pitch !== 0)),
+        gap: instructorMode ? aimGap : 0,
+        // A still cursor on the desktop instructor is a command (a held
+        // climb); the nose levels only with the pointer gone or the thumb
+        // lifted. A centred stick is no command at all.
+        levelPitch:
+          !instructorMode ||
+          input.presence() < 0.5 ||
+          (anchored && !touchAiming),
+        firing: guns.firing,
+        threading:
+          holeAssist.yaw !== 0 ||
+          holeAssist.pitch !== 0 ||
+          holeSaveActive(holeSave) ||
+          threadingCorridor(cornerWorld, flight, assistDir.x, assistDir.z) !==
+            null,
+        pilotTurn: intentTurn,
+        pilotPitch: intentPitch,
+        cornerCap: cornerCapInput(cornerCap),
+        aim: instructorMode ? assistDir : null,
+        turnRate: rates.turnRate,
+        pitchRate: rates.pitchRate,
+      },
+      effWorld,
+      dt,
+      effOut,
+    );
+    // A lifted thumb's anchored aim follows the nose while F9 levels.
+    if (effortless.weight > 0 && anchored && !touchAiming) {
+      touchControls?.followNose();
+    }
+    if (instructorMode) {
+      // The hole assist and F9's gentle part bias the instructor's error
+      // (+yaw is a right turn for the hole assist, i.e. less of the leftward
+      // error) — a stick nudge would just be flown back out by its loop.
+      const biased = {
+        yaw: err.yaw - holeAssist.yaw,
+        pitch: err.pitch + holeAssist.pitch,
+      };
+      if (assistOn) {
+        effortlessError(
+          effOut,
+          feelTuning,
+          rates.turnRate,
+          rates.pitchRate,
+          biased,
         );
+      }
+      instructor = instructorInput(
+        biased,
+        latch,
+        reframing,
+        dt,
+        instructor,
+        rates,
+        feelTuning,
+      );
+      // Off-window the presence fades the instructor out too: attitude
+      // hold — and there F9's level bias is handed over as stick instead.
+      const presence = input.presence();
+      command = {
+        ...command,
+        turn: instructor.turn * presence + effOut.biasTurn * (1 - presence),
+        pitch: instructor.pitch * presence + effOut.biasPitch * (1 - presence),
+      };
+      if (assistOn) effortlessCommand(effOut, roll, command);
+    } else if (!settingsOpen) {
+      if (holeAssist.yaw !== 0 || holeAssist.pitch !== 0) {
+        assistStick(holeAssist, command, rates, assistStickOut);
         command = {
           ...command,
           turn: assistStickOut.turn,
           pitch: assistStickOut.pitch,
         };
       }
+      // The feel's stick authority applies with the assist off too (Sharp:
+      // exactly the stick); stepEffortless's identity output adds nothing.
+      effortlessStick(
+        effOut,
+        feelTuning,
+        roll,
+        rates.turnRate,
+        rates.pitchRate,
+        command,
+      );
     }
-    // F5 corner speed manager: silently cap the commanded speed so the
-    // turn the pilot is committing to (or the wall ahead) is makeable. Intent
-    // is the turn command before free-look/zoom shaping; the clock is the one
-    // the movers are drawn (and crash-checked) at.
-    // F7: the turn input swings the nose about world-up only when upright —
-    // reversed inverted, about the body's up at knife-edge — so the intent
-    // the manager plans a world-frame turn for is signed by cos(real roll).
-    cornerCap = stepCornerCap(
-      cornerCap,
-      cornerSpeed(flight, cornerWorld, intentTurn * Math.cos(roll), renderMs),
-      dt,
-    );
     const shaped = {
       ...shapeInput(command, { steer }),
       boost: boost.active,
@@ -3783,15 +4206,22 @@ const frame = (now: number): void => {
     missileShake.addInto(camShake, now); // X1 impacts: display camera only
     // D3: the ground shakes under a collapse coming down nearby — D5: and
     // trembles under a tower the director has warned about.
+    // C2: and shakes city-wide under a quake.
     if (
       renderMs !== null &&
-      (socket.collapses.list.length > 0 || socket.director.size > 0)
+      (socket.collapses.list.length > 0 ||
+        socket.director.size > 0 ||
+        socket.quakes.size > 0)
     ) {
-      const jolt = collapseShakeOffset(
+      const jolt = collapseShakeOffsetInto(
+        joltScratch,
         Math.max(
           collapseShakeAmount(socket.collapses.list, flight.pos, renderMs),
           socket.director.size > 0
             ? warningTremor(socket.director.values(), flight.pos, renderMs)
+            : 0,
+          socket.quakes.size > 0
+            ? quakeShakeAmount(socket.quakes.values(), flight.pos, renderMs)
             : 0,
         ),
         now,
@@ -3891,6 +4321,33 @@ const frame = (now: number): void => {
             onBoss.weak,
             bullet.origin,
             onBoss.dir,
+            bullet.seq,
+            renderMs,
+          );
+          hud.hitMarker(now);
+          haptics.hit(now);
+          audio.hitThunk();
+        }
+        continue;
+      }
+    }
+    // C2: the bombers. Any round stops on a ship; our own claim it.
+    if (socket.bombers.runs.length > 0) {
+      const onBomber = bomberBulletHit(
+        socket.bombers,
+        bullet.prev,
+        bullet.pos,
+        renderMs,
+      );
+      if (onBomber) {
+        bullets.remove(bullet);
+        sparks.burst(onBomber.at, now);
+        if (!bullet.cosmetic && renderMs !== null) {
+          socket.sendBomberHit(
+            onBomber.run,
+            onBomber.k,
+            bullet.origin,
+            onBomber.dir,
             bullet.seq,
             renderMs,
           );
@@ -4113,6 +4570,7 @@ const frame = (now: number): void => {
   constructionSparks.update(chase.position, renderMs ?? now, microK);
   ground.update(chase.position);
   river.update(chase.position, renderMs, now); // L11
+  tunnels.update(chase.position); // U4
   skyDome.update(chase.position);
   airliners.update(renderMs);
   // Wounded smoke: own plane from server-said self HP, every remote (human
@@ -4133,12 +4591,20 @@ const frame = (now: number): void => {
       alive ? flight.pos : null,
     );
     for (const m of mf.whistles) {
-      audio.missileWhistle(
-        m.to,
-        flight.pos,
-        flight.yaw,
-        (missileImpactAt(m) - renderMs) / 1000,
-      );
+      // C2: a capped number of voices, and bombs only close by.
+      for (let i = whistleEnds.length - 1; i >= 0; i--) {
+        if ((whistleEnds[i] as number) <= now) whistleEnds.splice(i, 1);
+      }
+      if (whistleEnds.length >= WHISTLE_VOICES) continue;
+      if (
+        m.kind === "bomb" &&
+        wrapDistance(m.to, flight.pos) > BOMB_WHISTLE_M
+      ) {
+        continue;
+      }
+      const left = (missileImpactAt(m) - renderMs) / 1000;
+      whistleEnds.push(now + left * 1000);
+      audio.missileWhistle(m.to, flight.pos, flight.yaw, left);
     }
     if (mf.announces.length > 0) say(incomingCallout());
     for (const m of mf.impacts) {
@@ -4151,7 +4617,26 @@ const frame = (now: number): void => {
       music.noteCombat(now);
     }
     missileRenderer.update(mf.flying, chase.position, renderMs, now);
+    socket.pruneChaos(renderMs); // C2: runs and quakes long over
   }
+  // S8 QA: a staged raid holds the slot (a real `boss` message cannot
+  // replace it mid-window) and only staged shells fly.
+  if (qaBoss !== null && renderMs !== null) {
+    if (socket.boss.raid !== qaBoss.raid) {
+      socket.boss.raid = qaBoss.raid;
+      socket.boss.down = null;
+      socket.bossHp = raidMaxHp(qaBoss.raid);
+    }
+    for (const id of socket.flak.keys()) {
+      if (isQaShell(id)) continue;
+      socket.flak.delete(id);
+      qaForeignShells++;
+    }
+    qaFlakDue(qaBoss, renderMs, socket.flak);
+  }
+  // C2: the bomber formations and the fires.
+  bomberRenderer.update(socket.bombers, chase.position, renderMs, now);
+  fireRenderer.update(socket.fires, chase.position, now);
   // S4: the zeppelin, its flak and its fall; the HUD bar while it flies;
   // "it got away" once, when a raid runs out still flying.
   bossRenderer.update(
@@ -4280,6 +4765,7 @@ const frame = (now: number): void => {
   const heat = guns.state;
   hud.setHeat(heat.heat, heat.locked);
   hud.setBoost(boost.energy, boost.active);
+  hud.setRainOnLens(rain.lens); // R3: beads on the canopy rim
   hud.update(now);
   // S3 race readout: the live clock while racing, a hint near a start ring.
   const racing = courses[courseRunner.course];
@@ -4435,6 +4921,8 @@ const frame = (now: number): void => {
   // The pipper is the gun line's own vanishing point, so it only means
   // anything while we are flying it — the kill-cam gets no aim chrome.
   hud.setAimPoint(alive ? aimResult.aim : null);
+  // R3: the rain keeps the pipper's neighbourhood clear (next frame's draw).
+  rain.setAim(aimResult.aim, window.innerWidth, window.innerHeight);
   leadSolution = alive && aimResult.solution;
   touchControls?.setLeadReticle(alive ? aimResult.lead : null);
   // The instructor's cursor marker: only while flying in that mode (the
@@ -4469,7 +4957,7 @@ const frame = (now: number): void => {
   // hitch is exactly the number this ticket exists to surface, and the sim
   // clamp is there to keep flight stable, not to flatter the report.
   const drawCalls = renderer.info.render.calls;
-  frames.push(rawMs, drawCalls);
+  frames.push(rawMs, drawCalls, reflections.lastFrameDraws);
   jsFrames.push(preRenderMs, drawCalls);
   resFrames.push(rawMs, drawCalls);
   cpuFrames.push(preRenderMs, drawCalls);

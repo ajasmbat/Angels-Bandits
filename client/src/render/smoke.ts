@@ -13,7 +13,7 @@
 // plane's smoke — whatever its tier colour — is still one draw.
 
 import { MAX_HP, SMOKE_HP_FRAC } from "@angels-bandits/common/constants";
-import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
+import { type Vec3, wrapDeltaInto } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { RENDER_ORDER } from "./render-order";
 import { nearestImageInto, uploadPrefix } from "./wrapPlacement";
@@ -56,14 +56,23 @@ interface Puff {
   bornAt: number;
 }
 
-/** Pure trail-point model for one plane. */
+/**
+ * Pure trail-point model for one plane. Per frame it allocates nothing (S8:
+ * it re-based every puff into a new object and filtered into a new array a
+ * frame — ~5 KB a streaking plane): puffs are re-based in place, aged out by
+ * compaction, and a dead puff's object is reused by the next one.
+ */
 export class SmokeTrail {
-  private list: Puff[] = [];
-  private anchorPos: Vec3 | null = null;
+  private readonly list: Puff[] = [];
+  /** Dead puffs, reused before a new one is built. */
+  private readonly spare: Puff[] = [];
+  private readonly anchorPos: Vec3 = { x: 0, y: 0, z: 0 };
+  private anchored = false;
+  private readonly shift: Vec3 = { x: 0, y: 0, z: 0 };
   private lastEmitAt = Number.NEGATIVE_INFINITY;
 
   get anchor(): Vec3 | null {
-    return this.anchorPos;
+    return this.anchored ? this.anchorPos : null;
   }
 
   /**
@@ -77,27 +86,59 @@ export class SmokeTrail {
     emitting: boolean,
     emitMs = SMOKE_EMIT_MS,
   ): void {
-    if (this.anchorPos) {
+    const list = this.list;
+    if (this.anchored) {
       // Old puff position = oldAnchor + offset; new offset re-bases it onto
       // the new anchor by the shortest torus path between the two anchors.
-      const shift = wrapDelta(anchor, this.anchorPos);
-      for (const p of this.list) {
-        p.offset = {
-          x: p.offset.x + shift.x,
-          y: p.offset.y + shift.y,
-          z: p.offset.z + shift.z,
-        };
+      const shift = wrapDeltaInto(anchor, this.anchorPos, this.shift);
+      for (let i = 0; i < list.length; i++) {
+        const o = (list[i] as Puff).offset;
+        o.x += shift.x;
+        o.y += shift.y;
+        o.z += shift.z;
       }
     }
-    this.anchorPos = { ...anchor };
-    this.list = this.list.filter((p) => now - p.bornAt <= SMOKE_LIFE_MS);
+    this.anchorPos.x = anchor.x;
+    this.anchorPos.y = anchor.y;
+    this.anchorPos.z = anchor.z;
+    this.anchored = true;
+    // Age out in place, oldest first stays oldest first.
+    let kept = 0;
+    for (let i = 0; i < list.length; i++) {
+      const p = list[i] as Puff;
+      if (now - p.bornAt <= SMOKE_LIFE_MS) list[kept++] = p;
+      else this.spare.push(p);
+    }
+    list.length = kept;
     if (emitting && now - this.lastEmitAt >= emitMs) {
       this.lastEmitAt = now;
-      this.list.push({ offset: { x: 0, y: 0, z: 0 }, bornAt: now });
+      const p = this.spare.pop() ?? { offset: { x: 0, y: 0, z: 0 }, bornAt: 0 };
+      p.offset.x = 0;
+      p.offset.y = 0;
+      p.offset.z = 0;
+      p.bornAt = now;
+      list.push(p);
     }
   }
 
-  /** Live puffs: offsets from the current anchor plus 0..1 age. */
+  /** Puffs held (live as of the last update; `puffAge01` re-checks). */
+  get size(): number {
+    return this.list.length;
+  }
+
+  /** Puff `i`'s offset from the current anchor (live object: read only). */
+  puffOffset(i: number): Vec3 {
+    return (this.list[i] as Puff).offset;
+  }
+
+  /** Puff `i`'s age at `now`, 0..1 — or −1 once it has outlived its life. */
+  puffAge01(i: number, now: number): number {
+    const age = now - (this.list[i] as Puff).bornAt;
+    return age > SMOKE_LIFE_MS ? -1 : Math.max(0, age) / SMOKE_LIFE_MS;
+  }
+
+  /** Live puffs: offsets from the current anchor plus 0..1 age. Allocates —
+   * tests and QA; the renderer walks `size` / `puffAge01` instead. */
   puffs(now: number): { offset: Vec3; age01: number }[] {
     return this.list
       .filter((p) => now - p.bornAt <= SMOKE_LIFE_MS)
@@ -209,49 +250,68 @@ export class SmokeTrails {
     this.emitMs = share > 0 ? SMOKE_EMIT_MS / share : Number.POSITIVE_INFINITY;
   }
 
-  /** Re-project every live puff around the viewer. Call once per frame. */
+  /** Re-project every live puff around the viewer. Call once per frame.
+   * Allocation-free: one pre-bound callback walks the trails (no Map
+   * iterator or entry arrays), and puffs are read in place. */
   update(viewer: Vec3, now: number): void {
-    let i = 0;
-    const budget = MAX_PLANES * MAX_PUFFS;
-    for (const [id, trail] of this.trails) {
-      const anchor = trail.anchor;
-      const puffs = anchor ? trail.puffs(now) : [];
-      if (puffs.length === 0) {
-        this.trails.delete(id); // fully faded (death clouds age out here)
-        this.tints.delete(id);
-        continue;
-      }
-      if (!anchor) continue;
-      const base = nearestImageInto(scratchImage, viewer, anchor);
-      // One tint per trail (a tier change recolours the whole streak).
-      if (this.colors) this.scratchColor.setHex(this.tints.get(id) ?? 0xffffff);
-      for (const p of puffs) {
-        if (i >= budget) break;
-        const rise = p.age01 * (SMOKE_LIFE_MS / 1000) * SMOKE_RISE;
-        this.positions.setXYZ(
-          i,
-          base.x + p.offset.x,
-          base.y + p.offset.y + rise,
-          base.z + p.offset.z,
-        );
-        // Grow while dispersing; collapse over the last 15% of life so the
-        // constant-opacity material still reads as a fade-out.
-        const size =
-          p.age01 > 0.85
-            ? SIZE_MAX * (1 - (p.age01 - 0.85) / 0.15)
-            : SIZE_MIN + (SIZE_MAX - SIZE_MIN) * (p.age01 / 0.85);
-        this.sizes.setX(i, size);
-        if (this.colors) {
-          const c = this.scratchColor;
-          this.colors.setXYZ(i, c.r, c.g, c.b);
-        }
-        i++;
-      }
-    }
+    this.walk.viewer = viewer;
+    this.walk.now = now;
+    this.walk.i = 0;
+    this.trails.forEach(this.placeTrail);
+    const i = this.walk.i;
     this.lastPuffCount = i;
     this.points.geometry.setDrawRange(0, i);
     uploadPrefix(this.uploads, i);
   }
+
+  /** update()'s state for placeTrail. */
+  private readonly walk: { viewer: Vec3; now: number; i: number } = {
+    viewer: scratchImage,
+    now: 0,
+    i: 0,
+  };
+
+  private readonly placeTrail = (trail: SmokeTrail, id: string): void => {
+    const { viewer, now } = this.walk;
+    const budget = MAX_PLANES * MAX_PUFFS;
+    const anchor = trail.anchor;
+    let live = 0;
+    if (anchor) {
+      for (let k = 0; k < trail.size; k++)
+        if (trail.puffAge01(k, now) >= 0) live++;
+    }
+    if (live === 0) {
+      this.trails.delete(id); // fully faded (death clouds age out here)
+      this.tints.delete(id);
+      return;
+    }
+    if (!anchor) return;
+    const base = nearestImageInto(scratchImage, viewer, anchor);
+    // One tint per trail (a tier change recolours the whole streak).
+    if (this.colors) this.scratchColor.setHex(this.tints.get(id) ?? 0xffffff);
+    let i = this.walk.i;
+    for (let k = 0; k < trail.size; k++) {
+      if (i >= budget) break;
+      const age01 = trail.puffAge01(k, now);
+      if (age01 < 0) continue;
+      const o = trail.puffOffset(k);
+      const rise = age01 * (SMOKE_LIFE_MS / 1000) * SMOKE_RISE;
+      this.positions.setXYZ(i, base.x + o.x, base.y + o.y + rise, base.z + o.z);
+      // Grow while dispersing; collapse over the last 15% of life so the
+      // constant-opacity material still reads as a fade-out.
+      const size =
+        age01 > 0.85
+          ? SIZE_MAX * (1 - (age01 - 0.85) / 0.15)
+          : SIZE_MIN + (SIZE_MAX - SIZE_MIN) * (age01 / 0.85);
+      this.sizes.setX(i, size);
+      if (this.colors) {
+        const c = this.scratchColor;
+        this.colors.setXYZ(i, c.r, c.g, c.b);
+      }
+      i++;
+    }
+    this.walk.i = i;
+  };
 
   /** QA: live puff count last frame (perf reporting). */
   get puffCount(): number {

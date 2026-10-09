@@ -1,6 +1,6 @@
 // X1 missile strikes, server side: the director's launch rules and the
-// impact's bookkeeping. Spec literals from the ticket: ≤ one launch per
-// 20–40 s per area, a city-wide cap, never within 5 s of a nearby respawn,
+// impact's bookkeeping. Spec literals from the ticket (C2's cadence): ≤ one
+// launch per 4–8 s per area, a city-wide cap, never within 5 s of a nearby respawn,
 // D2 chunk damage exactly once, and missile damage that never stretches a
 // shooter's kill credit (8 s DAMAGE_MEMORY_MS).
 
@@ -23,6 +23,7 @@ import {
   type DirectorWorld,
   FAST_TUNING,
   MissileDirector,
+  X1_TUNING,
   applyMissileImpact,
 } from "../src/strikes";
 
@@ -110,7 +111,7 @@ describe("applyMissileImpact via settle", () => {
 });
 
 describe("MissileDirector cadence", () => {
-  it("stays capped: ≤ 3 in the air, ≥ 4 s apart, ≤ one per area per 20 s", () => {
+  it("stays capped: ≤ 8 in the air, ≥ 0.75 s apart, ≤ one per area per 4 s", () => {
     const { world } = roomWorld();
     const director = new MissileDirector(mulberry32(42));
     const planes = hoverers(12, 3);
@@ -142,7 +143,13 @@ describe("MissileDirector cadence", () => {
       expect(gap).toBeGreaterThanOrEqual(DEFAULT_TUNING.minGapMs);
     }
     // Hard ceiling from the city-wide gap, and well under it in practice.
-    expect(launches.length).toBeLessThanOrEqual((MINUTES * 60_000) / 4000);
+    expect(launches.length).toBeLessThanOrEqual(
+      (MINUTES * 60_000) / DEFAULT_TUNING.minGapMs,
+    );
+    expect(DEFAULT_TUNING.maxInFlight).toBe(8);
+    expect(DEFAULT_TUNING.minGapMs).toBe(750);
+    expect(DEFAULT_TUNING.areaMinMs).toBe(4000);
+    expect(DEFAULT_TUNING.areaMaxMs).toBe(8000);
     const byArea = new Map<string, number[]>();
     for (const l of launches)
       byArea.set(l.area, [...(byArea.get(l.area) ?? []), l.at]);
@@ -155,12 +162,25 @@ describe("MissileDirector cadence", () => {
     }
   });
 
-  it("goes quiet as the city nears its destruction cap", () => {
-    const { world } = roomWorld();
+  it("keeps striking at the destruction cap — the city's hold, not silence, is the brake", () => {
+    const { rc, world } = roomWorld();
     const director = new MissileDirector(mulberry32(5), FAST_TUNING);
     const planes = hoverers(4, 9);
+    const launch = untilLaunch(
+      director,
+      planes,
+      { ...world, destroyedShare: 0.24 },
+      0,
+    );
+    expect(launch).not.toBeNull();
+    // With the room holding (C2 gone-share backstop) it lands and breaks
+    // nothing; X1's own tuning still went quiet that close to its cap.
+    rc.damage.hold = true;
+    const m = (launch as { strike: MissileStrike }).strike;
+    expect(applyMissileImpact(rc, m)).toEqual([]);
+    const x1 = new MissileDirector(mulberry32(5), X1_TUNING);
     expect(
-      untilLaunch(director, planes, { ...world, destroyedShare: 0.24 }, 0),
+      untilLaunch(x1, planes, { ...world, destroyedShare: 0.24 }, 0),
     ).toBeNull();
   });
 

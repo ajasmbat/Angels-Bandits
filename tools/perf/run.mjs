@@ -564,6 +564,22 @@ async function flySegment(page, seg, sampleMs, worldMs) {
       const gl = () => (window.__abGl ? { ...window.__abGl } : null);
       const glAtSettle = gl();
       await waitMs(s.settleMs);
+      // S8: the staged spectacle on screen before the window opens. On a GPU
+      // it is there inside the settle; at 1–2 s a frame the client sees the
+      // glide cross the start ring only on the second frame after the
+      // teleport, so wait for it (bounded) rather than open the window on a
+      // course run that has not started.
+      let readyWaitMs = 0;
+      if (show.boss || show.course) {
+        const t0 = performance.now();
+        const ready = () =>
+          (!show.boss || ab.boss().present) &&
+          (!show.course || ab.course().ghostDrawn);
+        while (!ready() && performance.now() - t0 < s.readyMaxMs) {
+          await waitMs(0);
+        }
+        readyWaitMs = Math.round(performance.now() - t0);
+      }
 
       if (s.storm && !worldPinned) {
         // Line the window up so a scheduled strike lands `strikeLeadMs` in.
@@ -721,7 +737,12 @@ async function flySegment(page, seg, sampleMs, worldMs) {
         draws,
         spectacle:
           s.boss || s.course
-            ? { staged: show, before: spectacleBefore, after: spectacleAfter }
+            ? {
+                staged: show,
+                readyWaitMs,
+                before: spectacleBefore,
+                after: spectacleAfter,
+              }
             : null,
       };
     },
@@ -731,6 +752,7 @@ async function flySegment(page, seg, sampleMs, worldMs) {
       settleMs: SETTLE_MS,
       strikeLeadMs: STRIKE_LEAD_MS,
       slideMaxMs: TRAINS_SLIDE_MAX_MS,
+      readyMaxMs: SPECTACLE_READY_MAX_MS,
       worldMs,
       defaultWeather: DEFAULT_WEATHER,
     },
@@ -779,6 +801,10 @@ export function segmentVerdicts(name, stats) {
     spectacle: spectacleVerdict(seg, stats),
   };
 }
+
+/** S8: the longest a segment waits after its settle for its staged
+ * spectacle to be on screen (see flySegment). */
+export const SPECTACLE_READY_MAX_MS = 10_000;
 
 /**
  * S8: how far a fake pilot may be from the plane. The plane LOD switches at
@@ -1639,7 +1665,7 @@ function printVerdicts(report) {
     console.log(
       noHooks
         ? `${s.name}: this build cannot stage it (no S8 hooks)`
-        : `${s.name}: window start — ${end(sp.before)}; end — ${end(sp.after)}`,
+        : `${s.name}: window start${sp.readyWaitMs > 0 ? ` (waited ${sp.readyWaitMs} ms past the settle for it)` : ""} — ${end(sp.before)}; end — ${end(sp.after)}`,
     );
   }
   for (const s of report.segments) {

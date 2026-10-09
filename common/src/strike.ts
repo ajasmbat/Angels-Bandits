@@ -11,7 +11,7 @@
 
 import { type Building, tierGrids } from "./city/index";
 import { type CityIndex, forEachBuildingNear, losClear } from "./collision";
-import { MAX_HP } from "./constants";
+import { MAX_HP, WORLD_SIZE } from "./constants";
 import {
   type Vec3,
   wrapCoord,
@@ -85,6 +85,12 @@ const wrap = wrapCoord;
  */
 export function missilePosAt(s: MissileStrike, t: number, out: Vec3): Vec3 {
   const u = Math.min(1, Math.max(0, (t - s.t0) / MISSILE_FLIGHT_MS));
+  if (u <= 0) {
+    out.x = s.from.x;
+    out.y = s.from.y;
+    out.z = s.from.z;
+    return out;
+  }
   if (u >= 1) {
     out.x = s.to.x;
     out.y = s.to.y;
@@ -134,7 +140,14 @@ export interface MissileTarget {
   normal: Vec3;
 }
 
+/** The wire's 0.1 m grid, for heights. */
 const q = (v: number): number => Math.round(v * 10) / 10;
+/** A horizontal coordinate wrapped THEN put on the grid (wrapping a grid
+ * value can leave it a float hair off, which the wire would not carry). */
+const qc = (v: number): number => {
+  const r = Math.round(wrap(v) * 10) / 10;
+  return r >= WORLD_SIZE ? 0 : r;
+};
 
 /** The tier of `b` covering height `y` (null above the roof). */
 function tierAt(b: Building, y: number) {
@@ -237,7 +250,7 @@ export function pickMissileTarget(
       to = { x: probe.x, y: 0, z: probe.z };
       normal = { x: 0, y: 1, z: 0 };
     }
-    to = { x: wrap(q(to.x)), y: q(to.y), z: wrap(q(to.z)) };
+    to = { x: qc(to.x), y: q(to.y), z: qc(to.z) };
     const d = wrapDistance(to, aim);
     if (d < MISSILE_TARGET_MIN_M || d > MISSILE_TARGET_MAX_M) continue;
     if (keepClear.some((p) => wrapDistance(p, to) < MISSILE_PLANE_CLEAR_M)) {
@@ -313,9 +326,9 @@ export function planMissile(
       id,
       kind,
       from: {
-        x: wrap(q(target.to.x + Math.cos(az) * dist)),
+        x: qc(target.to.x + Math.cos(az) * dist),
         y: q(y),
-        z: wrap(q(target.to.z + Math.sin(az) * dist)),
+        z: qc(target.to.z + Math.sin(az) * dist),
       },
       to: { ...target.to },
       t0: Math.round(t0),

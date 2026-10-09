@@ -19,9 +19,9 @@
 // human looking for one. Without the flag the pass is never built: no draw,
 // no program, nothing.
 //
-// `inject()` is the detector's positive control: a 48×48 patch of HDR 1.0
-// held for INJECT_FRAMES frames, with a 16×16 NaN core written on the middle
-// one. The probe must count exactly INJECT_CORE² NaN pixels on that frame,
+// `inject()` is the detector's positive control: a 48×48 patch of HDR
+// INJECT_LEVEL held for INJECT_FRAMES frames, with a 16×16 NaN core written
+// on the middle one. The probe must count exactly INJECT_CORE² NaN pixels on that frame,
 // and the detector (tools/perf/blackbox.mjs) must flag a box there.
 
 import * as THREE from "three";
@@ -35,6 +35,9 @@ export type NanProbeMode = "off" | "count" | "paint";
 /** The positive control: patch and core edge lengths (drawing-buffer px). */
 export const INJECT_PATCH = 48;
 export const INJECT_CORE = 16;
+/** The patch's linear HDR level: bright on screen, but under the bloom
+ * threshold (0.72), so no glow of its own fills a sanitised (black) core. */
+export const INJECT_LEVEL = 0.5;
 /** Frames the patch is held; the core lands on the middle one. */
 export const INJECT_FRAMES = 7;
 /** What `paint` writes over a non-finite texel (linear HDR magenta). */
@@ -194,7 +197,7 @@ void main() {
       this.injectQuad.render(renderer);
       target.scissorTest = false;
     };
-    square(INJECT_PATCH, 0, 1);
+    square(INJECT_PATCH, 0, INJECT_LEVEL);
     // 0x7fc00000: a quiet NaN (exactly representable as a float uniform).
     if (k === Math.floor(INJECT_FRAMES / 2)) square(INJECT_CORE, 0x7fc00000, 0);
   }

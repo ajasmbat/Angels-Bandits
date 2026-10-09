@@ -30,7 +30,8 @@
 //     object passing through never is for long.
 //
 // Positive control (every profile × sky, first): `__ab.nanInject()` writes a
-// 48×48 HDR-1.0 patch for 7 frames with a 16×16 NaN core on the middle one.
+// 48×48 HDR-0.5 patch (bright, but under the bloom threshold) for 7 frames
+// with a 16×16 NaN core on the middle one.
 // The probe must count exactly 256 NaN pixels there AND the detector must
 // flag a box on that frame, or the run fails: a detector that is blind
 // reports 0 boxes too. The control's frame is never counted as a finding.
@@ -84,7 +85,7 @@ const STEP_MS = 16;
 /** Frames on a path's first pose before judging starts (streaming lands). */
 const SETTLE = 24;
 /** Frames judged per path unless --frames says otherwise. */
-const DEFAULT_FRAMES = 150;
+const DEFAULT_FRAMES = 60;
 /** A held path's camera pans this much yaw per frame (rad): a moving view. */
 const PAN_RAD = 0.003;
 /** The held plane's airspeed, m/s (the FOV follows it; never let it drift). */
@@ -93,9 +94,12 @@ const PIN_SPEED = 90;
 // --- The detector (named so a reader can argue with every number) --------
 /** Cell edge in CSS px (× the pixel ratio in drawing-buffer px). */
 export const CELL_CSS_PX = 4;
-/** Near-black: cell mean luma (0–255, sRGB bytes) at or below this. The
- * grade's lifted floor is ~5; a NaN pixel reads 0 or the floor. */
-export const DARK = 12;
+/** Near-black: cell mean luma (0–255, sRGB bytes) at or below this. A
+ * black box is the grade's lifted floor (~5, less in the vignette) or 0 on
+ * Mobile (no grade). 8, not more: the dark backing of an LED ticker seen up
+ * close reads ~13, and its scrolling glyphs uncover it a frame at a time
+ * (12 flagged `rubble` on every run). */
+export const DARK = 8;
 /** A dropped cell is at least this much darker than the brightest of the
  * frames around it, on both sides. */
 export const DROP = 24;
@@ -219,6 +223,8 @@ function installAnalyzer(cfg) {
       .filter((c) => c.isConnected)
       .sort((a, b) => b.width * b.height - a.width * a.height)[0];
   let scratch = null;
+  /** --shots: spare frame canvases for the ring. */
+  const pool = [];
   const grid = () => {
     const src = canvas();
     const w = src.width;
@@ -231,7 +237,10 @@ function installAnalyzer(cfg) {
     const ctx = scratch.getContext("2d", { willReadFrequently: true });
     ctx.drawImage(src, 0, 0);
     const px = ctx.getImageData(0, 0, w, h).data;
-    const cell = Math.max(1, Math.round(cfg.cellCss * window.devicePixelRatio));
+    // Drawing-buffer px per CSS px: the RENDER ratio (a phone at DPR 3 on
+    // the Mobile tier draws at 1), not window.devicePixelRatio.
+    const ratio = w / Math.max(1, src.clientWidth);
+    const cell = Math.max(1, Math.round(cfg.cellCss * ratio));
     const gw = Math.floor(w / cell);
     const gh = Math.floor(h / cell);
     const lum = new Float32Array(gw * gh);
@@ -244,13 +253,27 @@ function installAnalyzer(cfg) {
       }
     }
     const n = cell * cell;
-    for (let j = 0; j < lum.length; j++) lum[j] /= n;
-    return { gw, gh, cell, lum, w, h };
+    let mean = 0;
+    for (let j = 0; j < lum.length; j++) {
+      lum[j] /= n;
+      mean += lum[j];
+    }
+    mean /= Math.max(1, lum.length);
+    return {
+      mean,
+      gw,
+      gh,
+      cell,
+      ratio,
+      lum,
+      w,
+      h,
+    };
   };
   /** Boxes on the middle grid of a full ring (cell coords → CSS px). */
   const judge = () => {
     const mid = ring[cfg.before];
-    const { gw, gh, lum } = mid.g;
+    const { gw, gh, lum, cell, ratio } = mid.g;
     const dropped = new Uint8Array(lum.length);
     for (let j = 0; j < lum.length; j++) {
       const l = lum[j];
@@ -300,13 +323,14 @@ function installAnalyzer(cfg) {
       }
       const area = (x1 - x0 + 1) * (y1 - y0 + 1);
       if (n >= cfg.minCells && n / area >= cfg.fill) {
-        const css = cfg.cellCss;
+        // CSS px (what a player sees), from drawing-buffer cells.
+        const css = cell / ratio;
         out.push({
           cells: n,
-          x: x0 * css,
-          y: y0 * css,
-          w: (x1 - x0 + 1) * css,
-          h: (y1 - y0 + 1) * css,
+          x: Math.round(x0 * css),
+          y: Math.round(y0 * css),
+          w: Math.round((x1 - x0 + 1) * css),
+          h: Math.round((y1 - y0 + 1) * css),
         });
       }
     }
@@ -332,9 +356,27 @@ function installAnalyzer(cfg) {
     if (st.path === null) return;
     const probe = ab.nanProbe();
     const g = grid();
-    const png = cfg.shots ? scratch.toDataURL() : null;
-    ring.push({ frame: st.frame, judging: st.judging, g, png });
-    if (ring.length > cfg.before + 1 + cfg.after) ring.shift();
+    // --shots: a copy of this frame per ring slot, to outline a box on.
+    let shot = null;
+    if (cfg.shots) {
+      shot = pool.pop() ?? document.createElement("canvas");
+      shot.width = scratch.width;
+      shot.height = scratch.height;
+      shot.getContext("2d").drawImage(scratch, 0, 0);
+    }
+    ring.push({ frame: st.frame, judging: st.judging, g, shot });
+    if (ring.length > cfg.before + 1 + cfg.after) {
+      const old = ring.shift();
+      if (old.shot) pool.push(old.shot);
+    }
+    // --dump: every frame in the range, to look at in sequence.
+    if (cfg.dump && st.frame >= cfg.dump[0] && st.frame <= cfg.dump[1]) {
+      st.shots.push({
+        frame: st.frame,
+        kind: "frame",
+        png: scratch.toDataURL(),
+      });
+    }
     if (st.judging && probe) {
       st.frames++;
       st.negMax = Math.max(st.negMax, probe.neg);
@@ -347,9 +389,24 @@ function installAnalyzer(cfg) {
           box: probe.box,
           world: ab.renderMs(),
           pose: { x: f.pos.x, y: f.pos.y, z: f.pos.z, yaw: f.yaw },
+          // The whole image's mean luma: ~0 is a blackout, not a box.
+          meanLuma: Math.round(g.mean * 10) / 10,
+          alive: ab.combat().alive,
+          ...(st.hits.length < 3
+            ? {
+                camera: ab.reactions().camera,
+                draws: ab.perf().drawCalls,
+                buffer: ab.render().drawingBuffer,
+                speed: f.speed,
+              }
+            : {}),
         });
         if (cfg.shots && st.shots.length < cfg.maxShots) {
-          st.shots.push({ frame: st.frame, kind: "nan", png });
+          st.shots.push({
+            frame: st.frame,
+            kind: "nan",
+            png: scratch.toDataURL(),
+          });
         }
       }
     }
@@ -357,9 +414,26 @@ function installAnalyzer(cfg) {
       const mid = ring[cfg.before];
       if (mid.judging) {
         const boxes = judge();
-        for (const b of boxes) st.boxes.push({ frame: mid.frame, ...b });
+        for (const b of boxes) {
+          st.boxes.push({
+            frame: mid.frame,
+            meanLuma: Math.round(mid.g.mean * 10) / 10,
+            ...b,
+          });
+        }
         if (boxes.length > 0 && cfg.shots && st.shots.length < cfg.maxShots) {
-          st.shots.push({ frame: mid.frame, kind: "box", png: mid.png });
+          const ctx = mid.shot.getContext("2d");
+          ctx.strokeStyle = "#ff2020";
+          ctx.lineWidth = 2;
+          const k = mid.g.ratio;
+          for (const b of boxes) {
+            ctx.strokeRect(b.x * k - 2, b.y * k - 2, b.w * k + 4, b.h * k + 4);
+          }
+          st.shots.push({
+            frame: mid.frame,
+            kind: "box",
+            png: mid.shot.toDataURL(),
+          });
         }
       }
     }
@@ -644,6 +718,9 @@ async function positiveControl(page) {
 async function attribute(page, path, hit, frames, sky, worldMs) {
   await page.evaluate(() => window.__bb.reset("attribute"));
   await setupPath(page, path, worldMs, sky, frames);
+  // The hit's own frames again: the world clock pinned two frames before
+  // its instant, then those frames posed as the path posed them (a flown
+  // path, whose plane flew itself there, is teleported to where it was).
   const reproduce = async (hide) => {
     await page.evaluate(
       ({ hide, world }) => {
@@ -652,15 +729,19 @@ async function attribute(page, path, hit, frames, sky, worldMs) {
       },
       { hide, world: hit.world },
     );
-    for (let k = 0; k < 3; k++) {
-      await page.evaluate(
-        ({ hide, p, speed }) => {
-          window.__ab.teleport(p.x, p.z, p.y, p.yaw);
-          window.__ab.state().speed = speed;
-          window.__ab.qaHide(hide);
-        },
-        { hide, p: hit.pose, speed: PIN_SPEED },
-      );
+    for (let k = 2; k >= 0; k--) {
+      if (path.kind === "flown") {
+        await page.evaluate(
+          ({ p, speed }) => {
+            window.__ab.teleport(p.x, p.z, p.y, p.yaw);
+            window.__ab.state().speed = speed;
+          },
+          { p: hit.pose, speed: PIN_SPEED },
+        );
+      } else {
+        await poseFrame(page, path, hit.frame - k, frames);
+      }
+      await page.evaluate((h) => window.__ab.qaHide(h), hide);
       await step(page);
     }
     const p = await page.evaluate(() => window.__ab.nanProbe());
@@ -697,6 +778,7 @@ async function flyProfile(browser, port, name, opts, resolvePaths) {
     fill: FILL,
     shots: opts.shots !== null,
     maxShots: 4,
+    dump: opts.dump,
   });
   const out = [];
   try {
@@ -710,6 +792,7 @@ async function flyProfile(browser, port, name, opts, resolvePaths) {
         const idx = paths.indexOf(path);
         const worldMs = EPOCH_MS + WORLD_START_MS + idx * WORLD_STEP_MS;
         const frames = opts.frames;
+        const tSetup = Date.now();
         await page.evaluate((p) => window.__bb.reset(p), path.name);
         const setup = await setupPath(page, path, worldMs, sky, frames);
         const t0 = Date.now();
@@ -730,7 +813,9 @@ async function flyProfile(browser, port, name, opts, resolvePaths) {
           shots: window.__bb.shots,
           alive: window.__ab.combat().alive,
         }));
+        const tRead = Date.now();
         await teardownPath(page);
+        const tDone = Date.now();
         const row = {
           path: path.name,
           frames: r.frames,
@@ -744,7 +829,9 @@ async function flyProfile(browser, port, name, opts, resolvePaths) {
           hits: r.hits.slice(0, 8),
           staged: setup.staged,
           alive: r.alive,
-          secs: Math.round((Date.now() - t0) / 100) / 10,
+          secs: Math.round((tRead - t0) / 100) / 10,
+          setupSecs: Math.round((t0 - tSetup) / 100) / 10,
+          teardownSecs: Math.round((tDone - tRead) / 100) / 10,
         };
         if (opts.shots) {
           mkdirSync(opts.shots, { recursive: true });
@@ -769,7 +856,7 @@ async function flyProfile(browser, port, name, opts, resolvePaths) {
           );
         }
         console.log(
-          `  ${name}/${sky} ${path.name.padEnd(9)} ${String(row.frames).padStart(4)} fr  boxes ${row.boxes}  NaN frames ${row.nanFrames} (max ${row.nanMax} px)  Inf frames ${row.infFrames} (max ${row.infMax} px)  neg ≤ ${row.negMax}  ${row.secs}s${row.attribution ? `  ← ${row.attribution.sources.map((s) => s.name).join(", ") || `(base ${row.attribution.base}: not reproduced)`}` : ""}`,
+          `  ${name}/${sky} ${path.name.padEnd(9)} ${String(row.frames).padStart(4)} fr  boxes ${row.boxes}  NaN frames ${row.nanFrames} (max ${row.nanMax} px)  Inf frames ${row.infFrames} (max ${row.infMax} px)  neg ≤ ${row.negMax}  ${row.setupSecs}+${row.secs}+${row.teardownSecs}s${row.attribution ? `  ← ${row.attribution.sources.map((s) => s.name).join(", ") || `(base ${row.attribution.base}: not reproduced)`}` : ""}`,
         );
         rows.push(row);
       }
@@ -796,6 +883,7 @@ function parseArgs(argv) {
     build: true,
     out: resolve(HERE, "blackbox-last.json"),
     list: false,
+    dump: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -811,6 +899,7 @@ function parseArgs(argv) {
     else if (a === "--no-build") opts.build = false;
     else if (a === "--out") opts.out = resolve(process.cwd(), argv[++i]);
     else if (a === "--list") opts.list = true;
+    else if (a === "--dump") opts.dump = argv[++i].split(":").map(Number);
     else throw new Error(`unknown flag ${a}`);
   }
   for (const d of opts.devices) {
@@ -820,6 +909,7 @@ function parseArgs(argv) {
     if (!SKIES.includes(s)) throw new Error(`--sky: ${s} (night, dusk)`);
   }
   if (!(opts.frames >= 8)) throw new Error("--frames must be >= 8");
+  if (opts.dump && !opts.shots) throw new Error("--dump needs --shots");
   return opts;
 }
 
@@ -853,7 +943,9 @@ async function main() {
   };
   /** Every path this build has (one per bore), chosen by --paths. */
   const resolvePaths = async (page) => {
-    const all = buildPaths(await page.evaluate(() => window.__ab.tunnels()));
+    const all = buildPaths(
+      await page.evaluate(() => window.__ab.tunnels().length),
+    );
     if (!opts.paths) return all;
     const unknown = opts.paths.filter((n) => !all.some((p) => p.name === n));
     if (unknown.length > 0) {

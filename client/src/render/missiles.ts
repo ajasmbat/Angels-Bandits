@@ -160,7 +160,12 @@ export class MissileRenderer {
     this.smoke.sync(key, m.to, now, false);
     this.trailKeys.delete(m.id);
     if (this.debris > 0) {
-      this.impacts.missileDebris(m.to, impactNormal(m, this.normal), this.debris, now);
+      this.impacts.missileDebris(
+        m.to,
+        impactNormal(m, this.normal),
+        this.debris,
+        now,
+      );
     }
   }
 

@@ -35,10 +35,6 @@ import {
   TICK_UP_HZ,
 } from "@angels-bandits/common/constants";
 import { decodeSnapshotEntry } from "@angels-bandits/common/net";
-import {
-  type MissileStrike,
-  decodeMissile,
-} from "@angels-bandits/common/strike";
 import type {
   BotsConfigMsg,
   CourseBoardMsg,
@@ -54,6 +50,10 @@ import type {
   SnapshotMsg,
   WelcomeMsg,
 } from "@angels-bandits/common/protocol";
+import {
+  type MissileStrike,
+  decodeMissile,
+} from "@angels-bandits/common/strike";
 import type { Vec3 } from "@angels-bandits/common/world";
 import { PoseCadence, RenderClock } from "./clock";
 import { InterpDelay } from "./delay";

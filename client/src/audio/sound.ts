@@ -668,8 +668,7 @@ export class GameAudio implements VoiceSink {
     const end = now + durationS;
     // A late start (joined mid-fall) picks the sweep up where it would be.
     const done = 1 - Math.min(1, durationS / 2);
-    const fromHz =
-      WHISTLE_FROM_HZ * (WHISTLE_TO_HZ / WHISTLE_FROM_HZ) ** done;
+    const fromHz = WHISTLE_FROM_HZ * (WHISTLE_TO_HZ / WHISTLE_FROM_HZ) ** done;
     const osc = ctx.createOscillator();
     osc.type = "sine";
     osc.frequency.setValueAtTime(fromHz, now);

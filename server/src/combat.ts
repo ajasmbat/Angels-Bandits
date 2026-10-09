@@ -317,8 +317,7 @@ export class Combat {
     if (now < p.protectedUntil) return null;
     p.hp -= amount;
     p.lastEnvDamagedAt = now;
-    const death =
-      p.hp <= 0 ? this.environmentKill(id, "missile", now) : null;
+    const death = p.hp <= 0 ? this.environmentKill(id, "missile", now) : null;
     return { hp: Math.round(Math.max(0, p.hp)), death };
   }
 

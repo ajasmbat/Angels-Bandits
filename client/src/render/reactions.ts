@@ -273,10 +273,9 @@ export function prepareEvent(
   return {
     ev,
     base: isBlastEvent(ev) ? smokeBase(buildings, ev.x, ev.y, ev.z) : 0,
-    routes:
-      isBlastEvent(ev)
-        ? [responderRoute(ev, "police"), responderRoute(ev, "ambulance")]
-        : [],
+    routes: isBlastEvent(ev)
+      ? [responderRoute(ev, "police"), responderRoute(ev, "ambulance")]
+      : [],
   };
 }
 

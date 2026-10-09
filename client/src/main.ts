@@ -121,7 +121,6 @@ import {
   threatOnSix,
 } from "./game/callouts";
 import { ChaseCamera } from "./game/camera";
-import { MissileFeed, MissileShake } from "./game/missile-feed";
 import { detectCrash, touchesSolid } from "./game/collision";
 import {
   type CornerWorld,
@@ -153,6 +152,7 @@ import {
 } from "./game/instructor";
 import { speedFov } from "./game/jet-camera";
 import { magnetizeVelocity } from "./game/magnetism";
+import { MissileFeed, MissileShake } from "./game/missile-feed";
 import {
   BASE_FOV,
   createZoom,
@@ -183,8 +183,8 @@ import { createGradePass } from "./render/grade";
 import { Headlights } from "./render/headlights";
 import { HoleDecorRenderer } from "./render/hole-decor";
 import { BlastLedger, Impacts, burnCapFor } from "./render/impacts";
-import { MissileRenderer } from "./render/missiles";
 import { lookPasses } from "./render/lookup";
+import { MissileRenderer } from "./render/missiles";
 import { MoverLights, Movers } from "./render/movers";
 import { NatureRenderer } from "./render/nature";
 import { Pedestrians } from "./render/pedestrians";

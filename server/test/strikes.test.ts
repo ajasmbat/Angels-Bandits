@@ -125,7 +125,9 @@ describe("MissileDirector cadence", () => {
       if (strike) {
         // The area is the subject's: the nearest hoverer to the target.
         const subject = planes.reduce((a, b) =>
-          wrapDistance(a.pos, strike.to) < wrapDistance(b.pos, strike.to) ? a : b,
+          wrapDistance(a.pos, strike.to) < wrapDistance(b.pos, strike.to)
+            ? a
+            : b,
         );
         launches.push({ at: t, area: areaOf(subject.pos), strike });
       }
@@ -134,18 +136,21 @@ describe("MissileDirector cadence", () => {
     expect(launches.length).toBeGreaterThan(10);
     expect(maxInFlight).toBeLessThanOrEqual(DEFAULT_TUNING.maxInFlight);
     for (let i = 1; i < launches.length; i++) {
-      const gap = (launches[i] as { at: number }).at - (launches[i - 1] as { at: number }).at;
+      const gap =
+        (launches[i] as { at: number }).at -
+        (launches[i - 1] as { at: number }).at;
       expect(gap).toBeGreaterThanOrEqual(DEFAULT_TUNING.minGapMs);
     }
     // Hard ceiling from the city-wide gap, and well under it in practice.
     expect(launches.length).toBeLessThanOrEqual((MINUTES * 60_000) / 4000);
     const byArea = new Map<string, number[]>();
-    for (const l of launches) byArea.set(l.area, [...(byArea.get(l.area) ?? []), l.at]);
+    for (const l of launches)
+      byArea.set(l.area, [...(byArea.get(l.area) ?? []), l.at]);
     for (const times of byArea.values()) {
       for (let i = 1; i < times.length; i++) {
-        expect((times[i] as number) - (times[i - 1] as number)).toBeGreaterThanOrEqual(
-          DEFAULT_TUNING.areaMinMs,
-        );
+        expect(
+          (times[i] as number) - (times[i - 1] as number),
+        ).toBeGreaterThanOrEqual(DEFAULT_TUNING.areaMinMs);
       }
     }
   });
@@ -161,7 +166,11 @@ describe("MissileDirector cadence", () => {
 
   it("only lets a bot draw fire with a human near it", () => {
     const { world } = roomWorld();
-    const bot = { ...(hoverers(1, 21)[0] as DirectorPlane), id: "bot:a", human: false };
+    const bot = {
+      ...(hoverers(1, 21)[0] as DirectorPlane),
+      id: "bot:a",
+      human: false,
+    };
     const lonely = new MissileDirector(mulberry32(3), FAST_TUNING);
     expect(untilLaunch(lonely, [bot], world, 0, 30_000)).toBeNull();
     const watched = new MissileDirector(mulberry32(3), FAST_TUNING);
@@ -181,7 +190,9 @@ describe("the respawn rule (never within 5 s of a nearby respawn)", () => {
     for (let t = 0; t < 5000; t += 50) {
       const strike = director.tick(t, planes, world);
       if (strike) {
-        expect(wrapDistance(strike.to, subject.pos)).toBeGreaterThanOrEqual(150);
+        expect(wrapDistance(strike.to, subject.pos)).toBeGreaterThanOrEqual(
+          150,
+        );
       }
     }
     // After the window the area is fair game again.
@@ -204,7 +215,9 @@ describe("the respawn rule (never within 5 s of a nearby respawn)", () => {
     const victims = director.blastVictims(m, at, impact);
     expect(victims.map((v) => v.id)).toEqual(["old"]);
     // Inside the lethal radius it is lethal; the fresh plane is untouched.
-    expect((victims[0] as { damage: number }).damage).toBeGreaterThanOrEqual(100);
+    expect((victims[0] as { damage: number }).damage).toBeGreaterThanOrEqual(
+      100,
+    );
     const edge = director.blastVictims(
       m,
       [{ id: "old", pos: { ...m.to, y: m.to.y + MISSILE_LETHAL_RADIUS + 20 } }],
@@ -231,14 +244,22 @@ describe("Combat.environmentDamage (missile blasts)", () => {
     // A non-lethal blast 7 s after the hit, a lethal one 9 s after it.
     expect(combat.environmentDamage("p1", 20, 13_000)?.death).toBeNull();
     const hit = combat.environmentDamage("p1", 100, 15_000);
-    expect(hit?.death).toEqual({ victimId: "p1", killerId: null, cause: "missile" });
+    expect(hit?.death).toEqual({
+      victimId: "p1",
+      killerId: null,
+      cause: "missile",
+    });
     expect(combat.scoreOf("p0").kills).toBe(0);
   });
 
   it("pays the last damager within 8 s (the crash rule), cause missile", () => {
     const combat = arena();
     const hit = combat.environmentDamage("p1", 100, 13_000);
-    expect(hit?.death).toEqual({ victimId: "p1", killerId: "p0", cause: "missile" });
+    expect(hit?.death).toEqual({
+      victimId: "p1",
+      killerId: "p0",
+      cause: "missile",
+    });
   });
 
   it("respects spawn protection and holds off regen", () => {

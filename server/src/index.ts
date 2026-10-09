@@ -1142,7 +1142,8 @@ function tickMissiles(room: Room, now: number): void {
     nearBuilding: rm.near,
     index: rm.index,
     buildings: rc.buildings,
-    destroyedShare: rc.damage.destroyedCount / Math.max(1, rc.damage.chunkCount),
+    destroyedShare:
+      rc.damage.destroyedCount / Math.max(1, rc.damage.chunkCount),
   });
   if (launched) {
     sendToRoom(room, { type: "missile", m: encodeMissile(launched) });

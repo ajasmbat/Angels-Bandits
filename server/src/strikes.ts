@@ -19,10 +19,7 @@
 
 import type { Building } from "@angels-bandits/common/city";
 import type { CityIndex } from "@angels-bandits/common/collision";
-import {
-  DESTROY_CAP,
-  WORLD_SIZE,
-} from "@angels-bandits/common/constants";
+import { DESTROY_CAP, WORLD_SIZE } from "@angels-bandits/common/constants";
 import {
   MISSILE_CHUNK_DAMAGE,
   MISSILE_CHUNK_RADIUS,
@@ -188,7 +185,8 @@ export class MissileDirector {
       }
       subjects.push(p);
     }
-    for (const id of this.dwell.keys()) if (!seen.has(id)) this.dwell.delete(id);
+    for (const id of this.dwell.keys())
+      if (!seen.has(id)) this.dwell.delete(id);
 
     // Areas with a subject in them are active; a fresh one arms its first.
     const active: { area: number; subject: DirectorPlane }[] = [];
@@ -197,13 +195,15 @@ export class MissileDirector {
       let area = this.areas.get(key);
       if (!area || now - area.lastActive > t.areaIdleMs) {
         area = {
-          nextAt: now + t.firstMinMs + (t.firstMaxMs - t.firstMinMs) * this.rand(),
+          nextAt:
+            now + t.firstMinMs + (t.firstMaxMs - t.firstMinMs) * this.rand(),
           lastActive: now,
         };
         this.areas.set(key, area);
       }
       area.lastActive = now;
-      if (!active.some((a) => a.area === key)) active.push({ area: key, subject: p });
+      if (!active.some((a) => a.area === key))
+        active.push({ area: key, subject: p });
     }
 
     if (this.inFlight.length >= t.maxInFlight) return null;

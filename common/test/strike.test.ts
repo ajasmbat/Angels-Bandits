@@ -7,7 +7,11 @@
 
 import { generateCity, mulberry32 } from "@angels-bandits/common/city";
 import { buildCityIndex } from "@angels-bandits/common/collision";
-import { CITY_SEED, MAX_HP, WORLD_SIZE } from "@angels-bandits/common/constants";
+import {
+  CITY_SEED,
+  MAX_HP,
+  WORLD_SIZE,
+} from "@angels-bandits/common/constants";
 import {
   MISSILE_FLIGHT_MS,
   type MissilePlane,
@@ -39,7 +43,11 @@ function randomPlane(rand: () => number): MissilePlane {
   const heading = rand() * Math.PI * 2;
   const speed = 60 + 80 * rand();
   return {
-    pos: { x: rand() * WORLD_SIZE, y: 40 + 100 * rand(), z: rand() * WORLD_SIZE },
+    pos: {
+      x: rand() * WORLD_SIZE,
+      y: 40 + 100 * rand(),
+      z: rand() * WORLD_SIZE,
+    },
     vel: {
       x: Math.cos(heading) * speed,
       y: (rand() * 2 - 1) * 8,
@@ -82,7 +90,9 @@ describe("pickMissileTarget", () => {
       if (!target) continue;
       picked++;
       for (const p of planes) {
-        expect(wrapDistance(predictedPos(p), target.to)).toBeGreaterThanOrEqual(20);
+        expect(wrapDistance(predictedPos(p), target.to)).toBeGreaterThanOrEqual(
+          20,
+        );
         expect(wrapDistance(p.pos, target.to)).toBeGreaterThanOrEqual(20);
       }
       // ...and lands 25–80 m from where the subject will be.
@@ -138,7 +148,9 @@ describe("the telegraph", () => {
       expect(missileImpactAt(s) - s.t0).toBeGreaterThanOrEqual(1800);
       // The whistle starts after the broadcast and ≥ 1.8 s before impact.
       expect(missileWhistleAt(s)).toBeGreaterThanOrEqual(s.t0);
-      expect(missileImpactAt(s) - missileWhistleAt(s)).toBeGreaterThanOrEqual(1800);
+      expect(missileImpactAt(s) - missileWhistleAt(s)).toBeGreaterThanOrEqual(
+        1800,
+      );
     }
   });
 });

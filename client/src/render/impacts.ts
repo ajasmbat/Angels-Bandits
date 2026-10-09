@@ -17,10 +17,7 @@
 import { mulberry32 } from "@angels-bandits/common/city";
 import type { Building } from "@angels-bandits/common/city";
 import type { CityEvent } from "@angels-bandits/common/cityevents";
-import {
-  SMOKE_LIFE_MS,
-  isBlastEvent,
-} from "@angels-bandits/common/cityevents";
+import { SMOKE_LIFE_MS, isBlastEvent } from "@angels-bandits/common/cityevents";
 import type { CityIndex } from "@angels-bandits/common/collision";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
@@ -477,16 +474,53 @@ export class Impacts {
     const [sr, sg, sb] = SPARK_RGB;
     for (let i = 0; i < n(MISSILE_DEBRIS.sparks); i++) {
       const v = sprayInto(this.v, normal, 14 + 26 * rand(), 1.2, rand);
-      p.spawn(Kind.SPARK, point, v.x, v.y, v.z, 300 + 400 * rand(), 0.9, sr, sg, sb, now);
+      p.spawn(
+        Kind.SPARK,
+        point,
+        v.x,
+        v.y,
+        v.z,
+        300 + 400 * rand(),
+        0.9,
+        sr,
+        sg,
+        sb,
+        now,
+      );
     }
     const [dr, dg, db] = DUST_RGB[FacadeArchetype.OFFICE];
     for (let i = 0; i < n(MISSILE_DEBRIS.dust); i++) {
       const v = sprayInto(this.v, normal, 2 + 5 * rand(), 1.4, rand);
-      p.spawn(Kind.DUST, point, v.x, v.y, v.z, 2000 + 1800 * rand(), 4 + 4 * rand(), dr, dg, db, now);
+      p.spawn(
+        Kind.DUST,
+        point,
+        v.x,
+        v.y,
+        v.z,
+        2000 + 1800 * rand(),
+        4 + 4 * rand(),
+        dr,
+        dg,
+        db,
+        now,
+      );
     }
     for (let i = 0; i < n(MISSILE_DEBRIS.chips); i++) {
       const v = sprayInto(this.v, normal, 6 + 14 * rand(), 1.1, rand);
-      p.spawn(Kind.CHIP, point, v.x, v.y + 4, v.z, 1400 + 1200 * rand(), 0.6 + 0.6 * rand(), dr * 0.55, dg * 0.55, db * 0.55, now, rand() * 6.28);
+      p.spawn(
+        Kind.CHIP,
+        point,
+        v.x,
+        v.y + 4,
+        v.z,
+        1400 + 1200 * rand(),
+        0.6 + 0.6 * rand(),
+        dr * 0.55,
+        dg * 0.55,
+        db * 0.55,
+        now,
+        rand() * 6.28,
+      );
     }
   }
 

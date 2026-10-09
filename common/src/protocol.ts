@@ -379,6 +379,11 @@ export interface DeathMsg {
   victimId: string;
   killerId: string | null;
   cause: "shot" | "crash" | "storm" | "wreck";
+  /** S1: the server's kill site — the victim's on-record position,
+   * canonical and rounded to whole meters — so every client's jumbotron
+   * headline names the same place. Absent when the server had no pose. */
+  x?: number;
+  z?: number;
   /** D4: a shot-down plane falls as this wreck (common/src/wreck.ts) and
    * hits the city at `wreck.t + wreck.end` instead of exploding in place.
    * Absent for crash/storm deaths and over the room's WRECKS_MAX. */

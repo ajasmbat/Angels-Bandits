@@ -148,6 +148,10 @@ import {
   TRAIN_BOT_REACH,
 } from "@angels-bandits/common/constants";
 import {
+  type DirectorEvent,
+  inDangerZone,
+} from "@angels-bandits/common/director";
+import {
   type FlightInput,
   type FlightState,
   createFlightState,
@@ -170,6 +174,10 @@ import type { Combat, HitResult } from "./combat";
 
 /** Sim step, s — bots advance at snapshot cadence (the server's first sim loop). */
 const BOT_DT = 1 / TICK_DOWN_HZ;
+/** D5: a warned event's zone stays a no-fly zone this long after it
+ * happens, ms (a probe at arrival time sees past the hand-over to the
+ * collapse record's own zone). */
+const HAZARD_TAIL_MS = 2000;
 
 export type BotState = "PATROL" | "ENGAGE" | "EVADE" | "RECOVER";
 
@@ -506,6 +514,10 @@ export class RoomBots {
   /** D3 telemetry (bot sim): probes refused because they would have
    * entered an active collapse zone. */
   zoneRefusals = 0;
+  /** D5: the director's warned events — each one's danger zone is a no-fly
+   * zone from its warning until just after it happens (the collapse record
+   * then takes over). Set by the room every tick (setHazards). */
+  private hazards: readonly DirectorEvent[] = [];
   /** Room-level stream: mints per-bot seeds so bots stay deterministic. */
   private readonly rand: () => number;
 
@@ -797,11 +809,32 @@ export class RoomBots {
    * inside one is never boxed in by it.
    */
   private inCollapseZone(p: Vec3, r: number, t: number, from?: Vec3): boolean {
+    if (this.inHazard(p, r, t, from)) {
+      this.zoneRefusals++;
+      return true;
+    }
     const field = this.movers.collapses;
     if (!field || field.list.length === 0) return false;
     if (!collapseZoneHit(p, r, field.list, t, from)) return false;
     this.zoneRefusals++;
     return true;
+  }
+
+  /** D5: the room's warned director events (pending() of its
+   * DestructionDirector), refreshed every tick. */
+  setHazards(events: readonly DirectorEvent[]): void {
+    this.hazards = events;
+  }
+
+  /** Inside a warned event's zone at `t` that `from` is not already in? */
+  private inHazard(p: Vec3, r: number, t: number, from?: Vec3): boolean {
+    for (const e of this.hazards) {
+      if (t < e.w || t > e.at + HAZARD_TAIL_MS) continue;
+      if (!inDangerZone(e, p, r)) continue;
+      if (from && inDangerZone(e, from)) continue;
+      return true;
+    }
+    return false;
   }
 
   /**

@@ -29,6 +29,9 @@
 // X1: the room's missiles in the air live here too (`missiles`), for the
 // same reason — a strike announced while this client boots must still
 // whistle and land on time. main.ts consumes them on the synced clock.
+// D5: and so do the director's warned events (`director`) and its rebuilds,
+// which are applied to `cityDamage` and `collapses` on arrival — in message
+// order, so a `chunks` batch after a rebuild lands after it here too.
 
 import {
   type BossFlak,
@@ -52,6 +55,11 @@ import {
   SERVER_SILENCE_MS,
   TICK_UP_HZ,
 } from "@angels-bandits/common/constants";
+import {
+  type DirectorEvent,
+  type RebuildWire,
+  decodeDirectorEvent,
+} from "@angels-bandits/common/director";
 import { STREAK_TIERS, isMedalKind } from "@angels-bandits/common/medals";
 import { decodeSnapshotEntry } from "@angels-bandits/common/net";
 import type {
@@ -100,6 +108,11 @@ export interface GameSocketEvents {
   /** D3: a building section started to collapse (already applied to
    * `cityDamage` and `collapses`) — audio, shake, dust. */
   onCollapse?: (c: CollapseWire) => void;
+  /** D5: the director warned of an event (already in `director`). */
+  onDirectorWarn?: (e: DirectorEvent) => void;
+  /** D5: a rebuild announce (`go: false`) or one just applied to
+   * `cityDamage` and `collapses` (`go: true`, with the chunks it restored). */
+  onRebuild?: (r: RebuildWire, restored: readonly number[]) => void;
   /** S3: the official result of our own finished course run. */
   onCourseResult?: (msg: CourseResultMsg) => void;
   /** S3: a course leaderboard changed (ghost attached when a record fell). */
@@ -158,6 +171,10 @@ export class GameSocket {
    * every welcome and every `missile` event, listening or not. The frame
    * loop removes each once it has landed (or gone stale). */
   readonly missiles = new Map<number, MissileStrike>();
+  /** D5: the director's warned events, by id — from every welcome and every
+   * `directorWarn`, listening or not. The frame loop drops each once it has
+   * happened. */
+  readonly director = new Map<number, DirectorEvent>();
   /** S4: the room's sky boss — its raid and break-up (the mover field holds
    * this very slot, so the crash check sees it), every weak point's HP, and
    * the shells in the air by id (the renderer drops each once it bursts).
@@ -339,12 +356,32 @@ export class GameSocket {
     this.events.onResumed?.(next.welcome);
   }
 
-  /** A welcome's whole destruction: the broken set, then every collapse. */
+  /** A welcome's whole destruction: the broken set, then every collapse —
+   * and (D5) the director's warnings still to happen. */
   private replayDestruction(welcome: WelcomeMsg): void {
     this.cityDamage.reset(decodeChunkIds(welcome.destroyed));
     const records = Array.isArray(welcome.collapses) ? welcome.collapses : [];
     this.collapses.reset(records);
     for (const c of records) this.cityDamage.collapse(collapseChunks(c));
+    this.director.clear();
+    for (const w of welcome.director ?? []) {
+      const e = decodeDirectorEvent(w);
+      if (e) this.director.set(e.id, e);
+    }
+  }
+
+  /** D5: a rebuild — applied now if it is the real one (`go`). */
+  applyRebuild(r: RebuildWire): void {
+    let restored: number[] = [];
+    if (r.go) {
+      if (r.k === 0) {
+        restored = this.cityDamage.restoreBuilding(r.b);
+        this.collapses.removeBuilding(r.b);
+      } else {
+        this.collapses.removeCrane(r.b);
+      }
+    }
+    this.events.onRebuild?.(r, restored);
   }
 
   /** One live collapse: its chunks fall, its debris starts. */
@@ -620,6 +657,17 @@ export class GameSocket {
         break;
       case "collapse":
         this.applyCollapse(msg.c);
+        break;
+      case "directorWarn": {
+        const e = decodeDirectorEvent(msg.e);
+        if (e) {
+          this.director.set(e.id, e);
+          this.events.onDirectorWarn?.(e);
+        }
+        break;
+      }
+      case "rebuild":
+        this.applyRebuild(msg.r);
         break;
       case "courseResult":
         this.events.onCourseResult?.(msg);

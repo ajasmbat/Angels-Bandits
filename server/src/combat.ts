@@ -75,7 +75,15 @@ export type HitReject =
 export interface Death {
   victimId: string;
   killerId: string | null;
-  cause: "shot" | "crash" | "storm" | "wreck" | "collapse" | "missile" | "flak";
+  cause:
+    | "shot"
+    | "crash"
+    | "storm"
+    | "wreck"
+    | "collapse"
+    | "missile"
+    | "blast"
+    | "flak";
 }
 /** S4: a fired round claimed by something other than a plane hit (the sky
  * boss): the bullet existed and came from where the shooter is on record. */
@@ -392,17 +400,17 @@ export class Combat {
   }
 
   /**
-   * X1 environment damage (a missile blast; S4 a flak burst, `cause`
-   * "flak"): take `amount` off a living, unprotected plane. Nobody is
-   * credited for the damage itself — a lethal blast is an environment death
-   * that pays the last damager only by the crash rule. Null when nothing
-   * was applied (dead, protected, unknown).
+   * X1 environment damage (a missile blast; D5 a gas main, cause "blast";
+   * S4 a flak burst, cause "flak"): take `amount` off a living, unprotected
+   * plane. Nobody is credited for the damage itself — a lethal blast is an
+   * environment death that pays the last damager only by the crash rule.
+   * Null when nothing was applied (dead, protected, unknown).
    */
   environmentDamage(
     id: string,
     amount: number,
     now: number,
-    cause: "missile" | "flak" = "missile",
+    cause: "missile" | "blast" | "flak" = "missile",
   ): { hp: number; death: Death | null } | null {
     const p = this.players.get(id);
     if (!p || !p.alive || !(amount > 0)) return null;
@@ -436,7 +444,7 @@ export class Combat {
    * the credit (PLAN.md kill-credit rule), else no one. */
   private environmentKill(
     id: string,
-    cause: "crash" | "storm" | "collapse" | "missile" | "flak",
+    cause: "crash" | "storm" | "collapse" | "missile" | "blast" | "flak",
     now: number,
   ): Death | null {
     const p = this.players.get(id);

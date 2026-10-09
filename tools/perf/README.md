@@ -643,6 +643,11 @@ Two rules every tier obeys:
 | H2 hole guidance (chevrons, LED strips, mouth frame) | full | full | full | full (how a pilot finds a hole) |
 | R2 roof structures (penthouses, tanks, billboards, masts) | full | full | full (solid) | full (solid) |
 | R2 roof dressing, fine detail (drains, hatches, rods, dishes) | full | full | off | off (HVAC, ducts, solar, davits stay) |
+| S5 fog banks (drifting haze between the towers) | full | full | full | full (visibility parity; one instanced draw) |
+| S5 wind litter (paper, leaves, wrappers; low-pass kick) | full | full | 50 % | 34 %, one block out |
+| S5 moon light shafts (quarter-res pass) | full | full | full | off (pass skipped) |
+| S5 searchlight rays, wet-roof sign reflections | full | full | full | full (shader only) |
+| S5 heat shimmer, glare (FinalPass uniforms) | full | full | full | off |
 | F5/F6 flight feel | — | — | — | — (no render cost: no row in `FEATURE_TIERS`) |
 
 **Auto** starts at High and only ever steps **down**: a feature popping back

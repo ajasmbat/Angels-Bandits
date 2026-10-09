@@ -22,6 +22,7 @@ import {
   weatherAt,
 } from "@angels-bandits/common/weather";
 import * as THREE from "three";
+import { SIGN_PALETTE } from "./signage";
 
 export const WEATHER_UNIFORM = { value: new THREE.Vector4() };
 
@@ -169,16 +170,73 @@ export const BUILDING_WET_ROUGHNESS_GLSL = /* glsl */ `
 roughnessFactor = mix(roughnessFactor, 0.45, uWeather.x * (0.6 * facade + 0.8 * roofUp));
 `;
 
+/** S5 wet roofs: peak luminance of a sign's reflection in a roof puddle
+ * (before Fresnel and wetness) — sub-bloom, like the ground's neon smear. */
+export const ROOF_REFLECTION_LUM = 0.24;
+/** Reflection cells on the roof, m: one possible sign smear per cell. */
+const ROOF_REFLECTION_CELL = 12;
+/** Share of the cells that carry a reflection. */
+const ROOF_REFLECTION_SHARE = 0.3;
+/** The signs' palette at equal luminance ROOF_REFLECTION_LUM (GLSL array). */
+const ROOF_REFLECTION_PALETTE = `vec3[${SIGN_PALETTE.length}](${SIGN_PALETTE.map(
+  (c) => {
+    const k =
+      ROOF_REFLECTION_LUM / (0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b);
+    return `vec3(${(c.r * k).toFixed(4)}, ${(c.g * k).toFixed(4)}, ${(c.b * k).toFixed(4)})`;
+  },
+).join(", ")})`;
+
+/**
+ * S5: rain-wet roofs pool into puddles, and the puddles hold the city's
+ * signs — a smear of sign colour per roof cell, stretched toward the viewer
+ * the way a reflection in standing water is. Faked like every other wet
+ * reflection here (emissive, never SSR): world-anchored cells, so a frozen
+ * camera sees a still image; Fresnel-weighted and scaled by wetness, so it
+ * comes and goes with the weather. Uniform-only.
+ */
+const ROOF_REFLECTION_GLSL = /* glsl */ `
+  // Fades out with distance before the 6 m puddles go sub-pixel (aliasing).
+  float wxRoofFade = 1.0 - smoothstep(160.0, 420.0, length(vViewPosition));
+  if (roofUp > 0.5 && wxRoofFade > 0.0) {
+    vec2 wxRfRp = vBWorldPos.xz;
+    // Puddles: value noise (~9 m blobs), spreading as the roof soaks.
+    vec2 wxRfI = floor(wxRfRp * 0.11);
+    vec2 wxRfF = fract(wxRfRp * 0.11);
+    vec2 wxRfU = wxRfF * wxRfF * (3.0 - 2.0 * wxRfF);
+    float wxRfN = mix(mix(abWxHash(wxRfI), abWxHash(wxRfI + vec2(1.0, 0.0)), wxRfU.x),
+      mix(abWxHash(wxRfI + vec2(0.0, 1.0)), abWxHash(wxRfI + vec2(1.0, 1.0)), wxRfU.x), wxRfU.y);
+    float wxRfPud = smoothstep(0.62 - 0.2 * uWeather.x, 0.72 - 0.1 * uWeather.x, wxRfN);
+    if (wxRfPud > 0.0) {
+      // One sign's smear per cell, stretched along the ground view ray.
+      vec2 wxRfCell = floor(wxRfRp / ${ROOF_REFLECTION_CELL.toFixed(1)});
+      float wxRfH = abWxHash(wxRfCell + 31.7);
+      vec2 wxRfD = wxRfRp - (wxRfCell + 0.5) * ${ROOF_REFLECTION_CELL.toFixed(1)};
+      vec2 wxRfV = vBWorldPos.xz - cameraPosition.xz;
+      wxRfV = wxRfV / max(length(wxRfV), 1e-3);
+      float wxRfAlong = dot(wxRfD, wxRfV);
+      float wxRfAcross = wxRfD.x * wxRfV.y - wxRfD.y * wxRfV.x;
+      float wxRfSmear = exp(-wxRfAcross * wxRfAcross * 0.35 - wxRfAlong * wxRfAlong * 0.04)
+        * step(wxRfH, ${ROOF_REFLECTION_SHARE.toFixed(2)});
+      int wxRfIdx = int(floor(abWxHash(wxRfCell + 5.3) * ${SIGN_PALETTE.length.toFixed(1)}));
+      vec3 wxRfSign = ${ROOF_REFLECTION_PALETTE}[wxRfIdx];
+      float wxRfGraze = 0.3 + 0.7 * pow(1.0 - saturate(dot(normal, normalize(vViewPosition))), 2.0);
+      totalEmissiveRadiance += wxRfSign * (wxRfSmear * wxRfPud * wxRfGraze * wxRoofFade * uWeather.x);
+    }
+  }
+`;
+
 /** After every other emissive term (it adds; lit panes keep their glow). */
 export const BUILDING_WET_EMISSIVE_GLSL = /* glsl */ `
 if (uWeather.x > 0.0) {
   float wxFres = pow(1.0 - saturate(dot(normal, normalize(vViewPosition))), 5.0);
+  // S6: a GLASS pane under the reflection probe already mirrors at its own
+  // Fresnel (buildings-material.ts) — the wet sheen skips it, never doubles.
   totalEmissiveRadiance += ${WET_SHEEN_COLOR} * (${FACADE_SHEEN_GAIN} * wxFres * uWeather.x
-    * (facade * (1.0 - pane * lit) + roofUp));
+    * (facade * (1.0 - pane * lit) * (1.0 - uReflOn * step(vArch, 0.5) * pane) + roofUp));
   float wxFade = 1.0 - smoothstep(${RIPPLE_FADE.near}, ${RIPPLE_FADE.far}, length(vViewPosition));
   if (uWeather.y > 0.0 && roofUp > 0.5 && wxFade > 0.0) {
     totalEmissiveRadiance += ${WET_SHEEN_COLOR} * (${RIPPLE_GAIN} * wxFade * uWeather.x
       * abWxRipples(vBWorldPos.xz, uWeather.z, uWeather.y));
   }
-}
+${ROOF_REFLECTION_GLSL}}
 `;

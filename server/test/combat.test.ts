@@ -308,3 +308,27 @@ describe("regen, respawn scheduling, and score persistence", () => {
     expect(combat.scoreOf("p0").kills).toBe(1); // unchanged
   });
 });
+
+describe("W1: spawn protection starts at the first pose", () => {
+  // Joined at t=0 → protected until 5500 (SPAWN_PROTECTION_MS). A client
+  // that spent 8 s loading goes live at 8000: protected until 13500.
+  it("protectFrom restarts a living player's window from now", () => {
+    const combat = arena(1);
+    expect(combat.isProtected("p0", 5499)).toBe(true);
+    expect(combat.isProtected("p0", 5500)).toBe(false);
+    combat.protectFrom("p0", 8000);
+    expect(combat.isProtected("p0", 8000)).toBe(true);
+    expect(combat.isProtected("p0", 13_499)).toBe(true);
+    expect(combat.isProtected("p0", 13_500)).toBe(false);
+  });
+
+  it("never protects a dead or unknown player", () => {
+    const combat = arena(1);
+    combat.crash("p0", 6000);
+    combat.protectFrom("p0", 7000);
+    expect(combat.isAlive("p0")).toBe(false);
+    expect(combat.isProtected("p0", 7000)).toBe(false);
+    expect(() => combat.protectFrom("nobody", 7000)).not.toThrow();
+    expect(combat.isProtected("nobody", 7000)).toBe(false);
+  });
+});

@@ -104,8 +104,12 @@ export const BUDGETS = {
     rings: 114,
     glass: 112,
     // P4: the ticket's ceiling for peak chaos — boss, missiles, a collapse,
-    // bombers and a full 12-plane room in one view.
+    // bombers and a full 12-plane room in one view (runner: 107, the S6
+    // probe's 7 included) — and the two new views at the runner's measured
+    // High draws plus ~10 % (tunnel 91, exit 102; README P4).
     chaos: 140,
+    tunnel: 100,
+    exit: 112,
   },
   // P4: ceilings that apply only to a window measured on the Mobile tier
   // (`--quality mobile`); every other tier is held to `drawCalls` above.

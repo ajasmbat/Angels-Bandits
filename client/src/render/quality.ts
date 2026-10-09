@@ -100,8 +100,9 @@ export interface QualityProfile {
   microRadius: number;
   /** P4: the micro tier's altitude gate, scaled (streetlife.ts microGate:
    * 1 = full up to 100 m of camera height and gone by 140 m). Mobile
-   * fades it out by 91 m: from there the street life is a few pixels on a
-   * phone, and it was ~7 draws in the peak-chaos view. */
+   * fades it out between 75 and 105 m: from there the street life is a few
+   * pixels on a phone, and it was ~7 draws in the peak-chaos view (114 m).
+   * No harness view sits on an edge of the band (`core` flies at ~94 m). */
   microGate: number;
   /** L7 sign animation (tickers, chases, video). Off = each sign's static art. */
   signAnimation: boolean;
@@ -359,7 +360,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     grade: false,
     steamDensity: 0.5,
     microRadius: 1,
-    microGate: 0.65,
+    microGate: 0.75,
     signAnimation: false,
     jumbotronReplay: false,
     windowInteriors: false,
@@ -975,7 +976,7 @@ export const FEATURE_TIERS: readonly {
     medium: "full",
     low: "full",
     mobile: "reduced",
-    note: "pedestrians, city life, steam, signals, construction sparks and street furniture fade out between 100 and 140 m of camera height; Mobile between 65 and 91 m (a few pixels on a phone; ~7 draws in the peak-chaos view)",
+    note: "pedestrians, city life, steam, signals, construction sparks and street furniture fade out between 100 and 140 m of camera height; Mobile between 75 and 105 m (a few pixels on a phone; ~7 draws in the peak-chaos view)",
   },
   {
     feature: "P4 name tags — one batched draw",

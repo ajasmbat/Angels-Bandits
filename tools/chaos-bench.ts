@@ -297,7 +297,7 @@ const ENTRIES: { name: string; step: Step; reset?: () => void }[] = [
     },
   },
   {
-    name: "P4 explosions + sparks (a blast a frame)",
+    name: "P4 explosions + sparks (a blast every 20 frames)",
     step: (f) => {
       const { now } = frameAt(f);
       // Bench code: the impacts' bursts arrive as events.

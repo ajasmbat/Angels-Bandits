@@ -341,6 +341,7 @@ import { CourseRings } from "./render/rings";
 import { RiverRenderer } from "./render/river";
 import { RoofClutterRenderer } from "./render/roofclutter";
 import { RooftopLifeRenderer } from "./render/rooftop-life";
+import { RuinSmoke } from "./render/ruins";
 import { ScaffoldRenderer } from "./render/scaffold";
 import { attachStanding, setStandingClock } from "./render/standing-watch";
 import { Searchlights } from "./render/searchlights";
@@ -1152,6 +1153,8 @@ const bomberRenderer = new BomberRenderer(impacts, (at) => {
 });
 scene.add(bomberRenderer.group);
 const fireRenderer = new FireRenderer(impacts, city.cityBuildings);
+// D8: fresh ruins smoulder (smoke + embers off the stump and rubble).
+const ruinSmoke = new RuinSmoke(impacts, city.cityBuildings);
 // C2: a quake announced — the ground starts to rumble now (the shake rides
 // the camera path below, on the render clock).
 socket.events.onQuake = (q) => {
@@ -2232,6 +2235,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   );
   bomberRenderer.setQuality(QUALITY_PROFILES[tier].chaosFx); // C2
   fireRenderer.setQuality(QUALITY_PROFILES[tier].chaosFx); // C2
+  ruinSmoke.setQuality(QUALITY_PROFILES[tier].chaosFx); // D8
   blastLedger.setBurnCap(burnCapFor(QUALITY_PROFILES[tier].impacts));
   wrecks.setShare(QUALITY_PROFILES[tier].wreckFire); // D4
   bossRenderer.setQuality(QUALITY_PROFILES[tier].bossFx); // S4
@@ -4776,6 +4780,7 @@ const frame = (now: number): void => {
   }
   streakSmoke.update(chase.position, now);
   dust.update(socket.collapses.list, chase.position, renderMs);
+  ruinSmoke.update(socket.collapses.list, chase.position, renderMs, now);
   // D5: the director's warnings (dust, steam, sparks) and the rebuilds'
   // welders; an event is forgotten once its alarm has died away.
   if (socket.director.size > 0 && renderMs !== null) {

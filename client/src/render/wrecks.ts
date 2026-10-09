@@ -214,7 +214,8 @@ export class Wrecks {
    * `ms` (the render clock), or null. */
   touching(pos: Vec3, radius: number, ms: number | null): number | null {
     if (ms === null) return null;
-    for (const e of this.entries) {
+    for (let k = 0; k < this.entries.length; k++) {
+      const e = this.entries[k] as Entry; // D6: no iterator a frame
       if (e.landedAt !== null) continue;
       if (wreckTouches(e.w, pos, radius, ms, scratchPos)) return e.w.id;
     }
@@ -237,7 +238,9 @@ export class Wrecks {
     this.lastFrameMs = now;
     let drawn = 0;
     let kept = 0;
-    for (const e of this.entries) {
+    const count = this.entries.length;
+    for (let k = 0; k < count; k++) {
+      const e = this.entries[k] as Entry; // D6: no iterator a frame
       const w = e.w;
       if (e.landedAt === null && ms !== null && ms >= w.t + w.end) {
         e.landedAt = now;

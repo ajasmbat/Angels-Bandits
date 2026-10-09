@@ -146,7 +146,7 @@ import {
 import {
   ChaseCamera,
   collapseShakeAmount,
-  collapseShakeOffset,
+  collapseShakeOffsetInto,
 } from "./game/camera";
 import { detectCrash, touchesSolid } from "./game/collision";
 import {
@@ -1013,6 +1013,8 @@ const scaffold = new ScaffoldRenderer(city.cityBuildings, qualityTier);
 scene.add(scaffold.mesh);
 /** No warned events (the common frame — no iterator allocated). */
 const NO_EVENTS: readonly DirectorEvent[] = [];
+/** D3/D6: the collapse jolt this frame (reused). */
+const joltScratch = { x: 0, y: 0, z: 0 };
 /** The director alarm's position this frame (reused). */
 const alarmScratch = { x: 0, y: 0, z: 0 };
 // D4: shot-down planes fall as burning wrecks on the server's shared path
@@ -3721,7 +3723,8 @@ const frame = (now: number): void => {
       renderMs !== null &&
       (socket.collapses.list.length > 0 || socket.director.size > 0)
     ) {
-      const jolt = collapseShakeOffset(
+      const jolt = collapseShakeOffsetInto(
+        joltScratch,
         Math.max(
           collapseShakeAmount(socket.collapses.list, flight.pos, renderMs),
           socket.director.size > 0

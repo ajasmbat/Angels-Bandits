@@ -308,6 +308,14 @@ async function startServer(port, cwd = REPO) {
   });
   proc.stdout.on("data", (d) => log.push(String(d)));
   proc.stderr.on("data", (d) => log.push(String(d)));
+  // D6: a server that dies mid-run says why, instead of leaving the next
+  // page.goto to report a refused connection.
+  proc.on("exit", (code, signal) => {
+    if (signal === "SIGTERM" || code === 0) return;
+    console.error(
+      `!! the server on :${port} exited (${signal ?? `code ${code}`}):\n${log.join("").slice(-4000)}`,
+    );
+  });
   for (let i = 0; i < 120; i++) {
     if (proc.exitCode !== null) {
       throw new Error(`server died:\n${log.join("")}`);

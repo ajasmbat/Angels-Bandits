@@ -19,7 +19,12 @@ import {
   PITCH_RATE,
   TURN_RATE,
 } from "@angels-bandits/common/constants";
-import { type FlightState, flightForward } from "@angels-bandits/common/flight";
+import {
+  type FlightState,
+  flightAxes,
+  flightForward,
+  realRoll,
+} from "@angels-bandits/common/flight";
 import type { Vec3 } from "@angels-bandits/common/world";
 
 /** Loop gain, rad/s of commanded rate per rad of error, on both axes. High
@@ -69,11 +74,81 @@ export interface AimError {
   pitch: number;
 }
 
+const WORLD_UP: Vec3 = { x: 0, y: 1, z: 0 };
+
+/**
+ * The camera basis camera.lookAt builds from `eye`, `at` and the camera's
+ * `up`: forward, right = forward × up, up' = right × forward — written into
+ * `out`. A degenerate up (along the view) falls back to
+ * world-up, then to +X. Shared by cursorRay and touch's aimDirNdc.
+ */
+export function viewBasis(eye: Vec3, at: Vec3, up: Vec3, out: ViewBasis): void {
+  let fx = at.x - eye.x;
+  let fy = at.y - eye.y;
+  let fz = at.z - eye.z;
+  const fl = Math.hypot(fx, fy, fz) || 1;
+  fx /= fl;
+  fy /= fl;
+  fz /= fl;
+  let rx = fy * up.z - fz * up.y;
+  let ry = fz * up.x - fx * up.z;
+  let rz = fx * up.y - fy * up.x;
+  let rl = Math.hypot(rx, ry, rz);
+  if (rl < 1e-9) {
+    rx = -fz;
+    ry = 0;
+    rz = fx;
+    rl = Math.hypot(rx, rz) || 1;
+    if (Math.hypot(rx, rz) === 0) {
+      rx = 1;
+      rl = 1;
+    }
+  }
+  rx /= rl;
+  ry /= rl;
+  rz /= rl;
+  out.fx = fx;
+  out.fy = fy;
+  out.fz = fz;
+  out.rx = rx;
+  out.ry = ry;
+  out.rz = rz;
+  out.ux = ry * fz - rz * fy;
+  out.uy = rz * fx - rx * fz;
+  out.uz = rx * fy - ry * fx;
+}
+
+/** A camera basis: forward, right and up, unit. */
+export interface ViewBasis {
+  fx: number;
+  fy: number;
+  fz: number;
+  rx: number;
+  ry: number;
+  rz: number;
+  ux: number;
+  uy: number;
+  uz: number;
+}
+
+const basisScratch: ViewBasis = {
+  fx: 0,
+  fy: 0,
+  fz: -1,
+  rx: 1,
+  ry: 0,
+  rz: 0,
+  ux: 0,
+  uy: 1,
+  uz: 0,
+};
+
 /**
  * World ray through the cursor for a view. `eye` and `at` are the camera
  * position and look-at target as offsets from the plane (any common origin
  * works — only their difference is used); `fovDeg` is the VERTICAL FOV; ndc is
- * −1..1 with +y up. Up is world +Y, exactly as camera.lookAt builds it.
+ * −1..1 with +y up. `up` is the camera's up, exactly as camera.lookAt builds
+ * it (F7: the plane's own up through aerobatics; world +Y by default).
  */
 export function cursorRay(
   eye: Vec3,
@@ -82,29 +157,16 @@ export function cursorRay(
   aspect: number,
   ndcX: number,
   ndcY: number,
+  up: Vec3 = WORLD_UP,
 ): Vec3 {
-  let fx = at.x - eye.x;
-  let fy = at.y - eye.y;
-  let fz = at.z - eye.z;
-  const fl = Math.hypot(fx, fy, fz);
-  fx /= fl;
-  fy /= fl;
-  fz /= fl;
-  // right = forward × worldUp, then up = right × forward.
-  let rx = -fz;
-  let rz = fx;
-  const rl = Math.hypot(rx, rz) || 1;
-  rx /= rl;
-  rz /= rl;
-  const ux = -rz * fy;
-  const uy = rz * fx - rx * fz;
-  const uz = rx * fy;
+  const b = basisScratch;
+  viewBasis(eye, at, up, b);
   const t = Math.tan((fovDeg * Math.PI) / 360);
   const sx = ndcX * t * aspect;
   const sy = ndcY * t;
-  const x = fx + rx * sx + ux * sy;
-  const y = fy + uy * sy;
-  const z = fz + rz * sx + uz * sy;
+  const x = b.fx + b.rx * sx + b.ux * sy;
+  const y = b.fy + b.ry * sx + b.uy * sy;
+  const z = b.fz + b.rz * sx + b.uz * sy;
   const l = Math.hypot(x, y, z);
   return { x: x / l, y: y / l, z: z / l };
 }
@@ -126,14 +188,22 @@ export interface AimView {
  */
 export function aimView(
   flight: Pick<FlightState, "yaw" | "pitch">,
-  frame: { eye: Vec3; at: Vec3 },
+  frame: { eye: Vec3; at: Vec3; up?: Vec3 },
   fovDeg: number,
   aspect: number,
   ndc: { x: number; y: number },
 ): AimView {
   const fwd = flightForward(flight);
   return {
-    aimDir: cursorRay(frame.eye, frame.at, fovDeg, aspect, ndc.x, ndc.y),
+    aimDir: cursorRay(
+      frame.eye,
+      frame.at,
+      fovDeg,
+      aspect,
+      ndc.x,
+      ndc.y,
+      frame.up,
+    ),
     pipperDir: {
       x: fwd.x * BULLET_RANGE - frame.eye.x,
       y: fwd.y * BULLET_RANGE - frame.eye.y,
@@ -142,40 +212,51 @@ export function aimView(
   };
 }
 
-/** Heading authority is full up to this pipper elevation… (F7) */
+/** Turn authority (how far the turn moves the pipper, per unit of the full
+ * turn rate — cos of the pipper's elevation in upright flight) is full down
+ * to this… (F7: cos 55°) */
 const COS_FADE_START = Math.cos((55 * Math.PI) / 180);
-/** …and gone from this one on, where world yaw only spins the view. */
+/** …and gone from this one on, where the turn only spins the view. */
 const COS_FADE_END = Math.cos((80 * Math.PI) / 180);
 /** Nose-ease gain: rad of pitch toward the horizon per rad of side error
  * the fade took away. 1 left a dead zone at the limit — (0.15, 0.35) hung
  * at 83° with no turn; 3 made a cursor 0.1 off-centre pirouette at 74°. */
 const EASE = 2;
+/** Vertical error, rad, under which that ease turns from following the
+ * cursor's side of the pipper to seeking the horizon (F7). */
+const EASE_VERT = 0.3;
+/** |pitch| from which stepFlight's turn axis blends onto the body's up
+ * (flight.ts TURN_AXIS_BLEND) — mirrored here to measure turn authority. */
+const TURN_AXIS_BLEND = PITCH_LIMIT;
+
+const axes = { right: { x: 0, y: 0, z: 0 }, up: { x: 0, y: 0, z: 0 } };
 
 /**
  * How far to turn and pitch the plane so the pipper ray (`pipperDir`, from the
  * eye to the gun line's far point) lands on `aimDir`.
  *
- * F7: measured in the pipper's own frame (right = its horizontal right, up =
- * right × pipper), not as world heading/elevation differences — those flip
- * 180° as the cursor ray crosses the zenith, which is exactly where a cursor
- * held above the pipper ends up once the nose stops at PITCH_LIMIT and the
- * lagging eye keeps rising: the turn saturated and, the eye following the
- * heading, never came back (a flat spin). Here a cursor straight above or
- * below the pipper has zero side error at any pitch, and the error is
+ * F7 aerobatics: measured in the PLANE's own frame — right = the airframe's
+ * right axis (its real attitude, the cosmetic lean left out) squared up
+ * against the pipper, up = right × pipper — so "above the pipper" means
+ * toward the plane's own up at any attitude: a cursor held there pulls the
+ * nose up, over the top and round, and inverted it is still the way the
+ * pilot sees it. Pitch input rotates the nose exactly along that up; there
+ * is no pitch limit, so the vertical error is used as it is.
+ *
+ * The turn moves the pipper by `k` per unit of the full turn rate — k is
+ * measured from stepFlight's own turn axis (world-up upright, world-down
+ * inverted, the body's up toward knife-edge and vertical), and is cos of the
+ * pipper's elevation in upright flight, exactly the old heading-difference
+ * scaling. Where k is small the turn only spins the view, so turn authority
+ * fades out between k = cos 55° and cos 80°, and the share of side error the
+ * fade takes away eases the nose toward the horizon by the shorter way
+ * instead (both ways reach it now). Below 55° in upright flight the yaw error
+ * equals the old heading difference for a level step. The error is
  * continuous everywhere, so the zoom/free-look latch (a difference of two
  * calls) can't jump either.
- *
- * Near vertical a world yaw barely moves the pipper on screen, so heading
- * authority fades out between 55° and 80° of pipper elevation (its cosine is
- * the pipper's horizontal length, `ph`). The share of side error the fade
- * takes away eases the nose toward the horizon instead, until the plane can
- * turn again: no pirouette, and no lock at the limit. Below 55° the yaw
- * error equals the old heading difference for a level step (|yaw| stays
- * under π/2 / cos 55° < π, so wrapAngle never reverses it). The target nose
- * elevation is clamped to ±PITCH_LIMIT.
  */
 export function aimError(
-  flight: Pick<FlightState, "pitch">,
+  flight: Pick<FlightState, "yaw" | "pitch" | "roll" | "bank">,
   aimDir: Vec3,
   pipperDir: Vec3,
 ): AimError {
@@ -183,31 +264,73 @@ export function aimError(
   const px = pipperDir.x / pl;
   const py = pipperDir.y / pl;
   const pz = pipperDir.z / pl;
-  // PITCH_LIMIT keeps the pipper ≥ ~5° off vertical; the guard is belt only.
-  const ph = Math.hypot(px, pz) || 1e-9;
-  const rx = -pz / ph;
-  const rz = px / ph;
-  const ux = -rz * py;
+  const { right: R, up: U } = flightAxes(flight, axes);
+  // right ⟂ pipper (the eye parallax makes them a hair off square).
+  const rp = R.x * px + R.y * py + R.z * pz;
+  let rx = R.x - rp * px;
+  let ry = R.y - rp * py;
+  let rz = R.z - rp * pz;
+  const rl = Math.hypot(rx, ry, rz) || 1;
+  rx /= rl;
+  ry /= rl;
+  rz /= rl;
+  const ux = ry * pz - rz * py;
   const uy = rz * px - rx * pz;
-  const uz = rx * py;
+  const uz = rx * py - ry * px;
   const along = aimDir.x * px + aimDir.y * py + aimDir.z * pz;
   const half = Math.PI / 2;
   const side = clamp(
-    Math.atan2(aimDir.x * rx + aimDir.z * rz, along),
+    Math.atan2(aimDir.x * rx + aimDir.y * ry + aimDir.z * rz, along),
     -half,
     half,
   );
   const vert = Math.atan2(aimDir.x * ux + aimDir.y * uy + aimDir.z * uz, along);
+  // stepFlight's turn axis A (normalised); a turn of −1 rad about it moves
+  // the pipper by p × A, whose share along right is the authority k.
+  const roll = realRoll(flight);
+  const cr = Math.cos(roll);
+  const sr = Math.sin(roll);
+  const g = clamp(
+    (Math.abs(flight.pitch) - TURN_AXIS_BLEND) /
+      (Math.PI / 2 - TURN_AXIS_BLEND),
+    0,
+    1,
+  );
+  const kw = cr * Math.abs(cr) * (1 - g);
+  const ku = sr * sr * (1 - g) + g;
+  const ax = ku * U.x;
+  const ay = kw + ku * U.y;
+  const az = ku * U.z;
+  const al = Math.hypot(ax, ay, az) || 1;
+  const k = Math.max(
+    1e-9,
+    ((py * az - pz * ay) * rx +
+      (pz * ax - px * az) * ry +
+      (px * ay - py * ax) * rz) /
+      al,
+  );
   const fade = clamp(
-    (ph - COS_FADE_END) / (COS_FADE_START - COS_FADE_END),
+    (k - COS_FADE_END) / (COS_FADE_START - COS_FADE_END),
     0,
     1,
   );
   // turn +1 is right and DEcreases yaw, so a cursor to the right is −yaw.
-  const yaw = (-side / ph) * fade;
-  const ease = Math.sign(py) * EASE * (1 - fade) * Math.abs(side);
-  const want = clamp(flight.pitch + vert - ease, -PITCH_LIMIT, PITCH_LIMIT);
-  return { yaw, pitch: want - flight.pitch };
+  const yaw = (-side / k) * fade;
+  // Where turn authority fades, the side error the fade took away pitches
+  // the nose instead: on toward the cursor's own side of the pipper (over
+  // the top, if that is where it is — a turn works again past vertical), and
+  // only with the cursor level with the pipper toward the horizon by the
+  // shorter way (pitch moves the nose along up, so it lowers the elevation
+  // iff up.y and the nose's elevation share a sign). Blended over EASE_VERT,
+  // so it is continuous.
+  const toCursor = clamp(vert / EASE_VERT, -1, 1);
+  const toHorizon = -(py * uy >= 0 ? 1 : -1) * Math.sign(py);
+  const ease =
+    (toCursor + (1 - Math.abs(toCursor)) * toHorizon) *
+    EASE *
+    (1 - fade) *
+    Math.abs(side);
+  return { yaw, pitch: vert + ease };
 }
 
 /** Angle between two directions, rad — the pipper-to-cursor gap on screen. */

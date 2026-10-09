@@ -74,7 +74,10 @@ import {
   raycastChunk,
   tierGrids,
 } from "@angels-bandits/common/city";
-import type { CityIndex } from "@angels-bandits/common/collision";
+import {
+  type CityIndex,
+  forEachBuildingNear,
+} from "@angels-bandits/common/collision";
 import {
   BLOCK_PITCH,
   BULLET_DAMAGE,
@@ -94,7 +97,11 @@ import {
   pickMissileTarget,
   predictedPos,
 } from "@angels-bandits/common/strike";
-import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
+import {
+  type Vec3,
+  wrapCoord,
+  wrapDistance,
+} from "@angels-bandits/common/world";
 import { BOSS_CLAIM_LOOKBACK_MS, BOSS_DIR_CONE } from "./boss";
 import type { Combat, SpeedCapFn } from "./combat";
 import { DANGER_TUNING, type DangerBudget, type DangerTuning } from "./danger";
@@ -479,10 +486,16 @@ export class ChaosDirector {
         if (clear) to = p;
       }
     }
-    if (!to) return false;
-    if (!world.budget.allows("meteor", [to], METEOR_FLIGHT_MS, now, planes)) {
-      return false;
+    if (
+      to &&
+      !world.budget.allows("meteor", [to], METEOR_FLIGHT_MS, now, planes)
+    ) {
+      to = null;
     }
+    // Refused (or nothing clear): a roof near the action but away from
+    // every plane — the shower keeps falling where the fight can see it.
+    if (!to) to = this.actionRoof(humans, planes, world, now);
+    if (!to) return false;
     const m = planMeteor(
       rand,
       world.missiles.allocId(),
@@ -495,6 +508,44 @@ export class ChaosDirector {
     world.missiles.inject(m);
     out.meteors.push(m);
     return true;
+  }
+
+  /** A roof 120–400 m from a random human that the budget allows (in
+   * practice: no plane within its reach), or null. */
+  private actionRoof(
+    humans: readonly ChaosPlane[],
+    planes: readonly ChaosPlane[],
+    world: ChaosWorld,
+    now: number,
+  ): Vec3 | null {
+    const rand = this.meteorRand;
+    const anchor = humans[Math.floor(rand() * humans.length)] as ChaosPlane;
+    const buildings = world.city.buildings;
+    for (let n = 0; n < 10; n++) {
+      const a = rand() * Math.PI * 2;
+      const r = 120 + 280 * rand();
+      let best: Building | null = null;
+      let bestD = Number.POSITIVE_INFINITY;
+      const probe = {
+        x: wrapCoord(anchor.pos.x + Math.cos(a) * r),
+        y: 0,
+        z: wrapCoord(anchor.pos.z + Math.sin(a) * r),
+      };
+      forEachBuildingNear(world.index, probe, 40, (i) => {
+        const b = buildings[i] as Building;
+        const d = wrapDistance({ x: b.x, y: 0, z: b.z }, probe);
+        if (b.height >= 20 && d < bestD) {
+          bestD = d;
+          best = b;
+        }
+      });
+      if (!best) continue;
+      const p = roofPoint(best, rand);
+      if (world.budget.allows("meteor", [p], METEOR_FLIGHT_MS, now, planes)) {
+        return p;
+      }
+    }
+    return null;
   }
 
   // --- Bomber runs -------------------------------------------------------------

@@ -294,7 +294,7 @@ export function gasVictims(
 
 /** A warned event's zone as budget sample points: its centre and the four
  * corners of its plan-view rect at half its top (a topple's strip is long). */
-function zonePoints(e: DirectorEvent): Vec3[] {
+function zonePoints(e: Pick<DirectorEvent, "x" | "z" | "zone">): Vec3[] {
   const y = e.zone.top / 2;
   const at = (dx: number, dz: number): Vec3 => ({
     x: e.x + dx,
@@ -504,12 +504,24 @@ export class DestructionDirector {
           humans.some((h) => wrapDistance(h.pos, p.pos) <= DIRECTOR_ACTION_M)),
     );
     if (anchors.length === 0) return null;
+    // C2: a zone the danger budget refuses is blocked like a cooled-down
+    // plane's, so the pick moves on to a tower clear of the planes whose
+    // share is spent instead of losing the slot.
+    const bp = world.budget ? budgetPlanes(planes) : null;
     const blocked = (x: number, z: number, zone: DangerZone): boolean =>
       planes.some(
         (p) =>
           (this.fresh(p, now) || this.cooldown.has(p.id)) &&
           inDangerZone({ x, z, zone }, p.pos, t.cooldownMarginM),
-      );
+      ) ||
+      (bp !== null &&
+        !world.budget?.allows(
+          "director",
+          zonePoints({ x, z, zone }),
+          DIRECTOR_WARN_MS,
+          now,
+          bp,
+        ));
     const roll = this.rand();
     const order =
       roll < t.craneShare

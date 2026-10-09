@@ -178,8 +178,16 @@ const GAS_LEADS = [
 ];
 
 /** C2: a meteor's or a bomb run's blast (environment, like a missile). */
-const METEOR_LEADS = ["METEOR FLATTENS", "FIREBALL FROM THE SKY DOWNS", "METEOR CATCHES"];
-const BOMB_LEADS = ["BOMB RUN CATCHES", "CARPET BOMBING DOWNS", "BOMBERS TAKE OUT"];
+const METEOR_LEADS = [
+  "METEOR FLATTENS",
+  "FIREBALL FROM THE SKY DOWNS",
+  "METEOR CATCHES",
+];
+const BOMB_LEADS = [
+  "BOMB RUN CATCHES",
+  "CARPET BOMBING DOWNS",
+  "BOMBERS TAKE OUT",
+];
 
 /** S4: brought down by the sky boss's flak (environment, like a missile). */
 const FLAK_LEADS = ["FLAK CATCHES", "FLAK BRINGS DOWN", "ZEPPELIN GUNS DOWN"];

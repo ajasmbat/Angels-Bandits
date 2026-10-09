@@ -164,6 +164,12 @@ export interface QualityProfile {
    * zeppelin (solid), its weak points, running lights and the flak shells
    * themselves (the telegraph) are identical on every tier. */
   bossFx: number;
+  /** C2 constant chaos: share of the cosmetic dressing — a meteor's fire
+   * trail, the spreading fires' flames and smoke, a downed bomber's burst
+   * (all into the D1 particle pool). The meteor fireball and its city-wide
+   * glint, the bombs, the bombers (solid) and their lights, and the quake's
+   * shake and rumble — the telegraphs — are identical on every tier. */
+  chaosFx: number;
   /** S5 wind litter: share of each block's scraps kept (stride thinning). */
   litter: number;
   /** S5 moon light shafts (the quarter-res ShaftsPass; off skips it). */
@@ -212,6 +218,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     scaffold: 8,
     streakSmoke: 1,
     bossFx: 1,
+    chaosFx: 1,
     litter: 1,
     lightShafts: true,
     heatShimmer: true,
@@ -254,6 +261,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     scaffold: 6,
     streakSmoke: 1,
     bossFx: 0.75,
+    chaosFx: 0.75,
     litter: 1,
     lightShafts: true,
     heatShimmer: true,
@@ -296,6 +304,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     scaffold: 4,
     streakSmoke: 0.5,
     bossFx: 0.5,
+    chaosFx: 0.5,
     litter: 0.5,
     lightShafts: true,
     heatShimmer: true,
@@ -338,6 +347,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     scaffold: 2,
     streakSmoke: 0.5,
     bossFx: 0.35,
+    chaosFx: 0.3,
     litter: 0.34,
     lightShafts: false,
     heatShimmer: false,
@@ -761,6 +771,23 @@ export const FEATURE_TIERS: readonly {
     low: "reduced",
     mobile: "reduced",
     note: "emission 100 / 75 / 50 / 35 % into the D1 particle pool (no extra draw); the bursts' damage and the sections themselves are the same everywhere",
+  },
+  {
+    feature: "C2 chaos — meteors, bombs, bombers and their lights, quake shake",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "the telegraphs and the solids: the meteor fireball and its fog-free glint (one instanced draw + one Points), bombs in the missile pool, the bombers (one instanced draw, solid) and their lights (one Points), the quake's shake and rumble — the same everywhere",
+  },
+  {
+    feature:
+      "C2 chaos — meteor fire trails, spreading fires, downed-bomber bursts",
+    high: "full",
+    medium: "reduced",
+    low: "reduced",
+    mobile: "reduced",
+    note: "emission 100 / 75 / 50 / 30 % into the D1 particle pool (no extra draw); at most 24 fires emit, the nearest within 700 m; the fires' damage is the same everywhere",
   },
   {
     feature: "S5 fog banks (drifting haze between the towers)",

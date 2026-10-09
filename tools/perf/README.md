@@ -311,7 +311,7 @@ npm run perf -- --res auto --label scaler
 
 ## The client hooks it uses
 
-All read-only except the QA writes (`teleport`, `setPixelRatio`, `setBots`, `weather`, `pinWorld`), all on `window.__ab`:
+All read-only except the QA writes (`teleport`, `setPixelRatio`, `setBots`, `weather`, `pinWorld`, `qaDestruction`), all on `window.__ab`:
 
 | hook                             | used for                                    |
 | -------------------------------- | ------------------------------------------- |
@@ -325,6 +325,8 @@ All read-only except the QA writes (`teleport`, `setPixelRatio`, `setBots`, `wea
 | `storm()` / `net()` / `combat()` | strike timing, clock, alive check, death cause |
 | `pinWorld(t \| null)` (O4)       | render the world at server time `t` (a QA write) |
 | `weather(phase)` / `quality()`   | the pinned weather, the tier the window ran at |
+| `qaDestruction(spec \| null)` (D6) | stage a segment's destruction on this client (a QA write) |
+| `destruction()` (D6)             | what destruction is on screen and what it costs the renderer |
 
 The same `FrameMeter` (`client/src/render/perfmeter.ts`) feeds `perfStats()`,
 the in-game dev HUD and the adaptive resolution controller, so the number in

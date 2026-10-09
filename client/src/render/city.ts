@@ -805,6 +805,10 @@ export class CityRenderer {
       if (v === 0) this.release(b);
       else this.redraw(b);
     }
+    // D6: nothing damaged any more (a D5 rebuild of the last broken
+    // building, a reset): every range is abandoned and hidden, so start the
+    // mesh over instead of drawing those hidden slots until the next grow.
+    if (this.damagedList.length === 0) this.dNext = 0;
     this.damaged.count = this.dNext;
   }
 

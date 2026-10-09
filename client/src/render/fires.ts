@@ -11,6 +11,7 @@ import { chunkCentreInto } from "@angels-bandits/common/chaos";
 import {
   type Building,
   chunkBuilding,
+  chunkCell,
   chunkTier,
   tierGrids,
 } from "@angels-bandits/common/city";
@@ -69,6 +70,10 @@ export class FireRenderer {
     const near = this.near;
     let count = 0;
     for (const id of fires) {
+      // D8: a chunk this client already holds broken or fallen burns no
+      // more — the server's own cleanup reaches us a tick or more later,
+      // and a fire licking out of air is a skeleton of its own.
+      if (this.gone(id)) continue;
       const e = this.emitter(id);
       if (!e) continue;
       const d = wrapDistance(e.at, viewer);
@@ -102,6 +107,12 @@ export class FireRenderer {
       const smoke = Math.round((fire * SMOKE_RATE) / FIRE_RATE);
       this.impacts.wreckFire(e.at, fire, smoke, SPREAD, now);
     }
+  }
+
+  /** D8: is chunk `id` gone in this client's damage state? */
+  private gone(id: number): boolean {
+    const b = this.buildings[chunkBuilding(id)];
+    return (b?.damage?.cells[chunkTier(id)]?.[chunkCell(id)] ?? 0) !== 0;
   }
 
   /** The emitter of chunk `id`: its outer face, once. */

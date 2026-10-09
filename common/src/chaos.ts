@@ -36,6 +36,7 @@ import {
 import type { Building } from "./city/index";
 import { type MoverBox, type MoverHit, sphereHitsBox } from "./city/movers";
 import { mulberry32 } from "./city/rng";
+import { standingTopAt } from "./city/standing";
 import { BLOCK_PITCH, WORLD_SIZE } from "./constants";
 import {
   BOMB_FALL_MS,
@@ -138,14 +139,19 @@ export function planMeteor(
 }
 
 /** A roof point of building `b` (its top tier), seeded — a city-wide
- * meteor's target. */
+ * meteor's target. D8: on a broken tower, where it still stands under that
+ * point (its stump, or the street of a felled lot) — never the old roof's
+ * height, where the meteor would burst in mid-air. Same two draws either
+ * way, so the stream behind it never shifts. */
 export function roofPoint(b: Building, rand: () => number): Vec3 {
   const grids = tierGrids(b);
   const top = grids[grids.length - 1] as TierGrid;
+  const dx = (rand() - 0.5) * top.width * 0.8;
+  const dz = (rand() - 0.5) * top.depth * 0.8;
   return {
-    x: wrapCoord(b.x + (rand() - 0.5) * top.width * 0.8),
-    y: top.baseY + top.height,
-    z: wrapCoord(b.z + (rand() - 0.5) * top.depth * 0.8),
+    x: wrapCoord(b.x + dx),
+    y: b.damage ? standingTopAt(b, dx, dz) : top.baseY + top.height,
+    z: wrapCoord(b.z + dz),
   };
 }
 

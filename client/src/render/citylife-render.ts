@@ -22,7 +22,11 @@
 // Non-collidable: nothing here reaches collision.ts, the server or a bot
 // probe (people are the plan's accepted exception).
 
-import { type Building, CITY_GRID } from "@angels-bandits/common/city";
+import {
+  type Building,
+  CITY_GRID,
+  type LocalBox,
+} from "@angels-bandits/common/city";
 import { BLOCK_PITCH } from "@angels-bandits/common/constants";
 import {
   type Vec3,
@@ -71,6 +75,7 @@ import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import type { NearPass } from "./reactions";
 import { loopPhase } from "./rooftop-life";
 import { signalOffset } from "./signals";
+import { type StandingLayer, StandingMask } from "./standing-watch";
 import {
   BLOCK_WINDOW_RADIUS,
   MICRO_GATE_FULL,
@@ -472,12 +477,68 @@ function createMaterial(
 
 // --- Static blocks -------------------------------------------------------------
 
+/** Each building's figures up it (balconies, terrace), per seed — laid out
+ * once, shared by the renderer and its D8 standing layer. */
+const highCache = new WeakMap<
+  Building,
+  { seed: number; list: StaticFigure[] }
+>();
+function highFiguresOf(b: Building, seed: number): StaticFigure[] {
+  const hit = highCache.get(b);
+  if (hit && hit.seed === seed) return hit.list;
+  const list = highFigures(b, seed);
+  highCache.set(b, { seed, list });
+  return list;
+}
+
+/** A standing figure's box, m (feet at y, ~1.8 m tall, 0.6 m across). */
+const FIGURE_HALF = 0.3;
+const FIGURE_TALL = 1.8;
+
+/**
+ * D8: the figures up each building (highFigures, in its order) as boxes in
+ * the building's frame — a balcony or terrace that fell takes its people
+ * with it.
+ */
+export function citylifeStandingLayer(
+  buildings: readonly Building[],
+  seed: number,
+): StandingLayer {
+  const cache = new Map<number, readonly LocalBox[]>();
+  return {
+    boxes(index: number): readonly LocalBox[] {
+      let boxes = cache.get(index);
+      if (!boxes) {
+        const b = buildings[index] as Building;
+        boxes = highFiguresOf(b, seed).map((f) => {
+          const x = wrapDeltaAxis(b.x, f.x);
+          const z = wrapDeltaAxis(b.z, f.z);
+          return {
+            x0: x - FIGURE_HALF,
+            x1: x + FIGURE_HALF,
+            y0: f.y,
+            y1: f.y + FIGURE_TALL * f.height,
+            z0: z - FIGURE_HALF,
+            z1: z + FIGURE_HALF,
+          };
+        });
+        cache.set(index, boxes);
+      }
+      return boxes;
+    },
+  };
+}
+
 /** One block's static figures, packed anchor-relative (high ones first). */
 interface StaticBlock {
   ax: number;
   az: number;
   /** Figures up a building (drawn whatever the street gate says). */
   high: number;
+  /** D8: per high figure, its building's index and its index among that
+   * building's highFigures (the standing mask's item). */
+  owner: Int32Array;
+  ownerK: Int32Array;
   /** All figures (high + street). */
   count: number;
   matrices: Float32Array;
@@ -523,6 +584,8 @@ function packStatic(
   bz: number,
   figures: readonly StaticFigure[],
   performers: { x: number; z: number }[],
+  owner: Int32Array,
+  ownerK: Int32Array,
 ): StaticBlock {
   const ax = (bx + 0.5) * P;
   const az = (bz + 0.5) * P;
@@ -557,6 +620,8 @@ function packStatic(
     ax,
     az,
     high: figures.filter((f) => f.high === 1).length,
+    owner,
+    ownerK,
     count: n,
     matrices,
     colors,
@@ -625,6 +690,9 @@ export class CityLife {
   private density = 1;
   private radius = BLOCK_WINDOW_RADIUS;
   private readonly capacity: number;
+  /** D8: high figures on what fell are hidden (copyStatics reads it). */
+  private readonly standing: StandingMask;
+  private readonly blockOfBuilding: Int32Array;
 
   constructor(buildings: readonly Building[], seed: number) {
     this.riders = riderFleet(seed);
@@ -633,19 +701,43 @@ export class CityLife {
 
     // Static figures: stations + people up the buildings, per block.
     const byBlock = new Map<number, StaticFigure[]>();
-    for (const b of buildings) {
+    const owners = new Map<number, number[]>();
+    this.blockOfBuilding = new Int32Array(buildings.length);
+    buildings.forEach((b, i) => {
       const { bx, bz } = blockOf({ x: b.x, y: 0, z: b.z });
       const key = bx * CITY_GRID + bz;
+      this.blockOfBuilding[i] = key;
       const list = byBlock.get(key) ?? [];
-      list.push(...highFigures(b, seed));
+      const own = owners.get(key) ?? [];
+      const high = highFiguresOf(b, seed);
+      high.forEach((f, k) => {
+        list.push(f);
+        own.push(i, k);
+      });
       byBlock.set(key, list);
-    }
+      owners.set(key, own);
+    });
+    this.standing = new StandingMask(
+      buildings,
+      citylifeStandingLayer(buildings, seed),
+      this.restream,
+    );
     for (let bx = 0; bx < CITY_GRID; bx++) {
       for (let bz = 0; bz < CITY_GRID; bz++) {
         const key = bx * CITY_GRID + bz;
         const st = blockStations(bx, bz, seed);
         const all = [...(byBlock.get(key) ?? []), ...st.figures];
-        this.statics.set(key, packStatic(bx, bz, all, st.performers));
+        const own = owners.get(key) ?? [];
+        const owner = new Int32Array(own.length / 2);
+        const ownerK = new Int32Array(own.length / 2);
+        for (let j = 0; j < owner.length; j++) {
+          owner[j] = own[j * 2] as number;
+          ownerK[j] = own[j * 2 + 1] as number;
+        }
+        this.statics.set(
+          key,
+          packStatic(bx, bz, all, st.performers, owner, ownerK),
+        );
         this.ring.set(key, blockRingLife(bx, bz, seed));
         this.crossers.set(key, blockCrossers(bx, bz, seed));
         this.crossOffset.set(key, signalOffset(bx, bz, seed));
@@ -698,6 +790,18 @@ export class CityLife {
       this.arms,
     ];
   }
+
+  /** D8: building `b`'s figures changed standing — re-copy the statics if
+   * its block is in the streamed window. */
+  private readonly restream = (b: number): void => {
+    const key = this.blockOfBuilding[b] as number;
+    for (const { bx, bz } of this.window) {
+      if (bx * CITY_GRID + bz === key) {
+        this.staticKey = -1;
+        return;
+      }
+    }
+  };
 
   /** Re-derive the block window if the camera changed block (or radius);
    * returns the camera block's key. */
@@ -755,6 +859,7 @@ export class CityLife {
       return;
     }
     const t = serverTimeMs / 1000;
+    this.standing.update(); // D8: may ask for a re-copy of the statics
     this.uniforms.uLoop.value = loopPhase(serverTimeMs);
     const keep = gate * this.density;
     this.uniforms.uKeepStreet.value = keep;
@@ -914,6 +1019,14 @@ export class CityLife {
         const o = (n + i) * 16;
         m[o + 12] = (m[o + 12] as number) + ix;
         m[o + 14] = (m[o + 14] as number) + iz;
+        // D8: someone on a balcony or terrace that fell is gone with it
+        // (a zero basis: the instance draws nothing).
+        if (
+          i < s.high &&
+          this.standing.isHidden(s.owner[i] as number, s.ownerK[i] as number)
+        ) {
+          m.fill(0, o, o + 11);
+        }
       }
       colors.set(s.colors.subarray(0, count * 3), n * 3);
       life.set(s.life.subarray(0, count * 4), n * 4);

@@ -11,15 +11,37 @@
 //
 // Draw calls: boxes, cylinders, masts, mast tips, beacons (V2), plus ONE lit
 // box batch for door lamps and billboard faces and frames (R2).
+//
+// D8: a damaged roof sheds what stood on it. Structure bodies, their
+// dressing and masts are drawn exactly while their structure is in the live
+// `b.roof` (structureDrawn — what collides); free clutter and beacons while
+// decorStands keeps them (the roofclutter StandingLayer). Hidden instances
+// are written as a zero-scale matrix in every place path, so a torus flip
+// never brings one back.
 
-import type { Building } from "@angels-bandits/common/city";
+import {
+  type Building,
+  type LocalBox,
+  generatedRoof,
+} from "@angels-bandits/common/city";
+import type { RoofStructure } from "@angels-bandits/common/city/roof-structures";
 import { EMISSIVE_BEACON } from "@angels-bandits/common/constants";
-import type { Vec3 } from "@angels-bandits/common/world";
+import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
-import { type RoofPart, roofDetailsFor } from "./roof-details";
+import {
+  type RoofPart,
+  partBox,
+  roofDetailsFor,
+  structureDrawn,
+} from "./roof-details";
 import { type Mast, roofClutterFor } from "./roof-layout";
+import {
+  type StandingLayer,
+  StandingMask,
+  StandingWatch,
+} from "./standing-watch";
 import { ImageCache, InstanceUploads } from "./wrapPlacement";
 
 // The layout seam's long-standing import site.
@@ -51,6 +73,82 @@ const TIP_BOOST = 1.5;
 const CLUTTER_MATERIAL_COLOR = 0xffffff;
 const MAST_TONE = 0x737a85;
 
+/** Beacon sphere radius, m (its mesh below). */
+const BEACON_RADIUS = 1.4;
+/** Mast tip sphere radius, m (its mesh below). */
+const TIP_RADIUS = 0.35;
+
+/** Each building's mast structures, in roofClutterFor().masts order. */
+const mastStructures = (b: Building): RoofStructure[] =>
+  (generatedRoof(b) ?? []).filter((s) => s.kind === "mast");
+
+/**
+ * D8: everything this renderer draws on building `index`, in its item
+ * order — roofDetailsFor's boxes, cylinders and lit parts, then the masts
+ * (with their tips), then the beacon — as boxes in the building's frame.
+ */
+export function roofClutterStandingLayer(
+  buildings: readonly Building[],
+): StandingLayer {
+  const cache = new Map<number, LocalBox[]>();
+  return {
+    boxes(index: number): readonly LocalBox[] {
+      let out = cache.get(index);
+      if (out) return out;
+      out = [];
+      const b = buildings[index];
+      if (b) {
+        const d = roofDetailsFor(b);
+        for (const p of d.boxes) out.push(partBox(b, p, false));
+        for (const p of d.cylinders) out.push(partBox(b, p, true));
+        for (const p of d.lit) out.push(partBox(b, p, false));
+        const c = roofClutterFor(b);
+        for (const m of c.masts) {
+          const x = wrapDeltaAxis(b.x, m.x);
+          const z = wrapDeltaAxis(b.z, m.z);
+          out.push({
+            x0: x - TIP_RADIUS,
+            x1: x + TIP_RADIUS,
+            y0: m.y,
+            y1: m.y + m.height + TIP_RADIUS,
+            z0: z - TIP_RADIUS,
+            z1: z + TIP_RADIUS,
+          });
+        }
+        if (c.beacon) {
+          const x = wrapDeltaAxis(b.x, c.beacon.x);
+          const z = wrapDeltaAxis(b.z, c.beacon.z);
+          out.push({
+            x0: x - BEACON_RADIUS,
+            x1: x + BEACON_RADIUS,
+            y0: c.beacon.y - BEACON_RADIUS,
+            y1: c.beacon.y + BEACON_RADIUS,
+            z0: z - BEACON_RADIUS,
+            z1: z + BEACON_RADIUS,
+          });
+        }
+      }
+      cache.set(index, out);
+      return out;
+    },
+  };
+}
+
+/** A part as a batch takes it: which building, its D8 item slot there. */
+interface TaggedPart {
+  part: RoofPart;
+  owner: number;
+  slot: number;
+}
+
+const ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
+
+const pushTo = (map: Map<number, number[]>, key: number, v: number): void => {
+  const list = map.get(key);
+  if (list) list.push(v);
+  else map.set(key, [v]);
+};
+
 /**
  * One instanced batch of roof parts. Each part's rotation × scale is
  * composed ONCE here into a per-instance base matrix; the frame loop only
@@ -67,17 +165,33 @@ class PartBatch {
   private readonly images: ImageCache;
   private readonly uploads: InstanceUploads;
   private readonly scratch = new THREE.Matrix4();
+  /** D8: each instance's building, item slot there and structure. */
+  private readonly owner: Int32Array;
+  private readonly slot: Int32Array;
+  private readonly structure: (RoofStructure | null)[];
+  /** D8: each building's instances. */
+  private readonly byOwner = new Map<number, number[]>();
 
   constructor(
     geometry: THREE.BufferGeometry,
     material: THREE.Material,
-    parts: readonly RoofPart[],
+    tagged: readonly TaggedPart[],
+    private readonly hidden: (
+      owner: number,
+      slot: number,
+      structure: RoofStructure | null,
+    ) => boolean,
   ) {
-    const sorted = [
-      ...parts.filter((p) => !p.fine),
-      ...parts.filter((p) => p.fine),
+    const sortedTags = [
+      ...tagged.filter((t) => !t.part.fine),
+      ...tagged.filter((t) => t.part.fine),
     ];
-    this.coarse = parts.length - parts.filter((p) => p.fine).length;
+    const sorted = sortedTags.map((t) => t.part);
+    this.coarse = sortedTags.length - tagged.filter((t) => t.part.fine).length;
+    this.owner = Int32Array.from(sortedTags, (t) => t.owner);
+    this.slot = Int32Array.from(sortedTags, (t) => t.slot);
+    this.structure = sorted.map((p) => p.structure);
+    sortedTags.forEach((t, i) => pushTo(this.byOwner, t.owner, i));
     this.mesh = new THREE.InstancedMesh(geometry, material, sorted.length);
     this.base = new Float32Array(sorted.length * 16);
     this.ys = new Float32Array(sorted.length);
@@ -106,6 +220,17 @@ class PartBatch {
   }
 
   private readonly place = (i: number, x: number, z: number): void => {
+    if (
+      this.hidden(
+        this.owner[i] as number,
+        this.slot[i] as number,
+        this.structure[i] ?? null,
+      )
+    ) {
+      this.mesh.setMatrixAt(i, ZERO);
+      this.uploads.mark(i);
+      return;
+    }
     this.scratch.fromArray(this.base, i * 16);
     const e = this.scratch.elements;
     e[12] = x;
@@ -118,6 +243,11 @@ class PartBatch {
   update(cameraPos: Vec3): void {
     this.images.update(cameraPos, this.place);
     this.uploads.flush();
+  }
+
+  /** D8: re-place building `b`'s instances on the next update. */
+  refresh(b: number): void {
+    for (const i of this.byOwner.get(b) ?? []) this.images.dirty(i);
   }
 
   /** Draw everything, or only the coarse parts (Low / Mobile). */
@@ -134,6 +264,16 @@ export class RoofClutterRenderer {
   private readonly lit: PartBatch;
   private readonly masts: Mast[];
   private readonly beacons: { x: number; z: number; y: number }[];
+  /** D8: each mast's building and structure, each beacon's building and
+   * item slot, and the instances per building. */
+  private readonly mastOwner: Int32Array;
+  private readonly mastStructure: RoofStructure[];
+  private readonly beaconOwner: Int32Array;
+  private readonly beaconSlot: Int32Array;
+  private readonly mastsOf = new Map<number, number[]>();
+  private readonly beaconsOf = new Map<number, number[]>();
+  private readonly mask: StandingMask;
+  private readonly watch: StandingWatch;
   private readonly mastMesh: THREE.InstancedMesh;
   private readonly tipMesh: THREE.InstancedMesh;
   private readonly beaconMesh: THREE.InstancedMesh;
@@ -145,11 +285,49 @@ export class RoofClutterRenderer {
   private readonly mastUploads: InstanceUploads;
   private readonly beaconUploads: InstanceUploads;
 
-  constructor(buildings: readonly Building[]) {
+  constructor(private readonly buildings: readonly Building[]) {
     const layouts = buildings.map(roofClutterFor);
     const details = buildings.map(roofDetailsFor);
     this.masts = layouts.flatMap((c) => c.masts);
     this.beacons = layouts.flatMap((c) => (c.beacon ? [c.beacon] : []));
+    this.mask = new StandingMask(
+      buildings,
+      roofClutterStandingLayer(buildings),
+    );
+    this.watch = new StandingWatch(buildings);
+    // D8: tag every part with its building and its slot in the layer's item
+    // order (boxes, cylinders, lit, masts, beacon).
+    const boxParts: TaggedPart[] = [];
+    const cylinderParts: TaggedPart[] = [];
+    const litParts: TaggedPart[] = [];
+    const mastOwner: number[] = [];
+    const mastStructure: RoofStructure[] = [];
+    const beaconOwner: number[] = [];
+    const beaconSlot: number[] = [];
+    details.forEach((d, owner) => {
+      let slot = 0;
+      for (const part of d.boxes) boxParts.push({ part, owner, slot: slot++ });
+      for (const part of d.cylinders)
+        cylinderParts.push({ part, owner, slot: slot++ });
+      for (const part of d.lit) litParts.push({ part, owner, slot: slot++ });
+      const c = layouts[owner];
+      const structures = mastStructures(buildings[owner] as Building);
+      c?.masts.forEach((_, k) => {
+        pushTo(this.mastsOf, owner, mastOwner.length);
+        mastOwner.push(owner);
+        mastStructure.push(structures[k] as RoofStructure);
+        slot++;
+      });
+      if (c?.beacon) {
+        pushTo(this.beaconsOf, owner, beaconOwner.length);
+        beaconOwner.push(owner);
+        beaconSlot.push(slot++);
+      }
+    });
+    this.mastOwner = Int32Array.from(mastOwner);
+    this.mastStructure = mastStructure;
+    this.beaconOwner = Int32Array.from(beaconOwner);
+    this.beaconSlot = Int32Array.from(beaconSlot);
 
     const dark = new THREE.MeshStandardMaterial({
       color: CLUTTER_MATERIAL_COLOR,
@@ -160,25 +338,23 @@ export class RoofClutterRenderer {
     // the roof (same idiom as the city's unit box).
     const boxGeometry = new THREE.BoxGeometry(1, 1, 1);
     boxGeometry.translate(0, 0.5, 0);
-    this.boxes = new PartBatch(
-      boxGeometry,
-      dark,
-      details.flatMap((d) => d.boxes),
-    );
+    this.boxes = new PartBatch(boxGeometry, dark, boxParts, this.hidden);
     // Twelve sides: a round tank's flats sit within 3.5 % of its collider.
     const cylinderGeometry = new THREE.CylinderGeometry(1, 1, 1, 12);
     cylinderGeometry.translate(0, 0.5, 0);
     this.cylinders = new PartBatch(
       cylinderGeometry,
       dark,
-      details.flatMap((d) => d.cylinders),
+      cylinderParts,
+      this.hidden,
     );
     // R2: lamps and billboard art. Unlit, white × the per-instance emissive
     // colour (roof-details.ts lifts each to its rung, all under SIGN).
     this.lit = new PartBatch(
       boxGeometry,
       new THREE.MeshBasicMaterial({ color: 0xffffff }),
-      details.flatMap((d) => d.lit),
+      litParts,
+      this.hidden,
     );
 
     // Masts: the drawn base radius IS the collider's (MAST_RADIUS).
@@ -193,14 +369,14 @@ export class RoofClutterRenderer {
     const tipMaterial = new THREE.MeshBasicMaterial({ color: TIP_COLOR });
     tipMaterial.color.multiplyScalar(TIP_BOOST);
     this.tipMesh = new THREE.InstancedMesh(
-      new THREE.SphereGeometry(0.35, 6, 5),
+      new THREE.SphereGeometry(TIP_RADIUS, 6, 5),
       tipMaterial,
       this.masts.length,
     );
 
     this.beaconMaterial = new THREE.MeshBasicMaterial({ color: BEACON_COLOR });
     this.beaconMesh = new THREE.InstancedMesh(
-      new THREE.SphereGeometry(1.4, 12, 10),
+      new THREE.SphereGeometry(BEACON_RADIUS, 12, 10),
       this.beaconMaterial,
       this.beacons.length,
     );
@@ -236,8 +412,41 @@ export class RoofClutterRenderer {
     this.beaconUploads = new InstanceUploads([this.beaconMesh.instanceMatrix]);
   }
 
+  /** D8: is an item hidden? A structure's parts follow the live roof; the
+   * rest follow decorStands (the mask, refreshed by the watch). */
+  private readonly hidden = (
+    owner: number,
+    slot: number,
+    structure: RoofStructure | null,
+  ): boolean =>
+    structure
+      ? !structureDrawn(this.buildings[owner] as Building, structure)
+      : this.mask.isHidden(owner, slot);
+
+  /** D8: building `b`'s standing moved — re-evaluate and re-place it. */
+  private readonly restand = (b: number): void => {
+    this.mask.evaluate(b);
+    this.boxes.refresh(b);
+    this.cylinders.refresh(b);
+    this.lit.refresh(b);
+    for (const i of this.mastsOf.get(b) ?? []) this.mastImages.dirty(i);
+    for (const i of this.beaconsOf.get(b) ?? []) this.beaconImages.dirty(i);
+  };
+
   private readonly placeMast = (i: number, x: number, z: number): void => {
     const m = this.masts[i] as Mast;
+    const owner = this.mastOwner[i] as number;
+    if (
+      !structureDrawn(
+        this.buildings[owner] as Building,
+        this.mastStructure[i] as RoofStructure,
+      )
+    ) {
+      this.mastMesh.setMatrixAt(i, ZERO);
+      this.tipMesh.setMatrixAt(i, ZERO);
+      this.mastUploads.mark(i);
+      return;
+    }
     this.scratch.makeScale(1, m.height, 1);
     this.scratch.setPosition(x, m.y, z);
     this.mastMesh.setMatrixAt(i, this.scratch);
@@ -248,6 +457,16 @@ export class RoofClutterRenderer {
 
   private readonly placeBeacon = (i: number, x: number, z: number): void => {
     const b = this.beacons[i] as { x: number; z: number; y: number };
+    if (
+      this.mask.isHidden(
+        this.beaconOwner[i] as number,
+        this.beaconSlot[i] as number,
+      )
+    ) {
+      this.beaconMesh.setMatrixAt(i, ZERO);
+      this.beaconUploads.mark(i);
+      return;
+    }
     this.scratch.makeTranslation(x, b.y, z);
     this.beaconMesh.setMatrixAt(i, this.scratch);
     this.beaconUploads.mark(i);
@@ -279,6 +498,7 @@ export class RoofClutterRenderer {
    * server-synced time so every client's beacons pulse in phase.
    */
   update(cameraPos: Vec3, timeMs: number): void {
+    this.watch.poll(this.restand);
     this.boxes.update(cameraPos);
     this.cylinders.update(cameraPos);
     this.lit.update(cameraPos);

@@ -16,7 +16,12 @@
 // stream — never Math.random, never a torus image — so every client dresses
 // identical roofs.
 
-import { type Building, mulberry32 } from "@angels-bandits/common/city";
+import {
+  type Building,
+  type LocalBox,
+  generatedRoof,
+  mulberry32,
+} from "@angels-bandits/common/city";
 import {
   BILLBOARD_CATWALK,
   BILLBOARD_LIFT,
@@ -26,6 +31,7 @@ import {
   type RoofStructure,
 } from "@angels-bandits/common/city/roof-structures";
 import { LANDMARK_HEIGHT } from "@angels-bandits/common/constants";
+import { wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
 import {
@@ -61,6 +67,9 @@ export interface RoofPart {
   fine: boolean;
   /** Drawn from a solid roof structure (collides). */
   solid: boolean;
+  /** D8: the structure this part is the body or dressing of (null for free
+   * clutter) — drawn exactly while that structure stands (structureDrawn). */
+  structure: RoofStructure | null;
 }
 
 export interface RoofDetails {
@@ -210,11 +219,21 @@ function layoutDetails(b: Building): RoofDetails {
     p: Partial<RoofPart> &
       Pick<RoofPart, "x" | "y" | "z" | "sx" | "sy" | "sz" | "tone">,
   ) => {
-    list.push({ yaw: 0, tilt: 0, boost: 0, fine: false, solid: false, ...p });
+    list.push({
+      yaw: 0,
+      tilt: 0,
+      boost: 0,
+      fine: false,
+      solid: false,
+      structure: null,
+      ...p,
+    });
   };
 
   // --- Solid structure bodies and their dressing (Building.roof, 1:1).
-  for (const s of clutter.structures) dressStructure(b, s, out, part);
+  for (const s of clutter.structures) {
+    dressStructure(b, s, out, (list, p) => part(list, { ...p, structure: s }));
+  }
 
   // --- HVAC units (roofClutterFor), a steam stack on the first.
   clutter.acBoxes.forEach((box, i) => {
@@ -800,5 +819,57 @@ function braceFor(b: Building, leg: RoofStructure): RoofPart {
     boost: 0,
     fine: true,
     solid: false,
+    structure: leg,
   };
+}
+
+// --- D8: what still stands ------------------------------------------------
+
+/** Is structure `s` (one of generatedRoof(b)) drawn right now? Exactly while
+ * it is in the live `b.roof` (common/src/city/standing.ts syncRoof) — the
+ * list collision, sight lines and rays read, so drawing a tank and crashing
+ * into it agree after any damage. */
+export const structureDrawn = (b: Building, s: RoofStructure): boolean =>
+  b.roof === generatedRoof(b) || (b.roof?.includes(s) ?? false);
+
+/** The structures whose bodies the roof renderer draws for `b` right now
+ * (equal to the live `b.roof`, in its order). */
+export function drawnStructures(b: Building): readonly RoofStructure[] {
+  return (generatedRoof(b) ?? []).filter((s) => structureDrawn(b, s));
+}
+
+const corner = new THREE.Vector3();
+const partMatrix = new THREE.Matrix4();
+const tiltMatrix = new THREE.Matrix4();
+
+/**
+ * A part's world-axis bounding box in its building's frame (x/z from the
+ * building's centre, y from the ground): the unit box or cylinder scaled,
+ * tilted and yawed as the renderer draws it. `cylinder`: radius sx/sz.
+ */
+export function partBox(
+  b: Building,
+  p: RoofPart,
+  cylinder: boolean,
+  out: LocalBox = { x0: 0, x1: 0, y0: 0, y1: 0, z0: 0, z1: 0 },
+): LocalBox {
+  const hx = cylinder ? p.sx : p.sx / 2;
+  const hz = cylinder ? p.sz : p.sz / 2;
+  partMatrix.makeRotationY(p.yaw).multiply(tiltMatrix.makeRotationX(p.tilt));
+  const cx = wrapDeltaAxis(b.x, p.x);
+  const cz = wrapDeltaAxis(b.z, p.z);
+  out.x0 = out.y0 = out.z0 = Number.POSITIVE_INFINITY;
+  out.x1 = out.y1 = out.z1 = Number.NEGATIVE_INFINITY;
+  for (let k = 0; k < 8; k++) {
+    corner
+      .set(k & 1 ? hx : -hx, k & 2 ? p.sy : 0, k & 4 ? hz : -hz)
+      .applyMatrix4(partMatrix);
+    out.x0 = Math.min(out.x0, cx + corner.x);
+    out.x1 = Math.max(out.x1, cx + corner.x);
+    out.y0 = Math.min(out.y0, p.y + corner.y);
+    out.y1 = Math.max(out.y1, p.y + corner.y);
+    out.z0 = Math.min(out.z0, cz + corner.z);
+    out.z1 = Math.max(out.z1, cz + corner.z);
+  }
+  return out;
 }

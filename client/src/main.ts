@@ -34,6 +34,7 @@ import {
 import { natureFor } from "@angels-bandits/common/city/nature";
 import { setNewsTarget } from "@angels-bandits/common/city/newsheli";
 import { bridgeSpans } from "@angels-bandits/common/city/river";
+import { TUNNELS } from "@angels-bandits/common/city/tunnels";
 import { buildNatureIndex } from "@angels-bandits/common/collision";
 import {
   AWAY_MIN_MS,
@@ -835,6 +836,7 @@ const cornerWorld: CornerWorld = {
     ...cityHoles(city.cityBuildings),
     ...bridgeSpans(),
   ]),
+  tunnels: true, // U4: a bore's corridor never brakes
 };
 // H2 hole assist: the silent centering nudge reads every hole (and river
 // underpass) and the same city the crash check does. State is per frame.
@@ -853,6 +855,7 @@ const ASSIST_MAX_ROLL = Math.PI / 6;
 // last-moment pose correction that threads a hole when a crash is imminent.
 const saveWorld: SaveWorld = {
   spans: assistWorld.spans,
+  tunnels: TUNNELS, // U4: portals, mouths and bore walls
   buildings: city.cityBuildings,
   index: city.cityIndex,
   nature: natureIndex,

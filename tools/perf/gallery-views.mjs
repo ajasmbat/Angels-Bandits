@@ -160,4 +160,48 @@ export const VIEWS = [
       spread: 0,
     },
   },
+  // U4 tunnels: diving into the plaza (4,4) portal from the west, mid-bore
+  // on the Crosstown S-bend, and climbing out of plaza (8,2)'s cut; plus a
+  // river mouth seen from the channel. Pinned every frame (raf): below
+  // street level a stalled frame would sink the plane into the ramp.
+  {
+    name: "tunnel-portal",
+    x: 862,
+    z: 850,
+    y: 10,
+    yaw: -Math.PI / 2,
+    pitch: -0.3,
+    raf: true,
+    eye: [800, 42, 838],
+    at: [935, -18, 850],
+    weather: "clear",
+  },
+  {
+    name: "tunnel-mid",
+    x: 1176,
+    z: 787.2,
+    y: -52,
+    yaw: -0.912,
+    raf: true,
+    weather: "clear",
+  },
+  {
+    name: "tunnel-exit",
+    x: 1625,
+    z: 450,
+    y: -24,
+    yaw: -Math.PI / 2,
+    pitch: 0.3,
+    raf: true,
+    weather: "clear",
+  },
+  {
+    name: "tunnel-river-mouth",
+    x: 1208.4,
+    z: 1084.1,
+    y: -12,
+    yaw: 2.182,
+    raf: true,
+    weather: "clear",
+  },
 ];

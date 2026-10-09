@@ -14,7 +14,11 @@
 // `__ab.pinWorld` pins) — the vent picks, the shimmer fades and the litter
 // kick included — so a pinned world is a frozen atmosphere.
 
-import { type Building, CITY_GRID } from "@angels-bandits/common/city";
+import {
+  type Building,
+  CITY_GRID,
+  type LocalBox,
+} from "@angels-bandits/common/city";
 import { losClear } from "@angels-bandits/common/collision";
 import {
   BLOCK_PITCH,
@@ -43,6 +47,7 @@ import { shimmerClock } from "./post";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import type { NearPass } from "./reactions";
 import { roofDetailsFor } from "./roof-details";
+import { type StandingLayer, StandingMask } from "./standing-watch";
 import { nearestImageInto } from "./wrapPlacement";
 
 /** Cool moonlight the shafts are tinted (linear), times their gain. */
@@ -84,6 +89,39 @@ export interface AtmosphereFrame {
 const wrap = (c: number): number =>
   ((c % WORLD_SIZE) + WORLD_SIZE) % WORLD_SIZE;
 
+/**
+ * D8: the shimmer's anchors, per building — a small box under each exhaust
+ * stack top (roofDetailsFor's vents, in vent order), building-local. A
+ * stack on a roof that fell shimmers no more.
+ */
+export function atmosphereFxStandingLayer(
+  buildings: readonly Building[],
+): StandingLayer {
+  const cache = new Map<number, readonly LocalBox[]>();
+  return {
+    boxes(index: number): readonly LocalBox[] {
+      let boxes = cache.get(index);
+      if (!boxes) {
+        const b = buildings[index] as Building;
+        boxes = roofDetailsFor(b).vents.map((v) => {
+          const x = wrapDeltaAxis(b.x, v.x);
+          const z = wrapDeltaAxis(b.z, v.z);
+          return {
+            x0: x - 0.3,
+            x1: x + 0.3,
+            y0: v.y - 1,
+            y1: v.y,
+            z0: z - 0.3,
+            z1: z + 0.3,
+          };
+        });
+        cache.set(index, boxes);
+      }
+      return boxes;
+    },
+  };
+}
+
 /** Shimmer slots, wanted first, then strongest (no closure a frame). */
 const bySlotRank = (a: ShimmerSlot, b: ShimmerSlot): number =>
   Number(b.on) - Number(a.on) || b.level - a.level;
@@ -95,6 +133,11 @@ export class AtmosphereFx {
   private readonly buildings: readonly Building[];
   private readonly buildingsByBlock: Map<number, Building[]>;
   private readonly ventsByBlock = new Map<number, ShimmerVent[]>();
+  /** D8: each cached vent's building index and its index among that
+   * building's vents (the standing mask's item), packed b·256 + k. */
+  private readonly ventOwner = new Map<ShimmerVent, number>();
+  private readonly indexOf = new Map<Building, number>();
+  private readonly standing: StandingMask;
   private readonly candidates: ShimmerVent[] = [];
   /** The shimmer pick's id lists (scratch, reused each pick). */
   private readonly prevIds: number[] = [];
@@ -120,6 +163,11 @@ export class AtmosphereFx {
   ) {
     this.buildings = buildings;
     this.buildingsByBlock = buildingsByBlock;
+    buildings.forEach((b, i) => this.indexOf.set(b, i));
+    this.standing = new StandingMask(
+      buildings,
+      atmosphereFxStandingLayer(buildings),
+    );
     this.fogBanks = new FogBanks(seed);
     this.litter = new Litter(seed);
   }
@@ -145,6 +193,7 @@ export class AtmosphereFx {
     // Shafts and shimmer project through this frame's final camera pose.
     f.camera.updateMatrixWorld();
     windAt(t, this.wind);
+    this.standing.update(); // D8: picks read it at 4 Hz
     this.fogBanks.update(f.cameraPos, f.worldMs, f.planes, f.haze);
     this.litter.update(f.cameraPos, t, this.wind, f.passes, f.microK);
     this.updateShafts(f);
@@ -206,11 +255,15 @@ export class AtmosphereFx {
       vents = [];
       for (const b of this.buildingsByBlock.get(key) ?? []) {
         const stacks = roofDetailsFor(b).vents;
-        for (const s of stacks) {
+        const owner = this.indexOf.get(b) ?? -1;
+        for (let k = 0; k < stacks.length; k++) {
+          const s = stacks[k] as { x: number; y: number; z: number };
           // Id from the canonical position (stable on every client; two
           // stacks never share a decimetre).
           const id = Math.round(s.x * 10) * 40_000 + Math.round(s.z * 10);
-          vents.push({ id, x: s.x, y: s.y, z: s.z });
+          const vent = { id, x: s.x, y: s.y, z: s.z };
+          vents.push(vent);
+          this.ventOwner.set(vent, owner * 256 + k);
         }
       }
       this.ventsByBlock.set(key, vents);
@@ -260,14 +313,23 @@ export class AtmosphereFx {
       const bz = Math.floor(wrap(f.cameraPos.z) / BLOCK_PITCH);
       const grid = CITY_GRID;
       // P3: the 3×3 window refills in one pick; never the whole city.
-      if (this.ventsByBlock.size > 36) this.ventsByBlock.clear();
+      if (this.ventsByBlock.size > 36) {
+        this.ventsByBlock.clear();
+        this.ventOwner.clear();
+      }
       for (let i = -1; i <= 1; i++) {
         for (let j = -1; j <= 1; j++) {
           const cx = (((bx + i) % grid) + grid) % grid;
           const cz = (((bz + j) % grid) + grid) % grid;
           const vents = this.ventsFor(cx, cz);
           for (let q = 0; q < vents.length; q++) {
-            this.candidates.push(vents[q] as ShimmerVent);
+            const vent = vents[q] as ShimmerVent;
+            // D8: not over a roof that is no longer there.
+            const own = this.ventOwner.get(vent) ?? -1;
+            if (own >= 0 && this.standing.isHidden(own >> 8, own & 255)) {
+              continue;
+            }
+            this.candidates.push(vent);
           }
         }
       }

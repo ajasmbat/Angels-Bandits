@@ -404,8 +404,11 @@ export class BrokenNeon {
   private readonly start: number[];
   private readonly duration: number[];
   private readonly result: NeonBuzz = { pos: { x: 0, y: 0, z: 0 }, gain: 0 };
+  /** D8: tubes whose sign hides (its floor is gone) — they buzz no more. */
+  readonly muted: Uint8Array;
 
   constructor(tubes: readonly { seed: number; center: Vec3 }[]) {
+    this.muted = new Uint8Array(tubes.length);
     this.seeds = tubes.map((t) => t.seed);
     this.centers = tubes.map((t) => t.center);
     this.slot = tubes.map(() => Number.NaN);
@@ -443,6 +446,7 @@ export class BrokenNeon {
     let best = -1;
     let bestD = Number.POSITIVE_INFINITY;
     for (let i = 0; i < this.centers.length; i++) {
+      if (this.muted[i]) continue;
       const d = wrapDelta(listener, this.centers[i] as Vec3);
       const dist = Math.hypot(d.x, d.y, d.z);
       if (dist < bestD) {

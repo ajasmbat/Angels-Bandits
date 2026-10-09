@@ -312,6 +312,37 @@ try {
       }, v.chew);
       console.log("chew", v.name, JSON.stringify(r));
     }
+    if (v.stage) {
+      // D8: stage the destruction once (times relative to the render clock).
+      const r = await page.evaluate((st) => {
+        // Every hide lands in the next frame or two, not over minutes.
+        window.__ab.standingBudget?.(1e9);
+        const t0 = window.__ab.reactions().renderTime ?? 0;
+        const at = (o) => ({ ...o, t: t0 + o.t });
+        return window.__ab.qaDestruction({
+          ...(st.area ? { area: at(st.area) } : {}),
+          ...(st.fell ? { fell: st.fell.map(at) } : {}),
+        });
+      }, v.stage);
+      console.log("stage", v.name, JSON.stringify(r));
+      // A software rasteriser draws ~1 fps: let a few frames take it in,
+      // and (D8) every layer re-seat the staged buildings — the standing
+      // work is budgeted per FRAME, so at 1 fps it drains over seconds.
+      await page.evaluate(
+        () =>
+          new Promise((done) => {
+            let n = 0;
+            const t0 = performance.now();
+            const tick = () =>
+              ++n >= 4 &&
+              ((window.__ab.standingPending?.() ?? 0) === 0 ||
+                performance.now() - t0 > 60_000)
+                ? done()
+                : requestAnimationFrame(tick);
+            requestAnimationFrame(tick);
+          }),
+      );
+    }
     if (v.raf) {
       await page.evaluate((v) => {
         const hold = () => {
@@ -365,6 +396,12 @@ try {
       });
     }
     if (v.eye) await page.evaluate(() => window.__ab.qaCamera(null));
+    if (v.stage) {
+      await page.evaluate(() => {
+        window.__ab.qaDestruction(null);
+        window.__ab.standingBudget?.(null);
+      });
+    }
     if (v.timeMs !== undefined && !v.trainEye) {
       await page.evaluate(() => window.__ab.pinWorld(null));
     }

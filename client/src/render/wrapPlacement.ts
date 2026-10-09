@@ -71,6 +71,8 @@ export class ImageCache {
   /** Per-frame scratch: candidate indices, and a "seen" flag to dedupe. */
   private readonly cand: Int32Array;
   private readonly seen: Uint8Array;
+  /** D8: instances dirty() asked to rewrite on the next update. */
+  private readonly forced: number[] = [];
   /** Viewer at the last update; NaN forces the next one to scan everything. */
   private lastX = Number.NaN;
   private lastZ = Number.NaN;
@@ -112,6 +114,7 @@ export class ImageCache {
       for (let i = 0; i < this.xs.length; i++) {
         if (this.refresh(i, viewer, write)) changed++;
       }
+      this.forced.length = 0;
       return changed;
     }
     let n = 0;
@@ -136,7 +139,21 @@ export class ImageCache {
       this.seen[i] = 0;
       if (this.refresh(i, viewer, write)) changed++;
     }
+    if (this.forced.length > 0) {
+      this.forced.sort((p, q) => p - q);
+      for (const i of this.forced) {
+        if (this.refresh(i, viewer, write)) changed++;
+      }
+      this.forced.length = 0;
+    }
     return changed;
+  }
+
+  /** D8: rewrite instance `i` on the next update whatever its image (its
+   * look changed — a standing filter hid or showed it). */
+  dirty(i: number): void {
+    this.kx[i] = UNSET;
+    this.forced.push(i);
   }
 
   /** Forget every image; the next update rewrites all instances. */

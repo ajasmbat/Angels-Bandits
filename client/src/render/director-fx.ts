@@ -19,6 +19,8 @@ import {
   type TierGrid,
   chunkBox,
   chunkBuilding,
+  pointStands,
+  standingTopAt,
   tierGrids,
 } from "@angels-bandits/common/city";
 import { TOPPLE } from "@angels-bandits/common/city/collapse";
@@ -197,6 +199,18 @@ export class DirectorFx {
       const nx = FACE_NX[face] as number;
       const nz = FACE_NZ[face] as number;
       const along = (this.rand() * 2 - 1) * 0.9;
+      // D8: a worn tower pours dust only out of floors it still has.
+      if (
+        b.damage &&
+        !pointStands(
+          b,
+          nx !== 0 ? nx * (g.width / 2) : (along * g.width) / 2,
+          y,
+          nz !== 0 ? nz * (g.depth / 2) : (along * g.depth) / 2,
+        )
+      ) {
+        continue;
+      }
       // D6: canonicalize's arithmetic straight into `at` (it built two
       // objects per particle).
       this.at.x = wrapCoord(
@@ -370,6 +384,18 @@ export class DirectorFx {
         });
         this.at.x = p.x;
         this.at.y = 3 + this.rand() * Math.min(b.height, 60);
+        // D8: welders work on the stump that stands, not on the air where
+        // the tower was (a felled lot welds at the rubble line).
+        if (b.damage) {
+          const lx =
+            nx !== 0 ? nx * (g.width / 2) * 0.999 : (along * g.width) / 2;
+          const lz =
+            nz !== 0 ? nz * (g.depth / 2) * 0.999 : (along * g.depth) / 2;
+          this.at.y = Math.min(
+            this.at.y,
+            Math.max(1.5, standingTopAt(b, lx, lz)),
+          );
+        }
         this.at.z = p.z;
         this.n.x = nx;
         this.n.y = 0.3;

@@ -11,13 +11,23 @@
 // determinism check would fail by construction. Truncation therefore happens
 // inside the pure function, on a stable ordering, so a block's vent list is
 // the same on every client wherever anyone stands.
+//
+// D8: a roof vent stands on its building's deck; a felled or chewed-off roof
+// stops steaming (decorStands of the vent's stack, cached per damage
+// version) until the rebuild. Street vents are not on a building.
 
-import { type Building, mulberry32 } from "@angels-bandits/common/city";
-import type { Vec3 } from "@angels-bandits/common/world";
+import {
+  type Building,
+  type LocalBox,
+  decorStands,
+  mulberry32,
+} from "@angels-bandits/common/city";
+import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { RENDER_ORDER } from "./render-order";
 import { roofDetailsFor } from "./roof-details";
+import type { StandingLayer } from "./standing-watch";
 import {
   BLOCK_WINDOW_RADIUS,
   type BlockIndex,
@@ -50,6 +60,91 @@ const STREET_RISE = 9;
 const STREET_SPREAD = 1.6;
 /** Sprite size band, meters. */
 const PUFF_SIZE = 3.4;
+
+/** D8: each roof vent's building (kept off the vent itself, which is plain
+ * serialisable layout). */
+const ventOwner = new WeakMap<SteamVent, Building>();
+
+/**
+ * Building `b`'s roof vent, or null. A pure function of the building: its
+ * own stream, anchored on the stack R2's roof dressing actually draws.
+ */
+export function roofVentFor(b: Building): SteamVent | null {
+  if (b.height > ROOF_VENT_MAX_HEIGHT) return null;
+  // Per-building stream, not the block stream: a building's roof must not
+  // depend on how many buildings the generator happened to emit before it.
+  const rr = mulberry32(
+    (Math.imul(Math.round(b.x) + 1024, 73856093) ^
+      Math.imul(Math.round(b.z) + 1024, 19349663)) >>>
+      0,
+  );
+  if (rr() > ROOF_VENT_CHANCE) return null;
+  // Anchor on a stack that is actually DRAWN, so steam never rises out of
+  // bare roof deck — R2's roof dressing puts an exhaust stack on the first
+  // HVAC unit of every roof (roofDetailsFor().vents).
+  const stack = roofDetailsFor(b).vents[0];
+  if (!stack) return null;
+  const vent: SteamVent = {
+    x: stack.x,
+    z: stack.z,
+    y: stack.y,
+    rise: STREET_RISE * 0.7,
+    spread: STREET_SPREAD * 0.8,
+    phase: rr(),
+    roof: true,
+  };
+  ventOwner.set(vent, b);
+  return vent;
+}
+
+/** D8: a roof vent's stack, from the deck up, in its building's frame. */
+export function roofVentBox(b: Building, vent: SteamVent): LocalBox {
+  const x = wrapDeltaAxis(b.x, vent.x);
+  const z = wrapDeltaAxis(b.z, vent.z);
+  return {
+    x0: x - 0.3,
+    x1: x + 0.3,
+    y0: b.height,
+    y1: vent.y,
+    z0: z - 0.3,
+    z1: z + 0.3,
+  };
+}
+
+/** D8: the steam StandingLayer — each building's roof vent (if it rolled
+ * one; the per-block cap may still drop it, never add one). */
+export function steamStandingLayer(
+  buildings: readonly Building[],
+): StandingLayer {
+  return {
+    boxes(index: number): readonly LocalBox[] {
+      const b = buildings[index];
+      const vent = b ? roofVentFor(b) : null;
+      return b && vent ? [roofVentBox(b, vent)] : [];
+    },
+  };
+}
+
+/** D8: each roof vent's last verdict and the damage version it was taken at. */
+const ventVerdict = new WeakMap<SteamVent, { version: number; ok: boolean }>();
+
+/** Does roof vent `vent` still have a deck to steam from? O(1) a frame: the
+ * verdict is re-taken only when its building's damage version moves. */
+function ventStands(vent: SteamVent): boolean {
+  const b = ventOwner.get(vent);
+  if (!b) return true;
+  const version = b.damage?.version ?? 0;
+  let v = ventVerdict.get(vent);
+  if (!v) {
+    v = { version: Number.NaN, ok: true };
+    ventVerdict.set(vent, v);
+  }
+  if (v.version !== version) {
+    v.version = version;
+    v.ok = decorStands(b, roofVentBox(b, vent));
+  }
+  return v.ok;
+}
 
 /** One steam source: a fixed point that emits PUFFS_PER_VENT puffs forever. */
 export interface SteamVent {
@@ -112,29 +207,8 @@ export function steamVentsForBlock(
 
   const roof: SteamVent[] = [];
   for (const b of blockBuildings) {
-    if (b.height > ROOF_VENT_MAX_HEIGHT) continue;
-    // Per-building stream, not the block stream: a building's roof must not
-    // depend on how many buildings the generator happened to emit before it.
-    const rr = mulberry32(
-      (Math.imul(Math.round(b.x) + 1024, 73856093) ^
-        Math.imul(Math.round(b.z) + 1024, 19349663)) >>>
-        0,
-    );
-    if (rr() > ROOF_VENT_CHANCE) continue;
-    // Anchor on a stack that is actually DRAWN, so steam never rises out of
-    // bare roof deck — R2's roof dressing puts an exhaust stack on the first
-    // HVAC unit of every roof (roofDetailsFor().vents).
-    const vent = roofDetailsFor(b).vents[0];
-    if (!vent) continue;
-    roof.push({
-      x: vent.x,
-      z: vent.z,
-      y: vent.y,
-      rise: STREET_RISE * 0.7,
-      spread: STREET_SPREAD * 0.8,
-      phase: rr(),
-      roof: true,
-    });
+    const vent = roofVentFor(b);
+    if (vent) roof.push(vent);
   }
   // Street vents first (they are the ones a player at 40 m actually reads),
   // then roof vents in stable hash order. Both orderings are pure functions
@@ -338,6 +412,7 @@ export class Steam {
       this.windowScratch,
     )) {
       for (const vent of this.ventsFor(bx, bz)) {
+        if (vent.roof && !ventStands(vent)) continue; // D8: roof gone
         this.ventAt.x = vent.x;
         this.ventAt.z = vent.z;
         const base = nearestImageInto(this.ventImage, cameraPos, this.ventAt);

@@ -5,7 +5,12 @@
 // minimap never shows one. Dots and the tiling both go through wrapDelta
 // math (the pure seam below); the canvas painting is a thin adapter.
 
-import { type Building, cityHoles } from "@angels-bandits/common/city";
+import {
+  type Building,
+  type HoleSpan,
+  cityHoles,
+  standingProfile,
+} from "@angels-bandits/common/city";
 import {
   BRIDGE_HALF_WIDTH,
   RIVER_CENTER_Z,
@@ -24,6 +29,7 @@ import {
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
 import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
+import { StandingWatch } from "../render/standing-watch";
 
 const mod = (v: number, m: number): number => ((v % m) + m) % m;
 
@@ -104,36 +110,58 @@ function renderCityTile(
       2 * RIVER_HALF_WIDTH * s,
     );
   }
-  for (const b of buildings) {
-    if (b.height >= LANDMARK_HEIGHT) {
-      ctx.fillStyle = "#3fb8c9"; // landmark accent — same read as the 3D city
-    } else {
-      // Height ramp over the real building range (C1 raised the ceiling;
-      // this used to hardcode the old 180 m maximum and clipped flat).
-      const shade = 30 + Math.round((b.height / BUILDING_MAX_HEIGHT) * 45);
-      ctx.fillStyle = `rgb(${shade - 6}, ${shade - 4}, ${shade + 14})`;
-    }
-    ctx.fillRect(
-      (b.x - b.width / 2) * s,
-      (b.z - b.depth / 2) * s,
-      b.width * s,
-      b.depth * s,
-    );
+  for (const b of buildings) paintFootprint(ctx, b, s);
+  drawHoles(ctx, cityHoles(buildings), s);
+  drawTunnels(ctx, s);
+  return tile;
+}
+
+/** Rubble on a felled lot: warm grey, darker than any standing roof. */
+const RUBBLE_COLOR = "#2a2526";
+
+/** One footprint, shaded by the height that STANDS (D8: a felled tower is a
+ * low stump or a rubble lot on the map, not its old roof). */
+function paintFootprint(
+  ctx: CanvasRenderingContext2D,
+  b: Building,
+  s: number,
+): void {
+  const top = b.damage ? standingProfile(b).top : b.height;
+  if (top >= LANDMARK_HEIGHT) {
+    ctx.fillStyle = "#3fb8c9"; // landmark accent — same read as the 3D city
+  } else if (top <= 0) {
+    ctx.fillStyle = RUBBLE_COLOR;
+  } else {
+    // Height ramp over the real building range (C1 raised the ceiling;
+    // this used to hardcode the old 180 m maximum and clipped flat).
+    const shade = 30 + Math.round((top / BUILDING_MAX_HEIGHT) * 45);
+    ctx.fillStyle = `rgb(${shade - 6}, ${shade - 4}, ${shade + 14})`;
   }
-  // H1 holes: a bright tick through the footprint along the line you fly,
-  // in the mouth frames' cool white — the map shows where to aim, not just
-  // that a hole exists.
+  ctx.fillRect(
+    (b.x - b.width / 2) * s,
+    (b.z - b.depth / 2) * s,
+    b.width * s,
+    b.depth * s,
+  );
+}
+
+/** H1 holes: a bright tick through the footprint along the line you fly,
+ * in the mouth frames' cool white — the map shows where to aim, not just
+ * that a hole exists. */
+function drawHoles(
+  ctx: CanvasRenderingContext2D,
+  holes: readonly HoleSpan[],
+  s: number,
+): void {
   ctx.strokeStyle = "#bfe8ff";
   ctx.lineCap = "round";
-  for (const h of cityHoles(buildings)) {
+  for (const h of holes) {
     ctx.lineWidth = Math.max(2, h.hole.width * s);
     ctx.beginPath();
     ctx.moveTo(h.entry.x * s, h.entry.z * s);
     ctx.lineTo(h.exit.x * s, h.exit.z * s);
     ctx.stroke();
   }
-  drawTunnels(ctx, s);
-  return tile;
 }
 
 /** Portal accent: the tunnels' own cyan (render/tunnels.ts kerb lights). */
@@ -187,11 +215,34 @@ export class Minimap {
   private readonly ctx = this.canvas.getContext("2d");
   private readonly tile: HTMLCanvasElement;
   private readonly size: number;
+  /** D8: footprints repainted as their buildings break and are rebuilt. */
+  private readonly watch: StandingWatch;
+  private readonly holes: readonly HoleSpan[];
 
-  constructor(buildings: readonly Building[]) {
+  constructor(private readonly buildings: readonly Building[]) {
     this.size = this.canvas.width; // square; CSS scales it down for the HUD
     this.tile = renderCityTile(buildings, this.size);
+    this.watch = new StandingWatch(buildings);
+    this.holes = cityHoles(buildings);
   }
+
+  /** D8: repaint building `i`'s footprint (and any hole tick through it). */
+  private readonly repaint = (i: number): void => {
+    const ctx = this.tile.getContext("2d");
+    const b = this.buildings[i];
+    if (!ctx || !b) return;
+    const s = this.size / WORLD_SIZE;
+    paintFootprint(ctx, b, s);
+    let through = false;
+    for (const h of this.holes) if (h.hosts.includes(b)) through = true;
+    if (through) {
+      drawHoles(
+        ctx,
+        this.holes.filter((h) => h.hosts.includes(b)),
+        s,
+      );
+    }
+  };
 
   private blip(x: number, y: number, angle: number, color: string): void {
     const ctx = this.ctx;
@@ -220,6 +271,7 @@ export class Minimap {
   ): void {
     const ctx = this.ctx;
     if (!ctx) return;
+    this.watch.poll(this.repaint);
     const size = this.size;
     const o = minimapPatternOffset(playerPos, size);
     for (const dx of [0, size]) {

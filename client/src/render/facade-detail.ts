@@ -22,16 +22,22 @@ import {
   type Building,
   CITY_GRID,
   CONSTRUCTION_BLOCKS,
+  type LocalBox,
   mulberry32,
 } from "@angels-bandits/common/city";
 import { facadeClearances } from "@angels-bandits/common/city/street";
 import { BLOCK_PITCH, EMISSIVE_SIGN } from "@angels-bandits/common/constants";
-import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
+import {
+  type Vec3,
+  wrapDelta,
+  wrapDeltaAxis,
+} from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { FacadeArchetype, archetypeFor } from "./archetypes";
 import { emissiveBoost } from "./emissive";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { type SignPlacement, signageFor } from "./signage";
+import { type StandingLayer, StandingMask } from "./standing-watch";
 import { blockOf, blockWindow } from "./streetlife";
 import { facadeFor, pitchSeed, windowPitch } from "./window-pattern";
 import { nearestImage } from "./wrapPlacement";
@@ -766,6 +772,45 @@ export function facadeDetailFor(b: Building, seed: number): FacadeDetail {
   return { boxes, lights };
 }
 
+// --- D8: what still stands ------------------------------------------------
+
+/**
+ * Building `index`'s facade detail as building-local boxes for the standing
+ * filter: its boxes in facadeDetailFor order, then its work lights. Nothing
+ * stands more than MAX_PROTRUSION off its facade, so every box is judged
+ * whole (a scaffold pole the height of the street tier goes with the first
+ * floor above it that falls).
+ */
+export function facadeDetailStandingLayer(
+  buildings: readonly Building[],
+  seed: number,
+): StandingLayer {
+  const cache = new Map<number, LocalBox[]>();
+  return {
+    boxes(index) {
+      let out = cache.get(index);
+      if (out) return out;
+      const b = buildings[index] as Building;
+      const d = facadeDetailFor(b, seed);
+      out = [...d.boxes, ...d.lights].map((box) => {
+        const { min, max } = detailBounds(box);
+        const x = wrapDeltaAxis(b.x, box.x);
+        const z = wrapDeltaAxis(b.z, box.z);
+        return {
+          x0: x + (min.x - box.x),
+          x1: x + (max.x - box.x),
+          y0: min.y,
+          y1: max.y,
+          z0: z + (min.z - box.z),
+          z1: z + (max.z - box.z),
+        };
+      });
+      cache.set(index, out);
+      return out;
+    },
+  };
+}
+
 // --- Renderer: streamed per block, faded on the GPU ---
 
 /** Distance fade (vertex shader, per instance): full size inside FADE_NEAR,
@@ -806,6 +851,12 @@ interface BlockData {
   boxColors: Float32Array;
   lightCount: number;
   lightMatrices: Float32Array;
+  /** D8: the block's buildings, and where each one's boxes / lights start
+   * in it (one past the last at the end) — a building's items are
+   * contiguous, boxes then lights, in its StandingLayer order. */
+  buildings: Int32Array;
+  boxStart: Int32Array;
+  lightStart: Int32Array;
 }
 
 /** Instanced facade detail: one lit box mesh + one work-light mesh. */
@@ -817,8 +868,22 @@ export class FacadeDetailRenderer {
   private lastBlock = -1;
   /** O3 quality tier: whether the detail is drawn at all. */
   private tierOn = true;
+  /** D8: hides re-patch the streamed buffers in place. */
+  private readonly standing: StandingMask;
+  /** D8: each streamed building's first box / light slot and its block. */
+  private readonly streamedBox = new Map<number, number>();
+  private readonly streamedLight = new Map<number, number>();
+  private readonly streamedBlock = new Map<number, BlockData>();
+  private readonly blockOfBuilding: Int32Array;
+  private readonly shiftOf = new Map<BlockData, { dx: number; dz: number }>();
 
   constructor(buildings: readonly Building[], seed: number) {
+    this.standing = new StandingMask(
+      buildings,
+      facadeDetailStandingLayer(buildings, seed),
+      (b) => this.patch(b),
+    );
+    this.blockOfBuilding = new Int32Array(buildings.length);
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const e = new THREE.Euler();
@@ -838,18 +903,35 @@ export class FacadeDetailRenderer {
 
     const perBlock = new Map<
       number,
-      { boxes: DetailBox[]; lights: DetailBox[] }
+      {
+        boxes: DetailBox[];
+        lights: DetailBox[];
+        ids: number[];
+        boxStart: number[];
+        lightStart: number[];
+      }
     >();
-    for (const b of buildings) {
+    buildings.forEach((b, i) => {
       const { bx, bz } = blockOf({ x: b.x, y: 0, z: b.z });
       const key = bx * CITY_GRID + bz;
-      const entry = perBlock.get(key) ?? { boxes: [], lights: [] };
+      this.blockOfBuilding[i] = key;
+      const entry = perBlock.get(key) ?? {
+        boxes: [],
+        lights: [],
+        ids: [],
+        boxStart: [],
+        lightStart: [],
+      };
       const detail = facadeDetailFor(b, seed);
+      entry.ids.push(i);
+      entry.boxStart.push(entry.boxes.length);
+      entry.lightStart.push(entry.lights.length);
       entry.boxes.push(...detail.boxes);
       entry.lights.push(...detail.lights);
       perBlock.set(key, entry);
-    }
-    for (const [key, { boxes, lights }] of perBlock) {
+    });
+    for (const [key, entry] of perBlock) {
+      const { boxes, lights } = entry;
       const boxMatrices = new Float32Array(boxes.length * 16);
       const boxColors = new Float32Array(boxes.length * 3);
       boxes.forEach((box, i) => {
@@ -866,6 +948,9 @@ export class FacadeDetailRenderer {
         boxColors,
         lightCount: lights.length,
         lightMatrices,
+        buildings: Int32Array.from(entry.ids),
+        boxStart: Int32Array.from([...entry.boxStart, boxes.length]),
+        lightStart: Int32Array.from([...entry.lightStart, lights.length]),
       });
     }
 
@@ -937,6 +1022,7 @@ export class FacadeDetailRenderer {
    * per frame; the fade runs on the GPU.
    */
   update(cameraPos: Vec3, enabled = true): void {
+    this.standing.update(); // D8: patches streamed buildings in place
     const visible =
       enabled && this.tierOn && cameraPos.y < FADE_FAR + DETAIL_TOP;
     this.mesh.visible = visible;
@@ -957,12 +1043,28 @@ export class FacadeDetailRenderer {
     const lightMatrices = this.lightMesh.instanceMatrix.array as Float32Array;
     let nb = 0;
     let nl = 0;
+    this.streamedBox.clear();
+    this.streamedLight.clear();
+    this.streamedBlock.clear();
     for (const w of blockWindow(cameraPos)) {
       const d = this.blocks.get(w.bx * CITY_GRID + w.bz);
       if (!d) continue;
       const img = nearestImage(center, { x: d.ax, y: 0, z: d.az });
       const dx = img.x - d.ax;
       const dz = img.z - d.az;
+      let shift = this.shiftOf.get(d);
+      if (!shift) {
+        shift = { dx, dz };
+        this.shiftOf.set(d, shift);
+      }
+      shift.dx = dx;
+      shift.dz = dz;
+      for (let j = 0; j < d.buildings.length; j++) {
+        const b = d.buildings[j] as number;
+        this.streamedBox.set(b, nb + (d.boxStart[j] as number));
+        this.streamedLight.set(b, nl + (d.lightStart[j] as number));
+        this.streamedBlock.set(b, d);
+      }
       matrices.set(d.boxMatrices, nb * 16);
       colors.set(d.boxColors, nb * 3);
       for (let i = nb; i < nb + d.boxCount; i++) {
@@ -975,6 +1077,12 @@ export class FacadeDetailRenderer {
           (lightMatrices[i * 16 + 12] as number) + dx;
         lightMatrices[i * 16 + 14] =
           (lightMatrices[i * 16 + 14] as number) + dz;
+      }
+      // D8: what no longer stands streams in hidden.
+      for (let j = 0; j < d.buildings.length; j++) {
+        if (this.standing.hiddenOf(d.buildings[j] as number)) {
+          this.writeBuilding(d.buildings[j] as number, false);
+        }
       }
       nb += d.boxCount;
       nl += d.lightCount;
@@ -989,6 +1097,61 @@ export class FacadeDetailRenderer {
       if (!attr) continue;
       attr.clearUpdateRanges();
       attr.addUpdateRange(0, Math.max(1, n) * size);
+      attr.needsUpdate = true;
+    }
+  }
+
+  /** D8: building `b`'s standing flags changed — re-write its streamed
+   * instances in place (nothing when it is outside the streamed window). */
+  private patch(b: number): void {
+    if (!this.streamedBlock.has(b)) return;
+    this.writeBuilding(b, true);
+  }
+
+  /** Write building `b`'s streamed instances from its block's precomputed
+   * matrices: shown ones as streamed, hidden ones as zero-scale. */
+  private writeBuilding(b: number, upload: boolean): void {
+    const d = this.streamedBlock.get(b);
+    const at = this.streamedBox.get(b);
+    const lightAt = this.streamedLight.get(b);
+    const shift = d && this.shiftOf.get(d);
+    if (!d || at === undefined || lightAt === undefined || !shift) return;
+    const j = d.buildings.indexOf(b);
+    const b0 = d.boxStart[j] as number;
+    const b1 = d.boxStart[j + 1] as number;
+    const l0 = d.lightStart[j] as number;
+    const l1 = d.lightStart[j + 1] as number;
+    const hidden = this.standing.hiddenOf(b);
+    const put = (
+      src: Float32Array,
+      dst: Float32Array,
+      from: number,
+      to: number,
+      slot: number,
+      k0: number,
+    ) => {
+      for (let i = from; i < to; i++) {
+        const o = (slot + i - from) * 16;
+        if (hidden?.[k0 + i - from]) {
+          dst.fill(0, o, o + 16);
+          continue;
+        }
+        for (let e = 0; e < 16; e++) dst[o + e] = src[i * 16 + e] as number;
+        dst[o + 12] = (dst[o + 12] as number) + shift.dx;
+        dst[o + 14] = (dst[o + 14] as number) + shift.dz;
+      }
+    };
+    const matrices = this.mesh.instanceMatrix.array as Float32Array;
+    const lightMatrices = this.lightMesh.instanceMatrix.array as Float32Array;
+    put(d.boxMatrices, matrices, b0, b1, at, 0);
+    put(d.lightMatrices, lightMatrices, l0, l1, lightAt, b1 - b0);
+    if (!upload) return;
+    for (const [attr, from, n] of [
+      [this.mesh.instanceMatrix, at, b1 - b0],
+      [this.lightMesh.instanceMatrix, lightAt, l1 - l0],
+    ] as const) {
+      if (n <= 0) continue;
+      attr.addUpdateRange(from * 16, n * 16);
       attr.needsUpdate = true;
     }
   }

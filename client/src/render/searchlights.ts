@@ -22,8 +22,11 @@
 //
 // Stations and sweeps are pure functions of (city, server time) — no seed
 // stream of its own, no state — so every client sweeps in lockstep.
+//
+// D8: a station stands on its tower's roof; once that deck is gone (a felled
+// or chewed-off top), its lamp and beam go with it until the rebuild.
 
-import type { Building } from "@angels-bandits/common/city";
+import type { Building, LocalBox } from "@angels-bandits/common/city";
 import {
   EMISSIVE_BEACON,
   LANDMARK_HEIGHT,
@@ -35,6 +38,7 @@ import { AB_FOG_DISTANCE_GLSL, AB_FOG_GLSL } from "./fog";
 import type { MoverLights } from "./movers";
 import { trackPlanesInto } from "./reactions";
 import { RENDER_ORDER } from "./render-order";
+import { type StandingLayer, StandingMask } from "./standing-watch";
 import { glslFloat } from "./window-pattern";
 import { nearestImage, nearestImageInto } from "./wrapPlacement";
 
@@ -71,6 +75,8 @@ export interface SearchlightStation {
   z: number;
   /** Phase offset into the sweep cycle, 0..1. */
   phase: number;
+  /** D8: the index of the building it stands on (-1: none). */
+  building: number;
 }
 
 /**
@@ -104,15 +110,16 @@ export function searchlightStations(
   buildings: readonly Building[],
 ): SearchlightStation[] {
   const candidates = buildings
-    .filter((b) => b.height < LANDMARK_HEIGHT)
-    .slice()
-    .sort((a, b) => b.height - a.height || a.x - b.x || a.z - b.z)
+    .map((b, index) => ({ b, index }))
+    .filter(({ b }) => b.height < LANDMARK_HEIGHT)
+    .sort(({ b: a }, { b }) => b.height - a.height || a.x - b.x || a.z - b.z)
     .slice(0, SEARCHLIGHT_COUNT);
-  return candidates.map((b, i) => ({
+  return candidates.map(({ b, index }, i) => ({
     x: b.x,
     y: b.height,
     z: b.z,
     phase: i / SEARCHLIGHT_COUNT,
+    building: index,
   }));
 }
 
@@ -125,9 +132,39 @@ export function leaderStation(
   buildings: readonly Building[],
 ): SearchlightStation | null {
   const tower = buildings
-    .filter((b) => b.height >= LANDMARK_HEIGHT)
-    .sort((a, b) => a.x - b.x || a.z - b.z)[0];
-  return tower ? { x: tower.x, y: tower.height, z: tower.z, phase: 0 } : null;
+    .map((b, index) => ({ b, index }))
+    .filter(({ b }) => b.height >= LANDMARK_HEIGHT)
+    .sort(({ b: a }, { b }) => a.x - b.x || a.z - b.z)[0];
+  return tower
+    ? {
+        x: tower.b.x,
+        y: tower.b.height,
+        z: tower.b.z,
+        phase: 0,
+        building: tower.index,
+      }
+    : null;
+}
+
+/** D8: the lamp a station stands on its roof as, in its building's frame. */
+const LAMP_BOX: LocalBox = { x0: -1, x1: 1, y0: 0, y1: 3, z0: -1, z1: 1 };
+
+/** D8: the searchlights StandingLayer — each station's (and the leader
+ * lamp's) roof box; a building carries at most one. */
+export function searchlightsStandingLayer(
+  buildings: readonly Building[],
+): StandingLayer {
+  const lamps = new Map<number, LocalBox[]>();
+  const leader = leaderStation(buildings);
+  for (const s of [
+    ...searchlightStations(buildings),
+    ...(leader ? [leader] : []),
+  ]) {
+    lamps.set(s.building, [
+      { ...LAMP_BOX, y0: s.y + LAMP_BOX.y0, y1: s.y + LAMP_BOX.y1 },
+    ]);
+  }
+  return { boxes: (index) => lamps.get(index) ?? [] };
 }
 
 /**
@@ -491,8 +528,14 @@ export class Searchlights {
   private readonly leaderAim = { x: 0, y: 0, z: 0 };
   /** Beams drawn last frame — for the perf report. */
   private drawn = 0;
+  /** D8: a station whose roof is gone goes dark. */
+  private readonly mask: StandingMask;
 
   constructor(buildings: readonly Building[]) {
+    this.mask = new StandingMask(
+      buildings,
+      searchlightsStandingLayer(buildings),
+    );
     this.stations = searchlightStations(buildings);
     this.leaderLamp = leaderStation(buildings);
     this.leaderSlot = this.leaderLamp ? this.stations.length : -1;
@@ -554,6 +597,11 @@ export class Searchlights {
     lights?: MoverLights,
   ): void {
     const lamp = this.leaderLamp as SearchlightStation;
+    if (this.mask.isHidden(lamp.building, 0)) {
+      this.matrix.makeScale(0, 0, 0);
+      this.mesh.setMatrixAt(index, this.matrix);
+      return;
+    }
     this.lamp.x = lamp.x;
     this.lamp.y = lamp.y + 1.5;
     this.lamp.z = lamp.z;
@@ -609,8 +657,15 @@ export class Searchlights {
     }
     this.mesh.visible = true;
     this.uniforms.uTime.value = (serverTimeMs / 1000) % 1000;
+    this.mask.update();
     let index = 0;
     for (const station of this.stations) {
+      // D8: a felled roof's lamp is gone (its slot keeps its tint).
+      if (this.mask.isHidden(station.building, 0)) {
+        this.matrix.makeScale(0, 0, 0);
+        this.mesh.setMatrixAt(index++, this.matrix);
+        continue;
+      }
       const p = nearestImage(cameraPos, {
         x: station.x,
         y: station.y,

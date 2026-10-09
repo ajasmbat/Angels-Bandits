@@ -20,9 +20,18 @@
 // (cloth sways in the shared wind) and, for pigeons, by the shared pass
 // uniforms (lookup.ts) — so nothing is uploaded per frame but uniforms.
 
-import { type Building, mulberry32 } from "@angels-bandits/common/city";
+import {
+  type Building,
+  type LocalBox,
+  STAND_OUT,
+  mulberry32,
+} from "@angels-bandits/common/city";
 import { facadeClearances } from "@angels-bandits/common/city/street";
-import { wrapCoord, wrapDelta } from "@angels-bandits/common/world";
+import {
+  wrapCoord,
+  wrapDelta,
+  wrapDeltaAxis,
+} from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { FacadeArchetype, archetypeFor } from "./archetypes";
 import {
@@ -41,6 +50,7 @@ import { FLUTTER_SETTLE_S, LOOK_GLSL_PARS, W_GLSL, lookPasses } from "./lookup";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { CYCLES_PER_LOOP, loopPhase } from "./rooftop-life";
 import { signageFor } from "./signage";
+import { BakedHider, type StandingLayer, StandingMask } from "./standing-watch";
 import { pitchSeed, windowPitch } from "./window-pattern";
 
 // --- Layout rules ----------------------------------------------------------
@@ -477,6 +487,95 @@ export function itemExtent(item: LaundryLine | FacadeFlag | Banner): {
   };
 }
 
+// --- D8: what still stands --------------------------------------------------
+
+/** How many items a building's life bakes (laundry, flags, banners,
+ * pigeons — the bake's and the standing layer's item order). */
+const itemCount = (life: FacadeLife): number =>
+  life.laundry.length +
+  life.flags.length +
+  life.banners.length +
+  life.pigeons.length;
+
+/**
+ * Building `b`'s facade life as building-local boxes, in bake order. A
+ * pigeon on an entrance canopy can sit further out than STAND_OUT; it is
+ * judged by its anchor, pulled back to STAND_OUT off the tier-1 wall.
+ */
+export function facadeLifeBoxes(b: Building, life: FacadeLife): LocalBox[] {
+  const out: LocalBox[] = [];
+  // A facade item: `out0..out1` off plane `plane`, along `a0..a1`.
+  const onFace = (
+    axis: "x" | "z",
+    dir: -1 | 1,
+    plane: number,
+    a0: number,
+    a1: number,
+    y0: number,
+    y1: number,
+    reach: number,
+  ) => {
+    const n0 = wrapDeltaAxis(axis === "x" ? b.x : b.z, plane);
+    const n1 = n0 + dir * reach;
+    const l0 = wrapDeltaAxis(axis === "x" ? b.z : b.x, a0);
+    const l1 = l0 + (a1 - a0);
+    const lo = Math.min(n0, n1);
+    const hi = Math.max(n0, n1);
+    out.push(
+      axis === "x"
+        ? { x0: lo, x1: hi, y0, y1, z0: l0, z1: l1 }
+        : { x0: l0, x1: l1, y0, y1, z0: lo, z1: hi },
+    );
+  };
+  for (const l of life.laundry) {
+    const e = itemExtent(l);
+    onFace(l.axis, l.dir, l.plane, l.a0, l.a1, e.low, l.y + 0.1, e.out);
+  }
+  const rise = FLAG_REACH * Math.tan(FLAG_ELEVATION);
+  for (const f of life.flags) {
+    const e = itemExtent(f);
+    onFace(f.axis, f.dir, f.plane, e.a0, e.a1, f.y - 0.8, f.y + rise, e.out);
+  }
+  for (const bn of life.banners) {
+    const e = itemExtent(bn);
+    onFace(bn.axis, bn.dir, bn.plane, e.a0, e.a1, bn.y0, bn.y1, e.out);
+  }
+  const hw = b.width / 2 + STAND_OUT;
+  const hd = b.depth / 2 + STAND_OUT;
+  for (const pg of life.pigeons) {
+    const x = Math.max(-hw, Math.min(hw, wrapDeltaAxis(b.x, pg.x)));
+    const z = Math.max(-hd, Math.min(hd, wrapDeltaAxis(b.z, pg.z)));
+    out.push({
+      x0: x - 0.2,
+      x1: x + 0.2,
+      y0: pg.y,
+      y1: pg.y + 0.2,
+      z0: z - 0.2,
+      z1: z + 0.2,
+    });
+  }
+  return out;
+}
+
+/** The standing layer over every building's facade life. */
+export function facadeLifeStandingLayer(
+  buildings: readonly Building[],
+  seed: number,
+): StandingLayer {
+  const cache = new Map<number, LocalBox[]>();
+  return {
+    boxes(index) {
+      let out = cache.get(index);
+      if (!out) {
+        const b = buildings[index] as Building;
+        out = facadeLifeBoxes(b, facadeLifeFor(b, seed));
+        cache.set(index, out);
+      }
+      return out;
+    },
+  };
+}
+
 // --- Baking --------------------------------------------------------------------
 
 /** Animation tags (aAnim.x). */
@@ -494,6 +593,9 @@ export interface BakedFacadeLife {
   pivots: Float32Array;
   anims: Float32Array;
   vertexCount: number;
+  /** D8: item i's vertices are starts[i]..starts[i + 1] (items in
+   * facadeLifeBoxes order, building after building). */
+  starts: Int32Array;
 }
 
 class Baker {
@@ -609,8 +711,11 @@ const local = (
 
 export function bakeFacadeLife(lives: readonly FacadeLife[]): BakedFacadeLife {
   const k = new Baker();
+  const starts: number[] = [];
+  const mark = () => starts.push(k.p.length / 3);
   for (const life of lives) {
     for (const line of life.laundry) {
+      mark();
       const mid = (line.a0 + line.a1) / 2;
       const half = (line.a1 - line.a0) / 2;
       const [px, , pz] = local(line.axis, line.dir, 0, mid, 0);
@@ -659,6 +764,7 @@ export function bakeFacadeLife(lives: readonly FacadeLife[]): BakedFacadeLife {
       }
     }
     for (const f of life.flags) {
+      mark();
       const onX = f.axis === "x";
       k.pivot = {
         x: wrapCoord(onX ? f.plane : f.along),
@@ -711,6 +817,7 @@ export function bakeFacadeLife(lives: readonly FacadeLife[]): BakedFacadeLife {
       }
     }
     for (const bn of life.banners) {
+      mark();
       const onX = bn.axis === "x";
       k.pivot = {
         x: wrapCoord(onX ? bn.plane : bn.along),
@@ -747,6 +854,7 @@ export function bakeFacadeLife(lives: readonly FacadeLife[]): BakedFacadeLife {
       seg(h * 0.12, h * 0.96, bn.color);
     }
     for (const pg of life.pigeons) {
+      mark();
       k.pivot = { x: pg.x, y: pg.y, z: pg.z, fold: FOLD_PIGEON };
       const c = Math.cos(pg.yaw);
       const s = Math.sin(pg.yaw);
@@ -777,6 +885,7 @@ export function bakeFacadeLife(lives: readonly FacadeLife[]): BakedFacadeLife {
       }
     }
   }
+  mark();
   return {
     positions: new Float32Array(k.p),
     normals: new Float32Array(k.n),
@@ -784,6 +893,7 @@ export function bakeFacadeLife(lives: readonly FacadeLife[]): BakedFacadeLife {
     pivots: new Float32Array(k.pv),
     anims: new Float32Array(k.an),
     vertexCount: k.p.length / 3,
+    starts: Int32Array.from(starts),
   };
 }
 
@@ -865,10 +975,19 @@ export class FacadeLifeRenderer {
   };
   private readonly loop = { value: 0 };
   private tierOn = true;
+  /** D8: items on what no longer stands drop out of the bake. */
+  private readonly standing: StandingMask;
+  private readonly hider: BakedHider;
+  /** Each building's first item in the bake (one past the last at the end). */
+  private readonly firstItem: Int32Array;
 
   constructor(buildings: readonly Building[], seed: number) {
     const lives = buildings.map((b) => facadeLifeFor(b, seed));
     const baked = bakeFacadeLife(lives);
+    this.firstItem = new Int32Array(lives.length + 1);
+    lives.forEach((life, i) => {
+      this.firstItem[i + 1] = (this.firstItem[i] as number) + itemCount(life);
+    });
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute(
       "position",
@@ -904,6 +1023,21 @@ export class FacadeLifeRenderer {
     // space at the camera's torus image (the rooftop-life idiom).
     this.mesh = new THREE.Mesh(geometry, material);
     this.mesh.frustumCulled = false;
+    const position = geometry.getAttribute("position") as THREE.BufferAttribute;
+    position.setUsage(THREE.DynamicDrawUsage);
+    this.hider = new BakedHider(position, baked.starts);
+    this.standing = new StandingMask(
+      buildings,
+      facadeLifeStandingLayer(buildings, seed),
+      (b) => {
+        const first = this.firstItem[b] as number;
+        const n = (this.firstItem[b + 1] as number) - first;
+        for (let k = 0; k < n; k++) {
+          this.hider.setHidden(first + k, this.standing.isHidden(b, k));
+        }
+        this.hider.flush();
+      },
+    );
     this.counts = {
       laundry: lives.reduce((n, l) => n + l.laundry.length, 0),
       flags: lives.reduce((n, l) => n + l.flags.length, 0),
@@ -920,6 +1054,7 @@ export class FacadeLifeRenderer {
 
   /** Per frame: the synced clock (or local time before the first snapshot). */
   update(timeMs: number, on = true): void {
+    this.standing.update(); // D8
     this.mesh.visible = this.tierOn && on;
     this.loop.value = loopPhase(timeMs);
   }

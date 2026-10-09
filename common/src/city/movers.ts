@@ -59,6 +59,7 @@ import {
   wrapCoord,
   wrapDeltaAxis,
 } from "../world/index";
+import { type CollapseField, collideCollapses } from "./collapse";
 import { type Building, mulberry32 } from "./index";
 import { CONSTRUCTION_BLOCKS } from "./layout";
 import {
@@ -85,7 +86,10 @@ export type MoverKind =
   | "boat"
   // L5's elevated train (city/train.ts): the static deck and pillars, a car.
   | "viaduct"
-  | "train";
+  | "train"
+  // D3 collapses (city/collapse.ts): a chunk still falling, or its rubble.
+  | "debris"
+  | "rubble";
 
 /**
  * An oriented box. `x`/`z` are canonical in [0, WORLD_SIZE); `y` is the
@@ -171,6 +175,10 @@ export interface MoverField {
   /** L5/T2's elevated train lines (0-2, none when no loop fits the city).
    * Optional so a hand-built field (tests, EMPTY_MOVERS) need not mention it. */
   readonly trains?: readonly TrainLine[];
+  /** D3: the room's collapses — falling debris and the rubble it became, a
+   * pure function of each event and the clock like everything here. The
+   * room's ONE field (reset in place), so set once when the field is made. */
+  readonly collapses?: CollapseField;
 }
 
 /** A room's field: the seed's shared cranes and aircraft plus its own news
@@ -598,7 +606,22 @@ export function collideMovers(
     const hit = collideTrains(field.trains, pos, radius, timeMs);
     if (hit) return hit;
   }
-  return hitBoat(pos, radius, field, timeMs);
+  return hitBoat(pos, radius, field, timeMs) ?? hitCollapse(pos, radius, field, timeMs);
+}
+
+/** D3: the collapse piece the sphere touches, as a mover hit (id = the
+ * collapse's id). */
+function hitCollapse(
+  pos: Vec3,
+  radius: number,
+  field: MoverField,
+  timeMs: number,
+): MoverHit | null {
+  if (!field.collapses || field.collapses.list.length === 0) return null;
+  const hit = collideCollapses(pos, radius, field.collapses.list, timeMs);
+  return hit
+    ? { kind: hit.falling ? "debris" : "rubble", id: hit.collapse.id }
+    : null;
 }
 
 /**
@@ -646,7 +669,9 @@ export function collideBotMovers(
   }
   // Boats are solid for bots too: a chaser following a target under a bridge
   // flies the boats' height band, and bots must never die to scenery.
-  return hitBoat(pos, radius, field, timeMs);
+  // D3 debris and rubble too: bots probe them at arrival time, so they dodge
+  // a falling chunk where it WILL be, and route round the rubble after.
+  return hitBoat(pos, radius, field, timeMs) ?? hitCollapse(pos, radius, field, timeMs);
 }
 
 /** The L11 boat the sphere touches, as a mover hit (id = fleet index). */

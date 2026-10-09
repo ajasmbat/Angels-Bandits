@@ -58,11 +58,17 @@ export const chunkTier = (id: number): number =>
   Math.floor(id / MAX_CELLS) % MAX_TIERS;
 export const chunkCell = (id: number): number => id % MAX_CELLS;
 
+/** BuildingDamage.cells values: a chunk shot or blasted out (it drops D2
+ * street rubble) and one that fell in a D3 collapse (its debris lands as
+ * the collapse's own rubble, city/collapse.ts). Any non-zero cell is gone. */
+export const CELL_BROKEN = 1;
+export const CELL_FALLEN = 2;
+
 /** One building's destruction, written by CityDamage and read by solids(). */
 export interface BuildingDamage {
   /** The building's index in its city array (the chunk id prefix). */
   readonly index: number;
-  /** Per tier: 1 where the cell is destroyed. */
+  /** Per tier: CELL_BROKEN or CELL_FALLEN where the cell is gone, else 0. */
   readonly cells: Uint8Array[];
   /** Destroyed chunks in this building. */
   count: number;
@@ -373,6 +379,23 @@ function pushPiece(
 }
 
 /**
+ * The solid volume of one chunk as the building was generated: its cell
+ * clipped to the tier's hole-split base boxes (one box for an unholed tier,
+ * up to three around a hole), each tagged with the faces that lay inside
+ * the tier — what D3 drops when the chunk falls. Pure in the geometry.
+ */
+export function cellSolids(b: Building, tier: number, cell: number): SolidBox[] {
+  const g = tierGrids(b)[tier];
+  if (!g || cell < 0 || cell >= g.nx * g.ny * g.nz) return [];
+  const region = cellBox(g, cell);
+  const out: SolidBox[] = [];
+  for (const s of baseSolids(b)) {
+    if (s.tierIndex === tier) pushPiece(out, region, solidExtent(s), tier);
+  }
+  return out;
+}
+
+/**
  * The solids of a damaged building: each damaged tier's intact cells merged
  * into few boxes (runs of whole intact floor bands become one box; a band
  * with damage becomes x-runs per depth slice) and clipped to the tier's
@@ -387,7 +410,7 @@ export function damagedSolids(b: Building, dmg: BuildingDamage): SolidBox[] {
     const g = grids[k] as TierGrid;
     const cells = dmg.cells[k];
     const tierBoxes = base.filter((s) => s.tierIndex === k);
-    if (!cells || !cells.includes(1)) {
+    if (!cells || cells.every((v) => v === 0)) {
       out.push(...tierBoxes);
       continue;
     }
@@ -453,7 +476,7 @@ export function damagedSolids(b: Building, dmg: BuildingDamage): SolidBox[] {
 }
 
 /**
- * Rubble: every destroyed chunk drops onto the nearest OPEN tier-0 face
+ * Rubble: every broken (not fallen) chunk drops onto the nearest OPEN tier-0 face
  * (open ground for RUBBLE_REACH — a street-facing sidewalk or a yard, never
  * a party wall) within RUBBLE_FALL_RANGE of its centre, in the tier-0 bay
  * its centre projects onto. Each slot is one low box against the facade,
@@ -480,7 +503,8 @@ function pushRubble(out: SolidBox[], b: Building, dmg: BuildingDamage): void {
     const cells = dmg.cells[k];
     if (!cells) continue;
     for (let c = 0; c < cells.length; c++) {
-      if (!cells[c]) continue;
+      // Fallen chunks land as their collapse's rubble, not here.
+      if (cells[c] !== CELL_BROKEN) continue;
       cellBox(g, c, box);
       const cx = (box.x0 + box.x1) / 2;
       const cz = (box.z0 + box.z1) / 2;
@@ -592,6 +616,11 @@ function boxDistance(p: Vec3, box: LocalBox): number {
 export class CityDamage {
   private buildings: readonly Building[] | null = null;
   private readonly destroyed = new Set<number>();
+  /** D3: chunks that fell in a collapse. Kept apart from `destroyed`: they
+   * never count toward DESTROY_CAP, never go out in `chunks` batches or the
+   * welcome's `destroyed` — a client rebuilds them from the collapse records
+   * (CollapseField), so a late joiner holds exactly what a live one does. */
+  private readonly fallen = new Set<number>();
   private readonly hp = new Map<number, number>();
   private pending: number[] = [];
   private openFaces: Int8Array | null = null;
@@ -612,9 +641,12 @@ export class CityDamage {
     this.total = total;
     this.limit = Math.floor(total * DESTROY_CAP);
     const held = [...this.destroyed];
+    const fell = [...this.fallen];
     this.destroyed.clear();
+    this.fallen.clear();
     for (const b of buildings) b.damage = undefined;
-    for (const id of held) this.mark(id);
+    for (const id of held) this.mark(id, CELL_BROKEN);
+    for (const id of fell) this.mark(id, CELL_FALLEN);
     this.version++;
   }
 
@@ -629,6 +661,16 @@ export class CityDamage {
 
   isDestroyed(id: number): boolean {
     return this.destroyed.has(id);
+  }
+
+  /** D3: chunks that fell in collapses. */
+  get fallenCount(): number {
+    return this.fallen.size;
+  }
+
+  /** Broken or fallen: no longer part of the building. */
+  isGone(id: number): boolean {
+    return this.destroyed.has(id) || this.fallen.has(id);
   }
 
   /** The destroyed set, ascending — the welcome's replay. */
@@ -648,34 +690,55 @@ export class CityDamage {
   apply(ids: readonly number[]): void {
     let changed = false;
     for (const id of ids) {
-      if (this.destroyed.has(id)) continue;
+      if (this.isGone(id)) continue;
       if (this.buildings && !isChunk(this.buildings, id)) continue;
-      this.mark(id);
+      this.mark(id, CELL_BROKEN);
       changed = true;
     }
     if (changed) this.version++;
   }
 
-  /** Make the destroyed set exactly `ids` (a welcome; may shrink it). */
+  /** Make the destroyed set exactly `ids` (a welcome; may shrink it) and
+   * forget every fallen chunk — the caller replays the collapse records. */
   reset(ids: readonly number[]): void {
     this.destroyed.clear();
+    this.fallen.clear();
     this.hp.clear();
     this.pending = [];
     if (this.buildings) for (const b of this.buildings) b.damage = undefined;
     for (const id of ids) {
       if (this.buildings && !isChunk(this.buildings, id)) continue;
-      if (!this.destroyed.has(id)) this.mark(id);
+      if (!this.destroyed.has(id)) this.mark(id, CELL_BROKEN);
     }
     this.version++;
+  }
+
+  /**
+   * D3: these chunks fell in a collapse. Exempt from DESTROY_CAP (a collapse
+   * must never leave anything floating) and never queued for `chunks`: the
+   * collapse record itself carries them. A chunk already broken stays
+   * broken (its D2 rubble is already on the street).
+   */
+  collapse(ids: readonly number[]): void {
+    let changed = false;
+    for (const id of ids) {
+      if (this.isGone(id)) continue;
+      if (this.buildings && !isChunk(this.buildings, id)) continue;
+      this.fallen.add(id);
+      this.hp.delete(id);
+      if (this.buildings) this.writeCell(id, CELL_FALLEN);
+      changed = true;
+    }
+    if (changed) this.version++;
   }
 
   /** Destroy one chunk outright. False if it was already gone, is not a
    * chunk, or the city is at DESTROY_CAP. */
   destroyChunk(id: number): boolean {
-    if (!this.buildings || this.destroyed.has(id)) return false;
+    if (!this.buildings || this.isGone(id)) return false;
     if (!isChunk(this.buildings, id)) return false;
     if (this.destroyed.size >= this.limit) return false;
-    this.mark(id);
+    this.mark(id, CELL_BROKEN);
     this.hp.delete(id);
     this.pending.push(id);
     this.version++;
@@ -685,7 +748,7 @@ export class CityDamage {
   /** Take `amount` off a chunk; true when that destroyed it. At the cap a
    * chunk bottoms out at 1 HP and stands. */
   damageChunk(id: number, amount: number): boolean {
-    if (!this.buildings || this.destroyed.has(id) || !(amount > 0)) {
+    if (!this.buildings || this.isGone(id) || !(amount > 0)) {
       return false;
     }
     if (!isChunk(this.buildings, id)) return false;
@@ -701,7 +764,7 @@ export class CityDamage {
 
   /** Remaining HP of a standing chunk (0 once destroyed). */
   hpOf(id: number): number {
-    if (this.destroyed.has(id)) return 0;
+    if (this.isGone(id)) return 0;
     return this.hp.get(id) ?? CHUNK_HP;
   }
 
@@ -743,11 +806,15 @@ export class CityDamage {
     return out;
   }
 
-  /** Record `id` as destroyed and write it through to its building. */
-  private mark(id: number): void {
-    this.destroyed.add(id);
-    const buildings = this.buildings;
-    if (!buildings) return;
+  /** Record `id` as gone (`kind`) and write it through to its building. */
+  private mark(id: number, kind: number): void {
+    (kind === CELL_FALLEN ? this.fallen : this.destroyed).add(id);
+    if (this.buildings) this.writeCell(id, kind);
+  }
+
+  /** Write one gone cell through to its building's damage record. */
+  private writeCell(id: number, kind: number): void {
+    const buildings = this.buildings as readonly Building[];
     const index = chunkBuilding(id);
     const b = buildings[index] as Building;
     let dmg = b.damage;
@@ -766,10 +833,8 @@ export class CityDamage {
       b.damage = dmg;
     }
     const cells = dmg.cells[chunkTier(id)] as Uint8Array;
-    if (!cells[chunkCell(id)]) {
-      cells[chunkCell(id)] = 1;
-      dmg.count++;
-    }
+    if (!cells[chunkCell(id)]) dmg.count++;
+    cells[chunkCell(id)] = kind;
     dmg.version = ++damageVersion;
   }
 }
@@ -907,8 +972,8 @@ export function raycastChunk(
     const b = buildings[hit.building] as Building;
     const at = chunkAt(b, local);
     if (at && chunkMask(b)[at.tier]?.[at.cell] === 1) {
-      const destroyed = b.damage?.cells[at.tier]?.[at.cell] === 1;
-      if (!destroyed) hit.chunk = chunkId(hit.building, at.tier, at.cell);
+      const gone = (b.damage?.cells[at.tier]?.[at.cell] ?? 0) !== 0;
+      if (!gone) hit.chunk = chunkId(hit.building, at.tier, at.cell);
     }
   }
   return hit;

@@ -4,6 +4,7 @@
 // keeping every shape in this one file is what makes a binary encoder a later
 // drop-in swap.
 
+import type { CollapseWire } from "./city/collapse";
 import type { NewsHeliSlot, NewsHeliTarget } from "./city/newsheli";
 import type { CityEvent } from "./cityevents";
 import type { Vec3 } from "./world/index";
@@ -115,6 +116,11 @@ export interface HitClaimMsg {
 /** The client flew into a building or the ground (client-auth movement). */
 export interface CrashMsg {
   type: "crash";
+  /** D3: the server-clock time the crash was detected at — the movers'
+   * render time, which falling collapse debris is posed at. The server
+   * clamps it to the pose-age window and uses it only to tell a collapse
+   * kill from a plain crash; absent means "now". */
+  t?: number;
 }
 
 /**
@@ -198,6 +204,11 @@ export interface WelcomeMsg {
    * into another room — sees and collides with the same broken city. The
    * client RESETS to it: the set may be smaller than what it held. */
   destroyed: number[];
+  /** D3: every collapse event in the room, in order (city/collapse.ts
+   * CollapseWire). The client rebuilds each one's debris — falling or long
+   * since landed — and its fallen chunks from exactly these, so a late
+   * joiner sees and collides with what everyone else does. */
+  collapses: CollapseWire[];
   /** S3: every stunt course's leaderboard and record ghost, in course id
    * order (common/src/courses.ts generateCourses for this seed). The rings
    * themselves are never sent — both sides generate them from the seed. */
@@ -361,14 +372,15 @@ export interface DamageMsg {
 }
 
 /** Server-declared death. `killerId` null = un-credited crash or the storm
- * itself (⚡ environment). `"storm"` is the hidden death ceiling's kill bolt —
+ * itself (⚡ environment). `"collapse"` (D3) = crushed by falling debris:
+ * the credit goes to whoever brought the building down. `"storm"` is the hidden death ceiling's kill bolt —
  * clients render the bolt at the victim's last snapshot pose; the wire never
  * carries a warning or a timer (the rule is discovered, not announced). */
 export interface DeathMsg {
   type: "death";
   victimId: string;
   killerId: string | null;
-  cause: "shot" | "crash" | "storm";
+  cause: "shot" | "crash" | "storm" | "collapse";
 }
 
 /**
@@ -442,9 +454,20 @@ export interface AwayStartedMsg {
   type: "awayStarted";
 }
 
+/**
+ * D3: a section of a building collapses. Sent once, the tick it happens;
+ * every client marks `c.c`'s chunks fallen and builds the same debris from
+ * `c` alone (pure in the event and the clock). Old clients ignore it.
+ */
+export interface CollapseMsg {
+  type: "collapse";
+  c: CollapseWire;
+}
+
 export type ServerMsg =
   | WelcomeMsg
   | ChunksMsg
+  | CollapseMsg
   | CourseResultMsg
   | CourseBoardMsg
   | AwayStartedMsg

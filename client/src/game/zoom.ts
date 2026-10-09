@@ -6,10 +6,13 @@
 // common/, and the reduced turn rate is always valid under the server's clamps.
 
 import { BULLET_RANGE } from "@angels-bandits/common/constants";
+import { DEFAULT_TUNING } from "@angels-bandits/common/tuning";
 import type { Vec3 } from "@angels-bandits/common/world";
+import { tuning } from "./tuning";
 
-/** Un-zoomed vertical FOV — the value main.ts builds the camera with. */
-export const BASE_FOV = 70;
+/** Un-zoomed vertical FOV — the value main.ts builds the camera with (FL1:
+ * the shipped default; zoomFov reads the client's live tuning). */
+export const BASE_FOV = DEFAULT_TUNING.baseFov;
 /** Aimed FOV: 2.5× magnification, tight enough to read a bandit at range. */
 export const ZOOM_FOV = 28;
 /** Eye distance behind the plane at full zoom (chase is D(v), 26–36 m). */
@@ -66,9 +69,9 @@ export function stepZoom(s: ZoomState, held: boolean, dt: number): ZoomState {
 
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 
-/** Vertical FOV for the current zoom. Exactly BASE_FOV at z=0. */
+/** Vertical FOV for the current zoom. Exactly the tuning's baseFov at z=0. */
 export function zoomFov(z: number): number {
-  return lerp(BASE_FOV, ZOOM_FOV, z);
+  return lerp(tuning.baseFov, ZOOM_FOV, z);
 }
 
 /** Steering authority for the current zoom. Exactly 1 at z=0. */

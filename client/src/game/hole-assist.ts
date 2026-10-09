@@ -25,12 +25,19 @@
 import type { Building, HoleSpan } from "@angels-bandits/common/city";
 import { type CityIndex, collideCity } from "@angels-bandits/common/collision";
 import { PLAYER_RADIUS } from "@angels-bandits/common/constants";
+import { DEFAULT_TUNING } from "@angels-bandits/common/tuning";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
+import { tuning } from "./tuning";
 
 const DEG = Math.PI / 180;
+// FL1: the reach, the most aim, its rate and the classic stick cap live in
+// the shared FlightTuning (defaults re-exported here under their old names);
+// the code reads the client's live `tuning`, which only the Flight Lab
+// changes.
 /** The assist engages within this of a mouth, m, and is at full weight
- * inside ASSIST_FULL_RANGE (and all the way through the hole). */
-export const ASSIST_RANGE = 80;
+ * inside ASSIST_FULL_RANGE (and all the way through the hole) — or, for a
+ * lab reach under 80 m, inside the same 5/8 of it. */
+export const ASSIST_RANGE = DEFAULT_TUNING.holeAssistRange;
 export const ASSIST_FULL_RANGE = 50;
 /** Misalignment (the larger of heading and elevation off the axis) at which
  * the assist is full, and past which it is off, rad. */
@@ -40,8 +47,8 @@ export const ASSIST_ALIGN_MAX = 20 * DEG;
  * opening than this is flying past the hole, not into it. */
 export const ASSIST_CAPTURE = 6;
 /** The most aim the assist ever adds, rad, and how fast it may change, rad/s. */
-export const ASSIST_MAX_RAD = 4 * DEG;
-export const ASSIST_RATE = 6 * DEG;
+export const ASSIST_MAX_RAD = DEFAULT_TUNING.holeAssistMax;
+export const ASSIST_RATE = DEFAULT_TUNING.holeAssistRate;
 /** Mouse-aim mode: the intended direction is plane → the world point the
  * cursor marks this far out, m (about where the hole is when it engages). */
 export const ASSIST_AIM_RANGE = 120;
@@ -49,7 +56,7 @@ export const ASSIST_AIM_RANGE = 120;
 export const ASSIST_LOOKAHEAD = 40;
 /** Classic mode: the assist's stick share is capped at this, and opposing
  * stick past ASSIST_YIELD makes it yield outright. */
-export const ASSIST_STICK_MAX = 0.15;
+export const ASSIST_STICK_MAX = DEFAULT_TUNING.holeAssistStick;
 export const ASSIST_YIELD = 0.05;
 /** Rad/s of commanded rate per rad of error — the instructor's loop gain, so
  * a classic stick nudge and a mouse-aim bias of the same angle steer alike. */
@@ -119,6 +126,7 @@ export function holeAssistTarget(
 ): boolean {
   out.yaw = 0;
   out.pitch = 0;
+  const range = tuning.holeAssistRange;
   let best: HoleSpan | null = null;
   let bestDist = Number.POSITIVE_INFINITY;
   let bestW = 0;
@@ -142,7 +150,7 @@ export function holeAssistTarget(
     const half = s.length / 2;
     // Before the near mouth (toMouth > 0) or inside; never past the exit.
     const toMouth = -along - half;
-    if (toMouth > ASSIST_RANGE || along >= half) continue;
+    if (toMouth > range || along >= half) continue;
     if (Math.abs(lateral) > width / 2 + ASSIST_CAPTURE) continue;
     if (Math.abs(up) > height / 2 + ASSIST_CAPTURE) continue;
     // Misalignment of the intended direction off the axis.
@@ -161,14 +169,15 @@ export function holeAssistTarget(
     best = s;
     bestDist = dist;
     bestW =
-      fade(dist, ASSIST_FULL_RANGE, ASSIST_RANGE) *
+      fade(dist, Math.min(ASSIST_FULL_RANGE, range * 0.625), range) *
       fade(mis, ASSIST_ALIGN_FULL, ASSIST_ALIGN_MAX);
     bestYaw = (wantHeading - heading) * rightSign;
     bestPitch = wantElev - elev;
   }
   if (!best || bestW <= 0) return false;
-  const yaw = clamp(bestYaw, -ASSIST_MAX_RAD, ASSIST_MAX_RAD) * bestW;
-  const pitch = clamp(bestPitch, -ASSIST_MAX_RAD, ASSIST_MAX_RAD) * bestW;
+  const maxRad = tuning.holeAssistMax;
+  const yaw = clamp(bestYaw, -maxRad, maxRad) * bestW;
+  const pitch = clamp(bestPitch, -maxRad, maxRad) * bestW;
   // Never into a solid: the nudged sweep must not hit sooner than the
   // pilot's own. Small angles: rotate `dir` by yaw about up, pitch about
   // the right vector (first order is plenty at ≤ 4°).
@@ -198,7 +207,7 @@ export function stepHoleAssist(
   target: HoleAssist,
   dt: number,
 ): void {
-  const max = ASSIST_RATE * dt;
+  const max = tuning.holeAssistRate * dt;
   state.yaw += clamp(target.yaw - state.yaw, -max, max);
   state.pitch += clamp(target.pitch - state.pitch, -max, max);
 }
@@ -221,11 +230,8 @@ export function assistStick(
 /** One stick axis of assistStick — a module function, not a per-frame
  * closure (O5: no per-frame allocations). */
 function assistAxis(cmd: number, rad: number, rate: number): number {
-  const n = clamp(
-    (STICK_GAIN * rad) / rate,
-    -ASSIST_STICK_MAX,
-    ASSIST_STICK_MAX,
-  );
+  const cap = tuning.holeAssistStick;
+  const n = clamp((STICK_GAIN * rad) / rate, -cap, cap);
   if (cmd * n < 0 && Math.abs(cmd) > ASSIST_YIELD) return cmd;
   return clamp(cmd + n, -1, 1);
 }

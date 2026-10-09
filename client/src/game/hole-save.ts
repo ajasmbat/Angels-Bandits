@@ -62,8 +62,10 @@ import {
   type FlightState,
   stepFlight,
 } from "@angels-bandits/common/flight";
+import { DEFAULT_TUNING } from "@angels-bandits/common/tuning";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import { touchesSolid } from "./collision";
+import { tuning } from "./tuning";
 
 const DEG = Math.PI / 180;
 /** A crash predicted within this, s, triggers a search. */
@@ -72,8 +74,10 @@ export const SAVE_HORIZON = 0.35;
 export const SAVE_CLEAR_HORIZON = 0.5;
 /** Caps on one pass's corrections: position offset, m, and attitude tweak,
  * rad — each a vector magnitude (lateral+vertical, heading+pitch). */
-export const SAVE_MAX_OFFSET = 1.5;
-export const SAVE_MAX_ANGLE = 3 * DEG;
+// FL1: the save's strength lives in the shared FlightTuning (defaults
+// re-exported here); the code reads the client's live `tuning`.
+export const SAVE_MAX_OFFSET = DEFAULT_TUNING.saveMaxOffset;
+export const SAVE_MAX_ANGLE = DEFAULT_TUNING.saveMaxAngle;
 /** The correction's duration and its ramp in/out, s. */
 export const SAVE_TIME = 0.3;
 export const SAVE_RAMP = 0.04;
@@ -419,7 +423,7 @@ function rollout(
   let s: FlightState = start;
   let t = 0;
   while (t < horizon) {
-    if (t > 0) s = stepFlight(s, input, h);
+    if (t > 0) s = stepFlight(s, input, h, tuning);
     applyTo(s, trialSlice(trial.t0 + t, trial.t0 + t + h));
     t += h;
     if (probes >= SAVE_MAX_PROBES) return Number.NaN;
@@ -487,12 +491,12 @@ function setTrial(c: Candidate, span: SaveSpan, st: FlightState): void {
     const sV = frame.up > 0 ? -1 : 1;
     // A +yaw swings the nose's across component by sin(th + yaw).
     const sA = (Math.sin(frame.th + st.yaw) >= 0 ? 1 : -1) * sL;
-    const lat = c.l * sL * SAVE_MAX_OFFSET;
+    const lat = c.l * sL * tuning.saveMaxOffset;
     trial.dx = nx * lat;
     trial.dz = nz * lat;
-    trial.dy = c.v * sV * SAVE_MAX_OFFSET;
-    trial.dyaw = c.a * sA * SAVE_MAX_ANGLE;
-    trial.dpitch = c.p * sV * SAVE_MAX_ANGLE;
+    trial.dy = c.v * sV * tuning.saveMaxOffset;
+    trial.dyaw = c.a * sA * tuning.saveMaxAngle;
+    trial.dpitch = c.p * sV * tuning.saveMaxAngle;
     trial.t0 = 0;
     trial.ease = false;
     return;
@@ -503,12 +507,12 @@ function setTrial(c: Candidate, span: SaveSpan, st: FlightState): void {
   // A +yaw swings the nose's across component by d(fwd)/dyaw: (−cos, sin).
   const dLat = x ? Math.sin(st.yaw) : -Math.cos(st.yaw);
   const sA = (dLat >= 0 ? 1 : -1) * sL;
-  const lat = c.l * sL * SAVE_MAX_OFFSET;
+  const lat = c.l * sL * tuning.saveMaxOffset;
   trial.dx = x ? 0 : lat;
   trial.dz = x ? lat : 0;
-  trial.dy = c.v * sV * SAVE_MAX_OFFSET;
-  trial.dyaw = c.a * sA * SAVE_MAX_ANGLE;
-  trial.dpitch = c.p * sV * SAVE_MAX_ANGLE;
+  trial.dy = c.v * sV * tuning.saveMaxOffset;
+  trial.dyaw = c.a * sA * tuning.saveMaxAngle;
+  trial.dpitch = c.p * sV * tuning.saveMaxAngle;
   trial.t0 = 0;
   trial.ease = false;
 }
@@ -603,15 +607,15 @@ function search(
   const sg = travelSign(span, st.pos, st.yaw, st.pitch);
   if (sg === 0 || !onHoleSurface(span, hit, sg)) return;
   const bridge = !isTunnel(span) && span.hole.kind === "bridge";
-  const posLeft = SAVE_MAX_OFFSET - save.usedPos;
-  const angLeft = SAVE_MAX_ANGLE - save.usedAng;
+  const posLeft = tuning.saveMaxOffset - save.usedPos;
+  const angLeft = tuning.saveMaxAngle - save.usedAng;
   for (const c of SAVE_CANDIDATES) {
     // Under a bridge only the vertical plane can help (the channel is 120 m
     // wide); instructor modes never tweak the attitude.
     if (bridge && (c.l !== 0 || c.a !== 0)) continue;
     if (!angles && (c.a !== 0 || c.p !== 0)) continue;
-    const pos = Math.hypot(c.l, c.v) * SAVE_MAX_OFFSET;
-    const ang = Math.hypot(c.a, c.p) * SAVE_MAX_ANGLE;
+    const pos = Math.hypot(c.l, c.v) * tuning.saveMaxOffset;
+    const ang = Math.hypot(c.a, c.p) * tuning.saveMaxAngle;
     if (pos > posLeft + 1e-9 || ang > angLeft + 1e-9) continue;
     setTrial(c, span, st);
     const t = rollout(st, input, SAVE_CLEAR_HORIZON, world, clockMs);

@@ -12,14 +12,18 @@
 // gun tracking happens there), and above it the turn is already near its
 // rate limit, so the extra error has almost no rate left to add.
 
-import { MAX_SPEED, MIN_SPEED } from "@angels-bandits/common/constants";
+import { DEFAULT_TUNING } from "@angels-bandits/common/tuning";
 import type { Vec3 } from "@angels-bandits/common/world";
+import { tuning } from "./tuning";
 
-/** Lead angle per rad/s of commanded yaw rate beyond the deadband, rad:
- * ~1.4° in a full-rate turn at MAX_SPEED, ~2.7° at MIN_SPEED. Sized with the
- * aim loop closed through it: a held cursor turns at most ~1.12× main's
- * rate (speed FOV included), and a 30° step gains no overshoot. */
-const TURN_LEAD = 0.05;
+// FL1: the lead angle per rad/s of commanded yaw rate beyond the deadband
+// (turnLead, rad: ~1.4° in a full-rate turn at MAX_SPEED, ~2.7° at
+// MIN_SPEED — sized with the aim loop closed through it: a held cursor turns
+// at most ~1.12× main's rate, speed FOV included, and a 30° step gains no
+// overshoot) and the speed FOV kick (speedFovKick, degrees of extra vertical
+// FOV at top speed over the slowest: a gentle sense of speed; above it
+// main's boost kick takes over, and they stack: at full boost the view is
+// 70 + 4 + 9 = 83°) are read from the client's live tuning.
 /** Commanded yaw rate under which there is no lead at all, rad/s. */
 const LEAD_DEADBAND = 0.4;
 /** Most the view ever leads into a turn, rad (~2.9°). */
@@ -27,10 +31,6 @@ const LEAD_MAX = 0.05;
 /** Exp response of the lead toward its target, 1/s — it leans in and lets
  * go over ~1 s, never snapping with the stick. */
 const LEAD_RESPONSE = 3;
-/** Extra vertical FOV at MAX_SPEED over MIN_SPEED, degrees: a gentle sense
- * of speed. Above MAX_SPEED main's boost kick takes over (they stack: at
- * full boost the view is 70 + 4 + 9 = 83°). */
-const SPEED_FOV_KICK = 4;
 
 const clamp = (v: number, lo: number, hi: number): number =>
   Math.min(hi, Math.max(lo, v));
@@ -40,7 +40,9 @@ const clamp = (v: number, lo: number, hi: number): number =>
  * at the deadband edge, so it can't kick the aim loop there. */
 export function leadTarget(yawRate: number): number {
   const over = Math.max(0, Math.abs(yawRate) - LEAD_DEADBAND);
-  return Math.sign(yawRate) * Math.min(LEAD_MAX, TURN_LEAD * over);
+  // The cap scales with a lab turnLead (exactly LEAD_MAX at the default).
+  const cap = LEAD_MAX * (tuning.turnLead / DEFAULT_TUNING.turnLead);
+  return Math.sign(yawRate) * Math.min(cap, tuning.turnLead * over);
 }
 
 /** Ease the lead toward its target over `dt` (frame-rate independent). */
@@ -81,10 +83,12 @@ export function leadLookAt(
   };
 }
 
-/** Extra vertical FOV for airspeed, degrees: 0 at MIN_SPEED, SPEED_FOV_KICK
- * at MAX_SPEED and above. */
+/** Extra vertical FOV for airspeed, degrees: 0 at the slowest speed, the
+ * tuning's speedFovKick at top speed and above. */
 export function speedFov(speed: number): number {
+  const { minSpeed, maxSpeed } = tuning;
   return (
-    SPEED_FOV_KICK * clamp((speed - MIN_SPEED) / (MAX_SPEED - MIN_SPEED), 0, 1)
+    tuning.speedFovKick *
+    clamp((speed - minSpeed) / (maxSpeed - minSpeed), 0, 1)
   );
 }

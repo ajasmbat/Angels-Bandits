@@ -16,22 +16,36 @@
 // quaternion is rebuilt each step rather than stored, so no new field has to
 // survive every spread of a FlightState, and level flight with the wings
 // level takes an exact Euler fast path — bit-identical to the old model.
-//
-// FL1: every tunable is read from a FlightTuning (tuning.ts), a trailing
-// `tuning = DEFAULT_TUNING` parameter on each function — the server and its
-// bots never pass one, so only the Flight Lab's client ever flies another.
-// With the defaults every result is bit-identical to the constants it
-// replaced (common/test/tuning-parity.test.ts replays main's step).
 
 import {
+  BANK_ANGLE,
+  BANK_FREQ,
+  BOOST_MAX_SPEED,
+  BOOST_PITCH_MULT,
+  BOOST_RESPONSE,
+  BOOST_TURN_MULT,
   CEILING_FADE,
+  CLIMB_FREE_ANGLE,
+  CORNER_BRAKE_DECEL,
+  DIVE_FADE_BAND,
+  ENERGY_GAIN,
+  MAX_SPEED,
   MAX_VISUAL_BANK,
+  MIN_SPEED,
   MUSH_SINK,
+  PITCH_LIMIT,
+  PITCH_RATE,
   RESPAWN_SPEED,
+  ROLL_LEVEL_RATE,
+  ROLL_RATE,
   SOFT_CEILING,
-} from "./constants";
-import { DEFAULT_TUNING, type FlightTuning } from "./tuning";
-import { type Vec3, canonicalize } from "./world/index";
+  SPEED_RESPONSE,
+  THROTTLE_RATE,
+  TURN_BLEED,
+  TURN_RATE,
+  TURN_RATE_SLOW,
+} from "../../src/constants";
+import { type Vec3, canonicalize } from "../../src/world/index";
 
 const clamp = (v: number, lo: number, hi: number) =>
   Math.min(hi, Math.max(lo, v));
@@ -87,11 +101,7 @@ export interface FlightInput {
 /** Fresh level flight state at `pos` (canonicalized): spawn / respawn shape.
  * Airspeed is RESPAWN_SPEED; the throttle is FULL (F5), so the plane spools
  * up out of every spawn and respawn. */
-export function createFlightState(
-  pos: Vec3,
-  yaw = 0,
-  tuning: Readonly<FlightTuning> = DEFAULT_TUNING,
-): FlightState {
+export function createFlightState(pos: Vec3, yaw = 0): FlightState {
   return {
     pos: canonicalize(pos),
     yaw,
@@ -100,7 +110,7 @@ export function createFlightState(
     bank: 0,
     rollRate: 0,
     speed: RESPAWN_SPEED,
-    targetSpeed: tuning.maxSpeed,
+    targetSpeed: MAX_SPEED,
   };
 }
 
@@ -118,32 +128,19 @@ export function flightForward(state: Pick<FlightState, "yaw" | "pitch">): Vec3 {
  * Base full-deflection yaw rate at `speed`, rad/s (F5): TURN_RATE_SLOW at
  * MIN_SPEED easing linearly to TURN_RATE at MAX_SPEED, flat outside that.
  */
-export function turnRateAt(
-  speed: number,
-  tuning: Readonly<FlightTuning> = DEFAULT_TUNING,
-): number {
-  const u = clamp(
-    (speed - tuning.minSpeed) / (tuning.maxSpeed - tuning.minSpeed),
-    0,
-    1,
-  );
-  return tuning.turnRateSlow + (tuning.turnRate - tuning.turnRateSlow) * u;
+export function turnRateAt(speed: number): number {
+  const u = clamp((speed - MIN_SPEED) / (MAX_SPEED - MIN_SPEED), 0, 1);
+  return TURN_RATE_SLOW + (TURN_RATE - TURN_RATE_SLOW) * u;
 }
 
 /** Full-deflection (un-boosted) turn radius at `speed`, meters. */
-export function turnRadius(
-  speed: number,
-  tuning: Readonly<FlightTuning> = DEFAULT_TUNING,
-): number {
-  return speed / turnRateAt(speed, tuning);
+export function turnRadius(speed: number): number {
+  return speed / turnRateAt(speed);
 }
 
 /** Full-deflection (un-boosted) pull-up radius at `speed`, meters (F8). */
-export function pitchRadius(
-  speed: number,
-  tuning: Readonly<FlightTuning> = DEFAULT_TUNING,
-): number {
-  return speed / tuning.pitchRate;
+export function pitchRadius(speed: number): number {
+  return speed / PITCH_RATE;
 }
 
 /**
@@ -151,15 +148,11 @@ export function pitchRadius(
  * radius is at most `radius` — turnRadius's inverse, closed form because the
  * rate is linear in speed: v = a·R / (1 + b·R) for rate(v) = a − b·v.
  */
-export function speedForRadius(
-  radius: number,
-  tuning: Readonly<FlightTuning> = DEFAULT_TUNING,
-): number {
-  const { minSpeed, maxSpeed } = tuning;
-  const b = (tuning.turnRateSlow - tuning.turnRate) / (maxSpeed - minSpeed);
-  const a = tuning.turnRateSlow + b * minSpeed;
+export function speedForRadius(radius: number): number {
+  const b = (TURN_RATE_SLOW - TURN_RATE) / (MAX_SPEED - MIN_SPEED);
+  const a = TURN_RATE_SLOW + b * MIN_SPEED;
   const r = Math.max(0, radius);
-  return clamp((a * r) / (1 + b * r), minSpeed, maxSpeed);
+  return clamp((a * r) / (1 + b * r), MIN_SPEED, MAX_SPEED);
 }
 
 /**
@@ -174,16 +167,13 @@ export function speedForRadius(
 export function handlingRates(
   speed: number,
   boost: boolean,
-  tuning: Readonly<FlightTuning> = DEFAULT_TUNING,
 ): { turnRate: number; pitchRate: number } {
-  const { maxSpeed, boostMaxSpeed } = tuning;
   const excess = boost
     ? 1
-    : clamp((speed - maxSpeed) / (boostMaxSpeed - maxSpeed), 0, 1);
+    : clamp((speed - MAX_SPEED) / (BOOST_MAX_SPEED - MAX_SPEED), 0, 1);
   return {
-    turnRate:
-      turnRateAt(speed, tuning) * (1 + (tuning.boostTurnMult - 1) * excess),
-    pitchRate: tuning.pitchRate * (1 + (tuning.boostPitchMult - 1) * excess),
+    turnRate: turnRateAt(speed) * (1 + (BOOST_TURN_MULT - 1) * excess),
+    pitchRate: PITCH_RATE * (1 + (BOOST_PITCH_MULT - 1) * excess),
   };
 }
 
@@ -192,15 +182,13 @@ export function stepFlight(
   state: FlightState,
   input: FlightInput,
   dt: number,
-  tuning: Readonly<FlightTuning> = DEFAULT_TUNING,
 ): FlightState {
-  const { minSpeed, maxSpeed, boostMaxSpeed } = tuning;
   const turnIn = clamp(input.turn, -1, 1);
   const pitchIn = clamp(input.pitch, -1, 1);
   const rollIn = clamp(input.roll, -1, 1);
   const boost = input.boost === true;
 
-  const { turnRate, pitchRate } = handlingRates(state.speed, boost, tuning);
+  const { turnRate, pitchRate } = handlingRates(state.speed, boost);
 
   // Mouse-aim steering: inputs are rate commands at capped rates; neutral
   // input holds the current attitude (no auto-level of pitch or yaw).
@@ -221,7 +209,7 @@ export function stepFlight(
   } else if (
     real0 === 0 &&
     rollIn === 0 &&
-    Math.abs(state.pitch + dPitch) <= tuning.pitchLimit
+    Math.abs(state.pitch + dPitch) <= PITCH_LIMIT
   ) {
     // Wings level, upright, well clear of vertical: the quaternion step below
     // reduces to exactly this Euler update — taken directly, cheap and exact.
@@ -229,16 +217,7 @@ export function stepFlight(
     pitch = state.pitch + dPitch;
     real = 0;
   } else {
-    rotateAttitude(
-      state.yaw,
-      state.pitch,
-      real0,
-      dYaw,
-      dPitch,
-      rollIn,
-      dt,
-      tuning,
-    );
+    rotateAttitude(state.yaw, state.pitch, real0, dYaw, dPitch, rollIn, dt);
     yaw = att.yaw;
     pitch = att.pitch;
     real = att.roll;
@@ -251,25 +230,24 @@ export function stepFlight(
   // out with no overshoot at every frame rate. x is the lean minus its
   // target, v its rate. Capped at ±MAX_VISUAL_BANK. F7: A/D no longer feed
   // it — they roll the airframe for real (rotateAttitude).
-  const bankFreq = tuning.bankFreq;
   const bankTarget = clamp(
-    -turnIn * tuning.bankAngle,
+    -turnIn * BANK_ANGLE,
     -MAX_VISUAL_BANK,
     MAX_VISUAL_BANK,
   );
   const rx = bank0 - bankTarget;
   const rv = state.rollRate ?? 0;
-  const rDecay = Math.exp(-bankFreq * dt);
-  const rc = rv + bankFreq * rx;
+  const rDecay = Math.exp(-BANK_FREQ * dt);
+  const rc = rv + BANK_FREQ * rx;
   const bank = bankTarget + (rx + rc * dt) * rDecay;
-  const rollRate = (rv - bankFreq * rc * dt) * rDecay;
+  const rollRate = (rv - BANK_FREQ * rc * dt) * rDecay;
   const roll = real === 0 ? bank : wrapAngle(real + bank);
 
   // W/S move the commanded speed within [MIN_SPEED, MAX_SPEED].
   const targetSpeed = clamp(
-    state.targetSpeed + clamp(input.throttle, -1, 1) * tuning.throttleRate * dt,
-    minSpeed,
-    maxSpeed,
+    state.targetSpeed + clamp(input.throttle, -1, 1) * THROTTLE_RATE * dt,
+    MIN_SPEED,
+    MAX_SPEED,
   );
 
   // Soft ceiling: engine power fades to nothing across the CEILING_FADE band
@@ -285,31 +263,31 @@ export function stepFlight(
   // F5: the corner manager caps the commanded speed, never the throttle.
   const cap = boost || input.cornerCap === undefined ? null : input.cornerCap;
   const commanded = boost
-    ? boostMaxSpeed
+    ? BOOST_MAX_SPEED
     : cap === null
       ? targetSpeed
-      : Math.min(targetSpeed, Math.max(minSpeed, cap));
-  const effectiveTarget = minSpeed + (commanded - minSpeed) * power;
+      : Math.min(targetSpeed, Math.max(MIN_SPEED, cap));
+  const effectiveTarget = MIN_SPEED + (commanded - MIN_SPEED) * power;
   const maneuver = Math.min(1, Math.abs(turnIn) + Math.abs(pitchIn));
   // Above MAX_SPEED without boost (the post-boost tail) speed may only fall:
   // a dive can't hold boost speed. The wall-clock tail envelope itself is
   // boostSpeedCap in boost.ts, which the client clamps to every frame.
   const topSpeed = boost
-    ? boostMaxSpeed
-    : Math.max(maxSpeed, Math.min(state.speed, boostMaxSpeed));
+    ? BOOST_MAX_SPEED
+    : Math.max(MAX_SPEED, Math.min(state.speed, BOOST_MAX_SPEED));
   const dSpeed =
-    (boost ? tuning.boostResponse : tuning.speedResponse) *
+    (boost ? BOOST_RESPONSE : SPEED_RESPONSE) *
       (effectiveTarget - state.speed) -
-    energyRate(pitch, state.speed, topSpeed, tuning) -
-    tuning.turnBleed * maneuver;
-  let speed = clamp(state.speed + dSpeed * dt, minSpeed, topSpeed);
+    energyRate(pitch, state.speed, topSpeed) -
+    TURN_BLEED * maneuver;
+  let speed = clamp(state.speed + dSpeed * dt, MIN_SPEED, topSpeed);
   // F5 airbrake: above the corner cap airspeed falls at least
   // CORNER_BRAKE_DECEL (a constant deceleration, so stopping distances are
   // closed-form), but the brake itself never takes it below the cap.
   if (cap !== null && speed > cap) {
     speed = Math.max(
-      Math.max(minSpeed, cap),
-      Math.min(speed, state.speed - tuning.cornerBrakeDecel * dt),
+      Math.max(MIN_SPEED, cap),
+      Math.min(speed, state.speed - CORNER_BRAKE_DECEL * dt),
     );
   }
 
@@ -371,19 +349,22 @@ export function flightAxes(
 /** Where rotateAttitude leaves its result (module scratch: no allocation). */
 const att = { yaw: 0, pitch: 0, roll: 0 };
 
+/** |pitch| from which the turn axis blends from world-up to the body's own
+ * up, reaching it at vertical, rad. At vertical a world-up turn only spins
+ * the plane about its nose — and the Euler flip there reverses which way —
+ * while the body up is continuous through the flip. */
+const TURN_AXIS_BLEND = PITCH_LIMIT;
+
 /**
  * One attitude step as a quaternion (F7), into `att`. q = Ry(yaw)·Rx(pitch)·
  * Rz(roll); then
  * - the turn rotates about a WORLD axis: world-up when upright (the old
  *   flat turn), world-down when inverted (so the nose still goes to the
  *   pilot's right), the body's own up toward knife-edge (weights cos²/sin²
- *   of the roll) and toward vertical (from |pitch| = the tuning's
- *   pitchLimit: at vertical a world-up turn only spins the plane about its
- *   nose — and the Euler flip there reverses which way — while the body up
- *   is continuous through the flip);
+ *   of the roll) and toward vertical (TURN_AXIS_BLEND);
  * - pitch rotates about the body's right axis, A/D about its nose;
  * and, decomposed back to YXZ, a released roll eases to the nearest of
- * upright or inverted at the tuning's rollLevelRate, scaled by cos(pitch) (at vertical
+ * upright or inverted at ROLL_LEVEL_RATE, scaled by cos(pitch) (at vertical
  * "level" is undefined). `prevYaw` keeps yaw continuous (unwrapped) except
  * for the π of a gimbal flip.
  */
@@ -395,7 +376,6 @@ function rotateAttitude(
   dPitch: number,
   rollIn: number,
   dt: number,
-  tuning: Readonly<FlightTuning>,
 ): void {
   const hy = prevYaw / 2;
   const hp = pitch / 2;
@@ -424,8 +404,11 @@ function rotateAttitude(
     const ux = -sRoll * cYaw + cRoll * sPit * sYaw;
     const uy = cRoll * cPit;
     const uz = sRoll * sYaw + cRoll * sPit * cYaw;
-    const blend = tuning.pitchLimit;
-    const g = clamp((Math.abs(pitch) - blend) / (Math.PI / 2 - blend), 0, 1);
+    const g = clamp(
+      (Math.abs(pitch) - TURN_AXIS_BLEND) / (Math.PI / 2 - TURN_AXIS_BLEND),
+      0,
+      1,
+    );
     const kw = cRoll * Math.abs(cRoll) * (1 - g);
     const ku = sRoll * sRoll * (1 - g) + g;
     let ax = ku * ux;
@@ -464,7 +447,7 @@ function rotateAttitude(
     w = nw;
   }
   // q = q ⊗ Rz(dRoll) — about the body's nose. Works at any pitch.
-  const dRoll = rollIn * tuning.rollRate * dt;
+  const dRoll = rollIn * ROLL_RATE * dt;
   if (dRoll !== 0) {
     const s = Math.sin(dRoll / 2);
     const c = Math.cos(dRoll / 2);
@@ -502,8 +485,7 @@ function rotateAttitude(
     const target =
       Math.abs(outRoll) <= Math.PI / 2 ? 0 : outRoll > 0 ? Math.PI : -Math.PI;
     const err = target - outRoll;
-    const k =
-      (1 - Math.exp(-tuning.rollLevelRate * dt)) * hold * Math.cos(outPitch);
+    const k = (1 - Math.exp(-ROLL_LEVEL_RATE * dt)) * hold * Math.cos(outPitch);
     outRoll += err * k;
     // Snap the last hair so the exact fast path takes over again.
     if (Math.abs(target - outRoll) < 1e-6) outRoll = target === 0 ? 0 : target;
@@ -515,24 +497,21 @@ function rotateAttitude(
   att.roll = outRoll;
 }
 
+const SIN_CLIMB_FREE = Math.sin(CLIMB_FREE_ANGLE);
+
 /**
  * Speed lost to the attitude, m/s² (negative = gained) — the energy rule's
- * pitch term (F6). A climb costs nothing up to the tuning's climbFreeAngle
- * (thrust carries it), then ramps to energyGain at vertical. A dive gains the
- * full energyGain·|sin(pitch)|, faded out linearly over the last diveFadeBand
+ * pitch term (F6). A climb costs nothing up to CLIMB_FREE_ANGLE (thrust
+ * carries it), then ramps to ENERGY_GAIN at vertical. A dive gains the full
+ * ENERGY_GAIN·|sin(pitch)|, faded out linearly over the last DIVE_FADE_BAND
  * below `topSpeed`, so it eases onto the cap rather than hitting the clamp.
  */
-function energyRate(
-  pitch: number,
-  speed: number,
-  topSpeed: number,
-  tuning: Readonly<FlightTuning>,
-): number {
-  const gain = tuning.energyGain;
+function energyRate(pitch: number, speed: number, topSpeed: number): number {
   const s = Math.sin(pitch);
   if (s >= 0) {
-    const free = Math.sin(tuning.climbFreeAngle);
-    return (gain * Math.max(0, s - free)) / (1 - free);
+    return (
+      (ENERGY_GAIN * Math.max(0, s - SIN_CLIMB_FREE)) / (1 - SIN_CLIMB_FREE)
+    );
   }
-  return gain * s * clamp((topSpeed - speed) / tuning.diveFadeBand, 0, 1);
+  return ENERGY_GAIN * s * clamp((topSpeed - speed) / DIVE_FADE_BAND, 0, 1);
 }

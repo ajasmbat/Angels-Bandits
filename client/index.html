@@ -839,6 +839,24 @@
       #join-retry[hidden] {
         display: none;
       }
+      /* FL1: the Flight Lab link under FLY (and, in the lab, the way back). */
+      #join-lab {
+        display: inline-block;
+        margin: 12px auto 0;
+        color: #9fd8e8;
+        font-size: 11px;
+        letter-spacing: 0.18em;
+        text-decoration: none;
+        border-bottom: 1px solid rgba(159, 216, 232, 0.4);
+        padding-bottom: 1px;
+      }
+      #join-lab:hover {
+        color: #27e0c0;
+        border-color: #27e0c0;
+      }
+      #join form.busy #join-lab {
+        display: none;
+      }
       #minimap {
         position: fixed;
         left: 16px;
@@ -2460,6 +2478,8 @@
           spellcheck="false"
         />
         <button type="submit">FLY</button>
+        <!-- FL1 (ui/join.ts initLabLink): into the Flight Lab, or back out. -->
+        <a id="join-lab" href="?lab">FLIGHT LAB</a>
         <!-- U3 (ui/coach.ts): the controls primer, desktop or touch. -->
         <ul id="join-primer" aria-label="Controls"></ul>
         <div id="join-progress" aria-hidden="true"><div class="fill"></div></div>

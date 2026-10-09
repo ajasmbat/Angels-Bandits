@@ -16,19 +16,22 @@
 // cursor, so nothing downstream knows which one is steering.
 
 import type { FlightInput } from "@angels-bandits/common/flight";
+import { DEFAULT_TUNING } from "@angels-bandits/common/tuning";
 import { FREELOOK_KEY } from "./freelook";
 import { emulatedMouse, watchTouches } from "./touch-input";
+import { tuning } from "./tuning";
 
-const DEADZONE = 0.06; // fraction of the half-window the cursor can rest in
-/** Classic-stick expo: 0 = linear, 1 = pure cube. Soft centre, full edges. */
-const EXPO = 0.5;
-/** Cursor smoothing time constant, s — takes the twitch out of a hand. */
-const CURSOR_SMOOTH_S = 0.04;
+// FL1: the classic stick's deadzone (fraction of the half-window the cursor
+// can rest in), its expo (0 = linear, 1 = pure cube: soft centre, full
+// edges), the cursor smoothing time constant (s — takes the twitch out of a
+// hand), the hands-off throttle, and the lab-only mouse sensitivity and
+// invert-Y (identity at their defaults) are read from the client's live
+// `tuning`; the defaults live in common/src/tuning.ts.
 /** Once the cursor leaves the window, steering fades out over this, s. */
 const PRESENCE_FADE_S = 0.25;
 /** Throttle axis with nothing commanding it, −1..1 (F5): the commanded
  * speed climbs back to full at AUTO_THROTTLE × THROTTLE_RATE = 18 m/s². */
-export const AUTO_THROTTLE = 0.6;
+export const AUTO_THROTTLE = DEFAULT_TUNING.autoThrottle;
 /** F9: one wheel notch holds W (up) or S (down) this long, s; a spin
  * stacks up to WHEEL_HOLD_MAX_S. A notch is a DOM_DELTA_LINE of 3 or
  * ~100 px of DOM_DELTA_PIXEL (wheelNotches). */
@@ -160,7 +163,7 @@ export class FlightInputSource {
       const hh = this.target.innerHeight / 2;
       const x = Math.max(-1, Math.min(1, (this.rawX - hw) / hw));
       const y = Math.max(-1, Math.min(1, (this.rawY - hh) / hh));
-      const blend = 1 - Math.exp(-dt / CURSOR_SMOOTH_S);
+      const blend = 1 - Math.exp(-dt / tuning.cursorSmooth);
       this.mouseX += (x - this.mouseX) * blend;
       this.mouseY += (y - this.mouseY) * blend;
     }
@@ -318,10 +321,11 @@ export class FlightInputSource {
   }
 
   private axis(v: number): number {
+    const { deadzone, expo } = tuning;
     const a = Math.abs(v);
-    if (a < DEADZONE) return 0;
-    const s = Math.min(1, (a - DEADZONE) / (1 - DEADZONE));
-    return Math.sign(v) * this.presenceK * ((1 - EXPO) * s + EXPO * s * s * s);
+    if (a < deadzone) return 0;
+    const s = Math.min(1, (a - deadzone) / (1 - deadzone));
+    return Math.sign(v) * this.presenceK * ((1 - expo) * s + expo * s * s * s);
   }
 
   read(): FlightInput {
@@ -331,14 +335,16 @@ export class FlightInputSource {
     // Nothing on the throttle: ride back to full (F5).
     const throttle =
       !w && !s && this.touchThrottle === null
-        ? AUTO_THROTTLE
+        ? tuning.autoThrottle
         : Math.max(-1, Math.min(1, keys + (this.touchThrottle ?? 0)));
     // A rolls left (positive roll = left wing down), D rolls right.
     const roll =
       (this.keys.has("KeyA") ? 1 : 0) + (this.keys.has("KeyD") ? -1 : 0);
+    const sens = tuning.mouseSensitivity;
+    const ySign = tuning.invertY === 1 ? -1 : 1;
     return {
-      turn: this.axis(this.mouseX), // cursor right of center → right turn
-      pitch: this.axis(-this.mouseY), // cursor above center → pull up
+      turn: this.axis(this.mouseX * sens), // cursor right of center → right turn
+      pitch: this.axis(-this.mouseY * sens * ySign), // cursor above center → pull up
       roll,
       throttle,
     };

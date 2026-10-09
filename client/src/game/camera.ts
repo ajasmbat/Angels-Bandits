@@ -25,11 +25,13 @@
 // stays where the pilot sees it on screen — held above the pipper it keeps
 // pulling, over the top and round.
 
+import type { Collapse } from "@angels-bandits/common/city/collapse";
 import {
   CAMERA_RESPONSE,
   CHASE_BASE,
   CHASE_RISE,
   CHASE_STRETCH,
+  COLLAPSE_LEAD_MS,
   MIN_SPEED,
 } from "@angels-bandits/common/constants";
 import {
@@ -37,7 +39,7 @@ import {
   flightAxes,
   flightForward,
 } from "@angels-bandits/common/flight";
-import type { Vec3 } from "@angels-bandits/common/world";
+import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import type * as THREE from "three";
 import { orbitOffset } from "./freelook";
 import { leadLookAt, stepLead } from "./jet-camera";
@@ -508,4 +510,51 @@ function clearLength(
   };
   const hit = n > 0 ? first(0, n) : null;
   return hit === null ? len : Math.min(len, (hit - 1) * ARM_STEP);
+}
+
+/** D3: peak camera shake next to a collapse coming down, m. */
+export const COLLAPSE_SHAKE_PEAK = 1.4;
+/** …fading to nothing this far from it, m. */
+export const COLLAPSE_SHAKE_RANGE = 600;
+
+/**
+ * D3: how hard the ground is shaking at `pos` at server time `serverMs`,
+ * 0..1 — every collapse from its first movement until a second after its
+ * last chunk lands, strongest for the big ones, falling off with distance
+ * (torus-correct). Pure, so tests and main.ts agree.
+ */
+export function collapseShakeAmount(
+  list: readonly Collapse[],
+  pos: Vec3,
+  serverMs: number,
+): number {
+  let amount = 0;
+  for (let e = 0; e < list.length; e++) {
+    const c = list[e] as Collapse;
+    const age = serverMs - c.t0 - COLLAPSE_LEAD_MS;
+    if (age < 0 || age > c.endMs - COLLAPSE_LEAD_MS + 1000) continue;
+    const d = Math.hypot(
+      wrapDeltaAxis(c.x, pos.x),
+      pos.y * 0.5,
+      wrapDeltaAxis(c.z, pos.z),
+    );
+    if (d >= COLLAPSE_SHAKE_RANGE) continue;
+    const size = Math.min(1, 0.35 + c.n / 120);
+    const near = 1 - d / COLLAPSE_SHAKE_RANGE;
+    amount = Math.max(amount, size * near * near);
+  }
+  return amount;
+}
+
+/** The displayed camera's offset for a shake `amount` (0..1) at wall time
+ * `nowMs`: a fast irregular jolt, mostly vertical. */
+export function collapseShakeOffset(amount: number, nowMs: number): Vec3 {
+  if (amount <= 0) return { x: 0, y: 0, z: 0 };
+  const t = nowMs / 1000;
+  const a = amount * COLLAPSE_SHAKE_PEAK;
+  return {
+    x: a * 0.5 * (Math.sin(t * 37.1) + 0.5 * Math.sin(t * 71.3 + 1.7)),
+    y: a * (Math.sin(t * 43.7 + 0.4) + 0.5 * Math.sin(t * 89.9 + 2.1)),
+    z: a * 0.5 * (Math.sin(t * 31.3 + 2.9) + 0.5 * Math.sin(t * 67.7 + 0.8)),
+  };
 }

@@ -17,7 +17,7 @@
 //  - the target itself is never a plane (common/src/strike.ts picker), and
 //    the arc must clear the city as it stands.
 
-import type { Building } from "@angels-bandits/common/city";
+import { type Building, chunkBuilding } from "@angels-bandits/common/city";
 import type { CityIndex } from "@angels-bandits/common/collision";
 import { DESTROY_CAP, WORLD_SIZE } from "@angels-bandits/common/constants";
 import {
@@ -288,5 +288,12 @@ export class MissileDirector {
  * (D2's damage API, so D3 collapses ride the same destroyed set). Returns
  * the chunks destroyed. Call once per settled missile. */
 export function applyMissileImpact(city: RoomCity, m: MissileStrike): number[] {
-  return city.damage.damageAt(m.to, MISSILE_CHUNK_RADIUS, MISSILE_CHUNK_DAMAGE);
+  const out = city.damage.damageAt(
+    m.to,
+    MISSILE_CHUNK_RADIUS,
+    MISSILE_CHUNK_DAMAGE,
+  );
+  // D3: a collapse a missile sets off is the environment's — nobody's.
+  for (const id of out) city.breakers.set(chunkBuilding(id), null);
+  return out;
 }

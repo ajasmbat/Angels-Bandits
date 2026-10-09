@@ -5,6 +5,7 @@
 // D2 blast through the room's city — and wreck kills credit the shooter.
 // index.ts and the bot-sim harness both use exactly these.
 
+import { chunkBuilding } from "@angels-bandits/common/city";
 import { PLAYER_RADIUS } from "@angels-bandits/common/constants";
 import {
   WRECKS_MAX,
@@ -47,9 +48,16 @@ export const impactPos = (w: WreckParams): Vec3 =>
   wreckPosAt(w, w.t + w.end, { x: 0, y: 0, z: 0 });
 
 /** A wreck hit at `pos`: blow out every chunk near enough (D2 damageAt,
- * WRECK_BLAST_RADIUS, falling off to 0). Returns the chunks destroyed. */
-export function applyWreckImpact(city: RoomCity, pos: Vec3): number[] {
-  return city.damage.damageAt(pos, WRECK_BLAST_RADIUS, WRECK_BLAST_DAMAGE);
+ * WRECK_BLAST_RADIUS, falling off to 0). Returns the chunks destroyed.
+ * D3: a collapse it sets off is credited to `by` — the wreck's shooter. */
+export function applyWreckImpact(
+  city: RoomCity,
+  pos: Vec3,
+  by: string | null = null,
+): number[] {
+  const out = city.damage.damageAt(pos, WRECK_BLAST_RADIUS, WRECK_BLAST_DAMAGE);
+  for (const id of out) city.breakers.set(chunkBuilding(id), by);
+  return out;
 }
 
 /** One room's falling wrecks. */

@@ -379,6 +379,10 @@ export class LabPanel {
   }
 
   private changed(): void {
+    // The cross-field rules (top speed over the slowest, boost over top
+    // speed — the flight step divides by both gaps): a slider dragged past
+    // its partner pushes the partner along.
+    Object.assign(this.tuning, sanitizeTuning(this.tuning));
     writeStored(LAB_TUNING_KEY, exportTuning(this.tuning));
     this.hooks.onChange();
     this.refresh();

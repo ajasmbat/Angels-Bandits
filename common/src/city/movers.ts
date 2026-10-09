@@ -24,6 +24,7 @@
 //   - Helicopters on straight torus loops along street axes.
 //   - One blimp, circling below the cloud deck with a lit banner.
 
+import { type BossSlot, collideBoss } from "../boss";
 import {
   BLIMP_ALT,
   BLIMP_HULL,
@@ -59,7 +60,7 @@ import {
   wrapCoord,
   wrapDeltaAxis,
 } from "../world/index";
-import { type CollapseField, collideCollapses } from "./collapse";
+import { type CollapseField, collideCollapses, craneDown } from "./collapse";
 import { type Building, mulberry32 } from "./index";
 import { CONSTRUCTION_BLOCKS } from "./layout";
 import {
@@ -89,7 +90,10 @@ export type MoverKind =
   | "train"
   // D3 collapses (city/collapse.ts): a chunk still falling, or its rubble.
   | "debris"
-  | "rubble";
+  | "rubble"
+  // S4 sky boss (boss.ts): the zeppelin's hull, and its falling sections.
+  | "boss"
+  | "bossDebris";
 
 /**
  * An oriented box. `x`/`z` are canonical in [0, WORLD_SIZE); `y` is the
@@ -179,6 +183,10 @@ export interface MoverField {
    * pure function of each event and the clock like everything here. The
    * room's ONE field (reset in place), so set once when the field is made. */
   readonly collapses?: CollapseField;
+  /** S4: the room's sky boss — a raid's zeppelin and, once it is shot down,
+   * its falling sections (boss.ts, pure in the slot and the clock). PER
+   * ROOM like `news`; the slot is mutated in place as raids come and go. */
+  readonly boss?: BossSlot;
 }
 
 /** A room's field: the seed's shared cranes and aircraft plus its own news
@@ -450,7 +458,12 @@ const blankBox = (): MoverBox => ({
  * The collision path uses the same partBox with a scratch box instead.
  */
 export function craneBoxes(site: CraneSite, timeMs: number): MoverBox[] {
-  const theta = slewAngle(site, timeMs);
+  return craneBoxesAt(site, slewAngle(site, timeMs));
+}
+
+/** Every box of one crane slewed to `theta` (rad), canonicalized — D5's
+ * crane fall builds its debris from exactly these boxes. */
+export function craneBoxesAt(site: CraneSite, theta: number): MoverBox[] {
   return CRANE_PARTS.map((part) => {
     const box = partBox(site, part, theta, blankBox());
     const p = canonicalize({ x: box.x, y: 0, z: box.z });
@@ -589,6 +602,8 @@ export function collideMovers(
 ): MoverHit | null {
   for (let i = 0; i < field.cranes.length; i++) {
     const site = field.cranes[i] as CraneSite;
+    // D5: a felled crane is debris (hitCollapse) from the instant it fell.
+    if (craneDown(field.collapses, site.id, timeMs)) continue;
     const kind = hitsCrane(site, pos, radius, timeMs);
     if (kind) return { kind, id: site.id };
   }
@@ -600,6 +615,10 @@ export function collideMovers(
   }
   if (field.news && hitsNewsHeli(field.news, pos, radius, timeMs)) {
     return { kind: "newsHeli", id: NEWS_HELI_ID };
+  }
+  if (field.boss) {
+    const hit = collideBoss(field.boss, pos, radius, timeMs);
+    if (hit) return hit;
   }
   // L5/T2: the viaducts, stations and cars.
   if (field.trains) {
@@ -651,6 +670,8 @@ export function collideBotMovers(
 ): MoverHit | null {
   for (let i = 0; i < field.cranes.length; i++) {
     const site = field.cranes[i] as CraneSite;
+    // D5: a felled crane is debris (hitCollapse) from the instant it fell.
+    if (craneDown(field.collapses, site.id, timeMs)) continue;
     const kind = hitsCrane(site, pos, radius, timeMs);
     if (kind) return { kind, id: site.id };
   }
@@ -663,6 +684,12 @@ export function collideBotMovers(
   }
   if (field.news && hitsNewsHeli(field.news, pos, radius, timeMs)) {
     return { kind: "newsHeli", id: NEWS_HELI_ID };
+  }
+  // S4: the sky boss's hull and its falling sections — 260 m of solid in
+  // the band a bot's attack pass climbs into. Altitude-rejected first.
+  if (field.boss) {
+    const hit = collideBoss(field.boss, pos, radius, timeMs);
+    if (hit) return hit;
   }
   // L5: the viaduct and the train are solid for bots too — they sit right in
   // the canyon band, so a bot that could not see them would die to them.

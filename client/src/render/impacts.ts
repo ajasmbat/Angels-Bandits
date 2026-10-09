@@ -76,13 +76,16 @@ const BURN_TAPER_MS = 15_000;
 /** Colours (linear). Everything sits under the tracer rung of the emissive
  * ladder (EMISSIVE_TRACER 1.5): sparks ≈ 0.8, fire ≈ 0.7, a glass glint
  * peaks ≈ 0.85 — hot enough to bloom softly, never over a tracer. */
-const SPARK_RGB = [1.0, 0.76, 0.42] as const;
+export const SPARK_RGB = [1.0, 0.76, 0.42] as const;
 const FIRE_RGB = [1.0, 0.52, 0.16] as const;
 const GLASS_RGB = [0.72, 0.88, 1.0] as const;
 const SMOKE_RGB = [0.2, 0.18, 0.21] as const;
 /** Dust / chip tint per facade archetype: glass curtain-wall (pale grey
  * concrete core), masonry (brick), office (warm concrete). */
-const DUST_RGB: Record<FacadeArchetype, readonly [number, number, number]> = {
+export const DUST_RGB: Record<
+  FacadeArchetype,
+  readonly [number, number, number]
+> = {
   [FacadeArchetype.GLASS]: [0.42, 0.45, 0.48],
   [FacadeArchetype.MASONRY]: [0.5, 0.28, 0.2],
   [FacadeArchetype.OFFICE]: [0.46, 0.43, 0.38],
@@ -518,6 +521,50 @@ export class Impacts {
         dr * 0.55,
         dg * 0.55,
         db * 0.55,
+        now,
+        rand() * 6.28,
+      );
+    }
+  }
+
+  /**
+   * D5: one spray for the director's and the rebuild's effects — `n`
+   * particles of `kind` (× this pool's tier share, at least 1) from
+   * `point` along `normal` at `speed` m/s ± `spread`, living `lifeMs`
+   * (± 40 %) at `size`, in `rgb`. Allocation-free.
+   */
+  spray(
+    kind: Kind,
+    point: Vec3,
+    normal: Vec3,
+    speed: number,
+    spread: number,
+    n: number,
+    lifeMs: number,
+    size: number,
+    rgb: readonly [number, number, number],
+    now: number,
+  ): void {
+    const rand = this.rand;
+    for (let i = 0; i < this.count(n); i++) {
+      const v = sprayInto(
+        this.v,
+        normal,
+        speed * (0.6 + 0.8 * rand()),
+        spread,
+        rand,
+      );
+      this.pool.spawn(
+        kind,
+        point,
+        v.x,
+        v.y,
+        v.z,
+        lifeMs * (0.6 + 0.8 * rand()),
+        size * (0.7 + 0.6 * rand()),
+        rgb[0],
+        rgb[1],
+        rgb[2],
         now,
         rand() * 6.28,
       );

@@ -13,6 +13,15 @@ import {
   stopBoost,
 } from "@angels-bandits/common/boost";
 import {
+  BOSS_ID,
+  BOSS_WEAK_POINTS,
+  bossPoseAt,
+  bossPresent,
+  piecesFalling,
+  raidEnd,
+  raidMaxHp,
+} from "@angels-bandits/common/boss";
+import {
   type Building,
   cityHoles,
   mulberry32,
@@ -49,6 +58,7 @@ import {
   decodeGhost,
   generateCourses,
 } from "@angels-bandits/common/courses";
+import { type DirectorEvent, EVENT_GAS } from "@angels-bandits/common/director";
 import {
   type FlightState,
   createFlightState,
@@ -99,6 +109,7 @@ import { ThunderSchedule } from "./audio/thunder";
 import { TrainAudio } from "./audio/train-audio";
 import { createAutoFire, stepAutoFire } from "./game/auto-fire";
 import { BoostKey } from "./game/boost-key";
+import { bossBulletHit } from "./game/boss-hits";
 import {
   type BulletImpact,
   classifyBulletStep,
@@ -113,7 +124,10 @@ import {
   AmbientChatter,
   type Callout,
   LOW_HP_CALLOUT,
+  bossEndCallout,
+  bossInboundCallout,
   checkInCallout,
+  flakCallout,
   hitCallout,
   incomingCallout,
   maydayCallout,
@@ -142,6 +156,8 @@ import { type AimMode, FlightInputSource } from "./game/flight-input";
 import { createFreeLook, shapeInput, stepFreeLook } from "./game/freelook";
 import { Guns } from "./game/guns";
 import {
+  bossHeadline,
+  bossWarning,
   feedLine,
   killHeadline,
   pilotLabel,
@@ -191,10 +207,17 @@ import { Airliners } from "./render/airliners";
 import { archetypeFor } from "./render/archetypes";
 import { AtmosphereFx } from "./render/atmosphere-fx";
 import { Birds } from "./render/birds";
+import { BossRenderer } from "./render/boss";
 import { CityRenderer } from "./render/city";
 import { PICKUP_TAXIS } from "./render/citylife";
 import { CityLife } from "./render/citylife-render";
 import { ConstructionSparks } from "./render/construction";
+import {
+  ALARM_TAIL_MS as DIRECTOR_ALARM_TAIL_MS,
+  DirectorFx,
+  alarmAt,
+  warningTremor,
+} from "./render/director-fx";
 import { DroneShowRenderer } from "./render/drones";
 import { DustClouds, dustHaze } from "./render/dust";
 import { FacadeDetailRenderer } from "./render/facade-detail";
@@ -279,6 +302,7 @@ import { CourseRings } from "./render/rings";
 import { RiverRenderer } from "./render/river";
 import { RoofClutterRenderer } from "./render/roofclutter";
 import { RooftopLifeRenderer } from "./render/rooftop-life";
+import { ScaffoldRenderer } from "./render/scaffold";
 import { Searchlights } from "./render/searchlights";
 import { Signage } from "./render/signage";
 import { Signals } from "./render/signals";
@@ -742,7 +766,12 @@ const moverField = {
     welcome.seed,
   ),
   collapses: socket.collapses,
+  // S4: and the room's sky boss — the socket's slot, kept from every welcome
+  // and message, so the zeppelin is solid exactly where it is drawn.
+  boss: socket.boss,
 };
+// D5: crane-fall records name the room's crane sites — these.
+socket.collapses.bindCranes(moverField.cranes);
 if (moverField.news && welcome.newsHeli) {
   moverField.news.target = welcome.newsHeli.target;
   moverField.news.prev = welcome.newsHeli.prev;
@@ -958,6 +987,49 @@ socket.events.onCollapse = (c) => {
 // shader's damage map (city.damage). Cosmetic only — nothing here collides.
 const impacts = new Impacts();
 scene.add(impacts.points);
+// D5 destruction director: the warnings before its events and the
+// rebuild's construction effects, into the D1 pool above; the rumble,
+// groan and siren are audio (below and in the ambience update).
+const directorFx = new DirectorFx(
+  impacts,
+  explosions,
+  city.cityBuildings,
+  moverField.cranes,
+);
+socket.events.onDirectorWarn = (e) => {
+  const serverMs = socket.renderTime();
+  const left = (e.at - (serverMs ?? e.w)) / 1000;
+  audio.directorWarning(
+    e.k === EVENT_GAS,
+    { x: e.x, y: 10, z: e.z },
+    flight.pos,
+    flight.yaw,
+    left,
+  );
+  music.noteCombat(performance.now());
+};
+socket.events.onRebuild = (r, restored) => {
+  const now = performance.now();
+  if (r.go) {
+    directorFx.rebuildPop(restored, now);
+    // D1's marks (dark panes, holes, scorch) go with the damage.
+    if (r.k === 0) city.damage.clearBuilding(r.b);
+  } else {
+    const serverMs = socket.renderTime();
+    directorFx.rebuildAnnounced(
+      r,
+      serverMs === null ? 2000 : r.at - serverMs,
+      now,
+    );
+  }
+};
+// D5 rebuild dressing: scaffolding + a rebuild crane on damaged buildings.
+const scaffold = new ScaffoldRenderer(city.cityBuildings, qualityTier);
+scene.add(scaffold.mesh);
+/** No warned events (the common frame — no iterator allocated). */
+const NO_EVENTS: readonly DirectorEvent[] = [];
+/** The director alarm's position this frame (reused). */
+const alarmScratch = { x: 0, y: 0, z: 0 };
 // D4: shot-down planes fall as burning wrecks on the server's shared path
 // and blow up where it says they land (the D2 damage arrives as `chunks`).
 const wrecks = new Wrecks(impacts, (_w, at) => {
@@ -974,6 +1046,39 @@ const missileRenderer = new MissileRenderer(smoke, impacts);
 scene.add(missileRenderer.group);
 const missileFeed = new MissileFeed();
 const missileShake = new MissileShake();
+// S4 sky boss: the room's war zeppelin (the socket's slot) on the render
+// clock — hull, glowing weak points, running lights, flak shells — its
+// bursts and its falling sections' fire through the D1 particle pool. A
+// section hitting the city is a big blast and a jolt; a burst near us is a
+// crack and a "flak!" call.
+const bossRenderer = new BossRenderer(
+  impacts,
+  (at) => {
+    const t = performance.now();
+    explosions.explode(at, t);
+    explosions.explode({ x: at.x + 18, y: at.y + 10, z: at.z - 12 }, t + 120);
+    sparks.burst(at, t);
+    audio.missileBlast(at, flight.pos, flight.yaw);
+    missileShake.add(wrapDistance(at, flight.pos) * 0.6, t);
+  },
+  (at) => {
+    const t = performance.now();
+    audio.flakBurst(at, flight.pos, flight.yaw);
+    if (alive && wrapDistance(at, flight.pos) < 45) {
+      say(flakCallout());
+      radio.noteCombat(t);
+      music.noteCombat(t);
+    }
+  },
+);
+scene.add(bossRenderer.group);
+/** S4: each weak point's full HP on the current raid (the HUD bar's scale),
+ * rebuilt only when the raid changes — never per frame. */
+let bossMaxFor = -1;
+let bossMax: number[] = [];
+const bossAlive: boolean[] = BOSS_WEAK_POINTS.map(() => false);
+/** S4: the raid whose run-out we have already called ("it got away"). */
+let bossEscapeCalled = -1;
 /** The classifier's reusable result (allocation-free bullet loop). */
 const impactHit: BulletImpact = createBulletImpact();
 /** QA: the last city impact by a LOCAL round (own guns or __ab.qaFireAt —
@@ -1054,6 +1159,13 @@ const blastLedger = new BlastLedger(
 );
 blastLedger.ingest(welcome.cityEvents ?? []);
 socket.events.onCityEvent = (event) => {
+  // D5: a gas main blew in the street — the fireball, the bang, the jolt.
+  if (event.kind === "gas") {
+    const now = performance.now();
+    directorFx.gasBlast(event, now);
+    audio.missileBlast(event, flight.pos, flight.yaw);
+    missileShake.add(wrapDistance(event, flight.pos), now);
+  }
   reactor.ingest([event]);
   for (const site of blastLedger.ingest([event])) {
     impacts.blast(site, performance.now());
@@ -1640,7 +1752,7 @@ socket.events.onDamage = (msg) => {
       const shooterPos =
         msg.shooterId === socket.selfId
           ? null
-          : msg.shooterId === MISSILE_SHOOTER_ID
+          : msg.shooterId === MISSILE_SHOOTER_ID || msg.shooterId === BOSS_ID
             ? msg.from
             : remotes.poseOf(msg.shooterId)?.pos;
       damageIndicator.hit(msg.shooterId, shooterPos, dmg, now);
@@ -1765,6 +1877,39 @@ socket.events.onAward = (msg) => {
     killFeed.addStreak(nameOf(msg.id), msg.tier, own);
     say(streakCallout(msg.tier, own, nameOf(msg.id)));
   }
+};
+/** S4: a sky-boss raid begins — the whole room hears it, and the score
+ * swells (the moment S2 kept for it). */
+socket.events.onBoss = () => {
+  say(bossInboundCallout());
+  music.moment("swell");
+};
+/**
+ * S4: the zeppelin is down. One feed line for the top dealer (+ how many
+ * shared the kill — the badges of the top dealer's award join it), the
+ * screens' headline at its middle section, the radio, and the swell; the
+ * credited kills arrive with the `score` after.
+ */
+socket.events.onBossDown = (msg) => {
+  const credited = msg.dealers.filter(([, permille]) => permille >= 100);
+  const top = msg.top;
+  killFeed.addBossDown(
+    top === null ? null : nameOf(top),
+    Math.max(0, credited.length - 1),
+    BOSS_ID,
+    msg.dealers.some(([id]) => id === socket.selfId),
+  );
+  const mid = msg.d.pieces[1];
+  const line = bossHeadline(
+    top,
+    screenLabel,
+    msg.d.id,
+    mid?.p.x ?? 0,
+    mid?.p.z ?? 0,
+  );
+  jumbotrons.addHeadline(line.headline, line.feed);
+  say(bossEndCallout(true));
+  music.moment("swell");
 };
 socket.events.onRespawn = (msg) => {
   // Fresh spawn, fresh trail — a rebased teleport would smear smoke 1 km.
@@ -1958,6 +2103,9 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   missileRenderer.setQuality(QUALITY_PROFILES[tier].missileDebris);
   blastLedger.setBurnCap(burnCapFor(QUALITY_PROFILES[tier].impacts));
   wrecks.setShare(QUALITY_PROFILES[tier].wreckFire); // D4
+  bossRenderer.setQuality(QUALITY_PROFILES[tier].bossFx); // S4
+  directorFx.setShare(QUALITY_PROFILES[tier].directorFx); // D5
+  scaffold.setQuality(tier); // D5
   streakSmoke.setShare(QUALITY_PROFILES[tier].streakSmoke); // S7
   pedestrians.setQuality(tier);
   cityLife.setQuality(tier); // A1
@@ -2308,6 +2456,19 @@ declare global {
       };
       signage: () => Signage["counts"];
       jumbotron: () => Jumbotrons["stats"];
+      /** S4 QA: the room's sky boss as this client holds it — the raid, its
+       * HP, whether it flies (or falls) at the render clock, where, the
+       * shells in the air and what the renderer drew. */
+      boss: () => {
+        raid: typeof socket.boss.raid;
+        hp: number[];
+        down: typeof socket.boss.down;
+        present: boolean;
+        falling: boolean;
+        pos: { x: number; y: number; z: number; yaw: number } | null;
+        flak: number;
+        drawn: BossRenderer["stats"];
+      };
       jumbotronView: (
         i: number,
         distance?: number,
@@ -2783,6 +2944,25 @@ window.__ab = {
   // S1 QA: what the jumbotrons say, the replay pass count/draws, and a
   // canonical view square on screen `i` (feed it to qaCamera).
   jumbotron: () => jumbotrons.stats,
+  boss: () => {
+    const t = lastRenderMs;
+    const raid = socket.boss.raid;
+    const present = raid !== null && t !== null && bossPresent(socket.boss, t);
+    const pose =
+      present && raid && t !== null
+        ? bossPoseAt(raid, t, { x: 0, y: 0, z: 0, yaw: 0, hx: 1, hz: 0 })
+        : null;
+    return {
+      raid,
+      hp: [...socket.bossHp],
+      down: socket.boss.down,
+      present,
+      falling: t !== null && piecesFalling(socket.boss, t),
+      pos: pose && { x: pose.x, y: pose.y, z: pose.z, yaw: pose.yaw },
+      flak: socket.flak.size,
+      drawn: bossRenderer.stats,
+    };
+  },
   jumbotronView: (i, distance) => jumbotrons.view(i, distance),
   signImage: (x, z) => signage.imageOf(x, z),
   signBroken: (at) =>
@@ -3417,10 +3597,19 @@ const frame = (now: number): void => {
     // the camera and the airframe from moving in lockstep.
     const camShake = turbulenceOffset(now, flight.pos.y);
     missileShake.addInto(camShake, now); // X1 impacts: display camera only
-    // D3: the ground shakes under a collapse coming down nearby.
-    if (renderMs !== null && socket.collapses.list.length > 0) {
+    // D3: the ground shakes under a collapse coming down nearby — D5: and
+    // trembles under a tower the director has warned about.
+    if (
+      renderMs !== null &&
+      (socket.collapses.list.length > 0 || socket.director.size > 0)
+    ) {
       const jolt = collapseShakeOffset(
-        collapseShakeAmount(socket.collapses.list, flight.pos, renderMs),
+        Math.max(
+          collapseShakeAmount(socket.collapses.list, flight.pos, renderMs),
+          socket.director.size > 0
+            ? warningTremor(socket.director.values(), flight.pos, renderMs)
+            : 0,
+        ),
         now,
       );
       camShake.x += jolt.x;
@@ -3496,6 +3685,37 @@ const frame = (now: number): void => {
         impactHit,
       );
       classifyTotal += performance.now() - c0;
+    }
+    // S4: the zeppelin. A live weak point takes a claim (own rounds); armour
+    // stops any round — sparks, nothing claimed.
+    if (socket.boss.raid !== null) {
+      for (let k = 0; k < bossAlive.length; k++) {
+        bossAlive[k] = (socket.bossHp[k] ?? 0) > 0;
+      }
+      const onBoss = bossBulletHit(
+        socket.boss,
+        bossAlive,
+        bullet.prev,
+        bullet.pos,
+        renderMs,
+      );
+      if (onBoss) {
+        bullets.remove(bullet);
+        sparks.burst(onBoss.at, now);
+        if (!bullet.cosmetic && onBoss.weak >= 0 && renderMs !== null) {
+          socket.sendBossHit(
+            onBoss.weak,
+            bullet.origin,
+            onBoss.dir,
+            bullet.seq,
+            renderMs,
+          );
+          hud.hitMarker(now);
+          haptics.hit(now);
+          audio.hitThunk();
+        }
+        continue;
+      }
     }
     if (bullet.cosmetic) {
       if (wall) strikeCity(bullet, now);
@@ -3748,6 +3968,37 @@ const frame = (now: number): void => {
     }
     missileRenderer.update(mf.flying, chase.position, renderMs, now);
   }
+  // S4: the zeppelin, its flak and its fall; the HUD bar while it flies;
+  // "it got away" once, when a raid runs out still flying.
+  bossRenderer.update(
+    socket.boss,
+    socket.bossHp,
+    socket.flak,
+    chase.position,
+    renderMs,
+    now,
+  );
+  const bossRaid = socket.boss.raid;
+  if (bossRaid && bossRaid.id !== bossMaxFor) {
+    bossMaxFor = bossRaid.id;
+    bossMax = raidMaxHp(bossRaid);
+  }
+  const bossUp =
+    bossRaid !== null &&
+    renderMs !== null &&
+    bossPresent(socket.boss, renderMs);
+  hud.setBoss(bossUp ? socket.bossHp : null, bossMax, now);
+  if (
+    bossRaid &&
+    renderMs !== null &&
+    bossRaid.id !== bossEscapeCalled &&
+    !socket.boss.down &&
+    renderMs >= raidEnd(bossRaid) - 30_000 &&
+    renderMs < raidEnd(bossRaid)
+  ) {
+    bossEscapeCalled = bossRaid.id;
+    say(bossEndCallout(false));
+  }
   smoke.update(chase.position, now);
   // S7 streak smoke: every living plane on a streak, tinted by its tier.
   if (alive) {
@@ -3760,6 +4011,20 @@ const frame = (now: number): void => {
   }
   streakSmoke.update(chase.position, now);
   dust.update(socket.collapses.list, chase.position, renderMs);
+  // D5: the director's warnings (dust, steam, sparks) and the rebuilds'
+  // welders; an event is forgotten once its alarm has died away.
+  if (socket.director.size > 0 && renderMs !== null) {
+    for (const [id, e] of socket.director) {
+      if (renderMs > e.at + DIRECTOR_ALARM_TAIL_MS) socket.director.delete(id);
+    }
+  }
+  directorFx.update(
+    socket.director.size > 0 ? socket.director.values() : NO_EVENTS,
+    renderMs,
+    now,
+    dt,
+  );
+  scaffold.update(chase.position, socket.cityDamage.version);
   // Storm: consume this frame's scheduled strikes, then age/place the bolts
   // and drive the sky-flash pulse (fog stain + dome tint + violet ambient).
   for (const s of strikeFeed.poll(renderMs)) {
@@ -3787,7 +4052,11 @@ const frame = (now: number): void => {
   const wxMs = renderMs === null ? null : renderMs + weatherShift;
   const wx = weather.at(wxMs);
   setWeatherUniform(wx, wxMs);
-  jumbotrons.setWarning(wxMs === null ? null : stormWarning(wx)); // S1 banner
+  // S1 banner — S4: an air raid outranks the weather.
+  jumbotrons.setWarning(
+    bossWarning(socket.boss, renderMs) ??
+      (wxMs === null ? null : stormWarning(wx)),
+  );
   rain.update(wx, wxMs, camera.position, dt);
   const sky = storm.atmosphere(
     scene,
@@ -3876,6 +4145,11 @@ const frame = (now: number): void => {
     combat: radio.inCombat(now),
     serverTimeMs: renderMs,
     rain: rain.level, // L4 weather
+    // D5: the alarm at a warned (or just-happened) director event.
+    alarm:
+      socket.director.size > 0 && renderMs !== null
+        ? alarmAt(socket.director.values(), flight.pos, renderMs, alarmScratch)
+        : null,
   });
   // S2 soundtrack: the nearest living remote (torus distance) is the threat;
   // dead, there is none — the kill-cam plays calm.

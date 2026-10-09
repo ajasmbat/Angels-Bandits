@@ -681,6 +681,21 @@ export const COLLAPSE_CREDIT_SLACK = 8;
 /** The dust cloud's life, ms (sight-blocking haze in the canyon). */
 export const COLLAPSE_DUST_MS = 20_000;
 
+// --- D5 chain reactions (city/collapse.ts collapseImpacts) ---
+/** Falling debris that enters another building blasts its chunks there:
+ * at most this many impacts per collapse, this many per struck building,
+ * and two impacts on one building at least this far apart, m. */
+export const CHAIN_IMPACTS_MAX = 16;
+export const CHAIN_IMPACTS_PER_BUILDING = 4;
+export const CHAIN_COALESCE_M = 8;
+/** Each impact's D2 blast: radius (point-to-box), m, and damage — enough to
+ * break the chunk it lands in and bite its neighbours. */
+export const CHAIN_BLAST_RADIUS = 10;
+export const CHAIN_BLAST_DAMAGE = 240;
+/** A collapse set off by debris is one link further down the chain; past
+ * this many links debris no longer breaks anything (no city-wide domino). */
+export const CHAIN_DEPTH_MAX = 3;
+
 // --- D4 downed planes (common/src/wreck.ts) ---
 /** A shot-down plane's wreck: the sphere it falls as, m — solid while it
  * falls, and what its sweep stops on. */
@@ -992,6 +1007,20 @@ export const BOT_SPAWN_GRACE_MS = 3000;
  * contact flies above BOT_ENGAGE_CEILING — so the low layer prefers the fight
  * at its own altitude and is not forever dragged up by the nearest high one. */
 export const BOT_ACQUIRE_ALT_WEIGHT = 1;
+/** S4 sky boss: a bot ranks a weak point by its distance plus this, m, and
+ * none of the altitude weight — so it climbs at the zeppelin on purpose, yet
+ * still prefers a plane close by. */
+export const BOT_BOSS_PREFERENCE = 150;
+/** A climbing pass at a weak point starts this far out, m, and lasts this
+ * long, ms — the zeppelin is ~250 m above the canyon band, so a plane pass's
+ * 300 m / 3 s would never bring the guns to bear. */
+export const BOT_BOSS_PASS_RANGE = 470;
+export const BOT_BOSS_PASS_MS = 5000;
+/** A bot fires at a weak point inside this, m (< BULLET_RANGE). */
+export const BOT_BOSS_FIRE_RANGE = 330;
+/** ...and breaks its pass off inside this, m: the weak point is on a 260 m
+ * hull, and the turn away takes a MAX_SPEED turn radius (~118 m). */
+export const BOT_BOSS_STANDOFF = 170;
 /** A low EVADE breaks along its street toward a point this far ahead, m. */
 export const BOT_EVADE_STREET_LEAD = 150;
 /** …jinking this far either side of its centreline, m, flipping every

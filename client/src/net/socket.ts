@@ -29,7 +29,20 @@
 // X1: the room's missiles in the air live here too (`missiles`), for the
 // same reason — a strike announced while this client boots must still
 // whistle and land on time. main.ts consumes them on the synced clock.
+// D5: and so do the director's warned events (`director`) and its rebuilds,
+// which are applied to `cityDamage` and `collapses` on arrival — in message
+// order, so a `chunks` batch after a rebuild lands after it here too.
 
+import {
+  type BossFlak,
+  type BossRaid,
+  applyBossState,
+  decodeFlak,
+  decodeRaid,
+  emptyBossSlot,
+  isBossDown,
+  raidMaxHp,
+} from "@angels-bandits/common/boss";
 import { CityDamage, decodeChunkIds } from "@angels-bandits/common/city";
 import {
   CollapseField,
@@ -42,10 +55,16 @@ import {
   SERVER_SILENCE_MS,
   TICK_UP_HZ,
 } from "@angels-bandits/common/constants";
+import {
+  type DirectorEvent,
+  type RebuildWire,
+  decodeDirectorEvent,
+} from "@angels-bandits/common/director";
 import { STREAK_TIERS, isMedalKind } from "@angels-bandits/common/medals";
 import { decodeSnapshotEntry } from "@angels-bandits/common/net";
 import type {
   AwardMsg,
+  BossDownMsg,
   BotsConfigMsg,
   CourseBoardMsg,
   CourseResultMsg,
@@ -89,10 +108,19 @@ export interface GameSocketEvents {
   /** D3: a building section started to collapse (already applied to
    * `cityDamage` and `collapses`) — audio, shake, dust. */
   onCollapse?: (c: CollapseWire) => void;
+  /** D5: the director warned of an event (already in `director`). */
+  onDirectorWarn?: (e: DirectorEvent) => void;
+  /** D5: a rebuild announce (`go: false`) or one just applied to
+   * `cityDamage` and `collapses` (`go: true`, with the chunks it restored). */
+  onRebuild?: (r: RebuildWire, restored: readonly number[]) => void;
   /** S3: the official result of our own finished course run. */
   onCourseResult?: (msg: CourseResultMsg) => void;
   /** S3: a course leaderboard changed (ghost attached when a record fell). */
   onCourseBoard?: (msg: CourseBoardMsg) => void;
+  /** S4: a sky-boss raid began (already in `boss`). */
+  onBoss?: (raid: BossRaid) => void;
+  /** S4: the boss went down (already in `boss`): credit and the break-up. */
+  onBossDown?: (msg: BossDownMsg) => void;
   /** W2: the socket dropped; reconnecting in the background. */
   onReconnecting?: () => void;
   /** W2: back as the same player. `welcome` is the fresh one: roster,
@@ -143,6 +171,17 @@ export class GameSocket {
    * every welcome and every `missile` event, listening or not. The frame
    * loop removes each once it has landed (or gone stale). */
   readonly missiles = new Map<number, MissileStrike>();
+  /** D5: the director's warned events, by id — from every welcome and every
+   * `directorWarn`, listening or not. The frame loop drops each once it has
+   * happened. */
+  readonly director = new Map<number, DirectorEvent>();
+  /** S4: the room's sky boss — its raid and break-up (the mover field holds
+   * this very slot, so the crash check sees it), every weak point's HP, and
+   * the shells in the air by id (the renderer drops each once it bursts).
+   * Kept from every welcome and message, listening or not. */
+  readonly boss = emptyBossSlot();
+  bossHp: number[] = [];
+  readonly flak = new Map<number, BossFlak>();
   private ws: WebSocket;
   /** W2: "open" → "reconnecting" on a drop → back, or "lost" for good. */
   private state: "open" | "reconnecting" | "lost" = "open";
@@ -178,6 +217,7 @@ export class GameSocket {
     this.welcome = welcome;
     this.replayDestruction(welcome);
     this.addMissiles(welcome.missiles);
+    this.bossHp = applyBossState(this.boss, welcome.boss);
     this.attach(ws);
     // W2 watchdog: snapshots arrive at TICK_DOWN_HZ, so a visible tab that
     // hears nothing for SERVER_SILENCE_MS is on a dead (half-open) socket —
@@ -301,10 +341,14 @@ export class GameSocket {
     }
     this.ws = next.ws;
     // Missile ids are per room: a resume into another room starts over.
-    if (next.welcome.roomId !== this.welcome.roomId) this.missiles.clear();
+    if (next.welcome.roomId !== this.welcome.roomId) {
+      this.missiles.clear();
+      this.flak.clear(); // S4: shell ids are per room too
+    }
     this.welcome = next.welcome;
     this.replayDestruction(next.welcome);
     this.addMissiles(next.welcome.missiles);
+    this.bossHp = applyBossState(this.boss, next.welcome.boss);
     this.attach(next.ws);
     this.delay.reset(); // the outage's arrival gaps are not jitter
     this.lastHeardMs = performance.now();
@@ -312,12 +356,32 @@ export class GameSocket {
     this.events.onResumed?.(next.welcome);
   }
 
-  /** A welcome's whole destruction: the broken set, then every collapse. */
+  /** A welcome's whole destruction: the broken set, then every collapse —
+   * and (D5) the director's warnings still to happen. */
   private replayDestruction(welcome: WelcomeMsg): void {
     this.cityDamage.reset(decodeChunkIds(welcome.destroyed));
     const records = Array.isArray(welcome.collapses) ? welcome.collapses : [];
     this.collapses.reset(records);
     for (const c of records) this.cityDamage.collapse(collapseChunks(c));
+    this.director.clear();
+    for (const w of welcome.director ?? []) {
+      const e = decodeDirectorEvent(w);
+      if (e) this.director.set(e.id, e);
+    }
+  }
+
+  /** D5: a rebuild — applied now if it is the real one (`go`). */
+  applyRebuild(r: RebuildWire): void {
+    let restored: number[] = [];
+    if (r.go) {
+      if (r.k === 0) {
+        restored = this.cityDamage.restoreBuilding(r.b);
+        this.collapses.removeBuilding(r.b);
+      } else {
+        this.collapses.removeCrane(r.b);
+      }
+    }
+    this.events.onRebuild?.(r, restored);
   }
 
   /** One live collapse: its chunks fall, its debris starts. */
@@ -410,6 +474,22 @@ export class GameSocket {
       seq,
       delay: Math.round(this.effectiveDelayMs + extraMs),
     });
+  }
+
+  /**
+   * S4: one of our rounds met the sky boss's live weak point `wp`. The claim
+   * carries the round's whole line — the muzzle, its unit direction, and the
+   * render-clock time it met the zeppelin there — because the server re-runs
+   * that line against the armour itself.
+   */
+  sendBossHit(
+    wp: number,
+    bulletOrigin: Vec3,
+    dir: Vec3,
+    seq: number,
+    t: number,
+  ): void {
+    this.send({ type: "bossHit", wp, seq, bulletOrigin, dir, t });
   }
 
   /** Report flying into a building or the ground — or (D4) into the
@@ -537,6 +617,38 @@ export class GameSocket {
       case "awayStarted":
         this.events.onAwayStarted?.();
         break;
+      case "boss": {
+        const raid = decodeRaid(msg.r);
+        if (!raid) break;
+        this.boss.raid = raid;
+        this.boss.down = null;
+        this.bossHp = raidMaxHp(raid);
+        this.events.onBoss?.(raid);
+        break;
+      }
+      case "bossHp":
+        if (
+          this.boss.raid?.id === msg.id &&
+          Array.isArray(msg.hp) &&
+          msg.hp.length === this.bossHp.length &&
+          msg.hp.every((v) => typeof v === "number" && Number.isFinite(v))
+        ) {
+          this.bossHp = msg.hp;
+        }
+        break;
+      case "flak":
+        for (const w of Array.isArray(msg.f) ? msg.f : []) {
+          const f = decodeFlak(w);
+          if (f) this.flak.set(f.id, f);
+        }
+        break;
+      case "bossDown":
+        if (isBossDown(msg.d) && this.boss.raid?.id === msg.d.id) {
+          this.boss.down = msg.d;
+          this.bossHp = this.bossHp.map(() => 0);
+          this.events.onBossDown?.(msg);
+        }
+        break;
       case "missile":
         this.addMissiles([msg.m]);
         break;
@@ -545,6 +657,17 @@ export class GameSocket {
         break;
       case "collapse":
         this.applyCollapse(msg.c);
+        break;
+      case "directorWarn": {
+        const e = decodeDirectorEvent(msg.e);
+        if (e) {
+          this.director.set(e.id, e);
+          this.events.onDirectorWarn?.(e);
+        }
+        break;
+      }
+      case "rebuild":
+        this.applyRebuild(msg.r);
         break;
       case "courseResult":
         this.events.onCourseResult?.(msg);

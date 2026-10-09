@@ -148,9 +148,22 @@ export interface QualityProfile {
    * landing fire emit (into the D1 particle pool). The wreck itself, its
    * explosion and the street scorch are on every tier — the wreck is solid. */
   wreckFire: number;
+  /** D5 director warnings and rebuilds: share of the dust spilling from a
+   * warned tower, a gas main's steam, a crane's sparks, the welders and the
+   * rebuild's pop (into the D1 pool). The warning's sound, siren and tremor
+   * — the telegraph — are identical on every tier. */
+  directorFx: number;
+  /** D5 rebuild dressing: how many damaged buildings near the camera wear
+   * scaffolding and a rebuild crane at once (cosmetic, never solid). */
+  scaffold: number;
   /** S7 kill-streak smoke: share of its puff emission rate (the trail
    * thins, never shortens). Cosmetic — the streak is on the scoreboard too. */
   streakSmoke: number;
+  /** S4 sky boss: share of the particle dressing — the flak bursts' flames
+   * and smoke, and the falling sections' fire trails and landing fires. The
+   * zeppelin (solid), its weak points, running lights and the flak shells
+   * themselves (the telegraph) are identical on every tier. */
+  bossFx: number;
   /** S5 wind litter: share of each block's scraps kept (stride thinning). */
   litter: number;
   /** S5 moon light shafts (the quarter-res ShaftsPass; off skips it). */
@@ -195,7 +208,10 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     destructionDetail: true,
     collapseDust: 1,
     wreckFire: 1,
+    directorFx: 1,
+    scaffold: 8,
     streakSmoke: 1,
+    bossFx: 1,
     litter: 1,
     lightShafts: true,
     heatShimmer: true,
@@ -234,7 +250,10 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     destructionDetail: true,
     collapseDust: 0.75,
     wreckFire: 0.75,
+    directorFx: 0.75,
+    scaffold: 6,
     streakSmoke: 1,
+    bossFx: 0.75,
     litter: 1,
     lightShafts: true,
     heatShimmer: true,
@@ -273,7 +292,10 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     destructionDetail: false,
     collapseDust: 0.5,
     wreckFire: 0.5,
+    directorFx: 0.5,
+    scaffold: 4,
     streakSmoke: 0.5,
+    bossFx: 0.5,
     litter: 0.5,
     lightShafts: true,
     heatShimmer: true,
@@ -312,7 +334,10 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     destructionDetail: false,
     collapseDust: 0.3,
     wreckFire: 0.35,
+    directorFx: 0.35,
+    scaffold: 2,
     streakSmoke: 0.5,
+    bossFx: 0.35,
     litter: 0.34,
     lightShafts: false,
     heatShimmer: false,
@@ -720,6 +745,22 @@ export const FEATURE_TIERS: readonly {
     low: "reduced",
     mobile: "reduced",
     note: "puff emission 100 / 100 / 50 / 50 %; one tinted Points draw for every streaking plane; the scoreboard glow carries the streak on every tier",
+  },
+  {
+    feature: "S4 sky boss — the zeppelin, weak points, lights, flak shells",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "solid (crash check, camera arm, bots) and the flak's telegraph: two instanced draws + two Points on every tier",
+  },
+  {
+    feature: "S4 sky boss — flak bursts, falling-section fire and smoke",
+    high: "full",
+    medium: "reduced",
+    low: "reduced",
+    mobile: "reduced",
+    note: "emission 100 / 75 / 50 / 35 % into the D1 particle pool (no extra draw); the bursts' damage and the sections themselves are the same everywhere",
   },
   {
     feature: "S5 fog banks (drifting haze between the towers)",

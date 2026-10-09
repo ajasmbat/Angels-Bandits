@@ -240,6 +240,51 @@ export function incomingCallout(): Callout {
   };
 }
 
+/** S4: one "flak" per this long — a turret volley is one call. */
+const FLAK_COOLDOWN_MS = 15_000;
+
+/** S4: a sky-boss raid begins — the whole room hears it once. */
+export function bossInboundCallout(): Callout {
+  return {
+    kind: "threat",
+    key: "boss",
+    cooldownMs: 0,
+    expiresMs: 12_000,
+    voice: PHRASE.bossInbound,
+    ticker: "Enemy war zeppelin inbound — hit the engines and gas cells",
+    speaker: "CONTROL",
+  };
+}
+
+/** S4: a flak burst close to the local plane. Expires fast, like
+ * "incoming": a late call after the burst is worse than none. */
+export function flakCallout(): Callout {
+  return {
+    kind: "threat",
+    key: "flak",
+    cooldownMs: FLAK_COOLDOWN_MS,
+    expiresMs: 2_000,
+    voice: PHRASE.flak,
+    ticker: "FLAK! BREAK!",
+    speaker: "GUARD",
+  };
+}
+
+/** S4: the zeppelin is down (`own`: we dealt the most), or it got away. */
+export function bossEndCallout(down: boolean): Callout {
+  return {
+    kind: "kill",
+    key: "bossend",
+    cooldownMs: 0,
+    expiresMs: 10_000,
+    voice: down ? PHRASE.bossDown : PHRASE.bossEscaped,
+    ticker: down
+      ? "The zeppelin is going down — clear the area"
+      : "The zeppelin is pulling out — it got away",
+    speaker: "CONTROL",
+  };
+}
+
 /** Roster join: bots check in by callsign, humans generically. */
 export function checkInCallout(name: string, isBot: boolean): Callout {
   const callsign = safeCallsign(name, isBot);

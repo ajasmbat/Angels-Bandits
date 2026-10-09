@@ -721,6 +721,88 @@ export class GameAudio implements VoiceSink {
   }
 
   /**
+   * D5: a director event is coming at `pos` in `durationS`: a deep rumble
+   * swelling up to it and, for a tower or a crane, the structure groaning —
+   * slow, bending metal creaks; for a gas main, a hiss building under the
+   * street. Distance attenuates like the collapse it announces.
+   */
+  directorWarning(
+    gas: boolean,
+    pos: Vec3,
+    listenerPos: Vec3,
+    listenerYaw: number,
+    durationS: number,
+  ): void {
+    const s = spatialize(listenerPos, listenerYaw, pos);
+    const level = Math.min(1, s.gain * 10);
+    const ctx = this.ensure();
+    if (!ctx || !this.sfx || !this.noise || level <= 0 || durationS <= 0.1) {
+      return;
+    }
+    const now = ctx.currentTime;
+    const end = now + durationS;
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = s.pan;
+    panner.connect(this.sfx);
+    // Rumble: low-passed noise swelling to the event.
+    const rumble = ctx.createBufferSource();
+    rumble.buffer = this.noise;
+    rumble.loop = true;
+    const low = ctx.createBiquadFilter();
+    low.type = "lowpass";
+    low.frequency.setValueAtTime(60, now);
+    low.frequency.linearRampToValueAtTime(130, end);
+    const rg = ctx.createGain();
+    rg.gain.setValueAtTime(0.001, now);
+    rg.gain.linearRampToValueAtTime(0.5 * level, end);
+    rg.gain.linearRampToValueAtTime(0.001, end + 0.4);
+    rumble.connect(low).connect(rg).connect(panner);
+    rumble.start(now, Math.random());
+    rumble.stop(end + 0.5);
+    if (gas) {
+      // Hiss: high-passed noise, rising in pitch and level.
+      const hiss = ctx.createBufferSource();
+      hiss.buffer = this.noise;
+      hiss.loop = true;
+      const high = ctx.createBiquadFilter();
+      high.type = "bandpass";
+      high.Q.value = 0.7;
+      high.frequency.setValueAtTime(1800, now);
+      high.frequency.exponentialRampToValueAtTime(4200, end);
+      const hg = ctx.createGain();
+      hg.gain.setValueAtTime(0.001, now);
+      hg.gain.exponentialRampToValueAtTime(0.35 * level, end);
+      hg.gain.linearRampToValueAtTime(0.001, end + 0.1);
+      hiss.connect(high).connect(hg).connect(panner);
+      hiss.start(now, Math.random());
+      hiss.stop(end + 0.2);
+      return;
+    }
+    // Groans: a few slow, bending creaks of loaded steel.
+    const creaks = Math.max(2, Math.round(durationS * 1.2));
+    for (let i = 0; i < creaks; i++) {
+      const at = now + (i + Math.random() * 0.6) * (durationS / creaks);
+      const len = 0.5 + Math.random() * 0.7;
+      const osc = ctx.createOscillator();
+      osc.type = "sawtooth";
+      const f0 = 70 + Math.random() * 60;
+      osc.frequency.setValueAtTime(f0, at);
+      osc.frequency.exponentialRampToValueAtTime(f0 * 0.7, at + len);
+      const band = ctx.createBiquadFilter();
+      band.type = "bandpass";
+      band.frequency.value = 380 + Math.random() * 300;
+      band.Q.value = 4;
+      const cg = ctx.createGain();
+      cg.gain.setValueAtTime(0.001, at);
+      cg.gain.linearRampToValueAtTime(0.4 * level, at + 0.15);
+      cg.gain.exponentialRampToValueAtTime(0.001, at + len);
+      osc.connect(band).connect(cg).connect(panner);
+      osc.start(at);
+      osc.stop(at + len + 0.05);
+    }
+  }
+
+  /**
    * X1: an incoming missile's whistle, rising from now until it lands in
    * `durationS` (≤ MISSILE_WHISTLE_MS), placed at its impact point. Gain
    * swells as it falls; cut dead at impact, where the blast takes over.
@@ -771,6 +853,23 @@ export class GameAudio implements VoiceSink {
     const level = Math.min(1, s.gain * 6);
     this.burst("bandpass", 2600, 400, 0.25, EXPLOSION_LEVEL * level, s.pan);
     this.burst("lowpass", 260, 35, 2.2, EXPLOSION_LEVEL * 0.8 * level, s.pan);
+  }
+
+  /** S4: a flak shell bursting — a sharp, papery crack and a short thump,
+   * far lighter than a kill (a turret volley must not drown the fight). */
+  flakBurst(pos: Vec3, listenerPos: Vec3, listenerYaw: number): void {
+    const s = spatialize(listenerPos, listenerYaw, pos);
+    const level = Math.min(1, s.gain * 4);
+    if (level <= 0.01) return;
+    this.burst(
+      "bandpass",
+      1900,
+      500,
+      0.16,
+      EXPLOSION_LEVEL * 0.45 * level,
+      s.pan,
+    );
+    this.burst("lowpass", 320, 60, 0.4, EXPLOSION_LEVEL * 0.35 * level, s.pan);
   }
 
   /** Kill explosion at a world position: low boom + rumble tail. */

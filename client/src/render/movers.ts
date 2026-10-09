@@ -29,6 +29,12 @@
 // estimate exists. A mover you cannot see must never be able to kill you.
 
 import {
+  type Collapse,
+  KIND_CRANE,
+  blankPose,
+  piecePose,
+} from "@angels-bandits/common/city/collapse";
+import {
   type MoverBox,
   type MoverField,
   aircraftBox,
@@ -363,6 +369,10 @@ export class Movers {
   private readonly warn = new THREE.Color();
   private static readonly UP = new THREE.Vector3(0, 1, 0);
   private static readonly FORWARD = new THREE.Vector3(1, 0, 0);
+  private static readonly AXIS_X = new THREE.Vector3(1, 0, 0);
+  private static readonly AXIS_Z = new THREE.Vector3(0, 0, 1);
+  /** D5: one crane-debris piece's pose, reused. */
+  private readonly piece = blankPose();
 
   constructor(field: MoverField) {
     this.field = field;
@@ -418,6 +428,17 @@ export class Movers {
       // Until the first server clock estimate: see the header note.
       mesh.visible = false;
     }
+  }
+
+  /** D5: the debris of crane `id`'s fall, if the field holds it. */
+  private craneDebris(id: number): Collapse | null {
+    const list = this.field.collapses?.list;
+    if (!list) return null;
+    for (let i = 0; i < list.length; i++) {
+      const c = list[i] as Collapse;
+      if (c.kind === KIND_CRANE && c.building === id) return c;
+    }
+    return null;
   }
 
   /** Instances the rig actually draws — for the perf report. */
@@ -477,6 +498,37 @@ export class Movers {
     };
 
     for (const site of this.field.cranes) {
+      // D5: a felled crane is its debris from the instant it went over —
+      // the same piecePose the crash check collides with — in its own slots.
+      const fell = this.field.collapses?.felled.get(site.id);
+      if (fell !== undefined && serverTimeMs >= fell) {
+        const end = rigIndex + BOXES_PER_CRANE;
+        const debris = this.craneDebris(site.id);
+        for (let i = 0; debris && i < debris.n && rigIndex < end; i++) {
+          if (rigIndex >= this.rig.count) break;
+          const p = piecePose(debris, i, serverTimeMs, this.piece);
+          const at = nearestImageInto(this.image, cameraPos, {
+            x: debris.x + p.x,
+            y: p.y,
+            z: debris.z + p.z,
+          });
+          this.pos.set(at.x, at.y, at.z);
+          this.quat.setFromAxisAngle(
+            p.axis === 0 ? Movers.AXIS_X : Movers.AXIS_Z,
+            p.phi,
+          );
+          this.scale.set(2 * p.hx, 2 * p.hy, 2 * p.hz);
+          this.matrix.compose(this.pos, this.quat, this.scale);
+          this.rig.setMatrixAt(rigIndex++, this.matrix);
+        }
+        // Unused slots hidden, so the next crane's slots stay where they were.
+        this.scale.set(0, 0, 0);
+        this.matrix.compose(this.pos, this.quat, this.scale);
+        while (rigIndex < end && rigIndex < this.rig.count) {
+          this.rig.setMatrixAt(rigIndex++, this.matrix);
+        }
+        continue;
+      }
       const parts = craneBoxes(site, serverTimeMs);
       const mast = parts.find((p) => p.kind === "mast");
       const jib = parts.find((p) => p.kind === "jib");

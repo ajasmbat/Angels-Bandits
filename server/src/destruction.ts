@@ -12,6 +12,14 @@
 // fallen chunks and records each event in the room's CollapseField — the
 // field the room's movers (so the bots) collide with, and the welcome
 // replays. Each event remembers who brought it down (`by`), for credit.
+//
+// D5: and what it hits. Every collapse — shot, missile, wreck or director —
+// goes through recordCollapse, which queues where its falling pieces drive
+// into neighbouring buildings (collapseImpacts); each impact lands at its
+// instant as a D2 blast credited like the collapse, so a neighbour can come
+// down in turn (at most CHAIN_DEPTH_MAX links). And what comes back: a
+// rebuild (rebuildBuilding / rebuildCrane) restores a whole building, drops
+// its collapse records and everything the room keeps about it.
 
 import {
   type Building,
@@ -22,12 +30,21 @@ import {
 } from "@angels-bandits/common/city";
 import {
   CollapseField,
+  type CollapseImpact,
+  type CollapsePlan,
   type CollapseWire,
+  KIND_BUILDING,
+  KIND_CRANE,
+  TOPPLE,
   collapseChunks,
+  collapseImpacts,
   collapseWire,
   collideCollapses,
+  craneFallDir,
   planCollapses,
+  wireKind,
 } from "@angels-bandits/common/city/collapse";
+import type { CraneSite } from "@angels-bandits/common/city/movers";
 import {
   type CityIndex,
   buildCityIndex,
@@ -35,6 +52,9 @@ import {
 import {
   BULLET_DAMAGE,
   BULLET_RANGE,
+  CHAIN_BLAST_DAMAGE,
+  CHAIN_BLAST_RADIUS,
+  CHAIN_DEPTH_MAX,
   COLLAPSE_CAP,
   COLLAPSE_TICK_LIMIT,
   DEATH_BLAST_DAMAGE,
@@ -73,14 +93,37 @@ export interface RoomCity {
   /** The block index of `buildings` (valid under damage: footprints never
    * change, and rubble's reach is already in it). */
   readonly index: CityIndex;
+  /** D5: falling debris due to drive into a neighbour, earliest first. */
+  impacts: ChainImpact[];
+  /** D5: each collapse's link in its chain (0 = it started one). */
+  readonly collapseDepth: Map<number, number>;
+  /** D5: the chain link a building's next planned collapse would be (set
+   * when debris breaks it, cleared once it has been planned). */
+  readonly chainDepth: Map<number, number>;
+  /** D5 rebuild timers, server ms: when each building was first damaged
+   * since it was last whole, and when it last had a collapse. */
+  readonly firstDamageAt: Map<number, number>;
+  readonly lastStructuralAt: Map<number, number>;
 }
 
-export function createRoomCity(buildings: readonly Building[]): RoomCity {
+/** One queued D5 impact: where and when, which collapse's debris (dropped
+ * if that record is rebuilt away), its chain link and its credit. */
+export interface ChainImpact extends CollapseImpact {
+  source: number;
+  depth: number;
+  by: string | null;
+}
+
+export function createRoomCity(
+  buildings: readonly Building[],
+  cranes: readonly CraneSite[] = [],
+): RoomCity {
   const copy = cloneCity(buildings);
   const damage = new CityDamage();
   damage.bind(copy);
   const collapses = new CollapseField();
   collapses.bind(copy);
+  collapses.bindCranes(cranes);
   return {
     buildings: copy,
     damage,
@@ -90,6 +133,11 @@ export function createRoomCity(buildings: readonly Building[]): RoomCity {
     collapseBy: new Map(),
     dirty: new Set(),
     nextCollapseId: 1,
+    impacts: [],
+    collapseDepth: new Map(),
+    chainDepth: new Map(),
+    firstDamageAt: new Map(),
+    lastStructuralAt: new Map(),
   };
 }
 
@@ -100,6 +148,11 @@ export function resetRoomCity(city: RoomCity): void {
   city.breakers.clear();
   city.collapseBy.clear();
   city.dirty.clear();
+  city.impacts = [];
+  city.collapseDepth.clear();
+  city.chainDepth.clear();
+  city.firstDamageAt.clear();
+  city.lastStructuralAt.clear();
 }
 
 /** Unit nose vector of a wire attitude (the same math as bots.poseVelocity
@@ -164,8 +217,13 @@ export interface DestructionTick {
  * room's chunks are gone.
  */
 export function tickDestruction(city: RoomCity, now: number): DestructionTick {
+  landImpacts(city, now);
   const broke = city.damage.takeDestroyed();
-  for (const id of broke) city.dirty.add(chunkBuilding(id));
+  for (const id of broke) {
+    const b = chunkBuilding(id);
+    city.dirty.add(b);
+    if (!city.firstDamageAt.has(b)) city.firstDamageAt.set(b, now);
+  }
   const collapses: CollapseWire[] = [];
   const damage = city.damage;
   const capped = () =>
@@ -177,15 +235,135 @@ export function tickDestruction(city: RoomCity, now: number): DestructionTick {
     if (capped()) continue;
     const b = city.buildings[index];
     if (!b) continue;
+    const depth = city.chainDepth.get(index) ?? 0;
+    city.chainDepth.delete(index);
     for (const plan of planCollapses(b, index)) {
-      const wire = collapseWire(plan, index, city.nextCollapseId++, now);
-      damage.collapse(collapseChunks(wire));
-      city.collapses.add(wire);
-      city.collapseBy.set(wire.id, city.breakers.get(index) ?? null);
-      collapses.push(wire);
+      collapses.push(
+        stageCollapse(
+          city,
+          plan,
+          index,
+          now,
+          city.breakers.get(index) ?? null,
+          depth,
+        ),
+      );
     }
   }
   return { broke, collapses };
+}
+
+/**
+ * Record one collapse event in the room: its chunks fall, the field gets
+ * the record, its credit and chain link are kept, the building's rebuild
+ * timers start, and (below CHAIN_DEPTH_MAX) where its debris will drive
+ * into neighbours is queued. Every collapse goes through here.
+ */
+export function recordCollapse(
+  city: RoomCity,
+  wire: CollapseWire,
+  by: string | null,
+  depth: number,
+): void {
+  city.damage.collapse(collapseChunks(wire));
+  const c = city.collapses.add(wire);
+  city.collapseBy.set(wire.id, by);
+  city.collapseDepth.set(wire.id, depth);
+  if (wireKind(wire) === KIND_BUILDING) {
+    city.lastStructuralAt.set(wire.b, wire.t);
+    if (!city.firstDamageAt.has(wire.b)) city.firstDamageAt.set(wire.b, wire.t);
+  }
+  if (!c || depth >= CHAIN_DEPTH_MAX) return;
+  for (const i of collapseImpacts(c, city.buildings)) {
+    city.impacts.push({ ...i, source: wire.id, depth, by });
+  }
+  city.impacts.sort((a, b) => a.t - b.t);
+}
+
+/** A plan as the room's next collapse event at `now`, recorded. */
+export function stageCollapse(
+  city: RoomCity,
+  plan: CollapsePlan,
+  index: number,
+  now: number,
+  by: string | null,
+  depth = 0,
+): CollapseWire {
+  const wire = collapseWire(plan, index, city.nextCollapseId++, now);
+  recordCollapse(city, wire, by, depth);
+  return wire;
+}
+
+/** D5: crane `site` goes over at `now` (jib first), recorded. Nobody's. */
+export function stageCraneFall(
+  city: RoomCity,
+  site: CraneSite,
+  now: number,
+): CollapseWire {
+  const wire: CollapseWire = {
+    id: city.nextCollapseId++,
+    b: site.id,
+    t: now,
+    s: TOPPLE,
+    d: craneFallDir(site, now),
+    c: [],
+    k: KIND_CRANE,
+  };
+  recordCollapse(city, wire, null, 0);
+  return wire;
+}
+
+/** Land every queued impact due by `now`: a D2 blast where the debris
+ * drove in, credited to the collapse's culprit; a building it breaks is
+ * one chain link further down. */
+function landImpacts(city: RoomCity, now: number): void {
+  let k = 0;
+  while (k < city.impacts.length && (city.impacts[k] as ChainImpact).t <= now) {
+    const i = city.impacts[k] as ChainImpact;
+    k++;
+    const out = city.damage.damageAt(i, CHAIN_BLAST_RADIUS, CHAIN_BLAST_DAMAGE);
+    for (const id of out) {
+      const b = chunkBuilding(id);
+      city.breakers.set(b, i.by);
+      city.chainDepth.set(
+        b,
+        Math.max(city.chainDepth.get(b) ?? 0, i.depth + 1),
+      );
+    }
+  }
+  if (k > 0) city.impacts.splice(0, k);
+}
+
+/**
+ * D5 rebuild: building `index` is whole again — every chunk restored, its
+ * collapse records (debris and rubble) dropped, and everything the room
+ * keeps about it forgotten: credit, chain links, timers, queued impacts of
+ * its own debris. Returns the restored chunk ids.
+ */
+export function rebuildBuilding(city: RoomCity, index: number): number[] {
+  const restored = city.damage.restoreBuilding(index);
+  forgetRecords(city, city.collapses.removeBuilding(index));
+  city.breakers.delete(index);
+  city.dirty.delete(index);
+  city.chainDepth.delete(index);
+  city.firstDamageAt.delete(index);
+  city.lastStructuralAt.delete(index);
+  return restored;
+}
+
+/** D5 rebuild: the crane at site `id` stands again. */
+export function rebuildCrane(city: RoomCity, id: number): void {
+  forgetRecords(city, city.collapses.removeCrane(id));
+}
+
+function forgetRecords(city: RoomCity, ids: readonly number[]): void {
+  if (ids.length === 0) return;
+  const gone = new Set(ids);
+  for (const id of ids) {
+    city.collapseBy.delete(id);
+    city.collapseDepth.delete(id);
+  }
+  city.impacts = city.impacts.filter((i) => !gone.has(i.source));
 }
 
 /**

@@ -35,6 +35,7 @@ import {
 import {
   type Collapse,
   type CollapseField,
+  KIND_BUILDING,
   blankPose,
   piecePose,
 } from "@angels-bandits/common/city/collapse";
@@ -505,6 +506,8 @@ export class CityRenderer {
     ) as THREE.BufferAttribute;
     for (let k = 0; k < this.drawn.length; k++) {
       const c = this.drawn[k] as Collapse;
+      // D5: a crane's debris is drawn by the movers rig (its steelwork).
+      if (c.kind !== KIND_BUILDING) continue;
       const kx = imageIndex(cameraPos.x, c.x);
       const kz = imageIndex(cameraPos.z, c.z);
       const settled = t >= c.t0 + c.endMs;
@@ -562,16 +565,18 @@ export class CityRenderer {
     }
     for (let k = this.drawn.length; k < list.length; k++) {
       const c = list[k] as Collapse;
-      if (this.bNext + c.n > this.bCapacity) {
-        this.growDebris(Math.max(this.bCapacity * 2, this.bNext + c.n));
+      // D5: crane debris takes no slots here (the movers rig draws it).
+      const n = c.kind === KIND_BUILDING ? c.n : 0;
+      if (this.bNext + n > this.bCapacity) {
+        this.growDebris(Math.max(this.bCapacity * 2, this.bNext + n));
       }
       this.drawn.push(c);
       this.drawnStart.push(this.bNext);
       this.drawnKx.push(UNSET);
       this.drawnKz.push(UNSET);
       this.drawnSettled.push(false);
-      this.writeCollapse(c, this.bNext);
-      this.bNext += c.n;
+      if (n > 0) this.writeCollapse(c, this.bNext);
+      this.bNext += n;
     }
     (this.debris as THREE.InstancedMesh).count = this.bNext;
   }
@@ -622,6 +627,7 @@ export class CityRenderer {
       "aSubOff",
     ) as THREE.BufferAttribute;
     this.drawn.forEach((c, k) => {
+      if (c.kind !== KIND_BUILDING) return; // D5: crane debris, no slots
       const start = this.drawnStart[k] as number;
       this.writeCollapse(c, start);
       for (let i = 0; i < c.n; i++) {
@@ -815,13 +821,14 @@ export class CityRenderer {
     this.dkx[b] = UNSET;
   }
 
-  /** Double the damaged mesh (at least to fit every range) and compact:
-   * every damaged building gets a fresh range, written from its solids. */
+  /** Compact the damaged mesh — every damaged building gets a fresh range,
+   * written from its solids — doubling it only until it holds twice what
+   * the ranges need. D5: ranges released by rebuilds are abandoned, so a
+   * long session compacts them away here instead of doubling forever. */
   private grow(): void {
     let need = 0;
     for (const b of this.damagedList) need += this.slotCap[b] as number;
-    while (this.dCapacity < need) this.dCapacity *= 2;
-    this.dCapacity *= 2;
+    while (this.dCapacity < 2 * need) this.dCapacity *= 2;
     this.dArrays = allocArrays(this.dCapacity);
     this.damaged.removeFromParent();
     this.damaged.geometry.dispose();

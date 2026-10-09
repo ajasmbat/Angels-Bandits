@@ -33,6 +33,8 @@
     "./wreck": "./src/wreck.ts",
     "./cityevents": "./src/cityevents.ts",
     "./courses": "./src/courses.ts",
-    "./medals": "./src/medals.ts"
+    "./director": "./src/director.ts",
+    "./medals": "./src/medals.ts",
+    "./boss": "./src/boss.ts"
   }
 }

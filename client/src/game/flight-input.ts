@@ -7,7 +7,9 @@
 // W/S drive throttle, A/D the roll assist. The throttle lives at FULL (F5):
 // with no W/S held and no finger on the touch slider the axis reads
 // AUTO_THROTTLE, so the command rides back to full after any change — S
-// slows only while held. (The corner speed manager, not the throttle, is
+// slows only while held. F9: the mouse wheel is W/S too — each notch holds
+// the key for WHEEL_HOLD_S (down = slower), so it rides back to full
+// exactly like a released key. (The corner speed manager, not the throttle, is
 // what slows the plane for a corner.) No pointer lock — the HUD needs
 // the visible cursor. On a touch device (M1) ui/touch-controls.ts feeds the
 // same state through the setTouch* seams: the thumb's aim point IS the
@@ -27,6 +29,22 @@ const PRESENCE_FADE_S = 0.25;
 /** Throttle axis with nothing commanding it, −1..1 (F5): the commanded
  * speed climbs back to full at AUTO_THROTTLE × THROTTLE_RATE = 18 m/s². */
 export const AUTO_THROTTLE = 0.6;
+/** F9: one wheel notch holds W (up) or S (down) this long, s; a spin
+ * stacks up to WHEEL_HOLD_MAX_S. A notch is a DOM_DELTA_LINE of 3 or
+ * ~100 px of DOM_DELTA_PIXEL (wheelNotches). */
+export const WHEEL_HOLD_S = 0.2;
+export const WHEEL_HOLD_MAX_S = 1;
+const WHEEL_NOTCH_PX = 100;
+const WHEEL_NOTCH_LINES = 3;
+
+/** Wheel notches in a WheelEvent's delta, + = toward the user (down):
+ * slower. Pages count as many notches as the hold allows. */
+export function wheelNotches(deltaY: number, deltaMode: number): number {
+  if (deltaMode === 2)
+    return Math.sign(deltaY) * (WHEEL_HOLD_MAX_S / WHEEL_HOLD_S);
+  return deltaY / (deltaMode === 1 ? WHEEL_NOTCH_LINES : WHEEL_NOTCH_PX);
+}
+
 /** The aim-mode key, hardcoded like FREELOOK_KEY (no keybinding UI yet). */
 export const AIM_MODE_KEY = "KeyM";
 const AIM_MODE_STORAGE = "ab-aim-mode";
@@ -61,6 +79,9 @@ export class FlightInputSource {
   private touchZoom = false; // ZOOM button held or latched
   private touchLook = false; // two fingers on the aim zone
   private touchAimed = false; // a touch, not a mouse, placed the cursor last
+  private active = false; // the mouse moved since the last takeActivity
+  /** F9 wheel throttle: seconds of W (+) or S (−) still held. */
+  private wheelHold = 0;
 
   constructor(private readonly target: Window = window) {
     this.aimModeV = loadAimMode(target);
@@ -75,6 +96,7 @@ export class FlightInputSource {
       this.touchAimed = false;
       this.inside = true;
       this.presenceK = 1;
+      this.active = true;
       this.lookDx += e.movementX;
       this.lookDy += e.movementY;
     });
@@ -103,6 +125,18 @@ export class FlightInputSource {
     target.addEventListener("mouseup", (e: MouseEvent) => {
       if (e.button === 2) this.aim = false;
     });
+    // F9: the wheel is the throttle. Non-passive, so the page never scrolls
+    // or zooms under it — except over the settings panel, which scrolls.
+    target.addEventListener(
+      "wheel",
+      (e: WheelEvent) => {
+        const el = e.target as Element | null;
+        if (el?.closest?.(".settings")) return;
+        e.preventDefault();
+        this.addWheel(wheelNotches(e.deltaY, e.deltaMode));
+      },
+      { passive: false },
+    );
     // Without this the browser menu eats the hold and steals focus mid-zoom.
     target.addEventListener("contextmenu", (e: Event) => e.preventDefault());
     // A right mouseup delivered outside the window never arrives — the same
@@ -131,6 +165,32 @@ export class FlightInputSource {
       this.mouseY += (y - this.mouseY) * blend;
     }
     if (!this.inside) this.presenceK *= Math.exp(-dt / PRESENCE_FADE_S);
+    // The wheel's hold runs down toward zero from either side.
+    this.wheelHold =
+      this.wheelHold > 0
+        ? Math.max(0, this.wheelHold - dt)
+        : Math.min(0, this.wheelHold + dt);
+  }
+
+  /** Wheel notches (+ = down: slower) as a held W/S, stacked to the cap. A
+   * turn the other way first cancels what is left of the hold. */
+  addWheel(notches: number): void {
+    if (notches === 0) return;
+    const add = -notches * WHEEL_HOLD_S;
+    const base =
+      Math.sign(add) === Math.sign(this.wheelHold) ? this.wheelHold : 0;
+    this.wheelHold = Math.max(
+      -WHEEL_HOLD_MAX_S,
+      Math.min(WHEEL_HOLD_MAX_S, base + add),
+    );
+  }
+
+  /** Whether the pilot moved the mouse since the last call; drains it (F9
+   * idle). Touch reports its own (TouchControls.aiming). */
+  takeActivity(): boolean {
+    const a = this.active;
+    this.active = false;
+    return a;
   }
 
   /** Flip the aim mode — the M key and the touch aim-mode icon. */
@@ -154,6 +214,7 @@ export class FlightInputSource {
   releaseKeys(): void {
     this.keys.clear();
     this.aim = false;
+    this.wheelHold = 0;
   }
 
   /** Touch aim point, client px — exactly what a mousemove would report.
@@ -264,8 +325,8 @@ export class FlightInputSource {
   }
 
   read(): FlightInput {
-    const w = this.keys.has("KeyW");
-    const s = this.keys.has("KeyS");
+    const w = this.keys.has("KeyW") || this.wheelHold > 0;
+    const s = this.keys.has("KeyS") || this.wheelHold < 0;
     const keys = (w ? 1 : 0) + (s ? -1 : 0);
     // Nothing on the throttle: ride back to full (F5).
     const throttle =

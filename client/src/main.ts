@@ -151,7 +151,21 @@ import {
   cornerSpeed,
   holeCorridors,
   stepCornerCap,
+  threadingCorridor,
 } from "./game/corner-speed";
+import {
+  ASSIST_MAX_ROLL,
+  type EffortlessWorld,
+  FEEL_TUNING,
+  arcSweep,
+  createEffortless,
+  createEffortlessOut,
+  effortlessCommand,
+  effortlessError,
+  effortlessStick,
+  resetEffortless,
+  stepEffortless,
+} from "./game/effortless";
 import { type AimMode, FlightInputSource } from "./game/flight-input";
 import { createFreeLook, shapeInput, stepFreeLook } from "./game/freelook";
 import { Guns } from "./game/guns";
@@ -177,6 +191,7 @@ import {
 import {
   type SaveWorld,
   createHoleSave,
+  holeSaveActive,
   resetHoleSave,
   stepHoleSave,
 } from "./game/hole-save";
@@ -846,8 +861,6 @@ const holeAssist = createHoleAssist();
 const holeAssistWant = createHoleAssist();
 const assistDir: Vec3 = { x: 0, y: 0, z: 0 };
 const assistStickOut = { turn: 0, pitch: 0 };
-/** H2 hole assist stands down past this much real roll, rad (~30°, F7). */
-const ASSIST_MAX_ROLL = Math.PI / 6;
 // H3 hole save: the same spans, and every solid the crash check reads — the
 // last-moment pose correction that threads a hole when a crash is imminent.
 const saveWorld: SaveWorld = {
@@ -858,6 +871,18 @@ const saveWorld: SaveWorld = {
   movers: moverField,
 };
 const holeSave = createHoleSave();
+// F9 effortless assist (game/effortless.ts): the settings' FLIGHT ASSIST and
+// FEEL, its state and its per-frame output (written in place), and the
+// static solids its soft walls probe — the crash check's.
+let assistOn = settings.assist;
+let feelTuning = FEEL_TUNING[settings.feel];
+const effortless = createEffortless();
+const effOut = createEffortlessOut();
+const effWorld: EffortlessWorld = {
+  buildings: city.cityBuildings,
+  index: city.cityIndex,
+  nature: natureIndex,
+};
 const natureRenderer = new NatureRenderer(nature);
 scene.add(natureRenderer.group);
 // L11 river: embankment walls, bridges, the reflecting water and the boats.
@@ -1548,6 +1573,7 @@ function resetAssist(): void {
   holeAssist.yaw = 0;
   holeAssist.pitch = 0;
   resetHoleSave(holeSave); // H3: and no save mid-slide
+  resetEffortless(effortless); // F9: and no idle, no guard escape
 }
 
 /** S3: drop the local run (death, respawn, resume) — the server drops its
@@ -2684,6 +2710,13 @@ const settingsPanel = new SettingsPanel(
     setAutoFire: (on) => {
       autoFireOn = on;
     },
+    setAssist: (on) => {
+      assistOn = on;
+      resetEffortless(effortless);
+    },
+    setFeel: (feel) => {
+      feelTuning = FEEL_TUNING[feel];
+    },
     setRadioVoice: (on) => {
       saveRadioVoice(on);
       paintRadioToggle(on);
@@ -3314,6 +3347,7 @@ const frame = (now: number): void => {
     // command from the other mode ever reaches the plane.
     aimMode = input.aimMode();
     instructor = createInstructor();
+    resetEffortless(effortless);
     // Changed on the settings screen: toasted when it closes.
     if (!settingsOpen) hud.showAimMode(aimMode, isTouch());
   }
@@ -3367,9 +3401,18 @@ const frame = (now: number): void => {
     assistDir.x = -Math.sin(flight.yaw) * cosP;
     assistDir.y = Math.sin(flight.pitch);
     assistDir.z = -Math.cos(flight.yaw) * cosP;
-    /** The pilot's own turn command, assist excluded — the corner manager's
-     * intent, so the nudge can never make it brake for a turn. */
+    /** The pilot's own command, every assist excluded — the corner
+     * manager's intent (so a nudge can never make it brake for a turn) and
+     * what the F9 guard flies ahead. */
     let intentTurn = 0;
+    let intentPitch = 0;
+    const rates = handlingRates(flight.speed, boost.active);
+    /** Instructor only: this frame's aim error, view latch and reframing. */
+    let err: AimError = { yaw: 0, pitch: 0 };
+    let latch: AimError = { yaw: 0, pitch: 0 };
+    let reframing = false;
+    let anchored = false;
+    const instructorMode = !settingsOpen && aimMode === "instructor";
     if (settingsOpen) {
       // M6: the settings panel is up — the autopilot flies (wings level,
       // out of the skyline, throttle full). A fresh instructor every frame,
@@ -3377,7 +3420,8 @@ const frame = (now: number): void => {
       stepAssist(true, dt);
       command = autopilotInput(flight.pitch, flight.pos.y, roll);
       instructor = createInstructor();
-    } else if (aimMode === "instructor") {
+      resetEffortless(effortless);
+    } else if (instructorMode) {
       // The cursor is the aim point: fly the pipper onto it. The view is the
       // un-orbited chase frame at THIS frame's (already stepped) zoom, with
       // the same FOV formula the render writes (boost kick included) —
@@ -3386,7 +3430,7 @@ const frame = (now: number): void => {
       const aimFrame = chase.aimFrame(flight, zoom.z);
       // M7: a touch aim is a direction anchored in the world — project it
       // through this very view, so the cursor read just below IS it.
-      const anchored =
+      anchored =
         touchControls?.steer(flight, aimFrame, aimFov, camera.aspect, dt) ??
         false;
       const cursor = input.cursorNdc();
@@ -3403,7 +3447,7 @@ const frame = (now: number): void => {
       assistDir.x = ax / an;
       assistDir.y = ay / an;
       assistDir.z = az / an;
-      const err = aimError(flight, view.aimDir, view.pipperDir);
+      err = aimError(flight, view.aimDir, view.pipperDir);
       // Latch only what the VIEW changed this frame — the zoom easing, the
       // boost FOV kick, or the cursor moving while free-look owns the mouse
       // (held, or its orbit still easing back, which also covers the
@@ -3413,7 +3457,6 @@ const frame = (now: number): void => {
       // An anchored touch aim latches nothing: it stays put in the world
       // when the view reframes (and aimFrame never sees the free-look orbit),
       // so its error is already free of any view change.
-      let latch: AimError = { yaw: 0, pitch: 0 };
       const zoomMoved = zoom.z !== zoomPrev;
       const looking =
         freelook.held || freelook.yaw !== 0 || freelook.pitch !== 0;
@@ -3429,70 +3472,142 @@ const frame = (now: number): void => {
         const e0 = aimError(flight, before.aimDir, before.pipperDir);
         latch = { yaw: err.yaw - e0.yaw, pitch: err.pitch - e0.pitch };
       }
-      const reframing = looking || (zoom.z > 0 && zoom.z < 1);
-      const rates = handlingRates(flight.speed, boost.active);
+      reframing = looking || (zoom.z > 0 && zoom.z < 1);
       stepAssist(assistOff, dt);
-      // The assist biases the instructor's error toward the centreline (+yaw
-      // is a right turn, i.e. less of the leftward error) — a stick nudge
-      // would just be flown back out by the instructor's own loop.
-      const assisting = holeAssist.yaw !== 0 || holeAssist.pitch !== 0;
-      const unbiased = assisting
-        ? instructorInput(err, latch, reframing, dt, instructor, rates)
-        : null;
-      instructor = instructorInput(
-        assisting
-          ? {
-              yaw: err.yaw - holeAssist.yaw,
-              pitch: err.pitch + holeAssist.pitch,
-            }
-          : err,
+      const pilot = instructorInput(
+        err,
         latch,
         reframing,
         dt,
         instructor,
         rates,
+        feelTuning,
       );
-      intentTurn = (unbiased ?? instructor).turn * input.presence();
-      // Off-window the presence fades the instructor out too: attitude hold.
-      const presence = input.presence();
-      command = {
-        ...command,
-        turn: instructor.turn * presence,
-        pitch: instructor.pitch * presence,
-      };
-      // The reticle reads the unbiased view: the assist never shows.
+      intentTurn = pilot.turn * input.presence();
+      intentPitch = pilot.pitch * input.presence();
+      // The reticle reads the unbiased view: no assist ever shows.
       aimGap = angleBetween(view.aimDir, view.pipperDir);
       aimConverged = aimGap < CONVERGED_RAD;
       aimFovPrev = aimFov;
     } else {
       stepAssist(assistOff, dt);
       intentTurn = command.turn;
-      if (holeAssist.yaw !== 0 || holeAssist.pitch !== 0) {
-        assistStick(
-          holeAssist,
-          command,
-          handlingRates(flight.speed, boost.active),
-          assistStickOut,
+      intentPitch = command.pitch;
+    }
+    // F5 corner speed manager: silently cap the commanded speed so the
+    // turn the pilot is committing to (or the wall ahead) is makeable. The
+    // clock is the one the movers are drawn (and crash-checked) at.
+    // F7: the turn input swings the nose about world-up only when upright —
+    // reversed inverted, about the body's up at knife-edge — so the intent
+    // the manager plans a world-frame turn for is signed by cos(real roll).
+    // F9: with assist on it plans as much turn as the pilot is aiming.
+    cornerCap = stepCornerCap(
+      cornerCap,
+      cornerSpeed(
+        flight,
+        cornerWorld,
+        intentTurn * Math.cos(roll),
+        renderMs,
+        assistOn
+          ? arcSweep(flight, instructorMode ? assistDir : null)
+          : undefined,
+      ),
+      dt,
+    );
+    // F9 effortless assist: auto-level, coordinated turns, the ground floor
+    // and the soft walls, from the pilot's activity and this pose.
+    const touchAiming = touchControls?.aiming() ?? false;
+    stepEffortless(
+      effortless,
+      flight,
+      {
+        enabled: assistOn && !settingsOpen,
+        active:
+          input.takeActivity() ||
+          touchAiming ||
+          command.roll !== 0 ||
+          (!instructorMode && (command.turn !== 0 || command.pitch !== 0)),
+        gap: instructorMode ? aimGap : 0,
+        // A still cursor on the desktop instructor is a command (a held
+        // climb); the nose levels only with the pointer gone or the thumb
+        // lifted. A centred stick is no command at all.
+        levelPitch:
+          !instructorMode ||
+          input.presence() < 0.5 ||
+          (anchored && !touchAiming),
+        firing: guns.firing,
+        threading:
+          holeAssist.yaw !== 0 ||
+          holeAssist.pitch !== 0 ||
+          holeSaveActive(holeSave) ||
+          threadingCorridor(cornerWorld, flight, assistDir.x, assistDir.z) !==
+            null,
+        pilotTurn: intentTurn,
+        pilotPitch: intentPitch,
+        cornerCap: cornerCapInput(cornerCap),
+        aim: instructorMode ? assistDir : null,
+        turnRate: rates.turnRate,
+        pitchRate: rates.pitchRate,
+      },
+      effWorld,
+      dt,
+      effOut,
+    );
+    if (instructorMode) {
+      // The hole assist and F9's gentle part bias the instructor's error
+      // (+yaw is a right turn for the hole assist, i.e. less of the leftward
+      // error) — a stick nudge would just be flown back out by its loop.
+      const biased = {
+        yaw: err.yaw - holeAssist.yaw,
+        pitch: err.pitch + holeAssist.pitch,
+      };
+      if (assistOn) {
+        effortlessError(
+          effOut,
+          feelTuning,
+          rates.turnRate,
+          rates.pitchRate,
+          biased,
         );
+      }
+      instructor = instructorInput(
+        biased,
+        latch,
+        reframing,
+        dt,
+        instructor,
+        rates,
+        feelTuning,
+      );
+      // Off-window the presence fades the instructor out too: attitude
+      // hold — and there F9's level bias is handed over as stick instead.
+      const presence = input.presence();
+      command = {
+        ...command,
+        turn: instructor.turn * presence + effOut.biasTurn * (1 - presence),
+        pitch: instructor.pitch * presence + effOut.biasPitch * (1 - presence),
+      };
+      if (assistOn) effortlessCommand(effOut, roll, command);
+    } else if (!settingsOpen) {
+      if (holeAssist.yaw !== 0 || holeAssist.pitch !== 0) {
+        assistStick(holeAssist, command, rates, assistStickOut);
         command = {
           ...command,
           turn: assistStickOut.turn,
           pitch: assistStickOut.pitch,
         };
       }
+      // The feel's stick authority applies with the assist off too (Sharp:
+      // exactly the stick); stepEffortless's identity output adds nothing.
+      effortlessStick(
+        effOut,
+        feelTuning,
+        roll,
+        rates.turnRate,
+        rates.pitchRate,
+        command,
+      );
     }
-    // F5 corner speed manager: silently cap the commanded speed so the
-    // turn the pilot is committing to (or the wall ahead) is makeable. Intent
-    // is the turn command before free-look/zoom shaping; the clock is the one
-    // the movers are drawn (and crash-checked) at.
-    // F7: the turn input swings the nose about world-up only when upright —
-    // reversed inverted, about the body's up at knife-edge — so the intent
-    // the manager plans a world-frame turn for is signed by cos(real roll).
-    cornerCap = stepCornerCap(
-      cornerCap,
-      cornerSpeed(flight, cornerWorld, intentTurn * Math.cos(roll), renderMs),
-      dt,
-    );
     const shaped = {
       ...shapeInput(command, { steer }),
       boost: boost.active,

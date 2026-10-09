@@ -288,6 +288,12 @@ export class TouchControls {
     return true;
   }
 
+  /** F9 idle: a thumb is steering on the aim zone (one finger — two are
+   * free-look, which never steers). */
+  aiming(): boolean {
+    return this.aim.fingers.length > 0 && !this.aim.looking;
+  }
+
   /** M6 settings panel: suspend (releasing everything held — a FIRE held
    * while the phone turns upright must not keep shooting) or resume (on a
    * centred aim, like a fresh plane). */

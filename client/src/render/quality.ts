@@ -172,6 +172,11 @@ export interface QualityProfile {
   heatShimmer: boolean;
   /** S5 lens flares and streaks on the brightest lights (a FinalPass uniform). */
   glare: boolean;
+  /** U4 tunnel light fixtures (ceiling strips, guide lights, portal kerb
+   * lights, river mouth frames): one draw. The concrete shell is solid and
+   * identical on every tier, and carries its own baked light, so a tunnel
+   * stays lit without them. */
+  tunnelFixtures: boolean;
 }
 
 export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
@@ -216,6 +221,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     lightShafts: true,
     heatShimmer: true,
     glare: true,
+    tunnelFixtures: true,
   },
   medium: {
     maxPixelRatio: 1.5,
@@ -258,6 +264,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     lightShafts: true,
     heatShimmer: true,
     glare: true,
+    tunnelFixtures: true,
   },
   low: {
     maxPixelRatio: 1,
@@ -300,6 +307,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     lightShafts: true,
     heatShimmer: true,
     glare: true,
+    tunnelFixtures: true,
   },
   mobile: {
     maxPixelRatio: 1,
@@ -342,6 +350,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     lightShafts: false,
     heatShimmer: false,
     glare: false,
+    tunnelFixtures: false,
   },
 };
 
@@ -592,6 +601,22 @@ export const FEATURE_TIERS: readonly {
     low: "full",
     mobile: "full",
     note: "solid",
+  },
+  {
+    feature: "U4 tunnels — the concrete shell (walls, ramps, lintels)",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "solid: the crash check, the camera arm and the bots collide with it; baked light",
+  },
+  {
+    feature: "U4 tunnels — light fixtures (strips, guide and portal lights)",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "off",
+    note: "one draw; dressing only — the shell keeps its baked light",
   },
   {
     feature: "L12 sky cycle",

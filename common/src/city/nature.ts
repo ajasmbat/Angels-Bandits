@@ -45,7 +45,6 @@ import { canonicalize, wrapDeltaAxis } from "../world/index";
 import { type Building, CITY_GRID, cityHoles, mulberry32 } from "./index";
 import { CONSTRUCTION_BLOCKS, LANDMARK_BLOCKS, PLAZA_BLOCKS } from "./layout";
 import { isRiverRow, overChannel } from "./river";
-import { PORTAL_CUTS, inPortalCut } from "./tunnels";
 import {
   FURNITURE_LINE,
   INTERSECTION_HALF,
@@ -54,6 +53,7 @@ import {
   LOT_LINE,
   isInRoadway,
 } from "./street";
+import { PORTAL_CUTS, inPortalCut } from "./tunnels";
 
 // --- Seed-free layout ------------------------------------------------------
 // Park and forecourt offsets are LOCAL: meters from the block's centre, so

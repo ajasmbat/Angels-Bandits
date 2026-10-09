@@ -56,6 +56,7 @@ import {
   STREET_WALK_GLSL,
 } from "./street-paint";
 import { LAMP_STATIONS_MINUS, LAMP_STATIONS_PLUS } from "./streetlights";
+import { TUNNEL_GROUND_PARS } from "./tunnels";
 import {
   GROUND_WET_EMISSIVE_GLSL,
   GROUND_WET_GLSL,
@@ -767,6 +768,8 @@ vec3 abSitePaint(vec2 w, float n) {
 }
 // --- L11 river (render/river.ts owns this paint) ---
 ${RIVER_GROUND_PARS}
+// --- U4 tunnels (render/tunnels.ts owns the portal cuts) ---
+${TUNNEL_GROUND_PARS}
 ${STREET_PAINT_PARS}`;
 
 const GROUND_FRAGMENT_MAIN = /* glsl */ `
@@ -778,6 +781,9 @@ float abAA = max(abPx.x, abPx.y);
 // L11: the open river channel is a hole in the ground (the water and the
 // embankment walls are render/river.ts meshes). Bridge decks stay painted.
 if (abRiverOpen(vWorldXZ)) discard;
+// U4: so is every plaza portal's open cut (its ramp and walls are
+// render/tunnels.ts meshes).
+if (abPortalOpen(vWorldXZ)) discard;
 float abDx = abLineDist(vWorldXZ.x);
 float abDz = abLineDist(vWorldXZ.y);
 float abAdx = abs(abDx);

@@ -268,11 +268,7 @@ const outsideAt = (offFrom: number, dz: number, t: number): boolean =>
  * level at most once — blocked when that crossing lies outside the channel
  * (into the bank) or when an end is under street level outside it.
  */
-export function riverSegmentClear(
-  from: Vec3,
-  d: Vec3,
-  ground = true,
-): boolean {
+export function riverSegmentClear(from: Vec3, d: Vec3, ground = true): boolean {
   const toY = from.y + d.y;
   if (Math.min(from.y, toY) > PARAPET_HEIGHT) return true;
   const offFrom = riverOffset(from.z);

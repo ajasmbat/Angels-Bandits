@@ -595,7 +595,8 @@ function buildMouths(): { cuts: PortalCut[]; mouths: RiverMouth[] } {
           inHeading,
         });
       } else {
-        const sWall = end === 0 ? e.flat - MOUTH_SILL : t.length - e.flat + MOUTH_SILL;
+        const sWall =
+          end === 0 ? e.flat - MOUTH_SILL : t.length - e.flat + MOUTH_SILL;
         const w = tunnelPointInto(t, sWall, { x: 0, z: 0, th: 0 });
         const half = BORE_WIDTH / 2 / Math.abs(Math.sin(w.th));
         const x = wrap(w.x);
@@ -739,4 +740,123 @@ export function tunnelAt(p: Vec3): Tunnel | null {
     return t;
   }
   return null;
+}
+
+/**
+ * Is `p` under cover in a bore — inside one, under its ceiling (not in an
+ * open cut or out in the channel)? Rain and other sky effects stop there.
+ */
+export function underCover(p: Vec3): boolean {
+  if (p.y >= -LINTEL_MIN) return false;
+  for (const t of TUNNELS) {
+    tunnelFrameInto(t, p, fa);
+    if (fa.s < 0 || fa.s > t.length || inCut(t, fa.s)) continue;
+    if (Math.abs(fa.lat) > BORE_WIDTH / 2 + 1) continue;
+    if (p.y > ceilingAt(t, fa.s) + 1 || p.y < floorAt(t, fa.s) - 1) continue;
+    // A river mouth's in-channel stretch is open river, not cover.
+    const e = t.ends;
+    if (e[0].kind === "river" && fa.s < e[0].flat - MOUTH_SILL) continue;
+    if (e[1].kind === "river" && fa.s > t.length - e[1].flat + MOUTH_SILL) {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+// --- The drawn section (the renderer's one source) --------------------------
+
+/**
+ * Where a bore's side wall begins at a river-mouth end: the arc length at
+ * which that wall (lateral `side` × BORE_WIDTH / 2) meets the embankment
+ * wall plane. The wall is oblique to the bore, so the two sides differ.
+ * A plaza end's walls begin at the end itself.
+ */
+export function wallStart(t: Tunnel, end: 0 | 1, side: 1 | -1): number {
+  const e = t.ends[end];
+  if (e.kind !== "river") return end === 0 ? 0 : t.length;
+  // Bisect on |riverOffset| crossing the wall line, inside the sill.
+  const flat = e.flat;
+  let lo = end === 0 ? 0 : t.length;
+  let hi = end === 0 ? flat : t.length - flat;
+  const off = (s: number) => {
+    tunnelPointInto(t, s, scratchPt);
+    const z = scratchPt.z + side * (BORE_WIDTH / 2) * nz(scratchPt.th);
+    return Math.abs(riverOffset(z)) - RIVER_HALF_WIDTH;
+  };
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    if (off(mid) < 0) lo = mid;
+    else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+
+/** One drawn cross-section: the two wall feet (unwrapped x/z), the floor,
+ * and the wall top — the ceiling over a covered bore, street level over a
+ * cut. */
+export interface TunnelSection {
+  lx: number;
+  lz: number;
+  rx: number;
+  rz: number;
+  floor: number;
+  top: number;
+  covered: boolean;
+}
+
+/** The section at `s`. `covered` says whether to take the ceiling (pass the
+ * classification of the strip being drawn, so a strip that ends on the cut
+ * boundary keeps its own top). */
+export function tunnelSectionInto(
+  t: Tunnel,
+  s: number,
+  covered: boolean,
+  out: TunnelSection,
+): TunnelSection {
+  tunnelPointInto(t, s, scratchPt);
+  const h = BORE_WIDTH / 2;
+  const ox = nx(scratchPt.th) * h;
+  const oz = nz(scratchPt.th) * h;
+  out.lx = scratchPt.x + ox;
+  out.lz = scratchPt.z + oz;
+  out.rx = scratchPt.x - ox;
+  out.rz = scratchPt.z - oz;
+  out.floor = floorAt(t, s);
+  out.covered = covered;
+  out.top = covered ? Math.min(out.floor + BORE_HEIGHT, -LINTEL_MIN) : 0;
+  return out;
+}
+
+/** Drawing step along a bore, m (the chord sag on a 300 m bend is 7 mm). */
+export const SECTION_STEP = 4;
+
+/**
+ * The arc lengths a bore is drawn at: every SECTION_STEP, plus every place
+ * the profile or the path changes slope (cut ends, sills, ramp feet, the
+ * lintel clamp, leg joints) and the river walls' starts. Sorted, unique.
+ */
+export function tunnelSamples(t: Tunnel): number[] {
+  const L = t.length;
+  const set = new Set<number>();
+  for (let s = 0; s < L; s += SECTION_STEP) set.add(s);
+  set.add(L);
+  const [a, b] = t.ends;
+  const breaks = [
+    a.cut,
+    L - b.cut,
+    a.flat,
+    L - b.flat,
+    a.flat + (a.top - BORE_FLOOR_Y) / RAMP_GRADE,
+    L - b.flat - (b.top - BORE_FLOOR_Y) / RAMP_GRADE,
+    a.flat + Math.max(0, a.top + BORE_HEIGHT + LINTEL_MIN) / RAMP_GRADE,
+    L - b.flat - Math.max(0, b.top + BORE_HEIGHT + LINTEL_MIN) / RAMP_GRADE,
+    wallStart(t, 0, 1),
+    wallStart(t, 0, -1),
+    wallStart(t, 1, 1),
+    wallStart(t, 1, -1),
+  ];
+  for (const g of t.segs) breaks.push(g.s0);
+  for (const s of breaks) if (s > 0 && s < L) set.add(s);
+  return [...set].sort((x, y) => x - y);
 }

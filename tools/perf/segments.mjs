@@ -100,7 +100,9 @@ export const BUDGETS = {
     station: 111,
     hole: 113,
     sidewalk: 113,
-    boss: 307,
+    // P4: re-based after the plane fleet drew the room's 12 planes in 7
+    // draws: the runner's 92 (85 + the probe's 7) plus ~10 % (was 307).
+    boss: 101,
     rings: 114,
     glass: 112,
     // P4: the ticket's ceiling for peak chaos — boss, missiles, a collapse,

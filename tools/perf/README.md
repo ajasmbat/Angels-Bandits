@@ -678,6 +678,7 @@ Two rules every tier obeys:
 | U5 underground life — gardens, vines, glowing plants, fireflies, birds, station people | full | full | core + detail bands | core band (the hall, its glass, panels, waterfalls, the lake) |
 | P3 polish — HUD, menus, hit juice, camera-shake budget | full | full | full | full (DOM, CSS and audio, no draw) |
 | P4 plane fleet — every plane in one set of instanced draws | full | full | full | no windscreen glass, no scarf |
+| P4 street life from altitude — the micro tier's fade height | full (gone by 140 m) | full | full | gone by 105 m |
 | P4 name tags — one batched draw | full | full | full | full (identity) |
 | F5/F6 flight feel | — | — | — | — (no render cost: no row in `FEATURE_TIERS`) |
 | F9 effortless controls, B3 smarter bots | — | — | — | — (no render cost: no row in `FEATURE_TIERS`) |
@@ -2101,4 +2102,428 @@ node tools/perf/flicker.mjs --grid --only intersection,pose-19 --ablate all
 #    meant for in this view (runner: 0.117 — signage 0.070, the train's
 #    lights 0.035).
 node tools/perf/flicker.mjs --grid --only intersection --hide train --ablate all
+```
+
+---
+
+## P4: the Amazing batch gate — peak chaos, a tunnel, a tunnel exit
+
+P4 measures the game after the Amazing batch: C2 constant chaos, U4
+tunnels, U5 underground life, F9 controls, B3 bots, P3 polish and R3 rain.
+It runs on the same kind of GPU-less runner as O3–S8, so it counts draws,
+staging, determinism and allocations. **Milliseconds are for the M3**
+(commands at the end).
+
+What a plain visit sees differently:
+
+- **On High, Medium and Low, nothing.** The plane fleet changes how planes
+  are drawn, not how they look.
+- **On Mobile, two things.** Street life fades out between 75 and 105 m of
+  camera height instead of 100 and 140 m, and planes draw no windscreen
+  glass and no scarf.
+
+### The draws a full room cost, and the plane fleet
+
+The first ledger (`--ledger`, below) on the S8 `boss` view was 277 scene
+draws on High, and 176 of them were planes. A plane was 15 draws up close:
+eight material groups, four hinged surfaces, the prop, its blur disc and
+the scarf (`biplane.ts`), plus a name-tag sprite. Peak chaos at ≤ 140 and
+Mobile at ≤ 90 could not be reached by trimming dressing.
+
+`client/src/render/fleet.ts` now draws **every plane in the room, the own
+plane included, in one set of instanced draws**. Planes keep everything
+they had: their Group, the zoom-aware PlaneLOD and the rig that
+`animatePlane` drives (hinges, prop, blur, battle damage). Their meshes
+are taken off every camera layer, and once a frame, after the camera is
+final, the fleet reads each plane's state and writes one instance per
+plane. That covers the LOD level (taken by hand), the matrices (refreshed
+there, so no plane is drawn a frame late), the four deflections, damage,
+the spawn-shimmer or storm-reveal glow, the blur's opacity and the scarf's
+phase.
+
+| draw | what | per instance |
+| --- | --- | --- |
+| livery | body, trim, ailerons, elevator; the hinges turned in the vertex shader | primary and secondary livery, damage, glow |
+| misc | metal, prop blades, dark, engine, cream, leather; each part's colour baked, roughness and metalness per vertex, the exhaust ring's glow masked per vertex | prop angle, glow |
+| rudder | the checker rudder (its own map), hinged | damage, glow |
+| glass | windscreen and goggles (no depth write: a cloud sorted after it is never rejected) | glow |
+| blur | the prop disc | opacity, glow |
+| scarf | the flutter `flutterScarf` wrote on the CPU, now in the vertex shader | phase, glow |
+| far: livery + misc | the 2-draw impostor beyond PLANE_LOD_DISTANCE | damage, glow |
+
+That is **6 draws up close and 2 for impostors, whatever the room holds**
+(Mobile leaves out the glass and the scarf). Every name tag is **one**
+instanced billboard over a canvas atlas: the same canvas text, the same
+fixed 20 × 5 m quad, fogged, with no depth write. A cell is redrawn when a
+remote first seen as "???" gets its name. The hero-light and damage GLSL
+are the planes' own (`planelights.ts`, `plane.ts`). The per-plane uniform
+became a flat per-instance varying: an interpolated constant is not
+bit-exact (`concepts/traps/interpolated-hash-inputs.md`). Attributes are
+packed so a draw needs at most 14 of the 16 a GPU must offer. The first
+build used 17 and SwiftShader refused the livery program ("Too many
+attributes"), which the harness's page-error list caught.
+
+`?fleet=0` keeps the per-plane meshes and sprites. It is the rollback,
+and a paired `--ab "fleet=0"`.
+
+**Visual check** (no new tests, per the ticket): the same frame
+was captured with `?fleet=1` and `?fleet=0` in the **same room**, so both
+pages draw the same pilot ids and liveries.
+
+- **4 pilots ahead:** the liveries (olive, orange), the hinged surfaces,
+  the props, struts, wires, pilot, canopy glass, checker rudder and
+  exhaust glow match.
+- **The own plane at 15 HP** (`__ab.qaPlaneHp`, QA only): the scorch and
+  the holes match.
+- **A plane 420 m out:** it draws the impostor in both.
+
+The images are on the ticket.
+
+### Pools that drew nothing, every frame
+
+three issues a real, counted draw for a `drawRange` of 0; only
+`visible = false` skips it. The sparks, missile and meteor glints, bomber
+lights, dust, smoke and the D1 particle pool drew their parked or empty
+buffers every frame. They now go invisible when empty, and stay visible
+for the warm frame because prewarm forces every hidden object on. Kill
+explosions were 2 draws each (6 slots, up to 12 under a bomb carpet). They
+are now **2 draws however many** (an InstancedMesh of shells and one
+Points of embers; additive, so each fade rides its colour).
+
+### Three new segments, staged chaos
+
+Appended after S8's `glass`, so the sixteen older segments keep their
+index and their measured world instants. The server runs D6's quiet city,
+which sends no chaos at all, and the run asserts that. Everything in a
+chaos window is **staged on the client** through `__ab.qaChaos`
+(`client/src/game/qa-chaos.ts`). The staging is pure in the spec and the
+pinned world clock, and it goes through the **server's own planners**.
+
+- **Missiles:** strike k of a schedule launches at a fixed world time. Its
+  target comes from `pickMissileTarget` and its path from `planMissile`,
+  on a stream seeded from (seed, k).
+- **Meteors:** `planMeteor` onto roofs near the aim point.
+- **Bomber run:** `planBomberRun` places it so its carpet is centred
+  ahead of the view at a known instant, and `bombDrops` gives every bomb
+  with the server's own raycast height.
+- **Quake:** one quake shakes the whole window.
+- **Fires:** named chunks burn.
+
+The strikes join the socket's `missiles` map as they launch, so they fly
+X1's whole pipeline: flight, whistle, blast and debris. The stage is
+re-applied every frame. A server strike is dropped and counted, and
+`qaChaos(null)` takes back exactly what it added. While the world is
+pinned (QA only), the quake's and the collapse's camera jolt run on the
+world clock, so the shake is the same on every pass.
+
+Each spot was checked offline against the shared collision, and came back
+clear. The check ran `touchesSolid` over the city, trees and every mover,
+plus the staged collapse, the staged bombers and the staged boss hull. It
+sampled every 50 ms from 1 s before the segment's instant to 12 s after,
+at both the pass's instant and the warm-up's.
+
+| segment | what | how it stays repeatable |
+| --- | --- | --- |
+| `chaos` | **peak chaos** from D6's `collapse` view, held at 110 m: building 343 (215 m) topples across the street ahead and burns at 303's street face. The war zeppelin crosses 520 m out with its flak (S8's staging), 11 fake pilots weave 70–230 m ahead at 120–200 m, a missile launches every second (4–5 in the air), a meteor every 2.5 s, a three-ship bomber run crosses along z = 400 at 250 m dropping a 24-bomb carpet, and a quake shakes the view | all staged on the world clock. The pilots hold their fire (a tracer is a draw on their wall clock) and stay inside the plane LOD's near band, so the fleet's draws are constant |
+| `tunnel` | Crosstown's deep bore at 60 m/s from s = 330, past the metro hall, held at s = 660 | a glide on the bore's own guide line (`__ab.tunnelPose`) on the **world** clock: frame n sits at the same point on every pass and on any machine |
+| `exit` | climbing out of Crosstown's east portal into chaos: from under the lintel at 40 m/s up the ramp, out over plaza (8,2), climbing 40° and held 60 m past the lip at 62 m. The zeppelin crosses ahead, a missile a second lands on the blocks past the plaza, plus meteors, a bomber run across x = 2000 and a quake | a world-clock glide like `tunnel`. On a renderer at 1 s a frame, the 5 s window holds ~0.3 s of world time, so the runner sees the mouth and an M3 sees the climb out (a world-clock glide trades coverage for identity) |
+
+### Verdicts and budgets
+
+The O3 table gains a `chaos` column. **`chaos`** is read at both ends of
+the window and needs all of:
+
+- at least 3 missiles and a meteor or bomb in the air;
+- the bombers drawn;
+- the quake live;
+- the fires lit;
+- 0 server strikes;
+- 0 server chaos messages inside the window (`serverChaos`).
+
+S8's `spect.` column checks the boss and the pilots' range, and D6's
+`scene` column checks that the collapse is still falling. A `FAIL` in
+`chaos`, `spect.` or **`draws`** exits 1, with or without `--strict`.
+
+- **draws** are judged on the window's total, scene plus the S6 probe, at
+  the tier it ran at. On High that is `core` ≤ 120 and `chaos` ≤ 140. On
+  Mobile it is `chaos` ≤ 90 (`BUDGETS.drawCallsMobile`).
+- **determinism**: scene draws must be identical across passes in `chaos`,
+  `tunnel` and `exit`. `chaos` joins `boss` in UNPINNED (timing only, for
+  its pilots), but not in DRAWS_FLOAT.
+
+### No per-frame allocations: the table (`tools/chaos-bench.ts`)
+
+This is O5's table with D6's and S8's method and bar. It covers every
+per-frame entry point of C2, U4, U5 and the plane path P4 rewired, on the
+harness's own scenes: the `chaos` stage around the held view, the
+Crosstown glide, and twelve planes through the fleet. It runs in Node
+under V8's sampling heap profiler: 1200 warm frames, then the median of
+five 3000-frame runs.
+
+```sh
+node --import tsx tools/chaos-bench.ts [--where] [--json] [--only=fleet]
+```
+
+| entry point | first run | after | |
+| --- | ---: | ---: | --- |
+| C2 bombers.update (formation) | 0 | 0 | ok |
+| C2 fires.update (12 chunks) | 1 138 B | 239 B | ok |
+| X1/C2 missile feed + missiles.update | 594 B | 143 B | ok |
+| C2 quake shake | 20 B | 31 B | ok |
+| C2 pruneChaos | 29 B | 0 | ok |
+| P4 explosions + sparks (a blast every 20 frames) | 103 B | 104 B | ok |
+| U4 tunnels.update (Crosstown glide) | 0 | 0 | ok |
+| U5 underground.update (Crosstown glide) | 0 | 0 | ok |
+| remote planes: remotes.update + trails (11) | **~13 600 B** (with the fleet commit) | 733 B | ok |
+| P4 fleet.commit + tags (12 planes) | (in the row above) | 0 | ok |
+| **judged, all together** | **~15 500 B** | **~1 250 B** | **PASS** |
+
+"First run" is the bench's first run on this branch, before its fixes.
+The explosions row was already the batched one, and the fleet and
+remote-plane rows were one row then. The quake row moves 20–60 B from run
+to run. What the table found and fixed:
+
+- **Wingtip trails** (`trails.ts`, ~12 KB a frame in a full room):
+  - every push re-based every point of both ribbons into a new object;
+  - `emit` built two arrays per plane;
+  - `update` built an iterator and an array per plane.
+
+  Points are now re-based in place and recycled, there are no arrays, and
+  the walk is pre-bound.
+- **Remote planes:**
+  - an iterator and an entry array per remote;
+  - a fresh interpolated pose (three objects) per remote. There is now
+    `InterpolationBuffer.sampleInto` into a per-remote pose; `lastPose`
+    points into it, and every reader copies what it keeps.
+  - a turbulence vector, control deflections and the old `{ ...quat }`.
+
+  Doubles that were handed to calls are now passed in small objects (the
+  fleet's glow, the tag's position). The strobe check is inline.
+- **C2:**
+  - `fires.update` walked a Set and a Map with iterators and boxed three
+    doubles per fire (now typed arrays and a squared distance with the
+    same cut);
+  - the missile feed destructured `[id, m]` per strike;
+  - `quakeShakeAmount` took `quakes.values()`;
+  - `pruneChaos` built `for…of` entries;
+  - `wreckFire` destructured two colour arrays;
+  - the shared `wrapDistance` built a vector per call (it is now the same
+    hypot, inline).
+- **The CPU scarf:** `animatePlane` still rewrote the scarf strip for
+  planes the fleet draws (its shader flutters it). It no longer does.
+
+What remains is the residue D6 and S8 documented. Doubles handed to calls
+V8 does not inline are boxed. Most of what is left is the D1 particle
+pool's `spawn`, inside `wreckFire` (the fires' 239 B), plus the
+remote-plane path's `lights.place` and `trails.emit` arguments. The bar is
+the same as before: ≤ 1 KB a frame per entry, ≤ 4 KB in all.
+
+The bench also checks the tier table. Every C2, U4, U5, P3 and P4 feature
+has a `FEATURE_TIERS` row, and every such row is in the table above word
+for word (`tiers PASS`, 9 rows).
+
+### Quality tiers
+
+The batch's rows are now in the table above. The C2 and U4/U5 rows were in
+`FEATURE_TIERS` but missing from it. P4 adds four:
+
+- **P3 polish** has no draw.
+- **The plane fleet:** Mobile leaves out the windscreen glass and the
+  scarf.
+- **The name-tag batch:** the same on every tier.
+- **The micro tier's fade height** (a new knob, `microGate`): Mobile fades
+  street life out between 75 and 105 m of camera height instead of 100 and
+  140 m. On a phone a figure is a few pixels from there, and in the
+  peak-chaos view, held at 110 m, it was ~7 draws. The first try, 65–91 m,
+  put `core`'s flown camera (~94 m) on the band's edge: a metre of drift
+  turned four draws on and off between passes (68 / 68 / 64), and the
+  determinism line caught it. No harness view sits on an edge of 75–105 m.
+
+Solids, the telegraphs (missiles, bombers, the boss and its shells) and
+visibility parity are untouched on every tier. F9 and B3 have no render
+cost.
+
+### What the runner measured (P4)
+
+The runner was a GPU-less Linux box (SwiftShader on Vulkan) at `--res 0.75`.
+It was shared and badly oversubscribed: load average 35–47 on 16 cores
+from other tickets' harnesses, so frames took 1–17 s and a 5 s window
+held 4–11 of them. SwiftShader's GPU and wall times are the CPU
+rasterising: every `60fps` and `hitch` verdict reads FAIL here and says
+nothing about the M3. The determinism line's GPU half fails for the same
+reason. Its **draws** half is the claim.
+
+**High, `--runs 3`**, `core,chaos,tunnel,exit`. No page errors, no
+session resumes, every window alive.
+
+| segment | draws = scene + probe (median pass) | scene draws, 3 passes | budget | `chaos` / `spect.` / `scene` | first sight (window) |
+| --- | --- | --- | --- | --- | --- |
+| core | 90 = 83 + 7 | **83 / 83 / 83** | 120 | — | 0p 0t 0b |
+| chaos | **107** = 100 + 7 | **100 / 100 / 100** | **140** | ok / ok / ok | 0p 0t 0b |
+| tunnel | 91 = 84 + 7 | **84 / 84 / 84** | 100 (new) | — | 0p 0t 0b |
+| exit | 102 = 95 + 7 | **95 / 95 / 95** | 112 (new) | ok / ok / — | 0p 0t 0b |
+
+- **Peak chaos is 107 draws against its 140.** That covers the 12-plane
+  room under the zeppelin and its flak, 4 missiles, a meteor and 4–6 bombs
+  in the air, the three bombers, 12 burning chunks and a 215 m tower
+  mid-fall. S8's `boss` view, with only the planes and the zeppelin, drew
+  279 before the fleet.
+  - The fleet draws the 12 planes in 7 draws (6 airframe + 1 tag batch).
+  - The staged destruction adds its 4: damaged mesh, debris, dust and
+    scaffold.
+- **core is 90 against 120.** S8 measured 103; the fleet and the empty
+  pools took 13 off.
+- **Scene draws are identical across the passes in every segment**, `chaos`
+  included. Its pilots fly on their own wall clock, but all of them stay in
+  the near band and hold their fire, and the fleet's draws do not depend on
+  how many planes there are.
+- The `chaos` staging held at both ends of every window: 4 missiles, 1
+  meteor, 4–6 bombs, the bombers' 18 boxes, the quake live, 12 fires,
+  0 server strikes, 0 server chaos messages, pilots ≤ 245 m. The collapse
+  was still falling.
+
+**The full rooms, High, `--runs 3`**, `boss,furball`:
+
+| segment | draws = scene + probe | scene draws, 3 passes | fleet | budget |
+| --- | --- | --- | --- | --- |
+| boss | **92** = 85 + 7 (S8: 279) | **85 / 85 / 85** | 12 planes, all near, 7 draws | **101** (re-based from 307: measured + ~10 %) |
+| furball | 158 = 151 + 7 (S8: 255–268) | 160 / 159 / 151 (not asserted: the pilots' tracers) | 12 planes, 7 near + 5 impostors, 9 draws | — |
+
+**Mobile, `--quality mobile --runs 3`**, `core,chaos,tunnel,exit`. This
+is the second run, after the micro-band fix described under Quality tiers.
+Every window was alive with no resumes, and the `chaos`, `spect.` and
+`scene` verdicts were ok at both ends.
+
+| segment | draws (the probe draws nothing on Mobile) | 3 passes | budget |
+| --- | --- | --- | --- |
+| core | 73 | **73 / 73 / 73** | 120 |
+| chaos | **85** | **85 / 85 / 85** | **90 on Mobile** |
+| tunnel | 73 | **73 / 73 / 73** | 100 |
+| exit | 85 | **85 / 85 / 85** | 112 |
+
+- **Mobile peak chaos is 85 against its 90**, and the scene is the same
+  one as on High: the 12 planes, the zeppelin and its flak, the missiles,
+  bombs, meteor, bombers, fires and the falling tower. Here is where Mobile
+  saves against High:
+  - no S6 probe (−7);
+  - the fleet's glass and scarf (−2);
+  - the micro tier, gone at 114 m (~−6);
+  - the dressing its earlier tiers already thinned.
+- The only page error was U5's `compileAsync … isReady` on join. It is
+  ANGE-FPSV0I's to fix (U5b) and is not this change's.
+
+`boss` lost 187 draws to the fleet, and its scene draws are now identical
+across passes: its pilots stay in the near band and hold their fire.
+`furball` still floats with its pilots' tracer bursts, which are timed on
+their wall clock. It stays in DRAWS_FLOAT and carries no budget.
+
+### The draw ledger (`--ledger`)
+
+`run.mjs --ledger` attributes a segment's scene draws to the scene's
+systems, by name from O6's `qaSystems`. It runs after every end-of-window
+read, with the scene still staged and a glide frozen where it stands. For
+each system it takes a fresh baseline over 4 frames, hides the system
+alone, reads again over 4 frames, and puts the system back. It runs on
+measured passes only and takes minutes of frames on the runner. Read it as
+attribution, ±2 per row: transient pools (blasts, sparks, glints) come and
+go between the paired reads, which is why a few rows read negative. The
+window's own draws are the budget number.
+
+`chaos`, the top of the ledger:
+
+| system | High | Mobile |
+| --- | ---: | ---: |
+| fleet (12 planes + tags) | 7 | 5 |
+| roofClutter | 6 | 8 |
+| underground (U5, `other:26`) | 5 | 5 |
+| signage | 4 | 5 |
+| missiles (bodies, glints, meteors) | 4 | 4 |
+| boss (hull, weak points, lights, shells) | 4 | 4 |
+| river, sky, streetlights | 5 / 5 / 5 | 3 / 3 / 3 |
+| city (base + damaged mesh + debris) | 3 | 3 |
+| bombers, fx (blasts), plane (lights + trails), clouds, tunnels | 2 each | 2 each (tunnels 1) |
+| everything else (one draw each, or none) | the rest | the rest |
+| **scene draws (ledger read / window)** | 102 / 100 | 85 / 85 |
+
+Two things are left for a later ticket.
+
+- **U5's four draws** run on every tier from any altitude, though they are
+  seen only through a bore's mouths. A visibility gate (camera below
+  ground, or within some distance of an opening) would save them in every
+  sky view. It is not taken here: a pop at the gate's edge needs its own
+  visual check, and no budget needs the draws.
+- **roofClutter's 6–8** are R2's roof structures (which are solid) and
+  their dressing. Merging them by material would be the next draw to win
+  at altitude.
+
+### Commands for the M3 (P4)
+
+Run these on main after P4 merges, with the machine otherwise idle. Two
+refs:
+
+- `56f782e` is main when P4 branched, after the whole Amazing batch.
+- `becf491` is D6's merge, the last state before the batch (U4 was its
+  first merge).
+
+A build that old cannot stage `chaos`, `tunnel` or `exit`, so those
+segments print **no baseline** against it; read them on their own
+verdicts. `?fleet=0` is the paired A/B for the plane fleet out of one
+build.
+
+```sh
+npm run perf:setup   # once
+
+# 0. The repo gates and the allocation table (alloc PASS, tiers PASS, exit 0).
+npm run typecheck && npx biome check client common server && npm test
+node --import tsx tools/chaos-bench.ts
+
+# 1. The gate: every segment, three passes, determinism enforced. These
+#    exit 1 on their own:
+#    - any draw budget over (core <= 120, chaos <= 140, ...);
+#    - any `chaos` / `spect.` FAIL;
+#    - a server chaos message inside a window.
+#    Then read:
+#    - 60fps (GPU p50 <= 14 ms at ratio 2) and hitch (wall p99 <= 2x p50)
+#      for chaos, tunnel and exit;
+#    - the determinism line: scene draws identical in chaos, tunnel and exit.
+node tools/perf/run.mjs --runs 3 --samples --strict --label P4
+
+# 2. Mobile as a phone at its own ceiling (chaos <= 90 draws is judged on
+#    this run; GPU p50 <= 5 ms on Mobile is the assumed phone proxy, as in
+#    M3/P2/S8), then Low.
+node tools/perf/run.mjs --runs 3 --device phone --res 2 --quality mobile \
+  --segments core,chaos,tunnel,exit --label P4-mobile
+node tools/perf/run.mjs --runs 3 --res 2 --label high \
+  --ab "quality=low&res=1" --segments core,chaos,tunnel,exit
+
+# 3. What the plane fleet buys, paired out of one build: the full rooms with
+#    and without it (GPU p50, wall p50 and the draws column; on the runner
+#    boss went 277 -> 93 scene draws).
+node tools/perf/run.mjs --runs 3 --segments furball,boss,chaos \
+  --label fleet --ab "fleet=0"
+
+# 4. What the batch and P4 cost the views that existed before, against main
+#    when P4 branched and against the last state before the batch.
+#    (Before U4 there is no tunnel to glide down: against becf491 fly only
+#    the sixteen older segments.)
+node tools/perf/run.mjs --runs 3 --label P4 --ab-ref 56f782e
+node tools/perf/run.mjs --runs 3 --label P4 --ab-ref becf491 \
+  --segments core,plaza,sky,canyon,storm,street,furball,station,hole,sidewalk,collapse,ruins,rubble,boss,rings,glass
+
+# 5. Where the spikes land in the new views: every spike row must read
+#    "GL wait" or "outside JS", none "gc".
+node tools/perf/run.mjs --runs 3 --samples --trace /tmp/p4-traces \
+  --segments chaos,tunnel,exit
+
+# 6. In-page allocations per segment: chaos, tunnel and exit within
+#    +256 B/frame of core on the same run.
+node tools/perf/run.mjs --heap --segments core,chaos,tunnel,exit
+
+# 7. The per-system draw ledger, High and Mobile (what every budget is made
+#    of; README P4).
+node tools/perf/run.mjs --ledger --segments chaos
+node tools/perf/run.mjs --ledger --quality mobile --segments chaos
+
+# 8. Soak: Auto never steps down on the M3 (exits 1 if it does).
+node tools/perf/run.mjs --soak 600 --quality auto --res auto
 ```

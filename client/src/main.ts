@@ -356,6 +356,7 @@ import {
 import { STREAK_SMOKE_COLORS, SmokeTrails, smokeActive } from "./render/smoke";
 import {
   attachStanding,
+  setStandingBudget,
   setStandingClock,
   standingCost,
   standingPending,
@@ -2849,6 +2850,8 @@ declare global {
       standingCost: () => ReturnType<typeof standingCost>;
       /** D8 QA: buildings the layers have yet to re-evaluate (0 = settled). */
       standingPending: () => number;
+      /** D8 QA: lift (ms) or restore (null) the standing work's budget. */
+      standingBudget: (ms: number | null) => void;
       /** D8 QA: the latest building collapses (newest last). */
       recentCollapses: (
         n: number,
@@ -3751,6 +3754,7 @@ window.__ab = {
   },
   standingCost: () => standingCost(),
   standingPending: () => standingPending(),
+  standingBudget: (ms) => setStandingBudget(ms),
   recentCollapses: (n) =>
     socket.collapses.records
       .filter((w) => (w.k ?? 0) === 0)

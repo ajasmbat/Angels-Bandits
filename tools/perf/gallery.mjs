@@ -315,6 +315,8 @@ try {
     if (v.stage) {
       // D8: stage the destruction once (times relative to the render clock).
       const r = await page.evaluate((st) => {
+        // Every hide lands in the next frame or two, not over minutes.
+        window.__ab.standingBudget?.(1e9);
         const t0 = window.__ab.reactions().renderTime ?? 0;
         const at = (o) => ({ ...o, t: t0 + o.t });
         return window.__ab.qaDestruction({
@@ -334,7 +336,7 @@ try {
             const tick = () =>
               ++n >= 4 &&
               ((window.__ab.standingPending?.() ?? 0) === 0 ||
-                performance.now() - t0 > 240_000)
+                performance.now() - t0 > 60_000)
                 ? done()
                 : requestAnimationFrame(tick);
             requestAnimationFrame(tick);
@@ -394,7 +396,12 @@ try {
       });
     }
     if (v.eye) await page.evaluate(() => window.__ab.qaCamera(null));
-    if (v.stage) await page.evaluate(() => window.__ab.qaDestruction(null));
+    if (v.stage) {
+      await page.evaluate(() => {
+        window.__ab.qaDestruction(null);
+        window.__ab.standingBudget?.(null);
+      });
+    }
     if (v.timeMs !== undefined && !v.trainEye) {
       await page.evaluate(() => window.__ab.pinWorld(null));
     }

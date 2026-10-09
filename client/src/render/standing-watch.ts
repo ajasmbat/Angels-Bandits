@@ -49,6 +49,16 @@ export const STANDING_PER_FRAME = 8;
 /** Every layer's standing work shares this much of a frame, ms: past it
  * the rest waits for the next frame (a hide lands a frame or two later). */
 export const STANDING_BUDGET_MS = 0.3;
+/** The budget in force (QA may lift it: setStandingBudget). */
+let budgetMs = STANDING_BUDGET_MS;
+
+/** D8 QA: lift the shared budget (a software-rasterised shot at ~1 fps
+ * would otherwise take minutes to re-seat a staged block); null restores
+ * STANDING_BUDGET_MS. */
+export function setStandingBudget(ms: number | null): void {
+  budgetMs = ms ?? STANDING_BUDGET_MS;
+}
+
 /** …except that a layer handed nothing for this many frames still gets one
  * building, so the last layers polled never starve under constant chaos. */
 const STARVE_FRAMES = 6;
@@ -214,7 +224,7 @@ export class StandingWatch {
       deadline = Number.POSITIVE_INFINITY;
       return true;
     }
-    const end = t0 + STANDING_BUDGET_MS - costNow;
+    const end = t0 + budgetMs - costNow;
     if (performance.now() < end) {
       deadline = end;
       return true;

@@ -24,6 +24,21 @@
 //         SCARF   the pilot's scarf, its flutter in the vertex shader
 //   far   LIVERY + MISC impostor groups (the 2-draw silhouette)
 //
+// DT1 adds the enemy fighter-bomber (fighter.ts) and a mid level, for +2
+// draws however many planes there are:
+//
+//   ENEMY  the fighter's whole near airframe in ONE draw — hinges and prop
+//          turned in the vertex shader, the five bombs collapsed by the
+//          plane's rack mask, its paintwork (camo, decals, panel lines,
+//          rivets, soot, oil, chips) procedural from the rest position
+//   LOD    biplane-mid, fighter-mid and fighter-far as frames of one
+//          geometry: a per-instance kind picks the frame, the others'
+//          vertices collapse to a point (zero-area triangles; positions
+//          only — normals stay valid)
+//
+// The fighter's canopy glass rides the GLASS draw (the same frame select)
+// and its prop blur the BLUR draw (the disc scaled by its matrix).
+//
 // Per instance: the model matrix, the four deflections (aileron, elevator,
 // rudder, prop angle — read straight off the rig's hinge objects), battle
 // damage (the uAbDamage the per-plane uniform carried), the spawn-shimmer /
@@ -49,13 +64,37 @@ import {
   SCARF_SEGMENTS,
   biplaneSources,
 } from "./biplane";
+import {
+  BOMB_ID_BASE,
+  DETAIL_FRAGMENT_BODY,
+  DETAIL_FRAGMENT_DECL,
+  DETAIL_VERTEX_BODY,
+  DETAIL_VERTEX_DECL,
+  FIGHTER_PROP_Z,
+  fighterDecals,
+  fighterGeometry,
+} from "./fighter";
 import { SCARF_LENGTH, patchDamage, planeRig } from "./plane";
 import { patchHeroFragment } from "./planelights";
 import type { QualityTier } from "./quality";
 
-/** Instances each draw holds: the room, plus a few remotes that are leaving
- * while others join. Planes past it are not drawn (a full room is 12). */
-const CAPACITY = ROOM_CAP + 4;
+/** Biplanes the fleet draws: the room's humans, plus a few remotes that
+ * are leaving while others join. Planes past it are not drawn. */
+const CAPACITY_BIPLANE = ROOM_CAP + 8;
+/** DT1: enemy fighter-bombers (the carrier's waves, on top of the room). */
+const CAPACITY_ENEMY = 24;
+/** Draws both airframes share (LOD, glass, blur). */
+const CAPACITY_ALL = CAPACITY_BIPLANE + CAPACITY_ENEMY;
+
+/** LOD / glass frames (aPart.x there; the per-instance aKind picks one). */
+const FRAME_BIPLANE_MID = 0;
+const FRAME_FIGHTER_MID = 1;
+const FRAME_FIGHTER_FAR = 2;
+/** Glass frames: the biplane's windscreen / goggles, the fighter canopy. */
+const FRAME_BIPLANE_GLASS = 0;
+const FRAME_FIGHTER_GLASS = 1;
+/** Livery slot that takes no livery tint (colours baked). */
+const SLOT_BAKED = 2;
 
 /** Per-vertex hinge ids (0: rigid). */
 const HINGE_AILERON_L = 1;
@@ -76,7 +115,7 @@ const TWO_PI = 2 * Math.PI;
 interface PartSpec {
   geometry: THREE.BufferGeometry;
   hinge: number;
-  /** Livery slot: 0 primary, 1 secondary (LIVERY only). */
+  /** Livery slot: 0 primary, 1 secondary, 2 baked (LIVERY / LOD only). */
   slot?: number;
   roughness: number;
   metalness: number;
@@ -128,12 +167,36 @@ function part(spec: PartSpec) {
   return g;
 }
 
-function merged(parts: PartSpec[]): THREE.BufferGeometry {
+function merged(
+  parts: (PartSpec | THREE.BufferGeometry)[],
+): THREE.BufferGeometry {
   const g = mergeGeometries(
-    parts.map((p) => part(p)),
+    parts.map((p) => (p instanceof THREE.BufferGeometry ? p : part(p))),
     false,
   );
   if (!g) throw new Error("fleet: merge failed");
+  return g;
+}
+
+/** A fighter geometry (already in the fleet layout, fighter.ts) with its
+ * aPart.x (hinge or frame id) and, if given, aPart.y (livery slot) set. */
+function withPart(
+  src: THREE.BufferGeometry,
+  x: number | null,
+  y?: number,
+): THREE.BufferGeometry {
+  const g = new THREE.BufferGeometry();
+  for (const name of [...SHARED_ATTRS, "aRM"]) {
+    const a = src.getAttribute(name) as THREE.BufferAttribute | undefined;
+    if (!a) throw new Error(`fleet: the fighter has no ${name}`);
+    g.setAttribute(name, a);
+  }
+  const p = (src.getAttribute("aPart") as THREE.BufferAttribute).clone();
+  for (let i = 0; i < p.count; i++) {
+    if (x !== null) p.setX(i, x);
+    if (y !== undefined) p.setY(i, y);
+  }
+  g.setAttribute("aPart", p);
   return g;
 }
 
@@ -190,6 +253,12 @@ interface Variant {
   rm?: boolean;
   alpha?: boolean;
   scarf?: boolean;
+  /** DT1: the fighter's bomb ids (≥ BOMB_ID_BASE) collapse by aBombs. */
+  bombs?: boolean;
+  /** DT1: the per-instance frame select (aPart.x vs aKind). */
+  select?: boolean;
+  /** DT1: the fighter's procedural paintwork and its decal atlas. */
+  detail?: THREE.Texture | null;
 }
 
 const HINGE_DECL = `
@@ -207,17 +276,29 @@ mat3 abHingeRot(int h) {
   if (h == ${HINGE_PROP}) return mat3(c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0);
   return mat3(1.0, 0.0, 0.0, 0.0, c, s, 0.0, -s, c);
 }`;
+// Hinge ids index uAbHinge only inside [1, HINGES): the fighter's bomb ids
+// (≥ BOMB_ID_BASE) ride the same attribute and must never read past it.
 const HINGE_NORMAL = `
 int abH = int(aPart.x + 0.5);
 mat3 abR = mat3(1.0);
 mat4 abP = mat4(1.0);
-if (abH > 0) {
+if (abH > 0 && abH < ${HINGES}) {
   abR = abHingeRot(abH);
   abP = uAbHinge[abH];
   objectNormal = mat3(abP) * (abR * objectNormal);
 }`;
 const HINGE_POSITION = `
-if (abH > 0) transformed = (abP * vec4(abR * transformed, 1.0)).xyz;`;
+if (abH > 0 && abH < ${HINGES}) transformed = (abP * vec4(abR * transformed, 1.0)).xyz;`;
+/** A bomb off its rack: every vertex to one point (position only). */
+const BOMBS_DECL = `
+attribute float aBombs;`;
+const BOMBS_POSITION = `
+if (abH >= ${BOMB_ID_BASE} && ((int(aBombs + 0.5) >> (abH - ${BOMB_ID_BASE})) & 1) == 0) transformed = vec3(0.0);`;
+/** The frame select: another frame's vertices collapse to one point. */
+const SELECT_DECL = `
+attribute float aKind;`;
+const SELECT_POSITION = `
+if (abs(aPart.x - aKind) > 0.5) transformed = vec3(0.0);`;
 
 const SCARF_DECL = `
 attribute vec2 aScarf;
@@ -268,7 +349,7 @@ function patchVariant(
   // Per instance: aGlow = the glow (rgb) and one scalar (w) — the damage,
   // the blur's opacity or the scarf's phase, by draw. Per vertex: aPart
   // (see part()). Packed: a GPU need only offer 16 attributes.
-  const packed = v.hinge || v.damage || v.livery || v.exhaust;
+  const packed = v.hinge || v.damage || v.livery || v.exhaust || v.select;
   let vDecl = `attribute vec4 aGlow;\nflat varying vec3 vAbGlow;${packed ? "\nattribute vec4 aPart;" : ""}`;
   let vNormal = "";
   let vPosition = "";
@@ -288,6 +369,20 @@ function patchVariant(
     vDecl += SCARF_DECL;
     vNormal += SCARF_NORMAL;
     vPosition += SCARF_POSITION;
+  }
+  if (v.bombs) {
+    vDecl += BOMBS_DECL;
+    vPosition += BOMBS_POSITION;
+  }
+  if (v.select) {
+    vDecl += SELECT_DECL;
+    vPosition += SELECT_POSITION;
+  }
+  if (v.detail !== undefined) {
+    vDecl += DETAIL_VERTEX_DECL;
+    vNormal += DETAIL_VERTEX_BODY;
+    fDecl += DETAIL_FRAGMENT_DECL;
+    shader.uniforms.uAbDecal = { value: v.detail };
   }
   if (v.livery) {
     vDecl += "\nattribute vec3 aLiveryA;\nattribute vec3 aLiveryB;";
@@ -320,7 +415,8 @@ function patchVariant(
   if (v.livery) {
     vs = vs.replace(
       "#include <color_vertex>",
-      "#include <color_vertex>\nvColor.xyz *= mix(aLiveryA, aLiveryB, aPart.y);",
+      // Slot 2 (DT1): colours baked, no livery (the fighter in the LOD draw).
+      "#include <color_vertex>\nvColor.xyz *= aPart.y > 1.5 ? vec3(1.0) : mix(aLiveryA, aLiveryB, aPart.y);",
     );
   }
   shader.vertexShader = vs;
@@ -353,6 +449,14 @@ function patchVariant(
       "#include <color_fragment>\ndiffuseColor.a *= vAbAlpha;",
     );
   }
+  if (v.detail !== undefined) {
+    // After the albedo, before the damage terms (the first include is the
+    // one the damage patch kept): scorch and holes paint over the paint.
+    fs = fs.replace(
+      "#include <color_fragment>",
+      `#include <color_fragment>\n${DETAIL_FRAGMENT_BODY}`,
+    );
+  }
   shader.fragmentShader = fs;
 }
 
@@ -381,6 +485,9 @@ interface Draw {
   deflect?: THREE.InstancedBufferAttribute;
   liveryA?: THREE.InstancedBufferAttribute;
   liveryB?: THREE.InstancedBufferAttribute;
+  /** DT1: the frame (LOD / glass) and the rack mask (enemy). */
+  kind?: THREE.InstancedBufferAttribute;
+  bombs?: THREE.InstancedBufferAttribute;
   /** Instances written this frame. */
   n: number;
 }
@@ -413,17 +520,20 @@ export class PlaneFleet {
   private readonly scarf: Draw;
   private readonly farLivery: Draw;
   private readonly farMisc: Draw;
+  /** DT1: the enemy's near airframe, and the shared mid / far LOD frames. */
+  private readonly enemy: Draw;
+  private readonly lod: Draw;
   private readonly entries: Entry[] = [];
   private count = 0;
-  private readonly capacity = CAPACITY;
   /** Mobile draws neither the glass nor the scarf (quality.ts, P4). */
   private fineParts = true;
   private warming = false;
-  /** QA (__ab.fleet): planes drawn last frame, near and far. */
-  readonly stats = { planes: 0, near: 0, far: 0 };
+  /** QA (__ab.fleet): planes drawn last frame, by LOD level and kind. */
+  readonly stats = { planes: 0, near: 0, mid: 0, far: 0, enemies: 0 };
 
   constructor() {
     const { shared: s, materials: M, propZ } = biplaneSources();
+    const F = fighterGeometry();
     const hinges: THREE.Matrix4[] = [];
     for (let i = 0; i < HINGES; i++) hinges.push(new THREE.Matrix4());
     hinges[HINGE_AILERON_L] = pivotMatrix(s.pivots.aileronL);
@@ -509,6 +619,77 @@ export class PlaneFleet {
         tint: lin("dark"),
       },
     ]);
+    // DT1: the fighter's near airframe — hinge ids as the biplane's, the
+    // bombs keep their own ids (≥ BOMB_ID_BASE).
+    const enemyGeo = merged([
+      withPart(F.statics, 0),
+      withPart(F.aileronL, HINGE_AILERON_L),
+      withPart(F.aileronR, HINGE_AILERON_R),
+      withPart(F.elevator, HINGE_ELEVATOR),
+      withPart(F.rudder, HINGE_RUDDER),
+      withPart(F.blades, HINGE_PROP),
+      withPart(F.bombs, null),
+    ]);
+    const fighterHinges: THREE.Matrix4[] = [];
+    for (let i = 0; i < HINGES; i++) fighterHinges.push(new THREE.Matrix4());
+    fighterHinges[HINGE_AILERON_L] = pivotMatrix(F.pivots.aileronL);
+    fighterHinges[HINGE_AILERON_R] = pivotMatrix(F.pivots.aileronR);
+    fighterHinges[HINGE_ELEVATOR] = pivotMatrix(F.pivots.elevator);
+    fighterHinges[HINGE_RUDDER] = pivotMatrix(F.pivots.rudder);
+    fighterHinges[HINGE_PROP] = new THREE.Matrix4().makeTranslation(
+      0,
+      0,
+      FIGHTER_PROP_Z,
+    );
+    // The LOD frames: the biplane's mid level (livery slots like the near
+    // draw, the misc groups baked), the fighter's mid and far.
+    const mid = (k: string) => {
+      const g = s.mid.get(k as never);
+      if (!g) throw new Error(`fleet: the mid airframe has no ${k} group`);
+      return g;
+    };
+    const midMisc = (k: "metal" | "dark" | "engine" | "cream" | "leather") =>
+      s.mid.has(k)
+        ? [
+            {
+              geometry: mid(k),
+              hinge: FRAME_BIPLANE_MID,
+              slot: SLOT_BAKED,
+              ...rm(k),
+              tint: lin(k),
+              exhaust: k === "engine" ? 1 : 0,
+            },
+          ]
+        : [];
+    const lodGeo = merged([
+      {
+        geometry: mid("body"),
+        hinge: FRAME_BIPLANE_MID,
+        slot: 0,
+        ...rm("body"),
+      },
+      {
+        geometry: mid("trim"),
+        hinge: FRAME_BIPLANE_MID,
+        slot: 1,
+        ...rm("trim"),
+      },
+      ...midMisc("metal"),
+      ...midMisc("dark"),
+      ...midMisc("engine"),
+      ...midMisc("cream"),
+      ...midMisc("leather"),
+      withPart(F.mid, FRAME_FIGHTER_MID, SLOT_BAKED),
+      withPart(F.far, FRAME_FIGHTER_FAR, SLOT_BAKED),
+    ]);
+    const glassGeo = merged([
+      {
+        geometry: stat("glass"),
+        hinge: FRAME_BIPLANE_GLASS,
+        ...rm("glass"),
+      },
+      withPart(F.glass, FRAME_FIGHTER_GLASS),
+    ]);
 
     const white = { color: 0xffffff, vertexColors: true };
     const liveryMat = fleetMaterial(
@@ -530,11 +711,12 @@ export class PlaneFleet {
       hinges,
       white,
     );
-    this.livery = this.draw(liveryGeo, liveryMat, {
+    const B = CAPACITY_BIPLANE;
+    this.livery = this.draw(liveryGeo, liveryMat, B, {
       deflect: true,
       livery: true,
     });
-    this.misc = this.draw(miscGeo, miscMat, { deflect: true });
+    this.misc = this.draw(miscGeo, miscMat, B, { deflect: true });
     this.rudder = this.draw(
       rudderGeo,
       fleetMaterial(
@@ -542,31 +724,76 @@ export class PlaneFleet {
         { key: "rudder", hero: true, damage: true, hinge: true, rm: true },
         hinges,
       ),
+      B,
       { deflect: true },
     );
     this.glass = this.draw(
-      stat("glass"),
-      fleetMaterial(M.glass, { key: "glass" }, hinges, { depthWrite: false }),
-      {},
+      glassGeo,
+      fleetMaterial(M.glass, { key: "glass", select: true }, hinges, {
+        depthWrite: false,
+      }),
+      CAPACITY_ALL,
+      { kind: true },
     );
     this.blur = this.draw(
       s.blurDisc,
       fleetMaterial(M.blur, { key: "blur", alpha: true }, hinges, {
         opacity: 1,
       }),
+      CAPACITY_ALL,
       {},
     );
     this.scarf = this.draw(
       scarfGeometry(),
       fleetMaterial(M.scarf, { key: "scarf", hero: true, scarf: true }, hinges),
+      B,
       {},
     );
     // The impostor shares the near draws' programs (same variant keys).
-    this.farLivery = this.draw(farLiveryGeo, liveryMat, {
+    this.farLivery = this.draw(farLiveryGeo, liveryMat, B, {
       deflect: true,
       livery: true,
     });
-    this.farMisc = this.draw(farMiscGeo, miscMat, { deflect: true });
+    this.farMisc = this.draw(farMiscGeo, miscMat, B, { deflect: true });
+    this.enemy = this.draw(
+      enemyGeo,
+      fleetMaterial(
+        M.metal,
+        {
+          key: "enemy",
+          hero: true,
+          exhaust: true,
+          damage: true,
+          hinge: true,
+          rm: true,
+          bombs: true,
+          detail: fighterDecals(),
+        },
+        fighterHinges,
+        white,
+      ),
+      CAPACITY_ENEMY,
+      { deflect: true, bombs: true },
+    );
+    this.lod = this.draw(
+      lodGeo,
+      fleetMaterial(
+        M.body,
+        {
+          key: "lod",
+          hero: true,
+          exhaust: true,
+          damage: true,
+          livery: true,
+          rm: true,
+          select: true,
+        },
+        hinges,
+        white,
+      ),
+      CAPACITY_ALL,
+      { livery: true, kind: true },
+    );
     for (const m of Object.values(M)) {
       if (m instanceof THREE.Material) m.dispose();
     }
@@ -577,20 +804,26 @@ export class PlaneFleet {
   private draw(
     source: THREE.BufferGeometry,
     material: THREE.Material,
-    want: { deflect?: boolean; livery?: boolean },
+    capacity: number,
+    want: {
+      deflect?: boolean;
+      livery?: boolean;
+      kind?: boolean;
+      bombs?: boolean;
+    },
   ): Draw {
     const geometry = new THREE.BufferGeometry();
     for (const [name, a] of Object.entries(source.attributes)) {
       geometry.setAttribute(name, a);
     }
     if (source.index) geometry.setIndex(source.index);
-    const mesh = new THREE.InstancedMesh(geometry, material, this.capacity);
+    const mesh = new THREE.InstancedMesh(geometry, material, capacity);
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     mesh.count = 0;
     mesh.frustumCulled = false;
     const attr = (name: string, size: number) => {
       const a = new THREE.InstancedBufferAttribute(
-        new Float32Array(this.capacity * size),
+        new Float32Array(capacity * size),
         size,
       );
       a.setUsage(THREE.DynamicDrawUsage);
@@ -603,6 +836,8 @@ export class PlaneFleet {
       d.liveryA = attr("aLiveryA", 3);
       d.liveryB = attr("aLiveryB", 3);
     }
+    if (want.kind) d.kind = attr("aKind", 1);
+    if (want.bombs) d.bombs = attr("aBombs", 1);
     this.draws.push(d);
     this.group.add(mesh);
     return d;
@@ -674,12 +909,20 @@ export class PlaneFleet {
     camera.updateMatrixWorld();
     for (const d of this.draws) d.n = 0;
     let near = 0;
+    let mid = 0;
     let far = 0;
+    let biplanes = 0;
+    let enemies = 0;
     for (let i = 0; i < this.count; i++) {
       const e = this.entries[i] as Entry;
       const rig = planeRig(e.group);
       if (!rig || !shown(e.group)) continue;
-      if (near + far >= this.capacity) break;
+      const enemy = rig.kind === "fighter";
+      if (enemy ? enemies >= CAPACITY_ENEMY : biplanes >= CAPACITY_BIPLANE) {
+        continue;
+      }
+      if (enemy) enemies++;
+      else biplanes++;
       e.group.updateMatrixWorld(true);
       rig.lod.update(camera);
       const prim = scratchColor.setHex(rig.livery.primary);
@@ -692,38 +935,64 @@ export class PlaneFleet {
       const elev = rig.parts.elevator.rotation.x;
       const rud = rig.parts.rudder.rotation.y;
       const prop = rig.prop.rotation.z % TWO_PI;
-      if (rig.lod.getCurrentLevel() === 0) {
+      // Every LOD level hangs on the same transform.
+      const m = rig.near.matrixWorld;
+      const level = rig.lod.getCurrentLevel();
+      if (level === 0) {
         near++;
-        const m = rig.near.matrixWorld;
-        this.put(this.livery, m, e, damage, ail, elev, rud, prop);
-        setLivery(this.livery, pr, pg, pb, sec);
-        this.put(this.misc, m, e, damage, ail, elev, rud, prop);
-        this.put(this.rudder, m, e, damage, ail, elev, rud, prop);
+        if (enemy) {
+          const k = this.put(this.enemy, m, e, damage, ail, elev, rud, prop);
+          this.enemy.bombs?.setX(k, rig.bombs);
+        } else {
+          this.put(this.livery, m, e, damage, ail, elev, rud, prop);
+          setLivery(this.livery, pr, pg, pb, sec);
+          this.put(this.misc, m, e, damage, ail, elev, rud, prop);
+          this.put(this.rudder, m, e, damage, ail, elev, rud, prop);
+        }
         if (this.fineParts) {
-          this.put(this.glass, m, e, damage, ail, elev, rud, prop);
-          const sc = this.put(this.scarf, m, e, damage, ail, elev, rud, prop);
-          this.scarf.glow.setW(sc, rig.phase % SCARF_PHASE_WRAP);
-        }
-        const blur = rig.parts.blur;
-        if (blur.visible) {
-          const k = this.put(
-            this.blur,
-            blur.matrixWorld,
-            e,
-            damage,
-            ail,
-            elev,
-            rud,
-            prop,
+          const g = this.put(this.glass, m, e, damage, ail, elev, rud, prop);
+          this.glass.kind?.setX(
+            g,
+            enemy ? FRAME_FIGHTER_GLASS : FRAME_BIPLANE_GLASS,
           );
-          this.blur.glow.setW(k, rig.parts.blurMaterial.opacity);
+          if (!enemy) {
+            const sc = this.put(this.scarf, m, e, damage, ail, elev, rud, prop);
+            this.scarf.glow.setW(sc, rig.phase % SCARF_PHASE_WRAP);
+          }
         }
+      } else if (level === 1 || enemy) {
+        if (level === 1) mid++;
+        else far++;
+        const k = this.put(this.lod, m, e, damage, 0, 0, 0, 0);
+        setLivery(this.lod, pr, pg, pb, sec);
+        this.lod.kind?.setX(
+          k,
+          !enemy
+            ? FRAME_BIPLANE_MID
+            : level === 1
+              ? FRAME_FIGHTER_MID
+              : FRAME_FIGHTER_FAR,
+        );
       } else {
         far++;
-        const m = rig.far.matrixWorld;
         this.put(this.farLivery, m, e, damage, 0, 0, 0, 0);
         setLivery(this.farLivery, pr, pg, pb, sec);
         this.put(this.farMisc, m, e, damage, 0, 0, 0, 0);
+      }
+      // The prop disc, near and mid (beyond, it is under a pixel or two).
+      const blur = rig.parts.blur;
+      if (level < 2 && blur.visible) {
+        const k = this.put(
+          this.blur,
+          blur.matrixWorld,
+          e,
+          damage,
+          ail,
+          elev,
+          rud,
+          prop,
+        );
+        this.blur.glow.setW(k, rig.parts.blurMaterial.opacity);
       }
     }
     for (const d of this.draws) {
@@ -734,10 +1003,38 @@ export class PlaneFleet {
       if (d.deflect) d.deflect.needsUpdate = true;
       if (d.liveryA) d.liveryA.needsUpdate = true;
       if (d.liveryB) d.liveryB.needsUpdate = true;
+      if (d.kind) d.kind.needsUpdate = true;
+      if (d.bombs) d.bombs.needsUpdate = true;
     }
-    this.stats.planes = near + far;
+    this.stats.planes = near + mid + far;
     this.stats.near = near;
+    this.stats.mid = mid;
     this.stats.far = far;
+    this.stats.enemies = enemies;
+  }
+
+  /**
+   * QA (DT1): each fleet program's ACTIVE vertex attributes, as the GPU
+   * linked them — every one must stay within the 16 a GPU must offer. A
+   * draw not yet compiled reports nothing.
+   */
+  activeAttributes(renderer: THREE.WebGLRenderer): Record<string, number> {
+    const gl = renderer.getContext();
+    const out: Record<string, number> = {};
+    for (const d of this.draws) {
+      const material = d.mesh.material as THREE.Material;
+      const props = renderer.properties.get(material) as {
+        currentProgram?: { program: WebGLProgram };
+      };
+      const program = props.currentProgram?.program;
+      if (!program) continue;
+      const key = material.customProgramCacheKey();
+      out[key] = gl.getProgramParameter(
+        program,
+        gl.ACTIVE_ATTRIBUTES,
+      ) as number;
+    }
+    return out;
   }
 
   /** Draws issued last frame (QA): one per non-empty instanced mesh. */

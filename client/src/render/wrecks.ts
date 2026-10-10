@@ -3,9 +3,17 @@
 // (common/src/wreck.ts) at the RENDER clock — the clock the movers are drawn
 // and crash-checked at, so the wreck you see is the wreck you hit.
 //
-// One InstancedMesh of charred airframes (1 draw, WRECKS_MAX instances),
-// placed at the torus image nearest the viewer and tumbling about their
-// flight path. Flames and smoke ride the D1 impact particle pool (fixed
+// One InstancedMesh of charred airframes (1 draw), placed at the torus
+// image nearest the viewer and tumbling about their flight path.
+//
+// DT1: the wreck breaks apart. The draw's geometry holds five frames — the
+// biplane's hull, the fighter's hull, a wing panel, a tail and the engine
+// with its prop — and a per-instance kind picks one (the others' vertices
+// collapse to a point), so the hull and its three torn-off pieces are still
+// ONE draw (WRECKS_MAX × 4 instances). The pieces leave the hull one after
+// another on diverging, tumbling paths that are a pure function of the
+// wreck's id and its shared path — every client sees the same break-up —
+// and they are display-only: the wreck you can hit is the shared path. Flames and smoke ride the D1 impact particle pool (fixed
 // ring, nothing allocated per frame): a trail while it falls, then a fire
 // where it landed for WRECK_BURN_MS. A street landing leaves a scorch disc
 // (one more instanced draw). Where it lands is the server's `end`: this
@@ -45,8 +53,27 @@ const SCORCH_Y = 0.06;
 const WRECK_COLOR = 0x1b1714;
 const WRECK_EMBER = 0x3a1404;
 
+/** Which airframe a wreck was (the hull frame it draws). */
+export type WreckKind = "biplane" | "fighter";
+/** Draw frames (aFrame per vertex, aKind per instance). */
+const FRAME_BIPLANE = 0;
+const FRAME_FIGHTER = 1;
+/** The torn-off pieces: wing panel, tail, engine + prop. */
+const PIECE_FRAMES = [2, 3, 4] as const;
+/** When each piece tears off, s after the death, and its fling, m/s. */
+const PIECE_AT_S = [0.12, 0.45, 0.9] as const;
+const PIECE_FLING = [9, 6, 4] as const;
+/** A piece's air drag time constant, s (it slows to the gravity fall). */
+const PIECE_DRAG_S = 1.1;
+const PIECE_GRAVITY = 9.8;
+/** A piece is dropped this long after tearing off, s (or once under 0 m). */
+const PIECE_LIFE_S = 9;
+/** Hull + pieces per wreck: the draw's instance budget. */
+const INSTANCES_PER_WRECK = 1 + PIECE_FRAMES.length;
+
 interface Entry {
   w: WreckParams;
+  kind: WreckKind;
   /** Frame time (performance.now) it landed, or null while falling. */
   landedAt: number | null;
   /** Where it landed (canonical). */
@@ -55,33 +82,95 @@ interface Entry {
   smokeAcc: number;
 }
 
-/** A burnt-out biplane: fuselage, the lower wing snapped short on one side,
- * a stub of upper wing, the tail. Local −Z is the nose (as a plane's). */
-function wreckGeometry(): THREE.BufferGeometry {
-  const parts: THREE.BufferGeometry[] = [];
-  const box = (
-    w: number,
-    h: number,
-    d: number,
-    x: number,
-    y: number,
-    z: number,
-    rz = 0,
-  ) => {
+type Box = [number, number, number, number, number, number, number?];
+
+/** Boxes (w, h, d, x, y, z, roll) merged into one frame of the draw. */
+function frame(boxes: readonly Box[], id: number): THREE.BufferGeometry {
+  const parts = boxes.map(([w, h, d, x, y, z, rz = 0]) => {
     const g = new THREE.BoxGeometry(w, h, d);
     if (rz !== 0) g.rotateZ(rz);
     g.translate(x, y, z);
-    parts.push(g);
-  };
-  box(1.1, 1.1, 6.2, 0, 0, 0); // fuselage
-  box(5.4, 0.18, 1.4, -1.9, -0.45, -0.6, 0.12); // lower wing, whole side
-  box(2.2, 0.18, 1.4, 1.5, -0.45, -0.6, -0.35); // lower wing, snapped
-  box(3.6, 0.16, 1.3, -0.6, 0.95, -0.8, 0.08); // upper wing stub
-  box(2.4, 0.14, 0.9, 0, 0.2, 2.8); // tailplane
-  box(0.14, 1.2, 0.9, 0, 0.8, 2.8); // fin
+    return g;
+  });
   const merged = mergeGeometries(parts) as THREE.BufferGeometry;
   for (const g of parts) g.dispose();
+  const n = (merged.getAttribute("position") as THREE.BufferAttribute).count;
+  merged.setAttribute(
+    "aFrame",
+    new THREE.Float32BufferAttribute(new Float32Array(n).fill(id), 1),
+  );
   return merged;
+}
+
+/** Every wreck frame in one geometry. Local −Z is the nose (as a plane's). */
+function wreckGeometry(): THREE.BufferGeometry {
+  const frames = [
+    // A burnt-out biplane: fuselage, the lower wing whole on one side and
+    // snapped on the other, a stub of upper wing, the tail.
+    frame(
+      [
+        [1.1, 1.1, 6.2, 0, 0, 0],
+        [5.4, 0.18, 1.4, -1.9, -0.45, -0.6, 0.12],
+        [2.2, 0.18, 1.4, 1.5, -0.45, -0.6, -0.35],
+        [3.6, 0.16, 1.3, -0.6, 0.95, -0.8, 0.08],
+        [2.4, 0.14, 0.9, 0, 0.2, 2.8],
+        [0.14, 1.2, 0.9, 0, 0.8, 2.8],
+      ],
+      FRAME_BIPLANE,
+    ),
+    // The fighter: long hull, one gull wing kinked down then up, the other
+    // a stub, the canopy frame, the fin.
+    frame(
+      [
+        [1.15, 1.25, 8.4, 0, 0, 0.2],
+        [2.1, 0.22, 1.9, -1.1, -0.55, -0.2, 0.23],
+        [3.0, 0.2, 1.5, -3.5, -0.62, 0.0, -0.15],
+        [1.4, 0.22, 1.9, 0.75, -0.5, -0.2, -0.23],
+        [0.65, 0.5, 2.4, 0, 0.75, 0.3],
+        [0.12, 1.5, 1.1, 0, 0.95, 4.0],
+        [2.6, 0.12, 1.0, 0.4, 0.2, 3.8],
+      ],
+      FRAME_FIGHTER,
+    ),
+    // Torn-off wing panel (with its strut stubs).
+    frame(
+      [
+        [3.2, 0.16, 1.35, 0, 0, 0],
+        [0.1, 0.7, 0.1, 0.9, 0.35, 0.2],
+      ],
+      PIECE_FRAMES[0],
+    ),
+    // The tail: tailplane and fin on a stub of fuselage.
+    frame(
+      [
+        [2.3, 0.12, 0.9, 0, 0, 0],
+        [0.12, 1.1, 0.85, 0, 0.55, 0.05],
+        [0.5, 0.5, 1.4, 0, 0, -0.6],
+      ],
+      PIECE_FRAMES[1],
+    ),
+    // The engine with a bent prop.
+    frame(
+      [
+        [0.95, 0.95, 0.9, 0, 0, 0],
+        [0.12, 2.6, 0.08, 0, 0.2, -0.5, 0.5],
+      ],
+      PIECE_FRAMES[2],
+    ),
+  ];
+  const merged = mergeGeometries(frames) as THREE.BufferGeometry;
+  for (const g of frames) g.dispose();
+  return merged;
+}
+
+/** A stable 0..1 hash of (wreck id, salt). */
+function hash01(id: number, salt: number): number {
+  let h =
+    Math.imul(id ^ 0x9e3779b9, 0x85ebca6b) ^ Math.imul(salt + 1, 0xc2b2ae35);
+  h ^= h >>> 15;
+  h = Math.imul(h, 0x2c1b3c6d);
+  h ^= h >>> 12;
+  return (h >>> 0) / 4294967296;
 }
 
 /** Soft-edged dark disc for the street scorch. */
@@ -111,10 +200,16 @@ const scratchRoll = new THREE.Quaternion();
 const scratchMatrix = new THREE.Matrix4();
 const scratchScale = new THREE.Vector3(1, 1, 1);
 const scratchV3 = new THREE.Vector3();
+const scratchAxis = new THREE.Vector3();
+const scratchBase: Vec3 = { x: 0, y: 0, z: 0 };
+const scratchPiece: Vec3 = { x: 0, y: 0, z: 0 };
+const scratchBaseVel: Vec3 = { x: 0, y: 0, z: 0 };
 
 export class Wrecks {
   readonly group = new THREE.Group();
   private readonly mesh: THREE.InstancedMesh;
+  /** DT1: each instance's frame (hull kind or piece). */
+  private readonly kindAttr: THREE.InstancedBufferAttribute;
   private readonly scorch: THREE.InstancedMesh;
   private readonly entries: Entry[] = [];
   /** Street scorch centres (canonical), a ring of SCORCH_MAX. */
@@ -134,7 +229,29 @@ export class Wrecks {
       roughness: 0.95,
       metalness: 0.1,
     });
-    this.mesh = new THREE.InstancedMesh(wreckGeometry(), material, WRECKS_MAX);
+    // DT1: the frame select — a vertex of another frame collapses to the
+    // origin (position only; its normal stays valid).
+    material.customProgramCacheKey = () => "ab-wreck-frames";
+    material.onBeforeCompile = (shader) => {
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          "#include <common>",
+          "#include <common>\nattribute float aFrame;\nattribute float aKind;",
+        )
+        .replace(
+          "#include <begin_vertex>",
+          "#include <begin_vertex>\nif (abs(aFrame - aKind) > 0.5) transformed = vec3(0.0);",
+        );
+    };
+    const capacity = WRECKS_MAX * INSTANCES_PER_WRECK;
+    const geometry = wreckGeometry();
+    this.kindAttr = new THREE.InstancedBufferAttribute(
+      new Float32Array(capacity),
+      1,
+    );
+    this.kindAttr.setUsage(THREE.DynamicDrawUsage);
+    geometry.setAttribute("aKind", this.kindAttr);
+    this.mesh = new THREE.InstancedMesh(geometry, material, capacity);
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.mesh.frustumCulled = false;
     const disc = new THREE.CircleGeometry(SCORCH_RADIUS, 20);
@@ -170,13 +287,15 @@ export class Wrecks {
     this.share = share;
   }
 
-  /** A wreck the server announced (a death). A repeat id is ignored. */
-  add(w: WreckParams): void {
+  /** A wreck the server announced (a death). A repeat id is ignored.
+   * `kind`: the airframe that fell (a welcome replay does not say). */
+  add(w: WreckParams, kind: WreckKind = "biplane"): void {
     if (this.entries.some((e) => e.w.id === w.id)) return;
     // Over the pool the oldest goes: the server caps a room at the same.
     if (this.entries.length >= WRECKS_MAX) this.entries.shift();
     this.entries.push({
       w,
+      kind,
       landedAt: null,
       rest: { x: 0, y: 0, z: 0 },
       fireAcc: 0,
@@ -268,7 +387,12 @@ export class Wrecks {
         // holds at the death point: clamped by the path itself.
         wreckPosAt(w, ms, scratchPos);
         wreckVelAt(w, Math.max(ms, w.t), scratchVel);
-        this.place(drawn++, viewer, scratchPos, scratchVel, w, ms);
+        this.place(drawn, viewer, scratchPos, scratchVel, w, ms);
+        this.kindAttr.setX(
+          drawn++,
+          e.kind === "fighter" ? FRAME_FIGHTER : FRAME_BIPLANE,
+        );
+        drawn = this.pieces(drawn, viewer, w, ms);
         this.emit(
           e,
           scratchPos,
@@ -283,7 +407,10 @@ export class Wrecks {
     }
     this.entries.length = kept;
     this.mesh.count = drawn;
-    if (drawn > 0) this.mesh.instanceMatrix.needsUpdate = true;
+    if (drawn > 0) {
+      this.mesh.instanceMatrix.needsUpdate = true;
+      this.kindAttr.needsUpdate = true;
+    }
     for (let i = 0; i < this.scorches.length; i++) {
       const c = nearestImageInto(
         scratchImage,
@@ -321,6 +448,62 @@ export class Wrecks {
       scratchScale,
     );
     this.mesh.setMatrixAt(i, scratchMatrix);
+  }
+
+  /**
+   * DT1: the pieces torn off a falling wreck at render time `ms`, written
+   * from instance `i` on; returns the next free instance. Each piece leaves
+   * the hull at its own moment with the hull's velocity plus a fling (a
+   * hashed direction, mostly sideways), slows under drag into a gravity
+   * fall, and tumbles about a hashed axis — a pure function of the wreck.
+   */
+  private pieces(
+    first: number,
+    viewer: Vec3,
+    w: WreckParams,
+    ms: number,
+  ): number {
+    let i = first;
+    const s = Math.max(0, ms - w.t) / 1000;
+    for (let k = 0; k < PIECE_FRAMES.length; k++) {
+      const at = PIECE_AT_S[k] as number;
+      const t = s - at;
+      if (t <= 0 || t > PIECE_LIFE_S) continue;
+      wreckPosAt(w, w.t + at * 1000, scratchBase);
+      wreckVelAt(w, w.t + at * 1000, scratchBaseVel);
+      const a = hash01(w.id, k) * Math.PI * 2;
+      const fling = PIECE_FLING[k] as number;
+      const vx = scratchBaseVel.x + Math.cos(a) * fling;
+      const vy = scratchBaseVel.y + 2 + hash01(w.id, k + 7) * 3;
+      const vz = scratchBaseVel.z + Math.sin(a) * fling;
+      // Linear drag toward a gravity fall: v(t) = v0·e^(−t/τ) − gτ(1 − e^(−t/τ)).
+      const drag = PIECE_DRAG_S * (1 - Math.exp(-t / PIECE_DRAG_S));
+      scratchPiece.x = scratchBase.x + vx * drag;
+      scratchPiece.y =
+        scratchBase.y + vy * drag - PIECE_GRAVITY * PIECE_DRAG_S * (t - drag);
+      scratchPiece.z = scratchBase.z + vz * drag;
+      if (scratchPiece.y < 0) continue;
+      const p = nearestImageInto(scratchImage, viewer, scratchPiece);
+      scratchAxis
+        .set(
+          hash01(w.id, k + 13) - 0.5,
+          hash01(w.id, k + 17) - 0.5,
+          hash01(w.id, k + 19) - 0.5,
+        )
+        .normalize();
+      scratchQuat.setFromAxisAngle(
+        scratchAxis,
+        t * (3 + 4 * hash01(w.id, k + 23)),
+      );
+      scratchMatrix.compose(
+        scratchV3.set(p.x, p.y, p.z),
+        scratchQuat,
+        scratchScale,
+      );
+      this.mesh.setMatrixAt(i, scratchMatrix);
+      this.kindAttr.setX(i++, PIECE_FRAMES[k] as number);
+    }
+    return i;
   }
 
   /** Carry fractional emission and spawn this frame's whole particles. */

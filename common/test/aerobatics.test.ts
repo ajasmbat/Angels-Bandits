@@ -14,7 +14,6 @@ import {
   BOOST_MAX_SPEED,
   MAX_SPEED,
   MIN_SPEED,
-  ROLL_RATE,
   SOFT_CEILING,
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
@@ -28,9 +27,13 @@ import {
   realRoll,
   stepFlight,
 } from "@angels-bandits/common/flight";
+import { DEFAULT_TUNING } from "@angels-bandits/common/tuning";
 import { describe, expect, it } from "vitest";
 
 const DEG = Math.PI / 180;
+/** The player's full A/D roll rate (F10: PLAYER_ROLL_RATE; the bots keep
+ * ROLL_RATE). */
+const ROLL_RATE = DEFAULT_TUNING.rollRate;
 const NEUTRAL: FlightInput = { pitch: 0, turn: 0, roll: 0, throttle: 0 };
 /** Full pull at full throttle. */
 const PULL: FlightInput = { ...NEUTRAL, pitch: 1, throttle: 1 };
@@ -400,11 +403,12 @@ function* fuzzFlight(
 describe("F7 fuzz", () => {
   it("10^5 random steps: finite, in range, unit pose quaternion matching the body axes, continuous nose", () => {
     // The fastest the nose can swing: boosted, and slow (the turn is
-    // tightest at MIN_SPEED, F5) or fast — whichever is higher.
+    // tightest at MIN_SPEED, F5) or fast — whichever is higher — and on a
+    // wing, where a pull bites harder (F10 bank-and-pull).
     const maxRate = Math.max(
       ...[MIN_SPEED, MAX_SPEED, BOOST_MAX_SPEED].map((v) => {
         const r = handlingRates(v, true);
-        return r.turnRate + r.pitchRate;
+        return r.turnRate + r.pitchRate * (1 + DEFAULT_TUNING.bankPull);
       }),
     );
     const faults: string[] = [];

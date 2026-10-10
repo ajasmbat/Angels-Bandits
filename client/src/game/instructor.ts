@@ -13,6 +13,8 @@
 // converges the pipper onto it, critically damped. Neutral is "cursor on the
 // pipper", never screen centre: the chase eye looks ~10° below the gun line.
 
+import { minAltitude } from "@angels-bandits/common/city/river";
+import { groundFloor } from "@angels-bandits/common/city/tunnels";
 import {
   BULLET_RANGE,
   PITCH_RATE,
@@ -482,6 +484,13 @@ export function instructorInput(
 
 /** Bank-and-pull lets go under this much aim error, rad. */
 export const BANK_EXIT = 15 * DEG_I;
+/** …and only flies with this much air under it, m above the ground (or a
+ * U4 bore's floor): down among the towers an automatic hard bank would
+ * stand the soft walls and the hole assist down (they work wings-level)
+ * for a turn the pilot never asked for. Measured on the novice pilot
+ * (novice-pilot.test.ts): low, it cost crashes; from here up it costs
+ * none. The pilot's own A/D banks anywhere. */
+export const BANK_PULL_MIN_AGL = 120;
 /** Roll rate per rad of bank error, 1/s: a crisp but damped roll-in. */
 const BANK_GAIN = 6;
 
@@ -497,18 +506,21 @@ export function createBankPull(): BankPullState {
  * The instructor's roll command this frame (stick units, for roll-control's
  * `auto`), or null when it is not banking. `aimDir` / `pipperDir` are
  * aimView's rays; `standDown` is any assist that owns the line (threading a
- * hole, the F9 guard, the ground floor) — banking hard there would switch
- * the hole assist off and swing the pull at the ground.
+ * hole, the F9 guard or soft walls, the ground floor, the corner auto-slow
+ * braking for a wall) — banking hard there would switch them off and swing
+ * the pull at the ground. Under BANK_PULL_MIN_AGL it stands down too.
  */
 export function instructorBankPull(
   s: BankPullState,
-  flight: Pick<FlightState, "yaw" | "pitch" | "roll" | "bank">,
+  flight: Pick<FlightState, "pos" | "yaw" | "pitch" | "roll" | "bank">,
   aimDir: Vec3,
   pipperDir: Vec3,
   standDown: boolean,
 ): number | null {
   const max = live.instructorBankMax;
-  if (standDown || max <= 0) {
+  const { x, y, z } = flight.pos;
+  const agl = y - groundFloor(x, z, minAltitude(z));
+  if (standDown || max <= 0 || agl < BANK_PULL_MIN_AGL) {
     s.engaged = false;
     return null;
   }

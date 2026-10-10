@@ -4613,6 +4613,9 @@ const frame = (now: number): void => {
             bankView.pipperDir,
             effOut.pitch > 0 ||
               effortless.guard >= 0 ||
+              effOut.aimYaw !== 0 ||
+              effOut.aimPitch !== 0 ||
+              cornerCap < tuning.maxSpeed ||
               holeAssist.yaw !== 0 ||
               holeAssist.pitch !== 0 ||
               holeSaveActive(holeSave),

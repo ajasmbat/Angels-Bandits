@@ -20,6 +20,7 @@ import { describe, expect, it } from "vitest";
 import { FEEL_TUNING } from "../src/game/effortless";
 import {
   BANK_EXIT,
+  BANK_PULL_MIN_AGL,
   aimError,
   angleBetween,
   createBankPull,
@@ -154,5 +155,12 @@ describe("F10 mouse aim: the instructor banks and pulls for a far target", () =>
     // An assist owning the line stands it down.
     expect(instructorBankPull(s, f, target(120), nose, true)).toBeNull();
     expect(s.engaged).toBe(false);
+    // So does flying low among the towers.
+    const low = { ...f, pos: { ...f.pos, y: BANK_PULL_MIN_AGL - 10 } };
+    expect(instructorBankPull(s, low, target(120), nose, false)).toBeNull();
+    const high = { ...f, pos: { ...f.pos, y: BANK_PULL_MIN_AGL + 10 } };
+    expect(
+      instructorBankPull(s, high, target(120), nose, false),
+    ).not.toBeNull();
   });
 });

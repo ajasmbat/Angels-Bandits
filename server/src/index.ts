@@ -166,11 +166,7 @@ import {
   isResumeToken,
   isVec3,
 } from "./guards";
-import {
-  type RespawnEnemy,
-  pickRespawn,
-  respawnIfUnsafe,
-} from "./respawn";
+import { type RespawnEnemy, pickRespawn, respawnIfUnsafe } from "./respawn";
 import { type Room, RoomManager } from "./room";
 import { createStaticHandler } from "./statics";
 import { StormCeiling } from "./storm";

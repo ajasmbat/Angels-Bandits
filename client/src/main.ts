@@ -109,12 +109,12 @@ import {
   missileImpactAt,
 } from "@angels-bandits/common/strike";
 import { feelFromTuning } from "@angels-bandits/common/tuning";
+import type { WaveState } from "@angels-bandits/common/waves";
 import {
   WEATHER_PHASES,
   type WeatherPhase,
   phaseWindow,
 } from "@angels-bandits/common/weather";
-import type { WaveState } from "@angels-bandits/common/waves";
 import {
   type Vec3,
   wrapCoord,
@@ -190,6 +190,14 @@ import {
   threadingCorridor,
 } from "./game/corner-speed";
 import {
+  EASY_KEY,
+  easyActive,
+  loadEasy,
+  noteCleared,
+  saveEasy,
+  waveCleared,
+} from "./game/easy-mode";
+import {
   ASSIST_MAX_ROLL,
   type EffortlessWorld,
   FEEL_TUNING,
@@ -243,20 +251,8 @@ import {
   instructorInput,
 } from "./game/instructor";
 import { speedFov } from "./game/jet-camera";
-import {
-  EASY_KEY,
-  easyActive,
-  loadEasy,
-  noteCleared,
-  saveEasy,
-  waveCleared,
-} from "./game/easy-mode";
 import { magnetizeVelocity } from "./game/magnetism";
-import {
-  MissileFeed,
-  MissileShake,
-  bombingNear,
-} from "./game/missile-feed";
+import { MissileFeed, MissileShake, bombingNear } from "./game/missile-feed";
 import { createPullCue, stepPullCue } from "./game/pull-feel";
 import {
   type QaChaosSpec,

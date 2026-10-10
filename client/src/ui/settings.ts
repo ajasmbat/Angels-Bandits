@@ -127,8 +127,7 @@ export function clampSettings(raw: unknown): Settings {
     stickSens: STICK_SENS_STEPS.includes(o.stickSens as number)
       ? (o.stickSens as number)
       : d.stickSens,
-    flightData:
-      typeof o.flightData === "boolean" ? o.flightData : d.flightData,
+    flightData: typeof o.flightData === "boolean" ? o.flightData : d.flightData,
   };
 }
 

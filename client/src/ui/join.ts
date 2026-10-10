@@ -164,8 +164,7 @@ export function requestName(onGesture?: () => void): Promise<string> {
         // fullscreen over the game.
         input.blur();
         onGesture?.();
-        const name =
-          input.value.trim().slice(0, NAME_MAX_LENGTH) || callsign;
+        const name = input.value.trim().slice(0, NAME_MAX_LENGTH) || callsign;
         writeStored(STORAGE_KEY, name);
         setJoinStatus("CONNECTING…", CONNECTING_PROGRESS);
         resolve(name);

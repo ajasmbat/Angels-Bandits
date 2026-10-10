@@ -86,7 +86,9 @@ export function parseLearned(raw: string | null): HintId[] {
   if (!raw) return [];
   return raw
     .split(",")
-    .filter((id): id is HintId => (HINT_ORDER as readonly string[]).includes(id));
+    .filter((id): id is HintId =>
+      (HINT_ORDER as readonly string[]).includes(id),
+    );
 }
 
 /** A hint's line, for the device it shows on. */
@@ -252,10 +254,9 @@ export class Coach {
 
   constructor(private readonly touch: () => boolean) {
     this.learned = new Set(parseLearned(readStored(COACH_LEARNED_KEY)));
-    this.state = createCoach(
-      readStored(COACH_DONE_KEY) === "1",
-      [...this.learned],
-    );
+    this.state = createCoach(readStored(COACH_DONE_KEY) === "1", [
+      ...this.learned,
+    ]);
     this.finished = coachFinished(this.state);
     swallowMouse(this.skipBtn);
     this.skipBtn.addEventListener("click", () => this.skip());

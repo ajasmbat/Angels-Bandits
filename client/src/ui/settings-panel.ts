@@ -13,11 +13,11 @@
 // flies the plane while it is up (main.ts), which the header says — and
 // RESUME (or Esc, or ✕) puts the controls back.
 
+import { INTENSITY_NAMES } from "@angels-bandits/common/waves";
 import { FEELS, type Feel } from "../game/effortless";
 import type { AimMode } from "../game/flight-input";
 import type { RollLevelMode } from "../game/roll-control";
 import { SENSITIVITY_STEPS } from "../game/touch-input";
-import { INTENSITY_NAMES } from "@angels-bandits/common/waves";
 import {
   QUALITY_SETTINGS,
   type QualitySetting,
@@ -28,8 +28,8 @@ import {
   type CameraRoll,
   type PanelEnv,
   type PanelEvent,
-  type Settings,
   STICK_SENS_STEPS,
+  type Settings,
   type SettingsStore,
   clampSettings,
   nextManual,
@@ -468,8 +468,7 @@ export class SettingsPanel {
       this.values = clampSettings({ ...this.values, flightData: v === "on" });
       saveSettings(this.store, this.values);
       h.setFlightData(this.values.flightData);
-    }
-    else if (group === "sensitivity") h.setSensitivity(Number(v));
+    } else if (group === "sensitivity") h.setSensitivity(Number(v));
     else if (group === "aimMode") h.setAimMode(v as AimMode);
     else if (group === "radioVoice") h.setRadioVoice(v === "on");
     else if (group === "haptics") {

@@ -193,6 +193,7 @@ import {
   MissileDirector,
   applyMissileImpact,
 } from "./strikes";
+import { createGuard } from "./tick-guard";
 import { poseFromSpawn, roomPoseCap, validatePose } from "./validate";
 import { RoomWrecks, applyWreckImpact, impactPos } from "./wrecks";
 
@@ -2479,6 +2480,8 @@ function tick(): void {
 // past nominal — and a faster tick you don't actually deliver is not a faster
 // tick. BOT_DT assumes this cadence too, so the drift was slowing bots down.
 const TICK_MS = 1000 / TICK_DOWN_HZ;
+// A2: a throw anywhere in the tick must cost one tick, not the process.
+const guardTick = createGuard("tick");
 let nextTickAt = Date.now();
 const scheduleTick = (): void => {
   nextTickAt += TICK_MS;
@@ -2488,7 +2491,7 @@ const scheduleTick = (): void => {
   if (nextTickAt < now) nextTickAt = now + TICK_MS;
   setTimeout(
     () => {
-      tick();
+      guardTick(tick, Date.now());
       scheduleTick();
     },
     Math.max(0, nextTickAt - now),

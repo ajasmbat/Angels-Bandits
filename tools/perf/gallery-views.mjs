@@ -123,6 +123,77 @@ const wreckedPair = () => ({
   })),
 });
 
+/** DT1: a full room — 12 enemy fighters and 8 human biplanes spread over
+ * the three LOD bands (near, mid, far), every one in the frame: the fleet's
+ * draw count for the ticket's "rises ≤ 4" check (`fleet` log line). */
+const fullRoom = () => {
+  const at = (kind, i, dist, spread) => ({
+    kind,
+    x: 1000 + (i - 1.5) * spread,
+    y: 460 + (i % 2) * spread * 0.3,
+    z: 1000 - dist,
+    yaw: Math.PI / 2 + i * 0.4,
+    pitch: 0.1,
+    speed: 70,
+  });
+  const list = [];
+  for (let i = 0; i < 4; i++) {
+    list.push(at("fighter", i, 40, 12), at("fighter", i, 260, 60));
+    list.push(at("fighter", i, 650, 140));
+  }
+  for (let i = 0; i < 4; i++) {
+    list.push(at("biplane", i, 70, 14), at("biplane", i, 500, 110));
+  }
+  return {
+    name: "planes-full-room",
+    x: 1000,
+    z: 1200,
+    y: 600,
+    yaw: Math.PI,
+    eye: [1000, 462, 1010],
+    at: [1000, 460, 900],
+    weather: "clear",
+    sky: "dusk",
+    showcase: list,
+  };
+};
+
+/** DT1: the shimmer check (flicker.mjs --grid): one airframe, nothing
+ * animated (no airspeed: the prop stands, no blur), four at ~30 m and four
+ * at ~120 m — the procedural paintwork's lines, rivets and decals are what
+ * could crawl. Compare the fighter's score with the biplane's. */
+const shimmer = (name, kind) => ({
+  name,
+  x: 1000,
+  z: 1180,
+  y: 600,
+  yaw: Math.PI,
+  eye: [1000, 462, 1030],
+  at: [1000, 460, 990],
+  weather: "clear",
+  sky: "dusk",
+  showcase: [0, 1, 2, 3].flatMap((i) => [
+    {
+      kind,
+      x: 982 + i * 12,
+      y: 458 + (i % 2) * 4,
+      z: 1000,
+      yaw: Math.PI / 2 + i * 0.6,
+      pitch: 0.15,
+      speed: 0,
+    },
+    {
+      kind,
+      x: 940 + i * 40,
+      y: 470,
+      z: 910,
+      yaw: Math.PI / 2 + i * 0.6,
+      pitch: 0.15,
+      speed: 0,
+    },
+  ]),
+});
+
 /** DT1: the damage stages side by side, near — full HP, smoke (< 30),
  * fire (< 18), missing panels (> 86 % damage). */
 const damageSheet = () => {
@@ -665,6 +736,9 @@ export const VIEWS = [
   turntable("planes-turntable-mid", 250),
   turntable("planes-turntable-far", 600),
   damageSheet(),
+  fullRoom(),
+  shimmer("planes-shimmer-fighter", "fighter"),
+  shimmer("planes-shimmer-biplane", "biplane"),
   // DT1: a dogfight — over a biplane's shoulder, three fighter-bombers
   // banking through a turn ahead, one of them burning, a wingman high left.
   {

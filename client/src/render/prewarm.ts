@@ -36,7 +36,7 @@
 // whole timeout. The wait below drops a disposed material instead.
 //
 // A1: a shown object that draws NOTHING is still not drawn. Every pool that
-// boots empty — an InstancedMesh at count 0 (missiles, bombers, cave-ins,
+// boots empty — an InstancedMesh at count 0 (missiles, cave-ins,
 // scaffold, street furniture…), a geometry with an empty draw range (storm
 // bolts, steam, dust, impacts, litter…), an instanced geometry with no
 // instances (fog banks, rain) — was compiled and then skipped by the real

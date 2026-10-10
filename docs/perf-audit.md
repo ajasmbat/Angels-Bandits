@@ -76,7 +76,7 @@ Per phase (median run):
 | --- | --- | --- |
 | director (8 + 4) | 0.84 / 1.8 / **276** | 0.83 / 24 / **69** |
 | director (1 + 11) | 1.02 / 2.7 / **258** | 0.81 / 24 / **88** |
-| bots (1 + 11) | **1.53** / 13.5 / 35 | **1.21** / 7.6 / 30 |
+| bots (1 + 11) | **1.53** / 13.5 / 35 | **1.21** / 7.6 / 30 (with the since-withdrawn `losClear` index) |
 | bots (8 + 4) | 0.87 / 5.8 / 31 | 0.85 / 5.5 / 23 |
 | wrecks + missiles (8 + 4) | 0.31 / 5.3 / 27 | 0.25 / 3.9 / 15 |
 
@@ -101,17 +101,20 @@ Per phase (median run):
      the fall footprint are equal in every case. The raw bounds differ by
      at most 6e-14 m, inside the zone's whole-metre quantisation. The
      director tests pass unchanged.
-2. **`losClear` scanned all 559 buildings** (`common/src/collision.ts`), for
-   every bot sight-line test, every boss-turret target check and every
-   missile sweep. It now uses the city's block index, found by the
-   buildings array's identity (`buildCityIndex` registers it, so D9's
-   `gaps` keeps the 4th argument): only the buildings in the blocks the
-   segment's bounds touch, deduplicated and ascending.
-   The index footprints are grown by `RUBBLE_REACH`, so every building the
-   old footprint reject could pass is in them. **Proof:** 600 000 random
-   segments (intact, 10 % and 40 % damaged cities; seam-crossing, long up
-   to 1200 m, vertical, short), index versus linear: 0 mismatches. Bots
-   −21 % mean in the bot-heavy room.
+2. **`losClear` scans all 559 buildings** (`common/src/collision.ts`), for
+   every bot sight-line test, every boss-turret target check, every missile
+   sweep and the shimmer vents. An indexed version shipped in this PR at
+   first: only the buildings in the blocks the segment's bounds touch,
+   proven identical over 600 000 random segments, and it cut the bot phase
+   21 % in the bot-heavy room (the bench rows above include it). **It was
+   withdrawn**, and `losClear` is main's again. It does a fraction of the
+   work per call, so V8 needs far more calls before compiling it with
+   TurboFan. Until then it runs as Maglev code, which boxes the slab
+   clip's doubles: the D2 allocation guard (`destruction.test.ts`, one
+   sight line every 64 collision probes) measured ~2 MB against its 1 MB
+   limit, where main reaches TurboFan inside its first 559-building loop.
+   Steady state was the same as main. Re-landing it needs the slab clip
+   allocation-free in Maglev too, not a looser guard.
 3. `tickRebuilds` built the director's plane list every tick for a check
    that runs once a second (`rebuildDue`).
 4. Five bot rollout loops (`pathBlocked`, `heldBlocked`, `inputMeetsHazard`,
@@ -186,8 +189,8 @@ per traced window, and no spike was GC-caused in any trace.
 
 | # | function (source) | ms | what it is | A1 |
 | --- | --- | --- | --- | --- |
-| 1 | `losClear` (common/collision) | 119 | the shimmer vents' sight lines (`atmosphere-fx.ts`), scanning all 559 buildings, 4 Hz × every vent | **fixed**: uses the city index |
-| 2 | `wrapDeltaAxis` (common/world) | 55 | mostly inside #1 (two per building per sight line) | falls with #1 |
+| 1 | `losClear` (common/collision) | 119 | the shimmer vents' sight lines (`atmosphere-fx.ts`), scanning all 559 buildings, 4 Hz × every vent | not shipped: the indexed version was withdrawn (server section, item 2) |
+| 2 | `wrapDeltaAxis` (common/world) | 55 | mostly inside #1 (two per building per sight line) | — |
 | 3 | `Pedestrians.update` | 41 | walkers' pose and pack; already prefix-uploaded | — |
 | 4 | `frame` (main.ts) | 33 | the frame body's own glue | small allocations trimmed (below) |
 | 5 | `landingTime` (common/collapse) | 28 | staged collapses' debris, built once per collapse | event-driven; see the server's shape cache |
@@ -222,7 +225,7 @@ everything shipped is behavior-identical.
 | bloom pass `new THREE.Color()` a frame | `render/post.ts` | **yes**: one scratch |
 | edge markers: `targets.map` a frame, `nearestImage` per target, every pooled arrow re-hidden every frame | `main.ts`, `ui/markers.ts` | **yes**: reused array, scratch image, DOM writes only on change |
 | minimap: three array literals a frame | `ui/minimap.ts` | **yes** |
-| shimmer sight lines scan the whole city (#1 above) | `render/atmosphere-fx.ts` | **yes** |
+| shimmer sight lines scan the whole city (#1 above) | `render/atmosphere-fx.ts` | withdrawn with the `losClear` index (server section, item 2) |
 | signage colour pulse on the CPU + full colour upload | `render/signage.ts` | proposed (GPU section) |
 | cranes and aircraft: about 20 literals, closures and `find`s per crane a frame | `render/movers.ts` | not shipped: a wider refactor of a file siblings touch |
 | own-bullet hit tests: `wrapDelta` × bullets × targets | `game/hitdetect.ts`, `magnetism.ts` | not shipped: only while firing; next candidate |
@@ -439,11 +442,10 @@ this run can show:
 - Wall and JS p50 deltas (−17 % to +16 %) are inside the run's own 235 %
   pass-to-pass spread. They are not quoted as wins.
 
-The render-side wins (wake loop, train and pool uploads, MoverLights,
-shimmer sight lines) need the M3's GPU columns: run the commands in the
-GPU section. The measurable wins in this PR are the server's: the
-director stall (277 → 70 ms max tick), the bot phase (−21 %), and the
-wire (−20 % per client).
+The render-side wins (wake loop, train and pool uploads, MoverLights)
+need the M3's GPU columns: run the commands in the GPU section. The
+measurable wins in this PR are the server's: the director stall
+(277 → 70 ms max tick) and the wire (−20 % per client).
 
 One harness fix came out of getting this run to finish on a loaded
 software-rendered box: `joinGame`'s boot waits are now 180 s (they were

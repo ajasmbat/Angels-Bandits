@@ -235,19 +235,31 @@ describe("pose timestamps (O2)", () => {
   it("stamps each snapshot entry with the pose's own time, not the tick's", async () => {
     const peer = await connect("Stamped");
     const pose = parked(peer);
-    await streamStamped(peer, pose, 4, (now) => now - 37); // settle on record
+    // settle on record
+    const settle = await streamStamped(peer, pose, 4, (now) => now - 37);
     const from = peer.snapshots.length;
     // Same machine, same Date.now(): these stamps are exact server times,
     // 37 ms before each send — well inside the trusted window.
     const sent = await streamStamped(peer, pose, 30, (now) => now - 37);
     await wait(SNAPSHOT_INTERVAL_MS * 2);
     const stamps = new Set(sent.map((s) => s.t));
+    // A2: `from` is counted client-side, so the first snapshots of the window
+    // can still carry the last SETTLE pose (built before the first measured
+    // pose was handled, or already in flight). Those stamps are just as
+    // exact. And under a loaded full run a pose the server handles more than
+    // POSE_AGE_MAX_MS − 37 ms after it was sent is clamped to arrival −
+    // POSE_AGE_MAX_MS (the clamp test owns that behaviour), so its age sits at
+    // or past the bound rather than on a stamp. Neither is the tick's time.
+    const anyStamp = new Set([...settle, ...sent].map((s) => s.t));
     const seen = selfTimes(peer, from);
     expect(seen.length).toBeGreaterThan(10);
+    let exact = 0;
     for (const { poseTime, age } of seen) {
-      expect(stamps.has(poseTime)).toBe(true); // exactly the pose's own t
       expect(age).toBeGreaterThanOrEqual(37); // never the tick's own time
+      if (age < POSE_AGE_MAX_MS) expect(anyStamp.has(poseTime)).toBe(true);
+      if (stamps.has(poseTime)) exact++;
     }
+    expect(exact).toBeGreaterThan(5); // exactly the pose's own t
     peer.ws.close();
   }, 20000);
 

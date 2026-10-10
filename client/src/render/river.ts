@@ -26,8 +26,10 @@ import { type Building, standingProfile } from "@angels-bandits/common/city";
 import {
   BOAT_CABIN_HEIGHT,
   BOAT_HULL_HEIGHT,
+  BRIDGE_COUNT,
   BRIDGE_DECK_DEPTH,
   BRIDGE_HALF_WIDTH,
+  BRIDGE_SPAN_HALF,
   type Boat,
   type BoatPose,
   PARAPET_HEIGHT,
@@ -114,6 +116,10 @@ class Soup {
   readonly pos: number[] = [];
   readonly col: number[] = [];
   readonly emit: number[] = [];
+  /** D9: per vertex, the bridge (+1) whose breakable span it belongs to —
+   * 0 for everything that never falls. Set before emitting a span's faces. */
+  readonly spans: number[] = [];
+  span = 0;
 
   /** Quad a→b→c→d (any winding: the materials are double-sided). */
   quad(
@@ -128,6 +134,7 @@ class Soup {
       this.pos.push(v[0], v[1], v[2]);
       this.col.push(color.r, color.g, color.b);
       this.emit.push(emit.r, emit.g, emit.b);
+      this.spans.push(this.span);
     }
   }
 
@@ -203,13 +210,24 @@ class Soup {
     g.setAttribute("position", new THREE.Float32BufferAttribute(this.pos, 3));
     g.setAttribute("color", new THREE.Float32BufferAttribute(this.col, 3));
     g.setAttribute("aEmit", new THREE.Float32BufferAttribute(this.emit, 3));
+    g.setAttribute("aSpan", new THREE.Float32BufferAttribute(this.spans, 1));
     g.computeVertexNormals();
     return g;
   }
 }
 
-/** Vertex colours lit as usual, plus a per-vertex emissive (`aEmit`). */
-function vertexEmissiveMaterial(key: string): THREE.MeshStandardMaterial {
+/** D9: the fallen bridge spans (bit i = bridge i), shared by reference by
+ * the river structure (which drops a fallen span's deck, parapets and
+ * lights) and the ground plane (which stops painting its road) — set once
+ * a frame from the room's props on the render clock. */
+export const BRIDGE_GONE_UNIFORM = { value: 0 };
+
+/** Vertex colours lit as usual, plus a per-vertex emissive (`aEmit`) — and
+ * (D9, `spans`) a fallen span's vertices dropped out of sight. */
+function vertexEmissiveMaterial(
+  key: string,
+  spans = false,
+): THREE.MeshStandardMaterial {
   const m = new THREE.MeshStandardMaterial({
     vertexColors: true,
     roughness: 0.85,
@@ -218,14 +236,21 @@ function vertexEmissiveMaterial(key: string): THREE.MeshStandardMaterial {
   });
   m.customProgramCacheKey = () => key;
   m.onBeforeCompile = (shader) => {
+    if (spans) shader.uniforms.uBridgeGone = BRIDGE_GONE_UNIFORM;
     shader.vertexShader = shader.vertexShader
       .replace(
         "#include <common>",
-        "#include <common>\nattribute vec3 aEmit;\nvarying vec3 vEmit;",
+        `#include <common>\nattribute vec3 aEmit;\nvarying vec3 vEmit;${
+          spans ? "\nattribute float aSpan;\nuniform int uBridgeGone;" : ""
+        }`,
       )
       .replace(
         "#include <begin_vertex>",
-        "#include <begin_vertex>\nvEmit = aEmit;",
+        `#include <begin_vertex>\nvEmit = aEmit;${
+          spans
+            ? "\nif (aSpan > 0.5 && ((uBridgeGone >> (int(aSpan + 0.5) - 1)) & 1) == 1) transformed.y -= 1.0e5;"
+            : ""
+        }`,
       );
     shader.fragmentShader = shader.fragmentShader
       .replace("#include <common>", "#include <common>\nvarying vec3 vEmit;")
@@ -298,55 +323,97 @@ export function buildRiverStructure(): THREE.BufferGeometry {
     }
   }
 
-  // Bridges: the shared boxes, repeated for the second period.
+  // Bridges: the shared boxes, repeated for the second period — each cut
+  // into its two end pieces and the D9 breakable span between them (its
+  // vertices tagged, so a fallen span drops out of the mesh).
   for (const period of [0, WORLD_SIZE]) {
     for (const b of bridgeBoxes()) {
+      const bridge =
+        ((Math.round(b.x / BLOCK_PITCH) % BRIDGE_COUNT) + BRIDGE_COUNT) %
+        BRIDGE_COUNT;
       const x0 = period + b.x - b.hx;
       const x1 = period + b.x + b.hx;
-      const z0 = b.z - b.hz;
-      const z1 = b.z + b.hz;
-      if (b.y1 > 0) {
-        s.box(x0, x1, b.y0, b.y1, z0, z1, c(COLORS.rail), NO_EMIT, true, false);
-        continue;
-      }
-      // Deck: fascia on both long sides, the soffit below. No top face — the
-      // ground plane paints the road there.
-      s.quad(
-        [x0, b.y0, z0],
-        [x0, b.y0, z1],
-        [x0, b.y1, z1],
-        [x0, b.y1, z0],
-        c(COLORS.fascia),
-      );
-      s.quad(
-        [x1, b.y0, z0],
-        [x1, b.y0, z1],
-        [x1, b.y1, z1],
-        [x1, b.y1, z0],
-        c(COLORS.fascia),
-      );
-      s.quad(
-        [x0, b.y0, z0],
-        [x1, b.y0, z0],
-        [x1, b.y0, z1],
-        [x0, b.y0, z1],
-        c(COLORS.soffit),
-      );
-      // A string of fascia lights along each edge — the cue that says "you
-      // can fly under this" from down the channel.
-      const y = -BRIDGE_DECK_DEPTH * 0.55;
-      for (let z = z0 + FASCIA_STEP / 2; z < z1; z += FASCIA_STEP) {
-        for (const x of [x0 - 0.06, x1 + 0.06]) {
+      const zs = [
+        b.z - b.hz,
+        zc - BRIDGE_SPAN_HALF,
+        zc + BRIDGE_SPAN_HALF,
+        b.z + b.hz,
+      ];
+      for (let piece = 0; piece < 3; piece++) {
+        s.span = piece === 1 ? bridge + 1 : 0;
+        const z0 = zs[piece] as number;
+        const z1 = zs[piece + 1] as number;
+        if (b.y1 > 0) {
+          s.box(
+            x0,
+            x1,
+            b.y0,
+            b.y1,
+            z0,
+            z1,
+            c(COLORS.rail),
+            NO_EMIT,
+            true,
+            false,
+          );
+          continue;
+        }
+        // Deck: fascia on both long sides, the soffit below. No top face —
+        // the ground plane paints the road there.
+        s.quad(
+          [x0, b.y0, z0],
+          [x0, b.y0, z1],
+          [x0, b.y1, z1],
+          [x0, b.y1, z0],
+          c(COLORS.fascia),
+        );
+        s.quad(
+          [x1, b.y0, z0],
+          [x1, b.y0, z1],
+          [x1, b.y1, z1],
+          [x1, b.y1, z0],
+          c(COLORS.fascia),
+        );
+        s.quad(
+          [x0, b.y0, z0],
+          [x1, b.y0, z0],
+          [x1, b.y0, z1],
+          [x0, b.y0, z1],
+          c(COLORS.soffit),
+        );
+        // The broken edge a fallen span leaves (inside the deck while it
+        // stands, so never seen then).
+        if (piece !== 1) {
+          s.span = 0;
+          const ze = piece === 0 ? z1 : z0;
           s.quad(
-            [x, y - 0.18, z - 0.35],
-            [x, y - 0.18, z + 0.35],
-            [x, y + 0.18, z + 0.35],
-            [x, y + 0.18, z - 0.35],
-            c(COLORS.fasciaLight),
-            fasciaEmit,
+            [x0, b.y0, ze],
+            [x1, b.y0, ze],
+            [x1, b.y1, ze],
+            [x0, b.y1, ze],
+            c(COLORS.soffit),
           );
         }
+        s.span = piece === 1 ? bridge + 1 : 0;
+        // A string of fascia lights along each edge — the cue that says
+        // "you can fly under this" from down the channel.
+        const y = -BRIDGE_DECK_DEPTH * 0.55;
+        const first = b.z - b.hz + FASCIA_STEP / 2;
+        for (let z = first; z < b.z + b.hz; z += FASCIA_STEP) {
+          if (z < z0 || z >= z1) continue;
+          for (const x of [x0 - 0.06, x1 + 0.06]) {
+            s.quad(
+              [x, y - 0.18, z - 0.35],
+              [x, y - 0.18, z + 0.35],
+              [x, y + 0.18, z + 0.35],
+              [x, y + 0.18, z - 0.35],
+              c(COLORS.fasciaLight),
+              fasciaEmit,
+            );
+          }
+        }
       }
+      s.span = 0;
     }
   }
   return s.geometry();
@@ -628,7 +695,7 @@ export class RiverRenderer {
     });
     this.structure = new THREE.Mesh(
       buildRiverStructure(),
-      vertexEmissiveMaterial("ab-river-structure"),
+      vertexEmissiveMaterial("ab-river-structure-d9", true),
     );
     this.structure.frustumCulled = false;
 
@@ -753,9 +820,14 @@ outgoingLight *= min(1.0, ${WATER_LUMA_CAP} / max(luminance(outgoingLight), 1e-4
 /** GLSL: true where the ground plane must not draw (the open channel, not a
  * bridge deck) — uses sky.ts's abLineDist. */
 export const RIVER_GROUND_PARS = /* glsl */ `
+uniform int uBridgeGone;
 bool abRiverOpen(vec2 w) {
   float off = abs(mod(w.y, ${glsl(WORLD_SIZE)}) - ${glsl(RIVER_CENTER_Z)});
-  return off < ${glsl(RIVER_HALF_WIDTH)} && abs(abLineDist(w.x)) > ${glsl(BRIDGE_HALF_WIDTH)};
+  if (off >= ${glsl(RIVER_HALF_WIDTH)}) return false;
+  if (abs(abLineDist(w.x)) > ${glsl(BRIDGE_HALF_WIDTH)}) return true;
+  // D9: a fallen span leaves its deck's middle open to the water.
+  int k = int(mod(floor(w.x / ${glsl(BLOCK_PITCH)} + 0.5), ${glsl(BRIDGE_COUNT)}));
+  return off < ${glsl(BRIDGE_SPAN_HALF)} && ((uBridgeGone >> k) & 1) == 1;
 }
 // The promenade: granite setts in 1.5 m courses, a darker kerb at the wall.
 vec3 abPromenadePaint(vec2 w, float n, vec3 stone, vec3 joint) {

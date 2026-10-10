@@ -35,6 +35,8 @@ export interface Bullet {
 
 export class Bullets {
   private list: Bullet[] = [];
+  /** D9: the room's fallen bridge spans (a round flies through the gap). */
+  gaps = 0;
 
   get all(): readonly Bullet[] {
     return this.list;
@@ -68,7 +70,7 @@ export class Bullets {
     for (const b of this.list) {
       // U4: a round that went into the ground last step stops there — the
       // rock over a tunnel is cover (its last segment was still swept).
-      if (b.pos.y < 0 && hitsGround(b.pos, 0)) continue;
+      if (b.pos.y < 0 && hitsGround(b.pos, 0, this.gaps)) continue;
       const next = b.prev;
       next.x = wrapCoord(b.pos.x + b.vel.x * dt);
       next.y = b.pos.y + b.vel.y * dt;

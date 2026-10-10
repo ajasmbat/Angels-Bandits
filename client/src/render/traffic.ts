@@ -43,6 +43,7 @@
 // pass/stop decision comes out the same on every client.
 
 import { CITY_GRID, mulberry32 } from "@angels-bandits/common/city";
+import { inBridgeGap } from "@angels-bandits/common/city/river";
 import {
   CROSSWALK_DEPTH,
   INTERSECTION_HALF,
@@ -1097,6 +1098,9 @@ export class Traffic {
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
   }
 
+  /** D9: the room's fallen bridge spans (river.ts gaps), set per frame. */
+  gaps = 0;
+
   /** Vehicles in the fleet (the lane traffic; responder slots excluded). */
   get capacity(): number {
     return this.fleet.vehicles.length;
@@ -1143,7 +1147,10 @@ export class Traffic {
       this.canonical.z = s.z;
       const p = nearestImageInto(this.image, cameraPos, this.canonical);
       this.quat.setFromAxisAngle(Traffic.UP, s.yaw);
-      this.pos.set(p.x, 0, p.z);
+      // D9: a car driving into a fallen bridge span's gap is gone (into
+      // the river) — never drawn over the open water.
+      const gone = this.gaps !== 0 && inBridgeGap(s.x, s.z, this.gaps);
+      this.pos.set(p.x, gone ? -500 : 0, p.z);
       this.scratch.compose(this.pos, this.quat, Traffic.UNIT);
       this.mesh.setMatrixAt(i, this.scratch);
       const hazard = !v.runner && alarms !== null && alarmed(alarms, s.x, s.z);
@@ -1158,7 +1165,7 @@ export class Traffic {
       this.frame[f] = p.x - Math.sin(s.yaw) * half;
       this.frame[f + 1] = p.z - Math.cos(s.yaw) * half;
       this.frame[f + 2] = s.yaw;
-      this.frame[f + 3] = VEHICLES[v.kind].width / 2;
+      this.frame[f + 3] = gone ? 0 : VEHICLES[v.kind].width / 2;
     }
     this.drawnCount = vehicles.length;
     this.placeResponders(cameraPos, flash, reactions);

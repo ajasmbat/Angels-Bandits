@@ -16,7 +16,12 @@
 // explains the empty crossing.
 
 import { CITY_GRID } from "@angels-bandits/common/city";
-import { FURNITURE_LINE } from "@angels-bandits/common/city/street";
+import type { PropState } from "@angels-bandits/common/city/props";
+import {
+  type SignalMast,
+  allSignalMasts,
+  signalMastsForBlock,
+} from "@angels-bandits/common/city/street";
 import { BLOCK_PITCH, EMISSIVE_LAMP } from "@angels-bandits/common/constants";
 import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import * as THREE from "three";
@@ -52,9 +57,6 @@ const WALK_ON = 6;
 const WALK_FLASH = 8;
 /** Flashes per second during the flashing phase. */
 const FLASH_HZ = 2;
-
-/** How far back from the vehicle mast a crosswalk head stands, meters. */
-const XWALK_SETBACK = 6;
 
 /** A vehicle signal aspect. */
 export type Aspect = "red" | "amber" | "green";
@@ -141,93 +143,13 @@ export function goWindowStart(
   return s;
 }
 
-/** One signal head standing on the street furniture line. */
-export interface SignalMast {
-  /** Canonical ground position. */
-  x: number;
-  z: number;
-  /** Facing, radians — the head looks toward the traffic it governs. */
-  yaw: number;
-  /** Vehicle head or crosswalk head. */
-  kind: "vehicle" | "crosswalk";
-  /** True when this head follows the NS half of the cycle. */
-  ns: boolean;
-}
-
-/**
- * The masts of block (bx, bz)'s intersection — its SOUTH-WEST lattice corner.
- * Every block owns exactly one corner, so the CITY_GRID² blocks cover all
- * CITY_GRID² intersections once, with the torus wrap for free.
- *
- * Four vehicle masts, one per corner, alternating which axis they govern (a
- * diagonally opposite pair per axis — which is also why no two masts are ever
- * co-located; a second mast on the same corner would z-fight the first, since
- * a square pole rotated 90° occupies the identical volume).
- *
- * Eight crosswalk masts, set back XWALK_SETBACK along the axis they face, so
- * they clear both the vehicle mast and the lamp row.
- *
- * Every offset here is FURNITURE_LINE or FURNITURE_LINE + a setback, so all of
- * it sits on street furniture ground by contract: clear of the roadway on both
- * axes, and clear of the pedestrian band (which starts further back).
- */
-export function signalMastsForBlock(bx: number, bz: number): SignalMast[] {
-  const x0 = bx * BLOCK_PITCH;
-  const z0 = bz * BLOCK_PITCH;
-  const out: SignalMast[] = [];
-  const push = (
-    dx: number,
-    dz: number,
-    yaw: number,
-    kind: "vehicle" | "crosswalk",
-    ns: boolean,
-  ) => {
-    const c = canonicalize({ x: x0 + dx, y: 0, z: z0 + dz });
-    out.push({ x: c.x, z: c.z, yaw, kind, ns });
-  };
-  const F = FURNITURE_LINE;
-  const S = F + XWALK_SETBACK;
-  for (const sx of [-1, 1]) {
-    for (const sz of [-1, 1]) {
-      // Vehicle head: corners (+,+) and (−,−) govern NS, the other two EW.
-      // Forward is −Z at yaw 0, so a head facing +z looks back down the
-      // street at oncoming traffic.
-      const governsNs = sx === sz;
-      const yaw = governsNs
-        ? sz > 0
-          ? Math.PI
-          : 0
-        : sx > 0
-          ? -Math.PI / 2
-          : Math.PI / 2;
-      push(sx * F, sz * F, yaw, "vehicle", governsNs);
-      // Crosswalk heads. The one set back along z faces across the NS street
-      // (a walk along x → the EW half of the cycle); the axis-swapped one
-      // faces across the EW street (a walk along z → the NS half).
-      push(
-        sx * F,
-        sz * S,
-        sx > 0 ? -Math.PI / 2 : Math.PI / 2,
-        "crosswalk",
-        false,
-      );
-      push(sx * S, sz * F, sz > 0 ? Math.PI : 0, "crosswalk", true);
-    }
-  }
-  return out;
-}
-
-/** Every intersection's masts, for tests that sweep the whole city. */
-export function allSignalMasts(): SignalMast[] {
-  const out: SignalMast[] = [];
-  for (let bx = 0; bx < CITY_GRID; bx++) {
-    for (let bz = 0; bz < CITY_GRID; bz++)
-      out.push(...signalMastsForBlock(bx, bz));
-  }
-  return out;
-}
+// D9: the mast layout moved to the street contract (common/src/city/street.ts)
+// — masts can be snapped, so the server places them exactly as every client.
+export { type SignalMast, allSignalMasts, signalMastsForBlock };
 
 // --- Renderer -------------------------------------------------------------
+
+const wrapGrid = (v: number) => ((v % CITY_GRID) + CITY_GRID) % CITY_GRID;
 
 const MAST_HEIGHT = 5.4;
 const XWALK_MAST_HEIGHT = 3.6;
@@ -409,6 +331,17 @@ export class Signals {
     return masts;
   }
 
+  /** D9: the room's props, and the prop id of the first mast. */
+  private props: PropState | null = null;
+  private signalBase = 0;
+
+  /** D9: follow the room's props (block (bx, bz)'s masts are props
+   * `signalBase + (bx · GRID + bz) · 12 + k`, in signalMastsForBlock order). */
+  setProps(state: PropState, signalBase: number): void {
+    this.props = state;
+    this.signalBase = signalBase;
+  }
+
   /** O5: the block window, reused every frame (blockWindowInto). */
   private readonly windowScratch: BlockIndex[] = [];
 
@@ -443,7 +376,13 @@ export class Signals {
     )) {
       const aspects = signalPhase(bx, bz, t, this.seed);
       const masts = this.mastsFor(bx, bz);
-      for (const mast of masts) {
+      // D9: a snapped mast lies in the street (render/props.ts), not here.
+      const first =
+        this.signalBase +
+        (wrapGrid(bx) * CITY_GRID + wrapGrid(bz)) * masts.length;
+      for (let k = 0; k < masts.length; k++) {
+        const mast = masts[k] as SignalMast;
+        if (this.props?.isDown(first + k)) continue;
         this.anchor.x = mast.x;
         this.anchor.z = mast.z;
         const p = nearestImageInto(this.image, cameraPos, this.anchor);

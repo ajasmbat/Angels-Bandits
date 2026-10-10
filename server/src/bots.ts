@@ -89,6 +89,7 @@ import {
   type MoverField,
   collideBotMovers,
 } from "@angels-bandits/common/city/movers";
+import { gapsOf } from "@angels-bandits/common/city/props";
 import {
   RIVER_HALF_WIDTH,
   bridgeSpans,
@@ -1421,7 +1422,9 @@ export class RoomBots {
       // plus the L2 movers a bot is allowed to hit (crane geometry and the
       // blimp; helicopters are bot-transparent, see collideBotMovers).
       if (
-        hitsGround(bot.flight.pos) ||
+        // D9: a fallen bridge span is a hole here, as in the crash check
+        // (the probes keep it solid: a bot only ever avoids a gap).
+        hitsGround(bot.flight.pos, PLAYER_RADIUS, gapsOf(this.movers)) ||
         collideCity(
           bot.flight.pos,
           PLAYER_RADIUS,

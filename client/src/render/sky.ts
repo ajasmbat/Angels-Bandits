@@ -51,7 +51,7 @@ import {
   bindReflectionUniforms,
 } from "./reflections";
 import { RENDER_ORDER } from "./render-order";
-import { RIVER_GROUND_PARS } from "./river";
+import { BRIDGE_GONE_UNIFORM, RIVER_GROUND_PARS } from "./river";
 import { SIGN_PALETTE } from "./signage";
 import type { SkyState } from "./skycycle";
 import {
@@ -928,6 +928,8 @@ export class GroundPlane {
       shader.uniforms.uWeather = WEATHER_UNIFORM;
       // G1: the quality tier's street-paint switch, shared by reference.
       shader.uniforms.uStreetPaint = STREET_PAINT_UNIFORM;
+      // D9: a fallen bridge span's deck is open water, not road.
+      shader.uniforms.uBridgeGone = BRIDGE_GONE_UNIFORM;
       // S6: the reflection probe, by reference (puddles and ponds).
       bindReflectionUniforms(shader.uniforms);
       shader.vertexShader = shader.vertexShader

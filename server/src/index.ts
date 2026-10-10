@@ -167,6 +167,9 @@ import {
   applyShotDamage,
   collapseCulprit,
   createRoomCity,
+  propCulprit,
+  propsMessage,
+  propsWireState,
   resetRoomCity,
   tickDestruction,
   noseOf as wireNose,
@@ -184,7 +187,12 @@ import {
   isResumeToken,
   isVec3,
 } from "./guards";
-import { type RespawnEnemy, pickBotRespawn, pickRespawn } from "./respawn";
+import {
+  type RespawnEnemy,
+  pickBotRespawn,
+  pickRespawn,
+  respawnIfUnsafe,
+} from "./respawn";
 import { type Room, RoomManager } from "./room";
 import { createStaticHandler } from "./statics";
 import { StormCeiling } from "./storm";
@@ -193,6 +201,7 @@ import {
   MissileDirector,
   applyMissileImpact,
 } from "./strikes";
+import { createGuard } from "./tick-guard";
 import { poseFromSpawn, roomPoseCap, validatePose } from "./validate";
 import { RoomWrecks, applyWreckImpact, impactPos } from "./wrecks";
 
@@ -225,6 +234,12 @@ const BOSS_RAID_TUNING = TUNINGS.boss;
 
 /** Test-only introspection of the per-room maps (`GET /debug/rooms`). */
 const DEBUG_ROOMS = process.env.AB_DEBUG_ROOMS === "1";
+
+/** A2: `process.memoryUsage()` after a full GC when node exposes one. */
+const memoryAfterGc = (): NodeJS.MemoryUsage => {
+  (globalThis as { gc?: () => void }).gc?.();
+  return process.memoryUsage();
+};
 
 /**
  * D6: AB_QUIET_CITY=1 (the perf harness only — tools/perf/run.mjs): no room's
@@ -393,6 +408,9 @@ const roomMovers = (room: Room): MoverField => {
       bombers: roomBombers(room),
       // U6: and its cave-ins — the cave-in director's slot, the same way.
       caveins: roomCaveIns(room),
+      // D9: and its props — the felled tanks, jumbotrons and bridge spans
+      // (solid for bots too) and the gaps the spans left.
+      props: roomCity(room).props.slot,
     };
     roomMoversById.set(room.id, field);
   }
@@ -415,6 +433,9 @@ const roomCity = (room: Room): RoomCity => {
     rc = createRoomCity(
       room.seed === CITY_SEED ? city : generateCity(room.seed),
       moversFor(room.seed).cranes,
+      // D9: and its destructible props (they stay clear of the trains).
+      room.seed,
+      moversFor(room.seed).trains ?? [],
     );
     rc.damage.setCap(TUNINGS.destroyCap);
     roomCityById.set(room.id, rc);
@@ -652,7 +673,9 @@ function crashDeath(
   const rc = roomCityById.get(room.id);
   const culprit =
     rc && pos
-      ? collapseCulprit(rc, pos, PLAYER_RADIUS + COLLAPSE_CREDIT_SLACK, at)
+      ? (collapseCulprit(rc, pos, PLAYER_RADIUS + COLLAPSE_CREDIT_SLACK, at) ??
+        // D9: a falling tank, jumbotron or span — its feller's kill.
+        propCulprit(rc, pos, PLAYER_RADIUS + COLLAPSE_CREDIT_SLACK, at))
       : null;
   if (!culprit) return combat.crash(id, now);
   const by =
@@ -686,7 +709,12 @@ const wreckWorld = (room: Room): WreckWorld => {
     nature: natureIndexFor(room.seed),
     // S4: plus the sky boss's hull — its path is pure, so a wreck falling
     // into it hits it (a later break-up is not foreseen; it hits the air).
-    movers: { ...moversFor(room.seed), boss: roomBoss(room).slot },
+    // D9: plus the room's props — a fallen span's gap is open air.
+    movers: {
+      ...moversFor(room.seed),
+      boss: roomBoss(room).slot,
+      props: rc.props.slot,
+    },
   };
 };
 
@@ -1025,10 +1053,11 @@ function handleJoin(
     wantsAway: false,
     away: false,
     awayAt: 0,
-    course: new CourseTracker(
-      courseSetFor(room.seed).courses,
-      courseSetFor(room.seed).world,
-    ),
+    course: new CourseTracker(courseSetFor(room.seed).courses, {
+      ...courseSetFor(room.seed).world,
+      // D9: a dive through a fallen span is not "through the ground".
+      gaps: () => roomCity(room).props.slot.state.gapMask,
+    }),
   };
   clients.set(id, client);
   resumeIds.set(client.resumeToken, id);
@@ -1055,6 +1084,7 @@ function handleJoin(
     boss: roomBoss(room).state(now),
     ...(chaosFor(room) && { chaos: chaosFor(room)?.state(now) }),
     ...(caveInsFor(room) && { caveIns: caveInsFor(room)?.state(now) }),
+    props: propsWireState(roomCity(room)),
   };
   ws.send(JSON.stringify(welcome));
   sendToRoom(room, { type: "playerJoined", player: { id, name } }, id);
@@ -1185,6 +1215,24 @@ function broadcastCourseBoard(
  * than from a join it spent loading. */
 function goLive(client: Client, now: number): void {
   client.pending = false;
+  // A2: the join spawn was checked at join; re-check it now the plane is
+  // actually entering the world, and re-place it if danger moved onto it.
+  const spawn = respawnIfUnsafe(
+    client.pose,
+    livingEnemies(client.room, client.id),
+    Math.random,
+    spawnAvoid(client.room),
+    spawnClearOfBoss(client.room, now),
+  );
+  if (spawn) {
+    resetOnRecord(client, spawn, now);
+    sendToRoom(client.room, {
+      type: "respawn",
+      id: client.id,
+      spawn,
+      protectedUntil: now + SPAWN_PROTECTION_MS,
+    });
+  }
   combat.protectFrom(client.id, now);
   noteSpawn(client.room, client.id, client.pose.pos, now);
 }
@@ -2152,6 +2200,8 @@ function tickChaos(room: Room, now: number): void {
   for (const q of out.quakes) {
     sendToRoom(room, { type: "quake", q: encodeQuake(q) });
   }
+  // D9: every chunk that catches fire is sooted until its building rebuilds.
+  for (const id of out.firesOn) rc.props.soot.add(id);
   if (out.firesOn.length > 0 || out.firesOff.length > 0) {
     sendToRoom(room, {
       type: "fires",
@@ -2284,6 +2334,21 @@ const server = createServer((req, res) => {
         bossByRoom: [...bossByRoom.keys()],
         chaosByRoom: [...chaosByRoom.keys()],
         budgetsByRoom: [...budgetsByRoom.keys()],
+        caveInsByRoom: [...caveInsByRoom.keys()],
+        // A2: the soak's server samples — memory after a forced GC (when
+        // run with --expose-gc) and each room's damage, which every
+        // member's client must agree with.
+        memory: memoryAfterGc(),
+        damage: Object.fromEntries(
+          [...roomCityById].map(([id, rc]) => [
+            id,
+            {
+              destroyed: rc.damage.destroyedCount,
+              fallen: rc.damage.fallenCount,
+              collapses: rc.collapses.records.length,
+            },
+          ]),
+        ),
       }),
     );
     return;
@@ -2435,7 +2500,11 @@ function tick(): void {
     // collapse it set off, after it, so a client applies them in order.
     const rc = roomCityById.get(room.id);
     if (rc) {
-      const { broke, collapses } = tickDestruction(rc, time);
+      const { broke, collapses, props } = tickDestruction(
+        rc,
+        time,
+        breakable(room) ? chaosPlanes(room, time) : [],
+      );
       if (broke.length > 0) {
         sendToRoom(room, { type: "chunks", d: encodeChunkIds(broke) });
       }
@@ -2443,6 +2512,13 @@ function tick(): void {
         if (f.collapse) sendToRoom(room, { type: "collapse", c: f.collapse });
       }
       for (const c of collapses) sendToRoom(room, { type: "collapse", c });
+      // D9: the props' batch, after the chunks and collapses it rides on.
+      const pm = propsMessage(props);
+      if (pm) sendToRoom(room, { type: "props", ...pm });
+      // Shot cranes are felled through the director's warning; fires light
+      // where the props' blasts broke chunks (next tick's batch).
+      for (const site of props.condemned) directorFor(room).condemnCrane(site);
+      if (props.broke.length > 0) chaosFor(room)?.ignite(props.broke, time, rc);
     }
     // D5: rebuilds after the batch (nothing of theirs is pending now), then
     // the gas mains' blasts on the planes.
@@ -2479,6 +2555,8 @@ function tick(): void {
 // past nominal — and a faster tick you don't actually deliver is not a faster
 // tick. BOT_DT assumes this cadence too, so the drift was slowing bots down.
 const TICK_MS = 1000 / TICK_DOWN_HZ;
+// A2: a throw anywhere in the tick must cost one tick, not the process.
+const guardTick = createGuard("tick");
 let nextTickAt = Date.now();
 const scheduleTick = (): void => {
   nextTickAt += TICK_MS;
@@ -2488,7 +2566,7 @@ const scheduleTick = (): void => {
   if (nextTickAt < now) nextTickAt = now + TICK_MS;
   setTimeout(
     () => {
-      tick();
+      guardTick(tick, Date.now());
       scheduleTick();
     },
     Math.max(0, nextTickAt - now),

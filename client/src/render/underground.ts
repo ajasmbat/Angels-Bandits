@@ -568,7 +568,7 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
   for (const v of L.vines) {
     const soup = bands[v.band] as Soup;
     const z = zoneIx(v.t, v.s);
-    const strands = 3;
+    const strands = 2;
     for (let j = 0; j < strands; j++) {
       const sj = v.s - v.width / 2 + (v.width * (j + 0.5)) / strands;
       const len =
@@ -600,10 +600,10 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
           thinQuad(0, z),
         );
       }
-      // Leaves every 1.1 m down the strand, alternating, each a blade
+      // Leaves every 1.3 m down the strand, alternating, each a blade
       // angled out from the wall and down — tips into the bore.
       let i = 0;
-      for (let d = 0.5; d < len - 0.2; d += 1.1, i++) {
+      for (let d = 0.5; d < len - 0.2; d += 1.3, i++) {
         const k = (d / len) * n;
         const [sm, om, ym] = pt(k);
         const dir = i % 2 === 0 ? 1 : -1;
@@ -635,7 +635,7 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
     const c0 = rgba(deep ? C.mossDeep : C.moss);
     const c1 = mixC(c0, rgba(C.vineLight), 0.3);
     const c2 = mixC(c0, rgba(C.vineDark), 0.35);
-    const nc = Math.max(4, Math.ceil((2 * m.hl) / 1.1));
+    const nc = Math.max(3, Math.ceil((2 * m.hl) / 1.5));
     const top = m.y1;
     const seed = Math.floor(m.s * 7.13) + (m.side > 0 ? 0 : 977);
     const pts: P3[][] = [];
@@ -720,7 +720,7 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
       const tip = C.caps[
         Math.floor(g.hue * C.caps.length) % C.caps.length
       ] as THREE.Color;
-      fern(soup, g.t, g.s, g.side, g.inset, g.size, g.height, 4, g.phase, {
+      fern(soup, g.t, g.s, g.side, g.inset, g.size, g.height, 3, g.phase, {
         base: rgba(C.fernBase),
         tip: rgba(tip),
         tipAnim: glow,
@@ -895,7 +895,7 @@ function buildU7Decor(L: UndergroundLayout, bands: Soup[]): void {
     const soup = bands[b.band] as Soup;
     const seed = Math.floor(b.s * 17.3) + (b.side > 0 ? 0 : 5003);
     const greens = C.bush;
-    const n = 3 + (seed % 2);
+    const n = 3;
     const tops: [number, number, number][] = [];
     for (let i = 0; i < n; i++) {
       const a = (i / n) * Math.PI * 2 + hash01(seed + i) * 1.2;

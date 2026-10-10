@@ -816,16 +816,16 @@ const SALT7 = { plants: 0x7a11fe, spray: 0x5b2a7e } as const;
  * kerb, the mine's rails), never on the lake or the station's platform. */
 function lifeU7(out: UndergroundLayout): void {
   const fernP: Partial<Record<Zone, number>> = {
-    garden: 0.6,
-    grotto: 0.5,
-    mine: 0.22,
-    works: 0.1,
+    garden: 0.45,
+    grotto: 0.35,
+    mine: 0.18,
+    works: 0.08,
   };
   const bushP: Partial<Record<Zone, number>> = {
-    garden: 0.45,
-    grotto: 0.14,
-    mine: 0.08,
-    works: 0.05,
+    garden: 0.35,
+    grotto: 0.1,
+    mine: 0.06,
+    works: 0.04,
   };
   for (const t of TUNNELS) {
     const [d0, d1] = deepRange(t);
@@ -846,7 +846,7 @@ function lifeU7(out: UndergroundLayout): void {
           inset: minInset + fSize * 0.6 + r() * 0.8,
           size: fSize,
           height: 0.45 + r() * 0.55,
-          fronds: 5 + Math.floor(r() * 2),
+          fronds: 4 + Math.floor(r() * 2),
           phase: r() * Math.PI * 2,
           shade: r(),
           band: band(r(), 0.3, 0.35),
@@ -861,7 +861,7 @@ function lifeU7(out: UndergroundLayout): void {
           r: br,
           height: 0.55 + r() * 0.6,
           hue: r(),
-          flowers: 3 + Math.floor(r() * 5),
+          flowers: 2 + Math.floor(r() * 3),
           band: band(r(), 0.35, 0.35),
         };
         if (!lake && r() < (bushP[zone] ?? 0)) out.bushes.push(bush);

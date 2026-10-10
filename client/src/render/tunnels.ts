@@ -22,13 +22,12 @@
 // window: the shell leaves that stretch of wall out.
 //
 // U7: bright means WELL LIT AND COLOURFUL, not a cream box (tunnel-look.ts).
-// Vertex colours now carry each section's albedo (blended over 16 m) times
-// baked corner occlusion — walls in three coplanar bands, floor and ceiling
-// in three lateral strips, so the faces are exactly today's planes — and
-// `aSurf` carries (kind, s, v, wet|open) in bore-frame surface coordinates.
-// The shader lights it (warm pools under the crown lights over a cool
-// bounce) and gives it form: rock relief and strata, concrete formwork
-// seams, the metro's tiles, a gravel floor, a wet sheen by the water.
+// Vertex colours now carry each section's albedo (blended over 16 m) on
+// exactly U4's faces, and `aSurf` carries (kind, s, v, wet|open) in
+// bore-frame surface coordinates. The shader lights it (warm pools under
+// the crown lights over a cool bounce, corner occlusion) and gives it
+// form: rock relief and strata, concrete formwork seams, the metro's
+// tiles, a gravel floor, a wet sheen by the water.
 // The fixtures carry kind 0: drawn exactly as baked.
 //
 // TORUS. The network spans the whole world, so no single nearest-image
@@ -121,11 +120,9 @@ const LIGHT = {
   lane: 0.42,
 } as const;
 
-/** U7 baked corner occlusion: a wall's foot and head, the floor and the
- * ceiling along the walls (multipliers on the albedo). */
-const AO = { foot: 0.66, head: 0.76, floorEdge: 0.74, ceilEdge: 0.72 };
-/** How far the occlusion reaches from a corner, m (the band split). */
-const AO_REACH = 1.6;
+/** U7 corner occlusion (the shader's): a wall's foot and head, the floor
+ * and the ceiling along the walls, reaching this far from a corner, m. */
+const AO = { foot: 0.66, head: 0.76, edge: 0.73, reach: 1.6 };
 /** U7: how wet each section's surfaces are near the floor, 0..1. */
 const WET: Partial<Record<LookZone, number>> = {
   garden: 0.8,
@@ -325,81 +322,51 @@ function buildBore(t: Tunnel, shell: Soup, fix: Soup): void {
     blendedPalette(t, b, palB);
     const wet = covered ? (WET[zone] ?? 0) : 0;
     const open = covered ? 0 : 2;
-    // Floor and ceiling: three lateral strips, occluded along the walls.
+    // Floor, ceiling and walls: one quad each, as U4 drew them (the corner
+    // occlusion is the shader's, from the bore-frame coordinates).
     const floorMat = mat === SURF.tile ? SURF.concrete : mat;
-    const fr = AO_REACH / BORE_WIDTH;
-    const strips = [0, fr, 1 - fr, 1];
-    const floorAo = [AO.floorEdge, 1, 1, AO.floorEdge];
-    const ceilAo = [AO.ceilEdge, 1, 1, AO.ceilEdge];
-    const lAt3: P3 = [lA[0], lAt, lA[2]];
-    const rAt3: P3 = [rA[0], rAt, rA[2]];
-    const rBt3: P3 = [rB[0], rBt, rB[2]];
-    const lBt3: P3 = [lB[0], lBt, lB[2]];
-    for (let k = 0; k < 3; k++) {
-      const f0 = strips[k] as number;
-      const f1 = strips[k + 1] as number;
-      const lat0 = BORE_WIDTH / 2 - BORE_WIDTH * f0;
-      const lat1 = BORE_WIDTH / 2 - BORE_WIDTH * f1;
-      const sA0 = la + (ra - la) * f0;
-      const sA1 = la + (ra - la) * f1;
-      const sB0 = lb + (rb - lb) * f0;
-      const sB1 = lb + (rb - lb) * f1;
-      const k0 = floorAo[k] as number;
-      const k1 = floorAo[k + 1] as number;
-      shell.quad(
-        mix(lA, rA, f0),
-        mix(lA, rA, f1),
-        mix(lB, rB, f1),
-        mix(lB, rB, f0),
-        palA.floor,
-        [
-          palA.floor.clone().multiplyScalar(k0),
-          palA.floor.clone().multiplyScalar(k1),
-          palB.floor.clone().multiplyScalar(k1),
-          palB.floor.clone().multiplyScalar(k0),
+    const H2 = BORE_WIDTH / 2;
+    shell.quad(
+      lA,
+      rA,
+      rB,
+      lB,
+      palA.floor,
+      [palA.floor, palA.floor, palB.floor, palB.floor],
+      {
+        kind: surfKind(floorMat, FACE.floor),
+        uv: [
+          [la, H2],
+          [ra, -H2],
+          [rb, -H2],
+          [lb, H2],
         ],
+        w: wet * 0.6 + open,
+      },
+    );
+    if (covered) {
+      shell.quad(
+        [lA[0], lAt, lA[2]],
+        [rA[0], rAt, rA[2]],
+        [rB[0], rBt, rB[2]],
+        [lB[0], lBt, lB[2]],
+        palA.ceiling,
+        [palA.ceiling, palA.ceiling, palB.ceiling, palB.ceiling],
         {
-          kind: surfKind(floorMat, FACE.floor),
+          kind: surfKind(mat, FACE.ceiling),
           uv: [
-            [sA0, lat0],
-            [sA1, lat1],
-            [sB1, lat1],
-            [sB0, lat0],
+            [la, H2],
+            [ra, -H2],
+            [rb, -H2],
+            [lb, H2],
           ],
-          w: wet * 0.6 + open,
+          w: 0,
         },
       );
-      if (covered) {
-        const c0 = ceilAo[k] as number;
-        const c1 = ceilAo[k + 1] as number;
-        shell.quad(
-          mix(lAt3, rAt3, f0),
-          mix(lAt3, rAt3, f1),
-          mix(lBt3, rBt3, f1),
-          mix(lBt3, rBt3, f0),
-          palA.ceiling,
-          [
-            palA.ceiling.clone().multiplyScalar(c0),
-            palA.ceiling.clone().multiplyScalar(c1),
-            palB.ceiling.clone().multiplyScalar(c1),
-            palB.ceiling.clone().multiplyScalar(c0),
-          ],
-          {
-            kind: surfKind(mat, FACE.ceiling),
-            uv: [
-              [sA0, lat0],
-              [sA1, lat1],
-              [sB1, lat1],
-              [sB0, lat0],
-            ],
-            w: 0,
-          },
-        );
-      }
     }
-    // Walls: the section's rock / concrete / tile in the bore (three
-    // coplanar bands: an occluded foot, the face, an occluded head), stone
-    // retaining walls over a cut.
+    // Walls: the section's rock / concrete / tile in the bore, stone
+    // retaining walls over a cut. Wet runs down the wall's foot: the
+    // shader fades it by height.
     const wall = (
       pA: P3,
       pB: P3,
@@ -410,49 +377,24 @@ function buildBore(t: Tunnel, shell: Soup, fix: Soup): void {
     ) => {
       const hA = topA - pA[1];
       const hB = topB - pB[1];
-      const banded = covered && Math.min(hA, hB) > 4 * AO_REACH;
-      const rowsA = banded ? [0, AO_REACH, hA - AO_REACH, hA] : [0, hA];
-      const rowsB = banded ? [0, AO_REACH, hB - AO_REACH, hB] : [0, hB];
-      const aoRow = banded ? [AO.foot, 1, 1, AO.head] : [1, 1];
-      for (let j = 0; j + 1 < rowsA.length; j++) {
-        const ya0 = rowsA[j] as number;
-        const ya1 = rowsA[j + 1] as number;
-        const yb0 = rowsB[j] as number;
-        const yb1 = rowsB[j + 1] as number;
-        const wetAt = (h: number) => wet * Math.max(0, 1 - h / 8);
-        const cA0 = covered
-          ? palA.wall.clone().multiplyScalar(aoRow[j] as number)
-          : cutLow;
-        const cB0 = covered
-          ? palB.wall.clone().multiplyScalar(aoRow[j] as number)
-          : cutLow;
-        const cA1 = covered
-          ? palA.wall.clone().multiplyScalar(aoRow[j + 1] as number)
-          : cutHigh;
-        const cB1 = covered
-          ? palB.wall.clone().multiplyScalar(aoRow[j + 1] as number)
-          : cutHigh;
-        shell.quad(
-          [pA[0], pA[1] + ya0, pA[2]],
-          [pB[0], pB[1] + yb0, pB[2]],
-          [pB[0], pB[1] + yb1, pB[2]],
-          [pA[0], pA[1] + ya1, pA[2]],
-          cA0,
-          [cA0, cB0, cB1, cA1],
-          {
-            kind: surfKind(mat, FACE.wall),
-            uv: [
-              [sA, ya0],
-              [sB, yb0],
-              [sB, yb1],
-              [sA, ya1],
-            ],
-            // Wet runs down the foot of the wall; the shader reads one
-            // value per triangle's corners, interpolated.
-            w: wetAt((ya0 + ya1) / 2) + open,
-          },
-        );
-      }
+      shell.quad(
+        pA,
+        pB,
+        [pB[0], topB, pB[2]],
+        [pA[0], topA, pA[2]],
+        covered ? palA.wall : cutLow,
+        covered ? [palA.wall, palB.wall, palB.wall, palA.wall] : cutHigh,
+        {
+          kind: surfKind(mat, FACE.wall),
+          uv: [
+            [sA, 0],
+            [sB, 0],
+            [sB, hB],
+            [sA, hA],
+          ],
+          w: wet + open,
+        },
+      );
     };
     // U5: the station's glass stands where the left wall would.
     if (!inStationWindow(t, mid0(a, b), 1)) wall(lA, lB, lAt, lBt, la, lb);
@@ -720,7 +662,13 @@ if (abKind > 0.5) {
   float isWall = 1.0 - step(0.5, abFace);
   float isFloor = step(1.5, abFace);
   float isCeil = 1.0 - isWall - isFloor;
-  vec3 alb = diffuseColor.rgb;
+  // Corner occlusion: a wall's foot (v is height) and the deep bore's
+  // head; the floor and the ceiling along the walls (v is lateral).
+  float aoWall = mix(${AO.foot.toFixed(2)}, 1.0, smoothstep(0.0, ${AO.reach.toFixed(1)}, abUV.y)) *
+    mix(1.0, ${AO.head.toFixed(2)}, smoothstep(${(24 - AO.reach).toFixed(1)}, 24.0, abUV.y));
+  float aoFlat = mix(1.0, ${AO.edge.toFixed(2)}, smoothstep(${(18 - AO.reach).toFixed(1)}, 18.0, abs(abUV.y)));
+  vec3 alb = diffuseColor.rgb * mix(aoFlat, aoWall, isWall * (1.0 - abOpen));
+  abWet *= mix(1.0, max(0.0, 1.0 - abUV.y / 8.0), isWall);
   // Warm pools under the crown lights (every POOL_STEP along the bore), a
   // cool bounce everywhere; an open cut only has the night air.
   float ds = (fract(abUV.x / ${POOL_STEP.toFixed(1)} + 0.5) - 0.5) * ${POOL_STEP.toFixed(1)};

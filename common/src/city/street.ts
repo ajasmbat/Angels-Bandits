@@ -16,6 +16,7 @@ import {
   LANE_CENTER_OFFSET,
   LOT_LINE_MARGIN,
   STREET_WIDTH,
+  WORLD_SIZE,
 } from "../constants";
 import { type Vec3, canonicalize } from "../world";
 
@@ -221,4 +222,135 @@ export function nextIntersection(
       ? { x: next, y: 0, z: street.centerline }
       : { x: street.centerline, y: 0, z: next },
   );
+}
+
+// --- Street furniture positions (moved here from the client by D9) ----------
+// Lamps and signal masts can be snapped by a blast (city/props.ts), so the
+// server places them exactly as every client draws them. The renderers
+// (client/src/render/streetlights.ts, signals.ts) re-export these.
+
+/** Canonical ground position of one lamp (on a furniture line, y = 0). */
+export interface StreetlampPosition {
+  x: number;
+  z: number;
+}
+
+/**
+ * Every street lamp in canonical [0, WORLD_SIZE) coords, deterministic from
+ * the block grid. Each block contributes its west line (x = bx·PITCH) and its
+ * south line (z = bz·PITCH), placing lamps on BOTH of the line's furniture
+ * lines (contract: FURNITURE_LINE m off the centerline, 1 m behind the curb);
+ * with the torus wrap that tiles all street lines exactly once, corners
+ * excluded (fractions never land on 0 or 1).
+ */
+export function streetlampPositions(): StreetlampPosition[] {
+  const grid = WORLD_SIZE / BLOCK_PITCH;
+  const canon = (v: number) => canonicalize({ x: v, y: 0, z: 0 }).x;
+  const lamps: StreetlampPosition[] = [];
+  for (let bx = 0; bx < grid; bx++) {
+    for (let bz = 0; bz < grid; bz++) {
+      const x0 = bx * BLOCK_PITCH;
+      const z0 = bz * BLOCK_PITCH;
+      for (let i = 0; i < LAMP_STATIONS_PLUS.length; i++) {
+        const along = LAMP_STATIONS_PLUS[i] as number;
+        const staggered = LAMP_STATIONS_MINUS[i] as number;
+        // West line: a lamp on each furniture line, negative side staggered.
+        lamps.push({ x: x0 + FURNITURE_LINE, z: z0 + along });
+        lamps.push({ x: canon(x0 - FURNITURE_LINE), z: z0 + staggered });
+        // South line: same cross-section, axes swapped.
+        lamps.push({ x: x0 + along, z: z0 + FURNITURE_LINE });
+        lamps.push({ x: x0 + staggered, z: canon(z0 - FURNITURE_LINE) });
+      }
+    }
+  }
+  return lamps;
+}
+
+/** How far back from the vehicle mast a crosswalk head stands, meters. */
+const XWALK_SETBACK = 6;
+
+/** One signal head standing on the street furniture line. */
+export interface SignalMast {
+  /** Canonical ground position. */
+  x: number;
+  z: number;
+  /** Facing, radians — the head looks toward the traffic it governs. */
+  yaw: number;
+  /** Vehicle head or crosswalk head. */
+  kind: "vehicle" | "crosswalk";
+  /** True when this head follows the NS half of the cycle. */
+  ns: boolean;
+}
+
+/**
+ * The masts of block (bx, bz)'s intersection — its SOUTH-WEST lattice corner.
+ * Every block owns exactly one corner, so the (WORLD_SIZE / BLOCK_PITCH)² blocks cover all
+ * (WORLD_SIZE / BLOCK_PITCH)² intersections once, with the torus wrap for free.
+ *
+ * Four vehicle masts, one per corner, alternating which axis they govern (a
+ * diagonally opposite pair per axis — which is also why no two masts are ever
+ * co-located; a second mast on the same corner would z-fight the first, since
+ * a square pole rotated 90° occupies the identical volume).
+ *
+ * Eight crosswalk masts, set back XWALK_SETBACK along the axis they face, so
+ * they clear both the vehicle mast and the lamp row.
+ *
+ * Every offset here is FURNITURE_LINE or FURNITURE_LINE + a setback, so all of
+ * it sits on street furniture ground by contract: clear of the roadway on both
+ * axes, and clear of the pedestrian band (which starts further back).
+ */
+export function signalMastsForBlock(bx: number, bz: number): SignalMast[] {
+  const x0 = bx * BLOCK_PITCH;
+  const z0 = bz * BLOCK_PITCH;
+  const out: SignalMast[] = [];
+  const push = (
+    dx: number,
+    dz: number,
+    yaw: number,
+    kind: "vehicle" | "crosswalk",
+    ns: boolean,
+  ) => {
+    const c = canonicalize({ x: x0 + dx, y: 0, z: z0 + dz });
+    out.push({ x: c.x, z: c.z, yaw, kind, ns });
+  };
+  const F = FURNITURE_LINE;
+  const S = F + XWALK_SETBACK;
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      // Vehicle head: corners (+,+) and (−,−) govern NS, the other two EW.
+      // Forward is −Z at yaw 0, so a head facing +z looks back down the
+      // street at oncoming traffic.
+      const governsNs = sx === sz;
+      const yaw = governsNs
+        ? sz > 0
+          ? Math.PI
+          : 0
+        : sx > 0
+          ? -Math.PI / 2
+          : Math.PI / 2;
+      push(sx * F, sz * F, yaw, "vehicle", governsNs);
+      // Crosswalk heads. The one set back along z faces across the NS street
+      // (a walk along x → the EW half of the cycle); the axis-swapped one
+      // faces across the EW street (a walk along z → the NS half).
+      push(
+        sx * F,
+        sz * S,
+        sx > 0 ? -Math.PI / 2 : Math.PI / 2,
+        "crosswalk",
+        false,
+      );
+      push(sx * S, sz * F, sz > 0 ? Math.PI : 0, "crosswalk", true);
+    }
+  }
+  return out;
+}
+
+/** Every intersection's masts, for tests that sweep the whole city. */
+export function allSignalMasts(): SignalMast[] {
+  const out: SignalMast[] = [];
+  for (let bx = 0; bx < WORLD_SIZE / BLOCK_PITCH; bx++) {
+    for (let bz = 0; bz < WORLD_SIZE / BLOCK_PITCH; bz++)
+      out.push(...signalMastsForBlock(bx, bz));
+  }
+  return out;
 }

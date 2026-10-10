@@ -60,7 +60,11 @@ import {
   quakeLive,
   runEnd,
 } from "@angels-bandits/common/chaos";
-import { CityDamage, decodeChunkIds } from "@angels-bandits/common/city";
+import {
+  CityDamage,
+  chunkBuilding,
+  decodeChunkIds,
+} from "@angels-bandits/common/city";
 import {
   type CaveIn,
   addCaveIn,
@@ -73,6 +77,14 @@ import {
   type CollapseWire,
   collapseChunks,
 } from "@angels-bandits/common/city/collapse";
+import {
+  type Crater,
+  type PropDown,
+  PropState,
+  type WirePropState,
+  decodeCrater,
+  decodeIdRecords,
+} from "@angels-bandits/common/city/props";
 import type { CityEvent } from "@angels-bandits/common/cityevents";
 import {
   CONNECT_TIMEOUT_MS,
@@ -97,6 +109,7 @@ import type {
   DeathMsg,
   NewsHeliMsg,
   Pose,
+  PropsMsg,
   RespawnMsg,
   RosterEntry,
   ScoreEntry,
@@ -155,6 +168,12 @@ export interface GameSocketEvents {
   onBomberDown?: (d: BomberDown, by: string | null) => void;
   /** U6: a cave-in was announced (already in `caveIns`). */
   onCaveIn?: (c: CaveIn) => void;
+  /** D2: a `chunks` batch broke these (already in `cityDamage`) — D9's
+   * glass cascades and broken-window rings. */
+  onChunks?: (ids: readonly number[]) => void;
+  /** D9: props went down, blew up, came back, craters opened or closed
+   * (all already in `props` / `craters`). */
+  onProps?: (e: PropsEvent) => void;
   /** W2: the socket dropped; reconnecting in the background. */
   onReconnecting?: () => void;
   /** W2: back as the same player. `welcome` is the fresh one: roster,
@@ -162,6 +181,16 @@ export interface GameSocketEvents {
   onResumed?: (welcome: WelcomeMsg) => void;
   /** The session is over for good: the resume failed or ran out of time. */
   onClose?: () => void;
+}
+
+/** D9: one `props` message, decoded (ascending ids). */
+export interface PropsEvent {
+  down: readonly PropDown[];
+  blasts: readonly PropDown[];
+  restored: readonly number[];
+  announced: readonly PropDown[];
+  craters: readonly Crater[];
+  cratersGone: readonly number[];
 }
 
 /** One frame's latched clocks (server-clock ms unless noted). All null until
@@ -262,6 +291,14 @@ export class GameSocket {
   /** U6: the room's live cave-ins (the mover field holds this very slot) —
    * replaced by every welcome, grown by every `caveIn`, listening or not. */
   readonly caveIns = emptyCaveInSlot();
+  /** D9: the room's props (the mover field holds this very state once the
+   * game binds it to the city's layout), its street craters, the bridge
+   * spans whose repair is announced, and the sooted chunks — kept from
+   * every welcome and message, listening or not. */
+  readonly props = new PropState();
+  readonly craters = new Map<number, Crater>();
+  readonly spanRepairs = new Map<number, number>();
+  readonly soot = new Set<number>();
   private ws: WebSocket;
   /** W2: "open" → "reconnecting" on a drop → back, or "lost" for good. */
   private state: "open" | "reconnecting" | "lost" = "open";
@@ -300,6 +337,7 @@ export class GameSocket {
     this.bossHp = applyBossState(this.boss, welcome.boss);
     this.replayChaos(welcome.chaos);
     this.replayCaveIns(welcome.caveIns);
+    this.replayProps(welcome.props);
     this.attach(ws);
     // W2 watchdog: snapshots arrive at TICK_DOWN_HZ, so a visible tab that
     // hears nothing for SERVER_SILENCE_MS is on a dead (half-open) socket —
@@ -458,6 +496,7 @@ export class GameSocket {
     this.bossHp = applyBossState(this.boss, next.welcome.boss);
     this.replayChaos(next.welcome.chaos);
     this.replayCaveIns(next.welcome.caveIns);
+    this.replayProps(next.welcome.props);
     this.attach(next.ws);
     this.delay.reset(); // the outage's arrival gaps are not jitter
     this.lastHeardMs = performance.now();
@@ -487,6 +526,63 @@ export class GameSocket {
     }
   }
 
+  /** D9: a welcome's props REPLACE what was held (a resume may land in
+   * another room). */
+  private replayProps(state: WirePropState | undefined): void {
+    const downs = decodeIdRecords(state?.d, 3).map(([id, t, te]) => ({
+      id: id as number,
+      t: t as number,
+      te: te as number,
+    }));
+    if (downs.length > 0) this.serverDestruction++;
+    this.props.reset(downs);
+    this.craters.clear();
+    for (const w of Array.isArray(state?.c) ? state.c : []) {
+      const c = decodeCrater(w);
+      if (c) this.craters.set(c.id, c);
+    }
+    this.spanRepairs.clear();
+    this.soot.clear();
+    for (const id of decodeChunkIds(state?.s)) this.soot.add(id);
+  }
+
+  /** D9: one live `props` batch, in the server's order. */
+  private applyProps(msg: PropsMsg): void {
+    const pairs = (w: unknown): PropDown[] =>
+      decodeIdRecords(w, 2).map(([id, t]) => ({
+        id: id as number,
+        t: t as number,
+      }));
+    const down = pairs(msg.d);
+    const blasts = pairs(msg.b);
+    const restored = decodeChunkIds(msg.u);
+    const announced = pairs(msg.a);
+    for (const d of down) this.props.apply(d.id, d.t);
+    for (const b of blasts) this.props.blasted(b.id, b.t);
+    for (const id of restored) {
+      this.props.restore(id);
+      this.spanRepairs.delete(id);
+    }
+    for (const a of announced) this.spanRepairs.set(a.id, a.t);
+    const craters: Crater[] = [];
+    for (const w of Array.isArray(msg.c) ? msg.c : []) {
+      const c = decodeCrater(w);
+      if (!c) continue;
+      this.craters.set(c.id, c);
+      craters.push(c);
+    }
+    const cratersGone = decodeChunkIds(msg.cu);
+    for (const id of cratersGone) this.craters.delete(id);
+    this.events.onProps?.({
+      down,
+      blasts,
+      restored,
+      announced,
+      craters,
+      cratersGone,
+    });
+  }
+
   /** D5: a rebuild — applied now if it is the real one (`go`). */
   applyRebuild(r: RebuildWire): void {
     let restored: number[] = [];
@@ -494,8 +590,16 @@ export class GameSocket {
       if (r.k === 0) {
         restored = this.cityDamage.restoreBuilding(r.b);
         this.collapses.removeBuilding(r.b);
+        // D9: its roof props and jumbotron stand again, its soot goes —
+        // the server did the same in the same step.
+        this.props.restoreBuilding(r.b);
+        for (const id of [...this.soot]) {
+          if (chunkBuilding(id) === r.b) this.soot.delete(id);
+        }
       } else {
         this.collapses.removeCrane(r.b);
+        const crane = this.props.bound?.cranes.get(r.b);
+        if (crane !== undefined) this.props.restore(crane);
       }
     }
     this.events.onRebuild?.(r, restored);
@@ -914,12 +1018,22 @@ export class GameSocket {
       }
       case "fires":
         this.serverChaos++;
-        for (const id of decodeChunkIds(msg.on)) this.fires.add(id);
+        for (const id of decodeChunkIds(msg.on)) {
+          this.fires.add(id);
+          this.soot.add(id); // D9: it burned — sooted until a rebuild
+        }
         for (const id of decodeChunkIds(msg.off)) this.fires.delete(id);
         break;
-      case "chunks":
+      case "chunks": {
         this.serverDestruction++;
-        this.cityDamage.apply(decodeChunkIds(msg.d));
+        const ids = decodeChunkIds(msg.d);
+        this.cityDamage.apply(ids);
+        this.events.onChunks?.(ids);
+        break;
+      }
+      case "props":
+        this.serverDestruction++;
+        this.applyProps(msg);
         break;
       case "collapse":
         this.serverDestruction++;

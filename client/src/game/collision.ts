@@ -10,6 +10,7 @@ import {
   type MoverField,
   collideMovers,
 } from "@angels-bandits/common/city/movers";
+import { collideProps, gapsOf } from "@angels-bandits/common/city/props";
 import { collideTrains } from "@angels-bandits/common/city/train";
 import {
   type CityIndex,
@@ -72,7 +73,8 @@ export function touchesSolid(
   serverTimeMs?: number | null,
   nature?: NatureIndex,
 ): boolean {
-  if (hitsGround(pos, radius)) return true;
+  // D9: a fallen bridge span is a hole in its deck (drawn as one too).
+  if (hitsGround(pos, radius, gapsOf(movers))) return true;
   if (collideCity(pos, radius, buildings, index) !== null) return true;
   if (nature && collideNature(pos, radius, nature) !== null) return true;
   if (!movers) return false;
@@ -89,7 +91,11 @@ export function touchesSolid(
           radius,
           movers.collapses.list,
           Number.POSITIVE_INFINITY,
-        ) !== null)
+        ) !== null) ||
+      // D9: and fallen props, drawn (and solid) at rest.
+      (!!movers.props &&
+        collideProps(pos, radius, movers.props, Number.POSITIVE_INFINITY) !==
+          null)
     );
   }
   return collideMovers(pos, radius, movers, serverTimeMs) !== null;

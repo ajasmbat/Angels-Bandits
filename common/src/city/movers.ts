@@ -72,6 +72,7 @@ import {
   newsHeliSlot,
   newsTargetAt,
 } from "./newsheli";
+import { type PropSlot, collideProps } from "./props";
 import { type Boat, collideBoats, riverBoats } from "./river";
 import { type TrainLine, collideTrains, generateTrains } from "./train";
 
@@ -100,7 +101,11 @@ export type MoverKind =
   | "bomber"
   // U6 cave-ins (city/caveins.ts): falling rock, or the rubble it became.
   | "cavein"
-  | "caveRubble";
+  | "caveRubble"
+  // D9 props (city/props.ts): a felled tank, billboard, mast, jumbotron or
+  // bridge span still falling, or where it came to rest.
+  | "prop"
+  | "propRest";
 
 /**
  * An oriented box. `x`/`z` are canonical in [0, WORLD_SIZE); `y` is the
@@ -200,6 +205,10 @@ export interface MoverField {
   /** U6: the room's cave-ins (caveins.ts, pure in each event and the
    * clock). PER ROOM like `bombers`; the slot is mutated in place. */
   readonly caveins?: CaveInSlot;
+  /** D9: the room's destructible props (props.ts) — their felled solid
+   * pieces collide, and their fallen bridge spans are the `gaps` of the
+   * river's decks. PER ROOM; the state is mutated in place. */
+  readonly props?: PropSlot;
 }
 
 /** A room's field: the seed's shared cranes and aircraft plus its own news
@@ -646,8 +655,23 @@ export function collideMovers(
   return (
     hitBoat(pos, radius, field, timeMs) ??
     hitCollapse(pos, radius, field, timeMs) ??
-    hitCaveIn(pos, radius, field, timeMs)
+    hitCaveIn(pos, radius, field, timeMs) ??
+    hitProp(pos, radius, field, timeMs)
   );
+}
+
+/** D9: the felled prop the sphere touches, as a mover hit (id = the prop's
+ * id). Players and bots alike: a tank, a jumbotron or a span is solid from
+ * the instant it starts to fall until it is repaired. */
+function hitProp(
+  pos: Vec3,
+  radius: number,
+  field: MoverField,
+  timeMs: number,
+): MoverHit | null {
+  if (!field.props || field.props.state.fallers.length === 0) return null;
+  const hit = collideProps(pos, radius, field.props, timeMs);
+  return hit ? { kind: hit.falling ? "prop" : "propRest", id: hit.id } : null;
 }
 
 /** U6: the cave-in piece the sphere touches, as a mover hit (id = the
@@ -742,11 +766,12 @@ export function collideBotMovers(
   // flies the boats' height band, and bots must never die to scenery.
   // D3 debris and rubble too: bots probe them at arrival time, so they dodge
   // a falling chunk where it WILL be, and route round the rubble after.
-  // U6: and the cave-ins, the same way.
+  // U6: and the cave-ins, the same way. D9: and the felled props.
   return (
     hitBoat(pos, radius, field, timeMs) ??
     hitCollapse(pos, radius, field, timeMs) ??
-    hitCaveIn(pos, radius, field, timeMs)
+    hitCaveIn(pos, radius, field, timeMs) ??
+    hitProp(pos, radius, field, timeMs)
   );
 }
 

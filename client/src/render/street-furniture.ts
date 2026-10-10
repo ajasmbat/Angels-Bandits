@@ -70,8 +70,18 @@ export function buildStreetDetailContext(
   buildingsByBlock: Map<number, Building[]>,
   holes: readonly HoleSpan[],
   trains: readonly TrainLine[],
+  /** D9: the destructible street props' footprints (city/props.ts) — G1's
+   * cars and furniture give way to them, so nothing overlaps. */
+  extraKeepOut: readonly {
+    x: number;
+    z: number;
+    hx: number;
+    hz: number;
+  }[] = [],
 ): StreetDetailContext {
-  const keepOut: { x: number; z: number; hx: number; hz: number }[] = [];
+  const keepOut: { x: number; z: number; hx: number; hz: number }[] = [
+    ...extraKeepOut,
+  ];
   for (const line of trains) {
     line.viaduct.forEach((b, i) => {
       if (b.y - b.hy > ITEM_MAX_HEIGHT + 1) return; // deck: far overhead

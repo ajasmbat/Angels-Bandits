@@ -370,9 +370,16 @@ try {
         window.__ab.standingBudget?.(1e9);
         const t0 = window.__ab.reactions().renderTime ?? 0;
         const at = (o) => ({ ...o, t: t0 + o.t });
+        // D9: props, craters and burning floors — every `t` in them too.
+        const atAll = (o) =>
+          JSON.parse(JSON.stringify(o), (k, v) =>
+            k === "t" && typeof v === "number" ? t0 + v : v,
+          );
         return window.__ab.qaDestruction({
           ...(st.area ? { area: at(st.area) } : {}),
           ...(st.fell ? { fell: st.fell.map(at) } : {}),
+          ...(st.props ? { props: atAll(st.props) } : {}),
+          ...(st.blasts ? { blasts: st.blasts.map(at) } : {}),
         });
       }, v.stage);
       console.log("stage", v.name, JSON.stringify(r));
@@ -417,7 +424,15 @@ try {
     for (let k = 0; k < 18; k++) {
       await pin();
       if (v.caveIn) await stageCaveIn();
+      // D9: keep a glass curtain wall's cascade in the air (a software
+      // frame is ~1 s: one burst would be gone by the shot).
+      if (v.glass !== undefined) {
+        await page.evaluate((b) => window.__ab.qaGlass?.(b), v.glass);
+      }
       await sleep(90);
+    }
+    if (v.stage?.props) {
+      console.log("props", v.name, JSON.stringify(await page.evaluate(() => window.__ab.props?.())));
     }
     // S6: rebuild the reflection probe at this exact pose and let two frames
     // draw with it, so no shot catches the glass mid-crossfade (a build

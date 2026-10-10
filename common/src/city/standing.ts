@@ -347,27 +347,54 @@ function roofCarried(b: Building, r: RoofStructure): boolean {
   return true;
 }
 
+/** D9: roof structures shot loose or blasted off (city/props.ts), per
+ * building, as a bitmask over generatedRoof(b) indices. Kept OUT of
+ * BuildingDamage on purpose: `b.damage === undefined` still means "intact"
+ * everywhere (collision, standing, the damaged mesh), and CityDamage's
+ * bind/reset — which clear every damage record — cannot wipe it. Its owner
+ * (PropState) writes it through setRoofDown and re-derives it on a reset. */
+const roofDown = new WeakMap<Building, number>();
+
+/** D9: the generated roof structures of `b` that are down (bitmask). */
+export const roofDownOf = (b: Building): number => roofDown.get(b) ?? 0;
+
+/** D9: set `b`'s fallen roof structures (bitmask over generatedRoof(b)
+ * indices; 0 = none) and bring `b.roof` up to date. */
+export function setRoofDown(b: Building, mask: number): void {
+  if (mask === roofDownOf(b)) return;
+  if (mask) {
+    if (!generated.has(b)) generated.set(b, b.roof);
+    roofDown.set(b, mask);
+  } else {
+    roofDown.delete(b);
+  }
+  syncRoof(b);
+}
+
 /**
- * Make `b.roof` the generated structures whose deck still stands. Pure in
- * the current damage (no memory of what fell before), so a server and a
- * client holding the same destroyed set hold the same roof — collision,
- * sight lines, rays and the roof renderer read `b.roof` as before. Run by
- * CityDamage after every change to a building.
+ * Make `b.roof` the generated structures whose deck still stands and that
+ * have not been knocked down (D9's roof-down mask). Pure in the current
+ * damage and that mask (no memory of what fell before), so a server and a
+ * client holding the same destroyed set and the same fallen props hold the
+ * same roof — collision, sight lines, rays and the roof renderer read
+ * `b.roof` as before. Run by CityDamage after every change to a building.
  */
 export function syncRoof(b: Building): void {
+  const down = roofDownOf(b);
   if (!generated.has(b)) {
-    if (!b.damage || !b.roof) return;
+    if ((!b.damage && down === 0) || !b.roof) return;
     generated.set(b, b.roof);
   }
   const all = generated.get(b);
-  if (!all || !b.damage) {
+  if (!all || (!b.damage && down === 0)) {
     b.roof = all;
     return;
   }
   let kept: RoofStructure[] | null = null;
   for (let i = 0; i < all.length; i++) {
     const r = all[i] as RoofStructure;
-    const ok = roofCarried(b, r);
+    const ok =
+      (down & (1 << i)) === 0 && (b.damage === undefined || roofCarried(b, r));
     if (!ok && !kept) kept = all.slice(0, i);
     else if (ok && kept) kept.push(r);
   }

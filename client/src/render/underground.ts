@@ -575,7 +575,7 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
         v.length *
         (0.65 + (0.35 * ((j * 7 + Math.floor(v.shade * 5)) % 3)) / 2);
       const top = DEEP_CEIL;
-      const n = Math.max(2, Math.ceil(len / 2.5));
+      const n = Math.max(2, Math.ceil(len / 3.2));
       const ph = v.shade * 6.3 + j * 2.1;
       const pt = (k: number): [number, number, number] => {
         const u = k / n;
@@ -600,10 +600,10 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
           thinQuad(0, z),
         );
       }
-      // Leaves every 1.3 m down the strand, alternating, each a blade
+      // Leaves every 1.6 m down the strand, alternating, each a blade
       // angled out from the wall and down — tips into the bore.
       let i = 0;
-      for (let d = 0.5; d < len - 0.2; d += 1.3, i++) {
+      for (let d = 0.5; d < len - 0.2; d += 1.6, i++) {
         const k = (d / len) * n;
         const [sm, om, ym] = pt(k);
         const dir = i % 2 === 0 ? 1 : -1;
@@ -1867,7 +1867,7 @@ function buildU6Decor(L: UndergroundLayout, bands: Soup[]): void {
         rgba(C.dripTip),
       );
   }
-  // Glowing crystal clusters (U7): three hexagonal prisms with pointed
+  // Glowing crystal clusters (U7): three four-sided prisms with pointed
   // tips, leaning — the base dark, the faces alight.
   for (const cr of L.crystals) {
     const soup = bands[cr.band] as Soup;
@@ -1883,8 +1883,8 @@ function buildU6Decor(L: UndergroundLayout, bands: Soup[]): void {
       const lean = ds * 0.4;
       const shoulder = 0.78;
       const ring = (y: number, rr: number, l: number): P3[] =>
-        Array.from({ length: 6 }, (_, k) => {
-          const a = (k / 6) * Math.PI * 2 + i;
+        Array.from({ length: 4 }, (_, k) => {
+          const a = (k / 4) * Math.PI * 2 + i;
           return at(
             cr.t,
             cr.s + ds + l + Math.cos(a) * rr,
@@ -1895,8 +1895,8 @@ function buildU6Decor(L: UndergroundLayout, bands: Soup[]): void {
       const lo = ring(F, r, 0);
       const hi = ring(F + h * shoulder, r * 0.92, lean * shoulder);
       const apex = at(cr.t, cr.s + ds + lean, lat, F + h);
-      for (let k = 0; k < 6; k++) {
-        const j = (k + 1) % 6;
+      for (let k = 0; k < 4; k++) {
+        const j = (k + 1) % 4;
         const face = mixC(rgba(col), rgba(C.crystalBase), (k % 2) * 0.25);
         soup.quad(
           [lo[k] as P3, lo[j] as P3, hi[j] as P3, hi[k] as P3],

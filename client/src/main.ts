@@ -109,6 +109,7 @@ import {
   missileImpactAt,
 } from "@angels-bandits/common/strike";
 import { feelFromTuning } from "@angels-bandits/common/tuning";
+import type { WaveState } from "@angels-bandits/common/waves";
 import {
   WEATHER_PHASES,
   type WeatherPhase,
@@ -189,6 +190,14 @@ import {
   threadingCorridor,
 } from "./game/corner-speed";
 import {
+  EASY_KEY,
+  easyActive,
+  loadEasy,
+  noteCleared,
+  saveEasy,
+  waveCleared,
+} from "./game/easy-mode";
+import {
   ASSIST_MAX_ROLL,
   type EffortlessWorld,
   FEEL_TUNING,
@@ -243,7 +252,7 @@ import {
 } from "./game/instructor";
 import { speedFov } from "./game/jet-camera";
 import { magnetizeVelocity } from "./game/magnetism";
-import { MissileFeed, MissileShake } from "./game/missile-feed";
+import { MissileFeed, MissileShake, bombingNear } from "./game/missile-feed";
 import { createPullCue, stepPullCue } from "./game/pull-feel";
 import {
   type QaChaosSpec,
@@ -454,7 +463,7 @@ import { WeatherClock, setWeatherUniform } from "./render/weather";
 import { buildingSeed, isWindowLit } from "./render/window-pattern";
 import { nearestImage, nearestImageInto } from "./render/wrapPlacement";
 import { Wrecks } from "./render/wrecks";
-import { Coach, renderPrimer } from "./ui/coach";
+import { COACH_DONE_KEY, Coach, renderPrimer } from "./ui/coach";
 import { CommsTicker } from "./ui/comms";
 import { CourseBoard } from "./ui/course-board";
 import { DamageIndicator } from "./ui/damage-indicator";
@@ -522,6 +531,17 @@ whenTouch(() => renderPrimer(true));
 // so and links back; the ordinary card links into it.
 const LAB_URL = new URLSearchParams(window.location.search).has("lab");
 initLabLink(LAB_URL);
+
+// W4 Easy mode (game/easy-mode.ts): decided once and kept — read BEFORE
+// the join card remembers a callsign, which is half of how a pilot who has
+// played before is told from a first-timer. Never in the Flight Lab.
+let easyState = loadEasy(
+  readStored(EASY_KEY),
+  readStored("ab:name") !== null || readStored(COACH_DONE_KEY) === "1",
+);
+writeStored(EASY_KEY, saveEasy(easyState));
+const easyOn = (): boolean => !LAB_URL && easyActive(easyState);
+GameSocket.easy = easyOn;
 
 // --- Join flow: name → server welcome (identity, seed, spawn) ---
 const name = await requestName(phoneFullscreen.onJoinGesture);
@@ -1858,6 +1878,9 @@ const botCallsigns = (): string[] => {
 
 // --- Simulation state ---
 const input = new FlightInputSource();
+// W4: the settings' desktop stick sensitivity and the flight-data line.
+input.setStickSensitivity(settings.stickSens);
+document.body.classList.toggle("flight-data", settings.flightData);
 const chase = new ChaseCamera();
 // L11b spring arm: the eye never sits inside a building, the ground, the
 // river's decks and bank walls, or a mover at the latched render clock
@@ -1878,6 +1901,12 @@ let freelook = createFreeLook();
 let zoom = createZoom();
 // Mouse-aim instructor (F1): client-only, its output is ordinary input.
 let instructor = createInstructor();
+// W4: KEYBOARD is a desktop scheme — a touch device flies the instructor.
+const noKeysOnTouch = (): void => {
+  if (input.aimMode() === "keys") input.setAimMode("instructor");
+};
+if (isTouch()) noKeysOnTouch();
+whenTouch(noKeysOnTouch);
 let aimMode = input.aimMode();
 /** Last frame's smoothed cursor — the free-look drag latch diffs against it. */
 let cursorPrev = input.cursorNdc();
@@ -2470,7 +2499,12 @@ socket.events.onAwayStarted = () => {
  * news heli belong to the room, so they are re-seeded only if it changed.
  */
 let currentRoomId = welcome.roomId;
+/** W4: the room's wave as last seen in play (Easy mode's clear counter);
+ * null right after a join or resume, or while hidden — nothing counts
+ * until a second look. */
+let wavesSeen: WaveState | null = null;
 function applyResume(w: WelcomeMsg): void {
+  wavesSeen = null;
   const here = new Set(w.roster.map((r) => r.id));
   for (const id of [...players.keys()]) {
     if (id === socket.selfId || here.has(id)) continue;
@@ -2934,7 +2968,7 @@ declare global {
       freelook: () => ReturnType<typeof createFreeLook>;
       /** M1 QA: the aim point and whether the pipper sits on it (F1). */
       aim: () => {
-        mode: "instructor" | "classic";
+        mode: AimMode;
         converged: boolean;
         /** F6 QA: the pipper-to-cursor angle, rad. */
         gap: number;
@@ -3440,6 +3474,27 @@ const settingsPanel = new SettingsPanel(
     setVolumes: (next) => {
       settings = { ...settings, ...next };
       applyVolumes();
+    },
+    intensity: () => intensityBar.displayed,
+    setIntensity: (level) => {
+      // IntensityBar's claim path: one claim, the server decides.
+      intensityBar.dragTo(level);
+      intensityBar.release();
+    },
+    easy: easyOn,
+    setEasy: (on) => {
+      const was = easyOn();
+      easyState = { ...easyState, on };
+      writeStored(EASY_KEY, saveEasy(easyState));
+      if (easyOn() !== was) socket.sendSetEasy(easyOn());
+    },
+    setStickSens: (v) => {
+      settings = { ...settings, stickSens: v };
+      input.setStickSensitivity(v);
+    },
+    setFlightData: (on) => {
+      settings = { ...settings, flightData: on };
+      document.body.classList.toggle("flight-data", on);
     },
     onOpenChange: (open) => {
       settingsOpen = open;
@@ -5563,6 +5618,10 @@ const frame = (now: number): void => {
       radio.noteCombat(now);
       music.noteCombat(now);
     }
+    // W4: the bombing warning on the objective HUD.
+    hud.setBombWarning(
+      bombingNear(mf.flying, renderMs, alive ? flight.pos : null),
+    );
     missileRenderer.update(mf.flying, chase.position, renderMs, now);
     socket.pruneChaos(renderMs); // C2: runs and quakes long over
   }
@@ -5630,6 +5689,23 @@ const frame = (now: number): void => {
   hud.setBoss(bossUp ? socket.bossHp : null, bossMax, now);
   // W1: the carrier war — its tier, the wave, the enemies left, the banner.
   hud.setWaves(socket.waves, now);
+  // W4: Easy mode counts the waves this pilot SEES cleared — never across
+  // a hidden tab, a join or a resume (wavesSeen restarts), nor in the lab.
+  if (
+    wavesSeen !== null &&
+    !labMode &&
+    waveCleared(wavesSeen, socket.waves, socket.boss.down !== null)
+  ) {
+    const was = easyOn();
+    easyState = noteCleared(easyState);
+    writeStored(EASY_KEY, saveEasy(easyState));
+    if (was && !easyOn()) {
+      socket.sendSetEasy(false);
+      hud.notice("EASY MODE OFF — YOU'VE GOT THIS");
+    }
+  }
+  wavesSeen = document.hidden ? null : socket.waves;
+  hud.setEasy(easyOn());
   if (
     bossRaid &&
     renderMs !== null &&
@@ -5930,7 +6006,6 @@ const frame = (now: number): void => {
   }
   if (flying && guns.triggerHeld) coach.note("fire");
   if (flying && boost.active) coach.note("boost");
-  if (flying && scoreboard.isOpen) coach.note("scores");
   coach.frame(Math.min(rawMs, 250), alive, settingsOpen || document.hidden);
   cursorPrev = cursorNow;
   if (solutionTone.shouldPlay(alive && aimResult.solution, now)) {

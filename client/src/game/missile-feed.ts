@@ -21,6 +21,34 @@ export const MISSILE_STALE_MS = 500;
 /** The radio calls "incoming" for a target this close to the own plane, m. */
 export const MISSILE_ANNOUNCE_M = 300;
 
+/** W4: "ENEMY BOMBING NEAR YOU" — a bomb due to land within this of the
+ * own plane, m (a bomb's blast is 45 m; the margin is the reaction room)… */
+export const BOMB_WARN_M = 220;
+/** …within this long, ms (a bomb's whole fall is 2.6 s). */
+export const BOMB_WARN_MS = 3000;
+
+/**
+ * W4: whether an enemy bomb in the air is due to land near the own plane —
+ * the HUD's bombing warning. `flying` is a frame's `flying` list (or any
+ * strikes); only kind "bomb" counts (the seam ANGE-GWM8VE's enemy bombs
+ * ride), on the synced render clock; torus distance via wrapDistance.
+ * `self` null (dead) never warns. Pure.
+ */
+export function bombingNear(
+  flying: readonly MissileStrike[],
+  renderMs: number,
+  self: Vec3 | null,
+): boolean {
+  if (self === null) return false;
+  for (const m of flying) {
+    if (m.kind !== "bomb") continue;
+    const left = missileImpactAt(m) - renderMs;
+    if (left < 0 || left > BOMB_WARN_MS) continue;
+    if (wrapDistance(self, m.to) <= BOMB_WARN_M) return true;
+  }
+  return false;
+}
+
 /** One frame's work. Arrays are reused frame to frame. */
 export interface MissileFrame {
   /** In the air at this render time (launched, not landed). */

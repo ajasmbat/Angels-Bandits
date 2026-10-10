@@ -2,7 +2,7 @@
 // and styling live in index.html with the rest of the chrome; this module
 // shows the overlay, resolves with the chosen name, and remembers it.
 //
-// W1: the card is also the loading screen. It stays up after FLY showing
+// W1: the card is also the loading screen. It stays up after PLAY showing
 // CONNECTING… then LOADING CITY… until the first frame renders (main.ts
 // closes it), and a join that can't reach the server ends on a RETRY.
 //
@@ -10,8 +10,14 @@
 // (logo, skyline, LOADING… over a moving bar) so there is never a blank
 // screen while the bundle downloads; the name prompt takes over from it,
 // and each boot stage after FLY advances the bar (`--p`, 0..1).
+//
+// W4 (one-tap start): the name is optional — the box shows a random
+// callsign and an empty box flies under exactly that one — and PLAY is the
+// card's only call to action. The controls primer, the Flight Lab and the
+// iPhone install hint sit behind small icons (wired here).
 
 import { NAME_MAX_LENGTH } from "@angels-bandits/common/constants";
+import { coarsePointer } from "./mobile";
 import { readStored, writeStored } from "./storage";
 
 const STORAGE_KEY = "ab:name";
@@ -26,6 +32,47 @@ const RESUME_KEY = "ab:resume";
 /** P3: where the bar sits while the socket connects (the stages after it
  * are main.ts's). */
 const CONNECTING_PROGRESS = 0.2;
+
+const CALLSIGN_WORDS = [
+  "VIPER",
+  "MAVERICK",
+  "GHOST",
+  "RAVEN",
+  "FALCON",
+  "BLAZE",
+  "COMET",
+  "NOMAD",
+  "HAWK",
+  "JESTER",
+  "ROGUE",
+  "STORM",
+  "TALON",
+  "ZEPHYR",
+  "ACE",
+  "BANDIT",
+] as const;
+
+/** W4: a pilot's callsign when they don't type one — "VIPER-27". Always
+ * within NAME_MAX_LENGTH. `rand` is injectable for tests. */
+export function randomCallsign(rand: () => number = Math.random): string {
+  const word =
+    CALLSIGN_WORDS[Math.floor(rand() * CALLSIGN_WORDS.length)] ?? "PILOT";
+  const num = 10 + Math.floor(rand() * 90);
+  return `${word}-${num}`.slice(0, NAME_MAX_LENGTH);
+}
+
+/** W4: a small icon on the card that folds a section open and shut (the
+ * form's `cls` class shows it). Never focus-stealing: the card's Enter
+ * still means PLAY. */
+function bindFold(id: string, cls: string): void {
+  const btn = document.getElementById(id);
+  const form = document.getElementById("join-form");
+  if (!btn || !form) return;
+  btn.addEventListener("click", () => {
+    const open = form.classList.toggle(cls);
+    btn.setAttribute("aria-expanded", String(open));
+  });
+}
 
 /** Read-and-clear the resume token a reload left behind, if any. */
 export function takeResumeToken(): string | undefined {
@@ -56,8 +103,12 @@ export function initLabLink(lab: boolean): void {
   if (!lab) return;
   const link = document.getElementById("join-lab") as HTMLAnchorElement | null;
   if (link) {
+    // W4: in the lab the icon becomes a plain, visible way back.
     link.textContent = "← BACK TO THE GAME";
     link.href = location.pathname;
+    link.classList.add("text");
+    link.removeAttribute("aria-label");
+    link.removeAttribute("title");
   }
   const title = document.querySelector("#join h1");
   if (title) title.textContent = "FLIGHT LAB";
@@ -80,6 +131,12 @@ export function requestName(onGesture?: () => void): Promise<string> {
   input.maxLength = NAME_MAX_LENGTH;
   input.value = readStored(STORAGE_KEY) ?? "";
   const remembered = input.value.trim();
+  // W4: rolled once per visit — what the box shows is what an empty box
+  // flies as.
+  const callsign = randomCallsign();
+  input.placeholder = callsign;
+  bindFold("join-help", "show-primer");
+  bindFold("join-install", "show-install");
   overlay.classList.add("open");
   overlay.classList.remove("booting");
   setProgress(0);
@@ -92,8 +149,12 @@ export function requestName(onGesture?: () => void): Promise<string> {
     setJoinStatus("CONNECTING…", CONNECTING_PROGRESS);
     return Promise.resolve(remembered);
   }
-  input.focus();
-  input.select();
+  // W4: on a phone, focusing the box would raise the on-screen keyboard
+  // over PLAY — the one-tap start. The desktop keeps it (type, then Enter).
+  if (!coarsePointer()) {
+    input.focus();
+    input.select();
+  }
 
   return new Promise((resolve) => {
     form.addEventListener(
@@ -103,7 +164,7 @@ export function requestName(onGesture?: () => void): Promise<string> {
         // fullscreen over the game.
         input.blur();
         onGesture?.();
-        const name = input.value.trim().slice(0, NAME_MAX_LENGTH) || "Pilot";
+        const name = input.value.trim().slice(0, NAME_MAX_LENGTH) || callsign;
         writeStored(STORAGE_KEY, name);
         setJoinStatus("CONNECTING…", CONNECTING_PROGRESS);
         resolve(name);

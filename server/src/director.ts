@@ -52,7 +52,7 @@ import {
   craneFallDir,
   demolitionPlan,
 } from "@angels-bandits/common/city/collapse";
-import { type CraneSite, slewAngle } from "@angels-bandits/common/city/movers";
+import type { CraneSite } from "@angels-bandits/common/city/movers";
 import { underCover } from "@angels-bandits/common/city/tunnels";
 import {
   DIRECTOR_ACTION_M,

@@ -25,6 +25,7 @@ import {
   raidEnd,
   raidMaxHp,
 } from "@angels-bandits/common/boss";
+import { runEnd } from "@angels-bandits/common/chaos";
 import {
   type Building,
   cityHoles,
@@ -256,6 +257,7 @@ import {
   stageBoss,
 } from "./game/qa-spectacle";
 import { caveInShakeAmount, quakeShakeAmount } from "./game/quake";
+import { refreshResumedWorld } from "./game/resume-world";
 import {
   createRollControl,
   defaultRollLevel,
@@ -2128,6 +2130,7 @@ socket.events.onPlayerLeft = (id) => {
   remotes.playerLeft(id);
   scoreboard.playerLeft(id);
   players.delete(id);
+  reactor.forgetPlane(id); // A2
 };
 socket.events.onFired = (id) => remoteFired(id);
 socket.events.onDamage = (msg) => {
@@ -2396,16 +2399,14 @@ function applyResume(w: WelcomeMsg): void {
   applyCourseStandings(w.courses); // S3: boards moved on meanwhile
   showOwnScore(w.scores);
   botBar.resync(w.botTarget);
-  if (w.roomId !== currentRoomId) {
-    currentRoomId = w.roomId;
-    reactor.ingest(w.cityEvents ?? []);
-    blastLedger.ingest(w.cityEvents ?? []); // D1: already-seen ones are skipped
-    wrecks.reset((w.wrecks ?? []).filter(isWreckParams)); // D4
-    if (moverField.news && w.newsHeli) {
-      moverField.news.target = w.newsHeli.target;
-      moverField.news.prev = w.newsHeli.prev;
-    }
-  }
+  currentRoomId = w.roomId;
+  // A2: same room or not — the drop was long enough for these to move on.
+  refreshResumedWorld(w, {
+    reactor,
+    blastLedger,
+    wrecks,
+    news: moverField.news ?? null,
+  });
   smoke.clear(socket.selfId);
   streakSmoke.clear(socket.selfId);
   reactor.clearSelfTrack();
@@ -2970,6 +2971,10 @@ declare global {
         missilesDrawn: MissileRenderer["stats"];
         /** P4: C2 chaos messages the server has sent this session. */
         serverChaos: number;
+        /** A2: each held run's and quake's id and the server time the
+         * client lets it go (soak parity compares what is live at one
+         * instant — pruning is per frame). */
+        held: { runs: [number, number][]; quakes: [number, number][] };
       };
       /** P4: the world clock the frame loop last drew at (null: none yet). */
       renderMs: () => number | null;
@@ -2996,7 +3001,13 @@ declare global {
           | null,
       ) => number[];
       /** U6: live cave-ins held, and the pieces and events drawn last frame. */
-      caveIns: () => { live: number; pieces: number; events: number };
+      caveIns: () => {
+        live: number;
+        pieces: number;
+        events: number;
+        /** A2: each held cave-in's id and the server time it is over. */
+        held: [number, number][];
+      };
       /** P4: the plane fleet last frame — planes drawn (near / far LOD)
        * and the draws they cost; null under `?fleet=0`. */
       fleet: () => {
@@ -3882,6 +3893,17 @@ window.__ab = {
             },
       missilesDrawn: missileRenderer.stats,
       serverChaos: socket.serverChaos,
+      held: {
+        // socket.pruneChaos keeps a run its 5 s tail, as the server does.
+        runs: socket.bombers.runs.map((r): [number, number] => [
+          r.id,
+          runEnd(r) + 5000,
+        ]),
+        quakes: [...socket.quakes.values()].map((q): [number, number] => [
+          q.id,
+          q.t + q.dur,
+        ]),
+      },
     };
   },
   renderMs: () => lastRenderMs,
@@ -3919,6 +3941,10 @@ window.__ab = {
   caveIns: () => ({
     live: socket.caveIns.list.length,
     ...caveInRenderer.stats,
+    held: socket.caveIns.list.map((c): [number, number] => [
+      c.id,
+      c.t0 + c.endMs,
+    ]),
   }),
   fleet: () =>
     fleet && tagBatch

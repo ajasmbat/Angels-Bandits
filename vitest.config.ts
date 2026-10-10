@@ -8,8 +8,11 @@ export default defineConfig({
     // ~650 buildings rather than 97, and with 45 files contending for cores
     // the slowest of them can take a few seconds — well inside vitest's 5 s
     // default on an idle machine, but not under load. This is flake headroom,
-    // not an expected runtime.
-    testTimeout: 20000,
+    // not an expected runtime. A2 measured 20 s running out too: on a shared
+    // box at load 40–140 the whole-city suites (U5 renderer budget 10 s alone
+    // → 21 s loaded; D8 standing layers; D2 solids parity; river portals; D5
+    // scaffolding) crossed it with nothing wrong. 60 s still fails a hang.
+    testTimeout: 60000,
     // Lets the worker's RPC replies land between long synchronous tests;
     // see the file for why that is what "Timeout calling onTaskUpdate" was.
     setupFiles: ["./vitest.setup.ts"],

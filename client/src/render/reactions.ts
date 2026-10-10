@@ -826,6 +826,12 @@ export class CityReactor {
     return null;
   }
 
+  /** A2: a plane left the room — its low-pass bucket goes with it (bot ids
+   * are never reused, so the map otherwise grew with every bot ever seen). */
+  forgetPlane(id: string): void {
+    this.passBucket.delete(id);
+  }
+
   /** Respawn / death: the on-record track jumps, forget it. */
   clearSelfTrack(): void {
     this.selfTrack.length = 0;

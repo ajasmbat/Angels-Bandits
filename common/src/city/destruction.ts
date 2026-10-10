@@ -34,7 +34,7 @@ import { type SolidBox, baseSolids, solids } from "./holes";
 import type { Building } from "./index";
 import { ROOF_STRUCTURE_MAX_HEIGHT } from "./roof-structures";
 // standing.ts reads this module back at call time only (the holes.ts idiom).
-import { syncRoof } from "./standing";
+import { generatedRoof, syncRoof } from "./standing";
 
 /** SolidBox.cut bits: the box faces exposed by destruction (−x, +x, −y, +y,
  * −z, +z), and RUBBLE for a debris pile on the street. */
@@ -957,6 +957,9 @@ export interface RayHit {
   t: number;
   /** The chunk hit, or -1 when the ray stopped on rubble or a roof structure. */
   chunk: number;
+  /** D9: the R2 roof structure hit, as an index into generatedRoof(b) (so
+   * it names the same structure on every machine), or -1. */
+  roof: number;
 }
 
 /** Slab-clip entry distance of the ray (origin 0, unit `dir`) into a box in
@@ -1036,6 +1039,7 @@ export function raycastChunk(
       h: number,
       d: number,
       isChunkBox: boolean,
+      roofIndex: number,
     ) => {
       const t = rayEntry(
         dir,
@@ -1049,7 +1053,7 @@ export function raycastChunk(
       );
       if (t < 0 || t >= bestT) return;
       bestT = t;
-      best = { building: i, t, chunk: -1 };
+      best = { building: i, t, chunk: -1, roof: roofIndex };
       // 1 cm past the face, in the building's frame, to find the cell.
       bestLocal = isChunkBox
         ? {
@@ -1068,10 +1072,23 @@ export function raycastChunk(
         s.height,
         s.depth,
         (s.cut & CUT_RUBBLE) === 0,
+        -1,
       );
     }
-    for (const r of b.roof ?? []) {
-      consider(r.dx, r.dz, r.baseY, r.width, r.height, r.depth, false);
+    if (b.roof) {
+      const gen = generatedRoof(b) ?? b.roof;
+      for (const r of b.roof) {
+        consider(
+          r.dx,
+          r.dz,
+          r.baseY,
+          r.width,
+          r.height,
+          r.depth,
+          false,
+          gen.indexOf(r),
+        );
+      }
     }
   }
   const hit = best as RayHit | null;

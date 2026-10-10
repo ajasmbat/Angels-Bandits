@@ -119,4 +119,10 @@ export const STANDING_EXEMPT: Readonly<Record<string, string>> = {
     "cranes, helicopters and boats stand on lots and streets; a felled crane is D5's own collapse record",
   birds:
     "DT2 tower flocks read their tower's standingProfile each frame and stop drawing once it no longer stands over the wheel",
+  props:
+    "D9 street props stand on streets and promenades; a felled roof prop is out of the live b.roof and its rest pose drops once its deck no longer stands (PropState.restSupported)",
+  scars:
+    "D9 street craters and transient emitters; a glass cascade only comes off a chunk that just broke",
+  "facade-scars":
+    "D9 window rings and soot are D1 atlas marks on city.ts's live solids, like damage-map",
 };

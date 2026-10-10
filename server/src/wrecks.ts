@@ -24,7 +24,7 @@ import {
   wreckPosAt,
   wreckTouches,
 } from "@angels-bandits/common/wreck";
-import type { RoomCity } from "./destruction";
+import { type RoomCity, blastProps } from "./destruction";
 
 /** One falling wreck and whose it is. */
 export interface WreckRecord {
@@ -57,6 +57,7 @@ export function applyWreckImpact(
 ): number[] {
   const out = city.damage.damageAt(pos, WRECK_BLAST_RADIUS, WRECK_BLAST_DAMAGE);
   for (const id of out) city.breakers.set(chunkBuilding(id), by);
+  blastProps(city, pos, WRECK_BLAST_RADIUS, WRECK_BLAST_DAMAGE, by); // D9
   return out;
 }
 

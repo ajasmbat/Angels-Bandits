@@ -51,7 +51,7 @@ import {
   craneFallDir,
   demolitionPlan,
 } from "@angels-bandits/common/city/collapse";
-import { type CraneSite, slewAngle } from "@angels-bandits/common/city/movers";
+import type { CraneSite } from "@angels-bandits/common/city/movers";
 import { underCover } from "@angels-bandits/common/city/tunnels";
 import {
   DIRECTOR_ACTION_M,
@@ -88,6 +88,7 @@ import {
 import type { DangerBudget, DangerPlane } from "./danger";
 import {
   type RoomCity,
+  blastProps,
   rebuildBuilding,
   rebuildCrane,
   stageCollapse,
@@ -319,6 +320,8 @@ export class DestructionDirector {
   private armed: { slot: number; until: number } | null = null;
   private nextTry = 0;
   private warned: DirectorEvent[] = [];
+  /** D9: crane sites shot to 0 HP, waiting to be warned (in order). */
+  private condemned: number[] = [];
   private readonly cooldown = new Map<string, number>();
   private readonly spawns = new Map<string, number>();
   /** Announced rebuilds: key (kind · 1e6 + id) → apply time. */
@@ -359,6 +362,7 @@ export class DestructionDirector {
     this.scanFrom = null;
     this.armed = null;
     this.warned = [];
+    this.condemned = [];
     this.cooldown.clear();
     this.spawns.clear();
     this.announced.clear();
@@ -408,6 +412,9 @@ export class DestructionDirector {
         }
       }
     }
+
+    // D9: shot cranes are warned before anything else is picked.
+    this.warnCondemned(now, planes, world, out);
 
     // Arm the latest slot that came round.
     if (this.scanFrom === null) this.scanFrom = now;
@@ -483,9 +490,78 @@ export class DestructionDirector {
       GAS_CHUNK_RADIUS,
       GAS_CHUNK_DAMAGE,
     );
+    // D9: and the street round it — cars, lamps, a crater.
+    blastProps(
+      city,
+      { x: e.x, y: 1, z: e.z },
+      GAS_CHUNK_RADIUS,
+      GAS_CHUNK_DAMAGE,
+    );
     // A collapse a gas main sets off is the environment's — nobody's.
     for (const id of broke) city.breakers.set(chunkBuilding(id), null);
     return { event: e, collapse: null, broke };
+  }
+
+  /**
+   * D9: crane site `id` was shot (or blasted) to 0 HP. It does not fall on
+   * the spot: like every lethal director event it is WARNED first — the
+   * next tick turns it into an EVENT_CRANE at craneAlignAfter, at least
+   * DIRECTOR_WARN_MS out, through the danger budget (retried each tick
+   * while refused). It stays solid until it actually falls.
+   */
+  condemnCrane(id: number): void {
+    if (!this.condemned.includes(id)) this.condemned.push(id);
+  }
+
+  /** D9: warn every condemned crane the budget allows now. */
+  private warnCondemned(
+    now: number,
+    planes: readonly DestructionPlane[],
+    world: DestructionWorld,
+    out: DirectorTick,
+  ): void {
+    if (this.condemned.length === 0) return;
+    const bp = world.budget ? budgetPlanes(planes) : null;
+    const field = world.city.collapses;
+    this.condemned = this.condemned.filter((id) => {
+      const site = world.cranes.find((c) => c.id === id);
+      if (!site || craneDown(field, id, now)) return false;
+      if (this.warned.some((e) => e.k === EVENT_CRANE && e.b === id)) {
+        return false;
+      }
+      const at = craneAlignAfter(site, now + DIRECTOR_WARN_MS);
+      const c = buildCraneCollapse(site, {
+        id: 0,
+        b: id,
+        t: at,
+        s: TOPPLE,
+        d: craneFallDir(site, at),
+        c: [],
+        k: KIND_CRANE,
+      });
+      if (!c) return false;
+      const zone = zoneOf(c, 10);
+      const e = this.event(
+        EVENT_CRANE,
+        id,
+        { x: site.x, y: 0, z: site.z },
+        TOPPLE,
+        c.dir,
+        now,
+        at,
+        zone,
+      );
+      if (world.budget && bp) {
+        const pts = zonePoints(e);
+        if (!world.budget.allows("director", pts, e.at - now, now, bp)) {
+          return true; // keep it; try again next tick
+        }
+        world.budget.charge("director", pts, e.at - now, now, bp);
+      }
+      this.warned.push(e);
+      out.warned.push(e);
+      return false;
+    });
   }
 
   // --- The pick -------------------------------------------------------------

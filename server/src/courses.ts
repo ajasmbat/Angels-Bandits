@@ -75,6 +75,8 @@ export interface FinishedRun {
 export interface SweepWorld {
   buildings: readonly Building[];
   index?: CityIndex;
+  /** D9: the room's fallen bridge spans (river.ts gaps), read at the sweep. */
+  gaps?: () => number;
 }
 
 const scratch: Vec3 = { x: 0, y: 0, z: 0 };
@@ -89,12 +91,13 @@ export function sweptThroughSolid(
   world: SweepWorld,
 ): boolean {
   let streak = 0;
+  const gaps = world.gaps?.() ?? 0;
   const probeAt = (x: number, y: number, z: number): boolean => {
     scratch.x = wrapCoord(x);
     scratch.y = y;
     scratch.z = wrapCoord(z);
     const hit =
-      hitsGround(scratch, SWEEP_RADIUS) ||
+      hitsGround(scratch, SWEEP_RADIUS, gaps) ||
       collideCity(scratch, SWEEP_RADIUS, world.buildings, world.index) !== null;
     streak = hit ? streak + 1 : 0;
     return streak >= 2;

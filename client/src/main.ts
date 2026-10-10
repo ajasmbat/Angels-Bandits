@@ -25,8 +25,10 @@ import {
   raidEnd,
   raidMaxHp,
 } from "@angels-bandits/common/boss";
+import { runEnd } from "@angels-bandits/common/chaos";
 import {
   type Building,
+  chunkBuilding,
   cityHoles,
   mulberry32,
   raycastChunk,
@@ -44,6 +46,17 @@ import {
 } from "@angels-bandits/common/city/movers";
 import { natureFor } from "@angels-bandits/common/city/nature";
 import { setNewsTarget } from "@angels-bandits/common/city/newsheli";
+import {
+  PROP_CAR,
+  PROP_FUEL,
+  PROP_JUMBO,
+  PROP_LAMP,
+  PROP_SIGNAL,
+  PROP_STATION,
+  PROP_TAXI,
+  type PropSlot,
+  generateProps,
+} from "@angels-bandits/common/city/props";
 import { bridgeSpans } from "@angels-bandits/common/city/river";
 import {
   TUNNELS,
@@ -246,6 +259,7 @@ import {
   QA_ID_BASE,
   type QaDestructionSpec,
   stageDestruction,
+  stageProps,
 } from "./game/qa-destruction";
 import {
   type QaBossSpec,
@@ -256,6 +270,7 @@ import {
   stageBoss,
 } from "./game/qa-spectacle";
 import { caveInShakeAmount, quakeShakeAmount } from "./game/quake";
+import { refreshResumedWorld } from "./game/resume-world";
 import {
   createRollControl,
   defaultRollLevel,
@@ -300,6 +315,7 @@ import { DustClouds, dustHaze } from "./render/dust";
 import { FacadeDetailRenderer } from "./render/facade-detail";
 import { FacadeGarnishRenderer } from "./render/facade-garnish";
 import { FacadeLifeRenderer } from "./render/facade-life";
+import { FacadeScarKeeper } from "./render/facade-scars";
 import { FireRenderer } from "./render/fires";
 import { Fireworks } from "./render/fireworks";
 import { PlaneFleet } from "./render/fleet";
@@ -344,6 +360,7 @@ import {
   ShaftsPass,
 } from "./render/post";
 import { prewarmScene } from "./render/prewarm";
+import { PropsRenderer } from "./render/props";
 import {
   type AutoQualityState,
   DEFAULT_QUALITY,
@@ -387,11 +404,12 @@ import {
   stepResolution,
 } from "./render/resolution";
 import { CourseRings } from "./render/rings";
-import { RiverRenderer } from "./render/river";
+import { BRIDGE_GONE_UNIFORM, RiverRenderer } from "./render/river";
 import { RoofClutterRenderer } from "./render/roofclutter";
 import { RooftopLifeRenderer } from "./render/rooftop-life";
 import { RuinSmoke } from "./render/ruins";
 import { ScaffoldRenderer } from "./render/scaffold";
+import { ScarsRenderer } from "./render/scars";
 import { Searchlights } from "./render/searchlights";
 import { Signage } from "./render/signage";
 import { Signals } from "./render/signals";
@@ -904,9 +922,29 @@ const moverField = {
   bombers: socket.bombers,
   // U6: and its cave-ins — the falling rock and rubble in the bores.
   caveins: socket.caveIns,
+  // D9: and its props (bound just below): felled tanks, jumbotrons and
+  // bridge spans are solid where they are drawn, and the spans' gaps open.
+  props: undefined as PropSlot | undefined,
 };
 // D5: crane-fall records name the room's crane sites — these.
 socket.collapses.bindCranes(moverField.cranes);
+// D9: the room's destructible props — laid out from the seed, the city and
+// its movers exactly as the server lays them out; the socket's state (every
+// welcome and `props` batch) writes the fallen roof props through to the
+// city and is the mover field's slot.
+const propLayout = generateProps(welcome.seed, city.cityBuildings, {
+  cranes: moverField.cranes,
+  trains: moverField.trains,
+});
+socket.props.bind(propLayout, city.cityBuildings);
+const propSlotLive: PropSlot = { layout: propLayout, state: socket.props };
+/** D9: the props G1's street layout steers clear of. */
+const streetPropKeepsOut = (kind: number): boolean =>
+  kind === PROP_CAR ||
+  kind === PROP_TAXI ||
+  kind === PROP_FUEL ||
+  kind === PROP_STATION;
+moverField.props = propSlotLive;
 if (moverField.news && welcome.newsHeli) {
   moverField.news.target = welcome.newsHeli.target;
   moverField.news.prev = welcome.newsHeli.prev;
@@ -1109,6 +1147,11 @@ const streetFurniture = new StreetFurniture(
     buildingsByBlock,
     cityHoles(city.cityBuildings),
     moverField.trains ?? [],
+    // D9: G1's cars and furniture give way to the destructible vehicles
+    // and gas stations, so nothing parks inside them.
+    propLayout.props
+      .filter((p) => streetPropKeepsOut(p.kind))
+      .map((p) => ({ x: p.x, z: p.z, hx: p.hx, hz: p.hz })),
   ),
 );
 scene.add(streetFurniture.mesh);
@@ -1202,6 +1245,7 @@ socket.events.onRebuild = (r, restored) => {
     directorFx.rebuildPop(restored, now);
     // D1's marks (dark panes, holes, scorch) go with the damage.
     if (r.k === 0) city.damage.clearBuilding(r.b);
+    if (r.k === 0) facadeScars.forget(r.b); // D9: its scars went with them
     // D8: a dressed tower lands inside its scaffold, which strips away.
     if (r.k === 0) scaffold.rebuilt(r.b, now);
   } else {
@@ -1281,6 +1325,58 @@ socket.events.onCaveIn = (c) => {
 const fireRenderer = new FireRenderer(impacts, city.cityBuildings);
 // D8: fresh ruins smoulder (smoke + embers off the stump and rubble).
 const ruinSmoke = new RuinSmoke(impacts, city.cityBuildings);
+// D9 destructible props: wrecks, snapped lamps and masts, poles and wires,
+// gas stations and every solid faller (ONE draw, drawn == collided for the
+// fallers); the street's craters and scorch (ONE draw) and every prop
+// effect through the pools above; the facade scars (broken-window rings,
+// soot streaks) kept in the D1 atlas. The lamps, signals and jumbotrons
+// hide what went down.
+const propsRenderer = new PropsRenderer(propSlotLive);
+scene.add(propsRenderer.mesh);
+const scarsRenderer = new ScarsRenderer(
+  propSlotLive,
+  socket.craters,
+  city.cityBuildings,
+  impacts,
+  explosions,
+  sparks,
+);
+scene.add(scarsRenderer.mesh);
+const facadeScars = new FacadeScarKeeper(
+  city.damage,
+  city.cityBuildings,
+  socket.soot,
+);
+streetlights.setProps(socket.props, propLayout.first[PROP_LAMP] as number);
+signals.setProps(socket.props, propLayout.first[PROP_SIGNAL] as number);
+jumbotrons.setProps(socket.props, propLayout.first[PROP_JUMBO] as number);
+socket.events.onProps = (e) => {
+  const now = performance.now();
+  scarsRenderer.onProps(e, chase.position, now);
+  for (const b of e.blasts) {
+    const p = propLayout.props[b.id];
+    if (!p) continue;
+    const at = { x: p.x, y: p.y, z: p.z };
+    const big = p.kind === PROP_FUEL || p.kind === PROP_STATION;
+    if (big) audio.missileBlast(at, flight.pos, flight.yaw);
+    else audio.explosion(at, flight.pos, flight.yaw);
+    missileShake.add(wrapDistance(at, flight.pos) * (big ? 0.6 : 1.4), now);
+  }
+  if (e.blasts.length > 0) music.noteCombat(now);
+};
+socket.events.onChunks = (ids) => {
+  scarsRenderer.glassCascade(ids, chase.position, performance.now());
+};
+/** D9: the bridge spans fallen by render time `t` (the deck stays drawn
+ * until its span starts to fall on the render clock). */
+function spansDownAt(t: number | null): number {
+  let mask = 0;
+  propLayout.bridges.forEach((id, i) => {
+    if (!socket.props.isDown(id)) return;
+    if (t === null || t >= socket.props.downAt(id)) mask |= 1 << i;
+  });
+  return mask;
+}
 // C2: a quake announced — the ground starts to rumble now (the shake rides
 // the camera path below, on the render clock).
 socket.events.onQuake = (q) => {
@@ -2126,6 +2222,7 @@ socket.events.onPlayerLeft = (id) => {
   remotes.playerLeft(id);
   scoreboard.playerLeft(id);
   players.delete(id);
+  reactor.forgetPlane(id); // A2
 };
 socket.events.onFired = (id) => remoteFired(id);
 socket.events.onDamage = (msg) => {
@@ -2394,16 +2491,14 @@ function applyResume(w: WelcomeMsg): void {
   applyCourseStandings(w.courses); // S3: boards moved on meanwhile
   showOwnScore(w.scores);
   botBar.resync(w.botTarget);
-  if (w.roomId !== currentRoomId) {
-    currentRoomId = w.roomId;
-    reactor.ingest(w.cityEvents ?? []);
-    blastLedger.ingest(w.cityEvents ?? []); // D1: already-seen ones are skipped
-    wrecks.reset((w.wrecks ?? []).filter(isWreckParams)); // D4
-    if (moverField.news && w.newsHeli) {
-      moverField.news.target = w.newsHeli.target;
-      moverField.news.prev = w.newsHeli.prev;
-    }
-  }
+  currentRoomId = w.roomId;
+  // A2: same room or not — the drop was long enough for these to move on.
+  refreshResumedWorld(w, {
+    reactor,
+    blastLedger,
+    wrecks,
+    news: moverField.news ?? null,
+  });
   smoke.clear(socket.selfId);
   streakSmoke.clear(socket.selfId);
   reactor.clearSelfTrack();
@@ -2411,6 +2506,9 @@ function applyResume(w: WelcomeMsg): void {
   awayStarted = false;
   awaitingReturn = null;
   hud.setReconnecting(false);
+  // D9 QA: the welcome replaced the props with the server's — a staged
+  // scene (a slow software-GL capture can drop and resume) goes back on.
+  if (qaStaged.propsSpec) stageQaProps(qaStaged.propsSpec);
 }
 socket.events.onReconnecting = () => hud.setReconnecting(true);
 socket.events.onResumed = applyResume;
@@ -2510,6 +2608,8 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   );
   bomberRenderer.setQuality(QUALITY_PROFILES[tier].chaosFx); // C2
   fireRenderer.setQuality(QUALITY_PROFILES[tier].chaosFx); // C2
+  propsRenderer.setShare(QUALITY_PROFILES[tier].chaosFx); // D9
+  scarsRenderer.setShare(QUALITY_PROFILES[tier].chaosFx); // D9
   ruinSmoke.setQuality(QUALITY_PROFILES[tier].chaosFx); // D8
   blastLedger.setBurnCap(burnCapFor(QUALITY_PROFILES[tier].impacts));
   wrecks.setShare(QUALITY_PROFILES[tier].wreckFire); // D4
@@ -2963,6 +3063,10 @@ declare global {
         missilesDrawn: MissileRenderer["stats"];
         /** P4: C2 chaos messages the server has sent this session. */
         serverChaos: number;
+        /** A2: each held run's and quake's id and the server time the
+         * client lets it go (soak parity compares what is live at one
+         * instant — pruning is per frame). */
+        held: { runs: [number, number][]; quakes: [number, number][] };
       };
       /** P4: the world clock the frame loop last drew at (null: none yet). */
       renderMs: () => number | null;
@@ -2989,7 +3093,13 @@ declare global {
           | null,
       ) => number[];
       /** U6: live cave-ins held, and the pieces and events drawn last frame. */
-      caveIns: () => { live: number; pieces: number; events: number };
+      caveIns: () => {
+        live: number;
+        pieces: number;
+        events: number;
+        /** A2: each held cave-in's id and the server time it is over. */
+        held: [number, number][];
+      };
       /** P4: the plane fleet last frame — planes drawn (near / far LOD)
        * and the draws they cost; null under `?fleet=0`. */
       fleet: () => {
@@ -3190,6 +3300,10 @@ declare global {
        * without `keep`) first clears everything staged back to intact.
        */
       qaDestruction: (spec: QaDestructionSpec | null) => {
+        /** D9: props put down, craters made, floors set burning. */
+        props: number;
+        craters: number;
+        burning: number;
         collapses: number;
         broken: number;
         touched: number;
@@ -3200,6 +3314,19 @@ declare global {
        * the renderer — `stagedDraws` counts the draws only destruction
        * adds (damaged mesh, debris, dust, falling wrecks, scorch,
        * scaffolding; not the impact pool, which bullets feed too). */
+      /** D9 QA: the props on this client and what they draw. */
+      props: () => {
+        down: number;
+        fallers: number;
+        gaps: number;
+        craters: number;
+        soot: number;
+        instances: number;
+        decals: number;
+        scarReapplies: number;
+      };
+      /** D9 QA: re-throw building `b`'s glass cascade (chunks it lost). */
+      qaGlass: (b: number) => number;
       /** D8 QA: the standing filter's per-frame cost (ms, every layer). */
       standingCost: () => ReturnType<typeof standingCost>;
       /** D8 QA: buildings the layers have yet to re-evaluate (0 = settled). */
@@ -3475,8 +3602,37 @@ const qaStaged = {
   buildings: new Set<number>(),
   burns: new Set<string>(),
   wrecks: [] as number[],
+  /** D9: staged props down, craters and burning chunks — and the spec,
+   * re-staged after a W2 resume (whose welcome replaces the props). */
+  props: false,
+  propsSpec: null as QaDestructionSpec["props"] | null,
+  craters: [] as number[],
+  burning: [] as number[],
   active: false,
 };
+/** D9 QA: stage `spec` on the socket's props (see qaDestruction). */
+function stageQaProps(
+  spec: NonNullable<QaDestructionSpec["props"]>,
+): ReturnType<typeof stageProps> {
+  const props = stageProps(
+    city.cityBuildings,
+    propLayout,
+    socket.props,
+    socket.craters,
+    spec,
+    qaStaged.ids,
+  );
+  qaStaged.props = true;
+  qaStaged.propsSpec = spec;
+  qaStaged.craters.push(...props.craters);
+  for (const id of props.burning) {
+    socket.fires.add(id);
+    socket.soot.add(id);
+    qaStaged.burning.push(id);
+    qaStaged.buildings.add(chunkBuilding(id));
+  }
+  return props;
+}
 function clearQaDestruction(): void {
   socket.cityDamage.reset([]);
   socket.collapses.reset([]);
@@ -3488,6 +3644,16 @@ function clearQaDestruction(): void {
   }
   burns.length = kept;
   for (const id of qaStaged.wrecks) wrecks.remove(id);
+  if (qaStaged.props) socket.props.reset([]);
+  for (const id of qaStaged.craters) socket.craters.delete(id);
+  for (const id of qaStaged.burning) {
+    socket.fires.delete(id);
+    socket.soot.delete(id);
+  }
+  qaStaged.props = false;
+  qaStaged.propsSpec = null;
+  qaStaged.craters.length = 0;
+  qaStaged.burning.length = 0;
   qaStaged.buildings.clear();
   qaStaged.burns.clear();
   qaStaged.wrecks.length = 0;
@@ -3874,6 +4040,17 @@ window.__ab = {
             },
       missilesDrawn: missileRenderer.stats,
       serverChaos: socket.serverChaos,
+      held: {
+        // socket.pruneChaos keeps a run its 5 s tail, as the server does.
+        runs: socket.bombers.runs.map((r): [number, number] => [
+          r.id,
+          runEnd(r) + 5000,
+        ]),
+        quakes: [...socket.quakes.values()].map((q): [number, number] => [
+          q.id,
+          q.t + q.dur,
+        ]),
+      },
     };
   },
   renderMs: () => lastRenderMs,
@@ -3911,6 +4088,10 @@ window.__ab = {
   caveIns: () => ({
     live: socket.caveIns.list.length,
     ...caveInRenderer.stats,
+    held: socket.caveIns.list.map((c): [number, number] => [
+      c.id,
+      c.t0 + c.endMs,
+    ]),
   }),
   fleet: () =>
     fleet && tagBatch
@@ -4230,14 +4411,36 @@ window.__ab = {
       qaStaged.wrecks.push(id);
       crashed.push({ id, end: hit.end, hit: hit.hit });
     }
+    // D9: props down (with their blasts), craters, burning floors.
+    const props = spec.props ? stageQaProps(spec.props) : null;
     qaStaged.active = true;
     return {
+      props: props?.props.length ?? 0,
+      craters: props?.craters.length ?? 0,
+      burning: props?.burning.length ?? 0,
       collapses: staged.wires.length,
       broken: staged.broken,
       touched: staged.touched.length,
       blasts,
       wrecks: crashed,
     };
+  },
+  props: () => ({
+    down: socket.props.downCount,
+    gaps: socket.props.gapMask,
+    craters: socket.craters.size,
+    soot: socket.soot.size,
+    ...propsRenderer.drawStats,
+    decals: scarsRenderer.decalCount,
+    scarReapplies: facadeScars.reapplies,
+  }),
+  qaGlass: (b) => {
+    // D9 QA: re-throw building b's glass cascade from every chunk it has
+    // lost (a software frame is ~1 s — a single burst would be gone).
+    const ids = socket.cityDamage
+      .destroyedIds()
+      .filter((id) => chunkBuilding(id) === b);
+    return scarsRenderer.glassCascade(ids, chase.position, performance.now());
   },
   standingCost: () => standingCost(),
   standingPending: () => standingPending(),
@@ -5015,6 +5218,9 @@ const frame = (now: number): void => {
       bullet.vel = magnetizeVelocity(bullet.pos, bullet.vel, targets, dt);
     }
   }
+  // D9: rounds and the flight assist see the bridges' fallen spans.
+  bullets.gaps = socket.props.gapMask;
+  effWorld.gaps = socket.props.gapMask;
   bullets.step(dt);
   // Backwards, so a hit's bullets.remove() never skips the next bullet
   // (and no per-frame copy of the list — O4).
@@ -5432,6 +5638,16 @@ const frame = (now: number): void => {
   );
   underground.setCaveIns(socket.caveIns.list, chase.position, renderMs);
   fireRenderer.update(socket.fires, chase.position, now);
+  // D9: the props — fallen spans opened on the render clock (the river,
+  // the road paint, traffic and city life), wrecks, fallers and scars.
+  BRIDGE_GONE_UNIFORM.value = spansDownAt(renderMs);
+  traffic.gaps = BRIDGE_GONE_UNIFORM.value;
+  cityLife.gaps = BRIDGE_GONE_UNIFORM.value;
+  // (The QA eye when one is held: a capture's camera is not the chase.)
+  const propsViewer = qaView ? qaView.eye : chase.position;
+  propsRenderer.update(propsViewer, renderMs);
+  scarsRenderer.update(propsViewer, renderMs, now);
+  facadeScars.update(propsViewer, now);
   // S4: the zeppelin, its flak and its fall; the HUD bar while it flies;
   // "it got away" once, when a raid runs out still flying.
   bossRenderer.update(

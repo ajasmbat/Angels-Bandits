@@ -216,6 +216,8 @@ export interface EffortlessWorld {
   buildings: readonly Building[];
   index?: CityIndex;
   nature?: NatureIndex;
+  /** D9: the room's fallen bridge spans (river.ts gaps), 0 = none. */
+  gaps?: number;
 }
 
 /** One frame's view of the pilot. */
@@ -520,7 +522,7 @@ function closeness(
     probe.y = pos.y + dy * d;
     probe.z = pos.z + dz * d;
     if (
-      hitsGround(probe, AIM_PROBE_RADIUS) ||
+      hitsGround(probe, AIM_PROBE_RADIUS, world.gaps) ||
       collideCity(probe, AIM_PROBE_RADIUS, world.buildings, world.index) !==
         null ||
       (world.nature !== undefined &&
@@ -555,7 +557,7 @@ function rollout(
     st = stepFlight(st, guardInput, GUARD_STEP, tuning);
     const p = st.pos;
     if (
-      hitsGround(p, GUARD_RADIUS) ||
+      hitsGround(p, GUARD_RADIUS, world.gaps) ||
       collideCity(p, GUARD_RADIUS, world.buildings, world.index) !== null ||
       (world.nature !== undefined &&
         collideNature(p, GUARD_RADIUS, world.nature) !== null)

@@ -73,6 +73,10 @@ export class FacadeDamage {
   /** Last-hit stamp per slot (LRU). */
   private readonly slotStamp = new Float64Array(MAX_FACE_SLOTS);
   private readonly faceSlot = new Map<number, number>();
+  /** D9: a face's slot generation (bumped each time it is given a slot;
+   * gone when it is evicted) — how D9's scar keeper sees an eviction. */
+  private readonly epochs = new Map<number, number>();
+  private epochGen = 0;
   private stamp = 0;
   private cap = MAX_FACE_SLOTS;
   private readonly dirtySlots = new Set<number>();
@@ -91,6 +95,11 @@ export class FacadeDamage {
   setSlotCap(cap: number): void {
     this.cap = Math.max(1, Math.min(MAX_FACE_SLOTS, Math.floor(cap)));
     for (let s = this.cap; s < MAX_FACE_SLOTS; s++) this.evict(s);
+  }
+
+  /** D9: the face's slot generation, 0 while it holds no slot. */
+  faceEpoch(building: number, tier: number, face: number): number {
+    return this.epochs.get(faceKey(building, tier, face)) ?? 0;
   }
 
   /** The slot a face's records live in, or -1 (never marked / evicted). */
@@ -157,6 +166,7 @@ export class FacadeDamage {
     this.slotFace[slot] = key;
     this.slotStamp[slot] = stamp;
     this.faceSlot.set(key, slot);
+    this.epochs.set(key, ++this.epochGen);
     this.dirtyTiers.add(tierKey(building, tier));
     return slot;
   }
@@ -166,6 +176,7 @@ export class FacadeDamage {
     const key = this.slotFace[slot] as number;
     if (key === -1) return;
     this.faceSlot.delete(key);
+    this.epochs.delete(key);
     this.slotFace[slot] = -1;
     this.dirtyTiers.add(Math.floor(key / 4));
     const x0 = (slot % DAMAGE.slotsX) * DAMAGE.cols;

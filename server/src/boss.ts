@@ -75,7 +75,7 @@ import {
 import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 import type { BotRoundHit } from "./bots";
 import type { Combat, SpeedCapFn } from "./combat";
-import type { RoomCity } from "./destruction";
+import { type RoomCity, blastProps } from "./destruction";
 
 /** A plane as the director sees it this tick: its on-record pose (the
  * caller extrapolates a human's to `now`), velocity, and protection. */
@@ -162,13 +162,15 @@ export class BossDirector {
     this.spawns.set(id, now);
   }
 
-  /** A plane left the room: it neither draws flak nor keeps credit. */
+  /** A plane left the room: it draws no flak. Its damage credit stays for
+   * the raid (A2): a W2 drop is not a leave, and a pilot who resumes and
+   * finishes the boss is owed it — bossDowned only credits members still in
+   * the room, and every new raid starts the ledger over. */
   forget(id: string): void {
     this.launchByBot.delete(id);
     this.offered.delete(id);
     this.spawns.delete(id);
     this.taken.delete(id);
-    this.damageBy.delete(id);
     for (const t of this.turrets) if (t.targetId === id) t.targetId = null;
   }
 
@@ -633,6 +635,7 @@ export function applyBossImpact(
   building: Building | null = null,
 ): number[] {
   const out = city.damage.damageAt(at, BOSS_IMPACT_RADIUS, BOSS_IMPACT_DAMAGE);
+  blastProps(city, at, BOSS_IMPACT_RADIUS, BOSS_IMPACT_DAMAGE, by); // D9
   if (building) out.push(...crushUnder(city, building, at));
   for (const id of out) city.breakers.set(chunkBuilding(id), by);
   return out;

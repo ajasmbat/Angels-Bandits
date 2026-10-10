@@ -433,8 +433,12 @@ export function collideNature(
  * except inside a U4 tunnel's open volume (city/tunnels.ts tunnelOpen):
  * its cut, ramp, bore and mouth are air, and their walls are this ground.
  */
-export function hitsGround(pos: Vec3, radius: number = PLAYER_RADIUS): boolean {
-  return riverHit(pos, radius) && !tunnelOpen(pos, radius);
+export function hitsGround(
+  pos: Vec3,
+  radius: number = PLAYER_RADIUS,
+  gaps = 0,
+): boolean {
+  return riverHit(pos, radius, gaps) && !tunnelOpen(pos, radius);
 }
 
 /** losClear's sampled ground test: step along the line, m. Tunnel walls are
@@ -449,7 +453,7 @@ const groundAt: Vec3 = { x: 0, y: 0, z: 0 };
  * flight agree on where the rock is. Only asked when that part of the line
  * is near a bore; the bridge decks and railings stay with riverSegmentClear.
  */
-function undergroundClear(from: Vec3, d: Vec3): boolean {
+function undergroundClear(from: Vec3, d: Vec3, gaps = 0): boolean {
   const toY = from.y + d.y;
   // The t range below street level (y is monotonic along the segment).
   let t0 = 0;
@@ -466,7 +470,7 @@ function undergroundClear(from: Vec3, d: Vec3): boolean {
     groundAt.x = from.x + d.x * t;
     groundAt.y = Math.min(from.y + d.y * t, -1e-6);
     groundAt.z = from.z + d.z * t;
-    if (hitsGround(groundAt, 0)) return false;
+    if (hitsGround(groundAt, 0, gaps)) return false;
   }
   return true;
 }
@@ -620,6 +624,8 @@ export function losClear(
   from: Vec3,
   to: Vec3,
   buildings: readonly Building[] = [],
+  /** D9: fallen bridge spans (city/river.ts riverHit), 0 = none. */
+  gaps = 0,
 ): boolean {
   // Into scratch (riverSegmentClear and segmentHitsBox keep no reference).
   const d = wrapDeltaInto(from, to, sight);
@@ -631,9 +637,9 @@ export function losClear(
   // below street level near a tunnel the ground is sampled instead (the
   // bore is a hole in it); the decks and railings stay exact.
   if (undergroundNearTunnel(from, d)) {
-    if (!undergroundClear(from, d)) return false;
-    if (!riverSegmentClear(from, d, false)) return false;
-  } else if (!riverSegmentClear(from, d)) {
+    if (!undergroundClear(from, d, gaps)) return false;
+    if (!riverSegmentClear(from, d, false, gaps)) return false;
+  } else if (!riverSegmentClear(from, d, true, gaps)) {
     return false;
   }
   const loX = Math.min(0, dx);

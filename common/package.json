@@ -24,6 +24,8 @@
     "./city/tunnels": "./src/city/tunnels.ts",
     "./city/caveins": "./src/city/caveins.ts",
     "./city/roof-structures": "./src/city/roof-structures.ts",
+    "./city/jumbotron-sites": "./src/city/jumbotron-sites.ts",
+    "./city/props": "./src/city/props.ts",
     "./storm": "./src/storm.ts",
     "./strike": "./src/strike.ts",
     "./chaos": "./src/chaos.ts",

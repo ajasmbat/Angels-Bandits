@@ -698,6 +698,117 @@ export const VIEWS = [
       },
     },
   },
+  // D9 more destruction, staged through __ab.qaDestruction's `props` (the
+  // seed-42 prop layout: each `down` takes the nearest standing prop of
+  // that kind, and throws if none is near — the layout changed). Times are
+  // relative to the render clock at staging.
+  //
+  // destruction-glass: tower 343's glass curtain wall chewed open at the
+  // street (__ab.chew) and its cascade of shards re-thrown every pin
+  // (`glass`), from the glass-canyon street.
+  {
+    name: "destruction-glass",
+    x: 1200,
+    z: 340,
+    y: 40,
+    yaw: 0,
+    raf: true,
+    eye: [1204, 12, 404],
+    at: [1222, 30, 452],
+    weather: "clear",
+    chew: {
+      eye: [1205, 22, 436],
+      at: [1222, 26, 452],
+      rounds: 700,
+      spread: 0.3,
+    },
+    glass: 343,
+  },
+  // destruction-chain: the riverside gas station at (1300, 1030) blown up
+  // with the poles beside it down (live wires sparking), a parked car on
+  // the bank street gone up with it, craters (one a burst water main) and
+  // the bank towers across the street burning, soot rising up their faces.
+  {
+    name: "destruction-chain",
+    sky: "dusk",
+    x: 1214,
+    z: 1104,
+    y: 30,
+    yaw: 0,
+    raf: true,
+    eye: [1268, 11, 1058],
+    at: [1298, 6, 1000],
+    weather: "clear",
+    stage: {
+      props: {
+        down: [
+          { kind: "station", near: { x: 1300, z: 1030 }, t: -2500, blast: 600 },
+          { kind: "pole", near: { x: 1287, z: 1038 }, t: -2000 },
+          { kind: "pole", near: { x: 1313, z: 1038 }, t: -2000 },
+          { kind: "car", near: { x: 1240, z: 986 }, t: -2200, blast: 500 },
+          { kind: "lamp", near: { x: 1270, z: 1016 }, t: -2000 },
+        ],
+        craters: [
+          { x: 1262, z: 994, r: 4.5, t: -1700, water: true },
+          { x: 1300, z: 1004, r: 5, t: -1900, water: false },
+        ],
+        burn: [
+          { b: 360, h: 71, chunks: 6, face: "+z" },
+          { b: 359, h: 42, chunks: 4, face: "+z" },
+        ],
+      },
+    },
+  },
+  // destruction-bridge: the x = 1400 bridge's middle span down in the river
+  // (its lamps with it), the gap in the deck, from the south promenade.
+  {
+    name: "destruction-bridge",
+    sky: "dusk",
+    x: 1322,
+    z: 1032,
+    y: 22,
+    yaw: 0,
+    raf: true,
+    eye: [1342, 9, 1046],
+    at: [1400, -8, 1100],
+    weather: "clear",
+    stage: {
+      props: {
+        down: [{ kind: "bridge", near: { x: 1400, z: 1100 }, t: -30_000 }],
+      },
+    },
+  },
+  // destruction-street: the x = 1000 street at z ≈ 365, a lane in from
+  // two parked cars facing across it — both blown and flipped, lamps and a
+  // signal mast snapped into the street, craters and a burst water main.
+  {
+    name: "destruction-street",
+    x: 1000,
+    z: 280,
+    y: 30,
+    yaw: 0,
+    raf: true,
+    eye: [997, 6, 334],
+    at: [1000, 1, 372],
+    weather: "clear",
+    stage: {
+      props: {
+        down: [
+          { kind: "car", near: { x: 986, z: 362 }, t: -2600, blast: 400 },
+          { kind: "car", near: { x: 1014, z: 368 }, t: -2400, blast: 700 },
+          { kind: "lamp", near: { x: 1016, z: 375 }, t: -2500 },
+          { kind: "lamp", near: { x: 984, z: 337 }, t: -2500 },
+          { kind: "signal", near: { x: 984, z: 384 }, t: -2300 },
+          { kind: "signal", near: { x: 1016, z: 384 }, t: -2300 },
+        ],
+        craters: [
+          { x: 996, z: 352, r: 4.5, t: -2000, water: true },
+          { x: 1006, z: 388, r: 3.5, t: -2000, water: false },
+          { x: 990, z: 330, r: 3, t: -2000, water: false },
+        ],
+      },
+    },
+  },
   // S9: the war-zeppelin carrier, STAGED on the client (`__ab.qaBoss`): a
   // raid whose hull crosses `boss.ahead` m in front of the pinned plane at
   // the pinned world instant `timeMs`, flying the view's +X (so the hull

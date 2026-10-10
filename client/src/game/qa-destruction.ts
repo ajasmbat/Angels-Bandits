@@ -23,8 +23,11 @@
 import {
   type Building,
   type CityDamage,
+  chunkId,
+  chunkMask,
   chunksOf,
   mulberry32,
+  tierGrids,
 } from "@angels-bandits/common/city";
 import {
   type CollapseField,
@@ -36,6 +39,13 @@ import {
   demolitionPlan,
   planCollapses,
 } from "@angels-bandits/common/city/collapse";
+import {
+  type Crater,
+  PROP_BRIDGE,
+  PROP_KIND_NAMES,
+  type PropLayout,
+  type PropState,
+} from "@angels-bandits/common/city/props";
 import { COLLAPSE_CAP, DESTROY_CAP } from "@angels-bandits/common/constants";
 import { wrapDeltaAxis } from "@angels-bandits/common/world";
 
@@ -186,5 +196,121 @@ export interface QaDestructionSpec {
   fell?: StageFell[];
   blasts?: StageBlast[];
   wrecks?: StageWreck[];
+  /** D9: props down, craters, burning floors. */
+  props?: StageProps;
   keep?: boolean;
+}
+
+// --- D9 props ----------------------------------------------------------------
+
+/** One prop to stage down: the nearest of `kind` (PROP_KIND_NAMES) to plan
+ * point `near` that is still standing, down at world time `t`; explosive
+ * ones blow `blast` ms later (omitted: not yet). */
+export interface StagePropDown {
+  kind: string;
+  near: { x: number; z: number };
+  t: number;
+  blast?: number;
+}
+
+/** A street crater to stage (world time `t`). */
+export interface StageCrater {
+  x: number;
+  z: number;
+  r: number;
+  t: number;
+  water: boolean;
+}
+
+/** Floors set burning (and so sooted): `chunks` outer chunks of building
+ * `b` (its height the generator guard), one column up the middle of its
+ * `face` (default "+x"). */
+export interface StageBurn {
+  b: number;
+  h: number;
+  chunks: number;
+  face?: "+x" | "-x" | "+z" | "-z";
+}
+
+export interface StageProps {
+  down?: StagePropDown[];
+  craters?: StageCrater[];
+  burn?: StageBurn[];
+}
+
+/**
+ * Stage `spec` on the socket's prop state `state` (bound to `layout`) and
+ * crater map, as if the server had broadcast it. Pure in its inputs. Returns
+ * the props put down, the crater ids and the burning chunks.
+ */
+export function stageProps(
+  buildings: readonly Building[],
+  layout: PropLayout,
+  state: PropState,
+  craters: Map<number, Crater>,
+  spec: StageProps,
+  ids: { next: number },
+): { props: number[]; craters: number[]; burning: number[] } {
+  const props: number[] = [];
+  for (const d of spec.down ?? []) {
+    const kind = (PROP_KIND_NAMES as readonly string[]).indexOf(d.kind);
+    if (kind < 0) throw new Error(`qaDestruction: no prop kind "${d.kind}"`);
+    let best = -1;
+    let bestD = Number.POSITIVE_INFINITY;
+    for (const p of layout.props) {
+      if (p.kind !== kind || state.isDown(p.id)) continue;
+      const dist = Math.hypot(
+        wrapDeltaAxis(d.near.x, p.x),
+        wrapDeltaAxis(d.near.z, p.z),
+      );
+      if (dist < bestD) {
+        bestD = dist;
+        best = p.id;
+      }
+    }
+    if (best < 0 || bestD > 120) {
+      throw new Error(
+        `qaDestruction: no standing ${d.kind} within 120 m of (${d.near.x}, ${d.near.z}) — the layout changed`,
+      );
+    }
+    state.apply(best, d.t, d.blast === undefined ? -1 : d.t + d.blast);
+    props.push(best);
+    const p = layout.props[best];
+    if (p?.kind === PROP_BRIDGE) {
+      for (const lamp of layout.spanLamps[p.ref] ?? []) {
+        if (!state.isDown(lamp)) {
+          state.apply(lamp, d.t);
+          props.push(lamp);
+        }
+      }
+    }
+  }
+  const made: number[] = [];
+  for (const c of spec.craters ?? []) {
+    const id = ids.next++;
+    craters.set(id, { id, x: c.x, z: c.z, r: c.r, t: c.t, water: c.water });
+    made.push(id);
+  }
+  const burning: number[] = [];
+  for (const f of spec.burn ?? []) {
+    const b = buildings[f.b];
+    if (!b || Math.round(b.height) !== f.h) {
+      throw new Error(
+        `qaDestruction: building ${f.b} is ${b ? Math.round(b.height) : "missing"} m tall, the spec expects ${f.h} m — the city changed`,
+      );
+    }
+    const g = tierGrids(b)[0];
+    if (!g) continue;
+    const face = f.face ?? "+x";
+    const ix =
+      face === "+x" ? g.nx - 1 : face === "-x" ? 0 : Math.floor(g.nx / 2);
+    const iz =
+      face === "+z" ? g.nz - 1 : face === "-z" ? 0 : Math.floor(g.nz / 2);
+    const start = burning.length;
+    for (let iy = 0; iy < g.ny && burning.length - start < f.chunks; iy++) {
+      const cell = (iy * g.nz + iz) * g.nx + ix;
+      if (chunkMask(b)[0]?.[cell]) burning.push(chunkId(f.b, 0, cell));
+    }
+  }
+  return { props, craters: made, burning };
 }

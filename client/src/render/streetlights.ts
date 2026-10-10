@@ -7,9 +7,10 @@
 // covered exactly once despite the torus wrap.
 
 import {
-  FURNITURE_LINE,
   LAMP_STATIONS_MINUS,
   LAMP_STATIONS_PLUS,
+  type StreetlampPosition,
+  streetlampPositions,
 } from "@angels-bandits/common/city/street";
 import {
   BLOCK_PITCH,
@@ -30,42 +31,9 @@ import { ImageCache, InstanceUploads } from "./wrapPlacement";
 // Re-exported so this file stays their long-standing import site.
 export { LAMP_STATIONS_MINUS, LAMP_STATIONS_PLUS };
 
-/** Canonical ground position of one lamp (on a furniture line, y = 0). */
-export interface StreetlampPosition {
-  x: number;
-  z: number;
-}
-
-/**
- * Every street lamp in canonical [0, WORLD_SIZE) coords, deterministic from
- * the block grid. Each block contributes its west line (x = bx·PITCH) and its
- * south line (z = bz·PITCH), placing lamps on BOTH of the line's furniture
- * lines (contract: FURNITURE_LINE m off the centerline, 1 m behind the curb);
- * with the torus wrap that tiles all street lines exactly once, corners
- * excluded (fractions never land on 0 or 1).
- */
-export function streetlampPositions(): StreetlampPosition[] {
-  const grid = WORLD_SIZE / BLOCK_PITCH;
-  const canon = (v: number) => canonicalize({ x: v, y: 0, z: 0 }).x;
-  const lamps: StreetlampPosition[] = [];
-  for (let bx = 0; bx < grid; bx++) {
-    for (let bz = 0; bz < grid; bz++) {
-      const x0 = bx * BLOCK_PITCH;
-      const z0 = bz * BLOCK_PITCH;
-      for (let i = 0; i < LAMP_STATIONS_PLUS.length; i++) {
-        const along = LAMP_STATIONS_PLUS[i] as number;
-        const staggered = LAMP_STATIONS_MINUS[i] as number;
-        // West line: a lamp on each furniture line, negative side staggered.
-        lamps.push({ x: x0 + FURNITURE_LINE, z: z0 + along });
-        lamps.push({ x: canon(x0 - FURNITURE_LINE), z: z0 + staggered });
-        // South line: same cross-section, axes swapped.
-        lamps.push({ x: x0 + along, z: z0 + FURNITURE_LINE });
-        lamps.push({ x: x0 + staggered, z: canon(z0 - FURNITURE_LINE) });
-      }
-    }
-  }
-  return lamps;
-}
+// D9: the lamp layout moved to the street contract (common/src/city/street.ts)
+// — lamps can be snapped, so the server places them exactly as every client.
+export { type StreetlampPosition, streetlampPositions };
 
 const POLE_HEIGHT = 7;
 /** Lamp-head color, boosted to the ladder's LAMP rung so heads read hot to

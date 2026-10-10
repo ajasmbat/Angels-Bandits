@@ -57,6 +57,12 @@ export const PARAPET_HEIGHT = 1.1;
 export const PARAPET_THICKNESS = 0.5;
 /** The promenade between a bank street's lot line and the channel edge, m. */
 export const PROMENADE_DEPTH = BLOCK_PITCH / 2 - RIVER_HALF_WIDTH - LOT_LINE;
+/** D9: half the length of a bridge's breakable middle span, m — the part of
+ * the deck (and its parapets) that can collapse into the river
+ * (city/props.ts). The deck either side of it, out to the walls, stays. */
+export const BRIDGE_SPAN_HALF = 20;
+/** Bridges in the world: one per north–south street line. */
+export const BRIDGE_COUNT = WORLD_SIZE / BLOCK_PITCH;
 
 /** True if block row `bz` (any integer, wrapped) is the river. */
 export function isRiverRow(bz: number): boolean {
@@ -76,6 +82,23 @@ export function overChannel(z: number): boolean {
 /** Signed metres from the nearest north–south street line (a bridge axis). */
 const bridgeOffset = (x: number): number =>
   x - Math.round(x / BLOCK_PITCH) * BLOCK_PITCH;
+
+/** D9: which bridge (0..BRIDGE_COUNT−1) the nearest north–south street line
+ * at `x` carries. Wrap-safe. */
+export function bridgeIndexAt(x: number): number {
+  const n = BRIDGE_COUNT;
+  return (((Math.round(x / BLOCK_PITCH) % n) + n) % n) as number;
+}
+
+/** D9: is (x, z) over the open hole a fallen span left in bridge deck
+ * `bridgeIndexAt(x)` — `gaps` is the bitmask of fallen spans (bit i =
+ * bridge i)? Traffic, city life and street paint skip what stands there. */
+export function inBridgeGap(x: number, z: number, gaps: number): boolean {
+  if (gaps === 0) return false;
+  if (Math.abs(riverOffset(z)) >= BRIDGE_SPAN_HALF) return false;
+  if (Math.abs(bridgeOffset(x)) > BRIDGE_HALF_WIDTH) return false;
+  return (gaps & (1 << bridgeIndexAt(x))) !== 0;
+}
 
 /**
  * One solid box of the river's built structure, in canonical coordinates
@@ -153,7 +176,7 @@ function inBox(
  * Expanded-box convention throughout: the bank (solid below y = 0 outside
  * the channel) grows by `r` into the channel, the water by `r` upward.
  */
-export function riverHit(pos: Vec3, r: number): boolean {
+export function riverHit(pos: Vec3, r: number, gaps = 0): boolean {
   // The fast path: above every parapet, nothing here can be touched.
   if (pos.y - r > PARAPET_HEIGHT) return false;
   const off = Math.abs(riverOffset(pos.z));
@@ -176,19 +199,15 @@ export function riverHit(pos: Vec3, r: number): boolean {
     return true;
   }
   if (!onBridge) return false;
-  const dz = off;
+  // D9: a fallen middle span leaves the deck and parapets only from
+  // BRIDGE_SPAN_HALF out to the walls (each half its own box: centre and
+  // half length below), so the sphere may pass through the hole.
+  const gap = gaps !== 0 && (gaps & (1 << bridgeIndexAt(pos.x))) !== 0;
+  const dz = gap ? off - (DECK_HALF_LENGTH + BRIDGE_SPAN_HALF) / 2 : off;
+  const hz = gap ? (DECK_HALF_LENGTH - BRIDGE_SPAN_HALF) / 2 : DECK_HALF_LENGTH;
   // The deck.
   if (
-    inBox(
-      bx,
-      dz,
-      pos.y,
-      r,
-      BRIDGE_HALF_WIDTH,
-      DECK_HALF_LENGTH,
-      -BRIDGE_DECK_DEPTH,
-      0,
-    )
+    inBox(bx, dz, pos.y, r, BRIDGE_HALF_WIDTH, hz, -BRIDGE_DECK_DEPTH, 0)
   ) {
     return true;
   }
@@ -200,7 +219,7 @@ export function riverHit(pos: Vec3, r: number): boolean {
     pos.y,
     r,
     PARAPET_THICKNESS / 2,
-    DECK_HALF_LENGTH,
+    hz,
     0,
     PARAPET_HEIGHT,
   );
@@ -268,7 +287,12 @@ const outsideAt = (offFrom: number, dz: number, t: number): boolean =>
  * level at most once — blocked when that crossing lies outside the channel
  * (into the bank) or when an end is under street level outside it.
  */
-export function riverSegmentClear(from: Vec3, d: Vec3, ground = true): boolean {
+export function riverSegmentClear(
+  from: Vec3,
+  d: Vec3,
+  ground = true,
+  gaps = 0,
+): boolean {
   const toY = from.y + d.y;
   if (Math.min(from.y, toY) > PARAPET_HEIGHT) return true;
   const offFrom = riverOffset(from.z);
@@ -301,47 +325,54 @@ export function riverSegmentClear(from: Vec3, d: Vec3, ground = true): boolean {
   const oy = from.y;
   for (let k = first; k <= last; k++) {
     const b = k * BLOCK_PITCH - from.x; // this bridge's centre, local x
-    const z0 = cz - DECK_HALF_LENGTH;
-    const z1 = cz + DECK_HALF_LENGTH;
-    if (
-      segmentHitsBox(
-        0,
-        oy,
-        0,
-        d,
-        b - BRIDGE_HALF_WIDTH,
-        b + BRIDGE_HALF_WIDTH,
-        -BRIDGE_DECK_DEPTH,
-        0,
-        z0,
-        z1,
-      ) ||
-      segmentHitsBox(
-        0,
-        oy,
-        0,
-        d,
-        b - px - t2,
-        b - px + t2,
-        0,
-        PARAPET_HEIGHT,
-        z0,
-        z1,
-      ) ||
-      segmentHitsBox(
-        0,
-        oy,
-        0,
-        d,
-        b + px - t2,
-        b + px + t2,
-        0,
-        PARAPET_HEIGHT,
-        z0,
-        z1,
-      )
-    ) {
-      return false;
+    // D9: a fallen span splits the deck into its two end pieces.
+    const gap =
+      gaps !== 0 && (gaps & (1 << bridgeIndexAt(from.x + b))) !== 0;
+    for (let piece = gap ? 0 : -1; piece <= (gap ? 1 : -1); piece++) {
+      const z0 =
+        piece === 1 ? cz + BRIDGE_SPAN_HALF : cz - DECK_HALF_LENGTH;
+      const z1 =
+        piece === 0 ? cz - BRIDGE_SPAN_HALF : cz + DECK_HALF_LENGTH;
+      if (
+        segmentHitsBox(
+          0,
+          oy,
+          0,
+          d,
+          b - BRIDGE_HALF_WIDTH,
+          b + BRIDGE_HALF_WIDTH,
+          -BRIDGE_DECK_DEPTH,
+          0,
+          z0,
+          z1,
+        ) ||
+        segmentHitsBox(
+          0,
+          oy,
+          0,
+          d,
+          b - px - t2,
+          b - px + t2,
+          0,
+          PARAPET_HEIGHT,
+          z0,
+          z1,
+        ) ||
+        segmentHitsBox(
+          0,
+          oy,
+          0,
+          d,
+          b + px - t2,
+          b + px + t2,
+          0,
+          PARAPET_HEIGHT,
+          z0,
+          z1,
+        )
+      ) {
+        return false;
+      }
     }
     // The embankment railings from this bridge to the next one, the -z
     // side first.

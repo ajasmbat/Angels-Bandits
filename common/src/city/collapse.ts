@@ -1448,8 +1448,8 @@ export interface CollapseHit {
 const scratchPose = blankPose();
 
 /** Does a sphere at (dx, dy, dz) from the box centre touch the oriented
- * box? */
-function sphereHitsPiece(
+ * box? (D9's falling props test exactly this against their own poses.) */
+export function sphereHitsPiece(
   p: PiecePose,
   dx: number,
   dy: number,

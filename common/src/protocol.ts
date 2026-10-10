@@ -20,6 +20,7 @@ import type {
 import type { WireCaveIn } from "./city/caveins";
 import type { CollapseWire } from "./city/collapse";
 import type { NewsHeliSlot, NewsHeliTarget } from "./city/newsheli";
+import type { WireCrater, WirePropState } from "./city/props";
 import type { CityEvent } from "./cityevents";
 import type { RebuildWire, WireDirectorEvent } from "./director";
 import type { MedalKind, StreakTier } from "./medals";
@@ -321,6 +322,11 @@ export interface WelcomeMsg {
    * joiner sees, hears and collides with the same falling rock and rubble.
    * Absent: none (and a resume clears what it held). */
   caveIns?: WireCaveIn[];
+  /** D9: the room's destructible props that are down (and their blasts),
+   * its street craters and its sooted chunks (common/src/city/props.ts),
+   * so a late joiner sees and collides with the same wrecks, fallen tanks
+   * and broken bridges. Absent: none (and a resume clears what it held). */
+  props?: WirePropState;
 }
 
 // --- S3 stunt courses ---
@@ -759,8 +765,33 @@ export interface CaveInMsg {
   c: WireCaveIn;
 }
 
+/**
+ * D9: what the city's destructible props did this tick (common/src/city/
+ * props.ts), at most one per room per tick and only when something
+ * changed, sent right after the tick's `chunks` and collapses. Every field
+ * is optional; old clients ignore the message.
+ * - `d`: props that went down — pairs [idΔ, t] (ids ascending, Δ from the
+ *   previous id, the first absolute; t absolute server ms).
+ * - `b`: blasts that landed this tick — pairs [idΔ, t], the same way.
+ *   Clients draw a fireball from these, never from a prediction.
+ * - `u`: props that stand again (encodeChunkIds delta form).
+ * - `a`: bridge-span repairs announced — pairs [idΔ, at]; the span comes
+ *   back only with a later `u`.
+ * - `c`: new street craters; `cu`: crater ids repaired (delta form).
+ */
+export interface PropsMsg {
+  type: "props";
+  d?: number[];
+  b?: number[];
+  u?: number[];
+  a?: number[];
+  c?: WireCrater[];
+  cu?: number[];
+}
+
 export type ServerMsg =
   | WelcomeMsg
+  | PropsMsg
   | CaveInMsg
   | BombersMsg
   | BomberDownMsg

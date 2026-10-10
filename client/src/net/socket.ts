@@ -38,12 +38,15 @@
 
 import {
   type BossFlak,
+  type BossLaunch,
   type BossRaid,
   applyBossState,
   decodeFlak,
+  decodeLaunch,
   decodeRaid,
   emptyBossSlot,
   isBossDown,
+  launchDoneAt,
   raidMaxHp,
 } from "@angels-bandits/common/boss";
 import {
@@ -143,6 +146,8 @@ export interface GameSocketEvents {
   onBoss?: (raid: BossRaid) => void;
   /** S4: the boss went down (already in `boss`): credit and the break-up. */
   onBossDown?: (msg: BossDownMsg) => void;
+  /** S9: the carrier is launching `bot` (already in `boss.launches`). */
+  onBossLaunch?: (l: BossLaunch, bot: string) => void;
   /** C2: a quake was announced (already in `quakes`). */
   onQuake?: (q: QuakeEvent) => void;
   /** C2: a bomber was shot down (already in `bombers`; its undropped bombs
@@ -541,6 +546,11 @@ export class GameSocket {
    * and cave-ins that have settled away. */
   pruneChaos(t: number): void {
     if (this.caveIns.list.length > 0) pruneCaveIns(this.caveIns, t);
+    // S9: carrier launches whose rig has reset.
+    const ls = this.boss.launches;
+    if (ls && ls.length > 0 && launchDoneAt(ls[0] as BossLaunch) < t) {
+      this.boss.launches = ls.filter((l) => launchDoneAt(l) >= t);
+    }
     const runs = this.bombers.runs;
     for (let i = runs.length - 1; i >= 0; i--) {
       const r = runs[i];
@@ -818,8 +828,18 @@ export class GameSocket {
         if (!raid) break;
         this.boss.raid = raid;
         this.boss.down = null;
+        this.boss.launches = [];
         this.bossHp = raidMaxHp(raid);
         this.events.onBoss?.(raid);
+        break;
+      }
+      case "bossLaunch": {
+        const l = decodeLaunch(msg.l);
+        if (!l || this.boss.raid?.id !== l.raid) break;
+        const ls = this.boss.launches ?? [];
+        if (ls.some((o) => o.id === l.id)) break;
+        this.boss.launches = [...ls, l];
+        this.events.onBossLaunch?.(l, String(msg.bot));
         break;
       }
       case "bossHp":

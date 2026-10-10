@@ -318,6 +318,29 @@ try {
     if (v.caveIn) {
       console.log("caveIn", v.name, JSON.stringify(await stageCaveIn()));
     }
+    if (v.boss) {
+      // S9: stage the carrier at the pinned instant (see gallery-views.mjs).
+      const r = await page.evaluate((v) => {
+        window.__ab.qaBoss({
+          x: v.x,
+          y: v.y,
+          z: v.z,
+          yaw: v.yaw,
+          ahead: v.boss.ahead,
+          worldMs: v.timeMs,
+          crossMs: 0,
+          corridor: { near: 60, far: 160, lateral: 30, yLo: 250, yHi: 330 },
+        });
+        if (v.boss.launch) {
+          window.__ab.qaBossLaunch(v.boss.launch.kind, v.boss.launch.phaseMs);
+        }
+        if (v.boss.downAfterMs !== undefined) {
+          window.__ab.qaBossDown(v.boss.downAfterMs);
+        }
+        return window.__ab.boss();
+      }, v);
+      console.log("boss", v.name, JSON.stringify(r?.drawn ?? null));
+    }
     if (v.chew) {
       // D2: break the building once, before the frames settle.
       const r = await page.evaluate((c) => {
@@ -425,6 +448,7 @@ try {
       await page.evaluate(() => window.__ab.qaCaveIn(null));
     }
     if (v.eye) await page.evaluate(() => window.__ab.qaCamera(null));
+    if (v.boss) await page.evaluate(() => window.__ab.qaBoss(null));
     if (v.stage) {
       await page.evaluate(() => {
         window.__ab.qaDestruction(null);

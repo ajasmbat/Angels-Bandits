@@ -312,7 +312,7 @@ describe("weak-point hit claims", () => {
       const out =
         part.kind === "engine"
           ? { x: 0, y: -1, z: 0 }
-          : part.y > 20
+          : part.y > 15
             ? { x: 0, y: 1, z: 0 }
             : { x: 0, y: 0, z: Math.sign(part.z) };
       for (let n = 0; n < 100 && downAt === null; n++) {

@@ -20,6 +20,7 @@
 import {
   BANK_ANGLE,
   BANK_FREQ,
+  BANK_PULL,
   BOOST_DRAIN_RATE,
   BOOST_MAX_SPEED,
   BOOST_MIN_START,
@@ -37,10 +38,12 @@ import {
   CORNER_BRAKE_DECEL,
   DIVE_FADE_BAND,
   ENERGY_GAIN,
+  KNIFE_SPEED,
   MAX_SPEED,
   MIN_SPEED,
   PITCH_LIMIT,
   PITCH_RATE,
+  PLAYER_ROLL_RATE,
   ROLL_LEVEL_RATE,
   ROLL_RATE,
   SPEED_RESPONSE,
@@ -113,6 +116,11 @@ export interface FlightTuning {
   feelSteer: number;
   /** Classic/touch stick authority, share of the full rates. */
   stickAuthority: number;
+  /** F10 mouse-aim bank-and-pull: aim this far off the nose, rad, makes the
+   * instructor roll toward it and pull, up to `instructorBankMax` rad of
+   * bank (0 = never: today's flat re-aim). */
+  instructorBankThreshold: number;
+  instructorBankMax: number;
 
   // --- Roll & Pitch ---
   /** Full-deflection pitch rate, rad/s (PITCH_RATE). */
@@ -122,8 +130,31 @@ export interface FlightTuning {
   pitchLimit: number;
   /** Full A/D roll rate, rad/s (ROLL_RATE). */
   rollRate: number;
-  /** Self-levelling of a released roll, 1/s (ROLL_LEVEL_RATE). */
+  /** Self-levelling of a released roll in the flight model, 1/s
+   * (ROLL_LEVEL_RATE for bots; F10's player default 0: the bank holds, and
+   * the client's roll control does any levelling). */
   rollLevelRate: number;
+  /** F10: the A/D roll axis's ramp to full, s (a release ramps out 2.5×
+   * faster, so a let-go stops where it is). */
+  rollRamp: number;
+  /** F10: a double-tap of A/D snaps the roll this far onto that side, rad. */
+  snapRollAngle: number;
+  /** F10 roll auto-level (Settings: off / gentle / strong): the wait after
+   * the last roll input, s, and the gentle / strong levelling rates, 1/s. */
+  rollLevelDelay: number;
+  rollLevelGentle: number;
+  rollLevelStrong: number;
+  /** The Flight Lab's override of that setting: 0 = as in Settings, 1 =
+   * off, 2 = gentle, 3 = strong. */
+  rollLevelMode: number;
+  /** F10 bank-and-pull: pitch-rate gain at knife-edge (BANK_PULL); the
+   * pitch rate is pitchRate × (1 + bankPull·sin²(real roll)). */
+  bankPull: number;
+  /** F10 knife-edge side-force: share of the altitude held at 90° bank
+   * (1 = all of it), and the airspeed below which it fades, m/s
+   * (KNIFE_SPEED). */
+  knifeLift: number;
+  knifeSpeed: number;
 
   // --- Assists ---
   /** F9 flight assist (auto-level, coordinated turns, floor, soft walls):
@@ -177,6 +208,9 @@ export interface FlightTuning {
   boostFovKick: number;
   /** Look into the turn, rad per rad/s past the deadband (TURN_LEAD). */
   turnLead: number;
+  /** F10 camera roll: 0 = the horizon stays level (default), 1 = the view
+   * rolls with the plane (F7's chase camera), between = a blend. */
+  cameraRoll: number;
 
   // --- Boost ---
   /** Top airspeed while boosting, m/s (BOOST_MAX_SPEED). */
@@ -225,11 +259,22 @@ export const DEFAULT_TUNING: Readonly<FlightTuning> = Object.freeze({
   feelBand: 2 * DEG,
   feelSteer: 3.5,
   stickAuthority: 0.85,
+  instructorBankThreshold: 35 * DEG,
+  instructorBankMax: 80 * DEG,
 
   pitchRate: PITCH_RATE,
   pitchLimit: PITCH_LIMIT,
-  rollRate: ROLL_RATE,
-  rollLevelRate: ROLL_LEVEL_RATE,
+  rollRate: PLAYER_ROLL_RATE,
+  rollLevelRate: 0,
+  rollRamp: 0.08,
+  snapRollAngle: 90 * DEG,
+  rollLevelDelay: 0.8,
+  rollLevelGentle: 1.2,
+  rollLevelStrong: 3,
+  rollLevelMode: 0,
+  bankPull: BANK_PULL,
+  knifeLift: 1,
+  knifeSpeed: KNIFE_SPEED,
 
   assist: 1,
   assistMaxRoll: Math.PI / 6,
@@ -256,6 +301,7 @@ export const DEFAULT_TUNING: Readonly<FlightTuning> = Object.freeze({
   speedFovKick: 4,
   boostFovKick: 9,
   turnLead: 0.05,
+  cameraRoll: 0,
 
   boostMaxSpeed: BOOST_MAX_SPEED,
   boostResponse: BOOST_RESPONSE,
@@ -372,11 +418,22 @@ export const TUNING_SPEC: readonly TuningSpec[] = [
   deg("feelBand", "Turning", "Gentle re-aim beyond", "Past this angle big re-aims fly softer (0 = crisp everywhere).", 0, 15, 0.5),
   num("feelSteer", "Turning", "Gentle re-aim strength", "How hard a big re-aim turns past that angle.", 0.5, 10, 0.1, "/s"),
   num("stickAuthority", "Turning", "Stick strength", "Classic stick and touch: share of the full turn rate a full stick gives.", 0.3, 1.5, 0.05, "×"),
+  deg("instructorBankThreshold", "Turning", "Mouse bank-and-pull beyond", "Mouse aim: a target this far off the nose is reached by rolling toward it and pulling.", 15, 90, 1),
+  deg("instructorBankMax", "Turning", "Mouse bank-and-pull bank", "Mouse aim: the most it banks for that turn (0 = turn flat).", 0, 90, 1),
   // Roll & Pitch
   deg("pitchRate", "Roll & Pitch", "Pitch rate", "How fast the nose pulls up or pushes down.", 15, 200, 1, "°/s"),
   deg("pitchLimit", "Roll & Pitch", "Pitch envelope", "Steepest climb the auto-slow plans for, and where loops take over.", 30, 89, 1),
   deg("rollRate", "Roll & Pitch", "Roll rate (A/D)", "How fast A/D roll the plane.", 30, 460, 5, "°/s"),
-  num("rollLevelRate", "Roll & Pitch", "Roll self-level", "How fast the wings level after you let go of A/D (0 = stay rolled).", 0, 12, 0.25, "/s"),
+  num("rollLevelRate", "Roll & Pitch", "Roll self-level (physics)", "Built-in wing levelling after you let go of A/D (0 = the bank holds).", 0, 12, 0.25, "/s"),
+  num("rollRamp", "Roll & Pitch", "Roll ramp", "How long A/D take to reach full roll rate (shorter = snappier).", 0, 0.4, 0.01, "s"),
+  deg("snapRollAngle", "Roll & Pitch", "Snap-roll angle", "How far a double-tap of A/D snaps the plane onto that side.", 30, 180, 5),
+  num("rollLevelMode", "Roll & Pitch", "Roll auto-level mode", "0 = as in Settings, 1 = off, 2 = gentle, 3 = strong.", 0, 3, 1),
+  num("rollLevelDelay", "Roll & Pitch", "Roll auto-level delay", "Roll auto-level (Settings): seconds after you let go of A/D before it starts.", 0, 5, 0.1, "s"),
+  num("rollLevelGentle", "Roll & Pitch", "Roll auto-level gentle", "How fast GENTLE roll auto-level brings the wings back.", 0.1, 6, 0.1, "/s"),
+  num("rollLevelStrong", "Roll & Pitch", "Roll auto-level strong", "How fast STRONG roll auto-level brings the wings back.", 0.5, 12, 0.25, "/s"),
+  num("bankPull", "Roll & Pitch", "Bank-and-pull turn", "Extra pull rate on a wing: banked 90° and pulling turns this much harder.", 0, 3, 0.05, "×"),
+  num("knifeLift", "Roll & Pitch", "Knife-edge lift", "How much altitude the plane holds flying on its side (1 = all of it).", 0, 1, 0.05),
+  num("knifeSpeed", "Roll & Pitch", "Knife-edge min speed", "Below this speed a plane on its side starts to sink.", 20, 120, 1, "m/s"),
   // Assists
   toggle("assist", "Assists", "Flight assist", "Auto-level, coordinated turns, ground floor and soft walls."),
   deg("assistMaxRoll", "Assists", "Assist roll cut-off", "Past this much roll the hole assist and soft walls step aside.", 0, 90, 1),
@@ -403,6 +460,7 @@ export const TUNING_SPEC: readonly TuningSpec[] = [
   num("speedFovKick", "Mouse & Camera", "Speed FOV kick", "Extra field of view at top speed.", 0, 20, 0.5, "°"),
   num("boostFovKick", "Mouse & Camera", "Boost FOV kick", "Extra field of view at full boost.", 0, 25, 0.5, "°"),
   num("turnLead", "Mouse & Camera", "Look into turns", "How much the camera looks into a hard turn.", 0, 0.3, 0.01),
+  num("cameraRoll", "Mouse & Camera", "Camera roll", "0 = the horizon stays level when you roll; 1 = the view rolls with the plane.", 0, 1, 0.05),
   // Boost
   num("boostMaxSpeed", "Boost", "Boost top speed", "Top speed while holding SPACE.", 50, 260, 1, "m/s"),
   num("boostResponse", "Boost", "Boost kick", "How hard the boost shoves you toward its top speed.", 0.2, 5, 0.1, "/s"),
@@ -490,8 +548,9 @@ export const TUNING_PRESETS: readonly TuningPreset[] = [
       feelBand: 0,
       stickAuthority: 1,
       pitchRate: 1.5,
-      rollRate: 4.5,
-      rollLevelRate: 5,
+      rollRate: 7,
+      rollRamp: 0.05,
+      bankPull: 1.4,
       cameraResponse: 5,
       chaseBase: 24,
       chaseStretch: 0.14,
@@ -529,8 +588,11 @@ export const TUNING_PRESETS: readonly TuningPreset[] = [
       feelSteer: 2.2,
       stickAuthority: 0.8,
       pitchRate: 0.85,
-      rollRate: 1.6,
-      rollLevelRate: 0.5,
+      rollRate: 2.6,
+      rollRamp: 0.15,
+      bankPull: 0.8,
+      knifeLift: 0.45,
+      knifeSpeed: 45,
       cameraResponse: 2.5,
       chaseBase: 20,
       chaseStretch: 0.08,
@@ -544,6 +606,21 @@ export const TUNING_PRESETS: readonly TuningPreset[] = [
     },
   },
 ];
+
+/**
+ * The flight model the server's bots fly (F10): the defaults with the
+ * pre-F10 roll — ROLL_RATE, the flight model's own self-levelling
+ * (ROLL_LEVEL_RATE: their barrel rolls roll out on it), no bank-and-pull
+ * gain and no knife-edge sink — so every bot flies bit-for-bit as before.
+ */
+export const BOT_TUNING: Readonly<FlightTuning> = Object.freeze({
+  ...DEFAULT_TUNING,
+  rollRate: ROLL_RATE,
+  rollLevelRate: ROLL_LEVEL_RATE,
+  bankPull: 0,
+  knifeLift: 1,
+  knifeSpeed: 0,
+});
 
 /** DEFAULT_TUNING with a preset's values on top (a fresh, mutable copy). */
 export function presetTuning(preset: TuningPreset): FlightTuning {

@@ -80,6 +80,29 @@ const SHRUB_HEIGHT = 1.4;
  * onBeforeCompile.toString() by default (see traffic.ts for that bug). */
 export const NATURE_CROWN_CACHE_KEY = "ab-nature-crown-sway";
 
+/**
+ * O7: three's flat-shaded normal with its one hole closed. It is
+ * `normalize(cross(dFdx(p), dFdy(p)))` — and where the two derivatives are
+ * parallel or zero (a crown facet seen exactly edge-on, a sliver one pixel
+ * wide) the cross is zero and the normal NaN. ONE NaN pixel is a black frame:
+ * the bloom's deepest mip is a dozen texels wide and its blur covers all of
+ * it (tools/perf/blackbox.mjs found it from 8 m over a sidewalk). Such a
+ * pixel faces the camera instead.
+ */
+const FLAT_NORMAL = "vec3 normal = normalize( cross( fdx, fdy ) );";
+const CROWN_FLAT_NORMAL_GLSL = ((): string => {
+  const chunk = THREE.ShaderChunk.normal_fragment_begin;
+  if (!chunk.includes(FLAT_NORMAL)) {
+    throw new Error("nature: three's flat normal changed — re-check O7");
+  }
+  return chunk.replace(
+    FLAT_NORMAL,
+    `vec3 abFlat = cross( fdx, fdy );
+	float abFlat2 = dot( abFlat, abFlat );
+	vec3 normal = abFlat2 > 1e-24 ? abFlat * inversesqrt( abFlat2 ) : vec3( 0.0, 0.0, 1.0 );`,
+  );
+})();
+
 /** One instance's canonical ground position plus its fixed scale/height. */
 interface Slot {
   x: number;
@@ -282,6 +305,10 @@ export class NatureRenderer {
       shader.vertexShader = shader.vertexShader
         .replace("void main() {", `${CROWN_SWAY_GLSL}\nvoid main() {`)
         .replace("#include <begin_vertex>", CROWN_BEGIN_VERTEX_GLSL);
+      shader.fragmentShader = shader.fragmentShader.replace(
+        "#include <normal_fragment_begin>",
+        CROWN_FLAT_NORMAL_GLSL,
+      );
     };
 
     this.parts = [

@@ -15,6 +15,7 @@
 
 import { FEELS, type Feel } from "../game/effortless";
 import type { AimMode } from "../game/flight-input";
+import type { RollLevelMode } from "../game/roll-control";
 import { SENSITIVITY_STEPS } from "../game/touch-input";
 import {
   QUALITY_SETTINGS,
@@ -23,6 +24,7 @@ import {
 } from "../render/quality";
 import { coarsePointer } from "./mobile";
 import {
+  type CameraRoll,
   type PanelEnv,
   type PanelEvent,
   type Settings,
@@ -56,6 +58,12 @@ export interface SettingsHooks {
   /** F9 FLIGHT ASSIST on/off and the FEEL preset — applied live. */
   setAssist: (on: boolean) => void;
   setFeel: (feel: Feel) => void;
+  /** F10 ROLL AUTO-LEVEL as it applies now (the device default until the
+   * player picks one), and the pick — applied live. */
+  rollLevel: () => RollLevelMode;
+  setRollLevel: (mode: RollLevelMode) => void;
+  /** F10 CAMERA ROLL — applied live. */
+  setCameraRoll: (c: CameraRoll) => void;
   /** The resolution scale changed (debounced while a slider drags). */
   setResScale: (scale: number) => void;
   /** Any volume changed (the soundtrack's on/off switch too). */
@@ -135,6 +143,21 @@ const MARKUP = `
           "Feel",
           FEELS.map((f) => [f, FEEL_LABEL[f]]),
         )}
+      </div>
+      <div class="row">
+        <span>ROLL AUTO-LEVEL</span>
+        ${seg("rollLevel", "Roll auto-level", [
+          ["off", "OFF"],
+          ["gentle", "GENTLE"],
+          ["strong", "STRONG"],
+        ])}
+      </div>
+      <div class="row">
+        <span>CAMERA ROLL</span>
+        ${seg("cameraRoll", "Camera roll", [
+          ["level", "LEVEL"],
+          ["follow", "FOLLOW PLANE"],
+        ])}
       </div>
       <div class="row" data-row="sensitivity">
         <span>AIM SENSITIVITY</span>
@@ -375,6 +398,15 @@ export class SettingsPanel {
       this.values = clampSettings({ ...this.values, feel: v });
       saveSettings(this.store, this.values);
       h.setFeel(this.values.feel);
+    } else if (group === "rollLevel") {
+      // Same rule as haptics: null (the device default) until picked.
+      this.values = clampSettings({ ...this.values, rollLevel: v });
+      saveSettings(this.store, this.values);
+      if (this.values.rollLevel) h.setRollLevel(this.values.rollLevel);
+    } else if (group === "cameraRoll") {
+      this.values = clampSettings({ ...this.values, cameraRoll: v });
+      saveSettings(this.store, this.values);
+      h.setCameraRoll(this.values.cameraRoll);
     } else if (group === "musicOn") {
       this.values = clampSettings({ ...this.values, musicOn: v === "on" });
       saveSettings(this.store, this.values);
@@ -418,6 +450,8 @@ export class SettingsPanel {
       autoFire: h.autoFire() ? "on" : "off",
       assist: this.values.assist ? "on" : "off",
       feel: this.values.feel,
+      rollLevel: h.rollLevel(),
+      cameraRoll: this.values.cameraRoll,
       musicOn: this.values.musicOn ? "on" : "off",
     };
     for (const group of this.root.querySelectorAll<HTMLElement>(".seg")) {

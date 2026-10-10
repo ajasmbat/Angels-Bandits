@@ -112,6 +112,12 @@ uniform float uReflOn;
 vec3 abRefl(vec3 abReflDir, float abReflLod) {
   vec3 abReflC = mix(textureLod(uReflPrev, abReflDir, abReflLod).rgb,
                      textureLod(uReflCur, abReflDir, abReflLod).rgb, uReflBlend);
+  // O7: the probe is a HalfFloat cube with mips, so one non-finite texel
+  // in a face averages into every mip above it — and the cap below turned
+  // an Inf into Inf × 0, not a number. A non-finite channel (exponent all
+  // ones) reads 0.
+  abReflC = mix(abReflC, vec3(0.0), greaterThan(
+    floatBitsToUint(abReflC) & uvec3(0x7fffffffu), uvec3(0x7f7fffffu)));
   float abReflL = dot(abReflC, vec3(0.2126, 0.7152, 0.0722));
   return abReflC * min(1.0, ${glsl(REFL_LUMA_CAP)} / max(abReflL, 1e-4));
 }

@@ -17,10 +17,11 @@ import {
   flightAxes,
   flightForward,
   handlingRates,
+  realRoll,
   stepFlight,
 } from "@angels-bandits/common/flight";
 import type { Vec3 } from "@angels-bandits/common/world";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ChaseCamera } from "../src/game/camera";
 import { FEELS, FEEL_TUNING } from "../src/game/effortless";
 import {
@@ -33,6 +34,7 @@ import {
   createInstructor,
   instructorInput,
 } from "../src/game/instructor";
+import { createRollControl, stepRollControl } from "../src/game/roll-control";
 import {
   aimDirNdc,
   createAimDir,
@@ -40,9 +42,21 @@ import {
   recentreAimDir,
   stepAimDir,
 } from "../src/game/touch-aim-dir";
+import { tuning } from "../src/game/tuning";
 import { BASE_FOV } from "../src/game/zoom";
 
 const DEG = Math.PI / 180;
+
+// F10: these are the F6/F7 instructor behaviours flown through the camera
+// that ROLLS with the plane — today the "Camera roll: Follow plane" option
+// (cameraRoll 1); the default horizon-locked camera is
+// camera-horizon.test.ts's.
+beforeAll(() => {
+  tuning.cameraRoll = 1;
+});
+afterAll(() => {
+  tuning.cameraRoll = 0;
+});
 const ASPECT = 16 / 9;
 const FPS = [30, 60, 144];
 
@@ -65,6 +79,9 @@ class Loop {
   readonly cam = stubCamera();
   readonly chase = new ChaseCamera();
   ins: InstructorState = createInstructor();
+  /** F10: main's roll control, hands off A/D — it levels any roll the
+   * mouse flying builds up (the flight model's own self-levelling did). */
+  readonly rollCtl = createRollControl();
   /** Heading swept so far, rad (sum of |Δ|, so a spin can't cancel out).
    * F7: the heading of the WING LINE (the airframe's right axis) — the
    * nose's yaw flips by π over the top and is undefined at vertical, while
@@ -104,9 +121,20 @@ class Loop {
     );
     const turn = this.ins.turn;
     const wing0 = wingHeading(this.f);
+    const roll = stepRollControl(
+      this.rollCtl,
+      {
+        key: 0,
+        auto: null,
+        mode: "off",
+        roll: realRoll(this.f),
+        pitch: this.f.pitch,
+      },
+      dt,
+    );
     this.f = stepFlight(
       this.f,
-      { turn, pitch: this.ins.pitch, roll: 0, throttle },
+      { turn, pitch: this.ins.pitch, roll, throttle },
       dt,
     );
     const dWing = wingHeading(this.f) - wing0;

@@ -4,7 +4,8 @@
 //   onto it;
 // - classic: the cursor's offset from screen centre is a direct rate stick
 //   (deadzone + expo, read()).
-// W/S drive throttle, A/D the roll assist. The throttle lives at FULL (F5):
+// W/S drive throttle, A/D (Q/E aliases, F10) the roll — shaped by
+// game/roll-control.ts in main. The throttle lives at FULL (F5):
 // with no W/S held and no finger on the touch slider the axis reads
 // AUTO_THROTTLE, so the command rides back to full after any change — S
 // slows only while held. F9: the mouse wheel is W/S too — each notch holds
@@ -18,6 +19,7 @@
 import type { FlightInput } from "@angels-bandits/common/flight";
 import { DEFAULT_TUNING } from "@angels-bandits/common/tuning";
 import { FREELOOK_KEY } from "./freelook";
+import { rollKey } from "./roll-control";
 import { emulatedMouse, watchTouches } from "./touch-input";
 import { tuning } from "./tuning";
 
@@ -81,6 +83,7 @@ export class FlightInputSource {
   private touchThrottle: number | null = null; // slider servo, null = released
   private touchZoom = false; // ZOOM button held or latched
   private touchLook = false; // two fingers on the aim zone
+  private touchRoll = 0; // F10 roll buttons: +1 left, −1 right
   private touchAimed = false; // a touch, not a mouse, placed the cursor last
   private active = false; // the mouse moved since the last takeActivity
   /** F9 wheel throttle: seconds of W (+) or S (−) still held. */
@@ -254,12 +257,17 @@ export class FlightInputSource {
     this.touchThrottle = v;
   }
 
+  /** F10 roll buttons: +1 rolls left, −1 right, 0 none — added to A/D. */
+  setTouchRoll(v: number): void {
+    this.touchRoll = v;
+  }
+
   /** The ZOOM button: the touch twin of the right button. */
   setTouchZoom(held: boolean): void {
     this.touchZoom = held;
   }
 
-  /** Two-finger free-look: the touch twin of holding E. */
+  /** Two-finger free-look: the touch twin of holding C. */
   setTouchLook(held: boolean): void {
     this.touchLook = held;
   }
@@ -337,9 +345,12 @@ export class FlightInputSource {
       !w && !s && this.touchThrottle === null
         ? tuning.autoThrottle
         : Math.max(-1, Math.min(1, keys + (this.touchThrottle ?? 0)));
-    // A rolls left (positive roll = left wing down), D rolls right.
-    const roll =
-      (this.keys.has("KeyA") ? 1 : 0) + (this.keys.has("KeyD") ? -1 : 0);
+    // A/Q roll left (positive roll = left wing down), D/E roll right; the
+    // touch roll buttons add in (F10).
+    const roll = Math.max(
+      -1,
+      Math.min(1, rollKey((c) => this.keys.has(c)) + this.touchRoll),
+    );
     const sens = tuning.mouseSensitivity;
     const ySign = tuning.invertY === 1 ? -1 : 1;
     return {

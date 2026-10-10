@@ -1259,7 +1259,8 @@ if (vAbPart > 3.5) {
   float tB = ${TAU} * uLoop * ${CYCLES_PER_LOOP.causticB.toFixed(1)};
   float w1 = sin(q.x * 1.9 + sin(q.y * 1.3 + tA) * 1.4);
   float w2 = sin(q.y * 2.3 + sin(q.x * 1.1 - tB) * 1.6);
-  float caustic = pow(1.0 - abs(w1 + w2) * 0.5, 5.0);
+  // O7: a GPU sin() may round past ±1, and pow() of a negative base is NaN.
+  float caustic = pow(max(1.0 - abs(w1 + w2) * 0.5, 0.0), 5.0);
   totalEmissiveRadiance = ${vec3(poolColor(POOL_BASE_LUMINANCE))}
     + ${vec3(poolColor(POOL_EDGE_LUMINANCE))} * edgeK
     + ${vec3(poolColor(POOL_CAUSTIC_LUMINANCE))} * caustic;

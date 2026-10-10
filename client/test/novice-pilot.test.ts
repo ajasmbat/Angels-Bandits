@@ -36,6 +36,15 @@ describe("novice pilot, default scheme (F9)", () => {
   for (const [name, arm] of [
     ["main", { scheme: "instructor", assist: false, feel: "sharp" }],
     ["F9", { scheme: "instructor", assist: true, feel: "normal" }],
+    [
+      "F10",
+      {
+        scheme: "instructor",
+        assist: true,
+        feel: "normal",
+        f10: { rollLevel: "off" },
+      },
+    ],
   ] as const) {
     it(
       `flies the ${name} arm`,
@@ -55,5 +64,13 @@ describe("novice pilot, default scheme (F9)", () => {
     expect(main.crashes).toBeGreaterThan(20);
     expect(f9.crashes).toBeLessThanOrEqual(main.crashes * 0.6);
     expect(perWaypoint(f9)).toBeLessThanOrEqual(perWaypoint(main) * 0.8);
+  });
+
+  it("F10 (fast roll, held bank, bank-and-pull, the player's model): no worse than main", () => {
+    // "Main" for F10 is the F9 default it ships over.
+    const f9 = results.get("F9") as Result;
+    const f10 = results.get("F10") as Result;
+    expect(f10.crashes).toBeLessThanOrEqual(f9.crashes);
+    expect(perWaypoint(f10)).toBeLessThanOrEqual(perWaypoint(f9));
   });
 });

@@ -17,6 +17,7 @@ import {
   EMISSIVE_STROBE,
   EMISSIVE_TRACER,
 } from "@angels-bandits/common/constants";
+import { FINITE_GLSL } from "./hdr-safe";
 
 // --- Light shafts -------------------------------------------------------------
 
@@ -46,6 +47,7 @@ uniform vec2 uSun;       // the moon, in screen UV
 uniform float uAspect;   // width / height
 uniform float uStrength; // 0 = nothing (the pass is skipped before that)
 varying vec2 vUv;
+${FINITE_GLSL}
 // Interleaved gradient noise on the PIXEL — a fixed dither, never animated.
 float abIgn(vec2 p) {
   return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
@@ -64,7 +66,8 @@ void main() {
   float w = 1.0;
   float wsum = 0.0;
   for (int i = 0; i < ${SHAFT_SAMPLES}; i++) {
-    vec3 c = texture2D(tDiffuse, uv).rgb;
+    // O7: a NaN/Inf texel would march into every pixel of the disc.
+    vec3 c = abFinite(texture2D(tDiffuse, uv).rgb);
     float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
     // Only light above the floor scatters, and never more than the cap: a
     // tracer, a window or the moon disc counts as bright sky, no brighter.

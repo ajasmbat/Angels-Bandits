@@ -24,6 +24,18 @@
 // all built on it, and aimFrame hands it to the cursor ray, so the cursor
 // stays where the pilot sees it on screen — held above the pipper it keeps
 // pulling, over the top and round.
+//
+// F10 horizon lock: that follow-the-plane up is now the "Camera roll:
+// Follow plane" option (the tuning's cameraRoll = 1; between 0 and 1 it is
+// blended in). The default (cameraRoll 0, LEVEL) keeps the up exactly
+// world-up — the horizon never tilts when the plane rolls, banks or flies on
+// its side. A world-up camera cannot look straight up, so in LEVEL the arm
+// eases in heading and elevation about world-up instead of as a vector: its
+// elevation stays within ARM_MAX_ELEV of the horizon, and while the nose is
+// steeper than STEEP_PITCH its heading holds — so a loop swings the look
+// direction round the top (at most SWING_MAX rad/s), with no roll and no
+// flip. The look-at is always the plane. (The mouse aim through this camera
+// stays on its own side of the zenith: instructor.ts levelAim.)
 
 import type { Collapse } from "@angels-bandits/common/city/collapse";
 import { COLLAPSE_LEAD_MS } from "@angels-bandits/common/constants";
@@ -77,6 +89,15 @@ const UP_FOLLOW_FULL = 0.15;
 /** Exp response of the camera up toward its target, 1/s: it rolls after the
  * plane (~0.3 s), never glued to it. */
 const UP_RESPONSE = 6;
+/** LEVEL camera (F10): the arm's elevation stays within this of the
+ * horizon, rad, so the view never looks within 15° of straight up or down
+ * (where a world-up camera has no right). */
+const ARM_MAX_ELEV = (75 * Math.PI) / 180;
+/** …its heading holds while the nose is steeper than this, rad… */
+const STEEP_PITCH = (75 * Math.PI) / 180;
+/** …and swings toward a new one at most this fast, rad/s. */
+const SWING_MAX = 4;
+const WORLD_UP: Readonly<Vec3> = { x: 0, y: 1, z: 0 };
 
 export class ChaseCamera {
   /** Unit direction from the plane to the chase eye; null until snapped. */
@@ -97,6 +118,9 @@ export class ChaseCamera {
   private lead = 0;
   /** The camera's eased up, unit (F7). */
   private upV: Vec3 = { x: 0, y: 1, z: 0 };
+  /** LEVEL camera: the arm heading it holds through steep flight, rad
+   * (atan2 of the arm's x, z); null until set. */
+  private holdHeading: number | null = null;
   /** What the spring arm may not pass through; unset = no arm. */
   solid: SolidQuery | null = null;
 
@@ -122,6 +146,8 @@ export class ChaseCamera {
   snapTo(state: FlightState): void {
     this.upV = upTarget(state);
     this.dir = chaseDir(flightForward(state), this.upV);
+    this.holdHeading = null;
+    if (tuning.cameraRoll <= 0) this.dir = this.levelDir(state, this.dir, 1, 0);
     this.len = chaseDistance(state.speed);
     this.place(state);
     this.arm = 1;
@@ -215,16 +241,22 @@ export class ChaseCamera {
     this.upV = ul > 1e-6 ? { x: ux / ul, y: uy / ul, z: uz / ul } : upWant;
     const up = this.upV;
     const blend = 1 - Math.exp(-tuning.cameraResponse * dt);
-    const want = chaseDir(fwd, up);
-    const d = this.dir as Vec3;
-    const mixed = {
-      x: d.x + (want.x - d.x) * blend,
-      y: d.y + (want.y - d.y) * blend,
-      z: d.z + (want.z - d.z) * blend,
-    };
-    const m = Math.hypot(mixed.x, mixed.y, mixed.z);
-    this.dir =
-      m > 1e-6 ? { x: mixed.x / m, y: mixed.y / m, z: mixed.z / m } : want;
+    if (tuning.cameraRoll <= 0) {
+      // F10 LEVEL: heading/elevation about world-up, off the zenith.
+      this.dir = this.levelDir(state, this.dir as Vec3, blend, dt);
+    } else {
+      this.holdHeading = null;
+      const want = chaseDir(fwd, up);
+      const d = this.dir as Vec3;
+      const mixed = {
+        x: d.x + (want.x - d.x) * blend,
+        y: d.y + (want.y - d.y) * blend,
+        z: d.z + (want.z - d.z) * blend,
+      };
+      const m = Math.hypot(mixed.x, mixed.y, mixed.z);
+      this.dir =
+        m > 1e-6 ? { x: mixed.x / m, y: mixed.y / m, z: mixed.z / m } : want;
+    }
     this.len += (chaseDistance(state.speed) - this.len) * blend;
     this.place(state);
 
@@ -304,6 +336,36 @@ export class ChaseCamera {
     // the cursor ray. (Test stubs carry no up.)
     if (camera.up) camera.up.set(up.x, up.y, up.z);
     camera.lookAt(at.x, at.y, at.z);
+  }
+
+  /**
+   * The LEVEL camera's arm (F10): `d` eased toward the world-up chase
+   * direction by `blend` in heading and elevation — the elevation clamped
+   * to ±ARM_MAX_ELEV, the heading held while the nose is steeper than
+   * STEEP_PITCH and slewed at most SWING_MAX·dt (`dt` 0 with `blend` 1 is
+   * a snap). Never through the zenith, so never a flip.
+   */
+  private levelDir(state: FlightState, d: Vec3, blend: number, dt: number) {
+    const want = chaseDir(flightForward(state), WORLD_UP);
+    const wantElev = clampAbs(
+      Math.asin(Math.max(-1, Math.min(1, want.y))),
+      ARM_MAX_ELEV,
+    );
+    if (Math.abs(state.pitch) < STEEP_PITCH || this.holdHeading === null) {
+      this.holdHeading =
+        Math.hypot(want.x, want.z) > 1e-9
+          ? Math.atan2(want.x, want.z)
+          : Math.atan2(Math.sin(state.yaw), Math.cos(state.yaw));
+    }
+    const wantHead = this.holdHeading;
+    const elev = Math.asin(Math.max(-1, Math.min(1, d.y)));
+    const head = Math.hypot(d.x, d.z) > 1e-9 ? Math.atan2(d.x, d.z) : wantHead;
+    const off = wrapAngle(wantHead - head);
+    const step = dt > 0 ? clampAbs(off * blend, SWING_MAX * dt) : off * blend;
+    const h = head + step;
+    const e = clampAbs(elev + (wantElev - elev) * blend, ARM_MAX_ELEV);
+    const ce = Math.cos(e);
+    return { x: Math.sin(h) * ce, y: Math.sin(e), z: Math.cos(h) * ce };
   }
 
   /**
@@ -449,12 +511,37 @@ const axesScratch = {
   up: { x: 0, y: 0, z: 0 },
 };
 
+const clampAbs = (v: number, m: number): number =>
+  v > m ? m : v < -m ? -m : v;
+
+/** Wrap an angle to (−π, π]. */
+function wrapAngle(a: number): number {
+  if (a > -Math.PI && a <= Math.PI) return a;
+  const w = Math.atan2(Math.sin(a), Math.cos(a));
+  return w === -Math.PI ? Math.PI : w;
+}
+
+/** Where the camera's up is heading for this attitude (F10): exactly
+ * world-up with the camera roll at 0 (LEVEL, the default); the F7 follow
+ * target below at 1; normalised between. */
+function upTarget(state: FlightState): Vec3 {
+  const f = tuning.cameraRoll;
+  if (f <= 0) return { x: 0, y: 1, z: 0 };
+  const u = followUp(state);
+  if (f >= 1) return u;
+  const x = u.x * f;
+  const y = 1 - f + u.y * f;
+  const z = u.z * f;
+  const l = Math.hypot(x, y, z) || 1;
+  return { x: x / l, y: y / l, z: z / l };
+}
+
 /** Where the camera's up is heading for this attitude (F7): world-up while
  * the plane's own up keeps UP_FOLLOW_START of it, the plane's own up from
  * UP_FOLLOW_FULL down (steep, hard-rolled, inverted), blended between —
  * never zero, since the blend only runs while the plane's up still points
  * well upward. */
-function upTarget(state: FlightState): Vec3 {
+function followUp(state: FlightState): Vec3 {
   const u = flightAxes(state, axesScratch).up;
   const w = Math.min(
     1,

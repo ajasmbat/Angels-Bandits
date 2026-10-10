@@ -1,4 +1,4 @@
-// Hold-E free-look (B2) — the pure seam. All the math behind "look around
+// Hold-C free-look (B2; E until F10 made Q/E roll aliases) — the pure seam. All the math behind "look around
 // while the plane holds course" lives here, renderer-free (same pattern as
 // net/interp.ts and ui/lead.ts): a per-frame step function over immutable
 // state, thin adapters in flight-input/camera/main. CLIENT-ONLY by design —
@@ -9,9 +9,9 @@ import type { FlightInput } from "@angels-bandits/common/flight";
 import type { Vec3 } from "@angels-bandits/common/world";
 
 /** The free-look key, hardcoded for now (no keybinding UI yet). */
-export const FREELOOK_KEY = "KeyE";
+export const FREELOOK_KEY = "KeyC";
 
-/** Seconds of E-held for steering authority to ramp 1 → 0 (linear). */
+/** Seconds of C-held for steering authority to ramp 1 → 0 (linear). */
 const STEER_DECAY_S = 0.3;
 /** Orbit radians per pixel of mouse motion (steering uses cursor position,
  * free-look uses motion — separate constant by nature, hand-tuned). */

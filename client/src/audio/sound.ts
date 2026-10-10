@@ -90,6 +90,8 @@ const COLLAPSE_TAIL_S = 6;
 /** P3: the air rush as the plane rolls or loops through inverted. */
 const AERO_WHOOSH_LEVEL = 0.28;
 const AERO_WHOOSH_MIN_MS = 1200;
+/** F10: the hard pull's airframe creak, under the whoosh. */
+const CREAK_LEVEL = 0.32;
 const WHISTLE_FROM_HZ = 700;
 const WHISTLE_TO_HZ = 2400;
 
@@ -774,6 +776,24 @@ export class GameAudio implements VoiceSink {
     if (nowMs - this.lastAeroAt < AERO_WHOOSH_MIN_MS) return;
     this.lastAeroAt = nowMs;
     this.burst("bandpass", 380, 1500, 0.55, AERO_WHOOSH_LEVEL, 0);
+  }
+
+  /** F10: a hard pull — the airframe's low creak under a rush of air,
+   * louder the harder the pull (`g`). Fired once per pull (game/
+   * pull-feel.ts stepPullCue), and rate-limited with the aero whoosh. */
+  hardPull(g: number, nowMs: number): void {
+    if (nowMs - this.lastAeroAt < AERO_WHOOSH_MIN_MS) return;
+    this.lastAeroAt = nowMs;
+    const k = Math.min(1, Math.max(0, (g - 3) / 4));
+    this.burst("lowpass", 240, 90, 0.45, CREAK_LEVEL * (0.6 + 0.4 * k), 0);
+    this.burst(
+      "bandpass",
+      900,
+      300,
+      0.6,
+      AERO_WHOOSH_LEVEL * (0.7 + 0.3 * k),
+      0,
+    );
   }
 
   /** Near-miss whoosh: an enemy bullet just shaved past. Rate-limited. */

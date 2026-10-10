@@ -397,6 +397,21 @@
         opacity: 0.85;
         transition: none;
       }
+      /* F10: the g-meter — a subtle readout beside the screen centre that
+         shows only at a hard pull (ui/hud.ts setG). */
+      #g-meter {
+        display: none;
+        position: fixed;
+        left: calc(50% + 96px);
+        top: calc(50% + 28px);
+        color: #ffd27a;
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        font-variant-numeric: tabular-nums;
+        text-shadow: 0 1px 2px #000;
+        pointer-events: none;
+        user-select: none;
+      }
       /* Zoomed, the pipper IS the gunsight — brighten and thicken it. */
       body.zoom #crosshair {
         color: #ffd9a0;
@@ -1402,10 +1417,29 @@
         height: 64px;
         font-size: 11px;
       }
-      /* Kill-cam: nothing to fire, boost or zoom. */
+      /* F10 roll buttons: beside FIRE, under the left thumb — hold to roll,
+         double-tap to snap onto that wing. */
+      #touch-roll-l,
+      #touch-roll-r {
+        bottom: calc(var(--safe-b) + 18px);
+        width: 52px;
+        height: 52px;
+        border-radius: 14px;
+        font-size: 20px;
+        letter-spacing: 0;
+      }
+      #touch-roll-l {
+        left: calc(var(--safe-l) + 190px);
+      }
+      #touch-roll-r {
+        left: calc(var(--safe-l) + 248px);
+      }
+      /* Kill-cam: nothing to fire, boost, zoom or roll. */
       #touch-ui.dead #touch-fire,
       #touch-ui.dead #touch-boost,
-      #touch-ui.dead #touch-zoom {
+      #touch-ui.dead #touch-zoom,
+      #touch-ui.dead #touch-roll-l,
+      #touch-ui.dead #touch-roll-r {
         visibility: hidden;
       }
       #touch-icons {
@@ -1449,6 +1483,19 @@
           bottom: calc(var(--safe-b) + 14px);
           width: 56px;
           height: 56px;
+        }
+        /* F10: the roll pair moves above FIRE (BOOST took its place). */
+        #touch-roll-l,
+        #touch-roll-r {
+          bottom: calc(var(--safe-b) + 110px);
+          width: 48px;
+          height: 48px;
+        }
+        #touch-roll-l {
+          left: calc(var(--safe-l) + 82px);
+        }
+        #touch-roll-r {
+          left: calc(var(--safe-l) + 136px);
         }
         body.touch #killfeed,
         body.touch #comms {
@@ -2265,6 +2312,8 @@
       <div id="touch-fire" class="tc">FIRE</div>
       <div id="touch-boost" class="tc">BOOST</div>
       <div id="touch-zoom" class="tc">ZOOM</div>
+      <div id="touch-roll-l" class="tc" aria-label="Roll left">⟲</div>
+      <div id="touch-roll-r" class="tc" aria-label="Roll right">⟳</div>
       <!-- M9: aim mode and sensitivity are on the settings screen only —
            a stray tap mid-fight must not flip them. -->
       <div id="touch-icons">
@@ -2372,6 +2421,7 @@
     </div>
     <div id="freelook-hint">◇ FREE LOOK ◇</div>
     <div id="aim-mode-toast"></div>
+    <div id="g-meter" aria-hidden="true"></div>
     <!-- U3 (ui/coach.ts): first-life hints and the storm notice. -->
     <div id="coach-hint" role="status" aria-live="polite">
       <span class="text"></span>

@@ -43,6 +43,7 @@ import {
   SHIMMER_SLOTS,
 } from "./atmo-post";
 import { GRADE_GLSL, GRADE_PARS_GLSL, gradeUniforms } from "./grade";
+import { FINITE_GLSL } from "./hdr-safe";
 
 /** UnrealBloomPass's blur directions (static there, untyped in @types). */
 const BLUR_X = new THREE.Vector2(1, 0);
@@ -76,8 +77,10 @@ uniform float luminosityThreshold;
 uniform float smoothWidth;
 uniform vec2 uTap;
 varying vec2 vUv;
+${FINITE_GLSL}
 vec4 abBright(vec2 uv) {
-  vec4 texel = texture2D(tDiffuse, uv);
+  // O7 (hdr-safe.ts): one NaN/Inf texel here is a black box five mips wide.
+  vec4 texel = vec4(abFinite(texture2D(tDiffuse, uv).rgb), 1.0);
   float v = luminance(texel.xyz);
   float alpha = smoothstep(luminosityThreshold, luminosityThreshold + smoothWidth, v);
   return mix(vec4(0.0), texel, alpha);
@@ -367,7 +370,7 @@ function finalFragmentShader(grade: boolean): string {
     .slice(0, tail)
     .replace(
       "#include <colorspace_pars_fragment>",
-      `#include <colorspace_pars_fragment>\nuniform sampler2D tBloom;\n${FINAL_ATMO_PARS_GLSL}${grade ? `uniform float uGradeOn;\n${GRADE_PARS_GLSL}` : ""}`,
+      `#include <colorspace_pars_fragment>\nuniform sampler2D tBloom;\n${FINITE_GLSL}${FINAL_ATMO_PARS_GLSL}${grade ? `uniform float uGradeOn;\n${GRADE_PARS_GLSL}` : ""}`,
     )
     .replace(
       read,
@@ -376,17 +379,36 @@ function finalFragmentShader(grade: boolean): string {
       // target; then S5's glare (off the bloom) and light shafts.
       [
         "vec2 abUv = vUv + abShimmer( vUv );",
+        // O7 (hdr-safe.ts): the scene read, and the sum of everything the
+        // post adds to it, are finite and in range before the tone map —
+        // ACES writes Inf and NaN as black.
         "gl_FragColor = texture2D( tDiffuse, abUv );",
+        "gl_FragColor.rgb = abFinite( gl_FragColor.rgb );",
         "vec4 abBloom = texture2D( tBloom, vUv );",
         "gl_FragColor.rgb += abBloom.rgb * abBloom.a;",
         "if ( uGlare > 0.0 ) gl_FragColor.rgb += uGlare * abGlare( vUv );",
         "gl_FragColor.rgb += texture2D( tShafts, vUv ).rgb * uShaftTint;",
+        "gl_FragColor.rgb = abFinite( gl_FragColor.rgb );",
       ].join("\n"),
     );
   // M3's tiers switch the grade off (Mobile): a uniform, so the switch never
   // compiles a program.
-  return `${body}${grade ? `if (uGradeOn > 0.5) ${GRADE_GLSL}` : ""}\n}`;
+  return `${GLSL3_FRAGMENT}${body}${grade ? `if (uGradeOn > 0.5) ${GRADE_GLSL}` : ""}\n}`;
 }
+
+/**
+ * O7: FinalPass is built as GLSL ES 3.00 (`abFinite` tests float bits) from
+ * OutputShader's ES 1.00 source — the same maths, spelled for 3.00 exactly
+ * as three spells it for every ShaderMaterial (WebGLProgram's prefix).
+ */
+const GLSL3_VERTEX = "#define attribute in\n#define varying out\n";
+const GLSL3_FRAGMENT = [
+  "#define varying in",
+  "layout(location = 0) out highp vec4 pc_fragColor;",
+  "#define gl_FragColor pc_fragColor",
+  "#define texture2D texture",
+  "",
+].join("\n");
 
 /**
  * Bloom add + tone map + sRGB + grade, one full-res pass. Behaves like
@@ -431,7 +453,8 @@ export class FinalPass extends Pass {
     this.material = new THREE.RawShaderMaterial({
       name: grade ? "AbFinalGradeShader" : "AbFinalShader",
       uniforms: this.uniforms,
-      vertexShader: OutputShader.vertexShader,
+      glslVersion: THREE.GLSL3,
+      vertexShader: `${GLSL3_VERTEX}${OutputShader.vertexShader}`,
       fragmentShader: finalFragmentShader(grade),
     });
     this.quad = new FullScreenQuad(this.material);

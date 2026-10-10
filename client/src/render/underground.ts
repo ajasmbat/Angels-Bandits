@@ -2563,9 +2563,12 @@ if (vAnim.x > 3.5 && vAnim.x < 4.5) {
   float f = fract((vAnim.y + uU5Time * 4.0 * (0.7 + 0.6 * n)) * 0.35);
   float streak = smoothstep(0.35, 1.0, f) * (1.0 - smoothstep(0.88, 1.0, f));
   float foam = 1.0 - smoothstep(${(BORE_FLOOR_Y + 0.3).toFixed(2)}, ${(BORE_FLOOR_Y + 2.4).toFixed(2)}, vAnim.y);
-  diffuseColor.rgb *= 0.78 + 0.3 * streak * (0.6 + 0.4 * n2);
+  // U5's gentle streak contrast: moving streaks reverse a pixel's
+  // brightness every pass, and a stronger one reads as flicker (U7's
+  // flicker A/B, the garden view).
+  diffuseColor.rgb *= 0.9 + 0.14 * streak * (0.6 + 0.4 * n2);
   diffuseColor.rgb = mix(diffuseColor.rgb, ${glslColor(FOAM)}, foam * 0.7);
-  diffuseColor.a *= mix(0.72 + 0.28 * streak, 1.25, foam);
+  diffuseColor.a *= mix(0.85 + 0.15 * streak, 1.25, foam);
 }
 if (vAnim.x > 5.5 && vAnim.x < 6.5) {
   // U7 TILE: 0.6 × 0.3 m glazed tiles, grout, a tone per tile, faded to

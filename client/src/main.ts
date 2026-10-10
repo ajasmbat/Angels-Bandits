@@ -3394,6 +3394,8 @@ declare global {
         blasts: number;
       };
       juiceEvent: (kind: MomentKind) => void;
+      /** J1 QA: a blast of `size` `ahead` m in front of the own plane. */
+      juiceBlast: (size: number, ahead?: number) => void;
       /** A1 QA: what the city-life tier drew and holds. */
       cityLife: () => {
         drawn: number;
@@ -4393,6 +4395,16 @@ window.__ab = {
     };
   },
   juiceEvent: (kind) => juiceEvent(kind),
+  juiceBlast: (size, ahead = 140) => {
+    const at = {
+      x: flight.pos.x - Math.sin(flight.yaw) * ahead,
+      y: flight.pos.y,
+      z: flight.pos.z - Math.cos(flight.yaw) * ahead,
+    };
+    const now = performance.now();
+    explosions.explode(at, now, size);
+    blastShake.add(wrapDistance(at, flight.pos), size, now);
+  },
   cityLife: () => ({
     drawn: cityLife.count,
     statics: cityLife.staticDrawn,

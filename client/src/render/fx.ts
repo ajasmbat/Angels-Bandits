@@ -241,9 +241,43 @@ export class Explosions {
         blending: THREE.AdditiveBlending,
         depthWrite: false,
       });
+    // J1: a shell glows brightest face-on and fades to nothing at its rim
+    // (the facing ratio), so a fireball reads as a soft glowing volume, not
+    // a flat faceted disc — and only ever dims, so the HDR budget holds.
+    const shellMaterial = additive();
+    shellMaterial.onBeforeCompile = (shader) => {
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          "#include <common>",
+          "#include <common>\nvarying float vAbFacing;",
+        )
+        .replace(
+          "#include <project_vertex>",
+          [
+            "#include <project_vertex>",
+            "vec3 abN = normal;",
+            "#ifdef USE_INSTANCING",
+            "abN = mat3( instanceMatrix ) * abN;",
+            "#endif",
+            "abN = normalize( normalMatrix * abN );",
+            "vAbFacing = abs( dot( abN, normalize( -mvPosition.xyz ) ) );",
+          ].join("\n"),
+        );
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          "#include <common>",
+          "#include <common>\nvarying float vAbFacing;",
+        )
+        .replace(
+          "#include <opaque_fragment>",
+          "outgoingLight *= vAbFacing * vAbFacing;\n#include <opaque_fragment>",
+        );
+    };
+    // Distinct key: onBeforeCompile patches collide without one (V3).
+    shellMaterial.customProgramCacheKey = () => "j1-fireball-facing";
     this.shells = new THREE.InstancedMesh(
-      new THREE.IcosahedronGeometry(1, 1),
-      additive(),
+      new THREE.IcosahedronGeometry(1, 3),
+      shellMaterial,
       POOL * LAYERS,
     );
     this.rings = new THREE.InstancedMesh(

@@ -13,8 +13,8 @@
 //    has flown FIRST_RUN_MS off its carrier;
 //  - the run's subject is the enemy's W1 quarry — a human, never the carrier
 //    — and a quarry that is spawn-protected or freshly (re)spawned is left
-//    alone; the target (a rooftop near it for a DIVE, a street point near it
-//    for a CARPET) keeps clear of every such human, of a recent respawn and
+//    alone; the target (a rooftop near it for a DIVE — W3: often a manned
+//    AA nest — a street point near it for a CARPET) keeps clear of every such human, of a recent respawn and
 //    of the carrier's ground track.
 // And each release:
 //  - the run's own racks (common/src/bombs.ts: the heavy bomb for a dive,
@@ -125,6 +125,9 @@ export const BOMB_FAST_TUNING: BombTuning = {
   refusedRestMs: 1000,
 };
 
+/** W3: the chance a dive with a manned nest near its quarry takes it. */
+const NEST_DIVE_CHANCE = 0.5;
+
 /** One enemy plane as the director sees it this tick. */
 export interface BombEnemy {
   id: string;
@@ -164,6 +167,8 @@ export interface BombWorld {
   /** W1 intensity and the wave on (1-based). */
   intensity: Intensity;
   wave: number;
+  /** W3: the manned rooftop AA nests' roof decks — dive targets too. */
+  nests?: readonly Vec3[];
 }
 
 /** A run the brain should start. */
@@ -524,6 +529,13 @@ export class BombDirector {
       return true;
     };
     if (kind === "dive") {
+      // W3: a manned AA nest near the quarry draws a dive half the time —
+      // the guns shooting the waves down are what the waves bomb first.
+      const nests = (world.nests ?? []).filter(ok);
+      if (nests.length > 0 && this.rand() < NEST_DIVE_CHANCE) {
+        const n = nests[Math.floor(this.rand() * nests.length)] as Vec3;
+        return { x: n.x, y: n.y, z: n.z };
+      }
       const roofs: number[] = [];
       forEachBuildingNear(world.index, quarry.pos, t.targetMaxM, (i) => {
         roofs.push(i);

@@ -6,6 +6,14 @@
 // respawn message reseeds the flight state far from every enemy.
 
 import {
+  AA_HEAVY,
+  AA_ID,
+  AA_LIGHT,
+  type AaBurst,
+  type AaNest,
+  aaNestsOf,
+} from "@angels-bandits/common/aa";
+import {
   boostLevel,
   boostSpeedCap,
   createBoost,
@@ -109,6 +117,7 @@ import {
   missileImpactAt,
 } from "@angels-bandits/common/strike";
 import { feelFromTuning } from "@angels-bandits/common/tuning";
+import type { WaveState } from "@angels-bandits/common/waves";
 import {
   WEATHER_PHASES,
   type WeatherPhase,
@@ -189,6 +198,14 @@ import {
   threadingCorridor,
 } from "./game/corner-speed";
 import {
+  EASY_KEY,
+  easyActive,
+  loadEasy,
+  noteCleared,
+  saveEasy,
+  waveCleared,
+} from "./game/easy-mode";
+import {
   ASSIST_MAX_ROLL,
   type EffortlessWorld,
   FEEL_TUNING,
@@ -243,7 +260,7 @@ import {
 } from "./game/instructor";
 import { speedFov } from "./game/jet-camera";
 import { magnetizeVelocity } from "./game/magnetism";
-import { MissileFeed, MissileShake } from "./game/missile-feed";
+import { MissileFeed, MissileShake, bombingNear } from "./game/missile-feed";
 import { createPullCue, stepPullCue } from "./game/pull-feel";
 import {
   type QaChaosSpec,
@@ -291,6 +308,7 @@ import { FlightLab } from "./lab/lab";
 import { FlightMeter } from "./lab/meter";
 import { buildLabRoutes } from "./lab/routes";
 import { GameSocket } from "./net/socket";
+import { AaNestRenderer, type AaNestStats } from "./render/aa-nests";
 import { Airliners } from "./render/airliners";
 import { archetypeFor } from "./render/archetypes";
 import { AtmosphereFx } from "./render/atmosphere-fx";
@@ -454,7 +472,7 @@ import { WeatherClock, setWeatherUniform } from "./render/weather";
 import { buildingSeed, isWindowLit } from "./render/window-pattern";
 import { nearestImage, nearestImageInto } from "./render/wrapPlacement";
 import { Wrecks } from "./render/wrecks";
-import { Coach, renderPrimer } from "./ui/coach";
+import { COACH_DONE_KEY, Coach, renderPrimer } from "./ui/coach";
 import { CommsTicker } from "./ui/comms";
 import { CourseBoard } from "./ui/course-board";
 import { DamageIndicator } from "./ui/damage-indicator";
@@ -522,6 +540,17 @@ whenTouch(() => renderPrimer(true));
 // so and links back; the ordinary card links into it.
 const LAB_URL = new URLSearchParams(window.location.search).has("lab");
 initLabLink(LAB_URL);
+
+// W4 Easy mode (game/easy-mode.ts): decided once and kept — read BEFORE
+// the join card remembers a callsign, which is half of how a pilot who has
+// played before is told from a first-timer. Never in the Flight Lab.
+let easyState = loadEasy(
+  readStored(EASY_KEY),
+  readStored("ab:name") !== null || readStored(COACH_DONE_KEY) === "1",
+);
+writeStored(EASY_KEY, saveEasy(easyState));
+const easyOn = (): boolean => !LAB_URL && easyActive(easyState);
+GameSocket.easy = easyOn;
 
 // --- Join flow: name → server welcome (identity, seed, spawn) ---
 const name = await requestName(phoneFullscreen.onJoinGesture);
@@ -1332,6 +1361,26 @@ const ruinSmoke = new RuinSmoke(impacts, city.cityBuildings);
 // hide what went down.
 const propsRenderer = new PropsRenderer(propSlotLive);
 scene.add(propsRenderer.mesh);
+// W3: the rooftop AA nests — bases, guns, searchlights and tracer rounds
+// (four draws for the whole city); bursts off the wire, guns tracking the
+// enemy planes, a heavy shell's burst heard where it bursts.
+const aaNestList = aaNestsOf(propLayout);
+const aaNests = new AaNestRenderer(
+  aaNestList,
+  propSlotLive,
+  city.cityBuildings,
+  impacts,
+  (at) => audio.flakBurst(at, flight.pos, flight.yaw),
+);
+scene.add(aaNests.group);
+/** W3: the enemy planes' drawn positions this frame (reused). */
+const aaEnemyPos: Vec3[] = [];
+/** W3 QA (`__ab.qaAa`): staged nests firing on the render clock. */
+let qaAaStage: {
+  fire: { nest: number; to: Vec3 }[];
+  everyMs: number;
+  next: number;
+} | null = null;
 const scarsRenderer = new ScarsRenderer(
   propSlotLive,
   socket.craters,
@@ -1801,7 +1850,8 @@ whenTouch(() =>
 const players = new Map<string, { name: string; isBot: boolean }>(
   welcome.roster.map((r) => [r.id, { name: r.name, isBot: r.isBot ?? false }]),
 );
-const nameOf = (id: string): string => players.get(id)?.name ?? "???";
+const nameOf = (id: string): string =>
+  id === AA_ID ? "AA NEST" : (players.get(id)?.name ?? "???");
 const isBotOf = (id: string): boolean => players.get(id)?.isBot ?? false;
 /** S1: the name-guarded label a WORLD screen may show (bot callsign or the
  * pilot's alias — never free text; see game/headlines.ts). */
@@ -1867,6 +1917,9 @@ const botCallsigns = (): string[] => {
 
 // --- Simulation state ---
 const input = new FlightInputSource();
+// W4: the settings' desktop stick sensitivity and the flight-data line.
+input.setStickSensitivity(settings.stickSens);
+document.body.classList.toggle("flight-data", settings.flightData);
 const chase = new ChaseCamera();
 // L11b spring arm: the eye never sits inside a building, the ground, the
 // river's decks and bank walls, or a mover at the latched render clock
@@ -1887,6 +1940,12 @@ let freelook = createFreeLook();
 let zoom = createZoom();
 // Mouse-aim instructor (F1): client-only, its output is ordinary input.
 let instructor = createInstructor();
+// W4: KEYBOARD is a desktop scheme — a touch device flies the instructor.
+const noKeysOnTouch = (): void => {
+  if (input.aimMode() === "keys") input.setAimMode("instructor");
+};
+if (isTouch()) noKeysOnTouch();
+whenTouch(noKeysOnTouch);
 let aimMode = input.aimMode();
 /** Last frame's smoothed cursor — the free-look drag latch diffs against it. */
 let cursorPrev = input.cursorNdc();
@@ -2227,6 +2286,8 @@ socket.events.onPlayerLeft = (id) => {
   reactor.forgetPlane(id); // A2
 };
 socket.events.onFired = (id) => remoteFired(id);
+// W3: the rooftop guns fired (the server already rolled what they hit).
+socket.events.onAa = (bursts: AaBurst[]) => aaNests.add(bursts);
 socket.events.onDamage = (msg) => {
   if (msg.shooterId === socket.selfId) {
     hud.hitConfirm(performance.now());
@@ -2337,9 +2398,15 @@ socket.events.onDeath = (msg) => {
     msg.killerId === null ? null : nameOf(msg.killerId),
     nameOf(msg.victimId),
     msg.cause,
-    msg.killerId === socket.selfId || msg.victimId === socket.selfId,
+    msg.killerId === socket.selfId ||
+      msg.victimId === socket.selfId ||
+      msg.assist === socket.selfId,
     msg.victimId,
+    // W3: an AA kill's assisting pilot.
+    msg.assist !== undefined ? nameOf(msg.assist) : undefined,
   );
+  // W3: our assist on an AA kill gets the hit marker's kill flash.
+  if (msg.assist === socket.selfId) hud.killConfirm(performance.now());
   if (msg.killerId === socket.selfId && msg.victimId !== socket.selfId) {
     hud.killConfirm(performance.now());
     haptics.kill();
@@ -2368,7 +2435,7 @@ socket.events.onDeath = (msg) => {
     say(maydayCallout(name));
   } else if (msg.killerId === socket.selfId) {
     say(ownKillCallout(name));
-  } else if (msg.killerId !== null) {
+  } else if (msg.killerId !== null && msg.cause !== "aa") {
     say(splashCallout(nameOf(msg.killerId), isBotOf(msg.killerId), true));
   }
 };
@@ -2495,7 +2562,12 @@ socket.events.onAwayStarted = () => {
  * news heli belong to the room, so they are re-seeded only if it changed.
  */
 let currentRoomId = welcome.roomId;
+/** W4: the room's wave as last seen in play (Easy mode's clear counter);
+ * null right after a join or resume, or while hidden — nothing counts
+ * until a second look. */
+let wavesSeen: WaveState | null = null;
 function applyResume(w: WelcomeMsg): void {
+  wavesSeen = null;
   const here = new Set(w.roster.map((r) => r.id));
   for (const id of [...players.keys()]) {
     if (id === socket.selfId || here.has(id)) continue;
@@ -2633,6 +2705,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   );
   fireRenderer.setQuality(QUALITY_PROFILES[tier].chaosFx); // C2
   propsRenderer.setShare(QUALITY_PROFILES[tier].chaosFx); // D9
+  aaNests.setShare(QUALITY_PROFILES[tier].chaosFx); // W3
   scarsRenderer.setShare(QUALITY_PROFILES[tier].chaosFx); // D9
   ruinSmoke.setQuality(QUALITY_PROFILES[tier].chaosFx); // D8
   blastLedger.setBurnCap(burnCapFor(QUALITY_PROFILES[tier].impacts));
@@ -2959,7 +3032,7 @@ declare global {
       freelook: () => ReturnType<typeof createFreeLook>;
       /** M1 QA: the aim point and whether the pipper sits on it (F1). */
       aim: () => {
-        mode: "instructor" | "classic";
+        mode: AimMode;
         converged: boolean;
         /** F6 QA: the pipper-to-cursor angle, rad. */
         gap: number;
@@ -3136,6 +3209,16 @@ declare global {
       /** DT1 QA: pose planes in the world for the turntable, damage and
        * dogfight shots (canonical positions; null clears them). */
       planeShowcase: (list: ShowcasePlane[] | null) => number;
+      /** W3 QA: the rooftop AA nests — counts, manned/destroyed, rounds in
+       * the air, the draws they cost, and every nest's gun pivot. */
+      aaNests: () => AaNestStats & {
+        list: { id: number; x: number; y: number; z: number; heavy: boolean }[];
+      };
+      /** W3 QA: stage nests firing — each entry's nest bursts at `to`
+       * (canonical) every `everyMs` on the render clock; null clears. */
+      qaAa: (
+        spec: { fire: { nest: number; to: Vec3 }[]; everyMs?: number } | null,
+      ) => number;
       /** P4 QA: stage a C2 chaos scene around a held view on the pinned
        * world clock (game/qa-chaos.ts); null clears it. */
       qaChaos: (spec: QaChaosSpec | null) => {
@@ -3470,6 +3553,27 @@ const settingsPanel = new SettingsPanel(
     setVolumes: (next) => {
       settings = { ...settings, ...next };
       applyVolumes();
+    },
+    intensity: () => intensityBar.displayed,
+    setIntensity: (level) => {
+      // IntensityBar's claim path: one claim, the server decides.
+      intensityBar.dragTo(level);
+      intensityBar.release();
+    },
+    easy: easyOn,
+    setEasy: (on) => {
+      const was = easyOn();
+      easyState = { ...easyState, on };
+      writeStored(EASY_KEY, saveEasy(easyState));
+      if (easyOn() !== was) socket.sendSetEasy(easyOn());
+    },
+    setStickSens: (v) => {
+      settings = { ...settings, stickSens: v };
+      input.setStickSensitivity(v);
+    },
+    setFlightData: (on) => {
+      settings = { ...settings, flightData: on };
+      document.body.classList.toggle("flight-data", on);
     },
     onOpenChange: (open) => {
       settingsOpen = open;
@@ -4121,6 +4225,29 @@ window.__ab = {
         }
       : null,
   planeShowcase: (list) => setShowcase(list),
+  aaNests: () => ({
+    ...aaNests.stats,
+    list: aaNestList.map((n) => ({
+      id: n.id,
+      x: n.x,
+      y: n.y,
+      z: n.z,
+      heavy: n.heavy,
+    })),
+  }),
+  qaAa: (spec) => {
+    aaNests.clear();
+    if (spec === null) {
+      qaAaStage = null;
+      return 0;
+    }
+    qaAaStage = {
+      fire: spec.fire.filter((f) => aaNestList.some((n) => n.id === f.nest)),
+      everyMs: spec.everyMs ?? 900,
+      next: Number.NEGATIVE_INFINITY,
+    };
+    return qaAaStage.fire.length;
+  },
   // P4 QA: stage C2's chaos around a held view on the world clock — a
   // missile schedule, meteors, a quake, fires; null clears it.
   qaChaos: (spec) => {
@@ -5598,6 +5725,10 @@ const frame = (now: number): void => {
       radio.noteCombat(now);
       music.noteCombat(now);
     }
+    // W4: the bombing warning on the objective HUD.
+    hud.setBombWarning(
+      bombingNear(mf.flying, renderMs, alive ? flight.pos : null),
+    );
     missileRenderer.update(mf.flying, chase.position, renderMs, now);
     socket.pruneChaos(renderMs); // C2: runs and quakes long over
   }
@@ -5640,6 +5771,30 @@ const frame = (now: number): void => {
   // (The QA eye when one is held: a capture's camera is not the chase.)
   const propsViewer = qaView ? qaView.eye : chase.position;
   propsRenderer.update(propsViewer, renderMs);
+  // W3: the AA nests, their guns on the enemy planes we draw.
+  aaEnemyPos.length = 0;
+  for (const [id, p] of players) {
+    if (!p.isBot) continue;
+    const pose = remotes.poseOf(id);
+    if (pose) aaEnemyPos.push(pose.pos);
+  }
+  aaNests.setNight((skyCycle.state.pools - 0.7) / 0.3); // dusk dim, night full
+  if (qaAaStage && renderMs !== null && renderMs >= qaAaStage.next) {
+    qaAaStage.next = renderMs + qaAaStage.everyMs;
+    const t0 = renderMs;
+    aaNests.add(
+      qaAaStage.fire.map((f) => {
+        const n = aaNestList.find((x) => x.id === f.nest) as AaNest;
+        const gun = n.heavy ? AA_HEAVY : AA_LIGHT;
+        const fl = Math.max(
+          gun.minFuseMs,
+          (wrapDistance(n, f.to) / gun.speed) * 1000,
+        );
+        return { n: f.nest, t0, to: f.to, fl: Math.round(fl) };
+      }),
+    );
+  }
+  aaNests.update(propsViewer, renderMs, now, aaEnemyPos);
   scarsRenderer.update(propsViewer, renderMs, now);
   facadeScars.update(propsViewer, now);
   // S4: the zeppelin, its flak and its fall; the HUD bar while it flies;
@@ -5665,6 +5820,23 @@ const frame = (now: number): void => {
   hud.setBoss(bossUp ? socket.bossHp : null, bossMax, now);
   // W1: the carrier war — its tier, the wave, the enemies left, the banner.
   hud.setWaves(socket.waves, now);
+  // W4: Easy mode counts the waves this pilot SEES cleared — never across
+  // a hidden tab, a join or a resume (wavesSeen restarts), nor in the lab.
+  if (
+    wavesSeen !== null &&
+    !labMode &&
+    waveCleared(wavesSeen, socket.waves, socket.boss.down !== null)
+  ) {
+    const was = easyOn();
+    easyState = noteCleared(easyState);
+    writeStored(EASY_KEY, saveEasy(easyState));
+    if (was && !easyOn()) {
+      socket.sendSetEasy(false);
+      hud.notice("EASY MODE OFF — YOU'VE GOT THIS");
+    }
+  }
+  wavesSeen = document.hidden ? null : socket.waves;
+  hud.setEasy(easyOn());
   if (
     bossRaid &&
     renderMs !== null &&
@@ -5966,7 +6138,6 @@ const frame = (now: number): void => {
   }
   if (flying && guns.triggerHeld) coach.note("fire");
   if (flying && boost.active) coach.note("boost");
-  if (flying && scoreboard.isOpen) coach.note("scores");
   coach.frame(Math.min(rawMs, 250), alive, settingsOpen || document.hidden);
   cursorPrev = cursorNow;
   if (solutionTone.shouldPlay(alive && aimResult.solution, now)) {

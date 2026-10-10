@@ -286,6 +286,61 @@ export const VIEWS = [
     at: [180, 8, 1636],
     weather: "clear",
   },
+  // W3 rooftop AA: a quad machine-gun nest from 9 m (sandbags, crates,
+  // the gun on its pedestal, its gunner, the searchlight), and a night
+  // engagement — two light nests and a heavy flak gun on the tallest tower
+  // nearby firing at a fighter-bomber over the block (staged on this client
+  // through `__ab.qaAa`: each `aa.fire` entry's nest bursts at its `to`
+  // every `aa.everyMs` on the render clock). Nest ids are prop ids
+  // (`__ab.aaNests().list`).
+  {
+    name: "aa-nest-closeup",
+    x: 1262,
+    z: 704,
+    y: 95,
+    yaw: 0,
+    eye: [1255.5, 39, 697],
+    at: [1247.5, 34.2, 688.9],
+    weather: "clear",
+    // Swung side-on to the camera, firing up and away to its right.
+    aa: {
+      everyMs: 700,
+      fire: [{ nest: 3210, to: { x: 1400, y: 190, z: 540 } }],
+    },
+  },
+  {
+    name: "aa-firing-night",
+    x: 1330,
+    z: 860,
+    y: 160,
+    yaw: 0,
+    eye: [1257, 38.5, 700],
+    at: [1212, 118, 615],
+    weather: "clear",
+    sky: "night",
+    showcase: [
+      {
+        kind: "fighter",
+        x: 1195,
+        y: 150,
+        z: 600,
+        yaw: 1.2,
+        pitch: 0.05,
+        roll: -0.4,
+        speed: 70,
+        hp: 40,
+      },
+    ],
+    aa: {
+      everyMs: 300,
+      fire: [
+        { nest: 3210, to: { x: 1197, y: 151, z: 603 } },
+        { nest: 3204, to: { x: 1192, y: 148, z: 598 } },
+        { nest: 3211, to: { x: 1199, y: 153, z: 605 } },
+        { nest: 3208, to: { x: 1188, y: 158, z: 612 } },
+      ],
+    },
+  },
   // S6 glass reflections: glass-heavy views (the GLASS archetype clusters of
   // the seed-42 city), a puddled street and the river — the probe's three
   // readers. Each holds the QA camera at `eye` (the plane pinned behind it),

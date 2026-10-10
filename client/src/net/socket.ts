@@ -35,6 +35,7 @@
 // C2: and the chaos — quakes (`quakes`) and the burning chunks (`fires`).
 // U6: and the cave-ins (`caveIns`, the mover field's slot).
 
+import { type AaBurst, decodeAaBurst } from "@angels-bandits/common/aa";
 import {
   BOMBS_LOADED,
   BOMB_RACKS,
@@ -145,6 +146,9 @@ export interface GameSocketEvents {
   onIntensityConfig?: (msg: IntensityConfigMsg) => void;
   /** W1: the carrier war moved on (already in `waves`). */
   onWaves?: (state: WaveState) => void;
+  /** W3: the rooftop AA nests fired (decoded; cosmetic — the server rolled
+   * the hits). */
+  onAa?: (bursts: AaBurst[]) => void;
   /** L1: a server-accepted event the city reacts to (reactions.ts). */
   onCityEvent?: (event: CityEvent) => void;
   onNewsHeli?: (msg: NewsHeliMsg) => void;
@@ -368,6 +372,11 @@ export class GameSocket {
     }, WATCHDOG_MS);
   }
 
+  /** W4: whether the pilot flies in Easy mode — read as each join (the
+   * first, and every resume) is sent, so the server always has it current.
+   * main.ts sets it before connecting. */
+  static easy: () => boolean = () => false;
+
   /** Connect and join; resolves once the server's welcome arrives. Always
    * settles (W1): an error, a close before the welcome, or no welcome within
    * CONNECT_TIMEOUT_MS all reject — a join never hangs on a silent socket.
@@ -404,7 +413,13 @@ export class GameSocket {
           JSON.stringify(
             lab
               ? { type: "join", name, lab: true }
-              : { type: "join", name, resume },
+              : {
+                  type: "join",
+                  name,
+                  resume,
+                  // W4: only when on — absent reads as off on the server.
+                  ...(GameSocket.easy() ? { easy: true } : {}),
+                },
           ),
         ),
       );
@@ -797,6 +812,11 @@ export class GameSocket {
     this.send({ type: "setIntensity", level });
   }
 
+  /** W4: Easy mode switched on or off. */
+  sendSetEasy(on: boolean): void {
+    this.send({ type: "setEasy", on });
+  }
+
   /** FL1: the lab's tuning (a decoded export: JSON.parse(exportTuning(t)))
    * and/or its chaos and (W1) enemy-waves toggles. Ignored by the server
    * outside a lab room; the newest wins, so send the whole tuning each time. */
@@ -952,6 +972,15 @@ export class GameSocket {
           this.bossHp = msg.hp;
         }
         break;
+      case "aa": {
+        const bursts: AaBurst[] = [];
+        for (const w of Array.isArray(msg.b) ? msg.b : []) {
+          const b = decodeAaBurst(w);
+          if (b) bursts.push(b);
+        }
+        if (bursts.length > 0) this.events.onAa?.(bursts);
+        break;
+      }
       case "flak":
         for (const w of Array.isArray(msg.f) ? msg.f : []) {
           const f = decodeFlak(w);

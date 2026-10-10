@@ -21,6 +21,8 @@ interface Row {
   isBot: boolean;
   /** S7: current kill streak (server-owned, from the score rows). */
   streak: number;
+  /** W3: AA-nest kills of planes this pilot damaged first. */
+  assists: number;
 }
 
 export class Scoreboard {
@@ -194,11 +196,12 @@ export class Scoreboard {
 
   /** Apply a server scoreboard (welcome or a score broadcast). */
   setScores(scores: ScoreEntry[]): void {
-    for (const { id, kills, deaths, streak } of scores) {
+    for (const { id, kills, deaths, streak, assists } of scores) {
       const row = this.upsert(id);
       row.kills = kills;
       row.deaths = deaths;
       row.streak = streak ?? 0;
+      row.assists = assists ?? 0;
     }
     this.dirty = true;
   }
@@ -206,7 +209,14 @@ export class Scoreboard {
   private upsert(id: string): Row {
     let row = this.rows.get(id);
     if (!row) {
-      row = { name: "???", kills: 0, deaths: 0, isBot: false, streak: 0 };
+      row = {
+        name: "???",
+        kills: 0,
+        deaths: 0,
+        isBot: false,
+        streak: 0,
+        assists: 0,
+      };
       this.rows.set(id, row);
     }
     return row;
@@ -240,7 +250,10 @@ export class Scoreboard {
           tr.classList.add("streak", `streak-${tier}`);
           tr.title = `${row.streak}-kill streak`;
         }
-        for (const text of [row.name, `${row.kills}`, `${row.deaths}`]) {
+        // W3: AA assists ride the kills column ("3 +1").
+        const kills =
+          row.assists > 0 ? `${row.kills} +${row.assists}` : `${row.kills}`;
+        for (const text of [row.name, kills, `${row.deaths}`]) {
           const td = document.createElement("td");
           td.textContent = text;
           tr.append(td);

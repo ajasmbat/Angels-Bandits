@@ -883,6 +883,9 @@ const NEUTRAL_GRADE: WaveGrade = { jitter: 1, reaction: 1, fire: 1 };
 /** W1: the aim-jitter multiplier never leaves this band, whatever style ×
  * skill × grade multiply to. */
 const JITTER_SCALE_MIN = 0.5;
+/** W4: the share of lined-up shots an enemy still takes at a pilot in
+ * Easy mode (on top of its wave's trigger discipline). */
+const EASY_FIRE_SCALE = 0.5;
 const JITTER_SCALE_MAX = 3;
 
 /** B3 telemetry (the bot sim's report): what the tactics actually flew. */
@@ -911,6 +914,8 @@ export class RoomBots {
   private contactPos = new Map<string, Vec3>();
   private nextIndex = 1;
   private tickCount = 0;
+  /** W3: provoked enemies' patrol points (setDetours). */
+  private detours: ReadonlyMap<string, Vec3> = new Map();
   /** D3 telemetry (bot sim): probes refused because they would have
    * entered an active collapse zone. */
   zoneRefusals = 0;
@@ -1126,6 +1131,13 @@ export class RoomBots {
    * nobody. */
   setQuarries(quarries: ReadonlyMap<string, string>): void {
     for (const [id, bot] of this.bots) bot.quarryId = quarries.get(id) ?? null;
+  }
+
+  /** W3: enemies provoked by a rooftop AA nest (server/src/aa.ts) patrol
+   * toward these points (over the nest) instead of their quarry while
+   * listed. Replaced wholesale each call; empty = nobody detours. */
+  setDetours(detours: ReadonlyMap<string, Vec3>): void {
+    this.detours = detours;
   }
 
   quarryOf(id: string): string | null {
@@ -1562,6 +1574,7 @@ export class RoomBots {
    */
   spawnClear(pos: Vec3, yaw: number, now: number): boolean {
     const fwd = flightForward({ yaw, pitch: 0 });
+    const gaps = gapsOf(this.movers);
     // Samples a probe radius apart tile the run with overlapping spheres.
     for (let s = 0; s <= BOT_SPAWN_CLEAR_AHEAD; s += BOT_PROBE_RADIUS) {
       const p = canonicalize({
@@ -1569,7 +1582,7 @@ export class RoomBots {
         y: pos.y,
         z: pos.z + fwd.z * s,
       });
-      if (hitsGround(p, BOT_PROBE_RADIUS)) return false;
+      if (hitsGround(p, BOT_PROBE_RADIUS, gaps)) return false;
       if (collideCity(p, BOT_PROBE_RADIUS, this.buildings, this.cityIndex)) {
         return false;
       }
@@ -1616,6 +1629,7 @@ export class RoomBots {
     let f = this.flightFromSpawn(spawn);
     f.pitch = pitch;
     const free = this.withoutCarrier();
+    const gaps = gapsOf(this.movers);
     const runOut = (BOT_SPAWN_CLEAR_AHEAD / spawn.speed) * 1000;
     for (let ms = 0; ms <= graceMs + runOut; ms += BOT_DT * 1000) {
       f = botStep(f, botInput(NEUTRAL));
@@ -1624,7 +1638,7 @@ export class RoomBots {
       const after = ms >= graceMs;
       const r = after ? BOT_PROBE_RADIUS : PLAYER_RADIUS;
       if (
-        hitsGround(p, r) ||
+        hitsGround(p, r, gaps) ||
         collideCity(p, r, this.buildings, this.cityIndex) ||
         collideNature(p, r, this.nature) ||
         collideBotMovers(p, r, after ? this.movers : free, t) ||
@@ -1692,7 +1706,7 @@ export class RoomBots {
       // blimp; helicopters are bot-transparent, see collideBotMovers).
       if (
         // D9: a fallen bridge span is a hole here, as in the crash check
-        // (the probes keep it solid: a bot only ever avoids a gap).
+        // and every bot probe, rollout and sight line.
         hitsGround(bot.flight.pos, PLAYER_RADIUS, gapsOf(this.movers)) ||
         collideCity(
           bot.flight.pos,
@@ -1810,6 +1824,7 @@ export class RoomBots {
     const hits: BotRoundHit[] = [];
     const flying: BotRound[] = [];
     const lifeEnd = BULLET_LIFETIME_S * 1000;
+    const gaps = gapsOf(this.movers);
     for (const r of this.rounds) {
       const shooter = this.bots.get(r.shot.botId);
       const targetPos = this.contactPos.get(r.shot.targetId);
@@ -1829,7 +1844,7 @@ export class RoomBots {
           targetPos,
         )
       ) {
-        if (losClear(r.shot.origin, targetPos, this.buildings)) {
+        if (losClear(r.shot.origin, targetPos, this.buildings, gaps)) {
           hits.push({
             shot: r.shot,
             shooterPos: shooter.flight.pos,
@@ -2339,6 +2354,9 @@ export class RoomBots {
     bot: Bot,
     contacts: readonly BotContact[],
   ): Vec3 | undefined {
+    // W3: a provoked enemy heads for the nest that hit it.
+    const detour = this.detours.get(bot.entry.id);
+    if (detour) return detour;
     if (bot.quarryId === null) return undefined;
     for (const c of contacts) if (c.id === bot.quarryId) return c.pos;
     return undefined;
@@ -2523,6 +2541,7 @@ export class RoomBots {
   private rolloutManeuver(bot: Bot, m: Maneuver, now: number): boolean {
     const r = PLAYER_RADIUS + BOT_DEFEND_MARGIN;
     const probe: Maneuver = { ...m };
+    const gaps = gapsOf(this.movers);
     let f = bot.flight;
     let tail = -1;
     const maxSteps = Math.ceil((BOT_DEFEND_MAX_S + BOT_DEFEND_TAIL_S) / BOT_DT);
@@ -2538,7 +2557,7 @@ export class RoomBots {
       const t = now + k * BOT_DT * 1000;
       if (
         f.pos.y > BOT_DEFEND_MAX_ALT ||
-        hitsGround(f.pos, r) ||
+        hitsGround(f.pos, r, gaps) ||
         collideCity(f.pos, r, this.buildings, this.cityIndex) ||
         collideNature(f.pos, r, this.nature) ||
         collideBotMovers(f.pos, r + BOT_MOVER_CLEAR, this.movers, t) ||
@@ -2642,6 +2661,7 @@ export class RoomBots {
     until: number,
   ): boolean {
     const r = PLAYER_RADIUS + HAZARD_MARGIN;
+    const gaps = gapsOf(this.movers);
     let f = flight;
     const steps = Math.ceil((until - now) / (BOT_DT * 1000) + 0.5 / BOT_DT);
     for (let k = 1; k <= steps; k++) {
@@ -2650,7 +2670,7 @@ export class RoomBots {
       if (
         f.pos.y < BOT_MIN_ALT ||
         f.pos.y > BOT_CEILING_ALT ||
-        hitsGround(f.pos, r) ||
+        hitsGround(f.pos, r, gaps) ||
         collideCity(f.pos, r, this.buildings, this.cityIndex) ||
         collideNature(f.pos, r, this.nature) ||
         collideBotMovers(f.pos, r + BOT_MOVER_CLEAR, this.movers, t) ||
@@ -2785,6 +2805,7 @@ export class RoomBots {
     let f = bot.flight;
     let input: FlightInput = NEUTRAL;
     const steps = Math.round(horizon / BOT_DT);
+    const gaps = gapsOf(this.movers);
     for (let k = 0; k < steps; k++) {
       if (k === 0 || (this.tickCount + k) % BOT_DECISION_EVERY === 0) {
         const next = tunnelInput(
@@ -2797,7 +2818,7 @@ export class RoomBots {
         input = next;
       }
       f = botStep(f, botInput(input));
-      if (hitsGround(f.pos, r)) return false;
+      if (hitsGround(f.pos, r, gaps)) return false;
       const t = now + k * BOT_DT * 1000;
       // Below street level outside the river channel is a bore: nothing
       // but its walls (the ground, just tested) — and (U6) its cave-ins —
@@ -3045,6 +3066,7 @@ export class RoomBots {
     let f = bot.flight;
     let input: FlightInput = NEUTRAL;
     const steps = Math.round(BOT_HOLE_ROLLOUT_S / BOT_DT);
+    const gaps = gapsOf(this.movers);
     for (let k = 0; k < steps; k++) {
       if (k === 0 || (this.tickCount + k) % BOT_DECISION_EVERY === 0) {
         const next = threadInput(f, thread);
@@ -3054,7 +3076,7 @@ export class RoomBots {
       f = botStep(f, botInput(input));
       const t = now + k * BOT_DT * 1000;
       if (
-        hitsGround(f.pos, r) ||
+        hitsGround(f.pos, r, gaps) ||
         collideCity(f.pos, r, this.buildings, this.cityIndex) ||
         collideNature(f.pos, r, this.nature) ||
         collideBotMovers(f.pos, r + BOT_MOVER_CLEAR, this.movers, t) ||
@@ -3520,9 +3542,10 @@ export class RoomBots {
     // would let a knot of contacts behind one tower blind a bot to a human in
     // open air right in front of it.
     let tests = BOT_LOS_TESTS_MAX;
+    const gaps = gapsOf(this.movers);
     for (const { c } of inRange) {
       if (tests-- <= 0) break;
-      if (losClear(bot.flight.pos, c.pos, this.buildings)) {
+      if (losClear(bot.flight.pos, c.pos, this.buildings, gaps)) {
         bot.lastSeenAt = now;
         return c;
       }
@@ -3677,6 +3700,7 @@ export class RoomBots {
       (canyon ? BOT_CANYON_PROBE_RADIUS : BOT_PROBE_RADIUS) * margin;
     const profile =
       times ?? (canyon ? BOT_CANYON_PROBE_TIMES : BOT_PROBE_TIMES);
+    const gaps = gapsOf(this.movers);
     for (let i = 0; i < profile.length; i++) {
       const t = profile[i] ?? 0;
       const s = flight.speed * t;
@@ -3685,7 +3709,10 @@ export class RoomBots {
         y: flight.pos.y + dy * s,
         z: flight.pos.z + dz * s,
       });
-      if (hitsGround(p, radius)) return true;
+      // A fallen bridge span's 40 m gap is wider than these samples are
+      // apart, and its edges are no thinner than the deck itself, so unlike
+      // a building's holes it can be probed open.
+      if (hitsGround(p, radius, gaps)) return true;
       // Holes count as SOLID here: point samples 16–36 m apart can land
       // inside a hole and skip its thin walls. Bots never discover a hole
       // with a probe — they fly one only as a committed thread, checked by
@@ -3742,13 +3769,14 @@ export class RoomBots {
     let t = 0;
     let next = 0;
     const times = BOT_CANYON_PROBE_TIMES;
+    const gaps = gapsOf(this.movers);
     while (next < times.length) {
       f = botStep(f, botInput(bot.input));
       t += BOT_DT;
       if (t + 1e-9 < (times[next] ?? 0)) continue;
       next++;
       const p = f.pos;
-      if (hitsGround(p, radius)) return true;
+      if (hitsGround(p, radius, gaps)) return true;
       if (collideCity(p, radius, this.buildings, this.cityIndex)) return true;
       if (collideNature(p, radius, this.nature)) return true;
       if (
@@ -3808,6 +3836,7 @@ export class RoomBots {
     moversOnly: boolean,
   ): boolean {
     let f = flight;
+    const gaps = gapsOf(this.movers);
     const steps = Math.round(RECOVER_LOOK_S / BOT_DT);
     for (let k = 1; k <= steps; k++) {
       f = botStep(f, botInput(input));
@@ -3821,7 +3850,7 @@ export class RoomBots {
       }
       if (moversOnly) continue;
       if (
-        hitsGround(f.pos, PLAYER_RADIUS) ||
+        hitsGround(f.pos, PLAYER_RADIUS, gaps) ||
         collideCity(f.pos, PLAYER_RADIUS, this.buildings, this.cityIndex) ||
         collideNature(f.pos, PLAYER_RADIUS, this.nature)
       ) {
@@ -3887,8 +3916,13 @@ export class RoomBots {
     const fwd = flightForward(bot.flight);
     const along = (lx * fwd.x + ly * fwd.y + lz * fwd.z) / lead;
     if (along < Math.cos(BOT_FIRE_CONE)) return null;
-    // W1: an early wave's trigger discipline lets some lined-up shots go.
-    if (bot.grade.fire < 1 && bot.fireRand() >= bot.grade.fire) return null;
+    // W1: an early wave's trigger discipline lets some lined-up shots go —
+    // W4: and half again of them at a pilot in Easy mode (their aim jitter
+    // already sits at its clamp, so this is what Easy mode really buys).
+    const fire =
+      bot.grade.fire *
+      (!target.boss && this.skill.isEasy(target.id) ? EASY_FIRE_SCALE : 1);
+    if (fire < 1 && bot.fireRand() >= fire) return null;
     return {
       botId: bot.entry.id,
       targetId: bot.targetId,

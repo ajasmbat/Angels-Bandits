@@ -189,6 +189,13 @@ const BOMB_LEADS = [
   "AIR RAID TAKES OUT",
 ];
 
+/** W3: downed by a rooftop AA nest (the city's own guns). */
+const AA_LEADS = [
+  "ROOFTOP GUNS DOWN",
+  "AA NEST SPLASHES",
+  "FLAK FROM THE ROOFS DROPS",
+];
+
 /** S4: brought down by the sky boss's flak (environment, like a missile). */
 const FLAK_LEADS = ["FLAK CATCHES", "FLAK BRINGS DOWN", "ZEPPELIN GUNS DOWN"];
 /** S4: the zeppelin falls — the top dealer's headline. */
@@ -231,6 +238,8 @@ export function killHeadline(
     line = `${pick(METEOR_LEADS, seed)} ${victim}`;
   } else if (death.cause === "bomb") {
     line = `${pick(BOMB_LEADS, seed)} ${victim}`;
+  } else if (death.cause === "aa") {
+    line = `${pick(AA_LEADS, seed)} ${victim}`;
   } else if (death.killerId === null) {
     line = `${victim} ${pick(CRASH_VERBS, seed)}`;
   } else if (death.cause === "wreck") {
@@ -256,6 +265,7 @@ export function feedLine(
   if (death.cause === "flak") return `💥 ${victim}`;
   if (death.cause === "meteor") return `☄ ${victim}`;
   if (death.cause === "bomb") return `💣 ${victim}`;
+  if (death.cause === "aa") return `AA ▸ ${victim}`;
   if (death.killerId === null) return `☠ ${victim}`;
   const glyph =
     death.cause === "wreck" ? "🔥" : death.cause === "crash" ? "✕" : "▸";
@@ -289,6 +299,9 @@ export function replaySubject(death: HeadlineDeath): ReplaySubject {
   }
   if (death.cause === "bomb") {
     return { id: death.victimId, caption: "BOMB RUN" };
+  }
+  if (death.cause === "aa") {
+    return { id: death.victimId, caption: "ROOFTOP AA" };
   }
   if (death.killerId === null) {
     return { id: death.victimId, caption: "WIPEOUT" };

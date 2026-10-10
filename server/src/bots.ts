@@ -1631,8 +1631,9 @@ export class RoomBots {
     const free = this.withoutCarrier();
     const gaps = gapsOf(this.movers);
     const runOut = (BOT_SPAWN_CLEAR_AHEAD / spawn.speed) * 1000;
+    const inp = botInput(NEUTRAL); // A1: once, not per step
     for (let ms = 0; ms <= graceMs + runOut; ms += BOT_DT * 1000) {
-      f = botStep(f, botInput(NEUTRAL));
+      f = botStep(f, inp);
       const t = at + ms + BOT_DT * 1000;
       const p = f.pos;
       const after = ms >= graceMs;
@@ -2664,8 +2665,9 @@ export class RoomBots {
     const gaps = gapsOf(this.movers);
     let f = flight;
     const steps = Math.ceil((until - now) / (BOT_DT * 1000) + 0.5 / BOT_DT);
+    const inp = botInput(input); // A1: once, not per step
     for (let k = 1; k <= steps; k++) {
-      f = botStep(f, botInput(input));
+      f = botStep(f, inp);
       const t = now + k * BOT_DT * 1000;
       if (
         f.pos.y < BOT_MIN_ALT ||
@@ -2707,10 +2709,11 @@ export class RoomBots {
     const r = PLAYER_RADIUS + HAZARD_MARGIN;
     let f = flight;
     const steps = Math.round(HAZARD_LOOK_S / BOT_DT);
+    const inp = botInput(input); // A1: once, not per step
     for (let k = 1; k <= steps; k++) {
       const t0 = now + (k - 1) * BOT_DT * 1000;
       if (t0 > last) return false;
-      f = botStep(f, botInput(input));
+      f = botStep(f, inp);
       if (pointInHazard(f.pos, r, t0, t0 + BOT_DT * 1000, discs)) return true;
     }
     return false;
@@ -3769,9 +3772,10 @@ export class RoomBots {
     let t = 0;
     let next = 0;
     const times = BOT_CANYON_PROBE_TIMES;
+    const inp = botInput(bot.input); // A1: once, not per step
     const gaps = gapsOf(this.movers);
     while (next < times.length) {
-      f = botStep(f, botInput(bot.input));
+      f = botStep(f, inp);
       t += BOT_DT;
       if (t + 1e-9 < (times[next] ?? 0)) continue;
       next++;
@@ -3838,8 +3842,9 @@ export class RoomBots {
     let f = flight;
     const gaps = gapsOf(this.movers);
     const steps = Math.round(RECOVER_LOOK_S / BOT_DT);
+    const inp = botInput(input); // A1: once, not per step
     for (let k = 1; k <= steps; k++) {
-      f = botStep(f, botInput(input));
+      f = botStep(f, inp);
       const r = PLAYER_RADIUS + BOT_MOVER_CLEAR;
       const at = now + k * BOT_DT * 1000;
       if (

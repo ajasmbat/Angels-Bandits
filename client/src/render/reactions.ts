@@ -613,8 +613,12 @@ export const windowWakeUniform: { value: THREE.Vector4[] } = {
   value: Array.from({ length: MAX_WAKES }, () => new THREE.Vector4()),
 };
 
-/** Uniform declaration for the building fragment pars. */
-export const WAKE_PARS_GLSL = `uniform vec4 uWake[${MAX_WAKES}];\n`;
+/** A1: how many of uWake's slots are live this frame (the rest have w = 0),
+ * so every facade pixel stops there instead of reading all MAX_WAKES. */
+export const windowWakeCountUniform: { value: number } = { value: 0 };
+
+/** Uniform declarations for the building fragment pars. */
+export const WAKE_PARS_GLSL = `uniform vec4 uWake[${MAX_WAKES}];\nuniform int uWakeCount;\n`;
 
 /**
  * L1 window wake, spliced AFTER windowEmissiveGlsl (it reads that block's
@@ -634,6 +638,7 @@ export function wakeWindowGlsl(intensity: string): string {
 // --- L1 reactive city: windows woken by nearby gunfire / explosions ---
 float wakeK = 0.0;
 for (int wi = 0; wi < ${MAX_WAKES}; wi++) {
+  if (wi >= uWakeCount) break;
   vec4 wk = uWake[wi];
   if (wk.w <= 0.0) continue;
   vec3 wakeD = vBWorldPos - wk.xyz;
@@ -926,6 +931,7 @@ export class CityReactor {
         v.w = 0;
       }
     }
+    windowWakeCountUniform.value = Math.min(r.wakeCount, MAX_WAKES);
     this.placeSmoke(cameraPos);
     return r;
   }

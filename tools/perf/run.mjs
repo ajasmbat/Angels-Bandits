@@ -392,6 +392,10 @@ export function abQuery(value) {
   return value;
 }
 
+/** A1: how long joinGame waits for the page to boot, and then for its room
+ * to empty (was 60 s and 30 s). */
+const BOOT_WAIT_MS = 180_000;
+
 async function joinGame(page, url) {
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
@@ -401,8 +405,12 @@ async function joinGame(page, url) {
   await page.goto(url, { waitUntil: "domcontentloaded" });
   await page.fill("#join-name", "PERFBOT");
   await page.click('#join button[type="submit"]');
+  // A1: boot waits sized for a software-rendered page on a loaded box: the
+  // boot pre-warm compiles every program synchronously, and on SwiftShader
+  // at load ~100 that holds the page's main thread (and so these in-page
+  // polls) for tens of seconds. Setup waits, not measurements.
   await page.waitForFunction(() => typeof window.__ab !== "undefined", null, {
-    timeout: 60_000,
+    timeout: BOOT_WAIT_MS,
   });
   // Bots fly a live sim and shoot back — deterministic per room, but their
   // POSES depend on wall-clock timing, so they would smear every segment.
@@ -414,7 +422,7 @@ async function joinGame(page, url) {
     await page.waitForFunction(
       () => window.__ab.combat().targets.length === 0,
       null,
-      { timeout: 30_000 },
+      { timeout: BOOT_WAIT_MS },
     );
   } catch (err) {
     const left = await page.evaluate(() => ({
@@ -479,6 +487,7 @@ async function flySegment(page, seg, sampleMs, worldMs, ledger = false) {
   const stats = await page.evaluate(
     async (s) => {
       const ab = window.__ab;
+      window.__abGlPhase = s.name; // A1: the late-compile check's label
       /** Wait `ms` of in-page time, ticking on the frame loop itself. */
       const waitMs = (ms) =>
         new Promise((resolve) => {
@@ -1138,10 +1147,24 @@ export function spectacleVerdict(seg, stats) {
 function installGlProbe() {
   const counts = { programs: 0, textures: 0, buffers: 0 };
   window.__abGl = counts;
+  // A1: every program link with its time, its shader's name (three writes
+  // `#define SHADER_NAME <material>` into each source) and the harness
+  // phase it landed in — the late-compile check reads it.
+  const links = [];
+  window.__abGlLinks = links;
+  window.__abGlPhase = "boot";
+  const names = new WeakMap();
   const wrap = (proto, name, key) => {
     const original = proto[name];
     proto[name] = function (...args) {
       counts[key]++;
+      return original.apply(this, args);
+    };
+  };
+  const tap = (proto, name, fn) => {
+    const original = proto[name];
+    proto[name] = function (...args) {
+      fn(args);
       return original.apply(this, args);
     };
   };
@@ -1150,6 +1173,22 @@ function installGlProbe() {
     window.WebGLRenderingContext?.prototype,
   ]) {
     if (!proto) continue;
+    tap(proto, "shaderSource", ([shader, src]) => {
+      const m = /#define SHADER_NAME ([^\n]*)/.exec(String(src));
+      if (m) names.set(shader, m[1].trim());
+    });
+    tap(proto, "attachShader", ([program, shader]) => {
+      if (!names.has(program) && names.has(shader)) {
+        names.set(program, names.get(shader));
+      }
+    });
+    tap(proto, "linkProgram", ([program]) => {
+      links.push({
+        t: performance.now(),
+        name: names.get(program) ?? "?",
+        phase: window.__abGlPhase,
+      });
+    });
     wrap(proto, "linkProgram", "programs");
     wrap(proto, "texImage2D", "textures");
     wrap(proto, "texImage3D", "textures");
@@ -1175,6 +1214,7 @@ function flyWarmupLap(page) {
   return page.evaluate(
     async ([segs, ms]) => {
       const ab = window.__ab;
+      window.__abGlPhase = "warm-up"; // A1: the late-compile check's label
       const stageAt = (spec, base) =>
         JSON.parse(JSON.stringify(spec), (k, v) =>
           k === "t" && typeof v === "number" ? base + v : v,
@@ -1763,11 +1803,38 @@ async function measure(browser, url, { trace = true, ledger = true } = {}) {
       userAgent: navigator.userAgent,
     };
   });
+  // A1: every program linked more than LATE_COMPILE_MS after the boot
+  // pre-warm finished (null: a build without the bootedAt hook).
+  const lateLinks = await page.evaluate((after) => {
+    const booted = window.__ab.bootedAt?.() ?? null;
+    if (booted === null || !window.__abGlLinks) return null;
+    return window.__abGlLinks
+      .filter((l) => l.t > booted + after)
+      .map((l) => ({ ...l, t: Math.round(l.t - booted) }));
+  }, LATE_COMPILE_MS);
   await page.close();
-  return { segments, config, env, errors };
+  return { segments, config, env, errors, lateLinks };
 }
 
 // --- Reporting ------------------------------------------------------------
+
+/** A1: the hitch gate's table — programs linked > LATE_COMPILE_MS after the
+ * boot pre-warm, per measured pass (warm-up lap and every segment). */
+function printLateCompiles(passes) {
+  console.log(
+    `\nlate compiles (programs linked > ${LATE_COMPILE_MS / 1000} s after the boot pre-warm; target 0)`,
+  );
+  passes.forEach((links, i) => {
+    if (links === null) {
+      console.log(`  pass ${i + 1}: n/a (build has no bootedAt hook)`);
+      return;
+    }
+    console.log(`  pass ${i + 1}: ${links.length}`);
+    for (const l of links.slice(0, 40)) {
+      console.log(`    +${l.t} ms  ${l.phase.padEnd(10)} ${l.name}`);
+    }
+  });
+}
 
 /**
  * A frame this many times its own segment's p50 is a SPIKE — a different
@@ -1781,6 +1848,14 @@ async function measure(browser, url, { trace = true, ledger = true } = {}) {
  * would feel as a hitch.
  */
 export const SPIKE_FACTOR = 4;
+/**
+ * A1: the hitch gate. Every material is compiled — and drawn once — by the
+ * boot pre-warm (client/src/render/prewarm.ts), so a program the driver
+ * links more than this long after it finished is a first-sight hitch it
+ * missed. Counted over the WHOLE session (warm-up lap included), listed by
+ * shader name and phase; the target is 0, and any is an exit code.
+ */
+export const LATE_COMPILE_MS = 5000;
 /**
  * How many individual spikes a report lists per segment. The COUNT is always
  * exact; this caps only the itemised positions, so a pathological window
@@ -2808,6 +2883,7 @@ async function main() {
       }
     }
     report = buildReport(opts.label, runs, opts);
+    report.lateCompiles = runs.map((r) => r.lateLinks ?? null);
     if (abUrl !== null) {
       abReport = buildReport(abLabel, abRuns, opts);
       if (ref !== null) abReport.config.ref = ref.label;
@@ -2881,6 +2957,7 @@ async function main() {
     }
   }
 
+  printLateCompiles(report.lateCompiles);
   mkdirSync(dirname(opts.out), { recursive: true });
   writeFileSync(opts.out, `${JSON.stringify(report, null, 2)}\n`);
   console.log(`\nwrote ${opts.out}`);
@@ -2896,6 +2973,10 @@ async function main() {
   // "report, don't gate": the baseline needs a few PRs of trust first, and
   // a check that fails on a busy laptop gets disabled and then ignored.
   if (opts.strict && report.determinism && !report.determinism.pass) {
+    process.exitCode = 1;
+  }
+  // A1: a program linked after the boot pre-warm is a first-sight hitch.
+  if (report.lateCompiles.some((l) => l !== null && l.length > 0)) {
     process.exitCode = 1;
   }
   // S8: a segment that staged nothing (or lost it mid-window) is a broken

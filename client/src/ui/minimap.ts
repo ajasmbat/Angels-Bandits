@@ -274,11 +274,11 @@ export class Minimap {
     this.watch.poll(this.repaint);
     const size = this.size;
     const o = minimapPatternOffset(playerPos, size);
-    for (const dx of [0, size]) {
-      for (const dy of [0, size]) {
-        ctx.drawImage(this.tile, o.x + dx, o.y + dy);
-      }
-    }
+    // The 2×2 tile repeat, written out (A1: no per-frame array literals).
+    ctx.drawImage(this.tile, o.x, o.y);
+    ctx.drawImage(this.tile, o.x, o.y + size);
+    ctx.drawImage(this.tile, o.x + size, o.y);
+    ctx.drawImage(this.tile, o.x + size, o.y + size);
     for (const e of echoes) {
       const p = minimapPoint(playerPos, e.pos, size);
       // Pulsing magenta echo (Neon Vein): ~3 Hz throb while it fades out.

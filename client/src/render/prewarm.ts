@@ -34,6 +34,17 @@
 // enemy plane that leaves (W1: shot down, or gone with its carrier) arrives
 // as `playerLeft` and disposes that plane's materials, and boot sat out the
 // whole timeout. The wait below drops a disposed material instead.
+//
+// A1: a shown object that draws NOTHING is still not drawn. Every pool that
+// boots empty — an InstancedMesh at count 0 (missiles, cave-ins,
+// scaffold, street furniture…), a geometry with an empty draw range (storm
+// bolts, steam, dust, impacts, litter…), an instanced geometry with no
+// instances (fog banks, rain) — was compiled and then skipped by the real
+// frame, so the first explosion, missile, bolt or downpour still paid the
+// driver's lazy first draw. For that one frame each is forced to draw a
+// minimal prefix (1 instance, ≤ 3 vertices) behind the boot fade, and put
+// back the moment it returns: synchronously, so no game frame or socket
+// handler can see the forced counts.
 
 import * as THREE from "three";
 import type { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -91,10 +102,13 @@ export async function prewarmScene(
     renderer.setRenderTarget(previousTarget);
     // One real frame through the real chain (bloom, the final pass) — the
     // boot fade covers it. Never the reason boot fails.
+    const restore = forceEmptyDraws(scene);
     try {
       composer.render(0);
     } catch {
       /* the next real frame draws it instead */
+    } finally {
+      restore();
     }
   } finally {
     renderer.setRenderTarget(previousTarget);
@@ -104,6 +118,55 @@ export async function prewarmScene(
     scene.remove(tag);
     disposeNameTag(tag);
   }
+}
+
+/**
+ * Make every empty pool in `scene` draw a minimal prefix (see A1 above);
+ * returns the function that puts each count back exactly. Only pools with
+ * capacity for what is forced (an instance, the vertices) are touched.
+ */
+function forceEmptyDraws(scene: THREE.Scene): () => void {
+  const meshes: THREE.InstancedMesh[] = [];
+  const ranges = new Set<THREE.BufferGeometry>();
+  const instanced = new Set<THREE.InstancedBufferGeometry>();
+  scene.traverse((o) => {
+    if (o instanceof THREE.InstancedMesh) {
+      if (o.count === 0 && o.instanceMatrix.count >= 1) {
+        meshes.push(o);
+        o.count = 1;
+      }
+    }
+    const geometry = (o as THREE.Mesh).geometry as
+      | THREE.BufferGeometry
+      | undefined;
+    if (!geometry?.isBufferGeometry) return;
+    if (geometry.drawRange.count === 0 && !ranges.has(geometry)) {
+      const n =
+        geometry.index?.count ?? geometry.getAttribute("position")?.count;
+      if (n !== undefined && n >= 1) {
+        ranges.add(geometry);
+        geometry.drawRange.count = Math.min(3, n);
+      }
+    }
+    if (
+      geometry instanceof THREE.InstancedBufferGeometry &&
+      geometry.instanceCount === 0 &&
+      !instanced.has(geometry) &&
+      Object.values(geometry.attributes).every(
+        (a) =>
+          !(a as THREE.InstancedBufferAttribute).isInstancedBufferAttribute ||
+          a.count >= 1,
+      )
+    ) {
+      instanced.add(geometry);
+      geometry.instanceCount = 1;
+    }
+  });
+  return () => {
+    for (const m of meshes) m.count = 0;
+    for (const g of ranges) g.drawRange.count = 0;
+    for (const g of instanced) g.instanceCount = 0;
+  };
 }
 
 /** Resolves once every material's program has linked (compileAsync's

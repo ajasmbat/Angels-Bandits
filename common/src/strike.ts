@@ -58,7 +58,7 @@ export const MISSILE_CHUNK_DAMAGE = 300;
 const LAUNCH_MIN_M = 700;
 const LAUNCH_MAX_M = 900;
 /** Damage-indicator / DamageMsg shooter id for missile damage. Player ids
- * are UUIDs and bots `bot:<room>:<n>`, so this can never name a plane. */
+ * are base64url and bots `bot:<room>:<n>`, so this can never name a plane. */
 export const MISSILE_SHOOTER_ID = "@missile";
 
 /** A cruise missile skims in low; an artillery round lobs in from on high.

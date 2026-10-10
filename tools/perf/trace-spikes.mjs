@@ -1,6 +1,14 @@
 // O5: what a wall-clock spike is made of, from a Chrome trace.
 //
 //     node tools/perf/trace-spikes.mjs <trace.json> [...more]
+//     node tools/perf/trace-spikes.mjs --top 15 <trace.json> [...more]
+//
+// A1: `--top N` instead lists where the main thread's time went over ALL
+// the traces given: JavaScript self time by function (from the V8 CPU
+// samples), with GC, GL calls and native time as their own rows, each as
+// total ms and ms per frame. Read it on an unminified build
+// (`npx vite build --minify false` in client/, then run.mjs --no-build)
+// or the function names are the minifier's.
 //
 // run.mjs `--trace <dir>` records one trace per measured segment window
 // (CDP Tracing: devtools.timeline + V8 GC) and runs this on it. A SPIKE is a
@@ -267,9 +275,68 @@ export function describe(name, r) {
   return lines.join("\n");
 }
 
+/**
+ * A1: main-thread time by function over one trace's CPU samples — each
+ * sample charged the gap to the next (capped, so a profiler pause is not
+ * blamed on whatever ran before it). JS by leaf function; GC, GL calls,
+ * native and idle as one row each. Plus the trace's frame count.
+ */
+export function selfTimes(trace) {
+  const events = Array.isArray(trace) ? trace : (trace.traceEvents ?? []);
+  const key = mainThread(events);
+  const out = new Map();
+  if (key === null) return { frames: 0, ms: out };
+  const samples = cpuSamples(events, key);
+  for (let i = 0; i + 1 < samples.length; i++) {
+    const [ts, kind, fn] = samples[i];
+    const us = Math.min((samples[i + 1]?.[0] ?? ts) - ts, 10_000);
+    const row = kind === "js" ? fn : `(${kind})`;
+    out.set(row, (out.get(row) ?? 0) + us / 1000);
+  }
+  return { frames: analyseTrace(trace).frames, ms: out };
+}
+
+function printTop(files, n) {
+  const total = new Map();
+  let frames = 0;
+  for (const f of files) {
+    const r = selfTimes(JSON.parse(readFileSync(f, "utf8")));
+    frames += r.frames;
+    for (const [k, v] of r.ms) total.set(k, (total.get(k) ?? 0) + v);
+  }
+  const busy = [...total]
+    .filter(([k]) => k !== "(idle)")
+    .reduce((a, [, v]) => a + v, 0);
+  console.log(
+    `${files.length} traces, ${frames} frames, ${Math.round(busy)} ms busy on the main thread`,
+  );
+  const rows = [...total].sort((a, b) => b[1] - a[1]);
+  for (const [k, v] of rows.filter(([k]) => k.startsWith("(")))
+    console.log(`  ${k.padEnd(48)} ${v.toFixed(0).padStart(8)} ms`);
+  console.log(`top ${n} JS functions by self time:`);
+  for (const [k, v] of rows.filter(([k]) => !k.startsWith("(")).slice(0, n)) {
+    const per = frames > 0 ? (v / frames).toFixed(2) : "–";
+    console.log(
+      `  ${k.padEnd(56)} ${v.toFixed(0).padStart(7)} ms  ${per.padStart(6)} ms/frame  ${((100 * v) / busy).toFixed(1).padStart(5)} %`,
+    );
+  }
+}
+
 const entry = process.argv[1];
 if (entry && resolve(entry) === fileURLToPath(import.meta.url)) {
-  for (const f of process.argv.slice(2)) {
-    console.log(describe(f, analyseTrace(JSON.parse(readFileSync(f, "utf8")))));
+  const args = process.argv.slice(2);
+  const top = args.indexOf("--top");
+  if (top >= 0) {
+    const n = Number(args[top + 1]) || 15;
+    printTop(
+      args.filter((_, i) => i !== top && i !== top + 1),
+      n,
+    );
+  } else {
+    for (const f of args) {
+      console.log(
+        describe(f, analyseTrace(JSON.parse(readFileSync(f, "utf8")))),
+      );
+    }
   }
 }

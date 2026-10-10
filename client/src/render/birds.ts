@@ -26,12 +26,16 @@ import {
   standingProfile,
 } from "@angels-bandits/common/city";
 import { WORLD_SIZE } from "@angels-bandits/common/constants";
-import { type Vec3, canonicalize } from "@angels-bandits/common/world";
+import {
+  type Vec3,
+  canonicalize,
+  wrapCoord,
+} from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { type Scatter, nextScatter, scatterOffset } from "./bird-scatter";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { RENDER_ORDER } from "./render-order";
-import { nearestImage } from "./wrapPlacement";
+import { nearestImageInto } from "./wrapPlacement";
 
 /** Flocks in the world, and birds per flock: 6 x 24 = 144 points. */
 export const FLOCK_COUNT = 6;
@@ -170,6 +174,17 @@ export function birdPosition(
   index: number,
   serverTimeMs: number,
 ): Vec3 {
+  return birdPositionInto({ x: 0, y: 0, z: 0 }, flock, index, serverTimeMs);
+}
+
+/** birdPosition written into `out` — the per-frame loop's form (A1: it ran
+ * ~5 allocations a bird, every frame). Same arithmetic, same answer. */
+export function birdPositionInto(
+  out: Vec3,
+  flock: Flock,
+  index: number,
+  serverTimeMs: number,
+): Vec3 {
   const t = serverTimeMs / 1000;
   const spread = 0.35 + (0.65 * ((index * 7919) % 97)) / 97;
   const lift = (((index * 6151) % 53) / 53 - 0.5) * 14;
@@ -182,13 +197,11 @@ export function birdPosition(
       ? WHEEL_RADIUS * spread
       : flock.radius * (1 + 0.4 * ((spread - 0.35) / 0.65));
   const drift = flock.drift ?? DRIFT_SPEED;
-  const p = canonicalize({
-    x: flock.x + flock.dx * drift * t + Math.cos(a) * r,
-    y: 0,
-    z: flock.z + flock.dz * drift * t + Math.sin(a) * r,
-  });
+  out.x = wrapCoord(flock.x + flock.dx * drift * t + Math.cos(a) * r);
+  out.z = wrapCoord(flock.z + flock.dz * drift * t + Math.sin(a) * r);
   // A gentle bob, so a flock is a cloud rather than a disc.
-  return { x: p.x, y: flock.y + lift + Math.sin(a * 2) * 3, z: p.z };
+  out.y = flock.y + lift + Math.sin(a * 2) * 3;
+  return out;
 }
 
 // --- Renderer (consumes the pure model above; untested, like Streetlights) ---
@@ -221,6 +234,9 @@ export class Birds {
   /** Each flock's current scatter (L9), null while it wheels undisturbed. */
   private readonly scatters: (Scatter | null)[];
   private readonly offset: Vec3 = { x: 0, y: 0, z: 0 };
+  /** A1: per-bird scratch (canonical position, then its nearest image). */
+  private readonly bird: Vec3 = { x: 0, y: 0, z: 0 };
+  private readonly image: Vec3 = { x: 0, y: 0, z: 0 };
   /** O3 quality tier: birds drawn per flock. */
   private perFlock = BIRDS_PER_FLOCK;
 
@@ -306,7 +322,8 @@ export class Birds {
       );
       this.scatters[f] = scatter;
       for (let b = 0; b < this.perFlock; b++) {
-        const p = nearestImage(cameraPos, birdPosition(flock, b, serverTimeMs));
+        birdPositionInto(this.bird, flock, b, serverTimeMs);
+        const p = nearestImageInto(this.image, cameraPos, this.bird);
         const o = scatterOffset(
           flock.id,
           b,

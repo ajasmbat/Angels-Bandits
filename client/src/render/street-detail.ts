@@ -374,7 +374,8 @@ export type FurnitureKind =
   | "bikerack"
   | "bollards"
   | "planter"
-  | "booth";
+  | "booth"
+  | "cafe";
 
 /** Footprint along the street and across it (m), plus where its centre sits
  * off the centreline. Every footprint stays inside [STRIP_IN, STRIP_OUT]. */
@@ -393,6 +394,22 @@ const SPECS: Readonly<Record<FurnitureKind, ItemSpec>> = {
   bollards: { along: 4.6, across: 0.3, off: 15.45 },
   planter: { along: 1.3, across: 1.0, off: 15.95 },
   booth: { along: 1.05, across: 1.05, off: 15.95 },
+  // DT2: a café set re-skins a bench — the SAME footprint, so nothing moves.
+  cafe: { along: 1.9, across: 0.66, off: 16.0 },
+};
+
+/** DT2: share of benches that become a café set (table, two chairs and a
+ * parasol) — more on shopping streets than in parks. Picked by a position
+ * hash after the layout is final, so every item keeps its index and rank. */
+export const CAFE_SHARE = { street: 0.45, open: 0.25 } as const;
+const cafeHash = (x: number, z: number): number => {
+  let h =
+    Math.imul(Math.round(x * 8), 0x2c1b3c6d) ^
+    Math.imul(Math.round(z * 8), 0x297a2d39) ^
+    0x0ca7e5e7;
+  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 };
 
 /** Random-fill kinds and their weights, by the owner block's ground kind:
@@ -659,8 +676,10 @@ export function streetFurnitureFor(
   }
   // Stable cap, then ranks by final index (so thinning is camera-free).
   const capped = items.slice(0, MAX_FURNITURE_PER_BLOCK);
+  const cafes = CAFE_SHARE[open ? "open" : "street"];
   capped.forEach((it, i) => {
     it.rank = rankOf(i);
+    if (it.kind === "bench" && cafeHash(it.x, it.z) < cafes) it.kind = "cafe";
   });
   return capped;
 }
@@ -1031,6 +1050,30 @@ export function itemBoxes(it: StreetItem): DetailBox[] {
     case "planter": {
       box(0, 0, 1.3, 1.0, 0, 0.62, v < 0.5 ? 0x4a4a52 : 0x3d3428);
       box(0, 0, 1.05, 0.78, 0.62, 1.15, v < 0.7 ? 0x1f3a22 : 0x2a4a24);
+      break;
+    }
+    case "cafe": {
+      // Inside the bench's 1.9 × 0.66 m: a pedestal table between two
+      // chairs set ALONG the street (backs outward, ±0.89 m), and a parasol
+      // above head height (2.15–2.4 m, curb edge at 15.15 m).
+      const paint = [0x2b2d33, 0x6b4a32, 0x3a5a4a, 0x8a2a24];
+      const chair = pick(paint, v);
+      const canopy = pick(
+        [0xc8102e, 0x1f4fa0, 0x2e7d4f, 0xe8e2d0, 0xd9a514, 0x2b2d33],
+        (v * 5.3) % 1,
+      );
+      box(0, 0, 0.1, 0.1, 0, 0.72, 0x2a2a30); // pedestal
+      box(0, 0, 0.62, 0.62, 0.72, 0.76, 0xd8d4cc); // table top
+      for (const s of [-1, 1]) {
+        box(s * 0.66, 0, 0.4, 0.4, 0.44, 0.48, chair); // seat
+        box(s * 0.84, 0, 0.05, 0.4, 0.48, 0.9, chair); // back, outward
+        box(s * 0.5, 0, 0.04, 0.36, 0, 0.44, chair); // legs, inner pair
+        box(s * 0.82, 0, 0.04, 0.36, 0, 0.44, chair); // legs, outer pair
+      }
+      box(0, 0, 0.05, 0.05, 0.76, 2.38, 0x8a8f96); // parasol pole
+      box(0, 0, 1.7, 1.7, 2.15, 2.25, canopy); // canopy
+      box(0, 0, 1.1, 1.1, 2.25, 2.36, canopy); // its peak
+      box(0, 0, 1.74, 1.74, 2.08, 2.15, canopy); // valance
       break;
     }
     case "booth": {

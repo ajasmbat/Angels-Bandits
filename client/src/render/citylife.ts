@@ -44,8 +44,7 @@ import { BLOCK_PITCH, WORLD_SIZE } from "@angels-bandits/common/constants";
 import { wrapCoord, wrapDeltaAxis } from "@angels-bandits/common/world";
 import { FacadeArchetype, archetypeFor } from "./archetypes";
 import { facadeDetailFor } from "./facade-detail";
-import { roofDetailsFor } from "./roof-details";
-import { clutterRects, roofClutterFor } from "./roof-layout";
+import { roofKeepOuts } from "./roof-details";
 import { RoofKind, roofStyleFor } from "./roofs";
 import { LIFE_MAX_HEIGHT, ROOF_INSET, rooftopLifeFor } from "./rooftop-life";
 import { blockHeat } from "./signage";
@@ -1440,27 +1439,8 @@ function terrace(b: Building, out: StaticFigure[]): void {
   const kind = roofStyleFor(b).tierKinds[b.tiers.length - 1];
   if (kind !== RoofKind.MEMBRANE && kind !== RoofKind.GRAVEL) return;
   const life = rooftopLifeFor(b);
-  const clutter = roofClutterFor(b);
-  // R2: the shared keep-outs (structures, HVAC) and the roof dressing.
-  const taken: Rect[] = [
-    ...clutterRects(b, clutter),
-    ...roofDetailsFor(b).rects,
-    ...life.fans.map((f) => ({
-      x: f.x,
-      z: f.z,
-      hw: f.radius + 0.3,
-      hd: f.radius + 0.3,
-    })),
-    ...life.flags.map((f) => ({ x: f.x, z: f.z, hw: 0.4, hd: 0.4 })),
-  ];
-  if (life.party) {
-    const p = life.party;
-    taken.push({ x: p.x, z: p.z, hw: p.halfW, hd: p.halfD });
-  }
-  if (life.pool) {
-    const p = life.pool;
-    taken.push({ x: p.x, z: p.z, hw: p.halfW + 0.4, hd: p.halfD + 0.4 });
-  }
+  // The shared roof keep-outs: structures, HVAC, L8 life, R2 and DT2 dressing.
+  const taken: Rect[] = roofKeepOuts(b);
   const innerW = top.width / 2 - ROOF_INSET - 0.6;
   const innerD = top.depth / 2 - ROOF_INSET - 0.6;
   const inside = (x: number, z: number) =>

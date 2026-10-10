@@ -367,7 +367,12 @@ float abBeamCameraFade(float rho) {
 }
 float abBeamAlpha(float peak, float t, float facing, float viewDist,
                   float localRadius, float cameraFade) {
-  float fade = pow(1.0 - t, 1.5);
+  // O7: t is the cone's interpolated 0..1 height, and at the far rim it
+  // rounds to 1 + ε — pow() of the negative base is NaN (exp2·log2), and
+  // one NaN pixel blacks out the frame through bloom. Clamped, and u^1.5
+  // spelled without pow.
+  float u = clamp(1.0 - t, 0.0, 1.0);
+  float fade = u * sqrt(u);
   float hot = 0.4 + 0.6 * exp(-t * 6.0);
   float edge = abBeamSmooth(${glslFloat(BEAM_EDGE_IN)}, 0.8, facing);
   float near = abBeamSmooth(${glslFloat(BEAM_NEAR_IN)}, ${glslFloat(BEAM_NEAR_OUT)},

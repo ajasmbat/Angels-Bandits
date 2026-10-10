@@ -2537,3 +2537,259 @@ node tools/perf/run.mjs --ledger --quality mobile --segments chaos
 # 8. Soak: Auto never steps down on the M3 (exits 1 if it does).
 node tools/perf/run.mjs --soak 600 --quality auto --res auto
 ```
+
+## O7: black boxes — a moving camera, a NaN probe, and one pixel that blacks out the frame
+
+Players saw black rectangles flash for a frame or a few — in the tunnels,
+the sky, near buildings, on a phone (2026-10-09, live v20). That is not the
+frozen-camera shimmer O5/O6 measured, and `flicker.mjs` cannot see it: a
+40 px square for two frames is noise in a mean |Δluma|.
+
+### What a black box is
+
+The planner's hypothesis held. **One** non-finite pixel in the HDR scene
+(NaN, or ±Inf — and anything over 65504 written to the RGBA16F scene target
+is *stored* as +Inf) is a black box:
+
+1. the bloom's bright pass keeps it (`luminance(NaN)` thresholds to NaN;
+   Inf thresholds to 1 and passes Inf on);
+2. every blur tap that touches it is NaN/Inf, and each of the five mips
+   spreads it ±(kernel − 1) texels of a coarser target — the deepest is
+   1/32 of the CSS size with an 11-tap kernel, so ±10 texels there is
+   ±320 CSS px on screen;
+3. FinalPass adds that bloom and tone maps it, and ACES writes NaN — and
+   Inf, as Inf/Inf — as black.
+
+So the size of the box is set by the bloom, not by the bad pixel: on a
+1280-wide window it is a block about half the screen wide around the pixel,
+cut by the screen edge into a rectangle; at 640 CSS px or on a phone it is
+the whole frame. A single bad pixel on a single frame is a one-frame black
+flash.
+
+### The probe (`?nanprobe`, `client/src/render/nanprobe.ts`)
+
+A pass right after the scene render, before bloom, that classifies every
+HDR texel (`texelFetch`, so no filtering mixes neighbours) by its float
+**bits** — a driver's fast-math may fold `isnan(x)` or `x != x` away, never
+`floatBitsToUint`: exponent all ones with a non-zero mantissa is NaN, with a
+zero mantissa ±Inf. Finite negative pixels are counted too, and reported
+only (they cannot bloom). `count` (the default) writes a full-resolution
+RGBA8 mask and leaves the image alone, so the detector still sees the real
+thing; `__ab.nanProbe()` reads it back for exact counts and a bounding box.
+`?nanprobe=paint` also paints every non-finite texel magenta before bloom,
+for a human looking for one. Without the flag the pass is never built.
+
+`__ab.nanInject()` is the positive control: a 48×48 patch at HDR 0.5
+(bright, but under the 0.72 bloom threshold) for 7 frames with a 16×16 NaN
+core on the middle one — edges × the pixel ratio, so it covers the same CSS
+pixels (the detector's cells) at any ratio; it returns the NaN count the
+probe must read, (16 × ratio)².
+
+### The detector (`tools/perf/blackbox.mjs`)
+
+```sh
+node tools/perf/blackbox.mjs [--device desktop|retina|phone|all]
+                             [--sky night,dusk] [--paths a,b] [--frames N]
+                             [--repeat N] [--shots <dir>] [--attribute]
+                             [--dump from:to] [--no-build] [--out <file>]
+                             [--list]
+```
+
+It flies a MOVING plane and camera along every path, at night and at dusk:
+each perf segment from `segments.mjs` (its spot, staging and weather —
+the boss, the chaos, collapses and rubble, the storm, the street canyons,
+the hole glide, the tunnel and the tunnel exit; not the furball, whose fake
+pilots are a live sim), every tunnel bore glided portal to portal
+(`bore0`…), and a climb through the cloud deck (`deck`). Held segments pan
+0.003 rad a frame, so no view is frozen. Every frame (`__ab.qaAfterRender`,
+exactly once per frame) is judged two ways:
+
+- **the probe** — any NaN or Inf pixel fails the run;
+- **the image** — the canvas (after bloom, tone map and the grade) in 4 CSS
+  px cells of mean luma. A cell is *dropped* on frame t when it is
+  near-black (≤ `DARK` 8) and at least `DROP` 24 darker than the brightest
+  it was over the 3 frames before AND the 3 after — black that came and
+  went within three frames. A *box* is ≥ `MIN_CELLS` 4 connected dropped
+  cells filling ≥ `FILL` 0.5 of their bounding rectangle. `DARK` is 8 and
+  not more because a black box is the grade's lifted floor (~5) or 0 on
+  Mobile, while the dark backing of an LED ticker seen up close reads ~13
+  and its scrolling glyphs uncover it a frame at a time (`rubble` flagged
+  10 and 4 boxes in two runs at `DARK` 12, none with a non-finite pixel).
+
+Before the paths, every profile × sky runs the positive control: the probe
+must count every injected NaN pixel (256 × ratio²) AND the detector must
+flag a box on that frame, or the run fails — a blind detector reports 0
+boxes too. The control's frame is never counted.
+
+Determinism: the server runs on a fixed epoch (`fixed-epoch.mjs`) with the
+quiet city (staged destruction only), the page clock is Playwright's fake
+clock stepped 16 ms a frame, each path pins its world instant, weather and
+sky moment, and frame n's pose is a pure function of n. Two runs fly the
+same path to the same instants — not the same pixels: particles, debris
+and staged chaos draw from their own RNG, so two runs of ONE build differ
+by a mean |Δ| of 0.2–0.6 per channel (16 in `chaos`, whose meteors and
+blasts are random) — see the look check below. Profiles, all on the shipped `aa=off`: `desktop` (640×360 at ratio 1,
+High), `retina` (640×360 at ratio 2, High — the bloom's density > 1 path the
+M3 runs), `phone` (844×390 at DPR 3, touch, Mobile at ratio 1; the scene
+target is RGBA16F on every profile).
+
+`--attribute` re-poses a probe hit (its frames re-posed exactly, the world
+clock pinned to its instant) and hides each `__ab.qaHide` system in turn:
+the systems whose absence clears the hit are its source. A hit that does
+not come back with nothing hidden (a particle that ages by the sim step) is
+reported as not reproduced, never guessed at.
+
+### What it found, and what was fixed
+
+On the runner (SwiftShader, which is IEEE-exact for NaN and Inf and stores
+the RGBA16F target as real half floats), on `11d704d` — main plus the tool
+alone, no fix:
+
+| run | desktop | phone |
+| --- | --- | --- |
+| 60 judged frames a path (the default), night + dusk, every path | 0 boxes, 0 non-finite frames | 1 non-finite frame: `bore0` at dusk (the underground gardens), 1 px |
+| 90 judged frames a path, the first sweep (`b5accd5`, before the tool's own fixes: no bores) | night: 1 non-finite frame, `glass` frame 81, 1 px | dusk: 2 non-finite frames, `sidewalk` frame 62 and `glass` frame 4, 1 px each |
+
+Every one is a single NaN pixel, and every one blacked out the WHOLE frame
+(mean luma 0 — at 640 or 844 CSS px the bloom covers it all), and
+`--attribute` named the same system for each: `nature` (and `other:3`, an
+unnamed top-level scene object; no other system clears it). The hold paths pan across the judged
+frames, so a 60- and a 90-frame run fly different headings — which is why
+the two baselines catch different frames. The other boxes the first sweep
+flagged had no non-finite pixel behind them: an LED ticker's dark backing
+at `DARK` 12 (now 8, see above) and two at `street`'s screen edge on the
+phone at the old 12 px phone cells; neither recurs.
+
+Every source, fixed where it starts (the input, not only the output):
+
+| source | file | mechanism | fix | found by |
+| --- | --- | --- | --- | --- |
+| tree crowns | `nature.ts` | three's flat-shaded normal is `normalize(cross(dFdx(p), dFdy(p)))`; on a facet seen exactly edge-on the cross is 0 and the normal NaN — one pixel, pose-dependent | a zero cross faces the camera | probe: `sidewalk`, `glass`, `bore0` — every hit the runner caught, each attributed to `nature` |
+| searchlight beams | `searchlights.ts` | `pow(1.0 - t, 1.5)`; the cone's interpolated height t rounds to 1 + ε at the rim, and pow of a negative base is NaN | clamped, `u * sqrt(u)` | audit |
+| river wall lamps | `river.ts` | `pow(yw - WALL_LAMP_Y, 2.0)` with a negative base below the lamp row (NaN on fast-math GPUs) | squared | audit |
+| river Fresnel | `river.ts` | `pow(1.0 - max(dot(-v, n), 0.0), 5.0)`; a unit dot can round past 1 | clamped to [0, 1] | audit |
+| reflection probe | `reflections.ts` | a non-finite texel in a HalfFloat cube face spreads through its mips, and the luma cap turned Inf into Inf × 0 | a non-finite channel reads 0 | audit |
+| pool caustics | `rooftop-life.ts` | `pow(1.0 - abs(w1 + w2) * 0.5, 5.0)`; a GPU `sin` may round past ±1 | `max(…, 0.0)` | audit |
+| underground motes | `underground.ts` | `pow(0.5 + 0.5 * sin(…), 3.0)`, the same | `max(…, 0.0)` | audit |
+| moon disc | `sky.ts` | divide by a denormal `facing` sent q to Inf, `fract(Inf)` is NaN, × 0 still NaN | `max(facing, 1e-3)` | audit |
+| park lamps, pond neon | `sky.ts` | `atan(0, 0)` at the centre pixel (NaN on some GPUs) | `+ 1e-6` | audit |
+| helipad lights | `window-pattern.ts` | the same | `+ 1e-6` | audit |
+| road words | `street-paint.ts` | a zero pixel footprint made the glyph coverage 0/0 | footprint floored at 1e-4 | audit |
+
+### The guard (`client/src/render/hdr-safe.ts`)
+
+The next source should cost one pixel, not a box. Every pass that reads the
+scene — the bloom's bright pass, the shafts' march, FinalPass (the scene,
+and again the sum of everything the post adds) — reads it through
+`abFinite`: NaN → 0, +Inf → `HDR_MAX`, −Inf and negatives → 0, by the same
+bit test. `HDR_MAX` is 16384: the bloom composite's largest gain is 0.4 ×
+Σ mip factors (0.6 × 5) = 1.2, so no bloom target can exceed 19661, under
+float16's 65504, and the emissive ladder tops out orders of magnitude lower
+(ACES is white long before). It is a test and a clamp inside reads that
+already happen — no pass, no draw, no target. FinalPass is now built as
+GLSL ES 3.00 (three's RawShaderMaterial is ES 1.00, which has no
+`floatBitsToUint`), spelled exactly as three spells every ShaderMaterial.
+The look and the 0.72 threshold are unchanged for every finite pixel under
+`HDR_MAX`.
+
+### What the runner measured (O7)
+
+All on the runner (SwiftShader, 16 cores), HEAD with `origin/main` merged
+in (`ec65d36`: U5b, FL1):
+
+**The gate** — every path, night and dusk, 60 judged frames a path (22
+paths a sky, 3 of them bores), the positive control first in every profile
+× sky:
+
+| profile | runs | positive controls | black boxes | non-finite frames |
+| --- | --- | --- | --- | --- |
+| desktop (640×360 @1) | 3 | 6/6 | 0 | 0 |
+| phone (844×390, Mobile @1) | 3 | 6/6 | 0 | 0 |
+| retina (640×360 @2) | 1 | 2/2 (1024/1024) | 0 | 0 |
+
+After merging `origin/main` again (`2769057`: S9's carrier, U6's tunnel
+life and cave-ins), `boss`, `chaos`, `tunnel`, `exit`, `cavein`, every bore,
+`glass` and `sidewalk` re-flown on desktop and phone, night and dusk: 0
+boxes, 0 non-finite frames, every control flagged.
+
+Against the baseline above: `sidewalk` and `glass` at their 90-frame
+headings, re-flown on the fix before the merge (`e45c8f5`), read 0 too
+(desktop night; phone dusk). Negative pixels never exceeded 1 per frame anywhere.
+
+**Flicker** (`flicker.mjs --grid --repeat 3 --ref 45ab8c3`, frozen
+medians): the grid's own verdict is O5's
+target (halve every view over 0.01), which main fails identically — the
+question here is only "not worse". 53 of 55 views are within the tool's
+tolerance; two medians read worse, `glass-cluster` 0.012 → 0.028 and
+`sky-night` 0.130 → 0.141. Both are a bimodal capture state, not the build:
+HEAD's second repeat reproduced main's numbers to the third decimal, and
+main's own repeats wander as far (`high-overview` 0.065 / 0.061 / 0.041).
+Re-run alone with five repeats (`--only glass-cluster,sky-night,moon,sky-predawn
+--repeat 5`), main itself landed in the 0.028 mode once and `moon` swung
+0.011–0.125 on main, and every median came out **identical** to main:
+glass-cluster 0.012 / 0.012, sky-night 0.130 / 0.130, moon 0.050 / 0.050,
+sky-predawn 0.014 / 0.014. (That re-run used Chromium 1248's headless shell
+through `AB_CHROME`: another session pruned 1234 from the shared cache
+mid-run. Both arms ran on the same browser.)
+
+**The look.** The detector's `--dump` frames of 7 paths (`core`, `sky`,
+`canyon`, `glass`, `chaos`, `tunnel`, `bore0`; desktop, night, 60
+frames each) on the baseline and on baseline + fix (`afebfde`, before the
+merge, so nothing else differs), against the baseline run twice:
+
+| path | base vs base: mean \|Δ\| (worst frame) / p99.9 | base vs fix |
+| --- | --- | --- |
+| bore0 | 0.441 / 75 | 0.440 / 75 |
+| canyon | 0.258 / 25 | 0.226 / 22 |
+| chaos | 15.97 / 176 | 17.22 / 180 |
+| core | 0.422 / 116 | 0.544 / 117 |
+| glass | 0.239 / 17 | 0.235 / 17 |
+| sky | 0.633 / 133 | 0.682 / 132 |
+| tunnel | 0.456 / 111 | 0.336 / 96 |
+
+The harness is not pixel-deterministic (particles, debris and staged chaos
+draw from their own RNG), so the planned bound — mean under one 8-bit step,
+p99.9 within two — cannot be applied pixel for pixel; what the table shows
+is that the fix moves the image no more than running the same build twice
+does. By construction it cannot do more: `abFinite` is the identity on
+every finite value in [0, HDR_MAX], and every source fix is the identity
+wherever the old expression was finite.
+
+**Perf** (`run.mjs --runs 3 --res 0.75 --ab-ref 45ab8c3`, exit 0): GPU p50
+overall −0.1 % (−0.6 ms on a ~560 ms software frame). Every segment within
+the tool's 10 % tolerance; the largest increase is `collapse` +6.3 %, the
+largest moves are decreases (`canyon` −15.7 %, `core` −9.1 %), all inside
+SwiftShader's own pass-to-pass spread (66 % worst GPU p50 spread this run).
+Draw calls are identical in 15 of 19 segments; `storm` +1 → −1, `exit` −1,
+`furball` −3 (live pilots, unasserted) and `hole` 104 → 90 move between
+passes of ONE arm as well — the runner's "draw calls DIFFER per segment"
+determinism line, wall-clock glides on a software rasteriser — and with
+`?nanprobe` off O7 adds no pass, no draw and no target. The A/B includes
+the merged `origin/main` (U5b, FL1). The M3 run (command 4 below) is the
+real perf gate.
+
+### Commands for the M3 (O7)
+
+```sh
+# 1. The gate: every path, three profiles, both skies, three runs. Expect
+#    "positive controls failed: 0", "black boxes: 0", "frames with
+#    non-finite pixels: 0" and PASS (exit 0).
+node tools/perf/blackbox.mjs --device all --repeat 3 --attribute \
+  --shots /tmp/o7-shots
+
+# 2. Before, for the record: main plus the tool alone (the probe and
+#    blackbox.mjs, no fix) — the counts the fix took to zero. Check the
+#    tool's commit out into its own worktree and run step 1 there.
+git worktree add /tmp/o7-base 11d704d && cd /tmp/o7-base && npm ci && \
+  node tools/perf/blackbox.mjs --device all --attribute --shots /tmp/o7-base-shots
+
+# 3. Frozen-camera flicker not worse than main (the tool's own verdict).
+node tools/perf/flicker.mjs --grid --repeat 3 --ref 45ab8c3
+
+# 4. No render-cost regression (the sanitise is a test and a clamp inside
+#    existing reads): GPU p50 within the run's tolerance in every segment.
+node tools/perf/run.mjs --runs 3 --label O7 --ab-ref 45ab8c3
+
+# 5. Looking for a box by eye: magenta wherever the HDR scene is non-finite.
+#    open http://localhost:5173/?nanprobe=paint
+```

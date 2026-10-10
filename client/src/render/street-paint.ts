@@ -215,7 +215,8 @@ float abRoadWord(int word, int len, vec2 g, vec2 px, float aa) {
   float boxM = abBox(g, size * 0.5, aa);
   if (boxM <= 0.0) return 0.0;
   vec2 q = vec2(g.x + size.x * 0.5, size.y * 0.5 - g.y) / px;
-  vec2 w = min(vec2(aa) / px, vec2(1.0));
+  // O7: a zero footprint (fwidth 0 a hair from the road) made sharp 0/0.
+  vec2 w = clamp(vec2(aa) / px, vec2(1e-4), vec2(1.0));
   vec2 lo = q - 0.5 * w;
   vec2 hi = q + 0.5 * w;
   ivec2 i0 = ivec2(floor(lo));

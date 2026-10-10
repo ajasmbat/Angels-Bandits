@@ -73,6 +73,10 @@ function boreAt(t: Tunnel, s: number, lat: number, y: number): Vec3 {
   };
 }
 
+/** Let the event loop turn: these sweeps run for tens of seconds, and a
+ * long synchronous stretch starves vitest's worker RPC (vitest.setup.ts). */
+const turn = (): Promise<void> => new Promise((r) => setImmediate(r));
+
 /** Cave-in centres over every bore's ranges, `step` m apart (both ends). */
 function spots(step: number): { t: Tunnel; s: number }[] {
   const out: { t: Tunnel; s: number }[] = [];
@@ -94,11 +98,12 @@ describe("U6 cave-ins: the open lane is never touched", () => {
     }
   });
 
-  it("never puts a piece's corner in the lane, warning to gone", () => {
+  it("never puts a piece's corner in the lane, warning to gone", async () => {
     const pose = blankCaveInPose();
     let checked = 0;
     let worst = Number.POSITIVE_INFINITY;
     for (const { t, s } of spots(45)) {
+      await turn();
       for (const gap of GAPS) {
         for (const id of [1, 4242]) {
           const c = buildCaveIn({
@@ -163,9 +168,10 @@ describe("U6 cave-ins: the open lane is never touched", () => {
     expect(worst).toBeGreaterThan(0.25);
   }, 300_000);
 
-  it("never lets a plane-sized sphere anywhere in the lane meet a piece", () => {
+  it("never lets a plane-sized sphere anywhere in the lane meet a piece", async () => {
     let probes = 0;
     for (const { t, s } of spots(60)) {
+      await turn();
       for (const gap of GAPS) {
         const c = buildCaveIn({
           id: 9 + Math.round(s),
@@ -351,10 +357,11 @@ function flightSpots(): { t: Tunnel; s: number }[] {
 }
 
 describe("U6 cave-ins: a plane reacting 0.5 s after it sees one gets through", () => {
-  it("from every entry offset, speed, direction and arrival phase the lead rule allows", () => {
+  it("from every entry offset, speed, direction and arrival phase the lead rule allows", async () => {
     let flown = 0;
     const failures: string[] = [];
     for (const { t, s } of flightSpots()) {
+      await turn();
       for (const gap of GAPS) {
         const c = buildCaveIn({
           id: 31 + Math.round(s),

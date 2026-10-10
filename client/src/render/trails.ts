@@ -16,7 +16,7 @@ import {
 } from "@angels-bandits/common/constants";
 import { type Vec3, wrapDeltaInto } from "@angels-bandits/common/world";
 import * as THREE from "three";
-import { LIGHT_MOUNTS } from "./planelights";
+import { lightMountsFor } from "./planelights";
 import { nearestImage, nearestImageInto, uploadPrefix } from "./wrapPlacement";
 
 /** How long a trail point lives, ms (~the plan's "short ribbon trails"). */
@@ -267,8 +267,9 @@ export class PlaneTrails {
       plane.prevQuat = { x: quat.x, y: quat.y, z: quat.z, w: quat.w };
     }
     quatScratch.set(quat.x, quat.y, quat.z, quat.w);
-    this.pushTip(LIGHT_MOUNTS.navL, plane.left, pos, timeMs, hard);
-    this.pushTip(LIGHT_MOUNTS.navR, plane.right, pos, timeMs, hard);
+    const mounts = lightMountsFor(id);
+    this.pushTip(mounts.navL, plane.left, pos, timeMs, hard);
+    this.pushTip(mounts.navR, plane.right, pos, timeMs, hard);
   }
 
   /** One wingtip's sample: the mount turned by `quatScratch`, off `pos`. */

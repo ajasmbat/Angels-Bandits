@@ -3,7 +3,155 @@
 // x, z, y (meters), yaw (0 faces -Z) and pitch (radians, default level);
 // `sky` forces an L12 phase, `dyn` / `train` views are placed from the live
 // world at capture time (gallery.mjs only); `eye`/`at` views (A1) hold the
-// QA camera there, with the plane pinned at x/y/z.
+// QA camera there, with the plane pinned at x/y/z. DT1 `showcase` views pose
+// planes in the sky through __ab.planeShowcase (turntable, damage, dogfight).
+
+/** DT1: the turntable sheet — a row of each airframe at four headings, the
+ * QA camera `dist` m off (near ≈ 40 m, mid ≈ 250 m, far ≈ 600 m: the three
+ * LOD levels). Clear sky high over the city; the own plane parked behind
+ * the camera, out of shot. */
+const turntable = (name, dist) => {
+  const yaws = [Math.PI / 2, Math.PI * 0.75, Math.PI, Math.PI * 1.3];
+  const row = (kind, y) =>
+    yaws.map((yaw, i) => ({
+      kind,
+      x: 982 + i * 12,
+      y,
+      z: 1000,
+      yaw,
+      pitch: 0.12,
+      speed: 70,
+    }));
+  return {
+    name,
+    x: 1000,
+    z: 1000 + dist + 140,
+    y: 600,
+    yaw: Math.PI,
+    eye: [1000, 460, 1000 + dist],
+    at: [1000, 460, 1000],
+    weather: "clear",
+    sky: "dusk",
+    showcase: [...row("biplane", 465), ...row("fighter", 455)],
+  };
+};
+
+/** DT1: one airframe from 11 m, three-quarter front and a little above —
+ * the paintwork, the pilot, the racks and the rigging. */
+const closeup = (name, kind, hp = 100) => ({
+  name,
+  x: 1000,
+  z: 1150,
+  y: 600,
+  yaw: Math.PI,
+  eye: [1008, 464, 1008],
+  at: [1000, 460, 1000],
+  weather: "clear",
+  sky: "dusk",
+  showcase: [
+    {
+      kind,
+      x: 1000,
+      y: 460,
+      z: 1000,
+      yaw: Math.PI * 0.62,
+      pitch: 0.04,
+      roll: -0.12,
+      speed: 70,
+      aileron: 0.5,
+      elevator: 0.5,
+      hp,
+    },
+  ],
+});
+
+/** DT1: the three LOD levels side by side at one distance (held by the
+ * showcase's QA-only `lod`): near, mid, far, each from the side and from
+ * three-quarter front. */
+const lodSheet = () => {
+  const cols = [0, 0, 1, 1, 2, 2].map((lod, i) => ({
+    lod,
+    yaw: i % 2 === 0 ? Math.PI / 2 : Math.PI * 0.75,
+  }));
+  const row = (kind, y) =>
+    cols.map((c, i) => ({
+      kind,
+      x: 970 + i * 12,
+      y,
+      z: 1000,
+      yaw: c.yaw,
+      pitch: 0.1,
+      speed: 70,
+      lod: c.lod,
+    }));
+  return {
+    name: "planes-lod-levels",
+    x: 1000,
+    z: 1180,
+    y: 600,
+    yaw: Math.PI,
+    eye: [1000, 460, 1036],
+    at: [1000, 460, 1000],
+    weather: "clear",
+    sky: "dusk",
+    showcase: [...row("biplane", 465), ...row("fighter", 455)],
+  };
+};
+
+/** DT1: both airframes at 2 HP from 16 m — scorch, holes, missing panels,
+ * the engine fire and the smoke. */
+const wreckedPair = () => ({
+  name: "planes-closeup-wrecked",
+  x: 1000,
+  z: 1150,
+  y: 600,
+  yaw: Math.PI,
+  eye: [1000, 464, 1016],
+  at: [1000, 460, 1000],
+  weather: "clear",
+  sky: "dusk",
+  showcase: ["biplane", "fighter"].map((kind, i) => ({
+    kind,
+    x: 994 + i * 12,
+    y: 460,
+    z: 1000,
+    yaw: Math.PI * (i === 0 ? 0.62 : 0.38),
+    pitch: 0.25,
+    roll: i === 0 ? -0.3 : 0.3,
+    speed: 70,
+    hp: 2,
+  })),
+});
+
+/** DT1: the damage stages side by side, near — full HP, smoke (< 30),
+ * fire (< 18), missing panels (> 86 % damage). */
+const damageSheet = () => {
+  const hps = [100, 23, 16, 7];
+  const row = (kind, y) =>
+    hps.map((hp, i) => ({
+      kind,
+      x: 982 + i * 12,
+      y,
+      z: 1000,
+      yaw: Math.PI / 2,
+      pitch: 0.05,
+      hp,
+      speed: 70,
+    }));
+  return {
+    name: "planes-damage",
+    x: 1000,
+    z: 1180,
+    y: 600,
+    yaw: Math.PI,
+    eye: [1000, 460, 1026],
+    at: [1000, 460, 1000],
+    weather: "clear",
+    sky: "dusk",
+    showcase: [...row("biplane", 465), ...row("fighter", 455)],
+  };
+};
+
 export const VIEWS = [
   // name, x, z, y, yaw, extra
   { name: "chase-rooftops", x: 300, z: 900, y: 175, yaw: 0.6 },
@@ -508,5 +656,80 @@ export const VIEWS = [
     at: [1000, 268, 820],
     weather: "clear",
     boss: { ahead: 180, downAfterMs: 3500 },
+  },
+  turntable("planes-turntable-near", 26),
+  closeup("planes-closeup-fighter", "fighter"),
+  lodSheet(),
+  closeup("planes-closeup-biplane", "biplane"),
+  wreckedPair(),
+  turntable("planes-turntable-mid", 250),
+  turntable("planes-turntable-far", 600),
+  damageSheet(),
+  // DT1: a dogfight — over a biplane's shoulder, three fighter-bombers
+  // banking through a turn ahead, one of them burning, a wingman high left.
+  {
+    name: "planes-dogfight",
+    x: 1000,
+    z: 1300,
+    y: 600,
+    yaw: Math.PI,
+    eye: [1004, 451.5, 1031],
+    at: [998, 453, 975],
+    weather: "clear",
+    sky: "dusk",
+    showcase: [
+      {
+        kind: "biplane",
+        x: 995,
+        y: 447.5,
+        z: 1020,
+        yaw: 0.25,
+        roll: -0.6,
+        pitch: 0.05,
+        aileron: 0.6,
+        elevator: 0.4,
+      },
+      {
+        kind: "fighter",
+        x: 989,
+        y: 457,
+        z: 1003,
+        yaw: -1.35,
+        roll: -0.8,
+        pitch: 0.08,
+        elevator: 0.8,
+        aileron: -0.4,
+      },
+      {
+        kind: "fighter",
+        x: 1013,
+        y: 451,
+        z: 998,
+        yaw: 1.3,
+        roll: 0.7,
+        pitch: -0.05,
+        hp: 9,
+        elevator: 0.5,
+      },
+      {
+        kind: "fighter",
+        x: 1000,
+        y: 463,
+        z: 988,
+        yaw: -1.0,
+        roll: -1.1,
+        pitch: 0.15,
+        bombs: 0b00110,
+      },
+      {
+        kind: "biplane",
+        x: 1022,
+        y: 462,
+        z: 1008,
+        yaw: 1.2,
+        roll: 0.5,
+        pitch: 0.1,
+      },
+    ],
   },
 ];

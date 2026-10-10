@@ -184,7 +184,12 @@ import {
   isResumeToken,
   isVec3,
 } from "./guards";
-import { type RespawnEnemy, pickBotRespawn, pickRespawn } from "./respawn";
+import {
+  type RespawnEnemy,
+  pickBotRespawn,
+  pickRespawn,
+  respawnIfUnsafe,
+} from "./respawn";
 import { type Room, RoomManager } from "./room";
 import { createStaticHandler } from "./statics";
 import { StormCeiling } from "./storm";
@@ -1192,6 +1197,24 @@ function broadcastCourseBoard(
  * than from a join it spent loading. */
 function goLive(client: Client, now: number): void {
   client.pending = false;
+  // A2: the join spawn was checked at join; re-check it now the plane is
+  // actually entering the world, and re-place it if danger moved onto it.
+  const spawn = respawnIfUnsafe(
+    client.pose,
+    livingEnemies(client.room, client.id),
+    Math.random,
+    spawnAvoid(client.room),
+    spawnClearOfBoss(client.room, now),
+  );
+  if (spawn) {
+    resetOnRecord(client, spawn, now);
+    sendToRoom(client.room, {
+      type: "respawn",
+      id: client.id,
+      spawn,
+      protectedUntil: now + SPAWN_PROTECTION_MS,
+    });
+  }
   combat.protectFrom(client.id, now);
   noteSpawn(client.room, client.id, client.pose.pos, now);
 }

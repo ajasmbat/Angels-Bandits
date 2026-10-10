@@ -28,7 +28,7 @@ import {
   RESPAWN_SPEED,
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
-import type { SpawnState } from "@angels-bandits/common/protocol";
+import type { Pose, SpawnState } from "@angels-bandits/common/protocol";
 import {
   type Vec3,
   canonicalize,
@@ -121,6 +121,27 @@ export function pickRespawn(
   // RESPAWN_BAND_SAMPLES ≥ 1, so `far` is otherwise always set.
   const pos = best ?? (far as Vec3);
   return { pos, yaw: yawToNearest(pos, enemies, rand), speed: RESPAWN_SPEED };
+}
+
+/**
+ * A2: a join spawn is picked at JOIN, but the plane only enters the world
+ * when its first pose arrives — up to BOOT_TIMEOUT_MS later, time enough for
+ * a raid, a bomber run or a warned hazard to move onto it. Null while the
+ * held pose (heading included) is still clear; otherwise a fresh spawn by
+ * pickRespawn's own rules.
+ */
+export function respawnIfUnsafe(
+  held: Pose,
+  enemies: readonly RespawnEnemy[],
+  rand: () => number,
+  avoid: (pos: Vec3) => boolean,
+  clear: (pos: Vec3, yaw: number | null) => boolean,
+): SpawnState | null {
+  // The heading of the nose (−Z rotated by the attitude), yaw 0 facing −Z.
+  const { x, y, z, w } = held.quat;
+  const yaw = Math.atan2(2 * (x * z + w * y), 1 - 2 * (x * x + y * y));
+  if (!avoid(held.pos) && clear(held.pos, yaw)) return null;
+  return pickRespawn(enemies, rand, avoid, clear);
 }
 
 /** The yaw yawToNearest would give `pos` without drawing from the stream:

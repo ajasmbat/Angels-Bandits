@@ -45,8 +45,8 @@
 //               and the server's — a field that disagrees on every retry is
 //               a desync.
 // Every client is held to the same limits; the server too: it must stay up,
-// write nothing to stderr, and keep its heap (forced GC) and RSS within
-// +20 % of minute 5. The report has one verdict per client, the server, the
+// write nothing to stderr, keep its heap (forced GC) within +20 % of minute
+// 5, and its RSS trend under 1 MB/min over the last 15 minutes. The report has one verdict per client, the server, the
 // lab and parity, and PASSes only if all of them do.
 
 import { spawn } from "node:child_process";
@@ -359,15 +359,17 @@ async function runTtff(browser, url, refUrl) {
 }
 
 /** Settings open (Esc on desktop, the gear on touch), then closed. */
+// A2: a click waits for two animation frames of a stable box, and the DPR-3
+// phone on a software rasteriser can take seconds per frame under a shared
+// soak — 5 s timed out there with nothing wrong in the page.
+const UI_TIMEOUT_MS = 30000;
 async function openSettings(page, touch) {
-  if (touch) await page.click("#settings-btn", { timeout: 5000 });
+  if (touch) await page.click("#settings-btn", { timeout: UI_TIMEOUT_MS });
   else await page.keyboard.press("Escape");
   await page.waitForFunction(
     () => window.__ab?.settings().open === true,
     null,
-    {
-      timeout: 5000,
-    },
+    { timeout: UI_TIMEOUT_MS },
   );
 }
 async function closeSettings(page) {
@@ -375,9 +377,7 @@ async function closeSettings(page) {
   await page.waitForFunction(
     () => window.__ab?.settings().open === false,
     null,
-    {
-      timeout: 5000,
-    },
+    { timeout: UI_TIMEOUT_MS },
   );
 }
 
@@ -616,6 +616,7 @@ const SOAK_SAMPLE = () => {
     deaths: combat.scores.find((s) => s.id === ab.net().selfId)?.deaths ?? 0,
     dom: document.getElementsByTagName("*").length,
     ui: ab.qaUi ? ab.qaUi() : null,
+    fps: ab.perf ? Math.round(ab.perf().fps * 10) / 10 : null,
   };
 };
 
@@ -864,6 +865,7 @@ async function sampleClient(c, minute) {
     dom: s.dom,
     deaths: s.deaths,
     killcams: c.killcams,
+    fps: s.fps,
     ...(s.ui ?? {}),
   };
   c.samples.push(m);
@@ -1013,6 +1015,10 @@ async function runSoak(url, server) {
     if (SOAK_PHONE)
       clients.push(await openClient(url, "phone", PHONE, "Phone"));
     console.log(`  soak: ${clients.map((c) => c.role).join(", ")} joined`);
+    // Every client opens its settings once before anything is sampled: the
+    // panel is built on first open, and a baseline taken before that reads
+    // the build as DOM growth.
+    for (const c of clients) await settingsCycle(c, 0);
     const main = clients[0];
     const show = clients.find((c) => c.role === "peer1") ?? main;
     const start = Date.now();
@@ -1063,7 +1069,7 @@ async function runSoak(url, server) {
         for (const c of clients) {
           const m = await sampleClient(c, minute);
           line.push(
-            `${c.role} heap ${m.heapMB} dom ${m.dom} geo ${m.renderer?.geometries} tex ${m.renderer?.textures} prog ${m.renderer?.programs} deaths ${m.deaths}`,
+            `${c.role} heap ${m.heapMB} dom ${m.dom} geo ${m.renderer?.geometries} tex ${m.renderer?.textures} prog ${m.renderer?.programs} deaths ${m.deaths} fps ${m.fps}`,
           );
         }
         const d = await debugRooms(server.port);
@@ -1095,17 +1101,27 @@ async function runSoak(url, server) {
     .filter(
       (l) => l.trim() !== "" && !SERVER_WARN_ALLOW.some((re) => re.test(l)),
     );
+  const tail = serverSamples.filter((m) => m.rssMB !== null).slice(-15);
+  const rssSlope =
+    tail.length >= 2
+      ? (tail.at(-1).rssMB - tail[0].rssMB) /
+        (tail.at(-1).minute - tail[0].minute)
+      : null;
   const sv = {
     alive: server.proc.exitCode === null,
     stderr: stderr.length === 0,
     heap: grow("heapMB") !== null && grow("heapMB") <= 0.2,
-    rss: grow("rssMB") !== null && grow("rssMB") <= 0.2,
+    // RSS is what V8 has RESERVED, which steps up and is not handed back;
+    // the leak signal is heapUsed after a forced GC (above). RSS is held to
+    // its trend: under 1 MB/min over the last 15 minutes.
+    rss: rssSlope !== null && rssSlope < 1,
   };
   report.server = {
     pass: Object.values(sv).every(Boolean),
     verdicts: sv,
     heapGrowthVsMinute5: grow("heapMB"),
     rssGrowthVsMinute5: grow("rssMB"),
+    rssMBPerMinLast15: rssSlope,
     stderr: stderr.slice(0, 100),
     samples: serverSamples,
   };

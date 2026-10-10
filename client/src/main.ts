@@ -256,6 +256,7 @@ import {
   stageBoss,
 } from "./game/qa-spectacle";
 import { caveInShakeAmount, quakeShakeAmount } from "./game/quake";
+import { refreshResumedWorld } from "./game/resume-world";
 import {
   createRollControl,
   defaultRollLevel,
@@ -2042,6 +2043,7 @@ socket.events.onPlayerLeft = (id) => {
   remotes.playerLeft(id);
   scoreboard.playerLeft(id);
   players.delete(id);
+  reactor.forgetPlane(id); // A2
 };
 socket.events.onFired = (id) => remoteFired(id);
 socket.events.onDamage = (msg) => {
@@ -2309,16 +2311,14 @@ function applyResume(w: WelcomeMsg): void {
   applyCourseStandings(w.courses); // S3: boards moved on meanwhile
   showOwnScore(w.scores);
   botBar.resync(w.botTarget);
-  if (w.roomId !== currentRoomId) {
-    currentRoomId = w.roomId;
-    reactor.ingest(w.cityEvents ?? []);
-    blastLedger.ingest(w.cityEvents ?? []); // D1: already-seen ones are skipped
-    wrecks.reset((w.wrecks ?? []).filter(isWreckParams)); // D4
-    if (moverField.news && w.newsHeli) {
-      moverField.news.target = w.newsHeli.target;
-      moverField.news.prev = w.newsHeli.prev;
-    }
-  }
+  currentRoomId = w.roomId;
+  // A2: same room or not — the drop was long enough for these to move on.
+  refreshResumedWorld(w, {
+    reactor,
+    blastLedger,
+    wrecks,
+    news: moverField.news ?? null,
+  });
   smoke.clear(socket.selfId);
   streakSmoke.clear(socket.selfId);
   reactor.clearSelfTrack();

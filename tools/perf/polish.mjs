@@ -726,10 +726,12 @@ async function noise(c, now) {
   const k = keys[Math.floor(Math.random() * keys.length)];
   await page.keyboard.down(k);
   c.held.add(k);
-  if (c.touch) {
-    // The phone fires through its trigger and taps the screen now and then.
+  if (c.touch || c.keysOnly) {
+    // The phone fires through its trigger and taps the screen now and then;
+    // the lab pilot fires the same way and never clicks (a random click on
+    // the lab panel's EXIT link is a real navigation away).
     await page.evaluate((on) => window.__ab.setFiring(on), Math.random() < 0.5);
-    if (Math.random() < 0.3) await page.touchscreen.tap(422, 195);
+    if (c.touch && Math.random() < 0.3) await page.touchscreen.tap(422, 195);
   } else {
     const vp = page.viewportSize();
     await page.mouse.move(
@@ -744,7 +746,7 @@ async function noise(c, now) {
 }
 
 async function releaseInput(c) {
-  if (!c.touch) await c.page.mouse.up();
+  if (!c.touch && !c.keysOnly) await c.page.mouse.up();
   else await c.page.evaluate(() => window.__ab.setFiring(false));
   for (const k of c.held) await c.page.keyboard.up(k);
   c.held.clear();
@@ -928,6 +930,7 @@ function verdictsOf(c) {
  * must be gone from every per-room map the server keeps. */
 async function labVisit(url, port) {
   const c = await openClient(`${url}?lab`, "lab", PEER, "Lab");
+  c.keysOnly = true;
   const labRoom = await c.page.evaluate(() => window.__ab.net().roomId);
   const endAt = Date.now() + 45000;
   while (Date.now() < endAt) {

@@ -19,9 +19,11 @@
 //  * --shots    join, loading, HUD, settings, kill and medal moments on a
 //               1280×720 desktop and an 844×390 touch phone (DPR 3), plus
 //               the phone held upright.
-//  * --overlap  every visible fixed HUD box at 1920×1080, 1280×720 and the
-//               phone must not intersect another or leave the viewport.
+//  * --overlap  every visible fixed HUD box at 1920×1080, 1280×720, the
+//               phone and a short phone (740×320) must not intersect
+//               another or leave the viewport.
 //               World-anchored markers and full-screen overlays are exempt.
+//               A3: a `war` state adds every Carrier War HUD element at once.
 //  * --soak M   M minutes in one session: hand-flown random input with
 //               fire and boost, one kill + medal moment and one settings
 //               open/close a minute, real deaths and respawns along the
@@ -112,6 +114,13 @@ const DESKTOP_HD = {
 };
 const PHONE = {
   viewport: { width: 844, height: 390 },
+  deviceScaleFactor: 3,
+  isMobile: true,
+  hasTouch: true,
+};
+/** A3: a short landscape phone — the `max-height: 340px` layout. */
+const PHONE_SHORT = {
+  viewport: { width: 740, height: 320 },
   deviceScaleFactor: 3,
   isMobile: true,
   hasTouch: true,
@@ -551,12 +560,41 @@ const OVERLAP_PROBE = (exempt) => {
   return { viewport: { w: vw, h: vh }, boxes: outer, overlaps, offscreen };
 };
 
+/** Runs in the page (A3): every Carrier War HUD element shown together. */
+const WAR_HUD_ON = () => {
+  // Each element at its shown state's resting style: a software-rendered
+  // page can sit mid-entrance (opacity ~0) for seconds.
+  const freeze = document.createElement("style");
+  freeze.textContent = "*{animation:none!important;transition:none!important}";
+  document.head.appendChild(freeze);
+  const el = (id) => document.getElementById(id);
+  const show = (id, cls, text) => {
+    const e = el(id);
+    if (!e) return;
+    if (text !== undefined) e.textContent = text;
+    e.classList.add(cls);
+  };
+  const line = el("wave-hud")?.querySelector(".line");
+  if (line) line.textContent = "WAVE 3 · 5 ENEMIES LEFT · CARRIER 62%";
+  show("wave-hud", "open");
+  el("wave-hud")?.classList.add("easy-on");
+  show("wave-banner", "on", "WAVE 3");
+  show("bomb-warn", "on");
+  show("boss-bar", "open");
+  const combo = el("juice-combo");
+  if (combo) combo.dataset.tone = "moment";
+  show("juice-combo", "on", "CARRIER DOWN!");
+  show("juice-streak", "shown", "STREAK ×5");
+  show("juice-pop-0", "on", "+250");
+};
+
 async function runOverlap(browser, url) {
   const results = [];
   for (const [name, device] of [
     ["desktop-1920", DESKTOP_HD],
     ["desktop-1280", DESKTOP],
     ["phone-844", PHONE],
+    ["phone-740x320", PHONE_SHORT],
   ]) {
     const { context, page } = await openPage(browser, device);
     try {
@@ -579,10 +617,24 @@ async function runOverlap(browser, url) {
         await sleep(700);
         course = await page.evaluate(OVERLAP_PROBE, OVERLAP_EXEMPT);
       }
-      results.push({ name, idle, moment, course });
+      // A3: the Carrier War's whole HUD up at once — W1/W4's objective line
+      // (with the EASY chip), the WAVE banner, the bombing warning and the
+      // carrier's bar, and J1's combo banner, streak and score popup — over
+      // the medal moment above. Forced on in place (a build without one of
+      // them simply has nothing to show), animations frozen.
+      await page.evaluate(WAR_HUD_ON);
+      await sleep(300);
+      const war = await page.evaluate(OVERLAP_PROBE, OVERLAP_EXEMPT);
+      results.push({ name, idle, moment, course, war });
       console.log(
-        `  overlap ${name}: idle ${idle.overlaps.length} overlaps / ${idle.offscreen.length} off; medal ${moment.overlaps.length} / ${moment.offscreen.length}${course ? `; course ${course.overlaps.length} / ${course.offscreen.length}` : ""}`,
+        `  overlap ${name}: idle ${idle.overlaps.length} overlaps / ${idle.offscreen.length} off; medal ${moment.overlaps.length} / ${moment.offscreen.length}${course ? `; course ${course.overlaps.length} / ${course.offscreen.length}` : ""}; war ${war.overlaps.length} / ${war.offscreen.length}`,
       );
+      for (const o of war.overlaps) {
+        console.log(
+          `    war: ${o.a} × ${o.b} (${Math.round(o.w)}×${Math.round(o.h)} px)`,
+        );
+      }
+      for (const o of war.offscreen) console.log(`    war: ${o} off screen`);
     } finally {
       await context.close();
     }

@@ -833,7 +833,10 @@
         font-size: 12px;
       }
       body.touch #wave-banner {
-        font-size: 28px;
+        /* A3: under the bombing warning (which ends 96 px down), clear of
+           the medal toast below it. */
+        top: calc(var(--gut-y) + var(--safe-t) + 98px);
+        font-size: 24px;
       }
       /* S7: own medals, stacked under the top edge; each row pops in. */
       #medal-toast {
@@ -1260,6 +1263,10 @@
       #comms {
         top: calc(158px + var(--safe-t));
         right: calc(var(--gut-x) + var(--safe-r));
+        /* A3: a long radio line wraps inside the right column instead of
+           running under the centre column's medal toast and WAVE banner
+           (each at most ~170 px either side of centre). */
+        max-width: calc(50vw - var(--gut-x) - var(--safe-r) - 186px);
       }
       #perfhud {
         left: calc(var(--gut-x) + var(--safe-l));
@@ -1379,6 +1386,15 @@
       body.touch #killfeed,
       body.touch #comms {
         max-width: calc((100vw - var(--safe-l) - var(--safe-r)) * 0.3);
+      }
+      /* A3: the comms column stops short of the centre strip under the
+         gauges (W4's carrier bar and bombing warning, ~128 px either side
+         of centre); its lines ellipsize. */
+      body.touch #comms {
+        max-width: min(
+          calc((100vw - var(--safe-l) - var(--safe-r)) * 0.3),
+          calc(50vw - var(--gut-x) - var(--safe-r) - 88px - 136px)
+        );
       }
       body.touch #killfeed .entry,
       body.touch #comms .entry {
@@ -1669,6 +1685,12 @@
         body.touch #killfeed,
         body.touch #comms {
           max-width: calc((100vw - var(--safe-l) - var(--safe-r)) * 0.25);
+        }
+        body.touch #comms {
+          max-width: min(
+            calc((100vw - var(--safe-l) - var(--safe-r)) * 0.25),
+            calc(50vw - var(--gut-x) - var(--safe-r) - 88px - 136px)
+          );
         }
         body.touch #killfeed .entry:nth-last-child(n + 3),
         body.touch #comms .entry:nth-last-child(n + 2) {

@@ -70,7 +70,7 @@ const BEAM_SPARKS = 10;
 /** U7: the most an edge or corner is pulled in, as a fraction of the
  * piece's smallest half extent (rock; a slab half that, a beam a 3 cm
  * bevel under the same cap). */
-export const ROCK_INSET = 0.25;
+export const ROCK_INSET = 0.4;
 /** Program cache key (the rock shader). */
 export const ROCK_CACHE_KEY = "ab-u7-rock";
 
@@ -98,8 +98,8 @@ export function rockVertexInto(
       kind === PIECE_BEAM
         ? Math.min(0.03, cap)
         : kind === PIECE_SLAB
-          ? cap * (0.25 + 0.25 * h)
-          : cap * (0.35 + 0.65 * h) * (onFace === 3 ? 1 : 0.7);
+          ? cap * (0.15 + 0.35 * h)
+          : cap * (0.3 + 0.7 * h) * (onFace === 3 ? 1 : 0.75);
     out[i] = v - Math.sign(v) * (d / (scale[i] as number));
   }
   return out;
@@ -168,8 +168,8 @@ if (rockFaces > 1.5) {
     if (abs(v) < 0.49) continue;
     float h = abRockHash(rockP, aRock.x, float(i));
     float d = rockKind > 1.5 ? min(0.03, rockCap)
-      : rockKind > 0.5 ? rockCap * (0.25 + 0.25 * h)
-      : rockCap * (0.35 + 0.65 * h) * (rockFaces > 2.5 ? 1.0 : 0.7);
+      : rockKind > 0.5 ? rockCap * (0.15 + 0.35 * h)
+      : rockCap * (0.3 + 0.7 * h) * (rockFaces > 2.5 ? 1.0 : 0.75);
     transformed[i] = v - sign(v) * d / rockScale[i];
   }
 }

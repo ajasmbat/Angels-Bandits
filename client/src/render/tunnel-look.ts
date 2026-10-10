@@ -111,7 +111,7 @@ export const PALETTES: Record<LookZone, Palette> = {
     air: col(0x6aa4e8, 0.32),
   },
   station: {
-    wall: col(0xa8c4e4, 0.42),
+    wall: col(0x9cbce0, 0.36),
     ceiling: col(0x7c94b0, 0.42),
     floor: col(0x56647a),
     air: col(0x9cc4f0, 0.17),

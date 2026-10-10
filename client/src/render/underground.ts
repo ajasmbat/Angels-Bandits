@@ -140,15 +140,15 @@ const C = {
   lily: lit(0x4c9a46, 0.6),
   bud: emitOf(0xffe6f2, EMISSIVE_WINDOW),
   hallFloor: lit(0x8a96a4, 0.5),
-  platform: lit(0xb8c2cc, 0.45),
+  platform: lit(0xa8b4c2, 0.38),
   safety: lit(0xf2c641, 0.7),
   bed: lit(0x4a4640, 0.55),
   rail: lit(0x9aa0a6, 0.6),
-  tile: lit(0xd4e2f0, 0.42),
+  tile: lit(0xc4d6ec, 0.34),
   sign: lit(0x2f6fb0, 0.55),
-  plaster: lit(0xc8d8ea, 0.4),
-  rib: lit(0x9fb2c8, 0.42),
-  ceiling: lit(0xb8c8da, 0.4),
+  plaster: lit(0xb4c6dc, 0.32),
+  rib: lit(0x8aa0bc, 0.36),
+  ceiling: lit(0x9cb0c8, 0.32),
   portal: new THREE.Color(0.012, 0.012, 0.016),
   mullion: lit(0x3a3f46, 0.6),
   counter: lit(0x9a7552, 0.6),
@@ -196,7 +196,7 @@ const C = {
   ],
 } as const;
 
-const GLASS = { color: lit(0xcfe6f0, 0.6), alpha: 0.14 };
+const GLASS = { color: lit(0xbcd8ec, 0.4), alpha: 0.12 };
 const SHEET = { color: lit(0xbfe6f6, 0.55), alpha: 0.6 };
 const FOAM = lit(0xe9f6fb, 0.55);
 /** Firefly and pollen colours; fireflies on the WINDOW rung at peak. */
@@ -2546,12 +2546,12 @@ if (vAnim.x > 0.5 && vAnim.x < 1.5) {
   float fres = 0.04 + 0.96 * pow(1.0 - clamp(dot(wN, wV), 0.0, 1.0), 5.0);
   vec3 refl = vec3(0.1, 0.13, 0.16);
   #ifdef USE_FOG
-    refl = mix(refl, abTunnelAir.rgb * 1.3, abTunnelAir.a);
+    refl = mix(refl, abTunnelAir.rgb, abTunnelAir.a);
   #endif
   float wds = (fract(vAnim.y / 12.0 + 0.5) - 0.5) * 12.0 + slope.x * 25.0;
   float streak = exp(-wds * wds / 5.0) * (0.5 + 0.5 * clamp(crest * 0.5 + 0.5, 0.0, 1.0));
   float glint = step(3.5, uTunnelDetail);
-  vec3 water = mix(diffuseColor.rgb * (0.85 + 0.1 * crest), refl, fres);
+  vec3 water = mix(diffuseColor.rgb * (0.85 + 0.1 * crest), refl, fres * 0.7);
   water += vec3(1.0, 0.8, 0.56) * streak * (0.03 + 0.14 * fres) * (0.4 + 0.6 * glint);
   diffuseColor.rgb = abUnderClamp(water);
 }

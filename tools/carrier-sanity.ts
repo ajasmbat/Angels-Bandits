@@ -38,6 +38,8 @@
 //     the run, at any time;
 //  5. the carrier goes down within CARRIER_DOWN_S of the start, and the
 //     next carrier's raid arrives within NEXT_CARRIER_MS + 10 s of it.
+// After the next carrier the novice flies the war on (orbit and engage)
+// until it has seen MIN_BOMBS bombs or --timeout runs out.
 // A JSON report (per run: the timeline, every bomb, every kill by cause)
 // goes to --out.
 
@@ -125,6 +127,9 @@ const SURFACE_M = 3;
  * respawn quiet radius (server/src/strikes.ts respawnClearM), held at all
  * times here rather than only inside its 5 s window. */
 const SPAWN_CLEAR_M = 150;
+/** A run flies on past the next carrier until it has seen this many enemy
+ * bombs (Easy's first waves bomb rarely), up to --timeout. */
+const MIN_BOMBS = 3;
 
 // --- The novice --------------------------------------------------------------------
 
@@ -648,7 +653,7 @@ function fly(url: string, run: number, seed: number): Promise<RunReport> {
             ) {
               nextRaidS = sinceS();
               note("the NEXT carrier arrives");
-              setTimeout(finish, 1000);
+              if (bombs.length >= MIN_BOMBS) setTimeout(finish, 1000);
             }
           }
           break;
@@ -679,6 +684,11 @@ function fly(url: string, run: number, seed: number): Promise<RunReport> {
           if (m && m.kind === "bomb") {
             bombs.push(m);
             bombBy.set(m.id, msg.by);
+            const on = surfaceAt(m.to.x, m.to.z).on;
+            note(`enemy bomb ${bombs.length} (${msg.by}) → ${on}`);
+            if (nextRaidS !== null && bombs.length >= MIN_BOMBS) {
+              setTimeout(finish, 1000);
+            }
           }
           break;
         }

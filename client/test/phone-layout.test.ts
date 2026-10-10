@@ -283,6 +283,9 @@ const CONTROLS: Record<string, string[]> = {
   fire: ["#touch-ui .tc", "#touch-fire"],
   boost: ["#touch-ui .tc", "#touch-boost"],
   zoom: ["#touch-ui .tc", "#touch-zoom"],
+  // F10: the roll pair, beside (or on a short screen above) FIRE.
+  rollLeft: ["#touch-ui .tc", "#touch-roll-l"],
+  rollRight: ["#touch-ui .tc", "#touch-roll-r"],
 };
 
 /** The ≡ icon: a static child of the #touch-icons column (its only one). */

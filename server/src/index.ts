@@ -5,7 +5,7 @@
 // run is the backfill bots (B1): RoomBots advances them with the shared
 // stepFlight inside the same TICK_DOWN_HZ snapshot tick.
 
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import {
   type Boost,
@@ -193,6 +193,7 @@ import {
   MissileDirector,
   applyMissileImpact,
 } from "./strikes";
+import { TickProfiler } from "./tickstats";
 import { poseFromSpawn, roomPoseCap, validatePose } from "./validate";
 import { RoomWrecks, applyWreckImpact, impactPos } from "./wrecks";
 
@@ -225,6 +226,8 @@ const BOSS_RAID_TUNING = TUNINGS.boss;
 
 /** Test-only introspection of the per-room maps (`GET /debug/rooms`). */
 const DEBUG_ROOMS = process.env.AB_DEBUG_ROOMS === "1";
+/** A1: the tick's per-phase cost (`GET /debug/tick`; tools/perf/server-tick.mjs). */
+const tickStats = new TickProfiler(process.env.AB_TICK_STATS === "1");
 
 /**
  * D6: AB_QUIET_CITY=1 (the perf harness only — tools/perf/run.mjs): no room's
@@ -934,15 +937,25 @@ const sanitizeName = (raw: unknown): string => {
 };
 
 function sendToRoom(room: Room, msg: ServerMsg, exceptId?: string): void {
-  const data = JSON.stringify(msg);
+  // A1: UTF-8 encoded once, not once per socket (ws re-encodes a string on
+  // every send); still a text frame, exactly what a string send was.
+  const data = Buffer.from(JSON.stringify(msg));
   for (const { id } of room.members.values()) {
     if (id === exceptId) continue;
     const member = clients.get(id);
     if (member && member.ws.readyState === member.ws.OPEN) {
-      member.ws.send(data);
+      member.ws.send(data, { binary: false });
     }
   }
 }
+
+/**
+ * A1: a player id — 72 random bits, base64url (12 chars). It rides in every
+ * snapshot entry to every client, so the 36-char UUID it replaced was half
+ * a human's entry. Never `bot:…` or `@…` (no ':' or '@' in base64url), so it
+ * cannot name a bot or a MISSILE/BOSS shooter id.
+ */
+const mintPlayerId = (): string => randomBytes(9).toString("base64url");
 
 /** 128 random bits, base64url (22 chars) — unguessable, and never logged. */
 const mintResumeToken = (): string => randomBytes(16).toString("base64url");
@@ -2104,7 +2117,10 @@ function tickDirector(room: Room, now: number): FiredEvent[] {
 function tickRebuilds(room: Room, now: number): void {
   const rc = breakable(room);
   if (!rc) return;
-  const wires = directorFor(room).rebuild(now, directorPlanes(room, now), {
+  const director = directorFor(room);
+  // A1: its plane list only on the ticks it checks (1 in 20).
+  if (!director.rebuildDue(now)) return;
+  const wires = director.rebuild(now, directorPlanes(room, now), {
     city: rc,
     cranes: moversFor(room.seed).cranes,
   });
@@ -2288,6 +2304,12 @@ const server = createServer((req, res) => {
     );
     return;
   }
+  if (tickStats.enabled && req.url?.startsWith("/debug/tick")) {
+    if (req.url.endsWith("?reset=1")) tickStats.reset();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(tickStats.report()));
+    return;
+  }
   if (statics?.(req, res)) return;
   res.writeHead(404, { "content-type": "text/plain" });
   res.end("not found");
@@ -2312,7 +2334,7 @@ wss.on("connection", (ws) => {
       // FL1: a lab join never resumes — its token is not even looked up.
       const lab = msg.lab === true;
       const resumed = lab ? null : takeResume(msg.resume);
-      joinedId = resumed?.id ?? randomUUID();
+      joinedId = resumed?.id ?? mintPlayerId();
       client = handleJoin(
         ws,
         msg.name,
@@ -2413,10 +2435,13 @@ wss.on("connection", (ws) => {
 // into a tuple of integers, which is what pays for the 20 Hz cadence.
 function tick(): void {
   const time = Date.now();
+  tickStats.begin();
   for (const client of clients.values()) settleAway(client, time);
   issueRespawns(combat.tick(time).respawnsDue, time);
+  tickStats.lap("combat");
   for (const room of rooms.rooms) {
     tickRoomBots(room, time);
+    tickStats.lap("bots");
     enforceStormCeiling(room, time);
     updateNewsHeli(room, time);
     // C2: the gone-share backstop — at GONE_HOLD_SHARE nothing breaks this
@@ -2425,12 +2450,16 @@ function tick(): void {
     if (held && TUNINGS.hold) applyGoneHold(held);
     landWrecks(room, time); // D4: before the batch — its chunks ride along
     tickMissiles(room, time);
+    tickStats.lap("wrecks+missiles");
     tickChaos(room, time); // C2: before the batch — quakes' and fires' chunks
     tickCaveIns(room, time); // U6
+    tickStats.lap("chaos");
     tickBoss(room, time); // S4: before the batch — a landing's chunks ride it
+    tickStats.lap("boss");
     // D5: the director fires what is due (a gas main's chunks join the
     // batch; a demolition's record goes out after it) and warns what is next.
     const fired = tickDirector(room, time);
+    tickStats.lap("director");
     // D2: everything that broke this tick, as ONE batch — then (D3) every
     // collapse it set off, after it, so a client applies them in order.
     const rc = roomCityById.get(room.id);
@@ -2450,27 +2479,30 @@ function tick(): void {
     for (const f of fired) {
       if (f.event.k === EVENT_GAS) landGas(room, f.event, time);
     }
+    tickStats.lap("destruction");
     const snapshot: WireSnapshotMsg = {
       type: "snapshot",
       time,
-      // Dead planes are simply absent until their respawn is announced.
-      p: [...room.members.values()].flatMap(({ id }) => {
-        const pose = memberPose(room, id);
-        return pose
-          ? [
-              encodeSnapshotEntry({
-                id,
-                pose,
-                hp: combat.hpOf(id),
-                prot: combat.isProtected(id, time),
-                age: poseAgeOf(id, time),
-              }),
-            ]
-          : [];
-      }),
+      p: [],
     };
+    // Dead planes are simply absent until their respawn is announced.
+    for (const { id } of room.members.values()) {
+      const pose = memberPose(room, id);
+      if (!pose) continue;
+      snapshot.p.push(
+        encodeSnapshotEntry({
+          id,
+          pose,
+          hp: combat.hpOf(id),
+          prot: combat.isProtected(id, time),
+          age: poseAgeOf(id, time),
+        }),
+      );
+    }
     sendToRoom(room, snapshot);
+    tickStats.lap("snapshot");
   }
+  tickStats.end();
 }
 
 // Drift-compensating scheduler rather than setInterval: a tick that overruns

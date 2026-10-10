@@ -1579,6 +1579,8 @@ const leadIndicator = new LeadIndicator();
 // One soft tick on ACQUIRING a firing solution, never while it holds.
 const solutionTone = new SolutionTone();
 const markerScratch = new THREE.Vector3();
+/** A1: the edge markers' positions, refilled each frame. */
+const markerPositions: Vec3[] = [];
 // U1: getting shot — red edge flash, a thud, and an arc toward the shooter.
 const damageIndicator = new DamageIndicator();
 // U1 haptics: Android vibrates, iOS has no API (feature-detected no-op).
@@ -2585,10 +2587,15 @@ window.addEventListener("keydown", (e) => {
 
 // --- Dev/QA hooks (used by the headless verification harness) ---
 const perf = { frames: 0, ms: 0, fps: 0, frameMs: 0 };
+/** A1: performance.now() when the boot pre-warm finished (null before) —
+ * the harness's zero for "programs linked after the first 5 s". */
+let bootedAt: number | null = null;
 declare global {
   interface Window {
     __ab?: {
       state: () => FlightState;
+      /** A1: when the boot pre-warm finished (performance.now()), or null. */
+      bootedAt: () => number | null;
       /** FL1 QA: the Flight Lab's state and live tuning (null outside it). */
       lab: () =>
         | (ReturnType<FlightLab["debug"]> & {
@@ -3401,6 +3408,7 @@ function clearQaDestruction(): void {
   qaStaged.active = false;
 }
 window.__ab = {
+  bootedAt: () => bootedAt,
   state: () => flight,
   lab: () => (lab ? { ...lab.debug(), tuning: { ...tuning } } : null),
   teleport: (x, z, y = 300, yaw = 0) => {
@@ -4354,6 +4362,7 @@ reflections.requestRefill(true);
 reflections.update(renderer, scene, camera);
 socket.sendPing();
 flashFade();
+bootedAt = performance.now();
 
 // Named (M2) so the visibility pause at the bottom can stop and restore it.
 const frame = (now: number): void => {
@@ -5081,7 +5090,9 @@ const frame = (now: number): void => {
   planeTrails.update(chase.position, now);
 
   // --- Radio: threat scan, ambient chatter, then the one-line channel ---
-  if (alive && threatOnSix(flight.pos, flight.yaw, remotes.headings())) {
+  // A1: built once a frame — the bird scatter below reads the same list.
+  const headings = remotes.headings();
+  if (alive && threatOnSix(flight.pos, flight.yaw, headings)) {
     say(threatCallout(name));
     radio.noteCombat(now); // an active tail counts as combat
   }
@@ -5183,7 +5194,7 @@ const frame = (now: number): void => {
   // L9: flocks scatter from any plane this client sees within ~60 m.
   birdPlanes.length = 0;
   if (alive) birdPlanes.push(flight.pos);
-  for (const r of remotes.headings()) birdPlanes.push(r.pos);
+  for (const r of headings) birdPlanes.push(r.pos);
   birds.update(chase.position, renderMs, birdPlanes);
   // L10: the drones write LAST, so a full cloud drops drones, not nav lights.
   droneShow.update(chase.position, renderMs, moverLights);
@@ -5600,12 +5611,9 @@ const frame = (now: number): void => {
   qaAfterRender?.(); // O7 QA: the black-box detector reads this frame
 
   // Matrices are fresh after the render — project the screen-space UI now.
-  edgeMarkers.update(
-    camera,
-    chase.position,
-    targets.map((t) => t.pos),
-    markerScratch,
-  );
+  markerPositions.length = 0; // A1: one array, refilled, not one a frame
+  for (const t of targets) markerPositions.push(t.pos);
+  edgeMarkers.update(camera, chase.position, markerPositions, markerScratch);
   const aimResult = leadIndicator.update(
     camera,
     chase.position,

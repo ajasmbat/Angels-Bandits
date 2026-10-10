@@ -58,7 +58,7 @@ import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
 import { applyPointFloor } from "./point-floor";
 import type { SpotBeam } from "./searchlights";
-import { nearestImage, nearestImageInto } from "./wrapPlacement";
+import { nearestImage, nearestImageInto, uploadPrefix } from "./wrapPlacement";
 
 // --- Shared additive point cloud (nav lights, warning beacons, sparks) ---
 
@@ -113,6 +113,8 @@ export class MoverLights {
   private readonly colors = new Float32Array(LIGHT_CAPACITY * 3);
   private readonly sizes = new Float32Array(LIGHT_CAPACITY);
   private readonly geometry = new THREE.BufferGeometry();
+  /** position, color, aSize — what commit() uploads (A1: cached). */
+  private readonly attrs: THREE.BufferAttribute[];
   private count = 0;
 
   constructor() {
@@ -127,6 +129,9 @@ export class MoverLights {
     this.geometry.setAttribute(
       "aSize",
       new THREE.BufferAttribute(this.sizes, 1),
+    );
+    this.attrs = ["position", "color", "aSize"].map(
+      (name) => this.geometry.getAttribute(name) as THREE.BufferAttribute,
     );
     this.geometry.boundingSphere = new THREE.Sphere(
       new THREE.Vector3(),
@@ -179,13 +184,11 @@ export class MoverLights {
     this.sizes[i] = size;
   }
 
-  /** Upload the frame. */
+  /** Upload the frame — A1: the drawn prefix only, not all LIGHT_CAPACITY
+   * slots (~28 KB) every frame. */
   commit(): void {
     this.geometry.setDrawRange(0, this.count);
-    for (const name of ["position", "color", "aSize"]) {
-      const attr = this.geometry.getAttribute(name);
-      if (attr) attr.needsUpdate = true;
-    }
+    uploadPrefix(this.attrs, this.count);
   }
 
   /** Points written this frame — the perf report's handle on the budget. */

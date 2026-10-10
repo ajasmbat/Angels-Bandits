@@ -102,6 +102,8 @@ export class AbBloomPass extends UnrealBloomPass {
     fragmentShader: BrightShader.fragmentShader,
   });
   private readonly quad = new FullScreenQuad();
+  /** A1: render()'s saved clear colour — one Color, not one a frame. */
+  private readonly scratchClear = new THREE.Color();
 
   constructor(strength: number, radius: number, threshold: number) {
     super(new THREE.Vector2(256, 256), strength, radius, threshold);
@@ -173,7 +175,7 @@ export class AbBloomPass extends UnrealBloomPass {
     _writeBuffer: THREE.WebGLRenderTarget,
     readBuffer: THREE.WebGLRenderTarget,
   ): void {
-    const oldClear = renderer.getClearColor(new THREE.Color());
+    const oldClear = renderer.getClearColor(this.scratchClear);
     const oldAlpha = renderer.getClearAlpha();
     const oldAutoClear = renderer.autoClear;
     renderer.autoClear = false;

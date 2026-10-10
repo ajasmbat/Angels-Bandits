@@ -79,6 +79,10 @@ import {
   signText,
 } from "./train-sign";
 import { METRO_CARS, metroCarBox, metroState } from "./underground-layout";
+import { InstanceUploads, imageIndex } from "./wrapPlacement";
+
+/** A1: a fixed slot not yet placed (no torus image index is this). */
+const UNPLACED = 0x7fffffff;
 
 /** Program cache key for the patched train material — distinct from every
  * other key in the repo (three keys programs on onBeforeCompile.toString()
@@ -408,6 +412,14 @@ export class TrainRenderer {
 
   private readonly lines: readonly TrainLine[];
   private readonly statics: number;
+  /**
+   * A1: each fixed slot's (viaduct, then platform people) last placement —
+   * torus image along x and z, and hidden — so a frame only recomposes and
+   * uploads the slots whose image flipped (or whose person came or went),
+   * not every pillar and slab; the cars are rewritten every frame.
+   */
+  private readonly placed: Int32Array;
+  private readonly uploads: InstanceUploads;
   private readonly people: Person[] = [];
   private readonly lamps: Lamp[] = [];
   private readonly slots: TrainSlot[] = [];
@@ -486,6 +498,10 @@ export class TrainRenderer {
       this.count,
     );
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.uploads = new InstanceUploads([this.mesh.instanceMatrix]);
+    this.placed = new Int32Array((statics + this.people.length) * 3).fill(
+      UNPLACED,
+    );
     // Instances move relative to the camera every frame.
     this.mesh.frustumCulled = false;
     this.mesh.visible = lines.length > 0;
@@ -596,6 +612,21 @@ export class TrainRenderer {
     this.mesh.setMatrixAt(i, this.matrix);
   }
 
+  /** put() for a fixed slot, only when its image or `hidden` changed. */
+  private putFixed(i: number, b: MoverBox, camera: Vec3, hidden = false): void {
+    const kx = imageIndex(camera.x, b.x);
+    const kz = imageIndex(camera.z, b.z);
+    const h = hidden ? 1 : 0;
+    const s = i * 3;
+    const p = this.placed;
+    if (p[s] === kx && p[s + 1] === kz && p[s + 2] === h) return;
+    p[s] = kx;
+    p[s + 1] = kz;
+    p[s + 2] = h;
+    this.put(i, b, camera, hidden);
+    this.uploads.mark(i);
+  }
+
   /** A point in a car's own frame (along, up, across), rendered near the
    * camera, written into `this.at`. */
   private local(
@@ -681,7 +712,7 @@ export class TrainRenderer {
 
     let n = 0;
     for (const line of this.lines) {
-      for (const b of line.viaduct) this.put(n++, b, camera);
+      for (const b of line.viaduct) this.putFixed(n++, b, camera);
     }
     const range2 = this.lightRange * this.lightRange;
     const near = (x: number, z: number) => {
@@ -724,7 +755,7 @@ export class TrainRenderer {
       this.car.yaw = p.yaw;
       const hidden = p.rank >= fill;
       if (!hidden) this.peopleShown++;
-      this.put(this.statics + k, this.car, camera, hidden);
+      this.putFixed(this.statics + k, this.car, camera, hidden);
     }
 
     let best = Number.POSITIVE_INFINITY;
@@ -911,7 +942,12 @@ export class TrainRenderer {
       }
     }
     this.poseMetro(camera, serverTimeMs, doors);
-    this.mesh.instanceMatrix.needsUpdate = true;
+    // A1: the cars' slots (and metro) are posed every frame; the fixed
+    // slots before them were marked as they changed.
+    for (let i = this.statics + this.people.length; i < this.count; i++) {
+      this.uploads.mark(i);
+    }
+    this.uploads.flush();
     this.trainAttr.needsUpdate = true;
   }
 

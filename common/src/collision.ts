@@ -615,11 +615,61 @@ const sight: Vec3 = { x: 0, y: 0, z: 0 };
 const sightAt: Vec3 = { x: 0, y: 0, z: 0 };
 const sightC: Vec3 = { x: 0, y: 0, z: 0 };
 const NO_ROOF: readonly RoofStructure[] = [];
+/** A1: losClear's candidate buildings (deduplicated through `losStamp`). */
+const losCands: number[] = [];
+let losStamp = new Uint32Array(0);
+let losStampNow = 0;
+
+/**
+ * The buildings an index puts in the blocks a segment's plan-view bounds
+ * touch — each once, ascending — into `losCands`. Null (scan them all)
+ * without an index or with one built on another array.
+ */
+function losCandidates(
+  from: Vec3,
+  loX: number,
+  hiX: number,
+  loZ: number,
+  hiZ: number,
+  buildings: readonly Building[],
+  index: CityIndex | undefined,
+): readonly number[] | null {
+  if (!index || index.buildings !== buildings) return null;
+  if (losStamp.length < buildings.length) {
+    losStamp = new Uint32Array(buildings.length);
+  }
+  losStampNow = (losStampNow + 1) >>> 0;
+  if (losStampNow === 0) {
+    losStamp.fill(0);
+    losStampNow = 1;
+  }
+  losCands.length = 0;
+  const x0 = spanFirst(from.x + loX, from.x + hiX);
+  const nx = spanCount(from.x + loX, from.x + hiX);
+  const z0 = spanFirst(from.z + loZ, from.z + hiZ);
+  const nz = spanCount(from.z + loZ, from.z + hiZ);
+  for (let ix = 0; ix < nx; ix++) {
+    for (let iz = 0; iz < nz; iz++) {
+      const cell =
+        index.cells[wrapBlock(x0 + ix) * CITY_GRID + wrapBlock(z0 + iz)];
+      for (let k = 0; k < (cell?.length ?? 0); k++) {
+        const i = cell?.[k] as number;
+        if (losStamp[i] === losStampNow) continue;
+        losStamp[i] = losStampNow;
+        losCands.push(i);
+      }
+    }
+  }
+  // Ascending, as the linear scan visits them (the answer is a yes/no, so
+  // order cannot change it; this keeps the work order the same too).
+  return losCands.sort((a, b) => a - b);
+}
 
 export function losClear(
   from: Vec3,
   to: Vec3,
   buildings: readonly Building[] = [],
+  index?: CityIndex,
 ): boolean {
   // Into scratch (riverSegmentClear and segmentHitsBox keep no reference).
   const d = wrapDeltaInto(from, to, sight);
@@ -642,8 +692,13 @@ export function losClear(
   const hiZ = Math.max(0, dz);
   // Altitude is monotonic along the segment, so its lower end bounds it.
   const loY = Math.min(from.y, to.y);
-  for (let i = 0; i < buildings.length; i++) {
-    const b = buildings[i] as Building;
+  // A1: with an index, only the buildings in the blocks the segment's bounds
+  // touch (its footprints are grown by RUBBLE_REACH, so every building the
+  // footprint reject below could pass is among them).
+  const cands = losCandidates(from, loX, hiX, loZ, hiZ, buildings, index);
+  const count = cands ? cands.length : buildings.length;
+  for (let n = 0; n < count; n++) {
+    const b = buildings[cands ? (cands[n] as number) : n] as Building;
     // Whole sight line above the roof — the strong reject for high patrols
     // (R2: above the tallest roof structure, when it has any).
     const roof = b.roof;

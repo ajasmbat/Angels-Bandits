@@ -93,6 +93,9 @@ export class MissileRenderer {
   private readonly fireAcc = new Map<number, number>();
   /** QA (__ab.chaos): missile/bomb bodies and meteors drawn last frame. */
   readonly stats = { bodies: 0, meteors: 0 };
+  /** A1: last frame's live counts (an emptied pool uploads once more). */
+  private lastBodies = 1;
+  private lastMeteors = 1;
   private lastMs = Number.NaN;
 
   constructor(
@@ -259,17 +262,25 @@ export class MissileRenderer {
       }
     }
     this.bodies.count = n;
-    this.bodies.instanceMatrix.needsUpdate = true;
+    // A1: nothing in the air, nothing to upload — but the frame a pool
+    // empties still uploads once (its parked glints).
+    if (n > 0 || this.lastBodies > 0) {
+      this.bodies.instanceMatrix.needsUpdate = true;
+      this.glintPos.needsUpdate = true;
+    }
     // P4: the glint pools draw their live prefix only — nothing at rest.
     this.glints.geometry.setDrawRange(0, n);
     // three still issues a (counted) draw for an empty range: hide instead.
     this.glints.visible = n > 0;
-    this.glintPos.needsUpdate = true;
     this.meteors.count = nm;
-    this.meteors.instanceMatrix.needsUpdate = true;
+    if (nm > 0 || this.lastMeteors > 0) {
+      this.meteors.instanceMatrix.needsUpdate = true;
+      this.meteorGlintPos.needsUpdate = true;
+    }
     this.meteorGlints.geometry.setDrawRange(0, nm);
     this.meteorGlints.visible = nm > 0;
-    this.meteorGlintPos.needsUpdate = true;
+    this.lastBodies = n;
+    this.lastMeteors = nm;
     this.stats.bodies = n;
     this.stats.meteors = nm;
   }

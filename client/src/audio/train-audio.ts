@@ -8,6 +8,7 @@
 // bursts ahead of the audio clock. Diegetic only — no warning, no HUD.
 
 import type { Vec3 } from "@angels-bandits/common/world";
+import { rampTo } from "./ramp";
 import type { MixBus } from "./sound";
 import { spatialize } from "./spatial";
 
@@ -66,8 +67,8 @@ export class TrainAudio {
 
     const s = f.at && f.alive ? spatialize(f.listener, f.yaw, f.at) : null;
     const level = s ? Math.min(1, s.gain * CLATTER_FALLOFF) : 0;
-    g.clatter.gain.setTargetAtTime(level * CLATTER_LEVEL, now, 0.1);
-    if (s) g.pan.pan.setTargetAtTime(s.pan, now, 0.08);
+    rampTo(g.clatter.gain, level * CLATTER_LEVEL, now, 0.1);
+    if (s) rampTo(g.pan.pan, s.pan, now, 0.08);
 
     // Wheels over joints: two clicks a bogie, one joint every RAIL_JOINT.
     if (level > 0.01 && f.speed > 2) {

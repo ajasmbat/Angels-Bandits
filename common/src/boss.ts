@@ -62,7 +62,7 @@ export const BOSS_EGRESS_M = 900;
 export const BOSS_ORBIT_MS = 300_000;
 
 /** DamageMsg shooter id for flak, and the AwardMsg victim id of the boss
- * itself. Player ids are UUIDs and bots `bot:<room>:<n>`, so it can never
+ * itself. Player ids are base64url and bots `bot:<room>:<n>`, so it can never
  * name a plane (like MISSILE_SHOOTER_ID). */
 export const BOSS_ID = "@boss";
 /** Bot contacts for weak point k are `@boss:<k>` (server only). */

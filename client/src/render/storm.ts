@@ -124,6 +124,9 @@ interface Reveal {
  * Pure bookkeeping over revealedPlanes/revealLevel; a fresh strike replaces
  * a fading reveal at full strength.
  */
+/** A1: pings() with no reveals — shared, never mutated by its readers. */
+const NO_PINGS: { id: string; pos: Vec3; level: number }[] = [];
+
 export class StormReveals {
   private reveals: Reveal[] = [];
 
@@ -149,6 +152,8 @@ export class StormReveals {
 
   /** Active minimap echoes, pruned as they expire. */
   pings(nowMs: number): { id: string; pos: Vec3; level: number }[] {
+    // A1: the minimap asks every frame; almost always there is nothing.
+    if (this.reveals.length === 0) return NO_PINGS;
     this.reveals = this.reveals.filter((r) => revealLevel(r.at, nowMs) > 0);
     return this.reveals.map((r) => ({
       id: r.id,

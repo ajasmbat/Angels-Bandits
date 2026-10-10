@@ -84,6 +84,8 @@ export class BomberRenderer {
   private share = 1;
   /** QA (__ab.chaos): ship boxes and lights drawn last frame. */
   readonly stats = { boxes: 0, lights: 0 };
+  /** A1: last frame drew a hull or a light (its buffers need one more upload). */
+  private lastLive = true;
   /** Downs already burst here, by `run:k` (a ship bursts once). */
   private readonly burst = new Set<string>();
 
@@ -171,9 +173,14 @@ export class BomberRenderer {
     this.lights.visible = lights > 0;
     this.stats.boxes = parts;
     this.stats.lights = lights;
-    this.hulls.instanceMatrix.needsUpdate = true;
-    this.lightPos.needsUpdate = true;
-    this.lightCol.needsUpdate = true;
+    // A1: no bomber up, nothing to upload — but the frame the sky empties
+    // still uploads once (its parked lights).
+    if (parts > 0 || lights > 0 || this.lastLive) {
+      this.hulls.instanceMatrix.needsUpdate = true;
+      this.lightPos.needsUpdate = true;
+      this.lightCol.needsUpdate = true;
+    }
+    this.lastLive = parts > 0 || lights > 0;
   }
 
   /** The current ship's wingtips, tail and strobe, from `this.pose`. */

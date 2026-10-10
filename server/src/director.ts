@@ -39,6 +39,7 @@ import {
 } from "@angels-bandits/common/city";
 import {
   type Collapse,
+  type CollapsePlan,
   type CollapseWire,
   KIND_CRANE,
   PANCAKE,
@@ -314,6 +315,16 @@ function zonePoints(e: Pick<DirectorEvent, "x" | "z" | "zone">): Vec3[] {
 const budgetPlanes = (planes: readonly DestructionPlane[]): DangerPlane[] =>
   planes.map((p) => ({ id: p.id, pos: p.pos, vel: p.vel, prot: p.protected }));
 
+/** What the tower pick needs of one candidate collapse: its danger zone and
+ * (a topple's) fall footprint. */
+interface CollapseShape {
+  zone: DangerZone;
+  fp: DangerZone | null;
+}
+
+/** A1: shapes kept at most; past it the oldest goes first. */
+const SHAPE_CACHE_MAX = 256;
+
 export class DestructionDirector {
   private scanFrom: number | null = null;
   private armed: { slot: number; until: number } | null = null;
@@ -325,6 +336,14 @@ export class DestructionDirector {
   private readonly announced = new Map<number, RebuildWire>();
   private nextRebuildCheck = 0;
   private nextId = 1;
+  /**
+   * A1: candidate collapse shapes by (building, style, dir, chunk set).
+   * buildCollapse is a pure function of its wire and the generated city,
+   * and simulating a tower's debris is the costliest thing a tick does
+   * (~10–60 ms each, up to 20 per pick); a pick re-scores the same few
+   * towers every retry, so each shape is simulated once per standing state.
+   */
+  private readonly shapes = new Map<string, CollapseShape | null>();
 
   constructor(
     private readonly seed: number,
@@ -582,6 +601,29 @@ export class DestructionDirector {
     return due - now < this.tuning.rebuildQuietMs + DIRECTOR_WARN_MS;
   }
 
+  /** The shape of building `i` brought down as `plan` (null: no debris). */
+  private shapeOf(
+    buildings: readonly Building[],
+    i: number,
+    plan: CollapsePlan,
+  ): CollapseShape | null {
+    // Built at t = 0: the shape is the same at any start time, and a fixed
+    // one keeps the cached value exactly what a fresh build would give.
+    const wire = collapseWire(plan, i, 0, 0);
+    const key = `${i}:${wire.s}:${wire.d}:${wire.c}`;
+    const cached = this.shapes.get(key);
+    if (cached !== undefined) return cached;
+    const b = buildings[i] as Building;
+    const c = buildCollapse(buildings, wire);
+    const shape = c && { zone: zoneOf(c, 10), fp: fallFootprint(c, b) };
+    if (this.shapes.size >= SHAPE_CACHE_MAX) {
+      const oldest = this.shapes.keys().next();
+      if (!oldest.done) this.shapes.delete(oldest.value);
+    }
+    this.shapes.set(key, shape);
+    return shape;
+  }
+
   private pickTower(
     now: number,
     anchors: readonly DestructionPlane[],
@@ -653,17 +695,15 @@ export class DestructionDirector {
     const warnAt = now + DIRECTOR_WARN_MS;
     for (const cand of scored.slice(0, 4)) {
       const b = city.buildings[cand.i] as Building;
-      let best: { c: Collapse; dir: number; cross: number } | null = null;
+      let best: { shape: CollapseShape; dir: number; cross: number } | null =
+        null;
       if (cand.near) {
         for (const dir of DIRECTOR_DIRS) {
           const plan = demolitionPlan(b, cand.i, TOPPLE, dir);
           if (!plan) continue;
-          const c = buildCollapse(
-            city.buildings,
-            collapseWire(plan, cand.i, 0, warnAt),
-          );
-          const fp = c && fallFootprint(c, b);
-          if (!c || !fp) continue;
+          const shape = this.shapeOf(city.buildings, cand.i, plan);
+          const fp = shape?.fp;
+          if (!shape || !fp) continue;
           const cross = pathCrossing(
             fp,
             b.x,
@@ -673,25 +713,22 @@ export class DestructionDirector {
             DIRECTOR_PATH_S,
           );
           if (cross > 0 && (!best || cross > best.cross)) {
-            best = { c, dir, cross };
+            best = { shape, dir, cross };
           }
         }
       }
       let style = TOPPLE;
-      let c = best?.c ?? null;
+      let shape = best?.shape ?? null;
       let dir = best?.dir ?? 0;
-      if (!c) {
+      if (!shape) {
         const plan = demolitionPlan(b, cand.i, PANCAKE, 0);
         if (!plan) continue;
-        c = buildCollapse(
-          city.buildings,
-          collapseWire(plan, cand.i, 0, warnAt),
-        );
+        shape = this.shapeOf(city.buildings, cand.i, plan);
         style = PANCAKE;
         dir = 0;
-        if (!c) continue;
+        if (!shape) continue;
       }
-      const zone = zoneOf(c, 10);
+      const zone = shape.zone;
       if (blocked(b.x, b.z, zone)) continue;
       options.push({
         i: cand.i,
@@ -843,6 +880,12 @@ export class DestructionDirector {
   }
 
   // --- The rebuild ----------------------------------------------------------
+
+  /** A1: does `rebuild(now, …)` do anything this tick? (It checks once per
+   * rebuildCheckMs; the caller skips building its plane list otherwise.) */
+  rebuildDue(now: number): boolean {
+    return now >= this.nextRebuildCheck;
+  }
 
   /**
    * The rebuild cycle for one tick: apply announced rebuilds that are due

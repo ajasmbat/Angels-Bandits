@@ -29,7 +29,12 @@ import {
 import { DAMAGE_GLSL, DAMAGE_ON_UNIFORM, DAMAGE_PARS_GLSL } from "./damage-map";
 import { luminance } from "./emissive";
 import { LIVE_ON_UNIFORM, livingParsGlsl } from "./living-windows";
-import { WAKE_PARS_GLSL, wakeWindowGlsl, windowWakeUniform } from "./reactions";
+import {
+  WAKE_PARS_GLSL,
+  wakeWindowGlsl,
+  windowWakeCountUniform,
+  windowWakeUniform,
+} from "./reactions";
 import {
   REFLECTION_PARS_GLSL,
   REFL_F0,
@@ -434,6 +439,7 @@ export function createBuildingsMaterial(
     shader.uniforms.uLiveOn = LIVE_ON_UNIFORM;
     // L1 reactive city: the shared window-wake sources (reactions.ts).
     shader.uniforms.uWake = windowWakeUniform;
+    shader.uniforms.uWakeCount = windowWakeCountUniform;
     shader.uniforms.uOccupancy = OCCUPANCY_UNIFORM;
     // M3: the quality tier's window-interior switch, shared by reference.
     shader.uniforms.uWinInterior = WIN_INTERIOR_UNIFORM;

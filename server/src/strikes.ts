@@ -350,6 +350,7 @@ export class MissileDirector {
       target,
       now,
       world.buildings,
+      world.index,
     );
     if (strike) {
       this.nextId++;

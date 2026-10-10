@@ -16,6 +16,7 @@ import {
   barIndex,
   nextGrid,
 } from "./music-model";
+import { rampTo } from "./ramp";
 import { spatialize } from "./spatial";
 
 /** Share of the city bus at the performer's feet. */
@@ -71,8 +72,8 @@ export class Busker {
     if (!this.voice) this.voice = build(bus);
     const v = this.voice;
     const now = v.ctx.currentTime;
-    v.out.gain.setTargetAtTime(BUSKER_WEIGHT * this.level, now, 0.25);
-    if (sp) v.pan.pan.setTargetAtTime(sp.pan, now, 0.1);
+    rampTo(v.out.gain, BUSKER_WEIGHT * this.level, now, 0.25);
+    if (sp) rampTo(v.pan.pan, sp.pan, now, 0.1);
     if (this.level <= 0.001) return;
     // Schedule each pluck just ahead of its beat, on the shared grid (after
     // a hidden tab, pick the beat back up rather than firing a backlog).

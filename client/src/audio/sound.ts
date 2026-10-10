@@ -7,6 +7,7 @@
 import { MAX_SPEED, MIN_SPEED } from "@angels-bandits/common/constants";
 import type { Vec3 } from "@angels-bandits/common/world";
 import type { VoiceSink } from "./radio";
+import { rampTo } from "./ramp";
 import { spatialize } from "./spatial";
 
 /** A remote plane audible this frame (from RemotePlanes.contacts()). */
@@ -166,6 +167,8 @@ export class GameAudio implements VoiceSink {
     pan: StereoPannerNode;
   } | null = null;
   private readonly remotes = new Map<string, RemoteEngine>();
+  /** syncRemotes' per-frame scratch (A1: one Set, cleared, not one a frame). */
+  private readonly seenRemotes = new Set<string>();
   private lastWhooshAt = 0;
   private lastThudAt = Number.NEGATIVE_INFINITY;
   private lastPingAt = Number.NEGATIVE_INFINITY;
@@ -394,14 +397,16 @@ export class GameAudio implements VoiceSink {
     }
     const t = GameAudio.throttle01(targetSpeed);
     const now = ctx.currentTime;
-    this.ownOsc.frequency.setTargetAtTime(
+    rampTo(
+      this.ownOsc.frequency,
       ENGINE_MIN_HZ +
         t * (ENGINE_MAX_HZ - ENGINE_MIN_HZ) +
         boost01 * (ENGINE_BOOST_HZ - ENGINE_MAX_HZ),
       now,
       0.08,
     );
-    this.ownGain.gain.setTargetAtTime(
+    rampTo(
+      this.ownGain.gain,
       alive
         ? OWN_ENGINE_LEVEL *
             this.volumes.engine *
@@ -420,7 +425,8 @@ export class GameAudio implements VoiceSink {
   ): void {
     const ctx = this.ensure();
     if (!ctx || !this.sfx) return;
-    const seen = new Set<string>();
+    const seen = this.seenRemotes;
+    seen.clear();
     const now = ctx.currentTime;
     for (const src of sources) {
       seen.add(src.id);
@@ -441,17 +447,19 @@ export class GameAudio implements VoiceSink {
       }
       const s = spatialize(listenerPos, listenerYaw, src.pos);
       const t = GameAudio.throttle01(src.speed);
-      engine.osc.frequency.setTargetAtTime(
+      rampTo(
+        engine.osc.frequency,
         ENGINE_MIN_HZ + t * (ENGINE_MAX_HZ - ENGINE_MIN_HZ),
         now,
         0.08,
       );
-      engine.gain.gain.setTargetAtTime(
+      rampTo(
+        engine.gain.gain,
         s.gain * REMOTE_ENGINE_LEVEL * this.volumes.engine,
         now,
         0.1,
       );
-      engine.pan.pan.setTargetAtTime(s.pan, now, 0.05);
+      rampTo(engine.pan.pan, s.pan, now, 0.05);
     }
     for (const [id, engine] of this.remotes) {
       if (seen.has(id)) continue;
@@ -485,12 +493,25 @@ export class GameAudio implements VoiceSink {
       now + duration,
     );
     filter.Q.value = 1.2;
+    // A1: a centred burst (own gun, hits, thunder — most of them, at up to
+    // 10 a second) skips the StereoPanner node. The noise is mono, and a
+    // panner at 0 only scales it by cos(π/4) into both channels, so the gain
+    // takes that factor instead: the same signal, one node fewer per shot.
+    const centred = pan === 0;
+    const peak = centred ? level * Math.SQRT1_2 : level;
     const gain = ctx.createGain();
-    gain.gain.setValueAtTime(level, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
-    const panner = ctx.createStereoPanner();
-    panner.pan.value = pan;
-    src.connect(filter).connect(gain).connect(panner).connect(out);
+    gain.gain.setValueAtTime(peak, now);
+    gain.gain.exponentialRampToValueAtTime(
+      centred ? 0.001 * Math.SQRT1_2 : 0.001,
+      now + duration,
+    );
+    if (centred) {
+      src.connect(filter).connect(gain).connect(out);
+    } else {
+      const panner = ctx.createStereoPanner();
+      panner.pan.value = pan;
+      src.connect(filter).connect(gain).connect(panner).connect(out);
+    }
     src.start(now, Math.random());
     src.stop(now + duration + 0.05);
   }
@@ -670,7 +691,8 @@ export class GameAudio implements VoiceSink {
       src.connect(filter).connect(this.staticGain).connect(this.sfx);
       src.start();
     }
-    this.staticGain.gain.setTargetAtTime(
+    rampTo(
+      this.staticGain.gain,
       Math.max(0, Math.min(1, level)) * STATIC_BED_LEVEL,
       ctx.currentTime,
       0.3,
@@ -702,12 +724,13 @@ export class GameAudio implements VoiceSink {
       osc.start();
     }
     const now = ctx.currentTime;
-    this.buzzGain.gain.setTargetAtTime(
+    rampTo(
+      this.buzzGain.gain,
       Math.max(0, Math.min(1, level)) * NEON_BUZZ_LEVEL,
       now,
       0.03,
     );
-    this.buzzPan.pan.setTargetAtTime(Math.max(-1, Math.min(1, pan)), now, 0.05);
+    rampTo(this.buzzPan.pan, Math.max(-1, Math.min(1, pan)), now, 0.05);
   }
 
   /** The L5 train's rumble (and curve squeal) from `source`, the nearest
@@ -752,17 +775,19 @@ export class GameAudio implements VoiceSink {
       : { gain: 0, pan: 0 };
     const level = Math.min(1, s.gain * TRAIN_FALLOFF);
     const now = ctx.currentTime;
-    this.train.rumble.gain.setTargetAtTime(
+    rampTo(
+      this.train.rumble.gain,
       level * TRAIN_RUMBLE_LEVEL * (0.2 + 0.8 * speed01),
       now,
       0.2,
     );
-    this.train.squeal.gain.setTargetAtTime(
+    rampTo(
+      this.train.squeal.gain,
       squeal ? level * TRAIN_SQUEAL_LEVEL : 0,
       now,
       0.15,
     );
-    this.train.pan.pan.setTargetAtTime(s.pan, now, 0.1);
+    rampTo(this.train.pan.pan, s.pan, now, 0.1);
   }
 
   /** Boost ignition (F2): a rising rush of air as the burn lights. */
@@ -1050,12 +1075,13 @@ export class GameAudio implements VoiceSink {
       ? spatialize(listenerPos, listenerYaw, source)
       : { gain: 0, pan: 0 };
     const now = ctx.currentTime;
-    this.drone.gain.gain.setTargetAtTime(
+    rampTo(
+      this.drone.gain.gain,
       Math.min(1, s.gain * BOSS_DRONE_FALLOFF) * BOSS_DRONE_LEVEL,
       now,
       0.4,
     );
-    this.drone.pan.pan.setTargetAtTime(s.pan, now, 0.2);
+    rampTo(this.drone.pan.pan, s.pan, now, 0.2);
   }
 
   /** S9: the belly hangar's door klaxon — a two-tone horn, three blasts. */

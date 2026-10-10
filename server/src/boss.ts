@@ -392,7 +392,7 @@ export class BossDirector {
       let target: BossPlane | null = null;
       for (const { p } of ranked) {
         if (!flakSolution(muzzle, up, p, () => 0)) continue;
-        if (!losClear(muzzle, p.pos, world.buildings)) continue;
+        if (!losClear(muzzle, p.pos, world.buildings, world.index)) continue;
         target = p;
         break;
       }

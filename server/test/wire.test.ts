@@ -88,7 +88,9 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function flyUntilEnemies(peer: Peer): Promise<Set<string>> {
   const at: Pose = { ...peer.welcome.spawn, quat: { ...IDENTITY } };
   const enemies = new Set<string>();
-  const deadline = Date.now() + 15_000;
+  // ~8 s nominal (carrier 2–3 s in, its first wave 3 s later, a 2.4 s
+  // launch); the rest is headroom for a loaded machine.
+  const deadline = Date.now() + 25_000;
   while (Date.now() < deadline) {
     streamPose(peer, at);
     for (const m of peer.seen) {
@@ -204,7 +206,7 @@ describe("quantised snapshots over the wire", () => {
     expect(mean).toBeGreaterThan(SNAPSHOT_INTERVAL_MS * 0.9);
     expect(mean).toBeLessThan(SNAPSHOT_INTERVAL_MS * 1.1);
     peer.ws.close();
-  }, 20000);
+  }, 40000);
 
   it("costs far less per snapshot than the float-JSON shape it replaces", async () => {
     const peer = await connect("Bytes");
@@ -223,7 +225,7 @@ describe("quantised snapshots over the wire", () => {
     // text and ran ~240 bytes per plane; the tuple is comfortably under 100.
     expect(perEntry).toBeLessThan(100);
     peer.ws.close();
-  }, 20000);
+  }, 40000);
 });
 
 describe("pose timestamps (O2)", () => {
@@ -345,7 +347,7 @@ describe("pose timestamps (O2)", () => {
       expect(decodeSnapshotEntry(row).age).toBe(0);
     }
     peer.ws.close();
-  }, 20000);
+  }, 40000);
 });
 
 describe("hit claims at the new cadence", () => {

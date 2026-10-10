@@ -1,6 +1,7 @@
 // S4 sky boss — the shared, pure half. The SERVER keeps an armoured war
-// zeppelin over a room whenever a human is in it (C2: the next raid comes a
-// minute or so after the last one ends or goes down) (server/src/boss.ts): it broadcasts one
+// zeppelin over a room whenever a human is flying in it (W1: the carrier of
+// the room's enemy waves; the next one comes NEXT_CARRIER_MS after the last
+// goes down) (server/src/boss.ts): it broadcasts one
 // raid (id, start time, orbit centre, entry angle), and from there the
 // zeppelin's pose is a pure function of (raid, synced clock) — the L2 movers'
 // trick — so every client draws, collides with and shoots at the same hull at

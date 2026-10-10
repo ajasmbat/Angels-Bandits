@@ -173,7 +173,8 @@ function shootDown(sim: Sim, id: string): void {
 /** One server tick, in index.ts's order: the carrier then its waves, the
  * respawn pass, then the pilots. */
 function step(sim: Sim): void {
-  const now = (sim.now += DT);
+  sim.now += DT;
+  const now = sim.now;
   const out = sim.boss.tick(now, true, sim.humans, sim.world);
   if (out.started) sim.raids.push(out.started);
   sim.waves.tick(now, true, sim.humans);

@@ -2916,8 +2916,9 @@ declare global {
       tunnels: () => { length: number }[];
       /** O7: the NaN/Inf probe's last frame (null without `?nanprobe`). */
       nanProbe: () => NanProbeReading | null;
-      /** O7: queue the probe's positive control (false without a probe). */
-      nanInject: () => boolean;
+      /** O7: queue the probe's positive control; the NaN pixels it must
+       * count (null without a probe). */
+      nanInject: () => number | null;
       /** O7: a function run once per frame right after it is drawn. */
       qaAfterRender: (fn: (() => void) | null) => void;
       /** QA-only: pin the reaction clock to a server time (null = live). */
@@ -3758,11 +3759,7 @@ window.__ab = {
   // O7: the NaN/Inf probe (null without `?nanprobe`), its positive control,
   // and the per-frame hook the black-box detector reads frames through.
   nanProbe: () => nanProbe?.read(renderer) ?? null,
-  nanInject: () => {
-    if (!nanProbe) return false;
-    nanProbe.inject();
-    return true;
-  },
+  nanInject: () => nanProbe?.inject(renderer.getPixelRatio()) ?? null,
   qaAfterRender: (fn) => {
     qaAfterRender = fn;
   },

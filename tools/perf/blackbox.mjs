@@ -32,7 +32,7 @@
 // Positive control (every profile × sky, first): `__ab.nanInject()` writes a
 // 48×48 HDR-0.5 patch (bright, but under the bloom threshold) for 7 frames
 // with a 16×16 NaN core on the middle one.
-// The probe must count exactly 256 NaN pixels there AND the detector must
+// The probe must count exactly 256 × ratio² NaN pixels there AND the detector must
 // flag a box on that frame, or the run fails: a detector that is blind
 // reports 0 boxes too. The control's frame is never counted as a finding.
 //
@@ -688,7 +688,7 @@ async function positiveControl(page) {
     await page.evaluate((i) => window.__bb.at(i, true), i);
     await step(page);
   }
-  await page.evaluate(() => window.__ab.nanInject());
+  const expected = await page.evaluate(() => window.__ab.nanInject());
   for (let i = 10; i < 24; i++) {
     await page.evaluate((i) => window.__bb.at(i, true), i);
     await step(page);
@@ -700,14 +700,15 @@ async function positiveControl(page) {
   await page.evaluate(() => {
     window.__bb.path = null;
   });
-  const core = r.hits.find((h) => h.nan >= 256);
+  const core = r.hits.find((h) => h.nan >= expected);
   const coreFrame = core?.frame ?? null;
   const boxed =
     coreFrame !== null &&
     r.boxes.some((b) => Math.abs(b.frame - coreFrame) <= 1);
   return {
-    ok: core !== undefined && core.nan === 256 && boxed,
+    ok: core !== undefined && core.nan === expected && boxed,
     nan: core?.nan ?? 0,
+    expected,
     frame: coreFrame,
     boxed,
     boxes: r.boxes,
@@ -785,7 +786,7 @@ async function flyProfile(browser, port, name, opts, resolvePaths) {
     for (const sky of opts.skies) {
       const control = await positiveControl(page);
       console.log(
-        `  ${name}/${sky} control: probe ${control.nan}/256 NaN, box ${control.boxed ? "flagged" : "MISSED"} → ${control.ok ? "ok" : "FAIL"}`,
+        `  ${name}/${sky} control: probe ${control.nan}/${control.expected} NaN, box ${control.boxed ? "flagged" : "MISSED"} → ${control.ok ? "ok" : "FAIL"}`,
       );
       const rows = [];
       for (const path of paths) {

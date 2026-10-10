@@ -21,8 +21,10 @@
 //
 // `inject()` is the detector's positive control: a 48×48 patch of HDR
 // INJECT_LEVEL held for INJECT_FRAMES frames, with a 16×16 NaN core written
-// on the middle one. The probe must count exactly INJECT_CORE² NaN pixels on that frame,
-// and the detector (tools/perf/blackbox.mjs) must flag a box there.
+// on the middle one (edges × the pixel ratio, so it covers the same CSS
+// pixels at any ratio). The probe must count exactly (INJECT_CORE × ratio)²
+// NaN pixels on that frame, and the detector (tools/perf/blackbox.mjs)
+// must flag a box there.
 
 import * as THREE from "three";
 import {
@@ -145,6 +147,7 @@ void main() {
   private frames = 0;
   /** Frames of the positive control still to draw (0: none queued). */
   private injectLeft = 0;
+  private injectScale = 1;
   private pixels = new Uint8Array(4);
 
   constructor(private readonly paint: boolean) {
@@ -152,9 +155,15 @@ void main() {
     this.needsSwap = paint;
   }
 
-  /** Queue the positive control (see the header). */
-  inject(): void {
+  /**
+   * Queue the positive control (see the header), its edges × `scale` — the
+   * pixel ratio, so it covers the same CSS pixels (the detector's cells) at
+   * any ratio. Returns the NaN pixels the probe must count on its frame.
+   */
+  inject(scale = 1): number {
+    this.injectScale = Math.max(1, Math.round(scale));
     this.injectLeft = INJECT_FRAMES;
+    return (INJECT_CORE * this.injectScale) ** 2;
   }
 
   /** `width`/`height` are DRAWING-BUFFER pixels (EffectComposer's). */
@@ -197,9 +206,12 @@ void main() {
       this.injectQuad.render(renderer);
       target.scissorTest = false;
     };
-    square(INJECT_PATCH, 0, INJECT_LEVEL);
+    const s = this.injectScale;
+    square(INJECT_PATCH * s, 0, INJECT_LEVEL);
     // 0x7fc00000: a quiet NaN (exactly representable as a float uniform).
-    if (k === Math.floor(INJECT_FRAMES / 2)) square(INJECT_CORE, 0x7fc00000, 0);
+    if (k === Math.floor(INJECT_FRAMES / 2)) {
+      square(INJECT_CORE * s, 0x7fc00000, 0);
+    }
   }
 
   /** Read the last frame's mask back (synchronous; QA only). */

@@ -33,6 +33,7 @@ import {
   aaFlakDamage,
   aaGun,
   aaLevel,
+  aaManned,
   aaSightFrom,
   aimError,
   aimOf,
@@ -42,11 +43,7 @@ import {
   leadOf,
   slewGun,
 } from "@angels-bandits/common/aa";
-import {
-  type Building,
-  generatedRoof,
-  mulberry32,
-} from "@angels-bandits/common/city";
+import { type Building, mulberry32 } from "@angels-bandits/common/city";
 import type { PropState } from "@angels-bandits/common/city/props";
 import { losClear } from "@angels-bandits/common/collision";
 import type { Intensity } from "@angels-bandits/common/waves";
@@ -176,18 +173,9 @@ export class RoomAa {
     }));
   }
 
-  /** Is nest `n` manned: its prop up and its structure still on the roof? */
+  /** Is nest `n` manned (common/src/aa.ts aaManned)? */
   manned(n: AaNest, world: AaWorld): boolean {
-    if (world.props.isDown(n.id)) return false;
-    const b = world.buildings[n.b];
-    if (!b) return false;
-    const roof = b.roof;
-    if (roof === generatedRoof(b)) return roof !== undefined;
-    // D8: a damaged roof keeps only the structures whose deck stands.
-    const layout = world.props.bound;
-    const k = layout?.props[n.id]?.ref ?? -1;
-    const s = (generatedRoof(b) ?? [])[k];
-    return s !== undefined && (roof?.includes(s) ?? false);
+    return aaManned(n, world.buildings, world.props);
   }
 
   /**
@@ -365,7 +353,12 @@ export class RoomAa {
 
   /** Is `pos` in sight of nest `n` (its own sandbags never block it)? */
   private inSight(n: AaNest, pos: Vec3, world: AaWorld): boolean {
-    return losClear(aaSightFrom(n, this.sight), pos, world.buildings, world.gaps);
+    return losClear(
+      aaSightFrom(n, this.sight),
+      pos,
+      world.buildings,
+      world.gaps,
+    );
   }
 
   /** Land every burst due by `now`: a light one on its (still living, still
@@ -428,15 +421,22 @@ export class RoomAa {
         const d = wrapDelta(e.pos, aaSightFrom(n, this.sight));
         const dist = Math.hypot(d.x, d.y, d.z);
         if (dist > bestD || dist < 20) continue;
-        const cos = (d.x * e.vel.x + d.y * e.vel.y + d.z * e.vel.z) /
-          (dist * speed);
+        const cos =
+          (d.x * e.vel.x + d.y * e.vel.y + d.z * e.vel.z) / (dist * speed);
         if (cos < Math.cos(STRAFE_CONE)) continue;
         if (!this.manned(n, world)) continue;
         best = n;
         bestD = dist;
       }
       if (!best) continue;
-      if (!losClear(e.pos, aaSightFrom(best, this.sight), world.buildings, world.gaps)) {
+      if (
+        !losClear(
+          e.pos,
+          aaSightFrom(best, this.sight),
+          world.buildings,
+          world.gaps,
+        )
+      ) {
         continue;
       }
       this.strafeAt.set(e.id, now + STRAFE_INTERVAL_MS);

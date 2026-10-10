@@ -20,12 +20,14 @@
 //
 // Not re-exported from common/src/index.ts; import "@angels-bandits/common/aa".
 
-import { PROP_NEST, type PropLayout } from "./city/props";
+import type { Building } from "./city/index";
+import { PROP_NEST, type PropLayout, type PropState } from "./city/props";
 import {
   AA_FLAK_HEIGHT,
   AA_FLAK_RADIUS,
   AA_NEST_HEIGHT,
 } from "./city/roof-structures";
+import { generatedRoof } from "./city/standing";
 import { WORLD_SIZE } from "./constants";
 import type { Intensity } from "./waves";
 import { type Vec3, wrapCoord, wrapDelta } from "./world/index";
@@ -81,6 +83,25 @@ export function aaNestsOf(layout: PropLayout): AaNest[] {
     });
   }
   return out;
+}
+
+/**
+ * Is nest `n` manned: its prop standing, and its roof structure still in
+ * its building's live `b.roof` (D8: a deck that went takes the nest with
+ * it)? Server guns and client guns ask exactly this.
+ */
+export function aaManned(
+  n: AaNest,
+  buildings: readonly Building[],
+  props: PropState,
+): boolean {
+  if (props.isDown(n.id)) return false;
+  const b = buildings[n.b];
+  if (!b) return false;
+  const gen = generatedRoof(b);
+  if (b.roof === gen) return gen !== undefined;
+  const s = gen?.[props.bound?.props[n.id]?.ref ?? -1];
+  return s !== undefined && (b.roof?.includes(s) ?? false);
 }
 
 /** Where a nest's sight lines start (just over its own collider). */

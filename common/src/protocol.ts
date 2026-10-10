@@ -237,8 +237,8 @@ export interface ScoreEntry {
   deaths: number;
   /** S7: the pilot's current kill streak — the one source of truth for the
    * scoreboard glow and the streak smoke. Omitted while 0. */
-  streak?: number;  /** W3: AA-nest kills of planes this pilot had damaged first. Omitted
-   * while 0. */
+  streak?: number /** W3: AA-nest kills of planes this pilot had damaged first. Omitted
+   * while 0. */;
   assists?: number;
 }
 

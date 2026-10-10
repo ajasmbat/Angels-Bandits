@@ -8,11 +8,7 @@
 
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import {
-  AA_ID,
-  aaNestsOf,
-  encodeAaBurst,
-} from "@angels-bandits/common/aa";
+import { AA_ID, aaNestsOf, encodeAaBurst } from "@angels-bandits/common/aa";
 import {
   type Boost,
   boostLevel,
@@ -46,12 +42,12 @@ import {
   withNewsHeli,
 } from "@angels-bandits/common/city/movers";
 import { natureFor } from "@angels-bandits/common/city/nature";
-import { PROP_NEST } from "@angels-bandits/common/city/props";
 import {
   canRetarget,
   retargetNewsHeli,
   setNewsTarget,
 } from "@angels-bandits/common/city/newsheli";
+import { PROP_NEST } from "@angels-bandits/common/city/props";
 import {
   type CityIndex,
   type NatureIndex,
@@ -122,6 +118,7 @@ import {
 } from "@angels-bandits/common/world";
 import type { WreckParams, WreckWorld } from "@angels-bandits/common/wreck";
 import { type WebSocket, WebSocketServer } from "ws";
+import { type AaEnemy, RoomAa, STRAFE_DAMAGE } from "./aa";
 import {
   BossDirector,
   type BossPlane,
@@ -129,7 +126,6 @@ import {
   applyBossImpact,
   claimBossHit,
 } from "./boss";
-import { type AaEnemy, RoomAa, STRAFE_DAMAGE } from "./aa";
 import { RoomBots, applyBotFire, landBotRound, poseVelocity } from "./bots";
 import { CAVEIN_FAST, CAVEIN_TUNING, CaveInDirector } from "./caveins";
 import {
@@ -173,11 +169,7 @@ import {
   isResumeToken,
   isVec3,
 } from "./guards";
-import {
-  type RespawnEnemy,
-  pickRespawn,
-  respawnIfUnsafe,
-} from "./respawn";
+import { type RespawnEnemy, pickRespawn, respawnIfUnsafe } from "./respawn";
 import { type Room, RoomManager } from "./room";
 import { createStaticHandler } from "./statics";
 import { StormCeiling } from "./storm";

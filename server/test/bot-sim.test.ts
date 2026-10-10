@@ -120,7 +120,7 @@ import {
   inDangerZone,
 } from "@angels-bandits/common/director";
 import { flakHazard, missileHazard } from "@angels-bandits/common/hazards";
-import type { SpawnState } from "@angels-bandits/common/protocol";
+import type { RosterEntry, SpawnState } from "@angels-bandits/common/protocol";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
 import {
@@ -165,6 +165,16 @@ import {
   applyMissileImpact,
 } from "../src/strikes";
 import { RoomWrecks, applyWreckImpact, impactPos } from "../src/wrecks";
+
+/** Spawn `n` bots, each where `pick` says (W1 removed RoomBots.syncTo's
+ * backfill: the room spawns its enemies one carrier launch at a time). */
+const spawnBots = (
+  bots: RoomBots,
+  n: number,
+  pick: () => SpawnState,
+): { spawned: RosterEntry[] } => ({
+  spawned: Array.from({ length: n }, () => bots.spawn(pick())),
+});
 
 const ROOMS = Number(process.env.BOT_SIM_ROOMS ?? 18);
 /** Two disjoint seed sets. Tuning happens on `tune` (BOT_SIM_SET=tune); the
@@ -462,7 +472,7 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         if (spawn.pos.y < RESPAWN_ALTITUDE) streetSpawns++;
         return spawn;
       };
-      const roster = bots.syncTo(BOTS, () => pick([], 0)).spawned;
+      const roster = spawnBots(bots, BOTS, () => pick([], 0)).spawned;
       const inZone = new Set<string>();
       /** D3 director stand-in: shoot out floor band 1 of the standing tower
        * nearest the first living bot (nobody to credit). */

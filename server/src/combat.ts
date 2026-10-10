@@ -85,7 +85,9 @@ export interface Death {
     | "blast"
     | "flak"
     | "meteor"
-    | "bomb";
+    | "bomb"
+    // W1: an enemy plane that went down with its carrier.
+    | "carrier";
 }
 /** S4: a fired round claimed by something other than a plane hit (the sky
  * boss): the bullet existed and came from where the shooter is on record. */
@@ -147,6 +149,26 @@ export class Combat {
       respawnAt: Number.POSITIVE_INFINITY,
       regenAt: now,
     });
+  }
+
+  /** W1 Carrier War: register an enemy plane still on its carrier's rig —
+   * dead to everything (no pose, no hits, no regen) until `respawnAt`, its
+   * launch's release, when the respawn pass flies it off. No death counted. */
+  addAwaiting(id: string, respawnAt: number): void {
+    this.addPlayer(id, respawnAt);
+    const p = this.players.get(id) as PlayerCombat;
+    p.alive = false;
+    p.hp = 0;
+    p.respawnAt = respawnAt;
+  }
+
+  /** W1: an enemy plane goes down with its carrier — whatever its spawn
+   * protection, and credited to nobody (no kill, no medal). Null when it
+   * is not alive. */
+  scuttle(id: string, now: number): Death | null {
+    const p = this.players.get(id);
+    if (!p || !p.alive) return null;
+    return this.kill(id, p, null, "carrier", now);
   }
 
   /** Restart a living player's spawn protection from `now` (W1: a joiner's

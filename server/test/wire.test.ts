@@ -14,7 +14,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
-  BOT_TARGET_DEFAULT,
   BULLET_DAMAGE,
   BULLET_RANGE,
   INTERP_FLOOR_MS,
@@ -83,11 +82,42 @@ const streamPose = (peer: Peer, pose: Pose): void => {
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** W1: there are no backfill bots — enemy planes come off the carrier once
+ * a human is flying. Hold `peer` at its spawn (streaming, so it is in the
+ * air) until an enemy's row is in its snapshots; the enemies' ids. */
+async function flyUntilEnemies(peer: Peer): Promise<Set<string>> {
+  const at: Pose = { ...peer.welcome.spawn, quat: { ...IDENTITY } };
+  const enemies = new Set<string>();
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    streamPose(peer, at);
+    for (const m of peer.seen) {
+      if (m.type === "playerJoined" && m.player.isBot) {
+        enemies.add(m.player.id);
+      }
+    }
+    const last = peer.snapshots[peer.snapshots.length - 1];
+    if (last?.msg.p.some((e) => enemies.has(e[0]))) return enemies;
+    await wait(1000 / 20);
+  }
+  throw new Error("no enemy ever reached the snapshots");
+}
+
+/** Keep `peer` streaming its spawn pose (in the air) every 50 ms until
+ * the returned stop is called. */
+function keepFlying(peer: Peer): () => void {
+  const at: Pose = { ...peer.welcome.spawn, quat: { ...IDENTITY } };
+  const timer = setInterval(() => streamPose(peer, at), 1000 / 20);
+  return () => clearInterval(timer);
+}
+
 beforeAll(async () => {
   // node itself (tsx as a loader), not `npx tsx`: kill() in afterAll must
   // reach the server, or it outlives the test and keeps flying its bots.
   child = spawn(process.execPath, ["--import", "tsx", entry], {
-    env: { ...process.env, PORT: "0", AB_DEBUG_ROOMS: "" },
+    // W1: the QA carrier (AB_BOSS_FAST) so enemy planes are up within
+    // seconds of a pilot flying.
+    env: { ...process.env, PORT: "0", AB_DEBUG_ROOMS: "", AB_BOSS_FAST: "1" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   url = await new Promise<string>((resolve, reject) => {
@@ -157,11 +187,13 @@ describe("quantised snapshots over the wire", () => {
 
   it("delivers the cadence it promises — the tick does not drift under the bot sim", async () => {
     const peer = await connect("Cadence");
-    // The standing room already flies BOT_TARGET_DEFAULT bots, so the tick is
-    // doing real sim work while we time it.
-    expect(peer.welcome.botTarget).toBe(BOT_TARGET_DEFAULT);
+    // The carrier's enemy planes are up, so the tick is doing real sim work
+    // while we time it.
+    await flyUntilEnemies(peer);
+    const stop = keepFlying(peer);
     peer.snapshots.length = 0;
     await wait(3000);
+    stop();
     const gaps = peer.snapshots
       .slice(1)
       .map((s, i) => s.at - (peer.snapshots[i]?.at ?? s.at));
@@ -176,9 +208,13 @@ describe("quantised snapshots over the wire", () => {
 
   it("costs far less per snapshot than the float-JSON shape it replaces", async () => {
     const peer = await connect("Bytes");
+    // Planes to measure: this pilot and the carrier's enemies.
+    await flyUntilEnemies(peer);
+    const stop = keepFlying(peer);
     peer.snapshots.length = 0;
     peer.snapshotBytes = 0;
     await wait(2000);
+    stop();
     expect(peer.snapshots.length).toBeGreaterThan(20);
     const perEntry =
       peer.snapshotBytes /
@@ -295,10 +331,10 @@ describe("pose timestamps (O2)", () => {
 
   it("leaves bot rows unaged — they keep the pre-O2 tuple length", async () => {
     const peer = await connect("BotRows");
+    const bots = await flyUntilEnemies(peer);
+    const stop = keepFlying(peer);
     await wait(SNAPSHOT_INTERVAL_MS * 4);
-    const bots = new Set(
-      peer.welcome.roster.filter((r) => r.isBot).map((r) => r.id),
-    );
+    stop();
     expect(bots.size).toBeGreaterThan(0);
     const rows = peer.snapshots.flatMap(({ msg }) =>
       msg.p.filter((e) => bots.has(e[0])),
@@ -424,7 +460,7 @@ describe("malformed messages (S1)", () => {
       { type: "hit", targetId: "x", seq: 1, bulletOrigin: null },
       { type: "boost", on: "yes" },
       { type: "fire", seq: "1" },
-      { type: "setBots", count: null },
+      { type: "setIntensity", level: null },
       { type: "join", name: { evil: true } },
     ];
     for (const msg of bad) peer.ws.send(JSON.stringify(msg));

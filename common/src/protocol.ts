@@ -19,6 +19,7 @@ import type { CityEvent } from "./cityevents";
 import type { RebuildWire, WireDirectorEvent } from "./director";
 import type { MedalKind, StreakTier } from "./medals";
 import type { WireMissile } from "./strike";
+import type { WireWaves } from "./waves";
 import type { Vec3 } from "./world/index";
 import type { WreckParams } from "./wreck";
 
@@ -51,7 +52,8 @@ export interface SpawnState {
 export interface RosterEntry {
   id: string;
   name: string;
-  /** Set (true) only on server-flown backfill bots — drives client styling. */
+  /** Set (true) only on server-flown planes (W1: the carrier's enemies) —
+   * drives client styling. */
   isBot?: boolean;
 }
 
@@ -86,6 +88,8 @@ export interface LabMsg {
   type: "lab";
   tuning?: unknown;
   chaos?: boolean;
+  /** W1: the carrier and its enemy waves (off by default). */
+  waves?: boolean;
 }
 
 /** Streamed at TICK_UP_HZ once joined. */
@@ -160,14 +164,15 @@ export interface CrashMsg {
 }
 
 /**
- * A claim on the room's shared bot count (ANGE-6STDNN) — anyone may send it,
- * any time. `count` is ABSOLUTE (0–BOT_TARGET_MAX), not a delta. The server
- * clamps, rate-limits, and answers with botsConfig; a claim it drops is
- * simply never echoed, so the sender's slider snaps back.
+ * W1: a claim on the room's shared enemy intensity (ANGE-6STDNN's slider,
+ * now Easy / Normal / Hard / Insane = 0–3, common/src/waves.ts) — anyone may
+ * send it, any time. The server clamps, rate-limits, and answers with
+ * intensityConfig; a claim it drops is simply never echoed, so the sender's
+ * control snaps back. It shapes the room's waves from the next one on.
  */
-export interface SetBotsMsg {
-  type: "setBots";
-  count: number;
+export interface SetIntensityMsg {
+  type: "setIntensity";
+  level: number;
 }
 
 /**
@@ -218,7 +223,7 @@ export type ClientMsg =
   | BoostMsg
   | HitClaimMsg
   | CrashMsg
-  | SetBotsMsg
+  | SetIntensityMsg
   | LabMsg;
 
 // --- Server → client ---
@@ -246,9 +251,12 @@ export interface WelcomeMsg {
   roster: RosterEntry[];
   /** Current scoreboard, so a late joiner doesn't start from a blank board. */
   scores: ScoreEntry[];
-  /** The room's shared bot count, so a late joiner's slider starts in the
-   * right place instead of guessing the default. */
-  botTarget: number;
+  /** W1: the room's shared enemy intensity (0–3), so a late joiner's
+   * control starts in the right place instead of guessing the default. */
+  intensity: number;
+  /** W1: the room's carrier war — the wave on or coming and the enemies
+   * left (common/src/waves.ts). */
+  waves: WireWaves;
   /** L1: the room's city events from the last SMOKE_LIFE_MS, oldest first, so
    * a joiner sees the same smoke, alarms and responders as everyone else. */
   cityEvents: CityEvent[];
@@ -486,7 +494,9 @@ export interface DeathMsg {
     | "blast"
     | "flak"
     | "meteor"
-    | "bomb";
+    | "bomb"
+    // W1: an enemy plane that went down with its carrier (no killer).
+    | "carrier";
   /** S1: the server's kill site — the victim's on-record position,
    * canonical and rounded to whole meters — so every client's jumbotron
    * headline names the same place. Absent when the server had no pose. */
@@ -518,16 +528,26 @@ export interface ScoreMsg {
 }
 
 /**
- * The room's bot count changed (ANGE-6STDNN). Broadcast to EVERYONE including
+ * W1: the room's enemy intensity changed. Broadcast to EVERYONE including
  * the setter — the server is the only authority on the applied value, so
- * every slider renders this and never its own optimistic guess. `byName` is
- * for the comms ticker's attribution line and is free text: render it as
- * textContent, and never hand it to the radio voice.
+ * every control renders this and never its own optimistic guess. `byName`
+ * is for the attribution line and is free text: render it as textContent,
+ * and never hand it to the radio voice.
  */
-export interface BotsConfigMsg {
-  type: "botsConfig";
-  count: number;
+export interface IntensityConfigMsg {
+  type: "intensityConfig";
+  level: number;
   byName: string;
+}
+
+/**
+ * W1: the room's carrier war moved on — a wave's banner (WAVE_BREATHER), a
+ * wave launching and fighting (WAVE_LIVE, with its enemies left), or no
+ * wave (WAVE_IDLE). Sent only when it changes.
+ */
+export interface WavesMsg {
+  type: "waves";
+  w: WireWaves;
 }
 
 /**
@@ -726,7 +746,8 @@ export type ServerMsg =
   | CourseBoardMsg
   | AwayStartedMsg
   | NewsHeliMsg
-  | BotsConfigMsg
+  | IntensityConfigMsg
+  | WavesMsg
   | PlayerJoinedMsg
   | PlayerLeftMsg
   | WireSnapshotMsg

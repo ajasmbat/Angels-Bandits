@@ -114,6 +114,7 @@ import {
   type WeatherPhase,
   phaseWindow,
 } from "@angels-bandits/common/weather";
+import type { WaveState } from "@angels-bandits/common/waves";
 import {
   type Vec3,
   wrapCoord,
@@ -242,6 +243,14 @@ import {
   instructorInput,
 } from "./game/instructor";
 import { speedFov } from "./game/jet-camera";
+import {
+  EASY_KEY,
+  easyActive,
+  loadEasy,
+  noteCleared,
+  saveEasy,
+  waveCleared,
+} from "./game/easy-mode";
 import { magnetizeVelocity } from "./game/magnetism";
 import {
   MissileFeed,
@@ -458,7 +467,7 @@ import { WeatherClock, setWeatherUniform } from "./render/weather";
 import { buildingSeed, isWindowLit } from "./render/window-pattern";
 import { nearestImage, nearestImageInto } from "./render/wrapPlacement";
 import { Wrecks } from "./render/wrecks";
-import { Coach, renderPrimer } from "./ui/coach";
+import { COACH_DONE_KEY, Coach, renderPrimer } from "./ui/coach";
 import { CommsTicker } from "./ui/comms";
 import { CourseBoard } from "./ui/course-board";
 import { DamageIndicator } from "./ui/damage-indicator";
@@ -526,6 +535,17 @@ whenTouch(() => renderPrimer(true));
 // so and links back; the ordinary card links into it.
 const LAB_URL = new URLSearchParams(window.location.search).has("lab");
 initLabLink(LAB_URL);
+
+// W4 Easy mode (game/easy-mode.ts): decided once and kept — read BEFORE
+// the join card remembers a callsign, which is half of how a pilot who has
+// played before is told from a first-timer. Never in the Flight Lab.
+let easyState = loadEasy(
+  readStored(EASY_KEY),
+  readStored("ab:name") !== null || readStored(COACH_DONE_KEY) === "1",
+);
+writeStored(EASY_KEY, saveEasy(easyState));
+const easyOn = (): boolean => !LAB_URL && easyActive(easyState);
+GameSocket.easy = easyOn;
 
 // --- Join flow: name → server welcome (identity, seed, spawn) ---
 const name = await requestName(phoneFullscreen.onJoinGesture);
@@ -2474,7 +2494,12 @@ socket.events.onAwayStarted = () => {
  * news heli belong to the room, so they are re-seeded only if it changed.
  */
 let currentRoomId = welcome.roomId;
+/** W4: the room's wave as last seen in play (Easy mode's clear counter);
+ * null right after a join or resume, or while hidden — nothing counts
+ * until a second look. */
+let wavesSeen: WaveState | null = null;
 function applyResume(w: WelcomeMsg): void {
+  wavesSeen = null;
   const here = new Set(w.roster.map((r) => r.id));
   for (const id of [...players.keys()]) {
     if (id === socket.selfId || here.has(id)) continue;
@@ -5638,6 +5663,23 @@ const frame = (now: number): void => {
   hud.setBoss(bossUp ? socket.bossHp : null, bossMax, now);
   // W1: the carrier war — its tier, the wave, the enemies left, the banner.
   hud.setWaves(socket.waves, now);
+  // W4: Easy mode counts the waves this pilot SEES cleared — never across
+  // a hidden tab, a join or a resume (wavesSeen restarts), nor in the lab.
+  if (
+    wavesSeen !== null &&
+    !labMode &&
+    waveCleared(wavesSeen, socket.waves, socket.boss.down !== null)
+  ) {
+    const was = easyOn();
+    easyState = noteCleared(easyState);
+    writeStored(EASY_KEY, saveEasy(easyState));
+    if (was && !easyOn()) {
+      socket.sendSetEasy(false);
+      hud.notice("EASY MODE OFF — YOU'VE GOT THIS");
+    }
+  }
+  wavesSeen = document.hidden ? null : socket.waves;
+  hud.setEasy(easyOn());
   if (
     bossRaid &&
     renderMs !== null &&

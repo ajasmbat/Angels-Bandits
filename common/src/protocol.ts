@@ -76,6 +76,13 @@ export interface JoinMsg {
    * resumes (any `resume` is ignored) and never shares a room.
    */
   lab?: boolean;
+  /**
+   * W4: this pilot flies in Easy mode (a first-timer's default until three
+   * waves are cleared, or their own pick). The room's enemies treat an Easy
+   * pilot as the most novice skill level and let more of their shots go.
+   * Read at send time, so a resume carries the current value.
+   */
+  easy?: boolean;
 }
 
 /**
@@ -176,6 +183,12 @@ export interface SetIntensityMsg {
   level: number;
 }
 
+/** W4: Easy mode switched on or off (graduation, or the settings toggle). */
+export interface SetEasyMsg {
+  type: "setEasy";
+  on: boolean;
+}
+
 /**
  * Keepalive (W1): sent while the client boots (city build, shader pre-warm)
  * and nothing else is flowing yet. It only refreshes the server's liveness
@@ -225,6 +238,7 @@ export type ClientMsg =
   | HitClaimMsg
   | CrashMsg
   | SetIntensityMsg
+  | SetEasyMsg
   | LabMsg;
 
 // --- Server → client ---

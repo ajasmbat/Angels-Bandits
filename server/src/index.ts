@@ -251,6 +251,8 @@ interface Client {
   name: string;
   ws: WebSocket;
   room: Room;
+  /** W4: flying in Easy mode (the join's flag, then setEasy). */
+  easy?: boolean;
   /** Last accepted pose — what snapshots broadcast. */
   pose: Pose;
   /** When `pose` was taken, server clock ms (O2): the client's own stamp,
@@ -1493,6 +1495,13 @@ function bossDowned(room: Room, down: BossDown, now: number): void {
  * claimant's control snaps back to the last value the server confirmed.
  * The waves read it from their next wave on.
  */
+/** W4: a pilot's Easy mode, kept on the client and handed to its room's
+ * enemies (B3's skill scaler treats an Easy pilot as the most novice). */
+function setEasy(client: Client, on: boolean): void {
+  client.easy = on;
+  botsFor(client.room).skill.setEasy(client.id, on);
+}
+
 function handleSetIntensity(client: Client, level: unknown, now: number): void {
   const accepted = client.room.setIntensity(client.id, level, now);
   if (accepted === null) return;
@@ -2283,6 +2292,9 @@ wss.on("connection", (ws) => {
         resumed && { record: resumed.record, token: msg.resume as string },
         lab,
       );
+      // W4: a fresh join, a resume (maybe into another room) — either way
+      // the room's enemies learn the pilot's Easy mode from the join.
+      if (client) setEasy(client, msg.easy === true);
       return;
     }
     if (!client) return;
@@ -2305,6 +2317,8 @@ wss.on("connection", (ws) => {
       // claims, crashes and boost edges don't exist until it returns.
       if (msg.type === "setIntensity") {
         handleSetIntensity(client, msg.level, now);
+      } else if (msg.type === "setEasy" && typeof msg.on === "boolean") {
+        setEasy(client, msg.on);
       }
     } else if (msg.type === "pose") {
       if (!isPose(msg.pose)) return;
@@ -2324,6 +2338,8 @@ wss.on("connection", (ws) => {
       handleCrash(client, msg.t, msg.wreck, now);
     } else if (msg.type === "setIntensity") {
       handleSetIntensity(client, msg.level, now);
+    } else if (msg.type === "setEasy") {
+      if (typeof msg.on === "boolean") setEasy(client, msg.on);
     } else if (msg.type === "lab") {
       // FL1: ignored outside a lab room (applyLab refuses); newest wins.
       client.room.applyLab({

@@ -816,6 +816,9 @@ const NEUTRAL_GRADE: WaveGrade = { jitter: 1, reaction: 1, fire: 1 };
 /** W1: the aim-jitter multiplier never leaves this band, whatever style ×
  * skill × grade multiply to. */
 const JITTER_SCALE_MIN = 0.5;
+/** W4: the share of lined-up shots an enemy still takes at a pilot in
+ * Easy mode (on top of its wave's trigger discipline). */
+const EASY_FIRE_SCALE = 0.5;
 const JITTER_SCALE_MAX = 3;
 
 /** B3 telemetry (the bot sim's report): what the tactics actually flew. */
@@ -3596,8 +3599,13 @@ export class RoomBots {
     const fwd = flightForward(bot.flight);
     const along = (lx * fwd.x + ly * fwd.y + lz * fwd.z) / lead;
     if (along < Math.cos(BOT_FIRE_CONE)) return null;
-    // W1: an early wave's trigger discipline lets some lined-up shots go.
-    if (bot.grade.fire < 1 && bot.fireRand() >= bot.grade.fire) return null;
+    // W1: an early wave's trigger discipline lets some lined-up shots go —
+    // W4: and half again of them at a pilot in Easy mode (their aim jitter
+    // already sits at its clamp, so this is what Easy mode really buys).
+    const fire =
+      bot.grade.fire *
+      (!target.boss && this.skill.isEasy(target.id) ? EASY_FIRE_SCALE : 1);
+    if (fire < 1 && bot.fireRand() >= fire) return null;
     return {
       botId: bot.entry.id,
       targetId: bot.targetId,

@@ -4,7 +4,7 @@
 // whatever the server said, never a client-side simulation of them.
 
 import { mulberry32 } from "@angels-bandits/common/city";
-import { KILL_CAM_MS, MAX_HP } from "@angels-bandits/common/constants";
+import { MAX_HP, RESPAWN_MS } from "@angels-bandits/common/constants";
 import { MEDAL_LABEL, type MedalKind } from "@angels-bandits/common/medals";
 import type { DeathMsg } from "@angels-bandits/common/protocol";
 import {
@@ -513,11 +513,12 @@ export class Hud {
   /** Kill-cam overlay: the deathLabel headline plus a respawn countdown.
    * Called again when the server's death message lands after a local crash:
    * the headline upgrades, but the countdown keeps the clock it started on
-   * (`now`, performance.now()) — the respawn comes KILL_CAM_MS after death. */
+   * (`now`, performance.now()) — the respawn comes RESPAWN_MS (W4) after
+   * death. */
   showKillCam(label: string, now: number): void {
     this.killcamCause.textContent = label;
     if (this.respawnAt === 0) {
-      this.respawnAt = now + KILL_CAM_MS;
+      this.respawnAt = now + RESPAWN_MS;
       this.countShown = -1;
       this.tickCountdown(now);
     }

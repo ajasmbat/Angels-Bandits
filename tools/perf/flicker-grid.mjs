@@ -121,6 +121,8 @@ export function gridViews(startMs) {
         view(v.name, eye, yaw, pitch, {
           sky: v.sky ?? "night",
           plane: planeFor(eye, yaw),
+          // DT1: planes posed for the view (__ab.planeShowcase).
+          ...(v.showcase ? { showcase: v.showcase } : {}),
         }),
       );
       continue;

@@ -11,7 +11,6 @@
 
 import {
   type GunHeat,
-  canFire,
   cooledGunHeat,
   createGunHeat,
   firedGunHeat,

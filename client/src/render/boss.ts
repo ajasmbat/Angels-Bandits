@@ -69,7 +69,6 @@ import {
 } from "@angels-bandits/common/constants";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
-import { biplaneSources } from "./biplane";
 import {
   BONE_CARRIAGE,
   BONE_COUNT,
@@ -100,6 +99,7 @@ import {
   crewRestX,
 } from "./boss-hull";
 import { emissiveBoost } from "./emissive";
+import { fighterGeometry } from "./fighter";
 import type { Impacts } from "./impacts";
 import { nearestImageInto } from "./wrapPlacement";
 
@@ -856,11 +856,11 @@ export class BossRenderer {
     this.group.visible = false;
   }
 
-  /** The launch planes: the bots' own airframe (biplane.ts), merged with its
-   * colours baked, turned nose +X. Null without a DOM. */
+  /** The launch planes: the enemies' own airframe (DT1, fighter.ts — its
+   * mid level), colours baked, turned nose +X. Null without a DOM. */
   private planeGeometry(): PlaneGeo | null {
     if (typeof document === "undefined") return null;
-    return planeGeoFromBiplane((top) => {
+    return planeGeoFromFighter((top) => {
       this.planeTop = top;
     });
   }
@@ -1471,46 +1471,53 @@ export class BossRenderer {
   }
 }
 
-/** The bots' airframe for the launch rigs: biplane.ts's static groups and
- * blades, colours baked, nose turned from +Z to +X, origin at the plane's
- * centre with its wheels DECK_PLANE_H (1.6 m) under it. `top` gets the
- * hook's height over the centre. */
-function planeGeoFromBiplane(top: (h: number) => void): PlaneGeo | null {
-  // Lazy: biplane.ts builds its shared geometry on first use (needs a DOM).
+/** DT1: the enemies' airframe for the launch rigs: fighter.ts's mid level
+ * (hinged parts and prop folded in at rest), nose turned from +Z to +X,
+ * origin at the plane's centre with its wheels DECK_PLANE_H (1.6 m) under
+ * it, split into one part per (quantised) baked colour — the hull's
+ * accumulator takes one colour a part. `top` gets the hook's height over
+ * the centre. */
+function planeGeoFromFighter(top: (h: number) => void): PlaneGeo | null {
   const parts: { geometry: THREE.BufferGeometry; color: number }[] = [];
   try {
-    const src = biplaneSourcesLazy();
-    if (!src) return null;
-    const turn = new THREE.Matrix4().makeRotationY(Math.PI / 2);
-    const box = new THREE.Box3();
-    const all: THREE.BufferGeometry[] = [];
-    for (const key of src.groupKeys) {
-      const g = src.shared.statics.get(key);
-      const mat = src.materials[key] as THREE.MeshStandardMaterial | undefined;
-      if (!g || !mat?.color) continue;
-      const c = g.clone().applyMatrix4(turn);
-      all.push(c);
-      parts.push({ geometry: c, color: mat.color.getHex() });
-    }
-    const blades = src.shared.blades
-      .clone()
-      .applyMatrix4(new THREE.Matrix4().makeTranslation(0, 0, src.propZ))
-      .applyMatrix4(turn);
-    all.push(blades);
-    parts.push({ geometry: blades, color: 0x222222 });
-    for (const g of all) {
-      g.computeBoundingBox();
-      if (g.boundingBox) box.union(g.boundingBox);
-    }
+    const src = fighterGeometry()
+      .mid.clone()
+      .applyMatrix4(new THREE.Matrix4().makeRotationY(Math.PI / 2));
+    src.computeBoundingBox();
+    const box = src.boundingBox ?? new THREE.Box3();
     const lift = -1.6 - box.min.y;
-    for (const g of all) g.translate(0, lift, 0);
+    src.translate(0, lift, 0);
     top(box.max.y + lift);
+    const pos = src.getAttribute("position") as THREE.BufferAttribute;
+    const nrm = src.getAttribute("normal") as THREE.BufferAttribute;
+    const col = src.getAttribute("color") as THREE.BufferAttribute;
+    const buckets = new Map<number, { p: number[]; n: number[] }>();
+    const c = new THREE.Color();
+    const q = (v: number) => Math.round(v * 24) / 24;
+    for (let t = 0; t < pos.count; t += 3) {
+      // A triangle takes its first vertex's colour, quantised (the camo's
+      // soft demarcation would otherwise make a part per triangle).
+      c.setRGB(q(col.getX(t)), q(col.getY(t)), q(col.getZ(t)));
+      const hex = c.getHex();
+      let b = buckets.get(hex);
+      if (!b) {
+        b = { p: [], n: [] };
+        buckets.set(hex, b);
+      }
+      for (let v = t; v < t + 3; v++) {
+        b.p.push(pos.getX(v), pos.getY(v), pos.getZ(v));
+        b.n.push(nrm.getX(v), nrm.getY(v), nrm.getZ(v));
+      }
+    }
+    src.dispose();
+    for (const [hex, b] of buckets) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.Float32BufferAttribute(b.p, 3));
+      g.setAttribute("normal", new THREE.Float32BufferAttribute(b.n, 3));
+      parts.push({ geometry: g, color: hex });
+    }
   } catch {
     return null;
   }
   return { parts };
-}
-
-function biplaneSourcesLazy(): ReturnType<typeof biplaneSources> | null {
-  return typeof document === "undefined" ? null : biplaneSources();
 }

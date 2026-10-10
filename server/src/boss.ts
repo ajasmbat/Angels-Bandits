@@ -175,13 +175,15 @@ export class BossDirector {
     this.spawns.set(id, now);
   }
 
-  /** A plane left the room: it neither draws flak nor keeps credit. */
+  /** A plane left the room: it draws no flak. Its damage credit stays for
+   * the raid (A2): a W2 drop is not a leave, and a pilot who resumes and
+   * finishes the boss is owed it — bossDowned only credits members still in
+   * the room, and every new raid starts the ledger over. */
   forget(id: string): void {
     this.launchByBot.delete(id);
     this.offered.delete(id);
     this.spawns.delete(id);
     this.taken.delete(id);
-    this.damageBy.delete(id);
     for (const t of this.turrets) if (t.targetId === id) t.targetId = null;
   }
 

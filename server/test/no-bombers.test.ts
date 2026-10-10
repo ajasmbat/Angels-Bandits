@@ -1,6 +1,7 @@
 // W1: the C2 bomber formations ("the jets") are gone — from the shared
 // model, the wire, the server, the client and its staging — while the
-// far-off airliner lights (L10, scenery) stay. A source scan, so a bomber
+// far-off airliner lights (L10, scenery) stay. DT1's name for the carrier's
+// own enemy aircraft, the "fighter-bomber", is not one of them. A source scan, so a bomber
 // that creeps back in anywhere fails here rather than in a playtest.
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -24,7 +25,8 @@ describe("no bombers anywhere (W1)", () => {
     for (const f of SOURCES.flatMap(files)) {
       const lines = readFileSync(join(ROOT, f), "utf8").split("\n");
       lines.forEach((line, i) => {
-        if (/bomber|bombsOff|BombsOff/i.test(line)) {
+        const text = line.replace(/fighter-bombers?/gi, "");
+        if (/bomber|bombsOff|BombsOff/i.test(text)) {
           hits.push(`${f}:${i + 1}: ${line.trim()}`);
         }
       });

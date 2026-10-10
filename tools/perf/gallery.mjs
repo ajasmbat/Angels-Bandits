@@ -298,6 +298,14 @@ try {
         }
       }, v);
     await pin();
+    if (v.showcase) {
+      // DT1: pose the planes for a turntable / damage / dogfight shot.
+      const n = await page.evaluate(
+        (list) => window.__ab.planeShowcase(list),
+        v.showcase,
+      );
+      console.log("showcase", v.name, n);
+    }
     // U6: stage the cave-in `ago` ms into its life at the view's pinned
     // world time — and again after every pin below: idempotent (it replaces
     // what it staged), and a software-GL frame of seconds can trip the
@@ -422,6 +430,19 @@ try {
         ),
     );
     await page.screenshot({ path: `${OUT}/${v.name}.png`, timeout: 180000 });
+    if (v.showcase) {
+      console.log(
+        "fleet",
+        v.name,
+        JSON.stringify(
+          await page.evaluate(() => ({
+            ...window.__ab.fleet(),
+            nan: window.__ab.nanProbe(),
+          })),
+        ),
+      );
+      await page.evaluate(() => window.__ab.planeShowcase(null));
+    }
     if (v.trainEye) {
       console.log(
         "train",

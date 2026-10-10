@@ -30,6 +30,24 @@
 //               baseline (forced GC), GPU programs growing after minute 5,
 //               geometries/textures beyond ±10 %, DOM nodes beyond ±5 %, or
 //               a stuck UI state (STUCK_S).
+//
+// A2 widened the soak to the whole room (each client its own browser, so one
+// rasteriser cannot starve the others):
+//  * --peers N  N more desktop clients (640×360) flying the same room, one
+//               of them running the scripted spectacle: tunnel glides, a
+//               staged cave-in, a staged carrier launch and break-up.
+//  * --phone    a touch phone-profile client (844×390, DPR 3) as well.
+//  * --lab      a Flight Lab visit (`?lab`) at minutes 10 and 20 (--lab-at); after,
+//               every per-room map in the server's /debug/rooms must have
+//               dropped the lab room.
+//  * --parity   at minutes 11 and 21 (--parity-at) a late joiner compares its destruction,
+//               collapses, boss, cave-ins and chaos with the first client's
+//               and the server's — a field that disagrees on every retry is
+//               a desync.
+// Every client is held to the same limits; the server too: it must stay up,
+// write nothing to stderr, keep its heap (forced GC) within +20 % of minute
+// 5, and its RSS trend (median step) under 1 MB/min over the last 15 min. The report has one verdict per client, the server, the
+// lab and parity, and PASSes only if all of them do.
 
 import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -63,6 +81,15 @@ const SERVE_REPO = resolve(opt("repo", REPO));
  * interleaved pair compares two builds fairly. */
 const REF_REPO = opt("ref", null) ? resolve(opt("ref")) : null;
 const OVERLAP = flag("overlap");
+const PEERS = Number(opt("peers", "0"));
+const SOAK_PHONE = flag("phone");
+const SOAK_LAB = flag("lab");
+const PARITY = flag("parity");
+/** The minutes the lab visits and parity checks happen (comma lists). */
+const minutesOpt = (name, fallback) =>
+  opt(name, fallback).split(",").map(Number);
+const LAB_AT = minutesOpt("lab-at", "10,20");
+const PARITY_AT = minutesOpt("parity-at", "11,21");
 mkdirSync(OUT, { recursive: true });
 
 const CHROME_ARGS = process.env.AB_CHROME_ARGS
@@ -73,6 +100,10 @@ CHROME_ARGS.push("--autoplay-policy=no-user-gesture-required");
 
 const DESKTOP = {
   viewport: { width: 1280, height: 720 },
+  deviceScaleFactor: 1,
+};
+const PEER = {
+  viewport: { width: 640, height: 360 },
   deviceScaleFactor: 1,
 };
 const DESKTOP_HD = {
@@ -119,11 +150,25 @@ function freePort() {
 
 const liveServers = [];
 let liveBrowser = null;
+/** A2: the soak's extra browsers, one per client. */
+const extraBrowsers = [];
 async function killEverything() {
-  const browser = liveBrowser;
+  const browsers = [liveBrowser, ...extraBrowsers.splice(0)];
   liveBrowser = null;
   for (const server of liveServers.splice(0)) server.kill();
-  if (browser !== null) await browser.close().catch(() => {});
+  for (const b of browsers) if (b !== null) await b.close().catch(() => {});
+}
+function launchBrowser() {
+  return chromium.launch({
+    args: [
+      ...CHROME_ARGS,
+      // A2: several pages share the box; none may be parked as background.
+      "--disable-renderer-backgrounding",
+      "--disable-background-timer-throttling",
+      "--disable-backgrounding-occluded-windows",
+    ],
+    ...(process.env.AB_CHROME ? { executablePath: process.env.AB_CHROME } : {}),
+  });
 }
 for (const sig of ["SIGINT", "SIGTERM"]) {
   process.on(sig, () => {
@@ -133,21 +178,32 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
 
 async function startServer(port, cwd = SERVE_REPO) {
   const log = [];
-  const proc = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
-    cwd,
-    env: {
-      ...process.env,
-      PORT: String(port),
-      // A software-rendered page can go seconds between frames: the
-      // production 4 s liveness bound would drop it and resume mid-soak.
-      LIVENESS_TIMEOUT_MS: "30000",
-      BOOT_TIMEOUT_MS: "180000",
+  /** A2: stderr on its own — the soak fails on any line of it. */
+  const errLog = [];
+  const proc = spawn(
+    "node",
+    ["--expose-gc", "--import", "tsx", "server/src/index.ts"],
+    {
+      cwd,
+      env: {
+        ...process.env,
+        PORT: String(port),
+        // A2: /debug/rooms — per-room maps, memory and damage for the soak.
+        AB_DEBUG_ROOMS: "1",
+        // A software-rendered page can go seconds between frames: the
+        // production 4 s liveness bound would drop it and resume mid-soak.
+        LIVENESS_TIMEOUT_MS: "30000",
+        BOOT_TIMEOUT_MS: "180000",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
     },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  );
   liveServers.push(proc);
   proc.stdout.on("data", (d) => log.push(String(d)));
-  proc.stderr.on("data", (d) => log.push(String(d)));
+  proc.stderr.on("data", (d) => {
+    log.push(String(d));
+    errLog.push(String(d));
+  });
   for (let i = 0; i < 120; i++) {
     if (proc.exitCode !== null)
       throw new Error(`server died:\n${log.join("")}`);
@@ -158,7 +214,7 @@ async function startServer(port, cwd = SERVE_REPO) {
         if (!page.ok) {
           throw new Error("no client/dist — run `npm run build -w client`");
         }
-        return { proc, log };
+        return { proc, log, errLog, port };
       }
     } catch (err) {
       if (String(err).includes("client/dist")) throw err;
@@ -230,7 +286,7 @@ async function openPage(browser, device) {
 }
 
 /** Load, wait for the join card, FLY, wait for the first game frame. */
-async function boot(page, url, { onCard, onLoading } = {}) {
+async function boot(page, url, { onCard, onLoading, name = "QA" } = {}) {
   await page.goto(url, { waitUntil: "commit" });
   await page.waitForSelector("#join.open #join-name:not([disabled])", {
     timeout: 120000,
@@ -240,7 +296,7 @@ async function boot(page, url, { onCard, onLoading } = {}) {
     if (p.joinReady === null) p.joinReady = performance.now();
   });
   if (onCard) await onCard();
-  await page.fill("#join-name", "QA");
+  await page.fill("#join-name", name);
   await page.press("#join-name", "Enter");
   if (onLoading) await onLoading();
   await page.waitForFunction(() => window.__polish.firstFrame !== null, null, {
@@ -303,15 +359,17 @@ async function runTtff(browser, url, refUrl) {
 }
 
 /** Settings open (Esc on desktop, the gear on touch), then closed. */
+// A2: a click waits for two animation frames of a stable box, and the DPR-3
+// phone on a software rasteriser can take seconds per frame under a shared
+// soak — 5 s timed out there with nothing wrong in the page.
+const UI_TIMEOUT_MS = 30000;
 async function openSettings(page, touch) {
-  if (touch) await page.click("#settings-btn", { timeout: 5000 });
+  if (touch) await page.click("#settings-btn", { timeout: UI_TIMEOUT_MS });
   else await page.keyboard.press("Escape");
   await page.waitForFunction(
     () => window.__ab?.settings().open === true,
     null,
-    {
-      timeout: 5000,
-    },
+    { timeout: UI_TIMEOUT_MS },
   );
 }
 async function closeSettings(page) {
@@ -319,9 +377,7 @@ async function closeSettings(page) {
   await page.waitForFunction(
     () => window.__ab?.settings().open === false,
     null,
-    {
-      timeout: 5000,
-    },
+    { timeout: UI_TIMEOUT_MS },
   );
 }
 
@@ -560,197 +616,556 @@ const SOAK_SAMPLE = () => {
     deaths: combat.scores.find((s) => s.id === ab.net().selfId)?.deaths ?? 0,
     dom: document.getElementsByTagName("*").length,
     ui: ab.qaUi ? ab.qaUi() : null,
+    fps: ab.perf ? Math.round(ab.perf().fps * 10) / 10 : null,
   };
 };
 
-async function runSoak(browser, url) {
-  const { context, page } = await openPage(browser, DESKTOP);
-  const cdp = await context.newCDPSession(page);
-  const errors = [];
-  const warnings = [];
-  const allowedWarnings = new Map();
+/** A2: what a client must agree with the room about (a late joiner against
+ * the long-lived client, both against the server). */
+const PARITY_SAMPLE = (serverNow) => {
+  const ab = window.__ab;
+  // Cave-ins are pruned once per FRAME, so a page drawing 0.1 fps holds
+  // settled ones for seconds: compare the ids still live at one server
+  // instant, leaving out any within 1.5 s of their end.
+  const held = ab.caveIns().held;
+  const liveIds = (list) =>
+    list
+      .filter(([, end]) => end > serverNow + 1500)
+      .map(([id]) => id)
+      .sort((a, b) => a - b)
+      .join(",");
+  const d = ab.destruction();
+  const b = ab.boss();
+  const ch = ab.chaos();
+  return {
+    room: ab.net().roomId,
+    destroyed: d.destroyed,
+    fallen: d.fallen,
+    collapses: ab
+      .recentCollapses(1000)
+      .map((c) => `${c.b}@${c.t}`)
+      .join(","),
+    bossRaid: b.staged ? "staged" : (b.raid?.id ?? null),
+    bossDown: b.down !== null && b.down !== undefined,
+    bossHp: b.hp.join(","),
+    caveIns: held ? liveIds(held) : ab.caveIns().live,
+    // Quakes are pruned per frame too: ids live at one instant.
+    quakes: ch.held ? liveIds(ch.held.quakes) : ch.quakes.length,
+    fires: ch.fires,
+  };
+};
+
+const SERVER_WARN_ALLOW = [
+  // tools/perf/run.mjs's switch; never set by the soak, but harmless.
+  /AB_QUIET_CITY/,
+];
+
+/** Warnings and errors a page logs, sorted into the soak's buckets. */
+function watchConsole(page, c) {
   page.on("console", (msg) => {
     const text = msg.text();
-    if (msg.type() === "error") errors.push(text);
+    if (msg.type() === "error") c.errors.push(text);
     else if (msg.type() === "warning") {
       const allowed = WARN_ALLOW.find((re) => re.test(text));
       if (allowed) {
-        allowedWarnings.set(
+        c.allowed.set(
           String(allowed),
-          (allowedWarnings.get(String(allowed)) ?? 0) + 1,
+          (c.allowed.get(String(allowed)) ?? 0) + 1,
         );
-      } else warnings.push(text);
+      } else c.warnings.push(text);
     }
   });
-  page.on("pageerror", (err) => errors.push(`pageerror: ${err.message}`));
-  const minutes = [];
-  const stuck = [];
-  const since = {};
-  let settingsCycles = 0;
-  let forcedCrashes = 0;
-  let moments = 0;
-  let killcams = 0;
-  let wasKillcam = false;
-  let expectSettings = false;
+  page.on("pageerror", (err) => c.errors.push(`pageerror: ${err.message}`));
+}
+
+async function openClient(url, role, device, name) {
+  const browser = await launchBrowser();
+  extraBrowsers.push(browser);
+  const { context, page } = await openPage(browser, device);
+  const c = {
+    role,
+    browser,
+    context,
+    page,
+    touch: Boolean(device.hasTouch),
+    cdp: await context.newCDPSession(page),
+    errors: [],
+    warnings: [],
+    allowed: new Map(),
+    samples: [],
+    stuck: [],
+    since: {},
+    held: new Set(),
+    killcams: 0,
+    wasKillcam: false,
+    expectSettings: false,
+    settingsCycles: 0,
+    forcedCrashes: 0,
+    moments: 0,
+    nextInput: 0,
+  };
+  watchConsole(page, c);
+  await boot(page, url, { name });
+  return c;
+}
+
+async function closeClient(c) {
+  await c.context.close().catch(() => {});
+  await c.browser.close().catch(() => {});
+  const i = extraBrowsers.indexOf(c.browser);
+  if (i >= 0) extraBrowsers.splice(i, 1);
+}
+
+/** Hand-flown noise: steer, throttle, fire and boost at random. */
+async function noise(c, now) {
+  if (now < c.nextInput) return;
+  const { page } = c;
+  for (const k of c.held) await page.keyboard.up(k);
+  c.held.clear();
+  const keys = ["KeyA", "KeyD", "KeyW", "KeyS"];
+  const k = keys[Math.floor(Math.random() * keys.length)];
+  await page.keyboard.down(k);
+  c.held.add(k);
+  if (c.touch || c.keysOnly) {
+    // The phone fires through its trigger and taps the screen now and then;
+    // the lab pilot fires the same way and never clicks (a random click on
+    // the lab panel's EXIT link is a real navigation away).
+    await page.evaluate((on) => window.__ab.setFiring(on), Math.random() < 0.5);
+    if (c.touch && Math.random() < 0.3) await page.touchscreen.tap(422, 195);
+  } else {
+    const vp = page.viewportSize();
+    await page.mouse.move(
+      vp.width * (0.15 + Math.random() * 0.7),
+      vp.height * (0.2 + Math.random() * 0.6),
+    );
+    if (Math.random() < 0.5) await page.mouse.down();
+    else await page.mouse.up();
+  }
+  if (Math.random() < 0.15) await page.keyboard.press("Space");
+  c.nextInput = now + 1500 + Math.random() * 1500;
+}
+
+async function releaseInput(c) {
+  if (!c.touch && !c.keysOnly) await c.page.mouse.up();
+  else await c.page.evaluate(() => window.__ab.setFiring(false));
+  for (const k of c.held) await c.page.keyboard.up(k);
+  c.held.clear();
+}
+
+async function probeUi(c, now, start) {
+  const s = await c.page.evaluate(SOAK_SAMPLE);
+  // A UI state that clears on a frame (the death fade: two rAFs) cannot be
+  // judged stuck in under three frames — at 0.1 fps that is 30 s.
+  const frameFloorS = s.fps > 0 ? 3 / s.fps : 0;
+  if (s.signalLost)
+    c.stuck.push({ at: (now - start) / 1000, state: "signalLost" });
+  for (const key of Object.keys(STUCK_S)) {
+    const on =
+      key === "settings" ? s.settingsOpen && !c.expectSettings : s[key];
+    if (on) {
+      c.since[key] ??= now;
+      if (
+        (now - c.since[key]) / 1000 > Math.max(STUCK_S[key], frameFloorS) &&
+        !c.since[`${key}Reported`]
+      ) {
+        c.since[`${key}Reported`] = true;
+        c.stuck.push({ at: (now - start) / 1000, state: key });
+      }
+    } else {
+      c.since[key] = undefined;
+      c.since[`${key}Reported`] = false;
+    }
+  }
+  if (s.killcam && !c.wasKillcam) c.killcams++;
+  c.wasKillcam = s.killcam;
+}
+
+async function settingsCycle(c, at) {
+  if (
+    await c.page.evaluate(() =>
+      document.getElementById("killcam")?.classList.contains("open"),
+    )
+  ) {
+    return;
+  }
+  c.expectSettings = true;
   try {
-    await boot(page, url);
-    console.log("  soak: joined");
+    await openSettings(c.page, c.touch);
+    await sleep(1500);
+    await closeSettings(c.page);
+    c.settingsCycles++;
+  } catch (err) {
+    c.stuck.push({ at, state: `settings-cycle: ${err.message}` });
+  }
+  c.expectSettings = false;
+}
+
+/** Fly into the street: a real crash, kill-cam and respawn. */
+async function forceCrash(c) {
+  await c.page.evaluate(() => {
+    const p = window.__ab.state().pos;
+    window.__ab.teleport(p.x, p.z, 1);
+  });
+  c.forcedCrashes++;
+}
+
+/** Glide `metres` down tunnel `id` from arc length `s0` at ~60 m/s. */
+async function tunnelGlide(c, id, s0, metres) {
+  for (let d = 0; d <= metres; d += 12) {
+    await c.page.evaluate(
+      ([id, s0, d]) => {
+        const p = window.__ab.tunnelPose(id, s0, d, 0);
+        window.__ab.teleport(p.x, p.z, p.y, p.yaw);
+      },
+      [id, s0, d],
+    );
+    await sleep(200);
+  }
+}
+
+/** The scripted spectacle, one beat a minute on the spectacle client: what a
+ * random stick alone would rarely reach. Staged on THIS client only. */
+async function spectacle(c, minute) {
+  const beat = minute % 5;
+  if (beat === 1) {
+    await tunnelGlide(c, 0, 330, 300);
+  } else if (beat === 2) {
+    await c.page.evaluate(() => {
+      const t = window.__ab.net().worldTime ?? 0;
+      window.__ab.qaCaveIn([{ tunnel: 1, s: 380, gap: 2, t0: t + 1500 }]);
+    });
+    await tunnelGlide(c, 1, 300, 160);
+  } else if (beat === 3) {
+    await c.page.evaluate(() => {
+      window.__ab.qaCaveIn(null);
+      const ab = window.__ab;
+      const t = ab.net().worldTime ?? 0;
+      ab.teleport(1000, 1400, 290, 0);
+      ab.qaBoss({
+        x: 1000,
+        y: 290,
+        z: 1400,
+        yaw: 0,
+        ahead: 520,
+        worldMs: t,
+        crossMs: 8000,
+        corridor: { near: 70, far: 230, lateral: 25, yLo: 262, yHi: 317 },
+      });
+      ab.qaBossLaunch(0, 0);
+      ab.qaBossLaunch(1, 1500);
+    });
+  } else if (beat === 4) {
+    await c.page.evaluate(() => window.__ab.qaBossDown(0));
+  } else if (beat === 0) {
+    await c.page.evaluate(() => window.__ab.qaBoss(null));
+  }
+}
+
+async function debugRooms(port) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/debug/rooms`);
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+async function sampleClient(c, minute) {
+  await c.cdp.send("HeapProfiler.collectGarbage");
+  const heap = await c.cdp.send("Runtime.getHeapUsage");
+  const s = await c.page.evaluate(SOAK_SAMPLE);
+  const m = {
+    minute,
+    heapMB: +(heap.usedSize / 1048576).toFixed(2),
+    dom: s.dom,
+    deaths: s.deaths,
+    killcams: c.killcams,
+    fps: s.fps,
+    ...(s.ui ?? {}),
+  };
+  c.samples.push(m);
+  return m;
+}
+
+function verdictsOf(c) {
+  const base = c.samples.find((m) => m.minute === 5) ?? c.samples[0];
+  const last = c.samples.at(-1);
+  const growth = (k) =>
+    base && last && base[k] ? (last[k] - base[k]) / base[k] : null;
+  const rel = (k) =>
+    !base?.renderer ||
+    Math.abs((last.renderer[k] - base.renderer[k]) / base.renderer[k]) <= 0.1;
+  const verdicts = {
+    consoleErrors: c.errors.length === 0,
+    warnings: c.warnings.length === 0,
+    heap: growth("heapMB") !== null && growth("heapMB") <= 0.15,
+    dom: growth("dom") !== null && Math.abs(growth("dom")) <= 0.05,
+    programs:
+      !base?.renderer || last.renderer.programs <= base.renderer.programs,
+    geometries: rel("geometries"),
+    textures: rel("textures"),
+    stuck: c.stuck.length === 0,
+  };
+  return {
+    role: c.role,
+    pass: Object.values(verdicts).every(Boolean),
+    verdicts,
+    heapGrowthVsMinute5: growth("heapMB"),
+    domGrowthVsMinute5: growth("dom"),
+    errors: [...new Set(c.errors)].slice(0, 50),
+    errorCount: c.errors.length,
+    warnings: [...new Set(c.warnings)].slice(0, 50),
+    warningCount: c.warnings.length,
+    allowedWarnings: Object.fromEntries(c.allowed),
+    stuck: c.stuck,
+    settingsCycles: c.settingsCycles,
+    forcedCrashes: c.forcedCrashes,
+    moments: c.moments,
+    killcams: c.killcams,
+    samples: c.samples,
+  };
+}
+
+/** A2: the Flight Lab, visited in a page of its own; afterwards the lab room
+ * must be gone from every per-room map the server keeps. */
+async function labVisit(url, port) {
+  const c = await openClient(`${url}?lab`, "lab", PEER, "Lab");
+  c.keysOnly = true;
+  const labRoom = await c.page.evaluate(() => window.__ab.net().roomId);
+  const endAt = Date.now() + 45000;
+  while (Date.now() < endAt) {
+    await noise(c, Date.now());
+    await sleep(200);
+  }
+  await releaseInput(c);
+  const lab = await c.page.evaluate(() => window.__ab.lab() !== null);
+  await closeClient(c);
+  // The lab room dies with its pilot's socket (liveness at worst).
+  let leftover = null;
+  for (let i = 0; i < 40; i++) {
+    const d = await debugRooms(port);
+    leftover = d
+      ? Object.entries(d)
+          .filter(([, v]) => Array.isArray(v) && v.includes(labRoom))
+          .map(([k]) => k)
+      : ["/debug/rooms unreachable"];
+    if (leftover.length === 0) break;
+    await sleep(1000);
+  }
+  return {
+    labRoom,
+    labPanel: lab,
+    errors: [...new Set(c.errors)],
+    warnings: [...new Set(c.warnings)],
+    leftover,
+    pass:
+      lab &&
+      c.errors.length === 0 &&
+      c.warnings.length === 0 &&
+      leftover.length === 0,
+  };
+}
+
+/** A2: a late joiner against the long-lived client and the server. A field
+ * counts as a desync only if it disagrees on every one of the retries. */
+async function parityCheck(url, port, main) {
+  const c = await openClient(url, "parity", PEER, "Late");
+  await sleep(5000);
+  const tries = [];
+  for (let i = 0; i < 5; i++) {
+    // Same machine, same clock: the harness's now is the server's.
+    const serverNow = Date.now();
+    const [a, b, srv] = await Promise.all([
+      main.page.evaluate(PARITY_SAMPLE, serverNow),
+      c.page.evaluate(PARITY_SAMPLE, serverNow),
+      debugRooms(port),
+    ]);
+    const room = srv?.damage?.[a.room] ?? null;
+    tries.push({ main: a, late: b, server: room });
+    await sleep(1000);
+  }
+  const errors = [...new Set(c.errors)];
+  await closeClient(c);
+  const sameRoom = tries.every((t) => t.main.room === t.late.room);
+  const fields = Object.keys(tries[0].main).filter((k) => k !== "room");
+  const desync = [];
+  if (sameRoom) {
+    for (const k of fields) {
+      if (k === "bossRaid" && tries.some((t) => t.main[k] === "staged"))
+        continue;
+      if (tries.every((t) => t.main[k] !== t.late[k])) {
+        desync.push({
+          field: k,
+          main: tries.at(-1).main[k],
+          late: tries.at(-1).late[k],
+        });
+      }
+    }
+  }
+  // The server holds the truth for the damage counts.
+  for (const k of ["destroyed", "fallen"]) {
+    if (tries.every((t) => t.server && t.server[k] !== t.main[k])) {
+      desync.push({
+        field: `server.${k}`,
+        server: tries.at(-1).server?.[k],
+        main: tries.at(-1).main[k],
+      });
+    }
+  }
+  return {
+    sameRoom,
+    desync,
+    errors,
+    tries,
+    pass: desync.length === 0 && errors.length === 0,
+  };
+}
+
+async function runSoak(url, server) {
+  const clients = [];
+  const report = { clients: [], labVisits: [], parity: [], server: null };
+  const serverSamples = [];
+  try {
+    clients.push(await openClient(url, "desktop", DESKTOP, "QA"));
+    for (let i = 0; i < PEERS; i++) {
+      clients.push(await openClient(url, `peer${i + 1}`, PEER, `Peer${i + 1}`));
+    }
+    if (SOAK_PHONE)
+      clients.push(await openClient(url, "phone", PHONE, "Phone"));
+    console.log(`  soak: ${clients.map((c) => c.role).join(", ")} joined`);
+    // Every client opens its settings once before anything is sampled: the
+    // panel is built on first open, and a baseline taken before that reads
+    // the build as DOM growth.
+    for (const c of clients) await settingsCycle(c, 0);
+    const main = clients[0];
+    const show = clients.find((c) => c.role === "peer1") ?? main;
     const start = Date.now();
     const endAt = start + SOAK_MIN * 60000;
     let nextMinute = start + 60000;
-    let nextInput = start;
     let nextProbe = start;
-    const keys = ["KeyA", "KeyD", "KeyW", "KeyS"];
-    const held = new Set();
+    let minute = 0;
     while (Date.now() < endAt) {
       const now = Date.now();
-      if (now >= nextInput) {
-        // Hand-flown noise: steer, throttle, fire and boost at random.
-        for (const k of held) await page.keyboard.up(k);
-        held.clear();
-        const k = keys[Math.floor(Math.random() * keys.length)];
-        await page.keyboard.down(k);
-        held.add(k);
-        await page.mouse.move(
-          200 + Math.random() * 880,
-          150 + Math.random() * 420,
-        );
-        if (Math.random() < 0.5) await page.mouse.down();
-        else await page.mouse.up();
-        if (Math.random() < 0.15) await page.keyboard.press("Space");
-        nextInput = now + 1500 + Math.random() * 1500;
-      }
+      for (const c of clients) await noise(c, now);
       if (now >= nextProbe) {
-        const s = await page.evaluate(SOAK_SAMPLE);
-        if (s.signalLost)
-          stuck.push({ at: (now - start) / 1000, state: "signalLost" });
-        for (const key of Object.keys(STUCK_S)) {
-          const on =
-            key === "settings" ? s.settingsOpen && !expectSettings : s[key];
-          if (on) {
-            since[key] ??= now;
-            if (
-              (now - since[key]) / 1000 > STUCK_S[key] &&
-              !since[`${key}Reported`]
-            ) {
-              since[`${key}Reported`] = true;
-              stuck.push({ at: (now - start) / 1000, state: key });
-            }
-          } else {
-            since[key] = undefined;
-            since[`${key}Reported`] = false;
-          }
-        }
-        if (s.killcam && !wasKillcam) killcams++;
-        wasKillcam = s.killcam;
+        for (const c of clients) await probeUi(c, now, start);
         nextProbe = now + 2000;
       }
       if (now >= nextMinute) {
-        await page.mouse.up();
-        for (const k of held) await page.keyboard.up(k);
-        held.clear();
-        // The minute's scripted moments: a kill, a medal, a settings cycle.
-        await page.evaluate(() => window.__ab.qaMoment?.("kill"));
+        minute++;
+        const at = (now - start) / 1000;
+        for (const c of clients) await releaseInput(c);
+        // The minute's scripted moments on the first client.
+        await main.page.evaluate(() => window.__ab.qaMoment?.("kill"));
         await sleep(1500);
-        await page.evaluate(() => window.__ab.qaMoment?.("medal"));
-        moments += 2;
-        // Every third minute, fly into the street: a real crash, kill-cam
-        // and respawn, whatever the random stick did meanwhile.
-        if ((minutes.length + 1) % 3 === 0) {
-          await page.evaluate(() => {
-            const p = window.__ab.state().pos;
-            window.__ab.teleport(p.x, p.z, 1);
-          });
-          forcedCrashes++;
-          await sleep(1000);
+        await main.page.evaluate(() => window.__ab.qaMoment?.("medal"));
+        main.moments += 2;
+        for (const [i, c] of clients.entries()) {
+          // Staggered real crashes and respawns, every third minute each.
+          if ((minute + i) % 3 === 0) await forceCrash(c);
         }
-        if (
-          !(await page.evaluate(() =>
-            document.getElementById("killcam")?.classList.contains("open"),
-          ))
-        ) {
-          expectSettings = true;
-          try {
-            await openSettings(page, false);
-            await sleep(1500);
-            await closeSettings(page);
-            settingsCycles++;
-          } catch (err) {
-            stuck.push({
-              at: (now - start) / 1000,
-              state: `settings-cycle: ${err.message}`,
-            });
-          }
-          expectSettings = false;
+        await sleep(1000);
+        await settingsCycle(main, at);
+        const phone = clients.find((c) => c.role === "phone");
+        if (phone && minute % 5 === 0) await settingsCycle(phone, at);
+        if (show !== main || PEERS === 0) await spectacle(show, minute);
+        if (SOAK_LAB && LAB_AT.includes(minute)) {
+          const v = await labVisit(url, server.port);
+          report.labVisits.push({ minute, ...v });
+          console.log(
+            `  lab ${JSON.stringify({ minute, pass: v.pass, leftover: v.leftover, errors: v.errors.length })}`,
+          );
         }
-        await cdp.send("HeapProfiler.collectGarbage");
-        const heap = await cdp.send("Runtime.getHeapUsage");
-        const s = await page.evaluate(SOAK_SAMPLE);
-        const m = {
-          minute: minutes.length + 1,
-          heapMB: +(heap.usedSize / 1048576).toFixed(2),
-          dom: s.dom,
-          deaths: s.deaths,
-          killcams,
-          ...(s.ui ?? {}),
-        };
-        minutes.push(m);
-        console.log(`  soak ${JSON.stringify(m)}`);
+        if (PARITY && PARITY_AT.includes(minute)) {
+          const v = await parityCheck(url, server.port, main);
+          report.parity.push({ minute, ...v });
+          console.log(
+            `  parity ${JSON.stringify({ minute, pass: v.pass, desync: v.desync })}`,
+          );
+        }
+        const line = [];
+        for (const c of clients) {
+          const m = await sampleClient(c, minute);
+          line.push(
+            `${c.role} heap ${m.heapMB} dom ${m.dom} geo ${m.renderer?.geometries} tex ${m.renderer?.textures} prog ${m.renderer?.programs} deaths ${m.deaths} fps ${m.fps}`,
+          );
+        }
+        const d = await debugRooms(server.port);
+        const mem = d?.memory;
+        serverSamples.push({
+          minute,
+          heapMB: mem ? +(mem.heapUsed / 1048576).toFixed(2) : null,
+          rssMB: mem ? +(mem.rss / 1048576).toFixed(2) : null,
+          rooms: d?.rooms?.length ?? null,
+        });
+        console.log(
+          `  soak m${minute}: ${line.join(" | ")} | server heap ${serverSamples.at(-1).heapMB} rss ${serverSamples.at(-1).rssMB}`,
+        );
         nextMinute += 60000;
       }
       await sleep(200);
     }
   } finally {
-    await context.close();
+    for (const c of clients) await closeClient(c);
   }
-  const base = minutes.find((m) => m.minute === 5) ?? minutes[0];
-  const last = minutes.at(-1);
-  const growth = (k) =>
-    base && last && base[k] ? (last[k] - base[k]) / base[k] : null;
-  const verdicts = {
-    consoleErrors: errors.length === 0,
-    warnings: warnings.length === 0,
-    heap: growth("heapMB") !== null && growth("heapMB") <= 0.15,
-    dom: growth("dom") !== null && Math.abs(growth("dom")) <= 0.05,
-    programs:
-      !base?.renderer || last.renderer.programs <= base.renderer.programs,
-    geometries:
-      !base?.renderer ||
-      Math.abs(
-        (last.renderer.geometries - base.renderer.geometries) /
-          base.renderer.geometries,
-      ) <= 0.1,
-    textures:
-      !base?.renderer ||
-      Math.abs(
-        (last.renderer.textures - base.renderer.textures) /
-          base.renderer.textures,
-      ) <= 0.1,
-    stuck: stuck.length === 0,
+  report.clients = clients.map(verdictsOf);
+  const base = serverSamples.find((m) => m.minute === 5) ?? serverSamples[0];
+  const last = serverSamples.at(-1);
+  const grow = (k) =>
+    base?.[k] && last?.[k] ? (last[k] - base[k]) / base[k] : null;
+  const stderr = server.errLog
+    .join("")
+    .split("\n")
+    .filter(
+      (l) => l.trim() !== "" && !SERVER_WARN_ALLOW.some((re) => re.test(l)),
+    );
+  // The MEDIAN minute-to-minute step: a leak climbs every minute, while V8
+  // reserving a new high-water mark (a lab room's city clone, a GC that
+  // grew the heap) is one step it never hands back — not a trend.
+  const tail = serverSamples.filter((m) => m.rssMB !== null).slice(-16);
+  const steps = tail
+    .slice(1)
+    .map((m, i) => m.rssMB - tail[i].rssMB)
+    .sort((a, b) => a - b);
+  const rssSlope =
+    steps.length > 0 ? steps[Math.floor((steps.length - 1) / 2)] : null;
+  const sv = {
+    alive: server.proc.exitCode === null,
+    stderr: stderr.length === 0,
+    heap: grow("heapMB") !== null && grow("heapMB") <= 0.2,
+    // RSS is what V8 has RESERVED, which steps up and is not handed back;
+    // the leak signal is heapUsed after a forced GC (above). RSS is held to
+    // its trend: a median step under 1 MB/min over the last 15 minutes.
+    // (a trend needs a window: under 10 steps there is none to judge)
+    rss: steps.length < 10 || rssSlope < 1,
   };
-  return {
-    minutes: SOAK_MIN,
-    pass: Object.values(verdicts).every(Boolean),
-    verdicts,
-    heapGrowthVsMinute5: growth("heapMB"),
-    domGrowthVsMinute5: growth("dom"),
-    errors: [...new Set(errors)].slice(0, 50),
-    errorCount: errors.length,
-    warnings: [...new Set(warnings)].slice(0, 50),
-    warningCount: warnings.length,
-    allowedWarnings: Object.fromEntries(allowedWarnings),
-    stuck,
-    settingsCycles,
-    forcedCrashes,
-    moments,
-    killcams,
-    samples: minutes,
+  report.server = {
+    pass: Object.values(sv).every(Boolean),
+    verdicts: sv,
+    heapGrowthVsMinute5: grow("heapMB"),
+    rssGrowthVsMinute5: grow("rssMB"),
+    rssMedianStepMBLast15: rssSlope,
+    stderr: stderr.slice(0, 100),
+    samples: serverSamples,
   };
+  report.minutes = SOAK_MIN;
+  report.pass =
+    report.clients.every((c) => c.pass) &&
+    report.server.pass &&
+    report.labVisits.every((v) => v.pass) &&
+    report.parity.every((v) => v.pass);
+  report.verdicts = {
+    ...Object.fromEntries(report.clients.map((c) => [c.role, c.pass])),
+    server: report.server.pass,
+    lab: report.labVisits.every((v) => v.pass),
+    parity: report.parity.every((v) => v.pass),
+  };
+  return report;
 }
 
 async function main() {
   const port = await freePort();
-  await startServer(port);
+  const server = await startServer(port);
   liveBrowser = await chromium.launch({
     args: CHROME_ARGS,
     ...(process.env.AB_CHROME ? { executablePath: process.env.AB_CHROME } : {}),
@@ -781,7 +1196,7 @@ async function main() {
   }
   if (SOAK_MIN > 0) {
     console.log(`soak ${SOAK_MIN} min`);
-    report.soak = await runSoak(liveBrowser, url);
+    report.soak = await runSoak(url, server);
   }
   const path = resolve(OUT, `${LABEL}-report.json`);
   writeFileSync(path, `${JSON.stringify(report, null, 2)}\n`);

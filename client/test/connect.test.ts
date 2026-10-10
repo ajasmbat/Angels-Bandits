@@ -207,6 +207,25 @@ describe("GameSocket.connect — a join always settles", () => {
       expect(seen).toEqual(["reconnecting", "resumed"]);
     });
 
+    it("a same-room resume REPLACES the held strikes: one called off during the drop is gone (A2)", async () => {
+      const { socket, ws } = await connected();
+      // Missile 7 in the air; then the drop. Meanwhile the server called it
+      // off (`bombsOff`) and launched 8 — the resume's welcome says so.
+      const missile = (id: number) => [id, 0, 0, 3000, 0, 1000, 0, 1000, 5];
+      ws.emit("message", { type: "missile", m: missile(7) });
+      expect([...socket.missiles.keys()]).toEqual([7]);
+      ws.emit("close");
+      await vi.advanceTimersByTimeAsync(500);
+      const retry = FakeSocket.last;
+      retry.emit("open");
+      retry.emit("message", {
+        ...welcome("me", "tok-2"),
+        missiles: [missile(8)],
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect([...socket.missiles.keys()]).toEqual([8]);
+    });
+
     it("a refused token (the server made us someone new) ends the session", async () => {
       const { ws, seen } = await connected();
       ws.emit("close");

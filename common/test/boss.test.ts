@@ -23,7 +23,6 @@ import {
   BOSS_REACH_Z,
   BOSS_SPEED,
   BOSS_TUNING,
-  BOSS_TUNING_S4,
   BOSS_TURRETS,
   BOSS_WEAK_POINTS,
   type BossPart,
@@ -49,11 +48,11 @@ import {
   flakDamage,
   flakSolution,
   nextRaidAt,
-  periodFromStart,
   piecePoseAt,
   planRaid,
   raidEgressAt,
   raidEnd,
+  raidTier,
   turretMuzzleInto,
   weakPointInto,
 } from "@angels-bandits/common/boss";
@@ -117,7 +116,7 @@ describe("schedule and path are pure", () => {
     expect(first).toBe(nextRaidAt(null, T0, mulberry32(9)));
     expect(first - T0).toBeGreaterThanOrEqual(BOSS_TUNING.firstMinMs);
     expect(first - T0).toBeLessThanOrEqual(BOSS_TUNING.firstMaxMs);
-    // C2: `prev` is the last raid's END; the next comes period ± jitter on.
+    // `prev` is the last raid's END; the next comes period ± jitter on.
     const ended = first + 1_000_000;
     for (let i = 0; i < 50; i++) {
       const next = nextRaidAt(ended, T0, mulberry32(i));
@@ -126,17 +125,16 @@ describe("schedule and path are pure", () => {
       );
       expect(Number.isInteger(next)).toBe(true);
     }
-    // C2: ~30 s after a human arrives, then 60–90 s after each raid ends.
-    expect(BOSS_TUNING.firstMinMs).toBeGreaterThanOrEqual(25_000);
-    expect(BOSS_TUNING.firstMaxMs).toBeLessThanOrEqual(35_000);
-    expect(BOSS_TUNING.periodMs - BOSS_TUNING.periodJitterMs).toBe(60_000);
-    expect(BOSS_TUNING.periodMs + BOSS_TUNING.periodJitterMs).toBe(90_000);
-    expect(periodFromStart(BOSS_TUNING)).toBe(false);
-    // The S4 schedule AB_CHAOS=0 restores: ~15 minutes, start to start.
-    expect(BOSS_TUNING_S4.periodMs).toBe(15 * 60_000);
-    expect(periodFromStart(BOSS_TUNING_S4)).toBe(true);
+    // W1: the first carrier 4–6 s after a human starts flying, the next
+    // one 20 s after each goes down or flies off.
+    expect(BOSS_TUNING.firstMinMs).toBe(4000);
+    expect(BOSS_TUNING.firstMaxMs).toBe(6000);
+    expect(BOSS_TUNING.periodMs).toBe(20_000);
+    expect(BOSS_TUNING.periodJitterMs).toBe(0);
     // The QA schedule is only ever faster.
-    expect(BOSS_FAST_TUNING.firstMaxMs).toBeLessThan(BOSS_TUNING.firstMinMs);
+    expect(BOSS_FAST_TUNING.firstMaxMs).toBeLessThanOrEqual(
+      BOSS_TUNING.firstMinMs,
+    );
   });
 
   it("planRaid is deterministic and survives the wire bit for bit", () => {
@@ -146,6 +144,12 @@ describe("schedule and path are pure", () => {
     expect(encodeRaid(a).every(Number.isInteger)).toBe(true);
     expect(decodeRaid([1, 2, 3])).toBeNull();
     expect(decodeRaid([1, 2, 3, 4, 5, Number.NaN, 7])).toBeNull();
+    // W1: the tier rides an 8th element; a pre-W1 7-element raid is tier 1.
+    expect(a.tier).toBe(1);
+    expect(encodeRaid(a)).toHaveLength(8);
+    const old = decodeRaid(encodeRaid(a).slice(0, 7));
+    expect(old && raidTier(old)).toBe(1);
+    expect(decodeRaid([...encodeRaid(a).slice(0, 7), 0])).toBeNull();
   });
 
   it("bossPoseAt is a pure function of (raid, time)", () => {

@@ -1,6 +1,7 @@
-// The shared bot slider's WIRE contract (ANGE-6STDNN), driven over a real
-// socket against a real server process: the welcome's botTarget, the setBots
-// claim, and the botsConfig broadcast that answers it. The governance rules
+// The shared enemy-intensity WIRE contract (W1; ANGE-6STDNN's bot slider
+// before it), driven over a real socket against a real server process: the
+// welcome's intensity, the setIntensity claim, and the intensityConfig
+// broadcast that answers it. The governance rules
 // themselves are unit-tested at the Room seam (room.test.ts) — what is only
 // observable here is that a JOINING client is told the current value and that
 // a change reaches every member of the room, attributed.
@@ -82,18 +83,21 @@ function connect(name: string): Promise<Peer> {
   });
 }
 
-const isBotsConfig = (count: number, byName: string) => (msg: ServerMsg) =>
-  msg.type === "botsConfig" && msg.count === count && msg.byName === byName;
+const isConfig = (level: number, byName: string) => (msg: ServerMsg) =>
+  msg.type === "intensityConfig" &&
+  msg.level === level &&
+  msg.byName === byName;
 
-const setBots = (peer: Peer, count: number): void => {
-  peer.ws.send(JSON.stringify({ type: "setBots", count }));
+const setIntensity = (peer: Peer, level: number): void => {
+  peer.ws.send(JSON.stringify({ type: "setIntensity", level }));
 };
 
 beforeAll(async () => {
   // node itself (tsx as a loader), not `npx tsx`: kill() in afterAll must
   // reach the server, or it outlives the test and keeps flying its bots.
+  // AB_WAVES=0: no carrier — only the setting's wire is under test.
   child = spawn(process.execPath, ["--import", "tsx", entry], {
-    env: { ...process.env, PORT: "0" },
+    env: { ...process.env, PORT: "0", AB_WAVES: "0" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   url = await new Promise<string>((resolve, reject) => {
@@ -114,19 +118,19 @@ afterAll(() => {
   child?.kill();
 });
 
-describe("shared bot slider over the wire", () => {
-  it("tells a joining client the room's current bot count", async () => {
+describe("shared enemy intensity over the wire", () => {
+  it("tells a joining client the room's current intensity", async () => {
     const alice = await connect("Alice");
-    // The standing room starts at the spec default of 5.
-    expect(alice.welcome.botTarget).toBe(5);
+    // A fresh room starts at NORMAL.
+    expect(alice.welcome.intensity).toBe(1);
 
-    setBots(alice, 3);
-    await alice.waitFor(isBotsConfig(3, "Alice"), "Alice's own botsConfig");
+    setIntensity(alice, 3);
+    await alice.waitFor(isConfig(3, "Alice"), "Alice's own intensityConfig");
 
     // A LATE joiner is told 3, not the default — the whole point of the
-    // welcome field: their slider opens where the room actually is.
+    // welcome field: their control opens where the room actually is.
     const bob = await connect("Bob");
-    expect(bob.welcome.botTarget).toBe(3);
+    expect(bob.welcome.intensity).toBe(3);
     alice.ws.close();
     bob.ws.close();
   });
@@ -135,33 +139,33 @@ describe("shared bot slider over the wire", () => {
     const alice = await connect("Alice");
     const bob = await connect("Bob");
 
-    setBots(bob, 7);
-    // Both tabs move, and both learn it was Bob — the ticker's attribution.
-    await alice.waitFor(isBotsConfig(7, "Bob"), "Bob's change seen by Alice");
-    await bob.waitFor(isBotsConfig(7, "Bob"), "Bob's change echoed to Bob");
+    setIntensity(bob, 0);
+    // Both tabs move, and both learn it was Bob — the attribution line.
+    await alice.waitFor(isConfig(0, "Bob"), "Bob's change seen by Alice");
+    await bob.waitFor(isConfig(0, "Bob"), "Bob's change echoed to Bob");
     alice.ws.close();
     bob.ws.close();
   });
 
-  it("last write wins a slider war, and a rate-limited retry is dropped", async () => {
+  it("last write wins a setting war, and a rate-limited retry is dropped", async () => {
     const alice = await connect("Alice");
     const bob = await connect("Bob");
 
-    setBots(alice, 2);
-    await bob.waitFor(isBotsConfig(2, "Alice"), "Alice's 2");
+    setIntensity(alice, 2);
+    await bob.waitFor(isConfig(2, "Alice"), "Alice's 2");
     // Bob is a different player, so his write is not rate-limited: it lands
     // immediately after Alice's and wins.
-    setBots(bob, 9);
-    await alice.waitFor(isBotsConfig(9, "Bob"), "Bob's 9");
+    setIntensity(bob, 3);
+    await alice.waitFor(isConfig(3, "Bob"), "Bob's 3");
 
     // Alice tries again inside her 3 s window: silently dropped, no echo —
-    // which is what makes her slider snap back to 9.
-    setBots(alice, 0);
-    await alice.expectSilence((m) => m.type === "botsConfig", 1200);
+    // which is what makes her control snap back to 3.
+    setIntensity(alice, 0);
+    await alice.expectSilence((m) => m.type === "intensityConfig", 1200);
 
-    // The room really is at 9: a fresh joiner is told so.
+    // The room really is at 3: a fresh joiner is told so.
     const carol = await connect("Carol");
-    expect(carol.welcome.botTarget).toBe(9);
+    expect(carol.welcome.intensity).toBe(3);
     alice.ws.close();
     bob.ws.close();
     carol.ws.close();

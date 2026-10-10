@@ -35,11 +35,11 @@ export interface LabPanelHooks {
   /** The live tuning changed (already written in place). */
   onChange(): void;
   onRoute(id: string): void;
-  onToggle(name: "bots" | "chaos", on: boolean): void;
+  onToggle(name: "waves" | "chaos", on: boolean): void;
   onRespawn(): void;
 }
 
-export type LabToggle = "bots" | "chaos";
+export type LabToggle = "waves" | "chaos";
 
 /** The tuning, as exportTuning JSON. */
 export const LAB_TUNING_KEY = "ab-lab-tuning";
@@ -286,7 +286,7 @@ export class LabPanel {
     rr.append(button("lab-btn", "Respawn (R)", () => this.hooks.onRespawn()));
     play.append(rr);
     for (const [name, label] of [
-      ["bots", "Bots"],
+      ["waves", "Enemy waves"],
       ["chaos", "Chaos (boss, missiles, quakes)"],
     ] as const) {
       const lab = el("label", "lab-check");

@@ -105,8 +105,8 @@ export const BUDGETS = {
     boss: 101,
     rings: 114,
     glass: 112,
-    // P4: the ticket's ceiling for peak chaos — boss, missiles, a collapse,
-    // bombers and a full 12-plane room in one view (runner: 107, the S6
+    // P4: the ticket's ceiling for peak chaos — boss, missiles, a collapse
+    // and a full 12-plane room in one view (runner: 107, the S6
     // probe's 7 included) — and the two new views at the runner's measured
     // High draws plus ~10 % (tunnel 91, exit 102; README P4).
     chaos: 140,
@@ -519,28 +519,25 @@ export const SEGMENTS = [
   // measured world instants. The server runs D6's quiet city (no chaos is
   // ever sent: run.mjs asserts it), and every chaos thing on screen is
   // STAGED on the client through `__ab.qaChaos` (client/src/game/
-  // qa-chaos.ts): strike schedules, a bomber run, a quake and fires, all
+  // qa-chaos.ts): strike schedules, a quake and fires, all
   // pure in the spec and the pinned world clock, through the server's own
   // planners. `chaos` and `exit` glide/hold on the WORLD clock, so frame n
   // is the same scene on every pass on any machine. Every spot was checked
   // offline against the shared collision — touchesSolid with the city, the
-  // trees, every mover, the staged collapse, the staged bombers and the
-  // staged boss hull, every 50 ms over the warm-up's and the pass's settle
+  // trees, every mover, the staged collapse and the staged boss hull, every 50 ms over the warm-up's and the pass's settle
   // and window (README P4): clear.
   {
     name: "chaos",
-    what: "C2 peak chaos: 12 planes under the war zeppelin and its flak, a missile a second, meteors, a bomber carpet, a quake, fire and a tower toppling across the street",
+    what: "C2 peak chaos: 12 planes under the war zeppelin and its flak, a missile a second, meteors, a quake, fire and a tower toppling across the street",
     // D6's `collapse` viewpoint (building 343, 215 m, toppling west across
     // the x = 1200 street 236 m ahead), HELD at 110 m. 11 fake pilots weave
     // 70–230 m ahead down the street at 120–200 m — inside the plane LOD's
     // near band, so every plane is the full airframe all window — and hold
     // their fire (a tracer is a draw on the pilots' own wall clock). The
     // zeppelin crosses 520 m out at mid-window (S8's staging); a missile
-    // launches every second (4–5 in the air), a meteor every 2.5 s (1–2),
-    // and a three-ship bomber run crosses the view along z = 400 at 250 m,
-    // its 24-bomb carpet centred ahead 2 s into the segment (bombs falling
-    // through the whole window); a quake shakes all window; building 303's
-    // street face burns.
+    // launches every second (4–5 in the air) and a meteor every 2.5 s
+    // (1–2); a quake shakes all window; building 303's street face burns.
+    // (W1 retired C2's jet formations, which crossed this view too.)
     x: 1200,
     z: 700,
     y: 110,
@@ -584,7 +581,6 @@ export const SEGMENTS = [
         aim: { ahead: 380, side: -120, y: 0 },
         seed: 12,
       },
-      bombers: { dir: 0, aim: { ahead: 300, y: 0 }, crossMs: 2000 },
       quake: { startMs: -500, dur: 7000, mag: 0.8, aim: { ahead: 300, y: 0 } },
       fires: { b: 303, h: 49, chunks: 12 },
     },
@@ -606,14 +602,13 @@ export const SEGMENTS = [
   },
   {
     name: "exit",
-    what: "U4 into C2: climbing out of Crosstown's east portal into the chaos — the zeppelin, missiles, meteors, a bomber carpet, a quake",
+    what: "U4 into C2: climbing out of Crosstown's east portal into the chaos — the zeppelin, missiles, meteors, a quake",
     // Crosstown from s = L − 90 (under the lintel, on the ramp) at 40 m/s
     // of WORLD time: out of the cut over plaza (8,2) heading +x, climbing
     // 40° once past the lip (`climb`), held 60 m past it (`maxM` 150) at
     // 62 m — 50 m short of building 506 (92 m). The chaos is staged round
     // the lip, the view ahead: the zeppelin crossing 520 m out, a missile
-    // every second onto the blocks past the plaza, meteors, a bomber run
-    // across the line x = 2000. No pilots.
+    // every second onto the blocks past the plaza, meteors. No pilots.
     tunnel: { id: 0, s: -90, speed: 40, maxM: 150, climb: 40 },
     x: 1710,
     z: 450,
@@ -637,7 +632,6 @@ export const SEGMENTS = [
         aim: { ahead: 420, side: 120, y: 0 },
         seed: 22,
       },
-      bombers: { dir: 1, aim: { ahead: 300, y: 0 }, crossMs: 2000 },
       quake: { startMs: -500, dur: 7000, mag: 0.8, aim: { ahead: 200, y: 0 } },
     },
   },

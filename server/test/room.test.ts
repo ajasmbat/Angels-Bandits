@@ -65,109 +65,75 @@ describe("RoomManager", () => {
   });
 });
 
-describe("bot population math", () => {
-  it("a fresh standing room wants the default bot target (5, ANGE-6STDNN spec)", () => {
-    const mgr = new RoomManager();
-    const room = mgr.ensureRoom();
-    expect(room.botTarget).toBe(5);
-    expect(mgr.desiredBots(room)).toBe(5);
-  });
-
-  it("the target is ABSOLUTE: humans take seats only once the room fills", () => {
-    // Spec: actualBots = min(T, ROOM_CAP − humans). With T=8 and 10 humans
-    // only 2 seats are left, so 6 bots are pushed out; 12 humans leave none.
+describe("enemy intensity and enemy members (W1, ANGE-6STDNN's governance)", () => {
+  it("a fresh room starts at NORMAL", () => {
     const mgr = new RoomManager();
     const room = mgr.join("p1", "Pilot 1");
-    room.setBotTarget("p1", 8, 0);
-    expect(mgr.desiredBots(room)).toBe(8);
-    fill(mgr, 9, 1);
-    expect(room.humanCount).toBe(10);
-    expect(mgr.desiredBots(room)).toBe(2);
-    fill(mgr, 2, 10);
-    expect(room.humanCount).toBe(12);
-    expect(mgr.desiredBots(room)).toBe(0);
+    expect(room.intensity).toBe(1);
   });
 
-  it("bots never block humans: a room with 12 humans is full regardless of bots", () => {
+  it("enemies never block humans: a room with 12 humans is full regardless of enemies", () => {
     const mgr = new RoomManager();
-    const room = mgr.ensureRoom();
+    const room = mgr.join("p1", "Pilot 1");
     mgr.addBot(room, "bot:room-1:1", "BANDIT-1");
-    fill(mgr, 12);
-    // 12 humans + 1 lingering bot: full for the NEXT human, who gets room 2.
+    fill(mgr, 11, 1);
+    // 12 humans + 1 enemy: full for the NEXT human, who gets room 2.
     expect(room.full).toBe(true);
     const other = mgr.join("p13", "Pilot 13");
     expect(other.id).not.toBe(room.id);
   });
 
-  it("clamps a claim to the 0–11 range instead of refusing it", () => {
-    // Spec range: 0–11 (ROOM_CAP − 1 — one seat is always left for a human).
+  it("clamps a claim to the 0–3 range (EASY–INSANE) instead of refusing it", () => {
     // Different setters so the per-player rate limit isn't what's under test.
     const mgr = new RoomManager();
     const room = mgr.join("p1", "Pilot 1");
-    expect(room.setBotTarget("p1", 25, 0)).toBe(11);
-    expect(room.botTarget).toBe(11);
-    expect(room.setBotTarget("p2", -3, 0)).toBe(0);
-    expect(room.botTarget).toBe(0);
+    expect(room.setIntensity("p1", 25, 0)).toBe(3);
+    expect(room.intensity).toBe(3);
+    expect(room.setIntensity("p2", -3, 0)).toBe(0);
+    expect(room.intensity).toBe(0);
   });
 
-  it("refuses a claim that is not a whole number, leaving the target alone", () => {
+  it("refuses a claim that is not a whole number, leaving the level alone", () => {
     const mgr = new RoomManager();
     const room = mgr.join("p1", "Pilot 1");
-    room.setBotTarget("p1", 7, 0);
-    for (const [i, bad] of [4.7, Number.NaN, "8", null, undefined].entries()) {
+    room.setIntensity("p1", 2, 0);
+    for (const [i, bad] of [1.7, Number.NaN, "3", null, undefined].entries()) {
       // Fresh setter per case: a refusal must not consume the rate limit.
-      expect(room.setBotTarget(`bad${i}`, bad, 0)).toBeNull();
+      expect(room.setIntensity(`bad${i}`, bad, 0)).toBeNull();
     }
-    expect(room.botTarget).toBe(7);
+    expect(room.intensity).toBe(2);
   });
 
   it("rate-limits each player to one accepted change per 3 s, last write wins", () => {
     const mgr = new RoomManager();
     const room = mgr.join("p1", "Pilot 1");
-    expect(room.setBotTarget("p1", 2, 0)).toBe(2);
-    // 1 s later, same player: dropped (3 s window), target untouched.
-    expect(room.setBotTarget("p1", 9, 1000)).toBeNull();
-    expect(room.botTarget).toBe(2);
+    expect(room.setIntensity("p1", 2, 0)).toBe(2);
+    // 1 s later, same player: dropped (3 s window), level untouched.
+    expect(room.setIntensity("p1", 3, 1000)).toBeNull();
+    expect(room.intensity).toBe(2);
     // A DIFFERENT player is not rate-limited by p1's write — and wins.
-    expect(room.setBotTarget("p2", 4, 1000)).toBe(4);
-    expect(room.botTarget).toBe(4);
+    expect(room.setIntensity("p2", 0, 1000)).toBe(0);
+    expect(room.intensity).toBe(0);
     // Once p1's window has passed, p1 can take it back.
-    expect(room.setBotTarget("p1", 9, 3001)).toBe(9);
-    expect(room.botTarget).toBe(9);
+    expect(room.setIntensity("p1", 3, 3001)).toBe(3);
+    expect(room.intensity).toBe(3);
   });
 
-  it("a bot-only room that is not the standing (first) room wants 0 bots", () => {
+  it("addBot registers an enemy as a member; leave() removes it and can empty the room", () => {
     const mgr = new RoomManager();
-    fill(mgr, 13); // rooms 1 and 2 exist
-    const second = mgr.roomOf("p13");
-    if (!second) throw new Error("expected a second room");
-    mgr.leave("p13");
-    // p13 left but the room lingers only if it still has members; simulate
-    // the bot that was backfilled into it surviving the leave.
-    mgr.addBot(second, "bot:room-2:1", "BANDIT-1");
-    expect(mgr.desiredBots(second)).toBe(0);
-  });
-
-  it("addBot registers the bot as a member; leave() despawns it and can empty the room", () => {
-    const mgr = new RoomManager();
-    const room = mgr.ensureRoom();
+    const room = mgr.join("p1", "Pilot 1");
     const entry = mgr.addBot(room, "bot:room-1:1", "BANDIT-1");
     expect(entry).toEqual({
       id: "bot:room-1:1",
       name: "BANDIT-1",
       isBot: true,
     });
+    mgr.leave("p1");
+    // The last human gone, its enemies still hold the room until they go.
     expect(room.humanCount).toBe(0);
     expect(room.members.size).toBe(1);
     expect(mgr.roomOf("bot:room-1:1")?.id).toBe(room.id);
     mgr.leave("bot:room-1:1");
     expect(mgr.rooms).toHaveLength(0);
-  });
-
-  it("ensureRoom returns the existing first room instead of minting a new one", () => {
-    const mgr = new RoomManager();
-    const room = mgr.join("p1", "Pilot 1");
-    expect(mgr.ensureRoom().id).toBe(room.id);
-    expect(mgr.rooms).toHaveLength(1);
   });
 });

@@ -25,14 +25,18 @@ import {
   generateMovers,
 } from "@angels-bandits/common/city/movers";
 import {
-  BOT_TARGET_MAX,
   CITY_SEED,
   RESPAWN_SPEED,
+  ROOM_CAP,
   TICK_DOWN_HZ,
 } from "@angels-bandits/common/constants";
 import type { SpawnState } from "@angels-bandits/common/protocol";
 import { canonicalize } from "@angels-bandits/common/world";
 import { type BotContact, RoomBots } from "../server/src/bots";
+
+/** The roster benched: a full room's worth of bots (one seat kept for a
+ * human — the old bot slider's ceiling). */
+const BOT_TARGET_MAX = ROOM_CAP - 1;
 
 const city = generateCity(CITY_SEED);
 const field = generateMovers(CITY_SEED, city);
@@ -78,7 +82,7 @@ function spawner(scenario: Scenario): () => SpawnState {
 function run(scenario: Scenario, movers: MoverField): number {
   const spawn = spawner(scenario);
   const bots = new RoomBots("room-0", 1234, city, movers);
-  bots.syncTo(BOT_TARGET_MAX, spawn);
+  for (let k = 0; k < BOT_TARGET_MAX; k++) bots.spawn(spawn());
 
   // Every living bot is a contact for every other one, so the brain takes the
   // ENGAGE path (and therefore fanAround, the expensive probe consumer).

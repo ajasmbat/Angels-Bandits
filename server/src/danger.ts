@@ -2,7 +2,7 @@
 // survivable, so every LETHAL event a director stages near a plane is
 // charged to that plane, and a plane that has had its share in the last
 // window is left alone for a while. One DangerBudget per room, shared by the
-// X1 missile director, the C2 chaos director (meteors, bomber runs) and the
+// X1 missile director, the C2 chaos director (meteors) and the
 // D5 destruction director; index.ts and the bot-sim harness drive exactly
 // this.
 //
@@ -11,22 +11,20 @@
 //    current position OR its straight-line position at the impact instant;
 //  - at most `total` events near one plane per window, and at most
 //    perLayer[layer] of them from one layer, so missiles every few seconds
-//    can never use up the allowance meteors, bombers and the director need;
+//    can never use up the allowance meteors and the director need;
 //  - nothing at all near a plane that is spawn-protected or (re)spawned
 //    less than freshMs ago;
-//  - a multi-impact event (a bomber run's carpet) is charged ONCE per plane.
+//  - a multi-impact event is charged ONCE per plane.
 //
 // Exempt on purpose (each has its own floor): S4 flak (reaction delay and
 // a per-second damage cap), fire (it never hurts planes), wreck and boss
-// sections and chain reactions (consequences of budgeted events), and the
-// bombers' hulls (visible solids the respawn picker keeps clear of).
+// sections and chain reactions (consequences of budgeted events).
 
 import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 
 export type DangerLayer =
   | "missile"
   | "meteor"
-  | "bomber"
   | "director"
   // U6: a cave-in ahead of a plane in a bore (server/src/caveins.ts) —
   // charged by id (allowsIds / chargeIds): `near()` flies straight and
@@ -47,7 +45,7 @@ export interface DangerTuning {
 export const DANGER_TUNING: DangerTuning = {
   windowMs: 30_000,
   total: 4,
-  perLayer: { missile: 2, meteor: 1, bomber: 1, director: 1, cavein: 2 },
+  perLayer: { missile: 2, meteor: 1, director: 1, cavein: 2 },
   nearM: 80,
   freshMs: 5000,
 };

@@ -19,7 +19,8 @@ const ONLY = process.argv[4] ? process.argv[4].split(",") : null;
 mkdirSync(OUT, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const server = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
-  env: { ...process.env, PORT: String(PORT) },
+  // W1: no carrier war — the gallery frames an empty sky.
+  env: { ...process.env, PORT: String(PORT), AB_WAVES: "0" },
   stdio: "ignore",
 });
 /** Yaw that points the nose along (dx, dz): yaw 0 faces -Z. */
@@ -256,7 +257,6 @@ try {
   await page.fill("#join-name", "SHOT");
   await page.click('#join button[type="submit"]');
   await page.waitForFunction(() => !!window.__ab, null, { timeout: 60000 });
-  await page.evaluate(() => window.__ab.setBots(0));
   await sleep(1500);
   for (const view of VIEWS) {
     if (ONLY && !ONLY.includes(view.name)) continue;

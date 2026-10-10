@@ -1,5 +1,5 @@
 // P4 perf gate: the C2 chaos the harness stages on the client, so a measured
-// window shows the same missiles, meteors, bomber run, quake and fires on
+// window shows the same missiles, meteors, quake and fires on
 // every pass. QA only — reached through `__ab.qaChaos` (main.ts), never from
 // gameplay; a plain visit runs none of it.
 //
@@ -10,31 +10,19 @@
 // WORLD clock (`__ab.pinWorld`): strike k of a schedule is launched at a
 // fixed world time at a target picked by a stream seeded from (seed, k),
 // through the SAME planners the server uses (pickMissileTarget, planMissile,
-// planMeteor, planBomberRun, bombDrops); the bomber run is placed so its
-// carpet is centred on a point ahead of the view at a known instant; the
-// quake shakes the whole window; the fires burn named chunks. The strikes
+// planMeteor); the quake shakes the whole window; the fires burn named chunks. The strikes
 // then fly X1's whole pipeline from the socket's `missiles` map — flight,
 // whistle, blast, debris — exactly as a server strike would.
 
 import {
-  BOMBER_INGRESS_M,
-  BOMBER_RUN_M,
-  BOMBER_SPEED,
-  BOMB_THROW_M,
-  type BomberRun,
-  type BomberSlot,
   type QuakeEvent,
-  bombDrops,
-  planBomberRun,
   planMeteor,
   roofPoint,
-  runEnd,
 } from "@angels-bandits/common/chaos";
 import {
   type Building,
   chunkId,
   mulberry32,
-  raycastChunk,
   tierGrids,
 } from "@angels-bandits/common/city";
 import type { CityIndex } from "@angels-bandits/common/collision";
@@ -49,8 +37,6 @@ import { type Vec3, wrapCoord } from "@angels-bandits/common/world";
 
 /** Staged strikes are numbered from here; anything below is the server's. */
 export const QA_STRIKE_BASE = 2_000_000_000;
-/** A staged bomber run's id: far above any the server hands out. */
-export const QA_RUN_ID = 900_101;
 /** A staged quake's id. */
 export const QA_QUAKE_ID = 900_201;
 /** Strikes per schedule the stage plans up front (far more than a window
@@ -87,9 +73,6 @@ export interface QaChaosSpec {
   missiles?: QaStrikeSchedule;
   /** C2 meteors onto roofs round `aim`. */
   meteors?: QaStrikeSchedule;
-  /** A C2 bomber run along the street line nearest `aim`, flying `dir`,
-   * its carpet's centre landing `crossMs` after `worldMs`. */
-  bombers?: { dir: 0 | 1 | 2 | 3; aim: QaAim; crossMs: number };
   /** A C2 quake shaking from `startMs` (offset from `worldMs`) for `dur`
    * ms at magnitude `mag`, its epicentre at `aim`. */
   quake?: { startMs: number; dur: number; mag: number; aim: QaAim };
@@ -102,7 +85,6 @@ export interface QaChaosStage {
   readonly spec: QaChaosSpec;
   /** Every staged strike, ascending launch time. */
   readonly strikes: readonly MissileStrike[];
-  readonly run: BomberRun | null;
   readonly quake: QuakeEvent | null;
   readonly fires: readonly number[];
   /** The next strike not yet handed to the socket's map. */
@@ -179,48 +161,6 @@ function planMeteors(
   }
 }
 
-/** The run and its carpet, the way server/src/chaos.ts builds them. */
-function planRun(
-  spec: QaChaosSpec,
-  b: NonNullable<QaChaosSpec["bombers"]>,
-  buildings: readonly Building[],
-  out: MissileStrike[],
-): BomberRun | null {
-  // The lead is over the carpet's centre (INGRESS + RUN / 2 along) at the
-  // crossing; planBomberRun centres the line `ahead` past the anchor, and a
-  // bomb lands BOMB_THROW_M past its drop.
-  const crossAt = spec.worldMs + b.crossMs;
-  const t0 =
-    crossAt - ((BOMBER_INGRESS_M + BOMBER_RUN_M / 2) / BOMBER_SPEED) * 1000;
-  const run = planBomberRun(
-    QA_RUN_ID,
-    t0,
-    aimPoint(spec, b.aim),
-    b.dir,
-    -BOMB_THROW_M,
-    buildings,
-  );
-  if (!run) return null;
-  let j = 0;
-  for (const d of bombDrops(run)) {
-    const hit = raycastChunk(
-      buildings,
-      { x: d.x, y: d.from.y, z: d.z },
-      { x: 0, y: -1, z: 0 },
-      d.from.y + 1,
-    );
-    const y = hit ? Math.max(0, Math.round((d.from.y - hit.t) * 10) / 10) : 0;
-    out.push({
-      id: QA_STRIKE_BASE + 2 * SCHEDULE_LEN + j++,
-      kind: "bomb",
-      from: d.from,
-      to: { x: d.x, y, z: d.z },
-      t0: d.t,
-    });
-  }
-  return run;
-}
-
 /** `n` chunks of building `bi` facing the view: its lowest tier's cells on
  * the face toward (x, z), bottom-up, then round the corners. */
 function fireChunks(
@@ -251,7 +191,7 @@ function fireChunks(
   return out;
 }
 
-/** Plan the whole stage: every strike, the run, the quake, the fires. */
+/** Plan the whole stage: every strike, the quake, the fires. */
 export function stageChaos(
   spec: QaChaosSpec,
   index: CityIndex,
@@ -261,12 +201,6 @@ export function stageChaos(
   if (spec.missiles)
     planMissiles(spec, spec.missiles, index, buildings, strikes);
   if (spec.meteors) planMeteors(spec, spec.meteors, buildings, strikes);
-  const run = spec.bombers
-    ? planRun(spec, spec.bombers, buildings, strikes)
-    : null;
-  if (spec.bombers && !run) {
-    throw new Error("qaChaos: no bomber run clears that street line");
-  }
   strikes.sort((a, b) => a.t0 - b.t0 || a.id - b.id);
   let quake: QuakeEvent | null = null;
   if (spec.quake) {
@@ -283,7 +217,6 @@ export function stageChaos(
   return {
     spec,
     strikes,
-    run,
     quake,
     fires: spec.fires ? fireChunks(buildings, spec.fires, spec) : [],
     next: 0,
@@ -297,7 +230,6 @@ export const isQaStrike = (id: number): boolean => id >= QA_STRIKE_BASE;
 /** What a frame holds of the stage. */
 export interface QaChaosHeld {
   missiles: Map<number, MissileStrike>;
-  bombers: BomberSlot;
   quakes: Map<number, QuakeEvent>;
   fires: Set<number>;
 }
@@ -306,7 +238,7 @@ export interface QaChaosHeld {
  * Re-apply the stage at world time `nowMs`: every staged strike launched by
  * now and still in the air joins `held.missiles` (once — the missile feed
  * removes it when it lands), any server strike is dropped and counted, and
- * the run, the quake and the fires are held while they last. Allocates
+ * the quake and the fires are held while they last. Allocates
  * nothing (the strikes are planned up front).
  */
 export function qaChaosFrame(
@@ -327,15 +259,6 @@ export function qaChaosFrame(
     // Launched before the stage was applied and already down: never seen.
     if (missileImpactAt(m) > nowMs) held.missiles.set(m.id, m);
   }
-  const run = stage.run;
-  if (run && nowMs <= runEnd(run)) {
-    const runs = held.bombers.runs;
-    let has = false;
-    for (let i = 0; i < runs.length; i++) {
-      if ((runs[i] as BomberRun).id === run.id) has = true;
-    }
-    if (!has) runs.push(run);
-  }
   const q = stage.quake;
   if (q && nowMs < q.t + q.dur && !held.quakes.has(q.id)) {
     held.quakes.set(q.id, q);
@@ -348,14 +271,6 @@ export function qaChaosFrame(
 export function clearQaChaos(stage: QaChaosStage, held: QaChaosHeld): void {
   for (const id of held.missiles.keys()) {
     if (isQaStrike(id)) held.missiles.delete(id);
-  }
-  const runs = held.bombers.runs;
-  for (let i = runs.length - 1; i >= 0; i--) {
-    if ((runs[i] as BomberRun).id === QA_RUN_ID) runs.splice(i, 1);
-  }
-  const downs = held.bombers.downs;
-  for (let i = downs.length - 1; i >= 0; i--) {
-    if (downs[i]?.r === QA_RUN_ID) downs.splice(i, 1);
   }
   held.quakes.delete(QA_QUAKE_ID);
   for (const id of stage.fires) held.fires.delete(id);

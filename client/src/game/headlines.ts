@@ -186,7 +186,7 @@ const METEOR_LEADS = [
 const BOMB_LEADS = [
   "BOMB RUN CATCHES",
   "CARPET BOMBING DOWNS",
-  "BOMBERS TAKE OUT",
+  "AIR RAID TAKES OUT",
 ];
 
 /** S4: brought down by the sky boss's flak (environment, like a missile). */

@@ -520,7 +520,6 @@ async function joinProfile(browser, port, profile) {
   if ((await page.evaluate(() => window.__ab.nanProbe())) === null) {
     throw new Error("this build has no ?nanprobe (render/nanprobe.ts)");
   }
-  await page.evaluate(() => window.__ab.setBots(0));
   await page.waitForFunction(
     () => window.__ab.combat().targets.length === 0,
     null,

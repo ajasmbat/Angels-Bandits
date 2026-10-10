@@ -72,7 +72,8 @@ const until = async (cond: () => boolean, ms: number) => {
 
 beforeAll(async () => {
   child = spawn(process.execPath, ["--import", "tsx", entry], {
-    env: { ...process.env, PORT: "0" },
+    // W1: no carrier war — no enemy fire in the scenes these tests stage.
+    env: { ...process.env, PORT: "0", AB_WAVES: "0" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   url = await new Promise<string>((resolve, reject) => {
@@ -125,10 +126,8 @@ describe("D4 wrecks over the wire", () => {
     };
 
     const a = await connect("Shooter");
-    a.ws.send(JSON.stringify({ type: "setBots", count: 0 }));
     const b = await connect("Victim");
     expect(b.welcome.roomId).toBe(a.welcome.roomId);
-    await until(() => a.seen.some((m) => m.type === "botsConfig"), 3000);
     const pose = () => {
       a.ws.send(JSON.stringify({ type: "pose", pose: poseA }));
       b.ws.send(JSON.stringify({ type: "pose", pose: poseB }));

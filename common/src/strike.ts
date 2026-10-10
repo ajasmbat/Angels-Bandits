@@ -24,8 +24,9 @@ import {
 export const MISSILE_FLIGHT_MS = 5000;
 /** C2: a meteor's streak from high over the city to its impact, ms. */
 export const METEOR_FLIGHT_MS = 4500;
-/** C2: a bomb's fall from its bomber to the city, ms. Its run (and so every
- * bomb in it) is announced long before the drop. */
+/** A bomb's fall from the plane that drops it to the city, ms. C2's jet
+ * formations dropped these; W1 retired them, and the kind stays as the seam
+ * for enemy planes' bombs (ANGE-GWM8VE). */
 export const BOMB_FALL_MS = 2600;
 /** The rising whistle starts this long before impact, ms. */
 export const MISSILE_WHISTLE_MS = 2000;
@@ -57,8 +58,8 @@ export const MISSILE_SHOOTER_ID = "@missile";
 
 /** A cruise missile skims in low; an artillery round lobs in from on high.
  * C2 adds two more things that fall on the city along the same pipeline: a
- * meteor (a straight fiery streak from ~900 m up) and a bomb (dropped by a
- * bomber run, common/src/chaos.ts). */
+ * meteor (a straight fiery streak from ~900 m up) and a bomb (dropped from a
+ * plane; see BOMB_FALL_MS). */
 export type MissileKind = "cruise" | "artillery" | "meteor" | "bomb";
 
 /** Launch (or drop) → impact for each kind, ms. Every one of them is at
@@ -147,7 +148,7 @@ export function missilePosAt(s: MissileStrike, t: number, out: Vec3): Vec3 {
   const dx = wrapDeltaAxis(s.from.x, s.to.x);
   const dz = wrapDeltaAxis(s.from.z, s.to.z);
   if (s.kind === "bomb") {
-    // A dropped bomb: it keeps (most of) its bomber's way, slowing as drag
+    // A dropped bomb: it keeps (most of) its plane's way, slowing as drag
     // takes it, and falls faster and faster — u(2 − u) across, u² down.
     const h = u * (2 - u);
     out.x = wrap(s.from.x + dx * h);

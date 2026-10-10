@@ -77,6 +77,7 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 interface RoomMaps {
   rooms: string[];
   botsByRoom: string[];
+  wavesByRoom: string[];
   cityEvents: string[];
   roomMoversById: string[];
   pendingKillByRoom: string[];
@@ -89,7 +90,13 @@ const roomMaps = async (): Promise<RoomMaps> =>
 /** Every per-room map that holds `roomId`. */
 const holding = (maps: RoomMaps, roomId: string): string[] =>
   (
-    ["botsByRoom", "cityEvents", "roomMoversById", "pendingKillByRoom"] as const
+    [
+      "botsByRoom",
+      "wavesByRoom",
+      "cityEvents",
+      "roomMoversById",
+      "pendingKillByRoom",
+    ] as const
   ).filter((k) => maps[k].includes(roomId));
 
 describe("join deadline", () => {
@@ -124,21 +131,13 @@ describe("join deadline", () => {
 });
 
 describe("room disposal", () => {
-  it("frees every per-room map when the last human leaves a 0-bot room, and never touches a live arena", async () => {
+  it("frees every per-room map when the last human leaves, and never touches a live room", async () => {
     const a = await connect("Alone");
     const doomed = a.welcome.roomId;
-    expect(a.welcome.roster.some((r) => r.isBot)).toBe(true);
-
-    a.ws.send(JSON.stringify({ type: "setBots", count: 0 }));
-    const deadline = Date.now() + 5000;
-    while (
-      Date.now() < deadline &&
-      a.seen.filter((m) => m.type === "playerLeft").length <
-        a.welcome.roster.filter((r) => r.isBot).length
-    ) {
-      await wait(50);
-    }
-    expect((await roomMaps()).botsByRoom).toContain(doomed);
+    // W1: no backfill — a fresh room holds no bots; enemy planes only ever
+    // come off its carrier.
+    expect(a.welcome.roster.some((r) => r.isBot)).toBe(false);
+    expect((await roomMaps()).rooms).toContain(doomed);
 
     a.ws.close();
     await closed(a.ws);
@@ -150,21 +149,20 @@ describe("room disposal", () => {
     await wait(500);
     expect(holding(await roomMaps(), doomed)).toEqual([]);
 
-    // The next joiner starts a fresh standing room, which flies bots.
+    // The next joiner starts a fresh room, which lives while they are in it…
     const b = await connect("Next");
     const arena = b.welcome.roomId;
     expect(arena).not.toBe(doomed);
-    // Its bots take their seats right after the welcome.
-    await wait(300);
-    expect(
-      b.seen.some((m) => m.type === "playerJoined" && m.player.isBot),
-    ).toBe(true);
+    await wait(500);
+    maps = await roomMaps();
+    expect(maps.rooms).toContain(arena);
+    expect(maps.roomMoversById).toContain(arena);
+    // …and, with no standing bot arena any more, goes with them.
     b.ws.close();
     await closed(b.ws);
     await wait(500);
     maps = await roomMaps();
-    expect(maps.rooms).toContain(arena);
-    expect(maps.botsByRoom).toContain(arena);
-    expect(maps.roomMoversById).toContain(arena);
+    expect(maps.rooms).not.toContain(arena);
+    expect(holding(maps, arena)).toEqual([]);
   }, 20000);
 });

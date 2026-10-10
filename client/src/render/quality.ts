@@ -171,10 +171,9 @@ export interface QualityProfile {
    * themselves (the telegraph) are identical on every tier. */
   bossFx: number;
   /** C2 constant chaos: share of the cosmetic dressing — a meteor's fire
-   * trail, the spreading fires' flames and smoke, a downed bomber's burst
-   * (all into the D1 particle pool). The meteor fireball and its city-wide
-   * glint, the bombs, the bombers (solid) and their lights, and the quake's
-   * shake and rumble — the telegraphs — are identical on every tier. */
+   * trail and the spreading fires' flames and smoke (all into the D1
+   * particle pool). The meteor fireball and its city-wide glint, the bombs,
+   * and the quake's shake and rumble — the telegraphs — are identical on every tier. */
   chaosFx: number;
   /** S5 wind litter: share of each block's scraps kept (stride thinning). */
   litter: number;
@@ -874,16 +873,15 @@ export const FEATURE_TIERS: readonly {
     note: "S8: DOM and audio, no draw; the warning is the telegraph, so it is on every tier",
   },
   {
-    feature: "C2 chaos — meteors, bombs, bombers and their lights, quake shake",
+    feature: "C2 chaos — meteors, bombs, quake shake",
     high: "full",
     medium: "full",
     low: "full",
     mobile: "full",
-    note: "the telegraphs and the solids: the meteor fireball and its fog-free glint (one instanced draw + one Points), bombs in the missile pool, the bombers (one instanced draw, solid) and their lights (one Points), the quake's shake and rumble — the same everywhere",
+    note: "the telegraphs: the meteor fireball and its fog-free glint (one instanced draw + one Points), bombs in the missile pool, the quake's shake and rumble — the same everywhere",
   },
   {
-    feature:
-      "C2 chaos — meteor fire trails, spreading fires, downed-bomber bursts",
+    feature: "C2 chaos — meteor fire trails, spreading fires",
     high: "full",
     medium: "reduced",
     low: "reduced",

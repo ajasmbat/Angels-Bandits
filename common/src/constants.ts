@@ -835,15 +835,8 @@ export const LAB_ROOM_CAP = 8;
  * full"), in the 4000–4999 application range. */
 export const LAB_FULL_CODE = 4001;
 
-// --- Bots (B1) — every knob for the server-side backfill pilots ---
-/** Bot count a fresh room starts at, before anyone touches the slider. */
-export const BOT_TARGET_DEFAULT = 5;
-/** Highest bot count the shared slider can ask for. One seat is always kept
- * for a human, so the arena can never be locked to bots only. */
-export const BOT_TARGET_MAX = ROOM_CAP - 1;
-/** One accepted bot-count change per player per this long, ms — the shared
- * slider's only governance besides last-write-wins (ANGE-6STDNN). */
-export const BOT_TARGET_RATE_MS = 3000;
+// --- Bots (B1) — every knob for the server-side pilots (W1: the carrier's
+// enemy planes; how many and when is common/src/waves.ts) ---
 /**
  * Extra clearance a bot's probe demands around an L2 mover, m — on top of the
  * probe radius and the swept-sample padding in blockedAlong.

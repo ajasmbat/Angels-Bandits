@@ -61,13 +61,12 @@
 //
 // C2 constant chaos: BOT_SIM_CHAOS=1 runs EVERY layer at production cadence
 // — X1 strikes, the D5 director and its rebuilds, the S4 boss on its real
-// schedule, and the C2 chaos director (meteors, bomber runs, quakes,
-// spreading fire) — with the room's DangerBudget shared between them, the
-// gone-share hold and the bombers in the room's mover field (solid for
-// bots, probed): the paths index.ts uses. Every bot counts as a watched
-// human (the worst case).
-// The report counts deaths by cause — missile, meteor, bomb, into a bomber,
-// flak, collapse by origin, crash — and the chaos tick's cost.
+// schedule, and the C2 chaos director (meteors, quakes, spreading fire) —
+// with the room's DangerBudget shared between them and the gone-share
+// hold: the paths index.ts uses. Every bot counts as a watched human (the
+// worst case).
+// The report counts deaths by cause — missile, meteor, flak, collapse by
+// origin, crash — and the chaos tick's cost.
 //
 // MAIN_* are the same harness's numbers on main before B1 (bots mostly high,
 // spawned at RESPAWN_ALTITUDE), same seeds and run length — the bar the
@@ -79,7 +78,6 @@ import {
   collideBoss,
   raidMaxHp,
 } from "@angels-bandits/common/boss";
-import { collideBombers } from "@angels-bandits/common/chaos";
 import {
   type Building,
   chunkId,
@@ -122,7 +120,7 @@ import {
   inDangerZone,
 } from "@angels-bandits/common/director";
 import { flakHazard, missileHazard } from "@angels-bandits/common/hazards";
-import type { SpawnState } from "@angels-bandits/common/protocol";
+import type { RosterEntry, SpawnState } from "@angels-bandits/common/protocol";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
 import {
@@ -167,6 +165,16 @@ import {
   applyMissileImpact,
 } from "../src/strikes";
 import { RoomWrecks, applyWreckImpact, impactPos } from "../src/wrecks";
+
+/** Spawn `n` bots, each where `pick` says (W1 removed RoomBots.syncTo's
+ * backfill: the room spawns its enemies one carrier launch at a time). */
+const spawnBots = (
+  bots: RoomBots,
+  n: number,
+  pick: () => SpawnState,
+): { spawned: RosterEntry[] } => ({
+  spawned: Array.from({ length: n }, () => bots.spawn(pick())),
+});
 
 const ROOMS = Number(process.env.BOT_SIM_ROOMS ?? 18);
 /** Two disjoint seed sets. Tuning happens on `tune` (BOT_SIM_SET=tune); the
@@ -333,12 +341,10 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
     const maneuvers = new Map<string, number>();
     let maneuverCrashes = 0;
     let humanLevel = 0;
-    /** C2: kills by meteor and by bomb (the rest of missileKills are X1's),
-     * bots that flew into a bomber, what the chaos staged, and its cost. */
+    /** C2: kills by meteor (the rest of missileKills are X1's), what the
+     * chaos staged, and its cost. */
     let meteorKills = 0;
-    let bombKills = 0;
-    let bomberCrashes = 0;
-    const chaosStaged = { meteors: 0, runs: 0, quakes: 0, broke: 0 };
+    const chaosStaged = { meteors: 0, quakes: 0, broke: 0 };
     const chaosMs: number[] = [];
 
     for (let room = 0; room < ROOMS; room++) {
@@ -395,7 +401,6 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
             ...movers,
             collapses: rc.collapses,
             ...(boss && { boss: boss.slot }),
-            ...(chaos && { bombers: chaos.slot }),
           }
         : movers;
       const bots = new RoomBots(
@@ -467,7 +472,7 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         if (spawn.pos.y < RESPAWN_ALTITUDE) streetSpawns++;
         return spawn;
       };
-      const roster = bots.syncTo(BOTS, () => pick([], 0)).spawned;
+      const roster = spawnBots(bots, BOTS, () => pick([], 0)).spawned;
       const inZone = new Set<string>();
       /** D3 director stand-in: shoot out floor band 1 of the standing tower
        * nearest the first living bot (nobody to credit). */
@@ -602,9 +607,8 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
               if (hit.death) {
                 bots.setDead(v.id);
                 if (m.kind === "meteor") meteorKills++;
-                else if (m.kind === "bomb") bombKills++;
                 else missileKills++;
-              } else if (m.kind !== "meteor" && m.kind !== "bomb") {
+              } else if (m.kind !== "meteor") {
                 // index.ts landMissile: no break turn for a C2 blast.
                 bots.onDamaged(v.id, now);
               }
@@ -640,15 +644,9 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
               missiles: director,
               budget,
               index: rc.index,
-              obstacles: movers.cranes.map((c) => ({
-                x: c.x,
-                z: c.z,
-                top: c.hubY + 3,
-              })),
             });
             chaosMs.push(performance.now() - c0);
             chaosStaged.meteors += out.meteors.length;
-            chaosStaged.runs += out.runs.length;
             chaosStaged.quakes += out.quakes.length;
             chaosStaged.broke += out.broke.length;
           }
@@ -727,15 +725,6 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
             collideBoss(boss.slot, site, PLAYER_RADIUS + 1, now)
           ) {
             if (combat.crash(id, now)) hullCrashes++;
-            continue;
-          }
-          // C2: flown into a bomber (counted apart from the city).
-          if (
-            chaos &&
-            site &&
-            collideBombers(chaos.slot, site, PLAYER_RADIUS + 1, now)
-          ) {
-            if (combat.crash(id, now)) bomberCrashes++;
             continue;
           }
           // D3: crushed by falling debris is a collapse kill, not a crash.
@@ -996,12 +985,12 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         `D5 kills by event      ${DIRECTOR ? `demolition ${directorKills.collapse}, crane ${directorKills.crane}, gas ${directorKills.gas}, chain collapse ${directorKills.chain} (${((directorKills.collapse + directorKills.crane + directorKills.gas + directorKills.chain) / botMinutes).toFixed(3)} / bot-min; not in crashes)` : "off"}`,
         `S4 boss                ${BOSS || CHAOS ? `${bossHits} bot hits on weak points (${((100 * bossHits * BULLET_DAMAGE) / Math.max(1, bossHpTotal)).toFixed(1)}% of all boss HP), ${bossDowns}/${ROOMS} downed (at ${bossDownS.map((x) => x.toFixed(0)).join(", ") || "-"} s), ${bossLandings} sections landed` : "off"}`,
         `S4 flak                ${BOSS || CHAOS ? `${flakShells} shells, ${flakHits} bot hits, ${flakKills} kills (${(flakKills / botMinutes).toFixed(3)} / bot-min), ${hullCrashes} bots flew into the hull` : "off"}`,
-        `C2 chaos               ${CHAOS ? `${chaosStaged.meteors} meteors, ${chaosStaged.runs} bomber runs, ${chaosStaged.quakes} quakes, ${chaosStaged.broke} chunks broken by quakes/fire; kills: meteor ${meteorKills}, bomb ${bombKills}, into a bomber ${bomberCrashes} (${((meteorKills + bombKills + bomberCrashes) / botMinutes).toFixed(3)} / bot-min); chaos tick ms p50 ${q(chaosMs, 0.5).toFixed(3)} p99 ${q(chaosMs, 0.99).toFixed(3)} max ${q(chaosMs, 1).toFixed(3)}` : "off"}`,
+        `C2 chaos               ${CHAOS ? `${chaosStaged.meteors} meteors, ${chaosStaged.quakes} quakes, ${chaosStaged.broke} chunks broken by quakes/fire; kills: meteor ${meteorKills} (${(meteorKills / botMinutes).toFixed(3)} / bot-min); chaos tick ms p50 ${q(chaosMs, 0.5).toFixed(3)} p99 ${q(chaosMs, 0.99).toFixed(3)} max ${q(chaosMs, 1).toFixed(3)}` : "off"}`,
         `B3 tactics             ${TACTICS ? `${tactic.boomPasses} boom passes (${tactic.zooms} zooms), ${tactic.pincerDecisions} pincer decisions, ${tactic.breakOffs} break-offs, ${tactic.defendBreaks} defensive breaks, ${tactic.dodges} hazard dodges, ${tactic.decisions} decisions` : "off (pre-B3 brain)"}`,
         `B3 aerobatics          ${[...maneuvers].map(([k, n]) => `${k} ${n}`).join(", ") || "none"}; ${maneuverCrashes} crashes within 2 s of one`,
-        `B3 hazards             ${((missileHits + flakHits) / botMinutes).toFixed(3)} hits / bot-min, ${((missileKills + flakKills + hullCrashes + collapseKills + directorKills.collapse + directorKills.crane + directorKills.gas + directorKills.chain + meteorKills + bombKills + bomberCrashes) / botMinutes).toFixed(3)} deaths / bot-min (missile, meteor, bomb, flak, hull, bomber, collapse, director); with D4 wrecks flown into ${((missileKills + flakKills + hullCrashes + collapseKills + directorKills.collapse + directorKills.crane + directorKills.gas + directorKills.chain + meteorKills + bombKills + bomberCrashes + wreckKills) / botMinutes).toFixed(3)}`,
+        `B3 hazards             ${((missileHits + flakHits) / botMinutes).toFixed(3)} hits / bot-min, ${((missileKills + flakKills + hullCrashes + collapseKills + directorKills.collapse + directorKills.crane + directorKills.gas + directorKills.chain + meteorKills) / botMinutes).toFixed(3)} deaths / bot-min (missile, meteor, flak, hull, collapse, director); with D4 wrecks flown into ${((missileKills + flakKills + hullCrashes + collapseKills + directorKills.collapse + directorKills.crane + directorKills.gas + directorKills.chain + meteorKills + wreckKills) / botMinutes).toFixed(3)}`,
         `B3 skill               ${SKILL ? `${SKILL} human (level ${humanLevel.toFixed(2)}): ${humanHits} hits` : "neutral"}`,
-        `deaths / bot-min       ${((crashes + kills + flakKills + hullCrashes + collapseKills + missileKills + wreckKills + directorKills.collapse + directorKills.crane + directorKills.gas + directorKills.chain + meteorKills + bombKills + bomberCrashes) / botMinutes).toFixed(3)} (every cause)`,
+        `deaths / bot-min       ${((crashes + kills + flakKills + hullCrashes + collapseKills + missileKills + wreckKills + directorKills.collapse + directorKills.crane + directorKills.gas + directorKills.chain + meteorKills) / botMinutes).toFixed(3)} (every cause)`,
         "",
         `crash breakdown (${TUNE ? "tune" : "holdout"} seeds; roofs hit p10/p50/p90 m: ${quantiles(roofsHit)}):`,
         ...[...crashKinds]

@@ -126,7 +126,7 @@ export function pickRespawn(
 /**
  * A2: a join spawn is picked at JOIN, but the plane only enters the world
  * when its first pose arrives — up to BOOT_TIMEOUT_MS later, time enough for
- * a raid, a bomber run or a warned hazard to move onto it. Null while the
+ * a raid or a warned hazard to move onto it. Null while the
  * held pose (heading included) is still clear; otherwise a fresh spawn by
  * pickRespawn's own rules.
  */

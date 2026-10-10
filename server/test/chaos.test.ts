@@ -14,33 +14,21 @@
 
 import {
   BOSS_TUNING,
-  BOSS_TUNING_S4,
   BOSS_WEAK_POINTS,
   type BossRaid,
   raidEnd,
+  raidTier,
 } from "@angels-bandits/common/boss";
 import {
-  BOMBER_COUNT,
-  BOMBER_PARTS,
-  CHAOS_BOMBER,
   CHAOS_CADENCE,
   CHAOS_METEOR,
   CHAOS_QUAKE,
   type ChaosLayer,
   QUAKE_LEAD_MS,
-  blankBomberPose,
-  bomberPartBoxInto,
-  bomberPoseInto,
-  bomberRayHit,
   chaosSlotsInWindow,
-  collideBombers,
-  decodeBomberRun,
   decodeQuake,
-  emptyBomberSlot,
-  encodeBomberRun,
   encodeQuake,
   holdNear,
-  planBomberRun,
 } from "@angels-bandits/common/chaos";
 import {
   type Building,
@@ -48,7 +36,6 @@ import {
   generateCity,
   mulberry32,
 } from "@angels-bandits/common/city";
-import type { MoverBox } from "@angels-bandits/common/city/movers";
 import { generateMovers } from "@angels-bandits/common/city/movers";
 import {
   CITY_SEED,
@@ -60,13 +47,13 @@ import {
   DIRECTOR_WARN_MIN_MS,
 } from "@angels-bandits/common/director";
 import {
-  BOMB_FALL_MS,
   MISSILE_TELEGRAPH_MIN_MS,
   type MissileStrike,
   decodeMissile,
   encodeMissile,
   missileImpactAt,
 } from "@angels-bandits/common/strike";
+import { NEXT_CARRIER_MS } from "@angels-bandits/common/waves";
 import {
   type Vec3,
   wrapCoord,
@@ -298,7 +285,6 @@ function simulate(minutes: number, seed = 7): SimLog {
   for (const f of FLYERS) noteSpawn(f.id, flyerAt(f, T0).pos, T0 - 10_000);
 
   const end = T0 + minutes * 60_000;
-  const bombDrop = new Map<number, MissileStrike>();
   for (let t = T0; t < end; t += DT) {
     // A wingman respawns every 45 s (fresh for 5 s: nothing lethal near).
     if ((t - T0) % 45_000 === 0 && t > T0) {
@@ -312,7 +298,7 @@ function simulate(minutes: number, seed = 7): SimLog {
       prot: fresh(f.id, t),
     }));
     applyGoneHold(rc);
-    // Missiles (and meteors, bombs): land what is due, then launch.
+    // Missiles (and meteors): land what is due, then launch.
     for (const m of missiles.settle(t)) {
       const broke = applyMissileImpact(rc, m);
       chaos.ignite(broke, t, rc);
@@ -321,7 +307,6 @@ function simulate(minutes: number, seed = 7): SimLog {
         m.kind === "cruise" || m.kind === "artillery" ? "missile" : m.kind,
         m.to,
       );
-      bombDrop.delete(m.id);
     }
     const dPlanes: DirectorPlane[] = planes.map((p) => ({
       ...p,
@@ -352,13 +337,6 @@ function simulate(minutes: number, seed = 7): SimLog {
       budget,
       index: rc.index,
     });
-    // Bombs that dropped this tick and were not called off: no fresh plane
-    // under them.
-    for (const [id, m] of bombDrop) {
-      if (m.t0 > t || m.t0 <= t - DT) continue;
-      if (!missiles.missiles().some((x) => x.id === id)) continue;
-      checkFresh("bomb", t, [m.to], BOMB_FALL_MS, planes);
-    }
     for (const m of out.meteors) {
       checkFresh("meteor", t, [m.to], missileImpactAt(m) - t, planes);
       log.lethal.push({
@@ -368,20 +346,6 @@ function simulate(minutes: number, seed = 7): SimLog {
         where: m.to,
       });
       log.trace.push(`m${m.id}@${m.t0}:${m.to.x},${m.to.z}`);
-    }
-    for (const { run, bombs } of out.runs) {
-      log.trace.push(
-        `B${run.id}@${run.t0}:${run.x},${run.z},${run.dir},${run.alt}`,
-      );
-      for (const b of bombs) {
-        bombDrop.set(b.id, b);
-        log.lethal.push({
-          layer: "bomber",
-          warned: t,
-          at: missileImpactAt(b),
-          where: b.to,
-        });
-      }
     }
     for (const q of out.quakes) {
       log.quakes.push({ warned: t, t: q.t });
@@ -452,11 +416,7 @@ beforeAll(() => {
 
 describe("C2 schedules are deterministic", () => {
   it("every layer's slots are pure in (seed, window), partition the timeline and keep their band", () => {
-    for (const layer of [
-      CHAOS_METEOR,
-      CHAOS_BOMBER,
-      CHAOS_QUAKE,
-    ] as ChaosLayer[]) {
+    for (const layer of [CHAOS_METEOR, CHAOS_QUAKE] as ChaosLayer[]) {
       const a = chaosSlotsInWindow(42, layer, 0, 3_600_000);
       expect(chaosSlotsInWindow(42, layer, 0, 3_600_000)).toEqual(a);
       // Abutting windows give the same slots as one long one.
@@ -476,27 +436,16 @@ describe("C2 schedules are deterministic", () => {
     }
   });
 
-  it("the same seed and the same planes stage the same meteors, runs, quakes, missiles and director events", () => {
+  it("the same seed and the same planes stage the same meteors, quakes, missiles and director events", () => {
     const a = simulate(4, 11).trace;
     const b = simulate(4, 11).trace;
     expect(a.length).toBeGreaterThan(20);
     expect(b).toEqual(a);
     expect(a.some((s) => s.startsWith("m"))).toBe(true);
-    expect(a.some((s) => s.startsWith("B"))).toBe(true);
     expect(a.some((s) => s.startsWith("Q"))).toBe(true);
   }, 300_000);
 
-  it("runs, quakes and their bombs survive the wire bit for bit", () => {
-    const run = planBomberRun(
-      9,
-      T0 + 0.4,
-      { x: 1000, y: 0, z: 1000 },
-      1,
-      0,
-      SEED_CITY,
-    );
-    if (!run) throw new Error("no run");
-    expect(decodeBomberRun(encodeBomberRun(run))).toEqual(run);
+  it("quakes and every strike kind survive the wire bit for bit", () => {
     const q = { id: 3, t: T0 + 3000, dur: 5123, mag: 0.73, x: 12.3, z: 1999.9 };
     expect(decodeQuake(encodeQuake(q))).toEqual(q);
     for (const kind of ["cruise", "artillery", "meteor", "bomb"] as const) {
@@ -520,7 +469,7 @@ describe("the boss is always up", () => {
     index: createRoomCity(SEED_CITY).index,
   };
 
-  it("is in the sky ≥ 90 % of a 30-min session nobody shoots it down in, the first ~30 s after the human arrives", () => {
+  it("is in the sky ≥ 90 % of a 30-min session nobody shoots it down in, the first 4–6 s after the human arrives", () => {
     const boss = new BossDirector(mulberry32(2), BOSS_TUNING);
     let up = 0;
     let ticks = 0;
@@ -532,12 +481,12 @@ describe("the boss is always up", () => {
       ticks++;
     }
     expect(first).not.toBeNull();
-    expect((first as number) - T0).toBeGreaterThanOrEqual(25_000);
-    expect((first as number) - T0).toBeLessThanOrEqual(35_000 + DT);
+    expect((first as number) - T0).toBeGreaterThanOrEqual(4000);
+    expect((first as number) - T0).toBeLessThanOrEqual(6000 + DT);
     expect(up / ticks).toBeGreaterThanOrEqual(0.9);
   });
 
-  it("comes back 60–90 s after it is shot down", () => {
+  it("W1: the next carrier comes 20 s after it is shot down, one tier up, after its sections have all landed", () => {
     const boss = new BossDirector(mulberry32(4), BOSS_TUNING);
     let raid: BossRaid | null = null;
     let t = T0;
@@ -545,25 +494,30 @@ describe("the boss is always up", () => {
     // Shoot every weak point out a minute into the raid.
     t = raid.t0 + 60_000;
     boss.tick(t, true, [], world);
-    let ended: number | null = null;
+    let downAt: number | null = null;
+    let landed: number | null = null;
     for (let k = 0; k < BOSS_WEAK_POINTS.length; k++) {
-      for (let n = 0; n < 200; n++) {
+      for (let n = 0; n < 400; n++) {
         const hit = boss.damage("p", k, t, world);
         if (hit?.down) {
-          ended = hit.down.t + Math.max(...hit.down.pieces.map((p) => p.end));
+          downAt = hit.down.t;
+          landed = hit.down.t + Math.max(...hit.down.pieces.map((p) => p.end));
         }
       }
     }
-    if (ended === null) throw new Error("never went down");
+    if (downAt === null || landed === null) throw new Error("never went down");
+    // Its sections are all down well inside the gap: the next carrier never
+    // cuts the falling wreck short.
+    expect(landed - downAt).toBeLessThan(NEXT_CARRIER_MS);
     let next: BossRaid | null = null;
-    for (t += DT; t < ended + 5 * 60_000 && !next; t += DT) {
+    for (t += DT; t < downAt + 5 * 60_000 && !next; t += DT) {
       next = boss.tick(t, true, [], world).started;
     }
     if (!next) throw new Error("never came back");
-    expect(next.t0 - ended).toBeGreaterThanOrEqual(60_000);
-    expect(next.t0 - ended).toBeLessThanOrEqual(90_000 + DT);
-    // Long before S4's 15 minutes.
-    expect(next.t0 - raid.t0).toBeLessThan(BOSS_TUNING_S4.periodMs);
+    expect(next.t0 - downAt).toBeGreaterThanOrEqual(NEXT_CARRIER_MS);
+    expect(next.t0 - downAt).toBeLessThanOrEqual(NEXT_CARRIER_MS + DT);
+    expect(raidTier(next)).toBe(raidTier(raid) + 1);
+    expect(next.hpScale).toBeGreaterThan(raid.hpScale);
     expect(raidEnd(next)).toBeGreaterThan(next.t0);
   });
 });
@@ -591,14 +545,7 @@ describe("constant destruction, survivable (60-min room)", () => {
       }
     }
     expect(maxGap).toBeLessThanOrEqual(20_000);
-    for (const kind of [
-      "missile",
-      "meteor",
-      "bomb",
-      "director",
-      "collapse",
-      "quake",
-    ]) {
+    for (const kind of ["missile", "meteor", "director", "collapse", "quake"]) {
       expect(hour.mix[kind] ?? 0).toBeGreaterThan(0);
     }
   });
@@ -627,11 +574,10 @@ describe("constant destruction, survivable (60-min room)", () => {
     expect(hour.freshViolations).toEqual([]);
   });
 
-  it("warns of every lethal event at least its floor ahead: strikes, meteors and bombs ≥ 1.8 s, director events and quakes ≥ 3 s", () => {
+  it("warns of every lethal event at least its floor ahead: strikes and meteors ≥ 1.8 s, director events and quakes ≥ 3 s", () => {
     const floor: Record<DangerLayer, number> = {
       missile: MISSILE_TELEGRAPH_MIN_MS,
       meteor: MISSILE_TELEGRAPH_MIN_MS,
-      bomber: MISSILE_TELEGRAPH_MIN_MS,
       director: DIRECTOR_WARN_MIN_MS,
     };
     const seen = new Set<DangerLayer>();
@@ -639,12 +585,7 @@ describe("constant destruction, survivable (60-min room)", () => {
       seen.add(e.layer);
       expect(e.at - e.warned).toBeGreaterThanOrEqual(floor[e.layer]);
     }
-    expect([...seen].sort()).toEqual([
-      "bomber",
-      "director",
-      "meteor",
-      "missile",
-    ]);
+    expect([...seen].sort()).toEqual(["director", "meteor", "missile"]);
     expect(hour.quakes.length).toBeGreaterThan(10);
     for (const q of hour.quakes) {
       expect(q.t - q.warned).toBeGreaterThanOrEqual(QUAKE_LEAD_MS);
@@ -677,11 +618,11 @@ describe("the danger budget", () => {
     expect(b.take("meteor", [at(540)], 4500, T0 + 2000, p)).toBe(true);
     expect(b.take("director", [at(540)], 3500, T0 + 3000, p)).toBe(true);
     // Four in the window: even an unspent layer is refused.
-    expect(b.allows("bomber", [at(540)], 0, T0 + 4000, p)).toBe(false);
+    expect(b.allows("cavein", [at(540)], 0, T0 + 4000, p)).toBe(false);
     // Far from the plane is not "near" it.
     expect(b.allows("missile", [at(800)], 5000, T0 + 4000, p)).toBe(true);
     // The window slides.
-    expect(b.allows("bomber", [at(540)], 0, T0 + 31_000, p)).toBe(true);
+    expect(b.allows("cavein", [at(540)], 0, T0 + 31_000, p)).toBe(true);
     // Fresh: spawn-protected, or (re)spawned under 5 s ago.
     expect(
       b.allows("missile", [at(520)], 5000, T0, [plane("x", 500, true)]),
@@ -696,61 +637,12 @@ describe("the danger budget", () => {
   });
 });
 
-describe("bombers are solid and shootable where they are drawn", () => {
-  it("a sphere at each drawn box's centre collides, a round through it hits that ship, and a downed ship is neither", () => {
-    const run = planBomberRun(
-      1,
-      T0,
-      { x: 1000, y: 0, z: 1000 },
-      0,
-      0,
-      SEED_CITY,
-    );
-    if (!run) throw new Error("no run");
-    const slot = emptyBomberSlot();
-    slot.runs.push(run);
-    const t = T0 + 9000;
-    const pose = blankBomberPose();
-    const box = { kind: "bomber" } as MoverBox;
-    for (let k = 0; k < BOMBER_COUNT; k++) {
-      bomberPoseInto(run, k, t, pose);
-      for (let i = 0; i < BOMBER_PARTS.length; i++) {
-        bomberPartBoxInto(pose, i, box);
-        expect(collideBombers(slot, box, 0.1, t)).not.toBeNull();
-      }
-      const hit = bomberRayHit(
-        slot,
-        { x: pose.x, y: pose.y - 100, z: pose.z },
-        { x: 0, y: 1, z: 0 },
-        350,
-        t,
-      );
-      expect(hit?.k).toBe(k);
-      expect(
-        collideBombers(slot, { x: pose.x, y: pose.y + 30, z: pose.z }, 2, t),
-      ).toBeNull();
-    }
-    slot.downs.push({ r: run.id, k: 0, t: t - 1 });
-    bomberPoseInto(run, 0, t, pose);
-    expect(collideBombers(slot, pose, 0.5, t)).toBeNull();
-    expect(
-      bomberRayHit(
-        slot,
-        { x: pose.x, y: pose.y - 100, z: pose.z },
-        { x: 0, y: 1, z: 0 },
-        350,
-        t,
-      ),
-    ).toBeNull();
-  });
-});
-
 describe("AB_CHAOS=0 is an exact rollback", () => {
   it("restores every pre-C2 tuning and switches the new layers, budget and hold off", () => {
     const off = chaosTunings({ AB_CHAOS: "0" });
-    expect(off.boss).toEqual(BOSS_TUNING_S4);
-    expect(off.boss.periodMs).toBe(15 * 60_000);
-    expect(off.boss.firstMinMs).toBe(240_000);
+    // W1: the carrier's schedule is the game loop, not a C2 layer.
+    expect(off.boss).toEqual(BOSS_TUNING);
+    expect(off.waves).toBe(true);
     expect(off.missile).toEqual(X1_TUNING);
     expect(off.missile.areaMinMs).toBe(20_000);
     expect(off.missile.maxInFlight).toBe(3);
@@ -770,5 +662,10 @@ describe("AB_CHAOS=0 is an exact rollback", () => {
     expect(on.danger).toEqual(DANGER_TUNING);
     expect(on.destroyCap).toBe(DESTROY_CAP);
     expect(on.hold).toBe(true);
+    expect(on.waves).toBe(true);
+    // W1: AB_WAVES=0 switches the carrier war off, and nothing else.
+    const calm = chaosTunings({ AB_WAVES: "0" });
+    expect(calm.waves).toBe(false);
+    expect({ ...calm, waves: true }).toEqual(on);
   });
 });

@@ -8,11 +8,26 @@ import { fileURLToPath } from "node:url";
 import { generateCity } from "@angels-bandits/common/city";
 import { SMOKE_LIFE_MS } from "@angels-bandits/common/cityevents";
 import { CITY_SEED, RESPAWN_SPEED } from "@angels-bandits/common/constants";
-import type { ServerMsg, WelcomeMsg } from "@angels-bandits/common/protocol";
+import type {
+  RosterEntry,
+  ServerMsg,
+  SpawnState,
+  WelcomeMsg,
+} from "@angels-bandits/common/protocol";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { RoomBots } from "../src/bots";
 import { CityEventLog, nearBuildingProbe } from "../src/cityevents";
+
+/** Spawn `n` bots, each where `pick` says (W1 removed RoomBots.syncTo's
+ * backfill: the room spawns its enemies one carrier launch at a time). */
+const spawnBots = (
+  bots: RoomBots,
+  n: number,
+  pick: () => SpawnState,
+): { spawned: RosterEntry[] } => ({
+  spawned: Array.from({ length: n }, () => bots.spawn(pick())),
+});
 
 const city = generateCity(CITY_SEED);
 const always = () => true;
@@ -74,7 +89,7 @@ describe("nearBuildingProbe", () => {
 describe("RoomBots.lastPosOf", () => {
   it("still knows where a bot is after it was marked dead (its death site)", () => {
     const bots = new RoomBots("room-1", 7, []);
-    const { spawned } = bots.syncTo(1, () => ({
+    const { spawned } = spawnBots(bots, 1, () => ({
       pos: { x: 640, y: 300, z: 410 },
       yaw: 0,
       speed: RESPAWN_SPEED,

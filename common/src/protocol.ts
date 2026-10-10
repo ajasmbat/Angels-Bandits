@@ -11,12 +11,7 @@ import type {
   WireFlak,
   WireLaunch,
 } from "./boss";
-import type {
-  WireBomberDown,
-  WireBomberRun,
-  WireChaosState,
-  WireQuake,
-} from "./chaos";
+import type { WireChaosState, WireQuake } from "./chaos";
 import type { WireCaveIn } from "./city/caveins";
 import type { CollapseWire } from "./city/collapse";
 import type { NewsHeliSlot, NewsHeliTarget } from "./city/newsheli";
@@ -25,6 +20,7 @@ import type { CityEvent } from "./cityevents";
 import type { RebuildWire, WireDirectorEvent } from "./director";
 import type { MedalKind, StreakTier } from "./medals";
 import type { WireMissile } from "./strike";
+import type { WireWaves } from "./waves";
 import type { Vec3 } from "./world/index";
 import type { WreckParams } from "./wreck";
 
@@ -57,7 +53,8 @@ export interface SpawnState {
 export interface RosterEntry {
   id: string;
   name: string;
-  /** Set (true) only on server-flown backfill bots — drives client styling. */
+  /** Set (true) only on server-flown planes (W1: the carrier's enemies) —
+   * drives client styling. */
   isBot?: boolean;
 }
 
@@ -92,6 +89,8 @@ export interface LabMsg {
   type: "lab";
   tuning?: unknown;
   chaos?: boolean;
+  /** W1: the carrier and its enemy waves (off by default). */
+  waves?: boolean;
 }
 
 /** Streamed at TICK_UP_HZ once joined. */
@@ -166,14 +165,15 @@ export interface CrashMsg {
 }
 
 /**
- * A claim on the room's shared bot count (ANGE-6STDNN) — anyone may send it,
- * any time. `count` is ABSOLUTE (0–BOT_TARGET_MAX), not a delta. The server
- * clamps, rate-limits, and answers with botsConfig; a claim it drops is
- * simply never echoed, so the sender's slider snaps back.
+ * W1: a claim on the room's shared enemy intensity (ANGE-6STDNN's slider,
+ * now Easy / Normal / Hard / Insane = 0–3, common/src/waves.ts) — anyone may
+ * send it, any time. The server clamps, rate-limits, and answers with
+ * intensityConfig; a claim it drops is simply never echoed, so the sender's
+ * control snaps back. It shapes the room's waves from the next one on.
  */
-export interface SetBotsMsg {
-  type: "setBots";
-  count: number;
+export interface SetIntensityMsg {
+  type: "setIntensity";
+  level: number;
 }
 
 /**
@@ -214,25 +214,9 @@ export interface BossHitMsg {
   t: number;
 }
 
-/**
- * C2: a shooter-side hit claim on ship `k` of bomber run `run` — like a
- * boss claim, the round's whole line and the server-clock time `t` it met
- * the ship; the server re-runs it against the formation's own pose.
- */
-export interface BomberHitMsg {
-  type: "bomberHit";
-  run: number;
-  k: number;
-  seq: number;
-  bulletOrigin: Vec3;
-  dir: Vec3;
-  t: number;
-}
-
 export type ClientMsg =
   | JoinMsg
   | BossHitMsg
-  | BomberHitMsg
   | PingMsg
   | AwayMsg
   | PoseMsg
@@ -240,7 +224,7 @@ export type ClientMsg =
   | BoostMsg
   | HitClaimMsg
   | CrashMsg
-  | SetBotsMsg
+  | SetIntensityMsg
   | LabMsg;
 
 // --- Server → client ---
@@ -268,9 +252,12 @@ export interface WelcomeMsg {
   roster: RosterEntry[];
   /** Current scoreboard, so a late joiner doesn't start from a blank board. */
   scores: ScoreEntry[];
-  /** The room's shared bot count, so a late joiner's slider starts in the
-   * right place instead of guessing the default. */
-  botTarget: number;
+  /** W1: the room's shared enemy intensity (0–3), so a late joiner's
+   * control starts in the right place instead of guessing the default. */
+  intensity: number;
+  /** W1: the room's carrier war — the wave on or coming and the enemies
+   * left (common/src/waves.ts). */
+  waves: WireWaves;
   /** L1: the room's city events from the last SMOKE_LIFE_MS, oldest first, so
    * a joiner sees the same smoke, alarms and responders as everyone else. */
   cityEvents: CityEvent[];
@@ -313,9 +300,8 @@ export interface WelcomeMsg {
    * null when the room has none, so a resume into another room clears the
    * old room's boss. */
   boss?: WireBossState | null;
-  /** C2: the room's bomber runs (and the ships shot down), quakes still to
-   * come or shaking, and the burning chunks — so a late joiner sees, hears
-   * and collides with the same chaos. Their bombs and meteors ride
+  /** C2: the room's quakes still to come or shaking, and the burning
+   * chunks — so a late joiner sees and hears the same chaos. Meteors ride
    * `missiles`. Absent: none (and a resume clears what it held). */
   chaos?: WireChaosState;
   /** U6: the room's live cave-ins (common/src/city/caveins.ts), so a late
@@ -503,7 +489,7 @@ export interface DeathMsg {
   killerId: string | null;
   /** `"flak"` (S4): a sky-boss flak burst — environment, credited only by
    * the crash rule, like a missile. `"meteor"` / `"bomb"` (C2): a meteor's
-   * or a bomber run's bomb's blast, the same. */
+   * or a dropped bomb's blast, the same. */
   cause:
     | "shot"
     | "crash"
@@ -514,7 +500,9 @@ export interface DeathMsg {
     | "blast"
     | "flak"
     | "meteor"
-    | "bomb";
+    | "bomb"
+    // W1: an enemy plane that went down with its carrier (no killer).
+    | "carrier";
   /** S1: the server's kill site — the victim's on-record position,
    * canonical and rounded to whole meters — so every client's jumbotron
    * headline names the same place. Absent when the server had no pose. */
@@ -546,16 +534,26 @@ export interface ScoreMsg {
 }
 
 /**
- * The room's bot count changed (ANGE-6STDNN). Broadcast to EVERYONE including
+ * W1: the room's enemy intensity changed. Broadcast to EVERYONE including
  * the setter — the server is the only authority on the applied value, so
- * every slider renders this and never its own optimistic guess. `byName` is
- * for the comms ticker's attribution line and is free text: render it as
- * textContent, and never hand it to the radio voice.
+ * every control renders this and never its own optimistic guess. `byName`
+ * is for the attribution line and is free text: render it as textContent,
+ * and never hand it to the radio voice.
  */
-export interface BotsConfigMsg {
-  type: "botsConfig";
-  count: number;
+export interface IntensityConfigMsg {
+  type: "intensityConfig";
+  level: number;
   byName: string;
+}
+
+/**
+ * W1: the room's carrier war moved on — a wave's banner (WAVE_BREATHER), a
+ * wave launching and fighting (WAVE_LIVE, with its enemies left), or no
+ * wave (WAVE_IDLE). Sent only when it changes.
+ */
+export interface WavesMsg {
+  type: "waves";
+  w: WireWaves;
 }
 
 /**
@@ -710,36 +708,6 @@ export interface RebuildMsg {
   r: RebuildWire;
 }
 
-/**
- * C2: a bomber run begins (common/src/chaos.ts). The formation's flight is a
- * pure function of `r` and the synced clock; `b` is EVERY bomb it will drop
- * (common/src/strike.ts kind "bomb", each with its drop instant as t0) — one
- * message per run, however many bombs. Clients hold the bombs like any
- * missile and draw each from its drop.
- */
-export interface BombersMsg {
-  type: "bombers";
-  r: WireBomberRun;
-  b: WireMissile[];
-}
-
-/** C2: ship `d` of a run was shot down at `d[2]` by `by`; `off` are its
- * bombs that will no longer drop (drop time after the down) — clients drop
- * them. */
-export interface BomberDownMsg {
-  type: "bomberDown";
-  d: WireBomberDown;
-  by: string | null;
-  off: number[];
-}
-
-/** C2: announced strikes that will not land after all (a bomb called off at
- * its drop because a freshly spawned plane is under it). */
-export interface BombsOffMsg {
-  type: "bombsOff";
-  ids: number[];
-}
-
 /** C2: a quake is coming (common/src/chaos.ts): the ground starts rumbling
  * now and shakes from `q.t` — at least QUAKE_LEAD_MS after this is sent.
  * What it breaks arrives the usual way (`chunks`, `collapse`). */
@@ -793,9 +761,6 @@ export type ServerMsg =
   | WelcomeMsg
   | PropsMsg
   | CaveInMsg
-  | BombersMsg
-  | BomberDownMsg
-  | BombsOffMsg
   | QuakeMsg
   | FiresMsg
   | DirectorWarnMsg
@@ -812,7 +777,8 @@ export type ServerMsg =
   | CourseBoardMsg
   | AwayStartedMsg
   | NewsHeliMsg
-  | BotsConfigMsg
+  | IntensityConfigMsg
+  | WavesMsg
   | PlayerJoinedMsg
   | PlayerLeftMsg
   | WireSnapshotMsg

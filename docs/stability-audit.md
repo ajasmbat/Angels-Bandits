@@ -213,8 +213,22 @@ server's snapshot over the same window went from 32.9 to 33.7 MB, inside the
     `client/src/render/trails.ts`, `server/src/combat.ts` and
     `server/src/director.ts`. There was no stale `__ab` hook in the tooling,
     no stale URL knob, and no gallery view of a removed feature (every one of
-    the 57 views names a live system). The "PULL UP" leftovers were already
+    the 57 views at audit time names a live system). The "PULL UP" leftovers were already
     gone.
+
+11. **CPU-bound whole-city tests timed out on a loaded box.** One batch of
+    five `npm test` runs ran alongside a 4-browser soak at load 86–140, and 3
+    of them failed. A post-merge run at load ~40 failed once more. Each time
+    it was a different heavy suite crossing the global 20 s `testTimeout`,
+    never `wire.test.ts`:
+    - U5 renderer budget: 10.2 s alone, 21.3 s loaded
+    - D8 standing layers
+    - D2 solids parity
+    - river portals
+    - D5 scaffolding
+
+    `vitest.config.ts` now allows 60 s. That is still a bound that fails a
+    hang, and no assertion changed.
 
 ### No change needed
 
@@ -264,13 +278,9 @@ server's snapshot over the same window went from 32.9 to 33.7 MB, inside the
 
   `knip` also lists about 400 exported-but-unimported constants, mostly tuning
   values exported for their doc comments and tests. Not worth the churn.
-- **CPU-heavy whole-city tests time out under extreme load.** One earlier
-  batch of five ran alongside a 4-browser soak at load 86–140, and 3 of its
-  runs failed. Each failure was a different CPU-bound test exceeding its
-  20 s or 30 s budget (`standing-layers`, `underground`, `bots` long-sim,
-  scaffolding, `solids` parity, river portals), never `wire.test.ts`. They
-  usually take a few seconds. Those budgets are flake headroom for a loaded
-  box, and at 9× oversubscription the headroom runs out.
+- **`server/test/bots.test.ts` long-sim tests carry their own 30 s timeouts.**
+  These override the global one. Under load ~100, one of them took 30.7 s.
+  This is W1's file, so it was left alone.
 - **A3:** soak on a machine with a GPU, where the per-frame paths actually
   run at speed and warm-up finishes inside the window. A multi-hour server
   soak would pin down the server's last ±1 MB.

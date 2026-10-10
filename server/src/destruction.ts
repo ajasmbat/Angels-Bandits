@@ -64,6 +64,7 @@ import {
   PROP_CHAIN_DEPTH_MAX,
   PROP_CRANE,
   PROP_JUMBO,
+  PROP_REPAIR_MS,
   type PropDown,
   type PropLayout,
   type PropSlot,
@@ -86,7 +87,6 @@ import {
   isRoofProp,
   propDistance,
   propFuseMs,
-  PROP_REPAIR_MS,
   propRepairMs,
   propSlot,
   propsNear,
@@ -243,7 +243,8 @@ function createPropRoom(
   let layout = given ?? NO_PROPS;
   if (!given && seed !== undefined) {
     layout =
-      layoutCache.get(seed) ?? generateProps(seed, buildings, { cranes, trains });
+      layoutCache.get(seed) ??
+      generateProps(seed, buildings, { cranes, trains });
     layoutCache.set(seed, layout);
   }
   return {
@@ -356,7 +357,12 @@ export function applyShotDamage(
   const hit = raycastChunk(city.buildings, origin, dir, BULLET_RANGE);
   // D9: a prop (a car, a lamp, a span…) in front of the wall takes it.
   const props = city.props;
-  const prop = raycastProps(props.slot, origin, dir, hit ? hit.t : BULLET_RANGE);
+  const prop = raycastProps(
+    props.slot,
+    origin,
+    dir,
+    hit ? hit.t : BULLET_RANGE,
+  );
   if (prop) {
     props.slot.state.damage(prop.id, BULLET_DAMAGE, 0, by);
     return -1;
@@ -531,9 +537,19 @@ export function recordCollapse(
     if (!city.firstDamageAt.has(wire.b)) city.firstDamageAt.set(wire.b, wire.t);
   }
   // D9: what its pieces come to rest on is crushed as each one lands.
-  if (c && depth + 1 <= PROP_CHAIN_DEPTH_MAX && city.props.layout.props.length > 0) {
+  if (
+    c &&
+    depth + 1 <= PROP_CHAIN_DEPTH_MAX &&
+    city.props.layout.props.length > 0
+  ) {
     for (const k of collapseCrushes(c, city.props.layout)) {
-      queue(city.props.crushes, { t: k.t, id: k.id, depth: depth + 1, by, downAt: Number.NaN });
+      queue(city.props.crushes, {
+        t: k.t,
+        id: k.id,
+        depth: depth + 1,
+        by,
+        downAt: Number.NaN,
+      });
     }
   }
   if (!c || depth >= CHAIN_DEPTH_MAX) return;
@@ -585,7 +601,15 @@ function landImpacts(city: RoomCity, now: number): void {
     const i = city.impacts[k] as ChainImpact;
     k++;
     const out = city.damage.damageAt(i, CHAIN_BLAST_RADIUS, CHAIN_BLAST_DAMAGE);
-    blastProps(city, i, CHAIN_BLAST_RADIUS, CHAIN_BLAST_DAMAGE, i.by, i.depth + 1, now);
+    blastProps(
+      city,
+      i,
+      CHAIN_BLAST_RADIUS,
+      CHAIN_BLAST_DAMAGE,
+      i.by,
+      i.depth + 1,
+      now,
+    );
     for (const id of out) {
       const b = chunkBuilding(id);
       city.breakers.set(b, i.by);
@@ -758,14 +782,21 @@ export function tickProps(
 
   // 4. Faller landings: a D2 blast into the deck it lands on, and a crush
   // of what lies under it.
-  while (props.landings.length > 0 && (props.landings[0] as PropEvent).t <= now) {
+  while (
+    props.landings.length > 0 &&
+    (props.landings[0] as PropEvent).t <= now
+  ) {
     const e = props.landings.shift() as PropEvent;
     if (!live(city, e)) continue;
     const p = props.layout.props[e.id];
     if (!p) continue;
     if (p.kind !== PROP_BRIDGE) {
       const at = fallerLanding(props.layout, e.id);
-      const broke = city.damage.damageAt(at, LANDING_BLAST[0], LANDING_BLAST[1]);
+      const broke = city.damage.damageAt(
+        at,
+        LANDING_BLAST[0],
+        LANDING_BLAST[1],
+      );
       noteBroken(city, broke, e.by, e.depth);
       out.broke.push(...broke);
     }

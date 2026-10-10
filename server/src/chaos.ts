@@ -813,7 +813,10 @@ export class ChaosDirector {
         this.firesOff.push(id);
       }
       // D9: and it jumps to a damaged neighbour (common/src/city/props.ts).
-      const jump = this.fires.size < FIRE_MAX ? pickFireJump(city.buildings, id, this.fireRand) : -1;
+      const jump =
+        this.fires.size < FIRE_MAX
+          ? pickFireJump(city.buildings, id, this.fireRand)
+          : -1;
       if (jump >= 0 && !this.fires.has(jump) && !city.damage.isGone(jump)) {
         this.fires.set(jump, { since: now });
         this.firesOn.push(jump);

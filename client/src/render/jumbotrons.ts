@@ -19,7 +19,7 @@
 // like the street signage, so a screen across the seam is drawn where the
 // camera sees it.
 
-import { type Building, type LocalBox } from "@angels-bandits/common/city";
+import type { Building, LocalBox } from "@angels-bandits/common/city";
 import {
   JUMBOTRON_MAX,
   type JumbotronSite,
@@ -28,6 +28,7 @@ import {
   TICKER_HEIGHT,
   jumbotronSites,
 } from "@angels-bandits/common/city/jumbotron-sites";
+import type { PropState } from "@angels-bandits/common/city/props";
 import {
   BLOCK_PITCH,
   EMISSIVE_SIGN,
@@ -39,7 +40,6 @@ import {
   wrapDelta,
   wrapDeltaAxis,
 } from "@angels-bandits/common/world";
-import type { PropState } from "@angels-bandits/common/city/props";
 import * as THREE from "three";
 import type { MatchWarning } from "../game/headlines";
 import { CLASSIC_LIVERY, type Livery, createBiplane } from "./biplane";

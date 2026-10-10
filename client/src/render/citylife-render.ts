@@ -27,13 +27,13 @@ import {
   CITY_GRID,
   type LocalBox,
 } from "@angels-bandits/common/city";
+import { inBridgeGap } from "@angels-bandits/common/city/river";
 import { BLOCK_PITCH } from "@angels-bandits/common/constants";
 import {
   type Vec3,
   wrapCoord,
   wrapDeltaAxis,
 } from "@angels-bandits/common/world";
-import { inBridgeGap } from "@angels-bandits/common/city/river";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import {

@@ -43,6 +43,7 @@
 // pass/stop decision comes out the same on every client.
 
 import { CITY_GRID, mulberry32 } from "@angels-bandits/common/city";
+import { inBridgeGap } from "@angels-bandits/common/city/river";
 import {
   CROSSWALK_DEPTH,
   INTERSECTION_HALF,
@@ -56,7 +57,6 @@ import {
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
 import { type Vec3, canonicalize } from "@angels-bandits/common/world";
-import { inBridgeGap } from "@angels-bandits/common/city/river";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
 import {

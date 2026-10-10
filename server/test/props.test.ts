@@ -10,7 +10,13 @@
 // through a fallen span is not "through the ground".
 
 import { type Building, generateCity } from "@angels-bandits/common/city";
+import { mulberry32 } from "@angels-bandits/common/city";
 import { blankPose } from "@angels-bandits/common/city/collapse";
+import {
+  DIR_NEG_X,
+  TOPPLE,
+  demolitionPlan,
+} from "@angels-bandits/common/city/collapse";
 import { generateMovers } from "@angels-bandits/common/city/movers";
 import {
   PROP_BLASTS_PER_TICK,
@@ -43,12 +49,11 @@ import {
   DIRECTOR_WARN_MIN_MS,
   EVENT_CRANE,
 } from "@angels-bandits/common/director";
-import { mulberry32 } from "@angels-bandits/common/city";
 import { describe, expect, it } from "vitest";
 import { sweptThroughSolid } from "../src/courses";
 import {
-  type RoomCity,
   type PropsTick,
+  type RoomCity,
   applyShotDamage,
   blastProps,
   createRoomCity,
@@ -60,11 +65,6 @@ import {
   tickDestruction,
 } from "../src/destruction";
 import { DestructionDirector } from "../src/director";
-import {
-  DIR_NEG_X,
-  TOPPLE,
-  demolitionPlan,
-} from "@angels-bandits/common/city/collapse";
 
 const city = generateCity(CITY_SEED);
 const movers = generateMovers(CITY_SEED, city);
@@ -82,7 +82,10 @@ function run(
   rc: RoomCity,
   t0: number,
   ms: number,
-  planes: { pos: { x: number; y: number; z: number }; vel: { x: number; y: number; z: number } }[] = [],
+  planes: {
+    pos: { x: number; y: number; z: number };
+    vel: { x: number; y: number; z: number };
+  }[] = [],
 ): PropsTick[] {
   const out: PropsTick[] = [];
   for (let t = t0; t <= t0 + ms; t += TICK) {
@@ -139,8 +142,7 @@ describe("D9 props on the server", () => {
       seed: 0.5,
     }));
     const street = buildPropLayout(cars);
-    const make = () =>
-      createRoomCity(city, [], CITY_SEED, [], street);
+    const make = () => createRoomCity(city, [], CITY_SEED, [], street);
     const a = make();
     a.props.slot.state.knockDown(0, 0, "ace");
     const ticks = run(a, 0, 15_000);
@@ -180,7 +182,11 @@ describe("D9 props on the server", () => {
     for (let t = 0; t <= 60_000; t += TICK) {
       if (t % 200 === 0) {
         // Somewhere in the south-west quarter, street level to mid-rise.
-        const pos = { x: 200 + rand() * 600, y: rand() * 30, z: 200 + rand() * 600 };
+        const pos = {
+          x: 200 + rand() * 600,
+          y: rand() * 30,
+          z: 200 + rand() * 600,
+        };
         rc.damage.damageAt(pos, 20, 300);
         blastProps(rc, pos, 20, 300, null, 0, t);
       }
@@ -188,7 +194,8 @@ describe("D9 props on the server", () => {
       expect(tick.blasts.length).toBeLessThanOrEqual(PROP_BLASTS_PER_TICK);
       expect(tick.down.length).toBeLessThanOrEqual(PROP_DOWN_PER_TICK);
       expect(state.downCount).toBeLessThanOrEqual(cap);
-      for (const id of state.downIds()) maxDepth = Math.max(maxDepth, state.depthOf(id));
+      for (const id of state.downIds())
+        maxDepth = Math.max(maxDepth, state.depthOf(id));
     }
     expect(state.downCount).toBeGreaterThan(0);
     expect(maxDepth).toBeLessThanOrEqual(PROP_CHAIN_DEPTH_MAX);
@@ -197,8 +204,20 @@ describe("D9 props on the server", () => {
 
   it("a toppled tower crushes the props its debris lands on, as each piece lands", () => {
     const rc = room();
-    const plan = demolitionPlan(rc.buildings[343] as Building, 343, TOPPLE, DIR_NEG_X);
-    const wire = stageCollapse(rc, plan as NonNullable<typeof plan>, 343, 1000, "ace", 0);
+    const plan = demolitionPlan(
+      rc.buildings[343] as Building,
+      343,
+      TOPPLE,
+      DIR_NEG_X,
+    );
+    const wire = stageCollapse(
+      rc,
+      plan as NonNullable<typeof plan>,
+      343,
+      1000,
+      "ace",
+      0,
+    );
     expect(rc.props.crushes.length).toBeGreaterThan(0);
     const due = rc.props.crushes.map((c) => c.id);
     const last = Math.max(...rc.props.crushes.map((c) => c.t));
@@ -218,9 +237,13 @@ describe("D9 props on the server", () => {
     const director = new DestructionDirector(CITY_SEED, mulberry32(1));
     director.condemnCrane(site.id);
     const out = director.tick(10_000, [], { city: rc, cranes: movers.cranes });
-    const warned = out.warned.find((e) => e.k === EVENT_CRANE && e.b === site.id);
+    const warned = out.warned.find(
+      (e) => e.k === EVENT_CRANE && e.b === site.id,
+    );
     expect(warned).toBeDefined();
-    expect((warned?.at ?? 0) - 10_000).toBeGreaterThanOrEqual(DIRECTOR_WARN_MIN_MS);
+    expect((warned?.at ?? 0) - 10_000).toBeGreaterThanOrEqual(
+      DIRECTOR_WARN_MIN_MS,
+    );
     // Still standing until the warned event fires.
     expect(rc.collapses.felled.has(site.id)).toBe(false);
   });
@@ -242,7 +265,12 @@ describe("D9 props on the server", () => {
     rebuildBuilding(rc, tank.b);
     expect(state.isDown(tank.id)).toBe(false);
     // The span: a plane parked in its volume holds the repair back...
-    const inSpan = [{ pos: { x: span.x, y: -1, z: RIVER_CENTER_Z }, vel: { x: 0, y: 0, z: 0 } }];
+    const inSpan = [
+      {
+        pos: { x: span.x, y: -1, z: RIVER_CENTER_Z },
+        vel: { x: 0, y: 0, z: 0 },
+      },
+    ];
     const blocked = run(rc, SPAN_REPAIR_MS - 1000, 6000, inSpan);
     expect(blocked.some((t) => t.announced.length > 0)).toBe(false);
     expect(state.isDown(span.id)).toBe(true);
@@ -274,10 +302,16 @@ describe("D9 props on the server", () => {
     tickDestruction(rc, 5000);
     const t = 5000 + (fallSeconds(tank) * 1000) / 2;
     const pose = propPieceInto(rc.props.slot, tank.id, t, blankPose());
-    const at = { x: tank.x + (pose?.x ?? 0), y: pose?.y ?? 0, z: tank.z + (pose?.z ?? 0) };
+    const at = {
+      x: tank.x + (pose?.x ?? 0),
+      y: pose?.y ?? 0,
+      z: tank.z + (pose?.z ?? 0),
+    };
     expect(propCulprit(rc, at, 2, t)).toEqual({ id: tank.id, by: "ace" });
     // At rest it is rubble, not a kill.
-    expect(propCulprit(rc, at, 2, 5000 + fallSeconds(tank) * 1000 + 500)).toBeNull();
+    expect(
+      propCulprit(rc, at, 2, 5000 + fallSeconds(tank) * 1000 + 500),
+    ).toBeNull();
   });
 
   it("a late joiner's replay is the live state — a blast still to come included", () => {
@@ -292,7 +326,13 @@ describe("D9 props on the server", () => {
     const replay = new PropState();
     replay.bind(layout, client);
     const w = propsWireState(rc);
-    replay.reset(decodeIdRecords(w.d, 3).map(([id, t, te]) => ({ id: id as number, t: t as number, te: te as number })));
+    replay.reset(
+      decodeIdRecords(w.d, 3).map(([id, t, te]) => ({
+        id: id as number,
+        t: t as number,
+        te: te as number,
+      })),
+    );
     expect(replay.downIds()).toEqual(rc.props.slot.state.downIds());
     expect(Number.isNaN(replay.blastAt(fuel.id))).toBe(true);
     expect(client[tank.b]?.roof).toEqual(rc.buildings[tank.b]?.roof);
@@ -300,7 +340,8 @@ describe("D9 props on the server", () => {
     const ticks = run(rc, 2000 + TICK, propFuseMs(fuel.id) + TICK);
     for (const t of ticks) {
       const m = propsMessage(t);
-      for (const [id, at] of decodeIdRecords(m?.b, 2)) replay.blasted(id as number, at as number);
+      for (const [id, at] of decodeIdRecords(m?.b, 2))
+        replay.blasted(id as number, at as number);
     }
     expect(replay.blastAt(fuel.id)).toBe(rc.props.slot.state.blastAt(fuel.id));
     expect(Number.isNaN(replay.blastAt(fuel.id))).toBe(false);
@@ -309,8 +350,18 @@ describe("D9 props on the server", () => {
   it("a course run through a fallen span is not through the ground", () => {
     const rc = room();
     const span = ofKind(PROP_BRIDGE)[7] as Prop;
-    const path = [span.x, -1.2, RIVER_CENTER_Z - 12, span.x, -1.2, RIVER_CENTER_Z + 12];
-    const world = { buildings: rc.buildings, gaps: () => rc.props.slot.state.gapMask };
+    const path = [
+      span.x,
+      -1.2,
+      RIVER_CENTER_Z - 12,
+      span.x,
+      -1.2,
+      RIVER_CENTER_Z + 12,
+    ];
+    const world = {
+      buildings: rc.buildings,
+      gaps: () => rc.props.slot.state.gapMask,
+    };
     expect(sweptThroughSolid(path, world)).toBe(true); // the deck stands
     rc.props.slot.state.knockDown(span.id);
     tickDestruction(rc, 0);

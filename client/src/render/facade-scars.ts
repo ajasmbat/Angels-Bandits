@@ -142,7 +142,13 @@ export function facadeScars(
         // A shot-out chunk rings its panes; a fallen one took its facade
         // with it (the collapse's own rubble and soot tell that story).
         if (cells[c] && cells[c] !== CELL_FALLEN) {
-          mark(tier, c, true, false, (Math.imul(bi + 1, 0x9e3779b1) ^ (tier << 20) ^ c) >>> 0);
+          mark(
+            tier,
+            c,
+            true,
+            false,
+            (Math.imul(bi + 1, 0x9e3779b1) ^ (tier << 20) ^ c) >>> 0,
+          );
         }
       }
     });

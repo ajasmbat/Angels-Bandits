@@ -6,6 +6,7 @@
 // contract's curbside lamp row, never the roadway), so every street is
 // covered exactly once despite the torus wrap.
 
+import type { PropState } from "@angels-bandits/common/city/props";
 import {
   LAMP_STATIONS_MINUS,
   LAMP_STATIONS_PLUS,
@@ -22,7 +23,6 @@ import {
   canonicalize,
   wrapDelta,
 } from "@angels-bandits/common/world";
-import type { PropState } from "@angels-bandits/common/city/props";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
 import { ImageCache, InstanceUploads } from "./wrapPlacement";

@@ -15,6 +15,8 @@
 // so WALK is lit for only ~14 % of the cycle, as in a real city. That is what
 // explains the empty crossing.
 
+import { CITY_GRID } from "@angels-bandits/common/city";
+import type { PropState } from "@angels-bandits/common/city/props";
 import {
   type SignalMast,
   allSignalMasts,
@@ -22,8 +24,6 @@ import {
 } from "@angels-bandits/common/city/street";
 import { BLOCK_PITCH, EMISSIVE_LAMP } from "@angels-bandits/common/constants";
 import { type Vec3, canonicalize } from "@angels-bandits/common/world";
-import { CITY_GRID } from "@angels-bandits/common/city";
-import type { PropState } from "@angels-bandits/common/city/props";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { emissiveBoost } from "./emissive";
@@ -378,7 +378,8 @@ export class Signals {
       const masts = this.mastsFor(bx, bz);
       // D9: a snapped mast lies in the street (render/props.ts), not here.
       const first =
-        this.signalBase + (wrapGrid(bx) * CITY_GRID + wrapGrid(bz)) * masts.length;
+        this.signalBase +
+        (wrapGrid(bx) * CITY_GRID + wrapGrid(bz)) * masts.length;
       for (let k = 0; k < masts.length; k++) {
         const mast = masts[k] as SignalMast;
         if (this.props?.isDown(first + k)) continue;

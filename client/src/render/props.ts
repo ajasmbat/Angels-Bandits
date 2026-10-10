@@ -20,7 +20,10 @@
 // what is moving this frame (falling, flipping, toppling) is appended after
 // it every frame. Nearest-image placement like every renderer here.
 
-import { type PiecePose, blankPose } from "@angels-bandits/common/city/collapse";
+import {
+  type PiecePose,
+  blankPose,
+} from "@angels-bandits/common/city/collapse";
 import {
   LAMP_HEIGHT,
   POLE_HEIGHT,
@@ -455,15 +458,55 @@ export class PropsRenderer {
       this.q2.copy(this.q);
       if (p.kind === PROP_FUEL) {
         this.local(p, 0, 0.55, -len / 2 + 1.2, 2.4, 1.1, 2.4, dim, 0); // cab base
-        this.local(p, 0, 1.75, -len / 2 + 1.1, 2.3, 1.3, 2.0, down ? 0x222 : COLORS.glass, 0);
+        this.local(
+          p,
+          0,
+          1.75,
+          -len / 2 + 1.1,
+          2.3,
+          1.3,
+          2.0,
+          down ? 0x222 : COLORS.glass,
+          0,
+        );
         this.local(p, 0, 0.4, 0.6, wid, 0.5, len - 2.6, COLORS.chassis, 0);
-        this.local(p, 0, 1.75, 1.0, wid, 1.9, len - 3.0, down ? 0x3a3530 : COLORS.tanker, 0);
+        this.local(
+          p,
+          0,
+          1.75,
+          1.0,
+          wid,
+          1.9,
+          len - 3.0,
+          down ? 0x3a3530 : COLORS.tanker,
+          0,
+        );
         return;
       }
       this.local(p, 0, h * 0.32, 0, wid, h * 0.5, len, dim, 0);
-      this.local(p, 0, h * 0.78, -len * 0.04, wid * 0.92, h * 0.42, len * 0.55, COLORS.glass, 0);
+      this.local(
+        p,
+        0,
+        h * 0.78,
+        -len * 0.04,
+        wid * 0.92,
+        h * 0.42,
+        len * 0.55,
+        COLORS.glass,
+        0,
+      );
       if (p.kind === PROP_TAXI && !down) {
-        this.local(p, 0, h + 0.15, -len * 0.04, 0.9, 0.25, 0.35, 0xfff2b0, glowOf(0xfff2b0, EMISSIVE_SIGN));
+        this.local(
+          p,
+          0,
+          h + 0.15,
+          -len * 0.04,
+          0.9,
+          0.25,
+          0.35,
+          0xfff2b0,
+          glowOf(0xfff2b0, EMISSIVE_SIGN),
+        );
       }
       return;
     }
@@ -471,14 +514,31 @@ export class PropsRenderer {
     const since = Number.isFinite(t) ? (t - blastAt) / 1000 : 99;
     const u = Math.min(1, since / FLIP_S);
     const lift = (p.kind === PROP_FUEL ? 2.5 : 4.5) * Math.sin(Math.PI * u);
-    const roll = (p.seed < 0.5 ? -1 : 1) * Math.PI * smooth(u) * (p.kind === PROP_FUEL ? 0.5 : 1);
-    const ember = Number.isFinite(t) && t - blastAt < EMBER_MS ? EMBER * (1 - (t - blastAt) / EMBER_MS) : 0;
+    const roll =
+      (p.seed < 0.5 ? -1 : 1) *
+      Math.PI *
+      smooth(u) *
+      (p.kind === PROP_FUEL ? 0.5 : 1);
+    const ember =
+      Number.isFinite(t) && t - blastAt < EMBER_MS
+        ? EMBER * (1 - (t - blastAt) / EMBER_MS)
+        : 0;
     this.q.setFromAxisAngle(AXIS_Y, yaw);
     this.q2.setFromAxisAngle(AXIS_Z, roll);
     this.q.multiply(this.q2);
     this.q2.copy(this.q);
     const hh = p.kind === PROP_FUEL ? h * 0.75 : h * 0.6;
-    this.box(p.x, hh / 2 + lift, p.z, wid, hh, len * 0.95, this.q2, COLORS.charred, ember);
+    this.box(
+      p.x,
+      hh / 2 + lift,
+      p.z,
+      wid,
+      hh,
+      len * 0.95,
+      this.q2,
+      COLORS.charred,
+      ember,
+    );
     if (this.share > 0.3) this.rubble(p, 3, wid + 2);
   }
 
@@ -531,30 +591,143 @@ export class PropsRenderer {
       const lit = down ? 0 : 1;
       // Canopy on four columns, its red fascia lit, two pump islands, the
       // kiosk at the back with a lit window, the price sign.
-      this.box(p.x, top - 0.25, p.z, 2 * hx, 0.5, 2 * hz * 0.75, null, down ? 0x4a4642 : COLORS.canopy, 0);
-      this.box(p.x, top - 0.55, p.z, 2 * hx + 0.1, 0.18, 2 * hz * 0.75 + 0.1, null, COLORS.fascia, lit * glowOf(COLORS.fascia, EMISSIVE_SIGN) * 0.8);
+      this.box(
+        p.x,
+        top - 0.25,
+        p.z,
+        2 * hx,
+        0.5,
+        2 * hz * 0.75,
+        null,
+        down ? 0x4a4642 : COLORS.canopy,
+        0,
+      );
+      this.box(
+        p.x,
+        top - 0.55,
+        p.z,
+        2 * hx + 0.1,
+        0.18,
+        2 * hz * 0.75 + 0.1,
+        null,
+        COLORS.fascia,
+        lit * glowOf(COLORS.fascia, EMISSIVE_SIGN) * 0.8,
+      );
       for (const sx of [-1, 1]) {
         for (const sz of [-1, 1]) {
-          this.box(p.x + sx * (hx - 1.2), (top - 0.5) / 2, p.z + sz * (hz * 0.75 - 1), 0.35, top - 0.5, 0.35, null, COLORS.column, 0);
+          this.box(
+            p.x + sx * (hx - 1.2),
+            (top - 0.5) / 2,
+            p.z + sz * (hz * 0.75 - 1),
+            0.35,
+            top - 0.5,
+            0.35,
+            null,
+            COLORS.column,
+            0,
+          );
         }
-        this.box(p.x + sx * hx * 0.4, 0.75, p.z, 0.9, 1.5, 2.6, null, COLORS.pump, lit * 0.4);
+        this.box(
+          p.x + sx * hx * 0.4,
+          0.75,
+          p.z,
+          0.9,
+          1.5,
+          2.6,
+          null,
+          COLORS.pump,
+          lit * 0.4,
+        );
       }
       const back = p.yaw === 0 ? -1 : 1;
-      this.box(p.x, 1.4, p.z + back * (hz - 1.6), 2 * hx * 0.6, 2.8, 3, null, COLORS.kiosk, 0);
-      this.box(p.x, 1.6, p.z + back * (hz - 3.12), 2 * hx * 0.4, 1.0, 0.05, null, 0xffe0a0, lit * glowOf(0xffe0a0, EMISSIVE_SIGN) * 0.7);
-      this.box(p.x + hx + 0.8, 1.4, p.z, 0.25, 2.8, 0.25, null, COLORS.column, 0);
-      this.box(p.x + hx + 0.8, 2.6, p.z, 0.2, 0.7, 1.6, null, COLORS.sign, lit * glowOf(COLORS.sign, EMISSIVE_SIGN) * 0.8);
+      this.box(
+        p.x,
+        1.4,
+        p.z + back * (hz - 1.6),
+        2 * hx * 0.6,
+        2.8,
+        3,
+        null,
+        COLORS.kiosk,
+        0,
+      );
+      this.box(
+        p.x,
+        1.6,
+        p.z + back * (hz - 3.12),
+        2 * hx * 0.4,
+        1.0,
+        0.05,
+        null,
+        0xffe0a0,
+        lit * glowOf(0xffe0a0, EMISSIVE_SIGN) * 0.7,
+      );
+      this.box(
+        p.x + hx + 0.8,
+        1.4,
+        p.z,
+        0.25,
+        2.8,
+        0.25,
+        null,
+        COLORS.column,
+        0,
+      );
+      this.box(
+        p.x + hx + 0.8,
+        2.6,
+        p.z,
+        0.2,
+        0.7,
+        1.6,
+        null,
+        COLORS.sign,
+        lit * glowOf(COLORS.sign, EMISSIVE_SIGN) * 0.8,
+      );
       return;
     }
     // Blown: the canopy down on the pumps at an angle, everything charred.
-    const ember = Number.isFinite(t) && t - blastAt < EMBER_MS ? EMBER * (1 - (t - blastAt) / EMBER_MS) : 0;
+    const ember =
+      Number.isFinite(t) && t - blastAt < EMBER_MS
+        ? EMBER * (1 - (t - blastAt) / EMBER_MS)
+        : 0;
     this.q.setFromAxisAngle(AXIS_X, (p.seed - 0.5) * 0.5);
     this.q2.copy(this.q);
-    this.box(p.x, 1.1, p.z, 2 * hx * 0.95, 0.4, 2 * hz * 0.7, this.q2, COLORS.charred, ember);
+    this.box(
+      p.x,
+      1.1,
+      p.z,
+      2 * hx * 0.95,
+      0.4,
+      2 * hz * 0.7,
+      this.q2,
+      COLORS.charred,
+      ember,
+    );
     for (const sx of [-1, 1]) {
-      this.box(p.x + sx * hx * 0.4, 0.5, p.z, 1, 1, 2.6, null, COLORS.charred, ember * 0.6);
+      this.box(
+        p.x + sx * hx * 0.4,
+        0.5,
+        p.z,
+        1,
+        1,
+        2.6,
+        null,
+        COLORS.charred,
+        ember * 0.6,
+      );
     }
-    this.box(p.x, 1.0, p.z + (p.yaw === 0 ? -1 : 1) * (hz - 1.6), 2 * hx * 0.6, 2.0, 3, null, 0x2a2622, 0);
+    this.box(
+      p.x,
+      1.0,
+      p.z + (p.yaw === 0 ? -1 : 1) * (hz - 1.6),
+      2 * hx * 0.6,
+      2.0,
+      3,
+      null,
+      0x2a2622,
+      0,
+    );
     if (this.share > 0.3) this.rubble(p, 6, hx);
   }
 
@@ -572,8 +745,32 @@ export class PropsRenderer {
       : 0;
     // It falls away from the channel (onto the promenade).
     const yaw = p.z < 1100 ? Math.PI : 0;
-    this.hinged(p.x, 0, p.z, yaw, topple, POLE_HEIGHT / 2, 0.3, POLE_HEIGHT, 0.3, COLORS.pole, 0);
-    this.hinged(p.x, 0, p.z, yaw, topple, armY, 2 * arm, 0.14, 0.14, COLORS.pole, 0);
+    this.hinged(
+      p.x,
+      0,
+      p.z,
+      yaw,
+      topple,
+      POLE_HEIGHT / 2,
+      0.3,
+      POLE_HEIGHT,
+      0.3,
+      COLORS.pole,
+      0,
+    );
+    this.hinged(
+      p.x,
+      0,
+      p.z,
+      yaw,
+      topple,
+      armY,
+      2 * arm,
+      0.14,
+      0.14,
+      COLORS.pole,
+      0,
+    );
     const next = p.ref >= 0 ? layout.props[p.ref] : undefined;
     if (!next) return;
     const nextDown = state.isDown(next.id);
@@ -612,7 +809,16 @@ export class PropsRenderer {
     this.p.set(dx / len, dy / len, dz / len);
     this.q.setFromUnitVectors(AXIS_X, this.p);
     this.q2.copy(this.q);
-    this.box(x0 + dx / 2, y0 + dy / 2, z0 + dz / 2, len, 0.06, 0.06, this.q2, COLORS.wire, 0);
+    this.box(
+      x0 + dx / 2,
+      y0 + dy / 2,
+      z0 + dz / 2,
+      len,
+      0.06,
+      0.06,
+      this.q2,
+      COLORS.wire,
+      0,
+    );
   }
 }
-

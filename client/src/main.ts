@@ -43,6 +43,8 @@ import {
   generateMovers,
   withNewsHeli,
 } from "@angels-bandits/common/city/movers";
+import { natureFor } from "@angels-bandits/common/city/nature";
+import { setNewsTarget } from "@angels-bandits/common/city/newsheli";
 import {
   PROP_CAR,
   PROP_FUEL,
@@ -54,8 +56,6 @@ import {
   type PropSlot,
   generateProps,
 } from "@angels-bandits/common/city/props";
-import { natureFor } from "@angels-bandits/common/city/nature";
-import { setNewsTarget } from "@angels-bandits/common/city/newsheli";
 import { bridgeSpans } from "@angels-bandits/common/city/river";
 import {
   TUNNELS,
@@ -352,6 +352,7 @@ import {
   ShaftsPass,
 } from "./render/post";
 import { prewarmScene } from "./render/prewarm";
+import { PropsRenderer } from "./render/props";
 import {
   type AutoQualityState,
   DEFAULT_QUALITY,
@@ -395,13 +396,12 @@ import {
   stepResolution,
 } from "./render/resolution";
 import { CourseRings } from "./render/rings";
-import { PropsRenderer } from "./render/props";
 import { BRIDGE_GONE_UNIFORM, RiverRenderer } from "./render/river";
-import { ScarsRenderer } from "./render/scars";
 import { RoofClutterRenderer } from "./render/roofclutter";
 import { RooftopLifeRenderer } from "./render/rooftop-life";
 import { RuinSmoke } from "./render/ruins";
 import { ScaffoldRenderer } from "./render/scaffold";
+import { ScarsRenderer } from "./render/scars";
 import { Searchlights } from "./render/searchlights";
 import { Signage } from "./render/signage";
 import { Signals } from "./render/signals";

@@ -18,11 +18,11 @@ import {
 } from "@angels-bandits/common/city";
 import {
   DIR_NEG_X,
+  TOPPLE,
   blankPose,
   buildCollapse,
   collapseWire,
   demolitionPlan,
-  TOPPLE,
 } from "@angels-bandits/common/city/collapse";
 import { jumbotronSites } from "@angels-bandits/common/city/jumbotron-sites";
 import { generateMovers } from "@angels-bandits/common/city/movers";
@@ -79,11 +79,8 @@ import {
   signalMastsForBlock,
   streetlampPositions,
 } from "@angels-bandits/common/city/street";
-import {
-  CITY_SEED,
-  WORLD_SIZE,
-} from "@angels-bandits/common/constants";
 import { collideCity, hitsGround } from "@angels-bandits/common/collision";
+import { CITY_SEED, WORLD_SIZE } from "@angels-bandits/common/constants";
 import { wrapDeltaAxis } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
 
@@ -95,7 +92,11 @@ const props = layout.props;
 const ofKind = (k: number): Prop[] => props.filter((p) => p.kind === k);
 
 /** A fresh city + state bound to the layout (roof props write through). */
-function fresh(): { buildings: Building[]; state: PropState; damage: CityDamage } {
+function fresh(): {
+  buildings: Building[];
+  state: PropState;
+  damage: CityDamage;
+} {
   const buildings = generateCity(CITY_SEED);
   const damage = new CityDamage();
   damage.bind(buildings);
@@ -129,7 +130,8 @@ describe("D9 prop layout", () => {
     });
     const masts: { x: number; z: number }[] = [];
     for (let bx = 0; bx < 10; bx++) {
-      for (let bz = 0; bz < 10; bz++) masts.push(...signalMastsForBlock(bx, bz));
+      for (let bz = 0; bz < 10; bz++)
+        masts.push(...signalMastsForBlock(bx, bz));
     }
     const ss = ofKind(PROP_SIGNAL);
     expect(ss).toHaveLength(masts.length);
@@ -140,7 +142,10 @@ describe("D9 prop layout", () => {
   });
 
   it("parks vehicles in the parking lane, off intersections, bridges and portals", () => {
-    for (const p of props.filter((q) => q.kind === PROP_CAR || q.kind === PROP_TAXI || q.kind === PROP_FUEL)) {
+    for (const p of props.filter(
+      (q) =>
+        q.kind === PROP_CAR || q.kind === PROP_TAXI || q.kind === PROP_FUEL,
+    )) {
       const at = { x: p.x, y: 0, z: p.z };
       expect(isInRoadway(at)).toBe(true);
       expect(isInIntersection(at)).toBe(false);
@@ -165,7 +170,9 @@ describe("D9 prop layout", () => {
       const b = city[p.b] as Building;
       const r = (generatedRoof(b) ?? [])[p.ref];
       expect(r, `prop ${p.id}`).toBeDefined();
-      const kind = { 7: "waterTank", 8: "billboard", 9: "mast" }[p.kind as 7 | 8 | 9];
+      const kind = { 7: "waterTank", 8: "billboard", 9: "mast" }[
+        p.kind as 7 | 8 | 9
+      ];
       expect(r?.kind).toBe(kind);
       expect(p.landY).toBe(b.height);
       expect(layout.roofProp.get(p.b * 64 + p.ref)).toBe(p.id);
@@ -173,10 +180,14 @@ describe("D9 prop layout", () => {
   });
 
   it("finds a prop across the seam (propsNear is wrap-safe)", () => {
-    const bridge0 = props.find((p) => p.kind === PROP_BRIDGE && p.ref === 0) as Prop;
+    const bridge0 = props.find(
+      (p) => p.kind === PROP_BRIDGE && p.ref === 0,
+    ) as Prop;
     expect(bridge0.x).toBe(0);
     const seen: number[] = [];
-    propsNear(layout, WORLD_SIZE - 5, RIVER_CENTER_Z, 10, (id) => seen.push(id));
+    propsNear(layout, WORLD_SIZE - 5, RIVER_CENTER_Z, 10, (id) =>
+      seen.push(id),
+    );
     expect(seen).toContain(bridge0.id);
   });
 });
@@ -186,51 +197,60 @@ describe("D9 prop state machine", () => {
   // replay. Roof props leave b.roof (collision, rays and drawing follow);
   // a span opens its deck.
   const kinds = Array.from({ length: PROP_KIND_COUNT }, (_, k) => k);
-  it.each(kinds)("kind %i: standing → hit → down → restored → replayed", (k) => {
-    const { buildings, state } = fresh();
-    const p = ofKind(k)[0] as Prop;
-    expect(state.isDown(p.id)).toBe(false);
-    expect(state.hpOf(p.id)).toBe(p.hp);
-    expect(state.damage(p.id, p.hp - 1)).toBe(false);
-    expect(state.hpOf(p.id)).toBe(1);
-    expect(state.damage(p.id, 1, 2, "ace")).toBe(true);
-    expect(state.isDown(p.id)).toBe(true);
-    expect(state.damage(p.id, 50)).toBe(false); // down: no more damage
-    expect(Number.isNaN(state.downAt(p.id))).toBe(true); // not stamped yet
-    const [d] = state.take(5000);
-    expect(d).toEqual({ id: p.id, t: 5000 });
-    expect(state.downAt(p.id)).toBe(5000);
-    expect(state.depthOf(p.id)).toBe(2);
-    expect(state.byOf(p.id)).toBe("ace");
-    expect(state.fallers.includes(p.id)).toBe(isFaller(k));
-    if (k === PROP_BRIDGE) expect(state.gapMask).toBe(1 << p.ref);
-    if (isRoofProp(k)) {
-      const b = buildings[p.b] as Building;
-      const r = (generatedRoof(b) ?? [])[p.ref];
-      expect(b.roof?.includes(r as NonNullable<typeof r>) ?? false).toBe(false);
-      // Nothing about it is "damaged": b.damage stays undefined.
-      expect(b.damage).toBeUndefined();
-    }
-    if (isExplosive(k)) {
-      state.blasted(p.id, 5400);
-      expect(state.blastAt(p.id)).toBe(5400);
-    }
-    // A replay of the same downs is the same state.
-    const replay = fresh();
-    replay.state.reset([{ id: p.id, t: 5000, te: isExplosive(k) ? 5400 : -1 }]);
-    expect(replay.state.downIds()).toEqual(state.downIds());
-    expect(replay.state.gapMask).toBe(state.gapMask);
-    expect(replay.buildings[p.b]?.roof).toEqual(buildings[p.b]?.roof);
-    // Restored: back to whole.
-    state.restore(p.id);
-    expect(state.isDown(p.id)).toBe(false);
-    expect(state.hpOf(p.id)).toBe(p.hp);
-    expect(state.gapMask).toBe(0);
-    expect(state.fallers).toHaveLength(0);
-    if (isRoofProp(k)) {
-      expect(buildings[p.b]?.roof).toEqual(generatedRoof(buildings[p.b] as Building));
-    }
-  });
+  it.each(kinds)(
+    "kind %i: standing → hit → down → restored → replayed",
+    (k) => {
+      const { buildings, state } = fresh();
+      const p = ofKind(k)[0] as Prop;
+      expect(state.isDown(p.id)).toBe(false);
+      expect(state.hpOf(p.id)).toBe(p.hp);
+      expect(state.damage(p.id, p.hp - 1)).toBe(false);
+      expect(state.hpOf(p.id)).toBe(1);
+      expect(state.damage(p.id, 1, 2, "ace")).toBe(true);
+      expect(state.isDown(p.id)).toBe(true);
+      expect(state.damage(p.id, 50)).toBe(false); // down: no more damage
+      expect(Number.isNaN(state.downAt(p.id))).toBe(true); // not stamped yet
+      const [d] = state.take(5000);
+      expect(d).toEqual({ id: p.id, t: 5000 });
+      expect(state.downAt(p.id)).toBe(5000);
+      expect(state.depthOf(p.id)).toBe(2);
+      expect(state.byOf(p.id)).toBe("ace");
+      expect(state.fallers.includes(p.id)).toBe(isFaller(k));
+      if (k === PROP_BRIDGE) expect(state.gapMask).toBe(1 << p.ref);
+      if (isRoofProp(k)) {
+        const b = buildings[p.b] as Building;
+        const r = (generatedRoof(b) ?? [])[p.ref];
+        expect(b.roof?.includes(r as NonNullable<typeof r>) ?? false).toBe(
+          false,
+        );
+        // Nothing about it is "damaged": b.damage stays undefined.
+        expect(b.damage).toBeUndefined();
+      }
+      if (isExplosive(k)) {
+        state.blasted(p.id, 5400);
+        expect(state.blastAt(p.id)).toBe(5400);
+      }
+      // A replay of the same downs is the same state.
+      const replay = fresh();
+      replay.state.reset([
+        { id: p.id, t: 5000, te: isExplosive(k) ? 5400 : -1 },
+      ]);
+      expect(replay.state.downIds()).toEqual(state.downIds());
+      expect(replay.state.gapMask).toBe(state.gapMask);
+      expect(replay.buildings[p.b]?.roof).toEqual(buildings[p.b]?.roof);
+      // Restored: back to whole.
+      state.restore(p.id);
+      expect(state.isDown(p.id)).toBe(false);
+      expect(state.hpOf(p.id)).toBe(p.hp);
+      expect(state.gapMask).toBe(0);
+      expect(state.fallers).toHaveLength(0);
+      if (isRoofProp(k)) {
+        expect(buildings[p.b]?.roof).toEqual(
+          generatedRoof(buildings[p.b] as Building),
+        );
+      }
+    },
+  );
 
   it("holds bare records until bound, like CityDamage", () => {
     const state = new PropState();
@@ -239,7 +259,9 @@ describe("D9 prop state machine", () => {
     const buildings = generateCity(CITY_SEED);
     state.bind(layout, buildings);
     expect(state.isDown(p.id)).toBe(true);
-    expect(buildings[p.b]?.roof?.length).toBe((generatedRoof(city[p.b] as Building)?.length ?? 0) - 1);
+    expect(buildings[p.b]?.roof?.length).toBe(
+      (generatedRoof(city[p.b] as Building)?.length ?? 0) - 1,
+    );
   });
 
   it("a D5 rebuild brings a building's roof props back", () => {
@@ -248,7 +270,9 @@ describe("D9 prop state machine", () => {
     const b = (tanks[0] as Prop).b;
     const mine = props.filter((p) => p.b === b && isRoofProp(p.kind));
     for (const p of mine) state.apply(p.id, 1);
-    expect(state.restoreBuilding(b).sort()).toEqual(mine.map((p) => p.id).sort());
+    expect(state.restoreBuilding(b).sort()).toEqual(
+      mine.map((p) => p.id).sort(),
+    );
     expect(buildings[b]?.roof).toEqual(generatedRoof(buildings[b] as Building));
   });
 
@@ -266,7 +290,9 @@ describe("D9 prop state machine", () => {
     expect(downed).toBe(PROP_DOWN_PER_TICK);
     expect(state.take(1)).toHaveLength(PROP_DOWN_PER_TICK);
     // The next tick has a fresh budget.
-    expect(state.knockDown((lamps[PROP_DOWN_PER_TICK + 1] as Prop).id)).toBe(true);
+    expect(state.knockDown((lamps[PROP_DOWN_PER_TICK + 1] as Prop).id)).toBe(
+      true,
+    );
   });
 });
 
@@ -274,54 +300,74 @@ describe("D9 solid fallers: draw == collide", () => {
   const fallers = [PROP_TANK, 8, 9, PROP_JUMBO, PROP_BRIDGE].map(
     (k) => ofKind(k)[0] as Prop,
   );
-  it.each(fallers.map((p) => [p.id, p]))("prop %i falls as the box it collides", (_, p) => {
-    const { buildings, state } = fresh();
-    const slot = { layout, state };
-    const t0 = 10_000;
-    state.apply(p.id, t0);
-    const end = fallSeconds(p);
-    const pose = blankPose();
-    for (let s = -0.2; s <= end + 0.6; s += 0.1) {
-      const t = t0 + s * 1000;
-      const got = propPieceInto(slot, p.id, t, pose);
-      expect(got).not.toBeNull();
-      // Its centre is solid; 3 m beyond its largest half extent is not.
-      const c = { x: p.x + pose.x, y: pose.y, z: p.z + pose.z };
-      expect(collideProps(c, 0.1, slot, t)?.id).toBe(p.id);
-      const far = Math.max(pose.hx, pose.hy, pose.hz) * 1.8 + 3;
-      expect(collideProps({ x: c.x, y: c.y + far, z: c.z }, 0.1, slot, t)).toBeNull();
-    }
-    // Standing before it goes (a render clock trails the message).
-    fallerPose(p, -1, pose);
-    expect(pose).toMatchObject({ x: 0, z: 0, y: p.y, phi: 0, rest: false });
-    // At rest for good, lying on the surface it lands on.
-    fallerPose(p, end + 0.01, pose);
-    expect(pose.rest).toBe(true);
-    const half =
-      p.kind === PROP_BRIDGE
-        ? p.hy
-        : p.dir <= 1
-          ? p.hx
-          : p.hz;
-    if (p.kind !== PROP_BRIDGE) expect(pose.y - half).toBeCloseTo(p.landY, 6);
-    expect(collideProps({ x: p.x + pose.x, y: pose.y, z: p.z + pose.z }, 0.1, slot, Number.POSITIVE_INFINITY)?.falling).toBe(false);
-    void buildings;
-  });
+  it.each(fallers.map((p) => [p.id, p]))(
+    "prop %i falls as the box it collides",
+    (_, p) => {
+      const { buildings, state } = fresh();
+      const slot = { layout, state };
+      const t0 = 10_000;
+      state.apply(p.id, t0);
+      const end = fallSeconds(p);
+      const pose = blankPose();
+      for (let s = -0.2; s <= end + 0.6; s += 0.1) {
+        const t = t0 + s * 1000;
+        const got = propPieceInto(slot, p.id, t, pose);
+        expect(got).not.toBeNull();
+        // Its centre is solid; 3 m beyond its largest half extent is not.
+        const c = { x: p.x + pose.x, y: pose.y, z: p.z + pose.z };
+        expect(collideProps(c, 0.1, slot, t)?.id).toBe(p.id);
+        const far = Math.max(pose.hx, pose.hy, pose.hz) * 1.8 + 3;
+        expect(
+          collideProps({ x: c.x, y: c.y + far, z: c.z }, 0.1, slot, t),
+        ).toBeNull();
+      }
+      // Standing before it goes (a render clock trails the message).
+      fallerPose(p, -1, pose);
+      expect(pose).toMatchObject({ x: 0, z: 0, y: p.y, phi: 0, rest: false });
+      // At rest for good, lying on the surface it lands on.
+      fallerPose(p, end + 0.01, pose);
+      expect(pose.rest).toBe(true);
+      const half = p.kind === PROP_BRIDGE ? p.hy : p.dir <= 1 ? p.hx : p.hz;
+      if (p.kind !== PROP_BRIDGE) expect(pose.y - half).toBeCloseTo(p.landY, 6);
+      expect(
+        collideProps(
+          { x: p.x + pose.x, y: pose.y, z: p.z + pose.z },
+          0.1,
+          slot,
+          Number.POSITIVE_INFINITY,
+        )?.falling,
+      ).toBe(false);
+      void buildings;
+    },
+  );
 
   it("a fallen tank whose deck is gone is gone too (nothing floats)", () => {
     const { buildings, damage, state } = fresh();
     const slot = { layout, state };
     const p = ofKind(PROP_TANK)[0] as Prop;
     state.apply(p.id, 0);
-    const pose = propPieceInto(slot, p.id, Number.POSITIVE_INFINITY, blankPose());
+    const pose = propPieceInto(
+      slot,
+      p.id,
+      Number.POSITIVE_INFINITY,
+      blankPose(),
+    );
     expect(pose).not.toBeNull();
-    const at = { x: p.x + (pose?.x ?? 0), y: (pose?.y ?? 0), z: p.z + (pose?.z ?? 0) };
-    expect(collideProps(at, 0.1, slot, Number.POSITIVE_INFINITY)).not.toBeNull();
+    const at = {
+      x: p.x + (pose?.x ?? 0),
+      y: pose?.y ?? 0,
+      z: p.z + (pose?.z ?? 0),
+    };
+    expect(
+      collideProps(at, 0.1, slot, Number.POSITIVE_INFINITY),
+    ).not.toBeNull();
     // Break every top-tier chunk of its building.
     const b = buildings[p.b] as Building;
     const top = tierGrids(b).length - 1;
     damage.apply(chunksOf(b, p.b).filter((id) => chunkTier(id) === top));
-    expect(propPieceInto(slot, p.id, Number.POSITIVE_INFINITY, blankPose())).toBeNull();
+    expect(
+      propPieceInto(slot, p.id, Number.POSITIVE_INFINITY, blankPose()),
+    ).toBeNull();
     expect(collideProps(at, 0.1, slot, Number.POSITIVE_INFINITY)).toBeNull();
   });
 });
@@ -335,13 +381,19 @@ describe("D9 bridge gaps", () => {
     expect(riverHit(deck, 0.5, mask)).toBe(false);
     expect(hitsGround(deck, 0.5, mask)).toBe(false);
     expect(riverHit(deck, 0.5, 1 << 3)).toBe(true); // another bridge's gap
-    const parapet = { x: x + BRIDGE_HALF_WIDTH - 0.25, y: 0.5, z: RIVER_CENTER_Z + 5 };
+    const parapet = {
+      x: x + BRIDGE_HALF_WIDTH - 0.25,
+      y: 0.5,
+      z: RIVER_CENTER_Z + 5,
+    };
     expect(riverHit(parapet, 0.2)).toBe(true);
     expect(riverHit(parapet, 0.2, mask)).toBe(false);
     const beyond = { x, y: -1.2, z: RIVER_CENTER_Z + BRIDGE_SPAN_HALF + 3 };
     expect(riverHit(beyond, 0.5, mask)).toBe(true); // the end pieces stay
     expect(inBridgeGap(x, RIVER_CENTER_Z, mask)).toBe(true);
-    expect(inBridgeGap(x, RIVER_CENTER_Z + BRIDGE_SPAN_HALF + 1, mask)).toBe(false);
+    expect(inBridgeGap(x, RIVER_CENTER_Z + BRIDGE_SPAN_HALF + 1, mask)).toBe(
+      false,
+    );
     expect(overChannel(RIVER_CENTER_Z)).toBe(true);
   });
 
@@ -372,7 +424,12 @@ describe("D9 chains (pure halves)", () => {
       expect(p.kind === PROP_BRIDGE || p.kind === PROP_CRANE).toBe(false);
     }
     // Pure: the same event, the same crushes.
-    expect(collapseCrushes(buildCollapse(city, wire) as NonNullable<typeof c>, layout)).toEqual(crushes);
+    expect(
+      collapseCrushes(
+        buildCollapse(city, wire) as NonNullable<typeof c>,
+        layout,
+      ),
+    ).toEqual(crushes);
   });
 
   it("fire jumps only to OTHER buildings' chunks within reach, and only damaged ones", () => {
@@ -405,7 +462,9 @@ describe("D9 chains (pure halves)", () => {
     // A damaged neighbour: it can.
     const { buildings, damage } = fresh();
     const other = chunkBuilding(targets[0] as number);
-    damage.apply([chunksOf(buildings[other] as Building, other).at(-1) as number]);
+    damage.apply([
+      chunksOf(buildings[other] as Building, other).at(-1) as number,
+    ]);
     const jump = pickFireJump(buildings, id, always);
     expect(chunkBuilding(jump)).toBe(other);
   });

@@ -188,12 +188,27 @@ export class ScarsRenderer {
     for (const d of e.down) {
       const p = layout.props[d.id];
       if (!p || !this.near(p, viewer, SCAR_FX_M)) continue;
-      if (p.kind === PROP_LAMP || p.kind === PROP_SIGNAL || p.kind === PROP_POLE) {
+      if (
+        p.kind === PROP_LAMP ||
+        p.kind === PROP_SIGNAL ||
+        p.kind === PROP_POLE
+      ) {
         this.at.x = p.x;
         this.at.y = p.y + p.hy;
         this.at.z = p.z;
         this.sparks.burst(this.at, now);
-        this.impacts.spray(Kind.SPARK, this.at, UP, 6, 1.2, 14, 700, 0.35, SPARK_RGB, now);
+        this.impacts.spray(
+          Kind.SPARK,
+          this.at,
+          UP,
+          6,
+          1.2,
+          14,
+          700,
+          0.35,
+          SPARK_RGB,
+          now,
+        );
       }
     }
   }
@@ -217,11 +232,55 @@ export class ScarsRenderer {
       this.at.x = p.x;
       this.at.y = p.y + 1;
       this.at.z = p.z;
-      this.impacts.spray(Kind.FIRE, this.at, UP, 14, 0.5, 90, 1600, 4.5, FIRE_RGB, now);
+      this.impacts.spray(
+        Kind.FIRE,
+        this.at,
+        UP,
+        14,
+        0.5,
+        90,
+        1600,
+        4.5,
+        FIRE_RGB,
+        now,
+      );
     }
-    this.impacts.spray(Kind.FIRE, this.at, UP, 7, 1, big ? 40 : 22, 900, 2.6, FIRE_RGB, now);
-    this.impacts.spray(Kind.CHIP, this.at, UP, 11, 1.2, big ? 40 : 16, 1800, 0.4, DUST_RGB, now);
-    this.impacts.spray(Kind.GLASS, this.at, UP, 8, 1.3, big ? 30 : 12, 1600, 0.35, GLASS_RGB, now);
+    this.impacts.spray(
+      Kind.FIRE,
+      this.at,
+      UP,
+      7,
+      1,
+      big ? 40 : 22,
+      900,
+      2.6,
+      FIRE_RGB,
+      now,
+    );
+    this.impacts.spray(
+      Kind.CHIP,
+      this.at,
+      UP,
+      11,
+      1.2,
+      big ? 40 : 16,
+      1800,
+      0.4,
+      DUST_RGB,
+      now,
+    );
+    this.impacts.spray(
+      Kind.GLASS,
+      this.at,
+      UP,
+      8,
+      1.3,
+      big ? 30 : 12,
+      1600,
+      0.35,
+      GLASS_RGB,
+      now,
+    );
   }
 
   /** A `chunks` batch broke `ids`: every chunk of a GLASS curtain wall that
@@ -231,8 +290,30 @@ export class ScarsRenderer {
     for (const id of ids) {
       if (shown >= GLASS_CHUNKS_MAX) break;
       if (this.chunkFace(id) && this.nearPoint(this.at, viewer, SCAR_FX_M)) {
-        this.impacts.spray(Kind.GLASS, this.at, this.n, 4, 0.9, 44, 2800, 0.75, GLASS_RGB, now);
-        this.impacts.spray(Kind.GLASS, this.at, UP, 1.5, 1.4, 12, 3400, 0.45, GLASS_RGB, now);
+        this.impacts.spray(
+          Kind.GLASS,
+          this.at,
+          this.n,
+          4,
+          0.9,
+          44,
+          2800,
+          0.75,
+          GLASS_RGB,
+          now,
+        );
+        this.impacts.spray(
+          Kind.GLASS,
+          this.at,
+          UP,
+          1.5,
+          1.4,
+          12,
+          3400,
+          0.45,
+          GLASS_RGB,
+          now,
+        );
         shown++;
       }
     }
@@ -306,9 +387,31 @@ export class ScarsRenderer {
       // so only a whole particle owed is handed over.)
       const n = this.emit(0, SPRAY_RATE * dt);
       if (n === 0) continue;
-      this.impacts.spray(Kind.GLASS, this.at, UP, 12, 0.18, n, 1500, 0.55, WATER_RGB, now);
+      this.impacts.spray(
+        Kind.GLASS,
+        this.at,
+        UP,
+        12,
+        0.18,
+        n,
+        1500,
+        0.55,
+        WATER_RGB,
+        now,
+      );
       if (n >= 4) {
-        this.impacts.spray(Kind.DUST, this.at, UP, 2, 0.8, Math.floor(n / 4), 2200, 2.2, MIST_RGB, now);
+        this.impacts.spray(
+          Kind.DUST,
+          this.at,
+          UP,
+          2,
+          0.8,
+          Math.floor(n / 4),
+          2200,
+          2.2,
+          MIST_RGB,
+          now,
+        );
       }
     }
     // Burning wrecks (the nearest few), and live wires off fallen poles.
@@ -317,7 +420,11 @@ export class ScarsRenderer {
       const p = layout.props[id] as Prop;
       if (isExplosive(p.kind)) {
         const te = state.blastAt(id);
-        if (Number.isNaN(te) || tMs - te > WRECK_BURN_MS || fires >= WRECK_FIRES) {
+        if (
+          Number.isNaN(te) ||
+          tMs - te > WRECK_BURN_MS ||
+          fires >= WRECK_FIRES
+        ) {
           continue;
         }
         if (!this.near(p, viewer, SCAR_FX_M)) continue;
@@ -338,7 +445,18 @@ export class ScarsRenderer {
           this.at.y = 0.5;
           this.at.z = p.z + (this.rand() - 0.5) * 2;
           this.sparks.burst(this.at, now);
-          this.impacts.spray(Kind.SPARK, this.at, UP, 5, 1.4, 10, 600, 0.3, SPARK_RGB, now);
+          this.impacts.spray(
+            Kind.SPARK,
+            this.at,
+            UP,
+            5,
+            1.4,
+            10,
+            600,
+            0.3,
+            SPARK_RGB,
+            now,
+          );
         }
       }
     }
@@ -367,23 +485,100 @@ export class ScarsRenderer {
     this.at.z = at.z;
     if (p.kind === PROP_BRIDGE) {
       this.at.y = RIVER_WATER_Y + 0.5;
-      this.impacts.spray(Kind.GLASS, this.at, UP, 16, 0.9, 120, 2400, 0.9, WATER_RGB, now);
-      this.impacts.spray(Kind.DUST, this.at, UP, 4, 1.2, 50, 3600, 5, MIST_RGB, now);
+      this.impacts.spray(
+        Kind.GLASS,
+        this.at,
+        UP,
+        16,
+        0.9,
+        120,
+        2400,
+        0.9,
+        WATER_RGB,
+        now,
+      );
+      this.impacts.spray(
+        Kind.DUST,
+        this.at,
+        UP,
+        4,
+        1.2,
+        50,
+        3600,
+        5,
+        MIST_RGB,
+        now,
+      );
       return;
     }
     this.at.y = at.y + 0.5;
     if (p.kind === PROP_TANK) {
       // The tank bursts: a sheet of water over the roof edge.
-      this.impacts.spray(Kind.GLASS, this.at, UP, 9, 1.3, 90, 2000, 0.7, WATER_RGB, now);
-      this.impacts.spray(Kind.DUST, this.at, UP, 2, 1.2, 30, 2600, 3, MIST_RGB, now);
+      this.impacts.spray(
+        Kind.GLASS,
+        this.at,
+        UP,
+        9,
+        1.3,
+        90,
+        2000,
+        0.7,
+        WATER_RGB,
+        now,
+      );
+      this.impacts.spray(
+        Kind.DUST,
+        this.at,
+        UP,
+        2,
+        1.2,
+        30,
+        2600,
+        3,
+        MIST_RGB,
+        now,
+      );
       return;
     }
     if (p.kind === PROP_JUMBO) {
-      this.impacts.spray(Kind.GLASS, this.at, UP, 9, 1.4, 60, 2200, 0.4, GLASS_RGB, now);
+      this.impacts.spray(
+        Kind.GLASS,
+        this.at,
+        UP,
+        9,
+        1.4,
+        60,
+        2200,
+        0.4,
+        GLASS_RGB,
+        now,
+      );
       this.sparks.burst(this.at, now);
     }
-    this.impacts.spray(Kind.DUST, this.at, UP, 3, 1.3, 30, 3000, 3.5, DUST_RGB, now);
-    this.impacts.spray(Kind.SPARK, this.at, UP, 7, 1.3, 20, 700, 0.35, SPARK_RGB, now);
+    this.impacts.spray(
+      Kind.DUST,
+      this.at,
+      UP,
+      3,
+      1.3,
+      30,
+      3000,
+      3.5,
+      DUST_RGB,
+      now,
+    );
+    this.impacts.spray(
+      Kind.SPARK,
+      this.at,
+      UP,
+      7,
+      1.3,
+      20,
+      700,
+      0.35,
+      SPARK_RGB,
+      now,
+    );
   }
 
   /** Whole particles owed by emitter `k` this frame (fraction carried). */
@@ -405,7 +600,11 @@ export class ScarsRenderer {
     let n = 0;
     const put = (x: number, z: number, r: number, hex: number, yaw: number) => {
       if (n >= SCARS_MAX) return;
-      this.p.set(viewer.x + wrapDeltaAxis(viewer.x, x), 0.04 + n * 0.0005, viewer.z + wrapDeltaAxis(viewer.z, z));
+      this.p.set(
+        viewer.x + wrapDeltaAxis(viewer.x, x),
+        0.04 + n * 0.0005,
+        viewer.z + wrapDeltaAxis(viewer.z, z),
+      );
       this.q.setFromAxisAngle(THREE.Object3D.DEFAULT_UP, yaw);
       this.s.set(r, 1, r);
       this.m.compose(this.p, this.q, this.s);

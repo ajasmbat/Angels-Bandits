@@ -206,9 +206,7 @@ export function riverHit(pos: Vec3, r: number, gaps = 0): boolean {
   const dz = gap ? off - (DECK_HALF_LENGTH + BRIDGE_SPAN_HALF) / 2 : off;
   const hz = gap ? (DECK_HALF_LENGTH - BRIDGE_SPAN_HALF) / 2 : DECK_HALF_LENGTH;
   // The deck.
-  if (
-    inBox(bx, dz, pos.y, r, BRIDGE_HALF_WIDTH, hz, -BRIDGE_DECK_DEPTH, 0)
-  ) {
+  if (inBox(bx, dz, pos.y, r, BRIDGE_HALF_WIDTH, hz, -BRIDGE_DECK_DEPTH, 0)) {
     return true;
   }
   // The deck's parapets.
@@ -326,13 +324,10 @@ export function riverSegmentClear(
   for (let k = first; k <= last; k++) {
     const b = k * BLOCK_PITCH - from.x; // this bridge's centre, local x
     // D9: a fallen span splits the deck into its two end pieces.
-    const gap =
-      gaps !== 0 && (gaps & (1 << bridgeIndexAt(from.x + b))) !== 0;
+    const gap = gaps !== 0 && (gaps & (1 << bridgeIndexAt(from.x + b))) !== 0;
     for (let piece = gap ? 0 : -1; piece <= (gap ? 1 : -1); piece++) {
-      const z0 =
-        piece === 1 ? cz + BRIDGE_SPAN_HALF : cz - DECK_HALF_LENGTH;
-      const z1 =
-        piece === 0 ? cz - BRIDGE_SPAN_HALF : cz + DECK_HALF_LENGTH;
+      const z0 = piece === 1 ? cz + BRIDGE_SPAN_HALF : cz - DECK_HALF_LENGTH;
+      const z1 = piece === 0 ? cz - BRIDGE_SPAN_HALF : cz + DECK_HALF_LENGTH;
       if (
         segmentHitsBox(
           0,

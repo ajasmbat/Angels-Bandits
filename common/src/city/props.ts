@@ -421,8 +421,9 @@ export function generateProps(
   streetlampPositions().forEach((l, i) => {
     const onSpan =
       Math.abs(riverOffset(l.z)) < BRIDGE_SPAN_HALF &&
-      Math.abs(wrapDeltaAxis(Math.round(l.x / BLOCK_PITCH) * BLOCK_PITCH, l.x)) <=
-        BRIDGE_HALF_WIDTH;
+      Math.abs(
+        wrapDeltaAxis(Math.round(l.x / BLOCK_PITCH) * BLOCK_PITCH, l.x),
+      ) <= BRIDGE_HALF_WIDTH;
     const span = onSpan ? wrapGrid(Math.round(l.x / BLOCK_PITCH)) : -1;
     const p = add({
       ...base,
@@ -490,7 +491,11 @@ export function generateProps(
         // A north–south side through the river row is a bridge: no parking.
         if (s.axis === "z" && s.seg === RIVER_ROW) return;
         const kind =
-          pick < FUEL_SHARE ? PROP_FUEL : pick < TAXI_SHARE ? PROP_TAXI : PROP_CAR;
+          pick < FUEL_SHARE
+            ? PROP_FUEL
+            : pick < TAXI_SHARE
+              ? PROP_TAXI
+              : PROP_CAR;
         const [len, wid, h] = VEHICLE_DIMS[kind] as readonly [
           number,
           number,
@@ -553,7 +558,11 @@ export function generateProps(
   const candidates: { x: number; z: number; bank: -1 | 1 }[] = [];
   for (let i = 0; i < GRID; i++) {
     for (const bank of [-1, 1] as const) {
-      candidates.push({ x: i * BLOCK_PITCH + BLOCK_PITCH / 2, z: promenadeZ(bank), bank });
+      candidates.push({
+        x: i * BLOCK_PITCH + BLOCK_PITCH / 2,
+        z: promenadeZ(bank),
+        bank,
+      });
     }
   }
   const order = propRand(seed, 0x6a5057, 0);
@@ -593,7 +602,9 @@ export function generateProps(
       const line = Math.round(x / BLOCK_PITCH) * BLOCK_PITCH;
       const nearBridge = Math.abs(x - line) < BRIDGE_HALF_WIDTH + 4;
       const nearStation = stations.some(
-        (s) => s.bank === bank && Math.abs(wrapDeltaAxis(s.x, x)) < STATION_HALF[0] + 4,
+        (s) =>
+          s.bank === bank &&
+          Math.abs(wrapDeltaAxis(s.x, x)) < STATION_HALF[0] + 4,
       );
       if (nearBridge || nearStation || inPortalCut(x, z, 2)) {
         prev = null;
@@ -711,7 +722,11 @@ export function generateProps(
       if (top > s.y - lift) break;
       const half = (s.axis === "x" ? t.width : t.depth) / 2;
       const halfAcross = (s.axis === "x" ? t.depth : t.width) / 2;
-      if (lo < half && hi > -half && Math.abs(across) < halfAcross + s.width / 2) {
+      if (
+        lo < half &&
+        hi > -half &&
+        Math.abs(across) < halfAcross + s.width / 2
+      ) {
         landY = top;
       }
     }
@@ -1090,7 +1105,12 @@ export class PropState {
    * tick's take(). Refused (held at 1 HP) at the per-tick and share caps and
    * under the gone-hold.
    */
-  damage(id: number, amount: number, depth = 0, by: string | null = null): boolean {
+  damage(
+    id: number,
+    amount: number,
+    depth = 0,
+    by: string | null = null,
+  ): boolean {
     const layout = this.layout;
     if (!layout || this.down[id] || !(amount > 0)) return false;
     const p = layout.props[id];
@@ -1207,7 +1227,11 @@ export class PropState {
         out.push(id);
       }
     }
-    for (let id = layout.first[PROP_JUMBO] as number; id < (layout.first[PROP_BRIDGE] as number); id++) {
+    for (
+      let id = layout.first[PROP_JUMBO] as number;
+      id < (layout.first[PROP_BRIDGE] as number);
+      id++
+    ) {
       if (layout.props[id]?.b === b && this.down[id]) {
         this.restore(id);
         out.push(id);
@@ -1388,11 +1412,14 @@ export function collideProps(
     const dx = wrapDeltaAxis(p.x, pos.x);
     const dz = wrapDeltaAxis(p.z, pos.z);
     const bnd = boundsOf(p);
-    if (Math.abs(dx) > bnd.r + radius || Math.abs(dz) > bnd.r + radius) continue;
+    if (Math.abs(dx) > bnd.r + radius || Math.abs(dz) > bnd.r + radius)
+      continue;
     if (pos.y + radius < bnd.y0 || pos.y - radius > bnd.y1) continue;
     const pose = propPieceInto(slot, id, tMs, scratchPose);
     if (!pose || (fallingOnly && pose.rest)) continue;
-    if (sphereHitsPiece(pose, dx - pose.x, pos.y - pose.y, dz - pose.z, radius)) {
+    if (
+      sphereHitsPiece(pose, dx - pose.x, pos.y - pose.y, dz - pose.z, radius)
+    ) {
       return { id, falling: !pose.rest };
     }
   }
@@ -1676,7 +1703,10 @@ export function craterWater(seed: number, x: number, z: number): boolean {
   const cz = Math.floor(wrapCoord(z) / 4);
   return (
     mulberry32(
-      (seed ^ Math.imul(cx + 1, 73856093) ^ Math.imul(cz + 1, 19349663) ^ 0x3a7e5) >>>
+      (seed ^
+        Math.imul(cx + 1, 73856093) ^
+        Math.imul(cz + 1, 19349663) ^
+        0x3a7e5) >>>
         0,
     )() < 0.5
   );
@@ -1709,7 +1739,7 @@ const finite = (v: unknown): v is number =>
 export function decodeCrater(w: unknown): Crater | null {
   if (!Array.isArray(w) || w.length !== 6 || !w.every(finite)) return null;
   const [id, x, z, r, t, water] = w as number[];
-  if (!Number.isInteger(id) || !(r as number > 0)) return null;
+  if (!Number.isInteger(id) || !((r as number) > 0)) return null;
   return {
     id: id as number,
     x: wrapCoord((x as number) / 10),
@@ -1729,7 +1759,9 @@ export function encodeIdRecords(
   records: readonly (readonly number[])[],
   width: number,
 ): number[] {
-  const sorted = [...records].sort((a, b) => (a[0] as number) - (b[0] as number));
+  const sorted = [...records].sort(
+    (a, b) => (a[0] as number) - (b[0] as number),
+  );
   const out: number[] = [];
   let prev = 0;
   sorted.forEach((r, i) => {

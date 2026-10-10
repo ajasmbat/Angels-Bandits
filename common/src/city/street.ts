@@ -348,8 +348,8 @@ export function signalMastsForBlock(bx: number, bz: number): SignalMast[] {
 /** Every intersection's masts, for tests that sweep the whole city. */
 export function allSignalMasts(): SignalMast[] {
   const out: SignalMast[] = [];
-  for (let bx = 0; bx < (WORLD_SIZE / BLOCK_PITCH); bx++) {
-    for (let bz = 0; bz < (WORLD_SIZE / BLOCK_PITCH); bz++)
+  for (let bx = 0; bx < WORLD_SIZE / BLOCK_PITCH; bx++) {
+    for (let bz = 0; bz < WORLD_SIZE / BLOCK_PITCH; bz++)
       out.push(...signalMastsForBlock(bx, bz));
   }
   return out;

@@ -344,7 +344,18 @@ export function buildRiverStructure(): THREE.BufferGeometry {
         const z0 = zs[piece] as number;
         const z1 = zs[piece + 1] as number;
         if (b.y1 > 0) {
-          s.box(x0, x1, b.y0, b.y1, z0, z1, c(COLORS.rail), NO_EMIT, true, false);
+          s.box(
+            x0,
+            x1,
+            b.y0,
+            b.y1,
+            z0,
+            z1,
+            c(COLORS.rail),
+            NO_EMIT,
+            true,
+            false,
+          );
           continue;
         }
         // Deck: fascia on both long sides, the soffit below. No top face —

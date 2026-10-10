@@ -491,7 +491,12 @@ export class DestructionDirector {
       GAS_CHUNK_DAMAGE,
     );
     // D9: and the street round it — cars, lamps, a crater.
-    blastProps(city, { x: e.x, y: 1, z: e.z }, GAS_CHUNK_RADIUS, GAS_CHUNK_DAMAGE);
+    blastProps(
+      city,
+      { x: e.x, y: 1, z: e.z },
+      GAS_CHUNK_RADIUS,
+      GAS_CHUNK_DAMAGE,
+    );
     // A collapse a gas main sets off is the environment's — nobody's.
     for (const id of broke) city.breakers.set(chunkBuilding(id), null);
     return { event: e, collapse: null, broke };

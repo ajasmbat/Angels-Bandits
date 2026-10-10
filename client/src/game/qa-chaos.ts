@@ -13,7 +13,12 @@
 // planMeteor); the quake shakes the whole window; the fires burn named chunks. The strikes
 // then fly X1's whole pipeline from the socket's `missiles` map — flight,
 // whistle, blast, debris — exactly as a server strike would.
+//
+// W2: and an enemy plane's bombs (`bombs`), each planned by the server's
+// own planBombDrop from a plane pose — the gallery's dive-bomb and
+// bomb-impact shots.
 
+import { planBombDrop } from "@angels-bandits/common/bombs";
 import {
   type QuakeEvent,
   planMeteor,
@@ -26,6 +31,7 @@ import {
   tierGrids,
 } from "@angels-bandits/common/city";
 import type { CityIndex } from "@angels-bandits/common/collision";
+import { flightForward } from "@angels-bandits/common/flight";
 import {
   type MissileStrike,
   missileFlightMs,
@@ -79,6 +85,20 @@ export interface QaChaosSpec {
   /** C2 fire on `chunks` chunks of building `b` (its height is `h`, so a
    * generator change throws instead of burning another building). */
   fires?: { b: number; h: number; chunks: number };
+  /** W2: bombs dropped by an enemy plane at (x, y, z) flying `yaw` /
+   * `pitch` at `speed` m/s, released `t` ms from `worldMs`. */
+  bombs?: QaBombDrop[];
+}
+
+/** W2: one staged bomb release (canonical position, the plane's attitude). */
+export interface QaBombDrop {
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+  pitch: number;
+  speed: number;
+  t: number;
 }
 
 export interface QaChaosStage {
@@ -91,6 +111,8 @@ export interface QaChaosStage {
   next: number;
   /** Strikes the server sent while staged (dropped every frame). */
   foreign: number;
+  /** W2: staged bombs planBombDrop refused, and why (the verdict's read). */
+  bombsRefused: string[];
 }
 
 /** The view-relative point `aim`, canonical. */
@@ -161,6 +183,30 @@ function planMeteors(
   }
 }
 
+/** W2: the staged bombs, planned the way the server plans an enemy's. */
+function planBombs(
+  spec: QaChaosSpec,
+  index: CityIndex,
+  buildings: readonly Building[],
+  out: MissileStrike[],
+  refused: string[],
+): void {
+  (spec.bombs ?? []).forEach((b, k) => {
+    const fwd = flightForward({ yaw: b.yaw, pitch: b.pitch });
+    const vel = { x: fwd.x * b.speed, y: fwd.y * b.speed, z: fwd.z * b.speed };
+    const s = planBombDrop(
+      QA_STRIKE_BASE + 2 * SCHEDULE_LEN + k,
+      { x: b.x, y: b.y, z: b.z },
+      vel,
+      spec.worldMs + b.t,
+      index,
+      buildings,
+    );
+    if (typeof s === "string") refused.push(`${k}:${s}`);
+    else out.push(s);
+  });
+}
+
 /** `n` chunks of building `bi` facing the view: its lowest tier's cells on
  * the face toward (x, z), bottom-up, then round the corners. */
 function fireChunks(
@@ -201,6 +247,8 @@ export function stageChaos(
   if (spec.missiles)
     planMissiles(spec, spec.missiles, index, buildings, strikes);
   if (spec.meteors) planMeteors(spec, spec.meteors, buildings, strikes);
+  const bombsRefused: string[] = [];
+  planBombs(spec, index, buildings, strikes, bombsRefused);
   strikes.sort((a, b) => a.t0 - b.t0 || a.id - b.id);
   let quake: QuakeEvent | null = null;
   if (spec.quake) {
@@ -221,6 +269,7 @@ export function stageChaos(
     fires: spec.fires ? fireChunks(buildings, spec.fires, spec) : [],
     next: 0,
     foreign: 0,
+    bombsRefused,
   };
 }
 

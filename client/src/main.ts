@@ -3079,6 +3079,9 @@ declare global {
         } | null;
         /** P4: the missile and meteor bodies drawn last frame. */
         missilesDrawn: MissileRenderer["stats"];
+        /** W2: shock rings and explosions drawn last frame. */
+        rings: number;
+        explosions: number;
         /** P4: C2 chaos messages the server has sent this session. */
         serverChaos: number;
         /** A2: each held quake's id and the server time the
@@ -3139,6 +3142,8 @@ declare global {
         strikes: number;
         quake: boolean;
         fires: number;
+        /** W2: staged bombs the planner refused (`index:reason`). */
+        bombsRefused: string[];
       } | null;
       jumbotronView: (
         i: number,
@@ -4056,6 +4061,8 @@ window.__ab = {
               foreign: qaChaos.foreign,
             },
       missilesDrawn: missileRenderer.stats,
+      rings: shockRings.liveCount,
+      explosions: explosions.liveCount,
       serverChaos: socket.serverChaos,
       held: {
         quakes: [...socket.quakes.values()].map((q): [number, number] => [
@@ -4127,6 +4134,7 @@ window.__ab = {
       strikes: qaChaos.strikes.length,
       quake: qaChaos.quake !== null,
       fires: qaChaos.fires.length,
+      bombsRefused: qaChaos.bombsRefused,
     };
   },
   jumbotronView: (i, distance) => jumbotrons.view(i, distance),

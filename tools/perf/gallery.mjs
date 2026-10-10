@@ -443,7 +443,11 @@ try {
       await sleep(90);
     }
     if (v.stage?.props) {
-      console.log("props", v.name, JSON.stringify(await page.evaluate(() => window.__ab.props?.())));
+      console.log(
+        "props",
+        v.name,
+        JSON.stringify(await page.evaluate(() => window.__ab.props?.())),
+      );
     }
     // S6: rebuild the reflection probe at this exact pose and let two frames
     // draw with it, so no shot catches the glass mid-crossfade (a build
@@ -455,6 +459,31 @@ try {
           requestAnimationFrame(() => requestAnimationFrame(() => r())),
         ),
     );
+    if (v.drop) {
+      // W2: stage an enemy's bombs on the live render clock, then hold the
+      // shot until one is in the air ("air") or has just landed ("impact").
+      const r = await page.evaluate(
+        (v) =>
+          window.__ab.qaChaos({
+            x: v.x,
+            y: v.y,
+            z: v.z,
+            yaw: v.yaw,
+            worldMs: window.__ab.renderMs() ?? 0,
+            bombs: v.drop.bombs,
+          }),
+        v,
+      );
+      console.log("drop", v.name, JSON.stringify(r));
+      await page.waitForFunction(
+        (w) => {
+          const c = window.__ab.chaos();
+          return w === "air" ? c.missilesDrawn.bodies > 0 : c.rings > 0;
+        },
+        v.drop.waitFor,
+        { timeout: 120000, polling: "raf" },
+      );
+    }
     await page.screenshot({ path: `${OUT}/${v.name}.png`, timeout: 180000 });
     if (v.showcase) {
       console.log(
@@ -494,6 +523,7 @@ try {
       );
       await page.evaluate(() => window.__ab.qaCaveIn(null));
     }
+    if (v.drop) await page.evaluate(() => window.__ab.qaChaos(null));
     if (v.eye) await page.evaluate(() => window.__ab.qaCamera(null));
     if (v.boss) await page.evaluate(() => window.__ab.qaBoss(null));
     if (v.stage) {

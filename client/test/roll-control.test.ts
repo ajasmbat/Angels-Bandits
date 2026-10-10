@@ -21,6 +21,7 @@ import {
   TAP_MAX_S,
   createRollControl,
   defaultRollLevel,
+  effectiveRollLevel,
   snapTarget,
   stepRollControl,
 } from "../src/game/roll-control";
@@ -254,6 +255,20 @@ describe("F10 roll auto-level: off by default on the desktop, gentle on touch", 
     expect(gentle).toBeLessThan(tuning.rollLevelDelay + 3.5);
     expect(strong).toBeLessThan(gentle);
     expect(strong).toBeLessThan(tuning.rollLevelDelay + 1.5);
+  });
+
+  it("the Flight Lab's mode override wins over the setting; 0 defers to it", () => {
+    expect(effectiveRollLevel("off")).toBe("off");
+    for (const [m, want] of [
+      [1, "off"],
+      [2, "gentle"],
+      [3, "strong"],
+    ] as const) {
+      tuning.rollLevelMode = m;
+      expect(effectiveRollLevel("gentle")).toBe(want);
+    }
+    tuning.rollLevelMode = 0;
+    expect(effectiveRollLevel("strong")).toBe("strong");
   });
 
   it("levelling ends exactly on the wings-level path", () => {

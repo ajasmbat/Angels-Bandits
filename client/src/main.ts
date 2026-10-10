@@ -259,6 +259,7 @@ import { caveInShakeAmount, quakeShakeAmount } from "./game/quake";
 import {
   createRollControl,
   defaultRollLevel,
+  effectiveRollLevel,
   resetRollControl,
   stepRollControl,
 } from "./game/roll-control";
@@ -4684,7 +4685,7 @@ const frame = (now: number): void => {
           {
             key: rollKeys,
             auto: bankAuto,
-            mode: rollLevelMode,
+            mode: effectiveRollLevel(rollLevelMode),
             roll,
             pitch: flight.pitch,
           },

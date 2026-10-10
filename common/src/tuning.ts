@@ -144,6 +144,9 @@ export interface FlightTuning {
   rollLevelDelay: number;
   rollLevelGentle: number;
   rollLevelStrong: number;
+  /** The Flight Lab's override of that setting: 0 = as in Settings, 1 =
+   * off, 2 = gentle, 3 = strong. */
+  rollLevelMode: number;
   /** F10 bank-and-pull: pitch-rate gain at knife-edge (BANK_PULL); the
    * pitch rate is pitchRate × (1 + bankPull·sin²(real roll)). */
   bankPull: number;
@@ -268,6 +271,7 @@ export const DEFAULT_TUNING: Readonly<FlightTuning> = Object.freeze({
   rollLevelDelay: 0.8,
   rollLevelGentle: 1.2,
   rollLevelStrong: 3,
+  rollLevelMode: 0,
   bankPull: BANK_PULL,
   knifeLift: 1,
   knifeSpeed: KNIFE_SPEED,
@@ -423,6 +427,7 @@ export const TUNING_SPEC: readonly TuningSpec[] = [
   num("rollLevelRate", "Roll & Pitch", "Roll self-level (physics)", "Built-in wing levelling after you let go of A/D (0 = the bank holds).", 0, 12, 0.25, "/s"),
   num("rollRamp", "Roll & Pitch", "Roll ramp", "How long A/D take to reach full roll rate (shorter = snappier).", 0, 0.4, 0.01, "s"),
   deg("snapRollAngle", "Roll & Pitch", "Snap-roll angle", "How far a double-tap of A/D snaps the plane onto that side.", 30, 180, 5),
+  num("rollLevelMode", "Roll & Pitch", "Roll auto-level mode", "0 = as in Settings, 1 = off, 2 = gentle, 3 = strong.", 0, 3, 1),
   num("rollLevelDelay", "Roll & Pitch", "Roll auto-level delay", "Roll auto-level (Settings): seconds after you let go of A/D before it starts.", 0, 5, 0.1, "s"),
   num("rollLevelGentle", "Roll & Pitch", "Roll auto-level gentle", "How fast GENTLE roll auto-level brings the wings back.", 0.1, 6, 0.1, "/s"),
   num("rollLevelStrong", "Roll & Pitch", "Roll auto-level strong", "How fast STRONG roll auto-level brings the wings back.", 0.5, 12, 0.25, "/s"),

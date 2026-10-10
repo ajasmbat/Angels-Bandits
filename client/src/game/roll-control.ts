@@ -40,6 +40,15 @@ export function defaultRollLevel(touch: boolean): RollLevelMode {
   return touch ? "gentle" : "off";
 }
 
+/** The mode that applies: the Flight Lab's override (the tuning's
+ * rollLevelMode, 1–3) over the ROLL AUTO-LEVEL setting `setting`. */
+export function effectiveRollLevel(setting: RollLevelMode): RollLevelMode {
+  const m = Math.round(tuning.rollLevelMode);
+  return m >= 1 && m <= 3
+    ? (ROLL_LEVEL_MODES[m - 1] as RollLevelMode)
+    : setting;
+}
+
 /** A release ramps the axis out this many times faster than it ramps in. */
 export const RELEASE_FASTER = 2.5;
 /** Double-tap: the first press lasts at most this, s… */

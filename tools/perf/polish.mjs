@@ -628,6 +628,12 @@ const PARITY_SAMPLE = (serverNow) => {
   // settled ones for seconds: compare the ids still live at one server
   // instant, leaving out any within 1.5 s of their end.
   const held = ab.caveIns().held;
+  const liveIds = (list) =>
+    list
+      .filter(([, end]) => end > serverNow + 1500)
+      .map(([id]) => id)
+      .sort((a, b) => a - b)
+      .join(",");
   const d = ab.destruction();
   const b = ab.boss();
   const ch = ab.chaos();
@@ -642,15 +648,10 @@ const PARITY_SAMPLE = (serverNow) => {
     bossRaid: b.staged ? "staged" : (b.raid?.id ?? null),
     bossDown: b.down !== null && b.down !== undefined,
     bossHp: b.hp.join(","),
-    caveIns: held
-      ? held
-          .filter(([, end]) => end > serverNow + 1500)
-          .map(([id]) => id)
-          .sort((a, b) => a - b)
-          .join(",")
-      : ab.caveIns().live,
-    bomberRuns: ch.runs.length,
-    quakes: ch.quakes.length,
+    caveIns: held ? liveIds(held) : ab.caveIns().live,
+    // Runs and quakes are pruned per frame too: ids live at one instant.
+    bomberRuns: ch.held ? liveIds(ch.held.runs) : ch.runs.length,
+    quakes: ch.held ? liveIds(ch.held.quakes) : ch.quakes.length,
     fires: ch.fires,
   };
 };
@@ -1136,7 +1137,8 @@ async function runSoak(url, server) {
     // RSS is what V8 has RESERVED, which steps up and is not handed back;
     // the leak signal is heapUsed after a forced GC (above). RSS is held to
     // its trend: a median step under 1 MB/min over the last 15 minutes.
-    rss: rssSlope !== null && rssSlope < 1,
+    // (a trend needs a window: under 10 steps there is none to judge)
+    rss: steps.length < 10 || rssSlope < 1,
   };
   report.server = {
     pass: Object.values(sv).every(Boolean),

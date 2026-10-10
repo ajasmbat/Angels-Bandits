@@ -1121,6 +1121,7 @@ const atmosphere = new AtmosphereFx(
   buildingsByBlock,
   finalPass,
   shaftsPass,
+  city.cityIndex,
 );
 scene.add(...atmosphere.objects);
 const signals = new Signals(welcome.seed);

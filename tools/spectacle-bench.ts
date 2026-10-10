@@ -36,6 +36,12 @@
 // not judged: the score builds WebAudio nodes per BAR by design (here there
 // is no AudioContext, so its row is the per-frame state machine only).
 //
+// J1 adds the juice's per-frame entry points (the layered explosions on the
+// slow-mo FX clock, their heat in the shimmer, blast shake and the camera
+// cue), judged the same way, and two behavioural checks that exit 1 when
+// they fail: the FX clock's lag is paid back to 0 after a dip, and a cue
+// ends on a fresh press but never on a key held since it began.
+//
 // The bench also checks the tier table: every S1–S7 feature has a row in
 // `FEATURE_TIERS` (client/src/render/quality.ts), and every such row is in
 // the README's tier table (tools/perf/README.md), word for word. Exit 1 if
@@ -88,6 +94,9 @@ const { qaGhostTrack, qaShell, stageBoss } = await import(
   "../client/src/game/qa-spectacle"
 );
 const { Music } = await import("../client/src/audio/music");
+const { CamCue, ExplosionShake, FxClock, SLOWMO_RATE, freshPress } =
+  await import("../client/src/game/juice");
+const { Explosions } = await import("../client/src/render/fx");
 const { AtmosphereFx } = await import("../client/src/render/atmosphere-fx");
 const { BossRenderer } = await import("../client/src/render/boss");
 const { CourseGhost } = await import("../client/src/render/ghost");
@@ -251,7 +260,29 @@ const musicFrame = {
   threatDist: 120 as number | null,
   hp: 70,
   alive: true,
+  carrierDist: 600 as number | null,
+  waveLive: true,
 };
+// J1: blasts round the held boss view, a slow-mo every few seconds.
+const explosions = new Explosions();
+const fxClock = new FxClock();
+const blastShake = new ExplosionShake();
+const camCue = new CamCue();
+const blastAt: Vec3 = { x: 0, y: 0, z: 0 };
+const shakeOut: Vec3 = { x: 0, y: 0, z: 0 };
+/** One blast every 40 frames, a slow-mo dip every 300, on the FX clock. */
+function juiceFrame(f: number, now: number): void {
+  if (f % 40 === 0) {
+    blastAt.x = held.x + 60 * Math.sin(f);
+    blastAt.y = held.y - 20;
+    blastAt.z = held.z - 120 - 40 * Math.cos(f);
+    explosions.explode(blastAt, now, f % 120 === 0 ? 2 : 1);
+  }
+  if (f % 300 === 0) fxClock.trigger(now);
+  const rate = fxClock.step(now, FRAME_MS);
+  explosions.lag = fxClock.lag;
+  explosions.update(held, now, (FRAME_MS / 1000) * rate);
+}
 
 type Step = (f: number) => void;
 const ENTRIES: { name: string; step: Step; reset?: () => void }[] = [
@@ -347,6 +378,51 @@ const ENTRIES: { name: string; step: Step; reset?: () => void }[] = [
       frameAt(f);
       camera.position.set(viewer.x, viewer.y + 4, viewer.z + 14);
       probe.update(rendererStub, scene, camera);
+    },
+  },
+  {
+    name: "J1 explosions + FX clock",
+    step: (f) => {
+      const { now } = frameAt(f);
+      juiceFrame(f, now);
+    },
+  },
+  {
+    name: "J1 blast shimmer (atmosphere.update)",
+    step: (f) => {
+      const { ms, now } = frameAt(f);
+      juiceFrame(f, now);
+      camera.position.set(held.x, held.y + 4, held.z + 14);
+      camera.lookAt(held.x, held.y - 20, held.z - 120);
+      const heatCount = explosions.heatSources(now);
+      atmosphere.update({
+        camera,
+        cameraPos: held,
+        worldMs: ms,
+        now,
+        planes,
+        passes: noPasses,
+        haze: 0.3,
+        microK: 1,
+        moonDir,
+        moonVis: 1,
+        heat: explosions.heat,
+        heatCount,
+      });
+    },
+  },
+  {
+    name: "J1 blast shake + camera cue",
+    step: (f) => {
+      const { now } = frameAt(f);
+      if (f % 60 === 0) blastShake.add(40 + (f % 300), 1, now);
+      shakeOut.x = 0;
+      shakeOut.y = 0;
+      shakeOut.z = 0;
+      blastShake.addInto(shakeOut, now);
+      if (f % 200 === 0) camCue.start("breakup", now);
+      if (f % 200 === 90) camCue.cancel(now, "key");
+      sink += camCue.weight(now) + shakeOut.y;
     },
   },
   {
@@ -446,6 +522,46 @@ async function bytesPerFrame(
   return runs[Math.floor(RUNS / 2)] as Awaited<ReturnType<typeof profileRun>>;
 }
 
+// --- J1 behaviour -------------------------------------------------------------------
+
+/** The FX clock dips to SLOWMO_RATE and pays its lag back to 0; a cue ends
+ * on a fresh press (smoothly, to 0) and never on a key held since it began. */
+function juiceChecks(): string[] {
+  const fails: string[] = [];
+  const clock = new FxClock();
+  let t = 0;
+  let lowest = 1;
+  clock.trigger(t);
+  for (let f = 0; f < 240; f++) {
+    t += FRAME_MS;
+    lowest = Math.min(lowest, clock.step(t, FRAME_MS));
+  }
+  if (!(lowest <= SLOWMO_RATE + 1e-9)) fails.push(`dip reached ${lowest}`);
+  if (clock.lag !== 0 || clock.rate !== 1) {
+    fails.push(`FX lag ${clock.lag} ms (rate ${clock.rate}) 4 s after a dip`);
+  }
+  const off = new FxClock();
+  off.setEnabled(false);
+  off.trigger(0);
+  if (off.step(FRAME_MS, FRAME_MS) !== 1 || off.lag !== 0) {
+    fails.push("a disabled FX clock dipped");
+  }
+  const cue = new CamCue();
+  const held = new Set(["KeyW"]);
+  cue.start("breakup", 0);
+  if (freshPress(false, "KeyW", held)) fails.push("a held key skipped a cue");
+  if (freshPress(true, "KeyQ", held)) fails.push("auto-repeat skipped a cue");
+  if (!freshPress(false, "KeyQ", held)) fails.push("a fresh press did not");
+  cue.cancel(1000, "key");
+  if (!(cue.weight(1000) > 0)) fails.push("a cancel snapped the view back");
+  if (cue.weight(1600) !== 0 || cue.kind !== null) {
+    fails.push("a cancelled cue never ended");
+  }
+  if (cue.cancelReason !== "key") fails.push("the cancel reason was lost");
+  return fails;
+}
+const juice = juiceChecks();
+
 // --- The tier table ---------------------------------------------------------------
 
 /** Every S1–S7 feature has a FEATURE_TIERS row; every such row is in the
@@ -537,10 +653,18 @@ if (process.argv.includes("--json")) {
     `\nalloc ${over.length === 0 && !totalOver ? "PASS" : `FAIL (${[...over.map((r) => r.entry), ...(totalOver ? ["the total"] : [])].join(", ")})`}`,
   );
   console.log(
+    `juice ${juice.length === 0 ? "PASS (FX lag paid back, cue skips on a fresh press only)" : `FAIL\n  ${juice.join("\n  ")}`}`,
+  );
+  console.log(
     `tiers ${tiers.missing.length === 0 ? `PASS (${tiers.rows} S1–S7 rows, all in the README)` : `FAIL\n  ${tiers.missing.join("\n  ")}`}`,
   );
 }
 if (sink < 0) console.log(sink);
 process.exit(
-  over.length === 0 && !totalOver && tiers.missing.length === 0 ? 0 : 1,
+  over.length === 0 &&
+    !totalOver &&
+    tiers.missing.length === 0 &&
+    juice.length === 0
+    ? 0
+    : 1,
 );

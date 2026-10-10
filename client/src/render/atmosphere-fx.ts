@@ -428,21 +428,32 @@ export class AtmosphereFx {
       this.heatAt.x = h.x;
       this.heatAt.y = h.y - BLAST_SHIMMER_BELOW * h.size;
       this.heatAt.z = h.z;
-      if (
-        this.projectColumn(
-          cam,
-          this.heatAt,
-          BLAST_SHIMMER_HEIGHT * h.size,
-          BLAST_SHIMMER_HALF_WIDTH * h.size,
-          d,
-          tanHalf,
-          level,
-          a[n] as THREE.Vector4,
-          b[n] as THREE.Vector4,
-        )
-      ) {
-        n++;
-      }
+      // The vents' projection below, for a wider, taller column (inline,
+      // like it: doubles handed to a helper are boxed — S8).
+      const base = nearestImageInto(this.img, cam.position, this.heatAt);
+      const v = this.v;
+      const w = this.w;
+      v.x = base.x;
+      v.y = base.y;
+      v.z = base.z;
+      v.project(cam);
+      w.x = base.x;
+      w.y = base.y + BLAST_SHIMMER_HEIGHT * h.size;
+      w.z = base.z;
+      w.project(cam);
+      if (v.z > 1 || w.z > 1) continue; // behind the camera
+      if (Math.abs(v.x) > 1.3 || Math.abs(v.y) > 1.3) continue;
+      const slotA = a[n] as THREE.Vector4;
+      const slotB = b[n] as THREE.Vector4;
+      slotA.x = (v.x * 0.5 + 0.5) * cam.aspect;
+      slotA.y = v.y * 0.5 + 0.5;
+      slotA.z = (w.x * 0.5 + 0.5) * cam.aspect;
+      slotA.w = w.y * 0.5 + 0.5;
+      slotB.x = (BLAST_SHIMMER_HALF_WIDTH * h.size) / (2 * d * tanHalf);
+      slotB.y = level;
+      slotB.z = 0;
+      slotB.w = 0;
+      n++;
     }
     for (let q = 0; q < this.slots.length && n < SHIMMER_SLOTS; q++) {
       const s = this.slots[q] as ShimmerSlot;
@@ -455,67 +466,36 @@ export class AtmosphereFx {
       const level =
         s.level * (1 - smooth(SHIMMER_FULL, SHIMMER_RANGE * 1.1, d));
       if (level <= 0.001 || d < 4) continue;
-      if (
-        this.projectColumn(
-          cam,
-          s.vent,
-          SHIMMER_HEIGHT,
-          SHIMMER_HALF_WIDTH,
-          d,
-          tanHalf,
-          level,
-          a[n] as THREE.Vector4,
-          b[n] as THREE.Vector4,
-        )
-      ) {
-        n++;
-      }
+      const base = nearestImageInto(this.img, cam.position, s.vent);
+      // Fields written directly (S8): `set(...)` takes its doubles as
+      // arguments, and V8 boxed every one — ~1.3 KB a frame over six slots.
+      const v = this.v;
+      const w = this.w;
+      v.x = base.x;
+      v.y = base.y;
+      v.z = base.z;
+      v.project(cam);
+      w.x = base.x;
+      w.y = base.y + SHIMMER_HEIGHT;
+      w.z = base.z;
+      w.project(cam);
+      if (v.z > 1 || w.z > 1) continue; // behind the camera
+      if (Math.abs(v.x) > 1.3 || Math.abs(v.y) > 1.3) continue;
+      const slotA = a[n] as THREE.Vector4;
+      const slotB = b[n] as THREE.Vector4;
+      slotA.x = (v.x * 0.5 + 0.5) * cam.aspect;
+      slotA.y = v.y * 0.5 + 0.5;
+      slotA.z = (w.x * 0.5 + 0.5) * cam.aspect;
+      slotA.w = w.y * 0.5 + 0.5;
+      slotB.x = SHIMMER_HALF_WIDTH / (2 * d * tanHalf);
+      slotB.y = level;
+      slotB.z = 0;
+      slotB.w = 0;
+      n++;
     }
     (u.uShimCount as THREE.IUniform).value = n;
     (u.uShimTime as THREE.IUniform).value = shimmerClock(world / 1000);
     (u.uAspect as THREE.IUniform).value = cam.aspect;
-  }
-
-  /**
-   * Project one shimmer column — `height` up from canonical `foot`,
-   * `halfWidth` wide, `d` m from the eye — into a FinalPass slot. False
-   * when it is behind the camera or well off screen (slot untouched).
-   */
-  private projectColumn(
-    cam: THREE.PerspectiveCamera,
-    foot: Vec3,
-    height: number,
-    halfWidth: number,
-    d: number,
-    tanHalf: number,
-    level: number,
-    slotA: THREE.Vector4,
-    slotB: THREE.Vector4,
-  ): boolean {
-    const base = nearestImageInto(this.img, cam.position, foot);
-    // Fields written directly (S8): `set(...)` takes its doubles as
-    // arguments, and V8 boxed every one — ~1.3 KB a frame over six slots.
-    const v = this.v;
-    const w = this.w;
-    v.x = base.x;
-    v.y = base.y;
-    v.z = base.z;
-    v.project(cam);
-    w.x = base.x;
-    w.y = base.y + height;
-    w.z = base.z;
-    w.project(cam);
-    if (v.z > 1 || w.z > 1) return false; // behind the camera
-    if (Math.abs(v.x) > 1.3 || Math.abs(v.y) > 1.3) return false;
-    slotA.x = (v.x * 0.5 + 0.5) * cam.aspect;
-    slotA.y = v.y * 0.5 + 0.5;
-    slotA.z = (w.x * 0.5 + 0.5) * cam.aspect;
-    slotA.w = w.y * 0.5 + 0.5;
-    slotB.x = halfWidth / (2 * d * tanHalf);
-    slotB.y = level;
-    slotB.z = 0;
-    slotB.w = 0;
-    return true;
   }
 
   /** QA (`__ab.atmosphere()`). */

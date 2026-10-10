@@ -427,6 +427,8 @@ export class ScarsRenderer {
       put(p.x, p.z, blast[0] * 0.38, TINT.scorch, p.seed * 6.28);
     }
     this.decals = n;
+    // No scars: no draw call (pre-warm shows it once at boot).
+    this.mesh.visible = n > 0;
     if (n === 0) {
       this.m.makeTranslation(0, -9999, 0);
       this.mesh.setMatrixAt(0, this.m);

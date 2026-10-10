@@ -220,6 +220,8 @@ export class PropsRenderer {
       for (const id of this.moving) this.drawProp(id, t, true);
     }
     this.mesh.count = Math.max(1, this.n);
+    // Nothing to draw: no draw call (pre-warm shows it once at boot).
+    this.mesh.visible = this.n > 0;
     if (this.n === 0) {
       this.m.makeTranslation(0, -9999, 0);
       this.mesh.setMatrixAt(0, this.m);

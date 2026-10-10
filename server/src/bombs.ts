@@ -97,6 +97,9 @@ export interface BombTuning {
   freshClearM: number;
   /** A run the brain could not start rests its enemy this long, ms. */
   refusedRestMs: number;
+  /** Only an enemy within this of its quarry starts a run, m (from further
+   * the run would be over before it got there). */
+  runRangeM: number;
 }
 
 export const BOMB_TUNING: BombTuning = {
@@ -111,6 +114,7 @@ export const BOMB_TUNING: BombTuning = {
   carrierClearM: BOSS_REACH_XZ + 80,
   freshClearM: 80,
   refusedRestMs: 4000,
+  runRangeM: 600,
 };
 
 /** AB_BOMBS_FAST=1 (QA only): runs come quickly. */
@@ -356,6 +360,7 @@ export class BombDirector {
       if (mask === 0) continue;
       const quarry = humans.find((h) => h.id === e.quarry);
       if (!quarry || this.isFresh(quarry, now, world)) continue;
+      if (this.planDist(e.pos, quarry.pos) > t.runRangeM) continue;
       candidates.push({ enemy: e, quarry });
     }
     if (candidates.length === 0) return [];

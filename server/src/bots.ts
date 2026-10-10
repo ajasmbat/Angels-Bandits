@@ -452,7 +452,12 @@ const CARPET_CUE_M = 70;
 /** A carpet's releases need level flight: |sink| under this, m/s. */
 const CARPET_SINK_MAX = 8;
 /** A run's longest life, ms. */
-const RUN_MS: Record<BombRunKind, number> = { dive: 30_000, carpet: 20_000 };
+const RUN_MS: Record<BombRunKind, number> = { dive: 40_000, carpet: 25_000 };
+/** A dive climbing to its IP circles out to about this past its push-over
+ * point, m, rather than overflying the roof still too low. */
+const DIVE_CLIMB_STANDOFF = 250;
+/** ...climbing no steeper than this gradient (~24°). */
+const DIVE_CLIMB_GRADE = 0.45;
 
 /** W2: the bomb run a bot is flying. */
 interface BombRun {
@@ -1410,17 +1415,22 @@ export class RoomBots {
     const run = bot.run as BombRun;
     bot.state = "PATROL";
     bot.targetId = null;
-    if (run.kind === "carpet") {
-      // Down the street lattice toward the target, preferring straight on
-      // — the release wants a long run along one street.
-      this.canyonPatrol(bot, run.target, true);
-      return true;
-    }
     const { pos } = bot.flight;
     const d = wrapDelta(pos, run.target);
     const flat = Math.hypot(d.x, d.z);
     const fwd = flightForward({ yaw: bot.flight.yaw, pitch: 0 });
     const along = flat > 0 ? (d.x * fwd.x + d.z * fwd.z) / flat : 0;
+    if (run.kind === "carpet") {
+      // Its bombs would now land past the target: the window is gone.
+      if (along < 0 && flat > CARPET_CUE_M) {
+        this.finishRun(bot, now);
+        return false;
+      }
+      // Down the street lattice toward the target, preferring straight on
+      // — the release wants a long run along one street.
+      this.canyonPatrol(bot, run.target, true);
+      return true;
+    }
     const ipY = Math.min(run.target.y + DIVE_IP_ABOVE, DIVE_IP_MAX);
     // The push-over point: where a DIVE_ANGLE line from the IP meets the
     // aim point over the roof.
@@ -1447,18 +1457,31 @@ export class RoomBots {
       this.steerToward(bot, aim, 0, 0, -1);
       return true;
     }
-    // The approach: climb toward the IP over the target; arriving too close
-    // to push over, extend straight out first and come back round.
-    const aim: Vec3 =
-      flat < runIn * 0.6
-        ? { x: fwd.x * 300, y: ipY - pos.y, z: fwd.z * 300 }
-        : { x: d.x, y: ipY - pos.y, z: d.z };
-    aim.y = Math.min(aim.y, Math.hypot(aim.x, aim.z) * BOT_ATTACK_CLIMB);
-    const heading = this.fanAround(bot, now, aim, margin);
-    if (!heading) {
-      this.finishRun(bot, now);
-      return false;
+    // The approach. Still well under the IP and close in: circle the
+    // target (the way the bot is already turning, edging out) while it
+    // climbs. At height: straight for the target, and arriving too close to
+    // push over, extend straight out first and come back round.
+    let aim: Vec3;
+    if (pos.y < ipY - 20 && flat < runIn + DIVE_CLIMB_STANDOFF && flat > 0) {
+      const side = fwd.x * d.z - fwd.z * d.x >= 0 ? 1 : -1;
+      const out = flat < runIn + DIVE_CLIMB_STANDOFF * 0.6 ? 0.5 : 0;
+      aim = {
+        x: ((-d.z * side - d.x * out) / flat) * 300,
+        y: ipY - pos.y,
+        z: ((d.x * side - d.z * out) / flat) * 300,
+      };
+    } else if (flat < runIn * 0.6) {
+      aim = { x: fwd.x * 300, y: ipY - pos.y, z: fwd.z * 300 };
+    } else {
+      aim = { x: d.x, y: ipY - pos.y, z: d.z };
     }
+    // A climb the plane can hold: steeper, it bleeds to MIN_SPEED and mushes
+    // under the line its probes cleared.
+    aim.y = Math.min(aim.y, Math.hypot(aim.x, aim.z) * DIVE_CLIMB_GRADE);
+    // The fan picks the clear heading nearest the approach; boxed in, the
+    // bot recovers this decision and comes back to the run on the next.
+    const heading = this.fanAround(bot, now, aim, margin);
+    if (!heading) return false;
     this.steerToward(bot, heading.dir, 0, 0, 1);
     return true;
   }
@@ -2038,12 +2061,26 @@ export class RoomBots {
       }
     }
 
-    // W2: a bomb run flies its own stick — until something on its six,
-    // breaking off or a blocked nose takes the bot off it.
+    // W2: a bomb run flies its own stick — until something on its six or
+    // breaking off takes the bot off it. A blocked nose ends a dive; the
+    // approach and a carpet recover from one (RECOVER's pull-up) and carry
+    // on.
     if (bot.run) {
-      if (now < bot.evadeUntil || bot.breakSince !== null || blocked) {
+      if (
+        now < bot.evadeUntil ||
+        bot.breakSince !== null ||
+        (blocked && bot.run.diving)
+      ) {
         this.finishRun(bot, now);
+      } else if (blocked) {
+        // Climbing out to the IP, or down a street: pull up like any bot
+        // and come back to the run on a later decision.
+        recover(false);
+        return;
       } else if (this.flyRun(bot, now, margin)) {
+        return;
+      } else if (bot.run) {
+        recover(false);
         return;
       }
     }

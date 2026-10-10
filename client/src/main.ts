@@ -356,7 +356,7 @@ import { Fireworks } from "./render/fireworks";
 import { PlaneFleet } from "./render/fleet";
 import { installHeightFog } from "./render/fog";
 import { Fountains } from "./render/fountains";
-import { Explosions, Sparks } from "./render/fx";
+import { Explosions, ShockRings, Sparks } from "./render/fx";
 import { CourseGhost } from "./render/ghost";
 import { GpuTimer } from "./render/gputimer";
 import { createGradePass } from "./render/grade";
@@ -1233,6 +1233,15 @@ let microOn = renderOpts.micro;
 const MICRO_SAMPLE_BLOCK = { bx: 5, bz: 5 } as const;
 const explosions = new Explosions();
 scene.add(explosions.group);
+// W2: a bomb's blast front across what it hit, and the ring round an enemy's
+// bomb load going up in the air.
+const shockRings = new ShockRings();
+scene.add(shockRings.group);
+/** W2: a bomb's shock ring, m; a load going up: its ring and fireball size
+ * (fx.ts Explosions: 1 a kill, up to 2 the carrier). */
+const BOMB_RING_M = 38;
+const LOAD_RING_M = 55;
+const LOAD_BOOM_SCALE = 2;
 const sparks = new Sparks();
 scene.add(sparks.points);
 // U1: a round glancing off a spawn shield — blue-white, never the hit spray.
@@ -1878,6 +1887,7 @@ const remotes = new RemotePlanes(
   tagBatch,
 );
 remotes.setRoster(welcome.roster);
+remotes.setRacks(socket.racks); // W2: the bombs still on each enemy's racks
 
 // --- Combat: guns, bullets, tracers, HUD chrome ---
 const guns = new Guns();
@@ -2478,6 +2488,22 @@ socket.events.onDeath = (msg) => {
         true,
       );
     }
+  }
+  // W2: an enemy shot down on its bomb run took its load with it — a bigger
+  // fireball and a shock ring where it was hit (its wreck still falls).
+  const boom = msg.boom;
+  if (
+    Array.isArray(boom) &&
+    boom.length === 3 &&
+    boom.every((v) => typeof v === "number" && Number.isFinite(v))
+  ) {
+    const at = { x: boom[0], y: boom[1], z: boom[2] };
+    const t = performance.now();
+    explosions.explode(at, t, LOAD_BOOM_SCALE);
+    sparks.burst(at, t);
+    shockRings.ring(at, LOAD_RING_M, t);
+    audio.missileBlast(at, flight.pos, flight.yaw);
+    missileShake.add(wrapDistance(at, flight.pos), t);
   }
   // W1: a whole wave going down with its carrier is one spectacle, not a
   // line per plane: the bangs, and nothing on the feed, screens or radio.
@@ -3318,6 +3344,9 @@ declare global {
         } | null;
         /** P4: the missile and meteor bodies drawn last frame. */
         missilesDrawn: MissileRenderer["stats"];
+        /** W2: shock rings and explosions drawn last frame. */
+        rings: number;
+        explosions: number;
         /** P4: C2 chaos messages the server has sent this session. */
         serverChaos: number;
         /** A2: each held quake's id and the server time the
@@ -3388,6 +3417,8 @@ declare global {
         strikes: number;
         quake: boolean;
         fires: number;
+        /** W2: staged bombs the planner refused (`index:reason`). */
+        bombsRefused: string[];
       } | null;
       jumbotronView: (
         i: number,
@@ -4353,6 +4384,8 @@ window.__ab = {
               foreign: qaChaos.foreign,
             },
       missilesDrawn: missileRenderer.stats,
+      rings: shockRings.liveCount,
+      explosions: explosions.liveCount,
       serverChaos: socket.serverChaos,
       held: {
         quakes: [...socket.quakes.values()].map((q): [number, number] => [
@@ -4447,6 +4480,7 @@ window.__ab = {
       strikes: qaChaos.strikes.length,
       quake: qaChaos.quake !== null,
       fires: qaChaos.fires.length,
+      bombsRefused: qaChaos.bombsRefused,
     };
   },
   jumbotronView: (i, distance) => jumbotrons.view(i, distance),
@@ -5960,6 +5994,8 @@ const frame = (now: number): void => {
       sparks.burst(m.to, now);
       audio.missileBlast(m.to, flight.pos, flight.yaw);
       missileRenderer.impact(m, now);
+      // W2: a bomb's blast front races out across what it hit.
+      if (m.kind === "bomb") shockRings.ring(m.to, BOMB_RING_M, now);
       missileShake.add(wrapDistance(m.to, flight.pos), now);
       radio.noteCombat(now);
       music.noteCombat(now);
@@ -6159,6 +6195,7 @@ const frame = (now: number): void => {
   skyDome.tint(sky.tint);
   skyDome.mesh.visible = sky.domeVisible;
   explosions.update(chase.position, now, fxDt);
+  shockRings.update(chase.position, now);
   sparks.update(chase.position, now);
   shieldSparks.update(chase.position, now);
   // D1: burning patches age on the synced server clock; particles fly.

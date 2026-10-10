@@ -918,6 +918,79 @@ export const VIEWS = [
     weather: "clear",
     boss: { ahead: 180, downAfterMs: 3500 },
   },
+  // W2: an enemy fighter-bomber's dive on the x = 1000 street (z ≈ 380),
+  // its heavy centreline bomb just thrown (rack 0 empty) and falling ahead
+  // of it, trailing smoke — staged through __ab.qaChaos's `bombs`, planned
+  // by the server's own planBombDrop. `drop.bombs` times are relative to
+  // the render clock at staging; the shot waits until a bomb is in the air.
+  {
+    name: "enemy-dive-bomb",
+    x: 1000,
+    z: 1300,
+    y: 600,
+    yaw: Math.PI,
+    eye: [1009, 147, 468],
+    at: [1000, 124, 436],
+    weather: "clear",
+    sky: "dusk",
+    showcase: [
+      {
+        kind: "fighter",
+        x: 1000,
+        y: 138,
+        z: 441,
+        yaw: 0,
+        pitch: -0.35,
+        speed: 70,
+        elevator: 0.3,
+        bombs: 0b11110,
+      },
+    ],
+    drop: {
+      bombs: [
+        { x: 1000, y: 160, z: 500, yaw: 0, pitch: -0.35, speed: 70, t: -900 },
+      ],
+      waitFor: "air",
+    },
+  },
+  // W2: a carpet's wing bomb landing on the x = 1000 street at z ≈ 382, from
+  // the street: the fireball, the shock ring racing out, the debris throw
+  // and a crater, the fighter-bomber (wing racks empty) climbing away past
+  // it. The shot waits for the impact.
+  {
+    name: "enemy-bomb-impact",
+    x: 1000,
+    z: 1300,
+    y: 600,
+    yaw: Math.PI,
+    eye: [994, 16, 340],
+    at: [1000, 4, 388],
+    weather: "clear",
+    sky: "dusk",
+    showcase: [
+      {
+        kind: "fighter",
+        x: 1003,
+        y: 58,
+        z: 448,
+        yaw: Math.PI,
+        pitch: 0.25,
+        speed: 60,
+        bombs: 0b00001,
+      },
+    ],
+    stage: {
+      props: {
+        craters: [{ x: 1000, z: 388, r: 4.5, t: -200, water: false }],
+      },
+    },
+    drop: {
+      bombs: [
+        { x: 1000, y: 80, z: 466, yaw: 0, pitch: 0, speed: 60, t: -1600 },
+      ],
+      waitFor: "impact",
+    },
+  },
   turntable("planes-turntable-near", 26),
   closeup("planes-closeup-fighter", "fighter"),
   lodSheet(),

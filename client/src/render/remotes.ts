@@ -25,6 +25,7 @@ import * as THREE from "three";
 import { RenderClock } from "../net/clock";
 import { InterpolationBuffer } from "../net/interp";
 import type { FrameClock } from "../net/socket";
+import { BOMBS_FULL } from "./fighter";
 import type { PlaneFleet } from "./fleet";
 import {
   type NameTagBatch,
@@ -41,6 +42,7 @@ import {
   disposePlaneMesh,
   liveryFor,
   poseControls,
+  setPlaneBombs,
   spinPropeller,
 } from "./plane";
 import type { PlaneLights } from "./planelights";
@@ -106,11 +108,15 @@ interface Remote {
    * `lastPos` point into it while the remote is alive; readers copy what
    * they keep). */
   sampled: Pose;
+  /** W2: the bomb mask last applied to an enemy's racks. */
+  bombs: number;
 }
 
 export class RemotePlanes {
   private readonly remotes = new Map<string, Remote>();
   private readonly names = new Map<string, { name: string; isBot: boolean }>();
+  /** W2: the room's enemy racks (GameSocket.racks; absent: fully loaded). */
+  private racks: ReadonlyMap<string, number> | null = null;
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -125,6 +131,12 @@ export class RemotePlanes {
 
   get count(): number {
     return this.remotes.size;
+  }
+
+  /** W2: read each enemy's bombs from `racks` every frame (a dropped bomb
+   * leaves its rack empty on the airframe). */
+  setRacks(racks: ReadonlyMap<string, number>): void {
+    this.racks = racks;
   }
 
   setRoster(roster: RosterEntry[]): void {
@@ -193,6 +205,7 @@ export class RemotePlanes {
             quat: { x: 0, y: 0, z: 0, w: 1 },
             speed: 0,
           },
+          bombs: BOMBS_FULL,
         };
         remote.mesh.visible = false; // until the first sampled pose
         this.scene.add(remote.mesh);
@@ -423,6 +436,12 @@ export class RemotePlanes {
     }
     remote.prevTime = ownTime;
     animatePlane(remote.mesh, controls, pose.speed, remote.hp, dt);
+    // W2: the enemy's bombs still on its racks.
+    const bombs = this.racks?.get(id) ?? BOMBS_FULL;
+    if (bombs !== remote.bombs) {
+      remote.bombs = bombs;
+      setPlaneBombs(remote.mesh, bombs);
+    }
     remote.lastPos = pose.pos;
     remote.lastPose = pose;
     const p = nearestImageInto(scratchImage, viewer, pose.pos);

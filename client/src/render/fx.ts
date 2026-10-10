@@ -504,3 +504,98 @@ export class Explosions {
     this.shells.setColorAt(i, scratchTint.copy(tint).multiplyScalar(fade));
   }
 }
+
+/** W2: shock rings — a bomb's blast front racing out across the street or
+ * the roof it hit, and the ring round a bomb load going up in the air. */
+const RING_POOL = 8;
+const RING_LIFE_MS = 650;
+const GROUND_RING_COLOR = new THREE.Color(0xffd9a0);
+
+interface Ring {
+  center: Vec3;
+  bornAt: number;
+  radius: number;
+}
+
+/**
+ * W2: pooled shock rings — every live ring in ONE draw (an InstancedMesh of
+ * a flat additive annulus, laid level), expanding to its radius and fading
+ * through its colour. Placed at the torus image nearest the viewer every
+ * frame; nothing is drawn at rest.
+ */
+export class ShockRings {
+  readonly group = new THREE.Group();
+  private readonly pool: Ring[] = [];
+  private readonly mesh: THREE.InstancedMesh;
+
+  constructor() {
+    const geo = new THREE.RingGeometry(0.82, 1, 48, 1);
+    geo.rotateX(-Math.PI / 2);
+    this.mesh = new THREE.InstancedMesh(
+      geo,
+      new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      }),
+      RING_POOL,
+    );
+    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    for (let i = 0; i < RING_POOL; i++)
+      this.mesh.setColorAt(i, GROUND_RING_COLOR);
+    this.mesh.instanceColor?.setUsage(THREE.DynamicDrawUsage);
+    this.mesh.frustumCulled = false;
+    this.group.add(this.mesh);
+    // Hidden until the first ring (boot's prewarm shows it once, so its
+    // program is compiled before a bomb ever lands).
+    this.group.visible = false;
+    for (let i = 0; i < RING_POOL; i++) {
+      this.pool.push({
+        center: { x: 0, y: 0, z: 0 },
+        bornAt: Number.NEGATIVE_INFINITY,
+        radius: 0,
+      });
+    }
+  }
+
+  /** A ring out to `radius` m from a canonical world position. */
+  ring(center: Vec3, radius: number, now: number): void {
+    let slot = this.pool[0] as Ring;
+    for (const r of this.pool) if (r.bornAt < slot.bornAt) slot = r;
+    slot.bornAt = now;
+    slot.radius = radius;
+    slot.center.x = center.x;
+    slot.center.y = center.y + 0.6;
+    slot.center.z = center.z;
+  }
+
+  /** Rings drawn last frame (QA). */
+  get liveCount(): number {
+    return this.mesh.count;
+  }
+
+  update(viewer: Vec3, now: number): void {
+    let live = 0;
+    for (const r of this.pool) {
+      const age = now - r.bornAt;
+      if (age > RING_LIFE_MS) continue;
+      const t = age / RING_LIFE_MS;
+      const p = nearestImageInto(scratchImage, viewer, r.center);
+      const k = 1 - (1 - t) * (1 - t) * (1 - t);
+      const s = 1 + r.radius * k;
+      scratchShell.makeScale(s, 1, s).setPosition(p.x, p.y, p.z);
+      this.mesh.setMatrixAt(live, scratchShell);
+      this.mesh.setColorAt(
+        live,
+        scratchTint.copy(GROUND_RING_COLOR).multiplyScalar(0.9 * (1 - t)),
+      );
+      live++;
+    }
+    this.mesh.count = live;
+    this.mesh.instanceMatrix.needsUpdate = true;
+    if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
+    this.group.visible = live > 0;
+  }
+}

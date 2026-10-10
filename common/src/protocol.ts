@@ -5,6 +5,7 @@
 // drop-in swap.
 
 import type { WireAaBurst } from "./aa";
+import type { WireRacks } from "./bombs";
 import type {
   BossDown,
   WireBossRaid,
@@ -307,6 +308,9 @@ export interface WelcomeMsg {
    * encodeMissile), so a late joiner — or a resume — sees, hears and
    * dodges the same incoming strikes as everyone else. */
   missiles?: WireMissile[];
+  /** W2: the enemy planes that have dropped bombs, with the racks they
+   * still carry (common/src/bombs.ts) — an enemy left out is fully loaded. */
+  racks?: WireRacks;
   /** D5: the director's events warned and not yet happened (common/src/
    * director.ts encodeDirectorEvent), so a late joiner hears the same rumble
    * and sees the same dust. Applied rebuilds need nothing here: `destroyed`
@@ -534,6 +538,10 @@ export interface DeathMsg {
    * hits the city at `wreck.t + wreck.end` instead of exploding in place.
    * Absent for crash/storm deaths and over the room's WRECKS_MAX. */
   wreck?: WreckParams;
+  /** W2: an enemy shot down on a bomb run with its bombs still aboard —
+   * the load went up with it here (canonical, whole meters): a bigger
+   * mid-air fireball and a shock ring. Its wreck (if any) still falls. */
+  boom?: [x: number, y: number, z: number];
 }
 
 /**
@@ -637,6 +645,10 @@ export interface ChunksMsg {
 export interface MissileMsg {
   type: "missile";
   m: WireMissile;
+  /** W2: a bomb dropped by an enemy plane — its id and the rack it fell
+   * from (common/src/bombs.ts); clients empty that rack. */
+  by?: string;
+  r?: number;
 }
 
 /**

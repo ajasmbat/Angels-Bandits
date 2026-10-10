@@ -61,6 +61,16 @@
 // whatever contacts it is given, so the opt-in bot sim keeps measuring it
 // bot-vs-bot.
 //
+// W2 bomb runs sit outside the four states too, like threads: the room's
+// BombDirector (server/src/bombs.ts) hands a ready bot a run (startRun) — a
+// DIVE on a rooftop near its quarry (climb to the IP over it, push over into
+// a shallow glide-bomb dive, cue the release when the bomb would land on the
+// roof) or a CARPET down a street toward it (the street lattice, cueing its
+// wing bombs while flying along the street). The brain only flies the run
+// and cues releases (BotTickResult.cues); the director decides every drop.
+// A hit, a blocked nose, a missed window or the clock ends the run early;
+// either way the bot dives home (the attack cooldown) and rejoins the fight.
+//
 // Bots never send hit claims: tick() emits trigger pulls (BotShot) and
 // applyBotFire routes them through the existing Combat seam — same heat
 // model, damage, spawn protection, kill credit, and respawn as humans.
@@ -69,6 +79,12 @@
 // against where its target ACTUALLY went, so a target that jinks inside the
 // bullet's flight time dodges it exactly as it would dodge a human's.
 
+import {
+  BOMB_G_MAX,
+  BOMB_G_MIN,
+  type BombRunKind,
+  bombSurfaceY,
+} from "@angels-bandits/common/bombs";
 import { BOSS_FLAK_RANGE } from "@angels-bandits/common/boss";
 import {
   BOT_STYLE_TUNING,
@@ -257,6 +273,7 @@ import type {
   RosterEntry,
   SpawnState,
 } from "@angels-bandits/common/protocol";
+import { BOMB_FALL_MS } from "@angels-bandits/common/strike";
 import { BOT_TUNING } from "@angels-bandits/common/tuning";
 import type { WaveGrade } from "@angels-bandits/common/waves";
 import {
@@ -343,8 +360,18 @@ interface BotRound {
   targetAt: Vec3;
 }
 
+/** W2: a bot on a bomb run inside its release window this tick — the room's
+ * BombDirector decides whether a bomb actually falls. */
+export interface BombReleaseCue {
+  botId: string;
+  pos: Vec3;
+  vel: Vec3;
+}
+
 export interface BotTickResult {
   shots: BotShot[];
+  /** W2: bomb releases cued this tick (BombDirector.drop each). */
+  cues: BombReleaseCue[];
   /** Earlier rounds that met their target this tick, swept before anyone
    * moved — settle each through landBotRound. */
   hits: BotRoundHit[];
@@ -410,6 +437,44 @@ const wrapAngle = (a: number): number => {
 
 /** S9: the longest a launched bot settles before it may fight, ms. */
 const LAUNCH_SETTLE_MS = 25_000;
+
+/** W2 bomb runs. A dive's IP: this far over its roof, m, never above
+ * DIVE_IP_MAX (well under the bot ceiling). */
+const DIVE_IP_ABOVE = 140;
+const DIVE_IP_MAX = 420;
+/** The dive aims this far over the roof, m, at about DIVE_ANGLE (never
+ * steeper than DIVE_MAX_ANGLE), throttle cut: with the bomb's fixed fall
+ * the release height has to match the sink (common/src/bombs.ts). */
+const DIVE_AIM_ABOVE = 70;
+const DIVE_ANGLE = (22 * Math.PI) / 180;
+const DIVE_MAX_ANGLE = (35 * Math.PI) / 180;
+/** The height a dive keeps spare over its sink × the bomb's fall, m. */
+const DIVE_SINK_SPARE = 30;
+/** Below this over the roof a dive that has not released pulls out, m. */
+const DIVE_ABORT_ABOVE = 60;
+/** The brain cues a release when its bomb would land within this of the
+ * target, m (the director's reach is the real gate). */
+const DIVE_CUE_M = 30;
+const CARPET_CUE_M = 70;
+/** A carpet's releases need level flight: |sink| under this, m/s. */
+const CARPET_SINK_MAX = 8;
+/** A run's longest life, ms. */
+const RUN_MS: Record<BombRunKind, number> = { dive: 40_000, carpet: 25_000 };
+/** A dive climbing to its IP circles out to about this past its push-over
+ * point, m, rather than overflying the roof still too low. */
+const DIVE_CLIMB_STANDOFF = 250;
+/** ...climbing no steeper than this gradient (~24°). */
+const DIVE_CLIMB_GRADE = 0.45;
+
+/** W2: the bomb run a bot is flying. */
+interface BombRun {
+  kind: BombRunKind;
+  target: Vec3;
+  /** The run ends (missed) at this time, ms. */
+  until: number;
+  /** A dive past its push-over. */
+  diving: boolean;
+}
 const NEUTRAL: FlightInput = { pitch: 0, turn: 0, roll: 0, throttle: 0 };
 
 /** What a bot hands stepFlight: its stick inside the pre-F7 pitch envelope
@@ -809,6 +874,8 @@ interface Bot {
   grade: WaveGrade;
   /** W1: trigger discipline's own stream, salted like tacticRand. */
   fireRand: () => number;
+  /** W2: the bomb run it is flying (startRun), or null. */
+  run: BombRun | null;
 }
 
 /** A bot with no wave: B3's own aim, reaction and every shot taken. */
@@ -1049,6 +1116,7 @@ export class RoomBots {
       quarryId: null,
       grade: NEUTRAL_GRADE,
       fireRand: mulberry32((botSeed ^ 0x51f1e5) >>> 0),
+      run: null,
     });
     return entry;
   }
@@ -1207,6 +1275,8 @@ export class RoomBots {
   onDamaged(id: string, now: number): void {
     const bot = this.bots.get(id);
     if (!bot || !bot.alive) return;
+    // W2: shot at on a bomb run — the run is off (the director sees it go).
+    bot.run = null;
     bot.evadeUntil = now + BOT_EVADE_MS;
     bot.breakTurn = bot.rand() < 0.5 ? -1 : 1;
   }
@@ -1225,6 +1295,7 @@ export class RoomBots {
     bot.thread = null;
     bot.maneuver = null;
     bot.tunnel = null;
+    bot.run = null;
   }
 
   /** Server-issued respawn (same sampler as humans): fresh flight state.
@@ -1267,7 +1338,196 @@ export class RoomBots {
     bot.maneuver = null;
     bot.defendCooldownUntil = Number.NEGATIVE_INFINITY;
     bot.dodgeUntil = Number.NEGATIVE_INFINITY;
+    bot.run = null;
     this.pincerPrev.delete(id);
+  }
+
+  // --- W2 bomb runs ---
+
+  /** May `id` start a bomb run now: alive, settled off its carrier, not in
+   * a thread, tunnel or maneuver, not evading or broken off, not hurt, and
+   * not on a run already. */
+  canBomb(id: string, now: number): boolean {
+    const bot = this.bots.get(id);
+    if (!bot?.alive || bot.run || bot.thread || bot.tunnel || bot.maneuver) {
+      return false;
+    }
+    if (Number.isNaN(bot.graceUntil) || now < bot.graceUntil) return false;
+    if (now < bot.carrierUntil + LAUNCH_SETTLE_MS) return false;
+    if (now < bot.evadeUntil || bot.breakSince !== null) return false;
+    return bot.hp >= BOSS_HURT_HP;
+  }
+
+  /** Fly a bomb run of `kind` at `target` (BombDirector's order). False when
+   * the bot cannot take it now (the director rests it instead). */
+  startRun(id: string, kind: BombRunKind, target: Vec3, now: number): boolean {
+    const bot = this.bots.get(id);
+    if (!bot || !this.canBomb(id, now)) return false;
+    bot.run = { kind, target, until: now + RUN_MS[kind], diving: false };
+    bot.state = "PATROL";
+    bot.targetId = null;
+    bot.attackUntil = Number.NEGATIVE_INFINITY;
+    bot.boomUntil = Number.NEGATIVE_INFINITY;
+    bot.zoomUntil = Number.NEGATIVE_INFINITY;
+    bot.streetChase = false;
+    // Off the lattice it was on: a carpet re-joins the street nearest it.
+    bot.fought = true;
+    bot.waypoint = null;
+    bot.travel = null;
+    return true;
+  }
+
+  /** The run `id` is flying, or null. */
+  runOf(id: string): { kind: BombRunKind; target: Vec3 } | null {
+    const run = this.bots.get(id)?.run;
+    return run ? { kind: run.kind, target: run.target } : null;
+  }
+
+  /** The director made the run's last drop: pull out and go home. */
+  endRun(id: string, now: number): void {
+    const bot = this.bots.get(id);
+    if (bot?.run) this.finishRun(bot, now);
+  }
+
+  /** A run over (done or missed): dive home like the end of an attack pass
+   * and re-join the lattice, then the fight. */
+  private finishRun(bot: Bot, now: number): void {
+    bot.run = null;
+    bot.attackCooldownUntil = now + BOT_ATTACK_COOLDOWN_MS;
+    bot.fought = true;
+    bot.waypoint = null;
+    bot.travel = null;
+  }
+
+  /** Is the bot inside its run's release window right now? The bomb would
+   * land half its ground speed × the fall ahead (common/src/bombs.ts). */
+  private releaseCued(bot: Bot): boolean {
+    const run = bot.run;
+    if (!run) return false;
+    const { flight } = bot;
+    const fwd = flightForward(flight);
+    const lead = (flight.speed * BOMB_FALL_MS) / 2000;
+    const ix = flight.pos.x + fwd.x * lead;
+    const iz = flight.pos.z + fwd.z * lead;
+    const miss = Math.hypot(
+      wrapDeltaAxis(run.target.x, ix),
+      wrapDeltaAxis(run.target.z, iz),
+    );
+    if (run.kind === "dive") {
+      if (
+        !run.diving ||
+        miss > DIVE_CUE_M ||
+        flight.pos.y - run.target.y < DIVE_ABORT_ABOVE
+      ) {
+        return false;
+      }
+      // Inside the bomb's release envelope too, on whatever stands where it
+      // would land (common/src/bombs.ts bombCurveOk): pushed over still
+      // level and high, it would be slammed down — keep diving into it.
+      const fall = BOMB_FALL_MS / 1000;
+      const at = canonicalize({ x: ix, y: 0, z: iz });
+      const h = flight.pos.y - bombSurfaceY(this.cityIndex, at.x, at.z);
+      const g = (2 * (h + fwd.y * flight.speed * fall)) / (fall * fall);
+      return g >= BOMB_G_MIN && g <= BOMB_G_MAX;
+    }
+    return (
+      miss <= CARPET_CUE_M &&
+      flight.pos.y < BOT_CANYON_PROBE_ALT &&
+      Math.abs(fwd.y * flight.speed) < CARPET_SINK_MAX &&
+      this.streetAxis(flight) !== null
+    );
+  }
+
+  /**
+   * One decision of a bomb run: the stick, or false when the run is over
+   * (missed, or no clear heading — the caller recovers or fights on).
+   */
+  private flyRun(bot: Bot, now: number, margin: number): boolean {
+    const run = bot.run as BombRun;
+    bot.state = "PATROL";
+    bot.targetId = null;
+    const { pos } = bot.flight;
+    const d = wrapDelta(pos, run.target);
+    const flat = Math.hypot(d.x, d.z);
+    const fwd = flightForward({ yaw: bot.flight.yaw, pitch: 0 });
+    const along = flat > 0 ? (d.x * fwd.x + d.z * fwd.z) / flat : 0;
+    if (run.kind === "carpet") {
+      // Its bombs would now land past the target: the window is gone.
+      if (along < 0 && flat > CARPET_CUE_M) {
+        this.finishRun(bot, now);
+        return false;
+      }
+      // Down the street lattice toward the target, preferring straight on
+      // — the release wants a long run along one street.
+      this.canyonPatrol(bot, run.target, true);
+      return true;
+    }
+    const ipY = Math.min(run.target.y + DIVE_IP_ABOVE, DIVE_IP_MAX);
+    // The push-over point: where a DIVE_ANGLE line from the IP meets the
+    // aim point over the roof.
+    const runIn =
+      Math.max(0, ipY - run.target.y - DIVE_AIM_ABOVE) / Math.tan(DIVE_ANGLE);
+    if (
+      !run.diving &&
+      pos.y >= ipY - 20 &&
+      flat <= runIn + 60 &&
+      flat >= runIn * 0.6 &&
+      along > 0.9
+    ) {
+      run.diving = true;
+    }
+    if (run.diving) {
+      // Past the roof, under the pull-out height, or the roof behind: a
+      // dive that has not released by now has missed.
+      if (pos.y - run.target.y < DIVE_ABORT_ABOVE || flat < 20 || along < 0) {
+        this.finishRun(bot, now);
+        return false;
+      }
+      const aim: Vec3 = { x: d.x, y: d.y + DIVE_AIM_ABOVE, z: d.z };
+      // Never sink faster than the height left can take: a bomb falls its
+      // fixed time, so its release needs |sink|·T ≤ height − a spare
+      // (common/src/bombs.ts BOMB_G_MIN) — the dive shallows as it comes
+      // down instead of arriving too steep to release.
+      const fall = BOMB_FALL_MS / 1000;
+      const sinkMax = Math.max(
+        0,
+        (pos.y - run.target.y - DIVE_SINK_SPARE) / fall,
+      );
+      const down = Math.min(
+        DIVE_MAX_ANGLE,
+        Math.asin(clamp(sinkMax / Math.max(1, bot.flight.speed), 0, 1)),
+      );
+      aim.y = Math.max(aim.y, -flat * Math.tan(down));
+      this.steerToward(bot, aim, 0, 0, -1);
+      return true;
+    }
+    // The approach. Still well under the IP and close in: circle the
+    // target (the way the bot is already turning, edging out) while it
+    // climbs. At height: straight for the target, and arriving too close to
+    // push over, extend straight out first and come back round.
+    let aim: Vec3;
+    if (pos.y < ipY - 20 && flat < runIn + DIVE_CLIMB_STANDOFF && flat > 0) {
+      const side = fwd.x * d.z - fwd.z * d.x >= 0 ? 1 : -1;
+      const out = flat < runIn + DIVE_CLIMB_STANDOFF * 0.6 ? 0.5 : 0;
+      aim = {
+        x: ((-d.z * side - d.x * out) / flat) * 300,
+        y: ipY - pos.y,
+        z: ((d.x * side - d.z * out) / flat) * 300,
+      };
+    } else if (flat < runIn * 0.6) {
+      aim = { x: fwd.x * 300, y: ipY - pos.y, z: fwd.z * 300 };
+    } else {
+      aim = { x: d.x, y: ipY - pos.y, z: d.z };
+    }
+    // A climb the plane can hold: steeper, it bleeds to MIN_SPEED and mushes
+    // under the line its probes cleared.
+    aim.y = Math.min(aim.y, Math.hypot(aim.x, aim.z) * DIVE_CLIMB_GRADE);
+    // The fan picks the clear heading nearest the approach; boxed in, the
+    // bot recovers this decision and comes back to the run on the next.
+    const heading = this.fanAround(bot, now, aim, margin);
+    if (!heading) return false;
+    this.steerToward(bot, heading.dir, 0, 0, 1);
+    return true;
   }
 
   /**
@@ -1402,6 +1662,7 @@ export class RoomBots {
     const decide = this.tickCount % BOT_DECISION_EVERY === 0;
     const shots: BotShot[] = [];
     const crashes: string[] = [];
+    const cues: BombReleaseCue[] = [];
     this.rolloutsLeft = BOT_HOLE_ROLLOUTS_PER_TICK;
     this.trackTransits(now, contacts);
     const hits = this.flyRounds(now, contacts);
@@ -1469,8 +1730,14 @@ export class RoomBots {
 
       const shot = this.maybeFire(bot, now, contacts);
       if (shot) shots.push(shot);
+      // W2: a run past its clock is missed; one in its window cues a drop.
+      if (bot.run && now >= bot.run.until) this.finishRun(bot, now);
+      if (bot.run && this.releaseCued(bot)) {
+        const c = this.contactOf(bot.entry.id);
+        if (c) cues.push({ botId: bot.entry.id, pos: c.pos, vel: c.vel });
+      }
     }
-    return { shots, hits, crashes };
+    return { shots, cues, hits, crashes };
   }
 
   /**
@@ -1838,6 +2105,30 @@ export class RoomBots {
           return;
         }
         this.zoom(bot);
+        return;
+      }
+    }
+
+    // W2: a bomb run flies its own stick — until something on its six or
+    // breaking off takes the bot off it. A blocked nose ends a dive; the
+    // approach and a carpet recover from one (RECOVER's pull-up) and carry
+    // on.
+    if (bot.run) {
+      if (
+        now < bot.evadeUntil ||
+        bot.breakSince !== null ||
+        (blocked && bot.run.diving)
+      ) {
+        this.finishRun(bot, now);
+      } else if (blocked) {
+        // Climbing out to the IP, or down a street: pull up like any bot
+        // and come back to the run on a later decision.
+        recover(false);
+        return;
+      } else if (this.flyRun(bot, now, margin)) {
+        return;
+      } else if (bot.run) {
+        recover(false);
         return;
       }
     }

@@ -34,6 +34,14 @@ export const PHRASE = {
   bossEscaped: "The zeppelin is pulling out. It got away.",
   // S9: the carrier launching bandits from its hangar and its catapult.
   carrierLaunch: "Bandits launching from the carrier!",
+  // J1 announcer: the own pilot's combos and the carrier war's big moments.
+  comboDouble: "Double kill!",
+  comboTriple: "Triple kill!",
+  comboMulti: "Multi kill! They're falling out of the sky!",
+  bombRunStopped: "Bomb run stopped! Nice work.",
+  carrierDown: "Carrier down! Carrier down!",
+  aaAssist: "Triple A assist! Good shooting, ground crew.",
+  waveCleared: "Wave cleared! Regroup.",
 } as const;
 
 /**

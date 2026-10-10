@@ -665,11 +665,18 @@ export function collapseShakeOffsetInto(
  * the plane. */
 export const SHAKE_BUDGET_M = 1.6;
 
-/** Scale the summed shake `v` in place by `scale` (0.5 under reduced
- * motion), then soft-limit its length to SHAKE_BUDGET_M. */
+/** Scale the summed shake `v` in place by `scale` (J1: the SCREEN SHAKE
+ * setting; 0 under reduced motion), then soft-limit its length to
+ * SHAKE_BUDGET_M. */
 export function budgetShake(v: Vec3, scale: number): Vec3 {
   const m = Math.hypot(v.x, v.y, v.z) * scale;
-  if (m <= 0) return v;
+  if (m <= 0) {
+    // Scale 0 (shake off) or no shake at all: the view holds still.
+    v.x = 0;
+    v.y = 0;
+    v.z = 0;
+    return v;
+  }
   const k = (scale * SHAKE_BUDGET_M * Math.tanh(m / SHAKE_BUDGET_M)) / m;
   v.x *= k;
   v.y *= k;

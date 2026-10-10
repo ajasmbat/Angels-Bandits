@@ -26,6 +26,10 @@ const WHOOSH_LEVEL = 0.7;
 const EXPLOSION_LEVEL = 1.0;
 const HIT_LEVEL = 0.55;
 const KILL_LEVEL = 0.4;
+/** J1 slow-mo: the SFX bus's low-pass, wide open and at the dip's bottom,
+ * Hz — the world goes muffled and heavy while the FX layer crawls. */
+const SLOWMO_OPEN_HZ = 20_000;
+const SLOWMO_SHUT_HZ = 650;
 const SOLUTION_LEVEL = 0.13;
 const DAMAGE_LEVEL = 0.6;
 const SHIELD_LEVEL = 0.12;
@@ -148,6 +152,9 @@ export class GameAudio implements VoiceSink {
   private lastAeroAt = Number.NEGATIVE_INFINITY;
   /** Everything except the radio voice — ducked while a line is on air. */
   private sfx: GainNode | null = null;
+  /** J1: the slow-mo low-pass between the SFX bus and the master. */
+  private slowFilter: BiquadFilterNode | null = null;
+  private slowDepth = 0;
   private voice: GainNode | null = null;
   /** S2: the music volume stage, and the radio duck under it. */
   private music: GainNode | null = null;
@@ -233,7 +240,11 @@ export class GameAudio implements VoiceSink {
       this.limiter.release.value = LIMIT_RELEASE_S;
       this.master.connect(this.limiter).connect(this.ctx.destination);
       this.sfx = this.ctx.createGain();
-      this.sfx.connect(this.master);
+      this.slowFilter = this.ctx.createBiquadFilter();
+      this.slowFilter.type = "lowpass";
+      this.slowFilter.frequency.value = SLOWMO_OPEN_HZ;
+      this.slowFilter.Q.value = 0.9;
+      this.sfx.connect(this.slowFilter).connect(this.master);
       this.voice = this.ctx.createGain();
       this.voice.gain.value = VOICE_LEVEL * this.volumes.voice;
       this.voice.connect(this.master);
@@ -582,11 +593,36 @@ export class GameAudio implements VoiceSink {
     osc.stop(now + 0.12);
   }
 
-  /** Kill confirm: quick rising two-note chime over the last thunk. */
+  /** J1 slow-mo: muffle the SFX bus by `depth` (0 open … 1 the dip's
+   * bottom). Writes automation only when the depth moves. */
+  setSlowMo(depth: number): void {
+    const d = Math.min(1, Math.max(0, depth));
+    if (Math.abs(d - this.slowDepth) < 0.01 && (d > 0 || this.slowDepth === 0))
+      return;
+    this.slowDepth = d;
+    const f = this.slowFilter;
+    if (!f || !this.ctx) return;
+    const hz = SLOWMO_OPEN_HZ * (SLOWMO_SHUT_HZ / SLOWMO_OPEN_HZ) ** d;
+    f.frequency.setTargetAtTime(hz, this.ctx.currentTime, 0.03);
+  }
+
+  /** Kill confirm: a body thump under a quick rising two-note chime. */
   killConfirm(): void {
     const ctx = this.ensure();
     if (!ctx || !this.sfx) return;
     const now = ctx.currentTime;
+    // J1: the punch — a short pitch-dropping sine you feel more than hear.
+    const thump = ctx.createOscillator();
+    thump.type = "sine";
+    thump.frequency.setValueAtTime(130, now);
+    thump.frequency.exponentialRampToValueAtTime(42, now + 0.16);
+    const body = ctx.createGain();
+    body.gain.setValueAtTime(0.0001, now);
+    body.gain.exponentialRampToValueAtTime(KILL_LEVEL * 1.4, now + 0.008);
+    body.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+    thump.connect(body).connect(this.sfx);
+    thump.start(now);
+    thump.stop(now + 0.22);
     for (const [i, hz] of [523, 784].entries()) {
       const osc = ctx.createOscillator();
       osc.type = "triangle";

@@ -2016,8 +2016,54 @@
         display: block;
         margin: 8px 0 4px;
       }
-      #rotate .row[hidden] {
+      #rotate .row[hidden],
+      #rotate .note[hidden] {
         display: none;
+      }
+      /* W4: the key line under KEYBOARD, and the ADVANCED fold. */
+      #rotate .note {
+        margin: 8px 0 0;
+        color: #e8f6fa;
+        font-size: 10px;
+        letter-spacing: 0.12em;
+        opacity: 0.8;
+      }
+      #rotate .settings-advanced {
+        margin-top: 14px;
+        border-top: 1px solid #9fd8e826;
+      }
+      #rotate .settings-advanced summary {
+        padding: 10px 0 2px;
+        color: #9fd8e8;
+        font-size: 11px;
+        letter-spacing: 0.25em;
+        cursor: pointer;
+        list-style: none;
+      }
+      #rotate .settings-advanced summary::-webkit-details-marker {
+        display: none;
+      }
+      #rotate .settings-advanced summary::before {
+        content: "▸ ";
+      }
+      #rotate .settings-advanced[open] summary::before {
+        content: "▾ ";
+      }
+      /* W4 phone: thumb-sized choices and close box. */
+      body.touch #rotate .seg button {
+        height: 44px;
+        font-size: 11px;
+      }
+      body.touch #rotate .settings-close {
+        width: 44px;
+        height: 44px;
+      }
+      body.touch #rotate .settings-advanced summary {
+        padding: 14px 0 6px;
+        font-size: 12px;
+      }
+      body.touch #rotate .note {
+        font-size: 11px;
       }
       #rotate .slider {
         display: grid;

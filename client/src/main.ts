@@ -1882,6 +1882,9 @@ const botCallsigns = (): string[] => {
 
 // --- Simulation state ---
 const input = new FlightInputSource();
+// W4: the settings' desktop stick sensitivity and the flight-data line.
+input.setStickSensitivity(settings.stickSens);
+document.body.classList.toggle("flight-data", settings.flightData);
 const chase = new ChaseCamera();
 // L11b spring arm: the eye never sits inside a building, the ground, the
 // river's decks and bank walls, or a mover at the latched render clock
@@ -3475,6 +3478,27 @@ const settingsPanel = new SettingsPanel(
     setVolumes: (next) => {
       settings = { ...settings, ...next };
       applyVolumes();
+    },
+    intensity: () => intensityBar.displayed,
+    setIntensity: (level) => {
+      // IntensityBar's claim path: one claim, the server decides.
+      intensityBar.dragTo(level);
+      intensityBar.release();
+    },
+    easy: easyOn,
+    setEasy: (on) => {
+      const was = easyOn();
+      easyState = { ...easyState, on };
+      writeStored(EASY_KEY, saveEasy(easyState));
+      if (easyOn() !== was) socket.sendSetEasy(easyOn());
+    },
+    setStickSens: (v) => {
+      settings = { ...settings, stickSens: v };
+      input.setStickSensitivity(v);
+    },
+    setFlightData: (on) => {
+      settings = { ...settings, flightData: on };
+      document.body.classList.toggle("flight-data", on);
     },
     onOpenChange: (open) => {
       settingsOpen = open;

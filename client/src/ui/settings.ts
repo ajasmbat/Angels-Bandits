@@ -53,7 +53,15 @@ export interface Settings {
   /** F10 CAMERA ROLL: "level" keeps the horizon level (default);
    * "follow" rolls the view with the plane (F7's chase camera). */
   cameraRoll: CameraRoll;
+  /** W4 CONTROLS › SENSITIVITY on a desktop: the keyboard and classic
+   * stick's gain, one of STICK_SENS_STEPS (touch keeps `ab-touch-sens`). */
+  stickSens: number;
+  /** W4 ADVANCED › FLIGHT DATA: the SPD / ALT / FPS line (off: decluttered). */
+  flightData: boolean;
 }
+
+/** W4: the desktop stick SENSITIVITY steps (×). */
+export const STICK_SENS_STEPS: readonly number[] = [0.75, 1, 1.25, 1.5];
 
 export type CameraRoll = "level" | "follow";
 export const CAMERA_ROLLS: readonly CameraRoll[] = ["level", "follow"];
@@ -78,6 +86,8 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = {
   feel: "normal",
   rollLevel: null,
   cameraRoll: "level",
+  stickSens: 1,
+  flightData: false,
 };
 
 const clamp = (v: number, lo: number, hi: number) =>
@@ -114,6 +124,11 @@ export function clampSettings(raw: unknown): Settings {
     cameraRoll: CAMERA_ROLLS.includes(o.cameraRoll as CameraRoll)
       ? (o.cameraRoll as CameraRoll)
       : d.cameraRoll,
+    stickSens: STICK_SENS_STEPS.includes(o.stickSens as number)
+      ? (o.stickSens as number)
+      : d.stickSens,
+    flightData:
+      typeof o.flightData === "boolean" ? o.flightData : d.flightData,
   };
 }
 

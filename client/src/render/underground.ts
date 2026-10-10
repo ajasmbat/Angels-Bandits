@@ -135,8 +135,8 @@ const C = {
   vent: lit(0x2a2f36, 0.6),
   lip: lit(0x9a8e7a, 0.42),
   kerb: lit(0xa89c86, 0.42),
-  water: lit(0x2a8496, 0.5),
-  lake: lit(0x1f6c8a, 0.5),
+  water: lit(0x1f86a8, 0.55),
+  lake: lit(0x1474b0, 0.58),
   lily: lit(0x4c9a46, 0.6),
   bud: emitOf(0xffe6f2, EMISSIVE_WINDOW),
   hallFloor: lit(0x8a96a4, 0.5),
@@ -2544,14 +2544,14 @@ if (vAnim.x > 0.5 && vAnim.x < 1.5) {
   vec3 wN = normalize(vec3(-slope.x, 1.0, -slope.y));
   vec3 wV = normalize(cameraPosition - vLookWorld);
   float fres = 0.04 + 0.96 * pow(1.0 - clamp(dot(wN, wV), 0.0, 1.0), 5.0);
-  vec3 refl = vec3(0.1, 0.13, 0.16);
+  vec3 refl = vec3(0.05, 0.11, 0.2);
   #ifdef USE_FOG
-    refl = mix(refl, abTunnelAir.rgb, abTunnelAir.a);
+    refl = mix(refl, abTunnelAir.rgb, 0.45 * abTunnelAir.a);
   #endif
   float wds = (fract(vAnim.y / 12.0 + 0.5) - 0.5) * 12.0 + slope.x * 25.0;
   float streak = exp(-wds * wds / 5.0) * (0.5 + 0.5 * clamp(crest * 0.5 + 0.5, 0.0, 1.0));
   float glint = step(3.5, uTunnelDetail);
-  vec3 water = mix(diffuseColor.rgb * (0.85 + 0.1 * crest), refl, fres * 0.7);
+  vec3 water = mix(diffuseColor.rgb * (0.85 + 0.12 * crest), refl, fres * 0.55);
   water += vec3(1.0, 0.8, 0.56) * streak * (0.03 + 0.14 * fres) * (0.4 + 0.6 * glint);
   diffuseColor.rgb = abUnderClamp(water);
 }

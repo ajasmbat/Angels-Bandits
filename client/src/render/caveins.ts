@@ -187,7 +187,7 @@ ${LOOK_NOISE_GLSL}
 /** After color_fragment: the tint lit by its flat face normal (light from
  * the crown lamps, a cool bounce below) and a surface grain per kind. */
 const ROCK_FRAGMENT = /* glsl */ `
-vec3 rockN = normalize(cross(dFdx(vRockView), dFdy(vRockView)));
+vec3 rockN = abSafeNormal(cross(dFdx(vRockView), dFdy(vRockView)), vec3(0.0, 0.0, 1.0));
 vec2 rockUV = vec2(vRockLocal.x + vRockLocal.z * 0.7, vRockLocal.y + vRockLocal.z * 0.4);
 vec2 rockFw = fwidth(rockUV);
 float rockPx = max(max(rockFw.x, rockFw.y), 1e-4);

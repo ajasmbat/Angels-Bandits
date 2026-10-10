@@ -246,6 +246,12 @@ vec3 abFbm(vec2 p, float fr, float px) {
   }
   return acc;
 }
+// A unit vector, never normalize(0) (NaN — O7's black boxes): a
+// degenerate derivative normal reads as facing the eye.
+vec3 abSafeNormal(vec3 v, vec3 fallback) {
+  float l = length(v);
+  return l > 1e-12 ? v / l : fallback;
+}
 vec3 abUnderClamp(vec3 c) {
   float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
   return l > ${UNDER_CLAMP.toFixed(3)} ? c * (${UNDER_CLAMP.toFixed(3)} / l) : c;

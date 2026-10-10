@@ -786,7 +786,8 @@ if (abKind > 0.5) {
   // A wet sheen near the water and on the metro's glaze: the warm light
   // caught at grazing angles.
   vec3 V = normalize(cameraPosition - vLookWorld);
-  float fres = pow(1.0 - abs(dot(normalize(abNf), V)), 4.0);
+  // max(): an |dot| that rounds past 1 must not reach pow() (NaN, O7).
+  float fres = pow(max(1.0 - abs(dot(abSafeNormal(abNf, V), V)), 0.0), 4.0);
   alb *= 1.0 - 0.3 * abWet;
   vec3 sheen = abWarm * fres * (0.04 + 0.45 * pool) *
     (abWet * (0.6 + 0.8 * clamp(n.x + 0.5, 0.0, 1.0)) + gloss * 0.35);

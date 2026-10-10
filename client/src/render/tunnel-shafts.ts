@@ -146,10 +146,13 @@ const SHAFT_VERTEX = /* glsl */ `
 vShaftWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;
 `;
 const SHAFT_FRAGMENT = /* glsl */ `
-vec3 shaftN = normalize(cross(dFdx(vShaftWorld), dFdy(vShaftWorld)));
 vec3 shaftV = cameraPosition - vShaftWorld;
 float shaftD = length(shaftV);
-float shaftFacing = abs(dot(shaftN, shaftV / max(shaftD, 1e-3)));
+vec3 shaftE = shaftV / max(shaftD, 1e-3);
+// Never normalize(0) (NaN — O7): a degenerate normal reads as facing.
+vec3 shaftX = cross(dFdx(vShaftWorld), dFdy(vShaftWorld));
+float shaftL = length(shaftX);
+float shaftFacing = shaftL > 1e-12 ? abs(dot(shaftX / shaftL, shaftE)) : 1.0;
 diffuseColor.a *= smoothstep(0.2, 0.55, shaftFacing) *
   smoothstep(4.0, 12.0, shaftD) * (1.0 - smoothstep(45.0, 80.0, shaftD));
 `;

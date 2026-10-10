@@ -1553,7 +1553,7 @@ float abLine(float x, float period, float halfW) {
   float d = abs(fract(x / period + 0.5) - 0.5) * period;
   float hw = max(halfW, w * 0.75);
   float l = (1.0 - smoothstep(hw - w * 0.5, hw + w * 0.5, d)) * (halfW / hw);
-  return l * (1.0 - smoothstep(period * 0.1, period * 0.25, w));
+  return l * (1.0 - smoothstep(period * 0.05, period * 0.15, w));
 }
 // Rivet dots on a grid (cells of continuous rest coords), same AA policy.
 float abDots(vec2 p, vec2 period, float r) {
@@ -1561,7 +1561,7 @@ float abDots(vec2 p, vec2 period, float r) {
   vec2 d = abs(fract(p / period + 0.5) - 0.5) * period;
   float rr = max(r, max(w.x, w.y) * 0.75);
   float l = (1.0 - smoothstep(rr - w.x * 0.5, rr + w.x * 0.5, length(d))) * (r * r) / (rr * rr);
-  return l * (1.0 - smoothstep(min(period.x, period.y) * 0.1, min(period.x, period.y) * 0.25, max(w.x, w.y)));
+  return l * (1.0 - smoothstep(min(period.x, period.y) * 0.05, min(period.x, period.y) * 0.15, max(w.x, w.y)));
 }
 vec4 abDecalAt(vec2 uv, vec4 r) {
   float inside = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
@@ -1647,6 +1647,6 @@ export const DETAIL_FRAGMENT_BODY = `
   // Chipped paint: bare metal where a fine noise peaks (faded with range).
   vec3 cp = p * 9.0;
   float cw = length(fwidth(cp));
-  float chip = smoothstep(0.74, 0.8, abNoise(cp)) * (1.0 - smoothstep(0.3, 0.9, cw)) * painted;
+  float chip = smoothstep(0.74, 0.8, abNoise(cp)) * (1.0 - smoothstep(0.15, 0.45, cw)) * painted;
   diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.42, 0.43, 0.44), chip * 0.55);
 }`;

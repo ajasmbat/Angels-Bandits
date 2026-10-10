@@ -182,6 +182,11 @@ export class Combat {
     return this.players.get(id)?.alive ?? false;
   }
 
+  /** When a dead player's kill-cam ends (Infinity while alive), ms. */
+  respawnAtOf(id: string): number {
+    return this.players.get(id)?.respawnAt ?? Number.POSITIVE_INFINITY;
+  }
+
   isProtected(id: string, now: number): boolean {
     const p = this.players.get(id);
     if (!p?.alive) return false;

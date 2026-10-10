@@ -18,10 +18,15 @@ import {
 import {
   BOSS_ID,
   type BossDown,
+  LAUNCH_GRACE_MS,
+  LAUNCH_SEQ_MS,
   bossCredit,
   bossSpawnClear,
   encodeFlak,
+  encodeLaunch,
   encodeRaid,
+  launchReleaseAt,
+  launchSpawnAt,
 } from "@angels-bandits/common/boss";
 import {
   type BomberSlot,
@@ -1567,11 +1572,31 @@ function issueRespawns(due: string[], now: number): void {
     if (room.members.get(id)?.isBot) {
       // Bots respawn down in a street (B1); humans keep the high spawn.
       const bots = botsFor(room);
-      spawn = pickBotRespawn(enemies, (pos, yaw) =>
-        bots.spawnClear(pos, yaw, now),
-      );
-      combat.respawned(id, now);
-      bots.respawn(id, spawn);
+      // S9: ...unless the boss carrier is launching this one.
+      const boss = roomBoss(room);
+      const launch = boss.launchOf(id);
+      const raid = boss.slot.raid;
+      if (launch) {
+        const release = launchReleaseAt(launch);
+        // Planned to release on the respawn time: at most a tick to wait.
+        if (now < release && boss.activeRaid(now)) continue;
+        boss.released(id);
+      }
+      if (launch && raid?.id === launch.raid && boss.activeRaid(now)) {
+        const sp = launchSpawnAt(raid, launch);
+        spawn = { pos: sp.pos, yaw: sp.yaw, speed: sp.speed };
+        combat.respawned(id, now);
+        bots.respawn(id, spawn, {
+          pitch: sp.pitch,
+          until: now + (LAUNCH_GRACE_MS[launch.kind] as number),
+        });
+      } else {
+        spawn = pickBotRespawn(enemies, (pos, yaw) =>
+          bots.spawnClear(pos, yaw, now),
+        );
+        combat.respawned(id, now);
+        bots.respawn(id, spawn);
+      }
     } else {
       spawn = pickRespawn(
         enemies,
@@ -1902,6 +1927,33 @@ function tickBoss(room: Room, now: number): void {
       if (rc) applyBossImpact(rc, at, by, building);
       const event = cityEvents.offer(room.id, "death", at, now);
       if (event) sendToRoom(room, { type: "cityEvent", event });
+    }
+  }
+  // S9: a bot whose kill-cam is about to end comes back from the carrier —
+  // its launch timed to release on its respawn time, its release run
+  // cleared like any bot spawn (launchClear).
+  if (boss.activeRaid(now)) {
+    const bots = botsFor(room);
+    for (const member of room.members.values()) {
+      if (!member.isBot || combat.isAlive(member.id)) continue;
+      const respawnAt = combat.respawnAtOf(member.id);
+      if (!(respawnAt - now <= Math.max(...LAUNCH_SEQ_MS))) continue;
+      const l = boss.planLaunch(member.id, respawnAt, now, (raid, l) => {
+        const sp = launchSpawnAt(raid, l);
+        return bots.launchClear(
+          { pos: sp.pos, yaw: sp.yaw, speed: sp.speed },
+          sp.pitch,
+          LAUNCH_GRACE_MS[l.kind] as number,
+          launchReleaseAt(l),
+        );
+      });
+      if (l) {
+        sendToRoom(room, {
+          type: "bossLaunch",
+          l: encodeLaunch(l),
+          bot: member.id,
+        });
+      }
     }
   }
   if (boss.takeHpChanged() && boss.slot.raid) {

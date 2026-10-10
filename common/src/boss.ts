@@ -9,11 +9,16 @@
 // the break-up — three hull sections falling on the D4 wreck path to impacts
 // the server swept once.
 //
-// Draw == collide: the hull is ONE table of yaw-only boxes (BOSS_PARTS) and
-// one derivation of where each is (bossPartBoxInto / bossPiecePartBoxInto).
-// The renderer instances exactly those boxes and collideBoss tests exactly
-// those boxes. The weak points are some of those boxes (engine pods and
-// armoured gas-cell blisters) — solid like the rest, drawn glowing.
+// Draw == collide: the hull is ONE table of parts (BOSS_PARTS) — S9: solids
+// of revolution lathed from one station table, and boxes — and one
+// derivation of where each is (bossPartBoxInto / bossPiecePartBoxInto). The
+// renderer lathes and builds exactly those shapes (client/src/render/
+// boss-hull.ts) and collideBoss tests exactly those shapes (bossPartSdf).
+// The weak points are some of those parts (the engine cars and the armoured
+// gas-cell blisters) — solid like the rest, drawn glowing. S9 adds the
+// carrier's launches: a bot respawning during a raid is dropped from the
+// belly hangar's trapeze or flung off the dorsal catapult, its sequence a
+// pure function of (raid, launch, clock) like everything else here.
 //
 // Not re-exported from common/src/index.ts; import "@angels-bandits/common/boss".
 
@@ -26,6 +31,7 @@ import {
   BULLET_RANGE,
   HIT_RADIUS,
   MAX_HP,
+  RESPAWN_SPEED,
   WORLD_SIZE,
   WRECK_MAX_MS,
   WRECK_STEP_MS,
@@ -63,6 +69,18 @@ export const BOSS_ID = "@boss";
 export const BOSS_CONTACT_PREFIX = "@boss:";
 
 // --- The hull -----------------------------------------------------------------
+//
+// S9: the LZ 129's silhouette, made a dieselpunk carrier. The envelope is a
+// body of revolution — 254 m nose to tail, 42 m across (≈ 6:1), an elliptic
+// nose, a long parallel body and a long ogive to a pointed tail — drawn by
+// lathing ONE station table (BOSS_PROFILE) and collided against the same
+// table exactly (the 2-D distance to the profile in the meridian half-plane:
+// a solid of revolution's distance field). Everything that hangs off it is
+// either a small solid of revolution of its own (the engine cars with their
+// pusher props, the gas-cell blisters, the mooring cone) or a box drawn as a
+// box (fins, struts, the control car, the hangar keel, the catapult deck,
+// the turrets). Every part keeps its yaw-only bounding box: the broad phase,
+// the break-up sweep and the bots' reject tests read that.
 
 export type BossPartKind =
   | "hull"
@@ -70,11 +88,21 @@ export type BossPartKind =
   | "gondola"
   | "engine"
   | "cell"
-  | "turret";
+  | "turret"
+  | "strut"
+  | "deck";
 
-/** One box of the hull in its own frame: +X the nose, +Y up, +Z starboard
- * (the MoverBox convention), centre and half-extents in m. `piece` is the
- * section it falls with when the boss breaks up (0 fore, 1 mid, 2 aft). */
+/** A body of revolution's profile: (x, r) stations along the part's own +X
+ * axis (part-local x, ascending), radius r ≥ 0. It is closed to the axis at
+ * both ends — an end station with r > 0 is a flat disc (a cut). */
+export type BossProfile = readonly (readonly [x: number, r: number])[];
+
+/** One part of the hull in its own frame: +X the nose, +Y up, +Z starboard
+ * (the MoverBox convention), centre and bounding half-extents in m. `piece`
+ * is the section it falls with when the boss breaks up (0 fore, 1 mid, 2
+ * aft). `rev` null: the box IS the part; otherwise the part is the solid of
+ * revolution of `rev` about its local X axis through the centre (the box
+ * bounds it exactly: hx the profile's furthest x, hy = hz its widest r). */
 export interface BossPart {
   kind: BossPartKind;
   x: number;
@@ -84,9 +112,77 @@ export interface BossPart {
   hy: number;
   hz: number;
   piece: 0 | 1 | 2;
+  rev: BossProfile | null;
 }
 
-const part = (
+/**
+ * THE envelope, hull frame, tail to nose: x and radius, m. Max radius 21 m
+ * from x = 40 to 78 (the gas cells' parallel body), 254 m long overall.
+ */
+export const BOSS_PROFILE: BossProfile = [
+  [-128, 0],
+  [-127, 2.2],
+  [-124, 4.2],
+  [-118, 6.6],
+  [-108, 9.2],
+  [-94, 11.9],
+  [-78, 14.4],
+  [-60, 16.6],
+  [-40, 18.4],
+  [-20, 19.7],
+  [0, 20.5],
+  [20, 20.9],
+  [40, 21],
+  [78, 21],
+  [88, 20.7],
+  [97, 19.9],
+  [105, 18.5],
+  [111, 16.7],
+  [116, 14.4],
+  [120, 11.6],
+  [123, 8.4],
+  [125, 4.6],
+  [126, 0],
+];
+
+/** Where the envelope is cut into the three break-up sections, hull x. */
+export const BOSS_CUT_FORE = 52;
+export const BOSS_CUT_AFT = -56;
+
+/** A profile's radius at local x (0 off its ends). Pure. */
+export function profileR(profile: BossProfile, x: number): number {
+  const n = profile.length;
+  if (n === 0) return 0;
+  const first = profile[0] as readonly [number, number];
+  const last = profile[n - 1] as readonly [number, number];
+  if (x < first[0] || x > last[0]) return 0;
+  for (let i = 1; i < n; i++) {
+    const b = profile[i] as readonly [number, number];
+    if (x > b[0]) continue;
+    const a = profile[i - 1] as readonly [number, number];
+    const span = b[0] - a[0];
+    return span <= 1e-9
+      ? Math.max(a[1], b[1])
+      : a[1] + ((b[1] - a[1]) * (x - a[0])) / span;
+  }
+  return last[1];
+}
+
+/** The stations of `profile` between x0 and x1 (cut ends interpolated),
+ * shifted so `cx` is 0. */
+function sliceProfile(
+  profile: BossProfile,
+  x0: number,
+  x1: number,
+  cx: number,
+): BossProfile {
+  const out: [number, number][] = [[x0 - cx, profileR(profile, x0)]];
+  for (const [x, r] of profile) if (x > x0 && x < x1) out.push([x - cx, r]);
+  out.push([x1 - cx, profileR(profile, x1)]);
+  return out;
+}
+
+const box = (
   kind: BossPartKind,
   piece: 0 | 1 | 2,
   x: number,
@@ -95,50 +191,138 @@ const part = (
   hx: number,
   hy: number,
   hz: number,
-): BossPart => ({ kind, x, y, z, hx, hy, hz, piece });
+): BossPart => ({ kind, x, y, z, hx, hy, hz, piece, rev: null });
 
-/**
- * THE hull. 260 m nose to tail (the L2 blimp is 92 m), 56 m deep, 76 m
- * across the engine pods. Order is protocol: weak points and turrets index
- * into it, and the renderer's instances are these, in this order.
- */
-export const BOSS_PARTS: readonly BossPart[] = [
-  part("hull", 1, 0, 0, 0, 70, 26, 28), // 0 mid section
-  part("hull", 0, 95, 0, 0, 25, 21, 23), // 1 fore section
-  part("hull", 0, 128, -1, 0, 8, 14, 15), // 2 armoured nose
-  part("hull", 2, -95, 0, 0, 25, 21, 23), // 3 aft section
-  part("hull", 2, -126, 0, 0, 6, 13, 14), // 4 tail cone
-  part("fin", 2, -110, 26.5, 0, 14, 5.5, 1.2), // 5 dorsal fin
-  part("fin", 2, -110, -26.5, 0, 14, 5.5, 1.2), // 6 ventral fin
-  part("fin", 2, -110, 0, 29.5, 14, 1.2, 6.5), // 7 starboard fin
-  part("fin", 2, -110, 0, -29.5, 14, 1.2, 6.5), // 8 port fin
-  part("gondola", 1, 12, -31, 0, 24, 5, 8), // 9 command gondola
-  part("engine", 1, 48, -14, 33, 8, 4.5, 5), // 10 engine, fore starboard
-  part("engine", 1, 48, -14, -33, 8, 4.5, 5), // 11 engine, fore port
-  part("engine", 1, -48, -14, 33, 8, 4.5, 5), // 12 engine, aft starboard
-  part("engine", 1, -48, -14, -33, 8, 4.5, 5), // 13 engine, aft port
-  part("cell", 1, 28, 8, 29.5, 7, 6, 1.5), // 14 gas cell, starboard
-  part("cell", 1, -28, 8, -29.5, 7, 6, 1.5), // 15 gas cell, port
-  part("cell", 1, 0, 27.5, 0, 8, 1.5, 7), // 16 gas cell, dorsal
-  part("turret", 1, 45, 28, 0, 3, 2, 3), // 17 dorsal turret, fore
-  part("turret", 1, -45, 28, 0, 3, 2, 3), // 18 dorsal turret, aft
-  part("turret", 1, 58, -28, 14, 3, 2, 3), // 19 ventral turrets
-  part("turret", 1, 58, -28, -14, 3, 2, 3), // 20
-  part("turret", 1, -58, -28, 14, 3, 2, 3), // 21
-  part("turret", 1, -58, -28, -14, 3, 2, 3), // 22
+/** A solid of revolution centred at (x, y, z), its axis along hull X. */
+const rev = (
+  kind: BossPartKind,
+  piece: 0 | 1 | 2,
+  x: number,
+  y: number,
+  z: number,
+  profile: BossProfile,
+): BossPart => {
+  let hx = 0;
+  let r = 0;
+  for (const [px, pr] of profile) {
+    hx = Math.max(hx, Math.abs(px));
+    r = Math.max(r, pr);
+  }
+  return { kind, x, y, z, hx, hy: r, hz: r, piece, rev: profile };
+};
+
+/** An envelope section from hull x0 to x1 (centred on its middle). */
+const envelope = (piece: 0 | 1 | 2, x0: number, x1: number): BossPart =>
+  rev(
+    "hull",
+    piece,
+    (x0 + x1) / 2,
+    0,
+    0,
+    sliceProfile(BOSS_PROFILE, x0, x1, (x0 + x1) / 2),
+  );
+
+/** An engine car: a streamlined nacelle (nose +X) with its four-blade
+ * pusher prop's disc at the tail — the disc is solid, like a plane's. */
+export const ENGINE_PROFILE: BossProfile = [
+  [-7.1, 0],
+  [-7, 4],
+  [-6.6, 4],
+  [-6.5, 1.2],
+  [-5, 2.2],
+  [-2, 2.9],
+  [1, 3],
+  [4, 2.7],
+  [5.8, 1.8],
+  [6.5, 0],
+];
+/** An armoured gas-cell blister: a spindle half sunk into the envelope. */
+export const CELL_PROFILE: BossProfile = [
+  [-7, 0],
+  [-5, 1.8],
+  [-2, 2.7],
+  [2, 2.7],
+  [5, 1.8],
+  [7, 0],
+];
+/** The mooring cone on the nose. */
+const CONE_PROFILE: BossProfile = [
+  [-3, 1.6],
+  [1, 0.9],
+  [3, 0],
 ];
 
+/** Envelope radius at hull x (the surface a part sits on). */
+const skin = (x: number): number => profileR(BOSS_PROFILE, x);
+/** Engine cars: hull x, and their lateral / vertical offset. */
+const ENGINE_X = [30, 30, -30, -30] as const;
+const ENGINE_Z = 27;
+const ENGINE_Y = -11;
+/** The catapult deck's top (rails and carriage stand on it), hull y. */
+export const BOSS_DECK_Y = 22;
+
+/**
+ * THE hull. Order is protocol: weak points and turrets index into it (7 weak
+ * points, 6 turrets, as on S4's hull — the wire's HP array and the flak
+ * schedule are unchanged), and the renderer's bones are these, in this
+ * order.
+ */
+export const BOSS_PARTS: readonly BossPart[] = [
+  envelope(1, BOSS_CUT_AFT, BOSS_CUT_FORE), // 0 mid section
+  envelope(0, BOSS_CUT_FORE, 126), // 1 fore section
+  rev("hull", 0, 127, 0, 0, CONE_PROFILE), // 2 mooring cone
+  envelope(2, -128, BOSS_CUT_AFT), // 3 aft section
+  box("gondola", 0, 86, -23.5, 0, 8, 3.2, 3.2), // 4 control car
+  box("fin", 2, -103, 18, 0, 16, 12, 0.9), // 5 dorsal fin
+  box("fin", 2, -103, -18, 0, 16, 12, 0.9), // 6 ventral fin
+  box("fin", 2, -103, 0, 18, 16, 0.9, 12), // 7 starboard fin
+  box("fin", 2, -103, 0, -18, 16, 0.9, 12), // 8 port fin
+  box("gondola", 1, -4, -22.5, 0, 20, 3, 5.5), // 9 hangar keel
+  rev("engine", 1, ENGINE_X[0], ENGINE_Y, ENGINE_Z, ENGINE_PROFILE), // 10 fore stbd
+  rev("engine", 1, ENGINE_X[1], ENGINE_Y, -ENGINE_Z, ENGINE_PROFILE), // 11 fore port
+  rev("engine", 1, ENGINE_X[2], ENGINE_Y, ENGINE_Z, ENGINE_PROFILE), // 12 aft stbd
+  rev("engine", 1, ENGINE_X[3], ENGINE_Y, -ENGINE_Z, ENGINE_PROFILE), // 13 aft port
+  rev("cell", 1, 14, 6, Math.sqrt(skin(14) ** 2 - 36) - 0.3, CELL_PROFILE), // 14 stbd
+  rev("cell", 1, -18, 6, -(Math.sqrt(skin(-18) ** 2 - 36) - 0.3), CELL_PROFILE), // 15 port
+  rev("cell", 1, -32, skin(-32) - 0.3, 0, CELL_PROFILE), // 16 dorsal
+  box("turret", 0, 98, skin(98) + 1, 0, 3, 2, 3), // 17 dorsal, fore
+  box("turret", 1, -46, skin(-46) + 1.2, 0, 3, 2, 3), // 18 dorsal, aft
+  box("turret", 1, 42, -19.4 - 1.2, 8, 3, 2, 3), // 19 ventral turrets
+  box("turret", 1, 42, -19.4 - 1.2, -8, 3, 2, 3), // 20
+  box("turret", 1, -42, -Math.sqrt(skin(-42) ** 2 - 64) - 1.2, 8, 3, 2, 3), // 21
+  box("turret", 1, -42, -Math.sqrt(skin(-42) ** 2 - 64) - 1.2, -8, 3, 2, 3), // 22
+  box("strut", 1, ENGINE_X[0], ENGINE_Y, 20, 2.2, 0.5, 5), // 23 engine struts
+  box("strut", 1, ENGINE_X[1], ENGINE_Y, -20, 2.2, 0.5, 5), // 24
+  box("strut", 1, ENGINE_X[2], ENGINE_Y, 20, 2.2, 0.5, 5), // 25
+  box("strut", 1, ENGINE_X[3], ENGINE_Y, -20, 2.2, 0.5, 5), // 26
+  // 27 the catapult deck: its box reaches 0.9 m over the deck plate — the
+  // rails, the carriage and the deck crew stand in that headroom.
+  box(
+    "deck",
+    1,
+    20,
+    (19.5 + BOSS_DECK_Y + 0.9) / 2,
+    0,
+    30,
+    (BOSS_DECK_Y + 0.9 - 19.5) / 2,
+    2.6,
+  ),
+];
+
+const reach = (f: (p: BossPart) => number): number =>
+  Math.max(...BOSS_PARTS.map(f));
 /** Furthest any part reaches from the hull centre, per axis, m (reject
  * tests: the hull is never further than this from its centre). */
-export const BOSS_REACH_X = 136;
-export const BOSS_REACH_Y = 36;
-export const BOSS_REACH_Z = 38;
+export const BOSS_REACH_X = reach((p) => Math.abs(p.x) + p.hx);
+export const BOSS_REACH_Y = reach((p) => Math.abs(p.y) + p.hy);
+export const BOSS_REACH_Z = reach((p) => Math.abs(p.z) + p.hz);
 /** Plan-view reach of the hull from its centre (its length and beam), m. */
 export const BOSS_REACH_XZ = Math.hypot(BOSS_REACH_X, BOSS_REACH_Z);
 /** Bounding radius of the whole hull about its centre, m. */
 export const BOSS_RADIUS = Math.hypot(BOSS_REACH_X, BOSS_REACH_Y, BOSS_REACH_Z);
 
-/** The weak points: indices into BOSS_PARTS (4 engines, then 3 gas cells). */
+/** The weak points: indices into BOSS_PARTS (4 engine cars, then 3 gas
+ * cells). */
 export const BOSS_WEAK_POINTS: readonly number[] = [10, 11, 12, 13, 14, 15, 16];
 /** Each weak point's full HP at hpScale 1 (engines, then gas cells). */
 export const BOSS_WEAK_HP: readonly number[] = [
@@ -161,15 +345,97 @@ export const BOSS_TURRETS: readonly { part: number; up: 1 | -1 }[] = [
 
 /** The three sections it breaks into: their anchor (the frame they fall and
  * turn about) in the hull frame, and the boxes whose bottoms the impact sweep
- * tests (the big section and whatever hangs lowest under it). */
+ * tests (the envelope section and whatever hangs lowest under it). */
 export const BOSS_PIECES: readonly {
   ax: number;
   sweep: readonly number[];
 }[] = [
-  { ax: 100, sweep: [1, 2] },
-  { ax: 0, sweep: [0, 9] },
-  { ax: -100, sweep: [3, 4] },
+  { ax: 91, sweep: [1, 4] },
+  { ax: -2, sweep: [0, 9] },
+  { ax: -92, sweep: [3, 6] },
 ];
+
+// --- The exact shape ------------------------------------------------------------
+
+/** Squared distance from (px, py) to the segment a–b. */
+function segD2(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+): number {
+  const ex = bx - ax;
+  const ey = by - ay;
+  const len2 = ex * ex + ey * ey;
+  const u =
+    len2 <= 1e-18
+      ? 0
+      : Math.min(1, Math.max(0, ((px - ax) * ex + (py - ay) * ey) / len2));
+  const dx = px - (ax + ex * u);
+  const dy = py - (ay + ey * u);
+  return dx * dx + dy * dy;
+}
+
+/** Signed distance from a point at axial x / radial rho (≥ 0) to a solid of
+ * revolution: negative inside. Exact — the solid's surface is the profile
+ * polyline swept round, so the nearest surface point lies in the point's own
+ * meridian half-plane. */
+export function revSdf(profile: BossProfile, x: number, rho: number): number {
+  const n = profile.length;
+  const first = profile[0] as readonly [number, number];
+  const last = profile[n - 1] as readonly [number, number];
+  let d2 = Number.POSITIVE_INFINITY;
+  if (first[1] > 0) d2 = segD2(x, rho, first[0], 0, first[0], first[1]);
+  for (let i = 1; i < n; i++) {
+    const a = profile[i - 1] as readonly [number, number];
+    const b = profile[i] as readonly [number, number];
+    d2 = Math.min(d2, segD2(x, rho, a[0], a[1], b[0], b[1]));
+  }
+  if (last[1] > 0) {
+    d2 = Math.min(d2, segD2(x, rho, last[0], last[1], last[0], 0));
+  }
+  const d = Math.sqrt(d2);
+  return rho < profileR(profile, x) ? -d : d;
+}
+
+/** Signed distance from a part-local point to part `p`'s solid (negative
+ * inside). Exact for both shapes. */
+export function bossPartSdf(
+  p: BossPart,
+  lx: number,
+  ly: number,
+  lz: number,
+): number {
+  if (p.rev) return revSdf(p.rev, lx, Math.hypot(ly, lz));
+  const qx = Math.abs(lx) - p.hx;
+  const qy = Math.abs(ly) - p.hy;
+  const qz = Math.abs(lz) - p.hz;
+  const out = Math.hypot(Math.max(qx, 0), Math.max(qy, 0), Math.max(qz, 0));
+  return out + Math.min(Math.max(qx, qy, qz), 0);
+}
+
+/** Signed distance from world `pos` to part `p` placed as `b` (its box from
+ * bossPartBoxInto / bossPiecePartBoxInto), torus-aware. */
+export function bossPartSdfAt(p: BossPart, b: MoverBox, pos: Vec3): number {
+  const dx = wrapDeltaAxis(b.x, pos.x);
+  const dz = wrapDeltaAxis(b.z, pos.z);
+  const c = Math.cos(b.yaw);
+  const s = Math.sin(b.yaw);
+  return bossPartSdf(p, c * dx - s * dz, pos.y - b.y, s * dx + c * dz);
+}
+
+/** Does a sphere at `pos` touch part `p` placed as `b`? The box first. */
+function sphereHitsPart(
+  p: BossPart,
+  b: MoverBox,
+  pos: Vec3,
+  radius: number,
+): boolean {
+  if (!sphereHitsBox(b, pos, radius)) return false;
+  return p.rev === null || bossPartSdfAt(p, b, pos) <= radius;
+}
 
 // --- Raids --------------------------------------------------------------------
 
@@ -708,9 +974,16 @@ export function breakUp(
 export interface BossSlot {
   raid: BossRaid | null;
   down: BossDown | null;
+  /** S9: the carrier's launches still on (or just off) their rig, oldest
+   * first. Absent = none. */
+  launches?: BossLaunch[];
 }
 
-export const emptyBossSlot = (): BossSlot => ({ raid: null, down: null });
+export const emptyBossSlot = (): BossSlot => ({
+  raid: null,
+  down: null,
+  launches: [],
+});
 
 /** Is the intact zeppelin in the air at `t`? */
 export function bossPresent(slot: BossSlot, t: number): boolean {
@@ -750,7 +1023,10 @@ export function collideBoss(
       const reach = BOSS_REACH_XZ + radius;
       if (dx * dx + dz * dz <= reach * reach) {
         for (let i = 0; i < BOSS_PARTS.length; i++) {
-          if (sphereHitsBox(bossPartBoxInto(pose, i, hitBox), pos, radius)) {
+          const p = BOSS_PARTS[i] as BossPart;
+          if (
+            sphereHitsPart(p, bossPartBoxInto(pose, i, hitBox), pos, radius)
+          ) {
             return { kind: "boss", id: r.id };
           }
         }
@@ -768,8 +1044,14 @@ export function collideBoss(
     const reach = (PIECE_REACH[piece.k] as number) + radius;
     if (dx * dx + dy * dy + dz * dz > reach * reach) continue;
     for (const i of PIECE_PARTS[piece.k] as readonly number[]) {
+      const p = BOSS_PARTS[i] as BossPart;
       if (
-        sphereHitsBox(bossPiecePartBoxInto(piece, pose, i, hitBox), pos, radius)
+        sphereHitsPart(
+          p,
+          bossPiecePartBoxInto(piece, pose, i, hitBox),
+          pos,
+          radius,
+        )
       ) {
         return { kind: "bossDebris", id: d.id };
       }
@@ -814,6 +1096,187 @@ export function bossSpawnClear(
   return true;
 }
 const spawnAt: Vec3 = { x: 0, y: 0, z: 0 };
+
+// --- Carrier launches -----------------------------------------------------------
+//
+// S9: the zeppelin is a carrier. A bot respawning while it is on station may
+// be launched from it instead of the street: dropped from the belly
+// hangar's trapeze (the bay doors in the keel slide open, the plane is
+// lowered on the hook, tips nose-down and lets go) or flung off the dorsal
+// catapult (steam, then a 30 m run along the deck rail). The server picks
+// the station and the start time (server/src/boss.ts planLaunch), so a
+// launch is one small broadcast — everything else is a pure function of the
+// raid, the launch and the clock: where the plane hangs, where the rig is,
+// and the exact pose it is released at, which is the bot's spawn.
+
+export const LAUNCH_BELLY = 0;
+export const LAUNCH_CATAPULT = 1;
+export type LaunchKind = 0 | 1;
+/** Start to release, ms, per kind. Never longer than the kill-cam, so a
+ * launch planned at the death releases on the bot's normal respawn time. */
+export const LAUNCH_SEQ_MS: readonly number[] = [2400, 1800];
+/** A station stays busy this long after a release (the doors closing, the
+ * carriage running back), ms. */
+export const LAUNCH_RESET_MS = 1000;
+/** After release the bot flies its launch run straight (its stick neutral)
+ * and its own carrier is not solid to it, for this long, ms. */
+export const LAUNCH_GRACE_MS: readonly number[] = [1800, 1500];
+/** Release speed (the respawn speed) and pitch: a dive off the hook, a
+ * gentle climb off the deck, rad. */
+export const LAUNCH_SPEED = RESPAWN_SPEED;
+export const LAUNCH_PITCH: readonly number[] = [-0.32, 0.08];
+/** The belly bay (hull frame): its centre x, the plane stowed inside the
+ * keel, and how far the trapeze lowers it, m. */
+export const BAY_X = -4;
+const BAY_STOW_Y = -21.5;
+const BAY_HANG_Y = -31;
+/** The catapult run along the deck, hull x, and the plane's height over the
+ * deck plate (its wheels on the carriage), m. */
+export const CATAPULT_FROM_X = 12;
+export const CATAPULT_TO_X = 42;
+const DECK_PLANE_H = 1.6;
+
+/** One launch, exactly as broadcast. */
+export interface BossLaunch {
+  id: number;
+  /** The raid whose carrier launches it. */
+  raid: number;
+  kind: LaunchKind;
+  /** When the sequence starts, server ms. */
+  t0: number;
+}
+
+export const launchReleaseAt = (l: BossLaunch): number =>
+  l.t0 + (LAUNCH_SEQ_MS[l.kind] as number);
+/** When its station is free again, ms. */
+export const launchDoneAt = (l: BossLaunch): number =>
+  launchReleaseAt(l) + LAUNCH_RESET_MS;
+
+/** The launched plane's pose in the HULL frame (x nose, y up, z starboard),
+ * its nose along +X pitched by `pitch` (rad, + up). */
+export interface LaunchLocal {
+  x: number;
+  y: number;
+  z: number;
+  pitch: number;
+}
+
+const smooth = (u: number): number => {
+  const c = Math.min(1, Math.max(0, u));
+  return c * c * (3 - 2 * c);
+};
+
+/** Where the plane is on its rig at server time `t` (clamped to the
+ * sequence: at and after release, the release pose). Pure. */
+export function launchLocalAt(
+  l: BossLaunch,
+  t: number,
+  out: LaunchLocal,
+): LaunchLocal {
+  const s =
+    Math.min(Math.max(t - l.t0, 0), LAUNCH_SEQ_MS[l.kind] as number) / 1000;
+  if (l.kind === LAUNCH_BELLY) {
+    // Doors 0–0.6 s, lowered 0.6–1.7 s, tipped nose-down to the release
+    // pitch 1.7–2.4 s.
+    out.x = BAY_X;
+    out.y = BAY_STOW_Y + (BAY_HANG_Y - BAY_STOW_Y) * smooth((s - 0.6) / 1.1);
+    out.z = 0;
+    out.pitch = (LAUNCH_PITCH[0] as number) * smooth((s - 1.7) / 0.7);
+    return out;
+  }
+  // Steam 0–0.6 s, then the run: constant acceleration over 1.2 s, the nose
+  // lifting to the release pitch over its last 0.4 s.
+  const u = Math.min(1, Math.max(0, (s - 0.6) / 1.2));
+  out.x = CATAPULT_FROM_X + (CATAPULT_TO_X - CATAPULT_FROM_X) * u * u;
+  out.y = BOSS_DECK_Y + DECK_PLANE_H;
+  out.z = 0;
+  out.pitch = (LAUNCH_PITCH[1] as number) * smooth((s - 1.4) / 0.4);
+  return out;
+}
+
+/** The launch rig at server time `t`, for the renderer: how far the bay
+ * doors are open (0–1), the trapeze's drop under the keel (m), the
+ * catapult carriage's hull x, the steam's strength (0–1), and whether the
+ * plane is still on the rig (false at and after release). */
+export interface LaunchRig {
+  doors: number;
+  drop: number;
+  carriage: number;
+  steam: number;
+  onRig: boolean;
+}
+
+export function launchRigAt(
+  l: BossLaunch,
+  t: number,
+  out: LaunchRig,
+): LaunchRig {
+  const s = (t - l.t0) / 1000;
+  const rel = (LAUNCH_SEQ_MS[l.kind] as number) / 1000;
+  const back = LAUNCH_RESET_MS / 1000;
+  out.onRig = s >= 0 && s < rel;
+  const after = s >= rel ? smooth((s - rel) / back) : 0;
+  if (l.kind === LAUNCH_BELLY) {
+    out.doors =
+      s < 0 ? 0 : s < rel ? smooth(s / 0.6) : 1 - smooth((s - rel - 0.2) / 0.7);
+    const at = launchLocalAt(l, Math.min(t, launchReleaseAt(l)), rigScratch);
+    out.drop = (BAY_STOW_Y - at.y) * (1 - after);
+    out.carriage = CATAPULT_FROM_X;
+    out.steam = 0;
+    return out;
+  }
+  out.doors = 0;
+  out.drop = 0;
+  const at = launchLocalAt(l, Math.min(t, launchReleaseAt(l)), rigScratch);
+  out.carriage =
+    s < rel ? at.x : CATAPULT_TO_X + (CATAPULT_FROM_X - CATAPULT_TO_X) * after;
+  out.steam =
+    s < 0 || s > rel + 0.8
+      ? 0
+      : s < 0.6
+        ? s / 0.6
+        : s < rel
+          ? 1
+          : 1 - (s - rel) / 0.8;
+  return out;
+}
+const rigScratch: LaunchLocal = { x: 0, y: 0, z: 0, pitch: 0 };
+
+/** The release: where the bot spawns (the plane's pose on the rig at the
+ * release instant, placed by the hull's pose then), its flight yaw (yaw 0
+ * faces −Z) and pitch, and its speed. Pure. */
+export function launchSpawnAt(
+  r: BossRaid,
+  l: BossLaunch,
+): { pos: Vec3; yaw: number; pitch: number; speed: number } {
+  const t = launchReleaseAt(l);
+  const pose = bossPoseAt(r, t, blankPose());
+  const at = launchLocalAt(l, t, { x: 0, y: 0, z: 0, pitch: 0 });
+  const pos = placeLocal(pose, at.x, at.y, at.z, { x: 0, y: 0, z: 0 });
+  return {
+    pos,
+    yaw: Math.atan2(-pose.hx, -pose.hz),
+    pitch: at.pitch,
+    speed: LAUNCH_SPEED,
+  };
+}
+
+/** A launch on the wire: [id, raid, kind, t0]. */
+export type WireLaunch = [id: number, raid: number, kind: number, t0: number];
+
+export const encodeLaunch = (l: BossLaunch): WireLaunch => [
+  l.id,
+  l.raid,
+  l.kind,
+  l.t0,
+];
+
+export function decodeLaunch(w: unknown): BossLaunch | null {
+  if (!Array.isArray(w) || w.length !== 4 || !w.every(finite)) return null;
+  const [id, raid, kind, t0] = w as number[];
+  if (kind !== LAUNCH_BELLY && kind !== LAUNCH_CATAPULT) return null;
+  return { id: id as number, raid: raid as number, kind, t0: t0 as number };
+}
 
 // --- Hits ---------------------------------------------------------------------
 
@@ -863,6 +1326,108 @@ export function rayBox(
   if (!slab(oy, dy, box.hy)) return Number.POSITIVE_INFINITY;
   if (!slab(loz, ldz, box.hz)) return Number.POSITIVE_INFINITY;
   return slabT0;
+}
+
+/**
+ * Distance along a ray (origin `o`, direction `d`, both in a solid of
+ * revolution's own frame: axis +X) to the solid, or Infinity. Analytic: per
+ * profile segment the surface is a cone frustum, y² + z² = (a + k·t·dx)²,
+ * one quadratic in t; the end discs are planes. 0 when `o` is inside.
+ */
+export function rayRev(
+  profile: BossProfile,
+  ox: number,
+  oy: number,
+  oz: number,
+  dx: number,
+  dy: number,
+  dz: number,
+  maxDist: number,
+): number {
+  if (revSdf(profile, ox, Math.hypot(oy, oz)) <= 0) return 0;
+  let best = Number.POSITIVE_INFINITY;
+  const n = profile.length;
+  for (let i = 1; i < n; i++) {
+    const pa = profile[i - 1] as readonly [number, number];
+    const pb = profile[i] as readonly [number, number];
+    const x0 = pa[0];
+    const r0 = pa[1];
+    const x1 = pb[0];
+    const r1 = pb[1];
+    if (x1 - x0 <= 1e-9) {
+      // A step: the annulus between r0 and r1 in the plane x = x0.
+      if (Math.abs(dx) < 1e-12) continue;
+      const t = (x0 - ox) / dx;
+      if (!(t >= 0 && t < best && t <= maxDist)) continue;
+      const rr = Math.hypot(oy + t * dy, oz + t * dz);
+      if (rr >= Math.min(r0, r1) && rr <= Math.max(r0, r1)) best = t;
+      continue;
+    }
+    const k = (r1 - r0) / (x1 - x0);
+    const a = r0 + k * (ox - x0);
+    const A = dy * dy + dz * dz - k * k * dx * dx;
+    const B = 2 * (oy * dy + oz * dz - a * k * dx);
+    const C = oy * oy + oz * oz - a * a;
+    let ta = Number.NaN;
+    let tb = Number.NaN;
+    if (Math.abs(A) < 1e-12) {
+      if (Math.abs(B) > 1e-12) ta = -C / B;
+    } else {
+      const disc = B * B - 4 * A * C;
+      if (disc < 0) continue;
+      const sq = Math.sqrt(disc);
+      ta = (-B - sq) / (2 * A);
+      tb = (-B + sq) / (2 * A);
+    }
+    for (let j = 0; j < 2; j++) {
+      const t = j === 0 ? ta : tb;
+      if (!(t >= 0 && t < best && t <= maxDist)) continue;
+      const x = ox + t * dx;
+      if (x < x0 - 1e-9 || x > x1 + 1e-9 || a + k * t * dx < 0) continue;
+      best = t;
+    }
+  }
+  // The end discs (a cut section's open faces).
+  for (let j = 0; j < 2; j++) {
+    const pe = profile[j === 0 ? 0 : n - 1] as readonly [number, number];
+    const xe = pe[0];
+    const re = pe[1];
+    if (re <= 0 || Math.abs(dx) < 1e-12) continue;
+    const t = (xe - ox) / dx;
+    if (!(t >= 0 && t < best && t <= maxDist)) continue;
+    if (Math.hypot(oy + t * dy, oz + t * dz) <= re) best = t;
+  }
+  return best;
+}
+
+/** Distance along a unit ray from `o` (a delta from the part's centre, world
+ * axes) to part `p` placed as `box`, or Infinity: the box for a box part,
+ * the box then the exact solid for a solid of revolution. */
+export function rayPart(
+  p: BossPart,
+  ox: number,
+  oy: number,
+  oz: number,
+  dx: number,
+  dy: number,
+  dz: number,
+  box: MoverBox,
+  maxDist: number,
+): number {
+  const t = rayBox(ox, oy, oz, dx, dy, dz, box, maxDist);
+  if (p.rev === null || t === Number.POSITIVE_INFINITY) return t;
+  const c = Math.cos(box.yaw);
+  const s = Math.sin(box.yaw);
+  return rayRev(
+    p.rev,
+    c * ox - s * oz,
+    oy,
+    s * ox + c * oz,
+    c * dx - s * dz,
+    dy,
+    s * dx + c * dz,
+    maxDist,
+  );
 }
 
 /** Distance along a unit ray from `o` (a delta from the centre) to a sphere,
@@ -916,7 +1481,8 @@ export function bossRayHit(
     wrapDeltaInto(rayBoxScratch, origin, rayOff);
     const k = BOSS_WEAK_POINTS.indexOf(i);
     const live = k >= 0 && alive[k] === true;
-    let d = rayBox(
+    let d = rayPart(
+      BOSS_PARTS[i] as BossPart,
       rayOff.x,
       rayOff.y,
       rayOff.z,
@@ -1299,6 +1865,8 @@ export interface WireBossState {
   r: WireBossRaid;
   hp: number[];
   d?: BossDown;
+  /** S9: launches still on their rig (a joiner sees the plane hang). */
+  l?: WireLaunch[];
 }
 
 /** Install a welcome's boss state into a slot (null clears it — a resume
@@ -1314,6 +1882,13 @@ export function applyBossState(
     raid && state?.d && isBossDown(state.d) && state.d.id === raid.id
       ? state.d
       : null;
+  slot.launches = [];
+  if (raid && Array.isArray(state?.l)) {
+    for (const w of state.l) {
+      const l = decodeLaunch(w);
+      if (l && l.raid === raid.id) slot.launches.push(l);
+    }
+  }
   if (!raid || !state) return [];
   return raidMaxHp(raid).map((max, k) => {
     const v = state.hp[k];

@@ -11,6 +11,7 @@ import {
   blankPose,
   bossHitValid,
   bossPartBoxInto,
+  bossPartSdf,
   bossPoseAt,
   collideBoss,
   weakPointInto,
@@ -21,12 +22,8 @@ import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import { bossBulletHit } from "../src/game/boss-hits";
-import {
-  ARMOUR_PARTS,
-  SHELL_COLOR,
-  WEAK_COLOR,
-  boxMatrixInto,
-} from "../src/render/boss";
+import { SHELL_COLOR, WEAK_COLOR, boxMatrixInto } from "../src/render/boss";
+import { TAG_SOLID, buildBossHull } from "../src/render/boss-hull";
 import { luminance } from "../src/render/emissive";
 
 const T0 = 1_787_000_000_000;
@@ -56,10 +53,28 @@ const box = (i: number): MoverBox =>
   });
 
 describe("draw == collide (renderer)", () => {
-  it("instances every hull box exactly once: armour + weak points", () => {
-    expect(
-      [...ARMOUR_PARTS, ...BOSS_WEAK_POINTS].sort((a, b) => a - b),
-    ).toEqual(BOSS_PARTS.map((_, i) => i));
+  it("draws every hull part: solid geometry on each part's own surface", () => {
+    // S9: the hull is one skinned geometry (boss-hull.ts), not instanced
+    // boxes — every part, armour and weak points alike, has drawn solid
+    // surface on it (client/test/boss-hull.test.ts holds the whole shape).
+    const h = buildBossHull("full");
+    const pos = h.geometry.getAttribute("position");
+    const drawn = new Set<number>();
+    for (let v = 0; v < pos.count; v++) {
+      if (h.tag[v] !== TAG_SOLID) continue;
+      BOSS_PARTS.forEach((p, i) => {
+        const d = bossPartSdf(
+          p,
+          pos.getX(v) - p.x,
+          pos.getY(v) - p.y,
+          pos.getZ(v) - p.z,
+        );
+        if (Math.abs(d) < 0.2) drawn.add(i);
+      });
+    }
+    expect([...drawn].sort((a, b) => a - b)).toEqual(
+      BOSS_PARTS.map((_, i) => i),
+    );
   });
 
   it("each instance is its collision box, at the viewer's torus image", () => {
@@ -71,6 +86,8 @@ describe("draw == collide (renderer)", () => {
     const s = new THREE.Vector3();
     const local = new THREE.Vector3();
     for (let i = 0; i < BOSS_PARTS.length; i++) {
+      // S9: the box parts (a solid of revolution's box only bounds it).
+      if (BOSS_PARTS[i]?.rev !== null) continue;
       const b = box(i);
       boxMatrixInto(b, viewer, m).decompose(p, q, s);
       expect(s.x).toBeCloseTo(2 * b.hx, 9);

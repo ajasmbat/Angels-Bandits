@@ -32,6 +32,8 @@ export const PHRASE = {
   flak: "Flak, flak! Break!",
   bossDown: "The zeppelin is going down! Clear the area!",
   bossEscaped: "The zeppelin is pulling out. It got away.",
+  // S9: the carrier launching bandits from its hangar and its catapult.
+  carrierLaunch: "Bandits launching from the carrier!",
 } as const;
 
 /**

@@ -4,7 +4,13 @@
 // keeping every shape in this one file is what makes a binary encoder a later
 // drop-in swap.
 
-import type { BossDown, WireBossRaid, WireBossState, WireFlak } from "./boss";
+import type {
+  BossDown,
+  WireBossRaid,
+  WireBossState,
+  WireFlak,
+  WireLaunch,
+} from "./boss";
 import type {
   WireBomberDown,
   WireBomberRun,
@@ -637,6 +643,15 @@ export interface BossHpMsg {
   hp: number[];
 }
 
+/** S9: the boss carrier launches a bot (common/src/boss.ts BossLaunch):
+ * the plane hangs on its rig from `t0` and is released — `bot` respawns —
+ * at launchReleaseAt. Everything between is a pure function of the clock. */
+export interface BossLaunchMsg {
+  type: "bossLaunch";
+  l: WireLaunch;
+  bot: string;
+}
+
 /** S4: the shells the boss's turrets fired this tick (boss.ts BossFlak):
  * each flies from its turret's muzzle at its firing to its burst point. */
 export interface FlakMsg {
@@ -743,6 +758,7 @@ export type ServerMsg =
   | BossMsg
   | BossHpMsg
   | FlakMsg
+  | BossLaunchMsg
   | BossDownMsg
   | ChunksMsg
   | CollapseMsg

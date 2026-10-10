@@ -15,8 +15,12 @@ import {
 import {
   BOSS_ID,
   BOSS_WEAK_POINTS,
+  type BossDown,
+  type BossLaunch,
+  LAUNCH_BELLY,
   bossPoseAt,
   bossPresent,
+  breakUp,
   piecesFalling,
   raidEnd,
   raidMaxHp,
@@ -136,6 +140,7 @@ import {
   LOW_HP_CALLOUT,
   bossEndCallout,
   bossInboundCallout,
+  carrierLaunchCallout,
   checkInCallout,
   flakCallout,
   hitCallout,
@@ -1236,6 +1241,26 @@ const bossRenderer = new BossRenderer(
     }
   },
 );
+// S9: the carrier's launches and its break-up, heard where they happen.
+bossRenderer.setCues({
+  launchStart: (l, at) => {
+    if (l.kind === LAUNCH_BELLY) audio.bossKlaxon(at, flight.pos, flight.yaw);
+    else audio.catapultHiss(at, flight.pos, flight.yaw, false);
+  },
+  launchRelease: (l, at) => {
+    if (l.kind === LAUNCH_BELLY) audio.hookClunk(at, flight.pos, flight.yaw);
+    else audio.catapultHiss(at, flight.pos, flight.yaw, true);
+  },
+  breakUp: (joints) => {
+    const t = performance.now();
+    joints.forEach((at, k) => {
+      explosions.explode(at, t + k * 140);
+      sparks.burst(at, t + k * 140);
+    });
+    const first = joints[0];
+    if (first) audio.missileBlast(first, flight.pos, flight.yaw);
+  },
+});
 scene.add(bossRenderer.group);
 /** S8 QA (`__ab.qaBoss`): the staged raid and its flak schedule, and how
  * many shells the server sent while it was staged (dropped each frame). */
@@ -1243,6 +1268,16 @@ let qaBoss: QaBossStage | null = null;
 /** P4 QA (`__ab.qaChaos`): the staged chaos scene (game/qa-chaos.ts). */
 let qaChaos: QaChaosStage | null = null;
 let qaForeignShells = 0;
+/** S9 QA: staged launches are numbered from here (the server's count up
+ * from 1). */
+const QA_LAUNCH_BASE = 900_000;
+let qaLaunches = 0;
+/** S9 QA: what is staged on the raid — re-installed if a real raid's
+ * message replaces the slot. */
+const qaBossStage: { launches: BossLaunch[]; down: BossDown | null } = {
+  launches: [],
+  down: null,
+};
 /** S4: each weak point's full HP on the current raid (the HUD bar's scale),
  * rebuilt only when the raid changes — never per frame. */
 let bossMaxFor = -1;
@@ -2085,6 +2120,11 @@ socket.events.onBoss = () => {
   say(bossInboundCallout());
   music.moment("swell");
 };
+/** S9: the carrier launches a bandit — the radio calls it (20 s cooldown:
+ * one call per wave, not per plane). */
+socket.events.onBossLaunch = () => {
+  say(carrierLaunchCallout());
+};
 /**
  * S4: the zeppelin is down. One feed line for the top dealer (+ how many
  * shared the kill — the badges of the top dealer's award join it), the
@@ -2714,6 +2754,11 @@ declare global {
       };
       /** S8 QA: stage a raid crossing a held view (null clears). */
       qaBoss: (spec: QaBossSpec | null) => typeof socket.boss.raid;
+      /** S9 QA: on the staged raid, a carrier launch (`kind` 0 belly, 1
+       * catapult) `phaseMs` into its sequence at the world clock now. */
+      qaBossLaunch: (kind: 0 | 1, phaseMs: number) => BossLaunch | null;
+      /** S9 QA: break the staged raid's carrier up, `afterMs` ago. */
+      qaBossDown: (afterMs: number) => BossDown | null;
       /** S8 QA: a synthetic record ghost for the first course of `theme`
        * (speed null: none). Null when the city has no such course. */
       qaCourseGhost: (
@@ -3556,7 +3601,34 @@ window.__ab = {
     qaBoss = stageBoss(spec);
     qaForeignShells = 0;
     socket.flak.clear();
+    socket.boss.launches = [];
+    qaBossStage.launches = [];
+    qaBossStage.down = null;
     return qaBoss.raid;
+  },
+  qaBossLaunch: (kind, phaseMs) => {
+    if (qaBoss === null) return null;
+    const l: BossLaunch = {
+      id: QA_LAUNCH_BASE + qaLaunches++,
+      raid: qaBoss.raid.id,
+      kind,
+      t0: Math.round((worldTime() ?? 0) - phaseMs),
+    };
+    qaBossStage.launches.push(l);
+    socket.boss.launches = [...(socket.boss.launches ?? []), l];
+    return l;
+  },
+  qaBossDown: (afterMs) => {
+    if (qaBoss === null) return null;
+    const down = breakUp(qaBoss.raid, (worldTime() ?? 0) - afterMs, {
+      buildings: city.cityBuildings,
+      index: city.cityIndex,
+    });
+    qaBossStage.down = down;
+    socket.boss.raid = qaBoss.raid;
+    socket.boss.down = down;
+    socket.bossHp = socket.bossHp.map(() => 0);
+    return down;
   },
   // S8 QA: the record ghost the next run of the first course of `theme`
   // plays — a constant `speed` through its ring centres — or null for none.
@@ -5022,8 +5094,13 @@ const frame = (now: number): void => {
   if (qaBoss !== null && renderMs !== null) {
     if (socket.boss.raid !== qaBoss.raid) {
       socket.boss.raid = qaBoss.raid;
-      socket.boss.down = null;
-      socket.bossHp = raidMaxHp(qaBoss.raid);
+      // S9: with its staged launches and break-up (a real `boss` message
+      // clears both).
+      socket.boss.down = qaBossStage.down;
+      socket.boss.launches = [...qaBossStage.launches];
+      socket.bossHp = qaBossStage.down
+        ? raidMaxHp(qaBoss.raid).map(() => 0)
+        : raidMaxHp(qaBoss.raid);
     }
     for (const id of socket.flak.keys()) {
       if (isQaShell(id)) continue;
@@ -5041,7 +5118,8 @@ const frame = (now: number): void => {
     socket.boss,
     socket.bossHp,
     socket.flak,
-    chase.position,
+    // S9: its detail LOD reads the viewer — the QA eye when one is held.
+    qaView ? qaView.eye : chase.position,
     renderMs,
     now,
   );
@@ -5240,6 +5318,8 @@ const frame = (now: number): void => {
   );
   // L5/T2: the rumble from the nearest car (quieter standing at a station),
   // squealing on a curve, clattering over the joints, and the horn.
+  // S9: the carrier's diesels, from its hull while it flies.
+  audio.setBossDrone(bossRenderer.dronePos(), flight.pos, flight.yaw);
   audio.setTrainRumble(
     train.sound.at,
     train.sound.squeal,

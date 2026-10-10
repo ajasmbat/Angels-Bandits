@@ -350,4 +350,58 @@ export const VIEWS = [
       },
     },
   },
+  // S9: the war-zeppelin carrier, STAGED on the client (`__ab.qaBoss`): a
+  // raid whose hull crosses `boss.ahead` m in front of the pinned plane at
+  // the pinned world instant `timeMs`, flying the view's +X (so the hull
+  // frame is the world frame, centred at x 1000, y 305, z 820). A view may
+  // stage a launch `phaseMs` into its sequence (`__ab.qaBossLaunch`) or the
+  // break-up `downAfterMs` ago (`__ab.qaBossDown`). The QA camera frames it.
+  {
+    name: "boss-closeup",
+    x: 1000,
+    z: 1000,
+    y: 285,
+    yaw: 0,
+    timeMs: 1_790_000_000_000,
+    eye: [1112, 292, 925],
+    at: [1020, 303, 820],
+    weather: "clear",
+    boss: { ahead: 180 },
+  },
+  {
+    name: "boss-belly-launch",
+    x: 1000,
+    z: 1000,
+    y: 285,
+    yaw: 0,
+    timeMs: 1_790_000_000_000,
+    eye: [1046, 268, 880],
+    at: [998, 284, 820],
+    weather: "clear",
+    boss: { ahead: 180, launch: { kind: 0, phaseMs: 2050 } },
+  },
+  {
+    name: "boss-catapult-launch",
+    x: 1000,
+    z: 1000,
+    y: 285,
+    yaw: 0,
+    timeMs: 1_790_000_000_000,
+    eye: [1072, 342, 866],
+    at: [1028, 328, 820],
+    weather: "clear",
+    boss: { ahead: 180, launch: { kind: 1, phaseMs: 1500 } },
+  },
+  {
+    name: "boss-breakup",
+    x: 1000,
+    z: 1000,
+    y: 285,
+    yaw: 0,
+    timeMs: 1_790_000_000_000,
+    eye: [1060, 300, 1110],
+    at: [1000, 268, 820],
+    weather: "clear",
+    boss: { ahead: 180, downAfterMs: 3500 },
+  },
 ];

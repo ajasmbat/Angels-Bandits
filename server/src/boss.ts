@@ -28,10 +28,15 @@ import {
   BOSS_WEAK_POINTS,
   type BossDown,
   type BossFlak,
+  type BossLaunch,
   type BossPiece,
   type BossRaid,
   type BossSweepWorld,
   type BossTuning,
+  LAUNCH_BELLY,
+  LAUNCH_CATAPULT,
+  LAUNCH_SEQ_MS,
+  type LaunchKind,
   type WireBossState,
   blankPose,
   bossHitValid,
@@ -40,12 +45,16 @@ import {
   bossVelAt,
   breakUp,
   emptyBossSlot,
+  encodeLaunch,
   encodeRaid,
   flakDamage,
   flakSolution,
+  launchDoneAt,
+  launchReleaseAt,
   nextRaidAt,
   periodFromStart,
   planRaid,
+  raidEgressAt,
   raidEnd,
   raidMaxHp,
   turretMuzzleInto,
@@ -133,6 +142,13 @@ export class BossDirector {
   /** Flak taken per plane in the last second. */
   private readonly taken = new Map<string, { t: number; dmg: number }[]>();
   private hpDirty = false;
+  /** S9: the carrier's launches by bot id (a launch leaves this map when
+   * its bot is released; the slot keeps it until its rig has reset), the
+   * deaths already offered a launch (bot id → its respawn time), and the
+   * next launch id. */
+  private readonly launchByBot = new Map<string, BossLaunch>();
+  private readonly offered = new Map<string, number>();
+  private nextLaunch = 1;
   private readonly pose = blankPose();
   private readonly at: Vec3 = { x: 0, y: 0, z: 0 };
 
@@ -148,6 +164,8 @@ export class BossDirector {
 
   /** A plane left the room: it neither draws flak nor keeps credit. */
   forget(id: string): void {
+    this.launchByBot.delete(id);
+    this.offered.delete(id);
     this.spawns.delete(id);
     this.taken.delete(id);
     this.damageBy.delete(id);
@@ -190,7 +208,13 @@ export class BossDirector {
       this.slot.down && this.slot.down.id === r.id ? this.slot.down : null;
     const over = d ? d.t + Math.max(...d.pieces.map((p) => p.end)) : raidEnd(r);
     if (now > over + WELCOME_TAIL_MS) return null;
-    return { r: encodeRaid(r), hp: [...this.hp], ...(d && { d }) };
+    const ls = (this.slot.launches ?? []).filter((l) => launchDoneAt(l) > now);
+    return {
+      r: encodeRaid(r),
+      hp: [...this.hp],
+      ...(d && { d }),
+      ...(ls.length > 0 && { l: ls.map(encodeLaunch) }),
+    };
   }
 
   /** Living weak points as bot contacts (`@boss:<k>`), while it flies. */
@@ -236,7 +260,65 @@ export class BossDirector {
     if (raid) this.fireTurrets(now, raid, planes, world, out);
     this.settleShells(now, planes, out);
     this.settlePieces(now, out, world);
+    // S9: a launch whose rig has reset is history.
+    const ls = this.slot.launches;
+    if (ls && ls.length > 0 && launchDoneAt(ls[0] as BossLaunch) <= now) {
+      this.slot.launches = ls.filter((l) => launchDoneAt(l) > now);
+    }
     return out;
+  }
+
+  /**
+   * S9: offer a dead bot (`botId`, due back at `respawnAt`) a launch from
+   * the carrier. Once per death. Only while the zeppelin is intact and on
+   * station through the release; on a free station (the deck catapult and
+   * the belly trapeze alternate, either takes the launch when the other is
+   * busy); timed to release AT `respawnAt` (never before `now`, so at most
+   * a tick late); and only when `clear` passes its release run. Returns
+   * the launch (to broadcast) or null — the bot respawns as usual.
+   */
+  planLaunch(
+    botId: string,
+    respawnAt: number,
+    now: number,
+    clear: (raid: BossRaid, l: BossLaunch) => boolean,
+  ): BossLaunch | null {
+    if (this.launchByBot.has(botId)) return null;
+    if (this.offered.get(botId) === respawnAt) return null;
+    this.offered.set(botId, respawnAt);
+    const raid = this.activeRaid(now);
+    if (!raid) return null;
+    const first: LaunchKind =
+      this.nextLaunch % 2 === 0 ? LAUNCH_BELLY : LAUNCH_CATAPULT;
+    for (const kind of [
+      first,
+      first === LAUNCH_BELLY ? LAUNCH_CATAPULT : LAUNCH_BELLY,
+    ] as const) {
+      const t0 = Math.max(now, respawnAt - (LAUNCH_SEQ_MS[kind] as number));
+      const l: BossLaunch = { id: this.nextLaunch, raid: raid.id, kind, t0 };
+      const release = launchReleaseAt(l);
+      // On station (not running out) and still up at the release.
+      if (release >= raidEgressAt(raid) || !this.activeRaid(release)) continue;
+      const busy = (this.slot.launches ?? []).some(
+        (o) => o.kind === kind && launchDoneAt(o) > t0,
+      );
+      if (busy || !clear(raid, l)) continue;
+      this.nextLaunch++;
+      this.launchByBot.set(botId, l);
+      this.slot.launches = [...(this.slot.launches ?? []), l];
+      return l;
+    }
+    return null;
+  }
+
+  /** S9: the launch `botId` is waiting on, or null. */
+  launchOf(botId: string): BossLaunch | null {
+    return this.launchByBot.get(botId) ?? null;
+  }
+
+  /** S9: `botId` left its rig (released, or fell back to a street spawn). */
+  released(botId: string): void {
+    this.launchByBot.delete(botId);
   }
 
   private schedule(now: number, humans: boolean, out: BossTickResult): void {
@@ -262,6 +344,8 @@ export class BossDirector {
     this.hp = raidMaxHp(raid);
     this.damageBy.clear();
     this.settledPieces.clear();
+    this.launchByBot.clear();
+    this.slot.launches = [];
     this.shells = [];
     this.turrets = BOSS_TURRETS.map((_, k) => ({
       targetId: null,

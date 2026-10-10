@@ -1902,6 +1902,12 @@ let freelook = createFreeLook();
 let zoom = createZoom();
 // Mouse-aim instructor (F1): client-only, its output is ordinary input.
 let instructor = createInstructor();
+// W4: KEYBOARD is a desktop scheme — a touch device flies the instructor.
+const noKeysOnTouch = (): void => {
+  if (input.aimMode() === "keys") input.setAimMode("instructor");
+};
+if (isTouch()) noKeysOnTouch();
+whenTouch(noKeysOnTouch);
 let aimMode = input.aimMode();
 /** Last frame's smoothed cursor — the free-look drag latch diffs against it. */
 let cursorPrev = input.cursorNdc();
@@ -2963,7 +2969,7 @@ declare global {
       freelook: () => ReturnType<typeof createFreeLook>;
       /** M1 QA: the aim point and whether the pipper sits on it (F1). */
       aim: () => {
-        mode: "instructor" | "classic";
+        mode: AimMode;
         converged: boolean;
         /** F6 QA: the pipper-to-cursor angle, rad. */
         gap: number;

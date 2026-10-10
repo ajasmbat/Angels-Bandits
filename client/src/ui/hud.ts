@@ -12,6 +12,7 @@ import {
   WAVE_LIVE,
   type WaveState,
 } from "@angels-bandits/common/waves";
+import type { AimMode } from "../game/flight-input";
 import { gMeterView } from "../game/pull-feel";
 import type { LifeCard } from "../game/session-stats";
 import { tuning } from "../game/tuning";
@@ -120,8 +121,9 @@ export function deathLabel(
 
 /** The aim mode as a toast names it. Touch (M9) has no M key and no mouse,
  * so its wording carries neither. */
-function aimModeLabel(mode: "instructor" | "classic", touch: boolean): string {
+function aimModeLabel(mode: AimMode, touch: boolean): string {
   if (touch) return mode === "instructor" ? "INSTRUCTOR" : "CLASSIC STICK";
+  if (mode === "keys") return "KEYBOARD — ARROWS STEER, ENTER FIRES (M)";
   return mode === "instructor" ? "MOUSE INSTRUCTOR (M)" : "CLASSIC STICK (M)";
 }
 
@@ -476,7 +478,7 @@ export class Hud {
   }
 
   /** Brief toast naming the aim mode M just switched to. */
-  showAimMode(mode: "instructor" | "classic", touch: boolean): void {
+  showAimMode(mode: AimMode, touch: boolean): void {
     this.toast(`◇ AIM: ${aimModeLabel(mode, touch)} ◇`);
   }
 
@@ -486,7 +488,7 @@ export class Hud {
    * both changes share one toast.
    */
   showAimChanges(
-    mode: "instructor" | "classic" | null,
+    mode: AimMode | null,
     sensitivity: number | null,
     touch: boolean,
   ): void {

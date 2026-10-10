@@ -68,6 +68,7 @@ export function primerItems(touch: boolean): Array<[string, string]> {
     ["W / S", "throttle"],
     ["A / D", "roll · double-tap: snap"],
     ["RIGHT CLICK", "zoom"],
+    ["ARROWS · ENTER", "keyboard: steer · fire"],
     [keyName(FREELOOK_KEY), "look around"],
     ["TAB", "scores & bots"],
     [keyName(AIM_MODE_KEY), "aim mode"],

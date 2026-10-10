@@ -41,6 +41,7 @@ import {
   pickShimmerVentsInto,
 } from "./atmo-post";
 import { FogBanks } from "./fogbanks";
+import type { Heat } from "./fx";
 import { Litter } from "./litter";
 import type { FinalPass, ShaftsPass } from "./post";
 import { shimmerClock } from "./post";
@@ -83,7 +84,22 @@ export interface AtmosphereFrame {
   /** Unit vector toward the moon, and its visibility 0..1 (skycycle). */
   moonDir: readonly number[];
   moonVis: number;
+  /** J1: live blasts' heat (render/fx.ts heatSources) — the first
+   * `heatCount` of `heat` shimmer ahead of the roof vents. */
+  heat?: readonly Heat[];
+  heatCount?: number;
 }
+
+/** J1: a blast's heat column — from a little under the blast to well over
+ * it, wide — per unit of blast size, m. The ripple's amplitude and period
+ * are the vents' own (the shader is shared and untouched). */
+const BLAST_SHIMMER_BELOW = 8;
+const BLAST_SHIMMER_HEIGHT = 36;
+const BLAST_SHIMMER_HALF_WIDTH = 10;
+/** A blast column shimmers at full strength to here, gone by the range, m:
+ * wider than a vent's reach, the column is wider too. */
+const BLAST_SHIMMER_FULL = 260;
+const BLAST_SHIMMER_RANGE = 560;
 
 /** A metre coordinate into [0, WORLD_SIZE) (module level: no closure a pick). */
 const wrap = (c: number): number =>
@@ -151,6 +167,8 @@ export class AtmosphereFx {
   private readonly v = new THREE.Vector3();
   private readonly w = new THREE.Vector3();
   private readonly img: Vec3 = { x: 0, y: 0, z: 0 };
+  /** J1: a blast column's foot (scratch). */
+  private readonly heatAt: Vec3 = { x: 0, y: 0, z: 0 };
   private readonly eye: Vec3 = { x: 0, y: 0, z: 0 };
   private readonly top: Vec3 = { x: 0, y: 0, z: 0 };
 
@@ -394,7 +412,50 @@ export class AtmosphereFx {
     const b = u.uShimB?.value as THREE.Vector4[];
     const tanHalf = Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2);
     let n = 0;
-    for (let q = 0; q < this.slots.length; q++) {
+    // J1: blasts first — they pre-empt vents; vents fill what is left.
+    const heat = f.heat;
+    const heatCount = heat ? Math.min(f.heatCount ?? 0, heat.length) : 0;
+    for (let q = 0; q < heatCount && n < SHIMMER_SLOTS; q++) {
+      const h = (heat as readonly Heat[])[q] as Heat;
+      const d = Math.hypot(
+        wrapDeltaAxis(this.eye.x, h.x),
+        h.y - this.eye.y,
+        wrapDeltaAxis(this.eye.z, h.z),
+      );
+      const level =
+        h.level * (1 - smooth(BLAST_SHIMMER_FULL, BLAST_SHIMMER_RANGE, d));
+      if (level <= 0.001 || d < 4) continue;
+      this.heatAt.x = h.x;
+      this.heatAt.y = h.y - BLAST_SHIMMER_BELOW * h.size;
+      this.heatAt.z = h.z;
+      // The vents' projection below, for a wider, taller column (inline,
+      // like it: doubles handed to a helper are boxed — S8).
+      const base = nearestImageInto(this.img, cam.position, this.heatAt);
+      const v = this.v;
+      const w = this.w;
+      v.x = base.x;
+      v.y = base.y;
+      v.z = base.z;
+      v.project(cam);
+      w.x = base.x;
+      w.y = base.y + BLAST_SHIMMER_HEIGHT * h.size;
+      w.z = base.z;
+      w.project(cam);
+      if (v.z > 1 || w.z > 1) continue; // behind the camera
+      if (Math.abs(v.x) > 1.3 || Math.abs(v.y) > 1.3) continue;
+      const slotA = a[n] as THREE.Vector4;
+      const slotB = b[n] as THREE.Vector4;
+      slotA.x = (v.x * 0.5 + 0.5) * cam.aspect;
+      slotA.y = v.y * 0.5 + 0.5;
+      slotA.z = (w.x * 0.5 + 0.5) * cam.aspect;
+      slotA.w = w.y * 0.5 + 0.5;
+      slotB.x = (BLAST_SHIMMER_HALF_WIDTH * h.size) / (2 * d * tanHalf);
+      slotB.y = level;
+      slotB.z = 0;
+      slotB.w = 0;
+      n++;
+    }
+    for (let q = 0; q < this.slots.length && n < SHIMMER_SLOTS; q++) {
       const s = this.slots[q] as ShimmerSlot;
       // ventDist, inline: a double returned from the arrow was boxed.
       const d = Math.hypot(

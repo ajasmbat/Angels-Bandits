@@ -1701,6 +1701,7 @@ function creditMedals(room: Room, death: Death, now: number): void {
       victimId,
       medals: award.medals,
       ...(award.tier !== null && { tier: award.tier }),
+      ...(award.chain >= 2 && { chain: award.chain }),
     });
   }
   medals.death(victimId, killerId);

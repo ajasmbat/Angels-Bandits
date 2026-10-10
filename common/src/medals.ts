@@ -96,6 +96,9 @@ export interface Award {
   tier: StreakTier | null;
   /** The killer's streak after this kill. */
   streak: number;
+  /** J1: kills in the killer's current DOUBLE_KILL_MS chain, this one
+   * included (1 = no combo) — the client's DOUBLE / TRIPLE / MULTI banner. */
+  chain: number;
 }
 
 interface PilotRecord {
@@ -156,6 +159,7 @@ export class MedalLedger {
       medals: MEDAL_KINDS.filter((m) => medals.has(m)),
       tier,
       streak: k.streak,
+      chain: k.chain,
     };
   }
 
@@ -165,7 +169,12 @@ export class MedalLedger {
    * no record kept for it.
    */
   bossKill(id: string): Award {
-    return { medals: ["boss"], tier: null, streak: this.streakOf(id) };
+    return {
+      medals: ["boss"],
+      tier: null,
+      streak: this.streakOf(id),
+      chain: 0,
+    };
   }
 
   /** A death ends the victim's streak; a credited one leaves a grudge. */

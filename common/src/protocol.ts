@@ -593,6 +593,9 @@ export interface AwardMsg {
   victimId: string;
   medals: MedalKind[];
   tier?: StreakTier;
+  /** J1: the killer's kill chain (MedalLedger Award.chain), present only
+   * when it is a combo (≥ 2). An older server never sends it: no combo. */
+  chain?: number;
 }
 
 /** L1: a server-accepted moment the city reacts to (gunfire near buildings,

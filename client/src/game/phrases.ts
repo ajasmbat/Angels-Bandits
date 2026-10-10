@@ -38,7 +38,7 @@ export const PHRASE = {
   comboDouble: "Double kill!",
   comboTriple: "Triple kill!",
   comboMulti: "Multi kill! They're falling out of the sky!",
-  bomberStopped: "Bomber stopped! Nice work.",
+  bombRunStopped: "Bomb run stopped! Nice work.",
   carrierDown: "Carrier down! Carrier down!",
   aaAssist: "Triple A assist! Good shooting, ground crew.",
   waveCleared: "Wave cleared! Regroup.",

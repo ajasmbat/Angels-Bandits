@@ -486,7 +486,7 @@ export class GameSocket {
     }
     this.ws = next.ws;
     // A welcome's strikes REPLACE what was held, same room or not (A2): a
-    // bomb called off during the drop (`bombsOff`) must not fall on here,
+    // strike called off during the drop must not fall on here,
     // and missile and shell ids are per room besides.
     this.missiles.clear();
     this.flak.clear();

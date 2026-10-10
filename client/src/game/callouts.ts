@@ -179,16 +179,16 @@ export function comboCallout(combo: ComboKind): Callout {
   };
 }
 
-/** J1: a carrier-war moment the local pilot earned (W2's bomber, the
+/** J1: a carrier-war moment the local pilot earned (W2's bomb run, the
  * carrier, W3's AA assist, a wave cleared). */
 const MOMENT_VOICE: Readonly<Record<MomentKind, string>> = {
-  bomber: PHRASE.bomberStopped,
+  bombrun: PHRASE.bombRunStopped,
   carrier: PHRASE.carrierDown,
   aa: PHRASE.aaAssist,
   wave: PHRASE.waveCleared,
 };
 const MOMENT_TICKER: Readonly<Record<MomentKind, string>> = {
-  bomber: "bomber stopped — nice work",
+  bombrun: "bomb run stopped — nice work",
   carrier: "CARRIER DOWN! CARRIER DOWN!",
   aa: "triple-A assist — good shooting, ground crew",
   wave: "wave cleared — regroup",

@@ -29,16 +29,16 @@ export type JuiceKind =
   | "double"
   | "triple"
   | "multi"
-  | "bomber"
+  | "bombrun"
   | "carrier"
   | "aa"
   | "wave";
 
 /** A combo a kill chain earns. */
 export type ComboKind = "double" | "triple" | "multi";
-/** A carrier-war moment: a W2 bomber shot down mid-run, the carrier down,
+/** A carrier-war moment: a W2 enemy shot down on its bomb run, the carrier down,
  * a W3 AA nest finishing a plane we hit, a wave cleared. */
-export type MomentKind = "bomber" | "carrier" | "aa" | "wave";
+export type MomentKind = "bombrun" | "carrier" | "aa" | "wave";
 
 /** Style points each beat is worth (the popup's number — cosmetic, never
  * the kill-based scoreboard). MULTI is per kill past the third. */
@@ -47,7 +47,7 @@ export const STYLE_POINTS: Readonly<Record<JuiceKind, number>> = {
   double: 250,
   triple: 500,
   multi: 750,
-  bomber: 300,
+  bombrun: 300,
   carrier: 2500,
   aa: 150,
   wave: 750,
@@ -58,7 +58,7 @@ export const JUICE_LABEL: Readonly<Record<Exclude<JuiceKind, "kill">, string>> =
     double: "DOUBLE KILL",
     triple: "TRIPLE KILL",
     multi: "MULTI KILL",
-    bomber: "BOMBER STOPPED!",
+    bombrun: "BOMB RUN STOPPED!",
     carrier: "CARRIER DOWN!",
     aa: "AA ASSIST",
     wave: "WAVE CLEARED",

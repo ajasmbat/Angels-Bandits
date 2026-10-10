@@ -1391,7 +1391,7 @@ function cueTargetAt(ms: number): boolean {
  * J1: one beat of juice for the local pilot — the banner, the style-score
  * popup, the announcer and (for the big ones) the slow-mo. The carrier-war
  * moments come through here: "carrier" (bossDown), "wave" (the waves
- * edge), and the hooks W2 ("bomber": an enemy shot down on its bombing
+ * edge), and the hooks W2 ("bombrun": an enemy shot down on its bomb
  * run) and W3 ("aa": a rooftop nest finishing a plane we hit) call once
  * they land.
  */

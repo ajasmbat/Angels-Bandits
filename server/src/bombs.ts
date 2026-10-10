@@ -216,9 +216,6 @@ export interface BombStats {
   noTarget: number;
   brainRefused: number;
   peakInFlight: number;
-  /** Releases made within freshClearM of a fresh or protected human, or a
-   * target picked so — must stay 0. */
-  freshViolations: number;
 }
 
 interface Run {
@@ -249,7 +246,6 @@ export class BombDirector {
     noTarget: 0,
     brainRefused: 0,
     peakInFlight: 0,
-    freshViolations: 0,
   };
 
   constructor(
@@ -291,15 +287,6 @@ export class BombDirector {
     this.racks.delete(id);
     this.runs.delete(id);
     this.restUntil.delete(id);
-  }
-
-  /** The war stopped (last human out, war off): every run and rest gone. */
-  reset(): void {
-    this.racks.clear();
-    this.runs.clear();
-    this.restUntil.clear();
-    this.flying.clear();
-    this.lastStart = Number.NEGATIVE_INFINITY;
   }
 
   /**

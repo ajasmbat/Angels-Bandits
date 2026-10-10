@@ -711,6 +711,12 @@ async function measureBuild(
           },
           { v, pin: WEATHER },
         );
+        // DT1: pose the view's planes (or clear the last view's); a build
+        // without the hook just shows the empty sky.
+        await page.evaluate(
+          (list) => window.__ab.planeShowcase?.(list),
+          v.showcase ?? null,
+        );
         const still = { eye: v.eye, at: v.at, right: null, plane: v.plane };
         await aimView(page, still, PAN_M);
         for (let i = 0; i < GRID_SETTLE; i++) await page.clock.runFor(STEP_MS);

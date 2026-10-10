@@ -65,7 +65,7 @@ const ELEVATOR_GAP = 0.12;
 const RUDDER_HINGE = new THREE.Vector3(0, 0.25, -3.32);
 /** Prop hub plane and blade radius. */
 const PROP_Z = 3.5;
-const PROP_RADIUS = 1.6;
+export const PROP_RADIUS = 1.6;
 /** Rib pitch along the span, and half-width of a rib tape, meters. */
 const RIB_PITCH = 0.42;
 const RIB_TAPE = 0.025;
@@ -237,6 +237,23 @@ function blurTexture(): THREE.Texture {
   grad.addColorStop(1, "rgba(200,200,200,0)");
   g.fillStyle = grad;
   g.fillRect(0, 0, 256, 256);
+  // DT1 prop wash: faint helical streaks swept out of the hub — the
+  // slipstream the blades throw back, spinning with the disc.
+  g.strokeStyle = "rgba(225,225,225,0.22)";
+  g.lineWidth = 3;
+  for (let arm = 0; arm < 3; arm++) {
+    g.beginPath();
+    for (let k = 0; k <= 24; k++) {
+      const u = k / 24;
+      const r = 26 + u * 92;
+      const a = (arm / 3) * Math.PI * 2 + u * 2.4;
+      const x = 128 + r * Math.cos(a);
+      const y = 128 + r * Math.sin(a);
+      if (k === 0) g.moveTo(x, y);
+      else g.lineTo(x, y);
+    }
+    g.stroke();
+  }
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
   t.userData.shared = true;
@@ -290,7 +307,7 @@ const scratchColor = new THREE.Color();
  * the model-space rest position (scorch/holes stay put when a hinged part
  * moves), so callers pass `rest` when `matrix` is not model space.
  */
-function normalize(
+export function normalize(
   source: THREE.BufferGeometry,
   matrix: THREE.Matrix4,
   tint: number,
@@ -389,7 +406,7 @@ function bakeOne(
 // Airfoil loft
 
 /** NACA-4-style section: camber m at p, thickness t (fractions of chord). */
-interface Section {
+export interface Section {
   m: number;
   p: number;
   t: number;
@@ -397,7 +414,7 @@ interface Section {
 const WING_SECTION: Section = { m: 0.035, p: 0.4, t: 0.11 };
 const TAIL_SECTION: Section = { m: 0, p: 0.4, t: 0.085 };
 
-function camber(s: Section, c: number): number {
+export function camber(s: Section, c: number): number {
   if (s.m === 0) return 0;
   return c < s.p
     ? (s.m / (s.p * s.p)) * (2 * s.p * c - c * c)
@@ -421,7 +438,7 @@ const CHORD_SAMPLES = Array.from(
   (_, i) => (1 - Math.cos((Math.PI * i) / 14)) / 2,
 );
 
-interface LoftSpec {
+export interface LoftSpec {
   section: Section;
   /** Span range; x0 < x1. */
   x0: number;
@@ -439,6 +456,12 @@ interface LoftSpec {
   tipEnd?: number;
   /** Fabric: sag between ribs + rib-tape vertex shading. */
   fabric: boolean;
+  /** DT1 (fighter.ts): a tapered / swept piece — chord and chord-centre z
+   * at |x| (default: the constant `chord` and `zc`). */
+  chordAt?: (ax: number) => number;
+  zcAt?: (ax: number) => number;
+  /** Extra span stations (smooth shading along a long metal piece). */
+  stations?: number;
 }
 
 function ribDistance(x: number): { d: number; bay: number } {
@@ -467,6 +490,9 @@ function spanStations(spec: LoftSpec): number[] {
       }
     }
   }
+  for (let k = 1; k < (spec.stations ?? 0); k++) {
+    xs.add(spec.x0 + ((spec.x1 - spec.x0) * k) / (spec.stations ?? 1));
+  }
   if (spec.tipStart !== undefined && spec.tipEnd !== undefined) {
     for (const u of [0.3, 0.55, 0.72, 0.85, 0.94]) {
       const a = spec.tipStart + (spec.tipEnd - spec.tipStart) * u;
@@ -483,7 +509,7 @@ function spanStations(spec: LoftSpec): number[] {
  * tail→nose; cut edges (an aileron bay's spar face, an aileron's nose) get
  * duplicate vertices so they shade flat.
  */
-function loft(spec: LoftSpec): THREE.BufferGeometry {
+export function loft(spec: LoftSpec): THREE.BufferGeometry {
   const { section, c0, c1 } = spec;
   const cs = [
     c0,
@@ -508,7 +534,8 @@ function loft(spec: LoftSpec): THREE.BufferGeometry {
   const col: number[] = [];
   for (const x of xs) {
     const ax = Math.abs(x);
-    let chord = spec.chord;
+    let chord = spec.chordAt ? spec.chordAt(ax) : spec.chord;
+    const zc = spec.zcAt ? spec.zcAt(ax) : spec.zc;
     if (
       spec.tipStart !== undefined &&
       spec.tipEnd !== undefined &&
@@ -541,7 +568,7 @@ function loft(spec: LoftSpec): THREE.BufferGeometry {
         yBase +
         chord * (yc + (upper ? yt : -yt) - section.m * 0.8) +
         (upper ? -1 : 1) * sag * bow;
-      const z = spec.zc + chord / 2 - c * chord;
+      const z = zc + chord / 2 - c * chord;
       pos.push(x, y, z);
       col.push(shade, shade, shade);
     }
@@ -606,16 +633,17 @@ function hingePoint(
 // ---------------------------------------------------------------------------
 // Part helpers
 
-function strut(
+export function strut(
   a: THREE.Vector3,
   b: THREE.Vector3,
   radius: number,
   material: THREE.Material,
   streamline = true,
+  segments = 10,
 ): THREE.Mesh {
   const dir = new THREE.Vector3().subVectors(b, a);
   const len = dir.length();
-  const geo = new THREE.CylinderGeometry(radius, radius, len, 10);
+  const geo = new THREE.CylinderGeometry(radius, radius, len, segments);
   const m = new THREE.Mesh(geo, material);
   if (streamline) m.scale.x = 0.55; // airfoil-ish cross-section
   m.position.copy(a).addScaledVector(dir, 0.5);
@@ -703,6 +731,9 @@ export interface SharedGeometry {
   blurDisc: THREE.BufferGeometry;
   impostorBody: THREE.BufferGeometry;
   impostorDark: THREE.BufferGeometry;
+  /** DT1 mid level (150–450 m): the big shapes at low tessellation, every
+   * hinged part at rest, per material group. */
+  mid: Map<GroupKey, THREE.BufferGeometry>;
   pivots: {
     aileronL: Pivot;
     aileronR: Pivot;
@@ -716,7 +747,7 @@ export interface SharedGeometry {
 let shared: SharedGeometry | null = null;
 
 /** Built on the first plane (not at import: vitest has no `document`). */
-function sharedGeometry(): SharedGeometry {
+export function sharedGeometry(): SharedGeometry {
   if (!shared) shared = buildShared();
   return shared;
 }
@@ -1164,6 +1195,92 @@ function buildShared(): SharedGeometry {
     ),
   );
 
+  // ---------- DT1 hero detail: instruments, more rivets, fuel cap, step
+  // plate, pitot tube and the control cables running aft to the tail.
+  const panel = new THREE.Mesh(
+    new THREE.BoxGeometry(0.46, 0.13, 0.025),
+    T.dark,
+  );
+  panel.position.set(0, 0.47, -0.4);
+  g.add(panel);
+  for (const [x, y] of [
+    [-0.14, 0.485],
+    [0, 0.49],
+    [0.14, 0.485],
+    [-0.07, 0.445],
+    [0.07, 0.445],
+  ] as const) {
+    const bezel = new THREE.Mesh(
+      new THREE.TorusGeometry(0.026, 0.006, 4, 12),
+      T.chrome,
+    );
+    bezel.position.set(x, y, -0.415);
+    g.add(bezel);
+    const face = new THREE.Mesh(new THREE.CircleGeometry(0.024, 12), T.cream);
+    face.rotation.y = Math.PI; // faces the pilot (−Z)
+    face.position.set(x, y, -0.4135);
+    g.add(face);
+    const needle = new THREE.Mesh(
+      new THREE.BoxGeometry(0.003, 0.018, 0.002),
+      T.dark,
+    );
+    needle.position.set(x + 0.004, y + 0.006, -0.4145);
+    needle.rotation.z = -0.6 + x * 4;
+    g.add(needle);
+  }
+  // Rivet rows along the forward metal panels (top and both shoulders).
+  for (const a of [-1.25, 0, 1.25]) {
+    for (let z = 2.58; z > 1.36; z -= 0.11) {
+      const r = fuselageRadius(z) + 0.004;
+      const m = new THREE.Mesh(rivet, T.silver);
+      m.position.set(Math.sin(a) * r * 0.88, Math.cos(a) * r, z);
+      m.scale.set(1, 1, 0.5);
+      g.add(m);
+    }
+  }
+  const fuelCap = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.05, 0.05, 0.03, 12),
+    T.chrome,
+  );
+  fuelCap.position.set(0, 1.475, 0.77);
+  g.add(fuelCap);
+  const step = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.012, 0.25), T.dark);
+  step.position.set(0.78, -0.198, 0.2);
+  g.add(step);
+  g.add(
+    strut(
+      new THREE.Vector3(3.05, 0.6, 0.74),
+      new THREE.Vector3(3.05, 0.6, 1.18),
+      0.012,
+      T.chrome,
+      false,
+      6,
+    ),
+  );
+  for (const sx of [1, -1]) {
+    // Elevator and rudder cables from the cockpit to the tail horns.
+    g.add(
+      strut(
+        new THREE.Vector3(sx * 0.32, 0.02, -1.35),
+        new THREE.Vector3(sx * 0.1, 0.17, -2.72),
+        0.006,
+        T.wire,
+        false,
+        4,
+      ),
+    );
+    g.add(
+      strut(
+        new THREE.Vector3(sx * 0.28, 0.12, -1.45),
+        new THREE.Vector3(sx * 0.05, 0.3, -3.22),
+        0.006,
+        T.wire,
+        false,
+        4,
+      ),
+    );
+  }
+
   const statics = bake(g);
 
   // ---------- hinged surfaces (built in model space, baked into pivot space)
@@ -1359,6 +1476,7 @@ function buildShared(): SharedGeometry {
     blurDisc,
     impostorBody: required(farGroups, "body"),
     impostorDark: required(farGroups, "dark"),
+    mid: buildMid(),
     pivots: {
       aileronL: ailL.pivot,
       aileronR: ailR.pivot,
@@ -1368,6 +1486,177 @@ function buildShared(): SharedGeometry {
     checker: checkerTexture(),
     blurTexture: blurTexture(),
   };
+}
+
+/**
+ * DT1 mid level: what reads between 150 and 450 m — fuselage, cowl, both
+ * wings (dihedral kept), tail, struts, gear and the pilot's head — at a
+ * fraction of the near triangles. No wires, rivets, glass or scarf; the
+ * hinged surfaces sit at rest and the rudder wears the trim colour (the
+ * checker needs the near draw's map).
+ */
+function buildMid(): Map<GroupKey, THREE.BufferGeometry> {
+  const g = new THREE.Group();
+  const pts = FUSELAGE_PROFILE.map(
+    ([r, z]) => new THREE.Vector2(Math.max(r, 0.001), z),
+  );
+  const fusGeo = new THREE.LatheGeometry(pts, 12);
+  fusGeo.rotateX(Math.PI / 2);
+  const fus = fabric(new THREE.Mesh(fusGeo, T.red), HOLE_FUSELAGE);
+  fus.scale.x = 0.88;
+  g.add(fus);
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(0.4, 0.085, 6, 14),
+    T.maroon,
+  );
+  ring.scale.z = 1.6;
+  ring.position.z = 3.24;
+  g.add(ring);
+  const nose = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.42, 0.42, 0.1, 12),
+    T.dark,
+  );
+  nose.rotation.x = Math.PI / 2;
+  nose.position.z = 3.2;
+  g.add(nose);
+  const spinner = new THREE.Mesh(
+    new THREE.SphereGeometry(0.16, 8, 6),
+    T.chrome,
+  );
+  spinner.scale.z = 1.7;
+  spinner.position.z = 3.52;
+  g.add(spinner);
+  for (const [w, dihedral, section] of [
+    [UPPER, UPPER_DIHEDRAL, WING_SECTION],
+    [LOWER, LOWER_DIHEDRAL, WING_SECTION],
+    [STAB, 0, TAIL_SECTION],
+  ] as const) {
+    g.add(
+      fabric(
+        new THREE.Mesh(
+          loft({
+            section,
+            x0: -w.half,
+            x1: w.half,
+            c0: 0,
+            c1: 1,
+            chord: w.chord,
+            zc: w.z,
+            y0: w.y,
+            dihedral,
+            tipStart: w.tip,
+            tipEnd: w.half,
+            fabric: false,
+            stations: 2,
+          }),
+          T.red,
+        ),
+      ),
+    );
+  }
+  const finShape = new THREE.Shape();
+  finShape.moveTo(0, 0);
+  finShape.lineTo(0.75, 0);
+  finShape.quadraticCurveTo(0.85, 0.55, 0.45, 0.95);
+  finShape.quadraticCurveTo(0.2, 1.05, 0.0, 0.9);
+  finShape.lineTo(0, 0);
+  const fin = fabric(
+    new THREE.Mesh(
+      new THREE.ExtrudeGeometry(finShape, {
+        depth: 0.045,
+        bevelEnabled: false,
+        curveSegments: 4,
+      }),
+      T.red,
+    ),
+    HOLE_FUSELAGE,
+  );
+  fin.rotation.y = -Math.PI / 2;
+  fin.position.set(0.022, 0.25, -3.3);
+  g.add(fin);
+  const rudShape = new THREE.Shape();
+  rudShape.moveTo(0, -0.15);
+  rudShape.lineTo(0, 0.95);
+  rudShape.quadraticCurveTo(-0.55, 1.0, -0.62, 0.45);
+  rudShape.quadraticCurveTo(-0.66, -0.05, -0.35, -0.22);
+  rudShape.lineTo(0, -0.15);
+  const rud = fabric(
+    new THREE.Mesh(
+      new THREE.ExtrudeGeometry(rudShape, {
+        depth: 0.04,
+        bevelEnabled: false,
+        curveSegments: 4,
+      }),
+      T.maroon,
+    ),
+    HOLE_FUSELAGE,
+  );
+  rud.rotation.y = -Math.PI / 2;
+  rud.position.set(0.02, 0.25, -3.32);
+  g.add(rud);
+  for (const sx of [1, -1]) {
+    for (const [a, b] of [
+      [new THREE.Vector3(0.3, 0.52, 1.05), new THREE.Vector3(0.55, 1.3, 0.95)],
+      [new THREE.Vector3(0.3, 0.5, 0.15), new THREE.Vector3(0.55, 1.3, 0.3)],
+    ] as const) {
+      g.add(
+        strut(
+          new THREE.Vector3(a.x * sx, a.y, a.z),
+          new THREE.Vector3(b.x * sx, upperY(b.x, b.y), b.z),
+          0.035,
+          T.cream,
+          true,
+          5,
+        ),
+      );
+    }
+    const xo = 3.05;
+    const lowF = new THREE.Vector3(xo * sx, lowerY(xo, -0.25), 0.55);
+    const lowR = new THREE.Vector3(xo * sx, lowerY(xo, -0.25), -0.25);
+    const upF = new THREE.Vector3(xo * sx, upperY(xo, 1.32), 1.0);
+    const upR = new THREE.Vector3(xo * sx, upperY(xo, 1.32), 0.25);
+    g.add(strut(lowF, upF, 0.04, T.cream, true, 5));
+    g.add(strut(lowR, upR, 0.04, T.cream, true, 5));
+    g.add(strut(lowR, upF, 0.028, T.cream, true, 5));
+    const hub = new THREE.Vector3(0.98 * sx, -1.22, 0.85);
+    g.add(
+      strut(
+        new THREE.Vector3(0.34 * sx, -0.42, 1.35),
+        hub,
+        0.055,
+        T.red,
+        true,
+        5,
+      ),
+    );
+    g.add(
+      strut(
+        new THREE.Vector3(0.36 * sx, -0.4, 0.45),
+        hub,
+        0.055,
+        T.red,
+        true,
+        5,
+      ),
+    );
+    const tire = new THREE.Mesh(
+      new THREE.TorusGeometry(0.245, 0.115, 6, 12),
+      T.tire,
+    );
+    tire.rotation.y = Math.PI / 2;
+    tire.position.copy(hub);
+    g.add(tire);
+  }
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 6), T.helmet);
+  head.position.set(0, 0.86, -0.8);
+  g.add(head);
+  const torso = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.15, 0.2, 0.34, 8),
+    T.jacket,
+  );
+  torso.position.set(0, 0.6, -0.82);
+  g.add(torso);
+  return bake(g);
 }
 
 // ---------------------------------------------------------------------------
@@ -1393,12 +1682,14 @@ export interface BiplaneParts {
 
 export interface Biplane {
   near: THREE.Group;
+  /** DT1: the mid level (one mesh per material group). */
+  mid: THREE.Group;
   far: THREE.Group;
   parts: BiplaneParts;
   materials: BiplaneMaterials;
 }
 
-function hinged(
+export function hinged(
   geometry: THREE.BufferGeometry,
   material: THREE.Material,
   pivot: Pivot,
@@ -1481,6 +1772,12 @@ export function createBiplane(livery: Livery = CLASSIC_LIVERY): Biplane {
   const scarf = new THREE.Mesh(scarfGeo, M.scarf);
   near.add(scarf);
 
+  const mid = new THREE.Group();
+  for (const key of GROUP_KEYS) {
+    const geo = s.mid.get(key);
+    if (geo) mid.add(new THREE.Mesh(geo, M[key]));
+  }
+
   const far = new THREE.Group();
   far.add(
     new THREE.Mesh(s.impostorBody, M.body),
@@ -1489,6 +1786,7 @@ export function createBiplane(livery: Livery = CLASSIC_LIVERY): Biplane {
 
   return {
     near,
+    mid,
     far,
     materials: M,
     parts: {

@@ -323,14 +323,20 @@ import { Pedestrians } from "./render/pedestrians";
 import { FrameMeter, type FrameStats, percentile } from "./render/perfmeter";
 import {
   type ControlDeflection,
+  LIVERIES,
   NEUTRAL_CONTROLS,
   animatePlane,
+  buildEnemyMesh,
   buildPlaneMesh,
+  disposePlaneMesh,
+  forcePlaneLod,
   inputControls,
   liveryFor,
+  setPlaneBombs,
   spinPropeller,
 } from "./render/plane";
-import { PlaneLights } from "./render/planelights";
+import { PlaneFires } from "./render/plane-fire";
+import { PlaneLights, isEnemyId } from "./render/planelights";
 import {
   AbBloomPass,
   DiscardDepthPass,
@@ -1217,6 +1223,8 @@ const joltScratch = { x: 0, y: 0, z: 0 };
 const alarmScratch = { x: 0, y: 0, z: 0 };
 // D4: shot-down planes fall as burning wrecks on the server's shared path
 // and blow up where it says they land (the D2 damage arrives as `chunks`).
+/** DT1: wounded planes' engine fires (the stage after the smoke). */
+const planeFires = new PlaneFires(impacts);
 const wrecks = new Wrecks(impacts, (_w, at) => {
   explosions.explode(at, performance.now());
   audio.explosion(at, flight.pos, flight.yaw);
@@ -1453,6 +1461,81 @@ const trackedPlanes: { x: number; y: number; z: number }[] = [];
 /** O7 QA (`__ab.qaAfterRender`): called once per frame, right after the
  * frame is drawn — tools/perf/blackbox.mjs reads every frame exactly once. */
 let qaAfterRender: (() => void) | null = null;
+/** DT1 QA (`__ab.planeShowcase`): one posed plane — its airframe, where
+ * (canonical) and how it sits, its HP (the damage stages) and surfaces. */
+interface ShowcasePlane {
+  kind: "biplane" | "fighter";
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+  pitch?: number;
+  roll?: number;
+  hp?: number;
+  speed?: number;
+  aileron?: number;
+  elevator?: number;
+  rudder?: number;
+  /** Rack mask (fighter): which bombs are still on. */
+  bombs?: number;
+  /** Hold this LOD level (0 near, 1 mid, 2 far) whatever the distance. */
+  lod?: number;
+}
+const showcase: { spec: ShowcasePlane; mesh: THREE.Group; id: string }[] = [];
+const showcaseImage = { x: 0, y: 0, z: 0 };
+const showcaseQuat = new THREE.Quaternion();
+const showcaseEuler = new THREE.Euler();
+const showcaseControls: ControlDeflection = { ...NEUTRAL_CONTROLS };
+
+/** Replace the posed planes (null: none). Returns how many are posed. */
+function setShowcase(list: ShowcasePlane[] | null): number {
+  for (const s of showcase.splice(0)) {
+    scene.remove(s.mesh);
+    disposePlaneMesh(s.mesh);
+    smoke.sync(s.id, s.spec, performance.now(), false);
+    planeFires.drop(s.id);
+  }
+  (list ?? []).forEach((spec, i) => {
+    const fighter = spec.kind === "fighter";
+    // Enemy ids so the lights, trails and fire find the fighter's mounts.
+    const id = fighter ? `bot:showcase-${i}` : `showcase-${i}`;
+    const mesh = fighter
+      ? buildEnemyMesh()
+      : buildPlaneMesh(i === 0 ? undefined : LIVERIES[i % LIVERIES.length]);
+    scene.add(mesh);
+    fleet?.adopt(mesh);
+    if (fighter && spec.bombs !== undefined) setPlaneBombs(mesh, spec.bombs);
+    if (spec.lod !== undefined) forcePlaneLod(mesh, spec.lod);
+    showcase.push({ spec, mesh, id });
+  });
+  return showcase.length;
+}
+
+/** The posed planes' frame: placed at the image nearest the camera, their
+ * surfaces, prop, damage, lights, smoke and fire live, drawn by the fleet. */
+function showcaseFrame(dt: number, now: number, syncedMs: number): void {
+  for (const s of showcase) {
+    const v = s.spec;
+    const p = nearestImageInto(showcaseImage, chase.position, v);
+    s.mesh.position.set(p.x, p.y, p.z);
+    showcaseEuler.set(v.pitch ?? 0, v.yaw, v.roll ?? 0, "YXZ");
+    s.mesh.quaternion.setFromEuler(showcaseEuler);
+    showcaseQuat.copy(s.mesh.quaternion);
+    const speed = v.speed ?? 70;
+    const hp = v.hp ?? MAX_HP;
+    showcaseControls.aileron = v.aileron ?? 0;
+    showcaseControls.elevator = v.elevator ?? 0;
+    showcaseControls.rudder = v.rudder ?? 0;
+    spinPropeller(s.mesh, dt * speed * 0.7);
+    animatePlane(s.mesh, showcaseControls, speed, hp, dt);
+    s.mesh.visible = true;
+    fleet?.add(s.mesh);
+    planeLights.place(s.id, p, showcaseQuat, speed, syncedMs);
+    smoke.sync(s.id, v, now, smokeActive(hp));
+    planeFires.emit(s.id, v, showcaseQuat, hp, dt, now);
+  }
+}
+
 /** QA-only fixed camera (`__ab.qaCamera`): canonical eye + look-at, applied
  * just before the render so a capture can hold one viewpoint through a
  * death, the kill-cam and the respawn. Null = the normal chase camera. */
@@ -2090,7 +2173,8 @@ socket.events.onDeath = (msg) => {
   };
   // D4: a shot-down plane falls as a wreck — the bang comes where it lands.
   const wreck = isWreckParams(msg.wreck) ? msg.wreck : null;
-  if (wreck) wrecks.add(wreck);
+  // DT1: an enemy falls as the fighter's wreck, a human as the biplane's.
+  if (wreck) wrecks.add(wreck, isEnemyId(msg.victimId) ? "fighter" : "biplane");
   // Grab the victim's position before setDead clears it (self = own plane).
   const victimPos =
     msg.victimId === socket.selfId
@@ -2428,6 +2512,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   ruinSmoke.setQuality(QUALITY_PROFILES[tier].chaosFx); // D8
   blastLedger.setBurnCap(burnCapFor(QUALITY_PROFILES[tier].impacts));
   wrecks.setShare(QUALITY_PROFILES[tier].wreckFire); // D4
+  planeFires.setShare(QUALITY_PROFILES[tier].wreckFire); // DT1
   bossRenderer.setQuality(QUALITY_PROFILES[tier].bossFx); // S4
   directorFx.setShare(QUALITY_PROFILES[tier].directorFx); // D5
   scaffold.setQuality(tier); // D5
@@ -2909,9 +2994,16 @@ declare global {
       fleet: () => {
         planes: number;
         near: number;
+        mid: number;
         far: number;
+        enemies: number;
         draws: number;
+        /** DT1: each fleet program's active vertex attributes (≤ 16). */
+        attributes: Record<string, number>;
       } | null;
+      /** DT1 QA: pose planes in the world for the turntable, damage and
+       * dogfight shots (canonical positions; null clears them). */
+      planeShowcase: (list: ShowcasePlane[] | null) => number;
       /** P4 QA: stage a C2 chaos scene around a held view on the pinned
        * world clock (game/qa-chaos.ts); null clears it. */
       qaChaos: (spec: QaChaosSpec | null) => {
@@ -3824,8 +3916,10 @@ window.__ab = {
       ? {
           ...fleet.stats,
           draws: fleet.drawCount + (tagBatch.mesh.count > 0 ? 1 : 0),
+          attributes: fleet.activeAttributes(renderer),
         }
       : null,
+  planeShowcase: (list) => setShowcase(list),
   // P4 QA: stage C2's chaos around a held view on the world clock — a
   // missile schedule, meteors, a bomber run, a quake, fires; null clears it.
   qaChaos: (spec) => {
@@ -5077,6 +5171,7 @@ const frame = (now: number): void => {
       }
     });
   }
+  if (showcase.length > 0) showcaseFrame(dt, now, renderMs ?? now); // DT1 QA
   planeLights.commit();
   planeTrails.update(chase.position, now);
 
@@ -5241,9 +5336,26 @@ const frame = (now: number): void => {
   // simply stop being synced and age out inside SmokeTrails.
   if (alive) {
     smoke.sync(socket.selfId, flight.pos, now, smokeActive(selfHp));
+    planeFires.emit(
+      socket.selfId,
+      flight.pos,
+      plane.quaternion,
+      selfHp,
+      dt,
+      now,
+    );
   }
   for (const target of targets) {
     smoke.sync(target.id, target.pos, now, smokeActive(target.hp));
+    // DT1: below the smoke, the engine catches fire.
+    planeFires.emit(
+      target.id,
+      target.pos,
+      remotes.poseOf(target.id)?.quat ?? null,
+      target.hp,
+      dt,
+      now,
+    );
   }
   // X1 missiles on the synced clock: whistles, the "incoming" call, impacts,
   // then the bodies and their trails (fed before the smoke pass below).

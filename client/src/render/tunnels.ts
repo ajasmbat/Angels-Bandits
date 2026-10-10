@@ -739,18 +739,23 @@ if (abKind > 0.5) {
   float gloss = 0.0;
   if (abMat < 0.5) {
     // ROCK: strata on the walls — bands up the face, warped slowly.
-    float warp = abNoiseD(abUV * vec2(0.025, 0.07) + 3.1).x;
-    float band = abUV.y * 1.3 + warp * 7.0 + n.x * 1.5;
-    float strataFade = 1.0 - smoothstep(0.06, 0.2, abPx * 1.3);
-    float st = smoothstep(-0.55, 0.75, sin(band * 3.1));
-    detail *= mix(1.0, 0.74 + 0.36 * st, isWall * strataFade);
-    // The floor: gravel and the odd crack.
-    vec3 g = abFbm(abUV + 40.0, 2.4, abPx);
-    detail *= mix(1.0, 0.92 + 0.4 * g.x, isFloor);
-    float ridge = 1.0 - abs(2.0 * abNoiseD(abUV * 0.16 + 9.0).x - 1.0);
-    float crack = smoothstep(0.95, 0.99, ridge) * (1.0 - smoothstep(0.03, 0.09, abPx));
-    detail *= 1.0 - 0.45 * crack * isFloor;
-    grad += g.yz * 0.25 * isFloor;
+    if (isWall > 0.5) {
+      float warp = abNoiseD(abUV * vec2(0.025, 0.07) + 3.1).x;
+      float band = abUV.y * 1.3 + warp * 7.0 + n.x * 1.5;
+      float strataFade = 1.0 - smoothstep(0.06, 0.2, abPx * 1.3);
+      float st = smoothstep(-0.55, 0.75, sin(band * 3.1));
+      detail *= mix(1.0, 0.74 + 0.36 * st, strataFade);
+    }
+    // The floor: gravel and the odd crack — only on the floor (a whole
+    // triangle takes one side of this branch: no divergence, and the walls
+    // and ceiling skip half the noise).
+    if (isFloor > 0.5) {
+      vec3 g = abFbm(abUV + 40.0, 2.4, abPx);
+      float ridge = 1.0 - abs(2.0 * abNoiseD(abUV * 0.16 + 9.0).x - 1.0);
+      float crack = smoothstep(0.95, 0.99, ridge) * (1.0 - smoothstep(0.03, 0.09, abPx));
+      detail *= (0.92 + 0.4 * g.x) * (1.0 - 0.45 * crack);
+      grad += g.yz * 0.25;
+    }
   } else if (abMat < 1.5) {
     // CONCRETE: formwork panels 2.4 × 1.2 m, seams and tie holes,
     // streaks down the walls; a floor of 6 m slabs.
@@ -844,9 +849,9 @@ export class TunnelRenderer {
 
   /** Snap both meshes by whole periods so the camera sits in the middle;
    * U7: and set the bores' air from where the camera is. */
-  update(cameraPos: Vec3, nowMs = performance.now()): void {
+  update(cameraPos: Vec3): void {
     snapToPeriod(this.group, cameraPos);
-    updateTunnelAir(cameraPos, nowMs);
+    updateTunnelAir(cameraPos);
   }
 
   setQuality(tier: QualityTier): void {

@@ -30,8 +30,8 @@
 // AIR. fog.ts tints every fogged material's near fog toward TUNNEL_AIR
 // below street level — so planes, bullets and particles in a bore sit in
 // the same coloured air as the walls. This file drives it from the camera:
-// its zone's air colour (eased), and its depth (0 above −2 m, 1 below
-// −14 m) so a portal cross-fades. It ignores the L12 sky cycle on purpose:
+// its section's air colour (blended along the bore by position), and its
+// depth (0 above −2 m, 1 below −14 m) so a portal cross-fades. It ignores the L12 sky cycle on purpose:
 // the bores are lit by their own lamps, day or night.
 
 import {
@@ -262,35 +262,31 @@ vec3 abUnderClamp(vec3 c) {
 
 const frame: TunnelFrame = { s: 0, lat: 0, th: 0 };
 const probe: Vec3 = { x: 0, y: 0, z: 0 };
-const target = new THREE.Color();
 const current = new THREE.Color(PALETTES.works.air);
 const scratch = blankPalette();
-let lastMs = -1;
 
 const wrap = (v: number): number =>
   ((v % WORLD_SIZE) + WORLD_SIZE) % WORLD_SIZE;
 
-/** Per frame, from the camera (render space): the zone's air colour eased
- * over ~1.5 s, the strength by depth under the street. */
-export function updateTunnelAir(cameraPos: Vec3, nowMs: number): void {
-  const dt = lastMs < 0 ? 1 : Math.min(1, (nowMs - lastMs) / 1000);
-  lastMs = nowMs;
+/** Per frame, from the camera (render space): the air of the section the
+ * camera is in — already blended over ±8 m along the bore, so it changes
+ * smoothly with POSITION and never with time (a time-eased colour would
+ * drift every pixel frame to frame after a teleport or a respawn) — and
+ * the strength by depth under the street. Out of every bore (a cut, a
+ * river mouth) the last air holds while the strength fades. */
+export function updateTunnelAir(cameraPos: Vec3): void {
   probe.x = wrap(cameraPos.x);
   probe.y = cameraPos.y;
   probe.z = wrap(cameraPos.z);
   const t = cameraPos.y < 0 ? tunnelAt(probe) : null;
   if (t) {
     tunnelFrameInto(t, probe, frame);
-    target.copy(blendedPalette(t, frame.s, scratch).air);
-  } else {
-    target.copy(PALETTES.works.air);
+    current.copy(blendedPalette(t, frame.s, scratch).air);
   }
-  current.lerp(target, 1 - Math.exp(-dt / 0.5));
   // 0 at −2 m, 1 at −14 m.
   const d = Math.min(1, Math.max(0, (-2 - cameraPos.y) / 12));
-  const depth = d * d * (3 - 2 * d);
   TUNNEL_AIR[0] = current.r;
   TUNNEL_AIR[1] = current.g;
   TUNNEL_AIR[2] = current.b;
-  TUNNEL_AIR[3] = depth;
+  TUNNEL_AIR[3] = d * d * (3 - 2 * d);
 }

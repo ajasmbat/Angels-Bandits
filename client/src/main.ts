@@ -3317,6 +3317,11 @@ function qaSystems(): {
     ["river", [river.group]],
     ["tunnels", [tunnels.group]],
     ["tunnelShafts", [tunnelShafts.mesh]], // U7
+    // U7: U5's four draws, one by one (flicker --ablate attributes them).
+    ["undergroundDecor", [underground.decor]],
+    ["undergroundVeil", [underground.veil]],
+    ["undergroundMotes", [underground.motes]],
+    ["undergroundCritters", [underground.critters]],
     ["fountains", [fountains.points]],
     ["searchlights", [searchlights.mesh]],
     ["jumbotrons", [jumbotrons.mesh]],

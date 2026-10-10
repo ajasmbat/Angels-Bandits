@@ -4,13 +4,20 @@
 // keeping every shape in this one file is what makes a binary encoder a later
 // drop-in swap.
 
-import type { BossDown, WireBossRaid, WireBossState, WireFlak } from "./boss";
+import type {
+  BossDown,
+  WireBossRaid,
+  WireBossState,
+  WireFlak,
+  WireLaunch,
+} from "./boss";
 import type {
   WireBomberDown,
   WireBomberRun,
   WireChaosState,
   WireQuake,
 } from "./chaos";
+import type { WireCaveIn } from "./city/caveins";
 import type { CollapseWire } from "./city/collapse";
 import type { NewsHeliSlot, NewsHeliTarget } from "./city/newsheli";
 import type { CityEvent } from "./cityevents";
@@ -310,6 +317,10 @@ export interface WelcomeMsg {
    * and collides with the same chaos. Their bombs and meteors ride
    * `missiles`. Absent: none (and a resume clears what it held). */
   chaos?: WireChaosState;
+  /** U6: the room's live cave-ins (common/src/city/caveins.ts), so a late
+   * joiner sees, hears and collides with the same falling rock and rubble.
+   * Absent: none (and a resume clears what it held). */
+  caveIns?: WireCaveIn[];
 }
 
 // --- S3 stunt courses ---
@@ -637,6 +648,15 @@ export interface BossHpMsg {
   hp: number[];
 }
 
+/** S9: the boss carrier launches a bot (common/src/boss.ts BossLaunch):
+ * the plane hangs on its rig from `t0` and is released — `bot` respawns —
+ * at launchReleaseAt. Everything between is a pure function of the clock. */
+export interface BossLaunchMsg {
+  type: "bossLaunch";
+  l: WireLaunch;
+  bot: string;
+}
+
 /** S4: the shells the boss's turrets fired this tick (boss.ts BossFlak):
  * each flies from its turret's muzzle at its firing to its burst point. */
 export interface FlakMsg {
@@ -731,8 +751,17 @@ export interface FiresMsg {
   off: number[];
 }
 
+/** U6: the ceiling of a deep bore is coming down (common/src/city/
+ * caveins.ts): the warning starts at `c[3]`, the rock falls WARN later, and
+ * every piece is a pure function of this and the synced clock. */
+export interface CaveInMsg {
+  type: "caveIn";
+  c: WireCaveIn;
+}
+
 export type ServerMsg =
   | WelcomeMsg
+  | CaveInMsg
   | BombersMsg
   | BomberDownMsg
   | BombsOffMsg
@@ -743,6 +772,7 @@ export type ServerMsg =
   | BossMsg
   | BossHpMsg
   | FlakMsg
+  | BossLaunchMsg
   | BossDownMsg
   | ChunksMsg
   | CollapseMsg

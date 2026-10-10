@@ -29,6 +29,10 @@
 // the guide line, alignment against the path's heading AND its ramp grade)
 // instead of an axis — so the save threads a portal's lintel, a river
 // mouth, or a bend's wall exactly as it threads a hole.
+// U6: a cave-in's falling rock and rubble are in the bore's section too
+// (movers, so touchesSolid sees them); with one live ahead, the lateral
+// candidates slide toward its open lane instead of the centreline, so a
+// save never pushes a dodging plane back under the rock.
 //
 // Every save in one pass through the holes shares one budget (SAVE_MAX_OFFSET
 // and SAVE_MAX_ANGLE in total), re-armed only once the plane has left every
@@ -45,6 +49,10 @@
 
 import type { HoleSpan } from "@angels-bandits/common/city";
 import type { Building } from "@angels-bandits/common/city";
+import {
+  caveInGapLat,
+  nextCaveInAhead,
+} from "@angels-bandits/common/city/caveins";
 import type { MoverField } from "@angels-bandits/common/city/movers";
 import {
   BORE_HEIGHT,
@@ -480,6 +488,10 @@ export const SAVE_CANDIDATES: readonly Candidate[] = (() => {
   return out;
 })();
 
+/** U6: the lateral a bore's candidates slide toward — its centreline, or
+ * the open lane of a live cave-in ahead (search sets it per frame). */
+let boreTarget = 0;
+
 /** Fill `trial` with candidate `c` for `span` from state `st`. */
 function setTrial(c: Candidate, span: SaveSpan, st: FlightState): void {
   spanFrame(span, st.pos, 1);
@@ -487,7 +499,7 @@ function setTrial(c: Candidate, span: SaveSpan, st: FlightState): void {
     // Across = the path's left normal at the plane, (−sin th, cos th).
     const nx = -Math.sin(frame.th);
     const nz = Math.cos(frame.th);
-    const sL = frame.lateral > 0 ? -1 : 1;
+    const sL = frame.lateral > boreTarget ? -1 : 1;
     const sV = frame.up > 0 ? -1 : 1;
     // A +yaw swings the nose's across component by sin(th + yaw).
     const sA = (Math.sin(frame.th + st.yaw) >= 0 ? 1 : -1) * sL;
@@ -607,6 +619,22 @@ function search(
   const sg = travelSign(span, st.pos, st.yaw, st.pitch);
   if (sg === 0 || !onHoleSurface(span, hit, sg)) return;
   const bridge = !isTunnel(span) && span.hole.kind === "bridge";
+  // U6: in a bore with a live cave-in ahead, "toward the centre" means
+  // toward its open lane — every candidate is still flown against the
+  // falling rock (touchesSolid), so the save only ever helps into the gap.
+  boreTarget = 0;
+  const caveins = world.movers?.caveins?.list;
+  if (isTunnel(span) && caveins && caveins.length > 0 && clockMs !== null) {
+    tunnelFrameInto(span, st.pos, tf);
+    const ahead = nextCaveInAhead(
+      caveins,
+      span.id,
+      tf.s,
+      sg > 0 ? 1 : -1,
+      clockMs,
+    );
+    if (ahead) boreTarget = caveInGapLat(ahead.gap);
+  }
   const posLeft = tuning.saveMaxOffset - save.usedPos;
   const angLeft = tuning.saveMaxAngle - save.usedAng;
   for (const c of SAVE_CANDIDATES) {

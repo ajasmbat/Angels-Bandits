@@ -23,7 +23,15 @@
 
 import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 
-export type DangerLayer = "missile" | "meteor" | "bomber" | "director";
+export type DangerLayer =
+  | "missile"
+  | "meteor"
+  | "bomber"
+  | "director"
+  // U6: a cave-in ahead of a plane in a bore (server/src/caveins.ts) —
+  // charged by id (allowsIds / chargeIds): `near()` flies straight and
+  // clamps to street level, so it never sees an underground event.
+  | "cavein";
 
 export interface DangerTuning {
   windowMs: number;
@@ -39,7 +47,7 @@ export interface DangerTuning {
 export const DANGER_TUNING: DangerTuning = {
   windowMs: 30_000,
   total: 4,
-  perLayer: { missile: 2, meteor: 1, bomber: 1, director: 1 },
+  perLayer: { missile: 2, meteor: 1, bomber: 1, director: 1, cavein: 2 },
   nearM: 80,
   freshMs: 5000,
 };
@@ -167,6 +175,43 @@ export class DangerBudget {
       out.push(p.id);
     }
     return out;
+  }
+
+  /** U6: allows() for an event whose planes the caller has already named
+   * (`ids`, a subset of `planes`): each must be neither fresh nor over its
+   * total or this layer's share. */
+  allowsIds(
+    layer: DangerLayer,
+    ids: readonly string[],
+    now: number,
+    planes: readonly DangerPlane[],
+  ): boolean {
+    const t = this.tuning;
+    for (const p of planes) {
+      if (!ids.includes(p.id)) continue;
+      if (this.fresh(p, now)) return false;
+      if (this.count(p.id, now) >= t.total) return false;
+      if (this.count(p.id, now, layer) >= t.perLayer[layer]) return false;
+    }
+    return true;
+  }
+
+  /** U6: charge() to the planes the caller named, once each. */
+  chargeIds(layer: DangerLayer, ids: readonly string[], now: number): void {
+    for (const id of ids) {
+      let list = this.charges.get(id);
+      if (!list) {
+        list = [];
+        this.charges.set(id, list);
+      }
+      while (
+        list.length > 0 &&
+        now - (list[0] as Charge).t >= this.tuning.windowMs
+      ) {
+        list.shift();
+      }
+      list.push({ t: now, layer });
+    }
   }
 
   /** allows() then charge() in one step; true when staged. */

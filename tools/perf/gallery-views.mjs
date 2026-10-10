@@ -292,6 +292,111 @@ export const VIEWS = [
     raf: true,
     weather: "clear",
   },
+  // U6 cave-ins: Riverside's grotto straight, the ceiling coming down at
+  // s 380, the right-wall lane left open — the QA camera in that lane 42 m
+  // short of it (the plane parked behind it at s 300) — staged on this client
+  // through `__ab.qaCaveIn` at a pinned world time (`caveIn.ago` ms into
+  // its life): the warning (dust streaming from the cracks over the
+  // blocked lanes, lamps stuttering), the fall, and the rubble after.
+  {
+    name: "tunnel-cavein-warning",
+    x: 897.1,
+    z: 1302.1,
+    y: -52,
+    yaw: 2.182,
+    raf: true,
+    eye: [872.9, -55, 1333.7],
+    at: [829.8, -54, 1345.5],
+    timeMs: 60_000_000,
+    caveIn: { tunnel: 1, s: 380, gap: 1, ago: 1300 },
+    weather: "clear",
+  },
+  {
+    name: "tunnel-cavein-fall",
+    x: 897.1,
+    z: 1302.1,
+    y: -52,
+    yaw: 2.182,
+    raf: true,
+    eye: [872.9, -55, 1333.7],
+    at: [829.8, -54, 1345.5],
+    timeMs: 60_000_000,
+    caveIn: { tunnel: 1, s: 380, gap: 1, ago: 3100 },
+    weather: "clear",
+  },
+  {
+    name: "tunnel-cavein-rubble",
+    x: 897.1,
+    z: 1302.1,
+    y: -52,
+    yaw: 2.182,
+    raf: true,
+    eye: [872.9, -55, 1333.7],
+    at: [829.8, -54, 1345.5],
+    timeMs: 60_000_000,
+    caveIn: { tunnel: 1, s: 380, gap: 1, ago: 9000 },
+    weather: "clear",
+  },
+  // U6 tunnel life, a view per section's character: the Crosstown mine
+  // (timber sets, the rail line and its cart, workers, machinery, signs),
+  // the Seam Line works (pipe runs leaking steam, a grate's light shaft),
+  // the Riverside grotto (dripstone, crystals, roots, bats stirring off
+  // the ceiling), the garden's lake (fish, deer and foxes at the
+  // channels) and the metro platform (passengers waiting at its edge).
+  // Poses from tunnelPointInto (Crosstown s 196, Seam Line s 1290,
+  // Riverside s 240; the lake from a camera low over its shore at s 826).
+  {
+    name: "tunnel-life-mine",
+    x: 1084.5,
+    z: 835.5,
+    y: -56,
+    yaw: -1.258,
+    raf: true,
+    timeMs: 60_010_000,
+    weather: "clear",
+  },
+  {
+    name: "tunnel-life-works",
+    x: 720,
+    z: 1864.9,
+    y: -54,
+    yaw: 0,
+    raf: true,
+    timeMs: 60_010_000,
+    weather: "clear",
+  },
+  {
+    name: "tunnel-life-grotto",
+    x: 946.2,
+    z: 1267.7,
+    y: -55,
+    yaw: 2.182,
+    raf: true,
+    timeMs: 60_010_000,
+    weather: "clear",
+  },
+  {
+    name: "tunnel-life-lake",
+    x: 720,
+    z: 364.9,
+    y: -52,
+    yaw: 0,
+    raf: true,
+    eye: [715, -60.5, 328.9],
+    at: [724, -63.6, 304.9],
+    timeMs: 60_013_000,
+    weather: "clear",
+  },
+  {
+    name: "tunnel-life-platform",
+    x: 1273,
+    z: 676,
+    y: -56,
+    yaw: -1.1,
+    raf: true,
+    timeMs: 60_024_000,
+    weather: "clear",
+  },
   // D8 ruins: what a felled lot looks like once the debris is down — the
   // jagged stump, rubble across the street, smoke and soot, and NOTHING left
   // in the air where the tower was (no scaffold cage, crane mast, signs or
@@ -349,5 +454,59 @@ export const VIEWS = [
         buildings: 18,
       },
     },
+  },
+  // S9: the war-zeppelin carrier, STAGED on the client (`__ab.qaBoss`): a
+  // raid whose hull crosses `boss.ahead` m in front of the pinned plane at
+  // the pinned world instant `timeMs`, flying the view's +X (so the hull
+  // frame is the world frame, centred at x 1000, y 305, z 820). A view may
+  // stage a launch `phaseMs` into its sequence (`__ab.qaBossLaunch`) or the
+  // break-up `downAfterMs` ago (`__ab.qaBossDown`). The QA camera frames it.
+  {
+    name: "boss-closeup",
+    x: 1000,
+    z: 1000,
+    y: 285,
+    yaw: 0,
+    timeMs: 1_790_000_000_000,
+    eye: [1112, 292, 925],
+    at: [1020, 303, 820],
+    weather: "clear",
+    boss: { ahead: 180 },
+  },
+  {
+    name: "boss-belly-launch",
+    x: 1000,
+    z: 1000,
+    y: 285,
+    yaw: 0,
+    timeMs: 1_790_000_000_000,
+    eye: [1046, 268, 880],
+    at: [998, 284, 820],
+    weather: "clear",
+    boss: { ahead: 180, launch: { kind: 0, phaseMs: 2050 } },
+  },
+  {
+    name: "boss-catapult-launch",
+    x: 1000,
+    z: 1000,
+    y: 285,
+    yaw: 0,
+    timeMs: 1_790_000_000_000,
+    eye: [1072, 342, 866],
+    at: [1028, 328, 820],
+    weather: "clear",
+    boss: { ahead: 180, launch: { kind: 1, phaseMs: 1500 } },
+  },
+  {
+    name: "boss-breakup",
+    x: 1000,
+    z: 1000,
+    y: 285,
+    yaw: 0,
+    timeMs: 1_790_000_000_000,
+    eye: [1060, 300, 1110],
+    at: [1000, 268, 820],
+    weather: "clear",
+    boss: { ahead: 180, downAfterMs: 3500 },
   },
 ];

@@ -112,6 +112,9 @@ export const BUDGETS = {
     chaos: 140,
     tunnel: 100,
     exit: 112,
+    // U6: the `tunnel` view's ceiling — a cave-in adds one draw (its
+    // pieces; its dust rides the D1 pool), the life none (U5's draws).
+    cavein: 100,
   },
   // P4: ceilings that apply only to a window measured on the Mobile tier
   // (`--quality mobile`); every other tier is held to `drawCalls` above.
@@ -591,5 +594,24 @@ export const SEGMENTS = [
       bombers: { dir: 1, aim: { ahead: 300, y: 0 }, crossMs: 2000 },
       quake: { startMs: -500, dur: 7000, mag: 0.8, aim: { ahead: 200, y: 0 } },
     },
+  },
+  // --- U6: a cave-in at its peak, appended after P4's so every segment
+  // above keeps its index and measured world instant. Riverside's grotto
+  // straight (tunnel 1), the plane HELD on the guide line at s 320 looking
+  // down the bore at a cave-in staged at s 380 through `__ab.qaCaveIn`,
+  // 2 s into it at the segment's instant — the window opens on rock
+  // falling (bats stirred, lamps stuttering, dust in the D1 pool) and on a
+  // GPU runs on into the rubble. Its open lane is the centre (gap 2): the
+  // held guide line is in it, never under the rock.
+  {
+    name: "cavein",
+    what: "U6: a cave-in at peak fall in the grotto — up to 48 falling pieces, warning dust, landing puffs, stirred bats, the grotto's life",
+    tunnel: { id: 1, s: 320, speed: 0, maxM: 0 },
+    x: 880.7,
+    z: 1313.6,
+    y: -52,
+    yaw: 2.182,
+    weather: "clear",
+    caveIn: { tunnel: 1, s: 380, gap: 2, t: -2000 },
   },
 ];

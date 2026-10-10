@@ -34,15 +34,19 @@
 // order, so a `chunks` batch after a rebuild lands after it here too.
 // C2: and the chaos — bomber runs (`bombers`, the mover field's slot; their
 // bombs are missiles), quakes (`quakes`) and the burning chunks (`fires`).
+// U6: and the cave-ins (`caveIns`, the mover field's slot).
 
 import {
   type BossFlak,
+  type BossLaunch,
   type BossRaid,
   applyBossState,
   decodeFlak,
+  decodeLaunch,
   decodeRaid,
   emptyBossSlot,
   isBossDown,
+  launchDoneAt,
   raidMaxHp,
 } from "@angels-bandits/common/boss";
 import {
@@ -57,6 +61,13 @@ import {
   runEnd,
 } from "@angels-bandits/common/chaos";
 import { CityDamage, decodeChunkIds } from "@angels-bandits/common/city";
+import {
+  type CaveIn,
+  addCaveIn,
+  decodeCaveIn,
+  emptyCaveInSlot,
+  pruneCaveIns,
+} from "@angels-bandits/common/city/caveins";
 import {
   CollapseField,
   type CollapseWire,
@@ -135,11 +146,15 @@ export interface GameSocketEvents {
   onBoss?: (raid: BossRaid) => void;
   /** S4: the boss went down (already in `boss`): credit and the break-up. */
   onBossDown?: (msg: BossDownMsg) => void;
+  /** S9: the carrier is launching `bot` (already in `boss.launches`). */
+  onBossLaunch?: (l: BossLaunch, bot: string) => void;
   /** C2: a quake was announced (already in `quakes`). */
   onQuake?: (q: QuakeEvent) => void;
   /** C2: a bomber was shot down (already in `bombers`; its undropped bombs
    * already gone from `missiles`) by `by`. */
   onBomberDown?: (d: BomberDown, by: string | null) => void;
+  /** U6: a cave-in was announced (already in `caveIns`). */
+  onCaveIn?: (c: CaveIn) => void;
   /** W2: the socket dropped; reconnecting in the background. */
   onReconnecting?: () => void;
   /** W2: back as the same player. `welcome` is the fresh one: roster,
@@ -244,6 +259,9 @@ export class GameSocket {
   readonly bombers = emptyBomberSlot();
   readonly quakes = new Map<number, QuakeEvent>();
   readonly fires = new Set<number>();
+  /** U6: the room's live cave-ins (the mover field holds this very slot) —
+   * replaced by every welcome, grown by every `caveIn`, listening or not. */
+  readonly caveIns = emptyCaveInSlot();
   private ws: WebSocket;
   /** W2: "open" → "reconnecting" on a drop → back, or "lost" for good. */
   private state: "open" | "reconnecting" | "lost" = "open";
@@ -281,6 +299,7 @@ export class GameSocket {
     this.addMissiles(welcome.missiles);
     this.bossHp = applyBossState(this.boss, welcome.boss);
     this.replayChaos(welcome.chaos);
+    this.replayCaveIns(welcome.caveIns);
     this.attach(ws);
     // W2 watchdog: snapshots arrive at TICK_DOWN_HZ, so a visible tab that
     // hears nothing for SERVER_SILENCE_MS is on a dead (half-open) socket —
@@ -438,6 +457,7 @@ export class GameSocket {
     this.addMissiles(next.welcome.missiles);
     this.bossHp = applyBossState(this.boss, next.welcome.boss);
     this.replayChaos(next.welcome.chaos);
+    this.replayCaveIns(next.welcome.caveIns);
     this.attach(next.ws);
     this.delay.reset(); // the outage's arrival gaps are not jitter
     this.lastHeardMs = performance.now();
@@ -511,9 +531,26 @@ export class GameSocket {
     for (const id of decodeChunkIds(state.fires)) this.fires.add(id);
   }
 
+  /** U6: a welcome's cave-ins REPLACE what was held (a resume may land in
+   * another room). */
+  private replayCaveIns(list: readonly unknown[] | undefined): void {
+    this.caveIns.list.length = 0;
+    for (const w of Array.isArray(list) ? list : []) {
+      const e = decodeCaveIn(w);
+      if (e) addCaveIn(this.caveIns, e);
+    }
+  }
+
   /** C2: forget runs and quakes that are long over at server time `t` (the
-   * frame loop calls this; nothing is allocated when there is none). */
+   * frame loop calls this; nothing is allocated when there is none). U6:
+   * and cave-ins that have settled away. */
   pruneChaos(t: number): void {
+    if (this.caveIns.list.length > 0) pruneCaveIns(this.caveIns, t);
+    // S9: carrier launches whose rig has reset.
+    const ls = this.boss.launches;
+    if (ls && ls.length > 0 && launchDoneAt(ls[0] as BossLaunch) < t) {
+      this.boss.launches = ls.filter((l) => launchDoneAt(l) >= t);
+    }
     const runs = this.bombers.runs;
     for (let i = runs.length - 1; i >= 0; i--) {
       const r = runs[i];
@@ -791,8 +828,18 @@ export class GameSocket {
         if (!raid) break;
         this.boss.raid = raid;
         this.boss.down = null;
+        this.boss.launches = [];
         this.bossHp = raidMaxHp(raid);
         this.events.onBoss?.(raid);
+        break;
+      }
+      case "bossLaunch": {
+        const l = decodeLaunch(msg.l);
+        if (!l || this.boss.raid?.id !== l.raid) break;
+        const ls = this.boss.launches ?? [];
+        if (ls.some((o) => o.id === l.id)) break;
+        this.boss.launches = [...ls, l];
+        this.events.onBossLaunch?.(l, String(msg.bot));
         break;
       }
       case "bossHp":
@@ -856,6 +903,13 @@ export class GameSocket {
           this.quakes.set(q.id, q);
           this.events.onQuake?.(q);
         }
+        break;
+      }
+      case "caveIn": {
+        this.serverChaos++;
+        const e = decodeCaveIn(msg.c);
+        const c = e ? addCaveIn(this.caveIns, e) : null;
+        if (c) this.events.onCaveIn?.(c);
         break;
       }
       case "fires":

@@ -32,6 +32,10 @@
 // fraction; no per-frame allocation, nothing re-uploaded.
 
 import {
+  CAVEIN_WARN_MS,
+  type CaveIn,
+} from "@angels-bandits/common/city/caveins";
+import {
   BORE_FLOOR_Y,
   TUNNELS,
   type Tunnel,
@@ -49,6 +53,7 @@ import { SHELL_CEILING, SHELL_WALL_MID, snapToPeriod } from "./tunnels";
 import {
   BANDS,
   BIRD_BOB,
+  CABLE_SPAN,
   DEEP_CEIL,
   LAKE,
   LINING,
@@ -57,6 +62,7 @@ import {
   boreXZ,
   undergroundLayout,
 } from "./underground-layout";
+import { nearestImageInto } from "./wrapPlacement";
 
 /** Program cache keys (three keys programs on onBeforeCompile.toString()
  * otherwise; see traffic.ts). */
@@ -140,6 +146,33 @@ const C = {
   awningStripe: lit(0xf4ecdc, 0.68),
   lamp: emitOf(0xffd9a0, EMISSIVE_LAMP),
   wares: [lit(0xe0563a, 0.66), lit(0xf0c040, 0.66), lit(0x7cc04a, 0.66)],
+  // U6
+  timber: lit(0x7a5434, 0.6),
+  timberEnd: lit(0x9a7048, 0.62),
+  railTop: lit(0xb4b8bc, 0.62),
+  sleeper: lit(0x4a3a2c, 0.55),
+  machines: [lit(0x3f6b4a, 0.6), lit(0xb0702e, 0.6), lit(0x5a6470, 0.6)],
+  grille: lit(0x1f2226, 0.55),
+  cable: lit(0x262626, 0.5),
+  bracket: lit(0x55585c, 0.58),
+  signs: [lit(0x1d7a4c, 0.62), lit(0x2a5aa8, 0.62), lit(0xc98a12, 0.62)],
+  signRim: lit(0x2b2d30, 0.58),
+  signInk: lit(0xf4f1e8, 0.68),
+  pipes: [lit(0x8a5a3c, 0.6), lit(0x6c7a74, 0.6)],
+  flange: lit(0x9aa0a4, 0.6),
+  grateFrame: lit(0x2e3236, 0.58),
+  daylight: emitOf(0xe2f0ff, EMISSIVE_LAMP),
+  lightPool: lit(0xece0c2, 0.68),
+  dripTop: lit(0x9c8e78, 0.6),
+  dripTip: lit(0xd8ccb4, 0.66),
+  crystals: [
+    emitOf(0x7af4ff, EMISSIVE_WINDOW),
+    emitOf(0xc08cff, EMISSIVE_WINDOW),
+    emitOf(0xff8ad8, EMISSIVE_WINDOW),
+  ],
+  crystalBase: lit(0x4a5a66, 0.58),
+  root: lit(0x5e4430, 0.6),
+  rootTip: lit(0x8a6a4a, 0.62),
 } as const;
 
 const GLASS = { color: lit(0xcfe6f0, 0.6), alpha: 0.14 };
@@ -148,6 +181,18 @@ const FOAM = lit(0xe9f6fb, 0.7);
 /** Firefly and pollen colours; fireflies on the WINDOW rung at peak. */
 const FIREFLY = emitOf(0xd8ff7a, EMISSIVE_WINDOW);
 const POLLEN = lit(0xfff3cf, 0.5);
+/** U6 motes: steam off a pipe, mist off a waterfall, dust in a light shaft
+ * — aMote.w 2, 3, 4 (0 pollen, 1 firefly); colour, point size. */
+const MOTE_KIND: Record<
+  "firefly" | "pollen" | "steam" | "mist" | "shaft",
+  { w: number; color: THREE.Color; size: number }
+> = {
+  pollen: { w: 0, color: POLLEN, size: 0.16 },
+  firefly: { w: 1, color: FIREFLY, size: 0.45 },
+  steam: { w: 2, color: lit(0xe8eef0, 0.5), size: 0.7 },
+  mist: { w: 3, color: lit(0xd4ecf4, 0.42), size: 0.6 },
+  shaft: { w: 4, color: lit(0xfff0d0, 0.62), size: 0.2 },
+};
 const BIRD_COLORS = [
   lit(0x3b3532, 0.6),
   lit(0x6b5a4a, 0.6),
@@ -771,6 +816,7 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
 
   buildLake(bands);
   buildStation(L, bands);
+  buildU6Decor(L, bands);
 }
 
 function buildLake(bands: Soup[]): void {
@@ -1143,6 +1189,463 @@ function buildStation(L: UndergroundLayout, bands: Soup[]): void {
   }
 }
 
+// --- U6: the sections' own character ---------------------------------------------
+
+/** A box in the bore frame with ALL six faces (frameBox leaves the bottom
+ * out; things overhead are seen from below). */
+function solidBox(
+  soup: Soup,
+  t: Tunnel,
+  s0: number,
+  s1: number,
+  la: number,
+  lb: number,
+  y0: number,
+  y1: number,
+  c: RGBA,
+  top: RGBA = c,
+  bottom: RGBA = c,
+  a: Anim = STILL,
+): void {
+  frameBox(soup, t, s0, s1, la, lb, y0, y1, c, top, a);
+  flatStrip(soup, t, s0, s1, la, lb, y0, bottom, a);
+}
+
+/** Lateral bounds of a band `from` m to `to` m off the `side` wall. */
+const offWall = (side: 1 | -1, from: number, to: number): [number, number] => {
+  const a = side * (H - from);
+  const b = side * (H - to);
+  return [Math.min(a, b), Math.max(a, b)];
+};
+
+/** A four-sided spike: base square (half `r`) at `y0`, apex at `y1`. */
+function spike(
+  soup: Soup,
+  t: Tunnel,
+  s: number,
+  lat: number,
+  y0: number,
+  y1: number,
+  r: number,
+  base: RGBA,
+  tip: RGBA,
+  a: Anim = STILL,
+  lean = 0,
+): void {
+  const apex = at(t, s + lean, lat, y1);
+  const ring = [
+    at(t, s - r, lat, y0),
+    at(t, s, lat - r, y0),
+    at(t, s + r, lat, y0),
+    at(t, s, lat + r, y0),
+  ] as const;
+  for (let i = 0; i < 4; i++) {
+    const v0 = ring[i] as P3;
+    const v1 = ring[(i + 1) % 4] as P3;
+    soup.vertex(v0, base, a);
+    soup.vertex(v1, base, a);
+    soup.vertex(apex, tip, a);
+  }
+}
+
+function buildU6Decor(L: UndergroundLayout, bands: Soup[]): void {
+  const core = bands[0] as Soup;
+  // Mine timber sets: a post against each wall, a cap under the ceiling.
+  for (const tm of L.timbers) {
+    const soup = bands[tm.band] as Soup;
+    const s0 = tm.s - 0.2;
+    const s1 = tm.s + 0.2;
+    for (const side of [1, -1] as const) {
+      const [la, lb] = offWall(side, 0.05, 0.4);
+      frameBox(
+        soup,
+        tm.t,
+        s0,
+        s1,
+        la,
+        lb,
+        F,
+        DEEP_CEIL - 0.05,
+        rgba(C.timber),
+        rgba(C.timberEnd),
+      );
+    }
+    solidBox(
+      soup,
+      tm.t,
+      s0 - 0.05,
+      s1 + 0.05,
+      -(H - 0.05),
+      H - 0.05,
+      DEEP_CEIL - 0.42,
+      DEEP_CEIL - 0.03,
+      rgba(C.timber),
+      rgba(C.timber),
+      rgba(C.timberEnd),
+    );
+  }
+  // Rails and sleepers at the foot of a wall.
+  for (const rl of L.rails) {
+    for (const off of [0.55, 1.15]) {
+      const [la, lb] = offWall(rl.side, off - 0.04, off + 0.04);
+      frameBox(
+        core,
+        rl.t,
+        rl.s0,
+        rl.s1,
+        la,
+        lb,
+        F,
+        F + 0.12,
+        rgba(C.rail),
+        rgba(C.railTop),
+      );
+    }
+    const [sa, sb] = offWall(rl.side, 0.35, 1.35);
+    const detail = bands[1] as Soup;
+    for (let s = rl.s0; s < rl.s1 - 0.3; s += 1.2) {
+      frameBox(detail, rl.t, s, s + 0.24, sa, sb, F, F + 0.05, rgba(C.sleeper));
+    }
+  }
+  // Old machinery: a housing, its grille, a lamp; a winch drum on top.
+  for (const m of L.machines) {
+    const soup = bands[m.band] as Soup;
+    const col = C.machines[
+      Math.floor(m.hue * C.machines.length) % C.machines.length
+    ] as THREE.Color;
+    const [la, lb] = offWall(m.side, 0.05, m.depth);
+    frameBox(
+      soup,
+      m.t,
+      m.s - m.hl,
+      m.s + m.hl,
+      la,
+      lb,
+      F,
+      F + m.height,
+      rgba(col),
+      mixC(rgba(col), rgba(C.panelRim), 0.25),
+    );
+    // Grille slats on the face toward the bore.
+    const face = m.side * (H - m.depth - 0.01);
+    for (let i = 0; i < 3; i++) {
+      const ya = F + 0.25 + i * 0.32;
+      alongFace(
+        soup,
+        m.t,
+        face,
+        m.s - m.hl * 0.7,
+        m.s + m.hl * 0.1,
+        ya,
+        ya + 0.16,
+        rgba(C.grille),
+      );
+    }
+    const lampLat = m.side * (H - m.depth - 0.02);
+    const ly = F + m.height - 0.25;
+    const q = (ds: number, dy: number) =>
+      at(m.t, m.s + m.hl * 0.55 + ds, lampLat, ly + dy);
+    soup.quad(
+      [q(-0.12, -0.08), q(0.12, -0.08), q(0.12, 0.08), q(-0.12, 0.08)],
+      rgba(C.lamp),
+      [ANIM.lamp, 0, 0, 0],
+    );
+    if (m.kind === 1) {
+      const [da, db] = offWall(m.side, 0.15, m.depth - 0.1);
+      frameBox(
+        soup,
+        m.t,
+        m.s - m.hl * 0.6,
+        m.s + m.hl * 0.6,
+        da,
+        db,
+        F + m.height,
+        F + m.height + 0.5,
+        rgba(C.bracket),
+        rgba(C.railTop),
+      );
+    }
+  }
+  // Cable runs slung between brackets: thin cards with U5b's edge AA.
+  for (const cb of L.cables) {
+    const soup = core;
+    const lat = cb.side * (H - 0.08);
+    const top = F + cb.y;
+    const sag = (u: number) => top - 0.45 * 4 * u * (1 - u);
+    const lo = thin(0, 0, 1);
+    const hi = thin(0, 1, 0);
+    for (let s = cb.s0; s < cb.s1 - 1e-6; s += CABLE_SPAN) {
+      const end = Math.min(cb.s1, s + CABLE_SPAN);
+      const n = Math.max(1, Math.ceil(end - s));
+      for (let i = 0; i < n; i++) {
+        const ua = i / n;
+        const ub = (i + 1) / n;
+        const sa = s + (end - s) * ua;
+        const sb = s + (end - s) * ub;
+        soup.quad(
+          [
+            at(cb.t, sa, lat, sag(ua) - 0.04),
+            at(cb.t, sb, lat, sag(ub) - 0.04),
+            at(cb.t, sb, lat, sag(ub) + 0.04),
+            at(cb.t, sa, lat, sag(ua) + 0.04),
+          ],
+          rgba(C.cable),
+          [lo, lo, hi, hi],
+        );
+      }
+      const [ba, bb] = offWall(cb.side, 0.03, 0.2);
+      frameBox(
+        soup,
+        cb.t,
+        s - 0.06,
+        s + 0.06,
+        ba,
+        bb,
+        top - 0.1,
+        top + 0.1,
+        rgba(C.bracket),
+      );
+    }
+  }
+  // Wall signs: a rim, a coloured panel, a white arrow and stripe, a lamp.
+  for (const sg of L.signs) {
+    const soup = bands[sg.band] as Soup;
+    const col = C.signs[
+      Math.floor(sg.hue * C.signs.length) % C.signs.length
+    ] as THREE.Color;
+    const y0 = F + 5.4;
+    const y1 = F + 6.6;
+    wallStrip(
+      soup,
+      sg.t,
+      sg.side,
+      0.04,
+      sg.s - 1.55,
+      sg.s + 1.55,
+      y0 - 0.1,
+      y1 + 0.1,
+      rgba(C.signRim),
+      rgba(C.signRim),
+    );
+    wallStrip(
+      soup,
+      sg.t,
+      sg.side,
+      0.06,
+      sg.s - 1.4,
+      sg.s + 1.4,
+      y0,
+      y1,
+      rgba(col),
+      rgba(col),
+    );
+    const lat = sg.side * (H - 0.08);
+    const ym = (y0 + y1) / 2;
+    const d = sg.arrow;
+    soup.tri(
+      [
+        at(sg.t, sg.s + d * 1.15, lat, ym),
+        at(sg.t, sg.s + d * 0.55, lat, ym + 0.4),
+        at(sg.t, sg.s + d * 0.55, lat, ym - 0.4),
+      ],
+      rgba(C.signInk),
+    );
+    const a0 = sg.s - d * 1.1;
+    const a1 = sg.s + d * 0.6;
+    soup.quad(
+      [
+        at(sg.t, a0, lat, ym - 0.12),
+        at(sg.t, a1, lat, ym - 0.12),
+        at(sg.t, a1, lat, ym + 0.12),
+        at(sg.t, a0, lat, ym + 0.12),
+      ],
+      rgba(C.signInk),
+    );
+    // A lamp hood over it, lit underneath.
+    const [ha, hb] = offWall(sg.side, 0.05, 0.45);
+    frameBox(
+      soup,
+      sg.t,
+      sg.s - 0.5,
+      sg.s + 0.5,
+      ha,
+      hb,
+      y1 + 0.25,
+      y1 + 0.4,
+      rgba(C.signRim),
+    );
+    flatStrip(
+      soup,
+      sg.t,
+      sg.s - 0.45,
+      sg.s + 0.45,
+      ha,
+      hb,
+      y1 + 0.24,
+      rgba(C.lamp),
+      [ANIM.lamp, 0, 0, 0],
+    );
+  }
+  // Pipe runs with flanges every 6 m.
+  L.pipes.forEach((pp, i) => {
+    const col = C.pipes[i % C.pipes.length] as THREE.Color;
+    const [la, lb] = offWall(pp.side, 0.05, 0.05 + 2 * pp.r);
+    solidBox(
+      core,
+      pp.t,
+      pp.s0,
+      pp.s1,
+      la,
+      lb,
+      F + pp.y - pp.r,
+      F + pp.y + pp.r,
+      rgba(col),
+      mixC(rgba(col), rgba(C.panelRim), 0.2),
+      mixC(rgba(col), rgba(C.vent), 0.4),
+    );
+    const [fa, fb] = offWall(pp.side, 0.03, 0.12 + 2 * pp.r);
+    const detail = bands[1] as Soup;
+    for (let s = pp.s0 + 3; s < pp.s1 - 0.2; s += 6) {
+      solidBox(
+        detail,
+        pp.t,
+        s - 0.12,
+        s + 0.12,
+        fa,
+        fb,
+        F + pp.y - pp.r - 0.07,
+        F + pp.y + pp.r + 0.07,
+        rgba(C.flange),
+      );
+    }
+  });
+  // Ceiling grates with daylight behind (a 3 × 2 grid of lit panes in a
+  // dark frame — coarse on purpose: bars would shimmer), a pool of light
+  // on the floor under each.
+  for (const g of L.grates) {
+    const soup = bands[g.band] as Soup;
+    const y = DEEP_CEIL - 0.05;
+    const q = (ds: number, dl: number, yy: number) =>
+      at(g.t, g.s + ds, g.lat + dl, yy);
+    soup.quad(
+      [q(-1.9, -1.4, y), q(1.9, -1.4, y), q(1.9, 1.4, y), q(-1.9, 1.4, y)],
+      rgba(C.grateFrame),
+    );
+    for (let i = 0; i < 3; i++) {
+      for (let j = 0; j < 2; j++) {
+        const sa = -1.65 + i * 1.15;
+        const la = -1.15 + j * 1.2;
+        const yy = y - 0.03;
+        soup.quad(
+          [
+            q(sa, la, yy),
+            q(sa + 0.95, la, yy),
+            q(sa + 0.95, la + 1.1, yy),
+            q(sa, la + 1.1, yy),
+          ],
+          rgba(C.daylight),
+          [ANIM.lamp, 0, 0, 0],
+        );
+      }
+    }
+    flatStrip(
+      soup,
+      g.t,
+      g.s - 2.2,
+      g.s + 2.2,
+      g.lat - 1.7,
+      g.lat + 1.7,
+      F + 0.03,
+      rgba(C.lightPool),
+    );
+  }
+  // Stalactites and stalagmites.
+  for (const d of L.drips) {
+    const soup = bands[d.band] as Soup;
+    const base = mixC(rgba(C.dripTop), rgba(C.moss), d.shade * 0.25);
+    if (d.up)
+      spike(
+        soup,
+        d.t,
+        d.s,
+        d.lat,
+        F + 0.02,
+        F + d.len,
+        d.r,
+        base,
+        rgba(C.dripTip),
+      );
+    else
+      spike(
+        soup,
+        d.t,
+        d.s,
+        d.lat,
+        DEEP_CEIL - 0.02,
+        DEEP_CEIL - d.len,
+        d.r,
+        base,
+        rgba(C.dripTip),
+      );
+  }
+  // Glowing crystal clusters: three leaning spikes.
+  for (const cr of L.crystals) {
+    const soup = bands[cr.band] as Soup;
+    const col = C.crystals[
+      Math.floor(cr.hue * C.crystals.length) % C.crystals.length
+    ] as THREE.Color;
+    const glow: Anim = [ANIM.glow, cr.phase, 0, 0];
+    const lat = cr.side * (H - cr.inset);
+    for (let i = 0; i < 3; i++) {
+      const ds = (i - 1) * cr.size * 0.6;
+      const h = cr.height * (i === 1 ? 1 : 0.65);
+      const r = cr.size * (i === 1 ? 0.45 : 0.32);
+      spike(
+        soup,
+        cr.t,
+        cr.s + ds,
+        lat,
+        F,
+        F + h,
+        r,
+        rgba(C.crystalBase),
+        rgba(col),
+        glow,
+        ds * 0.4,
+      );
+    }
+  }
+  // Hanging roots: two crossed thin cards each (edge AA, ceiling behind).
+  for (const rt of L.roots) {
+    const soup = bands[rt.band] as Soup;
+    const top = DEEP_CEIL - 0.01;
+    const bot = top - rt.len;
+    const w = rt.width / 2;
+    const c0 = rgba(C.root);
+    const c1 = mixC(rgba(C.root), rgba(C.rootTip), 0.6 + 0.4 * rt.shade);
+    soup.quad(
+      [
+        at(rt.t, rt.s - w, rt.lat, top),
+        at(rt.t, rt.s + w, rt.lat, top),
+        at(rt.t, rt.s + w * 0.3, rt.lat, bot),
+        at(rt.t, rt.s - w * 0.3, rt.lat, bot),
+      ],
+      [c0, c0, c1, c1],
+      thinQuad(1),
+    );
+    soup.quad(
+      [
+        at(rt.t, rt.s, rt.lat - w, top),
+        at(rt.t, rt.s, rt.lat + w, top),
+        at(rt.t, rt.s, rt.lat + w * 0.3, bot),
+        at(rt.t, rt.s, rt.lat - w * 0.3, bot),
+      ],
+      [c0, c0, c1, c1],
+      thinQuad(1),
+    );
+  }
+}
+
 // --- Veil ---------------------------------------------------------------------
 
 function buildVeil(L: UndergroundLayout, bands: Soup[]): void {
@@ -1196,8 +1699,8 @@ function buildMotes(L: UndergroundLayout): {
 } {
   const per: number[][] = [[], [], []];
   for (const m of L.motes) {
-    const firefly = m.kind === "firefly";
-    const c = firefly ? FIREFLY : POLLEN;
+    const kind = MOTE_KIND[m.kind];
+    const c = kind.color;
     (per[m.band] as number[]).push(
       m.x,
       m.y,
@@ -1207,8 +1710,8 @@ function buildMotes(L: UndergroundLayout): {
       c.b,
       m.phase,
       m.amp,
-      firefly ? 0.45 : 0.16,
-      firefly ? 1 : 0,
+      kind.size,
+      kind.w,
     );
   }
   const STRIDE = 10;
@@ -1258,6 +1761,192 @@ const wrap = (v: number): number =>
 /** Critter kinds (aMisc.x). */
 const BIRD = 1;
 const WALKER = 2;
+/** U6: bats, fish and grazers (deer, foxes). People and the cart are
+ * walkers. */
+const BAT = 3;
+const FISH = 4;
+const GRAZER = 5;
+
+/** A box's faces (all but the bottom) as triangles, local x forward, y up,
+ * z across. */
+function boxTris(
+  out: P3[],
+  x0: number,
+  x1: number,
+  y0: number,
+  y1: number,
+  z0: number,
+  z1: number,
+): void {
+  const faces: P3[][] = [
+    [
+      [x0, y1, z0],
+      [x1, y1, z0],
+      [x1, y1, z1],
+      [x0, y1, z1],
+    ],
+    [
+      [x0, y0, z0],
+      [x1, y0, z0],
+      [x1, y1, z0],
+      [x0, y1, z0],
+    ],
+    [
+      [x0, y0, z1],
+      [x1, y0, z1],
+      [x1, y1, z1],
+      [x0, y1, z1],
+    ],
+    [
+      [x0, y0, z0],
+      [x0, y0, z1],
+      [x0, y1, z1],
+      [x0, y1, z0],
+    ],
+    [
+      [x1, y0, z0],
+      [x1, y0, z1],
+      [x1, y1, z1],
+      [x1, y1, z0],
+    ],
+  ];
+  for (const f of faces) {
+    out.push(
+      f[0] as P3,
+      f[1] as P3,
+      f[2] as P3,
+      f[0] as P3,
+      f[2] as P3,
+      f[3] as P3,
+    );
+  }
+}
+
+/** A bat: a small body and broad scalloped wings (local x forward). */
+const BAT_SHAPE: readonly P3[] = [
+  [0.14, 0, 0],
+  [-0.12, 0.04, 0],
+  [-0.12, -0.04, 0],
+  [0.06, 0, 0],
+  [-0.08, 0, 0],
+  [0.02, 0, 0.5],
+  [0.02, 0, 0.5],
+  [-0.08, 0, 0],
+  [-0.14, 0, 0.32],
+  [0.06, 0, 0],
+  [-0.08, 0, 0],
+  [0.02, 0, -0.5],
+  [0.02, 0, -0.5],
+  [-0.08, 0, 0],
+  [-0.14, 0, -0.32],
+];
+
+/** A fish, flat in the water: a body diamond and a tail. */
+const FISH_SHAPE: readonly P3[] = [
+  [0.36, 0, 0],
+  [0, 0, 0.11],
+  [-0.26, 0, 0],
+  [0.36, 0, 0],
+  [-0.26, 0, 0],
+  [0, 0, -0.11],
+  [-0.22, 0, 0],
+  [-0.44, 0, 0.13],
+  [-0.44, 0, -0.13],
+];
+
+/** Where a grazer's head starts (local x), m, at scale 1. */
+const HEAD_X = 0.38;
+
+/** A deer at scale 1 (a fox is one at ~0.55): body, neck and head, legs,
+ * tail. Returns [vertex, part] — part 0 body, 1 legs, 2 head. */
+function grazerShape(fox: boolean): [P3, number][] {
+  const k = fox ? 0.55 : 1;
+  const out: [P3, number][] = [];
+  const add = (
+    part: number,
+    x0: number,
+    x1: number,
+    y0: number,
+    y1: number,
+    z0: number,
+    z1: number,
+  ) => {
+    const tris: P3[] = [];
+    boxTris(tris, x0 * k, x1 * k, y0 * k, y1 * k, z0 * k, z1 * k);
+    for (const v of tris) out.push([v, part]);
+  };
+  add(0, -0.55, 0.45, 0.72, 1.2, -0.17, 0.17);
+  add(2, HEAD_X, 0.8, 1.05, 1.58, -0.09, 0.09);
+  for (const x of [-0.42, 0.32]) {
+    for (const z of [-0.11, 0.11])
+      add(1, x - 0.06, x + 0.06, 0, 0.78, z - 0.06, z + 0.06);
+  }
+  if (fox) add(0, -1.05, -0.5, 0.75, 0.95, -0.08, 0.08);
+  return out;
+}
+
+/** A worker: U5's walker, a helmet and its lamp (local x forward). */
+function workerShape(h: number): [P3, number][] {
+  const out: [P3, number][] = walkerShape(h).map((v) => [
+    v,
+    v[1] > h * 0.83 ? 1 : 0,
+  ]);
+  const tris: P3[] = [];
+  boxTris(tris, -0.14, 0.14, h - 0.04, h + 0.1, -0.14, 0.14);
+  for (const v of tris) out.push([v, 2]);
+  const lamp: P3[] = [];
+  boxTris(lamp, 0.13, 0.19, h - 0.01, h + 0.07, -0.05, 0.05);
+  for (const v of lamp) out.push([v, 3]);
+  return out;
+}
+
+/** The maintenance cart: a tub, its chassis, a lamp at each end. */
+function cartShape(): [P3, number][] {
+  const out: [P3, number][] = [];
+  const push = (part: number, tris: P3[]) => {
+    for (const v of tris) out.push([v, part]);
+  };
+  const tub: P3[] = [];
+  boxTris(tub, -0.75, 0.75, 0.12, 0.85, -0.38, 0.38);
+  push(0, tub);
+  const chassis: P3[] = [];
+  boxTris(chassis, -0.7, 0.7, -0.06, 0.12, -0.34, 0.34);
+  push(1, chassis);
+  for (const x of [0.75, -0.79]) {
+    const lamp: P3[] = [];
+    boxTris(lamp, x, x + 0.04, 0.45, 0.6, -0.1, 0.1);
+    push(2, lamp);
+  }
+  return out;
+}
+
+const BAT_COLOR = lit(0x2c2624, 0.55);
+const FISH_COLORS = [
+  lit(0xe8743a, 0.66),
+  lit(0xece6dc, 0.64),
+  lit(0xd8a838, 0.66),
+];
+const DEER = {
+  body: lit(0x8a6240, 0.62),
+  legs: lit(0x5a3e2a, 0.58),
+  head: lit(0x9a7048, 0.64),
+};
+const FOX = {
+  body: lit(0xc8642a, 0.64),
+  legs: lit(0x3a2a22, 0.56),
+  head: lit(0xd87a3a, 0.66),
+};
+const WORKER = {
+  vest: [lit(0xe8702a, 0.66), lit(0xd8d040, 0.64)],
+  skin: lit(0xd9b38c, 0.75),
+  helmet: lit(0xf2c230, 0.7),
+  lamp: lit(0xfff2b0, 0.7),
+};
+const CART = {
+  tub: lit(0x7a5032, 0.6),
+  chassis: lit(0x2e2a28, 0.55),
+  lamp: lit(0xffe2a0, 0.7),
+};
 
 /** One critter shape: local vertices (x forward, y up, z across) as tris. */
 const BIRD_SHAPE: readonly P3[] = [
@@ -1341,6 +2030,91 @@ function buildCritters(L: UndergroundLayout): {
       });
     }
   }
+  // --- U6 ---
+  for (const b of L.bats) {
+    for (const v of BAT_SHAPE) {
+      (per[b.band] as V[]).push({
+        local: v,
+        base: [b.x, b.y, b.z],
+        move: [b.ux, b.uz, b.r, 0],
+        misc: [BAT, b.speed, b.phase, 0],
+        color: BAT_COLOR,
+      });
+    }
+  }
+  for (const fi of L.fish) {
+    const c = FISH_COLORS[
+      Math.floor(fi.hue * FISH_COLORS.length) % FISH_COLORS.length
+    ] as THREE.Color;
+    for (const v of FISH_SHAPE) {
+      (per[fi.band] as V[]).push({
+        local: v,
+        base: [fi.x, fi.y, fi.z],
+        move: [fi.ux, fi.uz, fi.a, fi.b],
+        misc: [FISH, fi.speed, fi.phase, fi.jump],
+        color: c,
+      });
+    }
+  }
+  for (const g of L.grazers) {
+    const fox = g.kind === "fox";
+    const pal = fox ? FOX : DEER;
+    for (const [v, part] of grazerShape(fox)) {
+      (per[g.band] as V[]).push({
+        local: v,
+        base: [g.x, g.y, g.z],
+        move: [g.ux, g.uz, g.length, g.speed],
+        misc: [GRAZER, g.phase, HEAD_X * (fox ? 0.55 : 1), 0],
+        color: part === 0 ? pal.body : part === 1 ? pal.legs : pal.head,
+      });
+    }
+  }
+  for (const w of L.workers) {
+    const vest = WORKER.vest[
+      Math.floor(w.shade * WORKER.vest.length) % WORKER.vest.length
+    ] as THREE.Color;
+    for (const [v, part] of workerShape(w.height)) {
+      (per[w.band] as V[]).push({
+        local: v,
+        base: [w.x, w.y, w.z],
+        move: [w.ux, w.uz, w.length, w.speed],
+        misc: [WALKER, w.phase, 0, 0],
+        color:
+          part === 0
+            ? vest
+            : part === 1
+              ? WORKER.skin
+              : part === 2
+                ? WORKER.helmet
+                : WORKER.lamp,
+      });
+    }
+  }
+  for (const w of L.passengers) {
+    const c = COAT_COLORS[
+      Math.floor(w.shade * COAT_COLORS.length) % COAT_COLORS.length
+    ] as THREE.Color;
+    for (const v of walkerShape(w.height)) {
+      (per[w.band] as V[]).push({
+        local: v,
+        base: [w.x, w.y, w.z],
+        move: [w.ux, w.uz, w.length, w.speed],
+        misc: [WALKER, w.phase, 0, 0],
+        color: v[1] > w.height * 0.83 ? lit(0xd9b38c, 0.75) : c,
+      });
+    }
+  }
+  for (const w of L.carts) {
+    for (const [v, part] of cartShape()) {
+      (per[w.band] as V[]).push({
+        local: v,
+        base: [w.x, w.y, w.z],
+        move: [w.ux, w.uz, w.length, w.speed],
+        misc: [WALKER, w.phase, 0, 0],
+        color: part === 0 ? CART.tub : part === 1 ? CART.chassis : CART.lamp,
+      });
+    }
+  }
   let total = 0;
   for (const p of per) total += p.length;
   const pos = new Float32Array(total * 4 * 3);
@@ -1381,9 +2155,13 @@ function buildCritters(L: UndergroundLayout): {
 
 // --- Shaders ---------------------------------------------------------------------
 
+/** U6: cave-ins the lamps flicker for at once. */
+const CAVE_SLOTS = 4;
+
 const DECOR_VERTEX_PARS = /* glsl */ `
 attribute vec4 aAnim;
 uniform float uU5Time;
+uniform vec4 uCaveIn[${CAVE_SLOTS}];
 varying vec4 vAnim;
 varying float vGlow;
 varying float vThin;
@@ -1398,6 +2176,18 @@ if (aAnim.x > 2.5 && aAnim.x < 3.5) {
 }
 if (aAnim.x > 1.5 && aAnim.x < 2.5) {
   vGlow = 0.72 + 0.28 * (0.5 + 0.5 * sin(uU5Time * 1.3 + aAnim.y));
+}
+// U6: a lamp near a warned or falling cave-in stutters (one stutter per
+// event, the same for every lamp of it; no division anywhere).
+if (aAnim.x > 4.5 && aAnim.x < 5.5) {
+  vec3 caveW = (modelMatrix * vec4(transformed, 1.0)).xyz;
+  for (int k = 0; k < ${CAVE_SLOTS}; k++) {
+    vec4 cave = uCaveIn[k];
+    float caveNear = cave.z *
+      (1.0 - smoothstep(16.0, 36.0, distance(caveW.xz, cave.xy)));
+    float caveN = fract(sin(floor(uU5Time * 13.0) * 12.9898 + cave.w) * 43758.5453);
+    vGlow *= 1.0 - caveNear * (caveN > 0.5 ? 0.88 : 0.15);
+  }
 }
 `;
 const DECOR_FRAGMENT_PARS = /* glsl */ `
@@ -1446,14 +2236,26 @@ varying float vMote;
 const MOTES_VERTEX = /* glsl */ `
 float moteP = aMote.x;
 float moteT = uU5Time;
-transformed += aMote.y * vec3(
-  sin(moteT * 0.31 + moteP),
-  0.6 * sin(moteT * 0.47 + moteP * 1.7),
-  cos(moteT * 0.27 + moteP * 2.3));
-vMote = aMote.w > 0.5
-  // O7: max() — a GPU sin() may round below -1, and pow(<0) is NaN.
-  ? 0.25 + 0.75 * pow(max(0.5 + 0.5 * sin(moteT * 2.1 + moteP * 3.0), 0.0), 3.0)
-  : 0.8;
+float moteK = aMote.w;
+if (moteK > 1.5 && moteK < 2.5) {
+  // U6 steam: a puff rising and spreading off its leak, then gone, on a
+  // 2.4 s cycle (the motes of one leak are spread round its phase).
+  float puff = fract(moteT * 0.4167 + moteP * 0.15915);
+  transformed += aMote.y * puff * vec3(
+    0.55 * sin(moteP * 3.1), 1.0, 0.55 * cos(moteP * 2.3));
+  vMote = 0.75 * smoothstep(0.0, 0.12, puff) * (1.0 - puff);
+} else {
+  // Pollen, fireflies, mist and shaft dust drift; mist and dust slower.
+  float drift = moteK > 2.5 ? 0.45 : 1.0;
+  transformed += aMote.y * vec3(
+    sin(moteT * 0.31 * drift + moteP),
+    0.6 * sin(moteT * 0.47 * drift + moteP * 1.7),
+    cos(moteT * 0.27 * drift + moteP * 2.3));
+  vMote = moteK > 0.5 && moteK < 1.5
+    // O7: max() — a GPU sin() may round below -1, and pow(<0) is NaN.
+    ? 0.25 + 0.75 * pow(max(0.5 + 0.5 * sin(moteT * 2.1 + moteP * 3.0), 0.0), 3.0)
+    : moteK > 3.5 ? 0.9 : moteK > 2.5 ? 0.55 + 0.25 * sin(moteT * 0.8 + moteP) : 0.8;
+}
 `;
 /** After size attenuation: never a sub-pixel point (it would sparkle as it
  * drifts across pixels) — under 1.5 px it holds that size and dims instead;
@@ -1475,6 +2277,7 @@ attribute vec3 aBase;
 attribute vec4 aMove;
 attribute vec4 aMisc;
 uniform float uU5Time;
+uniform vec3 uPlane;
 `;
 const CRITTERS_VERTEX = /* glsl */ `
 vec2 u = aMove.xy;
@@ -1482,7 +2285,8 @@ vec2 left = vec2(-u.y, u.x);
 vec3 loc = transformed;
 vec3 at;
 vec2 fwd;
-if (aMisc.x < 1.5) {
+float kind = aMisc.x;
+if (kind < 1.5) {
   // A bird: an ellipse along the bore, a slow bob, flapping wings.
   float th = aMisc.z + aMisc.y * uU5Time;
   vec2 c = u * cos(th) * aMove.z + left * sin(th) * aMove.w;
@@ -1490,12 +2294,40 @@ if (aMisc.x < 1.5) {
   vec2 d = (-u * sin(th) * aMove.z + left * cos(th) * aMove.w) * sign(aMisc.y);
   fwd = normalize(d);
   loc.y += abs(loc.z) * 0.8 * sin(uU5Time * 9.0 + aMisc.z * 5.0);
-} else {
-  // A walker: there and back along the platform, bobbing per step.
+} else if (kind < 2.5 || kind > 4.5) {
+  // A walker (U6: a worker, a passenger, the cart) or a grazer: there and
+  // back along its line, bobbing per step.
   float cyc = fract(uU5Time * aMove.w / (2.0 * aMove.z) + aMisc.y);
   float along = aMove.z * (1.0 - abs(2.0 * cyc - 1.0));
   at = aBase + vec3(u.x * along, abs(sin(along * 4.5)) * 0.05, u.y * along);
   fwd = u * (cyc < 0.5 ? 1.0 : -1.0);
+  if (kind > 4.5) {
+    // A deer or a fox: the head (local x past aMisc.z) dips to graze.
+    float graze = smoothstep(0.1, 0.8, sin(uU5Time * 0.45 + aMisc.y * 6.2832));
+    loc.y -= graze * 0.9 * max(0.0, loc.x - aMisc.z);
+  }
+} else if (kind < 3.5) {
+  // U6 bat: hangs at its roost until the plane comes near, then swarms in
+  // a loop below it, wings beating — and settles back as the plane goes.
+  vec3 roost = (modelMatrix * vec4(aBase, 1.0)).xyz;
+  float stir = 1.0 - smoothstep(30.0, 70.0, distance(roost, uPlane));
+  float th = aMisc.z + aMisc.y * uU5Time;
+  vec2 c = (u * cos(th) + left * sin(th)) * aMove.z * stir;
+  at = aBase + vec3(c.x, -stir * (2.5 + 1.2 * sin(th * 1.7 + aMisc.z)), c.y);
+  fwd = (-u * sin(th) + left * cos(th)) * sign(aMisc.y);
+  loc.z *= mix(0.3, 1.0, stir);
+  loc.y += abs(loc.z) * stir * 0.8 * sin(uU5Time * 20.0 + aMisc.z * 5.0);
+} else {
+  // U6 fish: an ellipse in the lake at its surface, tail beating, and a
+  // jump now and then (5 % of a 14 s cycle).
+  float th = aMisc.z + aMisc.y * uU5Time;
+  vec2 c = u * cos(th) * aMove.z + left * sin(th) * aMove.w;
+  float jc = fract(uU5Time * 0.071 + aMisc.w);
+  float jump = jc < 0.05 ? sin(jc * 62.832) : 0.0;
+  at = aBase + vec3(c.x, jump * 0.8, c.y);
+  vec2 d = (-u * sin(th) * aMove.z + left * cos(th) * aMove.w) * sign(aMisc.y);
+  fwd = normalize(d);
+  loc.z += sin(uU5Time * 9.0 + aMisc.z * 3.0) * 0.1 * max(0.0, -loc.x);
 }
 vec2 side = vec2(-fwd.y, fwd.x);
 transformed = at + vec3(fwd.x * loc.x + side.x * loc.z, loc.y,
@@ -1510,7 +2342,7 @@ transformed = mix(transformed, at,
 function patch(
   material: THREE.Material,
   key: string,
-  time: { value: number },
+  uniforms: Record<string, THREE.IUniform>,
   vPars: string,
   vBody: string,
   fPars: string,
@@ -1518,7 +2350,9 @@ function patch(
 ): void {
   material.customProgramCacheKey = () => key;
   material.onBeforeCompile = (shader) => {
-    shader.uniforms.uU5Time = time;
+    // Every program binds every shared uniform (the time, U6's cave-ins
+    // and the plane): one object per renderer, updated in place.
+    Object.assign(shader.uniforms, uniforms);
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", `#include <common>\n${vPars}`)
       .replace("#include <begin_vertex>", `#include <begin_vertex>\n${vBody}`);
@@ -1566,11 +2400,25 @@ export class UndergroundLife {
   readonly critters: THREE.Mesh;
   private readonly buffers: UndergroundBuffers;
   private readonly time = { value: 0 };
+  /** U6: up to CAVE_SLOTS warned / falling cave-ins near the camera —
+   * render-space x, z, flicker amount (0: none), seed. A fixed-size array:
+   * never a #define, so no tier or event ever recompiles a program. */
+  private readonly caveIn = {
+    value: Array.from({ length: CAVE_SLOTS }, () => new THREE.Vector4()),
+  };
+  /** U6: the camera's plane, render space — the bats leave their roost
+   * as it passes. */
+  private readonly plane = { value: new THREE.Vector3(0, 1e5, 0) };
+  private readonly caveScratch: Vec3 = { x: 0, y: 0, z: 0 };
   private bands: number = BANDS;
 
   constructor() {
     this.buffers = buildUndergroundBuffers();
-    const time = this.time;
+    const time = {
+      uU5Time: this.time,
+      uCaveIn: this.caveIn,
+      uPlane: this.plane,
+    };
 
     const decorMat = new THREE.MeshBasicMaterial({
       vertexColors: true,
@@ -1670,10 +2518,46 @@ export class UndergroundLife {
     this.applyBands();
   }
 
-  /** Snap under the camera; advance the shader clock (world ms). */
-  update(cameraPos: Vec3, worldMs: number): void {
+  /** Snap under the camera; advance the shader clock (world ms). U6:
+   * `planePos` (render space; default the camera) stirs the bats. */
+  update(cameraPos: Vec3, worldMs: number, planePos: Vec3 = cameraPos): void {
     snapToPeriod(this.group, cameraPos);
     this.time.value = (((worldMs / 1000) % TIME_WRAP) + TIME_WRAP) % TIME_WRAP;
+    this.plane.value.set(planePos.x, planePos.y, planePos.z);
+  }
+
+  /** U6: the bores' lamps flicker over each cave-in from its warning until
+   * just after its rock is down — the nearest CAVE_SLOTS to `viewer` at
+   * render time `renderMs` (null: none). */
+  setCaveIns(
+    list: readonly CaveIn[],
+    viewer: Vec3,
+    renderMs: number | null,
+  ): void {
+    const slots = this.caveIn.value;
+    let k = 0;
+    if (renderMs !== null) {
+      for (let i = 0; i < list.length && k < CAVE_SLOTS; i++) {
+        const c = list[i] as CaveIn;
+        const ms = renderMs - c.t0;
+        if (!(ms >= 0) || ms > c.downMs + 800) continue;
+        const amount =
+          ms < CAVEIN_WARN_MS ? 0.55 + (0.45 * ms) / CAVEIN_WARN_MS : 1;
+        this.caveScratch.x = c.x;
+        this.caveScratch.z = c.z;
+        nearestImageInto(this.caveScratch, viewer, this.caveScratch);
+        (slots[k++] as THREE.Vector4).set(
+          this.caveScratch.x,
+          this.caveScratch.z,
+          amount,
+          (c.id % 97) * 1.37,
+        );
+      }
+    }
+    for (; k < CAVE_SLOTS; k++) {
+      const v = slots[k] as THREE.Vector4;
+      if (v.z !== 0) v.set(0, 0, 0, 0);
+    }
   }
 
   /** O3: a tier keeps its first `tunnelLife` bands (a drawRange prefix

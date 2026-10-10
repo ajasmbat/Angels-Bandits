@@ -18,10 +18,15 @@ import {
 import {
   BOSS_ID,
   type BossDown,
+  LAUNCH_GRACE_MS,
+  LAUNCH_SEQ_MS,
   bossCredit,
   bossSpawnClear,
   encodeFlak,
+  encodeLaunch,
   encodeRaid,
+  launchReleaseAt,
+  launchSpawnAt,
 } from "@angels-bandits/common/boss";
 import {
   type BomberSlot,
@@ -38,6 +43,11 @@ import {
   generateCity,
   mulberry32,
 } from "@angels-bandits/common/city";
+import {
+  type CaveInSlot,
+  emptyCaveInSlot,
+  encodeCaveIn,
+} from "@angels-bandits/common/city/caveins";
 import {
   type MoverField,
   generateMovers,
@@ -134,6 +144,7 @@ import {
   landBotRound,
   poseVelocity,
 } from "./bots";
+import { CAVEIN_FAST, CAVEIN_TUNING, CaveInDirector } from "./caveins";
 import {
   ChaosDirector,
   type ChaosPlane,
@@ -380,6 +391,8 @@ const roomMovers = (room: Room): MoverField => {
       boss: roomBoss(room).slot,
       // C2: and its bomber runs — the chaos director's slot, the same way.
       bombers: roomBombers(room),
+      // U6: and its cave-ins — the cave-in director's slot, the same way.
+      caveins: roomCaveIns(room),
     };
     roomMoversById.set(room.id, field);
   }
@@ -551,6 +564,32 @@ const chaosFor = (room: Room): ChaosDirector | null => {
 const noBombers: BomberSlot = emptyBomberSlot();
 const roomBombers = (room: Room): BomberSlot =>
   chaosFor(room)?.slot ?? noBombers;
+
+/**
+ * U6: each room's cave-in director (server/src/caveins.ts) — the ceiling of
+ * a deep bore coming down ahead of the planes in it. Seeded from the room's
+ * number like the other directors; null under AB_CHAOS=0 (its slot then
+ * stays empty forever). Created lazily, reset with the room's city, dropped
+ * with it.
+ */
+const caveInsByRoom = new Map<string, CaveInDirector>();
+const caveInsFor = (room: Room): CaveInDirector | null => {
+  if (!TUNINGS.chaos) return null;
+  let c = caveInsByRoom.get(room.id);
+  if (!c) {
+    const n = Number(room.id.split("-")[1] ?? 0);
+    c = new CaveInDirector(
+      (room.seed ^ Math.imul(n + 1, 0x3ca7e1d5)) >>> 0,
+      process.env.AB_CHAOS_FAST === "1" ? CAVEIN_FAST : CAVEIN_TUNING,
+    );
+    caveInsByRoom.set(room.id, c);
+  }
+  return c;
+};
+/** The room's cave-in slot (an empty one forever with chaos off). */
+const noCaveIns: CaveInSlot = emptyCaveInSlot();
+const roomCaveIns = (room: Room): CaveInSlot =>
+  caveInsFor(room)?.slot ?? noCaveIns;
 
 /** A plane (re)spawned or came back at `pos`: the missile and destruction
  * directors (and S4's turrets, and C2's budget) keep their quiet rules
@@ -884,6 +923,7 @@ function disposeRoom(room: Room): void {
   directorsByRoom.delete(room.id);
   chaosByRoom.delete(room.id);
   budgetsByRoom.delete(room.id);
+  caveInsByRoom.delete(room.id);
 }
 
 const sanitizeName = (raw: unknown): string => {
@@ -1014,6 +1054,7 @@ function handleJoin(
     director: directorFor(room).pending().map(encodeDirectorEvent),
     boss: roomBoss(room).state(now),
     ...(chaosFor(room) && { chaos: chaosFor(room)?.state(now) }),
+    ...(caveInsFor(room) && { caveIns: caveInsFor(room)?.state(now) }),
   };
   ws.send(JSON.stringify(welcome));
   sendToRoom(room, { type: "playerJoined", player: { id, name } }, id);
@@ -1192,6 +1233,7 @@ function handleLeave(id: string): void {
     bossByRoom.get(room.id)?.forget(id);
     botsByRoom.get(room.id)?.forgetHuman(id);
     budgetsByRoom.get(room.id)?.forget(id);
+    caveInsByRoom.get(room.id)?.forget(id); // U6
     sendToRoom(room, { type: "playerLeft", id });
     // D2: the last human out takes the damage with them (see breakable) —
     // D3: and the collapses, in the same reset.
@@ -1203,6 +1245,7 @@ function handleLeave(id: string): void {
       directorsByRoom.get(room.id)?.reset();
       chaosByRoom.get(room.id)?.reset();
       budgetsByRoom.get(room.id)?.reset();
+      caveInsByRoom.get(room.id)?.reset(); // U6
     }
     // Refill the vacated seat (or wind the bots down if the room is done);
     // a room the last member just left is already gone — free its state.
@@ -1567,11 +1610,31 @@ function issueRespawns(due: string[], now: number): void {
     if (room.members.get(id)?.isBot) {
       // Bots respawn down in a street (B1); humans keep the high spawn.
       const bots = botsFor(room);
-      spawn = pickBotRespawn(enemies, (pos, yaw) =>
-        bots.spawnClear(pos, yaw, now),
-      );
-      combat.respawned(id, now);
-      bots.respawn(id, spawn);
+      // S9: ...unless the boss carrier is launching this one.
+      const boss = roomBoss(room);
+      const launch = boss.launchOf(id);
+      const raid = boss.slot.raid;
+      if (launch) {
+        const release = launchReleaseAt(launch);
+        // Planned to release on the respawn time: at most a tick to wait.
+        if (now < release && boss.activeRaid(now)) continue;
+        boss.released(id);
+      }
+      if (launch && raid?.id === launch.raid && boss.activeRaid(now)) {
+        const sp = launchSpawnAt(raid, launch);
+        spawn = { pos: sp.pos, yaw: sp.yaw, speed: sp.speed };
+        combat.respawned(id, now);
+        bots.respawn(id, spawn, {
+          pitch: sp.pitch,
+          until: now + (LAUNCH_GRACE_MS[launch.kind] as number),
+        });
+      } else {
+        spawn = pickBotRespawn(enemies, (pos, yaw) =>
+          bots.spawnClear(pos, yaw, now),
+        );
+        combat.respawned(id, now);
+        bots.respawn(id, spawn);
+      }
     } else {
       spawn = pickRespawn(
         enemies,
@@ -1904,6 +1967,33 @@ function tickBoss(room: Room, now: number): void {
       if (event) sendToRoom(room, { type: "cityEvent", event });
     }
   }
+  // S9: a bot whose kill-cam is about to end comes back from the carrier —
+  // its launch timed to release on its respawn time, its release run
+  // cleared like any bot spawn (launchClear).
+  if (boss.activeRaid(now)) {
+    const bots = botsFor(room);
+    for (const member of room.members.values()) {
+      if (!member.isBot || combat.isAlive(member.id)) continue;
+      const respawnAt = combat.respawnAtOf(member.id);
+      if (!(respawnAt - now <= Math.max(...LAUNCH_SEQ_MS))) continue;
+      const l = boss.planLaunch(member.id, respawnAt, now, (raid, l) => {
+        const sp = launchSpawnAt(raid, l);
+        return bots.launchClear(
+          { pos: sp.pos, yaw: sp.yaw, speed: sp.speed },
+          sp.pitch,
+          LAUNCH_GRACE_MS[l.kind] as number,
+          launchReleaseAt(l),
+        );
+      });
+      if (l) {
+        sendToRoom(room, {
+          type: "bossLaunch",
+          l: encodeLaunch(l),
+          bot: member.id,
+        });
+      }
+    }
+  }
   if (boss.takeHpChanged() && boss.slot.raid) {
     sendToRoom(room, { type: "bossHp", id: boss.slot.raid.id, hp: boss.hp });
   }
@@ -2037,24 +2127,7 @@ function tickChaos(room: Room, now: number): void {
   const rc = breakable(room);
   const budget = budgetFor(room);
   if (!chaos || !rc || !budget) return;
-  const planes: ChaosPlane[] = [];
-  for (const member of room.members.values()) {
-    const pose = memberPose(room, member.id);
-    if (!pose) continue;
-    const age = poseAgeOf(member.id, now) / 1000;
-    const v = velocityOf(room, member.id, pose);
-    planes.push({
-      id: member.id,
-      pos: canonicalize({
-        x: pose.pos.x + v.x * age,
-        y: pose.pos.y + v.y * age,
-        z: pose.pos.z + v.z * age,
-      }),
-      vel: v,
-      human: !member.isBot,
-      prot: combat.isProtected(member.id, now),
-    });
-  }
+  const planes = chaosPlanes(room, now);
   const rm = missilesFor(room);
   const out = chaos.tick(now, planes, {
     city: rc,
@@ -2086,6 +2159,39 @@ function tickChaos(room: Room, now: number): void {
       off: encodeChunkIds([...out.firesOff].sort((a, b) => a - b)),
     });
   }
+}
+
+/** The room's planes as the C2 and U6 directors see them this tick:
+ * living, posed, extrapolated to `now`. */
+function chaosPlanes(room: Room, now: number): ChaosPlane[] {
+  const planes: ChaosPlane[] = [];
+  for (const member of room.members.values()) {
+    const pose = memberPose(room, member.id);
+    if (!pose) continue;
+    const age = poseAgeOf(member.id, now) / 1000;
+    const v = velocityOf(room, member.id, pose);
+    planes.push({
+      id: member.id,
+      pos: canonicalize({
+        x: pose.pos.x + v.x * age,
+        y: pose.pos.y + v.y * age,
+        z: pose.pos.z + v.z * age,
+      }),
+      vel: v,
+      human: !member.isBot,
+      prot: combat.isProtected(member.id, now),
+    });
+  }
+  return planes;
+}
+
+/** U6: the room's cave-ins this tick — only while its city is live (see
+ * quiet), like all chaos: each new one goes out as one `caveIn`. */
+function tickCaveIns(room: Room, now: number): void {
+  const director = caveInsFor(room);
+  if (!director || quiet(room)) return;
+  const out = director.tick(now, chaosPlanes(room, now), budgetFor(room));
+  for (const e of out) sendToRoom(room, { type: "caveIn", c: encodeCaveIn(e) });
 }
 
 /** C2: what a bomber line must clear besides roofs — the crane hubs. */
@@ -2320,6 +2426,7 @@ function tick(): void {
     landWrecks(room, time); // D4: before the batch — its chunks ride along
     tickMissiles(room, time);
     tickChaos(room, time); // C2: before the batch — quakes' and fires' chunks
+    tickCaveIns(room, time); // U6
     tickBoss(room, time); // S4: before the batch — a landing's chunks ride it
     // D5: the director fires what is due (a gas main's chunks join the
     // batch; a demolition's record goes out after it) and warns what is next.

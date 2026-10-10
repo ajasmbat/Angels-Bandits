@@ -75,6 +75,7 @@ import {
 import { type DirectorEvent, EVENT_GAS } from "@angels-bandits/common/director";
 import {
   type FlightState,
+  bankPitchMult,
   createFlightState,
   handlingRates,
   realRoll,
@@ -224,12 +225,15 @@ import {
   aimError,
   aimView,
   angleBetween,
+  createBankPull,
   createInstructor,
+  instructorBankPull,
   instructorInput,
 } from "./game/instructor";
 import { speedFov } from "./game/jet-camera";
 import { magnetizeVelocity } from "./game/magnetism";
 import { MissileFeed, MissileShake } from "./game/missile-feed";
+import { createPullCue, stepPullCue } from "./game/pull-feel";
 import {
   type QaChaosSpec,
   type QaChaosStage,
@@ -252,6 +256,13 @@ import {
   stageBoss,
 } from "./game/qa-spectacle";
 import { caveInShakeAmount, quakeShakeAmount } from "./game/quake";
+import {
+  createRollControl,
+  defaultRollLevel,
+  effectiveRollLevel,
+  resetRollControl,
+  stepRollControl,
+} from "./game/roll-control";
 import { SessionStats } from "./game/session-stats";
 import { resetTuning, tuning } from "./game/tuning";
 import { wreckCamView } from "./game/wreck-cam";
@@ -264,6 +275,7 @@ import {
   zoomSteer,
 } from "./game/zoom";
 import { FlightLab } from "./lab/lab";
+import { FlightMeter } from "./lab/meter";
 import { buildLabRoutes } from "./lab/routes";
 import { GameSocket } from "./net/socket";
 import { Airliners } from "./render/airliners";
@@ -456,6 +468,7 @@ import {
   type Settings,
   type SettingsStore,
   autopilotInput,
+  cameraRollBlend,
   loadSettings,
   musicGain,
   scaleLimits,
@@ -588,6 +601,9 @@ const settingsStore = ((): SettingsStore | undefined => {
   }
 })();
 let settings = loadSettings(settingsStore);
+// F10: the CAMERA ROLL setting rides in the live tuning (the camera reads
+// it there; in a lab room the lab's slider owns it).
+if (!labMode) tuning.cameraRoll = cameraRollBlend(settings.cameraRoll);
 /** O3's scaler limits under a tier and thermal level, with the player's
  * resolution scale (M6) on top. The one place the scaler's limits are made. */
 const limitsFor = (tier: QualityTier): ResolutionLimits =>
@@ -979,6 +995,19 @@ let assistOn = settings.assist;
 let feelTuning = FEEL_TUNING[settings.feel];
 const effortless = createEffortless();
 const effOut = createEffortlessOut();
+// F10 roll control (game/roll-control.ts): A/D/Q/E and the touch roll
+// buttons, the snap roll, bank ownership and the ROLL AUTO-LEVEL setting
+// (null = the device's default) — and the instructor's own bank-and-pull.
+const rollCtl = createRollControl();
+const bankPull = createBankPull();
+let rollLevelMode = settings.rollLevel ?? defaultRollLevel(isTouch());
+/** F10: g pulled, measured off the flown path (the lab meter's maths) —
+ * the HUD's g-meter and the hard-pull creak read it. */
+const gMeter = new FlightMeter();
+const pullCue = createPullCue();
+/** Bank past which the corner auto-slow stands down, |sin roll| (60°):
+ * on a wing the pull, not the turn input, is the turn it can't plan. */
+const CORNER_BANK_OUT = Math.sin((60 * Math.PI) / 180);
 const effWorld: EffortlessWorld = {
   buildings: city.cityBuildings,
   index: city.cityIndex,
@@ -1672,7 +1701,7 @@ chase.solid = (p, r) =>
     moverField,
     chaseMoversMs,
   );
-// Hold-E free-look: pure client camera state, never streamed (B2).
+// Hold-C free-look: pure client camera state, never streamed (B2).
 let freelook = createFreeLook();
 // Hold-right-click aim zoom: same deal — display + input shaping only.
 let zoom = createZoom();
@@ -1827,6 +1856,9 @@ function resetAssist(): void {
   holeAssist.pitch = 0;
   resetHoleSave(holeSave); // H3: and no save mid-slide
   resetEffortless(effortless); // F9: and no idle, no guard escape
+  resetRollControl(rollCtl); // F10: no ramp, snap or bank carried over
+  bankPull.engaged = false;
+  gMeter.reset();
 }
 
 /** S3: drop the local run (death, respawn, resume) — the server drops its
@@ -1889,6 +1921,7 @@ function enterDeath(killerId: string | null, cause: DeathMsg["cause"]): void {
   instructor = createInstructor();
   resetAssist();
   hud.setFreeLook(false);
+  hud.setG(1); // F10: no g-meter over the kill-cam
   // F7: a death mid-loop leaves the chase up rolled; the kill-cam's lookAt
   // frames the killer (or wreck) upright.
   camera.up.set(0, 1, 0);
@@ -3167,6 +3200,14 @@ const settingsPanel = new SettingsPanel(
     setFeel: (feel) => {
       feelTuning = labMode ? feelFromTuning(tuning) : FEEL_TUNING[feel];
     },
+    rollLevel: () => rollLevelMode,
+    setRollLevel: (mode) => {
+      rollLevelMode = mode;
+    },
+    // FL1: in the lab the panel's tuning owns the camera roll.
+    setCameraRoll: (c) => {
+      if (!labMode) tuning.cameraRoll = cameraRollBlend(c);
+    },
     setRadioVoice: (on) => {
       saveRadioVoice(on);
       paintRadioToggle(on);
@@ -4359,6 +4400,7 @@ const frame = (now: number): void => {
     aimMode = input.aimMode();
     instructor = createInstructor();
     resetEffortless(effortless);
+    bankPull.engaged = false;
     // Changed on the settings screen: toasted when it closes.
     if (!settingsOpen) hud.showAimMode(aimMode, isTouch());
   }
@@ -4418,6 +4460,13 @@ const frame = (now: number): void => {
     let intentTurn = 0;
     let intentPitch = 0;
     const rates = handlingRates(flight.speed, boost.active, tuning);
+    // F10: on a wing the pull bites harder (stepFlight's bankPitchMult) —
+    // the instructor and the assist normalise by the rate it really gets.
+    rates.pitchRate *= bankPitchMult(roll, tuning);
+    /** The pilot's own roll keys (A/D, Q/E, the touch buttons). */
+    const rollKeys = command.roll;
+    /** Instructor only: the rays the F10 bank-and-pull reads. */
+    let bankView: { aimDir: Vec3; pipperDir: Vec3 } | null = null;
     /** Instructor only: this frame's aim error, view latch and reframing. */
     let err: AimError = { yaw: 0, pitch: 0 };
     let latch: AimError = { yaw: 0, pitch: 0 };
@@ -4435,6 +4484,8 @@ const frame = (now: number): void => {
       command = autopilotInput(flight.pitch, flight.pos.y, roll);
       instructor = createInstructor();
       resetEffortless(effortless);
+      resetRollControl(rollCtl);
+      bankPull.engaged = false;
     } else if (instructorMode) {
       // The cursor is the aim point: fly the pipper onto it. The view is the
       // un-orbited chase frame at THIS frame's (already stepped) zoom, with
@@ -4449,6 +4500,7 @@ const frame = (now: number): void => {
         false;
       const cursor = input.cursorNdc();
       const view = aimView(flight, aimFrame, aimFov, camera.aspect, cursor);
+      bankView = view;
       // H2: where the pilot means to go — from the PLANE to the world point
       // the cursor marks ASSIST_AIM_RANGE out (the chase eye sits ~10° off
       // the gun line, so the eye ray's own angle would read misaligned).
@@ -4515,17 +4567,21 @@ const frame = (now: number): void => {
     // reversed inverted, about the body's up at knife-edge — so the intent
     // the manager plans a world-frame turn for is signed by cos(real roll).
     // F9: with assist on it plans as much turn as the pilot is aiming.
+    // F10: past 60° of bank the turn is the pull, which the manager can't
+    // plan — it stands down, its cap released at its own capRiseRate.
     cornerCap = stepCornerCap(
       cornerCap,
-      cornerSpeed(
-        flight,
-        cornerWorld,
-        intentTurn * Math.cos(roll),
-        renderMs,
-        assistOn
-          ? arcSweep(flight, instructorMode ? assistDir : null)
-          : undefined,
-      ),
+      Math.abs(Math.sin(roll)) > CORNER_BANK_OUT
+        ? tuning.maxSpeed
+        : cornerSpeed(
+            flight,
+            cornerWorld,
+            intentTurn * Math.cos(roll),
+            renderMs,
+            assistOn
+              ? arcSweep(flight, instructorMode ? assistDir : null)
+              : undefined,
+          ),
       dt,
     );
     // F9 effortless assist: auto-level, coordinated turns, the ground floor
@@ -4571,6 +4627,30 @@ const frame = (now: number): void => {
     if (effortless.weight > 0 && anchored && !touchAiming) {
       touchControls?.followNose();
     }
+    // F10: roll-control owns every wing-levelling now (the pilot's bank is
+    // held, or auto-levelled by the setting; anyone else's is levelled), so
+    // F9's idle roll never reaches the stick.
+    effOut.roll = 0;
+    // F10 bank-and-pull: a target far off the nose is reached by rolling
+    // toward it and pulling — never while an assist owns the line.
+    const bankAuto =
+      bankView === null
+        ? null
+        : instructorBankPull(
+            bankPull,
+            flight,
+            bankView.aimDir,
+            bankView.pipperDir,
+            effOut.pitch > 0 ||
+              effortless.guard >= 0 ||
+              effOut.aimYaw !== 0 ||
+              effOut.aimPitch !== 0 ||
+              cornerCap < tuning.maxSpeed ||
+              holeAssist.yaw !== 0 ||
+              holeAssist.pitch !== 0 ||
+              holeSaveActive(holeSave),
+          );
+    if (bankView === null) bankPull.engaged = false;
     if (instructorMode) {
       // The hole assist and F9's gentle part bias the instructor's error
       // (+yaw is a right turn for the hole assist, i.e. less of the leftward
@@ -4626,6 +4706,22 @@ const frame = (now: number): void => {
         command,
       );
     }
+    if (!autopilot) {
+      command = {
+        ...command,
+        roll: stepRollControl(
+          rollCtl,
+          {
+            key: rollKeys,
+            auto: bankAuto,
+            mode: effectiveRollLevel(rollLevelMode),
+            roll,
+            pitch: flight.pitch,
+          },
+          dt,
+        ),
+      };
+    }
     const shaped = {
       ...shapeInput(command, { steer }),
       boost: boost.active,
@@ -4634,6 +4730,10 @@ const frame = (now: number): void => {
     leadYawRate =
       -shaped.turn * handlingRates(flight.speed, boost.active, tuning).turnRate;
     flight = stepFlight(flight, shaped, dt, tuning);
+    // F10: g pulled, off the flown path — the g-meter and the creak.
+    gMeter.step(flight, dt);
+    hud.setG(gMeter.g);
+    if (stepPullCue(pullCue, gMeter.g)) audio.hardPull(gMeter.g, now);
     // Own control surfaces follow what the stick is commanding (F3).
     ownControls = inputControls(shaped, flight);
     // Hold the post-boost tail to the wall-clock envelope the server checks

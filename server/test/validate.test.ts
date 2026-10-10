@@ -11,6 +11,7 @@ import {
   stepFlight,
 } from "@angels-bandits/common/flight";
 import type { Pose } from "@angels-bandits/common/protocol";
+import { DEFAULT_TUNING } from "@angels-bandits/common/tuning";
 import { describe, expect, it } from "vitest";
 import { validatePose } from "../src/validate";
 
@@ -134,15 +135,16 @@ function sortie(): { poses: Pose[]; inverted: boolean[] } {
   const pull = { ...N, pitch: 1 };
   const roll = { ...N, roll: 1 };
   // Frames of each input at 60 Hz: a loop is ~6.3 s of full pull (PITCH_RATE
-  // 1 rad/s), a half roll 1.25 s (ROLL_RATE 2.5 rad/s).
+  // 1 rad/s), a half roll π / the player's roll rate (F10: ~0.57 s).
+  const half = Math.round((Math.PI / DEFAULT_TUNING.rollRate) * 60);
   const script: [FlightInput, number][] = [
     [N, 30],
     [pull, 378], // loop
-    [roll, 151], // 360° roll
+    [roll, 2 * half], // 360° roll
     [pull, 189], // Immelmann: half loop up…
-    [roll, 75], //  …half roll upright
+    [roll, half], //  …half roll upright
     [N, 30],
-    [roll, 75], // split-S: half roll inverted…
+    [roll, half], // split-S: half roll inverted…
     [pull, 189], // …half loop down
     [N, 30],
   ];
@@ -204,5 +206,76 @@ describe("validatePose: F7 aerobatics", () => {
     expect(verdict.pose).toBe(prev);
     // The honest next tick is two ticks from the pose on record: accepted.
     expect(validatePose(verdict.pose, poses[k + 1], 2 * DT).ok).toBe(true);
+  });
+});
+
+// F10: knife-edge flight and bank-and-pull sharp turns — the new envelope,
+// streamed exactly like the sortie above (the shared flight step at 60 Hz,
+// every third frame sent). The pull on a wing turns at ~2.2 rad/s, and a
+// slow plane on its side sinks (on pos.y, like the mush): every tick is
+// still a legal claim, while an impossible one still is not.
+
+/** Roll onto the right wing, a 2 s full pull (well past 180° of turn),
+ * then — throttled back, slow — 4 s on the wing, sinking. */
+function knifeSortie(): { poses: Pose[]; f: FlightState } {
+  const N: FlightInput = { pitch: 0, turn: 0, roll: 0, throttle: 1 };
+  const quarter = Math.round((Math.PI / 2 / DEFAULT_TUNING.rollRate) * 60);
+  const script: [FlightInput, number][] = [
+    [N, 30],
+    [{ ...N, roll: -1 }, quarter], // onto the right wing
+    [{ ...N, pitch: 1 }, 120], // bank-and-pull: a sharp, flat turn
+    [{ ...N, pitch: 1, boost: true }, 60], // boost tightens it
+    [{ ...N, throttle: -1, pitch: 0.6 }, 240], // slow on the wing: sinking
+  ];
+  let f: FlightState = {
+    pos: { x: 1000, y: 300, z: 1000 },
+    yaw: 0,
+    pitch: 0,
+    roll: 0,
+    bank: 0,
+    rollRate: 0,
+    speed: MAX_SPEED,
+    targetSpeed: MAX_SPEED,
+  };
+  const poses: Pose[] = [];
+  let frame = 0;
+  for (const [input, frames] of script) {
+    for (let i = 0; i < frames; i++) {
+      f = stepFlight(f, input, 1 / 60);
+      if (++frame % 3 !== 0) continue;
+      poses.push({ pos: { ...f.pos }, quat: wireQuat(f), speed: f.speed });
+    }
+  }
+  return { poses, f };
+}
+
+describe("validatePose: F10 knife-edge and bank-and-pull", () => {
+  it("accepts every tick of a knife-edge sharp turn, boosted and slow", () => {
+    const { poses, f } = knifeSortie();
+    expect(f.speed).toBeLessThan(55); // the slow, sinking stretch was flown
+    let prev = poses[0];
+    // The boosted stretch is judged by the boost mirror's cap, as the
+    // server does while a burn is on record.
+    const boostCap = DEFAULT_TUNING.boostMaxSpeed;
+    for (const claim of poses.slice(1)) {
+      const verdict = validatePose(prev, claim, DT, boostCap);
+      expect(verdict.ok).toBe(true);
+      expect(verdict.pose.pos).toEqual(claim.pos);
+      prev = verdict.pose;
+    }
+  });
+
+  it("still rejects a teleport and an over-speed claim mid-turn", () => {
+    const { poses } = knifeSortie();
+    const k = 40; // in the pull
+    const prev = poses[k - 1];
+    const jump: Pose = {
+      ...poses[k],
+      pos: { ...poses[k].pos, z: poses[k].pos.z + 60 },
+    };
+    expect(validatePose(prev, jump, DT).ok).toBe(false);
+    const fast: Pose = { ...poses[k], speed: MAX_SPEED * 1.2 };
+    expect(validatePose(prev, fast, DT).ok).toBe(false);
+    expect(validatePose(prev, poses[k], DT).ok).toBe(true);
   });
 });

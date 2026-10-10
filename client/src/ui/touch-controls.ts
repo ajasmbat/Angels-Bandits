@@ -2,7 +2,7 @@
 // game/touch-input.ts. The thumbs drive the SAME seams the mouse and
 // keyboard do: the aim point is FlightInputSource's cursor, FIRE is the
 // guns' trigger, BOOST is the SPACE edge, ZOOM is the right button, two
-// fingers are the E free-look. No parallel flight path. Built only on a
+// fingers are the C free-look, the ⟲/⟳ pair is A/D (F10). No parallel flight path. Built only on a
 // touch device (main.ts, via M2's whenTouch); chrome lives in index.html.
 // M7: in the instructor mode the thumb steers a direction anchored in the
 // world (game/touch-aim-dir.ts), projected onto the cursor each frame by
@@ -153,6 +153,8 @@ export class TouchControls {
   private readonly throttle = byId("touch-throttle");
   private readonly knob = byId("touch-knob");
   private readonly releases: Array<() => void> = [];
+  /** F10: the roll buttons held down (+1 left, −1 right). */
+  private readonly rollHeld = new Set<number>();
 
   constructor(private readonly t: TouchTargets) {
     this.aim = createTouchAim(this.viewport());
@@ -166,6 +168,14 @@ export class TouchControls {
       holdButton(
         byId("touch-zoom"),
         (down, at) => this.zoomPress(down, at),
+        live,
+      ),
+      // F10: the roll pair — A/D's twins (roll-control.ts reads their
+      // presses exactly like keys, so a double-tap is a snap roll).
+      holdButton(byId("touch-roll-l"), (down) => this.rollPress(1, down), live),
+      holdButton(
+        byId("touch-roll-r"),
+        (down) => this.rollPress(-1, down),
         live,
       ),
     );
@@ -508,8 +518,18 @@ export class TouchControls {
     this.t.input.setTouchZoom(this.zoomLatched);
   }
 
+  /** F10: a roll button went down or up (+1 left, −1 right). The last
+   * one pressed wins while both are held. */
+  private rollPress(side: number, down: boolean): void {
+    if (down) this.rollHeld.add(side);
+    else this.rollHeld.delete(side);
+    this.t.input.setTouchRoll(down ? side : this.rollHeld.size > 0 ? -side : 0);
+  }
+
   private releaseAll(): void {
     for (const release of this.releases) release();
+    this.rollHeld.clear();
+    this.t.input.setTouchRoll(0);
     this.zoomLatched = false;
     this.t.input.setTouchZoom(false);
   }

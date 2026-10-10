@@ -10,6 +10,7 @@ import { BUILDING_MAX_HEIGHT } from "@angels-bandits/common/constants";
 import type { FlightInput } from "@angels-bandits/common/flight";
 import { FEELS, type Feel } from "../game/effortless";
 import { AUTO_THROTTLE } from "../game/flight-input";
+import { ROLL_LEVEL_MODES, type RollLevelMode } from "../game/roll-control";
 import type { ResolutionLimits } from "../render/resolution";
 
 /** localStorage key for the values below (same `ab-` prefix as the rest). */
@@ -45,6 +46,21 @@ export interface Settings {
   /** F9 FEEL preset: the instructor's loop shape and the stick's
    * authority. Orthogonal to touch's AIM SENSITIVITY (px → aim). */
   feel: Feel;
+  /** F10 ROLL AUTO-LEVEL: off / gentle / strong as the player chose, or
+   * null = the device default (off on the desktop, gentle on touch),
+   * resolved at boot and never written back. */
+  rollLevel: RollLevelMode | null;
+  /** F10 CAMERA ROLL: "level" keeps the horizon level (default);
+   * "follow" rolls the view with the plane (F7's chase camera). */
+  cameraRoll: CameraRoll;
+}
+
+export type CameraRoll = "level" | "follow";
+export const CAMERA_ROLLS: readonly CameraRoll[] = ["level", "follow"];
+
+/** The tuning's cameraRoll blend for a setting (1 = follow the plane). */
+export function cameraRollBlend(c: CameraRoll): number {
+  return c === "follow" ? 1 : 0;
 }
 
 export const DEFAULT_SETTINGS: Readonly<Settings> = {
@@ -60,6 +76,8 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = {
   autoFire: null,
   assist: true,
   feel: "normal",
+  rollLevel: null,
+  cameraRoll: "level",
 };
 
 const clamp = (v: number, lo: number, hi: number) =>
@@ -90,6 +108,12 @@ export function clampSettings(raw: unknown): Settings {
     autoFire: typeof o.autoFire === "boolean" ? o.autoFire : d.autoFire,
     assist: typeof o.assist === "boolean" ? o.assist : d.assist,
     feel: FEELS.includes(o.feel as Feel) ? (o.feel as Feel) : d.feel,
+    rollLevel: ROLL_LEVEL_MODES.includes(o.rollLevel as RollLevelMode)
+      ? (o.rollLevel as RollLevelMode)
+      : d.rollLevel,
+    cameraRoll: CAMERA_ROLLS.includes(o.cameraRoll as CameraRoll)
+      ? (o.cameraRoll as CameraRoll)
+      : d.cameraRoll,
   };
 }
 

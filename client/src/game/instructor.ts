@@ -13,6 +13,8 @@
 // converges the pipper onto it, critically damped. Neutral is "cursor on the
 // pipper", never screen centre: the chase eye looks ~10° below the gun line.
 
+import { minAltitude } from "@angels-bandits/common/city/river";
+import { groundFloor } from "@angels-bandits/common/city/tunnels";
 import {
   BULLET_RANGE,
   PITCH_RATE,
@@ -76,6 +78,7 @@ export function instructorErrorFor(
   if (a <= gain * band) return rate / gain;
   return Math.sign(rate) * (band + (a - gain * band) / steer);
 }
+const DEG_I = Math.PI / 180;
 /** Exp fade of a latched reframe offset, s (~0.6 s to 5%). */
 const LATCH_FADE = 0.2;
 /** Pipper-to-cursor angle under which the reticle reads as converged. */
@@ -230,22 +233,61 @@ export function aimView(
   ndc: { x: number; y: number },
 ): AimView {
   const fwd = flightForward(flight);
+  const aimDir = cursorRay(
+    frame.eye,
+    frame.at,
+    fovDeg,
+    aspect,
+    ndc.x,
+    ndc.y,
+    frame.up,
+  );
+  if (live.cameraRoll <= 0) levelAim(aimDir, frame);
   return {
-    aimDir: cursorRay(
-      frame.eye,
-      frame.at,
-      fovDeg,
-      aspect,
-      ndc.x,
-      ndc.y,
-      frame.up,
-    ),
+    aimDir,
     pipperDir: {
       x: fwd.x * BULLET_RANGE - frame.eye.x,
       y: fwd.y * BULLET_RANGE - frame.eye.y,
       z: fwd.z * BULLET_RANGE - frame.eye.z,
     },
   };
+}
+
+/** F10 LEVEL camera: the steepest the cursor's aim may climb or dive, rad. */
+export const LEVEL_AIM_MAX_ELEV = (80 * Math.PI) / 180;
+
+/**
+ * F10: with the horizon-locked camera (cameraRoll 0) the screen's up is
+ * always the world's, so a cursor near the top of a steep view points past
+ * the zenith — at the far side of the sky — and flying there would put the
+ * nose over the top, swing the camera round and hunt back. In LEVEL the aim
+ * ray (in place) is folded back onto the camera's own side of the zenith
+ * and held within LEVEL_AIM_MAX_ELEV of the horizon: a mouse climb settles
+ * at a steep, stable attitude instead (loops are flown with a pull on the
+ * stick, A/D + pull, or the Follow-plane camera). Continuous everywhere.
+ */
+export function levelAim(aim: Vec3, frame: { eye: Vec3; at: Vec3 }): void {
+  let hx = frame.at.x - frame.eye.x;
+  let hz = frame.at.z - frame.eye.z;
+  const hl = Math.hypot(hx, hz);
+  if (hl < 1e-9) return;
+  hx /= hl;
+  hz /= hl;
+  const along = aim.x * hx + aim.z * hz;
+  if (along < 0) {
+    aim.x -= 2 * along * hx;
+    aim.z -= 2 * along * hz;
+  }
+  const h = Math.hypot(aim.x, aim.z);
+  const elev = Math.atan2(aim.y, h);
+  if (Math.abs(elev) <= LEVEL_AIM_MAX_ELEV) return;
+  const e = Math.sign(elev) * LEVEL_AIM_MAX_ELEV;
+  const ce = Math.cos(e);
+  const kx = h > 1e-9 ? aim.x / h : hx;
+  const kz = h > 1e-9 ? aim.z / h : hz;
+  aim.x = kx * ce;
+  aim.y = Math.sin(e);
+  aim.z = kz * ce;
 }
 
 /** Turn authority (how far the turn moves the pipper, per unit of the full
@@ -425,4 +467,108 @@ export function instructorInput(
     offYaw,
     offPitch,
   };
+}
+
+// --- F10 bank-and-pull ---------------------------------------------------------
+//
+// A target far off the nose is reached the way a fighter pilot does it: roll
+// toward it, pull, roll out on arrival — not a flat yaw. The instructor
+// banks up to the tuning's instructorBankMax so the target sits above the
+// plane's own up (aimError then reads it as a pull, and the pull on a wing
+// bites harder: flight.ts bankPitchMult). Engaged past instructorBankThreshold
+// of aim error, released under BANK_EXIT (hysteresis: no hunting at the
+// edge), its bank fading out on the way so the wings come level as the nose
+// arrives; once released, roll-control.ts levels what is left (the bank was
+// never the pilot's). The roll command goes through roll-control, so the
+// pilot's own A/D always wins.
+
+/** Bank-and-pull lets go under this much aim error, rad. */
+export const BANK_EXIT = 15 * DEG_I;
+/** …and only flies with this much air under it, m above the ground (or a
+ * U4 bore's floor): down among the towers an automatic hard bank would
+ * stand the soft walls and the hole assist down (they work wings-level)
+ * for a turn the pilot never asked for. Measured on the novice pilot
+ * (novice-pilot.test.ts): low, it cost crashes; from here up it costs
+ * none. The pilot's own A/D banks anywhere. */
+export const BANK_PULL_MIN_AGL = 120;
+/** Roll rate per rad of bank error, 1/s: a crisp but damped roll-in. */
+const BANK_GAIN = 6;
+
+export interface BankPullState {
+  engaged: boolean;
+}
+
+export function createBankPull(): BankPullState {
+  return { engaged: false };
+}
+
+/**
+ * The instructor's roll command this frame (stick units, for roll-control's
+ * `auto`), or null when it is not banking. `aimDir` / `pipperDir` are
+ * aimView's rays; `standDown` is any assist that owns the line (threading a
+ * hole, the F9 guard or soft walls, the ground floor, the corner auto-slow
+ * braking for a wall) — banking hard there would switch them off and swing
+ * the pull at the ground. Under BANK_PULL_MIN_AGL it stands down too.
+ */
+export function instructorBankPull(
+  s: BankPullState,
+  flight: Pick<FlightState, "pos" | "yaw" | "pitch" | "roll" | "bank">,
+  aimDir: Vec3,
+  pipperDir: Vec3,
+  standDown: boolean,
+): number | null {
+  const max = live.instructorBankMax;
+  const { x, y, z } = flight.pos;
+  const agl = y - groundFloor(x, z, minAltitude(z));
+  if (standDown || max <= 0 || agl < BANK_PULL_MIN_AGL) {
+    s.engaged = false;
+    return null;
+  }
+  const off = angleBetween(aimDir, pipperDir);
+  const enter = Math.max(live.instructorBankThreshold, BANK_EXIT + 1e-3);
+  if (off > enter) s.engaged = true;
+  else if (off < BANK_EXIT) s.engaged = false;
+  if (!s.engaged) return null;
+
+  // The nose (the pipper ray) and the LEVEL frame around it: up = world-up
+  // squared against the nose. Steep, that frame has no direction — hold.
+  const pl = Math.hypot(pipperDir.x, pipperDir.y, pipperDir.z) || 1;
+  const nx = pipperDir.x / pl;
+  const ny = pipperDir.y / pl;
+  const nz = pipperDir.z / pl;
+  let ux = -ny * nx;
+  let uy = 1 - ny * ny;
+  let uz = -ny * nz;
+  const ul = Math.hypot(ux, uy, uz);
+  if (ul < 0.2) return 0;
+  ux /= ul;
+  uy /= ul;
+  uz /= ul;
+  // right = nose × up.
+  const rx = ny * uz - nz * uy;
+  const ry = nz * ux - nx * uz;
+  const rz = nx * uy - ny * ux;
+  // Where the target sits round the nose, from level-up toward right.
+  const beta = Math.atan2(
+    aimDir.x * rx + aimDir.y * ry + aimDir.z * rz,
+    aimDir.x * ux + aimDir.y * uy + aimDir.z * uz,
+  );
+  // Bank so the plane's up points at it (+roll = left wing down, i.e. up
+  // toward −right), at most `max`; a target behind-below (|β| → π) fades
+  // back to no bank — that one is a push, not a split-S — so the command
+  // is continuous all round.
+  const a = Math.abs(beta);
+  const bank =
+    a <= max
+      ? -beta
+      : -Math.sign(beta) * max * Math.max(0, (Math.PI - a) / (Math.PI - max));
+  // The bank fades out as the nose arrives: level by BANK_EXIT.
+  const w = Math.min(1, Math.max(0, (off - BANK_EXIT) / (enter - BANK_EXIT)));
+  const want = bank * w;
+  const err = want - realRoll(flight);
+  const e = Math.atan2(Math.sin(err), Math.cos(err));
+  return Math.max(
+    -1,
+    Math.min(1, (e * BANK_GAIN) / Math.max(1e-6, live.rollRate)),
+  );
 }

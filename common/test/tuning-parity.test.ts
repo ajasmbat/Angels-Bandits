@@ -10,6 +10,14 @@
 // the bots' pitch envelope, boost and the post-boost tail, the corner cap's
 // airbrake, dive fade, climb bleed and the soft ceiling — at several frame
 // rates and with jittered steps.
+//
+// F10 changed the PLAYER's roll on purpose (fast roll, a held bank,
+// bank-and-pull, knife-edge sink), so DEFAULT_TUNING — what the client and
+// any caller that omits the tuning fly — now matches main only where the
+// airframe never rolls: on every scenario that stays on the wings-level
+// Euler fast path (or the bots' envelope) it must still be bit-equal. The
+// pre-F10 model lives on as BOT_TUNING, which the bots fly (server/src/
+// bots.ts botStep): it must match main on EVERY scenario.
 
 import { mulberry32 } from "@angels-bandits/common/city";
 import {
@@ -24,12 +32,13 @@ import {
   createFlightState,
   handlingRates,
   pitchRadius,
+  realRoll,
   speedForRadius,
   stepFlight,
   turnRadius,
   turnRateAt,
 } from "@angels-bandits/common/flight";
-import { DEFAULT_TUNING } from "@angels-bandits/common/tuning";
+import { BOT_TUNING, DEFAULT_TUNING } from "@angels-bandits/common/tuning";
 import { describe, expect, it } from "vitest";
 import * as legacy from "./fixtures/flight-legacy";
 
@@ -192,18 +201,43 @@ function firstDiff(a: FlightState, b: FlightState): string | null {
   return null;
 }
 
-describe("FL1 tuning parity: DEFAULT_TUNING flies exactly as main", () => {
+/** Main's run of `sc` never left the wings-level fast path: no A/D, the
+ * real roll exactly 0 and the pitch inside the envelope at every step (or
+ * the bots' clamped envelope). Measured on main's own trajectory. */
+function staysLevel(sc: { start: FlightState; steps: Step[] }): boolean {
+  let s = sc.start;
+  for (const { input, dt } of sc.steps) {
+    if (input.pitchLimit === undefined && input.roll !== 0) return false;
+    s = legacy.stepFlight(s, input, dt);
+    if (realRoll(s) !== 0) return false;
+    if (input.pitchLimit === undefined && Math.abs(s.pitch) > PITCH_LIMIT) {
+      return false;
+    }
+  }
+  return true;
+}
+
+describe("FL1 tuning parity: the pre-F10 model flies exactly as main", () => {
+  let level = 0;
   for (const sc of SCENARIOS) {
     it(sc.name, () => {
+      // F10: DEFAULT_TUNING only where the airframe never rolls.
+      const checkDefault = staysLevel(sc);
+      if (checkDefault) level++;
       let old = sc.start;
+      let bots = sc.start;
       let omitted = sc.start;
       let passed = sc.start;
       for (let i = 0; i < sc.steps.length; i++) {
         const { input, dt } = sc.steps[i] as Step;
         old = legacy.stepFlight(old, input, dt);
-        omitted = stepFlight(omitted, input, dt);
-        passed = stepFlight(passed, input, dt, DEFAULT_TUNING);
-        const d = firstDiff(old, omitted) ?? firstDiff(old, passed);
+        bots = stepFlight(bots, input, dt, BOT_TUNING);
+        let d = firstDiff(old, bots);
+        if (checkDefault) {
+          omitted = stepFlight(omitted, input, dt);
+          passed = stepFlight(passed, input, dt, DEFAULT_TUNING);
+          d = d ?? firstDiff(old, omitted) ?? firstDiff(old, passed);
+        }
         if (d !== null) {
           expect.fail(`${sc.name}: ${d} differs at step ${i}`);
         }
@@ -212,6 +246,12 @@ describe("FL1 tuning parity: DEFAULT_TUNING flies exactly as main", () => {
       expect(old.pos).not.toEqual(sc.start.pos);
     });
   }
+
+  it("DEFAULT_TUNING was held to main on the level scenarios", () => {
+    // level + throttle, turns, the bots' envelope and the jittered bot at
+    // every frame rate, at least.
+    expect(level).toBeGreaterThanOrEqual(3 * FRAME_RATES.length + 1);
+  });
 
   it("the derived helpers agree at every speed", () => {
     for (let v = 0; v <= 200; v += 0.37) {

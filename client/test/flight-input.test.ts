@@ -86,7 +86,7 @@ describe("right-button aim hold", () => {
   it("still clears held keys on blur (existing behaviour)", () => {
     const { win, fire } = stubWindow();
     const input = new FlightInputSource(win);
-    fire("keydown", { code: "KeyE" });
+    fire("keydown", { code: "KeyC" });
     expect(input.freeLookHeld()).toBe(true);
     fire("blur");
     expect(input.freeLookHeld()).toBe(false);

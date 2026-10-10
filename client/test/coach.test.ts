@@ -98,7 +98,8 @@ describe("the primer and hint copy", () => {
   it("desktop names the real keys; touch names the touch controls", () => {
     const desk = new Map(primerItems(false));
     expect(desk.get("SPACE")).toBe("boost");
-    expect(desk.get("E")).toBe("look around");
+    expect(desk.get("C")).toBe("look around");
+    expect(desk.get("A / D")).toBe("roll · double-tap: snap");
     expect(desk.get("M")).toBe("aim mode");
     const touch = primerItems(true).map(([control]) => control);
     expect(touch).toContain("FIRE");

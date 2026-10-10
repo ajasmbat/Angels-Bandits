@@ -7,6 +7,7 @@ import { mulberry32 } from "@angels-bandits/common/city";
 import { KILL_CAM_MS, MAX_HP } from "@angels-bandits/common/constants";
 import { MEDAL_LABEL, type MedalKind } from "@angels-bandits/common/medals";
 import type { DeathMsg } from "@angels-bandits/common/protocol";
+import { gMeterView } from "../game/pull-feel";
 import type { LifeCard } from "../game/session-stats";
 import { tuning } from "../game/tuning";
 
@@ -172,6 +173,11 @@ export class Hud {
   private readonly killcamCard = document.getElementById(
     "killcam-card",
   ) as HTMLDivElement;
+  /** F10: the g-meter (null on a page without it — tests). */
+  private readonly gMeter = document.getElementById(
+    "g-meter",
+  ) as HTMLDivElement | null;
+  private gText = "";
   private medalUntil = 0;
   /** P3: the kill's edge glow (built here, styled in ui/polish.css) — one
    * element, replayed by a class restart, never rebuilt. */
@@ -323,9 +329,26 @@ export class Hud {
         : `GFX ${tier.toUpperCase()}`;
   }
 
-  /** Free-look (hold E): show the hint and dim the aim chrome via CSS. */
+  /** Free-look (hold C): show the hint and dim the aim chrome via CSS. */
   setFreeLook(on: boolean): void {
     document.body.classList.toggle("freelook", on);
+  }
+
+  /** F10: the g-meter — hidden in ordinary flight, a subtle readout at
+   * a hard pull (game/pull-feel.ts gMeterView). */
+  setG(g: number): void {
+    if (!this.gMeter) return;
+    const v = gMeterView(g);
+    if (v === null) {
+      setStyle(this.gMeter, "display", "none");
+      return;
+    }
+    if (v.text !== this.gText) {
+      this.gText = v.text;
+      this.gMeter.textContent = v.text;
+    }
+    setStyle(this.gMeter, "opacity", v.opacity.toFixed(2));
+    setStyle(this.gMeter, "display", "block");
   }
 
   /** Aim zoom (hold right-click): brighten the pipper via CSS. */

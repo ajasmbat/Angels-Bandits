@@ -17,6 +17,15 @@ describe("novice pilot, classic stick (F9)", () => {
   for (const [name, arm] of [
     ["main classic", { scheme: "classic", assist: false, feel: "sharp" }],
     ["F9 classic", { scheme: "classic", assist: true, feel: "normal" }],
+    [
+      "F10 classic",
+      {
+        scheme: "classic",
+        assist: true,
+        feel: "normal",
+        f10: { rollLevel: "off" },
+      },
+    ],
   ] as const) {
     it(
       `flies the ${name} arm`,
@@ -34,5 +43,12 @@ describe("novice pilot, classic stick (F9)", () => {
     const f9 = results.get("F9 classic") as Result;
     expect(f9.crashes).toBeLessThanOrEqual(main.crashes);
     expect(perWaypoint(f9)).toBeLessThanOrEqual(perWaypoint(main));
+  });
+
+  it("F10 classic: no worse than the F9 default it ships over", () => {
+    const f9 = results.get("F9 classic") as Result;
+    const f10 = results.get("F10 classic") as Result;
+    expect(f10.crashes).toBeLessThanOrEqual(f9.crashes);
+    expect(perWaypoint(f10)).toBeLessThanOrEqual(perWaypoint(f9));
   });
 });

@@ -61,12 +61,18 @@ import {
 import {
   type FlightInput,
   type FlightState,
+  bankPitchMult,
   createFlightState,
   flightForward,
   handlingRates,
   realRoll,
   stepFlight,
 } from "@angels-bandits/common/flight";
+import {
+  BOT_TUNING,
+  DEFAULT_TUNING,
+  type FlightTuning,
+} from "@angels-bandits/common/tuning";
 import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
 import { detectCrash } from "../src/game/collision";
 import {
@@ -108,9 +114,16 @@ import {
 import {
   type AimError,
   aimError,
+  createBankPull,
   createInstructor,
+  instructorBankPull,
   instructorInput,
 } from "../src/game/instructor";
+import {
+  createRollControl,
+  resetRollControl,
+  stepRollControl,
+} from "../src/game/roll-control";
 
 const DEG = Math.PI / 180;
 const DT = 1 / 30;
@@ -378,7 +391,16 @@ export interface Arm {
   scheme: "instructor" | "classic";
   assist: boolean;
   feel: Feel;
+  /** F10's roll: the player's flight model (held bank, bank-and-pull,
+   * knife-edge lift) through main's roll control (stray roll levelled,
+   * the ROLL AUTO-LEVEL setting at `rollLevel`), the instructor's
+   * bank-and-pull and the corner auto-slow's bank stand-down. Absent: the
+   * pre-F10 roll model (BOT_TUNING's), exactly as main flew before F10. */
+  f10?: { rollLevel: "off" | "gentle" | "strong" };
 }
+
+/** F10: past this |sin roll| (60°) the corner auto-slow stands down. */
+const CORNER_BANK_OUT = Math.sin(60 * DEG);
 
 export interface Result {
   crashes: number;
@@ -403,6 +425,10 @@ function fly(arm: Arm, route: Route, seed: number): Result {
   const delaySteps = Math.round(DELAY_S / DT);
   const histYaw = new Float64Array(delaySteps + 1);
   const histPitch = new Float64Array(delaySteps + 1);
+  const f10 = arm.f10;
+  const model: Readonly<FlightTuning> = f10 ? DEFAULT_TUNING : BOT_TUNING;
+  const rollCtl = createRollControl();
+  const bankPull = createBankPull();
   let flight = createFlightState(route.start);
   let instructor = createInstructor();
   const eff = createEffortless();
@@ -432,6 +458,8 @@ function fly(arm: Arm, route: Route, seed: number): Result {
     if (flying) flight = { ...flight, speed: MAX_SPEED };
     instructor = createInstructor();
     resetEffortless(eff);
+    resetRollControl(rollCtl);
+    bankPull.engaged = false;
     cap = MAX_SPEED;
     camYaw = flight.yaw;
     camPitch = 0;
@@ -495,7 +523,8 @@ function fly(arm: Arm, route: Route, seed: number): Result {
     };
     const fwd = flightForward(flight);
     const roll = realRoll(flight);
-    const rates = handlingRates(flight.speed, false);
+    const rates = handlingRates(flight.speed, false, model);
+    if (f10) rates.pitchRate *= bankPitchMult(roll, model);
     const instructorMode = arm.scheme === "instructor";
     // H2 hole assist, with main's roll stand-down; it reads where the
     // pilot means to go (the cursor, or the nose for a stick).
@@ -536,15 +565,17 @@ function fly(arm: Arm, route: Route, seed: number): Result {
     cmd.roll = 0;
     cap = stepCornerCap(
       cap,
-      cornerSpeed(
-        flight,
-        cornerWorld,
-        cmd.turn * Math.cos(roll),
-        null,
-        arm.assist
-          ? arcSweep(flight, instructorMode ? aimDir : null)
-          : undefined,
-      ),
+      f10 && Math.abs(Math.sin(roll)) > CORNER_BANK_OUT
+        ? MAX_SPEED
+        : cornerSpeed(
+            flight,
+            cornerWorld,
+            cmd.turn * Math.cos(roll),
+            null,
+            arm.assist
+              ? arcSweep(flight, instructorMode ? aimDir : null)
+              : undefined,
+          ),
       DT,
     );
     stepEffortless(
@@ -571,6 +602,26 @@ function fly(arm: Arm, route: Route, seed: number): Result {
       DT,
       effOut,
     );
+    let bankAuto: number | null = null;
+    if (f10) {
+      // Main: roll control owns the wing levelling; the bank-and-pull.
+      effOut.roll = 0;
+      if (instructorMode) {
+        bankAuto = instructorBankPull(
+          bankPull,
+          flight,
+          aimDir,
+          fwd,
+          effOut.pitch > 0 ||
+            eff.guard >= 0 ||
+            effOut.aimYaw !== 0 ||
+            effOut.aimPitch !== 0 ||
+            cap < MAX_SPEED ||
+            assisting ||
+            holeSaveActive(save),
+        );
+      }
+    }
     if (instructorMode) {
       const biased = {
         yaw: err.yaw - assist.yaw,
@@ -597,6 +648,19 @@ function fly(arm: Arm, route: Route, seed: number): Result {
       }
       effortlessStick(effOut, feel, roll, rates.turnRate, rates.pitchRate, cmd);
     }
+    if (f10) {
+      cmd.roll = stepRollControl(
+        rollCtl,
+        {
+          key: 0,
+          auto: bankAuto,
+          mode: f10.rollLevel,
+          roll,
+          pitch: flight.pitch,
+        },
+        DT,
+      );
+    }
     const shaped: FlightInput = {
       turn: cmd.turn,
       pitch: cmd.pitch,
@@ -604,7 +668,7 @@ function fly(arm: Arm, route: Route, seed: number): Result {
       throttle: AUTO_THROTTLE,
       cornerCap: cornerCapInput(cap),
     };
-    flight = stepFlight(flight, shaped, DT);
+    flight = stepFlight(flight, shaped, DT, model);
     stepHoleSave(save, flight, shaped, DT, saveWorld, null, !instructorMode);
     t += DT;
     if (detectCrash(flight, buildings, index, undefined, null, nature)) {

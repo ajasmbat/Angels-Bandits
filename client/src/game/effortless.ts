@@ -123,9 +123,11 @@ const LEVEL_PITCH_MAX = 0.6;
 const LEVEL_ROLL_GAIN = 2;
 /** Real roll at which A/D's coordinated turn is full stick is the shared
  * lean's own full bank (the tuning's bankAngle); it fades out toward
- * knife-edge here. */
-const COORD_FADE_START = 75 * DEG;
-const COORD_FADE_END = 90 * DEG;
+ * knife-edge here. F10: gone by 80° (was 90°) — near knife-edge the turn
+ * input is rudder that drops the nose, and a plane on its side flies
+ * straight and level until the pilot pulls. */
+const COORD_FADE_START = 65 * DEG;
+const COORD_FADE_END = 80 * DEG;
 /** Ground floor: the predicted bottom of the dive must stay this far over
  * the ground, m; a full pull is reached FLOOR_BAND under that. */
 export const FLOOR_MARGIN = DEFAULT_TUNING.floorMargin;

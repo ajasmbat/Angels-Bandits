@@ -25,6 +25,7 @@
 
 import {
   CEILING_FADE,
+  KNIFE_SINK,
   MAX_VISUAL_BANK,
   MUSH_SINK,
   RESPAWN_SPEED,
@@ -187,6 +188,39 @@ export function handlingRates(
   };
 }
 
+/**
+ * F10 bank-and-pull: the pitch-rate multiplier at real roll `roll` (rad) —
+ * 1 + bankPull·sin²(roll), exactly 1 wings-level or inverted. On a wing the
+ * pull is the turn, and it bites harder. Exported so the mouse-aim
+ * instructor normalises by the pitch rate stepFlight will apply.
+ */
+export function bankPitchMult(
+  roll: number,
+  tuning: Readonly<FlightTuning> = DEFAULT_TUNING,
+): number {
+  if (roll === 0 || tuning.bankPull === 0) return 1;
+  const s = Math.sin(roll);
+  return 1 + tuning.bankPull * s * s;
+}
+
+/**
+ * F10 knife-edge sink at real roll `roll` and `speed`, m/s (≥ 0): the
+ * side-force holds the tuning's knifeLift share of the altitude at
+ * knifeSpeed and above, fading linearly to none at minSpeed, so a slow plane
+ * on its side sinks gently (at most KNIFE_SINK). 0 wings-level or inverted.
+ */
+export function knifeSink(
+  roll: number,
+  speed: number,
+  tuning: Readonly<FlightTuning> = DEFAULT_TUNING,
+): number {
+  if (roll === 0) return 0;
+  const s = Math.sin(roll);
+  const span = tuning.knifeSpeed - tuning.minSpeed;
+  const lift = span <= 0 ? 1 : clamp((speed - tuning.minSpeed) / span, 0, 1);
+  return KNIFE_SINK * s * s * (1 - tuning.knifeLift * lift);
+}
+
 /** Advance the flight model one tick. Pure: never mutates `state` or `input`. */
 export function stepFlight(
   state: FlightState,
@@ -206,9 +240,12 @@ export function stepFlight(
   // input holds the current attitude (no auto-level of pitch or yaw).
   const bank0 = state.bank ?? state.roll;
   const real0 = wrapAngle(state.roll - bank0);
-  const dYaw = -turnIn * turnRate * dt;
-  const dPitch = pitchIn * pitchRate * dt;
   const limit = input.pitchLimit;
+  // F10: on a wing the pull bites harder (exactly 1 wings-level, and for
+  // the bots' envelope, who never roll).
+  const pull = limit === undefined ? bankPitchMult(real0, tuning) : 1;
+  const dYaw = -turnIn * turnRate * dt;
+  const dPitch = pitchIn * pitchRate * pull * dt;
   let yaw: number;
   let pitch: number;
   let real: number;
@@ -290,7 +327,11 @@ export function stepFlight(
       ? targetSpeed
       : Math.min(targetSpeed, Math.max(minSpeed, cap));
   const effectiveTarget = minSpeed + (commanded - minSpeed) * power;
-  const maneuver = Math.min(1, Math.abs(turnIn) + Math.abs(pitchIn));
+  // F10: a banked pull's extra rate bleeds extra speed, so max turn can't
+  // be held for ever (exactly the old bleed when pull is 1).
+  const maneuver =
+    Math.min(1, Math.abs(turnIn) + Math.abs(pitchIn)) +
+    (pull === 1 ? 0 : Math.abs(pitchIn) * (pull - 1) * BANK_BLEED);
   // Above MAX_SPEED without boost (the post-boost tail) speed may only fall:
   // a dive can't hold boost speed. The wall-clock tail envelope itself is
   // boostSpeedCap in boost.ts, which the client clamps to every frame.
@@ -319,6 +360,9 @@ export function stepFlight(
   let climb = fwd.y * speed;
   if (climb > 0) climb *= power;
   climb -= (1 - power) * MUSH_SINK;
+  // F10 knife-edge: without enough side-force a plane on its side sinks —
+  // on pos.y, like the mush, so the nose stays where the pilot put it.
+  if (real !== 0) climb -= knifeSink(real, speed, tuning);
   const pos = canonicalize({
     x: state.pos.x + fwd.x * speed * dt,
     y: state.pos.y + climb * dt,
@@ -327,6 +371,15 @@ export function stepFlight(
 
   return { pos, yaw, pitch, roll, bank, rollRate, speed, targetSpeed };
 }
+
+/** Share of a banked pull's EXTRA rate that bleeds like a full-stick turn
+ * (F10): a 90°-bank full pull bleeds TURN_BLEED × (1 + BANK_PULL × this). */
+const BANK_BLEED = 0.5;
+
+/** F10: with the flight model's self-levelling off (the player's tuning),
+ * a released roll within this of level or inverted snaps there, rad — so a
+ * client levelling the wings lands back on the exact Euler fast path. */
+const ROLL_SNAP = 1e-3;
 
 /** Wrap an angle to (−π, π]. */
 function wrapAngle(a: number): number {
@@ -505,8 +558,10 @@ function rotateAttitude(
     const k =
       (1 - Math.exp(-tuning.rollLevelRate * dt)) * hold * Math.cos(outPitch);
     outRoll += err * k;
-    // Snap the last hair so the exact fast path takes over again.
-    if (Math.abs(target - outRoll) < 1e-6) outRoll = target === 0 ? 0 : target;
+    // Snap the last hair so the exact fast path takes over again (F10:
+    // a wider hair with self-levelling off — the client levels by input).
+    const hair = tuning.rollLevelRate === 0 && rollIn === 0 ? ROLL_SNAP : 1e-6;
+    if (Math.abs(target - outRoll) < hair) outRoll = target === 0 ? 0 : target;
     if (outRoll === -Math.PI) outRoll = Math.PI;
   }
 

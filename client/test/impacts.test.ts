@@ -142,4 +142,22 @@ describe("BlastLedger — server death events", () => {
     ledger.prune(t0 + SMOKE_LIFE_MS + 500);
     expect(ledger.burns.length).toBe(1);
   });
+
+  it("forgets a death only once no welcome can replay it — the ledger stays bounded (A2)", () => {
+    const d = new FacadeDamage();
+    const ledger = new BlastLedger(d, city, index);
+    ledger.ingest(events);
+    const snapshot = d.data.slice();
+    const last = (events.at(-1) as CityEvent).t;
+    // Burnt out, but a resume's welcome (SMOKE_LIFE_MS of replay on the
+    // server's clock, ahead of the render clock) may still carry them.
+    ledger.prune(last + SMOKE_LIFE_MS + 1000);
+    expect(ledger.burns.length).toBe(0);
+    expect(ledger.ingest(events)).toEqual([]);
+    expect(d.data).toEqual(snapshot);
+    expect(ledger.remembered).toBe(events.length);
+    // Long past any replay: forgotten.
+    ledger.prune(last + 2 * SMOKE_LIFE_MS);
+    expect(ledger.remembered).toBe(0);
+  });
 });

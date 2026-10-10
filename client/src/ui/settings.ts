@@ -10,6 +10,7 @@ import { BUILDING_MAX_HEIGHT } from "@angels-bandits/common/constants";
 import type { FlightInput } from "@angels-bandits/common/flight";
 import { FEELS, type Feel } from "../game/effortless";
 import { AUTO_THROTTLE } from "../game/flight-input";
+import { SHAKE_SETTINGS, type ShakeSetting } from "../game/juice";
 import { ROLL_LEVEL_MODES, type RollLevelMode } from "../game/roll-control";
 import type { ResolutionLimits } from "../render/resolution";
 
@@ -53,6 +54,14 @@ export interface Settings {
   /** F10 CAMERA ROLL: "level" keeps the horizon level (default);
    * "follow" rolls the view with the plane (F7's chase camera). */
   cameraRoll: CameraRoll;
+  /** J1 SCREEN SHAKE: every displayed-camera shake at full, a hint, or none. */
+  shake: ShakeSetting;
+  /** J1 REDUCED MOTION: on/off as the player chose, or null = the device's
+   * prefers-reduced-motion, resolved at boot and never written back. On,
+   * it turns slow-mo, every camera shake and the auto cameras off. */
+  reducedMotion: boolean | null;
+  /** J1 CARRIER CAM: the 2–3 s cinematic on the falling carrier. */
+  carrierCam: boolean;
 }
 
 export type CameraRoll = "level" | "follow";
@@ -78,6 +87,9 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = {
   feel: "normal",
   rollLevel: null,
   cameraRoll: "level",
+  shake: "full",
+  reducedMotion: null,
+  carrierCam: true,
 };
 
 const clamp = (v: number, lo: number, hi: number) =>
@@ -114,6 +126,12 @@ export function clampSettings(raw: unknown): Settings {
     cameraRoll: CAMERA_ROLLS.includes(o.cameraRoll as CameraRoll)
       ? (o.cameraRoll as CameraRoll)
       : d.cameraRoll,
+    shake: SHAKE_SETTINGS.includes(o.shake as ShakeSetting)
+      ? (o.shake as ShakeSetting)
+      : d.shake,
+    reducedMotion:
+      typeof o.reducedMotion === "boolean" ? o.reducedMotion : d.reducedMotion,
+    carrierCam: typeof o.carrierCam === "boolean" ? o.carrierCam : d.carrierCam,
   };
 }
 

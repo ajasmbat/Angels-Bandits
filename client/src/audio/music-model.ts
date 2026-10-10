@@ -36,7 +36,13 @@ export function barIndex(t: number): number {
 export const CALM = 0;
 export const CONTACT = 1;
 export const DOGFIGHT = 2;
-export type Intensity = typeof CALM | typeof CONTACT | typeof DOGFIGHT;
+/** J1: the carrier fight — the war-zeppelin up and close. */
+export const CARRIER = 3;
+export type Intensity =
+  | typeof CALM
+  | typeof CONTACT
+  | typeof DOGFIGHT
+  | typeof CARRIER;
 
 /** Bass and drums come in with a threat this close (3D, torus), m… */
 export const CONTACT_ENTER_M = 500;
@@ -52,6 +58,10 @@ export const DOGFIGHT_HOLD_S = 6;
 export const LOW_HP_ENTER = LOW_HP_CALLOUT;
 /** …and leaves once regen (or a pickup) has carried us clear of it. */
 export const LOW_HP_EXIT = 45;
+/** J1: the carrier fight starts with the zeppelin this close (3D, torus)… */
+export const CARRIER_ENTER_M = 700;
+/** …and lets go past this: 150 m of hysteresis, like contact's. */
+export const CARRIER_EXIT_M = 850;
 /** A calmer state applies only after this many bars of the louder one. */
 export const DEESCALATE_BARS = 2;
 
@@ -63,6 +73,11 @@ export interface MusicInputs {
   sinceCombatS: number;
   hp: number;
   alive: boolean;
+  /** J1: distance to the carrier while it is up, or null (none, or down). */
+  carrierDist?: number | null;
+  /** J1: a wave is live — its enemies are coming for us, so the score
+   * never sits at calm. */
+  waveLive?: boolean;
 }
 
 export interface MusicState {
@@ -89,10 +104,22 @@ export function targetState(
   }
   const reach = prev.intensity >= CONTACT ? CONTACT_EXIT_M : CONTACT_ENTER_M;
   const near = inp.threatDist !== null && inp.threatDist <= reach;
-  const hold = prev.intensity === DOGFIGHT ? DOGFIGHT_HOLD_S : COMBAT_ENTER_S;
+  const hold = prev.intensity >= DOGFIGHT ? DOGFIGHT_HOLD_S : COMBAT_ENTER_S;
   const fight = inp.sinceCombatS <= hold;
   const lowHp = inp.hp < (prev.lowHp ? LOW_HP_EXIT : LOW_HP_ENTER);
-  out.intensity = fight ? DOGFIGHT : near ? CONTACT : CALM;
+  const carrierReach =
+    prev.intensity === CARRIER ? CARRIER_EXIT_M : CARRIER_ENTER_M;
+  const carrier =
+    inp.carrierDist !== undefined &&
+    inp.carrierDist !== null &&
+    inp.carrierDist <= carrierReach;
+  out.intensity = carrier
+    ? CARRIER
+    : fight
+      ? DOGFIGHT
+      : near || inp.waveLive === true
+        ? CONTACT
+        : CALM;
   out.lowHp = lowHp;
   return out;
 }
@@ -198,10 +225,11 @@ export const WORST_CASE_SUM = Object.values(MUSIC_WEIGHTS).reduce(
   0,
 );
 
-const BASS = [0, 1, 1] as const;
-const DRUMS = [0, 0.7, 1] as const;
-const ARP = [0, 0, 1] as const;
-const BRIGHT = [0.25, 0.55, 1] as const;
+const BASS = [0, 1, 1, 1] as const;
+const DRUMS = [0, 0.7, 1, 1] as const;
+/** In CARRIER the arp layer's gain carries the war ostinato instead. */
+const ARP = [0, 0, 1, 1] as const;
+const BRIGHT = [0.25, 0.55, 1, 1] as const;
 /** The low-HP drop: the pad filter closes to this share. */
 const LOW_HP_DARK = 0.35;
 
@@ -216,7 +244,9 @@ export const emptyMix = (): LayerMix => ({
 
 /** Per-layer gains (0..1) for a state, written into the reused `out`.
  * Calm is the pad alone; contact adds bass and drums; the dogfight adds the
- * arpeggio and opens the pad. Low HP adds the drone and darkens the pad. */
+ * arpeggio and opens the pad; the carrier fight (J1) swaps the arpeggio for
+ * the war ostinato on the same layer — so no state ever sums past the
+ * weights. Low HP adds the drone and darkens the pad. */
 export function layerMix(s: MusicState, out: LayerMix): LayerMix {
   const i = s.intensity;
   out.pad = 1;
@@ -278,5 +308,20 @@ export function arpNote(bar: number, s: number): number {
 
 /** Hats on this 16th at this intensity? */
 export function hatOn(i: Intensity, s: number): boolean {
-  return i === DOGFIGHT || s % 2 === 0;
+  return i >= DOGFIGHT || s % 2 === 0;
+}
+
+// --- J1 war ostinato (the carrier fight) -------------------------------------
+
+/** War toms on these 16ths: a driving, off-kilter march. */
+export const WAR_TOMS = [0, 3, 6, 8, 10, 11, 14] as const;
+/** Eighth-note brass stabs as semitones over the bar's bass root an octave
+ * up; null = rest. Minor third and fifth: menace, not triumph. */
+const WAR_LINE: readonly (number | null)[] = [0, null, 0, 3, 0, null, 7, 5];
+
+/** The brass note of eighth `e` (0..7) of bar `bar`, Hz, or null. */
+export function warNote(bar: number, e: number): number | null {
+  const semis = WAR_LINE[e % WAR_LINE.length];
+  if (semis === null || semis === undefined) return null;
+  return (BASS_ROOT[chordSlot(bar)] ?? 110) * 2 * 2 ** (semis / 12);
 }

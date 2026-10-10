@@ -15,6 +15,7 @@ import { mulberry32 } from "@angels-bandits/common/city";
 import {
   BAR_S,
   BEAT_S,
+  CARRIER,
   Conductor,
   DOGFIGHT,
   EIGHTH_S,
@@ -27,6 +28,7 @@ import {
   SNARE,
   STEPS_PER_BAR,
   STEP_S,
+  WAR_TOMS,
   arpNote,
   barIndex,
   bassNote,
@@ -37,13 +39,16 @@ import {
   nextGrid,
   padChord,
   targetState,
+  warNote,
 } from "./music-model";
 import type { MixBus } from "./sound";
 
 /** A moment the score marks with a sting. `swell` is for D3/D5 building
  * collapses and the S4 sky boss's entrance. `medal` (S7) is a kill that
- * earned a medal — it plays INSTEAD of that kill's `victory`. */
-export type MusicMoment = "victory" | "drop" | "swell" | "medal";
+ * earned a medal — it plays INSTEAD of that kill's `victory`. `wave` (J1)
+ * is a wave cleared: a fanfare on the same oscillator, so it can never
+ * stack on a victory or medal sting. */
+export type MusicMoment = "victory" | "drop" | "swell" | "medal" | "wave";
 
 /** What the frame loop knows this frame. */
 export interface MusicFrame {
@@ -53,6 +58,10 @@ export interface MusicFrame {
   threatDist: number | null;
   hp: number;
   alive: boolean;
+  /** J1: distance to the carrier while it is up, or null. */
+  carrierDist: number | null;
+  /** J1: a wave is live. */
+  waveLive: boolean;
 }
 
 /** Envelope peaks inside each layer (each layer's voices sum to ≤ 1). */
@@ -63,6 +72,9 @@ const HAT_ACCENT = 0.17;
 const PAD_VOICE = 1 / 3;
 const ARP_DRY = 0.7;
 const ARP_WET = 0.3;
+/** J1 war ostinato voices inside the arp layer (they sum to ≤ 1). */
+const WAR_TOM_PEAK = 0.55;
+const WAR_BRASS_PEAK = 0.45;
 /** Pad filter cutoff from `bright` 0..1, Hz. */
 const PAD_DARK_HZ = 500;
 const PAD_BRIGHT_HZ = 2600;
@@ -89,6 +101,10 @@ interface Graph {
   arp: GainNode;
   arpOsc: OscillatorNode;
   arpEnv: GainNode;
+  tomOsc: OscillatorNode;
+  tomEnv: GainNode;
+  brassOsc: OscillatorNode[];
+  brassEnv: GainNode;
   tension: GainNode;
   winOsc: OscillatorNode;
   winEnv: GainNode;
@@ -114,6 +130,7 @@ export class Music {
     drop: 0,
     swell: 0,
     medal: 0,
+    wave: 0,
   };
   /** Last bar line scheduled, and how many nodes the graph holds (QA). */
   private lastBarAt: number | null = null;
@@ -151,6 +168,8 @@ export class Music {
         sinceCombatS: (f.nowMs - this.lastCombatMs) / 1000,
         hp: f.hp,
         alive: f.alive,
+        carrierDist: f.carrierDist,
+        waveLive: f.waveLive,
       },
       this.target,
     );
@@ -180,6 +199,7 @@ export class Music {
     if (kind === "victory") this.victory(g, at);
     else if (kind === "medal") this.medal(g, at);
     else if (kind === "drop") this.drop(g, at);
+    else if (kind === "wave") this.waveClear(g, at);
     else this.swell(g, at);
   }
 
@@ -223,7 +243,10 @@ export class Music {
     // Silent layers are not sequenced: no automation for what nobody hears.
     if (m.bass > 0) this.bassBar(g, bar, at);
     if (m.drums > 0) this.drumBar(g, s.intensity, at);
-    if (m.arp > 0) this.arpBar(g, bar, at);
+    if (m.arp > 0) {
+      if (s.intensity === CARRIER) this.warBar(g, bar, at);
+      else this.arpBar(g, bar, at);
+    }
   }
 
   /** A layer's bar-line crossfade: hold its level until the line `at`, then
@@ -253,7 +276,7 @@ export class Music {
   }
 
   private drumBar(g: Graph, intensity: Intensity, at: number): void {
-    const kicks = intensity === DOGFIGHT ? KICK_FIGHT : KICK;
+    const kicks = intensity >= DOGFIGHT ? KICK_FIGHT : KICK;
     for (const step of kicks) {
       const t = at + step * STEP_S;
       g.kickOsc.frequency.setValueAtTime(150, t);
@@ -276,6 +299,50 @@ export class Music {
       g.arpOsc.frequency.setValueAtTime(arpNote(bar, step), t);
       hit(g.arpEnv.gain, t, 1, 0.045);
     }
+  }
+
+  /** J1 carrier fight: war toms marching under brass stabs, in the arp
+   * layer's place (its gain, its weight). */
+  private warBar(g: Graph, bar: number, at: number): void {
+    for (const step of WAR_TOMS) {
+      const t = at + step * STEP_S;
+      g.tomOsc.frequency.setValueAtTime(step === 0 ? 120 : 98, t);
+      g.tomOsc.frequency.exponentialRampToValueAtTime(52, t + 0.18);
+      hit(g.tomEnv.gain, t, step === 0 || step === 8 ? 1 : 0.7, 0.12);
+    }
+    const env = g.brassEnv.gain;
+    for (let e = 0; e < 8; e++) {
+      const t = at + e * EIGHTH_S;
+      const hz = warNote(bar, e);
+      if (hz === null) {
+        env.setTargetAtTime(0, t, 0.04);
+        continue;
+      }
+      for (const [i, osc] of g.brassOsc.entries()) {
+        osc.frequency.setValueAtTime(hz * (i === 0 ? 1 : 0.5), t);
+      }
+      env.setValueAtTime(0, t);
+      env.linearRampToValueAtTime(1, t + 0.02);
+      env.setTargetAtTime(0.4, t + 0.03, 0.12);
+    }
+  }
+
+  /** J1 wave cleared: a broad rising fanfare in eighths that lands an
+   * octave up and rings, with the swell's sub impact under its first note. */
+  private waveClear(g: Graph, at: number): void {
+    const env = g.winEnv.gain;
+    env.cancelScheduledValues(at);
+    const notes = [440, 659.25, 880, 1046.5, 1318.5];
+    for (const [i, hz] of notes.entries()) {
+      const t = at + i * EIGHTH_S;
+      const last = i === notes.length - 1;
+      g.winOsc.frequency.setValueAtTime(hz, t);
+      hit(env, t, last ? 1 : 0.85, last ? 0.6 : 0.12);
+    }
+    hit(g.impactEnv.gain, at, 0.8, 0.3);
+    g.impactOsc.frequency.cancelScheduledValues(at);
+    g.impactOsc.frequency.setValueAtTime(80, at);
+    g.impactOsc.frequency.exponentialRampToValueAtTime(34, at + 0.7);
   }
 
   /** Victory: a rising A-minor run that lands on the high A and rings. */
@@ -457,6 +524,18 @@ export class Music {
     arpEnv.connect(echo).connect(feedback).connect(echo);
     echo.connect(gain(ARP_WET)).connect(arp);
 
+    // J1 war ostinato, on the arp layer's gain (the arp is silent in
+    // CARRIER, so the layer never sums past its weight): a pitch-dropping
+    // sine tom and two saws an octave apart through a dark low-pass.
+    const tomEnv = gain(0);
+    const tomOsc = tone("sine", 98);
+    tomOsc.connect(tomEnv).connect(gain(WAR_TOM_PEAK)).connect(arp);
+    const brassEnv = gain(0);
+    const brassFilter = filter("lowpass", 1100, 1.2);
+    brassFilter.connect(brassEnv).connect(gain(WAR_BRASS_PEAK)).connect(arp);
+    const brassOsc = [tone("sawtooth", 220), tone("sawtooth", 110)];
+    for (const osc of brassOsc) osc.connect(gain(0.5)).connect(brassFilter);
+
     // Tension: a minor second (E5/F5) trembling in sixteenths.
     const tension = layer();
     const tremolo = gain(0.5);
@@ -508,6 +587,10 @@ export class Music {
       arp,
       arpOsc,
       arpEnv,
+      tomOsc,
+      tomEnv,
+      brassOsc,
+      brassEnv,
       tension,
       winOsc,
       winEnv,

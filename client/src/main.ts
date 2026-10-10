@@ -18,9 +18,11 @@ import {
   type BossDown,
   type BossLaunch,
   LAUNCH_BELLY,
+  blankPose,
   bossPoseAt,
   bossPresent,
   breakUp,
+  piecePoseAt,
   piecesFalling,
   raidEnd,
   raidMaxHp,
@@ -109,6 +111,7 @@ import {
   missileImpactAt,
 } from "@angels-bandits/common/strike";
 import { feelFromTuning } from "@angels-bandits/common/tuning";
+import { WAVE_LIVE, type WaveState } from "@angels-bandits/common/waves";
 import {
   WEATHER_PHASES,
   type WeatherPhase,
@@ -125,6 +128,7 @@ import {
   type WreckParams,
   isWreckParams,
   wreckImpact,
+  wreckPosAt,
 } from "@angels-bandits/common/wreck";
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -161,10 +165,12 @@ import {
   bossInboundCallout,
   carrierLaunchCallout,
   checkInCallout,
+  comboCallout,
   flakCallout,
   hitCallout,
   incomingCallout,
   maydayCallout,
+  momentCallout,
   nearMissCallout,
   offStationCallout,
   ownKillCallout,
@@ -242,6 +248,22 @@ import {
   instructorInput,
 } from "./game/instructor";
 import { speedFov } from "./game/jet-camera";
+import {
+  CUE_MIN_ALT,
+  CamCue,
+  ExplosionShake,
+  FxClock,
+  JUICE_LABEL,
+  type MomentKind,
+  STYLE_POINTS,
+  comboLabel,
+  comboOf,
+  freshPress,
+  killPoints,
+  shakeScale,
+  slowMoFor,
+  waveCleared,
+} from "./game/juice";
 import { magnetizeVelocity } from "./game/magnetism";
 import { MissileFeed, MissileShake } from "./game/missile-feed";
 import { createPullCue, stepPullCue } from "./game/pull-feel";
@@ -472,6 +494,7 @@ import {
   showSignalLost,
   takeResumeToken,
 } from "./ui/join";
+import { JuiceHud } from "./ui/juice-hud";
 import { KillFeed } from "./ui/killfeed";
 import { LeadIndicator, SolutionTone } from "./ui/lead";
 import { EdgeMarkers } from "./ui/markers";
@@ -1273,6 +1296,7 @@ const planeFires = new PlaneFires(impacts);
 const wrecks = new Wrecks(impacts, (_w, at) => {
   explosions.explode(at, performance.now());
   audio.explosion(at, flight.pos, flight.yaw);
+  blastShake.add(wrapDistance(at, flight.pos), 1, performance.now()); // J1
 });
 scene.add(wrecks.group);
 wrecks.reset((welcome.wrecks ?? []).filter(isWreckParams));
@@ -1284,8 +1308,107 @@ const missileRenderer = new MissileRenderer(smoke, impacts);
 scene.add(missileRenderer.group);
 const missileFeed = new MissileFeed();
 const missileShake = new MissileShake();
-/** P3: the player's motion preference halves every camera shake. */
+/** P3: the player's motion preference (J1: the device default of the
+ * REDUCED MOTION setting). */
 const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+/** J1: REDUCED MOTION as it applies now — the player's pick, else the
+ * device's. On, it turns slow-mo, camera shake and the auto cameras off. */
+const reducedMotionOn = (): boolean =>
+  settings.reducedMotion ?? reducedMotion.matches;
+// J1 juice (game/juice.ts): the slow-mo FX clock, the camera cues, blast
+// shake and the HUD's combo banner, popups and streak counter.
+const fxClock = new FxClock();
+const camCue = new CamCue();
+const blastShake = new ExplosionShake();
+const juiceHud = new JuiceHud();
+/** The own kill's wreck the nudge glances at (null: none). */
+let cueWreck: WreckParams | null = null;
+/** Keys held right now, and the ones held when the live cue began — only a
+ * FRESH press skips a cue (a held throttle key never does). */
+const keysHeld = new Set<string>();
+const keysAtCue = new Set<string>();
+/** The cue's look target and the blend's scratch (no object a frame). */
+const cueTarget: Vec3 = { x: 0, y: 0, z: 0 };
+const cueImage: Vec3 = { x: 0, y: 0, z: 0 };
+const cuePose = blankPose();
+const cueFrom = new THREE.Quaternion();
+const cueLook = new THREE.Quaternion();
+/** Start a camera cue when the pilot can afford to look away. */
+function startCue(kind: "breakup" | "nudge", now: number): void {
+  if (!alive || settingsOpen || reducedMotionOn()) return;
+  if (kind === "breakup" && !settings.carrierCam) return;
+  if (flight.pos.y < CUE_MIN_ALT) return;
+  camCue.start(kind, now);
+  keysAtCue.clear();
+  for (const k of keysHeld) keysAtCue.add(k);
+}
+// Passive: the press still reaches the flight input — skipping costs nothing.
+window.addEventListener("keydown", (e) => {
+  if (
+    camCue.live(performance.now()) &&
+    freshPress(e.repeat, e.code, keysAtCue)
+  ) {
+    camCue.cancel(performance.now(), "key");
+  }
+  keysHeld.add(e.code);
+});
+window.addEventListener("keyup", (e) => {
+  keysHeld.delete(e.code);
+  keysAtCue.delete(e.code);
+});
+window.addEventListener("blur", () => keysHeld.clear());
+for (const type of ["pointerdown", "touchstart", "wheel"] as const) {
+  window.addEventListener(
+    type,
+    () => {
+      if (camCue.live(performance.now())) {
+        camCue.cancel(performance.now(), type);
+      }
+    },
+    { passive: true },
+  );
+}
+/** The live cue's target (canonical) at render time `ms`, into cueTarget;
+ * false when there is nothing to look at any more. */
+function cueTargetAt(ms: number): boolean {
+  if (camCue.kind === "breakup") {
+    const down = socket.boss.down;
+    const piece = down?.pieces[1] ?? down?.pieces[0];
+    if (!down || !piece) return false;
+    piecePoseAt(piece, down.t, piece.end, ms, cuePose);
+    cueTarget.x = cuePose.x;
+    cueTarget.y = cuePose.y;
+    cueTarget.z = cuePose.z;
+    return true;
+  }
+  if (camCue.kind === "nudge" && cueWreck !== null) {
+    wreckPosAt(cueWreck, ms, cueTarget);
+    return true;
+  }
+  return false;
+}
+/**
+ * J1: one beat of juice for the local pilot — the banner, the style-score
+ * popup, the announcer and (for the big ones) the slow-mo. The carrier-war
+ * moments come through here: "carrier" (bossDown), "wave" (the waves
+ * edge), and the hooks W2 ("bomber": an enemy shot down on its bombing
+ * run) and W3 ("aa": a rooftop nest finishing a plane we hit) call once
+ * they land.
+ */
+function juiceEvent(kind: MomentKind): void {
+  const now = performance.now();
+  juiceHud.showBanner(
+    JUICE_LABEL[kind],
+    kind === "carrier" ? "big" : "moment",
+    now,
+  );
+  juiceHud.popScore(STYLE_POINTS[kind]);
+  say(momentCallout(kind));
+  if (slowMoFor(kind)) fxClock.trigger(now);
+  if (kind === "wave") music.moment("wave");
+}
+/** The carrier war's last wave state, for the WAVE CLEARED edge. */
+let lastWaves: WaveState = { ...socket.waves };
 /** P3: last frame's attitude, for the aero whoosh's upright → inverted edge. */
 let wasInverted = false;
 /** C2: whistles sounding at once, at most (a bomb carpet must not become a
@@ -1964,6 +2087,7 @@ function applyStreaks(scores: ScoreEntry[]): void {
   streaks.clear();
   for (const e of scores) if (e.streak) streaks.set(e.id, e.streak);
   sessionStats.streak(streaks.get(socket.selfId) ?? 0);
+  juiceHud.setStreak(streaks.get(socket.selfId) ?? 0); // J1
   const card = sessionStats.card;
   if (card) hud.showLifeCard(card);
 }
@@ -2244,6 +2368,7 @@ socket.events.onDamage = (msg) => {
             ? msg.from
             : remotes.poseOf(msg.shooterId)?.pos;
       damageIndicator.hit(msg.shooterId, shooterPos, dmg, now);
+      camCue.cancel(now, "hit"); // J1: under fire, the view is the pilot's
       audio.damageThud(now);
       haptics.damage(now);
     }
@@ -2272,9 +2397,16 @@ socket.events.onDeath = (msg) => {
       ? flight.pos
       : remotes.poseOf(msg.victimId)?.pos;
   if (victimPos) {
+    const blastAt = performance.now();
     if (!wreck) {
       audio.explosion(victimPos, flight.pos, flight.yaw);
-      explosions.explode(victimPos, performance.now());
+      explosions.explode(victimPos, blastAt);
+      blastShake.add(wrapDistance(victimPos, flight.pos), 1, blastAt);
+    } else if (msg.cause === "shot") {
+      // J1: a shot-down plane bursts where it was hit, THEN falls burning —
+      // the kill reads at the instant of the kill, not at the landing.
+      explosions.explode(victimPos, blastAt, 0.6);
+      blastShake.add(wrapDistance(victimPos, flight.pos), 0.6, blastAt);
     }
     // Storm kill: the bolt comes down ON the victim (kill-cam length) with
     // an immediate hard crack — the one strike that isn't on the schedule.
@@ -2319,6 +2451,11 @@ socket.events.onDeath = (msg) => {
     hud.killConfirm(performance.now());
     haptics.kill();
     audio.killConfirm();
+    // J1: a glance at the wreck spiralling down (it is the shared path).
+    if (wreck) {
+      cueWreck = wreck;
+      startCue("nudge", performance.now());
+    }
     // The sting waits for this kill's `award` (S7): victory, or a medal's.
     sessionStats.kill();
     const card = sessionStats.card; // a posthumous kill joins its card
@@ -2326,6 +2463,7 @@ socket.events.onDeath = (msg) => {
   }
   hpBar.clear(msg.victimId); // never float a stale bar over a respawn
   if (msg.victimId === socket.selfId) {
+    camCue.cancel(performance.now(), "dead"); // J1: the kill-cam takes over
     enterDeath(msg.killerId, msg.cause);
     // S7: the life's card, built once from the server's death (a local
     // crash entered the kill-cam first without one).
@@ -2342,7 +2480,7 @@ socket.events.onDeath = (msg) => {
     radio.noteCombat(performance.now());
     say(maydayCallout(name));
   } else if (msg.killerId === socket.selfId) {
-    say(ownKillCallout(name));
+    // J1: the own kill's call waits for its `award` — a combo REPLACES it.
   } else if (msg.killerId !== null) {
     say(splashCallout(nameOf(msg.killerId), isBotOf(msg.killerId), true));
   }
@@ -2361,9 +2499,30 @@ socket.events.onAward = (msg) => {
     msg.medals.map((m) => MEDAL_LABEL[m]),
   );
   if (own && msg.victimId !== socket.selfId) {
-    music.moment(msg.medals.length > 0 ? "medal" : "victory");
+    const now = performance.now();
+    // J1: the server's kill chain is the combo — DOUBLE / TRIPLE / MULTI.
+    const combo = comboOf(msg.chain);
+    if (msg.victimId !== BOSS_ID) {
+      juiceHud.popScore(killPoints(msg.chain));
+      if (combo !== null) {
+        juiceHud.showBanner(
+          comboLabel(combo, msg.chain ?? 2),
+          combo === "double" ? "combo" : "big",
+          now,
+        );
+        say(comboCallout(combo));
+        if (alive) fxClock.trigger(now);
+      } else {
+        say(ownKillCallout(name));
+      }
+    }
+    music.moment(msg.medals.length > 0 || combo !== null ? "medal" : "victory");
+    // The banner already says DOUBLE KILL: the toast keeps the rest (the
+    // feed badge and the life card still count it).
+    const toast =
+      combo !== null ? msg.medals.filter((m) => m !== "double") : msg.medals;
+    if (toast.length > 0) hud.showMedals(toast, now);
     if (msg.medals.length > 0) {
-      hud.showMedals(msg.medals, performance.now());
       sessionStats.award(msg.medals);
       const card = sessionStats.card;
       if (card) hud.showLifeCard(card);
@@ -2409,8 +2568,27 @@ socket.events.onBossDown = (msg) => {
     mid?.p.z ?? 0,
   );
   jumbotrons.addHeadline(line.headline, line.feed);
-  say(bossEndCallout(true));
+  // J1: the carrier's death is the war's big beat — a blast where it
+  // breaks, felt across the city; CARRIER DOWN for those who brought it
+  // down (their call replaces the generic one), the break-up cam and the
+  // slow-mo for everyone flying.
+  const now = performance.now();
+  if (mid) {
+    explosions.explode(mid.p, now, 2);
+    blastShake.add(wrapDistance(mid.p, flight.pos), 2, now);
+  }
+  if (msg.dealers.some(([id]) => id === socket.selfId)) juiceEvent("carrier");
+  else {
+    say(bossEndCallout(true));
+    if (alive) fxClock.trigger(now);
+  }
+  startCue("breakup", now);
   music.moment("swell");
+};
+/** J1: the carrier war moved on — a wave cleared is the room's beat. */
+socket.events.onWaves = (state) => {
+  if (waveCleared(lastWaves, state)) juiceEvent("wave");
+  lastWaves = { ...state };
 };
 socket.events.onRespawn = (msg) => {
   // Fresh spawn, fresh trail — a rebased teleport would smear smoke 1 km.
@@ -2486,6 +2664,8 @@ function applyResume(w: WelcomeMsg): void {
   }
   lastScores = w.scores;
   applyStreaks(w.scores);
+  // J1: the war moved on during the gap — no stale WAVE CLEARED for it.
+  lastWaves = { ...socket.waves };
   refreshLeader();
   scoreboard.setScores(w.scores);
   applyCourseStandings(w.courses); // S3: boards moved on meanwhile
@@ -3200,6 +3380,20 @@ declare global {
       /** S2 QA: fire a sting by hand (`swell` stands in for the D3/D5
        * collapse and S4 boss events until they exist). */
       musicMoment: (kind: MusicMoment) => void;
+      /** J1 QA: the slow-mo FX clock, the camera cue, the shake scale and
+       * the blasts drawn — and a way to fire a beat by hand. */
+      juice: () => {
+        fxRate: number;
+        fxLagMs: number;
+        dipping: boolean;
+        cue: string | null;
+        cueWeight: number;
+        cueCancel: string | null;
+        shakeScale: number;
+        reducedMotion: boolean;
+        blasts: number;
+      };
+      juiceEvent: (kind: MomentKind) => void;
       /** A1 QA: what the city-life tier drew and holds. */
       cityLife: () => {
         drawn: number;
@@ -3423,6 +3617,16 @@ const settingsPanel = new SettingsPanel(
     setRadioVoice: (on) => {
       saveRadioVoice(on);
       paintRadioToggle(on);
+    },
+    // J1: SCREEN SHAKE, REDUCED MOTION and CARRIER CAM — read live each
+    // frame from `settings`; a cue already running stops under reduced
+    // motion or with the carrier cam switched off.
+    reducedMotion: reducedMotionOn,
+    setEffects: (next) => {
+      settings = { ...settings, ...next };
+      if (reducedMotionOn() || !settings.carrierCam) {
+        camCue.cancel(performance.now(), "settings");
+      }
     },
     setResScale: (scale) => {
       settings = { ...settings, resScale: scale };
@@ -4174,6 +4378,21 @@ window.__ab = {
   ambience: () => ambience.debug(),
   music: () => music.debug(),
   musicMoment: (kind) => music.moment(kind),
+  juice: () => {
+    const now = performance.now();
+    return {
+      fxRate: fxClock.rate,
+      fxLagMs: fxClock.lag,
+      dipping: fxClock.dipping(now),
+      cue: camCue.kind,
+      cueWeight: camCue.weight(now),
+      cueCancel: camCue.cancelReason,
+      shakeScale: shakeScale(settings.shake, reducedMotionOn()),
+      reducedMotion: reducedMotionOn(),
+      blasts: explosions.liveCount,
+    };
+  },
+  juiceEvent: (kind) => juiceEvent(kind),
   cityLife: () => ({
     drawn: cityLife.count,
     statics: cityLife.staticDrawn,
@@ -4646,6 +4865,15 @@ const frame = (now: number): void => {
   const rawMs = now - last;
   const dt = Math.min(rawMs / 1000, 0.05); // clamp hitches, keep sim stable
   last = now;
+  // J1 slow-mo: the FX clock only — stepFlight, the render clock and the
+  // server all keep `dt` and wall time. Off while dead (the kill-cam has
+  // its own beat), on the QA pinned clock, and under reduced motion.
+  fxClock.setEnabled(alive && qaWorld === null && !reducedMotionOn());
+  const fxDt = dt * fxClock.step(now, dt * 1000);
+  explosions.lag = fxClock.lag;
+  sparks.lag = fxClock.lag;
+  shieldSparks.lag = fxClock.lag;
+  audio.setSlowMo(fxClock.depth(now));
 
   // Drain look deltas every frame (dead too) so stale mouse motion never
   // dumps into the orbit as one jump. Signs: mouse-right pans the view
@@ -5120,6 +5348,7 @@ const frame = (now: number): void => {
     // the camera and the airframe from moving in lockstep.
     const camShake = turbulenceOffset(now, flight.pos.y);
     missileShake.addInto(camShake, now); // X1 impacts: display camera only
+    blastShake.addInto(camShake, now); // J1 blasts, by distance
     // D3: the ground shakes under a collapse coming down nearby — D5: and
     // trembles under a tower the director has warned about.
     // C2: and shakes city-wide under a quake.
@@ -5150,7 +5379,8 @@ const frame = (now: number): void => {
       camShake.y += jolt.y;
       camShake.z += jolt.z;
     }
-    budgetShake(camShake, reducedMotion.matches ? 0.5 : 1); // P3
+    // P3's one budget; J1: scaled by SCREEN SHAKE (0 under reduced motion).
+    budgetShake(camShake, shakeScale(settings.shake, reducedMotionOn()));
     // P3: rolling or looping through inverted rushes air past the canopy.
     const inverted = Math.cos(flight.pitch) * Math.cos(flight.roll) < -0.2;
     if (inverted && !wasInverted && alive) audio.aeroWhoosh(now);
@@ -5158,6 +5388,20 @@ const frame = (now: number): void => {
     const planeShake = turbulenceOffset(now + 537, flight.pos.y);
     chaseMoversMs = renderMs;
     chase.update(camera, flight, dt, freelook, camShake, zoom.z, leadYawRate);
+    // J1 camera cues: turn the DISPLAYED view toward the falling carrier
+    // (or an own kill's wreck) by the cue's weight. Render-only — steering
+    // reads chase.aimFrame and the guns never pause.
+    if (camCue.kind !== null) {
+      if (flight.pos.y < CUE_MIN_ALT) camCue.cancel(now, "low");
+      const w = camCue.weight(now);
+      if (w > 0 && renderMs !== null && cueTargetAt(renderMs)) {
+        const aim = nearestImageInto(cueImage, chase.position, cueTarget);
+        cueFrom.copy(camera.quaternion);
+        camera.lookAt(aim.x, aim.y, aim.z);
+        cueLook.copy(camera.quaternion);
+        camera.quaternion.copy(cueFrom).slerp(cueLook, w);
+      }
+    }
     const planePos = nearestImage(chase.position, flight.pos);
     plane.position.set(
       planePos.x + planeShake.x * 0.5,
@@ -5553,7 +5797,10 @@ const frame = (now: number): void => {
       whistleEnds.push(now + left * 1000);
       audio.missileWhistle(m.to, flight.pos, flight.yaw, left);
     }
-    if (mf.announces.length > 0) say(incomingCallout());
+    if (mf.announces.length > 0) {
+      say(incomingCallout());
+      camCue.cancel(now, "incoming"); // J1: eyes front
+    }
     for (const m of mf.impacts) {
       explosions.explode(m.to, now);
       sparks.burst(m.to, now);
@@ -5712,7 +5959,7 @@ const frame = (now: number): void => {
   );
   skyDome.tint(sky.tint);
   skyDome.mesh.visible = sky.domeVisible;
-  explosions.update(chase.position, now, dt);
+  explosions.update(chase.position, now, fxDt);
   sparks.update(chase.position, now);
   shieldSparks.update(chase.position, now);
   // D1: burning patches age on the synced server clock; particles fly.
@@ -5741,6 +5988,11 @@ const frame = (now: number): void => {
   hud.setBoost(boost.energy, boost.active);
   hud.setRainOnLens(rain.lens); // R3: beads on the canopy rim
   hud.update(now);
+  juiceHud.update(
+    now,
+    fxClock.dipping(now),
+    camCue.kind === "breakup" && camCue.weight(now) > 0.25,
+  );
   // S3 race readout: the live clock while racing, a hint near a start ring.
   const racing = courses[courseRunner.course];
   if (racing && alive) {
@@ -5804,7 +6056,23 @@ const frame = (now: number): void => {
       if (threatDist === null || d < threatDist) threatDist = d;
     }
   }
-  music.update({ nowMs: now, threatDist, hp: selfHp, alive });
+  // J1: the carrier fight — the zeppelin up and how close; a live wave
+  // keeps the score off calm.
+  let carrierDist: number | null = null;
+  if (alive && bossUp && bossRaid !== null && renderMs !== null) {
+    carrierDist = wrapDistance(
+      flight.pos,
+      bossPoseAt(bossRaid, renderMs, cuePose),
+    );
+  }
+  music.update({
+    nowMs: now,
+    threatDist,
+    hp: selfHp,
+    alive,
+    carrierDist,
+    waveLive: socket.waves.phase === WAVE_LIVE,
+  });
   // A1: the nearest busker within earshot of the plane (silent if none).
   busker.update(
     flight.pos,
@@ -5860,7 +6128,10 @@ const frame = (now: number): void => {
   // S5 atmosphere, once the camera is final (shimmer and shafts project
   // through it): fog banks clear of every plane, litter kicked by low
   // passes, all on the latched world clock.
+  const heatCount = explosions.heatSources(now); // J1 blast shimmer
   atmosphere.update({
+    heat: explosions.heat,
+    heatCount,
     camera,
     cameraPos: chase.position,
     worldMs: renderMs,

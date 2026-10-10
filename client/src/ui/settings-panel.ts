@@ -64,6 +64,10 @@ export interface SettingsHooks {
   setRollLevel: (mode: RollLevelMode) => void;
   /** F10 CAMERA ROLL — applied live. */
   setCameraRoll: (c: CameraRoll) => void;
+  /** J1 REDUCED MOTION as it applies now (the device's until picked). */
+  reducedMotion: () => boolean;
+  /** J1 SCREEN SHAKE, REDUCED MOTION or CARRIER CAM changed — applied live. */
+  setEffects: (s: Settings) => void;
   /** The resolution scale changed (debounced while a slider drags). */
   setResScale: (scale: number) => void;
   /** Any volume changed (the soundtrack's on/off switch too). */
@@ -126,6 +130,31 @@ const MARKUP = `
       )}
       <div class="readout"><span data-out="tier"></span><span data-out="fps"></span></div>
       ${slider("resScale", "RESOLUTION", 50)}
+    </section>
+    <section>
+      <h3>EFFECTS</h3>
+      <div class="row">
+        <span>SCREEN SHAKE</span>
+        ${seg("shake", "Screen shake", [
+          ["full", "FULL"],
+          ["reduced", "REDUCED"],
+          ["off", "OFF"],
+        ])}
+      </div>
+      <div class="row">
+        <span>REDUCED MOTION</span>
+        ${seg("reducedMotion", "Reduced motion", [
+          ["on", "ON"],
+          ["off", "OFF"],
+        ])}
+      </div>
+      <div class="row">
+        <span>CARRIER CAM</span>
+        ${seg("carrierCam", "Carrier cam", [
+          ["on", "ON"],
+          ["off", "OFF"],
+        ])}
+      </div>
     </section>
     <section>
       <h3>CONTROLS</h3>
@@ -407,6 +436,22 @@ export class SettingsPanel {
       this.values = clampSettings({ ...this.values, cameraRoll: v });
       saveSettings(this.store, this.values);
       h.setCameraRoll(this.values.cameraRoll);
+    } else if (group === "shake") {
+      this.values = clampSettings({ ...this.values, shake: v });
+      saveSettings(this.store, this.values);
+      h.setEffects(this.values);
+    } else if (group === "reducedMotion") {
+      // Same rule as haptics: null (the device default) until picked.
+      this.values = clampSettings({
+        ...this.values,
+        reducedMotion: v === "on",
+      });
+      saveSettings(this.store, this.values);
+      h.setEffects(this.values);
+    } else if (group === "carrierCam") {
+      this.values = clampSettings({ ...this.values, carrierCam: v === "on" });
+      saveSettings(this.store, this.values);
+      h.setEffects(this.values);
     } else if (group === "musicOn") {
       this.values = clampSettings({ ...this.values, musicOn: v === "on" });
       saveSettings(this.store, this.values);
@@ -452,6 +497,9 @@ export class SettingsPanel {
       feel: this.values.feel,
       rollLevel: h.rollLevel(),
       cameraRoll: this.values.cameraRoll,
+      shake: this.values.shake,
+      reducedMotion: h.reducedMotion() ? "on" : "off",
+      carrierCam: this.values.carrierCam ? "on" : "off",
       musicOn: this.values.musicOn ? "on" : "off",
     };
     for (const group of this.root.querySelectorAll<HTMLElement>(".seg")) {

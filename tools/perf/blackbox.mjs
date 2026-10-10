@@ -4,8 +4,11 @@
 //     node tools/perf/blackbox.mjs [--device desktop|retina|phone|all]
 //                                  [--sky night,dusk] [--paths a,b]
 //                                  [--frames N] [--repeat N] [--shots <dir>]
-//                                  [--attribute] [--no-build] [--out <file>]
-//                                  [--list]
+//                                  [--attribute] [--dump from:to]
+//                                  [--no-build] [--out <file>] [--list]
+//
+// `--dump from:to` (with --shots) writes every judged frame in the range,
+// per path — to look at a box in sequence, or to diff two builds' frames.
 //
 // What players reported (2026-10-09) are black squares that flash for a
 // frame or a few — in the tunnels, the sky and clouds, near buildings, on a
@@ -98,7 +101,7 @@ export const CELL_CSS_PX = 4;
  * black box is the grade's lifted floor (~5, less in the vignette) or 0 on
  * Mobile (no grade). 8, not more: the dark backing of an LED ticker seen up
  * close reads ~13, and its scrolling glyphs uncover it a frame at a time
- * (12 flagged `rubble` on every run). */
+ * (`rubble` flagged 10 and 4 in two runs). */
 export const DARK = 8;
 /** A dropped cell is at least this much darker than the brightest of the
  * frames around it, on both sides. */

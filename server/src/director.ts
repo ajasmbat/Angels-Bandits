@@ -328,6 +328,9 @@ const SHAPE_CACHE_MAX = 256;
 const PICK_CANDIDATES = 4;
 /** A1: how often the prefill re-scores the towers, ms. */
 const PREFILL_RESCAN_MS = 500;
+/** A1: the prefill starts this long before a slot arms, ms (≥ 20 ticks:
+ * one simulation a tick covers a full pick's 4 towers × 5 shapes). */
+const PREFILL_LEAD_MS = 2000;
 
 /** A tower the pick weighs: its index, score and the plane it aims at. */
 interface ScoredTower {
@@ -485,8 +488,15 @@ export class DestructionDirector {
         }
       }
     }
-    // A1: an idle tick warms the next pick's debris (see prefill).
-    if (!picking && this.goneShare(world) < t.stopShare) {
+    // A1: an idle tick warms the next pick's debris (see prefill) — only
+    // while a slot is armed or about to be (the schedule is a pure function
+    // of seed and time), so towers broken between slots are not simulated
+    // over and over for nothing.
+    const soon =
+      this.armed !== null ||
+      directorSlotsInWindow(this.seed, now / s, (now + PREFILL_LEAD_MS) / s)
+        .length > 0;
+    if (!picking && soon && this.goneShare(world) < t.stopShare) {
       this.prefill(now, planes, world);
     }
     return out;

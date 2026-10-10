@@ -9,6 +9,7 @@ import {
   type QuakeEvent,
   quakeAmp,
 } from "@angels-bandits/common/chaos";
+import { type CaveIn, caveInShake } from "@angels-bandits/common/city/caveins";
 import type { Vec3 } from "@angels-bandits/common/world";
 import { COLLAPSE_SHAKE_PEAK } from "./camera";
 
@@ -34,4 +35,20 @@ export function quakeShakeAmount(
   quakes.forEach(strongest);
   walk.pos = null;
   return Math.min(1, (walk.amp * QUAKE_SHAKE_M) / COLLAPSE_SHAKE_PEAK);
+}
+
+/** U6: the shake amount (0..1 of COLLAPSE_SHAKE_PEAK) the room's cave-ins
+ * put on a camera at `pos` at server time `renderMs` — the strongest of
+ * them (common/src/city/caveins.ts caveInShake). An index loop: nothing
+ * allocated per frame. */
+export function caveInShakeAmount(
+  list: readonly CaveIn[],
+  pos: Vec3,
+  renderMs: number,
+): number {
+  let amp = 0;
+  for (let i = 0; i < list.length; i++) {
+    amp = Math.max(amp, caveInShake(list[i] as CaveIn, pos, renderMs));
+  }
+  return Math.min(1, amp);
 }

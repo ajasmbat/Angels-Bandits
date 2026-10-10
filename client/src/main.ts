@@ -32,6 +32,13 @@ import {
   raycastChunk,
 } from "@angels-bandits/common/city";
 import {
+  CAVEIN_CEIL,
+  CAVEIN_FLOOR,
+  CAVEIN_WARN_MS,
+  type CaveIn,
+  addCaveIn,
+} from "@angels-bandits/common/city/caveins";
+import {
   generateMovers,
   withNewsHeli,
 } from "@angels-bandits/common/city/movers";
@@ -244,7 +251,7 @@ import {
   qaGhostTrack,
   stageBoss,
 } from "./game/qa-spectacle";
-import { quakeShakeAmount } from "./game/quake";
+import { caveInShakeAmount, quakeShakeAmount } from "./game/quake";
 import { SessionStats } from "./game/session-stats";
 import { resetTuning, tuning } from "./game/tuning";
 import { wreckCamView } from "./game/wreck-cam";
@@ -265,6 +272,7 @@ import { AtmosphereFx } from "./render/atmosphere-fx";
 import { Birds } from "./render/birds";
 import { BomberRenderer } from "./render/bombers";
 import { BossRenderer } from "./render/boss";
+import { CaveInRenderer } from "./render/caveins";
 import { CityRenderer } from "./render/city";
 import { PICKUP_TAXIS } from "./render/citylife";
 import { CityLife } from "./render/citylife-render";
@@ -409,7 +417,7 @@ import { TunnelRenderer } from "./render/tunnels";
 import { UndergroundLife } from "./render/underground";
 import { WeatherClock, setWeatherUniform } from "./render/weather";
 import { buildingSeed, isWindowLit } from "./render/window-pattern";
-import { nearestImage } from "./render/wrapPlacement";
+import { nearestImage, nearestImageInto } from "./render/wrapPlacement";
 import { Wrecks } from "./render/wrecks";
 import { BotBar } from "./ui/botbar";
 import { Coach, renderPrimer } from "./ui/coach";
@@ -864,6 +872,8 @@ const moverField = {
   boss: socket.boss,
   // C2: and its bomber formations, the same way.
   bombers: socket.bombers,
+  // U6: and its cave-ins — the falling rock and rubble in the bores.
+  caveins: socket.caveIns,
 };
 // D5: crane-fall records name the room's crane sites — these.
 socket.collapses.bindCranes(moverField.cranes);
@@ -983,6 +993,11 @@ scene.add(tunnels.group);
 // bore; added before prewarm so its programs compile at boot.
 const underground = new UndergroundLife();
 scene.add(underground.group);
+/** U6 QA (`__ab.qaCaveIn`): staged cave-ins are numbered from here, far
+ * above any the server hands out. */
+const QA_CAVEIN_BASE = 900_000_000;
+/** U6: our plane's render-space position for the bats (reused). */
+const batPlane = { x: 0, y: 0, z: 0 };
 // L9 moving nature: lit spray from the plaza ponds (pure ballistic function
 // of the synced clock; one Points, drawn only near a pond). Tree sway lives
 // in natureRenderer's crown shader; bird scatter in birds.update below.
@@ -1198,6 +1213,25 @@ const bomberRenderer = new BomberRenderer(impacts, (at) => {
   missileShake.add(wrapDistance(at, flight.pos), t);
 });
 scene.add(bomberRenderer.group);
+// U6 cave-ins: the room's falling rock and rubble in the bores (one
+// InstancedMesh on the render clock — drawn == collided), their dust in the
+// D1 pool. The rumble swells from the announce through the warning to the
+// crash of the fall; the shake rides the camera path below.
+const caveInRenderer = new CaveInRenderer(impacts);
+scene.add(caveInRenderer.mesh);
+socket.events.onCaveIn = (c) => {
+  const at = lastRenderMs;
+  const left = at === null ? CAVEIN_WARN_MS : c.t0 + c.downMs - at;
+  if (left <= 0) return; // already down (a replay): no rumble to come
+  audio.collapse(
+    { x: c.x, y: (CAVEIN_FLOOR + CAVEIN_CEIL) / 2, z: c.z },
+    flight.pos,
+    flight.yaw,
+    left / 1000 - 0.4,
+    0.35 + c.n / 40,
+  );
+  music.noteCombat(performance.now());
+};
 const fireRenderer = new FireRenderer(impacts, city.cityBuildings);
 // D8: fresh ruins smoulder (smoke + embers off the stump and rubble).
 const ruinSmoke = new RuinSmoke(impacts, city.cityBuildings);
@@ -2814,6 +2848,18 @@ declare global {
         d: number,
         climbDeg: number,
       ) => { x: number; y: number; z: number; yaw: number };
+      /** U6 QA: stage cave-ins on this client only — straight into the
+       * socket's slot, so they draw, collide, dust, shake and flicker
+       * exactly as a server one would — each warning at world time `t0`.
+       * Null (or a new list) first clears every staged one. Returns the
+       * staged ids. */
+      qaCaveIn: (
+        list:
+          | { tunnel: number; s: number; gap: 0 | 1 | 2; t0: number }[]
+          | null,
+      ) => number[];
+      /** U6: live cave-ins held, and the pieces and events drawn last frame. */
+      caveIns: () => { live: number; pieces: number; events: number };
       /** P4: the plane fleet last frame — planes drawn (near / far LOD)
        * and the draws they cost; null under `?fleet=0`. */
       fleet: () => {
@@ -3694,6 +3740,22 @@ window.__ab = {
       yaw: Math.atan2(-Math.cos(at.th), -Math.sin(at.th)),
     };
   },
+  qaCaveIn: (list) => {
+    const held = socket.caveIns.list;
+    for (let i = held.length - 1; i >= 0; i--) {
+      if ((held[i] as CaveIn).id >= QA_CAVEIN_BASE) held.splice(i, 1);
+    }
+    const ids: number[] = [];
+    (list ?? []).forEach((c, k) => {
+      const id = QA_CAVEIN_BASE + k;
+      if (addCaveIn(socket.caveIns, { id, ...c })) ids.push(id);
+    });
+    return ids;
+  },
+  caveIns: () => ({
+    live: socket.caveIns.list.length,
+    ...caveInRenderer.stats,
+  }),
   fleet: () =>
     fleet && tagBatch
       ? {
@@ -4653,7 +4715,8 @@ const frame = (now: number): void => {
       renderMs !== null &&
       (socket.collapses.list.length > 0 ||
         socket.director.size > 0 ||
-        socket.quakes.size > 0)
+        socket.quakes.size > 0 ||
+        socket.caveIns.list.length > 0)
     ) {
       const jolt = collapseShakeOffsetInto(
         joltScratch,
@@ -4665,6 +4728,7 @@ const frame = (now: number): void => {
           socket.quakes.size > 0
             ? quakeShakeAmount(socket.quakes, flight.pos, renderMs)
             : 0,
+          caveInShakeAmount(socket.caveIns.list, flight.pos, renderMs),
         ),
         // P4 QA: on the pinned world clock the jolt's phase is the world's
         // too, so a staged quake shakes the view identically every pass.
@@ -5035,7 +5099,12 @@ const frame = (now: number): void => {
   ground.update(chase.position);
   river.update(chase.position, renderMs, now); // L11
   tunnels.update(chase.position); // U4
-  underground.update(chase.position, renderMs ?? now); // U5
+  // U5 — U6: the bats stir for our own plane, where it is drawn.
+  underground.update(
+    chase.position,
+    renderMs ?? now,
+    nearestImageInto(batPlane, chase.position, flight.pos),
+  );
   skyDome.update(chase.position);
   airliners.update(renderMs);
   // Wounded smoke: own plane from server-said self HP, every remote (human
@@ -5111,6 +5180,15 @@ const frame = (now: number): void => {
   }
   // C2: the bomber formations and the fires.
   bomberRenderer.update(socket.bombers, chase.position, renderMs, now);
+  // U6: the cave-ins, and the bores' lamps flickering over a warned one.
+  caveInRenderer.update(
+    socket.caveIns,
+    chase.position,
+    renderMs,
+    rawMs / 1000,
+    now,
+  );
+  underground.setCaveIns(socket.caveIns.list, chase.position, renderMs);
   fireRenderer.update(socket.fires, chase.position, now);
   // S4: the zeppelin, its flak and its fall; the HUD bar while it flies;
   // "it got away" once, when a raid runs out still flying.

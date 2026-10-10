@@ -17,6 +17,7 @@ import type {
   WireChaosState,
   WireQuake,
 } from "./chaos";
+import type { WireCaveIn } from "./city/caveins";
 import type { CollapseWire } from "./city/collapse";
 import type { NewsHeliSlot, NewsHeliTarget } from "./city/newsheli";
 import type { CityEvent } from "./cityevents";
@@ -316,6 +317,10 @@ export interface WelcomeMsg {
    * and collides with the same chaos. Their bombs and meteors ride
    * `missiles`. Absent: none (and a resume clears what it held). */
   chaos?: WireChaosState;
+  /** U6: the room's live cave-ins (common/src/city/caveins.ts), so a late
+   * joiner sees, hears and collides with the same falling rock and rubble.
+   * Absent: none (and a resume clears what it held). */
+  caveIns?: WireCaveIn[];
 }
 
 // --- S3 stunt courses ---
@@ -746,8 +751,17 @@ export interface FiresMsg {
   off: number[];
 }
 
+/** U6: the ceiling of a deep bore is coming down (common/src/city/
+ * caveins.ts): the warning starts at `c[3]`, the rock falls WARN later, and
+ * every piece is a pure function of this and the synced clock. */
+export interface CaveInMsg {
+  type: "caveIn";
+  c: WireCaveIn;
+}
+
 export type ServerMsg =
   | WelcomeMsg
+  | CaveInMsg
   | BombersMsg
   | BomberDownMsg
   | BombsOffMsg

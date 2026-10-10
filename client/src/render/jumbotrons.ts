@@ -39,6 +39,7 @@ import {
   wrapDelta,
   wrapDeltaAxis,
 } from "@angels-bandits/common/world";
+import type { PropState } from "@angels-bandits/common/city/props";
 import * as THREE from "three";
 import type { MatchWarning } from "../game/headlines";
 import { CLASSIC_LIVERY, type Livery, createBiplane } from "./biplane";
@@ -264,6 +265,12 @@ export class Jumbotrons {
   private readonly uploads: InstanceUploads;
   /** D8: a screen on a facade that is gone goes with it. */
   private readonly standing: StandingMask;
+  /** D9: the room's props, the id of site 0, the version applied, and
+   * which sites are down. */
+  private props: PropState | null = null;
+  private jumboBase = 0;
+  private propsVersion = -1;
+  private readonly siteDown = new Uint8Array(8);
   private readonly layer: ReturnType<typeof jumbotronLayer>;
   /** D8: each instance's item index on its building. */
   private readonly slot: Int32Array;
@@ -443,7 +450,27 @@ export class Jumbotrons {
    * crawl the ticker on the synced clock, repaint if the content changed,
    * and run the LAST KILL pass if a kill landed since the last frame.
    */
+  /** D9: follow the room's props — site i is prop `jumboBase + i`; a
+   * screen shot loose falls as render/props.ts' solid faller instead. */
+  setProps(state: PropState, jumboBase: number): void {
+    this.props = state;
+    this.jumboBase = jumboBase;
+    this.propsVersion = -1;
+  }
+
   update(cameraPos: Vec3, timeMs: number | null): void {
+    const props = this.props;
+    if (props && props.version !== this.propsVersion) {
+      this.propsVersion = props.version;
+      for (let i = 0; i < this.sites.length; i++) {
+        const down = props.isDown(this.jumboBase + i);
+        if (down !== (this.siteDown[i] === 1)) {
+          this.siteDown[i] = down ? 1 : 0;
+          this.images.dirty(2 * i);
+          this.images.dirty(2 * i + 1);
+        }
+      }
+    }
     this.standing.update(); // D8
     this.images.update(cameraPos, this.place);
     this.uploads.flush();
@@ -473,8 +500,11 @@ export class Jumbotrons {
       ticker ? TICKER_HEIGHT : site.height,
       SCREEN_DEPTH,
     );
-    // D8: hanging on a facade that is gone — zero scale.
-    if (this.standing.isHidden(site.building, this.slot[i] as number)) {
+    // D8: hanging on a facade that is gone — zero scale. D9: or fallen.
+    if (
+      this.standing.isHidden(site.building, this.slot[i] as number) ||
+      this.siteDown[i >> 1] === 1
+    ) {
       this.scale.set(0, 0, 0);
     }
     this.matrix.compose(this.pos, this.quat, this.scale);

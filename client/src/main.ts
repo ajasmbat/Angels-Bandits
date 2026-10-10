@@ -43,6 +43,13 @@ import {
   withNewsHeli,
 } from "@angels-bandits/common/city/movers";
 import {
+  PROP_CAR,
+  PROP_FUEL,
+  PROP_JUMBO,
+  PROP_LAMP,
+  PROP_SIGNAL,
+  PROP_STATION,
+  PROP_TAXI,
   type PropSlot,
   generateProps,
 } from "@angels-bandits/common/city/props";
@@ -304,6 +311,7 @@ import { DustClouds, dustHaze } from "./render/dust";
 import { FacadeDetailRenderer } from "./render/facade-detail";
 import { FacadeGarnishRenderer } from "./render/facade-garnish";
 import { FacadeLifeRenderer } from "./render/facade-life";
+import { FacadeScarKeeper } from "./render/facade-scars";
 import { FireRenderer } from "./render/fires";
 import { Fireworks } from "./render/fireworks";
 import { PlaneFleet } from "./render/fleet";
@@ -385,7 +393,9 @@ import {
   stepResolution,
 } from "./render/resolution";
 import { CourseRings } from "./render/rings";
-import { RiverRenderer } from "./render/river";
+import { PropsRenderer } from "./render/props";
+import { BRIDGE_GONE_UNIFORM, RiverRenderer } from "./render/river";
+import { ScarsRenderer } from "./render/scars";
 import { RoofClutterRenderer } from "./render/roofclutter";
 import { RooftopLifeRenderer } from "./render/rooftop-life";
 import { RuinSmoke } from "./render/ruins";
@@ -918,6 +928,12 @@ const propLayout = generateProps(welcome.seed, city.cityBuildings, {
 });
 socket.props.bind(propLayout, city.cityBuildings);
 const propSlotLive: PropSlot = { layout: propLayout, state: socket.props };
+/** D9: the props G1's street layout steers clear of. */
+const streetPropKeepsOut = (kind: number): boolean =>
+  kind === PROP_CAR ||
+  kind === PROP_TAXI ||
+  kind === PROP_FUEL ||
+  kind === PROP_STATION;
 moverField.props = propSlotLive;
 if (moverField.news && welcome.newsHeli) {
   moverField.news.target = welcome.newsHeli.target;
@@ -1120,6 +1136,11 @@ const streetFurniture = new StreetFurniture(
     buildingsByBlock,
     cityHoles(city.cityBuildings),
     moverField.trains ?? [],
+    // D9: G1's cars and furniture give way to the destructible vehicles
+    // and gas stations, so nothing parks inside them.
+    propLayout.props
+      .filter((p) => streetPropKeepsOut(p.kind))
+      .map((p) => ({ x: p.x, z: p.z, hx: p.hx, hz: p.hz })),
   ),
 );
 scene.add(streetFurniture.mesh);
@@ -1213,6 +1234,7 @@ socket.events.onRebuild = (r, restored) => {
     directorFx.rebuildPop(restored, now);
     // D1's marks (dark panes, holes, scorch) go with the damage.
     if (r.k === 0) city.damage.clearBuilding(r.b);
+    if (r.k === 0) facadeScars.forget(r.b); // D9: its scars went with them
     // D8: a dressed tower lands inside its scaffold, which strips away.
     if (r.k === 0) scaffold.rebuilt(r.b, now);
   } else {
@@ -1290,6 +1312,58 @@ socket.events.onCaveIn = (c) => {
 const fireRenderer = new FireRenderer(impacts, city.cityBuildings);
 // D8: fresh ruins smoulder (smoke + embers off the stump and rubble).
 const ruinSmoke = new RuinSmoke(impacts, city.cityBuildings);
+// D9 destructible props: wrecks, snapped lamps and masts, poles and wires,
+// gas stations and every solid faller (ONE draw, drawn == collided for the
+// fallers); the street's craters and scorch (ONE draw) and every prop
+// effect through the pools above; the facade scars (broken-window rings,
+// soot streaks) kept in the D1 atlas. The lamps, signals and jumbotrons
+// hide what went down.
+const propsRenderer = new PropsRenderer(propSlotLive);
+scene.add(propsRenderer.mesh);
+const scarsRenderer = new ScarsRenderer(
+  propSlotLive,
+  socket.craters,
+  city.cityBuildings,
+  impacts,
+  explosions,
+  sparks,
+);
+scene.add(scarsRenderer.mesh);
+const facadeScars = new FacadeScarKeeper(
+  city.damage,
+  city.cityBuildings,
+  socket.soot,
+);
+streetlights.setProps(socket.props, propLayout.first[PROP_LAMP] as number);
+signals.setProps(socket.props, propLayout.first[PROP_SIGNAL] as number);
+jumbotrons.setProps(socket.props, propLayout.first[PROP_JUMBO] as number);
+socket.events.onProps = (e) => {
+  const now = performance.now();
+  scarsRenderer.onProps(e, chase.position, now);
+  for (const b of e.blasts) {
+    const p = propLayout.props[b.id];
+    if (!p) continue;
+    const at = { x: p.x, y: p.y, z: p.z };
+    const big = p.kind === PROP_FUEL || p.kind === PROP_STATION;
+    if (big) audio.missileBlast(at, flight.pos, flight.yaw);
+    else audio.explosion(at, flight.pos, flight.yaw);
+    missileShake.add(wrapDistance(at, flight.pos) * (big ? 0.6 : 1.4), now);
+  }
+  if (e.blasts.length > 0) music.noteCombat(now);
+};
+socket.events.onChunks = (ids) => {
+  scarsRenderer.glassCascade(ids, chase.position, performance.now());
+};
+/** D9: the bridge spans fallen by render time `t` (the deck stays drawn
+ * until its span starts to fall on the render clock). */
+function spansDownAt(t: number | null): number {
+  let mask = 0;
+  propLayout.bridges.forEach((id, i) => {
+    if (!socket.props.isDown(id)) return;
+    if (t === null || t >= socket.props.downAt(id)) mask |= 1 << i;
+  });
+  return mask;
+}
 // C2: a quake announced — the ground starts to rumble now (the shake rides
 // the camera path below, on the render clock).
 socket.events.onQuake = (q) => {
@@ -2443,6 +2517,8 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   );
   bomberRenderer.setQuality(QUALITY_PROFILES[tier].chaosFx); // C2
   fireRenderer.setQuality(QUALITY_PROFILES[tier].chaosFx); // C2
+  propsRenderer.setShare(QUALITY_PROFILES[tier].chaosFx); // D9
+  scarsRenderer.setShare(QUALITY_PROFILES[tier].chaosFx); // D9
   ruinSmoke.setQuality(QUALITY_PROFILES[tier].chaosFx); // D8
   blastLedger.setBurnCap(burnCapFor(QUALITY_PROFILES[tier].impacts));
   wrecks.setShare(QUALITY_PROFILES[tier].wreckFire); // D4
@@ -5340,6 +5416,14 @@ const frame = (now: number): void => {
   );
   underground.setCaveIns(socket.caveIns.list, chase.position, renderMs);
   fireRenderer.update(socket.fires, chase.position, now);
+  // D9: the props — fallen spans opened on the render clock (the river,
+  // the road paint, traffic and city life), wrecks, fallers and scars.
+  BRIDGE_GONE_UNIFORM.value = spansDownAt(renderMs);
+  traffic.gaps = BRIDGE_GONE_UNIFORM.value;
+  cityLife.gaps = BRIDGE_GONE_UNIFORM.value;
+  propsRenderer.update(chase.position, renderMs);
+  scarsRenderer.update(chase.position, renderMs, now);
+  facadeScars.update(chase.position);
   // S4: the zeppelin, its flak and its fall; the HUD bar while it flies;
   // "it got away" once, when a raid runs out still flying.
   bossRenderer.update(

@@ -51,7 +51,7 @@ import {
   bindReflectionUniforms,
 } from "./reflections";
 import { RENDER_ORDER } from "./render-order";
-import { RIVER_GROUND_PARS } from "./river";
+import { BRIDGE_GONE_UNIFORM, RIVER_GROUND_PARS } from "./river";
 import { SIGN_PALETTE } from "./signage";
 import type { SkyState } from "./skycycle";
 import {
@@ -921,13 +921,15 @@ export class GroundPlane {
     const material = new THREE.MeshStandardMaterial({ roughness: 1 });
     // Three keys its program cache on onBeforeCompile.toString(); an explicit
     // key keeps this patch from colliding with the other patched materials.
-    material.customProgramCacheKey = () => "ab-ground-paint-g1-s6-refl";
+    material.customProgramCacheKey = () => "ab-ground-paint-g1-s6-refl-d9";
     material.onBeforeCompile = (shader) => {
       shader.uniforms.uGroundOrigin = { value: this.origin };
       // L4: the shared weather uniform (render/weather.ts), by reference.
       shader.uniforms.uWeather = WEATHER_UNIFORM;
       // G1: the quality tier's street-paint switch, shared by reference.
       shader.uniforms.uStreetPaint = STREET_PAINT_UNIFORM;
+      // D9: a fallen bridge span's deck is open water, not road.
+      shader.uniforms.uBridgeGone = BRIDGE_GONE_UNIFORM;
       // S6: the reflection probe, by reference (puddles and ponds).
       bindReflectionUniforms(shader.uniforms);
       shader.vertexShader = shader.vertexShader

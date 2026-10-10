@@ -22,6 +22,8 @@ import {
 } from "@angels-bandits/common/city/street";
 import { BLOCK_PITCH, EMISSIVE_LAMP } from "@angels-bandits/common/constants";
 import { type Vec3, canonicalize } from "@angels-bandits/common/world";
+import { CITY_GRID } from "@angels-bandits/common/city";
+import type { PropState } from "@angels-bandits/common/city/props";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { emissiveBoost } from "./emissive";
@@ -146,6 +148,8 @@ export function goWindowStart(
 export { type SignalMast, allSignalMasts, signalMastsForBlock };
 
 // --- Renderer -------------------------------------------------------------
+
+const wrapGrid = (v: number) => ((v % CITY_GRID) + CITY_GRID) % CITY_GRID;
 
 const MAST_HEIGHT = 5.4;
 const XWALK_MAST_HEIGHT = 3.6;
@@ -327,6 +331,17 @@ export class Signals {
     return masts;
   }
 
+  /** D9: the room's props, and the prop id of the first mast. */
+  private props: PropState | null = null;
+  private signalBase = 0;
+
+  /** D9: follow the room's props (block (bx, bz)'s masts are props
+   * `signalBase + (bx · GRID + bz) · 12 + k`, in signalMastsForBlock order). */
+  setProps(state: PropState, signalBase: number): void {
+    this.props = state;
+    this.signalBase = signalBase;
+  }
+
   /** O5: the block window, reused every frame (blockWindowInto). */
   private readonly windowScratch: BlockIndex[] = [];
 
@@ -361,7 +376,12 @@ export class Signals {
     )) {
       const aspects = signalPhase(bx, bz, t, this.seed);
       const masts = this.mastsFor(bx, bz);
-      for (const mast of masts) {
+      // D9: a snapped mast lies in the street (render/props.ts), not here.
+      const first =
+        this.signalBase + (wrapGrid(bx) * CITY_GRID + wrapGrid(bz)) * masts.length;
+      for (let k = 0; k < masts.length; k++) {
+        const mast = masts[k] as SignalMast;
+        if (this.props?.isDown(first + k)) continue;
         this.anchor.x = mast.x;
         this.anchor.z = mast.z;
         const p = nearestImageInto(this.image, cameraPos, this.anchor);

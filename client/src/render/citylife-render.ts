@@ -33,6 +33,7 @@ import {
   wrapCoord,
   wrapDeltaAxis,
 } from "@angels-bandits/common/world";
+import { inBridgeGap } from "@angels-bandits/common/city/river";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import {
@@ -1036,6 +1037,9 @@ export class CityLife {
     return n;
   }
 
+  /** D9: the room's fallen bridge spans (river.ts gaps), set per frame. */
+  gaps = 0;
+
   private put(
     n: number,
     p: FigurePose,
@@ -1051,6 +1055,8 @@ export class CityLife {
     arms: Float32Array,
   ): number {
     if (n >= this.capacity) return n;
+    // D9: nobody walks on the open water a fallen bridge span left.
+    if (this.gaps !== 0 && inBridgeGap(p.x, p.z, this.gaps)) return n;
     writeMatrix(
       m,
       n * 16,

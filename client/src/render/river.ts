@@ -540,7 +540,10 @@ vec3 rvReflect(vec3 P, vec3 rd) {
   if (yw < 0.0) {
     float xw = P.x + rd.x * tw;
     float dl = abs(mod(xw + uRiverShift.x, ${glsl(WALL_LAMP_STEP)}) - ${glsl(WALL_LAMP_STEP / 2)});
-    float lamp = exp(-dl * dl * 0.35) * exp(-pow(yw - (${glsl(WALL_LAMP_Y)}), 2.0) * 0.25);
+    // O7: yw - WALL_LAMP_Y is negative below the lamp row, and pow() of a
+    // negative base is undefined (NaN on fast-math GPUs): squared instead.
+    float dy = yw - (${glsl(WALL_LAMP_Y)});
+    float lamp = exp(-dl * dl * 0.35) * exp(-dy * dy * 0.25);
     return vec3(0.03, 0.03, 0.04) + vec3(1.0, 0.62, 0.3) * lamp * 0.9;
   }
   // Then the bank's streetwall, at the far lot line.
@@ -587,7 +590,8 @@ const WATER_EMISSIVE = /* glsl */ `
   vec3 rvV = normalize(vRiverPos - cameraPosition);
   vec3 rvRd = reflect(rvV, rvN);
   rvRd.y = max(rvRd.y, 0.002);
-  float rvFres = 0.02 + 0.98 * pow(1.0 - max(dot(-rvV, rvN), 0.0), 5.0);
+  // O7: the dot of two unit vectors can round past 1 — a negative pow base.
+  float rvFres = 0.02 + 0.98 * pow(1.0 - clamp(dot(-rvV, rvN), 0.0, 1.0), 5.0);
   totalEmissiveRadiance += rvReflect(vRiverPos, rvRd) * (0.3 + 0.7 * rvFres);
 }
 `;

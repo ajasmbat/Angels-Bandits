@@ -2252,7 +2252,8 @@ if (moteK > 1.5 && moteK < 2.5) {
     0.6 * sin(moteT * 0.47 * drift + moteP * 1.7),
     cos(moteT * 0.27 * drift + moteP * 2.3));
   vMote = moteK > 0.5 && moteK < 1.5
-    ? 0.25 + 0.75 * pow(0.5 + 0.5 * sin(moteT * 2.1 + moteP * 3.0), 3.0)
+    // O7: max() — a GPU sin() may round below -1, and pow(<0) is NaN.
+    ? 0.25 + 0.75 * pow(max(0.5 + 0.5 * sin(moteT * 2.1 + moteP * 3.0), 0.0), 3.0)
     : moteK > 3.5 ? 0.9 : moteK > 2.5 ? 0.55 + 0.25 * sin(moteT * 0.8 + moteP) : 0.8;
 }
 `;

@@ -278,8 +278,10 @@ ${chain}
   float facing = dot(sd, uMoonDir);
   if (facing > 0.0) {
     // Disc-radius units on the tangent plane at the moon.
+    // O7: a denormal facing sent q to Inf and fract(Inf) is NaN (×0 is
+    // still NaN). Nothing of the moon reaches 89.9° from it.
     vec2 q = vec2(dot(sd, uMoonEast), dot(sd, uMoonNorth))
-             / (facing * ${MOON_TAN.toFixed(6)});
+             / (max(facing, 1e-3) * ${MOON_TAN.toFixed(6)});
     float r = length(q);
     vec3 moonCol = ${vec3Literal(peak.toArray())};
     // Disc: soft limb darkening + maria (low-frequency dark patches).
@@ -731,7 +733,9 @@ vec3 abParkPaint(vec2 l, float n, float aa, inout vec3 em, inout float water) {
     step(abs(r - ${N.ring}), ${N.path}));
   if (onPath > 0.5) c = ${GROUND_COLORS.path} * (1.0 + (abNoise(l * 2.3) - 0.5) * 0.35);
   // Warm pool under the nearest park lamp.
-  float k = floor((atan(l.y, l.x) - ${N.lampPhase}) / ${N.lampStep} + 0.5);
+  // O7: + 1e-6 here and below — atan(0, 0) is NaN on some GPUs, at the
+  // one pixel on the centre.
+  float k = floor((atan(l.y, l.x + 1e-6) - ${N.lampPhase}) / ${N.lampStep} + 0.5);
   float a = ${N.lampPhase} + k * ${N.lampStep};
   float pool = 1.0 - smoothstep(0.0, 9.0, length(l - vec2(cos(a), sin(a)) * ${N.lampR}));
   em += ${GROUND_COLORS.lampWarm} * pool * pool * ${PARK_POOL_GLOW};
@@ -748,14 +752,14 @@ vec3 abParkPaint(vec2 l, float n, float aa, inout vec3 em, inout float water) {
 // colours in angular sectors, strongest toward the rim.
 vec3 abPondNeon(vec2 l, vec2 w) {
   float r = length(l);
-  float sector = floor((atan(l.y, l.x) + 3.14159) / 0.5236);
+  float sector = floor((atan(l.y, l.x + 1e-6) + 3.14159) / 0.5236);
   vec2 key = floor(w / ${G.pitch}) + vec2(sector * 1.37, 3.0);
   float present = step(abHash(key + 9.1), 0.6);
   int hue = int(floor(abHash(key) * ${SIGN_PALETTE.length}.0));
   float band = smoothstep(${N.pond} * 0.45, ${N.pond}, r);
   // Streaks run radially — a reflection smears toward the viewer — broken
   // only softly along the radius.
-  float ripple = smoothstep(0.4, 0.85, abNoise(vec2(atan(l.y, l.x) * 14.0, r * 0.3)));
+  float ripple = smoothstep(0.4, 0.85, abNoise(vec2(atan(l.y, l.x + 1e-6) * 14.0, r * 0.3)));
   return AB_NEON[hue] * present * band * ripple * 0.4;
 }
 // A landmark forecourt: granite slabs, lawn panels each side of the entrance.

@@ -305,6 +305,7 @@ import { lookPasses } from "./render/lookup";
 import { MissileRenderer } from "./render/missiles";
 import { MoverLights, Movers } from "./render/movers";
 import { NameTagBatch } from "./render/nametags";
+import { NanProbePass, type NanProbeReading } from "./render/nanprobe";
 import { NatureRenderer } from "./render/nature";
 import { Pedestrians } from "./render/pedestrians";
 import { FrameMeter, type FrameStats, percentile } from "./render/perfmeter";
@@ -691,6 +692,13 @@ composer.addPass(new RenderPass(scene, camera));
 // O4: nothing after the scene pass reads its depth — tell a tile GPU not to
 // write it back to memory (a no-op where the driver ignores the hint).
 composer.addPass(new DiscardDepthPass());
+// O7 QA (`?nanprobe`, render/nanprobe.ts): every non-finite HDR pixel,
+// counted (and with `=paint` painted) BEFORE bloom can smear it into a box.
+const nanProbe =
+  renderOpts.nanProbe === "off"
+    ? null
+    : new NanProbePass(renderOpts.nanProbe === "paint");
+if (nanProbe) composer.addPass(nanProbe);
 // O4 (render/post.ts): the bloom chain at CSS density, then bloom add + tone
 // map + sRGB + grade in ONE full-res pass. `?post=legacy` rebuilds the old
 // chain (three's UnrealBloomPass with its full-res additive blend, the
@@ -1413,6 +1421,9 @@ socket.events.onCityEvent = (event) => {
 };
 /** Planes the searchlights track this frame (reused, no per-frame array). */
 const trackedPlanes: { x: number; y: number; z: number }[] = [];
+/** O7 QA (`__ab.qaAfterRender`): called once per frame, right after the
+ * frame is drawn — tools/perf/blackbox.mjs reads every frame exactly once. */
+let qaAfterRender: (() => void) | null = null;
 /** QA-only fixed camera (`__ab.qaCamera`): canonical eye + look-at, applied
  * just before the render so a capture can hold one viewpoint through a
  * death, the kill-cam and the respawn. Null = the normal chase camera. */
@@ -2992,6 +3003,15 @@ declare global {
           at: { x: number; y: number; z: number };
         } | null,
       ) => void;
+      /** O7: every tunnel bore's guide length, m. */
+      tunnels: () => { length: number }[];
+      /** O7: the NaN/Inf probe's last frame (null without `?nanprobe`). */
+      nanProbe: () => NanProbeReading | null;
+      /** O7: queue the probe's positive control; the NaN pixels it must
+       * count (null without a probe). */
+      nanInject: () => number | null;
+      /** O7: a function run once per frame right after it is drawn. */
+      qaAfterRender: (fn: (() => void) | null) => void;
       /** QA-only: pin the reaction clock to a server time (null = live). */
       qaReactionClock: (serverTimeMs: number | null) => void;
       /** D1: impact particles, burns and facade damage — live counts and
@@ -3726,6 +3746,8 @@ window.__ab = {
   qaPlaneHp: (hp) => {
     qaPlaneHp = hp;
   },
+  // O7: every bore's guide length, for the black-box detector's glides.
+  tunnels: () => TUNNELS.map((t) => ({ length: t.length })),
   tunnelPose: (id, s0, d, climbDeg) => {
     const t = TUNNELS[id];
     if (!t) throw new Error(`tunnelPose: no tunnel ${id}`);
@@ -3867,6 +3889,13 @@ window.__ab = {
   }),
   qaCamera: (view) => {
     qaView = view;
+  },
+  // O7: the NaN/Inf probe (null without `?nanprobe`), its positive control,
+  // and the per-frame hook the black-box detector reads frames through.
+  nanProbe: () => nanProbe?.read(renderer) ?? null,
+  nanInject: () => nanProbe?.inject(renderer.getPixelRatio()) ?? null,
+  qaAfterRender: (fn) => {
+    qaAfterRender = fn;
   },
   chew: (eye, at, rounds = 1200, spread = 1) => {
     const damage = socket.cityDamage;
@@ -5468,6 +5497,7 @@ const frame = (now: number): void => {
   reflections.observeQaEye(qaView ? qaView.eye : null);
   reflections.update(renderer, scene, camera);
   gpuTimer?.end();
+  qaAfterRender?.(); // O7 QA: the black-box detector reads this frame
 
   // Matrices are fresh after the render — project the screen-space UI now.
   edgeMarkers.update(

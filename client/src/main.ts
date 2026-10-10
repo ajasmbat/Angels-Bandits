@@ -42,6 +42,10 @@ import {
   generateMovers,
   withNewsHeli,
 } from "@angels-bandits/common/city/movers";
+import {
+  type PropSlot,
+  generateProps,
+} from "@angels-bandits/common/city/props";
 import { natureFor } from "@angels-bandits/common/city/nature";
 import { setNewsTarget } from "@angels-bandits/common/city/newsheli";
 import { bridgeSpans } from "@angels-bandits/common/city/river";
@@ -898,9 +902,23 @@ const moverField = {
   bombers: socket.bombers,
   // U6: and its cave-ins — the falling rock and rubble in the bores.
   caveins: socket.caveIns,
+  // D9: and its props (bound just below): felled tanks, jumbotrons and
+  // bridge spans are solid where they are drawn, and the spans' gaps open.
+  props: undefined as PropSlot | undefined,
 };
 // D5: crane-fall records name the room's crane sites — these.
 socket.collapses.bindCranes(moverField.cranes);
+// D9: the room's destructible props — laid out from the seed, the city and
+// its movers exactly as the server lays them out; the socket's state (every
+// welcome and `props` batch) writes the fallen roof props through to the
+// city and is the mover field's slot.
+const propLayout = generateProps(welcome.seed, city.cityBuildings, {
+  cranes: moverField.cranes,
+  trains: moverField.trains,
+});
+socket.props.bind(propLayout, city.cityBuildings);
+const propSlotLive: PropSlot = { layout: propLayout, state: socket.props };
+moverField.props = propSlotLive;
 if (moverField.news && welcome.newsHeli) {
   moverField.news.target = welcome.newsHeli.target;
   moverField.news.prev = welcome.newsHeli.prev;
@@ -4920,6 +4938,9 @@ const frame = (now: number): void => {
       bullet.vel = magnetizeVelocity(bullet.pos, bullet.vel, targets, dt);
     }
   }
+  // D9: rounds and the flight assist see the bridges' fallen spans.
+  bullets.gaps = socket.props.gapMask;
+  effWorld.gaps = socket.props.gapMask;
   bullets.step(dt);
   // Backwards, so a hit's bullets.remove() never skips the next bullet
   // (and no per-frame copy of the list — O4).

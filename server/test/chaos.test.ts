@@ -14,10 +14,10 @@
 
 import {
   BOSS_TUNING,
-  BOSS_TUNING_S4,
   BOSS_WEAK_POINTS,
   type BossRaid,
   raidEnd,
+  raidTier,
 } from "@angels-bandits/common/boss";
 import {
   CHAOS_CADENCE,
@@ -53,6 +53,7 @@ import {
   encodeMissile,
   missileImpactAt,
 } from "@angels-bandits/common/strike";
+import { NEXT_CARRIER_MS } from "@angels-bandits/common/waves";
 import {
   type Vec3,
   wrapCoord,
@@ -468,7 +469,7 @@ describe("the boss is always up", () => {
     index: createRoomCity(SEED_CITY).index,
   };
 
-  it("is in the sky ≥ 90 % of a 30-min session nobody shoots it down in, the first ~30 s after the human arrives", () => {
+  it("is in the sky ≥ 90 % of a 30-min session nobody shoots it down in, the first 4–6 s after the human arrives", () => {
     const boss = new BossDirector(mulberry32(2), BOSS_TUNING);
     let up = 0;
     let ticks = 0;
@@ -480,12 +481,12 @@ describe("the boss is always up", () => {
       ticks++;
     }
     expect(first).not.toBeNull();
-    expect((first as number) - T0).toBeGreaterThanOrEqual(25_000);
-    expect((first as number) - T0).toBeLessThanOrEqual(35_000 + DT);
+    expect((first as number) - T0).toBeGreaterThanOrEqual(4000);
+    expect((first as number) - T0).toBeLessThanOrEqual(6000 + DT);
     expect(up / ticks).toBeGreaterThanOrEqual(0.9);
   });
 
-  it("comes back 60–90 s after it is shot down", () => {
+  it("W1: the next carrier comes 20 s after it is shot down, one tier up, after its sections have all landed", () => {
     const boss = new BossDirector(mulberry32(4), BOSS_TUNING);
     let raid: BossRaid | null = null;
     let t = T0;
@@ -493,25 +494,30 @@ describe("the boss is always up", () => {
     // Shoot every weak point out a minute into the raid.
     t = raid.t0 + 60_000;
     boss.tick(t, true, [], world);
-    let ended: number | null = null;
+    let downAt: number | null = null;
+    let landed: number | null = null;
     for (let k = 0; k < BOSS_WEAK_POINTS.length; k++) {
-      for (let n = 0; n < 200; n++) {
+      for (let n = 0; n < 400; n++) {
         const hit = boss.damage("p", k, t, world);
         if (hit?.down) {
-          ended = hit.down.t + Math.max(...hit.down.pieces.map((p) => p.end));
+          downAt = hit.down.t;
+          landed = hit.down.t + Math.max(...hit.down.pieces.map((p) => p.end));
         }
       }
     }
-    if (ended === null) throw new Error("never went down");
+    if (downAt === null || landed === null) throw new Error("never went down");
+    // Its sections are all down well inside the gap: the next carrier never
+    // cuts the falling wreck short.
+    expect(landed - downAt).toBeLessThan(NEXT_CARRIER_MS);
     let next: BossRaid | null = null;
-    for (t += DT; t < ended + 5 * 60_000 && !next; t += DT) {
+    for (t += DT; t < downAt + 5 * 60_000 && !next; t += DT) {
       next = boss.tick(t, true, [], world).started;
     }
     if (!next) throw new Error("never came back");
-    expect(next.t0 - ended).toBeGreaterThanOrEqual(60_000);
-    expect(next.t0 - ended).toBeLessThanOrEqual(90_000 + DT);
-    // Long before S4's 15 minutes.
-    expect(next.t0 - raid.t0).toBeLessThan(BOSS_TUNING_S4.periodMs);
+    expect(next.t0 - downAt).toBeGreaterThanOrEqual(NEXT_CARRIER_MS);
+    expect(next.t0 - downAt).toBeLessThanOrEqual(NEXT_CARRIER_MS + DT);
+    expect(raidTier(next)).toBe(raidTier(raid) + 1);
+    expect(next.hpScale).toBeGreaterThan(raid.hpScale);
     expect(raidEnd(next)).toBeGreaterThan(next.t0);
   });
 });

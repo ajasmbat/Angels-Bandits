@@ -36,6 +36,7 @@ import {
   WRECK_MAX_MS,
   WRECK_STEP_MS,
 } from "./constants";
+import { NEXT_CARRIER_MS, carrierHpScale } from "./waves";
 import {
   type Vec3,
   wrapCoord,
@@ -451,8 +452,12 @@ export interface BossRaid {
   th0: number;
   /** Time on station, ms. */
   orbitMs: number;
-  /** Weak-point HP multiplier (tests and QA run small bosses). */
+  /** Weak-point HP multiplier (tests and QA run small bosses; W1: the
+   * carrier's tier is already in it). */
   hpScale: number;
+  /** W1: which carrier of the session this is, 1-based (its HUD tier; its
+   * HP and flak scale with it). Absent on a raid from before W1: 1. */
+  tier?: number;
 }
 
 const ingressMs = (): number => (BOSS_INGRESS_M / BOSS_SPEED) * 1000;
@@ -542,44 +547,31 @@ export interface BossTuning {
   /** First raid this long after a human is in the room, ms. */
   firstMinMs: number;
   firstMaxMs: number;
-  /** C2: the gap from the previous raid's END (its run-out done, or its last
-   * falling section down) to the next raid's start, ms, ± jitter. */
+  /** W1: the gap from the previous raid's END (its run-out done, or the
+   * instant it was shot down) to the next raid's start, ms, ± jitter. */
   periodMs: number;
   periodJitterMs: number;
   orbitMs: number;
   hpScale: number;
 }
 
-/** C2 constant chaos: the first raid ~30 s after a human arrives, then the
- * next one 60–90 s after each raid ends — on station 15 min, so the
- * zeppelin is up > 90 % of a session nobody shoots it down in. */
+/** W1 Carrier War: the first carrier 4–6 s after a human starts flying,
+ * the next one NEXT_CARRIER_MS after each goes down (or, never shot down,
+ * flies off after 15 min on station). */
 export const BOSS_TUNING: BossTuning = {
-  firstMinMs: 25_000,
-  firstMaxMs: 35_000,
-  periodMs: 75_000,
-  periodJitterMs: 15_000,
+  firstMinMs: 4000,
+  firstMaxMs: 6000,
+  periodMs: NEXT_CARRIER_MS,
+  periodJitterMs: 0,
   orbitMs: 900_000,
   hpScale: 1,
-};
-
-/** The S4 schedule before C2 (AB_CHAOS=0 restores it): first raid 4–6 min
- * after a human arrives, then every 15 min ± 1.5 START to start, 5 min on
- * station. `periodFromStart` marks the old start-to-start rule. */
-export const BOSS_TUNING_S4: BossTuning & { periodFromStart: true } = {
-  firstMinMs: 240_000,
-  firstMaxMs: 360_000,
-  periodMs: 900_000,
-  periodJitterMs: 90_000,
-  orbitMs: BOSS_ORBIT_MS,
-  hpScale: 1,
-  periodFromStart: true,
 };
 
 /** AB_BOSS_FAST=1 (tests and QA only): a small boss, right away. */
 export const BOSS_FAST_TUNING: BossTuning = {
   firstMinMs: 2000,
   firstMaxMs: 3000,
-  periodMs: 20_000,
+  periodMs: NEXT_CARRIER_MS,
   periodJitterMs: 0,
   orbitMs: 90_000,
   hpScale: 0.1,
@@ -588,8 +580,8 @@ export const BOSS_FAST_TUNING: BossTuning = {
 /**
  * When the next raid starts: the first one firstMin..firstMax after a human
  * arrived (`humanSince`), every later one periodMs ± periodJitterMs after
- * `prev` — the previous raid's END (C2), or its START under a tuning with
- * `periodFromStart` (the S4 rule). Pure in its inputs and `rand`; whole ms.
+ * `prev` — the previous raid's END (its run-out, or the instant it went
+ * down). Pure in its inputs and `rand`; whole ms.
  */
 export function nextRaidAt(
   prev: number | null,
@@ -609,31 +601,49 @@ export function nextRaidAt(
   );
 }
 
-/** Does `tuning` space raids start to start (S4) rather than end to start? */
-export const periodFromStart = (tuning: BossTuning): boolean =>
-  (tuning as { periodFromStart?: boolean }).periodFromStart === true;
+/** W1: how far a carrier's orbit centre may sit from the human it came for,
+ * m (plan view, seeded). */
+export const CARRIER_CENTRE_SPREAD_M = 120;
 
-/** The raid itself: a seeded centre and entry angle, quantised to the wire. */
+/**
+ * The raid itself: a seeded centre and entry angle, quantised to the wire.
+ * W1: `near` (a human) puts the orbit's centre within
+ * CARRIER_CENTRE_SPREAD_M of it — the carrier comes for the pilots, out of
+ * the haze ~800 m away — and `tier` scales its HP (carrierHpScale). Three
+ * draws either way.
+ */
 export function planRaid(
   rand: () => number,
   id: number,
   t0: number,
   tuning: BossTuning = BOSS_TUNING,
+  tier = 1,
+  near: Vec3 | null = null,
 ): BossRaid {
   const qc = (v: number) => {
     const c = Math.round(wrapCoord(v) * 10) / 10;
     return c >= WORLD_SIZE ? 0 : c;
   };
+  const rx = rand();
+  const rz = rand();
+  const spread = (r: number) => (r * 2 - 1) * CARRIER_CENTRE_SPREAD_M;
   return {
     id,
     t0: Math.round(t0),
-    cx: qc(rand() * WORLD_SIZE),
-    cz: qc(rand() * WORLD_SIZE),
+    cx: qc(near ? near.x + spread(rx) : rx * WORLD_SIZE),
+    cz: qc(near ? near.z + spread(rz) : rz * WORLD_SIZE),
     th0: Math.round(rand() * Math.PI * 2 * 1000) / 1000,
     orbitMs: Math.round(tuning.orbitMs),
-    hpScale: Math.round(tuning.hpScale * 100) / 100,
+    hpScale: Math.max(
+      0.01,
+      Math.round(tuning.hpScale * carrierHpScale(tier) * 100) / 100,
+    ),
+    tier,
   };
 }
+
+/** A raid's carrier tier (1 for a raid from before W1). */
+export const raidTier = (r: BossRaid): number => r.tier ?? 1;
 
 /** Full HP of weak point `k` on this raid. */
 export const weakMaxHp = (r: BossRaid, k: number): number =>
@@ -1731,7 +1741,7 @@ export function bossCredit(damage: ReadonlyMap<string, number>): BossCredit {
 // --- Wire ---------------------------------------------------------------------
 
 /** A raid on the wire: integers only, exactly reconstructible —
- * [id, t0, cx ×10, cz ×10, th0 ×1000, orbitMs, hpScale ×100]. */
+ * [id, t0, cx ×10, cz ×10, th0 ×1000, orbitMs, hpScale ×100, tier]. */
 export type WireBossRaid = [
   id: number,
   t0: number,
@@ -1740,6 +1750,7 @@ export type WireBossRaid = [
   th0: number,
   orbitMs: number,
   hpScale: number,
+  tier: number,
 ];
 
 export function encodeRaid(r: BossRaid): WireBossRaid {
@@ -1751,18 +1762,25 @@ export function encodeRaid(r: BossRaid): WireBossRaid {
     Math.round(r.th0 * 1000),
     r.orbitMs,
     Math.round(r.hpScale * 100),
+    raidTier(r),
   ];
 }
 
 const finite = (v: unknown): v is number =>
   typeof v === "number" && Number.isFinite(v);
 
-/** Inverse of encodeRaid; null for anything malformed. */
+/** Inverse of encodeRaid (a pre-W1 7-element raid is tier 1); null for
+ * anything malformed. */
 export function decodeRaid(w: unknown): BossRaid | null {
-  if (!Array.isArray(w) || w.length !== 7 || !w.every(finite)) return null;
-  const [id, t0, cx, cz, th0, orbitMs, hp] = w as number[];
+  if (!Array.isArray(w) || (w.length !== 7 && w.length !== 8)) return null;
+  if (!w.every(finite)) return null;
+  const [id, t0, cx, cz, th0, orbitMs, hp, tier] = w as number[];
   if ((orbitMs as number) < 0 || (hp as number) <= 0) return null;
+  if (tier !== undefined && !(Number.isInteger(tier) && tier >= 1)) {
+    return null;
+  }
   return {
+    ...(tier !== undefined && { tier }),
     id: id as number,
     t0: t0 as number,
     cx: (cx as number) / 10,

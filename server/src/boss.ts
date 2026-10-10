@@ -4,17 +4,23 @@
 // drive exactly this, so the sim measures the boss the live server flies.
 //
 // The rules:
-//  - a raid starts only while a human is in the room: the first one
-//    tuning.firstMin..firstMax after a human arrived, then (C2) period ±
-//    jitter after the last raid ENDED — flew off, or its last section came
-//    down (common/src/boss.ts nextRaidAt) — so one is nearly always up. A
-//    room left to its bots finishes a raid in progress but never starts one;
+//  - a raid starts only while a human is flying in the room: the first one
+//    tuning.firstMin..firstMax after a human arrived, then (W1) period ±
+//    jitter after the last raid ENDED — flew off, or the instant it was shot
+//    down (common/src/boss.ts nextRaidAt), though never while its sections
+//    are still falling. A room nobody is flying in finishes a raid in
+//    progress but never starts one;
+//  - W1: each raid is the session's next carrier (`tier`, reset by
+//    resetSession when the room empties of humans), its orbit centred near
+//    a human, its HP and flak scaled by its tier (common/src/waves.ts);
 //  - each turret fires at most every BOSS_FLAK_INTERVAL_MS, at the nearest
 //    plane in its range, traverse and line of sight — never a spawn-protected
 //    plane or one that (re)spawned in the last respawnQuietMs — and only
-//    after holding BOSS_FLAK_REACTION_MS on a new target (the bots' rule);
+//    after holding BOSS_FLAK_REACTION_MS on a new target (the bots' rule).
+//    W1: the caller hands it humans only — its own planes are not targets;
 //  - a burst hurts by distance from the plane's (extrapolated) on-record
-//    pose, never more than BOSS_FLAK_DPS_CAP to any plane in a rolling second;
+//    pose, never more than BOSS_FLAK_DPS_CAP (× the tier's flak scale) to
+//    any plane in a rolling second;
 //  - a weak-point hit is judged on the round's whole line against the
 //    zeppelin's own pose (bossHitValid), for players and bots alike.
 
@@ -52,11 +58,11 @@ import {
   launchDoneAt,
   launchReleaseAt,
   nextRaidAt,
-  periodFromStart,
   planRaid,
   raidEgressAt,
   raidEnd,
   raidMaxHp,
+  raidTier,
   turretMuzzleInto,
   weakPointInto,
 } from "@angels-bandits/common/boss";
@@ -72,6 +78,7 @@ import {
   INTERP_DELAY_MAX_MS,
   POSE_AGE_MAX_MS,
 } from "@angels-bandits/common/constants";
+import { carrierFlakScale } from "@angels-bandits/common/waves";
 import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 import type { BotRoundHit } from "./bots";
 import type { Combat, SpeedCapFn } from "./combat";
@@ -131,8 +138,9 @@ export class BossDirector {
   hp: number[] = [];
   private humanSince: number | null = null;
   private nextAt: number | null = null;
-  private lastStart: number | null = null;
   private nextRaid = 1;
+  /** W1: the session's carriers so far (the next raid is tier + 1). */
+  private tier = 0;
   private nextShell = 1;
   private readonly damageBy = new Map<string, number>();
   private turrets: Turret[] = [];
@@ -156,6 +164,11 @@ export class BossDirector {
     private readonly rand: () => number,
     private readonly tuning: BossTuning = BOSS_TUNING,
   ) {}
+
+  /** W1: the room emptied of humans — the next carrier is tier 1 again. */
+  resetSession(): void {
+    this.tier = 0;
+  }
 
   /** A plane (re)spawned or came back: no flak at it for a beat. */
   noteSpawn(id: string, now: number): void {
@@ -237,8 +250,9 @@ export class BossDirector {
 
   /**
    * One tick: the schedule, the turrets, the bursts due and the sections
-   * that hit. `humans`: a human is in the room. `planes`: the living planes
-   * in the air.
+   * that hit. `humans`: a human is flying in the room. `planes`: the living
+   * planes in the air the turrets may shoot (W1: the humans) — a new raid's
+   * orbit is centred near the first of them.
    */
   tick(
     now: number,
@@ -255,7 +269,7 @@ export class BossDirector {
     for (const [id, t] of this.spawns) {
       if (now - t >= RESPAWN_QUIET_MS) this.spawns.delete(id);
     }
-    this.schedule(now, humans, out);
+    this.schedule(now, humans, planes[0]?.pos ?? null, out);
     const raid = this.activeRaid(now);
     if (raid) this.fireTurrets(now, raid, planes, world, out);
     this.settleShells(now, planes, out);
@@ -321,7 +335,12 @@ export class BossDirector {
     this.launchByBot.delete(botId);
   }
 
-  private schedule(now: number, humans: boolean, out: BossTickResult): void {
+  private schedule(
+    now: number,
+    humans: boolean,
+    near: Vec3 | null,
+    out: BossTickResult,
+  ): void {
     if (!humans) {
       this.humanSince = null;
       if (!this.busy(now)) this.nextAt = null;
@@ -331,14 +350,21 @@ export class BossDirector {
     if (this.busy(now)) return;
     if (this.nextAt === null) {
       this.nextAt = nextRaidAt(
-        periodFromStart(this.tuning) ? this.lastStart : this.lastEnd(),
+        this.lastEnd(),
         this.humanSince,
         this.rand,
         this.tuning,
       );
     }
     if (now < this.nextAt) return;
-    const raid = planRaid(this.rand, this.nextRaid++, now, this.tuning);
+    const raid = planRaid(
+      this.rand,
+      this.nextRaid++,
+      now,
+      this.tuning,
+      ++this.tier,
+      near,
+    );
     this.slot.raid = raid;
     this.slot.down = null;
     this.hp = raidMaxHp(raid);
@@ -353,20 +379,17 @@ export class BossDirector {
       // Staggered, so six turrets never open up in one volley.
       nextFireAt: now + (k * BOSS_FLAK_INTERVAL_MS) / BOSS_TURRETS.length,
     }));
-    this.lastStart = now;
     this.nextAt = null;
     out.started = raid;
   }
 
-  /** When the last raid was over: its run-out done or, once it went down,
-   * its last section landed. Null before the first raid. */
+  /** When the last raid was over: its run-out done or (W1) the instant it
+   * went down. Null before the first raid. */
   private lastEnd(): number | null {
     const r = this.slot.raid;
     if (!r) return null;
     const d = this.slot.down;
-    if (d && d.id === r.id) {
-      return d.t + Math.max(0, ...d.pieces.map((p) => p.end));
-    }
+    if (d && d.id === r.id) return d.t;
     return raidEnd(r);
   }
 
@@ -429,6 +452,9 @@ export class BossDirector {
     out: BossTickResult,
   ): void {
     if (this.shells.length === 0) return;
+    // W1: the carrier's tier sets how hard its guns hit.
+    const r = this.slot.raid;
+    const scale = r ? carrierFlakScale(raidTier(r)) : 1;
     const left: BossFlak[] = [];
     for (const f of this.shells) {
       if (f.t0 + f.fuse > now) {
@@ -438,9 +464,9 @@ export class BossDirector {
       const victims: { id: string; damage: number }[] = [];
       for (const p of planes) {
         if (p.prot || this.spawns.has(p.id)) continue;
-        const raw = flakDamage(wrapDistance(p.pos, f.to));
+        const raw = flakDamage(wrapDistance(p.pos, f.to)) * scale;
         if (raw <= 0) continue;
-        const damage = this.capped(p.id, raw, now);
+        const damage = this.capped(p.id, raw, now, scale);
         if (damage > 0) victims.push({ id: p.id, damage });
       }
       out.bursts.push({ flak: f, victims });
@@ -449,12 +475,12 @@ export class BossDirector {
   }
 
   /** `raw` flak damage to `id` at `now`, cut to what its rolling second
-   * still allows; recorded. */
-  private capped(id: string, raw: number, now: number): number {
+   * still allows (BOSS_FLAK_DPS_CAP × `scale`); recorded. */
+  private capped(id: string, raw: number, now: number, scale: number): number {
     const log = (this.taken.get(id) ?? []).filter((e) => now - e.t < 1000);
     let sum = 0;
     for (const e of log) sum += e.dmg;
-    const damage = Math.max(0, Math.min(raw, BOSS_FLAK_DPS_CAP - sum));
+    const damage = Math.max(0, Math.min(raw, BOSS_FLAK_DPS_CAP * scale - sum));
     if (damage > 0) log.push({ t: now, dmg: damage });
     this.taken.set(id, log);
     return damage;

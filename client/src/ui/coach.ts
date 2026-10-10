@@ -1,9 +1,10 @@
 // First five minutes (U3): everything that teaches the controls, and all of
 // its copy in one place so it can't drift from the real controls unnoticed.
 // - the controls primer on the join card (desktop or touch variant),
-// - the first-life hints: aim → fire → boost → scores, one at a time, each
-//   fading as soon as the player does it (or after HINT_MS), never again
-//   once the queue is through or skipped,
+// - the first-life hints: aim → fire → boost (W4: three, short), one at a
+//   time, each fading as soon as the player does it (or after HINT_MS),
+//   never again once learned (done — remembered per hint) or once the queue
+//   is through or skipped,
 // - the one-time touch coach overlay on the first spawn,
 // - the one-time storm-ceiling notice after the first storm death.
 // No in-flight warnings (the owner removed PULL UP in #66): nothing here
@@ -22,6 +23,9 @@ import { readStored, writeStored } from "./storage";
 export const COACH_DONE_KEY = "ab:coach-done";
 export const TOUCH_COACH_KEY = "ab:touch-coach";
 export const STORM_HINT_KEY = "ab:storm-hint";
+/** W4: the hints already learned (done by the player), comma-separated —
+ * a learned hint never shows again, even if the queue never finished. */
+export const COACH_LEARNED_KEY = "ab:coach-learned";
 
 /** A hint stays up at most this long before the next one, ms. */
 export const HINT_MS = 8000;
@@ -71,8 +75,18 @@ export function primerItems(touch: boolean): Array<[string, string]> {
   ];
 }
 
-export type HintId = "aim" | "fire" | "boost" | "scores";
-export const HINT_ORDER: readonly HintId[] = ["aim", "fire", "boost", "scores"];
+export type HintId = "aim" | "fire" | "boost";
+/** W4: three tips, no more — the scores hint went (TAB / the minimap stay
+ * in the controls primer behind the join card's ? icon). */
+export const HINT_ORDER: readonly HintId[] = ["aim", "fire", "boost"];
+
+/** W4: the learned-hints flag's value → the hints in it (junk ignored). */
+export function parseLearned(raw: string | null): HintId[] {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .filter((id): id is HintId => (HINT_ORDER as readonly string[]).includes(id));
+}
 
 /** A hint's line, for the device it shows on. */
 export function hintText(id: HintId, touch: boolean): string {
@@ -85,10 +99,6 @@ export function hintText(id: HintId, touch: boolean): string {
       return touch
         ? "HOLD BOOST FOR SPEED"
         : `HOLD ${keyName(BOOST_KEY)} TO BOOST`;
-    case "scores":
-      return touch
-        ? "TAP THE MINIMAP FOR SCORES"
-        : "HOLD TAB FOR SCORES & BOTS";
   }
 }
 
@@ -105,10 +115,14 @@ export interface CoachState {
   waitMs: number;
 }
 
-/** A fresh queue; `done` (the flag) means nothing left to show. */
-export function createCoach(done: boolean): CoachState {
+/** A fresh queue; `done` (the flag) means nothing left to show, and a
+ * `learned` hint (W4) is left out. */
+export function createCoach(
+  done: boolean,
+  learned: readonly HintId[] = [],
+): CoachState {
   return {
-    queue: done ? [] : HINT_ORDER,
+    queue: done ? [] : HINT_ORDER.filter((id) => !learned.includes(id)),
     showing: null,
     shownMs: 0,
     waitMs: FIRST_DELAY_MS,
@@ -205,6 +219,8 @@ const MARKS: Array<{ id: string; label: string; side: string }> = [
 
 export class Coach {
   private state: CoachState;
+  /** W4: hints the player has done, ever (COACH_LEARNED_KEY). */
+  private readonly learned: Set<HintId>;
   private finished: boolean;
   private shown: Shown = null;
   private started = false;
@@ -234,7 +250,11 @@ export class Coach {
   ) as HTMLElement;
 
   constructor(private readonly touch: () => boolean) {
-    this.state = createCoach(readStored(COACH_DONE_KEY) === "1");
+    this.learned = new Set(parseLearned(readStored(COACH_LEARNED_KEY)));
+    this.state = createCoach(
+      readStored(COACH_DONE_KEY) === "1",
+      [...this.learned],
+    );
     this.finished = coachFinished(this.state);
     swallowMouse(this.skipBtn);
     this.skipBtn.addEventListener("click", () => this.skip());
@@ -298,6 +318,10 @@ export class Coach {
   /** The player did `id` (cheap to call every frame). */
   note(id: HintId): void {
     if (this.finished) return;
+    if (!this.learned.has(id)) {
+      this.learned.add(id);
+      writeStored(COACH_LEARNED_KEY, [...this.learned].join(","));
+    }
     if (this.state.showing === id) this.ended.push(`${id}:action`);
     this.state = noteAction(this.state, id);
   }

@@ -48,7 +48,7 @@ describe("the hint queue (createCoach / stepCoach / noteAction)", () => {
     expect(s.showing).toBeNull();
     s = run(s, 1);
     expect(s.showing).toBe("aim");
-    expect(s.queue).toEqual(["fire", "boost", "scores"]);
+    expect(s.queue).toEqual(["fire", "boost"]);
     s = run(s, HINT_MS - 1);
     expect(s.showing).toBe("aim");
     s = run(s, 1); // timed out
@@ -56,7 +56,7 @@ describe("the hint queue (createCoach / stepCoach / noteAction)", () => {
     expect(s.waitMs).toBe(GAP_MS);
     s = run(s, GAP_MS);
     expect(s.showing).toBe("fire");
-    for (const next of ["boost", "scores"]) {
+    for (const next of ["boost"]) {
       s = run(run(s, HINT_MS), GAP_MS);
       expect(s.showing).toBe(next);
     }
@@ -68,7 +68,7 @@ describe("the hint queue (createCoach / stepCoach / noteAction)", () => {
     let s = run(createCoach(false), FIRST_DELAY_MS);
     expect(s.showing).toBe("aim");
     s = noteAction(s, "boost"); // done before it was taught
-    expect(s.queue).toEqual(["fire", "scores"]);
+    expect(s.queue).toEqual(["fire"]);
     expect(s.showing).toBe("aim");
     s = noteAction(s, "aim");
     expect(s.showing).toBeNull();

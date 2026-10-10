@@ -243,7 +243,11 @@ import {
 } from "./game/instructor";
 import { speedFov } from "./game/jet-camera";
 import { magnetizeVelocity } from "./game/magnetism";
-import { MissileFeed, MissileShake } from "./game/missile-feed";
+import {
+  MissileFeed,
+  MissileShake,
+  bombingNear,
+} from "./game/missile-feed";
 import { createPullCue, stepPullCue } from "./game/pull-feel";
 import {
   type QaChaosSpec,
@@ -5563,6 +5567,10 @@ const frame = (now: number): void => {
       radio.noteCombat(now);
       music.noteCombat(now);
     }
+    // W4: the bombing warning on the objective HUD.
+    hud.setBombWarning(
+      bombingNear(mf.flying, renderMs, alive ? flight.pos : null),
+    );
     missileRenderer.update(mf.flying, chase.position, renderMs, now);
     socket.pruneChaos(renderMs); // C2: runs and quakes long over
   }
@@ -5930,7 +5938,6 @@ const frame = (now: number): void => {
   }
   if (flying && guns.triggerHeld) coach.note("fire");
   if (flying && boost.active) coach.note("boost");
-  if (flying && scoreboard.isOpen) coach.note("scores");
   coach.frame(Math.min(rawMs, 250), alive, settingsOpen || document.hidden);
   cursorPrev = cursorNow;
   if (solutionTone.shouldPlay(alive && aimResult.solution, now)) {

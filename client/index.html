@@ -507,6 +507,17 @@
       #radio-toggle.off {
         color: #5a6b78;
       }
+      /* W4 declutter: both live in the settings panel (and G / the panel
+         still drive them) — the HUD no longer carries them, desktop or
+         touch. The flight-data line (#hud) shows only when the panel's
+         ADVANCED › FLIGHT DATA asks for it (body.flight-data). */
+      #radio-toggle,
+      #quality-toggle {
+        display: none;
+      }
+      body:not(.flight-data) #hud {
+        display: none;
+      }
       #scoreboard {
         position: fixed;
         left: 50%;
@@ -663,10 +674,12 @@
          readout. Weak-point segments under the bar's fill. */
       #boss-bar {
         position: fixed;
-        top: 8px;
+        /* W4: a bare track under the objective line (#wave-hud), which
+           carries the carrier's name and its percentage now. */
+        top: calc(32px + var(--safe-t, 0px));
         left: 50%;
         transform: translateX(-50%);
-        width: min(420px, 62vw);
+        width: min(320px, 40vw);
         display: none;
         pointer-events: none;
         user-select: none;
@@ -701,6 +714,10 @@
         background: #fff3e8;
         transition: none;
       }
+      #boss-bar .name,
+      #boss-bar .cells {
+        display: none !important;
+      }
       #boss-bar .cells {
         display: flex;
         gap: 3px;
@@ -720,21 +737,66 @@
          and the "WAVE n" banner that pops at each wave's breather. */
       #wave-hud {
         position: fixed;
-        top: 46px;
+        top: calc(8px + var(--safe-t, 0px));
         left: 50%;
         transform: translateX(-50%);
         display: none;
         pointer-events: none;
         user-select: none;
         color: #ffd8c4;
-        font-size: 13px;
+        font-size: 15px;
         font-weight: bold;
-        letter-spacing: 0.24em;
+        letter-spacing: 0.22em;
         white-space: nowrap;
         text-shadow: 0 1px 2px #000;
       }
       #wave-hud.open {
         display: block;
+      }
+      /* W4: Easy mode's tag, a chip ahead of the objective line. */
+      #wave-hud .easy {
+        display: none;
+        margin-right: 10px;
+        padding: 1px 6px 1px 8px;
+        border: 1px solid #27e0c0aa;
+        color: #27e0c0;
+        font-size: 11px;
+        letter-spacing: 0.2em;
+        vertical-align: 2px;
+      }
+      #wave-hud.easy-on .easy {
+        display: inline-block;
+      }
+      /* W4: an incoming enemy bomb near the own plane. */
+      #bomb-warn {
+        position: fixed;
+        top: calc(52px + var(--safe-t, 0px));
+        left: 50%;
+        transform: translateX(-50%);
+        display: none;
+        pointer-events: none;
+        user-select: none;
+        padding: 3px 10px;
+        background: #3a0a0acc;
+        border: 1px solid #ff5a3a;
+        color: #ffb39a;
+        font-size: 13px;
+        font-weight: bold;
+        letter-spacing: 0.2em;
+        white-space: nowrap;
+        text-shadow: 0 1px 2px #000;
+        animation: bomb-warn-blink 0.7s steps(2, jump-none) infinite;
+      }
+      #bomb-warn.on {
+        display: block;
+      }
+      @keyframes bomb-warn-blink {
+        from {
+          opacity: 1;
+        }
+        to {
+          opacity: 0.55;
+        }
       }
       #wave-banner {
         position: fixed;
@@ -758,9 +820,15 @@
         transition: none;
         animation: medal-pop 0.4s cubic-bezier(0.2, 1.6, 0.4, 1) both;
       }
+      /* W4 phone: the objective line right under the top band (the
+         gauges hold its middle), the bar and the warning under it. */
       body.touch #wave-hud {
-        top: calc(var(--hud-top-band) + 30px);
-        font-size: 11px;
+        top: calc(var(--hud-top-band) + 2px);
+        font-size: 12px;
+      }
+      body.touch #bomb-warn {
+        top: calc(var(--hud-top-band) + 34px);
+        font-size: 12px;
       }
       body.touch #wave-banner {
         font-size: 28px;
@@ -865,9 +933,12 @@
         border: none;
         color: #0c0b18;
         font: inherit;
-        font-size: 14px;
-        letter-spacing: 0.15em;
-        padding: 9px 26px;
+        font-size: 20px;
+        font-weight: bold;
+        letter-spacing: 0.3em;
+        /* W4: one big PLAY — the card's only call to action. */
+        min-width: 220px;
+        padding: 14px 32px 14px 42px;
         cursor: pointer;
       }
       #join-status {
@@ -904,23 +975,69 @@
       #join-retry[hidden] {
         display: none;
       }
-      /* FL1: the Flight Lab link under FLY (and, in the lab, the way back). */
-      #join-lab {
-        display: inline-block;
-        margin: 12px auto 0;
-        color: #9fd8e8;
-        font-size: 11px;
-        letter-spacing: 0.18em;
-        text-decoration: none;
-        border-bottom: 1px solid rgba(159, 216, 232, 0.4);
-        padding-bottom: 1px;
+      /* W4: the small icons under PLAY — the controls primer (?), the
+         Flight Lab (FL1) and, on an iPhone page, the install hint. */
+      #join-icons {
+        display: flex;
+        justify-content: center;
+        gap: 10px;
+        margin: 14px auto 0;
       }
-      #join-lab:hover {
+      #join form.busy #join-icons {
+        display: none;
+      }
+      .join-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        box-sizing: border-box;
+        width: 32px;
+        height: 32px;
+        padding: 0;
+        background: transparent;
+        border: 1px solid rgba(159, 216, 232, 0.35);
+        border-radius: 50%;
+        color: #9fd8e8;
+        font: inherit;
+        font-size: 14px;
+        text-decoration: none;
+        cursor: pointer;
+      }
+      .join-icon svg {
+        width: 18px;
+        height: 18px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.6;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .join-icon:hover,
+      .join-icon[aria-expanded="true"] {
         color: #27e0c0;
         border-color: #27e0c0;
       }
-      #join form.busy #join-lab {
+      /* The install icon only where ui/fullscreen.ts unhid the hint (an
+         iPhone page); the hint itself only once the icon is tapped. */
+      #join-install {
         display: none;
+      }
+      #join-form:has(#pwa-hint:not([hidden])) #join-install {
+        display: inline-flex;
+      }
+      #join-form:not(.show-install) #pwa-hint {
+        display: none;
+      }
+      /* FL1, in the lab: the icon becomes the plain way back to the game. */
+      #join-lab.text {
+        width: auto;
+        height: auto;
+        border: none;
+        border-bottom: 1px solid rgba(159, 216, 232, 0.4);
+        border-radius: 0;
+        padding-bottom: 1px;
+        font-size: 11px;
+        letter-spacing: 0.18em;
       }
       #minimap {
         position: fixed;
@@ -1150,7 +1267,7 @@
         top: calc(14px + var(--safe-t));
       }
       #aim-mode-toast {
-        top: calc(34px + var(--safe-t));
+        top: calc(80px + var(--safe-t));
       }
       #join-fs {
         right: calc(14px + var(--safe-r));
@@ -1282,11 +1399,12 @@
         top: var(--hud-top-band);
       }
       body.touch #aim-mode-toast {
-        margin-top: 18px;
+        margin-top: 60px;
       }
-      /* S7: under the top band, smaller — a phone's middle is the fight. */
+      /* S7: under the top band, smaller — a phone's middle is the fight.
+         W4: below the objective line, its bar and the bombing warning. */
       body.touch #medal-toast {
-        top: calc(var(--hud-top-band) + 44px);
+        top: calc(var(--hud-top-band) + 64px);
       }
       body.touch #medal-toast .medal {
         font-size: 15px;
@@ -2164,6 +2282,10 @@
          the top-centre aim-mode toast; only its SKIP link takes input. The
          touch coach marks never take input: the drag that dismisses them
          still aims. Fades are opacity only. */
+      /* W4: folded behind the ? icon. */
+      #join-form:not(.show-primer) #join-primer {
+        display: none;
+      }
       #join-primer {
         list-style: none;
         display: flex;
@@ -2488,8 +2610,12 @@
       <div class="track"><div class="fill"></div></div>
       <div class="cells"></div>
     </div>
-    <!-- W1 (ui/hud.ts setWaves): the wave, the enemies left, the banner. -->
-    <div id="wave-hud" aria-live="polite"></div>
+    <!-- W1 (ui/hud.ts setWaves): the wave, the enemies left, the banner.
+         W4: the objective line — "WAVE 3 · 5 ENEMIES LEFT · CARRIER 62%" —
+         top centre over the carrier's bare bar, the EASY tag, and the
+         bombing warning under it. -->
+    <div id="wave-hud" aria-live="polite"><span class="easy">EASY</span><span class="line"></span></div>
+    <div id="bomb-warn" role="alert">⚠ ENEMY BOMBING NEAR YOU</div>
     <div id="wave-banner" aria-hidden="true"></div>
     <div id="scoreboard">
       <h2>SCOREBOARD</h2>
@@ -2586,10 +2712,52 @@
           enterkeyhint="go"
           spellcheck="false"
         />
-        <button type="submit">FLY</button>
-        <!-- FL1 (ui/join.ts initLabLink): into the Flight Lab, or back out. -->
-        <a id="join-lab" href="?lab">FLIGHT LAB</a>
-        <!-- U3 (ui/coach.ts): the controls primer, desktop or touch. -->
+        <button type="submit">PLAY</button>
+        <!-- W4: one tap to play — everything else behind small icons: the
+             controls primer (?), the Flight Lab (FL1; ui/join.ts
+             initLabLink turns it into a plain "back" link in the lab) and,
+             where ui/fullscreen.ts unhides #pwa-hint, the iPhone install
+             hint. -->
+        <div id="join-icons">
+          <button
+            id="join-help"
+            class="join-icon"
+            type="button"
+            title="Controls"
+            aria-label="Show the controls"
+            aria-expanded="false"
+            aria-controls="join-primer"
+          >
+            ?
+          </button>
+          <a
+            id="join-lab"
+            class="join-icon"
+            href="?lab"
+            title="Flight Lab"
+            aria-label="Flight Lab"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3" />
+              <path d="M7.5 15h9" />
+            </svg>
+          </a>
+          <button
+            id="join-install"
+            class="join-icon"
+            type="button"
+            title="Play fullscreen"
+            aria-label="How to play fullscreen"
+            aria-expanded="false"
+            aria-controls="pwa-hint"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 4v11M7 10l5 5 5-5M5 20h14" />
+            </svg>
+          </button>
+        </div>
+        <!-- U3 (ui/coach.ts): the controls primer, desktop or touch — W4:
+             folded behind the ? icon. -->
         <ul id="join-primer" aria-label="Controls"></ul>
         <div id="join-progress" aria-hidden="true"><div class="fill"></div></div>
         <p id="join-status" role="status" aria-live="polite">LOADING…</p>

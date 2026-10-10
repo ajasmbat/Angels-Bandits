@@ -35,7 +35,7 @@ import {
 } from "@angels-bandits/common/strike";
 import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 import type { DangerBudget } from "./danger";
-import type { RoomCity } from "./destruction";
+import { type RoomCity, blastProps } from "./destruction";
 
 export interface DirectorTuning {
   /** Continuous time near buildings before a plane draws fire, ms. */
@@ -350,7 +350,6 @@ export class MissileDirector {
       target,
       now,
       world.buildings,
-      world.index,
     );
     if (strike) {
       this.nextId++;
@@ -368,5 +367,6 @@ export function applyMissileImpact(city: RoomCity, m: MissileStrike): number[] {
   const out = city.damage.damageAt(m.to, radius, damage);
   // D3: a collapse a missile sets off is the environment's — nobody's.
   for (const id of out) city.breakers.set(chunkBuilding(id), null);
+  blastProps(city, m.to, radius, damage); // D9: cars, lamps, a crater
   return out;
 }

@@ -19,7 +19,7 @@ import {
   CITY_GRID,
   type LocalBox,
 } from "@angels-bandits/common/city";
-import { type CityIndex, losClear } from "@angels-bandits/common/collision";
+import { losClear } from "@angels-bandits/common/collision";
 import {
   BLOCK_PITCH,
   CLOUD_BASE,
@@ -160,9 +160,6 @@ export class AtmosphereFx {
     buildingsByBlock: Map<number, Building[]>,
     private readonly finalPass: FinalPass | null,
     private readonly shafts: ShaftsPass | null,
-    /** A1: the city's block index — the vents' sight lines test only the
-     * blocks they cross (the trace's costliest JS function without it). */
-    private readonly cityIndex?: CityIndex,
   ) {
     this.buildings = buildings;
     this.buildingsByBlock = buildingsByBlock;
@@ -287,7 +284,7 @@ export class AtmosphereFx {
     this.top.x = v.x;
     this.top.y = v.y + 1;
     this.top.z = v.z;
-    return losClear(this.eye, this.top, this.buildings, this.cityIndex);
+    return losClear(this.eye, this.top, this.buildings);
   };
 
   /** Pick (4 Hz), fade (world clock) and project the shimmer columns. */

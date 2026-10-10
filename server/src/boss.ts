@@ -75,7 +75,7 @@ import {
 import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 import type { BotRoundHit } from "./bots";
 import type { Combat, SpeedCapFn } from "./combat";
-import type { RoomCity } from "./destruction";
+import { type RoomCity, blastProps } from "./destruction";
 
 /** A plane as the director sees it this tick: its on-record pose (the
  * caller extrapolates a human's to `now`), velocity, and protection. */
@@ -394,7 +394,7 @@ export class BossDirector {
       let target: BossPlane | null = null;
       for (const { p } of ranked) {
         if (!flakSolution(muzzle, up, p, () => 0)) continue;
-        if (!losClear(muzzle, p.pos, world.buildings, world.index)) continue;
+        if (!losClear(muzzle, p.pos, world.buildings)) continue;
         target = p;
         break;
       }
@@ -635,6 +635,7 @@ export function applyBossImpact(
   building: Building | null = null,
 ): number[] {
   const out = city.damage.damageAt(at, BOSS_IMPACT_RADIUS, BOSS_IMPACT_DAMAGE);
+  blastProps(city, at, BOSS_IMPACT_RADIUS, BOSS_IMPACT_DAMAGE, by); // D9
   if (building) out.push(...crushUnder(city, building, at));
   for (const id of out) city.breakers.set(chunkBuilding(id), by);
   return out;

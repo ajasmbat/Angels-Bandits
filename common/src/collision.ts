@@ -64,6 +64,15 @@ export interface CityIndex {
  * is grown by RUBBLE_REACH, since a damaged building's rubble piles stand
  * that far in front of it (the index is built once; damage comes later).
  */
+/**
+ * A1: the newest index built over each `Building[]`, by identity — how
+ * losClear finds one without an argument of its own (its 4th is D9's
+ * `gaps`). The same identity rule firstSolidHit applies: an index describes
+ * the exact array it was built from, and city arrays are never resized
+ * after indexing.
+ */
+const indexOfArray = new WeakMap<readonly Building[], CityIndex>();
+
 export function buildCityIndex(buildings: readonly Building[]): CityIndex {
   const cells: number[][] = Array.from(
     { length: CITY_GRID * CITY_GRID },
@@ -82,7 +91,9 @@ export function buildCityIndex(buildings: readonly Building[]): CityIndex {
       }
     }
   }
-  return { buildings, cells };
+  const index: CityIndex = { buildings, cells };
+  indexOfArray.set(buildings, index);
+  return index;
 }
 
 /**
@@ -433,8 +444,12 @@ export function collideNature(
  * except inside a U4 tunnel's open volume (city/tunnels.ts tunnelOpen):
  * its cut, ramp, bore and mouth are air, and their walls are this ground.
  */
-export function hitsGround(pos: Vec3, radius: number = PLAYER_RADIUS): boolean {
-  return riverHit(pos, radius) && !tunnelOpen(pos, radius);
+export function hitsGround(
+  pos: Vec3,
+  radius: number = PLAYER_RADIUS,
+  gaps = 0,
+): boolean {
+  return riverHit(pos, radius, gaps) && !tunnelOpen(pos, radius);
 }
 
 /** losClear's sampled ground test: step along the line, m. Tunnel walls are
@@ -449,7 +464,7 @@ const groundAt: Vec3 = { x: 0, y: 0, z: 0 };
  * flight agree on where the rock is. Only asked when that part of the line
  * is near a bore; the bridge decks and railings stay with riverSegmentClear.
  */
-function undergroundClear(from: Vec3, d: Vec3): boolean {
+function undergroundClear(from: Vec3, d: Vec3, gaps = 0): boolean {
   const toY = from.y + d.y;
   // The t range below street level (y is monotonic along the segment).
   let t0 = 0;
@@ -466,7 +481,7 @@ function undergroundClear(from: Vec3, d: Vec3): boolean {
     groundAt.x = from.x + d.x * t;
     groundAt.y = Math.min(from.y + d.y * t, -1e-6);
     groundAt.z = from.z + d.z * t;
-    if (hitsGround(groundAt, 0)) return false;
+    if (hitsGround(groundAt, 0, gaps)) return false;
   }
   return true;
 }
@@ -621,9 +636,9 @@ let losStamp = new Uint32Array(0);
 let losStampNow = 0;
 
 /**
- * The buildings an index puts in the blocks a segment's plan-view bounds
- * touch — each once, ascending — into `losCands`. Null (scan them all)
- * without an index or with one built on another array.
+ * A1: the buildings `buildings`' index puts in the blocks a segment's
+ * plan-view bounds touch — each once, ascending — into `losCands`. Null
+ * (scan them all, as before) when no index was built over that array.
  */
 function losCandidates(
   from: Vec3,
@@ -632,8 +647,8 @@ function losCandidates(
   loZ: number,
   hiZ: number,
   buildings: readonly Building[],
-  index: CityIndex | undefined,
 ): readonly number[] | null {
+  const index = indexOfArray.get(buildings);
   if (!index || index.buildings !== buildings) return null;
   if (losStamp.length < buildings.length) {
     losStamp = new Uint32Array(buildings.length);
@@ -669,7 +684,8 @@ export function losClear(
   from: Vec3,
   to: Vec3,
   buildings: readonly Building[] = [],
-  index?: CityIndex,
+  /** D9: fallen bridge spans (city/river.ts riverHit), 0 = none. */
+  gaps = 0,
 ): boolean {
   // Into scratch (riverSegmentClear and segmentHitsBox keep no reference).
   const d = wrapDeltaInto(from, to, sight);
@@ -681,9 +697,9 @@ export function losClear(
   // below street level near a tunnel the ground is sampled instead (the
   // bore is a hole in it); the decks and railings stay exact.
   if (undergroundNearTunnel(from, d)) {
-    if (!undergroundClear(from, d)) return false;
-    if (!riverSegmentClear(from, d, false)) return false;
-  } else if (!riverSegmentClear(from, d)) {
+    if (!undergroundClear(from, d, gaps)) return false;
+    if (!riverSegmentClear(from, d, false, gaps)) return false;
+  } else if (!riverSegmentClear(from, d, true, gaps)) {
     return false;
   }
   const loX = Math.min(0, dx);
@@ -692,10 +708,11 @@ export function losClear(
   const hiZ = Math.max(0, dz);
   // Altitude is monotonic along the segment, so its lower end bounds it.
   const loY = Math.min(from.y, to.y);
-  // A1: with an index, only the buildings in the blocks the segment's bounds
-  // touch (its footprints are grown by RUBBLE_REACH, so every building the
-  // footprint reject below could pass is among them).
-  const cands = losCandidates(from, loX, hiX, loZ, hiZ, buildings, index);
+  // A1: with an index built over `buildings`, only the buildings in the
+  // blocks the segment's bounds touch (its footprints are grown by
+  // RUBBLE_REACH, so every building the footprint reject below could pass
+  // is among them); without one, the linear scan it always was.
+  const cands = losCandidates(from, loX, hiX, loZ, hiZ, buildings);
   const count = cands ? cands.length : buildings.length;
   for (let n = 0; n < count; n++) {
     const b = buildings[cands ? (cands[n] as number) : n] as Building;

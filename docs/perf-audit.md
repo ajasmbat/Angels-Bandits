@@ -102,8 +102,10 @@ Per phase (median run):
      director tests pass unchanged.
 2. **`losClear` scanned all 559 buildings** (`common/src/collision.ts`), for
    every bot sight-line test, every boss-turret target check and every
-   missile sweep. It now takes the city's block index: only the buildings
-   in the blocks the segment's bounds touch, deduplicated and ascending.
+   missile sweep. It now uses the city's block index, found by the
+   buildings array's identity (`buildCityIndex` registers it, so D9's
+   `gaps` keeps the 4th argument): only the buildings in the blocks the
+   segment's bounds touch, deduplicated and ascending.
    The index footprints are grown by `RUBBLE_REACH`, so every building the
    old footprint reject could pass is in them. **Proof:** 600 000 random
    segments (intact, 10 % and 40 % damaged cities; seam-crossing, long up

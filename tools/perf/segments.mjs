@@ -328,6 +328,20 @@ export const SEGMENTS = [
     // asserts it has NOT all landed by the window's end.
     stageAtWindow: {
       fell: [{ b: 343, h: 215, style: "topple", dir: 0, t: -1500 }],
+      // D9: and what its debris and the fight knock over on the street
+      // ahead — two cars blown, a roof tank toppling, lamps snapped, a
+      // crater with its water main spraying.
+      props: {
+        down: [
+          { kind: "car", near: { x: 1186, z: 554 }, t: -2500, blast: 500 },
+          { kind: "car", near: { x: 1186, z: 641 }, t: -1800, blast: 600 },
+          { kind: "tank", near: { x: 1175, z: 527 }, t: -500 },
+          { kind: "tank", near: { x: 1229, z: 513 }, t: -1200 },
+          { kind: "lamp", near: { x: 1216, z: 600 }, t: -2000 },
+          { kind: "lamp", near: { x: 1184, z: 575 }, t: -2000 },
+        ],
+        craters: [{ x: 1196, z: 560, r: 4.5, t: -2400, water: true }],
+      },
     },
     expect: "falling",
   },
@@ -375,6 +389,24 @@ export const SEGMENTS = [
           hit: "city",
         },
       ],
+      // D9: the block's street — cars blown and burning, a tank and a
+      // billboard down off the roofs, lamps snapped, craters (one a burst
+      // water main) — and two floors burning, sooting their facade.
+      props: {
+        down: [
+          { kind: "car", near: { x: 386, z: 942 }, t: -4000, blast: 500 },
+          { kind: "car", near: { x: 414, z: 971 }, t: -2500, blast: 400 },
+          { kind: "car", near: { x: 440, z: 986 }, t: -1500, blast: 700 },
+          { kind: "tank", near: { x: 432, z: 836 }, t: -3000 },
+          { kind: "billboard", near: { x: 450, z: 852 }, t: -800 },
+          { kind: "lamp", near: { x: 416, z: 925 }, t: -3000 },
+          { kind: "lamp", near: { x: 384, z: 962 }, t: -2000 },
+        ],
+        craters: [
+          { x: 398, z: 955, r: 4.5, t: -3500, water: true },
+          { x: 404, z: 880, r: 3.5, t: -2000, water: false },
+        ],
+      },
     },
   },
   {
@@ -523,6 +555,20 @@ export const SEGMENTS = [
     },
     stageAtWindow: {
       fell: [{ b: 343, h: 215, style: "topple", dir: 0, t: -1500 }],
+      // D9: and what its debris and the fight knock over on the street
+      // ahead — two cars blown, a roof tank toppling, lamps snapped, a
+      // crater with its water main spraying.
+      props: {
+        down: [
+          { kind: "car", near: { x: 1186, z: 554 }, t: -2500, blast: 500 },
+          { kind: "car", near: { x: 1186, z: 641 }, t: -1800, blast: 600 },
+          { kind: "tank", near: { x: 1175, z: 527 }, t: -500 },
+          { kind: "tank", near: { x: 1229, z: 513 }, t: -1200 },
+          { kind: "lamp", near: { x: 1216, z: 600 }, t: -2000 },
+          { kind: "lamp", near: { x: 1184, z: 575 }, t: -2000 },
+        ],
+        craters: [{ x: 1196, z: 560, r: 4.5, t: -2400, water: true }],
+      },
     },
     expect: "falling",
     chaos: {

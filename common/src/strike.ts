@@ -336,7 +336,6 @@ const SWEEP_STANDOFF_M = 3;
 export function missilePathClear(
   s: MissileStrike,
   buildings: readonly Building[],
-  index?: CityIndex,
 ): boolean {
   const a = { x: 0, y: 0, z: 0 };
   const b = { x: 0, y: 0, z: 0 };
@@ -352,9 +351,9 @@ export function missilePathClear(
       b.x = wrap(a.x + d.x * keep);
       b.y = a.y + d.y * keep;
       b.z = wrap(a.z + d.z * keep);
-      return b.y >= 0 && losClear(a, b, buildings, index);
+      return b.y >= 0 && losClear(a, b, buildings);
     }
-    if (b.y < 0 || !losClear(a, b, buildings, index)) return false;
+    if (b.y < 0 || !losClear(a, b, buildings)) return false;
     a.x = b.x;
     a.y = b.y;
     a.z = b.z;
@@ -374,7 +373,6 @@ export function planMissile(
   target: MissileTarget,
   t0: number,
   buildings: readonly Building[],
-  index?: CityIndex,
 ): MissileStrike | null {
   const faces = Math.hypot(target.normal.x, target.normal.z) > 0.5;
   const base = Math.atan2(target.normal.z, target.normal.x);
@@ -397,7 +395,7 @@ export function planMissile(
       to: { ...target.to },
       t0: Math.round(t0),
     };
-    if (missilePathClear(s, buildings, index)) return s;
+    if (missilePathClear(s, buildings)) return s;
   }
   return null;
 }

@@ -49,7 +49,14 @@ import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
-import { SHELL_CEILING, SHELL_WALL_MID, snapToPeriod } from "./tunnels";
+import {
+  LOOK_BEHIND_GLSL,
+  LOOK_NOISE_GLSL,
+  LOOK_ZONES,
+  TUNNEL_DETAIL,
+  lookZoneAt,
+} from "./tunnel-look";
+import { snapToPeriod } from "./tunnels";
 import {
   BANDS,
   BIRD_BOB,
@@ -94,6 +101,8 @@ export const ANIM = {
   fall: 4,
   /** A light panel or a stall lamp (LAMP rung, still). */
   lamp: 5,
+  /** U7: glazed tile — grout drawn at bore-frame metres (aAnim.y, z). */
+  tile: 6,
 } as const;
 
 /** Linear colour of `hex` lit by `k`. */
@@ -107,13 +116,13 @@ function emitOf(hex: number, rung: number): THREE.Color {
 
 const C = {
   panel: emitOf(0xfff2dc, EMISSIVE_LAMP),
-  panelRim: lit(0xe9dcc4, 0.7),
+  panelRim: lit(0xc9bca4, 0.4),
   vineDark: lit(0x2f6a2c, 0.55),
   vineLight: lit(0x6fb04a, 0.75),
   leaf: lit(0x58a03e, 0.8),
   moss: lit(0x4f7f34, 0.62),
   mossDeep: lit(0x2f6f5a, 0.6),
-  stem: lit(0xd9d2bf, 0.6),
+  stem: lit(0xd9cdb0, 0.42),
   caps: [
     emitOf(0x52f0ff, EMISSIVE_WINDOW),
     emitOf(0xb27cff, EMISSIVE_WINDOW),
@@ -124,26 +133,27 @@ const C = {
   frond: lit(0x5fa646, 0.75),
   flowers: [lit(0xff8fb1, 0.7), lit(0xffd36a, 0.7), lit(0xf2f0ff, 0.62)],
   vent: lit(0x2a2f36, 0.6),
-  lip: lit(0xb9ad98, 0.6),
-  kerb: lit(0xcfc4ae, 0.62),
-  water: lit(0x3fa6b8, 0.6),
-  lake: lit(0x2f8fa8, 0.58),
+  lip: lit(0x9a8e7a, 0.42),
+  kerb: lit(0xa89c86, 0.42),
+  water: lit(0x2a8496, 0.5),
+  lake: lit(0x1f6c8a, 0.5),
   lily: lit(0x4c9a46, 0.6),
   bud: emitOf(0xffe6f2, EMISSIVE_WINDOW),
-  hallFloor: lit(0xb7a88f, 0.62),
-  platform: lit(0xd8cdb6, 0.66),
+  hallFloor: lit(0x8a96a4, 0.5),
+  platform: lit(0xb8c2cc, 0.45),
   safety: lit(0xf2c641, 0.7),
   bed: lit(0x4a4640, 0.55),
   rail: lit(0x9aa0a6, 0.6),
-  tile: lit(0x5fb7ad, 0.62),
-  sign: lit(0x2f6fb0, 0.62),
-  plaster: lit(0xf1e6d2, 0.7),
-  ceiling: lit(0xfff1da, 0.72),
+  tile: lit(0xd4e2f0, 0.42),
+  sign: lit(0x2f6fb0, 0.55),
+  plaster: lit(0xc8d8ea, 0.4),
+  rib: lit(0x9fb2c8, 0.42),
+  ceiling: lit(0xb8c8da, 0.4),
   portal: new THREE.Color(0.012, 0.012, 0.016),
   mullion: lit(0x3a3f46, 0.6),
   counter: lit(0x9a7552, 0.6),
   awnings: [lit(0xd8473f, 0.62), lit(0x2f9e6e, 0.62), lit(0xe7a83a, 0.62)],
-  awningStripe: lit(0xf4ecdc, 0.68),
+  awningStripe: lit(0xf4ecdc, 0.5),
   lamp: emitOf(0xffd9a0, EMISSIVE_LAMP),
   wares: [lit(0xe0563a, 0.66), lit(0xf0c040, 0.66), lit(0x7cc04a, 0.66)],
   // U6
@@ -157,27 +167,38 @@ const C = {
   bracket: lit(0x55585c, 0.58),
   signs: [lit(0x1d7a4c, 0.62), lit(0x2a5aa8, 0.62), lit(0xc98a12, 0.62)],
   signRim: lit(0x2b2d30, 0.58),
-  signInk: lit(0xf4f1e8, 0.68),
+  signInk: lit(0xf4f1e8, 0.55),
   pipes: [lit(0x8a5a3c, 0.6), lit(0x6c7a74, 0.6)],
   flange: lit(0x9aa0a4, 0.6),
   grateFrame: lit(0x2e3236, 0.58),
   daylight: emitOf(0xe2f0ff, EMISSIVE_LAMP),
-  lightPool: lit(0xece0c2, 0.68),
-  dripTop: lit(0x9c8e78, 0.6),
-  dripTip: lit(0xd8ccb4, 0.66),
+  lightPool: lit(0xece0c2, 0.5),
+  dripTop: lit(0x7c705e, 0.5),
+  dripTip: lit(0xb8ac94, 0.5),
   crystals: [
     emitOf(0x7af4ff, EMISSIVE_WINDOW),
     emitOf(0xc08cff, EMISSIVE_WINDOW),
     emitOf(0xff8ad8, EMISSIVE_WINDOW),
   ],
-  crystalBase: lit(0x4a5a66, 0.58),
+  crystalBase: lit(0x3a4a5a, 0.5),
   root: lit(0x5e4430, 0.6),
   rootTip: lit(0x8a6a4a, 0.62),
+  // U7: real plants
+  fernDark: lit(0x2c6a2a, 0.55),
+  fernLight: lit(0x7cc04e, 0.62),
+  leafDark: lit(0x3a7a30, 0.6),
+  bush: [lit(0x2f6a2c, 0.55), lit(0x4a8a36, 0.6), lit(0x3d7a48, 0.58)],
+  bloom: [
+    lit(0xff7aa8, 0.62),
+    lit(0xffd25a, 0.62),
+    lit(0xf4f0ff, 0.52),
+    lit(0xc08cff, 0.6),
+  ],
 } as const;
 
 const GLASS = { color: lit(0xcfe6f0, 0.6), alpha: 0.14 };
-const SHEET = { color: lit(0xcfeefa, 0.66), alpha: 0.55 };
-const FOAM = lit(0xe9f6fb, 0.7);
+const SHEET = { color: lit(0xbfe6f6, 0.55), alpha: 0.6 };
+const FOAM = lit(0xe9f6fb, 0.55);
 /** Firefly and pollen colours; fireflies on the WINDOW rung at peak. */
 const FIREFLY = emitOf(0xd8ff7a, EMISSIVE_WINDOW);
 const POLLEN = lit(0xfff3cf, 0.5);
@@ -207,26 +228,35 @@ type RGBA = readonly [number, number, number, number];
 type Anim = readonly [number, number, number, number];
 const STILL: Anim = [ANIM.still, 0, 0, 0];
 /** Thin dressing over the wall (0) or the ceiling (1), at edge
- * coordinates (e1, e2) — see ANIM.thin. */
-const thin = (behind: 0 | 1, e1: number, e2: number, tri = false): Anim => [
-  ANIM.thin,
-  behind + (tri ? 2 : 0),
-  e1,
-  e2,
-];
+ * coordinates (e1, e2) — see ANIM.thin. U7: aAnim.y packs
+ * behind + 2·triangle + 4·zone (the look section it fades into, an index
+ * into LOOK_ZONES), decoded with floor(+0.5) and mod in the shader. */
+const thin = (
+  behind: 0 | 1,
+  e1: number,
+  e2: number,
+  tri = false,
+  zone = 0,
+): Anim => [ANIM.thin, behind + (tri ? 2 : 0) + 4 * zone, e1, e2];
 /** A thin triangle's corners: two barycentrics each (the third implied). */
-const thinTri = (behind: 0 | 1): readonly [Anim, Anim, Anim] => [
-  thin(behind, 1, 0, true),
-  thin(behind, 0, 1, true),
-  thin(behind, 0, 0, true),
+const thinTri = (behind: 0 | 1, zone = 0): readonly [Anim, Anim, Anim] => [
+  thin(behind, 1, 0, true, zone),
+  thin(behind, 0, 1, true, zone),
+  thin(behind, 0, 0, true, zone),
 ];
 /** A thin quad a→b→c→d whose long edges are a–d and b–c. */
-const thinQuad = (behind: 0 | 1): readonly [Anim, Anim, Anim, Anim] => [
-  thin(behind, 0, 1),
-  thin(behind, 1, 0),
-  thin(behind, 1, 0),
-  thin(behind, 0, 1),
+const thinQuad = (
+  behind: 0 | 1,
+  zone = 0,
+): readonly [Anim, Anim, Anim, Anim] => [
+  thin(behind, 0, 1, false, zone),
+  thin(behind, 1, 0, false, zone),
+  thin(behind, 1, 0, false, zone),
+  thin(behind, 0, 1, false, zone),
 ];
+/** U7: the look section index of bore `t` at `s` (for the thin fade). */
+const zoneIx = (t: Tunnel, s: number): number =>
+  LOOK_ZONES.indexOf(lookZoneAt(t, s));
 const rgba = (c: THREE.Color, a = 1): RGBA => [c.r, c.g, c.b, a];
 
 const scratch = { x: 0, z: 0, th: 0 };
@@ -532,83 +562,126 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
     );
   }
 
+  // U7: vines are strands that hang free of the wall — a narrow ribbon
+  // bowing out and swaying along the bore — with real leaves angled off
+  // them (two triangles each), not cards on the rock.
   for (const v of L.vines) {
     const soup = bands[v.band] as Soup;
+    const z = zoneIx(v.t, v.s);
     const strands = 3;
     for (let j = 0; j < strands; j++) {
-      const s0 = v.s - v.width / 2 + (v.width * j) / strands;
-      const s1 = s0 + (v.width / strands) * 0.8;
+      const sj = v.s - v.width / 2 + (v.width * (j + 0.5)) / strands;
       const len =
         v.length *
         (0.65 + (0.35 * ((j * 7 + Math.floor(v.shade * 5)) % 3)) / 2);
-      const off = 0.08 + 0.05 * j;
       const top = DEEP_CEIL;
-      const bot = top - len;
-      // Edge coordinates across the whole strand, not per split piece.
-      const across = (s: number): Anim => {
-        const u = (s - s0) / (s1 - s0);
-        return thin(0, u, 1 - u);
+      const n = Math.max(2, Math.ceil(len / 2.5));
+      const ph = v.shade * 6.3 + j * 2.1;
+      const pt = (k: number): [number, number, number] => {
+        const u = k / n;
+        const off = 0.1 + 0.05 * j + 0.3 * Math.sin(Math.PI * u) * u;
+        return [sj + 0.18 * Math.sin(k * 1.7 + ph) * u, off, top - len * u];
       };
-      wallStrip(
-        soup,
-        v.t,
-        v.side,
-        off,
-        s0,
-        s1,
-        bot,
-        top,
-        rgba(C.vineLight),
-        rgba(C.vineDark),
-        across,
-      );
-      // Leaves angled off the wall, still well inside the lining.
-      for (let y = top - 1; y > bot + 0.3; y -= 1.1) {
-        const sm = (s0 + s1) / 2 + (((y * 3.1) % 1) - 0.5) * 0.4;
-        const lw = v.side * (H - off);
-        const lo = v.side * (H - 0.6);
+      for (let k = 0; k < n; k++) {
+        const [sa, oa, ya] = pt(k);
+        const [sb, ob, yb] = pt(k + 1);
+        const wa = 0.1 * (1 - (0.5 * k) / n);
+        const wb = 0.1 * (1 - (0.5 * (k + 1)) / n);
+        const ca = mixC(rgba(C.vineDark), rgba(C.vineLight), k / n);
+        const cb = mixC(rgba(C.vineDark), rgba(C.vineLight), (k + 1) / n);
+        soup.quad(
+          [
+            at(v.t, sa - wa, v.side * (H - oa), ya),
+            at(v.t, sa + wa, v.side * (H - oa), ya),
+            at(v.t, sb + wb, v.side * (H - ob), yb),
+            at(v.t, sb - wb, v.side * (H - ob), yb),
+          ],
+          [ca, ca, cb, cb],
+          thinQuad(0, z),
+        );
+      }
+      // Leaves every 1.1 m down the strand, alternating, each a blade
+      // angled out from the wall and down — tips into the bore.
+      let i = 0;
+      for (let d = 0.5; d < len - 0.2; d += 1.1, i++) {
+        const k = (d / len) * n;
+        const [sm, om, ym] = pt(k);
+        const dir = i % 2 === 0 ? 1 : -1;
+        const leafLen = 0.45 + 0.12 * ((i * 5 + j) % 3);
+        const lc = rgba((i + j) % 3 === 0 ? C.leafDark : C.leaf);
         soup.tri(
           [
-            at(v.t, sm - 0.25, lw, y),
-            at(v.t, sm + 0.25, lw, y - 0.15),
-            at(v.t, sm, lo, y - 0.45),
+            at(v.t, sm - dir * 0.08, v.side * (H - om), ym + 0.1),
+            at(v.t, sm + dir * 0.08, v.side * (H - om), ym - 0.1),
+            at(
+              v.t,
+              sm + dir * leafLen * 0.75,
+              v.side * (H - om - leafLen * 0.6),
+              ym - 0.16,
+            ),
           ],
-          rgba(C.leaf),
-          thinTri(0),
+          lc,
+          thinTri(0, z),
         );
       }
     }
   }
 
+  // U7: moss is a lumpy carpet over the wall's foot and out onto the floor
+  // — an irregular mound with a ragged top, not a flat patch.
   for (const m of L.moss) {
     const soup = bands[m.band] as Soup;
     const deep = m.shade > 0.55;
-    const c = rgba(deep ? C.mossDeep : C.moss);
-    const c2 = mixC(c, rgba(C.vineLight), 0.25);
-    wallStrip(
-      soup,
-      m.t,
-      m.side,
-      0.06,
-      m.s - m.hl,
-      m.s + m.hl,
-      F + m.y0,
-      F + m.y1,
-      c,
-      c2,
-    );
-    // A mound at the wall's foot: a slope from the wall out to 0.7 m.
-    const w = m.side * (H - 0.02);
-    const o = m.side * (H - 0.7);
-    soup.quad(
-      [
-        at(m.t, m.s - m.hl, o, F + 0.02),
-        at(m.t, m.s + m.hl, o, F + 0.02),
-        at(m.t, m.s + m.hl, w, F + 0.3),
-        at(m.t, m.s - m.hl, w, F + 0.3),
-      ],
-      c,
-    );
+    const c0 = rgba(deep ? C.mossDeep : C.moss);
+    const c1 = mixC(c0, rgba(C.vineLight), 0.3);
+    const c2 = mixC(c0, rgba(C.vineDark), 0.35);
+    const nc = Math.max(4, Math.ceil((2 * m.hl) / 1.1));
+    const top = m.y1;
+    const seed = Math.floor(m.s * 7.13) + (m.side > 0 ? 0 : 977);
+    const pts: P3[][] = [];
+    const cols: RGBA[][] = [];
+    for (let i = 0; i <= nc; i++) {
+      const s = m.s - m.hl + (2 * m.hl * i) / nc;
+      const edge = i === 0 || i === nc;
+      // A rounded crown along the carpet, a little ragged.
+      // Low and cushioned: a carpet, never a fin up the wall.
+      const crown =
+        Math.min(2.2, top * 0.7) *
+        (0.35 + 0.65 * Math.sin((Math.PI * i) / nc) ** 0.7) *
+        (0.85 + 0.15 * hash01(seed + i * 31));
+      // The profile: out on the floor, a cushion at the wall's foot, up
+      // the wall to the crown.
+      const prof: [number, number][] = [
+        [0.8, 0.02],
+        [0.24, 0.25 + Math.min(0.5, crown * 0.3)],
+        [0.06, crown],
+      ];
+      const row: P3[] = [];
+      const crow: RGBA[] = [];
+      for (let j = 0; j < prof.length; j++) {
+        const [inset, y] = prof[j] as [number, number];
+        const h = hash01(seed + i * 31 + j * 7);
+        const bump = edge || j === 0 ? 0 : 0.14 * h;
+        const lat = edge ? 0.04 : inset + bump;
+        row.push(at(m.t, s, m.side * (H - lat), F + (edge ? y * 0.6 : y)));
+        crow.push(h < 0.33 ? c1 : h < 0.66 ? c0 : c2);
+      }
+      pts.push(row);
+      cols.push(crow);
+    }
+    const rows = 3;
+    for (let i = 0; i < nc; i++) {
+      for (let j = 0; j + 1 < rows; j++) {
+        const r0 = pts[i] as P3[];
+        const r1 = pts[i + 1] as P3[];
+        const k0 = cols[i] as RGBA[];
+        const k1 = cols[i + 1] as RGBA[];
+        soup.quad(
+          [r0[j] as P3, r1[j] as P3, r1[j + 1] as P3, r0[j + 1] as P3],
+          [k0[j] as RGBA, k1[j] as RGBA, k1[j + 1] as RGBA, k0[j + 1] as RGBA],
+        );
+      }
+    }
   }
 
   for (const g of L.glows) {
@@ -619,58 +692,45 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
       const cap = C.caps[
         Math.floor(g.hue * C.caps.length) % C.caps.length
       ] as THREE.Color;
-      const sw = Math.max(0.04, g.size * 0.22);
+      const sw = Math.max(0.04, g.size * 0.2);
       const top = F + g.height;
-      // Stem: two crossed quads.
-      soup.quad(
-        [
-          at(g.t, g.s - sw, lat, F),
-          at(g.t, g.s + sw, lat, F),
-          at(g.t, g.s + sw, lat, top),
-          at(g.t, g.s - sw, lat, top),
-        ],
-        rgba(C.stem),
-      );
-      soup.quad(
-        [
-          at(g.t, g.s, lat - sw, F),
-          at(g.t, g.s, lat + sw, F),
-          at(g.t, g.s, lat + sw, top),
-          at(g.t, g.s, lat - sw, top),
-        ],
-        rgba(C.stem),
-      );
-      // Cap: a low four-sided dome.
+      // U7: a three-sided stem under a five-sided glowing cap.
+      const ring = (r: number, y: number, n: number, rot: number): P3[] =>
+        Array.from({ length: n }, (_, i) => {
+          const a = (i / n) * Math.PI * 2 + rot;
+          return at(g.t, g.s + Math.cos(a) * r, lat + Math.sin(a) * r, y);
+        });
+      const foot = ring(sw * 1.2, F, 3, g.phase);
+      const neck = ring(sw, top, 3, g.phase);
+      for (let i = 0; i < 3; i++) {
+        const j = (i + 1) % 3;
+        soup.quad(
+          [foot[i] as P3, foot[j] as P3, neck[j] as P3, neck[i] as P3],
+          rgba(C.stem),
+        );
+      }
+      const rim = ring(g.size, top - 0.06, 5, g.phase);
       const apex = at(g.t, g.s, lat, top + g.size * 0.55);
-      const rim = [
-        at(g.t, g.s - g.size, lat, top - 0.05),
-        at(g.t, g.s, lat - g.size, top - 0.05),
-        at(g.t, g.s + g.size, lat, top - 0.05),
-        at(g.t, g.s, lat + g.size, top - 0.05),
-      ] as const;
-      for (let i = 0; i < 4; i++) {
-        soup.tri([rim[i] as P3, rim[(i + 1) % 4] as P3, apex], rgba(cap), glow);
+      for (let i = 0; i < 5; i++) {
+        const j = (i + 1) % 5;
+        soup.tri([rim[i] as P3, rim[j] as P3, apex], rgba(cap), glow);
       }
     } else {
+      // U7: a glowing fern — five arching fronds, tips alight.
       const tip = C.caps[
         Math.floor(g.hue * C.caps.length) % C.caps.length
       ] as THREE.Color;
-      for (let i = 0; i < 3; i++) {
-        const ang = (i - 1) * 0.45;
-        const ds = Math.sin(ang) * g.size * 1.6;
-        const dl = -g.side * Math.abs(Math.cos(ang)) * g.size * 0.6;
-        const base = at(g.t, g.s, lat, F);
-        const t1 = at(g.t, g.s + ds - 0.08, lat + dl, F + g.height);
-        const t2 = at(g.t, g.s + ds + 0.08, lat + dl, F + g.height);
-        soup.vertex(base, rgba(C.fernBase), STILL);
-        soup.vertex(t1, rgba(tip), glow);
-        soup.vertex(t2, rgba(tip), glow);
-      }
+      fern(soup, g.t, g.s, g.side, g.inset, g.size, g.height, 4, g.phase, {
+        base: rgba(C.fernBase),
+        tip: rgba(tip),
+        tipAnim: glow,
+      });
     }
   }
 
   for (const g of L.gardens) {
     const soup = bands[g.band] as Soup;
+    const gz = zoneIx(g.t, g.s);
     const la = g.lat - 0.6;
     const lb = g.lat + 0.6;
     frameBox(
@@ -699,7 +759,7 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
           at(g.t, s - 0.12, l, bot),
         ],
         [rgba(C.frond), rgba(C.frond), rgba(C.vineLight), rgba(C.vineLight)],
-        thinQuad(1),
+        thinQuad(1, gz),
       );
       if (i % 2 === 0) {
         const fl = C.flowers[i % C.flowers.length] as THREE.Color;
@@ -710,7 +770,7 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
             at(g.t, s, l + 0.15, bot + 0.2),
           ],
           rgba(fl),
-          thinTri(1),
+          thinTri(1, gz),
         );
       }
     }
@@ -817,6 +877,65 @@ function buildDecor(L: UndergroundLayout, bands: Soup[]): void {
   buildLake(bands);
   buildStation(L, bands);
   buildU6Decor(L, bands);
+  buildU7Decor(L, bands);
+}
+
+/** U7: ferns and flowering bushes on the floor along the walls. */
+function buildU7Decor(L: UndergroundLayout, bands: Soup[]): void {
+  for (const f of L.ferns) {
+    const soup = bands[f.band] as Soup;
+    const base = mixC(rgba(C.fernDark), rgba(C.moss), f.shade * 0.4);
+    fern(soup, f.t, f.s, f.side, f.inset, f.size, f.height, f.fronds, f.phase, {
+      base,
+      tip: mixC(rgba(C.fernLight), rgba(C.leaf), f.shade),
+      zone: zoneIx(f.t, f.s),
+    });
+  }
+  for (const b of L.bushes) {
+    const soup = bands[b.band] as Soup;
+    const seed = Math.floor(b.s * 17.3) + (b.side > 0 ? 0 : 5003);
+    const greens = C.bush;
+    const n = 3 + (seed % 2);
+    const tops: [number, number, number][] = [];
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2 + hash01(seed + i) * 1.2;
+      const ds = Math.cos(a) * b.r * 0.55;
+      const di = Math.sin(a) * b.r * 0.45;
+      const ry = b.height * (0.45 + 0.25 * hash01(seed + 40 + i));
+      const y = F + ry * 0.75;
+      const g = greens[(seed + i) % greens.length] as THREE.Color;
+      blob(
+        soup,
+        b.t,
+        b.side,
+        b.s + ds,
+        b.inset + di,
+        y,
+        b.r * 0.6,
+        b.r * 0.5,
+        ry,
+        seed + i,
+        rgba(g),
+        mixC(rgba(g), rgba(C.vineLight), 0.35),
+      );
+      tops.push([b.s + ds, b.inset + di, y + ry * 0.8]);
+    }
+    // Flowers: small crossed stars on the mounds' tops.
+    const bloom = C.bloom[
+      Math.floor(b.hue * C.bloom.length) % C.bloom.length
+    ] as THREE.Color;
+    for (let i = 0; i < b.flowers; i++) {
+      const [ts, ti, ty] = tops[i % tops.length] as [number, number, number];
+      const os = (hash01(seed + 90 + i) - 0.5) * b.r * 0.7;
+      const oi = (hash01(seed + 120 + i) - 0.5) * b.r * 0.6;
+      const y = ty - 0.05 - 0.15 * hash01(seed + 150 + i);
+      const q = (ds: number, di: number, dy: number): P3 =>
+        at(b.t, ts + os + ds, b.side * (H - (ti + oi + di)), y + dy);
+      const fc = rgba(bloom);
+      soup.tri([q(-0.09, 0, 0), q(0.09, 0, 0), q(0, 0, 0.1)], fc);
+      soup.tri([q(0, -0.09, 0), q(0, 0.09, 0), q(0, 0, 0.1)], fc);
+    }
+  }
 }
 
 function buildLake(bands: Soup[]): void {
@@ -950,6 +1069,9 @@ function buildStation(L: UndergroundLayout, bands: Soup[]): void {
   }
   // Back wall: tiles low, the line's colour band, plaster up to a glowing
   // ceiling.
+  // U7: the hall is tiled — glazed white-blue tiles with grout (ANIM.tile
+  // at bore-frame metres), the line's colour band across them.
+  const tileAt = (s: number, y: number): Anim => [ANIM.tile, s, y - F, 0];
   const backWall = (y0: number, y1: number, c: RGBA, c2 = c) => {
     for (let s = s0; s < s1; s += MAX_EDGE) {
       const sb = Math.min(s1, s + MAX_EDGE);
@@ -967,6 +1089,7 @@ function buildStation(L: UndergroundLayout, bands: Soup[]): void {
             at(t, s, L0(back), yb),
           ],
           [ca, ca, cb, cb],
+          [tileAt(s, ya), tileAt(sb, ya), tileAt(sb, yb), tileAt(s, yb)],
         );
       }
     }
@@ -985,6 +1108,44 @@ function buildStation(L: UndergroundLayout, bands: Soup[]): void {
         rgba(C.panel),
         [ANIM.lamp, 0, 0, 0],
       );
+    }
+  }
+  // U7: arched ribs across the hall every 10 m — a diaphragm arch from
+  // the glass's head to the back wall, its soffit curving up to the
+  // ceiling, the spandrels filled to the ceiling: the hall reads vaulted.
+  const RIB_SEG = 12;
+  const ribIn = H + 0.35;
+  const ribOut = back - 0.15;
+  const ribY = (f: number) => top - 3.2 * (1 - Math.sin(Math.PI * f) ** 0.6);
+  for (let s = s0 + 5; s < s1 - 4; s += 10) {
+    for (let i = 0; i < RIB_SEG; i++) {
+      const fa = i / RIB_SEG;
+      const fb = (i + 1) / RIB_SEG;
+      const la = L0(ribIn + (ribOut - ribIn) * fa);
+      const lb = L0(ribIn + (ribOut - ribIn) * fb);
+      const ya = Math.min(ribY(fa), top - 0.45);
+      const yb = Math.min(ribY(fb), top - 0.45);
+      // The soffit (seen from below), then both faces up to the ceiling.
+      core.quad(
+        [
+          at(t, s - 0.3, la, ya),
+          at(t, s + 0.3, la, ya),
+          at(t, s + 0.3, lb, yb),
+          at(t, s - 0.3, lb, yb),
+        ],
+        rgba(C.rib),
+      );
+      for (const ds of [-0.3, 0.3]) {
+        core.quad(
+          [
+            at(t, s + ds, la, ya),
+            at(t, s + ds, lb, yb),
+            at(t, s + ds, lb, top - 0.01),
+            at(t, s + ds, la, top - 0.01),
+          ],
+          [rgba(C.rib), rgba(C.rib), rgba(C.plaster), rgba(C.plaster)],
+        );
+      }
     }
   }
   // End walls, each with a dark portal the metro runs through: the wall
@@ -1248,6 +1409,123 @@ function spike(
   }
 }
 
+// --- U7: real plants -------------------------------------------------------------
+
+/** A deterministic 0..1 hash of an integer. */
+function hash01(n: number): number {
+  let x = Math.imul(n | 0, 0x2c1b3c6d) ^ 0x297a2d39;
+  x = Math.imul(x ^ (x >>> 15), 0x85ebca6b);
+  x = Math.imul(x ^ (x >>> 13), 0xc2b2ae35);
+  return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+}
+
+interface FernLook {
+  base: RGBA;
+  tip: RGBA;
+  /** The tips' animation (a glowing fern); thin edge AA otherwise. */
+  tipAnim?: Anim;
+  zone?: number;
+}
+
+/** A fern rooted `inset` m off the `side` wall at `s`: `fronds` tapered
+ * ribbons arching out (to `size` m) and up (to ~0.75 `height`) and
+ * drooping, spread round the side away from the wall — none reaching
+ * back into it. */
+function fern(
+  soup: Soup,
+  t: Tunnel,
+  s: number,
+  side: 1 | -1,
+  inset: number,
+  size: number,
+  height: number,
+  fronds: number,
+  phase: number,
+  look: FernLook,
+): void {
+  const SEG = 2;
+  for (let f = 0; f < fronds; f++) {
+    const a = -2.2 + (4.4 * (f + 0.5)) / fronds + 0.25 * Math.sin(phase + f);
+    const dS = Math.sin(a);
+    const dIn = Math.cos(a);
+    // Never into the wall: reach toward it at most inset − 0.05.
+    const reach =
+      size *
+      (0.8 + 0.25 * hash01(Math.floor(phase * 1000) + f)) *
+      (dIn < 0 ? Math.min(1, (inset - 0.05) / (size * 1.05 * -dIn)) : 1);
+    const pt = (u: number, w: number): P3 => {
+      const r = reach * u;
+      const y = F + 0.02 + height * (2.2 * u - 1.6 * u * u);
+      return at(
+        t,
+        s + dS * r - dIn * w,
+        side * (H - (inset + dIn * r + dS * w)),
+        y,
+      );
+    };
+    for (let k = 0; k < SEG; k++) {
+      const u0 = k / SEG;
+      const u1 = (k + 1) / SEG;
+      const w0 = size * 0.2 * (1 - 0.75 * u0) + 0.015;
+      const w1 = size * 0.2 * (1 - 0.75 * u1) + 0.015;
+      const c0 = mixC(look.base, look.tip, u0);
+      const c1 = mixC(look.base, look.tip, u1);
+      const quad: readonly [P3, P3, P3, P3] = [
+        pt(u0, -w0),
+        pt(u0, w0),
+        pt(u1, w1),
+        pt(u1, -w1),
+      ];
+      if (look.tipAnim) {
+        // One animation per frond: a mixed one would interpolate through
+        // the other kinds' ranges in the fragment shader.
+        soup.quad(quad, [c0, c0, c1, c1], look.tipAnim);
+      } else {
+        soup.quad(quad, [c0, c0, c1, c1], thinQuad(0, look.zone ?? 0));
+      }
+    }
+  }
+}
+
+/** A low-poly mound: an octahedron round (s, inset, y) with half extents
+ * (rs, rIn, ry), its corners jittered by `seed`. */
+function blob(
+  soup: Soup,
+  t: Tunnel,
+  side: 1 | -1,
+  s: number,
+  inset: number,
+  y: number,
+  rs: number,
+  rIn: number,
+  ry: number,
+  seed: number,
+  lo: RGBA,
+  hi: RGBA,
+): void {
+  const j = (k: number) => 0.8 + 0.35 * hash01(seed * 13 + k);
+  const p = (ds: number, di: number, dy: number): P3 =>
+    at(t, s + ds, side * (H - (inset + di)), y + dy);
+  const top = p(0.1 * rs, 0, ry * j(0));
+  const bot = p(0, 0, -ry * 0.3);
+  const ring = [
+    p(rs * j(1), 0, 0.1 * ry),
+    p(0, rIn * j(2), -0.05 * ry),
+    p(-rs * j(3), 0, 0.12 * ry),
+    p(0, -rIn * j(4), 0),
+  ];
+  for (let i = 0; i < 4; i++) {
+    const a = ring[i] as P3;
+    const b = ring[(i + 1) % 4] as P3;
+    soup.vertex(a, lo, STILL);
+    soup.vertex(b, lo, STILL);
+    soup.vertex(top, hi, STILL);
+    soup.vertex(b, lo, STILL);
+    soup.vertex(a, lo, STILL);
+    soup.vertex(bot, mixC(lo, rgba(C.vineDark), 0.5), STILL);
+  }
+}
+
 function buildU6Decor(L: UndergroundLayout, bands: Soup[]): void {
   const core = bands[0] as Soup;
   // Mine timber sets: a post against each wall, a cap under the ceiling.
@@ -1372,8 +1650,9 @@ function buildU6Decor(L: UndergroundLayout, bands: Soup[]): void {
     const lat = cb.side * (H - 0.08);
     const top = F + cb.y;
     const sag = (u: number) => top - 0.45 * 4 * u * (1 - u);
-    const lo = thin(0, 0, 1);
-    const hi = thin(0, 1, 0);
+    const cz = zoneIx(cb.t, (cb.s0 + cb.s1) / 2);
+    const lo = thin(0, 0, 1, false, cz);
+    const hi = thin(0, 1, 0, false, cz);
     for (let s = cb.s0; s < cb.s1 - 1e-6; s += CABLE_SPAN) {
       const end = Math.min(cb.s1, s + CABLE_SPAN);
       const n = Math.max(1, Math.ceil(end - s));
@@ -1588,7 +1867,8 @@ function buildU6Decor(L: UndergroundLayout, bands: Soup[]): void {
         rgba(C.dripTip),
       );
   }
-  // Glowing crystal clusters: three leaning spikes.
+  // Glowing crystal clusters (U7): three hexagonal prisms with pointed
+  // tips, leaning — the base dark, the faces alight.
   for (const cr of L.crystals) {
     const soup = bands[cr.band] as Soup;
     const col = C.crystals[
@@ -1599,50 +1879,69 @@ function buildU6Decor(L: UndergroundLayout, bands: Soup[]): void {
     for (let i = 0; i < 3; i++) {
       const ds = (i - 1) * cr.size * 0.6;
       const h = cr.height * (i === 1 ? 1 : 0.65);
-      const r = cr.size * (i === 1 ? 0.45 : 0.32);
-      spike(
-        soup,
-        cr.t,
-        cr.s + ds,
-        lat,
-        F,
-        F + h,
-        r,
-        rgba(C.crystalBase),
-        rgba(col),
-        glow,
-        ds * 0.4,
-      );
+      const r = cr.size * (i === 1 ? 0.4 : 0.28);
+      const lean = ds * 0.4;
+      const shoulder = 0.78;
+      const ring = (y: number, rr: number, l: number): P3[] =>
+        Array.from({ length: 6 }, (_, k) => {
+          const a = (k / 6) * Math.PI * 2 + i;
+          return at(
+            cr.t,
+            cr.s + ds + l + Math.cos(a) * rr,
+            lat + Math.sin(a) * rr,
+            y,
+          );
+        });
+      const lo = ring(F, r, 0);
+      const hi = ring(F + h * shoulder, r * 0.92, lean * shoulder);
+      const apex = at(cr.t, cr.s + ds + lean, lat, F + h);
+      for (let k = 0; k < 6; k++) {
+        const j = (k + 1) % 6;
+        const face = mixC(rgba(col), rgba(C.crystalBase), (k % 2) * 0.25);
+        soup.quad(
+          [lo[k] as P3, lo[j] as P3, hi[j] as P3, hi[k] as P3],
+          [rgba(C.crystalBase), rgba(C.crystalBase), face, face],
+          glow,
+        );
+        soup.tri([hi[k] as P3, hi[j] as P3, apex], rgba(col), glow);
+      }
     }
   }
-  // Hanging roots: two crossed thin cards each (edge AA, ceiling behind).
+  // Hanging roots (U7): tapered three-sided strands with a kink — every
+  // face keeps U5b's edge AA and fades into the ceiling with distance.
   for (const rt of L.roots) {
     const soup = bands[rt.band] as Soup;
+    const z = zoneIx(rt.t, rt.s);
     const top = DEEP_CEIL - 0.01;
-    const bot = top - rt.len;
     const w = rt.width / 2;
     const c0 = rgba(C.root);
     const c1 = mixC(rgba(C.root), rgba(C.rootTip), 0.6 + 0.4 * rt.shade);
-    soup.quad(
-      [
-        at(rt.t, rt.s - w, rt.lat, top),
-        at(rt.t, rt.s + w, rt.lat, top),
-        at(rt.t, rt.s + w * 0.3, rt.lat, bot),
-        at(rt.t, rt.s - w * 0.3, rt.lat, bot),
-      ],
-      [c0, c0, c1, c1],
-      thinQuad(1),
-    );
-    soup.quad(
-      [
-        at(rt.t, rt.s, rt.lat - w, top),
-        at(rt.t, rt.s, rt.lat + w, top),
-        at(rt.t, rt.s, rt.lat + w * 0.3, bot),
-        at(rt.t, rt.s, rt.lat - w * 0.3, bot),
-      ],
-      [c0, c0, c1, c1],
-      thinQuad(1),
-    );
+    const kink = (rt.shade - 0.5) * 0.25;
+    const spine: [number, number, number, number][] = [
+      [rt.s, rt.lat, top, w],
+      [rt.s + kink, rt.lat - kink * 0.6, top - rt.len * 0.55, w * 0.6],
+      [rt.s + kink * 0.4, rt.lat - kink, top - rt.len, w * 0.15],
+    ];
+    for (let k = 0; k < 2; k++) {
+      const [sa, la, ya, wa] = spine[k] as [number, number, number, number];
+      const [sb, lb, yb, wb] = spine[k + 1] as [number, number, number, number];
+      const ca = mixC(c0, c1, k / 2);
+      const cb = mixC(c0, c1, (k + 1) / 2);
+      for (let f = 0; f < 3; f++) {
+        const a0 = (f / 3) * Math.PI * 2;
+        const a1 = ((f + 1) / 3) * Math.PI * 2;
+        soup.quad(
+          [
+            at(rt.t, sa + Math.cos(a0) * wa, la + Math.sin(a0) * wa, ya),
+            at(rt.t, sa + Math.cos(a1) * wa, la + Math.sin(a1) * wa, ya),
+            at(rt.t, sb + Math.cos(a1) * wb, lb + Math.sin(a1) * wb, yb),
+            at(rt.t, sb + Math.cos(a0) * wb, lb + Math.sin(a0) * wb, yb),
+          ],
+          [ca, ca, cb, cb],
+          thinQuad(1, z),
+        );
+      }
+    }
   }
 }
 
@@ -2165,9 +2464,11 @@ uniform vec4 uCaveIn[${CAVE_SLOTS}];
 varying vec4 vAnim;
 varying float vGlow;
 varying float vThin;
+varying vec3 vLookWorld;
 `;
 const DECOR_VERTEX = /* glsl */ `
 vAnim = aAnim;
+vLookWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;
 vGlow = 1.0;
 vThin = 0.0;
 if (aAnim.x > 2.5 && aAnim.x < 3.5) {
@@ -2191,6 +2492,9 @@ if (aAnim.x > 4.5 && aAnim.x < 5.5) {
 }
 `;
 const DECOR_FRAGMENT_PARS = /* glsl */ `
+${LOOK_BEHIND_GLSL}
+${LOOK_NOISE_GLSL}
+varying vec3 vLookWorld;
 uniform float uU5Time;
 varying vec4 vAnim;
 varying float vGlow;
@@ -2203,28 +2507,77 @@ diffuseColor.rgb *= vGlow;
 // Derivatives outside any branch (undefined in non-uniform control flow).
 vec3 thinEdge = vec3(vAnim.zw, 1.0 - vAnim.z - vAnim.w);
 vec3 thinEdgeW = max(fwidth(thinEdge), vec3(1e-5));
+vec2 tileFw = fwidth(vAnim.yz);
+vec2 waterFw = fwidth(vLookWorld.xz);
+float waterPx = max(waterFw.x, waterFw.y);
 if (vAnim.x > 2.5 && vAnim.x < 3.5) {
-  // aAnim.y is 0..3 exactly; rounded, as an interpolated constant may
-  // arrive an ulp off.
+  // aAnim.y is behind + 2·tri + 4·zone, exact integers; rounded, as an
+  // interpolated constant may arrive an ulp off.
   float thinY = floor(vAnim.y + 0.5);
-  vec3 behind = mod(thinY, 2.0) > 0.5 ? ${glslColor(SHELL_CEILING)} : ${glslColor(SHELL_WALL_MID)};
+  float thinTriBit = mod(floor(thinY / 2.0 + 0.01), 2.0);
+  vec3 behind = abLookBehind(floor(thinY / 4.0 + 0.01), mod(thinY, 2.0));
   // Pixels from the nearest edge; a quad has no third edge.
   vec3 px = thinEdge / thinEdgeW;
-  float edgePx = min(px.x, thinY > 1.5 ? min(px.y, px.z) : px.y);
+  float edgePx = min(px.x, thinTriBit > 0.5 ? min(px.y, px.z) : px.y);
   float cover = clamp(edgePx, 0.0, 1.0);
   diffuseColor.rgb = mix(diffuseColor.rgb, behind, max(vThin, 1.0 - cover));
 }
 if (vAnim.x > 0.5 && vAnim.x < 1.5) {
-  float r = sin(vAnim.y * 1.7 - uU5Time * vAnim.z) *
-    sin(vAnim.y * 0.63 + uU5Time * vAnim.z * 0.4 + 1.3);
-  diffuseColor.rgb *= 0.92 + 0.12 * smoothstep(0.2, 1.0, r);
+  // U7 WATER: three wave trains moving down the stream — wave vectors are
+  // whole cycles per world period, so the pattern is periodic in WORLD_SIZE
+  // and the 2×2 snap never moves it — their analytic slope tilting the
+  // normal; a fresnel reflection of the bore's air and lamps, and soft
+  // warm streaks under the crown lights (vAnim.y is s along the bore).
+  vec2 wp = mod(vLookWorld.xz, ${WORLD_SIZE.toFixed(1)});
+  float wt = uU5Time * (0.6 + vAnim.z);
+  vec2 slope = vec2(0.0);
+  float crest = 0.0;
+  for (int i = 0; i < 3; i++) {
+    vec2 K = i == 0 ? vec2(900.0, 300.0) : i == 1 ? vec2(-500.0, 1100.0) : vec2(700.0, -650.0);
+    K *= ${((2 * Math.PI) / WORLD_SIZE).toFixed(7)};
+    float kl = length(K);
+    float fade = 1.0 - smoothstep(0.1, 0.3, waterPx * kl * 0.159);
+    float ph = dot(K, wp) - wt * (1.6 + 0.5 * float(i));
+    slope += K * cos(ph) * 0.006 * fade;
+    crest += sin(ph) * fade;
+  }
+  vec3 wN = normalize(vec3(-slope.x, 1.0, -slope.y));
+  vec3 wV = normalize(cameraPosition - vLookWorld);
+  float fres = 0.04 + 0.96 * pow(1.0 - clamp(dot(wN, wV), 0.0, 1.0), 5.0);
+  vec3 refl = vec3(0.1, 0.13, 0.16);
+  #ifdef USE_FOG
+    refl = mix(refl, abTunnelAir.rgb * 1.3, abTunnelAir.a);
+  #endif
+  float wds = (fract(vAnim.y / 12.0 + 0.5) - 0.5) * 12.0 + slope.x * 25.0;
+  float streak = exp(-wds * wds / 5.0) * (0.5 + 0.5 * clamp(crest * 0.5 + 0.5, 0.0, 1.0));
+  float glint = step(3.5, uTunnelDetail);
+  vec3 water = mix(diffuseColor.rgb * (0.85 + 0.1 * crest), refl, fres);
+  water += vec3(1.0, 0.8, 0.56) * streak * (0.03 + 0.14 * fres) * (0.4 + 0.6 * glint);
+  diffuseColor.rgb = abUnderClamp(water);
 }
 if (vAnim.x > 3.5 && vAnim.x < 4.5) {
+  // Falling water: streaks down the sheet (vAnim.y is height), foam and
+  // spray thickening toward its foot.
   float n = 0.5 + 0.5 * sin(vAnim.z * 7.3);
+  float n2 = 0.5 + 0.5 * sin(vAnim.z * 3.1 + 1.7);
   float f = fract((vAnim.y + uU5Time * 4.0 * (0.7 + 0.6 * n)) * 0.35);
-  float streak = smoothstep(0.4, 1.0, f) * (1.0 - smoothstep(0.9, 1.0, f));
-  diffuseColor.rgb *= 0.9 + 0.14 * streak;
-  diffuseColor.a *= 0.85 + 0.15 * streak;
+  float streak = smoothstep(0.35, 1.0, f) * (1.0 - smoothstep(0.88, 1.0, f));
+  float foam = 1.0 - smoothstep(${(BORE_FLOOR_Y + 0.3).toFixed(2)}, ${(BORE_FLOOR_Y + 2.4).toFixed(2)}, vAnim.y);
+  diffuseColor.rgb *= 0.78 + 0.3 * streak * (0.6 + 0.4 * n2);
+  diffuseColor.rgb = mix(diffuseColor.rgb, ${glslColor(FOAM)}, foam * 0.7);
+  diffuseColor.a *= mix(0.72 + 0.28 * streak, 1.25, foam);
+}
+if (vAnim.x > 5.5 && vAnim.x < 6.5) {
+  // U7 TILE: 0.6 × 0.3 m glazed tiles, grout, a tone per tile, faded to
+  // the average once a tile is a few pixels.
+  vec2 tsz = vec2(0.6, 0.3);
+  vec2 tc = vAnim.yz / tsz;
+  vec2 te = (0.5 - abs(fract(tc) - 0.5)) * tsz;
+  float tpx = max(max(tileFw.x, tileFw.y), 1e-4);
+  float grout = 1.0 - smoothstep(0.009, 0.009 + tpx * 1.5, min(te.x, te.y));
+  float fine = 1.0 - smoothstep(0.01, 0.035, tpx);
+  float tone = abHash(floor(tc) + 7.0);
+  diffuseColor.rgb *= mix(1.0, 0.94 + 0.12 * tone, fine) * (1.0 - 0.38 * grout * fine);
 }
 `;
 
@@ -2417,6 +2770,7 @@ export class UndergroundLife {
       uU5Time: this.time,
       uCaveIn: this.caveIn,
       uPlane: this.plane,
+      uTunnelDetail: TUNNEL_DETAIL,
     };
 
     const decorMat = new THREE.MeshBasicMaterial({

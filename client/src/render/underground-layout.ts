@@ -29,6 +29,8 @@
 //   - the GARDEN adds fish in the lake, deer and foxes, mist off the
 //     waterfalls and hanging roots;
 //   - the STATION's platform gets passengers waiting at its edge.
+// U7 adds real plants on the floor along the walls' feet (ferns and
+// flowering bushes, lifeU7) and spray at each waterfall's foot.
 //
 // DRAW == COLLIDE. Every SOLID item sits in the LINING: within LINING of
 // the wall, floor or ceiling it hangs on — under PLAYER_RADIUS, so the
@@ -315,6 +317,36 @@ export interface Walker {
   band: Band;
 }
 
+/** U7: a green fern on the floor — fronds arching out from its root. */
+export interface Fern {
+  t: Tunnel;
+  s: number;
+  side: 1 | -1;
+  /** Root in from the wall, m. */
+  inset: number;
+  /** Frond reach and arch height, m. */
+  size: number;
+  height: number;
+  fronds: number;
+  phase: number;
+  shade: number;
+  band: Band;
+}
+
+/** U7: a flowering bush on the floor — a cluster of leafy mounds. */
+export interface Bush {
+  t: Tunnel;
+  s: number;
+  side: 1 | -1;
+  inset: number;
+  /** Radius and height, m (under LINING tall). */
+  r: number;
+  height: number;
+  hue: number;
+  flowers: number;
+  band: Band;
+}
+
 export interface UndergroundLayout {
   panels: Panel[];
   vines: Vine[];
@@ -345,6 +377,9 @@ export interface UndergroundLayout {
   workers: Walker[];
   passengers: Walker[];
   carts: Walker[];
+  // --- U7 ---
+  ferns: Fern[];
+  bushes: Bush[];
 }
 
 // --- U6 items -------------------------------------------------------------------
@@ -539,6 +574,8 @@ export function undergroundLayout(): UndergroundLayout {
     workers: [],
     passengers: [],
     carts: [],
+    ferns: [],
+    bushes: [],
   };
   for (const t of TUNNELS) {
     const [d0, d1] = deepRange(t);
@@ -765,7 +802,90 @@ export function undergroundLayout(): UndergroundLayout {
     }
   }
   lifeU6(out);
+  lifeU7(out);
   return out;
+}
+
+// --- U7: real plants on the floor -------------------------------------------------
+
+const SALT7 = { plants: 0x7a11fe, spray: 0x5b2a7e } as const;
+
+/** Ferns and flowering bushes along the walls' feet, per section — on
+ * their own seeded streams, so nothing U5/U6 placed moves. All of them
+ * low (under LINING), in from the wall (clear of the garden's channel
+ * kerb, the mine's rails), never on the lake or the station's platform. */
+function lifeU7(out: UndergroundLayout): void {
+  const fernP: Partial<Record<Zone, number>> = {
+    garden: 0.6,
+    grotto: 0.5,
+    mine: 0.22,
+    works: 0.1,
+  };
+  const bushP: Partial<Record<Zone, number>> = {
+    garden: 0.45,
+    grotto: 0.14,
+    mine: 0.08,
+    works: 0.05,
+  };
+  for (const t of TUNNELS) {
+    const [d0, d1] = deepRange(t);
+    for (let k = Math.ceil(d0 / SLOT); k * SLOT + SLOT <= d1; k++) {
+      const s = k * SLOT + SLOT / 2;
+      const zone = zoneAt(t, s);
+      const r = stream(SALT7.plants, t.id, k);
+      // The garden's channel and the mine's rails take the wall's foot.
+      const minInset = zone === "garden" || zone === "mine" ? 1.6 : 0.35;
+      const lake = t.id === LAKE.tunnel && s > LAKE.s0 - 3 && s < LAKE.s1 + 3;
+      for (const side of [1, -1] as const) {
+        const fs = s + (r() - 0.5) * SLOT * 0.8;
+        const fSize = 0.45 + r() * 0.45;
+        const fern: Fern = {
+          t,
+          s: fs,
+          side,
+          inset: minInset + fSize * 0.6 + r() * 0.8,
+          size: fSize,
+          height: 0.45 + r() * 0.55,
+          fronds: 5 + Math.floor(r() * 2),
+          phase: r() * Math.PI * 2,
+          shade: r(),
+          band: band(r(), 0.3, 0.35),
+        };
+        if (!lake && r() < (fernP[zone] ?? 0)) out.ferns.push(fern);
+        const br = 0.35 + r() * 0.3;
+        const bush: Bush = {
+          t,
+          s: s + (r() - 0.5) * SLOT * 0.8,
+          side,
+          inset: minInset + br + 0.1 + r() * 0.6,
+          r: br,
+          height: 0.55 + r() * 0.6,
+          hue: r(),
+          flowers: 3 + Math.floor(r() * 5),
+          band: band(r(), 0.35, 0.35),
+        };
+        if (!lake && r() < (bushP[zone] ?? 0)) out.bushes.push(bush);
+      }
+    }
+  }
+  // Spray at each waterfall's foot: fine mist low over the channel.
+  const seam = TUNNELS[GARDEN.tunnel] as Tunnel;
+  const p0 = { x: 0, z: 0, th: 0 };
+  for (const w of out.waterfalls) {
+    const r = stream(SALT7.spray, seam.id, Math.round(w.s));
+    for (let i = 0; i < 6; i++) {
+      boreXZ(w.t, w.s + (r() - 0.5) * 2 * w.hw, w.side * (HALF - 1.5), p0);
+      out.motes.push({
+        x: p0.x,
+        y: BORE_FLOOR_Y + 0.9 + r() * 0.4,
+        z: p0.z,
+        kind: "mist",
+        amp: 0.55,
+        phase: r() * Math.PI * 2,
+        band: i < 2 ? 0 : 1,
+      });
+    }
+  }
 }
 
 // --- U6: a character per section ------------------------------------------------

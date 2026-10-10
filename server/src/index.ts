@@ -19,7 +19,9 @@ import {
 import {
   BOSS_ID,
   type BossDown,
+  blankPose,
   bossCredit,
+  bossPoseAt,
   bossSpawnClear,
   encodeFlak,
   encodeRaid,
@@ -123,7 +125,19 @@ import {
   applyBossImpact,
   claimBossHit,
 } from "./boss";
-import { RoomBots, applyBotFire, landBotRound, poseVelocity } from "./bots";
+import {
+  BombDirector,
+  type BombHuman,
+  type BombWorld,
+  applyLoadBlast,
+} from "./bombs";
+import {
+  type BombReleaseCue,
+  RoomBots,
+  applyBotFire,
+  landBotRound,
+  poseVelocity,
+} from "./bots";
 import { CAVEIN_FAST, CAVEIN_TUNING, CaveInDirector } from "./caveins";
 import {
   ChaosDirector,
@@ -906,6 +920,25 @@ const wavesFor = (room: Room): RoomWaves => {
   return w;
 };
 
+/**
+ * W2: each room's bomb runs (server/src/bombs.ts) — which enemy plane bombs
+ * what, and which of its bombs fall. Seeded from the room's number like the
+ * other directors; created lazily, dropped with the room.
+ */
+const bombsByRoom = new Map<string, BombDirector>();
+const bombsFor = (room: Room): BombDirector => {
+  let b = bombsByRoom.get(room.id);
+  if (!b) {
+    const n = Number(room.id.split("-")[1] ?? 0);
+    b = new BombDirector(
+      (room.seed ^ Math.imul(n + 1, 0x6b0b5e1d)) >>> 0,
+      TUNINGS.bombs,
+    );
+    bombsByRoom.set(room.id, b);
+  }
+  return b;
+};
+
 /** W1: an enemy plane leaves `room` for good (RoomWaves already dropped it
  * from its pilots, Combat and the carrier): every other per-plane record
  * forgotten, the roster left, `playerLeft` sent — and a room that held only
@@ -913,6 +946,7 @@ const wavesFor = (room: Room): RoomWaves => {
 function removeEnemy(room: Room, id: string): void {
   medals.forget(id);
   storm.forget(id);
+  bombsByRoom.get(room.id)?.forget(id);
   directorsByRoom.get(room.id)?.forget(id);
   budgetsByRoom.get(room.id)?.forget(id);
   caveInsByRoom.get(room.id)?.forget(id);
@@ -980,6 +1014,7 @@ function disposeRoom(room: Room): void {
   if (rooms.rooms.includes(room)) return;
   botsByRoom.delete(room.id);
   wavesByRoom.delete(room.id);
+  bombsByRoom.delete(room.id);
   cityEvents.forget(room.id);
   roomMoversById.delete(room.id);
   pendingKillByRoom.delete(room.id);
@@ -1119,6 +1154,7 @@ function handleJoin(
     collapses: [...roomCity(room).collapses.records],
     courses: courseSetFor(room.seed).book.standings(),
     missiles: missilesFor(room).director.missiles().map(encodeMissile),
+    racks: bombsByRoom.get(room.id)?.wire() ?? [],
     wrecks: wrecksByRoom.get(room.id)?.active() ?? [],
     director: directorFor(room).pending().map(encodeDirectorEvent),
     boss: roomBoss(room).state(now),
@@ -1527,6 +1563,23 @@ function sendDeath(
   const pos = lastPosOf(room, death.victimId);
   if (pos) pendingKillByRoom.set(room.id, { x: pos.x, z: pos.z });
   const site = pos ? canonicalize(pos) : null;
+  // W2: an enemy shot down on a bomb run takes its load with it — a bigger
+  // blast in the air where it was hit (its wreck, if any, still falls).
+  const loadWent =
+    bombsByRoom
+      .get(room.id)
+      ?.downed(death.victimId, now, death.cause === "shot") ?? false;
+  const boom = loadWent && site ? site : null;
+  if (boom) {
+    const rc = breakable(room);
+    if (rc) {
+      const by =
+        death.killerId !== null && room.members.has(death.killerId)
+          ? death.killerId
+          : null;
+      chaosFor(room)?.ignite(applyLoadBlast(rc, boom, by), now, rc);
+    }
+  }
   sendToRoom(room, {
     type: "death",
     victimId: death.victimId,
@@ -1537,6 +1590,13 @@ function sendDeath(
       z: Math.round(site.z) % WORLD_SIZE,
     }),
     ...(wreck && { wreck }),
+    ...(boom && {
+      boom: [
+        Math.round(boom.x) % WORLD_SIZE,
+        Math.round(boom.y),
+        Math.round(boom.z) % WORLD_SIZE,
+      ] as [number, number, number],
+    }),
   });
   // D4: a wreck's city event comes when it lands, where it lands. X1: a
   // missile death's blast IS the missile's own event — never a second one
@@ -1760,7 +1820,7 @@ function tickRoomBots(room: Room, now: number): void {
   );
   bots.setHazardDiscs("flak", roomBoss(room).shellsInFlight().map(flakHazard));
 
-  const { shots, hits, crashes } = bots.tick(now, contacts);
+  const { shots, cues, hits, crashes } = bots.tick(now, contacts);
 
   // D4: a falling wreck is solid for bots too (they do not probe for it).
   const wrecks = wrecksByRoom.get(room.id);
@@ -1807,6 +1867,81 @@ function tickRoomBots(room: Room, now: number): void {
     // Same cosmetic path as human fire: everyone renders the tracer.
     sendToRoom(room, { type: "fired", id: shot.botId });
     offerCityEvent(room, "gunfire", shot.botId, now);
+  }
+
+  tickBombs(room, bots, cues, now);
+}
+
+/**
+ * W2 the enemy planes' bombs for one room tick — only while the room's city
+ * may break (breakable) and the war is on: the director ends the runs the
+ * brain dropped and orders at most one new one, then this tick's cued
+ * releases are decided. A bomb that falls is an X1 strike already in the
+ * room's pipeline; it is announced as `missile` with its dropper and rack.
+ */
+function tickBombs(
+  room: Room,
+  bots: RoomBots,
+  cues: readonly BombReleaseCue[],
+  now: number,
+): void {
+  const rc = breakable(room);
+  if (!rc || !wavesOn(room)) return;
+  const waves = wavesFor(room);
+  const director = bombsFor(room);
+  const humans: BombHuman[] = waveHumans(room, now).map((h) => ({
+    id: h.id,
+    pos: h.pos,
+    vel: h.vel,
+    prot: h.prot,
+  }));
+  const raid = roomBoss(room).activeRaid(now);
+  const carrier = raid ? bossPoseAt(raid, now, blankPose()) : null;
+  const world: BombWorld = {
+    index: rc.index,
+    buildings: rc.buildings,
+    missiles: missilesFor(room).director,
+    budget: budgetFor(room),
+    carrier: carrier && { x: carrier.x, y: carrier.y, z: carrier.z },
+    hold: rc.damage.hold,
+    intensity: waves.intensity,
+    wave: waves.state().wave,
+  };
+  const enemies = [];
+  for (const e of waves.enemies()) {
+    const c = e.down ? null : bots.contactOf(e.id);
+    if (!c) continue;
+    enemies.push({
+      id: e.id,
+      pos: c.pos,
+      vel: c.vel,
+      quarry: bots.quarryOf(e.id),
+      ready: bots.canBomb(e.id, now),
+      onRun: bots.runOf(e.id) !== null,
+      launchedAt: e.launchedAt,
+    });
+  }
+  for (const order of director.tick(now, enemies, humans, world)) {
+    if (!bots.startRun(order.enemyId, order.kind, order.target, now)) {
+      director.refused(order.enemyId, now);
+    }
+  }
+  for (const cue of cues) {
+    if (!combat.isAlive(cue.botId)) continue;
+    const drop = director.drop(
+      now,
+      { enemyId: cue.botId, pos: cue.pos, vel: cue.vel },
+      humans,
+      world,
+    );
+    if (typeof drop === "string") continue;
+    sendToRoom(room, {
+      type: "missile",
+      m: encodeMissile(drop.strike),
+      by: drop.enemyId,
+      r: drop.rack,
+    });
+    if (drop.done) bots.endRun(drop.enemyId, now);
   }
 }
 
@@ -2013,9 +2148,12 @@ function landMissile(
   const cause =
     m.kind === "meteor" ? "meteor" : m.kind === "bomb" ? "bomb" : "missile";
   for (const victim of rm.director.blastVictims(m, planes, now)) {
+    const isBot = room.members.get(victim.id)?.isBot ?? false;
+    // W2: every bomb is an enemy plane's, and the enemies are immune to
+    // their own side's bombs (no friendly-fire crashes in a wave).
+    if (isBot && m.kind === "bomb") continue;
     const hit = combat.environmentDamage(victim.id, victim.damage, now, cause);
     if (!hit) continue;
-    const isBot = room.members.get(victim.id)?.isBot ?? false;
     sendToRoom(room, {
       type: "damage",
       targetId: victim.id,

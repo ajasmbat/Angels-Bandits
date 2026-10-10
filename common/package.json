@@ -28,6 +28,7 @@
     "./city/props": "./src/city/props.ts",
     "./storm": "./src/storm.ts",
     "./strike": "./src/strike.ts",
+    "./bombs": "./src/bombs.ts",
     "./chaos": "./src/chaos.ts",
     "./weather": "./src/weather.ts",
     "./wind": "./src/wind.ts",

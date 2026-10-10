@@ -76,6 +76,7 @@ import {
   wrapCoord,
   wrapDistance,
 } from "@angels-bandits/common/world";
+import { BOMB_FAST_TUNING, BOMB_TUNING, type BombTuning } from "./bombs";
 import { DANGER_TUNING, type DangerBudget, type DangerTuning } from "./danger";
 import type { RoomCity } from "./destruction";
 import {
@@ -150,6 +151,9 @@ export interface ChaosTunings {
   /** The room city's DESTROY_CAP, and whether the gone-share hold runs. */
   destroyCap: number;
   hold: boolean;
+  /** W2: the enemy planes' bomb runs — part of the carrier war, not a C2
+   * layer, so AB_CHAOS=0 leaves them alone (AB_BOMBS_FAST=1: QA pace). */
+  bombs: BombTuning;
 }
 
 /**
@@ -181,6 +185,7 @@ export function chaosTunings(
     danger: off ? null : DANGER_TUNING,
     destroyCap: off ? DESTROY_CAP_D2 : DESTROY_CAP,
     hold: !off,
+    bombs: env.AB_BOMBS_FAST === "1" ? BOMB_FAST_TUNING : BOMB_TUNING,
   };
 }
 

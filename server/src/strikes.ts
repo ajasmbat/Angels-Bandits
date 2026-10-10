@@ -14,7 +14,7 @@
 //    launches (meteors the C2 chaos director injects ride the same
 //    settle/landing path but never count against either);
 //  - C2: the room's DangerBudget (server/src/danger.ts) must allow it — at
-//    most two missiles near one plane per 30 s, among four lethal events;
+//    most two missiles near one plane per 30 s, among five lethal events;
 //  - no target near a respawn from the last 5 s, and no plane takes missile
 //    damage within 5 s of (re)spawning — whichever came first;
 //  - the target itself is never a plane (common/src/strike.ts picker), and
@@ -191,6 +191,20 @@ export class MissileDirector {
   /** A plane left the room or died: forget its dwell. */
   forget(id: string): void {
     this.dwell.delete(id);
+  }
+
+  /** W2: within the respawn quiet radius of a (re)spawn still inside its
+   * quiet window — where no bomb may land either. */
+  nearSpawn(pos: Vec3, now: number): boolean {
+    for (const s of this.spawns.values()) {
+      if (
+        now - s.t < this.tuning.respawnQuietMs &&
+        wrapDistance(s.pos, pos) < this.tuning.respawnClearM
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Spawned less than the quiet window ago. */

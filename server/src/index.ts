@@ -227,6 +227,12 @@ const BOSS_RAID_TUNING = TUNINGS.boss;
 /** Test-only introspection of the per-room maps (`GET /debug/rooms`). */
 const DEBUG_ROOMS = process.env.AB_DEBUG_ROOMS === "1";
 
+/** A2: `process.memoryUsage()` after a full GC when node exposes one. */
+const memoryAfterGc = (): NodeJS.MemoryUsage => {
+  (globalThis as { gc?: () => void }).gc?.();
+  return process.memoryUsage();
+};
+
 /**
  * D6: AB_QUIET_CITY=1 (the perf harness only — tools/perf/run.mjs): no room's
  * city ever breaks (`breakable` is null: no bullet, blast, wreck, missile,
@@ -2285,6 +2291,21 @@ const server = createServer((req, res) => {
         bossByRoom: [...bossByRoom.keys()],
         chaosByRoom: [...chaosByRoom.keys()],
         budgetsByRoom: [...budgetsByRoom.keys()],
+        caveInsByRoom: [...caveInsByRoom.keys()],
+        // A2: the soak's server samples — memory after a forced GC (when
+        // run with --expose-gc) and each room's damage, which every
+        // member's client must agree with.
+        memory: memoryAfterGc(),
+        damage: Object.fromEntries(
+          [...roomCityById].map(([id, rc]) => [
+            id,
+            {
+              destroyed: rc.damage.destroyedCount,
+              fallen: rc.damage.fallenCount,
+              collapses: rc.collapses.records.length,
+            },
+          ]),
+        ),
       }),
     );
     return;

@@ -17,7 +17,7 @@ import {
 import { type Vec3, wrapDeltaInto } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { LIGHT_MOUNTS } from "./planelights";
-import { nearestImage, nearestImageInto, uploadPrefix } from "./wrapPlacement";
+import { nearestImageInto, uploadPrefix } from "./wrapPlacement";
 
 /** How long a trail point lives, ms (~the plan's "short ribbon trails"). */
 export const TRAIL_LIFETIME_MS = 1500;

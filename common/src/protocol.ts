@@ -4,6 +4,7 @@
 // keeping every shape in this one file is what makes a binary encoder a later
 // drop-in swap.
 
+import type { WireRacks } from "./bombs";
 import type {
   BossDown,
   WireBossRaid,
@@ -11,7 +12,6 @@ import type {
   WireFlak,
   WireLaunch,
 } from "./boss";
-import type { WireRacks } from "./bombs";
 import type { WireChaosState, WireQuake } from "./chaos";
 import type { WireCaveIn } from "./city/caveins";
 import type { CollapseWire } from "./city/collapse";

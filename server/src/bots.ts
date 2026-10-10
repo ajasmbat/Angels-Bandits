@@ -263,12 +263,12 @@ import {
   pointInHazard,
 } from "@angels-bandits/common/hazards";
 import { inHoleSpan } from "@angels-bandits/common/medals";
-import { BOMB_FALL_MS } from "@angels-bandits/common/strike";
 import type {
   Pose,
   RosterEntry,
   SpawnState,
 } from "@angels-bandits/common/protocol";
+import { BOMB_FALL_MS } from "@angels-bandits/common/strike";
 import { BOT_TUNING } from "@angels-bandits/common/tuning";
 import type { WaveGrade } from "@angels-bandits/common/waves";
 import {

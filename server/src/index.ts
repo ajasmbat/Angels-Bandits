@@ -119,18 +119,18 @@ import {
 import type { WreckParams, WreckWorld } from "@angels-bandits/common/wreck";
 import { type WebSocket, WebSocketServer } from "ws";
 import {
+  BombDirector,
+  type BombHuman,
+  type BombWorld,
+  applyLoadBlast,
+} from "./bombs";
+import {
   BossDirector,
   type BossPlane,
   type BossWorld,
   applyBossImpact,
   claimBossHit,
 } from "./boss";
-import {
-  BombDirector,
-  type BombHuman,
-  type BombWorld,
-  applyLoadBlast,
-} from "./bombs";
 import {
   type BombReleaseCue,
   RoomBots,
@@ -180,11 +180,7 @@ import {
   isResumeToken,
   isVec3,
 } from "./guards";
-import {
-  type RespawnEnemy,
-  pickRespawn,
-  respawnIfUnsafe,
-} from "./respawn";
+import { type RespawnEnemy, pickRespawn, respawnIfUnsafe } from "./respawn";
 import { type Room, RoomManager } from "./room";
 import { createStaticHandler } from "./statics";
 import { StormCeiling } from "./storm";

@@ -97,11 +97,7 @@ export function bombSurfaceY(index: CityIndex, x: number, z: number): number {
  * grid: half its ground speed × the fall ahead along its ground track (the
  * curve's u(2 − u) leaves at exactly that ground speed), on the surface
  * there. */
-export function bombImpactPoint(
-  from: Vec3,
-  vel: Vec3,
-  index: CityIndex,
-): Vec3 {
+export function bombImpactPoint(from: Vec3, vel: Vec3, index: CityIndex): Vec3 {
   const s = BOMB_FALL_MS / 2000;
   const x = qc(from.x + vel.x * s);
   const z = qc(from.z + vel.z * s);

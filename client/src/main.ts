@@ -27,6 +27,7 @@ import {
 } from "@angels-bandits/common/boss";
 import {
   type Building,
+  chunkBuilding,
   cityHoles,
   mulberry32,
   raycastChunk,
@@ -257,6 +258,7 @@ import {
   QA_ID_BASE,
   type QaDestructionSpec,
   stageDestruction,
+  stageProps,
 } from "./game/qa-destruction";
 import {
   type QaBossSpec,
@@ -2418,6 +2420,9 @@ function applyResume(w: WelcomeMsg): void {
   awayStarted = false;
   awaitingReturn = null;
   hud.setReconnecting(false);
+  // D9 QA: the welcome replaced the props with the server's — a staged
+  // scene (a slow software-GL capture can drop and resume) goes back on.
+  if (qaStaged.propsSpec) stageQaProps(qaStaged.propsSpec);
 }
 socket.events.onReconnecting = () => hud.setReconnecting(true);
 socket.events.onResumed = applyResume;
@@ -3191,6 +3196,10 @@ declare global {
        * without `keep`) first clears everything staged back to intact.
        */
       qaDestruction: (spec: QaDestructionSpec | null) => {
+        /** D9: props put down, craters made, floors set burning. */
+        props: number;
+        craters: number;
+        burning: number;
         collapses: number;
         broken: number;
         touched: number;
@@ -3201,6 +3210,19 @@ declare global {
        * the renderer — `stagedDraws` counts the draws only destruction
        * adds (damaged mesh, debris, dust, falling wrecks, scorch,
        * scaffolding; not the impact pool, which bullets feed too). */
+      /** D9 QA: the props on this client and what they draw. */
+      props: () => {
+        down: number;
+        fallers: number;
+        gaps: number;
+        craters: number;
+        soot: number;
+        instances: number;
+        decals: number;
+        scarReapplies: number;
+      };
+      /** D9 QA: re-throw building `b`'s glass cascade (chunks it lost). */
+      qaGlass: (b: number) => number;
       /** D8 QA: the standing filter's per-frame cost (ms, every layer). */
       standingCost: () => ReturnType<typeof standingCost>;
       /** D8 QA: buildings the layers have yet to re-evaluate (0 = settled). */
@@ -3476,8 +3498,37 @@ const qaStaged = {
   buildings: new Set<number>(),
   burns: new Set<string>(),
   wrecks: [] as number[],
+  /** D9: staged props down, craters and burning chunks — and the spec,
+   * re-staged after a W2 resume (whose welcome replaces the props). */
+  props: false,
+  propsSpec: null as QaDestructionSpec["props"] | null,
+  craters: [] as number[],
+  burning: [] as number[],
   active: false,
 };
+/** D9 QA: stage `spec` on the socket's props (see qaDestruction). */
+function stageQaProps(
+  spec: NonNullable<QaDestructionSpec["props"]>,
+): ReturnType<typeof stageProps> {
+  const props = stageProps(
+    city.cityBuildings,
+    propLayout,
+    socket.props,
+    socket.craters,
+    spec,
+    qaStaged.ids,
+  );
+  qaStaged.props = true;
+  qaStaged.propsSpec = spec;
+  qaStaged.craters.push(...props.craters);
+  for (const id of props.burning) {
+    socket.fires.add(id);
+    socket.soot.add(id);
+    qaStaged.burning.push(id);
+    qaStaged.buildings.add(chunkBuilding(id));
+  }
+  return props;
+}
 function clearQaDestruction(): void {
   socket.cityDamage.reset([]);
   socket.collapses.reset([]);
@@ -3489,6 +3540,16 @@ function clearQaDestruction(): void {
   }
   burns.length = kept;
   for (const id of qaStaged.wrecks) wrecks.remove(id);
+  if (qaStaged.props) socket.props.reset([]);
+  for (const id of qaStaged.craters) socket.craters.delete(id);
+  for (const id of qaStaged.burning) {
+    socket.fires.delete(id);
+    socket.soot.delete(id);
+  }
+  qaStaged.props = false;
+  qaStaged.propsSpec = null;
+  qaStaged.craters.length = 0;
+  qaStaged.burning.length = 0;
   qaStaged.buildings.clear();
   qaStaged.burns.clear();
   qaStaged.wrecks.length = 0;
@@ -4229,14 +4290,36 @@ window.__ab = {
       qaStaged.wrecks.push(id);
       crashed.push({ id, end: hit.end, hit: hit.hit });
     }
+    // D9: props down (with their blasts), craters, burning floors.
+    const props = spec.props ? stageQaProps(spec.props) : null;
     qaStaged.active = true;
     return {
+      props: props?.props.length ?? 0,
+      craters: props?.craters.length ?? 0,
+      burning: props?.burning.length ?? 0,
       collapses: staged.wires.length,
       broken: staged.broken,
       touched: staged.touched.length,
       blasts,
       wrecks: crashed,
     };
+  },
+  props: () => ({
+    down: socket.props.downCount,
+    gaps: socket.props.gapMask,
+    craters: socket.craters.size,
+    soot: socket.soot.size,
+    ...propsRenderer.drawStats,
+    decals: scarsRenderer.decalCount,
+    scarReapplies: facadeScars.reapplies,
+  }),
+  qaGlass: (b) => {
+    // D9 QA: re-throw building b's glass cascade from every chunk it has
+    // lost (a software frame is ~1 s — a single burst would be gone).
+    const ids = socket.cityDamage
+      .destroyedIds()
+      .filter((id) => chunkBuilding(id) === b);
+    return scarsRenderer.glassCascade(ids, chase.position, performance.now());
   },
   standingCost: () => standingCost(),
   standingPending: () => standingPending(),
@@ -5421,9 +5504,11 @@ const frame = (now: number): void => {
   BRIDGE_GONE_UNIFORM.value = spansDownAt(renderMs);
   traffic.gaps = BRIDGE_GONE_UNIFORM.value;
   cityLife.gaps = BRIDGE_GONE_UNIFORM.value;
-  propsRenderer.update(chase.position, renderMs);
-  scarsRenderer.update(chase.position, renderMs, now);
-  facadeScars.update(chase.position);
+  // (The QA eye when one is held: a capture's camera is not the chase.)
+  const propsViewer = qaView ? qaView.eye : chase.position;
+  propsRenderer.update(propsViewer, renderMs);
+  scarsRenderer.update(propsViewer, renderMs, now);
+  facadeScars.update(propsViewer, now);
   // S4: the zeppelin, its flak and its fall; the HUD bar while it flies;
   // "it got away" once, when a raid runs out still flying.
   bossRenderer.update(

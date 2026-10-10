@@ -169,7 +169,9 @@ export class FacadeScarKeeper {
   private readonly applied = new Map<number, Applied>();
   private order: number[] = [];
   private readonly sootBy = new Map<number, number[]>();
-  private frame = 0;
+  /** Wall time of the last re-sort, ms (twice a second, whatever the frame
+   * rate — a software renderer draws a frame every few seconds). */
+  private lastSort = Number.NEGATIVE_INFINITY;
 
   constructor(
     private readonly damage: FacadeDamage,
@@ -182,8 +184,11 @@ export class FacadeScarKeeper {
     this.applied.delete(bi);
   }
 
-  update(viewer: Vec3): void {
-    if (this.frame++ % 30 === 0) this.reorder(viewer);
+  update(viewer: Vec3, now: number): void {
+    if (now - this.lastSort >= 500) {
+      this.lastSort = now;
+      this.reorder(viewer);
+    }
     for (const bi of this.order) {
       if (this.refresh(bi)) break; // one building a frame
     }

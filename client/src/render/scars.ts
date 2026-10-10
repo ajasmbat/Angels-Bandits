@@ -231,8 +231,8 @@ export class ScarsRenderer {
     for (const id of ids) {
       if (shown >= GLASS_CHUNKS_MAX) break;
       if (this.chunkFace(id) && this.nearPoint(this.at, viewer, SCAR_FX_M)) {
-        this.impacts.spray(Kind.GLASS, this.at, this.n, 4, 0.9, 26, 2600, 0.42, GLASS_RGB, now);
-        this.impacts.spray(Kind.GLASS, this.at, UP, 1.5, 1.4, 10, 3200, 0.3, GLASS_RGB, now);
+        this.impacts.spray(Kind.GLASS, this.at, this.n, 4, 0.9, 44, 2800, 0.75, GLASS_RGB, now);
+        this.impacts.spray(Kind.GLASS, this.at, UP, 1.5, 1.4, 12, 3400, 0.45, GLASS_RGB, now);
         shown++;
       }
     }

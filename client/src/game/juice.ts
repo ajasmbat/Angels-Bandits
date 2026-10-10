@@ -14,11 +14,6 @@
 //    camera by after the chase camera — steering reads chase.aimFrame, so a
 //    cue can never take the stick.
 
-import {
-  WAVE_BREATHER,
-  WAVE_LIVE,
-  type WaveState,
-} from "@angels-bandits/common/waves";
 import type { Vec3 } from "@angels-bandits/common/world";
 
 // --- Combos, medals and style points ---------------------------------------
@@ -93,20 +88,6 @@ export function slowMoFor(kind: JuiceKind): boolean {
     kind === "triple" ||
     kind === "multi" ||
     kind === "carrier"
-  );
-}
-
-/**
- * WAVE CLEARED is exactly the server's LIVE → BREATHER step into the next
- * wave (server/src/waves.ts: the last enemy down with the carrier still up).
- * LIVE → IDLE is never a clear: the carrier went down (that is CARRIER
- * DOWN, from `bossDown`), flew off, or the war was switched off.
- */
-export function waveCleared(prev: WaveState, next: WaveState): boolean {
-  return (
-    prev.phase === WAVE_LIVE &&
-    next.phase === WAVE_BREATHER &&
-    next.wave === prev.wave + 1
   );
 }
 

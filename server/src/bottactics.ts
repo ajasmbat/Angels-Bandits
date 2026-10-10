@@ -229,6 +229,20 @@ export function threatOnSix(
 export class SkillScaler {
   private readonly share = new Map<string, number>();
   private readonly levels = new Map<string, number>();
+  /** W4: humans flying in Easy mode — read as level −1 whatever their
+   * record, which keeps rolling underneath for when Easy mode ends. */
+  private readonly easy = new Set<string>();
+
+  /** W4: human `id` flies in Easy mode (or no longer does). */
+  setEasy(id: string, on: boolean): void {
+    if (on) this.easy.add(id);
+    else this.easy.delete(id);
+  }
+
+  /** W4: whether human `id` flies in Easy mode. */
+  isEasy(id: string): boolean {
+    return this.easy.has(id);
+  }
 
   /** One outcome for human `id`: `won` true when the human got the kill. */
   noteOutcome(id: string, won: boolean): void {
@@ -246,6 +260,7 @@ export class SkillScaler {
   /** The human's level: −1 (the bots are farming them) … +1 (they farm the
    * bots); 0 for anyone unknown — bots included. */
   levelOf(id: string): number {
+    if (this.easy.has(id)) return -1;
     return this.levels.get(id) ?? 0;
   }
 
@@ -253,6 +268,7 @@ export class SkillScaler {
   forget(id: string): void {
     this.share.delete(id);
     this.levels.delete(id);
+    this.easy.delete(id);
   }
 
   /** Aim-jitter multiplier against `id`. */

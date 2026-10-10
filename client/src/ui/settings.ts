@@ -62,7 +62,15 @@ export interface Settings {
   reducedMotion: boolean | null;
   /** J1 CARRIER CAM: the 2–3 s cinematic on the falling carrier. */
   carrierCam: boolean;
+  /** W4 CONTROLS › SENSITIVITY on a desktop: the keyboard and classic
+   * stick's gain, one of STICK_SENS_STEPS (touch keeps `ab-touch-sens`). */
+  stickSens: number;
+  /** W4 ADVANCED › FLIGHT DATA: the SPD / ALT / FPS line (off: decluttered). */
+  flightData: boolean;
 }
+
+/** W4: the desktop stick SENSITIVITY steps (×). */
+export const STICK_SENS_STEPS: readonly number[] = [0.75, 1, 1.25, 1.5];
 
 export type CameraRoll = "level" | "follow";
 export const CAMERA_ROLLS: readonly CameraRoll[] = ["level", "follow"];
@@ -90,6 +98,8 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = {
   shake: "full",
   reducedMotion: null,
   carrierCam: true,
+  stickSens: 1,
+  flightData: false,
 };
 
 const clamp = (v: number, lo: number, hi: number) =>
@@ -132,6 +142,10 @@ export function clampSettings(raw: unknown): Settings {
     reducedMotion:
       typeof o.reducedMotion === "boolean" ? o.reducedMotion : d.reducedMotion,
     carrierCam: typeof o.carrierCam === "boolean" ? o.carrierCam : d.carrierCam,
+    stickSens: STICK_SENS_STEPS.includes(o.stickSens as number)
+      ? (o.stickSens as number)
+      : d.stickSens,
+    flightData: typeof o.flightData === "boolean" ? o.flightData : d.flightData,
   };
 }
 

@@ -86,6 +86,7 @@ import {
   riverOffset,
 } from "./river";
 import { mulberry32 } from "./rng";
+import { isFlakNest } from "./roof-structures";
 import { generatedRoof, pointStands, setRoofDown } from "./standing";
 import {
   CURB_LINE,
@@ -112,6 +113,9 @@ export const PROP_MAST = 9;
 export const PROP_JUMBO = 10;
 export const PROP_BRIDGE = 11;
 export const PROP_CRANE = 12;
+/** W3: a rooftop AA nest (light gun or heavy flak) — appended last, so no
+ * older prop's id moved. */
+export const PROP_NEST = 13;
 export type PropKind =
   | typeof PROP_LAMP
   | typeof PROP_SIGNAL
@@ -125,8 +129,9 @@ export type PropKind =
   | typeof PROP_MAST
   | typeof PROP_JUMBO
   | typeof PROP_BRIDGE
-  | typeof PROP_CRANE;
-export const PROP_KIND_COUNT = 13;
+  | typeof PROP_CRANE
+  | typeof PROP_NEST;
+export const PROP_KIND_COUNT = 14;
 
 /** Names, for QA, logs and tests (index = kind). */
 export const PROP_KIND_NAMES = [
@@ -143,12 +148,15 @@ export const PROP_KIND_NAMES = [
   "jumbo",
   "bridge",
   "crane",
+  "nest",
 ] as const;
 
 /** HP per kind (bullets take BULLET_DAMAGE = 7 each). */
 export const PROP_HP: readonly number[] = [
-  25, 25, 40, 40, 60, 140, 30, 90, 70, 40, 160, 400, 500,
+  25, 25, 40, 40, 60, 140, 30, 90, 70, 40, 160, 400, 500, 90,
 ];
+/** W3: a heavy flak nest's HP (PROP_HP holds the light nest's). */
+export const NEST_FLAK_HP = 160;
 
 /** Kinds that fall as a SOLID piece (draw == collide) once down. */
 export const isFaller = (kind: number): boolean =>
@@ -160,7 +168,10 @@ export const isFaller = (kind: number): boolean =>
 
 /** Kinds that are R2 roof structures (they live in `b.roof` while up). */
 export const isRoofProp = (kind: number): boolean =>
-  kind === PROP_TANK || kind === PROP_BILLBOARD || kind === PROP_MAST;
+  kind === PROP_TANK ||
+  kind === PROP_BILLBOARD ||
+  kind === PROP_MAST ||
+  kind === PROP_NEST;
 
 /** Kinds that explode when they go down: blast radius m and damage (chunks
  * and props, falling off linearly to 0 at the radius). */
@@ -178,6 +189,8 @@ export const PROP_BLAST: readonly (readonly [number, number] | null)[] = [
   null,
   null,
   null,
+  // W3: a nest's ammunition cooks off (chunks and props; never planes).
+  [10, 150],
 ];
 export const isExplosive = (kind: number): boolean => PROP_BLAST[kind] !== null;
 
@@ -789,6 +802,37 @@ export function generateProps(
     });
     cranes.set(site.id, p.id);
   }
+
+  // W3 AA nests — the generated `aaNest` roof structures, building by
+  // building (an id range of their own, after every older kind).
+  first[PROP_NEST] = props.length;
+  buildings.forEach((b, bi) => {
+    const roof = generatedRoof(b) ?? [];
+    for (let k = 0; k < roof.length; k++) {
+      const r = roof[k] as (typeof roof)[number];
+      if (r.kind !== "aaNest") continue;
+      const p = add({
+        ...base,
+        kind: PROP_NEST,
+        x: wrapCoord(b.x + r.dx),
+        y: r.baseY + r.height / 2,
+        z: wrapCoord(b.z + r.dz),
+        hx: r.width / 2,
+        hy: r.height / 2,
+        hz: r.depth / 2,
+        hp: isFlakNest(r) ? NEST_FLAK_HP : (PROP_HP[PROP_NEST] as number),
+        b: bi,
+        roof: 1 << k,
+        ref: k,
+        landY: b.height,
+        seed: r.seed,
+      });
+      roofProp.set(roofKey(bi, k), p.id);
+      const list = roofOf.get(bi) ?? [];
+      list.push(p.id);
+      roofOf.set(bi, list);
+    }
+  });
   first[PROP_KIND_COUNT] = props.length;
   // Kinds with no range of their own start where the next one does.
   first[PROP_TAXI] = first[PROP_CAR] as number;
@@ -1123,7 +1167,9 @@ export class PropState {
       this.hpLeft[id] = left;
       return false;
     }
-    if (!this.mayGoDown()) {
+    // W3: a nest at 0 HP always goes down — held standing it would keep
+    // firing.
+    if (p.kind !== PROP_NEST && !this.mayGoDown()) {
       this.hpLeft[id] = 1;
       return false;
     }

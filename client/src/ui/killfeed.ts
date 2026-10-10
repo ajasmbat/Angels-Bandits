@@ -29,9 +29,12 @@ export class KillFeed {
       | "blast"
       | "flak"
       | "meteor"
-      | "bomb",
+      | "bomb"
+      | "aa",
     self = false,
     victimId?: string,
+    /** W3: an AA kill's assisting pilot ("AA NEST + A ▸ B"). */
+    assistName?: string,
   ): void {
     const entry = document.createElement("div");
     entry.className = self ? "entry self" : "entry";
@@ -41,7 +44,20 @@ export class KillFeed {
     victim.className = "victim";
     victim.textContent = victimName;
 
-    if (cause === "storm") {
+    if (cause === "aa") {
+      // W3: a rooftop AA nest downed it (with the pilot who hurt it first).
+      const nest = document.createElement("span");
+      nest.className = "killer aa";
+      nest.textContent = "AA NEST";
+      if (assistName !== undefined) {
+        const helper = document.createElement("span");
+        helper.className = "killer";
+        helper.textContent = assistName;
+        entry.append(nest, " + ", helper, " ▸ ", victim);
+      } else {
+        entry.append(nest, " ▸ ", victim);
+      }
+    } else if (cause === "storm") {
       entry.append("⚡ took down ", victim);
     } else if (cause === "missile") {
       entry.append("🚀 missile strike took down ", victim);

@@ -271,18 +271,18 @@ describe("regen, respawn scheduling, and score persistence", () => {
     expect(combat.hpOf("p1")).toBe(100);
   });
 
-  it("schedules the respawn KILL_CAM_MS (2.5 s) after death, and respawned() restores a protected, full-HP player", () => {
+  it("schedules the respawn RESPAWN_MS (1.9 s, W4) after death, and respawned() restores a protected, full-HP player", () => {
     const combat = arena(2);
     for (let i = 0; i < 15; i++) shoot(combat, "p0", "p1", i, T + i * 100);
     const deathAt = T + 1400;
     expect(combat.isAlive("p1")).toBe(false);
-    expect(combat.tick(deathAt + 2400).respawnsDue).toEqual([]);
-    expect(combat.tick(deathAt + 2500).respawnsDue).toEqual(["p1"]);
+    expect(combat.tick(deathAt + 1800).respawnsDue).toEqual([]);
+    expect(combat.tick(deathAt + 1900).respawnsDue).toEqual(["p1"]);
 
-    combat.respawned("p1", deathAt + 2500);
+    combat.respawned("p1", deathAt + 1900);
     expect(combat.isAlive("p1")).toBe(true);
     expect(combat.hpOf("p1")).toBe(100);
-    expect(combat.isProtected("p1", deathAt + 2500 + 3999)).toBe(true);
+    expect(combat.isProtected("p1", deathAt + 1900 + 3999)).toBe(true);
     expect(combat.tick(deathAt + 6000).respawnsDue).toEqual([]);
   });
 

@@ -16,7 +16,7 @@
 // hole, and off the centre of the tallest towers (searchlight stations).
 // Landmarks carry nothing: their beacon and crown are the read.
 
-import { LANDMARK_HEIGHT } from "../constants";
+import { LANDMARK_HEIGHT, WORLD_SIZE } from "../constants";
 import type { Building } from "./index";
 import { mulberry32 } from "./rng";
 
@@ -26,7 +26,10 @@ export type RoofStructureKind =
   | "waterTank"
   | "billboard"
   | "billboardLeg"
-  | "mast";
+  | "mast"
+  // W3: a rooftop anti-aircraft nest (sandbag ring, gun, crew) — light, or
+  // a heavy flak gun on the tallest towers (common/src/aa.ts).
+  | "aaNest";
 
 /** One solid roof structure, offset from its building's (x, z) center. */
 export interface RoofStructure {
@@ -86,6 +89,31 @@ export const BILLBOARD_THICKNESS = 0.45;
 export const BILLBOARD_CATWALK = 0.8;
 /** Billboard leg section, m. */
 export const BILLBOARD_LEG = 0.3;
+
+/** W3 AA nests: a sandbag ring round a gun mount, collided as one vertical
+ * cylinder whose top is the gun's top — above the clutter line, so solid.
+ * Light machine-gun nests sit on mid-rise roofs, chance weighted toward the
+ * map's middle; every non-landmark at least AA_FLAK_MIN_HEIGHT tall carries
+ * a heavy flak gun instead. */
+export const AA_NEST_RADIUS = 2.5;
+export const AA_NEST_HEIGHT = 2.8;
+export const AA_FLAK_RADIUS = 3.2;
+export const AA_FLAK_HEIGHT = 3.6;
+export const AA_NEST_MIN_HEIGHT = 30;
+export const AA_NEST_MIN_ROOF = 16;
+export const AA_FLAK_MIN_HEIGHT = 200;
+/** A light nest's chance at the anchor, falling linearly by AA_NEST_FALLOFF
+ * of itself at the torus' farthest point from it (wrap distance). */
+export const AA_NEST_CHANCE = 0.15;
+export const AA_NEST_FALLOFF = 0.75;
+/** The density anchor: the middle of the canonical map. On a torus every
+ * point is a middle — this one is fixed so the layout is. */
+export const AA_NEST_ANCHOR = { x: WORLD_SIZE / 2, z: WORLD_SIZE / 2 };
+/** A heavy (flak) nest's `face` marks it (light nests use 0..3). */
+export const AA_FLAK_FACE = 4;
+/** Is roof structure `s` a heavy flak nest? */
+export const isFlakNest = (s: RoofStructure): boolean =>
+  s.kind === "aaNest" && s.face === AA_FLAK_FACE;
 
 /** Keep-out margin between structures, m. */
 const GAP = 1.2;
@@ -327,7 +355,79 @@ export function roofStructuresFor(b: Building): RoofStructure[] {
     }
   }
 
+  // --- W3 AA nest: last, from its own stream, so adding it moved no other
+  // structure (they only keep out of its way from here on).
+  const nest = aaNestFor(b, taken, iw, id);
+  if (nest) out.push(nest);
+
   return out;
+}
+
+/** The torus' farthest point from any anchor, m (half the diagonal). */
+const FAR = (Math.SQRT2 * WORLD_SIZE) / 2;
+
+/**
+ * W3: the AA nest on `b`'s roof, or null — a heavy flak gun on every
+ * non-landmark at least AA_FLAK_MIN_HEIGHT tall (a light nest when the
+ * heavy one finds no room), else a light nest by a seeded roll weighted
+ * toward AA_NEST_ANCHOR. Clear of everything in `taken` by GAP.
+ */
+function aaNestFor(
+  b: Building,
+  taken: readonly Rect[],
+  iw: number,
+  id: number,
+): RoofStructure | null {
+  if (b.height < AA_NEST_MIN_HEIGHT) return null;
+  const top = b.tiers[b.tiers.length - 1];
+  if (!top || Math.min(top.width, top.depth) < AA_NEST_MIN_ROOF) return null;
+  const rand = mulberry32(
+    (Math.imul(b.x, 0x2545f491) ^
+      Math.imul(b.z, 0x9e3779b9) ^
+      Math.imul(b.height, 0x7feb352d) ^
+      0x5aa7e5) >>>
+      0,
+  );
+  const rRoll = rand();
+  const heavy = b.height >= AA_FLAK_MIN_HEIGHT;
+  if (!heavy) {
+    const dx = Math.abs(b.x - AA_NEST_ANCHOR.x);
+    const dz = Math.abs(b.z - AA_NEST_ANCHOR.z);
+    // Canonical coordinates are in [0, S): the wrap distance to the anchor
+    // at the middle is the plain one.
+    const far = Math.min(1, Math.hypot(dx, dz) / FAR);
+    if (rRoll >= AA_NEST_CHANCE * (1 - AA_NEST_FALLOFF * far)) return null;
+  }
+  const seed = rand();
+  const face = Math.floor(rand() * 4);
+  const tries = [heavy ? AA_FLAK_RADIUS : AA_NEST_RADIUS, AA_NEST_RADIUS];
+  for (let k = 0; k < (heavy ? 2 : 1); k++) {
+    const r = tries[k] as number;
+    if (r > iw || r > id) continue;
+    for (let i = 0; i < TRIES; i++) {
+      const spot: Rect = {
+        x: (rand() * 2 - 1) * (iw - r),
+        z: (rand() * 2 - 1) * (id - r),
+        hw: r,
+        hd: r,
+      };
+      if (!taken.every((t) => !overlaps(spot, t, GAP))) continue;
+      const flak = heavy && k === 0;
+      return {
+        kind: "aaNest",
+        dx: spot.x,
+        dz: spot.z,
+        baseY: b.height,
+        width: 2 * r,
+        depth: 2 * r,
+        height: flak ? AA_FLAK_HEIGHT : AA_NEST_HEIGHT,
+        round: true,
+        face: flak ? AA_FLAK_FACE : face,
+        seed,
+      };
+    }
+  }
+  return null;
 }
 
 /** Highest point of the building, roof structures included. */

@@ -4,7 +4,7 @@
 // whatever the server said, never a client-side simulation of them.
 
 import { mulberry32 } from "@angels-bandits/common/city";
-import { KILL_CAM_MS, MAX_HP } from "@angels-bandits/common/constants";
+import { MAX_HP, RESPAWN_MS } from "@angels-bandits/common/constants";
 import { MEDAL_LABEL, type MedalKind } from "@angels-bandits/common/medals";
 import type { DeathMsg } from "@angels-bandits/common/protocol";
 import {
@@ -12,6 +12,7 @@ import {
   WAVE_LIVE,
   type WaveState,
 } from "@angels-bandits/common/waves";
+import type { AimMode } from "../game/flight-input";
 import { gMeterView } from "../game/pull-feel";
 import type { LifeCard } from "../game/session-stats";
 import { tuning } from "../game/tuning";
@@ -32,6 +33,37 @@ export function waveLine(w: WaveState): string {
   }
   if (w.phase === WAVE_BREATHER) return `WAVE ${w.wave} INCOMING`;
   return "";
+}
+
+/** W4: the carrier's health as a whole percent, from its weak points' HP
+ * over their full HP (S4's bar fill) — null without a carrier. Never 0
+ * while any weak point still stands. */
+export function carrierPercent(
+  hp: readonly number[] | null,
+  max: readonly number[],
+): number | null {
+  if (hp === null || hp.length === 0) return null;
+  let left = 0;
+  let full = 0;
+  for (let k = 0; k < max.length; k++) {
+    left += Math.max(0, hp[k] ?? 0);
+    full += max[k] ?? 0;
+  }
+  if (full <= 0) return null;
+  const pct = Math.round((100 * left) / full);
+  return left > 0 ? Math.max(1, pct) : 0;
+}
+
+/**
+ * W4: the objective line, top centre — the wave line (waveLine) and, while
+ * a carrier is up, its health: "WAVE 3 · 5 ENEMIES LEFT · CARRIER 62%".
+ * A carrier between waves reads on its own. Pure, for the HUD and its tests.
+ */
+export function objectiveLine(w: WaveState, carrierPct: number | null): string {
+  const wave = waveLine(w);
+  if (carrierPct === null) return wave;
+  const carrier = `CARRIER ${carrierPct}%`;
+  return wave === "" ? carrier : `${wave} · ${carrier}`;
 }
 
 /** W1: the carrier bar's name line — its tier once it has one. */
@@ -89,8 +121,9 @@ export function deathLabel(
 
 /** The aim mode as a toast names it. Touch (M9) has no M key and no mouse,
  * so its wording carries neither. */
-function aimModeLabel(mode: "instructor" | "classic", touch: boolean): string {
+function aimModeLabel(mode: AimMode, touch: boolean): string {
   if (touch) return mode === "instructor" ? "INSTRUCTOR" : "CLASSIC STICK";
+  if (mode === "keys") return "KEYBOARD — ARROWS STEER, ENTER FIRES (M)";
   return mode === "instructor" ? "MOUSE INSTRUCTOR (M)" : "CLASSIC STICK (M)";
 }
 
@@ -236,6 +269,17 @@ export class Hud {
   private readonly waveBanner = document.getElementById(
     "wave-banner",
   ) as HTMLDivElement;
+  /** W4: the objective line's text node, the carrier's percent from the
+   * last setBoss, the EASY tag and the bombing warning as last written. */
+  private readonly waveText = this.waveHud.querySelector(
+    ".line",
+  ) as HTMLSpanElement | null;
+  private carrierPct: number | null = null;
+  private easyShown = false;
+  private readonly bombWarn = document.getElementById(
+    "bomb-warn",
+  ) as HTMLDivElement | null;
+  private bombShown = false;
   private waveShown = "";
   private tierShown = -1;
   private bannerWave = 0;
@@ -434,7 +478,7 @@ export class Hud {
   }
 
   /** Brief toast naming the aim mode M just switched to. */
-  showAimMode(mode: "instructor" | "classic", touch: boolean): void {
+  showAimMode(mode: AimMode, touch: boolean): void {
     this.toast(`◇ AIM: ${aimModeLabel(mode, touch)} ◇`);
   }
 
@@ -444,7 +488,7 @@ export class Hud {
    * both changes share one toast.
    */
   showAimChanges(
-    mode: "instructor" | "classic" | null,
+    mode: AimMode | null,
     sensitivity: number | null,
     touch: boolean,
   ): void {
@@ -471,11 +515,12 @@ export class Hud {
   /** Kill-cam overlay: the deathLabel headline plus a respawn countdown.
    * Called again when the server's death message lands after a local crash:
    * the headline upgrades, but the countdown keeps the clock it started on
-   * (`now`, performance.now()) — the respawn comes KILL_CAM_MS after death. */
+   * (`now`, performance.now()) — the respawn comes RESPAWN_MS (W4) after
+   * death. */
   showKillCam(label: string, now: number): void {
     this.killcamCause.textContent = label;
     if (this.respawnAt === 0) {
-      this.respawnAt = now + KILL_CAM_MS;
+      this.respawnAt = now + RESPAWN_MS;
       this.countShown = -1;
       this.tickCountdown(now);
     }
@@ -514,6 +559,7 @@ export class Hud {
     max: readonly number[],
     now: number,
   ): void {
+    this.carrierPct = carrierPercent(hp, max);
     if (hp === null || hp.length === 0) {
       if (this.bossShown !== null) {
         this.bossBar.classList.remove("open");
@@ -561,10 +607,13 @@ export class Hud {
    * DOM only when what it shows changed (called every frame).
    */
   setWaves(w: WaveState, now: number): void {
-    const line = waveLine(w);
+    // W4: the objective line — call after setBoss, which holds the
+    // carrier's percent.
+    const line = objectiveLine(w, this.carrierPct);
     if (line !== this.waveShown) {
       this.waveShown = line;
-      this.waveHud.textContent = line;
+      if (this.waveText) this.waveText.textContent = line;
+      else this.waveHud.textContent = line;
       this.waveHud.classList.toggle("open", line !== "");
     }
     if (w.tier !== this.tierShown) {
@@ -580,6 +629,27 @@ export class Hud {
       this.waveBanner.classList.add("on");
       this.bannerUntil = now + WAVE_BANNER_MS;
     }
+  }
+
+  /** W4: Easy mode's tag on the objective line. */
+  setEasy(on: boolean): void {
+    if (on === this.easyShown) return;
+    this.easyShown = on;
+    this.waveHud.classList.toggle("easy-on", on);
+  }
+
+  /** W4: "ENEMY BOMBING NEAR YOU" while an enemy bomb is due close by
+   * (game/missile-feed.ts bombingNear). */
+  setBombWarning(on: boolean): void {
+    if (on === this.bombShown || !this.bombWarn) return;
+    this.bombShown = on;
+    this.bombWarn.classList.toggle("on", on);
+  }
+
+  /** W4: a one-off line in the shared top-centre toast (Easy mode's
+   * graduation). */
+  notice(text: string): void {
+    this.toast(`◇ ${text} ◇`);
   }
 
   /** S7: own medals pop in at the top of the screen, stacked, held

@@ -8,6 +8,7 @@
 
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
+import { AA_ID, aaNestsOf, encodeAaBurst } from "@angels-bandits/common/aa";
 import {
   type Boost,
   boostLevel,
@@ -46,6 +47,7 @@ import {
   retargetNewsHeli,
   setNewsTarget,
 } from "@angels-bandits/common/city/newsheli";
+import { PROP_NEST } from "@angels-bandits/common/city/props";
 import {
   type CityIndex,
   type NatureIndex,
@@ -116,6 +118,7 @@ import {
 } from "@angels-bandits/common/world";
 import type { WreckParams, WreckWorld } from "@angels-bandits/common/wreck";
 import { type WebSocket, WebSocketServer } from "ws";
+import { type AaEnemy, RoomAa, STRAFE_DAMAGE } from "./aa";
 import {
   BossDirector,
   type BossPlane,
@@ -247,6 +250,8 @@ interface Client {
   name: string;
   ws: WebSocket;
   room: Room;
+  /** W4: flying in Easy mode (the join's flag, then setEasy). */
+  easy?: boolean;
   /** Last accepted pose — what snapshots broadcast. */
   pose: Pose;
   /** When `pose` was taken, server clock ms (O2): the client's own stamp,
@@ -412,6 +417,13 @@ const roomCity = (room: Room): RoomCity => {
       moversFor(room.seed).trains ?? [],
     );
     rc.damage.setCap(TUNINGS.destroyCap);
+    // W3: the room's AA nests are on the pilots' side — only an enemy
+    // plane's rounds (strafing, or stray fire) chew them; every blast still
+    // reaches them.
+    const layout = rc.props.layout;
+    rc.props.immune = (id, by) =>
+      layout.props[id]?.kind === PROP_NEST &&
+      !(by !== null && room.members.get(by)?.isBot === true);
     roomCityById.set(room.id, rc);
   }
   return rc;
@@ -902,6 +914,94 @@ const wavesFor = (room: Room): RoomWaves => {
   return w;
 };
 
+/**
+ * W3: each room's rooftop AA nests (server/src/aa.ts) over its own
+ * breakable city's nest props. Seeded from the room's number like the
+ * other directors; created lazily, reset with the room's city, dropped with
+ * the room.
+ */
+const aaByRoom = new Map<string, RoomAa>();
+const roomAa = (room: Room): RoomAa => {
+  let aa = aaByRoom.get(room.id);
+  if (!aa) {
+    const n = Number(room.id.split("-")[1] ?? 0);
+    aa = new RoomAa(
+      (CITY_SEED ^ Math.imul(n + 1, 0x6a09e667)) >>> 0,
+      aaNestsOf(roomCity(room).props.layout),
+    );
+    aaByRoom.set(room.id, aa);
+  }
+  return aa;
+};
+
+/**
+ * W3: the AA nests for one room tick — only while the carrier war is on
+ * (the enemies are their only targets). Bursts go out as one `aa`; each hit
+ * goes through Combat.aaDamage (enemies only, never a human) — a kill falls
+ * as a D4 wreck like any shot-down plane and counts for the wave; enemy
+ * rounds at nests go out as `fired` and (in a breakable city) chew the
+ * nest's prop. Provoked enemies' detours go to their pilots.
+ */
+function tickAa(room: Room, now: number): void {
+  if (!wavesOn(room)) {
+    aaByRoom.get(room.id)?.reset();
+    botsByRoom.get(room.id)?.setDetours(new Map());
+    return;
+  }
+  const waves = wavesFor(room);
+  const bots = botsFor(room);
+  const enemies: AaEnemy[] = [];
+  for (const e of waves.enemies()) {
+    if (e.down || !combat.isAlive(e.id)) continue;
+    const c = bots.contactOf(e.id);
+    if (!c) continue;
+    enemies.push({
+      id: e.id,
+      pos: c.pos,
+      vel: c.vel,
+      prot: combat.isProtected(e.id, now),
+    });
+  }
+  const aa = roomAa(room);
+  const rc = roomCity(room);
+  const state = rc.props.slot.state;
+  const out = aa.tick(now, enemies, room.intensity, {
+    buildings: rc.buildings,
+    props: state,
+    gaps: state.gapMask,
+  });
+  if (out.bursts.length > 0) {
+    sendToRoom(room, { type: "aa", b: out.bursts.map(encodeAaBurst) });
+  }
+  for (const h of out.hits) {
+    const hit = combat.aaDamage(h.target, h.damage, now, AA_ID);
+    if (!hit) continue;
+    sendToRoom(room, {
+      type: "damage",
+      targetId: h.target,
+      shooterId: AA_ID,
+      hp: hit.hp,
+      from: h.from,
+    });
+    aa.noteHit(h.target, h.nest, room.intensity, now);
+    if (!hit.death) {
+      bots.onDamaged(h.target, now);
+      continue;
+    }
+    aa.stats.downs++;
+    // Shot down: it falls as a wreck (its impact breaks the city, D2/D3).
+    const wreck = shotDown(room, h.target, AA_ID, now);
+    bots.setDead(h.target);
+    sendDeath(room, hit.death, now, wreck);
+  }
+  const breaks = breakable(room);
+  for (const s of out.strafes) {
+    sendToRoom(room, { type: "fired", id: s.enemy });
+    if (s.hit && breaks) state.damage(s.nest, STRAFE_DAMAGE, 0, s.enemy);
+  }
+  bots.setDetours(aa.detours(now));
+}
+
 /** W1: an enemy plane leaves `room` for good (RoomWaves already dropped it
  * from its pilots, Combat and the carrier): every other per-plane record
  * forgotten, the roster left, `playerLeft` sent — and a room that held only
@@ -976,6 +1076,7 @@ function disposeRoom(room: Room): void {
   if (rooms.rooms.includes(room)) return;
   botsByRoom.delete(room.id);
   wavesByRoom.delete(room.id);
+  aaByRoom.delete(room.id);
   cityEvents.forget(room.id);
   roomMoversById.delete(room.id);
   pendingKillByRoom.delete(room.id);
@@ -1331,6 +1432,7 @@ function handleLeave(id: string): void {
       // goes with the last of them), the next carrier tier 1 again.
       bossByRoom.get(room.id)?.resetSession();
       wavesByRoom.get(room.id)?.reset(Date.now());
+      aaByRoom.get(room.id)?.reset(); // W3
     }
     // A room the last member just left is already gone — free its state.
     disposeRoom(room);
@@ -1489,6 +1591,13 @@ function bossDowned(room: Room, down: BossDown, now: number): void {
  * claimant's control snaps back to the last value the server confirmed.
  * The waves read it from their next wave on.
  */
+/** W4: a pilot's Easy mode, kept on the client and handed to its room's
+ * enemies (B3's skill scaler treats an Easy pilot as the most novice). */
+function setEasy(client: Client, on: boolean): void {
+  client.easy = on;
+  botsFor(client.room).skill.setEasy(client.id, on);
+}
+
 function handleSetIntensity(client: Client, level: unknown, now: number): void {
   const accepted = client.room.setIntensity(client.id, level, now);
   if (accepted === null) return;
@@ -1533,6 +1642,8 @@ function sendDeath(
       z: Math.round(site.z) % WORLD_SIZE,
     }),
     ...(wreck && { wreck }),
+    // W3: an AA kill of a plane a pilot had damaged — their assist.
+    ...(death.assistId !== undefined && { assist: death.assistId }),
   });
   // D4: a wreck's city event comes when it lands, where it lands. X1: a
   // missile death's blast IS the missile's own event — never a second one
@@ -2280,6 +2391,9 @@ wss.on("connection", (ws) => {
         resumed && { record: resumed.record, token: msg.resume as string },
         lab,
       );
+      // W4: a fresh join, a resume (maybe into another room) — either way
+      // the room's enemies learn the pilot's Easy mode from the join.
+      if (client) setEasy(client, msg.easy === true);
       return;
     }
     if (!client) return;
@@ -2302,6 +2416,8 @@ wss.on("connection", (ws) => {
       // claims, crashes and boost edges don't exist until it returns.
       if (msg.type === "setIntensity") {
         handleSetIntensity(client, msg.level, now);
+      } else if (msg.type === "setEasy" && typeof msg.on === "boolean") {
+        setEasy(client, msg.on);
       }
     } else if (msg.type === "pose") {
       if (!isPose(msg.pose)) return;
@@ -2321,6 +2437,8 @@ wss.on("connection", (ws) => {
       handleCrash(client, msg.t, msg.wreck, now);
     } else if (msg.type === "setIntensity") {
       handleSetIntensity(client, msg.level, now);
+    } else if (msg.type === "setEasy") {
+      if (typeof msg.on === "boolean") setEasy(client, msg.on);
     } else if (msg.type === "lab") {
       // FL1: ignored outside a lab room (applyLab refuses); newest wins.
       client.room.applyLab({
@@ -2381,6 +2499,7 @@ function tick(): void {
   issueRespawns(combat.tick(time).respawnsDue, time);
   for (const room of rooms.rooms) {
     tickRoomBots(room, time);
+    tickAa(room, time); // W3: the rooftop guns, after the planes moved
     enforceStormCeiling(room, time);
     updateNewsHeli(room, time);
     // C2: the gone-share backstop — at GONE_HOLD_SHARE nothing breaks this

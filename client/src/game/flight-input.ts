@@ -3,7 +3,9 @@
 //   reports the smoothed cursor, and game/instructor.ts flies the pipper
 //   onto it;
 // - classic: the cursor's offset from screen centre is a direct rate stick
-//   (deadzone + expo, read()).
+//   (deadzone + expo, read());
+// - keys (W4, the settings' KEYBOARD): the arrow keys are that rate stick
+//   and the mouse steers nothing — ENTER fires (game/guns.ts).
 // W/S drive throttle, A/D (Q/E aliases, F10) the roll — shaped by
 // game/roll-control.ts in main. The throttle lives at FULL (F5):
 // with no W/S held and no finger on the touch slider the axis reads
@@ -54,14 +56,17 @@ export function wheelNotches(deltaY: number, deltaMode: number): number {
 export const AIM_MODE_KEY = "KeyM";
 const AIM_MODE_STORAGE = "ab-aim-mode";
 
-export type AimMode = "instructor" | "classic";
+export type AimMode = "instructor" | "classic" | "keys";
+
+/** W4 KEYBOARD: a held arrow key's share of full stick (× the stick
+ * sensitivity, capped at full) — digital keys at full deflection snap. */
+export const ARROW_STICK = 0.7;
 
 /** Stored mode, or the instructor when storage is absent or throws. */
 function loadAimMode(target: Window): AimMode {
   try {
-    return target.localStorage.getItem(AIM_MODE_STORAGE) === "classic"
-      ? "classic"
-      : "instructor";
+    const v = target.localStorage.getItem(AIM_MODE_STORAGE);
+    return v === "classic" || v === "keys" ? v : "instructor";
   } catch {
     return "instructor";
   }
@@ -88,6 +93,8 @@ export class FlightInputSource {
   private active = false; // the mouse moved since the last takeActivity
   /** F9 wheel throttle: seconds of W (+) or S (−) still held. */
   private wheelHold = 0;
+  /** W4: the settings' stick SENSITIVITY (the keyboard and classic stick). */
+  private stickSens = 1;
 
   constructor(private readonly target: Window = window) {
     this.aimModeV = loadAimMode(target);
@@ -199,9 +206,16 @@ export class FlightInputSource {
     return a;
   }
 
-  /** Flip the aim mode — the M key and the touch aim-mode icon. */
+  /** Flip the aim mode — the M key and the touch aim-mode icon. W4: from
+   * the keyboard scheme it goes back to the mouse instructor. */
   toggleAimMode(): void {
     this.setAimMode(this.aimModeV === "instructor" ? "classic" : "instructor");
+  }
+
+  /** W4: the settings' stick SENSITIVITY (×), for the keyboard and the
+   * classic stick. */
+  setStickSensitivity(v: number): void {
+    this.stickSens = Number.isFinite(v) && v > 0 ? v : 1;
   }
 
   /** Pick the aim mode (M6 settings panel), persisted like the toggle. */
@@ -351,8 +365,20 @@ export class FlightInputSource {
       -1,
       Math.min(1, rollKey((c) => this.keys.has(c)) + this.touchRoll),
     );
-    const sens = tuning.mouseSensitivity;
+    const sens = tuning.mouseSensitivity * this.stickSens;
     const ySign = tuning.invertY === 1 ? -1 : 1;
+    if (this.aimModeV === "keys") {
+      // W4 KEYBOARD: the arrows are the stick (→ turns right, ↑ pulls up);
+      // the mouse steers nothing.
+      const k = Math.min(1, ARROW_STICK * this.stickSens);
+      const held = (c: string) => (this.keys.has(c) ? 1 : 0);
+      return {
+        turn: (held("ArrowRight") - held("ArrowLeft")) * k,
+        pitch: (held("ArrowUp") - held("ArrowDown")) * k * ySign,
+        roll,
+        throttle,
+      };
+    }
     return {
       turn: this.axis(this.mouseX * sens), // cursor right of center → right turn
       pitch: this.axis(-this.mouseY * sens * ySign), // cursor above center → pull up

@@ -74,6 +74,7 @@ import {
   raycastChunk,
   tierGrids,
 } from "@angels-bandits/common/city";
+import { pickFireJump } from "@angels-bandits/common/city/props";
 import {
   type CityIndex,
   forEachBuildingNear,
@@ -810,6 +811,12 @@ export class ChaosDirector {
         city.breakers.set(i, null);
         this.fires.delete(id);
         this.firesOff.push(id);
+      }
+      // D9: and it jumps to a damaged neighbour (common/src/city/props.ts).
+      const jump = this.fires.size < FIRE_MAX ? pickFireJump(city.buildings, id, this.fireRand) : -1;
+      if (jump >= 0 && !this.fires.has(jump) && !city.damage.isGone(jump)) {
+        this.fires.set(jump, { since: now });
+        this.firesOn.push(jump);
       }
       if (this.fires.size >= FIRE_MAX) continue;
       if (this.fireRand() >= FIRE_SPREAD_P) continue;

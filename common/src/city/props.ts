@@ -1309,7 +1309,20 @@ export function propSlot(
 export const gapsOf = (field: { props?: PropSlot } | undefined): number =>
   field?.props?.state.gapMask ?? 0;
 
-const scratchPose = blankPose();
+/** collideProps' pose scratch. A literal, not blankPose(): collapse.ts ↔
+ * movers.ts ↔ this module is an import cycle, so nothing imported may run at
+ * module evaluation. */
+const scratchPose: PiecePose = {
+  x: 0,
+  y: 0,
+  z: 0,
+  hx: 0,
+  hy: 0,
+  hz: 0,
+  axis: 0,
+  phi: 0,
+  rest: false,
+};
 
 /**
  * Faller `id`'s pose at server time `tMs` — or null when it is no longer
@@ -1587,6 +1600,34 @@ export function fireJumpTargets(
     }
   }
   return out.sort((a, c) => a - c);
+}
+
+/** A burning chunk tries to jump to a neighbouring building this often,
+ * per spread tick. */
+export const FIRE_JUMP_P = 0.2;
+const jumpScratch: number[] = [];
+
+/**
+ * D9: where (if anywhere) the fire on chunk `id` jumps this spread tick: a
+ * fireJumpTargets chunk of a building that is ALREADY damaged (fire spreads
+ * between damaged buildings, it does not start in a whole one), or −1.
+ * Draws from `rand` the same way whatever the city holds (one roll, then
+ * one pick when there are targets).
+ */
+export function pickFireJump(
+  buildings: readonly Building[],
+  id: number,
+  rand: () => number,
+): number {
+  if (rand() >= FIRE_JUMP_P) return -1;
+  const all = fireJumpTargets(buildings, id, jumpScratch);
+  let n = 0;
+  for (const c of all) {
+    if (buildings[chunkBuilding(c)]?.damage !== undefined) all[n++] = c;
+  }
+  all.length = n;
+  if (n === 0) return -1;
+  return all[Math.floor(rand() * n)] as number;
 }
 
 // --- Craters -------------------------------------------------------------------

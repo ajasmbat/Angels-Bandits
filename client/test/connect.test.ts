@@ -273,6 +273,7 @@ class FakeEl {
   };
   textContent = "";
   value = "";
+  placeholder = "";
   hidden = true;
   disabled = false;
   maxLength = 0;
@@ -361,11 +362,13 @@ describe("the join card — CONNECTING…, the error state, RETRY", () => {
     expect(el("join").classes.has("open")).toBe(true);
   });
 
-  it("an empty name flies as Pilot", async () => {
+  it("an empty name flies as the random callsign the box showed (W4)", async () => {
     const naming = requestName();
+    const shown = el("join-name").placeholder;
+    expect(shown).toMatch(/^[A-Z]+-\d{2}$/);
     el("join-name").value = "   ";
     el("join-form").fire("submit");
-    expect(await naming).toBe("Pilot");
+    expect(await naming).toBe(shown);
   });
 
   it("a server it can't reach ends on the error state with RETRY, which rejoins in one tap", async () => {

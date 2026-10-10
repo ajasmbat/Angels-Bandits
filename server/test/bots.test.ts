@@ -355,7 +355,10 @@ describe("applyBotFire — bots use human combat rules", () => {
       yaw: 0,
       speed: RESPAWN_SPEED,
     })).spawned;
-    combat.addPlayer(entry.id, 0);
+    // W1/W4: an enemy plane is registered on its carrier's rig and released
+    // into the air (its death then waits KILL_CAM_MS, a human's RESPAWN_MS).
+    combat.addAwaiting(entry.id, 0);
+    combat.respawned(entry.id, 0);
 
     // Crash the bot (identical to a human crash death).
     const death = combat.crash(entry.id, 5000);

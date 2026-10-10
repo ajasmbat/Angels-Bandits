@@ -438,16 +438,16 @@ body.touch #fs-btn {
   left: auto;
 }
 body.touch #boss-bar {
-  /* W4: under the objective line, which sits right under the top band. */
-  top: calc(var(--hud-top-band) + 24px);
+  /* W4: a bare track under the objective line. */
+  top: calc(var(--gut-y) + var(--safe-t) + 62px);
   width: min(240px, 30vw);
 }
 body.touch #boss-bar .name {
   font-size: var(--ab-fs-xs);
 }
 body.touch #medal-toast {
-  /* W4: below the objective line, its bar and the bombing warning. */
-  top: calc(var(--hud-top-band) + 64px);
+  /* W4: under the top band (the objective line and its bar sit in it). */
+  top: calc(var(--hud-top-band) + 8px);
 }
 
 /* ===== Feedback juice =====================================================

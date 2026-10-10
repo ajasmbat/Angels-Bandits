@@ -398,7 +398,13 @@ export class GameSocket {
           JSON.stringify(
             lab
               ? { type: "join", name, lab: true }
-              : { type: "join", name, resume, easy: GameSocket.easy() },
+              : {
+                  type: "join",
+                  name,
+                  resume,
+                  // W4: only when on — absent reads as off on the server.
+                  ...(GameSocket.easy() ? { easy: true } : {}),
+                },
           ),
         ),
       );

@@ -2903,7 +2903,13 @@ declare global {
           | null,
       ) => number[];
       /** U6: live cave-ins held, and the pieces and events drawn last frame. */
-      caveIns: () => { live: number; pieces: number; events: number };
+      caveIns: () => {
+        live: number;
+        pieces: number;
+        events: number;
+        /** A2: each held cave-in's id and the server time it is over. */
+        held: [number, number][];
+      };
       /** P4: the plane fleet last frame — planes drawn (near / far LOD)
        * and the draws they cost; null under `?fleet=0`. */
       fleet: () => {
@@ -3818,6 +3824,10 @@ window.__ab = {
   caveIns: () => ({
     live: socket.caveIns.list.length,
     ...caveInRenderer.stats,
+    held: socket.caveIns.list.map((c): [number, number] => [
+      c.id,
+      c.t0 + c.endMs,
+    ]),
   }),
   fleet: () =>
     fleet && tagBatch

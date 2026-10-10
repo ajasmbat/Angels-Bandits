@@ -46,7 +46,7 @@
 //               a desync.
 // Every client is held to the same limits; the server too: it must stay up,
 // write nothing to stderr, keep its heap (forced GC) within +20 % of minute
-// 5, and its RSS trend under 1 MB/min over the last 15 minutes. The report has one verdict per client, the server, the
+// 5, and its RSS trend (median step) under 1 MB/min over the last 15 min. The report has one verdict per client, the server, the
 // lab and parity, and PASSes only if all of them do.
 
 import { spawn } from "node:child_process";
@@ -622,8 +622,12 @@ const SOAK_SAMPLE = () => {
 
 /** A2: what a client must agree with the room about (a late joiner against
  * the long-lived client, both against the server). */
-const PARITY_SAMPLE = () => {
+const PARITY_SAMPLE = (serverNow) => {
   const ab = window.__ab;
+  // Cave-ins are pruned once per FRAME, so a page drawing 0.1 fps holds
+  // settled ones for seconds: compare the ids still live at one server
+  // instant, leaving out any within 1.5 s of their end.
+  const held = ab.caveIns().held;
   const d = ab.destruction();
   const b = ab.boss();
   const ch = ab.chaos();
@@ -638,7 +642,13 @@ const PARITY_SAMPLE = () => {
     bossRaid: b.staged ? "staged" : (b.raid?.id ?? null),
     bossDown: b.down !== null && b.down !== undefined,
     bossHp: b.hp.join(","),
-    caveIns: ab.caveIns().live,
+    caveIns: held
+      ? held
+          .filter(([, end]) => end > serverNow + 1500)
+          .map(([id]) => id)
+          .sort((a, b) => a - b)
+          .join(",")
+      : ab.caveIns().live,
     bomberRuns: ch.runs.length,
     quakes: ch.quakes.length,
     fires: ch.fires,
@@ -742,6 +752,9 @@ async function releaseInput(c) {
 
 async function probeUi(c, now, start) {
   const s = await c.page.evaluate(SOAK_SAMPLE);
+  // A UI state that clears on a frame (the death fade: two rAFs) cannot be
+  // judged stuck in under three frames — at 0.1 fps that is 30 s.
+  const frameFloorS = s.fps > 0 ? 3 / s.fps : 0;
   if (s.signalLost)
     c.stuck.push({ at: (now - start) / 1000, state: "signalLost" });
   for (const key of Object.keys(STUCK_S)) {
@@ -750,7 +763,7 @@ async function probeUi(c, now, start) {
     if (on) {
       c.since[key] ??= now;
       if (
-        (now - c.since[key]) / 1000 > STUCK_S[key] &&
+        (now - c.since[key]) / 1000 > Math.max(STUCK_S[key], frameFloorS) &&
         !c.since[`${key}Reported`]
       ) {
         c.since[`${key}Reported`] = true;
@@ -957,9 +970,11 @@ async function parityCheck(url, port, main) {
   await sleep(5000);
   const tries = [];
   for (let i = 0; i < 5; i++) {
+    // Same machine, same clock: the harness's now is the server's.
+    const serverNow = Date.now();
     const [a, b, srv] = await Promise.all([
-      main.page.evaluate(PARITY_SAMPLE),
-      c.page.evaluate(PARITY_SAMPLE),
+      main.page.evaluate(PARITY_SAMPLE, serverNow),
+      c.page.evaluate(PARITY_SAMPLE, serverNow),
       debugRooms(port),
     ]);
     const room = srv?.damage?.[a.room] ?? null;
@@ -1101,19 +1116,23 @@ async function runSoak(url, server) {
     .filter(
       (l) => l.trim() !== "" && !SERVER_WARN_ALLOW.some((re) => re.test(l)),
     );
-  const tail = serverSamples.filter((m) => m.rssMB !== null).slice(-15);
+  // The MEDIAN minute-to-minute step: a leak climbs every minute, while V8
+  // reserving a new high-water mark (a lab room's city clone, a GC that
+  // grew the heap) is one step it never hands back — not a trend.
+  const tail = serverSamples.filter((m) => m.rssMB !== null).slice(-16);
+  const steps = tail
+    .slice(1)
+    .map((m, i) => m.rssMB - tail[i].rssMB)
+    .sort((a, b) => a - b);
   const rssSlope =
-    tail.length >= 2
-      ? (tail.at(-1).rssMB - tail[0].rssMB) /
-        (tail.at(-1).minute - tail[0].minute)
-      : null;
+    steps.length > 0 ? steps[Math.floor((steps.length - 1) / 2)] : null;
   const sv = {
     alive: server.proc.exitCode === null,
     stderr: stderr.length === 0,
     heap: grow("heapMB") !== null && grow("heapMB") <= 0.2,
     // RSS is what V8 has RESERVED, which steps up and is not handed back;
     // the leak signal is heapUsed after a forced GC (above). RSS is held to
-    // its trend: under 1 MB/min over the last 15 minutes.
+    // its trend: a median step under 1 MB/min over the last 15 minutes.
     rss: rssSlope !== null && rssSlope < 1,
   };
   report.server = {
@@ -1121,7 +1140,7 @@ async function runSoak(url, server) {
     verdicts: sv,
     heapGrowthVsMinute5: grow("heapMB"),
     rssGrowthVsMinute5: grow("rssMB"),
-    rssMBPerMinLast15: rssSlope,
+    rssMedianStepMBLast15: rssSlope,
     stderr: stderr.slice(0, 100),
     samples: serverSamples,
   };

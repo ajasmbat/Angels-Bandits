@@ -37,6 +37,11 @@
 
 import { type AaBurst, decodeAaBurst } from "@angels-bandits/common/aa";
 import {
+  BOMBS_LOADED,
+  BOMB_RACKS,
+  decodeRacks,
+} from "@angels-bandits/common/bombs";
+import {
   type BossFlak,
   type BossLaunch,
   type BossRaid,
@@ -261,6 +266,11 @@ export class GameSocket {
    * every welcome and every `missile` event, listening or not. The frame
    * loop removes each once it has landed (or gone stale). */
   readonly missiles = new Map<number, MissileStrike>();
+  /** W2: the bombs each enemy plane still carries (common/src/bombs.ts
+   * mask), for every enemy that has dropped any — an enemy not in here is
+   * fully loaded. From every welcome, every enemy `missile` (a drop empties
+   * its rack) and every `death` whose load went up with the plane. */
+  readonly racks = new Map<string, number>();
   /** D5: the director's warned events, by id — from every welcome and every
    * `directorWarn`, listening or not. The frame loop drops each once it has
    * happened. */
@@ -337,6 +347,7 @@ export class GameSocket {
     this.welcome = welcome;
     this.replayDestruction(welcome);
     this.addMissiles(welcome.missiles);
+    this.replayRacks(welcome.racks);
     this.bossHp = applyBossState(this.boss, welcome.boss);
     this.waves = decodeWaves(welcome.waves) ?? idleWaves();
     this.replayChaos(welcome.chaos);
@@ -508,6 +519,7 @@ export class GameSocket {
     this.welcome = next.welcome;
     this.replayDestruction(next.welcome);
     this.addMissiles(next.welcome.missiles);
+    this.replayRacks(next.welcome.racks);
     this.bossHp = applyBossState(this.boss, next.welcome.boss);
     this.waves = decodeWaves(next.welcome.waves) ?? idleWaves();
     this.replayChaos(next.welcome.chaos);
@@ -666,6 +678,12 @@ export class GameSocket {
     prune.t = t;
     this.quakes.forEach(pruneQuake);
     prune.quakes = null;
+  }
+
+  /** W2: a welcome's racks REPLACE what was held (enemy ids are per room). */
+  private replayRacks(w: unknown): void {
+    this.racks.clear();
+    for (const [id, mask] of decodeRacks(w)) this.racks.set(id, mask);
   }
 
   /** Hold every decodable missile of a welcome/event list (dupes are
@@ -884,6 +902,7 @@ export class GameSocket {
         this.events.onPlayerJoined?.(msg.player);
         break;
       case "playerLeft":
+        this.racks.delete(msg.id);
         this.events.onPlayerLeft?.(msg.id);
         break;
       case "fired":
@@ -893,6 +912,8 @@ export class GameSocket {
         this.events.onDamage?.(msg);
         break;
       case "death":
+        // W2: its bomb load went up with it.
+        if (msg.boom) this.racks.set(msg.victimId, 0);
         this.events.onDeath?.(msg);
         break;
       case "cityEvent":
@@ -976,6 +997,16 @@ export class GameSocket {
       case "missile":
         this.serverDestruction++;
         this.addMissiles([msg.m]);
+        // W2: an enemy plane's bomb — that rack is empty from here.
+        if (
+          typeof msg.by === "string" &&
+          Number.isInteger(msg.r) &&
+          (msg.r as number) >= 0 &&
+          (msg.r as number) < BOMB_RACKS
+        ) {
+          const mask = this.racks.get(msg.by) ?? BOMBS_LOADED;
+          this.racks.set(msg.by, mask & ~(1 << (msg.r as number)));
+        }
         break;
       case "quake": {
         this.serverChaos++;

@@ -24,10 +24,15 @@ import {
 export const MISSILE_FLIGHT_MS = 5000;
 /** C2: a meteor's streak from high over the city to its impact, ms. */
 export const METEOR_FLIGHT_MS = 4500;
-/** A bomb's fall from the plane that drops it to the city, ms. C2's jet
- * formations dropped these; W1 retired them, and the kind stays as the seam
- * for enemy planes' bombs (ANGE-GWM8VE). */
+/** A bomb's fall from the plane that drops it to the city, ms — the same
+ * for every drop, so its impact instant is a pure function of its release
+ * (and never under the telegraph floor). W2: the carrier's enemy planes
+ * drop them (common/src/bombs.ts plans the drop, server/src/bombs.ts
+ * decides it). */
 export const BOMB_FALL_MS = 2600;
+/** W2: the largest initial sink (or climb) a bomb may leave its plane with,
+ * m/s — what decodeMissile accepts on the wire. */
+export const BOMB_VY_MAX = 200;
 /** The rising whistle starts this long before impact, ms. */
 export const MISSILE_WHISTLE_MS = 2000;
 /** The fairness floor: no missile is ever announced later than this before
@@ -105,6 +110,9 @@ export interface MissileStrike {
   to: Vec3;
   /** Launch time, server clock ms. */
   t0: number;
+  /** W2, bombs only: the vertical speed the bomb leaves its plane with,
+   * m/s (negative: sinking), on the wire's 0.1 grid. Absent: 0. */
+  vy?: number;
 }
 
 /** Arc height over the straight launch → target line, by kind, m. */
@@ -149,11 +157,14 @@ export function missilePosAt(s: MissileStrike, t: number, out: Vec3): Vec3 {
   const dz = wrapDeltaAxis(s.from.z, s.to.z);
   if (s.kind === "bomb") {
     // A dropped bomb: it keeps (most of) its plane's way, slowing as drag
-    // takes it, and falls faster and faster — u(2 − u) across, u² down.
+    // takes it — u(2 − u) across, so it leaves at its plane's ground speed
+    // when `to` is the drop point bombs.ts plans — and falls faster and
+    // faster from the sink it left with (W2 `vy`): a constant pull down.
     const h = u * (2 - u);
     out.x = wrap(s.from.x + dx * h);
     out.z = wrap(s.from.z + dz * h);
-    out.y = s.from.y + (s.to.y - s.from.y) * u * u;
+    const vyT = ((s.vy ?? 0) * missileFlightMs(s.kind)) / 1000;
+    out.y = s.from.y + vyT * u + (s.to.y - s.from.y - vyT) * u * u;
     return out;
   }
   out.x = wrap(s.from.x + dx * u);
@@ -412,44 +423,58 @@ const WIRE_KINDS: readonly MissileKind[] = [
 ];
 
 /** A strike on the wire: [id, kind (0 cruise, 1 artillery, 2 meteor,
- * 3 bomb), from ×10, to ×10, t0] — integers only, exactly reconstructible. */
-export type WireMissile = [
-  id: number,
-  kind: 0 | 1 | 2 | 3,
-  fx: number,
-  fy: number,
-  fz: number,
-  tx: number,
-  ty: number,
-  tz: number,
-  t0: number,
-];
+ * 3 bomb), from ×10, to ×10, t0] — integers only, exactly reconstructible.
+ * W2: a bomb with a `vy` carries it ×10 as a tenth element. */
+export type WireMissile =
+  | [
+      id: number,
+      kind: 0 | 1 | 2 | 3,
+      fx: number,
+      fy: number,
+      fz: number,
+      tx: number,
+      ty: number,
+      tz: number,
+      t0: number,
+    ]
+  | [
+      id: number,
+      kind: 0 | 1 | 2 | 3,
+      fx: number,
+      fy: number,
+      fz: number,
+      tx: number,
+      ty: number,
+      tz: number,
+      t0: number,
+      vy: number,
+    ];
 
 export function encodeMissile(s: MissileStrike): WireMissile {
   const i = (v: number) => Math.round(v * 10);
-  return [
-    s.id,
-    WIRE_KINDS.indexOf(s.kind) as 0 | 1 | 2 | 3,
-    i(s.from.x),
-    i(s.from.y),
-    i(s.from.z),
-    i(s.to.x),
-    i(s.to.y),
-    i(s.to.z),
-    s.t0,
-  ];
+  const kind = WIRE_KINDS.indexOf(s.kind) as 0 | 1 | 2 | 3;
+  const from = [i(s.from.x), i(s.from.y), i(s.from.z)] as const;
+  const to = [i(s.to.x), i(s.to.y), i(s.to.z)] as const;
+  if (s.kind === "bomb" && s.vy !== undefined) {
+    return [s.id, kind, ...from, ...to, s.t0, i(s.vy)];
+  }
+  return [s.id, kind, ...from, ...to, s.t0];
 }
 
 /** Inverse of encodeMissile; null for anything malformed — an unknown
  * kind included (its flight time, so its impact instant, would be a guess). */
 export function decodeMissile(w: unknown): MissileStrike | null {
-  if (!Array.isArray(w) || w.length !== 9) return null;
+  if (!Array.isArray(w) || (w.length !== 9 && w.length !== 10)) return null;
   if (!w.every((v) => typeof v === "number" && Number.isFinite(v))) {
     return null;
   }
-  const [id, code, fx, fy, fz, tx, ty, tz, t0] = w as number[];
+  const [id, code, fx, fy, fz, tx, ty, tz, t0, vy] = w as number[];
   const kind = WIRE_KINDS[code as number];
   if (kind === undefined) return null;
+  // W2: only a bomb leaves a plane with a sink, and never a wild one.
+  if (vy !== undefined) {
+    if (kind !== "bomb" || Math.abs(vy / 10) > BOMB_VY_MAX) return null;
+  }
   return {
     id: id as number,
     kind,
@@ -464,5 +489,6 @@ export function decodeMissile(w: unknown): MissileStrike | null {
       z: (tz as number) / 10,
     },
     t0: t0 as number,
+    ...(vy !== undefined && { vy: vy / 10 }),
   };
 }

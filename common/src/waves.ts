@@ -11,6 +11,8 @@
 //  - each wave's GRADE: aim jitter, reaction and trigger discipline start
 //    soft and ramp gently over the first WAVE_RAMP waves, so the first
 //    waves stay easy for a new player;
+//  - each wave's BOMBING (W2): how often its planes start bomb runs and how
+//    many fly at once, heavier with the level and the wave;
 //  - each carrier's TIER: the n-th carrier of a session is tougher and its
 //    flak hits harder;
 //  - who hunts whom (assignQuarries): the nearest human, spread across the
@@ -160,6 +162,45 @@ export function waveGrade(wave: number, level: Intensity): WaveGrade {
     jitter: lerp(l.jitter),
     reaction: lerp(l.reaction),
     fire: Math.min(1, Math.max(0, lerp(l.fire))),
+  };
+}
+
+// --- Bombing (W2) ---------------------------------------------------------------
+
+/** How hard a wave bombs the city (server/src/bombs.ts schedules it). */
+export interface WaveBombing {
+  /** The room's gap between two bomb runs starting, ms. */
+  gapMs: number;
+  /** Bomb runs on at once in the room, at most. */
+  maxRuns: number;
+  /** One enemy's rest between the end of its run and its next, ms. */
+  restMs: number;
+}
+
+/** Per level: wave 1's gap and the gap WAVE_RAMP waves on, ms; the run cap
+ * the same way; and the per-enemy rest. Every column eases toward harder
+ * with the wave and is harder level by level. */
+const BOMB_LEVELS: readonly {
+  gap: readonly [number, number];
+  runs: readonly [number, number];
+  rest: number;
+}[] = [
+  { gap: [16_000, 10_000], runs: [1, 1], rest: 24_000 }, // EASY
+  { gap: [11_000, 6500], runs: [1, 2], rest: 18_000 }, // NORMAL
+  { gap: [8000, 4500], runs: [2, 3], rest: 14_000 }, // HARD
+  { gap: [6000, 3000], runs: [2, 4], rest: 10_000 }, // INSANE
+];
+
+/** Wave `wave`'s bombing at `level`: wave 1 its level's lightest, easing
+ * linearly to the end values by wave 1 + WAVE_RAMP, like waveGrade. Pure. */
+export function waveBombing(wave: number, level: Intensity): WaveBombing {
+  const l = BOMB_LEVELS[level] as (typeof BOMB_LEVELS)[number];
+  const t = Math.min(1, Math.max(0, (wave - 1) / WAVE_RAMP));
+  const lerp = (r: readonly [number, number]) => r[0] + (r[1] - r[0]) * t;
+  return {
+    gapMs: Math.round(lerp(l.gap)),
+    maxRuns: Math.round(lerp(l.runs)),
+    restMs: l.rest,
   };
 }
 

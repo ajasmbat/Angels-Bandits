@@ -13,8 +13,9 @@
 // reads from anywhere in the city (fog-free, 1 draw) and a fire trail
 // through the D1 particle pool (the tier's `chaosFx` share — cosmetic; the
 // fireball and glint are the telegraph, on every tier). A bomb is a short,
-// fat body with the red glint and no smoke trail (a carpet of 24 trails
-// would starve the planes' wound smoke).
+// fat body with the red glint and (W2) a smoke trail like a missile's — the
+// enemy planes' runs keep at most a handful in the air (server/src/bombs.ts
+// maxInFlight), not C2's carpets of 24.
 
 import { EMISSIVE_BEACON } from "@angels-bandits/common/constants";
 import {
@@ -245,7 +246,7 @@ export class MissileRenderer {
       this.bodies.setMatrixAt(n, this.dummy.matrix);
       this.glintPos.setXYZ(n, this.img.x, this.img.y, this.img.z);
       n++;
-      if (!bomb) this.smoke.sync(this.trailKey(m.id), this.pos, now, true);
+      this.smoke.sync(this.trailKey(m.id), this.pos, now, true);
     }
     this.dummy.scale.set(1, 1, 1);
     for (let i = n; i < MISSILE_POOL; i++) {
@@ -278,7 +279,7 @@ export class MissileRenderer {
    * the debris throws out of the struck surface. */
   impact(m: MissileStrike, now: number): void {
     this.fireAcc.delete(m.id);
-    if (m.kind === "cruise" || m.kind === "artillery") {
+    if (m.kind !== "meteor") {
       const key = this.trailKey(m.id);
       this.smoke.sync(key, m.to, now, false);
       this.trailKeys.delete(m.id);

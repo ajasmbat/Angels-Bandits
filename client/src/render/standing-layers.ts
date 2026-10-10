@@ -117,4 +117,6 @@ export const STANDING_EXEMPT: Readonly<Record<string, string>> = {
     "welding sparks at the construction crane sites — lots, not buildings",
   movers:
     "cranes, helicopters and boats stand on lots and streets; a felled crane is D5's own collapse record",
+  birds:
+    "DT2 tower flocks read their tower's standingProfile each frame and stop drawing once it no longer stands over the wheel",
 };

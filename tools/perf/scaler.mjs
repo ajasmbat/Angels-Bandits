@@ -74,7 +74,8 @@ for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
 async function startServer(port) {
   const proc = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
     cwd: REPO,
-    env: { ...process.env, PORT: String(port) },
+    // W1: no carrier war — an empty sky is the only reproducible one.
+    env: { ...process.env, PORT: String(port), AB_WAVES: "0" },
     stdio: "ignore",
   });
   for (let i = 0; i < 120; i++) {
@@ -117,7 +118,6 @@ async function main() {
     await page.waitForFunction(() => typeof window.__ab !== "undefined", null, {
       timeout: 60_000,
     });
-    await page.evaluate(() => window.__ab.setBots(0));
     // A low, dense viewpoint — the heaviest thing the path measures.
     await page.evaluate(() => window.__ab.teleport(200, 1200, 45, 0));
 

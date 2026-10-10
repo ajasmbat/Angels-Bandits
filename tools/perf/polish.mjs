@@ -649,8 +649,7 @@ const PARITY_SAMPLE = (serverNow) => {
     bossDown: b.down !== null && b.down !== undefined,
     bossHp: b.hp.join(","),
     caveIns: held ? liveIds(held) : ab.caveIns().live,
-    // Runs and quakes are pruned per frame too: ids live at one instant.
-    bomberRuns: ch.held ? liveIds(ch.held.runs) : ch.runs.length,
+    // Quakes are pruned per frame too: ids live at one instant.
     quakes: ch.held ? liveIds(ch.held.quakes) : ch.quakes.length,
     fires: ch.fires,
   };

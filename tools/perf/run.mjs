@@ -414,8 +414,10 @@ async function joinGame(page, url) {
   });
   // Bots fly a live sim and shoot back — deterministic per room, but their
   // POSES depend on wall-clock timing, so they would smear every segment.
-  // An empty room is the only reproducible room.
-  await page.evaluate(() => window.__ab.setBots(0));
+  // An empty room is the only reproducible room. W1: the quiet city flies no
+  // carrier, so no enemy ever launches; a pre-W1 --ab-ref build still
+  // backfills bots, and its `setBots(0)` empties them.
+  await page.evaluate(() => window.__ab.setBots?.(0));
   try {
     await page.waitForFunction(
       () => window.__ab.combat().targets.length === 0,
@@ -444,8 +446,8 @@ async function joinGame(page, url) {
 }
 
 /**
- * S8: re-assert joinGame's empty room before a segment — `setBots(0)` and
- * wait — if anything is flying in it. Says so, and names the room: a room
+ * S8: re-assert joinGame's empty room before a segment — `setBots(0)` on a
+ * pre-W1 build, and wait — if anything is flying in it. Says so, and names the room: a room
  * id different from the one the page joined is a session that dropped and
  * rejoined (W2), which is the machine, not the build.
  */
@@ -455,7 +457,7 @@ async function ensureEmptyRoom(page, name) {
     targets: window.__ab.combat().targets.length,
   }));
   if (now.targets === 0) return;
-  await page.evaluate(() => window.__ab.setBots(0));
+  await page.evaluate(() => window.__ab.setBots?.(0));
   const emptied = await page
     .waitForFunction(() => window.__ab.combat().targets.length === 0, null, {
       timeout: 30_000,
@@ -770,7 +772,6 @@ async function flySegment(page, seg, sampleMs, worldMs, ledger = false) {
           },
           chaos: ch && {
             ...ch.staged,
-            bomberBoxes: ch.drawn.boxes,
             missilesDrawn: ch.missilesDrawn.bodies,
             meteorsDrawn: ch.missilesDrawn.meteors,
             serverChaos: ch.serverChaos,
@@ -1032,7 +1033,7 @@ export const CHAOS_MISSILES_MIN = 3;
 /**
  * P4: did a chaos window show what was staged — at BOTH ends of it?
  * At least CHAOS_MISSILES_MIN missiles and a meteor or bomb in the air, the
- * bomber run drawn, the quake live, the fires lit (where staged), no strike
+ * quake live, the fires lit (where staged), no strike
  * from the server, and no server chaos message inside the window (D6's
  * quiet city sends none). Null when the segment stages no chaos, or the
  * build has no hook (an --ab-ref from before P4: no baseline).
@@ -1054,7 +1055,6 @@ export function chaosVerdict(seg, stats) {
       (e) =>
         (!c.missiles || e.inAir.missiles >= CHAOS_MISSILES_MIN) &&
         (!c.meteors || e.inAir.meteors + e.meteorsDrawn > 0) &&
-        (!c.bombers || (e.run && e.bomberBoxes > 0)) &&
         (!c.quake || e.quake) &&
         (!c.fires || e.fires > 0) &&
         e.foreign === 0,
@@ -1254,7 +1254,7 @@ function flyWarmupLap(page) {
         }
         const ghost = s.course && typeof ab.qaCourseGhost === "function";
         if (ghost) ab.qaCourseGhost(s.course.theme, s.course.ghostSpeed);
-        // P4: its chaos too — missiles, meteors, bombers, bursts and fire
+        // P4: its chaos too — missiles, meteors, bursts and fire
         // pay their first sight here — and a tunnel segment starts on its
         // bore's guide line.
         const caveIn = s.caveIn && typeof ab.qaCaveIn === "function";
@@ -1774,7 +1774,7 @@ async function measure(browser, url, { trace = true, ledger = true } = {}) {
         // the default bots. Restore joinGame's empty room before the next
         // segment, or every segment after this one draws them.
         if (left.targets > 0) {
-          await page.evaluate(() => window.__ab.setBots(0));
+          await page.evaluate(() => window.__ab.setBots?.(0));
           const emptied = await page
             .waitForFunction(
               () => window.__ab.combat().targets.length === 0,
@@ -2092,7 +2092,7 @@ function printVerdicts(report) {
         e.course &&
           `run on course ${e.course.course} (want ${e.course.expected}), next ring ${e.course.next}, ghost ${e.course.ghost ? (e.course.ghostDrawn ? "drawn" : "playing, not drawn (tier)") : "NOT playing"}`,
         e.chaos &&
-          `missiles ${e.chaos.inAir.missiles} / meteors ${e.chaos.inAir.meteors} / bombs ${e.chaos.inAir.bombs} in the air, bombers ${e.chaos.bomberBoxes} boxes, quake ${e.chaos.quake ? "live" : "OFF"}, fires ${e.chaos.fires}, ${e.chaos.foreign} server strikes`,
+          `missiles ${e.chaos.inAir.missiles} / meteors ${e.chaos.inAir.meteors} / bombs ${e.chaos.inAir.bombs} in the air, quake ${e.chaos.quake ? "live" : "OFF"}, fires ${e.chaos.fires}, ${e.chaos.foreign} server strikes`,
         e.pilotRange !== null && `furthest pilot ${e.pilotRange} m`,
       ]
         .filter(Boolean)

@@ -46,9 +46,10 @@ set) times each phase of `tick()` and serves `GET /debug/tick`.
 **"8 humans + 12 enemies" does not fit a room.** `ROOM_CAP` is 12 planes,
 so 8 humans get at most 4 bots. Both ends were measured: **8 humans +
 4 bots** (the room full of humans) and **1 human + 11 bots** (the room full
-of enemies), each with the boss carrier and every chaos layer up. W1's
-carrier waves replace the bots; this bench still drives them through the
-same `setBots`.
+of enemies), each with the boss carrier and every chaos layer up. These
+numbers predate W1, which replaced the bots with carrier waves and removed
+`setBots`: on a post-W1 server the bench's `--bots` flag does nothing, and
+the enemies are whatever the carrier launches.
 
 The before arm is `main` (97883bd) plus only the profiler. The two arms ran
 interleaved, 3 rounds each, on a machine at load average 80–150 (other

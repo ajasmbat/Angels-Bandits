@@ -37,6 +37,7 @@ import { FacadeArchetype, archetypeFor } from "./archetypes";
 import {
   DETAIL_MIN_Y,
   type DetailBox,
+  type DetailKind,
   MAX_PROTRUSION,
   facadeDetailFor,
 } from "./facade-detail";
@@ -194,6 +195,9 @@ function streetFaces(b: Building, seed: number): Face[] {
       const taken: Face["taken"] = [];
       for (const box of [...detail.boxes, ...detail.lights]) {
         if (box.axis !== axis || box.dir !== dir) continue;
+        // DT2's flush dressing (ivy, graffiti, sconces) is wall paint as far
+        // as a garment or a pole is concerned — A1 hangs in front of it.
+        if (FLUSH_KINDS.has(box.kind)) continue;
         if (Math.abs(box.plane - plane) > 0.01) continue;
         taken.push(boxRect(box));
       }
@@ -224,6 +228,13 @@ function streetFaces(b: Building, seed: number): Face[] {
   }
   return faces;
 }
+
+/** L13/DT2 kinds that lie flat on the wall (≤ 0.18 m out). */
+const FLUSH_KINDS: ReadonlySet<DetailKind> = new Set([
+  "ivy",
+  "graffiti",
+  "lamp",
+]);
 
 const boxRect = (box: DetailBox) => {
   const along = box.axis === "x" ? box.z : box.x;

@@ -27,6 +27,7 @@ import {
   TICK_DOWN_HZ,
 } from "@angels-bandits/common/constants";
 import { type HazardDisc, missileHazard } from "@angels-bandits/common/hazards";
+import type { RosterEntry, SpawnState } from "@angels-bandits/common/protocol";
 import { MISSILE_FLIGHT_MS } from "@angels-bandits/common/strike";
 import {
   type Vec3,
@@ -35,6 +36,16 @@ import {
 } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
 import { type BotContact, RoomBots } from "../src/bots";
+
+/** Spawn `n` bots, each where `pick` says (W1 removed RoomBots.syncTo's
+ * backfill: the room spawns its enemies one carrier launch at a time). */
+const spawnBots = (
+  bots: RoomBots,
+  n: number,
+  pick: () => SpawnState,
+): { spawned: RosterEntry[] } => ({
+  spawned: Array.from({ length: n }, () => bots.spawn(pick())),
+});
 
 const DT = 1000 / TICK_DOWN_HZ;
 
@@ -49,7 +60,7 @@ function chase(
   onTick: (pos: Vec3, now: number) => void,
 ): { crashes: number } {
   const bots = new RoomBots("room-0", 77, [], movers);
-  const [entry] = bots.syncTo(1, () => ({
+  const [entry] = spawnBots(bots, 1, () => ({
     pos: start,
     yaw: -Math.PI / 2, // nose along +x
     speed: 70,

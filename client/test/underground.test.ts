@@ -54,6 +54,9 @@ import {
 
 const H = 18;
 const BLOOM = 0.72;
+/** U7: the suites that scan every dressing vertex one by one (~1 M with the
+ * 3D plants) get headroom over vitest's 20 s default on a loaded box. */
+const SCAN_MS = 60_000;
 const layout = undergroundLayout();
 const buffers = buildUndergroundBuffers(layout);
 const frame: TunnelFrame = { s: 0, lat: 0, th: 0 };
@@ -320,7 +323,7 @@ describe("U5 draw == collide", () => {
   });
 });
 
-describe("U5 light", () => {
+describe("U5 light", { timeout: SCAN_MS }, () => {
   const lum = (
     col: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
     i: number,
@@ -359,7 +362,7 @@ describe("U5 light", () => {
   });
 });
 
-describe("U5 renderer budget", () => {
+describe("U5 renderer budget", { timeout: SCAN_MS }, () => {
   it("is four draws on every tier, thinned to whole bands, four images each", () => {
     const r = new UndergroundLife();
     const draws: THREE.Object3D[] = [];

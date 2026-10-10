@@ -2,8 +2,9 @@
 // client statics (production), and the ws presence rooms. HUMAN movement stays
 // client-authoritative (PLAN.md authority split) — pose claims are clamped via
 // validatePose and relayed in snapshots. The one flight sim this process DOES
-// run is the backfill bots (B1): RoomBots advances them with the shared
-// stepFlight inside the same TICK_DOWN_HZ snapshot tick.
+// run is the carrier's enemy planes (W1, server/src/waves.ts): RoomBots
+// advances them with the shared stepFlight inside the same TICK_DOWN_HZ
+// snapshot tick.
 
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
@@ -18,26 +19,12 @@ import {
 import {
   BOSS_ID,
   type BossDown,
-  LAUNCH_GRACE_MS,
-  LAUNCH_SEQ_MS,
   bossCredit,
   bossSpawnClear,
   encodeFlak,
-  encodeLaunch,
   encodeRaid,
-  launchReleaseAt,
-  launchSpawnAt,
 } from "@angels-bandits/common/boss";
-import {
-  type BomberSlot,
-  blankBomberPose,
-  bomberPoseInto,
-  bomberSpawnClear,
-  emptyBomberSlot,
-  encodeBomberDown,
-  encodeBomberRun,
-  encodeQuake,
-} from "@angels-bandits/common/chaos";
+import { encodeQuake } from "@angels-bandits/common/chaos";
 import {
   encodeChunkIds,
   generateCity,
@@ -121,6 +108,7 @@ import {
   type MissileStrike,
   encodeMissile,
 } from "@angels-bandits/common/strike";
+import { encodeWaves } from "@angels-bandits/common/waves";
 import {
   type Vec3,
   canonicalize,
@@ -133,24 +121,15 @@ import {
   type BossPlane,
   type BossWorld,
   applyBossImpact,
-  bossContactIndex,
   claimBossHit,
-  landBotBossRound,
 } from "./boss";
-import {
-  type BotContact,
-  RoomBots,
-  applyBotFire,
-  landBotRound,
-  poseVelocity,
-} from "./bots";
+import { RoomBots, applyBotFire, landBotRound, poseVelocity } from "./bots";
 import { CAVEIN_FAST, CAVEIN_TUNING, CaveInDirector } from "./caveins";
 import {
   ChaosDirector,
   type ChaosPlane,
   applyGoneHold,
   chaosTunings,
-  claimBomberHit,
 } from "./chaos";
 import { CityEventLog, nearBuildingProbe } from "./cityevents";
 import { Combat, type Death, type HitResult, type SpeedCapFn } from "./combat";
@@ -189,7 +168,6 @@ import {
 } from "./guards";
 import {
   type RespawnEnemy,
-  pickBotRespawn,
   pickRespawn,
   respawnIfUnsafe,
 } from "./respawn";
@@ -204,6 +182,7 @@ import {
 import { createGuard } from "./tick-guard";
 import { TickProfiler } from "./tickstats";
 import { poseFromSpawn, roomPoseCap, validatePose } from "./validate";
+import { RoomWaves, type WaveHuman, humanContacts } from "./waves";
 import { RoomWrecks, applyWreckImpact, impactPos } from "./wrecks";
 
 const PORT = Number(process.env.PORT ?? 8080);
@@ -250,7 +229,8 @@ const memoryAfterGc = (): NodeJS.MemoryUsage => {
  * director, chain or rebuild damage) and no boss raid starts. All of that is
  * timed on the wall clock, which the harness cannot pin, so the destruction a
  * measured window shows is only what the harness stages on the client — the
- * same reasoning as its empty room (`setBots(0)`). Never in production.
+ * same reasoning as its empty sky (no carrier, so no enemy waves). Never in
+ * production.
  */
 const QUIET_CITY = process.env.AB_QUIET_CITY === "1";
 if (QUIET_CITY && process.env.NODE_ENV === "production") {
@@ -407,8 +387,6 @@ const roomMovers = (room: Room): MoverField => {
       collapses: roomCity(room).collapses,
       // S4: and its sky boss — the director's own slot, mutated in place.
       boss: roomBoss(room).slot,
-      // C2: and its bomber runs — the chaos director's slot, the same way.
-      bombers: roomBombers(room),
       // U6: and its cave-ins — the cave-in director's slot, the same way.
       caveins: roomCaveIns(room),
       // D9: and its props — the felled tanks, jumbotrons and bridge spans
@@ -456,9 +434,8 @@ const quiet = (room: Room): boolean =>
 
 /**
  * Destruction applies only while the room has a human member (pending and
- * away ones count). The standing bot arena never empties and nobody would
- * see it — so an empty room stays whole, and handleLeave clears it when its
- * last human goes. FL1: and never in a lab room with chaos off (quiet).
+ * away ones count): nobody would see it otherwise — so an empty room stays
+ * whole, and handleLeave clears it when its last human goes. FL1: and never in a lab room with chaos off (quiet).
  */
 const breakable = (room: Room): RoomCity | null =>
   quiet(room) ? null : roomCity(room);
@@ -518,13 +495,11 @@ const bossWorld = (room: Room): BossWorld => {
   return { buildings: rc.buildings, index: rc.index };
 };
 
-/** S4: a human (re)spawn must never be pointed into the zeppelin's path —
- * C2: nor into a bomber formation's. */
+/** S4: a human (re)spawn must never be pointed into the zeppelin's path. */
 const spawnClearOfBoss =
   (room: Room, now: number) =>
   (pos: Vec3, yaw: number | null): boolean =>
-    bossSpawnClear(roomBoss(room).slot, pos, yaw, RESPAWN_SPEED, now) &&
-    bomberSpawnClear(roomBombers(room), pos, yaw, RESPAWN_SPEED, now);
+    bossSpawnClear(roomBoss(room).slot, pos, yaw, RESPAWN_SPEED, now);
 
 /**
  * Each room's destruction director (D5): timed events near the fight and
@@ -565,10 +540,10 @@ const budgetFor = (room: Room): DangerBudget | undefined => {
 };
 
 /**
- * C2: each room's chaos director (server/src/chaos.ts) — meteors, bomber
- * runs, quakes, spreading fire. Seeded from the room's number like the
- * other directors; null under AB_CHAOS=0. Its bomber slot rides the room's
- * mover field. Created lazily, reset with the room's city, dropped with it.
+ * C2: each room's chaos director (server/src/chaos.ts) — meteors, quakes,
+ * spreading fire. Seeded from the room's number like the other directors;
+ * null under AB_CHAOS=0. Created lazily, reset with the room's city, dropped
+ * with it.
  */
 const chaosByRoom = new Map<string, ChaosDirector>();
 const chaosFor = (room: Room): ChaosDirector | null => {
@@ -584,10 +559,6 @@ const chaosFor = (room: Room): ChaosDirector | null => {
   }
   return c;
 };
-/** The room's bomber slot (an empty one forever with chaos off). */
-const noBombers: BomberSlot = emptyBomberSlot();
-const roomBombers = (room: Room): BomberSlot =>
-  chaosFor(room)?.slot ?? noBombers;
 
 /**
  * U6: each room's cave-in director (server/src/caveins.ts) — the ceiling of
@@ -625,12 +596,12 @@ function noteSpawn(room: Room, id: string, pos: Vec3, now: number): void {
   budgetFor(room)?.noteSpawn(id, now); // C2: nothing lethal near it for 5 s
 }
 
-/** C2: a spawn stays this far from where a strike, meteor or bomb is about
- * to land, m (its blast radius and a margin). */
+/** C2: a spawn stays this far from where a strike or meteor is about to
+ * land, m (its blast radius and a margin). */
 const SPAWN_STRIKE_CLEAR_M = 120;
 
 /** D5: a spawn never lands inside a warned director event's danger zone —
- * C2: nor next to an incoming strike, meteor or bomb. */
+ * C2: nor next to an incoming strike or meteor. */
 const spawnAvoid =
   (room: Room) =>
   (pos: Vec3): boolean =>
@@ -821,8 +792,8 @@ const courseSetFor = (seed: number): CourseSet => {
   return set;
 };
 
-/** Per-room bot pilots. Created lazily; seeded from the room's number so
- * bot behavior is deterministic per room. */
+/** Per-room enemy pilots (W1: the carrier's planes). Created lazily; seeded
+ * from the room's number so bot behavior is deterministic per room. */
 const botsByRoom = new Map<string, RoomBots>();
 const botsFor = (room: Room): RoomBots => {
   let bots = botsByRoom.get(room.id);
@@ -906,44 +877,112 @@ const noseOf = (pose: Pose): Vec3 | null => {
   return len > 1e-6 ? { x: v.x / len, y: v.y / len, z: v.z / len } : null;
 };
 
-/** Sync a room's bot population to the backfill target: spawn/despawn bots,
- * mirror them into the roster + Combat, and announce like any player. */
-function syncRoomBots(room: Room): void {
-  const bots = botsFor(room);
-  const now = Date.now();
-  const { spawned, despawned } = bots.syncTo(rooms.desiredBots(room), () =>
-    pickBotRespawn(livingEnemies(room, ""), (pos, yaw) =>
-      bots.spawnClear(pos, yaw, now),
-    ),
-  );
-  for (const entry of spawned) {
-    rooms.addBot(room, entry.id, entry.name);
-    combat.addPlayer(entry.id, now);
-    const at = bots.lastPosOf(entry.id);
-    if (at) noteSpawn(room, entry.id, at, now);
-    sendToRoom(room, { type: "playerJoined", player: entry });
+/**
+ * W1: each room's carrier war (server/src/waves.ts) — its waves, its enemy
+ * planes and their lives, on the room's own carrier, pilots and Combat.
+ * Seeded from the room's number like its bots; created lazily, dropped with
+ * the room.
+ */
+const wavesByRoom = new Map<string, RoomWaves>();
+const wavesFor = (room: Room): RoomWaves => {
+  let w = wavesByRoom.get(room.id);
+  if (!w) {
+    const n = Number(room.id.split("-")[1] ?? 0);
+    w = new RoomWaves(
+      (CITY_SEED ^ Math.imul(n + 1, 0x3c6ef372)) >>> 0,
+      botsFor(room),
+      roomBoss(room),
+      combat,
+      {
+        addEnemy: (entry) => {
+          rooms.addBot(room, entry.id, entry.name);
+          sendToRoom(room, { type: "playerJoined", player: entry });
+        },
+        removeEnemy: (id) => removeEnemy(room, id),
+        send: (msg) => sendToRoom(room, msg),
+        death: (death, now) => sendDeath(room, death, now),
+      },
+    );
+    w.intensity = room.intensity;
+    wavesByRoom.set(room.id, w);
   }
-  for (const id of despawned) {
-    combat.removePlayer(id);
-    medals.forget(id);
-    bossByRoom.get(room.id)?.forget(id);
-    storm.forget(id);
-    rooms.leave(id);
-    sendToRoom(room, { type: "playerLeft", id });
-  }
-  // A wound-down room (no humans, no bots) is gone — drop its pilots too.
+  return w;
+};
+
+/** W1: an enemy plane leaves `room` for good (RoomWaves already dropped it
+ * from its pilots, Combat and the carrier): every other per-plane record
+ * forgotten, the roster left, `playerLeft` sent — and a room that held only
+ * it is gone. */
+function removeEnemy(room: Room, id: string): void {
+  medals.forget(id);
+  storm.forget(id);
+  directorsByRoom.get(room.id)?.forget(id);
+  budgetsByRoom.get(room.id)?.forget(id);
+  caveInsByRoom.get(room.id)?.forget(id);
+  rooms.leave(id);
+  sendToRoom(room, { type: "playerLeft", id });
   disposeRoom(room);
+}
+
+/** W1: is the carrier war on in `room` — the carrier flying and launching?
+ * Off server-wide under AB_WAVES=0 or a quiet city; in a Flight Lab only
+ * when its pilot turned it on. */
+const wavesOn = (room: Room): boolean =>
+  TUNINGS.waves && !QUIET_CITY && (!room.lab || room.labWaves);
+
+/** W1: does the carrier fly in `room`? With its waves — or, in a lab, as
+ * part of the chaos the pilot turned on (it launches nothing then). */
+const carrierOn = (room: Room): boolean =>
+  wavesOn(room) || (TUNINGS.waves && room.lab && room.labChaos && !QUIET_CITY);
+
+/** W1: the humans in `room` who have started flying — past W1 loading and
+ * not away. Dead in a kill-cam still counts: a death must not restart the
+ * carrier's clock. */
+const flyingHumanIn = (room: Room): boolean => {
+  for (const m of room.members.values()) {
+    if (m.isBot) continue;
+    const c = clients.get(m.id);
+    if (c && !c.pending && !c.away) return true;
+  }
+  return false;
+};
+
+/** W1: the humans in the air right now as the war sees them — on-record
+ * pose, extrapolated to `now` unless `extrapolate` is false (the bots'
+ * contacts read the pose as recorded, as they always have). */
+function waveHumans(room: Room, now: number, extrapolate = true): WaveHuman[] {
+  const out: WaveHuman[] = [];
+  for (const member of room.members.values()) {
+    if (member.isBot) continue;
+    const pose = memberPose(room, member.id);
+    if (!pose) continue;
+    const age = extrapolate ? poseAgeOf(member.id, now) / 1000 : 0;
+    const v = poseVelocity(pose);
+    out.push({
+      id: member.id,
+      pos: canonicalize({
+        x: pose.pos.x + v.x * age,
+        y: pose.pos.y + v.y * age,
+        z: pose.pos.z + v.z * age,
+      }),
+      vel: v,
+      prot: combat.isProtected(member.id, now),
+      hp: combat.hpOf(member.id),
+    });
+  }
+  return out;
 }
 
 /**
  * Free everything kept per room id once `room` is gone from the manager.
- * Liveness is the only test — never botTarget: a room still listed keeps its
+ * Liveness is the only test: a room still listed keeps its
  * state, and a dead id is never reused (room ids only count up), so the lazy
  * getters can't resurrect it either — only listed rooms are ever ticked.
  */
 function disposeRoom(room: Room): void {
   if (rooms.rooms.includes(room)) return;
   botsByRoom.delete(room.id);
+  wavesByRoom.delete(room.id);
   cityEvents.forget(room.id);
   roomMoversById.delete(room.id);
   pendingKillByRoom.delete(room.id);
@@ -1084,7 +1123,8 @@ function handleJoin(
     spawn,
     roster: room.roster(),
     scores: room.roster().map(({ id: rid }) => scoreEntryOf(rid)),
-    botTarget: room.botTarget,
+    intensity: room.intensity,
+    waves: encodeWaves(wavesFor(room).state()),
     cityEvents: cityEvents.recent(room.id, now),
     newsHeli: roomMovers(room).news,
     resumeToken: client.resumeToken,
@@ -1103,9 +1143,6 @@ function handleJoin(
   sendToRoom(room, { type: "playerJoined", player: { id, name } }, id);
   // Everyone else's board seeded this row at 0/0 from playerJoined.
   if (resumed) broadcastScores(room);
-  // The human takes a seat: one bot yields (idle first) after the welcome so
-  // the joiner sees a consistent roster then a normal playerLeft.
-  syncRoomBots(room);
   return client;
 }
 
@@ -1307,11 +1344,13 @@ function handleLeave(id: string): void {
       chaosByRoom.get(room.id)?.reset();
       budgetsByRoom.get(room.id)?.reset();
       caveInsByRoom.get(room.id)?.reset(); // U6
+      // W1: and the carrier war — every enemy plane despawned (the room
+      // goes with the last of them), the next carrier tier 1 again.
+      bossByRoom.get(room.id)?.resetSession();
+      wavesByRoom.get(room.id)?.reset(Date.now());
     }
-    // Refill the vacated seat (or wind the bots down if the room is done);
-    // a room the last member just left is already gone — free its state.
-    if (rooms.rooms.includes(room)) syncRoomBots(room);
-    else disposeRoom(room);
+    // A room the last member just left is already gone — free its state.
+    disposeRoom(room);
   }
 }
 
@@ -1419,62 +1458,7 @@ function handleBossHit(client: Client, msg: ClientEnvelope, now: number): void {
     bossWorld(client.room),
     speedCapOf(client, now),
   );
-  if (hit?.down) bossDowned(client.room, hit.down);
-}
-
-/**
- * C2: a shooter-side hit on a bomber. The round's whole line is re-judged
- * against the formation's own pose (server/src/chaos.ts claimBomberHit);
- * the ship that runs out of HP goes down at once: its undropped bombs are
- * called off, its shooter credited with a kill.
- */
-function handleBomberHit(
-  client: Client,
-  msg: ClientEnvelope,
-  now: number,
-): void {
-  const chaos = chaosFor(client.room);
-  if (!chaos) return;
-  const { run, k, seq, bulletOrigin, dir, t } = msg;
-  if (typeof run !== "number" || typeof k !== "number") return;
-  if (typeof seq !== "number" || typeof t !== "number") return;
-  if (!Number.isFinite(t) || !isVec3(bulletOrigin) || !isVec3(dir)) return;
-  const hit = claimBomberHit(
-    combat,
-    chaos,
-    missilesFor(client.room).director,
-    client.id,
-    { run, k, seq, origin: bulletOrigin, dir, t },
-    client.pose.pos,
-    now,
-    speedCapOf(client, now),
-  );
-  if (hit?.down) bomberDowned(client.room, hit.down, client.id, hit.cancelled);
-}
-
-/** C2: a bomber is down — everyone sees it go (and its bombs that will no
- * longer drop vanish), its shooter takes a kill, the news heli comes. */
-function bomberDowned(
-  room: Room,
-  down: { r: number; k: number; t: number },
-  by: string | null,
-  off: number[],
-): void {
-  sendToRoom(room, {
-    type: "bomberDown",
-    d: encodeBomberDown(down),
-    by,
-    off,
-  });
-  if (by !== null && room.members.has(by)) {
-    combat.creditKill(by);
-    broadcastScores(room);
-  }
-  const run = roomBombers(room).runs.find((r) => r.id === down.r);
-  if (run) {
-    const at = bomberPoseInto(run, down.k, down.t, blankBomberPose());
-    pendingKillByRoom.set(room.id, { x: at.x, z: at.z });
-  }
+  if (hit?.down) bossDowned(client.room, hit.down, now);
 }
 
 /**
@@ -1484,7 +1468,7 @@ function bomberDowned(
  * death — the boss is not a pilot), then the break-up, the award and the
  * new tallies. The news heli goes to cover the crash.
  */
-function bossDowned(room: Room, down: BossDown): void {
+function bossDowned(room: Room, down: BossDown, now: number): void {
   const ledger = new Map(
     [...roomBoss(room).damageLedger()].filter(([id]) => room.members.has(id)),
   );
@@ -1508,24 +1492,29 @@ function bossDowned(room: Room, down: BossDown): void {
   broadcastScores(room);
   const mid = down.pieces[1];
   if (mid) pendingKillByRoom.set(room.id, { x: mid.p.x, z: mid.p.z });
+  // W1: its planes go down with it.
+  const raid = roomBoss(room).slot.raid;
+  if (raid && raid.id === down.id) {
+    wavesFor(room).carrierDown(raid, now);
+  }
 }
 
 /**
- * A claim on the room's shared bot count (ANGE-6STDNN). The Room seam owns
- * the governance — clamp, whole-number check, per-player rate limit — so a
- * refusal is simply silence here: nothing is broadcast, and the claimant's
- * slider snaps back to the last value the server confirmed.
+ * W1: a claim on the room's enemy intensity (ANGE-6STDNN's governance). The
+ * Room seam owns it — clamp, whole-number check, per-player rate limit — so
+ * a refusal is simply silence here: nothing is broadcast, and the
+ * claimant's control snaps back to the last value the server confirmed.
+ * The waves read it from their next wave on.
  */
-function handleSetBots(client: Client, count: unknown, now: number): void {
-  const accepted = client.room.setBotTarget(client.id, count, now);
+function handleSetIntensity(client: Client, level: unknown, now: number): void {
+  const accepted = client.room.setIntensity(client.id, level, now);
   if (accepted === null) return;
+  wavesFor(client.room).intensity = accepted;
   sendToRoom(client.room, {
-    type: "botsConfig",
-    count: accepted,
+    type: "intensityConfig",
+    level: accepted,
     byName: client.name,
   });
-  // Bots spawn/despawn through the same path a join or a leave uses.
-  syncRoomBots(client.room);
 }
 
 /**
@@ -1565,7 +1554,13 @@ function sendDeath(
   // D4: a wreck's city event comes when it lands, where it lands. X1: a
   // missile death's blast IS the missile's own event — never a second one
   // (D5: nor a gas main's).
-  if (!wreck && death.cause !== "missile" && death.cause !== "blast") {
+  // W1: nor a plane going down with its carrier (its break-up is the event).
+  if (
+    !wreck &&
+    death.cause !== "missile" &&
+    death.cause !== "blast" &&
+    death.cause !== "carrier"
+  ) {
     offerCityEvent(room, "death", death.victimId, now);
   }
   creditMedals(room, death, now);
@@ -1573,6 +1568,8 @@ function sendDeath(
   botsByRoom
     .get(room.id)
     ?.noteDeath(death.victimId, death.killerId, death.cause);
+  // W1: an enemy plane down (the "enemy downed by X" hook fires here).
+  wavesByRoom.get(room.id)?.downed(death, now);
   broadcastScores(room);
 }
 
@@ -1660,8 +1657,10 @@ function handleCrash(
   sendDeath(client.room, death, now);
 }
 
-/** Kill-cams that just ended: place each player (human or bot) near, not
- * in front of, living enemies, reset their on-record pose, and announce the respawn. */
+/** Kill-cams that just ended: place each player near, not in front of,
+ * living enemies, reset their on-record pose, and announce the respawn.
+ * W1: an enemy plane's "respawn" is its release off the carrier's rig —
+ * or, shot down or with its carrier gone, its exit from the room. */
 function issueRespawns(due: string[], now: number): void {
   for (const id of due) {
     const room = rooms.roomOf(id);
@@ -1669,33 +1668,10 @@ function issueRespawns(due: string[], now: number): void {
     const enemies = livingEnemies(room, id);
     let spawn: SpawnState;
     if (room.members.get(id)?.isBot) {
-      // Bots respawn down in a street (B1); humans keep the high spawn.
-      const bots = botsFor(room);
-      // S9: ...unless the boss carrier is launching this one.
-      const boss = roomBoss(room);
-      const launch = boss.launchOf(id);
-      const raid = boss.slot.raid;
-      if (launch) {
-        const release = launchReleaseAt(launch);
-        // Planned to release on the respawn time: at most a tick to wait.
-        if (now < release && boss.activeRaid(now)) continue;
-        boss.released(id);
-      }
-      if (launch && raid?.id === launch.raid && boss.activeRaid(now)) {
-        const sp = launchSpawnAt(raid, launch);
-        spawn = { pos: sp.pos, yaw: sp.yaw, speed: sp.speed };
-        combat.respawned(id, now);
-        bots.respawn(id, spawn, {
-          pitch: sp.pitch,
-          until: now + (LAUNCH_GRACE_MS[launch.kind] as number),
-        });
-      } else {
-        spawn = pickBotRespawn(enemies, (pos, yaw) =>
-          bots.spawnClear(pos, yaw, now),
-        );
-        combat.respawned(id, now);
-        bots.respawn(id, spawn);
-      }
+      const released = wavesFor(room).release(id, now);
+      // Still on the rig (at most a tick), or despawned: nothing to say.
+      if (!released || released === "wait") continue;
+      spawn = released;
     } else {
       spawn = pickRespawn(
         enemies,
@@ -1780,24 +1756,13 @@ function settleAway(client: Client, now: number): void {
  * the same broadcasts human fire produces. */
 function tickRoomBots(room: Room, now: number): void {
   const bots = botsFor(room);
-  const contacts: BotContact[] = [];
+  // W1: the enemies hunt humans — the humans in the air are their only
+  // contacts (never each other, never their own carrier's weak points).
+  const contacts = humanContacts(waveHumans(room, now, false));
+  // B3: a hurt bot breaks off and comes back after regen — its own HP, now
+  // that it is not on its own contact list.
   for (const member of room.members.values()) {
-    const pose = memberPose(room, member.id);
-    if (!pose) continue;
-    contacts.push({
-      id: member.id,
-      pos: pose.pos,
-      vel: member.isBot
-        ? (bots.contactOf(member.id)?.vel ?? { x: 0, y: 0, z: 0 })
-        : poseVelocity(pose),
-      prot: combat.isProtected(member.id, now),
-      // B3: a hurt bot breaks off and comes back after regen.
-      hp: combat.hpOf(member.id),
-    });
-  }
-  // S4: the sky boss's live weak points are contacts too — bots engage it.
-  for (const c of roomBoss(room).contacts(now)) {
-    contacts.push({ ...c, prot: false, boss: true });
+    if (member.isBot) bots.setHp(member.id, combat.hpOf(member.id));
   }
   // B3: the timed hazards every client has already been told about — X1
   // missiles from their launch, S4 flak from its firing — for the bots to
@@ -1843,13 +1808,6 @@ function tickRoomBots(room: Room, now: number): void {
   // Rounds that landed this tick first (they were swept before anyone
   // moved), then this tick's fresh trigger pulls go into the air.
   for (const round of hits) {
-    if (bossContactIndex(round.shot.targetId) >= 0) {
-      // S4: a weak point — judged on the round's line like a player's claim.
-      const boss = roomBoss(room);
-      const hit = landBotBossRound(combat, boss, round, now, bossWorld(room));
-      if (hit?.down) bossDowned(room, hit.down);
-      continue;
-    }
     routeBotHit(room, bots, landBotRound(combat, round, now), round.shot, now);
   }
 
@@ -1955,35 +1913,29 @@ function tickMissiles(room: Room, now: number): void {
 }
 
 /**
- * S4 sky boss for one room tick: the schedule (a raid only starts with a
- * human in the room), the turrets' shells, the bursts due — flak damage
- * through Combat like a missile's, a kill falling as a D4 wreck — and the
- * falling sections that hit: D2 chunk damage (when breakable) credited to
- * the top dealer for D3, and the city's death reaction where each lands.
- * Then the tick's HP change, once.
+ * S4/W1 the carrier for one room tick: the schedule (a carrier only comes
+ * while a human is flying and the war is on), the turrets' shells at the
+ * humans, the bursts due — flak damage through Combat like a missile's, a
+ * kill falling as a D4 wreck — and the falling sections that hit: D2 chunk
+ * damage (when breakable) credited to the top dealer for D3, and the
+ * city's death reaction where each lands. Then the tick's HP change, once,
+ * and the carrier's waves.
  */
 function tickBoss(room: Room, now: number): void {
   const boss = roomBoss(room);
-  const planes: BossPlane[] = [];
-  for (const member of room.members.values()) {
-    const pose = memberPose(room, member.id);
-    if (!pose) continue;
-    const age = poseAgeOf(member.id, now) / 1000;
-    const v = velocityOf(room, member.id, pose);
-    planes.push({
-      id: member.id,
-      pos: canonicalize({
-        x: pose.pos.x + v.x * age,
-        y: pose.pos.y + v.y * age,
-        z: pose.pos.z + v.z * age,
-      }),
-      vel: v,
-      prot: combat.isProtected(member.id, now),
-    });
-  }
+  const humans = waveHumans(room, now);
+  // W1: its turrets shoot at the humans only — never its own planes.
+  const planes: BossPlane[] = humans.map((h) => ({
+    id: h.id,
+    pos: h.pos,
+    vel: h.vel,
+    prot: h.prot,
+  }));
   const result = boss.tick(
     now,
-    !quiet(room), // D6: no raid in a quiet city (FL1: nor a calm lab)
+    // D6: no carrier in a quiet city (FL1: nor a calm lab; W1: nor with the
+    // war off).
+    carrierOn(room) && flyingHumanIn(room),
     planes,
     bossWorld(room),
   );
@@ -2028,36 +1980,11 @@ function tickBoss(room: Room, now: number): void {
       if (event) sendToRoom(room, { type: "cityEvent", event });
     }
   }
-  // S9: a bot whose kill-cam is about to end comes back from the carrier —
-  // its launch timed to release on its respawn time, its release run
-  // cleared like any bot spawn (launchClear).
-  if (boss.activeRaid(now)) {
-    const bots = botsFor(room);
-    for (const member of room.members.values()) {
-      if (!member.isBot || combat.isAlive(member.id)) continue;
-      const respawnAt = combat.respawnAtOf(member.id);
-      if (!(respawnAt - now <= Math.max(...LAUNCH_SEQ_MS))) continue;
-      const l = boss.planLaunch(member.id, respawnAt, now, (raid, l) => {
-        const sp = launchSpawnAt(raid, l);
-        return bots.launchClear(
-          { pos: sp.pos, yaw: sp.yaw, speed: sp.speed },
-          sp.pitch,
-          LAUNCH_GRACE_MS[l.kind] as number,
-          launchReleaseAt(l),
-        );
-      });
-      if (l) {
-        sendToRoom(room, {
-          type: "bossLaunch",
-          l: encodeLaunch(l),
-          bot: member.id,
-        });
-      }
-    }
-  }
   if (boss.takeHpChanged() && boss.slot.raid) {
     sendToRoom(room, { type: "bossHp", id: boss.slot.raid.id, hp: boss.hp });
   }
+  // W1: the carrier's waves — after it, so a launch sees this tick's carrier.
+  wavesFor(room).tick(now, wavesOn(room), humans);
 }
 
 /**
@@ -2181,9 +2108,8 @@ function tickRebuilds(room: Room, now: number): void {
 
 /**
  * C2 chaos for one room tick — only while a human is in the room, like all
- * destruction (see breakable): meteors launched (as `missile`), bomber runs
- * (one `bombers` each, every bomb in it), bombs called off, quakes warned,
- * and the tick's fires batch. What quakes and fire break rides the tick's
+ * destruction (see breakable): meteors launched (as `missile`), quakes
+ * warned, and the tick's fires batch. What quakes and fire break rides the tick's
  * `chunks` batch.
  */
 function tickChaos(room: Room, now: number): void {
@@ -2198,20 +2124,9 @@ function tickChaos(room: Room, now: number): void {
     missiles: rm.director,
     budget,
     index: rm.index,
-    obstacles: craneTops(room.seed),
   });
   for (const m of out.meteors) {
     sendToRoom(room, { type: "missile", m: encodeMissile(m) });
-  }
-  for (const { run, bombs } of out.runs) {
-    sendToRoom(room, {
-      type: "bombers",
-      r: encodeBomberRun(run),
-      b: bombs.map(encodeMissile),
-    });
-  }
-  if (out.bombsOff.length > 0) {
-    sendToRoom(room, { type: "bombsOff", ids: out.bombsOff });
   }
   for (const q of out.quakes) {
     sendToRoom(room, { type: "quake", q: encodeQuake(q) });
@@ -2259,24 +2174,6 @@ function tickCaveIns(room: Room, now: number): void {
   const out = director.tick(now, chaosPlanes(room, now), budgetFor(room));
   for (const e of out) sendToRoom(room, { type: "caveIn", c: encodeCaveIn(e) });
 }
-
-/** C2: what a bomber line must clear besides roofs — the crane hubs. */
-const craneTopsBySeed = new Map<
-  number,
-  { x: number; z: number; top: number }[]
->();
-const craneTops = (seed: number) => {
-  let tops = craneTopsBySeed.get(seed);
-  if (!tops) {
-    tops = moversFor(seed).cranes.map((c) => ({
-      x: c.x,
-      z: c.z,
-      top: c.hubY + 3,
-    }));
-    craneTopsBySeed.set(seed, tops);
-  }
-  return tops;
-};
 
 /**
  * D5: a gas main blew: the city's blast reaction (`gas` city event — fire,
@@ -2340,6 +2237,7 @@ const server = createServer((req, res) => {
       JSON.stringify({
         rooms: rooms.rooms.map((r) => r.id),
         botsByRoom: [...botsByRoom.keys()],
+        wavesByRoom: [...wavesByRoom.keys()],
         cityEvents: cityEvents.roomIds(),
         roomMoversById: [...roomMoversById.keys()],
         pendingKillByRoom: [...pendingKillByRoom.keys()],
@@ -2427,7 +2325,9 @@ wss.on("connection", (ws) => {
     } else if (client.away) {
       // Away (W2): the plane is out of the world — its pose, shots, hit
       // claims, crashes and boost edges don't exist until it returns.
-      if (msg.type === "setBots") handleSetBots(client, msg.count, now);
+      if (msg.type === "setIntensity") {
+        handleSetIntensity(client, msg.level, now);
+      }
     } else if (msg.type === "pose") {
       if (!isPose(msg.pose)) return;
       if (client.pending) goLive(client, now);
@@ -2442,15 +2342,17 @@ wss.on("connection", (ws) => {
       if (!client.pending) handleHitClaim(client, msg, now);
     } else if (msg.type === "bossHit") {
       if (!client.pending) handleBossHit(client, msg, now);
-    } else if (msg.type === "bomberHit") {
-      if (!client.pending) handleBomberHit(client, msg, now);
     } else if (msg.type === "crash") {
       handleCrash(client, msg.t, msg.wreck, now);
-    } else if (msg.type === "setBots") {
-      handleSetBots(client, msg.count, now);
+    } else if (msg.type === "setIntensity") {
+      handleSetIntensity(client, msg.level, now);
     } else if (msg.type === "lab") {
       // FL1: ignored outside a lab room (applyLab refuses); newest wins.
-      client.room.applyLab({ tuning: msg.tuning, chaos: msg.chaos });
+      client.room.applyLab({
+        tuning: msg.tuning,
+        chaos: msg.chaos,
+        waves: msg.waves,
+      });
     }
   };
 
@@ -2608,10 +2510,6 @@ scheduleTick();
 
 // S3: generate (and log) the city's stunt courses before the first join.
 courseSetFor(CITY_SEED);
-
-// The standing arena: bots fly the first room even before anyone joins, so
-// the first joiner drops into a live dogfight instead of an empty sky.
-syncRoomBots(rooms.ensureRoom());
 
 // --- Liveness: joined clients stream at TICK_UP_HZ; prolonged silence = gone ---
 // A pending client (W1) is booting and may legitimately be silent for

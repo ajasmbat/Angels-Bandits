@@ -1,6 +1,6 @@
 // FL1 Flight Lab — the controller main.ts drives while it sits in a lab
-// room (the server's solo room: no bots, no boss, no chaos unless toggled,
-// validation against this room's own tuning). It owns the panel and the
+// room (the server's solo room: no enemy waves, no carrier, no chaos unless
+// toggled, validation against this room's own tuning). It owns the panel and the
 // telemetry strip, the five test routes (their rings, their client-side
 // timing, the checkpoints a crash respawns at) and the target drone, and it
 // keeps the room's server-side copy of the tuning current. main.ts keeps
@@ -48,8 +48,6 @@ const AIM_GOAL_MS = 5000;
 /** Lab tuning reaches the server at most this often, ms (trailing edge, so
  * a drag's last value always lands). */
 const SYNC_MS = 150;
-/** Bots the "Bots" toggle asks the room for. */
-const LAB_BOTS = 6;
 
 /** What the lab needs from main.ts. */
 export interface LabDeps {
@@ -61,8 +59,7 @@ export interface LabDeps {
   teleport(pos: Vec3, yaw: number, pitch: number): void;
   /** The tuning changed: re-read anything derived from it (feel, assist). */
   onTuning(): void;
-  sendLab(msg: { tuning?: unknown; chaos?: boolean }): void;
-  setBots(count: number): void;
+  sendLab(msg: { tuning?: unknown; chaos?: boolean; waves?: boolean }): void;
 }
 
 interface Checkpoint {
@@ -117,7 +114,8 @@ export class FlightLab {
         onChange: () => this.tuningChanged(),
         onRoute: (id) => this.pickRoute(id as LabRouteId),
         onToggle: (name, on) => {
-          if (name === "bots") deps.setBots(on ? LAB_BOTS : 0);
+          // W1: the carrier and its enemy waves, or the chaos.
+          if (name === "waves") deps.sendLab({ waves: on });
           else deps.sendLab({ chaos: on });
         },
         onRespawn: () => this.respawnAtStart(),

@@ -25,7 +25,6 @@ import {
   raidEnd,
   raidMaxHp,
 } from "@angels-bandits/common/boss";
-import { runEnd } from "@angels-bandits/common/chaos";
 import {
   type Building,
   chunkBuilding,
@@ -142,7 +141,6 @@ import { NEAR_MISS_RADIUS, closestApproach, spatialize } from "./audio/spatial";
 import { ThunderSchedule } from "./audio/thunder";
 import { TrainAudio } from "./audio/train-audio";
 import { createAutoFire, stepAutoFire } from "./game/auto-fire";
-import { bomberBulletHit } from "./game/bomber-hits";
 import { BoostKey } from "./game/boost-key";
 import { bossBulletHit } from "./game/boss-hits";
 import {
@@ -297,7 +295,6 @@ import { Airliners } from "./render/airliners";
 import { archetypeFor } from "./render/archetypes";
 import { AtmosphereFx } from "./render/atmosphere-fx";
 import { Birds } from "./render/birds";
-import { BomberRenderer } from "./render/bombers";
 import { BossRenderer } from "./render/boss";
 import { CaveInRenderer } from "./render/caveins";
 import { CityRenderer } from "./render/city";
@@ -450,13 +447,13 @@ import { Tracers } from "./render/tracers";
 import { Traffic } from "./render/traffic";
 import { PlaneTrails } from "./render/trails";
 import { TrainRenderer } from "./render/train";
+import { TunnelShafts } from "./render/tunnel-shafts";
 import { TunnelRenderer } from "./render/tunnels";
 import { UndergroundLife } from "./render/underground";
 import { WeatherClock, setWeatherUniform } from "./render/weather";
 import { buildingSeed, isWindowLit } from "./render/window-pattern";
 import { nearestImage, nearestImageInto } from "./render/wrapPlacement";
 import { Wrecks } from "./render/wrecks";
-import { BotBar } from "./ui/botbar";
 import { Coach, renderPrimer } from "./ui/coach";
 import { CommsTicker } from "./ui/comms";
 import { CourseBoard } from "./ui/course-board";
@@ -465,6 +462,7 @@ import { initFullscreenUi } from "./ui/fullscreen";
 import { Haptics } from "./ui/haptics";
 import { HPBAR_ALTITUDE, HpBarSprite, HpBarTracker } from "./ui/hpbar";
 import { Hud, deathLabel } from "./ui/hud";
+import { IntensityBar, intensityName } from "./ui/intensity";
 import {
   closeJoin,
   initLabLink,
@@ -918,8 +916,6 @@ const moverField = {
   // S4: and the room's sky boss — the socket's slot, kept from every welcome
   // and message, so the zeppelin is solid exactly where it is drawn.
   boss: socket.boss,
-  // C2: and its bomber formations, the same way.
-  bombers: socket.bombers,
   // U6: and its cave-ins — the falling rock and rubble in the bores.
   caveins: socket.caveIns,
   // D9: and its props (bound just below): felled tanks, jumbotrons and
@@ -1074,6 +1070,10 @@ scene.add(tunnels.group);
 // bore; added before prewarm so its programs compile at boot.
 const underground = new UndergroundLife();
 scene.add(underground.group);
+// U7: soft light shafts under the bores' crown lamps and grates (one
+// additive draw; MOBILE drops it), added before prewarm like the rest.
+const tunnelShafts = new TunnelShafts();
+scene.add(tunnelShafts.mesh);
 /** U6 QA (`__ab.qaCaveIn`): staged cave-ins are numbered from here, far
  * above any the server hands out. */
 const QA_CAVEIN_BASE = 900_000_000;
@@ -1104,7 +1104,8 @@ reflections.tag(jumbotrons.mesh);
 reflections.tag(ground.mesh);
 // L10 drone show: points in the shared MoverLights cloud (zero draw calls).
 const droneShow = new DroneShowRenderer(welcome.seed);
-const birds = new Birds(welcome.seed);
+// DT2: plus a flock wheeling round each of the four tallest towers.
+const birds = new Birds(welcome.seed, city.cityBuildings);
 scene.add(birds.points);
 /** L9: planes the flocks react to, refilled per frame (no per-frame array). */
 const birdPlanes: Vec3[] = [];
@@ -1288,20 +1289,11 @@ const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 /** P3: last frame's attitude, for the aero whoosh's upright → inverted edge. */
 let wasInverted = false;
 /** C2: whistles sounding at once, at most (a bomb carpet must not become a
- * wall of sine), and how far a bomb's whistle carries, m. */
+ * wall of sine), and how far a bomb's whistle carries, m — kept for the
+ * enemy planes' bombs (ANGE-GWM8VE). */
 const WHISTLE_VOICES = 3;
 const BOMB_WHISTLE_M = 350;
 const whistleEnds: number[] = [];
-// C2 bomber formations (the socket's slot, render clock — drawn == collided)
-// and the spreading fires (the socket's burning chunks, into the D1 pool).
-const bomberRenderer = new BomberRenderer(impacts, (at) => {
-  const t = performance.now();
-  explosions.explode(at, t);
-  sparks.burst(at, t);
-  audio.missileBlast(at, flight.pos, flight.yaw);
-  missileShake.add(wrapDistance(at, flight.pos), t);
-});
-scene.add(bomberRenderer.group);
 // U6 cave-ins: the room's falling rock and rubble in the bores (one
 // InstancedMesh on the render clock — drawn == collided), their dust in the
 // D1 pool. The rumble swells from the announce through the warning to the
@@ -1783,11 +1775,11 @@ const scoreboard = new Scoreboard(socket.selfId, window, !labMode);
 scoreboard.setRoster(welcome.roster);
 scoreboard.setScores(welcome.scores);
 showOwnScore(welcome.scores);
-// The room's shared bot count (ANGE-6STDNN): seeded from the welcome so a
-// late joiner's bar opens where the room already is.
-const botBar = new BotBar(welcome.botTarget);
-botBar.onClaim = (count) => socket.sendSetBots(count);
-scoreboard.bindBotBar(botBar);
+// W1: the room's shared enemy intensity (ANGE-6STDNN's governance): seeded
+// from the welcome so a late joiner's bar opens where the room already is.
+const intensityBar = new IntensityBar(welcome.intensity);
+intensityBar.onClaim = (level) => socket.sendSetIntensity(level);
+scoreboard.bindIntensity(intensityBar);
 // M2: no Tab key on a phone — a minimap tap pins the scoreboard (touch only).
 scoreboard.bindTapToggle(document.getElementById("minimap") as HTMLElement);
 // U3: first-life hints, the touch coach marks and the storm notice. Starts
@@ -2215,11 +2207,13 @@ socket.events.onPlayerJoined = (player) => {
   });
   remotes.playerJoined(player);
   scoreboard.playerJoined(player);
-  say(checkInCallout(player.name, player.isBot ?? false));
+  // W1: enemy planes come and go with every wave — the carrier's launch
+  // call covers them; only pilots check in.
+  if (!player.isBot) say(checkInCallout(player.name, false));
   refreshLeader(); // a bot's callsign label needs its roster entry
 };
 socket.events.onPlayerLeft = (id) => {
-  say(offStationCallout(nameOf(id), isBotOf(id)));
+  if (!isBotOf(id)) say(offStationCallout(nameOf(id), false));
   remotes.playerLeft(id);
   scoreboard.playerLeft(id);
   players.delete(id);
@@ -2293,6 +2287,13 @@ socket.events.onDeath = (msg) => {
         true,
       );
     }
+  }
+  // W1: a whole wave going down with its carrier is one spectacle, not a
+  // line per plane: the bangs, and nothing on the feed, screens or radio.
+  if (msg.cause === "carrier") {
+    hpBar.clear(msg.victimId);
+    remotes.setDead(msg.victimId);
+    return;
   }
   // S1: the city's screens. The tallies held here are the pre-death ones
   // (the server sends each death before its scores), the same on every
@@ -2466,7 +2467,7 @@ socket.events.onAwayStarted = () => {
 /**
  * W2: back as the same player after a dropped socket. The room moved on
  * meanwhile: reconcile who is here (silently — the radio already heard
- * nothing of the gap), take the server's scores and bot count, and fly the
+ * nothing of the gap), take the server's scores and enemy intensity, and fly the
  * fresh spawn, since the session restarted server-side. City events and the
  * news heli belong to the room, so they are re-seeded only if it changed.
  */
@@ -2491,7 +2492,7 @@ function applyResume(w: WelcomeMsg): void {
   scoreboard.setScores(w.scores);
   applyCourseStandings(w.courses); // S3: boards moved on meanwhile
   showOwnScore(w.scores);
-  botBar.resync(w.botTarget);
+  intensityBar.resync(w.intensity);
   currentRoomId = w.roomId;
   // A2: same room or not — the drop was long enough for these to move on.
   refreshResumedWorld(w, {
@@ -2525,14 +2526,14 @@ socket.events.onScores = (scores) => {
   scoreboard.setScores(scores);
   showOwnScore(scores);
 };
-socket.events.onBotsConfig = (msg) => {
+socket.events.onIntensityConfig = (msg) => {
   // The server is the only authority on this value — including for the
   // player who just dragged, whose bar has been showing a preview.
-  botBar.applyServer(msg.count, msg.byName);
-  scoreboard.refreshBotBar();
+  intensityBar.applyServer(msg.level, msg.byName);
+  scoreboard.refreshIntensity();
   // Ticker only, never the voice: byName is free text, and the radio's
   // name guard (game/callouts.ts) exists precisely to keep it out of TTS.
-  comms.add("NET", `${msg.byName} set bots to ${msg.count}`);
+  comms.add("NET", `${msg.byName} set enemies to ${intensityName(msg.level)}`);
 };
 
 // --- Perf instrumentation (P1) ---
@@ -2607,7 +2608,6 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
     QUALITY_PROFILES[tier].missileDebris,
     QUALITY_PROFILES[tier].chaosFx, // C2: meteor fire trails
   );
-  bomberRenderer.setQuality(QUALITY_PROFILES[tier].chaosFx); // C2
   fireRenderer.setQuality(QUALITY_PROFILES[tier].chaosFx); // C2
   propsRenderer.setShare(QUALITY_PROFILES[tier].chaosFx); // D9
   scarsRenderer.setShare(QUALITY_PROFILES[tier].chaosFx); // D9
@@ -2643,6 +2643,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   courseGhost.setQuality(tier); // S3: MOBILE keeps the rings, drops the ghost
   atmosphere.setQuality(tier); // S5
   tunnels.setQuality(tier); // U4: MOBILE drops the fixtures
+  tunnelShafts.setQuality(tier); // U7: and the shafts
   fleet?.setQuality(tier); // P4: MOBILE drops the glass and scarf
   underground.setQuality(tier); // U5: bands thin to the core
   reflections.setQuality(tier); // S6: faces per frame; Mobile off
@@ -2885,8 +2886,6 @@ declare global {
         values: Settings;
         gains: { master: number; voice: number; music: number } | null;
       };
-      /** Claim the room's shared bot count (QA: 0 makes a scene reproducible). */
-      setBots: (count: number) => void;
       net: () => {
         selfId: string;
         roomId: string;
@@ -3043,16 +3042,12 @@ declare global {
         ghost: boolean;
         ghostDrawn: boolean;
       };
-      /** C2 QA: the room's chaos as this client holds it — bomber runs and
-       * downs, quakes, burning chunks, strikes held by kind, and the ships
-       * and fireballs drawn last frame. */
+      /** C2 QA: the room's chaos as this client holds it — quakes, burning
+       * chunks and strikes held by kind. */
       chaos: () => {
-        runs: typeof socket.bombers.runs;
-        downs: typeof socket.bombers.downs;
         quakes: number[];
         fires: number;
         strikes: Record<string, number>;
-        drawn: BomberRenderer["stats"];
         /** The render clock the frame loop last drew at. */
         renderMs: number | null;
         /** P4: a staged chaos scene holds the slots (null: none), what of
@@ -3060,7 +3055,6 @@ declare global {
         staged: {
           strikes: number;
           inAir: ReturnType<typeof qaStrikesInAir>;
-          run: boolean;
           quake: boolean;
           fires: number;
           foreign: number;
@@ -3069,10 +3063,10 @@ declare global {
         missilesDrawn: MissileRenderer["stats"];
         /** P4: C2 chaos messages the server has sent this session. */
         serverChaos: number;
-        /** A2: each held run's and quake's id and the server time the
+        /** A2: each held quake's id and the server time the
          * client lets it go (soak parity compares what is live at one
          * instant — pruning is per frame). */
-        held: { runs: [number, number][]; quakes: [number, number][] };
+        held: { quakes: [number, number][] };
       };
       /** P4: the world clock the frame loop last drew at (null: none yet). */
       renderMs: () => number | null;
@@ -3125,7 +3119,6 @@ declare global {
        * world clock (game/qa-chaos.ts); null clears it. */
       qaChaos: (spec: QaChaosSpec | null) => {
         strikes: number;
-        run: boolean;
         quake: boolean;
         fires: number;
       } | null;
@@ -3536,6 +3529,12 @@ function qaSystems(): {
     ["nature", [natureRenderer.group]],
     ["river", [river.group]],
     ["tunnels", [tunnels.group]],
+    ["tunnelShafts", [tunnelShafts.mesh]], // U7
+    // U7: U5's four draws, one by one (flicker --ablate attributes them).
+    ["undergroundDecor", [underground.decor]],
+    ["undergroundVeil", [underground.veil]],
+    ["undergroundMotes", [underground.motes]],
+    ["undergroundCritters", [underground.critters]],
     ["fountains", [fountains.points]],
     ["searchlights", [searchlights.mesh]],
     ["jumbotrons", [jumbotrons.mesh]],
@@ -3564,7 +3563,6 @@ function qaSystems(): {
     ["wrecks", [wrecks.group]],
     ["missiles", [missileRenderer.group]],
     ["boss", [bossRenderer.group]],
-    ["bombers", [bomberRenderer.group]],
     ["reactions", [reactor.points]],
     ["storm", [storm.group, storm.flashLight]],
     ["clouds", [clouds.group]],
@@ -3798,7 +3796,6 @@ window.__ab = {
     values: settingsPanel.current(),
     gains: audio.busGains(),
   }),
-  setBots: (count) => socket.sendSetBots(count),
   net: () => ({
     selfId: socket.selfId,
     roomId: currentRoomId,
@@ -4026,12 +4023,9 @@ window.__ab = {
       strikes[m.kind] = (strikes[m.kind] ?? 0) + 1;
     }
     return {
-      runs: [...socket.bombers.runs],
-      downs: [...socket.bombers.downs],
       quakes: [...socket.quakes.keys()],
       fires: socket.fires.size,
       strikes,
-      drawn: bomberRenderer.stats,
       renderMs: lastRenderMs,
       staged:
         qaChaos === null
@@ -4039,7 +4033,6 @@ window.__ab = {
           : {
               strikes: qaChaos.strikes.length,
               inAir: qaStrikesInAir(socket.missiles, lastRenderMs ?? 0),
-              run: qaChaos.run !== null,
               quake:
                 qaChaos.quake !== null && socket.quakes.has(qaChaos.quake.id),
               fires: qaChaos.fires.length,
@@ -4048,11 +4041,6 @@ window.__ab = {
       missilesDrawn: missileRenderer.stats,
       serverChaos: socket.serverChaos,
       held: {
-        // socket.pruneChaos keeps a run its 5 s tail, as the server does.
-        runs: socket.bombers.runs.map((r): [number, number] => [
-          r.id,
-          runEnd(r) + 5000,
-        ]),
         quakes: [...socket.quakes.values()].map((q): [number, number] => [
           q.id,
           q.t + q.dur,
@@ -4110,7 +4098,7 @@ window.__ab = {
       : null,
   planeShowcase: (list) => setShowcase(list),
   // P4 QA: stage C2's chaos around a held view on the world clock — a
-  // missile schedule, meteors, a bomber run, a quake, fires; null clears it.
+  // missile schedule, meteors, a quake, fires; null clears it.
   qaChaos: (spec) => {
     if (qaChaos !== null) {
       clearQaChaos(qaChaos, socket);
@@ -4120,7 +4108,6 @@ window.__ab = {
     qaChaos = stageChaos(spec, city.cityIndex, city.cityBuildings);
     return {
       strikes: qaChaos.strikes.length,
-      run: qaChaos.run !== null,
       quake: qaChaos.quake !== null,
       fires: qaChaos.fires.length,
     };
@@ -4609,7 +4596,6 @@ const lab: FlightLab | null = labMode
         cornerCap = Math.min(cornerCap, tuning.maxSpeed);
       },
       sendLab: (msg) => socket.sendLab(msg),
-      setBots: (count) => socket.sendSetBots(count),
     })
   : null;
 // The room's copy of the tuning starts at the defaults: hand it ours.
@@ -5282,33 +5268,7 @@ const frame = (now: number): void => {
         continue;
       }
     }
-    // C2: the bombers. Any round stops on a ship; our own claim it.
-    if (socket.bombers.runs.length > 0) {
-      const onBomber = bomberBulletHit(
-        socket.bombers,
-        bullet.prev,
-        bullet.pos,
-        renderMs,
-      );
-      if (onBomber) {
-        bullets.remove(bullet);
-        sparks.burst(onBomber.at, now);
-        if (!bullet.cosmetic && renderMs !== null) {
-          socket.sendBomberHit(
-            onBomber.run,
-            onBomber.k,
-            bullet.origin,
-            onBomber.dir,
-            bullet.seq,
-            renderMs,
-          );
-          hud.hitMarker(now);
-          haptics.hit(now);
-          audio.hitThunk();
-        }
-        continue;
-      }
-    }
+
     if (bullet.cosmetic) {
       if (wall) strikeCity(bullet, now);
       // An enemy bullet shaving past this frame → panned near-miss whoosh.
@@ -5539,7 +5499,8 @@ const frame = (now: number): void => {
   constructionSparks.update(chase.position, renderMs ?? now, microK);
   ground.update(chase.position);
   river.update(chase.position, renderMs, now); // L11
-  tunnels.update(chase.position); // U4
+  tunnels.update(chase.position); // U4 (U7: and the bores' air)
+  tunnelShafts.update(chase.position); // U7
   // U5 — U6: the bats stir for our own plane, where it is drawn.
   underground.update(
     chase.position,
@@ -5636,8 +5597,6 @@ const frame = (now: number): void => {
     }
     qaFlakDue(qaBoss, renderMs, socket.flak);
   }
-  // C2: the bomber formations and the fires.
-  bomberRenderer.update(socket.bombers, chase.position, renderMs, now);
   // U6: the cave-ins, and the bores' lamps flickering over a warned one.
   caveInRenderer.update(
     socket.caveIns,
@@ -5647,6 +5606,7 @@ const frame = (now: number): void => {
     now,
   );
   underground.setCaveIns(socket.caveIns.list, chase.position, renderMs);
+  // C2: the fires.
   fireRenderer.update(socket.fires, chase.position, now);
   // D9: the props — fallen spans opened on the render clock (the river,
   // the road paint, traffic and city life), wrecks, fallers and scars.
@@ -5679,6 +5639,8 @@ const frame = (now: number): void => {
     renderMs !== null &&
     bossPresent(socket.boss, renderMs);
   hud.setBoss(bossUp ? socket.bossHp : null, bossMax, now);
+  // W1: the carrier war — its tier, the wave, the enemies left, the banner.
+  hud.setWaves(socket.waves, now);
   if (
     bossRaid &&
     renderMs !== null &&

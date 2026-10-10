@@ -149,6 +149,34 @@ const pushTo = (map: Map<number, number[]>, key: number, v: number): void => {
   else map.set(key, [v]);
 };
 
+/** DT2 distance LOD: a part with aFade > 0 folds into its own base (the
+ * unit shape's y = 0 pivot, before the instance matrix moves it to its
+ * torus image) between 0.7× and 1× aFade of camera distance. aFade = 0 —
+ * every solid body and every pre-DT2 part — is never touched, so what is
+ * drawn still equals what collides on every tier. */
+const ROOF_FADE_PARS = /* glsl */ `#include <common>
+attribute float aFade;
+`;
+const ROOF_FADE_VERTEX = /* glsl */ `#include <begin_vertex>
+#ifdef USE_INSTANCING
+if (aFade > 0.0) {
+  float rcDist = distance((modelMatrix * vec4(instanceMatrix[3].xyz, 1.0)).xyz, cameraPosition);
+  transformed *= 1.0 - smoothstep(aFade * 0.7, aFade, rcDist);
+}
+#endif
+`;
+
+/** Patch a roof batch material with the aFade fold (unique program key). */
+function withRoofFade<M extends THREE.Material>(m: M, key: string): M {
+  m.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", ROOF_FADE_PARS)
+      .replace("#include <begin_vertex>", ROOF_FADE_VERTEX);
+  };
+  m.customProgramCacheKey = () => key;
+  return m;
+}
+
 /**
  * One instanced batch of roof parts. Each part's rotation × scale is
  * composed ONCE here into a per-instance base matrix; the frame loop only
@@ -192,7 +220,16 @@ class PartBatch {
     this.slot = Int32Array.from(sortedTags, (t) => t.slot);
     this.structure = sorted.map((p) => p.structure);
     sortedTags.forEach((t, i) => pushTo(this.byOwner, t.owner, i));
-    this.mesh = new THREE.InstancedMesh(geometry, material, sorted.length);
+    // DT2: each batch owns its geometry so it can carry its own aFade.
+    const own = geometry.clone();
+    own.setAttribute(
+      "aFade",
+      new THREE.InstancedBufferAttribute(
+        Float32Array.from(sorted, (p) => p.fade),
+        1,
+      ),
+    );
+    this.mesh = new THREE.InstancedMesh(own, material, sorted.length);
     this.base = new Float32Array(sorted.length * 16);
     this.ys = new Float32Array(sorted.length);
     const yaw = new THREE.Matrix4();
@@ -338,13 +375,22 @@ export class RoofClutterRenderer {
     // the roof (same idiom as the city's unit box).
     const boxGeometry = new THREE.BoxGeometry(1, 1, 1);
     boxGeometry.translate(0, 0.5, 0);
-    this.boxes = new PartBatch(boxGeometry, dark, boxParts, this.hidden);
+    // DT2: boxes and cylinders share one faded twin of `dark` (the masts
+    // keep `dark` itself — their geometry carries no aFade).
+    const faded = withRoofFade(
+      new THREE.MeshStandardMaterial({
+        color: CLUTTER_MATERIAL_COLOR,
+        roughness: 1,
+      }),
+      "dt2-roof-fade-standard",
+    );
+    this.boxes = new PartBatch(boxGeometry, faded, boxParts, this.hidden);
     // Twelve sides: a round tank's flats sit within 3.5 % of its collider.
     const cylinderGeometry = new THREE.CylinderGeometry(1, 1, 1, 12);
     cylinderGeometry.translate(0, 0.5, 0);
     this.cylinders = new PartBatch(
       cylinderGeometry,
-      dark,
+      faded,
       cylinderParts,
       this.hidden,
     );
@@ -352,7 +398,10 @@ export class RoofClutterRenderer {
     // colour (roof-details.ts lifts each to its rung, all under SIGN).
     this.lit = new PartBatch(
       boxGeometry,
-      new THREE.MeshBasicMaterial({ color: 0xffffff }),
+      withRoofFade(
+        new THREE.MeshBasicMaterial({ color: 0xffffff }),
+        "dt2-roof-fade-basic",
+      ),
       litParts,
       this.hidden,
     );

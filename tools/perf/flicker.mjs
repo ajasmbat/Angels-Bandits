@@ -258,6 +258,8 @@ async function startServer(cwd) {
         ...process.env,
         PORT: String(port),
         AB_EPOCH_MS: String(EPOCH_MS),
+        // W1: no carrier war — an empty sky is the only reproducible one.
+        AB_WAVES: "0",
       },
       stdio: "ignore",
     },
@@ -584,7 +586,6 @@ async function measureBuild(
     await page.waitForFunction(() => typeof window.__ab !== "undefined", null, {
       timeout: 120_000,
     });
-    await page.evaluate(() => window.__ab.setBots(0));
     // Hold the plane still right above the scene's eye, so it can neither
     // die nor drift and the city streams around the view; the view itself
     // comes from qaCamera. 330 m: crash-proof (over every roof) and well

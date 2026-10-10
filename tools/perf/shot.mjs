@@ -87,7 +87,8 @@ for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
 async function startServer(port) {
   const proc = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
     cwd: REPO,
-    env: { ...process.env, PORT: String(port) },
+    // W1: no carrier war — an empty sky is the only reproducible one.
+    env: { ...process.env, PORT: String(port), AB_WAVES: "0" },
     stdio: "ignore",
   });
   for (let i = 0; i < 120; i++) {
@@ -114,7 +115,6 @@ async function capture(browser, baseUrl, mode) {
   await page.waitForFunction(() => typeof window.__ab !== "undefined", null, {
     timeout: 60_000,
   });
-  await page.evaluate(() => window.__ab.setBots(0));
   // HUD chrome is DOM, identical in every mode, and sits right where the
   // interesting edges are. Hide it so the crop shows only rendered pixels.
   await page.addStyleTag({

@@ -1,15 +1,18 @@
 // Tab-held scoreboard (PLAN.md UI): name, kills, deaths, sorted by kills.
 // State is whatever the server last said (welcome scores + score events) —
-// the client never counts kills itself.
+// the client never counts kills itself. W1: it lists the PILOTS — the
+// carrier's enemy planes come and go with every wave, and the HUD counts
+// them instead (ui/hud.ts setWaves).
 
-import { BOT_TARGET_MAX } from "@angels-bandits/common/constants";
 import { streakTier } from "@angels-bandits/common/medals";
 import type { RosterEntry, ScoreEntry } from "@angels-bandits/common/protocol";
-import type { BotBar } from "./botbar";
+import { INTENSITY_MAX } from "@angels-bandits/common/waves";
+import { type IntensityBar, intensityName } from "./intensity";
 
-/** Touch (M9): taps on the bot cells this soon after the panel opens are
- * ignored — a double-tap on the minimap must not change the room's bots. */
-const BOT_TAP_GUARD_MS = 300;
+/** Touch (M9): taps on the intensity cells this soon after the panel opens
+ * are ignored — a double-tap on the minimap must not change the room's
+ * enemies. */
+const TAP_GUARD_MS = 300;
 
 interface Row {
   name: string;
@@ -29,14 +32,14 @@ export class Scoreboard {
   ) as HTMLTableSectionElement;
   private readonly rows = new Map<string, Row>();
   private dirty = true;
-  /** Held open while a bot-count drag is in flight: releasing Tab mid-drag
+  /** Held open while an intensity drag is in flight: releasing Tab mid-drag
    * must not yank the surface out from under the pointer. */
   private dragging = false;
   private tabHeld = false;
   /** Touch (M2): there is no Tab key, so a minimap tap pins the panel open
    * until the next tap — see bindTapToggle. */
   private pinned = false;
-  /** performance.now() of the last closed → open (the bot-tap guard). */
+  /** performance.now() of the last closed → open (the tap guard). */
   private openedAt = Number.NEGATIVE_INFINITY;
 
   constructor(
@@ -67,42 +70,43 @@ export class Scoreboard {
   }
 
   /**
-   * Wire the shared bot-count bar (ANGE-6STDNN) to this panel: build its
-   * cells, paint `bar`'s state, and drive drags from pointer events.
+   * Wire the shared enemy-intensity bar (W1; ANGE-6STDNN's slider) to this
+   * panel: build its cells (one per level), paint `bar`'s state, and drive
+   * drags from pointer events.
    */
-  bindBotBar(bar: BotBar, target: Window = window): void {
-    const cells = document.getElementById("bots-cells") as HTMLDivElement;
-    const value = document.getElementById("bots-value") as HTMLSpanElement;
-    const by = document.getElementById("bots-by") as HTMLSpanElement;
-    const max = document.getElementById("bots-max") as HTMLSpanElement;
-    max.textContent = `${BOT_TARGET_MAX}`;
-    cells.setAttribute("aria-valuemax", `${BOT_TARGET_MAX}`);
-    for (let i = 1; i <= BOT_TARGET_MAX; i++) {
+  bindIntensity(bar: IntensityBar, target: Window = window): void {
+    const cells = document.getElementById("intensity-cells") as HTMLDivElement;
+    const value = document.getElementById("intensity-value") as HTMLSpanElement;
+    const by = document.getElementById("intensity-by") as HTMLSpanElement;
+    cells.setAttribute("aria-valuemax", `${INTENSITY_MAX}`);
+    for (let i = 0; i <= INTENSITY_MAX; i++) {
       const cell = document.createElement("div");
       cell.className = "cell";
-      cell.dataset.count = `${i}`;
+      cell.dataset.level = `${i}`;
       cells.append(cell);
     }
 
     const paint = (): void => {
       const shown = bar.displayed;
-      value.textContent = `${shown}`;
+      value.textContent = intensityName(shown);
       cells.setAttribute("aria-valuenow", `${shown}`);
+      cells.setAttribute("aria-valuetext", intensityName(shown));
       for (const cell of cells.querySelectorAll<HTMLDivElement>(".cell")) {
-        cell.classList.toggle("filled", Number(cell.dataset.count) <= shown);
+        cell.classList.toggle("filled", Number(cell.dataset.level) <= shown);
       }
       // Free text from another player: textContent keeps it inert (and the
       // radio voice never receives it — see game/callouts.ts).
       by.textContent = bar.attribution ?? "";
     };
-    this.repaintBots = paint;
+    this.repaintIntensity = paint;
 
-    /** Which notch the pointer is over: the cell it is on, or the nearest
-     * end. Left of the first cell means 0 — the only way to ask for none. */
+    /** Which level the pointer is over: the cell it is on, or the nearest
+     * end. */
     const notchAt = (clientX: number): number => {
       const box = cells.getBoundingClientRect();
       const frac = (clientX - box.left) / box.width;
-      return Math.ceil(Math.min(Math.max(frac, 0), 1) * BOT_TARGET_MAX);
+      const n = INTENSITY_MAX + 1;
+      return Math.min(INTENSITY_MAX, Math.max(0, Math.floor(frac * n)));
     };
 
     // A touch cancelled at touchstart never sends its emulated mousedown /
@@ -111,7 +115,7 @@ export class Scoreboard {
     cells.addEventListener(
       "touchstart",
       (e: TouchEvent) => {
-        if (e.timeStamp - this.openedAt < BOT_TAP_GUARD_MS) e.preventDefault();
+        if (e.timeStamp - this.openedAt < TAP_GUARD_MS) e.preventDefault();
       },
       { passive: false },
     );
@@ -158,12 +162,13 @@ export class Scoreboard {
     });
   }
 
-  /** Repaint the bot bar after a server change; set by bindBotBar. */
-  private repaintBots: (() => void) | null = null;
+  /** Repaint the intensity bar after a server change; set by
+   * bindIntensity. */
+  private repaintIntensity: (() => void) | null = null;
 
-  /** A botsConfig landed (main.ts already applied it to the BotBar). */
-  refreshBotBar(): void {
-    this.repaintBots?.();
+  /** An intensityConfig landed (main.ts already applied it to the bar). */
+  refreshIntensity(): void {
+    this.repaintIntensity?.();
   }
 
   setRoster(roster: RosterEntry[]): void {
@@ -221,14 +226,14 @@ export class Scoreboard {
   }
 
   private render(): void {
-    const sorted = [...this.rows.entries()].sort(
-      ([, a], [, b]) => b.kills - a.kills || a.deaths - b.deaths,
-    );
+    // W1: pilots only — the carrier's planes are the waves' business.
+    const sorted = [...this.rows.entries()]
+      .filter(([, row]) => !row.isBot)
+      .sort(([, a], [, b]) => b.kills - a.kills || a.deaths - b.deaths);
     this.rowsEl.replaceChildren(
       ...sorted.map(([id, row]) => {
         const tr = document.createElement("tr");
         if (id === this.selfId) tr.className = "self";
-        else if (row.isBot) tr.className = "bot";
         // S7: a pilot on a streak glows, brighter per tier.
         const tier = streakTier(row.streak);
         if (tier > 0) {

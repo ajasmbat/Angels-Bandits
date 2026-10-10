@@ -124,15 +124,14 @@ describe("FL1 lab room: the lab message is clamped", () => {
 });
 
 describe("FL1 lab room: room bookkeeping", () => {
-  it("a lab joiner gets a room of their own, alone, with bots off", () => {
+  it("a lab joiner gets a room of their own, alone, with enemy waves off", () => {
     const mgr = new RoomManager();
     const normal = mgr.join("p1", "Pilot 1");
     const lab = mgr.joinLab("l1", "Lab 1");
     expect(lab).not.toBeNull();
     expect(lab?.lab).toBe(true);
     expect(lab?.id).not.toBe(normal.id);
-    expect(lab?.botTarget).toBe(0);
-    expect(lab && mgr.desiredBots(lab)).toBe(0);
+    expect(lab?.labWaves).toBe(false);
     // A second lab joiner never shares it.
     expect(mgr.joinLab("l2", "Lab 2")?.id).not.toBe(lab?.id);
   });
@@ -147,23 +146,6 @@ describe("FL1 lab room: room bookkeeping", () => {
       expect(mgr.join(`p${i}`, `Pilot ${i}`).lab).toBe(false);
     }
     expect(lab?.humanCount).toBe(1);
-  });
-
-  it("the standing (bot-kept-alive) room is never a lab room", () => {
-    const mgr = new RoomManager();
-    const lab = mgr.joinLab("l1", "Lab 1");
-    // The lab was listed first: ensureRoom still makes a normal room.
-    const standing = mgr.ensureRoom();
-    expect(standing.lab).toBe(false);
-    expect(mgr.ensureRoom()).toBe(standing);
-    expect(mgr.desiredBots(standing)).toBeGreaterThan(0);
-    // A lab room its pilot just left winds its bots down to zero.
-    if (lab) {
-      lab.setBotTarget("l1", 5, 0);
-      expect(mgr.desiredBots(lab)).toBe(5);
-      lab.members.delete("l1");
-      expect(mgr.desiredBots(lab)).toBe(0);
-    }
   });
 
   it(`lab joins over LAB_ROOM_CAP (${LAB_ROOM_CAP}) are refused`, () => {

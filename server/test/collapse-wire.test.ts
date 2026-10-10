@@ -111,7 +111,8 @@ function clientDebris(peer: Peer): CollapseField {
 
 beforeAll(async () => {
   child = spawn(process.execPath, ["--import", "tsx", entry], {
-    env: { ...process.env, PORT: "0" },
+    // W1: no carrier war — no enemy fire in the scenes these tests stage.
+    env: { ...process.env, PORT: "0", AB_WAVES: "0" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   url = await new Promise<string>((resolve, reject) => {
@@ -160,10 +161,8 @@ describe("D3 collapses over the wire", () => {
     };
 
     const a = await connect("Shooter");
-    a.ws.send(JSON.stringify({ type: "setBots", count: 0 }));
     const b = await connect("Witness");
     expect(b.welcome.roomId).toBe(a.welcome.roomId);
-    await until(() => a.seen.some((m) => m.type === "botsConfig"), 3000);
     for (let i = 0; i < 12; i++) {
       a.ws.send(JSON.stringify({ type: "pose", pose: aim }));
       await wait(40);

@@ -35,6 +35,7 @@ import {
 import * as THREE from "three";
 import { FacadeArchetype, archetypeFor } from "./archetypes";
 import { emissiveBoost } from "./emissive";
+import { GLYPH_H, wordCells, wordRuns } from "./pixel-font";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { type SignPlacement, signageFor } from "./signage";
 import { type StandingLayer, StandingMask } from "./standing-watch";
@@ -113,7 +114,74 @@ const SCAFFOLD_DECK = 0x5a4632;
 export const WORK_LIGHT_COLOR = 0xffe2b0;
 export const WORK_LIGHT_RUNG = EMISSIVE_SIGN;
 
-export type DetailKind = "fireEscape" | "balcony" | "ac" | "scaffold";
+// --- DT2: balcony gardens and lights, ivy, graffiti ---
+/** Balcony planter, foliage and the occasional bloom on top. */
+const PLANTER_TONES = [0x9a5a3c, 0x6f6a66, 0x8a4a34] as const;
+const FOLIAGE_TONES = [0x2f5a2a, 0x3d6b2f, 0x24502a, 0x4a7a34] as const;
+const BLOOM_TONES = [0xd9467a, 0xe8c13a, 0xf2f2f2, 0xb05ad9] as const;
+/** Share of balconies with plants at both ends / at least one end. */
+const PLANTS_BOTH = 0.35;
+const PLANTS_ANY = 0.75;
+/** Share of balconies with a lit wall sconce beside the door. */
+export const SCONCE_CHANCE = 0.33;
+export const SCONCE_COLOR = 0xffc98a;
+/** Sconces glow under the bloom threshold (0.72): a warm dot, never a
+ * blooming speck that twinkles at range. */
+export const SCONCE_LUMINANCE = 0.5;
+/** Ivy curtains hang from a masonry tier's top (roof planters spilling
+ * over), down to no lower than DETAIL_MIN_Y. */
+export const IVY_CHANCE = 0.3;
+const IVY_ROW = 0.55;
+const IVY_TONES = [0x2c4a26, 0x355a2c, 0x23401f, 0x3e6332, 0x2a4f2f] as const;
+/** Graffiti throw-ups on a masonry street face's lowest dressable band. */
+export const GRAFFITI_CHANCE = 0.3;
+export const GRAFFITI_CELL = 0.3;
+/** Paint glows like hole-decor's murals do, well under DECOR_PAINT_GLOW. */
+export const GRAFFITI_GLOW = 0.2;
+/** Outline from the wall to 5 cm, fill 5–9 cm: ≥ 4 cm between the two
+ * front faces — depth-safe at the 380 m fade (near plane 1 m). */
+export const GRAFFITI_OUTLINE_OUT = 0.05;
+export const GRAFFITI_FILL_OUT = 0.09;
+const GRAFFITI_OUTLINE = 0.09;
+const GRAFFITI_OUTLINE_TONE = 0x111216;
+const GRAFFITI_TONES = [
+  0xff3d7f, 0x35d0ff, 0xffd23c, 0x7dff6a, 0xb46bff, 0xff7a2d, 0xf2f2f2,
+] as const;
+export const GRAFFITI_WORDS = [
+  "ACE",
+  "ZAP",
+  "BOOM",
+  "WILD",
+  "KAOS",
+  "RAD",
+  "FLY",
+  "DOPE",
+  "KING",
+  "ZOOM",
+  "MAD",
+  "GLOW",
+  "WOW",
+  "YES",
+] as const;
+
+export type DetailKind =
+  | "fireEscape"
+  | "balcony"
+  | "ac"
+  | "scaffold"
+  | "plant"
+  | "lamp"
+  | "ivy"
+  | "graffiti";
+
+/** DT2: the emissive rung each lit kind glows at (work lights: the SIGN
+ * rung, as they always have). */
+export const lightLuminance = (kind: DetailKind): number =>
+  kind === "lamp"
+    ? SCONCE_LUMINANCE
+    : kind === "graffiti"
+      ? GRAFFITI_GLOW
+      : WORK_LIGHT_RUNG;
 
 /** One instanced box, in its building's frame (b.x/b.z ± offsets — the
  * renderer moves the whole building to its torus image). */
@@ -449,8 +517,113 @@ function fireEscape(f: Face, rand: () => number, out: DetailBox[]): boolean {
   return false;
 }
 
+/** A deterministic 0..1 from a position on a face — DT2 decisions that
+ * must not draw from (and so shift) a layout stream. */
+function hashAt(a: number, y: number, n: number, salt: number): number {
+  let h =
+    Math.imul(Math.round(a * 8), 0x27d4eb2d) ^
+    Math.imul(Math.round(y * 8), 0x165667b1) ^
+    Math.imul(Math.round(n * 8), 0x61c88647) ^
+    Math.imul(salt, 0x9e3779b9);
+  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+const pickTone = <T>(list: readonly T[], r: number): T =>
+  list[Math.min(list.length - 1, Math.floor(r * list.length))] as T;
+
+/** DT2: potted plants at a balcony's ends (clear of the spot citylife
+ * stands its balcony people on, ±0.36 m round the middle) and a warm
+ * sconce on the wall beside the door. Position-hashed, so the balcony
+ * layout itself never moves. */
+function balconyLife(
+  f: Face,
+  along: number,
+  y: number,
+  width: number,
+  out: DetailBox[],
+  lights: DetailBox[],
+): void {
+  const h = hashAt(along, y, f.plane, 1);
+  const ends =
+    h < PLANTS_BOTH
+      ? [-1, 1]
+      : h < PLANTS_ANY
+        ? [hashAt(along, y, f.plane, 2) < 0.5 ? -1 : 1]
+        : [];
+  for (const side of ends) {
+    const at = along + side * (width / 2 - PANEL_THICKNESS - 0.28);
+    const r = hashAt(at, y, f.plane, 3);
+    const leafH = 0.3 + r * 0.45;
+    out.push(
+      boxOn(
+        f,
+        "plant",
+        at,
+        y + 0.17,
+        0.45,
+        0.34,
+        0.12,
+        0.55,
+        pickTone(PLANTER_TONES, r),
+      ),
+      boxOn(
+        f,
+        "plant",
+        at,
+        y + 0.34 + leafH / 2,
+        0.5,
+        leafH,
+        0.1,
+        0.6,
+        pickTone(FOLIAGE_TONES, (r * 7.3) % 1),
+      ),
+    );
+    if (r < 0.4) {
+      out.push(
+        boxOn(
+          f,
+          "plant",
+          at,
+          y + 0.34 + leafH + 0.05,
+          0.34,
+          0.1,
+          0.2,
+          0.5,
+          pickTone(BLOOM_TONES, r / 0.4),
+        ),
+      );
+    }
+  }
+  const lampY = y + 1.8;
+  if (
+    hashAt(along, y, f.plane, 4) < SCONCE_CHANCE &&
+    lampY + 0.2 <= f.top - TOP_CLEAR
+  ) {
+    const side = hashAt(along, y, f.plane, 5) < 0.5 ? -1 : 1;
+    const at = along + side * (width / 2 - 0.25);
+    const rect = {
+      a0: at - 0.1,
+      a1: at + 0.1,
+      y0: lampY - 0.12,
+      y1: lampY + 0.12,
+    };
+    if (!blocked(f, rect, true)) {
+      lights.push(
+        boxOn(f, "lamp", at, lampY, 0.16, 0.22, 0, 0.12, SCONCE_COLOR),
+      );
+    }
+  }
+}
+
 /** Balcony stacks on one face: a few bay columns, one balcony per floor. */
-function balconies(f: Face, rand: () => number, out: DetailBox[]): void {
+function balconies(
+  f: Face,
+  rand: () => number,
+  out: DetailBox[],
+  lights: DetailBox[],
+): void {
   const bays = f.nMax - f.nMin + 1;
   if (bays < 3) return;
   const columns =
@@ -524,6 +697,7 @@ function balconies(f: Face, rand: () => number, out: DetailBox[]): void {
           panel,
         ),
       );
+      balconyLife(f, along, y, width, out, lights);
     }
   }
 }
@@ -714,6 +888,173 @@ function scaffold(
   return false;
 }
 
+/** Rects of the boxes already on face `f` (AC units are never marked
+ * taken, so DT2 steps around every drawn box instead). */
+function occupied(f: Face, boxes: readonly DetailBox[]): Rect[] {
+  const out: Rect[] = [];
+  for (const box of boxes) {
+    if (box.axis !== f.axis || box.dir !== f.dir) continue;
+    if (Math.abs(box.plane - f.plane) > 0.01) continue;
+    const { min, max } = detailBounds(box);
+    out.push({
+      a0: f.axis === "x" ? min.z : min.x,
+      a1: f.axis === "x" ? max.z : max.x,
+      y0: min.y,
+      y1: max.y,
+    });
+  }
+  return out;
+}
+
+const clearOf = (f: Face, used: readonly Rect[], r: Rect): boolean =>
+  !blocked(f, r, true) && used.every((u) => !overlaps(u, r));
+
+/** DT2: an ivy curtain spilling down from the tier top — ragged rows of
+ * leaf clumps that narrow towards the bottom, a few strands trailing
+ * lower. Flat to the wall (≤ 0.16 m out): it grows round the AC units
+ * (they stand proud of it) but never over a sign, a fire escape, a
+ * balcony or a scaffold. */
+function ivy(
+  f: Face,
+  rand: () => number,
+  used: Rect[],
+  out: DetailBox[],
+): void {
+  const bays = f.nMax - f.nMin + 1;
+  const spanBays = 1 + Math.floor(rand() * 2);
+  const dropRoll = rand();
+  if (bays < spanBays) return;
+  const width = spanBays * f.px * 0.9;
+  const top = f.top - TOP_CLEAR - 0.05;
+  const bottom = Math.max(DETAIL_MIN_Y + 0.6, top - (4 + dropRoll * 10));
+  if (top - bottom < 2) return;
+  for (let tryIndex = 0; tryIndex < PLACE_TRIES; tryIndex++) {
+    const n = f.nMin + Math.floor(rand() * (bays - spanBays + 1));
+    const mid = f.center + (n + spanBays / 2) * f.px;
+    const rect = {
+      a0: mid - width / 2 - 0.2,
+      a1: mid + width / 2 + 0.2,
+      y0: bottom - 2,
+      y1: top,
+    };
+    if (
+      rect.a0 < f.center - f.length / 2 ||
+      rect.a1 > f.center + f.length / 2 ||
+      blocked(f, rect, true)
+    ) {
+      continue;
+    }
+    f.taken.push(rect);
+    used.push(rect);
+    const rows = Math.floor((top - bottom) / IVY_ROW);
+    for (let i = 0; i < rows; i++) {
+      const t = i / Math.max(1, rows - 1);
+      const w = width * (1 - 0.45 * t * t) * (0.8 + rand() * 0.2);
+      const jitter = (rand() - 0.5) * 0.3 * (1 - t * 0.5);
+      const depth = 0.06 + rand() * 0.1;
+      const y = top - (i + 0.5) * IVY_ROW;
+      const a = Math.min(
+        Math.max(mid + jitter, rect.a0 + w / 2),
+        rect.a1 - w / 2,
+      );
+      out.push(
+        boxOn(
+          f,
+          "ivy",
+          a,
+          y,
+          w,
+          IVY_ROW * 1.15,
+          0,
+          depth,
+          pickTone(IVY_TONES, rand()),
+        ),
+      );
+    }
+    // Strands trailing past the curtain's ragged hem.
+    const strands = 2 + Math.floor(rand() * 3);
+    const hem = top - rows * IVY_ROW;
+    for (let s = 0; s < strands; s++) {
+      const a = mid + (rand() - 0.5) * width * 0.6;
+      const len = Math.min(0.5 + rand() * 1.4, hem - DETAIL_MIN_Y);
+      const tone = pickTone(IVY_TONES, rand());
+      if (len < 0.3) continue;
+      out.push(
+        boxOn(f, "ivy", a, hem - len / 2 + 0.2, 0.22, len + 0.4, 0, 0.08, tone),
+      );
+    }
+    return;
+  }
+}
+
+/** DT2: a graffiti throw-up on the lowest dressable band of a street face
+ * — a word in chunky pixel letters, two-tone paint over a dark outline. */
+function graffiti(
+  f: Face,
+  rand: () => number,
+  used: Rect[],
+  out: DetailBox[],
+  lights: DetailBox[],
+): void {
+  const word = pickTone(GRAFFITI_WORDS, rand());
+  const toneA = pickTone(GRAFFITI_TONES, rand());
+  const toneB = pickTone(GRAFFITI_TONES, rand());
+  const cell = GRAFFITI_CELL;
+  const wordW = wordCells(word) * cell;
+  const base = DETAIL_MIN_Y + 0.25;
+  const top = base + GLYPH_H * cell;
+  if (top + GRAFFITI_OUTLINE > f.top - TOP_CLEAR) return;
+  const half = wordW / 2 + GRAFFITI_OUTLINE;
+  const room = f.length / 2 - half - 0.3;
+  if (room <= 0) return;
+  for (let tryIndex = 0; tryIndex < PLACE_TRIES; tryIndex++) {
+    const mid = f.center + (rand() * 2 - 1) * room;
+    const rect = {
+      a0: mid - half - 0.2,
+      a1: mid + half + 0.2,
+      y0: DETAIL_MIN_Y,
+      y1: top + GRAFFITI_OUTLINE + 0.2,
+    };
+    if (!clearOf(f, used, rect)) continue;
+    f.taken.push(rect);
+    used.push(rect);
+    // The reader's right runs along −z on an x face facing +x, etc.
+    const right = f.axis === "x" ? -f.dir : f.dir;
+    for (const run of wordRuns(word)) {
+      const a = mid + right * (-wordW / 2 + (run.col + run.len / 2) * cell);
+      const y = base + (GLYPH_H - 1 - run.row + 0.5) * cell;
+      const len = run.len * cell;
+      out.push(
+        boxOn(
+          f,
+          "graffiti",
+          a,
+          y,
+          len + 2 * GRAFFITI_OUTLINE,
+          cell + 2 * GRAFFITI_OUTLINE,
+          0,
+          GRAFFITI_OUTLINE_OUT,
+          GRAFFITI_OUTLINE_TONE,
+        ),
+      );
+      lights.push(
+        boxOn(
+          f,
+          "graffiti",
+          a,
+          y,
+          len,
+          cell,
+          GRAFFITI_OUTLINE_OUT,
+          GRAFFITI_FILL_OUT,
+          run.row < 2 ? toneA : toneB,
+        ),
+      );
+    }
+    return;
+  }
+}
+
 /**
  * Deterministic facade detail for one building, from (world seed, building)
  * alone. GLASS curtain walls and landmarks stay clean; MASONRY gets fire
@@ -762,13 +1103,29 @@ export function facadeDetailFor(b: Building, seed: number): FacadeDetail {
     if (b.height >= RESIDENTIAL_MIN_HEIGHT && rand() < RESIDENTIAL_CHANCE) {
       acChance = AC_CHANCE.residential;
       for (const f of faces) {
-        if (f.taken.length === 0) balconies(f, rand, boxes);
+        if (f.taken.length === 0) balconies(f, rand, boxes, lights);
       }
     }
   }
 
   const acRand = stream(b, seed, 3);
   for (const f of faces) acUnits(f, acChance, acRand, boxes);
+
+  // DT2, last and on their own streams, stepping around everything above:
+  // ivy curtains down masonry tiers, graffiti on masonry street faces.
+  if (arch === FacadeArchetype.MASONRY) {
+    const ivyRand = stream(b, seed, 5);
+    const paintRand = stream(b, seed, 6);
+    for (const f of faces) {
+      const used = occupied(f, [...boxes, ...lights]);
+      const rIvy = ivyRand();
+      const rPaint = paintRand();
+      if (rIvy < IVY_CHANCE) ivy(f, ivyRand, used, boxes);
+      if (f.tierIndex === 0 && rPaint < GRAFFITI_CHANCE) {
+        graffiti(f, paintRand, used, boxes, lights);
+      }
+    }
+  }
   return { boxes, lights };
 }
 
@@ -851,6 +1208,8 @@ interface BlockData {
   boxColors: Float32Array;
   lightCount: number;
   lightMatrices: Float32Array;
+  /** DT2: each light's linear colour, already lifted to its kind's rung. */
+  lightColors: Float32Array;
   /** D8: the block's buildings, and where each one's boxes / lights start
    * in it (one past the last at the end) — a building's items are
    * contiguous, boxes then lights, in its StandingLayer order. */
@@ -939,7 +1298,14 @@ export class FacadeDetailRenderer {
         color.setHex(box.color).toArray(boxColors, i * 3);
       });
       const lightMatrices = new Float32Array(lights.length * 16);
-      lights.forEach((box, i) => write(box, lightMatrices, i));
+      const lightColors = new Float32Array(lights.length * 3);
+      lights.forEach((box, i) => {
+        write(box, lightMatrices, i);
+        color.setHex(box.color);
+        color
+          .multiplyScalar(emissiveBoost(color, lightLuminance(box.kind)))
+          .toArray(lightColors, i * 3);
+      });
       this.blocks.set(key, {
         ax: (Math.floor(key / CITY_GRID) + 0.5) * BLOCK_PITCH,
         az: ((key % CITY_GRID) + 0.5) * BLOCK_PITCH,
@@ -948,6 +1314,7 @@ export class FacadeDetailRenderer {
         boxColors,
         lightCount: lights.length,
         lightMatrices,
+        lightColors,
         buildings: Int32Array.from(entry.ids),
         boxStart: Int32Array.from([...entry.boxStart, boxes.length]),
         lightStart: Int32Array.from([...entry.lightStart, lights.length]),
@@ -988,13 +1355,16 @@ export class FacadeDetailRenderer {
       new Float32Array(boxCap * 3),
       3,
     );
+    // DT2: white × a per-instance colour lifted to each kind's rung (work
+    // lights: WORK_LIGHT_COLOR at the SIGN rung, exactly as before).
     const lightMaterial = withFade(
-      new THREE.MeshBasicMaterial({ color: WORK_LIGHT_COLOR }),
-    );
-    lightMaterial.color.multiplyScalar(
-      emissiveBoost(lightMaterial.color, WORK_LIGHT_RUNG),
+      new THREE.MeshBasicMaterial({ color: 0xffffff }),
     );
     this.lightMesh = new THREE.InstancedMesh(geometry, lightMaterial, lightCap);
+    this.lightMesh.instanceColor = new THREE.InstancedBufferAttribute(
+      new Float32Array(lightCap * 3),
+      3,
+    );
     for (const mesh of [this.mesh, this.lightMesh]) {
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       mesh.instanceColor?.setUsage(THREE.DynamicDrawUsage);
@@ -1041,6 +1411,7 @@ export class FacadeDetailRenderer {
     const matrices = this.mesh.instanceMatrix.array as Float32Array;
     const colors = this.mesh.instanceColor?.array as Float32Array;
     const lightMatrices = this.lightMesh.instanceMatrix.array as Float32Array;
+    const lightColors = this.lightMesh.instanceColor?.array as Float32Array;
     let nb = 0;
     let nl = 0;
     this.streamedBox.clear();
@@ -1072,6 +1443,7 @@ export class FacadeDetailRenderer {
         matrices[i * 16 + 14] = (matrices[i * 16 + 14] as number) + dz;
       }
       lightMatrices.set(d.lightMatrices, nl * 16);
+      lightColors.set(d.lightColors, nl * 3);
       for (let i = nl; i < nl + d.lightCount; i++) {
         lightMatrices[i * 16 + 12] =
           (lightMatrices[i * 16 + 12] as number) + dx;
@@ -1093,6 +1465,7 @@ export class FacadeDetailRenderer {
       [this.mesh.instanceMatrix, nb, 16],
       [this.mesh.instanceColor, nb, 3],
       [this.lightMesh.instanceMatrix, nl, 16],
+      [this.lightMesh.instanceColor, nl, 3],
     ] as const) {
       if (!attr) continue;
       attr.clearUpdateRanges();

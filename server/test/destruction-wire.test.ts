@@ -89,7 +89,8 @@ const until = async (cond: () => boolean, ms: number) => {
 
 beforeAll(async () => {
   child = spawn(process.execPath, ["--import", "tsx", entry], {
-    env: { ...process.env, PORT: "0" },
+    // W1: no carrier war — no enemy fire in the scenes these tests stage.
+    env: { ...process.env, PORT: "0", AB_WAVES: "0" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   url = await new Promise<string>((resolve, reject) => {
@@ -147,10 +148,8 @@ describe("D2 destruction over the wire", () => {
     expect(shotAway).toBeGreaterThanOrEqual(0);
 
     const a = await connect("Shooter");
-    a.ws.send(JSON.stringify({ type: "setBots", count: 0 }));
     const b = await connect("Witness");
     expect(b.welcome.roomId).toBe(a.welcome.roomId);
-    await until(() => a.seen.some((m) => m.type === "botsConfig"), 3000);
 
     // Re-sync A in front of the facade: the first pose is a teleport, so it
     // is rejected until the server's re-sync threshold accepts it.

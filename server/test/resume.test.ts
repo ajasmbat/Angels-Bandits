@@ -44,6 +44,9 @@ beforeAll(async () => {
     env: {
       ...process.env,
       PORT: "0",
+      // W1: no carrier war — enemy fire would add damage (delaying away)
+      // and kills nobody asked for.
+      AB_WAVES: "0",
       RESUME_WINDOW_MS: String(RESUME_WINDOW),
       AWAY_SILENCE_MS: String(AWAY_SILENCE),
     },
@@ -61,10 +64,7 @@ beforeAll(async () => {
       resolve(`ws://127.0.0.1:${port}`);
     });
   });
-  // No bots: their fire would add damage (delaying away) and kills nobody
-  // asked for. Any member may set the room's count.
   admin = await connect("Admin");
-  admin.ws.send(JSON.stringify({ type: "setBots", count: 0 }));
   await wait(SNAPSHOT_INTERVAL_MS * 4);
 }, 30000);
 

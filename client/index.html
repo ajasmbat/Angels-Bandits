@@ -580,48 +580,48 @@
          the bot rows use — the bar literally counts the BANDIT rows the room
          will hold. The panel itself is pointer-events:none, so the control
          opts back in; without that the cells can't be clicked. */
-      #bots-control {
+      #intensity-control {
         margin-top: 14px;
         padding-top: 12px;
         border-top: 1px solid #27e0c033;
         pointer-events: auto;
       }
-      #bots-control .head {
+      #intensity-control .head {
         display: flex;
         justify-content: space-between;
         align-items: baseline;
         margin-bottom: 6px;
       }
-      #bots-control .head label {
+      #intensity-control .head label {
         color: #9fd8e8;
         font-size: 10px;
         letter-spacing: 0.15em;
       }
-      #bots-value {
+      #intensity-value {
         color: #ffa26b;
       }
-      #bots-by {
+      #intensity-by {
         color: #ffc46b;
         font-size: 10px;
         opacity: 0.8;
       }
-      #bots-cells {
+      #intensity-cells {
         display: flex;
         gap: 3px;
         cursor: pointer;
       }
-      #bots-cells .cell {
+      #intensity-cells .cell {
         flex: 1;
         height: 14px;
         background: #0c0b18;
         border: 1px solid #27e0c033;
       }
-      #bots-cells .cell.filled {
+      #intensity-cells .cell.filled {
         background: #ffa26b;
         border-color: #ffa26b;
         box-shadow: 0 0 5px #ffa26b55;
       }
-      #bots-control .scale {
+      #intensity-control .scale {
         display: flex;
         justify-content: space-between;
         margin-top: 3px;
@@ -714,6 +714,56 @@
       }
       #boss-bar .cell.spent {
         background: #3a2a24;
+      }
+      /* W1: the carrier war — the wave and the enemies left, under the
+         carrier's bar (shown while a wave is coming or up, carrier or not),
+         and the "WAVE n" banner that pops at each wave's breather. */
+      #wave-hud {
+        position: fixed;
+        top: 46px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: none;
+        pointer-events: none;
+        user-select: none;
+        color: #ffd8c4;
+        font-size: 13px;
+        font-weight: bold;
+        letter-spacing: 0.24em;
+        white-space: nowrap;
+        text-shadow: 0 1px 2px #000;
+      }
+      #wave-hud.open {
+        display: block;
+      }
+      #wave-banner {
+        position: fixed;
+        top: 26%;
+        left: 50%;
+        transform: translateX(-50%);
+        pointer-events: none;
+        user-select: none;
+        color: #ff8a3a;
+        font-size: 44px;
+        font-weight: bold;
+        letter-spacing: 0.4em;
+        text-shadow:
+          0 0 18px #ff5a1f88,
+          0 2px 4px #000;
+        opacity: 0;
+        transition: opacity 0.6s ease-out;
+      }
+      #wave-banner.on {
+        opacity: 1;
+        transition: none;
+        animation: medal-pop 0.4s cubic-bezier(0.2, 1.6, 0.4, 1) both;
+      }
+      body.touch #wave-hud {
+        top: calc(var(--hud-top-band) + 30px);
+        font-size: 11px;
+      }
+      body.touch #wave-banner {
+        font-size: 28px;
       }
       /* S7: own medals, stacked under the top edge; each row pops in. */
       #medal-toast {
@@ -1262,25 +1312,25 @@
         font-size: 13px;
       }
       body.touch #scoreboard th,
-      body.touch #bots-control .head label,
-      body.touch #bots-by,
-      body.touch #bots-control .scale {
+      body.touch #intensity-control .head label,
+      body.touch #intensity-by,
+      body.touch #intensity-control .scale {
         font-size: 11px;
       }
       body.touch #scoreboard th,
       body.touch #scoreboard td {
         padding: 1px 8px;
       }
-      body.touch #bots-control {
+      body.touch #intensity-control {
         margin-top: 8px;
         padding-top: 6px;
       }
       /* M9: the strip is one 44 px tall control (notchAt reads x only);
          the cells inside it are 36 px. */
-      body.touch #bots-cells {
+      body.touch #intensity-cells {
         padding: 4px 0;
       }
-      body.touch #bots-cells .cell {
+      body.touch #intensity-cells .cell {
         height: 36px;
         box-sizing: border-box;
       }
@@ -1317,7 +1367,7 @@
          --hud-top-band, inset by --safe-*. #touch-ui sits right after
          #speedlines and #raindrops, so every later HUD element paints over
          them — the interactive ones (#minimap, #fs-btn, the toggles, the
-         bots cells) keep their taps; the pointer-events:none ones let
+         intensity cells) keep their taps; the pointer-events:none ones let
          touches through to the full-screen layer. The buttons and icons are SIBLINGS of the
          layer, never inside it: its preventDefault would eat their taps. */
       #touch-ui {
@@ -1523,7 +1573,7 @@
         body.touch #scoreboard td {
           white-space: nowrap;
         }
-        body.touch #bots-control {
+        body.touch #intensity-control {
           grid-column: 2;
           grid-row: 2;
           margin-top: 0;
@@ -2438,6 +2488,9 @@
       <div class="track"><div class="fill"></div></div>
       <div class="cells"></div>
     </div>
+    <!-- W1 (ui/hud.ts setWaves): the wave, the enemies left, the banner. -->
+    <div id="wave-hud" aria-live="polite"></div>
+    <div id="wave-banner" aria-hidden="true"></div>
     <div id="scoreboard">
       <h2>SCOREBOARD</h2>
       <table>
@@ -2446,22 +2499,28 @@
         </thead>
         <tbody id="scoreboard-rows"></tbody>
       </table>
-      <div id="bots-control">
+      <div id="intensity-control">
         <div class="head">
-          <label for="bots-cells">BOTS: <span id="bots-value">5</span></label>
-          <span id="bots-by"></span>
+          <label for="intensity-cells"
+            >ENEMIES: <span id="intensity-value">NORMAL</span></label
+          >
+          <span id="intensity-by"></span>
         </div>
-        <!-- Cells are built by ui/scoreboard.ts (one per seat, count from
-             BOT_TARGET_MAX). tabindex=-1: focus must never land here, or the
-             flight keys would type into the page instead of flying. -->
+        <!-- Cells are built by ui/scoreboard.ts (one per level, EASY to
+             INSANE — common/src/waves.ts). tabindex=-1: focus must never land
+             here, or the flight keys would type into the page instead of
+             flying. -->
         <div
-          id="bots-cells"
+          id="intensity-cells"
           role="slider"
           tabindex="-1"
-          aria-label="Bots in this room"
+          aria-label="Enemy intensity in this room"
           aria-valuemin="0"
         ></div>
-        <div class="scale"><span>0</span><span id="bots-max">11</span></div>
+        <div class="scale">
+          <span id="intensity-min">EASY</span
+          ><span id="intensity-max">INSANE</span>
+        </div>
       </div>
       <!-- S3: stunt course leaderboards, built by ui/course-board.ts. -->
       <div id="course-board"></div>

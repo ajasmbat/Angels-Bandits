@@ -33,7 +33,7 @@ import {
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
 import { flightForward } from "@angels-bandits/common/flight";
-import type { SpawnState } from "@angels-bandits/common/protocol";
+import type { RosterEntry, SpawnState } from "@angels-bandits/common/protocol";
 import { canonicalize, wrapDeltaAxis } from "@angels-bandits/common/world";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -45,6 +45,16 @@ import {
 } from "../src/bots";
 import { Combat } from "../src/combat";
 import { pickRespawn } from "../src/respawn";
+
+/** Spawn `n` bots, each where `pick` says (W1 removed RoomBots.syncTo's
+ * backfill: the room spawns its enemies one carrier launch at a time). */
+const spawnBots = (
+  bots: RoomBots,
+  n: number,
+  pick: () => SpawnState,
+): { spawned: RosterEntry[] } => ({
+  spawned: Array.from({ length: n }, () => bots.spawn(pick())),
+});
 
 // Most tests here are long SYNCHRONOUS sims, and vitest's runner chains sync
 // tests without ever yielding a macrotask. Its fire-and-forget onTaskUpdate
@@ -68,10 +78,14 @@ const yieldToEventLoop = () =>
   new Promise<void>((resolve) => setImmediate(resolve));
 
 describe("RoomBots population sync", () => {
-  it("syncTo(6) on an empty room spawns BANDIT-1..6 with room-scoped ids", () => {
+  it("spawn mints BANDIT-1..6 with room-scoped ids; nextId names the next one first", () => {
     const bots = new RoomBots("room-1", 7, []);
-    const { spawned, despawned } = bots.syncTo(6, () => spawnAt(1000, 1000));
-    expect(despawned).toEqual([]);
+    const ids: string[] = [];
+    const spawned = [];
+    for (let k = 0; k < 6; k++) {
+      ids.push(bots.nextId());
+      spawned.push(bots.spawn(spawnAt(1000, 1000)));
+    }
     expect(spawned.map((e) => e.name)).toEqual([
       "BANDIT-1",
       "BANDIT-2",
@@ -88,54 +102,13 @@ describe("RoomBots population sync", () => {
       "bot:room-1:5",
       "bot:room-1:6",
     ]);
+    // W1: a launch is planned for the id the next spawn mints.
+    expect(ids).toEqual(spawned.map((e) => e.id));
     expect(spawned.every((e) => e.isBot)).toBe(true);
     expect(bots.count).toBe(6);
-  });
-
-  it("syncTo below the current count despawns down to the target", () => {
-    const bots = new RoomBots("room-1", 7, []);
-    bots.syncTo(6, () => spawnAt(1000, 1000));
-    const { spawned, despawned } = bots.syncTo(5, () => spawnAt(1000, 1000));
-    expect(spawned).toEqual([]);
-    expect(despawned).toHaveLength(1);
+    bots.remove("bot:room-1:3");
     expect(bots.count).toBe(5);
-    expect(bots.poseOf(despawned[0])).toBeNull();
-  });
-
-  it("a lowered count takes the IDLE bot: one engaging a human keeps its seat", () => {
-    // ANGE-6STDNN: the shared slider can cut the population mid-fight, so
-    // the idle-first despawn rule is now load-bearing. Two bots far apart;
-    // only the first has a human in front of it, so only it ENGAGEs.
-    const bots = new RoomBots("room-1", 7, []);
-    const [engager, idler] = bots.syncTo(
-      2,
-      (() => {
-        let n = 0;
-        return () => (n++ === 0 ? spawnAt(1000, 1000) : spawnAt(200, 200));
-      })(),
-    ).spawned;
-    const human = {
-      id: "11111111-aaaa-bbbb-cccc-000000000001",
-      pos: { x: 1000, y: 300, z: 900 },
-      vel: { x: 0, y: 0, z: 0 },
-      prot: false,
-    };
-    const contacts = () =>
-      [engager.id, idler.id]
-        .map((id) => {
-          const self = bots.contactOf(id);
-          if (!self) throw new Error("bot vanished");
-          return { id, ...self, prot: false };
-        })
-        .concat([human]);
-    // One brain decision is enough to acquire and engage.
-    for (let i = 0; i < BOT_DECISION_EVERY; i++) bots.tick(i, contacts());
-    expect(bots.stateOf(engager.id)).toBe("ENGAGE");
-    expect(bots.stateOf(idler.id)).toBe("PATROL");
-
-    const { despawned } = bots.syncTo(1, () => spawnAt(1000, 1000));
-    expect(despawned).toEqual([idler.id]);
-    expect(bots.poseOf(engager.id)).not.toBeNull();
+    expect(bots.poseOf("bot:room-1:3")).toBeNull();
   });
 
   it("seam pursuit: a bot at x=10 chases a target at x=1990 across the seam, not across the map", () => {
@@ -143,7 +116,7 @@ describe("RoomBots population sync", () => {
     // Facing -Z (yaw 0): the target sits 20 m to the LEFT through the seam
     // (wrapDelta x = -20; 1980 m the naive way) and ahead so the
     // threat-behind break doesn't apply.
-    const [entry] = bots.syncTo(1, () => spawnAt(10, 1000)).spawned;
+    const [entry] = spawnBots(bots, 1, () => spawnAt(10, 1000)).spawned;
     const target = {
       id: "11111111-aaaa-bbbb-cccc-000000000001",
       pos: { x: 1990, y: 300, z: 900 },
@@ -183,7 +156,7 @@ describe("RoomBots population sync", () => {
     const bots = new RoomBots("room-1", 3, city);
     // Spawn deep in a street canyon at 60 m, flying west along the z=1000
     // street between tower rows. 900 ticks = 60 s at 15 Hz.
-    const [entry] = bots.syncTo(1, () =>
+    const [entry] = spawnBots(bots, 1, () =>
       spawnAt(500, 1002, Math.PI / 2, 60),
     ).spawned;
     let onStreet = 0;
@@ -215,7 +188,9 @@ describe("RoomBots population sync", () => {
     // Spawned high: since B1 a chase only climbs at a high target inside an
     // attack pass (BOT_FIRE_RANGE), so the bot has to start within reach of
     // the deck for its pass to test the ceiling guard at all.
-    const [entry] = bots.syncTo(1, () => spawnAt(1000, 1000, 0, 440)).spawned;
+    const [entry] = spawnBots(bots, 1, () =>
+      spawnAt(1000, 1000, 0, 440),
+    ).spawned;
     let engaged = false;
     let peak = 0;
     // The worst case for the ceiling: an unprotected bait that is ALWAYS
@@ -254,7 +229,7 @@ describe("RoomBots population sync", () => {
 
   it("a bot pose carries the spawn position, yaw attitude, and speed", () => {
     const bots = new RoomBots("room-1", 7, []);
-    const [entry] = bots.syncTo(1, () =>
+    const [entry] = spawnBots(bots, 1, () =>
       spawnAt(100, 200, Math.PI / 2),
     ).spawned;
     const pose = bots.poseOf(entry.id);
@@ -375,7 +350,7 @@ describe("applyBotFire — bots use human combat rules", () => {
   it("a dead bot respawns through Combat timing + the respawn sampler", () => {
     const combat = new Combat();
     const bots = new RoomBots("room-1", 7, []);
-    const [entry] = bots.syncTo(1, () => ({
+    const [entry] = spawnBots(bots, 1, () => ({
       pos: { x: 100, y: 300, z: 100 },
       yaw: 0,
       speed: RESPAWN_SPEED,
@@ -406,7 +381,7 @@ describe("applyBotFire — bots use human combat rules", () => {
 
   it("holds fire for the reaction delay after acquiring a target", () => {
     const bots = new RoomBots("room-1", 7, []);
-    const [entry] = bots.syncTo(1, () => ({
+    const [entry] = spawnBots(bots, 1, () => ({
       pos: { x: 1000, y: 300, z: 1000 },
       yaw: 0,
       speed: RESPAWN_SPEED,
@@ -471,7 +446,7 @@ describe("canyon disposition", () => {
     );
     const roster: { bots: RoomBots; id: string }[] = [];
     for (const bots of rooms) {
-      for (const e of bots.syncTo(50, spreadSpawner()).spawned) {
+      for (const e of spawnBots(bots, 50, spreadSpawner()).spawned) {
         roster.push({ bots, id: e.id });
       }
     }
@@ -492,7 +467,7 @@ describe("canyon disposition", () => {
 
   it("brings a bot back down to the canyons after a high respawn", () => {
     const bots = new RoomBots("room-1", 11, []);
-    const roster = bots.syncTo(20, spreadSpawner()).spawned;
+    const roster = spawnBots(bots, 20, spreadSpawner()).spawned;
     let now = patrol([bots], 90);
     const before = roster.map((e) => bots.flightOf(e.id)?.pos.y ?? Number.NaN);
 
@@ -517,7 +492,7 @@ describe("canyon patrol in the real seeded city", () => {
   it("descends into the band, flies the streets, and stops thrashing in RECOVER", () => {
     const city = generateCity(CITY_SEED);
     const bots = new RoomBots("room-1", 11, city);
-    const roster = bots.syncTo(12, spreadSpawner()).spawned;
+    const roster = spawnBots(bots, 12, spreadSpawner()).spawned;
     const stat = new Map(
       roster.map((e) => [
         e.id,
@@ -587,7 +562,7 @@ describe("canyon patrol across the torus seam", () => {
     // street heading -X (yaw +pi/2 points the nose at -X), 60 m from the seam,
     // so its next intersections are x = 0 and then x = 1800 the far side.
     const bots = new RoomBots("room-1", 3, city);
-    const [entry] = bots.syncTo(1, () =>
+    const [entry] = spawnBots(bots, 1, () =>
       spawnAt(60, 600, Math.PI / 2, 60),
     ).spawned;
     if (!entry) throw new Error("no bot");
@@ -644,7 +619,9 @@ describe("terrain shapes pursuit instead of cancelling it", () => {
    */
   const runAtWall = (contact: boolean) => {
     const bots = new RoomBots("room-1", 3, [WALL]);
-    const [entry] = bots.syncTo(1, () => spawnAt(595, 600, EAST, ALT)).spawned;
+    const [entry] = spawnBots(bots, 1, () =>
+      spawnAt(595, 600, EAST, ALT),
+    ).spawned;
     if (!entry) throw new Error("no bot");
     // Well off to the side down the cross street: the sight line and the
     // pursuit line both stay clear of the slab.
@@ -712,7 +689,7 @@ describe("RECOVER survives as the last-resort guard", () => {
 
   it("falls through to RECOVER when every heading in the fan is blocked", () => {
     const bots = new RoomBots("room-1", 3, BOX);
-    const [entry] = bots.syncTo(1, () => spawnAt(540, 500, 0, 100)).spawned;
+    const [entry] = spawnBots(bots, 1, () => spawnAt(540, 500, 0, 100)).spawned;
     if (!entry) throw new Error("no bot");
     // A contact 30 m dead ahead, in the open and plainly visible — so the bot
     // WANTS to chase, and only the boxed-in terrain can stop it.
@@ -738,7 +715,7 @@ describe("RECOVER survives as the last-resort guard", () => {
   it("keeps the altitude floor as a hard override even mid-chase", () => {
     // Open sky, nothing to probe: the ONLY danger is being under BOT_MIN_ALT.
     const bots = new RoomBots("room-1", 3, []);
-    const [entry] = bots.syncTo(1, () =>
+    const [entry] = spawnBots(bots, 1, () =>
       spawnAt(1000, 1000, 0, BOT_MIN_ALT - 5),
     ).spawned;
     if (!entry) throw new Error("no bot");
@@ -797,7 +774,9 @@ describe("line of sight gates acquisition", () => {
     ticks: number,
   ) => {
     const bots = new RoomBots("room-1", 3, [PARAPET]);
-    const [entry] = bots.syncTo(1, () => spawnAt(1000, 1400, 0, 110)).spawned;
+    const [entry] = spawnBots(bots, 1, () =>
+      spawnAt(1000, 1400, 0, 110),
+    ).spawned;
     if (!entry) throw new Error("no bot");
     const held: (string | null)[] = [];
     const shotTimes: number[] = [];
@@ -848,7 +827,9 @@ describe("line of sight gates acquisition", () => {
     // open air off to the side. Walking only the nearest few sight lines would
     // spend the whole budget on the hidden three and acquire nobody.
     const bots = new RoomBots("room-1", 3, [PARAPET]);
-    const [entry] = bots.syncTo(1, () => spawnAt(1000, 1400, 0, 110)).spawned;
+    const [entry] = spawnBots(bots, 1, () =>
+      spawnAt(1000, 1400, 0, 110),
+    ).spawned;
     if (!entry) throw new Error("no bot");
     const OPEN = "11111111-aaaa-bbbb-cccc-00000000000d";
     const decoys = [0, 1, 2].map((i) => ({
@@ -901,7 +882,7 @@ describe("long-sim regressions", () => {
     const city = generateCity(CITY_SEED);
     const run = () => {
       const bots = new RoomBots("room-1", 77, city);
-      const roster = bots.syncTo(8, spreadSpawner()).spawned;
+      const roster = spawnBots(bots, 8, spreadSpawner()).spawned;
       for (let i = 1; i <= 90 * TICK_DOWN_HZ; i++) {
         bots.tick(i * (1000 / TICK_DOWN_HZ), []);
       }
@@ -925,7 +906,7 @@ describe("long-sim regressions", () => {
     for (let room = 0; room < 3; room++) {
       const bots = new RoomBots(`room-${room}`, 2024 + room * 31, city);
       const combat = new Combat();
-      const roster = bots.syncTo(11, spreadSpawner()).spawned;
+      const roster = spawnBots(bots, 11, spreadSpawner()).spawned;
       for (const e of roster) combat.addPlayer(e.id, 0);
       for (let i = 1; i <= 200 * TICK_DOWN_HZ; i++) {
         const now = i * (1000 / TICK_DOWN_HZ);
@@ -1021,7 +1002,7 @@ describe("bots vs the L2 movers", () => {
         speed: RESPAWN_SPEED,
       };
     };
-    bots.syncTo(11, spawn);
+    spawnBots(bots, 11, spawn);
 
     let moverDeaths = 0;
     let sweepTicks = 0;
@@ -1085,7 +1066,7 @@ describe("bots vs the L2 movers", () => {
         speed: RESPAWN_SPEED,
       };
     };
-    bots.syncTo(8, spawn);
+    spawnBots(bots, 8, spawn);
     // On the street the jib oversails, just outside the sweep: since B1 a
     // low bot will not cut across a construction block to reach a decoy
     // parked inside it, but it will chase one up the street — straight
@@ -1177,7 +1158,7 @@ describe("bots vs the L2 movers", () => {
     const site = l2Field.cranes[0];
     if (!site) throw new Error("no crane site");
     let n = 0;
-    bots.syncTo(8, () => {
+    spawnBots(bots, 8, () => {
       const a = (n++ / 8) * Math.PI * 2;
       const p = canonicalize({
         x: site.x + Math.cos(a) * 150,
@@ -1206,7 +1187,7 @@ describe("bots vs the L2 movers", () => {
     const blimp = l2Field.aircraft.find((a) => a.kind === "blimp");
     if (!heli || !blimp) throw new Error("missing aircraft");
     const bots = new RoomBots("room-0", 5, [], l2Field);
-    bots.syncTo(2, () => spawnAt(0, 0));
+    spawnBots(bots, 2, () => spawnAt(0, 0));
     const [inHeli, inBlimp] = bots.ids();
     if (!inHeli || !inBlimp) throw new Error("expected two bots");
 

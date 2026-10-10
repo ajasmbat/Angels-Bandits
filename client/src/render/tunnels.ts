@@ -16,11 +16,19 @@
 // well-lit tunnel on every tier — the fixtures are dressing, which is what
 // MOBILE drops. Fog still applies (fog: true), like everything else.
 //
-// U5: BRIGHT INSIDE. The bore is the night city's opposite — warm
-// sandstone walls lit like daylight and a glowing cream ceiling, every
-// surface still under the bloom threshold (0.72; the tests check every
-// vertex). The station's glass (underground.ts) replaces the left wall
-// along its window: the shell leaves that stretch of wall out.
+// U5: BRIGHT INSIDE. The bore is the night city's opposite, every surface
+// still under the bloom threshold (0.72; the tests check every vertex).
+// The station's glass (underground.ts) replaces the left wall along its
+// window: the shell leaves that stretch of wall out.
+//
+// U7: bright means WELL LIT AND COLOURFUL, not a cream box (tunnel-look.ts).
+// Vertex colours now carry each section's albedo (blended over 16 m) on
+// exactly U4's faces, and `aSurf` carries (kind, s, v, wet|open) in
+// bore-frame surface coordinates. The shader lights it (warm pools under
+// the crown lights over a cool bounce, corner occlusion) and gives it
+// form: rock relief and strata, concrete formwork seams, the metro's
+// tiles, a gravel floor, a wet sheen by the water.
+// The fixtures carry kind 0: drawn exactly as baked.
 //
 // TORUS. The network spans the whole world, so no single nearest-image
 // offset places it. Each triangle is wrapped by its centroid into one
@@ -55,7 +63,25 @@ import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
 import type { QualityTier } from "./quality";
 import { QUALITY_PROFILES } from "./quality";
+import {
+  FACE,
+  LOOK_NOISE_GLSL,
+  type LookZone,
+  POOL_STEP,
+  SURF,
+  TUNNEL_DETAIL,
+  blankPalette,
+  blendedPalette,
+  lookZoneAt,
+  materialOf,
+  setTunnelDetail,
+  surfKind,
+  updateTunnelAir,
+} from "./tunnel-look";
 import { inStationWindow } from "./underground-layout";
+
+/** Program cache key (the shell's surface shader). */
+export const SHELL_CACHE_KEY = "ab-u7-shell";
 
 /** Ceiling light strips: lateral offset, width, dash and gap, m. */
 const STRIP_OFFSET = 7;
@@ -76,11 +102,8 @@ const KERB_LIGHT_STEP = 4;
 const FRAME_STEP = 2.5;
 
 const COLORS = {
-  concrete: 0xe2d6bf,
-  floor: 0x8f8574,
-  ceiling: 0xfff0d6,
-  stone: 0x8d8579,
-  kerb: 0xd9d6cc,
+  stone: 0x6f6a62,
+  kerb: 0xbdb8ac,
   lane: 0xe8c45a,
   strip: 0xfff3dc,
   guide: 0xffa040,
@@ -88,30 +111,28 @@ const COLORS = {
   frame: 0xffc070,
 } as const;
 
-/** Baked light levels (multipliers on the albedo): walls brighten toward
- * the strips, the floor toward the middle. Kept under the bloom threshold —
- * a lit wall is never a ladder rung. */
+/** Baked light on the dressing drawn as-is (kind 0) and on the open cuts'
+ * retaining walls (night air, no lamps). */
 const LIGHT = {
-  floor: 0.62,
-  wallLow: 0.6,
-  wallHigh: 0.85,
-  ceiling: 0.7,
   cutWallLow: 0.3,
   cutWallHigh: 0.42,
-  kerb: 0.55,
+  kerb: 0.4,
+  lane: 0.42,
 } as const;
+
+/** U7 corner occlusion (the shader's): a wall's foot and head, the floor
+ * and the ceiling along the walls, reaching this far from a corner, m. */
+const AO = { foot: 0.66, head: 0.76, edge: 0.73, reach: 1.6 };
+/** U7: how wet each section's surfaces are near the floor, 0..1. */
+const WET: Partial<Record<LookZone, number>> = {
+  garden: 0.8,
+  lake: 1,
+  grotto: 0.45,
+};
 
 /** Linear colour of `hex` lit by `k`. */
 const lit = (hex: number, k: number): THREE.Color =>
   new THREE.Color(hex).multiplyScalar(k);
-
-/** U5: the bore's mid-height wall and its ceiling as drawn — what thin
- * dressing (underground.ts) fades into with distance. */
-export const SHELL_WALL_MID = lit(
-  COLORS.concrete,
-  (LIGHT.wallLow + LIGHT.wallHigh) / 2,
-);
-export const SHELL_CEILING = lit(COLORS.ceiling, LIGHT.ceiling);
 
 /** Linear emissive colour that puts `hex` on ladder rung `rung`. */
 function emitOf(hex: number, rung: number): THREE.Color {
@@ -121,21 +142,54 @@ function emitOf(hex: number, rung: number): THREE.Color {
 
 type P3 = readonly [number, number, number];
 
-/** A non-indexed triangle soup with per-vertex colour, in unwrapped world
- * coordinates; geometry() wraps and tiles it (see the header). */
+/** U7: a quad's surface — its kind (0: drawn as baked), the bore-frame
+ * (u, v) of each corner, and wet (0..1, +2 over an open cut). */
+interface Surf {
+  kind: number;
+  uv: readonly [number, number][];
+  w: number;
+}
+const BAKED: Surf = {
+  kind: 0,
+  uv: [
+    [0, 0],
+    [0, 0],
+    [0, 0],
+    [0, 0],
+  ],
+  w: 0,
+};
+
+/** A non-indexed triangle soup with per-vertex colour and surface, in
+ * unwrapped world coordinates; geometry() wraps and tiles it (see the
+ * header). */
 class Soup {
   readonly pos: number[] = [];
   readonly col: number[] = [];
+  readonly surf: number[] = [];
 
-  /** Quad a→b→c→d, one colour per vertex pair (bottom a/b, top c/d). */
-  quad(a: P3, b: P3, c: P3, d: P3, lo: THREE.Color, hi = lo): void {
-    const cols = [lo, lo, hi, lo, hi, hi];
-    const vs = [a, b, c, a, c, d];
-    for (let i = 0; i < 6; i++) {
+  /** Quad a→b→c→d, one colour per vertex pair (bottom a/b, top c/d) or
+   * one per corner. */
+  quad(
+    a: P3,
+    b: P3,
+    c: P3,
+    d: P3,
+    lo: THREE.Color,
+    hi: THREE.Color | readonly THREE.Color[] = lo,
+    surf: Surf = BAKED,
+  ): void {
+    const corner = Array.isArray(hi)
+      ? (hi as readonly THREE.Color[])
+      : [lo, lo, hi as THREE.Color, hi as THREE.Color];
+    const vs = [a, b, c, d];
+    for (const i of [0, 1, 2, 0, 2, 3]) {
       const v = vs[i] as P3;
-      const k = cols[i] as THREE.Color;
+      const k = corner[i] as THREE.Color;
+      const uv = surf.uv[i] as [number, number];
       this.pos.push(v[0], v[1], v[2]);
       this.col.push(k.r, k.g, k.b);
+      this.surf.push(surf.kind, uv[0], uv[1], surf.w);
     }
   }
 
@@ -162,6 +216,7 @@ class Soup {
     const n = this.pos.length;
     const out = new Float32Array(n * 4);
     const col = new Float32Array(n * 4);
+    const surf = new Float32Array((n / 3) * 4 * 4);
     for (let t = 0; t < n; t += 9) {
       const cx =
         ((this.pos[t] as number) +
@@ -187,6 +242,12 @@ class Soup {
             col[base + v + 1] = this.col[t + v + 1] as number;
             col[base + v + 2] = this.col[t + v + 2] as number;
           }
+          // The surface rides along unchanged: bore-frame, not world.
+          const sb = ((k * n + t) / 3) * 4;
+          const st = (t / 3) * 4;
+          for (let j = 0; j < 12; j++) {
+            surf[sb + j] = this.surf[st + j] as number;
+          }
           k++;
         }
       }
@@ -194,6 +255,7 @@ class Soup {
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.BufferAttribute(out, 3));
     g.setAttribute("color", new THREE.BufferAttribute(col, 3));
+    g.setAttribute("aSurf", new THREE.BufferAttribute(surf, 4));
     return g;
   }
 }
@@ -221,15 +283,13 @@ function buildBore(t: Tunnel, shell: Soup, fix: Soup): void {
   const s1 = Math.max(endL, endR);
   const clampL = (s: number) => Math.min(Math.max(s, startL), endL);
   const clampR = (s: number) => Math.min(Math.max(s, startR), endR);
-  const wallC = lit(COLORS.concrete, LIGHT.wallLow);
-  const wallTop = lit(COLORS.concrete, LIGHT.wallHigh);
-  const cutLow = lit(COLORS.stone, LIGHT.cutWallLow);
-  const cutHigh = lit(COLORS.stone, LIGHT.cutWallHigh);
-  const floorC = lit(COLORS.floor, LIGHT.floor);
-  const ceilC = lit(COLORS.ceiling, LIGHT.ceiling);
-  const laneC = lit(COLORS.lane, 0.55);
+  const cutLow = lit(COLORS.stone, 0.75);
+  const cutHigh = lit(COLORS.stone, 0.95);
+  const laneC = lit(COLORS.lane, LIGHT.lane);
   const strip = emitOf(COLORS.strip, EMISSIVE_LAMP);
   const guide = emitOf(COLORS.guide, EMISSIVE_WINDOW);
+  const palA = blankPalette();
+  const palB = blankPalette();
 
   for (let i = 0; i + 1 < samples.length; i++) {
     const a = samples[i] as number;
@@ -253,28 +313,100 @@ function buildBore(t: Tunnel, shell: Soup, fix: Soup): void {
     tunnelSectionInto(t, rb, covered, secB);
     const rB: P3 = [secB.rx, secB.floor, secB.rz];
     const rBt = secB.top;
-    // Floor.
-    shell.quad(lA, rA, rB, lB, floorC);
-    // Walls: concrete in the bore, stone retaining walls over a cut.
-    const lo = covered ? wallC : cutLow;
-    const hi = covered ? wallTop : cutHigh;
-    // U5: the station's glass stands where the left wall would.
-    if (!inStationWindow(t, mid0(a, b), 1)) {
-      shell.quad(lA, lB, [lB[0], lBt, lB[2]], [lA[0], lAt, lA[2]], lo, hi);
-    }
-    shell.quad(rA, rB, [rB[0], rBt, rB[2]], [rA[0], rAt, rA[2]], lo, hi);
+    // U7: the section's look — its material, its palette at each end
+    // (blended over 16 m), how wet it runs.
+    const mid = (a + b) / 2;
+    const zone = lookZoneAt(t, mid);
+    const mat = covered ? materialOf(zone) : SURF.concrete;
+    blendedPalette(t, a, palA);
+    blendedPalette(t, b, palB);
+    const wet = covered ? (WET[zone] ?? 0) : 0;
+    const open = covered ? 0 : 2;
+    // Floor, ceiling and walls: one quad each, as U4 drew them (the corner
+    // occlusion is the shader's, from the bore-frame coordinates).
+    const floorMat = mat === SURF.tile ? SURF.concrete : mat;
+    const H2 = BORE_WIDTH / 2;
+    shell.quad(
+      lA,
+      rA,
+      rB,
+      lB,
+      palA.floor,
+      [palA.floor, palA.floor, palB.floor, palB.floor],
+      {
+        kind: surfKind(floorMat, FACE.floor),
+        uv: [
+          [la, H2],
+          [ra, -H2],
+          [rb, -H2],
+          [lb, H2],
+        ],
+        w: wet * 0.6 + open,
+      },
+    );
     if (covered) {
       shell.quad(
         [lA[0], lAt, lA[2]],
         [rA[0], rAt, rA[2]],
         [rB[0], rBt, rB[2]],
         [lB[0], lBt, lB[2]],
-        ceilC,
+        palA.ceiling,
+        [palA.ceiling, palA.ceiling, palB.ceiling, palB.ceiling],
+        {
+          kind: surfKind(mat, FACE.ceiling),
+          uv: [
+            [la, H2],
+            [ra, -H2],
+            [rb, -H2],
+            [lb, H2],
+          ],
+          w: 0,
+        },
       );
     }
-    // Lane paint: a dashed centre line, slightly proud of the floor.
-    const mid = (a + b) / 2;
-    if (Math.floor(mid / 6) % 2 === 0 && a >= s0 + 2 && b <= s1 - 2) {
+    // Walls: the section's rock / concrete / tile in the bore, stone
+    // retaining walls over a cut. Wet runs down the wall's foot: the
+    // shader fades it by height.
+    const wall = (
+      pA: P3,
+      pB: P3,
+      topA: number,
+      topB: number,
+      sA: number,
+      sB: number,
+    ) => {
+      const hA = topA - pA[1];
+      const hB = topB - pB[1];
+      shell.quad(
+        pA,
+        pB,
+        [pB[0], topB, pB[2]],
+        [pA[0], topA, pA[2]],
+        covered ? palA.wall : cutLow,
+        covered ? [palA.wall, palB.wall, palB.wall, palA.wall] : cutHigh,
+        {
+          kind: surfKind(mat, FACE.wall),
+          uv: [
+            [sA, 0],
+            [sB, 0],
+            [sB, hB],
+            [sA, hA],
+          ],
+          w: wet + open,
+        },
+      );
+    };
+    // U5: the station's glass stands where the left wall would.
+    if (!inStationWindow(t, mid0(a, b), 1)) wall(lA, lB, lAt, lBt, la, lb);
+    wall(rA, rB, rAt, rBt, ra, rb);
+    // Lane paint: a dashed centre line, slightly proud of the floor — on
+    // the concrete runs only (a cave floor has none).
+    if (
+      floorMat === SURF.concrete &&
+      Math.floor(mid / 6) % 2 === 0 &&
+      a >= s0 + 2 &&
+      b <= s1 - 2
+    ) {
       const cA = mix(lA, rA, 0.5);
       const cB = mix(lB, rB, 0.5);
       const dx = (rA[0] - lA[0]) / BORE_WIDTH;
@@ -337,13 +469,24 @@ function buildBore(t: Tunnel, shell: Soup, fix: Soup): void {
     const sm = end === 0 ? e.cut : t.length - e.cut;
     tunnelSectionInto(t, sm, true, secA);
     const lintelY = secA.top;
+    const lintel = lit(COLORS.stone, 0.95);
     shell.quad(
       [secA.lx, secA.top, secA.lz],
       [secA.rx, secA.top, secA.rz],
       [secA.rx, 0, secA.rz],
       [secA.lx, 0, secA.lz],
-      wallTop,
-      cutHigh,
+      lintel,
+      lintel,
+      {
+        kind: surfKind(SURF.concrete, FACE.wall),
+        uv: [
+          [0, secA.top],
+          [BORE_WIDTH, secA.top],
+          [BORE_WIDTH, 0],
+          [0, 0],
+        ],
+        w: 2,
+      },
     );
     // Kerbs: the two long sides (lip to lintel) and across the lintel top.
     const sl = end === 0 ? 0 : t.length;
@@ -482,6 +625,129 @@ export function snapToPeriod(group: THREE.Object3D, cameraPos: Vec3): void {
   group.position.set(x * WORLD_SIZE, 0, z * WORLD_SIZE);
 }
 
+// --- U7: the surface shader --------------------------------------------------
+
+const SHELL_VERTEX_PARS = /* glsl */ `
+attribute vec4 aSurf;
+flat varying float vSurfKind;
+varying vec3 vSurf;
+varying vec3 vLookWorld;
+`;
+const SHELL_VERTEX = /* glsl */ `
+vSurfKind = aSurf.x;
+vSurf = aSurf.yzw;
+vLookWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;
+`;
+const SHELL_FRAGMENT_PARS = /* glsl */ `
+flat varying float vSurfKind;
+varying vec3 vSurf;
+varying vec3 vLookWorld;
+${LOOK_NOISE_GLSL}
+`;
+/** After color_fragment: diffuseColor.rgb is the baked albedo × occlusion
+ * (kind > 0) — light it and give it form. Kind 0 is drawn as baked. */
+const SHELL_FRAGMENT = /* glsl */ `
+// Derivatives outside any branch (undefined in non-uniform control flow).
+vec2 abUV = vSurf.xy;
+vec2 abFw = fwidth(abUV);
+float abPx = max(max(abFw.x, abFw.y), 1e-4);
+vec3 abNf = cross(dFdx(vLookWorld), dFdy(vLookWorld));
+// kind is the same at every corner (flat): rounded, never an interpolant.
+float abKind = floor(vSurfKind + 0.5);
+if (abKind > 0.5) {
+  float abFace = mod(abKind - 1.0, 3.0);
+  float abMat = floor((abKind - 1.0) / 3.0 + 0.01);
+  float abOpen = step(1.5, vSurf.z);
+  float abWet = clamp(vSurf.z - 2.0 * abOpen, 0.0, 1.0);
+  float isWall = 1.0 - step(0.5, abFace);
+  float isFloor = step(1.5, abFace);
+  float isCeil = 1.0 - isWall - isFloor;
+  // Corner occlusion: a wall's foot (v is height) and the deep bore's
+  // head; the floor and the ceiling along the walls (v is lateral).
+  float aoWall = mix(${AO.foot.toFixed(2)}, 1.0, smoothstep(0.0, ${AO.reach.toFixed(1)}, abUV.y)) *
+    mix(1.0, ${AO.head.toFixed(2)}, smoothstep(${(24 - AO.reach).toFixed(1)}, 24.0, abUV.y));
+  float aoFlat = mix(1.0, ${AO.edge.toFixed(2)}, smoothstep(${(18 - AO.reach).toFixed(1)}, 18.0, abs(abUV.y)));
+  vec3 alb = diffuseColor.rgb * mix(aoFlat, aoWall, isWall * (1.0 - abOpen));
+  abWet *= mix(1.0, max(0.0, 1.0 - abUV.y / 8.0), isWall);
+  // Warm pools under the crown lights (every POOL_STEP along the bore), a
+  // cool bounce everywhere; an open cut only has the night air.
+  float ds = (fract(abUV.x / ${POOL_STEP.toFixed(1)} + 0.5) - 0.5) * ${POOL_STEP.toFixed(1)};
+  float vh = clamp(abUV.y / 24.0, 0.0, 1.0);
+  float latK = clamp(abs(abUV.y) / 18.0, 0.0, 1.0);
+  float pool = exp(-ds * ds / 22.0) *
+    (isWall * (0.3 + 0.7 * vh) + isFloor * (1.0 - 0.5 * latK * latK) + isCeil * 0.32) *
+    (1.0 - abOpen);
+  float amb = mix(isWall * (0.6 - 0.1 * vh) + isFloor * 0.56 + isCeil * 0.46, 0.42, abOpen);
+  vec3 abWarm = vec3(1.0, 0.8, 0.56);
+  vec3 abCool = vec3(0.66, 0.8, 1.0);
+  // Relief: fBm in bore-frame metres, its gradient lit toward the pool.
+  vec3 n = abFbm(abUV, 0.42, abPx);
+  vec2 grad = n.yz;
+  float detail = 0.84 + 0.5 * n.x;
+  float gloss = 0.0;
+  if (abMat < 0.5) {
+    // ROCK: strata on the walls — bands up the face, warped slowly.
+    if (isWall > 0.5) {
+      float warp = abNoiseD(abUV * vec2(0.025, 0.07) + 3.1).x;
+      float band = abUV.y * 1.3 + warp * 7.0 + n.x * 1.5;
+      float strataFade = 1.0 - smoothstep(0.06, 0.2, abPx * 1.3);
+      float st = smoothstep(-0.55, 0.75, sin(band * 3.1));
+      detail *= mix(1.0, 0.74 + 0.36 * st, strataFade);
+    }
+    // The floor: gravel and the odd crack — only on the floor (a whole
+    // triangle takes one side of this branch: no divergence, and the walls
+    // and ceiling skip half the noise).
+    if (isFloor > 0.5) {
+      vec3 g = abFbm(abUV + 40.0, 2.4, abPx);
+      float ridge = 1.0 - abs(2.0 * abNoiseD(abUV * 0.16 + 9.0).x - 1.0);
+      float crack = smoothstep(0.95, 0.99, ridge) * (1.0 - smoothstep(0.03, 0.09, abPx));
+      detail *= (0.92 + 0.4 * g.x) * (1.0 - 0.45 * crack);
+      grad += g.yz * 0.25;
+    }
+  } else if (abMat < 1.5) {
+    // CONCRETE: formwork panels 2.4 × 1.2 m, seams and tie holes,
+    // streaks down the walls; a floor of 6 m slabs.
+    vec2 sz = mix(vec2(2.4, 1.2), vec2(6.0, 4.5), isFloor);
+    vec2 cell = abUV / sz;
+    vec2 e = (0.5 - abs(fract(cell) - 0.5)) * sz;
+    float seam = 1.0 - smoothstep(0.02, 0.02 + abPx * 1.5, min(e.x, e.y));
+    vec2 q = (fract(cell * vec2(2.0, 1.0)) - 0.5) * sz * vec2(0.5, 1.0);
+    float tie = (1.0 - smoothstep(0.035, 0.035 + abPx * 1.5, length(q))) * (1.0 - isFloor);
+    float fine = 1.0 - smoothstep(0.02, 0.07, abPx);
+    float stain = abNoiseD(abUV * vec2(0.9, 0.05) + 5.0).x;
+    detail = (0.9 + 0.22 * n.x) * (0.88 + 0.24 * stain) *
+      (1.0 - 0.42 * max(seam, tie) * fine);
+    grad *= 0.3;
+  } else {
+    // TILE (the metro): 0.6 × 0.3 m glazed tiles, grout, a tone per tile.
+    vec2 sz = vec2(0.6, 0.3);
+    vec2 cell = abUV / sz;
+    vec2 e = (0.5 - abs(fract(cell) - 0.5)) * sz;
+    float grout = 1.0 - smoothstep(0.009, 0.009 + abPx * 1.5, min(e.x, e.y));
+    float fine = 1.0 - smoothstep(0.01, 0.035, abPx);
+    float tone = abHash(floor(cell) + 7.0);
+    detail = mix(1.0, 0.94 + 0.12 * tone, fine) * (1.0 - 0.38 * grout * fine);
+    grad *= 0.08;
+    gloss = 1.0;
+  }
+  // The bump, lit from the pool's side and from above (walls) — MOBILE
+  // (detail 2) keeps the albedo pattern, drops the bump.
+  float bumpOn = step(2.5, uTunnelDetail);
+  vec2 L = vec2(-ds / (abs(ds) + 4.0), isWall * 0.9 - isCeil * 0.5);
+  float shade = clamp(1.0 - bumpOn * 0.85 * dot(grad, L), 0.6, 1.4);
+  vec3 light = abCool * amb + abWarm * pool;
+  // A wet sheen near the water and on the metro's glaze: the warm light
+  // caught at grazing angles.
+  vec3 V = normalize(cameraPosition - vLookWorld);
+  // max(): an |dot| that rounds past 1 must not reach pow() (NaN, O7).
+  float fres = pow(max(1.0 - abs(dot(abSafeNormal(abNf, V), V)), 0.0), 4.0);
+  alb *= 1.0 - 0.3 * abWet;
+  vec3 sheen = abWarm * fres * (0.04 + 0.45 * pool) *
+    (abWet * (0.6 + 0.8 * clamp(n.x + 0.5, 0.0, 1.0)) + gloss * 0.35);
+  diffuseColor.rgb = abUnderClamp(alb * detail * shade * light + sheen);
+}
+`;
+
 /** The network's two draws. */
 export class TunnelRenderer {
   readonly group = new THREE.Group();
@@ -491,12 +757,32 @@ export class TunnelRenderer {
   constructor() {
     const [shellGeo, fixGeo] = buildTunnelGeometry();
     // One unlit material for both (one program): vertex colours carry the
-    // baked light and the emissive rungs.
+    // baked albedo and the emissive rungs; U7's surface shader lights the
+    // shell (kind > 0) and leaves the fixtures (kind 0) as baked.
     const material = new THREE.MeshBasicMaterial({
       vertexColors: true,
       side: THREE.DoubleSide,
       fog: true,
     });
+    material.customProgramCacheKey = () => SHELL_CACHE_KEY;
+    material.onBeforeCompile = (shader) => {
+      shader.uniforms.uTunnelDetail = TUNNEL_DETAIL;
+      shader.vertexShader = shader.vertexShader
+        .replace("#include <common>", `#include <common>\n${SHELL_VERTEX_PARS}`)
+        .replace(
+          "#include <begin_vertex>",
+          `#include <begin_vertex>\n${SHELL_VERTEX}`,
+        );
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          "#include <common>",
+          `#include <common>\n${SHELL_FRAGMENT_PARS}`,
+        )
+        .replace(
+          "#include <color_fragment>",
+          `#include <color_fragment>\n${SHELL_FRAGMENT}`,
+        );
+    };
     this.shell = new THREE.Mesh(shellGeo, material);
     this.fixtures = new THREE.Mesh(fixGeo, material);
     for (const m of [this.shell, this.fixtures]) {
@@ -509,13 +795,16 @@ export class TunnelRenderer {
     this.group.add(this.shell, this.fixtures);
   }
 
-  /** Snap both meshes by whole periods so the camera sits in the middle. */
+  /** Snap both meshes by whole periods so the camera sits in the middle;
+   * U7: and set the bores' air from where the camera is. */
   update(cameraPos: Vec3): void {
     snapToPeriod(this.group, cameraPos);
+    updateTunnelAir(cameraPos);
   }
 
   setQuality(tier: QualityTier): void {
     this.fixtures.visible = QUALITY_PROFILES[tier].tunnelFixtures;
+    setTunnelDetail(tier);
   }
 }
 

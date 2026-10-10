@@ -31,8 +31,8 @@
 // compiled material and THROWS (inside a setTimeout, so its promise never
 // settles) once one is disposed mid-wait — its program is gone with it.
 // window.__ab and every socket handler are live during this await: the
-// bot that yields to a joining human (or a QA `setBots(0)`) arrives as
-// `playerLeft` and disposes that plane's materials, and boot sat out the
+// enemy plane that leaves (W1: shot down, or gone with its carrier) arrives
+// as `playerLeft` and disposes that plane's materials, and boot sat out the
 // whole timeout. The wait below drops a disposed material instead.
 //
 // A1: a shown object that draws NOTHING is still not drawn. Every pool that

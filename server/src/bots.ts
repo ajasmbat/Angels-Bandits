@@ -1,4 +1,4 @@
-// Server-flown backfill bots for one room — pure bookkeeping like room.ts
+// Server-flown bots for one room — pure bookkeeping like room.ts
 // and combat.ts: no sockets, no clocks of its own (tick takes `now`), and no
 // Math.random (per-bot mulberry32 seeded from the room seed), so tests are
 // deterministic.
@@ -51,6 +51,15 @@
 // follows a target it saw go in, and both commit only after a stepFlight
 // rollout of the whole pass — dive in, the bore, the climb out. The
 // controller is a carrot on the bore's centreline at its guide height.
+//
+// W1 Carrier War: in a room these are the carrier's enemy planes. The room
+// (server/src/waves.ts) spawns each one at its launch, hands the brain only
+// the humans as contacts, gives each a QUARRY — the human it hunts: with
+// nothing acquired, the patrol and the settle off the carrier turn the
+// street lattice toward it — and a wave GRADE (aim jitter, reaction and
+// trigger discipline, common/src/waves.ts). The brain itself still flies
+// whatever contacts it is given, so the opt-in bot sim keeps measuring it
+// bot-vs-bot.
 //
 // Bots never send hit claims: tick() emits trigger pulls (BotShot) and
 // applyBotFire routes them through the existing Combat seam — same heat
@@ -249,6 +258,7 @@ import type {
   SpawnState,
 } from "@angels-bandits/common/protocol";
 import { BOT_TUNING } from "@angels-bandits/common/tuning";
+import type { WaveGrade } from "@angels-bandits/common/waves";
 import {
   type Vec3,
   canonicalize,
@@ -793,7 +803,20 @@ interface Bot {
   /** B3: tactics' own seeded stream — salted off the bot's seed like
    * holeRand, so `rand`'s sequence (patrol turns, jitter) is untouched. */
   tacticRand: () => number;
+  /** W1: the human this bot hunts (setQuarries), or null. */
+  quarryId: string | null;
+  /** W1: its wave's grade (setGrade); neutral until set. */
+  grade: WaveGrade;
+  /** W1: trigger discipline's own stream, salted like tacticRand. */
+  fireRand: () => number;
 }
+
+/** A bot with no wave: B3's own aim, reaction and every shot taken. */
+const NEUTRAL_GRADE: WaveGrade = { jitter: 1, reaction: 1, fire: 1 };
+/** W1: the aim-jitter multiplier never leaves this band, whatever style ×
+ * skill × grade multiply to. */
+const JITTER_SCALE_MIN = 0.5;
+const JITTER_SCALE_MAX = 3;
 
 /** B3 telemetry (the bot sim's report): what the tactics actually flew. */
 export interface TacticStats {
@@ -1018,60 +1041,45 @@ export class RoomBots {
       defendCooldownUntil: Number.NEGATIVE_INFINITY,
       dodgeUntil: Number.NEGATIVE_INFINITY,
       tacticRand: mulberry32((botSeed ^ 0x7ac71c5) >>> 0),
+      quarryId: null,
+      grade: NEUTRAL_GRADE,
+      fireRand: mulberry32((botSeed ^ 0x51f1e5) >>> 0),
     });
     return entry;
+  }
+
+  /** The id the next spawn() will mint (W1: a launch is planned for it
+   * before the bot exists). */
+  nextId(): string {
+    return `bot:${this.roomId}:${this.nextIndex}`;
+  }
+
+  /** W1: who each bot hunts (enemy id → human id); a bot left out hunts
+   * nobody. */
+  setQuarries(quarries: ReadonlyMap<string, string>): void {
+    for (const [id, bot] of this.bots) bot.quarryId = quarries.get(id) ?? null;
+  }
+
+  quarryOf(id: string): string | null {
+    return this.bots.get(id)?.quarryId ?? null;
+  }
+
+  /** W1: a bot's own HP (Combat.hpOf) — its contacts are the humans, so
+   * the break-off reads it from here. */
+  setHp(id: string, hp: number): void {
+    const bot = this.bots.get(id);
+    if (bot) bot.hp = hp / MAX_HP;
+  }
+
+  /** W1: a bot's wave grade (aim, reaction, trigger discipline). */
+  setGrade(id: string, grade: WaveGrade): void {
+    const bot = this.bots.get(id);
+    if (bot) bot.grade = grade;
   }
 
   remove(id: string): void {
     this.bots.delete(id);
     this.pincerPrev.delete(id);
-  }
-
-  /**
-   * Sync the population to `desired`: spawn (via `pickSpawn`) or despawn
-   * (idle first — see pickDespawn) until the counts match. The caller
-   * mirrors the returned changes into the room roster and Combat.
-   */
-  syncTo(
-    desired: number,
-    pickSpawn: () => SpawnState,
-  ): { spawned: RosterEntry[]; despawned: string[] } {
-    const spawned: RosterEntry[] = [];
-    const despawned: string[] = [];
-    while (this.bots.size < desired) spawned.push(this.spawn(pickSpawn()));
-    while (this.bots.size > desired) {
-      const victim = this.pickDespawn();
-      if (!victim) break;
-      this.bots.delete(victim);
-      despawned.push(victim);
-    }
-    return { spawned, despawned };
-  }
-
-  /**
-   * The bot that should yield its seat: idle first — PATROL, then RECOVER,
-   * then EVADE, then a bot dogfighting another bot; one ENGAGEd with a human
-   * only as the last resort (a seat must still free up when every bot is).
-   */
-  pickDespawn(): string | null {
-    const rank = (b: Bot): number => {
-      switch (b.state) {
-        case "PATROL":
-          return 0;
-        case "RECOVER":
-          return 1;
-        case "EVADE":
-          return 2;
-        case "ENGAGE":
-          // Bot ids are minted with the "bot:" prefix; humans never contain ":".
-          return b.targetId?.startsWith("bot:") ? 3 : 4;
-      }
-    };
-    let best: Bot | null = null;
-    for (const b of this.bots.values()) {
-      if (!best || rank(b) < rank(best)) best = b;
-    }
-    return best?.entry.id ?? null;
   }
 
   /** The tunnel a bot is flying (U4), or null — read-only, for the sim. */
@@ -1757,7 +1765,8 @@ export class RoomBots {
       }
       bot.state = "PATROL";
       bot.targetId = null;
-      this.canyonPatrol(bot, undefined, true);
+      // W1: a hunter settles down the lattice toward its quarry.
+      this.canyonPatrol(bot, this.quarryPos(bot, contacts), true);
       return;
     }
 
@@ -2022,14 +2031,27 @@ export class RoomBots {
       return;
     }
 
-    // B3: a hurt bot patrols out from under the zeppelin's flak.
+    // B3: a hurt bot patrols out from under the zeppelin's flak. W1: a
+    // hunter with nobody in sight turns the lattice toward its quarry.
     const hurt = this.tactics && bot.hp < BOSS_HURT_HP;
     this.patrol(
       bot,
       now,
       BOT_HOLE_CHANCE,
-      hurt ? this.awayFromBoss(bot, contacts) : undefined,
+      (hurt ? this.awayFromBoss(bot, contacts) : undefined) ??
+        this.quarryPos(bot, contacts),
     );
+  }
+
+  /** W1: where the bot's quarry is, from this tick's contacts (undefined:
+   * no quarry, or it is not in the air). */
+  private quarryPos(
+    bot: Bot,
+    contacts: readonly BotContact[],
+  ): Vec3 | undefined {
+    if (bot.quarryId === null) return undefined;
+    for (const c of contacts) if (c.id === bot.quarryId) return c.pos;
+    return undefined;
   }
 
   /** PATROL: the street lattice. Coming back from a fight, re-join the
@@ -2157,14 +2179,19 @@ export class RoomBots {
   private jitterScale(bot: Bot, target: BotContact): number {
     if (!this.tactics) return 1;
     const skill = target.boss ? 1 : this.skill.jitterScale(target.id);
-    return bot.tuning.jitter * skill;
+    // W1: × its wave's grade, held to a sane band.
+    return clamp(
+      bot.tuning.jitter * skill * bot.grade.jitter,
+      JITTER_SCALE_MIN,
+      JITTER_SCALE_MAX,
+    );
   }
 
   /** First-shot reaction delay against `target`, ms. */
   private reactionMs(bot: Bot, target: BotContact): number {
     if (!this.tactics) return BOT_REACTION_MS;
     const skill = target.boss ? 1 : this.skill.reactionScale(target.id);
-    return BOT_REACTION_MS * bot.tuning.reaction * skill;
+    return BOT_REACTION_MS * bot.tuning.reaction * skill * bot.grade.reaction;
   }
 
   /**
@@ -3574,6 +3601,8 @@ export class RoomBots {
     const fwd = flightForward(bot.flight);
     const along = (lx * fwd.x + ly * fwd.y + lz * fwd.z) / lead;
     if (along < Math.cos(BOT_FIRE_CONE)) return null;
+    // W1: an early wave's trigger discipline lets some lined-up shots go.
+    if (bot.grade.fire < 1 && bot.fireRand() >= bot.grade.fire) return null;
     return {
       botId: bot.entry.id,
       targetId: bot.targetId,

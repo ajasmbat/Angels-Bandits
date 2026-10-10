@@ -11,7 +11,7 @@
 //  - each AREA (a 250 m cell) fires every 4–8 s (C2 constant chaos; X1
 //    shipped 20–40 s), the first one 1–4 s after it goes active;
 //  - city-wide, at most maxInFlight missiles in the air and a gap between
-//    launches (meteors and bombs the C2 chaos director injects ride the same
+//    launches (meteors the C2 chaos director injects ride the same
 //    settle/landing path but never count against either);
 //  - C2: the room's DangerBudget (server/src/danger.ts) must allow it — at
 //    most two missiles near one plane per 30 s, among four lethal events;
@@ -116,7 +116,7 @@ const EROSION_STOP = 0.8;
 const erodes = (t: DirectorTuning): boolean =>
   (t as { erosion?: boolean }).erosion === true;
 
-/** Strikes the director launched itself (meteors and bombs are injected). */
+/** Strikes the director launched itself (meteors are injected). */
 const launched = (m: MissileStrike): boolean =>
   m.kind === "cruise" || m.kind === "artillery";
 
@@ -168,29 +168,17 @@ export class MissileDirector {
     return this.inFlight;
   }
 
-  /** C2: a fresh id from the room's ONE strike id space — meteors and bombs
-   * share it, so a client's missile map never confuses two strikes. */
+  /** C2: a fresh id from the room's ONE strike id space — meteors share
+   * it, so a client's missile map never confuses two strikes. */
   allocId(): number {
     return this.nextId++;
   }
 
-  /** C2: a meteor or bomb the chaos director planned (its id from
+  /** C2: a meteor the chaos director planned (its id from
    * allocId): it lands through settle() like any missile, but never counts
    * against maxInFlight or the launch gap. */
   inject(strike: MissileStrike): void {
     this.inFlight.push(strike);
-  }
-
-  /** C2: drop strikes that will no longer land (a downed bomber's bombs, a
-   * bomb called off at its drop). Returns the ids actually dropped. */
-  cancel(ids: ReadonlySet<number>): number[] {
-    const out: number[] = [];
-    this.inFlight = this.inFlight.filter((m) => {
-      if (!ids.has(m.id)) return true;
-      out.push(m.id);
-      return false;
-    });
-    return out;
   }
 
   /** A plane (re)spawned or came back at `pos`: its area stays quiet and it

@@ -262,6 +262,30 @@ export const VIEWS = [
   // view is pinned every frame in the page (`raf`), not by round trips.
   { name: "sidewalk-closeup", x: 810, z: 1380, y: 8, yaw: 0.08, raf: true },
   { name: "rooftop-skim", x: 1210, z: 500, y: 140, yaw: 1.57, pitch: -0.15 },
+  // DT2 close-ups: a neon roof sign over the x = 200 street (laundry and
+  // pigeons on the same roof), and a masonry wall's graffiti under an ivy
+  // curtain, seen from the sidewalk across. QA camera at `eye`, plane pinned
+  // in the open air behind it, clear weather.
+  {
+    name: "roof-neon",
+    x: 200,
+    z: 960,
+    y: 70,
+    yaw: 0,
+    eye: [205, 58, 910],
+    at: [222, 53.4, 897],
+    weather: "clear",
+  },
+  {
+    name: "graffiti-ivy",
+    x: 200,
+    z: 1700,
+    y: 14,
+    yaw: 0,
+    eye: [196, 9, 1654],
+    at: [180, 8, 1636],
+    weather: "clear",
+  },
   // S6 glass reflections: glass-heavy views (the GLASS archetype clusters of
   // the seed-42 city), a puddled street and the river — the probe's three
   // readers. Each holds the QA camera at `eye` (the plane pinned behind it),

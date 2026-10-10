@@ -11,6 +11,7 @@
 
 import type { Building } from "./city/index";
 import { type MoverField, type MoverKind, collideMovers } from "./city/movers";
+import { gapsOf } from "./city/props";
 import { overChannel } from "./city/river";
 import {
   type CityIndex,
@@ -136,7 +137,8 @@ function solidAt(
   ms: number,
   world: WreckWorld,
 ): { hit: WreckHit; mover?: MoverKind } | null {
-  if (hitsGround(pos, WRECK_RADIUS)) {
+  // D9: through a fallen bridge span's gap, not onto it.
+  if (hitsGround(pos, WRECK_RADIUS, gapsOf(world.movers))) {
     // Below the street over the channel: the water or its walls.
     return { hit: pos.y < 0 && overChannel(pos.z) ? "river" : "ground" };
   }

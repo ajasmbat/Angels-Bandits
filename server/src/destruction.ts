@@ -238,9 +238,10 @@ function createPropRoom(
   cranes: readonly CraneSite[],
   seed: number | undefined,
   trains: readonly TrainLine[],
+  given?: PropLayout,
 ): PropRoom {
-  let layout = NO_PROPS;
-  if (seed !== undefined) {
+  let layout = given ?? NO_PROPS;
+  if (!given && seed !== undefined) {
     layout =
       layoutCache.get(seed) ?? generateProps(seed, buildings, { cranes, trains });
     layoutCache.set(seed, layout);
@@ -276,6 +277,8 @@ export function createRoomCity(
    * train lines, which they stay clear of). Omitted: a room with no props. */
   seed?: number,
   trains: readonly TrainLine[] = [],
+  /** Tests: these props instead of the seed's. */
+  layout?: PropLayout,
 ): RoomCity {
   const copy = cloneCity(buildings);
   const damage = new CityDamage();
@@ -297,7 +300,7 @@ export function createRoomCity(
     chainDepth: new Map(),
     firstDamageAt: new Map(),
     lastStructuralAt: new Map(),
-    props: createPropRoom(buildings, copy, cranes, seed, trains),
+    props: createPropRoom(buildings, copy, cranes, seed, trains, layout),
   };
 }
 

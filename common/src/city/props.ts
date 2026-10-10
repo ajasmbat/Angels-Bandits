@@ -779,6 +779,25 @@ export function generateProps(
   first[PROP_TAXI] = first[PROP_CAR] as number;
   first[PROP_FUEL] = first[PROP_CAR] as number;
 
+  return buildPropLayout(props, {
+    first,
+    roofOf,
+    roofProp,
+    spanLamps,
+    bridges,
+    cranes,
+  });
+}
+
+/**
+ * A layout over `props` (ids = their indices): the block buckets built
+ * here, the per-kind tables as given (empty by default). generateProps'
+ * last step — and how tests hand-build a street of props.
+ */
+export function buildPropLayout(
+  props: readonly Prop[],
+  tables: Partial<Omit<PropLayout, "props" | "buckets">> = {},
+): PropLayout {
   const buckets: number[][] = Array.from({ length: GRID * GRID }, () => []);
   for (const p of props) {
     const bx = wrapGrid(Math.floor(p.x / BLOCK_PITCH));
@@ -788,12 +807,12 @@ export function generateProps(
   return {
     props,
     buckets,
-    first,
-    roofOf,
-    roofProp,
-    spanLamps,
-    bridges,
-    cranes,
+    first: tables.first ?? [],
+    roofOf: tables.roofOf ?? new Map(),
+    roofProp: tables.roofProp ?? new Map(),
+    spanLamps: tables.spanLamps ?? [],
+    bridges: tables.bridges ?? [],
+    cranes: tables.cranes ?? new Map(),
   };
 }
 

@@ -27,7 +27,7 @@ the GPU questions.
 | Perf, phone | `run.mjs --runs 3 --device phone --quality mobile --ab-ref 97883bd` | exit 0; every draw budget ok (chaos 90 / 90); 0 late compiles |
 | Flicker | `flicker.mjs --grid --repeat 3 --ref 97883bd` | PENDING |
 | Black boxes | `blackbox.mjs --device desktop,phone --repeat 3` | PENDING |
-| Soak | `polish.mjs --soak 30 --peers 1 --phone --lab --parity` | PENDING |
+| Soak | `polish.mjs --soak 30 --peers 1 --phone --lab --parity` | 0 errors / 0 page errors / 0 server exceptions; lab and parity clean; exit 1 on client heap only (+17.5 % / +15.2 % / +14.6 %, flat after warm-up: written exception below) |
 
 ## What the gate fixed
 
@@ -198,7 +198,41 @@ PENDING-FLICKER
 
 ## Soak
 
-PENDING-SOAK
+Command: `node tools/perf/polish.mjs --out <dir> --label A3 --soak 30 --peers 1 --phone --lab --parity`.
+It ran on this branch's final code (c5a13ae; later commits are docs only),
+with three headless clients (desktop 1280×720, a 640×360 peer flying the
+scripted spectacle, a DPR-3 touch phone) against the real server: constant
+chaos, carrier waves, forced crashes and settings cycles. The box was at
+load 24–79, and the clients drew 0.5–1.8 fps.
+
+| | desktop | peer | phone | server |
+| --- | --- | --- | --- | --- |
+| console errors / page errors / unallowed warnings | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | stderr empty, alive |
+| heap vs minute 5 (forced GC) | **+17.5 %** | **+15.2 %** | +14.6 % | +9.6 % (limit 20 %) |
+| heap, minute 21 → 29 | 50.41 → 50.79 MB | 51.13 → 51.38 MB | 50.22 → 50.38 MB | RSS median step 0.11 MB/min |
+| DOM / programs / geometries / textures | flat | flat | flat | — |
+| stuck UI | none | none | none | — |
+
+Flight Lab visits at minutes 10 and 20 came back clean (0 leftover rooms,
+0 errors). Late-joiner parity at minutes 11 and 21 had 0 desyncs.
+
+**The verdict is exit 1, on the client-heap heuristic alone**: desktop and
+peer finished just over its 15 %. This is the **written exception** the plan
+allows, because the growth is warm-up, not a leak:
+
+- It decelerates from about 0.6 MB/min over minutes 1–10 to about
+  0.05 MB/min over minutes 21–29. That is +0.4 MB in the last 8 minutes for
+  desktop, +0.25 for the peer and +0.16 for the phone.
+- It has the same size and shape as A2's soaks of the pre-batch code: run
+  E read +16.0 / +16.8 / +16.2 %, and A2's single-client plateau measured
+  +0.12 MB over minutes 20–35. A2 attributed it to the per-building caches
+  filling as a client reaches more of the city, bounded by the city.
+- Renderer resources (geometries 118, textures 47–51, programs 111–112)
+  and DOM nodes did not move after minute 1.
+
+The batch added no growth that A2's soak did not already show. On a quiet
+machine the clients warm up inside the first 5 minutes, so the M3 soak
+(command 9) is expected to pass outright.
 
 ## Follow-ups (not fixed here)
 

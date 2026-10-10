@@ -383,7 +383,12 @@ more than 5 s after it**, over the whole session (warm-up lap included),
 per pass. The target is 0, and any is a non-zero exit, like a draw-budget
 miss.
 
-__LATE__
+**Result** (this branch, `--runs 3 --ab-ref origin/main` over `chaos`,
+`tunnel`, `furball`, `boss` and `ruins`, warm-up laps included): **0 late
+compiles in each of the 3 passes**, and the existing first-sight table
+reads `0p 0t 0b` in every settle and every window. The probe sees links,
+not the driver's lazy pipeline work. The forced warm-up draws are aimed at
+that work, and only the M3's `--samples` run (command 4 above) can show it.
 
 ### Other mid-game allocations (not shipped)
 
@@ -403,4 +408,42 @@ __LATE__
   one-shot event voices, capped by `chaosVoice`. They are fire-and-forget
   by Web Audio's design, and pooling them would change their envelopes.
 
-__PAIRED__
+## The paired run (`run.mjs --runs 3 --ab-ref origin/main`)
+
+```
+node tools/perf/run.mjs --no-build --runs 3 --ab-ref origin/main \
+  --segments chaos,tunnel,furball,boss,ruins --res 1        # exit 0
+```
+
+**The SwiftShader caveat, in full:** this runner has no GPU timer, so every
+GPU column reads 0.0 in both arms, and the harness's own GPU-p50 verdict
+cannot say anything. The box was at load 60–140, so wall p50 moved 235 %
+between passes of the *same* build. The harness flags that as "the machine
+was busy" and fails its determinism line on wall clock, as designed. What
+this run can show:
+
+- **Scene identity holds.** Draw calls are identical between the two
+  builds in every segment whose world is fully pinned: `tunnel` 84 = 84
+  (the asserted segment) and `chaos` 101 = 101, each identical across all
+  3 passes. `furball`, `ruins` and `boss` fly fake pilots on their own wall
+  clock, so they vary pass to pass in **both** arms (ref `boss` 112 / 85 /
+  86, ref `ruins` 152 / 152 / 164; this branch `ruins` 138 / 115 / 152).
+  Their median rows (−3, −37, 0) are that noise, not a change.
+- **No regression it can see:** every budget verdict is `ok`, the room and
+  spectacle staging held, and the destruction table matches field for
+  field (316 damaged slots, 667 debris pieces, 8 collapses in `ruins`).
+- **The late-compile gate reads 0** (above).
+- Wall and JS p50 deltas (−17 % to +16 %) are inside the run's own 235 %
+  pass-to-pass spread. They are not quoted as wins.
+
+The render-side wins (wake loop, train and pool uploads, MoverLights,
+shimmer sight lines) need the M3's GPU columns: run the commands in the
+GPU section. The measurable wins in this PR are the server's: the
+director stall (277 → 70 ms max tick), the bot phase (−21 %), and the
+wire (−20 % per client).
+
+One harness fix came out of getting this run to finish on a loaded
+software-rendered box: `joinGame`'s boot waits are now 180 s (they were
+60 s and 30 s). The boot pre-warm compiles every program synchronously,
+and at load ~130 that held the page's main thread, and so the harness's
+in-page polls, past the old limits on both builds.

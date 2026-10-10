@@ -921,7 +921,7 @@ export class GroundPlane {
     const material = new THREE.MeshStandardMaterial({ roughness: 1 });
     // Three keys its program cache on onBeforeCompile.toString(); an explicit
     // key keeps this patch from colliding with the other patched materials.
-    material.customProgramCacheKey = () => "ab-ground-paint-g1-s6-refl-d9";
+    material.customProgramCacheKey = () => "ab-ground-paint-g1-s6-refl";
     material.onBeforeCompile = (shader) => {
       shader.uniforms.uGroundOrigin = { value: this.origin };
       // L4: the shared weather uniform (render/weather.ts), by reference.

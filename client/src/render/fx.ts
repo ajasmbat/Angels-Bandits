@@ -134,6 +134,8 @@ interface Explosion {
   velocities: Float32Array;
   center: Vec3;
   bornAt: number;
+  /** W2: size multiplier — a bomb load going up is a bigger fireball. */
+  scale: number;
 }
 
 const scratchShell = new THREE.Matrix4();
@@ -206,15 +208,18 @@ export class Explosions {
         velocities: new Float32Array(PARTICLES * 3),
         center: { x: 0, y: 0, z: 0 },
         bornAt: Number.NEGATIVE_INFINITY,
+        scale: 1,
       });
     }
   }
 
-  /** Fire an explosion at a canonical world position. */
-  explode(center: Vec3, now: number): void {
+  /** Fire an explosion at a canonical world position (W2: `scale` sizes
+   * the shell and the ember spray — 1 for a plane's death). */
+  explode(center: Vec3, now: number, scale = 1): void {
     let slot = this.pool[0] as Explosion;
     for (const fx of this.pool) if (fx.bornAt < slot.bornAt) slot = fx;
     slot.bornAt = now;
+    slot.scale = scale;
     slot.center.x = center.x;
     slot.center.y = center.y;
     slot.center.z = center.z;
@@ -223,7 +228,7 @@ export class Explosions {
       const theta = Math.random() * Math.PI * 2;
       const cosPhi = Math.random() * 2 - 1;
       const sinPhi = Math.sqrt(1 - cosPhi * cosPhi);
-      const speed = PARTICLE_SPEED * (0.4 + 0.6 * Math.random());
+      const speed = PARTICLE_SPEED * scale * (0.4 + 0.6 * Math.random());
       slot.velocities[i * 3] = Math.cos(theta) * sinPhi * speed;
       slot.velocities[i * 3 + 1] = (cosPhi * 0.8 + 0.35) * speed;
       slot.velocities[i * 3 + 2] = Math.sin(theta) * sinPhi * speed;
@@ -249,7 +254,7 @@ export class Explosions {
       const p = nearestImageInto(scratchImage, viewer, fx.center);
       // Shell: fast expansion easing out, fading to nothing.
       const ease = 1 - (1 - t) * (1 - t);
-      const r = 0.5 + SHELL_MAX_RADIUS * ease;
+      const r = 0.5 + SHELL_MAX_RADIUS * fx.scale * ease;
       scratchShell.makeScale(r, r, r).setPosition(p.x, p.y, p.z);
       this.shells.setMatrixAt(live, scratchShell);
       this.shells.setColorAt(
@@ -288,6 +293,100 @@ export class Explosions {
     this.embers.geometry.setDrawRange(0, live * PARTICLES);
     this.emberPos.needsUpdate = true;
     this.emberCol.needsUpdate = true;
+    this.group.visible = live > 0;
+  }
+}
+
+/** W2: shock rings — a bomb's blast front racing out across the street or
+ * the roof it hit, and the ring round a bomb load going up in the air. */
+const RING_POOL = 8;
+const RING_LIFE_MS = 650;
+const RING_COLOR = new THREE.Color(0xffd9a0);
+
+interface Ring {
+  center: Vec3;
+  bornAt: number;
+  radius: number;
+}
+
+/**
+ * W2: pooled shock rings — every live ring in ONE draw (an InstancedMesh of
+ * a flat additive annulus, laid level), expanding to its radius and fading
+ * through its colour. Placed at the torus image nearest the viewer every
+ * frame; nothing is drawn at rest.
+ */
+export class ShockRings {
+  readonly group = new THREE.Group();
+  private readonly pool: Ring[] = [];
+  private readonly mesh: THREE.InstancedMesh;
+
+  constructor() {
+    const geo = new THREE.RingGeometry(0.82, 1, 48, 1);
+    geo.rotateX(-Math.PI / 2);
+    this.mesh = new THREE.InstancedMesh(
+      geo,
+      new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      }),
+      RING_POOL,
+    );
+    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    for (let i = 0; i < RING_POOL; i++) this.mesh.setColorAt(i, RING_COLOR);
+    this.mesh.instanceColor?.setUsage(THREE.DynamicDrawUsage);
+    this.mesh.frustumCulled = false;
+    this.group.add(this.mesh);
+    // Hidden until the first ring (boot's prewarm shows it once, so its
+    // program is compiled before a bomb ever lands).
+    this.group.visible = false;
+    for (let i = 0; i < RING_POOL; i++) {
+      this.pool.push({
+        center: { x: 0, y: 0, z: 0 },
+        bornAt: Number.NEGATIVE_INFINITY,
+        radius: 0,
+      });
+    }
+  }
+
+  /** A ring out to `radius` m from a canonical world position. */
+  ring(center: Vec3, radius: number, now: number): void {
+    let slot = this.pool[0] as Ring;
+    for (const r of this.pool) if (r.bornAt < slot.bornAt) slot = r;
+    slot.bornAt = now;
+    slot.radius = radius;
+    slot.center.x = center.x;
+    slot.center.y = center.y + 0.6;
+    slot.center.z = center.z;
+  }
+
+  /** Rings drawn last frame (QA). */
+  get liveCount(): number {
+    return this.mesh.count;
+  }
+
+  update(viewer: Vec3, now: number): void {
+    let live = 0;
+    for (const r of this.pool) {
+      const age = now - r.bornAt;
+      if (age > RING_LIFE_MS) continue;
+      const t = age / RING_LIFE_MS;
+      const p = nearestImageInto(scratchImage, viewer, r.center);
+      const k = 1 - (1 - t) * (1 - t) * (1 - t);
+      const s = 1 + r.radius * k;
+      scratchShell.makeScale(s, 1, s).setPosition(p.x, p.y, p.z);
+      this.mesh.setMatrixAt(live, scratchShell);
+      this.mesh.setColorAt(
+        live,
+        scratchTint.copy(RING_COLOR).multiplyScalar(0.9 * (1 - t)),
+      );
+      live++;
+    }
+    this.mesh.count = live;
+    this.mesh.instanceMatrix.needsUpdate = true;
+    if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
     this.group.visible = live > 0;
   }
 }

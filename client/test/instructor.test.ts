@@ -50,7 +50,7 @@ const DEG = Math.PI / 180;
 // F10: these are the F6/F7 instructor behaviours flown through the camera
 // that ROLLS with the plane — today the "Camera roll: Follow plane" option
 // (cameraRoll 1); the default horizon-locked camera is
-// instructor-level-camera.test.ts's.
+// camera-horizon.test.ts's.
 beforeAll(() => {
   tuning.cameraRoll = 1;
 });

@@ -72,6 +72,8 @@ describe("F9 settings: assist and feel", () => {
       autoFire: true,
       assist: true,
       feel: "normal",
+      rollLevel: null,
+      cameraRoll: "level",
     });
   });
 

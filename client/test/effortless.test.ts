@@ -19,6 +19,7 @@ import {
   stepFlight,
   turnRateAt,
 } from "@angels-bandits/common/flight";
+import { BOT_TUNING } from "@angels-bandits/common/tuning";
 import { describe, expect, it } from "vitest";
 import {
   type EffortlessFrame,
@@ -48,6 +49,12 @@ import {
 
 const DEG = Math.PI / 180;
 const DT = 1 / 60;
+/** The flight model F9 was built on: F10 gave the PLAYER a held bank, a
+ * faster roll and bank-and-pull, and moved wing levelling into
+ * roll-control.ts (main zeroes this module's idle roll). These tests prove
+ * F9's own shaping, so they fly the pre-F10 roll model it shaped — the one
+ * the bots still fly. */
+const F9_FLIGHT = BOT_TUNING;
 const NORMAL = FEEL_TUNING.normal;
 
 /** Level-ish flight at 300 m with a real roll of `roll` (no cosmetic
@@ -117,7 +124,7 @@ function flyStick(
       frame.pitchRate,
       cmd,
     );
-    f = stepFlight(f, { ...cmd, throttle: AUTO_THROTTLE }, DT);
+    f = stepFlight(f, { ...cmd, throttle: AUTO_THROTTLE }, DT, F9_FLIGHT);
     poses.push(f);
   }
   return poses;
@@ -195,7 +202,7 @@ describe("auto-level (F9): no input → wings level, level flight within 2 s", (
         roll: 0,
       };
       effortlessCommand(out, realRoll(f), cmd);
-      f = stepFlight(f, { ...cmd, throttle: AUTO_THROTTLE }, DT);
+      f = stepFlight(f, { ...cmd, throttle: AUTO_THROTTLE }, DT, F9_FLIGHT);
     }
     return f;
   }
@@ -237,7 +244,7 @@ describe("auto-level (F9): no input → wings level, level flight within 2 s", (
       ins = instructorInput(err, none, false, DT, ins, rates, NORMAL);
       const cmd = { turn: ins.turn, pitch: ins.pitch, roll: 0 };
       effortlessCommand(out, realRoll(f), cmd);
-      f = stepFlight(f, { ...cmd, throttle: AUTO_THROTTLE }, DT);
+      f = stepFlight(f, { ...cmd, throttle: AUTO_THROTTLE }, DT, F9_FLIGHT);
     }
     levelled(f);
   });

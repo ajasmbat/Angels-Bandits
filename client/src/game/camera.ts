@@ -34,8 +34,8 @@
 // elevation stays within ARM_MAX_ELEV of the horizon, and while the nose is
 // steeper than STEEP_PITCH its heading holds — so a loop swings the look
 // direction round the top (at most SWING_MAX rad/s), with no roll and no
-// flip; `swinging` tells main to latch that swing as a reframe, so the
-// mouse-aim instructor is not kicked by it. The look-at is always the plane.
+// flip. The look-at is always the plane. (The mouse aim through this camera
+// stays on its own side of the zenith: instructor.ts levelAim.)
 
 import type { Collapse } from "@angels-bandits/common/city/collapse";
 import { COLLAPSE_LEAD_MS } from "@angels-bandits/common/constants";
@@ -97,8 +97,6 @@ const ARM_MAX_ELEV = (75 * Math.PI) / 180;
 const STEEP_PITCH = (75 * Math.PI) / 180;
 /** …and swings toward a new one at most this fast, rad/s. */
 const SWING_MAX = 4;
-/** `swinging` reads true while the heading is this far off its target. */
-const SWING_REFRAME = (10 * Math.PI) / 180;
 const WORLD_UP: Readonly<Vec3> = { x: 0, y: 1, z: 0 };
 
 export class ChaseCamera {
@@ -123,8 +121,6 @@ export class ChaseCamera {
   /** LEVEL camera: the arm heading it holds through steep flight, rad
    * (atan2 of the arm's x, z); null until set. */
   private holdHeading: number | null = null;
-  /** LEVEL camera: how far the arm's heading is off its target, rad. */
-  private swingLeft = 0;
   /** What the spring arm may not pass through; unset = no arm. */
   solid: SolidQuery | null = null;
 
@@ -136,12 +132,6 @@ export class ChaseCamera {
   /** The camera's current (eased) up, unit — world-up in level flight. */
   get up(): Vec3 {
     return this.upV;
-  }
-
-  /** LEVEL camera: the arm is swinging round to a new heading over the
-   * top of a loop — a reframe the instructor should latch (F10). */
-  get swinging(): boolean {
-    return Math.abs(this.swingLeft) > SWING_REFRAME;
   }
 
   /** Hold the eye at `eye` (canonical) — a kill-cam that rides something
@@ -157,7 +147,6 @@ export class ChaseCamera {
     this.upV = upTarget(state);
     this.dir = chaseDir(flightForward(state), this.upV);
     this.holdHeading = null;
-    this.swingLeft = 0;
     if (tuning.cameraRoll <= 0) this.dir = this.levelDir(state, this.dir, 1, 0);
     this.len = chaseDistance(state.speed);
     this.place(state);
@@ -256,7 +245,6 @@ export class ChaseCamera {
       // F10 LEVEL: heading/elevation about world-up, off the zenith.
       this.dir = this.levelDir(state, this.dir as Vec3, blend, dt);
     } else {
-      this.swingLeft = 0;
       this.holdHeading = null;
       const want = chaseDir(fwd, up);
       const d = this.dir as Vec3;
@@ -376,7 +364,6 @@ export class ChaseCamera {
     const step = dt > 0 ? clampAbs(off * blend, SWING_MAX * dt) : off * blend;
     const h = head + step;
     const e = clampAbs(elev + (wantElev - elev) * blend, ARM_MAX_ELEV);
-    this.swingLeft = off - step;
     const ce = Math.cos(e);
     return { x: Math.sin(h) * ce, y: Math.sin(e), z: Math.cos(h) * ce };
   }

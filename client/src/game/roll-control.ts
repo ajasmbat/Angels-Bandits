@@ -10,7 +10,8 @@
 // - A held bank: the flight model no longer levels a released roll (the
 //   player's rollLevelRate is 0). Bank the PILOT put in (keys, snap roll) is
 //   theirs and holds — unless the ROLL AUTO-LEVEL setting is gentle or
-//   strong, which levels it once the keys have been quiet rollLevelDelay s.
+//   strong, which rolls it upright once the keys have been quiet
+//   rollLevelDelay s.
 //   Bank nobody commanded (the mouse's turn about the body's up near
 //   vertical, a loop's gimbal flip, the instructor's own bank-and-pull once
 //   it lets go) is always levelled at F7's old self-levelling rate, so a
@@ -131,12 +132,23 @@ export function snapTarget(roll: number, side: number, step: number): number {
   return wrapAngle(n * step);
 }
 
-/** Stick that levels `roll` at `rate` 1/s toward the nearest of upright or
- * inverted (F7's self-levelling, done by input), scaled by cos(pitch) — at
- * vertical "level" has no direction. Exactly 0 once there. */
-export function levelStick(roll: number, pitch: number, rate: number): number {
+/** Stick that levels `roll` at `rate` 1/s, scaled by cos(pitch) — at
+ * vertical "level" has no direction. `upright` levels to wings-up (the
+ * ROLL AUTO-LEVEL assist); otherwise to the nearest of upright or inverted
+ * (F7's self-levelling, done by input: the top of a loop stays inverted).
+ * Exactly 0 once there. */
+export function levelStick(
+  roll: number,
+  pitch: number,
+  rate: number,
+  upright = false,
+): number {
   const target =
-    Math.abs(roll) <= Math.PI / 2 ? 0 : roll > 0 ? Math.PI : -Math.PI;
+    upright || Math.abs(roll) <= Math.PI / 2
+      ? 0
+      : roll > 0
+        ? Math.PI
+        : -Math.PI;
   const err = target - roll;
   if (Math.abs(err) < LEVEL_DONE) return 0;
   return clamp(
@@ -216,7 +228,7 @@ export function stepRollControl(
       const rate = modeRate(f.mode);
       want =
         rate > 0 && s.quiet >= tuning.rollLevelDelay
-          ? levelStick(roll, f.pitch, rate)
+          ? levelStick(roll, f.pitch, rate, true)
           : 0;
     }
   }
@@ -226,17 +238,16 @@ export function stepRollControl(
 }
 
 /** Move `axis` toward `want`: growing at 1/rollRamp per second, shrinking
- * (and through zero) RELEASE_FASTER × quicker. Exact at the end. */
+ * (to zero, on a reversal) RELEASE_FASTER × quicker. Exact at the end. */
 function slew(axis: number, want: number, dt: number): number {
   const ramp = tuning.rollRamp;
   if (ramp <= 0) return want;
   const up = dt / ramp;
   const down = up * RELEASE_FASTER;
   if (axis !== 0 && Math.sign(want) !== Math.sign(axis)) {
-    // Out toward zero first (a release or a reversal)…
-    const a = Math.sign(axis) * Math.max(0, Math.abs(axis) - down);
-    if (a !== 0 || want === 0) return a;
-    return clamp(want, -up, up); // …and the rest of the frame onward.
+    // Out toward zero first (a release or a reversal); a reversal ramps
+    // up the other way from the next frame.
+    return Math.sign(axis) * Math.max(0, Math.abs(axis) - down);
   }
   const d = want - axis;
   if (Math.abs(want) < Math.abs(axis)) {

@@ -216,8 +216,7 @@ const scratchScale = new THREE.Vector3();
 /**
  * The instance matrix of one yaw-only box, placed at its torus image nearest
  * the viewer: a unit cube scaled to the box's full extents and turned by its
- * yaw about +Y (MoverBox's Three.js convention). Pure (C2: the bombers draw
- * their boxes with it).
+ * yaw about +Y (MoverBox's Three.js convention). Pure.
  */
 export function boxMatrixInto(
   box: MoverBox,

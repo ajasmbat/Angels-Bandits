@@ -32,8 +32,7 @@
 // D5: and so do the director's warned events (`director`) and its rebuilds,
 // which are applied to `cityDamage` and `collapses` on arrival — in message
 // order, so a `chunks` batch after a rebuild lands after it here too.
-// C2: and the chaos — bomber runs (`bombers`, the mover field's slot; their
-// bombs are missiles), quakes (`quakes`) and the burning chunks (`fires`).
+// C2: and the chaos — quakes (`quakes`) and the burning chunks (`fires`).
 // U6: and the cave-ins (`caveIns`, the mover field's slot).
 
 import {
@@ -50,15 +49,10 @@ import {
   raidMaxHp,
 } from "@angels-bandits/common/boss";
 import {
-  type BomberDown,
   type QuakeEvent,
   type WireChaosState,
-  decodeBomberDown,
-  decodeBomberRun,
   decodeQuake,
-  emptyBomberSlot,
   quakeLive,
-  runEnd,
 } from "@angels-bandits/common/chaos";
 import { CityDamage, decodeChunkIds } from "@angels-bandits/common/city";
 import {
@@ -150,9 +144,6 @@ export interface GameSocketEvents {
   onBossLaunch?: (l: BossLaunch, bot: string) => void;
   /** C2: a quake was announced (already in `quakes`). */
   onQuake?: (q: QuakeEvent) => void;
-  /** C2: a bomber was shot down (already in `bombers`; its undropped bombs
-   * already gone from `missiles`) by `by`. */
-  onBomberDown?: (d: BomberDown, by: string | null) => void;
   /** U6: a cave-in was announced (already in `caveIns`). */
   onCaveIn?: (c: CaveIn) => void;
   /** W2: the socket dropped; reconnecting in the background. */
@@ -238,8 +229,7 @@ export class GameSocket {
    * that carried any. A quiet city (AB_QUIET_CITY) sends none, so a segment
    * that saw this move measured something the harness did not stage. */
   serverDestruction = 0;
-  /** P4: C2 chaos messages received (bombers, downs, called-off bombs,
-   * quakes, fires; meteors arrive as `missile`, counted above) — a quiet
+  /** P4: C2 chaos messages received (quakes, fires; meteors arrive as `missile`, counted above) — a quiet
    * city sends none, so a chaos segment's window must see none. */
   serverChaos = 0;
   /** D6 (perf harness): sessions resumed after a drop (W2) — a resume
@@ -253,10 +243,8 @@ export class GameSocket {
   readonly boss = emptyBossSlot();
   bossHp: number[] = [];
   readonly flak = new Map<number, BossFlak>();
-  /** C2: the room's bomber runs and downed ships (the mover field holds
-   * this very slot), the quakes announced and not yet over, and the
-   * burning chunks — kept from every welcome and message, listening or not. */
-  readonly bombers = emptyBomberSlot();
+  /** C2: the quakes announced and not yet over, and the burning chunks —
+   * kept from every welcome and message, listening or not. */
   readonly quakes = new Map<number, QuakeEvent>();
   readonly fires = new Set<number>();
   /** U6: the room's live cave-ins (the mover field holds this very slot) —
@@ -508,22 +496,12 @@ export class GameSocket {
     this.events.onCollapse?.(c);
   }
 
-  /** C2: a welcome's chaos — the runs and downs, quakes and fires REPLACE
+  /** C2: a welcome's chaos — the quakes and fires REPLACE
    * what was held (a resume may land in another room, or a calmer one). */
   private replayChaos(state: WireChaosState | undefined): void {
-    this.bombers.runs.length = 0;
-    this.bombers.downs.length = 0;
     this.quakes.clear();
     this.fires.clear();
     if (!state) return;
-    for (const w of Array.isArray(state.runs) ? state.runs : []) {
-      const r = decodeBomberRun(w);
-      if (r) this.bombers.runs.push(r);
-    }
-    for (const w of Array.isArray(state.downs) ? state.downs : []) {
-      const d = decodeBomberDown(w);
-      if (d) this.bombers.downs.push(d);
-    }
     for (const w of Array.isArray(state.quakes) ? state.quakes : []) {
       const q = decodeQuake(w);
       if (q) this.quakes.set(q.id, q);
@@ -541,7 +519,7 @@ export class GameSocket {
     }
   }
 
-  /** C2: forget runs and quakes that are long over at server time `t` (the
+  /** C2: forget quakes that are long over at server time `t` (the
    * frame loop calls this; nothing is allocated when there is none). U6:
    * and cave-ins that have settled away. */
   pruneChaos(t: number): void {
@@ -550,16 +528,6 @@ export class GameSocket {
     const ls = this.boss.launches;
     if (ls && ls.length > 0 && launchDoneAt(ls[0] as BossLaunch) < t) {
       this.boss.launches = ls.filter((l) => launchDoneAt(l) >= t);
-    }
-    const runs = this.bombers.runs;
-    for (let i = runs.length - 1; i >= 0; i--) {
-      const r = runs[i];
-      if (!r || t <= runEnd(r) + 5000) continue;
-      runs.splice(i, 1);
-      const downs = this.bombers.downs;
-      for (let j = downs.length - 1; j >= 0; j--) {
-        if (downs[j]?.r === r.id) downs.splice(j, 1);
-      }
     }
     if (this.quakes.size === 0) return;
     prune.quakes = this.quakes;
@@ -673,21 +641,6 @@ export class GameSocket {
     t: number,
   ): void {
     this.send({ type: "bossHit", wp, seq, bulletOrigin, dir, t });
-  }
-
-  /**
-   * C2: one of our rounds met ship `k` of bomber run `run` — the round's
-   * whole line and the render-clock time, like a boss claim.
-   */
-  sendBomberHit(
-    run: number,
-    k: number,
-    bulletOrigin: Vec3,
-    dir: Vec3,
-    seq: number,
-    t: number,
-  ): void {
-    this.send({ type: "bomberHit", run, k, seq, bulletOrigin, dir, t });
   }
 
   /** Report flying into a building or the ground — or (D4) into the
@@ -868,33 +821,6 @@ export class GameSocket {
       case "missile":
         this.serverDestruction++;
         this.addMissiles([msg.m]);
-        break;
-      case "bombers": {
-        this.serverChaos++;
-        const r = decodeBomberRun(msg.r);
-        if (r && !this.bombers.runs.some((x) => x.id === r.id)) {
-          this.bombers.runs.push(r);
-        }
-        this.addMissiles(Array.isArray(msg.b) ? msg.b : []);
-        break;
-      }
-      case "bomberDown": {
-        this.serverChaos++;
-        const d = decodeBomberDown(msg.d);
-        if (d) {
-          this.bombers.downs.push(d);
-          for (const id of Array.isArray(msg.off) ? msg.off : []) {
-            this.missiles.delete(id);
-          }
-          this.events.onBomberDown?.(d, msg.by ?? null);
-        }
-        break;
-      }
-      case "bombsOff":
-        this.serverChaos++;
-        for (const id of Array.isArray(msg.ids) ? msg.ids : []) {
-          this.missiles.delete(id);
-        }
         break;
       case "quake": {
         this.serverChaos++;

@@ -293,13 +293,6 @@ export class MissileRenderer {
     }
   }
 
-  /** C2: a strike that will not land (a downed bomber's bomb, one called
-   * off): forget its per-strike state. */
-  drop(id: number): void {
-    this.fireAcc.delete(id);
-    this.trailKeys.delete(id);
-  }
-
   /** One stable trail id per missile (no per-frame string building). */
   private trailKey(id: number): string {
     let key = this.trailKeys.get(id);

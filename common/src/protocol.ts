@@ -11,12 +11,7 @@ import type {
   WireFlak,
   WireLaunch,
 } from "./boss";
-import type {
-  WireBomberDown,
-  WireBomberRun,
-  WireChaosState,
-  WireQuake,
-} from "./chaos";
+import type { WireChaosState, WireQuake } from "./chaos";
 import type { WireCaveIn } from "./city/caveins";
 import type { CollapseWire } from "./city/collapse";
 import type { NewsHeliSlot, NewsHeliTarget } from "./city/newsheli";
@@ -213,25 +208,9 @@ export interface BossHitMsg {
   t: number;
 }
 
-/**
- * C2: a shooter-side hit claim on ship `k` of bomber run `run` — like a
- * boss claim, the round's whole line and the server-clock time `t` it met
- * the ship; the server re-runs it against the formation's own pose.
- */
-export interface BomberHitMsg {
-  type: "bomberHit";
-  run: number;
-  k: number;
-  seq: number;
-  bulletOrigin: Vec3;
-  dir: Vec3;
-  t: number;
-}
-
 export type ClientMsg =
   | JoinMsg
   | BossHitMsg
-  | BomberHitMsg
   | PingMsg
   | AwayMsg
   | PoseMsg
@@ -312,9 +291,8 @@ export interface WelcomeMsg {
    * null when the room has none, so a resume into another room clears the
    * old room's boss. */
   boss?: WireBossState | null;
-  /** C2: the room's bomber runs (and the ships shot down), quakes still to
-   * come or shaking, and the burning chunks — so a late joiner sees, hears
-   * and collides with the same chaos. Their bombs and meteors ride
+  /** C2: the room's quakes still to come or shaking, and the burning
+   * chunks — so a late joiner sees and hears the same chaos. Meteors ride
    * `missiles`. Absent: none (and a resume clears what it held). */
   chaos?: WireChaosState;
   /** U6: the room's live cave-ins (common/src/city/caveins.ts), so a late
@@ -497,7 +475,7 @@ export interface DeathMsg {
   killerId: string | null;
   /** `"flak"` (S4): a sky-boss flak burst — environment, credited only by
    * the crash rule, like a missile. `"meteor"` / `"bomb"` (C2): a meteor's
-   * or a bomber run's bomb's blast, the same. */
+   * or a dropped bomb's blast, the same. */
   cause:
     | "shot"
     | "crash"
@@ -704,36 +682,6 @@ export interface RebuildMsg {
   r: RebuildWire;
 }
 
-/**
- * C2: a bomber run begins (common/src/chaos.ts). The formation's flight is a
- * pure function of `r` and the synced clock; `b` is EVERY bomb it will drop
- * (common/src/strike.ts kind "bomb", each with its drop instant as t0) — one
- * message per run, however many bombs. Clients hold the bombs like any
- * missile and draw each from its drop.
- */
-export interface BombersMsg {
-  type: "bombers";
-  r: WireBomberRun;
-  b: WireMissile[];
-}
-
-/** C2: ship `d` of a run was shot down at `d[2]` by `by`; `off` are its
- * bombs that will no longer drop (drop time after the down) — clients drop
- * them. */
-export interface BomberDownMsg {
-  type: "bomberDown";
-  d: WireBomberDown;
-  by: string | null;
-  off: number[];
-}
-
-/** C2: announced strikes that will not land after all (a bomb called off at
- * its drop because a freshly spawned plane is under it). */
-export interface BombsOffMsg {
-  type: "bombsOff";
-  ids: number[];
-}
-
 /** C2: a quake is coming (common/src/chaos.ts): the ground starts rumbling
  * now and shakes from `q.t` — at least QUAKE_LEAD_MS after this is sent.
  * What it breaks arrives the usual way (`chunks`, `collapse`). */
@@ -762,9 +710,6 @@ export interface CaveInMsg {
 export type ServerMsg =
   | WelcomeMsg
   | CaveInMsg
-  | BombersMsg
-  | BomberDownMsg
-  | BombsOffMsg
   | QuakeMsg
   | FiresMsg
   | DirectorWarnMsg

@@ -1300,8 +1300,7 @@ function slab(o: number, d: number, h: number): boolean {
   return slabT0 <= slabT1;
 }
 
-/** Distance along a unit ray from `o` to an oriented box, or Infinity (C2:
- * the bombers' hit test shares it).
+/** Distance along a unit ray from `o` to an oriented box, or Infinity.
  * `o` is a delta from the box centre in world axes. */
 export function rayBox(
   ox: number,

@@ -28,16 +28,7 @@ import {
   launchReleaseAt,
   launchSpawnAt,
 } from "@angels-bandits/common/boss";
-import {
-  type BomberSlot,
-  blankBomberPose,
-  bomberPoseInto,
-  bomberSpawnClear,
-  emptyBomberSlot,
-  encodeBomberDown,
-  encodeBomberRun,
-  encodeQuake,
-} from "@angels-bandits/common/chaos";
+import { encodeQuake } from "@angels-bandits/common/chaos";
 import {
   encodeChunkIds,
   generateCity,
@@ -150,7 +141,6 @@ import {
   type ChaosPlane,
   applyGoneHold,
   chaosTunings,
-  claimBomberHit,
 } from "./chaos";
 import { CityEventLog, nearBuildingProbe } from "./cityevents";
 import { Combat, type Death, type HitResult, type SpeedCapFn } from "./combat";
@@ -389,8 +379,6 @@ const roomMovers = (room: Room): MoverField => {
       collapses: roomCity(room).collapses,
       // S4: and its sky boss — the director's own slot, mutated in place.
       boss: roomBoss(room).slot,
-      // C2: and its bomber runs — the chaos director's slot, the same way.
-      bombers: roomBombers(room),
       // U6: and its cave-ins — the cave-in director's slot, the same way.
       caveins: roomCaveIns(room),
     };
@@ -494,13 +482,11 @@ const bossWorld = (room: Room): BossWorld => {
   return { buildings: rc.buildings, index: rc.index };
 };
 
-/** S4: a human (re)spawn must never be pointed into the zeppelin's path —
- * C2: nor into a bomber formation's. */
+/** S4: a human (re)spawn must never be pointed into the zeppelin's path. */
 const spawnClearOfBoss =
   (room: Room, now: number) =>
   (pos: Vec3, yaw: number | null): boolean =>
-    bossSpawnClear(roomBoss(room).slot, pos, yaw, RESPAWN_SPEED, now) &&
-    bomberSpawnClear(roomBombers(room), pos, yaw, RESPAWN_SPEED, now);
+    bossSpawnClear(roomBoss(room).slot, pos, yaw, RESPAWN_SPEED, now);
 
 /**
  * Each room's destruction director (D5): timed events near the fight and
@@ -541,10 +527,10 @@ const budgetFor = (room: Room): DangerBudget | undefined => {
 };
 
 /**
- * C2: each room's chaos director (server/src/chaos.ts) — meteors, bomber
- * runs, quakes, spreading fire. Seeded from the room's number like the
- * other directors; null under AB_CHAOS=0. Its bomber slot rides the room's
- * mover field. Created lazily, reset with the room's city, dropped with it.
+ * C2: each room's chaos director (server/src/chaos.ts) — meteors, quakes,
+ * spreading fire. Seeded from the room's number like the other directors;
+ * null under AB_CHAOS=0. Created lazily, reset with the room's city, dropped
+ * with it.
  */
 const chaosByRoom = new Map<string, ChaosDirector>();
 const chaosFor = (room: Room): ChaosDirector | null => {
@@ -560,10 +546,6 @@ const chaosFor = (room: Room): ChaosDirector | null => {
   }
   return c;
 };
-/** The room's bomber slot (an empty one forever with chaos off). */
-const noBombers: BomberSlot = emptyBomberSlot();
-const roomBombers = (room: Room): BomberSlot =>
-  chaosFor(room)?.slot ?? noBombers;
 
 /**
  * U6: each room's cave-in director (server/src/caveins.ts) — the ceiling of
@@ -601,12 +583,12 @@ function noteSpawn(room: Room, id: string, pos: Vec3, now: number): void {
   budgetFor(room)?.noteSpawn(id, now); // C2: nothing lethal near it for 5 s
 }
 
-/** C2: a spawn stays this far from where a strike, meteor or bomb is about
- * to land, m (its blast radius and a margin). */
+/** C2: a spawn stays this far from where a strike or meteor is about to
+ * land, m (its blast radius and a margin). */
 const SPAWN_STRIKE_CLEAR_M = 120;
 
 /** D5: a spawn never lands inside a warned director event's danger zone —
- * C2: nor next to an incoming strike, meteor or bomb. */
+ * C2: nor next to an incoming strike or meteor. */
 const spawnAvoid =
   (room: Room) =>
   (pos: Vec3): boolean =>
@@ -1362,61 +1344,6 @@ function handleBossHit(client: Client, msg: ClientEnvelope, now: number): void {
 }
 
 /**
- * C2: a shooter-side hit on a bomber. The round's whole line is re-judged
- * against the formation's own pose (server/src/chaos.ts claimBomberHit);
- * the ship that runs out of HP goes down at once: its undropped bombs are
- * called off, its shooter credited with a kill.
- */
-function handleBomberHit(
-  client: Client,
-  msg: ClientEnvelope,
-  now: number,
-): void {
-  const chaos = chaosFor(client.room);
-  if (!chaos) return;
-  const { run, k, seq, bulletOrigin, dir, t } = msg;
-  if (typeof run !== "number" || typeof k !== "number") return;
-  if (typeof seq !== "number" || typeof t !== "number") return;
-  if (!Number.isFinite(t) || !isVec3(bulletOrigin) || !isVec3(dir)) return;
-  const hit = claimBomberHit(
-    combat,
-    chaos,
-    missilesFor(client.room).director,
-    client.id,
-    { run, k, seq, origin: bulletOrigin, dir, t },
-    client.pose.pos,
-    now,
-    speedCapOf(client, now),
-  );
-  if (hit?.down) bomberDowned(client.room, hit.down, client.id, hit.cancelled);
-}
-
-/** C2: a bomber is down — everyone sees it go (and its bombs that will no
- * longer drop vanish), its shooter takes a kill, the news heli comes. */
-function bomberDowned(
-  room: Room,
-  down: { r: number; k: number; t: number },
-  by: string | null,
-  off: number[],
-): void {
-  sendToRoom(room, {
-    type: "bomberDown",
-    d: encodeBomberDown(down),
-    by,
-    off,
-  });
-  if (by !== null && room.members.has(by)) {
-    combat.creditKill(by);
-    broadcastScores(room);
-  }
-  const run = roomBombers(room).runs.find((r) => r.id === down.r);
-  if (run) {
-    const at = bomberPoseInto(run, down.k, down.t, blankBomberPose());
-    pendingKillByRoom.set(room.id, { x: at.x, z: at.z });
-  }
-}
-
-/**
  * S4: the sky boss is down. Credit by damage share (common/src/boss.ts
  * bossCredit, pilots still in the room): +1 kill for each dealer with
  * BOSS_CREDIT_MIN_SHARE, SKY-BOSS SLAYER for the top one (no streak, no
@@ -2117,9 +2044,8 @@ function tickRebuilds(room: Room, now: number): void {
 
 /**
  * C2 chaos for one room tick — only while a human is in the room, like all
- * destruction (see breakable): meteors launched (as `missile`), bomber runs
- * (one `bombers` each, every bomb in it), bombs called off, quakes warned,
- * and the tick's fires batch. What quakes and fire break rides the tick's
+ * destruction (see breakable): meteors launched (as `missile`), quakes
+ * warned, and the tick's fires batch. What quakes and fire break rides the tick's
  * `chunks` batch.
  */
 function tickChaos(room: Room, now: number): void {
@@ -2134,20 +2060,9 @@ function tickChaos(room: Room, now: number): void {
     missiles: rm.director,
     budget,
     index: rm.index,
-    obstacles: craneTops(room.seed),
   });
   for (const m of out.meteors) {
     sendToRoom(room, { type: "missile", m: encodeMissile(m) });
-  }
-  for (const { run, bombs } of out.runs) {
-    sendToRoom(room, {
-      type: "bombers",
-      r: encodeBomberRun(run),
-      b: bombs.map(encodeMissile),
-    });
-  }
-  if (out.bombsOff.length > 0) {
-    sendToRoom(room, { type: "bombsOff", ids: out.bombsOff });
   }
   for (const q of out.quakes) {
     sendToRoom(room, { type: "quake", q: encodeQuake(q) });
@@ -2193,24 +2108,6 @@ function tickCaveIns(room: Room, now: number): void {
   const out = director.tick(now, chaosPlanes(room, now), budgetFor(room));
   for (const e of out) sendToRoom(room, { type: "caveIn", c: encodeCaveIn(e) });
 }
-
-/** C2: what a bomber line must clear besides roofs — the crane hubs. */
-const craneTopsBySeed = new Map<
-  number,
-  { x: number; z: number; top: number }[]
->();
-const craneTops = (seed: number) => {
-  let tops = craneTopsBySeed.get(seed);
-  if (!tops) {
-    tops = moversFor(seed).cranes.map((c) => ({
-      x: c.x,
-      z: c.z,
-      top: c.hubY + 3,
-    }));
-    craneTopsBySeed.set(seed, tops);
-  }
-  return tops;
-};
 
 /**
  * D5: a gas main blew: the city's blast reaction (`gas` city event — fire,
@@ -2355,8 +2252,6 @@ wss.on("connection", (ws) => {
       if (!client.pending) handleHitClaim(client, msg, now);
     } else if (msg.type === "bossHit") {
       if (!client.pending) handleBossHit(client, msg, now);
-    } else if (msg.type === "bomberHit") {
-      if (!client.pending) handleBomberHit(client, msg, now);
     } else if (msg.type === "crash") {
       handleCrash(client, msg.t, msg.wreck, now);
     } else if (msg.type === "setBots") {

@@ -9,7 +9,7 @@
 //
 // The scenes are the harness's own (tools/perf/segments.mjs), staged the
 // same way (client/src/game/qa-chaos.ts): the `chaos` segment's missile
-// schedule, meteors, bomber run, quake and fires round the held view; a
+// schedule, meteors, quake and fires round the held view; a
 // viewer gliding down Crosstown's deep bore at 60 m/s past the metro hall
 // (`tunnel`); twelve planes weaving ahead of the view, drawn by the fleet.
 //
@@ -39,7 +39,7 @@ import { readFileSync } from "node:fs";
 import { Session } from "node:inspector/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type QuakeEvent, emptyBomberSlot } from "@angels-bandits/common/chaos";
+import type { QuakeEvent } from "@angels-bandits/common/chaos";
 import { type Building, generateCity } from "@angels-bandits/common/city";
 import { buildCityIndex } from "@angels-bandits/common/collision";
 import { CITY_SEED } from "@angels-bandits/common/constants";
@@ -73,7 +73,6 @@ const { MissileFeed } = await import("../client/src/game/missile-feed");
 const { quakeShakeAmount } = await import("../client/src/game/quake");
 const { collapseShakeOffsetInto } = await import("../client/src/game/camera");
 const { GameSocket } = await import("../client/src/net/socket");
-const { BomberRenderer } = await import("../client/src/render/bombers");
 const { FireRenderer } = await import("../client/src/render/fires");
 const { Explosions, Sparks } = await import("../client/src/render/fx");
 const { Impacts } = await import("../client/src/render/impacts");
@@ -120,20 +119,17 @@ const stage = stageChaos(
 const STRIKES: readonly MissileStrike[] = stage.strikes;
 const held = {
   missiles: new Map<number, MissileStrike>(),
-  bombers: emptyBomberSlot(),
   quakes: new Map<number, QuakeEvent>(),
   fires: new Set<number>(),
 };
 const held2 = {
   missiles: new Map<number, MissileStrike>(),
-  bombers: emptyBomberSlot(),
   quakes: new Map<number, QuakeEvent>(),
   fires: new Set<number>(),
 };
 
 const impacts = new Impacts();
 const smoke = new SmokeTrails();
-const bombers = new BomberRenderer(impacts, () => {});
 const fires = new FireRenderer(impacts, buildings);
 const missiles = new MissileRenderer(smoke, impacts);
 const feed = new MissileFeed();
@@ -233,17 +229,6 @@ const ENTRIES: { name: string; step: Step; reset?: () => void }[] = [
     },
   },
   {
-    name: "C2 bombers.update (formation)",
-    step: (f) => {
-      const { ms, now } = frameAt(f);
-      bombers.update(held.bombers, held3, ms, now);
-    },
-    reset: () => {
-      held.bombers.runs.length = 0;
-      if (stage.run) held.bombers.runs.push(stage.run);
-    },
-  },
-  {
     name: "C2 fires.update (12 chunks)",
     step: (f) => {
       const { now } = frameAt(f);
@@ -291,8 +276,6 @@ const ENTRIES: { name: string; step: Step; reset?: () => void }[] = [
       GameSocket.prototype.pruneChaos.call(held as never, ms);
     },
     reset: () => {
-      held.bombers.runs.length = 0;
-      if (stage.run) held.bombers.runs.push(stage.run);
       if (stage.quake) held.quakes.set(stage.quake.id, stage.quake);
     },
   },

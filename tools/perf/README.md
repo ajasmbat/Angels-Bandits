@@ -671,8 +671,8 @@ Two rules every tier obeys:
 | S6 glass reflections — neon skyline in glass, puddles, river | 1 probe face a frame | ½ a face | ⅓ of a face | off (no probe pass; faked reflections) |
 | S7 kill-streak smoke | full | full | 50 % of the puffs | 50 % of the puffs |
 | S7 medals, announcer, streak callouts | full | full | full | full (DOM and audio, no draw) |
-| C2 chaos — meteors, bombs, bombers and their lights, quake shake | full | full | full | full (the telegraphs and the solids) |
-| C2 chaos — meteor fire trails, spreading fires, downed-bomber bursts | full | 75 % | 50 % | 30 % (into the D1 pool, no draw) |
+| C2 chaos — meteors, bombs, quake shake | full | full | full | full (the telegraphs) |
+| C2 chaos — meteor fire trails, spreading fires | full | 75 % | 50 % | 30 % (into the D1 pool, no draw) |
 | U4 tunnels — the concrete shell (walls, ramps, lintels) | full | full | full | full (solid) |
 | U4 tunnels — light fixtures (strips, guide and portal lights) | full | full | full | off |
 | U5 underground life — gardens, vines, glowing plants, fireflies, birds, station people | full | full | core + detail bands | core band (the hall, its glass, panels, waterfalls, the lake) |
@@ -2203,9 +2203,6 @@ pinned world clock, and it goes through the **server's own planners**.
   target comes from `pickMissileTarget` and its path from `planMissile`,
   on a stream seeded from (seed, k).
 - **Meteors:** `planMeteor` onto roofs near the aim point.
-- **Bomber run:** `planBomberRun` places it so its carpet is centred
-  ahead of the view at a known instant, and `bombDrops` gives every bomb
-  with the server's own raycast height.
 - **Quake:** one quake shakes the whole window.
 - **Fires:** named chunks burn.
 
@@ -2218,15 +2215,15 @@ world clock, so the shake is the same on every pass.
 
 Each spot was checked offline against the shared collision, and came back
 clear. The check ran `touchesSolid` over the city, trees and every mover,
-plus the staged collapse, the staged bombers and the staged boss hull. It
+plus the staged collapse and the staged boss hull. It
 sampled every 50 ms from 1 s before the segment's instant to 12 s after,
 at both the pass's instant and the warm-up's.
 
 | segment | what | how it stays repeatable |
 | --- | --- | --- |
-| `chaos` | **peak chaos** from D6's `collapse` view, held at 110 m: building 343 (215 m) topples across the street ahead and burns at 303's street face. The war zeppelin crosses 520 m out with its flak (S8's staging), 11 fake pilots weave 70–230 m ahead at 120–200 m, a missile launches every second (4–5 in the air), a meteor every 2.5 s, a three-ship bomber run crosses along z = 400 at 250 m dropping a 24-bomb carpet, and a quake shakes the view | all staged on the world clock. The pilots hold their fire (a tracer is a draw on their wall clock) and stay inside the plane LOD's near band, so the fleet's draws are constant |
+| `chaos` | **peak chaos** from D6's `collapse` view, held at 110 m: building 343 (215 m) topples across the street ahead and burns at 303's street face. The war zeppelin crosses 520 m out with its flak (S8's staging), 11 fake pilots weave 70–230 m ahead at 120–200 m, a missile launches every second (4–5 in the air), a meteor every 2.5 s, and a quake shakes the view | all staged on the world clock. The pilots hold their fire (a tracer is a draw on their wall clock) and stay inside the plane LOD's near band, so the fleet's draws are constant |
 | `tunnel` | Crosstown's deep bore at 60 m/s from s = 330, past the metro hall, held at s = 660 | a glide on the bore's own guide line (`__ab.tunnelPose`) on the **world** clock: frame n sits at the same point on every pass and on any machine |
-| `exit` | climbing out of Crosstown's east portal into chaos: from under the lintel at 40 m/s up the ramp, out over plaza (8,2), climbing 40° and held 60 m past the lip at 62 m. The zeppelin crosses ahead, a missile a second lands on the blocks past the plaza, plus meteors, a bomber run across x = 2000 and a quake | a world-clock glide like `tunnel`. On a renderer at 1 s a frame, the 5 s window holds ~0.3 s of world time, so the runner sees the mouth and an M3 sees the climb out (a world-clock glide trades coverage for identity) |
+| `exit` | climbing out of Crosstown's east portal into chaos: from under the lintel at 40 m/s up the ramp, out over plaza (8,2), climbing 40° and held 60 m past the lip at 62 m. The zeppelin crosses ahead, a missile a second lands on the blocks past the plaza, plus meteors and a quake | a world-clock glide like `tunnel`. On a renderer at 1 s a frame, the 5 s window holds ~0.3 s of world time, so the runner sees the mouth and an M3 sees the climb out (a world-clock glide trades coverage for identity) |
 
 ### Verdicts and budgets
 
@@ -2234,7 +2231,6 @@ The O3 table gains a `chaos` column. **`chaos`** is read at both ends of
 the window and needs all of:
 
 - at least 3 missiles and a meteor or bomb in the air;
-- the bombers drawn;
 - the quake live;
 - the fires lit;
 - 0 server strikes;
@@ -2266,7 +2262,6 @@ node --import tsx tools/chaos-bench.ts [--where] [--json] [--only=fleet]
 
 | entry point | first run | after | |
 | --- | ---: | ---: | --- |
-| C2 bombers.update (formation) | 0 | 0 | ok |
 | C2 fires.update (12 chunks) | 1 138 B | 239 B | ok |
 | X1/C2 missile feed + missiles.update | 594 B | 143 B | ok |
 | C2 quake shake | 20 B | 31 B | ok |
@@ -2323,6 +2318,8 @@ has a `FEATURE_TIERS` row, and every such row is in the table above word
 for word (`tiers PASS`, 9 rows).
 
 ### Quality tiers
+
+> W1 (Carrier War) retired C2's jet formations. The P4 figures below were measured with them on screen and are kept as measured.
 
 The batch's rows are now in the table above. The C2 and U4/U5 rows were in
 `FEATURE_TIERS` but missing from it. P4 adds four:

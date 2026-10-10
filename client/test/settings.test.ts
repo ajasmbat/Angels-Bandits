@@ -74,6 +74,8 @@ describe("F9 settings: assist and feel", () => {
       feel: "normal",
       rollLevel: null,
       cameraRoll: "level",
+      stickSens: 1,
+      flightData: false,
     });
   });
 

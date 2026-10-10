@@ -17,6 +17,9 @@ import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emulatedMouse, watchTouches } from "./touch-input";
 
+/** W4: the keyboard's trigger. */
+export const FIRE_KEY = "Enter";
+
 /** Gun muzzle in plane-local coords (wings span ±4.5 m, guns just inboard). */
 const GUN_OFFSET_X = 3.5;
 const GUN_OFFSET_Y = 0;
@@ -53,6 +56,21 @@ export class Guns {
     });
     target.addEventListener("blur", () => {
       this.setTrigger(false);
+    });
+    // W4: ENTER is a trigger too (the KEYBOARD scheme's) — never while a
+    // field or button has the focus, nor on the join card, where Enter
+    // means PLAY.
+    target.addEventListener("keydown", (e: KeyboardEvent) => {
+      if (e.code !== FIRE_KEY || e.repeat) return;
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "BUTTON") return;
+      if (target.document?.getElementById("join")?.classList.contains("open")) {
+        return;
+      }
+      this.setTrigger(true);
+    });
+    target.addEventListener("keyup", (e: KeyboardEvent) => {
+      if (e.code === FIRE_KEY) this.setTrigger(false);
     });
   }
 

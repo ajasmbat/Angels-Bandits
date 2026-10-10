@@ -361,6 +361,11 @@ export class GameSocket {
     }, WATCHDOG_MS);
   }
 
+  /** W4: whether the pilot flies in Easy mode — read as each join (the
+   * first, and every resume) is sent, so the server always has it current.
+   * main.ts sets it before connecting. */
+  static easy: () => boolean = () => false;
+
   /** Connect and join; resolves once the server's welcome arrives. Always
    * settles (W1): an error, a close before the welcome, or no welcome within
    * CONNECT_TIMEOUT_MS all reject — a join never hangs on a silent socket.
@@ -397,7 +402,13 @@ export class GameSocket {
           JSON.stringify(
             lab
               ? { type: "join", name, lab: true }
-              : { type: "join", name, resume },
+              : {
+                  type: "join",
+                  name,
+                  resume,
+                  // W4: only when on — absent reads as off on the server.
+                  ...(GameSocket.easy() ? { easy: true } : {}),
+                },
           ),
         ),
       );
@@ -781,6 +792,11 @@ export class GameSocket {
    * answers with is real. */
   sendSetIntensity(level: number): void {
     this.send({ type: "setIntensity", level });
+  }
+
+  /** W4: Easy mode switched on or off. */
+  sendSetEasy(on: boolean): void {
+    this.send({ type: "setEasy", on });
   }
 
   /** FL1: the lab's tuning (a decoded export: JSON.parse(exportTuning(t)))

@@ -125,7 +125,7 @@ describe("Combat.stormKill credit", () => {
     const combat = new Combat();
     combat.addPlayer("p1", 0);
     combat.stormKill("p1", 5000);
-    expect(combat.tick(7400).respawnsDue).toEqual([]); // KILL_CAM_MS = 2500
-    expect(combat.tick(7500).respawnsDue).toEqual(["p1"]);
+    expect(combat.tick(6800).respawnsDue).toEqual([]); // RESPAWN_MS = 1900
+    expect(combat.tick(6900).respawnsDue).toEqual(["p1"]);
   });
 });

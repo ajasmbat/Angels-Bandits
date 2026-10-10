@@ -30,6 +30,7 @@ import {
   OVERHEAT_AT,
   REGEN_DELAY_MS,
   REGEN_RATE,
+  RESPAWN_MS,
   SPAWN_PROTECTION_MS,
   SPEED_TOLERANCE,
 } from "@angels-bandits/common/constants";
@@ -131,6 +132,9 @@ interface PlayerCombat {
   respawnAt: number;
   /** Regen bookkeeping: end of the last window regen was applied over. */
   regenAt: number;
+  /** W4: an enemy plane (registered by addAwaiting) — its death waits
+   * KILL_CAM_MS; a human's respawn comes after RESPAWN_MS. */
+  enemy?: true;
 }
 
 export class Combat {
@@ -166,6 +170,7 @@ export class Combat {
     p.alive = false;
     p.hp = 0;
     p.respawnAt = respawnAt;
+    p.enemy = true;
   }
 
   /** W1: an enemy plane goes down with its carrier — whatever its spawn
@@ -603,7 +608,7 @@ export class Combat {
     victim.alive = false;
     victim.hp = 0;
     victim.deaths++;
-    victim.respawnAt = now + KILL_CAM_MS;
+    victim.respawnAt = now + (victim.enemy ? KILL_CAM_MS : RESPAWN_MS);
     if (killerId !== null) {
       const killer = this.players.get(killerId);
       if (killer) killer.kills++;

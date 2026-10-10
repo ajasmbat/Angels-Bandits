@@ -6,9 +6,8 @@
 // sweep, the bots and the boss is scanned here: it passes a gaps argument,
 // or it is on the allowlist below with its reason and its exact count. The
 // allowlist cannot go stale (an entry matching fewer calls fails), and the
-// bots' ONE gaps-passing call — the physics death check — cannot lose it.
-// The W1 follow-up (gaps in the bot probes) is done when the bots.ts entry
-// is empty.
+// bots — whose probes, rollouts and sight lines all see the gap, like their
+// physics death check — have no entry at all.
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
@@ -24,10 +23,6 @@ const GAPS_ARG: Record<string, number> = {
 
 /** Calls that deliberately keep a fallen span solid, per file and function. */
 const ALLOW: Record<string, { calls: Record<string, number>; why: string }> = {
-  "server/src/bots.ts": {
-    calls: { hitsGround: 9, losClear: 2 },
-    why: "bot probes, rollouts and sight lines keep the deck (conservative: a gap is only avoided, never entered); the physics death check passes it — W1 follow-up",
-  },
   "server/src/boss.ts": {
     calls: { losClear: 1 },
     why: "turret sight lines from the zeppelin's altitude; a deck gap changes nothing up there",
@@ -131,8 +126,9 @@ describe("D9 bridge gaps reach every collision that kills or scores", () => {
     }
   });
 
-  it("keeps the bots' physics death check on the gaps", () => {
-    expect(withGaps.get("server/src/bots.ts")?.hitsGround).toBe(1);
+  it("keeps the bots' death check, probes and sight lines on the gaps", () => {
+    expect(withGaps.get("server/src/bots.ts")?.hitsGround).toBe(10);
+    expect(withGaps.get("server/src/bots.ts")?.losClear).toBe(2);
     expect(withGaps.get("client/src/game/collision.ts")?.hitsGround).toBe(1);
     expect(withGaps.get("common/src/wreck.ts")?.hitsGround).toBe(1);
     expect(withGaps.get("server/src/courses.ts")?.hitsGround).toBe(1);

@@ -804,8 +804,13 @@ export const HEAT_VALIDATION_SLACK = 0.1;
 /** Invulnerability after (re)spawn, ms — canceled the instant that player fires.
  * 5.5 s since F4 (was 4): a fresh pilot gets a beat to find their bearings. */
 export const SPAWN_PROTECTION_MS = 5500;
-/** Kill-cam beat between death and the server-issued respawn, ms. */
+/** Kill-cam beat between death and the server-issued respawn, ms — W4:
+ * now an ENEMY plane's (its exit after a shoot-down); a human's is
+ * RESPAWN_MS. */
 export const KILL_CAM_MS = 2500;
+/** W4: a human pilot's death → respawn, ms. Quick (≤ 2 s even with a
+ * server tick of slack on top) — back in the fight before the frustration. */
+export const RESPAWN_MS = 1900;
 /** Crash within this of last taking damage credits the damager, ms. */
 export const DAMAGE_MEMORY_MS = 8000;
 /** No damage for this long starts health regen, ms. 5 s since F4 (was 8):

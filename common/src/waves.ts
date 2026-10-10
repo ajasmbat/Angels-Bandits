@@ -73,6 +73,10 @@ export interface WaveLevel {
   fire: readonly [number, number];
 }
 
+/** W4: EASY's and NORMAL's first waves start slower to shoot and let
+ * more of their lined-up shots go (reaction / fire) — their aim jitter
+ * already sits at the bots' jitter clamp for a new player, so softening
+ * it further would change nothing. */
 export const WAVE_LEVELS: readonly WaveLevel[] = [
   // EASY
   {
@@ -81,8 +85,8 @@ export const WAVE_LEVELS: readonly WaveLevel[] = [
     growMax: 1,
     cap: 6,
     jitter: [2.2, 1.4],
-    reaction: [1.8, 1.3],
-    fire: [0.35, 0.6],
+    reaction: [2.2, 1.3],
+    fire: [0.25, 0.6],
   },
   // NORMAL
   {
@@ -91,8 +95,8 @@ export const WAVE_LEVELS: readonly WaveLevel[] = [
     growMax: 2,
     cap: 8,
     jitter: [1.8, 1],
-    reaction: [1.5, 1],
-    fire: [0.5, 0.85],
+    reaction: [1.9, 1],
+    fire: [0.35, 0.85],
   },
   // HARD
   {

@@ -259,8 +259,18 @@ body {
 #join.booting #join-name,
 #join.booting button[type="submit"],
 #join.booting #join-primer,
+#join.booting #join-icons,
 #join.booting #join-fs {
   visibility: hidden;
+}
+/* W4 phone: a PLAY the thumb can't miss, and icons at the 44 px floor. */
+body.touch #join button[type="submit"] {
+  min-height: 56px;
+  min-width: 240px;
+}
+body.touch .join-icon {
+  width: 44px;
+  height: 44px;
 }
 /* Touch: the card is smaller and the second searchlight stays dark (the
    landscape phone has no room for both, and fewer blended layers). */
@@ -428,14 +438,16 @@ body.touch #fs-btn {
   left: auto;
 }
 body.touch #boss-bar {
-  top: calc(var(--gut-y) + var(--safe-t) + 54px);
-  width: min(300px, 36vw);
+  /* W4: a bare track under the objective line. */
+  top: calc(var(--gut-y) + var(--safe-t) + 62px);
+  width: min(240px, 30vw);
 }
 body.touch #boss-bar .name {
   font-size: var(--ab-fs-xs);
 }
 body.touch #medal-toast {
-  top: calc(var(--gut-y) + var(--safe-t) + 92px);
+  /* W4: under the top band (the objective line and its bar sit in it). */
+  top: calc(var(--hud-top-band) + 8px);
 }
 
 /* ===== Feedback juice =====================================================

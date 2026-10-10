@@ -1033,11 +1033,19 @@ export function sanitizeAward(msg: AwardMsg): AwardMsg | null {
   const tier = (STREAK_TIERS as readonly unknown[]).includes(msg.tier)
     ? msg.tier
     : undefined;
+  // J1: a combo chain is a whole number ≥ 2; anything else is no combo.
+  const chain =
+    typeof msg.chain === "number" &&
+    Number.isInteger(msg.chain) &&
+    msg.chain >= 2
+      ? Math.min(msg.chain, 99)
+      : undefined;
   return {
     type: "award",
     id: msg.id,
     victimId: msg.victimId,
     medals: [...new Set(medals)],
     ...(tier !== undefined && { tier }),
+    ...(chain !== undefined && { chain }),
   };
 }

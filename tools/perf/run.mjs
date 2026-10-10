@@ -392,6 +392,10 @@ export function abQuery(value) {
   return value;
 }
 
+/** A1: how long joinGame waits for the page to boot, and then for its room
+ * to empty (was 60 s and 30 s). */
+const BOOT_WAIT_MS = 180_000;
+
 async function joinGame(page, url) {
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
@@ -401,8 +405,12 @@ async function joinGame(page, url) {
   await page.goto(url, { waitUntil: "domcontentloaded" });
   await page.fill("#join-name", "PERFBOT");
   await page.click('#join button[type="submit"]');
+  // A1: boot waits sized for a software-rendered page on a loaded box: the
+  // boot pre-warm compiles every program synchronously, and on SwiftShader
+  // at load ~100 that holds the page's main thread (and so these in-page
+  // polls) for tens of seconds. Setup waits, not measurements.
   await page.waitForFunction(() => typeof window.__ab !== "undefined", null, {
-    timeout: 60_000,
+    timeout: BOOT_WAIT_MS,
   });
   // Bots fly a live sim and shoot back — deterministic per room, but their
   // POSES depend on wall-clock timing, so they would smear every segment.
@@ -412,7 +420,7 @@ async function joinGame(page, url) {
     await page.waitForFunction(
       () => window.__ab.combat().targets.length === 0,
       null,
-      { timeout: 30_000 },
+      { timeout: BOOT_WAIT_MS },
     );
   } catch (err) {
     const left = await page.evaluate(() => ({

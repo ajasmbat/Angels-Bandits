@@ -79,7 +79,12 @@
 // against where its target ACTUALLY went, so a target that jinks inside the
 // bullet's flight time dodges it exactly as it would dodge a human's.
 
-import type { BombRunKind } from "@angels-bandits/common/bombs";
+import {
+  BOMB_G_MAX,
+  BOMB_G_MIN,
+  type BombRunKind,
+  bombSurfaceY,
+} from "@angels-bandits/common/bombs";
 import { BOSS_FLAK_RANGE } from "@angels-bandits/common/boss";
 import {
   BOT_STYLE_TUNING,
@@ -443,6 +448,8 @@ const DIVE_IP_MAX = 420;
 const DIVE_AIM_ABOVE = 70;
 const DIVE_ANGLE = (22 * Math.PI) / 180;
 const DIVE_MAX_ANGLE = (35 * Math.PI) / 180;
+/** The height a dive keeps spare over its sink × the bomb's fall, m. */
+const DIVE_SINK_SPARE = 30;
 /** Below this over the roof a dive that has not released pulls out, m. */
 const DIVE_ABORT_ABOVE = 60;
 /** The brain cues a release when its bomb would land within this of the
@@ -1388,16 +1395,28 @@ export class RoomBots {
     const { flight } = bot;
     const fwd = flightForward(flight);
     const lead = (flight.speed * BOMB_FALL_MS) / 2000;
+    const ix = flight.pos.x + fwd.x * lead;
+    const iz = flight.pos.z + fwd.z * lead;
     const miss = Math.hypot(
-      wrapDeltaAxis(run.target.x, flight.pos.x + fwd.x * lead),
-      wrapDeltaAxis(run.target.z, flight.pos.z + fwd.z * lead),
+      wrapDeltaAxis(run.target.x, ix),
+      wrapDeltaAxis(run.target.z, iz),
     );
     if (run.kind === "dive") {
-      return (
-        run.diving &&
-        miss <= DIVE_CUE_M &&
-        flight.pos.y - run.target.y >= DIVE_ABORT_ABOVE
-      );
+      if (
+        !run.diving ||
+        miss > DIVE_CUE_M ||
+        flight.pos.y - run.target.y < DIVE_ABORT_ABOVE
+      ) {
+        return false;
+      }
+      // Inside the bomb's release envelope too, on whatever stands where it
+      // would land (common/src/bombs.ts bombCurveOk): pushed over still
+      // level and high, it would be slammed down — keep diving into it.
+      const fall = BOMB_FALL_MS / 1000;
+      const at = canonicalize({ x: ix, y: 0, z: iz });
+      const h = flight.pos.y - bombSurfaceY(this.cityIndex, at.x, at.z);
+      const g = (2 * (h + fwd.y * flight.speed * fall)) / (fall * fall);
+      return g >= BOMB_G_MIN && g <= BOMB_G_MAX;
     }
     return (
       miss <= CARPET_CUE_M &&
@@ -1453,7 +1472,20 @@ export class RoomBots {
         return false;
       }
       const aim: Vec3 = { x: d.x, y: d.y + DIVE_AIM_ABOVE, z: d.z };
-      aim.y = Math.max(aim.y, -flat * Math.tan(DIVE_MAX_ANGLE));
+      // Never sink faster than the height left can take: a bomb falls its
+      // fixed time, so its release needs |sink|·T ≤ height − a spare
+      // (common/src/bombs.ts BOMB_G_MIN) — the dive shallows as it comes
+      // down instead of arriving too steep to release.
+      const fall = BOMB_FALL_MS / 1000;
+      const sinkMax = Math.max(
+        0,
+        (pos.y - run.target.y - DIVE_SINK_SPARE) / fall,
+      );
+      const down = Math.min(
+        DIVE_MAX_ANGLE,
+        Math.asin(clamp(sinkMax / Math.max(1, bot.flight.speed), 0, 1)),
+      );
+      aim.y = Math.max(aim.y, -flat * Math.tan(down));
       this.steerToward(bot, aim, 0, 0, -1);
       return true;
     }

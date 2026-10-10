@@ -211,6 +211,10 @@ export interface BombStats {
    * timed out, refused by the brain). */
   cancelled: number;
   detonations: number;
+  /** Runs not started: no target near the quarry passed, or the brain
+   * could not take the order. */
+  noTarget: number;
+  brainRefused: number;
   peakInFlight: number;
   /** Releases made within freshClearM of a fresh or protected human, or a
    * target picked so — must stay 0. */
@@ -242,6 +246,8 @@ export class BombDirector {
     refused: {},
     cancelled: 0,
     detonations: 0,
+    noTarget: 0,
+    brainRefused: 0,
     peakInFlight: 0,
     freshViolations: 0,
   };
@@ -324,6 +330,7 @@ export class BombDirector {
 
   /** The brain refused an order: no run after all, a short rest. */
   refused(id: string, now: number): void {
+    this.stats.brainRefused++;
     this.endRun(id, now, this.tuning.refusedRestMs);
   }
 
@@ -380,6 +387,7 @@ export class BombDirector {
           : "carpet";
     const target = this.pickTarget(kind, pick.quarry, humans, now, world);
     if (!target) {
+      this.stats.noTarget++;
       this.restUntil.set(pick.enemy.id, now + t.refusedRestMs);
       return [];
     }

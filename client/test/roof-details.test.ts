@@ -104,6 +104,7 @@ describe("R2 roofs: the height rule", () => {
       const d = roofDetailsFor(b);
       for (const s of b.roof ?? []) {
         if (s.kind === "mast") continue; // roofclutter's mast mesh, from c.masts
+        if (s.kind === "aaNest") continue; // W3: the AA nest renderer's
         const list = s.round ? d.cylinders : d.boxes;
         const body = list.find(
           (p) =>

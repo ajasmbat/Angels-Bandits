@@ -48,6 +48,10 @@ export const EMISSIVE_STROBE = 1.1;
 /** Boost afterburn flame at full burn (F2) — the hottest plane light, still
  * under tracers so a boosting bandit never out-shines its own gunfire. */
 export const EMISSIVE_AFTERBURN = 1.3;
+/** W3 rooftop AA tracer streams and muzzle flashes — the city's own guns
+ * read hot, but a notch under the pilots' tracers so a player's fire stays
+ * the brightest thing in a fight. */
+export const EMISSIVE_AA_TRACER = 1.4;
 export const EMISSIVE_TRACER = 1.5;
 
 // --- Buildings ---

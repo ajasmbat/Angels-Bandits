@@ -35,6 +35,7 @@
 // C2: and the chaos — quakes (`quakes`) and the burning chunks (`fires`).
 // U6: and the cave-ins (`caveIns`, the mover field's slot).
 
+import { type AaBurst, decodeAaBurst } from "@angels-bandits/common/aa";
 import {
   type BossFlak,
   type BossLaunch,
@@ -140,6 +141,9 @@ export interface GameSocketEvents {
   onIntensityConfig?: (msg: IntensityConfigMsg) => void;
   /** W1: the carrier war moved on (already in `waves`). */
   onWaves?: (state: WaveState) => void;
+  /** W3: the rooftop AA nests fired (decoded; cosmetic — the server rolled
+   * the hits). */
+  onAa?: (bursts: AaBurst[]) => void;
   /** L1: a server-accepted event the city reacts to (reactions.ts). */
   onCityEvent?: (event: CityEvent) => void;
   onNewsHeli?: (msg: NewsHeliMsg) => void;
@@ -947,6 +951,15 @@ export class GameSocket {
           this.bossHp = msg.hp;
         }
         break;
+      case "aa": {
+        const bursts: AaBurst[] = [];
+        for (const w of Array.isArray(msg.b) ? msg.b : []) {
+          const b = decodeAaBurst(w);
+          if (b) bursts.push(b);
+        }
+        if (bursts.length > 0) this.events.onAa?.(bursts);
+        break;
+      }
       case "flak":
         for (const w of Array.isArray(msg.f) ? msg.f : []) {
           const f = decodeFlak(w);

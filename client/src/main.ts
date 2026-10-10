@@ -6,6 +6,14 @@
 // respawn message reseeds the flight state far from every enemy.
 
 import {
+  AA_HEAVY,
+  AA_ID,
+  AA_LIGHT,
+  type AaBurst,
+  type AaNest,
+  aaNestsOf,
+} from "@angels-bandits/common/aa";
+import {
   boostLevel,
   boostSpeedCap,
   createBoost,
@@ -300,6 +308,7 @@ import { FlightLab } from "./lab/lab";
 import { FlightMeter } from "./lab/meter";
 import { buildLabRoutes } from "./lab/routes";
 import { GameSocket } from "./net/socket";
+import { AaNestRenderer, type AaNestStats } from "./render/aa-nests";
 import { Airliners } from "./render/airliners";
 import { archetypeFor } from "./render/archetypes";
 import { AtmosphereFx } from "./render/atmosphere-fx";
@@ -1344,6 +1353,26 @@ const ruinSmoke = new RuinSmoke(impacts, city.cityBuildings);
 // hide what went down.
 const propsRenderer = new PropsRenderer(propSlotLive);
 scene.add(propsRenderer.mesh);
+// W3: the rooftop AA nests — bases, guns, searchlights and tracer rounds
+// (four draws for the whole city); bursts off the wire, guns tracking the
+// enemy planes, a heavy shell's burst heard where it bursts.
+const aaNestList = aaNestsOf(propLayout);
+const aaNests = new AaNestRenderer(
+  aaNestList,
+  propSlotLive,
+  city.cityBuildings,
+  impacts,
+  (at) => audio.flakBurst(at, flight.pos, flight.yaw),
+);
+scene.add(aaNests.group);
+/** W3: the enemy planes' drawn positions this frame (reused). */
+const aaEnemyPos: Vec3[] = [];
+/** W3 QA (`__ab.qaAa`): staged nests firing on the render clock. */
+let qaAaStage: {
+  fire: { nest: number; to: Vec3 }[];
+  everyMs: number;
+  next: number;
+} | null = null;
 const scarsRenderer = new ScarsRenderer(
   propSlotLive,
   socket.craters,
@@ -1812,7 +1841,8 @@ whenTouch(() =>
 const players = new Map<string, { name: string; isBot: boolean }>(
   welcome.roster.map((r) => [r.id, { name: r.name, isBot: r.isBot ?? false }]),
 );
-const nameOf = (id: string): string => players.get(id)?.name ?? "???";
+const nameOf = (id: string): string =>
+  id === AA_ID ? "AA NEST" : (players.get(id)?.name ?? "???");
 const isBotOf = (id: string): boolean => players.get(id)?.isBot ?? false;
 /** S1: the name-guarded label a WORLD screen may show (bot callsign or the
  * pilot's alias — never free text; see game/headlines.ts). */
@@ -2247,6 +2277,8 @@ socket.events.onPlayerLeft = (id) => {
   reactor.forgetPlane(id); // A2
 };
 socket.events.onFired = (id) => remoteFired(id);
+// W3: the rooftop guns fired (the server already rolled what they hit).
+socket.events.onAa = (bursts: AaBurst[]) => aaNests.add(bursts);
 socket.events.onDamage = (msg) => {
   if (msg.shooterId === socket.selfId) {
     hud.hitConfirm(performance.now());
@@ -2341,9 +2373,15 @@ socket.events.onDeath = (msg) => {
     msg.killerId === null ? null : nameOf(msg.killerId),
     nameOf(msg.victimId),
     msg.cause,
-    msg.killerId === socket.selfId || msg.victimId === socket.selfId,
+    msg.killerId === socket.selfId ||
+      msg.victimId === socket.selfId ||
+      msg.assist === socket.selfId,
     msg.victimId,
+    // W3: an AA kill's assisting pilot.
+    msg.assist !== undefined ? nameOf(msg.assist) : undefined,
   );
+  // W3: our assist on an AA kill gets the hit marker's kill flash.
+  if (msg.assist === socket.selfId) hud.killConfirm(performance.now());
   if (msg.killerId === socket.selfId && msg.victimId !== socket.selfId) {
     hud.killConfirm(performance.now());
     haptics.kill();
@@ -2372,7 +2410,7 @@ socket.events.onDeath = (msg) => {
     say(maydayCallout(name));
   } else if (msg.killerId === socket.selfId) {
     say(ownKillCallout(name));
-  } else if (msg.killerId !== null) {
+  } else if (msg.killerId !== null && msg.cause !== "aa") {
     say(splashCallout(nameOf(msg.killerId), isBotOf(msg.killerId), true));
   }
 };
@@ -2642,6 +2680,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   );
   fireRenderer.setQuality(QUALITY_PROFILES[tier].chaosFx); // C2
   propsRenderer.setShare(QUALITY_PROFILES[tier].chaosFx); // D9
+  aaNests.setShare(QUALITY_PROFILES[tier].chaosFx); // W3
   scarsRenderer.setShare(QUALITY_PROFILES[tier].chaosFx); // D9
   ruinSmoke.setQuality(QUALITY_PROFILES[tier].chaosFx); // D8
   blastLedger.setBurnCap(burnCapFor(QUALITY_PROFILES[tier].impacts));
@@ -3142,6 +3181,16 @@ declare global {
       /** DT1 QA: pose planes in the world for the turntable, damage and
        * dogfight shots (canonical positions; null clears them). */
       planeShowcase: (list: ShowcasePlane[] | null) => number;
+      /** W3 QA: the rooftop AA nests — counts, manned/destroyed, rounds in
+       * the air, the draws they cost, and every nest's gun pivot. */
+      aaNests: () => AaNestStats & {
+        list: { id: number; x: number; y: number; z: number; heavy: boolean }[];
+      };
+      /** W3 QA: stage nests firing — each entry's nest bursts at `to`
+       * (canonical) every `everyMs` on the render clock; null clears. */
+      qaAa: (
+        spec: { fire: { nest: number; to: Vec3 }[]; everyMs?: number } | null,
+      ) => number;
       /** P4 QA: stage a C2 chaos scene around a held view on the pinned
        * world clock (game/qa-chaos.ts); null clears it. */
       qaChaos: (spec: QaChaosSpec | null) => {
@@ -4144,6 +4193,29 @@ window.__ab = {
         }
       : null,
   planeShowcase: (list) => setShowcase(list),
+  aaNests: () => ({
+    ...aaNests.stats,
+    list: aaNestList.map((n) => ({
+      id: n.id,
+      x: n.x,
+      y: n.y,
+      z: n.z,
+      heavy: n.heavy,
+    })),
+  }),
+  qaAa: (spec) => {
+    aaNests.clear();
+    if (spec === null) {
+      qaAaStage = null;
+      return 0;
+    }
+    qaAaStage = {
+      fire: spec.fire.filter((f) => aaNestList.some((n) => n.id === f.nest)),
+      everyMs: spec.everyMs ?? 900,
+      next: Number.NEGATIVE_INFINITY,
+    };
+    return qaAaStage.fire.length;
+  },
   // P4 QA: stage C2's chaos around a held view on the world clock — a
   // missile schedule, meteors, a quake, fires; null clears it.
   qaChaos: (spec) => {
@@ -5664,6 +5736,30 @@ const frame = (now: number): void => {
   // (The QA eye when one is held: a capture's camera is not the chase.)
   const propsViewer = qaView ? qaView.eye : chase.position;
   propsRenderer.update(propsViewer, renderMs);
+  // W3: the AA nests, their guns on the enemy planes we draw.
+  aaEnemyPos.length = 0;
+  for (const [id, p] of players) {
+    if (!p.isBot) continue;
+    const pose = remotes.poseOf(id);
+    if (pose) aaEnemyPos.push(pose.pos);
+  }
+  aaNests.setNight((skyCycle.state.pools - 0.7) / 0.3); // dusk dim, night full
+  if (qaAaStage && renderMs !== null && renderMs >= qaAaStage.next) {
+    qaAaStage.next = renderMs + qaAaStage.everyMs;
+    const t0 = renderMs;
+    aaNests.add(
+      qaAaStage.fire.map((f) => {
+        const n = aaNestList.find((x) => x.id === f.nest) as AaNest;
+        const gun = n.heavy ? AA_HEAVY : AA_LIGHT;
+        const fl = Math.max(
+          gun.minFuseMs,
+          (wrapDistance(n, f.to) / gun.speed) * 1000,
+        );
+        return { n: f.nest, t0, to: f.to, fl: Math.round(fl) };
+      }),
+    );
+  }
+  aaNests.update(propsViewer, renderMs, now, aaEnemyPos);
   scarsRenderer.update(propsViewer, renderMs, now);
   facadeScars.update(propsViewer, now);
   // S4: the zeppelin, its flak and its fall; the HUD bar while it flies;

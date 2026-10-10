@@ -189,6 +189,10 @@ export interface PropRoom {
   readonly soot: Set<number>;
   /** What this tick produced, drained by tickProps' caller. */
   out: PropsTick;
+  /** W3: does prop `id` shrug off a round fired by `by`? (The room makes
+   * its AA nests deaf to everyone's rounds but the enemy planes'.) Read
+   * only by applyShotDamage — every blast still reaches every prop. */
+  immune?: (id: number, by: string | null) => boolean;
 }
 
 /** D9: what the props did in one tick, in broadcast order. */
@@ -364,14 +368,18 @@ export function applyShotDamage(
     hit ? hit.t : BULLET_RANGE,
   );
   if (prop) {
-    props.slot.state.damage(prop.id, BULLET_DAMAGE, 0, by);
+    if (!props.immune?.(prop.id, by)) {
+      props.slot.state.damage(prop.id, BULLET_DAMAGE, 0, by);
+    }
     return -1;
   }
   if (!hit) return -1;
   if (hit.roof >= 0) {
-    // A roof tank, billboard or mast: its prop takes the round.
+    // A roof tank, billboard, mast or (W3) AA nest: its prop takes the round.
     const id = props.layout.roofProp.get(roofKey(hit.building, hit.roof));
-    if (id !== undefined) props.slot.state.damage(id, BULLET_DAMAGE, 0, by);
+    if (id !== undefined && !props.immune?.(id, by)) {
+      props.slot.state.damage(id, BULLET_DAMAGE, 0, by);
+    }
   }
   if (hit.chunk < 0) return -1;
   if (city.damage.damageChunk(hit.chunk, BULLET_DAMAGE)) {

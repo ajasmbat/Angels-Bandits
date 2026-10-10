@@ -317,6 +317,11 @@ try {
       );
       console.log("showcase", v.name, n);
     }
+    if (v.aa) {
+      // W3: stage the nests firing (repeats on the render clock).
+      const n = await page.evaluate((aa) => window.__ab.qaAa(aa), v.aa);
+      console.log("aa", v.name, n);
+    }
     // U6: stage the cave-in `ago` ms into its life at the view's pinned
     // world time — and again after every pin below: idempotent (it replaces
     // what it staged), and a software-GL frame of seconds can trip the
@@ -494,6 +499,17 @@ try {
       );
       await page.evaluate(() => window.__ab.qaCaveIn(null));
     }
+    console.log(
+      "aaNests",
+      v.name,
+      JSON.stringify(
+        await page.evaluate(() => {
+          const s = window.__ab.aaNests?.();
+          return s && { ...s, list: undefined };
+        }),
+      ),
+    );
+    if (v.aa) await page.evaluate(() => window.__ab.qaAa(null));
     if (v.eye) await page.evaluate(() => window.__ab.qaCamera(null));
     if (v.boss) await page.evaluate(() => window.__ab.qaBoss(null));
     if (v.stage) {

@@ -60,8 +60,8 @@ const ROUND_POOL = 192;
 /** A round flies on past its aim point by this share of its flight. */
 const OVERSHOOT = 0.35;
 /** Streak length (light round, heavy shell), m. */
-const STREAK_LIGHT = 9;
-const STREAK_HEAVY = 6;
+const STREAK_LIGHT = 12;
+const STREAK_HEAVY = 7;
 /** A gun keeps tracking its burst point this long after it fired, ms. */
 const HOLD_MS = 1600;
 /** A downed nest burns this long (tapering), ms, and its fire and smoke
@@ -100,11 +100,11 @@ const M_BOB = 2;
 const SANDBAG = [0x8f7d5a, 0x7f6f50, 0x9a8862];
 const CONCRETE = 0x77756e;
 const CRATE = 0x4b5638;
-const STEEL = 0x30343a;
-const GUNMETAL = 0x22252a;
-const UNIFORM = 0x55603f;
+const STEEL = 0x4a5058;
+const GUNMETAL = 0x3a3f47;
+const UNIFORM = 0x6b7a4c;
 const SKIN = 0xb88a6a;
-const HELMET = 0x3f4a32;
+const HELMET = 0x56643f;
 const CHAR = 0x2a2622;
 const ASH = 0x3d3934;
 const LAMP = 0xfff2c8;
@@ -564,7 +564,7 @@ varying vec3 vN;
 varying vec3 vView;
 void main() {
   float edge = pow(abs(dot(normalize(vN), normalize(vView))), 1.5);
-  float a = (1.0 - vAlong) * (1.0 - vAlong) * edge * 0.22 * uNight;
+  float a = (1.0 - vAlong) * (1.0 - vAlong) * edge * 0.34 * uNight;
   gl_FragColor = vec4(vec3(1.0, 0.95, 0.8) * a, a);
 }`,
       transparent: true,
@@ -575,7 +575,7 @@ void main() {
     this.beams = new THREE.InstancedMesh(cone, this.beamMaterial, n);
 
     // Tracer streaks: a thin cylinder along Y, oriented per round.
-    const streak = new THREE.CylinderGeometry(0.16, 0.16, 1, 5);
+    const streak = new THREE.CylinderGeometry(0.26, 0.26, 1, 5);
     const roundMaterial = new THREE.MeshBasicMaterial({
       color: AA_TRACER_COLOR,
       transparent: true,

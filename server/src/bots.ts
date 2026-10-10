@@ -247,6 +247,7 @@ import type {
   RosterEntry,
   SpawnState,
 } from "@angels-bandits/common/protocol";
+import { BOT_TUNING } from "@angels-bandits/common/tuning";
 import {
   type Vec3,
   canonicalize,
@@ -266,6 +267,14 @@ import type { Combat, HitResult } from "./combat";
 
 /** Sim step, s — bots advance at snapshot cadence (the server's first sim loop). */
 const BOT_DT = 1 / TICK_DOWN_HZ;
+
+/** One bot tick of the shared flight model, on BOT_TUNING (F10): the
+ * players' roll feel — fast roll, a held bank, bank-and-pull, knife-edge
+ * sink — never reaches a bot, so they fly exactly as before. Every bot
+ * step goes through here (server/test/bot-tuning.test.ts). */
+function botStep(f: FlightState, input: FlightInput): FlightState {
+  return stepFlight(f, input, BOT_DT, BOT_TUNING);
+}
 /** D5: a warned event's zone stays a no-fly zone this long after it
  * happens, ms (a probe at arrival time sees past the hand-over to the
  * collapse record's own zone). */
@@ -1340,7 +1349,7 @@ export class RoomBots {
     const free = this.withoutCarrier();
     const runOut = (BOT_SPAWN_CLEAR_AHEAD / spawn.speed) * 1000;
     for (let ms = 0; ms <= graceMs + runOut; ms += BOT_DT * 1000) {
-      f = stepFlight(f, botInput(NEUTRAL), BOT_DT);
+      f = botStep(f, botInput(NEUTRAL));
       const t = at + ms + BOT_DT * 1000;
       const p = f.pos;
       const after = ms >= graceMs;
@@ -1406,7 +1415,7 @@ export class RoomBots {
       }
       // The full F7 envelope only inside a maneuver; otherwise the bots'
       // pitch-limited, roll-free one.
-      bot.flight = stepFlight(bot.flight, raw ?? botInput(bot.input), BOT_DT);
+      bot.flight = botStep(bot.flight, raw ?? botInput(bot.input));
 
       // Identical geometry to players: solids (H1 holes open) + ground, PLAYER_RADIUS —
       // plus the L2 movers a bot is allowed to hit (crane geometry and the
@@ -2204,7 +2213,7 @@ export class RoomBots {
         else tail = k;
       }
       if (tail > 0 && (k - tail) * BOT_DT >= BOT_DEFEND_TAIL_S) return true;
-      f = stepFlight(f, input ?? botInput(NEUTRAL), BOT_DT);
+      f = botStep(f, input ?? botInput(NEUTRAL));
       const t = now + k * BOT_DT * 1000;
       if (
         f.pos.y > BOT_DEFEND_MAX_ALT ||
@@ -2315,7 +2324,7 @@ export class RoomBots {
     let f = flight;
     const steps = Math.ceil((until - now) / (BOT_DT * 1000) + 0.5 / BOT_DT);
     for (let k = 1; k <= steps; k++) {
-      f = stepFlight(f, botInput(input), BOT_DT);
+      f = botStep(f, botInput(input));
       const t = now + k * BOT_DT * 1000;
       if (
         f.pos.y < BOT_MIN_ALT ||
@@ -2360,7 +2369,7 @@ export class RoomBots {
     for (let k = 1; k <= steps; k++) {
       const t0 = now + (k - 1) * BOT_DT * 1000;
       if (t0 > last) return false;
-      f = stepFlight(f, botInput(input), BOT_DT);
+      f = botStep(f, botInput(input));
       if (pointInHazard(f.pos, r, t0, t0 + BOT_DT * 1000, discs)) return true;
     }
     return false;
@@ -2466,7 +2475,7 @@ export class RoomBots {
         if (!next) return thread.out;
         input = next;
       }
-      f = stepFlight(f, botInput(input), BOT_DT);
+      f = botStep(f, botInput(input));
       if (hitsGround(f.pos, r)) return false;
       const t = now + k * BOT_DT * 1000;
       // Below street level outside the river channel is a bore: nothing
@@ -2721,7 +2730,7 @@ export class RoomBots {
         if (!next) return true;
         input = next;
       }
-      f = stepFlight(f, botInput(input), BOT_DT);
+      f = botStep(f, botInput(input));
       const t = now + k * BOT_DT * 1000;
       if (
         hitsGround(f.pos, r) ||
@@ -3413,7 +3422,7 @@ export class RoomBots {
     let next = 0;
     const times = BOT_CANYON_PROBE_TIMES;
     while (next < times.length) {
-      f = stepFlight(f, botInput(bot.input), BOT_DT);
+      f = botStep(f, botInput(bot.input));
       t += BOT_DT;
       if (t + 1e-9 < (times[next] ?? 0)) continue;
       next++;
@@ -3480,7 +3489,7 @@ export class RoomBots {
     let f = flight;
     const steps = Math.round(RECOVER_LOOK_S / BOT_DT);
     for (let k = 1; k <= steps; k++) {
-      f = stepFlight(f, botInput(input), BOT_DT);
+      f = botStep(f, botInput(input));
       const r = PLAYER_RADIUS + BOT_MOVER_CLEAR;
       const at = now + k * BOT_DT * 1000;
       if (

@@ -239,6 +239,21 @@ export const ROLL_RATE = 2.5;
  * 5%), so a half roll left alone stays inverted and a 360° roll ends level.
  * Scaled by cos(pitch): at vertical "level" is undefined and it rests. */
 export const ROLL_LEVEL_RATE = 3;
+/** F10: the player's full A/D roll rate, rad/s (~315°/s): a quarter roll
+ * in ~0.33 s and a full aileron roll in ~1.2 s with the client's roll ramp.
+ * ROLL_RATE / ROLL_LEVEL_RATE above stay the bots' (BOT_TUNING). */
+export const PLAYER_ROLL_RATE = 5.5;
+/** F10 bank-and-pull: pitch rate gain at knife-edge — the full-deflection
+ * pitch rate is PITCH_RATE × (1 + BANK_PULL·sin²(real roll)), so a 90°-bank
+ * pull turns at 2.2 rad/s (a ~41 m radius at 90 m/s) while a wings-level
+ * loop is unchanged. */
+export const BANK_PULL = 1.2;
+/** F10 knife-edge side-force: the sink at 90° bank with no lift, m/s. It
+ * rides on pos.y like MUSH_SINK (the nose is not dragged down), and fades
+ * to nothing with the tuning's knifeLift above its knifeSpeed. */
+export const KNIFE_SINK = 4;
+/** F10: below this airspeed the knife-edge side-force fades, m/s. */
+export const KNIFE_SPEED = 55;
 /** Player collision-sphere radius, meters. */
 export const PLAYER_RADIUS = 2;
 /** Respawn altitude, meters — above every rooftop (tallest landmark is 250 m). */

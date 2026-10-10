@@ -450,6 +450,7 @@ import { Tracers } from "./render/tracers";
 import { Traffic } from "./render/traffic";
 import { PlaneTrails } from "./render/trails";
 import { TrainRenderer } from "./render/train";
+import { TunnelShafts } from "./render/tunnel-shafts";
 import { TunnelRenderer } from "./render/tunnels";
 import { UndergroundLife } from "./render/underground";
 import { WeatherClock, setWeatherUniform } from "./render/weather";
@@ -1074,6 +1075,10 @@ scene.add(tunnels.group);
 // bore; added before prewarm so its programs compile at boot.
 const underground = new UndergroundLife();
 scene.add(underground.group);
+// U7: soft light shafts under the bores' crown lamps and grates (one
+// additive draw; MOBILE drops it), added before prewarm like the rest.
+const tunnelShafts = new TunnelShafts();
+scene.add(tunnelShafts.mesh);
 /** U6 QA (`__ab.qaCaveIn`): staged cave-ins are numbered from here, far
  * above any the server hands out. */
 const QA_CAVEIN_BASE = 900_000_000;
@@ -2641,6 +2646,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   courseGhost.setQuality(tier); // S3: MOBILE keeps the rings, drops the ghost
   atmosphere.setQuality(tier); // S5
   tunnels.setQuality(tier); // U4: MOBILE drops the fixtures
+  tunnelShafts.setQuality(tier); // U7: and the shafts
   fleet?.setQuality(tier); // P4: MOBILE drops the glass and scarf
   underground.setQuality(tier); // U5: bands thin to the core
   reflections.setQuality(tier); // S6: faces per frame; Mobile off
@@ -3529,6 +3535,12 @@ function qaSystems(): {
     ["nature", [natureRenderer.group]],
     ["river", [river.group]],
     ["tunnels", [tunnels.group]],
+    ["tunnelShafts", [tunnelShafts.mesh]], // U7
+    // U7: U5's four draws, one by one (flicker --ablate attributes them).
+    ["undergroundDecor", [underground.decor]],
+    ["undergroundVeil", [underground.veil]],
+    ["undergroundMotes", [underground.motes]],
+    ["undergroundCritters", [underground.critters]],
     ["fountains", [fountains.points]],
     ["searchlights", [searchlights.mesh]],
     ["jumbotrons", [jumbotrons.mesh]],
@@ -5528,7 +5540,8 @@ const frame = (now: number): void => {
   constructionSparks.update(chase.position, renderMs ?? now, microK);
   ground.update(chase.position);
   river.update(chase.position, renderMs, now); // L11
-  tunnels.update(chase.position); // U4
+  tunnels.update(chase.position); // U4 (U7: and the bores' air)
+  tunnelShafts.update(chase.position); // U7
   // U5 — U6: the bats stir for our own plane, where it is drawn.
   underground.update(
     chase.position,

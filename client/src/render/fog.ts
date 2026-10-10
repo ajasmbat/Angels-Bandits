@@ -111,6 +111,35 @@ export const HAZE_PARAMS = new Float32Array([
   HAZE_TINT,
 ]);
 
+/**
+ * U7: the air in the bores — colour (rgb, linear) and strength (a, 0..1,
+ * how deep the camera is under the street) — one shared array like
+ * HAZE_PARAMS, written once a frame by tunnel-look.ts. Below street level a
+ * fogged surface fades toward this air with distance instead of the pale
+ * fog-and-haze, and the linear fog still takes over to reach fogColor
+ * exactly at fogFar (the torus's occlusion guarantee is untouched). Zero
+ * strength (the camera in the open) is exactly the old fog.
+ */
+export const TUNNEL_AIR = new Float32Array([0, 0, 0, 0]);
+/** How fast distance fades into the tunnel air, 1/m. */
+export const AIR_DENSITY = 0.0055;
+
+/** Mirror of the GLSL: how much a fragment at world height `fragY` and
+ * distance `dist` takes of the tunnel air at `strength`, given the linear
+ * fog factor already there. Zero above −1 m and once the fog is complete. */
+export function tunnelAirAmount(
+  strength: number,
+  fragY: number,
+  dist: number,
+  fogFactor: number,
+): number {
+  const u = Math.min(1, Math.max(0, (-1 - fragY) / 7));
+  const under = strength * u * u * (3 - 2 * u);
+  return (
+    under * (1 - Math.exp(-Math.max(0, dist) * AIR_DENSITY)) * (1 - fogFactor)
+  );
+}
+
 /** Set the haze colour (linear rgb) and tint for every fogged material. */
 export function setHaze(color: readonly number[], tint: number): void {
   HAZE_PARAMS[0] = color[0] as number;
@@ -165,6 +194,14 @@ export function installHeightFog(): void {
     }
   }
   (THREE.UniformsLib.fog as Record<string, unknown>).abHazeParams = hazeUniform;
+  // U7: the bores' air rides the same way.
+  const airUniform = { value: TUNNEL_AIR };
+  for (const lib of libs) {
+    if ("fogColor" in lib.uniforms) {
+      (lib.uniforms as Record<string, unknown>).abTunnelAir = airUniform;
+    }
+  }
+  (THREE.UniformsLib.fog as Record<string, unknown>).abTunnelAir = airUniform;
   // L4: the weather's haze uniform on every fogged material. Each ShaderLib
   // entry merged its OWN copy of UniformsLib.fog at import, so patch them all
   // (built-ins clone these per program); UniformsLib.fog covers the
@@ -203,6 +240,7 @@ export function installHeightFog(): void {
 #ifdef USE_FOG
 	uniform vec3 fogColor;
 	uniform vec4 abHazeParams; // L12: haze colour (rgb) + tint (a)
+	uniform vec4 abTunnelAir; // U7: the bores' air (rgb) + strength (a)
 	varying float vFogDepth;
 	varying float vFogWorldY;
 	#ifdef FOG_EXP2
@@ -221,8 +259,13 @@ export function installHeightFog(): void {
 	#else
 		float fogFactor = smoothstep( fogNear, fogFar, vFogDepth );
 	#endif
+	// U7: under the street, the bores' coloured air first (tunnelAirAmount);
+	// then the linear fog, which still reaches fogColor exactly at fogFar.
+	float abUnder = abTunnelAir.a * (1.0 - smoothstep(-8.0, -1.0, vFogWorldY));
+	float abAir = abUnder * (1.0 - exp(-vFogDepth * ${AIR_DENSITY.toFixed(4)}));
+	gl_FragColor.rgb = mix( gl_FragColor.rgb, abTunnelAir.rgb, abAir );
 	gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, fogFactor );
-	float abHaze = abHazeAmount(cameraPosition.y, vFogWorldY, vFogDepth) * (1.0 - fogFactor);
+	float abHaze = abHazeAmount(cameraPosition.y, vFogWorldY, vFogDepth) * (1.0 - fogFactor) * (1.0 - abUnder);
 	vec3 abHazeColor = mix(fogColor, abHazeParams.rgb, abHazeParams.a);
 	gl_FragColor.rgb = mix( gl_FragColor.rgb, abHazeColor, abHaze );
 #endif

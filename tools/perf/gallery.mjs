@@ -2,7 +2,8 @@
 //   npm run build -w client && node tools/perf/gallery.mjs <outDir> [port] [view,view]
 // Uses the cached chromium headless shell on Metal (see tools/perf/README.md;
 // AB_CHROME / AB_CHROME_ARGS point it elsewhere, e.g. SwiftShader on Linux;
-// AB_GALLERY_QUALITY pins a quality tier; AB_GALLERY_QUERY appends raw query
+// AB_GALLERY_QUALITY pins a quality tier; AB_GALLERY_DEVICE=phone shoots the
+// landscape phone profile; AB_GALLERY_QUERY appends raw query
 // params, e.g. `refl=0` for S6's before shots out of the same build).
 // The sky is pinned to deep night (`?sky=night`, L12) so shots never depend
 // on the server's time of night; views with a `sky` field force their own
@@ -222,10 +223,20 @@ try {
       ? process.env.AB_CHROME_ARGS.split(" ")
       : ["--use-angle=metal", "--enable-gpu"],
   });
-  const page = await browser.newPage({
-    viewport: { width: 1280, height: 720 },
-    deviceScaleFactor: 1,
-  });
+  // U7 AB_GALLERY_DEVICE=phone: run.mjs's landscape phone profile (844×390
+  // CSS px, touch, a mobile viewport) at a device ratio of 1 — what a
+  // software-GL box can draw — for phone before/after shots.
+  const phone = process.env.AB_GALLERY_DEVICE === "phone";
+  const page = await browser.newPage(
+    phone
+      ? {
+          viewport: { width: 844, height: 390 },
+          deviceScaleFactor: 1,
+          hasTouch: true,
+          isMobile: true,
+        }
+      : { viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 },
+  );
   page.on("pageerror", (e) => console.error("PAGEERROR", e.message));
   page.on("console", (m) => {
     if (m.type() === "error") console.error("CONSOLE", m.text());

@@ -25,7 +25,11 @@ import {
   demolitionPlan,
 } from "@angels-bandits/common/city/collapse";
 import { jumbotronSites } from "@angels-bandits/common/city/jumbotron-sites";
-import { generateMovers } from "@angels-bandits/common/city/movers";
+import {
+  collideBotMovers,
+  collideMovers,
+  generateMovers,
+} from "@angels-bandits/common/city/movers";
 import {
   FIRE_JUMP_M,
   PROP_BRIDGE,
@@ -316,6 +320,10 @@ describe("D9 solid fallers: draw == collide", () => {
         // Its centre is solid; 3 m beyond its largest half extent is not.
         const c = { x: p.x + pose.x, y: pose.y, z: p.z + pose.z };
         expect(collideProps(c, 0.1, slot, t)?.id).toBe(p.id);
+        // The crash check and the bots see it through the mover field.
+        const field = { cranes: [], aircraft: [], props: slot };
+        expect(collideMovers(c, 0.1, field, t)?.id).toBe(p.id);
+        expect(collideBotMovers(c, 0.1, field, t)?.kind).toMatch(/^prop/);
         const far = Math.max(pose.hx, pose.hy, pose.hz) * 1.8 + 3;
         expect(
           collideProps({ x: c.x, y: c.y + far, z: c.z }, 0.1, slot, t),

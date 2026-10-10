@@ -416,7 +416,9 @@ export class ScarsRenderer {
     }
     // Burning wrecks (the nearest few), and live wires off fallen poles.
     let fires = 0;
-    for (const id of state.downIds()) {
+    const downs = state.downList;
+    for (let i = 0; i < downs.length; i++) {
+      const id = downs[i] as number;
       const p = layout.props[id] as Prop;
       if (isExplosive(p.kind)) {
         const te = state.blastAt(id);

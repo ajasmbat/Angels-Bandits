@@ -1031,6 +1031,9 @@ export class PropState {
   private roofMasks = new Map<number, number>();
   /** Solid fallers that are down, ascending ids. */
   readonly fallers: number[] = [];
+  /** Every prop that is down (stamped), in the order it went down — kept
+   * up to date, so a per-frame walk allocates nothing. */
+  readonly downList: number[] = [];
   /** Bitmask of fallen bridge spans (bit i = bridge i) — river.ts gaps. */
   gapMask = 0;
   /** Props down. */
@@ -1263,6 +1266,7 @@ export class PropState {
 
   private clearEffects(): void {
     this.fallers.length = 0;
+    this.downList.length = 0;
     this.gapMask = 0;
     const buildings = this.buildings;
     if (buildings) {
@@ -1277,6 +1281,9 @@ export class PropState {
   /** What going down (or back up) changes beyond the arrays. */
   private effects(id: number, isDown: boolean): void {
     const p = (this.layout as PropLayout).props[id] as Prop;
+    const k = this.downList.indexOf(id);
+    if (isDown && k < 0) this.downList.push(id);
+    else if (!isDown && k >= 0) this.downList.splice(k, 1);
     if (isFaller(p.kind)) {
       const at = this.fallers.indexOf(id);
       if (isDown && at < 0) {

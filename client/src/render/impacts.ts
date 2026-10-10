@@ -225,7 +225,11 @@ const burnOrder = (a: Burn, b: Burn): number =>
  */
 export class BlastLedger {
   readonly burns: Burn[] = [];
-  private readonly seen = new Set<string>();
+  /** Every death already applied → its server time. Forgotten well after
+   * the server's welcome replay (SMOKE_LIFE_MS) can no longer resend it (A2:
+   * a long session otherwise kept one key per death forever). */
+  private readonly seen = new Map<string, number>();
+  private seenOldest = Number.POSITIVE_INFINITY;
   private burnCap = BURNS_MAX;
 
   constructor(
@@ -236,6 +240,12 @@ export class BlastLedger {
 
   get cap(): number {
     return this.burnCap;
+  }
+
+  /** Deaths still remembered for de-duplication (A2: bounded, not every
+   * death of the session). */
+  get remembered(): number {
+    return this.seen.size;
   }
 
   setBurnCap(cap: number): void {
@@ -253,7 +263,8 @@ export class BlastLedger {
     for (const ev of fresh) {
       const key = `${ev.t}:${ev.x}:${ev.y}:${ev.z}`;
       if (this.seen.has(key)) continue;
-      this.seen.add(key);
+      this.seen.set(key, ev.t);
+      if (ev.t < this.seenOldest) this.seenOldest = ev.t;
       const site = blastFacades(
         this.damage,
         this.buildings,
@@ -280,6 +291,15 @@ export class BlastLedger {
   /** Forget burns that have burnt out by server time `now` — and (D8)
    * mark those whose facade no longer stands. */
   prune(now: number): void {
+    // Swept only once the oldest key is due: no per-frame iterator.
+    if (now - this.seenOldest >= 2 * SMOKE_LIFE_MS) {
+      let oldest = Number.POSITIVE_INFINITY;
+      for (const [key, t] of this.seen) {
+        if (now - t >= 2 * SMOKE_LIFE_MS) this.seen.delete(key);
+        else if (t < oldest) oldest = t;
+      }
+      this.seenOldest = oldest;
+    }
     let kept = 0;
     for (const b of this.burns) {
       if (now - b.t < SMOKE_LIFE_MS) this.burns[kept++] = b;

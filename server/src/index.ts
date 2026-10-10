@@ -187,7 +187,12 @@ import {
   isResumeToken,
   isVec3,
 } from "./guards";
-import { type RespawnEnemy, pickBotRespawn, pickRespawn } from "./respawn";
+import {
+  type RespawnEnemy,
+  pickBotRespawn,
+  pickRespawn,
+  respawnIfUnsafe,
+} from "./respawn";
 import { type Room, RoomManager } from "./room";
 import { createStaticHandler } from "./statics";
 import { StormCeiling } from "./storm";
@@ -196,6 +201,7 @@ import {
   MissileDirector,
   applyMissileImpact,
 } from "./strikes";
+import { createGuard } from "./tick-guard";
 import { poseFromSpawn, roomPoseCap, validatePose } from "./validate";
 import { RoomWrecks, applyWreckImpact, impactPos } from "./wrecks";
 
@@ -228,6 +234,12 @@ const BOSS_RAID_TUNING = TUNINGS.boss;
 
 /** Test-only introspection of the per-room maps (`GET /debug/rooms`). */
 const DEBUG_ROOMS = process.env.AB_DEBUG_ROOMS === "1";
+
+/** A2: `process.memoryUsage()` after a full GC when node exposes one. */
+const memoryAfterGc = (): NodeJS.MemoryUsage => {
+  (globalThis as { gc?: () => void }).gc?.();
+  return process.memoryUsage();
+};
 
 /**
  * D6: AB_QUIET_CITY=1 (the perf harness only — tools/perf/run.mjs): no room's
@@ -1203,6 +1215,24 @@ function broadcastCourseBoard(
  * than from a join it spent loading. */
 function goLive(client: Client, now: number): void {
   client.pending = false;
+  // A2: the join spawn was checked at join; re-check it now the plane is
+  // actually entering the world, and re-place it if danger moved onto it.
+  const spawn = respawnIfUnsafe(
+    client.pose,
+    livingEnemies(client.room, client.id),
+    Math.random,
+    spawnAvoid(client.room),
+    spawnClearOfBoss(client.room, now),
+  );
+  if (spawn) {
+    resetOnRecord(client, spawn, now);
+    sendToRoom(client.room, {
+      type: "respawn",
+      id: client.id,
+      spawn,
+      protectedUntil: now + SPAWN_PROTECTION_MS,
+    });
+  }
   combat.protectFrom(client.id, now);
   noteSpawn(client.room, client.id, client.pose.pos, now);
 }
@@ -2304,6 +2334,21 @@ const server = createServer((req, res) => {
         bossByRoom: [...bossByRoom.keys()],
         chaosByRoom: [...chaosByRoom.keys()],
         budgetsByRoom: [...budgetsByRoom.keys()],
+        caveInsByRoom: [...caveInsByRoom.keys()],
+        // A2: the soak's server samples — memory after a forced GC (when
+        // run with --expose-gc) and each room's damage, which every
+        // member's client must agree with.
+        memory: memoryAfterGc(),
+        damage: Object.fromEntries(
+          [...roomCityById].map(([id, rc]) => [
+            id,
+            {
+              destroyed: rc.damage.destroyedCount,
+              fallen: rc.damage.fallenCount,
+              collapses: rc.collapses.records.length,
+            },
+          ]),
+        ),
       }),
     );
     return;
@@ -2510,6 +2555,8 @@ function tick(): void {
 // past nominal — and a faster tick you don't actually deliver is not a faster
 // tick. BOT_DT assumes this cadence too, so the drift was slowing bots down.
 const TICK_MS = 1000 / TICK_DOWN_HZ;
+// A2: a throw anywhere in the tick must cost one tick, not the process.
+const guardTick = createGuard("tick");
 let nextTickAt = Date.now();
 const scheduleTick = (): void => {
   nextTickAt += TICK_MS;
@@ -2519,7 +2566,7 @@ const scheduleTick = (): void => {
   if (nextTickAt < now) nextTickAt = now + TICK_MS;
   setTimeout(
     () => {
-      tick();
+      guardTick(tick, Date.now());
       scheduleTick();
     },
     Math.max(0, nextTickAt - now),

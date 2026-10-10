@@ -485,11 +485,11 @@ export class GameSocket {
       return;
     }
     this.ws = next.ws;
-    // Missile ids are per room: a resume into another room starts over.
-    if (next.welcome.roomId !== this.welcome.roomId) {
-      this.missiles.clear();
-      this.flak.clear(); // S4: shell ids are per room too
-    }
+    // A welcome's strikes REPLACE what was held, same room or not (A2): a
+    // bomb called off during the drop (`bombsOff`) must not fall on here,
+    // and missile and shell ids are per room besides.
+    this.missiles.clear();
+    this.flak.clear();
     this.welcome = next.welcome;
     this.replayDestruction(next.welcome);
     this.addMissiles(next.welcome.missiles);

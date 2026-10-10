@@ -40,7 +40,8 @@ import {
 } from "../src/boss";
 import { Combat } from "../src/combat";
 import { createRoomCity, tickDestruction } from "../src/destruction";
-import { pickRespawn } from "../src/respawn";
+import { pickRespawn, respawnIfUnsafe } from "../src/respawn";
+import { poseFromSpawn } from "../src/validate";
 
 const city = generateCity(CITY_SEED);
 const world = (() => {
@@ -468,10 +469,67 @@ describe("respawns during a raid", () => {
     ];
     const rand = mulberry32(8);
     for (let n = 0; n < 200; n++) {
-      const spawn = pickRespawn(enemies, rand, (pos, yaw) =>
+      // A2: the hull check is pickRespawn's `clear` (4th) — passed as
+      // `avoid`, its heading came in undefined, every candidate read as
+      // avoided and the far fallback won: the guard was never exercised.
+      const spawn = pickRespawn(enemies, rand, undefined, (pos, yaw) =>
         bossSpawnClear(boss.slot, pos, yaw, 65, t),
       );
       expect(bossSpawnClear(boss.slot, spawn.pos, spawn.yaw, 65, t)).toBe(true);
     }
+  });
+
+  it("a join spawn the raid moved onto is re-placed when the plane goes live (A2)", () => {
+    const { boss, raid } = startedDirector(5);
+    const t = raid.t0 + 60_000;
+    const clear = (pos: Vec3, yaw: number | null) =>
+      bossSpawnClear(boss.slot, pos, yaw, 65, t);
+    const rand = mulberry32(9);
+    // Picked at join somewhere clear, then booted while the hull came over:
+    // held right at a weak point's height beside it now.
+    const heldAt = under(raid, t, 0);
+    expect(clear(heldAt, 0)).toBe(false);
+    const moved = respawnIfUnsafe(
+      poseFromSpawn({ pos: heldAt, yaw: 0, speed: 65 }),
+      [],
+      rand,
+      () => false,
+      clear,
+    );
+    expect(moved).not.toBeNull();
+    expect(clear(moved?.pos as Vec3, moved?.yaw ?? null)).toBe(true);
+    // Still clear at go-live (heading included): left exactly where it is.
+    const fine = pickRespawn([], rand, undefined, clear);
+    expect(
+      respawnIfUnsafe(poseFromSpawn(fine), [], rand, () => false, clear),
+    ).toBeNull();
+    // A warned hazard on it counts the same.
+    expect(
+      respawnIfUnsafe(poseFromSpawn(fine), [], rand, () => true, clear),
+    ).not.toBeNull();
+  });
+});
+
+describe("boss credit across a drop (A2)", () => {
+  it("a W2 drop keeps the pilot's damage for the raid; a new raid starts over", () => {
+    const { boss, raid } = startedDirector(3);
+    const t = raid.t0 + 60_000;
+    expect(boss.damage("s", 0, t, world)).not.toBeNull();
+    // The socket dropped: handleLeave forgets the plane — flak, spawns —
+    // but the pilot may resume and finish the boss inside the raid.
+    boss.forget("s");
+    expect(boss.damageLedger().get("s")).toBe(BULLET_DAMAGE);
+    // bossDowned only ever credits members still in the room, and the
+    // ledger itself is per raid.
+    let next = null;
+    for (
+      let at = raidEnd(raid) + 1;
+      next === null && at < raidEnd(raid) + 3_600_000;
+      at += 5_000
+    ) {
+      next = boss.tick(at, true, [], world).started;
+    }
+    expect(next).not.toBeNull();
+    expect(boss.damageLedger().size).toBe(0);
   });
 });

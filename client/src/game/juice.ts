@@ -375,7 +375,11 @@ export class ExplosionShake {
 
 /** The SCREEN SHAKE setting. */
 export type ShakeSetting = "full" | "reduced" | "off";
-export const SHAKE_SETTINGS: readonly ShakeSetting[] = ["full", "reduced", "off"];
+export const SHAKE_SETTINGS: readonly ShakeSetting[] = [
+  "full",
+  "reduced",
+  "off",
+];
 
 /** The scale every displayed-camera shake gets: reduced motion (or OFF)
  * takes it all away; REDUCED keeps a hint of it. */

@@ -84,10 +84,41 @@ export const LIGHT_MOUNTS = {
   exhaust: { x: -0.53, y: -0.34, z: -2.46 },
 } as const satisfies Record<string, Vec3>;
 
+/** The five mounts every airframe has. */
+export type LightMounts = Record<keyof typeof LIGHT_MOUNTS, Vec3>;
+
+/**
+ * DT1: the enemy fighter-bomber's mounts (fighter.ts, same π turn): the
+ * gull wing's tips at model x = ±5.1, y ≈ −0.32, z ≈ 0.07; the rudder's
+ * trailing edge; the spine behind the gunner; the left bank's last stack.
+ */
+export const ENEMY_LIGHT_MOUNTS: LightMounts = {
+  navL: { x: -5.1, y: -0.32, z: -0.07 },
+  navR: { x: 5.1, y: -0.32, z: -0.07 },
+  tail: { x: 0, y: 0.95, z: 4.85 },
+  strobe: { x: 0, y: 0.68, z: 2.4 },
+  exhaust: { x: -0.68, y: 0.1, z: -2.25 },
+};
+
+/**
+ * DT1: is this plane an enemy (the carrier's fighter-bombers)? Today that is
+ * the server's bots — ids minted with the "bot:" prefix (server/src/bots.ts);
+ * W1's carrier waves keep that seam. Humans fly the biplane.
+ */
+export function isEnemyId(planeId: string): boolean {
+  return planeId.startsWith("bot:");
+}
+
+/** The light (and wingtip-trail) mounts of `planeId`'s airframe. */
+export function lightMountsFor(planeId: string): LightMounts {
+  return isEnemyId(planeId) ? ENEMY_LIGHT_MOUNTS : LIGHT_MOUNTS;
+}
+
 // --- Renderer: one Points draw call for every plane's five lights ---
 
 const LIGHTS_PER_PLANE = 5;
-const CAPACITY = ROOM_CAP * LIGHTS_PER_PLANE;
+/** Every plane the fleet can draw (DT1: enemies on top of a full room). */
+const CAPACITY = (ROOM_CAP + 12) * LIGHTS_PER_PLANE;
 
 /** Concept 1 "Regulation Night Traffic": small steady points, tight halos. */
 const NAV_SIZE = 1.7;
@@ -239,10 +270,11 @@ export class PlaneLights {
   ): void {
     if (this.count + LIGHTS_PER_PLANE > CAPACITY) return;
     scratchQuat.set(quat.x, quat.y, quat.z, quat.w);
+    const mounts = lightMountsFor(planeId);
 
-    this.append(rendered, LIGHT_MOUNTS.navL, redBoost, NAV_SIZE);
-    this.append(rendered, LIGHT_MOUNTS.navR, greenBoost, NAV_SIZE);
-    this.append(rendered, LIGHT_MOUNTS.tail, whiteBoost, TAIL_SIZE);
+    this.append(rendered, mounts.navL, redBoost, NAV_SIZE);
+    this.append(rendered, mounts.navR, greenBoost, NAV_SIZE);
+    this.append(rendered, mounts.tail, whiteBoost, TAIL_SIZE);
 
     // Strobe: synced-clock double flash, phase from the plane id (strobeOn,
     // inline: a double handed to a call V8 does not inline is boxed, per
@@ -255,12 +287,7 @@ export class PlaneLights {
       const off = STROBE_FLASH_OFFSETS[i] as number;
       if (phase >= off && phase < off + STROBE_FLASH_MS) lit = true;
     }
-    this.append(
-      rendered,
-      LIGHT_MOUNTS.strobe,
-      strobeBoost,
-      lit ? STROBE_SIZE : 0,
-    );
+    this.append(rendered, mounts.strobe, strobeBoost, lit ? STROBE_SIZE : 0);
 
     // Exhaust: throttle proxy (streamed speed) with a small flicker.
     const t = syncedTimeMs / 1000;
@@ -276,7 +303,7 @@ export class PlaneLights {
       );
     this.appendColor(
       rendered,
-      LIGHT_MOUNTS.exhaust,
+      mounts.exhaust,
       scratchColor,
       EXHAUST_SIZE * (1 + (AFTERBURN_SIZE - 1) * afterburn),
     );

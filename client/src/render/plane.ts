@@ -4,9 +4,12 @@
 // flies inside a half-turned parent; its ~9 m wingspan already matches the
 // game's plane size, so scale stays 1:1.
 //
-// F3: the model sits in a zoom-aware THREE.LOD (full airframe up close, a
-// 2-draw impostor beyond PLANE_LOD_DISTANCE), and `animatePlane` drives the
+// F3: the model sits in a zoom-aware THREE.LOD, and `animatePlane` drives the
 // per-frame life — hinged surfaces, prop blur, scarf flutter, battle damage.
+// DT1: three levels (full airframe within PLANE_LOD_NEAR, a simplified mid
+// level, a low-poly impostor beyond PLANE_LOD_FAR), and a second airframe:
+// enemies fly the carrier's fighter-bomber (fighter.ts, buildEnemyMesh) on
+// the same rig contract.
 
 import {
   BANK_ANGLE,
@@ -24,13 +27,21 @@ import {
 import * as THREE from "three";
 import { BASE_FOV } from "../game/zoom";
 import {
-  type BiplaneParts,
   CLASSIC_LIVERY,
   type Livery,
+  PROP_RADIUS,
   SCARF_ROOT,
   SCARF_SEGMENTS,
   createBiplane,
+  hinged,
+  sharedGeometry,
 } from "./biplane";
+import {
+  BOMBS_FULL,
+  FIGHTER_PROP_RADIUS,
+  FIGHTER_PROP_Z,
+  fighterGeometry,
+} from "./fighter";
 import { applyHeroLight, planeHash } from "./planelights";
 import type { QuatLike } from "./trails";
 
@@ -167,10 +178,13 @@ export function poseControls(
 
 // --- LOD ---
 
-/** Beyond this (un-zoomed) camera distance a plane draws its impostor, m. */
-export const PLANE_LOD_DISTANCE = 300;
-/** Switch-back band, fraction of the distance (no flicker at the boundary). */
-const PLANE_LOD_HYSTERESIS = 0.05;
+/** DT1: beyond this (un-zoomed) camera distance a plane draws its mid
+ * level, m, and beyond PLANE_LOD_FAR its impostor. */
+export const PLANE_LOD_NEAR = 150;
+export const PLANE_LOD_FAR = 450;
+/** Switch-back band, fraction of the distance (no flicker at the boundary:
+ * 15 m at the near switch, 45 m at the far one). */
+const PLANE_LOD_HYSTERESIS = 0.1;
 const DEG = Math.PI / 180;
 const lodCamera = { matrixWorld: new THREE.Matrix4(), zoom: 1 };
 
@@ -180,7 +194,22 @@ const lodCamera = { matrixWorld: new THREE.Matrix4(), zoom: 1 };
  * — so the measured distance shrinks by the FOV's magnification.
  */
 class PlaneLOD extends THREE.LOD {
+  /** QA only (`__ab.planeShowcase`'s `lod`): hold this level whatever the
+   * distance — the LOD sheet shows all three side by side. */
+  forced: number | null = null;
+
   override update(camera: THREE.Camera): void {
+    if (this.forced !== null) {
+      const levels = this.levels;
+      for (let i = 0; i < levels.length; i++) {
+        (levels[i] as { object: THREE.Object3D }).object.visible =
+          i === this.forced;
+      }
+      // three keeps the level it reports in a private field.
+      (this as unknown as { _currentLevel: number })._currentLevel =
+        this.forced;
+      return;
+    }
     let zoom = (camera as THREE.PerspectiveCamera).zoom ?? 1;
     if (camera instanceof THREE.PerspectiveCamera) {
       zoom *= Math.tan((BASE_FOV * DEG) / 2) / Math.tan((camera.fov * DEG) / 2);
@@ -193,8 +222,26 @@ class PlaneLOD extends THREE.LOD {
 
 // --- Assembly ---
 
+/** Which airframe a plane flies: the player biplane or the enemy fighter. */
+export type PlaneKind = "biplane" | "fighter";
+
+/** The moving bits of a plane (biplane.ts / buildEnemyMesh). */
+export interface PlaneParts {
+  /** Deflection children (rotation.x) of the hinge pivots. */
+  aileronL: THREE.Object3D;
+  aileronR: THREE.Object3D;
+  elevator: THREE.Object3D;
+  /** Rudder deflection (rotation.y). */
+  rudder: THREE.Object3D;
+  blur: THREE.Mesh;
+  blurMaterial: THREE.MeshStandardMaterial;
+  /** The pilot's scarf (the biplane's; the fighter's pilot wears a mask). */
+  scarf: THREE.Mesh | null;
+}
+
 export interface PlaneRig {
-  parts: BiplaneParts;
+  kind: PlaneKind;
+  parts: PlaneParts;
   lod: THREE.LOD;
   damage: { value: number };
   /** Smoothed deflections, [−1, 1]. */
@@ -204,9 +251,13 @@ export interface PlaneRig {
   /** P4 (fleet.ts): the LOD's two levels, the spinning prop and the
    * livery — what the plane fleet reads to draw this plane instanced. */
   near: THREE.Group;
+  mid: THREE.Group;
   far: THREE.Group;
   prop: THREE.Object3D;
   livery: Livery;
+  /** DT1 / W2 seam: the bombs still on the racks, bit i = rack i
+   * (fighter.ts FIGHTER_BOMB_RACKS). Biplanes carry none. */
+  bombs: number;
   /** Whether `animatePlane` rewrites the scarf strip on the CPU. Off once
    * the fleet draws the plane: its vertex shader flutters the scarf from
    * `phase` (fleet.ts), so the strip is never seen. */
@@ -221,35 +272,159 @@ export const DAMAGE_CACHE_SUFFIX = "-dmg";
 
 /** Build a plane; the own plane takes the default classic livery. */
 export function buildPlaneMesh(livery: Livery = CLASSIC_LIVERY): THREE.Group {
+  const { near, mid, far, parts } = createBiplane(livery);
+  return assemble("biplane", near, mid, far, parts, livery, 0);
+}
+
+/** The enemy's stand-in livery (the fighter's paint is baked; this only
+ * fills the rig contract). */
+const FIGHTER_LIVERY: Livery = { primary: 0x4c564d, secondary: 0x1f5d5a };
+
+/**
+ * DT1: an enemy — the carrier's fighter-bomber (fighter.ts). The fleet
+ * draws it from the shared geometry with its full paintwork; these
+ * per-plane meshes are the `?fleet=0` rollback (same airframe, LODs,
+ * hinges and damage; plain vertex-colour paint, no decals or weathering,
+ * the bombs shown while any is loaded).
+ */
+export function buildEnemyMesh(): THREE.Group {
+  const s = fighterGeometry();
+  const b = sharedGeometry();
+  const paint = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    vertexColors: true,
+    roughness: 0.55,
+    metalness: 0.35,
+  });
+  paint.userData.damage = true;
+  const glass = new THREE.MeshStandardMaterial({
+    color: 0xbfd9e8,
+    roughness: 0.05,
+    metalness: 0.1,
+    transparent: true,
+    opacity: 0.35,
+    side: THREE.DoubleSide,
+    forceSinglePass: true,
+  });
+  const blurMaterial = new THREE.MeshStandardMaterial({
+    color: 0x9a9da0,
+    map: b.blurTexture,
+    roughness: 0.6,
+    metalness: 0.3,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    forceSinglePass: true,
+  });
+  const near = new THREE.Group();
+  near.add(new THREE.Mesh(s.statics, paint), new THREE.Mesh(s.glass, glass));
+  const ailL = hinged(s.aileronL, paint, s.pivots.aileronL);
+  const ailR = hinged(s.aileronR, paint, s.pivots.aileronR);
+  const elev = hinged(s.elevator, paint, s.pivots.elevator);
+  const rud = hinged(s.rudder, paint, s.pivots.rudder);
+  near.add(ailL.holder, ailR.holder, elev.holder, rud.holder);
+  const prop = new THREE.Group();
+  prop.name = "propeller";
+  prop.add(new THREE.Mesh(s.blades, paint));
+  prop.position.z = FIGHTER_PROP_Z;
+  near.add(prop);
+  const bombs = new THREE.Mesh(s.bombs, paint);
+  bombs.name = "bombs";
+  near.add(bombs);
+  // The biplane's blur disc, scaled to this prop (the fleet draws both in
+  // one instanced draw by their matrices).
+  const blur = new THREE.Mesh(b.blurDisc, blurMaterial);
+  blur.scale.setScalar(FIGHTER_PROP_RADIUS / PROP_RADIUS);
+  blur.position.z = FIGHTER_PROP_Z + 0.03;
+  blur.visible = false;
+  near.add(blur);
+  const mid = new THREE.Group();
+  mid.add(new THREE.Mesh(s.mid, paint), new THREE.Mesh(s.midGlass, glass));
+  const far = new THREE.Group();
+  far.add(new THREE.Mesh(s.far, paint));
+  return assemble(
+    "fighter",
+    near,
+    mid,
+    far,
+    {
+      aileronL: ailL.deflect,
+      aileronR: ailR.deflect,
+      elevator: elev.deflect,
+      rudder: rud.deflect,
+      blur,
+      blurMaterial,
+      scarf: null,
+    },
+    FIGHTER_LIVERY,
+    BOMBS_FULL,
+  );
+}
+
+/** The LOD, hero light, damage and rig every airframe shares. */
+function assemble(
+  kind: PlaneKind,
+  near: THREE.Group,
+  mid: THREE.Group,
+  far: THREE.Group,
+  parts: PlaneParts,
+  livery: Livery,
+  bombs: number,
+): THREE.Group {
   const g = new THREE.Group();
-  const { near, far, parts } = createBiplane(livery);
   const lod = new PlaneLOD();
   lod.addLevel(near, 0);
-  lod.addLevel(far, PLANE_LOD_DISTANCE, PLANE_LOD_HYSTERESIS);
+  lod.addLevel(mid, PLANE_LOD_NEAR, PLANE_LOD_HYSTERESIS);
+  lod.addLevel(far, PLANE_LOD_FAR, PLANE_LOD_HYSTERESIS);
   lod.rotation.y = Math.PI; // model +Z nose → game −Z forward
   // Per-plane hero light (key/fill/rim/env + exhaust ring), body capped
   // below bloom — night readability on own plane and remotes alike.
   applyHeroLight(near);
+  applyHeroLight(mid);
   applyHeroLight(far);
   const damage = { value: 0 };
   applyDamage(lod, damage);
   g.add(lod);
   const prop = near.getObjectByName("propeller");
-  if (!prop) throw new Error("buildPlaneMesh: the biplane has no propeller");
+  if (!prop) throw new Error(`buildPlaneMesh: the ${kind} has no propeller`);
   const rig: PlaneRig = {
+    kind,
     parts,
     lod,
     damage,
     smooth: { ...NEUTRAL_CONTROLS },
     phase: 0,
     near,
+    mid,
     far,
     prop,
     livery,
-    cpuScarf: true,
+    cpuScarf: parts.scarf !== null,
+    bombs,
   };
   g.userData.rig = rig;
   return g;
+}
+
+/** QA only: hold `plane` at LOD `level` (0 near, 1 mid, 2 far; null: by
+ * distance again). */
+export function forcePlaneLod(
+  plane: THREE.Object3D,
+  level: number | null,
+): void {
+  const lod = planeRig(plane)?.lod;
+  if (lod instanceof PlaneLOD) lod.forced = level;
+}
+
+/** DT1 / W2: set which bombs are still on `plane`'s racks (bit i = rack i;
+ * a biplane ignores it). */
+export function setPlaneBombs(plane: THREE.Object3D, mask: number): void {
+  const rig = planeRig(plane);
+  if (!rig || rig.kind !== "fighter") return;
+  rig.bombs = mask;
+  const bombs = rig.near.getObjectByName("bombs");
+  if (bombs) bombs.visible = mask !== 0;
 }
 
 /** Advance the biplane's propeller by `radians` (child group "propeller"). */
@@ -318,7 +493,7 @@ export function animatePlane(
 
   // Flutter faster with airspeed; skip the CPU rewrite while far.
   rig.phase += dt * (12 + speed * 0.12);
-  if (rig.cpuScarf && rig.lod.getCurrentLevel() === 0) {
+  if (rig.cpuScarf && parts.scarf && rig.lod.getCurrentLevel() === 0) {
     flutterScarf(parts.scarf, rig.phase);
   }
 }
@@ -356,6 +531,11 @@ function flutterScarf(scarf: THREE.Mesh, phase: number): void {
 }
 
 // --- Battle damage: scorch + holes by HP, chained onto the hero patch ---
+
+/** DT1: battle damage (1 − hp / MAX_HP) past which skin panels go missing —
+ * after the wounded smoke (smoke.ts SMOKE_HP_FRAC) and the engine fire. */
+export const MISSING_PANELS_FROM = 0.86;
+const f = (n: number): string => n.toFixed(4);
 
 const DAMAGE_VERTEX_DECL = `#include <common>
 attribute float aHole;
@@ -407,6 +587,20 @@ if (uAbDamage > 0.0) {
   float abScorch = smoothstep(abEdge, abEdge + 0.12, abN) * min(1.0, uAbDamage * 3.0);
   float abSoot = clamp(max(abScorch * 0.85, abRim * 0.9) + abPuncture, 0.0, 1.0);
   diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.03, 0.026, 0.024), abSoot);
+  // DT1 missing panels — after the smoke and the fire stages: whole skin
+  // panels gone. A fabric bay opens to its ribs (cut through, as the holes);
+  // a hull panel shows the dark frame behind. Floored rest cells, so the
+  // same panels go on every LOD level and every client.
+  float abGone = clamp((uAbDamage - ${f(MISSING_PANELS_FROM)}) * 3.2, 0.0, 0.45);
+  vec3 abPanel = floor((vAbHole > 0.75 ? vec3(vAbRest.x, 0.0, vAbRest.z) : vAbRest) / 0.62);
+  if (vAbHole > 0.25 && abHash3(abPanel + 11.3) < abGone) {
+    if (vAbHole > 0.75) {
+      if (abs(fract(vAbRest.x / 0.42 + 0.5) - 0.5) * 0.42 > 0.03) discard;
+    } else {
+      float abFrame = abs(fract(vAbRest.z / 0.5 + 0.5) - 0.5) * 0.5;
+      diffuseColor.rgb = mix(vec3(0.012, 0.011, 0.01), vec3(0.09, 0.085, 0.08), step(abFrame, 0.03));
+    }
+  }
 }`;
 
 /** Patch the damage terms into an (already hero-patched) program. */

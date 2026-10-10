@@ -26,8 +26,9 @@ export const SMOKE_LIFE_MS = 1500;
 const SMOKE_RISE = 3;
 const scratchImage = { x: 0, y: 0, z: 0 };
 /** Point budget: trails × puffs a full-rate trail can hold (1500/70 ≈ 22).
- * Planes, plus X1's missiles in the air (render/missiles.ts MISSILE_POOL). */
-const MAX_PLANES = 12 + 6;
+ * Planes (DT1: a full room plus the carrier's enemies), plus X1's missiles
+ * in the air (render/missiles.ts MISSILE_POOL). */
+const MAX_PLANES = 24 + 6;
 const MAX_PUFFS = 24;
 /** Puff sprite size ramp over life, meters (grows as it disperses). */
 const SIZE_MIN = 2.4;

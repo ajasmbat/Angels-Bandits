@@ -36,6 +36,7 @@ import {
   type ControlDeflection,
   NEUTRAL_CONTROLS,
   animatePlane,
+  buildEnemyMesh,
   buildPlaneMesh,
   disposePlaneMesh,
   liveryFor,
@@ -43,7 +44,7 @@ import {
   spinPropeller,
 } from "./plane";
 import type { PlaneLights } from "./planelights";
-import { strobePhaseMs } from "./planelights";
+import { isEnemyId, strobePhaseMs } from "./planelights";
 import { REVEAL_COLOR, REVEAL_INTENSITY, turbulenceOffsetInto } from "./storm";
 import type { PlaneTrails, QuatLike } from "./trails";
 import { nearestImageInto } from "./wrapPlacement";
@@ -166,7 +167,11 @@ export class RemotePlanes {
         const tagName = known?.name ?? "???";
         const tagBot = known?.isBot ?? false;
         remote = {
-          mesh: buildPlaneMesh(liveryFor(id)), // per-pilot livery
+          // DT1: enemies fly the carrier's fighter-bomber; every human
+          // pilot a biplane in their own livery.
+          mesh: isEnemyId(id)
+            ? buildEnemyMesh()
+            : buildPlaneMesh(liveryFor(id)),
           tag: this.tags ? null : createNameTag(tagName, tagBot),
           tagCell: this.tags ? this.tags.alloc(tagName, tagBot) : -1,
           buffer: new InterpolationBuffer(),

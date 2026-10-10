@@ -430,7 +430,6 @@ import { WeatherClock, setWeatherUniform } from "./render/weather";
 import { buildingSeed, isWindowLit } from "./render/window-pattern";
 import { nearestImage, nearestImageInto } from "./render/wrapPlacement";
 import { Wrecks } from "./render/wrecks";
-import { BotBar } from "./ui/botbar";
 import { Coach, renderPrimer } from "./ui/coach";
 import { CommsTicker } from "./ui/comms";
 import { CourseBoard } from "./ui/course-board";
@@ -439,6 +438,7 @@ import { initFullscreenUi } from "./ui/fullscreen";
 import { Haptics } from "./ui/haptics";
 import { HPBAR_ALTITUDE, HpBarSprite, HpBarTracker } from "./ui/hpbar";
 import { Hud, deathLabel } from "./ui/hud";
+import { IntensityBar, intensityName } from "./ui/intensity";
 import {
   closeJoin,
   initLabLink,
@@ -1589,11 +1589,11 @@ const scoreboard = new Scoreboard(socket.selfId, window, !labMode);
 scoreboard.setRoster(welcome.roster);
 scoreboard.setScores(welcome.scores);
 showOwnScore(welcome.scores);
-// The room's shared bot count (ANGE-6STDNN): seeded from the welcome so a
-// late joiner's bar opens where the room already is.
-const botBar = new BotBar(welcome.botTarget);
-botBar.onClaim = (count) => socket.sendSetBots(count);
-scoreboard.bindBotBar(botBar);
+// W1: the room's shared enemy intensity (ANGE-6STDNN's governance): seeded
+// from the welcome so a late joiner's bar opens where the room already is.
+const intensityBar = new IntensityBar(welcome.intensity);
+intensityBar.onClaim = (level) => socket.sendSetIntensity(level);
+scoreboard.bindIntensity(intensityBar);
 // M2: no Tab key on a phone — a minimap tap pins the scoreboard (touch only).
 scoreboard.bindTapToggle(document.getElementById("minimap") as HTMLElement);
 // U3: first-life hints, the touch coach marks and the storm notice. Starts
@@ -2021,11 +2021,13 @@ socket.events.onPlayerJoined = (player) => {
   });
   remotes.playerJoined(player);
   scoreboard.playerJoined(player);
-  say(checkInCallout(player.name, player.isBot ?? false));
+  // W1: enemy planes come and go with every wave — the carrier's launch
+  // call covers them; only pilots check in.
+  if (!player.isBot) say(checkInCallout(player.name, false));
   refreshLeader(); // a bot's callsign label needs its roster entry
 };
 socket.events.onPlayerLeft = (id) => {
-  say(offStationCallout(nameOf(id), isBotOf(id)));
+  if (!isBotOf(id)) say(offStationCallout(nameOf(id), false));
   remotes.playerLeft(id);
   scoreboard.playerLeft(id);
   players.delete(id);
@@ -2097,6 +2099,13 @@ socket.events.onDeath = (msg) => {
         true,
       );
     }
+  }
+  // W1: a whole wave going down with its carrier is one spectacle, not a
+  // line per plane: the bangs, and nothing on the feed, screens or radio.
+  if (msg.cause === "carrier") {
+    hpBar.clear(msg.victimId);
+    remotes.setDead(msg.victimId);
+    return;
   }
   // S1: the city's screens. The tallies held here are the pre-death ones
   // (the server sends each death before its scores), the same on every
@@ -2270,7 +2279,7 @@ socket.events.onAwayStarted = () => {
 /**
  * W2: back as the same player after a dropped socket. The room moved on
  * meanwhile: reconcile who is here (silently — the radio already heard
- * nothing of the gap), take the server's scores and bot count, and fly the
+ * nothing of the gap), take the server's scores and enemy intensity, and fly the
  * fresh spawn, since the session restarted server-side. City events and the
  * news heli belong to the room, so they are re-seeded only if it changed.
  */
@@ -2295,7 +2304,7 @@ function applyResume(w: WelcomeMsg): void {
   scoreboard.setScores(w.scores);
   applyCourseStandings(w.courses); // S3: boards moved on meanwhile
   showOwnScore(w.scores);
-  botBar.resync(w.botTarget);
+  intensityBar.resync(w.intensity);
   if (w.roomId !== currentRoomId) {
     currentRoomId = w.roomId;
     reactor.ingest(w.cityEvents ?? []);
@@ -2328,14 +2337,14 @@ socket.events.onScores = (scores) => {
   scoreboard.setScores(scores);
   showOwnScore(scores);
 };
-socket.events.onBotsConfig = (msg) => {
+socket.events.onIntensityConfig = (msg) => {
   // The server is the only authority on this value — including for the
   // player who just dragged, whose bar has been showing a preview.
-  botBar.applyServer(msg.count, msg.byName);
-  scoreboard.refreshBotBar();
+  intensityBar.applyServer(msg.level, msg.byName);
+  scoreboard.refreshIntensity();
   // Ticker only, never the voice: byName is free text, and the radio's
   // name guard (game/callouts.ts) exists precisely to keep it out of TTS.
-  comms.add("NET", `${msg.byName} set bots to ${msg.count}`);
+  comms.add("NET", `${msg.byName} set enemies to ${intensityName(msg.level)}`);
 };
 
 // --- Perf instrumentation (P1) ---
@@ -2679,8 +2688,6 @@ declare global {
         values: Settings;
         gains: { master: number; voice: number; music: number } | null;
       };
-      /** Claim the room's shared bot count (QA: 0 makes a scene reproducible). */
-      setBots: (count: number) => void;
       net: () => {
         selfId: string;
         roomId: string;
@@ -3511,7 +3518,6 @@ window.__ab = {
     values: settingsPanel.current(),
     gains: audio.busGains(),
   }),
-  setBots: (count) => socket.sendSetBots(count),
   net: () => ({
     selfId: socket.selfId,
     roomId: currentRoomId,
@@ -4278,7 +4284,6 @@ const lab: FlightLab | null = labMode
         cornerCap = Math.min(cornerCap, tuning.maxSpeed);
       },
       sendLab: (msg) => socket.sendLab(msg),
-      setBots: (count) => socket.sendSetBots(count),
     })
   : null;
 // The room's copy of the tuning starts at the defaults: hand it ours.
@@ -5287,6 +5292,8 @@ const frame = (now: number): void => {
     renderMs !== null &&
     bossPresent(socket.boss, renderMs);
   hud.setBoss(bossUp ? socket.bossHp : null, bossMax, now);
+  // W1: the carrier war — its tier, the wave, the enemies left, the banner.
+  hud.setWaves(socket.waves, now);
   if (
     bossRaid &&
     renderMs !== null &&

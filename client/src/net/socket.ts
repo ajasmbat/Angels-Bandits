@@ -84,11 +84,11 @@ import { decodeSnapshotEntry } from "@angels-bandits/common/net";
 import type {
   AwardMsg,
   BossDownMsg,
-  BotsConfigMsg,
   CourseBoardMsg,
   CourseResultMsg,
   DamageMsg,
   DeathMsg,
+  IntensityConfigMsg,
   NewsHeliMsg,
   Pose,
   RespawnMsg,
@@ -102,6 +102,11 @@ import {
   type MissileStrike,
   decodeMissile,
 } from "@angels-bandits/common/strike";
+import {
+  type WaveState,
+  decodeWaves,
+  idleWaves,
+} from "@angels-bandits/common/waves";
 import type { Vec3 } from "@angels-bandits/common/world";
 import { PoseCadence, RenderClock } from "./clock";
 import { InterpDelay } from "./delay";
@@ -118,7 +123,10 @@ export interface GameSocketEvents {
   onScores?: (scores: ScoreEntry[]) => void;
   /** S7: the server's credit for one kill — medals, and a tier crossing. */
   onAward?: (msg: AwardMsg) => void;
-  onBotsConfig?: (msg: BotsConfigMsg) => void;
+  /** W1: the room's enemy intensity changed (who set it, to what). */
+  onIntensityConfig?: (msg: IntensityConfigMsg) => void;
+  /** W1: the carrier war moved on (already in `waves`). */
+  onWaves?: (state: WaveState) => void;
   /** L1: a server-accepted event the city reacts to (reactions.ts). */
   onCityEvent?: (event: CityEvent) => void;
   onNewsHeli?: (msg: NewsHeliMsg) => void;
@@ -242,6 +250,9 @@ export class GameSocket {
    * Kept from every welcome and message, listening or not. */
   readonly boss = emptyBossSlot();
   bossHp: number[] = [];
+  /** W1: the room's carrier war — the wave on or coming, enemies left —
+   * from every welcome and `waves` message. */
+  waves: WaveState = idleWaves();
   readonly flak = new Map<number, BossFlak>();
   /** C2: the quakes announced and not yet over, and the burning chunks —
    * kept from every welcome and message, listening or not. */
@@ -286,6 +297,7 @@ export class GameSocket {
     this.replayDestruction(welcome);
     this.addMissiles(welcome.missiles);
     this.bossHp = applyBossState(this.boss, welcome.boss);
+    this.waves = decodeWaves(welcome.waves) ?? idleWaves();
     this.replayChaos(welcome.chaos);
     this.replayCaveIns(welcome.caveIns);
     this.attach(ws);
@@ -444,6 +456,7 @@ export class GameSocket {
     this.replayDestruction(next.welcome);
     this.addMissiles(next.welcome.missiles);
     this.bossHp = applyBossState(this.boss, next.welcome.boss);
+    this.waves = decodeWaves(next.welcome.waves) ?? idleWaves();
     this.replayChaos(next.welcome.chaos);
     this.replayCaveIns(next.welcome.caveIns);
     this.attach(next.ws);
@@ -655,16 +668,17 @@ export class GameSocket {
     });
   }
 
-  /** Claim the room's shared bot count. The server may clamp or silently
-   * drop it (rate limit) — only the botsConfig it answers with is real. */
-  sendSetBots(count: number): void {
-    this.send({ type: "setBots", count });
+  /** W1: claim the room's shared enemy intensity (0–3). The server may
+   * clamp or silently drop it (rate limit) — only the intensityConfig it
+   * answers with is real. */
+  sendSetIntensity(level: number): void {
+    this.send({ type: "setIntensity", level });
   }
 
   /** FL1: the lab's tuning (a decoded export: JSON.parse(exportTuning(t)))
-   * and/or its chaos toggle. Ignored by the server outside a lab room; the
-   * newest wins, so send the whole tuning each time. */
-  sendLab(msg: { tuning?: unknown; chaos?: boolean }): void {
+   * and/or its chaos and (W1) enemy-waves toggles. Ignored by the server
+   * outside a lab room; the newest wins, so send the whole tuning each time. */
+  sendLab(msg: { tuning?: unknown; chaos?: boolean; waves?: boolean }): void {
     this.send({ type: "lab", ...msg });
   }
 
@@ -766,9 +780,17 @@ export class GameSocket {
       case "score":
         this.events.onScores?.(msg.scores);
         break;
-      case "botsConfig":
-        this.events.onBotsConfig?.(msg);
+      case "intensityConfig":
+        this.events.onIntensityConfig?.(msg);
         break;
+      case "waves": {
+        const w = decodeWaves(msg.w);
+        if (w) {
+          this.waves = w;
+          this.events.onWaves?.(w);
+        }
+        break;
+      }
       case "newsHeli":
         this.events.onNewsHeli?.(msg);
         break;

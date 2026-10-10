@@ -212,7 +212,8 @@ const DEBUG_ROOMS = process.env.AB_DEBUG_ROOMS === "1";
  * director, chain or rebuild damage) and no boss raid starts. All of that is
  * timed on the wall clock, which the harness cannot pin, so the destruction a
  * measured window shows is only what the harness stages on the client — the
- * same reasoning as its empty room (`setBots(0)`). Never in production.
+ * same reasoning as its empty sky (no carrier, so no enemy waves). Never in
+ * production.
  */
 const QUIET_CITY = process.env.AB_QUIET_CITY === "1";
 if (QUIET_CITY && process.env.NODE_ENV === "production") {
@@ -410,9 +411,8 @@ const quiet = (room: Room): boolean =>
 
 /**
  * Destruction applies only while the room has a human member (pending and
- * away ones count). The standing bot arena never empties and nobody would
- * see it — so an empty room stays whole, and handleLeave clears it when its
- * last human goes. FL1: and never in a lab room with chaos off (quiet).
+ * away ones count): nobody would see it otherwise — so an empty room stays
+ * whole, and handleLeave clears it when its last human goes. FL1: and never in a lab room with chaos off (quiet).
  */
 const breakable = (room: Room): RoomCity | null =>
   quiet(room) ? null : roomCity(room);
@@ -945,7 +945,7 @@ function waveHumans(room: Room, now: number, extrapolate = true): WaveHuman[] {
 
 /**
  * Free everything kept per room id once `room` is gone from the manager.
- * Liveness is the only test — never botTarget: a room still listed keeps its
+ * Liveness is the only test: a room still listed keeps its
  * state, and a dead id is never reused (room ids only count up), so the lazy
  * getters can't resurrect it either — only listed rooms are ever ticked.
  */

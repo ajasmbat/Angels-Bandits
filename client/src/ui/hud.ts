@@ -7,12 +7,36 @@ import { mulberry32 } from "@angels-bandits/common/city";
 import { KILL_CAM_MS, MAX_HP } from "@angels-bandits/common/constants";
 import { MEDAL_LABEL, type MedalKind } from "@angels-bandits/common/medals";
 import type { DeathMsg } from "@angels-bandits/common/protocol";
+import {
+  WAVE_BREATHER,
+  WAVE_LIVE,
+  type WaveState,
+} from "@angels-bandits/common/waves";
 import { gMeterView } from "../game/pull-feel";
 import type { LifeCard } from "../game/session-stats";
 import { tuning } from "../game/tuning";
 
 /** How long a medal toast stays up, ms (S7). */
 const MEDAL_TOAST_MS = 2600;
+/** How long the "WAVE n" banner stays up, ms (W1). */
+const WAVE_BANNER_MS = 2600;
+
+/**
+ * W1: the carrier war's HUD line — "WAVE 3 · 4 ENEMIES LEFT" while a wave is
+ * up, "WAVE 4 INCOMING" through its breather, nothing between carriers.
+ * Pure, for the HUD and its tests.
+ */
+export function waveLine(w: WaveState): string {
+  if (w.phase === WAVE_LIVE) {
+    return `WAVE ${w.wave} · ${w.left} ${w.left === 1 ? "ENEMY" : "ENEMIES"} LEFT`;
+  }
+  if (w.phase === WAVE_BREATHER) return `WAVE ${w.wave} INCOMING`;
+  return "";
+}
+
+/** W1: the carrier bar's name line — its tier once it has one. */
+export const carrierName = (tier: number): string =>
+  tier > 0 ? `WAR ZEPPELIN · TIER ${tier}` : "WAR ZEPPELIN";
 
 /**
  * The S7 end-of-life card's two lines: the numbers, then the medals (a
@@ -202,6 +226,20 @@ export class Hud {
    * bar is checked every frame while the boss flies. */
   private bossShown: number[] | null = null;
   private bossFlashUntil = 0;
+  /** W1: the carrier war's nodes and what they last showed. */
+  private readonly bossName = this.bossBar.querySelector(
+    ".name",
+  ) as HTMLDivElement;
+  private readonly waveHud = document.getElementById(
+    "wave-hud",
+  ) as HTMLDivElement;
+  private readonly waveBanner = document.getElementById(
+    "wave-banner",
+  ) as HTMLDivElement;
+  private waveShown = "";
+  private tierShown = -1;
+  private bannerWave = 0;
+  private bannerUntil = 0;
   private hitBlipUntil = 0;
   private aimModeTimer: ReturnType<typeof setTimeout> | undefined;
   private markerUntil = 0;
@@ -517,6 +555,33 @@ export class Hud {
     }
   }
 
+  /**
+   * W1: the carrier war — the carrier bar's tier, the wave line, and the
+   * "WAVE n" banner, popped once as each wave's breather starts. Writes the
+   * DOM only when what it shows changed (called every frame).
+   */
+  setWaves(w: WaveState, now: number): void {
+    const line = waveLine(w);
+    if (line !== this.waveShown) {
+      this.waveShown = line;
+      this.waveHud.textContent = line;
+      this.waveHud.classList.toggle("open", line !== "");
+    }
+    if (w.tier !== this.tierShown) {
+      this.tierShown = w.tier;
+      this.bossName.textContent = carrierName(w.tier);
+    }
+    if (w.phase === WAVE_BREATHER && w.wave !== this.bannerWave) {
+      this.bannerWave = w.wave;
+      this.waveBanner.textContent = `WAVE ${w.wave}`;
+      // Restart the pop: the class must be off for a reflow to replay it.
+      this.waveBanner.classList.remove("on");
+      void this.waveBanner.offsetWidth;
+      this.waveBanner.classList.add("on");
+      this.bannerUntil = now + WAVE_BANNER_MS;
+    }
+  }
+
   /** S7: own medals pop in at the top of the screen, stacked, held
    * MEDAL_TOAST_MS. A new award replaces the stack and re-pops it. */
   showMedals(medals: readonly MedalKind[], now: number): void {
@@ -580,6 +645,10 @@ export class Hud {
     if (this.bossFlashUntil !== 0 && now > this.bossFlashUntil) {
       this.bossBar.classList.remove("hit");
       this.bossFlashUntil = 0;
+    }
+    if (this.bannerUntil !== 0 && now > this.bannerUntil) {
+      this.waveBanner.classList.remove("on"); // CSS fades it out
+      this.bannerUntil = 0;
     }
     if (this.medalUntil !== 0 && now > this.medalUntil) {
       this.medalToast.classList.remove("on"); // CSS fades it out

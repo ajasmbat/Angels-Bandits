@@ -406,8 +406,10 @@ async function joinGame(page, url) {
   });
   // Bots fly a live sim and shoot back — deterministic per room, but their
   // POSES depend on wall-clock timing, so they would smear every segment.
-  // An empty room is the only reproducible room.
-  await page.evaluate(() => window.__ab.setBots(0));
+  // An empty room is the only reproducible room. W1: the quiet city flies no
+  // carrier, so no enemy ever launches; a pre-W1 --ab-ref build still
+  // backfills bots, and its `setBots(0)` empties them.
+  await page.evaluate(() => window.__ab.setBots?.(0));
   try {
     await page.waitForFunction(
       () => window.__ab.combat().targets.length === 0,
@@ -436,8 +438,8 @@ async function joinGame(page, url) {
 }
 
 /**
- * S8: re-assert joinGame's empty room before a segment — `setBots(0)` and
- * wait — if anything is flying in it. Says so, and names the room: a room
+ * S8: re-assert joinGame's empty room before a segment — `setBots(0)` on a
+ * pre-W1 build, and wait — if anything is flying in it. Says so, and names the room: a room
  * id different from the one the page joined is a session that dropped and
  * rejoined (W2), which is the machine, not the build.
  */
@@ -447,7 +449,7 @@ async function ensureEmptyRoom(page, name) {
     targets: window.__ab.combat().targets.length,
   }));
   if (now.targets === 0) return;
-  await page.evaluate(() => window.__ab.setBots(0));
+  await page.evaluate(() => window.__ab.setBots?.(0));
   const emptied = await page
     .waitForFunction(() => window.__ab.combat().targets.length === 0, null, {
       timeout: 30_000,
@@ -1732,7 +1734,7 @@ async function measure(browser, url, { trace = true, ledger = true } = {}) {
         // the default bots. Restore joinGame's empty room before the next
         // segment, or every segment after this one draws them.
         if (left.targets > 0) {
-          await page.evaluate(() => window.__ab.setBots(0));
+          await page.evaluate(() => window.__ab.setBots?.(0));
           const emptied = await page
             .waitForFunction(
               () => window.__ab.combat().targets.length === 0,

@@ -38,7 +38,9 @@ const arg = (name: string, fallback: number): number => {
   return i === -1 ? fallback : Number(process.argv[i + 1]);
 };
 const PILOTS = arg("pilots", 6);
-const BOTS = arg("bots", 6);
+/** W1: enemy planes come off the carrier in waves — the room's intensity
+ * (0–3) sets how many; the bench boots the QA carrier (AB_BOSS_FAST). */
+const INTENSITY = arg("intensity", 3);
 const SECONDS = arg("seconds", 12);
 const JITTER_MS = arg("jitter", 0);
 const AS_JSON = process.argv.includes("--json");
@@ -53,7 +55,7 @@ const entry = fileURLToPath(new URL("../server/src/index.ts", import.meta.url));
 const boot = (): Promise<{ kill: () => void; url: string }> =>
   new Promise((resolve, reject) => {
     const child = spawn("npx", ["tsx", entry], {
-      env: { ...process.env, PORT: "0" },
+      env: { ...process.env, PORT: "0", AB_BOSS_FAST: "1" },
       stdio: ["ignore", "pipe", "inherit"],
     });
     const timer = setTimeout(
@@ -197,8 +199,10 @@ const run = async (): Promise<void> => {
   const pilots: Pilot[] = [];
   for (let i = 0; i < PILOTS; i++) pilots.push(await pilot(url, i));
 
-  // Ask for the bot fill through the real shared-slider path.
-  pilots[0]?.ws.send(JSON.stringify({ type: "setBots", count: BOTS }));
+  // Ask for the waves through the real shared-setting path.
+  pilots[0]?.ws.send(
+    JSON.stringify({ type: "setIntensity", level: INTENSITY }),
+  );
 
   // Every pilot flies a lazy circle so poses genuinely change every tick — a
   // parked plane would let nothing but the clock move on the wire.
@@ -285,7 +289,7 @@ const run = async (): Promise<void> => {
 
   const out = {
     pilots: PILOTS,
-    botsRequested: BOTS,
+    intensity: INTENSITY,
     injectedJitterMs: JITTER_MS,
     seconds: Number(elapsed.toFixed(2)),
     snapshotHz: Number(

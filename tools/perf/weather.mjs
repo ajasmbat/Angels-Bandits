@@ -33,7 +33,8 @@ const FRAMES = Number(process.env.FRAMES ?? 0);
 mkdirSync(OUT, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const server = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
-  env: { ...process.env, PORT: String(PORT) },
+  // W1: no carrier war — the weather views frame an empty sky.
+  env: { ...process.env, PORT: String(PORT), AB_WAVES: "0" },
   stdio: "ignore",
 });
 // The gallery's static viewpoints (gallery.mjs), weather-relevant subset.
@@ -78,7 +79,6 @@ try {
   await page.fill("#join-name", "WX");
   await page.click('#join button[type="submit"]');
   await page.waitForFunction(() => !!window.__ab, null, { timeout: 60000 });
-  await page.evaluate(() => window.__ab.setBots(0));
   await sleep(1500);
   // Hold the pose and the weather phase EVERY frame from inside the page.
   await page.evaluate(() => {

@@ -37,8 +37,8 @@
 // is no AudioContext, so its row is the per-frame state machine only).
 //
 // J1 adds the juice's per-frame entry points (the layered explosions on the
-// slow-mo FX clock, their heat in the shimmer, blast shake and the camera
-// cue), judged the same way, and two behavioural checks that exit 1 when
+// slow-mo FX clock, blast shake and the camera cue), judged the same way —
+// S5's row now runs with two blasts' heat columns in the shimmer — and two behavioural checks that exit 1 when
 // they fail: the FX clock's lag is paid back to 0 after a dip, and a cue
 // ends on a fresh press but never on a key held since it began.
 //
@@ -270,6 +270,19 @@ const blastShake = new ExplosionShake();
 const camCue = new CamCue();
 const blastAt: Vec3 = { x: 0, y: 0, z: 0 };
 const shakeOut: Vec3 = { x: 0, y: 0, z: 0 };
+/** J1: two live blasts' heat for S5's shimmer row — the realistic worst
+ * case (blast columns pre-empting vents), without re-counting the blasts. */
+const heatViews = [0, 1].map(() => ({ x: 0, y: 0, z: 0, size: 1, level: 1 }));
+function blastHeat(f: number): void {
+  for (let k = 0; k < heatViews.length; k++) {
+    const h = heatViews[k] as (typeof heatViews)[number];
+    h.x = viewer.x + (k === 0 ? -30 : 40);
+    h.y = viewer.y + 10;
+    h.z = viewer.z - 140 - 60 * k;
+    h.size = 1 + k;
+    h.level = 1 - ((f + 48 * k) % 96) / 96;
+  }
+}
 /** One blast every 40 frames, a slow-mo dip every 300, on the FX clock. */
 function juiceFrame(f: number, now: number): void {
   if (f % 40 === 0) {
@@ -358,7 +371,10 @@ const ENTRIES: { name: string; step: Step; reset?: () => void }[] = [
       const { ms, now } = frameAt(f);
       camera.position.set(viewer.x, viewer.y + 4, viewer.z + 14);
       camera.lookAt(viewer.x, viewer.y, viewer.z - 100);
+      blastHeat(f);
       atmosphere.update({
+        heat: heatViews,
+        heatCount: heatViews.length,
         camera,
         cameraPos: viewer,
         worldMs: ms,
@@ -385,30 +401,6 @@ const ENTRIES: { name: string; step: Step; reset?: () => void }[] = [
     step: (f) => {
       const { now } = frameAt(f);
       juiceFrame(f, now);
-    },
-  },
-  {
-    name: "J1 blast shimmer (atmosphere.update)",
-    step: (f) => {
-      const { ms, now } = frameAt(f);
-      juiceFrame(f, now);
-      camera.position.set(held.x, held.y + 4, held.z + 14);
-      camera.lookAt(held.x, held.y - 20, held.z - 120);
-      const heatCount = explosions.heatSources(now);
-      atmosphere.update({
-        camera,
-        cameraPos: held,
-        worldMs: ms,
-        now,
-        planes,
-        passes: noPasses,
-        haze: 0.3,
-        microK: 1,
-        moonDir,
-        moonVis: 1,
-        heat: explosions.heat,
-        heatCount,
-      });
     },
   },
   {

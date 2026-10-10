@@ -324,6 +324,22 @@ interface CollapseShape {
 
 /** A1: shapes kept at most; past it the oldest goes first. */
 const SHAPE_CACHE_MAX = 256;
+/** Towers the pick simulates (and the prefill warms), best scored first. */
+const PICK_CANDIDATES = 4;
+/** A1: how often the prefill re-scores the towers, ms. */
+const PREFILL_RESCAN_MS = 500;
+
+/** A tower the pick weighs: its index, score and the plane it aims at. */
+interface ScoredTower {
+  i: number;
+  score: number;
+  near: DestructionPlane | null;
+}
+
+interface PrefillItem {
+  i: number;
+  plan: CollapsePlan;
+}
 
 export class DestructionDirector {
   private scanFrom: number | null = null;
@@ -344,6 +360,8 @@ export class DestructionDirector {
    * towers every retry, so each shape is simulated once per standing state.
    */
   private readonly shapes = new Map<string, CollapseShape | null>();
+  private readonly prefillQueue: PrefillItem[] = [];
+  private nextPrefillScan = 0;
 
   constructor(
     private readonly seed: number,
@@ -438,6 +456,7 @@ export class DestructionDirector {
       this.armed = { slot: last * s, until: last * s + t.slotPatienceMs };
       this.nextTry = 0;
     }
+    const picking = this.armed !== null && now >= this.nextTry;
     if (this.armed && now >= this.nextTry) {
       if (now > this.armed.until) {
         this.armed = null;
@@ -465,6 +484,10 @@ export class DestructionDirector {
           this.nextTry = now + t.retryMs;
         }
       }
+    }
+    // A1: an idle tick warms the next pick's debris (see prefill).
+    if (!picking && this.goneShare(world) < t.stopShare) {
+      this.prefill(now, planes, world);
     }
     return out;
   }
@@ -509,6 +532,58 @@ export class DestructionDirector {
 
   // --- The pick -------------------------------------------------------------
 
+  /** The planes the action is around: humans, and planes near one. */
+  private anchorsOf(
+    now: number,
+    planes: readonly DestructionPlane[],
+  ): DestructionPlane[] {
+    const humans = planes.filter((p) => p.human);
+    return planes.filter(
+      (p) =>
+        !this.fresh(p, now) &&
+        (p.human ||
+          humans.some((h) => wrapDistance(h.pos, p.pos) <= DIRECTOR_ACTION_M)),
+    );
+  }
+
+  /**
+   * A1: warm the shape cache for the towers the next pick would weigh — the
+   * top PICK_CANDIDATES as they score now, each way it could fall — at most
+   * one debris simulation a call. A cold pick simulated up to 20 in ONE tick
+   * (a 250–430 ms server stall under load); spread over the idle ticks
+   * before it, the pick finds them cached. buildCollapse is pure, so what
+   * the pick decides is exactly what it would have decided.
+   */
+  private prefill(
+    now: number,
+    planes: readonly DestructionPlane[],
+    world: DestructionWorld,
+  ): void {
+    if (now >= this.nextPrefillScan) {
+      this.nextPrefillScan = now + PREFILL_RESCAN_MS;
+      this.prefillQueue.length = 0;
+      const anchors = this.anchorsOf(now, planes);
+      if (anchors.length === 0) return;
+      const city = world.city;
+      const top = this.scoreTowers(now, anchors, planes, world);
+      for (const cand of top.slice(0, PICK_CANDIDATES)) {
+        const b = city.buildings[cand.i] as Building;
+        if (cand.near) {
+          for (const dir of DIRECTOR_DIRS) {
+            const plan = demolitionPlan(b, cand.i, TOPPLE, dir);
+            if (plan) this.prefillQueue.push({ i: cand.i, plan });
+          }
+        }
+        const plan = demolitionPlan(b, cand.i, PANCAKE, 0);
+        if (plan) this.prefillQueue.push({ i: cand.i, plan });
+      }
+    }
+    while (this.prefillQueue.length > 0) {
+      const q = this.prefillQueue.shift() as PrefillItem;
+      if (this.shapeOf(world.city.buildings, q.i, q.plan, true)) return;
+    }
+  }
+
   /** Pick and build the next event, or null when nothing fits right now. */
   pick(
     now: number,
@@ -516,13 +591,7 @@ export class DestructionDirector {
     world: DestructionWorld,
   ): DirectorEvent | null {
     const t = this.tuning;
-    const humans = planes.filter((p) => p.human);
-    const anchors = planes.filter(
-      (p) =>
-        !this.fresh(p, now) &&
-        (p.human ||
-          humans.some((h) => wrapDistance(h.pos, p.pos) <= DIRECTOR_ACTION_M)),
-    );
+    const anchors = this.anchorsOf(now, planes);
     if (anchors.length === 0) return null;
     // C2: a zone the danger budget refuses is blocked like a cooled-down
     // plane's, so the pick moves on to a tower clear of the planes whose
@@ -601,18 +670,31 @@ export class DestructionDirector {
     return due - now < this.tuning.rebuildQuietMs + DIRECTOR_WARN_MS;
   }
 
-  /** The shape of building `i` brought down as `plan` (null: no debris). */
+  /** The shape of building `i` brought down as `plan` (null: no debris).
+   * `built`: return whether this call simulated it instead (prefill). */
   private shapeOf(
     buildings: readonly Building[],
     i: number,
     plan: CollapsePlan,
-  ): CollapseShape | null {
+  ): CollapseShape | null;
+  private shapeOf(
+    buildings: readonly Building[],
+    i: number,
+    plan: CollapsePlan,
+    built: true,
+  ): boolean;
+  private shapeOf(
+    buildings: readonly Building[],
+    i: number,
+    plan: CollapsePlan,
+    built = false,
+  ): CollapseShape | null | boolean {
     // Built at t = 0: the shape is the same at any start time, and a fixed
     // one keeps the cached value exactly what a fresh build would give.
     const wire = collapseWire(plan, i, 0, 0);
     const key = `${i}:${wire.s}:${wire.d}:${wire.c}`;
     const cached = this.shapes.get(key);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined) return built ? false : cached;
     const b = buildings[i] as Building;
     const c = buildCollapse(buildings, wire);
     const shape = c && { zone: zoneOf(c, 10), fp: fallFootprint(c, b) };
@@ -621,27 +703,24 @@ export class DestructionDirector {
       if (!oldest.done) this.shapes.delete(oldest.value);
     }
     this.shapes.set(key, shape);
-    return shape;
+    return built ? true : shape;
   }
 
-  private pickTower(
+  /** Every tower near the action that could come down, near a plane first,
+   * then by score — the pick's candidates, best first. */
+  private scoreTowers(
     now: number,
     anchors: readonly DestructionPlane[],
     planes: readonly DestructionPlane[],
     world: DestructionWorld,
-    blocked: (x: number, z: number, zone: DangerZone) => boolean,
-  ): DirectorEvent | null {
+  ): ScoredTower[] {
     const t = this.tuning;
     const city = world.city;
     const wear = city.damage.wear();
     const busy = new Set(
       this.warned.filter((e) => e.k === EVENT_COLLAPSE).map((e) => e.b),
     );
-    const scored: {
-      i: number;
-      score: number;
-      near: DestructionPlane | null;
-    }[] = [];
+    const scored: ScoredTower[] = [];
     for (let i = 0; i < city.buildings.length; i++) {
       const b = city.buildings[i] as Building;
       if (b.height < t.towerMinM || busy.has(i)) continue;
@@ -681,6 +760,18 @@ export class DestructionDirector {
       (a, b) =>
         Number(!!b.near) - Number(!!a.near) || b.score - a.score || a.i - b.i,
     );
+    return scored;
+  }
+
+  private pickTower(
+    now: number,
+    anchors: readonly DestructionPlane[],
+    planes: readonly DestructionPlane[],
+    world: DestructionWorld,
+    blocked: (x: number, z: number, zone: DangerZone) => boolean,
+  ): DirectorEvent | null {
+    const city = world.city;
+    const scored = this.scoreTowers(now, anchors, planes, world);
     // The real debris of the best few, each way it could fall.
     const options: {
       i: number;
@@ -693,7 +784,7 @@ export class DestructionDirector {
       rank: number;
     }[] = [];
     const warnAt = now + DIRECTOR_WARN_MS;
-    for (const cand of scored.slice(0, 4)) {
+    for (const cand of scored.slice(0, PICK_CANDIDATES)) {
       const b = city.buildings[cand.i] as Building;
       let best: { shape: CollapseShape; dir: number; cross: number } | null =
         null;

@@ -2707,6 +2707,11 @@ paths a sky, 3 of them bores), the positive control first in every profile
 | phone (844×390, Mobile @1) | 3 | 6/6 | 0 | 0 |
 | retina (640×360 @2) | 1 | 2/2 (1024/1024) | 0 | 0 |
 
+After merging `origin/main` again (`2769057`: S9's carrier, U6's tunnel
+life and cave-ins), `boss`, `chaos`, `tunnel`, `exit`, `cavein`, every bore,
+`glass` and `sidewalk` re-flown on desktop and phone, night and dusk: 0
+boxes, 0 non-finite frames, every control flagged.
+
 Against the baseline above: `sidewalk` and `glass` at their 90-frame
 headings, re-flown on the fix before the merge (`e45c8f5`), read 0 too
 (desktop night; phone dusk). Negative pixels never exceeded 1 per frame anywhere.

@@ -4,6 +4,7 @@
 // keeping every shape in this one file is what makes a binary encoder a later
 // drop-in swap.
 
+import type { WireAaBurst } from "./aa";
 import type {
   BossDown,
   WireBossRaid,
@@ -76,6 +77,13 @@ export interface JoinMsg {
    * resumes (any `resume` is ignored) and never shares a room.
    */
   lab?: boolean;
+  /**
+   * W4: this pilot flies in Easy mode (a first-timer's default until three
+   * waves are cleared, or their own pick). The room's enemies treat an Easy
+   * pilot as the most novice skill level and let more of their shots go.
+   * Read at send time, so a resume carries the current value.
+   */
+  easy?: boolean;
 }
 
 /**
@@ -176,6 +184,12 @@ export interface SetIntensityMsg {
   level: number;
 }
 
+/** W4: Easy mode switched on or off (graduation, or the settings toggle). */
+export interface SetEasyMsg {
+  type: "setEasy";
+  on: boolean;
+}
+
 /**
  * Keepalive (W1): sent while the client boots (city build, shader pre-warm)
  * and nothing else is flowing yet. It only refreshes the server's liveness
@@ -225,6 +239,7 @@ export type ClientMsg =
   | HitClaimMsg
   | CrashMsg
   | SetIntensityMsg
+  | SetEasyMsg
   | LabMsg;
 
 // --- Server → client ---
@@ -236,7 +251,9 @@ export interface ScoreEntry {
   deaths: number;
   /** S7: the pilot's current kill streak — the one source of truth for the
    * scoreboard glow and the streak smoke. Omitted while 0. */
-  streak?: number;
+  streak?: number /** W3: AA-nest kills of planes this pilot had damaged first. Omitted
+   * while 0. */;
+  assists?: number;
 }
 
 /** Reply to a join: identity, room, shared city seed, spawn, current roster. */
@@ -502,7 +519,12 @@ export interface DeathMsg {
     | "meteor"
     | "bomb"
     // W1: an enemy plane that went down with its carrier (no killer).
-    | "carrier";
+    | "carrier"
+    // W3: downed by a rooftop AA nest (`killerId` AA_ID, common/src/aa.ts).
+    | "aa";
+  /** W3: an AA kill of a plane a pilot damaged first — that pilot's assist
+   * (their `assists` rides the `score` after). */
+  assist?: string;
   /** S1: the server's kill site — the victim's on-record position,
    * canonical and rounded to whole meters — so every client's jumbotron
    * headline names the same place. Absent when the server had no pose. */
@@ -571,6 +593,9 @@ export interface AwardMsg {
   victimId: string;
   medals: MedalKind[];
   tier?: StreakTier;
+  /** J1: the killer's kill chain (MedalLedger Award.chain), present only
+   * when it is a combo (≥ 2). An older server never sends it: no combo. */
+  chain?: number;
 }
 
 /** L1: a server-accepted moment the city reacts to (gunfire near buildings,
@@ -757,8 +782,18 @@ export interface PropsMsg {
   cu?: number[];
 }
 
+/** W3: the bursts the rooftop AA nests fired this tick (common/src/aa.ts
+ * AaBurst) — cosmetic on every client; the server already rolled what
+ * they hit, and its damage arrives as `damage` / `death` with shooter
+ * AA_ID. Old clients ignore it. */
+export interface AaMsg {
+  type: "aa";
+  b: WireAaBurst[];
+}
+
 export type ServerMsg =
   | WelcomeMsg
+  | AaMsg
   | PropsMsg
   | CaveInMsg
   | QuakeMsg

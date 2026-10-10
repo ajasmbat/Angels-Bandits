@@ -68,6 +68,7 @@ describe("roofStructuresFor: layout", () => {
     const kinds = new Set(withStructures(CITIES).map(({ s }) => s.kind));
     expect([...kinds].sort()).toEqual(
       [
+        "aaNest",
         "billboard",
         "billboardLeg",
         "coolingTower",

@@ -816,6 +816,9 @@ const NEUTRAL_GRADE: WaveGrade = { jitter: 1, reaction: 1, fire: 1 };
 /** W1: the aim-jitter multiplier never leaves this band, whatever style ×
  * skill × grade multiply to. */
 const JITTER_SCALE_MIN = 0.5;
+/** W4: the share of lined-up shots an enemy still takes at a pilot in
+ * Easy mode (on top of its wave's trigger discipline). */
+const EASY_FIRE_SCALE = 0.5;
 const JITTER_SCALE_MAX = 3;
 
 /** B3 telemetry (the bot sim's report): what the tactics actually flew. */
@@ -844,6 +847,8 @@ export class RoomBots {
   private contactPos = new Map<string, Vec3>();
   private nextIndex = 1;
   private tickCount = 0;
+  /** W3: provoked enemies' patrol points (setDetours). */
+  private detours: ReadonlyMap<string, Vec3> = new Map();
   /** D3 telemetry (bot sim): probes refused because they would have
    * entered an active collapse zone. */
   zoneRefusals = 0;
@@ -1058,6 +1063,13 @@ export class RoomBots {
    * nobody. */
   setQuarries(quarries: ReadonlyMap<string, string>): void {
     for (const [id, bot] of this.bots) bot.quarryId = quarries.get(id) ?? null;
+  }
+
+  /** W3: enemies provoked by a rooftop AA nest (server/src/aa.ts) patrol
+   * toward these points (over the nest) instead of their quarry while
+   * listed. Replaced wholesale each call; empty = nobody detours. */
+  setDetours(detours: ReadonlyMap<string, Vec3>): void {
+    this.detours = detours;
   }
 
   quarryOf(id: string): string | null {
@@ -2052,6 +2064,9 @@ export class RoomBots {
     bot: Bot,
     contacts: readonly BotContact[],
   ): Vec3 | undefined {
+    // W3: a provoked enemy heads for the nest that hit it.
+    const detour = this.detours.get(bot.entry.id);
+    if (detour) return detour;
     if (bot.quarryId === null) return undefined;
     for (const c of contacts) if (c.id === bot.quarryId) return c.pos;
     return undefined;
@@ -3615,8 +3630,13 @@ export class RoomBots {
     const fwd = flightForward(bot.flight);
     const along = (lx * fwd.x + ly * fwd.y + lz * fwd.z) / lead;
     if (along < Math.cos(BOT_FIRE_CONE)) return null;
-    // W1: an early wave's trigger discipline lets some lined-up shots go.
-    if (bot.grade.fire < 1 && bot.fireRand() >= bot.grade.fire) return null;
+    // W1: an early wave's trigger discipline lets some lined-up shots go —
+    // W4: and half again of them at a pilot in Easy mode (their aim jitter
+    // already sits at its clamp, so this is what Easy mode really buys).
+    const fire =
+      bot.grade.fire *
+      (!target.boss && this.skill.isEasy(target.id) ? EASY_FIRE_SCALE : 1);
+    if (fire < 1 && bot.fireRand() >= fire) return null;
     return {
       botId: bot.entry.id,
       targetId: bot.targetId,

@@ -48,6 +48,10 @@ export const EMISSIVE_STROBE = 1.1;
 /** Boost afterburn flame at full burn (F2) — the hottest plane light, still
  * under tracers so a boosting bandit never out-shines its own gunfire. */
 export const EMISSIVE_AFTERBURN = 1.3;
+/** W3 rooftop AA tracer streams and muzzle flashes — the city's own guns
+ * read hot, but a notch under the pilots' tracers so a player's fire stays
+ * the brightest thing in a fight. */
+export const EMISSIVE_AA_TRACER = 1.4;
 export const EMISSIVE_TRACER = 1.5;
 
 // --- Buildings ---
@@ -800,8 +804,13 @@ export const HEAT_VALIDATION_SLACK = 0.1;
 /** Invulnerability after (re)spawn, ms — canceled the instant that player fires.
  * 5.5 s since F4 (was 4): a fresh pilot gets a beat to find their bearings. */
 export const SPAWN_PROTECTION_MS = 5500;
-/** Kill-cam beat between death and the server-issued respawn, ms. */
+/** Kill-cam beat between death and the server-issued respawn, ms — W4:
+ * now an ENEMY plane's (its exit after a shoot-down); a human's is
+ * RESPAWN_MS. */
 export const KILL_CAM_MS = 2500;
+/** W4: a human pilot's death → respawn, ms. Quick (≤ 2 s even with a
+ * server tick of slack on top) — back in the fight before the frustration. */
+export const RESPAWN_MS = 1900;
 /** Crash within this of last taking damage credits the damager, ms. */
 export const DAMAGE_MEMORY_MS = 8000;
 /** No damage for this long starts health regen, ms. 5 s since F4 (was 8):

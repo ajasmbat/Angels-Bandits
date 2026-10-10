@@ -12,6 +12,7 @@
 import { type BotStyle, botStyleOfName } from "@angels-bandits/common/botstyle";
 import { mulberry32 } from "@angels-bandits/common/city";
 import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
+import type { ComboKind, MomentKind } from "./juice";
 import { AMBIENT_PHRASES, PHRASE, STYLE_AMBIENT } from "./phrases";
 
 /** Radio traffic classes, highest priority first (see RADIO_PRIORITY). */
@@ -149,6 +150,59 @@ export function ownKillCallout(selfName: string): Callout {
     voice: PHRASE.goodKill,
     ticker: "good kill, good kill",
     speaker: selfName,
+  };
+}
+
+/** J1: a combo's announcer line. It shares the own kill's `goodkill` key
+ * and replaces it — a double kill is one call, not "good kill" twice and a
+ * combo after. Expires fast: a late combo call is worse than none. */
+const COMBO_VOICE: Readonly<Record<ComboKind, string>> = {
+  double: PHRASE.comboDouble,
+  triple: PHRASE.comboTriple,
+  multi: PHRASE.comboMulti,
+};
+const COMBO_TICKER: Readonly<Record<ComboKind, string>> = {
+  double: "double kill!",
+  triple: "triple kill!",
+  multi: "multi kill — they're falling out of the sky",
+};
+
+export function comboCallout(combo: ComboKind): Callout {
+  return {
+    kind: "own",
+    key: "goodkill",
+    cooldownMs: 0,
+    expiresMs: 3_000,
+    voice: COMBO_VOICE[combo],
+    ticker: COMBO_TICKER[combo],
+    speaker: "CONTROL",
+  };
+}
+
+/** J1: a carrier-war moment the local pilot earned (W2's bomb run, the
+ * carrier, W3's AA assist, a wave cleared). */
+const MOMENT_VOICE: Readonly<Record<MomentKind, string>> = {
+  bombrun: PHRASE.bombRunStopped,
+  carrier: PHRASE.carrierDown,
+  aa: PHRASE.aaAssist,
+  wave: PHRASE.waveCleared,
+};
+const MOMENT_TICKER: Readonly<Record<MomentKind, string>> = {
+  bombrun: "bomb run stopped — nice work",
+  carrier: "CARRIER DOWN! CARRIER DOWN!",
+  aa: "triple-A assist — good shooting, ground crew",
+  wave: "wave cleared — regroup",
+};
+
+export function momentCallout(kind: MomentKind): Callout {
+  return {
+    kind: "own",
+    key: `moment-${kind}`,
+    cooldownMs: 0,
+    expiresMs: kind === "carrier" || kind === "wave" ? 8_000 : 4_000,
+    voice: MOMENT_VOICE[kind],
+    ticker: MOMENT_TICKER[kind],
+    speaker: "CONTROL",
   };
 }
 

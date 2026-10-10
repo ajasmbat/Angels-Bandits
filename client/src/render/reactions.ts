@@ -657,13 +657,20 @@ windowGlow += woke * litWindow * ${intensity} * ao;
 export const PUFFS = 36;
 /** Seconds for one puff to rise the full column. */
 const PUFF_RISE_S = 9;
-/** Column height a puff reaches, meters. */
-const COLUMN_HEIGHT = 95;
+/** Column height a puff reaches, meters (J1: tall enough to stand over the
+ * skyline as a landmark of the fight). */
+const COLUMN_HEIGHT = 150;
 /** The column leans downwind by this much at the top, meters. */
 const WIND_LEAN = { x: 26, z: 11 } as const;
 /** Puff sprite size ramp, meters. */
 const PUFF_MIN = 9;
-const PUFF_MAX = 24;
+const PUFF_MAX = 34;
+/** J1: the fog reads a column as this share of its real distance, so a
+ * kill's smoke stands out of the haze ~20% further off. Never below
+ * FOG_DISTANCE / (WORLD_SIZE / 2) = 0.8: a column must still be fully
+ * fogged where its torus image flips (the half-world limit), with a margin
+ * for the puffs' spread and lean. */
+const COLUMN_FOG_REACH = 0.82;
 /** City-lit grey: at night a smoke column reads by the street light it
  * catches, so it is LIGHTER than the dark sky and asphalt it rises over
  * (a near-black column vanishes against both). Not a light source: linear
@@ -755,7 +762,7 @@ export class CityReactor {
         .replace("gl_PointSize = size;", "gl_PointSize = size * aSize;")
         .replace(
           "#include <fog_vertex>",
-          `#include <fog_vertex>\ngl_PointSize = min(gl_PointSize, ${MAX_POINT_PX.toFixed(1)});`,
+          `#include <fog_vertex>\ngl_PointSize = min(gl_PointSize, ${MAX_POINT_PX.toFixed(1)});\n#ifdef USE_FOG\nvFogDepth *= ${COLUMN_FOG_REACH.toFixed(2)};\n#endif`,
         );
     };
     // Distinct key: textually similar patches collide without one (V3).

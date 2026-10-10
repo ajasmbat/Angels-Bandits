@@ -13,6 +13,7 @@
 // flies the plane while it is up (main.ts), which the header says — and
 // RESUME (or Esc, or ✕) puts the controls back.
 
+import { INTENSITY_NAMES } from "@angels-bandits/common/waves";
 import { FEELS, type Feel } from "../game/effortless";
 import type { AimMode } from "../game/flight-input";
 import type { RollLevelMode } from "../game/roll-control";
@@ -27,6 +28,7 @@ import {
   type CameraRoll,
   type PanelEnv,
   type PanelEvent,
+  STICK_SENS_STEPS,
   type Settings,
   type SettingsStore,
   clampSettings,
@@ -64,12 +66,26 @@ export interface SettingsHooks {
   setRollLevel: (mode: RollLevelMode) => void;
   /** F10 CAMERA ROLL — applied live. */
   setCameraRoll: (c: CameraRoll) => void;
+  /** J1 REDUCED MOTION as it applies now (the device's until picked). */
+  reducedMotion: () => boolean;
+  /** J1 SCREEN SHAKE, REDUCED MOTION or CARRIER CAM changed — applied live. */
+  setEffects: (s: Settings) => void;
   /** The resolution scale changed (debounced while a slider drags). */
   setResScale: (scale: number) => void;
   /** Any volume changed (the soundtrack's on/off switch too). */
   setVolumes: (s: Settings) => void;
   /** The panel opened or closed: the autopilot and the touch controls. */
   onOpenChange: (open: boolean) => void;
+  /** W4 ENEMIES: the room's shared intensity (0–3) as the room holds it,
+   * and a claim for another (IntensityBar's path: the server decides). */
+  intensity: () => number;
+  setIntensity: (level: number) => void;
+  /** W4 EASY MODE as it applies now, and the player's own pick. */
+  easy: () => boolean;
+  setEasy: (on: boolean) => void;
+  /** W4: the desktop stick SENSITIVITY and the FLIGHT DATA line. */
+  setStickSens: (v: number) => void;
+  setFlightData: (on: boolean) => void;
 }
 
 /** The Settings values a range slider drives. */
@@ -107,6 +123,12 @@ const seg = (key: string, label: string, opts: [string, string][]): string =>
 const slider = (key: string, label: string, min: number): string =>
   `<label class="slider"><span>${label}</span><input type="range" min="${min}" max="100" step="5" data-key="${key}" aria-label="${label}" /><output data-out="${key}"></output></label>`;
 
+/** W4: the graphics choices up top; the full ladder sits under ADVANCED. */
+const QUALITY_SIMPLE: QualitySetting[] = ["auto", "low", "high"];
+
+/** W4: the panel is five plain groups — GRAPHICS, CONTROLS, SOUND, CAMERA,
+ * ENEMIES — and an ADVANCED fold with everything else. `data-row="desk"` /
+ * `"touch"` rows show on that device only (refresh). */
 const MARKUP = `
 <div class="settings" role="dialog" aria-modal="true" aria-labelledby="settings-h" tabindex="-1">
   <header>
@@ -120,88 +142,76 @@ const MARKUP = `
     <section>
       <h3>GRAPHICS</h3>
       ${seg(
-        "quality",
-        "Graphics quality",
-        QUALITY_SETTINGS.map((q) => [q, QUALITY_LABEL[q]]),
+        "qualitySimple",
+        "Graphics",
+        QUALITY_SIMPLE.map((q) => [q, QUALITY_LABEL[q]]),
       )}
-      <div class="readout"><span data-out="tier"></span><span data-out="fps"></span></div>
-      ${slider("resScale", "RESOLUTION", 50)}
+      <h3>CAMERA</h3>
+      ${seg("cameraRoll", "Camera", [
+        ["level", "LEVEL"],
+        ["follow", "FOLLOW"],
+      ])}
     </section>
     <section>
-      <h3>CONTROLS</h3>
+      <h3>EFFECTS</h3>
       <div class="row">
-        <span>FLIGHT ASSIST</span>
-        ${seg("assist", "Flight assist", [
+        <span>SCREEN SHAKE</span>
+        ${seg("shake", "Screen shake", [
+          ["full", "FULL"],
+          ["reduced", "REDUCED"],
+          ["off", "OFF"],
+        ])}
+      </div>
+      <div class="row">
+        <span>REDUCED MOTION</span>
+        ${seg("reducedMotion", "Reduced motion", [
           ["on", "ON"],
           ["off", "OFF"],
         ])}
       </div>
       <div class="row">
-        <span>FEEL</span>
-        ${seg(
-          "feel",
-          "Feel",
-          FEELS.map((f) => [f, FEEL_LABEL[f]]),
-        )}
-      </div>
-      <div class="row">
-        <span>ROLL AUTO-LEVEL</span>
-        ${seg("rollLevel", "Roll auto-level", [
+        <span>CARRIER CAM</span>
+        ${seg("carrierCam", "Carrier cam", [
+          ["on", "ON"],
           ["off", "OFF"],
-          ["gentle", "GENTLE"],
-          ["strong", "STRONG"],
         ])}
       </div>
-      <div class="row">
-        <span>CAMERA ROLL</span>
-        ${seg("cameraRoll", "Camera roll", [
-          ["level", "LEVEL"],
-          ["follow", "FOLLOW PLANE"],
+    </section>
+    <section>
+      <h3>CONTROLS</h3>
+      <div class="row" data-row="desk">
+        ${seg("scheme", "Controls", [
+          ["instructor", "MOUSE"],
+          ["keys", "KEYBOARD"],
+        ])}
+      </div>
+      <div class="row" data-row="touch">
+        ${seg("schemeTouch", "Controls", [
+          ["instructor", "TOUCH"],
+          ["classic", "TOUCH STICK"],
         ])}
       </div>
       <div class="row" data-row="sensitivity">
-        <span>AIM SENSITIVITY</span>
+        <span>SENSITIVITY</span>
         ${seg(
           "sensitivity",
           "Aim sensitivity",
           SENSITIVITY_STEPS.map((s) => [String(s), `${s}×`]),
         )}
       </div>
-      <div class="row">
-        <span>AIM MODE</span>
-        ${seg("aimMode", "Aim mode", [
-          ["instructor", "INSTRUCTOR"],
-          ["classic", "CLASSIC"],
-        ])}
+      <div class="row" data-row="stickSens">
+        <span>SENSITIVITY</span>
+        ${seg(
+          "stickSens",
+          "Stick sensitivity",
+          STICK_SENS_STEPS.map((s) => [String(s), `${s}×`]),
+        )}
       </div>
-      <div class="row" data-row="haptics">
-        <span>HAPTICS</span>
-        ${seg("haptics", "Haptics", [
-          ["on", "ON"],
-          ["off", "OFF"],
-        ])}
-      </div>
-      <div class="row">
-        <span>AUTO FIRE</span>
-        ${seg("autoFire", "Auto fire", [
-          ["on", "ON"],
-          ["off", "OFF"],
-        ])}
-      </div>
+      <p class="note" data-row="keysHint">ARROWS STEER · ENTER FIRES · SPACE BOOSTS</p>
     </section>
     <section>
       <h3>SOUND</h3>
-      ${slider("master", "MASTER", 0)}
-      ${slider("engine", "ENGINE", 0)}
-      ${slider("voice", "RADIO VOICE", 0)}
-      ${slider("music", "MUSIC", 0)}
-      <div class="row">
-        <span>RADIO VOICE</span>
-        ${seg("radioVoice", "Radio voice", [
-          ["on", "ON"],
-          ["off", "OFF"],
-        ])}
-      </div>
+      ${slider("master", "VOLUME", 0)}
       <div class="row">
         <span>MUSIC</span>
         ${seg("musicOn", "Music", [
@@ -209,8 +219,104 @@ const MARKUP = `
           ["off", "OFF"],
         ])}
       </div>
+      <h3>ENEMIES</h3>
+      ${seg(
+        "intensity",
+        "Enemy intensity in this room",
+        INTENSITY_NAMES.map((n, i) => [String(i), n]),
+      )}
+      <div class="row">
+        <span>EASY MODE</span>
+        ${seg("easy", "Easy mode", [
+          ["on", "ON"],
+          ["off", "OFF"],
+        ])}
+      </div>
     </section>
   </div>
+  <details class="settings-advanced">
+    <summary tabindex="-1">ADVANCED</summary>
+    <div class="settings-body">
+      <section>
+        <h3>GRAPHICS</h3>
+        ${seg(
+          "quality",
+          "Graphics quality",
+          QUALITY_SETTINGS.map((q) => [q, QUALITY_LABEL[q]]),
+        )}
+        <div class="readout"><span data-out="tier"></span><span data-out="fps"></span></div>
+        ${slider("resScale", "RESOLUTION", 50)}
+        <div class="row">
+          <span>FLIGHT DATA</span>
+          ${seg("flightData", "Flight data", [
+            ["on", "ON"],
+            ["off", "OFF"],
+          ])}
+        </div>
+      </section>
+      <section>
+        <h3>FLYING</h3>
+        <div class="row" data-row="desk">
+          <span>AIM MODE</span>
+          ${seg("aimMode", "Aim mode", [
+            ["instructor", "MOUSE AIM"],
+            ["classic", "MOUSE STICK"],
+            ["keys", "KEYBOARD"],
+          ])}
+        </div>
+        <div class="row">
+          <span>FLIGHT ASSIST</span>
+          ${seg("assist", "Flight assist", [
+            ["on", "ON"],
+            ["off", "OFF"],
+          ])}
+        </div>
+        <div class="row">
+          <span>FEEL</span>
+          ${seg(
+            "feel",
+            "Feel",
+            FEELS.map((f) => [f, FEEL_LABEL[f]]),
+          )}
+        </div>
+        <div class="row">
+          <span>ROLL AUTO-LEVEL</span>
+          ${seg("rollLevel", "Roll auto-level", [
+            ["off", "OFF"],
+            ["gentle", "GENTLE"],
+            ["strong", "STRONG"],
+          ])}
+        </div>
+        <div class="row" data-row="haptics">
+          <span>HAPTICS</span>
+          ${seg("haptics", "Haptics", [
+            ["on", "ON"],
+            ["off", "OFF"],
+          ])}
+        </div>
+        <div class="row">
+          <span>AUTO FIRE</span>
+          ${seg("autoFire", "Auto fire", [
+            ["on", "ON"],
+            ["off", "OFF"],
+          ])}
+        </div>
+      </section>
+      <section>
+        <h3>SOUND MIX</h3>
+        ${slider("engine", "ENGINE", 0)}
+        ${slider("voice", "RADIO VOICE", 0)}
+        ${slider("music", "MUSIC", 0)}
+        <div class="row">
+          <span>RADIO VOICE</span>
+          ${seg("radioVoice", "Radio voice", [
+            ["on", "ON"],
+            ["off", "OFF"],
+          ])}
+        </div>
+      </section>
+    </div>
+  </details>
   <footer class="settings-foot">
     <span class="hint">ESC TO RESUME</span>
     <button type="button" class="settings-resume" tabindex="-1">RESUME</button>
@@ -306,6 +412,8 @@ export class SettingsPanel {
     } else {
       clearInterval(this.timer);
       this.flushRes();
+      // W4: the ADVANCED fold starts folded every time.
+      this.root.querySelector("details")?.removeAttribute("open");
       this.dragging = null;
       const focused = document.activeElement;
       if (focused instanceof HTMLElement && this.root.contains(focused)) {
@@ -375,8 +483,21 @@ export class SettingsPanel {
   /** A segmented button. */
   private pick(group: string, v: string): void {
     const h = this.hooks;
-    if (group === "quality") h.setQuality(v as QualitySetting);
-    else if (group === "sensitivity") h.setSensitivity(Number(v));
+    if (group === "quality" || group === "qualitySimple") {
+      h.setQuality(v as QualitySetting);
+    } else if (group === "scheme" || group === "schemeTouch") {
+      h.setAimMode(v as AimMode);
+    } else if (group === "intensity") h.setIntensity(Number(v));
+    else if (group === "easy") h.setEasy(v === "on");
+    else if (group === "stickSens") {
+      this.values = clampSettings({ ...this.values, stickSens: Number(v) });
+      saveSettings(this.store, this.values);
+      h.setStickSens(this.values.stickSens);
+    } else if (group === "flightData") {
+      this.values = clampSettings({ ...this.values, flightData: v === "on" });
+      saveSettings(this.store, this.values);
+      h.setFlightData(this.values.flightData);
+    } else if (group === "sensitivity") h.setSensitivity(Number(v));
     else if (group === "aimMode") h.setAimMode(v as AimMode);
     else if (group === "radioVoice") h.setRadioVoice(v === "on");
     else if (group === "haptics") {
@@ -407,6 +528,22 @@ export class SettingsPanel {
       this.values = clampSettings({ ...this.values, cameraRoll: v });
       saveSettings(this.store, this.values);
       h.setCameraRoll(this.values.cameraRoll);
+    } else if (group === "shake") {
+      this.values = clampSettings({ ...this.values, shake: v });
+      saveSettings(this.store, this.values);
+      h.setEffects(this.values);
+    } else if (group === "reducedMotion") {
+      // Same rule as haptics: null (the device default) until picked.
+      this.values = clampSettings({
+        ...this.values,
+        reducedMotion: v === "on",
+      });
+      saveSettings(this.store, this.values);
+      h.setEffects(this.values);
+    } else if (group === "carrierCam") {
+      this.values = clampSettings({ ...this.values, carrierCam: v === "on" });
+      saveSettings(this.store, this.values);
+      h.setEffects(this.values);
     } else if (group === "musicOn") {
       this.values = clampSettings({ ...this.values, musicOn: v === "on" });
       saveSettings(this.store, this.values);
@@ -441,10 +578,19 @@ export class SettingsPanel {
     const q = h.quality();
     const sens = h.sensitivity();
     const haptics = h.haptics();
+    const aim = h.aimMode();
+    const touch = coarsePointer();
     const marks: Record<string, string> = {
       quality: q.setting,
+      qualitySimple: q.setting,
+      scheme: aim,
+      schemeTouch: aim,
+      intensity: String(h.intensity()),
+      easy: h.easy() ? "on" : "off",
+      stickSens: String(this.values.stickSens),
+      flightData: this.values.flightData ? "on" : "off",
       sensitivity: String(sens),
-      aimMode: h.aimMode(),
+      aimMode: aim,
       radioVoice: h.radioVoice() ? "on" : "off",
       haptics: haptics ? "on" : "off",
       autoFire: h.autoFire() ? "on" : "off",
@@ -452,6 +598,9 @@ export class SettingsPanel {
       feel: this.values.feel,
       rollLevel: h.rollLevel(),
       cameraRoll: this.values.cameraRoll,
+      shake: this.values.shake,
+      reducedMotion: h.reducedMotion() ? "on" : "off",
+      carrierCam: this.values.carrierCam ? "on" : "off",
       musicOn: this.values.musicOn ? "on" : "off",
     };
     for (const group of this.root.querySelectorAll<HTMLElement>(".seg")) {
@@ -466,6 +615,26 @@ export class SettingsPanel {
       "[data-row=sensitivity]",
     );
     if (sensRow) sensRow.hidden = sens === null;
+    // W4: the device's own rows; the desktop stick's sensitivity and the
+    // keyboard's key line only where they mean something.
+    for (const row of this.root.querySelectorAll<HTMLElement>(
+      "[data-row=desk]",
+    )) {
+      row.hidden = touch;
+    }
+    for (const row of this.root.querySelectorAll<HTMLElement>(
+      "[data-row=touch]",
+    )) {
+      row.hidden = !touch;
+    }
+    const stickRow = this.root.querySelector<HTMLElement>(
+      "[data-row=stickSens]",
+    );
+    if (stickRow) stickRow.hidden = touch || aim === "instructor";
+    const keysHint = this.root.querySelector<HTMLElement>(
+      "[data-row=keysHint]",
+    );
+    if (keysHint) keysHint.hidden = touch || aim !== "keys";
     const hapticsRow =
       this.root.querySelector<HTMLElement>("[data-row=haptics]");
     if (hapticsRow) hapticsRow.hidden = haptics === null;

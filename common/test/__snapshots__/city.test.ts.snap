@@ -3,7 +3,7 @@
 exports[`generateCity determinism > matches the committed fingerprint for seed 42 (client and server must agree exactly) 1`] = `
 {
   "count": 559,
-  "digest": "12115e53",
+  "digest": "694e26a1",
   "first": {
     "damage": undefined,
     "depth": 85,
@@ -63,6 +63,18 @@ exports[`generateCity determinism > matches the committed fingerprint for seed 4
         "round": false,
         "seed": 0.3930692046415061,
         "width": 5.297808510949835,
+      },
+      {
+        "baseY": 40,
+        "depth": 5,
+        "dx": -4.906621641945094,
+        "dz": -3.682216098485515,
+        "face": 3,
+        "height": 2.8,
+        "kind": "aaNest",
+        "round": true,
+        "seed": 0.5380028889048845,
+        "width": 5,
       },
     ],
     "tiers": [

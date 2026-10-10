@@ -740,9 +740,9 @@ body.touch #juice-combo[data-tone="big"],
 body.touch #juice-combo[data-tone="moment"] {
   font-size: 26px;
 }
-/* A3: the streak counter sits clear of the phone's combo banner. */
+/* A3: the streak counter sits under the phone's combo banner (≤ 30 px). */
 body.touch #juice-streak {
-  top: 71%;
+  top: calc(62% + 34px);
 }
 @media (prefers-reduced-motion: reduce) {
   #juice-combo.on,

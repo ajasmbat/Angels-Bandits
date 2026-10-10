@@ -86,7 +86,11 @@ export interface Death {
     | "meteor"
     | "bomb"
     // W1: an enemy plane that went down with its carrier.
-    | "carrier";
+    | "carrier"
+    // W3: downed by a rooftop AA nest (killer AA_ID).
+    | "aa";
+  /** W3: on an AA kill, the pilot who had damaged the victim first. */
+  assistId?: string;
 }
 /** S4: a fired round claimed by something other than a plane hit (the sky
  * boss): the bullet existed and came from where the shooter is on record. */
@@ -105,6 +109,8 @@ interface PlayerCombat {
   alive: boolean;
   kills: number;
   deaths: number;
+  /** W3: AA kills of planes this pilot damaged first. */
+  assists: number;
   protectedUntil: number;
   heat: GunHeat;
   /** Fire-rate token bucket: refills 1 shot per FIRE_INTERVAL_MS up to
@@ -137,6 +143,7 @@ export class Combat {
       alive: true,
       kills: 0,
       deaths: 0,
+      assists: 0,
       protectedUntil: now + SPAWN_PROTECTION_MS,
       heat: createGunHeat(now),
       allowance: FIRE_BURST_SLACK,
@@ -220,7 +227,13 @@ export class Combat {
 
   scoreOf(id: string): ScoreEntry {
     const p = this.players.get(id);
-    return { id, kills: p?.kills ?? 0, deaths: p?.deaths ?? 0 };
+    const assists = p?.assists ?? 0;
+    return {
+      id,
+      kills: p?.kills ?? 0,
+      deaths: p?.deaths ?? 0,
+      ...(assists > 0 && { assists }),
+    };
   }
 
   /**
@@ -447,6 +460,43 @@ export class Combat {
     p.lastEnvDamagedAt = now;
     const death = p.hp <= 0 ? this.environmentKill(id, cause, now) : null;
     return { hp: Math.round(Math.max(0, p.hp)), death };
+  }
+
+  /**
+   * W3: a rooftop AA nest's burst or flak takes `amount` off `id` — which
+   * the CALLER guarantees is an enemy plane (server/src/aa.ts only ever
+   * names the carrier's planes; AA never reaches a human). Spawn
+   * protection holds. A kill is the AA's (AA_ID: nobody's tally moves);
+   * the pilot who last damaged the victim within DAMAGE_MEMORY_MS gets the
+   * assist. Null when nothing was applied.
+   */
+  aaDamage(
+    id: string,
+    amount: number,
+    now: number,
+    aaId: string,
+  ): { hp: number; death: Death | null } | null {
+    const p = this.players.get(id);
+    if (!p || !p.alive || !(amount > 0)) return null;
+    if (now < p.protectedUntil) return null;
+    p.hp -= amount;
+    p.lastEnvDamagedAt = now;
+    if (p.hp > 0) return { hp: Math.round(p.hp), death: null };
+    const assistId =
+      p.lastDamagerId !== null &&
+      p.lastDamagerId !== id &&
+      now - p.lastDamagedAt <= DAMAGE_MEMORY_MS
+        ? p.lastDamagerId
+        : null;
+    const death = this.kill(id, p, aaId, "aa", now);
+    if (assistId !== null) {
+      const helper = this.players.get(assistId);
+      if (helper) {
+        helper.assists++;
+        death.assistId = assistId;
+      }
+    }
+    return { hp: 0, death };
   }
 
   /**

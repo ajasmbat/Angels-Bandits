@@ -27,6 +27,7 @@
     "./city/jumbotron-sites": "./src/city/jumbotron-sites.ts",
     "./city/props": "./src/city/props.ts",
     "./storm": "./src/storm.ts",
+    "./aa": "./src/aa.ts",
     "./strike": "./src/strike.ts",
     "./chaos": "./src/chaos.ts",
     "./weather": "./src/weather.ts",

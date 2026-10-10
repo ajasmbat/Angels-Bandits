@@ -844,6 +844,8 @@ export class RoomBots {
   private contactPos = new Map<string, Vec3>();
   private nextIndex = 1;
   private tickCount = 0;
+  /** W3: provoked enemies' patrol points (setDetours). */
+  private detours: ReadonlyMap<string, Vec3> = new Map();
   /** D3 telemetry (bot sim): probes refused because they would have
    * entered an active collapse zone. */
   zoneRefusals = 0;
@@ -1058,6 +1060,13 @@ export class RoomBots {
    * nobody. */
   setQuarries(quarries: ReadonlyMap<string, string>): void {
     for (const [id, bot] of this.bots) bot.quarryId = quarries.get(id) ?? null;
+  }
+
+  /** W3: enemies provoked by a rooftop AA nest (server/src/aa.ts) patrol
+   * toward these points (over the nest) instead of their quarry while
+   * listed. Replaced wholesale each call; empty = nobody detours. */
+  setDetours(detours: ReadonlyMap<string, Vec3>): void {
+    this.detours = detours;
   }
 
   quarryOf(id: string): string | null {
@@ -2048,6 +2057,9 @@ export class RoomBots {
     bot: Bot,
     contacts: readonly BotContact[],
   ): Vec3 | undefined {
+    // W3: a provoked enemy heads for the nest that hit it.
+    const detour = this.detours.get(bot.entry.id);
+    if (detour) return detour;
     if (bot.quarryId === null) return undefined;
     for (const c of contacts) if (c.id === bot.quarryId) return c.pos;
     return undefined;

@@ -4,6 +4,7 @@
 // keeping every shape in this one file is what makes a binary encoder a later
 // drop-in swap.
 
+import type { WireAaBurst } from "./aa";
 import type {
   BossDown,
   WireBossRaid,
@@ -236,7 +237,9 @@ export interface ScoreEntry {
   deaths: number;
   /** S7: the pilot's current kill streak — the one source of truth for the
    * scoreboard glow and the streak smoke. Omitted while 0. */
-  streak?: number;
+  streak?: number;  /** W3: AA-nest kills of planes this pilot had damaged first. Omitted
+   * while 0. */
+  assists?: number;
 }
 
 /** Reply to a join: identity, room, shared city seed, spawn, current roster. */
@@ -502,7 +505,12 @@ export interface DeathMsg {
     | "meteor"
     | "bomb"
     // W1: an enemy plane that went down with its carrier (no killer).
-    | "carrier";
+    | "carrier"
+    // W3: downed by a rooftop AA nest (`killerId` AA_ID, common/src/aa.ts).
+    | "aa";
+  /** W3: an AA kill of a plane a pilot damaged first — that pilot's assist
+   * (their `assists` rides the `score` after). */
+  assist?: string;
   /** S1: the server's kill site — the victim's on-record position,
    * canonical and rounded to whole meters — so every client's jumbotron
    * headline names the same place. Absent when the server had no pose. */
@@ -757,8 +765,18 @@ export interface PropsMsg {
   cu?: number[];
 }
 
+/** W3: the bursts the rooftop AA nests fired this tick (common/src/aa.ts
+ * AaBurst) — cosmetic on every client; the server already rolled what
+ * they hit, and its damage arrives as `damage` / `death` with shooter
+ * AA_ID. Old clients ignore it. */
+export interface AaMsg {
+  type: "aa";
+  b: WireAaBurst[];
+}
+
 export type ServerMsg =
   | WelcomeMsg
+  | AaMsg
   | PropsMsg
   | CaveInMsg
   | QuakeMsg

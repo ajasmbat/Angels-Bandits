@@ -87,7 +87,13 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * air) until an enemy's row is in its snapshots; the enemies' ids. */
 async function flyUntilEnemies(peer: Peer): Promise<Set<string>> {
   const at: Pose = { ...peer.welcome.spawn, quat: { ...IDENTITY } };
-  const enemies = new Set<string>();
+  // Enemies already in the room are in the welcome's roster — a peer that
+  // joins before the last test's leave has landed shares that room and its
+  // wave, which launches nothing new until someone downs it. Later launches
+  // arrive as playerJoined.
+  const enemies = new Set(
+    peer.welcome.roster.filter((r) => r.isBot).map((r) => r.id),
+  );
   // ~8 s nominal (carrier 2–3 s in, its first wave 3 s later, a 2.4 s
   // launch); the rest is headroom for a loaded machine.
   const deadline = Date.now() + 25_000;

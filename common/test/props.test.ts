@@ -174,8 +174,8 @@ describe("D9 prop layout", () => {
       const b = city[p.b] as Building;
       const r = (generatedRoof(b) ?? [])[p.ref];
       expect(r, `prop ${p.id}`).toBeDefined();
-      const kind = { 7: "waterTank", 8: "billboard", 9: "mast" }[
-        p.kind as 7 | 8 | 9
+      const kind = { 7: "waterTank", 8: "billboard", 9: "mast", 13: "aaNest" }[
+        p.kind as 7 | 8 | 9 | 13
       ];
       expect(r?.kind).toBe(kind);
       expect(p.landY).toBe(b.height);

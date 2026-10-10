@@ -80,11 +80,12 @@ export interface QualityProfile {
   treeSway: boolean;
   /** L9 fountain spray, share of particles. */
   fountains: number;
-  /** L9 birds drawn per flock, share. */
+  /** L9 birds drawn per flock, share (DT2's tower flocks too). */
   birds: number;
   /** L10 airliner contrail length, share. */
   contrails: number;
-  /** L13 fire escapes, balconies, AC units, scaffolding. */
+  /** L13 fire escapes, balconies, AC units, scaffolding; DT2 balcony
+   * plants and sconces, ivy curtains and graffiti (all one instanced rig). */
   facadeDetail: boolean;
   /** The bloom pass (half-res chain). Mobile keeps it: the lower pixel ratio
    * already makes it cheap, and a quarter-res chain would let a 1–2 px tracer
@@ -119,7 +120,8 @@ export interface QualityProfile {
   /** A1 facade life: laundry lines, facade flags and banners, pigeons. */
   facadeLife: boolean;
   /** G1 street furniture + parked cars: share of objects kept (golden-ratio
-   * thinning by a uniform — street-furniture.ts). */
+   * thinning by a uniform — street-furniture.ts). DT2's café sets are
+   * re-skinned benches, so they thin exactly as the benches did. */
   streetDetail: number;
   /** G1 fine ground paint (wear, patches, manholes, drains, arrows, words,
    * bike lanes, ramps, tiles, grates). Off = the S1/VO5 paint alone. */
@@ -129,7 +131,9 @@ export interface QualityProfile {
    * the tunnel's LED strips are guidance and stay on every tier. */
   holeDecor: number;
   /** R2 roof dressing's fine detail (drains, hatches, walkways, lightning
-   * rods, dishes, braces, gondola cables). Structures are solid and stay. */
+   * rods, dishes, braces, gondola cables) and all of DT2's roof dressing
+   * (laundry, pigeons, garden beds and trees, neon signs — which also fold
+   * away with distance on every tier). Structures are solid and stay. */
   roofDetail: boolean;
   /** S3 the record ghost replayed beside a course run (one translucent
    * draw). The rings themselves are guidance and stay on every tier. */

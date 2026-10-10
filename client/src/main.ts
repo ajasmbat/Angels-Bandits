@@ -1104,7 +1104,8 @@ reflections.tag(jumbotrons.mesh);
 reflections.tag(ground.mesh);
 // L10 drone show: points in the shared MoverLights cloud (zero draw calls).
 const droneShow = new DroneShowRenderer(welcome.seed);
-const birds = new Birds(welcome.seed);
+// DT2: plus a flock wheeling round each of the four tallest towers.
+const birds = new Birds(welcome.seed, city.cityBuildings);
 scene.add(birds.points);
 /** L9: planes the flocks react to, refilled per frame (no per-frame array). */
 const birdPlanes: Vec3[] = [];

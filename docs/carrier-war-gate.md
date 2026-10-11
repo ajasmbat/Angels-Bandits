@@ -18,15 +18,15 @@ the GPU questions.
 
 | check | command | result |
 | --- | --- | --- |
-| Repo gates | typecheck, biome, `npm test`, client build | PENDING |
+| Repo gates | `npm run typecheck`, `npx biome check client common server`, `npm test`, `npm run build -w client` | all exit 0 (2471 tests passed, 1 skipped) |
 | Gameplay sanity | `node --import tsx tools/carrier-sanity.ts --runs 3` | **PASS, 3/3** |
 | Roof seams | `node --import tsx tools/roof-seams.ts` | **PASS**: 0 clashes |
 | HUD seams | `node tools/perf/polish.mjs --overlap` | **PASS**: 0 overlaps after the fixes (before: 4, and the WAVE banner off centre) |
 | Allocation benches | `tools/{chaos,spectacle,destruction}-bench.ts` | chaos **PASS** after the fixes (was over budget); destruction **PASS**; spectacle **FAIL** on `boss.update`, which is pre-existing and equally over on 97883bd |
 | Perf, desktop | `run.mjs --runs 3 --res 1 --ab-ref 97883bd` | every draw budget ok once the runner's probe artefact is accounted for; 0 late compiles; 0 page errors |
 | Perf, phone | `run.mjs --runs 3 --device phone --quality mobile --ab-ref 97883bd` | exit 0; every draw budget ok (chaos 90 / 90); 0 late compiles |
-| Flicker | `flicker.mjs --grid --repeat 3 --ref 97883bd` | PENDING |
-| Black boxes | `blackbox.mjs --device desktop,phone --repeat 3` | PENDING |
+| Flicker | `flicker.mjs --grid --repeat 1 --ref 97883bd` | 63/89 views unchanged; 26 'worse' = new or re-staged motion (planes, AA guns, searchlights, U7 water), confirmed by `--ablate`; no new shimmer source. `--ref` before W1 needed a harness fix |
+| Black boxes | `blackbox.mjs --device desktop,phone --repeat 1` | **0 black boxes**, 4/4 positive controls; **FAIL on 2 NaN frames** (1–2 px, phone/dusk/exit, new with the batch, intermittent) → follow-up ANGE-4C8FOI |
 | Soak | `polish.mjs --soak 30 --peers 1 --phone --lab --parity` | 0 errors / 0 page errors / 0 server exceptions; lab and parity clean; exit 1 on client heap only (+17.5 % / +15.2 % / +14.6 %, flat after warm-up: written exception below) |
 
 ## What the gate fixed
@@ -194,7 +194,66 @@ explosions + sparks` went 104 → 223, from J1's `fx.ts`.
 
 ## Flicker and black boxes
 
-PENDING-FLICKER
+### Black boxes (`tools/perf/blackbox.mjs`)
+
+Command: `node tools/perf/blackbox.mjs --device desktop,phone --repeat 1`,
+on this branch's final build: every path, night and dusk. A first
+`--repeat 3` attempt was cut to one repeat, at load 45, after 8 clean paths.
+
+- **Black boxes: 0** on every path, device and sky. The positive control
+  was flagged in all 4 profile × sky combinations (256/256 NaN probed, box
+  flagged), so the detector is not blind.
+- **Frames with non-finite pixels: 2, so the tool says FAIL.** Both were
+  on **phone / dusk / `exit`**: 1–2 NaN pixels a frame, at random spots on
+  the portal ramp's floor and wall. Re-flown three more times on this
+  branch it showed in one of three (1 px). Flown 3 times on 97883bd it
+  never showed. `--attribute` cannot reproduce it on a re-pose ("base 0"),
+  so the source is RNG- or dt-driven. O7's `abFinite` guard keeps it to a
+  single pixel (0 boxes anywhere), but by O7's rule every non-finite
+  source is a defect. It is **new with the batch** and **not fixed here**:
+  hunting an intermittent source takes per-system ablation over many
+  passes, which is more than this gate's minimal-fix budget. Filed as
+  **ANGE-4C8FOI**, with the suspects (U7's tunnel fog, debris and motes;
+  J1/W2's FX) and the evidence.
+
+### Flicker (`tools/perf/flicker.mjs --grid`)
+
+Command: `node tools/perf/flicker.mjs --grid --repeat 1 --ref 97883bd --no-build`,
+89 views, frozen and panning, each arm on its own build, served from one
+fixed epoch. The plan's cut order took it from `--repeat 3` to 1 repeat.
+The branch arm's own first repeat, from an earlier attempt, matched this
+one to the third decimal in every view.
+
+**The grid needed a fix first.** W1 removed `flicker.mjs`'s `setBots(0)`,
+since a post-W1 room holds no bots. A `--ref` older than W1 still fills its
+room, so the grid waited forever for an empty one: `--ref 97883bd` timed
+out twice. `setBots?.(0)` is back, optional-chained the way `run.mjs` has it.
+
+**Result.** The grid's own target (halve every view over 0.01) fails on
+81 of 89 views here, as it did on main for O7; the gate's question is "not
+worse". **63 views read the same as 97883bd** within the tool's tolerance.
+**26 read worse**, and they are content in motion, not shimmer:
+
+| views | before → after (frozen) | what moves |
+| --- | --- | --- |
+| `planes-*` (11 views: closeups, turntable, damage, full room, dogfight) | e.g. full room 0.208 → 0.502, biplane closeup 0.010 → 0.068 | DT1's `planeShowcase` stages planes that 97883bd cannot show ("a build without the hook just shows the empty sky"), lit by the city's sweeping searchlights |
+| `aa-nest-closeup`, `aa-firing-night` | 0.238 → 0.303, 0.013 → 0.044 | W3's nests: slewing guns, crews, sweeping searchlight cones (97883bd has no nests) |
+| `boss-closeup`, `boss-catapult-launch`, `boss-breakup`, `enemy-dive-bomb` | 0.043 → 0.110 (catapult) | DT1's fighters on the carrier, and the searchlights at the view's re-staged instant |
+| `tunnel-cavein-*` (3), `tunnel-life-lake`, `tunnel-life-platform` | lake 0.015 → 0.134 | U7's animated underground (water, plants, motes, rock debris) |
+| `glass-cluster`, `sky-night` | 0.008 → 0.022, 0.118 → 0.136 | the bimodal capture state O7 already recorded for exactly these two views (main itself lands in either mode) |
+
+`--ablate` on the three worst confirms it. With every named system hidden,
+each falls to 0.000–0.002:
+
+- `planes-full-room` (0.250): searchlights 0.199; the fleet only 0.009
+  and the own plane 0.022 (a spinning prop).
+- `boss-catapult-launch` (0.110): searchlights 0.088.
+- `tunnel-life-lake` (0.134): U7's `undergroundDecor` 0.109.
+
+Hiding single systems in `aa-firing-night` halves its score in each case,
+the signature of a moving light over every lit surface. No batch system
+shows up as a shimmer source. Real-GPU confirmation is M3 command 6.
+
 
 ## Soak
 
@@ -243,6 +302,9 @@ machine the clients warm up inside the first 5 minutes, so the M3 soak
   at 100 of 101, and cavein at 99 of 100 with its scene draws varying
   85–92 between passes. The next draw any of those views gains needs a
   budget decision or a draw back.
+- **ANGE-4C8FOI: an intermittent NaN pixel on the phone tier at the tunnel
+  exit** (black boxes section). It is new with the batch, single pixels,
+  never a box.
 - **A fallen bridge span.** `bombSurfaceY` has no prop state, so a bomb
   whose fall ends over a D9 span that has collapsed into the river still
   bursts at deck height. That needs a fallen span and a bomb on its 40 m

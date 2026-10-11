@@ -261,8 +261,13 @@ export function installHeightFog(): void {
 	#endif
 	// U7: under the street, the bores' coloured air first (tunnelAirAmount);
 	// then the linear fog, which still reaches fogColor exactly at fogFar.
+	// O7b: max() — vFogDepth is a length at every vertex, but interpolated
+	// across a long sliver (the zeppelin's searchlight cones) a pixel can
+	// read it far below 0: exp() overflows, 0 × Inf is NaN, and a merely
+	// negative depth mixes past the air (a negative pixel). The haze below
+	// clamps its distance the same way.
 	float abUnder = abTunnelAir.a * (1.0 - smoothstep(-8.0, -1.0, vFogWorldY));
-	float abAir = abUnder * (1.0 - exp(-vFogDepth * ${AIR_DENSITY.toFixed(4)}));
+	float abAir = abUnder * (1.0 - exp(-max(vFogDepth, 0.0) * ${AIR_DENSITY.toFixed(4)}));
 	gl_FragColor.rgb = mix( gl_FragColor.rgb, abTunnelAir.rgb, abAir );
 	gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, fogFactor );
 	float abHaze = abHazeAmount(cameraPosition.y, vFogWorldY, vFogDepth) * (1.0 - fogFactor) * (1.0 - abUnder);

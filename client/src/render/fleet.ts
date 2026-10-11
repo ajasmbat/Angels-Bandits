@@ -507,7 +507,19 @@ export interface Glow {
 }
 const NO_GLOW: Glow = { r: 0, g: 0, b: 0 };
 
-const scratchColor = new THREE.Color();
+/** A3: each livery hex as a three colour, converted once (bounded by
+ * render/plane.ts LIVERIES and the fighter's stand-in) — setHex runs
+ * three's colour management, which boxes its doubles once the batch's FX
+ * make it polymorphic: ~2.5 KB a frame for a full room, every frame. */
+const liveryColors = new Map<number, THREE.Color>();
+function liveryColor(hex: number): THREE.Color {
+  let c = liveryColors.get(hex);
+  if (!c) {
+    c = new THREE.Color().setHex(hex);
+    liveryColors.set(hex, c);
+  }
+  return c;
+}
 
 export class PlaneFleet {
   readonly group = new THREE.Group();
@@ -925,11 +937,11 @@ export class PlaneFleet {
       else biplanes++;
       e.group.updateMatrixWorld(true);
       rig.lod.update(camera);
-      const prim = scratchColor.setHex(rig.livery.primary);
+      const prim = liveryColor(rig.livery.primary);
       const pr = prim.r;
       const pg = prim.g;
       const pb = prim.b;
-      const sec = scratchColor.setHex(rig.livery.secondary);
+      const sec = liveryColor(rig.livery.secondary);
       const damage = rig.damage.value;
       const ail = rig.parts.aileronL.rotation.x;
       const elev = rig.parts.elevator.rotation.x;

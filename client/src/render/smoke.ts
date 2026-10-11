@@ -159,7 +159,10 @@ export class SmokeTrails {
   /** Tinted mode only: per-puff colour, and each trail's tint. */
   private readonly colors: THREE.BufferAttribute | null;
   private readonly tints = new Map<string, number>();
-  private readonly scratchColor = new THREE.Color();
+  /** A3: each tint as a three colour, converted once — setHex runs three's
+   * colour management, which boxes its doubles once J1's FX make it
+   * polymorphic (~780 B/frame for 12 streaking planes). */
+  private readonly tintColors = new Map<number, THREE.Color>();
   /** What update() re-uploads each frame (built once — no per-frame array). */
   private readonly uploads: readonly (THREE.BufferAttribute | null)[];
   /** Emission cadence, ms; Infinity = emission off (quality share 0). */
@@ -291,7 +294,9 @@ export class SmokeTrails {
     if (!anchor) return;
     const base = nearestImageInto(scratchImage, viewer, anchor);
     // One tint per trail (a tier change recolours the whole streak).
-    if (this.colors) this.scratchColor.setHex(this.tints.get(id) ?? 0xffffff);
+    const tint = this.colors
+      ? this.tintColor(this.tints.get(id) ?? 0xffffff)
+      : null;
     let i = this.walk.i;
     for (let k = 0; k < trail.size; k++) {
       if (i >= budget) break;
@@ -307,14 +312,21 @@ export class SmokeTrails {
           ? SIZE_MAX * (1 - (age01 - 0.85) / 0.15)
           : SIZE_MIN + (SIZE_MAX - SIZE_MIN) * (age01 / 0.85);
       this.sizes.setX(i, size);
-      if (this.colors) {
-        const c = this.scratchColor;
-        this.colors.setXYZ(i, c.r, c.g, c.b);
-      }
+      if (this.colors && tint) this.colors.setXYZ(i, tint.r, tint.g, tint.b);
       i++;
     }
     this.walk.i = i;
   };
+
+  /** `hex` as a three colour (cached: the streak tiers and white). */
+  private tintColor(hex: number): THREE.Color {
+    let c = this.tintColors.get(hex);
+    if (!c) {
+      c = new THREE.Color().setHex(hex);
+      this.tintColors.set(hex, c);
+    }
+    return c;
+  }
 
   /** QA: live puff count last frame (perf reporting). */
   get puffCount(): number {

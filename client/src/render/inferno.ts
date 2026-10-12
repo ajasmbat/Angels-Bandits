@@ -741,6 +741,8 @@ export interface InfernoStats {
   floating: number;
   /** Overdraw proxy: screen fractions of the flame cards and smoke puffs. */
   coverage: number;
+  /** Glow spots handed to the cloud deck. */
+  glow: number;
 }
 
 /** The inferno: sites, three draws and the zero-draw feeds. */
@@ -803,6 +805,7 @@ export class Inferno {
     gutted: 0,
     floating: 0,
     coverage: 0,
+    glow: 0,
   };
   // Per-building column pick (scratch).
   private readonly colB = new Int32Array(512);
@@ -1375,11 +1378,12 @@ export class Inferno {
         this.cloudGlow[o] = img.x;
         this.cloudGlow[o + 1] = img.z;
         this.cloudGlow[o + 2] = strength * burn;
-        this.cloudGlow[o + 3] = 260 + 140 * (this.colW[c] as number);
+        this.cloudGlow[o + 3] = 380 + 200 * (this.colW[c] as number);
         glow++;
       }
     }
     this.cloudGlowCount = glow;
+    this.stats.glow = glow;
     const g = this.smoke.geometry as THREE.InstancedBufferGeometry;
     g.instanceCount = puffs;
     this.smoke.visible = puffs > 0;

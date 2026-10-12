@@ -324,8 +324,8 @@ const RAIN_DARKEN = 0.15;
  * this far toward a smoky ember-brown, and the height haze toward smoke —
  * the same on every tier (rule 2), and darken-leaning, so the horizon seam
  * stays invisible and nothing in the air nears the bloom threshold. */
-const BURN_FOG_MIX = 0.38;
-const BURN_FOG_COLOR = 0x2a140c;
+const BURN_FOG_MIX = 0.45;
+const BURN_FOG_COLOR = 0x3a1a0e;
 const BURN_HAZE_MIX = 0.5;
 const BURN_HAZE_RGB = [0.1, 0.055, 0.04] as const;
 /** The sky dome's multiplicative pull at burn 1 (× BURN_FOG_MIX). */
@@ -602,10 +602,10 @@ const CEILING_OPACITY = 0.55;
 
 /** L7: glow spots the deck takes, its glow colour (linear) and mix. */
 const DECK_GLOW_MAX = 8;
-const DECK_GLOW_RGB = "vec3(0.62, 0.17, 0.05)";
-const DECK_GLOW_MIX = 0.85;
+const DECK_GLOW_RGB = "vec3(0.9, 0.26, 0.06)";
+const DECK_GLOW_MIX = 1.0;
 /** The puffs over a fire, pulled toward ember-orange (linear). */
-const PUFF_GLOW = new THREE.Color(0.75, 0.24, 0.08);
+const PUFF_GLOW = new THREE.Color(0.95, 0.32, 0.1);
 
 /** Soft multi-blob puff texture (procedural, no assets — the game's idiom). */
 function puffTexture(): THREE.CanvasTexture {
@@ -732,7 +732,7 @@ for (int i = 0; i < ${DECK_GLOW_MAX}; i++) {
 }
 deckGlow = min(deckGlow, 1.0);
 diffuseColor.rgb = mix(diffuseColor.rgb, ${DECK_GLOW_RGB}, deckGlow * ${DECK_GLOW_MIX.toFixed(2)});
-diffuseColor.a = max(diffuseColor.a, deckGlow * 0.7);`,
+diffuseColor.a = max(diffuseColor.a, deckGlow * 0.85);`,
         );
     };
     ceilingMat.customProgramCacheKey = () => "ab-cloud-ceiling-l7-glow";
@@ -819,7 +819,7 @@ diffuseColor.a = max(diffuseColor.a, deckGlow * 0.7);`,
         const f = 1 - d / r;
         k += (this.glowSpots[o + 2] as number) * f * f;
       }
-      k = Math.min(1, k) * 0.8;
+      k = Math.min(1, k);
       if (k > 0) any = true;
       this.puffTint.copy(this.puffBase).lerp(PUFF_GLOW, k);
       arr[i * 3] = this.puffTint.r;

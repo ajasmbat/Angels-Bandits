@@ -104,6 +104,9 @@ import {
   CHAIN_BLAST_DAMAGE,
   CHAIN_BLAST_RADIUS,
   CHAIN_DEPTH_MAX,
+  CHAIN_ENERGY_MAX,
+  CHAIN_ENERGY_MIN,
+  COLLAPSE_BUILD_BUDGET_MS,
   COLLAPSE_CAP,
   COLLAPSE_TICK_LIMIT,
   DEATH_BLAST_DAMAGE,
@@ -498,8 +501,18 @@ export function tickDestruction(
   const capped = () =>
     damage.destroyedCount + damage.fallenCount >=
     COLLAPSE_CAP * damage.chunkCount;
+  // D10: a tall tower's debris is ~4× the pieces it was; past
+  // COLLAPSE_BUILD_BUDGET_MS of building this tick, the rest wait a tick
+  // (the first always runs, so the queue always moves).
+  const began = performance.now();
   for (const index of [...city.dirty].sort((a, b) => a - b)) {
     if (collapses.length >= COLLAPSE_TICK_LIMIT) break;
+    if (
+      collapses.length > 0 &&
+      performance.now() - began > COLLAPSE_BUILD_BUDGET_MS
+    ) {
+      break;
+    }
     city.dirty.delete(index);
     if (capped()) continue;
     const b = city.buildings[index];
@@ -608,16 +621,13 @@ function landImpacts(city: RoomCity, now: number): void {
   while (k < city.impacts.length && (city.impacts[k] as ChainImpact).t <= now) {
     const i = city.impacts[k] as ChainImpact;
     k++;
-    const out = city.damage.damageAt(i, CHAIN_BLAST_RADIUS, CHAIN_BLAST_DAMAGE);
-    blastProps(
-      city,
-      i,
-      CHAIN_BLAST_RADIUS,
-      CHAIN_BLAST_DAMAGE,
-      i.by,
-      i.depth + 1,
-      now,
-    );
+    // D10: the blast scales with what struck — a slab at speed smashes
+    // more than a chip — inside CHAIN_ENERGY_MIN..MAX of the D5 blast.
+    const e = Math.min(CHAIN_ENERGY_MAX, Math.max(CHAIN_ENERGY_MIN, i.e));
+    const radius = CHAIN_BLAST_RADIUS * Math.sqrt(e);
+    const damage = CHAIN_BLAST_DAMAGE * e;
+    const out = city.damage.damageAt(i, radius, damage);
+    blastProps(city, i, radius, damage, i.by, i.depth + 1, now);
     for (const id of out) {
       const b = chunkBuilding(id);
       city.breakers.set(b, i.by);

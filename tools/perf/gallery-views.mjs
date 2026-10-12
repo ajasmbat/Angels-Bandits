@@ -1397,8 +1397,6 @@ export const VIEWS = [
     timeMs: 1_790_000_000_000,
     weather: "clear",
     raf: true,
-    // The room's live burn level, pinned off (the inferno view pins 0.9).
-    stage: { burn: 0 },
   },
   // L2: the same long view with reference 2's city burning (burn 0.9).
   {

@@ -92,7 +92,7 @@ export function farShellDistance(d: number): number {
 // Colours (sRGB) and peak linear luminances — every one under the 0.72
 // bloom threshold before the far fade even applies (≤ FAR_VIS of it shows).
 const WINDOW_COLOR = 0xffb468;
-const WINDOW_PEAK = 0.6;
+const WINDOW_PEAK = 0.66;
 const STREET_COLOR = 0xffa040;
 const STREET_PEAK = 0.24;
 const LAMP_COLOR = 0xffd9a8;
@@ -218,6 +218,15 @@ vec4 abSpire(vec2 sc) {
 }
 void main() {
   float kind = aSlot.z;
+  // Past this tier's radius: out before any hashing (the slot prefix
+  // already stops near it).
+  vec2 slotCentre = kind < 0.5
+    ? aSlot.xy * ${f(FAR_CELL)} + uFarFrac + ${f(FAR_CELL / 2)}
+    : aSlot.xy * ${f(FAR_SUPER)} + uFarSuperFrac + ${f(FAR_SUPER / 2)};
+  if (length(slotCentre) > uFarOuter + (kind < 0.5 ? 100.0 : 1300.0)) {
+    gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+    return;
+  }
   vec2 c;     // footprint centre, from the eye (x, z), m
   vec2 hsz;   // footprint half sizes, m
   float H;    // full height, m
@@ -259,7 +268,7 @@ void main() {
     H = 16.0 + 60.0 * dens + (24.0 + 250.0 * dens * dens) * pow(r, 2.0);
     H = min(H, 340.0);
     seed = float(h2 >> 16u) / 65535.0;
-    occ = 0.1 + 0.22 * abBits(h2, 16u) * (0.5 + 0.5 * dens);
+    occ = 0.14 + 0.26 * abBits(h2, 16u) * (0.5 + 0.5 * dens);
     // Art Deco setbacks on the tall ones.
     if (H > 105.0 && abBits(h2, 24u) < 0.5) {
       style = 2.0;
@@ -354,18 +363,21 @@ void main() {
   vec3 em = vec3(0.0);
   float px = d * uFarPx; // metres per pixel here
   if (!roof) {
-    // Lit windows, two levels, each only where it is ≥ ~2.5 px and its
-    // mean below that — window pairs (2 storeys × 2 bays), then windows.
+    // Lit windows: cells of 2 bays × 2 storeys, each lit or dark, shown
+    // where a cell is ≥ ~2 px (its mean below that), and drawn as a lit
+    // strip inset in the cell — separate lights, not blocks — where a cell
+    // is ≥ ~5 px (the strip's mean coverage below that). Nothing finer
+    // than ~2 px ever switches, so the far city cannot crawl.
     vec2 pg = vFacade / vec2(6.0, 7.2);
-    float groupK = 1.0 - smoothstep(0.35, 0.65, px / 7.2);
+    float cellK = 1.0 - smoothstep(0.35, 0.65, px / 7.2);
+    float insetK = 1.0 - smoothstep(0.12, 0.22, px / 7.2);
     float g = abFarCell(floor(pg), seed);
     float group = step(1.0 - occ, g) * (0.55 + 0.45 * fract(g * 7.0));
     float groupMean = occ * 0.775;
-    float lit = mix(groupMean, group, groupK);
-    vec2 wc = fract(vFacade / vec2(3.0, 3.6));
-    float winK = 1.0 - smoothstep(0.25, 0.42, px / 3.6);
-    float glass = step(0.18, wc.x) * step(wc.x, 0.82) * step(0.22, wc.y) * step(wc.y, 0.8);
-    float pane = mix(0.45, glass, winK);
+    vec2 fc = fract(pg);
+    float inset = step(0.12, fc.x) * step(fc.x, 0.88) * step(0.18, fc.y) * step(fc.y, 0.62);
+    float pane = mix(0.338, inset, insetK);
+    float lit = mix(groupMean, group, cellK);
     vec3 wcol = mix(${lit(WINDOW_COLOR, WINDOW_PEAK)}, ${lit(EMBER_COLOR, WINDOW_PEAK)}, 0.6 * burn);
     em += wcol * lit * pane;
     // Floodlit crowns on the spires and the odd setback.
@@ -383,6 +395,9 @@ void main() {
     float fl = 0.7 + 0.3 * sin(uFarTime * 7.0 + vFacade.y * 0.3 + seed * 50.0);
     em += ${lit(EMBER_COLOR, EMBER_PEAK)} * fl * smoothstep(0.0, 0.6, burn);
   }
+  // Never past the bloom threshold where a tower's lights stack (windows,
+  // crown, embers): a luminance cap under 0.72 before the far fade.
+  em *= min(1.0, 0.7 / max(dot(em, vec3(0.2126, 0.7152, 0.0722)), 1e-4));
   float vis = abFarVis(d) * vInfo.z;
   gl_FragColor = vec4(mix(fogC, col + em, vis), 1.0);
 }

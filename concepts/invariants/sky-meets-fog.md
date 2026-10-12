@@ -32,9 +32,14 @@
    - draws the live fog colour below the stop;
    - puts its gradient through the same map above the stop, so the two
      meet exactly at every moment, mid-flash and in dust included;
-   - ramps the flash's extra gain, the moon halo, the dusk/dawn glows and
-     the clouds in from zero over `SKY_GLOW_RAMP` / `CLOUD_FADE` above the
-     stop.
+   - ramps the flash's extra gain, the moon halo, the dusk/dawn glows,
+     the burning city's glow (`uBurnGlow`, L7b) and the clouds in from
+     zero over `SKY_GLOW_RAMP` / `CLOUD_FADE` (≈ 5° since L7b) above the
+     stop;
+   - thins the burn's smoke tint high up (L7b): the burn is the map's
+     LAST lerp (`SkyAir.burn` / `burnTint`), so the dome can undo part of
+     it, but only from `SKY_GLOW_RAMP` above the stop. Below that it is
+     the full map, so the seam is still exact.
 3. **Additive things fade by attenuation, never by lerping to the fog
    colour.** They multiply by `(1 − abFogFactor) · (1 − haze)` (the V1
    lesson: a lerp brightens the distance).
@@ -53,6 +58,15 @@
 `ShaderMaterial` with `fog: true` is fed them live). Then call
 `abFogFactor` and `abHazeAmount`. Do not keep a second copy of the fog
 state.
+
+**The dome is centred on the rendered camera.** That is the chase
+camera, or under `__ab.qaCamera` the QA eye's image, as with the river.
+Centred on a plane parked hundreds of metres away, the moon and the
+clouds slide by parallax.
+
+**The cloud deck's ceiling sheet (`storm.ts` CloudDeck) thins with
+distance** (L7b, `CEILING_NEAR`–`CEILING_FAR`). Seen edge-on and fogged,
+it would otherwise lay a flat lid over the dome's clouds above ~16°.
 
 **The storm sky's clouds (`sky-clouds.ts`) are part of the same seam:**
 

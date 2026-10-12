@@ -15,6 +15,9 @@ import {
   BOUNCE_TINTS,
   BUILDING_SHADER_SOURCE,
   GRAZING_REFLECTANCE,
+  UPLIGHT_HEIGHT,
+  UPLIGHT_INTENSITY,
+  UPLIGHT_TINT,
 } from "../src/render/buildings-material";
 import { facadeColor } from "../src/render/city";
 import { luminance } from "../src/render/emissive";
@@ -65,9 +68,16 @@ describe("VO2 facade palette", () => {
     const ao = 1 - FACADE.aoStrength * (1 - Math.min(y / 6, 1));
     const soot = 1 - FACADE.soot * (1 - Math.min(y / 90, 1));
     const k = Math.exp(-y / BOUNCE_HEIGHT) * ao * soot;
+    // L3: on an uplit tier the uplight cone REPLACES the bounce (a convex
+    // mix), so the street wash is the larger of the two at its cone's heart.
+    const up =
+      Math.exp(-y / UPLIGHT_HEIGHT) *
+      luminance(UPLIGHT_TINT) *
+      UPLIGHT_INTENSITY;
     bouncePeak = Math.max(
       bouncePeak,
       maxDiffuse * maxTint * BOUNCE_INTENSITY * k,
+      maxDiffuse * up * ao * soot,
     );
   }
 

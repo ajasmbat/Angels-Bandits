@@ -14,7 +14,11 @@
 // The palettes (albedo and emissive) live here too, so the shader emitters
 // in window-pattern.ts and the ladder test read ONE set of numbers.
 
-import type { Building } from "@angels-bandits/common/city";
+import {
+  type Building,
+  type LandmarkStyle,
+  landmarkStyleAt,
+} from "@angels-bandits/common/city";
 import {
   HELIPAD_CHANCE,
   HELIPAD_MAX_HEIGHT,
@@ -104,7 +108,10 @@ export const LED_HUES = [
   new THREE.Color(1.0, 0.76, 0.46), // warm white
   new THREE.Color(0.58, 0.38, 1.0), // violet
 ] as const;
-const LED_LANDMARK = 0; // landmarks share the city's teal-cyan identity
+/** L3: the Art Deco landmarks' outline is warm white (their stone is lit
+ * like stone, not neon); the glass supertall keeps an ice-white one. */
+const LED_LANDMARK_DECO = 3;
+const LED_LANDMARK_GLASS = 2;
 
 /** Crown floodlight tints, max component 1 (the bound in the ladder test
  * multiplies the brightest albedo by the largest component). */
@@ -123,6 +130,47 @@ export const CROWN_GAIN = 1.3;
 export const crownDepth = (height: number): number =>
   Math.min(Math.max(height * 0.14, 14), 32);
 
+/**
+ * L3 landmark tier roles — what the shader paints on a landmark's tier,
+ * carried in `aRoof.w` (+ UPLIGHT_FLAG) by city.ts. 0 = an ordinary tier.
+ */
+export const LandmarkRole = {
+  NONE: 0,
+  /** A floodlit Art Deco setback: the crown wash over the whole tier. */
+  DECO_CROWN: 1,
+  /** The stacked lit arches (HALCYON), over the crown wash. */
+  ARCH_CROWN: 2,
+  /** A spire, needle or mooring mast: lit vertical seams. */
+  SPIRE: 3,
+  /** The glass supertall's lit crown: horizontal light fins. */
+  GLASS_CROWN: 4,
+} as const;
+export type LandmarkRole = (typeof LandmarkRole)[keyof typeof LandmarkRole];
+/** Added to the role in `aRoof.w` when the tier's base is uplit. */
+export const UPLIGHT_FLAG = 8;
+
+/** The role of tier `tierIndex` of a landmark of `style` (tier 0 is the
+ * podium, tier 1 the shaft; LANDMARK_PROFILES has four tiers). */
+export function landmarkRole(
+  style: LandmarkStyle | null,
+  tierIndex: number,
+  tierCount: number,
+): LandmarkRole {
+  if (style === null || tierIndex < 2) return LandmarkRole.NONE;
+  const top = tierIndex === tierCount - 1;
+  if (style === "ziggurat") return LandmarkRole.DECO_CROWN;
+  if (style === "glass") {
+    return top ? LandmarkRole.SPIRE : LandmarkRole.GLASS_CROWN;
+  }
+  if (style === "arches") {
+    return top ? LandmarkRole.SPIRE : LandmarkRole.ARCH_CROWN;
+  }
+  return top ? LandmarkRole.SPIRE : LandmarkRole.DECO_CROWN; // spire
+}
+
+/** Share of ordinary buildings whose street base is uplit (L3). */
+export const UPLIGHT_CHANCE = 0.15;
+
 export interface RoofStyle {
   /** One roof kind per tier, bottom-up (a helipad only ever tops the stack). */
   tierKinds: RoofKind[];
@@ -130,8 +178,14 @@ export interface RoofStyle {
   tone: number;
   /** LED outline colour, linear, already boosted to LED_LUMINANCE. */
   led: THREE.Color | null;
-  /** Crown wash: tint × CROWN_GAIN, and the lit depth (top tier only). */
+  /** Crown wash: tint × CROWN_GAIN, and the lit depth (top tier only —
+   * on a landmark every crown tier, at its own height: city.ts). */
   crown: { color: THREE.Color; depth: number } | null;
+  /** L3: the landmark's style (null off the landmark blocks). */
+  landmark: LandmarkStyle | null;
+  /** L3: the street base is uplit — scalloped warm floodlight cones (a
+   * landmark's shaft always is, from its podium roof). */
+  uplight: boolean;
 }
 
 const pick = <T>(list: readonly T[], r: number): T =>
@@ -157,6 +211,9 @@ export function roofStyleFor(b: Building): RoofStyle {
   const rLed = rand();
   const rLedHue = rand();
   const rCrown = rand();
+  // L3: drawn last, so every roll above keeps its value.
+  const rUplight = rand();
+  const style = landmark ? landmarkStyleAt(b.x, b.z) : null;
 
   const base: RoofKind = rBase < 0.55 ? RoofKind.MEMBRANE : RoofKind.GRAVEL;
   let topKind: RoofKind = base;
@@ -185,7 +242,9 @@ export function roofStyleFor(b: Building): RoofStyle {
 
   let led: THREE.Color | null = null;
   if (landmark || (b.height >= LED_MIN_HEIGHT && rLed < LED_CHANCE)) {
-    const hue = landmark ? LED_HUES[LED_LANDMARK] : pick(LED_HUES, rLedHue);
+    const hue = landmark
+      ? LED_HUES[style === "glass" ? LED_LANDMARK_GLASS : LED_LANDMARK_DECO]
+      : pick(LED_HUES, rLedHue);
     led = hue.clone().multiplyScalar(emissiveBoost(hue, LED_LUMINANCE));
   }
 
@@ -193,7 +252,7 @@ export function roofStyleFor(b: Building): RoofStyle {
   if (landmark || b.height >= CROWN_MIN_HEIGHT) {
     // Most crowns are white light; one in four takes a colour.
     const tint = landmark
-      ? CROWN_TINTS[0]
+      ? CROWN_TINTS[style === "glass" ? 1 : 0]
       : rCrown < 0.45
         ? CROWN_TINTS[0]
         : rCrown < 0.7
@@ -205,5 +264,12 @@ export function roofStyleFor(b: Building): RoofStyle {
     };
   }
 
-  return { tierKinds, tone: rTone, led, crown };
+  return {
+    tierKinds,
+    tone: rTone,
+    led,
+    crown,
+    landmark: style,
+    uplight: landmark || rUplight < UPLIGHT_CHANCE,
+  };
 }

@@ -68,7 +68,13 @@ import {
   crewSchedule,
 } from "./living-windows";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
-import { type RoofStyle, roofStyleFor } from "./roofs";
+import {
+  LandmarkRole,
+  type RoofStyle,
+  UPLIGHT_FLAG,
+  landmarkRole,
+  roofStyleFor,
+} from "./roofs";
 import { pushUpdateRange } from "./update-range";
 import { WIN_INTERIOR_UNIFORM, packRun } from "./window-pattern";
 import { ImageCache, InstanceUploads, imageIndex } from "./wrapPlacement";
@@ -206,7 +212,10 @@ interface BuildingLook {
  *
  *   aArchetype  facade archetype (all tiers of a building agree), and in .y
  *               D1's facade-damage slot word for the box's tier (`word`)
- *   aRoof       VO3: (roof kind, crown depth on the top tier else 0, tone, 0)
+ *   aRoof       VO3: (roof kind, crown depth on the top tier else 0, tone,
+ *               L3 landmark role + UPLIGHT_FLAG — roofs.ts LandmarkRole;
+ *               a landmark's crown tiers wash over their whole height, and
+ *               D3 debris pieces carry neither role nor uplight)
  *   aLed        VO3: boosted LED outline colour (0 = none)
  *   aCrown      VO3: crown wash tint × gain (top tier only)
  *   aSubOff     H1: this box's base-centre offset inside its PARENT tier
@@ -226,21 +235,33 @@ function writeSolid(
   s: SolidBox,
   look: BuildingLook,
   word: number,
+  debris = false,
 ): void {
   const tier = b.tiers[s.tierIndex] as Building["tiers"][number];
   let tierBase = 0;
   for (let k = 0; k < s.tierIndex; k++) tierBase += b.tiers[k]?.height ?? 0;
   const isTop = s.tierIndex === b.tiers.length - 1;
+  // L3: a landmark's setbacks above the shaft are all crowns, floodlit over
+  // their whole height; its shaft and an uplit building's street base carry
+  // the uplight. A falling piece carries neither (it is no longer a facade).
+  const role = landmarkRole(look.style.landmark, s.tierIndex, b.tiers.length);
+  const crownTier = role !== LandmarkRole.NONE || isTop;
+  const crownDepth =
+    role !== LandmarkRole.NONE ? tier.height : (look.style.crown?.depth ?? 0);
+  const uplit =
+    look.style.uplight &&
+    s.tierIndex === (look.style.landmark === null ? 0 : 1);
   a.archetype[i * 2] = look.arch;
   a.archetype[i * 2 + 1] = word;
   a.roof[i * 4] = look.style.tierKinds[s.tierIndex] ?? 0;
-  a.roof[i * 4 + 1] = isTop && look.style.crown ? look.style.crown.depth : 0;
+  a.roof[i * 4 + 1] = crownTier && look.style.crown ? crownDepth : 0;
   a.roof[i * 4 + 2] = look.style.tone;
-  a.roof[i * 4 + 3] = 0;
+  a.roof[i * 4 + 3] = debris ? 0 : role + (uplit ? UPLIGHT_FLAG : 0);
   if (look.style.led) look.style.led.toArray(a.led, i * 3);
   else a.led.fill(0, i * 3, i * 3 + 3);
-  if (isTop && look.style.crown) look.style.crown.color.toArray(a.crown, i * 3);
-  else a.crown.fill(0, i * 3, i * 3 + 3);
+  if (crownTier && look.style.crown) {
+    look.style.crown.color.toArray(a.crown, i * 3);
+  } else a.crown.fill(0, i * 3, i * 3 + 3);
   a.subOff[i * 4] = s.dx;
   a.subOff[i * 4 + 1] = s.baseY - tierBase;
   a.subOff[i * 4 + 2] = s.dz;
@@ -641,7 +662,7 @@ export class CityRenderer {
         cut: c.cut[i] as number,
       };
       const word = this.damage.packedWord(c.building, solid.tierIndex);
-      writeSolid(arrays, start + i, building, solid, look, word);
+      writeSolid(arrays, start + i, building, solid, look, word, true);
       this.bRest[start + i] = 0;
     }
     this.bAttrLo = Math.min(this.bAttrLo, start);

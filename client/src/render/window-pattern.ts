@@ -34,10 +34,12 @@ import {
 } from "./living-windows";
 import {
   GARDEN_LIGHT_COLOR,
+  LandmarkRole,
   PAD_LIGHT_COLOR,
   PARAPET_INSET,
   ROOF_ALBEDO,
   RoofKind,
+  UPLIGHT_FLAG,
 } from "./roofs";
 
 /** Per-archetype facade look: window grid, occupancy and light colour. */
@@ -828,6 +830,51 @@ float led = ledOn * clamp(max(ledCorner, ledStrip) * facade + ledRing * roofUp, 
 // The strip IS the light: no diffuse under it, so lit facade + LED never stack.
 diffuseColor.rgb *= 1.0 - led;
 
+// --- L3 landmark tiers (roofs.ts LandmarkRole in vRoof.w, + UPLIGHT_FLAG) ---
+// A landmark's crown tiers carry architectural light at the LED rung: the
+// stacked arches of the arched crown, lit seams up a spire, light fins round
+// the glass crown. Same convex contract as the LED outline above: the mask
+// zeroes the diffuse here and REPLACES the emission (roofLightGlsl), so a
+// lit line never stacks on a window, a crown wash or the facade. Lines are
+// abLine-filtered (energy-conserving below a pixel: a distant crown keeps a
+// steady glow instead of crawling). A spire has no office windows.
+float lmCode = floor(vRoof.w + 0.5);
+float upOn = step(${glslFloat(UPLIGHT_FLAG - 0.5)}, lmCode);
+float lmRole = lmCode - ${glslFloat(UPLIGHT_FLAG)} * upOn;
+float lmMask = 0.0;
+float lmAA = max(rPix, max(mAA.y, 1e-4));
+if (lmRole > 0.5 && facade > 0.5) {
+  float lmU = winGrid.x;
+  float lmV = vMeters.y;
+  if (lmRole > ${glslFloat(LandmarkRole.ARCH_CROWN - 0.5)} && lmRole < ${glslFloat(LandmarkRole.ARCH_CROWN + 0.5)}) {
+    // Three rows of nested arches, each row a step narrower — the crown
+    // reads as setbacks of radiating arches.
+    float rowH = vBHeight / 3.0;
+    for (int k = 0; k < 3; k++) {
+      float v0 = float(k) * rowH;
+      float rx = ledRunHalf * (${glslFloat(LANDMARK_LIGHT.archWidth)} - ${glslFloat(LANDMARK_LIGHT.archStep)} * float(k));
+      float ry = rowH * 0.92;
+      float m = min(rx, ry);
+      float r = length(vec2(lmU / rx, (lmV - v0) / ry));
+      float above = step(v0, lmV);
+      lmMask = max(lmMask, above * max(
+        abLine(abs(r - 1.0) * m, ${glslFloat(LANDMARK_LIGHT.archHalf)}, lmAA),
+        abLine(abs(r - ${glslFloat(LANDMARK_LIGHT.archInner)}) * m, ${glslFloat(LANDMARK_LIGHT.archInnerHalf)}, lmAA)));
+    }
+  } else if (lmRole > ${glslFloat(LandmarkRole.SPIRE - 0.5)} && lmRole < ${glslFloat(LandmarkRole.SPIRE + 0.5)}) {
+    float lmSeam = max(
+      abLine(max(ledRunHalf - abs(lmU), 0.0), ${glslFloat(LANDMARK_LIGHT.seamHalf)}, lmAA),
+      abLine(abs(lmU), ${glslFloat(LANDMARK_LIGHT.seamHalf * 0.7)}, lmAA));
+    float lmRing = abLine(abPeriodic(lmV, ${glslFloat(LANDMARK_LIGHT.ringPitch * 0.5)}, ${glslFloat(LANDMARK_LIGHT.ringPitch)}), ${glslFloat(LANDMARK_LIGHT.ringHalf)}, lmAA);
+    lmMask = max(lmSeam, ${glslFloat(LANDMARK_LIGHT.ringGain)} * lmRing);
+    pane = 0.0;
+  } else if (lmRole > ${glslFloat(LandmarkRole.GLASS_CROWN - 0.5)}) {
+    lmMask = ${glslFloat(LANDMARK_LIGHT.finGain)} * abLine(abPeriodic(lmV, ${glslFloat(LANDMARK_LIGHT.finPitch * 0.5)}, ${glslFloat(LANDMARK_LIGHT.finPitch)}), ${glslFloat(LANDMARK_LIGHT.finHalf)}, lmAA);
+  }
+  lmMask = clamp(lmMask, 0.0, 1.0) * ledOn;
+}
+diffuseColor.rgb *= 1.0 - lmMask;
+
 // --- VO3 crown floodlight wash (top tier of the tallest towers) ---
 // Fixtures on the ledge below the crown throw scalloped cones up the top
 // floors: bright just above the fixture line, fading with height, a scallop
@@ -857,9 +904,31 @@ export function roofLightGlsl(): string {
 totalEmissiveRadiance += diffuseColor.rgb * vCrown * crownK;
 totalEmissiveRadiance += roofUp * (padLight * ${glslVec3(PAD_LIGHT_COLOR)}
   + bollard * ${glslVec3(GARDEN_LIGHT_COLOR)});
-totalEmissiveRadiance = mix(totalEmissiveRadiance, vLed, led);
+totalEmissiveRadiance = mix(totalEmissiveRadiance, vLed, max(led, lmMask));
 `;
 }
+
+/** L3 landmark light lines, meters (window-pattern roofSurfaceGlsl). */
+export const LANDMARK_LIGHT = {
+  /** Arched crown: the outer arch's half-width as a share of the face run,
+   * how much each row above narrows it, the inner arch's radius share, and
+   * the two lines' half-widths. */
+  archWidth: 0.92,
+  archStep: 0.2,
+  archInner: 0.7,
+  archHalf: 0.3,
+  archInnerHalf: 0.2,
+  /** Spire: seam half-width (corners; the centre seam is 0.7 of it), and a
+   * ring of light every ringPitch at ringGain. */
+  seamHalf: 0.3,
+  ringPitch: 4,
+  ringHalf: 0.12,
+  ringGain: 0.6,
+  /** Glass crown: horizontal fins. */
+  finPitch: 2.6,
+  finHalf: 0.14,
+  finGain: 0.8,
+} as const;
 
 // --- H1 fly-through holes -------------------------------------------------
 // A holed tier is drawn as walls + lintel + sill (city.ts), all painted in the

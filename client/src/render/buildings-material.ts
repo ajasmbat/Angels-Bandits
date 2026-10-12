@@ -123,6 +123,23 @@ export const BOUNCE_TINTS = {
 } as const;
 export const BOUNCE_NEON_MIX = 0.55;
 
+/**
+ * L3 facade uplights: on an uplit tier (roofs.ts UPLIGHT_FLAG — a seeded few
+ * street bases, and every landmark shaft from its podium roof) fixtures at
+ * the tier base throw scalloped warm cones up the wall. Light × albedo like
+ * the bounce, and it REPLACES the bounce there (a convex mix, never a sum),
+ * so the street-level wash stays under BOUNCE_LUMINANCE_CAP: the brightest
+ * finish × the tint's luminance × UPLIGHT_INTENSITY at a cone's heart is the
+ * peak (client/test/facade-palette.test.ts bounds it with the bounce).
+ */
+export const UPLIGHT_INTENSITY = 0.62;
+/** e-folding height of an uplight cone, meters above the tier base. */
+export const UPLIGHT_HEIGHT = 22;
+/** Fixture spacing along the facade, meters. */
+export const UPLIGHT_BAY = 9;
+/** Warm white (sodium-free ~3000 K), max component 1. */
+export const UPLIGHT_TINT = new THREE.Color(1.0, 0.8, 0.56);
+
 const VERTEX_PARS = /* glsl */ `
 attribute vec2 aArchetype; // x: facade archetype, y: D1 damage slot word
 flat varying highp float vDmgWord;
@@ -359,7 +376,21 @@ float bounceH = fract(vBSeed * 7.31);
 vec3 bounceTint = mix(${glslVec3(BOUNCE_TINTS.sodium)},
   mix(${glslVec3(BOUNCE_TINTS.magenta)}, ${glslVec3(BOUNCE_TINTS.cyan)}, step(0.5, fract(vBSeed * 3.7))),
   step(0.66, bounceH) * ${BOUNCE_NEON_MIX.toFixed(2)});
-totalEmissiveRadiance += diffuseColor.rgb * bounceTint * ${BOUNCE_INTENSITY.toFixed(2)} * bounceK;
+// L3 uplights (UPLIGHT_INTENSITY): scalloped cones from the tier base,
+// measured in TIER meters (a landmark shaft is uplit from its podium roof),
+// a cone per bay that fades to its mean with distance; they replace the
+// bounce on an uplit tier.
+float upZ = vMeters.y;
+float upU = (fract(winGrid.x / ${UPLIGHT_BAY.toFixed(1)}) - 0.5) * ${UPLIGHT_BAY.toFixed(1)};
+float upSpread = 0.6 + 0.35 * max(upZ, 0.0);
+float upScallop = mix(0.55, 0.25 + 0.75 * exp(-(upU * upU) / (upSpread * upSpread)),
+  abDetail(${UPLIGHT_BAY.toFixed(1)}, wAA.x));
+float upK = facade * smoothstep(0.0, 1.2, upZ) * exp(-max(upZ, 0.0) / ${UPLIGHT_HEIGHT.toFixed(1)})
+  * upScallop * (1.0 - pane * lit) * (1.0 - shopBand * glass * shopLit);
+totalEmissiveRadiance += diffuseColor.rgb * mix(
+  bounceTint * ${BOUNCE_INTENSITY.toFixed(2)} * bounceK,
+  ${glslVec3(UPLIGHT_TINT)} * ${UPLIGHT_INTENSITY.toFixed(2)} * upK,
+  upOn);
 `;
 
 /**

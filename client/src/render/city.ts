@@ -60,6 +60,7 @@ import {
   tierKey,
 } from "./damage-map";
 import { pieceMatrix } from "./debris";
+import { gutWear } from "./inferno-shading";
 import {
   type CrewSlot,
   LIVE_ON_UNIFORM,
@@ -330,6 +331,8 @@ export class CityRenderer {
   private readonly slotUsed: Int32Array;
   private readonly dkx: Int16Array;
   private readonly dkz: Int16Array;
+  /** L7: each building's chunk count, filled on first need (0 = not yet). */
+  private readonly chunkTotals: Int32Array;
   /** Buildings currently drawn damaged. */
   private readonly damagedList: number[] = [];
   private damaged: THREE.InstancedMesh;
@@ -461,6 +464,7 @@ export class CityRenderer {
     this.slotStart = new Int32Array(n).fill(-1);
     this.slotCap = new Int32Array(n);
     this.slotUsed = new Int32Array(n);
+    this.chunkTotals = new Int32Array(n);
     this.dkx = new Int16Array(n).fill(UNSET);
     this.dkz = new Int16Array(n).fill(UNSET);
     this.dCapacity = 256;
@@ -867,10 +871,14 @@ export class CityRenderer {
     const building = this.buildings[b] as Building;
     const start = this.slotStart[b] as number;
     const look = this.looks[b] as BuildingLook;
+    // L7: how gutted the building is (aRoof.w — the shader gates it by the
+    // room's burn, so a burn change uploads nothing).
+    const gut = gutWear((building.damage?.count ?? 0) / this.chunkTotal(b));
     for (let k = 0; k < boxes.length; k++) {
       const s = boxes[k] as SolidBox;
       const word = this.damage.packedWord(b, s.tierIndex);
       writeSolid(this.dArrays, start + k, building, s, look, word);
+      this.dArrays.roof[(start + k) * 4 + 3] = gut;
     }
     for (let k = boxes.length; k < (this.slotCap[b] as number); k++) {
       this.damaged.setMatrixAt(start + k, HIDDEN);
@@ -879,6 +887,18 @@ export class CityRenderer {
     this.markDirty(this.dirtyAttr, start, start + (this.slotCap[b] as number));
     // Force its matrices out on the next placement.
     this.dkx[b] = UNSET;
+  }
+
+  /** L7: building `b`'s chunk count (cached; the chunk grid never changes). */
+  private chunkTotal(b: number): number {
+    let n = this.chunkTotals[b] as number;
+    if (n === 0) {
+      for (const mask of chunkMask(this.buildings[b] as Building)) {
+        for (let c = 0; c < mask.length; c++) n += mask[c] as number;
+      }
+      this.chunkTotals[b] = Math.max(1, n);
+    }
+    return this.chunkTotals[b] as number;
   }
 
   /** Compact the damaged mesh — every damaged building gets a fresh range,

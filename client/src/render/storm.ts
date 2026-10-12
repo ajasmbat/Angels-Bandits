@@ -26,7 +26,7 @@ import { type Strike, strikesInWindow } from "@angels-bandits/common/storm";
 import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
-import { HAZE_WEATHER } from "./fog";
+import { HAZE_PARAMS, HAZE_WEATHER } from "./fog";
 import { RENDER_ORDER } from "./render-order";
 import { DUSK, FOG_NEAR } from "./sky";
 import { nearestImage, nearestImageInto, uploadPrefix } from "./wrapPlacement";
@@ -320,6 +320,14 @@ const DUST_FOG_FAR = 140;
 /** Concrete dust: the fog colour the brown-out pulls toward (sRGB). */
 const DUST_FOG_COLOR = 0x4a443e;
 const RAIN_DARKEN = 0.15;
+/** L7 inferno: at burn level 1 the fog (and the sky behind it) is pulled
+ * this far toward a smoky ember-brown, and the height haze toward smoke —
+ * the same on every tier (rule 2), and darken-leaning, so the horizon seam
+ * stays invisible and nothing in the air nears the bloom threshold. */
+const BURN_FOG_MIX = 0.38;
+const BURN_FOG_COLOR = 0x2a140c;
+const BURN_HAZE_MIX = 0.5;
+const BURN_HAZE_RGB = [0.1, 0.055, 0.04] as const;
 
 /** The slice of the shared weather (common/src/weather.ts) the sky reads. */
 export interface SkyWeather {
@@ -360,6 +368,7 @@ export class StormRenderer {
   private readonly fogBase = new THREE.Color(DUSK.sky);
   private readonly cloudFogColor = new THREE.Color(IN_CLOUD_FOG_COLOR);
   private readonly dustFogColor = new THREE.Color(DUST_FOG_COLOR);
+  private readonly burnFogColor = new THREE.Color(BURN_FOG_COLOR);
   private readonly flashColor = new THREE.Color(FLASH_COLOR);
   private readonly scratch = new THREE.Color();
 
@@ -518,12 +527,22 @@ export class StormRenderer {
     nowMs: number,
     wx: SkyWeather = DRY_SKY,
     dust = 0,
+    burn = 0,
   ): { tint: THREE.Color; domeVisible: boolean } {
     const f = this.flashLevel(nowMs) * wx.flash;
     // 0 below the deck → 1 fully inside; a 30 m ramp kills boundary flicker.
     const inK = Math.min(1, Math.max(0, (cameraY - CLOUD_BASE) / 30));
     this.flashLight.intensity = f * FLASH_PEAK * (1 + inK * 0.6);
     HAZE_WEATHER.x = RAIN_HAZE_EXTRA * wx.haze + DUST_HAZE_EXTRA * dust;
+    // L7: the city's smoke in the haze (the sky cycle rewrote it this frame).
+    if (burn > 0) {
+      const k = burn * BURN_HAZE_MIX;
+      for (let i = 0; i < 3; i++) {
+        HAZE_PARAMS[i] =
+          (HAZE_PARAMS[i] as number) +
+          ((BURN_HAZE_RGB[i] as number) - (HAZE_PARAMS[i] as number)) * k;
+      }
+    }
     const dim = 1 - RAIN_DARKEN * wx.haze;
     if (scene.fog instanceof THREE.Fog) {
       const near = FOG_NEAR + (RAIN_FOG_NEAR - FOG_NEAR) * wx.haze;
@@ -543,7 +562,8 @@ export class StormRenderer {
         .multiplyScalar(dim)
         .lerp(this.cloudFogColor, inK * 0.85)
         .lerp(this.flashColor, f * FLASH_TINT * (1 + inK))
-        .lerp(this.dustFogColor, dust * 0.8);
+        .lerp(this.dustFogColor, dust * 0.8)
+        .lerp(this.burnFogColor, burn * BURN_FOG_MIX);
       if (scene.background instanceof THREE.Color) {
         scene.background.copy(scene.fog.color);
       }
@@ -574,6 +594,13 @@ const PUFF_OPACITY = 0.38;
 const CEILING_Y = CLOUD_BASE - 3;
 const CEILING_COLOR = 0x0a0b16;
 const CEILING_OPACITY = 0.55;
+
+/** L7: glow spots the deck takes, its glow colour (linear) and mix. */
+const DECK_GLOW_MAX = 8;
+const DECK_GLOW_RGB = "vec3(0.62, 0.17, 0.05)";
+const DECK_GLOW_MIX = 0.85;
+/** The puffs over a fire, pulled toward ember-orange (linear). */
+const PUFF_GLOW = new THREE.Color(0.75, 0.24, 0.08);
 
 /** Soft multi-blob puff texture (procedural, no assets — the game's idiom). */
 function puffTexture(): THREE.CanvasTexture {
@@ -613,6 +640,15 @@ export class CloudDeck {
   /** Per-puff scratch for the wrap placement — no allocation per frame (O3). */
   private readonly canonical: Vec3 = { x: 0, y: 0, z: 0 };
   private readonly image: Vec3 = { x: 0, y: 0, z: 0 };
+  /** L7: glow spots on the deck's underside (render x, z, strength, radius). */
+  private readonly glowU = {
+    value: Array.from({ length: DECK_GLOW_MAX }, () => new THREE.Vector4()),
+  };
+  private readonly glowCountU = { value: 0 };
+  private readonly puffBase = new THREE.Color(PUFF_COLOR);
+  private readonly puffTint = new THREE.Color();
+  private glowSpots: Float32Array = new Float32Array(0);
+  private glowCount = 0;
 
   constructor(seed: number) {
     const rand = mulberry32((seed ^ 0x5f3759df) >>> 0);
@@ -622,9 +658,11 @@ export class CloudDeck {
       z: rand() * WORLD_SIZE,
       s: PUFF_SCALE_MIN + rand() * (PUFF_SCALE_MAX - PUFF_SCALE_MIN),
     }));
+    // L7: white material × a per-puff colour (PUFF_COLOR at rest), so the
+    // puffs over a burning block can take the fire's glow without a draw.
     const material = new THREE.MeshBasicMaterial({
       map: puffTexture(),
-      color: PUFF_COLOR,
+      color: 0xffffff,
       transparent: true,
       opacity: PUFF_OPACITY,
       depthWrite: false,
@@ -635,23 +673,67 @@ export class CloudDeck {
       PUFF_COUNT,
     );
     this.puffs.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    for (let i = 0; i < PUFF_COUNT; i++)
+      this.puffs.setColorAt(i, this.puffBase);
+    (this.puffs.instanceColor as THREE.InstancedBufferAttribute).setUsage(
+      THREE.DynamicDrawUsage,
+    );
     this.puffs.frustumCulled = false;
     this.puffs.renderOrder = RENDER_ORDER.cloudPuffs;
     // The dark underside: one camera-following sheet just below the band.
+    const ceilingMat = new THREE.MeshBasicMaterial({
+      color: CEILING_COLOR,
+      transparent: true,
+      opacity: CEILING_OPACITY,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      // One pass, not three's back-then-front pair for a transparent
+      // double-sided material (O3): that pair flags the material
+      // needsUpdate twice a frame — two program re-checks and an extra
+      // draw — and on a flat sheet it draws the same pixels one pass does.
+      forceSinglePass: true,
+    });
+    // L7: the underside glows ember-red over the burning blocks (a uniform
+    // array of spots, by reference — no recompile as fires come and go).
+    ceilingMat.onBeforeCompile = (shader) => {
+      shader.uniforms.uDeckGlow = this.glowU;
+      shader.uniforms.uDeckGlowCount = this.glowCountU;
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          "#include <common>",
+          "#include <common>\nvarying vec2 vDeckXZ;",
+        )
+        .replace(
+          "#include <begin_vertex>",
+          "#include <begin_vertex>\nvDeckXZ = (modelMatrix * vec4(transformed, 1.0)).xz;",
+        );
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          "#include <common>",
+          `#include <common>
+varying vec2 vDeckXZ;
+uniform vec4 uDeckGlow[${DECK_GLOW_MAX}];
+uniform int uDeckGlowCount;`,
+        )
+        .replace(
+          "#include <color_fragment>",
+          `#include <color_fragment>
+float deckGlow = 0.0;
+for (int i = 0; i < ${DECK_GLOW_MAX}; i++) {
+  if (i >= uDeckGlowCount) break;
+  vec4 g = uDeckGlow[i];
+  float k = 1.0 - smoothstep(0.0, g.w, distance(vDeckXZ, g.xy));
+  deckGlow += g.z * k * k;
+}
+deckGlow = min(deckGlow, 1.0);
+diffuseColor.rgb = mix(diffuseColor.rgb, ${DECK_GLOW_RGB}, deckGlow * ${DECK_GLOW_MIX.toFixed(2)});
+diffuseColor.a = max(diffuseColor.a, deckGlow * 0.7);`,
+        );
+    };
+    ceilingMat.customProgramCacheKey = () => "ab-cloud-ceiling-l7-glow";
     this.ceiling = new THREE.Mesh(
       new THREE.PlaneGeometry(2 * FOG_DISTANCE + 200, 2 * FOG_DISTANCE + 200),
-      new THREE.MeshBasicMaterial({
-        color: CEILING_COLOR,
-        transparent: true,
-        opacity: CEILING_OPACITY,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-        // One pass, not three's back-then-front pair for a transparent
-        // double-sided material (O3): that pair flags the material
-        // needsUpdate twice a frame — two program re-checks and an extra
-        // draw — and on a flat sheet it draws the same pixels one pass does.
-        forceSinglePass: true,
-      }),
+      ceilingMat,
     );
     this.ceiling.rotation.x = Math.PI / 2;
     this.group.add(this.puffs, this.ceiling);
@@ -677,6 +759,7 @@ export class CloudDeck {
       this.puffs.setMatrixAt(i, this.mat);
     }
     this.puffs.instanceMatrix.needsUpdate = true;
+    this.tintPuffs();
     this.ceiling.position.set(viewer.x, CEILING_Y, viewer.z);
     // In front of the puffs from below, behind them from above (O1).
     this.ceiling.renderOrder =
@@ -684,6 +767,65 @@ export class CloudDeck {
         ? RENDER_ORDER.cloudCeilingBelow
         : RENDER_ORDER.cloudCeilingAbove;
   }
+
+  /**
+   * L7: the fires under the deck (render/inferno.ts cloudGlow: render-space
+   * x, z, strength, radius per spot) and the room's burn. The underside
+   * glows over them and the puffs above take the colour; at burn 0 it is
+   * exactly the old deck. Tier-independent, like the deck itself.
+   */
+  setGlow(spots: Float32Array, count: number, burn: number): void {
+    this.glowSpots = spots;
+    // Each spot's strength already carries the burn; burn 0 is no glow.
+    this.glowCount = burn > 0 ? Math.min(count, DECK_GLOW_MAX) : 0;
+    const u = this.glowU.value;
+    for (let i = 0; i < this.glowCount; i++) {
+      (u[i] as THREE.Vector4).set(
+        spots[i * 4] as number,
+        spots[i * 4 + 1] as number,
+        spots[i * 4 + 2] as number,
+        spots[i * 4 + 3] as number,
+      );
+    }
+    this.glowCountU.value = this.glowCount;
+  }
+
+  /** Each puff's colour: PUFF_COLOR, pulled toward the fire's glow by the
+   * spots under it (one pass over the puffs; nothing allocated). */
+  private tintPuffs(): void {
+    const n = this.glowCount;
+    const attr = this.puffs.instanceColor as THREE.InstancedBufferAttribute;
+    if (n === 0 && !this.puffsTinted) return;
+    const arr = attr.array as Float32Array;
+    let any = false;
+    for (let i = 0; i < PUFF_COUNT; i++) {
+      // The puff's render position is its matrix translation.
+      const e = this.puffs.instanceMatrix.array as Float32Array;
+      const px = e[i * 16 + 12] as number;
+      const pz = e[i * 16 + 14] as number;
+      let k = 0;
+      for (let s = 0; s < n; s++) {
+        const o = s * 4;
+        const dx = px - (this.glowSpots[o] as number);
+        const dz = pz - (this.glowSpots[o + 1] as number);
+        const r = (this.glowSpots[o + 3] as number) * 1.3;
+        const d = Math.sqrt(dx * dx + dz * dz);
+        if (d >= r) continue;
+        const f = 1 - d / r;
+        k += (this.glowSpots[o + 2] as number) * f * f;
+      }
+      k = Math.min(1, k) * 0.8;
+      if (k > 0) any = true;
+      this.puffTint.copy(this.puffBase).lerp(PUFF_GLOW, k);
+      arr[i * 3] = this.puffTint.r;
+      arr[i * 3 + 1] = this.puffTint.g;
+      arr[i * 3 + 2] = this.puffTint.b;
+    }
+    attr.needsUpdate = true;
+    this.puffsTinted = any;
+  }
+
+  private puffsTinted = false;
 }
 
 /** Sides of each bolt segment's open tube. */

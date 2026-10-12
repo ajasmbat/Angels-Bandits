@@ -198,6 +198,9 @@ export interface QaDestructionSpec {
   wrecks?: StageWreck[];
   /** D9: props down, craters, burning floors. */
   props?: StageProps;
+  /** L7: the room's burn level to draw (0..1) instead of the server's,
+   * until the staging is cleared. */
+  burn?: number;
   keep?: boolean;
 }
 

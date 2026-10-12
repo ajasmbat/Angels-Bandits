@@ -139,7 +139,7 @@ const LANDING_CHAIN: readonly { d: number; size: number; lum: number }[] = [
   { d: 40, size: 20, lum: 0.04 },
   { d: 50, size: 24, lum: 0.032 },
   { d: 61, size: 29, lum: 0.025 },
-]
+];
 /** Steady lights, the two wingtip halos, the exhaust and its halo; L6's
  * landing lamp, its halo and the chain on biplanes only. */
 const LIGHTS_PER_PLANE = 8;

@@ -596,15 +596,22 @@ export function farCellTower(
   b[i * 4 + 3] = alive ? style : -1;
 }
 
-/** The spire super-cells (offsets from the camera's) that can reach inside
- * FAR_MAX_RADIUS — a fixed list after the lattice in the instance buffer. */
+/** The spire super-cells (offsets from the camera's) that can hold a spire
+ * inside FAR_MAX_RADIUS wherever the camera is in its own super-cell — a
+ * fixed list after the lattice in the instance buffer, so a spire is never
+ * missed and never pops. */
 function spireSlots(): [number, number][] {
   const out: [number, number][] = [];
   const m = Math.ceil(FAR_MAX_RADIUS / FAR_SUPER) + 1;
   for (let ix = -m; ix <= m; ix++) {
     for (let iz = -m; iz <= m; iz++) {
-      const r = Math.hypot((ix + 0.5) * FAR_SUPER, (iz + 0.5) * FAR_SUPER);
-      if (r - FAR_SUPER <= FAR_MAX_RADIUS) out.push([ix, iz]);
+      // The nearest the two squares (the camera's super-cell, this one)
+      // come to each other.
+      const gap = Math.hypot(
+        Math.max(Math.abs(ix) - 1, 0) * FAR_SUPER,
+        Math.max(Math.abs(iz) - 1, 0) * FAR_SUPER,
+      );
+      if (gap <= FAR_MAX_RADIUS) out.push([ix, iz]);
     }
   }
   return out;
@@ -687,8 +694,9 @@ void main() {
   float zr = w.y - ${f(RIVER_CENTER_Z)};
   zr -= ${f(WORLD_SIZE)} * floor(zr / ${f(WORLD_SIZE)} + 0.5);
   float az = abs(zr);
+  float water = 0.0;
   if (az < ${f(RIVER_HALF_WIDTH + 14)}) {
-    float water = 1.0 - smoothstep(${f(RIVER_HALF_WIDTH - 1)}, ${f(RIVER_HALF_WIDTH + 1)}, az);
+    water = 1.0 - smoothstep(${f(RIVER_HALF_WIDTH - 1)}, ${f(RIVER_HALF_WIDTH + 1)}, az);
     float deck = abLines(w.x, ${f(BLOCK_PITCH)}, 11.0, fw.x);
     vec3 wcol = fogC * 0.3 + abCityGlow.rgb * 0.8;
     col = mix(col, wcol, water * (1.0 - deck));
@@ -714,7 +722,7 @@ void main() {
     // Patchy: the fire is in some of each burning block's 40 m cells.
     float fire = 0.7 * step(bh, 0.45 * burn) * step(0.55, mix(0.6, sp, speckK))
       * (0.6 + 0.4 * sin(uFarTime * 5.0 + bh * 80.0 + sp * 9.0));
-    em += ${lit(EMBER_COLOR, EMBER_PEAK)} * fire;
+    em += ${lit(EMBER_COLOR, EMBER_PEAK)} * fire * (1.0 - water);
   }
   float vis = abFarVis(d) * smoothstep(${f(CARPET_FADE[0])}, ${f(CARPET_FADE[1])}, d);
   gl_FragColor = vec4(mix(fogC, col + em, vis), 1.0);

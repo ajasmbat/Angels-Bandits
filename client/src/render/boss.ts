@@ -106,7 +106,6 @@ import {
   crewRestX,
 } from "./boss-hull";
 import { emissiveBoost } from "./emissive";
-import { DUSK, MOON_DIR } from "./sky";
 import { fighterGeometry } from "./fighter";
 import type { Impacts } from "./impacts";
 import {
@@ -114,6 +113,7 @@ import {
   SCOUT_BEAM_COLOR,
   type SpotBeam,
 } from "./searchlights";
+import { DUSK, MOON_DIR } from "./sky";
 import { nearestImageInto } from "./wrapPlacement";
 
 /** The weak points' glow (hazard rung — under tracers, over windows), the
@@ -626,9 +626,7 @@ const SHEEN_SPEC_LUM = 0.34;
 const SHEEN_RIM_LUM = 0.09;
 const glF = (n: number): string => n.toFixed(5);
 const sheenCol = (lum: number): string => {
-  const c = SHEEN_COLOR.clone().multiplyScalar(
-    emissiveBoost(SHEEN_COLOR, lum),
-  );
+  const c = SHEEN_COLOR.clone().multiplyScalar(emissiveBoost(SHEEN_COLOR, lum));
   return `vec3(${glF(c.r)}, ${glF(c.g)}, ${glF(c.b)})`;
 };
 const HULL_SHEEN = `vec3 bSheen = vec3(0.0);

@@ -538,7 +538,9 @@ describe("D2 collision stays allocation-free", () => {
     const before = process.memoryUsage().heapUsed;
     run(100000);
     const grown = process.memoryUsage().heapUsed - before;
-    // A 56 B/call regression would show as ~11 MB here.
-    expect(grown).toBeLessThan(1024 * 1024);
+    // A 56 B/call regression would show as ~11 MB here. The bound leaves
+    // room for V8/GC noise between machines (a Linux CI runner reads ~1.3 MB
+    // where the M3 reads well under 1 MB) while still catching that.
+    expect(grown).toBeLessThan(4 * 1024 * 1024);
   });
 });

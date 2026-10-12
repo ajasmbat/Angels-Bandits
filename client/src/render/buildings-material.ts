@@ -27,6 +27,7 @@ import {
   BROKEN_VERTEX_GLSL,
 } from "./broken-shading";
 import { DAMAGE_GLSL, DAMAGE_ON_UNIFORM, DAMAGE_PARS_GLSL } from "./damage-map";
+import { FRACTURE_VERTEX_GLSL } from "./debris";
 import { luminance } from "./emissive";
 import { LIVE_ON_UNIFORM, livingParsGlsl } from "./living-windows";
 import {
@@ -424,15 +425,21 @@ export interface LiveTimeUniform {
 
 /** The city's instanced material: dark towers + procedural lit windows.
  * `liveTime` is the L3 living-windows clock; the city renderer owns it and
- * writes it once per frame. */
+ * writes it once per frame. D10 `fracture`: the collapse-debris variant —
+ * the same shading, plus the fracture geometry's inward chips and steel
+ * rebar (debris.ts); its own program, since it reads `uv` (the 16th vertex
+ * attribute, which the city and damaged meshes never touch). */
 export function createBuildingsMaterial(
   liveTime: LiveTimeUniform = { value: 0 },
   damage: THREE.Texture | null = null,
+  opts: { fracture?: boolean } = {},
 ): THREE.MeshStandardMaterial {
   const material = new THREE.MeshStandardMaterial({
     roughness: 0.85,
     metalness: 0.15,
   });
+  const fracture = opts.fracture === true;
+  if (fracture) material.defines = { AB_FRACTURE: "" };
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uLiveTime = liveTime;
     // O3: the quality tier's living-windows switch, shared by reference.
@@ -456,7 +463,7 @@ export function createBuildingsMaterial(
       .replace("#include <common>", `#include <common>\n${VERTEX_PARS}`)
       .replace(
         "#include <begin_vertex>",
-        `#include <begin_vertex>\n${VERTEX_MAIN}`,
+        `#include <begin_vertex>\n${VERTEX_MAIN}${FRACTURE_VERTEX_GLSL}`,
       );
     shader.fragmentShader = shader.fragmentShader
       .replace("#include <common>", `#include <common>\n${FRAGMENT_PARS}`)
@@ -479,7 +486,9 @@ export function createBuildingsMaterial(
   };
   // Distinct compiled program per patch (V3 rule: three keys programs on
   // onBeforeCompile.toString(), and sibling materials collide silently).
+  const key =
+    "ab-buildings-h1-holes-l1-wake-l3-live-l4-wet-g1-lobbies-d1-damage-d2-broken-s6-refl-d10-steel";
   material.customProgramCacheKey = () =>
-    "ab-buildings-h1-holes-l1-wake-l3-live-l4-wet-g1-lobbies-d1-damage-d2-broken-s6-refl";
+    fracture ? `${key}-d10-fracture` : key;
   return material;
 }

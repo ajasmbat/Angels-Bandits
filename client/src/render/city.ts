@@ -19,10 +19,15 @@
 // Each collapse owns a slot range, posed every frame by the shared
 // piecePose while anything in it moves — the pose the crash check collides
 // with — and left alone once it is all rubble (until its image flips).
+// D10: its geometry is debris.ts's fracture box and its material the
+// building material's fracture variant — the same facade, broken edges and
+// rebar, all inside the box that collides; a column keeps CUT_STEEL when it
+// turns to rubble.
 
 import {
   type Building,
   CUT_RUBBLE,
+  CUT_STEEL,
   type CityDamage,
   type HoleSpan,
   type SolidBox,
@@ -59,7 +64,7 @@ import {
   faceSlotsFor,
   tierKey,
 } from "./damage-map";
-import { pieceMatrix } from "./debris";
+import { fractureGeometry, pieceMatrix } from "./debris";
 import {
   type CrewSlot,
   LIVE_ON_UNIFORM,
@@ -151,8 +156,8 @@ function cityMesh(
   material: THREE.Material,
   arrays: InstanceArrays,
   capacity: number,
+  geometry: THREE.BufferGeometry = unitBox(),
 ): THREE.InstancedMesh {
-  const geometry = unitBox();
   const attr = (a: Float32Array, size: number) =>
     new THREE.InstancedBufferAttribute(a, size);
   // Static per-instance data — see writeSolid for what each one carries.
@@ -253,6 +258,16 @@ function writeSolid(
   look.color.toArray(a.color, i * 3);
 }
 
+/** D10: debris slots per chunk the boot capacity budgets — the seed city
+ * averages 3.76 (hole splits included), with ~6 % to spare. */
+export const DEBRIS_PIECES_PER_CHUNK = 4;
+
+/** The CUT_* word a debris piece paints with: its own faces while it falls,
+ * rubble once it lands — a column (CUT_STEEL) stays steel either way. */
+export function debrisCut(cut: number, rest: boolean): number {
+  return rest ? CUT_RUBBLE | (cut & CUT_STEEL) : cut;
+}
+
 /** A matrix that draws nothing (a hidden or spare slot). */
 const HIDDEN = new THREE.Matrix4().makeScale(0, 0, 0);
 /** No image yet — forces a damaged building's first placement. */
@@ -303,6 +318,8 @@ export class CityRenderer {
   private readonly liveClock = new LiveClock();
   private readonly liveTime = { value: 0 };
   private readonly material: THREE.Material;
+  /** D10: the debris mesh's material (the fracture variant). */
+  private readonly debrisMaterial: THREE.Material;
 
   /** D1: the facade damage map (scorch, dark windows) and its GPU atlas. */
   readonly damage = new FacadeDamage();
@@ -424,6 +441,12 @@ export class CityRenderer {
       this.liveTime,
       this.damageTexture.texture,
     );
+    // D10: the collapse debris's variant (fracture chips, rebar).
+    this.debrisMaterial = createBuildingsMaterial(
+      this.liveTime,
+      this.damageTexture.texture,
+      { fracture: true },
+    );
     const arrays = allocArrays(this.instances.length);
     this.instances.forEach((s, i) => {
       const b = this.owner[i] as number;
@@ -510,8 +533,10 @@ export class CityRenderer {
     for (const b of this.buildings) {
       for (const mask of chunkMask(b)) for (const v of mask) chunks += v;
     }
-    // A hole can split a chunk into up to three pieces; most are one.
-    this.bBootCapacity = Math.ceil(chunks * COLLAPSE_CAP * 1.25) + 64;
+    // D10: a chunk falls as ~3.76 pieces on average over the seed city
+    // (storey slabs, a sheet, a column; hole splits included).
+    this.bBootCapacity =
+      Math.ceil(chunks * COLLAPSE_CAP * DEBRIS_PIECES_PER_CHUNK) + 64;
     this.growDebris(this.bBootCapacity);
   }
 
@@ -560,7 +585,7 @@ export class CityRenderer {
         const rest = pose.rest ? 1 : 0;
         if (this.bRest[start + i] !== rest) {
           this.bRest[start + i] = rest;
-          subOff.setW(start + i, rest ? CUT_RUBBLE : (c.cut[i] as number));
+          subOff.setW(start + i, debrisCut(c.cut[i] as number, rest === 1));
           this.bAttrLo = Math.min(this.bAttrLo, start + i);
           this.bAttrHi = Math.max(this.bAttrHi, start + i + 1);
         }
@@ -647,7 +672,12 @@ export class CityRenderer {
       this.debris.removeFromParent();
       this.debris.geometry.dispose();
     }
-    const mesh = cityMesh(this.material, this.bArrays, capacity);
+    const mesh = cityMesh(
+      this.debrisMaterial,
+      this.bArrays,
+      capacity,
+      fractureGeometry(),
+    );
     for (let i = 0; i < capacity; i++) mesh.setMatrixAt(i, HIDDEN);
     mesh.count = this.bNext;
     this.mesh.add(mesh);
@@ -660,7 +690,9 @@ export class CityRenderer {
       const start = this.drawnStart[k] as number;
       this.writeCollapse(c, start);
       for (let i = 0; i < c.n; i++) {
-        if (this.bRest[start + i]) subOff.setW(start + i, CUT_RUBBLE);
+        if (this.bRest[start + i]) {
+          subOff.setW(start + i, debrisCut(c.cut[i] as number, true));
+        }
       }
       this.drawnKx[k] = UNSET;
     });

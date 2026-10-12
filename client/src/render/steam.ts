@@ -15,15 +15,40 @@
 // D8: a roof vent stands on its building's deck; a felled or chewed-off roof
 // stops steaming (decorStands of the vent's stack, cached per damage
 // version) until the rebuild. Street vents are not on a building.
+//
+// Stormlit L5 (white plumes, like the reference's rooftops):
+//  - Roof plumes are big, white and tall (ROOF_RISE, ROOF_SCALE), from more
+//    roofs, taller ones included, and are seen from much higher up than the
+//    street life (steamRoofGate) — street vents keep the micro gate.
+//  - They DRIFT WITH THE WIND: a puff is carried by airDrift(now) −
+//    airDrift(its birth) — the integrated shared air, so the plume bends
+//    and a veer never swings a whole plume at once. Still a pure function of
+//    (vent, puff, time). A street vent's plume drifts only along its street.
+//  - Per-puff alpha (THREE vertex colours, rgba) fades a puff in at birth
+//    and out at the end, replacing the old shrink-to-nothing trick; the tint
+//    is sodium-warm near the street and moon-white aloft.
+//  - SOFT, NO HARD INTERSECTIONS: there is no depth texture, so the soft-
+//    particle fade is analytic — fogbanks.ts's clearance (a puff is gone
+//    before its sprite could reach a building box), a lift that keeps each
+//    sprite above the surface it rises from, a near-camera fade, and a
+//    screen-edge fade (a point is culled whole when its centre leaves the
+//    screen; a big one must have faded first). Sprites are capped at
+//    MAX_FILL × their view distance.
+//  - Still ONE pooled THREE.Points draw; the per-block cap stays in the
+//    pure function, so every client steams alike.
 
 import {
   type Building,
+  CITY_GRID,
   type LocalBox,
   decorStands,
   mulberry32,
 } from "@angels-bandits/common/city";
+import { BLOCK_PITCH } from "@angels-bandits/common/constants";
+import { airDrift } from "@angels-bandits/common/wind";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { clearanceAgainst } from "./fogbanks";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { RENDER_ORDER } from "./render-order";
 import { roofDetailsFor } from "./roof-details";
@@ -43,15 +68,29 @@ import {
 import { nearestImageInto, uploadPrefix } from "./wrapPlacement";
 
 /** Hard per-block vent budget — enforced in the pure function (see header). */
-export const MAX_VENTS_PER_BLOCK = 5;
+export const MAX_VENTS_PER_BLOCK = 6;
 /** Puffs alive per vent at any instant. */
 export const PUFFS_PER_VENT = 6;
 /** Most gutter vents a block can roll. */
 const MAX_STREET_VENTS = 3;
-/** Buildings taller than this have roofs you never see from the canyon band. */
-const ROOF_VENT_MAX_HEIGHT = 90;
-/** Chance a low building's roof unit vents steam. */
-const ROOF_VENT_CHANCE = 0.25;
+/** L5: roofs up to this tall steam (the plumes read from above now). */
+const ROOF_VENT_MAX_HEIGHT = 160;
+/** Chance a roof's unit vents steam. */
+const ROOF_VENT_CHANCE = 0.45;
+/** L5 roof plume: its climb over one life, m, and its size multiplier. */
+const ROOF_RISE = 20;
+const ROOF_SCALE = 2;
+/** Share of the shared air's drift a puff takes. */
+const STEAM_DRIFT = 0.8;
+/** Alpha over a life: in over the first share, out from this one. */
+const FADE_IN = 0.12;
+const FADE_OUT = 0.6;
+/** The clearance fade's soft band, m. */
+const STEAM_PART_SOFT = 2;
+/** A vent's neighbours (for the clearance) lie within this of it, m. */
+const NEIGHBOUR_REACH = 45;
+/** Widest a sprite is drawn, as a share of its view distance. */
+const MAX_FILL = 0.35;
 /** Seconds a puff takes to travel its full rise. */
 const PUFF_LIFE = 5.5;
 /** How far a street plume climbs over its life, meters. */
@@ -88,10 +127,11 @@ export function roofVentFor(b: Building): SteamVent | null {
     x: stack.x,
     z: stack.z,
     y: stack.y,
-    rise: STREET_RISE * 0.7,
-    spread: STREET_SPREAD * 0.8,
+    rise: ROOF_RISE,
+    spread: STREET_SPREAD * 1.5,
     phase: rr(),
     roof: true,
+    scale: ROOF_SCALE,
   };
   ventOwner.set(vent, b);
   return vent;
@@ -163,6 +203,10 @@ export interface SteamVent {
   roof: boolean;
   /** Puff size multiplier (G1 food carts are small, close plumes); 1 if absent. */
   scale?: number;
+  /** L5: a street vent's street direction (unit): its plume drifts only
+   * along it. Absent: the full wind. */
+  tx?: number;
+  tz?: number;
 }
 
 /** Stable per-vent hash — orders roof vents so truncation is camera-independent. */
@@ -202,6 +246,8 @@ export function steamVentsForBlock(
       spread: STREET_SPREAD,
       phase,
       roof: false,
+      tx: scratch.dx,
+      tz: scratch.dz,
     });
   }
 
@@ -224,6 +270,58 @@ export interface PuffPose {
   age: number;
   /** Sprite diameter, meters. */
   size: number;
+  /** L5: the life's alpha, 0..1 (in at birth, out at the end). */
+  alpha: number;
+}
+
+const smooth = (e0: number, e1: number, x: number): number => {
+  const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+};
+
+/** airDrift scratch (module level: the pose stays allocation-free). */
+const driftNow = { x: 0, z: 0 };
+const driftBirth = { x: 0, z: 0 };
+
+/** Server ms at which life `n` of puff `j` of `vent` was born. */
+const birthMs = (vent: SteamVent, j: number, n: number): number =>
+  (n - vent.phase - j / PUFFS_PER_VENT) * PUFF_LIFE * 1000;
+
+/**
+ * L5: the renderer's memo of the air's drift — "now" once per frame, each
+ * puff's birth once per life. The same values puffPoseInto computes without
+ * it (a pure function either way), at ~1/300 of the airDrift calls.
+ */
+export class SteamDriftMemo {
+  private nowS = Number.NaN;
+  private readonly now = { x: 0, z: 0 };
+  private readonly births = new WeakMap<SteamVent, Float64Array>();
+  private readonly out = { x: 0, z: 0 };
+
+  nowAt(timeSeconds: number): { x: number; z: number } {
+    if (timeSeconds !== this.nowS) {
+      this.nowS = timeSeconds;
+      airDrift(timeSeconds * 1000, this.now);
+    }
+    return this.now;
+  }
+
+  birthOf(vent: SteamVent, j: number, n: number): { x: number; z: number } {
+    let b = this.births.get(vent);
+    if (!b) {
+      b = new Float64Array(PUFFS_PER_VENT * 3).fill(Number.NaN);
+      this.births.set(vent, b);
+    }
+    if (b[j * 3] !== n) {
+      airDrift(birthMs(vent, j, n), this.out);
+      b[j * 3] = n;
+      b[j * 3 + 1] = this.out.x;
+      b[j * 3 + 2] = this.out.z;
+    }
+    this.out.x = b[j * 3 + 1] as number;
+    this.out.z = b[j * 3 + 2] as number;
+    return this.out;
+  }
 }
 
 /**
@@ -236,20 +334,41 @@ export function puffPoseInto(
   j: number,
   timeSeconds: number,
   out: PuffPose,
+  memo?: SteamDriftMemo,
 ): PuffPose {
   // JS `%` (this never enters a shader — there is no `frac` in this repo).
-  let age = (timeSeconds / PUFF_LIFE + vent.phase + j / PUFFS_PER_VENT) % 1;
+  const cyc = timeSeconds / PUFF_LIFE + vent.phase + j / PUFFS_PER_VENT;
+  let age = cyc % 1;
   if (age < 0) age += 1;
   const sway = Math.sin(age * 3.1 + vent.phase * 6.3) * vent.spread * age;
-  out.pos.x = vent.x + sway;
-  out.pos.y = vent.y + age * vent.rise;
-  out.pos.z = vent.z + sway * 0.6;
+  // L5: carried by the shared air since this puff's birth (integrated, so
+  // pure and smooth); a street plume only along its street.
+  // A puff's birth is fixed for its whole life (life number `n`), so the
+  // renderer memoises it: one airDrift per puff per life, one per frame.
+  const n = Math.floor(cyc);
+  const now = memo
+    ? memo.nowAt(timeSeconds)
+    : airDrift(timeSeconds * 1000, driftNow);
+  const birth = memo
+    ? memo.birthOf(vent, j, n)
+    : airDrift(birthMs(vent, j, n), driftBirth);
+  let wx = wrapDeltaAxis(birth.x, now.x) * STEAM_DRIFT;
+  let wz = wrapDeltaAxis(birth.z, now.z) * STEAM_DRIFT;
+  if (vent.tx !== undefined && vent.tz !== undefined) {
+    const a = wx * vent.tx + wz * vent.tz;
+    wx = a * vent.tx;
+    wz = a * vent.tz;
+  }
+  // Grow while dispersing (monotonic: the alpha does the fading now).
+  out.size = PUFF_SIZE * (vent.scale ?? 1) * (0.45 + age * 2.1);
+  out.pos.x = vent.x + sway + wx;
+  // Lifted so the sprite never dips into the surface it rises from (and
+  // never past the top of the rise).
+  out.pos.y =
+    vent.y + Math.max(age * vent.rise, Math.min(0.5 * out.size, vent.rise));
+  out.pos.z = vent.z + sway * 0.6 + wz;
   out.age = age;
-  // Grow while dispersing, then collapse over the last 15 % of life: the
-  // smoke.ts trick for faking an alpha fade under a constant-opacity
-  // PointsMaterial.
-  const grow = PUFF_SIZE * (vent.scale ?? 1) * (0.45 + age * 2.1);
-  out.size = age > 0.85 ? grow * (1 - (age - 0.85) / 0.15) : grow;
+  out.alpha = smooth(0, FADE_IN, age) * (1 - smooth(FADE_OUT, 1, age));
   return out;
 }
 
@@ -263,13 +382,22 @@ export const puffPose = (
     pos: { x: 0, y: 0, z: 0 },
     age: 0,
     size: 0,
+    alpha: 0,
   });
+
+/** L5: roof plumes read from far higher than the street life — full to
+ * 300 m of camera height, gone by 460 m. */
+export function steamRoofGate(cameraY: number): number {
+  return 1 - smooth(300, 460, cameraY);
+}
 
 // --- Renderer -------------------------------------------------------------
 
-/** Cool grey-white: steam is lit by the city, not self-lit. */
-const STEAM_COLOR = 0xc8cfd6;
-const STEAM_OPACITY = 0.28;
+/** Steam is lit by the city, not self-lit (L5: whiter, denser). Linear rgb
+ * per puff: moon-white aloft, sodium-warm low over the street. */
+const STEAM_WHITE = [0.86, 0.9, 0.96] as const;
+const STEAM_WARM = [1.0, 0.74, 0.5] as const;
+const STEAM_OPACITY = 0.42;
 
 /** Soft round puff sprite — a bare PointsMaterial renders hard squares. */
 function puffTexture(): THREE.Texture {
@@ -300,12 +428,19 @@ export class Steam {
   ) => readonly SteamVent[];
   private readonly positions: THREE.BufferAttribute;
   private readonly sizes: THREE.BufferAttribute;
+  /** L5: per-puff tint (rgb) and alpha (a) — THREE's rgba vertex colours. */
+  private readonly colors: THREE.BufferAttribute;
   private readonly material: THREE.PointsMaterial;
   private readonly pose: PuffPose = {
     pos: { x: 0, y: 0, z: 0 },
     age: 0,
     size: 0,
+    alpha: 0,
   };
+  /** L5: each vent's neighbouring buildings (its clearance boxes). */
+  private readonly neighbours = new WeakMap<SteamVent, Building[]>();
+  private readonly tests = { tests: 0 };
+  private readonly memo = new SteamDriftMemo();
   private drawn = 0;
   /** M3 quality tier: every Nth puff of a vent is drawn (1 = all). */
   private puffStride = 1;
@@ -334,11 +469,14 @@ export class Steam {
     const geometry = new THREE.BufferGeometry();
     this.positions = new THREE.BufferAttribute(new Float32Array(budget * 3), 3);
     this.sizes = new THREE.BufferAttribute(new Float32Array(budget), 1);
+    this.colors = new THREE.BufferAttribute(new Float32Array(budget * 4), 4);
     geometry.setAttribute("position", this.positions);
     geometry.setAttribute("aSize", this.sizes);
+    geometry.setAttribute("color", this.colors);
     geometry.setDrawRange(0, 0);
     this.material = new THREE.PointsMaterial({
-      color: STEAM_COLOR,
+      color: 0xffffff,
+      vertexColors: true, // rgba: the tint and the life's alpha
       map: puffTexture(),
       size: 1, // per-point aSize carries the real size
       transparent: true,
@@ -351,17 +489,34 @@ export class Steam {
       shader.vertexShader = shader.vertexShader
         .replace(
           "#include <common>",
-          "attribute float aSize;\n#include <common>",
+          "attribute float aSize;\nvarying float vAbFade;\n#include <common>",
         )
-        // Clamp so a puff directly under the camera cannot ask for a
-        // thousand-pixel point sprite.
+        // L5: the size in metres, capped at MAX_FILL × the view distance,
+        // then to pixels (scale = half the buffer height), clamped so a puff
+        // under the camera cannot ask for a thousand-pixel sprite. Then the
+        // soft fades: near the lens, and before the centre leaves the screen
+        // (a point is culled whole when it does).
         .replace(
-          "gl_PointSize = size;",
-          "gl_PointSize = clamp(size * aSize, 1.0, 420.0);",
+          "#include <logdepthbuf_vertex>",
+          `float abD = max(-mvPosition.z, 1e-3);
+gl_PointSize = clamp(min(aSize, ${MAX_FILL.toFixed(2)} * abD) * scale / abD, 1.0, 420.0);
+vec2 abNdc = gl_Position.xy / max(gl_Position.w, 1e-3);
+vAbFade = smoothstep(3.0, 3.0 + aSize, abD)
+  * (1.0 - smoothstep(0.85, 1.0, max(abs(abNdc.x), abs(abNdc.y))));
+#include <logdepthbuf_vertex>`,
+        );
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          "#include <common>",
+          "varying float vAbFade;\n#include <common>",
+        )
+        .replace(
+          "#include <color_fragment>",
+          "#include <color_fragment>\ndiffuseColor.a *= vAbFade;",
         );
     };
     // Distinct key — onBeforeCompile patches silently collide without one.
-    this.material.customProgramCacheKey = () => "ab-steam-asize";
+    this.material.customProgramCacheKey = () => "ab-steam-l5";
     this.points = new THREE.Points(geometry, this.material);
     this.points.frustumCulled = false;
     this.points.renderOrder = RENDER_ORDER.steam;
@@ -391,18 +546,44 @@ export class Steam {
   private readonly ventImage: Vec3 = { x: 0, y: 0, z: 0 };
   private readonly windowScratch: BlockIndex[] = [];
 
+  /** L5: the buildings near `vent` (3×3 blocks, within NEIGHBOUR_REACH of
+   * it) — the boxes its puffs keep clear of. Cached per vent. */
+  private neighboursOf(vent: SteamVent): Building[] {
+    let list = this.neighbours.get(vent);
+    if (list) return list;
+    list = [];
+    const bx0 = Math.floor(vent.x / BLOCK_PITCH);
+    const bz0 = Math.floor(vent.z / BLOCK_PITCH);
+    for (let i = -1; i <= 1; i++) {
+      for (let j = -1; j <= 1; j++) {
+        const bx = (((bx0 + i) % CITY_GRID) + CITY_GRID) % CITY_GRID;
+        const bz = (((bz0 + j) % CITY_GRID) + CITY_GRID) % CITY_GRID;
+        for (const b of this.buildingsByBlock.get(bx * 1000 + bz) ?? []) {
+          const ex = Math.abs(wrapDeltaAxis(b.x, vent.x)) - b.width / 2;
+          const ez = Math.abs(wrapDeltaAxis(b.z, vent.z)) - b.depth / 2;
+          if (ex < NEIGHBOUR_REACH && ez < NEIGHBOUR_REACH) list.push(b);
+        }
+      }
+    }
+    this.neighbours.set(vent, list);
+    return list;
+  }
+
   /** Phase-only, so a missing clock falls back to local time (the signage
    * policy): a plume in the wrong part of its cycle is invisible, where
-   * hiding every vent until the first snapshot would not be. */
-  update(cameraPos: Vec3, timeMs: number, gate: number): void {
-    if (gate <= 0) {
+   * hiding every vent until the first snapshot would not be. `gate` is the
+   * street life's altitude gate (street vents); `roofGate` (L5) the roof
+   * plumes' own, far higher one (steamRoofGate). */
+  update(cameraPos: Vec3, timeMs: number, gate: number, roofGate = gate): void {
+    this.tests.tests = 0;
+    if (gate <= 0 && roofGate <= 0) {
       this.points.visible = false;
       this.drawn = 0;
       return;
     }
     this.points.visible = true;
-    this.material.opacity = STEAM_OPACITY * gate;
     const t = timeMs / 1000;
+    const colors = this.colors.array as Float32Array;
     let i = 0;
     // P3: keep the cache to last frame's window (about to be refilled).
     pruneBlockCache(this.byBlock, this.windowScratch);
@@ -412,26 +593,51 @@ export class Steam {
       this.windowScratch,
     )) {
       for (const vent of this.ventsFor(bx, bz)) {
+        const k = vent.roof ? roofGate : gate;
+        if (k <= 0) continue;
         if (vent.roof && !ventStands(vent)) continue; // D8: roof gone
         this.ventAt.x = vent.x;
         this.ventAt.z = vent.z;
         const base = nearestImageInto(this.ventImage, cameraPos, this.ventAt);
+        const near = this.neighboursOf(vent);
         for (let j = 0; j < PUFFS_PER_VENT; j += this.puffStride) {
-          puffPoseInto(vent, j, t, this.pose);
+          const pose = puffPoseInto(vent, j, t, this.pose, this.memo);
+          if (pose.alpha <= 0.002) continue;
+          // Soft: gone before the sprite could reach a building box.
+          const clear = clearanceAgainst(
+            near,
+            pose.pos.x,
+            pose.pos.y,
+            pose.pos.z,
+            pose.size / 2,
+            STEAM_PART_SOFT,
+            this.tests,
+          );
+          const alpha = pose.alpha * k * clear;
+          if (alpha <= 0.002) continue;
           this.positions.setXYZ(
             i,
-            base.x + (this.pose.pos.x - vent.x),
-            this.pose.pos.y,
-            base.z + (this.pose.pos.z - vent.z),
+            base.x + (pose.pos.x - vent.x),
+            pose.pos.y,
+            base.z + (pose.pos.z - vent.z),
           );
-          this.sizes.setX(i, this.pose.size);
+          this.sizes.setX(i, pose.size);
+          // Sodium-warm low over the street, moon-white aloft.
+          const warm = 1 - smooth(3, 14, pose.pos.y);
+          colors[i * 4] =
+            STEAM_WHITE[0] + (STEAM_WARM[0] - STEAM_WHITE[0]) * warm;
+          colors[i * 4 + 1] =
+            STEAM_WHITE[1] + (STEAM_WARM[1] - STEAM_WHITE[1]) * warm;
+          colors[i * 4 + 2] =
+            STEAM_WHITE[2] + (STEAM_WARM[2] - STEAM_WHITE[2]) * warm;
+          colors[i * 4 + 3] = alpha;
           i++;
         }
       }
     }
     this.drawn = i;
     this.points.geometry.setDrawRange(0, i);
-    uploadPrefix([this.positions, this.sizes], i);
+    uploadPrefix([this.positions, this.sizes, this.colors], i);
   }
 
   /** M3: the tier's share of each vent's puffs, and how far out it streams.
@@ -448,5 +654,10 @@ export class Steam {
   /** Puffs drawn last frame (perf + the altitude-gate acceptance check). */
   get count(): number {
     return this.drawn;
+  }
+
+  /** L5: building boxes the clearance fade tested last frame (perf). */
+  get boxTests(): number {
+    return this.tests.tests;
   }
 }

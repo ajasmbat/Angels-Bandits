@@ -1,28 +1,37 @@
 // R3 rain readability (client/src/render/rain-look.ts): the streaks fall
 // along gravity + wind (never a radial fan out of the flight path), thin out
-// with speed, and never cover more than 8 % of the screen — checked against
-// an independent Monte Carlo projection of the drop field, at the worst
-// screen the resolution scaler can reach.
+// with speed, and never cover more than 3 % of the screen (L5; R3 set 8 %) —
+// checked against an independent Monte Carlo projection of both layers of
+// the drop field, at the worst screen the resolution scaler can reach.
 
 import { mulberry32 } from "@angels-bandits/common/city";
 import { BOOST_MAX_SPEED, MIN_SPEED } from "@angels-bandits/common/constants";
 import { describe, expect, it } from "vitest";
 import { QUALITY_PROFILES, type QualityTier } from "../src/render/quality";
 import {
+  FAR_LAYER,
+  NEAR_LAYER,
   RAIN_BOX_XZ,
   RAIN_BOX_Y,
   RAIN_COVERAGE_CAP,
   RAIN_FADE_END,
   RAIN_FALL_SPEED,
+  RAIN_FAR_BOX_XZ,
+  RAIN_FAR_BOX_Y,
+  RAIN_FAR_FADE_XZ,
+  RAIN_FAR_FADE_Y,
+  RAIN_FAR_NEAR,
   RAIN_MAX_DROPS,
   RAIN_NEAR_CUT,
   RAIN_THIN_BAND,
+  type RainLayer,
   type RainLook,
   STREAK_COVERAGE_BUDGET,
   type V3,
   focalPx,
   rainCount,
   rainCoverage,
+  rainFieldCoverage,
   rainSpeedLook,
   streakDir,
   streakWidthPx,
@@ -141,11 +150,30 @@ describe("speed look", () => {
   });
 });
 
+/** Each layer's box and the region its drops are drawn in (rain.ts). */
+const MC_LAYERS = {
+  near: {
+    box: [RAIN_BOX_XZ, RAIN_BOX_Y],
+    drawn: (x: number, y: number, z: number) =>
+      Math.hypot(x, y, z) >= RAIN_NEAR_CUT &&
+      Math.hypot(x, z) <= RAIN_BOX_XZ * RAIN_FADE_END &&
+      Math.abs(y) <= RAIN_BOX_Y * RAIN_FADE_END,
+  },
+  far: {
+    box: [RAIN_FAR_BOX_XZ, RAIN_FAR_BOX_Y],
+    drawn: (x: number, y: number, z: number) =>
+      Math.hypot(x, y, z) >= RAIN_FAR_NEAR &&
+      Math.hypot(x, z) <= RAIN_FAR_FADE_XZ[1] &&
+      Math.abs(y) <= RAIN_FAR_FADE_Y[1],
+  },
+} as const;
+
 /**
  * Independent check of the analytic estimate: drop `count` seeded drops in
- * the box around a pinhole camera (16:9, `H` px tall, pitched by `pitch`),
- * keep the ones the shader draws (past the near cut, inside the box fade,
- * head on screen), project head and tail and add up length × drawn width.
+ * the layer's box around a pinhole camera (16:9, `H` px tall, pitched by
+ * `pitch`), keep the ones the shader draws (past the near cut, inside the
+ * box fade, head on screen), project head and tail and add up length ×
+ * drawn width.
  */
 function monteCarlo(
   count: number,
@@ -154,7 +182,9 @@ function monteCarlo(
   fov: number,
   pitch: number,
   dir: V3,
+  layer: keyof typeof MC_LAYERS = "near",
 ): number {
+  const { box, drawn: inside } = MC_LAYERS[layer];
   const W = (H * 16) / 9;
   const f = focalPx(H, fov);
   const rand = mulberry32(0x5eed);
@@ -167,17 +197,11 @@ function monteCarlo(
   };
   let area = 0;
   for (let i = 0; i < count; i++) {
-    const x = (rand() - 0.5) * RAIN_BOX_XZ;
-    const y = (rand() - 0.5) * RAIN_BOX_Y;
-    const z = (rand() - 0.5) * RAIN_BOX_XZ;
+    const x = (rand() - 0.5) * box[0];
+    const y = (rand() - 0.5) * box[1];
+    const z = (rand() - 0.5) * box[0];
     const dist = Math.hypot(x, y, z);
-    if (
-      dist < RAIN_NEAR_CUT ||
-      Math.hypot(x, z) > RAIN_BOX_XZ * RAIN_FADE_END ||
-      Math.abs(y) > RAIN_BOX_Y * RAIN_FADE_END
-    ) {
-      continue;
-    }
+    if (!inside(x, y, z)) continue;
     const h = proj(x, y, z);
     if (!h || Math.abs(h.u) > W / 2 || Math.abs(h.v) > H / 2) continue;
     const t = proj(x - dir.x * len, y - dir.y * len, z - dir.z * len);
@@ -202,15 +226,30 @@ describe("screen coverage", () => {
       [270, 83, -0.6, down],
       [1080, 74, 0.3, leaning],
     ] as const) {
-      const est = rainCoverage(RAIN_MAX_DROPS, 1, focalPx(H, fov));
-      const mc = monteCarlo(RAIN_MAX_DROPS, 1, H, fov, pitch, dir);
-      expect(mc).toBeLessThanOrEqual(est);
-      // …and is not so loose that the cap starves the rain.
-      expect(mc).toBeGreaterThan(est * 0.4);
+      for (const [name, layer] of [
+        ["near", NEAR_LAYER],
+        ["far", FAR_LAYER],
+      ] as [keyof typeof MC_LAYERS, RainLayer][]) {
+        const est = rainCoverage(RAIN_MAX_DROPS, 1, focalPx(H, fov), layer);
+        const mc = monteCarlo(
+          RAIN_MAX_DROPS,
+          layer.length,
+          H,
+          fov,
+          pitch,
+          dir,
+          name,
+        );
+        expect(mc).toBeLessThanOrEqual(est);
+        // …and is not so loose that the cap starves the rain. The far
+        // layer's bound counts a whole sphere shell while its drops fill a
+        // ±64 m slab, so it is a little looser by construction.
+        expect(mc).toBeGreaterThan(est * (name === "near" ? 0.4 : 0.3));
+      }
     }
   });
 
-  it("rain never covers more than 8 % of the screen — any speed, FOV, tier, resolution", () => {
+  it("rain never covers more than 3 % of the screen — any speed, FOV, tier, resolution", () => {
     // The width floor is in drawing-buffer px, so the smallest buffer is the
     // worst case: a 360-px-tall phone viewport at the scaler's floor.
     const heights = [360 * RESOLUTION_FLOOR, 540, 720, 1080, 2160];
@@ -230,7 +269,7 @@ describe("screen coverage", () => {
                 l,
                 f,
               );
-              const cov = rainCoverage(n, l.length, f) * drawn(l) + lens;
+              const cov = rainFieldCoverage(n, l.length, f) * drawn(l) + lens;
               worst = Math.max(worst, cov);
             }
           }
@@ -288,9 +327,9 @@ describe("quality tiers", () => {
     const f = focalPx(270, 83);
     const capped = rainCount(1, 1, l, f);
     expect(capped).toBeLessThan(RAIN_MAX_DROPS);
-    expect(rainCoverage(capped, l.length, f) * drawn(l)).toBeLessThanOrEqual(
-      STREAK_COVERAGE_BUDGET,
-    );
+    expect(
+      rainFieldCoverage(capped, l.length, f) * drawn(l),
+    ).toBeLessThanOrEqual(STREAK_COVERAGE_BUDGET);
     // A tier already under the cap keeps its own count.
     const mobile = QUALITY_PROFILES.mobile.rainDensity;
     expect(rainCount(1, mobile, l, focalPx(1080, 70))).toBe(

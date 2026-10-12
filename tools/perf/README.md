@@ -2889,3 +2889,5 @@ the benches:
 
 - `tools/carrier-sanity.ts`: an Easy novice pilot against the real server.
 - `tools/roof-seams.ts`: AA nests against everything drawn on their roofs.
+
+<!-- lander smoke test -->

@@ -898,7 +898,7 @@ export const FEATURE_TIERS: readonly {
     medium: "reduced",
     low: "reduced",
     mobile: "reduced",
-    note: "flame sites and the air 100 / 75 / 50 / 30 % (chaosFx): at most 64 sites × 3 cards, the nearest within 760 m, faded out at the cap; 1600 embers/ash/debris; one instanced draw + one points draw",
+    note: "flame sites and the air 100 / 75 / 50 / 30 % (chaosFx): at most 80 sites × 3 cards, the nearest within 760 m, faded out at the cap; 1600 embers/ash/debris; one instanced draw + one points draw",
   },
   {
     feature: "L7 inferno — smoke columns",

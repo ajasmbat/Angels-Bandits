@@ -77,7 +77,7 @@ import { RENDER_ORDER } from "./render-order";
 import { nearestImageInto, uploadPrefix } from "./wrapPlacement";
 
 /** Flame sites drawn at once (full share), and cards per site. */
-export const FLAME_SITES_MAX = 64;
+export const FLAME_SITES_MAX = 80;
 const CARDS = 3;
 /** Smoke columns drawn at once (full share), and puffs per column. */
 export const COLUMNS_MAX = 14;
@@ -1233,7 +1233,11 @@ export class Inferno {
       if (w <= 0.01) continue;
       const img = nearestImageInto(this.img, viewer, this.canon);
       const grow = (0.55 + 0.45 * (this.cW[c] as number)) * scale;
-      const width = info.size * grow * (info.kind === KIND_FLOOR ? 1.35 : 1.1);
+      // Bigger with distance, so a burning block still reads as fire from
+      // across the city (dressing: never solid, never collided).
+      const far = 1 + 0.8 * smooth01((d - 150) / 450);
+      const width =
+        info.size * grow * far * (info.kind === KIND_FLOOR ? 1.35 : 1.1);
       const height = width * (info.kind === KIND_FLOOR ? 1.7 : 2.1);
       const seed = hash01(info.key | 0, Math.floor(info.key / 4294967296));
       for (let j = 0; j < CARDS; j++) {

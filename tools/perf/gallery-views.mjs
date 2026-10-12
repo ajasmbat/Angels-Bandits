@@ -1112,7 +1112,7 @@ export const VIEWS = [
   // `__ab.inferno()` is logged for each: sites, draws, floating = 0).
   referenceView("reference-hero"),
   referenceView("reference-inferno", { stage: INFERNO_STAGE }),
-  // L7 the sky reacting: from 140 m on the south bank, up at the cloud deck
+  // L7 the sky reacting: from 180 m on the south bank, up at the cloud deck
   // over reference-inferno's burning blocks — the columns climbing into it,
   // its underside glowing ember-red over the fires, the haze gone smoky.
   {
@@ -1121,8 +1121,8 @@ export const VIEWS = [
     z: 1010,
     y: 310,
     yaw: -Math.PI / 2,
-    eye: [1180, 140, 1330],
-    at: [1430, 480, 1020],
+    eye: [1300, 180, 1250],
+    at: [1420, 497, 1080],
     timeMs: 1_790_000_000_000,
     stage: INFERNO_STAGE,
   },

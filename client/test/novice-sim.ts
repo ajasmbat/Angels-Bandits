@@ -56,6 +56,7 @@ import {
   RESPAWN_ALTITUDE,
   RESPAWN_BAND_MAX,
   RESPAWN_BAND_MIN,
+  RESPAWN_SPEED,
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
 import {
@@ -241,6 +242,7 @@ function makeRoute(seed: number, i: number): Route {
     if (clearSegment(p, ahead, 10)) start = p;
   }
   let at = points.length > 0 ? (points[points.length - 1] as Vec3) : start;
+  let backtracks = 0;
   for (let n = 0; n < 40; n++) {
     let next: Vec3[] | null = null;
     if (n === 2) {
@@ -250,6 +252,9 @@ function makeRoute(seed: number, i: number): Route {
     if (next === null && n % 4 === 3) {
       // A hole: in through one mouth, out the other.
       for (const s of spans) {
+        // H1: low holes only — the cores' clear-air rule now puts some
+        // 180–210 m up between their towers, and these are LOW routes.
+        if (s.center.y > 120) continue;
         const d = wrapDelta(at, s.center);
         const dist = Math.hypot(d.x, d.z);
         if (dist < 200 || dist > 700) continue;
@@ -279,14 +284,26 @@ function makeRoute(seed: number, i: number): Route {
       for (let k = 0; k < 600 && next === null; k++) {
         const spread = k < 300 ? 75 : 150;
         const h = heading + (rand() - 0.5) * 2 * spread * DEG;
-        const dist = 150 + rand() * 250;
+        // …and take a shorter first hop out of a tight spot.
+        const dist = k < 300 ? 150 + rand() * 250 : 60 + rand() * 340;
+        // Low (25–85 m) first; H1: a hole high in a core (or a setback
+        // terrace's pocket) can leave no clear low leg out, so the wider
+        // search may come down from its exit, or climb out.
         const c = canon({
           x: at.x - Math.sin(h) * dist,
-          y: 25 + rand() * 60,
+          y: 25 + rand() * (k < 300 ? 60 : at.y + 35),
           z: at.z - Math.cos(h) * dist,
         });
         if (clearSegment(at, c, 9)) next = [c];
       }
+    }
+    if (next === null && backtracks < 3 && points.length > 1) {
+      // H1: boxed in (a setback terrace's pocket in a core): step back a
+      // waypoint and search again from there.
+      backtracks++;
+      points.pop();
+      at = points[points.length - 1] as Vec3;
+      continue;
     }
     if (next === null) break;
     for (const p of next) {
@@ -470,13 +487,29 @@ function fly(arm: Arm, route: Route, seed: number): Result {
   /** The game's respawn (server/src/respawn.ts, U2): RESPAWN_ALTITUDE,
    * RESPAWN_BAND_MIN..MAX out from where the pilot was headed, nose on it. */
   const respawnNear = (target: Vec3): Vec3 => {
-    const bearing = rand() * 2 * Math.PI;
-    const r = RESPAWN_BAND_MIN + rand() * (RESPAWN_BAND_MAX - RESPAWN_BAND_MIN);
-    return canon({
-      x: target.x + Math.sin(bearing) * r,
-      y: RESPAWN_ALTITUDE,
-      z: target.z + Math.cos(bearing) * r,
-    });
+    let pos: Vec3 = target;
+    // H1: the server vetoes a spawn whose straight run-out meets a landmark
+    // supertall (server/src/respawn.ts); so does this one — the first draw
+    // whose 6 s at RESPAWN_SPEED toward its target is clear.
+    for (let k = 0; k < 12; k++) {
+      const bearing = rand() * 2 * Math.PI;
+      const r =
+        RESPAWN_BAND_MIN + rand() * (RESPAWN_BAND_MAX - RESPAWN_BAND_MIN);
+      pos = canon({
+        x: target.x + Math.sin(bearing) * r,
+        y: RESPAWN_ALTITUDE,
+        z: target.z + Math.cos(bearing) * r,
+      });
+      const d = wrapDelta(pos, target);
+      const flat = Math.hypot(d.x, d.z) || 1;
+      const out = canon({
+        x: pos.x + (d.x / flat) * RESPAWN_SPEED * 6,
+        y: pos.y,
+        z: pos.z + (d.z / flat) * RESPAWN_SPEED * 6,
+      });
+      if (clearSegment(pos, out, 30)) break;
+    }
+    return pos;
   };
   spawn(route.start, route.points[0] as Vec3, true);
 

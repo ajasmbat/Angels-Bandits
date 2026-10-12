@@ -1523,10 +1523,24 @@ export function buildCollapse(
     top = Math.max(top, p.y + p.hy);
   }
   const f = wire.f;
-  const fail =
+  let fail =
     style === PANCAKE && typeof f === "number" && Number.isFinite(f)
       ? Math.min(top, Math.max(base, Math.round(f) / 10))
       : base;
+  if (style === PANCAKE) {
+    // H1: the wire carries whole decimetres, but a storey edge need not be
+    // one (a 317 m tier's 26 floors are 12.19 m each). Snap back to the
+    // piece edge the wire names, or the block's bottom slab — standing
+    // exactly on the failure — would read as crushed under it and the
+    // column would pass through itself.
+    let snap = Number.POSITIVE_INFINITY;
+    for (const p of raw) {
+      for (const e of [p.y - p.hy, p.y + p.hy]) {
+        if (Math.abs(e - fail) < Math.abs(snap - fail)) snap = e;
+      }
+    }
+    if (Math.abs(snap - fail) <= 0.05 + 1e-9) fail = snap;
+  }
   return assembleCollapse(
     raw,
     {

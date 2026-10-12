@@ -656,6 +656,14 @@ const PUFF_COLOR = 0x2a3242;
 const PUFF_OPACITY = 0.38;
 /** The ceiling sheet: the deck's darker-from-below altitude read. */
 const CEILING_Y = CLOUD_BASE - 3;
+/** H1: the deck's materials fog as if it were this much lower — the deck
+ * rose 150 m over the supertalls (CLOUD_BASE 500 → 650), and the radial fog
+ * would otherwise swallow it from the street (~71 % overhead, was 25 %).
+ * Capped so the deck is still fully fogged where the camera's far plane
+ * (FOG_DISTANCE + 100) cuts it: from the street that is 622 m out, at a
+ * lowered distance of √(622² + 500²) ≈ 798 m (fog.ts AB_FOG_LIFT). */
+export const DECK_FOG_LIFT = Math.min(CLOUD_BASE - 500, 150);
+const DECK_FOG_DEFINES = { AB_FOG_LIFT: DECK_FOG_LIFT.toFixed(1) };
 const CEILING_COLOR = 0x07090f;
 const CEILING_OPACITY = 0.55;
 
@@ -731,6 +739,7 @@ export class CloudDeck {
       opacity: PUFF_OPACITY,
       depthWrite: false,
     });
+    material.defines = { ...DECK_FOG_DEFINES };
     this.puffs = new THREE.InstancedMesh(
       new THREE.PlaneGeometry(1, 1),
       material,
@@ -757,6 +766,7 @@ export class CloudDeck {
       // draw — and on a flat sheet it draws the same pixels one pass does.
       forceSinglePass: true,
     });
+    ceilingMat.defines = { ...DECK_FOG_DEFINES };
     // L7: the underside glows ember-red over the burning blocks (a uniform
     // array of spots, by reference — no recompile as fires come and go).
     ceilingMat.onBeforeCompile = (shader) => {

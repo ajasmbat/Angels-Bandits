@@ -5,11 +5,18 @@
 // living enemy (torus wrapDistance), never inside any enemy's nose cone, and
 // faces that enemy; the 5.5 s spawn protection covers the approach. Sampled:
 // random candidates, best band score wins. RESPAWN_ALTITUDE is above every
-// rooftop, so any x/z is safe — no building check needed.
+// generated rooftop; H1's landmark supertalls rise through it, so a
+// candidate whose straight run-out meets one is vetoed (landmarkClearance).
 //
 // The RNG is injected (like the city generator's seeding) so tests choose
 // the candidates and the winner is deterministic.
 
+import {
+  BOSS_SPAWN_MARGIN,
+  BOSS_SPAWN_RUNOUT_S,
+} from "@angels-bandits/common/boss";
+import { landmarkProfile } from "@angels-bandits/common/city/landmarks";
+import { LANDMARK_BLOCKS } from "@angels-bandits/common/city/layout";
 import { overChannel } from "@angels-bandits/common/city/river";
 import { ROADWAY_HALF } from "@angels-bandits/common/city/street";
 import {
@@ -70,6 +77,62 @@ function inNoseCone(p: Vec3, enemies: readonly RespawnEnemy[]): boolean {
   return false;
 }
 
+/**
+ * H1: each landmark supertall as the spawn layer sees it — its centre and
+ * the plan radius (half-diagonal) of its widest tier reaching within
+ * BOSS_SPAWN_MARGIN of RESPAWN_ALTITUDE. Pure in the fixed landmark layout,
+ * so no city is needed (a broken tower is only ever smaller).
+ */
+const LANDMARK_SPAWN_SOLIDS = LANDMARK_BLOCKS.map(([bx, bz], i) => {
+  let base = 0;
+  let half = 0;
+  for (const t of landmarkProfile(i).tiers) {
+    if (base + t.height >= RESPAWN_ALTITUDE - BOSS_SPAWN_MARGIN) {
+      half = Math.max(half, Math.hypot(t.width, t.depth) / 2);
+    }
+    base += t.height;
+  }
+  return {
+    x: bx * BLOCK_PITCH + BLOCK_PITCH / 2,
+    z: bz * BLOCK_PITCH + BLOCK_PITCH / 2,
+    r: half,
+  };
+}).filter((s) => s.r > 0);
+
+/**
+ * H1: the closest a spawn at `pos` flying `yaw` level at RESPAWN_SPEED for
+ * BOSS_SPAWN_RUNOUT_S comes to a landmark supertall, plan metres (negative:
+ * it flies into one). `yaw` null (not known yet) asks for every heading,
+ * like bossSpawnClear: the whole run-out disc counts.
+ */
+export function landmarkClearance(pos: Vec3, yaw: number | null): number {
+  const reach = RESPAWN_SPEED * BOSS_SPAWN_RUNOUT_S;
+  const fx = yaw === null ? 0 : -Math.sin(yaw);
+  const fz = yaw === null ? 0 : -Math.cos(yaw);
+  const disc = yaw === null ? reach : 0;
+  let clearance = Number.POSITIVE_INFINITY;
+  for (let s = 0; s <= BOSS_SPAWN_RUNOUT_S; s += 0.25) {
+    const p: Vec3 = {
+      x: pos.x + fx * RESPAWN_SPEED * s,
+      y: pos.y,
+      z: pos.z + fz * RESPAWN_SPEED * s,
+    };
+    for (const l of LANDMARK_SPAWN_SOLIDS) {
+      const d = wrapDelta(p, { x: l.x, y: pos.y, z: l.z });
+      clearance = Math.min(clearance, Math.hypot(d.x, d.z) - l.r - disc);
+    }
+    if (yaw === null) break;
+  }
+  return clearance;
+}
+
+/** H1: a spawn clears the landmarks when its run-out keeps this far off. */
+const landmarkClear = (pos: Vec3, yaw: number | null): boolean =>
+  landmarkClearance(pos, yaw) >= BOSS_SPAWN_MARGIN;
+
+/** The default `avoid`: nothing. */
+const NO_AVOID = (): boolean => false;
+
 /** How far a candidate `nearest` distance misses the band's middle, m —
  * lower is better. Infinity (no enemies) never beats anything. */
 const bandScore = (nearest: number): number => Math.abs(nearest - BAND_MID);
@@ -83,18 +146,23 @@ const bandScore = (nearest: number): number => Math.abs(nearest - BAND_MID);
  * `clear` (S4) vetoes candidates outright — a sky boss's hull crosses the
  * spawn layer, and spawn protection does not stop a crash. It is asked with
  * the heading the spawn would get (null: none yet — no enemies to face).
- * A sky where nothing is clear keeps the unvetoed pick.
+ * A sky where nothing is clear keeps the unvetoed pick. H1: the landmark
+ * supertalls are always asked (landmarkClear) — and if every candidate
+ * fails, the one whose run-out stays farthest from them wins, never an
+ * unchecked one.
  */
 export function pickRespawn(
   enemies: readonly RespawnEnemy[],
   rand: () => number = Math.random,
-  avoid: (pos: Vec3) => boolean = () => false,
+  avoid: (pos: Vec3) => boolean = NO_AVOID,
   clear?: (pos: Vec3, yaw: number | null) => boolean,
 ): SpawnState {
   let best: Vec3 | null = null;
   let bestScore = Number.POSITIVE_INFINITY;
   let far: Vec3 | null = null;
   let farScore = Number.NEGATIVE_INFINITY;
+  let safest: Vec3 | null = null;
+  let safestScore = Number.NEGATIVE_INFINITY;
   for (let i = 0; i < RESPAWN_BAND_SAMPLES; i++) {
     const candidate: Vec3 = {
       x: rand() * WORLD_SIZE,
@@ -102,7 +170,14 @@ export function pickRespawn(
       z: rand() * WORLD_SIZE,
     };
     const nearest = nearestDistance(candidate, enemies);
-    if (clear && !clear(candidate, facing(candidate, enemies))) continue;
+    const heading = facing(candidate, enemies);
+    const room = landmarkClearance(candidate, heading);
+    if (room > safestScore) {
+      safest = candidate;
+      safestScore = room;
+    }
+    if (room < BOSS_SPAWN_MARGIN) continue;
+    if (clear && !clear(candidate, heading)) continue;
     if (nearest > farScore) {
       far = candidate;
       farScore = nearest;
@@ -116,8 +191,14 @@ export function pickRespawn(
       bestScore = score;
     }
   }
-  // Every candidate vetoed (never, in practice): the plain pick instead.
-  if (!best && !far) return pickRespawn(enemies, rand);
+  // Every candidate vetoed (never, in practice): drop the caller's vetoes,
+  // keep the landmarks' — and if even that leaves nothing, the candidate
+  // flying farthest from the supertalls.
+  if (!best && !far) {
+    if (clear || avoid !== NO_AVOID) return pickRespawn(enemies, rand);
+    const pos = safest as Vec3;
+    return { pos, yaw: yawToNearest(pos, enemies, rand), speed: RESPAWN_SPEED };
+  }
   // RESPAWN_BAND_SAMPLES ≥ 1, so `far` is otherwise always set.
   const pos = best ?? (far as Vec3);
   return { pos, yaw: yawToNearest(pos, enemies, rand), speed: RESPAWN_SPEED };
@@ -140,7 +221,8 @@ export function respawnIfUnsafe(
   // The heading of the nose (−Z rotated by the attitude), yaw 0 facing −Z.
   const { x, y, z, w } = held.quat;
   const yaw = Math.atan2(2 * (x * z + w * y), 1 - 2 * (x * x + y * y));
-  if (!avoid(held.pos) && clear(held.pos, yaw)) return null;
+  if (!avoid(held.pos) && clear(held.pos, yaw) && landmarkClear(held.pos, yaw))
+    return null;
   return pickRespawn(enemies, rand, avoid, clear);
 }
 

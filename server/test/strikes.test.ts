@@ -118,19 +118,40 @@ describe("MissileDirector cadence", () => {
     const launches: { at: number; area: string; strike: MissileStrike }[] = [];
     const areaOf = (p: Vec3) =>
       `${Math.floor(p.x / 250)}:${Math.floor(p.z / 250)}`;
+    // The area is the subject's — read off the director itself (H1: on the
+    // taller city a facade target is often nearer another hoverer than its
+    // subject, so "the nearest hoverer" no longer names it).
+    let subject: DirectorPlane | null = null;
+    const launchAt = (
+      director as unknown as {
+        launchAt: (
+          now: number,
+          s: DirectorPlane,
+          ...rest: unknown[]
+        ) => unknown;
+      }
+    ).launchAt.bind(director);
+    (
+      director as unknown as {
+        launchAt: (
+          now: number,
+          s: DirectorPlane,
+          ...rest: unknown[]
+        ) => unknown;
+      }
+    ).launchAt = (now, s, ...rest) => {
+      subject = s;
+      return launchAt(now, s, ...rest);
+    };
     let maxInFlight = 0;
     const MINUTES = 10;
     for (let t = 0; t < MINUTES * 60_000; t += 50) {
       director.settle(t);
       const strike = director.tick(t, planes, world);
       if (strike) {
-        // The area is the subject's: the nearest hoverer to the target.
-        const subject = planes.reduce((a, b) =>
-          wrapDistance(a.pos, strike.to) < wrapDistance(b.pos, strike.to)
-            ? a
-            : b,
-        );
-        launches.push({ at: t, area: areaOf(subject.pos), strike });
+        const s = subject as DirectorPlane | null;
+        if (!s) throw new Error("a strike with no subject");
+        launches.push({ at: t, area: areaOf(s.pos), strike });
       }
       maxInFlight = Math.max(maxInFlight, director.missiles().length);
     }

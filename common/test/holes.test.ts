@@ -69,9 +69,11 @@ const where = (s: HoleSpan) =>
 
 describe("H2 hole count and mouths (seed 42)", () => {
   it("has about 3× H1's 12 holes, of every kind", () => {
-    expect(spans.length).toBeGreaterThanOrEqual(30);
+    // H1: 29 of them on the taller city (12 row tunnels, 8 gates, 5 sky
+    // holes) — the cores' towers fill most run-out corridors.
+    expect(spans.length).toBeGreaterThanOrEqual(28);
     expect(byKind("arch").length).toBe(4);
-    expect(byKind("tunnel").length).toBeGreaterThanOrEqual(15);
+    expect(byKind("tunnel").length).toBeGreaterThanOrEqual(12);
     expect(byKind("gate").length).toBeGreaterThanOrEqual(5);
     expect(byKind("sky").length).toBeGreaterThanOrEqual(3);
     // Block-through: at least one tunnel runs street to street, and one cuts
@@ -125,7 +127,23 @@ describe("H2 holes fly clear (seed 42)", () => {
   it("every tunnel, gate and sky hole exits into clear air: HOLE_RUN_OUT past both outer mouths (buildings and trees)", () => {
     const r = PLAYER_RADIUS;
     let seam = 0;
-    for (const s of ruled) {
+    // H1: seed 42's taller city has no ruled hole near the seam, so seed 2's
+    // (8 run-outs across it) are flown too — the torus stays exercised.
+    const seamCity = generateCity(2);
+    const seamIndex = buildCityIndex(seamCity);
+    const seamNature = buildNatureIndex(natureFor(2, seamCity));
+    const cases = [
+      ...ruled.map((s) => ({ s, city, index, nature })),
+      ...cityHoles(seamCity)
+        .filter((s) => s.hole.kind !== "arch")
+        .map((s) => ({
+          s,
+          city: seamCity,
+          index: seamIndex,
+          nature: seamNature,
+        })),
+    ];
+    for (const { s, city, index, nature } of cases) {
       // Closed boxes: a facade exactly at the run-out's end is legal, so the
       // probe stops just inside it.
       const end = s.length / 2 + HOLE_RUN_OUT - r - 0.5;
@@ -240,13 +258,20 @@ describe("H2 holes keep their walls (seed 42)", () => {
     for (const s of spans) {
       const end = s.length / 2 + (s.hole.kind === "arch" ? 0 : 20);
       expect(losClear(at(s, -end), at(s, end), city), where(s)).toBe(true);
-      // Diagonal across the run, wall to wall: blocked by a host's solids.
+      // Diagonal across the run, wall to wall, and up into the lintel:
+      // blocked by a host's solids — at the first host's centre (H1: a row
+      // tunnel's midpoint can be open air over a setback terrace between
+      // two hosts).
+      const host = s.hosts[0] as Building;
+      const mid =
+        s.hole.axis === "x" ? host.x - s.center.x : host.z - s.center.z;
+      const h = mid - Math.round(mid / WORLD_SIZE) * WORLD_SIZE;
       const c = s.hole.width / 2 + HOLE_WALL_MIN / 2;
-      expect(losClear(at(s, 0, -c), at(s, 0, c), city), where(s)).toBe(false);
+      expect(losClear(at(s, h, -c), at(s, h, c), city), where(s)).toBe(false);
       expect(
         losClear(
-          at(s, 0, 0, s.hole.height / 2 + 2),
-          at(s, 0, 0, s.hole.height / 2 + 4),
+          at(s, h, 0, s.hole.height / 2 + 2),
+          at(s, h, 0, s.hole.height / 2 + 4),
           city,
         ),
         where(s),

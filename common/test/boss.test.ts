@@ -73,7 +73,7 @@ import {
   HELI_ALT_MAX,
   HELI_HULL,
   MAX_HP,
-  NEWS_HELI_ALT_MIN,
+  NEWS_HELI_ALT_MAX,
   RESPAWN_SPEED,
   WRECK_MAX_MS,
 } from "@angels-bandits/common/constants";
@@ -216,7 +216,11 @@ describe("schedule and path are pure", () => {
     }
     expect(bottom).toBeGreaterThan(roofs + 15);
     expect(bottom).toBeGreaterThan(HELI_ALT_MAX + (HELI_HULL[1] as number));
-    expect(top).toBeLessThan(NEWS_HELI_ALT_MIN - (HELI_HULL[1] as number));
+    // H1: the supertalls pushed the carrier over the news heli (its rotor
+    // blur, as newsheli.test.ts reckons it), with the old gap to spare.
+    expect(bottom).toBeGreaterThan(
+      NEWS_HELI_ALT_MAX + (HELI_HULL[1] as number) * 1.3 + 15,
+    );
     expect(top).toBeLessThan(BLIMP_ALT - (BLIMP_HULL[1] as number));
     expect(top).toBeLessThan(CLOUD_BASE);
     // "Several times the blimp's size."

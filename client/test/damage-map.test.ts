@@ -144,24 +144,31 @@ describe("blastFacades", () => {
     expect(site?.building).toBe(bi);
     expect(site?.face).toBe(FacadeFace.PX);
     expect(site?.distance).toBeCloseTo(6, 6);
-    // Count shattered cells by distance band on that face.
+    // Count shattered cells by distance band on that face — over eight
+    // seeded blasts (H1: seed 42's taller city put a smaller facade here,
+    // and one blast's handful of scorched cells is too few to read a
+    // majority off).
     let near = 0;
     let nearAll = 0;
     let far = 0;
     let farAll = 0;
-    for (let cy = 0; cy < DAMAGE.rows; cy++) {
-      for (
-        let cx = -DAMAGE.colOffset;
-        cx < DAMAGE.cols - DAMAGE.colOffset;
-        cx++
-      ) {
-        const c = d.read(bi, 0, FacadeFace.PX, cx, cy);
-        if (!c.shattered && c.scorch === 0) continue;
-        if (c.scorch > 80) nearAll++;
-        if (c.shattered && c.scorch > 80) near++;
-        if (c.scorch === 0) {
-          farAll++;
-          if (c.shattered) far++;
+    for (let seed = 9; seed < 17; seed++) {
+      const ds = seed === 9 ? d : new FacadeDamage();
+      if (seed !== 9) blastFacades(ds, city, index, centre, mulberry32(seed));
+      for (let cy = 0; cy < DAMAGE.rows; cy++) {
+        for (
+          let cx = -DAMAGE.colOffset;
+          cx < DAMAGE.cols - DAMAGE.colOffset;
+          cx++
+        ) {
+          const c = ds.read(bi, 0, FacadeFace.PX, cx, cy);
+          if (!c.shattered && c.scorch === 0) continue;
+          if (c.scorch > 80) nearAll++;
+          if (c.shattered && c.scorch > 80) near++;
+          if (c.scorch === 0) {
+            farAll++;
+            if (c.shattered) far++;
+          }
         }
       }
     }

@@ -26,8 +26,10 @@ import { HAZE_WEATHER, fogFactor, hazeAmount } from "./fog";
 import type { MoverLights } from "./movers";
 import type { SpotBeam } from "./searchlights";
 
-/** Longest throw a carrier lamp is rated for, m (it flies at ~305 m). */
-export const LANDING_MAX_THROW = 560;
+/** Longest throw a carrier lamp is rated for, m. H1: the carrier flies at
+ * BOSS_ALT 570 m now (was 305 m, rated 560), so the same lamp angles need
+ * the camera's whole reach — past it nothing is drawn anyway. */
+export const LANDING_MAX_THROW = 900;
 /** Shortest beam drawn, m — a lamp right over a roof is still a lamp. */
 const LANDING_MIN_THROW = 12;
 /** How far past the hit the cone runs, m, so its tip sits IN the pool. */

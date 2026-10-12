@@ -154,16 +154,34 @@ describe("wreck sweep (first solid)", () => {
   });
 
   it("hits a facade it is flying at, high above the street", () => {
-    const y = tower.height / 2;
+    // H1: a slab whose west face fronts open air for the 25 m run-in (the
+    // taller city's first slab has a party-wall neighbour there).
+    const facing = city.find(
+      (b) =>
+        !b.holes &&
+        !b.roof &&
+        b.height >= 60 &&
+        b.tiers.length === 1 &&
+        [6, 15, 25].every(
+          (d) =>
+            collideCity(
+              { x: b.x - b.width / 2 - d, y: b.height / 2, z: b.z },
+              WRECK_RADIUS,
+              city,
+              index,
+            ) === null,
+        ),
+    ) as Building;
+    const y = facing.height / 2;
     const { impact, at } = sweep({
-      p: { x: tower.x - tower.width / 2 - 25, y, z: tower.z },
+      p: { x: facing.x - facing.width / 2 - 25, y, z: facing.z },
       v: { x: 90, y: 0, z: 0 },
       t: 0,
       spin: -1,
     });
     expect(impact.hit).toBe("city");
     expect(at.y).toBeGreaterThan(y - 10);
-    expect(collideCity(at, WRECK_RADIUS, [tower])).not.toBeNull();
+    expect(collideCity(at, WRECK_RADIUS, [facing])).not.toBeNull();
     expect(impact.end).toBeLessThan(1000);
   });
 

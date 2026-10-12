@@ -86,7 +86,7 @@ export function chaosSlotsInWindow(
 // --- Meteors -------------------------------------------------------------------
 
 /** Where a meteor starts: this high, m, and this far out (plan view). */
-export const METEOR_ALT = 900;
+export const METEOR_ALT = 1050; // H1: over MAX_ALTITUDE (950), as 900 was over 800
 const METEOR_RUN_MIN_M = 300;
 const METEOR_RUN_MAX_M = 500;
 

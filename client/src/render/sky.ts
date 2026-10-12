@@ -77,6 +77,14 @@ import {
   cloudGlsl,
   createCloudUniforms,
 } from "./sky-clouds";
+import {
+  SKY_FOG_AIR,
+  SKY_FOG_ELEVATION,
+  SKY_FOG_STOP,
+  SKY_FOG_STOPS,
+  SKY_GLOW_RAMP,
+  SKY_STOPS,
+} from "./sky-fog";
 import type { SkyState } from "./skycycle";
 import {
   STREET_PAINT_PARS,
@@ -190,28 +198,16 @@ export function setupSky(scene: THREE.Scene): SkyRig {
   return { ambient, moon, glow, hemi };
 }
 
-/** Canvas fraction at which the gradient becomes the fog colour for good.
- * 0.5 is the horizon; 0.4 is 18° above it — higher than the tallest landmark
- * at the fog limit can reach seen from the street, so a fully fogged tower
- * can never be told apart from the sky behind it (the torus occlusion
- * guarantee; pinned in client/test/sky.test.ts). */
-export const SKY_FOG_STOP = 0.4;
-
-/** Vertical gradient stops, as polar-angle fractions (0 zenith, 0.5 the
- * horizon): the last is SKY_FOG_STOP, from which the sky IS the fog colour. */
-export const SKY_STOPS = [0, 0.14, 0.25, 0.32, 0.37, SKY_FOG_STOP] as const;
+// The fog band (SKY_FOG_STOP and friends) lives in sky-fog.ts since H1: the
+// fog chunks read it too (above the stop, fog fades toward this dome's
+// gradient), and fog.ts must not import this module.
+export { SKY_FOG_ELEVATION, SKY_FOG_STOP, SKY_GLOW_RAMP, SKY_STOPS };
 /** L1 night gradient (sRGB): a near-black navy zenith, storm navy, then
  * steel blue lifting toward the band — then DUSK.sky. (VO1's ran deep blue
  * into violet light pollution.) */
 export const SKY_GRADIENT_NIGHT = [
   0x03050b, 0x070b16, 0x0c1322, 0x141c2d, 0x1b2435,
 ] as const;
-/** Elevation (rad) above SKY_FOG_STOP over which the moon halo and the
- * dawn/dusk dome glows ramp in from exactly zero — nothing additive may
- * touch the fog-coloured band (a fogged tower would show against it). */
-export const SKY_GLOW_RAMP = 0.06;
-/** Elevation of SKY_FOG_STOP, rad. */
-export const SKY_FOG_ELEVATION = (0.5 - SKY_FOG_STOP) * Math.PI;
 
 /** Moon disc angular radius, radians (~2.6° — big and cinematic, the way a
  * long lens shows it; the real 0.26° would be a sub-pixel dot at FOV 70). */
@@ -608,6 +604,7 @@ export class SkyDome {
         .set((hex >> 16) & 255, (hex >> 8) & 255, hex & 255)
         .divideScalar(255);
     });
+    stops.forEach((v, i) => v.toArray(SKY_FOG_STOPS, i * 3));
     const dusk = new THREE.Vector2(GLOW_DIR.x, GLOW_DIR.z).normalize();
     this.clouds = createCloudUniforms();
     this.clouds.uCloudOn.value = cloudsOn ? 1 : 0;
@@ -656,11 +653,15 @@ export class SkyDome {
     const stops = [s.zenith, s.sky14, s.sky25, s.sky32, s.sky37, s.horizon];
     for (let i = 0; i < stops.length; i++) {
       const c = stops[i] as readonly number[];
-      (u.uSkyStops.value[i] as THREE.Vector3).set(
+      const v = u.uSkyStops.value[i] as THREE.Vector3;
+      v.set(
         encodeSrgb(c[0] as number),
         encodeSrgb(c[1] as number),
         encodeSrgb(c[2] as number),
       );
+      // H1: every fogged material fades toward this same gradient above
+      // the stop (sky-fog.ts).
+      v.toArray(SKY_FOG_STOPS, i * 3);
     }
     u.uDuskGlow.value.fromArray(s.duskGlow);
     u.uDawnGlow.value.fromArray(s.dawnGlow);
@@ -697,6 +698,14 @@ export class SkyDome {
     u.uAirAdd.value.copy(air.add);
     u.uAirGain.value = air.gain;
     u.uFogColor.value.copy(air.fog);
+    // H1: the fog chunks' copy of the map (sky-fog.ts), switched on by the
+    // first write.
+    SKY_FOG_AIR[0] = air.add.r;
+    SKY_FOG_AIR[1] = air.add.g;
+    SKY_FOG_AIR[2] = air.add.b;
+    SKY_FOG_AIR[3] = air.scale;
+    SKY_FOG_AIR[4] = air.gain;
+    SKY_FOG_AIR[5] = 1;
   }
 
   /**

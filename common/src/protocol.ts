@@ -302,6 +302,10 @@ export interface WelcomeMsg {
    * model reloads instead of drawing debris the server does not collide
    * with. Absent from an older server. */
   cm?: number;
+  /** H1: the server's city generator (constants.ts CITY_MODEL). A client
+   * built for another one reloads: its buildings are not the server's.
+   * Absent from an older server. */
+  cg?: number;
   /** S3: every stunt course's leaderboard and record ghost, in course id
    * order (common/src/courses.ts generateCourses for this seed). The rings
    * themselves are never sent — both sides generate them from the seed. */

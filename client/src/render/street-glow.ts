@@ -96,17 +96,20 @@ const HAZE_PASS = 0.45;
 const STRIP_Y = 0.05;
 
 // --- Luminance budget (linear, pre-bloom; the bloom threshold is 0.72) -----
-// Multipliers on STREET_GLOW_COLOR, whose own luminance is ~0.54.
-/** The lamp row's bright core (≈ 0.55 luminance at a lamp station). */
+// Multipliers on STREET_GLOW_COLOR (luminance ~0.54) BEFORE the hard
+// STRIP_CAP below, which bounds whatever these stack to.
+/** The lamp row's bright core. */
 const ROW_CORE = 1.15;
 /** The soft halo either side of a lamp row. */
 const ROW_HALO = 0.42;
-/** The warm wash over the roadway (≈ 0.06). */
+/** The warm wash over the roadway. */
 const ROAD_WASH = 0.24;
-/** A crossing's corner pools (≈ 0.65 where two lamp rows meet). */
+/** A crossing's corner pools, where two lamp rows meet. */
 const CORNER = 1.0;
-/** Storefront spill along a building lot (≈ 0.11 on the brightest shops). */
+/** Storefront spill along a building lot (the brightest shops). */
 const SHOP = 0.35;
+/** Hard cap on the luminance the strip adds to any pixel (see main()). */
+const STRIP_CAP = 0.45;
 /** Neon smear peak luminance (sparse, a few lots per street). */
 const NEON_LUM = 0.18;
 
@@ -285,6 +288,13 @@ float abStation(float along, vec3 stations) {
   vec3 w = min(m, ${glsl(BLOCK_PITCH)} - m);
   return min(w.x, min(w.y, w.z));
 }
+// The roadway's warm wash, a touch brighter toward the lamp rows. Taken as
+// the MAX of the two streets inside a crossing, never their sum, so the box
+// is no brighter than either roadway.
+float abWash(float d) {
+  float ad = abs(d);
+  return ${glsl(ROAD_WASH)} * (0.6 + 0.4 * smoothstep(4.0, ${glsl(CURB_LINE)}, ad)) * (1.0 - smoothstep(${glsl(CURB_LINE)}, ${glsl(CURB_LINE + 2)}, ad));
+}
 // Fade 1 → 0 toward the strip's edge, so every strip border is dark.
 float abTaper(float d) {
   return 1.0 - smoothstep(${glsl(STRIP_HALF - 1.5)}, ${glsl(STRIP_HALF - 0.1)}, abs(d));
@@ -312,8 +322,6 @@ float abStreet(float d, float along, float line, float aaC, float aaA, float cro
   float halo = 1.0 - smoothstep(0.0, 7.0, off);
   float notCrossing = smoothstep(${glsl(CURB_LINE - 1)}, ${glsl(CURB_LINE + 3)}, abs(cross));
   float light = rowAlong * (${glsl(ROW_CORE)} * core + ${glsl(ROW_HALO)} * halo * halo) * notCrossing;
-  // The roadway's warm wash, a touch brighter toward the lamp rows.
-  light += ${glsl(ROAD_WASH)} * (0.6 + 0.4 * smoothstep(4.0, ${glsl(CURB_LINE)}, ad)) * (1.0 - smoothstep(${glsl(CURB_LINE)}, ${glsl(CURB_LINE + 2)}, ad));
   // Storefront spill: the back of the sidewalk along a BUILT lot, shop by
   // shop (28 shops per block side), warm, some dark.
   float band = smoothstep(${glsl(FURNITURE_LINE + 0.5)}, ${glsl(LOT_LINE - 1.5)}, ad) * notCrossing * uSpill;
@@ -360,8 +368,16 @@ void main() {
   vec2 cd = vec2(abs(dX), abs(dZ)) - ${glsl(FURNITURE_LINE)};
   float corner = 1.0 - smoothstep(0.0, 11.0, length(cd));
   light += ${glsl(CORNER)} * corner * corner * max(tX, tZ);
+  light += max(tX * abWash(dX), tZ * abWash(dZ));
   float a = fade * uLevel * abAdditiveFog(vDepth, vWorldY);
-  gl_FragColor = vec4((uColor * light + neon) * a, 1.0);
+  vec3 rgb = (uColor * light + neon) * a;
+  // The luminance budget as a hard cap, not a tuning outcome: whatever the
+  // terms stack to (a lamp station on a storefront at a corner, little haze),
+  // the strip adds at most STRIP_CAP — so strip + a phantom car light + the
+  // night street stays under the 0.72 bloom threshold.
+  float lum = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
+  rgb *= min(1.0, ${glsl(STRIP_CAP)} / max(lum, 1e-4));
+  gl_FragColor = vec4(rgb, 1.0);
 }
 `;
 
@@ -455,10 +471,10 @@ const PLATOON_MAX = 4;
 const MEMBER_SPACING = 7.5;
 const GAP_MIN = 14;
 const GAP_SPAN = 70;
-/** Light colours, linear: peaks ≈ 0.68 (white) and ≈ 0.5 (red) luminance —
- * sub-bloom. */
-const HEAD_COLOR = [0.73, 0.68, 0.58] as const;
-const TAIL_COLOR = [1.85, 0.15, 0.09] as const;
+/** Light colours, linear: peaks ≈ 0.40 (white) and ≈ 0.34 (red) luminance —
+ * sub-bloom even where one crosses the brightest street glow (STRIP_CAP). */
+const HEAD_COLOR = [0.43, 0.4, 0.34] as const;
+const TAIL_COLOR = [1.26, 0.1, 0.06] as const;
 
 export interface FarCar {
   /** 1 for a lane along z (a north–south street), 0 along x. */

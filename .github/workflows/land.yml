@@ -3,6 +3,11 @@ on:
   schedule:
     - cron: "*/30 * * * *"
   workflow_dispatch: {}
+  # Scheduled runs are best-effort on GitHub (they were skipped for hours on
+  # 2026-10-12), so also run whenever a ticket PR opens or gets new commits.
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    branches: [main]
 concurrency:
   group: land-tickets
   cancel-in-progress: false

@@ -44,6 +44,8 @@ import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { AB_AA_GLSL } from "./aa-glsl";
 import { luminance } from "./emissive";
+import { FAR_DENSITY_GLSL, FAR_ORIGIN } from "./far-skyline";
+import { AB_CITY_GLOW_GLSL, CITY_GLOW } from "./fog";
 import {
   FIRELIGHT_GROUND_GLSL,
   INFERNO_PARS_GLSL,
@@ -206,6 +208,9 @@ export const SKY_STOPS = [0, 0.14, 0.25, 0.32, 0.37, SKY_FOG_STOP] as const;
 export const SKY_GRADIENT_NIGHT = [
   0x03050b, 0x070b16, 0x0c1322, 0x141c2d, 0x1b2435,
 ] as const;
+/** L2: how strongly the city glow (fog.ts CITY_GLOW) lights the cloud
+ * masses' undersides near the horizon, × the glow, over a dense district. */
+export const CLOUD_GLOW_GAIN = 2.2;
 /** Elevation (rad) above SKY_FOG_STOP over which the moon halo and the
  * dawn/dusk dome glows ramp in from exactly zero — nothing additive may
  * touch the fog-coloured band (a fogged tower would show against it). */
@@ -275,7 +280,11 @@ function skyPatch(material: THREE.MeshBasicMaterial, u: SkyUniforms): void {
     )
     .join("\n");
   material.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, u);
+    Object.assign(shader.uniforms, u, {
+      // L2: the city glow (fog.ts) and the far city's districts, shared.
+      abCityGlow: { value: CITY_GLOW },
+      uFarOrigin: FAR_ORIGIN,
+    });
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", "#include <common>\nvarying vec3 vSkyDir;")
       .replace(
@@ -305,6 +314,8 @@ uniform vec3 uBurnGlow;
 uniform vec3 uBurnDir;
 uniform vec4 uBurnAir;
 ${cloudGlsl(SKY_FOG_ELEVATION)}
+${AB_CITY_GLOW_GLSL}
+${FAR_DENSITY_GLSL}
 float mHash(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
 float mNoise(vec2 p) {
   vec2 i = floor(p); vec2 f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
@@ -403,6 +414,9 @@ ${chain}
       vec3 bodyA = mix(${glslColor(CLOUD_BODY)}, ${glslColor(CLOUD_CORE)}, smoothstep(0.55, 1.0, rawA) * smoothstep(0.62, 0.85, fa.x))
         + ${vec3Literal(moonHue.toArray())} * ((0.1 * near + 0.03 * pow(m, 3.0)) * uMoonVis)
         + ${glslColor(CLOUD_CITY_GLOW)} * low + rim
+        // L2: the city's glow on the undersides, strongest over its dense
+        // districts (the far skyline's own density, under this cloud).
+        + abCityGlow.rgb * (${CLOUD_GLOW_GAIN.toFixed(2)} * low * (0.3 + 0.7 * abFarDensity(uFarOrigin + hz * ${CLOUD_A.height.toFixed(1)})))
         // L7b: the cloud base over the fires glows ember-red.
         + uBurnGlow * ((0.25 + 2.5 * low) * burnToward);
       vec3 bodyB = ${glslColor(CLOUD_HIGH)}
@@ -435,7 +449,11 @@ ${chain}
   }
   air *= 1.0 + (uAirGain - 1.0) * above;
   air += ${vec3Literal(flash.toArray())} * (${CLOUD_FLASH_PEAK.toFixed(3)} * lightning);
-  diffuseColor.rgb = mix(uFogColor, air, above);
+  // L2: the city glow, by elevation — the same term the fog chunk adds to
+  // every fogged surface, so below the stop this is still exactly the fog
+  // colour along this ray, and above it the glow carries on, fading.
+  diffuseColor.rgb = mix(uFogColor, air, above)
+    + abCityGlow.rgb * abCityGlowProfile(clamp(sd.y, -1.0, 1.0));
 }`,
       );
   };

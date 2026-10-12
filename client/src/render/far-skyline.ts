@@ -87,8 +87,8 @@ const SPIRE_SHARE = 0.55;
 const RIVER_ROW_INDEX = RIVER_ROW;
 /** Peak share of the far city's own colour over the fog, and its haze
  * length, m: `FAR_VIS · exp(−(D − 800) / FAR_HAZE)`. */
-export const FAR_VIS = 0.62;
-export const FAR_HAZE = 3200;
+export const FAR_VIS = 0.7;
+export const FAR_HAZE = 4000;
 
 /**
  * Where the shell draws something whose true radial distance is `d`, m —
@@ -109,7 +109,7 @@ const STREET_PEAK = 0.24;
 const LAMP_COLOR = 0xffd9a8;
 const LAMP_PEAK = 0.45;
 const CROWN_COLOR = 0xffdcae;
-const CROWN_PEAK = 0.58;
+const CROWN_PEAK = 0.66;
 const BEACON_COLOR = 0xff2a18;
 const BEACON_PEAK = 0.58;
 const EMBER_COLOR = 0xff5a1c;
@@ -195,7 +195,7 @@ vec3 abFarShell(vec3 rel) {
 float abFarVis(float d) {
   float v = ${FAR_VIS.toFixed(3)} * exp(-(d - ${f(FOG_DISTANCE)}) / ${f(FAR_HAZE)});
   v *= 1.0 - smoothstep(0.72 * uFarOuter, uFarOuter - 100.0, d);
-  v *= (1.0 - clamp(abWeather.y, 0.0, 1.0)) / (1.0 + 1.5 * max(abWeather.x, 0.0));
+  v *= (1.0 - clamp(abWeather.y, 0.0, 1.0)) / (1.0 + 0.9 * max(abWeather.x, 0.0));
   return v * smoothstep(${f(0.9 * FOG_DISTANCE)}, ${f(FOG_DISTANCE)}, fogFar);
 }
 `;
@@ -378,6 +378,13 @@ void main() {
     float lit = mix(groupMean, group, cellK);
     vec3 wcol = mix(${lit(WINDOW_COLOR, WINDOW_PEAK)}, ${lit(EMBER_COLOR, WINDOW_PEAK)}, 0.6 * burn);
     em += wcol * lit * pane;
+    // The burning city: a share of towers ablaze from inside, floor by
+    // floor in its window cells (their mean where they are small).
+    if (vKind.y > 0.5) {
+      float fl = 0.75 + 0.25 * sin(uFarTime * 6.0 + seed * 50.0 + floor(pg.y) * 1.7);
+      float fire = mix(0.5, step(0.5, fract(g * 13.0)), cellK);
+      em += ${lit(EMBER_COLOR, EMBER_PEAK)} * fl * fire * smoothstep(0.0, 0.6, burn);
+    }
     // Floodlit crowns on the spires and the odd setback.
     if (part > 1.5 && part < 2.5 && ((style > 0.5 && style < 1.5) || (style > 1.5 && fract(seed * 3.1) < 0.3))) {
       float up = clamp(1.0 - (vKind.z - vFacade.y) / max(vKind.w, 1.0), 0.0, 1.0);
@@ -387,11 +394,6 @@ void main() {
   // Red beacons on the needle tips, a slow pulse.
   if (part > 2.5 && vFacade.y > vKind.z - 0.18 * vKind.w) {
     em += ${lit(BEACON_COLOR, BEACON_PEAK)} * (0.6 + 0.4 * sin(uFarTime * 2.1 + seed * 40.0));
-  }
-  // The burning city: a share of towers ablaze from inside.
-  if (vKind.y > 0.5 && !roof) {
-    float fl = 0.7 + 0.3 * sin(uFarTime * 7.0 + vFacade.y * 0.3 + seed * 50.0);
-    em += ${lit(EMBER_COLOR, EMBER_PEAK)} * fl * smoothstep(0.0, 0.6, burn);
   }
   // Never past the bloom threshold where a tower's lights stack (windows,
   // crown, embers): a luminance cap under 0.72 before the far fade.
@@ -590,7 +592,7 @@ export function farCellTower(
   if (H > 105 && bits(h2, 24) < 0.5) style = bits(h2, 4) < 0.35 ? 3 : 2;
   b[i * 4] = H;
   b[i * 4 + 1] = (h2 >>> 16) / 65535;
-  b[i * 4 + 2] = 0.14 + 0.26 * bits(h2, 16) * (0.5 + 0.5 * dens);
+  b[i * 4 + 2] = 0.18 + 0.32 * bits(h2, 16) * (0.5 + 0.5 * dens);
   b[i * 4 + 3] = alive ? style : -1;
 }
 
@@ -672,7 +674,7 @@ void main() {
   float speckK = 1.0 - smoothstep(4.0, 14.0, max(fw.x, fw.y));
   float speck = mix(0.5, sp, speckK) * (0.25 + 0.75 * dens);
   vec3 col = ${linear(ROOF)} * 0.55;
-  vec3 em = ${lit(WINDOW_COLOR, 0.12)} * speck;
+  vec3 em = ${lit(WINDOW_COLOR, 0.16)} * speck;
   // The street grid on the real 200 m lattice: sodium lines, brighter
   // crossings; quieter districts dimmer.
   float lx = abLines(w.x, ${f(BLOCK_PITCH)}, 4.0, fw.x);
@@ -710,7 +712,7 @@ void main() {
     vec2 bc = floor(w / ${f(BLOCK_PITCH)});
     float bh = float(abFarHash(uvec2(mod(bc, ${f(FAR_PERIOD / BLOCK_PITCH)})) + uvec2(71u, 19u)) & 0xffffu) / 65535.0;
     // Patchy: the fire is in some of each burning block's 40 m cells.
-    float fire = step(bh, 0.5 * burn) * step(0.55, mix(0.6, sp, speckK))
+    float fire = 0.7 * step(bh, 0.45 * burn) * step(0.55, mix(0.6, sp, speckK))
       * (0.6 + 0.4 * sin(uFarTime * 5.0 + bh * 80.0 + sp * 9.0));
     em += ${lit(EMBER_COLOR, EMBER_PEAK)} * fire;
   }

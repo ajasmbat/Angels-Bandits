@@ -123,6 +123,9 @@ export function gridViews(startMs) {
           plane: planeFor(eye, yaw),
           // DT1: planes posed for the view (__ab.planeShowcase).
           ...(v.showcase ? { showcase: v.showcase } : {}),
+          // L7: the view's staged destruction and burn (__ab.qaDestruction),
+          // so an inferno view is scored burning, never intact.
+          ...(v.stage ? { stage: v.stage } : {}),
         }),
       );
       continue;
@@ -138,6 +141,7 @@ export function gridViews(startMs) {
       view(v.name, eye, v.yaw, pitch, {
         sky: v.sky ?? "night",
         plane: planeFor(eye, v.yaw),
+        ...(v.stage ? { stage: v.stage } : {}),
       }),
     );
   }

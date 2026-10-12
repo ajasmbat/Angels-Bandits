@@ -19,6 +19,8 @@ import {
   DIR_NEG_X,
   DIR_POS_X,
   PANCAKE,
+  ROLE_COLUMN,
+  ROLE_SHEET,
   TOPPLE,
   blankPose,
   buildCollapse,
@@ -33,6 +35,9 @@ import {
 import {
   CITY_SEED,
   COLLAPSE_BAND_MIN,
+  COLLAPSE_COLUMN_RUBBLE,
+  COLLAPSE_COLUMN_SIDE,
+  STREET_WIDTH,
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
 import { canonicalize } from "@angels-bandits/common/world";
@@ -290,7 +295,15 @@ describe("D3 debris trajectories", () => {
         expect((c.ry[i] as number) + (c.ay[i] as number)).toBeLessThan(
           bld.height,
         );
-        expect(c.ay[i] as number).toBeLessThan(2);
+        // Low rubble — but D10's column stubs stand proud of the pile, up to
+        // half their height.
+        if (c.role[i] === ROLE_COLUMN) {
+          expect(c.ay[i] as number).toBeLessThanOrEqual(
+            (c.hy[i] as number) * COLLAPSE_COLUMN_RUBBLE + COLLAPSE_COLUMN_SIDE,
+          );
+        } else {
+          expect(c.ay[i] as number).toBeLessThan(2);
+        }
         const w = canonicalize({ x: c.x + p.x, y: p.y, z: c.z + p.z });
         expect(w.x).toBeGreaterThanOrEqual(0);
         expect(w.x).toBeLessThan(WORLD_SIZE);
@@ -312,8 +325,20 @@ describe("D3 debris trajectories", () => {
     expect(t.c.restBounds.x1).toBeGreaterThan(b.width / 2 + 10);
     const p = sampleCollapse("pancake");
     const pb = p.city[p.c.building] as Building;
-    expect(p.c.restBounds.x0).toBeGreaterThanOrEqual(-pb.width / 2 - 1e-6);
-    expect(p.c.restBounds.x1).toBeLessThanOrEqual(pb.width / 2 + 1e-6);
+    // The floors pancake inside the footprint; D10's facade sheets peel off
+    // into the street — never across it.
+    for (let i = 0; i < p.c.n; i++) {
+      const x0 = (p.c.rx[i] as number) - (p.c.ax[i] as number);
+      const x1 = (p.c.rx[i] as number) + (p.c.ax[i] as number);
+      const reach =
+        p.c.role[i] === ROLE_SHEET
+          ? STREET_WIDTH
+          : p.c.role[i] === ROLE_COLUMN
+            ? (p.c.ay[i] as number) // a leaning stub's top overhangs
+            : 0.05; // a slumped slab's tilt widens its box by a few cm
+      expect(x0).toBeGreaterThanOrEqual(-pb.width / 2 - reach);
+      expect(x1).toBeLessThanOrEqual(pb.width / 2 + reach);
+    }
   });
 
   it("falling debris is solid, and lethal only while it falls", () => {

@@ -36,9 +36,13 @@ import {
 import {
   type CollapseField,
   KIND_BUILDING,
+  PANCAKE,
   wireKind,
 } from "@angels-bandits/common/city/collapse";
-import { COLLAPSE_LEAD_MS } from "@angels-bandits/common/constants";
+import {
+  COLLAPSE_CREEP_MS,
+  COLLAPSE_LEAD_MS,
+} from "@angels-bandits/common/constants";
 import type * as THREE from "three";
 import { pushUpdateRange } from "./update-range";
 
@@ -71,8 +75,9 @@ export interface StandingSource {
 let source: StandingSource | null = null;
 let field: CollapseField | null = null;
 let clockMs: number | null = null;
-/** Each building's latest collapse start (record time + lead), ms, from the
- * field at `fieldVersion`. */
+/** Each building's latest collapse start (record time + lead, + D10's creep
+ * for a pancake — the tower stands through it), ms, from the field at
+ * `fieldVersion`. */
 const starts = new Map<number, number>();
 let fieldVersion = -1;
 
@@ -134,7 +139,8 @@ function heldBack(b: number): boolean {
     starts.clear();
     for (const w of field.records) {
       if (wireKind(w) !== KIND_BUILDING || !Number.isFinite(w.t)) continue;
-      const at = w.t + COLLAPSE_LEAD_MS;
+      const at =
+        w.t + COLLAPSE_LEAD_MS + (w.s === PANCAKE ? COLLAPSE_CREEP_MS : 0);
       if (at > (starts.get(w.b) ?? Number.NEGATIVE_INFINITY))
         starts.set(w.b, at);
     }

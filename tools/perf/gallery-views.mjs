@@ -395,19 +395,19 @@ export const VIEWS = [
     at: [1000, -10, 1100],
     weather: "clear",
   },
-  // L3 Stormlit (Manhattan): THE SPIRE (5,8) and HALCYON TOWER (8,6) from
-  // over midtown — the stepped spire, the arched crown, the floodlit
-  // setbacks over a prewar masonry city; the arched crown from ~250 m (where
-  // a thin lit line aliases first); and water towers on stilts across a
-  // block of masonry roofs. The plane is pinned behind the QA camera.
+  // L3 Stormlit (Manhattan): THE SPIRE (5,8) from ~400 m — the stepped
+  // massing, floodlit setbacks and mast over a prewar masonry city; HALCYON
+  // TOWER (8,6)'s arched crown from ~250 m (where a thin lit line aliases
+  // first); and water towers on stilts across a block of masonry roofs. The
+  // plane is pinned behind the QA camera.
   {
     name: "landmark-deco",
-    x: 870,
-    z: 760,
+    x: 990,
+    z: 1290,
     y: 200,
     yaw: 0,
-    eye: [900, 200, 800],
-    at: [1300, 175, 1370],
+    eye: [1000, 190, 1330],
+    at: [1100, 170, 1700],
   },
   {
     name: "landmark-close",

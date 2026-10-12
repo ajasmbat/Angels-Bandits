@@ -29,6 +29,7 @@ import { emissiveBoost } from "./emissive";
 import { HAZE_WEATHER } from "./fog";
 import { RENDER_ORDER } from "./render-order";
 import { DUSK, FOG_NEAR } from "./sky";
+import { STORM_FLASH_COLOR } from "./sky-clouds";
 import { nearestImage, nearestImageInto, uploadPrefix } from "./wrapPlacement";
 
 /** Speed of sound, m/s — thunder trails the flash by wrapDistance / this. */
@@ -284,13 +285,14 @@ const BOLT_LIFE_MS = 280;
 /** Core luminance sits just under the tracer rung: lightning is scenery. */
 const BOLT_CORE_LUMA = EMISSIVE_TRACER - 0.05;
 const BOLT_CORE_COLOR = 0xf4eeff;
-const BOLT_GLOW_COLOR = 0xb46cff; // violet-magenta halo
+const BOLT_GLOW_COLOR = 0x8ea8ff; // L1: cold blue-white halo (was violet)
 const BOLT_GLOW_OPACITY = 0.42;
 const BOLT_CORE_RADIUS = 0.8;
 const BOLT_GLOW_RADIUS = 4.6;
-/** Sky flash: violet ambient pulse + fog/dome stain, ≤ 150 ms by contract. */
+/** Sky flash: cold ambient pulse + fog/dome stain, ≤ 150 ms by contract. L1
+ * moved it from violet to the cold blue-white of a real storm flash. */
 const FLASH_MS = 140;
-const FLASH_COLOR = 0xa678ff;
+const FLASH_COLOR = STORM_FLASH_COLOR;
 /** Peak added ambient intensity. VO1's blue-hour fill (ambient 0.75 +
  * hemisphere 1.35) is ~7x the old night's, so the flash doubled to stay a
  * visible pulse: ~3x the base fill at peak, facades still far sub-bloom. */
@@ -300,10 +302,10 @@ const FLASH_TINT = 0.24;
 /** Simultaneously-alive bolts: schedule cadence is 8–15 s, life 280 ms, so
  * 3 slots only ever fill when kill bolts pile onto a scheduled strike. */
 const BOLT_SLOTS = 3;
-/** In-cloud fog band (camera above CLOUD_BASE): dense grey-violet soup. */
+/** In-cloud fog band (camera above CLOUD_BASE): dense storm-grey soup. */
 const IN_CLOUD_FOG_NEAR = 12;
 const IN_CLOUD_FOG_FAR = 190;
-const IN_CLOUD_FOG_COLOR = 0x3a3c52;
+const IN_CLOUD_FOG_COLOR = 0x2c3340;
 
 /** L4 weather → atmosphere. A downpour pulls the fog's near edge in (fog FAR
  * never moves: it is the torus occlusion guarantee), thickens the height haze
@@ -320,6 +322,27 @@ const DUST_FOG_FAR = 140;
 /** Concrete dust: the fog colour the brown-out pulls toward (sRGB). */
 const DUST_FOG_COLOR = 0x4a443e;
 const RAIN_DARKEN = 0.15;
+/** L1: how far a full downpour flattens the clear fog curve (fog.ts
+ * FOG_SHAPE, `abWeather.y`): the rain closes the mid-range in a little;
+ * the cloud deck and dust flatten it all the way. */
+const RAIN_FOG_FLATTEN = 0.4;
+
+/**
+ * L1: what atmosphere() did to the clear-sky colour, as ONE affine map —
+ * fog = fogBase · scale + add — folding the rain dim, the in-cloud soup,
+ * the flash stain and the D3 dust in their exact order. The dome puts its
+ * gradient through the same map, so at SKY_FOG_STOP (gradient == fogBase)
+ * the sky equals the fog at every moment. `gain` is the flash's extra
+ * brightening above the stop (the dome ramps it in from zero there).
+ */
+export interface SkyAir {
+  scale: number;
+  add: THREE.Color;
+  gain: number;
+  /** This frame's fog colour (scene.fog.color), for the band below the stop. */
+  fog: THREE.Color;
+  domeVisible: boolean;
+}
 
 /** The slice of the shared weather (common/src/weather.ts) the sky reads. */
 export interface SkyWeather {
@@ -361,7 +384,16 @@ export class StormRenderer {
   private readonly cloudFogColor = new THREE.Color(IN_CLOUD_FOG_COLOR);
   private readonly dustFogColor = new THREE.Color(DUST_FOG_COLOR);
   private readonly flashColor = new THREE.Color(FLASH_COLOR);
-  private readonly scratch = new THREE.Color();
+  private readonly air: SkyAir = {
+    scale: 1,
+    add: new THREE.Color(0, 0, 0),
+    gain: 1,
+    fog: new THREE.Color(DUSK.sky),
+    domeVisible: true,
+  };
+  /** Where the latest bolt came down (canonical), for the dome's in-cloud
+   * lightning (L1). */
+  private readonly flashAnchor: Vec3 = { x: 0, y: 0, z: 0 };
 
   constructor(private readonly buildings: readonly Building[]) {
     const coreBoost = emissiveBoost(
@@ -462,6 +494,8 @@ export class StormRenderer {
     slot.lifeMs = lifeMs;
     slot.group.visible = true;
     this.flashAt = nowMs;
+    this.flashAnchor.x = strike.x;
+    this.flashAnchor.z = strike.z;
   }
 
   /** Age bolts and re-place them at the image nearest the viewer. */
@@ -491,8 +525,25 @@ export class StormRenderer {
     this.fogBase.copy(color);
   }
 
+  /** One step of the air's colour chain: x → lerp(x, t, w), i.e.
+   * x·(1 − w) + t·w, folded into the affine scale/add. */
+  private lerpAir(t: THREE.Color, w: number): void {
+    const air = this.air;
+    air.scale *= 1 - w;
+    air.add.multiplyScalar(1 - w);
+    air.add.r += t.r * w;
+    air.add.g += t.g * w;
+    air.add.b += t.b * w;
+  }
+
+  /** L1: the latest bolt's ground point (canonical) — the dome lights the
+   * clouds above it during the flash. */
+  get lastStrike(): Readonly<Vec3> {
+    return this.flashAnchor;
+  }
+
   /** Current flash envelope 0..1 (soft 140 ms decay). */
-  private flashLevel(nowMs: number): number {
+  flashLevel(nowMs: number): number {
     const age = nowMs - this.flashAt;
     if (age < 0 || age >= FLASH_MS) return 0;
     return 1 - age / FLASH_MS;
@@ -502,8 +553,9 @@ export class StormRenderer {
    * The single writer of storm atmosphere, called once per frame: the sky
    * flash (violet ambient pulse + fog stain) and the in-cloud fog override
    * when the CAMERA climbs into the deck — dense grey-violet soup, restored
-   * smoothly below. Returns the SkyDome tint and whether the dome should
-   * render at all (inside cloud the fog IS the sky). Tracers and all other
+   * smoothly below. Returns the sky's air (SkyAir: the colour chain the
+   * dome repeats, the flash gain, this frame's fog colour) and whether the
+   * dome should render at all (inside cloud the fog IS the sky). Tracers and all other
    * emissives are unlit materials, so the ambient pulse cannot wash them
    * out, and the stained fog peaks far below the 0.72 bloom threshold.
    *
@@ -518,13 +570,30 @@ export class StormRenderer {
     nowMs: number,
     wx: SkyWeather = DRY_SKY,
     dust = 0,
-  ): { tint: THREE.Color; domeVisible: boolean } {
+  ): SkyAir {
     const f = this.flashLevel(nowMs) * wx.flash;
     // 0 below the deck → 1 fully inside; a 30 m ramp kills boundary flicker.
     const inK = Math.min(1, Math.max(0, (cameraY - CLOUD_BASE) / 30));
     this.flashLight.intensity = f * FLASH_PEAK * (1 + inK * 0.6);
     HAZE_WEATHER.x = RAIN_HAZE_EXTRA * wx.haze + DUST_HAZE_EXTRA * dust;
+    // L1: the clear curve flattens back to the plain smoothstep in the
+    // sight-blocking soups (fog.ts FOG_SHAPE).
+    HAZE_WEATHER.y = Math.min(
+      1,
+      Math.max(inK, dust, RAIN_FOG_FLATTEN * wx.haze),
+    );
     const dim = 1 - RAIN_DARKEN * wx.haze;
+    // The colour chain as an affine map x → x·scale + add (see SkyAir):
+    // each lerp(t, w) is x·(1 − w) + t·w.
+    const air = this.air;
+    air.scale = dim;
+    air.add.setRGB(0, 0, 0);
+    this.lerpAir(this.cloudFogColor, inK * 0.85);
+    this.lerpAir(this.flashColor, f * FLASH_TINT * (1 + inK));
+    this.lerpAir(this.dustFogColor, dust * 0.8);
+    const scale = air.scale;
+    air.gain = 1 + f * 1.6;
+    air.domeVisible = inK < 0.5;
     if (scene.fog instanceof THREE.Fog) {
       const near = FOG_NEAR + (RAIN_FOG_NEAR - FOG_NEAR) * wx.haze;
       const clearNear = near + (IN_CLOUD_FOG_NEAR - near) * inK;
@@ -538,22 +607,15 @@ export class StormRenderer {
         clearFar,
         clearFar + (DUST_FOG_FAR - clearFar) * dust,
       );
-      scene.fog.color
-        .copy(this.fogBase)
-        .multiplyScalar(dim)
-        .lerp(this.cloudFogColor, inK * 0.85)
-        .lerp(this.flashColor, f * FLASH_TINT * (1 + inK))
-        .lerp(this.dustFogColor, dust * 0.8);
+      scene.fog.color.copy(this.fogBase).multiplyScalar(scale).add(air.add);
       if (scene.background instanceof THREE.Color) {
         scene.background.copy(scene.fog.color);
       }
+      air.fog.copy(scene.fog.color);
+    } else {
+      air.fog.copy(this.fogBase).multiplyScalar(scale).add(air.add);
     }
-    // Dome stain: multiplicative tint pulled toward violet and brightened.
-    this.scratch
-      .setRGB(dim, dim, dim)
-      .lerp(this.flashColor, f * FLASH_TINT)
-      .multiplyScalar(1 + f * 1.6);
-    return { tint: this.scratch, domeVisible: inK < 0.5 };
+    return air;
   }
 }
 
@@ -567,12 +629,12 @@ const PUFF_SCALE_MIN = 160;
 const PUFF_SCALE_MAX = 340;
 /** Deck drift, m/s along +x (Neon Vein: visible slow march). */
 const PUFF_DRIFT_MPS = 1.4;
-/** Purple-stained puff tint over the dusk sky (Neon Vein deck dye). */
-const PUFF_COLOR = 0x4a3c6e;
+/** Storm-grey puff tint (L1: was a Neon Vein purple dye). */
+const PUFF_COLOR = 0x2a3242;
 const PUFF_OPACITY = 0.38;
 /** The ceiling sheet: the deck's darker-from-below altitude read. */
 const CEILING_Y = CLOUD_BASE - 3;
-const CEILING_COLOR = 0x0a0b16;
+const CEILING_COLOR = 0x07090f;
 const CEILING_OPACITY = 0.55;
 
 /** Soft multi-blob puff texture (procedural, no assets — the game's idiom). */

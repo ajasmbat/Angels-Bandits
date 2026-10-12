@@ -130,6 +130,7 @@ import {
   wrapCoord,
   wrapDelta,
   wrapDeltaAxis,
+  wrapDeltaInto,
   wrapDistance,
 } from "@angels-bandits/common/world";
 import {
@@ -759,11 +760,13 @@ const DEFAULT_FB_SAMPLES = renderer
 // (windows ~0.8+, lamp heads ~0.9, tracers ~1.5) — so ONLY emissives glow.
 // The blur chain runs from half the CSS resolution (O4: AbBloomPass — at
 // ratio 2 that is a quarter of the drawing buffer per axis, same halo).
-// Strength and radius are the LOOK (a wider, gentler halo reads as haze
-// around a light rather than a hard glow); the threshold is the CONTRACT the
-// emissive ladder is built against and does not move.
-const BLOOM_STRENGTH = 0.4;
-const BLOOM_RADIUS = 0.5;
+// Strength and radius are the LOOK; the threshold is the CONTRACT the
+// emissive ladder is built against and does not move. L1 "Stormlit" made it
+// stronger but tighter (radius 0.5 → 0.2: the small mips carry less of it):
+// a bright glow hugging each light, like the reference's halos, rather than
+// a wide haze that greys the dark sky. The sky cycle drives the strength.
+const BLOOM_STRENGTH = 0.55;
+const BLOOM_RADIUS = 0.2;
 const BLOOM_THRESHOLD = 0.72;
 // The composer owns its own render target so `msaa` can put samples on the
 // buffer the SCENE is actually drawn into. HalfFloat matches what
@@ -919,11 +922,14 @@ const facadeDetail = new FacadeDetailRenderer(city.cityBuildings, welcome.seed);
 scene.add(facadeDetail.group);
 const ground = new GroundPlane();
 scene.add(ground.mesh);
-const skyDome = new SkyDome();
+// L1: `?clouds=0` keeps the storm sky's clouds off (the perf A/B).
+const skyDome = new SkyDome(renderOpts.clouds);
+/** L1: the torus step from the eye to the latest strike (no per-frame allocation). */
+const skyFlashStep: Vec3 = { x: 0, y: 0, z: 0 };
 scene.add(skyDome.mesh);
 // L10 airliners ride the dome like the stars: camera-following, fog off,
 // never in world space. Pure schedule of (seed, synced clock).
-const airliners = new Airliners(welcome.seed);
+const airliners = new Airliners(welcome.seed, skyDome.clouds);
 skyDome.mesh.add(airliners.points);
 const streetlights = new Streetlights();
 scene.add(streetlights.group);
@@ -2952,6 +2958,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   fountains.setQuality(tier);
   birds.setQuality(tier);
   airliners.setQuality(tier);
+  skyDome.setQuality(tier); // L1: fine cloud octaves only
   facadeDetail.setQuality(tier);
   train.setQuality(tier); // T2: platform people, sparks, light range
   courseGhost.setQuality(tier); // S3: MOBILE keeps the rings, drops the ghost
@@ -5967,7 +5974,7 @@ const frame = (now: number): void => {
     renderMs ?? now,
     nearestImageInto(batPlane, chase.position, flight.pos),
   );
-  skyDome.update(chase.position);
+  skyDome.update(chase.position, dt, renderMs);
   airliners.update(renderMs);
   // Wounded smoke: own plane from server-said self HP, every remote (human
   // or bot) from snapshot HP — all clients see the same wounds. Death clouds
@@ -6232,7 +6239,12 @@ const frame = (now: number): void => {
       ? 0
       : dustHaze(socket.collapses.list, chase.position, renderMs),
   );
-  skyDome.tint(sky.tint);
+  skyDome.setAir(sky);
+  // L1: the latest strike lights the clouds from inside during its flash.
+  skyDome.setFlash(
+    storm.flashLevel(now) * wx.flash,
+    wrapDeltaInto(chase.position, storm.lastStrike, skyFlashStep),
+  );
   skyDome.mesh.visible = sky.domeVisible;
   explosions.update(chase.position, now, fxDt);
   shockRings.update(chase.position, now);

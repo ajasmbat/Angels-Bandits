@@ -37,7 +37,11 @@
 // flip. The look-at is always the plane. (The mouse aim through this camera
 // stays on its own side of the zenith: instructor.ts levelAim.)
 
-import type { Collapse } from "@angels-bandits/common/city/collapse";
+import {
+  type Collapse,
+  type FloorEvent,
+  collapseFloorEvents,
+} from "@angels-bandits/common/city/collapse";
 import { COLLAPSE_LEAD_MS } from "@angels-bandits/common/constants";
 import {
   type FlightState,
@@ -602,11 +606,21 @@ export const COLLAPSE_SHAKE_PEAK = 1.4;
 /** …fading to nothing this far from it, m. */
 export const COLLAPSE_SHAKE_RANGE = 600;
 
+/** D10: a floor event's jolt decays with this time constant, ms, and is
+ * over after JOLT_MS; between beats the ground keeps a rumble of
+ * SHAKE_RUMBLE of the peak. */
+export const JOLT_DECAY_MS = 350;
+const JOLT_MS = 1200;
+export const SHAKE_RUMBLE = 0.4;
+
 /**
  * D3: how hard the ground is shaking at `pos` at server time `serverMs`,
  * 0..1 — every collapse from its first movement until a second after its
  * last chunk lands, strongest for the big ones, falling off with distance
- * (torus-correct). Pure, so tests and main.ts agree.
+ * (torus-correct). D10: a rumble under the whole fall and a jolt at every
+ * floor event (collapse.ts collapseFloorEvents — a storey giving way, a
+ * section breaking up, the mass hitting the ground), each by its size.
+ * Pure, so tests and main.ts agree.
  */
 export function collapseShakeAmount(
   list: readonly Collapse[],
@@ -616,17 +630,28 @@ export function collapseShakeAmount(
   let amount = 0;
   for (let e = 0; e < list.length; e++) {
     const c = list[e] as Collapse;
-    const age = serverMs - c.t0 - COLLAPSE_LEAD_MS;
-    if (age < 0 || age > c.endMs - COLLAPSE_LEAD_MS + 1000) continue;
+    const age = serverMs - c.t0;
+    if (age < COLLAPSE_LEAD_MS || age > c.endMs + 1000) continue;
     const d = Math.hypot(
       wrapDeltaAxis(c.x, pos.x),
       pos.y * 0.5,
       wrapDeltaAxis(c.z, pos.z),
     );
     if (d >= COLLAPSE_SHAKE_RANGE) continue;
-    const size = Math.min(1, 0.35 + c.n / 120);
+    const size = Math.min(1, 0.35 + c.chunks.length / 120);
     const near = 1 - d / COLLAPSE_SHAKE_RANGE;
-    amount = Math.max(amount, size * near * near);
+    const events = collapseFloorEvents(c);
+    let jolt = 0;
+    for (let k = 0; k < events.length; k++) {
+      const ev = events[k] as FloorEvent;
+      const dt = age - ev.t;
+      if (dt < 0 || dt > JOLT_MS) continue;
+      jolt = Math.max(jolt, ev.size * Math.exp(-dt / JOLT_DECAY_MS));
+    }
+    amount = Math.max(
+      amount,
+      size * near * near * (SHAKE_RUMBLE + (1 - SHAKE_RUMBLE) * jolt),
+    );
   }
   return amount;
 }

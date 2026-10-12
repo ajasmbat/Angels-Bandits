@@ -85,14 +85,22 @@ gives frozen 0.091 on main and **0.021** on this branch.
 
 Main also fails all five on the grid's absolute O5 thresholds.
 
-`--ablate` shows where the difference comes from:
+`--ablate` (`moon`, `high-overview`) shows where the difference comes from:
 
 - **Not the new sky.** The dome's share is unchanged: moon 0.011 → 0.010,
   high-overview 0 → 0.
-- **The sweeping searchlight beams over the darker sky:** moon
-  0.036 → 0.058, high-overview 0.029 → 0.034.
+- **Not shimmer on static geometry.** With the dome, searchlights, traffic
+  and cloud deck all hidden, both builds score almost zero: moon
+  0.003 → 0.005, high-overview 0.000 → 0.001.
+- **The searchlight sweep reads more strongly.** Its share goes from 0.036
+  to 0.058 on moon and from 0.029 to 0.034 on high-overview. The beams are
+  real animation, and they now cross a darker steel sky through thinner
+  mid-distance fog, so each 16 ms step changes more luma.
+- **Not the grade or bloom either.** A variant of this branch with main's
+  grade and bloom scores the same as this branch (high-overview 0.100,
+  moon 0.127).
 
-This is animation that already existed. The stronger, tighter bloom and the
-deeper S-curve, which the ticket asks for, raise its frame-to-frame contrast.
-It is not new shimmer. See the PR for the variant run that isolates the
-grade and bloom.
+So the grid's frozen score rises because a moving light got more visible,
+not because anything new shimmers. If the overnight gate wants the old
+number back, the lever is the beam brightness in `searchlights.ts`, which
+belongs to L6.

@@ -487,6 +487,7 @@ import {
   StreetFurniture,
   buildStreetDetailContext,
 } from "./render/street-furniture";
+import { FarTraffic } from "./render/street-glow";
 import { microGate } from "./render/streetlife";
 import { Streetlights } from "./render/streetlights";
 import { Tracers } from "./render/tracers";
@@ -935,6 +936,9 @@ const airliners = new Airliners(welcome.seed, skyDome.clouds);
 skyDome.mesh.add(airliners.points);
 const streetlights = new Streetlights();
 scene.add(streetlights.group);
+// Stormlit L8: the far-field street glow (the lamp pools hand over to it
+// with distance) — one additive draw for the whole grid.
+scene.add(streetlights.glow.mesh);
 // L12 sky cycle: dusk → deep night → pre-dawn on the synced server clock
 // (~40 min loop). Writes lights, dome, haze, exposure, bloom strength, grade,
 // window occupancy and lamp pools each frame; `?sky=` pins a phase (QA).
@@ -962,6 +966,11 @@ scene.add(traffic.mesh);
 // the cars Traffic placed this frame. Two additive draws for the whole city.
 const headlights = new Headlights(traffic.capacity);
 scene.add(headlights.cones, headlights.pools);
+// Stormlit L8: phantom car lights in the far field — rivers of white
+// headlights and red taillights on every avenue past ~250 m. One points draw,
+// a pure function of the synced clock like Traffic.
+const farTraffic = new FarTraffic(welcome.seed);
+scene.add(farTraffic.points);
 // L2 movers: cranes, helicopters, the blimp. Poses are the SAME pure function
 // of (seed, server clock) the crash check uses, so what you see is what you
 // can hit — and nothing about them is ever streamed.
@@ -2966,6 +2975,8 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   constructionSparks.setQuality(tier);
   rain.setQuality(tier);
   headlights.setQuality(tier);
+  streetlights.setQuality(tier); // L8: the far strip's spill
+  farTraffic.setQuality(tier); // L8: phantom fleet share
   signage.setQuality(tier);
   jumbotrons.setQuality(tier); // S1: Mobile shows the static LAST KILL card
   rooftopLife.setQuality(tier);
@@ -3611,6 +3622,18 @@ declare global {
       tunnels: () => { length: number }[];
       /** O7: the NaN/Inf probe's last frame (null without `?nanprobe`). */
       nanProbe: () => NanProbeReading | null;
+      /** Stormlit L8 QA: what `names` add to the linear HDR scene BEFORE
+       * bloom — the same frozen frame rendered without and with them —
+       * over the pixels they brighten by > 0.004: count, peak / p99 luma,
+       * the largest added luma, and how many they push over the bloom
+       * threshold. Null if no name matched. */
+      hdrLuma: (names: string[]) => {
+        pixels: number;
+        peak: number;
+        p99: number;
+        added: number;
+        crossed: number;
+      } | null;
       /** O7: queue the probe's positive control; the NaN pixels it must
        * count (null without a probe). */
       nanInject: () => number | null;
@@ -3925,6 +3948,8 @@ function qaSystems(): {
     ["traffic", [traffic.mesh]],
     ["headlightCones", [headlights.cones]],
     ["headlightPools", [headlights.pools]],
+    ["streetGlow", [streetlights.glow.mesh]], // Stormlit L8
+    ["farTraffic", [farTraffic.points]], // Stormlit L8
     ["movers", [movers.rig, movers.hulls, movers.rotors]],
     ["moverLights", [moverLights.points]],
     ["train", [train.mesh]],
@@ -4663,6 +4688,54 @@ window.__ab = {
   // O7: the NaN/Inf probe (null without `?nanprobe`), its positive control,
   // and the per-frame hook the black-box detector reads frames through.
   nanProbe: () => nanProbe?.read(renderer) ?? null,
+  hdrLuma: (names) => {
+    // Two synchronous renders of ONE frozen scene state — no sim step runs
+    // between them — with `names` hidden, then shown. The scene pass draws
+    // the linear HDR scene into the composer's readBuffer as it stands when
+    // render() starts (the final pass then swaps the pair), so that target
+    // is taken BEFORE each render and read after it.
+    const render = (): Float32Array => {
+      const target = composer.readBuffer;
+      composer.render();
+      const { width, height } = target;
+      const raw = new Uint16Array(width * height * 4);
+      renderer.readRenderTargetPixels(target, 0, 0, width, height, raw);
+      const luma = new Float32Array(width * height);
+      const h = THREE.DataUtils.fromHalfFloat;
+      for (let i = 0; i < luma.length; i++) {
+        luma[i] =
+          0.2126 * h(raw[i * 4] ?? 0) +
+          0.7152 * h(raw[i * 4 + 1] ?? 0) +
+          0.0722 * h(raw[i * 4 + 2] ?? 0);
+      }
+      return luma;
+    };
+    const ab = window.__ab;
+    if (!ab || ab.qaHide(names).length === 0) return null;
+    const base = render();
+    ab.qaHide([]);
+    const luma = render();
+    const lit: number[] = [];
+    let added = 0;
+    let crossed = 0;
+    for (let i = 0; i < luma.length; i++) {
+      const now = luma[i] as number;
+      const was = base[i] as number;
+      if (now - was <= 0.004) continue;
+      lit.push(now);
+      added = Math.max(added, now - was);
+      // Pushed over the bloom threshold by these systems (was under it).
+      if (now > BLOOM_THRESHOLD && was <= BLOOM_THRESHOLD) crossed++;
+    }
+    lit.sort((x, y) => x - y);
+    return {
+      pixels: lit.length,
+      peak: lit[lit.length - 1] ?? 0,
+      p99: lit[Math.floor(lit.length * 0.99)] ?? 0,
+      added,
+      crossed,
+    };
+  },
   nanInject: () => nanProbe?.inject(renderer.getPixelRatio()) ?? null,
   qaAfterRender: (fn) => {
     qaAfterRender = fn;
@@ -5903,6 +5976,7 @@ const frame = (now: number): void => {
   cityLife.updateTaxis(renderMs);
   traffic.update(chase.position, renderMs, cityReact, cityLife.taxiPoses);
   headlights.update(chase.position, traffic); // L6: after traffic.update
+  farTraffic.update(renderMs); // L8: same latched clock as the fleet
   // Every L2 system takes the SAME latched clock the crash check used.
   movers.update(chase.position, renderMs, moverLights);
   // L5/T2, same latched clock; any plane passing close draws a horn.

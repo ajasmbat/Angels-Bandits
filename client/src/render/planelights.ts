@@ -129,12 +129,12 @@ export function lightMountsFor(planeId: string): LightMounts {
  * (searchlights.ts) — overlapping discs read from behind AND from the side.
  * Each sprite is sub-bloom; the chain's overlap stays under ~0.4. */
 const LANDING_CHAIN: readonly { d: number; size: number; lum: number }[] = [
-  { d: 5, size: 3.2, lum: 0.17 },
-  { d: 12, size: 6.5, lum: 0.13 },
-  { d: 23, size: 11, lum: 0.095 },
-  { d: 38, size: 16, lum: 0.065 },
-  { d: 58, size: 23, lum: 0.042 },
-];
+  { d: 8, size: 3, lum: 0.12 },
+  { d: 16, size: 6, lum: 0.1 },
+  { d: 27, size: 10, lum: 0.075 },
+  { d: 42, size: 15, lum: 0.055 },
+  { d: 62, size: 22, lum: 0.038 },
+]
 /** Steady lights, the two wingtip halos, the exhaust and its halo; L6's
  * landing lamp, its halo and the chain on biplanes only. */
 const LIGHTS_PER_PLANE = 8;
@@ -159,8 +159,8 @@ const HALO_LUM = 0.16;
 /** L6: the landing lamp — the lamp rung, under the nav lights' — and its
  * halo. */
 const LANDING_SIZE = 1.5;
-const LANDING_HALO_SIZE = 7;
-const LANDING_HALO_LUM = 0.2;
+const LANDING_HALO_SIZE = 4.5;
+const LANDING_HALO_LUM = 0.15;
 /** Exhaust flicker rate, Hz-ish components (deliberately incommensurate). */
 const FLICKER_A = 13;
 const FLICKER_B = 7.3;

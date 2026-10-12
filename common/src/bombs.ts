@@ -20,9 +20,10 @@
 // Not re-exported from common/src/index.ts; import "@angels-bandits/common/bombs".
 
 import type { Building } from "./city/index";
+import { BRIDGE_HALF_WIDTH, RIVER_WATER_Y, overChannel } from "./city/river";
 import { standingTopAt } from "./city/standing";
 import { type CityIndex, forEachBuildingNear } from "./collision";
-import { WORLD_SIZE } from "./constants";
+import { BLOCK_PITCH, WORLD_SIZE } from "./constants";
 import {
   BOMB_FALL_MS,
   type MissileStrike,
@@ -30,7 +31,7 @@ import {
   encodeMissile,
   missilePathClear,
 } from "./strike";
-import { type Vec3, wrapCoord } from "./world/index";
+import { type Vec3, wrapCoord, wrapDeltaAxis } from "./world/index";
 
 // --- Racks ----------------------------------------------------------------------
 
@@ -81,7 +82,8 @@ const qc = (v: number): number => {
 };
 
 /** The height of whatever stands at (x, z) in `index`'s city as it stands
- * now — a roof, a broken tower's stump — or 0 (the street). */
+ * now — a roof, a broken tower's stump — or 0 (the street, a bridge deck),
+ * or the water over the L11 river's open channel. */
 export function bombSurfaceY(index: CityIndex, x: number, z: number): number {
   const buildings = index.buildings;
   let top = 0;
@@ -90,7 +92,12 @@ export function bombSurfaceY(index: CityIndex, x: number, z: number): number {
     const t = standingTopAt(buildings[i] as Building, -o.x, -o.z);
     if (t > top) top = t;
   });
-  return top;
+  if (top > 0 || !overChannel(z)) return top;
+  // A3: off every bridge deck (one per north–south street line, its top on
+  // the street plane) the channel is open down to the water — a bomb there
+  // used to burst in mid-air at street height.
+  const off = wrapDeltaAxis(Math.round(x / BLOCK_PITCH) * BLOCK_PITCH, x);
+  return Math.abs(off) <= BRIDGE_HALF_WIDTH ? 0 : RIVER_WATER_Y;
 }
 
 /** Where a bomb released at `from` flying `vel` (m/s) lands, on the wire

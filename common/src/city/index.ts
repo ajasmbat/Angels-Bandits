@@ -26,6 +26,7 @@ import {
 } from "../constants";
 import type { BuildingDamage } from "./destruction";
 import { type Hole, assignHoles, clearHoleAir, landmarkArch } from "./holes";
+import { landmarkProfile } from "./landmarks";
 import { CONSTRUCTION_BLOCKS, LANDMARK_BLOCKS, PLAZA_BLOCKS } from "./layout";
 import { isRiverRow } from "./river";
 import { mulberry32 } from "./rng";
@@ -35,6 +36,14 @@ import { LOT_LINE } from "./street";
 // Re-exported so the hand-placed lists keep their long-standing import site
 // (client signage, common/storm) while living in their own module.
 export { CONSTRUCTION_BLOCKS, LANDMARK_BLOCKS, PLAZA_BLOCKS };
+// L3: the landmark silhouettes and the style lookup the client dresses by.
+export {
+  type LandmarkProfile,
+  type LandmarkStyle,
+  LANDMARK_PROFILES,
+  landmarkProfile,
+  landmarkStyleAt,
+} from "./landmarks";
 export { mulberry32 };
 // D2 breakable buildings: the chunk model and the damage state.
 export {
@@ -169,18 +178,6 @@ export function makeBuilding(b: Building): Building {
 export const CITY_GRID = WORLD_SIZE / BLOCK_PITCH;
 
 const blockKey = (bx: number, bz: number) => bx * CITY_GRID + bz;
-
-/**
- * Landmarks' fixed slim-shaft-and-crown profile: podium at the full
- * LANDMARK_FOOTPRINT, a long shaft, a small crown; heights sum to
- * LANDMARK_HEIGHT. Hand-placed like the landmark blocks themselves —
- * orientation reads must survive reseeds.
- */
-const LANDMARK_TIERS: readonly Tier[] = [
-  { width: LANDMARK_FOOTPRINT, depth: LANDMARK_FOOTPRINT, height: 60 },
-  { width: 62, depth: 62, height: 150 },
-  { width: 34, depth: 34, height: 40 },
-];
 
 /** How many tiers a building of `height` gets from its 0..1 tier roll. */
 function tierCount(height: number, rTier: number): number {
@@ -368,13 +365,15 @@ const ROW_SALT = 0x2c9277b5;
  * Generate the full city for a seed. Every block of the CITY_GRID×CITY_GRID
  * Manhattan grid is subdivided into irregular lots that build out to the lot
  * line, except fixed plaza blocks (left empty for C2), fixed landmark
- * blocks (one slim supertall each, arched through its podium) and the L11
- * river row (city/river.ts — no buildings at all). Some lots then
+ * blocks (one Art Deco or glass supertall each, LANDMARK_PROFILES, arched
+ * through its podium) and the L11 river row (city/river.ts — no buildings
+ * at all). Some lots then
  * get an H1 tunnel or sky hole. Deterministic for a given seed.
  */
 export function generateCity(seed: number): Building[] {
-  const landmarks = new Set(
-    LANDMARK_BLOCKS.map(([bx, bz]) => blockKey(bx, bz)),
+  // Landmark block → its LANDMARK_PROFILES slot.
+  const landmarks = new Map(
+    LANDMARK_BLOCKS.map(([bx, bz], i) => [blockKey(bx, bz), i]),
   );
   const plazas = new Set(PLAZA_BLOCKS.map(([bx, bz]) => blockKey(bx, bz)));
   // Construction sites are empty ground like plazas: their tower cranes live
@@ -392,14 +391,16 @@ export function generateCity(seed: number): Building[] {
       // Skipping costs no other block anything: each block draws from its
       // own PRNG stream (blockSeed), so the rest of the city is unchanged.
       if (isRiverRow(bz)) continue;
-      if (landmarks.has(key)) {
+      const slot = landmarks.get(key);
+      if (slot !== undefined) {
+        const profile = landmarkProfile(slot);
         buildings.push({
           x: bx * BLOCK_PITCH + BLOCK_PITCH / 2,
           z: bz * BLOCK_PITCH + BLOCK_PITCH / 2,
           width: LANDMARK_FOOTPRINT,
           depth: LANDMARK_FOOTPRINT,
           height: LANDMARK_HEIGHT,
-          tiers: LANDMARK_TIERS.map((t) => ({ ...t })),
+          tiers: profile.tiers.map((t) => ({ ...t })),
           holes: [landmarkArch(bx, bz)],
         });
         continue;

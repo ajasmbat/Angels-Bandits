@@ -34,10 +34,12 @@ import {
 } from "./living-windows";
 import {
   GARDEN_LIGHT_COLOR,
+  LandmarkRole,
   PAD_LIGHT_COLOR,
   PARAPET_INSET,
   ROOF_ALBEDO,
   RoofKind,
+  UPLIGHT_FLAG,
 } from "./roofs";
 
 /** Per-archetype facade look: window grid, occupancy and light colour. */
@@ -77,6 +79,11 @@ export interface FacadeParams {
   /** Share of floors on a late shift, and their lit share. */
   brightFloor: number;
   brightFloorLit: number;
+  /** L3: share of buildings standing (nearly) empty tonight, and what
+   * their every floor's lit share is scaled by — the odd dark block in a
+   * busy skyline. */
+  vacantBuilding: number;
+  vacantScale: number;
   /** Colour-temperature swing added per building / per floor (±half each). */
   buildingTempSwing: number;
   floorTempSwing: number;
@@ -106,31 +113,34 @@ export interface FacadeParams {
  * fewer floors have gone home (42% → 30%), baseline occupancy is up ~6
  * points per archetype, and the street AO is lighter — at night the street
  * is a light source, not a shadow (the canyon bounce in buildings-material
- * now lifts the lower facades instead). */
+ * now lifts the lower facades instead). L3 Stormlit (Manhattan) moves it
+ * from sparse to the reference's busy prewar night: half the windows lit
+ * (40–70 % per building), fewer floors gone home (30 % → 18 %), a few
+ * more late shifts, warm-dominant glass and offices, and more curtains. */
 export const FACADE: FacadeParams = {
   glass: {
     pitch: [3.2, 3.1],
     pane: [0.87, 0.76],
-    lit: 0.36,
-    cool: 0.62,
-    blinds: 0.22,
+    lit: 0.5,
+    cool: 0.32,
+    blinds: 0.28,
     roomDepth: 3.4,
     grimeScale: 1.0,
   },
   masonry: {
     pitch: [3.5, 3.5],
     pane: [0.45, 0.42],
-    lit: 0.28,
-    cool: 0.06,
-    blinds: 0.44,
+    lit: 0.55,
+    cool: 0.05,
+    blinds: 0.5,
     roomDepth: 2.2,
     grimeScale: 1.6,
   },
   office: {
     pitch: [5.2, 4.1],
     pane: [0.9, 0.5],
-    lit: 0.32,
-    cool: 0.38,
+    lit: 0.49,
+    cool: 0.22,
     blinds: 0.3,
     roomDepth: 3.0,
     grimeScale: 1.25,
@@ -140,10 +150,12 @@ export const FACADE: FacadeParams = {
   zoneH: 3,
   zoneLo: 0.4,
   zoneHi: 1.5,
-  darkFloor: 0.3,
+  darkFloor: 0.18,
   darkFloorLit: 0.03,
-  brightFloor: 0.1,
+  brightFloor: 0.12,
   brightFloorLit: 0.95,
+  vacantBuilding: 0.07,
+  vacantScale: 0.2,
   buildingTempSwing: 0.4,
   floorTempSwing: 0.4,
   tempJitter: 0.18,
@@ -272,16 +284,19 @@ export function litProbability(
   cellY: number,
 ): number {
   const s = seed * 61;
+  // L3: a vacant building scales every floor state down together.
+  const vacant =
+    abHash(13, 5, s) < FACADE.vacantBuilding ? FACADE.vacantScale : 1;
   const floorH = abHash(3, cellY, s);
-  if (floorH < FACADE.darkFloor) return FACADE.darkFloorLit;
-  if (floorH > 1 - FACADE.brightFloor) return FACADE.brightFloorLit;
+  if (floorH < FACADE.darkFloor) return FACADE.darkFloorLit * vacant;
+  if (floorH > 1 - FACADE.brightFloor) return FACADE.brightFloorLit * vacant;
   const zoneH = abHash(
     Math.floor(cellX / FACADE.zoneW) + 17,
     Math.floor(cellY / FACADE.zoneH) + 41,
     s,
   );
   const p = facadeFor(arch).lit * (FACADE.zoneLo + FACADE.zoneHi * zoneH);
-  return Math.min(Math.max(p, 0), 0.97);
+  return Math.min(Math.max(p, 0), 0.97) * vacant;
 }
 
 /** Is this window cell lit? (mirror of the shader's `lit` term.) */
@@ -458,6 +473,9 @@ float winH = abHash(winCell, vBSeed * 61.0);
 float pLit = clamp(winLit * (${glslFloat(FACADE.zoneLo)} + ${glslFloat(FACADE.zoneHi)} * zoneH), 0.0, 0.97);
 if (floorH < ${glslFloat(FACADE.darkFloor)}) pLit = ${glslFloat(FACADE.darkFloorLit)};
 else if (floorH > ${glslFloat(1 - FACADE.brightFloor)}) pLit = ${glslFloat(FACADE.brightFloorLit)};
+// L3: the odd vacant building — every floor state scaled down together.
+float vacantK = mix(1.0, ${glslFloat(FACADE.vacantScale)}, step(abHash(vec2(13.0, 5.0), vBSeed * 61.0), ${glslFloat(FACADE.vacantBuilding)}));
+pLit *= vacantK;
 float lit = step(winH, pLit) * facade;
 ${livingLitGlsl()}// L12 sky cycle: tonight's occupancy, own hash per window, soft switch.
 float occH = abHash(winCell + 59.0, vBSeed * 61.0);
@@ -470,6 +488,7 @@ lit *= smoothstep(occH, occH + ${glslFloat(OCCUPANCY_FADE)}, uOccupancy * ${glsl
 // uniform), so the distant glow — and the bloom it feeds — keeps its energy.
 float litMean = ${glslFloat(FACADE.darkFloor * FACADE.darkFloorLit + FACADE.brightFloor * FACADE.brightFloorLit)}
   + ${glslFloat(1 - FACADE.darkFloor - FACADE.brightFloor)} * min(winLit * ${glslFloat(FACADE.zoneLo + 0.5 * FACADE.zoneHi)}, 0.97);
+litMean *= vacantK;
 float floorDetail = min(abCellDetail(winPitch.y, wAA.y), abCellDetail(winPitch.x * ${glslFloat(FACADE.zoneW)}, wAA.x));
 float pLitAA = mix(litMean, pLit, floorDetail);
 lit = mix(pLitAA * clamp(uOccupancy, 0.0, 1.0) * facade, lit, winDetail) * winRow;
@@ -623,8 +642,37 @@ float soot = clamp(
 );
 // Facades only — roofs are repainted from scratch by roofSurfaceGlsl().
 diffuseColor.rgb *= mix(1.0, faceJit * ao * soot, facade);
+// L3 prewar masonry: a stone cornice along every tier's roof edge over a
+// dark shadow line (the overhang's shade), and a stone belt course over the
+// shop floor. Filtered lines (a distant cornice fades to its area share,
+// never a crawling 1 px stripe); the stone REPLACES the brick convexly, at
+// an albedo under the brightest finish, so no face gets brighter than the
+// palette bound.
+float masonK = step(0.5, vArch) * (1.0 - step(1.5, vArch)) * facade;
+float cornD = vBHeight - vMeters.y;
+float cornice = abLine(abs(cornD - ${glslFloat(CORNICE.band * 0.5)}), ${glslFloat(CORNICE.band * 0.5)}, wAA.y);
+float cornShade = abLine(abs(cornD - ${glslFloat(CORNICE.band + CORNICE.shade * 0.5)}), ${glslFloat(CORNICE.shade * 0.5)}, wAA.y);
+float belt = abLine(abs(vWorldY - ${glslFloat(CORNICE.beltY)}), ${glslFloat(CORNICE.beltHalf)}, wAA.y);
+diffuseColor.rgb *= 1.0 - masonK * ${glslFloat(CORNICE.shadeDark)} * cornShade;
+diffuseColor.rgb = mix(diffuseColor.rgb, ${glslVec3(CORNICE.stone)} * faceJit * soot,
+  masonK * max(cornice, belt) * ${glslFloat(CORNICE.stoneMix)});
 `;
 }
+
+/** L3 prewar masonry trim, meters and linear albedo. */
+export const CORNICE = {
+  /** The stone band along the roof edge, and the shadow line under it. */
+  band: 0.55,
+  shade: 0.3,
+  shadeDark: 0.45,
+  /** The belt course over the shop floor (world height), half-height. */
+  beltY: 4.3,
+  beltHalf: 0.28,
+  /** Pale limestone — under every finish's peak, so the palette bound
+   * (client/test/facade-palette.test.ts) covers the trim too. */
+  stone: new THREE.Color(0.24, 0.22, 0.19),
+  stoneMix: 0.85,
+} as const;
 
 // --- VO3 roofs & crowns --------------------------------------------------
 // Roof paint and architectural light, generated from roofs.ts (which decides
@@ -782,6 +830,56 @@ float led = ledOn * clamp(max(ledCorner, ledStrip) * facade + ledRing * roofUp, 
 // The strip IS the light: no diffuse under it, so lit facade + LED never stack.
 diffuseColor.rgb *= 1.0 - led;
 
+// --- L3 landmark tiers (roofs.ts LandmarkRole in vRoof.w, + UPLIGHT_FLAG) ---
+// A landmark's crown tiers carry architectural light at the LED rung: the
+// stacked arches of the arched crown, lit seams up a spire, light fins round
+// the glass crown. Same convex contract as the LED outline above: the mask
+// zeroes the diffuse here and REPLACES the emission (roofLightGlsl), so a
+// lit line never stacks on a window, a crown wash or the facade. Lines are
+// abLine-filtered (energy-conserving below a pixel: a distant crown keeps a
+// steady glow instead of crawling). A spire has no office windows.
+float lmCode = floor(vRoof.w + 0.5);
+float upOn = step(${glslFloat(UPLIGHT_FLAG - 0.5)}, lmCode);
+float lmRole = lmCode - ${glslFloat(UPLIGHT_FLAG)} * upOn;
+float lmMask = 0.0;
+float lmAA = max(rPix, max(mAA.y, 1e-4));
+if (lmRole > 0.5 && facade > 0.5) {
+  float lmU = winGrid.x;
+  float lmV = vMeters.y;
+  if (lmRole < ${glslFloat(LandmarkRole.DECO_CROWN + 0.5)}) {
+    // A floodlit Art Deco setback: lit piers up the face, brightening
+    // towards the tier top, over the crown wash.
+    float lmPier = abLine(abPeriodic(lmU, 0.0, ${glslFloat(LANDMARK_LIGHT.pierPitch)}), ${glslFloat(LANDMARK_LIGHT.pierHalf)}, lmAA);
+    lmMask = ${glslFloat(LANDMARK_LIGHT.pierGain)} * lmPier * smoothstep(0.1 * vBHeight, vBHeight, lmV);
+  } else if (lmRole > ${glslFloat(LandmarkRole.ARCH_CROWN - 0.5)} && lmRole < ${glslFloat(LandmarkRole.ARCH_CROWN + 0.5)}) {
+    // Three rows of nested arches, each row a step narrower — the crown
+    // reads as setbacks of radiating arches.
+    float rowH = vBHeight / 3.0;
+    for (int k = 0; k < 3; k++) {
+      float v0 = float(k) * rowH;
+      float rx = ledRunHalf * (${glslFloat(LANDMARK_LIGHT.archWidth)} - ${glslFloat(LANDMARK_LIGHT.archStep)} * float(k));
+      float ry = rowH * 0.92;
+      float m = min(rx, ry);
+      float r = length(vec2(lmU / rx, (lmV - v0) / ry));
+      float above = step(v0, lmV);
+      lmMask = max(lmMask, above * max(
+        abLine(abs(r - 1.0) * m, ${glslFloat(LANDMARK_LIGHT.archHalf)}, lmAA),
+        abLine(abs(r - ${glslFloat(LANDMARK_LIGHT.archInner)}) * m, ${glslFloat(LANDMARK_LIGHT.archInnerHalf)}, lmAA)));
+    }
+  } else if (lmRole > ${glslFloat(LandmarkRole.SPIRE - 0.5)} && lmRole < ${glslFloat(LandmarkRole.SPIRE + 0.5)}) {
+    float lmSeam = max(
+      abLine(max(ledRunHalf - abs(lmU), 0.0), ${glslFloat(LANDMARK_LIGHT.seamHalf)}, lmAA),
+      abLine(abs(lmU), ${glslFloat(LANDMARK_LIGHT.seamHalf * 0.7)}, lmAA));
+    float lmRing = abLine(abPeriodic(lmV, ${glslFloat(LANDMARK_LIGHT.ringPitch * 0.5)}, ${glslFloat(LANDMARK_LIGHT.ringPitch)}), ${glslFloat(LANDMARK_LIGHT.ringHalf)}, lmAA);
+    lmMask = max(lmSeam, ${glslFloat(LANDMARK_LIGHT.ringGain)} * lmRing);
+    pane = 0.0;
+  } else if (lmRole > ${glslFloat(LandmarkRole.GLASS_CROWN - 0.5)}) {
+    lmMask = ${glslFloat(LANDMARK_LIGHT.finGain)} * abLine(abPeriodic(lmV, ${glslFloat(LANDMARK_LIGHT.finPitch * 0.5)}, ${glslFloat(LANDMARK_LIGHT.finPitch)}), ${glslFloat(LANDMARK_LIGHT.finHalf)}, lmAA);
+  }
+  lmMask = clamp(lmMask, 0.0, 1.0) * ledOn;
+}
+diffuseColor.rgb *= 1.0 - lmMask;
+
 // --- VO3 crown floodlight wash (top tier of the tallest towers) ---
 // Fixtures on the ledge below the crown throw scalloped cones up the top
 // floors: bright just above the fixture line, fading with height, a scallop
@@ -811,9 +909,36 @@ export function roofLightGlsl(): string {
 totalEmissiveRadiance += diffuseColor.rgb * vCrown * crownK;
 totalEmissiveRadiance += roofUp * (padLight * ${glslVec3(PAD_LIGHT_COLOR)}
   + bollard * ${glslVec3(GARDEN_LIGHT_COLOR)});
-totalEmissiveRadiance = mix(totalEmissiveRadiance, vLed, led);
+totalEmissiveRadiance = mix(totalEmissiveRadiance, vLed, max(led, lmMask));
 `;
 }
+
+/** L3 landmark light lines, meters (window-pattern roofSurfaceGlsl). */
+export const LANDMARK_LIGHT = {
+  /** Deco crown: lit piers along each face, their half-width, and their
+   * peak share of the LED colour (at the tier top). */
+  pierPitch: 3.4,
+  pierHalf: 0.22,
+  pierGain: 0.85,
+  /** Arched crown: the outer arch's half-width as a share of the face run,
+   * how much each row above narrows it, the inner arch's radius share, and
+   * the two lines' half-widths. */
+  archWidth: 0.92,
+  archStep: 0.2,
+  archInner: 0.7,
+  archHalf: 0.3,
+  archInnerHalf: 0.2,
+  /** Spire: seam half-width (corners; the centre seam is 0.7 of it), and a
+   * ring of light every ringPitch at ringGain. */
+  seamHalf: 0.3,
+  ringPitch: 4,
+  ringHalf: 0.12,
+  ringGain: 0.6,
+  /** Glass crown: horizontal fins. */
+  finPitch: 2.6,
+  finHalf: 0.14,
+  finGain: 0.8,
+} as const;
 
 // --- H1 fly-through holes -------------------------------------------------
 // A holed tier is drawn as walls + lintel + sill (city.ts), all painted in the

@@ -14,7 +14,9 @@ import { describe, expect, it } from "vitest";
 import { FacadeArchetype, archetypeFor } from "../src/render/archetypes";
 import {
   BUILDING_SHADER_SOURCE,
+  WINDOW_COOL,
   WINDOW_EMISSIVE_INTENSITY,
+  WINDOW_WARM,
   createBuildingsMaterial,
 } from "../src/render/buildings-material";
 import { luminance } from "../src/render/emissive";
@@ -118,11 +120,11 @@ describe("clustered occupancy", () => {
         }
       }
       const fraction = lit / total;
-      // Concept 1 is a sparse city: roughly one window in four once the
-      // vacant floors are counted, never the old uniform wall of light and
-      // never a fully black city.
-      expect(fraction).toBeGreaterThan(0.12);
-      expect(fraction).toBeLessThan(0.45);
+      // L3 Stormlit: the reference's busy prewar night — 40–70 % of the
+      // windows lit once the vacant floors are counted, never the old
+      // uniform wall of light and never a sparse, mostly black city.
+      expect(fraction).toBeGreaterThan(0.4);
+      expect(fraction).toBeLessThan(0.7);
     }
   });
 
@@ -272,10 +274,12 @@ describe("mixed colour temperature", () => {
   });
 
   it("keeps the emissive boost pinned to the ladder's WINDOW rung", () => {
-    // The brightest palette colour is COOL (0.55, 0.85, 1.0); boosting it by
-    // the shipped intensity must land exactly on EMISSIVE_WINDOW.
-    const coolLum = 0.2126 * 0.55 + 0.7152 * 0.85 + 0.0722 * 1.0;
-    expect(coolLum * Number(WINDOW_EMISSIVE_INTENSITY)).toBeCloseTo(
+    // L3: the brightest palette colour is the amber WARM (1.0, 0.55, 0.2) —
+    // COOL is kept at or under it — and boosting it by the shipped intensity
+    // must land exactly on EMISSIVE_WINDOW.
+    const warmLum = 0.2126 * 1.0 + 0.7152 * 0.55 + 0.0722 * 0.2;
+    expect(luminance(WINDOW_COOL)).toBeLessThanOrEqual(luminance(WINDOW_WARM));
+    expect(warmLum * Number(WINDOW_EMISSIVE_INTENSITY)).toBeCloseTo(
       EMISSIVE_WINDOW,
       3,
     );
@@ -485,7 +489,7 @@ describe("living windows", () => {
     0, 0.05, 37.5, 59.9, 450, 1234.5, 3599.9, 3600, 5000, 7140, 7199.9,
   ];
 
-  it("keeps the lit fraction inside the C3 band at every time sample", () => {
+  it("keeps the lit fraction inside the L3 night band at every time sample", () => {
     for (const arch of ARCHES) {
       for (const t of SAMPLES) {
         let level = 0;
@@ -498,8 +502,9 @@ describe("living windows", () => {
             }
           }
         }
-        expect(level / total).toBeGreaterThan(0.12);
-        expect(level / total).toBeLessThan(0.45);
+        // The L3 night band (40–70 %), at every moment of the live clock.
+        expect(level / total).toBeGreaterThan(0.4);
+        expect(level / total).toBeLessThan(0.7);
       }
     }
   });
@@ -526,8 +531,8 @@ describe("living windows", () => {
           }
         }
       }
-      expect(level / total).toBeGreaterThan(0.12);
-      expect(level / total).toBeLessThan(0.45);
+      expect(level / total).toBeGreaterThan(0.4);
+      expect(level / total).toBeLessThan(0.7);
     }
   });
 

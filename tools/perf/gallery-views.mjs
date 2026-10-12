@@ -433,6 +433,60 @@ export const VIEWS = [
     at: [1000, -10, 1100],
     weather: "clear",
   },
+  // L3 Stormlit (Manhattan): THE SPIRE (5,8) from ~400 m — the stepped
+  // massing, floodlit setbacks and mast over a prewar masonry city; HALCYON
+  // TOWER (8,6)'s arched crown from ~250 m (where a thin lit line aliases
+  // first); THE NEEDLE (2,3)'s glass crown and spire; an uplit street base;
+  // and water towers on stilts across a block of masonry roofs. The
+  // plane is parked low at glass-landmark's spot, well clear of the QA camera
+  // (pinned at 200 m beside the towers it drew W3 flak and died mid-capture).
+  {
+    name: "landmark-deco",
+    x: 400,
+    z: 520,
+    y: 70,
+    yaw: 0,
+    eye: [1000, 190, 1330],
+    at: [1100, 170, 1700],
+  },
+  {
+    name: "landmark-close",
+    x: 400,
+    z: 520,
+    y: 70,
+    yaw: 0,
+    eye: [1520, 212, 1130],
+    at: [1700, 212, 1300],
+  },
+  {
+    name: "needle-crown",
+    x: 400,
+    z: 520,
+    y: 70,
+    yaw: 0,
+    eye: [400, 228, 530],
+    at: [500, 226, 700],
+  },
+  {
+    // One of the seeded uplit street bases (roofs.ts UPLIGHT_CHANCE): the
+    // 166 m tower at (1054, 1245.5), its west face on the x = 1000 street.
+    name: "uplight-base",
+    x: 400,
+    z: 520,
+    y: 70,
+    yaw: 0,
+    eye: [992, 9, 1300],
+    at: [1020, 16, 1236],
+  },
+  {
+    name: "rooftops-water-towers",
+    x: 280,
+    z: 870,
+    y: 110,
+    yaw: 0,
+    eye: [300, 105, 900],
+    at: [420, 45, 1050],
+  },
   // L4 Stormlit: the river along its length, high over the south bank like
   // the reference's centre — the x = 400 suspension bridge close, the
   // street bridges beyond it, the water's long streaks between. The second

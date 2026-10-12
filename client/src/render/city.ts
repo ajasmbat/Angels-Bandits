@@ -35,6 +35,7 @@ import {
   chunkMask,
   cityHoles,
   generateCity,
+  landmarkStyleAt,
   solids,
 } from "@angels-bandits/common/city";
 import {
@@ -74,34 +75,50 @@ import {
   crewSchedule,
 } from "./living-windows";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
-import { type RoofStyle, roofStyleFor } from "./roofs";
+import {
+  LandmarkRole,
+  type RoofStyle,
+  UPLIGHT_FLAG,
+  landmarkRole,
+  roofStyleFor,
+} from "./roofs";
 import { pushUpdateRange } from "./update-range";
 import { WIN_INTERIOR_UNIFORM, packRun } from "./window-pattern";
 import { ImageCache, InstanceUploads, imageIndex } from "./wrapPlacement";
 
 /**
  * VO2 "Neon Blue Hour" facade albedo — real building materials instead of
- * C3's near-black desaturated slabs. Each archetype is a FAMILY of finishes
- * (glass: teal / steel-blue / bronze; masonry: terracotta / red brick /
- * sandstone; office: limestone / warm concrete / cool grey), picked and
- * varied deterministically from the building's own dimensions (shared by
- * all its tiers, seam-safe — never its translation), so a dense block reads
- * as many neighbouring buildings. Albedo only: the lights and the window
- * emissive do the rest, and the brightest finish stays far under the bloom
- * threshold once lit (client/test/facade-palette.test.ts). setHSL is in
- * three's LINEAR working space, so `l` here is (roughly) linear albedo: the
- * pale finishes are pulled to ~0.25 so they don't read as daylit concrete
- * next to the windows.
+ * C3's near-black desaturated slabs. Each archetype is a FAMILY of finishes,
+ * picked and varied deterministically from the building's own dimensions
+ * (shared by all its tiers, seam-safe — never its translation), so a dense
+ * block reads as many neighbouring buildings. Albedo only: the lights and
+ * the window emissive do the rest, and the brightest finish stays far under
+ * the bloom threshold once lit (client/test/facade-palette.test.ts). setHSL
+ * is in three's LINEAR working space, so `l` here is (roughly) linear
+ * albedo: the pale finishes are pulled to ~0.25 so they don't read as daylit
+ * concrete next to the windows.
+ *
+ * L3 Stormlit: the prewar city of the reference — MASONRY is warm brown
+ * brick, tan/buff brick and limestone, sooted charcoal brick, and some red
+ * brick; glass stays bronze / teal / steel blue, office limestone / concrete
+ * / grey. Landmarks no longer share one orientation teal: the Art Deco ones
+ * are pale floodlit limestone (each a slightly different stone, so the crown
+ * washes read), the glass supertall a dark steel blue. (x, z) only picks the
+ * landmark's style (landmarkStyleAt) — the canonical position, never an image.
  */
 export function facadeColor(
-  b: Pick<Building, "width" | "depth" | "height">,
+  b: Pick<Building, "x" | "z" | "width" | "depth" | "height">,
   arch: number,
   out = new THREE.Color(),
 ): THREE.Color {
   const t = ((b.height * 7 + b.width * 3 + b.depth) % 17) / 17;
   const v = ((b.width * 13 + b.depth * 7 + b.height * 3) % 23) / 23;
   if (b.height >= LANDMARK_HEIGHT) {
-    return out.setHSL(0.52, 0.42, 0.22); // landmark teal — orientation
+    const style = landmarkStyleAt(b.x, b.z);
+    if (style === "ziggurat") return out.setHSL(0.1, 0.24, 0.235); // buff limestone
+    if (style === "spire") return out.setHSL(0.09, 0.16, 0.225); // grey limestone
+    if (style === "arches") return out.setHSL(0.11, 0.12, 0.22); // pale stone, steel
+    return out.setHSL(0.6, 0.3, 0.13); // the glass supertall: dark steel blue
   }
   if (arch === FacadeArchetype.GLASS) {
     if (v < 0.22) return out.setHSL(0.09 + t * 0.03, 0.34, 0.156 + t * 0.047); // bronze
@@ -109,9 +126,10 @@ export function facadeColor(
     return out.setHSL(0.58 + t * 0.05, 0.3, 0.156 + t * 0.055); // steel blue
   }
   if (arch === FacadeArchetype.MASONRY) {
-    if (v < 0.4) return out.setHSL(0.03 + t * 0.02, 0.46, 0.172 + t * 0.047); // terracotta
-    if (v < 0.75) return out.setHSL(0.0 + t * 0.02, 0.4, 0.14 + t * 0.039); // red brick
-    return out.setHSL(0.08 + t * 0.03, 0.36, 0.19 + t * 0.04); // sandstone
+    if (v < 0.36) return out.setHSL(0.045 + t * 0.02, 0.42, 0.13 + t * 0.04); // warm brown brick
+    if (v < 0.62) return out.setHSL(0.085 + t * 0.025, 0.32, 0.18 + t * 0.045); // tan / buff
+    if (v < 0.82) return out.setHSL(0.015 + t * 0.02, 0.4, 0.13 + t * 0.035); // red brick
+    return out.setHSL(0.07 + t * 0.03, 0.1, 0.085 + t * 0.03); // sooted charcoal
   }
   if (v < 0.45) return out.setHSL(0.1 + t * 0.03, 0.16, 0.185 + t * 0.04); // limestone
   if (v < 0.8) return out.setHSL(0.07 + t * 0.03, 0.1, 0.175 + t * 0.04); // warm concrete
@@ -201,7 +219,10 @@ interface BuildingLook {
  *
  *   aArchetype  facade archetype (all tiers of a building agree), and in .y
  *               D1's facade-damage slot word for the box's tier (`word`)
- *   aRoof       VO3: (roof kind, crown depth on the top tier else 0, tone, 0)
+ *   aRoof       VO3: (roof kind, crown depth on the top tier else 0, tone,
+ *               L3 landmark role + UPLIGHT_FLAG — roofs.ts LandmarkRole;
+ *               a landmark's crown tiers wash over their whole height, and
+ *               D3 debris pieces carry neither role nor uplight)
  *   aLed        VO3: boosted LED outline colour (0 = none)
  *   aCrown      VO3: crown wash tint × gain (top tier only)
  *   aSubOff     H1: this box's base-centre offset inside its PARENT tier
@@ -221,21 +242,33 @@ function writeSolid(
   s: SolidBox,
   look: BuildingLook,
   word: number,
+  debris = false,
 ): void {
   const tier = b.tiers[s.tierIndex] as Building["tiers"][number];
   let tierBase = 0;
   for (let k = 0; k < s.tierIndex; k++) tierBase += b.tiers[k]?.height ?? 0;
   const isTop = s.tierIndex === b.tiers.length - 1;
+  // L3: a landmark's setbacks above the shaft are all crowns, floodlit over
+  // their whole height; its shaft and an uplit building's street base carry
+  // the uplight. A falling piece carries neither (it is no longer a facade).
+  const role = landmarkRole(look.style.landmark, s.tierIndex, b.tiers.length);
+  const crownTier = role !== LandmarkRole.NONE || isTop;
+  const crownDepth =
+    role !== LandmarkRole.NONE ? tier.height : (look.style.crown?.depth ?? 0);
+  const uplit =
+    look.style.uplight &&
+    s.tierIndex === (look.style.landmark === null ? 0 : 1);
   a.archetype[i * 2] = look.arch;
   a.archetype[i * 2 + 1] = word;
   a.roof[i * 4] = look.style.tierKinds[s.tierIndex] ?? 0;
-  a.roof[i * 4 + 1] = isTop && look.style.crown ? look.style.crown.depth : 0;
+  a.roof[i * 4 + 1] = crownTier && look.style.crown ? crownDepth : 0;
   a.roof[i * 4 + 2] = look.style.tone;
-  a.roof[i * 4 + 3] = 0;
+  a.roof[i * 4 + 3] = debris ? 0 : role + (uplit ? UPLIGHT_FLAG : 0);
   if (look.style.led) look.style.led.toArray(a.led, i * 3);
   else a.led.fill(0, i * 3, i * 3 + 3);
-  if (isTop && look.style.crown) look.style.crown.color.toArray(a.crown, i * 3);
-  else a.crown.fill(0, i * 3, i * 3 + 3);
+  if (crownTier && look.style.crown) {
+    look.style.crown.color.toArray(a.crown, i * 3);
+  } else a.crown.fill(0, i * 3, i * 3 + 3);
   a.subOff[i * 4] = s.dx;
   a.subOff[i * 4 + 1] = s.baseY - tierBase;
   a.subOff[i * 4 + 2] = s.dz;
@@ -662,7 +695,7 @@ export class CityRenderer {
         cut: c.cut[i] as number,
       };
       const word = this.damage.packedWord(c.building, solid.tierIndex);
-      writeSolid(arrays, start + i, building, solid, look, word);
+      writeSolid(arrays, start + i, building, solid, look, word, true);
       this.bRest[start + i] = 0;
     }
     this.bAttrLo = Math.min(this.bAttrLo, start);

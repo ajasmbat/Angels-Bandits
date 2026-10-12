@@ -1,9 +1,12 @@
 import {
   CONSTRUCTION_BLOCKS,
   LANDMARK_BLOCKS,
+  LANDMARK_PROFILES,
   PLAZA_BLOCKS,
   generateCity,
+  landmarkStyleAt,
 } from "@angels-bandits/common/city";
+import { MAX_TIERS } from "@angels-bandits/common/city/destruction";
 import {
   LOT_LINE,
   SIDEWALK_DEPTH,
@@ -142,10 +145,14 @@ describe("generateCity layout", () => {
     }
   });
 
-  it("stacks 1–3 tiers per building: heights sum to the total, tier 1 keeps the footprint", () => {
+  it("stacks 1–3 tiers per building (landmarks up to MAX_TIERS): heights sum to the total, tier 1 keeps the footprint", () => {
     for (const b of city) {
       expect(b.tiers.length).toBeGreaterThanOrEqual(1);
-      expect(b.tiers.length).toBeLessThanOrEqual(3);
+      // L3: a landmark's hand-built profile may use every tier the chunk id
+      // has bits for; generated lots still stack at most three.
+      expect(b.tiers.length).toBeLessThanOrEqual(
+        b.height === LANDMARK_HEIGHT ? MAX_TIERS : 3,
+      );
       // Tier 1 IS the building's footprint — streets and minimap unchanged.
       expect(b.tiers[0]?.width).toBe(b.width);
       expect(b.tiers[0]?.depth).toBe(b.depth);
@@ -171,15 +178,58 @@ describe("generateCity layout", () => {
     }
   });
 
-  it("gives every landmark the fixed slim-shaft-and-crown profile (spec literals)", () => {
-    const landmarks = city.filter((b) => b.height === LANDMARK_HEIGHT);
-    for (const b of landmarks) {
-      expect(b.tiers).toEqual([
-        { width: 90, depth: 90, height: 60 },
-        { width: 62, depth: 62, height: 150 },
-        { width: 34, depth: 34, height: 40 },
-      ]);
-    }
+  it("gives every landmark its slot's hand-placed profile (spec literals)", () => {
+    // L3: one silhouette per LANDMARK_BLOCKS slot, in that order.
+    expect(LANDMARK_PROFILES.map((p) => [p.style, p.tiers])).toEqual([
+      [
+        "glass",
+        [
+          { width: 90, depth: 90, height: 60 },
+          { width: 52, depth: 52, height: 150 },
+          { width: 30, depth: 30, height: 26 },
+          { width: 10, depth: 10, height: 14 },
+        ],
+      ],
+      [
+        "ziggurat",
+        [
+          { width: 90, depth: 90, height: 60 },
+          { width: 62, depth: 62, height: 110 },
+          { width: 46, depth: 46, height: 40 },
+          { width: 30, depth: 30, height: 40 },
+        ],
+      ],
+      [
+        "spire",
+        [
+          { width: 90, depth: 90, height: 60 },
+          { width: 62, depth: 62, height: 140 },
+          { width: 34, depth: 34, height: 30 },
+          { width: 10, depth: 10, height: 20 },
+        ],
+      ],
+      [
+        "arches",
+        [
+          { width: 90, depth: 90, height: 60 },
+          { width: 56, depth: 56, height: 136 },
+          { width: 34, depth: 34, height: 34 },
+          { width: 10, depth: 10, height: 20 },
+        ],
+      ],
+    ]);
+    LANDMARK_BLOCKS.forEach(([bx, bz], i) => {
+      const b = city.find(
+        (o) =>
+          o.x === bx * BLOCK_PITCH + BLOCK_PITCH / 2 &&
+          o.z === bz * BLOCK_PITCH + BLOCK_PITCH / 2,
+      );
+      expect(b?.height).toBe(LANDMARK_HEIGHT);
+      expect(b?.tiers).toEqual(LANDMARK_PROFILES[i]?.tiers);
+      expect(landmarkStyleAt(b?.x ?? 0, b?.z ?? 0)).toBe(
+        LANDMARK_PROFILES[i]?.style,
+      );
+    });
   });
 
   it("varies the skyline: seed 42 has slabs, 2-tier and 3-tier towers", () => {

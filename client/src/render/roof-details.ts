@@ -29,10 +29,12 @@ import {
   COOLING_SHROUD,
   ROOF_CLUTTER_MAX_HEIGHT,
   type RoofStructure,
+  TANK_STILT,
 } from "@angels-bandits/common/city/roof-structures";
 import { LANDMARK_HEIGHT } from "@angels-bandits/common/constants";
 import { wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { FacadeArchetype, archetypeFor } from "./archetypes";
 import { emissiveBoost } from "./emissive";
 import { GLYPH_H, wordCells, wordRuns } from "./pixel-font";
 import {
@@ -121,7 +123,17 @@ const AD_BOOSTS = AD_TONES.map((t) => boostOf(t, BILLBOARD_FACE_LUMINANCE));
 // --- Palette (sRGB; the clutter material is white, tone is per instance) --
 const PENTHOUSE_TONES = [0x8d8a84, 0x7d6f63, 0x9a9890, 0x6f747b] as const;
 const COOLING_TONES = [0x7f8a86, 0x8c9496] as const;
-const TANK_TONES = [0x7a6552, 0x6e7680, 0x86705a] as const; // timber / steel
+const TANK_TONES = [0x7a5a40, 0x6a5036, 0x86684a, 0x6e7680] as const; // timber, the odd steel
+/** L3 water towers: the shallow stepped cone that tops the barrel inside
+ * the collider, m, and the cap, hoop and stilt tones. */
+const TANK_CAP = 0.7;
+const TANK_CAP_TONE = 0x4a4038;
+const TANK_HOOP_TONE = 0x2e2c2a;
+const TANK_STILT_TONE = 0x3e3a36;
+/** L3 chimneys (masonry roofs) and stair bulkheads. */
+const CHIMNEY_TONES = [0x6e4234, 0x7a4a36, 0x5a3a30] as const;
+const CHIMNEY_CAP_TONE = 0x3a3634;
+const BULKHEAD_TONES = [0x8a7a68, 0x7d6f63, 0x6f6a64] as const;
 const BOX_TONES = [0x9aa1aa, 0x9c9585, 0x8a929c, 0xa7a49b] as const; // plant
 const BOARD_BACK_TONE = 0x3c4046;
 const LEG_TONE = 0x5a5f66;
@@ -670,7 +682,122 @@ function layoutDetails(b: Building): RoofDetails {
   // byte-identical with or without it.
   dressDt2(b, top, kind, { innerW, innerD, free, claim, part, out });
 
+  // --- L3: chimneys and stair bulkheads, after everything else on their
+  // own stream (so all of the above is byte-identical without them).
+  dressPrewar(b, { innerW, innerD, free, claim, part, out });
+
   return out;
+}
+
+/** L3 chimney / bulkhead chances, per roof. */
+export const CHIMNEY_CHANCE = 0.75;
+export const BULKHEAD_CHANCE = 0.4;
+
+/**
+ * L3 prewar roofs: one or two brick chimneys on a MASONRY roof — the first
+ * one's top is put FIRST in `vents`, so the roof plume steam.ts already
+ * anchors on vents[0] rises from the chimney as smoke (no new plume: the
+ * vent gate and the per-block cap are steam.ts's own) — and a stair
+ * bulkhead with a lit door on some roofs. All ≤ ROOF_CLUTTER_MAX_HEIGHT.
+ */
+function dressPrewar(b: Building, ctx: Dt2Context): void {
+  const { innerW, innerD, free, claim, part, out } = ctx;
+  const y = b.height;
+  const w = mulberry32(
+    (Math.imul(b.x, 0x5bd1e995) ^
+      Math.imul(b.z, 0x1b873593) ^
+      Math.imul(b.height, 0xcc9e2d51) ^
+      0x6a09e667) >>>
+      0,
+  );
+  const rChimney = w();
+  const rBulk = w();
+  const spot = (hw: number, hd: number): Rect | null => {
+    if (hw > innerW || hd > innerD) return null;
+    for (let i = 0; i < TRIES; i++) {
+      const r: Rect = {
+        x: b.x + (w() * 2 - 1) * (innerW - hw),
+        z: b.z + (w() * 2 - 1) * (innerD - hd),
+        hw,
+        hd,
+      };
+      if (free(r)) return r;
+    }
+    return null;
+  };
+
+  if (
+    archetypeFor(b) === FacadeArchetype.MASONRY &&
+    rChimney < CHIMNEY_CHANCE
+  ) {
+    const count = rChimney < CHIMNEY_CHANCE * 0.4 ? 2 : 1;
+    let first = true;
+    for (let i = 0; i < count; i++) {
+      const sx = 0.9 + w() * 0.5;
+      const sz = 0.8 + w() * 0.5;
+      const h = 1.6 + w() * 0.6;
+      const tone = pick(CHIMNEY_TONES, w());
+      const r = spot(sx / 2 + 0.2, sz / 2 + 0.2);
+      if (!r) continue;
+      claim(r);
+      part(out.boxes, { x: r.x, y, z: r.z, sx, sy: h, sz, tone });
+      part(out.boxes, {
+        x: r.x,
+        y: y + h,
+        z: r.z,
+        sx: sx + 0.16,
+        sy: 0.12,
+        sz: sz + 0.16,
+        tone: CHIMNEY_CAP_TONE,
+        fine: true,
+      });
+      if (first) {
+        out.vents.unshift({ x: r.x, y: y + h + 0.12, z: r.z });
+        first = false;
+      }
+    }
+  }
+
+  if (rBulk < BULKHEAD_CHANCE) {
+    const sx = 2.4 + w() * 0.6;
+    const sz = 2.0 + w() * 0.6;
+    const h = 2.3;
+    const face = Math.floor(w() * 4);
+    const r = spot(sx / 2 + 0.4, sz / 2 + 0.4);
+    if (r) {
+      claim(r);
+      part(out.boxes, {
+        x: r.x,
+        y,
+        z: r.z,
+        sx,
+        sy: h,
+        sz,
+        tone: pick(BULKHEAD_TONES, w()),
+      });
+      const [nx, nz] = faceDir(face);
+      const half = face < 2 ? sx / 2 : sz / 2;
+      part(out.boxes, {
+        x: r.x + nx * half,
+        y,
+        z: r.z + nz * half,
+        sx: face < 2 ? 0.08 : 0.9,
+        sy: 1.9,
+        sz: face < 2 ? 0.9 : 0.08,
+        tone: DOOR_TONE,
+      });
+      part(out.lit, {
+        x: r.x + nx * (half + 0.08),
+        y: y + 1.98,
+        z: r.z + nz * (half + 0.08),
+        sx: face < 2 ? 0.16 : 0.3,
+        sy: 0.14,
+        sz: face < 2 ? 0.3 : 0.16,
+        tone: DOOR_LAMP_TONE,
+        boost: DOOR_LAMP_BOOST,
+      });
+    }
+  }
 }
 
 // --- DT2: laundry, pigeons, gardens and neon on the roofs -----------------
@@ -1240,9 +1367,96 @@ function dressStructure(
       // rooftop-life's GPU-spun fans.
       body(out.boxes, s.height - COOLING_SHROUD, pick(COOLING_TONES, s.seed));
       return;
-    case "waterTank":
-      body(out.cylinders, s.height, toneAt(TANK_TONES, x, z));
+    case "waterTank": {
+      // L3: the classic timber tower — the solid barrel (with its stepped
+      // conical cap, inside the collider) up on four stilts over a slatted
+      // platform, dark hoops round the staves. Below the barrel everything
+      // is ≤ TANK_STILT: clutter by the flight-band rule.
+      const r = s.width / 2;
+      const deck = s.baseY - TANK_STILT;
+      const barrel = s.height - TANK_CAP;
+      body(out.cylinders, barrel, toneAt(TANK_TONES, x, z));
+      const cap = TANK_CAP;
+      part(out.cylinders, {
+        x,
+        y: s.baseY + barrel,
+        z,
+        sx: r * 0.9,
+        sy: cap * 0.45,
+        sz: r * 0.9,
+        tone: TANK_CAP_TONE,
+        solid: true,
+      });
+      part(out.cylinders, {
+        x,
+        y: s.baseY + barrel + cap * 0.45,
+        z,
+        sx: r * 0.55,
+        sy: cap * 0.35,
+        sz: r * 0.55,
+        tone: TANK_CAP_TONE,
+        solid: true,
+      });
+      part(out.cylinders, {
+        x,
+        y: s.baseY + barrel + cap * 0.8,
+        z,
+        sx: r * 0.2,
+        sy: cap * 0.2,
+        sz: r * 0.2,
+        tone: TANK_CAP_TONE,
+        solid: true,
+      });
+      for (const f of [0.28, 0.66]) {
+        part(out.cylinders, {
+          x,
+          y: s.baseY + barrel * f,
+          z,
+          sx: r + 0.05,
+          sy: 0.14,
+          sz: r + 0.05,
+          tone: TANK_HOOP_TONE,
+          fine: true,
+        });
+      }
+      part(out.cylinders, {
+        x,
+        y: s.baseY - 0.16,
+        z,
+        sx: r + 0.35,
+        sy: 0.16,
+        sz: r + 0.35,
+        tone: TANK_STILT_TONE,
+      });
+      const leg = r * 0.68;
+      for (let k = 0; k < 4; k++) {
+        const a = Math.PI / 4 + (k * Math.PI) / 2;
+        part(out.boxes, {
+          x: x + Math.cos(a) * leg,
+          y: deck,
+          z: z + Math.sin(a) * leg,
+          sx: 0.32,
+          sy: TANK_STILT - 0.16,
+          sz: 0.32,
+          tone: TANK_STILT_TONE,
+        });
+      }
+      // Cross-bracing between the legs on two faces.
+      for (const yaw of [0, Math.PI / 2]) {
+        part(out.boxes, {
+          x,
+          y: deck + 0.25,
+          z,
+          sx: leg * 1.41,
+          sy: 0.12,
+          sz: 0.12,
+          yaw,
+          tone: TANK_STILT_TONE,
+          fine: true,
+        });
+      }
       return;
+    }
     case "billboardLeg":
       body(out.boxes, s.height, LEG_TONE);
       out.boxes.push(braceFor(b, s));

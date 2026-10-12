@@ -27,6 +27,7 @@ import {
   mulberry32,
 } from "@angels-bandits/common/city";
 import { facadeClearances } from "@angels-bandits/common/city/street";
+import { LANDMARK_HEIGHT } from "@angels-bandits/common/constants";
 import {
   wrapCoord,
   wrapDelta,
@@ -314,7 +315,12 @@ function laundryOn(f: Face, rand: () => number, out: LaundryLine[]): void {
 export function facadeLifeFor(b: Building, seed: number): FacadeLife {
   const life: FacadeLife = { laundry: [], flags: [], banners: [], pigeons: [] };
   const arch = archetypeFor(b);
-  const faces = arch === FacadeArchetype.GLASS ? [] : streetFaces(b, seed);
+  // L3: an Art Deco landmark is MASONRY stone but hangs no laundry — it
+  // stays as clean as the glass towers.
+  const faces =
+    arch === FacadeArchetype.GLASS || b.height >= LANDMARK_HEIGHT
+      ? []
+      : streetFaces(b, seed);
 
   if (arch === FacadeArchetype.MASONRY) {
     const rand = stream(b, seed, 1);

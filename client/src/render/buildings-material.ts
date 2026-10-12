@@ -71,9 +71,15 @@ import {
 } from "./window-pattern";
 
 /** Window palette, linear (GLSL space): warm incandescent vs cool
- * fluorescent — every window is a CONVEX mix of these two. */
-const WINDOW_WARM = new THREE.Color(1.0, 0.72, 0.35);
-const WINDOW_COOL = new THREE.Color(0.55, 0.85, 1.0);
+ * fluorescent — every window is a CONVEX mix of these two.
+ *
+ * L3 Stormlit: the reference city glows amber — incandescent rooms around
+ * 2700 K (sRGB ≈ 255/194/124) — with a few cool-white offices, never the
+ * old cyan. COOL is kept at or under WARM's luminance, so the emissive
+ * intensity below normalises to the dominant amber: an ordinary warm window
+ * sits exactly on the WINDOW rung and no colour can pass it. */
+export const WINDOW_WARM = new THREE.Color(1.0, 0.55, 0.2);
+export const WINDOW_COOL = new THREE.Color(0.55, 0.62, 0.71);
 const glslVec3 = (c: THREE.Color) =>
   `vec3(${c.r.toFixed(3)}, ${c.g.toFixed(3)}, ${c.b.toFixed(3)})`;
 
@@ -125,6 +131,25 @@ export const BOUNCE_TINTS = {
 /** L1 "Stormlit": the street's sodium carries the bounce; neon only tints
  * it (was 0.55). */
 export const BOUNCE_NEON_MIX = 0.3;
+
+/**
+ * L3 facade uplights: on an uplit tier (roofs.ts UPLIGHT_FLAG — a seeded few
+ * street bases, and every landmark shaft from its podium roof) fixtures at
+ * the tier base throw scalloped warm cones up the wall. Light × albedo like
+ * the bounce, and it REPLACES the bounce there (a convex mix, never a sum),
+ * so the street-level wash stays under BOUNCE_LUMINANCE_CAP: the brightest
+ * finish × the tint's luminance × UPLIGHT_INTENSITY at a cone's heart is the
+ * peak (client/test/facade-palette.test.ts bounds it with the bounce).
+ */
+export const UPLIGHT_INTENSITY = 0.62;
+/** e-folding height of an uplight cone, meters above the tier base — well
+ * above the bounce's, so the cones read as floodlit piers climbing past
+ * where the street's spill has faded. */
+export const UPLIGHT_HEIGHT = 40;
+/** Fixture spacing along the facade, meters. */
+export const UPLIGHT_BAY = 9;
+/** Warm white (sodium-free ~3000 K), max component 1. */
+export const UPLIGHT_TINT = new THREE.Color(1.0, 0.8, 0.56);
 
 const VERTEX_PARS = /* glsl */ `
 attribute vec2 aArchetype; // x: facade archetype, y: D1 damage slot word
@@ -363,7 +388,21 @@ float bounceH = fract(vBSeed * 7.31);
 vec3 bounceTint = mix(${glslVec3(BOUNCE_TINTS.sodium)},
   mix(${glslVec3(BOUNCE_TINTS.magenta)}, ${glslVec3(BOUNCE_TINTS.cyan)}, step(0.5, fract(vBSeed * 3.7))),
   step(0.66, bounceH) * ${BOUNCE_NEON_MIX.toFixed(2)});
-totalEmissiveRadiance += diffuseColor.rgb * bounceTint * ${BOUNCE_INTENSITY.toFixed(2)} * bounceK;
+// L3 uplights (UPLIGHT_INTENSITY): scalloped cones from the tier base,
+// measured in TIER meters (a landmark shaft is uplit from its podium roof),
+// a cone per bay that fades to its mean with distance; they replace the
+// bounce on an uplit tier.
+float upZ = vMeters.y;
+float upU = (fract(winGrid.x / ${UPLIGHT_BAY.toFixed(1)}) - 0.5) * ${UPLIGHT_BAY.toFixed(1)};
+float upSpread = 0.6 + 0.35 * max(upZ, 0.0);
+float upScallop = mix(0.4, 0.08 + 0.92 * exp(-(upU * upU) / (upSpread * upSpread)),
+  abDetail(${UPLIGHT_BAY.toFixed(1)}, wAA.x));
+float upK = facade * smoothstep(0.0, 1.2, upZ) * exp(-max(upZ, 0.0) / ${UPLIGHT_HEIGHT.toFixed(1)})
+  * upScallop * (1.0 - pane * lit) * (1.0 - shopBand * glass * shopLit);
+totalEmissiveRadiance += diffuseColor.rgb * mix(
+  bounceTint * ${BOUNCE_INTENSITY.toFixed(2)} * bounceK,
+  ${glslVec3(UPLIGHT_TINT)} * ${UPLIGHT_INTENSITY.toFixed(2)} * upK,
+  upOn);
 `;
 
 /**

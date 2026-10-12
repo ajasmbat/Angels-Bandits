@@ -26,7 +26,11 @@ import {
   mulberry32,
 } from "@angels-bandits/common/city";
 import { facadeClearances } from "@angels-bandits/common/city/street";
-import { BLOCK_PITCH, EMISSIVE_SIGN } from "@angels-bandits/common/constants";
+import {
+  BLOCK_PITCH,
+  EMISSIVE_SIGN,
+  LANDMARK_HEIGHT,
+} from "@angels-bandits/common/constants";
 import {
   type Vec3,
   wrapDelta,
@@ -1065,7 +1069,11 @@ export function facadeDetailFor(b: Building, seed: number): FacadeDetail {
   const boxes: DetailBox[] = [];
   const lights: DetailBox[] = [];
   const arch = archetypeFor(b);
-  if (arch === FacadeArchetype.GLASS) return { boxes, lights };
+  // L3: the Art Deco landmarks are MASONRY stone, but no fire escape, AC unit
+  // or scaffold ever goes up a landmark — they stay clean like the glass one.
+  if (arch === FacadeArchetype.GLASS || b.height >= LANDMARK_HEIGHT) {
+    return { boxes, lights };
+  }
   const sign = signageFor(b, seed);
   const faces = facesOf(b, arch, [
     ...sign.marquees,
@@ -1176,9 +1184,11 @@ export function facadeDetailStandingLayer(
  * pops at the window's edge. */
 const FADE_NEAR = 260;
 const FADE_FAR = 380;
-/** Highest a detail can sit (tallest OFFICE tower), plus slack — above
- * FADE_FAR + this the whole tier is past the fade and is not drawn. */
-const DETAIL_TOP = 140;
+/** Highest a detail can sit (the tallest non-GLASS tower: since L3 that is
+ * a 150 m masonry or office tower, archetypes.ts GLASS_MIN_HEIGHT), plus
+ * slack — above FADE_FAR + this the whole tier is past the fade and is not
+ * drawn. */
+const DETAIL_TOP = 160;
 
 const FADE_GLSL = /* glsl */ `#include <begin_vertex>
 // L13: shrink each box into its own centre with distance (anchor = the

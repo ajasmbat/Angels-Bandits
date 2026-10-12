@@ -224,23 +224,28 @@ const damageSheet = () => {
 };
 
 /** L7 Stormlit: the two references' composition — high over the south
- * bank, looking down the river (the x-running block row z 1000–1200) toward
- * the far skyline, the war zeppelin close on the left. `reference-hero` is
- * reference 1 (the city at peace); `extra` stages reference 2 on it. */
+ * bank, looking out over the city toward the horizon (L7b: down the river
+ * at ≈ −4° pitch, so the top of the frame is the storm sky): the moon
+ * (MOON_DIR, ~25° up) upper left, the war zeppelin side-on upper right,
+ * and the blocks round (1400, 1100) — INFERNO_STAGE's, both banks —
+ * filling the lower half; clear weather, so a before/after pair shares
+ * the sky. `reference-hero` is reference 1 (the city at peace); `extra`
+ * stages reference 2 on it. */
 const referenceView = (name, extra = {}) => ({
   name,
-  // The plane (and the carrier staged ahead of it) sits left of and above
-  // the eye, out of its own shot.
-  x: 1060,
-  z: 1010,
-  y: 460,
+  // The plane sits 70 m over the eye (out of its own shot), nose to +x;
+  // the carrier is staged 280 m ahead of it, crossing side-on. H1: L7b's
+  // composition lifted 270 m with the carrier (BOSS_ALT 570 m) — the eye
+  // at 430 m (was 230), the same −4° pitch, the hull ~27° up instead of
+  // ~14°, the cores' towers and the supertalls standing into the frame.
+  x: 965,
+  z: 1303,
+  y: 500,
   yaw: -Math.PI / 2,
-  // H1: the eye rides over the downtown cores, 140 m under the carrier's
-  // BOSS_ALT (570 m), pitched ~12° down — the 250 m eye of L7 would leave
-  // the hull out of the top of the frame.
-  eye: [960, 430, 1250],
-  at: [1560, 300, 1085],
+  eye: [965, 430, 1303],
+  at: [1869, 360, 881],
   timeMs: 1_790_000_000_000,
+  weather: "clear",
   boss: { ahead: 280 },
   // Held there every frame, so it never flies into the carrier's hull.
   raf: true,
@@ -248,18 +253,20 @@ const referenceView = (name, extra = {}) => ({
 });
 
 /** L7: what reference 2 stages on that composition — the blocks on both
- * banks chewed (a seeded third of the chunks of the 44 buildings within
- * 380 m, the collapses that leaves owing long landed), the room's burn 0.9. */
+ * banks chewed (a seeded third of the chunks of the buildings round the
+ * view — L7b: the 116 within 560 m (H1's taller city: 109), the whole frame's city, was the 44
+ * within 380 m — the collapses that leaves owing long landed), the room's
+ * burn 0.9. */
 const INFERNO_STAGE = {
   area: {
     x: 1400,
     z: 1100,
-    r: 380,
+    r: 560,
     share: 0.35,
     seed: 7,
     t: -90_000,
     stepMs: 500,
-    buildings: 43,
+    buildings: 109,
   },
   burn: 0.9,
 };
@@ -1110,18 +1117,20 @@ export const VIEWS = [
     weather: "clear",
     boss: { ahead: 180, downAfterMs: 3500 },
   },
-  // L6 (Stormlit): the reference composition — the carrier upper left, its
-  // lamps and escort scouts throwing beams down onto the roofs, a posed
-  // biplane mid right (its nav, landing and exhaust lights lit) flying away
-  // into the scene, and the city below. The own plane is parked high out of
-  // shot; the hull is staged 450 m ahead of the view (centre ≈ x 1500,
-  // y 570, z 550 — H1's BOSS_ALT), over the 400 m landmark at (1500, 300);
-  // no rooftop searchlight stands near the biplane to swing onto it. H1:
-  // the eye rides over the downtown cores (470 m), 100 m under the hull,
-  // pitched ~15° down so the hull still crosses the top of the frame and
-  // the supertalls and the city fill the rest.
+  // L6 (Stormlit): the carrier composition (L7b: renamed from a second
+  // `reference-hero`, which shared its name and file with L7's) — the
+  // carrier upper left, its lamps and escort scouts throwing beams down
+  // onto the roofs, a posed biplane mid right (its nav, landing and
+  // exhaust lights lit) flying away into the scene, and the city below.
+  // The own plane is parked high out of shot; the hull is staged 450 m
+  // ahead of the view (centre ≈ x 1500, y 570 — H1's BOSS_ALT — z 550),
+  // over the 400 m landmark at (1500, 300); no rooftop searchlight stands
+  // near the biplane to swing onto it. H1: the eye rides over the downtown
+  // cores (470 m), 100 m under the hull, pitched ~15° down so the hull
+  // still crosses the top of the frame and the supertalls and the city
+  // fill the rest.
   {
-    name: "reference-hero",
+    name: "reference-carrier",
     x: 1500,
     z: 1000,
     y: 600,
@@ -1330,6 +1339,60 @@ export const VIEWS = [
   // `__ab.inferno()` is logged for each: sites, draws, floating = 0).
   referenceView("reference-hero"),
   referenceView("reference-inferno", { stage: INFERNO_STAGE }),
+  // L7b readability in the inferno: the normal chase camera at 190 m over
+  // reference-inferno's burning blocks, an enemy fighter 110 m ahead, our
+  // guns firing at it (`guns`: the trigger held through the shot) — the
+  // tracers, the bandit, the pipper and the HUD must all still read.
+  {
+    name: "inferno-dogfight",
+    x: 1250,
+    z: 1460,
+    y: 190,
+    yaw: 0,
+    pitch: -0.12,
+    timeMs: 1_790_000_000_000,
+    weather: "clear",
+    guns: true,
+    raf: true,
+    stage: INFERNO_STAGE,
+    showcase: [
+      {
+        kind: "fighter",
+        x: 1250,
+        y: 180,
+        z: 1350,
+        yaw: 0.15,
+        pitch: -0.05,
+        roll: 0.3,
+        speed: 70,
+      },
+    ],
+  },
+  // L7b: high-overview's pose over a burning district ~400 m ahead (a
+  // seeded third of the chunks within 300 m of it chewed, burn 0.9) — the
+  // smoke columns climbing to the deck seen from the standard overview.
+  {
+    name: "high-overview-inferno",
+    x: 100,
+    z: 1500,
+    y: 380,
+    yaw: 0.9,
+    pitch: -0.35,
+    timeMs: 1_790_000_000_000,
+    stage: {
+      area: {
+        x: 1787,
+        z: 1251,
+        r: 300,
+        share: 0.35,
+        seed: 11,
+        t: -90_000,
+        stepMs: 500,
+        buildings: 22,
+      },
+      burn: 0.9,
+    },
+  },
   // L7 the sky reacting: from 180 m on the south bank, up at the cloud deck
   // over reference-inferno's burning blocks — the columns climbing into it,
   // its underside glowing ember-red over the fires, the haze gone smoky.
@@ -1393,5 +1456,35 @@ export const VIEWS = [
       },
       burn: 0.9,
     },
+  },
+  // L2 Stormlit: the reference's long view — 300 m over the river, looking
+  // east along it past the real city's fog limit to the far skyline (its
+  // waterfront, bridge light chains and spires) and the glowing horizon.
+  // The plane is held 160 m behind the eye, out of shot.
+  {
+    name: "reference-wide",
+    x: 400,
+    z: 1100,
+    y: 330,
+    yaw: -Math.PI / 2,
+    eye: [560, 300, 1100],
+    at: [1560, 40, 1100],
+    timeMs: 1_790_000_000_000,
+    weather: "clear",
+    raf: true,
+  },
+  // L2: the same long view with reference 2's city burning (burn 0.9).
+  {
+    name: "reference-wide-inferno",
+    x: 400,
+    z: 1100,
+    y: 330,
+    yaw: -Math.PI / 2,
+    eye: [560, 300, 1100],
+    at: [1560, 40, 1100],
+    timeMs: 1_790_000_000_000,
+    weather: "clear",
+    raf: true,
+    stage: { burn: 0.9 },
   },
 ];

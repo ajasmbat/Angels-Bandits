@@ -358,6 +358,7 @@ import { FacadeDetailRenderer } from "./render/facade-detail";
 import { FacadeGarnishRenderer } from "./render/facade-garnish";
 import { FacadeLifeRenderer } from "./render/facade-life";
 import { FacadeScarKeeper } from "./render/facade-scars";
+import { FarSkyline } from "./render/far-skyline";
 import { FireRenderer } from "./render/fires";
 import { Fireworks } from "./render/fireworks";
 import { PlaneFleet } from "./render/fleet";
@@ -935,6 +936,11 @@ scene.add(skyDome.mesh);
 // never in world space. Pure schedule of (seed, synced clock).
 const airliners = new Airliners(welcome.seed, skyDome.clouds);
 skyDome.mesh.add(airliners.points);
+// Stormlit L2: kilometres of city past the fog limit — a lit street carpet
+// with the river's waterfronts and bridge chains, and instanced towers and
+// spires — drawn in a shell just inside 800 m. Two opaque draws, never solid.
+const farSkyline = new FarSkyline(skyDome.uniforms.uMoonDir);
+scene.add(farSkyline.carpet, farSkyline.towers);
 const streetlights = new Streetlights();
 scene.add(streetlights.group);
 // Stormlit L8: the far-field street glow (the lamp pools hand over to it
@@ -2978,6 +2984,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   headlights.setQuality(tier);
   streetlights.setQuality(tier); // L8: the far strip's spill
   farTraffic.setQuality(tier); // L8: phantom fleet share
+  farSkyline.setQuality(tier); // L2: the far skyline's radius
   signage.setQuality(tier);
   jumbotrons.setQuality(tier); // S1: Mobile shows the static LAST KILL card
   rooftopLife.setQuality(tier);
@@ -3958,6 +3965,9 @@ function qaSystems(): {
     ["headlightPools", [headlights.pools]],
     ["streetGlow", [streetlights.glow.mesh]], // Stormlit L8
     ["farTraffic", [farTraffic.points]], // Stormlit L8
+    ["farSkyline", [farSkyline.carpet, farSkyline.towers]], // Stormlit L2
+    ["farCarpet", [farSkyline.carpet]], // Stormlit L2
+    ["farTowers", [farSkyline.towers]], // Stormlit L2
     ["movers", [movers.rig, movers.hulls, movers.rotors]],
     ["moverLights", [moverLights.points]],
     ["train", [train.mesh]],
@@ -6129,7 +6139,14 @@ const frame = (now: number): void => {
     renderMs ?? now,
     nearestImageInto(batPlane, chase.position, flight.pos),
   );
-  skyDome.update(chase.position, dt, renderMs);
+  // L7b: the dome (moon, clouds) is centred on the RENDERED camera too — a
+  // QA eye hundreds of metres from the parked plane otherwise sees the
+  // moon and the cloud deck through that much parallax.
+  skyDome.update(
+    qaView ? nearestImage(chase.position, qaView.eye) : chase.position,
+    dt,
+    renderMs,
+  );
   airliners.update(renderMs);
   // Wounded smoke: own plane from server-said self HP, every remote (human
   // or bot) from snapshot HP — all clients see the same wounds. Death clouds
@@ -6374,6 +6391,12 @@ const frame = (now: number): void => {
   }
   clouds.update(chase.position, camera.quaternion, renderMs);
   clouds.setGlow(inferno.cloudGlow, inferno.cloudGlowCount, burnShown);
+  // L7b: and the sky over them (the dome, toward the fires).
+  skyDome.setBurnGlow(
+    inferno.cloudGlow,
+    burnShown > 0 ? inferno.cloudGlowCount : 0,
+    camera.position,
+  );
   // L12: the cycle's horizon is the storm's clear-sky fog base.
   skyCycle.update(renderMs);
   storm.setFogBase(skyCycle.horizon);
@@ -6398,6 +6421,7 @@ const frame = (now: number): void => {
       ? 0
       : dustHaze(socket.collapses.list, chase.position, renderMs),
     burnShown,
+    skyCycle.state.pools, // L2: the city glow dims with the street lights
   );
   skyDome.setAir(sky);
   // L1: the latest strike lights the clouds from inside during its flash.
@@ -6589,6 +6613,15 @@ const frame = (now: number): void => {
     worldMs: renderMs,
     now,
   });
+  // Stormlit L2: the far skyline from the RENDER camera (a QA eye too),
+  // hidden with the dome inside the cloud deck.
+  farSkyline.update(
+    camera,
+    dt,
+    renderer.domElement.height,
+    now,
+    sky.domeVisible,
+  );
   const heatCount = inferno.mergeHeat(
     explosions.heat,
     explosions.heatSources(now), // J1 blast shimmer

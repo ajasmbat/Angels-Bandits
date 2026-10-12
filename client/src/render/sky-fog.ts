@@ -42,11 +42,19 @@ export const SKY_FOG_ELEVATION = (0.5 - SKY_FOG_STOP) * Math.PI;
 export const SKY_FOG_STOPS = new Float32Array(SKY_STOPS.length * 3);
 /**
  * H1: the dome's air map, shared the same way (Sky.setAir writes it):
- * [add.r, add.g, add.b, scale, gain, on, 0, 0]. `on` stays 0 until a sky
- * has written it, so a scene without one (tests, tools) fogs to the plain
- * fog colour exactly as before.
+ * [add.r, add.g, add.b, scale, gain, on, 0, 0, burn.r, burn.g, burn.b,
+ * burn weight] (L7b's smoke tint, the map's last lerp). `on` stays 0 until
+ * a sky has written it, so a scene without one (tests, tools) fogs to the
+ * plain fog colour exactly as before.
  */
-export const SKY_FOG_AIR = new Float32Array([0, 0, 0, 1, 1, 0, 0, 0]);
+export const SKY_FOG_AIR = new Float32Array([
+  0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0,
+]);
+/** L7b: how much of the burn's smoke tint the high dome sheds (1 = all, at
+ * BURN_SKY_TOP rad above the stop; none of it up to SKY_GLOW_RAMP above
+ * it) — the dome (sky.ts) and the sky-matched fog shed it the same way. */
+export const BURN_SKY_THIN = 0.85;
+export const BURN_SKY_TOP = 0.22;
 
 const f5 = (v: number): string => v.toFixed(5);
 
@@ -58,7 +66,7 @@ const f5 = (v: number): string => v.toFixed(5);
  */
 export const AB_SKY_FOG_GLSL = /* glsl */ `
 uniform vec3 abSkyStops[${SKY_STOPS.length}];
-uniform vec4 abSkyAir[2];
+uniform vec4 abSkyAir[3];
 vec3 abSkyFog(vec3 fogCol, float sinEl) {
   if (abSkyAir[1].y < 0.5) return fogCol;
   float el = asin(clamp(sinEl, -1.0, 1.0));
@@ -75,7 +83,16 @@ ${SKY_STOPS.slice(1)
   )
   .join("\n")}
   vec3 sky = mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
-  vec3 air = (sky * abSkyAir[0].w + abSkyAir[0].xyz) * (1.0 + (abSkyAir[1].x - 1.0) * above);
+  vec3 air = sky * abSkyAir[0].w + abSkyAir[0].xyz;
+  // L7b: the burn's smoke tint, thinned high exactly as the dome thins it.
+  vec4 burn = abSkyAir[2];
+  if (burn.w > 0.0) {
+    float burnHigh = smoothstep(${f5(SKY_FOG_ELEVATION + SKY_GLOW_RAMP)}, ${f5(SKY_FOG_ELEVATION + BURN_SKY_TOP)}, el);
+    vec3 preBurn = (air - burn.rgb * burn.w) / (1.0 - burn.w);
+    float burnW = burn.w * (1.0 - ${BURN_SKY_THIN.toFixed(2)} * burnHigh);
+    air = preBurn * (1.0 - burnW) + burn.rgb * burnW;
+  }
+  air *= 1.0 + (abSkyAir[1].x - 1.0) * above;
   return mix(fogCol, air, above);
 }
 `;

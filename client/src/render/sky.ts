@@ -44,6 +44,8 @@ import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { AB_AA_GLSL } from "./aa-glsl";
 import { luminance } from "./emissive";
+import { FAR_DENSITY_GLSL, FAR_ORIGIN } from "./far-skyline";
+import { AB_CITY_GLOW_GLSL, CITY_GLOW } from "./fog";
 import {
   FIRELIGHT_GROUND_GLSL,
   INFERNO_PARS_GLSL,
@@ -78,6 +80,8 @@ import {
   createCloudUniforms,
 } from "./sky-clouds";
 import {
+  BURN_SKY_THIN,
+  BURN_SKY_TOP,
   SKY_FOG_AIR,
   SKY_FOG_ELEVATION,
   SKY_FOG_STOP,
@@ -208,6 +212,9 @@ export { SKY_FOG_ELEVATION, SKY_FOG_STOP, SKY_GLOW_RAMP, SKY_STOPS };
 export const SKY_GRADIENT_NIGHT = [
   0x03050b, 0x070b16, 0x0c1322, 0x141c2d, 0x1b2435,
 ] as const;
+/** L2: how strongly the city glow (fog.ts CITY_GLOW) lights the cloud
+ * masses' undersides near the horizon, × the glow, over a dense district. */
+export const CLOUD_GLOW_GAIN = 2.2;
 
 /** Moon disc angular radius, radians (~2.6° — big and cinematic, the way a
  * long lens shows it; the real 0.26° would be a sub-pixel dot at FOV 70). */
@@ -271,7 +278,11 @@ function skyPatch(material: THREE.MeshBasicMaterial, u: SkyUniforms): void {
     )
     .join("\n");
   material.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, u);
+    Object.assign(shader.uniforms, u, {
+      // L2: the city glow (fog.ts) and the far city's districts, shared.
+      abCityGlow: { value: CITY_GLOW },
+      uFarOrigin: FAR_ORIGIN,
+    });
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", "#include <common>\nvarying vec3 vSkyDir;")
       .replace(
@@ -297,7 +308,12 @@ uniform vec3 uAirAdd;
 uniform float uAirGain;
 uniform float uFlash;
 uniform vec3 uFlashDir;
+uniform vec3 uBurnGlow;
+uniform vec3 uBurnDir;
+uniform vec4 uBurnAir;
 ${cloudGlsl(SKY_FOG_ELEVATION)}
+${AB_CITY_GLOW_GLSL}
+${FAR_DENSITY_GLSL}
 float mHash(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
 float mNoise(vec2 p) {
   vec2 i = floor(p); vec2 f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
@@ -323,7 +339,14 @@ ${chain}
   float facing = dot(sd, uMoonDir);
   float cover = 0.0;
   float lightning = 0.0;
+  // L7b: the burning city lights the sky over it — toward the fires
+  // (uBurnDir.xy, focus .z: 0 all round, 1 one side), ramped in from zero
+  // above the stop like every other glow.
+  vec2 hzB = sd.xz / max(length(sd.xz), 1e-4);
+  float burnToward = mix(1.0, pow(max(dot(hzB, uBurnDir.xy), 0.0), 1.5), uBurnDir.z);
   if (above > 0.0) {
+    float burnBand = above * (1.0 - smoothstep(${(SKY_FOG_ELEVATION + SKY_GLOW_RAMP).toFixed(5)}, ${(SKY_FOG_ELEVATION + 0.3).toFixed(5)}, el));
+    sky += uBurnGlow * (burnBand * burnToward);
     // Dusk / dawn glow: hugs the band just above the stop, in one quarter.
     vec2 hz = sd.xz / max(length(sd.xz), 1e-4);
     float band = above * (1.0 - smoothstep(${(SKY_FOG_ELEVATION + SKY_GLOW_RAMP).toFixed(5)}, ${(SKY_FOG_ELEVATION + 0.5).toFixed(5)}, el));
@@ -378,7 +401,8 @@ ${chain}
       float m = max(facing, 0.0);
       float near = pow(m, 12.0); // within ~30° of the moon
       float halo2 = pow(m, 200.0); // inside the halo
-      float rimLum = mix(0.08, ${RIM_PEAK.toFixed(3)}, near)
+      // L7b: every moon-facing edge carries a silver rim (was 0.08).
+      float rimLum = mix(0.14, ${RIM_PEAK.toFixed(3)}, near)
         + ${(RIM_PEAK_HALO - RIM_PEAK).toFixed(3)} * halo2;
       vec3 rim = ${vec3Literal(moonHue.toArray())} * rimLum * lit * uMoonVis;
       float low = 1.0 - smoothstep(${SKY_FOG_ELEVATION.toFixed(5)}, ${(SKY_FOG_ELEVATION + 0.35).toFixed(5)}, el);
@@ -386,10 +410,16 @@ ${chain}
       // The masses round the moon are moonlit through (the reference's
       // grey-white clouds about the gap).
       vec3 bodyA = mix(${glslColor(CLOUD_BODY)}, ${glslColor(CLOUD_CORE)}, smoothstep(0.55, 1.0, rawA) * smoothstep(0.62, 0.85, fa.x))
-        + ${vec3Literal(moonHue.toArray())} * (0.1 * near * uMoonVis)
-        + ${glslColor(CLOUD_CITY_GLOW)} * low + rim;
+        + ${vec3Literal(moonHue.toArray())} * ((0.1 * near + 0.03 * pow(m, 3.0)) * uMoonVis)
+        + ${glslColor(CLOUD_CITY_GLOW)} * low + rim
+        // L2: the city's glow on the undersides, strongest over its dense
+        // districts (the far skyline's own density, under this cloud).
+        + abCityGlow.rgb * (${CLOUD_GLOW_GAIN.toFixed(2)} * low * (0.3 + 0.7 * abFarDensity(uFarOrigin + hz * ${CLOUD_A.height.toFixed(1)})))
+        // L7b: the cloud base over the fires glows ember-red.
+        + uBurnGlow * ((0.25 + 2.5 * low) * burnToward);
       vec3 bodyB = ${glslColor(CLOUD_HIGH)}
-        + ${vec3Literal(moonHue.toArray())} * (0.02 + 0.2 * near) * uMoonVis;
+        + ${vec3Literal(moonHue.toArray())} * (0.02 + 0.2 * near) * uMoonVis
+        + uBurnGlow * (0.15 * burnToward);
       sky = mix(sky, bodyB, dB);
       sky = mix(sky, bodyA, dA);
       cover = clamp(dA + dB * (1.0 - dA), 0.0, 1.0);
@@ -405,9 +435,23 @@ ${chain}
   }
   // The air (see above): the same affine map as the fog, the flash gain
   // ramped in from the stop, and below the stop exactly the fog colour.
-  vec3 air = (sky * uAirScale + uAirAdd) * (1.0 + (uAirGain - 1.0) * above);
+  vec3 air = sky * uAirScale + uAirAdd;
+  // L7b: the burn's smoke tint is the map's LAST lerp (uBurnAir: colour,
+  // weight). Up to SKY_GLOW_RAMP above the stop it is the full map; higher
+  // it thins out, so the storm sky and the moon stay over the burning city.
+  if (uBurnAir.w > 0.0) {
+    float burnHigh = smoothstep(${(SKY_FOG_ELEVATION + SKY_GLOW_RAMP).toFixed(5)}, ${(SKY_FOG_ELEVATION + BURN_SKY_TOP).toFixed(5)}, el);
+    vec3 preBurn = (air - uBurnAir.rgb * uBurnAir.w) / (1.0 - uBurnAir.w);
+    float burnW = uBurnAir.w * (1.0 - ${BURN_SKY_THIN.toFixed(2)} * burnHigh);
+    air = preBurn * (1.0 - burnW) + uBurnAir.rgb * burnW;
+  }
+  air *= 1.0 + (uAirGain - 1.0) * above;
   air += ${vec3Literal(flash.toArray())} * (${CLOUD_FLASH_PEAK.toFixed(3)} * lightning);
-  diffuseColor.rgb = mix(uFogColor, air, above);
+  // L2: the city glow, by elevation — the same term the fog chunk adds to
+  // every fogged surface, so below the stop this is still exactly the fog
+  // colour along this ray, and above it the glow carries on, fading.
+  diffuseColor.rgb = mix(uFogColor, air, above)
+    + abCityGlow.rgb * abCityGlowProfile(clamp(sd.y, -1.0, 1.0));
 }`,
       );
   };
@@ -434,6 +478,11 @@ interface SkyUniforms extends CloudUniforms {
   /** L1: in-cloud lightning level 0..1 and the unit direction to it. */
   uFlash: { value: number };
   uFlashDir: { value: THREE.Vector3 };
+  /** L7b: the burning city's glow (linear) and where it is (x, z, focus). */
+  uBurnGlow: { value: THREE.Vector3 };
+  uBurnDir: { value: THREE.Vector3 };
+  /** L7b: the burn's lerp in the air map (rgb colour, w weight). */
+  uBurnAir: { value: THREE.Vector4 };
 }
 
 /** Linear → sRGB transfer (the gradient uniforms are sRGB, like the old
@@ -580,6 +629,16 @@ export function patchCloudCover(
     );
 }
 
+/** L7b: the burning city's glow on the sky and the cloud base at full
+ * strength (linear, before the air map — the city's light through smoke,
+ * deep ember-red, far under the bloom threshold), and how much each glow
+ * spot's strength (burn-scaled) adds toward it. */
+export const BURN_SKY_GLOW = [0.075, 0.016, 0.003] as const;
+// L7b's BURN_SKY_THIN / BURN_SKY_TOP (how much of the burn's smoke tint the
+// high dome sheds, and by when) live in sky-fog.ts since H1: the fog chunks
+// shed it the same way.
+const BURN_SKY_PER_SPOT = 0.3;
+
 /** Camera-following gradient dome, just inside the far plane, above the fog. */
 export class SkyDome {
   readonly mesh: THREE.Mesh;
@@ -624,6 +683,9 @@ export class SkyDome {
       uAirGain: { value: 1 },
       uFlash: { value: 0 },
       uFlashDir: { value: new THREE.Vector3(0, 1, 0) },
+      uBurnGlow: { value: new THREE.Vector3() },
+      uBurnDir: { value: new THREE.Vector3(1, 0, 0) },
+      uBurnAir: { value: new THREE.Vector4() },
     };
     this.setMoon(MOON_DIR);
     skyPatch(material, this.uniforms);
@@ -692,20 +754,29 @@ export class SkyDome {
     add: THREE.Color;
     gain: number;
     fog: THREE.Color;
+    burn?: number;
+    burnTint?: THREE.Color;
   }): void {
     const u = this.uniforms;
     u.uAirScale.value = air.scale;
     u.uAirAdd.value.copy(air.add);
     u.uAirGain.value = air.gain;
     u.uFogColor.value.copy(air.fog);
+    const t = air.burnTint;
+    u.uBurnAir.value.set(t?.r ?? 0, t?.g ?? 0, t?.b ?? 0, air.burn ?? 0);
     // H1: the fog chunks' copy of the map (sky-fog.ts), switched on by the
-    // first write.
+    // first write — the burn's smoke tint included, so a fogged supertall
+    // over a burning city still takes the dome's colour behind it.
     SKY_FOG_AIR[0] = air.add.r;
     SKY_FOG_AIR[1] = air.add.g;
     SKY_FOG_AIR[2] = air.add.b;
     SKY_FOG_AIR[3] = air.scale;
     SKY_FOG_AIR[4] = air.gain;
     SKY_FOG_AIR[5] = 1;
+    SKY_FOG_AIR[8] = t?.r ?? 0;
+    SKY_FOG_AIR[9] = t?.g ?? 0;
+    SKY_FOG_AIR[10] = t?.b ?? 0;
+    SKY_FOG_AIR[11] = air.burn ?? 0;
   }
 
   /**
@@ -722,6 +793,47 @@ export class SkyDome {
     d.y = CLOUD_A.height;
     d.z = toStrike.z;
     u.uFlashDir.value.set(d.x, d.y, d.z).normalize();
+  }
+
+  /**
+   * L7b: the fires under the sky (render/inferno.ts cloudGlow: render-space
+   * x, z, strength, radius per spot — each the torus image nearest the
+   * viewer, so the direction is the wrapped one) seen from `eye`. The glow
+   * leans toward their strength-weighted direction, all round when they
+   * surround the eye. Burn 0 (no spots) is exactly the old dome.
+   */
+  setBurnGlow(
+    spots: Float32Array,
+    count: number,
+    eye: { x: number; z: number },
+  ): void {
+    let sx = 0;
+    let sz = 0;
+    let sum = 0;
+    for (let i = 0; i < count; i++) {
+      const dx = (spots[i * 4] as number) - eye.x;
+      const dz = (spots[i * 4 + 1] as number) - eye.z;
+      const w = spots[i * 4 + 2] as number;
+      const len = Math.hypot(dx, dz);
+      if (w <= 0 || len < 1) {
+        sum += Math.max(0, w);
+        continue;
+      }
+      sx += (dx / len) * w;
+      sz += (dz / len) * w;
+      sum += w;
+    }
+    const u = this.uniforms;
+    const k = Math.min(1, sum * BURN_SKY_PER_SPOT);
+    u.uBurnGlow.value.set(
+      BURN_SKY_GLOW[0] * k,
+      BURN_SKY_GLOW[1] * k,
+      BURN_SKY_GLOW[2] * k,
+    );
+    const len = Math.hypot(sx, sz);
+    if (len > 1e-6) {
+      u.uBurnDir.value.set(sx / len, sz / len, Math.min(1, len / sum));
+    } else u.uBurnDir.value.set(1, 0, 0);
   }
 
   /** M3 tiers: fine cloud octaves and the rim's second octave (uniforms —

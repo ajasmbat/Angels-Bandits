@@ -26,7 +26,7 @@ import { type Strike, strikesInWindow } from "@angels-bandits/common/storm";
 import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
-import { HAZE_PARAMS, HAZE_WEATHER } from "./fog";
+import { CITY_GLOW, HAZE_PARAMS, HAZE_WEATHER } from "./fog";
 import { RENDER_ORDER } from "./render-order";
 import { DUSK, FOG_NEAR } from "./sky";
 import { STORM_FLASH_COLOR } from "./sky-clouds";
@@ -342,15 +342,32 @@ export interface SkyAir {
   /** This frame's fog colour (scene.fog.color), for the band below the stop. */
   fog: THREE.Color;
   domeVisible: boolean;
+  /** L7b: the burn's lerp — the LAST step of the map — its weight and
+   * colour, so the dome can thin it out high above the stop (where the
+   * map need not match the fog) and keep the storm sky overhead. */
+  burn: number;
+  burnTint: THREE.Color;
 }
 /** L7 inferno: at burn level 1 the fog (and, through the SkyAir map, the
- * sky behind it) is pulled this far toward a smoky ember-brown, and the
- * height haze toward smoke — the same on every tier (rule 2), and
- * darken-leaning, so nothing in the air nears the bloom threshold. */
-const BURN_FOG_MIX = 0.45;
-const BURN_FOG_COLOR = 0x3a1a0e;
-const BURN_HAZE_MIX = 0.5;
-const BURN_HAZE_RGB = [0.1, 0.055, 0.04] as const;
+ * sky behind it) is pulled this far toward a smoky ember-brown (L7b: the
+ * distance glowing through the smoke, the black columns standing out
+ * against it — still dark: the haze measures ≈ sRGB 0.3 with L2's horizon
+ * glow on top, under fire-cover's 0.45), and the height haze toward smoke —
+ * the same on every tier (rule 2), and darken-leaning, so nothing in the
+ * air nears the bloom threshold. */
+const BURN_FOG_MIX = 0.42;
+const BURN_FOG_COLOR = 0x6a2a12;
+const BURN_HAZE_MIX = 0.55;
+const BURN_HAZE_RGB = [0.14, 0.06, 0.035] as const;
+
+/** L2 city glow (fog.ts CITY_GLOW): the light pollution's colour (sRGB)
+ * and its peak linear luminance at the horizon on a clear night — ~0.7×
+ * the fog colour's own 0.025, so the horizon glows warm, far under bloom.
+ * The burning city pulls it toward ember red and up by BURN_GLOW_GAIN. */
+export const CITY_GLOW_COLOR = 0xffb26e;
+export const CITY_GLOW_PEAK = 0.017;
+const BURN_GLOW_COLOR = 0xff5520;
+const BURN_GLOW_GAIN = 1.4;
 
 /** The slice of the shared weather (common/src/weather.ts) the sky reads. */
 export interface SkyWeather {
@@ -393,11 +410,17 @@ export class StormRenderer {
   private readonly dustFogColor = new THREE.Color(DUST_FOG_COLOR);
   private readonly burnFogColor = new THREE.Color(BURN_FOG_COLOR);
   private readonly flashColor = new THREE.Color(FLASH_COLOR);
+  /** L2: the clear-night city glow and its burning shade, at unit
+   * luminance (linear). */
+  private readonly glowColor = unitLuma(new THREE.Color(CITY_GLOW_COLOR));
+  private readonly burnGlowColor = unitLuma(new THREE.Color(BURN_GLOW_COLOR));
   private readonly air: SkyAir = {
     scale: 1,
     add: new THREE.Color(0, 0, 0),
     gain: 1,
     fog: new THREE.Color(DUSK.sky),
+    burn: 0,
+    burnTint: new THREE.Color(BURN_FOG_COLOR),
     domeVisible: true,
   };
   /** Where the latest bolt came down (canonical), for the dome's in-cloud
@@ -572,6 +595,10 @@ export class StormRenderer {
    * reads brightest in a downpour all route through here, so this stays the
    * single writer of fog state (the strike schedule itself never changes:
    * strikes are server-authoritative kills).
+   *
+   * L2: also the city glow in the air (fog.ts CITY_GLOW) — `cityLight` is
+   * the sky cycle's street-light level (dusk dims it); none inside the deck
+   * or a dust cloud, dimmed with the rain, hotter and redder with `burn`.
    */
   atmosphere(
     scene: THREE.Scene,
@@ -580,6 +607,7 @@ export class StormRenderer {
     wx: SkyWeather = DRY_SKY,
     dust = 0,
     burn = 0,
+    cityLight = 1,
   ): SkyAir {
     const f = this.flashLevel(nowMs) * wx.flash;
     // 0 below the deck → 1 fully inside; a 30 m ramp kills boundary flicker.
@@ -602,6 +630,21 @@ export class StormRenderer {
       }
     }
     const dim = 1 - RAIN_DARKEN * wx.haze;
+    const glowK =
+      CITY_GLOW_PEAK *
+      cityLight *
+      dim *
+      (1 - inK) *
+      (1 - Math.min(1, dust)) *
+      (1 + BURN_GLOW_GAIN * burn);
+    for (let i = 0; i < 3; i++) {
+      const c = i === 0 ? "r" : i === 1 ? "g" : "b";
+      CITY_GLOW[i] =
+        glowK *
+        (this.glowColor[c] +
+          (this.burnGlowColor[c] - this.glowColor[c]) * burn);
+    }
+    CITY_GLOW[3] = burn;
     // The colour chain as an affine map x → x·scale + add (see SkyAir):
     // each lerp(t, w) is x·(1 − w) + t·w.
     const air = this.air;
@@ -613,6 +656,7 @@ export class StormRenderer {
     // L7: the burning city's smoke, last — the dome takes it through the
     // same map, so the horizon stays seamless.
     this.lerpAir(this.burnFogColor, burn * BURN_FOG_MIX);
+    air.burn = burn * BURN_FOG_MIX;
     const scale = air.scale;
     air.gain = 1 + f * 1.6;
     air.domeVisible = inK < 0.5;
@@ -666,10 +710,13 @@ export const DECK_FOG_LIFT = Math.min(CLOUD_BASE - 500, 150);
 const DECK_FOG_DEFINES = { AB_FOG_LIFT: DECK_FOG_LIFT.toFixed(1) };
 const CEILING_COLOR = 0x07090f;
 const CEILING_OPACITY = 0.55;
+/** L7b: the sheet thins from CEILING_NEAR to CEILING_FAR m from the viewer. */
+const CEILING_NEAR = 220;
+const CEILING_FAR = 620;
 
 /** L7: glow spots the deck takes, its glow colour (linear) and mix. */
 const DECK_GLOW_MAX = 8;
-const DECK_GLOW_RGB = "vec3(0.9, 0.26, 0.06)";
+const DECK_GLOW_RGB = "vec3(1.0, 0.28, 0.05)";
 const DECK_GLOW_MIX = 1.0;
 /** The puffs over a fire, pulled toward ember-orange (linear). */
 const PUFF_GLOW = new THREE.Color(0.95, 0.32, 0.1);
@@ -775,17 +822,18 @@ export class CloudDeck {
       shader.vertexShader = shader.vertexShader
         .replace(
           "#include <common>",
-          "#include <common>\nvarying vec2 vDeckXZ;",
+          "#include <common>\nvarying vec2 vDeckXZ;\nvarying float vDeckR;",
         )
         .replace(
           "#include <begin_vertex>",
-          "#include <begin_vertex>\nvDeckXZ = (modelMatrix * vec4(transformed, 1.0)).xz;",
+          "#include <begin_vertex>\nvDeckXZ = (modelMatrix * vec4(transformed, 1.0)).xz;\nvDeckR = length(position.xy);",
         );
       shader.fragmentShader = shader.fragmentShader
         .replace(
           "#include <common>",
           `#include <common>
 varying vec2 vDeckXZ;
+varying float vDeckR;
 uniform vec4 uDeckGlow[${DECK_GLOW_MAX}];
 uniform int uDeckGlowCount;`,
         )
@@ -800,11 +848,15 @@ for (int i = 0; i < ${DECK_GLOW_MAX}; i++) {
   deckGlow += g.z * k * k;
 }
 deckGlow = min(deckGlow, 1.0);
+// L7b: the sheet is the altitude cue OVERHEAD; seen edge-on far out it
+// would lay a flat fogged lid over the whole storm sky, so it thins with
+// distance from the viewer (the glow over the fires a good deal less).
+float deckNear = 1.0 - smoothstep(${CEILING_NEAR.toFixed(1)}, ${CEILING_FAR.toFixed(1)}, vDeckR);
 diffuseColor.rgb = mix(diffuseColor.rgb, ${DECK_GLOW_RGB}, deckGlow * ${DECK_GLOW_MIX.toFixed(2)});
-diffuseColor.a = max(diffuseColor.a, deckGlow * 0.85);`,
+diffuseColor.a = max(diffuseColor.a * mix(0.15, 1.0, deckNear), deckGlow * mix(0.45, 0.8, deckNear));`,
         );
     };
-    ceilingMat.customProgramCacheKey = () => "ab-cloud-ceiling-l7-glow";
+    ceilingMat.customProgramCacheKey = () => "ab-cloud-ceiling-l7b-glow";
     this.ceiling = new THREE.Mesh(
       new THREE.PlaneGeometry(2 * FOG_DISTANCE + 200, 2 * FOG_DISTANCE + 200),
       ceilingMat,
@@ -1021,4 +1073,9 @@ function writeBoltTube(
   });
   geometry.setDrawRange(0, n * TUBE_INDEX.length);
   uploadPrefix([attr], n * TUBE_VERT_COUNT);
+}
+
+/** `c` scaled to unit linear luminance (in place). */
+function unitLuma(c: THREE.Color): THREE.Color {
+  return c.multiplyScalar(1 / (0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b));
 }

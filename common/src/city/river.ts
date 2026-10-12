@@ -517,6 +517,96 @@ export interface Landmark {
   hx: number;
   hz: number;
   top: number;
+  /** The same parts clustered (side × span band), each with its exact
+   * bounding box — the collision tests' second broad phase. */
+  groups: readonly LandmarkGroup[];
+}
+
+/** A cluster of one landmark's parts and their bounding box (local frame,
+ * radius included). */
+export interface LandmarkGroup {
+  x0: number;
+  x1: number;
+  y0: number;
+  y1: number;
+  z0: number;
+  z1: number;
+  boxes: readonly LandmarkBox[];
+  struts: readonly LandmarkStrut[];
+}
+
+/** Cluster parts by side of the street (−x, over it, +x) and by z band
+ * (before, inside, after the D9 span), and box each cluster. */
+function groupParts(
+  boxes: readonly LandmarkBox[],
+  struts: readonly LandmarkStrut[],
+): LandmarkGroup[] {
+  const band = (v: number, cut: number) => (v < -cut ? 0 : v > cut ? 2 : 1);
+  const groups = new Map<
+    number,
+    LandmarkGroup & { b: LandmarkBox[]; s: LandmarkStrut[] }
+  >();
+  const at = (x: number, z: number) => {
+    const key = band(x, BRIDGE_HALF_WIDTH - 1) * 3 + band(z, BRIDGE_SPAN_HALF);
+    let g = groups.get(key);
+    if (!g) {
+      g = {
+        x0: Number.POSITIVE_INFINITY,
+        x1: Number.NEGATIVE_INFINITY,
+        y0: Number.POSITIVE_INFINITY,
+        y1: Number.NEGATIVE_INFINITY,
+        z0: Number.POSITIVE_INFINITY,
+        z1: Number.NEGATIVE_INFINITY,
+        boxes: [],
+        struts: [],
+        b: [],
+        s: [],
+      };
+      g.boxes = g.b;
+      g.struts = g.s;
+      groups.set(key, g);
+    }
+    return g;
+  };
+  const grow = (
+    g: LandmarkGroup,
+    x0: number,
+    x1: number,
+    y0: number,
+    y1: number,
+    z0: number,
+    z1: number,
+  ) => {
+    g.x0 = Math.min(g.x0, x0);
+    g.x1 = Math.max(g.x1, x1);
+    g.y0 = Math.min(g.y0, y0);
+    g.y1 = Math.max(g.y1, y1);
+    g.z0 = Math.min(g.z0, z0);
+    g.z1 = Math.max(g.z1, z1);
+  };
+  for (const b of boxes) {
+    const g = at(b.x, b.z);
+    g.b.push(b);
+    grow(g, b.x - b.hx, b.x + b.hx, b.y0, b.y1, b.z - b.hz, b.z + b.hz);
+  }
+  for (const q of struts) {
+    const g = at((q.ax + q.bx) / 2, (q.az + q.bz) / 2);
+    g.s.push(q);
+    grow(
+      g,
+      Math.min(q.ax, q.bx) - q.r,
+      Math.max(q.ax, q.bx) + q.r,
+      Math.min(q.ay, q.by) - q.r,
+      Math.max(q.ay, q.by) + q.r,
+      Math.min(q.az, q.bz) - q.r,
+      Math.max(q.az, q.bz) + q.r,
+    );
+  }
+  return [...groups.values()].map(({ b, s, ...g }) => ({
+    ...g,
+    boxes: b,
+    struts: s,
+  }));
 }
 
 /** The suspension pylons: centre |dz|, half depth, legs' x span, m. */
@@ -799,7 +889,16 @@ function buildLandmark(bridge: number, kind: LandmarkKind): Landmark {
     hz = Math.max(hz, Math.abs(s.az) + s.r, Math.abs(s.bz) + s.r);
     top = Math.max(top, s.ay + s.r, s.by + s.r);
   }
-  return { bridge, kind, boxes, struts, hx, hz, top };
+  return {
+    bridge,
+    kind,
+    boxes,
+    struts,
+    hx,
+    hz,
+    top,
+    groups: groupParts(boxes, struts),
+  };
 }
 
 /** The landmark bridges, in LANDMARK_LIST order. */
@@ -880,14 +979,26 @@ function landmarkHit(
 ): boolean {
   if (Math.abs(x) > lm.hx + r || Math.abs(z) > lm.hz + r) return false;
   if (y - r > lm.top) return false;
-  for (const b of lm.boxes) {
-    if (gone && b.span) continue;
-    if (inBox(x - b.x, z - b.z, y, r, b.hx, b.hz, b.y0, b.y1)) return true;
-  }
-  for (const s of lm.struts) {
-    if (gone && s.span) continue;
-    const rr = r + s.r;
-    if (strutDist2(x, y, z, 0, 0, 0, s) <= rr * rr) return true;
+  for (const g of lm.groups) {
+    if (
+      x < g.x0 - r ||
+      x > g.x1 + r ||
+      z < g.z0 - r ||
+      z > g.z1 + r ||
+      y < g.y0 - r ||
+      y > g.y1 + r
+    ) {
+      continue;
+    }
+    for (const b of g.boxes) {
+      if (gone && b.span) continue;
+      if (inBox(x - b.x, z - b.z, y, r, b.hx, b.hz, b.y0, b.y1)) return true;
+    }
+    for (const s of g.struts) {
+      if (gone && s.span) continue;
+      const rr = r + s.r;
+      if (strutDist2(x, y, z, 0, 0, 0, s) <= rr * rr) return true;
+    }
   }
   return false;
 }
@@ -928,28 +1039,33 @@ function landmarkClear(
   ) {
     return true;
   }
-  for (const b of lm.boxes) {
-    if (gone && b.span) continue;
-    if (
-      segmentHitsBox(
-        x,
-        y,
-        z,
-        d,
-        b.x - b.hx,
-        b.x + b.hx,
-        b.y0,
-        b.y1,
-        b.z - b.hz,
-        b.z + b.hz,
-      )
-    ) {
-      return false;
+  for (const g of lm.groups) {
+    if (!segmentHitsBox(x, y, z, d, g.x0, g.x1, g.y0, g.y1, g.z0, g.z1)) {
+      continue;
     }
-  }
-  for (const s of lm.struts) {
-    if (gone && s.span) continue;
-    if (strutDist2(x, y, z, d.x, d.y, d.z, s) <= s.r * s.r) return false;
+    for (const b of g.boxes) {
+      if (gone && b.span) continue;
+      if (
+        segmentHitsBox(
+          x,
+          y,
+          z,
+          d,
+          b.x - b.hx,
+          b.x + b.hx,
+          b.y0,
+          b.y1,
+          b.z - b.hz,
+          b.z + b.hz,
+        )
+      ) {
+        return false;
+      }
+    }
+    for (const s of g.struts) {
+      if (gone && s.span) continue;
+      if (strutDist2(x, y, z, d.x, d.y, d.z, s) <= s.r * s.r) return false;
+    }
   }
   return true;
 }

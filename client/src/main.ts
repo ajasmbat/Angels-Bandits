@@ -6459,7 +6459,9 @@ const frame = (now: number): void => {
   inferno.update({
     burn: burnShown,
     fires: socket.fires,
-    viewer: chase.position,
+    // The camera, not the plane: what is picked and lit follows the view
+    // (the same in play; a QA camera may sit far from the parked plane).
+    viewer: camera.position,
     camera,
     viewportH: renderer.domElement.height,
     worldMs: renderMs,

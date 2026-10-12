@@ -712,7 +712,7 @@ export interface InfernoFrame {
   burn: number;
   /** C2 burning chunks (`socket.fires`). */
   fires: ReadonlySet<number>;
-  /** Where things are placed around (the chase position). */
+  /** Where things are picked and placed around (the camera). */
   viewer: Vec3;
   camera: THREE.PerspectiveCamera;
   /** Viewport height in pixels (the air's point sizes). */

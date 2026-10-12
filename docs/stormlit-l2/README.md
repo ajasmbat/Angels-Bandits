@@ -81,3 +81,37 @@ The contract is written up in `concepts/invariants/sky-meets-fog.md`.
 - **Tower data.** A full window fill (10 404 cells) takes ~3 ms warm, and
   one row (crossing a cell) ~0.25 ms on this box. 8 208 of the High window's
   cells hold a tower: 1 175 over 150 m and 1 089 Art Deco setbacks.
+
+## Performance (SwiftShader, load average 70–150 from other tickets)
+
+`node tools/perf/run.mjs --runs 3 --ab-ref 7061222 …`, interleaved with main
+(the times are SwiftShader's, i.e. this box's CPU rasterising).
+
+| run | segment | draws (main → L2) | GPU p50 Δ | late compiles |
+|---|---|---|---|---|
+| `--res 0.75 --segments core,sky` | core | 99 → 101 (**+2**) | +23.4 % | 0 / 0 / 0 |
+| | sky | 83 → 83 (0: the far skyline hides with the dome in the cloud deck) | +0.0 % | 0 / 0 / 0 |
+| `--res 0.75 --segments core` (after the carpet density moved per vertex) | core | 99 → 101 (**+2**) | −13.6 % | 0 / 0 / 0 |
+| `--device phone --quality mobile --segments core` | core | 80 → 82 (**+2**) | +33.7 % | 0 / 0 / 0 |
+
+**The milliseconds here are noise.** The harness's own determinism check
+failed on every run: GPU p50 spread up to 144 % between passes, wall p50 up
+to 5300 %. The same core comparison read +23 % in one run and −14 % in the
+next. The numbers that do not depend on timing hold:
+
+- **+2 draw calls** on every tier (budget +3). The city glow adds 0.
+- **0 late compiles.** A tier switch only sets an instance count and a
+  uniform.
+- The **phone profile ran all passes**.
+
+The ≤ 0.6 ms GPU budget has to be measured on the M3. If it misses, these
+are the knobs, in order. None of them compiles:
+
+1. Lower High's radius (`farSkyline` 5000 → 4400 m in `quality.ts`, −22 %
+   tower slots).
+2. Thin the far towers by density.
+3. Drop the carpet's block speckle.
+
+Tower slots per tier: 102² / 90² / 70² / 54² (High → Mobile), 80 vertices
+each. Empty slots and those past the radius exit at the top of the vertex
+shader.

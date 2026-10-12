@@ -63,8 +63,10 @@ export const CUT_SPEED = 600;
 const CUT_SLACK = 20;
 
 /** Elevation band (rad above SKY_FOG_STOP) over which the clouds fade in
- * from zero — distant cloud melts into the horizon haze (≈ 12°). */
-export const CLOUD_FADE = 0.21;
+ * from zero — distant cloud melts into the horizon haze (L7b: ≈ 5°, was
+ * 12°, so a view out toward the horizon shows the deck right down to the
+ * haze, as reference 1 does; still exactly zero at the stop). */
+export const CLOUD_FADE = 0.09;
 
 /** Angular radius of the clear gap around the moon, rad (≈ 3.5 discs). */
 export const MOON_GAP = 0.16;
@@ -88,7 +90,7 @@ export const STORM_FLASH_COLOR = 0x9fb4ff;
  * gaps (the reference's clouds read lighter than the sky between them, the
  * thick cores darker than the thin edges), the high deck a touch lighter,
  * and the warm city glow on their undersides near the horizon. */
-export const CLOUD_BODY = 0x283143;
+export const CLOUD_BODY = 0x2e374b; // L7b: a step lighter (was 0x283143)
 export const CLOUD_CORE = 0x121822;
 export const CLOUD_HIGH = 0x222b3c;
 export const CLOUD_CITY_GLOW = 0x2a2018;

@@ -6139,7 +6139,14 @@ const frame = (now: number): void => {
     renderMs ?? now,
     nearestImageInto(batPlane, chase.position, flight.pos),
   );
-  skyDome.update(chase.position, dt, renderMs);
+  // L7b: the dome (moon, clouds) is centred on the RENDERED camera too — a
+  // QA eye hundreds of metres from the parked plane otherwise sees the
+  // moon and the cloud deck through that much parallax.
+  skyDome.update(
+    qaView ? nearestImage(chase.position, qaView.eye) : chase.position,
+    dt,
+    renderMs,
+  );
   airliners.update(renderMs);
   // Wounded smoke: own plane from server-said self HP, every remote (human
   // or bot) from snapshot HP — all clients see the same wounds. Death clouds
@@ -6384,6 +6391,12 @@ const frame = (now: number): void => {
   }
   clouds.update(chase.position, camera.quaternion, renderMs);
   clouds.setGlow(inferno.cloudGlow, inferno.cloudGlowCount, burnShown);
+  // L7b: and the sky over them (the dome, toward the fires).
+  skyDome.setBurnGlow(
+    inferno.cloudGlow,
+    burnShown > 0 ? inferno.cloudGlowCount : 0,
+    camera.position,
+  );
   // L12: the cycle's horizon is the storm's clear-sky fog base.
   skyCycle.update(renderMs);
   storm.setFogBase(skyCycle.horizon);

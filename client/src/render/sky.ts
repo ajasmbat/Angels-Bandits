@@ -583,7 +583,8 @@ export function patchCloudCover(
 export class SkyDome {
   readonly mesh: THREE.Mesh;
   private readonly stars: THREE.Points;
-  private readonly uniforms: SkyUniforms;
+  /** Public for L4: the river's moon column shares uMoonDir / uMoonVis. */
+  readonly uniforms: SkyUniforms;
   /** L1: the cloud uniforms the stars and airliners share by reference. */
   readonly clouds: CloudUniforms;
   private readonly cloudOffset = new CloudOffset();
@@ -1102,7 +1103,7 @@ ${STREET_WALK_GLSL}  } else {
     } else if (abKind == ${N.site}) {
       abPaint = abSitePaint(vWorldXZ, abNoiseV);
     } else if (abKind == ${N.river}) {
-      abPaint = abPromenadePaint(vWorldXZ, abNoiseV, ${GROUND_COLORS.paving}, ${GROUND_COLORS.slabJoint});
+      abPaint = abPromenadePaint(vWorldXZ, abNoiseV, ${GROUND_COLORS.paving}, ${GROUND_COLORS.slabJoint}, abEmissive);
     }
   }
 }

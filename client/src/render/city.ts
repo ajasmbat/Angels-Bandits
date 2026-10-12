@@ -42,7 +42,8 @@ import {
   type CollapseField,
   KIND_BUILDING,
   blankPose,
-  piecePose,
+  posePieceNow,
+  setPoseClock,
 } from "@angels-bandits/common/city/collapse";
 import {
   type CityIndex,
@@ -64,7 +65,7 @@ import {
   faceSlotsFor,
   tierKey,
 } from "./damage-map";
-import { fractureGeometry, pieceMatrix } from "./debris";
+import { fractureGeometry, pieceMatrixAt, pieceOrigin } from "./debris";
 import {
   type CrewSlot,
   LIVE_ON_UNIFORM,
@@ -577,11 +578,14 @@ export class CityRenderer {
       this.drawnKz[k] = kz;
       this.drawnSettled[k] = settled;
       const start = this.drawnStart[k] as number;
-      const ox = c.x + kx * WORLD_SIZE;
-      const oz = c.z + kz * WORLD_SIZE;
+      // D10: the clock and the origin once per collapse; the per-piece
+      // calls carry no doubles (~4× D3's pieces).
+      pieceOrigin.x = c.x + kx * WORLD_SIZE;
+      pieceOrigin.z = c.z + kz * WORLD_SIZE;
+      setPoseClock(t);
       for (let i = 0; i < c.n; i++) {
-        const pose = piecePose(c, i, t, this.bPose);
-        debris.setMatrixAt(start + i, pieceMatrix(pose, ox, oz, this.scratch));
+        const pose = posePieceNow(c, i, this.bPose);
+        debris.setMatrixAt(start + i, pieceMatrixAt(pose, this.scratch));
         const rest = pose.rest ? 1 : 0;
         if (this.bRest[start + i] !== rest) {
           this.bRest[start + i] = rest;

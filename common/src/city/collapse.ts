@@ -1084,6 +1084,21 @@ export function piecePose(
  * so the loop sets the clock once and poses with no double argument. */
 const poseClock = { tMs: 0 };
 
+/** D10: set the clock posePieceNow() poses at (once per frame, not once
+ * per piece — the per-frame posing loops' allocation-free path). */
+export function setPoseClock(tMs: number): void {
+  poseClock.tMs = tMs;
+}
+
+/** piecePose at the clock setPoseClock() last set. */
+export function posePieceNow(
+  c: Collapse,
+  i: number,
+  out: PiecePose,
+): PiecePose {
+  return poseNow(c, i, out);
+}
+
 /** piecePose at `poseClock.tMs`. */
 function poseNow(c: Collapse, i: number, out: PiecePose): PiecePose {
   const tau = (poseClock.tMs - c.t0) / 1000 - (c.start[i] as number);

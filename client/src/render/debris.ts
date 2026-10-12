@@ -45,6 +45,22 @@ export function pieceMatrix(
   return out.compose(pos, quat, scale).multiply(CENTRE);
 }
 
+/** D10: pieceMatrixAt()'s torus-image origin — set once per collapse, so
+ * the per-piece call carries no doubles (O5's rule: a double handed to a
+ * call V8 does not inline is boxed, and there are ~4× D3's pieces). */
+export const pieceOrigin = { x: 0, z: 0 };
+
+/** pieceMatrix at `pieceOrigin`. Allocation-free. */
+export function pieceMatrixAt(
+  pose: PiecePose,
+  out: THREE.Matrix4,
+): THREE.Matrix4 {
+  quat.setFromAxisAngle(pose.axis === 0 ? AXIS_X : AXIS_Z, pose.phi);
+  pos.set(pieceOrigin.x + pose.x, pose.y, pieceOrigin.z + pose.z);
+  scale.set(2 * pose.hx, 2 * pose.hy, 2 * pose.hz);
+  return out.compose(pos, quat, scale).multiply(CENTRE);
+}
+
 // --- D10 fracture geometry ----------------------------------------------------
 
 /** Segments per axis of the subdivided unit box. */

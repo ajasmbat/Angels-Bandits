@@ -98,13 +98,13 @@ const STRIP_Y = 0.05;
 // --- Luminance budget (linear, pre-bloom; the bloom threshold is 0.72) -----
 // Multipliers on STREET_GLOW_COLOR, whose own luminance is ~0.54.
 /** The lamp row's bright core (≈ 0.55 luminance at a lamp station). */
-const ROW_CORE = 1.5;
+const ROW_CORE = 1.15;
 /** The soft halo either side of a lamp row. */
-const ROW_HALO = 0.5;
+const ROW_HALO = 0.42;
 /** The warm wash over the roadway (≈ 0.06). */
 const ROAD_WASH = 0.24;
 /** A crossing's corner pools (≈ 0.65 where two lamp rows meet). */
-const CORNER = 1.3;
+const CORNER = 1.0;
 /** Storefront spill along a building lot (≈ 0.11 on the brightest shops). */
 const SHOP = 0.35;
 /** Neon smear peak luminance (sparse, a few lots per street). */

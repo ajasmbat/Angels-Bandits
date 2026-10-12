@@ -6370,7 +6370,7 @@ const frame = (now: number): void => {
     bossWarning(socket.boss, renderMs) ??
       (wxMs === null ? null : stormWarning(wx)),
   );
-  rain.update(wx, wxMs, camera.position, dt);
+  rain.update(wx, wxMs, camera.position, dt, searchlights); // L5: lit in the beams
   const sky = storm.atmosphere(
     scene,
     chase.position.y,

@@ -1,0 +1,117 @@
+# L2 Stormlit: the far skyline and the city glow, before and after
+
+Each sheet has three columns: the matching crop of a reference render, main
+before L2 (`7061222`), and this branch. Everything was shot with
+`tools/perf/gallery.mjs` at 1280×720 on a GPU-less Linux box (SwiftShader,
+load average 40–70 from other tickets), so the colours are right but no
+frame rate here means anything.
+
+Weather and the room's burn level are live in the gallery unless a view pins
+them. Shots in the same row were taken minutes apart in separate sessions, so
+rain, lightning and the burn can differ between before and after. Read the
+far field and the horizon, not the near-city weather.
+
+| sheet | what to look at |
+|---|---|
+| `reference-wide.jpg` | New view: 300 m over the river, looking along it. Before, the city stopped at the 800 m fog limit against an empty navy sky. After, the river runs on into the far city (waterfront lamps, bridge light chains), the street grid continues to the horizon, the far towers stand as dark silhouettes with lit windows, and the horizon glows warm under the sky. |
+| `reference-wide-inferno.jpg` | The same view at burn 0.9: the far districts afire, the windows gone ember, the horizon glow hotter and redder. |
+| `high-overview.jpg` | Kilometres of city out to the horizon, where there was haze (both in rain). |
+| `chase-rooftops.jpg` | From roof height, the far skyline stands above the near blocks right across the horizon, with a spire silhouette. |
+| `street-low.jpg` | In the canyon the far field is almost all hidden by the near blocks, as it should be. The only change is a warmer horizon at the street's end. |
+| `boss-closeup.jpg` | Behind the carrier, the far city and the glow fill what was empty fog, with two spire silhouettes on the horizon. |
+| `moon.jpg` | Clear weather, toward the moon. The far skyline (spires, setbacks, lit windows) stands on a warm horizon band under the dark sky. Before, the city ended at the fog. (The before frame caught a lightning flash.) |
+
+## Layered depth, and one deliberate gap
+
+The long views now read near blocks → mid city (into the fog) → far skyline →
+glowing horizon. Between the real city's fog (≈ 650–800 m) and the far city's
+fade-in (to ≈ 1.25 km) there is a band that reads as a low mist bank. That is
+deliberate. The far city is drawn just inside the fog limit (below), and it
+has to start fog-coloured, or its inner edge would show as a ring.
+
+Real buildings at 700–800 m are almost fully fogged. They stand in front of
+the far city as soft fog-coloured silhouettes, like towers in mist in front of
+a lit distance. That is how the fog has to compose with a far field drawn
+behind it.
+
+## How it works (the short version)
+
+- **The shell.** The far city (true distance 0.8–5 km) is drawn along each
+  vertex's own view ray at a compressed distance of 792–799.5 m, just inside
+  the fog limit. Everything real at 800 m or more is exactly the fog colour,
+  torus images that switch included, and always loses the depth test to it.
+  So no wrap can ever show against the far city, and the camera's far plane
+  (900 m) never clips it.
+- **World-anchored.** It is placed on an unwrapped camera offset (the clouds'
+  `CloudOffset`, with a 64 km period of 32 torus widths). It has true
+  parallax, never jumps at the seam, and continues the real 200 m street grid
+  and the river row.
+- **Nothing pops.** Towers fade to the fog colour by 950 m, then sink to zero
+  height while already fog-coloured. Spires do the same from 2.6 km in, so
+  they recede into the fog and are never reached. Everything is exactly the
+  fog colour again by R_out − 100 m, so there is no ring edge.
+- **The glow is part of the fog colour.** It is added per view ray (peaking
+  at the horizon) in the fog chunk (every fogged material), in the dome on
+  both sides of the fog stop, and in the far skyline, so the sky still meets
+  the fog exactly. The cloud masses' undersides take it too, strongest over
+  the far city's dense districts. It is 0 inside the cloud deck and in dust,
+  and hotter and redder with the inferno burn.
+
+The contract is written up in `concepts/invariants/sky-meets-fog.md`.
+
+## Probes (scratch scripts, not committed tests)
+
+- **The shell.** `farShellDistance` was sampled every 0.5 m over 800–6000 m.
+  It is strictly increasing and stays in [792.0, 797.4] m, always under the
+  fog limit.
+- **The lattice never pops.** A CPU-side flight drove the real
+  `FarSkyline.update` 3 km east at 7 m a frame, across the torus seam and 30
+  cell boundaries. Every frame it rebuilt each tower the way the vertex
+  shader does. Over 2.63 M tower checks there were **0 problems**:
+  - every tower within R was present exactly once;
+  - each one carried its own world cell's data;
+  - none moved in the unwrapped plane.
+- **Bloom.** The pre-bloom HDR light the far skyline adds (`__ab.hdrLuma`,
+  `AB_GALLERY_PROBE=farSkyline`) peaks at 0.33 in `high-overview` and 0.30
+  in `chase-rooftops`. It pushes **0 pixels** over the 0.72 threshold. The
+  shader also caps a tower's stacked lights at 0.7 before the far fade.
+- **The glow curve.** `cityGlowProfile` is 1.00 at the horizon, 0.29 at 5°
+  up and 0.013 at the fog stop (18°). It is 0.32 looking 20° down. The GLSL
+  carries the same two constants.
+- **Tower data.** A full window fill (10 404 cells) takes ~3 ms warm, and
+  one row (crossing a cell) ~0.25 ms on this box. 8 208 of the High window's
+  cells hold a tower: 1 175 over 150 m and 1 089 Art Deco setbacks.
+
+## Performance (SwiftShader, load average 70–150 from other tickets)
+
+`node tools/perf/run.mjs --runs 3 --ab-ref 7061222 …`, interleaved with main
+(the times are SwiftShader's, i.e. this box's CPU rasterising).
+
+| run | segment | draws (main → L2) | GPU p50 Δ | late compiles |
+|---|---|---|---|---|
+| `--res 0.75 --segments core,sky` | core | 99 → 101 (**+2**) | +23.4 % | 0 / 0 / 0 |
+| | sky | 83 → 83 (0: the far skyline hides with the dome in the cloud deck) | +0.0 % | 0 / 0 / 0 |
+| `--res 0.75 --segments core` (after the carpet density moved per vertex) | core | 99 → 101 (**+2**) | −13.6 % | 0 / 0 / 0 |
+| `--device phone --quality mobile --segments core` | core | 80 → 82 (**+2**) | +33.7 % | 0 / 0 / 0 |
+
+**The milliseconds here are noise.** The harness's own determinism check
+failed on every run: GPU p50 spread up to 144 % between passes, wall p50 up
+to 5300 %. The same core comparison read +23 % in one run and −14 % in the
+next. The numbers that do not depend on timing hold:
+
+- **+2 draw calls** on every tier (budget +3). The city glow adds 0.
+- **0 late compiles.** A tier switch only sets an instance count and a
+  uniform.
+- The **phone profile ran all passes**.
+
+The ≤ 0.6 ms GPU budget has to be measured on the M3. If it misses, these
+are the knobs, in order. None of them compiles:
+
+1. Lower High's radius (`farSkyline` 5000 → 4400 m in `quality.ts`, −22 %
+   tower slots).
+2. Thin the far towers by density.
+3. Drop the carpet's block speckle.
+
+Tower slots per tier: 102² / 90² / 70² / 54² (High → Mobile), 80 vertices
+each. Empty slots and those past the radius exit at the top of the vertex
+shader.

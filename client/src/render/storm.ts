@@ -26,7 +26,7 @@ import { type Strike, strikesInWindow } from "@angels-bandits/common/storm";
 import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
-import { HAZE_PARAMS, HAZE_WEATHER } from "./fog";
+import { CITY_GLOW, HAZE_PARAMS, HAZE_WEATHER } from "./fog";
 import { RENDER_ORDER } from "./render-order";
 import { DUSK, FOG_NEAR } from "./sky";
 import { STORM_FLASH_COLOR } from "./sky-clouds";
@@ -352,6 +352,15 @@ const BURN_FOG_COLOR = 0x3a1a0e;
 const BURN_HAZE_MIX = 0.5;
 const BURN_HAZE_RGB = [0.1, 0.055, 0.04] as const;
 
+/** L2 city glow (fog.ts CITY_GLOW): the light pollution's colour (sRGB)
+ * and its peak linear luminance at the horizon on a clear night — ~0.7×
+ * the fog colour's own 0.025, so the horizon glows warm, far under bloom.
+ * The burning city pulls it toward ember red and up by BURN_GLOW_GAIN. */
+export const CITY_GLOW_COLOR = 0xffb26e;
+export const CITY_GLOW_PEAK = 0.017;
+const BURN_GLOW_COLOR = 0xff5520;
+const BURN_GLOW_GAIN = 1.4;
+
 /** The slice of the shared weather (common/src/weather.ts) the sky reads. */
 export interface SkyWeather {
   /** Extra haze, 0..1. */
@@ -393,6 +402,10 @@ export class StormRenderer {
   private readonly dustFogColor = new THREE.Color(DUST_FOG_COLOR);
   private readonly burnFogColor = new THREE.Color(BURN_FOG_COLOR);
   private readonly flashColor = new THREE.Color(FLASH_COLOR);
+  /** L2: the clear-night city glow and its burning shade, at unit
+   * luminance (linear). */
+  private readonly glowColor = unitLuma(new THREE.Color(CITY_GLOW_COLOR));
+  private readonly burnGlowColor = unitLuma(new THREE.Color(BURN_GLOW_COLOR));
   private readonly air: SkyAir = {
     scale: 1,
     add: new THREE.Color(0, 0, 0),
@@ -572,6 +585,10 @@ export class StormRenderer {
    * reads brightest in a downpour all route through here, so this stays the
    * single writer of fog state (the strike schedule itself never changes:
    * strikes are server-authoritative kills).
+   *
+   * L2: also the city glow in the air (fog.ts CITY_GLOW) — `cityLight` is
+   * the sky cycle's street-light level (dusk dims it); none inside the deck
+   * or a dust cloud, dimmed with the rain, hotter and redder with `burn`.
    */
   atmosphere(
     scene: THREE.Scene,
@@ -580,6 +597,7 @@ export class StormRenderer {
     wx: SkyWeather = DRY_SKY,
     dust = 0,
     burn = 0,
+    cityLight = 1,
   ): SkyAir {
     const f = this.flashLevel(nowMs) * wx.flash;
     // 0 below the deck → 1 fully inside; a 30 m ramp kills boundary flicker.
@@ -602,6 +620,21 @@ export class StormRenderer {
       }
     }
     const dim = 1 - RAIN_DARKEN * wx.haze;
+    const glowK =
+      CITY_GLOW_PEAK *
+      cityLight *
+      dim *
+      (1 - inK) *
+      (1 - Math.min(1, dust)) *
+      (1 + BURN_GLOW_GAIN * burn);
+    for (let i = 0; i < 3; i++) {
+      const c = i === 0 ? "r" : i === 1 ? "g" : "b";
+      CITY_GLOW[i] =
+        glowK *
+        (this.glowColor[c] +
+          (this.burnGlowColor[c] - this.glowColor[c]) * burn);
+    }
+    CITY_GLOW[3] = burn;
     // The colour chain as an affine map x → x·scale + add (see SkyAir):
     // each lerp(t, w) is x·(1 − w) + t·w.
     const air = this.air;
@@ -1011,4 +1044,9 @@ function writeBoltTube(
   });
   geometry.setDrawRange(0, n * TUBE_INDEX.length);
   uploadPrefix([attr], n * TUBE_VERT_COUNT);
+}
+
+/** `c` scaled to unit linear luminance (in place). */
+function unitLuma(c: THREE.Color): THREE.Color {
+  return c.multiplyScalar(1 / (0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b));
 }

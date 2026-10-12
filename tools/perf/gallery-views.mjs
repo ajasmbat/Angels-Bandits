@@ -1382,4 +1382,36 @@ export const VIEWS = [
       burn: 0.9,
     },
   },
+  // L2 Stormlit: the reference's long view — 300 m over the river, looking
+  // east along it past the real city's fog limit to the far skyline (its
+  // waterfront, bridge light chains and spires) and the glowing horizon.
+  // The plane is held 160 m behind the eye, out of shot.
+  {
+    name: "reference-wide",
+    x: 400,
+    z: 1100,
+    y: 330,
+    yaw: -Math.PI / 2,
+    eye: [560, 300, 1100],
+    at: [1560, 40, 1100],
+    timeMs: 1_790_000_000_000,
+    weather: "clear",
+    raf: true,
+    // The room's live burn level, pinned off (the inferno view pins 0.9).
+    stage: { burn: 0 },
+  },
+  // L2: the same long view with reference 2's city burning (burn 0.9).
+  {
+    name: "reference-wide-inferno",
+    x: 400,
+    z: 1100,
+    y: 330,
+    yaw: -Math.PI / 2,
+    eye: [560, 300, 1100],
+    at: [1560, 40, 1100],
+    timeMs: 1_790_000_000_000,
+    weather: "clear",
+    raf: true,
+    stage: { burn: 0.9 },
+  },
 ];

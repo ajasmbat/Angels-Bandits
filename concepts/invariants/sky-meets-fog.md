@@ -5,8 +5,10 @@
 - the **linear fog** every fogged material gets: `fog_fragment`, patched in
   `client/src/render/fog.ts`, computes `abFogFactor(fogNear, fogFar, d)`;
 - every **custom shader that fogs itself**: the searchlight beams
-  (`searchlights.ts`), the headlight cones (`headlights.ts`), and anything
-  later that draws far away (L2's skyline);
+  (`searchlights.ts`), the headlight cones (`headlights.ts`), and L2's far
+  skyline (`far-skyline.ts`);
+- the **city glow** (`fog.ts` `CITY_GLOW`, L2): a warm term added to the
+  fog colour per view direction, `abGlowFog(fogColor, sinEl)`;
 - the **sky dome** (`sky.ts` `skyPatch`) below and just above
   `SKY_FOG_STOP`;
 - the **fog colour writer**: `StormRenderer.atmosphere()` in `storm.ts`,
@@ -38,6 +40,18 @@
 3. **Additive things fade by attenuation, never by lerping to the fog
    colour.** They multiply by `(1 − abFogFactor) · (1 − haze)` (the V1
    lesson: a lerp brightens the distance).
+4. **The fog colour is per RAY, not per frame (L2).** Every site that draws
+   the fog colour adds the same city glow, `CITY_GLOW.rgb ·
+   cityGlowProfile(sinEl)`, with sinEl the sine of the view ray's elevation:
+   - the fog chunk (`abFogC`, all fogged materials; none under the street);
+   - the dome, on both sides of the stop, so below it the dome is still
+     exactly the fog colour along that ray;
+   - the far skyline's fade target.
+   The glow is elevation-only by design, because the fog chunk only knows
+   the ray's height. Its only writer is `storm.atmosphere()`, and it is 0
+   inside the deck and in dust. A custom shader that mixes toward
+   `fogColor` itself must mix toward `abGlowFog(fogColor, sinEl)` instead,
+   or a fogged object shows as a darker shape against the glowing horizon.
 
 **What breaks when they disagree:**
 
@@ -48,11 +62,29 @@
 - A shape that does not reach 1 at `fogFar` shows the torus wrap as a
   tower popping in at the screen edge.
 
-**For a new far-field shader (L2):** include `AB_FOG_GLSL` and take
+**For a new far-field shader:** include `AB_FOG_GLSL` and take
 `fogColor` / `fogNear` / `fogFar` from three's `UniformsLib.fog` (a
 `ShaderMaterial` with `fog: true` is fed them live). Then call
-`abFogFactor` and `abHazeAmount`. Do not keep a second copy of the fog
-state.
+`abFogFactor`, `abHazeAmount` and `abGlowFog`. Do not keep a second copy of
+the fog state.
+
+**The far skyline (L2) is drawn in a shell just INSIDE the fog limit.**
+- Its vertices move along their own view rays to a compressed radial
+  distance in [792, 799.5) m (`farShellDistance`). The screen position stays
+  exact and the depth order monotonic.
+- Everything real at or past 800 m is exactly the fog colour (torus images
+  that switch included) and always loses the depth test to it, so no wrap
+  can ever show against the far city.
+- Real geometry at 792–800 m is ≥ 99.8 % fogged, so its order against the
+  shell cannot be seen.
+- It is placed at an unwrapped offset like the clouds (`CloudOffset` with a
+  64 km period, a whole number of torus widths). It stays congruent to the
+  canonical position, so the far street grid and river continue the real
+  ones.
+- It fades so nothing pops: fog-coloured at its inner edge, then sunk to
+  zero height before a slot leaves.
+- Moving the shell outside 800 m, or past the camera's far plane (900 m),
+  breaks this.
 
 **The storm sky's clouds (`sky-clouds.ts`) are part of the same seam:**
 

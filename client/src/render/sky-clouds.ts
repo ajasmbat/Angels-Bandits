@@ -231,12 +231,17 @@ float abCloudCover(vec3 sd) {
  * the float the shader gets never loses its fraction.
  */
 export class CloudOffset {
-  /** Unwrapped camera x/z, m (mod CLOUD_PERIOD). */
+  /** Unwrapped camera x/z, m (mod `period`). */
   x = 0;
   z = 0;
   private readonly prev: Vec3 = { x: 0, y: 0, z: 0 };
   private readonly step: Vec3 = { x: 0, y: 0, z: 0 };
   private primed = false;
+
+  /** `period`: what x/z are kept mod — CLOUD_PERIOD for the clouds; L2's
+   * far skyline keeps a whole number of torus widths instead, so x/z stay
+   * congruent to the canonical position mod WORLD_SIZE. */
+  constructor(private readonly period = CLOUD_PERIOD) {}
 
   /** Advance to the camera's canonical position after `dtSec` (the sim's
    * clamped step). Returns true when this frame was a cut (reset). */
@@ -247,12 +252,12 @@ export class CloudOffset {
       const moved = Math.hypot(d.x, d.z);
       if (moved > CUT_SLACK + CUT_SPEED * Math.max(0, dtSec)) cut = true;
       else {
-        this.x = mod(this.x + d.x, CLOUD_PERIOD);
-        this.z = mod(this.z + d.z, CLOUD_PERIOD);
+        this.x = mod(this.x + d.x, this.period);
+        this.z = mod(this.z + d.z, this.period);
       }
     }
     if (cut) {
-      // Canonical coords are already in [0, WORLD_SIZE) ⊂ [0, CLOUD_PERIOD).
+      // Canonical coords are already in [0, WORLD_SIZE) ⊂ [0, period).
       this.x = mod(cam.x, WORLD_SIZE);
       this.z = mod(cam.z, WORLD_SIZE);
     }

@@ -240,8 +240,9 @@ void main() {
   float shape = exp(-r2 * 1.1) * (1.0 - smoothstep(0.45, 1.0, r2));
   if (vTint.a * shape < 0.002) discard;
   #ifdef USE_FOG
-    // The haze it is made of (fog.ts's haze colour), lit from below.
-    vec3 abBase = mix(fogColor, abHazeParams.rgb, abHazeParams.a);
+    // The haze it is made of (fog.ts's haze colour, over L2's glow-aware
+    // fog colour along this ray), lit from below.
+    vec3 abBase = mix(abGlowFog(fogColor, (vFogWorldY - cameraPosition.y) / max(vFogDepth, 1.0)), abHazeParams.rgb, abHazeParams.a);
   #else
     vec3 abBase = vec3(0.06, 0.05, 0.08);
   #endif

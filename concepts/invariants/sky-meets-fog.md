@@ -5,8 +5,10 @@
 - the **linear fog** every fogged material gets: `fog_fragment`, patched in
   `client/src/render/fog.ts`, computes `abFogFactor(fogNear, fogFar, d)`;
 - every **custom shader that fogs itself**: the searchlight beams
-  (`searchlights.ts`), the headlight cones (`headlights.ts`), and L2's far
-  skyline (`far-skyline.ts`);
+  (`searchlights.ts`), the headlight cones (`headlights.ts`), the far rain
+  curtain (`rain.ts`'s far layer, L5: attenuated by `abFogFactor` and the
+  height haze in its vertex shader, `fog: true` only to be fed the
+  uniforms), and L2's far skyline (`far-skyline.ts`);
 - the **city glow** (`fog.ts` `CITY_GLOW`, L2): a warm term added to the
   fog colour per view direction, `abGlowFog(fogColor, sinEl)`;
 - the **sky dome** (`sky.ts` `skyPatch`) below and just above

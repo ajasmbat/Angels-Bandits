@@ -186,7 +186,7 @@ export class AtmosphereFx {
       buildings,
       atmosphereFxStandingLayer(buildings),
     );
-    this.fogBanks = new FogBanks(seed);
+    this.fogBanks = new FogBanks(seed, buildingsByBlock); // L5: parts round them
     this.litter = new Litter(seed);
   }
 

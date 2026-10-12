@@ -12,6 +12,13 @@
 //  - COVERAGE: the expected share of screen pixels the streaks touch, and
 //    the drop count that keeps it under budget at the live focal length.
 //    The ~1.5 px width floor is what makes a low resolution the worst case.
+//  - DEPTH (Stormlit L5): two layers in the one draw. The NEAR layer is the
+//    R3 field, sparser close to the lens; the FAR layer (every
+//    RAIN_FAR_EVERY-th instance) lives in a box five times wider, is drawn
+//    only from RAIN_FAR_NEAR out, longer and fainter, and dissolves into the
+//    fog — the misty curtain behind the near drops. Each drop also gets its
+//    own length (rainLengthFactor), so the field never reads as a comb. The
+//    coverage bound and the count cap cover both layers.
 
 import { MIN_SPEED } from "@angels-bandits/common/constants";
 
@@ -19,25 +26,46 @@ import { MIN_SPEED } from "@angels-bandits/common/constants";
 export const RAIN_BOX_XZ = 80;
 /** Vertical box edge, m (no seam on Y). */
 export const RAIN_BOX_Y = 40;
+/** L5 far layer: its box edges, m (400 divides WORLD_SIZE too). */
+export const RAIN_FAR_BOX_XZ = 400;
+export const RAIN_FAR_BOX_Y = 160;
+/** Every RAIN_FAR_EVERY-th instance is a far drop (index % N === N − 1). */
+export const RAIN_FAR_EVERY = 3;
+/** A far drop fades in from this view distance… */
+export const RAIN_FAR_NEAR = 40;
+/** …to full past this one, m (the near layer is gone by 40 m). */
+export const RAIN_FAR_FULL = 60;
+/** The far layer's horizontal fade (start, end) and vertical end, m. */
+export const RAIN_FAR_FADE_XZ = [150, 190] as const;
+export const RAIN_FAR_FADE_Y = [48, 64] as const;
+/** Far streaks are this much longer than near ones (they are far smaller
+ * on screen) and this much fainter. */
+export const RAIN_FAR_LENGTH = 3;
+export const RAIN_FAR_ALPHA = 0.45;
+/** Per-drop length spread: a drop's length is the look's × a factor in
+ * [1 − RAIN_LENGTH_SPREAD, 1 + RAIN_LENGTH_SPREAD] (mean 1). */
+export const RAIN_LENGTH_SPREAD = 0.55;
 /** Drops at full downpour, before the tier, speed and coverage cuts. */
 export const RAIN_MAX_DROPS = 8000;
 /** Terminal fall speed, m/s. */
 export const RAIN_FALL_SPEED = 11;
 /** Drops nearer than this collapse — the lens never fills with rain. */
-export const RAIN_NEAR_CUT = 4;
-/** …and reach full strength only past this, m (the ~8 m near fade). */
-export const RAIN_NEAR_FULL = 8;
+export const RAIN_NEAR_CUT = 6;
+/** …and reach full strength only past this, m (L5: sparse near the lens). */
+export const RAIN_NEAR_FULL = 14;
 /** The box fade: a drop is gone past this share of the box half-edges. */
 export const RAIN_FADE_END = 0.5;
 /** Streak half-width, m; it widens by this share per metre of distance. */
-export const STREAK_HALF_WIDTH = 0.02;
+export const STREAK_HALF_WIDTH = 0.013;
 export const STREAK_WIDEN_PER_M = 0.03;
 /** A streak is never drawn thinner than this many drawing-buffer px (O5). */
 export const STREAK_MIN_PX = 1.5;
-/** Hard rule: rain covers at most this share of the screen's pixels. */
-export const RAIN_COVERAGE_CAP = 0.08;
-/** The streaks' share of that; the rest is the lens-edge droplets. */
-export const STREAK_COVERAGE_BUDGET = 0.075;
+/** Hard rule: rain covers at most this share of the screen's pixels (L5:
+ * 3 %, down from R3's 8 % — fine rain, never a curtain over the lens). */
+export const RAIN_COVERAGE_CAP = 0.03;
+/** The streaks' share of that (both layers); the rest is the lens-edge
+ * droplets (≈ 0.33 % worst case). */
+export const STREAK_COVERAGE_BUDGET = 0.026;
 /** Lean: this share of the camera's velocity tilts the streak… */
 export const LEAN_GAIN = 0.05;
 /** …capped at this share of the fall speed (asin(0.45) ≈ 27° at most). */
@@ -129,12 +157,40 @@ export function streakWidthPx(d: number, focal: number): number {
 
 const COVERAGE_STEPS = 48;
 
+/** One layer of the field, for the coverage bound. */
+export interface RainLayer {
+  /** Box volume, m³ (the drop density is count / volume). */
+  volume: number;
+  /** Nearest and farthest a drawn drop can be from the lens, m. */
+  near: number;
+  far: number;
+  /** Streak length relative to the look's. */
+  length: number;
+}
+
+export const NEAR_LAYER: RainLayer = {
+  volume: RAIN_BOX_XZ * RAIN_BOX_XZ * RAIN_BOX_Y,
+  near: RAIN_NEAR_CUT,
+  far: RAIN_BOX_XZ * RAIN_FADE_END,
+  length: 1,
+};
+
+export const FAR_LAYER: RainLayer = {
+  volume: RAIN_FAR_BOX_XZ * RAIN_FAR_BOX_XZ * RAIN_FAR_BOX_Y,
+  near: RAIN_FAR_NEAR,
+  // The farthest corner of the drawn region (horizontal and vertical fades).
+  far: Math.hypot(RAIN_FAR_FADE_XZ[1], RAIN_FAR_FADE_Y[1]),
+  length: RAIN_FAR_LENGTH,
+};
+
 /**
  * Expected share of screen pixels covered by `count` streaks `length` m long
- * at pixel focal length `focal`. An UPPER bound, on purpose: every drop in a
- * sphere out to the box fade counts at the box's density, every streak is
- * taken side-on (full projected length), faded drops count as fully drawn,
- * and overlaps are not merged.
+ * at pixel focal length `focal`, in `layer` (default: the near R3 layer). An
+ * UPPER bound, on purpose: every drop in a sphere shell out to the layer's
+ * reach counts at the box's density, every streak is taken side-on (full
+ * projected length), faded drops count as fully drawn, and overlaps are not
+ * merged. Per-drop lengths average to `length` (rainLengthFactor's mean is
+ * 1), and coverage is linear in length, so the mean is exact.
  *
  * A shell at depth d holds ρ·(A/f²)·d²·dd drops in view (A = screen px²),
  * each covering (L·f/d)·w(d) px, so coverage = ρ·(L/f)·∫ d·w(d) dd.
@@ -143,24 +199,50 @@ export function rainCoverage(
   count: number,
   length: number,
   focal: number,
+  layer: RainLayer = NEAR_LAYER,
 ): number {
-  const rho = count / (RAIN_BOX_XZ * RAIN_BOX_XZ * RAIN_BOX_Y);
-  const d0 = RAIN_NEAR_CUT;
-  const d1 = RAIN_BOX_XZ * RAIN_FADE_END;
+  const rho = count / layer.volume;
+  const d0 = layer.near;
+  const d1 = layer.far;
   const step = (d1 - d0) / COVERAGE_STEPS;
   let sum = 0;
   for (let i = 0; i < COVERAGE_STEPS; i++) {
     const d = d0 + (i + 0.5) * step;
     sum += d * streakWidthPx(d, focal) * step;
   }
-  return (rho * length * sum) / focal;
+  return (rho * length * layer.length * sum) / focal;
 }
+
+/** Share of the instances that are far drops (one in RAIN_FAR_EVERY). */
+export const FAR_SHARE = 1 / RAIN_FAR_EVERY;
+
+/** Both layers' coverage for `count` instances (the interleave splits them
+ * NEAR/FAR in the 1 − FAR_SHARE / FAR_SHARE ratio). */
+export function rainFieldCoverage(
+  count: number,
+  length: number,
+  focal: number,
+): number {
+  return (
+    rainCoverage(count * (1 - FAR_SHARE), length, focal, NEAR_LAYER) +
+    rainCoverage(count * FAR_SHARE, length, focal, FAR_LAYER)
+  );
+}
+
+/** Instance `i`'s layer: true for a far drop (baked into rain.ts's aLayer). */
+export const isFarDrop = (i: number): boolean =>
+  i % RAIN_FAR_EVERY === RAIN_FAR_EVERY - 1;
+
+/** A drop's length factor from its seed `s` in [0, 1): mean 1. */
+export const rainLengthFactor = (s: number): number =>
+  1 - RAIN_LENGTH_SPREAD + 2 * RAIN_LENGTH_SPREAD * s;
 
 /**
  * The streak instances to draw: the downpour's share of RAIN_MAX_DROPS
  * scaled by the quality tier (`tierDensity`), then capped so the drawn
- * share (`look.density` of them, plus the fade band) stays inside STREAK_COVERAGE_BUDGET at the
- * live focal length. The render and the QA count both come from here.
+ * share (`look.density` of them, plus the fade band) of BOTH layers stays
+ * inside STREAK_COVERAGE_BUDGET at the live focal length. The render and
+ * the QA count both come from here.
  */
 export function rainCount(
   rain: number,
@@ -173,7 +255,7 @@ export function rainCount(
   );
   if (want === 0) return 0;
   const drawn = Math.min(1, look.density * (1 + RAIN_THIN_BAND));
-  const perDrop = rainCoverage(1, look.length, focal) * drawn;
+  const perDrop = rainFieldCoverage(1, look.length, focal) * drawn;
   if (perDrop <= 0) return want;
   return Math.min(want, Math.floor(STREAK_COVERAGE_BUDGET / perDrop));
 }

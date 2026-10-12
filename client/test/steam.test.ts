@@ -157,22 +157,22 @@ describe("puffPose", () => {
     }
   });
 
-  it("grows then collapses, so a constant-opacity material still fades out", () => {
+  it("grows, then fades out by its alpha (L5: no longer by collapsing)", () => {
     if (!vent) return;
-    // Sample sizes across one life by driving `age` through the phase.
-    const sizes: { age: number; size: number }[] = [];
+    // Sample across one life by driving `age` through the phase.
+    const s: { age: number; size: number; alpha: number }[] = [];
     for (let t = 0; t < 5.5; t += 0.05) {
       const p = puffPose(vent, 0, t);
-      sizes.push({ age: p.age, size: p.size });
+      s.push({ age: p.age, size: p.size, alpha: p.alpha });
     }
-    const young = sizes.filter((s) => s.age > 0.1 && s.age < 0.2);
-    const mid = sizes.filter((s) => s.age > 0.6 && s.age < 0.7);
-    const dying = sizes.filter((s) => s.age > 0.97);
-    expect(Math.max(...mid.map((s) => s.size))).toBeGreaterThan(
-      Math.max(...young.map((s) => s.size)),
+    const young = s.filter((x) => x.age > 0.1 && x.age < 0.2);
+    const mid = s.filter((x) => x.age > 0.3 && x.age < 0.5);
+    const dying = s.filter((x) => x.age > 0.97);
+    expect(Math.max(...mid.map((x) => x.size))).toBeGreaterThan(
+      Math.max(...young.map((x) => x.size)),
     );
-    expect(Math.max(...dying.map((s) => s.size))).toBeLessThan(
-      Math.min(...mid.map((s) => s.size)),
-    );
+    // Fully there mid-life, all but gone at the end of it.
+    expect(Math.min(...mid.map((x) => x.alpha))).toBeGreaterThan(0.99);
+    expect(Math.max(...dying.map((x) => x.alpha))).toBeLessThan(0.02);
   });
 });

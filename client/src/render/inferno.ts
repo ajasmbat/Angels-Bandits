@@ -837,6 +837,10 @@ export class Inferno {
         transparent: true,
         depthWrite: false,
         side: THREE.DoubleSide,
+        // One pass, not three's back-then-front pair for a transparent
+        // double-sided material (O3): a camera-facing card has one side
+        // to draw, and the pair would cost the flames a second draw.
+        forceSinglePass: true,
         fog: true,
       }),
     );

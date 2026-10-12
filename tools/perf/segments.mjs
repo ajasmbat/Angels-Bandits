@@ -82,8 +82,12 @@ export const TRAINS_SLIDE_MAX_MS = WORLD_STEP_MS - SETTLE_MS - SAMPLE_MS;
  *    headlight pools (each is one draw, all are dressing).
  */
 /** D6: see BUDGETS.chunkInstances — the runner's `ruins` (316 damaged-mesh
- * slots + 667 debris pieces = 983) + 10 % (README D6). */
-const CHUNK_INSTANCES_BUDGET = 1082;
+ * slots + 667 debris pieces = 983) + 10 % (README D6). H1 re-derived it the
+ * same way for the taller city: the same 30 % chew of the `ruins` block
+ * brings down buildings ~2× taller, and D10 cuts their debris by storey —
+ * 237 slots + 4848 pieces = 5085 (rubble: 2541), + 10 %. The debris mesh's
+ * boot size (76 954 for the H1 city) still holds them with room to spare. */
+const CHUNK_INSTANCES_BUDGET = 5594;
 
 export const BUDGETS = {
   gpuP50Ms: 14,

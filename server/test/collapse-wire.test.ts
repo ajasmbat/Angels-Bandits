@@ -28,6 +28,7 @@ import {
 import { collideMovers } from "@angels-bandits/common/city/movers";
 import {
   CITY_SEED,
+  COLLAPSE_MODEL,
   FIRE_INTERVAL_MS,
   PLAYER_RADIUS,
 } from "@angels-bandits/common/constants";
@@ -93,10 +94,10 @@ const until = async (cond: () => boolean, ms: number) => {
   return cond();
 };
 
-/** What a client builds from what it was told: its own city, broken and
- * collapsed exactly as the messages say (the GameSocket's replay). */
-function clientDebris(peer: Peer): CollapseField {
-  const city = generateCity(CITY_SEED);
+/** What a client builds from what it was told: its own city (generated at
+ * its boot), broken and collapsed exactly as the messages say (the
+ * GameSocket's replay). */
+function clientDebris(peer: Peer, city: Building[]): CollapseField {
   const damage = new CityDamage();
   const field = new CollapseField();
   damage.bind(city);
@@ -162,7 +163,14 @@ describe("D3 collapses over the wire", () => {
 
     const a = await connect("Shooter");
     const b = await connect("Witness");
+    // Each client's own city, built as a real client's is: at boot, before
+    // anything breaks — not between the collapse and the fly-in below, where
+    // two city generations (1–2 s each on a loaded runner) ate its window.
+    const cityA = generateCity(CITY_SEED);
+    const cityB = generateCity(CITY_SEED);
     expect(b.welcome.roomId).toBe(a.welcome.roomId);
+    // D10: the welcome says which collapse model built what follows.
+    expect(a.welcome.cm).toBe(COLLAPSE_MODEL);
     for (let i = 0; i < 12; i++) {
       a.ws.send(JSON.stringify({ type: "pose", pose: aim }));
       await wait(40);
@@ -185,20 +193,24 @@ describe("D3 collapses over the wire", () => {
     expect(a.collapses[0]).toEqual(wire);
     expect(wire.b).toBe(target);
     // ...and each builds identical debris from it.
-    const fa = clientDebris(a);
-    const fb = clientDebris(b);
+    const fa = clientDebris(a, cityA);
+    const fb = clientDebris(b, cityB);
     const ca = fa.list[0] as Collapse;
     const cb = fb.list[0] as Collapse;
     expect(ca).toBeDefined();
     const p = blankPose();
-    const q = blankPose();
+    // Every pose of every piece, compared in one assertion: D10's debris is
+    // ~4× the pieces, and a toEqual each ate the window the fly-in below
+    // needs on a loaded runner.
+    const posesA: ReturnType<typeof blankPose>[] = [];
+    const posesB: ReturnType<typeof blankPose>[] = [];
     for (let t = 0; t <= ca.endMs; t += 173) {
       for (let i = 0; i < ca.n; i++) {
-        expect(piecePose(cb, i, ca.t0 + t, q)).toEqual(
-          piecePose(ca, i, ca.t0 + t, p),
-        );
+        posesA.push({ ...piecePose(ca, i, ca.t0 + t, p) });
+        posesB.push({ ...piecePose(cb, i, ca.t0 + t, p) });
       }
     }
+    expect(posesB).toEqual(posesA);
 
     // B flies into the highest falling chunk mid-fall: place B on its path
     // (re-sync), then hold there until the chunk arrives.

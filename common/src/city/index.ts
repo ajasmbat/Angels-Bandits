@@ -50,6 +50,7 @@ export {
   CUT_POS_Y,
   CUT_POS_Z,
   CUT_RUBBLE,
+  CUT_STEEL,
   CityDamage,
   cellBox,
   chunkAt,

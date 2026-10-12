@@ -12,6 +12,7 @@ import {
   BOOST_MAX_SPEED,
   EMISSIVE_AFTERBURN,
   EMISSIVE_EXHAUST,
+  EMISSIVE_LAMP,
   EMISSIVE_NAVLIGHT,
   EMISSIVE_STROBE,
   MAX_SPEED,
@@ -84,6 +85,11 @@ export const LIGHT_MOUNTS = {
   exhaust: { x: -0.53, y: -0.34, z: -2.46 },
 } as const satisfies Record<string, Vec3>;
 
+/** L6: the biplane's landing lamp, under the cowl's chin (game-local), and
+ * the direction it throws — ahead, a few degrees nose-down. */
+export const LANDING_MOUNT: Vec3 = { x: 0, y: -0.45, z: -2.95 };
+const LANDING_DIP = 0.07;
+
 /** The five mounts every airframe has. */
 export type LightMounts = Record<keyof typeof LIGHT_MOUNTS, Vec3>;
 
@@ -114,17 +120,52 @@ export function lightMountsFor(planeId: string): LightMounts {
   return isEnemyId(planeId) ? ENEMY_LIGHT_MOUNTS : LIGHT_MOUNTS;
 }
 
-// --- Renderer: one Points draw call for every plane's five lights ---
+// --- Renderer: one Points draw call for every plane's lights ---
 
-const LIGHTS_PER_PLANE = 5;
+/** L6: the beam ahead of a biplane's landing lamp — soft sprites strung
+ * along its throw (m from the lamp), growing and dimming into the mist.
+ * A sprite chain, not a cone: from the chase camera the throw is seen
+ * nearly down its own axis, where a cone's silhouette-faded walls vanish
+ * (searchlights.ts) — overlapping discs read from behind AND from the side.
+ * Each sprite is sub-bloom, and spaced well inside its neighbours' glow
+ * so the throw reads as one beam, not beads; the whole chain stacked (seen
+ * straight down the throw) sums to ~0.45, under the 0.72 threshold. */
+const LANDING_CHAIN: readonly { d: number; size: number; lum: number }[] = [
+  { d: 5, size: 4.5, lum: 0.09 },
+  { d: 10, size: 7, lum: 0.08 },
+  { d: 16, size: 9.5, lum: 0.07 },
+  { d: 23, size: 12.5, lum: 0.06 },
+  { d: 31, size: 16, lum: 0.05 },
+  { d: 40, size: 20, lum: 0.04 },
+  { d: 50, size: 24, lum: 0.032 },
+  { d: 61, size: 29, lum: 0.025 },
+];
+/** Steady lights, the two wingtip halos, the exhaust and its halo; L6's
+ * landing lamp, its halo and the chain on biplanes only. */
+const LIGHTS_PER_PLANE = 8;
+const LANDING_LIGHTS = 2 + LANDING_CHAIN.length;
+const MAX_LIGHTS_PER_PLANE = LIGHTS_PER_PLANE + LANDING_LIGHTS;
 /** Every plane the fleet can draw (DT1: enemies on top of a full room). */
-const CAPACITY = (ROOM_CAP + 12) * LIGHTS_PER_PLANE;
+const CAPACITY = (ROOM_CAP + 12) * MAX_LIGHTS_PER_PLANE;
 
 /** Concept 1 "Regulation Night Traffic": small steady points, tight halos. */
 const NAV_SIZE = 1.7;
 const TAIL_SIZE = 1.4;
 const STROBE_SIZE = 3.2;
-const EXHAUST_SIZE = 1.1;
+/** L6: a bigger exhaust glow (was 1.1 m) with a soft warm halo round it. */
+const EXHAUST_SIZE = 1.5;
+const EXHAUST_HALO_SIZE = 4.2;
+/** L6: the wingtip halos — a soft coloured glow round each crisp nav point,
+ * on every airframe (the enemies' nav lights match the hero's). Halo + nav
+ * stays under the tracer rung (1.0 + 0.16 < 1.5); the halo alone is far
+ * under the bloom threshold, so it is a glow in the haze, not a flare. */
+const HALO_SIZE = 6.5;
+const HALO_LUM = 0.16;
+/** L6: the landing lamp — the lamp rung, under the nav lights' — and its
+ * halo. */
+const LANDING_SIZE = 1.5;
+const LANDING_HALO_SIZE = 4.5;
+const LANDING_HALO_LUM = 0.15;
 /** Exhaust flicker rate, Hz-ish components (deliberately incommensurate). */
 const FLICKER_A = 13;
 const FLICKER_B = 7.3;
@@ -150,6 +191,31 @@ const strobeBoost = NAV_WHITE.clone().multiplyScalar(
 );
 const exhaustBoost = EXHAUST_AMBER.clone().multiplyScalar(
   emissiveBoost(EXHAUST_AMBER, EMISSIVE_EXHAUST),
+);
+const redHalo = NAV_RED.clone().multiplyScalar(
+  emissiveBoost(NAV_RED, HALO_LUM),
+);
+const greenHalo = NAV_GREEN.clone().multiplyScalar(
+  emissiveBoost(NAV_GREEN, HALO_LUM),
+);
+const exhaustHalo = EXHAUST_AMBER.clone().multiplyScalar(
+  emissiveBoost(EXHAUST_AMBER, 0.12),
+);
+const LANDING_WHITE = new THREE.Color(1.0, 0.93, 0.8);
+const landingBoost = LANDING_WHITE.clone().multiplyScalar(
+  emissiveBoost(LANDING_WHITE, EMISSIVE_LAMP),
+);
+const landingHalo = LANDING_WHITE.clone().multiplyScalar(
+  emissiveBoost(LANDING_WHITE, LANDING_HALO_LUM),
+);
+/** Each chain sprite's mount (game-local), fixed: down the dipped throw. */
+const landingChainMounts: readonly Vec3[] = LANDING_CHAIN.map((c) => ({
+  x: LANDING_MOUNT.x,
+  y: LANDING_MOUNT.y - c.d * LANDING_DIP,
+  z: LANDING_MOUNT.z - c.d,
+}));
+const landingChain = LANDING_CHAIN.map((c) =>
+  LANDING_WHITE.clone().multiplyScalar(emissiveBoost(LANDING_WHITE, c.lum)),
 );
 /** Boost afterburn (F2): a hotter, whiter flame on its own rung, still
  * under tracers. */
@@ -268,12 +334,15 @@ export class PlaneLights {
       ),
     ),
   ): void {
-    if (this.count + LIGHTS_PER_PLANE > CAPACITY) return;
+    if (this.count + MAX_LIGHTS_PER_PLANE > CAPACITY) return;
     scratchQuat.set(quat.x, quat.y, quat.z, quat.w);
-    const mounts = lightMountsFor(planeId);
+    const enemy = isEnemyId(planeId);
+    const mounts = enemy ? ENEMY_LIGHT_MOUNTS : LIGHT_MOUNTS;
 
     this.append(rendered, mounts.navL, redBoost, NAV_SIZE);
     this.append(rendered, mounts.navR, greenBoost, NAV_SIZE);
+    this.append(rendered, mounts.navL, redHalo, HALO_SIZE);
+    this.append(rendered, mounts.navR, greenHalo, HALO_SIZE);
     this.append(rendered, mounts.tail, whiteBoost, TAIL_SIZE);
 
     // Strobe: synced-clock double flash, phase from the plane id (strobeOn,
@@ -307,6 +376,28 @@ export class PlaneLights {
       scratchColor,
       EXHAUST_SIZE * (1 + (AFTERBURN_SIZE - 1) * afterburn),
     );
+    // (Channel by channel: a double handed to a call V8 does not inline is
+    // boxed, per plane per frame — P4's allocation table.)
+    const glow = throttle * flicker;
+    scratchColor.r = exhaustHalo.r * glow;
+    scratchColor.g = exhaustHalo.g * glow;
+    scratchColor.b = exhaustHalo.b * glow;
+    this.appendColor(rendered, mounts.exhaust, scratchColor, EXHAUST_HALO_SIZE);
+
+    // L6: the hero's landing lamp and its beam into the mist (biplanes —
+    // the enemies keep their DT1 look).
+    if (enemy) return;
+    this.append(rendered, LANDING_MOUNT, landingBoost, LANDING_SIZE);
+    this.append(rendered, LANDING_MOUNT, landingHalo, LANDING_HALO_SIZE);
+    for (let i = 0; i < LANDING_CHAIN.length; i++) {
+      const c = LANDING_CHAIN[i] as { d: number; size: number; lum: number };
+      this.append(
+        rendered,
+        landingChainMounts[i] as Vec3,
+        landingChain[i] as THREE.Color,
+        c.size,
+      );
+    }
   }
 
   private append(

@@ -586,6 +586,9 @@ async function measureBuild(
     await page.waitForFunction(() => typeof window.__ab !== "undefined", null, {
       timeout: 120_000,
     });
+    // A3: a --ref from before W1 still fills the room with bots; empty it
+    // (a no-op hook since W1 — the wait below needs no targets either way).
+    await page.evaluate(() => window.__ab.setBots?.(0));
     // Hold the plane still right above the scene's eye, so it can neither
     // die nor drift and the city streams around the view; the view itself
     // comes from qaCamera. 330 m: crash-proof (over every roof) and well

@@ -2790,3 +2790,15 @@ node tools/perf/run.mjs --runs 3 --label O7 --ab-ref 45ab8c3
 # 5. Looking for a box by eye: magenta wherever the HDR scene is non-finite.
 #    open http://localhost:5173/?nanprobe=paint
 ```
+
+## A3: the Carrier War release gate
+
+The batch gate for W1–W4, D9, DT1, DT2, A1, A2, J1 and U7 against 97883bd
+(the commit before the batch) is written up in
+[`docs/carrier-war-gate.md`](../../docs/carrier-war-gate.md): its results,
+what it fixed, its follow-ups and the M3 commands. It added a `war` state
+and a short-phone profile to `polish.mjs --overlap`, plus two tools beside
+the benches:
+
+- `tools/carrier-sanity.ts`: an Easy novice pilot against the real server.
+- `tools/roof-seams.ts`: AA nests against everything drawn on their roofs.

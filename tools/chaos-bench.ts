@@ -39,8 +39,10 @@ import { readFileSync } from "node:fs";
 import { Session } from "node:inspector/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { BossLaunch } from "@angels-bandits/common/boss";
 import type { QuakeEvent } from "@angels-bandits/common/chaos";
 import { type Building, generateCity } from "@angels-bandits/common/city";
+import { emptyCaveInSlot } from "@angels-bandits/common/city/caveins";
 import { buildCityIndex } from "@angels-bandits/common/collision";
 import { CITY_SEED } from "@angels-bandits/common/constants";
 import type { SnapshotMsg } from "@angels-bandits/common/protocol";
@@ -121,6 +123,10 @@ const held = {
   missiles: new Map<number, MissileStrike>(),
   quakes: new Map<number, QuakeEvent>(),
   fires: new Set<number>(),
+  // A3: what pruneChaos reads since U6 (cave-ins) and S9 (launches) — the
+  // bench crashed on them before it measured anything.
+  caveIns: emptyCaveInSlot(),
+  boss: { launches: [] as BossLaunch[] },
 };
 const held2 = {
   missiles: new Map<number, MissileStrike>(),

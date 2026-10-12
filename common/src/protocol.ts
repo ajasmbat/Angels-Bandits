@@ -339,6 +339,10 @@ export interface WelcomeMsg {
    * so a late joiner sees and collides with the same wrecks, fallen tanks
    * and broken bridges. Absent: none (and a resume clears what it held). */
   props?: WirePropState;
+  /** L7: the room's burn level on the wire (common/src/burn.ts encodeBurn,
+   * 0..100), so a late joiner sees the same inferno at once. Absent (a
+   * server that predates L7): not burning. */
+  burn?: number;
 }
 
 // --- S3 stunt courses ---
@@ -592,6 +596,17 @@ export interface WavesMsg {
 }
 
 /**
+ * L7: the room's burn level moved (common/src/burn.ts — encodeBurn, 0..100).
+ * Server-authoritative and room-wide, so every client draws the same
+ * inferno; sent only when the encoded level changes, at most every
+ * BURN_SEND_MS. Old clients ignore it.
+ */
+export interface BurnMsg {
+  type: "burn";
+  b: number;
+}
+
+/**
  * S7: the server's credit for one kill (common/src/medals.ts MedalLedger).
  * Sent to the whole room for EVERY credited kill — right after its `death`
  * and before its `score` — so every client shows the same medals and the
@@ -831,6 +846,7 @@ export type ServerMsg =
   | NewsHeliMsg
   | IntensityConfigMsg
   | WavesMsg
+  | BurnMsg
   | PlayerJoinedMsg
   | PlayerLeftMsg
   | WireSnapshotMsg

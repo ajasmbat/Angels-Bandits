@@ -54,6 +54,7 @@ import {
   launchDoneAt,
   raidMaxHp,
 } from "@angels-bandits/common/boss";
+import { decodeBurn } from "@angels-bandits/common/burn";
 import {
   type QuakeEvent,
   type WireChaosState,
@@ -297,6 +298,10 @@ export class GameSocket {
   /** W1: the room's carrier war — the wave on or coming, enemies left —
    * from every welcome and `waves` message. */
   waves: WaveState = idleWaves();
+  /** L7: the room's burn level, 0..1 (common/src/burn.ts), from every
+   * welcome and `burn` message — server-authoritative, so every client
+   * draws the same inferno. */
+  burn = 0;
   readonly flak = new Map<number, BossFlak>();
   /** C2: the quakes announced and not yet over, and the burning chunks —
    * kept from every welcome and message, listening or not. */
@@ -351,6 +356,7 @@ export class GameSocket {
     this.replayRacks(welcome.racks);
     this.bossHp = applyBossState(this.boss, welcome.boss);
     this.waves = decodeWaves(welcome.waves) ?? idleWaves();
+    this.burn = decodeBurn(welcome.burn);
     this.replayChaos(welcome.chaos);
     this.replayCaveIns(welcome.caveIns);
     this.replayProps(welcome.props);
@@ -523,6 +529,7 @@ export class GameSocket {
     this.replayRacks(next.welcome.racks);
     this.bossHp = applyBossState(this.boss, next.welcome.boss);
     this.waves = decodeWaves(next.welcome.waves) ?? idleWaves();
+    this.burn = decodeBurn(next.welcome.burn);
     this.replayChaos(next.welcome.chaos);
     this.replayCaveIns(next.welcome.caveIns);
     this.replayProps(next.welcome.props);
@@ -941,6 +948,9 @@ export class GameSocket {
         }
         break;
       }
+      case "burn":
+        this.burn = decodeBurn(msg.b);
+        break;
       case "newsHeli":
         this.events.onNewsHeli?.(msg);
         break;

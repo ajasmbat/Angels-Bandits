@@ -918,6 +918,31 @@ export const FEATURE_TIERS: readonly {
     note: "emission 100 / 75 / 50 / 30 % into the D1 particle pool (no extra draw); at most 24 fires emit, the nearest within 700 m; the fires' damage is the same everywhere",
   },
   {
+    feature: "L7 inferno — flames, embers, ash and debris",
+    high: "full",
+    medium: "reduced",
+    low: "reduced",
+    mobile: "reduced",
+    note: "flame sites 100 / 75 / 50 / 30 % (chaosFx): at most 80 sites × 3 cards, the nearest within 760 m, faded out at the cap — one instanced draw; the air (1600 embers/ash/debris × chaosFx) one points draw, off on Mobile (its peak-chaos scene is at the Mobile draw ceiling)",
+  },
+  {
+    feature: "L7 inferno — smoke columns",
+    high: "full",
+    medium: "full",
+    low: "reduced",
+    mobile: "reduced",
+    note: "columns 100 / 100 / 50 / 34 % (smokeColumns), each puff grown by 1/√share so the columns hide the same sky on every tier (rule 2 for the fill); Mobile drops the billowing edge (a uniform); one instanced draw",
+  },
+  {
+    feature:
+      "L7 inferno — burn level, gutted frames, firelight, cloud and fog glow",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "the look of solid things and of the air: shader terms and uniforms on the city, ground, fog and cloud deck, identical on every tier, no draw",
+  },
+  {
     feature: "S5 fog banks (drifting haze between the towers)",
     high: "full",
     medium: "full",

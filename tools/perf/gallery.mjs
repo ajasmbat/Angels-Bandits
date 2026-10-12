@@ -396,6 +396,8 @@ try {
           ...(st.fell ? { fell: st.fell.map(at) } : {}),
           ...(st.props ? { props: atAll(st.props) } : {}),
           ...(st.blasts ? { blasts: st.blasts.map(at) } : {}),
+          // L7: the burn level to draw (a build without it ignores it).
+          ...(st.burn !== undefined ? { burn: st.burn } : {}),
         });
       }, v.stage);
       console.log("stage", v.name, JSON.stringify(r));
@@ -564,6 +566,14 @@ try {
       "shot",
       v.name,
       JSON.stringify(await page.evaluate(() => window.__ab.perf())),
+    );
+    // L7: what the inferno drew (a build without it logs null).
+    console.log(
+      "inferno",
+      v.name,
+      JSON.stringify(
+        await page.evaluate(() => window.__ab.inferno?.() ?? null),
+      ),
     );
   }
   // L6: one intersection at a red (a real queue behind the stop line), then

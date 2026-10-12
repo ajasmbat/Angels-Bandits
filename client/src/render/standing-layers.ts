@@ -101,6 +101,10 @@ export const STANDING_EXEMPT: Readonly<Record<string, string>> = {
     "a pure layout; citylife-render draws (and filters) its balcony and terrace figures",
   fires:
     "per-chunk emitters, not per-building items: a chunk this client holds gone never emits",
+  inferno:
+    "L7 fire sites exist only BECAUSE of damage, so they are rebuilt from the live cells whenever a building's damage version moves — a floor fire on a chunk that stands, a window fire out of a standing facade chunk — never a static per-building item list; `__ab.inferno().floating` counts drawn sites over what stands (0)",
+  "inferno-shading":
+    "L7 gutted frames and firelight: shader terms on city.ts's live solids, like damage-map",
   reactions:
     "smoke bases re-derive from the live solids and roof when the building under them changes; wakes light city.ts's live facades",
   storm:

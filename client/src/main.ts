@@ -370,6 +370,7 @@ import { createGradePass } from "./render/grade";
 import { Headlights } from "./render/headlights";
 import { HoleDecorRenderer } from "./render/hole-decor";
 import { BlastLedger, Impacts, burnCapFor } from "./render/impacts";
+import { Inferno, type InfernoStats } from "./render/inferno";
 import { Jumbotrons } from "./render/jumbotrons";
 import { lookPasses } from "./render/lookup";
 import { MissileRenderer } from "./render/missiles";
@@ -1502,6 +1503,16 @@ socket.events.onCaveIn = (c) => {
   music.noteCombat(performance.now());
 };
 const fireRenderer = new FireRenderer(impacts, city.cityBuildings);
+// L7 inferno: the city burns as the room's burn level rises — fire sites
+// from the wreckage, flames, smoke columns and the air full of embers (three
+// draws), the firelight, gutted frames, shimmer and cloud glow (none).
+const inferno = new Inferno(city.cityBuildings);
+scene.add(inferno.group);
+/** L7: the burn level drawn this frame — the server's, eased (it moves in
+ * 1 % steps), or `__ab.qaDestruction`'s `burn`, snapped. */
+let burnShown = 0;
+let qaBurn: number | null = null;
+let burnWelcome: unknown = null;
 // D8: fresh ruins smoulder (smoke + embers off the stump and rubble).
 const ruinSmoke = new RuinSmoke(impacts, city.cityBuildings);
 // D10: what a collapsing building sheds — gravel, window frames, glass,
@@ -2931,6 +2942,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
     QUALITY_PROFILES[tier].chaosFx, // C2: meteor fire trails
   );
   fireRenderer.setQuality(QUALITY_PROFILES[tier].chaosFx); // C2
+  inferno.setQuality(tier); // L7: flames, columns and air (counts only)
   propsRenderer.setShare(QUALITY_PROFILES[tier].chaosFx); // D9
   aaNests.setShare(QUALITY_PROFILES[tier].chaosFx); // W3
   scarsRenderer.setShare(QUALITY_PROFILES[tier].chaosFx); // D9
@@ -3670,6 +3682,9 @@ declare global {
        * the renderer — `stagedDraws` counts the draws only destruction
        * adds (damaged mesh, debris, dust, falling wrecks, scorch,
        * scaffolding; not the impact pool, which bullets feed too). */
+      /** L7 QA: the inferno — the burn drawn, its sites and draws, the D8
+       * `floating` count (0) and the overdraw proxy. */
+      inferno: () => InfernoStats;
       /** D9 QA: the props on this client and what they draw. */
       props: () => {
         down: number;
@@ -3947,6 +3962,10 @@ function qaSystems(): {
       ],
     ],
     ["impacts", [impacts.points]],
+    // L7: the inferno's three draws, one by one.
+    ["infernoFlames", [inferno.flames]],
+    ["infernoSmoke", [inferno.smoke]],
+    ["infernoAir", [inferno.air]],
     ["scaffold", [scaffold.mesh]],
     ["wrecks", [wrecks.group]],
     ["missiles", [missileRenderer.group]],
@@ -4050,6 +4069,7 @@ function clearQaDestruction(): void {
   qaStaged.burns.clear();
   qaStaged.wrecks.length = 0;
   qaStaged.active = false;
+  qaBurn = null; // L7
 }
 window.__ab = {
   bootedAt: () => bootedAt,
@@ -4805,6 +4825,9 @@ window.__ab = {
   qaDestruction: (spec) => {
     if (spec === null || !spec.keep) clearQaDestruction();
     if (spec === null) return null;
+    // L7: a staged burn level overrides the server's, snapped (a window
+    // measured on it never ramps); cleared with the staging.
+    if (spec.burn !== undefined) qaBurn = Math.min(1, Math.max(0, spec.burn));
     const staged = stageDestruction(
       city.cityBuildings,
       socket.cityDamage,
@@ -4858,6 +4881,7 @@ window.__ab = {
       wrecks: crashed,
     };
   },
+  inferno: () => inferno.info(),
   props: () => ({
     down: socket.props.downCount,
     gaps: socket.props.gapMask,
@@ -6244,7 +6268,20 @@ const frame = (now: number): void => {
   }
   for (const ev of thunder.due(now)) audio.thunder(ev.gain, ev.hard);
   storm.update(chase.position, now);
+  // L7: the burn this frame — the server's eased, a QA stage's or a fresh
+  // welcome's snapped — and the deck glowing over the fires (last frame's
+  // columns: they move slower than a frame).
+  {
+    const target = qaBurn ?? socket.burn;
+    if (qaBurn !== null || burnWelcome !== socket.welcome) {
+      burnShown = target;
+      burnWelcome = socket.welcome;
+    } else {
+      burnShown += (target - burnShown) * (1 - Math.exp(-dt / 1.5));
+    }
+  }
   clouds.update(chase.position, camera.quaternion, renderMs);
+  clouds.setGlow(inferno.cloudGlow, inferno.cloudGlowCount, burnShown);
   // L12: the cycle's horizon is the storm's clear-sky fog base.
   skyCycle.update(renderMs);
   storm.setFogBase(skyCycle.horizon);
@@ -6268,6 +6305,7 @@ const frame = (now: number): void => {
     renderMs === null
       ? 0
       : dustHaze(socket.collapses.list, chase.position, renderMs),
+    burnShown,
   );
   skyDome.setAir(sky);
   // L1: the latest strike lights the clouds from inside during its flash.
@@ -6446,9 +6484,25 @@ const frame = (now: number): void => {
   // S5 atmosphere, once the camera is final (shimmer and shafts project
   // through it): fog banks clear of every plane, litter kicked by low
   // passes, all on the latched world clock.
-  const heatCount = explosions.heatSources(now); // J1 blast shimmer
+  // L7: the inferno, once the camera is final (its picks and the air's
+  // point sizes read it); its fires shimmer after the J1 blasts.
+  inferno.update({
+    burn: burnShown,
+    fires: socket.fires,
+    // The camera, not the plane: what is picked and lit follows the view
+    // (the same in play; a QA camera may sit far from the parked plane).
+    viewer: camera.position,
+    camera,
+    viewportH: renderer.domElement.height,
+    worldMs: renderMs,
+    now,
+  });
+  const heatCount = inferno.mergeHeat(
+    explosions.heat,
+    explosions.heatSources(now), // J1 blast shimmer
+  );
   atmosphere.update({
-    heat: explosions.heat,
+    heat: inferno.heat,
     heatCount,
     camera,
     cameraPos: chase.position,

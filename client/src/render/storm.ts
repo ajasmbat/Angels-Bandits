@@ -350,13 +350,13 @@ export interface SkyAir {
 }
 /** L7 inferno: at burn level 1 the fog (and, through the SkyAir map, the
  * sky behind it) is pulled this far toward a smoky ember-brown (L7b: the
- * distance glowing through the smoke — at this mix the fog stays at sRGB
- * value ≈ 0.38, under fire-cover's 0.45 — so the black columns stand out
- * against it), and the height haze toward smoke —
+ * distance glowing through the smoke, the black columns standing out
+ * against it — still dark: the haze measures ≈ sRGB 0.3 with L2's horizon
+ * glow on top, under fire-cover's 0.45), and the height haze toward smoke —
  * the same on every tier (rule 2), and darken-leaning, so nothing in the
  * air nears the bloom threshold. */
 const BURN_FOG_MIX = 0.42;
-const BURN_FOG_COLOR = 0x8a3818;
+const BURN_FOG_COLOR = 0x6a2a12;
 const BURN_HAZE_MIX = 0.55;
 const BURN_HAZE_RGB = [0.14, 0.06, 0.035] as const;
 

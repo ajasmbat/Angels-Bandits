@@ -1,7 +1,9 @@
 # L7b: the inferno and the storm sky (before, after, reference)
 
 Each sheet is **before (main `7061222`) | after (L7b) | the matching
-reference**. Both builds were shot at the same pose, using the new gallery
+reference**. `reference-hero` and `reference-inferno` were re-shot after
+merging main's L2 (the far skyline) and L5 (mist and rain); the after panel
+is labelled to say so. Both builds were shot at the same pose, using the new gallery
 views (tools-side) on main's own build. The reference is:
 
 - reference 1 (*Stormlit Manhattan*) for the calm views: `reference-hero`,
@@ -30,13 +32,21 @@ don't pass.
 | reference 2 | 24.7 % | |
 | reference 1 | 3.9 % | |
 | main, `reference-inferno` | 1.3 % | 1.5 % |
-| **L7b, `reference-inferno`** | **21.2 %** (20.7–22.9 % over four captures) | **33.0 %** |
+| **L7b, `reference-inferno`** (before merging L2/L5) | **21.2 %** (20.7–22.9 % over four captures) | **33.0 %** |
+| **L7b merged with L2 + L5, `reference-inferno`** | **29.2 %** | **43.2 %** |
 | main, `inferno-gutted` | 6.4 % | |
 | L7b, `inferno-gutted` | 34.5 % | |
 | main / L7b, `reference-hero` (burn 0) | 1.3 % / 1.3 % | |
 
 The ticket estimated reference 2 at ~40 % by eye. With a mask that leaves out
 city light, reference 2 measures 24.7 %.
+
+After merging L2 (the far skyline), part of the count is L2's own burning far
+city, whose ember-lit districts sit on the horizon band. This ticket's fire
+alone measured 21.2 %. When the burn fog was brighter, it stacked with L2's
+horizon glow and pushed the haze over the mask's value cut. L7b therefore
+keeps the burn fog dark, and the haze measures ≈ sRGB 0.3, so the air itself
+never counts as fire.
 
 `__ab.inferno()` on `reference-inferno` reported: 2591 live sites, 209 flames
 drawn (627 cards), 18 columns, 116 gutted, and `floating: 0` (no drawn fire

@@ -322,7 +322,6 @@ export function buildingClearance(
 ): number {
   const bx0 = Math.floor(x / BLOCK_PITCH);
   const bz0 = Math.floor(z / BLOCK_PITCH);
-  const reach = r + soft;
   let k = 1;
   for (let i = -1; i <= 1; i++) {
     const bx = (((bx0 + i) % CITY_GRID) + CITY_GRID) % CITY_GRID;
@@ -330,22 +329,39 @@ export function buildingClearance(
       const bz = (((bz0 + j) % CITY_GRID) + CITY_GRID) % CITY_GRID;
       const list = byBlock.get(bx * 1000 + bz);
       if (!list) continue;
-      for (let n = 0; n < list.length; n++) {
-        const b = list[n] as Building;
-        if (count) count.tests++;
-        const ex = Math.abs(wrapDeltaAxis(b.x, x)) - b.width / 2;
-        if (ex > reach) continue;
-        const ez = Math.abs(wrapDeltaAxis(b.z, z)) - b.depth / 2;
-        if (ez > reach) continue;
-        const top = standingProfile(b).top;
-        const ey = y - top;
-        if (ey > reach) continue;
-        const d = Math.hypot(Math.max(ex, 0), Math.max(ez, 0), Math.max(ey, 0));
-        const t = Math.min(1, Math.max(0, (d - r) / soft));
-        k = Math.min(k, t * t * (3 - 2 * t));
-        if (k <= 0) return 0;
-      }
+      k = Math.min(k, clearanceAgainst(list, x, y, z, r, soft, count));
+      if (k <= 0) return 0;
     }
+  }
+  return k;
+}
+
+/** buildingClearance over an explicit list of buildings (steam.ts keeps
+ * each vent's neighbours, so a puff tests a handful of boxes). */
+export function clearanceAgainst(
+  list: readonly Building[],
+  x: number,
+  y: number,
+  z: number,
+  r: number,
+  soft: number,
+  count?: { tests: number },
+): number {
+  const reach = r + soft;
+  let k = 1;
+  for (let n = 0; n < list.length; n++) {
+    const b = list[n] as Building;
+    if (count) count.tests++;
+    const ex = Math.abs(wrapDeltaAxis(b.x, x)) - b.width / 2;
+    if (ex > reach) continue;
+    const ez = Math.abs(wrapDeltaAxis(b.z, z)) - b.depth / 2;
+    if (ez > reach) continue;
+    const ey = y - standingProfile(b).top;
+    if (ey > reach) continue;
+    const d = Math.hypot(Math.max(ex, 0), Math.max(ez, 0), Math.max(ey, 0));
+    const t = Math.min(1, Math.max(0, (d - r) / soft));
+    k = Math.min(k, t * t * (3 - 2 * t));
+    if (k <= 0) return 0;
   }
   return k;
 }

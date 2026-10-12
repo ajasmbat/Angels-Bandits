@@ -471,7 +471,7 @@ import {
   standingCost,
   standingPending,
 } from "./render/standing-watch";
-import { Steam } from "./render/steam";
+import { Steam, steamRoofGate } from "./render/steam";
 import {
   CloudDeck,
   REVEAL_COLOR,
@@ -6088,7 +6088,13 @@ const frame = (now: number): void => {
   // Phase-only subsystems fall back to local time before the first snapshot
   // (the signage policy): a plume or a signal in the wrong part of its cycle
   // is invisible, where hiding every one of them until clock sync would not be.
-  steam.update(chase.position, renderMs ?? now, microK);
+  // L5: roof plumes read from far higher than the street life.
+  steam.update(
+    chase.position,
+    renderMs ?? now,
+    microK,
+    microOn ? steamRoofGate(chase.position.y) : 0,
+  );
   // G1: static layout — re-packed only when the block window moves; the
   // furniture thins with the micro gate, parked cars by their own gate.
   streetFurniture.update(chase.position, microK);

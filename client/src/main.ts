@@ -148,7 +148,7 @@ import { CityAmbience } from "./audio/ambience";
 import { Busker } from "./audio/busker";
 import { Music, type MusicMoment } from "./audio/music";
 import { RadioQueue, RadioVoice } from "./audio/radio";
-import { GameAudio } from "./audio/sound";
+import { COLLAPSE_BEATS_MAX, GameAudio } from "./audio/sound";
 import { NEAR_MISS_RADIUS, closestApproach, spatialize } from "./audio/spatial";
 import { ThunderSchedule } from "./audio/thunder";
 import { TrainAudio } from "./audio/train-audio";
@@ -338,6 +338,11 @@ import { CaveInRenderer } from "./render/caveins";
 import { CityRenderer } from "./render/city";
 import { PICKUP_TAXIS } from "./render/citylife";
 import { CityLife } from "./render/citylife-render";
+import {
+  CollapseDetail,
+  beatSchedule,
+  creepSeconds,
+} from "./render/collapse-fx";
 import { ConstructionSparks } from "./render/construction";
 import {
   ALARM_TAIL_MS as DIRECTOR_ALARM_TAIL_MS,
@@ -1271,6 +1276,15 @@ socket.events.onCollapse = (c) => {
     debris.endMs / 1000 - 0.8,
     debris.n / 120,
   );
+  // D10: the cracking through the creep, then a roar per beat (≤ 6).
+  const at = socket.renderTime() ?? debris.t0;
+  audio.collapseBeats(
+    site,
+    flight.pos,
+    flight.yaw,
+    beatSchedule(debris, at, COLLAPSE_BEATS_MAX),
+    creepSeconds(debris, at),
+  );
   music.noteCombat(performance.now());
 };
 // D1 bullet impacts: sparks, dust, chips, glass and burning patches in ONE
@@ -1486,6 +1500,9 @@ let qaBurn: number | null = null;
 let burnWelcome: unknown = null;
 // D8: fresh ruins smoulder (smoke + embers off the stump and rubble).
 const ruinSmoke = new RuinSmoke(impacts, city.cityBuildings);
+// D10: what a collapsing building sheds — gravel, window frames, glass,
+// steel sparks, and a burst at every floor event (the D1 pool, no draw).
+const collapseDetail = new CollapseDetail(impacts, city.cityBuildings);
 // D9 destructible props: wrecks, snapped lamps and masts, poles and wires,
 // gas stations and every solid faller (ONE draw, drawn == collided for the
 // fallers); the street's craters and scorch (ONE draw) and every prop
@@ -1842,6 +1859,14 @@ const worldTime = (): number | null =>
 // every client computes the identical storm from (seed, synced clock).
 const storm = new StormRenderer(city.cityBuildings);
 scene.add(storm.group, storm.flashLight);
+// D10: collapse dust is lit by the scene — the sky cycle's rig and the
+// storm's lightning flash.
+dust.setLights({
+  ambient: skyRig.ambient,
+  hemi: skyRig.hemi,
+  moon: skyRig.moon,
+  flash: storm.flashLight,
+});
 const strikeFeed = new StrikeFeed(welcome.seed);
 // The deck everyone shares: seeded layout, drifting on the synced clock.
 const clouds = new CloudDeck(welcome.seed);
@@ -2907,6 +2932,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   aaNests.setShare(QUALITY_PROFILES[tier].chaosFx); // W3
   scarsRenderer.setShare(QUALITY_PROFILES[tier].chaosFx); // D9
   ruinSmoke.setQuality(QUALITY_PROFILES[tier].chaosFx); // D8
+  collapseDetail.setQuality(QUALITY_PROFILES[tier].chaosFx); // D10
   blastLedger.setBurnCap(burnCapFor(QUALITY_PROFILES[tier].impacts));
   wrecks.setShare(QUALITY_PROFILES[tier].wreckFire); // D4
   planeFires.setShare(QUALITY_PROFILES[tier].wreckFire); // DT1
@@ -6160,6 +6186,7 @@ const frame = (now: number): void => {
   streakSmoke.update(chase.position, now);
   dust.update(socket.collapses.list, chase.position, renderMs);
   ruinSmoke.update(socket.collapses.list, chase.position, renderMs, now);
+  collapseDetail.update(socket.collapses.list, chase.position, renderMs, now);
   // D5: the director's warnings (dust, steam, sparks) and the rebuilds'
   // welders; an event is forgotten once its alarm has died away.
   if (socket.director.size > 0 && renderMs !== null) {

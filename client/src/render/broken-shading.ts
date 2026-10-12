@@ -35,8 +35,12 @@ const SOOT = 0.7;
 const EMBER_SHARE = 0.14;
 const EMBER = "vec3(0.42, 0.13, 0.03)";
 
-/** Packs the face's damage kind above the half-size in vBroken.w. */
-const KIND_STRIDE = "4096.0";
+/** Packs the face's damage kind above the half-size in vBroken.w (kinds: 0
+ * facade, 1 exposed, 2 rubble, 3 steel — D10's columns and rebar). */
+export const KIND_STRIDE = "4096.0";
+/** D10 steel: a dark, rust-streaked albedo (linear). */
+const STEEL = "vec3(0.075, 0.06, 0.055)";
+const RUST = "vec3(0.17, 0.075, 0.035)";
 
 /** The CUT_* mask (city/destruction.ts) → this face's damage kind, plus the
  * face's in-plane position and half size in meters — ONE vec4 varying:
@@ -48,7 +52,8 @@ export const BROKEN_VERTEX_GLSL = /* glsl */ `
 float brkMask = floor(aSubOff.w + 0.5);
 float brkFace = normal.x < -0.5 ? 1.0 : normal.x > 0.5 ? 2.0 : normal.y < -0.5 ? 4.0
   : normal.y > 0.5 ? 8.0 : normal.z < -0.5 ? 16.0 : 32.0;
-float brkKind = brkMask >= 64.0 ? 2.0 : mod(floor(brkMask / brkFace), 2.0);
+// D10: CUT_STEEL (128) first — a landed column is CUT_RUBBLE | CUT_STEEL.
+float brkKind = brkMask >= 128.0 ? 3.0 : brkMask >= 64.0 ? 2.0 : mod(floor(brkMask / brkFace), 2.0);
 // Box-centred meters (the unit box's y runs 0..1).
 vec3 brkLocal = (position - vec3(0.0, 0.5, 0.0)) * sScale;
 vec2 brkUV = abs(normal.x) > 0.5 ? brkLocal.zy : abs(normal.z) > 0.5 ? brkLocal.xy : brkLocal.xz;
@@ -67,7 +72,11 @@ if (brkDmg > 0.5) {
   // instance sits at its nearest torus image, like every other pattern).
   vec2 brkW = brkN.x > 0.5 ? vBWorldPos.zy : brkN.z > 0.5 ? vBWorldPos.xy : vBWorldPos.xz;
   float brkNoise = abHash(floor(brkW * 1.7), vBSeed * 31.0);
-  if (brkDmg > 1.5) {
+  if (brkDmg > 2.5) {
+    // D10 steel: a column or I-beam segment, rebar — dark, streaked rust.
+    float brkStreak = abHash(vec2(floor(brkW.x * 3.0), floor(brkW.y * 0.7)), vBSeed * 17.0);
+    diffuseColor.rgb = mix(${STEEL}, ${RUST}, smoothstep(0.35, 0.95, brkStreak)) * (0.8 + 0.4 * brkNoise);
+  } else if (brkDmg > 1.5) {
     // Rubble: broken concrete, with chunks of the facade's own finish.
     float brkChunk = abHash(floor(vBWorldPos.xz * 1.3 + vBWorldPos.y * 2.1), vBSeed * 7.0);
     vec3 brkConcrete = vec3(${SLAB_ALBEDO.toFixed(2)}) * (0.45 + 0.7 * brkNoise);

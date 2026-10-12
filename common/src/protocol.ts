@@ -297,6 +297,11 @@ export interface WelcomeMsg {
    * since landed — and its fallen chunks from exactly these, so a late
    * joiner sees and collides with what everyone else does. */
   collapses: CollapseWire[];
+  /** D10: the server's collapse model (constants.ts COLLAPSE_MODEL) — what
+   * it builds debris with from those records. A client built for another
+   * model reloads instead of drawing debris the server does not collide
+   * with. Absent from an older server. */
+  cm?: number;
   /** S3: every stunt course's leaderboard and record ghost, in course id
    * order (common/src/courses.ts generateCourses for this seed). The rings
    * themselves are never sent — both sides generate them from the seed. */

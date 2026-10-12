@@ -88,6 +88,7 @@ import {
 } from "@angels-bandits/common/city/props";
 import type { CityEvent } from "@angels-bandits/common/cityevents";
 import {
+  COLLAPSE_MODEL,
   CONNECT_TIMEOUT_MS,
   LAB_FULL_CODE,
   SERVER_SILENCE_MS,
@@ -543,6 +544,10 @@ export class GameSocket {
   /** A welcome's whole destruction: the broken set, then every collapse —
    * and (D5) the director's warnings still to happen. */
   private replayDestruction(welcome: WelcomeMsg): void {
+    // D10: a tab built for another collapse model (a deploy since it
+    // loaded) would build debris the server does not collide with: reload
+    // — once per session per server model, so a cached page can never loop.
+    if (staleCollapseModel(welcome)) reloadOnce(welcome.cm as number);
     if (
       (welcome.destroyed?.length ?? 0) > 0 ||
       (welcome.collapses?.length ?? 0) > 0 ||
@@ -1086,6 +1091,23 @@ export class GameSocket {
     }
   }
 }
+
+/** D10: reload for server collapse model `cm`, unless this session already
+ * did (sessionStorage can be missing or throw: then reload anyway). */
+function reloadOnce(cm: number): void {
+  const key = "ab-collapse-model-reload";
+  try {
+    if (globalThis.sessionStorage?.getItem(key) === String(cm)) return;
+    globalThis.sessionStorage?.setItem(key, String(cm));
+  } catch {
+    // No storage: a reload is still better than diverging debris.
+  }
+  globalThis.location?.reload?.();
+}
+
+/** D10: does `welcome` come from a server with another collapse model? */
+export const staleCollapseModel = (welcome: Pick<WelcomeMsg, "cm">): boolean =>
+  typeof welcome.cm === "number" && welcome.cm !== COLLAPSE_MODEL;
 
 /**
  * S7: an `award` as this build understands it, or null when its shape is

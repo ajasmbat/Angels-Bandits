@@ -712,6 +712,54 @@ export const COLLAPSE_CREDIT_SLACK = 8;
 /** The dust cloud's life, ms (sight-blocking haze in the canyon). */
 export const COLLAPSE_DUST_MS = 20_000;
 
+// --- D10 realistic collapse (common/src/city/collapse.ts) ---
+/** The collapse model's version: what buildCollapse derives from a wire.
+ * The welcome carries it; a client built for another model reloads rather
+ * than build different debris than the server collides with. */
+export const COLLAPSE_MODEL = 10;
+/** Pancake: the creep after the lead beat, ms — the failure floor groans
+ * and sags, dust puffs out, then the upper block lets go. */
+export const COLLAPSE_CREEP_MS = 900;
+/** Pancake: the falling column's acceleration as a share of g (the floors
+ * below resist a little as the crush front drives through them). */
+export const COLLAPSE_CRUSH_G = 0.72;
+/** A chunk falls as storey slabs of about this height, m. */
+export const COLLAPSE_SLAB_STOREY = 4;
+/** Facade sheets: share of the chunks on a building's outline that shed
+ * one, and its thickness, m: with PLAYER_RADIUS 2, 2r + t = 6 m covers the
+ * fastest relative step between two checks (plane + debris ÷ check rate),
+ * so a point-sampled sphere never skips a sheet. */
+export const COLLAPSE_SHEET_SHARE = 0.35;
+export const COLLAPSE_SHEET_THICK = 2;
+/** Column / I-beam segments: share of chunk solids that carry one, its
+ * side, m, how much of its height survives the landing, and its lean at
+ * rest, rad. */
+export const COLLAPSE_COLUMN_SHARE = 0.25;
+export const COLLAPSE_COLUMN_SIDE = 1.2;
+export const COLLAPSE_COLUMN_RUBBLE = 0.5;
+export const COLLAPSE_COLUMN_LEAN = 0.35;
+/** Rubble slumps at rest: at most this tilt, rad, and at most this rise of
+ * a slab's far edge, m. */
+export const COLLAPSE_SLUMP_MAX = 0.3;
+export const COLLAPSE_SLUMP_RISE = 1;
+/** Topple: the top of a section breaks off the swing at this tilt, rad;
+ * the base keeps COLLAPSE_TOPPLE_BREAK. */
+export const COLLAPSE_TOPPLE_BREAK_TOP = 0.55;
+/** A peeling facade sheet breaks off its hinge at this tilt, rad, and
+ * keeps this share of its outward speed (it tears and drops, it is not
+ * thrown), so it lands in the street, not across it. */
+export const COLLAPSE_SHEET_BREAK = 0.35;
+export const COLLAPSE_SHEET_DRIFT = 0.2;
+/** Pieces the shared builder makes per chunk solid, at most (3 storey
+ * slabs, a sheet, a column) — the bound the renderer sizes itself by. */
+export const COLLAPSE_PIECES_PER_SOLID = 5;
+/** Floor events (crush, break-up and landing beats) per collapse, at most:
+ * squibs, roars and the ground shake key off them. */
+export const COLLAPSE_FLOOR_EVENTS_MAX = 12;
+/** Server: stop starting collapse builds in a tick once this much of it is
+ * spent, ms (the first always runs; the rest wait a tick). */
+export const COLLAPSE_BUILD_BUDGET_MS = 20;
+
 // --- D5 chain reactions (city/collapse.ts collapseImpacts) ---
 /** Falling debris that enters another building blasts its chunks there:
  * at most this many impacts per collapse, this many per struck building,
@@ -723,6 +771,13 @@ export const CHAIN_COALESCE_M = 8;
  * break the chunk it lands in and bite its neighbours. */
 export const CHAIN_BLAST_RADIUS = 10;
 export const CHAIN_BLAST_DAMAGE = 240;
+/** D10: an impact's blast scales with the striking piece's energy, within
+ * this range of CHAIN_BLAST_* (a slab at speed smashes more than a slow
+ * chip; neither escapes the caps above). */
+export const CHAIN_ENERGY_MIN = 0.5;
+export const CHAIN_ENERGY_MAX = 1.5;
+/** …and the energy that scores 1.0: √(volume m³ × speed² m²/s²). */
+export const CHAIN_ENERGY_REF = 1200;
 /** A collapse set off by debris is one link further down the chain; past
  * this many links debris no longer breaks anything (no city-wide domino). */
 export const CHAIN_DEPTH_MAX = 3;

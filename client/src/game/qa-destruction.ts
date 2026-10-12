@@ -13,8 +13,11 @@
 // COLLAPSE_CAP of the city's chunks are gone. A felled tower is D5's
 // demolition (`demolitionPlan`), which the director runs past both caps.
 //
-// Deliberately left out: `collapseImpacts` chains (the server lands those
-// later as D2 blasts; a staged scene is the state at one instant).
+// `collapseImpacts` chains are left out (the server lands those later as D2
+// blasts; a staged scene is the state at one instant) — unless a felled
+// tower asks for them (D10 `chain`): then each impact lands at once as the
+// server's energy-scaled blast, and every building it breaks collapses at
+// that impact's instant, one link down.
 //
 // Building indices are generateCity(CITY_SEED)'s — a protocol-level contract
 // — and every spec states what it expects to find there, so a generator
@@ -35,6 +38,7 @@ import {
   PANCAKE,
   TOPPLE,
   collapseChunks,
+  collapseImpacts,
   collapseWire,
   demolitionPlan,
   planCollapses,
@@ -46,7 +50,14 @@ import {
   type PropLayout,
   type PropState,
 } from "@angels-bandits/common/city/props";
-import { COLLAPSE_CAP, DESTROY_CAP } from "@angels-bandits/common/constants";
+import {
+  CHAIN_BLAST_DAMAGE,
+  CHAIN_BLAST_RADIUS,
+  CHAIN_ENERGY_MAX,
+  CHAIN_ENERGY_MIN,
+  COLLAPSE_CAP,
+  DESTROY_CAP,
+} from "@angels-bandits/common/constants";
 import { wrapDeltaAxis } from "@angels-bandits/common/world";
 
 /** Staged ids start here: far above any id a room mints in a session. */
@@ -77,6 +88,8 @@ export interface StageFell {
   /** Topple direction, DIR_* (−x, +x, −z, +z). */
   dir: number;
   t: number;
+  /** D10: land its debris's chain impacts on the buildings it strikes. */
+  chain?: boolean;
 }
 
 export interface StageResult {
@@ -152,9 +165,46 @@ export function stageDestruction(
       throw new Error(
         `qaDestruction: building ${f.b} has nothing left to fell`,
       );
-    wires.push(record(damage, field, collapseWire(plan, f.b, ids.next++, f.t)));
+    const wire = record(
+      damage,
+      field,
+      collapseWire(plan, f.b, ids.next++, f.t),
+    );
+    wires.push(wire);
+    if (f.chain) chain(buildings, damage, field, wire, ids, wires);
   }
   return { wires, broken, touched };
+}
+
+/** D10 `chain`: `wire`'s impacts land as the server lands them (an
+ * energy-scaled D2 blast each), and every building they break collapses
+ * at its first impact's instant. One link: the QA shot of a tower striking
+ * its neighbour, not the whole cascade. */
+function chain(
+  buildings: readonly Building[],
+  damage: CityDamage,
+  field: CollapseField,
+  wire: CollapseWire,
+  ids: { next: number },
+  wires: CollapseWire[],
+): void {
+  const c = field.list.find((x) => x.id === wire.id);
+  if (!c) return;
+  const first = new Map<number, number>();
+  for (const i of collapseImpacts(c, buildings)) {
+    const e = Math.min(CHAIN_ENERGY_MAX, Math.max(CHAIN_ENERGY_MIN, i.e));
+    damage.damageAt(
+      i,
+      CHAIN_BLAST_RADIUS * Math.sqrt(e),
+      CHAIN_BLAST_DAMAGE * e,
+    );
+    if (!first.has(i.building)) first.set(i.building, i.t);
+  }
+  for (const [b, t] of [...first].sort((p, q) => p[0] - q[0])) {
+    for (const plan of planCollapses(buildings[b] as Building, b)) {
+      wires.push(record(damage, field, collapseWire(plan, b, ids.next++, t)));
+    }
+  }
 }
 
 /** recordCollapse's client half: the chunks fall, the debris starts. */

@@ -791,6 +791,71 @@ export const VIEWS = [
       },
     },
   },
+  // D10 realistic collapse, staged through __ab.qaDestruction on the D8
+  // tower (building 343, 215 m at (1240, 464); times relative to the render
+  // clock at staging). Mid-pancake: the block has let go and the crush
+  // front is driving down through the lower storeys, squibs puffing out of
+  // the windows under it, facade sheets peeling off into the street. Topple
+  // into a neighbour: felled west, its upper floors strike the 224 m tower
+  // 295 across the street ~4.5 s in (`chain`: the impacts land as the
+  // server's energy-scaled blasts and 295 breaks where it was hit) — shot
+  // 0.6 s after the first strike. Dust in the street: the pyroclastic surge
+  // rolling down the x = 1200 street at street level, 9 s after the mass hit
+  // the ground. Ruin detail: the pile up close — slumped slabs, steel stubs
+  // leaning out of it, rebar off the broken edges, sheets lying in the
+  // street. The plane is parked at 240 m over the lot, out of shot.
+  {
+    name: "collapse-pancake-mid",
+    sky: "dusk",
+    x: 1215,
+    z: 760,
+    y: 240,
+    yaw: 0,
+    eye: [1120, 60, 680],
+    at: [1240, 95, 464],
+    weather: "clear",
+    stage: { fell: [{ b: 343, h: 215, style: "pancake", dir: 0, t: -4600 }] },
+  },
+  {
+    name: "collapse-topple-impact",
+    sky: "dusk",
+    x: 1215,
+    z: 760,
+    y: 260,
+    yaw: 0,
+    eye: [1185, 120, 720],
+    at: [1150, 150, 464],
+    weather: "clear",
+    stage: {
+      fell: [
+        { b: 343, h: 215, style: "topple", dir: 0, t: -5100, chain: true },
+      ],
+    },
+  },
+  {
+    name: "collapse-dust-street",
+    sky: "dusk",
+    x: 1215,
+    z: 760,
+    y: 240,
+    yaw: 0,
+    eye: [1200, 9, 660],
+    at: [1200, 14, 470],
+    weather: "clear",
+    stage: { fell: [{ b: 343, h: 215, style: "pancake", dir: 0, t: -12_000 }] },
+  },
+  {
+    name: "ruin-detail",
+    sky: "dusk",
+    x: 1215,
+    z: 760,
+    y: 240,
+    yaw: 0,
+    eye: [1203, 16, 540],
+    at: [1238, 3, 468],
+    weather: "clear",
+    stage: { fell: [{ b: 343, h: 215, style: "pancake", dir: 0, t: -25_000 }] },
+  },
   // D9 more destruction, staged through __ab.qaDestruction's `props` (the
   // seed-42 prop layout: each `down` takes the nearest standing prop of
   // that kind, and throws if none is near — the layout changed). Times are

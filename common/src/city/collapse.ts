@@ -2179,6 +2179,8 @@ export function collapseFloorEvents(c: Collapse): readonly FloorEvent[] {
     t0 = Math.min(t0, e.t);
     t1 = Math.max(t1, e.t);
   }
+  // Equal time bins over the span, one set per kind (a beat's height is
+  // that of what it is — a crushed storey is not averaged with a landing).
   const bins = COLLAPSE_FLOOR_EVENTS_MAX;
   const width = Math.max(1, (t1 - t0) / bins);
   type Acc = {
@@ -2187,43 +2189,45 @@ export function collapseFloorEvents(c: Collapse): readonly FloorEvent[] {
     y: number;
     z: number;
     w: number;
-    kw: number[];
+    k: number;
   };
-  const acc: (Acc | null)[] = new Array(bins).fill(null);
+  const acc = new Map<number, Acc>();
   for (const e of raw) {
-    const k = Math.min(bins - 1, Math.floor((e.t - t0) / width));
-    // The failure floor always opens the list on its own.
-    const slot = e.k === BEAT_GIVE ? 0 : k;
-    let a = acc[slot];
+    const slot = Math.min(bins - 1, Math.floor((e.t - t0) / width));
+    const key = slot * 4 + e.k;
+    let a = acc.get(key);
     if (!a) {
-      a = { t: 0, x: 0, y: 0, z: 0, w: 0, kw: [0, 0, 0, 0] };
-      acc[slot] = a;
+      a = { t: 0, x: 0, y: 0, z: 0, w: 0, k: e.k };
+      acc.set(key, a);
     }
     a.t += e.t * e.w;
     a.x += e.x * e.w;
     a.y += e.y * e.w;
     a.z += e.z * e.w;
     a.w += e.w;
-    a.kw[e.k] = (a.kw[e.k] as number) + e.w;
   }
+  // The biggest COLLAPSE_FLOOR_EVENTS_MAX, always with the failure floor.
+  const all = [...acc.entries()]
+    .sort((p, q) => p[0] - q[0])
+    .map(([, a]) => a)
+    .filter((a) => a.w > 0);
+  const keep = all
+    .slice()
+    .sort(
+      (p, q) =>
+        (q.k === BEAT_GIVE ? 1 : 0) - (p.k === BEAT_GIVE ? 1 : 0) || q.w - p.w,
+    )
+    .slice(0, COLLAPSE_FLOOR_EVENTS_MAX);
   let big = 0;
-  for (const a of acc) if (a) big = Math.max(big, a.w);
-  const out: FloorEvent[] = [];
-  for (const a of acc) {
-    if (!a || a.w <= 0) continue;
-    let kind = 0;
-    for (let k = 1; k < 4; k++) {
-      if ((a.kw[k] as number) > (a.kw[kind] as number)) kind = k;
-    }
-    out.push({
-      t: a.t / a.w,
-      x: a.x / a.w,
-      y: a.y / a.w,
-      z: a.z / a.w,
-      size: a.w / big,
-      kind,
-    });
-  }
+  for (const a of keep) big = Math.max(big, a.w);
+  const out: FloorEvent[] = keep.map((a) => ({
+    t: a.t / a.w,
+    x: a.x / a.w,
+    y: a.y / a.w,
+    z: a.z / a.w,
+    size: a.w / big,
+    kind: a.k,
+  }));
   out.sort((p, q) => p.t - q.t || p.kind - q.kind);
   floorEventCache.set(c, out);
   return out;

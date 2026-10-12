@@ -7,13 +7,15 @@ along a hard, straight line. L5 makes that line impossible instead.
 
 **The sites that must agree:**
 
-- `buildingClearance` / `clearanceAgainst` in `client/src/render/fogbanks.ts`.
-  A puff of visible radius `r` keeps `smoothstep(r, r + soft, d)` of its
-  alpha, where `d` is its distance to each STANDING building box (footprint ×
-  `standingProfile(b).top`). Zero means a box is inside the sprite.
-- The S5 fog banks (`FogBanks.update`, soft 12 m) and every steam puff
-  (`Steam.update`, soft 2 m, each vent's neighbours cached) both go
-  through it.
+- `nearestBoxDistance` and `clearanceAgainst` in
+  `client/src/render/fogbanks.ts`. Both measure `d`, a puff's distance to
+  each STANDING building box (footprint × `standingProfile(b).top`).
+- An S5 bank puff (`FogBanks.update`) SHRINKS to fit. Its drawn radius is
+  `min(r, d − BANK_FIT_MARGIN)`, and it fades out once squeezed below
+  `BANK_FIT_FADE` of its own radius.
+- A steam puff (`Steam.update`, each vent's neighbours cached) FADES. It keeps
+  `smoothstep(r, r + 2, d)` of its alpha, so zero means a box is inside the
+  sprite.
 - The canyon mist does NOT. It is safe by construction instead:
   `MIST_SIZE_MAX / 2 + MIST_CROSS_MAX + 4 ≤ LOT_LINE`, the street contract's
   facade line (`common/src/city/street.ts`), is checked at module load.

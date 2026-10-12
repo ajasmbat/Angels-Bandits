@@ -134,7 +134,7 @@ const LANDING_CHAIN: readonly { d: number; size: number; lum: number }[] = [
   { d: 27, size: 10, lum: 0.075 },
   { d: 42, size: 15, lum: 0.055 },
   { d: 62, size: 22, lum: 0.038 },
-]
+];
 /** Steady lights, the two wingtip halos, the exhaust and its halo; L6's
  * landing lamp, its halo and the chain on biplanes only. */
 const LIGHTS_PER_PLANE = 8;
@@ -203,6 +203,12 @@ const landingBoost = LANDING_WHITE.clone().multiplyScalar(
 const landingHalo = LANDING_WHITE.clone().multiplyScalar(
   emissiveBoost(LANDING_WHITE, LANDING_HALO_LUM),
 );
+/** Each chain sprite's mount (game-local), fixed: down the dipped throw. */
+const landingChainMounts: readonly Vec3[] = LANDING_CHAIN.map((c) => ({
+  x: LANDING_MOUNT.x,
+  y: LANDING_MOUNT.y - c.d * LANDING_DIP,
+  z: LANDING_MOUNT.z - c.d,
+}));
 const landingChain = LANDING_CHAIN.map((c) =>
   LANDING_WHITE.clone().multiplyScalar(emissiveBoost(LANDING_WHITE, c.lum)),
 );
@@ -365,7 +371,12 @@ export class PlaneLights {
       scratchColor,
       EXHAUST_SIZE * (1 + (AFTERBURN_SIZE - 1) * afterburn),
     );
-    scratchColor.copy(exhaustHalo).multiplyScalar(throttle * flicker);
+    // (Channel by channel: a double handed to a call V8 does not inline is
+    // boxed, per plane per frame — P4's allocation table.)
+    const glow = throttle * flicker;
+    scratchColor.r = exhaustHalo.r * glow;
+    scratchColor.g = exhaustHalo.g * glow;
+    scratchColor.b = exhaustHalo.b * glow;
     this.appendColor(rendered, mounts.exhaust, scratchColor, EXHAUST_HALO_SIZE);
 
     // L6: the hero's landing lamp and its beam into the mist (biplanes —
@@ -375,12 +386,9 @@ export class PlaneLights {
     this.append(rendered, LANDING_MOUNT, landingHalo, LANDING_HALO_SIZE);
     for (let i = 0; i < LANDING_CHAIN.length; i++) {
       const c = LANDING_CHAIN[i] as { d: number; size: number; lum: number };
-      scratchMount.x = LANDING_MOUNT.x;
-      scratchMount.y = LANDING_MOUNT.y - c.d * LANDING_DIP;
-      scratchMount.z = LANDING_MOUNT.z - c.d;
       this.append(
         rendered,
-        scratchMount,
+        landingChainMounts[i] as Vec3,
         landingChain[i] as THREE.Color,
         c.size,
       );
@@ -427,7 +435,6 @@ export class PlaneLights {
 
 const scratchColor = new THREE.Color();
 const scratchFlame = new THREE.Color();
-const scratchMount: Vec3 = { x: 0, y: 0, z: 0 };
 
 // --- Hero light (VO4): every plane lights ITSELF, in its own shader ---
 //

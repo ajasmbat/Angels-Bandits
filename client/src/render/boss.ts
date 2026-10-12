@@ -226,8 +226,17 @@ const NAV_LIGHTS: readonly NavLight[] = [
   nav(P(9).x + 12, KEEL_BOTTOM - 0.1, -2.5, GONDOLA_WARM, EMISSIVE_LAMP),
 ];
 /** L6: lights per escort scout — port red and starboard green at the
- * wingtips, and a red strobe on its back. */
+ * wingtips, and a red strobe on its back — boosted onto their rungs once. */
 const SCOUT_LIGHTS = 3;
+const SCOUT_GREEN = STARBOARD.clone().multiplyScalar(
+  emissiveBoost(STARBOARD, EMISSIVE_NAVLIGHT),
+);
+const SCOUT_RED = PORT.clone().multiplyScalar(
+  emissiveBoost(PORT, EMISSIVE_NAVLIGHT),
+);
+const SCOUT_STROBE = PORT.clone().multiplyScalar(
+  emissiveBoost(PORT, EMISSIVE_STROBE),
+);
 /** Where on the hull the fire spreads to as weak points die: two points by
  * each weak point, on the envelope's skin (hull frame). */
 const FIRE_POINTS: readonly Vec3[] = BOSS_WEAK_POINTS.flatMap((i) => {
@@ -1216,15 +1225,32 @@ export class BossRenderer {
       // down when sinking.
       const bank = -0.9 * Math.cos(t / 4.9 + p * 0.7) * (7 / 4.9) * 0.25;
       const pitch = 0.5 * Math.cos(t / 3.7 + p * 1.3) * (4 / 3.7) * 0.25;
-      this.m2
-        .makeTranslation(dx, dy, dz)
-        .multiply(this.m.makeRotationX(bank))
-        .multiply(this.mScout.makeRotationZ(pitch));
-      this.localScratch.copy(this.m2);
+      // T(dx, dy, dz) · Rx(bank) · Rz(pitch), written straight into the
+      // elements (column-major): no double crosses a call (S8).
+      const cb = Math.cos(bank);
+      const sb = Math.sin(bank);
+      const cp = Math.cos(pitch);
+      const sp = Math.sin(pitch);
+      const e = this.localScratch.elements;
+      e[0] = cp;
+      e[1] = cb * sp;
+      e[2] = sb * sp;
+      e[3] = 0;
+      e[4] = -sp;
+      e[5] = cb * cp;
+      e[6] = sb * cp;
+      e[7] = 0;
+      e[8] = 0;
+      e[9] = -sb;
+      e[10] = cb;
+      e[11] = 0;
+      e[12] = dx;
+      e[13] = dy;
+      e[14] = dz;
+      e[15] = 1;
       this.setBone(BONE_SCOUT + k, this.localScratch);
     }
   }
-  private readonly mScout = new THREE.Matrix4();
 
   /** L6: this frame's beams from the posed lamp and scout bones, into the
    * pooled `spots` (rendered coordinates — the bones are already placed on
@@ -1283,8 +1309,11 @@ export class BossRenderer {
     aim.z = dir.z;
     s.tint = tint;
     s.head = head;
-    s.radius = undefined;
-    s.length = undefined;
+    // Numbers only, never undefined: a field that flips between the two
+    // boxes every double stored in it (S8's allocation table). Length 0 is
+    // "not landed yet" — beam-landing.ts sets the real throw.
+    s.radius = 0;
+    s.length = 0;
     s.reach = 1;
     this.spotSpread[i] = spread;
   }
@@ -1301,6 +1330,11 @@ export class BossRenderer {
     az: 0,
     phase: i,
     aim: { x: 0, y: -1, z: 0 },
+    length: 0,
+    radius: 0,
+    reach: 1,
+    tint: CARRIER_BEAM_COLOR,
+    head: false,
   }));
   spotCount = 0;
   readonly spotSpread: number[] = Array.from({ length: BOSS_SPOTS }, () => 0);
@@ -1543,34 +1577,47 @@ export class BossRenderer {
       const k = on ? emissiveBoost(l.color, l.rung) : 0;
       this.lightCol.setXYZ(n, l.color.r * k, l.color.g * k, l.color.b * k);
     }
-    // L6: each escort's wingtips and its back strobe, off its own bone
-    // (the bone is already on the viewer's torus image).
+    this.placeScoutLights(now);
+    this.lightPos.needsUpdate = true;
+    this.lightCol.needsUpdate = true;
+    this.lights.visible = true;
+  }
+
+  /** L6: each escort's wingtips and its back strobe, off its own bone (the
+   * bone is already on the viewer's torus image). Straight into the typed
+   * arrays: a double handed to a call V8 does not inline is boxed (S8's
+   * allocation table). */
+  private placeScoutLights(now: number): void {
+    const pos = this.lightPos.array as Float32Array;
+    const col = this.lightCol.array as Float32Array;
+    const v = this.spotVec;
     let n = NAV_LIGHTS.length;
     for (let k = 0; k < SCOUTS; k++) {
       const c = SCOUT_AT[k] as { x: number; y: number; z: number };
       const bone = (this.bones[BONE_SCOUT + k] as THREE.Bone).matrixWorld;
-      const scoutStrobe = (now + k * 410) % STROBE_PERIOD_MS < STROBE_ON_MS;
+      const strobe = (now + k * 410) % STROBE_PERIOD_MS < STROBE_ON_MS;
       for (let j = 0; j < SCOUT_LIGHTS; j++) {
-        const v = this.spotVec;
-        if (j < 2)
-          v.set(c.x, c.y, c.z + (j === 0 ? SCOUT_TIP_Z : -SCOUT_TIP_Z));
-        else v.set(c.x - 1, c.y + 0.85, c.z);
+        v.x = c.x - (j === 2 ? 1 : 0);
+        v.y = c.y + (j === 2 ? 0.85 : 0);
+        v.z = c.z + (j === 0 ? SCOUT_TIP_Z : j === 1 ? -SCOUT_TIP_Z : 0);
         v.applyMatrix4(bone);
-        this.lightPos.setXYZ(n, v.x, v.y, v.z);
-        const col = j === 0 ? STARBOARD : PORT;
-        const kk =
-          j < 2
-            ? emissiveBoost(col, EMISSIVE_NAVLIGHT)
-            : scoutStrobe
-              ? emissiveBoost(PORT, EMISSIVE_STROBE)
-              : 0;
-        this.lightCol.setXYZ(n, col.r * kk, col.g * kk, col.b * kk);
+        pos[n * 3] = v.x;
+        pos[n * 3 + 1] = v.y;
+        pos[n * 3 + 2] = v.z;
+        const lit =
+          j === 0
+            ? SCOUT_GREEN
+            : j === 1
+              ? SCOUT_RED
+              : strobe
+                ? SCOUT_STROBE
+                : null;
+        col[n * 3] = lit ? lit.r : 0;
+        col[n * 3 + 1] = lit ? lit.g : 0;
+        col[n * 3 + 2] = lit ? lit.b : 0;
         n++;
       }
     }
-    this.lightPos.needsUpdate = true;
-    this.lightCol.needsUpdate = true;
-    this.lights.visible = true;
   }
 
   /** Shell heads in flight; each burst once, then dropped from `flak`.

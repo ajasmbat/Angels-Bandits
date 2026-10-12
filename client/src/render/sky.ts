@@ -43,7 +43,9 @@ import {
 import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { AB_AA_GLSL } from "./aa-glsl";
+import { luminance } from "./emissive";
 import { applyPointFloor } from "./point-floor";
+import type { QualityTier } from "./quality";
 import {
   REFLECTION_PARS_GLSL,
   REFL_PUDDLE_CAM_Y,
@@ -53,6 +55,23 @@ import {
 import { RENDER_ORDER } from "./render-order";
 import { BRIDGE_GONE_UNIFORM, RIVER_GROUND_PARS } from "./river";
 import { SIGN_PALETTE } from "./signage";
+import {
+  CLOUD_A,
+  CLOUD_B,
+  CLOUD_BODY,
+  CLOUD_CITY_GLOW,
+  CLOUD_CORE,
+  CLOUD_FLASH_PEAK,
+  CLOUD_HIGH,
+  CLOUD_TIER,
+  CloudOffset,
+  type CloudUniforms,
+  RIM_PEAK,
+  RIM_PEAK_HALO,
+  STORM_FLASH_COLOR,
+  cloudGlsl,
+  createCloudUniforms,
+} from "./sky-clouds";
 import type { SkyState } from "./skycycle";
 import {
   STREET_PAINT_PARS,
@@ -72,19 +91,20 @@ import {
 } from "./weather";
 
 /**
- * VO1 "Neon Blue Hour" palette. The night stays a night — windows, neon and
- * tracers still carry identity — but it is a LUMINOUS night: light pollution
- * makes the horizon the brightest part of the sky, so the fog that dissolves
- * distant towers is a glowing blue-violet rather than black, and silhouettes
- * separate by depth (aerial perspective) instead of merging into one mass.
+ * L1 "Stormlit" palette (was VO1's "Neon Blue Hour"). A storm night over a
+ * sodium-lit city: dark steel-blue shadows and air, a cool silver moon key,
+ * and warm amber light from the streets below. The horizon is still the
+ * brightest part of the sky — a steel-blue-grey haze rather than VO1's
+ * glowing lilac — so distant towers dissolve into lit air and silhouettes
+ * separate by depth, while windows and lamps carry all the warmth.
  */
 export const DUSK = {
-  sky: 0x3a3160, // horizon glow — clear color AND fog color, always identical
-  ambient: 0x56587e, // cool skylight floor so nothing is ever pure black
-  moon: 0xc8d2ff, // cool moonlight key: the light that gives faces their form
-  glow: 0xff8a5c, // warm low afterglow / sodium city glow from the far side
-  hemiSky: 0x5c64a0, // hemisphere: blue sky above...
-  hemiGround: 0x845038, // ...warm street-glow bounce from below
+  sky: 0x232c3c, // steel-blue horizon haze — clear color AND fog color, always identical
+  ambient: 0x3c4a64, // cool steel skylight floor so nothing is ever pure black
+  moon: 0xbccbe8, // cool silver moonlight key: the light that gives faces their form
+  glow: 0xff9a50, // warm sodium city glow from the far side
+  hemiSky: 0x46587c, // hemisphere: steel-blue sky above...
+  hemiGround: 0x8c5a30, // ...warm sodium street bounce from below
 } as const;
 
 /**
@@ -98,20 +118,24 @@ export const MOON_DIR = new THREE.Vector3(0.52, 0.42, -0.74).normalize();
 
 /** Light intensities (three's physical units: irradiance multipliers). */
 export const LIGHT_RIG = {
-  ambient: 0.75,
+  ambient: 0.7,
   moon: 2.1,
-  glow: 1.15,
-  hemi: 1.35,
+  glow: 1.0,
+  // L1: the skylight keeps ~30 % of the dust's light against the moon key
+  // (D10's dust darkens with the sky — collapse-d10.test.ts).
+  hemi: 1.45,
 } as const;
 
-/** Tone-mapping exposure — the whole-image lift (ACES filmic). */
-export const EXPOSURE = 1.18;
+/** Tone-mapping exposure — the whole-image lift (ACES filmic). L1 eased it
+ * (1.18 → 1.10) for deeper blacks; the grade's lift does the rest. */
+export const EXPOSURE = 1.1;
 
 /** Where the linear fog starts, m. VO1 pushed it out from 60 m: with a
  * luminous fog colour, a fog that starts at 60 m flattens the mid-distance
- * into one violet wash. The far end (FOG_DISTANCE) is the torus contract and
- * does not move. */
-export const FOG_NEAR = 140;
+ * into one wash. L1 pushed it to 200 m and shaped the curve (fog.ts
+ * FOG_SHAPE) so the skyline reads at 600 m. The far end (FOG_DISTANCE) is
+ * the torus contract and does not move. */
+export const FOG_NEAR = 200;
 
 const GROUND_SIZE = 2 * FOG_DISTANCE + 200; // fully covers the fog radius
 /**
@@ -171,10 +195,11 @@ export const SKY_FOG_STOP = 0.4;
 /** Vertical gradient stops, as polar-angle fractions (0 zenith, 0.5 the
  * horizon): the last is SKY_FOG_STOP, from which the sky IS the fog colour. */
 export const SKY_STOPS = [0, 0.14, 0.25, 0.32, 0.37, SKY_FOG_STOP] as const;
-/** VO1 night gradient (sRGB): deep blue zenith, night blue, moonlit blue,
- * lifting toward the band, violet light pollution — then DUSK.sky. */
+/** L1 night gradient (sRGB): a near-black navy zenith, storm navy, then
+ * steel blue lifting toward the band — then DUSK.sky. (VO1's ran deep blue
+ * into violet light pollution.) */
 export const SKY_GRADIENT_NIGHT = [
-  0x060a26, 0x0b1336, 0x131d4a, 0x22245a, 0x30295f,
+  0x03050b, 0x070b16, 0x0c1322, 0x141c2d, 0x1b2435,
 ] as const;
 /** Elevation (rad) above SKY_FOG_STOP over which the moon halo and the
  * dawn/dusk dome glows ramp in from exactly zero — nothing additive may
@@ -186,9 +211,10 @@ export const SKY_FOG_ELEVATION = (0.5 - SKY_FOG_STOP) * Math.PI;
 /** Moon disc angular radius, radians (~2.6° — big and cinematic, the way a
  * long lens shows it; the real 0.26° would be a sub-pixel dot at FOV 70). */
 export const MOON_RADIUS = 0.045;
-/** Peak linear luminance of the disc: just over the 0.72 bloom threshold so
- * it carries a soft halo, still far under the tracer rung (1.5). */
-export const MOON_PEAK = 0.95;
+/** Peak linear luminance of the disc: over the 0.72 bloom threshold so it
+ * carries a halo (L1 lifted it from 0.95 for the reference's bright full
+ * moon), still well under the tracer rung (1.5). */
+export const MOON_PEAK = 1.15;
 
 /** Disc angular radius as a gnomonic (tangent-plane) distance. */
 const MOON_TAN = Math.tan(MOON_RADIUS);
@@ -207,6 +233,20 @@ const vec3Literal = (v: readonly number[]): string =>
  * from the SAME colour it hands the fog. A dusk glow (west) and a dawn glow
  * (east) are added above the stop only.
  *
+ * L1 storm sky (sky-clouds.ts): two parallax cloud layers — dark masses
+ * with silver rims on the side facing the moon, brightest beside it, and a
+ * thin high deck — a noise-edged gap where the moon breaks through, and
+ * lightning that lights the clouds from inside. All of it fades in from
+ * zero above the fog stop, and none of it runs below.
+ *
+ * The air (L1): storm.atmosphere() folds the rain dim, the in-cloud soup,
+ * the flash stain and the D3 dust into one affine map the fog colour goes
+ * through (SkyAir); everything above the stop goes through the same map,
+ * and the band below the stop IS this frame's fog colour (uFogColor). At
+ * the stop the gradient equals the fog base, so the sky meets the fog
+ * exactly at every moment — mid-flash and inside dust included. The
+ * flash's extra brightening ramps in from zero over SKY_GLOW_RAMP.
+ *
  * Moon: the disc lives in the tangent plane at uMoonDir (gnomonic
  * projection, the same mapping a camera-facing quad would give). The dome
  * draws first and the city paints over it, so towers occlude the moon
@@ -215,7 +255,11 @@ const vec3Literal = (v: readonly number[]): string =>
 function skyPatch(material: THREE.MeshBasicMaterial, u: SkyUniforms): void {
   const peak = new THREE.Color(DUSK.moon);
   const lum = 0.2126 * peak.r + 0.7152 * peak.g + 0.0722 * peak.b;
+  // The moon's hue at unit luminance (the rims are lit by it).
+  const moonHue = peak.clone().multiplyScalar(1 / lum);
   peak.multiplyScalar(MOON_PEAK / lum);
+  const flash = new THREE.Color(STORM_FLASH_COLOR);
+  flash.multiplyScalar(1 / luminance(flash));
   const n = SKY_STOPS.length;
   // Chained mixes: each is 0 before its interval and 1 after it, so the
   // chain IS the piecewise-linear gradient.
@@ -246,6 +290,13 @@ uniform float uMoonVis;
 uniform vec3 uDuskGlow;
 uniform vec3 uDawnGlow;
 uniform vec2 uDuskDir;
+uniform vec3 uFogColor;
+uniform float uAirScale;
+uniform vec3 uAirAdd;
+uniform float uAirGain;
+uniform float uFlash;
+uniform vec3 uFlashDir;
+${cloudGlsl(SKY_FOG_ELEVATION)}
 float mHash(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
 float mNoise(vec2 p) {
   vec2 i = floor(p); vec2 f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
@@ -268,14 +319,19 @@ ${chain}
   // Nothing additive below the fog stop: ramp in from exactly zero above it.
   float el = asin(clamp(sd.y, -1.0, 1.0));
   float above = smoothstep(${SKY_FOG_ELEVATION.toFixed(5)}, ${(SKY_FOG_ELEVATION + SKY_GLOW_RAMP).toFixed(5)}, el);
-  // Dusk / dawn glow: hugs the band just above the stop, in one quarter.
-  vec2 hz = sd.xz / max(length(sd.xz), 1e-4);
-  float band = above * (1.0 - smoothstep(${(SKY_FOG_ELEVATION + SKY_GLOW_RAMP).toFixed(5)}, ${(SKY_FOG_ELEVATION + 0.5).toFixed(5)}, el));
-  float side = dot(hz, uDuskDir);
-  sky += uDuskGlow * band * pow(max(side, 0.0), 3.0);
-  sky += uDawnGlow * band * pow(max(-side, 0.0), 3.0);
-  diffuseColor.rgb *= sky;
   float facing = dot(sd, uMoonDir);
+  float cover = 0.0;
+  float lightning = 0.0;
+  if (above > 0.0) {
+    // Dusk / dawn glow: hugs the band just above the stop, in one quarter.
+    vec2 hz = sd.xz / max(length(sd.xz), 1e-4);
+    float band = above * (1.0 - smoothstep(${(SKY_FOG_ELEVATION + SKY_GLOW_RAMP).toFixed(5)}, ${(SKY_FOG_ELEVATION + 0.5).toFixed(5)}, el));
+    float side = dot(hz, uDuskDir);
+    sky += uDuskGlow * band * pow(max(side, 0.0), 3.0);
+    sky += uDawnGlow * band * pow(max(-side, 0.0), 3.0);
+  }
+  vec3 moonCol = ${vec3Literal(peak.toArray())};
+  float moonHalo = 0.0;
   if (facing > 0.0) {
     // Disc-radius units on the tangent plane at the moon.
     // O7: a denormal facing sent q to Inf and fract(Inf) is NaN (×0 is
@@ -283,7 +339,6 @@ ${chain}
     vec2 q = vec2(dot(sd, uMoonEast), dot(sd, uMoonNorth))
              / (max(facing, 1e-3) * ${MOON_TAN.toFixed(6)});
     float r = length(q);
-    vec3 moonCol = ${vec3Literal(peak.toArray())};
     // Disc: soft limb darkening + maria (low-frequency dark patches).
     // The disc itself never reaches the fog band (MOON_EL_LOW); only the
     // wide halo could, so only the halo takes the ramp.
@@ -291,25 +346,76 @@ ${chain}
     float maria = mNoise(q * 2.3 + 3.1) * 0.6 + mNoise(q * 5.1) * 0.4;
     float limb = 0.78 + 0.22 * sqrt(max(0.0, 1.0 - r * r));
     vec3 discCol = moonCol * limb * (1.0 - 0.28 * smoothstep(0.45, 0.75, maria));
-    // Halo, added over the sky: a tight corona and a wide moonlit haze.
+    // Halo, added over the sky: a tight corona and a wide moonlit haze
+    // (L1: wider and brighter, the reference's glow through wet air).
     float d = max(r - 1.0, 0.0);
-    float halo = (0.22 * exp(-d * 2.6) + 0.07 * exp(-d * 0.55)) * uMoonVis * above;
-    // The storm flash tints the dome (diffuse) up to ~2.6x; the moon takes
-    // its hue but never its gain, so it can never out-shine a tracer.
-    vec3 hue = diffuse / max(1.0, max(diffuse.r, max(diffuse.g, diffuse.b)));
-    vec3 moonLit = (discCol * disc + moonCol * halo * (1.0 - disc)) * hue;
-    diffuseColor.rgb = diffuseColor.rgb * (1.0 - disc) + moonLit;
+    float halo = (0.26 * exp(-d * 2.2) + 0.09 * exp(-d * 0.42)) * uMoonVis * above;
+    sky = sky * (1.0 - disc) + discCol * disc + moonCol * halo * (1.0 - disc);
+    moonHalo = halo;
   }
+  // L1 clouds — skipped wholesale in the fog band and on ?clouds=0.
+  if (above > 0.0 && uCloudOn > 0.5 && sd.y > 0.02) {
+    float fade = abCloudFade(sd.y);
+    if (fade > 0.0) {
+      vec2 hz = sd.xz / sd.y;
+      vec2 pA = uCloudOffA + hz * ${CLOUD_A.height.toFixed(1)};
+      vec3 fa = abCloudFieldA(pA, ${CLOUD_A.height.toFixed(1)} / sd.y, uCloudDetail);
+      float gap = abCloudGap(sd, fa.x);
+      float rawA = abCloudDensityA(fa.x);
+      float dA = rawA * gap * fade;
+      float dB = abCloudDensityB(abCloudFieldB(uCloudOffB + hz * ${CLOUD_B.height.toFixed(1)}))
+        * fade * mix(1.0, gap, 0.6);
+      // Moonlight: rims on the side facing the moon. Step a little along
+      // the plane toward where the moon's ray meets it; where the coarse
+      // field falls that way, this is a moon-facing edge.
+      vec2 pMoon = uCloudOffA + uMoonDir.xz / max(uMoonDir.y, 0.05) * ${CLOUD_A.height.toFixed(1)};
+      vec2 toMoon = pMoon - pA;
+      toMoon /= max(length(toMoon), 1.0);
+      float here = uCloudRim > 1.5 ? fa.z : fa.y;
+      float there = abCloudCoarseA(pA + toMoon * 140.0, uCloudRim);
+      float lit = clamp((here - there) * 7.0 + 0.12, 0.0, 1.0) * (1.0 - 0.65 * rawA);
+      float m = max(facing, 0.0);
+      float near = pow(m, 12.0); // within ~30° of the moon
+      float halo2 = pow(m, 200.0); // inside the halo
+      float rimLum = mix(0.08, ${RIM_PEAK.toFixed(3)}, near)
+        + ${(RIM_PEAK_HALO - RIM_PEAK).toFixed(3)} * halo2;
+      vec3 rim = ${vec3Literal(moonHue.toArray())} * rimLum * lit * uMoonVis;
+      float low = 1.0 - smoothstep(${SKY_FOG_ELEVATION.toFixed(5)}, ${(SKY_FOG_ELEVATION + 0.35).toFixed(5)}, el);
+      // Thick cores darker than the thin edges.
+      // The masses round the moon are moonlit through (the reference's
+      // grey-white clouds about the gap).
+      vec3 bodyA = mix(${glslColor(CLOUD_BODY)}, ${glslColor(CLOUD_CORE)}, smoothstep(0.55, 1.0, rawA) * smoothstep(0.62, 0.85, fa.x))
+        + ${vec3Literal(moonHue.toArray())} * (0.1 * near * uMoonVis)
+        + ${glslColor(CLOUD_CITY_GLOW)} * low + rim;
+      vec3 bodyB = ${glslColor(CLOUD_HIGH)}
+        + ${vec3Literal(moonHue.toArray())} * (0.02 + 0.2 * near) * uMoonVis;
+      sky = mix(sky, bodyB, dB);
+      sky = mix(sky, bodyA, dA);
+      cover = clamp(dA + dB * (1.0 - dA), 0.0, 1.0);
+      // The moon's glow still bleeds through thin cloud.
+      sky += moonCol * moonHalo * cover * 0.35;
+      // Lightning lights the cloud mass around the strike from inside.
+      // (Its own, gentler elevation fade: the lit deck melts into the
+      // horizon haze instead of ending on a line.)
+      lightning = uFlash * pow(max(dot(sd, uFlashDir), 0.0), 5.0)
+        * (0.25 + 0.75 * cover)
+        * smoothstep(${SKY_FOG_ELEVATION.toFixed(5)}, ${(SKY_FOG_ELEVATION + 0.45).toFixed(5)}, el);
+    }
+  }
+  // The air (see above): the same affine map as the fog, the flash gain
+  // ramped in from the stop, and below the stop exactly the fog colour.
+  vec3 air = (sky * uAirScale + uAirAdd) * (1.0 + (uAirGain - 1.0) * above);
+  air += ${vec3Literal(flash.toArray())} * (${CLOUD_FLASH_PEAK.toFixed(3)} * lightning);
+  diffuseColor.rgb = mix(uFogColor, air, above);
 }`,
       );
   };
   // Unique key: three caches programs on onBeforeCompile.toString().
-  material.customProgramCacheKey = () => "l12-sky-dome-cycle";
+  material.customProgramCacheKey = () => "l1-storm-sky-dome";
 }
 
-/** The dome's uniforms — written by SkyDome.setCycle once per frame. */
-interface SkyUniforms {
-  [name: string]: THREE.IUniform;
+/** The dome's uniforms — written by SkyDome once per frame. */
+interface SkyUniforms extends CloudUniforms {
   uSkyStops: { value: THREE.Vector3[] };
   uMoonDir: { value: THREE.Vector3 };
   uMoonEast: { value: THREE.Vector3 };
@@ -318,6 +424,15 @@ interface SkyUniforms {
   uDuskGlow: { value: THREE.Vector3 };
   uDawnGlow: { value: THREE.Vector3 };
   uDuskDir: { value: THREE.Vector2 };
+  /** L1: this frame's fog colour (linear) — the band below the stop. */
+  uFogColor: { value: THREE.Color };
+  /** L1: the air's affine map (storm.ts SkyAir) and flash gain. */
+  uAirScale: { value: number };
+  uAirAdd: { value: THREE.Color };
+  uAirGain: { value: number };
+  /** L1: in-cloud lightning level 0..1 and the unit direction to it. */
+  uFlash: { value: number };
+  uFlashDir: { value: THREE.Vector3 };
 }
 
 /** Linear → sRGB transfer (the gradient uniforms are sRGB, like the old
@@ -372,7 +487,7 @@ function starDotTexture(): THREE.DataTexture {
  * dome's render order) and the city paints over them, as it should. Sizes
  * are in pixels with no attenuation: a star is a point, not a sprite.
  */
-function starField(seed: number): THREE.Points {
+function starField(seed: number, clouds: CloudUniforms): THREE.Points {
   let state = seed >>> 0;
   const rand = () => {
     state = (state + 0x6d2b79f5) >>> 0;
@@ -421,9 +536,10 @@ function starField(seed: number): THREE.Points {
     depthWrite: false,
     fog: false,
   });
-  material.customProgramCacheKey = () => "ab-stars";
+  material.customProgramCacheKey = () => "ab-stars-l1";
   material.onBeforeCompile = (shader) => {
     applyPointFloor(shader, STAR_FLOOR_PX);
+    patchCloudCover(shader, clouds);
   };
   const points = new THREE.Points(geometry, material);
   points.renderOrder = RENDER_ORDER.sky;
@@ -431,19 +547,56 @@ function starField(seed: number): THREE.Points {
   return points;
 }
 
+/**
+ * L1: fade a dome-riding point (a star, an airliner light) by the cloud
+ * coverage in its direction, so it only shows in the gaps. Coverage per
+ * VERTEX —
+ * one coverage evaluation per point, the same function and the same
+ * uniform objects the dome paints with. The point's local position is its
+ * direction from the eye (it rides the camera-centred dome).
+ */
+export function patchCloudCover(
+  shader: THREE.WebGLProgramParametersWithUniforms,
+  clouds: CloudUniforms,
+): void {
+  Object.assign(shader.uniforms, clouds);
+  shader.vertexShader = shader.vertexShader
+    .replace(
+      "#include <common>",
+      `#include <common>\nvarying float vCloudVis;\n${cloudGlsl(SKY_FOG_ELEVATION)}`,
+    )
+    .replace(
+      "#include <color_vertex>",
+      "#include <color_vertex>\n\tvCloudVis = 1.0 - abCloudCover(normalize(position));",
+    );
+  // ALPHA, not colour: a star is normal-blended, so a blackened one would
+  // still paint a dark dot over the cloud in front of it.
+  shader.fragmentShader = shader.fragmentShader
+    .replace("#include <common>", "#include <common>\nvarying float vCloudVis;")
+    .replace(
+      "#include <color_fragment>",
+      "#include <color_fragment>\n\tdiffuseColor.a *= vCloudVis;",
+    );
+}
+
 /** Camera-following gradient dome, just inside the far plane, above the fog. */
 export class SkyDome {
   readonly mesh: THREE.Mesh;
   private readonly stars: THREE.Points;
-  private readonly uniforms: SkyUniforms;
+  /** Public for L4: the river's moon column shares uMoonDir / uMoonVis. */
+  readonly uniforms: SkyUniforms;
+  /** L1: the cloud uniforms the stars and airliners share by reference. */
+  readonly clouds: CloudUniforms;
+  private readonly cloudOffset = new CloudOffset();
+  private readonly flashDir: Vec3 = { x: 0, y: 0, z: 0 };
 
-  constructor() {
+  constructor(cloudsOn = true) {
     const material = new THREE.MeshBasicMaterial({
       side: THREE.BackSide,
       fog: false,
       depthWrite: false,
     });
-    // Starts on the VO1 night (the L12 cycle overwrites it every frame).
+    // Starts on the night key (the L12 cycle overwrites it every frame).
     const stops = [...SKY_GRADIENT_NIGHT, DUSK.sky].map((hex) => {
       const v = new THREE.Vector3();
       return v
@@ -451,7 +604,10 @@ export class SkyDome {
         .divideScalar(255);
     });
     const dusk = new THREE.Vector2(GLOW_DIR.x, GLOW_DIR.z).normalize();
+    this.clouds = createCloudUniforms();
+    this.clouds.uCloudOn.value = cloudsOn ? 1 : 0;
     this.uniforms = {
+      ...this.clouds,
       uSkyStops: { value: stops },
       uMoonDir: { value: MOON_DIR.clone() },
       uMoonEast: { value: new THREE.Vector3() },
@@ -460,6 +616,12 @@ export class SkyDome {
       uDuskGlow: { value: new THREE.Vector3() },
       uDawnGlow: { value: new THREE.Vector3() },
       uDuskDir: { value: dusk },
+      uFogColor: { value: new THREE.Color(DUSK.sky) },
+      uAirScale: { value: 1 },
+      uAirAdd: { value: new THREE.Color(0, 0, 0) },
+      uAirGain: { value: 1 },
+      uFlash: { value: 0 },
+      uFlashDir: { value: new THREE.Vector3(0, 1, 0) },
     };
     this.setMoon(MOON_DIR);
     skyPatch(material, this.uniforms);
@@ -469,7 +631,7 @@ export class SkyDome {
     );
     this.mesh.renderOrder = RENDER_ORDER.sky; // always the backdrop
     // Stars ride the dome: same centre, hidden with it inside the cloud deck.
-    this.stars = starField(0x57a2f1e1);
+    this.stars = starField(0x57a2f1e1, this.clouds);
     this.mesh.add(this.stars);
   }
 
@@ -480,6 +642,7 @@ export class SkyDome {
     u.uMoonDir.value.set(dir.x, dir.y, dir.z);
     u.uMoonEast.value.set(0, 1, 0).cross(u.uMoonDir.value).normalize();
     u.uMoonNorth.value.copy(u.uMoonDir.value).cross(u.uMoonEast.value);
+    this.clouds.uCloudMoon.value.copy(u.uMoonDir.value);
   }
 
   /** L12 sky cycle: write this frame's gradient, glows, moon and stars. */
@@ -501,15 +664,57 @@ export class SkyDome {
     (this.stars.material as THREE.PointsMaterial).opacity = s.stars;
   }
 
-  /** Keep the dome centered on the viewer. */
-  update(cameraPos: Vec3): void {
+  /**
+   * Keep the dome centred on the viewer and advance the clouds: the
+   * unwrapped camera offset (sky-clouds.ts CloudOffset — `dtSec` is the
+   * sim's clamped step) plus each layer's wind on the synced clock.
+   */
+  update(cameraPos: Vec3, dtSec = 0, timeMs: number | null = null): void {
     this.mesh.position.set(cameraPos.x, cameraPos.y, cameraPos.z);
+    this.cloudOffset.advance(cameraPos, dtSec);
+    this.cloudOffset.layer(CLOUD_A.wind, timeMs, this.clouds.uCloudOffA.value);
+    this.cloudOffset.layer(CLOUD_B.wind, timeMs, this.clouds.uCloudOffB.value);
   }
 
-  /** Storm hook (ST2): multiplicative tint over the gradient — white is the
-   * resting state, a sky flash pulls it violet and brightens it briefly. */
-  tint(color: THREE.Color): void {
-    (this.mesh.material as THREE.MeshBasicMaterial).color.copy(color);
+  /**
+   * Storm hook (L1, replaces ST2's multiplicative tint): this frame's air
+   * from storm.atmosphere() — the fog colour for the band below the stop,
+   * the affine colour map and flash gain for everything above it.
+   */
+  setAir(air: {
+    scale: number;
+    add: THREE.Color;
+    gain: number;
+    fog: THREE.Color;
+  }): void {
+    const u = this.uniforms;
+    u.uAirScale.value = air.scale;
+    u.uAirAdd.value.copy(air.add);
+    u.uAirGain.value = air.gain;
+    u.uFogColor.value.copy(air.fog);
+  }
+
+  /**
+   * L1: lightning inside the clouds — `level` (the flash envelope, 0..1)
+   * and the torus step from the eye to the strike (wrapDelta: the image of
+   * the strike nearest the viewer), lit at the cloud masses' height.
+   */
+  setFlash(level: number, toStrike: Readonly<Vec3>): void {
+    const u = this.uniforms;
+    u.uFlash.value = level;
+    if (level <= 0) return;
+    const d = this.flashDir;
+    d.x = toStrike.x;
+    d.y = CLOUD_A.height;
+    d.z = toStrike.z;
+    u.uFlashDir.value.set(d.x, d.y, d.z).normalize();
+  }
+
+  /** M3 tiers: fine cloud octaves and the rim's second octave (uniforms —
+   * never a recompile). Coverage is identical on every tier. */
+  setQuality(tier: QualityTier): void {
+    this.clouds.uCloudDetail.value = CLOUD_TIER[tier].detail;
+    this.clouds.uCloudRim.value = CLOUD_TIER[tier].rim;
   }
 }
 
@@ -579,7 +784,7 @@ const PUDDLE_FADE = { near: "70.0", far: "260.0" } as const;
 /** Puddle albedo darkening (wet asphalt is darker than damp). */
 const PUDDLE_DARKEN = "0.62";
 /** Sky reflected at grazing angles: the horizon colour, lifted. */
-const SHEEN_COLOR = glslColor(0x6c62b0);
+const SHEEN_COLOR = glslColor(0x5a6c8c); // L1: steel, not lilac
 /** Peak sheen gain at full Fresnel on a puddle. */
 const SHEEN_GAIN = "0.9";
 /** Neon spill smear peak luminance (before Fresnel/wetness; sub-bloom). */
@@ -898,7 +1103,7 @@ ${STREET_WALK_GLSL}  } else {
     } else if (abKind == ${N.site}) {
       abPaint = abSitePaint(vWorldXZ, abNoiseV);
     } else if (abKind == ${N.river}) {
-      abPaint = abPromenadePaint(vWorldXZ, abNoiseV, ${GROUND_COLORS.paving}, ${GROUND_COLORS.slabJoint});
+      abPaint = abPromenadePaint(vWorldXZ, abNoiseV, ${GROUND_COLORS.paving}, ${GROUND_COLORS.slabJoint}, abEmissive);
     }
   }
 }

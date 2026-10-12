@@ -93,6 +93,10 @@ export interface QualityProfile {
   /** L13 fire escapes, balconies, AC units, scaffolding; DT2 balcony
    * plants and sconces, ivy curtains and graffiti (all one instanced rig). */
   facadeDetail: boolean;
+  /** L4 river dressing: the landmark decks' light streams, boat wakes and
+   * light streaks on the water, rain rings. The bridges, piers and boats
+   * themselves are solid and the same on every tier. */
+  riverDetail: boolean;
   /** The bloom pass (half-res chain). Mobile keeps it: the lower pixel ratio
    * already makes it cheap, and a quarter-res chain would let a 1–2 px tracer
    * fall between texels and its halo shimmer. Only thermal level 1 drops it. */
@@ -226,6 +230,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     birds: 1,
     contrails: 1,
     facadeDetail: true,
+    riverDetail: true,
     bloom: true,
     grade: true,
     steamDensity: 1,
@@ -275,6 +280,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     birds: 1,
     contrails: 1,
     facadeDetail: true,
+    riverDetail: true,
     bloom: true,
     grade: true,
     steamDensity: 1,
@@ -324,6 +330,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     birds: 0.5,
     contrails: 0.5,
     facadeDetail: false,
+    riverDetail: false,
     bloom: true,
     grade: true,
     steamDensity: 1,
@@ -373,6 +380,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     birds: 0.5,
     contrails: 0.5,
     facadeDetail: false,
+    riverDetail: false,
     bloom: true,
     grade: false,
     steamDensity: 0.5,
@@ -704,6 +712,14 @@ export const FEATURE_TIERS: readonly {
     low: "full",
     mobile: "full",
     note: "uniforms only",
+  },
+  {
+    feature: "L1 storm sky clouds (dome shader)",
+    high: "full",
+    medium: "full",
+    low: "reduced",
+    mobile: "reduced",
+    note: "no draw; coverage octaves (the cloud silhouettes, the moon gap, which stars show) identical on every tier — Low drops one fine octave, Mobile both and the rim's second octave (uniforms)",
   },
   {
     feature: "L13 facade detail",

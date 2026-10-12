@@ -12,7 +12,7 @@
 import type { Building } from "./city/index";
 import { type MoverField, type MoverKind, collideMovers } from "./city/movers";
 import { gapsOf } from "./city/props";
-import { overChannel } from "./city/river";
+import { PARAPET_HEIGHT, overChannel } from "./city/river";
 import {
   type CityIndex,
   type NatureIndex,
@@ -139,8 +139,11 @@ function solidAt(
 ): { hit: WreckHit; mover?: MoverKind } | null {
   // D9: through a fallen bridge span's gap, not onto it.
   if (hitsGround(pos, WRECK_RADIUS, gapsOf(world.movers))) {
-    // Below the street over the channel: the water or its walls.
-    return { hit: pos.y < 0 && overChannel(pos.z) ? "river" : "ground" };
+    // Below the street over the channel: the water or its walls. L4: high
+    // on a landmark bridge (a pylon, a cable, a truss) it is a structure,
+    // not ground — no scorch painted in mid-air.
+    if (pos.y < 0 && overChannel(pos.z)) return { hit: "river" };
+    return { hit: pos.y - WRECK_RADIUS > PARAPET_HEIGHT ? "city" : "ground" };
   }
   if (collideCity(pos, WRECK_RADIUS, world.buildings, world.index)) {
     return { hit: "city" };

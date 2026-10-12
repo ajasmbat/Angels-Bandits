@@ -1,6 +1,7 @@
-// Final grade (VO5 filmic grade): saturation, a mild contrast S-curve, a
-// teal-shadow / amber-highlight split-tone, a lifted black floor and a soft
-// vignette, on the display-referred image. Applied AFTER tone mapping and the
+// Final grade (VO5 filmic grade, L1 "Stormlit" retune): saturation, a
+// contrast S-curve, a steel-blue-shadow / amber-highlight split-tone, a
+// violet-to-steel correction in the shadows, a deep (barely lifted) black
+// floor, a vignette and a static film grain, on the display-referred image. Applied AFTER tone mapping and the
 // sRGB encode (O4: inside the same final pass, render/post.ts), so it works
 // in tonemapped sRGB where "10 % darker at the corners" means what it says — in linear HDR the same vignette would eat the
 // emissive ladder's headroom unevenly across the frame. Bloom has already run
@@ -9,31 +10,45 @@
 // Order matters: ACES already has a toe and shoulder, so the S-curve is mild
 // and comes BEFORE the lift — the other way round it would re-crush the floor
 // it is meant to raise. Saturation goes first so it doesn't amplify the tint.
-// A ±0.5/255 dither keeps the teal floor + vignette from banding in the dark
-// sky on an 8-bit canvas. Off with `?grade=0` so the perf harness can A/B its
-// cost.
+// The grain (L1) replaces VO5's ±0.5/255 dither: it keeps that floor at
+// black, so the dark sky still never bands on an 8-bit canvas, and grows to
+// GRAIN in the mid-tones. It is STATIC (screen-space, no time input): the
+// O5/O6 frozen-camera flicker metric scores any frame-to-frame change as
+// shimmer, and an animated grain would be exactly that. Off with `?grade=0`
+// so the perf harness can A/B its cost.
 
 import * as THREE from "three";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 
 /** Darkening at the very corner, 0..1 — the centre is untouched. */
-export const VIGNETTE_STRENGTH = 0.22;
+export const VIGNETTE_STRENGTH = 0.3;
 /** Where the falloff starts, as a fraction of the half-diagonal. */
-export const VIGNETTE_START = 0.5;
+export const VIGNETTE_START = 0.45;
 /** Saturation multiplier: 1 is neutral. */
-export const SATURATION = 1.06;
-/** S-curve mix toward smoothstep(c): 0 is neutral, 1 a full smoothstep. */
-export const CONTRAST = 0.14;
-/** Black floor per channel (sRGB): pure black lands here, a cool teal-blue. */
-export const LIFT: readonly [number, number, number] = [0.012, 0.022, 0.03];
-/** Shadow tint, added at full weight on black and fading by (1-luma)². */
+export const SATURATION = 1.08;
+/** S-curve mix toward smoothstep(c): 0 is neutral, 1 a full smoothstep.
+ * L1 deepened it (0.14 → 0.24) for the reference's deep blacks. */
+export const CONTRAST = 0.24;
+/** Black floor per channel (sRGB): pure black lands here, a deep steel blue
+ * (L1: VO5's teal floor was ~3x higher and read as haze). */
+export const LIFT: readonly [number, number, number] = [0.004, 0.006, 0.01];
+/** Shadow tint, added at full weight on black and fading by (1-luma)²:
+ * steel blue. */
 export const SHADOW_TINT: readonly [number, number, number] = [
-  -0.026, 0.012, 0.032,
+  -0.02, 0.004, 0.03,
 ];
-/** Highlight tint, added at full weight on white and fading by luma². */
+/** Highlight tint, added at full weight on white and fading by luma²:
+ * warm amber, the sodium lights. */
 export const HIGHLIGHT_TINT: readonly [number, number, number] = [
-  0.042, 0.012, -0.048,
+  0.05, 0.016, -0.045,
 ];
+/** L1: how much of a dark pixel's violet cast (red riding with blue above
+ * green) is pulled out, 0..1, fading out by luma — lilac shadows go steel,
+ * amber (blue below green) and bright neon are untouched. */
+export const DEPURPLE = 0.6;
+/** L1: static film grain amplitude at mid-grey (display-referred); it
+ * falls to the old 0.5/255 dither at black and at white. */
+export const GRAIN = 0.012;
 
 const vec3Of = (v: readonly number[]): string =>
   `vec3(${v.map((n) => n.toFixed(4)).join(", ")})`;
@@ -77,8 +92,13 @@ export const GRADE_GLSL = /* glsl */ `
   g = clamp(g, 0.0, 1.0);
   // Mild S-curve: blend toward smoothstep, pivoting at mid-grey.
   g = mix(g, g * g * (3.0 - 2.0 * g), uContrast);
-  // Split-tone: teal in the shadows, amber in the highlights.
+  // L1: violet → steel in the dark: the share of red that rides with blue
+  // above green (lilac, magenta) comes out, weighted toward the shadows.
   float l = dot(g, GRADE_LUMA);
+  float violet = max(min(g.r, g.b) - g.g, 0.0);
+  g.r -= ${DEPURPLE.toFixed(3)} * violet * (1.0 - l) * (1.0 - l);
+  // Split-tone: steel blue in the shadows, amber in the highlights.
+  l = dot(g, GRADE_LUMA);
   g += uShadowTint * (1.0 - l) * (1.0 - l);
   g += uHighlightTint * l * l;
   g = clamp(g, 0.0, 1.0);
@@ -90,9 +110,11 @@ export const GRADE_GLSL = /* glsl */ `
   float r = length(d) / 1.41421356;
   float v = smoothstep(uStart, 1.0, r);
   g *= 1.0 - uVignette * v * v;
-  // Dither: ±0.5/255 of screen-space noise against 8-bit banding.
+  // Static grain (L1): screen-space noise, ±0.5/255 at black and white
+  // (the old anti-banding dither) up to GRAIN at mid-grey. No time input.
   float n = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
-  g += (n - 0.5) / 255.0;
+  float gLum = dot(clamp(g, 0.0, 1.0), GRADE_LUMA);
+  g += (n - 0.5) * (1.0 / 255.0 + ${(2 * GRAIN).toFixed(4)} * 4.0 * gLum * (1.0 - gLum));
   gl_FragColor.rgb = g;
 }
 `;

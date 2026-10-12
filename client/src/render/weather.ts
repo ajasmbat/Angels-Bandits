@@ -70,7 +70,7 @@ const glslColor = (hex: number): string => {
 };
 
 /** Sky sheen on wet surfaces: the horizon violet the VO5 puddles reflect. */
-const WET_SHEEN_COLOR = glslColor(0x6c62b0);
+const WET_SHEEN_COLOR = glslColor(0x5a6c8c); // L1: steel, not lilac
 /** Ripple/splash gain on the sheen colour (~0.12 luminance peak per ring). */
 const RIPPLE_GAIN = "0.55";
 /** Ripples fade out over this view distance, m — sub-pixel rings sparkle. */

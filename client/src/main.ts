@@ -130,6 +130,7 @@ import {
   wrapCoord,
   wrapDelta,
   wrapDeltaAxis,
+  wrapDeltaInto,
   wrapDistance,
 } from "@angels-bandits/common/world";
 import {
@@ -760,11 +761,13 @@ const DEFAULT_FB_SAMPLES = renderer
 // (windows ~0.8+, lamp heads ~0.9, tracers ~1.5) — so ONLY emissives glow.
 // The blur chain runs from half the CSS resolution (O4: AbBloomPass — at
 // ratio 2 that is a quarter of the drawing buffer per axis, same halo).
-// Strength and radius are the LOOK (a wider, gentler halo reads as haze
-// around a light rather than a hard glow); the threshold is the CONTRACT the
-// emissive ladder is built against and does not move.
-const BLOOM_STRENGTH = 0.4;
-const BLOOM_RADIUS = 0.5;
+// Strength and radius are the LOOK; the threshold is the CONTRACT the
+// emissive ladder is built against and does not move. L1 "Stormlit" made it
+// stronger but tighter (radius 0.5 → 0.2: the small mips carry less of it):
+// a bright glow hugging each light, like the reference's halos, rather than
+// a wide haze that greys the dark sky. The sky cycle drives the strength.
+const BLOOM_STRENGTH = 0.55;
+const BLOOM_RADIUS = 0.2;
 const BLOOM_THRESHOLD = 0.72;
 // The composer owns its own render target so `msaa` can put samples on the
 // buffer the SCENE is actually drawn into. HalfFloat matches what
@@ -920,11 +923,14 @@ const facadeDetail = new FacadeDetailRenderer(city.cityBuildings, welcome.seed);
 scene.add(facadeDetail.group);
 const ground = new GroundPlane();
 scene.add(ground.mesh);
-const skyDome = new SkyDome();
+// L1: `?clouds=0` keeps the storm sky's clouds off (the perf A/B).
+const skyDome = new SkyDome(renderOpts.clouds);
+/** L1: the torus step from the eye to the latest strike (no per-frame allocation). */
+const skyFlashStep: Vec3 = { x: 0, y: 0, z: 0 };
 scene.add(skyDome.mesh);
 // L10 airliners ride the dome like the stars: camera-following, fog off,
 // never in world space. Pure schedule of (seed, synced clock).
-const airliners = new Airliners(welcome.seed);
+const airliners = new Airliners(welcome.seed, skyDome.clouds);
 skyDome.mesh.add(airliners.points);
 const streetlights = new Streetlights();
 scene.add(streetlights.group);
@@ -1122,8 +1128,13 @@ scene.add(natureRenderer.group);
 // L11 river: embankment walls, bridges, the reflecting water and the boats.
 // Its solids (decks, walls, boats) collide through hitsGround/the movers, so
 // this is drawing only — updated on the same latched clock as the movers.
-const river = new RiverRenderer(welcome.seed, city.cityBuildings);
+// L4: the water's moon column follows the sky dome's live moon.
+const river = new RiverRenderer(welcome.seed, city.cityBuildings, {
+  dir: skyDome.uniforms.uMoonDir,
+  vis: skyDome.uniforms.uMoonVis,
+});
 scene.add(river.group);
+Object.assign(window, { __abRiver: river, __abR: renderer }); // DEBUG-L4-REMOVE
 // U4 tunnels: the concrete shell and its light fixtures (two draws). Solid
 // through hitsGround — drawing only, snapped under the camera each frame.
 const tunnels = new TunnelRenderer();
@@ -2958,10 +2969,12 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   fountains.setQuality(tier);
   birds.setQuality(tier);
   airliners.setQuality(tier);
+  skyDome.setQuality(tier); // L1: fine cloud octaves only
   facadeDetail.setQuality(tier);
   train.setQuality(tier); // T2: platform people, sparks, light range
   courseGhost.setQuality(tier); // S3: MOBILE keeps the rings, drops the ghost
   atmosphere.setQuality(tier); // S5
+  river.setQuality(tier); // L4: streams, wakes, rain rings
   tunnels.setQuality(tier); // U4: MOBILE drops the fixtures
   tunnelShafts.setQuality(tier); // U7: and the shafts
   fleet?.setQuality(tier); // P4: MOBILE drops the glass and scarf
@@ -6019,7 +6032,14 @@ const frame = (now: number): void => {
   signals.update(chase.position, renderMs ?? now, microK, cityReact);
   constructionSparks.update(chase.position, renderMs ?? now, microK);
   ground.update(chase.position);
-  river.update(chase.position, renderMs, now); // L11
+  // L11. L4: under a QA eye the water and structure follow the RENDERED
+  // camera (the eye's image by the chase camera, as the render places it)
+  // — the water strip only reaches FOG_DISTANCE + 100 m either way of it.
+  river.update(
+    qaView ? nearestImage(chase.position, qaView.eye) : chase.position,
+    renderMs,
+    now,
+  );
   tunnels.update(chase.position); // U4 (U7: and the bores' air)
   tunnelShafts.update(chase.position); // U7
   // U5 — U6: the bats stir for our own plane, where it is drawn.
@@ -6028,7 +6048,7 @@ const frame = (now: number): void => {
     renderMs ?? now,
     nearestImageInto(batPlane, chase.position, flight.pos),
   );
-  skyDome.update(chase.position);
+  skyDome.update(chase.position, dt, renderMs);
   airliners.update(renderMs);
   // Wounded smoke: own plane from server-said self HP, every remote (human
   // or bot) from snapshot HP — all clients see the same wounds. Death clouds
@@ -6293,7 +6313,12 @@ const frame = (now: number): void => {
       ? 0
       : dustHaze(socket.collapses.list, chase.position, renderMs),
   );
-  skyDome.tint(sky.tint);
+  skyDome.setAir(sky);
+  // L1: the latest strike lights the clouds from inside during its flash.
+  skyDome.setFlash(
+    storm.flashLevel(now) * wx.flash,
+    wrapDeltaInto(chase.position, storm.lastStrike, skyFlashStep),
+  );
   skyDome.mesh.visible = sky.domeVisible;
   explosions.update(chase.position, now, fxDt);
   shockRings.update(chase.position, now);

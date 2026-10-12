@@ -14,16 +14,16 @@ import {
   HAZE_SCALE_HEIGHT,
   combinedFog,
   fogDistance,
+  fogFactor,
   hazeAmount,
   installHeightFog,
 } from "../src/render/fog";
 import { FOG_NEAR } from "../src/render/sky";
 
-/** three's linear fog factor, as fog_fragment computes it. */
-const linear = (near: number, far: number, d: number) => {
-  const t = Math.min(1, Math.max(0, (d - near) / (far - near)));
-  return t * t * (3 - 2 * t);
-};
+/** The linear-fog layer's factor, as the patched fog_fragment computes it
+ * (L1: three's smoothstep, shaped — fog.ts fogFactor). */
+const linear = (near: number, far: number, d: number) =>
+  fogFactor(near, far, d);
 
 describe("hazeAmount", () => {
   it("is zero at zero distance and grows with distance", () => {

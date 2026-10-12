@@ -104,6 +104,11 @@ const RAIN_COLOR = 0xb8c4e8;
 /** L5: a fully lit streak is this much brighter than an unlit one: 0.09 ×
  * 1.6 ≈ 0.14, R3's peak — the light redistributes, it never adds a rung. */
 const LIGHT_GAIN = 0.6;
+/** A far drop is RAIN_FAR_ALPHA (0.45) as bright unlit, ≈ 0.04, so its
+ * light gain may be larger: × 3 ≈ 0.12 lit, still under R3's 0.14 peak.
+ * From flying height the lamps are far below the near box, and this is
+ * what glitters over them. */
+const FAR_LIGHT_GAIN = 2;
 /** Sodium lamp warmth (sRGB, normalised to RAIN_COLOR's luminance below). */
 const LAMP_TINT = 0xffb36b;
 /** Lamp head height (streetlights.ts POLE_HEIGHT) and the glow's reach, m. */
@@ -274,7 +279,8 @@ void main() {
   float light = min(1.0, lamp + beam);
   vec3 litC = lamp * ${glslVec3(lumaMatched(LAMP_TINT))} + beamC;
   float litW = lamp + beam;
-  vColor = mix(uColor, litW > 1e-4 ? litC / litW : uColor, light) * (1.0 + ${LIGHT_GAIN.toFixed(2)} * light);
+  vColor = mix(uColor, litW > 1e-4 ? litC / litW : uColor, light)
+    * (1.0 + (far ? ${FAR_LIGHT_GAIN.toFixed(2)} : ${LIGHT_GAIN.toFixed(2)}) * light);
   vAlpha = k * aim * uFade * (0.6 + 0.4 * aSeed.w) * mix(1.0, 0.15, position.y) / widen;
   vSide = position.x;
 }

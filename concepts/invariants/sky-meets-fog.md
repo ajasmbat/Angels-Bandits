@@ -40,7 +40,11 @@
    at the fragment's elevation through the same air map, blended over
    `SKY_GLOW_RAMP` exactly as the dome blends (`SKY_FOG_STOPS` and
    `SKY_FOG_AIR` are shared uniform arrays the sky writes each frame; `on`
-   stays 0 without a sky, which is the old flat fog). The dome's extras —
+   stays 0 without a sky, which is the old flat fog). It sheds the burn's
+   smoke tint high up exactly as the dome does (`BURN_SKY_THIN` /
+   `BURN_SKY_TOP` live in `sky-fog.ts` for both), and L2's city glow is
+   added on top of it (`abGlowFog(abSkyFog(fogColor, sinEl), sinEl)`), as
+   the dome adds it. The dome's extras —
    moon halo, dusk/dawn glows, clouds — are not in it, so a crown fully
    fogged 800–900 m away can still outline against a cloud, as a real far
    tower does; the torus flip (horizontal ≥ 1000 m) is past the camera's

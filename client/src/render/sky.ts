@@ -435,7 +435,8 @@ function starField(seed: number): THREE.Points {
 export class SkyDome {
   readonly mesh: THREE.Mesh;
   private readonly stars: THREE.Points;
-  private readonly uniforms: SkyUniforms;
+  /** Public for L4: the river's moon column shares uMoonDir / uMoonVis. */
+  readonly uniforms: SkyUniforms;
 
   constructor() {
     const material = new THREE.MeshBasicMaterial({
@@ -898,7 +899,7 @@ ${STREET_WALK_GLSL}  } else {
     } else if (abKind == ${N.site}) {
       abPaint = abSitePaint(vWorldXZ, abNoiseV);
     } else if (abKind == ${N.river}) {
-      abPaint = abPromenadePaint(vWorldXZ, abNoiseV, ${GROUND_COLORS.paving}, ${GROUND_COLORS.slabJoint});
+      abPaint = abPromenadePaint(vWorldXZ, abNoiseV, ${GROUND_COLORS.paving}, ${GROUND_COLORS.slabJoint}, abEmissive);
     }
   }
 }

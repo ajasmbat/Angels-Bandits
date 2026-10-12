@@ -401,6 +401,7 @@ export const VIEWS = [
   // looks back west over the x = 1400 truss to the x = 1600 suspension.
   {
     name: "river-bridges",
+    raf: true,
     x: 160,
     z: 1000,
     y: 320,
@@ -411,6 +412,7 @@ export const VIEWS = [
   },
   {
     name: "river-bridges-truss",
+    raf: true,
     x: 1840,
     z: 1200,
     y: 320,

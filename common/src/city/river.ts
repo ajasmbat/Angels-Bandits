@@ -531,10 +531,10 @@ export const PYLON_SPIRE_TOP = 48;
 export const CABLE_X = BRIDGE_HALF_WIDTH + 2;
 export const CABLE_R = 0.8;
 /** Main cable: over the saddle, at mid-span, and down at the anchorage. */
-const SADDLE_Y = 43;
-const SAG_Y = 3.5;
-const ANCHOR_DZ = 77;
-const ANCHOR_Y = 2;
+export const SADDLE_Y = 43;
+export const SAG_Y = 3.5;
+export const ANCHOR_DZ = 77;
+export const ANCHOR_Y = 2;
 /** Suspender spacing along the main span, m. */
 const SUSPENDER_STEP = 6.25;
 /** The side girder outside each parapet (both kinds), m. */
@@ -1062,20 +1062,7 @@ function piersClear(from: Vec3, d: Vec3): boolean {
   for (const b of PIER_BOXES) {
     const x = wrapDeltaAxis(b.x, from.x);
     const z = wrapDeltaAxis(b.z, from.z);
-    if (
-      segmentHitsBox(
-        x,
-        from.y,
-        z,
-        d,
-        -b.hx,
-        b.hx,
-        b.y0,
-        b.y1,
-        -b.hz,
-        b.hz,
-      )
-    ) {
+    if (segmentHitsBox(x, from.y, z, d, -b.hx, b.hx, b.y0, b.y1, -b.hz, b.hz)) {
       return false;
     }
   }

@@ -127,14 +127,19 @@ export function lightMountsFor(planeId: string): LightMounts {
  * A sprite chain, not a cone: from the chase camera the throw is seen
  * nearly down its own axis, where a cone's silhouette-faded walls vanish
  * (searchlights.ts) — overlapping discs read from behind AND from the side.
- * Each sprite is sub-bloom; the chain's overlap stays under ~0.4. */
+ * Each sprite is sub-bloom, and spaced well inside its neighbours' glow
+ * so the throw reads as one beam, not beads; the whole chain stacked (seen
+ * straight down the throw) sums to ~0.45, under the 0.72 threshold. */
 const LANDING_CHAIN: readonly { d: number; size: number; lum: number }[] = [
-  { d: 8, size: 3, lum: 0.12 },
-  { d: 16, size: 6, lum: 0.1 },
-  { d: 27, size: 10, lum: 0.075 },
-  { d: 42, size: 15, lum: 0.055 },
-  { d: 62, size: 22, lum: 0.038 },
-];
+  { d: 5, size: 4.5, lum: 0.09 },
+  { d: 10, size: 7, lum: 0.08 },
+  { d: 16, size: 9.5, lum: 0.07 },
+  { d: 23, size: 12.5, lum: 0.06 },
+  { d: 31, size: 16, lum: 0.05 },
+  { d: 40, size: 20, lum: 0.04 },
+  { d: 50, size: 24, lum: 0.032 },
+  { d: 61, size: 29, lum: 0.025 },
+]
 /** Steady lights, the two wingtip halos, the exhaust and its halo; L6's
  * landing lamp, its halo and the chain on biplanes only. */
 const LIGHTS_PER_PLANE = 8;

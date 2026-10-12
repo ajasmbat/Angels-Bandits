@@ -78,8 +78,8 @@ export interface QualityProfile {
   /** Stormlit L8: the far street glow's storefront and neon spill (the lamp
    * lines, roadway wash and lit crossings stay on every tier). */
   streetGlowSpill: boolean;
-  /** Stormlit L2: the far skyline's outer radius, m (far-skyline.ts — an
-   * instance-count prefix of its near → far slots and a uniform; purely
+  /** Stormlit L2: the far skyline's outer radius, m (far-skyline.ts — the
+   * tower lattice's side, an instance count, and a uniform; purely
    * far-field dressing past the fog limit, never solid). */
   farSkyline: number;
   /** L7 the coloured light each sign spills onto the street. */
@@ -971,7 +971,7 @@ export const FEATURE_TIERS: readonly {
     medium: "reduced",
     low: "reduced",
     mobile: "reduced",
-    note: "outer radius 5 / 4.4 / 3.4 / 2.6 km (farSkyline): an instance-count prefix of the near → far tower slots and a uniform — purely far-field dressing behind the fog limit, never solid; two opaque draws on every tier",
+    note: "outer radius 5 / 4.4 / 3.4 / 2.6 km (farSkyline): the tower lattice's side (an instance count: 102² / 90² / 70² / 54² slots) and a uniform — purely far-field dressing behind the fog limit, never solid; two opaque draws on every tier",
   },
   {
     feature: "Stormlit L2 — city glow in the fog, the dome and the cloud bases",

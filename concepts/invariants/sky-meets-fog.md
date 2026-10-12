@@ -82,7 +82,7 @@ the fog state.
   canonical position, so the far street grid and river continue the real
   ones.
 - It fades so nothing pops: fog-coloured at its inner edge, then sunk to
-  zero height before a slot leaves.
+  zero height before it reaches the fog limit.
 - Moving the shell outside 800 m, or past the camera's far plane (900 m),
   breaks this.
 

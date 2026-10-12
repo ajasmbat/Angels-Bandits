@@ -29,7 +29,7 @@
 //
 // FADES, so nothing pops (all radial distances from the eye):
 //   towers  colour → fog over FADE_IN, then SINK to zero height over SINK
-//           while already fog-coloured, gone before their slot leaves;
+//           while already fog-coloured, gone before the fog limit;
 //   spires  the same, further out (SPIRE_FADE / SPIRE_SINK), so a landmark
 //           recedes into the fog and is never reached;
 //   carpet  fog-coloured at 800 m, in over CARPET_FADE;

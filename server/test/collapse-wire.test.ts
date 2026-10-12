@@ -194,14 +194,18 @@ describe("D3 collapses over the wire", () => {
     const cb = fb.list[0] as Collapse;
     expect(ca).toBeDefined();
     const p = blankPose();
-    const q = blankPose();
+    // Every pose of every piece, compared in one assertion: D10's debris is
+    // ~4× the pieces, and a toEqual each ate the window the fly-in below
+    // needs on a loaded runner.
+    const posesA: ReturnType<typeof blankPose>[] = [];
+    const posesB: ReturnType<typeof blankPose>[] = [];
     for (let t = 0; t <= ca.endMs; t += 173) {
       for (let i = 0; i < ca.n; i++) {
-        expect(piecePose(cb, i, ca.t0 + t, q)).toEqual(
-          piecePose(ca, i, ca.t0 + t, p),
-        );
+        posesA.push({ ...piecePose(ca, i, ca.t0 + t, p) });
+        posesB.push({ ...piecePose(cb, i, ca.t0 + t, p) });
       }
     }
+    expect(posesB).toEqual(posesA);
 
     // B flies into the highest falling chunk mid-fall: place B on its path
     // (re-sync), then hold there until the chunk arrives.

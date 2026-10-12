@@ -84,12 +84,14 @@ export const CLOUD_FLASH_PEAK = 1.1;
  * was violet). */
 export const STORM_FLASH_COLOR = 0x9fb4ff;
 
-/** Cloud body colours (sRGB): dark storm navy-charcoal masses, the high
- * deck a touch lighter, and the warm city glow on their undersides near the
- * horizon. */
-export const CLOUD_BODY = 0x0c111b;
-export const CLOUD_HIGH = 0x161e2c;
-export const CLOUD_CITY_GLOW = 0x3a2a1e;
+/** Cloud body colours (sRGB): storm-grey masses a step ABOVE the near-black
+ * gaps (the reference's clouds read lighter than the sky between them, the
+ * thick cores darker than the thin edges), the high deck a touch lighter,
+ * and the warm city glow on their undersides near the horizon. */
+export const CLOUD_BODY = 0x283143;
+export const CLOUD_CORE = 0x121822;
+export const CLOUD_HIGH = 0x222b3c;
+export const CLOUD_CITY_GLOW = 0x2a2018;
 
 /** Fine-detail octaves and rim octaves per tier (uniforms, never defines —
  * a tier switch must not compile; quality.ts rule 1). */
@@ -203,7 +205,7 @@ float abCloudGap(vec3 sd, float field) {
   float r = acos(clamp(dot(sd, uCloudMoon), -1.0, 1.0)) + (field - 0.5) * 0.12;
   return smoothstep(${f5(MOON_GAP * 0.55)}, ${f5(MOON_GAP)}, r);
 }
-float abCloudDensityA(float field) { return smoothstep(0.42, 0.68, field); }
+float abCloudDensityA(float field) { return smoothstep(0.32, 0.5, field); }
 float abCloudDensityB(float field) { return 0.55 * smoothstep(0.55, 0.85, field); }
 // Coverage for the point shaders (stars, airliner lights): coarse octaves
 // only — a point needs to know whether it is behind cloud, not the detail.

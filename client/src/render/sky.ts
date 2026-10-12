@@ -60,6 +60,7 @@ import {
   CLOUD_B,
   CLOUD_BODY,
   CLOUD_CITY_GLOW,
+  CLOUD_CORE,
   CLOUD_FLASH_PEAK,
   CLOUD_HIGH,
   CLOUD_TIER,
@@ -372,13 +373,18 @@ ${chain}
       float there = abCloudCoarseA(pA + toMoon * 140.0, uCloudRim);
       float lit = clamp((here - there) * 7.0 + 0.12, 0.0, 1.0) * (1.0 - 0.65 * rawA);
       float m = max(facing, 0.0);
-      float near = pow(m, 24.0); // within ~25° of the moon
+      float near = pow(m, 12.0); // within ~30° of the moon
       float halo2 = pow(m, 200.0); // inside the halo
-      float rimLum = mix(0.035, ${RIM_PEAK.toFixed(3)}, near)
+      float rimLum = mix(0.08, ${RIM_PEAK.toFixed(3)}, near)
         + ${(RIM_PEAK_HALO - RIM_PEAK).toFixed(3)} * halo2;
       vec3 rim = ${vec3Literal(moonHue.toArray())} * rimLum * lit * uMoonVis;
       float low = 1.0 - smoothstep(${SKY_FOG_ELEVATION.toFixed(5)}, ${(SKY_FOG_ELEVATION + 0.35).toFixed(5)}, el);
-      vec3 bodyA = ${glslColor(CLOUD_BODY)} + ${glslColor(CLOUD_CITY_GLOW)} * low + rim;
+      // Thick cores darker than the thin edges.
+      // The masses round the moon are moonlit through (the reference's
+      // grey-white clouds about the gap).
+      vec3 bodyA = mix(${glslColor(CLOUD_BODY)}, ${glslColor(CLOUD_CORE)}, smoothstep(0.55, 1.0, rawA) * smoothstep(0.62, 0.85, fa.x))
+        + ${vec3Literal(moonHue.toArray())} * (0.1 * near * uMoonVis)
+        + ${glslColor(CLOUD_CITY_GLOW)} * low + rim;
       vec3 bodyB = ${glslColor(CLOUD_HIGH)}
         + ${vec3Literal(moonHue.toArray())} * (0.02 + 0.2 * near) * uMoonVis;
       sky = mix(sky, bodyB, dB);
@@ -387,8 +393,11 @@ ${chain}
       // The moon's glow still bleeds through thin cloud.
       sky += moonCol * moonHalo * cover * 0.35;
       // Lightning lights the cloud mass around the strike from inside.
+      // (Its own, gentler elevation fade: the lit deck melts into the
+      // horizon haze instead of ending on a line.)
       lightning = uFlash * pow(max(dot(sd, uFlashDir), 0.0), 5.0)
-        * (0.25 + 0.75 * cover) * fade;
+        * (0.25 + 0.75 * cover)
+        * smoothstep(${SKY_FOG_ELEVATION.toFixed(5)}, ${(SKY_FOG_ELEVATION + 0.45).toFixed(5)}, el);
     }
   }
   // The air (see above): the same affine map as the fog, the flash gain

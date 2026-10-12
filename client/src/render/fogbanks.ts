@@ -122,7 +122,7 @@ const MIST_UNDER = 1.4;
 // --- L5 canyon mist ---------------------------------------------------------
 
 /** Strands in the world, and puffs per strand. */
-export const MIST_STRANDS = 48;
+export const MIST_STRANDS = 120;
 export const PUFFS_PER_STRAND = 6;
 /** Strand centre altitude band, m. */
 export const MIST_ALT_MIN = 12;
@@ -140,9 +140,11 @@ const MIST_STRAND_GAP = 170;
  * — about one S5 bank's BANK_OPACITY_MAX. */
 export const MIST_ALPHA = 0.1;
 /** L5: how much brighter than the bare night haze a lit layer reads — the
- * street light it hangs in (canyon mist) or over (banks). The brightest
- * result stays ≈ 0.25 luminance: far under the 0.72 bloom threshold. */
-const MIST_GAIN = 3;
+ * street light it hangs in (canyon mist) or over (banks): ≈ 0.3 luminance
+ * at night, and never past MIST_LUMA_CAP, far under the 0.72 bloom
+ * threshold. */
+const MIST_GAIN = 4;
+const MIST_LUMA_CAP = 0.4;
 const BANK_GAIN = 1.6;
 // The contract the no-test claim rests on: a puff's whole sprite stays
 // inside the canyon, facades at LOT_LINE.
@@ -490,7 +492,11 @@ void main() {
   // L5: lit from below — the lower half takes more of the lamp colour.
   // L5: lit from below — sodium light pooled on the lower half.
   float abLow = vUnder * smoothstep(0.15, -0.45, vUv.y);
-  gl_FragColor = vec4(abBase * (vTint.rgb + abLow * vec3(2.4, 1.3, 0.5)), vTint.a * shape);
+  vec3 abMist = abBase * (vTint.rgb + abLow * vec3(2.4, 1.3, 0.5));
+  // Hard cap (L5): the base is the LIVE fog colour, which a lightning flash
+  // or the dust lifts — a lit sheet must never become a bloom source.
+  abMist *= min(1.0, ${MIST_LUMA_CAP.toFixed(2)} / max(dot(abMist, vec3(0.2126, 0.7152, 0.0722)), 1e-4));
+  gl_FragColor = vec4(abMist, vTint.a * shape);
   #include <fog_fragment>
 }
 `;

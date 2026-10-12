@@ -780,7 +780,7 @@ export class Inferno {
   private flameShare = 1;
   private smokeShare = 1;
   private airShare = 1;
-  private lastNow = Number.NaN;
+  private lastWorld = Number.NaN;
   private readonly wind: Wind = { x: 1, z: 0, strength: 0 };
   private readonly img: Vec3 = { x: 0, y: 0, z: 0 };
   private readonly canon: Vec3 = { x: 0, y: 0, z: 0 };
@@ -951,11 +951,13 @@ export class Inferno {
   /** Per frame, once the camera is placed. */
   update(f: InfernoFrame): void {
     const now = f.now;
-    const dt = Number.isFinite(this.lastNow)
-      ? Math.min(0.1, Math.max(0, (now - this.lastNow) / 1000))
-      : 0;
-    this.lastNow = now;
     const world = f.worldMs ?? now;
+    // The slots fade on the WORLD clock, like every animation here: a frame
+    // pinned in place (QA, a frozen capture) changes nothing.
+    const dt = Number.isFinite(this.lastWorld)
+      ? Math.min(0.1, Math.max(0, (world - this.lastWorld) / 1000))
+      : 0;
+    this.lastWorld = world;
     const burn = Math.min(1, Math.max(0, f.burn));
     INFERNO_BURN_UNIFORM.value = burn;
     setFirePhase(world);

@@ -235,11 +235,11 @@ const referenceView = (name, extra = {}) => ({
   z: 1010,
   y: 460,
   yaw: -Math.PI / 2,
-  // H1: the eye rides just over the downtown cores, under the carrier's
-  // BOSS_ALT (570 m) — the 250 m eye of L7 would leave the hull out of the
-  // top of the frame.
-  eye: [960, 400, 1250],
-  at: [1560, 80, 1085],
+  // H1: the eye rides over the downtown cores, 140 m under the carrier's
+  // BOSS_ALT (570 m), pitched ~12° down — the 250 m eye of L7 would leave
+  // the hull out of the top of the frame.
+  eye: [960, 430, 1250],
+  at: [1560, 300, 1085],
   timeMs: 1_790_000_000_000,
   boss: { ahead: 280 },
   // Held there every frame, so it never flies into the carrier's hull.
@@ -1117,8 +1117,9 @@ export const VIEWS = [
   // shot; the hull is staged 450 m ahead of the view (centre ≈ x 1500,
   // y 570, z 550 — H1's BOSS_ALT), over the 400 m landmark at (1500, 300);
   // no rooftop searchlight stands near the biplane to swing onto it. H1:
-  // the eye rides just over the downtown cores (430 m), under the hull, so
-  // the supertalls stand at eye height and the city still fills the frame.
+  // the eye rides over the downtown cores (470 m), 100 m under the hull,
+  // pitched ~15° down so the hull still crosses the top of the frame and
+  // the supertalls and the city fill the rest.
   {
     name: "reference-hero",
     x: 1500,
@@ -1126,15 +1127,15 @@ export const VIEWS = [
     y: 600,
     yaw: 0,
     timeMs: 1_790_000_000_000,
-    eye: [1484, 430, 1036],
-    at: [1630, 260, 740],
+    eye: [1484, 470, 1036],
+    at: [1630, 380, 740],
     weather: "clear",
     boss: { ahead: 450 },
     showcase: [
       {
         kind: "biplane",
         x: 1500,
-        y: 410,
+        y: 450,
         z: 1000,
         yaw: 0.1,
         pitch: 0.04,

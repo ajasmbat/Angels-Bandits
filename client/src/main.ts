@@ -362,6 +362,7 @@ import { FireRenderer } from "./render/fires";
 import { Fireworks } from "./render/fireworks";
 import { PlaneFleet } from "./render/fleet";
 import { installHeightFog } from "./render/fog";
+import type { MistStats } from "./render/fogbanks";
 import { Fountains } from "./render/fountains";
 import { Explosions, ShockRings, Sparks } from "./render/fx";
 import { CourseGhost } from "./render/ghost";
@@ -3143,6 +3144,13 @@ declare global {
         frameMs: number;
         drawCalls: number;
         smokePuffs: number;
+        /** L5: the mist's survival of the parting, per layer. */
+        mist: Readonly<MistStats>;
+        /** L5: building boxes the mist + steam clearance tested last frame. */
+        clearanceTests: number;
+        /** L5: steam puffs drawn and rain streaks drawn. */
+        steamPuffs: number;
+        rainDrops: number;
       };
       /** P1: the full frame-time window — p50/p95/p99/worst + draw calls. */
       perfStats: () => FrameStats;
@@ -4114,6 +4122,10 @@ window.__ab = {
     frameMs: perf.frameMs,
     drawCalls: renderer.info.render.calls,
     smokePuffs: smoke.puffCount,
+    mist: atmosphere.fogBanks.stats,
+    clearanceTests: atmosphere.fogBanks.stats.boxTests + steam.boxTests,
+    steamPuffs: steam.count,
+    rainDrops: rain.drops,
   }),
   // P1 harness surface: percentiles over the window since the last reset.
   perfStats: () => frames.stats(),

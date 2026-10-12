@@ -7,11 +7,18 @@
 //      occlusion guarantee — everything must be fully dissolved into the sky
 //      colour before the half-world limit, or the wrap shows. It is applied
 //      exactly as three applies it and its factor reaches 1 at fogFar.
+//      L1 (Stormlit) shapes it: `abFogFactor` is smoothstep(near, far, d)
+//      raised to FOG_SHAPE, so the air stays thin near the camera and only
+//      closes in toward the limit (a skyline reads at 600 m), and it still
+//      reaches exactly 1 at fogFar. Inside the cloud deck, a dust brown-out
+//      and (partly) a downpour the shape flattens back to the plain
+//      smoothstep (`abWeather.y`), so those sight-blocking soups keep their
+//      full mid-range density.
 //   2. The height haze is the LOOK: exponential density that is thickest at
 //      street level and thins with altitude, integrated analytically along
-//      the view ray (the classic exp-height fog), tinted toward a city-glow
-//      violet. Tower tops stand clear while the canyons swim; from altitude
-//      the streets sit under a luminous soup. It only ever ADDS on top of
+//      the view ray (the classic exp-height fog), tinted toward a lit grey
+//      street mist. L1 pooled it low (scale height 45 m): tower tops stand
+//      clear in steel-blue air while the canyons swim. It only ever ADDS on top of
 //      layer 1, and only where layer 1 has not already finished, so the
 //      occlusion guarantee is untouched.
 //
@@ -22,22 +29,32 @@
 
 import * as THREE from "three";
 
-/** Scale height of the haze, m: density falls to 1/e every H metres. */
-export const HAZE_SCALE_HEIGHT = 85;
+/** Scale height of the haze, m: density falls to 1/e every H metres. L1
+ * pooled it low (85 → 45 m): mist between the buildings, clear air above. */
+export const HAZE_SCALE_HEIGHT = 45;
 /** Haze density at street level, 1/m — visibility ~ 1/density. */
-export const HAZE_DENSITY = 0.0027;
-/** Where the haze layer is tinted toward (sRGB): sodium-and-neon city glow —
- * VO1 lifted it from a near-black plum to a luminous warm violet, so the
- * canyons swim in lit air rather than in murk. */
-export const HAZE_COLOR = 0x6e4a6e;
+export const HAZE_DENSITY = 0.004;
+/** Where the haze layer is tinted toward (sRGB): L1 "Stormlit" — a grey
+ * street mist lit warm from below, over the steel-blue fog (VO1's was a
+ * luminous violet). */
+export const HAZE_COLOR = 0x3b3d46;
 /** How far the haze's colour departs from the fog colour, 0..1. */
 export const HAZE_TINT = 0.55;
+
+/** L1: the clear-air fog curve's exponent — smoothstep(near, far, d)^k.
+ * 2 keeps the mid-distance open (≤ 0.1 at 400 m, ~0.55 at 600 m with the
+ * 200 m FOG_NEAR) and still reaches exactly 1 at fogFar. `abWeather.y`
+ * flattens it: k = FOG_SHAPE − y·(FOG_SHAPE − 1), so y = 0 (the default,
+ * and what a program without the uniform reads) is the clear curve and
+ * y = 1 the plain smoothstep. */
+export const FOG_SHAPE = 2;
 
 /**
  * L4 weather: the haze's EXTRA density, shared by every fogged material.
  * The shader reads `AB_HAZE_DENSITY * (1.0 + abWeather.x)`, so the default 0
- * is exactly the dry haze; `.y` is reserved (0). StormRenderer.atmosphere()
- * is its only writer, once per frame.
+ * is exactly the dry haze. `.y` (L1) flattens the fog curve, 0..1 — 0 the
+ * clear shaped curve, 1 the plain smoothstep (in cloud, in dust).
+ * StormRenderer.atmosphere() is its only writer, once per frame.
  *
  * Load-bearing: this is a PLAIN `{x, y}` object, never a THREE.Vector2.
  * three's cloneUniforms deep-copies three types (and arrays) per material
@@ -89,6 +106,23 @@ export function fogDistance(
 
 /** GLSL for fogDistance, on a view-space position. */
 export const AB_FOG_DISTANCE_GLSL = "length(mvPosition.xyz)";
+
+/**
+ * L1: the linear-fog layer's factor at distance `dist` — the TS mirror of
+ * `abFogFactor` below. `flatten` is `abWeather.y`. Exactly 1 at and past
+ * `far` whatever the shape (the torus's occlusion guarantee).
+ */
+export function fogFactor(
+  near: number,
+  far: number,
+  dist: number,
+  flatten = 0,
+): number {
+  const t = Math.min(1, Math.max(0, (dist - near) / (far - near)));
+  const s = t * t * (3 - 2 * t);
+  const k = FOG_SHAPE - Math.min(1, Math.max(0, flatten)) * (FOG_SHAPE - 1);
+  return s ** k;
+}
 
 /** The two layers combined: what a fogged surface's colour is mixed by. */
 export function combinedFog(linear: number, haze: number): number {
@@ -148,7 +182,12 @@ export function setHaze(color: readonly number[], tint: number): void {
   HAZE_PARAMS[3] = tint;
 }
 
-/** GLSL for the haze: the function plus its constants. Usable in any shader
+/** GLSL for the haze and the shaped linear fog: the functions plus their
+ * constants — THE seam for any custom fogged shader (L2's far field, the
+ * beams): `abFogFactor(fogNear, fogFar, dist)` and
+ * `abHazeAmount(camY, fragY, dist)`, with fogColor/fogNear/fogFar from
+ * three's `UniformsLib.fog` (a ShaderMaterial with `fog: true` gets them
+ * live). Usable in any shader
  * that has `cameraPosition` (every three shader does). It declares the L4
  * `abWeather` uniform itself — the ONLY declaration, since the searchlight
  * beams include this raw (without fog_pars_fragment) — so a material using it
@@ -160,7 +199,13 @@ const float AB_HAZE_H = ${HAZE_SCALE_HEIGHT.toFixed(1)};
 const float AB_HAZE_DENSITY = ${HAZE_DENSITY.toFixed(5)};
 const vec3 AB_HAZE_COLOR = vec3(${hazeLinear.r.toFixed(4)}, ${hazeLinear.g.toFixed(4)}, ${hazeLinear.b.toFixed(4)});
 const float AB_HAZE_TINT = ${HAZE_TINT.toFixed(3)};
+const float AB_FOG_SHAPE = ${FOG_SHAPE.toFixed(1)};
 uniform vec2 abWeather;
+float abFogFactor(float near, float far, float dist) {
+  float s = smoothstep(near, far, dist);
+  float k = AB_FOG_SHAPE - clamp(abWeather.y, 0.0, 1.0) * (AB_FOG_SHAPE - 1.0);
+  return pow(s, k);
+}
 float abHazeAmount(float camY, float fragY, float dist) {
   float cy = max(camY, 0.0);
   float fy = max(fragY, 0.0);
@@ -257,7 +302,8 @@ export function installHeightFog(): void {
 	#ifdef FOG_EXP2
 		float fogFactor = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth );
 	#else
-		float fogFactor = smoothstep( fogNear, fogFar, vFogDepth );
+		// L1: the shaped curve (abFogFactor) — still 1 at fogFar.
+		float fogFactor = abFogFactor( fogNear, fogFar, vFogDepth );
 	#endif
 	// U7: under the street, the bores' coloured air first (tunnelAirAmount);
 	// then the linear fog, which still reaches fogColor exactly at fogFar.

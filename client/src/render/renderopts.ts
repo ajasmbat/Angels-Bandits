@@ -13,6 +13,7 @@
 //   ?street=0             disable G1 street detail: furniture, parked cars
 //                         and the fine ground paint (default on)
 //   ?grade=0              disable the final vignette/saturation grade (default on)
+//   ?clouds=0             disable the L1 storm-sky clouds in the dome (default on)
 //   ?post=legacy          the pre-O4 post chain (default: the fused one)
 //   ?quality=auto|high|medium|low|mobile   graphics tier (default: the
 //                         player's saved pick, else DEFAULT_QUALITY — see
@@ -99,6 +100,11 @@ export interface RenderOptions {
    */
   grade: boolean;
   /**
+   * L1: the storm sky's cloud layers (a dome uniform). On in the shipped
+   * game; `?clouds=0` is their perf A/B control.
+   */
+  clouds: boolean;
+  /**
    * The graphics tier the URL asks for, or null to use the player's saved
    * pick (G / the HUD entry), falling back to DEFAULT_QUALITY. A URL value
    * wins over the saved one and is NOT saved — a QA link must never change
@@ -143,6 +149,7 @@ export const DEFAULT_RENDER_OPTIONS: RenderOptions = {
   micro: true,
   street: true,
   grade: true,
+  clouds: true,
   quality: null,
   post: "fused",
   reflections: true,
@@ -212,6 +219,9 @@ export function readRenderOptions(
 
   const grade = params.get("grade");
   if (grade !== null) opts.grade = grade !== "0" && grade !== "false";
+
+  const clouds = params.get("clouds");
+  if (clouds !== null) opts.clouds = clouds !== "0" && clouds !== "false";
 
   opts.quality = parseQualitySetting(params.get("quality"));
 

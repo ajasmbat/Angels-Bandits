@@ -28,6 +28,8 @@ import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
 import { applyPointFloor } from "./point-floor";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
+import { patchCloudCover } from "./sky";
+import type { CloudUniforms } from "./sky-clouds";
 
 /** Inside the dome (FOG_DISTANCE + 60) and in front of the stars (+40). */
 const DOME_RADIUS = FOG_DISTANCE + 20;
@@ -90,7 +92,11 @@ export class Airliners {
   /** Airliners drawn last frame — QA read-back. */
   drawn: Airliner[] = [];
 
-  constructor(private readonly seed: number) {
+  constructor(
+    private readonly seed: number,
+    /** L1: the dome's cloud uniforms — lights behind cloud fade out. */
+    private readonly clouds: CloudUniforms | null = null,
+  ) {
     this.geometry.setAttribute(
       "position",
       new THREE.BufferAttribute(this.positions, 3),
@@ -113,7 +119,7 @@ export class Airliners {
       depthWrite: false,
       fog: false,
     });
-    material.customProgramCacheKey = () => "ab-airliners";
+    material.customProgramCacheKey = () => "ab-airliners-l1";
     material.onBeforeCompile = (shader) => {
       shader.vertexShader = shader.vertexShader
         .replace(
@@ -123,6 +129,8 @@ export class Airliners {
         .replace("gl_PointSize = size;", "gl_PointSize = size * aSize;");
       // O5: never drawn under 2 px, alpha-paid, faded below 1 px.
       applyPointFloor(shader);
+      // L1: only in the gaps of the storm sky.
+      if (this.clouds) patchCloudCover(shader, this.clouds);
     };
     this.points = new THREE.Points(this.geometry, material);
     this.points.frustumCulled = false;

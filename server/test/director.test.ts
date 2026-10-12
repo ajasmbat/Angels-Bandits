@@ -429,7 +429,7 @@ describe("the director over time", () => {
     expect(rebuilt).toBeGreaterThan(0);
   }, 300_000);
 
-  it("keeps the destroyed share of the city under 15 % over a 60-minute fight", () => {
+  it("keeps the destroyed share of the city under 15 % over a 60-minute fight", async () => {
     const rc = createRoomCity(SEED_CITY, CRANES);
     const director = new DestructionDirector(
       CITY_SEED,
@@ -447,6 +447,14 @@ describe("the director over time", () => {
     let rebuilt = 0;
     const DT = 250;
     for (let t = T0; t < T0 + 60 * 60_000; t += DT) {
+      // Let the event loop turn once a simulated minute: as one synchronous
+      // block (77 s on a loaded box) the hour starved the vitest worker's
+      // RPC, whose fixed 60 s timeout then failed the whole run with
+      // "Timeout calling onTaskUpdate" though every test passed
+      // (vitest.setup.ts). The sim itself is unchanged.
+      if ((t - T0) % 60_000 === 0) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
       const planes = circling(centres, t);
       // The fight: every plane firing along its heading (bot gunfire, ~4
       // rounds/s), an X1-sized strike every ~20 s and a wreck/death blast

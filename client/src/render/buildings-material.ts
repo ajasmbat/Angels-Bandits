@@ -64,9 +64,15 @@ import {
 } from "./window-pattern";
 
 /** Window palette, linear (GLSL space): warm incandescent vs cool
- * fluorescent — every window is a CONVEX mix of these two. */
-const WINDOW_WARM = new THREE.Color(1.0, 0.72, 0.35);
-const WINDOW_COOL = new THREE.Color(0.55, 0.85, 1.0);
+ * fluorescent — every window is a CONVEX mix of these two.
+ *
+ * L3 Stormlit: the reference city glows amber — incandescent rooms around
+ * 2700 K (sRGB ≈ 255/194/124) — with a few cool-white offices, never the
+ * old cyan. COOL is kept at or under WARM's luminance, so the emissive
+ * intensity below normalises to the dominant amber: an ordinary warm window
+ * sits exactly on the WINDOW rung and no colour can pass it. */
+export const WINDOW_WARM = new THREE.Color(1.0, 0.55, 0.2);
+export const WINDOW_COOL = new THREE.Color(0.55, 0.62, 0.71);
 const glslVec3 = (c: THREE.Color) =>
   `vec3(${c.r.toFixed(3)}, ${c.g.toFixed(3)}, ${c.b.toFixed(3)})`;
 

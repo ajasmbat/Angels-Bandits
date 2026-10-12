@@ -4,49 +4,82 @@
 // (stable) dimensions, the roofClutterFor idiom: no Math.random, no THREE,
 // so every client paints identical facades. The shader branches on this id
 // (per-instance attribute) and city.ts picks the facade tint from it.
+//
+// L3 Stormlit (Manhattan): the reference city is PREWAR — brick and stone
+// towers with punched windows, setbacks and cornices, with glass curtain
+// walls a minority. So MASONRY is now the default for every height; GLASS
+// keeps the supertalls and the slim shafts, and OFFICE a seeded share of the
+// mid-rises and towers. Landmarks follow their LANDMARK_PROFILES style.
 
-import type { Building } from "@angels-bandits/common/city";
+import { type Building, landmarkStyleAt } from "@angels-bandits/common/city";
 import { LANDMARK_HEIGHT } from "@angels-bandits/common/constants";
 
 export const FacadeArchetype = {
-  /** Curtain-wall: tall or slim towers + ALL landmarks. Cool, tight floors. */
+  /** Curtain-wall: supertalls, slim shafts and the glass landmark. */
   GLASS: 0,
-  /** Punched windows, deep insets, warm: low and wide mid-rises. */
+  /** Punched windows, deep insets, warm brick and stone: the prewar
+   * default — and the Art Deco landmarks. */
   MASONRY: 1,
-  /** Horizontal strip windows, mixed color: everything else. */
+  /** Horizontal strip windows, mixed color: a seeded share of the rest. */
   OFFICE: 2,
 } as const;
 export type FacadeArchetype =
   (typeof FacadeArchetype)[keyof typeof FacadeArchetype];
 
 /** GLASS when taller than this, whatever the footprint. */
-const GLASS_MIN_HEIGHT = 120;
+const GLASS_MIN_HEIGHT = 150;
 /** ... or when height/longest-side reads as a slim shaft. */
-const GLASS_MIN_ASPECT = 1.4;
-/** MASONRY under this height (and wide) — low brick/stone mid-rises. */
+const GLASS_MIN_ASPECT = 1.8;
+/** OFFICE for a seeded share of the walk-ups (low commercial blocks)… */
+const OFFICE_SHARE_LOW = 0.65;
+/** …a smaller share of the 40 m+ mid-rises and towers, which the reference
+ * shows overwhelmingly as brick and stone… */
+const OFFICE_SHARE_TALL = 0.4;
+const OFFICE_TALL_FROM = 40;
+/** Low and wide stays brick whatever the roll (the XY8LH8 rule, and the
+ * prewar walk-up blocks of the reference): under this height… */
 const MASONRY_MAX_HEIGHT = 70;
-/** MASONRY needs a footprint at least this wide on its longest side —
- * "low and wide" is relative to the lot scale, so this tracks it. C1's BSP
- * lots have a median longest side of ~78 m (they used to be 100–170 m
- * free-standing blocks); at the old 120 m threshold masonry all but vanished
- * and four buildings in five came out OFFICE. */
+/** …with a longest side at least this wide. */
 const MASONRY_MIN_SIDE = 80;
+/** …and only when every tier is wide enough for more than two OFFICE bays
+ * (the widest jittered OFFICE pitch is 5.2 × 1.16 ≈ 6.03 m). */
+const OFFICE_MIN_TIER = 12.1;
+
+/** An integer hash of the building's dimensions in [0, 1) — bit-identical in
+ * every JS engine (Math.sin is not), seam-safe (never the translation). */
+function dimsRoll(b: Building): number {
+  let h = Math.imul(Math.round(b.width) + 1, 0x9e3779b1);
+  h = Math.imul(h ^ (Math.round(b.depth) + 7), 0x85ebca6b);
+  h = Math.imul(h ^ (Math.round(b.height) + 13), 0xc2b2ae35);
+  h ^= h >>> 15;
+  return (h >>> 0) / 4294967296;
+}
 
 /**
- * Classify one building. Deterministic and total: landmarks and supertalls
- * are always GLASS, low-and-wide is MASONRY, the rest is OFFICE.
+ * Classify one building. Deterministic and total: landmarks by their style
+ * (the glass one GLASS, the Art Deco ones MASONRY stone), supertalls and slim
+ * shafts GLASS, a seeded share of the rest OFFICE (fewer of the towers),
+ * and everything else MASONRY.
  */
 export function archetypeFor(b: Building): FacadeArchetype {
   const side = Math.max(b.width, b.depth);
-  if (
-    b.height >= LANDMARK_HEIGHT ||
-    b.height > GLASS_MIN_HEIGHT ||
-    b.height / side >= GLASS_MIN_ASPECT
-  ) {
+  if (b.height >= LANDMARK_HEIGHT) {
+    const style = landmarkStyleAt(b.x, b.z);
+    return style === null || style === "glass"
+      ? FacadeArchetype.GLASS
+      : FacadeArchetype.MASONRY;
+  }
+  if (b.height > GLASS_MIN_HEIGHT || b.height / side >= GLASS_MIN_ASPECT) {
     return FacadeArchetype.GLASS;
   }
-  if (b.height < MASONRY_MAX_HEIGHT && side >= MASONRY_MIN_SIDE) {
-    return FacadeArchetype.MASONRY;
+  const lowWide = b.height < MASONRY_MAX_HEIGHT && side >= MASONRY_MIN_SIDE;
+  if (
+    !lowWide &&
+    dimsRoll(b) <
+      (b.height >= OFFICE_TALL_FROM ? OFFICE_SHARE_TALL : OFFICE_SHARE_LOW) &&
+    b.tiers.every((t) => Math.min(t.width, t.depth) >= OFFICE_MIN_TIER)
+  ) {
+    return FacadeArchetype.OFFICE;
   }
-  return FacadeArchetype.OFFICE;
+  return FacadeArchetype.MASONRY;
 }

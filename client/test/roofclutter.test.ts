@@ -4,7 +4,10 @@
 // real seed-42 city pins determinism and containment in aggregate.
 
 import { type Building, generateCity } from "@angels-bandits/common/city";
-import { roofStructuresFor } from "@angels-bandits/common/city/roof-structures";
+import {
+  TANK_STILT,
+  roofStructuresFor,
+} from "@angels-bandits/common/city/roof-structures";
 import { LANDMARK_HEIGHT } from "@angels-bandits/common/constants";
 import { describe, expect, it } from "vitest";
 import { roofClutterFor } from "../src/render/roofclutter";
@@ -69,7 +72,8 @@ describe("roofClutterFor", () => {
       for (const t of c.waterTowers) {
         expect(Math.abs(t.x - b.x) + t.radius).toBeLessThanOrEqual(w);
         expect(Math.abs(t.z - b.z) + t.radius).toBeLessThanOrEqual(d);
-        expect(t.y).toBe(b.height);
+        // L3: the tank stands on its (clutter) stilts above the deck.
+        expect(t.y).toBe(b.height + TANK_STILT);
       }
       for (const box of c.acBoxes) {
         expect(Math.abs(box.x - b.x) + box.width / 2).toBeLessThanOrEqual(w);

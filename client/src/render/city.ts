@@ -30,6 +30,7 @@ import {
   chunkMask,
   cityHoles,
   generateCity,
+  landmarkStyleAt,
   solids,
 } from "@angels-bandits/common/city";
 import {
@@ -74,27 +75,37 @@ import { ImageCache, InstanceUploads, imageIndex } from "./wrapPlacement";
 
 /**
  * VO2 "Neon Blue Hour" facade albedo — real building materials instead of
- * C3's near-black desaturated slabs. Each archetype is a FAMILY of finishes
- * (glass: teal / steel-blue / bronze; masonry: terracotta / red brick /
- * sandstone; office: limestone / warm concrete / cool grey), picked and
- * varied deterministically from the building's own dimensions (shared by
- * all its tiers, seam-safe — never its translation), so a dense block reads
- * as many neighbouring buildings. Albedo only: the lights and the window
- * emissive do the rest, and the brightest finish stays far under the bloom
- * threshold once lit (client/test/facade-palette.test.ts). setHSL is in
- * three's LINEAR working space, so `l` here is (roughly) linear albedo: the
- * pale finishes are pulled to ~0.25 so they don't read as daylit concrete
- * next to the windows.
+ * C3's near-black desaturated slabs. Each archetype is a FAMILY of finishes,
+ * picked and varied deterministically from the building's own dimensions
+ * (shared by all its tiers, seam-safe — never its translation), so a dense
+ * block reads as many neighbouring buildings. Albedo only: the lights and
+ * the window emissive do the rest, and the brightest finish stays far under
+ * the bloom threshold once lit (client/test/facade-palette.test.ts). setHSL
+ * is in three's LINEAR working space, so `l` here is (roughly) linear
+ * albedo: the pale finishes are pulled to ~0.25 so they don't read as daylit
+ * concrete next to the windows.
+ *
+ * L3 Stormlit: the prewar city of the reference — MASONRY is warm brown
+ * brick, tan/buff brick and limestone, sooted charcoal brick, and some red
+ * brick; glass stays bronze / teal / steel blue, office limestone / concrete
+ * / grey. Landmarks no longer share one orientation teal: the Art Deco ones
+ * are pale floodlit limestone (each a slightly different stone, so the crown
+ * washes read), the glass supertall a dark steel blue. (x, z) only picks the
+ * landmark's style (landmarkStyleAt) — the canonical position, never an image.
  */
 export function facadeColor(
-  b: Pick<Building, "width" | "depth" | "height">,
+  b: Pick<Building, "x" | "z" | "width" | "depth" | "height">,
   arch: number,
   out = new THREE.Color(),
 ): THREE.Color {
   const t = ((b.height * 7 + b.width * 3 + b.depth) % 17) / 17;
   const v = ((b.width * 13 + b.depth * 7 + b.height * 3) % 23) / 23;
   if (b.height >= LANDMARK_HEIGHT) {
-    return out.setHSL(0.52, 0.42, 0.22); // landmark teal — orientation
+    const style = landmarkStyleAt(b.x, b.z);
+    if (style === "ziggurat") return out.setHSL(0.1, 0.24, 0.235); // buff limestone
+    if (style === "spire") return out.setHSL(0.09, 0.16, 0.225); // grey limestone
+    if (style === "arches") return out.setHSL(0.11, 0.12, 0.22); // pale stone, steel
+    return out.setHSL(0.6, 0.3, 0.13); // the glass supertall: dark steel blue
   }
   if (arch === FacadeArchetype.GLASS) {
     if (v < 0.22) return out.setHSL(0.09 + t * 0.03, 0.34, 0.156 + t * 0.047); // bronze
@@ -102,9 +113,10 @@ export function facadeColor(
     return out.setHSL(0.58 + t * 0.05, 0.3, 0.156 + t * 0.055); // steel blue
   }
   if (arch === FacadeArchetype.MASONRY) {
-    if (v < 0.4) return out.setHSL(0.03 + t * 0.02, 0.46, 0.172 + t * 0.047); // terracotta
-    if (v < 0.75) return out.setHSL(0.0 + t * 0.02, 0.4, 0.14 + t * 0.039); // red brick
-    return out.setHSL(0.08 + t * 0.03, 0.36, 0.19 + t * 0.04); // sandstone
+    if (v < 0.36) return out.setHSL(0.045 + t * 0.02, 0.42, 0.13 + t * 0.04); // warm brown brick
+    if (v < 0.62) return out.setHSL(0.085 + t * 0.025, 0.32, 0.18 + t * 0.045); // tan / buff
+    if (v < 0.82) return out.setHSL(0.015 + t * 0.02, 0.4, 0.13 + t * 0.035); // red brick
+    return out.setHSL(0.07 + t * 0.03, 0.1, 0.085 + t * 0.03); // sooted charcoal
   }
   if (v < 0.45) return out.setHSL(0.1 + t * 0.03, 0.16, 0.185 + t * 0.04); // limestone
   if (v < 0.8) return out.setHSL(0.07 + t * 0.03, 0.1, 0.175 + t * 0.04); // warm concrete

@@ -127,7 +127,10 @@ export const SIGN_PALETTE: readonly PaletteColor[] = [
   { r: 0.2, g: 0.35, b: 1.0 },
   { r: 1.0, g: 0.12, b: 0.1 },
 ];
-const PALETTE_WEIGHTS = [2.5, 2, 2.5, 1.5, 2.5] as const;
+/** L1 "Stormlit": warm signs dominate (amber ~half, red a fifth) and the
+ * pink/cyan/blue neon is the accent the reference shows — a few signs, not
+ * a neon city. Was [2.5, 2, 2.5, 1.5, 2.5]. */
+const PALETTE_WEIGHTS = [1.5, 1, 6, 0.8, 2.5] as const;
 const PALETTE_TOTAL = PALETTE_WEIGHTS.reduce((a, w) => a + w, 0);
 
 /** Weighted palette pick from one PRNG draw. */

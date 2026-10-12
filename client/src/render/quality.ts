@@ -692,6 +692,14 @@ export const FEATURE_TIERS: readonly {
     note: "uniforms only",
   },
   {
+    feature: "L1 storm sky clouds (dome shader)",
+    high: "full",
+    medium: "full",
+    low: "reduced",
+    mobile: "reduced",
+    note: "no draw; coverage octaves (the cloud silhouettes, the moon gap, which stars show) identical on every tier — Low drops one fine octave, Mobile both and the rim's second octave (uniforms)",
+  },
+  {
     feature: "L13 facade detail",
     high: "full",
     medium: "full",

@@ -115,7 +115,9 @@ export const BOUNCE_TINTS = {
   magenta: new THREE.Color(1.0, 0.36, 0.78),
   cyan: new THREE.Color(0.36, 0.82, 1.0),
 } as const;
-export const BOUNCE_NEON_MIX = 0.55;
+/** L1 "Stormlit": the street's sodium carries the bounce; neon only tints
+ * it (was 0.55). */
+export const BOUNCE_NEON_MIX = 0.3;
 
 const VERTEX_PARS = /* glsl */ `
 attribute vec2 aArchetype; // x: facade archetype, y: D1 damage slot word

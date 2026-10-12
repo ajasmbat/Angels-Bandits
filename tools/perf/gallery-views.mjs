@@ -919,24 +919,35 @@ export const VIEWS = [
     boss: { ahead: 180, downAfterMs: 3500 },
   },
   // L6 (Stormlit): the reference composition — the carrier upper left, its
-  // lamps and escort scouts throwing beams down onto the roofs, the own
-  // biplane (pinned here, its nav, landing and exhaust lights lit) mid
-  // right flying away into the scene, and the city below. The hull is
-  // staged 450 m ahead of the plane (centre ≈ x 1500, y 305, z 550), over
-  // the landmark at (1500, 300); no rooftop searchlight stands near the
-  // plane to swing onto it.
+  // lamps and escort scouts throwing beams down onto the roofs, a posed
+  // biplane mid right (its nav, landing and exhaust lights lit) flying away
+  // into the scene, and the city below. The own plane is parked high out of
+  // shot; the hull is staged 450 m ahead of the view (centre ≈ x 1500,
+  // y 305, z 550), over the landmark at (1500, 300); no rooftop searchlight
+  // stands near the biplane to swing onto it.
   {
     name: "reference-hero",
     x: 1500,
     z: 1000,
-    y: 300,
+    y: 600,
     yaw: 0,
-    pitch: 0.04,
     timeMs: 1_790_000_000_000,
     eye: [1484, 324, 1036],
     at: [1630, 190, 740],
     weather: "clear",
     boss: { ahead: 450 },
+    showcase: [
+      {
+        kind: "biplane",
+        x: 1500,
+        y: 300,
+        z: 1000,
+        yaw: 0.1,
+        pitch: 0.04,
+        roll: -0.12,
+        speed: 70,
+      },
+    ],
   },
   // W2: an enemy fighter-bomber's dive on the x = 1000 street (z ≈ 380),
   // its heavy centreline bomb just thrown (rack 0 empty) and falling ahead

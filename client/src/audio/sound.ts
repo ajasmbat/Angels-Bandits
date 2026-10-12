@@ -92,6 +92,10 @@ const LIMIT_RELEASE_S = 0.1;
 const CHAOS_VOICES = 6;
 /** How long a collapse sounds after the crash lands (its grumbling tail). */
 const COLLAPSE_TAIL_S = 6;
+/** D10: at most this many roars per collapse, and this many cracks in its
+ * creep. */
+export const COLLAPSE_BEATS_MAX = 6;
+const COLLAPSE_CRACKS = 6;
 /** P3: the air rush as the plane rolls or loops through inverted. */
 const AERO_WHOOSH_LEVEL = 0.28;
 const AERO_WHOOSH_MIN_MS = 1200;
@@ -935,6 +939,96 @@ export class GameAudio implements VoiceSink {
     sub.connect(sg).connect(panner);
     sub.start(now);
     sub.stop(crashAt + 1.5);
+  }
+
+  /**
+   * D10: the beats of a collapse coming down at `pos`, on top of collapse()'s
+   * rumble — cracking through the `creepS` seconds the failure floor sags
+   * (sharp, high bursts: concrete and steel letting go), then for each beat
+   * (`t` seconds from now, `size` 0..1 — a storey giving way, a section
+   * breaking up, the mass hitting the ground; at most COLLAPSE_BEATS_MAX) a
+   * roar falling from a crack to a growl with a debris thud under it. One
+   * chaos voice for all of it.
+   */
+  collapseBeats(
+    pos: Vec3,
+    listenerPos: Vec3,
+    listenerYaw: number,
+    beats: readonly { t: number; size: number }[],
+    creepS: number,
+  ): void {
+    const s = spatialize(listenerPos, listenerYaw, pos);
+    const level = Math.min(1, s.gain * 10);
+    const ctx = this.ensure();
+    if (!ctx || !this.sfx || !this.noise || level <= 0) return;
+    const now = ctx.currentTime;
+    let last = Math.max(0, creepS);
+    const use = beats.slice(0, COLLAPSE_BEATS_MAX);
+    for (const b of use) last = Math.max(last, b.t);
+    const out = this.chaosVoice(level * 0.8, last + 1.6);
+    if (!out) return;
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = s.pan;
+    panner.connect(out);
+    const noise = this.noise;
+    const shot = (
+      at: number,
+      type: BiquadFilterType,
+      fromHz: number,
+      toHz: number,
+      dur: number,
+      gain: number,
+    ) => {
+      const src = ctx.createBufferSource();
+      src.buffer = noise;
+      src.loop = true;
+      const f = ctx.createBiquadFilter();
+      f.type = type;
+      f.frequency.setValueAtTime(fromHz, at);
+      f.frequency.exponentialRampToValueAtTime(toHz, at + dur);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, now);
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.linearRampToValueAtTime(gain, at + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+      src.connect(f).connect(g).connect(panner);
+      src.start(now, Math.random());
+      src.stop(at + dur + 0.05);
+    };
+    // The creep: cracks, closer together as it goes.
+    for (let k = 0; k < COLLAPSE_CRACKS && creepS > 0.1; k++) {
+      const at =
+        now + creepS * Math.sqrt((k + Math.random() * 0.6) / COLLAPSE_CRACKS);
+      shot(
+        at,
+        "bandpass",
+        2600 + 1800 * Math.random(),
+        900,
+        0.09,
+        0.55 * level,
+      );
+    }
+    for (const b of use) {
+      if (b.t < 0) continue;
+      const at = now + b.t;
+      const k = 0.4 + 0.6 * Math.min(1, Math.max(0, b.size));
+      // A crack, then the roar falling to a growl…
+      shot(at, "bandpass", 3200, 1200, 0.07, 0.5 * level * k);
+      shot(at, "lowpass", 1100, 70, 1.3, EXPLOSION_LEVEL * 0.7 * level * k);
+      // …and the thud of the debris landing.
+      const sub = ctx.createOscillator();
+      sub.type = "sine";
+      sub.frequency.setValueAtTime(58, at);
+      sub.frequency.exponentialRampToValueAtTime(24, at + 0.45);
+      const sg = ctx.createGain();
+      sg.gain.setValueAtTime(0.0001, now);
+      sg.gain.setValueAtTime(0.0001, at);
+      sg.gain.linearRampToValueAtTime(0.7 * level * k, at + 0.015);
+      sg.gain.exponentialRampToValueAtTime(0.0001, at + 0.5);
+      sub.connect(sg).connect(panner);
+      sub.start(now);
+      sub.stop(at + 0.55);
+    }
   }
 
   /**

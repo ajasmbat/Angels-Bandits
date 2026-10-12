@@ -24,6 +24,7 @@ import {
   DIR_POS_Z,
   KIND_CRANE,
   PANCAKE,
+  ROLE_SHEET,
   TOPPLE,
   blankPose,
   buildCollapse,
@@ -409,7 +410,15 @@ describe("chain reactions", () => {
           city,
           collapseWire(pancake as NonNullable<typeof pancake>, i, 2, T0),
         );
-        expect(collapseImpacts(pc as NonNullable<typeof pc>, city)).toEqual([]);
+        // The floors pancake into their own footprint and drive into no
+        // one; only D10's facade sheets, peeling into the street, can reach
+        // a neighbour across an alley.
+        const p = pc as NonNullable<typeof pc>;
+        const floors = {
+          ...p,
+          rep: p.rep.map((r, k) => (p.role[k] === ROLE_SHEET ? 0 : r)),
+        };
+        expect(collapseImpacts(floors, city)).toEqual([]);
         break;
       }
     }

@@ -141,6 +141,18 @@ const tall = (b: Building) => {
 };
 const solidTall = base.findIndex((b, i) => i !== TOWER && tall(b) && !b.holes);
 const holed = base.findIndex((b) => tall(b) && !!b.holes);
+/** D10: a single-tier building whose +x wing can shear off. */
+const shearable = base.findIndex((b) => {
+  const g = tierGrids(b)[0];
+  return (
+    !!g &&
+    !b.holes &&
+    tierGrids(b).length === 1 &&
+    g.nx >= 4 &&
+    g.ny >= 4 &&
+    g.nz >= 3
+  );
+});
 const seam = base.findIndex(
   (b) =>
     tall(b) && (b.x < b.width / 2 + 60 || b.x > WORLD_SIZE - b.width / 2 - 60),
@@ -205,6 +217,27 @@ const SCENARIOS: Scenario[] = [
         damage.apply(ids);
         settle(city, damage, solidTall);
         return [solidTall];
+      }),
+  },
+  {
+    // D10: a wing left hanging by a slot cut one column in shears off
+    // outward; the rest stands, jagged.
+    name: "sheared wing",
+    build: () =>
+      staged((city, damage) => {
+        const b = city[shearable] as Building;
+        const g = tierGrids(b)[0] as NonNullable<
+          ReturnType<typeof tierGrids>[0]
+        >;
+        const ids: number[] = [];
+        for (let iy = 0; iy < g.ny; iy++)
+          for (let iz = 0; iz < g.nz; iz++)
+            ids.push(chunkAtCell(b, shearable, 0, g.nx - 2, iy, iz));
+        for (let iz = 0; iz < g.nz; iz++)
+          ids.push(chunkAtCell(b, shearable, 0, g.nx - 1, 0, iz));
+        damage.apply(ids);
+        settle(city, damage, shearable);
+        return [shearable];
       }),
   },
   { name: "at the torus seam", build: () => fell(seam, TOPPLE, DIR_NEG_Z) },

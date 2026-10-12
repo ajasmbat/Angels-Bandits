@@ -26,36 +26,75 @@
 // fails outright and takes everything above it down. Anything standing but
 // not S also falls, so no chunk is ever left floating.
 //
-// Styles: no survivors (or survivors centred) under the section → PANCAKE,
-// the floors drop straight down in a cascade and crush the column under them
-// to the ground; survivors off to one side → TOPPLE, the section tips over
-// its base edge toward the missing side (snapped to ±x/±z: streets run
-// along the axes), breaks up mid-fall and scatters across the street. Every
-// piece ends as a flat rubble box resting on the ground or on the rubble
-// under it — never on something that could later be shot away.
+// Styles: no survivors (or survivors centred) under the section → PANCAKE;
+// survivors off to one side → TOPPLE, the section tips over its base edge
+// toward the missing side (snapped to ±x/±z: streets run along the axes).
+// D10 made both read like real buildings coming down:
+//
+//   - Pre-fracture: a chunk falls as storey slabs, with facade sheets off
+//     the building's outline and column / I-beam segments (`fracture`), not
+//     as one 20 × 12 × 20 m block. Every piece is still an oriented box —
+//     what it collides as; the renderer draws a broken shape inside it.
+//   - PANCAKE is progressive: a creep, then the upper block lets go and a
+//     crush front drives down from the failure height (the wire's `f`); each
+//     storey under it starts when the front reaches it, at the front's
+//     speed, so floors give way one after another, faster and faster, and
+//     the facade sheets peel off into the street as they go.
+//   - TOPPLE bends as it swings: its top breaks off first, its base at the
+//     D3 angle. An unsupported wing or corner with open air outside it
+//     shears off the same way (`shearDir`) and leaves the rest standing.
+//   - Slenderness weighs the choice: a slender section topples at half the
+//     offset a squat one needs (`toppleThreshold`).
+//
+// Every piece ends as a rubble box — slumped a little askew, a column stub
+// leaning out of the pile — resting on the ground or on the rubble under it,
+// never on something that could later be shot away.
 
 import {
   CHAIN_COALESCE_M,
+  CHAIN_ENERGY_MAX,
+  CHAIN_ENERGY_MIN,
+  CHAIN_ENERGY_REF,
   CHAIN_IMPACTS_MAX,
   CHAIN_IMPACTS_PER_BUILDING,
-  CHUNK_FLOOR,
   COLLAPSE_BAND_MIN,
-  COLLAPSE_BAND_STAGGER_MS,
+  COLLAPSE_COLUMN_LEAN,
+  COLLAPSE_COLUMN_RUBBLE,
+  COLLAPSE_COLUMN_SHARE,
+  COLLAPSE_COLUMN_SIDE,
+  COLLAPSE_CREEP_MS,
+  COLLAPSE_CRUSH_G,
+  COLLAPSE_FLOOR_EVENTS_MAX,
   COLLAPSE_GRAVITY,
   COLLAPSE_LEAD_MS,
   COLLAPSE_PANCAKE_TILT,
   COLLAPSE_RUBBLE_RATIO,
+  COLLAPSE_SHEET_BREAK,
+  COLLAPSE_SHEET_DRIFT,
+  COLLAPSE_SHEET_SHARE,
+  COLLAPSE_SHEET_THICK,
+  COLLAPSE_SLAB_STOREY,
+  COLLAPSE_SLUMP_MAX,
+  COLLAPSE_SLUMP_RISE,
   COLLAPSE_SQUASH_MS,
   COLLAPSE_SYMMETRY,
   COLLAPSE_TOPPLE_ALPHA_MAX,
   COLLAPSE_TOPPLE_ALPHA_MIN,
   COLLAPSE_TOPPLE_BREAK,
+  COLLAPSE_TOPPLE_BREAK_TOP,
   COLLAPSE_TOPPLE_K,
   COLLAPSE_ZONE_TAIL_MS,
   CRANE_MAST_SIDE,
 } from "../constants";
 import { type Vec3, canonicalize, wrapDeltaAxis } from "../world/index";
 import {
+  CUT_NEG_X,
+  CUT_NEG_Y,
+  CUT_NEG_Z,
+  CUT_POS_X,
+  CUT_POS_Y,
+  CUT_POS_Z,
+  CUT_STEEL,
   type LocalBox,
   type TierGrid,
   cellBox,
@@ -72,6 +111,7 @@ import {
   supportGraph,
   tierGrids,
 } from "./destruction";
+import type { SolidBox } from "./holes";
 import type { Building } from "./index";
 // movers.ts ↔ collapse.ts is a module cycle (collideMovers reads the field;
 // a crane fall reads the crane's boxes). Every use is at call time.
@@ -116,6 +156,9 @@ export interface CollapseWire {
   /** D5: KIND_CRANE for a falling tower crane (b = its site id); absent for
    * a building section, so D3 records are unchanged on the wire. */
   k?: number;
+  /** D10 pancake: the failure height, whole decimetres — where the crush
+   * front starts. Absent: the section's base (every piece lets go at once). */
+  f?: number;
 }
 
 /** A wire's kind (absent = a building section). */
@@ -128,6 +171,9 @@ export interface CollapsePlan {
   dir: number;
   /** Ascending chunk ids. */
   chunks: number[];
+  /** D10: the failure height, m — the base of the section that let go
+   * (what a pancake crushes lies below it). */
+  fail: number;
 }
 
 // --- Support -----------------------------------------------------------------
@@ -314,12 +360,23 @@ function anyStandingAbove(
   return false;
 }
 
-/** Pancake or topple (and which way) from the failed band's survivors. */
+/** D10: the topple threshold for a section `height` m tall over a tier
+ * `g`: COLLAPSE_SYMMETRY scaled by clamp(3 / s, 0.5, 1.5), s = height ÷
+ * min(width, depth). A slender section topples at half the offset that
+ * tips today's s = 3 section; a squat one needs half again as much. */
+export function toppleThreshold(g: TierGrid, height: number): number {
+  const s = Math.max(1e-6, height) / Math.max(1, Math.min(g.width, g.depth));
+  return COLLAPSE_SYMMETRY * Math.min(1.5, Math.max(0.5, 3 / s));
+}
+
+/** Pancake or topple (and which way) from the failed band's survivors,
+ * for a section `height` m tall above it. */
 function styleOf(
   g: TierGrid,
   mask: Uint8Array,
   st: Uint8Array,
   band: number,
+  height: number,
 ): { style: CollapseStyle; dir: number } {
   const box: LocalBox = { x0: 0, x1: 0, y0: 0, y1: 0, z0: 0, z1: 0 };
   let ax = 0;
@@ -347,7 +404,7 @@ function styleOf(
   // From the survivors toward what is missing: the weak side.
   const ox = (ax / an - sx / sn) / g.width;
   const oz = (az / an - sz / sn) / g.depth;
-  if (Math.max(Math.abs(ox), Math.abs(oz)) < COLLAPSE_SYMMETRY) {
+  if (Math.max(Math.abs(ox), Math.abs(oz)) < toppleThreshold(g, height)) {
     return { style: PANCAKE, dir: 0 };
   }
   if (Math.abs(ox) >= Math.abs(oz)) {
@@ -401,6 +458,149 @@ function crushedUnder(
   return out;
 }
 
+/** Lowest base and highest top of the (tier, cell) pairs in `set`, m. */
+function spanOf(
+  grids: readonly TierGrid[],
+  set: readonly number[],
+): { base: number; top: number } {
+  const box: LocalBox = { x0: 0, x1: 0, y0: 0, y1: 0, z0: 0, z1: 0 };
+  let base = Number.POSITIVE_INFINITY;
+  let top = Number.NEGATIVE_INFINITY;
+  for (let j = 0; j < set.length; j += 2) {
+    cellBox(grids[set[j] as number] as TierGrid, set[j + 1] as number, box);
+    base = Math.min(base, box.y0);
+    top = Math.max(top, box.y1);
+  }
+  return { base, top };
+}
+
+/** Outward unit step of a DIR_* along x (−1/+1) or 0. */
+const stepX = (d: number) => (d === DIR_NEG_X ? -1 : d === DIR_POS_X ? 1 : 0);
+const stepZ = (d: number) => (d === DIR_NEG_Z ? -1 : d === DIR_POS_Z ? 1 : 0);
+
+/**
+ * D10 partial collapse: may the unsupported `set` shear off its building as
+ * a wing / corner peeling outward (a TOPPLE over its own outer base edge)?
+ * Only into open air — nothing left standing above any of its cells, or
+ * outward of them along the direction in their tier, the tier flush with
+ * the street tier on that side — and only when something of the building
+ * stays standing (the jagged remainder). A rigid swing outward about the
+ * outer base edge moves every point outward (and the inner ones up, into
+ * the empty air over the set), so it passes through nothing that stands.
+ * Returns the DIR_* (the side the set leans furthest toward), or −1.
+ */
+function shearDir(
+  grids: readonly TierGrid[],
+  standing: readonly Uint8Array[],
+  set: readonly number[],
+): number {
+  if (set.length < 6) return -1; // under three chunks: a plain drop
+  const after = standing.map((st) => st.slice());
+  for (let j = 0; j < set.length; j += 2) {
+    (after[set[j] as number] as Uint8Array)[set[j + 1] as number] = 0;
+  }
+  if (!after.some((st) => st.includes(1))) return -1; // nothing stays
+  const g0 = grids[0] as TierGrid;
+  const box: LocalBox = { x0: 0, x1: 0, y0: 0, y1: 0, z0: 0, z1: 0 };
+  const other: LocalBox = { x0: 0, x1: 0, y0: 0, y1: 0, z0: 0, z1: 0 };
+  let cx = 0;
+  let cz = 0;
+  const open = [true, true, true, true];
+  for (let j = 0; j < set.length; j += 2) {
+    const k = set[j] as number;
+    const c = set[j + 1] as number;
+    const g = grids[k] as TierGrid;
+    const st = after[k] as Uint8Array;
+    const ix = c % g.nx;
+    const iz = Math.floor(c / g.nx) % g.nz;
+    const iy = Math.floor(c / (g.nx * g.nz));
+    cellBox(g, c, box);
+    cx += (box.x0 + box.x1) / 2;
+    cz += (box.z0 + box.z1) / 2;
+    // Nothing standing above it: its own column, then every higher tier.
+    for (let y = iy + 1; y < g.ny; y++) {
+      if (st[cellIndex(g, ix, y, iz)]) return -1;
+    }
+    for (let kk = k + 1; kk < grids.length; kk++) {
+      const gk = grids[kk] as TierGrid;
+      const sk = after[kk] as Uint8Array;
+      for (let cc = 0; cc < sk.length; cc++) {
+        if (!sk[cc]) continue;
+        cellBox(gk, cc, other);
+        if (
+          Math.min(other.x1, box.x1) - Math.max(other.x0, box.x0) > 1e-6 &&
+          Math.min(other.z1, box.z1) - Math.max(other.z0, box.z0) > 1e-6
+        ) {
+          return -1;
+        }
+      }
+    }
+    // Open outward along each direction (in its tier, flush with tier 0).
+    for (let d = 0; d < 4; d++) {
+      if (!open[d]) continue;
+      const sx = stepX(d);
+      const sz = stepZ(d);
+      const flush =
+        sx !== 0
+          ? g.width / 2 >= g0.width / 2 - 0.5
+          : g.depth / 2 >= g0.depth / 2 - 0.5;
+      if (!flush) {
+        open[d] = false;
+        continue;
+      }
+      // The swing rises as it goes out: this band and every one above it,
+      // out to the tier's edge, must be clear…
+      for (
+        let x = ix + sx, z = iz + sz;
+        open[d] && x >= 0 && x < g.nx && z >= 0 && z < g.nz;
+        x += sx, z += sz
+      ) {
+        for (let y = iy; y < g.ny; y++) {
+          if (st[cellIndex(g, x, y, z)]) {
+            open[d] = false;
+            break;
+          }
+        }
+      }
+      if (!open[d]) continue;
+      // …and so must every higher tier over that strip.
+      const sx0 = sx < 0 ? -g.width / 2 : box.x0;
+      const sx1 = sx > 0 ? g.width / 2 : box.x1;
+      const sz0 = sz < 0 ? -g.depth / 2 : box.z0;
+      const sz1 = sz > 0 ? g.depth / 2 : box.z1;
+      for (let kk = k + 1; kk < grids.length && open[d]; kk++) {
+        const gk = grids[kk] as TierGrid;
+        const sk = after[kk] as Uint8Array;
+        for (let cc = 0; cc < sk.length; cc++) {
+          if (!sk[cc]) continue;
+          cellBox(gk, cc, other);
+          if (
+            Math.min(other.x1, sx1) - Math.max(other.x0, sx0) > 1e-6 &&
+            Math.min(other.z1, sz1) - Math.max(other.z0, sz0) > 1e-6
+          ) {
+            open[d] = false;
+            break;
+          }
+        }
+      }
+    }
+  }
+  const n = set.length / 2;
+  cx /= n;
+  cz /= n;
+  let best = -1;
+  let lean = 0;
+  for (let d = 0; d < 4; d++) {
+    if (!open[d]) continue;
+    const off = stepX(d) * cx + stepZ(d) * cz;
+    if (off > lean + 1e-6) {
+      lean = off;
+      best = d;
+    }
+  }
+  return best;
+}
+
 /** The next collapse in `standing`, or null when everything is held up. */
 function nextPlan(
   b: Building,
@@ -421,23 +621,31 @@ function nextPlan(
       for (let c = first; c < st.length; c++) if (st[c]) set.push(k, c);
     });
     const g = grids[fail.tier] as TierGrid;
+    const span = spanOf(grids, set);
     ({ style, dir } = styleOf(
       g,
       masks[fail.tier] as Uint8Array,
       standing[fail.tier] as Uint8Array,
       fail.band,
+      set.length > 0 ? span.top - span.base : 0,
     ));
   } else {
     set = unsupported(b, standing);
     if (set.length === 0) return null;
+    const d = shearDir(grids, standing, set);
+    if (d >= 0) {
+      style = TOPPLE;
+      dir = d;
+    }
   }
+  const failY = set.length > 0 ? spanOf(grids, set).base : 0;
   if (style === PANCAKE) set = set.concat(crushedUnder(grids, standing, set));
   const chunks: number[] = [];
   for (let j = 0; j < set.length; j += 2) {
     chunks.push(chunkId(index, set[j] as number, set[j + 1] as number));
   }
   chunks.sort((x, y) => x - y);
-  return { style, dir, chunks };
+  return { style, dir, chunks, fail: failY };
 }
 
 /**
@@ -537,6 +745,7 @@ export function demolitionPlan(
   };
   let set = pick(false);
   if (set.length === 0) return null;
+  const failY = spanOf(grids, set).base;
   if (style === TOPPLE && g0) {
     const jagged = pick(true);
     // Keep the broken stump only if, with the section gone, it owes nothing
@@ -553,7 +762,7 @@ export function demolitionPlan(
     chunks.push(chunkId(index, set[j] as number, set[j + 1] as number));
   }
   chunks.sort((x, y) => x - y);
-  return { style, dir: style === TOPPLE ? dir : 0, chunks };
+  return { style, dir: style === TOPPLE ? dir : 0, chunks, fail: failY };
 }
 
 /** A plan as the wire event `id` at server time `t`. */
@@ -563,7 +772,7 @@ export function collapseWire(
   id: number,
   t: number,
 ): CollapseWire {
-  return {
+  const wire: CollapseWire = {
     id,
     b: building,
     t,
@@ -571,15 +780,34 @@ export function collapseWire(
     d: plan.style === TOPPLE ? plan.dir : 0,
     c: encodeChunkIds(plan.chunks),
   };
+  // D10: a pancake carries where it failed (a topple pivots on its base).
+  if (plan.style === PANCAKE && Number.isFinite(plan.fail)) {
+    wire.f = Math.round(plan.fail * 10);
+  }
+  return wire;
 }
 
 // --- Debris ----------------------------------------------------------------
+
+/** D10 fragment roles: a storey slab (floor plate and the storey's walls),
+ * a facade sheet peeling off the outline, a column / I-beam segment. */
+export const ROLE_SLAB = 0;
+export const ROLE_SHEET = 1;
+export const ROLE_COLUMN = 2;
+
+/** D10 per-piece motion: a straight DROP (start, initial speed, effective
+ * g, a slow tilt about its own centre), or a HINGE — a swing about its own
+ * pivot (which may itself be dropping) until it breaks off into a ballistic
+ * arc, spinning on. */
+export const MODE_DROP = 0;
+export const MODE_HINGE = 1;
 
 /**
  * One collapse's debris, derived once from its wire. Positions are relative
  * to the building's centre (`x`, `z`, canonical); y is altitude. Per-piece
  * arrays are indexed by piece. Pieces rotate only about the x or z axis
- * (`axis` 0 / 1), so every rest box is axis-aligned.
+ * (`axis` 0 / 1); at rest a piece lies at a quarter turn plus a small slump
+ * about that same axis (an oriented box — what it collides as).
  */
 export interface Collapse {
   readonly id: number;
@@ -594,14 +822,25 @@ export interface Collapse {
   /** The building's centre, canonical. */
   readonly x: number;
   readonly z: number;
+  /** D10: the failure height, m (the crush front starts here). */
+  readonly fail: number;
   /** The chunks that fell (ascending). */
   readonly chunks: readonly number[];
   /** Pieces. */
   readonly n: number;
   readonly chunk: Int32Array;
   readonly tier: Uint8Array;
-  /** D2 CUT_* faces of the piece as it stood (renderer shading). */
+  /** D2 CUT_* faces of the piece as it stood (renderer shading); CUT_STEEL
+   * on a column. */
   readonly cut: Uint8Array;
+  /** D10: ROLE_*, MODE_*, and 1 on the pieces the chain-impact probe
+   * follows (a chunk solid's middle slab, a sheet, a crane segment). */
+  readonly role: Uint8Array;
+  readonly mode: Uint8Array;
+  readonly rep: Uint8Array;
+  /** D10: the volume a rep piece stands for (its whole chunk solid, or
+   * itself), m³; 0 on the rest. */
+  readonly vol: Float64Array;
   /** Standing pose: centre and half extents. */
   readonly ox: Float64Array;
   readonly oy: Float64Array;
@@ -613,10 +852,33 @@ export interface Collapse {
   readonly start: Float64Array;
   /** Rotation axis (0 = x, 1 = z). */
   readonly axis: Uint8Array;
-  /** Pancake: the tilt a piece leans toward, rad (signed). */
+  /** DROP: the tilt a piece leans toward, rad (signed). */
   readonly tilt: Float64Array;
-  /** Topple: pivot (on the base edge), sign of the rotation about `axis`,
-   * angular acceleration, break-up time (s after start) and spin rate. */
+  /** DROP: downward speed at the start, m/s, and acceleration, m/s² (a
+   * HINGE's pivot drops the same way; 0 for a fixed pivot). */
+  readonly v0: Float64Array;
+  readonly dg: Float64Array;
+  /** DROP, a crushed storey: how long it is crushed for, s after its start
+   * (its top rides the front down while its base holds, until it is
+   * COLLAPSE_RUBBLE_RATIO of its height; 0 for a piece that only falls),
+   * and that crushed half height, m. */
+  readonly crush: Float64Array;
+  readonly chy: Float64Array;
+  /** Half height at landing, m (where the squash starts from). */
+  readonly lhy: Float64Array;
+  /** HINGE: pivot, sign of the rotation about `axis`, angular acceleration,
+   * break-up time (s after start), tilt there and spin rate after it. */
+  readonly hpx: Float64Array;
+  readonly hpy: Float64Array;
+  readonly hpz: Float64Array;
+  readonly hsign: Float64Array;
+  readonly halpha: Float64Array;
+  readonly hbreak: Float64Array;
+  readonly hang: Float64Array;
+  readonly homega: Float64Array;
+  /** Topple: the section's pivot (on the base edge), sign, angular
+   * acceleration, LATEST break-up time (s after start: every piece is
+   * ballistic by then) and the spin rate at the base's break. */
   readonly px: number;
   readonly py: number;
   readonly pz: number;
@@ -624,7 +886,7 @@ export interface Collapse {
   readonly alpha: number;
   readonly tBreak: number;
   readonly omega: number;
-  /** Topple: centre and velocity at break-up. */
+  /** HINGE: centre and velocity at break-up. */
   readonly bx: Float64Array;
   readonly by: Float64Array;
   readonly bz: Float64Array;
@@ -637,7 +899,7 @@ export interface Collapse {
   readonly ly: Float64Array;
   readonly lz: Float64Array;
   readonly lphi: Float64Array;
-  /** Rest: centre, local half extents, angle (a multiple of π/2). */
+  /** Rest: centre, local half extents, angle (a quarter turn + slump). */
   readonly rx: Float64Array;
   readonly ry: Float64Array;
   readonly rz: Float64Array;
@@ -645,7 +907,8 @@ export interface Collapse {
   readonly rhy: Float64Array;
   readonly rhz: Float64Array;
   readonly rphi: Float64Array;
-  /** Rest box as a world-axis AABB's half extents. */
+  /** Rest box as a world-axis AABB's half extents (it bounds the slumped
+   * box; the collision itself is the oriented box). */
   readonly ax: Float64Array;
   readonly ay: Float64Array;
   readonly az: Float64Array;
@@ -734,39 +997,69 @@ type Draft = { -readonly [K in keyof Collapse]: Collapse[K] };
 const flightAt = { tau: 0 };
 
 /** The in-flight pose (before landing) of piece `i` at `flightAt.tau` s
- * after its start. Writes centre + angle; half extents are the standing
- * ones. */
+ * after its start. Writes centre, angle and half height (the standing one,
+ * but for a storey being crushed); hx / hz are the standing ones. */
 function flight(c: Collapse, i: number, out: PiecePose): void {
   const tau = flightAt.tau;
-  if (c.style === PANCAKE) {
+  const v0 = c.v0[i] as number;
+  const g = c.dg[i] as number;
+  out.hy = c.hy[i] as number;
+  if (c.mode[i] === MODE_DROP) {
     out.x = c.ox[i] as number;
-    out.y = (c.oy[i] as number) - 0.5 * G * tau * tau;
     out.z = c.oz[i] as number;
+    const k1 = c.crush[i] as number;
+    if (k1 > 0) {
+      // A crushed storey: its top rides the front down, its base holds…
+      const base = (c.oy[i] as number) - (c.hy[i] as number);
+      out.phi = 0;
+      if (tau < k1) {
+        const top =
+          (c.oy[i] as number) +
+          (c.hy[i] as number) -
+          v0 * tau -
+          0.5 * g * tau * tau;
+        out.y = (top + base) / 2;
+        out.hy = (top - base) / 2;
+        return;
+      }
+      // …then, crushed flat, it falls with the column.
+      const dt = tau - k1;
+      const v1 = v0 + g * k1;
+      const h = c.chy[i] as number;
+      out.y = base + h - v1 * dt - 0.5 * g * dt * dt;
+      out.hy = h;
+      return;
+    }
+    out.y = (c.oy[i] as number) - v0 * tau - 0.5 * g * tau * tau;
     out.phi = ((c.tilt[i] as number) * tau) / (tau + 1.5);
     return;
   }
-  if (tau < c.tBreak) {
-    const theta = 0.5 * c.alpha * tau * tau;
-    const phi = c.sign * theta;
+  const tb = c.hbreak[i] as number;
+  const sign = c.hsign[i] as number;
+  if (tau < tb) {
+    const phi = sign * 0.5 * (c.halpha[i] as number) * tau * tau;
+    const px = c.hpx[i] as number;
+    const py = c.hpy[i] as number;
+    const pz = c.hpz[i] as number;
     rotate(
       c.axis[i] as number,
       phi,
-      (c.ox[i] as number) - c.px,
-      (c.oy[i] as number) - c.py,
-      (c.oz[i] as number) - c.pz,
+      (c.ox[i] as number) - px,
+      (c.oy[i] as number) - py,
+      (c.oz[i] as number) - pz,
       rot,
     );
-    out.x = c.px + rot.x;
-    out.y = c.py + rot.y;
-    out.z = c.pz + rot.z;
+    out.x = px + rot.x;
+    out.y = py + rot.y - v0 * tau - 0.5 * g * tau * tau;
+    out.z = pz + rot.z;
     out.phi = phi;
     return;
   }
-  const dt = tau - c.tBreak;
+  const dt = tau - tb;
   out.x = (c.bx[i] as number) + (c.vx[i] as number) * dt;
   out.y = (c.by[i] as number) + (c.vy[i] as number) * dt - 0.5 * G * dt * dt;
   out.z = (c.bz[i] as number) + (c.vz[i] as number) * dt;
-  out.phi = c.sign * (COLLAPSE_TOPPLE_BREAK + c.omega * dt);
+  out.phi = sign * ((c.hang[i] as number) + (c.homega[i] as number) * dt);
 }
 
 /**
@@ -782,7 +1075,33 @@ export function piecePose(
   tMs: number,
   out: PiecePose,
 ): PiecePose {
-  const tau = (tMs - c.t0) / 1000 - (c.start[i] as number);
+  poseClock.tMs = tMs;
+  return poseNow(c, i, out);
+}
+
+/** poseNow()'s time. D10: the collision loop poses ~4× the pieces D3 did,
+ * and a double handed to a call V8 does not inline is boxed (O5's rule) —
+ * so the loop sets the clock once and poses with no double argument. */
+const poseClock = { tMs: 0 };
+
+/** D10: set the clock posePieceNow() poses at (once per frame, not once
+ * per piece — the per-frame posing loops' allocation-free path). */
+export function setPoseClock(tMs: number): void {
+  poseClock.tMs = tMs;
+}
+
+/** piecePose at the clock setPoseClock() last set. */
+export function posePieceNow(
+  c: Collapse,
+  i: number,
+  out: PiecePose,
+): PiecePose {
+  return poseNow(c, i, out);
+}
+
+/** piecePose at `poseClock.tMs`. */
+function poseNow(c: Collapse, i: number, out: PiecePose): PiecePose {
+  const tau = (poseClock.tMs - c.t0) / 1000 - (c.start[i] as number);
   const land = c.land[i] as number;
   out.axis = c.axis[i] as number;
   if (!(tau > 0)) {
@@ -812,7 +1131,6 @@ export function piecePose(
     flightAt.tau = tau;
     flight(c, i, out);
     out.hx = c.hx[i] as number;
-    out.hy = c.hy[i] as number;
     out.hz = c.hz[i] as number;
     return out;
   }
@@ -825,7 +1143,7 @@ export function piecePose(
   const ly = c.ly[i] as number;
   const lz = c.lz[i] as number;
   const hx = c.hx[i] as number;
-  const hy = c.hy[i] as number;
+  const hy = c.lhy[i] as number;
   const hz = c.hz[i] as number;
   const lphi = c.lphi[i] as number;
   out.x = lx + ((c.rx[i] as number) - lx) * k;
@@ -838,7 +1156,59 @@ export function piecePose(
   return out;
 }
 
-/** First tau ≥ 0 at which piece `i`'s lowest point reaches `floor`. */
+/** Piece `i`'s rest pose (an oriented box), into `out`. */
+function restPose(c: Collapse, i: number, out: PiecePose): PiecePose {
+  out.x = c.rx[i] as number;
+  out.y = c.ry[i] as number;
+  out.z = c.rz[i] as number;
+  out.hx = c.rhx[i] as number;
+  out.hy = c.rhy[i] as number;
+  out.hz = c.rhz[i] as number;
+  out.axis = c.axis[i] as number;
+  out.phi = c.rphi[i] as number;
+  out.rest = true;
+  return out;
+}
+
+/** Landing search step, s, then bisection to well under a millimetre. */
+const LAND_STEP_S = 0.05;
+
+/** The smallest t ≥ 0 with y0 − v·t − ½·g·t² ≤ level (y0 > level), or
+ * Infinity when it never gets there (g = 0 and v ≤ 0). */
+function dropTime(y0: number, v: number, g: number, level: number): number {
+  const d = y0 - level;
+  if (d <= 0) return 0;
+  if (g <= 0) return v > 0 ? d / v : Number.POSITIVE_INFINITY;
+  return (-v + Math.sqrt(v * v + 2 * g * d)) / g;
+}
+
+/** The range of a box's vertical half extent over tilts |φ| ≤ `max` about
+ * `axis` (a·cos φ + b·sin φ peaks at atan(b / a)). */
+function extentRange(
+  axis: number,
+  max: number,
+  hx: number,
+  hy: number,
+  hz: number,
+): { lo: number; hi: number } {
+  const b = axis === 0 ? hz : hx;
+  const at0 = hy;
+  const atMax = vertExtent(axis, max, hx, hy, hz);
+  const peak = max >= Math.atan2(b, hy) ? Math.hypot(hy, b) : atMax;
+  return {
+    lo: Math.min(at0, atMax),
+    hi: Math.max(at0, atMax, peak),
+  };
+}
+
+/**
+ * First tau ≥ 0 at which piece `i`'s lowest point reaches `floor`. A DROP
+ * and a ballistic arc fall on a parabola, so the landing lies between the
+ * times its centre reaches floor + the largest and the smallest vertical
+ * half extent its tilt allows: bracket there, step through the bracket (a
+ * spinning piece can touch, lift and touch again) and bisect. A swing is
+ * stepped from its start.
+ */
 function landingTime(c: Collapse, i: number, floor: number): number {
   const pose = blankPose();
   const hx = c.hx[i] as number;
@@ -848,32 +1218,253 @@ function landingTime(c: Collapse, i: number, floor: number): number {
   const gap = (tau: number) => {
     flightAt.tau = tau;
     flight(c, i, pose);
-    return pose.y - vertExtent(axis, pose.phi, hx, hy, hz) - floor;
+    return pose.y - vertExtent(axis, pose.phi, hx, pose.hy, hz) - floor;
   };
   if (gap(0) <= 0) return 0;
-  const step = 0.02;
-  let lo = 0;
-  let hi = step;
-  // Free fall from the tallest tower lands in well under 10 s.
-  while (gap(hi) > 0 && hi < 60) {
-    lo = hi;
-    hi += step;
+  const k1 = c.crush[i] as number;
+  if (k1 > 0) {
+    // A crushed storey lands once its base, crushed, has dropped to the
+    // floor: a parabola from the end of its crush.
+    const base = (c.oy[i] as number) - hy;
+    const v1 = (c.v0[i] as number) + (c.dg[i] as number) * k1;
+    return k1 + dropTime(base, v1, c.dg[i] as number, floor);
   }
-  for (let k = 0; k < 30; k++) {
-    const mid = (lo + hi) / 2;
-    if (gap(mid) > 0) lo = mid;
-    else hi = mid;
+  const search = (from: number, to: number): number => {
+    let lo = from;
+    let hi = Math.min(to, from + LAND_STEP_S);
+    while (gap(hi) > 0) {
+      if (hi >= to) return Number.NaN;
+      lo = hi;
+      hi = Math.min(to, hi + LAND_STEP_S);
+    }
+    for (let k = 0; k < 26; k++) {
+      const mid = (lo + hi) / 2;
+      if (gap(mid) > 0) lo = mid;
+      else hi = mid;
+    }
+    return hi;
+  };
+  // Nothing in this model falls for a minute: the backstop of the searches.
+  const LAST = 60;
+  if (c.mode[i] === MODE_DROP) {
+    const tilt = Math.abs(c.tilt[i] as number);
+    const r = extentRange(axis, tilt, hx, hy, hz);
+    const y0 = c.oy[i] as number;
+    const v = c.v0[i] as number;
+    const g = c.dg[i] as number;
+    const from = dropTime(y0, v, g, floor + r.hi);
+    const to = Math.min(LAST, dropTime(y0, v, g, floor + r.lo) + LAND_STEP_S);
+    const t = search(Math.min(from, to), to);
+    return Number.isNaN(t) ? search(to, LAST) : t;
   }
-  return hi;
+  const tb = c.hbreak[i] as number;
+  const swing = search(0, Math.min(tb, LAST));
+  if (!Number.isNaN(swing)) return swing;
+  // Ballistic from tb: y = by + vy·dt − ½·G·dt² (vy may point up).
+  const r = Math.hypot(hx, hy, hz);
+  const lo = Math.min(hx, hy, hz);
+  const by = c.by[i] as number;
+  const vy = -(c.vy[i] as number);
+  const from = tb + dropTime(by, vy, G, floor + r);
+  const to = Math.min(LAST, tb + dropTime(by, vy, G, floor + lo) + LAND_STEP_S);
+  const t = search(Math.max(tb, Math.min(from, to)), to);
+  return Number.isNaN(t) ? search(Math.min(tb, LAST), LAST) : t;
 }
 
 /** D8: gap between a toppled building's fall-side face and its rubble, m. */
 const REST_CLEAR = 0.3;
 
-/** Per-event deterministic stream: the event id and the chunk, never a
- * position. */
-const pieceRand = (id: number, chunk: number) =>
-  mulberry32((Math.imul(id + 1, 0x9e3779b1) ^ chunk) >>> 0);
+/** A small integer hash of (a, b, c) → a mulberry32 stream. */
+const streamOf = (a: number, b: number, c: number) =>
+  mulberry32(
+    (Math.imul(a + 1, 0x9e3779b1) ^
+      Math.imul(b + 0x632be5ab, 0x85ebca6b) ^
+      Math.imul(c + 7, 0xc2b2ae35)) >>>
+      0,
+  );
+
+/** Per-event deterministic stream: the event id, the chunk and the piece's
+ * index in it — never a position. */
+const pieceRand = (id: number, chunk: number, sub: number) =>
+  streamOf(id, chunk, sub);
+
+/** One piece as it stood: the chunk it came from, its tier and exposed
+ * faces, centre (relative to the collapse's centre) and half extents; its
+ * role, whether it is its solid's chain probe (and the solid's volume),
+ * its index in the chunk, and — a sheet — the DIR_* it peels toward. */
+interface RawPiece {
+  chunk: number;
+  tier: number;
+  cut: number;
+  x: number;
+  y: number;
+  z: number;
+  hx: number;
+  hy: number;
+  hz: number;
+  role: number;
+  rep: number;
+  vol: number;
+  sub: number;
+  face: number;
+}
+
+/** CUT_* bit of each DIR_* face (−x, +x, −z, +z) and of its opposite. */
+const FACE_CUT = [CUT_NEG_X, CUT_POS_X, CUT_NEG_Z, CUT_POS_Z] as const;
+const BACK_CUT = [CUT_POS_X, CUT_NEG_X, CUT_POS_Z, CUT_NEG_Z] as const;
+
+/**
+ * D10 pre-fracture: one chunk solid (centre-relative extents) as storey
+ * slabs, maybe a facade sheet off the building's outline and maybe a column
+ * segment — what falls instead of one 20 × 12 × 20 m block. Pure in the
+ * building's shape and the chunk (never the event), so a tower always
+ * breaks along the same lines. The pieces tile the solid (the column sits
+ * inside the slabs, inset, like the steel in the concrete), so the standing
+ * pose looks exactly like the chunk did.
+ */
+function fracture(
+  b: Building,
+  s: { x0: number; x1: number; y0: number; y1: number; z0: number; z1: number },
+  solidCut: number,
+  tier: number,
+  chunk: number,
+  solid: number,
+  out: RawPiece[],
+): void {
+  let cut = solidCut;
+  const rand = streamOf(chunk, solid, 0x0d10);
+  const sheetRoll = rand();
+  const faceRoll = rand();
+  const columnRoll = rand();
+  const cornerRoll = rand();
+  const g0 = tierGrids(b)[0] as TierGrid;
+  const h = s.y1 - s.y0;
+  const r = { ...s };
+  const vol = (s.x1 - s.x0) * h * (s.z1 - s.z0);
+  let sub = 0;
+  let sheet: RawPiece | null = null;
+  // A facade sheet: an original face on the street outline, wide enough to
+  // leave a slab behind it.
+  if (sheetRoll < COLLAPSE_SHEET_SHARE && h >= COLLAPSE_SLAB_STOREY) {
+    const T = COLLAPSE_SHEET_THICK;
+    const faces: number[] = [];
+    const wide = s.x1 - s.x0 >= 2 * T + 2;
+    const deep = s.z1 - s.z0 >= 2 * T + 2;
+    if (wide && !(cut & CUT_NEG_X) && s.x0 <= -g0.width / 2 + 0.5)
+      faces.push(DIR_NEG_X);
+    if (wide && !(cut & CUT_POS_X) && s.x1 >= g0.width / 2 - 0.5)
+      faces.push(DIR_POS_X);
+    if (deep && !(cut & CUT_NEG_Z) && s.z0 <= -g0.depth / 2 + 0.5)
+      faces.push(DIR_NEG_Z);
+    if (deep && !(cut & CUT_POS_Z) && s.z1 >= g0.depth / 2 - 0.5)
+      faces.push(DIR_POS_Z);
+    if (faces.length > 0) {
+      const face = faces[Math.floor(faceRoll * faces.length)] as number;
+      const box = { ...r };
+      if (face === DIR_NEG_X) {
+        box.x1 = r.x0 + T;
+        r.x0 = box.x1;
+      } else if (face === DIR_POS_X) {
+        box.x0 = r.x1 - T;
+        r.x1 = box.x0;
+      } else if (face === DIR_NEG_Z) {
+        box.z1 = r.z0 + T;
+        r.z0 = box.z1;
+      } else {
+        box.z0 = r.z1 - T;
+        r.z1 = box.z0;
+      }
+      sheet = {
+        chunk,
+        tier,
+        // Its outer face is the facade; its inner face is the building's
+        // insides, now open.
+        cut: (cut | (BACK_CUT[face] as number)) & ~(FACE_CUT[face] as number),
+        x: (box.x0 + box.x1) / 2,
+        y: (box.y0 + box.y1) / 2,
+        z: (box.z0 + box.z1) / 2,
+        hx: (box.x1 - box.x0) / 2,
+        hy: (box.y1 - box.y0) / 2,
+        hz: (box.z1 - box.z0) / 2,
+        role: ROLE_SHEET,
+        // A sheet flies its own path: it probes for itself.
+        rep: 1,
+        vol: (box.x1 - box.x0) * (box.y1 - box.y0) * (box.z1 - box.z0),
+        sub: 0,
+        face,
+      };
+      // What the sheet came off now shows the gutted storeys there.
+      cut |= FACE_CUT[face] as number;
+    }
+  }
+  // Storey slabs, bottom-up.
+  const k = Math.max(1, Math.round(h / COLLAPSE_SLAB_STOREY));
+  const mid = Math.floor(k / 2);
+  for (let j = 0; j < k; j++) {
+    const y0 = r.y0 + (h * j) / k;
+    const y1 = j === k - 1 ? r.y1 : r.y0 + (h * (j + 1)) / k;
+    let c = cut;
+    if (j > 0) c |= CUT_NEG_Y;
+    if (j < k - 1) c |= CUT_POS_Y;
+    out.push({
+      chunk,
+      tier,
+      cut: c,
+      x: (r.x0 + r.x1) / 2,
+      y: (y0 + y1) / 2,
+      z: (r.z0 + r.z1) / 2,
+      hx: (r.x1 - r.x0) / 2,
+      hy: (y1 - y0) / 2,
+      hz: (r.z1 - r.z0) / 2,
+      role: ROLE_SLAB,
+      rep: j === mid ? 1 : 0,
+      vol: j === mid ? vol : 0,
+      sub: sub++,
+      face: -1,
+    });
+  }
+  if (sheet) {
+    sheet.sub = sub++;
+    out.push(sheet);
+  }
+  // A column / I-beam segment in one corner, inset (hidden while it
+  // stands; it is the steel left sticking out of the pile).
+  const side = COLLAPSE_COLUMN_SIDE;
+  if (
+    columnRoll < COLLAPSE_COLUMN_SHARE &&
+    r.x1 - r.x0 >= 4 * side &&
+    r.z1 - r.z0 >= 4 * side &&
+    h >= COLLAPSE_SLAB_STOREY
+  ) {
+    const corner = Math.floor(cornerRoll * 4);
+    const inset = 0.4;
+    const cx = corner & 1 ? r.x1 - inset - side / 2 : r.x0 + inset + side / 2;
+    const cz = corner & 2 ? r.z1 - inset - side / 2 : r.z0 + inset + side / 2;
+    out.push({
+      chunk,
+      tier,
+      cut:
+        CUT_NEG_X |
+        CUT_POS_X |
+        CUT_NEG_Y |
+        CUT_POS_Y |
+        CUT_NEG_Z |
+        CUT_POS_Z |
+        CUT_STEEL,
+      x: cx,
+      y: (s.y0 + s.y1) / 2,
+      z: cz,
+      hx: side / 2,
+      hy: h / 2 - 0.2,
+      hz: side / 2,
+      role: ROLE_COLUMN,
+      rep: 0,
+      vol: 0,
+      sub: sub++,
+      face: -1,
+    });
+  }
+}
 
 /**
  * The debris of one collapse — a pure function of the wire and the city's
@@ -900,23 +1491,42 @@ export function buildCollapse(
   const style: CollapseStyle = wire.s === TOPPLE ? TOPPLE : PANCAKE;
   const dir = style === TOPPLE ? Math.min(3, Math.max(0, wire.d | 0)) : 0;
 
-  // Pieces: each chunk's generated solid volume.
+  // Pieces: each chunk's generated solid volume, pre-fractured.
   const raw: RawPiece[] = [];
   for (const id of chunks) {
-    for (const s of cellSolids(b, chunkTier(id), chunkCell(id))) {
-      raw.push({
-        chunk: id,
-        tier: s.tierIndex,
-        cut: s.cut,
-        x: s.dx,
-        y: s.baseY + s.height / 2,
-        z: s.dz,
-        hx: s.width / 2,
-        hy: s.height / 2,
-        hz: s.depth / 2,
-      });
+    const solids = cellSolids(b, chunkTier(id), chunkCell(id));
+    for (let j = 0; j < solids.length; j++) {
+      const s = solids[j] as SolidBox;
+      fracture(
+        b,
+        {
+          x0: s.dx - s.width / 2,
+          x1: s.dx + s.width / 2,
+          y0: s.baseY,
+          y1: s.baseY + s.height,
+          z0: s.dz - s.depth / 2,
+          z1: s.dz + s.depth / 2,
+        },
+        s.cut,
+        s.tierIndex,
+        id,
+        j,
+        raw,
+      );
     }
   }
+  if (raw.length === 0) return null;
+  let base = Number.POSITIVE_INFINITY;
+  let top = Number.NEGATIVE_INFINITY;
+  for (const p of raw) {
+    base = Math.min(base, p.y - p.hy);
+    top = Math.max(top, p.y + p.hy);
+  }
+  const f = wire.f;
+  const fail =
+    style === PANCAKE && typeof f === "number" && Number.isFinite(f)
+      ? Math.min(top, Math.max(base, Math.round(f) / 10))
+      : base;
   return assembleCollapse(
     raw,
     {
@@ -928,24 +1538,11 @@ export function buildCollapse(
       dir,
       x: b.x,
       z: b.z,
+      fail,
       chunks,
     },
     null,
   );
-}
-
-/** One piece as it stood: the chunk it came from, its tier and exposed
- * faces, centre (relative to the collapse's centre) and half extents. */
-interface RawPiece {
-  chunk: number;
-  tier: number;
-  cut: number;
-  x: number;
-  y: number;
-  z: number;
-  hx: number;
-  hy: number;
-  hz: number;
 }
 
 /** What a Collapse is besides its pieces. */
@@ -958,7 +1555,57 @@ interface CollapseMeta {
   dir: number;
   x: number;
   z: number;
+  fail: number;
   chunks: readonly number[];
+}
+
+/** Rotation axis and sign that tip a top toward DIR_* `d` (signs: +φ about
+ * z tips the top toward −x; +φ about x tips it toward +z). */
+const hingeAxis = (d: number) => (d === DIR_NEG_X || d === DIR_POS_X ? 1 : 0);
+const hingeSign = (d: number) =>
+  d === DIR_POS_X ? -1 : d === DIR_NEG_X ? 1 : d === DIR_POS_Z ? 1 : -1;
+
+/** Break piece `i`'s hinge off at its `hbreak`: centre and velocity there
+ * (ω × r, plus a dropping pivot's own fall), keeping `drift` of the
+ * horizontal part. */
+function breakUp(c: Draft, i: number, drift = 1): void {
+  const axis = c.axis[i] as number;
+  const sign = c.hsign[i] as number;
+  const alpha = c.halpha[i] as number;
+  const tb = c.hbreak[i] as number;
+  const v0 = c.v0[i] as number;
+  const g = c.dg[i] as number;
+  const ang = 0.5 * alpha * tb * tb;
+  const omega = alpha * tb;
+  c.hang[i] = ang;
+  c.homega[i] = omega;
+  const px = c.hpx[i] as number;
+  const py = c.hpy[i] as number;
+  const pz = c.hpz[i] as number;
+  rotate(
+    axis,
+    sign * ang,
+    (c.ox[i] as number) - px,
+    (c.oy[i] as number) - py,
+    (c.oz[i] as number) - pz,
+    rot,
+  );
+  c.bx[i] = px + rot.x;
+  c.by[i] = py + rot.y - v0 * tb - 0.5 * g * tb * tb;
+  c.bz[i] = pz + rot.z;
+  const w = sign * omega;
+  const fall = v0 + g * tb;
+  if (axis === 0) {
+    // k = +x: k × r = (0, −r.z, r.y)
+    c.vx[i] = 0;
+    c.vy[i] = -w * rot.z - fall;
+    c.vz[i] = w * rot.y * drift;
+  } else {
+    // k = +z: k × r = (−r.y, r.x, 0)
+    c.vx[i] = -w * rot.y * drift;
+    c.vy[i] = w * rot.x - fall;
+    c.vz[i] = 0;
+  }
 }
 
 /**
@@ -966,7 +1613,8 @@ interface CollapseMeta {
  * second half of a building section's and (D5) a crane's debris. A topple
  * pivots on the base edge of the pieces on the fall side, or on
  * `pivotEdge` (the fall-axis coordinate) when given: a crane tips over its
- * mast foot, not the tip of its jib.
+ * mast foot, not the tip of its jib (and breaks up all at once — it is one
+ * lattice, not a stack of floors).
  */
 function assembleCollapse(
   raw: readonly RawPiece[],
@@ -986,11 +1634,16 @@ function assembleCollapse(
     dir,
     x: meta.x,
     z: meta.z,
+    fail: meta.fail,
     chunks: meta.chunks,
     n,
     chunk: Int32Array.from(raw, (p) => p.chunk),
     tier: Uint8Array.from(raw, (p) => p.tier),
     cut: Uint8Array.from(raw, (p) => p.cut),
+    role: Uint8Array.from(raw, (p) => p.role),
+    mode: new Uint8Array(n),
+    rep: Uint8Array.from(raw, (p) => p.rep),
+    vol: Float64Array.from(raw, (p) => p.vol),
     ox: Float64Array.from(raw, (p) => p.x),
     oy: Float64Array.from(raw, (p) => p.y),
     oz: Float64Array.from(raw, (p) => p.z),
@@ -1000,6 +1653,19 @@ function assembleCollapse(
     start: f64(),
     axis: new Uint8Array(n),
     tilt: f64(),
+    v0: f64(),
+    dg: f64(),
+    crush: f64(),
+    chy: f64(),
+    lhy: f64(),
+    hpx: f64(),
+    hpy: f64(),
+    hpz: f64(),
+    hsign: f64(),
+    halpha: f64(),
+    hbreak: f64(),
+    hang: f64(),
+    homega: f64(),
     px: 0,
     py: 0,
     pz: 0,
@@ -1039,53 +1705,159 @@ function assembleCollapse(
     base = Math.min(base, (c.oy[i] as number) - (c.hy[i] as number));
     top = Math.max(top, (c.oy[i] as number) + (c.hy[i] as number));
   }
-  /** Rest floor per piece (pancake stacks; a topple lands on the ground). */
+  /** Rest floor per piece (pancake stacks; everything else lands on the
+   * ground). */
   const floor = f64();
+  const rands = raw.map((p) => pieceRand(meta.id, p.chunk, p.sub));
 
   if (style === PANCAKE) {
-    // Floors drop in a cascade: a later start the higher a piece's base,
-    // so nothing overtakes what is under it.
+    // Progressive collapse: the creep, then the upper block lets go and
+    // drives down from the failure height at the column's effective g. A
+    // storey under it is reached when the block — less the storeys already
+    // crushed flat under it in that column (`off`) — comes down to its top;
+    // it is crushed (its top rides the block down, its base holds) to
+    // COLLAPSE_RUBBLE_RATIO of its height, then falls with the column. Each
+    // storey is reached a little sooner than the last: they give way one
+    // after another, faster and faster, and the column never passes
+    // through itself.
+    const gc = COLLAPSE_CRUSH_G * G;
+    const release = lead + COLLAPSE_CREEP_MS / 1000;
+    const failY = meta.fail;
+    const off = f64();
     for (let i = 0; i < n; i++) {
-      const rand = pieceRand(meta.id, c.chunk[i] as number);
-      c.axis[i] = rand() < 0.5 ? 0 : 1;
-      c.tilt[i] = (rand() * 2 - 1) * COLLAPSE_PANCAKE_TILT;
       const bottom = (c.oy[i] as number) - (c.hy[i] as number);
-      c.start[i] =
-        lead +
-        ((bottom - base) / CHUNK_FLOOR) * (COLLAPSE_BAND_STAGGER_MS / 1000);
+      if (bottom >= failY - 1e-6) continue;
+      const top = (c.oy[i] as number) + (c.hy[i] as number);
+      for (let k = 0; k < n; k++) {
+        if (k === i || c.role[k] !== ROLE_SLAB) continue;
+        const kb = (c.oy[k] as number) - (c.hy[k] as number);
+        const kt = (c.oy[k] as number) + (c.hy[k] as number);
+        if (kb >= failY - 1e-6 || kt <= top + 1e-6) continue;
+        if (
+          Math.min(
+            (c.ox[i] as number) + (c.hx[i] as number),
+            (c.ox[k] as number) + (c.hx[k] as number),
+          ) -
+            Math.max(
+              (c.ox[i] as number) - (c.hx[i] as number),
+              (c.ox[k] as number) - (c.hx[k] as number),
+            ) <=
+            1e-6 ||
+          Math.min(
+            (c.oz[i] as number) + (c.hz[i] as number),
+            (c.oz[k] as number) + (c.hz[k] as number),
+          ) -
+            Math.max(
+              (c.oz[i] as number) - (c.hz[i] as number),
+              (c.oz[k] as number) - (c.hz[k] as number),
+            ) <=
+            1e-6
+        ) {
+          continue;
+        }
+        off[i] =
+          (off[i] as number) + 2 * (c.hy[k] as number) * COLLAPSE_RUBBLE_RATIO;
+      }
+    }
+    for (let i = 0; i < n; i++) {
+      const rand = rands[i] as () => number;
+      const role = c.role[i] as number;
+      const hx = c.hx[i] as number;
+      const hz = c.hz[i] as number;
+      const axis = rand() < 0.5 ? 0 : 1;
+      // Slabs drop nearly flat (an edge rises at most ~1 m); a column can
+      // lean as far as today's chunks did.
+      const across = axis === 0 ? hz : hx;
+      const amp =
+        role === ROLE_COLUMN
+          ? COLLAPSE_PANCAKE_TILT
+          : Math.min(COLLAPSE_PANCAKE_TILT, 1 / Math.max(1, across));
+      c.axis[i] = axis;
+      c.tilt[i] = (rand() * 2 - 1) * amp;
+      const pieceTop = (c.oy[i] as number) + (c.hy[i] as number);
+      const bottom = (c.oy[i] as number) - (c.hy[i] as number);
+      const crushed = bottom < failY - 1e-6;
+      // How far the block has come down when it reaches this piece.
+      const reach = crushed
+        ? Math.max(0, failY - (off[i] as number) - pieceTop)
+        : 0;
+      c.start[i] = release + Math.sqrt((2 * reach) / gc);
+      c.v0[i] = Math.sqrt(2 * gc * reach);
+      c.dg[i] = gc;
+      c.mode[i] = MODE_DROP;
+      if (crushed && role === ROLE_SLAB) {
+        const h = 2 * (c.hy[i] as number);
+        const flat = h * COLLAPSE_RUBBLE_RATIO;
+        c.crush[i] =
+          Math.sqrt((2 * (reach + h - flat)) / gc) -
+          Math.sqrt((2 * reach) / gc);
+        c.chy[i] = flat / 2;
+        c.tilt[i] = 0;
+      }
+      if (role === ROLE_SHEET) {
+        // A facade sheet peels outward off its own base edge as it goes,
+        // that edge dropping with the storeys behind it.
+        const face = (raw[i] as RawPiece).face;
+        const ax = hingeAxis(face);
+        c.mode[i] = MODE_HINGE;
+        c.axis[i] = ax;
+        c.tilt[i] = 0;
+        c.hsign[i] = hingeSign(face);
+        c.hpx[i] =
+          face === DIR_POS_X
+            ? (c.ox[i] as number) + hx
+            : face === DIR_NEG_X
+              ? (c.ox[i] as number) - hx
+              : (c.ox[i] as number);
+        c.hpy[i] = bottom;
+        c.hpz[i] =
+          face === DIR_POS_Z
+            ? (c.oz[i] as number) + hz
+            : face === DIR_NEG_Z
+              ? (c.oz[i] as number) - hz
+              : (c.oz[i] as number);
+        c.halpha[i] = Math.min(
+          COLLAPSE_TOPPLE_ALPHA_MAX,
+          Math.max(
+            COLLAPSE_TOPPLE_ALPHA_MIN,
+            (COLLAPSE_TOPPLE_K * G) / Math.max(1, 2 * (c.hy[i] as number)),
+          ),
+        );
+        c.hbreak[i] = Math.sqrt(
+          (2 * COLLAPSE_SHEET_BREAK) / (c.halpha[i] as number),
+        );
+        breakUp(c, i, COLLAPSE_SHEET_DRIFT);
+      }
     }
     // Stack: bottom-up, each slab rests on the highest slab already placed
-    // under its (untilted) footprint — pure geometry, no trig.
+    // under its (untilted) footprint — pure geometry, no trig. Sheets land
+    // in the street and columns stand in the pile: neither carries anything.
     const order = [...Array(n).keys()].sort(
       (p, q) =>
         (c.oy[p] as number) -
           (c.hy[p] as number) -
           ((c.oy[q] as number) - (c.hy[q] as number)) || p - q,
     );
+    const placed: number[] = [];
     for (let a = 0; a < n; a++) {
       const i = order[a] as number;
+      const role = c.role[i] as number;
+      if (role === ROLE_SHEET) continue;
       let y = 0;
-      for (let k = 0; k < a; k++) {
-        const j = order[k] as number;
+      const ix0 = (c.ox[i] as number) - (c.hx[i] as number);
+      const ix1 = (c.ox[i] as number) + (c.hx[i] as number);
+      const iz0 = (c.oz[i] as number) - (c.hz[i] as number);
+      const iz1 = (c.oz[i] as number) + (c.hz[i] as number);
+      for (let k = 0; k < placed.length; k++) {
+        const j = placed[k] as number;
         const overlapX =
-          Math.min(
-            (c.ox[i] as number) + (c.hx[i] as number),
-            (c.ox[j] as number) + (c.hx[j] as number),
-          ) -
-          Math.max(
-            (c.ox[i] as number) - (c.hx[i] as number),
-            (c.ox[j] as number) - (c.hx[j] as number),
-          );
+          Math.min(ix1, (c.ox[j] as number) + (c.hx[j] as number)) -
+          Math.max(ix0, (c.ox[j] as number) - (c.hx[j] as number));
+        if (overlapX <= 1e-6) continue;
         const overlapZ =
-          Math.min(
-            (c.oz[i] as number) + (c.hz[i] as number),
-            (c.oz[j] as number) + (c.hz[j] as number),
-          ) -
-          Math.max(
-            (c.oz[i] as number) - (c.hz[i] as number),
-            (c.oz[j] as number) - (c.hz[j] as number),
-          );
-        if (overlapX > 1e-6 && overlapZ > 1e-6) {
+          Math.min(iz1, (c.oz[j] as number) + (c.hz[j] as number)) -
+          Math.max(iz0, (c.oz[j] as number) - (c.hz[j] as number));
+        if (overlapZ > 1e-6) {
           y = Math.max(
             y,
             (floor[j] as number) +
@@ -1094,6 +1866,7 @@ function assembleCollapse(
         }
       }
       floor[i] = y;
+      if (role === ROLE_SLAB) placed.push(i);
     }
   } else {
     // Topple: the section tips over its base edge on the weak side.
@@ -1106,10 +1879,8 @@ function assembleCollapse(
       edge = positive ? Math.max(edge, o + h) : Math.min(edge, o - h);
     }
     if (pivotEdge !== null) edge = pivotEdge;
-    // Falling along x turns about z, along z about x. Signs: +φ about z
-    // tips the top toward −x; +φ about x tips it toward +z.
-    const axis = xAxisFall ? 1 : 0;
-    c.sign = xAxisFall ? (positive ? -1 : 1) : positive ? 1 : -1;
+    const axis = hingeAxis(dir);
+    c.sign = hingeSign(dir);
     c.px = xAxisFall ? edge : 0;
     c.py = base;
     c.pz = xAxisFall ? 0 : edge;
@@ -1120,43 +1891,48 @@ function assembleCollapse(
         (COLLAPSE_TOPPLE_K * G) / Math.max(1, top - base),
       ),
     );
-    c.tBreak = Math.sqrt((2 * COLLAPSE_TOPPLE_BREAK) / c.alpha);
-    c.omega = c.alpha * c.tBreak;
+    c.omega = c.alpha * Math.sqrt((2 * COLLAPSE_TOPPLE_BREAK) / c.alpha);
+    let latest = 0;
     for (let i = 0; i < n; i++) {
+      const rand = rands[i] as () => number;
       c.axis[i] = axis;
       c.start[i] = lead;
-      // Break-up: centre on the swing, velocity ω (k × r) for the spin.
-      const phi = c.sign * COLLAPSE_TOPPLE_BREAK;
-      rotate(
-        axis,
-        phi,
-        (c.ox[i] as number) - c.px,
-        (c.oy[i] as number) - c.py,
-        (c.oz[i] as number) - c.pz,
-        rot,
-      );
-      c.bx[i] = c.px + rot.x;
-      c.by[i] = c.py + rot.y;
-      c.bz[i] = c.pz + rot.z;
-      const w = c.sign * c.omega;
-      if (axis === 0) {
-        // k = +x: k × r = (0, −r.z, r.y)
-        c.vx[i] = 0;
-        c.vy[i] = -w * rot.z;
-        c.vz[i] = w * rot.y;
-      } else {
-        // k = +z: k × r = (−r.y, r.x, 0)
-        c.vx[i] = -w * rot.y;
-        c.vy[i] = w * rot.x;
-        c.vz[i] = 0;
+      c.mode[i] = MODE_HINGE;
+      c.hpx[i] = c.px;
+      c.hpy[i] = c.py;
+      c.hpz[i] = c.pz;
+      c.hsign[i] = c.sign;
+      c.halpha[i] = c.alpha;
+      // The section bends as it swings: its top breaks off first, its base
+      // at today's angle (so nothing new swings over a stump). A crane is
+      // one lattice and goes all at once.
+      let brk = COLLAPSE_TOPPLE_BREAK;
+      if (pivotEdge === null && top > base) {
+        const h01 = Math.min(
+          1,
+          Math.max(
+            0,
+            ((c.oy[i] as number) - (c.hy[i] as number) - base) / (top - base),
+          ),
+        );
+        brk -=
+          (COLLAPSE_TOPPLE_BREAK - COLLAPSE_TOPPLE_BREAK_TOP) *
+          h01 *
+          (0.75 + 0.25 * rand());
       }
+      c.hbreak[i] = Math.sqrt((2 * brk) / c.alpha);
+      latest = Math.max(latest, c.hbreak[i] as number);
+      breakUp(c, i);
     }
+    c.tBreak = latest;
   }
 
   // Landing and rest, per piece.
   const pose = blankPose();
   let end = 0;
   for (let i = 0; i < n; i++) {
+    const rand = rands[i] as () => number;
+    const role = c.role[i] as number;
     const land = landingTime(c, i, floor[i] as number);
     c.land[i] = land;
     flightAt.tau = land;
@@ -1165,38 +1941,81 @@ function assembleCollapse(
     c.ly[i] = pose.y;
     c.lz[i] = pose.z;
     c.lphi[i] = pose.phi;
+    c.lhy[i] = pose.hy;
     const quarter = Math.round(pose.phi / HALF_PI);
     const odd = Math.abs(quarter) % 2 === 1;
     const axis = c.axis[i] as number;
     const hx = c.hx[i] as number;
     const hy = c.hy[i] as number;
     const hz = c.hz[i] as number;
-    const slab = 2 * hy * COLLAPSE_RUBBLE_RATIO;
-    c.rphi[i] = quarter * HALF_PI;
-    // The local axis that ends up vertical is squashed to the slab.
+    // The local axis that ends up vertical is squashed (a column keeps half
+    // its height; nothing gets thicker than it was).
+    const ratio =
+      role === ROLE_COLUMN ? COLLAPSE_COLUMN_RUBBLE : COLLAPSE_RUBBLE_RATIO;
+    const upright = odd ? (axis === 1 ? hx : hz) : hy;
+    const slab = Math.min(2 * upright, 2 * hy * ratio);
     c.rhx[i] = odd && axis === 1 ? slab / 2 : hx;
     c.rhy[i] = odd ? hy : slab / 2;
     c.rhz[i] = odd && axis === 0 ? slab / 2 : hz;
+    // D10 slump: rubble settles a little askew about the axis it fell on —
+    // the far edge of a slab rises at most COLLAPSE_SLUMP_RISE; a column
+    // stub leans like the steel left standing in a pile.
+    const across = odd
+      ? (c.rhy[i] as number)
+      : axis === 0
+        ? (c.rhz[i] as number)
+        : (c.rhx[i] as number);
+    const sgn = rand() < 0.5 ? -1 : 1;
+    const slump =
+      role === ROLE_COLUMN && !odd
+        ? sgn * COLLAPSE_COLUMN_LEAN * (0.4 + 0.6 * rand())
+        : sgn *
+          rand() *
+          Math.min(
+            COLLAPSE_SLUMP_MAX,
+            COLLAPSE_SLUMP_RISE / Math.max(1, across),
+          );
+    const phi = quarter * HALF_PI + slump;
+    c.rphi[i] = phi;
+    const cs = Math.abs(Math.cos(phi));
+    const sn = Math.abs(Math.sin(phi));
+    const rhx = c.rhx[i] as number;
+    const rhy = c.rhy[i] as number;
+    const rhz = c.rhz[i] as number;
+    // World AABB of the slumped rest box.
+    c.ax[i] = axis === 1 ? cs * rhx + sn * rhy : rhx;
+    c.ay[i] = vertExtent(axis, phi, rhx, rhy, rhz);
+    c.az[i] = axis === 0 ? sn * rhy + cs * rhz : rhz;
     c.rx[i] = pose.x;
-    c.ry[i] = (floor[i] as number) + slab / 2;
+    c.ry[i] = (floor[i] as number) + (c.ay[i] as number);
     c.rz[i] = pose.z;
-    // World AABB of the rest box: a quarter turn swaps two extents.
-    c.ax[i] = odd && axis === 1 ? hy : (c.rhx[i] as number);
-    c.ay[i] = slab / 2;
-    c.az[i] = odd && axis === 0 ? hy : (c.rhz[i] as number);
     // D8: a toppled building's rubble never comes to rest back over its own
     // footprint (behind the pivot edge) — the stump stands there, and rubble
     // lying on a chunk that can later be shot away would float. A slow piece
-    // that drops short slides off over the edge as it squashes.
+    // that drops short slides off over the edge as it squashes. D10: a
+    // peeled facade sheet comes to rest out in the street the same way.
+    let fall = -1;
+    let edgeAt = 0;
     if (style === TOPPLE && pivotEdge === null) {
-      const xFall = dir === DIR_NEG_X || dir === DIR_POS_X;
-      const pos = dir === DIR_POS_X || dir === DIR_POS_Z;
+      fall = dir;
+      edgeAt = dir === DIR_NEG_X || dir === DIR_POS_X ? c.px : c.pz;
+    } else if (role === ROLE_SHEET) {
+      fall = (raw[i] as RawPiece).face;
+      edgeAt =
+        fall === DIR_NEG_X || fall === DIR_POS_X
+          ? (c.hpx[i] as number)
+          : (c.hpz[i] as number);
+    }
+    if (fall >= 0) {
+      const xFall = fall === DIR_NEG_X || fall === DIR_POS_X;
+      const pos = fall === DIR_POS_X || fall === DIR_POS_Z;
       const half = (xFall ? c.ax[i] : c.az[i]) as number;
       const at = (xFall ? c.rx[i] : c.rz[i]) as number;
-      const edge = xFall ? c.px : c.pz;
       const back = pos ? at - half : at + half;
-      if (pos ? back < edge + REST_CLEAR : back > edge - REST_CLEAR) {
-        const moved = pos ? edge + REST_CLEAR + half : edge - REST_CLEAR - half;
+      if (pos ? back < edgeAt + REST_CLEAR : back > edgeAt - REST_CLEAR) {
+        const moved = pos
+          ? edgeAt + REST_CLEAR + half
+          : edgeAt - REST_CLEAR - half;
         if (xFall) c.rx[i] = moved;
         else c.rz[i] = moved;
       }
@@ -1204,9 +2023,22 @@ function assembleCollapse(
     end = Math.max(end, (c.start[i] as number) + land + SQUASH_S);
   }
   c.endMs = end * 1000;
+  sweepBounds(c);
+  return c;
+}
 
-  // Bounds: every pose the debris takes (sampled finely, padded by the
-  // distance a piece can cover between samples) and the rest boxes.
+/** Samples of a hinge's swing for the swept bounds. */
+const SWING_SAMPLES = 12;
+
+/**
+ * Everything the debris ever covers (`bounds`) and its rest boxes
+ * (`restBounds`), from the closed-form motion: a DROP is a vertical column
+ * over its piece, a swing is sampled (padded by the furthest a point moves
+ * between samples — an arc never strays further from its chord), a
+ * ballistic arc is bounded by its ends and its apex, and the squash by its
+ * two ends. Every box is padded by the piece's bounding radius.
+ */
+function sweepBounds(c: Draft): void {
   const all = c.bounds;
   all.x0 = all.y0 = all.z0 = Number.POSITIVE_INFINITY;
   all.x1 = all.y1 = all.z1 = Number.NEGATIVE_INFINITY;
@@ -1218,23 +2050,44 @@ function assembleCollapse(
     box.z0 = Math.min(box.z0, z - r);
     box.z1 = Math.max(box.z1, z + r);
   };
-  const step = 0.05;
-  for (let i = 0; i < n; i++) {
-    const r = Math.hypot(
-      c.hx[i] as number,
-      c.hy[i] as number,
-      c.hz[i] as number,
-    );
-    const last = (c.start[i] as number) + (c.land[i] as number) + SQUASH_S;
-    for (let t = 0; t <= last + step; t += step) {
-      piecePose(c, i, c.t0 + t * 1000, pose);
-      grow(all, pose.x, pose.y, pose.z, r + 4);
+  const pose = blankPose();
+  for (let i = 0; i < c.n; i++) {
+    const r =
+      Math.hypot(c.hx[i] as number, c.hy[i] as number, c.hz[i] as number) + 1;
+    const land = c.land[i] as number;
+    grow(all, c.ox[i] as number, c.oy[i] as number, c.oz[i] as number, r);
+    grow(all, c.lx[i] as number, c.ly[i] as number, c.lz[i] as number, r);
+    if (c.mode[i] === MODE_HINGE) {
+      const tb = Math.min(land, c.hbreak[i] as number);
+      let px = c.ox[i] as number;
+      let py = c.oy[i] as number;
+      let pz = c.oz[i] as number;
+      for (let k = 1; k <= SWING_SAMPLES; k++) {
+        flightAt.tau = (tb * k) / SWING_SAMPLES;
+        flight(c, i, pose);
+        const step = Math.hypot(pose.x - px, pose.y - py, pose.z - pz);
+        grow(all, pose.x, pose.y, pose.z, r + step);
+        grow(all, px, py, pz, r + step);
+        px = pose.x;
+        py = pose.y;
+        pz = pose.z;
+      }
+      if (land > tb) {
+        // Ballistic: x and z are linear, y peaks once.
+        const vy = c.vy[i] as number;
+        const apex = vy / G;
+        if (apex > 0 && tb + apex < land) {
+          flightAt.tau = tb + apex;
+          flight(c, i, pose);
+          grow(all, pose.x, pose.y, pose.z, r);
+        }
+      }
     }
   }
   const rest = c.restBounds;
   rest.x0 = rest.y0 = rest.z0 = Number.POSITIVE_INFINITY;
   rest.x1 = rest.y1 = rest.z1 = Number.NEGATIVE_INFINITY;
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < c.n; i++) {
     const x = c.rx[i] as number;
     const y = c.ry[i] as number;
     const z = c.rz[i] as number;
@@ -1244,10 +2097,166 @@ function assembleCollapse(
     rest.y1 = Math.max(rest.y1, y + (c.ay[i] as number));
     rest.z0 = Math.min(rest.z0, z - (c.az[i] as number));
     rest.z1 = Math.max(rest.z1, z + (c.az[i] as number));
+    // The squash slides the landing box to the rest box.
+    const r =
+      Math.hypot(c.hx[i] as number, c.hy[i] as number, c.hz[i] as number) + 1;
+    grow(all, x, y, z, r);
   }
   grow(all, rest.x0, rest.y0, rest.z0, 0);
   grow(all, rest.x1, rest.y1, rest.z1, 0);
-  return c;
+}
+
+// --- D10 floor events --------------------------------------------------------
+
+/** What a floor event is: the failure floor giving way, a storey crushed
+ * by the front, a section breaking up in the air, debris landing. */
+export const BEAT_GIVE = 0;
+export const BEAT_CRUSH = 1;
+export const BEAT_BREAK = 2;
+export const BEAT_LAND = 3;
+
+/** One beat of a collapse — squibs, roars and the ground's jolts key off
+ * these. Position centre-relative (add the collapse's x/z). */
+export interface FloorEvent {
+  /** Ms after the collapse's t0. */
+  t: number;
+  x: number;
+  y: number;
+  z: number;
+  /** 0..1: this beat's share of the biggest one. */
+  size: number;
+  /** BEAT_*. */
+  kind: number;
+}
+
+const floorEventCache = new WeakMap<Collapse, readonly FloorEvent[]>();
+
+/**
+ * D10: `c`'s beats, in time order, at most COLLAPSE_FLOOR_EVENTS_MAX —
+ * pure in the collapse (cached). Each piece contributes its volume to the
+ * moment the front reaches it (a crushed storey), its break-up (a hinge)
+ * and its landing; the failure floor giving way opens the list. Merged
+ * into equal time bins over the collapse's span.
+ */
+export function collapseFloorEvents(c: Collapse): readonly FloorEvent[] {
+  const hit = floorEventCache.get(c);
+  if (hit) return hit;
+  const raw: {
+    t: number;
+    x: number;
+    y: number;
+    z: number;
+    w: number;
+    k: number;
+  }[] = [];
+  const pose = blankPose();
+  let first = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < c.n; i++) {
+    const w =
+      8 * (c.hx[i] as number) * (c.hy[i] as number) * (c.hz[i] as number);
+    const start = (c.start[i] as number) * 1000;
+    first = Math.min(first, start);
+    const x = c.ox[i] as number;
+    const z = c.oz[i] as number;
+    if (c.style === PANCAKE && (c.v0[i] as number) > 0) {
+      raw.push({
+        t: start,
+        x,
+        y: (c.oy[i] as number) + (c.hy[i] as number),
+        z,
+        w,
+        k: BEAT_CRUSH,
+      });
+    }
+    const tb = c.hbreak[i] as number;
+    if (c.mode[i] === MODE_HINGE && tb < (c.land[i] as number)) {
+      raw.push({
+        t: start + tb * 1000,
+        x: c.bx[i] as number,
+        y: c.by[i] as number,
+        z: c.bz[i] as number,
+        w: 0.5 * w,
+        k: BEAT_BREAK,
+      });
+    }
+    piecePose(c, i, Number.POSITIVE_INFINITY, pose);
+    raw.push({
+      t: start + (c.land[i] as number) * 1000,
+      x: pose.x,
+      y: pose.y,
+      z: pose.z,
+      w,
+      k: BEAT_LAND,
+    });
+  }
+  let total = 0;
+  for (const e of raw) total += e.w;
+  raw.push({
+    t: Number.isFinite(first) ? first : 0,
+    x: 0,
+    y: c.fail,
+    z: 0,
+    w: Math.max(1e-6, (0.25 * total) / Math.max(1, COLLAPSE_FLOOR_EVENTS_MAX)),
+    k: BEAT_GIVE,
+  });
+  let t0 = Number.POSITIVE_INFINITY;
+  let t1 = Number.NEGATIVE_INFINITY;
+  for (const e of raw) {
+    t0 = Math.min(t0, e.t);
+    t1 = Math.max(t1, e.t);
+  }
+  // Equal time bins over the span, one set per kind (a beat's height is
+  // that of what it is — a crushed storey is not averaged with a landing).
+  const bins = COLLAPSE_FLOOR_EVENTS_MAX;
+  const width = Math.max(1, (t1 - t0) / bins);
+  type Acc = {
+    t: number;
+    x: number;
+    y: number;
+    z: number;
+    w: number;
+    k: number;
+  };
+  const acc = new Map<number, Acc>();
+  for (const e of raw) {
+    const slot = Math.min(bins - 1, Math.floor((e.t - t0) / width));
+    const key = slot * 4 + e.k;
+    let a = acc.get(key);
+    if (!a) {
+      a = { t: 0, x: 0, y: 0, z: 0, w: 0, k: e.k };
+      acc.set(key, a);
+    }
+    a.t += e.t * e.w;
+    a.x += e.x * e.w;
+    a.y += e.y * e.w;
+    a.z += e.z * e.w;
+    a.w += e.w;
+  }
+  // The biggest COLLAPSE_FLOOR_EVENTS_MAX, always with the failure floor.
+  const all = [...acc.entries()]
+    .sort((p, q) => p[0] - q[0])
+    .map(([, a]) => a)
+    .filter((a) => a.w > 0);
+  const keep = all
+    .slice()
+    .sort(
+      (p, q) =>
+        (q.k === BEAT_GIVE ? 1 : 0) - (p.k === BEAT_GIVE ? 1 : 0) || q.w - p.w,
+    )
+    .slice(0, COLLAPSE_FLOOR_EVENTS_MAX);
+  let big = 0;
+  for (const a of keep) big = Math.max(big, a.w);
+  const out: FloorEvent[] = keep.map((a) => ({
+    t: a.t / a.w,
+    x: a.x / a.w,
+    y: a.y / a.w,
+    z: a.z / a.w,
+    size: a.w / big,
+    kind: a.k,
+  }));
+  out.sort((p, q) => p.t - q.t || p.kind - q.kind);
+  floorEventCache.set(c, out);
+  return out;
 }
 
 // --- D5 crane falls ----------------------------------------------------------
@@ -1323,6 +2332,15 @@ export function buildCraneCollapse(
         hx: axis === 0 ? seg : hx,
         hy: axis === 1 ? seg : hy,
         hz: axis === 2 ? seg : hz,
+        role: ROLE_SLAB,
+        rep: 1,
+        vol:
+          8 *
+          (axis === 0 ? seg : hx) *
+          (axis === 1 ? seg : hy) *
+          (axis === 2 ? seg : hz),
+        sub: raw.length,
+        face: -1,
       });
     }
   }
@@ -1339,6 +2357,7 @@ export function buildCraneCollapse(
       dir,
       x: site.x,
       z: site.z,
+      fail: 0,
       chunks: [],
     },
     ((positive ? 1 : -1) * CRANE_MAST_SIDE) / 2,
@@ -1355,7 +2374,20 @@ export interface CollapseImpact {
   x: number;
   y: number;
   z: number;
+  /** D10: the blast's scale, CHAIN_ENERGY_MIN..MAX — the striking mass's
+   * energy (√(volume · speed²) ÷ CHAIN_ENERGY_REF), clamped. */
+  e: number;
 }
+
+/** D10: an impact's blast scale for `vol` m³ arriving at `speed` m/s. */
+export const impactScale = (vol: number, speed: number): number =>
+  Math.min(
+    CHAIN_ENERGY_MAX,
+    Math.max(
+      CHAIN_ENERGY_MIN,
+      (Math.sqrt(Math.max(0, vol)) * Math.abs(speed)) / CHAIN_ENERGY_REF,
+    ),
+  );
 
 /** Trajectory sampling step for collapseImpacts, s. */
 const IMPACT_STEP_S = 0.1;
@@ -1364,8 +2396,9 @@ const IMPACT_STEP_S = 0.1;
  * D5: where collapse `c`'s falling pieces first drive into ANOTHER
  * building's standing chunks (a crane's debris: any building) — the instant
  * a piece's centre enters a chunk of it that still stands. A per-building
- * AABB reject against the debris' swept bounds, then each piece sampled
- * every IMPACT_STEP_S until it lands. Coalesced: per building at most
+ * AABB reject against the debris' swept bounds, then each probe piece (D10:
+ * one per chunk solid — its pieces fall together — and each sheet) sampled
+ * every IMPACT_STEP_S until it lands; its energy there scales the blast. Coalesced: per building at most
  * CHAIN_IMPACTS_PER_BUILDING impacts at least CHAIN_COALESCE_M apart, and
  * CHAIN_IMPACTS_MAX in all, earliest first. Pure in (c, buildings' shape
  * and damage); the server lands each one as a D2 blast at its instant.
@@ -1391,7 +2424,9 @@ export function collapseImpacts(
   const pose = blankPose();
   const hit = new Set<number>();
   const local: Vec3 = { x: 0, y: 0, z: 0 };
+  const ahead = blankPose();
   for (let p = 0; p < c.n; p++) {
+    if (!c.rep[p]) continue;
     hit.clear();
     const start = c.start[p] as number;
     const land = c.land[p] as number;
@@ -1404,12 +2439,32 @@ export function collapseImpacts(
         local.x = pose.x - n.dx;
         local.y = pose.y;
         local.z = pose.z - n.dz;
+        // D10: the footprint reject before the grid lookup (most samples
+        // of a long topple are nowhere near most of its neighbours).
+        if (
+          local.y > b.height ||
+          Math.abs(local.x) > b.width / 2 ||
+          Math.abs(local.z) > b.depth / 2
+        ) {
+          continue;
+        }
         const at = chunkAt(b, local);
         if (!at || chunkMask(b)[at.tier]?.[at.cell] !== 1) continue;
         if (b.damage?.cells[at.tier]?.[at.cell]) continue;
         hit.add(n.i);
         const w = canonicalize({ x: c.x + pose.x, y: 0, z: c.z + pose.z });
-        found.push({ t: tMs, building: n.i, x: w.x, y: pose.y, z: w.z });
+        piecePose(c, p, tMs + 50, ahead);
+        const speed =
+          Math.hypot(ahead.x - pose.x, ahead.y - pose.y, ahead.z - pose.z) /
+          0.05;
+        found.push({
+          t: tMs,
+          building: n.i,
+          x: w.x,
+          y: pose.y,
+          z: w.z,
+          e: impactScale(c.vol[p] as number, speed),
+        });
       }
     }
   }
@@ -1531,29 +2586,27 @@ export function collideCollapses(
     if (tMs >= c.t0 + c.endMs) {
       if (fallingOnly || outside(c.restBounds, dx, pos.y, dz, radius)) continue;
       for (let i = 0; i < c.n; i++) {
-        const ex = Math.max(
-          0,
-          Math.abs(dx - (c.rx[i] as number)) - (c.ax[i] as number),
-        );
-        const ey = Math.max(
-          0,
-          Math.abs(pos.y - (c.ry[i] as number)) - (c.ay[i] as number),
-        );
-        const ez = Math.max(
-          0,
-          Math.abs(dz - (c.rz[i] as number)) - (c.az[i] as number),
-        );
-        if (ex * ex + ey * ey + ez * ez <= radius * radius) {
+        // The rest box's AABB first, then (D10: rubble lies slumped) the
+        // oriented box itself.
+        const ox = dx - (c.rx[i] as number);
+        const oy = pos.y - (c.ry[i] as number);
+        const oz = dz - (c.rz[i] as number);
+        const ex = Math.max(0, Math.abs(ox) - (c.ax[i] as number));
+        const ey = Math.max(0, Math.abs(oy) - (c.ay[i] as number));
+        const ez = Math.max(0, Math.abs(oz) - (c.az[i] as number));
+        if (ex * ex + ey * ey + ez * ez > radius * radius) continue;
+        if (sphereHitsPiece(restPose(c, i, scratchPose), ox, oy, oz, radius)) {
           return { collapse: c, piece: i, falling: false };
         }
       }
       continue;
     }
     if (outside(c.bounds, dx, pos.y, dz, radius)) continue;
+    poseClock.tMs = tMs;
     for (let i = 0; i < c.n; i++) {
-      const p = piecePose(c, i, tMs, scratchPose);
+      const p = poseNow(c, i, scratchPose);
       if (fallingOnly && p.rest) continue;
-      const bound = Math.hypot(p.hx, p.hy, p.hz) + radius;
+      const bound = Math.sqrt(p.hx * p.hx + p.hy * p.hy + p.hz * p.hz) + radius;
       const ox = dx - p.x;
       const oy = pos.y - p.y;
       const oz = dz - p.z;

@@ -952,8 +952,12 @@ describe("long-sim regressions", () => {
     // Vacuity guard — a furball with no gunfire would make the ratio trivial.
     expect(shot).toBeGreaterThan(0);
     expect(crashed / (crashed + shot)).toBeLessThan(0.4);
-    // Long seeded sims: generous timeout so a loaded CI box cannot flake it.
-  }, 30_000);
+    // Long seeded sim: 33 bots × 200 s. Alone it takes ~25 s on a box at
+    // load ~150 (main and this branch alike), and ~50 s with the whole suite
+    // contending — over the 30 s it used to carry. The global testTimeout
+    // (vitest.config.ts: 60 s of flake headroom, still failing a hang) is the
+    // budget for exactly this.
+  });
 });
 
 // --- L2 (ANGE-1PVSJE): bots and the moving obstacles ---

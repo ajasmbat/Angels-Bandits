@@ -649,9 +649,9 @@ void main() {
   float baseFade = smoothstep(4.0, 24.0, h);
   float camFade = smoothstep(size * 0.35, size * 1.2, dist);
   vAlpha = aB.z * env * baseFade * camFade;
-  // L7b: the fire lights the column's lower ~45 % (the reference's orange
+  // L7b: the fire lights the column's lower ~30 % (the reference's orange
   // plume bases), fading up into the dark.
-  vGlow = aB.z * (1.0 - smoothstep(0.0, 0.35 * H, h)) * (0.35 + 0.65 * exp(-h / 60.0));
+  vGlow = aB.z * (1.0 - smoothstep(0.0, 0.3 * H, h)) * (0.35 + 0.65 * exp(-h / 60.0));
   vRise = ph;
   vSeed = aB.y;
   #include <fog_vertex>
@@ -686,7 +686,7 @@ void main() {
   albedo += vec3(0.035, 0.038, 0.047) * smoothstep(0.1, 0.5, vCornerY) * vRise;
   float under = smoothstep(0.3, -0.5, vCornerY);
   float flick = 0.85 + 0.15 * sin(6.2832 * (uFirePhase.x + vSeed));
-  vec3 glow = vec3(1.0, 0.2, 0.03) * (1.3 * vGlow * (0.25 + 0.75 * under) * flick)
+  vec3 glow = vec3(1.0, 0.2, 0.03) * (1.3 * vGlow * (0.12 + 0.88 * under * under) * flick)
     + vec3(0.025, 0.006, 0.0015) * uSmokeBurn * (1.0 - vRise);
   gl_FragColor = vec4(albedo + glow, a);
   #include <fog_fragment>
@@ -783,7 +783,9 @@ void main() {
   // Never under 1.5 px (a sub-pixel point sparkles): fade it instead.
   col.a *= clamp(px * px / 2.25, 0.0, 1.0);
   gl_PointSize = clamp(px, 1.5, 48.0);
-  if (col.a < 0.004) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+  // Never a point at (or behind) the eye: its clip w is ~0, and a
+  // rasteriser fed that point can stall (the camera's own air sits there).
+  if (col.a < 0.004 || mvPosition.z > -0.5) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
   vCol = col;
   vRot = rot;
   vKind = aKind;

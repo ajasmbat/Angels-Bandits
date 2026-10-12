@@ -1327,6 +1327,35 @@ export const VIEWS = [
   // `__ab.inferno()` is logged for each: sites, draws, floating = 0).
   referenceView("reference-hero"),
   referenceView("reference-inferno", { stage: INFERNO_STAGE }),
+  // L7b readability in the inferno: the normal chase camera at 190 m over
+  // reference-inferno's burning blocks, an enemy fighter 110 m ahead, our
+  // guns firing at it (`guns`: the trigger held through the shot) — the
+  // tracers, the bandit, the pipper and the HUD must all still read.
+  {
+    name: "inferno-dogfight",
+    x: 1250,
+    z: 1460,
+    y: 190,
+    yaw: 0,
+    pitch: -0.12,
+    timeMs: 1_790_000_000_000,
+    weather: "clear",
+    guns: true,
+    raf: true,
+    stage: INFERNO_STAGE,
+    showcase: [
+      {
+        kind: "fighter",
+        x: 1250,
+        y: 180,
+        z: 1350,
+        yaw: 0.15,
+        pitch: -0.05,
+        roll: 0.3,
+        speed: 70,
+      },
+    ],
+  },
   // L7b: high-overview's pose over a burning district ~400 m ahead (a
   // seeded third of the chunks within 300 m of it chewed, burn 0.9) — the
   // smoke columns climbing to the deck seen from the standard overview.

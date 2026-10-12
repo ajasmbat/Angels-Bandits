@@ -937,7 +937,7 @@ export const FEATURE_TIERS: readonly {
     medium: "reduced",
     low: "reduced",
     mobile: "reduced",
-    note: "flame sites 100 / 75 / 50 / 30 % (chaosFx): at most 80 sites × 3 cards, the nearest within 760 m, faded out at the cap — one instanced draw; the air (1600 embers/ash/debris × chaosFx) one points draw, off on Mobile (its peak-chaos scene is at the Mobile draw ceiling)",
+    note: "flame sites 100 / 75 / 50 / 30 % (chaosFx): at most 220 sites × 3 cards (floors, window rows, rubble fields), picked by view and spread over the burning buildings within 760 m, faded out at the cap — one instanced draw; the air (480 embers and ash round the camera + 1600 embers/ash/debris round the fires, × chaosFx) one points draw, off on Mobile (its peak-chaos scene is at the Mobile draw ceiling)",
   },
   {
     feature: "L7 inferno — smoke columns",
@@ -945,7 +945,7 @@ export const FEATURE_TIERS: readonly {
     medium: "full",
     low: "reduced",
     mobile: "reduced",
-    note: "columns 100 / 100 / 50 / 34 % (smokeColumns), each puff grown by 1/√share so the columns hide the same sky on every tier (rule 2 for the fill); Mobile drops the billowing edge (a uniform); one instanced draw",
+    note: "columns 100 / 100 / 50 / 34 % (smokeColumns) of at most 20 × 16 puffs, each puff grown by 1/√share so the columns hide the same sky on every tier (rule 2 for the fill); Mobile drops the billowing edge (a uniform); one instanced draw",
   },
   {
     feature:
@@ -954,7 +954,7 @@ export const FEATURE_TIERS: readonly {
     medium: "full",
     low: "full",
     mobile: "full",
-    note: "the look of solid things and of the air: shader terms and uniforms on the city, ground, fog and cloud deck, identical on every tier, no draw",
+    note: "the look of solid things and of the air: shader terms and uniforms on the city (gutted frames, ember rims, burning wreckage), the ground, the fog, the sky dome and the cloud deck (the burning districts' light and glow), identical on every tier, no draw",
   },
   {
     feature: "S5 fog banks (drifting haze between the towers)",

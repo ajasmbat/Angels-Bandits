@@ -503,7 +503,15 @@ try {
         { timeout: 120000, polling: "raf" },
       );
     }
+    if (v.guns) {
+      // L7b: hold the trigger until a burst is in the air (the shot below
+      // is taken with it still held).
+      await page.mouse.move(640, 360);
+      await page.mouse.down();
+      await sleep(1500);
+    }
     await page.screenshot({ path: `${OUT}/${v.name}.png`, timeout: 180000 });
+    if (v.guns) await page.mouse.up();
     if (PROBE) {
       // Stormlit L8 (AB_GALLERY_PROBE=name,name): the pre-bloom linear HDR
       // luma of what those systems add (one frozen frame rendered without

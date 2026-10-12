@@ -160,12 +160,12 @@ const FOG_PARS = /* glsl */ `
 uniform float fogNear;
 uniform float fogFar;
 ${AB_FOG_GLSL}
-// Additive fog: attenuate, never lerp toward the fog colour. The linear fog
-// in full (the torus's occlusion guarantee); the street-level haze only by
+// Additive fog: attenuate, never lerp toward the fog colour. The (L1-shaped)
+// linear fog in full (the torus's occlusion guarantee); the street-level haze only by
 // HAZE_PASS of its amount — a light source seen through lit mist keeps
 // reading (the lamp pools it replaces were never fogged at all).
 float abAdditiveFog(float depth, float worldY) {
-  float fogFactor = smoothstep(fogNear, fogFar, depth);
+  float fogFactor = abFogFactor(fogNear, fogFar, depth);
   float haze = abHazeAmount(cameraPosition.y, worldY, depth);
   return (1.0 - fogFactor) * (1.0 - ${glsl(HAZE_PASS)} * haze);
 }
@@ -645,7 +645,7 @@ export class FarTraffic {
         .replace(
           "#include <fog_fragment>",
           /* glsl */ `#ifdef USE_FOG
-  gl_FragColor.a *= (1.0 - smoothstep(fogNear, fogFar, vFogDepth)) * (1.0 - ${glsl(HAZE_PASS)} * abHazeAmount(cameraPosition.y, vFogWorldY, vFogDepth));
+  gl_FragColor.a *= (1.0 - abFogFactor(fogNear, fogFar, vFogDepth)) * (1.0 - ${glsl(HAZE_PASS)} * abHazeAmount(cameraPosition.y, vFogWorldY, vFogDepth));
 #endif`,
         );
       // O5: never drawn under 2 px, alpha-paid, faded below 1 px.

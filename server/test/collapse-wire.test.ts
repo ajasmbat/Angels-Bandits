@@ -94,10 +94,10 @@ const until = async (cond: () => boolean, ms: number) => {
   return cond();
 };
 
-/** What a client builds from what it was told: its own city, broken and
- * collapsed exactly as the messages say (the GameSocket's replay). */
-function clientDebris(peer: Peer): CollapseField {
-  const city = generateCity(CITY_SEED);
+/** What a client builds from what it was told: its own city (generated at
+ * its boot), broken and collapsed exactly as the messages say (the
+ * GameSocket's replay). */
+function clientDebris(peer: Peer, city: Building[]): CollapseField {
   const damage = new CityDamage();
   const field = new CollapseField();
   damage.bind(city);
@@ -163,6 +163,11 @@ describe("D3 collapses over the wire", () => {
 
     const a = await connect("Shooter");
     const b = await connect("Witness");
+    // Each client's own city, built as a real client's is: at boot, before
+    // anything breaks — not between the collapse and the fly-in below, where
+    // two city generations (1–2 s each on a loaded runner) ate its window.
+    const cityA = generateCity(CITY_SEED);
+    const cityB = generateCity(CITY_SEED);
     expect(b.welcome.roomId).toBe(a.welcome.roomId);
     // D10: the welcome says which collapse model built what follows.
     expect(a.welcome.cm).toBe(COLLAPSE_MODEL);
@@ -188,8 +193,8 @@ describe("D3 collapses over the wire", () => {
     expect(a.collapses[0]).toEqual(wire);
     expect(wire.b).toBe(target);
     // ...and each builds identical debris from it.
-    const fa = clientDebris(a);
-    const fb = clientDebris(b);
+    const fa = clientDebris(a, cityA);
+    const fb = clientDebris(b, cityB);
     const ca = fa.list[0] as Collapse;
     const cb = fb.list[0] as Collapse;
     expect(ca).toBeDefined();

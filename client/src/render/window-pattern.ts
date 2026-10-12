@@ -846,7 +846,12 @@ float lmAA = max(rPix, max(mAA.y, 1e-4));
 if (lmRole > 0.5 && facade > 0.5) {
   float lmU = winGrid.x;
   float lmV = vMeters.y;
-  if (lmRole > ${glslFloat(LandmarkRole.ARCH_CROWN - 0.5)} && lmRole < ${glslFloat(LandmarkRole.ARCH_CROWN + 0.5)}) {
+  if (lmRole < ${glslFloat(LandmarkRole.DECO_CROWN + 0.5)}) {
+    // A floodlit Art Deco setback: lit piers up the face, brightening
+    // towards the tier top, over the crown wash.
+    float lmPier = abLine(abPeriodic(lmU, 0.0, ${glslFloat(LANDMARK_LIGHT.pierPitch)}), ${glslFloat(LANDMARK_LIGHT.pierHalf)}, lmAA);
+    lmMask = ${glslFloat(LANDMARK_LIGHT.pierGain)} * lmPier * smoothstep(0.1 * vBHeight, vBHeight, lmV);
+  } else if (lmRole > ${glslFloat(LandmarkRole.ARCH_CROWN - 0.5)} && lmRole < ${glslFloat(LandmarkRole.ARCH_CROWN + 0.5)}) {
     // Three rows of nested arches, each row a step narrower — the crown
     // reads as setbacks of radiating arches.
     float rowH = vBHeight / 3.0;
@@ -910,6 +915,11 @@ totalEmissiveRadiance = mix(totalEmissiveRadiance, vLed, max(led, lmMask));
 
 /** L3 landmark light lines, meters (window-pattern roofSurfaceGlsl). */
 export const LANDMARK_LIGHT = {
+  /** Deco crown: lit piers along each face, their half-width, and their
+   * peak share of the LED colour (at the tier top). */
+  pierPitch: 3.4,
+  pierHalf: 0.22,
+  pierGain: 0.85,
   /** Arched crown: the outer arch's half-width as a share of the face run,
    * how much each row above narrows it, the inner arch's radius share, and
    * the two lines' half-widths. */

@@ -31,13 +31,13 @@
 // camera sees a soft gradient creep, never a flicker.
 //
 // Stormlit L5 (low mist):
-//  - The banks sit lower (35–80 m) and PART AROUND THE TOWERS: each puff's
-//    alpha is scaled on the CPU by its clearance from the standing building
-//    boxes around it (buildingClearance — smoothstep(r, r + soft, distance),
-//    so a sprite that could reach a box is already gone: no hard line where
-//    a facade cuts a quad, and no pop, since the distance is continuous).
-//    There is no depth texture to soft-fade against; this is the analytic
-//    equivalent, and steam.ts uses the same helper.
+//  - The banks sit lower (35–80 m) and PART AROUND THE TOWERS: on the CPU
+//    each puff shrinks to fit the gap to the nearest standing building box
+//    (nearestBoxDistance − BANK_FIT_MARGIN), and fades out once it is
+//    squeezed small — so a sprite never reaches a box: no hard line where a
+//    facade cuts a quad, and no pop, since the distance is continuous. There
+//    is no depth texture to soft-fade against; this is the analytic
+//    equivalent (steam.ts fades by clearanceAgainst, the same idea).
 //  - CANYON MIST: strands of small puffs on the street centre lines at
 //    12–40 m (canyonMistLayout), drifting ALONG their street with the
 //    along-street share of the shared air — channelled by the canyon. A
@@ -107,8 +107,11 @@ export const FADE_CLEAR = 25;
 export const FILL_CLAMP = 0.35;
 /** Most planes a frame fades the banks around. */
 export const MAX_FADE_PLANES = 12;
-/** L5: a bank puff fades out over this much clearance beyond its radius, m. */
-export const BANK_PART_SOFT = 12;
+/** L5: a bank puff's sprite stays this far off the nearest building box, m
+ * (it shrinks to fit the gap), and fades out as it shrinks from
+ * BANK_FIT_FADE[1] to BANK_FIT_FADE[0] of its own radius. */
+export const BANK_FIT_MARGIN = 2;
+export const BANK_FIT_FADE = [0.25, 0.5] as const;
 /** L5 vertical squash of a sheet seen side-on (1 = round): banks, mist. */
 const BANK_FLAT = 0.6;
 const MIST_FLAT = 0.5;
@@ -309,41 +312,55 @@ export function canyonMistLayout(seed: number): MistStrand[] {
 }
 
 /**
- * L5: how much of a puff at canonical (x, y, z) with visible radius `r`
- * survives the buildings around it, 0..1 — smoothstep(r, r + soft, d) over
- * the 3×3 blocks around it, d the distance to each STANDING building box
- * (footprint × its standing top, standingProfile — cached per damage
- * version, so a felled tower stops parting the mist). Zero means some box is
- * within the sprite's radius: it is never drawn where a facade could cut it.
- * `count` (optional) adds the boxes tested, for the perf budget.
+ * L5: distance from canonical (x, y, z) to the nearest STANDING building box
+ * in the 3×3 blocks around it, m — `reach` if none is nearer. What a bank
+ * puff shrinks to fit (FogBanks.update): continuous in the position, so a
+ * drifting puff never pops.
  */
-export function buildingClearance(
+export function nearestBoxDistance(
   byBlock: ReadonlyMap<number, readonly Building[]>,
   x: number,
   y: number,
   z: number,
-  r: number,
-  soft: number,
+  reach: number,
   count?: { tests: number },
 ): number {
   const bx0 = Math.floor(x / BLOCK_PITCH);
   const bz0 = Math.floor(z / BLOCK_PITCH);
-  let k = 1;
+  let best = reach;
   for (let i = -1; i <= 1; i++) {
     const bx = (((bx0 + i) % CITY_GRID) + CITY_GRID) % CITY_GRID;
     for (let j = -1; j <= 1; j++) {
       const bz = (((bz0 + j) % CITY_GRID) + CITY_GRID) % CITY_GRID;
       const list = byBlock.get(bx * 1000 + bz);
       if (!list) continue;
-      k = Math.min(k, clearanceAgainst(list, x, y, z, r, soft, count));
-      if (k <= 0) return 0;
+      for (let n = 0; n < list.length; n++) {
+        const b = list[n] as Building;
+        if (count) count.tests++;
+        const ex = Math.abs(wrapDeltaAxis(b.x, x)) - b.width / 2;
+        if (ex >= best) continue;
+        const ez = Math.abs(wrapDeltaAxis(b.z, z)) - b.depth / 2;
+        if (ez >= best) continue;
+        const ey = y - standingProfile(b).top;
+        if (ey >= best) continue;
+        const d = Math.hypot(Math.max(ex, 0), Math.max(ez, 0), Math.max(ey, 0));
+        if (d < best) best = d;
+        if (best <= 0) return 0;
+      }
     }
   }
-  return k;
+  return best;
 }
 
-/** buildingClearance over an explicit list of buildings (steam.ts keeps
- * each vent's neighbours, so a puff tests a handful of boxes). */
+/**
+ * L5: how much of a puff at canonical (x, y, z) with visible radius `r`
+ * survives the buildings in `list`, 0..1 — smoothstep(r, r + soft, d), d its
+ * distance to each STANDING building box (footprint × its standing top,
+ * standingProfile — cached per damage version, so a felled tower stops
+ * counting). Zero means a box is within the sprite: it is never drawn where
+ * a facade could cut it. steam.ts keeps each vent's neighbours, so a puff
+ * tests a handful of boxes. `count` (optional) adds the boxes tested.
+ */
 export function clearanceAgainst(
   list: readonly Building[],
   x: number,
@@ -664,15 +681,22 @@ export class FogBanks {
         const ex = wrapDeltaAxis(cameraPos.x, canon.x);
         const ez = wrapDeltaAxis(cameraPos.z, canon.z);
         if (ex * ex + ez * ez > reach * reach) continue;
-        // L5: part around the towers (0 = a box within the sprite).
-        const part = buildingClearance(
-          this.byBlock,
-          canon.x,
-          canon.y,
-          canon.z,
-          puff.size / 2,
-          BANK_PART_SOFT,
-          this.tests,
+        // L5: part around the towers — shrink to fit the gap to the nearest
+        // standing box (the sprite never reaches it), fade once small.
+        const r = puff.size / 2;
+        const fit = Math.min(
+          r,
+          nearestBoxDistance(
+            this.byBlock,
+            canon.x,
+            canon.y,
+            canon.z,
+            r + BANK_FIT_MARGIN,
+            this.tests,
+          ) - BANK_FIT_MARGIN,
+        );
+        const part = smooth01(
+          (fit / r - BANK_FIT_FADE[0]) / (BANK_FIT_FADE[1] - BANK_FIT_FADE[0]),
         );
         st.bankPuffs++;
         if (part >= 0.5) st.bankKept++;
@@ -683,7 +707,7 @@ export class FogBanks {
         this.put(
           k++,
           p,
-          puff.size,
+          2 * fit,
           bank.tint,
           bank.lit * low,
           PUFF_ALPHA * density * part,

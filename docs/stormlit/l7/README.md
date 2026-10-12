@@ -1,8 +1,11 @@
 # L7 Inferno — before / after / reference
 
-Each sheet is **before (main) | after (L7) | the matching reference**:
-reference 1 (*Stormlit Manhattan*) for `reference-hero`, reference 2
-(*Apocalyptic City Under Fire*) for everything else.
+Each sheet is **before (main) | after (L7) | the matching reference**.
+`reference-hero`, `reference-inferno` and `inferno-gutted` were re-shot after
+L1 (the storm sky, grade and fog) landed: main `9e73a56` against this branch
+merged onto it. The rest are from before that merge (main `56f6197`). The
+reference is reference 1 (*Stormlit Manhattan*) for `reference-hero` and
+reference 2 (*Apocalyptic City Under Fire*) for everything else.
 
 | sheet | what it shows |
 | --- | --- |
@@ -18,8 +21,8 @@ reference 1 (*Stormlit Manhattan*) for `reference-hero`, reference 2
 
 GPU-less Linux box, SwiftShader, render scale 0.75, every view pinned to one
 world instant (`__ab.pinWorld(1 790 000 000 000)`), clear weather, the plane
-held at its pose each frame, both builds — main at `56f6197` and this branch
-on top of it (before D10 merged in) — shot with the same tool. The server ran with
+held at its pose each frame, main and this branch shot with the same tool
+in the same session. The server ran with
 `AB_QUIET_CITY=1` and raised `LIVENESS_TIMEOUT_MS` / `?silence=` — at
 0.3–0.5 fps a slow page is otherwise dropped and its resume's welcome wipes
 the staged destruction mid-capture. On this box the carrier's staging

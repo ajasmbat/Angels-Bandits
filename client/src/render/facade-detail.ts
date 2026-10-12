@@ -1199,7 +1199,10 @@ export function facadeDetailFor(b: Building, seed: number): FacadeDetail {
     // L11, last (no draw): cornice ledges, unless the tower wears a VO3
     // neon outline — its strip runs along that same roof edge.
     if (!roofStyleFor(b).led) {
-      const tone = pickTone(CORNICE_STONE, ((b.width * 7 + b.depth * 3) % 10) / 10);
+      const tone = pickTone(
+        CORNICE_STONE,
+        ((b.width * 7 + b.depth * 3) % 10) / 10,
+      );
       for (const f of faces) cornice(f, tone, boxes);
     }
   }

@@ -943,7 +943,9 @@ export class Inferno {
   setQuality(tier: QualityTier): void {
     const p = QUALITY_PROFILES[tier];
     this.flameShare = Math.max(0.2, p.chaosFx);
-    this.airShare = Math.max(0.15, p.chaosFx);
+    // Mobile drops the air (a draw of pure dressing): its peak-chaos scene
+    // sits at the Mobile draw ceiling already.
+    this.airShare = tier === "mobile" ? 0 : Math.max(0.15, p.chaosFx);
     this.smokeShare = Math.max(0.25, p.smokeColumns);
     this.smokeDetailU.value = p.heatShimmer ? 1 : 0;
   }
@@ -1514,7 +1516,7 @@ export class Inferno {
     }
     this.stats.anchors = na;
     const count =
-      na > 0
+      na > 0 && this.airShare > 0
         ? Math.round(
             AIR_MAX *
               this.airShare *

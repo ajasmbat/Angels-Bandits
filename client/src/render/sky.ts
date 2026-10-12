@@ -121,7 +121,9 @@ export const LIGHT_RIG = {
   ambient: 0.7,
   moon: 2.1,
   glow: 1.0,
-  hemi: 1.3,
+  // L1: the skylight keeps ~30 % of the dust's light against the moon key
+  // (D10's dust darkens with the sky — collapse-d10.test.ts).
+  hemi: 1.45,
 } as const;
 
 /** Tone-mapping exposure — the whole-image lift (ACES filmic). L1 eased it

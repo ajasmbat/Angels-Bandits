@@ -133,8 +133,10 @@ export const BOUNCE_NEON_MIX = 0.55;
  * peak (client/test/facade-palette.test.ts bounds it with the bounce).
  */
 export const UPLIGHT_INTENSITY = 0.62;
-/** e-folding height of an uplight cone, meters above the tier base. */
-export const UPLIGHT_HEIGHT = 22;
+/** e-folding height of an uplight cone, meters above the tier base — well
+ * above the bounce's, so the cones read as floodlit piers climbing past
+ * where the street's spill has faded. */
+export const UPLIGHT_HEIGHT = 40;
 /** Fixture spacing along the facade, meters. */
 export const UPLIGHT_BAY = 9;
 /** Warm white (sodium-free ~3000 K), max component 1. */
@@ -383,7 +385,7 @@ vec3 bounceTint = mix(${glslVec3(BOUNCE_TINTS.sodium)},
 float upZ = vMeters.y;
 float upU = (fract(winGrid.x / ${UPLIGHT_BAY.toFixed(1)}) - 0.5) * ${UPLIGHT_BAY.toFixed(1)};
 float upSpread = 0.6 + 0.35 * max(upZ, 0.0);
-float upScallop = mix(0.55, 0.25 + 0.75 * exp(-(upU * upU) / (upSpread * upSpread)),
+float upScallop = mix(0.4, 0.08 + 0.92 * exp(-(upU * upU) / (upSpread * upSpread)),
   abDetail(${UPLIGHT_BAY.toFixed(1)}, wAA.x));
 float upK = facade * smoothstep(0.0, 1.2, upZ) * exp(-max(upZ, 0.0) / ${UPLIGHT_HEIGHT.toFixed(1)})
   * upScallop * (1.0 - pane * lit) * (1.0 - shopBand * glass * shopLit);

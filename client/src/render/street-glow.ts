@@ -19,8 +19,9 @@
 //     (so `__ab.pinWorld` pins it and every client agrees); phantoms do not
 //     stop at signals — at 250 m and beyond a queue is a few pixels.
 //
-// Both are ATTENUATED by the linear fog and the height haze, never lerped
-// toward the fog colour (fog.ts: the V1 lesson for additive light), and
+// Both are ATTENUATED by the linear fog (in full) and the height haze (in
+// part), never lerped toward the fog colour (fog.ts: the V1 lesson for
+// additive light), and
 // both stay SUB-BLOOM (peaks under the 0.72 threshold): moving sub-pixel
 // bloom blobs are the O5 shimmer case, and the lamp heads already carry the
 // LAMP rung.
@@ -88,6 +89,9 @@ const STRIP_SPAN = 1100;
  * triangle carries the world-coordinate varying, and so whole segments
  * inside the fade-in band can be collapsed in the vertex shader. */
 const SEGMENT = 40;
+/** Share of the street-level haze that attenuates the street light (the
+ * linear fog always applies in full — the torus guarantee). */
+const HAZE_PASS = 0.45;
 /** Strip height above the street (plus polygonOffset, like the L6 pools). */
 const STRIP_Y = 0.05;
 
@@ -153,11 +157,14 @@ const FOG_PARS = /* glsl */ `
 uniform float fogNear;
 uniform float fogFar;
 ${AB_FOG_GLSL}
-// Additive fog: attenuate by both layers, never lerp toward the fog colour.
+// Additive fog: attenuate, never lerp toward the fog colour. The linear fog
+// in full (the torus's occlusion guarantee); the street-level haze only by
+// HAZE_PASS of its amount — a light source seen through lit mist keeps
+// reading (the lamp pools it replaces were never fogged at all).
 float abAdditiveFog(float depth, float worldY) {
   float fogFactor = smoothstep(fogNear, fogFar, depth);
   float haze = abHazeAmount(cameraPosition.y, worldY, depth);
-  return (1.0 - fogFactor) * (1.0 - haze);
+  return (1.0 - fogFactor) * (1.0 - ${glsl(HAZE_PASS)} * haze);
 }
 `;
 
@@ -622,7 +629,7 @@ export class FarTraffic {
         .replace(
           "#include <fog_fragment>",
           /* glsl */ `#ifdef USE_FOG
-  gl_FragColor.a *= (1.0 - smoothstep(fogNear, fogFar, vFogDepth)) * (1.0 - abHazeAmount(cameraPosition.y, vFogWorldY, vFogDepth));
+  gl_FragColor.a *= (1.0 - smoothstep(fogNear, fogFar, vFogDepth)) * (1.0 - ${glsl(HAZE_PASS)} * abHazeAmount(cameraPosition.y, vFogWorldY, vFogDepth));
 #endif`,
         );
       // O5: never drawn under 2 px, alpha-paid, faded below 1 px.

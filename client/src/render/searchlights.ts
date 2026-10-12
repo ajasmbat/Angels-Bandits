@@ -493,7 +493,7 @@ void main() {
   // exactly as the buildings behind it dissolve — it never lerps toward the
   // fog colour (that would brighten the sky). Both layers: the linear fog
   // that guarantees the torus, and the height haze the city sits in.
-  float fogFactor = smoothstep(fogNear, fogFar, vDepth);
+  float fogFactor = abFogFactor(fogNear, fogFar, vDepth);
   float haze = abHazeAmount(cameraPosition.y, vWorldY, vDepth);
   a *= (1.0 - fogFactor) * (1.0 - haze);
   gl_FragColor = vec4(vTint * a, 1.0);

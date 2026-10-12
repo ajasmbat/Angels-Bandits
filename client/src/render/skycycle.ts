@@ -11,7 +11,7 @@
 // The bottom half is the adapter that writes a state into the scene once per
 // frame (uniform and light writes only — no meshes, no draw calls).
 //
-// NIGHT is VO1's "Neon Blue Hour" exactly (sky.ts DUSK / LIGHT_RIG / EXPOSURE,
+// NIGHT is L1's "Stormlit" night exactly (sky.ts DUSK / LIGHT_RIG / EXPOSURE,
 // fog.ts HAZE_*, grade.ts tints): deep night IS today's look.
 
 import * as THREE from "three";
@@ -107,7 +107,7 @@ export interface SkyState extends SkyKey {
   glowDir: Rgb;
 }
 
-/** Deep night — VO1 "Neon Blue Hour", bit for bit. */
+/** Deep night — L1 "Stormlit", bit for bit. */
 export const NIGHT: SkyKey = {
   zenith: lin(SKY_GRADIENT_NIGHT[0]),
   sky14: lin(SKY_GRADIENT_NIGHT[1]),
@@ -130,71 +130,74 @@ export const NIGHT: SkyKey = {
   dawnGlow: [0, 0, 0],
   stars: 1,
   exposure: EXPOSURE,
-  bloom: 0.4,
+  // L1: a stronger, tighter bloom (the radius lives in main.ts) — the
+  // reference's glow halos round every light.
+  bloom: 0.55,
   shadowTint: [...SHADOW_TINT],
   highlightTint: [...HIGHLIGHT_TINT],
   occupancy: 1,
   pools: 1,
 };
 
-/** Dusk: a violet-rose horizon with the sunset's orange still burning in
- * the west, a brighter sky fill, the city only half switched on. */
+/** Dusk: a storm dusk — a steel horizon with the sunset's orange still
+ * burning low in the west, a brighter sky fill, the city only half
+ * switched on. (L1: VO1's was violet-rose.) */
 export const DUSK_KEY: SkyKey = {
-  zenith: lin(0x101a44),
-  sky14: lin(0x1a2558),
-  sky25: lin(0x2b316c),
-  sky32: lin(0x3a3170),
-  sky37: lin(0x48386a),
-  horizon: lin(0x4c3458),
-  ambient: lin(0x62608a),
+  zenith: lin(0x0a1224),
+  sky14: lin(0x111b30),
+  sky25: lin(0x1b263c),
+  sky32: lin(0x263046),
+  sky37: lin(0x30374a),
+  horizon: lin(0x343a48),
+  ambient: lin(0x4a5674),
   ambientI: 0.85,
   moon: lin(DUSK.moon),
   moonI: 1.5,
-  glow: lin(0xff7a48),
-  glowI: 1.5,
-  hemiSky: lin(0x6066a6),
-  hemiGround: lin(0x8a5038),
-  hemiI: 1.4,
-  haze: lin(0x704664),
+  glow: lin(0xff7a40),
+  glowI: 1.35,
+  hemiSky: lin(0x50608a),
+  hemiGround: lin(0x8a5432),
+  hemiI: 1.35,
+  haze: lin(0x4a4448),
   hazeTint: 0.5,
-  duskGlow: glowOf(0xff7038, 0.5),
+  duskGlow: glowOf(0xff7038, 0.42),
   dawnGlow: [0, 0, 0],
   stars: 0.3,
-  exposure: 1.2,
-  bloom: 0.36,
-  shadowTint: [-0.02, 0.008, 0.03],
-  highlightTint: [0.06, 0.016, -0.05],
+  exposure: 1.14,
+  bloom: 0.5,
+  shadowTint: [-0.016, 0.004, 0.026],
+  highlightTint: [0.06, 0.02, -0.05],
   occupancy: 0.7,
   pools: 0.75,
 };
 
-/** Pre-dawn: a cool blue lift, the windows thinning out, and the faintest
- * pale glow on the eastern horizon. */
+/** Pre-dawn: a cool steel-blue lift, the windows thinning out, and the
+ * faintest pale glow on the eastern horizon. */
 export const PREDAWN: SkyKey = {
-  zenith: lin(0x0c1640),
-  sky14: lin(0x15215a),
-  sky25: lin(0x22306c),
-  sky32: lin(0x2e3a74),
-  sky37: lin(0x384476),
-  horizon: lin(0x3c4878),
-  ambient: lin(0x5c6890),
+  zenith: lin(0x080f22),
+  sky14: lin(0x0e1830),
+  sky25: lin(0x17243e),
+  sky32: lin(0x1f2e4a),
+  sky37: lin(0x283850),
+  horizon: lin(0x2c3a52),
+  ambient: lin(0x485a7c),
   ambientI: 0.85,
-  moon: lin(0xb8c8ff),
+  moon: lin(0xb4c4ec),
   moonI: 1.6,
-  glow: lin(0x7c8cc8),
+  glow: lin(0x7c8cc0),
   glowI: 0.7,
-  hemiSky: lin(0x5c70a8),
-  hemiGround: lin(0x5c4a48),
-  hemiI: 1.4,
-  haze: lin(0x50608a),
+  hemiSky: lin(0x4c6290),
+  hemiGround: lin(0x5a4a40),
+  hemiI: 1.3,
+  haze: lin(0x404a5c),
   hazeTint: 0.5,
   duskGlow: [0, 0, 0],
-  dawnGlow: glowOf(0xa8b8e8, 0.32),
+  dawnGlow: glowOf(0xa8b8e0, 0.28),
   stars: 0.5,
-  exposure: 1.2,
-  bloom: 0.38,
-  shadowTint: [-0.03, 0.014, 0.04],
-  highlightTint: [0.02, 0.012, -0.02],
+  exposure: 1.14,
+  bloom: 0.52,
+  shadowTint: [-0.024, 0.008, 0.036],
+  highlightTint: [0.03, 0.012, -0.024],
   occupancy: 0.55,
   pools: 0.85,
 };

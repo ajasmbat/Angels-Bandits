@@ -362,6 +362,7 @@ import { FireRenderer } from "./render/fires";
 import { Fireworks } from "./render/fireworks";
 import { PlaneFleet } from "./render/fleet";
 import { installHeightFog } from "./render/fog";
+import type { MistStats } from "./render/fogbanks";
 import { Fountains } from "./render/fountains";
 import { Explosions, ShockRings, Sparks } from "./render/fx";
 import { CourseGhost } from "./render/ghost";
@@ -471,7 +472,7 @@ import {
   standingCost,
   standingPending,
 } from "./render/standing-watch";
-import { Steam } from "./render/steam";
+import { Steam, steamRoofGate } from "./render/steam";
 import {
   CloudDeck,
   REVEAL_COLOR,
@@ -3143,6 +3144,13 @@ declare global {
         frameMs: number;
         drawCalls: number;
         smokePuffs: number;
+        /** L5: the mist's survival of the parting, per layer. */
+        mist: Readonly<MistStats>;
+        /** L5: building boxes the mist + steam clearance tested last frame. */
+        clearanceTests: number;
+        /** L5: steam puffs drawn and rain streaks drawn. */
+        steamPuffs: number;
+        rainDrops: number;
       };
       /** P1: the full frame-time window — p50/p95/p99/worst + draw calls. */
       perfStats: () => FrameStats;
@@ -4114,6 +4122,10 @@ window.__ab = {
     frameMs: perf.frameMs,
     drawCalls: renderer.info.render.calls,
     smokePuffs: smoke.puffCount,
+    mist: atmosphere.fogBanks.stats,
+    clearanceTests: atmosphere.fogBanks.stats.boxTests + steam.boxTests,
+    steamPuffs: steam.count,
+    rainDrops: rain.drops,
   }),
   // P1 harness surface: percentiles over the window since the last reset.
   perfStats: () => frames.stats(),
@@ -6088,7 +6100,13 @@ const frame = (now: number): void => {
   // Phase-only subsystems fall back to local time before the first snapshot
   // (the signage policy): a plume or a signal in the wrong part of its cycle
   // is invisible, where hiding every one of them until clock sync would not be.
-  steam.update(chase.position, renderMs ?? now, microK);
+  // L5: roof plumes read from far higher than the street life.
+  steam.update(
+    chase.position,
+    renderMs ?? now,
+    microK,
+    microOn ? steamRoofGate(chase.position.y) : 0,
+  );
   // G1: static layout — re-packed only when the block window moves; the
   // furniture thins with the micro gate, parked cars by their own gate.
   streetFurniture.update(chase.position, microK);
@@ -6370,7 +6388,7 @@ const frame = (now: number): void => {
     bossWarning(socket.boss, renderMs) ??
       (wxMs === null ? null : stormWarning(wx)),
   );
-  rain.update(wx, wxMs, camera.position, dt);
+  rain.update(wx, wxMs, camera.position, dt, searchlights); // L5: lit in the beams
   const sky = storm.atmosphere(
     scene,
     chase.position.y,

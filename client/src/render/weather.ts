@@ -76,6 +76,21 @@ const RIPPLE_GAIN = "0.55";
 /** Ripples fade out over this view distance, m — sub-pixel rings sparkle. */
 const RIPPLE_FADE = { near: "12.0", far: "55.0" } as const;
 
+/** L5 puddle shimmer: two travelling waves whose periods, s, divide
+ * RIPPLE_WRAP_S — so the shimmer is seamless across the clock's wrap. */
+export const SHIMMER_PERIODS_S = [2, 3] as const;
+for (const s of SHIMMER_PERIODS_S) {
+  if (RIPPLE_WRAP_S % s !== 0) {
+    throw new Error("weather: a shimmer period must divide RIPPLE_WRAP_S");
+  }
+}
+const SHIMMER_W = SHIMMER_PERIODS_S.map((s) => ((2 * Math.PI) / s).toFixed(6));
+/** Shimmer depth on the reflections in standing water (ground, roofs). */
+const SHIMMER_GAIN = "0.25";
+const ROOF_SHIMMER_GAIN = "0.2";
+/** The ground shimmer fades out over this view distance, m. */
+const SHIMMER_FADE = { near: "15.0", far: "90.0" } as const;
+
 /** Uniform + ripple field, shared by both materials' fragment pars. */
 export const WEATHER_PARS_GLSL = /* glsl */ `
 uniform vec4 uWeather;
@@ -137,6 +152,20 @@ roughnessFactor = mix(roughnessFactor, roughnessFactor * 0.6, uWeather.x);
 
 /** After lights_physical_fragment: the emissive is final by then. */
 export const GROUND_WET_EMISSIVE_GLSL = /* glsl */ `
+// L5: the lamp and neon reflections in standing water shimmer — two slow
+// travelling waves, phase-warped by static world noise (world-anchored: a
+// frozen world is a still image), ±${SHIMMER_GAIN} of what is already there, so
+// the result stays ≥ 0 and under the ground's luma cap.
+if (uWeather.x > 0.0) {
+  float abShFade = 1.0 - smoothstep(${SHIMMER_FADE.near}, ${SHIMMER_FADE.far}, length(vViewPosition));
+  float abShWater = max(abPud, abWater) * uWeather.x * abShFade;
+  if (abShWater > 0.0) {
+    float abShPh = abNoise(vWorldXZ * 0.35) * 6.2832;
+    float abSh = sin(dot(vWorldXZ, vec2(0.83, 0.31)) + uWeather.z * ${SHIMMER_W[0]} + abShPh)
+      * sin(dot(vWorldXZ, vec2(-0.27, 0.71)) - uWeather.z * ${SHIMMER_W[1]} + abShPh * 0.7);
+    totalEmissiveRadiance += (abEmissive + abNeon * 0.5) * (${SHIMMER_GAIN} * abSh * abShWater);
+  }
+}
 if (uWeather.y > 0.0) {
   float abWxFade = 1.0 - smoothstep(${RIPPLE_FADE.near}, ${RIPPLE_FADE.far}, length(vViewPosition));
   if (abWxFade > 0.0) {
@@ -220,7 +249,9 @@ const ROOF_REFLECTION_GLSL = /* glsl */ `
       int wxRfIdx = int(floor(abWxHash(wxRfCell + 5.3) * ${SIGN_PALETTE.length.toFixed(1)}));
       vec3 wxRfSign = ${ROOF_REFLECTION_PALETTE}[wxRfIdx];
       float wxRfGraze = 0.3 + 0.7 * pow(1.0 - saturate(dot(normal, normalize(vViewPosition))), 2.0);
-      totalEmissiveRadiance += wxRfSign * (wxRfSmear * wxRfPud * wxRfGraze * wxRoofFade * uWeather.x);
+      // L5: the reflection shimmers (a wave whose period divides the wrap).
+      float wxRfSh = 1.0 + ${ROOF_SHIMMER_GAIN} * sin(dot(wxRfRp, vec2(0.71, -0.43)) + uWeather.z * ${SHIMMER_W[0]} + wxRfH * 6.2832);
+      totalEmissiveRadiance += wxRfSign * (wxRfSmear * wxRfPud * wxRfGraze * wxRoofFade * uWeather.x * wxRfSh);
     }
   }
 `;

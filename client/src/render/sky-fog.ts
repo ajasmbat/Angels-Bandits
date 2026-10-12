@@ -64,7 +64,9 @@ vec3 abSkyFog(vec3 fogCol, float sinEl) {
   float el = asin(clamp(sinEl, -1.0, 1.0));
   float above = smoothstep(${f5(SKY_FOG_ELEVATION)}, ${f5(SKY_FOG_ELEVATION + SKY_GLOW_RAMP)}, el);
   if (above <= 0.0) return fogCol;
-  float f = 0.5 - el / PI;
+  // A literal, not PI: ShaderMaterials include the fog chunks without
+  // three's <common>.
+  float f = 0.5 - el * 0.3183098862;
   vec3 c = abSkyStops[0];
 ${SKY_STOPS.slice(1)
   .map(

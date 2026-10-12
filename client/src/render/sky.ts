@@ -44,6 +44,11 @@ import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { AB_AA_GLSL } from "./aa-glsl";
 import { luminance } from "./emissive";
+import {
+  FIRELIGHT_GROUND_GLSL,
+  INFERNO_PARS_GLSL,
+  bindInfernoUniforms,
+} from "./inferno-shading";
 import { applyPointFloor } from "./point-floor";
 import type { QualityTier } from "./quality";
 import {
@@ -1137,6 +1142,8 @@ export class GroundPlane {
       shader.uniforms.uBridgeGone = BRIDGE_GONE_UNIFORM;
       // S6: the reflection probe, by reference (puddles and ponds).
       bindReflectionUniforms(shader.uniforms);
+      // L7: the fire lights on the street, by reference.
+      bindInfernoUniforms(shader.uniforms);
       shader.vertexShader = shader.vertexShader
         .replace(
           "#include <common>",
@@ -1149,7 +1156,7 @@ export class GroundPlane {
       shader.fragmentShader = shader.fragmentShader
         .replace(
           "#include <common>",
-          `#include <common>\n${GROUND_FRAGMENT_PARS}${WEATHER_PARS_GLSL}${REFLECTION_PARS_GLSL}`,
+          `#include <common>\n${GROUND_FRAGMENT_PARS}${WEATHER_PARS_GLSL}${REFLECTION_PARS_GLSL}${INFERNO_PARS_GLSL}`,
         )
         .replace(
           "vec4 diffuseColor = vec4( diffuse, opacity );",
@@ -1201,7 +1208,8 @@ if (abWater > 0.5) {
   vec3 abMoonV = normalize((viewMatrix * vec4(${N.moonDir}, 0.0)).xyz);
   float abGlint = pow(max(dot(abRefl, abMoonV), 0.0), ${POND_GLINT_POWER});
   totalEmissiveRadiance += ${GROUND_COLORS.moon} * abGlint * ${POND_GLINT} * mix(0.35, 1.0, abNear);
-}`,
+}
+${FIRELIGHT_GROUND_GLSL}`,
         )
         // L4 weather (render/weather.ts): wet roughness after the VO5 lines,
         // rain ripples once the emissive is final.

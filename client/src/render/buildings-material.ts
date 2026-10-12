@@ -29,6 +29,12 @@ import {
 import { DAMAGE_GLSL, DAMAGE_ON_UNIFORM, DAMAGE_PARS_GLSL } from "./damage-map";
 import { FRACTURE_VERTEX_GLSL } from "./debris";
 import { luminance } from "./emissive";
+import {
+  GUTTED_COLOR_GLSL,
+  GUTTED_EMISSIVE_GLSL,
+  INFERNO_PARS_GLSL,
+  bindInfernoUniforms,
+} from "./inferno-shading";
 import { LIVE_ON_UNIFORM, livingParsGlsl } from "./living-windows";
 import {
   WAKE_PARS_GLSL,
@@ -228,7 +234,7 @@ float abHash(vec2 p, float s) {
 float abSafeDiv(float d) {
   return abs(d) < 1e-4 ? (d < 0.0 ? -1e-4 : 1e-4) : d;
 }
-${DAMAGE_PARS_GLSL}${roofParsGlsl()}${WAKE_PARS_GLSL}${livingParsGlsl()}${WEATHER_PARS_GLSL}${REFLECTION_PARS_GLSL}`;
+${DAMAGE_PARS_GLSL}${INFERNO_PARS_GLSL}${roofParsGlsl()}${WAKE_PARS_GLSL}${livingParsGlsl()}${WEATHER_PARS_GLSL}${REFLECTION_PARS_GLSL}`;
 
 /** Injected after color_fragment: derives the shared window-grid locals
  * (in scope for the emissive block below — same main body), modulates the
@@ -243,6 +249,7 @@ const FRAGMENT_COLOR =
   roofSurfaceGlsl() +
   holeSurfaceGlsl() +
   BROKEN_COLOR_GLSL +
+  GUTTED_COLOR_GLSL +
   BUILDING_WET_COLOR_GLSL;
 
 /** G1 lit lobbies: what a storefront's room averages to over its walls,
@@ -398,12 +405,13 @@ if (uReflOn > 0.5 && vArch < 0.5) {
 /** Windows, shops and the VO2 bounce, then the VO3 architectural light so its
  * LED replacement overrides everything the pixel emitted before, then the H1
  * hole frame (a convex replacement too — it never stacks on the rest), and
- * D2 last: a face destruction exposed emits only its ember. */
+ * D2 last: a face destruction exposed emits only its ember — then L7's gutted
+ * frames and firelight (inferno-shading.ts), over whatever that left. */
 const FRAGMENT_EMISSIVE = `${windowEmissiveGlsl(
   glslVec3(WINDOW_WARM),
   glslVec3(WINDOW_COOL),
   WINDOW_EMISSIVE_INTENSITY,
-)}${wakeWindowGlsl(WINDOW_EMISSIVE_INTENSITY)}${SHOP_BAND_GLSL}${GLASS_REFLECTION_GLSL}${roofLightGlsl()}${holeLightGlsl()}${BUILDING_WET_EMISSIVE_GLSL}${BROKEN_EMISSIVE_GLSL}`;
+)}${wakeWindowGlsl(WINDOW_EMISSIVE_INTENSITY)}${SHOP_BAND_GLSL}${GLASS_REFLECTION_GLSL}${roofLightGlsl()}${holeLightGlsl()}${BUILDING_WET_EMISSIVE_GLSL}${BROKEN_EMISSIVE_GLSL}${GUTTED_EMISSIVE_GLSL}`;
 
 const FRAGMENT_SPECULAR = /* glsl */ `
 material.specularF90 = vArch < 0.5 ? ${GRAZING_REFLECTANCE.glass.toFixed(2)} : ${GRAZING_REFLECTANCE.solid.toFixed(2)};
@@ -462,6 +470,8 @@ export function createBuildingsMaterial(
     shader.uniforms.uDamageOn = DAMAGE_ON_UNIFORM;
     // S6: the reflection probe's cubes, blend and switch, by reference.
     bindReflectionUniforms(shader.uniforms);
+    // L7: the burn, the fire lights and the flicker clocks, by reference.
+    bindInfernoUniforms(shader.uniforms);
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", `#include <common>\n${VERTEX_PARS}`)
       .replace(

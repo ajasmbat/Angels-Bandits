@@ -32,6 +32,10 @@ export const RENDER_ORDER = {
   birds: -0.2,
   /** L1 smoke columns over kill sites: on the ground, beyond the trails. */
   smokeColumns: -0.15,
+  /** L7 inferno flame cards and the embers/ash/debris round them: AFTER
+   * the smoke columns, so a fire paints over its own smoke (the columns
+   * also fade out over their lowest ~20 m). */
+  fireVolumes: -0.12,
   smoke: -0.1,
   /** L4 rain streaks (additive): the nearest layer of all — the field lives
    * within 40 m of the camera — so after the smoke, still before the 0 group

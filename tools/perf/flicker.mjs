@@ -721,9 +721,36 @@ async function measureBuild(
           (list) => window.__ab.planeShowcase?.(list),
           v.showcase ?? null,
         );
+        // L7: stage the view's destruction and burn (times relative to the
+        // render clock, as the gallery does), or clear the last view's. A
+        // build without a field ignores it; one without the hook flies the
+        // city intact.
+        const inferno = await page.evaluate((st) => {
+          const ab = window.__ab;
+          if (typeof ab.qaDestruction !== "function") return null;
+          if (!st) {
+            ab.qaDestruction(null);
+            return null;
+          }
+          ab.standingBudget?.(1e9);
+          const t0 = ab.reactions().renderTime ?? 0;
+          ab.qaDestruction(
+            JSON.parse(JSON.stringify(st), (k, val) =>
+              k === "t" && typeof val === "number" ? t0 + val : val,
+            ),
+          );
+          return true;
+        }, v.stage ?? null);
         const still = { eye: v.eye, at: v.at, right: null, plane: v.plane };
         await aimView(page, still, PAN_M);
         for (let i = 0; i < GRID_SETTLE; i++) await page.clock.runFor(STEP_MS);
+        if (inferno && v.stage?.burn !== undefined) {
+          // L7: a burning view scored with nothing burning would pass
+          // trivially — say what the inferno drew (null: a build without it).
+          console.log(
+            `  ${v.name}: inferno ${JSON.stringify(await page.evaluate(() => window.__ab.inferno?.() ?? null))}`,
+          );
+        }
         const frozen = await captureFrames(
           page,
           GRID_FRAMES,

@@ -22,7 +22,7 @@ import {
 } from "@angels-bandits/common/collision";
 import type { Vec3 } from "@angels-bandits/common/world";
 import * as THREE from "three";
-import { hazeAmount } from "./fog";
+import { HAZE_WEATHER, fogFactor, hazeAmount } from "./fog";
 import type { MoverLights } from "./movers";
 import type { SpotBeam } from "./searchlights";
 
@@ -51,8 +51,8 @@ const poolColor = new THREE.Color();
 /** The two fog layers the beam shader attenuates by, mirrored on the CPU. */
 function fogFade(eye: Vec3, p: Vec3, fogNear: number, fogFar: number): number {
   const dist = Math.hypot(p.x - eye.x, p.y - eye.y, p.z - eye.z);
-  const t = Math.min(1, Math.max(0, (dist - fogNear) / (fogFar - fogNear)));
-  const linear = t * t * (3 - 2 * t);
+  // L1's shaped linear fog (the beams' abFogFactor), flattened by weather.
+  const linear = fogFactor(fogNear, fogFar, dist, HAZE_WEATHER.y);
   return (1 - linear) * (1 - hazeAmount(eye.y, p.y, dist));
 }
 

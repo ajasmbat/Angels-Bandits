@@ -411,6 +411,12 @@ export class StreetGlow {
     (this.material.uniforms.uLevel as THREE.IUniform).value = k;
   }
 
+  /** The street light's current level, 0..1 — for L5's under-lit mist,
+   * with STREET_GLOW_COLOR. */
+  get level(): number {
+    return (this.material.uniforms.uLevel as THREE.IUniform).value as number;
+  }
+
   /** O3: Mobile drops the storefront and neon spill (a uniform — rule 1). */
   setQuality(tier: QualityTier): void {
     (this.material.uniforms.uSpill as THREE.IUniform).value = QUALITY_PROFILES[

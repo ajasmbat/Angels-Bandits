@@ -161,8 +161,10 @@ run on a quiet GPU (the M3).
 
 ## Flicker (`tools/perf/flicker.mjs --grid`, ref `7061222`)
 
-**Clear and dry** (the default; `--repeat 3`) is no worse anywhere. Frozen
-score, HEAD vs ref, all three repeats:
+**Clear and dry** (the default; `--repeat 3`) is no worse anywhere. The run
+was cut by my 150-minute timeout (exit 124) two views into the ref's third
+repeat, so the tool never printed its own verdict table. These are the
+recorded frozen scores, HEAD vs ref:
 
 | view | ref | HEAD |
 |---|---|---|
@@ -196,19 +198,22 @@ rule by more. Measured against main, every view is better.
 
 ## Black boxes (`tools/perf/blackbox.mjs`, desktop)
 
-**Non-finite pixels: 0 in every frame of every path on this branch.** That
-covers core, sky, canyon, street (downpour), sidewalk and deck, at night and
-dusk, with the positive control passing.
+**Non-finite pixels: 0 in every frame of every path on this branch**:
+core, sky, canyon, street (downpour) and sidewalk, at night and dusk, with
+the positive control passing. That was one full pass plus part of a second;
+the box cut the run short with my own 90-minute timeout, exit 124.
 
 The first pass found 1 NaN frame (1 px) on `core`. The one NaN-capable line
 I had added, the mist billboard's view-direction `normalize`, was then
 guarded (`7034169`), and every later pass is 0.
 
-The image half of the detector flagged a few transient dark-cell "boxes" in
-some paths, with no non-finite pixel behind any of them. **Main flags them
-too under the same load:**
-- main `core`/`street`/`sidewalk`: 11 boxes, 0 non-finite (exit 1);
-- main dusk `core` alone: 9.
+The image half of the detector flagged transient dark-cell "boxes" with no
+non-finite pixel behind any of them:
+- this branch: 18 over 12 path runs (street 2, sidewalk 6 + 3, dusk core 7);
+- **main under the same load:** 11 over its `core`/`street`/`sidewalk` run,
+  0 non-finite (exit 1), plus 9 on dusk `core` alone in another run.
+
+So the tool's "0 boxes" bar is not met on either build here.
 
 These are cells of frames the SwiftShader process dropped at load 120–150,
 not render faults. The same machine also returned a few fully black

@@ -4,7 +4,9 @@
 // AB_CHROME / AB_CHROME_ARGS point it elsewhere, e.g. SwiftShader on Linux;
 // AB_GALLERY_QUALITY pins a quality tier; AB_GALLERY_DEVICE=phone shoots the
 // landscape phone profile; AB_GALLERY_QUERY appends raw query
-// params, e.g. `refl=0` for S6's before shots out of the same build).
+// params, e.g. `refl=0` for S6's before shots out of the same build;
+// AB_GALLERY_PROBE=streetGlow,farTraffic logs the pre-bloom HDR luma those
+// systems add to each shot, L8).
 // The sky is pinned to deep night (`?sky=night`, L12) so shots never depend
 // on the server's time of night; views with a `sky` field force their own
 // phase through __ab.sky.
@@ -16,6 +18,10 @@ import { VIEWS } from "./gallery-views.mjs";
 const OUT = resolve(process.argv[2] ?? "gallery");
 const PORT = Number(process.argv[3] ?? 8099);
 const ONLY = process.argv[4] ? process.argv[4].split(",") : null;
+/** Stormlit L8: systems whose pre-bloom light each shot also probes. */
+const PROBE = process.env.AB_GALLERY_PROBE
+  ? process.env.AB_GALLERY_PROBE.split(",")
+  : null;
 mkdirSync(OUT, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const server = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
@@ -396,6 +402,8 @@ try {
           ...(st.fell ? { fell: st.fell.map(at) } : {}),
           ...(st.props ? { props: atAll(st.props) } : {}),
           ...(st.blasts ? { blasts: st.blasts.map(at) } : {}),
+          // L7: the burn level to draw (a build without it ignores it).
+          ...(st.burn !== undefined ? { burn: st.burn } : {}),
         });
       }, v.stage);
       console.log("stage", v.name, JSON.stringify(r));
@@ -490,6 +498,16 @@ try {
       );
     }
     await page.screenshot({ path: `${OUT}/${v.name}.png`, timeout: 180000 });
+    if (PROBE) {
+      // Stormlit L8 (AB_GALLERY_PROBE=name,name): the pre-bloom linear HDR
+      // luma of what those systems add (one frozen frame rendered without
+      // and with them). A build without the hook prints null.
+      const probe = await page.evaluate(
+        (names) => window.__ab.hdrLuma?.(names) ?? null,
+        PROBE,
+      );
+      console.log("hdr-probe", v.name, JSON.stringify(probe));
+    }
     if (v.showcase) {
       console.log(
         "fleet",
@@ -564,6 +582,14 @@ try {
       "shot",
       v.name,
       JSON.stringify(await page.evaluate(() => window.__ab.perf())),
+    );
+    // L7: what the inferno drew (a build without it logs null).
+    console.log(
+      "inferno",
+      v.name,
+      JSON.stringify(
+        await page.evaluate(() => window.__ab.inferno?.() ?? null),
+      ),
     );
   }
   // L6: one intersection at a red (a real queue behind the stop line), then

@@ -364,6 +364,8 @@ export const SEGMENTS = [
     hold: true,
     pilots: 11,
     stage: {
+      // L7: the inferno over the ruined block (see chaos).
+      burn: 0.9,
       area: {
         x: 400,
         z: 780,
@@ -557,6 +559,9 @@ export const SEGMENTS = [
       corridor: { near: 70, far: 230, lateral: 25, yLo: 120, yHi: 200 },
     },
     stageAtWindow: {
+      // L7: the inferno at its peak — burn 0.9, snapped (never ramps
+      // inside the window); a build without it ignores the field.
+      burn: 0.9,
       fell: [{ b: 343, h: 215, style: "topple", dir: 0, t: -1500 }],
       // D9: and what its debris and the fight knock over on the street
       // ahead — two cars blown, a roof tank toppling, lamps snapped, a

@@ -25,6 +25,9 @@ import {
 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
+import { AB_FOG_DISTANCE_GLSL } from "./fog";
+import type { QualityTier } from "./quality";
+import { GLOW_FADE_FAR, GLOW_FADE_NEAR, StreetGlow } from "./street-glow";
 import { ImageCache, InstanceUploads } from "./wrapPlacement";
 
 // Lamp stations live in the S1 street contract (common/src/city/street.ts):
@@ -76,6 +79,9 @@ export class Streetlights {
   private readonly poles: THREE.InstancedMesh;
   private readonly heads: THREE.InstancedMesh;
   private readonly glows: THREE.InstancedMesh;
+  /** L8: the far-field street glow the pools hand over to (street-glow.ts);
+   * main.ts adds its mesh to the scene (its own QA ablation name). */
+  readonly glow = new StreetGlow();
   private readonly scratch = new THREE.Matrix4();
   private readonly images: ImageCache;
   private readonly uploads: InstanceUploads;
@@ -110,18 +116,40 @@ export class Streetlights {
 
     const glowGeometry = new THREE.CircleGeometry(GLOW_RADIUS, 16);
     glowGeometry.rotateX(-Math.PI / 2); // flat on the street
-    this.glows = new THREE.InstancedMesh(
-      glowGeometry,
-      new THREE.MeshBasicMaterial({
-        map: glowTexture(),
-        transparent: true,
-        opacity: GLOW_OPACITY,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        fog: false, // additive + fog would brighten the distant ground
-      }),
-      n,
-    );
+    const glowMaterial = new THREE.MeshBasicMaterial({
+      map: glowTexture(),
+      transparent: true,
+      opacity: GLOW_OPACITY,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      fog: false, // additive + fog would brighten the distant ground
+    });
+    // L8: the pools fade OUT across the band the street glow strip fades IN
+    // over (same radial distance, same constants), so the hand-off sums to
+    // one at every distance; multiplied after the opacity, so the sky
+    // cycle's dusk level scales both sides alike.
+    glowMaterial.customProgramCacheKey = () => "ab-l8-lamp-pool-fade";
+    glowMaterial.onBeforeCompile = (shader) => {
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          "#include <common>",
+          "#include <common>\nvarying float vAbDist;",
+        )
+        .replace(
+          "#include <project_vertex>",
+          `#include <project_vertex>\nvAbDist = ${AB_FOG_DISTANCE_GLSL};`,
+        );
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          "#include <common>",
+          "#include <common>\nvarying float vAbDist;",
+        )
+        .replace(
+          "#include <alphamap_fragment>",
+          `#include <alphamap_fragment>\ndiffuseColor.a *= 1.0 - smoothstep(${GLOW_FADE_NEAR.toFixed(1)}, ${GLOW_FADE_FAR.toFixed(1)}, vAbDist);`,
+        );
+    };
+    this.glows = new THREE.InstancedMesh(glowGeometry, glowMaterial, n);
 
     for (const mesh of [this.poles, this.heads, this.glows]) {
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -191,6 +219,12 @@ export class Streetlights {
    * emissive-ladder rung. */
   setPoolLevel(k: number): void {
     (this.glows.material as THREE.MeshBasicMaterial).opacity = GLOW_OPACITY * k;
+    this.glow.setLevel(k); // L8: the far strip is the same light
+  }
+
+  /** O3: the far strip's tier knobs (the lamps themselves never change). */
+  setQuality(tier: QualityTier): void {
+    this.glow.setQuality(tier);
   }
 
   /**

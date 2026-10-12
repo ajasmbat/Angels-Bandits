@@ -72,6 +72,12 @@ export interface QualityProfile {
   livingWindows: boolean;
   /** L6 headlight cones (the additive volumes). The ground pools stay on. */
   headlightCones: boolean;
+  /** Stormlit L8: share of the far-field phantom car lights (street-glow.ts,
+   * an interleaved draw-range prefix — every avenue thins evenly). */
+  farTraffic: number;
+  /** Stormlit L8: the far street glow's storefront and neon spill (the lamp
+   * lines, roadway wash and lit crossings stay on every tier). */
+  streetGlowSpill: boolean;
   /** L7 the coloured light each sign spills onto the street. */
   signSpill: boolean;
   /** L8 rooftop string lights (the party/pool props stay). */
@@ -215,6 +221,8 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     smokeColumns: 1,
     livingWindows: true,
     headlightCones: true,
+    farTraffic: 1,
+    streetGlowSpill: true,
     signSpill: true,
     rooftopLights: true,
     treeSway: true,
@@ -263,6 +271,8 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     smokeColumns: 1,
     livingWindows: true,
     headlightCones: true,
+    farTraffic: 1,
+    streetGlowSpill: true,
     signSpill: true,
     rooftopLights: true,
     treeSway: true,
@@ -311,6 +321,8 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     smokeColumns: 0.5,
     livingWindows: false,
     headlightCones: false,
+    farTraffic: 0.6,
+    streetGlowSpill: true,
     signSpill: false,
     rooftopLights: false,
     treeSway: false,
@@ -359,6 +371,8 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     smokeColumns: 0.34,
     livingWindows: false,
     headlightCones: false,
+    farTraffic: 0.5,
+    streetGlowSpill: false,
     signSpill: false,
     rooftopLights: false,
     treeSway: false,
@@ -893,6 +907,15 @@ export const FEATURE_TIERS: readonly {
     note: "S8: DOM and audio, no draw; the warning is the telegraph, so it is on every tier",
   },
   {
+    feature:
+      "Stormlit L6 — carrier searchlights and their roof pools, escort scouts, wingtip halos, landing lights",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "no draw of their own: the beams are instances in the searchlight mesh, the pools in the mover light cloud, the scouts bones of the carrier's skinned draw (cosmetic, solid to nothing), the halos and landing beam points in the plane-lights cloud — the same everywhere (the carrier's searchlights are part of how you find it)",
+  },
+  {
     feature: "C2 chaos — meteors, bombs, quake shake",
     high: "full",
     medium: "full",
@@ -907,6 +930,31 @@ export const FEATURE_TIERS: readonly {
     low: "reduced",
     mobile: "reduced",
     note: "emission 100 / 75 / 50 / 30 % into the D1 particle pool (no extra draw); at most 24 fires emit, the nearest within 700 m; the fires' damage is the same everywhere",
+  },
+  {
+    feature: "L7 inferno — flames, embers, ash and debris",
+    high: "full",
+    medium: "reduced",
+    low: "reduced",
+    mobile: "reduced",
+    note: "flame sites 100 / 75 / 50 / 30 % (chaosFx): at most 80 sites × 3 cards, the nearest within 760 m, faded out at the cap — one instanced draw; the air (1600 embers/ash/debris × chaosFx) one points draw, off on Mobile (its peak-chaos scene is at the Mobile draw ceiling)",
+  },
+  {
+    feature: "L7 inferno — smoke columns",
+    high: "full",
+    medium: "full",
+    low: "reduced",
+    mobile: "reduced",
+    note: "columns 100 / 100 / 50 / 34 % (smokeColumns), each puff grown by 1/√share so the columns hide the same sky on every tier (rule 2 for the fill); Mobile drops the billowing edge (a uniform); one instanced draw",
+  },
+  {
+    feature:
+      "L7 inferno — burn level, gutted frames, firelight, cloud and fog glow",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "the look of solid things and of the air: shader terms and uniforms on the city, ground, fog and cloud deck, identical on every tier, no draw",
   },
   {
     feature: "S5 fog banks (drifting haze between the towers)",

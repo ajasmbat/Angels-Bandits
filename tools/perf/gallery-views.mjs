@@ -223,6 +223,44 @@ const damageSheet = () => {
   };
 };
 
+/** L7 Stormlit: the two references' composition — high over the south
+ * bank, looking down the river (the x-running block row z 1000–1200) toward
+ * the far skyline, the war zeppelin close on the left. `reference-hero` is
+ * reference 1 (the city at peace); `extra` stages reference 2 on it. */
+const referenceView = (name, extra = {}) => ({
+  name,
+  // The plane (and the carrier staged ahead of it) sits left of and above
+  // the eye, out of its own shot.
+  x: 1060,
+  z: 1010,
+  y: 310,
+  yaw: -Math.PI / 2,
+  eye: [960, 250, 1250],
+  at: [1560, 30, 1085],
+  timeMs: 1_790_000_000_000,
+  boss: { ahead: 280 },
+  // Held there every frame, so it never flies into the carrier's hull.
+  raf: true,
+  ...extra,
+});
+
+/** L7: what reference 2 stages on that composition — the blocks on both
+ * banks chewed (a seeded third of the chunks of the 44 buildings within
+ * 380 m, the collapses that leaves owing long landed), the room's burn 0.9. */
+const INFERNO_STAGE = {
+  area: {
+    x: 1400,
+    z: 1100,
+    r: 380,
+    share: 0.35,
+    seed: 7,
+    t: -90_000,
+    stepMs: 500,
+    buildings: 44,
+  },
+  burn: 0.9,
+};
+
 export const VIEWS = [
   // name, x, z, y, yaw, extra
   { name: "chase-rooftops", x: 300, z: 900, y: 175, yaw: 0.6 },
@@ -1063,6 +1101,37 @@ export const VIEWS = [
     weather: "clear",
     boss: { ahead: 180, downAfterMs: 3500 },
   },
+  // L6 (Stormlit): the reference composition — the carrier upper left, its
+  // lamps and escort scouts throwing beams down onto the roofs, a posed
+  // biplane mid right (its nav, landing and exhaust lights lit) flying away
+  // into the scene, and the city below. The own plane is parked high out of
+  // shot; the hull is staged 450 m ahead of the view (centre ≈ x 1500,
+  // y 305, z 550), over the landmark at (1500, 300); no rooftop searchlight
+  // stands near the biplane to swing onto it.
+  {
+    name: "reference-hero",
+    x: 1500,
+    z: 1000,
+    y: 600,
+    yaw: 0,
+    timeMs: 1_790_000_000_000,
+    eye: [1484, 324, 1036],
+    at: [1630, 190, 740],
+    weather: "clear",
+    boss: { ahead: 450 },
+    showcase: [
+      {
+        kind: "biplane",
+        x: 1500,
+        y: 300,
+        z: 1000,
+        yaw: 0.1,
+        pitch: 0.04,
+        roll: -0.12,
+        speed: 70,
+      },
+    ],
+  },
   // W2: an enemy fighter-bomber's dive on the x = 1000 street (z ≈ 380),
   // its heavy centreline bomb just thrown (rack 0 empty) and falling ahead
   // of it, trailing smoke — staged through __ab.qaChaos's `bombs`, planned
@@ -1213,5 +1282,104 @@ export const VIEWS = [
         pitch: 0.1,
       },
     ],
+  },
+  // Stormlit L8: the street grid from altitude — the avenue at x = 400
+  // north toward the river (sodium lines, phantom traffic, lit crossings),
+  // the same at dusk and in a downpour, and an east–west street from 150 m.
+  { name: "street-grid", x: 430, z: 1750, y: 300, yaw: 0, pitch: -0.45 },
+  {
+    name: "street-grid-dusk",
+    x: 430,
+    z: 1750,
+    y: 300,
+    yaw: 0,
+    pitch: -0.45,
+    sky: "dusk",
+  },
+  {
+    name: "street-grid-rain",
+    x: 430,
+    z: 1750,
+    y: 300,
+    yaw: 0,
+    pitch: -0.45,
+    weather: "downpour",
+  },
+  {
+    name: "street-grid-low",
+    x: 830,
+    z: 615,
+    y: 150,
+    yaw: Math.PI / 2,
+    pitch: -0.3,
+  },
+  // L7 Stormlit: the reference compositions (see referenceView) and the
+  // inferno on D8's chewed block (ruin-chewed's pose and stage at burn 0.9 —
+  // `__ab.inferno()` is logged for each: sites, draws, floating = 0).
+  referenceView("reference-hero"),
+  referenceView("reference-inferno", { stage: INFERNO_STAGE }),
+  // L7 the sky reacting: from 180 m on the south bank, up at the cloud deck
+  // over reference-inferno's burning blocks — the columns climbing into it,
+  // its underside glowing ember-red over the fires, the haze gone smoky.
+  {
+    name: "inferno-sky",
+    x: 1060,
+    z: 1010,
+    y: 310,
+    yaw: -Math.PI / 2,
+    eye: [1300, 180, 1250],
+    at: [1420, 497, 1080],
+    timeMs: 1_790_000_000_000,
+    stage: INFERNO_STAGE,
+  },
+  // L7 gutted frames up close: building 85 (55 m, a third of it gone) from
+  // 100 m out, its standing facades charred, fire behind their windows.
+  {
+    name: "inferno-gutted",
+    sky: "dusk",
+    x: 470,
+    z: 1120,
+    y: 300,
+    yaw: 0,
+    eye: [430, 62, 1015],
+    at: [349, 28, 940],
+    weather: "clear",
+    stage: {
+      area: {
+        x: 400,
+        z: 780,
+        r: 200,
+        share: 0.3,
+        seed: 6,
+        t: -60_000,
+        stepMs: 1000,
+        buildings: 18,
+      },
+      burn: 0.9,
+    },
+  },
+  {
+    name: "inferno-chewed",
+    sky: "dusk",
+    x: 330,
+    z: 900,
+    y: 240,
+    yaw: 0,
+    eye: [300, 95, 960],
+    at: [400, 35, 780],
+    weather: "clear",
+    stage: {
+      area: {
+        x: 400,
+        z: 780,
+        r: 200,
+        share: 0.3,
+        seed: 6,
+        t: -60_000,
+        stepMs: 1000,
+        buildings: 18,
+      },
+      burn: 0.9,
+    },
   },
 ];

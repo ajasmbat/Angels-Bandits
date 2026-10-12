@@ -333,6 +333,7 @@ import { AaNestRenderer, type AaNestStats } from "./render/aa-nests";
 import { Airliners } from "./render/airliners";
 import { archetypeFor } from "./render/archetypes";
 import { AtmosphereFx } from "./render/atmosphere-fx";
+import { landBeam } from "./render/beam-landing";
 import { Birds } from "./render/birds";
 import { BossRenderer } from "./render/boss";
 import { CaveInRenderer } from "./render/caveins";
@@ -369,6 +370,7 @@ import { createGradePass } from "./render/grade";
 import { Headlights } from "./render/headlights";
 import { HoleDecorRenderer } from "./render/hole-decor";
 import { BlastLedger, Impacts, burnCapFor } from "./render/impacts";
+import { Inferno, type InfernoStats } from "./render/inferno";
 import { Jumbotrons } from "./render/jumbotrons";
 import { lookPasses } from "./render/lookup";
 import { MissileRenderer } from "./render/missiles";
@@ -451,7 +453,7 @@ import { RooftopLifeRenderer } from "./render/rooftop-life";
 import { RuinSmoke } from "./render/ruins";
 import { ScaffoldRenderer } from "./render/scaffold";
 import { ScarsRenderer } from "./render/scars";
-import { Searchlights } from "./render/searchlights";
+import { Searchlights, type SpotBeam } from "./render/searchlights";
 import { Signage } from "./render/signage";
 import { Signals } from "./render/signals";
 import { EXPOSURE, GroundPlane, SkyDome, setupSky } from "./render/sky";
@@ -485,6 +487,7 @@ import {
   StreetFurniture,
   buildStreetDetailContext,
 } from "./render/street-furniture";
+import { FarTraffic } from "./render/street-glow";
 import { microGate } from "./render/streetlife";
 import { Streetlights } from "./render/streetlights";
 import { Tracers } from "./render/tracers";
@@ -933,6 +936,9 @@ const airliners = new Airliners(welcome.seed, skyDome.clouds);
 skyDome.mesh.add(airliners.points);
 const streetlights = new Streetlights();
 scene.add(streetlights.group);
+// Stormlit L8: the far-field street glow (the lamp pools hand over to it
+// with distance) — one additive draw for the whole grid.
+scene.add(streetlights.glow.mesh);
 // L12 sky cycle: dusk → deep night → pre-dawn on the synced server clock
 // (~40 min loop). Writes lights, dome, haze, exposure, bloom strength, grade,
 // window occupancy and lamp pools each frame; `?sky=` pins a phase (QA).
@@ -960,6 +966,11 @@ scene.add(traffic.mesh);
 // the cars Traffic placed this frame. Two additive draws for the whole city.
 const headlights = new Headlights(traffic.capacity);
 scene.add(headlights.cones, headlights.pools);
+// Stormlit L8: phantom car lights in the far field — rivers of white
+// headlights and red taillights on every avenue past ~250 m. One points draw,
+// a pure function of the synced clock like Traffic.
+const farTraffic = new FarTraffic(welcome.seed);
+scene.add(farTraffic.points);
 // L2 movers: cranes, helicopters, the blimp. Poses are the SAME pure function
 // of (seed, server clock) the crash check uses, so what you see is what you
 // can hit — and nothing about them is ever streamed.
@@ -1152,6 +1163,9 @@ const fountains = new Fountains(nature.ponds);
 scene.add(fountains.points);
 const fireworks = new Fireworks(welcome.seed);
 const searchlights = new Searchlights(city.cityBuildings);
+/** L6: this frame's moving beams — the carrier's lamps and escorts first,
+ * then the helicopters' spots (reused; never reallocated per frame). */
+const beamSpots: SpotBeam[] = [];
 scene.add(searchlights.mesh);
 // S1: the city's jumbotrons + headline tickers (one draw), told what to say
 // by game/headlines.ts from the room's broadcasts (fed in onDeath/onScores).
@@ -1498,6 +1512,16 @@ socket.events.onCaveIn = (c) => {
   music.noteCombat(performance.now());
 };
 const fireRenderer = new FireRenderer(impacts, city.cityBuildings);
+// L7 inferno: the city burns as the room's burn level rises — fire sites
+// from the wreckage, flames, smoke columns and the air full of embers (three
+// draws), the firelight, gutted frames, shimmer and cloud glow (none).
+const inferno = new Inferno(city.cityBuildings);
+scene.add(inferno.group);
+/** L7: the burn level drawn this frame — the server's, eased (it moves in
+ * 1 % steps), or `__ab.qaDestruction`'s `burn`, snapped. */
+let burnShown = 0;
+let qaBurn: number | null = null;
+let burnWelcome: unknown = null;
 // D8: fresh ruins smoulder (smoke + embers off the stump and rubble).
 const ruinSmoke = new RuinSmoke(impacts, city.cityBuildings);
 // D10: what a collapsing building sheds — gravel, window frames, glass,
@@ -2927,6 +2951,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
     QUALITY_PROFILES[tier].chaosFx, // C2: meteor fire trails
   );
   fireRenderer.setQuality(QUALITY_PROFILES[tier].chaosFx); // C2
+  inferno.setQuality(tier); // L7: flames, columns and air (counts only)
   propsRenderer.setShare(QUALITY_PROFILES[tier].chaosFx); // D9
   aaNests.setShare(QUALITY_PROFILES[tier].chaosFx); // W3
   scarsRenderer.setShare(QUALITY_PROFILES[tier].chaosFx); // D9
@@ -2950,6 +2975,8 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   constructionSparks.setQuality(tier);
   rain.setQuality(tier);
   headlights.setQuality(tier);
+  streetlights.setQuality(tier); // L8: the far strip's spill
+  farTraffic.setQuality(tier); // L8: phantom fleet share
   signage.setQuality(tier);
   jumbotrons.setQuality(tier); // S1: Mobile shows the static LAST KILL card
   rooftopLife.setQuality(tier);
@@ -3595,6 +3622,18 @@ declare global {
       tunnels: () => { length: number }[];
       /** O7: the NaN/Inf probe's last frame (null without `?nanprobe`). */
       nanProbe: () => NanProbeReading | null;
+      /** Stormlit L8 QA: what `names` add to the linear HDR scene BEFORE
+       * bloom — the same frozen frame rendered without and with them —
+       * over the pixels they brighten by > 0.004: count, peak / p99 luma,
+       * the largest added luma, and how many they push over the bloom
+       * threshold. Null if no name matched. */
+      hdrLuma: (names: string[]) => {
+        pixels: number;
+        peak: number;
+        p99: number;
+        added: number;
+        crossed: number;
+      } | null;
       /** O7: queue the probe's positive control; the NaN pixels it must
        * count (null without a probe). */
       nanInject: () => number | null;
@@ -3666,6 +3705,9 @@ declare global {
        * the renderer — `stagedDraws` counts the draws only destruction
        * adds (damaged mesh, debris, dust, falling wrecks, scorch,
        * scaffolding; not the impact pool, which bullets feed too). */
+      /** L7 QA: the inferno — the burn drawn, its sites and draws, the D8
+       * `floating` count (0) and the overdraw proxy. */
+      inferno: () => InfernoStats;
       /** D9 QA: the props on this client and what they draw. */
       props: () => {
         down: number;
@@ -3906,6 +3948,8 @@ function qaSystems(): {
     ["traffic", [traffic.mesh]],
     ["headlightCones", [headlights.cones]],
     ["headlightPools", [headlights.pools]],
+    ["streetGlow", [streetlights.glow.mesh]], // Stormlit L8
+    ["farTraffic", [farTraffic.points]], // Stormlit L8
     ["movers", [movers.rig, movers.hulls, movers.rotors]],
     ["moverLights", [moverLights.points]],
     ["train", [train.mesh]],
@@ -3943,6 +3987,10 @@ function qaSystems(): {
       ],
     ],
     ["impacts", [impacts.points]],
+    // L7: the inferno's three draws, one by one.
+    ["infernoFlames", [inferno.flames]],
+    ["infernoSmoke", [inferno.smoke]],
+    ["infernoAir", [inferno.air]],
     ["scaffold", [scaffold.mesh]],
     ["wrecks", [wrecks.group]],
     ["missiles", [missileRenderer.group]],
@@ -4046,6 +4094,7 @@ function clearQaDestruction(): void {
   qaStaged.burns.clear();
   qaStaged.wrecks.length = 0;
   qaStaged.active = false;
+  qaBurn = null; // L7
 }
 window.__ab = {
   bootedAt: () => bootedAt,
@@ -4639,6 +4688,54 @@ window.__ab = {
   // O7: the NaN/Inf probe (null without `?nanprobe`), its positive control,
   // and the per-frame hook the black-box detector reads frames through.
   nanProbe: () => nanProbe?.read(renderer) ?? null,
+  hdrLuma: (names) => {
+    // Two synchronous renders of ONE frozen scene state — no sim step runs
+    // between them — with `names` hidden, then shown. The scene pass draws
+    // the linear HDR scene into the composer's readBuffer as it stands when
+    // render() starts (the final pass then swaps the pair), so that target
+    // is taken BEFORE each render and read after it.
+    const render = (): Float32Array => {
+      const target = composer.readBuffer;
+      composer.render();
+      const { width, height } = target;
+      const raw = new Uint16Array(width * height * 4);
+      renderer.readRenderTargetPixels(target, 0, 0, width, height, raw);
+      const luma = new Float32Array(width * height);
+      const h = THREE.DataUtils.fromHalfFloat;
+      for (let i = 0; i < luma.length; i++) {
+        luma[i] =
+          0.2126 * h(raw[i * 4] ?? 0) +
+          0.7152 * h(raw[i * 4 + 1] ?? 0) +
+          0.0722 * h(raw[i * 4 + 2] ?? 0);
+      }
+      return luma;
+    };
+    const ab = window.__ab;
+    if (!ab || ab.qaHide(names).length === 0) return null;
+    const base = render();
+    ab.qaHide([]);
+    const luma = render();
+    const lit: number[] = [];
+    let added = 0;
+    let crossed = 0;
+    for (let i = 0; i < luma.length; i++) {
+      const now = luma[i] as number;
+      const was = base[i] as number;
+      if (now - was <= 0.004) continue;
+      lit.push(now);
+      added = Math.max(added, now - was);
+      // Pushed over the bloom threshold by these systems (was under it).
+      if (now > BLOOM_THRESHOLD && was <= BLOOM_THRESHOLD) crossed++;
+    }
+    lit.sort((x, y) => x - y);
+    return {
+      pixels: lit.length,
+      peak: lit[lit.length - 1] ?? 0,
+      p99: lit[Math.floor(lit.length * 0.99)] ?? 0,
+      added,
+      crossed,
+    };
+  },
   nanInject: () => nanProbe?.inject(renderer.getPixelRatio()) ?? null,
   qaAfterRender: (fn) => {
     qaAfterRender = fn;
@@ -4801,6 +4898,9 @@ window.__ab = {
   qaDestruction: (spec) => {
     if (spec === null || !spec.keep) clearQaDestruction();
     if (spec === null) return null;
+    // L7: a staged burn level overrides the server's, snapped (a window
+    // measured on it never ramps); cleared with the staging.
+    if (spec.burn !== undefined) qaBurn = Math.min(1, Math.max(0, spec.burn));
     const staged = stageDestruction(
       city.cityBuildings,
       socket.cityDamage,
@@ -4854,6 +4954,7 @@ window.__ab = {
       wrecks: crashed,
     };
   },
+  inferno: () => inferno.info(),
   props: () => ({
     down: socket.props.downCount,
     gaps: socket.props.gapMask,
@@ -5875,6 +5976,7 @@ const frame = (now: number): void => {
   cityLife.updateTaxis(renderMs);
   traffic.update(chase.position, renderMs, cityReact, cityLife.taxiPoses);
   headlights.update(chase.position, traffic); // L6: after traffic.update
+  farTraffic.update(renderMs); // L8: same latched clock as the fleet
   // Every L2 system takes the SAME latched clock the crash check used.
   movers.update(chase.position, renderMs, moverLights);
   // L5/T2, same latched clock; any plane passing close draws a horn.
@@ -5904,10 +6006,45 @@ const frame = (now: number): void => {
       if (target.id === leaderId) leaderPos = target.pos;
     }
   }
+  // S4: the zeppelin, its flak and its fall. L6: posed here, BEFORE the
+  // searchlights, so the beams its lamps and escort scouts throw — landed
+  // on the roofs they meet, a pool of light in the mover cloud each — are
+  // this frame's, like the hull. Its beams go first: a full beam mesh drops
+  // a helicopter's spot, never the carrier's.
+  const bossViewer = qaView ? qaView.eye : chase.position;
+  bossRenderer.update(
+    socket.boss,
+    socket.bossHp,
+    socket.flak,
+    // S9: its detail LOD reads the viewer — the QA eye when one is held.
+    bossViewer,
+    renderMs,
+    now,
+  );
+  beamSpots.length = 0;
+  const fogNear = scene.fog instanceof THREE.Fog ? scene.fog.near : 0;
+  const fogFar = scene.fog instanceof THREE.Fog ? scene.fog.far : 1e9;
+  for (let i = 0; i < bossRenderer.spotCount; i++) {
+    const spot = bossRenderer.spots[i] as SpotBeam;
+    landBeam(
+      spot,
+      bossRenderer.spotSpread[i] as number,
+      city.cityBuildings,
+      city.cityIndex,
+      bossViewer,
+      fogNear,
+      fogFar,
+      moverLights,
+    );
+    beamSpots.push(spot);
+  }
+  for (let i = 0; i < movers.spots.length; i++) {
+    beamSpots.push(movers.spots[i] as SpotBeam);
+  }
   searchlights.update(
     chase.position,
     renderMs,
-    movers.spots,
+    beamSpots,
     moverLights,
     trackedPlanes,
     leaderPos,
@@ -6118,17 +6255,8 @@ const frame = (now: number): void => {
   aaNests.update(propsViewer, renderMs, now, aaEnemyPos);
   scarsRenderer.update(propsViewer, renderMs, now);
   facadeScars.update(propsViewer, now);
-  // S4: the zeppelin, its flak and its fall; the HUD bar while it flies;
-  // "it got away" once, when a raid runs out still flying.
-  bossRenderer.update(
-    socket.boss,
-    socket.bossHp,
-    socket.flak,
-    // S9: its detail LOD reads the viewer — the QA eye when one is held.
-    qaView ? qaView.eye : chase.position,
-    renderMs,
-    now,
-  );
+  // S4: the HUD bar while the zeppelin flies (L6: it is posed above, before
+  // the searchlights); "it got away" once, when a raid runs out still flying.
   const bossRaid = socket.boss.raid;
   if (bossRaid && bossRaid.id !== bossMaxFor) {
     bossMaxFor = bossRaid.id;
@@ -6214,7 +6342,20 @@ const frame = (now: number): void => {
   }
   for (const ev of thunder.due(now)) audio.thunder(ev.gain, ev.hard);
   storm.update(chase.position, now);
+  // L7: the burn this frame — the server's eased, a QA stage's or a fresh
+  // welcome's snapped — and the deck glowing over the fires (last frame's
+  // columns: they move slower than a frame).
+  {
+    const target = qaBurn ?? socket.burn;
+    if (qaBurn !== null || burnWelcome !== socket.welcome) {
+      burnShown = target;
+      burnWelcome = socket.welcome;
+    } else {
+      burnShown += (target - burnShown) * (1 - Math.exp(-dt / 1.5));
+    }
+  }
   clouds.update(chase.position, camera.quaternion, renderMs);
+  clouds.setGlow(inferno.cloudGlow, inferno.cloudGlowCount, burnShown);
   // L12: the cycle's horizon is the storm's clear-sky fog base.
   skyCycle.update(renderMs);
   storm.setFogBase(skyCycle.horizon);
@@ -6238,6 +6379,7 @@ const frame = (now: number): void => {
     renderMs === null
       ? 0
       : dustHaze(socket.collapses.list, chase.position, renderMs),
+    burnShown,
   );
   skyDome.setAir(sky);
   // L1: the latest strike lights the clouds from inside during its flash.
@@ -6416,9 +6558,25 @@ const frame = (now: number): void => {
   // S5 atmosphere, once the camera is final (shimmer and shafts project
   // through it): fog banks clear of every plane, litter kicked by low
   // passes, all on the latched world clock.
-  const heatCount = explosions.heatSources(now); // J1 blast shimmer
+  // L7: the inferno, once the camera is final (its picks and the air's
+  // point sizes read it); its fires shimmer after the J1 blasts.
+  inferno.update({
+    burn: burnShown,
+    fires: socket.fires,
+    // The camera, not the plane: what is picked and lit follows the view
+    // (the same in play; a QA camera may sit far from the parked plane).
+    viewer: camera.position,
+    camera,
+    viewportH: renderer.domElement.height,
+    worldMs: renderMs,
+    now,
+  });
+  const heatCount = inferno.mergeHeat(
+    explosions.heat,
+    explosions.heatSources(now), // J1 blast shimmer
+  );
   atmosphere.update({
-    heat: explosions.heat,
+    heat: inferno.heat,
     heatCount,
     camera,
     cameraPos: chase.position,

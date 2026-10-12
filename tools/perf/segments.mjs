@@ -416,7 +416,7 @@ export const SEGMENTS = [
     // has a viaduct over it). Buildings 332 and 325 (west) and 375 and 374
     // (east) toppled across it 56–62 s before the segment's instant, after
     // 25 % of the chunks of the five buildings within 120 m of (1200, 1700)
-    // were shot away: 6 collapses, 386 chunks down, the last landed 44 s
+    // were shot away: 8 collapses (L3 seed 27; 6 and 386 chunks before), the last landed 44 s
     // before the instant — no dust, nothing moving; the harness asserts
     // every collapse is at rest. A glide in WALL time, like `hole`.
     x: 1200,
@@ -430,12 +430,13 @@ export const SEGMENTS = [
         z: 1700,
         r: 120,
         share: 0.25,
-        // L3: 10, not 9 — the Art Deco landmark profiles changed the
+        // L3: 27, not 9 — the Art Deco landmark profiles changed the
         // city's chunk count (and so the destruction caps), and seed 9's
-        // area pass now brings 375 down before the scripted fell. Seed 10
-        // stages the same scene: 6 collapses, every fell standing until
-        // its own.
-        seed: 10,
+        // area pass now brings 375 down before its scripted fell. Seed 27
+        // stages on both the pre- and post-L3 city (8 collapses each, every
+        // fell standing until its own), so an --ab-ref across L3 measures
+        // the same scene in both arms.
+        seed: 27,
         t: -75_000,
         stepMs: 500,
         buildings: 5,

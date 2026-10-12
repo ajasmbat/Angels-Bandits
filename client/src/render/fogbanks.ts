@@ -133,8 +133,14 @@ export const MIST_CROSS_MAX = 2;
 const MIST_STEP = 13;
 /** Strands on one street keep this far apart (wrap-aware), m. */
 const MIST_STRAND_GAP = 170;
-/** Per-puff alpha (a strand seen end-on stacks ~6 of them). */
-export const MIST_ALPHA = 0.11;
+/** Per-puff alpha: a strand seen end-on stacks 6 of them, 1 − 0.9⁶ ≈ 0.47
+ * — about one S5 bank's BANK_OPACITY_MAX. */
+export const MIST_ALPHA = 0.1;
+/** L5: how much brighter than the bare night haze a lit layer reads — the
+ * street light it hangs in (canyon mist) or over (banks). The brightest
+ * result stays ≈ 0.25 luminance: far under the 0.72 bloom threshold. */
+const MIST_GAIN = 3;
+const BANK_GAIN = 1.6;
 // The contract the no-test claim rests on: a puff's whole sprite stays
 // inside the canyon, facades at LOT_LINE.
 if (MIST_SIZE_MAX / 2 + MIST_CROSS_MAX + 4 > LOT_LINE) {
@@ -583,6 +589,7 @@ export class FogBanks {
     alpha: number,
     flat: number,
     under: number,
+    gain: number,
   ): void {
     const puffs = this.puffAttr.array as Float32Array;
     const tints = this.tintAttr.array as Float32Array;
@@ -591,9 +598,10 @@ export class FogBanks {
     puffs[k * 4 + 1] = p.y;
     puffs[k * 4 + 2] = p.z;
     puffs[k * 4 + 3] = size;
-    tints[k * 4] = LIGHT_GAIN * (1 - lit + lit * tint[0] * 1.6);
-    tints[k * 4 + 1] = LIGHT_GAIN * (1 - lit + lit * tint[1] * 1.6);
-    tints[k * 4 + 2] = LIGHT_GAIN * (1 - lit + lit * tint[2] * 1.6);
+    const g = LIGHT_GAIN * gain;
+    tints[k * 4] = g * (1 - lit + lit * tint[0] * 1.6);
+    tints[k * 4 + 1] = g * (1 - lit + lit * tint[1] * 1.6);
+    tints[k * 4 + 2] = g * (1 - lit + lit * tint[2] * 1.6);
     tints[k * 4 + 3] = alpha;
     shapes[k * 2] = flat;
     shapes[k * 2 + 1] = under;
@@ -681,6 +689,7 @@ export class FogBanks {
           PUFF_ALPHA * density * part,
           BANK_FLAT,
           BANK_UNDER * low,
+          1 + (BANK_GAIN - 1) * low,
         );
       }
     }
@@ -714,6 +723,7 @@ export class FogBanks {
           MIST_ALPHA * density,
           MIST_FLAT,
           MIST_UNDER,
+          MIST_GAIN,
         );
       }
     }

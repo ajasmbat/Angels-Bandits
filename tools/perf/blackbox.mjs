@@ -791,10 +791,7 @@ async function flyProfile(browser, port, name, opts, resolvePaths) {
     dump: opts.dump,
   });
   if (opts.hide.length > 0) {
-    const hidden = await page.evaluate(
-      (h) => window.__ab.qaHide(h),
-      opts.hide,
-    );
+    const hidden = await page.evaluate((h) => window.__ab.qaHide(h), opts.hide);
     const unknown = opts.hide.filter((n) => !hidden.includes(n));
     if (unknown.length > 0) {
       throw new Error(`--hide: no system ${unknown.join(", ")}`);

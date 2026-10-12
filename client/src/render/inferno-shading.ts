@@ -67,8 +67,8 @@ export function setFirePhase(worldMs: number): void {
 const fract = (v: number): number => v - Math.floor(v);
 
 /** A building is gutted between these shares of its chunks worn away. */
-export const GUT_WEAR_LO = 0.22;
-export const GUT_WEAR_HI = 0.5;
+export const GUT_WEAR_LO = 0.1;
+export const GUT_WEAR_HI = 0.3;
 
 /** The gut wear a damaged building's instances carry (aRoof.w), 0..1. */
 export function gutWear(wearShare: number): number {
@@ -129,7 +129,7 @@ float gutK = ${GUT_K_GLSL};
 if (gutK > 0.0 && brkDmg < 0.5) {
   float gutSoot = abHash(floor(vMeters.xz * 0.35 + vec2(vMeters.y * 0.21)), vBSeed * 29.0);
   vec3 gutChar = vec3(0.035, 0.03, 0.028) * (0.55 + 0.9 * gutSoot);
-  diffuseColor.rgb = mix(diffuseColor.rgb, gutChar, gutK * 0.9);
+  diffuseColor.rgb = mix(diffuseColor.rgb, gutChar, gutK * 0.94);
 }
 `;
 
@@ -147,12 +147,17 @@ export const GUTTED_EMISSIVE_GLSL = /* glsl */ `
 // --- L7 gutted frames: the lights out, fire inside, ember edges ---
 if (gutK > 0.0 && brkDmg < 0.5) {
   totalEmissiveRadiance *= 1.0 - gutK;
+  // Fire takes whole floors (some burnt out, dark), and within a burning
+  // floor some rooms: a skeleton of black voids and burning ones, from a dull
+  // ember to a roaring blaze.
   float gutRoom = abHash(winCell + 113.0, vBSeed * 23.0);
-  float gutBurning = step(gutRoom, 0.2 + 0.65 * gutK) * facade;
+  float gutFloor = abHash(vec2(winCell.y, 3.0), vBSeed * 17.0);
+  float gutBurning = step(gutRoom, 0.15 + 0.5 * gutK) * step(gutFloor, 0.72) * facade;
+  float gutHeat = 0.3 + 0.7 * abHash(winCell + 7.0, vBSeed * 31.0);
   float gutFlick = 0.72 + 0.28 * sin(6.2832 * (uFirePhase.x + gutRoom * 3.0))
                          * sin(6.2832 * (uFirePhase.y + gutRoom * 7.0));
-  vec3 gutFire = mix(vec3(0.6, 0.1, 0.012), ${GUT_FIRE_HOT}, (1.0 - winF.y) * gutFlick);
-  totalEmissiveRadiance += gutFire * (pane * gutBurning * gutK * gutFlick);
+  vec3 gutFire = mix(vec3(0.6, 0.1, 0.012), ${GUT_FIRE_HOT}, (1.0 - winF.y) * gutFlick * gutHeat);
+  totalEmissiveRadiance += gutFire * (pane * gutBurning * gutK * gutFlick * gutHeat);
   // The frame: within 0.25 m outside a burning pane's edge, at full detail.
   float gutOut = max(paneD.x * winPitch.x, paneD.y * winPitch.y);
   float gutEdge = (1.0 - smoothstep(0.0, 0.25, gutOut)) * step(0.0, gutOut) * winDetail;

@@ -328,6 +328,8 @@ const BURN_FOG_MIX = 0.38;
 const BURN_FOG_COLOR = 0x2a140c;
 const BURN_HAZE_MIX = 0.5;
 const BURN_HAZE_RGB = [0.1, 0.055, 0.04] as const;
+/** The sky dome's multiplicative pull at burn 1 (× BURN_FOG_MIX). */
+const BURN_DOME_TINT = new THREE.Color(0.62, 0.36, 0.26);
 
 /** The slice of the shared weather (common/src/weather.ts) the sky reads. */
 export interface SkyWeather {
@@ -568,9 +570,12 @@ export class StormRenderer {
         scene.background.copy(scene.fog.color);
       }
     }
-    // Dome stain: multiplicative tint pulled toward violet and brightened.
+    // Dome stain: multiplicative tint pulled toward violet and brightened —
+    // L7: and toward smoke-brown as the city burns (a darken-leaning tint,
+    // the same pull the fog takes, so the horizon stays seamless).
     this.scratch
       .setRGB(dim, dim, dim)
+      .lerp(BURN_DOME_TINT, burn * BURN_FOG_MIX)
       .lerp(this.flashColor, f * FLASH_TINT)
       .multiplyScalar(1 + f * 1.6);
     return { tint: this.scratch, domeVisible: inK < 0.5 };

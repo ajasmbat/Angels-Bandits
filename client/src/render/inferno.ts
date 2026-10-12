@@ -68,6 +68,7 @@ import {
   FIRE_LIGHT_COUNT_UNIFORM,
   FIRE_LIGHT_UNIFORM,
   FIRE_PHASE_UNIFORM,
+  GUT_WEAR_LO,
   INFERNO_BURN_UNIFORM,
   setFirePhase,
 } from "./inferno-shading";
@@ -76,7 +77,7 @@ import { RENDER_ORDER } from "./render-order";
 import { nearestImageInto, uploadPrefix } from "./wrapPlacement";
 
 /** Flame sites drawn at once (full share), and cards per site. */
-export const FLAME_SITES_MAX = 48;
+export const FLAME_SITES_MAX = 64;
 const CARDS = 3;
 /** Smoke columns drawn at once (full share), and puffs per column. */
 export const COLUMNS_MAX = 14;
@@ -496,21 +497,25 @@ void main() {
   float x = vUv.x;
   float y = vUv.y;
   float sx = vSeed * 37.0 + vLayer * 11.0;
-  // Two octaves scrolling up the flame (periods 4 and 8 lattice cells: the
-  // phase scroll wraps seamlessly).
-  vec2 q = vec2(x * 2.2 + sx, y * 2.0 - uFirePhase.x * 4.0);
-  float n = 0.62 * abInfNoise(q, 4.0) + 0.38 * abInfNoise(vec2(q.x * 2.0 + 3.1, q.y * 2.0), 8.0);
-  // Teardrop: wide at the base, licking narrower toward a ragged tip.
-  float xd = x + (n - 0.5) * 0.45 * y;
-  float width = 0.5 * pow(max(1.0 - y, 0.0), 0.55) * (0.72 + 0.56 * n);
-  float body = 1.0 - smoothstep(width * 0.5, width, abs(xd));
-  float tip = 1.0 - smoothstep(0.3, 1.0, y + (n - 0.5) * 0.65);
-  float m = body * tip * smoothstep(0.0, 0.07, y);
-  float heat = m * (1.0 - y * 0.85) * (0.6 + 0.6 * n) * mix(1.0, 0.72, step(vLayer, 0.5));
+  // Three octaves scrolling up the flame (periods 4, 8 and 16 lattice cells
+  // along y: the phase scroll wraps seamlessly).
+  vec2 q = vec2(x * 2.4 + sx, y * 2.2 - uFirePhase.x * 4.0);
+  float n = 0.5 * abInfNoise(q, 4.0)
+          + 0.3 * abInfNoise(vec2(q.x * 2.1 + 5.3, q.y * 2.0), 8.0)
+          + 0.2 * abInfNoise(vec2(q.x * 4.3 + 1.7, q.y * 4.0), 16.0);
+  // A soft teardrop, its outline licked sideways more toward the tip...
+  float xd = x + (n - 0.5) * 0.55 * y;
+  float width = 0.48 * pow(max(1.0 - y, 0.0), 0.6);
+  float body = 1.0 - smoothstep(width * 0.15, width, abs(xd));
+  // ...torn into tongues by the noise, more the higher it climbs.
+  float erode = smoothstep(0.15 + 0.6 * y, 0.45 + 0.6 * y, n + 0.25);
+  float m = body * erode * smoothstep(0.0, 0.08, y);
+  float heat = m * (1.0 - 0.8 * y) * (0.7 + 0.6 * n) * mix(1.0, 0.72, step(vLayer, 0.5));
   vec3 col = mix(vec3(0.45, 0.05, 0.0), vec3(1.0, 0.36, 0.04), smoothstep(0.12, 0.5, heat));
   col = mix(col, vec3(1.0, 0.82, 0.5), smoothstep(0.62, 1.0, heat));
   col *= ${FIRE_GAIN.toFixed(4)} * mix(0.5, 1.0, smoothstep(0.08, 0.9, heat));
-  float a = smoothstep(0.02, 0.3, m) * vAlpha;
+  // Cool edges are thin, the hot core opaque.
+  float a = smoothstep(0.0, 0.35, m) * (0.5 + 0.5 * smoothstep(0.1, 0.6, heat)) * vAlpha;
   if (a < 0.004) discard;
   gl_FragColor = vec4(col, a);
   #include <fog_fragment>
@@ -563,7 +568,7 @@ void main() {
   float baseFade = smoothstep(4.0, 24.0, h);
   float camFade = smoothstep(size * 0.35, size * 1.2, dist);
   vAlpha = aB.z * env * baseFade * camFade;
-  vGlow = aB.z * exp(-h / 70.0);
+  vGlow = aB.z * exp(-h / 38.0);
   vRise = ph;
   vSeed = aB.y;
   #include <fog_vertex>
@@ -585,15 +590,15 @@ void main() {
   float r2 = dot(vUv, vUv) * 4.0;
   // Billowing edge: a static noise turning with the puff (Mobile: plain).
   float n = uSmokeDetail > 0.5 ? abInfNoise(vUv * 3.2 + vSeed * 17.0, 64.0) : 0.5;
-  float shape = exp(-r2 * 1.5) * (1.0 - smoothstep(0.45, 1.0, r2)) * (0.6 + 0.8 * n);
-  float a = clamp(shape, 0.0, 1.0) * vAlpha * 0.92;
+  float shape = exp(-r2 * 1.5) * (1.0 - smoothstep(0.45, 1.0, r2)) * (0.45 + 1.1 * n);
+  float a = clamp(shape, 0.0, 1.0) * vAlpha * 0.95;
   if (a < 0.003) discard;
   // Near-black smoke, a touch greyer (moonlit) as it rises; lit orange from
   // below by its own fire, strongest under each puff.
-  vec3 albedo = vec3(0.028, 0.026, 0.028) + vec3(0.025, 0.026, 0.034) * vRise;
+  vec3 albedo = vec3(0.012, 0.011, 0.012) + vec3(0.016, 0.017, 0.022) * vRise;
   float under = smoothstep(0.3, -0.5, vCornerY);
   float flick = 0.85 + 0.15 * sin(6.2832 * (uFirePhase.x + vSeed));
-  vec3 glow = vec3(1.0, 0.33, 0.07) * (vGlow * (0.5 + 0.5 * under) * flick);
+  vec3 glow = vec3(1.0, 0.3, 0.06) * (0.6 * vGlow * (0.35 + 0.65 * under) * flick);
   gl_FragColor = vec4(albedo + glow, a);
   #include <fog_fragment>
 }
@@ -1007,7 +1012,7 @@ export class Inferno {
         entry.builtAt = now;
       }
       if (entry.n > 0) this.active.push(i);
-      if (entry.wear > 0.22) gutted++;
+      if (entry.wear > GUT_WEAR_LO) gutted++;
     }
     this.stats.gutted = gutted;
   }
@@ -1218,7 +1223,7 @@ export class Inferno {
       if (w <= 0.01) continue;
       const img = nearestImageInto(this.img, viewer, this.canon);
       const grow = (0.55 + 0.45 * (this.cW[c] as number)) * scale;
-      const width = info.size * grow * (info.kind === KIND_FLOOR ? 1 : 0.85);
+      const width = info.size * grow * (info.kind === KIND_FLOOR ? 1.35 : 1.1);
       const height = width * (info.kind === KIND_FLOOR ? 1.7 : 2.1);
       const seed = hash01(info.key | 0, Math.floor(info.key / 4294967296));
       for (let j = 0; j < CARDS; j++) {
@@ -1403,8 +1408,8 @@ export class Inferno {
           this.canon.x + info.nx * 2,
           this.canon.y + info.size * 0.8,
           this.canon.z + info.nz * 2,
-          18 + info.size * 4 * w,
-          0.6 + 0.6 * w,
+          12 + info.size * 2.5 * w,
+          0.45 + 0.45 * w,
         );
         lightsWanted++;
       }

@@ -15,10 +15,11 @@ far field and the horizon, not the near-city weather.
 |---|---|
 | `reference-wide.jpg` | New view: 300 m over the river, looking along it. Before, the city stopped at the 800 m fog limit against an empty navy sky. After, the river runs on into the far city (waterfront lamps, bridge light chains), the street grid continues to the horizon, the far towers stand as dark silhouettes with lit windows, and the horizon glows warm under the sky. |
 | `reference-wide-inferno.jpg` | The same view at burn 0.9: the far districts afire, the windows gone ember, the horizon glow hotter and redder. |
-| `high-overview.jpg` | Kilometres of city out to the horizon, where there was haze. |
+| `high-overview.jpg` | Kilometres of city out to the horizon, where there was haze (both in rain). |
 | `chase-rooftops.jpg` | From roof height, the far skyline stands above the near blocks right across the horizon, with a spire silhouette. |
 | `street-low.jpg` | In the canyon the far field is almost all hidden by the near blocks, as it should be. The only change is a warmer horizon at the street's end. |
-| `boss-closeup.jpg` | Behind the carrier, the far city and the glow fill what was empty fog. |
+| `boss-closeup.jpg` | Behind the carrier, the far city and the glow fill what was empty fog, with two spire silhouettes on the horizon. |
+| `moon.jpg` | Clear weather, toward the moon. The far skyline (spires, setbacks, lit windows) stands on a warm horizon band under the dark sky. Before, the city ended at the fog. (The before frame caught a lightning flash.) |
 
 ## Layered depth, and one deliberate gap
 
@@ -57,3 +58,26 @@ behind it.
   and hotter and redder with the inferno burn.
 
 The contract is written up in `concepts/invariants/sky-meets-fog.md`.
+
+## Probes (scratch scripts, not committed tests)
+
+- **The shell.** `farShellDistance` was sampled every 0.5 m over 800–6000 m.
+  It is strictly increasing and stays in [792.0, 797.4] m, always under the
+  fog limit.
+- **The lattice never pops.** A CPU-side flight drove the real
+  `FarSkyline.update` 3 km east at 7 m a frame, across the torus seam and 30
+  cell boundaries. Every frame it rebuilt each tower the way the vertex
+  shader does. Over 2.63 M tower checks there were **0 problems**:
+  - every tower within R was present exactly once;
+  - each one carried its own world cell's data;
+  - none moved in the unwrapped plane.
+- **Bloom.** The pre-bloom HDR light the far skyline adds (`__ab.hdrLuma`,
+  `AB_GALLERY_PROBE=farSkyline`) peaks at 0.33 in `high-overview` and 0.30
+  in `chase-rooftops`. It pushes **0 pixels** over the 0.72 threshold. The
+  shader also caps a tower's stacked lights at 0.7 before the far fade.
+- **The glow curve.** `cityGlowProfile` is 1.00 at the horizon, 0.29 at 5°
+  up and 0.013 at the fog stop (18°). It is 0.32 looking 20° down. The GLSL
+  carries the same two constants.
+- **Tower data.** A full window fill (10 404 cells) takes ~3 ms warm, and
+  one row (crossing a cell) ~0.25 ms on this box. 8 208 of the High window's
+  cells hold a tower: 1 175 over 150 m and 1 089 Art Deco setbacks.

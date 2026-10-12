@@ -487,6 +487,89 @@ export const VIEWS = [
     eye: [300, 105, 900],
     at: [420, 45, 1050],
   },
+  // L11 Neonized New York: one close-up per New York building type, across
+  // the street from a street face (archetypes.ts facadeStyleFor on the seed
+  // city), and the neon layer — the plaza (4,4) screen's street wall and a
+  // shop street at eye level. The plane is parked at the L3 spot, clear of
+  // every frame.
+  {
+    // Prewar brick tower (54, 534.5), 60 m: rusticated base over the shops.
+    name: "facade-prewar",
+    x: 400,
+    z: 520,
+    y: 70,
+    yaw: 0,
+    eye: [1988, 14, 515],
+    at: [20, 24, 545],
+    weather: "clear",
+  },
+  {
+    // Art Deco tower (250.5, 849), 88 m: piers, strips, chevron spandrels.
+    name: "facade-deco",
+    x: 400,
+    z: 520,
+    y: 70,
+    yaw: 0,
+    eye: [192, 26, 820],
+    at: [220, 40, 850],
+    weather: "clear",
+  },
+  {
+    // Cast-iron loft (37.5, 900), 48 m: tall arched windows, columns.
+    name: "facade-castiron",
+    x: 400,
+    z: 520,
+    y: 70,
+    yaw: 0,
+    eye: [1990, 12, 878],
+    at: [20, 17, 905],
+    weather: "clear",
+  },
+  {
+    // Brownstone row (130.5, 958), 21 m: stoops, 6-over-6 windows, hoods.
+    name: "facade-brownstone",
+    x: 400,
+    z: 520,
+    y: 70,
+    yaw: 0,
+    eye: [212, 5, 944],
+    at: [180, 7, 962],
+    weather: "clear",
+  },
+  {
+    // Modern glass tower (50.5, 246.5), 113 m: mullion grid, reflections.
+    name: "facade-glass",
+    x: 400,
+    z: 520,
+    y: 70,
+    yaw: 0,
+    eye: [1984, 38, 226],
+    at: [20, 54, 250],
+    weather: "clear",
+  },
+  {
+    // Plaza (4,4) at the screen on (1019.8, 964): its lit street wall.
+    name: "neon-plaza",
+    x: 400,
+    z: 520,
+    y: 70,
+    yaw: 0,
+    eye: [925, 12, 925],
+    at: [1010, 22, 975],
+    weather: "clear",
+  },
+  {
+    // Down the x = 1000 avenue at eye level: storefronts, neon window
+    // signs, marquees, the wet street.
+    name: "neon-street-night",
+    x: 400,
+    z: 520,
+    y: 70,
+    yaw: 0,
+    eye: [1004, 4, 1222],
+    at: [992, 6, 1320],
+    weather: "clear",
+  },
   // L4 Stormlit: the river along its length, high over the south bank like
   // the reference's centre — the x = 400 suspension bridge close, the
   // street bridges beyond it, the water's long streaks between. The second

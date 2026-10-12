@@ -28,6 +28,7 @@ import {
   wrapDeltaAxis,
 } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { FacadeStyle, facadeStyleFor } from "./archetypes";
 import { emissiveBoost } from "./emissive";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import {
@@ -288,6 +289,9 @@ export function signageFor(b: Building, seed: number): BuildingSignage {
   };
   const t1 = b.tiers[0];
   if (!t1) return none;
+  // L11: a brownstone row has stoops and front doors, not shopfronts — no
+  // blade sign, billboard or storefront strip over a stoop.
+  if (facadeStyleFor(b) === FacadeStyle.BROWNSTONE) return none;
 
   const bSeed =
     (seed ^

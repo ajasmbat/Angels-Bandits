@@ -140,8 +140,8 @@ export function facadeColor(
     return out.setHSL(0.02 + t * 0.02, 0.38, 0.12 + t * 0.03); // red brick row
   }
   if (style === FacadeStyle.CAST_IRON) {
-    if (v < 0.4) return out.setHSL(0.11 + t * 0.03, 0.14, 0.19 + t * 0.04); // cream paint
-    if (v < 0.75) return out.setHSL(0.55 + t * 0.05, 0.08, 0.15 + t * 0.04); // grey paint
+    if (v < 0.4) return out.setHSL(0.11 + t * 0.03, 0.16, 0.15 + t * 0.035); // cream paint
+    if (v < 0.75) return out.setHSL(0.55 + t * 0.05, 0.08, 0.13 + t * 0.035); // grey paint
     return out.setHSL(0.3 + t * 0.05, 0.12, 0.11 + t * 0.03); // iron green
   }
   if (style === FacadeStyle.DECO) {

@@ -533,7 +533,9 @@ if (uReflOn > 0.5 && vArch > 0.5) {
   if (rfMaskW > 0.0) {
     float rfCosW = clamp(abs(dot(viewRay, vObjNormal)), 0.0, 1.0);
     float rfFW = mix(${REFL_F0.toFixed(3)}, ${GRAZING_REFLECTANCE.solid.toFixed(2)}, pow(1.0 - rfCosW, 5.0));
-    totalEmissiveRadiance += abRefl(reflect(viewRay, vObjNormal), ${REFL_GLASS_LOD.toFixed(1)}) * (rfFW * rfMaskW);
+    // Never below zero: the probe can hold a slightly negative texel, and
+    // the many punched panes must not spread it over the facade.
+    totalEmissiveRadiance += max(abRefl(reflect(viewRay, vObjNormal), ${REFL_GLASS_LOD.toFixed(1)}), vec3(0.0)) * (rfFW * rfMaskW);
   }
 }
 `;

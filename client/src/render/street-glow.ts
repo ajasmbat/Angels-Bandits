@@ -109,7 +109,7 @@ const CORNER = 1.0;
 /** Storefront spill along a building lot (the brightest shops). */
 const SHOP = 0.35;
 /** Hard cap on the luminance the strip adds to any pixel (see main()). */
-const STRIP_CAP = 0.45;
+const STRIP_CAP = 0.34;
 /** Neon smear peak luminance (sparse, a few lots per street). */
 const NEON_LUM = 0.18;
 
@@ -471,10 +471,10 @@ const PLATOON_MAX = 4;
 const MEMBER_SPACING = 7.5;
 const GAP_MIN = 14;
 const GAP_SPAN = 70;
-/** Light colours, linear: peaks ≈ 0.40 (white) and ≈ 0.34 (red) luminance —
+/** Light colours, linear: peaks ≈ 0.34 (white) and ≈ 0.30 (red) luminance —
  * sub-bloom even where one crosses the brightest street glow (STRIP_CAP). */
-const HEAD_COLOR = [0.43, 0.4, 0.34] as const;
-const TAIL_COLOR = [1.26, 0.1, 0.06] as const;
+const HEAD_COLOR = [0.365, 0.34, 0.29] as const;
+const TAIL_COLOR = [1.1, 0.088, 0.053] as const;
 
 export interface FarCar {
   /** 1 for a lane along z (a north–south street), 0 along x. */

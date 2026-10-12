@@ -116,7 +116,15 @@ interface Cloud {
   /** The floor events squibs fire on (crushed storeys, a pancake's failure;
    * a topple's break-ups). */
   squibs: { t: number; x: number; y: number; z: number }[];
+  /** Every puff's seeds, HASHES per puff (D6: a hash per seed per puff per
+   * frame boxed a double each). */
+  seeds: Float64Array;
+  /** Every puff's kind (PUFF_*). */
+  kinds: Uint8Array;
 }
+
+/** Seeds kept per puff (salts 1..HASHES-1; 0 unused). */
+const HASHES = 10;
 /** Each collapse's cloud, worked out once (D6: it is pure in the collapse,
  * and was recomputed per puff per frame — an object and a hypot each). */
 const clouds = new WeakMap<Collapse, Cloud>();
@@ -165,7 +173,15 @@ function cloudOf(c: Collapse): Cloud {
     fz1,
     surgeAt,
     squibs,
+    seeds: new Float64Array(DUST_PUFFS * HASHES),
+    kinds: new Uint8Array(DUST_PUFFS),
   };
+  for (let k = 0; k < DUST_PUFFS; k++) {
+    cloud.kinds[k] = puffKind(c.id, k);
+    for (let salt = 1; salt < HASHES; salt++) {
+      cloud.seeds[k * HASHES + salt] = hash01(c.id, k, salt);
+    }
+  }
   clouds.set(c, cloud);
   return cloud;
 }
@@ -221,28 +237,33 @@ function puffOf(
   tMs: number,
   out: DustPuff,
 ): boolean {
-  const kind = puffKind(c.id, k);
+  if (k >= DUST_PUFFS) return false;
+  const kind = cloud.kinds[k] as number;
   if (kind === PUFF_SQUIB && cloud.squibs.length > 0) {
     return squibOf(c, cloud, k, tMs, out);
   }
   if (kind === PUFF_SURGE) return surgeOf(c, cloud, k, tMs, out);
-  const birth = COLLAPSE_LEAD_MS * 0.5 + hash01(c.id, k, 1) * 2500;
+  const birth =
+    COLLAPSE_LEAD_MS * 0.5 + (cloud.seeds[k * HASHES + 1] as number) * 2500;
   const age = tMs - c.t0 - birth;
   const env = envelope(age);
   if (env <= 0) return false;
   const s = age / 1000;
-  const angle = hash01(c.id, k, 2) * Math.PI * 2;
+  const angle = (cloud.seeds[k * HASHES + 2] as number) * Math.PI * 2;
   // Rolls outward fast, then hangs: the canyon fills, it doesn't drift off.
-  const reach = cloud.r * (0.3 + 0.9 * hash01(c.id, k, 3));
+  const reach = cloud.r * (0.3 + 0.9 * (cloud.seeds[k * HASHES + 3] as number));
   const spread = reach + 45 * (1 - Math.exp(-s / 4));
   out.x = cloud.x + Math.cos(angle) * spread;
   out.z = cloud.z + Math.sin(angle) * spread;
-  out.y = 4 + cloud.h * hash01(c.id, k, 4) * (1 - Math.exp(-s / 3)) + 0.6 * s;
+  out.y =
+    4 +
+    cloud.h * (cloud.seeds[k * HASHES + 4] as number) * (1 - Math.exp(-s / 3)) +
+    0.6 * s;
   out.size =
     PUFF_SIZE_MIN +
     (PUFF_SIZE_MAX - PUFF_SIZE_MIN) *
       Math.min(1, s / 8) *
-      (0.7 + 0.3 * hash01(c.id, k, 5));
+      (0.7 + 0.3 * (cloud.seeds[k * HASHES + 5] as number));
   out.alpha = env;
   return true;
 }
@@ -256,15 +277,15 @@ function surgeOf(
   tMs: number,
   out: DustPuff,
 ): boolean {
-  const birth = cloud.surgeAt + hash01(c.id, k, 1) * 2500;
+  const birth = cloud.surgeAt + (cloud.seeds[k * HASHES + 1] as number) * 2500;
   const age = tMs - c.t0 - birth;
   const env = envelope(age);
   if (env <= 0) return false;
   const s = age / 1000;
-  const side = Math.floor(hash01(c.id, k, 2) * 4); // −x, +x, −z, +z
+  const side = Math.floor((cloud.seeds[k * HASHES + 2] as number) * 4); // −x, +x, −z, +z
   const alongX = side < 2;
   const sign = side % 2 === 0 ? -1 : 1;
-  const across = hash01(c.id, k, 3);
+  const across = cloud.seeds[k * HASHES + 3] as number;
   // Out of the lot: from the footprint's face, at a point along it…
   const face = alongX
     ? sign > 0
@@ -281,10 +302,12 @@ function surgeOf(
   const street = streetAhead(worldFace, sign) - (alongX ? c.x : c.z);
   const out1 = Math.abs(street - face);
   // …then along the street, one way, most of a block.
-  const turn = hash01(c.id, k, 4) < 0.5 ? -1 : 1;
-  const along = SURGE_ALONG_M * (0.35 + 0.65 * hash01(c.id, k, 5));
+  const turn = (cloud.seeds[k * HASHES + 4] as number) < 0.5 ? -1 : 1;
+  const along =
+    SURGE_ALONG_M * (0.35 + 0.65 * (cloud.seeds[k * HASHES + 5] as number));
   const run = (out1 + along) * (1 - Math.exp(-s / SURGE_TAU_S));
-  const lane = (hash01(c.id, k, 6) * 2 - 1) * (STREET_WIDTH / 2 - 3);
+  const lane =
+    ((cloud.seeds[k * HASHES + 6] as number) * 2 - 1) * (STREET_WIDTH / 2 - 3);
   let u: number; // along the fall-out axis, centre-relative
   let v: number; // across it
   if (run <= out1) {
@@ -300,13 +323,13 @@ function surgeOf(
   const grow = Math.min(1, s / 6);
   out.size =
     (PUFF_SIZE_MIN * 0.8 + (PUFF_SIZE_MAX - PUFF_SIZE_MIN * 0.8) * grow) *
-    (0.6 + 0.4 * hash01(c.id, k, 7));
+    (0.6 + 0.4 * (cloud.seeds[k * HASHES + 7] as number));
   // Ground-hugging; slowly lifting once it has slowed. Never so low that
   // the ground cuts more than the sprite's soft rim.
   const lift = SURGE_LIFT * Math.max(0, s - 3);
   out.y = Math.max(
     0.35 * out.size,
-    2 + (SURGE_TOP_M - 2) * hash01(c.id, k, 8) + lift,
+    2 + (SURGE_TOP_M - 2) * (cloud.seeds[k * HASHES + 8] as number) + lift,
   );
   out.alpha = env * 0.9;
   return true;
@@ -322,19 +345,19 @@ function squibOf(
   out: DustPuff,
 ): boolean {
   const e = cloud.squibs[
-    Math.floor(hash01(c.id, k, 1) * cloud.squibs.length)
+    Math.floor((cloud.seeds[k * HASHES + 1] as number) * cloud.squibs.length)
   ] as Cloud["squibs"][number];
-  const age = tMs - c.t0 - e.t - hash01(c.id, k, 2) * 150;
+  const age = tMs - c.t0 - e.t - (cloud.seeds[k * HASHES + 2] as number) * 150;
   const env = squibEnvelope(age);
   if (env <= 0) return false;
   const s = age / 1000;
-  const side = Math.floor(hash01(c.id, k, 3) * 4);
+  const side = Math.floor((cloud.seeds[k * HASHES + 3] as number) * 4);
   const alongX = side < 2;
   const sign = side % 2 === 0 ? -1 : 1;
-  const across = hash01(c.id, k, 4);
+  const across = cloud.seeds[k * HASHES + 4] as number;
   const jet =
     SQUIB_REACH_M *
-    (0.6 + 0.4 * hash01(c.id, k, 5)) *
+    (0.6 + 0.4 * (cloud.seeds[k * HASHES + 5] as number)) *
     (1 - Math.exp(-s / SQUIB_TAU_S));
   if (c.style === PANCAKE) {
     const face = alongX
@@ -350,13 +373,18 @@ function squibOf(
     out.x = alongX ? face + sign * jet : at;
     out.z = alongX ? at : face + sign * jet;
     // Out of the windows of the storey under the one that just gave way.
-    out.y = Math.max(2, e.y - 1 - 3 * hash01(c.id, k, 6)) - 0.8 * s;
+    out.y =
+      Math.max(2, e.y - 1 - 3 * (cloud.seeds[k * HASHES + 6] as number)) -
+      0.8 * s;
   } else {
     // A break-up in the air: a burst round where the section came apart.
-    const a = hash01(c.id, k, 6) * Math.PI * 2;
+    const a = (cloud.seeds[k * HASHES + 6] as number) * Math.PI * 2;
     out.x = e.x + Math.cos(a) * jet * 0.6;
     out.z = e.z + Math.sin(a) * jet * 0.6;
-    out.y = Math.max(2, e.y + (hash01(c.id, k, 7) - 0.5) * 8 - 1.5 * s);
+    out.y = Math.max(
+      2,
+      e.y + ((cloud.seeds[k * HASHES + 7] as number) - 0.5) * 8 - 1.5 * s,
+    );
   }
   out.size = 5 + 11 * Math.min(1, s / 1.6);
   out.alpha = env;

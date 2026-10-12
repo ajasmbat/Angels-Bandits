@@ -1075,7 +1075,18 @@ export function piecePose(
   tMs: number,
   out: PiecePose,
 ): PiecePose {
-  const tau = (tMs - c.t0) / 1000 - (c.start[i] as number);
+  poseClock.tMs = tMs;
+  return poseNow(c, i, out);
+}
+
+/** poseNow()'s time. D10: the collision loop poses ~4× the pieces D3 did,
+ * and a double handed to a call V8 does not inline is boxed (O5's rule) —
+ * so the loop sets the clock once and poses with no double argument. */
+const poseClock = { tMs: 0 };
+
+/** piecePose at `poseClock.tMs`. */
+function poseNow(c: Collapse, i: number, out: PiecePose): PiecePose {
+  const tau = (poseClock.tMs - c.t0) / 1000 - (c.start[i] as number);
   const land = c.land[i] as number;
   out.axis = c.axis[i] as number;
   if (!(tau > 0)) {
@@ -2576,10 +2587,11 @@ export function collideCollapses(
       continue;
     }
     if (outside(c.bounds, dx, pos.y, dz, radius)) continue;
+    poseClock.tMs = tMs;
     for (let i = 0; i < c.n; i++) {
-      const p = piecePose(c, i, tMs, scratchPose);
+      const p = poseNow(c, i, scratchPose);
       if (fallingOnly && p.rest) continue;
-      const bound = Math.hypot(p.hx, p.hy, p.hz) + radius;
+      const bound = Math.sqrt(p.hx * p.hx + p.hy * p.hy + p.hz * p.hz) + radius;
       const ox = dx - p.x;
       const oy = pos.y - p.y;
       const oz = dz - p.z;

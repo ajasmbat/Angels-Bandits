@@ -1069,4 +1069,34 @@ export const VIEWS = [
       },
     ],
   },
+  // Stormlit L8: the street grid from altitude — the avenue at x = 400
+  // north toward the river (sodium lines, phantom traffic, lit crossings),
+  // the same at dusk and in a downpour, and an east–west street from 150 m.
+  { name: "street-grid", x: 430, z: 1750, y: 300, yaw: 0, pitch: -0.45 },
+  {
+    name: "street-grid-dusk",
+    x: 430,
+    z: 1750,
+    y: 300,
+    yaw: 0,
+    pitch: -0.45,
+    sky: "dusk",
+  },
+  {
+    name: "street-grid-rain",
+    x: 430,
+    z: 1750,
+    y: 300,
+    yaw: 0,
+    pitch: -0.45,
+    weather: "downpour",
+  },
+  {
+    name: "street-grid-low",
+    x: 830,
+    z: 615,
+    y: 150,
+    yaw: Math.PI / 2,
+    pitch: -0.3,
+  },
 ];

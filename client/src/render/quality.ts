@@ -72,6 +72,12 @@ export interface QualityProfile {
   livingWindows: boolean;
   /** L6 headlight cones (the additive volumes). The ground pools stay on. */
   headlightCones: boolean;
+  /** Stormlit L8: share of the far-field phantom car lights (street-glow.ts,
+   * an interleaved draw-range prefix — every avenue thins evenly). */
+  farTraffic: number;
+  /** Stormlit L8: the far street glow's storefront and neon spill (the lamp
+   * lines, roadway wash and lit crossings stay on every tier). */
+  streetGlowSpill: boolean;
   /** L7 the coloured light each sign spills onto the street. */
   signSpill: boolean;
   /** L8 rooftop string lights (the party/pool props stay). */
@@ -211,6 +217,8 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     smokeColumns: 1,
     livingWindows: true,
     headlightCones: true,
+    farTraffic: 1,
+    streetGlowSpill: true,
     signSpill: true,
     rooftopLights: true,
     treeSway: true,
@@ -258,6 +266,8 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     smokeColumns: 1,
     livingWindows: true,
     headlightCones: true,
+    farTraffic: 1,
+    streetGlowSpill: true,
     signSpill: true,
     rooftopLights: true,
     treeSway: true,
@@ -305,6 +315,8 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     smokeColumns: 0.5,
     livingWindows: false,
     headlightCones: false,
+    farTraffic: 0.6,
+    streetGlowSpill: true,
     signSpill: false,
     rooftopLights: false,
     treeSway: false,
@@ -352,6 +364,8 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     smokeColumns: 0.34,
     livingWindows: false,
     headlightCones: false,
+    farTraffic: 0.5,
+    streetGlowSpill: false,
     signSpill: false,
     rooftopLights: false,
     treeSway: false,

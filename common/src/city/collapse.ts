@@ -858,6 +858,14 @@ export interface Collapse {
    * HINGE's pivot drops the same way; 0 for a fixed pivot). */
   readonly v0: Float64Array;
   readonly dg: Float64Array;
+  /** DROP, a crushed storey: how long it is crushed for, s after its start
+   * (its top rides the front down while its base holds, until it is
+   * COLLAPSE_RUBBLE_RATIO of its height; 0 for a piece that only falls),
+   * and that crushed half height, m. */
+  readonly crush: Float64Array;
+  readonly chy: Float64Array;
+  /** Half height at landing, m (where the squash starts from). */
+  readonly lhy: Float64Array;
   /** HINGE: pivot, sign of the rotation about `axis`, angular acceleration,
    * break-up time (s after start), tilt there and spin rate after it. */
   readonly hpx: Float64Array;
@@ -989,16 +997,40 @@ type Draft = { -readonly [K in keyof Collapse]: Collapse[K] };
 const flightAt = { tau: 0 };
 
 /** The in-flight pose (before landing) of piece `i` at `flightAt.tau` s
- * after its start. Writes centre + angle; half extents are the standing
- * ones. */
+ * after its start. Writes centre, angle and half height (the standing one,
+ * but for a storey being crushed); hx / hz are the standing ones. */
 function flight(c: Collapse, i: number, out: PiecePose): void {
   const tau = flightAt.tau;
   const v0 = c.v0[i] as number;
   const g = c.dg[i] as number;
+  out.hy = c.hy[i] as number;
   if (c.mode[i] === MODE_DROP) {
     out.x = c.ox[i] as number;
-    out.y = (c.oy[i] as number) - v0 * tau - 0.5 * g * tau * tau;
     out.z = c.oz[i] as number;
+    const k1 = c.crush[i] as number;
+    if (k1 > 0) {
+      // A crushed storey: its top rides the front down, its base holds…
+      const base = (c.oy[i] as number) - (c.hy[i] as number);
+      out.phi = 0;
+      if (tau < k1) {
+        const top =
+          (c.oy[i] as number) +
+          (c.hy[i] as number) -
+          v0 * tau -
+          0.5 * g * tau * tau;
+        out.y = (top + base) / 2;
+        out.hy = (top - base) / 2;
+        return;
+      }
+      // …then, crushed flat, it falls with the column.
+      const dt = tau - k1;
+      const v1 = v0 + g * k1;
+      const h = c.chy[i] as number;
+      out.y = base + h - v1 * dt - 0.5 * g * dt * dt;
+      out.hy = h;
+      return;
+    }
+    out.y = (c.oy[i] as number) - v0 * tau - 0.5 * g * tau * tau;
     out.phi = ((c.tilt[i] as number) * tau) / (tau + 1.5);
     return;
   }
@@ -1073,7 +1105,6 @@ export function piecePose(
     flightAt.tau = tau;
     flight(c, i, out);
     out.hx = c.hx[i] as number;
-    out.hy = c.hy[i] as number;
     out.hz = c.hz[i] as number;
     return out;
   }
@@ -1086,7 +1117,7 @@ export function piecePose(
   const ly = c.ly[i] as number;
   const lz = c.lz[i] as number;
   const hx = c.hx[i] as number;
-  const hy = c.hy[i] as number;
+  const hy = c.lhy[i] as number;
   const hz = c.hz[i] as number;
   const lphi = c.lphi[i] as number;
   out.x = lx + ((c.rx[i] as number) - lx) * k;
@@ -1161,9 +1192,17 @@ function landingTime(c: Collapse, i: number, floor: number): number {
   const gap = (tau: number) => {
     flightAt.tau = tau;
     flight(c, i, pose);
-    return pose.y - vertExtent(axis, pose.phi, hx, hy, hz) - floor;
+    return pose.y - vertExtent(axis, pose.phi, hx, pose.hy, hz) - floor;
   };
   if (gap(0) <= 0) return 0;
+  const k1 = c.crush[i] as number;
+  if (k1 > 0) {
+    // A crushed storey lands once its base, crushed, has dropped to the
+    // floor: a parabola from the end of its crush.
+    const base = (c.oy[i] as number) - hy;
+    const v1 = (c.v0[i] as number) + (c.dg[i] as number) * k1;
+    return k1 + dropTime(base, v1, c.dg[i] as number, floor);
+  }
   const search = (from: number, to: number): number => {
     let lo = from;
     let hi = Math.min(to, from + LAND_STEP_S);
@@ -1590,6 +1629,9 @@ function assembleCollapse(
     tilt: f64(),
     v0: f64(),
     dg: f64(),
+    crush: f64(),
+    chy: f64(),
+    lhy: f64(),
     hpx: f64(),
     hpy: f64(),
     hpz: f64(),
@@ -1643,14 +1685,54 @@ function assembleCollapse(
   const rands = raw.map((p) => pieceRand(meta.id, p.chunk, p.sub));
 
   if (style === PANCAKE) {
-    // Progressive collapse: the creep, then the upper block lets go and a
-    // crush front drives down from the failure height at the column's
-    // effective g. A storey under it starts when the front reaches its top,
-    // at the front's speed — so the column never overtakes itself, and the
-    // storeys give way one after another, faster and faster.
+    // Progressive collapse: the creep, then the upper block lets go and
+    // drives down from the failure height at the column's effective g. A
+    // storey under it is reached when the block — less the storeys already
+    // crushed flat under it in that column (`off`) — comes down to its top;
+    // it is crushed (its top rides the block down, its base holds) to
+    // COLLAPSE_RUBBLE_RATIO of its height, then falls with the column. Each
+    // storey is reached a little sooner than the last: they give way one
+    // after another, faster and faster, and the column never passes
+    // through itself.
     const gc = COLLAPSE_CRUSH_G * G;
     const release = lead + COLLAPSE_CREEP_MS / 1000;
     const failY = meta.fail;
+    const off = f64();
+    for (let i = 0; i < n; i++) {
+      const bottom = (c.oy[i] as number) - (c.hy[i] as number);
+      if (bottom >= failY - 1e-6) continue;
+      const top = (c.oy[i] as number) + (c.hy[i] as number);
+      for (let k = 0; k < n; k++) {
+        if (k === i || c.role[k] !== ROLE_SLAB) continue;
+        const kb = (c.oy[k] as number) - (c.hy[k] as number);
+        const kt = (c.oy[k] as number) + (c.hy[k] as number);
+        if (kb >= failY - 1e-6 || kt <= top + 1e-6) continue;
+        if (
+          Math.min(
+            (c.ox[i] as number) + (c.hx[i] as number),
+            (c.ox[k] as number) + (c.hx[k] as number),
+          ) -
+            Math.max(
+              (c.ox[i] as number) - (c.hx[i] as number),
+              (c.ox[k] as number) - (c.hx[k] as number),
+            ) <=
+            1e-6 ||
+          Math.min(
+            (c.oz[i] as number) + (c.hz[i] as number),
+            (c.oz[k] as number) + (c.hz[k] as number),
+          ) -
+            Math.max(
+              (c.oz[i] as number) - (c.hz[i] as number),
+              (c.oz[k] as number) - (c.hz[k] as number),
+            ) <=
+            1e-6
+        ) {
+          continue;
+        }
+        off[i] =
+          (off[i] as number) + 2 * (c.hy[k] as number) * COLLAPSE_RUBBLE_RATIO;
+      }
+    }
     for (let i = 0; i < n; i++) {
       const rand = rands[i] as () => number;
       const role = c.role[i] as number;
@@ -1668,11 +1750,24 @@ function assembleCollapse(
       c.tilt[i] = (rand() * 2 - 1) * amp;
       const pieceTop = (c.oy[i] as number) + (c.hy[i] as number);
       const bottom = (c.oy[i] as number) - (c.hy[i] as number);
-      const below = bottom < failY - 1e-6 ? Math.max(0, failY - pieceTop) : 0;
-      c.start[i] = release + Math.sqrt((2 * below) / gc);
-      c.v0[i] = Math.sqrt(2 * gc * below);
+      const crushed = bottom < failY - 1e-6;
+      // How far the block has come down when it reaches this piece.
+      const reach = crushed
+        ? Math.max(0, failY - (off[i] as number) - pieceTop)
+        : 0;
+      c.start[i] = release + Math.sqrt((2 * reach) / gc);
+      c.v0[i] = Math.sqrt(2 * gc * reach);
       c.dg[i] = gc;
       c.mode[i] = MODE_DROP;
+      if (crushed && role === ROLE_SLAB) {
+        const h = 2 * (c.hy[i] as number);
+        const flat = h * COLLAPSE_RUBBLE_RATIO;
+        c.crush[i] =
+          Math.sqrt((2 * (reach + h - flat)) / gc) -
+          Math.sqrt((2 * reach) / gc);
+        c.chy[i] = flat / 2;
+        c.tilt[i] = 0;
+      }
       if (role === ROLE_SHEET) {
         // A facade sheet peels outward off its own base edge as it goes,
         // that edge dropping with the storeys behind it.
@@ -1820,6 +1915,7 @@ function assembleCollapse(
     c.ly[i] = pose.y;
     c.lz[i] = pose.z;
     c.lphi[i] = pose.phi;
+    c.lhy[i] = pose.hy;
     const quarter = Math.round(pose.phi / HALF_PI);
     const odd = Math.abs(quarter) % 2 === 1;
     const axis = c.axis[i] as number;

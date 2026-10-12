@@ -28,6 +28,11 @@ import {
   encodeFlak,
   encodeRaid,
 } from "@angels-bandits/common/boss";
+import {
+  BURN_SEND_MS,
+  BurnModel,
+  encodeBurn,
+} from "@angels-bandits/common/burn";
 import { encodeQuake } from "@angels-bandits/common/chaos";
 import {
   encodeChunkIds,
@@ -1114,6 +1119,7 @@ function disposeRoom(room: Room): void {
   if (rooms.rooms.includes(room)) return;
   botsByRoom.delete(room.id);
   wavesByRoom.delete(room.id);
+  burnByRoom.delete(room.id); // L7
   bombsByRoom.delete(room.id);
   aaByRoom.delete(room.id);
   cityEvents.forget(room.id);
@@ -1272,6 +1278,7 @@ function handleJoin(
     ...(chaosFor(room) && { chaos: chaosFor(room)?.state(now) }),
     ...(caveInsFor(room) && { caveIns: caveInsFor(room)?.state(now) }),
     props: propsWireState(roomCity(room)),
+    burn: encodeBurn(burnByRoom.get(room.id)?.model.level ?? 0),
   };
   ws.send(JSON.stringify(welcome));
   sendToRoom(room, { type: "playerJoined", player: { id, name } }, id);
@@ -1472,6 +1479,8 @@ function handleLeave(id: string): void {
     if (room.humanCount === 0) {
       const rc = roomCityById.get(room.id);
       if (rc) resetRoomCity(rc);
+      // L7: and the fire with it — the model and its gone-count baseline.
+      burnByRoom.delete(room.id);
       // D5: and the director's warnings, cooldowns and rebuilds with it —
       // C2: and the chaos (runs, quakes, fires) and the budget.
       directorsByRoom.get(room.id)?.reset();
@@ -2374,6 +2383,61 @@ function tickRebuilds(room: Room, now: number): void {
 }
 
 /**
+ * L7: each room's burn level (common/src/burn.ts) — the server's half of
+ * the inferno. The model is stepped once per tick with the room's gone
+ * share and the chunks that went since the last tick, and its encoded
+ * level goes out (`burn`) whenever it moves, at most every BURN_SEND_MS
+ * (the LAST SENT value is the comparison, so the trailing value always
+ * follows). Read-only on the room's CityDamage: nothing here breaks,
+ * mends or holds anything.
+ */
+interface RoomBurn {
+  model: BurnModel;
+  /** The room's gone chunks right after the last tick's rebuilds: what
+   * this tick's fresh destruction is counted from. */
+  gone: number;
+  at: number;
+  sent: number;
+  sentAt: number;
+}
+const burnByRoom = new Map<string, RoomBurn>();
+
+/** L7: a room city's gone chunks (destroyed + fallen). */
+const goneOf = (rc: RoomCity): number =>
+  rc.damage.destroyedCount + rc.damage.fallenCount;
+
+/** L7: step `room`'s burn; `goneBefore` was read just before the rebuilds. */
+function tickBurn(
+  room: Room,
+  rc: RoomCity | undefined,
+  goneBefore: number,
+  now: number,
+): void {
+  if (!rc) return; // no city yet: nothing has burned
+  let b = burnByRoom.get(room.id);
+  if (!b) {
+    b = {
+      model: new BurnModel(),
+      gone: goneBefore,
+      at: now,
+      sent: 0,
+      sentAt: 0,
+    };
+    burnByRoom.set(room.id, b);
+  }
+  const fresh = Math.max(0, goneBefore - b.gone);
+  b.model.step(now - b.at, rc.damage.goneShare, fresh);
+  b.gone = goneOf(rc);
+  b.at = now;
+  const enc = encodeBurn(b.model.level);
+  if (enc !== b.sent && now - b.sentAt >= BURN_SEND_MS) {
+    b.sent = enc;
+    b.sentAt = now;
+    sendToRoom(room, { type: "burn", b: enc });
+  }
+}
+
+/**
  * C2 chaos for one room tick — only while a human is in the room, like all
  * destruction (see breakable): meteors launched (as `missile`), quakes
  * warned, and the tick's fires batch. What quakes and fire break rides the tick's
@@ -2728,8 +2792,11 @@ function tick(): void {
       if (props.broke.length > 0) chaosFor(room)?.ignite(props.broke, time, rc);
     }
     // D5: rebuilds after the batch (nothing of theirs is pending now), then
-    // the gas mains' blasts on the planes.
+    // the gas mains' blasts on the planes. L7: the burn steps around them —
+    // what went this tick is counted BEFORE a rebuild can hand chunks back.
+    const goneBefore = rc ? goneOf(rc) : 0;
     tickRebuilds(room, time);
+    tickBurn(room, rc, goneBefore, time);
     for (const f of fired) {
       if (f.event.k === EVENT_GAS) landGas(room, f.event, time);
     }

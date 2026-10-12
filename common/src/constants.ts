@@ -45,6 +45,10 @@ export const EMISSIVE_NAVLIGHT = 1.0;
 export const EMISSIVE_BEACON = 1.05;
 /** Anti-collision strobe at flash peak — brightest plane light, under tracers. */
 export const EMISSIVE_STROBE = 1.1;
+/** L7 inferno flame cores at their hottest — the city's fires roar over
+ * every lamp and beacon, but under the afterburn and every tracer, and the
+ * cards blend (never add), so a stack of them never sums past this. */
+export const EMISSIVE_FIRE = 1.2;
 /** Boost afterburn flame at full burn (F2) — the hottest plane light, still
  * under tracers so a boosting bandit never out-shines its own gunfire. */
 export const EMISSIVE_AFTERBURN = 1.3;

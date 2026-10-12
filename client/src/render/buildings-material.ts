@@ -488,7 +488,7 @@ export function createBuildingsMaterial(
   // Distinct compiled program per patch (V3 rule: three keys programs on
   // onBeforeCompile.toString(), and sibling materials collide silently).
   const key =
-    "ab-buildings-h1-holes-l1-wake-l3-live-l4-wet-g1-lobbies-d1-damage-d2-broken-s6-refl-d10-steel";
+    "ab-buildings-h1-holes-l1-wake-l3-live-l4-wet-g1-lobbies-d1-damage-d2-broken-s6-refl";
   material.customProgramCacheKey = () =>
     fracture ? `${key}-d10-fracture` : key;
   return material;

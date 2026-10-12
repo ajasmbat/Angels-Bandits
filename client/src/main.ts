@@ -1848,6 +1848,14 @@ const worldTime = (): number | null =>
 // every client computes the identical storm from (seed, synced clock).
 const storm = new StormRenderer(city.cityBuildings);
 scene.add(storm.group, storm.flashLight);
+// D10: collapse dust is lit by the scene — the sky cycle's rig and the
+// storm's lightning flash.
+dust.setLights({
+  ambient: skyRig.ambient,
+  hemi: skyRig.hemi,
+  moon: skyRig.moon,
+  flash: storm.flashLight,
+});
 const strikeFeed = new StrikeFeed(welcome.seed);
 // The deck everyone shares: seeded layout, drifting on the synced clock.
 const clouds = new CloudDeck(welcome.seed);

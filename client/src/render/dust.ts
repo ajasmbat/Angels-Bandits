@@ -44,6 +44,7 @@ import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { RENDER_ORDER } from "./render-order";
+import { DUSK, LIGHT_RIG } from "./sky";
 import { pushUpdateRange } from "./update-range";
 
 /** Puffs per cloud at full quality. */
@@ -74,6 +75,31 @@ const SURGE_LIFT = 0.45;
 const SQUIB_REACH_M = 22;
 const SQUIB_TAU_S = 0.5;
 export const SQUIB_LIFE_MS = 3500;
+
+/** D10: puffs this high take the sky's light; at the street, the ground's. */
+export const DUST_LIGHT_SPAN_M = 60;
+
+/** D10: the scene lights the dust is lit by (sky.ts SkyRig, storm.ts). */
+export interface DustLights {
+  ambient: THREE.AmbientLight;
+  hemi: THREE.HemisphereLight;
+  moon: THREE.DirectionalLight;
+  flash?: THREE.AmbientLight;
+}
+
+/** The rig's design-night luminance above and at street level (sky.ts DUSK
+ * and LIGHT_RIG): the tints are relative to it, so the dust keeps its tuned
+ * look on that night and follows the light from there. */
+const lum = (hex: number, k: number) => {
+  const c = new THREE.Color(hex);
+  return (0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b) * k;
+};
+const REF_SKY =
+  lum(DUSK.ambient, LIGHT_RIG.ambient) +
+  lum(DUSK.hemiSky, LIGHT_RIG.hemi) +
+  lum(DUSK.moon, LIGHT_RIG.moon) * 0.35;
+const REF_GROUND =
+  lum(DUSK.ambient, LIGHT_RIG.ambient) + lum(DUSK.hemiGround, LIGHT_RIG.hemi);
 
 /** One puff: where it is and how it looks. */
 export interface DustPuff {
@@ -488,6 +514,12 @@ export class DustClouds {
   private readonly alphas: THREE.BufferAttribute;
   private readonly puff: DustPuff = { x: 0, y: 0, z: 0, size: 0, alpha: 0 };
   private share = 1;
+  /** D10: the light the dust is lit by, relative to the night it was tuned
+   * under (1, 1, 1 there): at its top, and at street level. */
+  private readonly skyTint = new THREE.Color(1, 1, 1);
+  private readonly groundTint = new THREE.Color(1, 1, 1);
+  private lights: DustLights | null = null;
+  private readonly scratch = new THREE.Color();
 
   constructor() {
     const budget = MAX_CLOUDS * DUST_PUFFS;
@@ -523,30 +555,84 @@ export class DustClouds {
       opacity: DUST_OPACITY,
       depthWrite: false,
     });
+    const sky = this.skyTint;
+    const ground = this.groundTint;
     material.onBeforeCompile = (shader) => {
+      // D10: lit by the scene — the puff's height mixes the ground light
+      // (warm street glow) into the sky light (DustClouds.light).
+      shader.uniforms.uDustSky = { value: sky };
+      shader.uniforms.uDustGround = { value: ground };
       shader.vertexShader = shader.vertexShader
         .replace(
           "#include <common>",
-          "attribute float aSize;\nattribute float aAlpha;\nvarying float vAlpha;\n#include <common>",
+          "attribute float aSize;\nattribute float aAlpha;\nvarying float vAlpha;\nvarying float vDustH;\n#include <common>",
         )
         .replace(
           "gl_PointSize = size;",
-          "gl_PointSize = size * aSize;\n\tvAlpha = aAlpha;",
+          `gl_PointSize = size * aSize;\n\tvAlpha = aAlpha;\n\tvDustH = clamp(position.y / ${DUST_LIGHT_SPAN_M.toFixed(1)}, 0.0, 1.0);`,
         );
       shader.fragmentShader = shader.fragmentShader
         .replace(
           "#include <common>",
-          "varying float vAlpha;\n#include <common>",
+          "uniform vec3 uDustSky;\nuniform vec3 uDustGround;\nvarying float vAlpha;\nvarying float vDustH;\n#include <common>",
         )
         .replace(
           "#include <color_fragment>",
-          "#include <color_fragment>\n\tdiffuseColor.a *= vAlpha;",
+          "#include <color_fragment>\n\tdiffuseColor.a *= vAlpha;\n\tdiffuseColor.rgb *= mix(uDustGround, uDustSky, vDustH);",
         );
     };
-    material.customProgramCacheKey = () => "dust-asize-aalpha";
+    material.customProgramCacheKey = () => "dust-asize-aalpha-d10-lit";
     this.points = new THREE.Points(geometry, material);
     this.points.frustumCulled = false;
     this.points.renderOrder = RENDER_ORDER.smoke;
+  }
+
+  /** D10: the scene's lights the dust is lit by (the sky rig the L12 cycle
+   * drives, and the storm's flash). */
+  setLights(lights: DustLights): void {
+    this.lights = lights;
+  }
+
+  /** D10: this frame's sky / ground tints from the lights, each relative
+   * to the rig's own design values (a whole-night average of ~1). */
+  private light(): void {
+    const l = this.lights;
+    if (!l) return;
+    const t = this.scratch;
+    const ambient = l.ambient.intensity;
+    const hemi = l.hemi.intensity;
+    const flash = l.flash ? l.flash.intensity : 0;
+    // Above: skylight + the hemisphere's sky + a share of the moon key.
+    t.copy(l.ambient.color).multiplyScalar(ambient);
+    t.r += l.hemi.color.r * hemi + l.moon.color.r * l.moon.intensity * 0.35;
+    t.g += l.hemi.color.g * hemi + l.moon.color.g * l.moon.intensity * 0.35;
+    t.b += l.hemi.color.b * hemi + l.moon.color.b * l.moon.intensity * 0.35;
+    if (l.flash) {
+      t.r += l.flash.color.r * flash;
+      t.g += l.flash.color.g * flash;
+      t.b += l.flash.color.b * flash;
+    }
+    this.skyTint.setRGB(t.r / REF_SKY, t.g / REF_SKY, t.b / REF_SKY);
+    // Street level: skylight + the hemisphere's warm ground bounce.
+    t.copy(l.ambient.color).multiplyScalar(ambient);
+    t.r += l.hemi.groundColor.r * hemi;
+    t.g += l.hemi.groundColor.g * hemi;
+    t.b += l.hemi.groundColor.b * hemi;
+    if (l.flash) {
+      t.r += l.flash.color.r * flash;
+      t.g += l.flash.color.g * flash;
+      t.b += l.flash.color.b * flash;
+    }
+    this.groundTint.setRGB(
+      t.r / REF_GROUND,
+      t.g / REF_GROUND,
+      t.b / REF_GROUND,
+    );
+  }
+
+  /** QA/tests: the current tints. */
+  get tints(): { sky: THREE.Color; ground: THREE.Color } {
+    return { sky: this.skyTint, ground: this.groundTint };
   }
 
   /** Quality: fewer puffs on cheaper tiers, each bigger to cover the same
@@ -561,6 +647,7 @@ export class DustClouds {
     viewer: Vec3,
     serverMs: number | null,
   ): void {
+    this.light();
     let i = 0;
     if (serverMs !== null) {
       const per = Math.max(1, Math.round(DUST_PUFFS * this.share));

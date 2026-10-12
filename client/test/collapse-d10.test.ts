@@ -43,7 +43,7 @@ import {
   STREET_WIDTH,
 } from "@angels-bandits/common/constants";
 import * as THREE from "three";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { COLLAPSE_BEATS_MAX } from "../src/audio/sound";
 import { COLLAPSE_SHAKE_RANGE, collapseShakeAmount } from "../src/game/camera";
 import { staleCollapseModel } from "../src/net/socket";
@@ -68,6 +68,7 @@ import {
   fractureInset,
 } from "../src/render/debris";
 import {
+  DustClouds,
   PUFF_SQUIB,
   PUFF_SURGE,
   SQUIB_LIFE_MS,
@@ -77,6 +78,7 @@ import {
   puffKind,
 } from "../src/render/dust";
 import type { Impacts } from "../src/render/impacts";
+import { setupSky } from "../src/render/sky";
 
 const city = generateCity(CITY_SEED);
 
@@ -352,6 +354,45 @@ describe("D10 dust: the surge rolls down the streets, squibs fire on the floors"
     expect(dustHaze([c], cam, t)).toBeGreaterThan(0.3);
     expect(dustHaze([c], { x: sx, y: 300, z: b.z + 80 }, t)).toBe(0);
     expect(dustHaze([c], { x: b.x + 900, y: 6, z: b.z }, t)).toBe(0);
+  });
+});
+
+describe("D10 dust is lit by the scene", () => {
+  it("~1 under the night it was tuned in, brighter in a lightning flash, darker when the sky dims, warm at street level", () => {
+    vi.stubGlobal("document", {
+      createElement: () => ({ width: 0, height: 0, getContext: () => null }),
+    });
+    try {
+      const scene = new THREE.Scene();
+      const rig = setupSky(scene);
+      const flash = new THREE.AmbientLight(0xffffff, 0);
+      const dust = new DustClouds();
+      dust.setLights({
+        ambient: rig.ambient,
+        hemi: rig.hemi,
+        moon: rig.moon,
+        flash,
+      });
+      const lum = (c: THREE.Color) =>
+        0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+      const at = { x: 0, y: 0, z: 0 };
+      dust.update([], at, 0);
+      const { sky, ground } = dust.tints;
+      expect(lum(sky)).toBeCloseTo(1, 6);
+      expect(lum(ground)).toBeCloseTo(1, 6);
+      expect(ground.r).toBeGreaterThan(ground.b); // the street's sodium glow
+      const night = lum(sky);
+      flash.intensity = 3;
+      dust.update([], at, 0);
+      expect(lum(dust.tints.sky)).toBeGreaterThan(night * 1.5);
+      flash.intensity = 0;
+      rig.hemi.intensity *= 0.3;
+      rig.ambient.intensity *= 0.3;
+      dust.update([], at, 0);
+      expect(lum(dust.tints.sky)).toBeLessThan(night * 0.8);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

@@ -439,7 +439,8 @@ export function createBuildingsMaterial(
     metalness: 0.15,
   });
   const fracture = opts.fracture === true;
-  if (fracture) material.defines = { AB_FRACTURE: "" };
+  // Added to three's own (MeshStandardMaterial's STANDARD), never instead.
+  if (fracture) material.defines = { ...material.defines, AB_FRACTURE: "" };
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uLiveTime = liveTime;
     // O3: the quality tier's living-windows switch, shared by reference.

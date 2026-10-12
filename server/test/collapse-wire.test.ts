@@ -28,6 +28,7 @@ import {
 import { collideMovers } from "@angels-bandits/common/city/movers";
 import {
   CITY_SEED,
+  COLLAPSE_MODEL,
   FIRE_INTERVAL_MS,
   PLAYER_RADIUS,
 } from "@angels-bandits/common/constants";
@@ -163,6 +164,8 @@ describe("D3 collapses over the wire", () => {
     const a = await connect("Shooter");
     const b = await connect("Witness");
     expect(b.welcome.roomId).toBe(a.welcome.roomId);
+    // D10: the welcome says which collapse model built what follows.
+    expect(a.welcome.cm).toBe(COLLAPSE_MODEL);
     for (let i = 0; i < 12; i++) {
       a.ws.send(JSON.stringify({ type: "pose", pose: aim }));
       await wait(40);

@@ -37,7 +37,8 @@ import { ROOF_STRUCTURE_MAX_HEIGHT } from "./roof-structures";
 import { generatedRoof, syncRoof } from "./standing";
 
 /** SolidBox.cut bits: the box faces exposed by destruction (−x, +x, −y, +y,
- * −z, +z), and RUBBLE for a debris pile on the street. */
+ * −z, +z), RUBBLE for a debris pile on the street, and (D10) STEEL for a
+ * collapse's column / I-beam fragment — painted as steel, landed or not. */
 export const CUT_NEG_X = 1;
 export const CUT_POS_X = 2;
 export const CUT_NEG_Y = 4;
@@ -45,6 +46,7 @@ export const CUT_POS_Y = 8;
 export const CUT_NEG_Z = 16;
 export const CUT_POS_Z = 32;
 export const CUT_RUBBLE = 64;
+export const CUT_STEEL = 128;
 
 /** Chunk id layout: building index · tier (2 bits) · cell (12 bits). */
 const CELL_BITS = 12;

@@ -2588,8 +2588,8 @@ probe must read, (16 × ratio)².
 node tools/perf/blackbox.mjs [--device desktop|retina|phone|all]
                              [--sky night,dusk] [--paths a,b] [--frames N]
                              [--repeat N] [--shots <dir>] [--attribute]
-                             [--dump from:to] [--no-build] [--out <file>]
-                             [--list]
+                             [--dump from:to] [--hide name,name]
+                             [--no-build] [--out <file>] [--list]
 ```
 
 It flies a MOVING plane and camera along every path, at night and at dusk:
@@ -2636,6 +2636,13 @@ the systems whose absence clears the hit are its source. A hit that does
 not come back with nothing hidden (a particle that ages by the sim step) is
 reported as not reproduced, never guessed at.
 
+`--hide name,name` (O7b) keeps the named `__ab.qaHide` systems out of EVERY
+frame of every path — the attribution for a hit `--attribute` cannot
+re-pose: compare the non-finite frames over N passes with and without it.
+Hiding a system can shift the shared `Math.random` stream, so a clean arm is
+a lead to confirm, not a verdict on its own. A hit's `box` is in GL pixel
+coordinates, **y up**: `y0` 360 of 390 is 30 rows from the TOP of the frame.
+
 ### What it found, and what was fixed
 
 On the runner (SwiftShader, which is IEEE-exact for NaN and Inf and stores
@@ -2672,6 +2679,7 @@ Every source, fixed where it starts (the input, not only the output):
 | park lamps, pond neon | `sky.ts` | `atan(0, 0)` at the centre pixel (NaN on some GPUs) | `+ 1e-6` | audit |
 | helipad lights | `window-pattern.ts` | the same | `+ 1e-6` | audit |
 | road words | `street-paint.ts` | a zero pixel footprint made the glyph coverage 0/0 | footprint floored at 1e-4 | audit |
+| tunnel air (O7b) | `fog.ts` | U7's `abUnder * (1.0 - exp(-vFogDepth * k))`: `vFogDepth` is a length at every vertex, but interpolated across the zeppelin's 330 m searchlight cones (long slivers, one end near the camera) a pixel reads it far below 0 — `exp()` overflows, 0 × Inf is NaN; a merely negative depth mixes past the air into a negative pixel | `max(vFogDepth, 0.0)`, as the haze already clamps its distance | `--hide boss`, then a same-frame re-render per boss part and per fog term: phone, dusk, `exit` (see O7b below) |
 
 ### The guard (`client/src/render/hdr-safe.ts`)
 
@@ -2790,6 +2798,85 @@ node tools/perf/run.mjs --runs 3 --label O7 --ab-ref 45ab8c3
 # 5. Looking for a box by eye: magenta wherever the HDR scene is non-finite.
 #    open http://localhost:5173/?nanprobe=paint
 ```
+
+## O7b: one NaN pixel on the phone at the tunnel exit
+
+The A3 Carrier War gate found `blackbox.mjs --device phone --sky dusk
+--paths exit` reading 1–2 frames of one NaN pixel on about half of its
+passes after the batch (U7 … J1), never on 97883bd. `--attribute` could not
+re-pose it (the zeppelin's pose and lamps follow the raid clock, not the
+path's pinned frames), and the hit boxes read as the portal ramp's floor —
+they are GL coordinates, y up: every hit was in the top 100 rows, on the
+zeppelin's searchlight cones over the city ahead.
+
+How it was found, on the runner (SwiftShader, Chromium 1248 headless shell,
+phone/dusk/`exit`, 60 judged frames a pass):
+
+| arm | passes | passes with a NaN frame | NaN frames |
+| --- | --- | --- | --- |
+| HEAD (1f68659) | 15 | 10 | 23 |
+| `--hide tunnels` | 3 | 2 | 7 |
+| `--hide fx,impacts,reactions` | 4 | 4 | 13 |
+| `--hide plane,fleet,tracers` | 4 | 2 | 8 |
+| `--hide missiles` | 4 | 2 | 4 |
+| `--hide wrecks` | 4 | 3 | 5 |
+| `--hide litter,fogBanks,clouds,rain,storm,scaffold` | 4 | 4 | 7 |
+| `--hide litter,…,missiles,boss,wrecks,scaffold` | 4 | 0 | 0 |
+| `--hide boss,wrecks` | 4 | 0 | 0 |
+| `--hide boss` | 4 | 0 | 0 |
+
+`boss` was hidden in every clean arm (12 passes, 0 hits), and the
+negative pixels mostly went with it. A throwaway build then re-rendered each
+hit's own frame (same state, no step) with one boss part hidden, and with
+the glow shader's terms switched one at a time:
+
+- 46 of 47 hits cleared with the glow mesh (lamp beams, lenses, exhaust
+  heat, muzzle flashes) hidden, and none with the hull, the lights or the
+  shells hidden. The 47th (837,295, the gate's own example pixel) cleared
+  with no single part hidden. That is consistent with two fogged boss
+  layers on one pixel, but it was not reproduced again to prove it.
+- 40 of 40 cleared with the glow's fog chunk skipped. None cleared with
+  its colour, `vAlong`, `vColor` or alpha zeroed (26 of 26 tried).
+  `vFogDepth` and `vFogWorldY` were finite.
+- Every one of 14 hit frames tested had glow pixels whose interpolated
+  `vFogDepth` was negative (some below −16000). Clamping it at its use
+  cleared all 14.
+
+The fix is in the shared fog chunk, so it covers every fogged material,
+the hull included. It is the identity wherever the depth is ≥ 0, i.e. at
+every pixel whose interpolant is sane: no look change.
+
+On the fix (same runner):
+
+| run | passes | non-finite frames | boxes | controls |
+| --- | --- | --- | --- | --- |
+| phone, dusk, `exit` | 10 | 0 | 0 | 10/10 |
+| phone, every path, night + dusk | 1 (48 rows) | 0 | 0 | 2/2 |
+| retina, every path, night + dusk | 1 (48 rows) | 0 | 0 | 2/2 |
+| desktop, every path, night + dusk | 1 (48 rows) | 1: `rings` at dusk, 1 px | 0 | 2/2 |
+
+The 10-pass `exit` arm reads 0 where HEAD hit in 10 of 15 passes. At HEAD's rate
+(p ≈ 0.67 a pass), 10 clean passes rule out a leftover source at the 95 %
+level; that needs ≥ 3 by ln(0.05)/ln(1 − p). The `--device all --repeat 3` gate did not
+finish here. On the shared runner a full pass takes 3–4 hours (2 min a row
+under load), so one pass per profile was flown, in parallel. The desktop
+`rings` pixel was not reproduced in 3 more `rings` passes on the fix or 3 on
+1f68659 (pre-fix). This fix cannot create one: it is the identity on every
+finite depth ≥ 0. It is left unattributed, for the next gate.
+
+Those same `rings`-only reruns (`--device desktop --sky dusk --paths rings
+--repeat 3`) show the positive control's box MISSED on passes 2 and 3, on
+the fix and on 1f68659 alike (the probe still counted 256/256). That is
+pre-existing, a detector or staging issue in a later pass's control view,
+not this change.
+
+```sh
+# The O7b arm: expect 0 non-finite frames over 10 passes (HEAD: ~2 in 3).
+node tools/perf/blackbox.mjs --device phone --sky dusk --paths exit --repeat 10
+# Attribution without a re-pose: the same arm with a system hidden.
+node tools/perf/blackbox.mjs --device phone --sky dusk --paths exit --repeat 4 --hide boss
+```
+
 
 ## A3: the Carrier War release gate
 

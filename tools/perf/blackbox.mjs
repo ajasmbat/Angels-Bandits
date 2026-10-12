@@ -5,10 +5,16 @@
 //                                  [--sky night,dusk] [--paths a,b]
 //                                  [--frames N] [--repeat N] [--shots <dir>]
 //                                  [--attribute] [--dump from:to]
+//                                  [--hide name,name]
 //                                  [--no-build] [--out <file>] [--list]
 //
 // `--dump from:to` (with --shots) writes every judged frame in the range,
 // per path — to look at a box in sequence, or to diff two builds' frames.
+//
+// `--hide name,name` (O7b) keeps the named `__ab.qaHide` systems out of
+// EVERY frame of every path (flicker.mjs's --hide): the attribution for a
+// hit `--attribute` cannot re-pose (an RNG- or dt-driven one) — compare the
+// non-finite frames over N passes with and without it.
 //
 // What players reported (2026-10-09) are black squares that flash for a
 // frame or a few — in the tunnels, the sky and clouds, near buildings, on a
@@ -718,7 +724,7 @@ async function positiveControl(page) {
 }
 
 /** --attribute: re-pose a probe hit and hide each system in turn. */
-async function attribute(page, path, hit, frames, sky, worldMs) {
+async function attribute(page, path, hit, frames, sky, worldMs, keep) {
   await page.evaluate(() => window.__bb.reset("attribute"));
   await setupPath(page, path, worldMs, sky, frames);
   // The hit's own frames again: the world clock pinned two frames before
@@ -750,19 +756,20 @@ async function attribute(page, path, hit, frames, sky, worldMs) {
     const p = await page.evaluate(() => window.__ab.nanProbe());
     return p.nan + p.inf;
   };
-  const base = await reproduce([]);
+  const base = await reproduce(keep);
   const out = { frame: hit.frame, base, sources: [] };
   if (base === 0) {
-    await page.evaluate(() => window.__ab.qaHide([]));
+    await page.evaluate((h) => window.__ab.qaHide(h), keep);
     await teardownPath(page);
     return out;
   }
   const systems = await page.evaluate(() => window.__ab.qaSystems());
   for (const name of systems) {
-    const n = await reproduce([name]);
+    if (keep.includes(name)) continue;
+    const n = await reproduce([...keep, name]);
     if (n < base) out.sources.push({ name, left: n });
   }
-  await page.evaluate(() => window.__ab.qaHide([]));
+  await page.evaluate((h) => window.__ab.qaHide(h), keep);
   await teardownPath(page);
   return out;
 }
@@ -783,6 +790,17 @@ async function flyProfile(browser, port, name, opts, resolvePaths) {
     maxShots: 4,
     dump: opts.dump,
   });
+  if (opts.hide.length > 0) {
+    const hidden = await page.evaluate(
+      (h) => window.__ab.qaHide(h),
+      opts.hide,
+    );
+    const unknown = opts.hide.filter((n) => !hidden.includes(n));
+    if (unknown.length > 0) {
+      throw new Error(`--hide: no system ${unknown.join(", ")}`);
+    }
+    console.log(`  ${name}: hiding ${hidden.join(", ")}`);
+  }
   const out = [];
   try {
     for (const sky of opts.skies) {
@@ -856,6 +874,7 @@ async function flyProfile(browser, port, name, opts, resolvePaths) {
             frames,
             sky,
             worldMs,
+            opts.hide,
           );
         }
         console.log(
@@ -887,6 +906,7 @@ function parseArgs(argv) {
     out: resolve(HERE, "blackbox-last.json"),
     list: false,
     dump: null,
+    hide: [],
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -903,6 +923,7 @@ function parseArgs(argv) {
     else if (a === "--out") opts.out = resolve(process.cwd(), argv[++i]);
     else if (a === "--list") opts.list = true;
     else if (a === "--dump") opts.dump = argv[++i].split(":").map(Number);
+    else if (a === "--hide") opts.hide = argv[++i].split(",");
     else throw new Error(`unknown flag ${a}`);
   }
   for (const d of opts.devices) {
@@ -942,6 +963,7 @@ async function main() {
     tool: "blackbox",
     detector: { CELL_CSS_PX, DARK, DROP, BEFORE, AFTER, MIN_CELLS, FILL },
     frames: opts.frames,
+    hide: opts.hide,
     runs: [],
   };
   /** Every path this build has (one per bore), chosen by --paths. */

@@ -877,6 +877,15 @@ export const FEATURE_TIERS: readonly {
     note: "S8: DOM and audio, no draw; the warning is the telegraph, so it is on every tier",
   },
   {
+    feature:
+      "Stormlit L6 — carrier searchlights and their roof pools, escort scouts, wingtip halos, landing lights",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "no draw of their own: the beams are instances in the searchlight mesh, the pools in the mover light cloud, the scouts bones of the carrier's skinned draw (cosmetic, solid to nothing), the halos and landing beam points in the plane-lights cloud — the same everywhere (the carrier's searchlights are part of how you find it)",
+  },
+  {
     feature: "C2 chaos — meteors, bombs, quake shake",
     high: "full",
     medium: "full",

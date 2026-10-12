@@ -450,7 +450,10 @@ void main() {
   float size = min(aPuff.w, ${FILL_CLAMP.toFixed(2)} * dist);
   // L5 layering: a sheet seen side-on (squashed in the vertical), a round
   // blob seen from above (|view dir y| → 1).
-  float up = abs(normalize(centre - cameraPosition).y);
+  // (No normalize: a centre ON the camera would be 0/0 — a NaN pixel even
+  // at zero alpha, the O7 black box.)
+  vec3 toPuff = centre - cameraPosition;
+  float up = min(1.0, abs(toPuff.y) / max(length(toPuff), 1e-3));
   float squash = mix(aShape.x, 1.0, up);
   vec4 mvPosition = mvCentre + vec4(position.x * size, position.y * size * squash, 0.0, 0.0);
   // The underglow reads on a sheet's lower edge, not on a blob from above.

@@ -538,10 +538,9 @@ export class GameSocket {
    * and (D5) the director's warnings still to happen. */
   private replayDestruction(welcome: WelcomeMsg): void {
     // D10: a tab built for another collapse model (a deploy since it
-    // loaded) would build debris the server does not collide with: reload.
-    if (staleCollapseModel(welcome)) {
-      globalThis.location?.reload?.();
-    }
+    // loaded) would build debris the server does not collide with: reload
+    // — once per session per server model, so a cached page can never loop.
+    if (staleCollapseModel(welcome)) reloadOnce(welcome.cm as number);
     if (
       (welcome.destroyed?.length ?? 0) > 0 ||
       (welcome.collapses?.length ?? 0) > 0 ||
@@ -1081,6 +1080,19 @@ export class GameSocket {
         break; // already consumed by open()
     }
   }
+}
+
+/** D10: reload for server collapse model `cm`, unless this session already
+ * did (sessionStorage can be missing or throw: then reload anyway). */
+function reloadOnce(cm: number): void {
+  const key = "ab-collapse-model-reload";
+  try {
+    if (globalThis.sessionStorage?.getItem(key) === String(cm)) return;
+    globalThis.sessionStorage?.setItem(key, String(cm));
+  } catch {
+    // No storage: a reload is still better than diverging debris.
+  }
+  globalThis.location?.reload?.();
 }
 
 /** D10: does `welcome` come from a server with another collapse model? */

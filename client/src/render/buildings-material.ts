@@ -557,6 +557,10 @@ const neonColorGlsl = (): string => {
  * pixel and dims instead of crawling — and skip lobbies and brownstones.
  */
 const NEON_SIGNS_GLSL = /* glsl */ `
+// L11: a brownstone's fanlight over its front door is lit from the hall —
+// warm, at a share of the WINDOW rung (a convex replacement, never a sum).
+totalEmissiveRadiance = mix(totalEmissiveRadiance,
+  ${glslVec3(WINDOW_WARM)} * ${WINDOW_EMISSIVE_INTENSITY} * 0.75, fwFan * winDetail);
 float neonShopI = floor(winGrid.x / ${SHOP_PITCH});
 float neonH = abHash(vec2(neonShopI, 23.0), vBSeed * 31.0);
 float neonCu = winGrid.x - neonShopI * ${SHOP_PITCH};

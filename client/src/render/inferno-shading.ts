@@ -106,7 +106,7 @@ export function bindInfernoUniforms(
 /** L7b: an exposed storey ablaze and a rubble pile's embers at their
  * hottest (linear) — red-orange, under the WINDOW rung. */
 const WRECK_FIRE = "vec3(1.0, 0.15, 0.012)";
-const WRECK_EMBER = "vec3(0.55, 0.07, 0.006)";
+const WRECK_EMBER = "vec3(0.8, 0.1, 0.008)";
 /** Most firelight one surface takes, per channel (on its albedo). */
 const FIRELIGHT_CAP = 1.6;
 /** A burning district's light at full strength (linear, on albedo): a
@@ -244,7 +244,7 @@ if (brkDmg > 0.5 && brkDmg < 2.5 && uBurn > 0.0) {
     totalEmissiveRadiance += ${WRECK_FIRE} * (wrLit * wrHeat * wrFlick * wrK);
   } else {
     // Rubble: glowing patches of embers under the soot.
-    float wrPatch = smoothstep(0.45, 0.85, abHash(floor(vBWorldPos.xz * 0.6), vBSeed * 19.0));
+    float wrPatch = smoothstep(0.3, 0.7, abHash(floor(vBWorldPos.xz * 0.6), vBSeed * 19.0));
     totalEmissiveRadiance += ${WRECK_EMBER} * (wrPatch * wrFlick * wrK);
   }
 }

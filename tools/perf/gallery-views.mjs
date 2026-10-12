@@ -395,6 +395,30 @@ export const VIEWS = [
     at: [1000, -10, 1100],
     weather: "clear",
   },
+  // L4 Stormlit: the river along its length, high over the south bank like
+  // the reference's centre — the x = 400 suspension bridge close, the
+  // street bridges beyond it, the water's long streaks between. The second
+  // looks back west over the x = 1400 truss to the x = 1600 suspension.
+  {
+    name: "river-bridges",
+    x: 160,
+    z: 1000,
+    y: 320,
+    yaw: -Math.PI / 2,
+    eye: [170, 120, 1030],
+    at: [560, -18, 1110],
+    weather: "clear",
+  },
+  {
+    name: "river-bridges-truss",
+    x: 1840,
+    z: 1200,
+    y: 320,
+    yaw: Math.PI / 2,
+    eye: [1830, 95, 1185],
+    at: [1430, -12, 1095],
+    weather: "clear",
+  },
   // N1: plaza (4,4) as a night park — pond, paths, lamps, tree clusters.
   { name: "plaza-park", x: 900, z: 1030, y: 120, yaw: 0, pitch: -0.6 },
   { name: "moon", x: 700, z: 1000, y: 260, yaw: -0.61, pitch: 0.2 }, // faces MOON_DIR

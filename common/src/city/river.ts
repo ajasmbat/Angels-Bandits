@@ -177,7 +177,10 @@ function inBox(
  * the channel) grows by `r` into the channel, the water by `r` upward.
  */
 export function riverHit(pos: Vec3, r: number, gaps = 0): boolean {
-  // The fast path: above every parapet, nothing here can be touched.
+  // L4: the landmark bridges' pylons, cables and trusses — the only river
+  // solids above the parapets.
+  if (pos.y - r <= LANDMARK_TOP && landmarkTouch(pos, r, gaps)) return true;
+  // The fast path: above every parapet, nothing else here can be touched.
   if (pos.y - r > PARAPET_HEIGHT) return false;
   const off = Math.abs(riverOffset(pos.z));
   // Away from the river entirely: the old flat ground.
@@ -186,6 +189,8 @@ export function riverHit(pos: Vec3, r: number, gaps = 0): boolean {
   if (pos.y - r <= RIVER_WATER_Y) return true;
   // The bank: solid below street level outside the channel walls.
   if (off >= RIVER_HALF_WIDTH - r && pos.y - r <= 0) return true;
+  // L4: the piers against the walls.
+  if (pos.y - r <= PIER_LAMP_TOP && pierHit(pos, r)) return true;
   const bx = bridgeOffset(pos.x);
   const onBridge = Math.abs(bx) <= BRIDGE_HALF_WIDTH + r;
   // The embankment railing: along both channel edges, broken by the bridges
@@ -292,7 +297,12 @@ export function riverSegmentClear(
   gaps = 0,
 ): boolean {
   const toY = from.y + d.y;
-  if (Math.min(from.y, toY) > PARAPET_HEIGHT) return true;
+  const lowY = Math.min(from.y, toY);
+  if (lowY > LANDMARK_TOP) return true;
+  // L4: the landmark bridges' solids, then (low down) the piers.
+  if (!landmarksClear(from, d, gaps)) return false;
+  if (lowY > PARAPET_HEIGHT) return true;
+  if (lowY <= PIER_LAMP_TOP && !piersClear(from, d)) return false;
   const offFrom = riverOffset(from.z);
   // U4: `ground` false skips the water and the bank — the caller has
   // sampled the ground itself (a sight line into a tunnel, where the bank
@@ -430,6 +440,646 @@ export function bridgeSpans(): HoleSpan[] {
     });
   }
   return out;
+}
+
+// --- L4 Stormlit: the landmark bridges and the piers --------------------------
+//
+// Three of the ten street bridges are dressed as landmarks: two suspension
+// bridges and a through-truss. Their deck, parapets, underpass and D9 span
+// are the plain bridge's, untouched — the landmark only ADDS solids around
+// them, listed below once and read by everything: riverHit and
+// riverSegmentClear collide them, the renderer (client render/river-bridges)
+// draws them, so a pylon, a cable or a truss brace is exactly where it kills.
+//
+// Each part is in its bridge's LOCAL frame: x off the street line
+// (bridgeOffset), z off the channel centreline (riverOffset), y absolute.
+// Nothing stands over the street itself (|x| < BRIDGE_HALF_WIDTH) above the
+// deck except the truss's braces at 14.5 m, so the bots' street corridor
+// (25–70 m) stays open; nothing stands under the deck (the underpass B2
+// threads is the plain bridge's); the pylons stand in the water at
+// |dz| = 50, outside the boat lanes (|dz| ≤ 43); anchorages stay on the
+// promenade (|dz| ≤ 80, the lot line) — the train viaduct over the bank
+// street sits at |dz| ≥ 93.5.
+//
+// D9: every member is split exactly at |dz| = BRIDGE_SPAN_HALF, and the ones
+// inside are `span` — they drop with the fallen span (the faller itself is
+// still the deck box). Cables, pylons and anchorages never fall.
+
+/** What a landmark part is: the renderer's colour and light pick. */
+export type LandmarkRole =
+  | "pylon"
+  | "crown"
+  | "spire"
+  | "girder"
+  | "anchor"
+  | "cable"
+  | "suspender"
+  | "chord"
+  | "post"
+  | "diagonal"
+  | "brace";
+
+/** A solid box of a landmark, in its bridge's local frame. */
+export interface LandmarkBox {
+  x: number;
+  z: number;
+  hx: number;
+  hz: number;
+  y0: number;
+  y1: number;
+  /** Part of the D9 breakable span: gone while the span is down. */
+  span: boolean;
+  role: LandmarkRole;
+}
+
+/** A solid capsule (a cable chord, a diagonal), local frame. */
+export interface LandmarkStrut {
+  ax: number;
+  ay: number;
+  az: number;
+  bx: number;
+  by: number;
+  bz: number;
+  r: number;
+  span: boolean;
+  role: LandmarkRole;
+}
+
+export type LandmarkKind = "suspension" | "truss";
+
+/** One landmark bridge: its parts and their bounding box (local frame). */
+export interface Landmark {
+  bridge: number;
+  kind: LandmarkKind;
+  boxes: readonly LandmarkBox[];
+  struts: readonly LandmarkStrut[];
+  /** Bounding half extents and top, every part (radius included). */
+  hx: number;
+  hz: number;
+  top: number;
+}
+
+/** The suspension pylons: centre |dz|, half depth, legs' x span, m. */
+export const PYLON_DZ = 50;
+const PYLON_HALF_Z = 3;
+const PYLON_X0 = BRIDGE_HALF_WIDTH + 0.5;
+const PYLON_X1 = BRIDGE_HALF_WIDTH + 3.5;
+/** The pylons' three set-back tiers (tops, m) and the spire's tip. */
+export const PYLON_TIERS = [30, 38, 44] as const;
+export const PYLON_SPIRE_TOP = 48;
+/** The cable planes (x off the line), the cables' collision radius, m. */
+export const CABLE_X = BRIDGE_HALF_WIDTH + 2;
+export const CABLE_R = 0.8;
+/** Main cable: over the saddle, at mid-span, and down at the anchorage. */
+const SADDLE_Y = 43;
+const SAG_Y = 3.5;
+const ANCHOR_DZ = 77;
+const ANCHOR_Y = 2;
+/** Suspender spacing along the main span, m. */
+const SUSPENDER_STEP = 6.25;
+/** The side girder outside each parapet (both kinds), m. */
+export const GIRDER_X0 = BRIDGE_HALF_WIDTH;
+export const GIRDER_X1 = BRIDGE_HALF_WIDTH + 3;
+export const GIRDER_TOP = 1.2;
+/** The truss: its plane (x off the line), chord heights, panel length, m. */
+export const TRUSS_X = BRIDGE_HALF_WIDTH + 1.5;
+export const TRUSS_TOP = 14.75;
+const TRUSS_HALF_LENGTH = 50;
+const TRUSS_PANEL = 10;
+/** The truss's overhead braces span the street at this height, m. */
+export const TRUSS_BRACE_Y0 = 14.5;
+
+/** Which bridges are landmarks (bridge index, x = index · BLOCK_PITCH).
+ * Not 4–6: the U4 river mouths' climb-outs cross those lines. */
+const LANDMARK_LIST: readonly { bridge: number; kind: LandmarkKind }[] = [
+  { bridge: 2, kind: "suspension" },
+  { bridge: 7, kind: "truss" },
+  { bridge: 8, kind: "suspension" },
+];
+
+/** Main cable height at |dz| = `a` (the parabola over the main span, a
+ * straight back span to the anchorage) — the curve the chords sample. */
+export function cableY(a: number): number {
+  if (a <= PYLON_DZ) {
+    const u = a / PYLON_DZ;
+    return SAG_Y + (SADDLE_Y - SAG_Y) * u * u;
+  }
+  const u = Math.min(1, (a - PYLON_DZ) / (ANCHOR_DZ - PYLON_DZ));
+  return SADDLE_Y + (ANCHOR_Y - SADDLE_Y) * u;
+}
+
+/** Points the main cable's chords join, dz ascending (−77 … 77). */
+function cablePoints(): number[] {
+  const zs = [-ANCHOR_DZ];
+  for (let z = -PYLON_DZ; z <= PYLON_DZ; z += 10) zs.push(z);
+  zs.push(ANCHOR_DZ);
+  return zs;
+}
+
+/** Height of the drawn (chorded) cable at dz — what a suspender meets. */
+function chordY(z: number): number {
+  const zs = cablePoints();
+  for (let i = 0; i + 1 < zs.length; i++) {
+    const a = zs[i] as number;
+    const b = zs[i + 1] as number;
+    if (z >= a && z <= b) {
+      const t = (z - a) / (b - a);
+      return cableY(Math.abs(a)) * (1 - t) + cableY(Math.abs(b)) * t;
+    }
+  }
+  return ANCHOR_Y;
+}
+
+const inSpan = (z0: number, z1: number): boolean =>
+  z0 >= -BRIDGE_SPAN_HALF && z1 <= BRIDGE_SPAN_HALF;
+
+/** A z run split at ±BRIDGE_SPAN_HALF: [z0, z1, span] pieces. */
+function spanPieces(z0: number, z1: number): [number, number, boolean][] {
+  const cuts = [z0, z1, -BRIDGE_SPAN_HALF, BRIDGE_SPAN_HALF]
+    .filter((z) => z >= z0 && z <= z1)
+    .sort((a, b) => a - b);
+  const out: [number, number, boolean][] = [];
+  for (let i = 0; i + 1 < cuts.length; i++) {
+    const a = cuts[i] as number;
+    const b = cuts[i + 1] as number;
+    if (b - a > 1e-9) out.push([a, b, inSpan(a, b)]);
+  }
+  return out;
+}
+
+function buildLandmark(bridge: number, kind: LandmarkKind): Landmark {
+  const boxes: LandmarkBox[] = [];
+  const struts: LandmarkStrut[] = [];
+  const box = (
+    x0: number,
+    x1: number,
+    y0: number,
+    y1: number,
+    z0: number,
+    z1: number,
+    role: LandmarkRole,
+  ) => {
+    for (const [a, b, span] of spanPieces(z0, z1)) {
+      boxes.push({
+        x: (x0 + x1) / 2,
+        z: (a + b) / 2,
+        hx: (x1 - x0) / 2,
+        hz: (b - a) / 2,
+        y0,
+        y1,
+        span,
+        role,
+      });
+    }
+  };
+  const strut = (
+    ax: number,
+    ay: number,
+    az: number,
+    bx: number,
+    by: number,
+    bz: number,
+    r: number,
+    role: LandmarkRole,
+    span = false,
+  ) => struts.push({ ax, ay, az, bx, by, bz, r, span, role });
+
+  for (const sx of [-1, 1]) {
+    const gx0 = sx > 0 ? GIRDER_X0 : -GIRDER_X1;
+    // The side girder, wall to wall.
+    box(
+      gx0,
+      gx0 + (GIRDER_X1 - GIRDER_X0),
+      -BRIDGE_DECK_DEPTH,
+      GIRDER_TOP,
+      -RIVER_HALF_WIDTH,
+      RIVER_HALF_WIDTH,
+      "girder",
+    );
+    if (kind === "suspension") {
+      const lx0 = sx > 0 ? PYLON_X0 : -PYLON_X1;
+      const lx1 = sx > 0 ? PYLON_X1 : -PYLON_X0;
+      const cx = sx * CABLE_X;
+      for (const sz of [-1, 1]) {
+        const zc = sz * PYLON_DZ;
+        // An Art Deco pylon: three set-back tiers from the water, a spire.
+        let y0 = RIVER_WATER_Y - 1;
+        PYLON_TIERS.forEach((y1, tier) => {
+          const inset = tier * 0.5;
+          box(
+            lx0 + inset,
+            lx1 - inset,
+            y0,
+            y1,
+            zc - PYLON_HALF_Z + inset,
+            zc + PYLON_HALF_Z - inset,
+            tier === 2 ? "crown" : "pylon",
+          );
+          y0 = y1;
+        });
+        box(
+          cx - 0.5,
+          cx + 0.5,
+          y0,
+          PYLON_SPIRE_TOP,
+          zc - 0.5,
+          zc + 0.5,
+          "spire",
+        );
+        // The anchorage on the promenade.
+        const az = sz * ANCHOR_DZ;
+        box(lx0, lx1, 0, 3.5, az - 3, az + 3, "anchor");
+      }
+      // The main cable: straight chords of its curve, anchorage to
+      // anchorage over both saddles.
+      const zs = cablePoints();
+      for (let i = 0; i + 1 < zs.length; i++) {
+        const a = zs[i] as number;
+        const b = zs[i + 1] as number;
+        strut(
+          cx,
+          cableY(Math.abs(a)),
+          a,
+          cx,
+          cableY(Math.abs(b)),
+          b,
+          CABLE_R,
+          "cable",
+        );
+      }
+      // Suspenders from the girder up to the cable.
+      for (
+        let z = -PYLON_DZ + SUSPENDER_STEP;
+        z < PYLON_DZ - 1e-6;
+        z += SUSPENDER_STEP
+      ) {
+        box(
+          cx - 0.15,
+          cx + 0.15,
+          GIRDER_TOP,
+          chordY(z),
+          z - 0.15,
+          z + 0.15,
+          "suspender",
+        );
+      }
+    } else {
+      const tx = sx * TRUSS_X;
+      const L = TRUSS_HALF_LENGTH;
+      // Top chord, end posts down to the walls, verticals, Warren diagonals.
+      box(tx - 1, tx + 1, TRUSS_TOP - 0.75, TRUSS_TOP + 0.75, -L, L, "chord");
+      for (const sz of [-1, 1]) {
+        strut(
+          tx,
+          GIRDER_TOP,
+          sz * RIVER_HALF_WIDTH,
+          tx,
+          TRUSS_TOP,
+          sz * L,
+          0.6,
+          "post",
+        );
+      }
+      for (let z = -L; z <= L + 1e-6; z += TRUSS_PANEL) {
+        const span = Math.abs(z) < BRIDGE_SPAN_HALF;
+        boxes.push({
+          x: tx,
+          z,
+          hx: 0.5,
+          hz: 0.4,
+          y0: GIRDER_TOP,
+          y1: TRUSS_TOP - 0.75,
+          span,
+          role: "post",
+        });
+      }
+      for (let i = 0; i < (2 * L) / TRUSS_PANEL; i++) {
+        const z0 = -L + i * TRUSS_PANEL;
+        const z1 = z0 + TRUSS_PANEL;
+        const up = i % 2 === 0;
+        strut(
+          tx,
+          up ? GIRDER_TOP : TRUSS_TOP,
+          z0,
+          tx,
+          up ? TRUSS_TOP : GIRDER_TOP,
+          z1,
+          0.45,
+          "diagonal",
+          inSpan(z0, z1),
+        );
+      }
+    }
+  }
+  if (kind === "truss") {
+    // Overhead braces across the street, chord to chord.
+    for (const z of [-50, -30, -10, 10, 30, 50]) {
+      boxes.push({
+        x: 0,
+        z,
+        hx: TRUSS_X + 1,
+        hz: 0.4,
+        y0: TRUSS_BRACE_Y0,
+        y1: TRUSS_TOP + 0.75,
+        span: Math.abs(z) < BRIDGE_SPAN_HALF,
+        role: "brace",
+      });
+    }
+  }
+  let hx = 0;
+  let hz = 0;
+  let top = 0;
+  for (const b of boxes) {
+    hx = Math.max(hx, Math.abs(b.x) + b.hx);
+    hz = Math.max(hz, Math.abs(b.z) + b.hz);
+    top = Math.max(top, b.y1);
+  }
+  for (const s of struts) {
+    hx = Math.max(hx, Math.abs(s.ax) + s.r, Math.abs(s.bx) + s.r);
+    hz = Math.max(hz, Math.abs(s.az) + s.r, Math.abs(s.bz) + s.r);
+    top = Math.max(top, s.ay + s.r, s.by + s.r);
+  }
+  return { bridge, kind, boxes, struts, hx, hz, top };
+}
+
+/** The landmark bridges, in LANDMARK_LIST order. */
+export const LANDMARKS: readonly Landmark[] = LANDMARK_LIST.map((l) =>
+  buildLandmark(l.bridge, l.kind),
+);
+
+/** Per bridge index: its landmark, or null for a plain street bridge. */
+const LANDMARK_AT: readonly (Landmark | null)[] = Array.from(
+  { length: BRIDGE_COUNT },
+  (_, i) => LANDMARKS.find((l) => l.bridge === i) ?? null,
+);
+
+/** The landmark (or null) bridge index `i` carries. Wrapped. */
+export function landmarkAt(i: number): Landmark | null {
+  const n = BRIDGE_COUNT;
+  return LANDMARK_AT[((i % n) + n) % n] ?? null;
+}
+
+/** The highest any landmark solid reaches, and how far off the channel
+ * centreline any stands (the anchorages), m — the broad phases. */
+export const LANDMARK_TOP = Math.max(...LANDMARKS.map((l) => l.top));
+const LANDMARK_REACH_Z = Math.max(...LANDMARKS.map((l) => l.hz));
+
+/** Squared distance between segment p + s·u (s ∈ [0, 1]) and strut `q`
+ * (u = 0: from the point p). Ericson's closest points; allocation-free. */
+function strutDist2(
+  px: number,
+  py: number,
+  pz: number,
+  ux: number,
+  uy: number,
+  uz: number,
+  q: LandmarkStrut,
+): number {
+  const vx = q.bx - q.ax;
+  const vy = q.by - q.ay;
+  const vz = q.bz - q.az;
+  const wx = px - q.ax;
+  const wy = py - q.ay;
+  const wz = pz - q.az;
+  const a = ux * ux + uy * uy + uz * uz;
+  const e = vx * vx + vy * vy + vz * vz;
+  const f = vx * wx + vy * wy + vz * wz;
+  const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+  let s = 0;
+  let t = 0;
+  if (a <= 1e-12) {
+    t = clamp01(f / e);
+  } else {
+    const c = ux * wx + uy * wy + uz * wz;
+    const b = ux * vx + uy * vy + uz * vz;
+    const denom = a * e - b * b;
+    s = denom > 1e-12 ? clamp01((b * f - c * e) / denom) : 0;
+    t = (b * s + f) / e;
+    if (t < 0) {
+      t = 0;
+      s = clamp01(-c / a);
+    } else if (t > 1) {
+      t = 1;
+      s = clamp01((b - c) / a);
+    }
+  }
+  const dx = wx + ux * s - vx * t;
+  const dy = wy + uy * s - vy * t;
+  const dz = wz + uz * s - vz * t;
+  return dx * dx + dy * dy + dz * dz;
+}
+
+/** Does a sphere at local (x, y, z) touch landmark `lm`'s solids? */
+function landmarkHit(
+  x: number,
+  y: number,
+  z: number,
+  r: number,
+  lm: Landmark,
+  gone: boolean,
+): boolean {
+  if (Math.abs(x) > lm.hx + r || Math.abs(z) > lm.hz + r) return false;
+  if (y - r > lm.top) return false;
+  for (const b of lm.boxes) {
+    if (gone && b.span) continue;
+    if (inBox(x - b.x, z - b.z, y, r, b.hx, b.hz, b.y0, b.y1)) return true;
+  }
+  for (const s of lm.struts) {
+    if (gone && s.span) continue;
+    const rr = r + s.r;
+    if (strutDist2(x, y, z, 0, 0, 0, s) <= rr * rr) return true;
+  }
+  return false;
+}
+
+/** riverHit's landmark half: the bridge line nearest `pos`, if a landmark. */
+function landmarkTouch(pos: Vec3, r: number, gaps: number): boolean {
+  const z = riverOffset(pos.z);
+  if (Math.abs(z) > LANDMARK_REACH_Z + r) return false;
+  const lm = landmarkAt(Math.round(pos.x / BLOCK_PITCH));
+  if (!lm) return false;
+  const gone = gaps !== 0 && (gaps & (1 << lm.bridge)) !== 0;
+  return landmarkHit(bridgeOffset(pos.x), pos.y, z, r, lm, gone);
+}
+
+/** Is the segment local origin (x, y, z) + t·d clear of landmark `lm`? */
+function landmarkClear(
+  x: number,
+  y: number,
+  z: number,
+  d: Vec3,
+  lm: Landmark,
+  gone: boolean,
+): boolean {
+  // Bounding-box reject first: most sight lines pass wide of a landmark.
+  if (
+    !segmentHitsBox(
+      x,
+      y,
+      z,
+      d,
+      -lm.hx,
+      lm.hx,
+      RIVER_WATER_Y - 1,
+      lm.top,
+      -lm.hz,
+      lm.hz,
+    )
+  ) {
+    return true;
+  }
+  for (const b of lm.boxes) {
+    if (gone && b.span) continue;
+    if (
+      segmentHitsBox(
+        x,
+        y,
+        z,
+        d,
+        b.x - b.hx,
+        b.x + b.hx,
+        b.y0,
+        b.y1,
+        b.z - b.hz,
+        b.z + b.hz,
+      )
+    ) {
+      return false;
+    }
+  }
+  for (const s of lm.struts) {
+    if (gone && s.span) continue;
+    if (strutDist2(x, y, z, d.x, d.y, d.z, s) <= s.r * s.r) return false;
+  }
+  return true;
+}
+
+/** Is the segment from `from` along `d` clear of every landmark near it? */
+function landmarksClear(from: Vec3, d: Vec3, gaps: number): boolean {
+  const z = riverOffset(from.z);
+  if (
+    Math.min(z, z + d.z) > LANDMARK_REACH_Z ||
+    Math.max(z, z + d.z) < -LANDMARK_REACH_Z
+  ) {
+    return true;
+  }
+  const xLo = from.x + Math.min(0, d.x);
+  const xHi = from.x + Math.max(0, d.x);
+  const first = Math.floor((xLo - BLOCK_PITCH / 2) / BLOCK_PITCH);
+  const last = Math.ceil((xHi + BLOCK_PITCH / 2) / BLOCK_PITCH);
+  for (let k = first; k <= last; k++) {
+    const lm = landmarkAt(k);
+    if (!lm) continue;
+    const gone = gaps !== 0 && (gaps & (1 << lm.bridge)) !== 0;
+    if (!landmarkClear(from.x - k * BLOCK_PITCH, from.y, z, d, lm, gone)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** A stone jetty against one embankment wall, with lamp posts at its head:
+ * canonical x, the wall it stands on (−1: low z, +1: high z). Mid-block,
+ * clear of both U4 mouths' approaches and of every bridge. */
+export interface Pier {
+  x: number;
+  side: -1 | 1;
+}
+export const PIERS: readonly Pier[] = [
+  { x: 300, side: -1 },
+  { x: 500, side: 1 },
+  { x: 700, side: -1 },
+  { x: 1300, side: 1 },
+  { x: 1500, side: -1 },
+  { x: 1900, side: 1 },
+];
+/** A pier's half width (x), its head's |dz| (it runs from there to the
+ * wall), and its deck top, m. */
+export const PIER_HALF_WIDTH = 5;
+export const PIER_HEAD_DZ = 46;
+export const PIER_TOP = RIVER_WATER_Y + 2.6;
+/** The lamp posts at each pier head: x off the pier's centre, |dz|, half
+ * thickness and top, m. */
+export const PIER_LAMP_X = PIER_HALF_WIDTH - 0.8;
+export const PIER_LAMP_DZ = PIER_HEAD_DZ + 0.8;
+export const PIER_LAMP_HALF = 0.15;
+export const PIER_LAMP_TOP = PIER_TOP + 4;
+
+/** Every solid box of the piers, canonical (like bridgeBoxes). */
+export function pierBoxes(): RiverBox[] {
+  const out: RiverBox[] = [];
+  const len = RIVER_HALF_WIDTH - PIER_HEAD_DZ;
+  for (const p of PIERS) {
+    const z = RIVER_CENTER_Z + p.side * (PIER_HEAD_DZ + len / 2);
+    out.push({
+      x: p.x,
+      z,
+      hx: PIER_HALF_WIDTH,
+      hz: len / 2,
+      y0: RIVER_WATER_Y - 1,
+      y1: PIER_TOP,
+    });
+    for (const sx of [-1, 1]) {
+      out.push({
+        x: p.x + sx * PIER_LAMP_X,
+        z: RIVER_CENTER_Z + p.side * PIER_LAMP_DZ,
+        hx: PIER_LAMP_HALF,
+        hz: PIER_LAMP_HALF,
+        y0: PIER_TOP,
+        y1: PIER_LAMP_TOP,
+      });
+    }
+  }
+  return out;
+}
+const PIER_BOXES = pierBoxes();
+
+/** Does a sphere at `pos` touch a pier or its lamps? */
+function pierHit(pos: Vec3, r: number): boolean {
+  if (pos.y - r > PIER_LAMP_TOP) return false;
+  for (const b of PIER_BOXES) {
+    if (
+      inBox(
+        wrapDeltaAxis(b.x, pos.x),
+        wrapDeltaAxis(b.z, pos.z),
+        pos.y,
+        r,
+        b.hx,
+        b.hz,
+        b.y0,
+        b.y1,
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Is the segment from `from` along `d` clear of the piers? Local frame
+ * with `from` at the origin, like the bridges. */
+function piersClear(from: Vec3, d: Vec3): boolean {
+  for (const b of PIER_BOXES) {
+    const x = wrapDeltaAxis(b.x, from.x);
+    const z = wrapDeltaAxis(b.z, from.z);
+    if (
+      segmentHitsBox(
+        x,
+        from.y,
+        z,
+        d,
+        -b.hx,
+        b.hx,
+        b.y0,
+        b.y1,
+        -b.hz,
+        b.hz,
+      )
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // --- Boats ------------------------------------------------------------------

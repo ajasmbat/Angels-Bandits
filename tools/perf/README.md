@@ -673,6 +673,9 @@ Two rules every tier obeys:
 | S7 medals, announcer, streak callouts | full | full | full | full (DOM and audio, no draw) |
 | C2 chaos — meteors, bombs, quake shake | full | full | full | full (the telegraphs) |
 | C2 chaos — meteor fire trails, spreading fires | full | 75 % | 50 % | 30 % (into the D1 pool, no draw) |
+| L7 inferno — flames, embers, ash and debris | full | 75 % | 50 % | 30 % (one instanced + one points draw) |
+| L7 inferno — smoke columns | full | full | 50 % of the columns, bigger puffs | 34 %, bigger puffs, plain edge |
+| L7 inferno — burn level, gutted frames, firelight, cloud and fog glow | full | full | full | full (shader terms, no draw) |
 | U4 tunnels — the concrete shell (walls, ramps, lintels) | full | full | full | full (solid) |
 | U4 tunnels — light fixtures (strips, guide and portal lights) | full | full | full | off |
 | U5 underground life — gardens, vines, glowing plants, fireflies, birds, station people | full | full | core + detail bands | core band (the hall, its glass, panels, waterfalls, the lake) |

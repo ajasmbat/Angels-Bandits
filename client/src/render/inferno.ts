@@ -363,7 +363,8 @@ class FadeSlots {
   private readonly wanted: Uint8Array;
 
   constructor(readonly k: number) {
-    this.key = new Float64Array(k).fill(-1);
+    // NaN = empty: every real key (C2's negative ones too) is a number.
+    this.key = new Float64Array(k).fill(Number.NaN);
     this.w = new Float32Array(k);
     this.x = new Float64Array(k);
     this.y = new Float64Array(k);
@@ -419,7 +420,9 @@ class FadeSlots {
         this.wanted[i] === 1
           ? Math.min(1, w + dt * SLOT_RATE)
           : Math.max(0, w - dt * SLOT_RATE);
-      if ((this.w[i] as number) <= 0 && this.wanted[i] === 0) this.key[i] = -1;
+      if ((this.w[i] as number) <= 0 && this.wanted[i] === 0) {
+        this.key[i] = Number.NaN;
+      }
     }
   }
 }

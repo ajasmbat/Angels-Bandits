@@ -547,7 +547,8 @@ function starField(seed: number, clouds: CloudUniforms): THREE.Points {
 
 /**
  * L1: fade a dome-riding point (a star, an airliner light) by the cloud
- * coverage in its direction, so it only shows in the gaps. Per VERTEX —
+ * coverage in its direction, so it only shows in the gaps. Coverage per
+ * VERTEX —
  * one coverage evaluation per point, the same function and the same
  * uniform objects the dome paints with. The point's local position is its
  * direction from the eye (it rides the camera-centred dome).
@@ -560,11 +561,19 @@ export function patchCloudCover(
   shader.vertexShader = shader.vertexShader
     .replace(
       "#include <common>",
-      `#include <common>\n${cloudGlsl(SKY_FOG_ELEVATION)}`,
+      `#include <common>\nvarying float vCloudVis;\n${cloudGlsl(SKY_FOG_ELEVATION)}`,
     )
     .replace(
       "#include <color_vertex>",
-      "#include <color_vertex>\n\tvColor *= 1.0 - abCloudCover(normalize(position));",
+      "#include <color_vertex>\n\tvCloudVis = 1.0 - abCloudCover(normalize(position));",
+    );
+  // ALPHA, not colour: a star is normal-blended, so a blackened one would
+  // still paint a dark dot over the cloud in front of it.
+  shader.fragmentShader = shader.fragmentShader
+    .replace("#include <common>", "#include <common>\nvarying float vCloudVis;")
+    .replace(
+      "#include <color_fragment>",
+      "#include <color_fragment>\n\tdiffuseColor.a *= vCloudVis;",
     );
 }
 

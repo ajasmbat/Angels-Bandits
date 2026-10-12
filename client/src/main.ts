@@ -1113,8 +1113,13 @@ scene.add(natureRenderer.group);
 // L11 river: embankment walls, bridges, the reflecting water and the boats.
 // Its solids (decks, walls, boats) collide through hitsGround/the movers, so
 // this is drawing only — updated on the same latched clock as the movers.
-const river = new RiverRenderer(welcome.seed, city.cityBuildings);
+// L4: the water's moon column follows the sky dome's live moon.
+const river = new RiverRenderer(welcome.seed, city.cityBuildings, {
+  dir: skyDome.uniforms.uMoonDir,
+  vis: skyDome.uniforms.uMoonVis,
+});
 scene.add(river.group);
+Object.assign(window, { __abRiver: river, __abR: renderer }); // DEBUG-L4-REMOVE
 // U4 tunnels: the concrete shell and its light fixtures (two draws). Solid
 // through hitsGround — drawing only, snapped under the camera each frame.
 const tunnels = new TunnelRenderer();
@@ -2951,6 +2956,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   train.setQuality(tier); // T2: platform people, sparks, light range
   courseGhost.setQuality(tier); // S3: MOBILE keeps the rings, drops the ghost
   atmosphere.setQuality(tier); // S5
+  river.setQuality(tier); // L4: streams, wakes, rain rings
   tunnels.setQuality(tier); // U4: MOBILE drops the fixtures
   tunnelShafts.setQuality(tier); // U7: and the shafts
   fleet?.setQuality(tier); // P4: MOBILE drops the glass and scarf
@@ -5945,7 +5951,14 @@ const frame = (now: number): void => {
   signals.update(chase.position, renderMs ?? now, microK, cityReact);
   constructionSparks.update(chase.position, renderMs ?? now, microK);
   ground.update(chase.position);
-  river.update(chase.position, renderMs, now); // L11
+  // L11. L4: under a QA eye the water and structure follow the RENDERED
+  // camera (the eye's image by the chase camera, as the render places it)
+  // — the water strip only reaches FOG_DISTANCE + 100 m either way of it.
+  river.update(
+    qaView ? nearestImage(chase.position, qaView.eye) : chase.position,
+    renderMs,
+    now,
+  );
   tunnels.update(chase.position); // U4 (U7: and the bores' air)
   tunnelShafts.update(chase.position); // U7
   // U5 — U6: the bats stir for our own plane, where it is drawn.

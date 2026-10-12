@@ -68,6 +68,9 @@ import {
   FIRE_LIGHT_COUNT_UNIFORM,
   FIRE_LIGHT_UNIFORM,
   FIRE_PHASE_UNIFORM,
+  FIRE_ZONES,
+  FIRE_ZONE_COUNT_UNIFORM,
+  FIRE_ZONE_UNIFORM,
   GUT_WEAR_LO,
   INFERNO_BURN_UNIFORM,
   setFirePhase,
@@ -77,24 +80,39 @@ import { RENDER_ORDER } from "./render-order";
 import { nearestImageInto, uploadPrefix } from "./wrapPlacement";
 
 /** Flame sites drawn at once (full share), and cards per site. */
-export const FLAME_SITES_MAX = 80;
+export const FLAME_SITES_MAX = 220;
 const CARDS = 3;
 /** Smoke columns drawn at once (full share), and puffs per column. */
-export const COLUMNS_MAX = 14;
-const PUFFS = 12;
+export const COLUMNS_MAX = 20;
+const PUFFS = 16;
+/** L7b: columns nearer than this are picked as though farther (a plume
+ * reads from a distance; up close it is only a dark wall), m. */
+const COLUMN_NEAR = 220;
 /** Embers, ash and debris (full share), round AIR_ANCHORS fires. */
 export const AIR_MAX = 1600;
 const AIR_ANCHORS = 16;
+/** L7b: embers and ash in the air round the camera (the same draw, its
+ * first AIR_CAM points), in a CAM_BOX m cube that wraps with the view —
+ * CAM_BOX divides WORLD_SIZE, so the torus wrap of the camera's render
+ * position never moves a point. */
+export const AIR_CAM = 480;
+const CAM_BOX = 80;
 /** Candidates a damaged building keeps (its lowest ranks). */
-const SITES_PER_BUILDING = 24;
+const SITES_PER_BUILDING = 32;
 /** Nothing is drawn past this, m (inside the fog's full dissolve). */
 const CUT_M = FOG_DISTANCE * 0.95;
 /** A building rebuilds its sites at most this often, ms. */
 const REBUILD_MS = 250;
+/** A building this worn (share of its chunks gone) burns round its foot. */
+const RUBBLE_WEAR = 0.06;
 /** Site kinds. */
 const KIND_FLOOR = 0;
 const KIND_WINDOW = 1;
 const KIND_C2 = 2;
+/** L7b: a burning rubble field at the foot of a wrecked building. */
+const KIND_RUBBLE = 3;
+/** Rubble-field candidates round a wrecked building's footprint. */
+const RUBBLE_SITES = 8;
 /** A site comes alive over this much of the burn × wear scale. */
 const RANK_SOFT = 0.08;
 /** Fading slots (lights, air anchors) ease in and out at this rate, 1/s. */
@@ -114,7 +132,7 @@ const FIRE_GAIN = EMISSIVE_FIRE / luminance(new THREE.Color(1, 0.82, 0.5));
 /** The air's phases' periods, s: debris arc, ember rise, ash fall. */
 const AIR_PERIODS = [3.1, 4.3, 9.7] as const;
 /** The firelight colour (linear) at strength 1. */
-const FIRELIGHT_RGB = [1.0, 0.42, 0.12] as const;
+const FIRELIGHT_RGB = [1.0, 0.3, 0.07] as const;
 
 /** Small integer hash → [0, 1) (seeded by ids, never by a pose). */
 function hash01(a: number, b: number): number {
@@ -264,7 +282,8 @@ export function buildSites(
           cz,
           0,
           0,
-          Math.min(g.cw, g.cd) * 0.7,
+          // L7b: the whole floor ablaze, wall to wall.
+          Math.min(g.cw, g.cd) * 1.05,
         );
       }
       // WINDOW: a standing facade neighbour on the same floor burns out of
@@ -294,9 +313,38 @@ export function buildSites(
           wz,
           fx,
           fz,
-          Math.min(5, (fx !== 0 ? g.cd : g.cw) * 0.35),
+          // L7b: a row of tongues pouring out of the window band.
+          Math.min(9, (fx !== 0 ? g.cd : g.cw) * 0.6),
         );
       }
+    }
+  }
+  // L7b RUBBLE: a wrecked building's fallen insides burn round its foot —
+  // the corners and the middle of each side, just outside its walls (on
+  // the ground: nothing to stand on but the street).
+  const g0 = grids[0];
+  if (g0 && out.wear >= RUBBLE_WEAR) {
+    const hw = g0.width / 2 + 3;
+    const hd = g0.depth / 2 + 3;
+    const size = Math.min(16, Math.max(g0.width, g0.depth) * 0.4);
+    const base = chunkId(index, 0, 0);
+    for (let q = 0; q < RUBBLE_SITES; q++) {
+      const a = (q / RUBBLE_SITES) * Math.PI * 2;
+      const ca = Math.cos(a);
+      const sa = Math.sin(a);
+      // On the footprint's outline (a rounded rectangle), pushed out.
+      const k = 1 / Math.max(Math.abs(ca) / hw, Math.abs(sa) / hd);
+      pushCandidate(
+        index,
+        KIND_RUBBLE,
+        base + q,
+        ca * k,
+        0,
+        sa * k,
+        0,
+        0,
+        size,
+      );
     }
   }
   // Keep the SITES_PER_BUILDING lowest ranks (partial selection).
@@ -338,9 +386,11 @@ function swapScratch(i: number, j: number): void {
   sw(scratch.key);
 }
 
-/** How alive a building's sites are at `burn`, from its wear. */
+/** How alive a building's sites are at `burn`, from its wear (≥ 1: all). */
 export const siteAmount = (burn: number, wear: number): number =>
-  burn * Math.min(1, 0.3 + 2.2 * wear);
+  // L7b: by burn 0.7 every site of every damaged building is alight (a
+  // building with a few chunks gone included); below it the fire spreads.
+  Math.min(1.05, burn * 1.5) * Math.min(1, 0.7 + 6 * wear);
 
 /** A site's weight: 0 below its rank, 1 a RANK_SOFT past it. */
 export const siteWeight = (rank: number, amount: number): number =>
@@ -451,18 +501,23 @@ float abInfNoise(vec2 p, float py) {
 
 const FLAME_VERTEX = /* glsl */ `
 attribute vec4 aA; // render-space base (xyz), width (w)
-attribute vec4 aB; // height, seed, alpha, layer
+attribute vec4 aB; // height, seed, alpha, layer + 4 × form
 uniform vec2 uWind;
 varying vec2 vUv;
 flat varying float vSeed;
 flat varying float vLayer;
+flat varying float vForm;
 varying float vAlpha;
 #include <fog_pars_vertex>
 void main() {
   vec3 base = aA.xyz;
   float w = aA.w;
   float h = aB.x;
-  float layer = aB.w;
+  // L7b: the form — 0 a floor ablaze (a back card and a front pair), 1 a
+  // row of tongues out of a window band, 2 a rubble field (both side by
+  // side across the fire).
+  float form = floor(aB.w / 4.0 + 0.01);
+  float layer = aB.w - 4.0 * form;
   // Cylindrical billboard about +y: flames stand up, whatever the camera.
   vec3 toCam = cameraPosition - base;
   toCam.y = 0.0;
@@ -472,9 +527,11 @@ void main() {
   // Layer 0 is the tall back card; 1 and 2 the front pair, either side.
   float back = step(layer, 0.5);
   float side = layer < 1.5 ? -1.0 : 1.0;
-  vec3 off = -fwd * (back * 0.3 * w) + right * ((1.0 - back) * side * 0.2 * w);
+  float row = step(0.5, form);
+  vec3 off = -fwd * (back * 0.3 * w * (1.0 - row))
+    + right * ((1.0 - back) * side * mix(0.2, 0.55, row) * w);
   float hs = mix(0.78, 1.15, back);
-  float ws = mix(0.72, 1.0, back);
+  float ws = mix(0.72, 1.0, back) * mix(1.0, 0.62, row);
   vec3 p = base + off + right * (position.x * w * ws) + vec3(0.0, position.y * h * hs, 0.0);
   // The tip leans downwind.
   p.xz += uWind * (position.y * position.y * h * 0.22);
@@ -483,6 +540,7 @@ void main() {
   vUv = position.xy;
   vSeed = aB.y;
   vLayer = layer;
+  vForm = form;
   vAlpha = aB.z;
   #include <fog_vertex>
 }
@@ -493,6 +551,7 @@ uniform vec4 uFirePhase;
 varying vec2 vUv;
 flat varying float vSeed;
 flat varying float vLayer;
+flat varying float vForm;
 varying float vAlpha;
 #include <fog_pars_fragment>
 ${NOISE_GLSL}
@@ -506,22 +565,39 @@ void main() {
   float n = 0.5 * abInfNoise(q, 4.0)
           + 0.3 * abInfNoise(vec2(q.x * 2.1 + 5.3, q.y * 2.0), 8.0)
           + 0.2 * abInfNoise(vec2(q.x * 4.3 + 1.7, q.y * 4.0), 16.0);
-  // A soft teardrop, its outline licked sideways more toward the tip...
+  // A soft teardrop (L7b: fuller), its outline licked sideways more
+  // toward the tip...
+  // A rubble field (form 2) is a low bank of fire: barely tapering, its
+  // top all tongues.
+  float rubble = step(1.5, vForm);
   float xd = x + (n - 0.5) * 0.55 * y;
-  float width = 0.48 * pow(max(1.0 - y, 0.0), 0.6);
-  float body = 1.0 - smoothstep(width * 0.15, width, abs(xd));
+  float width = 0.5 * pow(max(1.0 - y, 0.0), mix(0.55, 0.2, rubble));
+  float body = 1.0 - smoothstep(width * 0.2, width, abs(xd));
   // ...torn into tongues by the noise, more the higher it climbs.
-  float erode = smoothstep(0.15 + 0.6 * y, 0.45 + 0.6 * y, n + 0.25);
-  float m = body * erode * smoothstep(0.0, 0.08, y);
-  float heat = m * (1.0 - 0.8 * y) * (0.7 + 0.6 * n) * mix(1.0, 0.72, step(vLayer, 0.5));
-  vec3 col = mix(vec3(0.45, 0.05, 0.0), vec3(1.0, 0.36, 0.04), smoothstep(0.12, 0.5, heat));
-  col = mix(col, vec3(1.0, 0.82, 0.5), smoothstep(0.62, 1.0, heat));
-  col *= ${FIRE_GAIN.toFixed(4)} * mix(0.5, 1.0, smoothstep(0.08, 0.9, heat));
+  float erode = smoothstep(0.1 + 0.55 * y, 0.4 + 0.55 * y, n + 0.3 - 0.1 * rubble);
+  float m = body * erode * smoothstep(0.0, 0.06, y);
+  // Hot only low in the flame and where the noise runs hot: the core is
+  // a small yellow-white heart, the body orange-red.
+  float heat = m * (1.0 - 0.9 * y) * (0.5 + 0.65 * n) * mix(1.0, 0.75, step(vLayer, 0.5));
+  // L7b: reference 2's fire — deep red edges, an orange-red body (kept
+  // under ~0.9 linear, where the filmic curve leaves it red-orange instead
+  // of washing it to yellow), a small yellow-white core; only the core
+  // reaches the EMISSIVE_FIRE rung.
+  vec3 col = mix(vec3(0.42, 0.03, 0.0), vec3(1.0, 0.12, 0.01), smoothstep(0.1, 0.42, heat));
+  col = mix(col, vec3(1.0, 0.42, 0.1), smoothstep(0.5, 0.8, heat));
+  col = mix(col, vec3(1.0, 0.82, 0.5), smoothstep(0.8, 1.0, heat));
+  col *= ${FIRE_GAIN.toFixed(4)} * mix(0.55, 1.0, smoothstep(0.08, 0.9, heat));
   // Cool edges are thin, the hot core opaque.
-  float a = smoothstep(0.0, 0.35, m) * (0.5 + 0.5 * smoothstep(0.1, 0.6, heat)) * vAlpha;
+  float a = smoothstep(0.0, 0.45, m) * (0.45 + 0.55 * smoothstep(0.1, 0.5, heat)) * vAlpha;
   if (a < 0.004) discard;
   gl_FragColor = vec4(col, a);
-  #include <fog_fragment>
+  #ifdef USE_FOG
+  // L7b: fire shines through the smoke and haze — its fog is the shaped
+  // curve squared (still exactly 1 at fogFar; every flame is gone by
+  // CUT_M anyway), so a block burning 600 m out still reads as fire.
+  float flameFog = abFogFactor(fogNear, fogFar, vFogDepth);
+  gl_FragColor.rgb = mix(gl_FragColor.rgb, fogColor, flameFog * flameFog);
+  #endif
 }
 `;
 
@@ -551,7 +627,9 @@ void main() {
   c.x += sin(6.2832 * (ph * 2.0 + aB.y)) * wob;
   c.z += cos(6.2832 * (ph * 1.7 + aB.y * 1.3)) * wob;
   c.y += h;
-  float size = mix(16.0, 95.0, pow(ph, 0.75)) * aB.w;
+  // L7b: a dense plume — an 18 m puff at the fire swelling to 75 m at
+  // the deck, narrow enough to read as a column against the sky.
+  float size = mix(18.0, 75.0, pow(ph, 0.8)) * aB.w;
   vec4 mvC = viewMatrix * vec4(c, 1.0);
   float dist = length(mvC.xyz);
   // Bounded overdraw: never wider than 0.9 × its view distance.
@@ -571,7 +649,9 @@ void main() {
   float baseFade = smoothstep(4.0, 24.0, h);
   float camFade = smoothstep(size * 0.35, size * 1.2, dist);
   vAlpha = aB.z * env * baseFade * camFade;
-  vGlow = aB.z * exp(-h / 38.0);
+  // L7b: the fire lights the column's lower ~45 % (the reference's orange
+  // plume bases), fading up into the dark.
+  vGlow = aB.z * (1.0 - smoothstep(0.0, 0.35 * H, h)) * (0.35 + 0.65 * exp(-h / 60.0));
   vRise = ph;
   vSeed = aB.y;
   #include <fog_vertex>
@@ -581,6 +661,7 @@ void main() {
 const SMOKE_FRAGMENT = /* glsl */ `
 uniform vec4 uFirePhase;
 uniform float uSmokeDetail;
+uniform float uSmokeBurn;
 varying vec2 vUv;
 varying float vCornerY;
 varying float vAlpha;
@@ -593,15 +674,20 @@ void main() {
   float r2 = dot(vUv, vUv) * 4.0;
   // Billowing edge: a static noise turning with the puff (Mobile: plain).
   float n = uSmokeDetail > 0.5 ? abInfNoise(vUv * 3.2 + vSeed * 17.0, 64.0) : 0.5;
-  float shape = exp(-r2 * 1.5) * (1.0 - smoothstep(0.45, 1.0, r2)) * (0.45 + 1.1 * n);
-  float a = clamp(shape, 0.0, 1.0) * vAlpha * 0.95;
+  float shape = exp(-r2 * 1.2) * (1.0 - smoothstep(0.5, 1.0, r2)) * (0.6 + 1.1 * n);
+  float a = clamp(shape * 1.3, 0.0, 1.0) * vAlpha * 0.97;
   if (a < 0.003) discard;
-  // Near-black smoke, a touch greyer (moonlit) as it rises; lit orange from
-  // below by its own fire, strongest under each puff.
-  vec3 albedo = vec3(0.012, 0.011, 0.012) + vec3(0.016, 0.017, 0.022) * vRise;
+  // Near-black smoke, a touch greyer (moonlit) as it rises, its top edge
+  // catching the moon; lit orange from below by its own fire, strongest
+  // under each puff (L7b: hot enough to read as the reference's lit plume
+  // bases against the haze), and the whole plume a dim ember from the
+  // burning city under it.
+  vec3 albedo = vec3(0.012, 0.01, 0.009) + vec3(0.016, 0.016, 0.019) * vRise;
+  albedo += vec3(0.035, 0.038, 0.047) * smoothstep(0.1, 0.5, vCornerY) * vRise;
   float under = smoothstep(0.3, -0.5, vCornerY);
   float flick = 0.85 + 0.15 * sin(6.2832 * (uFirePhase.x + vSeed));
-  vec3 glow = vec3(1.0, 0.3, 0.06) * (0.6 * vGlow * (0.35 + 0.65 * under) * flick);
+  vec3 glow = vec3(1.0, 0.2, 0.03) * (1.3 * vGlow * (0.25 + 0.75 * under) * flick)
+    + vec3(0.025, 0.006, 0.0015) * uSmokeBurn * (1.0 - vRise);
   gl_FragColor = vec4(albedo + glow, a);
   #include <fog_fragment>
 }
@@ -616,6 +702,9 @@ uniform vec4 uAnchorB[${AIR_ANCHORS}]; // radius, flame height, -, -
 uniform vec4 uAirPhase;                // debris, ember, ash phases
 uniform vec2 uWind;
 uniform float uPxPerM;                 // pixels per metre at 1 m
+uniform vec4 uCamBox;                  // render-space camera (xyz), strength
+uniform vec3 uEmberOff;                // camera embers' drift, mod CAM_BOX
+uniform vec3 uAshOff;                  // camera ash's drift, mod CAM_BOX
 varying vec4 vCol;
 varying float vRot;
 varying float vKind;
@@ -632,7 +721,27 @@ void main() {
   vec4 col = vec4(0.0);
   float rot = 0.0;
   float ang = aSeed.y * 6.2832;
-  if (aKind < 0.5) {
+  bool cam = aSlot > ${AIR_ANCHORS.toFixed(1)} - 0.5;
+  if (cam) {
+    // L7b: the air round the camera — embers rising and ash falling
+    // through a cube that wraps with the view, faded over its outer 30 %
+    // so nothing pops at the wrap.
+    vec3 off = aKind < 0.5 ? uEmberOff : uAshOff;
+    vec3 q = aSeed.xyz * ${CAM_BOX.toFixed(1)} + off - uCamBox.xyz;
+    q = (fract(q / ${CAM_BOX.toFixed(1)}) - 0.5) * ${CAM_BOX.toFixed(1)};
+    p = uCamBox.xyz + q;
+    vec3 e = abs(q) / ${(CAM_BOX / 2).toFixed(1)};
+    float edge = 1.0 - smoothstep(0.7, 1.0, max(max(e.x, e.y), e.z));
+    if (aKind < 0.5) {
+      size = 0.1 + 0.2 * aSeed.w;
+      float blink = 0.6 + 0.4 * sin(6.2832 * (uAirPhase.y * 3.0 + aSeed.w * 7.0));
+      col = vec4(vec3(1.0, 0.42, 0.09) * (1.5 * blink), edge);
+    } else {
+      size = 0.12 + 0.18 * aSeed.w;
+      col = vec4(0.16, 0.15, 0.145, 0.8 * edge);
+    }
+    col.a *= uCamBox.w;
+  } else if (aKind < 0.5) {
     // Embers: up out of the fire on a swirl, carried downwind, cooling.
     float ph = fract(uAirPhase.y + aSeed.x);
     float t = ph * ${AIR_PERIODS[1].toFixed(1)};
@@ -667,7 +776,7 @@ void main() {
     float landed = step(A.y - 1.0, p.y);
     col = vec4(vec3(0.06, 0.05, 0.045), landed);
   }
-  col.a *= A.w;
+  if (!cam) col.a *= A.w;
   vec4 mvPosition = viewMatrix * vec4(p, 1.0);
   gl_Position = projectionMatrix * mvPosition;
   float px = size * uPxPerM / max(-mvPosition.z, 1.0);
@@ -777,6 +886,9 @@ export class Inferno {
   private readonly anchorBU: { value: THREE.Vector4[] };
   private readonly airPhaseU = { value: new THREE.Vector4() };
   private readonly pxPerMU = { value: 600 };
+  private readonly camBoxU = { value: new THREE.Vector4() };
+  private readonly emberOffU = { value: new THREE.Vector3() };
+  private readonly ashOffU = { value: new THREE.Vector3() };
   private flameShare = 1;
   private smokeShare = 1;
   private airShare = 1;
@@ -789,7 +901,11 @@ export class Inferno {
   private cB = new Int32Array(this.cap);
   private cS = new Int16Array(this.cap);
   private cD = new Float64Array(this.cap);
+  /** L7b: the pick order — distance² over the view weight² (viewRank). */
+  private cR = new Float64Array(this.cap);
   private cW = new Float32Array(this.cap);
+  /** The camera's forward (unit), for viewRank. */
+  private readonly fwd = new THREE.Vector3(0, 0, -1);
   private cN = 0;
   private readonly lights = new FadeSlots(FIRE_LIGHTS);
   private readonly anchors = new FadeSlots(AIR_ANCHORS);
@@ -869,6 +985,7 @@ export class Inferno {
           uWind: this.windU,
           uFirePhase: FIRE_PHASE_UNIFORM,
           uSmokeDetail: this.smokeDetailU,
+          uSmokeBurn: INFERNO_BURN_UNIFORM,
         }),
         vertexShader: SMOKE_VERTEX,
         fragmentShader: SMOKE_FRAGMENT,
@@ -882,24 +999,33 @@ export class Inferno {
     this.smoke.visible = false;
     // The air: static seeds, every motion in the vertex shader.
     const ag = new THREE.BufferGeometry();
-    const seeds = new Float32Array(AIR_MAX * 4);
-    const kinds = new Float32Array(AIR_MAX);
-    const slots = new Float32Array(AIR_MAX);
+    const total = AIR_CAM + AIR_MAX;
+    const seeds = new Float32Array(total * 4);
+    const kinds = new Float32Array(total);
+    const slots = new Float32Array(total);
     let s = 0x2545f491;
     const rnd = () => {
       s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
       return s / 4294967296;
     };
     for (let i = 0; i < AIR_MAX; i++) {
-      for (let k = 0; k < 4; k++) seeds[i * 4 + k] = rnd();
+      const j = AIR_CAM + i;
+      for (let k = 0; k < 4; k++) seeds[j * 4 + k] = rnd();
       // Interleaved, so any drawn prefix holds every kind in proportion.
       const m = i % 20;
-      kinds[i] = m < 11 ? 0 : m < 17 ? 1 : 2;
-      slots[i] = i % AIR_ANCHORS;
+      kinds[j] = m < 11 ? 0 : m < 17 ? 1 : 2;
+      slots[j] = i % AIR_ANCHORS;
+    }
+    // L7b: the camera's own embers and ash lead the buffer (slot
+    // AIR_ANCHORS), so the draw range is one run: [0 or AIR_CAM, …).
+    for (let i = 0; i < AIR_CAM; i++) {
+      for (let k = 0; k < 4; k++) seeds[i * 4 + k] = rnd();
+      kinds[i] = i % 5 < 3 ? 0 : 1;
+      slots[i] = AIR_ANCHORS;
     }
     ag.setAttribute(
       "position",
-      new THREE.BufferAttribute(new Float32Array(AIR_MAX * 3), 3),
+      new THREE.BufferAttribute(new Float32Array(total * 3), 3),
     );
     ag.setAttribute("aSeed", new THREE.BufferAttribute(seeds, 4));
     ag.setAttribute("aKind", new THREE.BufferAttribute(kinds, 1));
@@ -920,6 +1046,9 @@ export class Inferno {
           uAirPhase: this.airPhaseU,
           uWind: this.windU,
           uPxPerM: this.pxPerMU,
+          uCamBox: this.camBoxU,
+          uEmberOff: this.emberOffU,
+          uAshOff: this.ashOffU,
         }),
         vertexShader: AIR_VERTEX,
         fragmentShader: AIR_FRAGMENT,
@@ -979,6 +1108,7 @@ export class Inferno {
     this.tanHalf = Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2);
     this.camAspect = cam.aspect;
     this.pxPerMU.value = f.viewportH / (2 * this.tanHalf);
+    cam.getWorldDirection(this.fwd);
     this.syncSites(now);
     this.syncC2(f.fires);
     this.collect(f.viewer, burn);
@@ -1116,6 +1246,7 @@ export class Inferno {
     this.cB = g32(this.cB);
     this.cS = g16(this.cS);
     this.cD = gd(this.cD);
+    this.cR = gd(this.cR);
     this.cW = gf(this.cW);
     this.cap = n;
   }
@@ -1142,6 +1273,11 @@ export class Inferno {
         this.cB[this.cN] = bi;
         this.cS[this.cN] = i;
         this.cD[this.cN] = d2;
+        // A building's k-th site (they are kept in rank order) picks as
+        // though (1 + k/4)× as far, so the cap spreads over many burning
+        // buildings instead of drawing every site of the nearest few.
+        const spread = 1 + i / 4;
+        this.cR[this.cN] = this.viewRank(dx, dy, dz, d2) * spread * spread;
         this.cW[this.cN] = w;
         this.cN++;
       }
@@ -1160,10 +1296,38 @@ export class Inferno {
       this.cB[this.cN] = -1;
       this.cS[this.cN] = idx;
       this.cD[this.cN] = d2;
+      this.cR[this.cN] = this.viewRank(dx, dy, dz, d2);
       this.cW[this.cN] = 1;
       this.cN++;
     }
     this.stats.sites = live;
+  }
+
+  /**
+   * L7b: a candidate's pick key — its distance² over its view weight²: a
+   * fire within ~32° of the view axis counts at its distance, one 63° or
+   * more off it (out of frame) as though 4× as far, smoothly in between, so the capped draw is spent
+   * on fire in view and a turning camera re-ranks sites smoothly (the cap
+   * fade runs on this key).
+   */
+  private viewRank(dx: number, dy: number, dz: number, d2: number): number {
+    const d = Math.sqrt(d2);
+    if (d < 1) return d2;
+    const f = this.fwd;
+    const c = (dx * f.x + dy * f.y + dz * f.z) / d;
+    const vw = 0.25 + 0.75 * smooth01((c - 0.45) / 0.4);
+    return d2 / (vw * vw);
+  }
+
+  /** viewRank on the level: the camera's heading, not its pitch. */
+  private levelRank(dx: number, dz: number, d2: number): number {
+    const f = this.fwd;
+    const h = Math.hypot(f.x, f.z);
+    const d = Math.sqrt(d2);
+    if (d < 1 || h < 1e-3) return d2;
+    const c = (dx * f.x + dz * f.z) / (d * h);
+    const vw = 0.3 + 0.7 * smooth01((c + 0.2) / 0.7);
+    return d2 / (vw * vw);
   }
 
   /** Candidate `c`'s canonical position, size and kind. */
@@ -1206,10 +1370,13 @@ export class Inferno {
     for (let i = 0; i < m; i++) {
       let best = i;
       for (let j = i + 1; j < this.cN; j++) {
-        if ((this.cD[j] as number) < (this.cD[best] as number)) best = j;
+        if ((this.cR[j] as number) < (this.cR[best] as number)) best = j;
       }
       if (best === i) continue;
       swap4(this.cB, this.cS, this.cD, this.cW, i, best);
+      const t = this.cR[i] as number;
+      this.cR[i] = this.cR[best] as number;
+      this.cR[best] = t;
     }
   }
 
@@ -1219,7 +1386,12 @@ export class Inferno {
     // One past the cap: its distance is where the fade-out ends.
     this.selectNearest(want + 1);
     const n = Math.min(want, this.cN);
-    const edge = this.cN > want ? Math.sqrt(this.cD[want] as number) : CUT_M;
+    // The cap fade runs on the pick key (viewRank), like the pick itself;
+    // under the cap nothing fades but the last stretch before CUT_M.
+    const edge =
+      this.cN > want
+        ? Math.sqrt(this.cR[want] as number)
+        : Number.POSITIVE_INFINITY;
     const fadeFrom = edge * 0.75;
     const a = this.flameA.array as Float32Array;
     const bArr = this.flameB.array as Float32Array;
@@ -1232,28 +1404,41 @@ export class Inferno {
     for (let c = 0; c < n; c++) {
       const info = this.siteOf(c, this.canon);
       const d = Math.sqrt(this.cD[c] as number);
-      const fade = 1 - smooth01((d - fadeFrom) / Math.max(1, edge - fadeFrom));
+      const r = Math.sqrt(this.cR[c] as number);
+      const fade =
+        (1 - smooth01((r - fadeFrom) / Math.max(1, edge - fadeFrom))) *
+        (1 - smooth01((d - 0.85 * CUT_M) / (0.15 * CUT_M)));
       const w = (this.cW[c] as number) * fade;
       if (w <= 0.01) continue;
       const img = nearestImageInto(this.img, viewer, this.canon);
       const grow = (0.55 + 0.45 * (this.cW[c] as number)) * scale;
       // Bigger with distance, so a burning block still reads as fire from
       // across the city (dressing: never solid, never collided).
-      const far = 1 + 0.8 * smooth01((d - 150) / 450);
+      const far = 1 + 1.8 * smooth01((d - 100) / 500);
+      const kind = info.kind;
       const width =
-        info.size * grow * far * (info.kind === KIND_FLOOR ? 1.35 : 1.1);
-      const height = width * (info.kind === KIND_FLOOR ? 1.7 : 2.1);
+        info.size *
+        grow *
+        far *
+        (kind === KIND_FLOOR ? 1.3 : kind === KIND_RUBBLE ? 1.6 : 1.15);
+      const height =
+        width * (kind === KIND_FLOOR ? 1.7 : kind === KIND_RUBBLE ? 0.55 : 1.9);
+      // The card form (FLAME_VERTEX): floor / row of tongues / rubble.
+      const form = kind === KIND_FLOOR ? 0 : kind === KIND_RUBBLE ? 2 : 1;
       const seed = hash01(info.key | 0, Math.floor(info.key / 4294967296));
+      // L7b: no two fires alike — a roaring one beside a low one, so a
+      // burning block reads as a ragged skyline of fire, not a curtain.
+      const vary = 0.6 + 0.8 * hash01(info.key | 0, 77);
       for (let j = 0; j < CARDS; j++) {
         const o = cards * 4;
         a[o] = img.x;
         a[o + 1] = img.y;
         a[o + 2] = img.z;
-        a[o + 3] = width;
-        bArr[o] = height;
+        a[o + 3] = width * (0.8 + 0.2 * vary);
+        bArr[o] = height * vary;
         bArr[o + 1] = seed;
         bArr[o + 2] = Math.min(1, w * 1.2);
-        bArr[o + 3] = j;
+        bArr[o + 3] = j + 4 * form;
         cards++;
       }
       cov += (width * height * CARDS * 0.5) / Math.max(1, d * d);
@@ -1326,7 +1511,13 @@ export class Inferno {
       const k = this.colN++;
       this.colB[k] = bi;
       this.colS[k] = lead;
-      this.colD[k] = d2;
+      // L7b: picked (and faded at the cap) by viewRank, level: a column
+      // climbs through the whole frame wherever its foot is.
+      // Closer than COLUMN_NEAR m a column is a wall of smoke round the
+      // camera, not a plume: it picks as though that much farther out.
+      const dc = Math.sqrt(d2);
+      const dn = dc + 2 * Math.max(0, COLUMN_NEAR - dc);
+      this.colD[k] = this.levelRank(dx, dz, dn * dn);
       this.colW[k] = Math.min(1, sum / 3);
     }
     const want = Math.max(1, Math.round(COLUMNS_MAX * this.smokeShare));
@@ -1361,8 +1552,9 @@ export class Inferno {
       this.canon.y = e.y[si] as number;
       this.canon.z = e.z[si] as number;
       const img = nearestImageInto(this.img, viewer, this.canon);
+      // L7b: up into the cloud deck (CLOUD_BASE 500 m) at high burn.
       const height =
-        (200 + 220 * Math.min(1, e.wear * 3)) * (0.55 + 0.45 * burn);
+        (260 + 280 * Math.min(1, e.wear * 3)) * (0.55 + 0.45 * burn);
       const seed = hash01(this.colB[c] as number, 911);
       for (let p = 0; p < PUFFS; p++) {
         const o = puffs * 4;
@@ -1376,8 +1568,8 @@ export class Inferno {
         b[o + 3] = sizeMul * (0.75 + 0.5 * (this.colW[c] as number));
         puffs++;
       }
-      // Coverage: PUFFS puffs ~55 m across, at about the column's distance.
-      const sz = 55 * sizeMul;
+      // Coverage: PUFFS puffs ~85 m across, at about the column's distance.
+      const sz = 85 * sizeMul;
       cov +=
         (PUFFS * sz * sz * strength) /
         Math.max(1, d * d + height * height * 0.25);
@@ -1386,10 +1578,19 @@ export class Inferno {
         this.cloudGlow[o] = img.x;
         this.cloudGlow[o + 1] = img.z;
         this.cloudGlow[o + 2] = strength * burn;
-        this.cloudGlow[o + 3] = 380 + 200 * (this.colW[c] as number);
+        this.cloudGlow[o + 3] = 300 + 160 * (this.colW[c] as number);
+        // L7b: the same block's firelight from below (inferno-shading.ts
+        // FIRE_ZONE_UNIFORM), a tighter reach than the glow on the deck.
+        (FIRE_ZONE_UNIFORM.value[glow] as THREE.Vector4).set(
+          img.x,
+          img.z,
+          strength * burn,
+          170 + 110 * (this.colW[c] as number),
+        );
         glow++;
       }
     }
+    FIRE_ZONE_COUNT_UNIFORM.value = Math.min(glow, FIRE_ZONES);
     this.cloudGlowCount = glow;
     this.stats.glow = glow;
     const g = this.smoke.geometry as THREE.InstancedBufferGeometry;
@@ -1524,9 +1725,23 @@ export class Inferno {
               Math.min(1, na / 6),
           )
         : 0;
-    this.air.geometry.setDrawRange(0, count);
-    this.air.visible = count > 0;
-    this.stats.air = count;
+    // L7b: the camera's embers and ash — as strong as the burn, within
+    // reach of the nearest drawn fire (sorted first by pickFlames).
+    const near = drawn > 0 ? Math.sqrt(this.cD[0] as number) : CUT_M;
+    const camK =
+      this.airShare > 0
+        ? smooth01((this.stats.burn - 0.2) / 0.5) *
+          (1 - smooth01((near - 150) / 400))
+        : 0;
+    const wx = this.windU.value.x;
+    const wz = this.windU.value.y;
+    driftInto(this.emberOffU.value, wx * 1.6 * dt, 2.6 * dt, wz * 1.6 * dt);
+    driftInto(this.ashOffU.value, wx * 2.5 * dt, -1.4 * dt, wz * 2.5 * dt);
+    this.camBoxU.value.set(viewer.x, viewer.y, viewer.z, camK);
+    const camN = camK > 0.01 ? Math.round(AIR_CAM * this.airShare) : 0;
+    this.air.geometry.setDrawRange(AIR_CAM - camN, camN + count);
+    this.air.visible = camN + count > 0;
+    this.stats.air = camN + count;
   }
 
   private heatFires = 0;
@@ -1567,6 +1782,12 @@ export class Inferno {
   info(): InfernoStats {
     return { ...this.stats };
   }
+}
+
+/** Move a camera-air drift by (dx, dy, dz), kept in [0, CAM_BOX). */
+function driftInto(v: THREE.Vector3, dx: number, dy: number, dz: number): void {
+  const m = (a: number) => a - Math.floor(a / CAM_BOX) * CAM_BOX;
+  v.set(m(v.x + dx), m(v.y + dy), m(v.z + dz));
 }
 
 /** Swap entries i and j of four parallel arrays (no closure per swap). */

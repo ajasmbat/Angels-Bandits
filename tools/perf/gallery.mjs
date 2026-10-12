@@ -315,6 +315,12 @@ try {
         }
       }, v);
     await pin();
+    // L7b: a view that pins the world clock re-picks its weather phase
+    // against the PINNED clock (the call above picked it against the live
+    // one, so a pinned view never got the weather it asked for).
+    if (wx && v.timeMs !== undefined) {
+      await page.evaluate((w) => window.__ab.weather(w), wx);
+    }
     if (v.showcase) {
       // DT1: pose the planes for a turntable / damage / dogfight shot.
       const n = await page.evaluate(

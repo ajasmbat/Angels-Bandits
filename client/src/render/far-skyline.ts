@@ -633,12 +633,16 @@ const CARPET_VERTEX = /* glsl */ `
 ${COMMON_GLSL}
 attribute vec2 aRing; // (0..1 along the radius, azimuth rad)
 varying vec3 vShell;
+// The district density, per vertex: it varies over 1.6 km cells, far
+// coarser than the rings, so the pixels interpolate it instead of hashing.
+varying float vDens;
 void main() {
   float camY = max(cameraPosition.y, 0.0);
   // From where the ground is exactly at the fog limit, out past R_out.
   float r0 = sqrt(max(${f(FOG_DISTANCE * FOG_DISTANCE)} - camY * camY, 1.0)) - 2.0;
   float r = r0 * pow(${f(FAR_MAX_RADIUS + 200)} / r0, aRing.x);
   vec3 rel = vec3(cos(aRing.y) * r, -camY, sin(aRing.y) * r);
+  vDens = abFarDensity(uFarOrigin + rel.xz);
   vShell = abFarShell(rel);
   gl_Position = projectionMatrix * viewMatrix * vec4(cameraPosition + vShell, 1.0);
 }
@@ -647,6 +651,7 @@ void main() {
 const CARPET_FRAGMENT = /* glsl */ `
 ${COMMON_GLSL}
 varying vec3 vShell;
+varying float vDens;
 // A filtered line train: lines of half width \`hw\` every \`per\` m at x, given
 // the pixel footprint \`fw\` (m) — its exact AA edge near, its mean coverage
 // once the period is under a few pixels.
@@ -672,7 +677,7 @@ void main() {
   float d = length(rel);
   vec2 w = uFarOrigin + rel.xz;
   vec2 fw = fwidth(w);
-  float dens = abFarDensity(w);
+  float dens = vDens;
   float burn = abCityGlow.a;
   // Roofs and courtyards, warm speckle of lit windows and yards (40 m cells,
   // their mean once a cell is under ~3 px).

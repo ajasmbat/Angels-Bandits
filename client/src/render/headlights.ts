@@ -62,7 +62,7 @@ uniform float fogFar;
 ${AB_FOG_GLSL}
 // Additive fog: attenuate by both layers, never lerp toward the fog colour.
 float abAdditiveFog(float depth, float worldY) {
-  float fogFactor = smoothstep(fogNear, fogFar, depth);
+  float fogFactor = abFogFactor(fogNear, fogFar, depth);
   float haze = abHazeAmount(cameraPosition.y, worldY, depth);
   return (1.0 - fogFactor) * (1.0 - haze);
 }

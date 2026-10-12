@@ -15,6 +15,11 @@
 // against the far city. Real geometry at 792–800 m is ≥ 99.8 % fogged, so
 // its order against the shell cannot be seen.
 //
+// THE LATTICE. Each 100 m world cell's tower depends only on the cell, so
+// the CPU works it out once, when the cell enters a toroidal window of
+// N × N instance slots round the camera (FarSkyline.step: one row per cell
+// crossed); the vertex shader only reads it.
+//
 // WORLD-ANCHORED, SEAM-FREE. Everything is placed in an unwrapped camera
 // offset (sky-clouds CloudOffset) kept mod FAR_PERIOD, a whole number of
 // torus widths and of every cell size here: it never jumps at the seam,
@@ -28,9 +33,9 @@
 //   spires  the same, further out (SPIRE_FADE / SPIRE_SINK), so a landmark
 //           recedes into the fog and is never reached;
 //   carpet  fog-coloured at 800 m, in over CARPET_FADE;
-//   far     farVisibility(): haze, and exactly the fog colour by R − 100
-//           (the tier's R_out — the slot prefix wobbles ≤ 71 m with the
-//           camera inside its cell), so there is no ring edge;
+//   far     abFarVis(): haze, and exactly the fog colour by R − 100 (the
+//           tier's R_out; a tower centred past R is dropped, already
+//           fog-coloured), so there is no ring edge;
 //   weather nothing inside the deck or dust, thinner in rain.
 // The fog colour it fades to is the glow-aware one (fog.ts abGlowFog), the
 // same the fog chunk and the dome reach, so the inner edge meets the
@@ -40,6 +45,7 @@
 import {
   RIVER_CENTER_Z,
   RIVER_HALF_WIDTH,
+  RIVER_ROW,
 } from "@angels-bandits/common/city/river";
 import { LOT_LINE } from "@angels-bandits/common/city/street";
 import {
@@ -74,6 +80,11 @@ export const SPIRE_FADE = [2600, 2000] as const;
 export const SPIRE_SINK = [2000, 1800] as const;
 /** Carpet: fog-coloured at the fog limit, in by the second distance. */
 export const CARPET_FADE = [FOG_DISTANCE, 1250] as const;
+/** Share of the spire super-cells that hold a spire. */
+const SPIRE_SHARE = 0.55;
+/** The river's block row, as a GLSL-comparable index (canonical rows mod
+ * WORLD_SIZE / BLOCK_PITCH). */
+const RIVER_ROW_INDEX = RIVER_ROW;
 /** Peak share of the far city's own colour over the fog, and its haze
  * length, m: `FAR_VIS · exp(−(D − 800) / FAR_HAZE)`. */
 export const FAR_VIS = 0.62;
@@ -191,42 +202,43 @@ float abFarVis(float d) {
 
 // --- 1. Towers -----------------------------------------------------------------
 
+/** GLSL: the spire super-cell \`sc\`'s spire — (exists, block x, block z,
+ * seed). Mirrored by farSpire() (the lattice keeps a spire's block clear). */
+const FAR_SPIRE_GLSL = /* glsl */ `
+float abBits(uint h, uint shift) { return float((h >> shift) & 0xffu) / 255.0; }
+vec4 abSpire(vec2 sc) {
+  uint h = abFarHash(uvec2(mod(sc, ${f(FAR_PERIOD / FAR_SUPER)})) + uvec2(977u, 613u));
+  float bx = float((h >> 8u) & 7u);
+  float bz = float((h >> 12u) & 7u);
+  // Never in the river row (a super-cell's 8 block rows are canonical rows
+  // mod 10: 1600 = 8 × 200).
+  float row = mod(sc.y * 8.0 + bz, ${f(WORLD_SIZE / BLOCK_PITCH)});
+  float has = (abBits(h, 0u) < ${SPIRE_SHARE.toFixed(2)} && abs(row - ${f(RIVER_ROW_INDEX)}) > 0.5) ? 1.0 : 0.0;
+  return vec4(has, bx, bz, float(h >> 16u) / 65535.0);
+}
+`;
+
 const TOWER_VERTEX = /* glsl */ `
 ${COMMON_GLSL}
 attribute float aPart;
-attribute vec3 aSlot; // lattice offset (x, z) from the camera's cell; kind
-uniform vec2 uFarCell; // the camera's tower cell (mod the period)
-uniform vec2 uFarFrac; // that cell's corner − the eye, m (x, z)
+// Per instance. A lattice slot (index < uFarN²): its world cell's tower,
+// worked out on the CPU (FarTowerField) — (centre x/z in the cell, half
+// sizes) and (height, seed, occupancy, style; style −1: none). A spire slot
+// (style −2): (super-cell offset x/z from the camera's, −, −).
+attribute vec4 aTowerA;
+attribute vec4 aTowerB;
+uniform float uFarN; // the lattice's side, cells
+uniform vec2 uFarCellN; // the camera's unwrapped cell, mod uFarN
+uniform vec2 uFarFrac; // the camera cell's corner − the eye, m (x, z)
 uniform vec2 uFarSuper; // the camera's spire super-cell
 uniform vec2 uFarSuperFrac;
 varying vec3 vRel;
 varying vec2 vFacade;
 varying vec3 vNormal;
 flat varying vec4 vInfo; // seed, occupancy, colour fade, part
-flat varying vec4 vKind; // kind (0 tower, 1 spire, 2 setback), burning, part top y, part height
-float abBits(uint h, uint shift) { return float((h >> shift) & 0xffu) / 255.0; }
-// The spire super-cell \`sc\`'s spire: (exists, block x, block z, seed).
-vec4 abSpire(vec2 sc) {
-  uint h = abFarHash(uvec2(mod(sc, ${f(FAR_PERIOD / FAR_SUPER)})) + uvec2(977u, 613u));
-  float bx = float((h >> 8u) & 7u);
-  float bz = float((h >> 12u) & 7u);
-  // Never in the river row (the super-cell's block rows are canonical rows
-  // mod 10: 8 per super-cell, 1600 = 8 × 200).
-  float row = mod(sc.y * 8.0 + bz, ${f(WORLD_SIZE / BLOCK_PITCH)});
-  float has = (abBits(h, 0u) < 0.55 && abs(row - ${f(RIVER_CENTER_Z / BLOCK_PITCH - 0.5)}) > 0.5) ? 1.0 : 0.0;
-  return vec4(has, bx, bz, float(h >> 16u) / 65535.0);
-}
+flat varying vec4 vKind; // style (0 plain, 1 spire, 2 setback), burning, part top y, part height
+${FAR_SPIRE_GLSL}
 void main() {
-  float kind = aSlot.z;
-  // Past this tier's radius: out before any hashing (the slot prefix
-  // already stops near it).
-  vec2 slotCentre = kind < 0.5
-    ? aSlot.xy * ${f(FAR_CELL)} + uFarFrac + ${f(FAR_CELL / 2)}
-    : aSlot.xy * ${f(FAR_SUPER)} + uFarSuperFrac + ${f(FAR_SUPER / 2)};
-  if (length(slotCentre) > uFarOuter + (kind < 0.5 ? 100.0 : 1300.0)) {
-    gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
-    return;
-  }
   vec2 c;     // footprint centre, from the eye (x, z), m
   vec2 hsz;   // footprint half sizes, m
   float H;    // full height, m
@@ -240,47 +252,32 @@ void main() {
   float needle = 0.0; // needle half width, m (0: none)
   float style = 0.0;
   bool alive = true;
-  if (kind < 0.5) {
-    vec2 cell = mod(uFarCell + aSlot.xy, ${f(FAR_PERIOD / FAR_CELL)});
-    uint h = abFarHash(uvec2(cell));
-    uint h2 = abFarHash(uvec2(h, h ^ 0x9e3779b9u));
-    vec2 corner = aSlot.xy * ${f(FAR_CELL)} + uFarFrac;
-    vec2 w = uFarOrigin + corner + ${f(FAR_CELL / 2)};
-    float dens = abFarDensity(w);
-    // Blocks: cells are half-blocks; the river row and parks hold none.
-    float row = mod(floor(cell.y / 2.0), ${f(WORLD_SIZE / BLOCK_PITCH)});
-    if (abs(row - ${f(RIVER_CENTER_Z / BLOCK_PITCH - 0.5)}) < 0.5) alive = false;
-    if (abBits(h, 0u) < 0.08 + 0.25 * (1.0 - smoothstep(0.0, 0.15, dens))) alive = false;
-    // A spire's block is the spire's alone.
-    vec2 sc = floor(cell / 16.0);
-    vec4 sp = abSpire(sc);
-    vec2 blk = floor((cell - sc * 16.0) / 2.0);
-    if (sp.x > 0.5 && blk == sp.yz) alive = false;
-    // The footprint inside the half-block's buildable band (streets clear).
-    vec2 west = 1.0 - mod(cell, 2.0); // 1: the half on the block's low side
-    vec2 lo = west * ${f(LOT_LINE)};
-    vec2 hi = ${f(FAR_CELL)} - (1.0 - west) * ${f(LOT_LINE)};
-    hsz = mix(vec2(17.0), (hi - lo) * 0.5 - 1.0, vec2(abBits(h, 8u), abBits(h, 16u)));
-    vec2 t = vec2(abBits(h2, 0u), abBits(h2, 8u));
-    c = corner + mix(lo + hsz, hi - hsz, t);
-    float r = abBits(h, 24u);
-    // Dense districts cluster tall: the downtowns stand out of the city.
-    H = 16.0 + 60.0 * dens + (24.0 + 250.0 * dens * dens) * pow(r, 2.0);
-    H = min(H, 340.0);
-    seed = float(h2 >> 16u) / 65535.0;
-    occ = 0.14 + 0.26 * abBits(h2, 16u) * (0.5 + 0.5 * dens);
-    // Art Deco setbacks on the tall ones.
-    if (H > 105.0 && abBits(h2, 24u) < 0.5) {
+  float code = aTowerB.w;
+  if (code > -1.5) {
+    // The slot's world cell relative to the camera's (toroidal lattice:
+    // slot ≡ world cell mod N, the window centred on the camera).
+    float id = float(gl_InstanceID);
+    vec2 slot = vec2(mod(id, uFarN), floor(id / uFarN));
+    float hn = floor(uFarN * 0.5);
+    vec2 rel = mod(slot - uFarCellN + hn, uFarN) - hn;
+    c = rel * ${f(FAR_CELL)} + uFarFrac + aTowerA.xy;
+    hsz = aTowerA.zw;
+    H = aTowerB.x;
+    seed = aTowerB.y;
+    occ = aTowerB.z;
+    alive = code > -0.5;
+    // Art Deco setbacks (2) — with a needle (3).
+    if (code > 1.5) {
       style = 2.0;
-      ends = vec3(0.6, 0.8, abBits(h2, 4u) < 0.35 ? 0.93 : 1.0);
+      ends = vec3(0.6, 0.8, code > 2.5 ? 0.93 : 1.0);
       scale = vec3(1.0, 0.74, 0.5);
-      needle = ends.z < 1.0 ? 2.0 : 0.0;
+      needle = code > 2.5 ? 2.0 : 0.0;
     }
   } else {
-    vec2 sc = mod(uFarSuper + aSlot.xy, ${f(FAR_PERIOD / FAR_SUPER)});
+    vec2 sc = mod(uFarSuper + aTowerA.xy, ${f(FAR_PERIOD / FAR_SUPER)});
     vec4 sp = abSpire(sc);
     alive = sp.x > 0.5;
-    c = aSlot.xy * ${f(FAR_SUPER)} + uFarSuperFrac + sp.yz * ${f(BLOCK_PITCH)} + ${f(BLOCK_PITCH / 2)};
+    c = aTowerA.xy * ${f(FAR_SUPER)} + uFarSuperFrac + sp.yz * ${f(BLOCK_PITCH)} + ${f(BLOCK_PITCH / 2)};
     hsz = vec2(40.0);
     seed = sp.w;
     H = 290.0 + 170.0 * fract(seed * 7.31);
@@ -297,11 +294,12 @@ void main() {
   float dh = max(length(c) - length(hsz), 0.0);
   float dy = camY > H ? camY - H : (camY < 0.0 ? -camY : 0.0);
   float dn = sqrt(dh * dh + dy * dy);
-  vec2 fadeBand = kind < 0.5 ? vec2(${f(FADE_IN[0])}, ${f(FADE_IN[1])}) : vec2(${f(SPIRE_FADE[0])}, ${f(SPIRE_FADE[1])});
-  vec2 sinkBand = kind < 0.5 ? vec2(${f(SINK[0])}, ${f(SINK[1])}) : vec2(${f(SPIRE_SINK[0])}, ${f(SPIRE_SINK[1])});
+  bool spire = style > 0.5 && style < 1.5;
+  vec2 fadeBand = spire ? vec2(${f(SPIRE_FADE[0])}, ${f(SPIRE_FADE[1])}) : vec2(${f(FADE_IN[0])}, ${f(FADE_IN[1])});
+  vec2 sinkBand = spire ? vec2(${f(SPIRE_SINK[0])}, ${f(SPIRE_SINK[1])}) : vec2(${f(SINK[0])}, ${f(SINK[1])});
   float colourIn = smoothstep(fadeBand.y, fadeBand.x, dn);
   float sink = smoothstep(sinkBand.y, sinkBand.x, dn);
-  if (sink <= 0.0 || length(c) > uFarOuter + 150.0) alive = false;
+  if (sink <= 0.0 || length(c) > uFarOuter) alive = false;
   if (!alive) {
     gl_Position = vec4(0.0, 0.0, 2.0, 1.0); // behind the far plane: culled
     return;
@@ -325,14 +323,14 @@ void main() {
   float hgt = H * sink;
   vec2 local = position.xz * hp * mix(1.0, tp, position.y);
   float y = mix(y0, y1, position.y) * hgt;
-  vec3 rel = vec3(c.x + local.x, y - camY, c.y + local.y);
-  vRel = rel;
+  vec3 rel3 = vec3(c.x + local.x, y - camY, c.y + local.y);
+  vRel = rel3;
   vNormal = normal;
   vFacade = vec2(abs(normal.x) > 0.5 ? local.y : local.x, y);
   vInfo = vec4(seed, occ, colourIn, aPart);
-  float burning = abBits(abFarHash(uvec2(seed * 65535.0, 31u)), 0u) < 0.4 * abCityGlow.a ? 1.0 : 0.0;
+  float burning = fract(seed * 91.7) < 0.4 * abCityGlow.a ? 1.0 : 0.0;
   vKind = vec4(style, burning, y1 * hgt, (y1 - y0) * hgt);
-  gl_Position = projectionMatrix * viewMatrix * vec4(cameraPosition + abFarShell(rel), 1.0);
+  gl_Position = projectionMatrix * viewMatrix * vec4(cameraPosition + abFarShell(rel3), 1.0);
 }
 `;
 
@@ -477,47 +475,143 @@ function towerGeometry(): THREE.BufferGeometry {
   return g;
 }
 
-/** Every slot out to FAR_MAX_RADIUS, sorted near → far (early-z, and a
- * tier's R_out is a prefix). Towers: 100 m cells (centre radius ≥ 700 m —
- * anything nearer is always inside the fog limit); spires: super-cells
- * (any that can reach past SPIRE_SINK). Returns the slots and, per tier
- * radius, the prefix length. */
-export function farSlots(): {
-  slots: Float32Array;
-  prefix: (r: number) => number;
-} {
-  const list: { x: number; z: number; kind: number; r: number }[] = [];
-  const n = Math.ceil((FAR_MAX_RADIUS + FAR_CELL) / FAR_CELL);
-  for (let ix = -n; ix <= n; ix++) {
-    for (let iz = -n; iz <= n; iz++) {
-      const r = Math.hypot((ix + 0.5) * FAR_CELL, (iz + 0.5) * FAR_CELL);
-      if (r < 700 || r > FAR_MAX_RADIUS + FAR_CELL) continue;
-      list.push({ x: ix, z: iz, kind: 0, r });
-    }
-  }
+// The CPU half of the towers. Each world cell's tower depends only on the
+// cell, so it is worked out once, when the cell enters the lattice — a
+// toroidal window of N × N slots centred on the camera's cell, slot ≡ world
+// cell mod N. Crossing a cell refills ONE row of N slots (a cut, or a tier
+// change, all of them), and the vertex shader only reads. These mirror the
+// GLSL bit for bit where it matters (the integer hash) and to float
+// precision elsewhere (the district density the carpet and dome share).
+
+const mod = (a: number, m: number): number => ((a % m) + m) % m;
+const smooth = (a: number, b: number, x: number): number => {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+};
+/** abFarHash: (uint, uint) → uint. */
+export function farHash(x: number, y: number): number {
+  const qx = Math.imul(x >>> 0, 1597334673) >>> 0;
+  const qy = Math.imul(y >>> 0, 3812015801 | 0) >>> 0;
+  let n = Math.imul((qx ^ qy) >>> 0, 1597334673) >>> 0;
+  n = (n ^ (n >>> 15)) >>> 0;
+  n = Math.imul(n, 2246822519 | 0) >>> 0;
+  return (n ^ (n >>> 13)) >>> 0;
+}
+const bits = (h: number, shift: number): number => ((h >>> shift) & 0xff) / 255;
+function farRand(cx: number, cy: number, per: number): number {
+  return (farHash(mod(cx, per), mod(cy, per)) & 0xffff) / 65535;
+}
+function farValue(px: number, py: number, per: number): number {
+  const ix = Math.floor(px);
+  const iy = Math.floor(py);
+  const tx = px - ix;
+  const ty = py - iy;
+  const ux = tx * tx * (3 - 2 * tx);
+  const uy = ty * ty * (3 - 2 * ty);
+  const a = farRand(ix, iy, per);
+  const b = farRand(ix + 1, iy, per);
+  const c = farRand(ix, iy + 1, per);
+  const d = farRand(ix + 1, iy + 1, per);
+  return (a + (b - a) * ux) * (1 - uy) + (c + (d - c) * ux) * uy;
+}
+/** abFarDensity at (x, z) of the unwrapped plane, 0..1. */
+export function farDensity(x: number, z: number): number {
+  const per = FAR_PERIOD / FAR_SUPER;
+  const n =
+    0.62 * farValue(x / FAR_SUPER, z / FAR_SUPER, per) +
+    0.38 * farValue(x / (FAR_SUPER / 2) + 11, z / (FAR_SUPER / 2) + 5, per * 2);
+  return smooth(0.22, 0.78, n);
+}
+/** abSpire: the super-cell's spire block, or null. */
+function farSpire(sx: number, sz: number): { bx: number; bz: number } | null {
+  const per = FAR_PERIOD / FAR_SUPER;
+  const h = farHash(mod(sx, per) + 977, mod(sz, per) + 613);
+  const bx = (h >>> 8) & 7;
+  const bz = (h >>> 12) & 7;
+  const row = mod(mod(sz, per) * 8 + bz, WORLD_SIZE / BLOCK_PITCH);
+  return bits(h, 0) < SPIRE_SHARE && row !== RIVER_ROW_INDEX
+    ? { bx, bz }
+    : null;
+}
+
+/** Cells per period, and the tower data's floats per slot. */
+const CELLS = FAR_PERIOD / FAR_CELL;
+/**
+ * Write the tower of world cell (cx, cz) (cell indices mod CELLS) into
+ * `a`/`b` at slot `i`: (centre x/z within the cell, half sizes) and
+ * (height, seed, occupancy, style: −1 none, 0 plain, 2 setback, 3 setback
+ * with a needle).
+ */
+export function farCellTower(
+  cx: number,
+  cz: number,
+  a: Float32Array,
+  b: Float32Array,
+  i: number,
+): void {
+  const h = farHash(cx, cz);
+  const h2 = farHash(h, (h ^ 0x9e3779b9) >>> 0);
+  const dens = farDensity((cx + 0.5) * FAR_CELL, (cz + 0.5) * FAR_CELL);
+  let alive = true;
+  // Blocks: cells are half-blocks; the river row and parks hold none.
+  if (mod(Math.floor(cz / 2), WORLD_SIZE / BLOCK_PITCH) === RIVER_ROW_INDEX)
+    alive = false;
+  if (bits(h, 0) < 0.08 + 0.25 * (1 - smooth(0, 0.15, dens))) alive = false;
+  // A spire's block is the spire's alone.
+  const sx = Math.floor(cx / 16);
+  const sz = Math.floor(cz / 16);
+  const sp = farSpire(sx, sz);
+  if (
+    sp &&
+    Math.floor((cx - sx * 16) / 2) === sp.bx &&
+    Math.floor((cz - sz * 16) / 2) === sp.bz
+  )
+    alive = false;
+  // The footprint inside the half-block's buildable band (streets clear).
+  const westX = 1 - mod(cx, 2);
+  const westZ = 1 - mod(cz, 2);
+  const loX = westX * LOT_LINE;
+  const loZ = westZ * LOT_LINE;
+  const hiX = FAR_CELL - (1 - westX) * LOT_LINE;
+  const hiZ = FAR_CELL - (1 - westZ) * LOT_LINE;
+  const hx = 17 + ((hiX - loX) * 0.5 - 1 - 17) * bits(h, 8);
+  const hz = 17 + ((hiZ - loZ) * 0.5 - 1 - 17) * bits(h, 16);
+  const tx = bits(h2, 0);
+  const tz = bits(h2, 8);
+  a[i * 4] = loX + hx + (hiX - hx - (loX + hx)) * tx;
+  a[i * 4 + 1] = loZ + hz + (hiZ - hz - (loZ + hz)) * tz;
+  a[i * 4 + 2] = hx;
+  a[i * 4 + 3] = hz;
+  // Dense districts cluster tall: the downtowns stand out of the city.
+  const r = bits(h, 24);
+  const H = Math.min(340, 16 + 60 * dens + (24 + 250 * dens * dens) * r * r);
+  let style = 0;
+  // Art Deco setbacks on the tall ones, some with a needle.
+  if (H > 105 && bits(h2, 24) < 0.5) style = bits(h2, 4) < 0.35 ? 3 : 2;
+  b[i * 4] = H;
+  b[i * 4 + 1] = (h2 >>> 16) / 65535;
+  b[i * 4 + 2] = 0.14 + 0.26 * bits(h2, 16) * (0.5 + 0.5 * dens);
+  b[i * 4 + 3] = alive ? style : -1;
+}
+
+/** The spire super-cells (offsets from the camera's) that can reach inside
+ * FAR_MAX_RADIUS — a fixed list after the lattice in the instance buffer. */
+function spireSlots(): [number, number][] {
+  const out: [number, number][] = [];
   const m = Math.ceil(FAR_MAX_RADIUS / FAR_SUPER) + 1;
   for (let ix = -m; ix <= m; ix++) {
     for (let iz = -m; iz <= m; iz++) {
-      // The super-cell's nearest and farthest points from its own centre.
       const r = Math.hypot((ix + 0.5) * FAR_SUPER, (iz + 0.5) * FAR_SUPER);
-      if (r - FAR_SUPER > FAR_MAX_RADIUS) continue;
-      list.push({ x: ix, z: iz, kind: 1, r: Math.max(0, r - FAR_SUPER) });
+      if (r - FAR_SUPER <= FAR_MAX_RADIUS) out.push([ix, iz]);
     }
   }
-  list.sort((a, b) => a.r - b.r);
-  const slots = new Float32Array(list.length * 3);
-  list.forEach((s, i) => {
-    slots[i * 3] = s.x;
-    slots[i * 3 + 1] = s.z;
-    slots[i * 3 + 2] = s.kind;
-  });
-  const prefix = (radius: number): number => {
-    let k = 0;
-    while (k < list.length && (list[k] as { r: number }).r <= radius + FAR_CELL)
-      k++;
-    return k;
-  };
-  return { slots, prefix };
+  return out;
+}
+
+/** The lattice side for a far radius: every cell whose tower can lie
+ * within `radius` of the eye. Even, so the window is centred. */
+export function farLatticeSide(radius: number): number {
+  return 2 * (Math.ceil(radius / FAR_CELL) + 1);
 }
 
 // --- 2. Carpet -----------------------------------------------------------------
@@ -658,8 +752,18 @@ export class FarSkyline {
   readonly towers: THREE.Mesh;
   private readonly uniforms: Record<string, THREE.IUniform>;
   private readonly offset = new CloudOffset(FAR_PERIOD);
-  private readonly prefix: (r: number) => number;
   private readonly geometry: THREE.InstancedBufferGeometry;
+  private readonly towerA: THREE.InstancedBufferAttribute;
+  private readonly towerB: THREE.InstancedBufferAttribute;
+  private readonly spires = spireSlots();
+  /** The lattice's side (cells) and the camera's UNWRAPPED cell (null:
+   * the lattice needs a full fill). */
+  private n = farLatticeSide(FAR_MAX_RADIUS);
+  private wcx = 0;
+  private wcz = 0;
+  private filled = false;
+  private cellX = 0;
+  private cellZ = 0;
 
   /** `moonDir`: the dome's moon direction uniform, shared by reference. */
   constructor(moonDir: { value: THREE.Vector3 }) {
@@ -670,7 +774,8 @@ export class FarSkyline {
       uFarPx: { value: 0.001 },
       uFarTime: { value: 0 },
       uFarMoon: moonDir,
-      uFarCell: { value: new THREE.Vector2() },
+      uFarN: { value: this.n },
+      uFarCellN: { value: new THREE.Vector2() },
       uFarFrac: { value: new THREE.Vector2() },
       uFarSuper: { value: new THREE.Vector2() },
       uFarSuperFrac: { value: new THREE.Vector2() },
@@ -684,14 +789,24 @@ export class FarSkyline {
         fog: true,
         side: THREE.FrontSide,
       });
-    const { slots, prefix } = farSlots();
-    this.prefix = prefix;
+    const capacity = this.n * this.n + this.spires.length;
     this.geometry = towerGeometry() as THREE.InstancedBufferGeometry;
-    this.geometry.setAttribute(
-      "aSlot",
-      new THREE.InstancedBufferAttribute(slots, 3),
+    this.towerA = new THREE.InstancedBufferAttribute(
+      new Float32Array(capacity * 4),
+      4,
     );
-    this.geometry.instanceCount = prefix(FAR_MAX_RADIUS);
+    this.towerB = new THREE.InstancedBufferAttribute(
+      new Float32Array(capacity * 4),
+      4,
+    );
+    for (const attr of [this.towerA, this.towerB]) {
+      attr.setUsage(THREE.DynamicDrawUsage);
+    }
+    this.geometry.setAttribute("aTowerA", this.towerA);
+    this.geometry.setAttribute("aTowerB", this.towerB);
+    // Until the first fill: nothing alive (style −1).
+    (this.towerB.array as Float32Array).fill(-1);
+    this.writeSpires();
     this.towers = new THREE.Mesh(
       this.geometry,
       material(TOWER_VERTEX, TOWER_FRAGMENT),
@@ -711,10 +826,61 @@ export class FarSkyline {
       "l2-far-carpet";
   }
 
+  /** The spire slots, right after the lattice's n² (style −2). */
+  private writeSpires(): void {
+    const a = this.towerA.array as Float32Array;
+    const b = this.towerB.array as Float32Array;
+    const base = this.n * this.n;
+    this.spires.forEach(([x, z], k) => {
+      const i = base + k;
+      a.set([x, z, 0, 0], i * 4);
+      b.set([0, 0, 0, -2], i * 4);
+    });
+    this.geometry.instanceCount = base + this.spires.length;
+  }
+
+  /** Fill one world cell (unwrapped indices) into its slot. */
+  private fillCell(wx: number, wz: number): void {
+    const n = this.n;
+    farCellTower(
+      mod(wx, CELLS),
+      mod(wz, CELLS),
+      this.towerA.array as Float32Array,
+      this.towerB.array as Float32Array,
+      mod(wz, n) * n + mod(wx, n),
+    );
+  }
+
+  /** Fill the whole window round the camera's cell. */
+  private fillAll(): void {
+    const h = this.n / 2;
+    for (let z = this.wcz - h; z < this.wcz + h; z++) {
+      for (let x = this.wcx - h; x < this.wcx + h; x++) this.fillCell(x, z);
+    }
+    this.filled = true;
+  }
+
+  /** Step the window one cell along x (`dx` ±1) or z, filling the column
+   * or row that enters it. */
+  private step(dx: number, dz: number): void {
+    const h = this.n / 2;
+    if (dx !== 0) {
+      this.wcx += dx;
+      const x = dx > 0 ? this.wcx + h - 1 : this.wcx - h;
+      for (let z = this.wcz - h; z < this.wcz + h; z++) this.fillCell(x, z);
+    }
+    if (dz !== 0) {
+      this.wcz += dz;
+      const z = dz > 0 ? this.wcz + h - 1 : this.wcz - h;
+      for (let x = this.wcx - h; x < this.wcx + h; x++) this.fillCell(x, z);
+    }
+  }
+
   /**
    * Once a frame, after the render camera is final: advance the unwrapped
    * offset from it (`dtSec`, the sim's clamped step, tells flight from a
-   * cut), place the lattices, and the pixel scale the needles floor to.
+   * cut), move the lattice (one row per cell crossed; all of it on a cut),
+   * and the pixel scale the needles floor to.
    */
   update(
     camera: THREE.PerspectiveCamera,
@@ -728,14 +894,33 @@ export class FarSkyline {
     // carpet also below the street, where it would be seen from beneath.
     this.towers.visible = shown;
     this.carpet.visible = shown && p.y > 0;
-    this.offset.advance(p, dtSec);
+    const cut = this.offset.advance(p, dtSec);
     const ux = this.offset.x;
     const uz = this.offset.z;
     FAR_ORIGIN.value.set(ux, uz);
     const u = this.uniforms;
     const cx = Math.floor(ux / FAR_CELL);
     const cz = Math.floor(uz / FAR_CELL);
-    (u.uFarCell?.value as THREE.Vector2).set(cx, cz);
+    // The unwrapped cell: steps of the mod-CELLS one, wrap-aware.
+    const dx = mod(cx - this.cellX + CELLS / 2, CELLS) - CELLS / 2;
+    const dz = mod(cz - this.cellZ + CELLS / 2, CELLS) - CELLS / 2;
+    this.cellX = cx;
+    this.cellZ = cz;
+    if (cut || !this.filled || Math.abs(dx) > 1 || Math.abs(dz) > 1) {
+      this.wcx = cx;
+      this.wcz = cz;
+      this.fillAll();
+      this.towerA.needsUpdate = true;
+      this.towerB.needsUpdate = true;
+    } else if (dx !== 0 || dz !== 0) {
+      this.step(dx, dz);
+      this.towerA.needsUpdate = true;
+      this.towerB.needsUpdate = true;
+    }
+    (u.uFarCellN?.value as THREE.Vector2).set(
+      mod(this.wcx, this.n),
+      mod(this.wcz, this.n),
+    );
     (u.uFarFrac?.value as THREE.Vector2).set(
       cx * FAR_CELL - ux,
       cz * FAR_CELL - uz,
@@ -753,11 +938,18 @@ export class FarSkyline {
     (u.uFarTime as THREE.IUniform).value = (nowMs / 1000) % 3600;
   }
 
-  /** O3: the tier's far radius — an instance-count prefix and a uniform
-   * (rule 1: no compile). Dressing only, so it may differ per tier. */
+  /** O3: the tier's far radius — the lattice's side (an instance count,
+   * refilled on the next update), and a uniform (rule 1: no compile).
+   * Dressing only, so it may differ per tier. */
   setQuality(tier: QualityTier): void {
     const r = QUALITY_PROFILES[tier].farSkyline;
     (this.uniforms.uFarOuter as THREE.IUniform).value = r;
-    this.geometry.instanceCount = this.prefix(r);
+    const n = farLatticeSide(r);
+    if (n === this.n) return;
+    this.n = n;
+    (this.uniforms.uFarN as THREE.IUniform).value = n;
+    (this.towerB.array as Float32Array).fill(-1);
+    this.writeSpires();
+    this.filled = false;
   }
 }

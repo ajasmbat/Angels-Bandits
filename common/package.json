@@ -13,6 +13,7 @@
     "./boost": "./src/boost.ts",
     "./city": "./src/city/index.ts",
     "./city/layout": "./src/city/layout.ts",
+    "./city/landmarks": "./src/city/landmarks.ts",
     "./city/destruction": "./src/city/destruction.ts",
     "./city/collapse": "./src/city/collapse.ts",
     "./city/street": "./src/city/street.ts",

@@ -115,6 +115,17 @@ export const AA_FLAK_FACE = 4;
 export const isFlakNest = (s: RoofStructure): boolean =>
   s.kind === "aaNest" && s.face === AA_FLAK_FACE;
 
+/** L3 water towers: the timber tank stands on stilts this tall. The stilts
+ * stay under ROOF_CLUTTER_MAX_HEIGHT, so by the flight-band rule they are
+ * clutter (drawn, never collided); the barrel above them is the solid — its
+ * baseY is the deck plus this, like a billboard panel over its legs. */
+export const TANK_STILT = 2.2;
+/** L3: every roof at least this wide may carry a tower (the reference has
+ * them everywhere); the classic R2 roll keeps its old 24 m gate and its
+ * draws, the extra towers come after everything else from their own stream. */
+export const TANK_MIN_ROOF = 16;
+export const TANK_CHANCE = 0.72;
+
 /** Keep-out margin between structures, m. */
 const GAP = 1.2;
 const TRIES = 8;
@@ -209,12 +220,13 @@ export function roofStructuresFor(b: Building): RoofStructure[] {
     });
   }
 
-  /** A free spot for a hw×hd footprint within `span` of the inner roof. */
-  const place = (hw: number, hd: number, span = 1): Rect | null => {
+  /** A free spot for a hw×hd footprint within `span` of the inner roof,
+   * rolled from `rng` (the sub-stream unless a later pass brings its own). */
+  const place = (hw: number, hd: number, span = 1, rng = d): Rect | null => {
     if (hw > iw || hd > id) return null;
     for (let i = 0; i < TRIES; i++) {
-      const rx = d();
-      const rz = d();
+      const rx = rng();
+      const rz = rng();
       const r: Rect = {
         x: (rx * 2 - 1) * Math.max(0, (iw - hw) * span),
         z: (rz * 2 - 1) * Math.max(0, (id - hd) * span),
@@ -232,6 +244,7 @@ export function roofStructuresFor(b: Building): RoofStructure[] {
     height: number,
     face: number,
     round = false,
+    rng = d,
   ) => {
     out.push({
       kind,
@@ -243,7 +256,7 @@ export function roofStructuresFor(b: Building): RoofStructure[] {
       height,
       round,
       face,
-      seed: d(),
+      seed: rng(),
     });
   };
 
@@ -277,14 +290,17 @@ export function roofStructuresFor(b: Building): RoofStructure[] {
   }
 
   // --- Water tank (the old V2 water tower, now solid): a round timber or
-  // steel tank, 5–7 m tall.
+  // steel tank, 5–7 m tall — L3: up on TANK_STILT stilts (clutter), so the
+  // solid starts above them.
+  let tank = false;
   if (rTank < 0.45 && Math.min(top.width, top.depth) >= 24) {
     const radius = 2.2 + d() * 1.1;
     const h = 5 + d() * 2;
     const r = place(radius, radius);
     if (r) {
       taken.push(r);
-      push("waterTank", r, y, h, 0, true);
+      push("waterTank", r, y + TANK_STILT, h, 0, true);
+      tank = true;
     }
   }
 
@@ -358,7 +374,40 @@ export function roofStructuresFor(b: Building): RoofStructure[] {
   // --- W3 AA nest: last, from its own stream, so adding it moved no other
   // structure (they only keep out of its way from here on).
   const nest = aaNestFor(b, taken, iw, id);
-  if (nest) out.push(nest);
+  if (nest) {
+    out.push(nest);
+    taken.push({
+      x: nest.dx,
+      z: nest.dz,
+      hw: nest.width / 2,
+      hd: nest.depth / 2,
+    });
+  }
+
+  // --- L3 extra water towers: the reference has one on most prewar roofs.
+  // After EVERYTHING else and from their own salted stream, so no structure
+  // above (and no AA nest, no roof index) moved to make room: a tower only
+  // goes where the roof is still free.
+  if (
+    !tank &&
+    rTank < TANK_CHANCE &&
+    Math.min(top.width, top.depth) >= TANK_MIN_ROOF
+  ) {
+    const w = mulberry32(
+      (Math.imul(b.x, 0x6c8e9cf5) ^
+        Math.imul(b.z, 0x31848bab) ^
+        Math.imul(b.height, 0x9e3779b1) ^
+        0x1b873593) >>>
+        0,
+    );
+    const radius = 1.9 + w() * 1.1;
+    const h = 4.6 + w() * 1.8;
+    const r = place(radius, radius, 1, w);
+    if (r) {
+      taken.push(r);
+      push("waterTank", r, y + TANK_STILT, h, 0, true, w);
+    }
+  }
 
   return out;
 }

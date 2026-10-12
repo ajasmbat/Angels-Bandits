@@ -15,6 +15,7 @@ import {
   type RoofStructure,
   SEARCHLIGHT_CLEAR_HALF,
   SEARCHLIGHT_CLEAR_MIN_HEIGHT,
+  TANK_STILT,
   hasHelipad,
   roofStructuresFor,
   roofTop,
@@ -89,10 +90,14 @@ describe("roofStructuresFor: layout", () => {
       expect(Math.abs(s.dz) + d).toBeLessThanOrEqual(
         t.depth / 2 - ROOF_STRUCTURE_INSET + EPS,
       );
-      // Only a billboard panel floats (over its legs); everything else
-      // stands on the roof deck.
+      // Only a billboard panel floats (over its legs) and an L3 water tank
+      // sits up on its (clutter) stilts; everything else stands on the deck.
       expect(s.baseY).toBe(
-        s.kind === "billboard" ? b.height + BILLBOARD_LIFT : b.height,
+        s.kind === "billboard"
+          ? b.height + BILLBOARD_LIFT
+          : s.kind === "waterTank"
+            ? b.height + TANK_STILT
+            : b.height,
       );
       expect(s.height).toBeGreaterThan(0);
       expect(s.baseY + s.height - b.height).toBeLessThanOrEqual(

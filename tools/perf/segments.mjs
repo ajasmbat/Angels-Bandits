@@ -430,7 +430,12 @@ export const SEGMENTS = [
         z: 1700,
         r: 120,
         share: 0.25,
-        seed: 9,
+        // L3: 10, not 9 — the Art Deco landmark profiles changed the
+        // city's chunk count (and so the destruction caps), and seed 9's
+        // area pass now brings 375 down before the scripted fell. Seed 10
+        // stages the same scene: 6 collapses, every fell standing until
+        // its own.
+        seed: 10,
         t: -75_000,
         stepMs: 500,
         buildings: 5,

@@ -332,6 +332,7 @@ import { AaNestRenderer, type AaNestStats } from "./render/aa-nests";
 import { Airliners } from "./render/airliners";
 import { archetypeFor } from "./render/archetypes";
 import { AtmosphereFx } from "./render/atmosphere-fx";
+import { landBeam } from "./render/beam-landing";
 import { Birds } from "./render/birds";
 import { BossRenderer } from "./render/boss";
 import { CaveInRenderer } from "./render/caveins";
@@ -445,7 +446,7 @@ import { RooftopLifeRenderer } from "./render/rooftop-life";
 import { RuinSmoke } from "./render/ruins";
 import { ScaffoldRenderer } from "./render/scaffold";
 import { ScarsRenderer } from "./render/scars";
-import { Searchlights } from "./render/searchlights";
+import { Searchlights, type SpotBeam } from "./render/searchlights";
 import { Signage } from "./render/signage";
 import { Signals } from "./render/signals";
 import { EXPOSURE, GroundPlane, SkyDome, setupSky } from "./render/sky";
@@ -1136,6 +1137,9 @@ const fountains = new Fountains(nature.ponds);
 scene.add(fountains.points);
 const fireworks = new Fireworks(welcome.seed);
 const searchlights = new Searchlights(city.cityBuildings);
+/** L6: this frame's moving beams — the carrier's lamps and escorts first,
+ * then the helicopters' spots (reused; never reallocated per frame). */
+const beamSpots: SpotBeam[] = [];
 scene.add(searchlights.mesh);
 // S1: the city's jumbotrons + headline tickers (one draw), told what to say
 // by game/headlines.ts from the room's broadcasts (fed in onDeath/onScores).
@@ -5865,10 +5869,45 @@ const frame = (now: number): void => {
       if (target.id === leaderId) leaderPos = target.pos;
     }
   }
+  // S4: the zeppelin, its flak and its fall. L6: posed here, BEFORE the
+  // searchlights, so the beams its lamps and escort scouts throw — landed
+  // on the roofs they meet, a pool of light in the mover cloud each — are
+  // this frame's, like the hull. Its beams go first: a full beam mesh drops
+  // a helicopter's spot, never the carrier's.
+  const bossViewer = qaView ? qaView.eye : chase.position;
+  bossRenderer.update(
+    socket.boss,
+    socket.bossHp,
+    socket.flak,
+    // S9: its detail LOD reads the viewer — the QA eye when one is held.
+    bossViewer,
+    renderMs,
+    now,
+  );
+  beamSpots.length = 0;
+  const fogNear = scene.fog instanceof THREE.Fog ? scene.fog.near : 0;
+  const fogFar = scene.fog instanceof THREE.Fog ? scene.fog.far : 1e9;
+  for (let i = 0; i < bossRenderer.spotCount; i++) {
+    const spot = bossRenderer.spots[i] as SpotBeam;
+    landBeam(
+      spot,
+      bossRenderer.spotSpread[i] as number,
+      city.cityBuildings,
+      city.cityIndex,
+      bossViewer,
+      fogNear,
+      fogFar,
+      moverLights,
+    );
+    beamSpots.push(spot);
+  }
+  for (let i = 0; i < movers.spots.length; i++) {
+    beamSpots.push(movers.spots[i] as SpotBeam);
+  }
   searchlights.update(
     chase.position,
     renderMs,
-    movers.spots,
+    beamSpots,
     moverLights,
     trackedPlanes,
     leaderPos,
@@ -6072,17 +6111,8 @@ const frame = (now: number): void => {
   aaNests.update(propsViewer, renderMs, now, aaEnemyPos);
   scarsRenderer.update(propsViewer, renderMs, now);
   facadeScars.update(propsViewer, now);
-  // S4: the zeppelin, its flak and its fall; the HUD bar while it flies;
-  // "it got away" once, when a raid runs out still flying.
-  bossRenderer.update(
-    socket.boss,
-    socket.bossHp,
-    socket.flak,
-    // S9: its detail LOD reads the viewer — the QA eye when one is held.
-    qaView ? qaView.eye : chase.position,
-    renderMs,
-    now,
-  );
+  // S4: the HUD bar while the zeppelin flies (L6: it is posed above, before
+  // the searchlights); "it got away" once, when a raid runs out still flying.
   const bossRaid = socket.boss.raid;
   if (bossRaid && bossRaid.id !== bossMaxFor) {
     bossMaxFor = bossRaid.id;

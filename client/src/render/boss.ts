@@ -84,6 +84,7 @@ import {
   BONE_PROP,
   BONE_RUDDER_D,
   BONE_RUDDER_V,
+  BONE_SCOUT,
   BONE_TRAPEZE,
   BONE_TURRET,
   type BoneRest,
@@ -92,15 +93,27 @@ import {
   CREW_X1,
   KEEL_BOTTOM,
   LAMPS,
+  LAMP_AT,
+  LAMP_LENS_DROP,
   type PlaneGeo,
+  SCOUTS,
+  SCOUT_AT,
+  SCOUT_LAMP,
+  SCOUT_TIP_Z,
   boneRests,
   buildBossGlow,
   buildBossHull,
   crewRestX,
 } from "./boss-hull";
 import { emissiveBoost } from "./emissive";
+import { DUSK, MOON_DIR } from "./sky";
 import { fighterGeometry } from "./fighter";
 import type { Impacts } from "./impacts";
+import {
+  CARRIER_BEAM_COLOR,
+  SCOUT_BEAM_COLOR,
+  type SpotBeam,
+} from "./searchlights";
 import { nearestImageInto } from "./wrapPlacement";
 
 /** The weak points' glow (hazard rung — under tracers, over windows), the
@@ -125,14 +138,25 @@ const HEAT_BOOST = emissiveBoost(HEAT_COLOR, EMISSIVE_EXHAUST);
 /** Searchlight lenses and muzzle flashes: the lamp rung. */
 export const LAMP_COLOR = new THREE.Color(0xfff0d0);
 const LAMP_BOOST = emissiveBoost(LAMP_COLOR, EMISSIVE_LAMP);
-/** A searchlight beam's peak (at the lens), a fraction of the lamp rung:
- * additive haze, well under the bloom threshold. */
-const BEAM_PEAK = 0.13;
+/** L6: a carrier lamp's throw radius per metre of beam (~4.3° half-angle),
+ * and a scout's (a tighter, smaller lamp). The beams are SpotBeams drawn by
+ * searchlights.ts; main.ts lands them on the city (beam-landing.ts). */
+export const CARRIER_BEAM_SPREAD = 0.075;
+export const SCOUT_BEAM_SPREAD = 0.06;
+/** Every beam the carrier throws: its lamps, then one per escort scout. */
+export const BOSS_SPOTS = LAMPS + SCOUTS;
+/** L6: each lamp's sweep centre (rad about +Y; 0 = ahead, +π/2 = to port):
+ * the control car's pair ahead to starboard and to port, the keel's pair
+ * astern to starboard and to port. */
+const LAMP_BEARING: readonly number[] = [-0.85, 0.85, -2.3, 2.3];
 /** Running lights: port red, starboard green, white tail and crown, and the
  * belly's red anti-collision strobe. */
 const PORT = new THREE.Color(0xff2a20);
 const STARBOARD = new THREE.Color(0x2aff5a);
 const WHITE = new THREE.Color(0xffffff);
+/** L6: the engine cars' red lamps and the gondola's warm work lamps. */
+const ENGINE_RED = new THREE.Color(0xff1e14);
+const GONDOLA_WARM = new THREE.Color(0xffc98a);
 const NAV_SIZE_PX = 5;
 const STROBE_PERIOD_MS = 1300;
 const STROBE_ON_MS = 90;
@@ -187,7 +211,23 @@ const NAV_LIGHTS: readonly NavLight[] = [
   nav(P(4).x, P(4).y - P(4).hy - 0.1, 0, PORT, EMISSIVE_STROBE, true),
   nav(-20, 19.9, 0, PORT, EMISSIVE_STROBE, true),
   nav(P(9).x - P(9).hx + 1, KEEL_BOTTOM - 0.1, 0, WHITE, EMISSIVE_STROBE, true),
+  // L6: the engine cars' red running lamps, steady on their bellies — the
+  // reference's red glow under the hull (beacon rung: over windows and the
+  // weak points' throb, under the strobes and every tracer).
+  ...[10, 11, 12, 13].map((i) =>
+    nav(P(i).x - 1, P(i).y - 3.05, P(i).z, ENGINE_RED, EMISSIVE_BEACON),
+  ),
+  // L6: the lit gondola — warm work lamps under the control car and the
+  // hangar keel, on the lamp rung.
+  ...[-5, 0, 5].map((dx) =>
+    nav(P(4).x + dx, P(4).y - P(4).hy - 0.1, 0, GONDOLA_WARM, EMISSIVE_LAMP),
+  ),
+  nav(P(9).x + 12, KEEL_BOTTOM - 0.1, 2.5, GONDOLA_WARM, EMISSIVE_LAMP),
+  nav(P(9).x + 12, KEEL_BOTTOM - 0.1, -2.5, GONDOLA_WARM, EMISSIVE_LAMP),
 ];
+/** L6: lights per escort scout — port red and starboard green at the
+ * wingtips, and a red strobe on its back. */
+const SCOUT_LIGHTS = 3;
 /** Where on the hull the fire spreads to as weak points die: two points by
  * each weak point, on the envelope's skin (hull frame). */
 const FIRE_POINTS: readonly Vec3[] = BOSS_WEAK_POINTS.flatMap((i) => {
@@ -443,7 +483,11 @@ if (vMat < 0.5) {
   float below = (1.0 - smoothstep(-0.4, 0.2, cos(th)));
   float streak = bNoise(vec2(vRest.x * 0.9, th * 3.0)) * below;
   diffuseColor.rgb *= tone * weather * (1.0 - 0.18 * streak);
-  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.16, 0.17, 0.19), max(girder * 0.75, max(ring * 0.8, minor * 0.6)));
+  // L6: on the dark skin the structure reads as SHEEN, not paint — the
+  // girders and ring frames are a touch lighter and polished (lower
+  // roughness below), so the moon picks them out as bands along the top.
+  float rib = max(girder * 0.8, max(ring * 0.9, minor * 0.45));
+  diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 1.35 + vec3(0.012, 0.014, 0.02), rib);
   // Exhaust soot aft of the engine cars, on the flank they hang from.
   for (int e = 0; e < 4; e++) {
     vec3 ep = uWeakPos[e];
@@ -461,6 +505,7 @@ if (vMat < 0.5) {
   float at = abs(th);
   float wx = (vRest.x - 6.0) / 2.2;
   if (vRest.x > 6.0 && vRest.x < 48.0) {
+    // (The promenade's band, unchanged by L6.)
     float fwx = max(fwidth(wx), 1e-4);
     float inX = smoothstep(0.18 - fwx, 0.18 + fwx, fract(wx)) * (1.0 - smoothstep(0.82 - fwx, 0.82 + fwx, fract(wx)));
     float arc = (at - 2.3) * 20.5;
@@ -471,26 +516,29 @@ if (vMat < 0.5) {
     diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.05), w);
     bEmis += uWindow * w * lit * (0.75 + 0.25 * bHash(vec2(floor(wx), 7.0 + sign(th))));
   }
-  // The crest (x 63.5–76.5) and the name plate (x 0–40) on both flanks,
+  // The crest (x 67–75) and the name plate (x 10–34) on both flanks,
   // painted on the curve: u along the hull (reading forward to starboard,
-  // aft to port), v up the flank.
+  // aft to port), v up the flank. L6: small — an insignia on a dark hull,
+  // not a billboard.
   if (uHasCrest > 0.5) {
     float s = sign(vRest.z);
     float arc = (at - 1.5708) * 21.0;
     vec4 tc = vec4(0.0);
-    if (vRest.x > 63.5 && vRest.x < 76.5 && abs(arc) < 6.5) {
-      float u = (vRest.x - 63.5) / 13.0;
-      tc = texture2D(uCrest, vec2(0.5 * (s > 0.0 ? u : 1.0 - u), 0.5 - arc / 13.0));
-    } else if (vRest.x > 0.0 && vRest.x < 40.0 && abs(arc - 4.5) < 3.0) {
-      float u = vRest.x / 40.0;
-      tc = texture2D(uCrest, vec2(0.5 + 0.5 * (s > 0.0 ? u : 1.0 - u), 0.5 - (arc - 4.5) / 6.4));
+    if (vRest.x > 67.0 && vRest.x < 75.0 && abs(arc) < 4.0) {
+      float u = (vRest.x - 67.0) / 8.0;
+      tc = texture2D(uCrest, vec2(0.5 * (s > 0.0 ? u : 1.0 - u), 0.5 - arc / 8.0));
+    } else if (vRest.x > 10.0 && vRest.x < 34.0 && abs(arc - 4.0) < 1.9) {
+      float u = (vRest.x - 10.0) / 24.0;
+      tc = texture2D(uCrest, vec2(0.5 + 0.5 * (s > 0.0 ? u : 1.0 - u), 0.5 - (arc - 4.0) / 3.8));
     }
-    diffuseColor.rgb = mix(diffuseColor.rgb, tc.rgb, tc.a);
+    diffuseColor.rgb = mix(diffuseColor.rgb, tc.rgb * 0.75, tc.a);
   }
-  // Doped fabric over duralumin: mostly diffuse (a metallic skin mirrors
-  // the warm city glow and reads bronze, not silver).
-  bRough = 0.68;
-  bMetal = 0.12;
+  // L6: doped fabric, varnished — glossy enough for the moon to lay a
+  // highlight along the top, the ribs glossier still (sheen bands). Not
+  // metallic: there is no environment map, so a metal skin would read black
+  // between highlights (and S9 found it mirrors the city glow as bronze).
+  bRough = mix(0.4, 0.24, rib);
+  bMetal = 0.08;
 } else if (vMat < 1.5) {
   // --- Painted armour: plate seams and grime ---------------------------------
   float seam = max(bLine(vRest.x / 2.5, 0.02), bLine((vRest.y + vRest.z) / 2.0, 0.02));
@@ -561,6 +609,46 @@ if (vMat < 1.5) {
 }
 `;
 
+/** L6: the lit hull (scene light only, before its own emission) is capped
+ * under the 0.72 bloom threshold, as the planes' bodies are (planelights
+ * HERO_BODY_CAP): a glossy moon highlight models the hull without ever
+ * blooming or outshining its lamps. Emission (windows, weak points, embers)
+ * rides on top, uncapped, on its own rungs. */
+export const HULL_LIT_CAP = 0.66;
+/** L6: the varnished envelope's sheen — there is no environment map, so
+ * the gloss is given its light here: a moon glint (Blinn-Phong off
+ * MOON_DIR, tighter where the roughness, ribs included, is lower) and a
+ * cool fresnel rim brightest on the upper flanks. Peak linear luminances
+ * at albedo-free F 1; capped with the rest of the lit hull below. Only the
+ * envelope and the armour (vMat < 1.5) take it. */
+const SHEEN_COLOR = new THREE.Color(DUSK.moon);
+const SHEEN_SPEC_LUM = 0.34;
+const SHEEN_RIM_LUM = 0.09;
+const glF = (n: number): string => n.toFixed(5);
+const sheenCol = (lum: number): string => {
+  const c = SHEEN_COLOR.clone().multiplyScalar(
+    emissiveBoost(SHEEN_COLOR, lum),
+  );
+  return `vec3(${glF(c.r)}, ${glF(c.g)}, ${glF(c.b)})`;
+};
+const HULL_SHEEN = `vec3 bSheen = vec3(0.0);
+if (vMat < 1.5) {
+  vec3 sN = normalize(normal);
+  vec3 sV = normalize(vViewPosition);
+  vec3 sMoon = normalize((viewMatrix * vec4(${glF(MOON_DIR.x)}, ${glF(MOON_DIR.y)}, ${glF(MOON_DIR.z)}, 0.0)).xyz);
+  vec3 sUp = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+  float sGloss = 1.0 - smoothstep(0.2, 0.7, roughnessFactor);
+  float sSpec = pow(saturate(dot(sN, normalize(sMoon + sV))), mix(10.0, 48.0, sGloss));
+  float sRim = pow(1.0 - saturate(dot(sN, sV)), 3.0) * (0.3 + 0.7 * saturate(dot(sN, sUp)));
+  bSheen = ${sheenCol(SHEEN_SPEC_LUM)} * sSpec * (0.35 + 0.65 * sGloss)
+    + ${sheenCol(SHEEN_RIM_LUM)} * sRim;
+}`;
+const HULL_OUTGOING =
+  "vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;";
+const HULL_OUTGOING_CAPPED = `vec3 bLit = totalDiffuse + totalSpecular + bSheen;
+bLit *= min(1.0, ${HULL_LIT_CAP.toFixed(2)} / max(luminance(bLit), 1e-4));
+vec3 outgoingLight = bLit + totalEmissiveRadiance;`;
+
 const GLOW_VERT_HEAD = /* glsl */ `
 attribute float aKind;
 attribute float aIdx;
@@ -577,7 +665,6 @@ vAlong = aAlong;
 `;
 const GLOW_FRAG_HEAD = /* glsl */ `
 uniform float uTime;
-uniform float uBeam;
 uniform float uLens;
 uniform float uHeat;
 uniform float uFlash[6];
@@ -591,9 +678,7 @@ const GLOW_FRAG_BODY = /* glsl */ `
 #include <color_fragment>
 float a = clamp(vAlong, 0.0, 1.0);
 float k = 0.0;
-if (vKind < 0.5) {
-  k = uBeam * pow(1.0 - a, 1.7);
-} else if (vKind < 1.5) {
+if (vKind < 1.5) {
   k = uHeat * (0.5 + 0.5 * sin(uTime * 9.0 + a * 14.0 + vIdx)) * (1.0 - a) * smoothstep(0.0, 0.1, a);
 } else if (vKind < 2.5) {
   int t = int(vIdx + 0.5);
@@ -636,7 +721,6 @@ export class BossRenderer {
   };
   private readonly glowU: {
     uTime: { value: number };
-    uBeam: { value: number };
     uLens: { value: number };
     uHeat: { value: number };
     uFlash: { value: number[] };
@@ -747,7 +831,11 @@ export class BossRenderer {
         .replace("#include <color_fragment>", HULL_FRAG_SURFACE)
         .replace(
           "#include <roughnessmap_fragment>",
-          "#include <roughnessmap_fragment>\nroughnessFactor = bRough;",
+          // L6: specular antialiasing — the lathe is faceted round its axis,
+          // so a glossy lobe would crawl from facet to facet in flight. The
+          // screen-space spread of the normal raises the roughness where
+          // one pixel spans a lot of curvature (far away, grazing).
+          "#include <roughnessmap_fragment>\nroughnessFactor = max(bRough, min(0.7, length(fwidth(vNormal)) * 1.6));",
         )
         .replace(
           "#include <metalnessmap_fragment>",
@@ -755,8 +843,9 @@ export class BossRenderer {
         )
         .replace(
           "#include <emissivemap_fragment>",
-          "#include <emissivemap_fragment>\ntotalEmissiveRadiance += bEmis;",
-        );
+          `#include <emissivemap_fragment>\ntotalEmissiveRadiance += bEmis;\n${HULL_SHEEN}`,
+        )
+        .replace(HULL_OUTGOING, HULL_OUTGOING_CAPPED);
     };
     hullMat.customProgramCacheKey = () => "s9-boss-hull";
     const full = buildBossHull("full", plane);
@@ -766,7 +855,6 @@ export class BossRenderer {
 
     this.glowU = {
       uTime: { value: 0 },
-      uBeam: { value: 0 },
       uLens: { value: 0 },
       uHeat: { value: 0 },
       uFlash: { value: BOSS_TURRETS.map(() => 0) },
@@ -803,12 +891,13 @@ export class BossRenderer {
     this.hullLite.visible = false;
 
     const lightGeo = new THREE.BufferGeometry();
+    const lightCount = NAV_LIGHTS.length + SCOUTS * SCOUT_LIGHTS;
     this.lightPos = new THREE.BufferAttribute(
-      new Float32Array(NAV_LIGHTS.length * 3),
+      new Float32Array(lightCount * 3),
       3,
     );
     this.lightCol = new THREE.BufferAttribute(
-      new Float32Array(NAV_LIGHTS.length * 3),
+      new Float32Array(lightCount * 3),
       3,
     );
     lightGeo.setAttribute("position", this.lightPos);
@@ -892,6 +981,8 @@ export class BossRenderer {
       ? 0
       : Math.min(0.1, (now - this.lastFrameMs) / 1000);
     this.lastFrameMs = now;
+    // L6: no beams unless an intact hull is drawn this frame.
+    this.spotCount = 0;
     this.updateBurns(now, dt);
     this.hullU.uTime.value = (now % 600_000) / 1000;
     this.glowU.uTime.value = this.hullU.uTime.value;
@@ -997,6 +1088,7 @@ export class BossRenderer {
     this.poseTurrets(renderMs, now, dt, true);
     this.poseCrew(now);
     this.poseLamps(now, true);
+    this.poseScouts(now);
     this.poseLaunches(raid, slot.launches ?? [], renderMs);
 
     // Weak points: a slow, shared throb (alive, and targets), white on a
@@ -1019,11 +1111,11 @@ export class BossRenderer {
       this.lastHp[k] = left;
     }
     this.hullU.uBurn.value = spent / BOSS_WEAK_POINTS.length;
-    this.glowU.uBeam.value = BEAM_PEAK * LAMP_BOOST;
     this.glowU.uLens.value = LAMP_BOOST;
     this.glowU.uHeat.value = HEAT_BOOST * 0.35;
     this.damageFx(now, dt);
     this.placeLights(viewer, now);
+    this.exportSpots(now);
   }
 
   /** Turret k: traverse and elevate toward its newest shell's burst point
@@ -1095,18 +1187,127 @@ export class BossRenderer {
     }
   }
 
-  /** Searchlights sweep the city below (pure in the frame clock). */
+  /** Searchlights sweep the city below (pure in the frame clock). L6: the
+   * four lamps fan out — the control car's pair ahead to either side, the
+   * keel's pair astern — each scything slowly round its own bearing, leaning
+   * 0.3–0.7 rad off the vertical, so the cones rake the roofs under the hull
+   * as the reference's do. */
   private poseLamps(now: number, on: boolean): void {
     for (let k = 0; k < LAMPS; k++) {
       const az =
-        0.75 * Math.sin(now / 3100 + k * 2.1) + (k === 2 ? Math.PI : 0);
-      const tilt = 0.55 + 0.25 * Math.sin(now / 2300 + k);
+        (LAMP_BEARING[k] as number) + 0.5 * Math.sin(now / 3700 + k * 2.1);
+      const tilt = 0.5 + 0.2 * Math.sin(now / 2900 + k * 1.3);
       this.m2.makeRotationY(az).multiply(this.m.makeRotationZ(tilt));
       this.localScratch.copy(this.m2);
       this.setBone(BONE_LAMP + k, this.localScratch);
     }
-    if (!on) this.glowU.uBeam.value = 0;
+    if (!on) this.glowU.uLens.value = 0;
   }
+
+  /** L6: the escort scouts hold station round the hull, drifting and
+   * bobbing on the frame clock and banking into their own drift — a slow,
+   * watchful weave, never a fighter's. */
+  private poseScouts(now: number): void {
+    const t = now / 1000;
+    for (let k = 0; k < SCOUTS; k++) {
+      const p = k * 2.4;
+      const dx = 9 * Math.sin(t / 6.1 + p);
+      const dy = 4 * Math.sin(t / 3.7 + p * 1.3);
+      const dz = 7 * Math.sin(t / 4.9 + p * 0.7);
+      // Bank into the sideways drift (its rate, d/dt of dz), nose a touch
+      // down when sinking.
+      const bank = -0.9 * Math.cos(t / 4.9 + p * 0.7) * (7 / 4.9) * 0.25;
+      const pitch = 0.5 * Math.cos(t / 3.7 + p * 1.3) * (4 / 3.7) * 0.25;
+      this.m2
+        .makeTranslation(dx, dy, dz)
+        .multiply(this.m.makeRotationX(bank))
+        .multiply(this.mScout.makeRotationZ(pitch));
+      this.localScratch.copy(this.m2);
+      this.setBone(BONE_SCOUT + k, this.localScratch);
+    }
+  }
+  private readonly mScout = new THREE.Matrix4();
+
+  /** L6: this frame's beams from the posed lamp and scout bones, into the
+   * pooled `spots` (rendered coordinates — the bones are already placed on
+   * the torus image nearest the viewer). Lengths are main's to set:
+   * beam-landing.ts throws each one to the roof it meets. */
+  private exportSpots(now: number): void {
+    const v = this.spotVec;
+    const d = this.spotDir;
+    let n = 0;
+    for (let k = 0; k < LAMPS; k++) {
+      const l = LAMP_AT[k] as { x: number; y: number; z: number };
+      const bone = (this.bones[BONE_LAMP + k] as THREE.Bone).matrixWorld;
+      v.set(l.x, l.y - LAMP_LENS_DROP, l.z).applyMatrix4(bone);
+      d.set(0, -1, 0).transformDirection(bone);
+      this.fillSpot(n++, v, d, CARRIER_BEAM_COLOR, CARRIER_BEAM_SPREAD, false);
+    }
+    const t = now / 1000;
+    for (let k = 0; k < SCOUTS; k++) {
+      const c = SCOUT_AT[k] as { x: number; y: number; z: number };
+      const bone = (this.bones[BONE_SCOUT + k] as THREE.Bone).matrixWorld;
+      v.set(
+        c.x + SCOUT_LAMP.x,
+        c.y + SCOUT_LAMP.y,
+        c.z + SCOUT_LAMP.z,
+      ).applyMatrix4(bone);
+      // Straight down off the scout, wandering ahead and to the sides.
+      d.set(
+        0.35 + 0.25 * Math.sin(t / 2.9 + k * 1.9),
+        -1,
+        0.4 * Math.sin(t / 3.6 + k * 2.7),
+      )
+        .normalize()
+        .transformDirection(bone);
+      this.fillSpot(n++, v, d, SCOUT_BEAM_COLOR, SCOUT_BEAM_SPREAD, true);
+    }
+    this.spotCount = n;
+  }
+
+  private fillSpot(
+    i: number,
+    at: THREE.Vector3,
+    dir: THREE.Vector3,
+    tint: THREE.Color,
+    spread: number,
+    head: boolean,
+  ): void {
+    const s = this.spots[i] as SpotBeam;
+    s.x = at.x;
+    s.y = at.y;
+    s.z = at.z;
+    s.ax = dir.x;
+    s.az = dir.z;
+    const aim = s.aim as Vec3;
+    aim.x = dir.x;
+    aim.y = dir.y;
+    aim.z = dir.z;
+    s.tint = tint;
+    s.head = head;
+    s.radius = undefined;
+    s.length = undefined;
+    s.reach = 1;
+    this.spotSpread[i] = spread;
+  }
+
+  /** L6: the carrier's beams this frame — `spots[0 .. spotCount)`, each
+   * with a unit `aim`; beam-landing.ts sets its length, radius (from
+   * `spotSpread`, radius per metre of throw) and reach. None when no intact
+   * hull is up. */
+  readonly spots: SpotBeam[] = Array.from({ length: BOSS_SPOTS }, (_, i) => ({
+    x: 0,
+    y: 0,
+    z: 0,
+    ax: 1,
+    az: 0,
+    phase: i,
+    aim: { x: 0, y: -1, z: 0 },
+  }));
+  spotCount = 0;
+  readonly spotSpread: number[] = Array.from({ length: BOSS_SPOTS }, () => 0);
+  private readonly spotVec = new THREE.Vector3();
+  private readonly spotDir = new THREE.Vector3();
 
   /**
    * The carrier's launches on the render clock: the newest launch on each
@@ -1311,12 +1512,13 @@ export class BossRenderer {
     for (let b = 3; b < BONE_COUNT; b++) this.setBone(b, null);
     this.hideBone(BONE_PLANE_BELLY);
     this.hideBone(BONE_PLANE_DECK);
+    // L6: the escorts are gone with their carrier (never riding the wreck).
+    for (let k = 0; k < SCOUTS; k++) this.hideBone(BONE_SCOUT + k);
     for (let k = 0; k < BOSS_WEAK_POINTS.length; k++) {
       (this.hullU.uWeakCol.value[k] as THREE.Color).copy(SPENT);
       this.hullU.uWeakSpent.value[k] = 1;
     }
     this.hullU.uBurn.value = 1;
-    this.glowU.uBeam.value = 0;
     this.glowU.uLens.value = 0;
     this.glowU.uHeat.value = 0;
     this.glowU.uSteam.value = 0;
@@ -1342,6 +1544,31 @@ export class BossRenderer {
       const on = !l.strobe || strobeOn;
       const k = on ? emissiveBoost(l.color, l.rung) : 0;
       this.lightCol.setXYZ(n, l.color.r * k, l.color.g * k, l.color.b * k);
+    }
+    // L6: each escort's wingtips and its back strobe, off its own bone
+    // (the bone is already on the viewer's torus image).
+    let n = NAV_LIGHTS.length;
+    for (let k = 0; k < SCOUTS; k++) {
+      const c = SCOUT_AT[k] as { x: number; y: number; z: number };
+      const bone = (this.bones[BONE_SCOUT + k] as THREE.Bone).matrixWorld;
+      const scoutStrobe = (now + k * 410) % STROBE_PERIOD_MS < STROBE_ON_MS;
+      for (let j = 0; j < SCOUT_LIGHTS; j++) {
+        const v = this.spotVec;
+        if (j < 2)
+          v.set(c.x, c.y, c.z + (j === 0 ? SCOUT_TIP_Z : -SCOUT_TIP_Z));
+        else v.set(c.x - 1, c.y + 0.85, c.z);
+        v.applyMatrix4(bone);
+        this.lightPos.setXYZ(n, v.x, v.y, v.z);
+        const col = j === 0 ? STARBOARD : PORT;
+        const kk =
+          j < 2
+            ? emissiveBoost(col, EMISSIVE_NAVLIGHT)
+            : scoutStrobe
+              ? emissiveBoost(PORT, EMISSIVE_STROBE)
+              : 0;
+        this.lightCol.setXYZ(n, col.r * kk, col.g * kk, col.b * kk);
+        n++;
+      }
     }
     this.lightPos.needsUpdate = true;
     this.lightCol.needsUpdate = true;

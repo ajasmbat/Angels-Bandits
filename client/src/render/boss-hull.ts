@@ -15,7 +15,10 @@
 //    the solid hull (aerials, crew, ladders, walkways, lamp housings) or, for
 //    the pennants only, PENNANT_REACH_M;
 //  - TAG_RIG    — the launch rig and the planes on it (not hull: no plane is
-//    solid to another).
+//    solid to another);
+//  - TAG_ESCORT — L6's escort scouts flying station round the hull:
+//    cosmetic, solid to nothing (rounds and planes pass through them), so
+//    they are no part of the collision shape either.
 // client/test/boss-hull.test.ts holds the solid and dressing vertices to the
 // collision shape. Pure THREE (no DOM): the tests build it in node.
 
@@ -45,10 +48,14 @@ export const MAT_CLOTH = 7;
 export const MAT_CREW = 8;
 export const MAT_BAY = 9;
 export const MAT_PLANE = 10;
+/** L6: the escort scouts — their own code, so none of the envelope's
+ * rest-frame painting (girders, crest, windows, scorch) lands on them. */
+export const MAT_SCOUT = 11;
 
 export const TAG_SOLID = 0;
 export const TAG_DRESS = 1;
 export const TAG_RIG = 2;
+export const TAG_ESCORT = 3;
 /** How far non-solid dressing may stand off the solid hull, m. */
 export const DRESS_REACH_M = 1.5;
 /** ...and the pennants, which stream off the dorsal fin's tip. */
@@ -74,9 +81,11 @@ export const BONE_PLANE_BELLY = 27;
 export const BONE_PLANE_DECK = 28;
 export const BONE_CREW = 29; // + crew 0..CREW-1
 export const CREW = 8;
-export const BONE_LAMP = 37; // + lamp 0..2
-export const LAMPS = 3;
-export const BONE_COUNT = 40;
+export const BONE_LAMP = 37; // + lamp 0..3
+export const LAMPS = 4;
+export const BONE_SCOUT = 41; // + scout 0..2
+export const SCOUTS = 3;
+export const BONE_COUNT = 44;
 
 /** A bone's pivot in the hull frame and the section it rides. */
 export interface BoneRest {
@@ -102,12 +111,28 @@ const FIN_TAIL_X = -119;
 export const CREW_X0 = -8;
 export const CREW_X1 = 48;
 export const CREW_Z = 2.15;
-/** The searchlights: two under the control car, one under the keel. */
+/** The searchlights: two under the control car, two under the keel (L6:
+ * the fourth aft of the bay, so the trapeze never swings through it). */
 export const LAMP_AT: readonly { x: number; y: number; z: number }[] = [
   { x: part(4).x + 3, y: part(4).y - part(4).hy, z: 1.6 },
   { x: part(4).x + 3, y: part(4).y - part(4).hy, z: -1.6 },
   { x: KEEL.x + 14, y: KEEL_BOTTOM, z: 0 },
+  { x: KEEL.x - 16, y: KEEL_BOTTOM, z: 0 },
 ];
+/** The lens of lamp k's housing, below its pivot (hull frame, at rest). */
+export const LAMP_LENS_DROP = 1.32;
+/** L6: where each escort scout keeps station (hull frame) — one ahead and
+ * high to port, one ahead and low to starboard, one low on the port
+ * quarter: close enough to read as the carrier's, clear of its turrets'
+ * arcs and of the launch lanes under the keel and over the deck. */
+export const SCOUT_AT: readonly { x: number; y: number; z: number }[] = [
+  { x: 150, y: 24, z: -48 },
+  { x: 92, y: -46, z: 56 },
+  { x: -72, y: -40, z: -60 },
+];
+/** A scout's lamp (under its nose) and wingtip lights, from its centre. */
+export const SCOUT_LAMP = { x: 1.3, y: -0.95, z: 0 };
+export const SCOUT_TIP_Z = 3.25;
 /** The dorsal and ventral turrets' mounts (head pivot), from the parts. */
 export const TURRET_PARTS: readonly number[] = [17, 18, 19, 20, 21, 22];
 
@@ -145,6 +170,7 @@ export function boneRests(): BoneRest[] {
     set(BONE_CREW + c, crewRestX(c), BOSS_DECK_Y, c % 2 ? -CREW_Z : CREW_Z, 1);
   }
   LAMP_AT.forEach((l, k) => set(BONE_LAMP + k, l.x, l.y, l.z, k < 2 ? 0 : 1));
+  SCOUT_AT.forEach((c, k) => set(BONE_SCOUT + k, c.x, c.y, c.z, 0));
   return out;
 }
 
@@ -437,8 +463,9 @@ const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
 
 // --- Colours ------------------------------------------------------------------
 
-/** Silver-grey doped skin, gunmetal armour, near-black guns, brass. */
-export const SKIN = 0xa9b2bc;
+/** L6: dark gunmetal-navy doped skin (the reference's sinister hull — the
+ * gloss comes from the shader), gunmetal armour, near-black guns, brass. */
+export const SKIN = 0x445168;
 const ARMOUR = 0x3b4048;
 const PLATE = 0x4a4f57;
 const GUN = 0x1d1f23;
@@ -1080,6 +1107,9 @@ export function buildBossHull(
     );
   });
 
+  // L6: the escort scouts, each on its own bone.
+  SCOUT_AT.forEach((c, k) => scout(acc, c, BONE_SCOUT + k, full));
+
   // The planes on their rigs.
   if (plane) {
     const rest = [
@@ -1098,6 +1128,59 @@ export function buildBossHull(
   }
   return acc.build();
 }
+/**
+ * L6: one escort scout — a small dieselpunk drone, nose +X, ~7 m span: a
+ * flattened teardrop body with a glazed dome, stub wings out to two engine
+ * pods, a tail fin and the spotlight housing under the nose. Cosmetic
+ * (TAG_ESCORT): it is solid to nothing.
+ */
+function scout(
+  acc: Acc,
+  c: { x: number; y: number; z: number },
+  bone: number,
+  full: boolean,
+): void {
+  const o = (color: number) => ({
+    color,
+    mat: MAT_SCOUT,
+    bone,
+    tag: TAG_ESCORT,
+  });
+  const seg = full ? 14 : 8;
+  const body = new THREE.SphereGeometry(1, seg, full ? 8 : 5);
+  acc.add(
+    body,
+    o(ARMOUR),
+    at(c.x, c.y, c.z).multiply(m4().makeScale(3.1, 0.8, 1.35)),
+  );
+  acc.add(
+    body,
+    o(0x0d1218),
+    at(c.x + 0.9, c.y + 0.45, c.z).multiply(m4().makeScale(1.1, 0.55, 0.7)),
+  );
+  body.dispose();
+  boxAt(acc, c.x - 0.2, c.y, c.z, 0.7, 0.08, SCOUT_TIP_Z - 0.4, o(PLATE));
+  for (const side of [1, -1]) {
+    rod(
+      acc,
+      V(c.x - 1.4, c.y, c.z + side * (SCOUT_TIP_Z - 0.4)),
+      V(c.x + 1.2, c.y, c.z + side * (SCOUT_TIP_Z - 0.4)),
+      0.42,
+      o(BRASS),
+      full ? 10 : 6,
+    );
+  }
+  boxAt(acc, c.x - 2.6, c.y + 0.6, c.z, 0.5, 0.55, 0.06, o(PLATE));
+  rod(
+    acc,
+    V(c.x + SCOUT_LAMP.x, c.y - 0.5, c.z),
+    V(c.x + SCOUT_LAMP.x, c.y + SCOUT_LAMP.y, c.z),
+    0.3,
+    o(BRASS),
+    8,
+  );
+}
+
 const PROFILE = (BOSS_PARTS[0] as BossPart).rev
   ? // The whole envelope's table, through the shared export.
     ((): BossProfile => {
@@ -1117,18 +1200,14 @@ const PROFILE = (BOSS_PARTS[0] as BossPart).rev
 
 // --- The glow (additive) ------------------------------------------------------------
 
-/** Glow vertex kinds the glow shader scales: beams by their lamp, flashes by
- * their turret, steam and sparks by the catapult, exhaust heat by time. */
-export const GLOW_BEAM = 0;
+/** Glow vertex kinds the glow shader scales: flashes by their turret, steam
+ * and sparks by the catapult, exhaust heat by time, lenses by the lamps.
+ * (Kind 0 was S9's beam cone; L6 moved the beams to searchlights.ts.) */
 export const GLOW_HEAT = 1;
 export const GLOW_FLASH = 2;
 export const GLOW_STEAM = 3;
 export const GLOW_SPARK = 4;
 export const GLOW_LENS = 5;
-/** Searchlight beam length and spread, m. */
-export const BEAM_LEN = 330;
-const BEAM_R = 16;
-
 export function buildBossGlow(): THREE.BufferGeometry {
   const pos: number[] = [];
   const col: number[] = [];
@@ -1159,23 +1238,12 @@ export function buildBossGlow(): THREE.BufferGeometry {
       bone.push(b);
     }
   };
-  // Beams: open cones down from each lamp (the bone aims them).
+  // The lamps' lenses (the bone aims them). L6: their beams are drawn by
+  // the city's volumetric searchlight mesh (searchlights.ts), from the
+  // SpotBeams the renderer exports — not cones of this glow.
   LAMP_AT.forEach((l, k) => {
-    const g = new THREE.CylinderGeometry(0.5, BEAM_R, BEAM_LEN, 20, 1, true);
-    const m = at(l.x, l.y - 1.3 - BEAM_LEN / 2, l.z);
-    const top = l.y - 1.3;
-    push(
-      g,
-      m,
-      [1, 0.92, 0.75],
-      GLOW_BEAM,
-      k,
-      BONE_LAMP + k,
-      (v) => (top - v.y) / BEAM_LEN,
-    );
-    g.dispose();
     const lens = new THREE.CircleGeometry(0.5, 12);
-    const lm = at(l.x, l.y - 1.32, l.z).multiply(
+    const lm = at(l.x, l.y - LAMP_LENS_DROP, l.z).multiply(
       m4().makeRotationX(Math.PI / 2),
     );
     push(lens, lm, [1, 0.95, 0.85], GLOW_LENS, k, BONE_LAMP + k, () => 0);

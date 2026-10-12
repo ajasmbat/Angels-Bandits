@@ -918,6 +918,26 @@ export const VIEWS = [
     weather: "clear",
     boss: { ahead: 180, downAfterMs: 3500 },
   },
+  // L6 (Stormlit): the reference composition — the carrier upper left, its
+  // lamps and escort scouts throwing beams down onto the roofs, the own
+  // biplane (pinned here, its nav, landing and exhaust lights lit) mid
+  // right flying away into the scene, and the city below. The hull is
+  // staged 450 m ahead of the plane (centre ≈ x 1500, y 305, z 550), over
+  // the landmark at (1500, 300); no rooftop searchlight stands near the
+  // plane to swing onto it.
+  {
+    name: "reference-hero",
+    x: 1500,
+    z: 1000,
+    y: 300,
+    yaw: 0,
+    pitch: 0.04,
+    timeMs: 1_790_000_000_000,
+    eye: [1484, 324, 1036],
+    at: [1630, 190, 740],
+    weather: "clear",
+    boss: { ahead: 450 },
+  },
   // W2: an enemy fighter-bomber's dive on the x = 1000 street (z ≈ 380),
   // its heavy centreline bomb just thrown (rack 0 empty) and falling ahead
   // of it, trailing smoke — staged through __ab.qaChaos's `bombs`, planned

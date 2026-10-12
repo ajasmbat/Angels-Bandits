@@ -98,6 +98,16 @@ export interface SpotBeam {
    * site) instead of the wandering street spot, and the throw it needs. */
   aim?: Vec3;
   length?: number;
+  /** L6: the throw's radius at its tip, m (default: scaled off the length),
+   * its colour (default SPOT_COLOR — sub-bloom like every beam), whether
+   * this mesh draws the lamp head (false where the owner draws its own lens
+   * — two heads would stack past the tracer rung), and how far the falloff
+   * runs: alpha reaches zero at t = 1 / reach, so a beam that LANDS on a
+   * roof (reach < 1) still meets the pool it throws there. */
+  radius?: number;
+  tint?: THREE.Color;
+  head?: boolean;
+  reach?: number;
 }
 
 /**
@@ -325,6 +335,8 @@ export interface BeamFragment {
   localRadius: number;
   /** The eye's beamCameraRho for this beam. */
   rho: number;
+  /** L6: the falloff's reach (1: gone at the tip; < 1: still lit there). */
+  reach?: number;
 }
 
 /**
@@ -333,7 +345,7 @@ export interface BeamFragment {
  * terms. Peaks at BEAM_OPACITY; only ever scales it down.
  */
 export function beamAlpha(f: BeamFragment): number {
-  const fade = (1 - f.t) ** 1.5;
+  const fade = Math.max(0, 1 - f.t * (f.reach ?? 1)) ** 1.5;
   const hot = 0.4 + 0.6 * Math.exp(-f.t * 6);
   const edge = smoothstep(BEAM_EDGE_IN, 0.8, f.facing);
   return (
@@ -366,12 +378,12 @@ float abBeamCameraFade(float rho) {
     abBeamSmooth(${glslFloat(BEAM_RHO_IN)}, ${glslFloat(BEAM_RHO_OUT)}, rho);
 }
 float abBeamAlpha(float peak, float t, float facing, float viewDist,
-                  float localRadius, float cameraFade) {
+                  float localRadius, float cameraFade, float reach) {
   // O7: t is the cone's interpolated 0..1 height, and at the far rim it
   // rounds to 1 + ε — pow() of the negative base is NaN (exp2·log2), and
   // one NaN pixel blacks out the frame through bloom. Clamped, and u^1.5
-  // spelled without pow.
-  float u = clamp(1.0 - t, 0.0, 1.0);
+  // spelled without pow. L6: reach < 1 leaves the tip lit (a landed beam).
+  float u = clamp(1.0 - t * reach, 0.0, 1.0);
   float fade = u * sqrt(u);
   float hot = 0.4 + 0.6 * exp(-t * 6.0);
   float edge = abBeamSmooth(${glslFloat(BEAM_EDGE_IN)}, 0.8, facing);
@@ -394,12 +406,20 @@ const HEAD_SIZE = 7;
 const SPOT_HEAD_SIZE = 4;
 
 /** Instances the mesh can hold beyond the rooftop stations (4 street helis,
- * the L10 news heli, headroom). */
-const SPOT_CAPACITY = 9;
+ * the L10 news heli, L6's carrier lamps and escort scouts, headroom). */
+const SPOT_CAPACITY = 18;
+
+/** L6: the war carrier's lamps — a whiter arc than the helis' spots — and
+ * its escort scouts'. Luminance ≈ SPOT_COLOR's, so each wall stays at the
+ * spots' sub-bloom peak (BEAM_OPACITY × ~0.75). */
+export const CARRIER_BEAM_COLOR = new THREE.Color(0.78, 0.77, 0.7);
+export const SCOUT_BEAM_COLOR = new THREE.Color(0.72, 0.76, 0.82);
 
 const BEAM_VERTEX = /* glsl */ `
 attribute vec3 aTint;
+attribute float aReach;
 uniform float uTime;
+varying float vReach;
 varying float vT;
 varying vec3 vTint;
 varying float vShimmer;
@@ -437,6 +457,7 @@ void main() {
     abBeamCameraRho(cameraPosition, apex, axis, len, tipRadius));
   vWorldPos = worldPos.xyz;
   vTint = aTint;
+  vReach = aReach;
   // Slow drift of faint bands along the beam: dust in the throw.
   vShimmer = 0.88 + 0.12 * sin(position.y * 38.0 - uTime * 1.7 + apex.x * 0.01);
   vec4 mvPosition = viewMatrix * worldPos;
@@ -450,6 +471,7 @@ const BEAM_FRAGMENT = /* glsl */ `
 uniform float uOpacity;
 uniform float fogNear;
 uniform float fogFar;
+varying float vReach;
 varying float vT;
 varying vec3 vTint;
 varying float vShimmer;
@@ -476,7 +498,7 @@ void main() {
   float viewDist = length(toEye);
   float facing = abs(dot(normal_w, toEye / max(viewDist, 1e-4)));
   float a = abBeamAlpha(uOpacity, vT, facing, viewDist, vTipRadius * vT,
-    vCameraFade) * vShimmer;
+    vCameraFade, vReach) * vShimmer;
   // S5 god rays: the throw breaks into shafts as it scatters through the
   // haze — fixed in the beam's own frame (the angle about its axis), so they
   // ride the sweep and never crawl, stronger down the throw and in the low,
@@ -515,6 +537,10 @@ export class Searchlights {
   private readonly leaderLamp: SearchlightStation | null;
   private readonly leaderSlot: number;
   private readonly tints: THREE.InstancedBufferAttribute;
+  /** L6: per-instance falloff reach (stations 1; spots set per frame). */
+  private readonly reaches: THREE.InstancedBufferAttribute;
+  /** The first spot slot (after the rooftop stations and the leader). */
+  private readonly spotSlot: number;
   private readonly capacity: number;
   private readonly uniforms = THREE.UniformsUtils.merge([
     THREE.UniformsLib.fog,
@@ -565,7 +591,15 @@ export class Searchlights {
       tints[i * 3 + 2] = c.b;
     }
     this.tints = new THREE.InstancedBufferAttribute(tints, 3);
+    this.tints.setUsage(THREE.DynamicDrawUsage);
     cone.setAttribute("aTint", this.tints);
+    this.reaches = new THREE.InstancedBufferAttribute(
+      new Float32Array(capacity).fill(1),
+      1,
+    );
+    this.reaches.setUsage(THREE.DynamicDrawUsage);
+    cone.setAttribute("aReach", this.reaches);
+    this.spotSlot = fixed;
     this.mesh = new THREE.InstancedMesh(
       cone,
       new THREE.ShaderMaterial({
@@ -696,17 +730,31 @@ export class Searchlights {
       lights?.place({ x: p.x, y: p.y + 1.5, z: p.z }, headBoost, HEAD_SIZE);
     }
     if (this.leaderLamp) this.placeLeader(index++, cameraPos, leader, lights);
-    for (const spot of spots) {
+    const tints = this.tints.array as Float32Array;
+    const reaches = this.reaches.array as Float32Array;
+    for (let s = 0; s < spots.length; s++) {
       if (index >= this.capacity) break;
+      const spot = spots[s] as SpotBeam;
       this.pos.set(spot.x, spot.y, spot.z);
       const d = spot.aim ?? spotDirection(spot, serverTimeMs);
       // Throw as far as the ground and a little past it, never further than
       // the lamp is rated for — a spot on the deck is a pool, not a pillar.
       const length =
         spot.length ?? Math.min(SPOT_LENGTH_MAX, (spot.y + 12) / -d.y);
-      const radius = SPOT_RADIUS * (length / SPOT_LENGTH_MAX);
+      const radius = spot.radius ?? SPOT_RADIUS * (length / SPOT_LENGTH_MAX);
+      // L6: a spot slot's colour and reach are the spot's own this frame.
+      const tint = spot.tint ?? SPOT_COLOR;
+      tints[index * 3] = tint.r;
+      tints[index * 3 + 1] = tint.g;
+      tints[index * 3 + 2] = tint.b;
+      reaches[index] = spot.reach ?? 1;
       this.place(index++, d, length, Math.max(6, radius));
-      lights?.place(spot, spotHeadBoost, SPOT_HEAD_SIZE);
+      if (spot.head !== false)
+        lights?.place(spot, spotHeadBoost, SPOT_HEAD_SIZE);
+    }
+    if (index > this.spotSlot) {
+      this.tints.needsUpdate = true;
+      this.reaches.needsUpdate = true;
     }
     this.drawn = index;
     this.mesh.count = Math.max(1, index);

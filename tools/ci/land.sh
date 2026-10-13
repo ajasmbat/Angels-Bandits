@@ -40,7 +40,12 @@ for n in $(gh pr list --state open --base main --limit 50 --json number,headRefN
       echo "merged #$n"
   else
     tail -60 /tmp/gate.log
-    note "$n" "not merged: $why on the merged result (see the Actions log)."
+    fails=$(grep -E "FAIL |error TS|AssertionError|✗|×|Error:" /tmp/gate.log | sed 's/\x1b\[[0-9;]*m//g' | sort -u | head -15)
+    note "$n" "not merged: $why on the merged result.
+\`\`\`
+$fails
+\`\`\`
+(full log: the land-tickets Actions run)"
   fi
   echo "::endgroup::"
 done

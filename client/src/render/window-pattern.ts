@@ -24,7 +24,7 @@
 import { EMISSIVE_HOLE_LED } from "@angels-bandits/common/constants";
 import * as THREE from "three";
 import { AB_AA_GLSL } from "./aa-glsl";
-import { FacadeArchetype } from "./archetypes";
+import { FacadeArchetype, FacadeStyle, STYLE_ARCH } from "./archetypes";
 import { emissiveBoost } from "./emissive";
 import {
   TV_COLOR,
@@ -65,8 +65,12 @@ export interface FacadeParams {
   glass: ArchetypeFacade;
   masonry: ArchetypeFacade;
   office: ArchetypeFacade;
-  /** Per-building pitch jitter, ± this fraction (floor height / bay width). */
+  /** Per-building pitch jitter, ± this fraction (bay width; the floor
+   * height's is pitchJitterY). */
   pitchJitter: number;
+  /** L11: the floor height's own jitter, ± this fraction — small, so every
+   * style keeps a real New York floor (3.4–4.2 m). At most pitchJitter. */
+  pitchJitterY: number;
   /** Tenant zone size in window cells: bays across × floors up. */
   zoneW: number;
   zoneH: number;
@@ -119,8 +123,8 @@ export interface FacadeParams {
  * more late shifts, warm-dominant glass and offices, and more curtains. */
 export const FACADE: FacadeParams = {
   glass: {
-    pitch: [3.2, 3.1],
-    pane: [0.87, 0.76],
+    pitch: [3.2, 3.9],
+    pane: [0.9, 0.78],
     lit: 0.5,
     cool: 0.32,
     blinds: 0.28,
@@ -128,8 +132,8 @@ export const FACADE: FacadeParams = {
     grimeScale: 1.0,
   },
   masonry: {
-    pitch: [3.5, 3.5],
-    pane: [0.45, 0.42],
+    pitch: [2.7, 3.6],
+    pane: [0.44, 0.5],
     lit: 0.55,
     cool: 0.05,
     blinds: 0.5,
@@ -137,8 +141,8 @@ export const FACADE: FacadeParams = {
     grimeScale: 1.6,
   },
   office: {
-    pitch: [5.2, 4.1],
-    pane: [0.9, 0.5],
+    pitch: [5.2, 3.9],
+    pane: [0.92, 0.46],
     lit: 0.49,
     cool: 0.22,
     blinds: 0.3,
@@ -146,6 +150,7 @@ export const FACADE: FacadeParams = {
     grimeScale: 1.25,
   },
   pitchJitter: 0.16,
+  pitchJitterY: 0.05,
   zoneW: 3,
   zoneH: 3,
   zoneLo: 0.4,
@@ -253,24 +258,216 @@ float abPitchSeed(vec3 dims) {
 `;
 }
 
+// --- L11 New York window geometry, per style ---------------------------
+
+/** Opening shapes the shader draws (abOpeningSd). */
+export const WindowShape = {
+  /** Curtain-wall cell: the pane fills the cell between mullions. */
+  CURTAIN: 0,
+  /** Punched rectangle. */
+  RECT: 1,
+  /** Mid-century ribbon: one long band per floor, mullions across it. */
+  RIBBON: 2,
+  /** Art Deco vertical strip between piers. */
+  STRIP: 3,
+  /** Cast-iron loft: tall window under a segmental arch. */
+  LOFT: 4,
+  /** Round-headed arch (the prewar crown floor). */
+  ARCH: 5,
+} as const;
+export type WindowShape = (typeof WindowShape)[keyof typeof WindowShape];
+
+/** One style's window geometry, meters unless noted. */
+export interface StyleWindow {
+  /** Cell pitch [along the run, floor height] before the jitter. */
+  pitch: readonly [number, number];
+  /** Opening size as a fraction of the cell. */
+  pane: readonly [number, number];
+  shape: WindowShape;
+  /** How deep the glass sits behind the wall face (the reveal). */
+  recess: number;
+  /** Lights per sash [across, up]: 2-over-2 is [2, 1] with 2 sashes. */
+  lights: readonly [number, number];
+  /** Sashes stacked in the opening (2 = a double-hung meeting rail). */
+  sashes: number;
+  /** Sash frame width inside the opening. */
+  frame: number;
+  /** Projecting stone sill and lintel heights (0 = none). */
+  sill: number;
+  lintel: number;
+}
+
+/** The base style of each archetype carries the archetype's own pitch and
+ * pane (FACADE), so facadeFor(arch) and styleWindow(base) never disagree. */
+export const STYLE_WINDOW: Readonly<Record<FacadeStyle, StyleWindow>> = {
+  [FacadeStyle.MODERN_GLASS]: {
+    pitch: FACADE.glass.pitch,
+    pane: FACADE.glass.pane,
+    shape: WindowShape.CURTAIN,
+    recess: 0.06,
+    lights: [1, 1],
+    sashes: 1,
+    frame: 0.04,
+    sill: 0,
+    lintel: 0,
+  },
+  [FacadeStyle.MIDCENTURY_GLASS]: {
+    pitch: [3.0, 3.7],
+    pane: [0.97, 0.6],
+    shape: WindowShape.RIBBON,
+    recess: 0.05,
+    lights: [2, 1],
+    sashes: 1,
+    frame: 0.035,
+    sill: 0,
+    lintel: 0,
+  },
+  [FacadeStyle.PREWAR]: {
+    pitch: FACADE.masonry.pitch,
+    pane: FACADE.masonry.pane,
+    shape: WindowShape.RECT,
+    recess: 0.28,
+    lights: [2, 1],
+    sashes: 2,
+    frame: 0.06,
+    sill: 0.14,
+    lintel: 0.26,
+  },
+  [FacadeStyle.DECO]: {
+    pitch: [2.6, 3.7],
+    pane: [0.5, 0.6],
+    shape: WindowShape.STRIP,
+    recess: 0.22,
+    lights: [2, 1],
+    sashes: 2,
+    frame: 0.05,
+    sill: 0.08,
+    lintel: 0,
+  },
+  [FacadeStyle.CAST_IRON]: {
+    pitch: [3.4, 4.2],
+    pane: [0.6, 0.66],
+    shape: WindowShape.LOFT,
+    recess: 0.24,
+    lights: [1, 1],
+    sashes: 2,
+    frame: 0.07,
+    sill: 0.12,
+    lintel: 0,
+  },
+  [FacadeStyle.BROWNSTONE]: {
+    pitch: [2.5, 3.4],
+    pane: [0.44, 0.52],
+    shape: WindowShape.RECT,
+    recess: 0.3,
+    lights: [3, 2],
+    sashes: 2,
+    frame: 0.06,
+    sill: 0.14,
+    lintel: 0.36,
+  },
+  [FacadeStyle.MIDCENTURY_OFFICE]: {
+    pitch: FACADE.office.pitch,
+    pane: FACADE.office.pane,
+    shape: WindowShape.RIBBON,
+    recess: 0.14,
+    lights: [4, 1],
+    sashes: 1,
+    frame: 0.05,
+    sill: 0.06,
+    lintel: 0,
+  },
+};
+
+/** Window geometry for one style (an archetype id means its base style). */
+export const styleWindow = (style: FacadeStyle): StyleWindow =>
+  STYLE_WINDOW[style];
+
+/** The shader's style slot for a style: archetype · 4 + sub — what the
+ * fragment stage decodes from the packed `aArchetype.x`. */
+export const styleSlot = (style: FacadeStyle): number =>
+  STYLE_ARCH[style].arch * 4 + STYLE_ARCH[style].sub;
+
 /**
  * Window cell pitch in meters after this building's per-building jitter,
  * from its `pitchSeed`: x takes the seed, y its low 12 bits (`fract(seed ·
  * 4096)`, exact for a 24-bit seed) so the two jitters are independent.
  * Cells are measured from the TIER's horizontal centre and the tier's base
- * (the shader's vMeters frame).
+ * (the shader's vMeters frame). L11: per STYLE (an archetype id still means
+ * its base style), and the floor height only swings ± pitchJitterY.
  */
 export function windowPitch(
-  arch: FacadeArchetype,
+  style: FacadeStyle,
   seed: number,
 ): [number, number] {
-  const f = facadeFor(arch);
+  const p = styleWindow(style).pitch;
   const j = FACADE.pitchJitter;
+  const jy = FACADE.pitchJitterY;
   return [
-    f.pitch[0] * (1 - j + 2 * j * seed),
-    f.pitch[1] * (1 - j + 2 * j * fract(seed * 4096)),
+    p[0] * (1 - j + 2 * j * seed),
+    p[1] * (1 - jy + 2 * jy * fract(seed * 4096)),
   ];
 }
+
+/** A hit this close to an opening's edge (m) counts as wall: the JS twin is
+ * float64 and the shader float32, so they may disagree right at the edge —
+ * this way a disagreement turns a hit into a near-miss, never shatters a
+ * pane that is not drawn. */
+export const PANE_EDGE_MARGIN = 0.01;
+
+/**
+ * Is (u, v) — meters from the cell's centre along the run / up — inside
+ * this style's drawn opening? The JS twin of the shader's abOpeningSd
+ * (`topRow`: the prewar crown floor's round-headed arch).
+ */
+export function paneContains(
+  style: FacadeStyle,
+  pitch: readonly [number, number],
+  u: number,
+  v: number,
+  topRow = false,
+): boolean {
+  const w = styleWindow(style);
+  const hx = (w.pane[0] * pitch[0]) / 2;
+  const hy = (w.pane[1] * pitch[1]) / 2;
+  const shape =
+    style === FacadeStyle.PREWAR && topRow ? WindowShape.ARCH : w.shape;
+  return openingSd(shape, hx, hy, u, v) <= -PANE_EDGE_MARGIN;
+}
+
+/** Signed distance to an opening of half size (hx, hy), < 0 inside — the
+ * twin of the GLSL abOpeningSd below. */
+function openingSd(
+  shape: WindowShape,
+  hx: number,
+  hy: number,
+  u: number,
+  v: number,
+): number {
+  const box = Math.max(Math.abs(u) - hx, Math.abs(v) - hy);
+  if (shape === WindowShape.ARCH) {
+    const spring = hy - hx;
+    return v > spring ? Math.hypot(u, v - spring) - hx : box;
+  }
+  if (shape === WindowShape.LOFT) {
+    const r = hx * LOFT_ARCH_RADIUS;
+    return Math.max(
+      Math.max(Math.abs(u) - hx, -hy - v),
+      Math.hypot(u, v - (hy - r)) - r,
+    );
+  }
+  return box;
+}
+
+/** The loft's segmental arch radius as a multiple of its half width. */
+export const LOFT_ARCH_RADIUS = 1.6;
+
+/** L11 brownstones are BROWNSTONE_BAYS bays per house: the first bay of
+ * each (cell x ≡ 0) is the door bay — a stoop up to the parlour floor's
+ * front door, where the other bays have windows. */
+export const BROWNSTONE_BAYS = 3;
+export const brownstoneDoorBay = (cellX: number): boolean =>
+  ((cellX % BROWNSTONE_BAYS) + BROWNSTONE_BAYS) % BROWNSTONE_BAYS === 0;
 
 /**
  * Probability that one window cell is lit, clustered the way the shader
@@ -406,6 +603,47 @@ const archBlock = (f: ArchetypeFacade) => /* glsl */ `
   grimeScale = ${glslFloat(f.grimeScale)};`;
 
 /**
+ * L11: the style slot (archetype · 4 + sub, decoded from the FLAT packed
+ * `vArch` — an interpolated copy could round to the next style at some
+ * pixels) and each style's window geometry, generated from STYLE_WINDOW.
+ * Overrides the archetype's pitch and pane; occupancy stays per archetype.
+ */
+function styleChainGlsl(): string {
+  const order = (Object.values(FacadeStyle) as FacadeStyle[]).sort(
+    (a, b) => styleSlot(b) - styleSlot(a),
+  );
+  const branch = (st: FacadeStyle, i: number): string => {
+    const w = STYLE_WINDOW[st];
+    const head =
+      i === order.length - 1
+        ? "} else {"
+        : `${i === 0 ? "if" : "} else if"} (fwSid > ${glslFloat(styleSlot(st) - 0.5)}) {`;
+    return `${head}
+  winPitch = vec2(${glslFloat(w.pitch[0])}, ${glslFloat(w.pitch[1])});
+  winPane = vec2(${glslFloat(w.pane[0])}, ${glslFloat(w.pane[1])});
+  fwShape = ${glslFloat(w.shape)};
+  fwRecess = ${glslFloat(w.recess)};
+  fwLights = vec2(${glslFloat(w.lights[0])}, ${glslFloat(w.lights[1])});
+  fwSashes = ${glslFloat(w.sashes)};
+  fwFrameW = ${glslFloat(w.frame)};
+  fwSill = ${glslFloat(w.sill)};
+  fwLintel = ${glslFloat(w.lintel)};
+`;
+  };
+  return /* glsl */ `// --- L11 New York style: window geometry per style slot ---
+float fwSid = floor(vArch + 0.01) * 4.0 + floor(fract(vArch + 0.01) * 8.0);
+float fwShape = 0.0;
+float fwRecess = 0.0;
+vec2 fwLights = vec2(1.0);
+float fwSashes = 1.0;
+float fwFrameW = 0.0;
+float fwSill = 0.0;
+float fwLintel = 0.0;
+${order.map(branch).join("")}}
+`;
+}
+
+/**
  * Archetype params, the window grid, and the CLUSTERED occupancy decision.
  * Emitted into the `color_fragment` slot: the locals it declares stay in
  * scope for the emissive block below (same shader main body).
@@ -424,10 +662,11 @@ if (vArch > 1.5) {                 // OFFICE — strip windows, mixed light${arc
 } else if (vArch > 0.5) {          // MASONRY — small punched windows, warm${archBlock(FACADE.masonry)}
   winInset = 1.0;
 }
+${styleChainGlsl()}
 // Per-building floor height and bay width: a block of BSP lots must read as
 // many buildings, not one wall with one window grid stamped across it.
 // L13: from the bit-exact vPitchSeed, so JS (windowPitch) knows the rows.
-winPitch.y *= ${glslFloat(1 - FACADE.pitchJitter)} + ${glslFloat(2 * FACADE.pitchJitter)} * fract(vPitchSeed * 4096.0);
+winPitch.y *= ${glslFloat(1 - FACADE.pitchJitterY)} + ${glslFloat(2 * FACADE.pitchJitterY)} * fract(vPitchSeed * 4096.0);
 winPitch.x *= ${glslFloat(1 - FACADE.pitchJitter)} + ${glslFloat(2 * FACADE.pitchJitter)} * vPitchSeed;
 
 // Facade plane: side faces get (facade-run, height) meters; roofs none.
@@ -435,6 +674,9 @@ vec2 winGrid = vec2(1e6);
 if (abs(vObjNormal.x) > 0.5) winGrid = vec2(vMeters.z, vMeters.y);
 else if (abs(vObjNormal.z) > 0.5) winGrid = vec2(vMeters.x, vMeters.y);
 float facade = 1.0 - step(1e5, abs(winGrid.x));
+// The camera's view ray (L11: the window recess needs it in the colour
+// slot; the interiors, the shop rooms and the reflections read it below).
+vec3 viewRay = normalize(vBWorldPos - cameraPosition);
 ${holeMaskGlsl()}vec2 winCell = floor(winGrid / winPitch);
 vec2 winF = fract(winGrid / winPitch);
 // O1 anti-aliasing: facade meters per pixel, (run, height). Taken from the
@@ -521,7 +763,6 @@ float mixMean = mix(${glslFloat(FACADE.tempJitter * 0.5)}, ${glslFloat(1 - FACAD
 // The far-field colour: the expected temperature, untouched by the per-cell
 // TV swap below (a sub-pixel TV cell must not sparkle either).
 vec3 winColorMean = mix(${warm}, ${cool}, mixMean);
-vec3 viewRay = normalize(vBWorldPos - cameraPosition);
 // Some rooms draw their blinds: flat diffuse glow, no parallax.
 float blinds = step(abHash(winCell + 3.0, vBSeed * 29.0), winBlinds);
 // O1: the parallax room, the blinds and the brightness spread are per-cell
@@ -570,7 +811,8 @@ ${livingColorGlsl(glslVec3(TV_COLOR))}
       rayIn = -sign(vObjNormal.z) * viewRay.z;
       rayUV = vec2(viewRay.x, viewRay.y);
     }
-    vec2 cellMeters = winF * winPitch;
+    // L11: the room starts where the ray meets the RECESSED glass.
+    vec2 cellMeters = clamp(fwG + 0.5 * winPitch, vec2(0.0), winPitch);
     float tBack = roomDepth / max(rayIn, 0.03);
     float tU = ((rayUV.x > 0.0 ? winPitch.x : 0.0) - cellMeters.x) / abSafeDiv(rayUV.x);
     float tV = ((rayUV.y > 0.0 ? winPitch.y : 0.0) - cellMeters.y) / abSafeDiv(rayUV.y);
@@ -578,21 +820,39 @@ ${livingColorGlsl(glslVec3(TV_COLOR))}
     roomCol = tHit == tBack ? roomLight * 0.55
             : tHit == tV ? (rayUV.y > 0.0 ? roomLight * 0.9 : roomLight * 0.24)
             : roomLight * 0.38;
+    // L11: a table or floor lamp in some rooms — a warm pool on the back
+    // wall (every factor stays < 1: the room never outshines its pane).
+    vec2 lampAt = vec2(0.25 + 0.5 * abHash(winCell + 71.0, vBSeed * 19.0), 0.9) * vec2(winPitch.x, 1.0);
+    vec2 lampHit = cellMeters + rayUV * tHit;
+    float lampOn = step(abHash(winCell + 67.0, vBSeed * 19.0), 0.35) * step(tBack, tHit);
+    roomCol = mix(roomCol, roomLight * 0.95, lampOn * exp(-dot(lampHit - lampAt, lampHit - lampAt) * 3.0));
     roomCol *= 1.0 - 0.45 * clamp(tHit / (roomDepth * 2.2), 0.0, 1.0);
   }
   // Per-window brightness spread: a real block is not one bulb repeated.
   float dim = ${glslFloat(1 - FACADE.brightSpread)} + ${glslFloat(FACADE.brightSpread)} * winH;
-  litWindow = mix(roomCol * (0.55 + 0.45 * winH), winColor * (0.5 + 0.3 * winH), blinds) * dim;
+  // L11: drawn blinds show their slats; some open rooms hang curtains,
+  // pulled to the sides and glowing where the room light comes through.
+  float slatD = abDetail(0.12, fwAA) * fwNearOn;
+  float slats = 1.0 - 0.3 * slatD * abLine(abPeriodic(fwG.y, 0.0, 0.12), 0.018, fwAA);
+  float curtainOn = step(abHash(winCell + 83.0, vBSeed * 29.0), 0.4) * (1.0 - blinds) * fwNearOn;
+  float curtainK = curtainOn * smoothstep(fwHalf.x * 0.42, fwHalf.x * 0.62, abs(fwG.x));
+  // |sin(31u)| repeats every π/31 ≈ 0.1 m: filtered at that period.
+  float folds = 0.82 + 0.18 * mix(0.64, abs(sin(fwG.x * 31.0)), abDetail(0.1, fwAA));
+  vec3 openRoom = mix(roomCol * (0.55 + 0.45 * winH), winColor * 0.45 * folds, curtainK);
+  litWindow = mix(openRoom, winColor * (0.5 + 0.3 * winH) * slats, blinds) * dim;
   litWindow = mix(litMeanCol, litWindow, winDetail);
 }
 ${livingShadeGlsl()}vec3 windowGlow = pane * lit * litWindow * ${intensity} * ao;
+// L11: a lit room spills onto its own reveal — the jambs and sill glow a
+// little in the window's colour (a fraction of the pane: under its rung).
+windowGlow += fwReveal * winDetail * winRow * lit * litWindow * ${intensity} * ao * 0.22;
 // Unlit panes catch a faint grazing-angle sky sheen (far below the bloom
-// threshold — a glassy read, not a light source). S6: on GLASS with the
-// reflection probe on, the real reflection (buildings-material.ts) REPLACES
-// this stand-in rather than stacking on it.
+// threshold — a glassy read, not a light source). S6: with the reflection
+// probe on, the real reflection (buildings-material.ts — L11: on every
+// archetype's glass) REPLACES this stand-in rather than stacking on it.
 float sheenF = pow(1.0 - clamp(abs(dot(viewRay, vObjNormal)), 0.0, 1.0), 3.0);
 windowGlow += pane * (1.0 - lit) * facade * vec3(0.35, 0.5, 0.7) * sheenF * 0.05
-  * (1.0 - uReflOn * step(vArch, 0.5));
+  * (1.0 - uReflOn);
 `;
 }
 
@@ -603,15 +863,10 @@ windowGlow += pane * (1.0 - lit) * facade * vec3(0.35, 0.5, 0.7) * sheenF * 0.05
  */
 export function weatheringGlsl(): string {
   return /* glsl */ `
-// MASONRY punched windows read as deep holes: darken a surround ring around
-// the pane (diffuse only — the lit glow is emissive and unaffected).
-vec2 surroundCov = 1.0 - smoothstep(-0.5 * paneAA, 0.5 * paneAA, paneD - vec2(0.08, 0.1));
-float surround = mix(
-  min(winPane.x + 0.16, 1.0) * min(winPane.y + 0.2, 1.0),
-  surroundCov.x * surroundCov.y,
-  winDetail
-);
-diffuseColor.rgb *= 1.0 - winInset * surround * facade * winRow * 0.6;
+// L11: the opening is a real recess now (facade-window.ts paints its
+// reveal, glass and sash over the wall after this pass); \`surround\` is the
+// opening's filtered coverage, which the old flat darkening ring stood in for.
+float surround = mix(fwArea, fwOpen, winDetail) * winRow;
 // Per-face tone jitter: each box face gets a slightly different value (and
 // opposite faces differ), so corners read even in flat night light.
 float faceId = abs(vObjNormal.x) > 0.5 ? (vObjNormal.x > 0.0 ? 0.0 : 1.0)

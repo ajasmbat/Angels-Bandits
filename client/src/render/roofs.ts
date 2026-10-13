@@ -36,6 +36,7 @@ import {
 import * as THREE from "three";
 import { FacadeArchetype, archetypeFor } from "./archetypes";
 import { emissiveBoost } from "./emissive";
+import { NEON_PALETTE, neonChance } from "./neon";
 
 /** Roof paint per tier. A const object + union — the repo has no TS enums.
  * 2 was VO3's SKYLIGHTS, retired by R2; the others keep their numbers (the
@@ -100,14 +101,24 @@ export const GARDEN_LIGHT_COLOR = new THREE.Color(
 /** LED outline peak: architectural neon, between the WINDOW (0.88) and SIGN
  * (0.93) rungs — it blooms like a sign strip, never above one. */
 export const LED_LUMINANCE = 0.9;
-/** LED hues (pre-boost). Each is lifted to exactly LED_LUMINANCE. */
+/** LED hues (pre-boost). Each is lifted to exactly LED_LUMINANCE.
+ * L11: the neon tube outlines — the L11 pink and red join the VO3 set
+ * (appended, so every earlier index keeps its colour). */
 export const LED_HUES = [
   new THREE.Color(0.15, 0.82, 1.0), // cyan
   new THREE.Color(1.0, 0.22, 0.78), // magenta
   new THREE.Color(0.72, 0.86, 1.0), // ice white
   new THREE.Color(1.0, 0.76, 0.46), // warm white
   new THREE.Color(0.58, 0.38, 1.0), // violet
+  NEON_PALETTE.pink, // neon pink
+  NEON_PALETTE.red, // neon red
 ] as const;
+/** L11: the share of tall towers wearing a neon outline — VO3's
+ * LED_CHANCE scaled by the neon density, never below it. */
+export const NEON_OUTLINE_CHANCE = neonChance(LED_CHANCE, LED_CHANCE);
+/** L11: a setback tower this tall (two tiers or more) may wear one too —
+ * the neon traces its setbacks as well as its crown. */
+export const NEON_SETBACK_MIN_HEIGHT = 70;
 /** L3: the Art Deco landmarks' outline is warm white (their stone is lit
  * like stone, not neon); the glass supertall keeps an ice-white one. */
 const LED_LANDMARK_DECO = 3;
@@ -241,7 +252,10 @@ export function roofStyleFor(b: Building): RoofStyle {
   );
 
   let led: THREE.Color | null = null;
-  if (landmark || (b.height >= LED_MIN_HEIGHT && rLed < LED_CHANCE)) {
+  const outlined =
+    b.height >= LED_MIN_HEIGHT ||
+    (b.height >= NEON_SETBACK_MIN_HEIGHT && b.tiers.length >= 2);
+  if (landmark || (outlined && rLed < NEON_OUTLINE_CHANCE)) {
     const hue = landmark
       ? LED_HUES[style === "glass" ? LED_LANDMARK_GLASS : LED_LANDMARK_DECO]
       : pick(LED_HUES, rLedHue);

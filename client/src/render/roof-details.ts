@@ -36,6 +36,7 @@ import { wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { FacadeArchetype, archetypeFor } from "./archetypes";
 import { emissiveBoost } from "./emissive";
+import { neonChance } from "./neon";
 import { GLYPH_H, wordCells, wordRuns } from "./pixel-font";
 import {
   type Rect,
@@ -815,7 +816,8 @@ export const DT2_FADE = {
 /** Chances, rolled once per roof on the DT2 stream. */
 export const LAUNDRY_CHANCE = 0.3;
 export const PIGEON_CHANCE = 0.4;
-export const NEON_CHANCE = 0.16;
+/** L11: scaled by the neon layer's one density knob (neon.ts). */
+export const NEON_CHANCE = neonChance(0.16);
 /** Neon signs crown mid-rises: high enough to be seen over the street
  * wall, low enough to sit under the flight band's roofs. */
 export const NEON_MIN_HEIGHT = 25;

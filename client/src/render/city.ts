@@ -57,7 +57,13 @@ import {
 } from "@angels-bandits/common/constants";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
-import { FacadeArchetype, archetypeFor } from "./archetypes";
+import {
+  FacadeArchetype,
+  FacadeStyle,
+  archetypeFor,
+  facadeStyleFor,
+  packArchetype,
+} from "./archetypes";
 import { BROKEN_DETAIL_UNIFORM } from "./broken-shading";
 import { createBuildingsMaterial } from "./buildings-material";
 import {
@@ -105,9 +111,14 @@ import { ImageCache, InstanceUploads, imageIndex } from "./wrapPlacement";
  * are pale floodlit limestone (each a slightly different stone, so the crown
  * washes read), the glass supertall a dark steel blue. (x, z) only picks the
  * landmark's style (landmarkStyleAt) — the canonical position, never an image.
+ *
+ * L11: the New York style picks its own finish inside the archetype's —
+ * brownstone sandstone, painted cast iron, Deco buff brick and stone, the
+ * mid-century box's blue-green glass — no lighter than the families above,
+ * so the facade-palette bound still covers every face.
  */
 export function facadeColor(
-  b: Pick<Building, "x" | "z" | "width" | "depth" | "height">,
+  b: Building,
   arch: number,
   out = new THREE.Color(),
 ): THREE.Color {
@@ -119,6 +130,23 @@ export function facadeColor(
     if (style === "spire") return out.setHSL(0.09, 0.16, 0.225); // grey limestone
     if (style === "arches") return out.setHSL(0.11, 0.12, 0.22); // pale stone, steel
     return out.setHSL(0.6, 0.3, 0.13); // the glass supertall: dark steel blue
+  }
+  const style = facadeStyleFor(b);
+  if (style === FacadeStyle.MIDCENTURY_GLASS) {
+    return out.setHSL(0.46 + t * 0.04, 0.34, 0.13 + t * 0.03); // blue-green
+  }
+  if (style === FacadeStyle.BROWNSTONE) {
+    if (v < 0.7) return out.setHSL(0.04 + t * 0.02, 0.36, 0.1 + t * 0.035); // brownstone
+    return out.setHSL(0.02 + t * 0.02, 0.38, 0.12 + t * 0.03); // red brick row
+  }
+  if (style === FacadeStyle.CAST_IRON) {
+    if (v < 0.4) return out.setHSL(0.11 + t * 0.03, 0.16, 0.15 + t * 0.035); // cream paint
+    if (v < 0.75) return out.setHSL(0.55 + t * 0.05, 0.08, 0.13 + t * 0.035); // grey paint
+    return out.setHSL(0.3 + t * 0.05, 0.12, 0.11 + t * 0.03); // iron green
+  }
+  if (style === FacadeStyle.DECO) {
+    if (v < 0.55) return out.setHSL(0.09 + t * 0.03, 0.26, 0.17 + t * 0.045); // buff brick
+    return out.setHSL(0.1 + t * 0.02, 0.14, 0.19 + t * 0.04); // limestone
   }
   if (arch === FacadeArchetype.GLASS) {
     if (v < 0.22) return out.setHSL(0.09 + t * 0.03, 0.34, 0.156 + t * 0.047); // bronze
@@ -204,6 +232,7 @@ function cityMesh(
 /** Everything a building's instances carry besides their own box, derived
  * once per building. */
 interface BuildingLook {
+  /** The packed facade archetype + L11 New York style (packArchetype). */
   arch: number;
   style: RoofStyle;
   crew: CrewSlot | undefined;
@@ -217,7 +246,8 @@ interface BuildingLook {
  * so a recycled slot of the damaged mesh carries nothing from its last
  * tenant.
  *
- *   aArchetype  facade archetype (all tiers of a building agree), and in .y
+ *   aArchetype  facade archetype + L11 style / 8 (archetypes.ts packArchetype;
+ *               all tiers of a building agree), and in .y
  *               D1's facade-damage slot word for the box's tier (`word`)
  *   aRoof       VO3: (roof kind, crown depth on the top tier else 0, tone,
  *               L3 landmark role + UPLIGHT_FLAG — roofs.ts LandmarkRole;
@@ -464,7 +494,7 @@ export class CityRenderer {
         run = packRun(lo, lo + s.length);
       }
       return {
-        arch,
+        arch: packArchetype(facadeStyleFor(b)),
         style: roofStyleFor(b),
         crew: rota.get(b),
         run,

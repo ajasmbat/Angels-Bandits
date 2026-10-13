@@ -313,23 +313,36 @@ export function canyonMistLayout(seed: number): MistStrand[] {
   return strands;
 }
 
+/** nearestBoxDistance's inputs beside the point, and its result. */
+export interface BoxProbe {
+  /** Searched out to here, m: the result if no box is nearer. */
+  reach: number;
+  /** The result, m. */
+  d: number;
+  /** Boxes tested, added to (perf). */
+  tests: number;
+}
+
 /**
- * L5: distance from canonical (x, y, z) to the nearest STANDING building box
- * in the 3×3 blocks around it, m — `reach` if none is nearer. What a bank
- * puff shrinks to fit (FogBanks.update): continuous in the position, so a
- * drifting puff never pops.
+ * L5: distance from canonical `p` to the nearest STANDING building box in
+ * the 3×3 blocks around it, m — `probe.reach` if none is nearer — into
+ * `probe.d`. What a bank puff shrinks to fit (FogBanks.placeBanks):
+ * continuous in the position, so a drifting puff never pops. A probe object
+ * rather than double arguments and a double result: the loop is too big to
+ * inline, and each of those was boxed once a puff (S5's allocation budget).
  */
 export function nearestBoxDistance(
   byBlock: ReadonlyMap<number, readonly Building[]>,
-  x: number,
-  y: number,
-  z: number,
-  reach: number,
-  count?: { tests: number },
-): number {
+  p: Readonly<Vec3>,
+  probe: BoxProbe,
+): void {
+  const x = p.x;
+  const y = p.y;
+  const z = p.z;
   const bx0 = Math.floor(x / BLOCK_PITCH);
   const bz0 = Math.floor(z / BLOCK_PITCH);
-  let best = reach;
+  let best = probe.reach;
+  let tests = 0;
   for (let i = -1; i <= 1; i++) {
     const bx = (((bx0 + i) % CITY_GRID) + CITY_GRID) % CITY_GRID;
     for (let j = -1; j <= 1; j++) {
@@ -338,20 +351,30 @@ export function nearestBoxDistance(
       if (!list) continue;
       for (let n = 0; n < list.length; n++) {
         const b = list[n] as Building;
-        if (count) count.tests++;
+        tests++;
         const ex = Math.abs(wrapDeltaAxis(b.x, x)) - b.width / 2;
         if (ex >= best) continue;
         const ez = Math.abs(wrapDeltaAxis(b.z, z)) - b.depth / 2;
         if (ez >= best) continue;
         const ey = y - standingProfile(b).top;
         if (ey >= best) continue;
-        const d = Math.hypot(Math.max(ex, 0), Math.max(ez, 0), Math.max(ey, 0));
+        // Not Math.hypot: TurboFan does not inline it, so every call boxed
+        // its arguments and result (S5's per-frame allocations, L5).
+        const px = Math.max(ex, 0);
+        const pz = Math.max(ez, 0);
+        const py = Math.max(ey, 0);
+        const d = Math.sqrt(px * px + pz * pz + py * py);
         if (d < best) best = d;
-        if (best <= 0) return 0;
+        if (best <= 0) {
+          probe.d = 0;
+          probe.tests += tests;
+          return;
+        }
       }
     }
   }
-  return best;
+  probe.d = best;
+  probe.tests += tests;
 }
 
 /**
@@ -383,7 +406,10 @@ export function clearanceAgainst(
     if (ez > reach) continue;
     const ey = y - standingProfile(b).top;
     if (ey > reach) continue;
-    const d = Math.hypot(Math.max(ex, 0), Math.max(ez, 0), Math.max(ey, 0));
+    const px = Math.max(ex, 0);
+    const pz = Math.max(ez, 0);
+    const py = Math.max(ey, 0);
+    const d = Math.sqrt(px * px + pz * pz + py * py); // not hypot: see above
     const t = Math.min(1, Math.max(0, (d - r) / soft));
     k = Math.min(k, t * t * (3 - 2 * t));
     if (k <= 0) return 0;
@@ -406,6 +432,20 @@ export function bankDensity(
   const wave = 0.5 - 0.5 * Math.cos(Math.PI * 2 * u);
   const d = smooth01((wave - 0.15) / 0.55);
   return Math.min(1, d * (0.75 + 0.25 * Math.min(1, Math.max(0, haze))));
+}
+
+/** Every bank's (or strand's) density at `serverMs` into `out`, once a
+ * frame: a small loop bankDensity inlines into, so its doubles stay unboxed
+ * (placeBanks / placeMist read them from the typed array). */
+function densitiesInto(
+  out: Float64Array,
+  list: readonly Pick<FogBank, "cycle" | "phase">[],
+  serverMs: number,
+  haze: number,
+): void {
+  for (let i = 0; i < list.length; i++) {
+    out[i] = bankDensity(list[i] as FogBank, serverMs, haze);
+  }
 }
 
 /** A puff's canonical centre at `serverMs` (air drift + churn), into `out`.
@@ -536,7 +576,10 @@ export class FogBanks {
   private readonly canon: Vec3 = { x: 0, y: 0, z: 0 };
   private readonly img: Vec3 = { x: 0, y: 0, z: 0 };
   private drawn = 0;
-  private readonly tests = { tests: 0 };
+  private readonly probe: BoxProbe = { reach: 0, d: 0, tests: 0 };
+  /** This frame's density per bank / strand, filled by densitiesInto. */
+  private readonly bankDensities: Float64Array;
+  private readonly mistDensities: Float64Array;
   private readonly statsOut: MistStats = {
     bankPuffs: 0,
     bankKept: 0,
@@ -556,6 +599,8 @@ export class FogBanks {
   ) {
     this.banks = fogBankLayout(seed);
     this.strands = canyonMistLayout(seed);
+    this.bankDensities = new Float64Array(this.banks.length);
+    this.mistDensities = new Float64Array(this.strands.length);
     const capacity =
       this.banks.length * PUFFS_PER_BANK +
       this.strands.length * PUFFS_PER_STRAND;
@@ -651,7 +696,7 @@ export class FogBanks {
     st.bankKept = 0;
     st.mistPuffs = 0;
     st.mistKept = 0;
-    this.tests.tests = 0;
+    this.probe.tests = 0;
     if (serverMs === null) {
       this.mesh.visible = false;
       this.drawn = 0;
@@ -666,6 +711,20 @@ export class FogBanks {
       (this.planesU[i] as THREE.Vector3).set(p.x, p.y, p.z);
     }
     (this.uniforms.uPlaneCount as THREE.IUniform).value = n;
+    // The banks and the mist are placed by two methods, not inline: L5's
+    // per-puff calls (put, nearestBoxDistance, smooth01) only fit TurboFan's
+    // inlining budget one loop at a time. Outlined, every double handed to
+    // them, and every result, was boxed — S5's per-frame allocations.
+    densitiesInto(this.bankDensities, this.banks, serverMs, haze);
+    densitiesInto(this.mistDensities, this.strands, serverMs, haze);
+    this.placeMist(cameraPos, this.placeBanks(cameraPos, serverMs));
+    st.boxTests = this.probe.tests;
+  }
+
+  /** The fog banks' puffs from slot 0, parted around the towers; returns
+   * the next free slot. */
+  private placeBanks(cameraPos: Vec3, serverMs: number): number {
+    const st = this.statsOut;
     const reach = FOG_DISTANCE + BANK_RADIUS_MAX;
     // S8: puffCentreInto's churn, once a frame rather than once a puff (the
     // same arithmetic, so the same centres), and a squared range test — a
@@ -679,7 +738,7 @@ export class FogBanks {
     let k = 0;
     for (let b = 0; b < this.banks.length; b++) {
       const bank = this.banks[b] as FogBank;
-      const density = bankDensity(bank, serverMs, haze);
+      const density = this.bankDensities[b] as number;
       if (density <= 0.001) continue;
       for (let q = 0; q < bank.puffs.length; q++) {
         const puff = bank.puffs[q] as FogPuff;
@@ -694,17 +753,9 @@ export class FogBanks {
         // L5: part around the towers — shrink to fit the gap to the nearest
         // standing box (the sprite never reaches it), fade once small.
         const r = puff.size / 2;
-        const fit = Math.min(
-          r,
-          nearestBoxDistance(
-            this.byBlock,
-            canon.x,
-            canon.y,
-            canon.z,
-            r + BANK_FIT_MARGIN,
-            this.tests,
-          ) - BANK_FIT_MARGIN,
-        );
+        this.probe.reach = r + BANK_FIT_MARGIN;
+        nearestBoxDistance(this.byBlock, canon, this.probe);
+        const fit = Math.min(r, this.probe.d - BANK_FIT_MARGIN);
         const part = smooth01(
           (fit / r - BANK_FIT_FADE[0]) / (BANK_FIT_FADE[1] - BANK_FIT_FADE[0]),
         );
@@ -727,10 +778,23 @@ export class FogBanks {
         );
       }
     }
-    // L5 canyon mist: along the street, with the along-street air.
+    return k;
+  }
+
+  /** L5 canyon mist from slot `from`: along the street, with the
+   * along-street air; then the draw count and the upload. The upload stays
+   * here, not in the (now small) update: inlined there, three's range-list
+   * regrowth (spectacle-bench's separate column) was charged to S5. */
+  private placeMist(cameraPos: Vec3, from: number): void {
+    const st = this.statsOut;
+    const reach = FOG_DISTANCE + BANK_RADIUS_MAX;
+    const dxAir = this.drift.x * BANK_DRIFT;
+    const dzAir = this.drift.z * BANK_DRIFT;
+    const canon = this.canon;
+    let k = from;
     for (let m = 0; m < this.strands.length; m++) {
       const strand = this.strands[m] as MistStrand;
-      const density = bankDensity(strand, serverMs, haze);
+      const density = this.mistDensities[m] as number;
       if (density <= 0.001) continue;
       const along = strand.s + (strand.axis === 0 ? dzAir : dxAir);
       for (let q = 0; q < strand.puffs.length; q++) {
@@ -761,7 +825,6 @@ export class FogBanks {
         );
       }
     }
-    st.boxTests = this.tests.tests;
     this.drawn = k;
     this.geometry.instanceCount = k;
     uploadPrefix(this.uploads, k);

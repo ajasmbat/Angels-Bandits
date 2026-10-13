@@ -1041,10 +1041,15 @@ export class BossRenderer {
     (this.bones[b] as THREE.Bone).matrixWorld.copy(this.zero);
   }
 
-  private pickLod(viewer: Vec3, x: number, z: number, y: number): void {
-    const dx = wrapDeltaAxis(x, viewer.x);
-    const dz = wrapDeltaAxis(z, viewer.z);
-    const d = Math.hypot(dx, viewer.y - y, dz);
+  /** Full or lite hull for the viewer's distance to `this.pose` (read here,
+   * not handed over: doubles passed to a call that is not inlined are boxed
+   * — S4's allocation budget). */
+  private pickLod(viewer: Vec3): void {
+    const pose = this.pose;
+    const dx = wrapDeltaAxis(pose.x, viewer.x);
+    const dz = wrapDeltaAxis(pose.z, viewer.z);
+    const dy = viewer.y - pose.y;
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz); // not hypot: poseTurrets
     // Hysteresis: never flips on the boundary.
     if (this.lod === "full" && d > BOSS_LOD_M + 30) this.lod = "lite";
     else if (this.lod === "lite" && d < BOSS_LOD_M - 30) this.lod = "full";
@@ -1063,17 +1068,13 @@ export class BossRenderer {
     dt: number,
   ): void {
     const pose = this.pose;
-    this.pickLod(viewer, pose.x, pose.z, pose.y);
+    this.pickLod(viewer);
+    // The three sections share one matrix while intact: computed once and
+    // copied (each hullMatrixInto call boxed its doubles — S4's budget).
+    const hull = this.section[0] as THREE.Matrix4;
+    hullMatrixInto(pose.x, pose.y, pose.z, pose.yaw, 0, viewer, hull);
     for (let k = 0; k < 3; k++) {
-      hullMatrixInto(
-        pose.x,
-        pose.y,
-        pose.z,
-        pose.yaw,
-        0,
-        viewer,
-        this.section[k] as THREE.Matrix4,
-      );
+      if (k > 0) (this.section[k] as THREE.Matrix4).copy(hull);
       this.setBone(k, null);
     }
     // Props: a steady pusher spin, alternate cars counter-rotating.
@@ -1155,7 +1156,9 @@ export class BossRenderer {
         yaw = Math.atan2(-lz, lx);
         el = Math.max(
           0,
-          Math.min(0.7, Math.atan2(dy * t.up, Math.hypot(lx, lz))),
+          // sqrt, not Math.hypot: hypot is not inlined, and boxed its
+          // doubles once a turret a frame (S4's allocation budget).
+          Math.min(0.7, Math.atan2(dy * t.up, Math.sqrt(lx * lx + lz * lz))),
         );
       }
       const blend = 1 - Math.exp(-dt * 4);

@@ -127,6 +127,7 @@ import {
 } from "@angels-bandits/common/weather";
 import {
   type Vec3,
+  canonicalize,
   wrapCoord,
   wrapDelta,
   wrapDeltaAxis,
@@ -325,6 +326,7 @@ import {
   zoomHeld,
   zoomSteer,
 } from "./game/zoom";
+import { DestructLab } from "./lab/destruct-lab";
 import { FlightLab } from "./lab/lab";
 import { FlightMeter } from "./lab/meter";
 import { buildLabRoutes } from "./lab/routes";
@@ -572,8 +574,14 @@ whenTouch(() => renderPrimer(true));
 // FL1: `?lab` (or `?lab=<share code>`) flies the Flight Lab — a solo lab
 // room on the server, the tuning panel, the test routes. The join card says
 // so and links back; the ordinary card links into it.
-const LAB_URL = new URLSearchParams(window.location.search).has("lab");
-initLabLink(LAB_URL);
+// DL1: `?destructlab` (or `?destructlab=<share code>`) is the Destruction
+// Lab — the same solo lab room, joined with `destruct`.
+const DESTRUCT_URL = new URLSearchParams(window.location.search).has(
+  "destructlab",
+);
+const LAB_URL =
+  new URLSearchParams(window.location.search).has("lab") || DESTRUCT_URL;
+initLabLink(LAB_URL, DESTRUCT_URL);
 
 // W4 Easy mode (game/easy-mode.ts): decided once and kept — read BEFORE
 // the join card remembers a callsign, which is half of how a pilot who has
@@ -598,6 +606,7 @@ try {
     name,
     LAB_URL ? undefined : resume,
     LAB_URL,
+    DESTRUCT_URL,
   );
 } catch (err) {
   showJoinError(err instanceof Error ? err.message : "Can't reach the server");
@@ -610,6 +619,11 @@ const { welcome } = socket;
 // shipped tuning, whatever this tab held before.
 const labMode = socket.lab;
 if (!labMode) resetTuning();
+// DL1: the Destruction Lab is a lab room with `destruct` (the server's
+// welcome says so). Its tuning is destruction tuning — the flight stays on
+// the shipped model.
+const destructMode = socket.destruct;
+if (destructMode) resetTuning();
 // W1: the boot below (synchronous city build, then the shader pre-warm) can
 // run for seconds on a slow phone. A drop at ANY point of it must still end
 // on SIGNAL LOST — remembered here, shown the moment the boot can show it
@@ -1870,6 +1884,8 @@ function showcaseFrame(dt: number, now: number, syncedMs: number): void {
  * just before the render so a capture can hold one viewpoint through a
  * death, the kill-cam and the respawn. Null = the normal chase camera. */
 let qaView: { eye: Vec3; at: Vec3; fov?: number } | null = null;
+/** DL1: a QA tool set `qaView` (the Destruction Lab's camera stands down). */
+let qaViewHeld = false;
 /** QA-only (`__ab.qaReactionClock`): evaluate the city's reactions at this
  * server time instead of the render clock, so a capture on a slow software
  * renderer can show "event + 2 s" exactly. Null = the render clock. */
@@ -3152,6 +3168,10 @@ declare global {
             tuning: Record<string, number>;
           })
         | null;
+      /** DL1 QA: the Destruction Lab's controller (null outside it) — its
+       * state (`debug()`), and its arena, target, camera, triggers and
+       * clock, for the screenshot tools. */
+      destructLab: () => DestructLab | null;
       teleport: (x: number, z: number, y?: number, yaw?: number) => void;
       perf: () => {
         fps: number;
@@ -4141,6 +4161,7 @@ window.__ab = {
   bootedAt: () => bootedAt,
   state: () => flight,
   lab: () => (lab ? { ...lab.debug(), tuning: { ...tuning } } : null),
+  destructLab: () => destructLab,
   teleport: (x, z, y = 300, yaw = 0) => {
     interruptQuality(); // O3: a transient
     flight = {
@@ -4729,6 +4750,8 @@ window.__ab = {
   }),
   qaCamera: (view) => {
     qaView = view;
+    // DL1: a QA eye overrides the Destruction Lab's camera until cleared.
+    qaViewHeld = view !== null;
   },
   // O7: the NaN/Inf probe (null without `?nanprobe`), its positive control,
   // and the per-frame hook the black-box detector reads frames through.
@@ -5187,23 +5210,45 @@ let last = performance.now();
 // FL1 Flight Lab (lab rooms only): the panel, the telemetry strip, the test
 // routes and the drone — built before the pre-warm so their programs
 // compile behind the boot fade like everything else.
-const lab: FlightLab | null = labMode
-  ? new FlightLab({
-      scene,
-      tuning,
-      routes: buildLabRoutes(city.cityBuildings, courses),
-      teleport: labTeleport,
-      onTuning: () => {
-        feelTuning = feelFromTuning(tuning);
-        assistOn = tuning.assist === 1;
-        // A shorter top speed must not leave the corner cap above it.
-        cornerCap = Math.min(cornerCap, tuning.maxSpeed);
-      },
+const lab: FlightLab | null =
+  labMode && !destructMode
+    ? new FlightLab({
+        scene,
+        tuning,
+        routes: buildLabRoutes(city.cityBuildings, courses),
+        teleport: labTeleport,
+        onTuning: () => {
+          feelTuning = feelFromTuning(tuning);
+          assistOn = tuning.assist === 1;
+          // A shorter top speed must not leave the corner cap above it.
+          cornerCap = Math.min(cornerCap, tuning.maxSpeed);
+        },
+        sendLab: (msg) => socket.sendLab(msg),
+      })
+    : null;
+// The room's copy of the tuning starts at the defaults: hand it ours.
+lab?.syncNow();
+
+// DL1 Destruction Lab (Destruction Lab rooms only): the panel, the
+// telemetry strip, the camera, the clock and the triggers. Its look reaches
+// the renderers through render/destruct-look.ts, its tuning the room
+// through the lab message — nowhere else.
+const destructLab: DestructLab | null = destructMode
+  ? new DestructLab({
+      canvas: renderer.domElement,
+      camera,
+      buildings: city.cityBuildings,
+      field: socket.collapses,
       sendLab: (msg) => socket.sendLab(msg),
     })
   : null;
-// The room's copy of the tuning starts at the defaults: hand it ours.
-lab?.syncNow();
+destructLab?.syncNow();
+if (destructLab) {
+  socket.events.onLabStats = (msg) => destructLab.noteStats(msg);
+}
+/** DL1: the lab camera's ground shake, written in place. */
+const labJolt = { x: 0, y: 0, z: 0 };
+const labEye = { x: 0, y: 0, z: 0 };
 
 /** FL1: a lab respawn — a fresh plane at `pos` along (yaw, pitch), no
  * death, no kill-cam, nothing sent but the next pose (the lab room resyncs
@@ -5294,6 +5339,36 @@ const frame = (rafNow: number): void => {
   }
   const renderMs = qaWorld !== null ? qaWorld.ms : frameClock.time;
   lastRenderMs = renderMs;
+  // DL1: in the Destruction Lab every collapse renderer poses on the lab's
+  // clock (live, paused, slowed or scrubbed — exact: the debris and the dust
+  // are pure in time), and the view is the lab's camera (unless a QA tool
+  // holds one).
+  const collapseMs = destructLab
+    ? destructLab.frame(
+        renderMs,
+        rawMs / 1000,
+        impacts.liveCount + dust.puffCount,
+        impacts.cap,
+      )
+    : renderMs;
+  if (destructLab && !qaViewHeld) {
+    const v = destructLab.cameraView(dt);
+    labEye.x = v.eye.x;
+    labEye.y = v.eye.y;
+    labEye.z = v.eye.z;
+    // The ground shake, at the eye (D3's shake, on the lab clock).
+    if (collapseMs !== null && socket.collapses.list.length > 0) {
+      const jolt = collapseShakeOffsetInto(
+        labJolt,
+        collapseShakeAmount(socket.collapses.list, labEye, collapseMs),
+        now,
+      );
+      labEye.x += jolt.x;
+      labEye.y += jolt.y;
+      labEye.z += jolt.z;
+    }
+    qaView = { eye: labEye, at: v.at };
+  }
   setStandingClock(renderMs); // D8
   planeLights.begin(); // own + remote lights re-append every frame
   moverLights.begin(); // crane/aircraft lights + firework sparks, same deal
@@ -5638,6 +5713,18 @@ const frame = (rafNow: number): void => {
     leadYawRate =
       -shaped.turn * handlingRates(flight.speed, boost.active, tuning).turnRate;
     flight = stepFlight(flight, shaped, dt, tuning);
+    // DL1: the Destruction Lab parks the plane on its camera — the city
+    // streams around the view — and keeps it out of everything (no crash,
+    // no guns, out of sight).
+    if (destructLab && qaView) {
+      const at = canonicalize(qaView.eye);
+      flight = {
+        ...flight,
+        pos: at,
+        speed: tuning.minSpeed,
+        targetSpeed: tuning.minSpeed,
+      };
+    }
     // F10: g pulled, off the flown path — the g-meter and the creak.
     gMeter.step(flight, dt);
     hud.setG(gMeter.g);
@@ -5663,19 +5750,22 @@ const frame = (rafNow: number): void => {
       renderMs,
       aimMode !== "instructor",
     );
-    const crashed = detectCrash(
-      flight,
-      city.cityBuildings,
-      city.cityIndex,
-      moverField,
-      renderMs,
-      natureIndex,
-    );
+    const crashed =
+      !destructLab &&
+      detectCrash(
+        flight,
+        city.cityBuildings,
+        city.cityIndex,
+        moverField,
+        renderMs,
+        natureIndex,
+      );
     // D4: a falling wreck is solid too (on the same render clock). Named in
     // the report only when it, and no static solid, is what we hit.
-    const wreckHit = crashed
-      ? null
-      : wrecks.touching(flight.pos, PLAYER_RADIUS, renderMs);
+    const wreckHit =
+      crashed || destructLab
+        ? null
+        : wrecks.touching(flight.pos, PLAYER_RADIUS, renderMs);
     if ((crashed || wreckHit !== null) && lab) {
       // FL1: no deaths in the lab — straight back to the last checkpoint.
       // The server never hears of it.
@@ -5689,7 +5779,7 @@ const frame = (rafNow: number): void => {
   // S3: ring passes over this frame's move. FL1: the lab times its own
   // routes instead (lab.frame below) — a lab run is never a course run.
   if (lab) lab.frame(flight, alive, dt, now, chase.position);
-  else stepCourse(now);
+  else if (!destructLab) stepCourse(now);
 
   // M8 auto-fire, stepped dead or alive so a death drops it at once. It
   // never pulls under our own spawn protection (only FIRE may spend it), on
@@ -5728,7 +5818,11 @@ const frame = (rafNow: number): void => {
 
     // Guns: at most one shot a frame; the same seq goes to server and sim.
     // Free-look suppresses shots (heat keeps cooling, none builds).
-    const shot = guns.update(now, flight, !freelook.held && !settingsOpen);
+    const shot = guns.update(
+      now,
+      flight,
+      !freelook.held && !settingsOpen && !destructLab,
+    );
     if (shot) {
       bullets.spawn(shot.seq, shot.origin, shot.vel);
       socket.sendFire(shot.seq);
@@ -5819,7 +5913,11 @@ const frame = (rafNow: number): void => {
       renderMs ?? now,
       boost.active ? 1 : 0, // own flame follows the real burn, not speed
     );
-    planeTrails.emit(socket.selfId, flight.pos, poseQuat, now, dt);
+    if (!destructLab) {
+      planeTrails.emit(socket.selfId, flight.pos, poseQuat, now, dt);
+    }
+    // DL1: no plane in the Destruction Lab's shot.
+    if (destructLab) plane.visible = false;
   } else if (killCamWreck !== null && renderMs !== null) {
     // D4 kill-cam: ride behind our own wreck down to where it hits.
     wreckCamView(killCamWreck, renderMs, wreckEye, wreckAt);
@@ -6012,7 +6110,7 @@ const frame = (rafNow: number): void => {
 
   city.update(chase.position);
   // D3: debris posed at the render clock — the one the crash check uses.
-  city.updateDebris(chase.position, renderMs);
+  city.updateDebris(chase.position, collapseMs);
   // L3 living windows: slow on/off, TV glow, silhouettes and the cleaning
   // crew all run off this one shared-clock uniform (living-windows.ts).
   city.updateLiveWindows(renderMs, now);
@@ -6395,9 +6493,9 @@ const frame = (rafNow: number): void => {
   // D11: the collapse's dust, smoke and detail measure from the camera that
   // renders — the QA eye when one is set (its near fade, range and haze).
   const collapseViewer = qaView ? qaView.eye : chase.position;
-  dust.update(socket.collapses.list, collapseViewer, renderMs, camera.aspect);
-  ruinSmoke.update(socket.collapses.list, collapseViewer, renderMs, now);
-  collapseDetail.update(socket.collapses.list, collapseViewer, renderMs, now);
+  dust.update(socket.collapses.list, collapseViewer, collapseMs, camera.aspect);
+  ruinSmoke.update(socket.collapses.list, collapseViewer, collapseMs, now);
+  collapseDetail.update(socket.collapses.list, collapseViewer, collapseMs, now);
   // D5: the director's warnings (dust, steam, sparks) and the rebuilds'
   // welders; an event is forgotten once its alarm has died away.
   if (socket.director.size > 0 && renderMs !== null) {
@@ -6465,9 +6563,9 @@ const frame = (rafNow: number): void => {
   );
   rain.update(wx, wxMs, camera.position, dt, searchlights); // L5: lit in the beams
   lastDustHaze =
-    renderMs === null
+    collapseMs === null
       ? 0
-      : dustHaze(socket.collapses.list, collapseViewer, renderMs);
+      : dustHaze(socket.collapses.list, collapseViewer, collapseMs);
   const sky = storm.atmosphere(
     scene,
     chase.position.y,
@@ -6710,6 +6808,9 @@ const frame = (rafNow: number): void => {
   reflections.update(renderer, scene, camera);
   gpuTimer?.end();
   qaAfterRender?.(); // O7 QA: the black-box detector reads this frame
+  // DL1: the lab's draw count and its time-lapse capture (the drawing
+  // buffer is valid only until this frame is composited).
+  destructLab?.afterRender(renderer.domElement, renderer.info.render.calls);
 
   // Matrices are fresh after the render — project the screen-space UI now.
   markerPositions.length = 0; // A1: one array, refilled, not one a frame

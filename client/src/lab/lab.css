@@ -359,3 +359,34 @@ body.touch .lab-tm-route,
 body.touch .lab-tm-pitch {
   display: none;
 }
+
+/* --- DL1 Destruction Lab ---------------------------------------------------- */
+.dlab-panel {
+  --lab-w: 340px;
+}
+.dlab-target {
+  margin: 4px 0 2px;
+  opacity: 0.9;
+  color: var(--ab-ink);
+}
+.lab-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.lab-row input[type="range"]:disabled {
+  opacity: 0.35;
+}
+.dlab-telemetry .lab-tm-warn b {
+  color: var(--ab-accent);
+}
+.dlab-telemetry .lab-tm-warn.over b {
+  color: var(--ab-hot);
+}
+body.touch .dlab-panel {
+  --lab-w: min(320px, 50vw);
+}
+body.touch .dlab-telemetry .lab-tm-boxes,
+body.touch .dlab-telemetry .lab-tm-build,
+body.touch .dlab-telemetry .lab-tm-draws {
+  display: none;
+}

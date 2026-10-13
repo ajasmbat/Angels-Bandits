@@ -2,10 +2,12 @@
 
 Every sheet here is shot on this GPU-less Linux box (SwiftShader, High tier,
 render scale 0.75), the server quiet (`AB_QUIET_CITY=1`, no carrier waves),
-the world clock pinned. **Before** is main `981fba4` (L11; the gallery pair: `555a314`, G7) plus only the two
-QA hooks the tools need (`__ab.qaFrameClock`, a QA camera's `fov`), so both
-sides are shot identically. Particles age on a virtual 30 fps frame clock,
-so a 1 fps rasteriser shows what a GPU does.
+the world clock pinned. **Before** is main (`981fba4` for the time-lapses,
+`bb3a5bd` for the gallery) plus only the two QA hooks the tools need
+(`__ab.qaFrameClock`, a QA camera's `fov`), so both sides are shot
+identically. Particles age on a virtual 30 fps frame clock, so a 1 fps
+rasteriser shows what a GPU does. The time-lapse sheets put before and
+after side by side at each instant.
 
 | sheet | what it shows |
 | --- | --- |
@@ -27,8 +29,39 @@ so a 1 fps rasteriser shows what a GPU does.
 | `destruction-chewed` black / orange squares | Exposed storeys were a near-black room with a flat ember in 14 % of cells, seen at a grazing angle. | Thick lit slab edges, rooms behind them, dangling rebar, charred rims. Looked at head-on. |
 | `destruction-bridge` "dark box" | The fallen span lay in the water, seen side-on from the promenade. | Seen from above the gap. |
 | Planes dying "600 m away" | The topple model threw a tower's top storeys up to ~2× its height (≈ 600 m for a 305 m tower), far outside the strip the director warns about. The gallery's deaths were the live director's chains hitting a plane left to fly between pins. | `COLLAPSE_TOPPLE_DRIFT` 0.45 (`COLLAPSE_MODEL` 12): the farthest chunk lands ≈ 1 h out. `common/test/collapse-reach.test.ts`. The gallery holds its plane and runs a quiet city. |
-| `destruction-glass` hard black mass over the sky (before and after G7) | The inferno smoke clamps a puff to 0.9× its distance *before* computing its near-camera fade, so a near puff stays ~97 % opaque. With albedo 0.012 and a saturated ×1.3 edge, a column beside the camera drew a hard, near-black disc. | The fade uses the puff's true size (gone at 0.6×, full at 2×). The edge is soft to 0 with the core ≤ 0.85. Sooty, not black. The columns are held under 50 % of the frame. `client/test/collapse-coverage.test.ts`. |
+| `destruction-glass` hard black mass over the sky (before and after G7) | Not smoke: bisected with `__ab.qaHide`, it is the **T2 elevated train**. Its loop turns at (x 600, z 200), 27 m up, and the view's street-level eye sat 15 m under it, so a passing car's underside filled the upper-left (unpinned, so only some shots). The inferno smoke *did* have the bug suspected: it clamped a near puff to 0.9× its distance before its near fade, leaving it ~97 % opaque, near-black and hard-rimmed. | View re-posed off the line and pinned. The committed check holds every pinned destruction view ≥ 30 m from the trains and ≥ 6 m from its own debris. Smoke: the near fade uses the true size (gone at 0.6×, full at 2×), the edge is soft to 0 with the core ≤ 0.85, the albedo is sooty rather than black, and the columns are held under 50 % of the frame (`client/test/collapse-coverage.test.ts`). |
 | NaN pixels on every collapse (O7) | Rebar ribbons (four corners on one unit-box point) gave the facade AA `smoothstep(0, 0, x)`. Under the flame cap the inferno computed `∞ − ∞` as every flame's alpha. | Facade varyings from the displaced vertex. No cap fade under the cap. |
 
 The gutted-building shading (inferno-shading.ts `GUTTED_*`) is G7's, not
 this ticket's.
+
+## Measured (time-lapse JSON, per frame)
+
+| | pancake 460 m | topple 600 m | tower-on-tower |
+| --- | --- | --- | --- |
+| largest falling piece, 1.5–6.5 s (≥ 12 px) | 20 px | 14–15 px | 19–23 px |
+| collapse particles in view, 1.5–6.5 s (≥ 150) | 464–1345 | 267–1357 | 275–1406 |
+| dust's share of the frame (≤ 0.70) | ≤ 0.15 | ≤ 0.12 | ≤ 0.18 |
+| clipped pixels (≤ 0.5 %) | 0 % | 0 % | 0 % |
+| luma spread vs its before frame (≥ 0.6×) | ≥ 0.99× | ≥ 0.99× | ≥ 0.99× |
+| NaN pixels (main → D11) | 33 → 0 | 413 → 0 | 586 → 0 |
+| draw calls (main → D11) | 95–97 → 96–97 | 96–98 → 97–98 | 95–97 → 96–97 |
+| plane deaths | none | none | none |
+
+Resting pieces never drop between captures (D10 rubble rests for good). The
+settled ring fills to its 320 fragments by the landing and holds them for
+20 s.
+
+**Perf** (`run.mjs --runs 3 --segments collapse,ruins,chaos --ab-ref
+origin/main`, SwiftShader, load average 60–100). Draw calls, ref → D11:
+`collapse` 110 → 110, `ruins` 164 → 141, `chaos` 136 → 134. The harness's
+own pinning checks failed in both arms under that load (fake-pilot rooms
+never emptied, the staged chaos did not hold, determinism FAIL), so its GPU
+and wall numbers are not evidence either way. Measure them on the M3. The
+O7 black-box detector (`blackbox.mjs`) was not run here. The NaN probe it
+uses read 0 in every D11 time-lapse frame on every case.
+
+**Known limit.** At 600 m a topple's and a chain's dust reads during the fall
+but is faint once the debris lands behind foreground blocks. The pancake's
+cloud is clear at 460 m. DL1 (Destruction Lab, live tuning) is the place to
+push it further.

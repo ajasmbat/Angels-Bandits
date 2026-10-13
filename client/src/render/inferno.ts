@@ -1407,9 +1407,13 @@ export class Inferno {
       const info = this.siteOf(c, this.canon);
       const d = Math.sqrt(this.cD[c] as number);
       const r = Math.sqrt(this.cR[c] as number);
+      // D11: under the cap there is no cap fade — `edge` is infinite, and
+      // ∞ − ∞ made every flame's alpha NaN (O7's detector, a lone collapse).
+      const capFade = Number.isFinite(edge)
+        ? 1 - smooth01((r - fadeFrom) / Math.max(1, edge - fadeFrom))
+        : 1;
       const fade =
-        (1 - smooth01((r - fadeFrom) / Math.max(1, edge - fadeFrom))) *
-        (1 - smooth01((d - 0.85 * CUT_M) / (0.15 * CUT_M)));
+        capFade * (1 - smooth01((d - 0.85 * CUT_M) / (0.15 * CUT_M)));
       const w = (this.cW[c] as number) * fade;
       if (w <= 0.01) continue;
       const img = nearestImageInto(this.img, viewer, this.canon);

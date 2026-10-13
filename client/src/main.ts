@@ -1883,6 +1883,9 @@ let qaReactAt: number | null = null;
  * smoothed clocks already resync from.
  */
 let qaWorld: { ms: number; frameMs: number | null } | null = null;
+/** D11 QA (`__ab.qaFrameClock`): the frame clock as a virtual one that
+ * steps `dtMs` per frame. Null = the rAF timestamp. */
+let qaFrameStep: { dtMs: number; now: number } | null = null;
 /** The world clock the frame loop rendered at last (pinned or synced). */
 const worldTime = (): number | null =>
   qaWorld !== null ? qaWorld.ms : socket.renderTime();
@@ -3770,6 +3773,13 @@ declare global {
        * world time the next frame starts from.
        */
       pinWorld: (serverTimeMs: number | null) => number | null;
+      /**
+       * D11 time-lapse QA: every frame's clock steps by exactly `dtMs` of a
+       * virtual clock instead of the rAF timestamp (null = the rAF clock),
+       * so a software rasteriser at 1 fps renders what a GPU shows at
+       * 1000 / dtMs fps — particles age and shed per frame as they would.
+       */
+      qaFrameClock: (dtMs: number | null) => void;
       /** L1 QA: the live city events and what the city is doing about them
        * at this tab's render clock — two tabs must report the same. */
       reactions: () => {
@@ -5039,6 +5049,10 @@ window.__ab = {
   qaReactionClock: (serverTimeMs) => {
     qaReactAt = serverTimeMs;
   },
+  qaFrameClock: (dtMs) => {
+    qaFrameStep = dtMs === null ? null : { dtMs, now: last };
+    if (dtMs === null) last = performance.now();
+  },
   pinWorld: (serverTimeMs) => {
     qaWorld =
       serverTimeMs === null ? null : { ms: serverTimeMs, frameMs: null };
@@ -5206,7 +5220,10 @@ flashFade();
 bootedAt = performance.now();
 
 // Named (M2) so the visibility pause at the bottom can stop and restore it.
-const frame = (now: number): void => {
+const frame = (rafNow: number): void => {
+  // D11 QA: a fixed virtual step instead of the rAF clock (time-lapses).
+  if (qaFrameStep !== null) qaFrameStep.now += qaFrameStep.dtMs;
+  const now = qaFrameStep !== null ? qaFrameStep.now : rafNow;
   // O3: when this callback actually started running — the pre-render JS
   // cost below is measured from here (the rAF timestamp can predate it).
   const frameStart = performance.now();

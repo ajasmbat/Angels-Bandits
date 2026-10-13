@@ -167,6 +167,13 @@ export const FRACTURE_VERTEX_GLSL = /* glsl */ `
   transformed += (vec3(1.0) - frB) * frRebar * frSide * ${REBAR_HALF.toFixed(2)} / frS;
   // Rebar paints as steel whatever face it leaves from.
   if (frRebar > 0.5) vBroken.w = brkHalf.y + 3.0 * ${KIND_STRIDE};
+  // D11: the facade passes read the DISPLACED surface. A rebar ribbon's
+  // four corners share one unit-box position, so the undisplaced meters
+  // had no screen derivative: the facade's AA band collapsed to
+  // smoothstep(0, 0, x) — undefined, NaN on SwiftShader (O7's detector).
+  vMeters = transformed * sScale + aSubOff.xyz;
+  vWorldY = transformed.y * sScale.y + instanceMatrix[3].y;
+  vBWorldPos = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;
 }
 #endif
 `;

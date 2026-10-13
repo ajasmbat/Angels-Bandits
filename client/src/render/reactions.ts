@@ -29,7 +29,11 @@ import {
   SMOKE_LIFE_MS,
   isBlastEvent,
 } from "@angels-bandits/common/cityevents";
-import { BLOCK_PITCH, WORLD_SIZE } from "@angels-bandits/common/constants";
+import {
+  BLOCK_PITCH,
+  BUILDING_MAX_HEIGHT,
+  WORLD_SIZE,
+} from "@angels-bandits/common/constants";
 import type { SnapshotMsg } from "@angels-bandits/common/protocol";
 import {
   type Vec3,
@@ -505,8 +509,9 @@ export interface LowPass {
 export interface NearPass extends LowPass {
   y: number;
 }
-/** A plane below this altitude is recorded as a near pass, meters. */
-export const NEAR_PASS_ALT = 280;
+/** A plane below this altitude is recorded as a near pass, meters (H1: the
+ * tallest generated roof plus 40, as 280 was over the old 240). */
+export const NEAR_PASS_ALT = BUILDING_MAX_HEIGHT + 40;
 /** Near passes are kept this long, ms (the longest reaction they drive). */
 export const NEAR_PASS_LIFE_MS = 14_000;
 /** Near passes held at once (12 planes × 2/s × 14 s, with room). */

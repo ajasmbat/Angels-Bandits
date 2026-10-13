@@ -1,5 +1,5 @@
 // Death-ceiling seam: StormCeiling is pure per-plane timing bookkeeping —
-// CONTINUOUS time above STORM_KILL_ALT (600 m), STORM_GRACE_MS (3000 ms) of
+// CONTINUOUS time above STORM_KILL_ALT (750 m since H1), STORM_GRACE_MS (3000 ms) of
 // grace, reset the instant the plane dips back below. Expected values are the
 // ticket's spec literals, not recomputed from the implementation.
 
@@ -7,9 +7,9 @@ import { describe, expect, it } from "vitest";
 import { Combat } from "../src/combat";
 import { StormCeiling } from "../src/storm";
 
-const KILL_ALT = 600; // spec: hidden ceiling arms strictly above 600 m
-const HIGH = 700;
-const LOW = 400;
+const KILL_ALT = 750; // spec: hidden ceiling arms strictly above 750 m (H1)
+const HIGH = 850;
+const LOW = 550;
 
 describe("StormCeiling grace timer", () => {
   it("does not kill a plane 2.9 s above the kill altitude", () => {

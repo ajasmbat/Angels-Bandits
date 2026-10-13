@@ -6,7 +6,7 @@
 // (O3), `ab-touch-sens` (M1), `ab-aim-mode` (F1), `ab-radio-voice` — and
 // only the new values live under SETTINGS_KEY.
 
-import { BUILDING_MAX_HEIGHT } from "@angels-bandits/common/constants";
+import { CITY_TOP } from "@angels-bandits/common/constants";
 import type { FlightInput } from "@angels-bandits/common/flight";
 import { FEELS, type Feel } from "../game/effortless";
 import { AUTO_THROTTLE } from "../game/flight-input";
@@ -253,9 +253,11 @@ export function nextManual(
 // tallest roof is the obstacle answer. It does not steer round a wall dead
 // ahead at street level — F5's corner manager still brakes for one.
 
-/** Below this the autopilot climbs: the tallest roof plus a margin (also
- * clears the 250 m landmarks). */
-export const AUTOPILOT_SAFE_ALT = BUILDING_MAX_HEIGHT + 40;
+/** Below this the autopilot climbs: H1, just over the tallest thing in the
+ * city (the 480 m needle, CITY_TOP) with the plane's radius to spare, and
+ * still under the news heli's belly (≥ 491.8 m) — a level hold here
+ * clears every roof and every landmark. */
+export const AUTOPILOT_SAFE_ALT = CITY_TOP + 8;
 /** Climb attitude below AUTOPILOT_SAFE_ALT, rad (15°). */
 export const AUTOPILOT_CLIMB = (15 * Math.PI) / 180;
 /** Height over which the climb eases to level as it nears the safe altitude. */

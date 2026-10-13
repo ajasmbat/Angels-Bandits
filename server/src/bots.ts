@@ -1997,7 +1997,7 @@ export class RoomBots {
       } else {
         bot.input = {
           // The ceiling dives back under the cloud deck; every other danger
-          // (ground, tier boxes ≤ 250 m) pulls up — never both at once.
+          // (ground, tier boxes ≤ CITY_TOP) pulls up — never both at once.
           pitch: dive ? -BOT_INPUT_CAP : BOT_INPUT_CAP,
           turn: bot.breakTurn * BOT_INPUT_CAP * 0.6,
           roll: 0,

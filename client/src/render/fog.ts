@@ -28,6 +28,7 @@
 // shader includes `AB_FOG_GLSL` and does exactly that.
 
 import * as THREE from "three";
+import { AB_SKY_FOG_GLSL, SKY_FOG_AIR, SKY_FOG_STOPS } from "./sky-fog";
 
 /** Scale height of the haze, m: density falls to 1/e every H metres. L1
  * pooled it low (85 → 45 m): mist between the buildings, clear air above. */
@@ -63,6 +64,49 @@ export const FOG_SHAPE = 2;
  * without a recompile. A Vector2 would be cloned and silently freeze.
  */
 export const HAZE_WEATHER: { x: number; y: number } = { x: 0, y: 0 };
+
+/**
+ * L2 "Stormlit" city glow: the light pollution in the air over kilometres
+ * of lit city — a warm in-scatter term ADDED TO THE FOG COLOUR per view
+ * direction, so the fog colour a fully fogged surface reaches is
+ * `fogColor + CITY_GLOW.rgb · cityGlowProfile(sinEl)` (sinEl: the sine of
+ * the view ray's elevation). It peaks at the horizon, is ~1 % by the sky's
+ * fog stop (18° up — above it the near-black storm sky would show any more
+ * as a brown wash) and ~30 % looking 20° down at the fogged ground. Every site that draws the fog colour adds the SAME term — the
+ * fog chunk below (all fogged materials), the sky dome on both sides of
+ * the stop (sky.ts) and the far skyline (far-skyline.ts) — so a fogged
+ * tower still matches the sky behind it exactly, and melts into the glow.
+ *
+ * rgb: the glow (linear, strength folded in), a: the inferno burn level
+ * 0..1 (the far skyline's ember districts). storm.atmosphere() is its only
+ * writer, once per frame (0 in cloud and dust). A Float32Array shared BY
+ * REFERENCE like HAZE_PARAMS — one write reaches every program.
+ */
+export const CITY_GLOW = new Float32Array([0, 0, 0, 0]);
+/** cityGlowProfile's falloff above and below the horizon, per unit sinEl. */
+export const CITY_GLOW_UP = 14;
+export const CITY_GLOW_DOWN = 3.3;
+
+/** The glow's share at view-ray elevation sine `sinEl` (TS mirror of
+ * `abCityGlowProfile`): 1 at the horizon. */
+export function cityGlowProfile(sinEl: number): number {
+  return Math.exp(
+    -Math.max(sinEl, 0) * CITY_GLOW_UP + Math.min(sinEl, 0) * CITY_GLOW_DOWN,
+  );
+}
+
+/** GLSL: the glow uniform and `abGlowFog(fogC, sinEl)` — the fog colour for
+ * a view ray (see CITY_GLOW). Part of AB_FOG_GLSL; the dome includes it on
+ * its own. A program without the uniform reads 0: the plain fog colour. */
+export const AB_CITY_GLOW_GLSL = /* glsl */ `
+uniform vec4 abCityGlow;
+float abCityGlowProfile(float sinEl) {
+  return exp(-max(sinEl, 0.0) * ${CITY_GLOW_UP.toFixed(2)} + min(sinEl, 0.0) * ${CITY_GLOW_DOWN.toFixed(2)});
+}
+vec3 abGlowFog(vec3 fogC, float sinEl) {
+  return fogC + abCityGlow.rgb * abCityGlowProfile(clamp(sinEl, -1.0, 1.0));
+}
+`;
 
 /**
  * Fraction of a view ray, from a camera at `camY` to a point at `fragY`
@@ -201,6 +245,7 @@ const vec3 AB_HAZE_COLOR = vec3(${hazeLinear.r.toFixed(4)}, ${hazeLinear.g.toFix
 const float AB_HAZE_TINT = ${HAZE_TINT.toFixed(3)};
 const float AB_FOG_SHAPE = ${FOG_SHAPE.toFixed(1)};
 uniform vec2 abWeather;
+${AB_CITY_GLOW_GLSL}
 float abFogFactor(float near, float far, float dist) {
   float s = smoothstep(near, far, dist);
   float k = AB_FOG_SHAPE - clamp(abWeather.y, 0.0, 1.0) * (AB_FOG_SHAPE - 1.0);
@@ -247,6 +292,26 @@ export function installHeightFog(): void {
     }
   }
   (THREE.UniformsLib.fog as Record<string, unknown>).abTunnelAir = airUniform;
+  // H1: the dome's gradient and air map (sky-fog.ts), shared the same way:
+  // above the fog stop a fogged surface fades toward the sky behind it.
+  const skyStops = { value: SKY_FOG_STOPS };
+  const skyAir = { value: SKY_FOG_AIR };
+  for (const lib of libs) {
+    if ("fogColor" in lib.uniforms) {
+      (lib.uniforms as Record<string, unknown>).abSkyStops = skyStops;
+      (lib.uniforms as Record<string, unknown>).abSkyAir = skyAir;
+    }
+  }
+  (THREE.UniformsLib.fog as Record<string, unknown>).abSkyStops = skyStops;
+  (THREE.UniformsLib.fog as Record<string, unknown>).abSkyAir = skyAir;
+  // L2: the city glow rides the same way (one shared array).
+  const glowUniform = { value: CITY_GLOW };
+  for (const lib of libs) {
+    if ("fogColor" in lib.uniforms) {
+      (lib.uniforms as Record<string, unknown>).abCityGlow = glowUniform;
+    }
+  }
+  (THREE.UniformsLib.fog as Record<string, unknown>).abCityGlow = glowUniform;
   // L4: the weather's haze uniform on every fogged material. Each ShaderLib
   // entry merged its OWN copy of UniformsLib.fog at import, so patch them all
   // (built-ins clone these per program); UniformsLib.fog covers the
@@ -265,6 +330,9 @@ export function installHeightFog(): void {
   const probe = THREE.UniformsUtils.clone(THREE.ShaderLib.standard.uniforms);
   if (probe.abWeather?.value !== HAZE_WEATHER) {
     console.error("fog: abWeather no longer shared — weather haze is frozen");
+  }
+  if (probe.abCityGlow?.value !== CITY_GLOW) {
+    console.error("fog: abCityGlow no longer shared — the city glow is frozen");
   }
   THREE.ShaderChunk.fog_pars_vertex = /* glsl */ `
 #ifdef USE_FOG
@@ -295,15 +363,29 @@ export function installHeightFog(): void {
 		uniform float fogFar;
 	#endif
 	${AB_FOG_GLSL}
+	${AB_SKY_FOG_GLSL}
 #endif
 `;
   THREE.ShaderChunk.fog_fragment = /* glsl */ `
 #ifdef USE_FOG
+	// H1: the view ray's climb (sin of its elevation), for the sky-matched
+	// fog colour above the stop (sky-fog.ts).
+	float abRise = vFogWorldY - cameraPosition.y;
+	float abSinEl = abRise / max(vFogDepth, 1.0);
+	float abFogDepth = vFogDepth;
+	#ifdef AB_FOG_LIFT
+		// H1: the cloud deck fogs as if AB_FOG_LIFT m lower (storm.ts
+		// DECK_FOG_LIFT) — from under it, the same air as before the sky
+		// rose; past the camera's far plane it is still fully fogged.
+		float abFlat = max(vFogDepth * vFogDepth - abRise * abRise, 0.0);
+		float abUp = abRise > 0.0 ? max(abRise - AB_FOG_LIFT, 0.0) : abRise;
+		abFogDepth = sqrt(abFlat + abUp * abUp);
+	#endif
 	#ifdef FOG_EXP2
-		float fogFactor = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth );
+		float fogFactor = 1.0 - exp( - fogDensity * fogDensity * abFogDepth * abFogDepth );
 	#else
 		// L1: the shaped curve (abFogFactor) — still 1 at fogFar.
-		float fogFactor = abFogFactor( fogNear, fogFar, vFogDepth );
+		float fogFactor = abFogFactor( fogNear, fogFar, abFogDepth );
 	#endif
 	// U7: under the street, the bores' coloured air first (tunnelAirAmount);
 	// then the linear fog, which still reaches fogColor exactly at fogFar.
@@ -315,9 +397,14 @@ export function installHeightFog(): void {
 	float abUnder = abTunnelAir.a * (1.0 - smoothstep(-8.0, -1.0, vFogWorldY));
 	float abAir = abUnder * (1.0 - exp(-max(vFogDepth, 0.0) * ${AIR_DENSITY.toFixed(4)}));
 	gl_FragColor.rgb = mix( gl_FragColor.rgb, abTunnelAir.rgb, abAir );
-	gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, fogFactor );
-	float abHaze = abHazeAmount(cameraPosition.y, vFogWorldY, vFogDepth) * (1.0 - fogFactor) * (1.0 - abUnder);
-	vec3 abHazeColor = mix(fogColor, abHazeParams.rgb, abHazeParams.a);
+	// L2: the fog colour along THIS ray — H1's sky-matched colour above the
+	// stop (the dome's own gradient), plus the city glow by its elevation
+	// (the dome and the far skyline add the same), none of it under the
+	// street.
+	vec3 abFogC = mix( abGlowFog( abSkyFog( fogColor, abSinEl ), abSinEl ), fogColor, abTunnelAir.a );
+	gl_FragColor.rgb = mix( gl_FragColor.rgb, abFogC, fogFactor );
+	float abHaze = abHazeAmount(cameraPosition.y, vFogWorldY, abFogDepth) * (1.0 - fogFactor) * (1.0 - abUnder);
+	vec3 abHazeColor = mix(abFogC, abHazeParams.rgb, abHazeParams.a);
 	gl_FragColor.rgb = mix( gl_FragColor.rgb, abHazeColor, abHaze );
 #endif
 `;

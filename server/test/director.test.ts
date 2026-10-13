@@ -149,8 +149,14 @@ describe("the director's pick", () => {
           DIRECTOR_PATH_S,
         ),
       ).toBeGreaterThan(0);
-      // The plane is inside the warned danger zone (bots refuse to enter).
-      expect(inDangerZone(ev, { ...pos, z: pos.z + 60 }, 0)).toBe(true);
+      // The plane flies into the warned danger zone (bots refuse to enter)
+      // within its 3 s path — H1: the pick may be another tower that path
+      // passes (the taller city has more of them), not the one beside it.
+      let inside = false;
+      for (let s = 0; s <= DIRECTOR_PATH_S; s += 0.1) {
+        inside ||= inDangerZone(ev, { ...pos, z: pos.z + 100 * s }, 0);
+      }
+      expect(inside).toBe(true);
     }
   });
 
@@ -528,9 +534,14 @@ describe("chain reactions", () => {
     const struck = new Set(hits.map((h) => h.building));
     const broke: number[] = [];
     for (let t = T0; t <= T0 + c.endMs + 1000; t += 50) {
+      // H1: and every building a later link of the chain drives into.
+      for (const m of rc.impacts) struck.add(m.building);
       broke.push(...tickDestruction(rc, t).broke);
     }
-    expect(rc.impacts).toHaveLength(0);
+    // Every impact of THIS collapse has landed. (H1: a struck neighbour of
+    // the taller city may come down in turn and queue its own, later, one
+    // link down the chain — CHAIN_DEPTH_MAX still bounds that.)
+    expect(rc.impacts.filter((m) => m.depth === 0)).toHaveLength(0);
     const hitBuildings = new Set(broke.map(chunkBuilding));
     expect(hitBuildings.size).toBeGreaterThan(0);
     for (const j of hitBuildings) {

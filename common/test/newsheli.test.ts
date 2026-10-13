@@ -30,9 +30,9 @@ import {
 import {
   BLIMP_ALT,
   BLIMP_HULL,
+  CITY_TOP,
   CLOUD_BASE,
   HELI_HULL,
-  LANDMARK_HEIGHT,
   NEWS_HELI_ALT_MAX,
   NEWS_HELI_ALT_MIN,
   NEWS_HELI_DWELL_MS,
@@ -176,14 +176,13 @@ describe("news heli pose", () => {
   });
 
   it("stays in its band: over every roof, under the blimp and the clouds", () => {
+    // H1: L10's 350–450 m band, lifted over the supertalls (CITY_TOP).
     expect(NEWS_HELI_ALT_MIN).toBeGreaterThanOrEqual(350);
-    expect(NEWS_HELI_ALT_MAX).toBeLessThanOrEqual(450);
+    expect(NEWS_HELI_ALT_MAX).toBeLessThanOrEqual(CITY_TOP + 50);
     const top = NEWS_HELI_ALT_MAX + HELI_HULL[1] * 1.3; // rotor blur
     expect(top).toBeLessThan(BLIMP_ALT - BLIMP_HULL[1]);
     expect(top).toBeLessThan(CLOUD_BASE);
-    expect(NEWS_HELI_ALT_MIN - HELI_HULL[1]).toBeGreaterThan(
-      LANDMARK_HEIGHT + 50,
-    );
+    expect(NEWS_HELI_ALT_MIN - HELI_HULL[1]).toBeGreaterThan(CITY_TOP + 15);
     let current = newsHeliIdle(SEED);
     for (let k = 0; k < 40; k++) {
       const t = T0 + k * 90_000;

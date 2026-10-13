@@ -94,14 +94,16 @@ export const BILLBOARD_LEG = 0.3;
  * cylinder whose top is the gun's top — above the clutter line, so solid.
  * Light machine-gun nests sit on mid-rise roofs, chance weighted toward the
  * map's middle; every non-landmark at least AA_FLAK_MIN_HEIGHT tall carries
- * a heavy flak gun instead. */
+ * a heavy flak gun instead. H1: 200 → 280 m, the top of the downtown cores'
+ * band — with the taller skyline that keeps the city's flak and nest
+ * counts where W3 tuned them (seed 42: 4 flak of 41 nests, was 4 of 40). */
 export const AA_NEST_RADIUS = 2.5;
 export const AA_NEST_HEIGHT = 2.8;
 export const AA_FLAK_RADIUS = 3.2;
 export const AA_FLAK_HEIGHT = 3.6;
 export const AA_NEST_MIN_HEIGHT = 30;
 export const AA_NEST_MIN_ROOF = 16;
-export const AA_FLAK_MIN_HEIGHT = 200;
+export const AA_FLAK_MIN_HEIGHT = 280;
 /** A light nest's chance at the anchor, falling linearly by AA_NEST_FALLOFF
  * of itself at the torus' farthest point from it (wrap distance). */
 export const AA_NEST_CHANCE = 0.15;

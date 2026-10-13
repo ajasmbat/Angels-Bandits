@@ -92,11 +92,11 @@ describe("validatePose", () => {
     expect(Math.hypot(q.x, q.y, q.z, q.w)).toBeCloseTo(1, 6);
   });
 
-  it("clamps claimed altitude to MAX_ALTITUDE (800 m)", () => {
-    const prev = pose(1000, 795, 1000);
-    const verdict = validatePose(prev, pose(1000, 810, 1000), DT);
+  it("clamps claimed altitude to MAX_ALTITUDE (950 m)", () => {
+    const prev = pose(1000, 945, 1000);
+    const verdict = validatePose(prev, pose(1000, 960, 1000), DT);
     expect(verdict.ok).toBe(true);
-    expect(verdict.pose.pos.y).toBe(800);
+    expect(verdict.pose.pos.y).toBe(950);
   });
 
   it("canonicalizes an accepted position back into [0, WORLD_SIZE)", () => {

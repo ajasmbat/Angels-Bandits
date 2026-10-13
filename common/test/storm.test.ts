@@ -119,9 +119,10 @@ describe("strike positions (Concept D: rods over a marching front)", () => {
 });
 
 describe("storm constants (spec values from the ticket)", () => {
-  it("pins the storm altitudes and grace: clouds at 500, kill at 600, 3 s grace", () => {
-    expect(CLOUD_BASE).toBe(500);
-    expect(STORM_KILL_ALT).toBe(600);
+  it("pins the storm altitudes and grace: clouds at 650, kill at 750, 3 s grace", () => {
+    // H1 lifted the ticket's 500 / 600 m by 150 m over the supertalls.
+    expect(CLOUD_BASE).toBe(650);
+    expect(STORM_KILL_ALT).toBe(750);
     expect(STORM_GRACE_MS).toBe(3000);
   });
 

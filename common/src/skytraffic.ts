@@ -18,9 +18,9 @@ import { BLOCK_PITCH } from "./constants";
 export const AIRLINER_SLOT_MS = 40000;
 /** Fraction of slots that carry a flight. */
 const AIRLINER_CHANCE = 0.75;
-/** Flight altitude band above the viewer, m — far above MAX_ALTITUDE (800). */
-export const AIRLINER_ALT_MIN = 1000;
-export const AIRLINER_ALT_MAX = 1600;
+/** Flight altitude band above the viewer, m — far above MAX_ALTITUDE (950). */
+export const AIRLINER_ALT_MIN = 1150;
+export const AIRLINER_ALT_MAX = 1750;
 /** Cruise speed band, m/s, and the half-length of the straight track, m —
  * long enough that both ends sit within a few degrees of the horizon. */
 const AIRLINER_SPEED_MIN = 210;

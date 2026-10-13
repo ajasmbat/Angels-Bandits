@@ -58,8 +58,19 @@ function freshCity(): { city: Building[]; damage: CityDamage } {
 function pickTower(city: readonly Building[]): number {
   const i = city.findIndex((b) => {
     const g = tierGrids(b)[0];
+    // H1: and no bigger than the tower these tests were written at (6
+    // cells a storey, ≤ 130 m) — the taller city's first tower is 4 × 4
+    // cells, and the per-piece sweeps below would run 2–3× as long for no
+    // new coverage (the supertalls' collapse is collapse-d10.test.ts's).
     return (
-      !b.holes && !!g && g.nx >= 2 && g.nz >= 2 && g.ny >= 3 && b.height >= 80
+      !b.holes &&
+      !!g &&
+      g.nx >= 2 &&
+      g.nz >= 2 &&
+      g.nx * g.nz <= 6 &&
+      g.ny >= 3 &&
+      b.height >= 80 &&
+      b.height <= 130
     );
   });
   expect(i).toBeGreaterThanOrEqual(0);

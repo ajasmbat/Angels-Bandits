@@ -44,6 +44,10 @@ export const RENDER_ORDER = {
   /** S5 wind litter: street-level scraps — before the 0 group, so tracers,
    * planes and tags always paint over them. */
   litter: -0.04,
+  /** L2 far skyline (carpet + towers): OPAQUE, after the city's opaques
+   * (renderOrder 0), so early-z culls whatever the city hides; still
+   * before every transparent above. */
+  farSkyline: 1,
   /** Searchlight beams: additive, after the opaque city and the sky. */
   beams: 2,
 } as const;

@@ -415,9 +415,16 @@ describe("nothing is buried: a jib inside a facade is an invisible killer", () =
     for (const b of boxes) {
       const ax = Math.cos(b.yaw);
       const az = -Math.sin(b.yaw);
-      const radius = Math.max(b.hz, b.hy);
-      for (let s = -b.hx; s <= b.hx; s += 1) {
-        const p = { x: b.x + ax * s, y: b.y, z: b.z + az * s };
+      // H1: a tall box (the mast) is walked up its height with a sphere
+      // covering its whole cross-section — one sphere of its half HEIGHT
+      // reached 48 m sideways, into the street wall across the road.
+      const tall = b.hy > Math.max(b.hx, b.hz);
+      const radius = tall ? Math.hypot(b.hx, b.hz) : Math.max(b.hz, b.hy);
+      const steps: { s: number; v: number }[] = [];
+      if (tall) for (let v = -b.hy; v <= b.hy; v += 1) steps.push({ s: 0, v });
+      else for (let s = -b.hx; s <= b.hx; s += 1) steps.push({ s, v: 0 });
+      for (const { s, v } of steps) {
+        const p = { x: b.x + ax * s, y: b.y + v, z: b.z + az * s };
         const hit = collideCity(p, radius, buildings, index);
         if (hit) {
           bad.push(

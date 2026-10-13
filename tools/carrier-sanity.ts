@@ -47,6 +47,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
+  BOSS_ALT,
   BOSS_WEAK_POINTS,
   type BossRaid,
   blankPose,
@@ -137,6 +138,10 @@ const POSE_HZ = 30;
 const SPEED = 62;
 const TURN_RATE = (45 * Math.PI) / 180;
 const ORBIT = { x: WORLD_SIZE / 2, z: WORLD_SIZE / 2, r: 250, y: 140 };
+/** The novice's own ceiling, m: 115 m over the carrier's cruise (420 m when
+ * it flew at 305; H1 lifted it to BOSS_ALT 570) — over its top weak points,
+ * far under the storm kill altitude. */
+const TOP_Y = BOSS_ALT + 115;
 const ENGAGE_M = 700;
 const FIRE_CONE = (12 * Math.PI) / 180;
 const FIRE_M = 300;
@@ -462,7 +467,7 @@ function fly(url: string, run: number, seed: number): Promise<RunReport> {
     const n = noseOf(yaw, pitch);
     pos = canonicalize({
       x: pos.x + n.x * v * dt,
-      y: Math.max(40, Math.min(420, pos.y + n.y * v * dt)),
+      y: Math.max(40, Math.min(TOP_Y, pos.y + n.y * v * dt)),
       z: pos.z + n.z * v * dt,
     });
     send({ type: "pose", pose: { pos, quat: quatOf(yaw, pitch), speed: v } });

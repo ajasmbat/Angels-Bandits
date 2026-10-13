@@ -78,6 +78,10 @@ export interface QualityProfile {
   /** Stormlit L8: the far street glow's storefront and neon spill (the lamp
    * lines, roadway wash and lit crossings stay on every tier). */
   streetGlowSpill: boolean;
+  /** Stormlit L2: the far skyline's outer radius, m (far-skyline.ts — the
+   * tower lattice's side, an instance count, and a uniform; purely
+   * far-field dressing past the fog limit, never solid). */
+  farSkyline: number;
   /** L7 the coloured light each sign spills onto the street. */
   signSpill: boolean;
   /** L8 rooftop string lights (the party/pool props stay). */
@@ -223,6 +227,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     headlightCones: true,
     farTraffic: 1,
     streetGlowSpill: true,
+    farSkyline: 5000,
     signSpill: true,
     rooftopLights: true,
     treeSway: true,
@@ -273,6 +278,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     headlightCones: true,
     farTraffic: 1,
     streetGlowSpill: true,
+    farSkyline: 4400,
     signSpill: true,
     rooftopLights: true,
     treeSway: true,
@@ -323,6 +329,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     headlightCones: false,
     farTraffic: 0.6,
     streetGlowSpill: true,
+    farSkyline: 3400,
     signSpill: false,
     rooftopLights: false,
     treeSway: false,
@@ -373,6 +380,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     headlightCones: false,
     farTraffic: 0.5,
     streetGlowSpill: false,
+    farSkyline: 2600,
     signSpill: false,
     rooftopLights: false,
     treeSway: false,
@@ -937,7 +945,7 @@ export const FEATURE_TIERS: readonly {
     medium: "reduced",
     low: "reduced",
     mobile: "reduced",
-    note: "flame sites 100 / 75 / 50 / 30 % (chaosFx): at most 80 sites × 3 cards, the nearest within 760 m, faded out at the cap — one instanced draw; the air (1600 embers/ash/debris × chaosFx) one points draw, off on Mobile (its peak-chaos scene is at the Mobile draw ceiling)",
+    note: "flame sites 100 / 75 / 50 / 30 % (chaosFx): at most 220 sites × 3 cards (floors, window rows, rubble fields), picked by view and spread over the burning buildings within 760 m, faded out at the cap — one instanced draw; the air (480 embers and ash round the camera + 1600 embers/ash/debris round the fires, × chaosFx) one points draw, off on Mobile (its peak-chaos scene is at the Mobile draw ceiling)",
   },
   {
     feature: "L7 inferno — smoke columns",
@@ -945,7 +953,7 @@ export const FEATURE_TIERS: readonly {
     medium: "full",
     low: "reduced",
     mobile: "reduced",
-    note: "columns 100 / 100 / 50 / 34 % (smokeColumns), each puff grown by 1/√share so the columns hide the same sky on every tier (rule 2 for the fill); Mobile drops the billowing edge (a uniform); one instanced draw",
+    note: "columns 100 / 100 / 50 / 34 % (smokeColumns) of at most 20 × 16 puffs, each puff grown by 1/√share so the columns hide the same sky on every tier (rule 2 for the fill); Mobile drops the billowing edge (a uniform); one instanced draw",
   },
   {
     feature:
@@ -954,7 +962,24 @@ export const FEATURE_TIERS: readonly {
     medium: "full",
     low: "full",
     mobile: "full",
-    note: "the look of solid things and of the air: shader terms and uniforms on the city, ground, fog and cloud deck, identical on every tier, no draw",
+    note: "the look of solid things and of the air: shader terms and uniforms on the city (gutted frames, ember rims, burning wreckage), the ground, the fog, the sky dome and the cloud deck (the burning districts' light and glow), identical on every tier, no draw",
+  },
+  {
+    feature:
+      "Stormlit L2 — far skyline past the fog limit (towers, spires, carpet, river lights)",
+    high: "full",
+    medium: "reduced",
+    low: "reduced",
+    mobile: "reduced",
+    note: "outer radius 5 / 4.4 / 3.4 / 2.6 km (farSkyline): the tower lattice's side (an instance count: 102² / 90² / 70² / 54² slots) and a uniform — purely far-field dressing behind the fog limit, never solid; two opaque draws on every tier",
+  },
+  {
+    feature: "Stormlit L2 — city glow in the fog, the dome and the cloud bases",
+    high: "full",
+    medium: "full",
+    low: "full",
+    mobile: "full",
+    note: "the look of the air: a term in the fog colour, the dome and the cloud shading, identical on every tier, no draw",
   },
   {
     feature: "S5 fog banks (drifting haze between the towers)",

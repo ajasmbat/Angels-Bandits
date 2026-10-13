@@ -384,6 +384,12 @@ describe("D8 roof structures follow the stump (draw == collide)", () => {
   });
 });
 
+/** H1: the taller city has 217 towers past `tall` (was 132) and 2.2× the
+ * chunks among them, and both tests below fell every one in each direction —
+ * full coverage, so a longer budget than vitest's 60 s headroom (and the
+ * swept one yields per tower, see there). */
+const DEMOLITION_SWEEP_MS = 180_000;
+
 describe("D8 demolition leaves a broken, held-up stump", () => {
   // One city, each tower felled and rebuilt in turn (restoreBuilding).
   const city = generateCity(CITY_SEED);
@@ -391,112 +397,123 @@ describe("D8 demolition leaves a broken, held-up stump", () => {
   damage.bind(city);
   const eligible = city.map((b, i) => [b, i] as const).filter(([b]) => tall(b));
 
-  it("owes no further collapse after any TOPPLE or PANCAKE demolition", () => {
-    expect(eligible.length).toBeGreaterThan(30);
-    for (const [b, i] of eligible) {
-      for (const [style, dir] of [
-        [TOPPLE, DIR_NEG_X],
-        [TOPPLE, DIR_POS_X],
-        [TOPPLE, DIR_NEG_Z],
-        [TOPPLE, DIR_POS_Z],
-        [PANCAKE, 0],
-      ] as const) {
-        const plan = demolitionPlan(b, i, style, dir);
-        if (plan) damage.collapse(plan.chunks);
-        expect(planCollapses(b, i), `${i}`).toEqual([]);
-        damage.restoreBuilding(i);
+  it(
+    "owes no further collapse after any TOPPLE or PANCAKE demolition",
+    () => {
+      expect(eligible.length).toBeGreaterThan(30);
+      for (const [b, i] of eligible) {
+        for (const [style, dir] of [
+          [TOPPLE, DIR_NEG_X],
+          [TOPPLE, DIR_POS_X],
+          [TOPPLE, DIR_NEG_Z],
+          [TOPPLE, DIR_POS_Z],
+          [PANCAKE, 0],
+        ] as const) {
+          const plan = demolitionPlan(b, i, style, dir);
+          if (plan) damage.collapse(plan.chunks);
+          expect(planCollapses(b, i), `${i}`).toEqual([]);
+          damage.restoreBuilding(i);
+        }
       }
-    }
-  });
+    },
+    DEMOLITION_SWEEP_MS,
+  );
 
-  it("is stepped (TOPPLE), and no piece swings through it or comes to rest on it", () => {
-    let stepped = 0;
-    let checked = 0;
-    const pose = blankPose();
-    for (const [b, i] of eligible) {
-      for (const dir of [DIR_NEG_X, DIR_POS_X, DIR_NEG_Z, DIR_POS_Z]) {
-        const plan = demolitionPlan(b, i, TOPPLE, dir);
-        if (!plan) continue;
-        damage.collapse(plan.chunks);
-        if (new Set(standingProfile(b).stump).size > 1) stepped++;
-        const stump = solids(b).filter((s) => !(s.cut & CUT_RUBBLE));
-        // Every 4th tower gets the full swept-pose check (it is the slow part).
-        const swept = checked++ % 4 === 0;
-        const c = buildCollapse(city, collapseWire(plan, i, 1, 0));
-        damage.restoreBuilding(i);
-        if (!c) continue;
-        let top = 0;
-        for (const s of stump) top = Math.max(top, s.baseY + s.height);
-        // The jagged part (above the bottom band): the bottom band's fall-side
-        // edge is grazed as pieces break away over it, as it always was.
-        const raised = stump.filter((s) => s.baseY > 0.5);
-        const inside = (x: number, y: number, z: number) =>
-          raised.some(
-            (s) =>
-              Math.abs(x - s.dx) < s.width / 2 - 0.5 &&
-              Math.abs(z - s.dz) < s.depth / 2 - 0.5 &&
-              y > s.baseY + 0.5 &&
-              y < s.baseY + s.height - 0.5,
-          );
-        for (let p = 0; p < c.n && swept; p++) {
-          for (let t = 0; t <= c.endMs; t += 50) {
-            piecePose(c, p, t, pose);
-            const reach = Math.hypot(pose.hx, pose.hy, pose.hz);
-            if (pose.y - reach > top) continue;
-            const ca = Math.cos(pose.phi);
-            const sa = Math.sin(pose.phi);
-            for (const u of [-1, 0, 1])
-              for (const v of [-1, 0, 1])
-                for (const w of [-1, 0, 1]) {
-                  const lx = u * pose.hx;
-                  const ly = v * pose.hy;
-                  const lz = w * pose.hz;
-                  // Rotation about x (axis 0) or z (axis 1), as collapse.ts.
-                  const x = pose.axis === 1 ? lx * ca - ly * sa : lx;
-                  const y =
-                    pose.axis === 1 ? lx * sa + ly * ca : ly * ca - lz * sa;
-                  const z = pose.axis === 1 ? lz : ly * sa + lz * ca;
-                  if (inside(pose.x + x, pose.y + y, pose.z + z)) {
-                    expect.fail(
-                      `building ${i} dir ${dir} piece ${p} at ${t} ms`,
-                    );
+  it(
+    "is stepped (TOPPLE), and no piece swings through it or comes to rest on it",
+    async () => {
+      let stepped = 0;
+      let checked = 0;
+      const pose = blankPose();
+      for (const [b, i] of eligible) {
+        // H1: a macrotask per tower, so a sweep this long never starves the
+        // worker's RPC (vitest.setup.ts only yields between tests).
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        for (const dir of [DIR_NEG_X, DIR_POS_X, DIR_NEG_Z, DIR_POS_Z]) {
+          const plan = demolitionPlan(b, i, TOPPLE, dir);
+          if (!plan) continue;
+          damage.collapse(plan.chunks);
+          if (new Set(standingProfile(b).stump).size > 1) stepped++;
+          const stump = solids(b).filter((s) => !(s.cut & CUT_RUBBLE));
+          // Every 4th tower gets the full swept-pose check (it is the slow part).
+          const swept = checked++ % 4 === 0;
+          const c = buildCollapse(city, collapseWire(plan, i, 1, 0));
+          damage.restoreBuilding(i);
+          if (!c) continue;
+          let top = 0;
+          for (const s of stump) top = Math.max(top, s.baseY + s.height);
+          // The jagged part (above the bottom band): the bottom band's fall-side
+          // edge is grazed as pieces break away over it, as it always was.
+          const raised = stump.filter((s) => s.baseY > 0.5);
+          const inside = (x: number, y: number, z: number) =>
+            raised.some(
+              (s) =>
+                Math.abs(x - s.dx) < s.width / 2 - 0.5 &&
+                Math.abs(z - s.dz) < s.depth / 2 - 0.5 &&
+                y > s.baseY + 0.5 &&
+                y < s.baseY + s.height - 0.5,
+            );
+          for (let p = 0; p < c.n && swept; p++) {
+            for (let t = 0; t <= c.endMs; t += 50) {
+              piecePose(c, p, t, pose);
+              const reach = Math.hypot(pose.hx, pose.hy, pose.hz);
+              if (pose.y - reach > top) continue;
+              const ca = Math.cos(pose.phi);
+              const sa = Math.sin(pose.phi);
+              for (const u of [-1, 0, 1])
+                for (const v of [-1, 0, 1])
+                  for (const w of [-1, 0, 1]) {
+                    const lx = u * pose.hx;
+                    const ly = v * pose.hy;
+                    const lz = w * pose.hz;
+                    // Rotation about x (axis 0) or z (axis 1), as collapse.ts.
+                    const x = pose.axis === 1 ? lx * ca - ly * sa : lx;
+                    const y =
+                      pose.axis === 1 ? lx * sa + ly * ca : ly * ca - lz * sa;
+                    const z = pose.axis === 1 ? lz : ly * sa + lz * ca;
+                    if (inside(pose.x + x, pose.y + y, pose.z + z)) {
+                      expect.fail(
+                        `building ${i} dir ${dir} piece ${p} at ${t} ms`,
+                      );
+                    }
                   }
-                }
+            }
+          }
+          for (let p = 0; p < c.n; p++) {
+            // At rest: on the ground, clear of the footprint it fell from.
+            expect(c.ry[p] as number).toBeCloseTo(c.ay[p] as number, 6);
+            const over = stump.some(
+              (s) =>
+                Math.min(
+                  (c.rx[p] as number) + (c.ax[p] as number),
+                  s.dx + s.width / 2,
+                ) -
+                  Math.max(
+                    (c.rx[p] as number) - (c.ax[p] as number),
+                    s.dx - s.width / 2,
+                  ) >
+                  1e-6 &&
+                Math.min(
+                  (c.rz[p] as number) + (c.az[p] as number),
+                  s.dz + s.depth / 2,
+                ) -
+                  Math.max(
+                    (c.rz[p] as number) - (c.az[p] as number),
+                    s.dz - s.depth / 2,
+                  ) >
+                  1e-6,
+            );
+            if (over)
+              expect.fail(
+                `building ${i} dir ${dir} piece ${p} rests on the stump`,
+              );
           }
         }
-        for (let p = 0; p < c.n; p++) {
-          // At rest: on the ground, clear of the footprint it fell from.
-          expect(c.ry[p] as number).toBeCloseTo(c.ay[p] as number, 6);
-          const over = stump.some(
-            (s) =>
-              Math.min(
-                (c.rx[p] as number) + (c.ax[p] as number),
-                s.dx + s.width / 2,
-              ) -
-                Math.max(
-                  (c.rx[p] as number) - (c.ax[p] as number),
-                  s.dx - s.width / 2,
-                ) >
-                1e-6 &&
-              Math.min(
-                (c.rz[p] as number) + (c.az[p] as number),
-                s.dz + s.depth / 2,
-              ) -
-                Math.max(
-                  (c.rz[p] as number) - (c.az[p] as number),
-                  s.dz - s.depth / 2,
-                ) >
-                1e-6,
-          );
-          if (over)
-            expect.fail(
-              `building ${i} dir ${dir} piece ${p} rests on the stump`,
-            );
-        }
       }
-    }
-    expect(stepped).toBeGreaterThan(20);
-  });
+      expect(stepped).toBeGreaterThan(20);
+    },
+    DEMOLITION_SWEEP_MS,
+  );
 });
 
 describe("D8 the hide survives the GPU write paths", () => {

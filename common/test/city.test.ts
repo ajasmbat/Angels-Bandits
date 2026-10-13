@@ -3,6 +3,7 @@ import {
   LANDMARK_BLOCKS,
   LANDMARK_PROFILES,
   PLAZA_BLOCKS,
+  blockZone,
   generateCity,
   landmarkStyleAt,
 } from "@angels-bandits/common/city";
@@ -16,9 +17,11 @@ import {
   BLOCK_PITCH,
   BUILDING_MAX_HEIGHT,
   BUILDING_MIN_HEIGHT,
+  CITY_TOP,
   LANDMARK_HEIGHT,
   LOT_MIN_WIDTH,
   STREET_WIDTH,
+  TIER_FOUR_MIN_HEIGHT,
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
 import { describe, expect, it, vi } from "vitest";
@@ -136,10 +139,13 @@ describe("generateCity layout", () => {
   });
 
   it("has 4 landmark supertalls at LANDMARK_HEIGHT and all other heights in [min, max]", () => {
-    const landmarks = city.filter((b) => b.height === LANDMARK_HEIGHT);
+    // H1: the supertalls are LANDMARK_HEIGHT (400 m) to CITY_TOP (480 m).
+    const landmarks = city.filter((b) => b.height >= LANDMARK_HEIGHT);
     expect(landmarks).toHaveLength(EXPECTED_LANDMARK_COUNT);
+    for (const b of landmarks) expect(b.height).toBeLessThanOrEqual(CITY_TOP);
+    expect(Math.max(...landmarks.map((b) => b.height))).toBe(CITY_TOP);
     for (const b of city) {
-      if (b.height === LANDMARK_HEIGHT) continue;
+      if (b.height >= LANDMARK_HEIGHT) continue;
       expect(b.height).toBeGreaterThanOrEqual(BUILDING_MIN_HEIGHT);
       expect(b.height).toBeLessThanOrEqual(BUILDING_MAX_HEIGHT);
     }
@@ -149,9 +155,12 @@ describe("generateCity layout", () => {
     for (const b of city) {
       expect(b.tiers.length).toBeGreaterThanOrEqual(1);
       // L3: a landmark's hand-built profile may use every tier the chunk id
-      // has bits for; generated lots still stack at most three.
+      // has bits for; generated lots stack at most three — H1: but for the
+      // skyscrapers past TIER_FOUR_MIN_HEIGHT, whose setbacks take four.
       expect(b.tiers.length).toBeLessThanOrEqual(
-        b.height === LANDMARK_HEIGHT ? MAX_TIERS : 3,
+        b.height >= LANDMARK_HEIGHT || b.height >= TIER_FOUR_MIN_HEIGHT
+          ? MAX_TIERS
+          : 3,
       );
       // Tier 1 IS the building's footprint — streets and minimap unchanged.
       expect(b.tiers[0]?.width).toBe(b.width);
@@ -181,40 +190,42 @@ describe("generateCity layout", () => {
   it("gives every landmark its slot's hand-placed profile (spec literals)", () => {
     // L3: one silhouette per LANDMARK_BLOCKS slot, in that order.
     expect(LANDMARK_PROFILES.map((p) => [p.style, p.tiers])).toEqual([
+      // H1: L3's designs scaled up into the supertalls (480 / 400 / 450 /
+      // 430 m), podiums kept.
       [
         "glass",
         [
           { width: 90, depth: 90, height: 60 },
-          { width: 52, depth: 52, height: 150 },
-          { width: 30, depth: 30, height: 26 },
-          { width: 10, depth: 10, height: 14 },
+          { width: 60, depth: 60, height: 332 },
+          { width: 34, depth: 34, height: 57 },
+          { width: 10, depth: 10, height: 31 },
         ],
       ],
       [
         "ziggurat",
         [
           { width: 90, depth: 90, height: 60 },
-          { width: 62, depth: 62, height: 110 },
-          { width: 46, depth: 46, height: 40 },
-          { width: 30, depth: 30, height: 40 },
+          { width: 72, depth: 72, height: 197 },
+          { width: 52, depth: 52, height: 72 },
+          { width: 34, depth: 34, height: 71 },
         ],
       ],
       [
         "spire",
         [
           { width: 90, depth: 90, height: 60 },
-          { width: 62, depth: 62, height: 140 },
-          { width: 34, depth: 34, height: 30 },
-          { width: 10, depth: 10, height: 20 },
+          { width: 72, depth: 72, height: 287 },
+          { width: 40, depth: 40, height: 62 },
+          { width: 10, depth: 10, height: 41 },
         ],
       ],
       [
         "arches",
         [
           { width: 90, depth: 90, height: 60 },
-          { width: 56, depth: 56, height: 136 },
-          { width: 34, depth: 34, height: 34 },
-          { width: 10, depth: 10, height: 20 },
+          { width: 64, depth: 64, height: 265 },
+          { width: 40, depth: 40, height: 66 },
+          { width: 10, depth: 10, height: 39 },
         ],
       ],
     ]);
@@ -224,7 +235,10 @@ describe("generateCity layout", () => {
           o.x === bx * BLOCK_PITCH + BLOCK_PITCH / 2 &&
           o.z === bz * BLOCK_PITCH + BLOCK_PITCH / 2,
       );
-      expect(b?.height).toBe(LANDMARK_HEIGHT);
+      expect(b?.height).toBe(
+        LANDMARK_PROFILES[i]?.tiers.reduce((s, t) => s + t.height, 0),
+      );
+      expect(b?.height).toBeGreaterThanOrEqual(LANDMARK_HEIGHT);
       expect(b?.tiers).toEqual(LANDMARK_PROFILES[i]?.tiers);
       expect(landmarkStyleAt(b?.x ?? 0, b?.z ?? 0)).toBe(
         LANDMARK_PROFILES[i]?.style,
@@ -235,7 +249,7 @@ describe("generateCity layout", () => {
   it("varies the skyline: seed 42 has slabs, 2-tier and 3-tier towers", () => {
     const counts = [0, 0, 0];
     for (const b of city) {
-      if (b.height === LANDMARK_HEIGHT) continue;
+      if (b.height >= LANDMARK_HEIGHT) continue;
       const i = b.tiers.length - 1;
       counts[i] = (counts[i] ?? 0) + 1;
     }
@@ -248,7 +262,7 @@ describe("generateCity layout", () => {
     const other = generateCity(7);
     const landmarkSpots = (bs: typeof city) =>
       bs
-        .filter((b) => b.height === LANDMARK_HEIGHT)
+        .filter((b) => b.height >= LANDMARK_HEIGHT)
         .map((b) => `${b.x},${b.z}`)
         .sort();
     expect(landmarkSpots(other)).toEqual(landmarkSpots(city));
@@ -291,8 +305,9 @@ describe("generateCity BSP lots", () => {
 
   it("subdivides blocks into many lots: a dense city, not 97 towers", () => {
     // 550, not 600: L11 turned one block row into the river, taking its ~69
-    // lots with it (seed 42: 628 → 559). Density per built block is unchanged.
-    expect(city.length).toBeGreaterThanOrEqual(550);
+    // lots with it (seed 42: 628 → 559). H1: 500 — the downtown cores cut
+    // fewer, wider lots for their towers (seed 42: 559 → 523).
+    expect(city.length).toBeGreaterThanOrEqual(500);
     expect(city.length).toBeLessThanOrEqual(750);
   });
 
@@ -440,7 +455,7 @@ describe("generateCity streetwall", () => {
 
 describe("generateCity lot variance and skyline", () => {
   const city = generateCity(42);
-  const lots = city.filter((b) => b.height !== LANDMARK_HEIGHT);
+  const lots = city.filter((b) => b.height < LANDMARK_HEIGHT);
 
   it("gives lots genuinely irregular widths — a spread, not one modal width", () => {
     // What separates BSP from a fixed n×n grid: a fixed 4×2 grid of the
@@ -472,17 +487,35 @@ describe("generateCity lot variance and skyline", () => {
   });
 
   it("shapes the skyline as a low streetwall with a thin tower tail", () => {
-    // The spec is HEIGHT_BANDS: 70% under 60 m, 90% under 120 m, 2% above
-    // 190 m. Bounds are loose enough to be a distribution check, not a
-    // restatement of the table.
-    const heights = lots.map((b) => b.height);
-    const share = (max: number) =>
-      heights.filter((h) => h <= max).length / heights.length;
-    expect(share(60)).toBeGreaterThan(0.6);
-    expect(share(60)).toBeLessThan(0.8);
-    expect(share(120)).toBeGreaterThan(0.85);
-    expect(share(190)).toBeGreaterThan(0.95);
-    expect(share(190)).toBeLessThan(0.995);
+    // H1: the spec is per zone (constants.ts HEIGHT_BANDS_*): a dense core
+    // of 150–320 m towers, a 40–120 m mid-rise ring, low streetwall at the
+    // edges and the waterfront. Bounds are loose enough to be a
+    // distribution check, not a restatement of the tables.
+    const inZone = (z: string) =>
+      lots
+        .filter(
+          (b) =>
+            blockZone(
+              Math.floor(b.x / BLOCK_PITCH),
+              Math.floor(b.z / BLOCK_PITCH),
+            ) === z,
+        )
+        .map((b) => b.height);
+    const share = (hs: number[], f: (h: number) => boolean) =>
+      hs.filter(f).length / hs.length;
+    const core = inZone("core");
+    const mid = inZone("mid");
+    const edge = inZone("edge");
+    expect(share(core, (h) => h >= 150)).toBeGreaterThan(0.75);
+    expect(share(core, (h) => h >= 240)).toBeGreaterThan(0.3);
+    expect(share(mid, (h) => h <= 120)).toBeGreaterThan(0.75);
+    expect(share(mid, (h) => h < 40)).toBeLessThan(0.05);
+    expect(share(edge, (h) => h <= 60)).toBeGreaterThan(0.8);
+    expect(Math.max(...edge)).toBeLessThanOrEqual(90);
+    // The whole skyline: many true skyscrapers, still a minority.
+    const towers = lots.filter((b) => b.height >= 150).length;
+    expect(towers).toBeGreaterThanOrEqual(60);
+    expect(towers / lots.length).toBeLessThan(0.2);
   });
 
   it("keeps every lot strictly shorter than a landmark, so height still identifies one", () => {

@@ -63,8 +63,10 @@ export const CUT_SPEED = 600;
 const CUT_SLACK = 20;
 
 /** Elevation band (rad above SKY_FOG_STOP) over which the clouds fade in
- * from zero — distant cloud melts into the horizon haze (≈ 12°). */
-export const CLOUD_FADE = 0.21;
+ * from zero — distant cloud melts into the horizon haze (L7b: ≈ 5°, was
+ * 12°, so a view out toward the horizon shows the deck right down to the
+ * haze, as reference 1 does; still exactly zero at the stop). */
+export const CLOUD_FADE = 0.09;
 
 /** Angular radius of the clear gap around the moon, rad (≈ 3.5 discs). */
 export const MOON_GAP = 0.16;
@@ -88,7 +90,7 @@ export const STORM_FLASH_COLOR = 0x9fb4ff;
  * gaps (the reference's clouds read lighter than the sky between them, the
  * thick cores darker than the thin edges), the high deck a touch lighter,
  * and the warm city glow on their undersides near the horizon. */
-export const CLOUD_BODY = 0x283143;
+export const CLOUD_BODY = 0x2e374b; // L7b: a step lighter (was 0x283143)
 export const CLOUD_CORE = 0x121822;
 export const CLOUD_HIGH = 0x222b3c;
 export const CLOUD_CITY_GLOW = 0x2a2018;
@@ -231,12 +233,17 @@ float abCloudCover(vec3 sd) {
  * the float the shader gets never loses its fraction.
  */
 export class CloudOffset {
-  /** Unwrapped camera x/z, m (mod CLOUD_PERIOD). */
+  /** Unwrapped camera x/z, m (mod `period`). */
   x = 0;
   z = 0;
   private readonly prev: Vec3 = { x: 0, y: 0, z: 0 };
   private readonly step: Vec3 = { x: 0, y: 0, z: 0 };
   private primed = false;
+
+  /** `period`: what x/z are kept mod — CLOUD_PERIOD for the clouds; L2's
+   * far skyline keeps a whole number of torus widths instead, so x/z stay
+   * congruent to the canonical position mod WORLD_SIZE. */
+  constructor(private readonly period = CLOUD_PERIOD) {}
 
   /** Advance to the camera's canonical position after `dtSec` (the sim's
    * clamped step). Returns true when this frame was a cut (reset). */
@@ -247,12 +254,12 @@ export class CloudOffset {
       const moved = Math.hypot(d.x, d.z);
       if (moved > CUT_SLACK + CUT_SPEED * Math.max(0, dtSec)) cut = true;
       else {
-        this.x = mod(this.x + d.x, CLOUD_PERIOD);
-        this.z = mod(this.z + d.z, CLOUD_PERIOD);
+        this.x = mod(this.x + d.x, this.period);
+        this.z = mod(this.z + d.z, this.period);
       }
     }
     if (cut) {
-      // Canonical coords are already in [0, WORLD_SIZE) ⊂ [0, CLOUD_PERIOD).
+      // Canonical coords are already in [0, WORLD_SIZE) ⊂ [0, period).
       this.x = mod(cam.x, WORLD_SIZE);
       this.z = mod(cam.z, WORLD_SIZE);
     }

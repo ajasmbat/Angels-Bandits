@@ -6,7 +6,8 @@ same view, same build settings. All shots are 1280×720 on SwiftShader (a
 GPU-less Linux box at load ~65), quality High, render scale 0.75, deep night,
 clear weather, taken with a scratch variant of `tools/perf/gallery.mjs` that
 also reads the `?nanprobe` counters (`__ab.nanProbe()`) once a few fresh
-frames have landed. Colours are right; frame rates on this box are not
+frames have landed (shot before the unlit glass went from albedo 0.018 to
+0.05, see below). Colours are right; frame rates on this box are not
 representative.
 
 | sheet | view | what to look at |

@@ -16,6 +16,13 @@
 // Both drop the window/shop/LED emissive the facade pass computed; a few
 // gutted rooms keep a dim sub-bloom ember (well under the 0.72 threshold —
 // not a rung on the emissive ladder).
+//
+// G7: the insides read as a charred SKELETON at every distance — floor
+// slabs and a column every room, round dark (not black) rooms — and every
+// per-room / per-patch decision resolves to its mean once its cell is
+// sub-pixel (the grid's top-level `wAA`, never a derivative in a branch).
+// Near-black rooms with flat orange ember rooms fogged into navy blocks
+// and, far away, aliased into orange and black checkerboards.
 
 /** D2 quality switch (quality.ts destructionDetail): 1 = rebar and jagged
  * rims, 0 = flat slabs and rooms. A uniform, so a tier switch compiles
@@ -28,7 +35,11 @@ export const BROKEN_STOREY = 3.6;
 const SLAB_SHARE = 0.1;
 /** Linear albedo of the slabs, the gutted rooms and the rubble. */
 const SLAB_ALBEDO = 0.2;
-const ROOM_ALBEDO = 0.03;
+const ROOM_ALBEDO = 0.1;
+/** G7: room width along the face (one structural bay), and the half width
+ * of the column at each bay line, meters. */
+const ROOM_BAY = 6.0;
+const COLUMN_HALF = 0.25;
 /** D8 scorch: how dark the soot patches get (share of albedo removed). */
 const SOOT = 0.7;
 /** Ember: share of gutted rooms that smoulder, and its linear colour. */
@@ -71,7 +82,8 @@ if (brkDmg > 0.5) {
   // World-anchored in-plane coordinates for the patterns (seam-safe: the
   // instance sits at its nearest torus image, like every other pattern).
   vec2 brkW = brkN.x > 0.5 ? vBWorldPos.zy : brkN.z > 0.5 ? vBWorldPos.xy : vBWorldPos.xz;
-  float brkNoise = abHash(floor(brkW * 1.7), vBSeed * 31.0);
+  float brkAA = max(wAA.x, wAA.y);
+  float brkNoise = mix(0.5, abHash(floor(brkW * 1.7), vBSeed * 31.0), abDetail(0.6, brkAA));
   if (brkDmg > 2.5) {
     // D10 steel: a column or I-beam segment, rebar — dark, streaked rust.
     float brkStreak = abHash(vec2(floor(brkW.x * 3.0), floor(brkW.y * 0.7)), vBSeed * 17.0);
@@ -80,14 +92,22 @@ if (brkDmg > 0.5) {
     // Rubble: broken concrete, with chunks of the facade's own finish.
     float brkChunk = abHash(floor(vBWorldPos.xz * 1.3 + vBWorldPos.y * 2.1), vBSeed * 7.0);
     vec3 brkConcrete = vec3(${SLAB_ALBEDO.toFixed(2)}) * (0.45 + 0.7 * brkNoise);
-    diffuseColor.rgb = mix(brkConcrete, diffuseColor.rgb * 0.8, step(0.62, brkChunk));
+    diffuseColor.rgb = mix(brkConcrete, diffuseColor.rgb * 0.8, mix(0.38, step(0.62, brkChunk), abDetail(0.77, brkAA)));
   } else {
     float brkStorey = vWorldY / ${BROKEN_STOREY.toFixed(1)};
     float brkInSlab = fract(brkStorey);
-    // A floor or ceiling face (normal ±y) is all slab.
-    float brkSlab = max(step(brkInSlab, ${SLAB_SHARE.toFixed(2)}), step(0.5, brkN.y));
-    float brkRoom = abHash(vec2(floor(brkW.x / 6.0), floor(brkStorey)), vBSeed * 13.0);
-    vec3 brkRoomCol = vec3(${ROOM_ALBEDO.toFixed(2)}) * (0.6 + 0.8 * brkRoom);
+    // The skeleton: a slab every storey and a column every bay, filtered
+    // (they thin to their area share far away); a floor or ceiling face
+    // (normal ±y) is all slab.
+    float brkSlabLine = abLine(abPeriodic(vWorldY, ${((SLAB_SHARE * BROKEN_STOREY) / 2).toFixed(3)}, ${BROKEN_STOREY.toFixed(1)}),
+      ${((SLAB_SHARE * BROKEN_STOREY) / 2).toFixed(3)}, wAA.y);
+    float brkColumn = abLine(abPeriodic(brkW.x, 0.0, ${ROOM_BAY.toFixed(1)}), ${COLUMN_HALF.toFixed(2)}, wAA.x);
+    float brkSlab = max(max(brkSlabLine, brkColumn), step(0.5, brkN.y));
+    // Per room: its coin flips resolve to their means once a room is
+    // sub-pixel.
+    float brkRoomDetail = min(abCellDetail(${ROOM_BAY.toFixed(1)}, wAA.x), abCellDetail(${BROKEN_STOREY.toFixed(1)}, wAA.y));
+    float brkRoom = abHash(vec2(floor(brkW.x / ${ROOM_BAY.toFixed(1)}), floor(brkStorey)), vBSeed * 13.0);
+    vec3 brkRoomCol = vec3(${ROOM_ALBEDO.toFixed(3)}) * (0.6 + 0.8 * mix(0.5, brkRoom, brkRoomDetail));
     vec3 brkSlabCol = vec3(${SLAB_ALBEDO.toFixed(2)}) * (0.75 + 0.4 * brkNoise);
     diffuseColor.rgb = mix(brkRoomCol, brkSlabCol, brkSlab);
     if (uBrokenDetail > 0.5) {
@@ -105,11 +125,14 @@ if (brkDmg > 0.5) {
       float brkBar = (1.0 - step(0.08, brkBarU)) * max(brkNearSlab, brkRim) * (1.0 - step(0.5, brkN.y));
       diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.09, 0.05, 0.035), brkBar);
     }
-    brkEmber = (1.0 - brkSlab) * step(brkRoom, ${EMBER_SHARE.toFixed(2)});
+    // A smouldering room glows along its floor, fading up into the dark —
+    // embers lighting a room, not a lit orange tile (its mean far away).
+    brkEmber = (1.0 - brkSlab) * mix(${EMBER_SHARE.toFixed(2)} * 0.4,
+      step(brkRoom, ${EMBER_SHARE.toFixed(2)}) * (1.0 - smoothstep(0.1, 0.7, brkInSlab)), brkRoomDetail);
   }
   // D8 scorch: soot-blackened patches over everything destruction exposed —
   // the stump's cut faces and the rubble alike.
-  float brkSoot = smoothstep(0.5, 0.85, abHash(floor(brkW * 0.45), vBSeed * 5.0));
+  float brkSoot = mix(0.325, smoothstep(0.5, 0.85, abHash(floor(brkW * 0.45), vBSeed * 5.0)), abDetail(2.2, brkAA));
   diffuseColor.rgb *= 1.0 - ${SOOT.toFixed(2)} * brkSoot;
 }
 `;

@@ -1540,6 +1540,34 @@ export const VIEWS = [
       burn: 0.9,
     },
   },
+  // G7: inferno-gutted's block at night, burn 0.6, ~250 m out over the
+  // avenue at x = 400, level with the tops of its gutted towers (the flames
+  // below the frame) — the range where they read as navy blocks and
+  // orange/black checkerboards (tools/perf/gutted-check.mjs scores it).
+  {
+    name: "inferno-gutted-mid",
+    x: 400,
+    z: 1180,
+    y: 170,
+    yaw: 0,
+    eye: [400, 140, 1080],
+    at: [440, 110, 800],
+    timeMs: 1_790_000_000_000,
+    weather: "clear",
+    stage: {
+      area: {
+        x: 400,
+        z: 780,
+        r: 200,
+        share: 0.3,
+        seed: 6,
+        t: -60_000,
+        stepMs: 1000,
+        buildings: 16,
+      },
+      burn: 0.6,
+    },
+  },
   // L2 Stormlit: the reference's long view — 300 m over the river, looking
   // east along it past the real city's fog limit to the far skyline (its
   // waterfront, bridge light chains and spires) and the glowing horizon.

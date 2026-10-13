@@ -28,7 +28,7 @@ import { deflateSync, inflateSync } from "node:zlib";
 export const FIRE_MASK = { hueMax: 25, hueWrap: 345, sat: 0.45, val: 0.45 };
 
 /** HUD rects in the 1280 × 720 desktop layout: [x0, y0, x1, y1]. */
-const HUD_RECTS = [
+export const HUD_RECTS = [
   [0, 0, 250, 190], // minimap + its buttons
   [470, 0, 810, 52], // the carrier's name and bar
   [460, 615, 820, 665], // the coach tip

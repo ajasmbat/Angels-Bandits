@@ -251,14 +251,15 @@ describe("losClear against real generateCity() output", () => {
   const city = generateCity(42);
 
   it("is blocked by the landmark shaft at (500, 700) and clear above it", () => {
-    // Landmark tiers are seed-independent: 90 m podium to y=60, 62 m shaft to
-    // y=210, 34 m crown to y=250. At y=150 the shaft spans x 469..531.
+    // Landmark tiers are seed-independent: 90 m podium to y=60, 60 m shaft to
+    // y=392, 34 m crown to y=449, 10 m needle to CITY_TOP (480). At y=150
+    // the shaft spans x 470..530.
     expect(
       losClear({ x: 300, y: 150, z: 700 }, { x: 700, y: 150, z: 700 }, city),
     ).toBe(false);
-    // Nothing in the city reaches 250 m, so 300 m sees clean across.
+    // Nothing in the city reaches CITY_TOP + 20, so 500 m sees clean across.
     expect(
-      losClear({ x: 300, y: 300, z: 700 }, { x: 700, y: 300, z: 700 }, city),
+      losClear({ x: 300, y: 500, z: 700 }, { x: 700, y: 500, z: 700 }, city),
     ).toBe(true);
   });
 

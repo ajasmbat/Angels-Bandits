@@ -6,9 +6,13 @@
 
 import {
   BLOCK_PITCH,
-  HEIGHT_BANDS,
+  CORE_LOT_MAX_DEPTH,
+  CRANE_SITE_REACH,
+  CRANE_SITE_ROOF_MAX,
+  HEIGHT_BANDS_CORE,
+  HEIGHT_BANDS_EDGE,
+  HEIGHT_BANDS_MID,
   LANDMARK_FOOTPRINT,
-  LANDMARK_HEIGHT,
   LOT_CROSS_SPLIT_CHANCE,
   LOT_INTERIOR_INSET_MAX,
   LOT_MAX_DEPTH,
@@ -16,6 +20,9 @@ import {
   LOT_SPLIT_MAX,
   LOT_SPLIT_MIN,
   LOT_STOP_CHANCE,
+  SLENDER_MAX,
+  TIER_FOUR_MIN_HEIGHT,
+  TIER_MIN_SIDE,
   TIER_SETBACK_MAX,
   TIER_SETBACK_MIN,
   TIER_SPLIT_MAX,
@@ -32,6 +39,7 @@ import { isRiverRow } from "./river";
 import { mulberry32 } from "./rng";
 import { type RoofStructure, roofStructuresFor } from "./roof-structures";
 import { LOT_LINE } from "./street";
+import { type BlockZone, blockZone } from "./zones";
 
 // Re-exported so the hand-placed lists keep their long-standing import site
 // (client signage, common/storm) while living in their own module.
@@ -45,6 +53,15 @@ export {
   landmarkStyleAt,
 } from "./landmarks";
 export { mulberry32 };
+// H1: the district seam (core / mid / edge) the generator builds heights by.
+export {
+  type BlockZone,
+  CITY_CORES,
+  CORE_RADIUS,
+  LANDMARK_RING,
+  MID_RADIUS,
+  blockZone,
+} from "./zones";
 // D2 breakable buildings: the chunk model and the damage state.
 export {
   type BuildingDamage,
@@ -179,9 +196,11 @@ export const CITY_GRID = WORLD_SIZE / BLOCK_PITCH;
 
 const blockKey = (bx: number, bz: number) => bx * CITY_GRID + bz;
 
-/** How many tiers a building of `height` gets from its 0..1 tier roll. */
+/** How many tiers a building of `height` gets from its 0..1 tier roll.
+ * H1: setbacks scale with height — the skyscrapers of the cores take four. */
 function tierCount(height: number, rTier: number): number {
   if (height < TIER_TWO_MIN_HEIGHT) return 1;
+  if (height >= TIER_FOUR_MIN_HEIGHT && rTier < 0.6) return 4;
   if (height >= TIER_THREE_MIN_HEIGHT && rTier < 0.55) return 3;
   if (rTier < 0.85) return 2;
   return 1; // some talls stay sheer slabs — skyline variety
@@ -203,12 +222,23 @@ function buildTiers(
   const setback =
     TIER_SETBACK_MIN + rSetback * (TIER_SETBACK_MAX - TIER_SETBACK_MIN);
   const split = TIER_SPLIT_MIN + rSplit * (TIER_SPLIT_MAX - TIER_SPLIT_MIN);
+  // H1: never set back past TIER_MIN_SIDE — a tower whose next tier would
+  // be a stick keeps fewer, fatter tiers instead. (Only ever binds the
+  // extra tiers H1 added: the old 1–3 tier towers never reach it.)
+  let n = count;
+  while (
+    n > 1 &&
+    Math.min(width, depth) * setback ** (n - 1) < TIER_MIN_SIDE &&
+    n > tierFloor(height)
+  ) {
+    n--;
+  }
   const tiers: Tier[] = [];
   let w = width;
   let d = depth;
   let remaining = height;
-  for (let i = 0; i < count; i++) {
-    const h = i === count - 1 ? remaining : Math.round(remaining * split);
+  for (let i = 0; i < n; i++) {
+    const h = i === n - 1 ? remaining : Math.round(remaining * split);
     tiers.push({ width: w, depth: d, height: h });
     remaining -= h;
     w = Math.round(w * setback);
@@ -216,6 +246,12 @@ function buildTiers(
   }
   return tiers;
 }
+
+/** The fewest tiers TIER_MIN_SIDE may cut a tower down to: only H1's
+ * fourth tier is ever dropped — the 1–3 tier profiles below
+ * TIER_FOUR_MIN_HEIGHT keep their old shapes whatever their top width. */
+const tierFloor = (height: number): number =>
+  height >= TIER_FOUR_MIN_HEIGHT ? 3 : 4;
 
 /**
  * A rectangle of buildable land in canonical world coordinates, x0 < x1 and
@@ -248,13 +284,14 @@ function subdivide(
   depth: number,
   rand: () => number,
   out: Lot[],
+  maxDepth: number = LOT_MAX_DEPTH,
 ): void {
   const width = lot.x1 - lot.x0;
   const depthM = lot.z1 - lot.z0;
   const canX = width >= 2 * LOT_MIN_WIDTH;
   const canZ = depthM >= 2 * LOT_MIN_WIDTH;
 
-  if (depth >= LOT_MAX_DEPTH || (!canX && !canZ)) {
+  if (depth >= maxDepth || (!canX && !canZ)) {
     out.push(lot);
     return;
   }
@@ -286,8 +323,8 @@ function subdivide(
 
   const a = splitX ? { ...lot, x1: cut } : { ...lot, z1: cut };
   const b = splitX ? { ...lot, x0: cut } : { ...lot, z0: cut };
-  subdivide(a, depth + 1, rand, out);
-  subdivide(b, depth + 1, rand, out);
+  subdivide(a, depth + 1, rand, out, maxDepth);
+  subdivide(b, depth + 1, rand, out, maxDepth);
 }
 
 /**
@@ -327,19 +364,40 @@ function insetInterior(lot: Lot, block: Lot, rand: () => number): Lot {
   return inset;
 }
 
+/** H1: each district's height table (constants.ts). */
+const ZONE_BANDS: Record<
+  BlockZone,
+  ReadonlyArray<readonly [number, number, number]>
+> = {
+  core: HEIGHT_BANDS_CORE,
+  mid: HEIGHT_BANDS_MID,
+  edge: HEIGHT_BANDS_EDGE,
+};
+
 /**
- * Height for one lot from the HEIGHT_BANDS table: `rBand` picks the band,
+ * Height for one lot from its zone's band table: `rBand` picks the band,
  * `rIn` picks uniformly inside it. A band table rather than a power curve
  * because the skyline read is the histogram — mostly low streetwall with a
- * thin tail of towers — and that is far easier to tune as bands.
+ * thin tail of towers — and that is far easier to tune as bands. H1: then
+ * capped at SLENDER_MAX × the lot's short side (a narrow lot keeps a
+ * pencil tower, the wide lots take the skyscrapers).
  */
-function bandHeight(rBand: number, rIn: number): number {
-  for (const band of HEIGHT_BANDS) {
-    if (rBand < band[0]) return Math.round(band[1] + rIn * (band[2] - band[1]));
+function bandHeight(
+  bands: ReadonlyArray<readonly [number, number, number]>,
+  rBand: number,
+  rIn: number,
+  shortSide: number,
+): number {
+  let pick = bands[bands.length - 1];
+  for (const band of bands) {
+    if (rBand < band[0]) {
+      pick = band;
+      break;
+    }
   }
-  const last = HEIGHT_BANDS[HEIGHT_BANDS.length - 1];
-  if (!last) throw new Error("HEIGHT_BANDS is empty");
-  return Math.round(last[1] + rIn * (last[2] - last[1]));
+  if (!pick) throw new Error("height band table is empty");
+  const h = Math.round(pick[1] + rIn * (pick[2] - pick[1]));
+  return Math.min(h, Math.round(SLENDER_MAX * shortSide));
 }
 
 /**
@@ -352,6 +410,30 @@ function bandHeight(rBand: number, rIn: number): number {
  */
 const blockSeed = (seed: number, bx: number, bz: number) =>
   (seed ^ Math.imul(bx + 1, 73856093) ^ Math.imul(bz + 1, 19349663)) >>> 0;
+
+/** Torus distance between two canonical coordinates on one axis. */
+const axisGap = (a: number, b: number): number => {
+  const d = Math.abs(a - b) % WORLD_SIZE;
+  return Math.min(d, WORLD_SIZE - d);
+};
+
+/** H1: does `lot` come within CRANE_SITE_REACH of a construction block?
+ * Its building then stays under CRANE_SITE_ROOF_MAX, so the site's crane
+ * keeps its full jib over the street (city/movers.ts generateMovers). */
+function nearCraneSite(lot: Lot): boolean {
+  const cx = (lot.x0 + lot.x1) / 2;
+  const cz = (lot.z0 + lot.z1) / 2;
+  for (const [bx, bz] of CONSTRUCTION_BLOCKS) {
+    const sx = bx * BLOCK_PITCH + BLOCK_PITCH / 2;
+    const sz = bz * BLOCK_PITCH + BLOCK_PITCH / 2;
+    const gx = axisGap(cx, sx) - (lot.x1 - lot.x0) / 2 - BLOCK_PITCH / 2;
+    const gz = axisGap(cz, sz) - (lot.z1 - lot.z0) / 2 - BLOCK_PITCH / 2;
+    if (Math.hypot(Math.max(0, gx), Math.max(0, gz)) <= CRANE_SITE_REACH) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /** Salt for the H1 hole stream — separate from the lot stream (roofs.ts
  * idiom), so adding holes moved no lot, and hole rolls never correlate with
@@ -399,7 +481,9 @@ export function generateCity(seed: number): Building[] {
           z: bz * BLOCK_PITCH + BLOCK_PITCH / 2,
           width: LANDMARK_FOOTPRINT,
           depth: LANDMARK_FOOTPRINT,
-          height: LANDMARK_HEIGHT,
+          // H1: the supertalls differ in height (400–480 m); every one is
+          // at least LANDMARK_HEIGHT, which is how the city knows them.
+          height: profile.tiers.reduce((s, t) => s + t.height, 0),
           tiers: profile.tiers.map((t) => ({ ...t })),
           holes: [landmarkArch(bx, bz)],
         });
@@ -417,14 +501,30 @@ export function generateCity(seed: number): Building[] {
       };
 
       const rand = mulberry32(blockSeed(seed, bx, bz));
+      const zone = blockZone(bx, bz);
       const lots: Lot[] = [];
-      subdivide(block, 0, rand, lots);
+      // H1: the cores cut fewer, wider lots — the skyscrapers' footprints.
+      subdivide(
+        block,
+        0,
+        rand,
+        lots,
+        zone === "core" ? CORE_LOT_MAX_DEPTH : LOT_MAX_DEPTH,
+      );
 
       for (const raw of lots) {
         const lot = insetInterior(raw, block, rand);
         const width = lot.x1 - lot.x0;
         const depth = lot.z1 - lot.z0;
-        const height = bandHeight(rand(), rand());
+        const banded = bandHeight(
+          ZONE_BANDS[zone],
+          rand(),
+          rand(),
+          Math.min(width, depth),
+        );
+        const height = nearCraneSite(lot)
+          ? Math.min(banded, CRANE_SITE_ROOF_MAX)
+          : banded;
         const rTier = rand();
         const rSetback = rand();
         const rSplit = rand();

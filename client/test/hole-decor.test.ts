@@ -61,7 +61,8 @@ function corners(i: number) {
 
 describe("hole decor — seed 42", () => {
   it("decorates every hole, inside the vertex budget, deterministically", () => {
-    expect(spans.length).toBeGreaterThanOrEqual(30);
+    // H1: 29 spans on the taller city (holes.test.ts).
+    expect(spans.length).toBeGreaterThanOrEqual(28);
     for (const { span, quads } of decor) {
       const inside = quads.filter((q) => q.kind !== DecorKind.CHEVRON);
       expect(

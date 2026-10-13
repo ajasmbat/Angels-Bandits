@@ -53,13 +53,18 @@ const R = PLAYER_RADIUS;
 const MAX_POS_RATE = 6;
 const MAX_ANG_RATE = 20 * DEG;
 
-const city = generateCity(CITY_SEED);
 /** main.ts's saveWorld, without the clock-driven solids (see the header). */
-const world: SaveWorld = {
-  spans: [...cityHoles(city), ...bridgeSpans()],
-  buildings: city,
-  index: buildCityIndex(city),
+const worldFor = (seed: number): SaveWorld => {
+  const city = generateCity(seed);
+  return {
+    spans: [...cityHoles(city), ...bridgeSpans()],
+    buildings: city,
+    index: buildCityIndex(city),
+  };
 };
+/** The world every flight below is flown in: seed 42's, but for the seam
+ * draw (H1: the taller seed-42 city has no hole near the seam). */
+let world: SaveWorld = worldFor(CITY_SEED);
 const crashes = (st: FlightState) =>
   detectCrash(st, world.buildings, world.index);
 const wrap = (v: number) => ((v % WORLD_SIZE) + WORLD_SIZE) % WORLD_SIZE;
@@ -363,7 +368,16 @@ describe("hole save — seeded near-misses through the seed-42 city", () => {
     const speeds = kept.map((c) => c.off.speed);
     expect(Math.min(...speeds)).toBeLessThan(45);
     expect(Math.max(...speeds)).toBeGreaterThan(120);
-    expect(kept.some((c) => c.off.seam)).toBe(true);
+    // Across the seam: H1's taller seed-42 city has no hole near it, so
+    // seed 2's near-misses (drawn and filtered the same way) carry it.
+    const home = world;
+    world = worldFor(2);
+    try {
+      const seam = sample().kept.filter((c) => c.off.seam);
+      expect(kept.some((c) => c.off.seam) || seam.length > 0).toBe(true);
+    } finally {
+      world = home;
+    }
   });
 
   for (const [mode, flights] of [

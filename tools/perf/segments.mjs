@@ -12,7 +12,10 @@
 // CRASH SAFETY IS PART OF THE CONTRACT. A segment that flies into a tower
 // dies, and a dead plane renders a kill-cam instead of the scene we meant to
 // measure. Two ways to be safe, and every segment below uses one of them:
-//   1. y > 260 — above LANDMARK_HEIGHT (250), the tallest thing in the city.
+//   1. y > 336 — above every generated roof and its roof structures
+//      (BUILDING_MAX_HEIGHT 320 + 16), AND clear of the four landmark
+//      supertalls (to CITY_TOP, 480 m), whose blocks every such path avoids
+//      — or y > 480, over everything.
 //   2. Travel along a street: with yaw 0 the plane flies down -Z at constant
 //      x, so an x on a BLOCK_PITCH (200 m) boundary stays inside the 30 m
 //      street band for the whole segment, whatever the buildings do.
@@ -79,8 +82,12 @@ export const TRAINS_SLIDE_MAX_MS = WORLD_STEP_MS - SETTLE_MS - SAMPLE_MS;
  *    headlight pools (each is one draw, all are dressing).
  */
 /** D6: see BUDGETS.chunkInstances — the runner's `ruins` (316 damaged-mesh
- * slots + 667 debris pieces = 983) + 10 % (README D6). */
-const CHUNK_INSTANCES_BUDGET = 1082;
+ * slots + 667 debris pieces = 983) + 10 % (README D6). H1 re-derived it the
+ * same way for the taller city: the same 30 % chew of the `ruins` block
+ * brings down buildings ~2× taller, and D10 cuts their debris by storey —
+ * 237 slots + 4848 pieces = 5085 (rubble: 2541), + 10 %. The debris mesh's
+ * boot size (76 954 for the H1 city) still holds them with room to spare. */
+const CHUNK_INSTANCES_BUDGET = 5594;
 
 export const BUDGETS = {
   gpuP50Ms: 14,
@@ -156,7 +163,7 @@ export const SEGMENTS = [
     what: "high and level — the whole skyline inside FOG_DISTANCE at once",
     x: 700,
     z: 1400,
-    y: 560, // under the 600 m storm ceiling: this segment must not die
+    y: 560, // under the 750 m storm ceiling, over every supertall: this segment must not die
     yaw: yawToward(-1, 1),
   },
   {
@@ -310,14 +317,16 @@ export const SEGMENTS = [
   // 50 ms from 1 s before the segment's instant to 12 s after: clear.
   {
     name: "collapse",
-    what: "D3/D5: a 215 m tower toppling across the street ahead — debris in the air, the dust cloud rising",
-    // Building 343 (1240, 464), west face on the x = 1200 street. HELD on
-    // that street's centreline 236 m south, 110 m up, nose north. It
-    // topples west (−x) across the street: 126 pieces, 8.7 s from the
-    // charge to the last landing, its rubble 20–281 m west of its centre —
-    // never near the camera.
-    x: 1200,
-    z: 700,
+    what: "D3/D5: a 294 m skyscraper toppling across the street ahead — debris in the air, the dust cloud rising",
+    // H1: building 157 (658.5, 249), 294 m, in the downtown core, west
+    // face on the x = 600 street (D6's tower 343 at (1240, 464) on the
+    // x = 1200 street is a mid-rise now; this is its pose shifted (−600,
+    // −215), so the street and the face line up as they did). HELD on that
+    // street's centreline 236 m south, 110 m up, nose north. It topples
+    // west (−x) across the street into the towers there — never near the
+    // camera.
+    x: 600,
+    z: 485,
     y: 110,
     yaw: 0,
     hold: true,
@@ -327,20 +336,20 @@ export const SEGMENTS = [
     // ~0.75 s of world time) and on the M3 (~5 s of it) alike. The harness
     // asserts it has NOT all landed by the window's end.
     stageAtWindow: {
-      fell: [{ b: 343, h: 215, style: "topple", dir: 0, t: -1500 }],
+      fell: [{ b: 157, h: 294, style: "topple", dir: 0, t: -1500 }],
       // D9: and what its debris and the fight knock over on the street
       // ahead — two cars blown, a roof tank toppling, lamps snapped, a
       // crater with its water main spraying.
       props: {
         down: [
-          { kind: "car", near: { x: 1186, z: 554 }, t: -2500, blast: 500 },
-          { kind: "car", near: { x: 1186, z: 641 }, t: -1800, blast: 600 },
-          { kind: "tank", near: { x: 1175, z: 527 }, t: -500 },
-          { kind: "tank", near: { x: 1229, z: 513 }, t: -1200 },
-          { kind: "lamp", near: { x: 1216, z: 600 }, t: -2000 },
-          { kind: "lamp", near: { x: 1184, z: 575 }, t: -2000 },
+          { kind: "car", near: { x: 586, z: 339 }, t: -2500, blast: 500 },
+          { kind: "car", near: { x: 586, z: 426 }, t: -1800, blast: 600 },
+          { kind: "tank", near: { x: 575, z: 312 }, t: -500 },
+          { kind: "tank", near: { x: 629, z: 298 }, t: -1200 },
+          { kind: "lamp", near: { x: 616, z: 385 }, t: -2000 },
+          { kind: "lamp", near: { x: 584, z: 360 }, t: -2000 },
         ],
-        craters: [{ x: 1196, z: 560, r: 4.5, t: -2400, water: true }],
+        craters: [{ x: 596, z: 345, r: 4.5, t: -2400, water: true }],
       },
     },
     expect: "falling",
@@ -350,7 +359,7 @@ export const SEGMENTS = [
     what: "D1–D4: the 12-plane furball in a heavily damaged block — broken towers, collapses still coming, dust, burning facades, a wreck's fire",
     // The furball's own viewpoint, weather and 11 pilots, so `ruins` −
     // `furball` is what the destruction costs that fight. The block around
-    // the pilots' corridor (18 buildings within 200 m of (400, 780)) has
+    // the pilots' corridor (16 buildings within 200 m of (400, 780)) has
     // 30 % of its chunks shot away (seeded); the 21 collapses that leaves
     // owing start every second from 14 s before the segment's instant to
     // 6 s after it, so dust hangs over landed rubble while more comes down.
@@ -374,7 +383,7 @@ export const SEGMENTS = [
         seed: 6,
         t: -14_000,
         stepMs: 1000,
-        buildings: 18,
+        buildings: 16,
       },
       blasts: [
         { x: 382, y: 55, z: 720, t: -2000 },
@@ -391,8 +400,8 @@ export const SEGMENTS = [
           hit: "city",
         },
       ],
-      // D9: the block's street — cars blown and burning, a tank and a
-      // billboard down off the roofs, lamps snapped, craters (one a burst
+      // D9: the block's street — cars blown and burning, two water tanks
+      // down off the roofs (H1: one was a billboard), lamps snapped, craters (one a burst
       // water main) — and two floors burning, sooting their facade.
       props: {
         down: [
@@ -400,7 +409,9 @@ export const SEGMENTS = [
           { kind: "car", near: { x: 414, z: 971 }, t: -2500, blast: 400 },
           { kind: "car", near: { x: 440, z: 986 }, t: -1500, blast: 700 },
           { kind: "tank", near: { x: 432, z: 836 }, t: -3000 },
-          { kind: "billboard", near: { x: 450, z: 852 }, t: -800 },
+          // H1: the taller block has no billboard roof left; its
+          // neighbour's water tank goes instead.
+          { kind: "tank", near: { x: 471, z: 877 }, t: -800 },
           { kind: "lamp", near: { x: 416, z: 925 }, t: -3000 },
           { kind: "lamp", near: { x: 384, z: 962 }, t: -2000 },
         ],
@@ -415,12 +426,12 @@ export const SEGMENTS = [
     name: "rubble",
     what: "D2/D3: a glide down a street both sides of which came down into it — every piece at rest",
     // The x = 1200 street, from z = 1880 north at 20 m (the x = 800 street
-    // has a viaduct over it). Buildings 332 and 325 (west) and 375 and 374
-    // (east) toppled across it 56–62 s before the segment's instant, after
-    // 25 % of the chunks of the five buildings within 120 m of (1200, 1700)
-    // were shot away: 8 collapses (L3 seed 27; 6 and 386 chunks before), the last landed 44 s
-    // before the instant — no dust, nothing moving; the harness asserts
-    // every collapse is at rest. A glide in WALL time, like `hole`.
+    // has a viaduct over it). H1: buildings 303 (west) and 340 and 341
+    // (east, the 241 m one) toppled across it 58–62 s before the segment's
+    // instant, after 25 % of the chunks of the three buildings within 120 m
+    // of (1200, 1700) were shot away (Midtown's landmark is one of them) —
+    // no dust, nothing moving; the harness asserts every collapse is at
+    // rest. A glide in WALL time, like `hole`.
     x: 1200,
     z: 1880,
     y: 20,
@@ -432,22 +443,18 @@ export const SEGMENTS = [
         z: 1700,
         r: 120,
         share: 0.25,
-        // L3: 27, not 9 — the Art Deco landmark profiles changed the
-        // city's chunk count (and so the destruction caps), and seed 9's
-        // area pass now brings 375 down before its scripted fell. Seed 27
-        // stages on both the pre- and post-L3 city (8 collapses each, every
-        // fell standing until its own), so an --ab-ref across L3 measures
-        // the same scene in both arms.
-        seed: 27,
+        // H1: 18 — the taller city's area pass would take 340 and 341
+        // down before their scripted fells under L3's 27; under 18 every
+        // fell stands until its own (8 collapses).
+        seed: 18,
         t: -75_000,
         stepMs: 500,
-        buildings: 5,
+        buildings: 3,
       },
       fell: [
-        { b: 332, h: 117, style: "topple", dir: 1, t: -62_000 },
-        { b: 375, h: 168, style: "topple", dir: 0, t: -60_000 },
-        { b: 374, h: 135, style: "topple", dir: 0, t: -58_000 },
-        { b: 325, h: 107, style: "topple", dir: 1, t: -56_000 },
+        { b: 303, h: 117, style: "topple", dir: 1, t: -62_000 },
+        { b: 340, h: 132, style: "topple", dir: 0, t: -60_000 },
+        { b: 341, h: 241, style: "topple", dir: 0, t: -58_000 },
       ],
     },
     expect: "settled",
@@ -461,9 +468,10 @@ export const SEGMENTS = [
   {
     name: "boss",
     what: "S4: a full 12-plane room weaving under the war zeppelin and its flak, at altitude",
-    // HELD at 285 m (over every roof, under the hull's 268–337 m band only
+    // HELD at 550 m (H1: S8's 285 m lifted with BOSS_ALT, 305 → 570 m —
+    // over every roof and supertall, under the hull's 540–600 m band only
     // where the hull is 380+ m away) while 11 fake pilots weave 70–230 m
-    // ahead at 262–317 m — inside the plane LOD's near band (300 m) from
+    // ahead at 527–582 m — inside the plane LOD's near band (300 m) from
     // the camera, so every plane is the full airframe all window — and hold
     // their fire (a tracer is a draw call, timed on the pilots' wall clock).
     // The zeppelin is STAGED on the client (`__ab.qaBoss`,
@@ -473,15 +481,15 @@ export const SEGMENTS = [
     // the segment's instant so shells are always in the air.
     x: 1000,
     z: 1000,
-    y: 285,
+    y: 550,
     yaw: 0,
     hold: true,
     pilots: 11,
-    pilotFlight: { near: 70, far: 230, yLo: 262, yHi: 317 },
+    pilotFlight: { near: 70, far: 230, yLo: 527, yHi: 582 },
     pilotFire: false,
     boss: {
       ahead: 520,
-      corridor: { near: 70, far: 230, lateral: 25, yLo: 262, yHi: 317 },
+      corridor: { near: 70, far: 230, lateral: 25, yLo: 527, yHi: 582 },
     },
   },
   {
@@ -510,7 +518,7 @@ export const SEGMENTS = [
   {
     name: "glass",
     what: "S6: a close-up on the glass landmark — the probe's neon skyline in its curtain wall",
-    // Building 127, the 250 m glass landmark at (500, 700) the gallery's
+    // Building 115, the 480 m glass landmark at (500, 700) the gallery's
     // glass-landmark view frames. HELD 85 m off its north-west corner at
     // 120 m, nose toward (500, 700): the frame is curtain wall at a grazing
     // angle, where the Fresnel term makes the reflection strongest. A held
@@ -537,17 +545,20 @@ export const SEGMENTS = [
   {
     name: "chaos",
     what: "C2 peak chaos: 12 planes under the war zeppelin and its flak, a missile a second, meteors, a quake, fire and a tower toppling across the street",
-    // D6's `collapse` viewpoint (building 343, 215 m, toppling west across
-    // the x = 1200 street 236 m ahead), HELD at 110 m. 11 fake pilots weave
+    // D6's `collapse` viewpoint (H1: building 157, 294 m, toppling west
+    // across the x = 600 street 236 m ahead), HELD at 110 m. 11 fake pilots weave
     // 70–230 m ahead down the street at 120–200 m — inside the plane LOD's
     // near band, so every plane is the full airframe all window — and hold
     // their fire (a tracer is a draw on the pilots' own wall clock). The
     // zeppelin crosses 520 m out at mid-window (S8's staging); a missile
     // launches every second (4–5 in the air) and a meteor every 2.5 s
-    // (1–2); a quake shakes all window; building 303's street face burns.
+    // (1–2); a quake shakes all window; building 161's street face burns.
+    // H1: the zeppelin flies at BOSS_ALT 570 m now, ~460 m over this held
+    // camera — mostly over the top of the frame; its beams, escorts and
+    // flak still reach down into it.
     // (W1 retired C2's jet formations, which crossed this view too.)
-    x: 1200,
-    z: 700,
+    x: 600,
+    z: 485,
     y: 110,
     yaw: 0,
     hold: true,
@@ -562,20 +573,20 @@ export const SEGMENTS = [
       // L7: the inferno at its peak — burn 0.9, snapped (never ramps
       // inside the window); a build without it ignores the field.
       burn: 0.9,
-      fell: [{ b: 343, h: 215, style: "topple", dir: 0, t: -1500 }],
+      fell: [{ b: 157, h: 294, style: "topple", dir: 0, t: -1500 }],
       // D9: and what its debris and the fight knock over on the street
       // ahead — two cars blown, a roof tank toppling, lamps snapped, a
       // crater with its water main spraying.
       props: {
         down: [
-          { kind: "car", near: { x: 1186, z: 554 }, t: -2500, blast: 500 },
-          { kind: "car", near: { x: 1186, z: 641 }, t: -1800, blast: 600 },
-          { kind: "tank", near: { x: 1175, z: 527 }, t: -500 },
-          { kind: "tank", near: { x: 1229, z: 513 }, t: -1200 },
-          { kind: "lamp", near: { x: 1216, z: 600 }, t: -2000 },
-          { kind: "lamp", near: { x: 1184, z: 575 }, t: -2000 },
+          { kind: "car", near: { x: 586, z: 339 }, t: -2500, blast: 500 },
+          { kind: "car", near: { x: 586, z: 426 }, t: -1800, blast: 600 },
+          { kind: "tank", near: { x: 575, z: 312 }, t: -500 },
+          { kind: "tank", near: { x: 629, z: 298 }, t: -1200 },
+          { kind: "lamp", near: { x: 616, z: 385 }, t: -2000 },
+          { kind: "lamp", near: { x: 584, z: 360 }, t: -2000 },
         ],
-        craters: [{ x: 1196, z: 560, r: 4.5, t: -2400, water: true }],
+        craters: [{ x: 596, z: 345, r: 4.5, t: -2400, water: true }],
       },
     },
     expect: "falling",
@@ -593,7 +604,7 @@ export const SEGMENTS = [
         seed: 12,
       },
       quake: { startMs: -500, dur: 7000, mag: 0.8, aim: { ahead: 300, y: 0 } },
-      fires: { b: 303, h: 49, chunks: 12 },
+      fires: { b: 161, h: 250, chunks: 12 },
     },
   },
   {

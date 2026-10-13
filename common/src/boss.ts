@@ -49,10 +49,10 @@ import { type WreckHit, type WreckPath, wreckPosAt } from "./wreck";
 
 // --- Flight envelope ----------------------------------------------------------
 
-/** Cruise altitude of the hull's centre, m. The whole hull (268–337 m) sits
- * over every roof (250 m) and helicopter (≤ 263 m), under the news heli
- * (≥ 346.8 m), the blimp (≥ 416 m) and CLOUD_BASE. */
-export const BOSS_ALT = 305;
+/** Cruise altitude of the hull's centre, m. H1: the whole hull (540–600 m)
+ * sits over every roof (CITY_TOP 480 m, the supertalls) and the news heli
+ * (rotor ≤ 519.2 m), under the blimp (≥ 611 m) and CLOUD_BASE. */
+export const BOSS_ALT = 570;
 /** Cruise speed, m/s — a lumbering thing, slower than any plane's MIN_SPEED. */
 export const BOSS_SPEED = 16;
 /** Orbit radius around the raid's centre, m. */

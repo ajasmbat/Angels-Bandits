@@ -892,16 +892,17 @@ async function spectacle(c, minute) {
       window.__ab.qaCaveIn(null);
       const ab = window.__ab;
       const t = ab.net().worldTime ?? 0;
-      ab.teleport(1000, 1400, 290, 0);
+      // H1: 265 m higher, with the carrier (BOSS_ALT 305 → 570 m).
+      ab.teleport(1000, 1400, 555, 0);
       ab.qaBoss({
         x: 1000,
-        y: 290,
+        y: 555,
         z: 1400,
         yaw: 0,
         ahead: 520,
         worldMs: t,
         crossMs: 8000,
-        corridor: { near: 70, far: 230, lateral: 25, yLo: 262, yHi: 317 },
+        corridor: { near: 70, far: 230, lateral: 25, yLo: 527, yHi: 582 },
       });
       ab.qaBossLaunch(0, 0);
       ab.qaBossLaunch(1, 1500);

@@ -79,6 +79,16 @@ import {
   cloudGlsl,
   createCloudUniforms,
 } from "./sky-clouds";
+import {
+  BURN_SKY_THIN,
+  BURN_SKY_TOP,
+  SKY_FOG_AIR,
+  SKY_FOG_ELEVATION,
+  SKY_FOG_STOP,
+  SKY_FOG_STOPS,
+  SKY_GLOW_RAMP,
+  SKY_STOPS,
+} from "./sky-fog";
 import type { SkyState } from "./skycycle";
 import {
   STREET_PAINT_PARS,
@@ -192,16 +202,10 @@ export function setupSky(scene: THREE.Scene): SkyRig {
   return { ambient, moon, glow, hemi };
 }
 
-/** Canvas fraction at which the gradient becomes the fog colour for good.
- * 0.5 is the horizon; 0.4 is 18° above it — higher than the tallest landmark
- * at the fog limit can reach seen from the street, so a fully fogged tower
- * can never be told apart from the sky behind it (the torus occlusion
- * guarantee; pinned in client/test/sky.test.ts). */
-export const SKY_FOG_STOP = 0.4;
-
-/** Vertical gradient stops, as polar-angle fractions (0 zenith, 0.5 the
- * horizon): the last is SKY_FOG_STOP, from which the sky IS the fog colour. */
-export const SKY_STOPS = [0, 0.14, 0.25, 0.32, 0.37, SKY_FOG_STOP] as const;
+// The fog band (SKY_FOG_STOP and friends) lives in sky-fog.ts since H1: the
+// fog chunks read it too (above the stop, fog fades toward this dome's
+// gradient), and fog.ts must not import this module.
+export { SKY_FOG_ELEVATION, SKY_FOG_STOP, SKY_GLOW_RAMP, SKY_STOPS };
 /** L1 night gradient (sRGB): a near-black navy zenith, storm navy, then
  * steel blue lifting toward the band — then DUSK.sky. (VO1's ran deep blue
  * into violet light pollution.) */
@@ -211,12 +215,6 @@ export const SKY_GRADIENT_NIGHT = [
 /** L2: how strongly the city glow (fog.ts CITY_GLOW) lights the cloud
  * masses' undersides near the horizon, × the glow, over a dense district. */
 export const CLOUD_GLOW_GAIN = 2.2;
-/** Elevation (rad) above SKY_FOG_STOP over which the moon halo and the
- * dawn/dusk dome glows ramp in from exactly zero — nothing additive may
- * touch the fog-coloured band (a fogged tower would show against it). */
-export const SKY_GLOW_RAMP = 0.06;
-/** Elevation of SKY_FOG_STOP, rad. */
-export const SKY_FOG_ELEVATION = (0.5 - SKY_FOG_STOP) * Math.PI;
 
 /** Moon disc angular radius, radians (~2.6° — big and cinematic, the way a
  * long lens shows it; the real 0.26° would be a sub-pixel dot at FOV 70). */
@@ -442,7 +440,7 @@ ${chain}
   // weight). Up to SKY_GLOW_RAMP above the stop it is the full map; higher
   // it thins out, so the storm sky and the moon stay over the burning city.
   if (uBurnAir.w > 0.0) {
-    float burnHigh = smoothstep(${(SKY_FOG_ELEVATION + SKY_GLOW_RAMP).toFixed(5)}, ${(SKY_FOG_ELEVATION + 0.22).toFixed(5)}, el);
+    float burnHigh = smoothstep(${(SKY_FOG_ELEVATION + SKY_GLOW_RAMP).toFixed(5)}, ${(SKY_FOG_ELEVATION + BURN_SKY_TOP).toFixed(5)}, el);
     vec3 preBurn = (air - uBurnAir.rgb * uBurnAir.w) / (1.0 - uBurnAir.w);
     float burnW = uBurnAir.w * (1.0 - ${BURN_SKY_THIN.toFixed(2)} * burnHigh);
     air = preBurn * (1.0 - burnW) + uBurnAir.rgb * burnW;
@@ -636,9 +634,9 @@ export function patchCloudCover(
  * deep ember-red, far under the bloom threshold), and how much each glow
  * spot's strength (burn-scaled) adds toward it. */
 export const BURN_SKY_GLOW = [0.075, 0.016, 0.003] as const;
-/** L7b: how much of the burn's smoke tint the high dome sheds (1 = all, at
- * 0.22 rad above the stop; none of it up to SKY_GLOW_RAMP above it). */
-const BURN_SKY_THIN = 0.85;
+// L7b's BURN_SKY_THIN / BURN_SKY_TOP (how much of the burn's smoke tint the
+// high dome sheds, and by when) live in sky-fog.ts since H1: the fog chunks
+// shed it the same way.
 const BURN_SKY_PER_SPOT = 0.3;
 
 /** Camera-following gradient dome, just inside the far plane, above the fog. */
@@ -665,6 +663,7 @@ export class SkyDome {
         .set((hex >> 16) & 255, (hex >> 8) & 255, hex & 255)
         .divideScalar(255);
     });
+    stops.forEach((v, i) => v.toArray(SKY_FOG_STOPS, i * 3));
     const dusk = new THREE.Vector2(GLOW_DIR.x, GLOW_DIR.z).normalize();
     this.clouds = createCloudUniforms();
     this.clouds.uCloudOn.value = cloudsOn ? 1 : 0;
@@ -716,11 +715,15 @@ export class SkyDome {
     const stops = [s.zenith, s.sky14, s.sky25, s.sky32, s.sky37, s.horizon];
     for (let i = 0; i < stops.length; i++) {
       const c = stops[i] as readonly number[];
-      (u.uSkyStops.value[i] as THREE.Vector3).set(
+      const v = u.uSkyStops.value[i] as THREE.Vector3;
+      v.set(
         encodeSrgb(c[0] as number),
         encodeSrgb(c[1] as number),
         encodeSrgb(c[2] as number),
       );
+      // H1: every fogged material fades toward this same gradient above
+      // the stop (sky-fog.ts).
+      v.toArray(SKY_FOG_STOPS, i * 3);
     }
     u.uDuskGlow.value.fromArray(s.duskGlow);
     u.uDawnGlow.value.fromArray(s.dawnGlow);
@@ -761,6 +764,19 @@ export class SkyDome {
     u.uFogColor.value.copy(air.fog);
     const t = air.burnTint;
     u.uBurnAir.value.set(t?.r ?? 0, t?.g ?? 0, t?.b ?? 0, air.burn ?? 0);
+    // H1: the fog chunks' copy of the map (sky-fog.ts), switched on by the
+    // first write — the burn's smoke tint included, so a fogged supertall
+    // over a burning city still takes the dome's colour behind it.
+    SKY_FOG_AIR[0] = air.add.r;
+    SKY_FOG_AIR[1] = air.add.g;
+    SKY_FOG_AIR[2] = air.add.b;
+    SKY_FOG_AIR[3] = air.scale;
+    SKY_FOG_AIR[4] = air.gain;
+    SKY_FOG_AIR[5] = 1;
+    SKY_FOG_AIR[8] = t?.r ?? 0;
+    SKY_FOG_AIR[9] = t?.g ?? 0;
+    SKY_FOG_AIR[10] = t?.b ?? 0;
+    SKY_FOG_AIR[11] = air.burn ?? 0;
   }
 
   /**

@@ -1,7 +1,7 @@
 import {
+  CITY_TOP,
   EMISSIVE_TRACER,
   FOG_DISTANCE,
-  LANDMARK_HEIGHT,
 } from "@angels-bandits/common/constants";
 import { describe, expect, it } from "vitest";
 import {
@@ -9,9 +9,12 @@ import {
   FOG_NEAR,
   MOON_DIR,
   MOON_PEAK,
+  SKY_FOG_ELEVATION,
   SKY_FOG_STOP,
+  SKY_GLOW_RAMP,
   STAR_PEAK,
 } from "../src/render/sky";
+import { skyFogAbove } from "../src/render/sky-fog";
 import { SKY_CYCLE_MS, domeGradient, skyStateAt } from "../src/render/skycycle";
 
 const BLOOM_THRESHOLD = 0.72;
@@ -20,9 +23,26 @@ describe("VO1 blue-hour sky", () => {
   it("is fog-coloured everywhere a fully fogged landmark could stand", () => {
     // The gradient's canvas fraction maps to polar angle; 0.5 is the horizon.
     const fogFromElevation = (0.5 - SKY_FOG_STOP) * Math.PI;
-    // Worst case: a landmark at the fog limit, seen from the pavement.
-    const tallest = Math.atan(LANDMARK_HEIGHT / FOG_DISTANCE);
-    expect(fogFromElevation).toBeGreaterThan(tallest);
+    // Worst case: a landmark at the fog limit (radial fog: the crown is
+    // CITY_TOP up and FOG_DISTANCE away), seen from the pavement. H1's
+    // supertalls stand far above the stop there…
+    const tallest = Math.asin(CITY_TOP / FOG_DISTANCE);
+    expect(fogFromElevation).toBeLessThan(tallest);
+    // …so above the stop a fully fogged surface takes the dome's own colour
+    // (sky-fog.ts abSkyFog): its blend from the fog colour to the dome's
+    // gradient is the dome's, exactly, at every elevation up to the crown.
+    const domeAbove = (el: number) => {
+      const t = Math.min(
+        1,
+        Math.max(0, (el - SKY_FOG_ELEVATION) / SKY_GLOW_RAMP),
+      );
+      return t * t * (3 - 2 * t);
+    };
+    for (let el = 0; el <= tallest; el += 0.002) {
+      expect(skyFogAbove(el)).toBeCloseTo(domeAbove(el), 12);
+    }
+    // Below the stop it is the plain fog colour, as the dome is.
+    expect(skyFogAbove(fogFromElevation)).toBe(0);
   });
 
   it("keeps the linear fog reaching 1 before the torus half-world", () => {

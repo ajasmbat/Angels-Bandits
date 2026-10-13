@@ -59,14 +59,26 @@ export const EMISSIVE_AA_TRACER = 1.4;
 export const EMISSIVE_TRACER = 1.5;
 
 // --- Buildings ---
-// Height bounds are the envelope of HEIGHT_BANDS below; the bands are what
-// actually shapes the skyline. BUILDING_MAX_HEIGHT stays strictly under
-// LANDMARK_HEIGHT because four consumers (minimap, roof beacons, facade
-// archetypes, the city's neon tint) identify a landmark by height alone.
+// Height bounds are the envelope of the zone band tables below; the bands
+// are what actually shapes the skyline. BUILDING_MAX_HEIGHT (plus the
+// tallest roof structure) stays strictly under LANDMARK_HEIGHT because
+// consumers all over the client (minimap, roof beacons, facade archetypes,
+// the city's neon tint, searchlights) identify a landmark by height alone.
 export const BUILDING_MIN_HEIGHT = 20;
-export const BUILDING_MAX_HEIGHT = 240;
-/** Hand-placed landmark supertalls for orientation. */
-export const LANDMARK_HEIGHT = 250;
+/** H1: the downtown cores' tallest towers (was 240). */
+export const BUILDING_MAX_HEIGHT = 320;
+/** Hand-placed landmark supertalls for orientation. H1: the RECOGNITION
+ * threshold — every landmark is at least this tall (the shortest is exactly
+ * this), every generated building is under it, so `height >=
+ * LANDMARK_HEIGHT` still means "a landmark". Their real heights are their
+ * profiles' (city/landmarks.ts, 400–480 m). */
+export const LANDMARK_HEIGHT = 400;
+/** H1: the tallest thing in the city — the tallest landmark profile's
+ * summed tiers (city/landmarks.ts keeps them equal; a test pins it). Every
+ * altitude that must clear the whole skyline (the carrier, the news heli,
+ * the blimp, the cloud deck, the ceilings) is set above this, never above
+ * LANDMARK_HEIGHT. */
+export const CITY_TOP = 480;
 /** Footprint side of the slim landmark towers, meters. */
 export const LANDMARK_FOOTPRINT = 90;
 
@@ -99,19 +111,54 @@ export const LOT_CROSS_SPLIT_CHANCE = 0.25;
 export const LOT_INTERIOR_INSET_MAX = 4;
 
 /**
- * Skyline distribution: [cumulative probability, min height, max height].
- * A continuous low/mid streetwall with a thin tail of towers punching
- * through — a plain power curve over one range gives a lumpy mid-rise mass
- * once there are several buildings per block. Must be sorted ascending by
- * probability, end at exactly 1, and stay inside
+ * Skyline distribution: [cumulative probability, min height, max height],
+ * one table per H1 zone (city/zones.ts). A band table rather than a power
+ * curve because the skyline read is the histogram. Each must be sorted
+ * ascending by probability, end at exactly 1, and stay inside
  * [BUILDING_MIN_HEIGHT, BUILDING_MAX_HEIGHT].
+ *
+ *  - CORE: the two downtown cores — a dense mass of 150–320 m towers with
+ *    some shorter filler between them (Manhattan's Midtown and Downtown).
+ *  - MID: the mid-rise ring round the cores and the landmarks — 40–120 m
+ *    blocks with a thin tail of towers.
+ *  - EDGE: the outskirts and the waterfront — the low streetwall.
  */
-export const HEIGHT_BANDS: ReadonlyArray<readonly [number, number, number]> = [
-  [0.7, 20, 60],
-  [0.9, 60, 120],
-  [0.98, 120, 190],
-  [1.0, 190, 240],
+export const HEIGHT_BANDS_CORE: ReadonlyArray<
+  readonly [number, number, number]
+> = [
+  [0.12, 90, 150],
+  [0.5, 150, 240],
+  [1.0, 240, 320],
 ];
+export const HEIGHT_BANDS_MID: ReadonlyArray<
+  readonly [number, number, number]
+> = [
+  [0.82, 40, 120],
+  [0.96, 120, 170],
+  [1.0, 170, 210],
+];
+export const HEIGHT_BANDS_EDGE: ReadonlyArray<
+  readonly [number, number, number]
+> = [
+  [0.88, 20, 60],
+  [1.0, 60, 90],
+];
+/** H1 slenderness cap: a lot's building is at most this many times its
+ * short side tall — the big towers land on the big lots, and a 26 m sliver
+ * tops out as a pencil tower (~180 m), never a 320 m needle. */
+export const SLENDER_MAX = 7;
+/** H1: a lot within this of a construction block (city/layout.ts) stays
+ * low enough for its tower crane — the jib reaches CRANE_JIB_MAX + its half
+ * side + a plane's radius from a mast set CRANE_MAST_INSET inside the
+ * block, and must keep CRANE_HUB_CLEARANCE over every roof it can reach
+ * from a hub no higher than CRANE_MAST_MAX (city/movers.ts), so the cores'
+ * towers never shorten a jib out of the street it oversails. m. */
+export const CRANE_SITE_REACH = 46;
+/** ...and that low, m (CRANE_MAST_MAX − CRANE_HUB_CLEARANCE − 1). */
+export const CRANE_SITE_ROOF_MAX = 86;
+/** H1: a core block subdivides no deeper than this (LOT_MAX_DEPTH
+ * elsewhere): at most four lots, so its towers get the wide footprints. */
+export const CORE_LOT_MAX_DEPTH = 2;
 
 // --- Tiered setbacks (V2) ---
 // Buildings are 1–3 stacked, centered tiers; tier 1 keeps the full footprint
@@ -121,6 +168,12 @@ export const HEIGHT_BANDS: ReadonlyArray<readonly [number, number, number]> = [
 export const TIER_TWO_MIN_HEIGHT = 80;
 /** Minimum total height for a 3-tier wedding-cake profile, meters. */
 export const TIER_THREE_MIN_HEIGHT = 130;
+/** H1: minimum total height for a 4-tier skyscraper profile, meters —
+ * setbacks scale with height (destruction.ts MAX_TIERS is 4). */
+export const TIER_FOUR_MIN_HEIGHT = 220;
+/** H1: a setback is skipped (the tower keeps fewer tiers) once it would
+ * leave a tier narrower than this, meters — a crown, not a stick. */
+export const TIER_MIN_SIDE = 14;
 /** Upper-tier footprint ratio vs the tier below, min..max (setback range). */
 export const TIER_SETBACK_MIN = 0.55;
 export const TIER_SETBACK_MAX = 0.8;
@@ -172,18 +225,23 @@ export const GATE_MIN_HEIGHT = 100;
  * wins its sky roll gets a sky hole. Clear air above the facing streetwall is
  * the scarce filter. Measured (H2): seed 42 has 4 arches, 23 tunnels (3 of
  * them street to street, one a two-lot block-through at street level), 12
- * gates and 5 sky holes — 44 against H1's 12; seeds 1–20 median 36. */
-export const ROW_TUNNEL_CHANCE = 0.7;
-export const GATE_CHANCE = 0.35;
-export const SKY_HOLE_CHANCE = 0.5;
+ * gates and 5 sky holes — 44 against H1's 12; seeds 1–20 median 36.
+ * H1 (taller skyline): the cores' 150–320 m towers fill most run-out
+ * corridors, so clear air alone is now the filter — every candidate that
+ * has it gets its hole (seed 42: 4 arches, 17 tunnels, 8 gates, 5 sky
+ * holes = 34; seeds 1–20 min 25, median 35, max 46). */
+export const ROW_TUNNEL_CHANCE = 1;
+export const GATE_CHANCE = 1;
+export const SKY_HOLE_CHANCE = 1;
 
 // --- Flight (tuned by T2) ---
 /** Minimum airspeed, m/s. At MIN_SPEED you mush, never stall. */
 export const MIN_SPEED = 40;
 /** Maximum airspeed, m/s. */
 export const MAX_SPEED = 90;
-/** Soft altitude ceiling, meters — engine power fades above this. */
-export const SOFT_CEILING = 600;
+/** Soft altitude ceiling, meters — engine power fades above this. H1: 600 →
+ * 750, CLOUD_BASE + 100 as before, 270 m over CITY_TOP. */
+export const SOFT_CEILING = 750;
 /** Band above SOFT_CEILING over which engine power fades to nothing, meters. */
 export const CEILING_FADE = 150;
 /** Sink rate at full ceiling fade, m/s — the "mush back down", never a wall. */
@@ -264,8 +322,11 @@ export const KNIFE_SINK = 4;
 export const KNIFE_SPEED = 55;
 /** Player collision-sphere radius, meters. */
 export const PLAYER_RADIUS = 2;
-/** Respawn altitude, meters — above every rooftop (tallest landmark is 250 m). */
-export const RESPAWN_ALTITUDE = 300;
+/** Respawn altitude, meters — above every generated rooftop and its roof
+ * structures (BUILDING_MAX_HEIGHT + ROOF_STRUCTURE_MAX_HEIGHT = 336) with
+ * 34 m to spare. H1: the landmark supertalls (to CITY_TOP) rise through it,
+ * so server/src/respawn.ts vetoes a spawn whose run-out meets one. */
+export const RESPAWN_ALTITUDE = 370;
 /** Respawn airspeed, m/s — combat speed. The THROTTLE spawns full (F5:
  * createFlightState), so the plane accelerates out of a respawn. */
 export const RESPAWN_SPEED = 65;
@@ -337,8 +398,9 @@ export const POSE_AGE_MAX_MS = 200;
 export const SPEED_TOLERANCE = 1.1;
 /** Slack added to the per-update displacement bound, meters (network jitter). */
 export const POSE_DISTANCE_SLACK = 15;
-/** Claimed altitude is clamped to this, meters (legal flight can't sustain more). */
-export const MAX_ALTITUDE = 800;
+/** Claimed altitude is clamped to this, meters (legal flight can't sustain
+ * more: SOFT_CEILING + CEILING_FADE + 50). */
+export const MAX_ALTITUDE = 950;
 /** Max player-name length on the wire; longer names are truncated. */
 export const NAME_MAX_LENGTH = 16;
 /** Server drops a joined connection silent for this long, ms (clients stream at TICK_UP_HZ). */
@@ -385,10 +447,14 @@ export const BOOT_PING_INTERVAL_MS = 1000;
 
 // --- Storm (ST1) --- schedule shared client/server; the ceiling is a hidden
 // server rule — no constant here feeds a warning UI, by design.
-/** Cloud deck base altitude, m (ST2 renders the deck; bots stay under it). */
-export const CLOUD_BASE = 500;
+/** Cloud deck base altitude, m (ST2 renders the deck; bots stay under it).
+ * H1: 500 → 650, over the blimp's hull (≤ 639 m), which is over the
+ * carrier's, which is over the news heli, which is over CITY_TOP. The
+ * deck's own materials fog as if it were still at 500 m (client storm.ts
+ * DECK_FOG_LIFT), so it reads the same from the street. */
+export const CLOUD_BASE = 650;
 /** Above this altitude the hidden death ceiling arms, m. */
-export const STORM_KILL_ALT = 600;
+export const STORM_KILL_ALT = 750;
 /** Continuous time above STORM_KILL_ALT before the kill bolt, ms — dipping
  * below resets it. Never announced to clients: discovery is the design. */
 export const STORM_GRACE_MS = 3000;
@@ -402,7 +468,7 @@ export const STRIKE_INTERVAL_MAX_MS = 15000;
 /** Strike coverage cell, m — every cell is struck once per 16-strike epoch. */
 export const STORM_CELL_SIZE = 500;
 /** A strike whose cell holds a landmark supertall lands within this of the
- * tower's center — the 250 m towers are the city's lightning rods, m. */
+ * tower's center — the supertalls are the city's lightning rods, m. */
 export const STORM_ROD_RADIUS = 60;
 
 // --- Moving obstacles (L2) --- the city's big moving parts. Every pose is a
@@ -462,9 +528,10 @@ export const HELI_SPEED_MIN = 30;
 export const HELI_SPEED_MAX = 45;
 /** Helicopter hull half-extents, m: half-length along travel, half-height, half-width. */
 export const HELI_HULL = [10, 3.2, 2.8] as const;
-/** Blimp cruise altitude, m. Below CLOUD_BASE so it flies under the deck, and
- * far enough under RESPAWN_ALTITUDE's 300 m that a spawn can never land in it. */
-export const BLIMP_ALT = 430;
+/** Blimp cruise altitude, m. Below CLOUD_BASE so it flies under the deck
+ * (hull 611–639 m), over the carrier's hull (≤ 600 m) and far over
+ * RESPAWN_ALTITUDE, so a spawn can never land in it. */
+export const BLIMP_ALT = 625;
 /** Blimp cruise speed, m/s — the slowest thing in the sky. */
 export const BLIMP_SPEED = 12;
 /** Blimp hull half-extents, m: half-length, half-height, half-width. */
@@ -544,9 +611,10 @@ export const TRAIN_BOT_REACH = 150;
 /** Consecutive bursts are this far apart (seeded jitter), ms. */
 export const FIREWORK_INTERVAL_MIN_MS = 6000;
 export const FIREWORK_INTERVAL_MAX_MS = 11000;
-/** Burst altitude band, m — well above the streetwall, under the cloud deck. */
-export const FIREWORK_ALT_MIN = 150;
-export const FIREWORK_ALT_MAX = 300;
+/** Burst altitude band, m — well above the streetwall, under the cloud deck.
+ * H1: lifted over the downtown cores' roofs (BUILDING_MAX_HEIGHT). */
+export const FIREWORK_ALT_MIN = 340;
+export const FIREWORK_ALT_MAX = 460;
 /** How long one burst's sparks live, ms. */
 export const FIREWORK_LIFETIME_MS = 2200;
 /** Sparks per burst, and concurrent bursts the client budgets for. Capped
@@ -716,7 +784,13 @@ export const COLLAPSE_DUST_MS = 20_000;
 /** The collapse model's version: what buildCollapse derives from a wire.
  * The welcome carries it; a client built for another model reloads rather
  * than build different debris than the server collides with. */
-export const COLLAPSE_MODEL = 10;
+export const COLLAPSE_MODEL = 11; // H1: the wire's failure height snaps to its storey edge
+/** H1: the city generator's version — the welcome carries it like
+ * COLLAPSE_MODEL. A tab built for another generator (a deploy since it
+ * loaded) would build a different city, so every chunk id, collapse and
+ * prop it hears would name the wrong building: it reloads instead. Bump it
+ * with any change that moves a building. */
+export const CITY_MODEL = 2;
 /** Pancake: the creep after the lead beat, ms — the failure floor groans
  * and sags, dust puffs out, then the upper block lets go. */
 export const COLLAPSE_CREEP_MS = 900;
@@ -1008,7 +1082,7 @@ export const BOT_RECOVER_CLEAR = 2;
 export const BOT_MIN_ALT = 15;
 /** Bots never enter the clouds (ST1): RECOVER pitches DOWN above this, m —
  * a margin under CLOUD_BASE so the hidden storm rule can't kill a bot. */
-export const BOT_CEILING_ALT = 480;
+export const BOT_CEILING_ALT = CLOUD_BASE - 20;
 /** Ceiling anticipation: danger when the current climb would reach
  * BOT_CEILING_ALT within this lookahead, s (the pitch-down turnaround). */
 export const BOT_CEILING_LOOKAHEAD_S = 1.2;
@@ -1200,8 +1274,9 @@ export const BOT_DEFEND_COOLDOWN_MS = 6000;
 export const BOT_DEFEND_TAIL_S = 2;
 export const BOT_DEFEND_MARGIN = 6;
 /** …and never topping out above this, m: a loop from the floor climbs
- * ~150 m, and above here is the zeppelin's sky (S4 hull ~280–300 m). */
-export const BOT_DEFEND_MAX_ALT = 240;
+ * ~150 m, and above here is the news heli's and the zeppelin's sky (H1:
+ * heli ≥ 491 m, hull 530–590 m). */
+export const BOT_DEFEND_MAX_ALT = 480;
 /** The longest maneuver a rollout may fly before it must have ended, s. */
 export const BOT_DEFEND_MAX_S = 9;
 
@@ -1253,11 +1328,12 @@ export const BOT_TUNNEL_RUNOUT = 60;
 // with the bots); its pose is a pure function of (server-broadcast target,
 // server clock) in common/src/city/newsheli.ts. Airliners and the drone show
 // are scenery schedules in common/src/skytraffic.ts.
-/** News-heli orbit altitude band, m. Inside the ticket's 350-450 m band, but
- * capped so the hull and rotor stay under the blimp's belly (BLIMP_ALT -
- * BLIMP_HULL[1] = 416 m) and far above every roof (LANDMARK_HEIGHT 250). */
-export const NEWS_HELI_ALT_MIN = 350;
-export const NEWS_HELI_ALT_MAX = 390;
+/** News-heli orbit altitude band, m. H1: over every roof (the hull's belly
+ * ≥ 496.8 m, 16.8 m over CITY_TOP's 480 m needle), and the rotor blur
+ * (≤ 519.2 m) ≥ 20 m under the carrier's hull (BOSS_ALT − BOSS_REACH_Y =
+ * 540 m) — the carrier now flies over the heli, not under it. */
+export const NEWS_HELI_ALT_MIN = 500;
+export const NEWS_HELI_ALT_MAX = 515;
 /** Orbit radius around the kill site, m, and the speeds it flies at, m/s. */
 export const NEWS_HELI_ORBIT_R = 110;
 export const NEWS_HELI_ORBIT_SPEED = 28;

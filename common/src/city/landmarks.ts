@@ -28,55 +28,57 @@ export interface LandmarkProfile {
 
 /**
  * The landmark silhouettes, one per LANDMARK_BLOCKS slot (a longer block
- * list cycles through them). Every profile:
- *  - sums to exactly LANDMARK_HEIGHT (250 m) — `height >= LANDMARK_HEIGHT`
- *    is how the whole codebase recognises a landmark;
+ * list cycles through them). H1 scaled L3's four designs up into the
+ * city's supertalls — same styles, same tier rhythm, shafts ~2× taller and
+ * ~15 % wider. Every profile:
+ *  - sums to between LANDMARK_HEIGHT (400 m) and CITY_TOP (480 m), the
+ *    tallest summing to exactly CITY_TOP — `height >= LANDMARK_HEIGHT` is
+ *    how the whole codebase recognises a landmark, and nothing generated
+ *    reaches it;
  *  - keeps the 90 × 90 × 60 m podium (the H1 arch, the forecourt lawn);
  *  - has at most 4 tiers (destruction.ts MAX_TIERS: 2 tier bits per chunk);
  *  - sets every tier strictly back from the one below;
  *  - gives tiers[1] at least 63 m of height and 52 m of width, so the
  *    landmark jumbotron (jumbotron-sites.ts landmarkSite) still fits;
- *  - keeps the top tier 10 m wide — more than two window bays at the widest
- *    pitch, and room for the leader searchlight's lamp;
- *  - stays inside the old slim-shaft silhouette (90 m to 60 m, 62 m to
- *    210 m, 34 m to 250 m) at every height, so nothing that cleared the old
- *    landmark (courses, AA arcs, the news heli, birds) can hit a new one.
+ *  - keeps the glass, spire and arches tops 10 m wide — more than two
+ *    window bays at the widest pitch, and room for the leader searchlight's
+ *    lamp.
  */
 export const LANDMARK_PROFILES: readonly LandmarkProfile[] = [
   {
     style: "glass",
     tiers: [
       { width: 90, depth: 90, height: 60 },
-      { width: 52, depth: 52, height: 150 },
-      { width: 30, depth: 30, height: 26 },
-      { width: 10, depth: 10, height: 14 },
+      { width: 60, depth: 60, height: 332 },
+      { width: 34, depth: 34, height: 57 },
+      { width: 10, depth: 10, height: 31 },
     ],
   },
   {
     style: "ziggurat",
     tiers: [
       { width: 90, depth: 90, height: 60 },
-      { width: 62, depth: 62, height: 110 },
-      { width: 46, depth: 46, height: 40 },
-      { width: 30, depth: 30, height: 40 },
+      { width: 72, depth: 72, height: 197 },
+      { width: 52, depth: 52, height: 72 },
+      { width: 34, depth: 34, height: 71 },
     ],
   },
   {
     style: "spire",
     tiers: [
       { width: 90, depth: 90, height: 60 },
-      { width: 62, depth: 62, height: 140 },
-      { width: 34, depth: 34, height: 30 },
-      { width: 10, depth: 10, height: 20 },
+      { width: 72, depth: 72, height: 287 },
+      { width: 40, depth: 40, height: 62 },
+      { width: 10, depth: 10, height: 41 },
     ],
   },
   {
     style: "arches",
     tiers: [
       { width: 90, depth: 90, height: 60 },
-      { width: 56, depth: 56, height: 136 },
-      { width: 34, depth: 34, height: 34 },
-      { width: 10, depth: 10, height: 20 },
+      { width: 64, depth: 64, height: 265 },
+      { width: 40, depth: 40, height: 66 },
+      { width: 10, depth: 10, height: 39 },
     ],
   },
 ];
@@ -88,8 +90,8 @@ export const landmarkProfile = (slot: number): LandmarkProfile =>
 /**
  * The style of the landmark whose block holds (x, z), canonical world
  * coordinates — or null off the landmark blocks. Pass the building's own
- * (x, z): landmarks share one footprint and height, so their dimensions
- * cannot tell them apart.
+ * (x, z): landmarks share one podium footprint, so their dimensions are not
+ * how to tell them apart.
  */
 export function landmarkStyleAt(x: number, z: number): LandmarkStyle | null {
   const bx = Math.floor(x / BLOCK_PITCH);

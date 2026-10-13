@@ -249,7 +249,7 @@ function placePlanes(s: number): void {
     const p = planes[i] as Vec3;
     const ph = i * 2.399;
     p.x = BOSS.x + 9 * Math.sin(0.0008 * s + ph);
-    p.y = 262 + 27 * (1 + Math.sin(0.0003 * s + ph));
+    p.y = 527 + 27 * (1 + Math.sin(0.0003 * s + ph)); // H1: BOSS_ALT + 265
     p.z = BOSS.z - 150 - 80 * Math.sin(0.0004 * s + ph);
   }
 }

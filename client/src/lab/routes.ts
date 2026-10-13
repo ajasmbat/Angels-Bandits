@@ -47,8 +47,9 @@ export interface LabRoute {
   course: Course | null;
 }
 
-/** The drone's orbit: centre, radius, altitude and airspeed. Above every
- * rooftop (≤ 250 m) and the boss's 305 m cruise, under the news heli. */
+/** The drone's orbit: centre, radius, altitude and airspeed. H1: the orbit
+ * clears every roof it passes (the Midtown core's towers by ≥ 12 m) and
+ * stays far under the news heli and the carrier (≥ 500 m). */
 export const DRONE_CENTER: Readonly<Vec3> = { x: 1000, y: 330, z: 1450 };
 export const DRONE_RADIUS = 170;
 export const DRONE_SPEED = 22;

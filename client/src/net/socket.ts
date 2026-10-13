@@ -88,6 +88,7 @@ import {
 } from "@angels-bandits/common/city/props";
 import type { CityEvent } from "@angels-bandits/common/cityevents";
 import {
+  CITY_MODEL,
   COLLAPSE_MODEL,
   CONNECT_TIMEOUT_MS,
   LAB_FULL_CODE,
@@ -548,6 +549,11 @@ export class GameSocket {
     // loaded) would build debris the server does not collide with: reload
     // — once per session per server model, so a cached page can never loop.
     if (staleCollapseModel(welcome)) reloadOnce(welcome.cm as number);
+    // H1: likewise a tab built for another city generator — every id it
+    // hears would name a different building.
+    if (staleCityModel(welcome)) {
+      reloadOnce(welcome.cg as number, "ab-city-model-reload");
+    }
     if (
       (welcome.destroyed?.length ?? 0) > 0 ||
       (welcome.collapses?.length ?? 0) > 0 ||
@@ -1094,8 +1100,7 @@ export class GameSocket {
 
 /** D10: reload for server collapse model `cm`, unless this session already
  * did (sessionStorage can be missing or throw: then reload anyway). */
-function reloadOnce(cm: number): void {
-  const key = "ab-collapse-model-reload";
+function reloadOnce(cm: number, key = "ab-collapse-model-reload"): void {
   try {
     if (globalThis.sessionStorage?.getItem(key) === String(cm)) return;
     globalThis.sessionStorage?.setItem(key, String(cm));
@@ -1104,6 +1109,10 @@ function reloadOnce(cm: number): void {
   }
   globalThis.location?.reload?.();
 }
+
+/** H1: does `welcome` come from a server with another city generator? */
+export const staleCityModel = (welcome: Pick<WelcomeMsg, "cg">): boolean =>
+  typeof welcome.cg === "number" && welcome.cg !== CITY_MODEL;
 
 /** D10: does `welcome` come from a server with another collapse model? */
 export const staleCollapseModel = (welcome: Pick<WelcomeMsg, "cm">): boolean =>

@@ -234,13 +234,16 @@ const damageSheet = () => {
 const referenceView = (name, extra = {}) => ({
   name,
   // The plane sits 70 m over the eye (out of its own shot), nose to +x;
-  // the carrier is staged 280 m ahead of it, crossing side-on ~14° up.
+  // the carrier is staged 280 m ahead of it, crossing side-on. H1: L7b's
+  // composition lifted 270 m with the carrier (BOSS_ALT 570 m) — the eye
+  // at 430 m (was 230), the same −4° pitch, the hull ~27° up instead of
+  // ~14°, the cores' towers and the supertalls standing into the frame.
   x: 965,
   z: 1303,
-  y: 300,
+  y: 500,
   yaw: -Math.PI / 2,
-  eye: [965, 230, 1303],
-  at: [1869, 160, 881],
+  eye: [965, 430, 1303],
+  at: [1869, 360, 881],
   timeMs: 1_790_000_000_000,
   weather: "clear",
   boss: { ahead: 280 },
@@ -251,7 +254,7 @@ const referenceView = (name, extra = {}) => ({
 
 /** L7: what reference 2 stages on that composition — the blocks on both
  * banks chewed (a seeded third of the chunks of the buildings round the
- * view — L7b: the 116 within 560 m, the whole frame's city, was the 44
+ * view — L7b: the 116 within 560 m (H1's taller city: 109), the whole frame's city, was the 44
  * within 380 m — the collapses that leaves owing long landed), the room's
  * burn 0.9. */
 const INFERNO_STAGE = {
@@ -263,7 +266,7 @@ const INFERNO_STAGE = {
     seed: 7,
     t: -90_000,
     stepMs: 500,
-    buildings: 116,
+    buildings: 109,
   },
   burn: 0.9,
 };
@@ -287,7 +290,7 @@ export const VIEWS = [
     z: 1520,
     y: 22,
     yaw: 0,
-    eye: [572, 26, 1452],
+    eye: [588, 26, 1440],
     at: [600, 0, 1400],
     weather: "clear",
   },
@@ -489,7 +492,7 @@ export const VIEWS = [
     name: "rooftops-water-towers",
     x: 280,
     z: 870,
-    y: 110,
+    y: 360,
     yaw: 0,
     eye: [300, 105, 900],
     at: [420, 45, 1050],
@@ -824,36 +827,40 @@ export const VIEWS = [
   // jagged stump, rubble across the street, smoke and soot, and NOTHING left
   // in the air where the tower was (no scaffold cage, crane mast, signs or
   // roof structures). Staged through __ab.qaDestruction (`stage`, times
-  // relative to the render clock at staging): building 343 (215 m, at
-  // (1240, 464)) felled 15 s before the shot — toppled west across the
-  // x = 1200 street, or pancaked — and the seeded 30 % chew of the `ruins`
-  // segment's block (18 buildings within 200 m of (400, 780)), its
-  // collapses landed. The plane is parked at 240 m over the lot, out of shot
-  // (the scaffold dresses the damaged buildings nearest the plane) and under
-  // the zeppelin's band.
+  // relative to the render clock at staging): building 157 (294 m, at
+  // (658.5, 249), H1's downtown core) felled 15 s before the shot —
+  // toppled west across the x = 600 street, or pancaked — and the seeded
+  // 30 % chew of the `ruins` segment's block (16 buildings within 200 m of
+  // (400, 780)), its collapses landed. H1 moved these views with the tower:
+  // D8's tower 343 (215 m at (1240, 464), on the x = 1200 street) became a
+  // mid-rise, and every pose is the old one shifted (−600, −215) so the
+  // street and the tower's west face line up as they did. The plane is
+  // parked at 360 m over the lot, out of shot (the scaffold dresses the
+  // damaged buildings nearest the plane), over every generated roof and
+  // under the zeppelin's band.
   {
     name: "ruin-felled",
     sky: "dusk",
-    x: 1215,
-    z: 560,
-    y: 240,
+    x: 615,
+    z: 345,
+    y: 360,
     yaw: 0,
-    eye: [1192, 64, 590],
-    at: [1232, 12, 462],
+    eye: [592, 64, 375],
+    at: [632, 12, 247],
     weather: "clear",
-    stage: { fell: [{ b: 343, h: 215, style: "topple", dir: 0, t: -15_000 }] },
+    stage: { fell: [{ b: 157, h: 294, style: "topple", dir: 0, t: -15_000 }] },
   },
   {
     name: "ruin-pancake",
     sky: "dusk",
-    x: 1215,
-    z: 560,
-    y: 240,
+    x: 615,
+    z: 345,
+    y: 360,
     yaw: 0,
-    eye: [1186, 42, 552],
-    at: [1240, 8, 464],
+    eye: [586, 42, 337],
+    at: [640, 8, 249],
     weather: "clear",
-    stage: { fell: [{ b: 343, h: 215, style: "pancake", dir: 0, t: -15_000 }] },
+    stage: { fell: [{ b: 157, h: 294, style: "pancake", dir: 0, t: -15_000 }] },
   },
   {
     name: "ruin-chewed",
@@ -874,100 +881,101 @@ export const VIEWS = [
         seed: 6,
         t: -60_000,
         stepMs: 1000,
-        buildings: 18,
+        buildings: 16,
       },
     },
   },
   // D10 realistic collapse, staged through __ab.qaDestruction on the D8
-  // tower (building 343, 215 m at (1240, 464); times relative to the render
+  // tower (building 157, 294 m at (658.5, 249); times relative to the render
   // clock at staging). Mid-pancake: the block has let go and the crush
   // front is driving down through the lower storeys, squibs puffing out of
   // the windows under it, facade sheets peeling off into the street. Topple
-  // into a neighbour: felled west, its upper floors strike the 224 m tower
-  // 295 across the street ~4.5 s in (`chain`: the impacts land as the
-  // server's energy-scaled blasts and 295 breaks where it was hit) — shot
-  // 0.6 s after the first strike. Dust in the street: the pyroclastic surge
-  // rolling down the x = 1200 street at street level, 9 s after the mass hit
+  // into a neighbour: felled west, its upper floors strike the 302 m tower
+  // 110 across the street (`chain`: the impacts land as the server's
+  // energy-scaled blasts and 110 breaks where it was hit) — the eye and
+  // aim are D10's, shifted with the tower and raised for its height (×1.37).
+  // Dust in the street: the pyroclastic surge
+  // rolling down the x = 600 street at street level, 9 s after the mass hit
   // the ground. Ruin detail: the pile up close — slumped slabs, steel stubs
   // leaning out of it, rebar off the broken edges, sheets lying in the
-  // street. The plane is parked at 240 m over the lot, out of shot.
+  // street. The plane is parked at 360 m over the lot, out of shot.
   {
     name: "collapse-pancake-mid",
     sky: "dusk",
-    x: 1215,
-    z: 760,
-    y: 240,
+    x: 615,
+    z: 545,
+    y: 360,
     yaw: 0,
-    eye: [1120, 60, 680],
-    at: [1240, 95, 464],
+    eye: [592, 110, 540],
+    at: [640, 130, 249],
     weather: "clear",
-    stage: { fell: [{ b: 343, h: 215, style: "pancake", dir: 0, t: -4600 }] },
+    stage: { fell: [{ b: 157, h: 294, style: "pancake", dir: 0, t: -4600 }] },
   },
   {
     name: "collapse-topple-impact",
     sky: "dusk",
-    x: 1215,
-    z: 760,
-    y: 260,
+    x: 615,
+    z: 545,
+    y: 360,
     yaw: 0,
-    eye: [1185, 120, 720],
-    at: [1150, 150, 464],
+    eye: [585, 164, 505],
+    at: [550, 206, 249],
     weather: "clear",
     stage: {
       fell: [
-        { b: 343, h: 215, style: "topple", dir: 0, t: -5100, chain: true },
+        { b: 157, h: 294, style: "topple", dir: 0, t: -5100, chain: true },
       ],
     },
   },
   {
     name: "collapse-dust-street",
     sky: "dusk",
-    x: 1215,
-    z: 760,
-    y: 240,
+    x: 615,
+    z: 545,
+    y: 360,
     yaw: 0,
-    eye: [1200, 9, 660],
-    at: [1200, 14, 470],
+    eye: [600, 9, 445],
+    at: [600, 14, 255],
     weather: "clear",
-    stage: { fell: [{ b: 343, h: 215, style: "pancake", dir: 0, t: -12_000 }] },
+    stage: { fell: [{ b: 157, h: 294, style: "pancake", dir: 0, t: -12_000 }] },
   },
   {
     name: "ruin-detail",
     sky: "dusk",
-    x: 1215,
-    z: 760,
-    y: 240,
+    x: 615,
+    z: 545,
+    y: 360,
     yaw: 0,
-    eye: [1203, 16, 540],
-    at: [1238, 3, 468],
+    eye: [603, 16, 325],
+    at: [638, 3, 253],
     weather: "clear",
-    stage: { fell: [{ b: 343, h: 215, style: "pancake", dir: 0, t: -25_000 }] },
+    stage: { fell: [{ b: 157, h: 294, style: "pancake", dir: 0, t: -25_000 }] },
   },
   // D9 more destruction, staged through __ab.qaDestruction's `props` (the
   // seed-42 prop layout: each `down` takes the nearest standing prop of
   // that kind, and throws if none is near — the layout changed). Times are
   // relative to the render clock at staging.
   //
-  // destruction-glass: tower 343's glass curtain wall chewed open at the
+  // destruction-glass: tower 157's glass curtain wall chewed open at the
   // street (__ab.chew) and its cascade of shards re-thrown every pin
   // (`glass`), from the glass-canyon street.
   {
     name: "destruction-glass",
-    x: 1200,
-    z: 340,
+    x: 600,
+    z: 125,
     y: 40,
     yaw: 0,
     raf: true,
-    eye: [1204, 12, 404],
-    at: [1222, 30, 452],
+    eye: [604, 12, 189],
+    at: [622, 30, 237],
     weather: "clear",
     chew: {
-      eye: [1205, 22, 436],
-      at: [1222, 26, 452],
+      eye: [605, 22, 221],
+      at: [622, 26, 237],
       rounds: 700,
       spread: 0.3,
     },
-    glass: 343,
+    glass: 157,
   },
   // destruction-chain: the riverside gas station at (1300, 1030) blown up
   // with the poles beside it down (live wires sparking), a parked car on
@@ -998,8 +1006,8 @@ export const VIEWS = [
           { x: 1300, z: 1004, r: 5, t: -1900, water: false },
         ],
         burn: [
-          { b: 360, h: 71, chunks: 6, face: "+z" },
-          { b: 359, h: 42, chunks: 4, face: "+z" },
+          { b: 334, h: 47, chunks: 6, face: "+z" },
+          { b: 331, h: 27, chunks: 4, face: "+z" },
         ],
       },
     },
@@ -1057,18 +1065,19 @@ export const VIEWS = [
   // S9: the war-zeppelin carrier, STAGED on the client (`__ab.qaBoss`): a
   // raid whose hull crosses `boss.ahead` m in front of the pinned plane at
   // the pinned world instant `timeMs`, flying the view's +X (so the hull
-  // frame is the world frame, centred at x 1000, y 305, z 820). A view may
+  // frame is the world frame, centred at x 1000, y 570, z 820 — H1's
+  // BOSS_ALT; the views ride 265 m higher than S9's to keep the framing). A view may
   // stage a launch `phaseMs` into its sequence (`__ab.qaBossLaunch`) or the
   // break-up `downAfterMs` ago (`__ab.qaBossDown`). The QA camera frames it.
   {
     name: "boss-closeup",
     x: 1000,
     z: 1000,
-    y: 285,
+    y: 550,
     yaw: 0,
     timeMs: 1_790_000_000_000,
-    eye: [1112, 292, 925],
-    at: [1020, 303, 820],
+    eye: [1112, 557, 925],
+    at: [1020, 568, 820],
     weather: "clear",
     boss: { ahead: 180 },
   },
@@ -1076,11 +1085,11 @@ export const VIEWS = [
     name: "boss-belly-launch",
     x: 1000,
     z: 1000,
-    y: 285,
+    y: 550,
     yaw: 0,
     timeMs: 1_790_000_000_000,
-    eye: [1046, 268, 880],
-    at: [998, 284, 820],
+    eye: [1046, 533, 880],
+    at: [998, 549, 820],
     weather: "clear",
     boss: { ahead: 180, launch: { kind: 0, phaseMs: 2050 } },
   },
@@ -1088,11 +1097,11 @@ export const VIEWS = [
     name: "boss-catapult-launch",
     x: 1000,
     z: 1000,
-    y: 285,
+    y: 550,
     yaw: 0,
     timeMs: 1_790_000_000_000,
-    eye: [1072, 342, 866],
-    at: [1028, 328, 820],
+    eye: [1072, 607, 866],
+    at: [1028, 593, 820],
     weather: "clear",
     boss: { ahead: 180, launch: { kind: 1, phaseMs: 1500 } },
   },
@@ -1100,11 +1109,11 @@ export const VIEWS = [
     name: "boss-breakup",
     x: 1000,
     z: 1000,
-    y: 285,
+    y: 550,
     yaw: 0,
     timeMs: 1_790_000_000_000,
-    eye: [1060, 300, 1110],
-    at: [1000, 268, 820],
+    eye: [1060, 565, 1110],
+    at: [1000, 533, 820],
     weather: "clear",
     boss: { ahead: 180, downAfterMs: 3500 },
   },
@@ -1114,9 +1123,12 @@ export const VIEWS = [
   // onto the roofs, a posed biplane mid right (its nav, landing and
   // exhaust lights lit) flying away into the scene, and the city below.
   // The own plane is parked high out of shot; the hull is staged 450 m
-  // ahead of the view (centre ≈ x 1500, y 305, z 550), over the landmark
-  // at (1500, 300); no rooftop searchlight stands near the biplane to
-  // swing onto it.
+  // ahead of the view (centre ≈ x 1500, y 570 — H1's BOSS_ALT — z 550),
+  // over the 400 m landmark at (1500, 300); no rooftop searchlight stands
+  // near the biplane to swing onto it. H1: the eye rides over the downtown
+  // cores (470 m), 100 m under the hull, pitched ~15° down so the hull
+  // still crosses the top of the frame and the supertalls and the city
+  // fill the rest.
   {
     name: "reference-carrier",
     x: 1500,
@@ -1124,15 +1136,15 @@ export const VIEWS = [
     y: 600,
     yaw: 0,
     timeMs: 1_790_000_000_000,
-    eye: [1484, 324, 1036],
-    at: [1630, 190, 740],
+    eye: [1484, 470, 1036],
+    at: [1630, 380, 740],
     weather: "clear",
     boss: { ahead: 450 },
     showcase: [
       {
         kind: "biplane",
         x: 1500,
-        y: 300,
+        y: 450,
         z: 1000,
         yaw: 0.1,
         pitch: 0.04,
@@ -1391,7 +1403,7 @@ export const VIEWS = [
     y: 310,
     yaw: -Math.PI / 2,
     eye: [1300, 180, 1250],
-    at: [1420, 497, 1080],
+    at: [1420, 647, 1080],
     timeMs: 1_790_000_000_000,
     stage: INFERNO_STAGE,
   },
@@ -1416,7 +1428,7 @@ export const VIEWS = [
         seed: 6,
         t: -60_000,
         stepMs: 1000,
-        buildings: 18,
+        buildings: 16,
       },
       burn: 0.9,
     },
@@ -1440,7 +1452,7 @@ export const VIEWS = [
         seed: 6,
         t: -60_000,
         stepMs: 1000,
-        buildings: 18,
+        buildings: 16,
       },
       burn: 0.9,
     },

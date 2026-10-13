@@ -101,8 +101,8 @@ const CURTAIN_SHARE = 0.2;
  * life. */
 const PLUME_RISE = 0.5;
 const PLUME_OUT = 0.12;
-const PLUME_SIZE_0 = 0.07;
-const PLUME_SIZE_1 = 0.32;
+const PLUME_SIZE_0 = 0.1;
+const PLUME_SIZE_1 = 0.45;
 export const PLUME_LIFE_MS = 15_000;
 /** D11 curtain: how far out of the face it billows (× the tower's height,
  * capped), how fast it slides down at most, m/s, the time it takes to reach
@@ -115,7 +115,7 @@ const CURTAIN_FALL_TAU = 1.5;
 export const CURTAIN_LIFE_MS = 11_000;
 const CURTAIN_SIZE_0 = 12;
 const CURTAIN_SIZE_1 = 24;
-const CURTAIN_SIZE_PER_M = 0.25;
+const CURTAIN_SIZE_PER_M = 0.32;
 /** D11: the column's puffs grow with the tower (× height / this, 1..max),
  * and it climbs to COLUMN_RISE of the tower's height (≤ COLUMN_TOP_M). */
 const COLUMN_SCALE_H_M = 150;

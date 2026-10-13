@@ -6,6 +6,7 @@
 //   node tools/perf/collapse-timelapse.mjs <outDir> [--cases pancake,topple,chain]
 //     [--times before,1.5,3,4.5,6.5,9,14,25] [--label after] [--port 8231]
 //     [--root <checkout>] [--fps 30] [--res 0.75] [--eye x,y,z --at x,y,z]
+//     [--sheet-only]   (lay out the frames a run already saved in <outDir>)
 //
 // Same browser knobs as gallery.mjs (AB_CHROME / AB_CHROME_ARGS, e.g.
 // SwiftShader on a GPU-less box; AB_GALLERY_QUALITY pins a tier). `--root`
@@ -24,7 +25,7 @@
 // carrier band), pinned every frame; its crash state is logged per frame
 // shot (a staged collapse must never reach it).
 import { spawn } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { chromium } from "playwright";
 import { CASES } from "./collapse-cases.mjs";
@@ -110,6 +111,79 @@ const lumaStats = (statsPage, png) =>
     };
   }, png.toString("base64"));
 
+/**
+ * The labelled sheet — two columns of 640×360 frames, a caption on each,
+ * the case's title on top — drawn on a plain 2D canvas in `page` (no page
+ * screenshot: a full-page capture of eight full frames could take the
+ * browser down on a loaded software-GL box). PNG bytes.
+ */
+async function makeSheet(page, title, shots) {
+  const b64 = await page.evaluate(
+    async ([title, frames]) => {
+      const W = 640;
+      const H = 360;
+      const rows = Math.ceil(frames.length / 2);
+      const cv = document.createElement("canvas");
+      cv.width = 2 * W;
+      cv.height = 32 + rows * H;
+      const ctx = cv.getContext("2d");
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, cv.width, cv.height);
+      ctx.font = "600 15px monospace";
+      ctx.fillStyle = "#fff";
+      ctx.fillText(title, 10, 21);
+      for (let i = 0; i < frames.length; i++) {
+        const img = new Image();
+        img.src = `data:image/png;base64,${frames[i].png}`;
+        await img.decode();
+        const x = (i % 2) * W;
+        const y = 32 + Math.floor(i / 2) * H;
+        ctx.drawImage(img, x, y, W, H);
+        ctx.fillStyle = "rgba(0,0,0,.75)";
+        ctx.fillRect(x, y, 12 + 9.2 * frames[i].label.length, 26);
+        ctx.fillStyle = "#fff";
+        ctx.fillText(frames[i].label, x + 8, y + 18);
+      }
+      return cv.toDataURL("image/png").split(",")[1];
+    },
+    [title, shots.map((s) => ({ label: s.label, png: s.png }))],
+  );
+  return Buffer.from(b64, "base64");
+}
+
+const chromeArgs = () => ({
+  executablePath:
+    process.env.AB_CHROME ??
+    `${process.env.HOME}/Library/Caches/ms-playwright/chromium_headless_shell-1223/chrome-headless-shell-mac-arm64/chrome-headless-shell`,
+  args: process.env.AB_CHROME_ARGS
+    ? process.env.AB_CHROME_ARGS.split(" ")
+    : ["--use-angle=metal", "--enable-gpu"],
+});
+
+// `--sheet-only`: lay out the frames an earlier run saved in <outDir>.
+if (argv.includes("--sheet-only")) {
+  const b = await chromium.launch(chromeArgs());
+  const page = await b.newPage();
+  for (const name of ONLY) {
+    const shots = TIMES.map((tau) => ({
+      label: tau === null ? "before" : `t = ${tau.toFixed(1)} s`,
+      file: `${OUT}/${name}-${tau === null ? "before" : tau.toFixed(1)}.png`,
+    }))
+      .filter((s) => existsSync(s.file))
+      .map((s) => ({ ...s, png: readFileSync(s.file).toString("base64") }));
+    if (shots.length === 0) continue;
+    const title = `${CASES[name].title}${LABEL ? ` — ${LABEL}` : ""}`;
+    writeFileSync(
+      `${OUT}/${name}-timelapse${LABEL ? `-${LABEL}` : ""}.png`,
+      await makeSheet(page, title, shots),
+    );
+    console.log("sheet", name, shots.length);
+  }
+  await b.close();
+  server.kill();
+  process.exit(0);
+}
+
 let browser;
 try {
   for (let i = 0; i < 160; i++) {
@@ -118,14 +192,7 @@ try {
     } catch {}
     await sleep(250);
   }
-  browser = await chromium.launch({
-    executablePath:
-      process.env.AB_CHROME ??
-      `${process.env.HOME}/Library/Caches/ms-playwright/chromium_headless_shell-1223/chrome-headless-shell-mac-arm64/chrome-headless-shell`,
-    args: process.env.AB_CHROME_ARGS
-      ? process.env.AB_CHROME_ARGS.split(" ")
-      : ["--use-angle=metal", "--enable-gpu"],
-  });
+  browser = await chromium.launch(chromeArgs());
   const page = await browser.newPage({
     viewport: { width: 1280, height: 720 },
     deviceScaleFactor: 1,
@@ -254,29 +321,23 @@ try {
       deaths,
       shots: shots.map((s) => ({ label: s.label, ...s.info })),
     };
-    // The labelled sheet: two columns, a caption bar on each frame.
-    const sheet = await browser.newPage({
-      viewport: { width: 1280, height: 400 },
-      deviceScaleFactor: 1,
-    });
-    const head = `${c.title}${LABEL ? ` — ${LABEL}` : ""}`;
-    await sheet.setContent(`<!doctype html><html><body style="margin:0;background:#000;font:600 15px/1 monospace;color:#fff">
-      <div style="padding:8px 10px;background:#111">${head}</div>
-      <div style="display:grid;grid-template-columns:640px 640px">
-      ${shots
-        .map(
-          (s) => `<div style="position:relative;width:640px;height:360px">
-          <img src="data:image/png;base64,${s.png}" style="width:640px;height:360px;display:block">
-          <div style="position:absolute;left:0;top:0;padding:6px 10px;background:rgba(0,0,0,.75)">${s.label}</div></div>`,
-        )
-        .join("")}
-      </div></body></html>`);
-    await sheet.screenshot({
-      path: `${OUT}/${name}-timelapse${LABEL ? `-${LABEL}` : ""}.png`,
-      fullPage: true,
-      timeout: 600_000,
-    });
-    await sheet.close();
+    writeFileSync(
+      `${OUT}/${name}${LABEL ? `-${LABEL}` : ""}.json`,
+      JSON.stringify(report.cases[name], null, 2),
+    );
+    try {
+      writeFileSync(
+        `${OUT}/${name}-timelapse${LABEL ? `-${LABEL}` : ""}.png`,
+        await makeSheet(
+          stats,
+          `${c.title}${LABEL ? ` — ${LABEL}` : ""}`,
+          shots,
+        ),
+      );
+    } catch (e) {
+      // The frames are on disk: `--sheet-only` lays them out later.
+      console.error("sheet", name, e.message);
+    }
     console.log(
       "deaths",
       name,

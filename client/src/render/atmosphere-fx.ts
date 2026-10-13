@@ -291,11 +291,11 @@ export class AtmosphereFx {
 
   private ventDist = (v: ShimmerVent): number => {
     const e = this.eye;
-    return Math.hypot(
-      wrapDeltaAxis(e.x, v.x),
-      v.y - e.y,
-      wrapDeltaAxis(e.z, v.z),
-    );
+    const dx = wrapDeltaAxis(e.x, v.x);
+    const dy = v.y - e.y;
+    const dz = wrapDeltaAxis(e.z, v.z);
+    // sqrt, not Math.hypot: hypot is not inlined, so it boxed its doubles.
+    return Math.sqrt(dx * dx + dy * dy + dz * dz);
   };
 
   private ventVisible = (v: ShimmerVent): boolean => {
@@ -417,11 +417,11 @@ export class AtmosphereFx {
     const heatCount = heat ? Math.min(f.heatCount ?? 0, heat.length) : 0;
     for (let q = 0; q < heatCount && n < SHIMMER_SLOTS; q++) {
       const h = (heat as readonly Heat[])[q] as Heat;
-      const d = Math.hypot(
-        wrapDeltaAxis(this.eye.x, h.x),
-        h.y - this.eye.y,
-        wrapDeltaAxis(this.eye.z, h.z),
-      );
+      const hx = wrapDeltaAxis(this.eye.x, h.x);
+      const hy = h.y - this.eye.y;
+      const hz = wrapDeltaAxis(this.eye.z, h.z);
+      const d = Math.sqrt(hx * hx + hy * hy + hz * hz); // not hypot: ventDist
+
       const level =
         h.level * (1 - smooth(BLAST_SHIMMER_FULL, BLAST_SHIMMER_RANGE, d));
       if (level <= 0.001 || d < 4) continue;
@@ -458,11 +458,10 @@ export class AtmosphereFx {
     for (let q = 0; q < this.slots.length && n < SHIMMER_SLOTS; q++) {
       const s = this.slots[q] as ShimmerSlot;
       // ventDist, inline: a double returned from the arrow was boxed.
-      const d = Math.hypot(
-        wrapDeltaAxis(this.eye.x, s.vent.x),
-        s.vent.y - this.eye.y,
-        wrapDeltaAxis(this.eye.z, s.vent.z),
-      );
+      const vx = wrapDeltaAxis(this.eye.x, s.vent.x);
+      const vy = s.vent.y - this.eye.y;
+      const vz = wrapDeltaAxis(this.eye.z, s.vent.z);
+      const d = Math.sqrt(vx * vx + vy * vy + vz * vz);
       const level =
         s.level * (1 - smooth(SHIMMER_FULL, SHIMMER_RANGE * 1.1, d));
       if (level <= 0.001 || d < 4) continue;

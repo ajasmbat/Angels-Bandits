@@ -405,8 +405,8 @@ const SPECS: Readonly<Record<FurnitureKind, ItemSpec>> = {
 
 /** L11: chance a street side has a subway entrance, and the tries along it
  * (each a seeded spot, kept only where the strip is still free). */
-export const SUBWAY_SIDE_CHANCE = 0.12;
-const SUBWAY_TRIES = 6;
+export const SUBWAY_SIDE_CHANCE = 0.35;
+const SUBWAY_TRIES = 16;
 
 /** DT2: share of benches that become a café set (table, two chairs and a
  * parasol) — more on shopping streets than in parks. Picked by a position

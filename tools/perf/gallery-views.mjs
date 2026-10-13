@@ -503,7 +503,7 @@ export const VIEWS = [
   // shop street at eye level. The plane is parked at the L3 spot, clear of
   // every frame.
   {
-    // Prewar brick tower (54, 534.5), 60 m: rusticated base over the shops.
+    // Prewar brick tower (54, 534.5), 119 m: rusticated base over the shops.
     name: "facade-prewar",
     x: 400,
     z: 520,
@@ -514,14 +514,14 @@ export const VIEWS = [
     weather: "clear",
   },
   {
-    // Art Deco tower (250.5, 849), 88 m: piers, strips, chevron spandrels.
+    // Art Deco tower (144.5, 677.5), 95 m: piers, strips, chevron spandrels.
     name: "facade-deco",
     x: 400,
     z: 520,
     y: 70,
     yaw: 0,
-    eye: [192, 26, 820],
-    at: [220, 40, 850],
+    eye: [211, 24, 652],
+    at: [180, 40, 680],
     weather: "clear",
   },
   {
@@ -547,14 +547,14 @@ export const VIEWS = [
     weather: "clear",
   },
   {
-    // Modern glass tower (50.5, 246.5), 113 m: mullion grid, reflections.
+    // Modern glass tower (54, 454.5), 143 m: mullion grid, reflections.
     name: "facade-glass",
     x: 400,
     z: 520,
     y: 70,
     yaw: 0,
-    eye: [1984, 38, 226],
-    at: [20, 54, 250],
+    eye: [1984, 38, 428],
+    at: [20, 56, 456],
     weather: "clear",
   },
   {

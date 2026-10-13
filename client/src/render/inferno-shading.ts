@@ -203,9 +203,9 @@ const GUT_GLOW_RGB = "vec3(0.16, 0.035, 0.008)";
  * ember line and the char smoulders. Then the firelight on every building
  * face, broken or not.
  *
- * G7: LOD-stable. Every per-cell decision resolves to its expected value as
- * its cell goes sub-pixel — a room's coin flip to its probability by
- * `winDetail`, a floor's by `floorDetail`, heat / sill / flicker to their
+ * G7: LOD-stable. Every per-cell decision resolves to its expected value
+ * before its cell turns to noise — a room's coin flip to its probability
+ * while a cell is ~12 px, a floor's by `floorDetail`, heat / sill / flicker to their
  * means, the ember ring and slab line to their area shares — so a distant
  * tower glows as burning floor bands, then as an even ember wash, never as
  * an orange and black checkerboard. Every far value is a convex mix of the
@@ -227,12 +227,16 @@ if (gutK > 0.0 && brkDmg < 0.5) {
   float gutFloor = abHash(vec2(winCell.y, 3.0), vBSeed * 17.0);
   float gutPRoom = min(0.15 + 0.5 * gutK + 0.2 * gutHi, 1.0);
   float gutPFloor = 0.72 + 0.2 * gutHi;
+  // A burning/dark coin flip per room is noise until a room is large on
+  // screen: it resolves to its probability while a cell is still ~12 px
+  // (the floor bands carry the read from there), not at the grid's ~3 px.
+  float gutRoomDetail = min(abCellDetail(4.0 * winPitch.x, wAA.x), abCellDetail(4.0 * winPitch.y, wAA.y));
   float gutBand = mix(gutPFloor, step(gutFloor, gutPFloor), floorDetail);
-  float gutBurning = mix(gutPRoom, step(gutRoom, gutPRoom), winDetail) * gutBand * facade;
-  float gutHeat = mix(0.65, 0.3 + 0.7 * abHash(winCell + 7.0, vBSeed * 31.0), winDetail);
+  float gutBurning = mix(gutPRoom, step(gutRoom, gutPRoom), gutRoomDetail) * gutBand * facade;
+  float gutHeat = mix(0.65, 0.3 + 0.7 * abHash(winCell + 7.0, vBSeed * 31.0), gutRoomDetail);
   // Each room flickers on its own clock; a distant floor on the floor's,
   // a distant tower gently, as one.
-  float gutKey = mix(mix(0.5, gutFloor, floorDetail), gutRoom, winDetail);
+  float gutKey = mix(mix(0.5, gutFloor, floorDetail), gutRoom, gutRoomDetail);
   float gutFlick = 0.72 + 0.28 * mix(0.3, 1.0, floorDetail)
     * sin(6.2832 * (uFirePhase.x + gutKey * 3.0)) * sin(6.2832 * (uFirePhase.y + gutKey * 7.0));
   float gutSill = mix(0.5, 1.0 - winF.y, winDetail);
@@ -269,9 +273,10 @@ if (brkDmg > 0.5 && brkDmg < 2.5 && uBurn > 0.0) {
   float wrK = smoothstep(0.3, 0.8, uBurn);
   vec3 wrN = abs(vObjNormal);
   vec2 wrW = wrN.x > 0.5 ? vBWorldPos.zy : wrN.z > 0.5 ? vBWorldPos.xy : vBWorldPos.xz;
-  // G7: the 6 m room × storey cells resolve to their means once sub-pixel
-  // (the grid's top-level wAA: no derivative in this branch).
-  float wrDetail = min(abCellDetail(6.0, wAA.x), abCellDetail(${BROKEN_STOREY.toFixed(1)}, wAA.y));
+  // G7: the 6 m room × storey cells resolve to their means well before
+  // they are sub-pixel (the grid's top-level wAA: no derivative here).
+  // Rooms burn or not at random: resolved while a room is still ~12 px.
+  float wrDetail = min(abCellDetail(18.0, wAA.x), abCellDetail(${(3 * BROKEN_STOREY).toFixed(1)}, wAA.y));
   float wrFlick = 0.7 + 0.3 * sin(6.2832 * (uFirePhase.x + mix(0.5, abHash(floor(wrW / 6.0), vBSeed * 3.0), wrDetail) * 4.0));
   if (brkDmg < 1.5) {
     // An exposed storey: most rooms between the slabs on fire, hottest

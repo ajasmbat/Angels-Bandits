@@ -161,14 +161,22 @@ vec3 abFireLight(vec3 p, vec3 n) {
 /** Gutted: the room's burn gates the building's gut wear. */
 const GUT_K_GLSL = "vRoof.w * smoothstep(0.08, 0.45, uBurn)";
 
-/** After BROKEN_COLOR_GLSL: an original face of a gutted building chars. */
+/** After BROKEN_COLOR_GLSL: an original face of a gutted building chars —
+ * G7: to a dark grey-brown (CHAR_RGB, varied by soot), never near-black:
+ * a black albedo with its lights out fogged to a flat navy monolith. The
+ * window voids go darker still, recesses inside the lighter charred frame,
+ * and a share of the original facade (its slabs, sills, reveals) shows
+ * through. Every per-cell term resolves to its mean as its cell goes
+ * sub-pixel, from the grid's top-level `wAA` — no derivative in a branch. */
+const CHAR_RGB = "vec3(0.11, 0.092, 0.078)";
 export const GUTTED_COLOR_GLSL = /* glsl */ `
-// --- L7 gutted frames: soot-black, patchy, on the original faces only ---
+// --- L7 gutted frames: charred grey-brown, sooty, on the original faces only ---
 float gutK = ${GUT_K_GLSL};
 if (gutK > 0.0 && brkDmg < 0.5) {
-  float gutSoot = abHash(floor(vMeters.xz * 0.35 + vec2(vMeters.y * 0.21)), vBSeed * 29.0);
-  vec3 gutChar = vec3(0.035, 0.03, 0.028) * (0.55 + 0.9 * gutSoot);
-  diffuseColor.rgb = mix(diffuseColor.rgb, gutChar, gutK * 0.94);
+  float gutSootN = abHash(floor(vMeters.xz * 0.2 + vec2(vMeters.y * 0.2)), vBSeed * 29.0);
+  float gutSoot = mix(0.5, gutSootN, abDetail(5.0, max(wAA.x, wAA.y)));
+  vec3 gutChar = ${CHAR_RGB} * (0.7 + 0.6 * gutSoot) * (1.0 - 0.65 * pane * facade);
+  diffuseColor.rgb = mix(diffuseColor.rgb, gutChar, gutK * 0.85);
 }
 `;
 
@@ -184,67 +192,101 @@ const GUT_RIM_RGB = "vec3(0.75, 0.17, 0.03)";
 const GUT_RIM_LUM = 0.283;
 export const GUT_RIM_PEAK = 0.55;
 
+/** G7: the charred frame's own smoulder (linear; luminance ≈ 0.06 at its
+ * hottest, low down) — a gutted tower is never an unlit block at night. */
+const GUT_GLOW_RGB = "vec3(0.16, 0.035, 0.008)";
+
 /**
- * After BROKEN_EMISSIVE_GLSL: a gutted building's own lights die, burning
- * rooms glow through its window cells (flickering, hotter at the sill), and
- * the frame just outside each burning pane carries a thin ember line. Then
- * the firelight on every building face, broken or not.
+ * After BROKEN_EMISSIVE_GLSL: a gutted building's own lights die with the
+ * fire, burning rooms glow through its window cells (flickering, hotter at
+ * the sill), the frame just outside each burning opening carries a thin
+ * ember line and the char smoulders. Then the firelight on every building
+ * face, broken or not.
+ *
+ * G7: LOD-stable. Every per-cell decision resolves to its expected value as
+ * its cell goes sub-pixel — a room's coin flip to its probability by
+ * `winDetail`, a floor's by `floorDetail`, heat / sill / flicker to their
+ * means, the ember ring and slab line to their area shares — so a distant
+ * tower glows as burning floor bands, then as an even ember wash, never as
+ * an orange and black checkerboard. Every far value is a convex mix of the
+ * near ones, so the ladder bound holds: the far sum (fire ≲ 0.04, ring ≲
+ * 0.02, rim ≤ GUT_RIM_PEAK, glow ≤ 0.06) stays under the 0.72 rung.
  */
 export const GUTTED_EMISSIVE_GLSL = /* glsl */ `
 // --- L7 gutted frames: the lights out, fire inside, ember edges ---
 if (gutK > 0.0 && brkDmg < 0.5) {
-  totalEmissiveRadiance *= 1.0 - gutK;
+  // L7b: past burn ~0.7 nearly every room of nearly every floor is alight.
+  float gutHi = smoothstep(0.5, 0.8, uBurn);
+  // G7: half the building's own lights linger at a moderate burn, none at
+  // full burn (by then ~85 % of its rooms are alight).
+  totalEmissiveRadiance *= 1.0 - gutK * (0.5 + 0.5 * gutHi);
   // Fire takes whole floors (some burnt out, dark), and within a burning
-  // floor some rooms: a skeleton of black voids and burning ones, from a dull
+  // floor some rooms: a skeleton of dark voids and burning ones, from a dull
   // ember to a roaring blaze.
   float gutRoom = abHash(winCell + 113.0, vBSeed * 23.0);
   float gutFloor = abHash(vec2(winCell.y, 3.0), vBSeed * 17.0);
-  // L7b: past burn ~0.7 nearly every room of nearly every floor is alight.
-  float gutHi = smoothstep(0.5, 0.8, uBurn);
-  float gutBurning = step(gutRoom, 0.15 + 0.5 * gutK + 0.2 * gutHi)
-    * step(gutFloor, 0.72 + 0.2 * gutHi) * facade;
-  float gutHeat = 0.3 + 0.7 * abHash(winCell + 7.0, vBSeed * 31.0);
-  float gutFlick = 0.72 + 0.28 * sin(6.2832 * (uFirePhase.x + gutRoom * 3.0))
-                         * sin(6.2832 * (uFirePhase.y + gutRoom * 7.0));
-  vec3 gutFire = mix(vec3(0.6, 0.1, 0.012), ${GUT_FIRE_HOT}, (1.0 - winF.y) * gutFlick * gutHeat);
+  float gutPRoom = min(0.15 + 0.5 * gutK + 0.2 * gutHi, 1.0);
+  float gutPFloor = 0.72 + 0.2 * gutHi;
+  float gutBand = mix(gutPFloor, step(gutFloor, gutPFloor), floorDetail);
+  float gutBurning = mix(gutPRoom, step(gutRoom, gutPRoom), winDetail) * gutBand * facade;
+  float gutHeat = mix(0.65, 0.3 + 0.7 * abHash(winCell + 7.0, vBSeed * 31.0), winDetail);
+  // Each room flickers on its own clock; a distant floor on the floor's,
+  // a distant tower gently, as one.
+  float gutKey = mix(mix(0.5, gutFloor, floorDetail), gutRoom, winDetail);
+  float gutFlick = 0.72 + 0.28 * mix(0.3, 1.0, floorDetail)
+    * sin(6.2832 * (uFirePhase.x + gutKey * 3.0)) * sin(6.2832 * (uFirePhase.y + gutKey * 7.0));
+  float gutSill = mix(0.5, 1.0 - winF.y, winDetail);
+  vec3 gutFire = mix(vec3(0.6, 0.1, 0.012), ${GUT_FIRE_HOT}, gutSill * gutFlick * gutHeat);
   totalEmissiveRadiance += gutFire * (pane * gutBurning * gutK * gutFlick * gutHeat);
-  // The frame: within 0.25 m outside a burning pane's edge, at full detail.
-  float gutOut = max(paneD.x * winPitch.x, paneD.y * winPitch.y);
-  float gutEdge = (1.0 - smoothstep(0.0, 0.25, gutOut)) * step(0.0, gutOut) * winDetail;
+  // The frame: within 0.25 m outside a burning opening (L11's shaped
+  // opening), its area share once the cell is sub-pixel.
+  vec2 gutOpen = 2.0 * fwHalf;
+  float gutRing = 0.5 * ((gutOpen.x + 0.5) * (gutOpen.y + 0.5) - gutOpen.x * gutOpen.y)
+    / max(winPitch.x * winPitch.y, 1.0);
+  float gutEdgeNear = (1.0 - smoothstep(0.0, 0.25, fwSdWall)) * step(0.0, fwSdWall);
+  float gutEdge = mix(gutRing, gutEdgeNear, winDetail);
   totalEmissiveRadiance += vec3(0.62, 0.15, 0.025)
     * (gutEdge * gutBurning * gutK * (0.6 + 0.4 * gutFlick) * winRow);
   // L7b: the ember rim — the frame lit from the fire inside: its vertical
   // corners (within ~1.5 m of the tier's edge), its floor slabs (the
-  // bottom of each window cell) and, faintly, every face seen edge-on;
-  // hotter low down, flickering on the fire clock.
+  // bottom of each window cell, their area share far away) and, faintly,
+  // every face seen edge-on; hotter low down, flickering on the fire clock.
   float gutAlong = abs(vObjNormal.x) > 0.5 ? vHalfXZ.y - abs(vMeters.z) : vHalfXZ.x - abs(vMeters.x);
   float gutCorner = 1.0 - smoothstep(0.0, 1.5, gutAlong);
-  float gutSlab = (1.0 - smoothstep(0.0, 0.3 / winPitch.y, winF.y)) * winRow * winDetail;
+  float gutSlab = mix(0.15 / winPitch.y, 1.0 - smoothstep(0.0, 0.3 / winPitch.y, winF.y), winDetail) * winRow;
   float gutGraze = pow(1.0 - abs(dot(viewRay, vObjNormal)), 3.0);
-  float gutRimFlick = 0.75 + 0.25 * sin(6.2832 * (uFirePhase.x * 2.0 + gutFloor * 5.0));
+  float gutRimFlick = 0.75 + 0.25 * sin(6.2832 * (uFirePhase.x * 2.0 + gutKey * 5.0));
+  float gutLow = 0.6 + 0.4 * exp(-vMeters.y / 60.0);
   float gutRim = min(1.0, 0.5 * gutCorner + 0.4 * gutSlab + 0.35 * gutGraze)
-    * gutK * smoothstep(0.2, 0.7, uBurn) * gutRimFlick
-    * (0.6 + 0.4 * exp(-vMeters.y / 60.0)) * facade;
+    * gutK * smoothstep(0.2, 0.7, uBurn) * gutRimFlick * gutLow * facade;
   totalEmissiveRadiance += ${GUT_RIM_RGB} * (${(GUT_RIM_PEAK / GUT_RIM_LUM).toFixed(3)} * gutRim);
+  // G7: the char smoulders between the openings.
+  totalEmissiveRadiance += ${GUT_GLOW_RGB}
+    * (gutK * smoothstep(0.1, 0.5, uBurn) * gutLow * facade * (1.0 - pane));
 }
 // --- L7b the wreckage burns: exposed rooms ablaze and rubble smouldering ---
 if (brkDmg > 0.5 && brkDmg < 2.5 && uBurn > 0.0) {
   float wrK = smoothstep(0.3, 0.8, uBurn);
   vec3 wrN = abs(vObjNormal);
   vec2 wrW = wrN.x > 0.5 ? vBWorldPos.zy : wrN.z > 0.5 ? vBWorldPos.xy : vBWorldPos.xz;
-  float wrFlick = 0.7 + 0.3 * sin(6.2832 * (uFirePhase.x + abHash(floor(wrW / 6.0), vBSeed * 3.0) * 4.0));
+  // G7: the 6 m room × storey cells resolve to their means once sub-pixel
+  // (the grid's top-level wAA: no derivative in this branch).
+  float wrDetail = min(abCellDetail(6.0, wAA.x), abCellDetail(${BROKEN_STOREY.toFixed(1)}, wAA.y));
+  float wrFlick = 0.7 + 0.3 * sin(6.2832 * (uFirePhase.x + mix(0.5, abHash(floor(wrW / 6.0), vBSeed * 3.0), wrDetail) * 4.0));
   if (brkDmg < 1.5) {
     // An exposed storey: most rooms between the slabs on fire, hottest
     // at the floor, a few burnt out (the reference's lit skeletons).
     float wrStorey = vWorldY / ${BROKEN_STOREY.toFixed(1)};
     float wrIn = fract(wrStorey);
     float wrRoom = abHash(vec2(floor(wrW.x / 6.0), floor(wrStorey)), vBSeed * 13.0);
-    float wrLit = step(wrRoom, 0.3 + 0.5 * wrK) * smoothstep(0.1, 0.18, wrIn) * (1.0 - step(0.5, wrN.y));
-    float wrHeat = (1.0 - 0.6 * wrIn) * (0.55 + 0.45 * wrRoom);
+    float wrP = 0.3 + 0.5 * wrK;
+    float wrLit = mix(wrP * 0.86, step(wrRoom, wrP) * smoothstep(0.1, 0.18, wrIn), wrDetail) * (1.0 - step(0.5, wrN.y));
+    float wrHeat = mix(0.54, (1.0 - 0.6 * wrIn) * (0.55 + 0.45 * wrRoom), wrDetail);
     totalEmissiveRadiance += ${WRECK_FIRE} * (wrLit * wrHeat * wrFlick * wrK);
   } else {
     // Rubble: glowing patches of embers under the soot.
-    float wrPatch = smoothstep(0.3, 0.7, abHash(floor(vBWorldPos.xz * 0.6), vBSeed * 19.0));
+    float wrPatch = mix(0.5, smoothstep(0.3, 0.7, abHash(floor(vBWorldPos.xz * 0.6), vBSeed * 19.0)),
+      abDetail(1.67, max(wAA.x, wAA.y)));
     totalEmissiveRadiance += ${WRECK_EMBER} * (wrPatch * wrFlick * wrK);
   }
 }

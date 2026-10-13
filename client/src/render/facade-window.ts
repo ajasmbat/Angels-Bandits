@@ -88,8 +88,10 @@ export const RELIEF = {
 } as const;
 
 /** Glass seen as a surface (unlit): dark, faintly blue — the lit room and
- * the reflection are emissive and come on top. */
-const GLASS_DARK = { r: 0.018, g: 0.02, b: 0.026 } as const;
+ * the reflection are emissive and come on top. Not black: night glass
+ * holds the city's glow, and a near-black pane sliding past a lit one
+ * reads as a black flash in motion (the O7 detector flags it). */
+const GLASS_DARK = { r: 0.05, g: 0.055, b: 0.068 } as const;
 /** Front door wood, and the dark iron of rails and sashes. */
 const DOOR_WOOD = { r: 0.06, g: 0.032, b: 0.018 } as const;
 const IRON_DARK = { r: 0.022, g: 0.022, b: 0.024 } as const;

@@ -57,9 +57,14 @@ after, so every other sign keeps the animation it had (0.241).
 - `tools/perf/blackbox.mjs --device desktop --sky night --paths
   core,canyon,sidewalk,street,glass,plaza --frames 40`: 0 frames with a
   non-finite pixel on main (`e1e4482`), on this branch, and on this branch
-  merged with H1/L2/L7b. The image heuristic's "boxes" are on the downpour
-  `street` path (and one `sidewalk`): 3 on main and 3 on the branch before
-  the merge.
+  merged with H1/L2/L7b. The image heuristic's "boxes" (a cell that drops to
+  near-black for ≤ 3 frames) first showed 2 on the downpour `street` path
+  that current main does not: unlit office ribbon glass was nearly black
+  (albedo 0.018), so a lit pane sliding past it read as a black flash. The
+  unlit glass is now 0.05 (night glass holds the city's glow): `--paths
+  street --repeat 3` gives 0, 0, 0 boxes, like main. One six-path run still
+  counted 2 there; `e1e4482` itself counted 2 on the same path, so that is
+  this loaded box's noise.
 - The `?nanprobe` captures above: 0 NaN/Inf in every view on the branch
   except one transient 613-pixel frame in `facade-deco` that did not
   reproduce in three re-probes of the same view; `origin/main`'s capture had

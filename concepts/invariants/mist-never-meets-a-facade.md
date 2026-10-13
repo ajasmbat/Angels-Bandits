@@ -10,7 +10,7 @@ along a hard, straight line. L5 makes that line impossible instead.
 - `nearestBoxDistance` and `clearanceAgainst` in
   `client/src/render/fogbanks.ts`. Both measure `d`, a puff's distance to
   each STANDING building box (footprint × `standingProfile(b).top`).
-- An S5 bank puff (`FogBanks.update`) SHRINKS to fit. Its drawn radius is
+- An S5 bank puff (`FogBanks.placeBanks`) SHRINKS to fit. Its drawn radius is
   `min(r, d − BANK_FIT_MARGIN)`, and it fades out once squeezed below
   `BANK_FIT_FADE` of its own radius.
 - A steam puff (`Steam.update`, each vent's neighbours cached) FADES. It keeps

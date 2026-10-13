@@ -75,8 +75,14 @@ export const CHIP_EDGE: readonly [number, number] = [0.4, 1.8];
 export const CHIP_FACE: readonly [number, number] = [0, 0.25];
 /** The per-piece hash scales a chip into [FRACTURE_HASH_MIN, 1]. */
 export const FRACTURE_HASH_MIN = 0.45;
+/** D11: the share of its chips an intact piece (CUT_INTACT) keeps. */
+export const INTACT_CHIP = 0.1;
 /** Half width of a rebar ribbon, m. */
 export const REBAR_HALF = 0.05;
+/** D11: the falling debris's ember (chipped concrete) and uplight colours,
+ * linear — their sum stays under the bloom threshold. */
+const FRACTURE_EMBER = "vec3(0.42, 0.12, 0.025)";
+const FRACTURE_UPLIGHT = "vec3(0.16, 0.1, 0.05)";
 /** uv.y role codes: 0 the box surface; 1/2 a rebar ribbon's inner end
  * (side −/+), 3/4 its outer end (side −/+). */
 export const ROLE_SURFACE = 0;
@@ -121,11 +127,15 @@ export function fractureInset(
   role: number,
   size: readonly [number, number, number],
   h01: number,
+  intact = false,
 ): [number, number, number] {
   const c = [p[0], p[1] - 0.5, p[2]];
   const b = boundary(p);
   const out: [number, number, number] = [p[0], p[1], p[2]];
-  const depth = chip * (FRACTURE_HASH_MIN + (1 - FRACTURE_HASH_MIN) * h01);
+  const depth =
+    chip *
+    (FRACTURE_HASH_MIN + (1 - FRACTURE_HASH_MIN) * h01) *
+    (intact ? INTACT_CHIP : 1);
   const outer = role > 2.5;
   for (let a = 0; a < 3; a++) {
     const s = Math.max(size[a] as number, 1e-4);
@@ -157,7 +167,9 @@ export const FRACTURE_VERTEX_GLSL = /* glsl */ `
   );
   float frH = fract(sin(dot(aSubOff.xyz, vec3(12.9898, 78.233, 37.719)) +
     dot(position, vec3(91.7, 23.1, 57.3))) * 43758.5453);
-  float frDepth = uv.x * (${FRACTURE_HASH_MIN.toFixed(2)} + ${(1 - FRACTURE_HASH_MIN).toFixed(2)} * frH);
+  // D11: an intact piece (CUT_INTACT) keeps INTACT_CHIP of its chips.
+  float frDepth = uv.x * (${FRACTURE_HASH_MIN.toFixed(2)} + ${(1 - FRACTURE_HASH_MIN).toFixed(2)} * frH)
+    * (1.0 - ${(1 - INTACT_CHIP).toFixed(2)} * brkIntact);
   vec3 frS = max(sScale, vec3(1e-4));
   vec3 frD = min(vec3(frDepth), ${FRACTURE_MAX_SHARE.toFixed(2)} * 0.5 * frS);
   float frOuter = step(2.5, uv.y);
@@ -174,6 +186,36 @@ export const FRACTURE_VERTEX_GLSL = /* glsl */ `
   vMeters = transformed * sScale + aSubOff.xyz;
   vWorldY = transformed.y * sScale.y + instanceMatrix[3].y;
   vBWorldPos = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;
+  // D11 lit debris: falling (no CUT_RUBBLE bit yet), the chip depth, and
+  // how far this face looks down once posed (a box face's direction under
+  // R·S is R·n — the scale only lengthens it).
+  vFrLit = vec3(
+    (1.0 - mod(floor(brkMask / 64.0), 2.0)) * (1.0 - brkIntact),
+    uv.x,
+    max(0.0, -normalize(mat3(modelMatrix) * mat3(instanceMatrix) * normal).y)
+  );
+}
+#endif
+`;
+
+/** D11: the fracture variant's own varyings (both stages). */
+export const FRACTURE_PARS_GLSL = /* glsl */ `
+#ifdef AB_FRACTURE
+// (falling, chip depth m, how far the face looks down)
+varying vec3 vFrLit;
+#endif
+`;
+
+/** D11: debris that reads at range — while a piece falls, the faces the
+ * fracture exposed (its broken concrete, not its facade) glow with the fire
+ * it came out of at the knocked-off corners (CHIP_CORNER) and, looking
+ * down, take the street's warm glow from below. Off once it rests (the rubble is the D2 look). Both
+ * under the bloom threshold (0.72). */
+export const FRACTURE_EMISSIVE_GLSL = /* glsl */ `
+#ifdef AB_FRACTURE
+if (vFrLit.x > 0.5 && brkDmg > 0.5) {
+  float frEdge = smoothstep(1.0, 2.0, vFrLit.y);
+  totalEmissiveRadiance += ${FRACTURE_EMBER} * frEdge + ${FRACTURE_UPLIGHT} * vFrLit.z;
 }
 #endif
 `;

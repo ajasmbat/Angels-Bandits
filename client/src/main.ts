@@ -342,7 +342,9 @@ import { PICKUP_TAXIS } from "./render/citylife";
 import { CityLife } from "./render/citylife-render";
 import {
   CollapseDetail,
+  type CollapseView,
   beatSchedule,
+  collapseView,
   creepSeconds,
 } from "./render/collapse-fx";
 import { ConstructionSparks } from "./render/construction";
@@ -1709,6 +1711,8 @@ let lastImpact: {
 let classifyMs = 0;
 /** The last frame's world clock (server ms) — QA blasts are stamped on it. */
 let lastRenderMs: number | null = null;
+/** D11 QA: the dust haze at the viewer last frame (0..1, before the cap). */
+let lastDustHaze = 0;
 /** The seq __ab.qaFireAt stamps its rounds with, so QA can tell its own
  * impact from a stray remote tracer's. */
 const QA_ROUND_SEQ = -2;
@@ -1865,7 +1869,7 @@ function showcaseFrame(dt: number, now: number, syncedMs: number): void {
 /** QA-only fixed camera (`__ab.qaCamera`): canonical eye + look-at, applied
  * just before the render so a capture can hold one viewpoint through a
  * death, the kill-cam and the respawn. Null = the normal chase camera. */
-let qaView: { eye: Vec3; at: Vec3 } | null = null;
+let qaView: { eye: Vec3; at: Vec3; fov?: number } | null = null;
 /** QA-only (`__ab.qaReactionClock`): evaluate the city's reactions at this
  * server time instead of the render clock, so a capture on a slow software
  * renderer can show "event + 2 s" exactly. Null = the render clock. */
@@ -3629,11 +3633,13 @@ declare global {
         spread?: number,
       ) => { building: number; destroyed: number };
       /** QA-only: hold the camera at a canonical eye looking at `at`
-       * (null restores the chase camera). */
+       * (null restores the chase camera); D11: `fov` (degrees, vertical)
+       * pins the field of view while it holds. */
       qaCamera: (
         view: {
           eye: { x: number; y: number; z: number };
           at: { x: number; y: number; z: number };
+          fov?: number;
         } | null,
       ) => void;
       /** O7: every tunnel bore's guide length, m. */
@@ -3754,6 +3760,13 @@ declare global {
         fallen: number;
         chunks: number;
         dustPuffs: number;
+        /** D11: the dust's share of the frame, its alpha budget scale and
+         * the haze at the viewer. */
+        dustCoverage: number;
+        dustScale: number;
+        dustHazeAtEye: number;
+        collapseView: CollapseView | null;
+        settledFlecks: number;
         impactParticles: number;
         burns: number;
         wrecks: number;
@@ -5019,6 +5032,7 @@ window.__ab = {
     const stats = city.destructionStats;
     const w = wrecks.drawStats;
     const dustPuffs = dust.puffCount;
+    const dustCover = dust.coverage;
     const scaffolds = scaffold.mesh.count;
     const on = (n: number): number => (n > 0 ? 1 : 0);
     return {
@@ -5027,6 +5041,24 @@ window.__ab = {
       fallen: socket.cityDamage.fallenCount,
       chunks: socket.cityDamage.chunkCount,
       dustPuffs,
+      // D11: the cloud's share of the frame (after the budget), the
+      // budget's alpha scale, and the haze at the viewer.
+      dustCoverage: dustCover.share,
+      dustScale: dustCover.scale,
+      dustHazeAtEye: lastDustHaze,
+      // D11: what the camera sees of the collapses, and the settled ring.
+      collapseView:
+        lastRenderMs === null
+          ? null
+          : collapseView(
+              socket.collapses.list,
+              camera,
+              lastRenderMs,
+              renderer.domElement.height,
+              impacts.points.geometry.getAttribute("position").array,
+              impacts.liveCount,
+            ),
+      settledFlecks: impacts.restCount,
       impactParticles: impacts.liveCount,
       burns: blastLedger.burns.length,
       wrecks: w.held,
@@ -6360,9 +6392,12 @@ const frame = (rafNow: number): void => {
     streakSmoke.sync(target.id, target.pos, now, tint !== null, tint ?? 0);
   }
   streakSmoke.update(chase.position, now);
-  dust.update(socket.collapses.list, chase.position, renderMs);
-  ruinSmoke.update(socket.collapses.list, chase.position, renderMs, now);
-  collapseDetail.update(socket.collapses.list, chase.position, renderMs, now);
+  // D11: the collapse's dust, smoke and detail measure from the camera that
+  // renders — the QA eye when one is set (its near fade, range and haze).
+  const collapseViewer = qaView ? qaView.eye : chase.position;
+  dust.update(socket.collapses.list, collapseViewer, renderMs, camera.aspect);
+  ruinSmoke.update(socket.collapses.list, collapseViewer, renderMs, now);
+  collapseDetail.update(socket.collapses.list, collapseViewer, renderMs, now);
   // D5: the director's warnings (dust, steam, sparks) and the rebuilds'
   // welders; an event is forgotten once its alarm has died away.
   if (socket.director.size > 0 && renderMs !== null) {
@@ -6429,14 +6464,16 @@ const frame = (rafNow: number): void => {
       (wxMs === null ? null : stormWarning(wx)),
   );
   rain.update(wx, wxMs, camera.position, dt, searchlights); // L5: lit in the beams
+  lastDustHaze =
+    renderMs === null
+      ? 0
+      : dustHaze(socket.collapses.list, collapseViewer, renderMs);
   const sky = storm.atmosphere(
     scene,
     chase.position.y,
     now,
     wx,
-    renderMs === null
-      ? 0
-      : dustHaze(socket.collapses.list, chase.position, renderMs),
+    lastDustHaze,
     burnShown,
     skyCycle.state.pools, // L2: the city glow dims with the street lights
   );
@@ -6594,11 +6631,11 @@ const frame = (rafNow: number): void => {
   // read camera.projectionMatrix directly, so writing it after would project
   // them with last frame's FOV. Guarded so a static FOV costs nothing, and
   // aspect (the resize handler's business) is left alone.
-  const fov = viewFov(
-    zoom.z,
-    overspeed,
-    alive ? flight.speed : tuning.minSpeed,
-  );
+  // D11: a QA camera may hold its own FOV (no speed or zoom widening) —
+  // the frustum the destruction-view check frames its subject in.
+  const fov =
+    qaView?.fov ??
+    viewFov(zoom.z, overspeed, alive ? flight.speed : tuning.minSpeed);
   if (camera.fov !== fov) {
     camera.fov = fov;
     camera.updateProjectionMatrix();

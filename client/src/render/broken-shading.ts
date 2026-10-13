@@ -50,6 +50,10 @@ export const BROKEN_VERTEX_GLSL = /* glsl */ `
 // D2: which face is this vertex on, and is it one destruction exposed?
 // Float bit tests, not int bitwise ops (portable to every GLSL ES driver).
 float brkMask = floor(aSubOff.w + 0.5);
+// D11: a debris piece not broken yet (city.ts CUT_INTACT, 256) — the
+// fracture variant draws it nearly whole; the face bits are what is left.
+float brkIntact = step(255.5, brkMask);
+brkMask -= 256.0 * brkIntact;
 float brkFace = normal.x < -0.5 ? 1.0 : normal.x > 0.5 ? 2.0 : normal.y < -0.5 ? 4.0
   : normal.y > 0.5 ? 8.0 : normal.z < -0.5 ? 16.0 : 32.0;
 // D10: CUT_STEEL (128) first — a landed column is CUT_RUBBLE | CUT_STEEL.

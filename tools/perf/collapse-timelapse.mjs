@@ -5,7 +5,7 @@
 //   npm run build -w client
 //   node tools/perf/collapse-timelapse.mjs <outDir> [--cases pancake,topple,chain]
 //     [--times before,1.5,3,4.5,6.5,9,14,25] [--label after] [--port 8231]
-//     [--root <checkout>] [--fps 30] [--res 0.75]
+//     [--root <checkout>] [--fps 30] [--res 0.75] [--eye x,y,z --at x,y,z]
 //
 // Same browser knobs as gallery.mjs (AB_CHROME / AB_CHROME_ARGS, e.g.
 // SwiftShader on a GPU-less box; AB_GALLERY_QUALITY pins a tier). `--root`
@@ -27,6 +27,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { chromium } from "playwright";
+import { CASES } from "./collapse-cases.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (name, dflt) => {
@@ -48,40 +49,6 @@ const TIMES = opt("times", "before,1.5,3,4.5,6.5,9,14,25")
 const LEAD_MS = 1000;
 /** Rendered frame by frame before each capture, world ms. */
 const WARM_MS = 2500;
-
-/**
- * The collapses. Building indices are generateCity(CITY_SEED)'s and `h`
- * guards them (qaDestruction throws if the city changed). Eyes are
- * ~460 m off and 200 m up with a clear sight line to the tower (losClear
- * over every other building), the tower near the middle of the frame.
- */
-const CASES = {
-  // The planner's pancake: building 166 (305 m at (663, 729)), from the
-  // north-west across the river blocks.
-  pancake: {
-    title: "pancake — building 166, 305 m, eye 460 m off, 200 m up",
-    eye: [264, 200, 959],
-    at: [663, 140, 729],
-    fell: [{ b: 166, h: 305, style: "pancake", dir: 0 }],
-  },
-  // The planner's topple: building 247 (312 m at (948, 1651)) falling
-  // north (−z), across the view from the east.
-  topple: {
-    title: "topple — building 247, 312 m, falling north, eye 470 m off",
-    eye: [1410, 200, 1569],
-    at: [948, 130, 1651],
-    fell: [{ b: 247, h: 312, style: "topple", dir: 2 }],
-  },
-  // Tower-on-tower: building 157 (294 m at (659, 249)) felled west into
-  // the 302 m building 110, whose struck floors give way in turn (D10
-  // `chain`), seen from the north.
-  chain: {
-    title: "tower-on-tower — 157 (294 m) toppled west into 110 (302 m)",
-    eye: [682, 200, -170],
-    at: [600, 120, 293],
-    fell: [{ b: 157, h: 294, style: "topple", dir: 0, chain: true }],
-  },
-};
 
 const ONLY = opt("cases", Object.keys(CASES).join(",")).split(",");
 mkdirSync(OUT, { recursive: true });
@@ -108,6 +75,40 @@ const untilWorld = (page, ms) =>
     ms,
     { polling: "raf", timeout: 600_000 },
   );
+
+/**
+ * A capture's luma (Rec. 709 over sRGB, 0–255): mean, standard deviation
+ * and the share of pixels at 250 or more (clipped) — "never one flat grey,
+ * never blown white" as numbers.
+ */
+const lumaStats = (statsPage, png) =>
+  statsPage.evaluate(async (b64) => {
+    const img = new Image();
+    img.src = `data:image/png;base64,${b64}`;
+    await img.decode();
+    const cv = document.createElement("canvas");
+    cv.width = img.width;
+    cv.height = img.height;
+    const ctx = cv.getContext("2d");
+    ctx.drawImage(img, 0, 0);
+    const px = ctx.getImageData(0, 0, cv.width, cv.height).data;
+    let sum = 0;
+    let sq = 0;
+    let clipped = 0;
+    const n = px.length / 4;
+    for (let i = 0; i < px.length; i += 4) {
+      const l = 0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2];
+      sum += l;
+      sq += l * l;
+      if (l >= 250) clipped++;
+    }
+    const mean = sum / n;
+    return {
+      mean: Math.round(mean * 10) / 10,
+      std: Math.round(Math.sqrt(Math.max(0, sq / n - mean * mean)) * 10) / 10,
+      clipped: Math.round((clipped / n) * 10000) / 100,
+    };
+  }, png.toString("base64"));
 
 let browser;
 try {
@@ -141,14 +142,23 @@ try {
   await page.waitForFunction(() => !!window.__ab, null, { timeout: 120_000 });
   await sleep(1500);
   const virtual = await page.evaluate(() => !!window.__ab.qaFrameClock);
+  // A plain page that measures each capture (no WebGL: a 2D canvas).
+  const stats = await browser.newPage();
   console.log(
     `build ${ROOT}: ${virtual ? `virtual frame clock at ${FPS} fps` : "no qaFrameClock — world-clock jumps only"}`,
   );
   const report = { label: LABEL, root: ROOT, virtual, fps: FPS, cases: {} };
 
   for (const name of ONLY) {
-    const c = CASES[name];
-    if (!c) throw new Error(`no case "${name}"`);
+    const base = CASES[name];
+    if (!base) throw new Error(`no case "${name}"`);
+    // `--eye x,y,z --at x,y,z`: the same collapse from another pose.
+    const xyz = (o) => opt(o, null)?.split(",").map(Number) ?? null;
+    const c = {
+      ...base,
+      eye: xyz("eye") ?? base.eye,
+      at: xyz("at") ?? base.at,
+    };
     await page.evaluate(() => window.__ab.weather("clear"));
     // The world from here: pinned, the tower felled LEAD_MS on.
     const w0 = await page.evaluate(() => {
@@ -157,10 +167,11 @@ try {
       return t;
     });
     await page.evaluate(
-      ({ eye, at }) => {
+      ({ eye, at, fov }) => {
         window.__ab.qaCamera({
           eye: { x: eye[0], y: eye[1], z: eye[2] },
           at: { x: at[0], y: at[1], z: at[2] },
+          fov,
         });
         // Parked over the eye, above every roof (CITY_TOP 480 m) and
         // under the carrier band; re-pinned every frame.
@@ -172,7 +183,7 @@ try {
         };
         hold();
       },
-      { eye: c.eye, at: c.at },
+      { eye: c.eye, at: c.at, fov: c.fov },
     );
     await page.evaluate(() => window.__ab.weather("clear"));
     const t0 = w0 + LEAD_MS;
@@ -207,11 +218,19 @@ try {
           death: c.lastDeath?.cause ?? null,
           debrisPieces: d.debrisPieces,
           dustPuffs: d.dustPuffs,
+          // D11 (null on a build without them): the dust's share of the
+          // frame and the haze at the eye; what the camera sees of the
+          // collapse; the fragments lying settled.
+          dustCoverage: d.dustCoverage ?? null,
+          dustHazeAtEye: d.dustHazeAtEye ?? null,
+          view: d.collapseView ?? null,
+          settled: d.settledFlecks ?? null,
           impactParticles: d.impactParticles,
           drawCalls: window.__ab.perf().drawCalls,
           nan: window.__ab.nanProbe(),
         };
       });
+      info.luma = await lumaStats(stats, png);
       if (!info.alive) deaths.push({ tau, cause: info.death });
       const label = tau === null ? "before" : `t = ${tau.toFixed(1)} s`;
       console.log("shot", name, label, JSON.stringify(info));
@@ -255,6 +274,7 @@ try {
     await sheet.screenshot({
       path: `${OUT}/${name}-timelapse${LABEL ? `-${LABEL}` : ""}.png`,
       fullPage: true,
+      timeout: 600_000,
     });
     await sheet.close();
     console.log(

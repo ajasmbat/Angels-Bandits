@@ -836,7 +836,8 @@ ${livingColorGlsl(glslVec3(TV_COLOR))}
   float slats = 1.0 - 0.3 * slatD * abLine(abPeriodic(fwG.y, 0.0, 0.12), 0.018, fwAA);
   float curtainOn = step(abHash(winCell + 83.0, vBSeed * 29.0), 0.4) * (1.0 - blinds) * fwNearOn;
   float curtainK = curtainOn * smoothstep(fwHalf.x * 0.42, fwHalf.x * 0.62, abs(fwG.x));
-  float folds = 0.82 + 0.18 * mix(0.5, abs(sin(fwG.x * 31.0)), abDetail(0.2, fwAA));
+  // |sin(31u)| repeats every π/31 ≈ 0.1 m: filtered at that period.
+  float folds = 0.82 + 0.18 * mix(0.64, abs(sin(fwG.x * 31.0)), abDetail(0.1, fwAA));
   vec3 openRoom = mix(roomCol * (0.55 + 0.45 * winH), winColor * 0.45 * folds, curtainK);
   litWindow = mix(openRoom, winColor * (0.5 + 0.3 * winH) * slats, blinds) * dim;
   litWindow = mix(litMeanCol, litWindow, winDetail);

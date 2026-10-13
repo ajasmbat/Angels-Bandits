@@ -269,6 +269,43 @@ export function signAnimations(
   };
 }
 
+/**
+ * L11: the animation of a SUBSET of the signs `full` was computed for —
+ * `keep*` flags each sign in full's order. Kept signs keep exactly the
+ * animation (and broken-tube seed) they had in the full list, so removing
+ * some signs (brownstones carry none) never re-rolls the rest of the city's
+ * tickers, chases and broken neon. Broken slots are renumbered densely.
+ */
+export function keepSignAnimations(
+  full: SignageAnimation,
+  keepMarquees: readonly boolean[],
+  keepBillboards: readonly boolean[],
+  keepStrips: readonly boolean[],
+): SignageAnimation {
+  const remap = (keep: readonly boolean[]): number[] => {
+    let n = 0;
+    return keep.map((k) => (k ? n++ : -1));
+  };
+  const mi = remap(keepMarquees);
+  const si = remap(keepStrips);
+  const pick = (list: SignAnim[], keep: readonly boolean[]): SignAnim[] =>
+    list.filter((_, i) => keep[i]).map((a) => ({ ...a, brokenSlot: -1 }));
+  const marquees = pick(full.marquees, keepMarquees);
+  const billboards = pick(full.billboards, keepBillboards);
+  const strips = pick(full.strips, keepStrips);
+  const broken = full.broken
+    .map((t) => ({
+      ...t,
+      index: (t.kind === "marquee" ? mi : si)[t.index] ?? -1,
+    }))
+    .filter((t) => t.index >= 0);
+  broken.forEach((t, slot) => {
+    const anims = t.kind === "marquee" ? marquees : strips;
+    (anims[t.index] as SignAnim).brokenSlot = slot;
+  });
+  return { marquees, billboards, strips, broken };
+}
+
 // --- The shader clock and its CPU mirrors ---
 
 /** Synced ms → the shader's wrapped seconds, [0, SIGN_LOOP_S). */

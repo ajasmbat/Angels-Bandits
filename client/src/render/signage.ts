@@ -36,6 +36,7 @@ import {
   type NeonBuzz,
   type SignAnim,
   type SignageAnimation,
+  keepSignAnimations,
   rungPalette,
   signAnimations,
   signClock,
@@ -281,6 +282,17 @@ function shuffledSlots(rand: () => number, n: number): number[] {
  * seed, same neon, on every client.
  */
 export function signageFor(b: Building, seed: number): BuildingSignage {
+  // L11: a brownstone row has stoops and front doors, not shopfronts — no
+  // blade sign, billboard or storefront strip over a stoop.
+  if (facadeStyleFor(b) === FacadeStyle.BROWNSTONE) {
+    return { marquees: [], billboards: [], strips: [], spills: [] };
+  }
+  return signageLayoutFor(b, seed);
+}
+
+/** The S2 layout before L11's brownstone rule — the Signage renderer walks
+ * it so the city's sign animations stay the ones S2 rolled. */
+function signageLayoutFor(b: Building, seed: number): BuildingSignage {
   const none: BuildingSignage = {
     marquees: [],
     billboards: [],
@@ -289,9 +301,6 @@ export function signageFor(b: Building, seed: number): BuildingSignage {
   };
   const t1 = b.tiers[0];
   if (!t1) return none;
-  // L11: a brownstone row has stoops and front doors, not shopfronts — no
-  // blade sign, billboard or storefront strip over a stoop.
-  if (facadeStyleFor(b) === FacadeStyle.BROWNSTONE) return none;
 
   const bSeed =
     (seed ^
@@ -888,11 +897,24 @@ export class Signage {
 
     // L7: animate in the shader off one clock uniform — no texture uploads,
     // no extra draws. Broken tubes stutter via a small uniform array.
-    const anim = signAnimations(
-      this.marquees,
-      this.billboards,
-      this.strips,
-      seed,
+    // L11: animated over S2's full layout (brownstones included), then the
+    // brownstones' signs dropped — every other sign keeps its animation.
+    const full = buildings.map((b) => signageLayoutFor(b, seed));
+    const brownstone = buildings.map(
+      (b) => facadeStyleFor(b) === FacadeStyle.BROWNSTONE,
+    );
+    const keep = (k: "marquees" | "billboards" | "strips"): boolean[] =>
+      full.flatMap((f, i) => f[k].map(() => !brownstone[i]));
+    const anim = keepSignAnimations(
+      signAnimations(
+        full.flatMap((f) => f.marquees),
+        full.flatMap((f) => f.billboards),
+        full.flatMap((f) => f.strips),
+        seed,
+      ),
+      keep("marquees"),
+      keep("billboards"),
+      keep("strips"),
     );
     this.brokenRef = anim.broken.map((t) => ({
       kind: t.kind === "marquee" ? 0 : 2,

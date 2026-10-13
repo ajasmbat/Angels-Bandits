@@ -24,11 +24,29 @@ export const BROKEN_DETAIL_UNIFORM = { value: 1 };
 
 /** Storey pitch of the exposed slabs, meters. */
 export const BROKEN_STOREY = 3.6;
-/** Slab thickness as a share of the storey. */
-const SLAB_SHARE = 0.1;
-/** Linear albedo of the slabs, the gutted rooms and the rubble. */
-const SLAB_ALBEDO = 0.2;
-const ROOM_ALBEDO = 0.03;
+/** Slab thickness as a share of the storey (D11: 0.1 → 0.16, a slab edge
+ * that reads from across the street). */
+const SLAB_SHARE = 0.16;
+/** Linear albedo of the slabs, the gutted rooms and the rubble (D11: the
+ * rooms are a back wall in shadow, not a hole into black). */
+const SLAB_ALBEDO = 0.24;
+const ROOM_ALBEDO = 0.06;
+/** D11: an exposed room's kind by its hash — burning below ROOM_BURNING,
+ * its lights still on below ROOM_LIT, dark above. */
+const ROOM_BURNING = 0.12;
+const ROOM_LIT = 0.34;
+/** D11 linear emission, all under the bloom threshold (0.72): a lit room's
+ * warm light at the ceiling, a burning room's fire at the floor, the street
+ * glow on a slab edge, the embers in a charred rim. */
+const ROOM_LIGHT = "vec3(0.36, 0.26, 0.15)";
+const ROOM_FIRE_LOW = "vec3(0.6, 0.2, 0.03)";
+const ROOM_FIRE_HIGH = "vec3(0.32, 0.06, 0.01)";
+const SLAB_GLOW = "vec3(0.045, 0.032, 0.02)";
+const RIM_EMBER = "vec3(0.3, 0.07, 0.012)";
+/** D11: room cell width along the face, m, and the char band round an
+ * opening, m. */
+const ROOM_W = 6;
+const CHAR_M = 1.8;
 /** D8 scorch: how dark the soot patches get (share of albedo removed). */
 const SOOT = 0.7;
 /** Ember: share of gutted rooms that smoulder, and its linear colour. */
@@ -70,6 +88,14 @@ export const BROKEN_COLOR_GLSL = /* glsl */ `
 // --- D2 exposed insides and rubble ---
 float brkDmg = floor(vBroken.w / ${KIND_STRIDE});
 float brkEmber = 0.0;
+// D11: the exposed storey's room — burning, lit, how high in it, contents
+// (and dangling bars) in silhouette — its slab edge, and the charred rim.
+float brkFire = 0.0;
+float brkLit = 0.0;
+float brkRoomV = 0.0;
+float brkStuffK = 0.0;
+float brkSlabK = 0.0;
+float brkChar = 0.0;
 if (brkDmg > 0.5) {
   vec3 brkN = abs(vObjNormal);
   // World-anchored in-plane coordinates for the patterns (seam-safe: the
@@ -90,16 +116,28 @@ if (brkDmg > 0.5) {
     float brkInSlab = fract(brkStorey);
     // A floor or ceiling face (normal ±y) is all slab.
     float brkSlab = max(step(brkInSlab, ${SLAB_SHARE.toFixed(2)}), step(0.5, brkN.y));
-    float brkRoom = abHash(vec2(floor(brkW.x / 6.0), floor(brkStorey)), vBSeed * 13.0);
-    vec3 brkRoomCol = vec3(${ROOM_ALBEDO.toFixed(2)}) * (0.6 + 0.8 * brkRoom);
+    float brkRoom = abHash(vec2(floor(brkW.x / ${ROOM_W.toFixed(1)}), floor(brkStorey)), vBSeed * 13.0);
+    // D11: inside the room — 0 at its floor, 1 at its ceiling — and across.
+    float brkV = clamp((brkInSlab - ${SLAB_SHARE.toFixed(2)}) / ${(1 - SLAB_SHARE).toFixed(2)}, 0.0, 1.0);
+    // Contents: desks, shelves and fallen ceiling against the back wall.
+    float brkStuff = step(brkV, 0.2 + 0.22 * abHash(floor(brkW.xx / 1.6), vBSeed * 19.0 + floor(brkStorey)));
+    vec3 brkRoomCol = vec3(${ROOM_ALBEDO.toFixed(2)}) * (0.6 + 0.8 * brkRoom) * (0.7 + 0.5 * brkV) * (1.0 - 0.6 * brkStuff);
     vec3 brkSlabCol = vec3(${SLAB_ALBEDO.toFixed(2)}) * (0.75 + 0.4 * brkNoise);
     diffuseColor.rgb = mix(brkRoomCol, brkSlabCol, brkSlab);
+    // D11 charred rim: soot darkening toward the opening's edge.
+    vec2 brkHalfSize = vec2(vBroken.z, vBroken.w - brkDmg * ${KIND_STRIDE});
+    vec2 brkFromEdge = brkHalfSize - abs(vBroken.xy);
+    float brkEdge = min(brkFromEdge.x, brkFromEdge.y);
+    brkChar = (1.0 - smoothstep(0.0, ${CHAR_M.toFixed(1)}, brkEdge)) * (1.0 - step(0.5, brkN.y));
+    diffuseColor.rgb *= 1.0 - 0.5 * brkChar;
+    brkFire = (1.0 - brkSlab) * step(brkRoom, ${ROOM_BURNING.toFixed(2)});
+    brkLit = (1.0 - brkSlab) * step(${ROOM_BURNING.toFixed(2)}, brkRoom) * step(brkRoom, ${ROOM_LIT.toFixed(2)});
+    brkRoomV = brkV;
+    brkStuffK = brkStuff;
+    brkSlabK = brkSlab * (1.0 - step(0.5, brkN.y));
     if (uBrokenDetail > 0.5) {
       // Jagged rim: within a noisy band of the face's edge the concrete is
       // broken — lighter, chunkier — and rebar sticks out of it.
-      vec2 brkHalfSize = vec2(vBroken.z, vBroken.w - brkDmg * ${KIND_STRIDE});
-      vec2 brkFromEdge = brkHalfSize - abs(vBroken.xy);
-      float brkEdge = min(brkFromEdge.x, brkFromEdge.y);
       float brkJag = 0.35 + 0.9 * abHash(floor(brkW * 2.3), vBSeed * 3.0);
       float brkRim = 1.0 - step(brkJag, brkEdge);
       diffuseColor.rgb = mix(diffuseColor.rgb, vec3(${SLAB_ALBEDO.toFixed(2)}) * (0.9 + 0.5 * brkNoise), brkRim * 0.85);
@@ -107,7 +145,13 @@ if (brkDmg > 0.5) {
       float brkBarU = abs(fract(brkW.x / 0.3) - 0.5);
       float brkNearSlab = 1.0 - step(0.12 + 0.18 * brkNoise, brkInSlab - ${SLAB_SHARE.toFixed(2)});
       float brkBar = (1.0 - step(0.08, brkBarU)) * max(brkNearSlab, brkRim) * (1.0 - step(0.5, brkN.y));
-      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.09, 0.05, 0.035), brkBar);
+      // D11: and bars dangling from the slab above, each its own length.
+      float brkHangU = abs(fract(brkW.x / 0.45) - 0.5);
+      float brkHangL = 0.08 + 0.4 * abHash(vec2(floor(brkW.x / 0.45), floor(brkStorey)), vBSeed * 29.0);
+      float brkHang = (1.0 - step(0.06, brkHangU)) * step(1.0 - brkHangL, brkV) * (1.0 - brkSlab)
+        * step(0.55, abHash(vec2(floor(brkW.x / 0.45), floor(brkStorey) + 7.0), vBSeed * 37.0));
+      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.09, 0.05, 0.035), max(brkBar, brkHang));
+      brkStuffK = max(brkStuffK, brkHang);
     }
     brkEmber = (1.0 - brkSlab) * step(brkRoom, ${EMBER_SHARE.toFixed(2)});
   }
@@ -122,6 +166,18 @@ if (brkDmg > 0.5) {
  * facade computed — only the gutted rooms' embers. */
 export const BROKEN_EMISSIVE_GLSL = /* glsl */ `
 if (brkDmg > 0.5) {
-  totalEmissiveRadiance = ${EMBER} * brkEmber;
+  totalEmissiveRadiance = vec3(0.0);
+  // D11: an exposed storey is a broken floor with rooms behind it, not a
+  // black square — the lights still on in some (brightest at the ceiling,
+  // the contents in silhouette against them), fire in others (hottest at
+  // the floor, flickering), the street's glow on the slab edges, and
+  // embers in the charred rim. All under the bloom threshold.
+  float brkFlick = 0.75 + 0.25 * sin(6.2832 * (uFirePhase.x + vBSeed * 5.0 + brkRoomV));
+  totalEmissiveRadiance += ${ROOM_LIGHT} * brkLit * (0.3 + 0.7 * brkRoomV) * (1.0 - 0.75 * brkStuffK);
+  totalEmissiveRadiance += mix(${ROOM_FIRE_LOW}, ${ROOM_FIRE_HIGH}, brkRoomV) * brkFire * brkFlick * (1.0 - 0.5 * brkStuffK);
+  totalEmissiveRadiance += ${SLAB_GLOW} * brkSlabK;
+  // The smoulder in a burnt-out room: low, uneven, never a flat square.
+  totalEmissiveRadiance += ${EMBER} * brkEmber * (1.0 - brkRoomV) * (1.0 - brkStuffK) * brkFlick;
+  totalEmissiveRadiance += ${RIM_EMBER} * brkChar * brkChar * step(0.6, abHash(floor(vBWorldPos.xz * 1.3 + vBWorldPos.y), vBSeed * 41.0)) * brkFlick;
 }
 `;

@@ -33,9 +33,7 @@ const server = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
     ...process.env,
     PORT: String(PORT),
     AB_WAVES: "0",
-    ...(process.env.AB_GALLERY_LIVE_CITY === "1"
-      ? {}
-      : { AB_QUIET_CITY: "1" }),
+    ...(process.env.AB_GALLERY_LIVE_CITY === "1" ? {} : { AB_QUIET_CITY: "1" }),
   },
   stdio: "ignore",
 });
@@ -321,6 +319,9 @@ try {
           window.__ab.qaCamera({
             eye: { x: ex, y: ey, z: ez },
             at: { x: ax, y: ay, z: az },
+            // D11: a view may pin its field of view (a build without it
+            // ignores the field).
+            ...(v.fov ? { fov: v.fov } : {}),
           });
         }
       }, v);

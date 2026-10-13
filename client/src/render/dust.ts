@@ -57,8 +57,9 @@ import { RENDER_ORDER } from "./render-order";
 import { DUSK, LIGHT_RIG } from "./sky";
 import { pushUpdateRange } from "./update-range";
 
-/** Puffs per cloud at full quality (D11: 72 → 112, for the curtain). */
-export const DUST_PUFFS = 112;
+/** Puffs per cloud at full quality (D11: 72 → 144, for the curtain and
+ * the plumes). */
+export const DUST_PUFFS = 144;
 /** Clouds drawn at once (the newest win). */
 const MAX_CLOUDS = 6;
 /** Puff sprite size ramp, m (before the tier's coverage scale). */
@@ -90,15 +91,15 @@ export const PUFF_COLUMN = 1;
 export const PUFF_SQUIB = 2;
 export const PUFF_CURTAIN = 3;
 export const PUFF_PLUME = 4;
-const SURGE_SHARE = 0.28;
-const COLUMN_SHARE = 0.15;
-const SQUIB_SHARE = 0.12;
+const SURGE_SHARE = 0.24;
+const COLUMN_SHARE = 0.12;
+const SQUIB_SHARE = 0.1;
 const CURTAIN_SHARE = 0.2;
 /** D11 plume: dust boiling out where the falling mass lands (a pancake's
  * pile at its foot, a topple's debris along its line) and climbing — how
  * high (× the tower's height), how far out, its size ramp (× height) and
  * life. */
-const PLUME_RISE = 0.35;
+const PLUME_RISE = 0.5;
 const PLUME_OUT = 0.12;
 const PLUME_SIZE_0 = 0.07;
 const PLUME_SIZE_1 = 0.32;

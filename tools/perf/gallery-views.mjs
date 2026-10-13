@@ -271,6 +271,11 @@ const INFERNO_STAGE = {
   burn: 0.9,
 };
 
+/** D11: the world instant every staged destruction view is shot at (each
+ * stage's times are offsets from it): pinned, so a slow rasteriser's
+ * settle loop cannot shoot a fall long after it landed. */
+const D11_MS = 1_790_000_000_000;
+
 export const VIEWS = [
   // name, x, z, y, yaw, extra
   { name: "chase-rooftops", x: 300, z: 900, y: 175, yaw: 0.6 },
@@ -697,8 +702,9 @@ export const VIEWS = [
     z: 300,
     y: 300,
     yaw: 0,
-    eye: [588, 34, 382],
-    at: [626, 58, 452],
+    eye: [584, 44, 420],
+    at: [622, 56, 446],
+    fov: 70,
     weather: "clear",
     chew: {
       eye: [598, 34, 440],
@@ -923,30 +929,37 @@ export const VIEWS = [
   // under the zeppelin's band.
   {
     name: "ruin-felled",
+    fov: 70,
+    phase: "settled",
+    timeMs: D11_MS,
     sky: "dusk",
     x: 615,
     z: 345,
     y: 360,
     yaw: 0,
-    eye: [592, 64, 375],
-    at: [632, 12, 247],
+    eye: [606, 60, 330],
+    at: [575, 6, 249],
     weather: "clear",
     stage: { fell: [{ b: 157, h: 294, style: "topple", dir: 0, t: -15_000 }] },
   },
   {
     name: "ruin-pancake",
+    fov: 70,
+    phase: "settled",
+    timeMs: D11_MS,
     sky: "dusk",
     x: 615,
     z: 345,
     y: 360,
     yaw: 0,
-    eye: [586, 42, 337],
-    at: [640, 8, 249],
+    eye: [604, 40, 285],
+    at: [659, 12, 249],
     weather: "clear",
     stage: { fell: [{ b: 157, h: 294, style: "pancake", dir: 0, t: -15_000 }] },
   },
   {
     name: "ruin-chewed",
+    timeMs: D11_MS,
     sky: "dusk",
     x: 330,
     z: 900,
@@ -984,25 +997,31 @@ export const VIEWS = [
   // street. The plane is parked at 360 m over the lot, out of shot.
   {
     name: "collapse-pancake-mid",
+    fov: 70,
+    phase: "falling",
+    timeMs: D11_MS,
     sky: "dusk",
     x: 615,
     z: 545,
     y: 360,
     yaw: 0,
-    eye: [592, 110, 540],
-    at: [640, 130, 249],
+    eye: [524, 140, 88],
+    at: [659, 92, 249],
     weather: "clear",
     stage: { fell: [{ b: 157, h: 294, style: "pancake", dir: 0, t: -4600 }] },
   },
   {
     name: "collapse-topple-impact",
+    fov: 70,
+    phase: "falling",
+    timeMs: D11_MS,
     sky: "dusk",
     x: 615,
     z: 545,
     y: 360,
     yaw: 0,
-    eye: [585, 164, 505],
-    at: [550, 206, 249],
+    eye: [586, 180, 100],
+    at: [586, 123, 250],
     weather: "clear",
     stage: {
       fell: [
@@ -1012,25 +1031,31 @@ export const VIEWS = [
   },
   {
     name: "collapse-dust-street",
+    fov: 70,
+    phase: "settled",
+    timeMs: D11_MS,
     sky: "dusk",
     x: 615,
     z: 545,
     y: 360,
     yaw: 0,
-    eye: [600, 9, 445],
-    at: [600, 14, 255],
+    eye: [600, 10, 290],
+    at: [640, 8, 260],
     weather: "clear",
     stage: { fell: [{ b: 157, h: 294, style: "pancake", dir: 0, t: -12_000 }] },
   },
   {
     name: "ruin-detail",
+    fov: 70,
+    phase: "settled",
+    timeMs: D11_MS,
     sky: "dusk",
     x: 615,
     z: 545,
     y: 360,
     yaw: 0,
-    eye: [603, 16, 325],
-    at: [638, 3, 253],
+    eye: [597, 14, 280],
+    at: [652, 6, 249],
     weather: "clear",
     stage: { fell: [{ b: 157, h: 294, style: "pancake", dir: 0, t: -25_000 }] },
   },
@@ -1066,6 +1091,13 @@ export const VIEWS = [
   // the bank towers across the street burning, soot rising up their faces.
   {
     name: "destruction-chain",
+    fov: 70,
+    subject: [
+      [1300, 4, 1030],
+      [1287, 4, 1038],
+      [1240, 2, 986],
+    ],
+    timeMs: D11_MS,
     sky: "dusk",
     x: 1214,
     z: 1104,
@@ -1099,14 +1131,21 @@ export const VIEWS = [
   // (its lamps with it), the gap in the deck, from the south promenade.
   {
     name: "destruction-bridge",
+    fov: 70,
+    subject: [
+      [1400, 1, 1084],
+      [1400, 1, 1116],
+      [1400, -18, 1100],
+    ],
+    timeMs: D11_MS,
     sky: "dusk",
     x: 1322,
     z: 1032,
     y: 22,
     yaw: 0,
     raf: true,
-    eye: [1342, 9, 1046],
-    at: [1400, -8, 1100],
+    eye: [1360, 30, 1040],
+    at: [1400, -12, 1100],
     weather: "clear",
     stage: {
       props: {
@@ -1119,6 +1158,13 @@ export const VIEWS = [
   // signal mast snapped into the street, craters and a burst water main.
   {
     name: "destruction-street",
+    fov: 70,
+    subject: [
+      [986, 2, 362],
+      [1014, 2, 368],
+      [996, 1, 352],
+    ],
+    timeMs: D11_MS,
     x: 1000,
     z: 280,
     y: 30,

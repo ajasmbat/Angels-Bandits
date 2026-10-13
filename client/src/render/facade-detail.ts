@@ -37,14 +37,15 @@ import {
   wrapDeltaAxis,
 } from "@angels-bandits/common/world";
 import * as THREE from "three";
-import { FacadeArchetype, archetypeFor } from "./archetypes";
+import { FacadeArchetype, archetypeFor, facadeStyleFor } from "./archetypes";
 import { emissiveBoost } from "./emissive";
 import { GLYPH_H, wordCells, wordRuns } from "./pixel-font";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
+import { roofStyleFor } from "./roofs";
 import { type SignPlacement, signageFor } from "./signage";
 import { type StandingLayer, StandingMask } from "./standing-watch";
 import { blockOf, blockWindow } from "./streetlife";
-import { facadeFor, pitchSeed, windowPitch } from "./window-pattern";
+import { pitchSeed, styleWindow, windowPitch } from "./window-pattern";
 import { nearestImage } from "./wrapPlacement";
 
 /** Nothing stands further than this off its facade plane, meters. */
@@ -118,6 +119,21 @@ const SCAFFOLD_DECK = 0x5a4632;
 export const WORK_LIGHT_COLOR = 0xffe2b0;
 export const WORK_LIGHT_RUNG = EMISSIVE_SIGN;
 
+// --- L11: cornice ledges (masonry street faces, under every tier top) ---
+/** The cornice sits under the parapet lip and below the VO3 LED strip band
+ * (its top is CORNICE_DROP under the tier top), projecting CORNICE_OUT,
+ * over a shallower bed moulding. */
+const CORNICE_DROP = 0.85;
+const CORNICE_HEIGHT = 0.42;
+const CORNICE_OUT = 0.48;
+const BED_HEIGHT = 0.16;
+const BED_OUT = 0.22;
+/** Longest cornice segment, meters: the 260–380 m fade shrinks each box to
+ * its own centre, and a short segment reads as a fade, not a slide. */
+const CORNICE_SEGMENT = 6;
+const CORNICE_STONE = [0x8a8274, 0x857a6c, 0x8e8576] as const;
+const CORNICE_BED = 0x6b6358;
+
 // --- DT2: balcony gardens and lights, ivy, graffiti ---
 /** Balcony planter, foliage and the occasional bloom on top. */
 const PLANTER_TONES = [0x9a5a3c, 0x6f6a66, 0x8a4a34] as const;
@@ -169,6 +185,7 @@ export const GRAFFITI_WORDS = [
 ] as const;
 
 export type DetailKind =
+  | "cornice"
   | "fireEscape"
   | "balcony"
   | "ac"
@@ -363,11 +380,13 @@ function facesOf(
   const t0 = b.tiers[0];
   if (!t0) return [];
   const clearance = facadeClearances(b.x, b.z, t0.width, t0.depth);
-  const sill = (1 - facadeFor(arch).pane[1]) / 2;
+  // L11: the drawn rows and sills are the New York style's.
+  const style = facadeStyleFor(b);
+  const sill = (1 - styleWindow(style).pane[1]) / 2;
   const faces: Face[] = [];
   let base = 0;
   b.tiers.forEach((t, tierIndex) => {
-    const [px, py] = windowPitch(arch, pitchSeed(t.width, t.height, t.depth));
+    const [px, py] = windowPitch(style, pitchSeed(t.width, t.height, t.depth));
     const holed = new Set(
       (b.holes ?? [])
         .filter((h) => h.tierIndex === tierIndex)
@@ -913,6 +932,50 @@ function occupied(f: Face, boxes: readonly DetailBox[]): Rect[] {
 const clearOf = (f: Face, used: readonly Rect[], r: Rect): boolean =>
   !blocked(f, r, true) && used.every((u) => !overlaps(u, r));
 
+/** L11: a stone cornice along the top of a masonry street face, in short
+ * segments that step around signs, fire escapes, ivy and anything else
+ * already on the face. */
+function cornice(f: Face, tone: number, out: DetailBox[]): void {
+  const top = f.top - CORNICE_DROP;
+  const y0 = top - CORNICE_HEIGHT - BED_HEIGHT;
+  if (y0 < DETAIL_MIN_Y || y0 < f.base) return;
+  const used = occupied(f, out);
+  // A hair inside the face's ends, so a segment never reaches past them.
+  const run = f.length - 0.04;
+  const n = Math.max(1, Math.ceil(run / CORNICE_SEGMENT));
+  const seg = run / n;
+  const a0 = f.center - run / 2;
+  for (let i = 0; i < n; i++) {
+    const r: Rect = { a0: a0 + i * seg, a1: a0 + (i + 1) * seg, y0, y1: top };
+    if (!clearOf(f, used, r)) continue;
+    const mid = (r.a0 + r.a1) / 2;
+    out.push(
+      boxOn(
+        f,
+        "cornice",
+        mid,
+        top - CORNICE_HEIGHT / 2,
+        seg,
+        CORNICE_HEIGHT,
+        0,
+        CORNICE_OUT,
+        tone,
+      ),
+      boxOn(
+        f,
+        "cornice",
+        mid,
+        y0 + BED_HEIGHT / 2,
+        seg,
+        BED_HEIGHT,
+        0,
+        BED_OUT,
+        CORNICE_BED,
+      ),
+    );
+  }
+}
+
 /** DT2: an ivy curtain spilling down from the tier top — ragged rows of
  * leaf clumps that narrow towards the bottom, a few strands trailing
  * lower. Flat to the wall (≤ 0.16 m out): it grows round the AC units
@@ -1132,6 +1195,15 @@ export function facadeDetailFor(b: Building, seed: number): FacadeDetail {
       if (f.tierIndex === 0 && rPaint < GRAFFITI_CHANCE) {
         graffiti(f, paintRand, used, boxes, lights);
       }
+    }
+    // L11, last (no draw): cornice ledges, unless the tower wears a VO3
+    // neon outline — its strip runs along that same roof edge.
+    if (!roofStyleFor(b).led) {
+      const tone = pickTone(
+        CORNICE_STONE,
+        ((b.width * 7 + b.depth * 3) % 10) / 10,
+      );
+      for (const f of faces) cornice(f, tone, boxes);
     }
   }
   return { boxes, lights };

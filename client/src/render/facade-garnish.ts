@@ -21,6 +21,7 @@ import {
 import { BLOCK_PITCH } from "@angels-bandits/common/constants";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { FacadeStyle, facadeStyleFor } from "./archetypes";
 import { type StandingLayer, StandingMask } from "./standing-watch";
 import { ImageCache, InstanceUploads } from "./wrapPlacement";
 
@@ -116,6 +117,8 @@ export function facadeGarnishFor(b: Building): FacadeGarnish {
 }
 
 function canopyFor(b: Building): Canopy | null {
+  // L11: a brownstone's entrance is its stoop — no awning over it.
+  if (facadeStyleFor(b) === FacadeStyle.BROWNSTONE) return null;
   const street = nearestStreet({ x: b.x, y: 0, z: b.z });
   // The facade facing that street: for a north–south street (axis "z", a
   // line of constant x) it is an x facade; dir points building → street.

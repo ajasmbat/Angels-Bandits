@@ -31,11 +31,17 @@ import {
   wrapCoord,
   wrapDeltaInto,
 } from "@angels-bandits/common/world";
-import { type FacadeArchetype, archetypeFor } from "../render/archetypes";
+import {
+  type FacadeArchetype,
+  FacadeStyle,
+  archetypeFor,
+  facadeStyleFor,
+} from "../render/archetypes";
 import {
   HOLE,
   ROOF,
-  facadeFor,
+  brownstoneDoorBay,
+  paneContains,
   pitchSeed,
   windowPitch,
 } from "../render/window-pattern";
@@ -114,7 +120,7 @@ export function tierBase(b: Building, k: number): number {
 export function tierPitch(b: Building, tier: number): [number, number] {
   const t = b.tiers[tier];
   if (!t) return [1, 1];
-  return windowPitch(archetypeFor(b), pitchSeed(t.width, t.height, t.depth));
+  return windowPitch(facadeStyleFor(b), pitchSeed(t.width, t.height, t.depth));
 }
 
 /**
@@ -141,16 +147,33 @@ export function classifyFacadeCell(
     out.pane = false;
     return;
   }
-  const pane = facadeFor(archetypeFor(b)).pane;
+  const style = facadeStyleFor(b);
   const fx = gx - Math.floor(gx);
   const fy = gy - Math.floor(gy);
-  let onPane =
-    Math.abs(fx - 0.5) <= pane[0] * 0.5 && Math.abs(fy - 0.5) <= pane[1] * 0.5;
+  // L11: the style's drawn opening (an arch, a loft's segmental head, a
+  // ribbon), measured from the cell centre; a prewar tier's top floor
+  // arches (its crown floor, under the cornice).
+  const topRow = (out.cellY + 2) * py > t.height - ROOF.windowBand;
+  let onPane = paneContains(
+    style,
+    [px, py],
+    (fx - 0.5) * px,
+    (fy - 0.5) * py,
+    topRow,
+  );
   // R2: the band under every roof edge is blank spandrel.
   if ((out.cellY + 1) * py > t.height - ROOF.windowBand) onPane = false;
-  // V2 storefront glass at street level (tier 1 only) is not the grid.
   const base = tierBase(b, tier);
-  if (base + h < SHOP_BAND_HEIGHT) onPane = false;
+  if (style === FacadeStyle.BROWNSTONE) {
+    // L11: a brownstone has no shopfront — its garden-level windows are
+    // glass — but its door bay is a stoop and a front door, not a pane.
+    if (base === 0 && out.cellY <= 1 && brownstoneDoorBay(out.cellX)) {
+      onPane = false;
+    }
+  } else if (base + h < SHOP_BAND_HEIGHT) {
+    // V2 storefront glass at street level (tier 1 only) is not the grid.
+    onPane = false;
+  }
   // H1: no windows inside a hole's reveal on its mouth faces.
   const hole = b.holes?.find((x) => x.tierIndex === tier);
   if (hole) {

@@ -94,10 +94,13 @@ describe("classifyBulletStep — facades", () => {
     expect(edge?.pane).toBe(false);
     // R2: the top row whose top crosses height − windowBand is spandrel.
     const topRow = Math.floor((90 - ROOF.windowBand) / py);
+    // Inside that row AND under the 90 m roof (L11's taller floors put the
+    // row's centre above the roof line on this slab).
+    const bandY = Math.min((topRow + 0.5) * py, 90 - 0.3);
     const roofBand = classify(
       [b],
-      { x: 540, y: (topRow + 0.5) * py, z: 500 + 0.5 * px },
-      { x: 515, y: (topRow + 0.5) * py, z: 500 + 0.5 * px },
+      { x: 540, y: bandY, z: 500 + 0.5 * px },
+      { x: 515, y: bandY, z: 500 + 0.5 * px },
     );
     expect(roofBand?.cellY).toBe(topRow);
     expect(roofBand?.pane).toBe(false);

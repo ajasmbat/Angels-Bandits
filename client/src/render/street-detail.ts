@@ -347,6 +347,8 @@ export const CURB_SHADER = {
 /** Salted PRNG tags — far from streetlife's 1–4 and from each other. */
 export const TAG_FURNITURE = 0x47_31_46; // "G1F"
 export const TAG_PARKING = 0x47_31_50; // "G1P"
+/** L11: subway entrances, on their own stream so no other draw moves. */
+export const TAG_SUBWAY = 0x4c_31_31; // "L11"
 
 /** The per-block stream for one G1 subsystem (streetlife's mixing). */
 function g1Stream(seed: number, bx: number, bz: number, tag: number) {
@@ -375,7 +377,8 @@ export type FurnitureKind =
   | "bollards"
   | "planter"
   | "booth"
-  | "cafe";
+  | "cafe"
+  | "subway";
 
 /** Footprint along the street and across it (m), plus where its centre sits
  * off the centreline. Every footprint stays inside [STRIP_IN, STRIP_OUT]. */
@@ -396,7 +399,14 @@ const SPECS: Readonly<Record<FurnitureKind, ItemSpec>> = {
   booth: { along: 1.05, across: 1.05, off: 15.95 },
   // DT2: a café set re-skins a bench — the SAME footprint, so nothing moves.
   cafe: { along: 1.9, across: 0.66, off: 16.0 },
+  // L11: a subway stair, its railings and two globe lamps — inside the strip.
+  subway: { along: 4.4, across: 1.5, off: 15.85 },
 };
+
+/** L11: chance a street side has a subway entrance, and the tries along it
+ * (each a seeded spot, kept only where the strip is still free). */
+export const SUBWAY_SIDE_CHANCE = 0.35;
+const SUBWAY_TRIES = 16;
 
 /** DT2: share of benches that become a café set (table, two chairs and a
  * parasol) — more on shopping streets than in parks. Picked by a position
@@ -612,6 +622,9 @@ export function streetFurnitureFor(
   const total = fill.reduce((t, [, w]) => t + w, 0);
   const site = isSite(bx, bz);
   const items: StreetItem[] = [];
+  // L11: each side's placer, kept for the subway pass after the fill.
+  const placers: ((k: FurnitureKind, along: number, v: number) => boolean)[] =
+    [];
 
   for (const s of blockSides(bx, bz)) {
     const plan = curbPlanFor(s);
@@ -644,6 +657,7 @@ export function streetFurnitureFor(
       });
       return true;
     };
+    if (!site) placers.push(place);
     // Fixed by the curb plan (always the same draws, placed or not).
     const vHydrant = rand();
     const vShelter = rand();
@@ -672,6 +686,24 @@ export function streetFurnitureFor(
       if (along + SPECS[k].along / 2 > BLOCK_PITCH - CORNER_CLEAR) break;
       if (!skip && place(k, along, variant)) a = along + SPECS[k].along / 2;
       else a += gap;
+    }
+  }
+  // L11: subway entrances, AFTER the fill on their own stream: a side that
+  // rolls one tries a few seeded spots and keeps the first that is still
+  // free, so no fill item moves, drops or redraws.
+  const subRand = g1Stream(seed, bx, bz, TAG_SUBWAY);
+  for (const place of placers) {
+    const roll = subRand();
+    const start = subRand();
+    const variant = subRand();
+    if (open || roll >= SUBWAY_SIDE_CHANCE) continue;
+    const span = BLOCK_PITCH - 2 * CORNER_CLEAR - SPECS.subway.along;
+    for (let i = 0; i < SUBWAY_TRIES; i++) {
+      const along =
+        CORNER_CLEAR +
+        SPECS.subway.along / 2 +
+        ((start + i / SUBWAY_TRIES) % 1) * span;
+      if (place("subway", along, variant)) break;
     }
   }
   // Stable cap, then ranks by final index (so thinning is camera-free).
@@ -913,6 +945,9 @@ export interface DetailBox {
 export const AD_PANEL_LUMA = 0.6;
 export const BOOTH_LIGHT_LUMA = 0.45;
 export const HAZARD_LUMA = 0.5;
+/** L11 subway globe lamps: a green glow under the bloom threshold, like
+ * the lit posters — a recognisable entrance, never a lamp-rung light. */
+export const SUBWAY_GLOBE_LUMA = 0.62;
 
 /** sRGB hex → linear rgb scaled to a target luminance. */
 function litColor(hex: number, luma: number): [number, number, number] {
@@ -1074,6 +1109,27 @@ export function itemBoxes(it: StreetItem): DetailBox[] {
       box(0, 0, 1.7, 1.7, 2.15, 2.25, canopy); // canopy
       box(0, 0, 1.1, 1.1, 2.25, 2.36, canopy); // its peak
       box(0, 0, 1.74, 1.74, 2.08, 2.15, canopy); // valance
+      break;
+    }
+    case "subway": {
+      // L11: a subway stair going down beside the curb — its dark well, the
+      // steps (a stepped run of slabs), green iron railings on three sides,
+      // and a green globe lamp on a post at each end of the rail.
+      const rail = 0x1f3a2a;
+      box(0, 0, 4.2, 1.3, 0, 0.03, 0x0c0d10); // the well's mouth
+      for (let i = 0; i < 6; i++) {
+        box(-1.75 + i * 0.6, 0, 0.6, 1.2, 0.03, 0.05 + i * 0.012, 0x3a3836);
+      }
+      box(0, 0.68, 4.3, 0.06, 0, 1.0, rail); // facade-side rail
+      box(0, -0.68, 4.3, 0.06, 0, 1.0, rail); // curb-side rail
+      box(2.12, 0, 0.06, 1.4, 0, 1.0, rail); // closed end
+      box(0, 0.68, 4.3, 0.1, 0.95, 1.05, rail); // handrail caps
+      box(0, -0.68, 4.3, 0.1, 0.95, 1.05, rail);
+      const globe = litColor(0x6dff9a, SUBWAY_GLOBE_LUMA);
+      for (const u of [-2.05, 2.05]) {
+        box(u, -0.68, 0.08, 0.08, 1.0, 2.55, rail); // lamp post
+        box(u, -0.68, 0.3, 0.3, 2.55, 2.85, 0x2a6a40, globe); // the globe
+      }
       break;
     }
     case "booth": {

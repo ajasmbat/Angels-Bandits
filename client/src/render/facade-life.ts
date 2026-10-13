@@ -34,7 +34,7 @@ import {
   wrapDeltaAxis,
 } from "@angels-bandits/common/world";
 import * as THREE from "three";
-import { FacadeArchetype, archetypeFor } from "./archetypes";
+import { FacadeArchetype, archetypeFor, facadeStyleFor } from "./archetypes";
 import {
   DETAIL_MIN_Y,
   type DetailBox,
@@ -174,9 +174,12 @@ function stream(b: Building, seed: number, salt: number): () => number {
 function streetFaces(b: Building, seed: number): Face[] {
   const t0 = b.tiers[0];
   if (!t0) return [];
-  const arch = archetypeFor(b);
   const clearance = facadeClearances(b.x, b.z, t0.width, t0.depth);
-  const [px, py] = windowPitch(arch, pitchSeed(t0.width, t0.height, t0.depth));
+  // L11: on the New York style's drawn rows.
+  const [px, py] = windowPitch(
+    facadeStyleFor(b),
+    pitchSeed(t0.width, t0.height, t0.depth),
+  );
   const holed = new Set(
     (b.holes ?? []).filter((h) => h.tierIndex === 0).map((h) => h.axis),
   );

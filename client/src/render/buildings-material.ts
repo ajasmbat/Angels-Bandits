@@ -34,12 +34,24 @@ import {
 } from "./debris";
 import { luminance } from "./emissive";
 import {
+  OPENING_SD_GLSL,
+  facadeMaterialGlsl,
+  windowDepthGlsl,
+} from "./facade-window";
+import {
   GUTTED_COLOR_GLSL,
   GUTTED_EMISSIVE_GLSL,
   INFERNO_PARS_GLSL,
   bindInfernoUniforms,
 } from "./inferno-shading";
 import { LIVE_ON_UNIFORM, livingParsGlsl } from "./living-windows";
+import {
+  NEON_BAR_SHARE,
+  NEON_DENSITY,
+  NEON_PALETTE,
+  NEON_SHOP_SHARE,
+  NEON_SIGN_COLORS,
+} from "./neon";
 import {
   WAKE_PARS_GLSL,
   wakeWindowGlsl,
@@ -60,6 +72,7 @@ import {
   WEATHER_UNIFORM,
 } from "./weather";
 import {
+  FACADE,
   OCCUPANCY_UNIFORM,
   UNPACK_RUN_GLSL,
   WIN_INTERIOR_UNIFORM,
@@ -96,6 +109,30 @@ const glslVec3 = (c: THREE.Color) =>
 export const WINDOW_EMISSIVE_INTENSITY = (
   EMISSIVE_WINDOW / Math.max(luminance(WINDOW_WARM), luminance(WINDOW_COOL))
 ).toFixed(4);
+
+/**
+ * L11 → L2 seam: the facade look the far skyline should match, as plain
+ * linear numbers (no THREE objects for the caller to hold) — the window
+ * palette, the share of windows lit on a night floor, and the neon layer's
+ * palette and density (neon.ts). Lives here, not in neon.ts, because the
+ * window palette is this module's and neon.ts must not import it back.
+ */
+export function skylineFacadeLook(): {
+  windowWarm: [number, number, number];
+  windowCool: [number, number, number];
+  litShare: number;
+  neon: [number, number, number][];
+  neonDensity: number;
+} {
+  const rgb = (c: THREE.Color): [number, number, number] => [c.r, c.g, c.b];
+  return {
+    windowWarm: rgb(WINDOW_WARM),
+    windowCool: rgb(WINDOW_COOL),
+    litShare: (FACADE.glass.lit + FACADE.masonry.lit + FACADE.office.lit) / 3,
+    neon: Object.values(NEON_PALETTE).map(rgb),
+    neonDensity: NEON_DENSITY,
+  };
+}
 
 /** Street-level shop band height, meters of WORLD height (tier 1 only —
  * upper-tier bases sit far above this and keep ordinary windows). */
@@ -176,7 +213,10 @@ varying vec3 vObjNormal;
 flat varying float vBSeed;
 flat varying float vPitchSeed;
 varying float vWorldY;
-varying float vArch;
+// L11: flat — the fraction carries the New York style (archetypes.ts
+// packArchetype), and an interpolated copy one ulp off would decode the
+// next style down at some pixels (concepts/traps/interpolated-hash-inputs).
+flat varying float vArch;
 varying float vBHeight;
 varying vec3 vBWorldPos;
 varying vec4 vRoof;
@@ -237,6 +277,44 @@ vRun = abUnpackRun(aCrew.w); // H2: the hole's run (city.ts packRun)
 vCrew = aCrew;
 ${BROKEN_VERTEX_GLSL}`;
 
+/**
+ * L11 neon window signs (neon.ts): the tube shapes a shop or bar hangs in
+ * its glass — a pill with a bar ("OPEN"), a cocktail glass, a ring with a
+ * slash, an arrow, a script squiggle over an underline. Distance to the
+ * tube's centreline, meters, for a sign centred on p (about 1.4 × 0.7 m).
+ */
+const NEON_SIGN_PARS_GLSL = /* glsl */ `
+float abSeg(vec2 p, vec2 a, vec2 b) {
+  vec2 pa = p - a;
+  vec2 ba = b - a;
+  return length(pa - ba * clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0));
+}
+float abNeonSign(vec2 p, float kind) {
+  if (kind < 0.5) {
+    vec2 nq = abs(p) - vec2(0.56, 0.18);
+    float pill = abs(length(max(nq, 0.0)) + min(max(nq.x, nq.y), 0.0) - 0.12);
+    return min(pill, abSeg(p, vec2(-0.36, 0.0), vec2(0.36, 0.0)));
+  }
+  if (kind < 1.5) {
+    float cup = min(abSeg(p, vec2(-0.3, 0.28), vec2(0.0, -0.02)), abSeg(p, vec2(0.3, 0.28), vec2(0.0, -0.02)));
+    cup = min(cup, abSeg(p, vec2(-0.3, 0.28), vec2(0.3, 0.28)));
+    cup = min(cup, abSeg(p, vec2(0.0, -0.02), vec2(0.0, -0.26)));
+    return min(cup, abSeg(p, vec2(-0.16, -0.26), vec2(0.16, -0.26)));
+  }
+  if (kind < 2.5) {
+    return min(abs(length(p) - 0.28), abSeg(p, vec2(-0.2, -0.2), vec2(0.2, 0.2)));
+  }
+  if (kind < 3.5) {
+    float arrow = min(abSeg(p, vec2(-0.55, 0.0), vec2(0.45, 0.0)), abSeg(p, vec2(0.45, 0.0), vec2(0.2, 0.22)));
+    return min(arrow, abSeg(p, vec2(0.45, 0.0), vec2(0.2, -0.22)));
+  }
+  float wave = 0.11 * sin(p.x * 9.0);
+  float squiggle = abs(p.y - 0.06 - wave) / sqrt(1.0 + 0.98 * cos(p.x * 9.0) * cos(p.x * 9.0));
+  squiggle = max(squiggle, abs(p.x) - 0.55);
+  return min(squiggle, abSeg(p, vec2(-0.5, -0.2), vec2(0.5, -0.2)));
+}
+`;
+
 const FRAGMENT_PARS = /* glsl */ `
 uniform float uOccupancy; // L12 sky cycle: window occupancy, 0..1
 uniform float uWinInterior; // M3 tier: parallax rooms on (1) or mean light (0)
@@ -245,7 +323,10 @@ varying vec3 vObjNormal;
 flat varying float vBSeed;
 flat varying float vPitchSeed;
 varying float vWorldY;
-varying float vArch;
+// L11: flat — the fraction carries the New York style (archetypes.ts
+// packArchetype), and an interpolated copy one ulp off would decode the
+// next style down at some pixels (concepts/traps/interpolated-hash-inputs).
+flat varying float vArch;
 varying float vBHeight;
 varying vec3 vBWorldPos;
 varying vec4 vRoof;
@@ -263,7 +344,7 @@ float abHash(vec2 p, float s) {
 float abSafeDiv(float d) {
   return abs(d) < 1e-4 ? (d < 0.0 ? -1e-4 : 1e-4) : d;
 }
-${DAMAGE_PARS_GLSL}${INFERNO_PARS_GLSL}${roofParsGlsl()}${WAKE_PARS_GLSL}${livingParsGlsl()}${WEATHER_PARS_GLSL}${REFLECTION_PARS_GLSL}`;
+${OPENING_SD_GLSL}${NEON_SIGN_PARS_GLSL}${DAMAGE_PARS_GLSL}${INFERNO_PARS_GLSL}${roofParsGlsl()}${WAKE_PARS_GLSL}${livingParsGlsl()}${WEATHER_PARS_GLSL}${REFLECTION_PARS_GLSL}`;
 
 /** Injected after color_fragment: derives the shared window-grid locals
  * (in scope for the emissive block below — same main body), modulates the
@@ -273,8 +354,10 @@ ${DAMAGE_PARS_GLSL}${INFERNO_PARS_GLSL}${roofParsGlsl()}${WAKE_PARS_GLSL}${livin
  * comes last, over whatever the facade pass left inside a hole. */
 const FRAGMENT_COLOR =
   windowGridGlsl() +
+  windowDepthGlsl() +
   DAMAGE_GLSL +
   weatheringGlsl() +
+  facadeMaterialGlsl() +
   roofSurfaceGlsl() +
   holeSurfaceGlsl() +
   BROKEN_COLOR_GLSL +
@@ -303,7 +386,8 @@ const SHOP_CEILING = "3.8";
  * a reception desk and lift doors with lit indicators). Detail fades to
  * SHOP_ROOM_MEAN with distance, and Mobile keeps that mean. */
 const SHOP_BAND_GLSL = /* glsl */ `
-float shopBand = (1.0 - step(${SHOP_BAND_HEIGHT}, vWorldY)) * facade;
+// L11: a brownstone has no shopfront — its stoop and garden level instead.
+float shopBand = (1.0 - step(${SHOP_BAND_HEIGHT}, vWorldY)) * facade * (1.0 - fwBrown);
 float shopH = fract(sin((floor(winGrid.x / ${SHOP_PITCH}) + vBSeed * 47.0) * 12.9898) * 43758.5453);
 // Tall glass from 0.5 m to 3.4 m with thin mullions between shopfronts —
 // filtered (O1), so from altitude the mullions fade to their 12 % share.
@@ -443,6 +527,68 @@ if (uReflOn > 0.5 && vArch < 0.5) {
     totalEmissiveRadiance += abRefl(reflect(viewRay, vObjNormal), ${REFL_GLASS_LOD.toFixed(1)}) * (rfF * rfMask);
   }
 }
+// L11: a punched or ribbon window's glass is glass too — it mirrors the
+// probe with the same Fresnel shape (F0 head-on), but old sash glass set
+// deep in a reveal reaches only the SOLID grazing cap, so the city and sky
+// come into it at grazing angles without turning a brick wall into a
+// stained-glass mosaic. Under the glass bound; behind the same tier switch.
+if (uReflOn > 0.5 && vArch > 0.5) {
+  float rfMaskW = pane * (1.0 - lit) * facade * (1.0 - shopBand * glass * shopLit);
+  if (rfMaskW > 0.0) {
+    float rfCosW = clamp(abs(dot(viewRay, vObjNormal)), 0.0, 1.0);
+    float rfFW = mix(${REFL_F0.toFixed(3)}, ${GRAZING_REFLECTANCE.solid.toFixed(2)}, pow(1.0 - rfCosW, 5.0));
+    // Never below zero: the probe can hold a slightly negative texel, and
+    // the many punched panes must not spread it over the facade.
+    totalEmissiveRadiance += max(abRefl(reflect(viewRay, vObjNormal), ${REFL_GLASS_LOD.toFixed(1)}), vec3(0.0)) * (rfFW * rfMaskW);
+  }
+}
+`;
+
+/** Neon tube core half width and halo, meters. */
+const NEON_TUBE = { core: 0.028, halo: 0.08, haloGain: 0.3 } as const;
+const neonColorGlsl = (): string => {
+  const c = NEON_SIGN_COLORS;
+  const v = (i: number) => glslVec3(c[i] as THREE.Color);
+  return `neonIdx < 0.5 ? ${v(0)} : neonIdx < 1.5 ? ${v(1)} : neonIdx < 2.5 ? ${v(2)} : neonIdx < 3.5 ? ${v(3)} : ${v(4)}`;
+};
+
+/**
+ * L11 neon window signs (neon.ts, NEON_DENSITY): a share of storefronts hang
+ * a tube sign in their glass, and a few second-floor windows over the shops
+ * a bar or club sign. A convex replacement at the SIGN rung (core + a soft
+ * halo), after the reflections and before the VO3 / H1 / D2 replacements so
+ * those still win. Tubes are abLine-filtered — a distant sign thins to a
+ * pixel and dims instead of crawling — and skip lobbies and brownstones.
+ */
+const NEON_SIGNS_GLSL = /* glsl */ `
+// L11: a brownstone's fanlight over its front door is lit from the hall —
+// warm, at a share of the WINDOW rung (a convex replacement, never a sum).
+totalEmissiveRadiance = mix(totalEmissiveRadiance,
+  ${glslVec3(WINDOW_WARM)} * ${WINDOW_EMISSIVE_INTENSITY} * 0.75, fwFan * winDetail);
+float neonShopI = floor(winGrid.x / ${SHOP_PITCH});
+float neonH = abHash(vec2(neonShopI, 23.0), vBSeed * 31.0);
+float neonCu = winGrid.x - neonShopI * ${SHOP_PITCH};
+float neonShop = shopBand * glass * (1.0 - shopLobby) * step(neonH, ${NEON_SHOP_SHARE.toFixed(4)});
+vec2 neonP = vec2(neonCu - 0.5 * ${SHOP_PITCH} - (abHash(vec2(neonShopI, 29.0), vBSeed * 31.0) - 0.5) * 2.6, vWorldY - 2.5);
+// A bar sign fills the lower part of its pane (second floor, street tier).
+float neonBarH = abHash(winCell + 47.0, vBSeed * 43.0);
+float neonBar = (1.0 - shopBand) * fwGround * step(${SHOP_BAND_HEIGHT}, vWorldY) * (1.0 - step(9.5, vWorldY))
+  * step(0.5, vArch) * (1.0 - fwBrown) * step(neonBarH, ${NEON_BAR_SHARE.toFixed(4)}) * pane;
+float neonScale = max(fwHalf.x / 0.75, 0.3);
+vec2 neonBarP = (fwG - vec2(0.0, -0.25 * fwHalf.y)) / neonScale;
+float neonMask = 0.0;
+float neonIdx = 0.0;
+if (neonShop + neonBar > 0.0) {
+  float neonKey = neonShop > 0.0 ? neonH : neonBarH;
+  neonIdx = floor(abHash(vec2(neonKey * 97.0, 3.0), 11.0) * 5.0);
+  float neonKind = floor(abHash(vec2(neonKey * 89.0, 5.0), 13.0) * 5.0);
+  float neonD = neonShop > 0.0 ? abNeonSign(neonP, neonKind) : abNeonSign(neonBarP, neonKind) * neonScale;
+  float neonCore = abLine(neonD, ${NEON_TUBE.core.toFixed(3)}, fwAA);
+  float neonHalo = ${NEON_TUBE.haloGain.toFixed(2)} * exp(-neonD / ${NEON_TUBE.halo.toFixed(2)}) * abDetail(${(NEON_TUBE.halo * 4).toFixed(2)}, fwAA);
+  neonMask = clamp(neonCore + neonHalo, 0.0, 1.0) * max(neonShop, neonBar);
+}
+totalEmissiveRadiance = mix(totalEmissiveRadiance, ${neonColorGlsl()}, neonMask);
+diffuseColor.rgb *= 1.0 - neonMask;
 `;
 
 /** Windows, shops and the VO2 bounce, then the VO3 architectural light so its
@@ -454,7 +600,7 @@ const FRAGMENT_EMISSIVE = `${windowEmissiveGlsl(
   glslVec3(WINDOW_WARM),
   glslVec3(WINDOW_COOL),
   WINDOW_EMISSIVE_INTENSITY,
-)}${wakeWindowGlsl(WINDOW_EMISSIVE_INTENSITY)}${SHOP_BAND_GLSL}${GLASS_REFLECTION_GLSL}${roofLightGlsl()}${holeLightGlsl()}${BUILDING_WET_EMISSIVE_GLSL}${BROKEN_EMISSIVE_GLSL}${GUTTED_EMISSIVE_GLSL}${FRACTURE_EMISSIVE_GLSL}`;
+)}${wakeWindowGlsl(WINDOW_EMISSIVE_INTENSITY)}${SHOP_BAND_GLSL}${GLASS_REFLECTION_GLSL}${NEON_SIGNS_GLSL}${roofLightGlsl()}${holeLightGlsl()}${BUILDING_WET_EMISSIVE_GLSL}${BROKEN_EMISSIVE_GLSL}${GUTTED_EMISSIVE_GLSL}${FRACTURE_EMISSIVE_GLSL}`;
 
 const FRAGMENT_SPECULAR = /* glsl */ `
 material.specularF90 = vArch < 0.5 ? ${GRAZING_REFLECTANCE.glass.toFixed(2)} : ${GRAZING_REFLECTANCE.solid.toFixed(2)};

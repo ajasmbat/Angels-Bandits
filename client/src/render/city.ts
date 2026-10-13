@@ -42,6 +42,8 @@ import {
   type Collapse,
   type CollapseField,
   KIND_BUILDING,
+  MODE_HINGE,
+  PANCAKE,
   blankPose,
   posePieceNow,
   setPoseClock,
@@ -327,10 +329,42 @@ function writeSolid(
  * averages 3.76 (hole splits included), with ~6 % to spare. */
 export const DEBRIS_PIECES_PER_CHUNK = 4;
 
+/** D11: the debris word's flag for a piece not broken yet (still standing,
+ * a pancake's block riding down whole, a topple's block before it breaks
+ * up): drawn with almost no fracture chips, so the block reads as a block. */
+export const CUT_INTACT = 256;
+
 /** The CUT_* word a debris piece paints with: its own faces while it falls,
- * rubble once it lands — a column (CUT_STEEL) stays steel either way. */
-export function debrisCut(cut: number, rest: boolean): number {
-  return rest ? CUT_RUBBLE | (cut & CUT_STEEL) : cut;
+ * rubble once it lands — a column (CUT_STEEL) stays steel either way. D11:
+ * `intact` (while it falls) adds CUT_INTACT. */
+export function debrisCut(cut: number, rest: boolean, intact = false): number {
+  return rest
+    ? CUT_RUBBLE | (cut & CUT_STEEL)
+    : intact
+      ? cut | CUT_INTACT
+      : cut;
+}
+
+/** D11: debris piece state per slot — broken and moving, at rest, intact. */
+const BROKEN = 0;
+const AT_REST = 1;
+const INTACT = 2;
+
+/**
+ * D11: is piece `i` of `c`, posed (`hy` its posed half height) at `tMs`
+ * and not at rest, still whole? Before it starts; a pancake's piece until
+ * the pile starts crushing it; a topple's hinged piece until it breaks up.
+ */
+export function pieceIntact(
+  c: Collapse,
+  i: number,
+  tMs: number,
+  hy: number,
+): boolean {
+  const age = (tMs - c.t0) / 1000 - (c.start[i] as number);
+  if (age < 0) return true;
+  if (c.style === PANCAKE) return hy >= 0.98 * (c.hy[i] as number);
+  return c.mode[i] === MODE_HINGE && age < (c.hbreak[i] as number);
 }
 
 /** A matrix that draws nothing (a hidden or spare slot). */
@@ -442,7 +476,8 @@ export class CityRenderer {
   private readonly drawnKx: number[] = [];
   private readonly drawnKz: number[] = [];
   private readonly drawnSettled: boolean[] = [];
-  /** Per slot: 1 while drawn as rubble (its cut word says CUT_RUBBLE). */
+  /** Per slot: its drawn state (BROKEN / AT_REST / INTACT — the cut word
+   * says CUT_RUBBLE at rest, CUT_INTACT intact). */
   private bRest = new Uint8Array(0);
   private bNext = 0;
   /** Slots whose matrices / attributes changed this frame: [lo, hi). */
@@ -653,10 +688,17 @@ export class CityRenderer {
       for (let i = 0; i < c.n; i++) {
         const pose = posePieceNow(c, i, this.bPose);
         debris.setMatrixAt(start + i, pieceMatrixAt(pose, this.scratch));
-        const rest = pose.rest ? 1 : 0;
-        if (this.bRest[start + i] !== rest) {
-          this.bRest[start + i] = rest;
-          subOff.setW(start + i, debrisCut(c.cut[i] as number, rest === 1));
+        const state = pose.rest
+          ? AT_REST
+          : pieceIntact(c, i, t, pose.hy)
+            ? INTACT
+            : BROKEN;
+        if (this.bRest[start + i] !== state) {
+          this.bRest[start + i] = state;
+          subOff.setW(
+            start + i,
+            debrisCut(c.cut[i] as number, state === AT_REST, state === INTACT),
+          );
           this.bAttrLo = Math.min(this.bAttrLo, start + i);
           this.bAttrHi = Math.max(this.bAttrHi, start + i + 1);
         }
@@ -761,8 +803,12 @@ export class CityRenderer {
       const start = this.drawnStart[k] as number;
       this.writeCollapse(c, start);
       for (let i = 0; i < c.n; i++) {
-        if (this.bRest[start + i]) {
-          subOff.setW(start + i, debrisCut(c.cut[i] as number, true));
+        const state = this.bRest[start + i];
+        if (state !== BROKEN) {
+          subOff.setW(
+            start + i,
+            debrisCut(c.cut[i] as number, state === AT_REST, state === INTACT),
+          );
         }
       }
       this.drawnKx[k] = UNSET;

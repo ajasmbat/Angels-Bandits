@@ -14,6 +14,14 @@
 //        - SQUIBS: dust jetting out of the facade just under each storey as
 //          the crush front reaches it (collapse.ts floor events), short and
 //          sharp — the look of a real progressive collapse.
+//      D11 added the CURTAIN: dust thrown off the facades where the tower
+//      fails (a pancake's crush front, storey by storey; a topple's falling
+//      block) that pours down the faces and billows out as it falls — the
+//      shape that reads as a collapse from 600 m. And LIMITS: a puff fades
+//      as its sprite grows past the screen (the camera close to or inside
+//      it), the whole cloud is held under DUST_COVERAGE_MAX of the frame,
+//      and its colour is clamped under the bloom threshold, so a cloud
+//      never flattens the frame or blows it out white.
 //      Puffs fade as the camera comes into them (no hard sprite plane in the
 //      face) and sit high enough that the ground clips only their soft rim.
 //      The scene has no depth texture to fade against, so this stands in
@@ -32,7 +40,9 @@ import {
   BEAT_LAND,
   type Collapse,
   PANCAKE,
+  blankPose,
   collapseFloorEvents,
+  piecePose,
 } from "@angels-bandits/common/city/collapse";
 import {
   BLOCK_PITCH,
@@ -47,23 +57,76 @@ import { RENDER_ORDER } from "./render-order";
 import { DUSK, LIGHT_RIG } from "./sky";
 import { pushUpdateRange } from "./update-range";
 
-/** Puffs per cloud at full quality. */
-export const DUST_PUFFS = 72;
+/** Puffs per cloud at full quality (D11: 72 → 144, for the curtain and
+ * the plumes). */
+export const DUST_PUFFS = 144;
 /** Clouds drawn at once (the newest win). */
 const MAX_CLOUDS = 6;
 /** Puff sprite size ramp, m (before the tier's coverage scale). */
 const PUFF_SIZE_MIN = 14;
 const PUFF_SIZE_MAX = 46;
-/** Concrete dust: a warm grey a touch lighter than the night haze. */
-const DUST_COLOR = 0x6a625a;
-const DUST_OPACITY = 0.5;
+/** Concrete dust: a warm grey a touch lighter than the night haze (D11:
+ * lighter still — it catches the street glow, the moon and the fires). */
+const DUST_COLOR = 0xa89d90;
+const DUST_OPACITY = 0.8;
+/** D11: the dust's linear colour never passes this — under the bloom
+ * threshold (0.72), however many lit puffs stack in front of the camera. */
+export const DUST_RGB_MAX = 0.6;
+/** D11: the drawn cloud never covers more than this share of the frame
+ * (Σ sprite area × alpha × the sprite's mean alpha); past it every puff's
+ * alpha is scaled down to fit. */
+export const DUST_COVERAGE_MAX = 0.7;
+/** D11: a puff is fully drawn from this many of its own sizes away and
+ * fades to nothing at DUST_NEAR_GONE — the camera close to or inside it. */
+const DUST_NEAR_FULL = 1.5;
+const DUST_NEAR_GONE = 0.35;
+/** The line of the patched fog chunk (fog.ts) the dust squares. */
+export const DUST_FOG_LINE =
+  "float fogFactor = abFogFactor( fogNear, fogFar, abFogDepth );";
+/** Mean alpha of the sprite texture over its square (the coverage sum). */
+const SPRITE_MEAN_ALPHA = 0.35;
+/** The fire glow in a hot puff (linear, before the clamp). */
+const DUST_FIRE = [0.55, 0.22, 0.06] as const;
 
 /** D10 puff kinds, and their shares of a cloud's puffs. */
 export const PUFF_SURGE = 0;
 export const PUFF_COLUMN = 1;
 export const PUFF_SQUIB = 2;
-const SURGE_SHARE = 0.5;
-const COLUMN_SHARE = 0.3;
+export const PUFF_CURTAIN = 3;
+export const PUFF_PLUME = 4;
+const SURGE_SHARE = 0.24;
+const COLUMN_SHARE = 0.12;
+const SQUIB_SHARE = 0.1;
+const CURTAIN_SHARE = 0.2;
+/** D11 plume: dust boiling out where the falling mass lands (a pancake's
+ * pile at its foot, a topple's debris along its line) and climbing — how
+ * high (× the tower's height), how far out, its size ramp (× height) and
+ * life. */
+const PLUME_RISE = 0.5;
+const PLUME_OUT = 0.12;
+const PLUME_SIZE_0 = 0.1;
+const PLUME_SIZE_1 = 0.45;
+export const PLUME_LIFE_MS = 15_000;
+/** D11 curtain: how far out of the face it billows (× the tower's height,
+ * capped), how fast it slides down at most, m/s, the time it takes to reach
+ * that speed, s, its life, ms, and its size ramp (start; end = base +
+ * per-metre of height), m. */
+const CURTAIN_OUT_K = 0.12;
+const CURTAIN_OUT_MAX = 40;
+const CURTAIN_FALL = 18;
+const CURTAIN_FALL_TAU = 1.5;
+export const CURTAIN_LIFE_MS = 11_000;
+const CURTAIN_SIZE_0 = 12;
+const CURTAIN_SIZE_1 = 24;
+const CURTAIN_SIZE_PER_M = 0.32;
+/** D11: the column's puffs grow with the tower (× height / this, 1..max),
+ * and it climbs to COLUMN_RISE of the tower's height (≤ COLUMN_TOP_M). */
+const COLUMN_SCALE_H_M = 150;
+const COLUMN_SCALE_MAX = 2.2;
+const COLUMN_RISE = 0.45;
+const COLUMN_TOP_M = 150;
+/** A curtain puff glows with the fire of the floor it left for this long. */
+const CURTAIN_HOT_MS = 2200;
 /** The surge: e-folding time of its run, s; how far along the street it
  * rolls past where it meets it, m (most of a block each way); how high it
  * hugs the ground, m; and how fast it lifts once it has slowed, m/s. */
@@ -110,6 +173,8 @@ export interface DustPuff {
   size: number;
   /** 0..1 opacity factor. */
   alpha: number;
+  /** D11: 0..1 fire glow (a curtain puff fresh off a failing floor). */
+  heat?: number;
 }
 
 /** Fade envelope of a cloud `age` ms after it starts: quick swell, long
@@ -119,6 +184,13 @@ function envelope(age: number): number {
   const swell = Math.min(1, age / 1200);
   const tail = Math.min(1, (COLLAPSE_DUST_MS - age) / (0.4 * COLLAPSE_DUST_MS));
   return swell * tail;
+}
+
+/** D11: a curtain (or plume) puff's envelope: a quick swell, a long hang. */
+function curtainEnvelope(age: number, life = CURTAIN_LIFE_MS): number {
+  if (age < 0 || age >= life) return 0;
+  const tail = Math.min(1, (life - age) / (0.45 * life));
+  return Math.min(1, age / 400) * tail;
 }
 
 /** A squib's envelope `age` ms after its floor event: a sharp puff. */
@@ -142,6 +214,12 @@ interface Cloud {
   /** The floor events squibs fire on (crushed storeys, a pancake's failure;
    * a topple's break-ups). */
   squibs: { t: number; x: number; y: number; z: number }[];
+  /** D11: each curtain puff's source — when it leaves the tower (ms after
+   * t0), where (centre-relative), and the outward direction it billows
+   * along (a facade's normal; a topple's falling block: away from it). */
+  curtain: Float64Array;
+  /** The tower's height (the curtain's reach and size scale). */
+  height: number;
   /** Every puff's seeds, HASHES per puff (D6: a hash per seed per puff per
    * frame boxed a double each). */
   seeds: Float64Array;
@@ -188,17 +266,20 @@ function cloudOf(c: Collapse): Cloud {
         : e.kind === BEAT_BREAK;
     if (fire) squibs.push({ t: e.t, x: e.x, y: e.y, z: e.z });
   }
+  const height = Math.max(all.y1, 1);
   cloud = {
     x: (b.x0 + b.x1) / 2,
     z: (b.z0 + b.z1) / 2,
     r: Math.max(20, Math.hypot(b.x1 - b.x0, b.z1 - b.z0) / 2),
-    h: Math.min(90, Math.max(25, 0.35 * all.y1)),
+    h: Math.min(COLUMN_TOP_M, Math.max(25, COLUMN_RISE * all.y1)),
     fx0,
     fx1,
     fz0,
     fz1,
     surgeAt,
     squibs,
+    curtain: new Float64Array(DUST_PUFFS * CURTAIN_STRIDE),
+    height,
     seeds: new Float64Array(DUST_PUFFS * HASHES),
     kinds: new Uint8Array(DUST_PUFFS),
   };
@@ -208,8 +289,80 @@ function cloudOf(c: Collapse): Cloud {
       cloud.seeds[k * HASHES + salt] = hash01(c.id, k, salt);
     }
   }
+  curtainSources(c, cloud);
   clouds.set(c, cloud);
   return cloud;
+}
+
+/** Curtain source fields per puff: t, x, y, z, nx, nz. */
+const CURTAIN_STRIDE = 6;
+const curtainPose = blankPose();
+
+/**
+ * D11: where each curtain and plume puff leaves the tower (pure in the
+ * collapse). A CURTAIN puff comes off a falling piece part-way down its
+ * fall, at its pose then — a pancake's on the facade of the block riding
+ * down, out of the face nearest it; a topple's off the falling block,
+ * billowing away from it. A PLUME puff is born where a piece lands, when it
+ * lands: a pancake's out of the foot of the tower on the face nearest it
+ * (the pile it sinks into), a topple's where its debris hits the street.
+ */
+function curtainSources(c: Collapse, cloud: Cloud): void {
+  const out = cloud.curtain;
+  const pancake = c.style === PANCAKE;
+  for (let k = 0; k < DUST_PUFFS; k++) {
+    const o = k * CURTAIN_STRIDE;
+    const kind = cloud.kinds[k];
+    if ((kind !== PUFF_CURTAIN && kind !== PUFF_PLUME) || c.n === 0) {
+      out[o] = Number.POSITIVE_INFINITY;
+      continue;
+    }
+    const seed = (j: number) => cloud.seeds[k * HASHES + j] as number;
+    const i = Math.min(c.n - 1, Math.floor(seed(1) * c.n));
+    const start = (c.start[i] as number) * 1000;
+    const land = (c.land[i] as number) * 1000;
+    const t =
+      kind === PUFF_PLUME
+        ? start + land + seed(4) * 400
+        : start + land * (0.15 + 0.6 * seed(4));
+    piecePose(
+      c,
+      i,
+      kind === PUFF_PLUME ? Number.POSITIVE_INFINITY : t,
+      curtainPose,
+    );
+    out[o] = t;
+    out[o + 2] = curtainPose.y;
+    if (pancake) {
+      // Onto the footprint's face nearest the piece, at a seeded point.
+      const toX0 = curtainPose.x - cloud.fx0;
+      const toX1 = cloud.fx1 - curtainPose.x;
+      const toZ0 = curtainPose.z - cloud.fz0;
+      const toZ1 = cloud.fz1 - curtainPose.z;
+      const near = Math.min(toX0, toX1, toZ0, toZ1);
+      const across = seed(3);
+      const alongX = near === toX0 || near === toX1;
+      const sign = alongX ? (near === toX1 ? 1 : -1) : near === toZ1 ? 1 : -1;
+      out[o + 1] = alongX
+        ? sign > 0
+          ? cloud.fx1
+          : cloud.fx0
+        : cloud.fx0 + (cloud.fx1 - cloud.fx0) * across;
+      out[o + 3] = alongX
+        ? cloud.fz0 + (cloud.fz1 - cloud.fz0) * across
+        : sign > 0
+          ? cloud.fz1
+          : cloud.fz0;
+      out[o + 4] = alongX ? sign : 0;
+      out[o + 5] = alongX ? 0 : sign;
+    } else {
+      const a = seed(2) * Math.PI * 2;
+      out[o + 1] = curtainPose.x;
+      out[o + 3] = curtainPose.z;
+      out[o + 4] = Math.cos(a);
+      out[o + 5] = Math.sin(a);
+    }
+  }
 }
 
 /** Small integer hash → [0, 1) (puff seeds from the collapse id and the
@@ -230,7 +383,11 @@ export function puffKind(id: number, k: number): number {
     ? PUFF_SURGE
     : u < SURGE_SHARE + COLUMN_SHARE
       ? PUFF_COLUMN
-      : PUFF_SQUIB;
+      : u < SURGE_SHARE + COLUMN_SHARE + SQUIB_SHARE
+        ? PUFF_SQUIB
+        : u < SURGE_SHARE + COLUMN_SHARE + SQUIB_SHARE + CURTAIN_SHARE
+          ? PUFF_CURTAIN
+          : PUFF_PLUME;
 }
 
 /** The street line (a BLOCK_PITCH multiple) a run from world coordinate
@@ -265,10 +422,19 @@ function puffOf(
 ): boolean {
   if (k >= DUST_PUFFS) return false;
   const kind = cloud.kinds[k] as number;
+  out.heat = 0;
   if (kind === PUFF_SQUIB && cloud.squibs.length > 0) {
     return squibOf(c, cloud, k, tMs, out);
   }
   if (kind === PUFF_SURGE) return surgeOf(c, cloud, k, tMs, out);
+  if (kind === PUFF_CURTAIN || kind === PUFF_PLUME) {
+    if (Number.isFinite(cloud.curtain[k * CURTAIN_STRIDE] as number)) {
+      return kind === PUFF_PLUME
+        ? plumeOf(c, cloud, k, tMs, out)
+        : curtainOf(c, cloud, k, tMs, out);
+    }
+    // No source (a collapse with nothing in it): a column puff instead.
+  }
   const birth =
     COLLAPSE_LEAD_MS * 0.5 + (cloud.seeds[k * HASHES + 1] as number) * 2500;
   const age = tMs - c.t0 - birth;
@@ -286,10 +452,11 @@ function puffOf(
     cloud.h * (cloud.seeds[k * HASHES + 4] as number) * (1 - Math.exp(-s / 3)) +
     0.6 * s;
   out.size =
-    PUFF_SIZE_MIN +
-    (PUFF_SIZE_MAX - PUFF_SIZE_MIN) *
-      Math.min(1, s / 8) *
-      (0.7 + 0.3 * (cloud.seeds[k * HASHES + 5] as number));
+    (PUFF_SIZE_MIN +
+      (PUFF_SIZE_MAX - PUFF_SIZE_MIN) *
+        Math.min(1, s / 8) *
+        (0.7 + 0.3 * (cloud.seeds[k * HASHES + 5] as number))) *
+    Math.min(COLUMN_SCALE_MAX, Math.max(1, cloud.height / COLUMN_SCALE_H_M));
   out.alpha = env;
   return true;
 }
@@ -358,6 +525,83 @@ function surgeOf(
     2 + (SURGE_TOP_M - 2) * (cloud.seeds[k * HASHES + 8] as number) + lift,
   );
   out.alpha = env * 0.9;
+  return true;
+}
+
+/** D11: a curtain puff — thrown off the tower where it fails, billowing out
+ * of the face and pouring down it, growing as it goes; hot at first. */
+function curtainOf(
+  c: Collapse,
+  cloud: Cloud,
+  k: number,
+  tMs: number,
+  out: DustPuff,
+): boolean {
+  const o = k * CURTAIN_STRIDE;
+  const age = tMs - c.t0 - (cloud.curtain[o] as number);
+  const env = curtainEnvelope(age);
+  if (env <= 0) return false;
+  const s = age / 1000;
+  const seed = (j: number) => cloud.seeds[k * HASHES + j] as number;
+  const reach =
+    Math.min(CURTAIN_OUT_MAX, CURTAIN_OUT_K * cloud.height) *
+    (0.4 + 0.6 * seed(5));
+  const outward = reach * (1 - Math.exp(-s / 0.9));
+  // Slides down, gathering speed up to CURTAIN_FALL (the integral of
+  // CURTAIN_FALL · (1 − e^(−s/τ))).
+  const fall =
+    CURTAIN_FALL *
+    (0.6 + 0.4 * seed(6)) *
+    (s - CURTAIN_FALL_TAU * (1 - Math.exp(-s / CURTAIN_FALL_TAU)));
+  const end = CURTAIN_SIZE_1 + CURTAIN_SIZE_PER_M * Math.min(cloud.height, 480);
+  out.size =
+    (CURTAIN_SIZE_0 + (end - CURTAIN_SIZE_0) * Math.min(1, s / 6)) *
+    (0.7 + 0.3 * seed(7));
+  out.x =
+    (cloud.curtain[o + 1] as number) +
+    (cloud.curtain[o + 4] as number) * outward;
+  out.z =
+    (cloud.curtain[o + 3] as number) +
+    (cloud.curtain[o + 5] as number) * outward;
+  // Down the face, never through the ground (the soft rim only).
+  out.y = Math.max(0.35 * out.size, (cloud.curtain[o + 2] as number) - fall);
+  out.alpha = env * 0.85;
+  out.heat = Math.max(0, 1 - age / CURTAIN_HOT_MS);
+  return true;
+}
+
+/** D11: a plume puff — dust boiling out where the falling mass lands and
+ * climbing, big and slow: the cloud a tower sinks into. */
+function plumeOf(
+  c: Collapse,
+  cloud: Cloud,
+  k: number,
+  tMs: number,
+  out: DustPuff,
+): boolean {
+  const o = k * CURTAIN_STRIDE;
+  const age = tMs - c.t0 - (cloud.curtain[o] as number);
+  const env = curtainEnvelope(age, PLUME_LIFE_MS);
+  if (env <= 0) return false;
+  const s = age / 1000;
+  const seed = (j: number) => cloud.seeds[k * HASHES + j] as number;
+  const h = Math.min(cloud.height, 480);
+  const outward =
+    PLUME_OUT * h * (0.3 + 0.7 * seed(5)) * (1 - Math.exp(-s / 1.6));
+  const rise = PLUME_RISE * h * seed(6) * seed(6) * (1 - Math.exp(-s / 3.5));
+  out.size =
+    h *
+    (PLUME_SIZE_0 + (PLUME_SIZE_1 - PLUME_SIZE_0) * Math.min(1, s / 5)) *
+    (0.65 + 0.35 * seed(7));
+  out.x =
+    (cloud.curtain[o + 1] as number) +
+    (cloud.curtain[o + 4] as number) * outward;
+  out.z =
+    (cloud.curtain[o + 3] as number) +
+    (cloud.curtain[o + 5] as number) * outward;
+  out.y = Math.max(0.35 * out.size, (cloud.curtain[o + 2] as number) + rise);
+  out.alpha = env * 0.8;
+  out.heat = 0;
   return true;
 }
 
@@ -512,7 +756,12 @@ export class DustClouds {
   private readonly positions: THREE.BufferAttribute;
   private readonly sizes: THREE.BufferAttribute;
   private readonly alphas: THREE.BufferAttribute;
+  private readonly heats: THREE.BufferAttribute;
   private readonly puff: DustPuff = { x: 0, y: 0, z: 0, size: 0, alpha: 0 };
+  /** D11 QA: the frame share the drawn cloud covered last frame (after the
+   * budget), and the budget's scale on every alpha (1 = under it). */
+  private lastCoverage = 0;
+  private lastScale = 1;
   private share = 1;
   /** D10: the light the dust is lit by, relative to the night it was tuned
    * under (1, 1, 1 there): at its top, and at street level. */
@@ -527,25 +776,43 @@ export class DustClouds {
     this.positions = new THREE.BufferAttribute(new Float32Array(budget * 3), 3);
     this.sizes = new THREE.BufferAttribute(new Float32Array(budget), 1);
     this.alphas = new THREE.BufferAttribute(new Float32Array(budget), 1);
-    for (const a of [this.positions, this.sizes, this.alphas]) {
+    this.heats = new THREE.BufferAttribute(new Float32Array(budget), 1);
+    for (const a of [this.positions, this.sizes, this.alphas, this.heats]) {
       a.setUsage(THREE.DynamicDrawUsage);
     }
     geometry.setAttribute("position", this.positions);
     geometry.setAttribute("aSize", this.sizes);
     geometry.setAttribute("aAlpha", this.alphas);
+    geometry.setAttribute("aHeat", this.heats);
     geometry.setDrawRange(0, 0);
-    // A soft, lumpy puff (the smoke sprite, broader).
+    // D11: a billowing, cauliflower puff — a soft core with lobes round it
+    // (seeded, so every client draws the same sprite), not a flat disc.
     const canvas = document.createElement("canvas");
     canvas.width = 64;
     canvas.height = 64;
     const ctx = canvas.getContext("2d");
     if (ctx) {
-      const g = ctx.createRadialGradient(32, 32, 2, 32, 32, 32);
-      g.addColorStop(0, "rgba(255,255,255,0.85)");
-      g.addColorStop(0.5, "rgba(255,255,255,0.5)");
-      g.addColorStop(1, "rgba(255,255,255,0)");
-      ctx.fillStyle = g;
-      ctx.fillRect(0, 0, 64, 64);
+      const lobe = (x: number, y: number, r: number, a: number) => {
+        const g = ctx.createRadialGradient(x, y, 1, x, y, r);
+        g.addColorStop(0, `rgba(255,255,255,${a})`);
+        g.addColorStop(0.55, `rgba(255,255,255,${a * 0.55})`);
+        g.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+      };
+      lobe(32, 32, 30, 0.6);
+      for (let i = 0; i < 7; i++) {
+        const a = (i / 7) * Math.PI * 2 + 0.4 * Math.sin(i * 2.3);
+        const d = 11 + 4 * Math.sin(i * 1.7);
+        lobe(
+          32 + Math.cos(a) * d,
+          32 + Math.sin(a) * d,
+          13 + 3 * Math.cos(i * 2.9),
+          0.45,
+        );
+      }
     }
     const material = new THREE.PointsMaterial({
       color: DUST_COLOR,
@@ -565,23 +832,38 @@ export class DustClouds {
       shader.vertexShader = shader.vertexShader
         .replace(
           "#include <common>",
-          "attribute float aSize;\nattribute float aAlpha;\nvarying float vAlpha;\nvarying float vDustH;\n#include <common>",
+          "attribute float aSize;\nattribute float aAlpha;\nattribute float aHeat;\nvarying float vAlpha;\nvarying float vDustH;\nvarying float vHeat;\n#include <common>",
         )
         .replace(
           "gl_PointSize = size;",
-          `gl_PointSize = size * aSize;\n\tvAlpha = aAlpha;\n\tvDustH = clamp(position.y / ${DUST_LIGHT_SPAN_M.toFixed(1)}, 0.0, 1.0);`,
+          `gl_PointSize = size * aSize;\n\tvAlpha = aAlpha;\n\tvHeat = aHeat;\n\tvDustH = clamp(position.y / ${DUST_LIGHT_SPAN_M.toFixed(1)}, 0.0, 1.0);`,
         );
       shader.fragmentShader = shader.fragmentShader
         .replace(
           "#include <common>",
-          "uniform vec3 uDustSky;\nuniform vec3 uDustGround;\nvarying float vAlpha;\nvarying float vDustH;\n#include <common>",
+          "uniform vec3 uDustSky;\nuniform vec3 uDustGround;\nvarying float vAlpha;\nvarying float vDustH;\nvarying float vHeat;\n#include <common>",
         )
         .replace(
           "#include <color_fragment>",
-          "#include <color_fragment>\n\tdiffuseColor.a *= vAlpha;\n\tdiffuseColor.rgb *= mix(uDustGround, uDustSky, vDustH);",
+          // D11: + the glow of the failing floor a curtain puff left, and
+          // clamped under the bloom threshold BEFORE bloom — however many
+          // lit puffs stack, the dust never blows out white.
+          `#include <color_fragment>\n\tdiffuseColor.a *= vAlpha;\n\tdiffuseColor.rgb *= mix(uDustGround, uDustSky, vDustH);\n\tdiffuseColor.rgb += vec3(${DUST_FIRE.map((v) => v.toFixed(2)).join(", ")}) * vHeat;\n\tdiffuseColor.rgb = min(diffuseColor.rgb, vec3(${DUST_RGB_MAX.toFixed(2)}));`,
+        )
+        // D11: the dust reads through the distance haze — its fog is the
+        // shaped curve squared (the inferno flames' rule: still exactly 1 at
+        // fogFar, so the sky still meets the fog and the wrap stays hidden),
+        // so a collapse's cloud 600 m out is a cloud, not the haze itself.
+        .replace(
+          "#include <fog_fragment>",
+          THREE.ShaderChunk.fog_fragment.replace(
+            DUST_FOG_LINE,
+            `${DUST_FOG_LINE}\n\t\tfogFactor *= fogFactor;`,
+          ),
         );
     };
-    material.customProgramCacheKey = () => "dust-asize-aalpha-d10-lit";
+    material.customProgramCacheKey = () =>
+      "dust-asize-aalpha-d10-lit-d11-heat-fog2";
     this.points = new THREE.Points(geometry, material);
     this.points.frustumCulled = false;
     this.points.renderOrder = RENDER_ORDER.smoke;
@@ -641,14 +923,23 @@ export class DustClouds {
     this.share = QUALITY_PROFILES[tier].collapseDust;
   }
 
-  /** Re-project every live puff around the viewer. Call once per frame. */
+  /** D11 QA: the share of the frame the cloud covered last frame, and the
+   * coverage budget's scale on every alpha (1 = it fitted). */
+  get coverage(): { share: number; scale: number } {
+    return { share: this.lastCoverage, scale: this.lastScale };
+  }
+
+  /** Re-project every live puff around the viewer. Call once per frame.
+   * D11: `aspect` (the view's width / height) sizes the coverage budget. */
   update(
     list: readonly Collapse[],
     viewer: Vec3,
     serverMs: number | null,
+    aspect = 16 / 9,
   ): void {
     this.light();
     let i = 0;
+    let cover = 0;
     if (serverMs !== null) {
       const per = Math.max(1, Math.round(DUST_PUFFS * this.share));
       const grow = Math.sqrt(DUST_PUFFS / per);
@@ -667,19 +958,44 @@ export class DustClouds {
           const pz = oz + this.puff.z;
           const size = this.puff.size * grow;
           // D10: fade a puff the camera is coming into — no hard sprite
-          // plane across the view (the stand-in for a depth fade).
+          // plane across the view (the stand-in for a depth fade). D11:
+          // from DUST_NEAR_FULL of its own size, so the opacity a puff can
+          // put in front of the camera is capped by its distance.
           const ddx = px - viewer.x;
           const ddy = this.puff.y - viewer.y;
           const ddz = pz - viewer.z;
-          const near = Math.sqrt(ddx * ddx + ddy * ddy + ddz * ddz) / size;
-          const fade = Math.min(1, Math.max(0, (near - 0.25) / 0.6));
+          const dist = Math.sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
+          const fade = Math.min(
+            1,
+            Math.max(
+              0,
+              (dist / size - DUST_NEAR_GONE) /
+                (DUST_NEAR_FULL - DUST_NEAR_GONE),
+            ),
+          );
           if (fade <= 0) continue;
+          const alpha = this.puff.alpha * fade;
           this.positions.setXYZ(i, px, this.puff.y, pz);
           this.sizes.setX(i, size);
-          this.alphas.setX(i, this.puff.alpha * fade);
+          this.alphas.setX(i, alpha);
+          this.heats.setX(i, this.puff.heat ?? 0);
+          // Its share of the frame: three's size attenuation draws it
+          // size · (H/2) / depth px across (depth ≈ distance; behind the
+          // camera it counts too — conservative).
+          const half = size / (2 * Math.max(dist, 1));
+          cover +=
+            alpha * SPRITE_MEAN_ALPHA * Math.min(1, (half * half) / aspect);
           i++;
         }
       }
+    }
+    // D11: the coverage budget — the whole cloud never covers more than
+    // DUST_COVERAGE_MAX of the frame.
+    this.lastScale = cover > DUST_COVERAGE_MAX ? DUST_COVERAGE_MAX / cover : 1;
+    this.lastCoverage = cover * this.lastScale;
+    if (this.lastScale < 1) {
+      const a = this.alphas.array as Float32Array;
+      for (let k = 0; k < i; k++) a[k] = (a[k] as number) * this.lastScale;
     }
     this.points.geometry.setDrawRange(0, i);
     // P4: three still issues a (counted) draw for an empty range.
@@ -689,6 +1005,7 @@ export class DustClouds {
       markRange(this.positions, i);
       markRange(this.sizes, i);
       markRange(this.alphas, i);
+      markRange(this.heats, i);
     }
   }
 

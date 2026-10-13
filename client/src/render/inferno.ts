@@ -126,6 +126,43 @@ const FIRE_SHIMMER_SIZE_PER_M = 1 / 16;
 const FIRE_SHIMMER_RANGE = 320;
 /** Cloud-deck glow spots (storm.ts CloudDeck.setGlow). */
 export const CLOUD_GLOW_MAX = 8;
+/** D11: a smoke puff is fully drawn from SMOKE_NEAR_FULL of its own size
+ * away and gone at SMOKE_NEAR_GONE — measured on its TRUE size (the
+ * overdraw clamp below shrinks a near puff to 0.9 × its distance, which had
+ * left every near puff at ~97 % and a column beside the camera a hard,
+ * near-black disc over half the sky). */
+export const SMOKE_NEAR_FULL = 2.0;
+export const SMOKE_NEAR_GONE = 0.6;
+/** D11: a puff's most opaque (its core), and the share of the frame the
+ * drawn columns may cover (Σ area × strength); past it every puff's
+ * strength is scaled down to fit — like the collapse dust's budget. */
+export const SMOKE_ALPHA_MAX = 0.85;
+export const SMOKE_COVERAGE_MAX = 0.5;
+
+/** smoothstep(e0, e1, x). */
+const smoothstepJs = (e0: number, e1: number, x: number): number => {
+  const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+};
+
+/** D11: the near-camera fade of a smoke puff `size` m across, `dist` m
+ * from the camera — the GLSL's own formula (SMOKE_VERTEX). */
+export const smokeNearFade = (size: number, dist: number): number =>
+  smoothstepJs(SMOKE_NEAR_GONE * size, SMOKE_NEAR_FULL * size, dist);
+
+/** D11: the scale on every puff's strength that keeps the columns'
+ * frame coverage `cov` under SMOKE_COVERAGE_MAX. */
+export const smokeCoverageScale = (cov: number): number =>
+  cov > SMOKE_COVERAGE_MAX ? SMOKE_COVERAGE_MAX / cov : 1;
+
+/** D11: the puff's radial opacity at r² (r = 1 at the card's edge, before
+ * the noise): a soft falloff to exactly 0 at the edge, never saturating to
+ * a hard rim — the GLSL's own formula (SMOKE_FRAGMENT). */
+export const smokeShape = (r2: number, n = 0.5): number =>
+  Math.min(
+    SMOKE_ALPHA_MAX,
+    Math.exp(-r2 * 1.8) * (1 - smoothstepJs(0.15, 1.0, r2)) * (0.6 + 1.1 * n),
+  );
 /** The flames' colour gain: the hottest core (1, 0.82, 0.5) peaks exactly
  * at the EMISSIVE_FIRE rung. */
 const FIRE_GAIN = EMISSIVE_FIRE / luminance(new THREE.Color(1, 0.82, 0.5));
@@ -632,6 +669,9 @@ void main() {
   float size = mix(18.0, 75.0, pow(ph, 0.8)) * aB.w;
   vec4 mvC = viewMatrix * vec4(c, 1.0);
   float dist = length(mvC.xyz);
+  // D11: never in the camera's face — on its TRUE size (smokeNearFade),
+  // before the overdraw clamp shrinks it.
+  float camFade = smoothstep(size * ${SMOKE_NEAR_GONE.toFixed(2)}, size * ${SMOKE_NEAR_FULL.toFixed(2)}, dist);
   // Bounded overdraw: never wider than 0.9 × its view distance.
   size = min(size, 0.9 * dist);
   float rot = 6.2832 * (aB.y + ph * 0.35);
@@ -647,7 +687,6 @@ void main() {
   // depth fade — the pipeline keeps no depth texture).
   float env = smoothstep(0.0, 0.08, ph) * (1.0 - smoothstep(0.7, 1.0, ph));
   float baseFade = smoothstep(4.0, 24.0, h);
-  float camFade = smoothstep(size * 0.35, size * 1.2, dist);
   vAlpha = aB.z * env * baseFade * camFade;
   // L7b: the fire lights the column's lower ~30 % (the reference's orange
   // plume bases), fading up into the dark.
@@ -674,15 +713,18 @@ void main() {
   float r2 = dot(vUv, vUv) * 4.0;
   // Billowing edge: a static noise turning with the puff (Mobile: plain).
   float n = uSmokeDetail > 0.5 ? abInfNoise(vUv * 3.2 + vSeed * 17.0, 64.0) : 0.5;
-  float shape = exp(-r2 * 1.2) * (1.0 - smoothstep(0.5, 1.0, r2)) * (0.6 + 1.1 * n);
-  float a = clamp(shape * 1.3, 0.0, 1.0) * vAlpha * 0.97;
+  // D11: a soft falloff all the way to the card's edge, the core capped
+  // under opaque (smokeShape): never a saturated, hard-rimmed disc.
+  float shape = min(${SMOKE_ALPHA_MAX.toFixed(2)}, exp(-r2 * 1.8) * (1.0 - smoothstep(0.15, 1.0, r2)) * (0.6 + 1.1 * n));
+  float a = shape * vAlpha;
   if (a < 0.003) discard;
   // Near-black smoke, a touch greyer (moonlit) as it rises, its top edge
   // catching the moon; lit orange from below by its own fire, strongest
   // under each puff (L7b: hot enough to read as the reference's lit plume
   // bases against the haze), and the whole plume a dim ember from the
   // burning city under it.
-  vec3 albedo = vec3(0.012, 0.01, 0.009) + vec3(0.016, 0.016, 0.019) * vRise;
+  // D11: dark, never black — sooty grey-brown that takes the night light.
+  vec3 albedo = vec3(0.03, 0.027, 0.025) + vec3(0.016, 0.016, 0.019) * vRise;
   albedo += vec3(0.035, 0.038, 0.047) * smoothstep(0.1, 0.5, vCornerY) * vRise;
   float under = smoothstep(0.3, -0.5, vCornerY);
   float flick = 0.85 + 0.15 * sin(6.2832 * (uFirePhase.x + vSeed));
@@ -852,6 +894,8 @@ export interface InfernoStats {
   floating: number;
   /** Overdraw proxy: screen fractions of the flame cards and smoke puffs. */
   coverage: number;
+  /** D11: the smoke columns' share of it (after their budget). */
+  smokeCoverage: number;
   /** Glow spots handed to the cloud deck. */
   glow: number;
 }
@@ -923,6 +967,7 @@ export class Inferno {
     gutted: 0,
     floating: 0,
     coverage: 0,
+    smokeCoverage: 0,
     glow: 0,
   };
   // Per-building column pick (scratch).
@@ -1407,9 +1452,13 @@ export class Inferno {
       const info = this.siteOf(c, this.canon);
       const d = Math.sqrt(this.cD[c] as number);
       const r = Math.sqrt(this.cR[c] as number);
+      // D11: under the cap there is no cap fade — `edge` is infinite, and
+      // ∞ − ∞ made every flame's alpha NaN (O7's detector, a lone collapse).
+      const capFade = Number.isFinite(edge)
+        ? 1 - smooth01((r - fadeFrom) / Math.max(1, edge - fadeFrom))
+        : 1;
       const fade =
-        (1 - smooth01((r - fadeFrom) / Math.max(1, edge - fadeFrom))) *
-        (1 - smooth01((d - 0.85 * CUT_M) / (0.15 * CUT_M)));
+        capFade * (1 - smooth01((d - 0.85 * CUT_M) / (0.15 * CUT_M)));
       const w = (this.cW[c] as number) * fade;
       if (w <= 0.01) continue;
       const img = nearestImageInto(this.img, viewer, this.canon);
@@ -1601,7 +1650,15 @@ export class Inferno {
     uploadPrefix(this.smokeUploads, puffs);
     this.stats.columns = puffs / PUFFS;
     const k = 1 / (4 * this.tanHalf * this.tanHalf * this.camAspect);
-    this.stats.coverage += cov * k;
+    // D11: the columns' frame budget — every puff's strength scaled to fit.
+    const scale = smokeCoverageScale(cov * k);
+    if (scale < 1) {
+      for (let i = 0; i < puffs; i++) {
+        b[i * 4 + 2] = (b[i * 4 + 2] as number) * scale;
+      }
+    }
+    this.stats.smokeCoverage = cov * k * scale;
+    this.stats.coverage += cov * k * scale;
   }
 
   /** Fire lights and air anchors from the drawn flames (nearest first,

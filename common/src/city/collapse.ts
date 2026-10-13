@@ -82,6 +82,7 @@ import {
   COLLAPSE_TOPPLE_ALPHA_MIN,
   COLLAPSE_TOPPLE_BREAK,
   COLLAPSE_TOPPLE_BREAK_TOP,
+  COLLAPSE_TOPPLE_DRIFT,
   COLLAPSE_TOPPLE_K,
   COLLAPSE_ZONE_TAIL_MS,
   CRANE_MAST_SIDE,
@@ -1936,7 +1937,9 @@ function assembleCollapse(
       }
       c.hbreak[i] = Math.sqrt((2 * brk) / c.alpha);
       latest = Math.max(latest, c.hbreak[i] as number);
-      breakUp(c, i);
+      // D11: a building's chunks keep COLLAPSE_TOPPLE_DRIFT of the swing's
+      // throw (a crane's lattice, one piece, keeps all of it).
+      breakUp(c, i, pivotEdge === null ? COLLAPSE_TOPPLE_DRIFT : 1);
     }
     c.tBreak = latest;
   }

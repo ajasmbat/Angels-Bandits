@@ -25,8 +25,16 @@ const PROBE = process.env.AB_GALLERY_PROBE
 mkdirSync(OUT, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const server = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
-  // W1: no carrier war — the gallery frames an empty sky.
-  env: { ...process.env, PORT: String(PORT), AB_WAVES: "0" },
+  // W1: no carrier war — the gallery frames an empty sky. D11: and a quiet
+  // city — the server's director (and the chains its topples set off) fells
+  // towers near the parked plane on the wall clock, so a shot showed (and
+  // died to) destruction nobody staged. AB_GALLERY_LIVE_CITY=1 keeps it.
+  env: {
+    ...process.env,
+    PORT: String(PORT),
+    AB_WAVES: "0",
+    ...(process.env.AB_GALLERY_LIVE_CITY === "1" ? {} : { AB_QUIET_CITY: "1" }),
+  },
   stdio: "ignore",
 });
 /** Yaw that points the nose along (dx, dz): yaw 0 faces -Z. */
@@ -311,6 +319,9 @@ try {
           window.__ab.qaCamera({
             eye: { x: ex, y: ey, z: ez },
             at: { x: ax, y: ay, z: az },
+            // D11: a view may pin its field of view (a build without it
+            // ignores the field).
+            ...(v.fov ? { fov: v.fov } : {}),
           });
         }
       }, v);
@@ -431,7 +442,9 @@ try {
           }),
       );
     }
-    if (v.raf) {
+    // D11: a fixed-camera view holds its plane every frame too — left to fly
+    // between pins, it wandered off its parking spot into the city.
+    if (v.raf || v.eye) {
       await page.evaluate((v) => {
         const hold = () => {
           if (!window.__abPin) return;
@@ -583,7 +596,7 @@ try {
     if (v.timeMs !== undefined && !v.trainEye) {
       await page.evaluate(() => window.__ab.pinWorld(null));
     }
-    if (v.raf) {
+    if (v.raf || v.eye) {
       await page.evaluate(() => {
         window.__abPin = false;
       });

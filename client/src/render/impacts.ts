@@ -27,6 +27,7 @@ import * as THREE from "three";
 import type { BulletImpact } from "../game/bullet-impact";
 import { FacadeArchetype } from "./archetypes";
 import { type BlastSite, type FacadeDamage, blastFacades } from "./damage-map";
+import { applyPointFloor } from "./point-floor";
 import { RENDER_ORDER } from "./render-order";
 import { uploadPrefix } from "./wrapPlacement";
 
@@ -51,6 +52,10 @@ export const Kind = {
   GLASS: 3,
   FIRE: 4,
   SMOKE: 5,
+  /** D11: a blue-white electrical flash (a collapse's severed wiring). */
+  FLASH: 6,
+  /** D11: a fragment lying where it landed (the settled ring). */
+  REST: 7,
 } as const;
 export type Kind = (typeof Kind)[keyof typeof Kind];
 
@@ -62,7 +67,21 @@ const GRAVITY: Record<Kind, number> = {
   [Kind.GLASS]: 12,
   [Kind.FIRE]: -5,
   [Kind.SMOKE]: -2.6,
+  [Kind.FLASH]: 0,
+  [Kind.REST]: 0,
 };
+
+/** D11: the settled ring — fragments flagged to settle (a collapse's
+ * chunks) that reach the ground lie there and fade over REST_LIFE_MS
+ * instead of dying in the air. Its own small ring, so the busy pool never
+ * overwrites what lies on the pile. */
+export const REST_FLECKS = 320;
+/** D11: falling chunks flagged to settle fly in their own ring, so the
+ * busy pool's sparks never overwrite one mid-fall. */
+export const CHUNK_FLECKS = 400;
+export const REST_LIFE_MS = 20_000;
+/** Where a fragment comes to rest, m (the street). */
+const REST_Y = 0.25;
 
 /** Per bullet impact, at full share (each × share, at least 1). */
 export const PER_HIT = { sparks: 8, dust: 3, chips: 4, glass: 10 } as const;
@@ -116,6 +135,8 @@ export class ImpactPool {
   /** Per-particle base colour and a phase for glints / flicker. */
   readonly rgb: Float32Array;
   readonly phase: Float32Array;
+  /** D11: 1 = moves to the settled ring when it reaches the ground. */
+  readonly settle: Uint8Array;
 
   constructor(capacity = IMPACT_PARTICLES_MAX) {
     this.capacity = capacity;
@@ -132,6 +153,7 @@ export class ImpactPool {
     this.size = new Float32Array(capacity);
     this.rgb = new Float32Array(capacity * 3);
     this.phase = new Float32Array(capacity);
+    this.settle = new Uint8Array(capacity);
   }
 
   get limit(): number {
@@ -160,6 +182,7 @@ export class ImpactPool {
     b: number,
     now: number,
     phase = 0,
+    settle = 0,
   ): void {
     const i = this.head;
     this.head = (this.head + 1) % this.cap;
@@ -177,6 +200,7 @@ export class ImpactPool {
     this.rgb[i * 3 + 1] = g;
     this.rgb[i * 3 + 2] = b;
     this.phase[i] = phase;
+    this.settle[i] = settle;
   }
 
   isLive(i: number, now: number): boolean {
@@ -365,6 +389,11 @@ function sprayInto(
 export class Impacts {
   readonly points: THREE.Points;
   readonly pool = new ImpactPool();
+  /** D11: fragments lying where they landed (drawn in the same Points). */
+  readonly rest = new ImpactPool(REST_FLECKS);
+  /** D11: chunks on their way down to the settled ring (same Points). */
+  readonly chunks = new ImpactPool(CHUNK_FLECKS);
+  private lastRest = 0;
   private readonly positions: THREE.BufferAttribute;
   private readonly colors: THREE.BufferAttribute;
   private readonly sizes: THREE.BufferAttribute;
@@ -380,7 +409,7 @@ export class Impacts {
   private readonly rand = Math.random;
 
   constructor() {
-    const n = this.pool.capacity;
+    const n = this.pool.capacity + this.chunks.capacity + this.rest.capacity;
     const geometry = new THREE.BufferGeometry();
     this.positions = new THREE.BufferAttribute(new Float32Array(n * 3), 3);
     this.colors = new THREE.BufferAttribute(new Float32Array(n * 4), 4);
@@ -420,9 +449,13 @@ export class Impacts {
           "attribute float aSize;\n#include <common>",
         )
         .replace("gl_PointSize = size;", "gl_PointSize = size * aSize;");
+      // D11: O5's point floor — a far spark or chunk is drawn at least
+      // POINT_FLOOR_PX across with its alpha paying for the extra size, so
+      // it reads (and stops popping between pixels) at 600 m.
+      applyPointFloor(shader);
     };
     // Distinct program key — onBeforeCompile patches collide without one (V3).
-    material.customProgramCacheKey = () => "d1-impacts-asize";
+    material.customProgramCacheKey = () => "d1-impacts-asize-d11-floor";
     this.points = new THREE.Points(geometry, material);
     this.points.frustumCulled = false;
     this.points.renderOrder = RENDER_ORDER.smoke;
@@ -594,6 +627,7 @@ export class Impacts {
     size: number,
     rgb: readonly [number, number, number],
     now: number,
+    settle = false,
   ): void {
     const rand = this.rand;
     for (let i = 0; i < this.count(n); i++) {
@@ -604,7 +638,7 @@ export class Impacts {
         spread,
         rand,
       );
-      this.pool.spawn(
+      (settle ? this.chunks : this.pool).spawn(
         kind,
         point,
         v.x,
@@ -617,6 +651,7 @@ export class Impacts {
         rgb[2],
         now,
         rand() * 6.28,
+        settle ? 1 : 0,
       );
     }
   }
@@ -781,24 +816,60 @@ export class Impacts {
     this.at.z = s.point.z + s.normal.z * 0.6 + (s.normal.z === 0 ? u : 0);
   }
 
-  /** Place every live particle around the viewer; pack the live prefix. */
-  update(viewer: Vec3, now: number): void {
-    const p = this.pool;
+  /** Write pool `p`'s live particles into the buffers from slot `n` on;
+   * returns the next free slot. A particle flagged to settle that reached
+   * the street moves to the settled ring instead. */
+  private place(
+    p: ImpactPool,
+    from: number,
+    viewer: Vec3,
+    now: number,
+  ): number {
+    let n = from;
     const pos = this.positions.array as Float32Array;
     const col = this.colors.array as Float32Array;
     const sizes = this.sizes.array as Float32Array;
-    let n = 0;
+    const rest = this.rest;
     for (let i = 0; i < p.limit; i++) {
       if (!p.isLive(i, now)) continue;
       const t = (now - (p.born[i] as number)) / 1000;
       const u = (t * 1000) / (p.life[i] as number); // 0..1 of its life
       const kind = p.kind[i] as Kind;
       const g = GRAVITY[kind];
+      const y = (p.oy[i] as number) + (p.vy[i] as number) * t - 0.5 * g * t * t;
+      if (p.settle[i] === 1 && y <= REST_Y && g > 0) {
+        // D11: it reached the street — into the settled ring, where it
+        // landed (the moment it crossed REST_Y), and out of the air.
+        const vy = p.vy[i] as number;
+        const tl =
+          (vy +
+            Math.sqrt(
+              Math.max(0, vy * vy + 2 * g * ((p.oy[i] as number) - REST_Y)),
+            )) /
+          g;
+        this.at.x = (p.ox[i] as number) + (p.vx[i] as number) * tl;
+        this.at.y = REST_Y;
+        this.at.z = (p.oz[i] as number) + (p.vz[i] as number) * tl;
+        rest.spawn(
+          Kind.REST,
+          this.at,
+          0,
+          0,
+          0,
+          REST_LIFE_MS,
+          p.size[i] as number,
+          p.rgb[i * 3] as number,
+          p.rgb[i * 3 + 1] as number,
+          p.rgb[i * 3 + 2] as number,
+          now,
+        );
+        p.born[i] = Number.NEGATIVE_INFINITY;
+        continue;
+      }
       const x =
         viewer.x +
         wrapDeltaAxis(viewer.x, p.ox[i] as number) +
         (p.vx[i] as number) * t;
-      const y = (p.oy[i] as number) + (p.vy[i] as number) * t - 0.5 * g * t * t;
       const z =
         viewer.z +
         wrapDeltaAxis(viewer.z, p.oz[i] as number) +
@@ -815,6 +886,11 @@ export class Impacts {
           (kind === Kind.DUST ? 0.55 : 0.5) * (1 - u) * Math.min(1, u * 8);
       } else if (kind === Kind.CHIP) {
         alpha = 1 - u * u;
+      } else if (kind === Kind.FLASH) {
+        // A blue-white arc: full at once, gone in a blink.
+        alpha = 1 - u;
+        size *= 1 + 0.6 * u;
+        bright = 1 - 0.4 * u;
       } else if (kind === Kind.GLASS) {
         // Tumbling shards catch the light now and then: a glint, not a glow.
         const glint = Math.abs(Math.sin(t * 22 + (p.phase[i] as number)));
@@ -839,6 +915,35 @@ export class Impacts {
       sizes[n] = size;
       n++;
     }
+    return n;
+  }
+
+  /** Place every live particle around the viewer; pack the live prefix. */
+  update(viewer: Vec3, now: number): void {
+    // D11: the busy pool, then the falling chunks, then what lies settled.
+    let n = this.place(this.pool, 0, viewer, now);
+    n = this.place(this.chunks, n, viewer, now);
+    const pos = this.positions.array as Float32Array;
+    const col = this.colors.array as Float32Array;
+    const sizes = this.sizes.array as Float32Array;
+    const rest = this.rest;
+    // D11: the settled ring — lying still, fading over the last 40 %.
+    let restLive = 0;
+    for (let i = 0; i < rest.capacity; i++) {
+      if (!rest.isLive(i, now)) continue;
+      const u = (now - (rest.born[i] as number)) / (rest.life[i] as number);
+      pos[n * 3] = viewer.x + wrapDeltaAxis(viewer.x, rest.ox[i] as number);
+      pos[n * 3 + 1] = rest.oy[i] as number;
+      pos[n * 3 + 2] = viewer.z + wrapDeltaAxis(viewer.z, rest.oz[i] as number);
+      col[n * 4] = rest.rgb[i * 3] as number;
+      col[n * 4 + 1] = rest.rgb[i * 3 + 1] as number;
+      col[n * 4 + 2] = rest.rgb[i * 3 + 2] as number;
+      col[n * 4 + 3] = Math.min(1, (1 - u) / 0.4);
+      sizes[n] = rest.size[i] as number;
+      n++;
+      restLive++;
+    }
+    this.lastRest = restLive;
     this.lastLive = n;
     this.points.geometry.setDrawRange(0, n);
     // P4: three still issues a (counted) draw for an empty range.
@@ -849,6 +954,11 @@ export class Impacts {
   /** QA: live particles drawn last frame, and the tier's cap. */
   get liveCount(): number {
     return this.lastLive;
+  }
+
+  /** D11 QA: settled fragments drawn last frame. */
+  get restCount(): number {
+    return this.lastRest;
   }
 
   get cap(): number {

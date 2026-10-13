@@ -27,7 +27,11 @@ import {
   BROKEN_VERTEX_GLSL,
 } from "./broken-shading";
 import { DAMAGE_GLSL, DAMAGE_ON_UNIFORM, DAMAGE_PARS_GLSL } from "./damage-map";
-import { FRACTURE_VERTEX_GLSL } from "./debris";
+import {
+  FRACTURE_EMISSIVE_GLSL,
+  FRACTURE_PARS_GLSL,
+  FRACTURE_VERTEX_GLSL,
+} from "./debris";
 import { luminance } from "./emissive";
 import {
   OPENING_SD_GLSL,
@@ -596,7 +600,7 @@ const FRAGMENT_EMISSIVE = `${windowEmissiveGlsl(
   glslVec3(WINDOW_WARM),
   glslVec3(WINDOW_COOL),
   WINDOW_EMISSIVE_INTENSITY,
-)}${wakeWindowGlsl(WINDOW_EMISSIVE_INTENSITY)}${SHOP_BAND_GLSL}${GLASS_REFLECTION_GLSL}${NEON_SIGNS_GLSL}${roofLightGlsl()}${holeLightGlsl()}${BUILDING_WET_EMISSIVE_GLSL}${BROKEN_EMISSIVE_GLSL}${GUTTED_EMISSIVE_GLSL}`;
+)}${wakeWindowGlsl(WINDOW_EMISSIVE_INTENSITY)}${SHOP_BAND_GLSL}${GLASS_REFLECTION_GLSL}${NEON_SIGNS_GLSL}${roofLightGlsl()}${holeLightGlsl()}${BUILDING_WET_EMISSIVE_GLSL}${BROKEN_EMISSIVE_GLSL}${GUTTED_EMISSIVE_GLSL}${FRACTURE_EMISSIVE_GLSL}`;
 
 const FRAGMENT_SPECULAR = /* glsl */ `
 material.specularF90 = vArch < 0.5 ? ${GRAZING_REFLECTANCE.glass.toFixed(2)} : ${GRAZING_REFLECTANCE.solid.toFixed(2)};
@@ -658,13 +662,19 @@ export function createBuildingsMaterial(
     // L7: the burn, the fire lights and the flicker clocks, by reference.
     bindInfernoUniforms(shader.uniforms);
     shader.vertexShader = shader.vertexShader
-      .replace("#include <common>", `#include <common>\n${VERTEX_PARS}`)
+      .replace(
+        "#include <common>",
+        `#include <common>\n${VERTEX_PARS}${FRACTURE_PARS_GLSL}`,
+      )
       .replace(
         "#include <begin_vertex>",
         `#include <begin_vertex>\n${VERTEX_MAIN}${FRACTURE_VERTEX_GLSL}`,
       );
     shader.fragmentShader = shader.fragmentShader
-      .replace("#include <common>", `#include <common>\n${FRAGMENT_PARS}`)
+      .replace(
+        "#include <common>",
+        `#include <common>\n${FRAGMENT_PARS}${FRACTURE_PARS_GLSL}`,
+      )
       .replace(
         "#include <color_fragment>",
         `#include <color_fragment>\n${FRAGMENT_COLOR}`,

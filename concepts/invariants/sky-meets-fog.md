@@ -8,7 +8,11 @@
   (`searchlights.ts`), the headlight cones (`headlights.ts`), the far rain
   curtain (`rain.ts`'s far layer, L5: attenuated by `abFogFactor` and the
   height haze in its vertex shader, `fog: true` only to be fed the
-  uniforms), and L2's far skyline (`far-skyline.ts`);
+  uniforms), and L2's far skyline (`far-skyline.ts`); and the two that
+  SHAPE the shared chunk's factor — the inferno flames (`inferno.ts`) and,
+  D11, the collapse dust (`dust.ts`, `DUST_FOG_LINE`): the factor squared,
+  still exactly 1 at `fogFar`, so they read through the haze and still
+  vanish where the fog does;
 - the **city glow** (`fog.ts` `CITY_GLOW`, L2): a warm term added to the
   fog colour per view direction, `abGlowFog(fogColor, sinEl)`;
 - the **sky dome** (`sky.ts` `skyPatch`) below and just above

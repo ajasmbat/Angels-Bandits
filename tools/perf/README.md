@@ -2893,4 +2893,38 @@ the benches:
 - `tools/carrier-sanity.ts`: an Easy novice pilot against the real server.
 - `tools/roof-seams.ts`: AA nests against everything drawn on their roofs.
 
+## D11: collapse time-lapses and the destruction-view check
+
+`collapse-timelapse.mjs` stages a fell through `__ab.qaDestruction` on a
+pinned world clock, freezes a QA camera (`collapse-cases.mjs`: the
+planner's 460 m pancake, a 600 m topple, a tower-on-tower chain) and
+captures fixed times after it lets go into one labelled sheet, with a JSON
+row per frame: alive, debris, dust puffs and their share of the frame, the
+haze at the eye, what the camera sees of the collapse (`collapseView`),
+settled fragments, draw calls, the NaN probe and the frame's luma spread.
+`__ab.qaFrameClock(dtMs)` steps every frame by a fixed virtual `dt`, so a
+1 fps software rasteriser sheds and ages particles as a GPU at `--fps` would
+(a build without it jumps the world clock only).
+
+```sh
+npm run build -w client
+node tools/perf/collapse-timelapse.mjs out/ --label after
+# a before sheet from another checkout's built client:
+(cd ../main && node tools/perf/collapse-timelapse.mjs ../d11/out --label before)
+```
+
+Both it and `gallery.mjs` run the server with `AB_QUIET_CITY=1`: the live
+director (and the chain reactions its topples set off) otherwise fells
+towers near the parked plane on the wall clock — destruction nobody staged,
+and the "far-away" deaths of D11's first gallery runs (`gallery.mjs`:
+`AB_GALLERY_LIVE_CITY=1` keeps it live). A fixed-camera view now holds its
+plane every frame.
+
+`destruction-views.test.mjs` (with `view-check.mjs`) is the committed
+check that every staged destruction view, time-lapse case and destruction
+segment frames its subject, has a clear sight line to it and catches a
+fell in the phase it promises — pure geometry over the seed city, so a
+generator change that moves a subject fails `vitest`, not a gallery
+review. Results: [`docs/stormlit/d11`](../../docs/stormlit/d11/README.md).
+
 <!-- lander smoke test -->

@@ -760,6 +760,19 @@ export const COLLAPSE_TOPPLE_ALPHA_MIN = 0.08;
 export const COLLAPSE_TOPPLE_ALPHA_MAX = 1.5;
 /** Topple: tilt at which the section breaks into separate chunks, rad. */
 export const COLLAPSE_TOPPLE_BREAK = 0.9;
+/** D11: the share of its swing's horizontal speed a building chunk keeps
+ * when it breaks off. At 1 (D10) the top storeys were thrown up to ~2× the
+ * tower's height — a 305 m tower's debris killed planes 600 m out, far
+ * beyond the strip the director warns about; at 0.45 a seed-city tower's
+ * farthest chunk lands about one tower-height from its centre (≤ 1.15 h;
+ * one stocky 259 m tower, swung faster by ALPHA_MIN, 1.5 h), as a real
+ * topple's top does, and half of it within ~0.55 h. */
+export const COLLAPSE_TOPPLE_DRIFT = 0.45;
+/** D11: no tall tower's collapse debris ever flies or rests further than
+ * this many tower-heights from the building's centre (swept bounds
+ * included) — the fairness envelope common/test/collapse-reach.test.ts
+ * holds every 250 m+ tower of the seed city to (D10's was ~2). */
+export const COLLAPSE_TOPPLE_REACH = 1.55;
 /** A landed chunk squashes into a rubble slab this share of its height
  * (≈1.4 m for a 12 m floor band) over COLLAPSE_SQUASH_MS. */
 export const COLLAPSE_RUBBLE_RATIO = 0.12;
@@ -784,7 +797,7 @@ export const COLLAPSE_DUST_MS = 20_000;
 /** The collapse model's version: what buildCollapse derives from a wire.
  * The welcome carries it; a client built for another model reloads rather
  * than build different debris than the server collides with. */
-export const COLLAPSE_MODEL = 11; // H1: the wire's failure height snaps to its storey edge
+export const COLLAPSE_MODEL = 12; // D11: a topple's chunks keep COLLAPSE_TOPPLE_DRIFT of their throw
 /** H1: the city generator's version — the welcome carries it like
  * COLLAPSE_MODEL. A tab built for another generator (a deploy since it
  * loaded) would build a different city, so every chunk id, collapse and

@@ -315,10 +315,15 @@ const RAIN_FOG_NEAR = 70;
 const RAIN_HAZE_EXTRA = 0.6;
 /** D3: inside a collapse's dust cloud (render/dust.ts dustHaze, 0..1) the
  * haze thickens by up to this and the fog closes to DUST_FOG_NEAR/FAR, m —
- * a sight-blocking brown-out that is the same on every quality tier. */
+ * a sight-blocking brown-out that is the same on every quality tier.
+ * D11: at most DUST_HAZE_MAX of it, with the fog no closer than 20 / 280 m
+ * and the dust colour mixed in at most DUST_COLOR_MIX — thick, but never
+ * a frame flattened to one grey. */
 const DUST_HAZE_EXTRA = 6;
-const DUST_FOG_NEAR = 4;
-const DUST_FOG_FAR = 140;
+const DUST_FOG_NEAR = 20;
+const DUST_FOG_FAR = 280;
+export const DUST_HAZE_MAX = 0.6;
+const DUST_COLOR_MIX = 0.45;
 /** Concrete dust: the fog colour the brown-out pulls toward (sRGB). */
 const DUST_FOG_COLOR = 0x4a443e;
 const RAIN_DARKEN = 0.15;
@@ -605,11 +610,12 @@ export class StormRenderer {
     cameraY: number,
     nowMs: number,
     wx: SkyWeather = DRY_SKY,
-    dust = 0,
+    dustIn = 0,
     burn = 0,
     cityLight = 1,
   ): SkyAir {
     const f = this.flashLevel(nowMs) * wx.flash;
+    const dust = Math.min(DUST_HAZE_MAX, Math.max(0, dustIn));
     // 0 below the deck → 1 fully inside; a 30 m ramp kills boundary flicker.
     const inK = Math.min(1, Math.max(0, (cameraY - CLOUD_BASE) / 30));
     this.flashLight.intensity = f * FLASH_PEAK * (1 + inK * 0.6);
@@ -652,7 +658,7 @@ export class StormRenderer {
     air.add.setRGB(0, 0, 0);
     this.lerpAir(this.cloudFogColor, inK * 0.85);
     this.lerpAir(this.flashColor, f * FLASH_TINT * (1 + inK));
-    this.lerpAir(this.dustFogColor, dust * 0.8);
+    this.lerpAir(this.dustFogColor, dust * DUST_COLOR_MIX);
     // L7: the burning city's smoke, last — the dome takes it through the
     // same map, so the horizon stays seamless.
     this.lerpAir(this.burnFogColor, burn * BURN_FOG_MIX);

@@ -70,7 +70,7 @@ function expectSame(
   if (!a || !b) return;
   for (const key of Object.keys(a) as (keyof legacy.Collapse)[]) {
     const x = a[key] as unknown;
-    const y = (b as unknown as Record<string, unknown>)[key];
+    const y: unknown = (b as unknown as Record<string, unknown>)[key];
     if (ArrayBuffer.isView(x)) {
       const xa = x as unknown as ArrayLike<number>;
       const ya = y as ArrayLike<number>;
@@ -168,9 +168,10 @@ describe("DL1 parity: the default tuning is today's collapse model", () => {
         damage.apply(ids);
         const pl = legacy.planCollapses(b, i);
         for (const [name, t] of TUNINGS) {
-          expect(live.planCollapses(b, i, t), `${i}@${share} (${name})`).toEqual(
-            pl,
-          );
+          expect(
+            live.planCollapses(b, i, t),
+            `${i}@${share} (${name})`,
+          ).toEqual(pl);
         }
         for (const [k, plan] of pl.entries()) {
           const wire = legacy.collapseWire(plan, i, 100 + k, 5_000 + k);

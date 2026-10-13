@@ -59,6 +59,36 @@
 // never on something that could later be shot away.
 
 import {
+  CUT_NEG_X,
+  CUT_NEG_Y,
+  CUT_NEG_Z,
+  CUT_POS_X,
+  CUT_POS_Y,
+  CUT_POS_Z,
+  CUT_STEEL,
+  type LocalBox,
+  type TierGrid,
+  cellBox,
+  cellIndex,
+  cellSolids,
+  chunkAt,
+  chunkBuilding,
+  chunkCell,
+  chunkId,
+  chunkMask,
+  chunkTier,
+  decodeChunkIds,
+  encodeChunkIds,
+  supportGraph,
+  tierGrids,
+} from "../../src/city/destruction";
+import type { SolidBox } from "../../src/city/holes";
+import type { Building } from "../../src/city/index";
+// movers.ts ↔ collapse.ts is a module cycle (collideMovers reads the field;
+// a crane fall reads the crane's boxes). Every use is at call time.
+import { type CraneSite, craneBoxesAt, slewAngle } from "../../src/city/movers";
+import { mulberry32 } from "../../src/city/rng";
+import {
   CHAIN_COALESCE_M,
   CHAIN_ENERGY_MAX,
   CHAIN_ENERGY_MIN,
@@ -96,36 +126,6 @@ import {
   CRANE_MAST_SIDE,
 } from "../../src/constants";
 import { type Vec3, canonicalize, wrapDeltaAxis } from "../../src/world/index";
-import {
-  CUT_NEG_X,
-  CUT_NEG_Y,
-  CUT_NEG_Z,
-  CUT_POS_X,
-  CUT_POS_Y,
-  CUT_POS_Z,
-  CUT_STEEL,
-  type LocalBox,
-  type TierGrid,
-  cellBox,
-  cellIndex,
-  cellSolids,
-  chunkAt,
-  chunkBuilding,
-  chunkCell,
-  chunkId,
-  chunkMask,
-  chunkTier,
-  decodeChunkIds,
-  encodeChunkIds,
-  supportGraph,
-  tierGrids,
-} from "../../src/city/destruction";
-import type { SolidBox } from "../../src/city/holes";
-import type { Building } from "../../src/city/index";
-// movers.ts ↔ collapse.ts is a module cycle (collideMovers reads the field;
-// a crane fall reads the crane's boxes). Every use is at call time.
-import { type CraneSite, craneBoxesAt, slewAngle } from "../../src/city/movers";
-import { mulberry32 } from "../../src/city/rng";
 
 export const PANCAKE = 0;
 export const TOPPLE = 1;

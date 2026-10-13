@@ -2,7 +2,7 @@
 
 Every sheet here is shot on this GPU-less Linux box (SwiftShader, High tier,
 render scale 0.75), the server quiet (`AB_QUIET_CITY=1`, no carrier waves),
-the world clock pinned. **Before** is main `981fba4` (L11) plus only the two
+the world clock pinned. **Before** is main `981fba4` (L11; the gallery pair: `555a314`, G7) plus only the two
 QA hooks the tools need (`__ab.qaFrameClock`, a QA camera's `fov`), so both
 sides are shot identically. Particles age on a virtual 30 fps frame clock,
 so a 1 fps rasteriser shows what a GPU does.
@@ -27,6 +27,7 @@ so a 1 fps rasteriser shows what a GPU does.
 | `destruction-chewed` black / orange squares | Exposed storeys were a near-black room with a flat ember in 14 % of cells, seen at a grazing angle. | Thick lit slab edges, rooms behind them, dangling rebar, charred rims. Looked at head-on. |
 | `destruction-bridge` "dark box" | The fallen span lay in the water, seen side-on from the promenade. | Seen from above the gap. |
 | Planes dying "600 m away" | The topple model threw a tower's top storeys up to ~2× its height (≈ 600 m for a 305 m tower), far outside the strip the director warns about. The gallery's deaths were the live director's chains hitting a plane left to fly between pins. | `COLLAPSE_TOPPLE_DRIFT` 0.45 (`COLLAPSE_MODEL` 12): the farthest chunk lands ≈ 1 h out. `common/test/collapse-reach.test.ts`. The gallery holds its plane and runs a quiet city. |
+| `destruction-glass` hard black mass over the sky (before and after G7) | The inferno smoke clamps a puff to 0.9× its distance *before* computing its near-camera fade, so a near puff stays ~97 % opaque. With albedo 0.012 and a saturated ×1.3 edge, a column beside the camera drew a hard, near-black disc. | The fade uses the puff's true size (gone at 0.6×, full at 2×). The edge is soft to 0 with the core ≤ 0.85. Sooty, not black. The columns are held under 50 % of the frame. `client/test/collapse-coverage.test.ts`. |
 | NaN pixels on every collapse (O7) | Rebar ribbons (four corners on one unit-box point) gave the facade AA `smoothstep(0, 0, x)`. Under the flame cap the inferno computed `∞ − ∞` as every flame's alpha. | Facade varyings from the displaced vertex. No cap fade under the cap. |
 
 The gutted-building shading (inferno-shading.ts `GUTTED_*`) is G7's, not

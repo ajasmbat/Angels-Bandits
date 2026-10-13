@@ -80,6 +80,9 @@ export const DUST_COVERAGE_MAX = 0.7;
  * fades to nothing at DUST_NEAR_GONE — the camera close to or inside it. */
 const DUST_NEAR_FULL = 1.5;
 const DUST_NEAR_GONE = 0.35;
+/** The line of the patched fog chunk (fog.ts) the dust squares. */
+export const DUST_FOG_LINE =
+  "float fogFactor = abFogFactor( fogNear, fogFar, abFogDepth );";
 /** Mean alpha of the sprite texture over its square (the coverage sum). */
 const SPRITE_MEAN_ALPHA = 0.35;
 /** The fire glow in a hot puff (linear, before the clamp). */
@@ -846,9 +849,21 @@ export class DustClouds {
           // clamped under the bloom threshold BEFORE bloom — however many
           // lit puffs stack, the dust never blows out white.
           `#include <color_fragment>\n\tdiffuseColor.a *= vAlpha;\n\tdiffuseColor.rgb *= mix(uDustGround, uDustSky, vDustH);\n\tdiffuseColor.rgb += vec3(${DUST_FIRE.map((v) => v.toFixed(2)).join(", ")}) * vHeat;\n\tdiffuseColor.rgb = min(diffuseColor.rgb, vec3(${DUST_RGB_MAX.toFixed(2)}));`,
+        )
+        // D11: the dust reads through the distance haze — its fog is the
+        // shaped curve squared (the inferno flames' rule: still exactly 1 at
+        // fogFar, so the sky still meets the fog and the wrap stays hidden),
+        // so a collapse's cloud 600 m out is a cloud, not the haze itself.
+        .replace(
+          "#include <fog_fragment>",
+          THREE.ShaderChunk.fog_fragment.replace(
+            DUST_FOG_LINE,
+            `${DUST_FOG_LINE}\n\t\tfogFactor *= fogFactor;`,
+          ),
         );
     };
-    material.customProgramCacheKey = () => "dust-asize-aalpha-d10-lit-d11-heat";
+    material.customProgramCacheKey = () =>
+      "dust-asize-aalpha-d10-lit-d11-heat-fog2";
     this.points = new THREE.Points(geometry, material);
     this.points.frustumCulled = false;
     this.points.renderOrder = RENDER_ORDER.smoke;

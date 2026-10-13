@@ -15,12 +15,15 @@ import {
   demolitionPlan,
 } from "@angels-bandits/common/city/collapse";
 import { CITY_SEED } from "@angels-bandits/common/constants";
+import * as THREE from "three";
 import { describe, expect, it, vi } from "vitest";
 import {
   DUST_COVERAGE_MAX,
+  DUST_FOG_LINE,
   DUST_RGB_MAX,
   DustClouds,
 } from "../src/render/dust";
+import { installHeightFog } from "../src/render/fog";
 import {
   SMOKE_ALPHA_MAX,
   SMOKE_COVERAGE_MAX,
@@ -77,6 +80,13 @@ describe("D11 collapse dust: a cloud, never a flat frame", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it("reads through the distance haze: its fog line is the one the fog chunk computes", () => {
+    installHeightFog();
+    // The dust squares THIS line's factor; if fog.ts ever renames it the
+    // dust would silently fog like everything else.
+    expect(THREE.ShaderChunk.fog_fragment).toContain(DUST_FOG_LINE);
   });
 
   it("is clamped under the bloom threshold, however many puffs stack", () => {

@@ -88,6 +88,12 @@ const { stageDestruction, QA_ID_BASE } = await import(
   "../client/src/game/qa-destruction"
 );
 const { CityRenderer } = await import("../client/src/render/city");
+// DL1: the collapse detail and the ruins' smoke (absent before D10 / D8 in
+// an older checkout: those rows are skipped).
+const collapseFx = await import("../client/src/render/collapse-fx").catch(
+  () => null,
+);
+const ruinsMod = await import("../client/src/render/ruins").catch(() => null);
 const { DirectorFx } = await import("../client/src/render/director-fx");
 const { DustClouds, dustHaze } = await import("../client/src/render/dust");
 const { Explosions } = await import("../client/src/render/fx");
@@ -145,6 +151,13 @@ const wreckList = [
   return { id: QA_ID_BASE + 1000 + i, ...path, end: hit.end, hit: hit.hit };
 });
 const scaffold = new ScaffoldRenderer(buildings, "high");
+const detailImpacts = new Impacts();
+const collapseDetail = collapseFx
+  ? new collapseFx.CollapseDetail(detailImpacts, buildings)
+  : null;
+const ruinSmoke = ruinsMod
+  ? new ruinsMod.RuinSmoke(detailImpacts, buildings)
+  : null;
 const directorFx = new DirectorFx(impacts, explosions, buildings, []);
 const target = buildings[staged.touched[2] as number] as Building;
 const warning: DirectorEvent = {
@@ -280,6 +293,31 @@ const ENTRIES: { name: string; step: Step; reset?: () => void }[] = [
     },
     reset: () => wrecks.reset(wreckList),
   },
+  ...(collapseDetail
+    ? [
+        {
+          // DL1: the collapse detail's trails, bursts and crush front into
+          // its own pool (sprayed and aged — the pool's update included).
+          name: "collapseDetail.update",
+          step: (f: number) => {
+            const { ms, now } = frameAt(f);
+            collapseDetail.update(field.list, viewer, ms, now);
+            detailImpacts.update(viewer, now);
+          },
+        },
+      ]
+    : []),
+  ...(ruinSmoke
+    ? [
+        {
+          name: "ruinSmoke.update",
+          step: (f: number) => {
+            const { ms, now } = frameAt(f);
+            ruinSmoke.update(field.list, viewer, ms, now);
+          },
+        },
+      ]
+    : []),
   {
     name: "impacts.burn + update",
     step: (f) => {
@@ -416,6 +454,11 @@ function digest(e: (typeof ENTRIES)[number]): string {
   geo(wrecks.group);
   geo(scaffold.mesh);
   geo(missiles.group);
+  // DL1: the collapse detail's own pool, on its own rows only (so every
+  // other row's digest still compares with a checkout before it).
+  if (e.name === "collapseDetail.update" || e.name === "ruinSmoke.update") {
+    geo(detailImpacts.points);
+  }
   h.update(`${shake.x},${shake.y},${shake.z},${sink}`);
   return h.digest("hex").slice(0, 16);
 }

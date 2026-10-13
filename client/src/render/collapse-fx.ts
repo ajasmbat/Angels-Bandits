@@ -30,6 +30,9 @@
 //     fewer panes: GLASS_MASONRY of the shower);
 //   - a budget: the collapses never spray more than RATE_MAX particles a
 //     second into the busy pool, so gunfire impacts are never starved.
+//
+// DL1: the amounts, chances, range and budgets read render/destruct-look.ts
+// (the constants below, or × exactly 1, outside the Destruction Lab).
 
 import type { Building } from "@angels-bandits/common/city";
 import {
@@ -44,6 +47,7 @@ import {
   collapseFloorEvents,
   piecePose,
 } from "@angels-bandits/common/city/collapse";
+import { LOOK_DEFAULTS } from "@angels-bandits/common/destruction-tuning";
 import {
   type Vec3,
   wrapCoord,
@@ -51,16 +55,21 @@ import {
 } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { FacadeArchetype, archetypeFor } from "./archetypes";
+import { destructLook } from "./destruct-look";
 import { DUST_RGB, type Impacts, Kind, SPARK_RGB } from "./impacts";
 
 /** Collapses further than this shed nothing, m; at most this many at once. */
-export const DETAIL_RANGE_M = 650;
-export const COLLAPSES_NEAR = 3;
+export const DETAIL_RANGE_M = LOOK_DEFAULTS.detailRange;
+export const COLLAPSES_NEAR = LOOK_DEFAULTS.collapsesNear;
 /** Trail emissions per second per collapse at full share (each one a few
  * particles off one piece). */
-export const TRAIL_RATE = 40;
+export const TRAIL_RATE = LOOK_DEFAULTS.trailRate;
 /** A floor event's burst at full share, particles (× its size). */
-export const BURST = { gravel: 26, dust: 10, glass: 34 } as const;
+export const BURST = {
+  gravel: LOOK_DEFAULTS.gravelBurst,
+  dust: LOOK_DEFAULTS.dustBurst,
+  glass: LOOK_DEFAULTS.glassBurst,
+} as const;
 /** D11: the building scale's reference height, m, and its clamp. */
 export const SCALE_H_M = 120;
 const SCALE_MAX = 3;
@@ -72,12 +81,12 @@ export const RANGE_GROW = 3;
 /** D11: crush-front bursts per second at most (per collapse, full share);
  * the busy pool's budget for all collapses, particles per second. */
 export const FRONT_RATE = 36;
-export const RATE_MAX = 600;
+export const RATE_MAX = LOOK_DEFAULTS.particleBudget;
 /** D11: a masonry / office tower's share of a curtain wall's glass. */
 const GLASS_MASONRY = 0.4;
 /** D11: a crush-front burst's chance of an electrical flash and of fire. */
-const FLASH_CHANCE = 0.16;
-const FIRE_CHANCE = 0.55;
+const FLASH_CHANCE = LOOK_DEFAULTS.flashChance;
+const FIRE_CHANCE = LOOK_DEFAULTS.fireChance;
 
 const GLASS_RGB = [0.72, 0.88, 1.0] as const;
 const FRAME_RGB = [0.08, 0.08, 0.09] as const;
@@ -263,7 +272,7 @@ export class CollapseDetail {
   private readonly frontOwed = new Map<number, number>();
   private readonly scale: Scale = { size: 1, count: 1 };
   /** D11: the busy pool's budget, particles, refilled at RATE_MAX/s. */
-  private tokens = RATE_MAX;
+  private tokens: number = RATE_MAX;
   private readonly out: Vec3 = { x: 0, y: 0, z: 0 };
   private readonly tint = new Map<number, readonly [number, number, number]>();
   private readonly dark = new Map<number, readonly [number, number, number]>();
@@ -313,14 +322,14 @@ export class CollapseDetail {
       const dx = wrapDeltaAxis(viewer.x, c.x);
       const dz = wrapDeltaAxis(viewer.z, c.z);
       const d = Math.sqrt(dx * dx + dz * dz);
-      if (d > DETAIL_RANGE_M) continue;
+      if (d > destructLook.detailRange) continue;
       const slot = this.near[count] ?? { c, d };
       slot.c = c;
       slot.d = d;
       this.near[count++] = slot;
     }
     // Partial selection of the nearest COLLAPSES_NEAR.
-    const n = Math.min(count, COLLAPSES_NEAR);
+    const n = Math.min(count, destructLook.collapsesNear);
     for (let i = 0; i < n; i++) {
       let best = i;
       for (let j = i + 1; j < count; j++) {
@@ -330,9 +339,10 @@ export class CollapseDetail {
       this.near[i] = this.near[best] as Near;
       this.near[best] = t;
     }
+    const budget = destructLook.particleBudget;
     this.tokens = Math.min(
-      RATE_MAX * this.share,
-      this.tokens + RATE_MAX * this.share * dt,
+      budget * this.share,
+      this.tokens + budget * this.share * dt,
     );
     for (let i = 0; i < n; i++) {
       const near = this.near[i] as Near;
@@ -375,6 +385,9 @@ export class CollapseDetail {
     now: number,
     settle = false,
   ): void {
+    // DL1: a look amount of 0 sprays nothing (the floor of 1 is for a
+    // small, positive amount).
+    if (!(n > 0)) return;
     let count = Math.max(1, Math.round(n * this.scale.count));
     if (!settle) {
       count = Math.min(count, Math.floor(this.tokens));
@@ -459,24 +472,47 @@ export class CollapseDetail {
       true,
     );
     this.emit(Kind.CHIP, this.at, this.out, 12, 0.9, 3, 1800, 0.45, chips, now);
+    const look = destructLook;
     this.emit(
       Kind.SPARK,
       this.at,
       this.out,
       14,
       1.1,
-      3,
+      3 * look.sparkAmount,
       600,
       0.7,
       SPARK_RGB,
       now,
     );
-    if (Math.random() < FIRE_CHANCE) {
-      this.emit(Kind.FIRE, this.at, UP, 4, 0.8, 2, 1100, 2.2, FIRE_RGB, now);
+    if (Math.random() < look.fireChance) {
+      this.emit(
+        Kind.FIRE,
+        this.at,
+        UP,
+        4,
+        0.8,
+        2 * look.floorFire,
+        1100,
+        2.2,
+        FIRE_RGB,
+        now,
+      );
     }
-    if (Math.random() < FLASH_CHANCE) {
+    if (Math.random() < look.flashChance) {
       this.emit(Kind.FLASH, this.at, UP, 0.5, 1, 1, 200, 5, FLASH_RGB, now);
-      this.emit(Kind.SPARK, this.at, UP, 18, 1.4, 4, 500, 0.6, FLASH_RGB, now);
+      this.emit(
+        Kind.SPARK,
+        this.at,
+        UP,
+        18,
+        1.4,
+        4 * look.sparkAmount,
+        500,
+        0.6,
+        FLASH_RGB,
+        now,
+      );
     }
     if (Math.random() < this.glassShare(c.building)) {
       this.emit(
@@ -535,7 +571,8 @@ export class CollapseDetail {
   /** The trail: this frame's share of TRAIL_RATE, each off the next
    * falling piece round the collapse. */
   private trail(c: Collapse, renderMs: number, dt: number, now: number): void {
-    let owed = (this.owed.get(c.id) ?? 0) + TRAIL_RATE * this.share * dt;
+    const rate = destructLook.trailRate;
+    let owed = (this.owed.get(c.id) ?? 0) + rate * this.share * dt;
     let k = this.cursor.get(c.id) ?? 0;
     // At most a full lap of pieces per frame looking for falling ones.
     let tries = 0;
@@ -554,7 +591,7 @@ export class CollapseDetail {
       if (!moving && k % 3 !== 0) continue;
       this.shed(c, k, vx, vy, vz, now);
     }
-    this.owed.set(c.id, Math.min(owed, TRAIL_RATE));
+    this.owed.set(c.id, Math.min(owed, rate));
     this.cursor.set(c.id, k);
   }
 
@@ -606,7 +643,18 @@ export class CollapseDetail {
       );
     }
     if (role === ROLE_COLUMN) {
-      this.emit(Kind.SPARK, this.at, UP, 9, 1.3, 3, 420, 0.8, SPARK_RGB, now);
+      this.emit(
+        Kind.SPARK,
+        this.at,
+        UP,
+        9,
+        1.3,
+        3 * destructLook.sparkAmount,
+        420,
+        0.8,
+        SPARK_RGB,
+        now,
+      );
     } else if (role === ROLE_SHEET) {
       // Window frames cascading off the peeling facade — and its glass
       // (D11: off every tower, a curtain wall's the most).
@@ -644,6 +692,7 @@ export class CollapseDetail {
     const events = collapseFloorEvents(c);
     const tint = this.dust(c.building);
     const glass = this.glass(c.building);
+    const look = destructLook;
     for (let e = 0; e < events.length; e++) {
       const ev = events[e] as (typeof events)[number];
       const t = c.t0 + ev.t;
@@ -659,7 +708,7 @@ export class CollapseDetail {
         UP,
         landed ? 14 : 9,
         1.4,
-        Math.round(BURST.gravel * k),
+        Math.round(look.gravelBurst * k),
         1800,
         0.6,
         this.chips(c.building),
@@ -671,7 +720,7 @@ export class CollapseDetail {
         UP,
         5,
         1.5,
-        Math.round(BURST.dust * k),
+        Math.round(look.dustBurst * k),
         3200,
         6,
         tint,
@@ -684,7 +733,7 @@ export class CollapseDetail {
           UP,
           8,
           1.5,
-          Math.round(BURST.glass * k * (glass ? 1 : GLASS_MASONRY)),
+          Math.round(look.glassBurst * k * (glass ? 1 : GLASS_MASONRY)),
           2600,
           0.4,
           GLASS_RGB,
@@ -698,7 +747,7 @@ export class CollapseDetail {
           UP,
           5,
           1.2,
-          Math.round(6 * k),
+          Math.round(6 * k * look.floorFire),
           1200,
           2.4,
           FIRE_RGB,

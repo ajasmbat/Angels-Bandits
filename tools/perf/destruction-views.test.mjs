@@ -14,10 +14,13 @@ import { VIEWS } from "./gallery-views.mjs";
 import { SEGMENTS } from "./segments.mjs";
 import {
   CITY,
+  EYE_TRAIN_M,
   collapseSamples,
+  eyeClearOfDebris,
   felledCollapse,
   framed,
   inOpen,
+  nearestTrain,
   xyz,
 } from "./view-check.mjs";
 
@@ -40,7 +43,7 @@ function fellSubject(f, ageMs, phase) {
   const s = collapseSamples(c, ageMs, falling, 96);
   if (falling) expect(s.moving, "pieces still moving").toBeGreaterThan(0);
   else expect(ageMs, "the fell has settled").toBeGreaterThanOrEqual(c.endMs);
-  return { points: inOpen(s.points, [f.b]), skip: [f.b] };
+  return { points: inOpen(s.points, [f.b]), skip: [f.b], c };
 }
 
 /** The building whose footprint (+ 2 m) holds plan point `p`. */
@@ -69,10 +72,27 @@ describe("D11 staged destruction views frame their subject", () => {
   for (const v of fellViews) {
     it(`${v.name}: the ${v.phase} fell is in frame and in sight`, () => {
       const f = v.stage.fell[0];
-      const { points, skip } = fellSubject(f, -f.t, v.phase);
+      const { points, skip, c } = fellSubject(f, -f.t, v.phase);
+      // D11: never inside (or brushing) the debris it frames.
+      expect(eyeClearOfDebris(c, -f.t, xyz(v.eye)), `${v.name} eye clear`).toBe(
+        true,
+      );
       const r = framed(xyz(v.eye), xyz(v.at), points, skip, v.fov);
       expect(r.inFrame, `${v.name} framed`).toBeGreaterThanOrEqual(MIN_FRAMED);
       expect(r.seen, `${v.name} seen`).toBeGreaterThanOrEqual(MIN_SEEN);
+    });
+  }
+
+  // D11: a pinned destruction view's eye keeps clear of the elevated
+  // trains at its instant — one passing a few metres over a street-level
+  // eye drew its underside as a black mass over destruction-glass's sky.
+  for (const v of VIEWS.filter(
+    (v) => v.eye && v.timeMs !== undefined && (v.stage || v.chew),
+  )) {
+    it(`${v.name}: no elevated train passes over the eye`, () => {
+      expect(nearestTrain(xyz(v.eye), v.timeMs)).toBeGreaterThanOrEqual(
+        EYE_TRAIN_M,
+      );
     });
   }
 

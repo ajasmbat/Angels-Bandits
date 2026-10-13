@@ -11,10 +11,12 @@ import {
   TOPPLE,
   blankPose,
   collapseWire,
+  collideCollapses,
   demolitionPlan,
   piecePose,
 } from "../../common/src/city/collapse.ts";
 import { generateCity, makeBuilding } from "../../common/src/city/index.ts";
+import { generateTrains, trainBoxes } from "../../common/src/city/train.ts";
 import {
   buildCityIndex,
   collideCity,
@@ -130,6 +132,42 @@ export function inOpen(points, skip = []) {
     const hit = collideCity(p, 0.5, CITY, INDEX);
     return hit === null || skip.some((i) => CITY[i] === hit);
   });
+}
+
+/** Clearance an eye keeps from debris and trains, m. */
+export const EYE_CLEAR_M = 6;
+export const EYE_TRAIN_M = 30;
+
+/** Is `eye` clear of collapse `c`'s pieces at `ageMs` (and at rest)? */
+export function eyeClearOfDebris(c, ageMs, eye) {
+  return (
+    collideCollapses(eye, EYE_CLEAR_M, [c], ageMs) === null &&
+    collideCollapses(eye, EYE_CLEAR_M, [c], Number.POSITIVE_INFINITY) === null
+  );
+}
+
+const TRAINS = generateTrains(CITY_SEED, CITY);
+
+/** The nearest elevated-train car to `eye` over [tMs − spanMs, tMs +
+ * spanMs] (a gallery's settle loop drifts a pinned clock a little), m. */
+export function nearestTrain(eye, tMs, spanMs = 3000) {
+  let best = Number.POSITIVE_INFINITY;
+  for (let t = tMs - spanMs; t <= tMs + spanMs; t += 250) {
+    for (const line of TRAINS) {
+      for (const b of trainBoxes(line, t)) {
+        // Plan distance to the car's bounding circle (its yaw ignored:
+        // conservative), and the height gap to its box.
+        const plan = Math.max(
+          0,
+          Math.hypot(wrapDeltaAxis(b.x, eye.x), wrapDeltaAxis(b.z, eye.z)) -
+            Math.hypot(b.hx, b.hz),
+        );
+        const dy = Math.max(0, Math.abs(eye.y - b.y) - b.hy);
+        best = Math.min(best, Math.hypot(plan, dy));
+      }
+    }
+  }
+  return best;
 }
 
 /** A view's [x, y, z] as a point. */

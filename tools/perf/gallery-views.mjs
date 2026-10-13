@@ -1069,13 +1069,15 @@ export const VIEWS = [
   // (`glass`), from the glass-canyon street.
   {
     name: "destruction-glass",
+    fov: 70,
+    timeMs: D11_MS,
     x: 600,
-    z: 125,
+    z: 345,
     y: 40,
     yaw: 0,
     raf: true,
-    eye: [604, 12, 189],
-    at: [622, 30, 237],
+    eye: [606, 16, 300],
+    at: [621, 30, 240],
     weather: "clear",
     chew: {
       eye: [605, 22, 221],
@@ -1144,7 +1146,7 @@ export const VIEWS = [
     y: 22,
     yaw: 0,
     raf: true,
-    eye: [1360, 30, 1040],
+    eye: [1340, 24, 1166],
     at: [1400, -12, 1100],
     weather: "clear",
     stage: {

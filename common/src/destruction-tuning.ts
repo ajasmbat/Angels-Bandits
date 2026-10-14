@@ -203,6 +203,9 @@ export interface DestructionTuning {
   floorFire: number;
   /** A crush-front burst's chance of fire (FIRE_CHANCE). */
   fireChance: number;
+  /** Dying lights: the share of a broken floor's lit rooms whose lights
+   * are failing — half of them dead, half stuttering (0: all steady). */
+  roomFlicker: number;
   /** …and of a blue-white electrical flash (FLASH_CHANCE). */
   flashChance: number;
 
@@ -282,6 +285,7 @@ export const DEFAULT_DESTRUCTION_TUNING: Readonly<DestructionTuning> =
     sparkAmount: 1,
     floorFire: 1,
     fireChance: LOOK_DEFAULTS.fireChance,
+    roomFlicker: 0,
     flashChance: LOOK_DEFAULTS.flashChance,
 
     chainBlastDamage: CHAIN_BLAST_DAMAGE,
@@ -443,6 +447,7 @@ export const DESTRUCTION_SPEC: readonly DestructionSpec[] = [
   num("sparkAmount", "Fire & Sparks", "look", "Steel sparks", "Sparks off the steel and the crush front.", 0, 3, 0.05, "×"),
   num("floorFire", "Fire & Sparks", "look", "Floor fire", "Embers and flame bursting out of each failing floor.", 0, 3, 0.05, "×"),
   num("fireChance", "Fire & Sparks", "look", "Fire on impact", "Chance a crush-front burst catches fire.", 0, 1, 0.01),
+  num("roomFlicker", "Fire & Sparks", "look", "Dying lights", "Share of the lit rooms on a broken floor whose lights stutter or have died (0 = all steady).", 0, 1, 0.01),
   num("flashChance", "Fire & Sparks", "look", "Electrical flashes", "Chance a burst flashes blue-white (severed cables).", 0, 1, 0.01),
   // Chain reactions
   num("chainBlastDamage", "Chain reactions", "server", "Impact damage", "How much falling debris smashes the buildings it hits.", 0, 600, 5),
@@ -515,6 +520,7 @@ export const DESTRUCTION_PRESETS: readonly DestructionPreset[] = [
       floorFire: 1.8,
       fireChance: 0.8,
       flashChance: 0.3,
+      roomFlicker: 0.6,
       chainBlastDamage: 300,
       chainEnergyMax: 2,
       collapsesNear: 4,
@@ -542,6 +548,7 @@ export const DESTRUCTION_PRESETS: readonly DestructionPreset[] = [
       dustRise: 1.15,
       fireChance: 0.35,
       flashChance: 0.2,
+      roomFlicker: 0.45,
       glassBurst: 44,
       sparkAmount: 1.3,
     },

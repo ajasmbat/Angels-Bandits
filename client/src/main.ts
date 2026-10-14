@@ -5249,6 +5249,7 @@ if (destructLab) {
 /** DL1: the lab camera's ground shake, written in place. */
 const labJolt = { x: 0, y: 0, z: 0 };
 const labEye = { x: 0, y: 0, z: 0 };
+const labView = { eye: labEye as Vec3, at: labEye as Vec3 };
 
 /** FL1: a lab respawn — a fresh plane at `pos` along (yaw, pitch), no
  * death, no kill-cam, nothing sent but the next pose (the lab room resyncs
@@ -5367,7 +5368,8 @@ const frame = (rafNow: number): void => {
       labEye.y += jolt.y;
       labEye.z += jolt.z;
     }
-    qaView = { eye: labEye, at: v.at };
+    labView.at = v.at;
+    qaView = labView;
   }
   setStandingClock(renderMs); // D8
   planeLights.begin(); // own + remote lights re-append every frame

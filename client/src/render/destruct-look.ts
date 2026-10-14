@@ -10,6 +10,7 @@ import {
   DEFAULT_DESTRUCTION_TUNING,
   type DestructionTuning,
 } from "@angels-bandits/common/destruction-tuning";
+import { ROOM_FLICKER_UNIFORM } from "./broken-shading";
 
 /** The live look. Read it; write it only through setDestructLook. */
 export const destructLook: DestructionTuning = {
@@ -24,5 +25,6 @@ export let destructLookVersion = 0;
  * renderers only read the LOOK ones). */
 export function setDestructLook(t: Readonly<DestructionTuning>): void {
   Object.assign(destructLook, t);
+  ROOM_FLICKER_UNIFORM.value = t.roomFlicker;
   destructLookVersion++;
 }

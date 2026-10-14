@@ -235,17 +235,20 @@ export class DestructLab {
         onScrub: (u) => this.scrubTo(u),
         onStep: (n) => this.clock.step(n, this.liveMs),
         onLive: () => this.clock.goLive(),
-        onTimelapse: () => this.startTimelapse(),
+        onTimelapse: () => this.timelapse(),
       },
       this.arenas,
     );
     setDestructLook(this.tuning);
+    document.body.classList.add("dlab");
     this.pickArena(0);
     this.bindInput();
   }
 
   /** The live render clock main.ts last handed in. */
   private liveMs: number | null = null;
+  /** When the last trigger went (live server ms). */
+  private firedAt = Number.NEGATIVE_INFINITY;
 
   /** QA (window.__ab.destructLab): what the lab is doing. */
   debug(): {
@@ -260,8 +263,11 @@ export class DestructLab {
     collapses: number;
     stats: LabStatsMsg | null;
     lapse: boolean;
+    /** The collapse the timeline replays: its event time and length. */
+    focus: { t0: number; endMs: number; pieces: number } | null;
     tuning: DestructionTuning;
   } {
+    const f = this.focusCollapse();
     return {
       arena: this.dropIn ? null : (this.arenas[this.arena]?.name ?? null),
       dropIn: this.dropIn,
@@ -274,6 +280,7 @@ export class DestructLab {
       collapses: this.deps.field.list.length,
       stats: this.stats,
       lapse: this.lapse !== null,
+      focus: f ? { t0: f.t0, endMs: f.endMs, pieces: f.n } : null,
       tuning: { ...this.tuning },
     };
   }
@@ -314,8 +321,9 @@ export class DestructLab {
     if (need.dir) t.d = opts.dir;
     if (need.corner) t.c = opts.corner;
     if (need.floor) t.f = opts.floor;
-    // Watching starts again from now.
+    // Watching starts again from now (and the timeline follows this one).
     this.clock.goLive();
+    this.firedAt = this.liveMs ?? Number.NEGATIVE_INFINITY;
     this.deps.sendLab({ trigger: t });
   }
 
@@ -348,15 +356,53 @@ export class DestructLab {
     if (!a) return;
     this.arena = i;
     this.setDropIn(false);
-    const top = this.deps.buildings[a.towers[0] as number] as Building;
     this.setTarget(a.towers[0] as number);
-    this.setCamera(
-      { x: a.centre.x, y: top.height * 0.35, z: a.centre.z },
-      this.yaw,
-      0.32,
-      Math.max(160, a.reach * 1.6 + top.height * 0.9),
-    );
+    this.frameTower(a.towers[0] as number, a.reach);
     this.panel.setArena(i);
+  }
+
+  /** Bring the camera round to tower `b`: back far enough for the whole
+   * tower (and `extra` m of where it can fall), from the direction and
+   * elevation — of a ring of 16 and five — that sees the most of its height
+   * past every other building (five sight lines up its near face; the
+   * lowest elevation wins a tie). */
+  frameTower(b: number, extra = 0): void {
+    const t = this.deps.buildings[b];
+    if (!t) return;
+    const dist = Math.min(
+      DIST_MAX,
+      Math.max(140, 0.95 * t.height + 0.3 * extra + 110),
+    );
+    const focusY = t.height * 0.45;
+    let best = { yaw: this.yaw, pitch: 0.6, seen: -1 };
+    const dir = { x: 0, y: 0, z: 0 };
+    for (const pitch of [0.18, 0.3, 0.45, 0.62, 0.8]) {
+      const cp = Math.cos(pitch);
+      for (let k = 0; k < 16; k++) {
+        const yaw = this.yaw + (k * Math.PI) / 8;
+        const eye = canonicalize({
+          x: t.x + dist * cp * Math.sin(yaw),
+          y: focusY + dist * Math.sin(pitch),
+          z: t.z + dist * cp * Math.cos(yaw),
+        });
+        let seen = 0;
+        for (const share of [0.15, 0.35, 0.55, 0.75, 0.95]) {
+          const dx = wrapDeltaAxis(eye.x, t.x);
+          const dy = t.height * share - eye.y;
+          const dz = wrapDeltaAxis(eye.z, t.z);
+          const len = Math.hypot(dx, dy, dz);
+          dir.x = dx / len;
+          dir.y = dy / len;
+          dir.z = dz / len;
+          const hit = raycastChunk(this.deps.buildings, eye, dir, len);
+          if (!hit || hit.building === b) seen++;
+        }
+        if (seen > best.seen) best = { yaw, pitch, seen };
+        if (seen === 5) break;
+      }
+      if (best.seen === 5) break;
+    }
+    this.setCamera({ x: t.x, y: focusY, z: t.z }, best.yaw, best.pitch, dist);
   }
 
   private setDropIn(on: boolean): void {
@@ -509,10 +555,18 @@ export class DestructLab {
     }
   }
 
-  /** The collapse the timeline replays: the latest. */
+  /** The collapse the timeline replays: the biggest one since the last
+   * trigger (a tower's own fall, not the chain's aftershocks); else the
+   * latest. */
   private focusCollapse(): Collapse | null {
     const list = this.deps.field.list;
-    return (list[list.length - 1] as Collapse | undefined) ?? null;
+    let best: Collapse | null = null;
+    for (let k = 0; k < list.length; k++) {
+      const c = list[k] as Collapse;
+      if (c.t0 < this.firedAt - 2000) continue;
+      if (!best || c.n > best.n) best = c;
+    }
+    return best ?? (list[list.length - 1] as Collapse | undefined) ?? null;
   }
 
   /** Its replay span, server ms: from just before the event to its dust's
@@ -528,7 +582,9 @@ export class DestructLab {
     this.clock.scrub(a + (b - a) * u, this.liveMs);
   }
 
-  private startTimelapse(): void {
+  /** Capture the latest collapse at LAPSE_TIMES_MS into one labelled
+   * sheet (downloaded, and kept in `lastSheet`). */
+  timelapse(): void {
     const c = this.focusCollapse();
     if (!c || this.lapse) return;
     const times = [...LAPSE_TIMES_MS];
@@ -701,13 +757,8 @@ export class DestructLab {
       z: from.z + dir.z * hit.t,
     });
     this.setTarget(hit.building, p);
-    if (this.dropIn) {
-      // In the city, the camera comes round to the picked tower.
-      const b = this.deps.buildings[hit.building] as Building;
-      this.focus.x = b.x;
-      this.focus.z = b.z;
-      this.focus.y = b.height * 0.35;
-    }
+    // In the city, the camera comes round to the picked tower.
+    if (this.dropIn) this.frameTower(hit.building);
   }
 }
 

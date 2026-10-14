@@ -1433,7 +1433,10 @@ function fracture(
     }
   }
   // Storey slabs, bottom-up.
-  const k = Math.max(1, Math.round(h / T.slabStorey));
+  // DL1: × (1 + slabGrowth · height / 300 m) — exactly the slab height
+  // while slabGrowth is 0 (the default).
+  const slab = T.slabStorey * (1 + T.slabGrowth * (b.height / 300));
+  const k = Math.max(1, Math.round(h / slab));
   const mid = Math.floor(k / 2);
   for (let j = 0; j < k; j++) {
     const y0 = r.y0 + (h * j) / k;

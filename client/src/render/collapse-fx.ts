@@ -401,7 +401,8 @@ export class CollapseDetail {
       speed,
       spread,
       count,
-      lifeMs,
+      // DL1: what settles lies the look's persistence (× exactly 1 off it).
+      settle ? lifeMs * destructLook.debrisLife : lifeMs,
       size * this.scale.size,
       rgb,
       now,

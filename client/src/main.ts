@@ -5905,15 +5905,16 @@ const frame = (rafNow: number): void => {
     animatePlane(plane, ownControls, flight.speed, qaPlaneHp ?? selfHp, dt);
     // Own aviation lights + wingtip trails (strobe on the synced clock so
     // every client sees this plane blink at the same instant).
-    planeLights.place(
-      socket.selfId,
-      planePos,
-      poseQuat,
-      flight.speed,
-      renderMs ?? now,
-      boost.active ? 1 : 0, // own flame follows the real burn, not speed
-    );
+    // DL1: the Destruction Lab's parked plane shows no lights or trails.
     if (!destructLab) {
+      planeLights.place(
+        socket.selfId,
+        planePos,
+        poseQuat,
+        flight.speed,
+        renderMs ?? now,
+        boost.active ? 1 : 0, // own flame follows the real burn, not speed
+      );
       planeTrails.emit(socket.selfId, flight.pos, poseQuat, now, dt);
     }
     // DL1: no plane in the Destruction Lab's shot.
@@ -6627,7 +6628,7 @@ const frame = (rafNow: number): void => {
       now - courseRunner.startMs,
     );
   } else {
-    const near = alive && !lab ? startRingNear() : null;
+    const near = alive && !lab && !destructLab ? startRingNear() : null;
     raceHud.hint(near, near ? courseBoard.recordOf(near.id) : null);
   }
   raceHud.update(now);

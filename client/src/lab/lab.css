@@ -390,3 +390,23 @@ body.touch .dlab-telemetry .lab-tm-build,
 body.touch .dlab-telemetry .lab-tm-draws {
   display: none;
 }
+/* In the Destruction Lab the plane is parked out of shot: its HUD, the
+   course prompts, the tips and the touch controls stand down (the lab's
+   camera takes the pointer and touches). */
+body.dlab #crosshair,
+body.dlab #lead,
+body.dlab #minimap,
+body.dlab #hud,
+body.dlab #gauges,
+body.dlab #freelook-hint,
+body.dlab #aim-mode-toast,
+body.dlab #g-meter,
+body.dlab #coach-hint,
+body.dlab #touch-coach,
+body.dlab #killfeed,
+body.dlab #comms,
+body.dlab #race,
+body.dlab #boss-bar,
+body.dlab #touch-ui {
+  display: none !important;
+}

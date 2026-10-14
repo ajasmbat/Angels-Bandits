@@ -137,6 +137,10 @@ export interface DestructionTuning {
   /** Storey slab height a chunk breaks into, m (COLLAPSE_SLAB_STOREY):
    * smaller = more, smaller fragments. */
   slabStorey: number;
+  /** Taller towers break into bigger slabs: the slab height × (1 + this ×
+   * height / 300 m) — the fragment size distribution by building size
+   * (0: every tower alike, today). */
+  slabGrowth: number;
   /** Share of outline chunks that peel a facade sheet
    * (COLLAPSE_SHEET_SHARE). */
   sheetShare: number;
@@ -163,6 +167,10 @@ export interface DestructionTuning {
   /** Pancake: a falling column's largest tilt, rad
    * (COLLAPSE_PANCAKE_TILT). */
   pancakeTilt: number;
+  /** × how long the settled gravel and chunks lie in the street before
+   * they fade (the dressing's persistence; the rubble boxes stay until the
+   * rebuild). */
+  debrisLife: number;
 
   // --- Dust & Smoke (look) ---
   /** Share of each cloud's puffs drawn (× the quality tier's). */
@@ -245,6 +253,7 @@ export const DEFAULT_DESTRUCTION_TUNING: Readonly<DestructionTuning> =
     symmetry: COLLAPSE_SYMMETRY,
 
     slabStorey: COLLAPSE_SLAB_STOREY,
+    slabGrowth: 0,
     sheetShare: COLLAPSE_SHEET_SHARE,
     sheetBreak: COLLAPSE_SHEET_BREAK,
     sheetDrift: COLLAPSE_SHEET_DRIFT,
@@ -256,6 +265,7 @@ export const DEFAULT_DESTRUCTION_TUNING: Readonly<DestructionTuning> =
     slumpRise: COLLAPSE_SLUMP_RISE,
     squashMs: COLLAPSE_SQUASH_MS,
     pancakeTilt: COLLAPSE_PANCAKE_TILT,
+    debrisLife: 1,
 
     dustDensity: 1,
     dustOpacity: LOOK_DEFAULTS.dustOpacity,
@@ -404,6 +414,7 @@ export const DESTRUCTION_SPEC: readonly DestructionSpec[] = [
   num("symmetry", "Structure", "server", "Pancake vs topple", "How off-centre the surviving supports may be before the tower topples instead of pancaking.", 0, 0.5, 0.01, "×"),
   // Debris
   num("slabStorey", "Debris", "build", "Slab size", "Each chunk breaks into storey slabs this tall — smaller means more, smaller fragments.", 2, 12, 0.5, "m"),
+  num("slabGrowth", "Debris", "build", "Bigger slabs on tall towers", "Taller towers break into bigger slabs (0 = every tower alike).", 0, 1.5, 0.05, "×"),
   num("sheetShare", "Debris", "build", "Facade peel", "Chance an outside chunk sheds a facade sheet that peels off into the street.", 0, 1, 0.01),
   deg("sheetBreak", "Debris", "build", "Facade tear-off angle", "How far a facade sheet leans out before it tears off.", 5, 70, 1),
   num("sheetDrift", "Debris", "build", "Facade throw", "How far a torn-off facade sheet carries into the street.", 0, 1, 0.01, "×"),
@@ -415,6 +426,7 @@ export const DESTRUCTION_SPEC: readonly DestructionSpec[] = [
   num("slumpRise", "Debris", "build", "Rubble edge rise", "How far a slumped slab's edge lifts off the pile.", 0, 4, 0.1, "m"),
   num("squashMs", "Debris", "build", "Settle time", "How long a landed piece takes to squash into rubble.", 100, 1500, 25, "ms"),
   deg("pancakeTilt", "Debris", "build", "Falling tilt", "How far pieces tip as a pancake's column drops.", 0, 40, 0.5),
+  num("debrisLife", "Debris", "look", "Fragment persistence", "How long the gravel and chunks lie in the street before they fade.", 0.2, 4, 0.05, "×"),
   // Dust & Smoke
   num("dustDensity", "Dust & Smoke", "look", "Dust density", "Share of each cloud's puffs drawn (on top of the quality tier).", 0.1, 1, 0.05, "×"),
   num("dustOpacity", "Dust & Smoke", "look", "Dust opacity", "How thick each puff of dust looks.", 0.1, 1, 0.01),
@@ -495,6 +507,7 @@ export const DESTRUCTION_PRESETS: readonly DestructionPreset[] = [
       dustSize: 1.2,
       dustLife: 1.25,
       dustCoverageMax: 0.75,
+      debrisLife: 1.5,
       trailRate: 70,
       gravelBurst: 40,
       glassBurst: 56,
@@ -515,6 +528,8 @@ export const DESTRUCTION_PRESETS: readonly DestructionPreset[] = [
     values: {
       crushG: 0.82,
       creepMs: 1200,
+      slabGrowth: 0.35,
+      debrisLife: 1.8,
       toppleDrift: 0.35,
       slabStorey: 3.5,
       sheetShare: 0.45,

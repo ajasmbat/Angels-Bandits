@@ -31,7 +31,8 @@ const DEVICE = opt("device", "desktop");
 const PRESET = opt("preset", "");
 /** A case: the trigger, the arena it runs in, its options. */
 const CASES = {
-  topple: { k: "topple", arena: 2, dir: 1 },
+  topple: { k: "topple", arena: 1, dir: 1 },
+  supertall: { k: "topple", arena: 2, dir: 1 },
   pancake: { k: "pancake", arena: 0 },
   shear: { k: "shear", arena: 1, corner: 3 },
   charge: { k: "charge", arena: 0, floor: 2 },

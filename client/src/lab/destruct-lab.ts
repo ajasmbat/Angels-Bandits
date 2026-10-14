@@ -362,10 +362,11 @@ export class DestructLab {
   }
 
   /** Bring the camera round to tower `b`: back far enough for the whole
-   * tower (and `extra` m of where it can fall), from the direction and
-   * elevation — of a ring of 16 and five — that sees the most of its height
-   * past every other building (five sight lines up its near face; the
-   * lowest elevation wins a tie). */
+   * tower (and `extra` m of where it can fall), from the lowest elevation
+   * — of five, each round a ring of 16 directions — that sees at least four
+   * of five points up its near face past every other building (a side
+   * view reads a fall; its foot is often behind something); failing that,
+   * the one that sees the most. */
   frameTower(b: number, extra = 0): void {
     const t = this.deps.buildings[b];
     if (!t) return;
@@ -398,9 +399,9 @@ export class DestructLab {
           if (!hit || hit.building === b) seen++;
         }
         if (seen > best.seen) best = { yaw, pitch, seen };
-        if (seen === 5) break;
+        if (seen >= 4) break;
       }
-      if (best.seen === 5) break;
+      if (best.seen >= 4) break;
     }
     this.setCamera({ x: t.x, y: focusY, z: t.z }, best.yaw, best.pitch, dist);
   }

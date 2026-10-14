@@ -104,6 +104,23 @@ The live lab shows the rest. A 319 m topple into the dense core sets off
 about 20–25 chained collapses, and their builds push the lab's server p99
 to ≈ 7 ms while they land. The telemetry flags it.
 
+**Normal play, A/B against main**
+(`run.mjs --runs 3 --segments collapse,ruins,chaos --ab-ref origin/main`,
+SwiftShader, with the evidence runs sharing the box). JS p50, ref → DL1:
+
+| segment | JS p50 |
+| --- | --- |
+| collapse | 18.0 → 13.1 ms |
+| ruins | 54.3 → 24.7 ms |
+| chaos | 20.1 → 15.0 ms |
+
+Draw calls: `collapse` is unchanged at 110. `ruins` moved between passes, so
+it can't be compared. The harness exited 1. Its own pinning checks failed in
+both arms under this load, as D11 found: the fake-pilot rooms never emptied,
+the staged chaos did not hold, and the determinism check failed. Its GPU and
+wall numbers say nothing about a GPU here, and "within budget" (60 fps)
+can't be judged on a software rasteriser. **Measure it on the M3.**
+
 **Solid pieces are identical on every tier.** Only the dressing scales: the
 tier's dust and particle shares, plus the Performance preset's look fields.
 A test holds the phone preset to look-only fields.
@@ -143,5 +160,6 @@ Two things to know when reading the sheets:
   size-by-height. These are still to come: partial walls standing in the
   rubble, twisted (rather than leaning) steel, and debris that turns into
   particles past ~200 m and impostors further out.
-- **60 fps on the phone profile** with the Performance preset is not
-  measured. There is no GPU here.
+- **60 fps on the phone profile** with the Performance preset, and normal
+  play inside its frame budgets, are not measured. There is no GPU here (see
+  the A/B above).

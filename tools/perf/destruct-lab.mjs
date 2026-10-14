@@ -41,6 +41,9 @@ const CASES = {
   bomb: { k: "bomb", arena: 1 },
   missile: { k: "missile", arena: 1 },
   shoot: { k: "shoot", arena: 1 },
+  // Drop into the city: the tallest tower the camera can see whole from a
+  // low side view, toppled across the line of sight (a clean side-on fall).
+  showcase: { k: "topple", arena: -1 },
 };
 const ONLY = opt("cases", "topple,pancake,shear,chain").split(",");
 const PROFILES = {
@@ -124,6 +127,26 @@ try {
     await until(page, () => window.__ab.destructLab().debug().collapses === 0);
     await page.evaluate((a) => {
       const l = window.__ab.destructLab();
+      if (a.arena < 0) {
+        // The showcase: down the towers by height, the first framed from
+        // the lowest elevation (a side view, nothing in front of it).
+        const order = l.deps.buildings
+          .map((b, i) => [b.height, i])
+          .filter(([h]) => h > 120 && h < 300)
+          .sort((p, q) => q[0] - p[0]);
+        l.dropIntoCity(true);
+        for (const [, i] of order) {
+          l.frameTower(i);
+          if (l.pitch <= 0.2) {
+            l.setTarget(i);
+            break;
+          }
+        }
+        // Fall across the view: the camera looks along (−sin yaw, −cos yaw).
+        const alongX = Math.abs(Math.sin(l.yaw)) > Math.abs(Math.cos(l.yaw));
+        l.panel.options.dir = alongX ? 3 : 1;
+        return;
+      }
       l.pickArena(a.arena);
       if (a.dir !== undefined) l.panel.options.dir = a.dir;
       if (a.corner !== undefined) l.panel.options.corner = a.corner;

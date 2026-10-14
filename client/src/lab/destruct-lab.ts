@@ -228,7 +228,7 @@ export class DestructLab {
         onChange: () => this.tuningChanged(),
         onArena: (i) => this.pickArena(i),
         onResetArena: () => this.resetArena(),
-        onDropIntoCity: (on) => this.setDropIn(on),
+        onDropIntoCity: (on) => this.dropIntoCity(on),
         onTrigger: (k) => this.fire(k),
         onPause: () => this.clock.togglePause(),
         onSpeed: (v) => this.clock.setSpeed(v),
@@ -355,7 +355,7 @@ export class DestructLab {
     const a = this.arenas[i];
     if (!a) return;
     this.arena = i;
-    this.setDropIn(false);
+    this.dropIntoCity(false);
     this.setTarget(a.towers[0] as number);
     this.frameTower(a.towers[0] as number, a.reach);
     this.panel.setArena(i);
@@ -406,7 +406,8 @@ export class DestructLab {
     this.setCamera({ x: t.x, y: focusY, z: t.z }, best.yaw, best.pitch, dist);
   }
 
-  private setDropIn(on: boolean): void {
+  /** "Drop into city": any tower anywhere is a target (off: the arena's). */
+  dropIntoCity(on: boolean): void {
     this.dropIn = on;
     this.panel.setDropIntoCity(on);
     this.panel.setArena(on ? -1 : this.arena);

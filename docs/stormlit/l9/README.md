@@ -60,7 +60,7 @@ Hue distance is the L1 distance between the two 12-bin hue histograms (each pixe
 | `boss-closeup` | ref 1 | 0.47 → **0.38** | −0.10 → **−0.06** | |
 | `dogfight-calm` | ref 1 | 0.30 → **0.22** | −0.04 → −0.04 | |
 | `street-low` | ref 1 | 0.69 → 0.73 | +0.01 → +0.04 | |
-| `reference-inferno` | ref 2 | 0.74 → **0.23** | −0.02 → +0.01 | 34.7 → 31.9 (ref 2: 24.7) |
+| `reference-inferno` | ref 2 | 0.74 → **0.23** | −0.02 → +0.01 | 34.7 → 31.9 (ref 2: 27.3 on the same HUD mask, 24.7 whole frame) |
 | `inferno-dogfight` | ref 2 | 0.48 → **0.14** | +0.02 → +0.01 | 33.9 → 32.9 |
 | `inferno-gutted` | ref 2 | 0.21 → **0.13** | +0.07 → **+0.02** | 42.0 → 35.0 |
 

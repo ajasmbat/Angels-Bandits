@@ -24,6 +24,31 @@ const TRACER_BOOST = emissiveBoost(
   EMISSIVE_TRACER,
 );
 
+/** L9: the flash's soft round glow, peaking at 1 in the middle (the rung
+ * above) and 0 at the rim. Untextured, a sprite is a flat square: at the
+ * tracer rung, a white block blooming over the bandit dead ahead for as
+ * long as the trigger is held. */
+function flashGlow(): THREE.DataTexture {
+  const n = 32;
+  const data = new Uint8Array(n * n * 4);
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      const r = Math.hypot(x + 0.5 - n / 2, y + 0.5 - n / 2) / (n / 2);
+      const rim = Math.min(1, Math.max(0, (1 - r) / 0.25));
+      const o = (y * n + x) * 4;
+      data[o] = 255;
+      data[o + 1] = 255;
+      data[o + 2] = 255;
+      data[o + 3] = Math.round(255 * Math.exp(-r * r * 4) * rim * rim);
+    }
+  }
+  const tex = new THREE.DataTexture(data, n, n);
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
+
 const up = new THREE.Vector3(0, 1, 0);
 const dir = new THREE.Vector3();
 const scratchImage = { x: 0, y: 0, z: 0 };
@@ -62,6 +87,7 @@ export class Tracers {
     }
     this.flashMaterial = new THREE.SpriteMaterial({
       color: TRACER_COLOR,
+      map: flashGlow(),
       transparent: true,
       blending: THREE.AdditiveBlending,
       depthWrite: false,

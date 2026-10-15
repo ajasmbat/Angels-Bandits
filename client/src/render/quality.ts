@@ -945,7 +945,7 @@ export const FEATURE_TIERS: readonly {
     medium: "reduced",
     low: "reduced",
     mobile: "reduced",
-    note: "flame sites 100 / 75 / 50 / 30 % (chaosFx): at most 220 sites × 3 cards (floors, window rows, rubble fields), picked by view and spread over the burning buildings within 760 m, faded out at the cap — one instanced draw; the air (480 embers and ash round the camera + 1600 embers/ash/debris round the fires, × chaosFx) one points draw, off on Mobile (its peak-chaos scene is at the Mobile draw ceiling)",
+    note: "flame sites 100 / 75 / 50 / 30 % (chaosFx): at most 1200 sites × 10 small tongues (L9: floors, window rows on every storey, rubble fields; each at least 4 px wide, so a far block is a carpet of small fires), picked by view and spread over the burning buildings within 760 m, faded out at the cap — one instanced draw; the air (480 embers and ash round the camera + 1600 embers/ash/debris round the fires, × chaosFx) one points draw, off on Mobile (its peak-chaos scene is at the Mobile draw ceiling)",
   },
   {
     feature: "L7 inferno — smoke columns",
@@ -953,7 +953,7 @@ export const FEATURE_TIERS: readonly {
     medium: "full",
     low: "reduced",
     mobile: "reduced",
-    note: "columns 100 / 100 / 50 / 34 % (smokeColumns) of at most 20 × 16 puffs, each puff grown by 1/√share so the columns hide the same sky on every tier (rule 2 for the fill); Mobile drops the billowing edge (a uniform); one instanced draw",
+    note: "columns 100 / 100 / 50 / 34 % (smokeColumns) of at most 6 × 16 puffs (L9: was 20, too thin under the frame budget; the district firelight and the deck glow still take the 8 nearest burning blocks), each puff grown by 1/√share so the columns hide the same sky on every tier (rule 2 for the fill); Mobile drops the billowing edge (a uniform); one instanced draw",
   },
   {
     feature:

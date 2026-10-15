@@ -1492,6 +1492,33 @@ export const VIEWS = [
     yaw: Math.PI / 2,
     pitch: -0.3,
   },
+  // L9: inferno-dogfight's pose and fight over the same blocks at peace
+  // (burn 0) — the calm half of the readability check; listed before the
+  // staged views, whose burn would still be easing down.
+  {
+    name: "dogfight-calm",
+    x: 1250,
+    z: 1460,
+    y: 190,
+    yaw: 0,
+    pitch: -0.12,
+    timeMs: 1_790_000_000_000,
+    weather: "clear",
+    guns: true,
+    raf: true,
+    showcase: [
+      {
+        kind: "fighter",
+        x: 1250,
+        y: 180,
+        z: 1350,
+        yaw: 0.15,
+        pitch: -0.05,
+        roll: 0.3,
+        speed: 70,
+      },
+    ],
+  },
   // L7 Stormlit: the reference compositions (see referenceView) and the
   // inferno on D8's chewed block (ruin-chewed's pose and stage at burn 0.9 —
   // `__ab.inferno()` is logged for each: sites, draws, floating = 0).

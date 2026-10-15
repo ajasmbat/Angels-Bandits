@@ -379,7 +379,9 @@ export const CITY_GLOW_COLOR = 0xffb26e;
 // fog colour's own luminance, still ~1/18 of the bloom threshold.
 export const CITY_GLOW_PEAK = 0.04;
 const BURN_GLOW_COLOR = 0xff5520;
-const BURN_GLOW_GAIN = 1.4;
+// L9: 0.2 (was 1.4 over a 0.017 peak) — with the clear-night peak at
+// 0.04 the burning city's glow stays where L7b tuned it (≈ 0.04–0.05).
+const BURN_GLOW_GAIN = 0.2;
 
 /** The slice of the shared weather (common/src/weather.ts) the sky reads. */
 export interface SkyWeather {

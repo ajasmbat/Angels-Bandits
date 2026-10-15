@@ -144,8 +144,11 @@ export const LIGHT_RIG = {
 } as const;
 
 /** Tone-mapping exposure — the whole-image lift (ACES filmic). L1 eased it
- * (1.18 → 1.10) for deeper blacks; the grade's lift does the rest. */
-export const EXPOSURE = 1.1;
+ * (1.18 → 1.10) for deeper blacks; the grade's lift does the rest. L9
+ * (reference match): 1.25 — at 1.10 the calm views measured mean luma
+ * 0.13–0.20 against reference 1's 0.27 (tools/perf/palette.mjs); the
+ * deep floor is the grade's, and exposure moves no bloom threshold. */
+export const EXPOSURE = 1.25;
 
 /** Where the linear fog starts, m. VO1 pushed it out from 60 m: with a
  * luminous fog colour, a fog that starts at 60 m flattens the mid-distance

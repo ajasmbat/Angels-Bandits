@@ -360,17 +360,24 @@ export interface SkyAir {
  * glow on top, under fire-cover's 0.45), and the height haze toward smoke —
  * the same on every tier (rule 2), and darken-leaning, so nothing in the
  * air nears the bloom threshold. */
-const BURN_FOG_MIX = 0.42;
-const BURN_FOG_COLOR = 0x6a2a12;
+// L9: 0.42 of 0x6a2a12 over the steel-blue night fog left blue above green
+// in the mix — the burning city's haze read magenta (49 % of the hue mass
+// at 330–360° against reference 2's 3 %); a darker umber with more green
+// in it reads ember orange-red at about the same (dark) level.
+const BURN_FOG_MIX = 0.4;
+const BURN_FOG_COLOR = 0x5a3c0e;
 const BURN_HAZE_MIX = 0.55;
 const BURN_HAZE_RGB = [0.14, 0.06, 0.035] as const;
 
 /** L2 city glow (fog.ts CITY_GLOW): the light pollution's colour (sRGB)
- * and its peak linear luminance at the horizon on a clear night — ~0.7×
- * the fog colour's own 0.025, so the horizon glows warm, far under bloom.
+ * and its peak linear luminance at the horizon on a clear night (L9: see
+ * the value), so the horizon glows warm, far under bloom.
  * The burning city pulls it toward ember red and up by BURN_GLOW_GAIN. */
 export const CITY_GLOW_COLOR = 0xffb26e;
-export const CITY_GLOW_PEAK = 0.017;
+// L9: 0.04 (was 0.017) — reference 1's haze glows amber over the whole lit
+// city (palette.mjs: the calm views' hue mass was ~80 % blue); ~1.6× the
+// fog colour's own luminance, still ~1/18 of the bloom threshold.
+export const CITY_GLOW_PEAK = 0.04;
 const BURN_GLOW_COLOR = 0xff5520;
 const BURN_GLOW_GAIN = 1.4;
 

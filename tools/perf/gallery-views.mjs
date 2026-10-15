@@ -247,13 +247,13 @@ const referenceView = (name, extra = {}) => ({
   x: 700,
   z: 1230,
   y: 490,
-  yaw: Math.atan2(-333, 272),
+  yaw: Math.atan2(-356, 240),
   eye: [700, 400, 1230],
   at: [1700, 295, 1080],
   fov: 80,
   timeMs: 1_790_000_000_000,
   weather: "clear",
-  boss: { ahead: Math.hypot(333, 272) },
+  boss: { ahead: Math.hypot(356, 240) },
   showcase: [
     {
       kind: "biplane",

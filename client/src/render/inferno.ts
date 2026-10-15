@@ -104,8 +104,10 @@ export const TONGUE_GROW_MAX = 4;
 /** A tongue's card is this much wider than its flame: the rest is its
  * soft glow (FLAME_FRAGMENT), which runs neighbouring tongues together. */
 const TONGUE_HALO = 1.7;
-/** Smoke columns drawn at once (full share), and puffs per column. */
-export const COLUMNS_MAX = 20;
+/** Smoke columns drawn at once (full share), and puffs per column. L9:
+ * 6 (was 20) — D11's frame budget (SMOKE_COVERAGE_MAX) thinned 20 columns
+ * to near-invisible; reference 2 has a few dense black ones. */
+export const COLUMNS_MAX = 6;
 const PUFFS = 16;
 /** L7b: columns nearer than this are picked as though farther (a plume
  * reads from a distance; up close it is only a dark wall), m. */
@@ -1758,7 +1760,11 @@ export class Inferno {
       this.colW[k] = Math.min(1, sum / 3);
     }
     const want = Math.max(1, Math.round(COLUMNS_MAX * this.smokeShare));
-    const m = Math.min(want + 1, this.colN);
+    // L9: the cloud-deck glow and the district firelight (FIRE_ZONES) take
+    // the CLOUD_GLOW_MAX nearest burning buildings whether or not their
+    // column is drawn — fewer, stronger columns no longer dim the city.
+    const glowWant = Math.max(want, CLOUD_GLOW_MAX);
+    const m = Math.min(glowWant + 1, this.colN);
     for (let i = 0; i < m; i++) {
       let best = i;
       for (let j = i + 1; j < this.colN; j++) {
@@ -1768,9 +1774,13 @@ export class Inferno {
       swap4(this.colB, this.colS, this.colD, this.colW, i, best);
     }
     const n = Math.min(want, this.colN);
+    const ng = Math.min(glowWant, this.colN);
     const edge =
       this.colN > want ? Math.sqrt(this.colD[want] as number) : CUT_M;
     const fadeFrom = edge * 0.75;
+    const gEdge =
+      this.colN > glowWant ? Math.sqrt(this.colD[glowWant] as number) : CUT_M;
+    const gFrom = gEdge * 0.75;
     // Fewer columns on a cheaper tier, each puff grown so the coverage holds.
     const sizeMul = 1 / Math.sqrt(this.smokeShare);
     const a = this.smokeA.array as Float32Array;
@@ -1778,50 +1788,54 @@ export class Inferno {
     let puffs = 0;
     let glow = 0;
     let cov = 0;
-    for (let c = 0; c < n; c++) {
+    for (let c = 0; c < ng; c++) {
       const e = this.sites.get(this.colB[c] as number) as BuildingSites;
       const si = this.colS[c] as number;
       const d = Math.sqrt(this.colD[c] as number);
       const fade = 1 - smooth01((d - fadeFrom) / Math.max(1, edge - fadeFrom));
-      const strength = (this.colW[c] as number) * fade;
-      if (strength <= 0.02) continue;
+      const strength = c < n ? (this.colW[c] as number) * fade : 0;
+      const gFade = 1 - smooth01((d - gFrom) / Math.max(1, gEdge - gFrom));
+      const lit = (this.colW[c] as number) * gFade;
+      if (strength <= 0.02 && lit <= 0.02) continue;
       this.canon.x = e.x[si] as number;
       this.canon.y = e.y[si] as number;
       this.canon.z = e.z[si] as number;
       const img = nearestImageInto(this.img, viewer, this.canon);
-      // L7b: up into the cloud deck (CLOUD_BASE 500 m) at high burn.
-      const height =
-        (260 + 280 * Math.min(1, e.wear * 3)) * (0.55 + 0.45 * burn);
-      const seed = hash01(this.colB[c] as number, 911);
-      for (let p = 0; p < PUFFS; p++) {
-        const o = puffs * 4;
-        a[o] = img.x;
-        a[o + 1] = img.y;
-        a[o + 2] = img.z;
-        a[o + 3] = height;
-        b[o] = p / PUFFS;
-        b[o + 1] = seed;
-        b[o + 2] = strength;
-        b[o + 3] = sizeMul * (0.75 + 0.5 * (this.colW[c] as number));
-        puffs++;
+      if (strength > 0.02) {
+        // L7b: up into the cloud deck (CLOUD_BASE 500 m) at high burn.
+        const height =
+          (260 + 280 * Math.min(1, e.wear * 3)) * (0.55 + 0.45 * burn);
+        const seed = hash01(this.colB[c] as number, 911);
+        for (let p = 0; p < PUFFS; p++) {
+          const o = puffs * 4;
+          a[o] = img.x;
+          a[o + 1] = img.y;
+          a[o + 2] = img.z;
+          a[o + 3] = height;
+          b[o] = p / PUFFS;
+          b[o + 1] = seed;
+          b[o + 2] = strength;
+          b[o + 3] = sizeMul * (0.75 + 0.5 * (this.colW[c] as number));
+          puffs++;
+        }
+        // Coverage: PUFFS puffs ~85 m across, at about the column's distance.
+        const sz = 85 * sizeMul;
+        cov +=
+          (PUFFS * sz * sz * strength) /
+          Math.max(1, d * d + height * height * 0.25);
       }
-      // Coverage: PUFFS puffs ~85 m across, at about the column's distance.
-      const sz = 85 * sizeMul;
-      cov +=
-        (PUFFS * sz * sz * strength) /
-        Math.max(1, d * d + height * height * 0.25);
-      if (glow < CLOUD_GLOW_MAX) {
+      if (glow < CLOUD_GLOW_MAX && lit > 0.02) {
         const o = glow * 4;
         this.cloudGlow[o] = img.x;
         this.cloudGlow[o + 1] = img.z;
-        this.cloudGlow[o + 2] = strength * burn;
+        this.cloudGlow[o + 2] = lit * burn;
         this.cloudGlow[o + 3] = 300 + 160 * (this.colW[c] as number);
         // L7b: the same block's firelight from below (inferno-shading.ts
         // FIRE_ZONE_UNIFORM), a tighter reach than the glow on the deck.
         (FIRE_ZONE_UNIFORM.value[glow] as THREE.Vector4).set(
           img.x,
           img.z,
-          strength * burn,
+          lit * burn,
           170 + 110 * (this.colW[c] as number),
         );
         glow++;

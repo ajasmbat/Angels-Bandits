@@ -13,9 +13,12 @@
 //    and never pops. D8: sites stand only on what stands (they are rebuilt
 //    from the live cells whenever the building's damage version moves), so
 //    the module is STANDING_EXEMPT rather than a StandingLayer.
-//  - FLAMES (1 draw): three layered vertical-billboard cards per drawn site,
-//    a procedural flame on the world clock, blended (never added: a stack
-//    never sums past EMISSIVE_FIRE, under every tracer).
+//  - FLAMES (1 draw): L9 — each drawn site is a cluster of TONGUES small
+//    vertical-billboard flames, scattered over what burns (a window row on
+//    every floor of a facade chunk, a floor wall to wall, a rubble field),
+//    each its own size, heat and flicker, a procedural flame on the world
+//    clock. Soft-additive edges, but bounded: a stack never sums past
+//    EMISSIVE_FIRE, under every tracer.
 //  - SMOKE COLUMNS (1 draw): a black column of puffs over each burning
 //    building's lead site, hundreds of metres up into the cloud deck,
 //    leaning with the shared wind, lit orange from below by its fire.
@@ -79,9 +82,28 @@ import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { RENDER_ORDER } from "./render-order";
 import { nearestImageInto, uploadPrefix } from "./wrapPlacement";
 
-/** Flame sites drawn at once (full share), and cards per site. */
-export const FLAME_SITES_MAX = 220;
-const CARDS = 3;
+/** Flame sites drawn at once (full share), and the small flames (tongues)
+ * each one is drawn as. L9: was 220 sites of 3 cards up to ~30 × 55 m,
+ * grown 2.8× with distance — giant sawtooth sheets over whole blocks; the
+ * small tongues cost a fraction of that fill, so ~3× the sites reach the
+ * burning blocks across the frame, not just the ones under the camera. */
+export const FLAME_SITES_MAX = 1200;
+export const TONGUES = 10;
+/** The nearest drawn sites kept in order (the lights, air and shimmer). */
+const SORTED_HEAD = 48;
+/** A tongue's base width and height per site kind (floor, window, C2,
+ * rubble — KIND_*), m, before the site's weight and per-tongue variation. */
+const TONGUE_W = [4.4, 3.0, 3.0, 3.8] as const;
+const TONGUE_H = [10, 7.6, 7, 5] as const;
+/** Window fires burn out of every floor of their chunk, this tall, m. */
+const FIRE_FLOOR_M = 3.6;
+/** A tongue is never drawn narrower than this many pixels (a sub-pixel card
+ * sparkles); it grows up to TONGUE_GROW_MAX× to hold it, then fades. */
+export const TONGUE_MIN_PX = 4;
+export const TONGUE_GROW_MAX = 4;
+/** A tongue's card is this much wider than its flame: the rest is its
+ * soft glow (FLAME_FRAGMENT), which runs neighbouring tongues together. */
+const TONGUE_HALO = 1.7;
 /** Smoke columns drawn at once (full share), and puffs per column. */
 export const COLUMNS_MAX = 20;
 const PUFFS = 16;
@@ -111,6 +133,8 @@ const KIND_WINDOW = 1;
 const KIND_C2 = 2;
 /** L7b: a burning rubble field at the foot of a wrecked building. */
 const KIND_RUBBLE = 3;
+/** FLAME_VERTEX's form per site kind: floor, window row, C2, rubble. */
+const FLAME_FORM = [0, 1, 2, 3] as const;
 /** Rubble-field candidates round a wrecked building's footprint. */
 const RUBBLE_SITES = 8;
 /** A site comes alive over this much of the burn × wear scale. */
@@ -204,6 +228,11 @@ class BuildingSites {
   readonly rank = new Float32Array(SITES_PER_BUILDING);
   /** Flame width, m. */
   readonly size = new Float32Array(SITES_PER_BUILDING);
+  /** L9: what burns — its extent along x and z (a window row's face, a
+   * floor; a rubble field's radius in both), m, and a window fire's floors. */
+  readonly ex = new Float32Array(SITES_PER_BUILDING);
+  readonly ez = new Float32Array(SITES_PER_BUILDING);
+  readonly rows = new Uint8Array(SITES_PER_BUILDING);
   /** Stable key: chunkId × 4 + kind. */
   readonly key = new Float64Array(SITES_PER_BUILDING);
 }
@@ -220,6 +249,9 @@ const scratch = {
   kind: new Uint8Array(SCRATCH_MAX),
   rank: new Float32Array(SCRATCH_MAX),
   size: new Float32Array(SCRATCH_MAX),
+  ex: new Float32Array(SCRATCH_MAX),
+  ez: new Float32Array(SCRATCH_MAX),
+  rows: new Uint8Array(SCRATCH_MAX),
   key: new Float64Array(SCRATCH_MAX),
 };
 const box: LocalBox = { x0: 0, x1: 0, y0: 0, y1: 0, z0: 0, z1: 0 };
@@ -245,6 +277,9 @@ function pushCandidate(
   nx: number,
   nz: number,
   size: number,
+  ex: number,
+  ez: number,
+  rows: number,
 ): void {
   const key = chunk * 4 + kind;
   for (let i = 0; i < scratch.n; i++) if (scratch.key[i] === key) return;
@@ -258,6 +293,9 @@ function pushCandidate(
   scratch.kind[i] = kind;
   scratch.rank[i] = hash01(index, chunk * 4 + kind);
   scratch.size[i] = size;
+  scratch.ex[i] = ex;
+  scratch.ez[i] = ez;
+  scratch.rows[i] = rows;
   scratch.key[i] = key;
 }
 
@@ -321,6 +359,9 @@ export function buildSites(
           0,
           // L7b: the whole floor ablaze, wall to wall.
           Math.min(g.cw, g.cd) * 1.05,
+          box.x1 - box.x0,
+          box.z1 - box.z0,
+          1,
         );
       }
       // WINDOW: a standing facade neighbour on the same floor burns out of
@@ -346,12 +387,17 @@ export function buildSites(
           KIND_WINDOW,
           chunkId(index, k, n),
           wx,
-          box.y0 + g.ch * 0.3,
+          // L9: the chunk's own floor — its tongues burn out of the windows
+          // of every storey in it (FLAME_VERTEX).
+          box.y0,
           wz,
           fx,
           fz,
           // L7b: a row of tongues pouring out of the window band.
           Math.min(9, (fx !== 0 ? g.cd : g.cw) * 0.6),
+          fx !== 0 ? 0 : box.x1 - box.x0,
+          fx !== 0 ? box.z1 - box.z0 : 0,
+          Math.max(1, Math.min(7, Math.floor(g.ch / FIRE_FLOOR_M))),
         );
       }
     }
@@ -381,6 +427,9 @@ export function buildSites(
         0,
         0,
         size,
+        size * 0.6,
+        size * 0.6,
+        1,
       );
     }
   }
@@ -401,6 +450,9 @@ export function buildSites(
     out.kind[i] = scratch.kind[i] as number;
     out.rank[i] = scratch.rank[i] as number;
     out.size[i] = scratch.size[i] as number;
+    out.ex[i] = scratch.ex[i] as number;
+    out.ez[i] = scratch.ez[i] as number;
+    out.rows[i] = scratch.rows[i] as number;
     out.key[i] = scratch.key[i] as number;
   }
   out.n = keep;
@@ -420,6 +472,9 @@ function swapScratch(i: number, j: number): void {
   sw(scratch.kind);
   sw(scratch.rank);
   sw(scratch.size);
+  sw(scratch.ex);
+  sw(scratch.ez);
+  sw(scratch.rows);
   sw(scratch.key);
 }
 
@@ -537,48 +592,90 @@ float abInfNoise(vec2 p, float py) {
 `;
 
 const FLAME_VERTEX = /* glsl */ `
-attribute vec4 aA; // render-space base (xyz), width (w)
-attribute vec4 aB; // height, seed, alpha, layer + 4 × form
+attribute vec4 aA; // render-space site base (xyz), tongue width (w)
+attribute vec4 aB; // tongue height, seed, alpha, form + 8 × floors
+attribute vec4 aC; // what burns: extent along x, along z (m); normal (x, z)
 uniform vec2 uWind;
+uniform vec4 uFirePhase;
+uniform float uPxPerM;
 varying vec2 vUv;
 flat varying float vSeed;
-flat varying float vLayer;
 flat varying float vForm;
+flat varying float vTemp;
 varying float vAlpha;
 #include <fog_pars_vertex>
+// Per-tongue randoms from the site's seed and the tongue's index — both
+// per-instance/per-vertex constants of the card, never interpolated.
+float abTongue(float s, float k, float c) {
+  return fract(sin(s * 91.7 + k * 12.9898 + c * 78.233) * 43758.5453);
+}
 void main() {
-  vec3 base = aA.xyz;
-  float w = aA.w;
-  float h = aB.x;
-  // L7b: the form — 0 a floor ablaze (a back card and a front pair), 1 a
-  // row of tongues out of a window band, 2 a rubble field (both side by
-  // side across the fire).
-  float form = floor(aB.w / 4.0 + 0.01);
-  float layer = aB.w - 4.0 * form;
+  // L9: the card is one of the site's TONGUES small flames (position.z is
+  // its index), scattered over what burns: form 0 a floor wall to wall,
+  // 1 a window row on every floor of the chunk's face, 2 a C2 chunk's
+  // windows, 3 a rubble field round a wrecked building's foot.
+  float k = position.z;
+  float rows = floor(aB.w / 8.0 + 0.01);
+  float form = floor(aB.w - 8.0 * rows + 0.5);
+  float s = aB.y;
+  float h1 = abTongue(s, k, 1.0);
+  float h2 = abTongue(s, k, 2.0);
+  float h3 = abTongue(s, k, 3.0);
+  float h4 = abTongue(s, k, 4.0);
+  // More tongues catch as the site grows; about one in six never does, so
+  // no two fires are the same row of flames.
+  float alive = step(k + 0.5, ${TONGUES.toFixed(1)} * (0.3 + 0.7 * aB.z)) * step(0.16, h4);
+  vec2 n = aC.zw;
+  vec3 off;
+  float wnd = 0.0;
+  if (form < 0.5) {
+    off = vec3((h1 - 0.5) * aC.x, 0.0, (h2 - 0.5) * aC.y) * 0.92;
+  } else if (form < 2.5) {
+    // Spread evenly along the face, jittered, out of one storey's windows
+    // (sill height), just proud of the wall.
+    float t = (k + 0.5 + (h1 - 0.5) * 0.7) / ${TONGUES.toFixed(1)} - 0.5;
+    float storey = floor(h2 * rows * 0.999);
+    off = vec3(t * aC.x, storey * ${FIRE_FLOOR_M.toFixed(1)} + 0.8, t * aC.y)
+      + vec3(n.x, 0.0, n.y) * (0.3 + 0.5 * h3);
+    wnd = 1.0;
+  } else {
+    float r = sqrt(h1) * aC.x;
+    float an = 6.2832 * h2;
+    off = vec3(cos(an) * r, 0.0, sin(an) * r);
+  }
+  vec3 base = aA.xyz + off;
+  float w = aA.w * (0.6 + 0.8 * h3);
+  float h = aB.x * (0.55 + 0.9 * h1 * h4 + 0.25 * h2);
+  // Each tongue flickers on its own: 1–3 whole cycles per phase period,
+  // so the phase's wrap never jumps.
+  float cyc = 1.0 + floor(h4 * 2.999);
+  h *= 0.8 + 0.2 * sin(6.2832 * (uFirePhase.x * cyc + h2));
+  // Never narrower than TONGUE_MIN_PX px (a sub-pixel card sparkles):
+  // grown up to TONGUE_GROW_MAX×, faded past that.
+  vec4 mvBase = viewMatrix * vec4(base, 1.0);
+  float px = w * uPxPerM / max(-mvBase.z, 1.0);
+  float grow = clamp(${TONGUE_MIN_PX.toFixed(1)} / max(px, 1e-3), 1.0, ${TONGUE_GROW_MAX.toFixed(1)});
+  float far = clamp(px * ${TONGUE_GROW_MAX.toFixed(1)} / ${TONGUE_MIN_PX.toFixed(1)}, 0.0, 1.0);
+  w *= grow;
+  h *= mix(1.0, grow, 0.6);
   // Cylindrical billboard about +y: flames stand up, whatever the camera.
   vec3 toCam = cameraPosition - base;
   toCam.y = 0.0;
   float len = length(toCam);
   vec3 fwd = len > 1e-3 ? toCam / len : vec3(0.0, 0.0, 1.0);
   vec3 right = vec3(fwd.z, 0.0, -fwd.x);
-  // Layer 0 is the tall back card; 1 and 2 the front pair, either side.
-  float back = step(layer, 0.5);
-  float side = layer < 1.5 ? -1.0 : 1.0;
-  float row = step(0.5, form);
-  vec3 off = -fwd * (back * 0.3 * w * (1.0 - row))
-    + right * ((1.0 - back) * side * mix(0.2, 0.55, row) * w);
-  float hs = mix(0.78, 1.15, back);
-  float ws = mix(0.72, 1.0, back) * mix(1.0, 0.62, row);
-  vec3 p = base + off + right * (position.x * w * ws) + vec3(0.0, position.y * h * hs, 0.0);
-  // The tip leans downwind.
-  p.xz += uWind * (position.y * position.y * h * 0.22);
+  vec3 p = base + right * (position.x * w * ${TONGUE_HALO.toFixed(2)}) + vec3(0.0, position.y * h, 0.0);
+  // The tip leans downwind; a window's tongue curls out of its window.
+  float tip = position.y * position.y * h;
+  p.xz += uWind * (tip * 0.22) + n * (tip * 0.3 * wnd);
   vec4 mvPosition = viewMatrix * vec4(p, 1.0);
   gl_Position = projectionMatrix * mvPosition;
+  vAlpha = aB.z * far * alive;
+  if (vAlpha < 0.004) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
   vUv = position.xy;
-  vSeed = aB.y;
-  vLayer = layer;
+  vSeed = fract(s * 7.31 + k * 0.6180339);
   vForm = form;
-  vAlpha = aB.z;
+  vTemp = h3 * 0.6 + h1 * 0.4;
   #include <fog_vertex>
 }
 `;
@@ -587,35 +684,34 @@ const FLAME_FRAGMENT = /* glsl */ `
 uniform vec4 uFirePhase;
 varying vec2 vUv;
 flat varying float vSeed;
-flat varying float vLayer;
 flat varying float vForm;
+flat varying float vTemp;
 varying float vAlpha;
 #include <fog_pars_fragment>
 ${NOISE_GLSL}
 void main() {
-  float x = vUv.x;
+  // The flame's own frame: the card is TONGUE_HALO× its width.
+  float x = vUv.x * ${TONGUE_HALO.toFixed(2)};
   float y = vUv.y;
-  float sx = vSeed * 37.0 + vLayer * 11.0;
+  float sx = vSeed * 37.0;
   // Three octaves scrolling up the flame (periods 4, 8 and 16 lattice cells
   // along y: the phase scroll wraps seamlessly).
   vec2 q = vec2(x * 2.4 + sx, y * 2.2 - uFirePhase.x * 4.0);
   float n = 0.5 * abInfNoise(q, 4.0)
           + 0.3 * abInfNoise(vec2(q.x * 2.1 + 5.3, q.y * 2.0), 8.0)
           + 0.2 * abInfNoise(vec2(q.x * 4.3 + 1.7, q.y * 4.0), 16.0);
-  // A soft teardrop (L7b: fuller), its outline licked sideways more
-  // toward the tip...
-  // A rubble field (form 2) is a low bank of fire: barely tapering, its
-  // top all tongues.
-  float rubble = step(1.5, vForm);
+  // A full, soft teardrop, its outline licked sideways more toward the
+  // tip; a rubble flame (form 3) is a low lump, barely tapering.
+  float rubble = step(2.5, vForm);
   float xd = x + (n - 0.5) * 0.55 * y;
-  float width = 0.5 * pow(max(1.0 - y, 0.0), mix(0.55, 0.2, rubble));
-  float body = 1.0 - smoothstep(width * 0.2, width, abs(xd));
+  float width = 0.5 * pow(max(1.0 - y, 0.0), mix(0.42, 0.22, rubble));
+  float body = 1.0 - smoothstep(width * 0.25, width, abs(xd));
   // ...torn into tongues by the noise, more the higher it climbs.
-  float erode = smoothstep(0.1 + 0.55 * y, 0.4 + 0.55 * y, n + 0.3 - 0.1 * rubble);
+  float erode = smoothstep(0.06 + 0.5 * y, 0.36 + 0.55 * y, n + 0.34 - 0.1 * rubble);
   float m = body * erode * smoothstep(0.0, 0.06, y);
-  // Hot only low in the flame and where the noise runs hot: the core is
-  // a small yellow-white heart, the body orange-red.
-  float heat = m * (1.0 - 0.9 * y) * (0.5 + 0.65 * n) * mix(1.0, 0.75, step(vLayer, 0.5));
+  // Hot only low in the flame and where the noise runs hot; each tongue a
+  // little hotter or cooler than its neighbours.
+  float heat = m * (1.0 - 0.9 * y) * (0.5 + 0.65 * n) * (0.8 + 0.35 * vTemp);
   // L7b: reference 2's fire — deep red edges, an orange-red body (kept
   // under ~0.9 linear, where the filmic curve leaves it red-orange instead
   // of washing it to yellow), a small yellow-white core; only the core
@@ -624,16 +720,28 @@ void main() {
   col = mix(col, vec3(1.0, 0.42, 0.1), smoothstep(0.5, 0.8, heat));
   col = mix(col, vec3(1.0, 0.82, 0.5), smoothstep(0.8, 1.0, heat));
   col *= ${FIRE_GAIN.toFixed(4)} * mix(0.55, 1.0, smoothstep(0.08, 0.9, heat));
-  // Cool edges are thin, the hot core opaque.
-  float a = smoothstep(0.0, 0.45, m) * (0.45 + 0.55 * smoothstep(0.1, 0.5, heat)) * vAlpha;
-  if (a < 0.004) discard;
-  gl_FragColor = vec4(col, a);
+  float a = smoothstep(0.0, 0.45, m) * (0.45 + 0.55 * smoothstep(0.1, 0.5, heat));
+  // L9: and its glow round it — strongest low, where the fire is — so a
+  // row of tongues reads as one burning window band, not a row of spikes.
+  float gx = max(abs(xd) - width * 0.6, 0.0) * 2.0;
+  float glow = 0.42 * exp(-gx * gx * 9.0) * pow(max(1.0 - y, 0.0), 1.4) * smoothstep(-0.05, 0.12, y) * (1.0 - a);
+  float at = (a + glow) * vAlpha;
+  if (at < 0.004) discard;
+  // L9 soft-additive edges: premultiplied, a tongue's thin edges and its
+  // glow hide only a part of what is behind as they light it, its core all
+  // of it. The light is held at or under EMISSIVE_FIRE × that cover, so the
+  // composite over anything at or under the rung still never passes it.
+  float cover = (a * mix(0.5, 1.0, smoothstep(0.25, 0.7, heat)) + glow * 0.35) * vAlpha;
+  vec3 rgb = (col * a + vec3(1.0, 0.2, 0.03) * ${(FIRE_GAIN * 0.5).toFixed(4)} * glow) * vAlpha;
+  float lum = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
+  rgb *= min(1.0, ${EMISSIVE_FIRE.toFixed(2)} * cover / max(lum, 1e-5));
+  gl_FragColor = vec4(rgb, cover);
   #ifdef USE_FOG
   // L7b: fire shines through the smoke and haze — its fog is the shaped
   // curve squared (still exactly 1 at fogFar; every flame is gone by
   // CUT_M anyway), so a block burning 600 m out still reads as fire.
   float flameFog = abFogFactor(fogNear, fogFar, vFogDepth);
-  gl_FragColor.rgb = mix(gl_FragColor.rgb, fogColor, flameFog * flameFog);
+  gl_FragColor.rgb = mix(gl_FragColor.rgb, fogColor * cover, flameFog * flameFog);
   #endif
 }
 `;
@@ -922,6 +1030,7 @@ export class Inferno {
   private readonly c2Em: Float64Array[] = [];
   private readonly flameA: THREE.InstancedBufferAttribute;
   private readonly flameB: THREE.InstancedBufferAttribute;
+  private readonly flameC: THREE.InstancedBufferAttribute;
   private readonly smokeA: THREE.InstancedBufferAttribute;
   private readonly smokeB: THREE.InstancedBufferAttribute;
   private readonly flameUploads: THREE.BufferAttribute[];
@@ -979,29 +1088,36 @@ export class Inferno {
 
   constructor(private readonly buildings: readonly Building[]) {
     this.chunkTotals = new Int32Array(buildings.length);
-    // Flames: a unit card standing on its base (x in ±0.5, y in 0..1).
-    const card = cardGeometry(0);
+    // Flames: one instance per drawn site, TONGUES unit cards standing on
+    // their bases (x in ±0.5, y in 0..1, z the tongue's index).
+    const card = tongueGeometry(TONGUES);
     const fg = new THREE.InstancedBufferGeometry();
     fg.index = card.index;
     fg.setAttribute("position", card.getAttribute("position"));
-    const flameCap = FLAME_SITES_MAX * CARDS;
-    this.flameA = dynAttr(flameCap, 4);
-    this.flameB = dynAttr(flameCap, 4);
+    this.flameA = dynAttr(FLAME_SITES_MAX, 4);
+    this.flameB = dynAttr(FLAME_SITES_MAX, 4);
+    this.flameC = dynAttr(FLAME_SITES_MAX, 4);
     fg.setAttribute("aA", this.flameA);
     fg.setAttribute("aB", this.flameB);
+    fg.setAttribute("aC", this.flameC);
     fg.instanceCount = 0;
-    this.flameUploads = [this.flameA, this.flameB];
+    this.flameUploads = [this.flameA, this.flameB, this.flameC];
     this.flames = new THREE.Mesh(
       fg,
       new THREE.ShaderMaterial({
         uniforms: fogUniforms({
           uWind: this.windU,
           uFirePhase: FIRE_PHASE_UNIFORM,
+          uPxPerM: this.pxPerMU,
         }),
         vertexShader: FLAME_VERTEX,
         fragmentShader: FLAME_FRAGMENT,
         transparent: true,
         depthWrite: false,
+        // L9: premultiplied (FLAME_FRAGMENT's soft-additive edges).
+        blending: THREE.CustomBlending,
+        blendSrc: THREE.OneFactor,
+        blendDst: THREE.OneMinusSrcAlphaFactor,
         side: THREE.DoubleSide,
         // One pass, not three's back-then-front pair for a transparent
         // double-sided material (O3): a camera-facing card has one side
@@ -1381,7 +1497,16 @@ export class Inferno {
   private siteOf(
     c: number,
     out: Vec3,
-  ): { size: number; kind: number; key: number; nx: number; nz: number } {
+  ): {
+    size: number;
+    kind: number;
+    key: number;
+    nx: number;
+    nz: number;
+    ex: number;
+    ez: number;
+    rows: number;
+  } {
     const bi = this.cB[c] as number;
     const si = this.cS[c] as number;
     if (bi >= 0) {
@@ -1394,6 +1519,9 @@ export class Inferno {
       this.siteInfo.key = e.key[si] as number;
       this.siteInfo.nx = e.nx[si] as number;
       this.siteInfo.nz = e.nz[si] as number;
+      this.siteInfo.ex = e.ex[si] as number;
+      this.siteInfo.ez = e.ez[si] as number;
+      this.siteInfo.rows = e.rows[si] as number;
     } else {
       const v = this.c2Em[si] as Float64Array;
       out.x = v[0] as number;
@@ -1405,33 +1533,78 @@ export class Inferno {
       this.siteInfo.key = -1 - (this.c2Ids[si] as number);
       this.siteInfo.nx = v[3] as number;
       this.siteInfo.nz = v[4] as number;
+      // A C2 chunk burns out of a few windows of its face, on one storey.
+      this.siteInfo.ex = v[3] !== 0 ? 0 : 8;
+      this.siteInfo.ez = v[3] !== 0 ? 8 : 0;
+      this.siteInfo.rows = 1;
     }
     return this.siteInfo;
   }
 
-  private readonly siteInfo = { size: 0, kind: 0, key: 0, nx: 0, nz: 0 };
+  private readonly siteInfo = {
+    size: 0,
+    kind: 0,
+    key: 0,
+    nx: 0,
+    nz: 0,
+    ex: 0,
+    ez: 0,
+    rows: 1,
+  };
 
-  /** Partial selection: the `n` nearest candidates to the front. */
+  /**
+   * The `n` nearest candidates (by pick key) to the front, the next nearest
+   * at index `n` (the cap fade's edge), and the SORTED_HEAD nearest of them
+   * in order (feedSlots hands the nearest drawn fires the lights and the
+   * air). L9: a quickselect, O(candidates) — the partial selection sort it
+   * replaces was O(candidates × cap), too slow for FLAME_SITES_MAX.
+   */
   private selectNearest(n: number): void {
-    const m = Math.min(n, this.cN);
-    for (let i = 0; i < m; i++) {
-      let best = i;
-      for (let j = i + 1; j < this.cN; j++) {
-        if ((this.cR[j] as number) < (this.cR[best] as number)) best = j;
+    const r = this.cR;
+    if (n < this.cN) {
+      let lo = 0;
+      let hi = this.cN - 1;
+      while (hi > lo) {
+        // Median of three into `hi`, then a Lomuto partition round it.
+        const mid = (lo + hi) >>> 1;
+        if ((r[mid] as number) < (r[lo] as number)) this.swapCand(lo, mid);
+        if ((r[hi] as number) < (r[lo] as number)) this.swapCand(lo, hi);
+        if ((r[mid] as number) < (r[hi] as number)) this.swapCand(mid, hi);
+        const pivot = r[hi] as number;
+        let store = lo;
+        for (let i = lo; i < hi; i++) {
+          if ((r[i] as number) < pivot) this.swapCand(i, store++);
+        }
+        this.swapCand(store, hi);
+        if (store === n) break;
+        if (store < n) lo = store + 1;
+        else hi = store - 1;
       }
-      if (best === i) continue;
-      swap4(this.cB, this.cS, this.cD, this.cW, i, best);
-      const t = this.cR[i] as number;
-      this.cR[i] = this.cR[best] as number;
-      this.cR[best] = t;
     }
+    const m = Math.min(n, this.cN);
+    const head = Math.min(SORTED_HEAD, m);
+    for (let i = 0; i < head; i++) {
+      let best = i;
+      for (let j = i + 1; j < m; j++) {
+        if ((r[j] as number) < (r[best] as number)) best = j;
+      }
+      if (best !== i) this.swapCand(i, best);
+    }
+  }
+
+  private swapCand(i: number, j: number): void {
+    if (i === j) return;
+    swap4(this.cB, this.cS, this.cD, this.cW, i, j);
+    const t = this.cR[i] as number;
+    this.cR[i] = this.cR[j] as number;
+    this.cR[j] = t;
   }
 
   /** Write the flame cards; returns how many sites were drawn. */
   private pickFlames(viewer: Vec3, burn: number): number {
     const want = Math.max(1, Math.round(FLAME_SITES_MAX * this.flameShare));
     // One past the cap: its distance is where the fade-out ends.
-    this.selectNearest(want + 1);
+    this.selectNearest(want);
     const n = Math.min(want, this.cN);
     // The cap fade runs on the pick key (viewRank), like the pick itself;
     // under the cap nothing fades but the last stretch before CUT_M.
@@ -1442,10 +1615,12 @@ export class Inferno {
     const fadeFrom = edge * 0.75;
     const a = this.flameA.array as Float32Array;
     const bArr = this.flameB.array as Float32Array;
+    const cArr = this.flameC.array as Float32Array;
     const aspect = this.camAspect;
     const k = 1 / (4 * this.tanHalf * this.tanHalf * aspect);
+    const pxPerM = this.pxPerMU.value;
     let cov = 0;
-    let cards = 0;
+    let drawnSites = 0;
     let floating = 0;
     const scale = 0.7 + 0.3 * burn;
     for (let c = 0; c < n; c++) {
@@ -1463,44 +1638,55 @@ export class Inferno {
       if (w <= 0.01) continue;
       const img = nearestImageInto(this.img, viewer, this.canon);
       const grow = (0.55 + 0.45 * (this.cW[c] as number)) * scale;
-      // Bigger with distance, so a burning block still reads as fire from
-      // across the city (dressing: never solid, never collided).
-      const far = 1 + 1.8 * smooth01((d - 100) / 500);
       const kind = info.kind;
-      const width =
-        info.size *
-        grow *
-        far *
-        (kind === KIND_FLOOR ? 1.3 : kind === KIND_RUBBLE ? 1.6 : 1.15);
-      const height =
-        width * (kind === KIND_FLOOR ? 1.7 : kind === KIND_RUBBLE ? 0.55 : 1.9);
-      // The card form (FLAME_VERTEX): floor / row of tongues / rubble.
-      const form = kind === KIND_FLOOR ? 0 : kind === KIND_RUBBLE ? 2 : 1;
+      // L9: no distance growth — FLAME_VERTEX holds each tongue to a
+      // minimum pixel width instead, so a far block is a carpet of small
+      // fires, not a few sheets the size of the block.
       const seed = hash01(info.key | 0, Math.floor(info.key / 4294967296));
-      // L7b: no two fires alike — a roaring one beside a low one, so a
-      // burning block reads as a ragged skyline of fire, not a curtain.
+      // L7b: no two fires alike — a roaring one beside a low one.
       const vary = 0.6 + 0.8 * hash01(info.key | 0, 77);
-      for (let j = 0; j < CARDS; j++) {
-        const o = cards * 4;
-        a[o] = img.x;
-        a[o + 1] = img.y;
-        a[o + 2] = img.z;
-        a[o + 3] = width * (0.8 + 0.2 * vary);
-        bArr[o] = height * vary;
-        bArr[o + 1] = seed;
-        bArr[o + 2] = Math.min(1, w * 1.2);
-        bArr[o + 3] = j + 4 * form;
-        cards++;
-      }
-      cov += (width * height * CARDS * 0.5) / Math.max(1, d * d);
+      const tw = (TONGUE_W[kind] as number) * grow * (0.85 + 0.15 * vary);
+      const th = (TONGUE_H[kind] as number) * grow * vary;
+      const alpha = Math.min(1, w * 1.2);
+      const o = drawnSites * 4;
+      a[o] = img.x;
+      a[o + 1] = img.y;
+      a[o + 2] = img.z;
+      a[o + 3] = tw;
+      bArr[o] = th;
+      bArr[o + 1] = seed;
+      bArr[o + 2] = alpha;
+      bArr[o + 3] =
+        (FLAME_FORM[kind] as number) +
+        (kind === KIND_WINDOW ? 8 * info.rows : 0);
+      cArr[o] = info.ex;
+      cArr[o + 1] = info.ez;
+      cArr[o + 2] = info.nx;
+      cArr[o + 3] = info.nz;
+      drawnSites++;
+      // Overdraw proxy: the tongues alight (FLAME_VERTEX: ~0.84 of the
+      // 0.3 + 0.7 α share), each ~half its card, grown to its pixel floor.
+      const px = (tw * pxPerM) / Math.max(1, d);
+      const g = Math.min(TONGUE_GROW_MAX, Math.max(1, TONGUE_MIN_PX / px));
+      const lit = TONGUES * (0.3 + 0.7 * alpha) * 0.84;
+      cov +=
+        (lit *
+          tw *
+          TONGUE_HALO *
+          g *
+          th *
+          (0.4 + 0.6 * g) *
+          0.5 *
+          Math.min(1, (px * TONGUE_GROW_MAX) / TONGUE_MIN_PX)) /
+        Math.max(1, d * d);
       if (this.isFloating(c, this.canon, info.nx, info.nz)) floating++;
     }
     const g = this.flames.geometry as THREE.InstancedBufferGeometry;
-    g.instanceCount = cards;
-    this.flames.visible = cards > 0;
-    uploadPrefix(this.flameUploads, cards);
-    this.stats.flames = cards / CARDS;
-    this.stats.cards = cards;
+    g.instanceCount = drawnSites;
+    this.flames.visible = drawnSites > 0;
+    uploadPrefix(this.flameUploads, drawnSites);
+    this.stats.flames = drawnSites;
+    this.stats.cards = drawnSites * TONGUES;
     this.stats.floating = floating;
     this.stats.coverage = cov * k;
     return n;
@@ -1896,6 +2082,22 @@ function cardGeometry(y0: number): THREE.BufferGeometry {
     ),
   );
   g.setIndex([0, 1, 2, 0, 2, 3]);
+  return g;
+}
+
+/** L9: `n` unit flame cards (x in ±0.5, y in [0, 1]) in one geometry, each
+ * card's vertices carrying its index in z (FLAME_VERTEX places them). */
+function tongueGeometry(n: number): THREE.BufferGeometry {
+  const pos = new Float32Array(n * 12);
+  const idx: number[] = [];
+  for (let k = 0; k < n; k++) {
+    pos.set([-0.5, 0, k, 0.5, 0, k, 0.5, 1, k, -0.5, 1, k], k * 12);
+    const v = k * 4;
+    idx.push(v, v + 1, v + 2, v, v + 2, v + 3);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  g.setIndex(idx);
   return g;
 }
 

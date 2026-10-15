@@ -233,20 +233,39 @@ const damageSheet = () => {
  * stages reference 2 on it. */
 const referenceView = (name, extra = {}) => ({
   name,
-  // The plane sits 70 m over the eye (out of its own shot), nose to +x;
-  // the carrier is staged 280 m ahead of it, crossing side-on. H1: L7b's
-  // composition lifted 270 m with the carrier (BOSS_ALT 570 m) — the eye
-  // at 430 m (was 230), the same −4° pitch, the hull ~27° up instead of
-  // ~14°, the cores' towers and the supertalls standing into the frame.
-  x: 965,
-  z: 1303,
-  y: 500,
-  yaw: -Math.PI / 2,
-  eye: [965, 430, 1303],
-  at: [1869, 360, 881],
+  // L9: re-posed after H1 to the references' own composition. The eye is
+  // 400 m over the south bank at x 700, looking east down the river
+  // (−6° pitch) to the far skyline, through a pinned 80° lens (the
+  // references' wide view); the south core's towers and the 430 m
+  // landmark at (1700, 1300) stand up the right of the frame. Not higher:
+  // fire is cut at 760 m (CUT_M, inside the 800 m fog), so from 530 m
+  // almost none of the burning city was in reach. The plane is parked
+  // 90 m over the eye (out of shot), its nose aimed so the carrier, staged
+  // 430 m ahead of it, crosses broadside 170 m above the eye in the upper
+  // left with its beams down on the roofs. A posed biplane flies away into
+  // the scene mid-right, 40 m out.
+  x: 700,
+  z: 1230,
+  y: 490,
+  yaw: Math.atan2(-333, 272),
+  eye: [700, 400, 1230],
+  at: [1700, 295, 1080],
+  fov: 80,
   timeMs: 1_790_000_000_000,
   weather: "clear",
-  boss: { ahead: 280 },
+  boss: { ahead: Math.hypot(333, 272) },
+  showcase: [
+    {
+      kind: "biplane",
+      x: 741,
+      y: 392,
+      z: 1231,
+      yaw: -1.31,
+      pitch: 0.03,
+      roll: -0.12,
+      speed: 70,
+    },
+  ],
   // Held there every frame, so it never flies into the carrier's hull.
   raf: true,
   ...extra,
@@ -269,6 +288,14 @@ const INFERNO_STAGE = {
     buildings: 109,
   },
   burn: 0.9,
+};
+
+/** L9: INFERNO_STAGE for the re-posed reference composition — centred on
+ * the band of the frame the fire reaches (380–640 m out from the eye, down
+ * the river), so the burning blocks fill the lower frame. */
+const REFERENCE_INFERNO_STAGE = {
+  ...INFERNO_STAGE,
+  area: { ...INFERNO_STAGE.area, x: 1204, z: 1155, buildings: 102 },
 };
 
 /** D11: the world instant every staged destruction view is shot at (each
@@ -1469,7 +1496,7 @@ export const VIEWS = [
   // inferno on D8's chewed block (ruin-chewed's pose and stage at burn 0.9 —
   // `__ab.inferno()` is logged for each: sites, draws, floating = 0).
   referenceView("reference-hero"),
-  referenceView("reference-inferno", { stage: INFERNO_STAGE }),
+  referenceView("reference-inferno", { stage: REFERENCE_INFERNO_STAGE }),
   // L7b readability in the inferno: the normal chase camera at 190 m over
   // reference-inferno's burning blocks, an enemy fighter 110 m ahead, our
   // guns firing at it (`guns`: the trigger held through the shot) — the

@@ -49,44 +49,32 @@
 // Every piece ends as a rubble box — slumped a little askew, a column stub
 // leaning out of the pile — resting on the ground or on the rubble under it,
 // never on something that could later be shot away.
+//
+// DL1: every tunable above reads a DestructionTuning (common/src/
+// destruction-tuning.ts) — the planner, the builder and the chain probe take
+// one as a trailing `tuning = DEFAULT_DESTRUCTION_TUNING` (held in `T` for
+// the call's duration: they are synchronous), and each Collapse keeps the
+// gravity, squash time and lead it was built with, so posing it needs no
+// tuning at all. With the defaults every number is the constant it mirrors —
+// bit for bit (common/test/destruction-parity.test.ts). A Destruction Lab
+// room stamps its build tuning on the wire (`dt`); only a lab CollapseField
+// builds from it.
 
 import {
   CHAIN_COALESCE_M,
-  CHAIN_ENERGY_MAX,
-  CHAIN_ENERGY_MIN,
-  CHAIN_ENERGY_REF,
-  CHAIN_IMPACTS_MAX,
-  CHAIN_IMPACTS_PER_BUILDING,
-  COLLAPSE_BAND_MIN,
-  COLLAPSE_COLUMN_LEAN,
-  COLLAPSE_COLUMN_RUBBLE,
-  COLLAPSE_COLUMN_SHARE,
   COLLAPSE_COLUMN_SIDE,
-  COLLAPSE_CREEP_MS,
-  COLLAPSE_CRUSH_G,
   COLLAPSE_FLOOR_EVENTS_MAX,
-  COLLAPSE_GRAVITY,
-  COLLAPSE_LEAD_MS,
-  COLLAPSE_PANCAKE_TILT,
-  COLLAPSE_RUBBLE_RATIO,
-  COLLAPSE_SHEET_BREAK,
-  COLLAPSE_SHEET_DRIFT,
-  COLLAPSE_SHEET_SHARE,
   COLLAPSE_SHEET_THICK,
-  COLLAPSE_SLAB_STOREY,
-  COLLAPSE_SLUMP_MAX,
-  COLLAPSE_SLUMP_RISE,
-  COLLAPSE_SQUASH_MS,
-  COLLAPSE_SYMMETRY,
   COLLAPSE_TOPPLE_ALPHA_MAX,
   COLLAPSE_TOPPLE_ALPHA_MIN,
-  COLLAPSE_TOPPLE_BREAK,
-  COLLAPSE_TOPPLE_BREAK_TOP,
-  COLLAPSE_TOPPLE_DRIFT,
-  COLLAPSE_TOPPLE_K,
   COLLAPSE_ZONE_TAIL_MS,
   CRANE_MAST_SIDE,
 } from "../constants";
+import {
+  DEFAULT_DESTRUCTION_TUNING,
+  type DestructionTuning,
+  tuningFromStamp,
+} from "../destruction-tuning";
 import { type Vec3, canonicalize, wrapDeltaAxis } from "../world/index";
 import {
   CUT_NEG_X,
@@ -160,6 +148,10 @@ export interface CollapseWire {
   /** D10 pancake: the failure height, whole decimetres — where the crush
    * front starts. Absent: the section's base (every piece lets go at once). */
   f?: number;
+  /** DL1: a Destruction Lab room's build tuning — the BUILD fields that
+   * differ from the defaults (destruction-tuning.ts buildStamp). Never set
+   * by a normal room, and read only by a lab CollapseField. */
+  dt?: Record<string, number>;
 }
 
 /** A wire's kind (absent = a building section). */
@@ -175,6 +167,22 @@ export interface CollapsePlan {
   /** D10: the failure height, m — the base of the section that let go
    * (what a pancake crushes lies below it). */
   fail: number;
+}
+
+/** DL1: the tuning the planner / builder / chain probe in progress reads
+ * (set for the duration of the exported call; they never yield). */
+let T: Readonly<DestructionTuning> = DEFAULT_DESTRUCTION_TUNING;
+
+/** Run `fn` with `tuning` as `T`, restoring the previous one after (so a
+ * nested call — a builder inside a planner — sees its own). */
+function withTuning<R>(tuning: Readonly<DestructionTuning>, fn: () => R): R {
+  const prev = T;
+  T = tuning;
+  try {
+    return fn();
+  } finally {
+    T = prev;
+  }
 }
 
 // --- Support -----------------------------------------------------------------
@@ -336,7 +344,7 @@ function failingBand(
         exist += mask[c] as number;
         up += st[c] as number;
       }
-      if (exist === 0 || up >= COLLAPSE_BAND_MIN * exist) continue;
+      if (exist === 0 || up >= T.bandMin * exist) continue;
       if (anyStandingAbove(grids, standing, k, iy))
         return { tier: k, band: iy };
     }
@@ -365,9 +373,15 @@ function anyStandingAbove(
  * `g`: COLLAPSE_SYMMETRY scaled by clamp(3 / s, 0.5, 1.5), s = height ÷
  * min(width, depth). A slender section topples at half the offset that
  * tips today's s = 3 section; a squat one needs half again as much. */
-export function toppleThreshold(g: TierGrid, height: number): number {
+export function toppleThreshold(
+  g: TierGrid,
+  height: number,
+  tuning: Readonly<DestructionTuning> = T,
+): number {
+  if (tuning !== T)
+    return withTuning(tuning, () => toppleThreshold(g, height, tuning));
   const s = Math.max(1e-6, height) / Math.max(1, Math.min(g.width, g.depth));
-  return COLLAPSE_SYMMETRY * Math.min(1.5, Math.max(0.5, 3 / s));
+  return T.symmetry * Math.min(1.5, Math.max(0.5, 3 / s));
 }
 
 /** Pancake or topple (and which way) from the failed band's survivors,
@@ -655,7 +669,13 @@ function nextPlan(
  * crush can fail a lower band, or leave a ledge unsupported). Afterwards no
  * standing chunk is unsupported. Pure in (shape, damage).
  */
-export function planCollapses(b: Building, index: number): CollapsePlan[] {
+export function planCollapses(
+  b: Building,
+  index: number,
+  tuning: Readonly<DestructionTuning> = DEFAULT_DESTRUCTION_TUNING,
+): CollapsePlan[] {
+  if (tuning !== T)
+    return withTuning(tuning, () => planCollapses(b, index, tuning));
   const standing = standingOf(b);
   const plans: CollapsePlan[] = [];
   // Each plan removes at least one chunk, so this ends; the bound is a
@@ -722,7 +742,13 @@ export function demolitionPlan(
   index: number,
   style: CollapseStyle,
   dir: number,
+  tuning: Readonly<DestructionTuning> = DEFAULT_DESTRUCTION_TUNING,
 ): CollapsePlan | null {
+  if (tuning !== T) {
+    return withTuning(tuning, () =>
+      demolitionPlan(b, index, style, dir, tuning),
+    );
+  }
   const grids = tierGrids(b);
   const standing = standingOf(b);
   const g0 = grids[0] as TierGrid;
@@ -915,6 +941,12 @@ export interface Collapse {
   readonly az: Float64Array;
   /** Ms after t0 when the last piece is at rest. */
   readonly endMs: number;
+  /** DL1: what it was built with — gravity on its ballistic arcs, m/s²,
+   * the landing squash, s, and the lead beat, ms (the defaults' constants
+   * outside a Destruction Lab). Posing reads these, never a tuning. */
+  readonly g: number;
+  readonly squashS: number;
+  readonly leadMs: number;
   /** Everything the debris ever covers (centre-relative), and its rest
    * boxes, for the per-event reject. */
   readonly bounds: LocalBox;
@@ -947,8 +979,6 @@ export const blankPose = (): PiecePose => ({
   rest: false,
 });
 
-const G = COLLAPSE_GRAVITY;
-const SQUASH_S = COLLAPSE_SQUASH_MS / 1000;
 const HALF_PI = Math.PI / 2;
 
 /** Half extent along world y of a box rotated by `phi` about x (0) / z (1). */
@@ -1058,7 +1088,7 @@ function flight(c: Collapse, i: number, out: PiecePose): void {
   }
   const dt = tau - tb;
   out.x = (c.bx[i] as number) + (c.vx[i] as number) * dt;
-  out.y = (c.by[i] as number) + (c.vy[i] as number) * dt - 0.5 * G * dt * dt;
+  out.y = (c.by[i] as number) + (c.vy[i] as number) * dt - 0.5 * c.g * dt * dt;
   out.z = (c.bz[i] as number) + (c.vz[i] as number) * dt;
   out.phi = sign * ((c.hang[i] as number) + (c.homega[i] as number) * dt);
 }
@@ -1116,7 +1146,8 @@ function poseNow(c: Collapse, i: number, out: PiecePose): PiecePose {
     out.rest = false;
     return out;
   }
-  if (tau >= land + SQUASH_S) {
+  const squash = c.squashS;
+  if (tau >= land + squash) {
     out.x = c.rx[i] as number;
     out.y = c.ry[i] as number;
     out.z = c.rz[i] as number;
@@ -1135,7 +1166,7 @@ function poseNow(c: Collapse, i: number, out: PiecePose): PiecePose {
     out.hz = c.hz[i] as number;
     return out;
   }
-  const u = (tau - land) / SQUASH_S;
+  const u = (tau - land) / squash;
   const k = u * u * (3 - 2 * u);
   // D6: the lerp written out — a closure here was an allocation per
   // squashing piece per frame, and a helper call (not inlined this deep)
@@ -1266,8 +1297,11 @@ function landingTime(c: Collapse, i: number, floor: number): number {
   const lo = Math.min(hx, hy, hz);
   const by = c.by[i] as number;
   const vy = -(c.vy[i] as number);
-  const from = tb + dropTime(by, vy, G, floor + r);
-  const to = Math.min(LAST, tb + dropTime(by, vy, G, floor + lo) + LAND_STEP_S);
+  const from = tb + dropTime(by, vy, c.g, floor + r);
+  const to = Math.min(
+    LAST,
+    tb + dropTime(by, vy, c.g, floor + lo) + LAND_STEP_S,
+  );
   const t = search(Math.max(tb, Math.min(from, to)), to);
   return Number.isNaN(t) ? search(Math.min(tb, LAST), LAST) : t;
 }
@@ -1346,7 +1380,7 @@ function fracture(
   let sheet: RawPiece | null = null;
   // A facade sheet: an original face on the street outline, wide enough to
   // leave a slab behind it.
-  if (sheetRoll < COLLAPSE_SHEET_SHARE && h >= COLLAPSE_SLAB_STOREY) {
+  if (sheetRoll < T.sheetShare && h >= T.slabStorey) {
     const T = COLLAPSE_SHEET_THICK;
     const faces: number[] = [];
     const wide = s.x1 - s.x0 >= 2 * T + 2;
@@ -1399,7 +1433,10 @@ function fracture(
     }
   }
   // Storey slabs, bottom-up.
-  const k = Math.max(1, Math.round(h / COLLAPSE_SLAB_STOREY));
+  // DL1: × (1 + slabGrowth · height / 300 m) — exactly the slab height
+  // while slabGrowth is 0 (the default).
+  const slab = T.slabStorey * (1 + T.slabGrowth * (b.height / 300));
+  const k = Math.max(1, Math.round(h / slab));
   const mid = Math.floor(k / 2);
   for (let j = 0; j < k; j++) {
     const y0 = r.y0 + (h * j) / k;
@@ -1432,10 +1469,10 @@ function fracture(
   // stands; it is the steel left sticking out of the pile).
   const side = COLLAPSE_COLUMN_SIDE;
   if (
-    columnRoll < COLLAPSE_COLUMN_SHARE &&
+    columnRoll < T.columnShare &&
     r.x1 - r.x0 >= 4 * side &&
     r.z1 - r.z0 >= 4 * side &&
-    h >= COLLAPSE_SLAB_STOREY
+    h >= T.slabStorey
   ) {
     const corner = Math.floor(cornerRoll * 4);
     const inset = 0.4;
@@ -1476,7 +1513,10 @@ function fracture(
 export function buildCollapse(
   buildings: readonly Building[],
   wire: CollapseWire,
+  tuning: Readonly<DestructionTuning> = DEFAULT_DESTRUCTION_TUNING,
 ): Collapse | null {
+  if (tuning !== T)
+    return withTuning(tuning, () => buildCollapse(buildings, wire, tuning));
   // A crane wire names a crane site, not a building: CollapseField routes it
   // to buildCraneCollapse.
   if (wireKind(wire) !== KIND_BUILDING) return null;
@@ -1710,10 +1750,15 @@ function assembleCollapse(
     ay: f64(),
     az: f64(),
     endMs: 0,
+    g: T.gravity,
+    squashS: T.squashMs / 1000,
+    leadMs: T.leadMs,
     bounds: { x0: 0, x1: 0, y0: 0, y1: 0, z0: 0, z1: 0 },
     restBounds: { x0: 0, x1: 0, y0: 0, y1: 0, z0: 0, z1: 0 },
   };
-  const lead = COLLAPSE_LEAD_MS / 1000;
+  const lead = T.leadMs / 1000;
+  const G = T.gravity;
+  const SQUASH_S = c.squashS;
   let base = Number.POSITIVE_INFINITY;
   let top = Number.NEGATIVE_INFINITY;
   for (let i = 0; i < n; i++) {
@@ -1735,8 +1780,8 @@ function assembleCollapse(
     // storey is reached a little sooner than the last: they give way one
     // after another, faster and faster, and the column never passes
     // through itself.
-    const gc = COLLAPSE_CRUSH_G * G;
-    const release = lead + COLLAPSE_CREEP_MS / 1000;
+    const gc = T.crushG * G;
+    const release = lead + T.creepMs / 1000;
     const failY = meta.fail;
     const off = f64();
     for (let i = 0; i < n; i++) {
@@ -1770,8 +1815,7 @@ function assembleCollapse(
         ) {
           continue;
         }
-        off[i] =
-          (off[i] as number) + 2 * (c.hy[k] as number) * COLLAPSE_RUBBLE_RATIO;
+        off[i] = (off[i] as number) + 2 * (c.hy[k] as number) * T.rubbleRatio;
       }
     }
     for (let i = 0; i < n; i++) {
@@ -1785,8 +1829,8 @@ function assembleCollapse(
       const across = axis === 0 ? hz : hx;
       const amp =
         role === ROLE_COLUMN
-          ? COLLAPSE_PANCAKE_TILT
-          : Math.min(COLLAPSE_PANCAKE_TILT, 1 / Math.max(1, across));
+          ? T.pancakeTilt
+          : Math.min(T.pancakeTilt, 1 / Math.max(1, across));
       c.axis[i] = axis;
       c.tilt[i] = (rand() * 2 - 1) * amp;
       const pieceTop = (c.oy[i] as number) + (c.hy[i] as number);
@@ -1802,7 +1846,7 @@ function assembleCollapse(
       c.mode[i] = MODE_DROP;
       if (crushed && role === ROLE_SLAB) {
         const h = 2 * (c.hy[i] as number);
-        const flat = h * COLLAPSE_RUBBLE_RATIO;
+        const flat = h * T.rubbleRatio;
         c.crush[i] =
           Math.sqrt((2 * (reach + h - flat)) / gc) -
           Math.sqrt((2 * reach) / gc);
@@ -1835,13 +1879,11 @@ function assembleCollapse(
           COLLAPSE_TOPPLE_ALPHA_MAX,
           Math.max(
             COLLAPSE_TOPPLE_ALPHA_MIN,
-            (COLLAPSE_TOPPLE_K * G) / Math.max(1, 2 * (c.hy[i] as number)),
+            (T.toppleK * G) / Math.max(1, 2 * (c.hy[i] as number)),
           ),
         );
-        c.hbreak[i] = Math.sqrt(
-          (2 * COLLAPSE_SHEET_BREAK) / (c.halpha[i] as number),
-        );
-        breakUp(c, i, COLLAPSE_SHEET_DRIFT);
+        c.hbreak[i] = Math.sqrt((2 * T.sheetBreak) / (c.halpha[i] as number));
+        breakUp(c, i, T.sheetDrift);
       }
     }
     // Stack: bottom-up, each slab rests on the highest slab already placed
@@ -1875,8 +1917,7 @@ function assembleCollapse(
         if (overlapZ > 1e-6) {
           y = Math.max(
             y,
-            (floor[j] as number) +
-              2 * (c.hy[j] as number) * COLLAPSE_RUBBLE_RATIO,
+            (floor[j] as number) + 2 * (c.hy[j] as number) * T.rubbleRatio,
           );
         }
       }
@@ -1903,10 +1944,10 @@ function assembleCollapse(
       COLLAPSE_TOPPLE_ALPHA_MAX,
       Math.max(
         COLLAPSE_TOPPLE_ALPHA_MIN,
-        (COLLAPSE_TOPPLE_K * G) / Math.max(1, top - base),
+        (T.toppleK * G) / Math.max(1, top - base),
       ),
     );
-    c.omega = c.alpha * Math.sqrt((2 * COLLAPSE_TOPPLE_BREAK) / c.alpha);
+    c.omega = c.alpha * Math.sqrt((2 * T.toppleBreak) / c.alpha);
     let latest = 0;
     for (let i = 0; i < n; i++) {
       const rand = rands[i] as () => number;
@@ -1921,7 +1962,7 @@ function assembleCollapse(
       // The section bends as it swings: its top breaks off first, its base
       // at today's angle (so nothing new swings over a stump). A crane is
       // one lattice and goes all at once.
-      let brk = COLLAPSE_TOPPLE_BREAK;
+      let brk = T.toppleBreak;
       if (pivotEdge === null && top > base) {
         const h01 = Math.min(
           1,
@@ -1931,15 +1972,13 @@ function assembleCollapse(
           ),
         );
         brk -=
-          (COLLAPSE_TOPPLE_BREAK - COLLAPSE_TOPPLE_BREAK_TOP) *
-          h01 *
-          (0.75 + 0.25 * rand());
+          (T.toppleBreak - T.toppleBreakTop) * h01 * (0.75 + 0.25 * rand());
       }
       c.hbreak[i] = Math.sqrt((2 * brk) / c.alpha);
       latest = Math.max(latest, c.hbreak[i] as number);
       // D11: a building's chunks keep COLLAPSE_TOPPLE_DRIFT of the swing's
       // throw (a crane's lattice, one piece, keeps all of it).
-      breakUp(c, i, pivotEdge === null ? COLLAPSE_TOPPLE_DRIFT : 1);
+      breakUp(c, i, pivotEdge === null ? T.toppleDrift : 1);
     }
     c.tBreak = latest;
   }
@@ -1967,8 +2006,7 @@ function assembleCollapse(
     const hz = c.hz[i] as number;
     // The local axis that ends up vertical is squashed (a column keeps half
     // its height; nothing gets thicker than it was).
-    const ratio =
-      role === ROLE_COLUMN ? COLLAPSE_COLUMN_RUBBLE : COLLAPSE_RUBBLE_RATIO;
+    const ratio = role === ROLE_COLUMN ? T.columnRubble : T.rubbleRatio;
     const upright = odd ? (axis === 1 ? hx : hz) : hy;
     const slab = Math.min(2 * upright, 2 * hy * ratio);
     c.rhx[i] = odd && axis === 1 ? slab / 2 : hx;
@@ -1985,13 +2023,10 @@ function assembleCollapse(
     const sgn = rand() < 0.5 ? -1 : 1;
     const slump =
       role === ROLE_COLUMN && !odd
-        ? sgn * COLLAPSE_COLUMN_LEAN * (0.4 + 0.6 * rand())
+        ? sgn * T.columnLean * (0.4 + 0.6 * rand())
         : sgn *
           rand() *
-          Math.min(
-            COLLAPSE_SLUMP_MAX,
-            COLLAPSE_SLUMP_RISE / Math.max(1, across),
-          );
+          Math.min(T.slumpMax, T.slumpRise / Math.max(1, across));
     const phi = quarter * HALF_PI + slump;
     c.rphi[i] = phi;
     const cs = Math.abs(Math.cos(phi));
@@ -2092,7 +2127,7 @@ function sweepBounds(c: Draft): void {
       if (land > tb) {
         // Ballistic: x and z are linear, y peaks once.
         const vy = c.vy[i] as number;
-        const apex = vy / G;
+        const apex = vy / c.g;
         if (apex > 0 && tb + apex < land) {
           flightAt.tau = tb + apex;
           flight(c, i, pose);
@@ -2397,12 +2432,16 @@ export interface CollapseImpact {
 }
 
 /** D10: an impact's blast scale for `vol` m³ arriving at `speed` m/s. */
-export const impactScale = (vol: number, speed: number): number =>
+export const impactScale = (
+  vol: number,
+  speed: number,
+  tuning: Readonly<DestructionTuning> = T,
+): number =>
   Math.min(
-    CHAIN_ENERGY_MAX,
+    tuning.chainEnergyMax,
     Math.max(
-      CHAIN_ENERGY_MIN,
-      (Math.sqrt(Math.max(0, vol)) * Math.abs(speed)) / CHAIN_ENERGY_REF,
+      tuning.chainEnergyMin,
+      (Math.sqrt(Math.max(0, vol)) * Math.abs(speed)) / tuning.chainEnergyRef,
     ),
   );
 
@@ -2423,7 +2462,10 @@ const IMPACT_STEP_S = 0.1;
 export function collapseImpacts(
   c: Collapse,
   buildings: readonly Building[],
+  tuning: Readonly<DestructionTuning> = DEFAULT_DESTRUCTION_TUNING,
 ): CollapseImpact[] {
+  if (tuning !== T)
+    return withTuning(tuning, () => collapseImpacts(c, buildings, tuning));
   const near: { i: number; dx: number; dz: number }[] = [];
   const box = c.bounds;
   for (let i = 0; i < buildings.length; i++) {
@@ -2488,7 +2530,7 @@ export function collapseImpacts(
   found.sort((a, b) => a.t - b.t || a.building - b.building);
   const out: CollapseImpact[] = [];
   for (const f of found) {
-    if (out.length >= CHAIN_IMPACTS_MAX) break;
+    if (out.length >= T.chainImpactsMax) break;
     let same = 0;
     let close = false;
     for (const o of out) {
@@ -2501,7 +2543,7 @@ export function collapseImpacts(
       );
       if (d < CHAIN_COALESCE_M) close = true;
     }
-    if (close || same >= CHAIN_IMPACTS_PER_BUILDING) continue;
+    if (close || same >= T.chainImpactsPerBuilding) continue;
     out.push(f);
   }
   return out;
@@ -2681,6 +2723,10 @@ export function collapseZoneHit(
  * in place: bots and the room's MoverField hold it for the room's life.
  */
 export class CollapseField {
+  /** DL1: a Destruction Lab field — the one kind that builds a wire's debris
+   * from its stamped tuning (`dt`). Every other field ignores the stamp, so
+   * lab tuning can never reach a normal room's debris. */
+  lab = false;
   private buildings: readonly Building[] | null = null;
   /** D5: the room's crane sites (a crane fall's wire names one by id). */
   private cranes: readonly CraneSite[] = [];
@@ -2778,7 +2824,11 @@ export class CollapseField {
       const site = this.cranes.find((s) => s.id === wire.b);
       return site ? buildCraneCollapse(site, wire) : null;
     }
-    return buildCollapse(this.buildings as readonly Building[], wire);
+    return buildCollapse(
+      this.buildings as readonly Building[],
+      wire,
+      this.lab ? tuningFromStamp(wire.dt) : DEFAULT_DESTRUCTION_TUNING,
+    );
   }
 
   private noteFelled(wire: CollapseWire): void {

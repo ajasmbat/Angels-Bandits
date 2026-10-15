@@ -98,10 +98,15 @@ function takeRejoin(): boolean {
 
 /** FL1: the join card's Flight Lab link. On the ordinary card it leads
  * into the lab (`?lab`); in the lab the card says it is the lab and the
- * link leads back to the game. */
-export function initLabLink(lab: boolean): void {
+ * link leads back to the game. DL1: likewise the Destruction Lab's link
+ * beside it (`?destructlab`). */
+export function initLabLink(lab: boolean, destruct = false): void {
   if (!lab) return;
-  const link = document.getElementById("join-lab") as HTMLAnchorElement | null;
+  // In either lab, the other lab's icon goes: one plain way back.
+  document.getElementById(destruct ? "join-lab" : "join-dlab")?.remove();
+  const link = document.getElementById(
+    destruct ? "join-dlab" : "join-lab",
+  ) as HTMLAnchorElement | null;
   if (link) {
     // W4: in the lab the icon becomes a plain, visible way back.
     link.textContent = "← BACK TO THE GAME";
@@ -111,13 +116,17 @@ export function initLabLink(lab: boolean): void {
     link.removeAttribute("title");
   }
   const title = document.querySelector("#join h1");
-  if (title) title.textContent = "FLIGHT LAB";
+  if (title) title.textContent = destruct ? "DESTRUCTION LAB" : "FLIGHT LAB";
   const tag = document.querySelector("#join .join-tag");
-  if (tag) tag.textContent = "TUNE THE FLIGHT MODEL, LIVE";
+  if (tag) {
+    tag.textContent = destruct
+      ? "TRIGGER, WATCH AND TUNE EVERY COLLAPSE"
+      : "TUNE THE FLIGHT MODEL, LIVE";
+  }
   const fly = document.querySelector<HTMLButtonElement>(
     "#join button[type=submit]",
   );
-  if (fly) fly.textContent = "FLY THE LAB";
+  if (fly) fly.textContent = destruct ? "ENTER THE LAB" : "FLY THE LAB";
 }
 
 /** Show the join overlay and resolve with the pilot's name once they enter.

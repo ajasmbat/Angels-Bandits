@@ -32,6 +32,12 @@
 //      and pulls the fog in by it. That is identical on every tier
 //      (quality.ts visibility parity): a Mobile player never sees further
 //      through the dust than a High one.
+//
+// DL1: the look reads render/destruct-look.ts — density, opacity, rise,
+// roll-out, puff size, hang time, the coverage cap and the cloud count — all
+// the constants below or exactly 1 outside the Destruction Lab. And no
+// per-puff closures (each was an allocation per puff per frame): the seeds
+// are read straight out of the cloud's array.
 
 import {
   BEAT_BREAK,
@@ -47,11 +53,12 @@ import {
 import {
   BLOCK_PITCH,
   COLLAPSE_DUST_MS,
-  COLLAPSE_LEAD_MS,
   STREET_WIDTH,
 } from "@angels-bandits/common/constants";
+import { LOOK_DEFAULTS } from "@angels-bandits/common/destruction-tuning";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { destructLook } from "./destruct-look";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { RENDER_ORDER } from "./render-order";
 import { DUSK, LIGHT_RIG } from "./sky";
@@ -61,21 +68,21 @@ import { pushUpdateRange } from "./update-range";
  * the plumes). */
 export const DUST_PUFFS = 144;
 /** Clouds drawn at once (the newest win). */
-const MAX_CLOUDS = 6;
+const MAX_CLOUDS = LOOK_DEFAULTS.dustClouds;
 /** Puff sprite size ramp, m (before the tier's coverage scale). */
 const PUFF_SIZE_MIN = 14;
 const PUFF_SIZE_MAX = 46;
 /** Concrete dust: a warm grey a touch lighter than the night haze (D11:
  * lighter still — it catches the street glow, the moon and the fires). */
 const DUST_COLOR = 0xa89d90;
-const DUST_OPACITY = 0.8;
+const DUST_OPACITY = LOOK_DEFAULTS.dustOpacity;
 /** D11: the dust's linear colour never passes this — under the bloom
  * threshold (0.72), however many lit puffs stack in front of the camera. */
 export const DUST_RGB_MAX = 0.6;
 /** D11: the drawn cloud never covers more than this share of the frame
  * (Σ sprite area × alpha × the sprite's mean alpha); past it every puff's
  * alpha is scaled down to fit. */
-export const DUST_COVERAGE_MAX = 0.7;
+export const DUST_COVERAGE_MAX = LOOK_DEFAULTS.dustCoverageMax;
 /** D11: a puff is fully drawn from this many of its own sizes away and
  * fades to nothing at DUST_NEAR_GONE — the camera close to or inside it. */
 const DUST_NEAR_FULL = 1.5;
@@ -180,9 +187,11 @@ export interface DustPuff {
 /** Fade envelope of a cloud `age` ms after it starts: quick swell, long
  * hang, thin out over the last 40 %. */
 function envelope(age: number): number {
-  if (age < 0 || age >= COLLAPSE_DUST_MS) return 0;
+  // DL1: × the look's hang time (exactly 1 outside the lab).
+  const life = COLLAPSE_DUST_MS * destructLook.dustLife;
+  if (age < 0 || age >= life) return 0;
   const swell = Math.min(1, age / 1200);
-  const tail = Math.min(1, (COLLAPSE_DUST_MS - age) / (0.4 * COLLAPSE_DUST_MS));
+  const tail = Math.min(1, (life - age) / (0.4 * life));
   return swell * tail;
 }
 
@@ -191,6 +200,18 @@ function curtainEnvelope(age: number, life = CURTAIN_LIFE_MS): number {
   if (age < 0 || age >= life) return 0;
   const tail = Math.min(1, (life - age) / (0.45 * life));
   return Math.min(1, age / 400) * tail;
+}
+
+/** DL1: the per-puff path's clock and envelope, in one object — a double
+ * handed to (or returned from) a call V8 does not inline is boxed (O5's
+ * rule), and this path runs once per puff per frame. `tMs` is the server
+ * time the puffs are posed at; `age` the age an envelope is asked for, and
+ * `env` its answer. */
+const puffClock = { tMs: 0, age: 0, env: 0 };
+
+/** envelope(puffClock.age) into puffClock.env. */
+function envelopeNow(): void {
+  puffClock.env = envelope(puffClock.age);
 }
 
 /** A squib's envelope `age` ms after its floor event: a sharp puff. */
@@ -317,14 +338,17 @@ function curtainSources(c: Collapse, cloud: Cloud): void {
       out[o] = Number.POSITIVE_INFINITY;
       continue;
     }
-    const seed = (j: number) => cloud.seeds[k * HASHES + j] as number;
-    const i = Math.min(c.n - 1, Math.floor(seed(1) * c.n));
+    const sk = k * HASHES;
+    const i = Math.min(
+      c.n - 1,
+      Math.floor((cloud.seeds[sk + 1] as number) * c.n),
+    );
     const start = (c.start[i] as number) * 1000;
     const land = (c.land[i] as number) * 1000;
     const t =
       kind === PUFF_PLUME
-        ? start + land + seed(4) * 400
-        : start + land * (0.15 + 0.6 * seed(4));
+        ? start + land + (cloud.seeds[sk + 4] as number) * 400
+        : start + land * (0.15 + 0.6 * (cloud.seeds[sk + 4] as number));
     piecePose(
       c,
       i,
@@ -340,7 +364,7 @@ function curtainSources(c: Collapse, cloud: Cloud): void {
       const toZ0 = curtainPose.z - cloud.fz0;
       const toZ1 = cloud.fz1 - curtainPose.z;
       const near = Math.min(toX0, toX1, toZ0, toZ1);
-      const across = seed(3);
+      const across = cloud.seeds[sk + 3] as number;
       const alongX = near === toX0 || near === toX1;
       const sign = alongX ? (near === toX1 ? 1 : -1) : near === toZ1 ? 1 : -1;
       out[o + 1] = alongX
@@ -356,7 +380,7 @@ function curtainSources(c: Collapse, cloud: Cloud): void {
       out[o + 4] = alongX ? sign : 0;
       out[o + 5] = alongX ? 0 : sign;
     } else {
-      const a = seed(2) * Math.PI * 2;
+      const a = (cloud.seeds[sk + 2] as number) * Math.PI * 2;
       out[o + 1] = curtainPose.x;
       out[o + 3] = curtainPose.z;
       out[o + 4] = Math.cos(a);
@@ -408,37 +432,33 @@ export function dustPuff(
   tMs: number,
   out: DustPuff,
 ): boolean {
-  return puffOf(c, cloudOf(c), k, tMs, out);
+  puffClock.tMs = tMs;
+  return puffOf(c, cloudOf(c), k, out);
 }
 
 /** dustPuff with `c`'s cloud already worked out (D6: once per cloud per
  * frame, not once per puff — the same numbers). */
-function puffOf(
-  c: Collapse,
-  cloud: Cloud,
-  k: number,
-  tMs: number,
-  out: DustPuff,
-): boolean {
+function puffOf(c: Collapse, cloud: Cloud, k: number, out: DustPuff): boolean {
   if (k >= DUST_PUFFS) return false;
   const kind = cloud.kinds[k] as number;
   out.heat = 0;
   if (kind === PUFF_SQUIB && cloud.squibs.length > 0) {
-    return squibOf(c, cloud, k, tMs, out);
+    return squibOf(c, cloud, k, out);
   }
-  if (kind === PUFF_SURGE) return surgeOf(c, cloud, k, tMs, out);
+  if (kind === PUFF_SURGE) return surgeOf(c, cloud, k, out);
   if (kind === PUFF_CURTAIN || kind === PUFF_PLUME) {
     if (Number.isFinite(cloud.curtain[k * CURTAIN_STRIDE] as number)) {
       return kind === PUFF_PLUME
-        ? plumeOf(c, cloud, k, tMs, out)
-        : curtainOf(c, cloud, k, tMs, out);
+        ? plumeOf(c, cloud, k, out)
+        : curtainOf(c, cloud, k, out);
     }
     // No source (a collapse with nothing in it): a column puff instead.
   }
-  const birth =
-    COLLAPSE_LEAD_MS * 0.5 + (cloud.seeds[k * HASHES + 1] as number) * 2500;
-  const age = tMs - c.t0 - birth;
-  const env = envelope(age);
+  const birth = c.leadMs * 0.5 + (cloud.seeds[k * HASHES + 1] as number) * 2500;
+  const age = puffClock.tMs - c.t0 - birth;
+  puffClock.age = age;
+  envelopeNow();
+  const env = puffClock.env;
   if (env <= 0) return false;
   const s = age / 1000;
   const angle = (cloud.seeds[k * HASHES + 2] as number) * Math.PI * 2;
@@ -449,7 +469,10 @@ function puffOf(
   out.z = cloud.z + Math.sin(angle) * spread;
   out.y =
     4 +
-    cloud.h * (cloud.seeds[k * HASHES + 4] as number) * (1 - Math.exp(-s / 3)) +
+    cloud.h *
+      destructLook.dustRise *
+      (cloud.seeds[k * HASHES + 4] as number) *
+      (1 - Math.exp(-s / 3)) +
     0.6 * s;
   out.size =
     (PUFF_SIZE_MIN +
@@ -463,16 +486,12 @@ function puffOf(
 
 /** D10: a surge puff — out of the lot to the street on one side, then
  * along the street one way, hugging the ground, then lifting. */
-function surgeOf(
-  c: Collapse,
-  cloud: Cloud,
-  k: number,
-  tMs: number,
-  out: DustPuff,
-): boolean {
+function surgeOf(c: Collapse, cloud: Cloud, k: number, out: DustPuff): boolean {
   const birth = cloud.surgeAt + (cloud.seeds[k * HASHES + 1] as number) * 2500;
-  const age = tMs - c.t0 - birth;
-  const env = envelope(age);
+  const age = puffClock.tMs - c.t0 - birth;
+  puffClock.age = age;
+  envelopeNow();
+  const env = puffClock.env;
   if (env <= 0) return false;
   const s = age / 1000;
   const side = Math.floor((cloud.seeds[k * HASHES + 2] as number) * 4); // −x, +x, −z, +z
@@ -497,7 +516,9 @@ function surgeOf(
   // …then along the street, one way, most of a block.
   const turn = (cloud.seeds[k * HASHES + 4] as number) < 0.5 ? -1 : 1;
   const along =
-    SURGE_ALONG_M * (0.35 + 0.65 * (cloud.seeds[k * HASHES + 5] as number));
+    SURGE_ALONG_M *
+    destructLook.dustRollOut *
+    (0.35 + 0.65 * (cloud.seeds[k * HASHES + 5] as number));
   const run = (out1 + along) * (1 - Math.exp(-s / SURGE_TAU_S));
   const lane =
     ((cloud.seeds[k * HASHES + 6] as number) * 2 - 1) * (STREET_WIDTH / 2 - 3);
@@ -534,29 +555,28 @@ function curtainOf(
   c: Collapse,
   cloud: Cloud,
   k: number,
-  tMs: number,
   out: DustPuff,
 ): boolean {
   const o = k * CURTAIN_STRIDE;
-  const age = tMs - c.t0 - (cloud.curtain[o] as number);
+  const age = puffClock.tMs - c.t0 - (cloud.curtain[o] as number);
   const env = curtainEnvelope(age);
   if (env <= 0) return false;
   const s = age / 1000;
-  const seed = (j: number) => cloud.seeds[k * HASHES + j] as number;
+  const sk = k * HASHES;
   const reach =
     Math.min(CURTAIN_OUT_MAX, CURTAIN_OUT_K * cloud.height) *
-    (0.4 + 0.6 * seed(5));
+    (0.4 + 0.6 * (cloud.seeds[sk + 5] as number));
   const outward = reach * (1 - Math.exp(-s / 0.9));
   // Slides down, gathering speed up to CURTAIN_FALL (the integral of
   // CURTAIN_FALL · (1 − e^(−s/τ))).
   const fall =
     CURTAIN_FALL *
-    (0.6 + 0.4 * seed(6)) *
+    (0.6 + 0.4 * (cloud.seeds[sk + 6] as number)) *
     (s - CURTAIN_FALL_TAU * (1 - Math.exp(-s / CURTAIN_FALL_TAU)));
   const end = CURTAIN_SIZE_1 + CURTAIN_SIZE_PER_M * Math.min(cloud.height, 480);
   out.size =
     (CURTAIN_SIZE_0 + (end - CURTAIN_SIZE_0) * Math.min(1, s / 6)) *
-    (0.7 + 0.3 * seed(7));
+    (0.7 + 0.3 * (cloud.seeds[sk + 7] as number));
   out.x =
     (cloud.curtain[o + 1] as number) +
     (cloud.curtain[o + 4] as number) * outward;
@@ -572,27 +592,26 @@ function curtainOf(
 
 /** D11: a plume puff — dust boiling out where the falling mass lands and
  * climbing, big and slow: the cloud a tower sinks into. */
-function plumeOf(
-  c: Collapse,
-  cloud: Cloud,
-  k: number,
-  tMs: number,
-  out: DustPuff,
-): boolean {
+function plumeOf(c: Collapse, cloud: Cloud, k: number, out: DustPuff): boolean {
   const o = k * CURTAIN_STRIDE;
-  const age = tMs - c.t0 - (cloud.curtain[o] as number);
+  const age = puffClock.tMs - c.t0 - (cloud.curtain[o] as number);
   const env = curtainEnvelope(age, PLUME_LIFE_MS);
   if (env <= 0) return false;
   const s = age / 1000;
-  const seed = (j: number) => cloud.seeds[k * HASHES + j] as number;
+  const sk = k * HASHES;
+  const s6 = cloud.seeds[sk + 6] as number;
   const h = Math.min(cloud.height, 480);
   const outward =
-    PLUME_OUT * h * (0.3 + 0.7 * seed(5)) * (1 - Math.exp(-s / 1.6));
-  const rise = PLUME_RISE * h * seed(6) * seed(6) * (1 - Math.exp(-s / 3.5));
+    PLUME_OUT *
+    h *
+    (0.3 + 0.7 * (cloud.seeds[sk + 5] as number)) *
+    (1 - Math.exp(-s / 1.6));
+  const rise =
+    PLUME_RISE * destructLook.dustRise * h * s6 * s6 * (1 - Math.exp(-s / 3.5));
   out.size =
     h *
     (PLUME_SIZE_0 + (PLUME_SIZE_1 - PLUME_SIZE_0) * Math.min(1, s / 5)) *
-    (0.65 + 0.35 * seed(7));
+    (0.65 + 0.35 * (cloud.seeds[sk + 7] as number));
   out.x =
     (cloud.curtain[o + 1] as number) +
     (cloud.curtain[o + 4] as number) * outward;
@@ -607,17 +626,12 @@ function plumeOf(
 
 /** D10: a squib — dust jetting out of the facade just under a storey as
  * the crush front reaches it. */
-function squibOf(
-  c: Collapse,
-  cloud: Cloud,
-  k: number,
-  tMs: number,
-  out: DustPuff,
-): boolean {
+function squibOf(c: Collapse, cloud: Cloud, k: number, out: DustPuff): boolean {
   const e = cloud.squibs[
     Math.floor((cloud.seeds[k * HASHES + 1] as number) * cloud.squibs.length)
   ] as Cloud["squibs"][number];
-  const age = tMs - c.t0 - e.t - (cloud.seeds[k * HASHES + 2] as number) * 150;
+  const age =
+    puffClock.tMs - c.t0 - e.t - (cloud.seeds[k * HASHES + 2] as number) * 150;
   const env = squibEnvelope(age);
   if (env <= 0) return false;
   const s = age / 1000;
@@ -675,7 +689,7 @@ export function dustHaze(
   let best = 0;
   for (let e = 0; e < list.length; e++) {
     const c = list[e] as Collapse;
-    const age = tMs - c.t0 - COLLAPSE_LEAD_MS;
+    const age = tMs - c.t0 - c.leadMs;
     const env = envelope(age);
     if (env <= 0) continue;
     const cloud = cloudOf(c);
@@ -723,7 +737,7 @@ function surgeHaze(c: Collapse, cloud: Cloud, cam: Vec3, tMs: number): number {
     const street =
       streetAhead((alongX ? c.x : c.z) + face, sign) - (alongX ? c.x : c.z);
     const out1 = Math.abs(street - face);
-    const run = (out1 + SURGE_ALONG_M) * reach;
+    const run = (out1 + SURGE_ALONG_M * destructLook.dustRollOut) * reach;
     const u = alongX ? x : z; // the fall-out axis
     const v = alongX ? z : x;
     const lo = alongX ? cloud.fz0 : cloud.fx0;
@@ -938,22 +952,33 @@ export class DustClouds {
     aspect = 16 / 9,
   ): void {
     this.light();
+    const look = destructLook;
+    const material = this.points.material as THREE.PointsMaterial;
+    if (material.opacity !== look.dustOpacity) {
+      material.opacity = look.dustOpacity;
+    }
     let i = 0;
     let cover = 0;
     if (serverMs !== null) {
-      const per = Math.max(1, Math.round(DUST_PUFFS * this.share));
-      const grow = Math.sqrt(DUST_PUFFS / per);
+      const per = Math.max(
+        1,
+        Math.round(DUST_PUFFS * this.share * look.dustDensity),
+      );
+      const grow = Math.sqrt(DUST_PUFFS / per) * look.dustSize;
+      const maxClouds = Math.min(MAX_CLOUDS, look.dustClouds);
+      const life = COLLAPSE_DUST_MS * look.dustLife;
+      puffClock.tMs = serverMs;
       let clouds = 0;
-      for (let e = list.length - 1; e >= 0 && clouds < MAX_CLOUDS; e--) {
+      for (let e = list.length - 1; e >= 0 && clouds < maxClouds; e--) {
         const c = list[e] as Collapse;
         const age = serverMs - c.t0;
-        if (age < 0 || age > COLLAPSE_DUST_MS + 4000) continue;
+        if (age < 0 || age > life + 4000) continue;
         clouds++;
         const ox = viewer.x + wrapDeltaAxis(viewer.x, c.x);
         const oz = viewer.z + wrapDeltaAxis(viewer.z, c.z);
         const cloud = cloudOf(c);
         for (let k = 0; k < per; k++) {
-          if (!puffOf(c, cloud, k, serverMs, this.puff)) continue;
+          if (!puffOf(c, cloud, k, this.puff)) continue;
           const px = ox + this.puff.x;
           const pz = oz + this.puff.z;
           const size = this.puff.size * grow;
@@ -991,7 +1016,8 @@ export class DustClouds {
     }
     // D11: the coverage budget — the whole cloud never covers more than
     // DUST_COVERAGE_MAX of the frame.
-    this.lastScale = cover > DUST_COVERAGE_MAX ? DUST_COVERAGE_MAX / cover : 1;
+    const cap = look.dustCoverageMax;
+    this.lastScale = cover > cap ? cap / cover : 1;
     this.lastCoverage = cover * this.lastScale;
     if (this.lastScale < 1) {
       const a = this.alphas.array as Float32Array;

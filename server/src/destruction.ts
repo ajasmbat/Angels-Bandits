@@ -27,6 +27,13 @@
 // down in turn (at most CHAIN_DEPTH_MAX links). And what comes back: a
 // rebuild (rebuildBuilding / rebuildCrane) restores a whole building, drops
 // its collapse records and everything the room keeps about it.
+//
+// DL1: and how. The room city carries a DestructionTuning (`tuning`) — the
+// planner's, the chain probe's and the chain blasts' numbers — which is
+// DEFAULT_DESTRUCTION_TUNING in every room but a Destruction Lab. A lab
+// room city (`lab`) also stamps its build tuning on every collapse wire it
+// records, and its CollapseField builds from the stamp, so the lab's
+// clients build the debris the room collides with.
 
 import {
   type Building,
@@ -101,17 +108,17 @@ import {
 import {
   BULLET_DAMAGE,
   BULLET_RANGE,
-  CHAIN_BLAST_DAMAGE,
-  CHAIN_BLAST_RADIUS,
-  CHAIN_DEPTH_MAX,
-  CHAIN_ENERGY_MAX,
-  CHAIN_ENERGY_MIN,
   COLLAPSE_BUILD_BUDGET_MS,
   COLLAPSE_CAP,
   COLLAPSE_TICK_LIMIT,
   DEATH_BLAST_DAMAGE,
   DEATH_BLAST_RADIUS,
 } from "@angels-bandits/common/constants";
+import {
+  DEFAULT_DESTRUCTION_TUNING,
+  type DestructionTuning,
+  buildStamp,
+} from "@angels-bandits/common/destruction-tuning";
 import type { Quat } from "@angels-bandits/common/protocol";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 
@@ -158,6 +165,19 @@ export interface RoomCity {
   readonly lastStructuralAt: Map<number, number>;
   /** D9: the room's destructible props. */
   readonly props: PropRoom;
+  /** DL1: the planner's, chain probe's and chain blasts' tuning (the
+   * defaults outside a Destruction Lab). */
+  tuning: Readonly<DestructionTuning>;
+  /** DL1: a Destruction Lab's city — stamps its build tuning on its wires.
+   * Set with setLabCity, never back. */
+  readonly lab: boolean;
+}
+
+/** DL1: make `city` a Destruction Lab's — its wires carry its build tuning
+ * and its field builds from them. */
+export function setLabCity(city: RoomCity): void {
+  (city as { lab: boolean }).lab = true;
+  city.collapses.lab = true;
 }
 
 /** One queued prop event: when, which prop, the chain link that set it off,
@@ -309,6 +329,8 @@ export function createRoomCity(
     firstDamageAt: new Map(),
     lastStructuralAt: new Map(),
     props: createPropRoom(buildings, copy, cranes, seed, trains, layout),
+    tuning: DEFAULT_DESTRUCTION_TUNING,
+    lab: false,
   };
 }
 
@@ -519,7 +541,7 @@ export function tickDestruction(
     if (!b) continue;
     const depth = city.chainDepth.get(index) ?? 0;
     city.chainDepth.delete(index);
-    for (const plan of planCollapses(b, index)) {
+    for (const plan of planCollapses(b, index, city.tuning)) {
       collapses.push(
         stageCollapse(
           city,
@@ -573,8 +595,8 @@ export function recordCollapse(
       });
     }
   }
-  if (!c || depth >= CHAIN_DEPTH_MAX) return;
-  for (const i of collapseImpacts(c, city.buildings)) {
+  if (!c || depth >= city.tuning.chainDepthMax) return;
+  for (const i of collapseImpacts(c, city.buildings, city.tuning)) {
     city.impacts.push({ ...i, source: wire.id, depth, by });
   }
   city.impacts.sort((a, b) => a.t - b.t);
@@ -590,6 +612,9 @@ export function stageCollapse(
   depth = 0,
 ): CollapseWire {
   const wire = collapseWire(plan, index, city.nextCollapseId++, now);
+  // DL1: a Destruction Lab's debris is built with its own tuning.
+  const dt = city.lab ? buildStamp(city.tuning) : undefined;
+  if (dt) wire.dt = dt as Record<string, number>;
   recordCollapse(city, wire, by, depth);
   return wire;
 }
@@ -623,9 +648,10 @@ function landImpacts(city: RoomCity, now: number): void {
     k++;
     // D10: the blast scales with what struck — a slab at speed smashes
     // more than a chip — inside CHAIN_ENERGY_MIN..MAX of the D5 blast.
-    const e = Math.min(CHAIN_ENERGY_MAX, Math.max(CHAIN_ENERGY_MIN, i.e));
-    const radius = CHAIN_BLAST_RADIUS * Math.sqrt(e);
-    const damage = CHAIN_BLAST_DAMAGE * e;
+    const t = city.tuning;
+    const e = Math.min(t.chainEnergyMax, Math.max(t.chainEnergyMin, i.e));
+    const radius = t.chainBlastRadius * Math.sqrt(e);
+    const damage = t.chainBlastDamage * e;
     const out = city.damage.damageAt(i, radius, damage);
     blastProps(city, i, radius, damage, i.by, i.depth + 1, now);
     for (const id of out) {

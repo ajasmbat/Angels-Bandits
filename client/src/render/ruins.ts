@@ -52,8 +52,10 @@ function hash01(a: number, b: number): number {
 export class RuinSmoke {
   private share = 1;
   private lastMs = Number.NaN;
-  /** Fractional puffs owed per collapse id. */
-  private readonly acc = new Map<number, number>();
+  /** Fractional puffs owed per collapse id. DL1: in a record whose double
+   * field is written in place — a double stored straight into a Map is a
+   * fresh HeapNumber every frame. */
+  private readonly acc = new Map<number, { v: number }>();
   private readonly near: Near[] = [];
   private readonly at: Vec3 = { x: 0, y: 0, z: 0 };
 
@@ -94,7 +96,8 @@ export class RuinSmoke {
       const r = c.restBounds;
       const dx = wrapDeltaAxis(viewer.x, c.x + (r.x0 + r.x1) / 2);
       const dz = wrapDeltaAxis(viewer.z, c.z + (r.z0 + r.z1) / 2);
-      const d = Math.hypot(dx, dz);
+      // DL1: not Math.hypot (a builtin: its result boxed every call).
+      const d = Math.sqrt(dx * dx + dz * dz);
       if (d > RUIN_DRAW_M) continue;
       const slot = this.near[count] ?? { c, d };
       slot.c = c;
@@ -115,9 +118,12 @@ export class RuinSmoke {
       const c = (this.near[i] as Near).c;
       const age = renderMs - (c.t0 + c.endMs);
       const fade = 1 - age / RUIN_SMOKE_MS;
-      let owed =
-        (this.acc.get(c.id) ?? hash01(c.id, 99)) +
-        SMOKE_RATE * this.share * fade * dt;
+      let rec = this.acc.get(c.id);
+      if (!rec) {
+        rec = { v: hash01(c.id, 99) };
+        this.acc.set(c.id, rec);
+      }
+      let owed = rec.v + SMOKE_RATE * this.share * fade * dt;
       while (owed >= 1) {
         owed -= 1;
         const k = Math.floor(hash01(c.id, Math.floor(now / 97)) * EMITTERS);
@@ -125,7 +131,7 @@ export class RuinSmoke {
         const ember = age < RUIN_EMBER_MS && hash01(c.id, now) < 0.35 ? 1 : 0;
         this.impacts.wreckFire(this.at, ember, 1, SPREAD, now);
       }
-      this.acc.set(c.id, owed);
+      rec.v = owed;
     }
   }
 

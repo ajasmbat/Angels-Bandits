@@ -110,6 +110,7 @@ import type {
   DamageMsg,
   DeathMsg,
   IntensityConfigMsg,
+  LabStatsMsg,
   NewsHeliMsg,
   Pose,
   PropsMsg,
@@ -160,6 +161,8 @@ export interface GameSocketEvents {
   /** D3: a building section started to collapse (already applied to
    * `cityDamage` and `collapses`) — audio, shake, dust. */
   onCollapse?: (c: CollapseWire) => void;
+  /** DL1: the Destruction Lab room's server telemetry. */
+  onLabStats?: (msg: LabStatsMsg) => void;
   /** D5: the director warned of an event (already in `director`). */
   onDirectorWarn?: (e: DirectorEvent) => void;
   /** D5: a rebuild announce (`go: false`) or one just applied to
@@ -352,6 +355,9 @@ export class GameSocket {
   ) {
     this.ws = ws;
     this.welcome = welcome;
+    // DL1: only a Destruction Lab's field builds a wire's stamped tuning —
+    // set before the welcome's records are built.
+    this.collapses.lab = welcome.lab === true && welcome.destruct === true;
     this.replayDestruction(welcome);
     this.addMissiles(welcome.missiles);
     this.replayRacks(welcome.racks);
@@ -395,8 +401,10 @@ export class GameSocket {
     name: string,
     resume?: string,
     lab = false,
+    /** DL1: with `lab`, the Destruction Lab. */
+    destruct = false,
   ): Promise<GameSocket> {
-    const { ws, welcome } = await GameSocket.open(name, resume, lab);
+    const { ws, welcome } = await GameSocket.open(name, resume, lab, destruct);
     return new GameSocket(ws, welcome, name);
   }
 
@@ -404,6 +412,7 @@ export class GameSocket {
     name: string,
     resume?: string,
     lab = false,
+    destruct = false,
   ): Promise<{ ws: WebSocket; welcome: WelcomeMsg }> {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(socketUrl());
@@ -420,7 +429,7 @@ export class GameSocket {
         ws.send(
           JSON.stringify(
             lab
-              ? { type: "join", name, lab: true }
+              ? { type: "join", name, lab: true, ...(destruct && { destruct }) }
               : {
                   type: "join",
                   name,
@@ -733,6 +742,12 @@ export class GameSocket {
     return this.welcome.lab === true;
   }
 
+  /** DL1: is this a Destruction Lab room? Only when the server's welcome
+   * says so — the one gate for applying destruction tuning on this client. */
+  get destruct(): boolean {
+    return this.welcome.lab === true && this.welcome.destruct === true;
+  }
+
   /** W2: the tab hid (`true`) or came back (`false`). */
   sendAway(on: boolean): void {
     this.send({ type: "away", on });
@@ -838,7 +853,16 @@ export class GameSocket {
   /** FL1: the lab's tuning (a decoded export: JSON.parse(exportTuning(t)))
    * and/or its chaos and (W1) enemy-waves toggles. Ignored by the server
    * outside a lab room; the newest wins, so send the whole tuning each time. */
-  sendLab(msg: { tuning?: unknown; chaos?: boolean; waves?: boolean }): void {
+  sendLab(msg: {
+    tuning?: unknown;
+    chaos?: boolean;
+    waves?: boolean;
+    /** DL1: the Destruction Lab's tuning (a decoded export), a trigger, an
+     * arena reset. */
+    destruct?: unknown;
+    trigger?: unknown;
+    reset?: boolean;
+  }): void {
     this.send({ type: "lab", ...msg });
   }
 
@@ -1067,6 +1091,9 @@ export class GameSocket {
       case "collapse":
         this.serverDestruction++;
         this.applyCollapse(msg.c);
+        break;
+      case "labStats":
+        this.events.onLabStats?.(msg);
         break;
       case "directorWarn": {
         this.serverDestruction++;

@@ -359,3 +359,54 @@ body.touch .lab-tm-route,
 body.touch .lab-tm-pitch {
   display: none;
 }
+
+/* --- DL1 Destruction Lab ---------------------------------------------------- */
+.dlab-panel {
+  --lab-w: 340px;
+}
+.dlab-target {
+  margin: 4px 0 2px;
+  opacity: 0.9;
+  color: var(--ab-ink);
+}
+.lab-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.lab-row input[type="range"]:disabled {
+  opacity: 0.35;
+}
+.dlab-telemetry .lab-tm-warn b {
+  color: var(--ab-accent);
+}
+.dlab-telemetry .lab-tm-warn.over b {
+  color: var(--ab-hot);
+}
+body.touch .dlab-panel {
+  --lab-w: min(320px, 50vw);
+}
+body.touch .dlab-telemetry .lab-tm-boxes,
+body.touch .dlab-telemetry .lab-tm-build,
+body.touch .dlab-telemetry .lab-tm-draws {
+  display: none;
+}
+/* In the Destruction Lab the plane is parked out of shot: its HUD, the
+   course prompts, the tips and the touch controls stand down (the lab's
+   camera takes the pointer and touches). */
+body.dlab #crosshair,
+body.dlab #lead,
+body.dlab #minimap,
+body.dlab #hud,
+body.dlab #gauges,
+body.dlab #freelook-hint,
+body.dlab #aim-mode-toast,
+body.dlab #g-meter,
+body.dlab #coach-hint,
+body.dlab #touch-coach,
+body.dlab #killfeed,
+body.dlab #comms,
+body.dlab #race,
+body.dlab #boss-bar,
+body.dlab #touch-ui {
+  display: none !important;
+}

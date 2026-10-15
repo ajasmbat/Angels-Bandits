@@ -29,6 +29,12 @@
  * nothing. */
 export const BROKEN_DETAIL_UNIFORM = { value: 1 };
 
+/** DL1 dying lights (the Destruction Lab's look, destruct-look.ts): the
+ * share of a broken floor's lit rooms whose lights are failing — the lower
+ * half of it dead, the rest stuttering in bursts. 0 (the default): every
+ * lit room steady, exactly as before. */
+export const ROOM_FLICKER_UNIFORM = { value: 0 };
+
 /** Storey pitch of the exposed slabs, meters. */
 export const BROKEN_STOREY = 3.6;
 /** Slab thickness as a share of the storey (D11: 0.1 → 0.14, a slab edge
@@ -104,6 +110,8 @@ float brkRoomV = 0.0;
 float brkStuffK = 0.0;
 float brkSlabK = 0.0;
 float brkChar = 0.0;
+float brkRoomH = 0.0;
+float brkRoomD = 0.0;
 if (brkDmg > 0.5) {
   vec3 brkN = abs(vObjNormal);
   // World-anchored in-plane coordinates for the patterns (seam-safe: the
@@ -154,6 +162,8 @@ if (brkDmg > 0.5) {
       step(${ROOM_BURNING.toFixed(2)}, brkRoom) * step(brkRoom, ${ROOM_LIT.toFixed(2)}), brkRoomDetail);
     brkRoomV = brkV;
     brkStuffK = brkStuff;
+    brkRoomH = abHash(vec2(floor(brkW.x / ${ROOM_BAY.toFixed(1)}), floor(brkStorey)), vBSeed * 41.0);
+    brkRoomD = brkRoomDetail;
     brkSlabK = brkSlab * (1.0 - step(0.5, brkN.y));
     if (uBrokenDetail > 0.5) {
       // Jagged rim: within a noisy band of the face's edge the concrete is
@@ -200,7 +210,18 @@ export const BROKEN_EMISSIVE_GLSL = /* glsl */ `
 if (brkDmg > 0.5) {
   totalEmissiveRadiance = ${EMBER} * brkEmber;
   float brkFlick = 0.75 + 0.25 * sin(6.2832 * (uFirePhase.x + vBSeed * 5.0 + brkRoomV));
-  totalEmissiveRadiance += ${ROOM_LIGHT} * brkLit * (0.3 + 0.7 * brkRoomV) * (1.0 - 0.75 * brkStuffK);
+  // DL1: dying lights — a share of the lit rooms dead or stuttering in
+  // bursts (their mean once a room is sub-pixel, G7). Off: exactly 1.
+  float brkPower = 1.0;
+  if (uRoomFlicker > 0.0) {
+    float brkFault = step(brkRoomH, uRoomFlicker);
+    float brkDead = step(brkRoomH, 0.5 * uRoomFlicker);
+    float brkBurst = step(0.55, abHash(vec2(floor(uFirePhase.y * 6.0), brkRoomH * 17.0), 5.0));
+    float brkBlink = step(0.4, abHash(vec2(floor(uFirePhase.x * 13.0), brkRoomH * 23.0), 7.0));
+    float brkOne = mix(1.0, mix(mix(1.0, brkBlink, brkBurst), 0.0, brkDead), brkFault);
+    brkPower = mix(1.0 - uRoomFlicker * (0.5 + 0.5 * 0.45 * 0.4), brkOne, brkRoomD);
+  }
+  totalEmissiveRadiance += ${ROOM_LIGHT} * brkLit * (0.3 + 0.7 * brkRoomV) * (1.0 - 0.75 * brkStuffK) * brkPower;
   totalEmissiveRadiance += mix(${ROOM_FIRE_LOW}, ${ROOM_FIRE_HIGH}, brkRoomV) * brkFire * brkFlick * (1.0 - 0.5 * brkStuffK);
   totalEmissiveRadiance += ${SLAB_GLOW} * brkSlabK;
   totalEmissiveRadiance += ${RIM_EMBER} * brkChar * brkChar * 0.4 * brkFlick;

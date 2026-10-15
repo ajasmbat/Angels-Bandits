@@ -44,6 +44,7 @@ import {
   emptyCaveInSlot,
   encodeCaveIn,
 } from "@angels-bandits/common/city/caveins";
+import type { CollapseWire } from "@angels-bandits/common/city/collapse";
 import {
   type MoverField,
   generateMovers,
@@ -91,6 +92,7 @@ import {
   type Course,
   generateCourses,
 } from "@angels-bandits/common/courses";
+import { parseLabTrigger } from "@angels-bandits/common/destruct-lab";
 import {
   type DirectorEvent,
   EVENT_GAS,
@@ -165,6 +167,7 @@ import {
   type SweepWorld,
 } from "./courses";
 import { DangerBudget } from "./danger";
+import { DestructLab } from "./destruct-lab";
 import {
   type RoomCity,
   applyDeathBlast,
@@ -175,6 +178,7 @@ import {
   propsMessage,
   propsWireState,
   resetRoomCity,
+  setLabCity,
   tickDestruction,
   noseOf as wireNose,
 } from "./destruction";
@@ -449,9 +453,25 @@ const roomCity = (room: Room): RoomCity => {
     rc.props.immune = (id, by) =>
       layout.props[id]?.kind === PROP_NEST &&
       !(by !== null && room.members.get(by)?.isBot === true);
+    // DL1: a Destruction Lab's city reads (and stamps) the lab's tuning.
+    if (room.destruct) {
+      setLabCity(rc);
+      rc.tuning = room.destructTuning;
+    }
     roomCityById.set(room.id, rc);
   }
   return rc;
+};
+
+/** DL1: each Destruction Lab room's trigger queue and telemetry. */
+const destructLabs = new Map<string, DestructLab>();
+const destructLabFor = (room: Room): DestructLab => {
+  let lab = destructLabs.get(room.id);
+  if (!lab) {
+    lab = new DestructLab();
+    destructLabs.set(room.id, lab);
+  }
+  return lab;
 };
 
 /**
@@ -468,7 +488,13 @@ const quiet = (room: Room): boolean =>
  * whole, and handleLeave clears it when its last human goes. FL1: and never in a lab room with chaos off (quiet).
  */
 const breakable = (room: Room): RoomCity | null =>
-  quiet(room) ? null : roomCity(room);
+  // DL1: a Destruction Lab breaks with chaos off — breaking is its point
+  // (everything else about it stays quiet).
+  room.destruct && room.humanCount > 0
+    ? roomCity(room)
+    : quiet(room)
+      ? null
+      : roomCity(room);
 
 /**
  * Each room's missile director (X1) and the probes it reads, built against
@@ -1135,6 +1161,7 @@ function disposeRoom(room: Room): void {
   chaosByRoom.delete(room.id);
   budgetsByRoom.delete(room.id);
   caveInsByRoom.delete(room.id);
+  destructLabs.delete(room.id); // DL1
 }
 
 const sanitizeName = (raw: unknown): string => {
@@ -1202,16 +1229,20 @@ function handleJoin(
   id: string,
   resumed: { record: ResumeRecord; token: string } | null,
   lab = false,
+  destruct = false,
 ): Client | null {
   const name = resumed ? resumed.record.name : sanitizeName(rawName);
   // FL1: a lab join gets a room of its own (never resumed — the caller
   // passes no record) or, over LAB_ROOM_CAP, nothing at all: refused before
   // any player state exists.
   const room = lab
-    ? rooms.joinLab(id, name)
+    ? rooms.joinLab(id, name, destruct)
     : rooms.join(id, name, resumed?.record.roomId);
   if (!room) {
-    ws.close(LAB_FULL_CODE, "Flight Lab is full");
+    ws.close(
+      LAB_FULL_CODE,
+      destruct ? "Destruction Lab is full" : "Flight Lab is full",
+    );
     return null;
   }
   const now = Date.now();
@@ -1260,6 +1291,7 @@ function handleJoin(
     id,
     roomId: room.id,
     ...(room.lab && { lab: true as const }),
+    ...(room.destruct && { destruct: true as const }),
     seed: room.seed,
     spawn,
     roster: room.roster(),
@@ -2160,6 +2192,8 @@ const velocityOf = (room: Room, id: string, pose: Pose): Vec3 =>
 function tickMissiles(room: Room, now: number): void {
   const rm = missilesFor(room);
   for (const m of rm.director.settle(now)) landMissile(room, rm, m, now);
+  // DL1: a Destruction Lab's missiles are the ones it fires itself.
+  if (room.destruct) return;
   const rc = breakable(room);
   if (!rc) return;
   const planes: DirectorPlane[] = [];
@@ -2285,6 +2319,9 @@ function landMissile(
   }
   const event = cityEvents.offer(room.id, "missile", m.to, now);
   if (event) sendToRoom(room, { type: "cityEvent", event });
+  // DL1: the lab's own strikes never hurt its pilot (its camera is often
+  // right on top of the aim point).
+  if (room.destruct) return;
   const planes: { id: string; pos: Vec3 }[] = [];
   for (const member of room.members.values()) {
     const pose = memberPose(room, member.id);
@@ -2351,6 +2388,8 @@ function directorPlanes(room: Room, now: number): DestructionPlane[] {
  * hands back what fired; the bots get the warned zones as no-fly zones.
  */
 function tickDirector(room: Room, now: number): FiredEvent[] {
+  // DL1: nothing is felled behind a Destruction Lab's back.
+  if (room.destruct) return [];
   const rc = breakable(room);
   const director = directorsByRoom.get(room.id) ?? (rc && directorFor(room));
   if (!director) return [];
@@ -2370,6 +2409,8 @@ function tickDirector(room: Room, now: number): FiredEvent[] {
 
 /** D5: announce and apply the room's due rebuilds. */
 function tickRebuilds(room: Room, now: number): void {
+  // DL1: a Destruction Lab's arena stays broken until its reset.
+  if (room.destruct) return;
   const rc = breakable(room);
   if (!rc) return;
   const director = directorFor(room);
@@ -2639,6 +2680,7 @@ wss.on("connection", (ws) => {
         joinedId,
         resumed && { record: resumed.record, token: msg.resume as string },
         lab,
+        lab && msg.destruct === true, // DL1
       );
       // W4: a fresh join, a resume (maybe into another room) — either way
       // the room's enemies learn the pilot's Easy mode from the join.
@@ -2694,7 +2736,10 @@ wss.on("connection", (ws) => {
         tuning: msg.tuning,
         chaos: msg.chaos,
         waves: msg.waves,
+        destruct: msg.destruct,
       });
+      // DL1: a Destruction Lab's tuning, triggers and arena reset.
+      if (client.room.destruct) handleDestructLab(client.room, msg, now);
     }
   };
 
@@ -2739,6 +2784,37 @@ wss.on("connection", (ws) => {
   ws.on("error", () => ws.terminate());
 });
 
+/** DL1: broadcast what a lab trigger or lab tick set off. */
+function sendLabOutput(
+  room: Room,
+  out: { collapses: CollapseWire[]; missiles: MissileStrike[] },
+): void {
+  for (const m of out.missiles) {
+    sendToRoom(room, { type: "missile", m: encodeMissile(m) });
+  }
+  for (const c of out.collapses) sendToRoom(room, { type: "collapse", c });
+}
+
+/** DL1: a Destruction Lab message's tuning, trigger and reset (the tuning
+ * itself already landed through Room.applyLab). */
+function handleDestructLab(room: Room, msg: ClientEnvelope, now: number): void {
+  const rc = roomCity(room);
+  rc.tuning = room.destructTuning;
+  const lab = destructLabFor(room);
+  if (msg.reset === true) {
+    for (const r of lab.reset(rc, now))
+      sendToRoom(room, { type: "rebuild", r });
+  }
+  if (msg.trigger !== undefined) {
+    const t = parseLabTrigger(msg.trigger, rc.buildings);
+    if (!t) return;
+    const began = performance.now();
+    const out = lab.trigger(rc, t, now, missilesFor(room).director);
+    if (out.collapses.length > 0) lab.noteBuild(performance.now() - began);
+    sendLabOutput(room, out);
+  }
+}
+
 // --- Combat + bot sim tick + snapshots at TICK_DOWN_HZ, one stringify per room ---
 // Snapshots go out QUANTISED (ANGE-4KO2W2): common/src/net.ts turns each entry
 // into a tuple of integers, which is what pays for the 20 Hz cadence.
@@ -2774,12 +2850,24 @@ function tick(): void {
     // D2: everything that broke this tick, as ONE batch — then (D3) every
     // collapse it set off, after it, so a client applies them in order.
     const rc = roomCityById.get(room.id);
+    // DL1: a Destruction Lab's timed steps (sustained fire, a chain across
+    // the block) land first, so what they break rides this tick's batch.
+    const lab = room.destruct && rc ? destructLabFor(room) : null;
+    if (lab && rc) {
+      rc.tuning = room.destructTuning;
+      sendLabOutput(room, lab.tickLab(rc, time));
+    }
     if (rc) {
+      const destructionAt = performance.now();
       const { broke, collapses, props } = tickDestruction(
         rc,
         time,
         breakable(room) ? chaosPlanes(room, time) : [],
       );
+      if (lab) {
+        const ms = performance.now() - destructionAt;
+        lab.noteTick(ms, collapses.length > 0 ? ms : 0);
+      }
       if (broke.length > 0) {
         sendToRoom(room, { type: "chunks", d: encodeChunkIds(broke) });
       }
@@ -2794,6 +2882,8 @@ function tick(): void {
       // where the props' blasts broke chunks (next tick's batch).
       for (const site of props.condemned) directorFor(room).condemnCrane(site);
       if (props.broke.length > 0) chaosFor(room)?.ignite(props.broke, time, rc);
+      const stats = lab?.stats(rc, time);
+      if (stats) sendToRoom(room, { type: "labStats", ...stats });
     }
     // D5: rebuilds after the batch (nothing of theirs is pending now), then
     // the gas mains' blasts on the planes. L7: the burn steps around them —

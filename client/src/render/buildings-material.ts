@@ -25,6 +25,7 @@ import {
   BROKEN_DETAIL_UNIFORM,
   BROKEN_EMISSIVE_GLSL,
   BROKEN_VERTEX_GLSL,
+  ROOM_FLICKER_UNIFORM,
 } from "./broken-shading";
 import { DAMAGE_GLSL, DAMAGE_ON_UNIFORM, DAMAGE_PARS_GLSL } from "./damage-map";
 import {
@@ -337,6 +338,7 @@ varying vec4 vHole;
 varying vec2 vRun;
 varying vec4 vBroken;
 uniform float uBrokenDetail; // D2 quality: rebar + jagged rims on (1)
+uniform float uRoomFlicker; // DL1: the broken floors' dying lights (0 = off)
 
 float abHash(vec2 p, float s) {
   return fract(sin(dot(p + s * 61.0, vec2(127.1, 311.7))) * 43758.5453);
@@ -654,6 +656,7 @@ export function createBuildingsMaterial(
     shader.uniforms.uWeather = WEATHER_UNIFORM;
     // D2: the quality tier's broken-edge detail switch, by reference.
     shader.uniforms.uBrokenDetail = BROKEN_DETAIL_UNIFORM;
+    shader.uniforms.uRoomFlicker = ROOM_FLICKER_UNIFORM;
     // D1: the facade damage atlas and its switch (damage-map.ts).
     shader.uniforms.uDamage = { value: damage };
     shader.uniforms.uDamageOn = DAMAGE_ON_UNIFORM;

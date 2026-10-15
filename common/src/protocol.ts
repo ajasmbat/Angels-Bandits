@@ -79,6 +79,13 @@ export interface JoinMsg {
    */
   lab?: boolean;
   /**
+   * DL1: with `lab`, join the Destruction Lab instead — the same private solo
+   * room, where destruction runs without chaos, the director and rebuild
+   * timers are off, and the room's destruction tuning and triggers are the
+   * lab's (LabMsg `destruct`, `trigger`, `reset`).
+   */
+  destruct?: boolean;
+  /**
    * W4: this pilot flies in Easy mode (a first-timer's default until three
    * waves are cleared, or their own pick). The room's enemies treat an Easy
    * pilot as the most novice skill level and let more of their shots go.
@@ -100,6 +107,15 @@ export interface LabMsg {
   chaos?: boolean;
   /** W1: the carrier and its enemy waves (off by default). */
   waves?: boolean;
+  /** DL1, Destruction Lab rooms only: the lab's destruction tuning, a
+   * decoded export (`JSON.parse(exportDestructionTuning(t))`, common/src/
+   * destruction-tuning.ts) — re-imported and clamped by the server. */
+  destruct?: unknown;
+  /** DL1: set something off (server/src/destruct-lab.ts LabTrigger —
+   * validated there). */
+  trigger?: unknown;
+  /** DL1: the arena whole again — every building, crane and prop. */
+  reset?: boolean;
 }
 
 /** Streamed at TICK_UP_HZ once joined. */
@@ -265,6 +281,9 @@ export interface WelcomeMsg {
   /** FL1: set only when this is a Flight Lab room — the one place a client
    * may apply lab tuning. */
   lab?: true;
+  /** DL1: set only (with `lab`) in a Destruction Lab room — the one place a
+   * client applies destruction tuning and builds stamped wires. */
+  destruct?: true;
   seed: number;
   spawn: SpawnState;
   roster: RosterEntry[];
@@ -696,6 +715,22 @@ export interface CollapseMsg {
 }
 
 /**
+ * DL1: the Destruction Lab room's own telemetry, about twice a second (lab
+ * rooms only): the server's destruction tick — its last and its p99 over
+ * the last LAB_STATS_WINDOW ticks, ms — the debris pieces still moving and
+ * every collision box the room's field holds.
+ */
+export interface LabStatsMsg {
+  type: "labStats";
+  last: number;
+  p99: number;
+  /** The heaviest collapse build in the window, ms (a one-off per event). */
+  build: number;
+  live: number;
+  boxes: number;
+}
+
+/**
  * S4: a sky-boss raid begins (common/src/boss.ts). Everything about the
  * zeppelin's flight is a pure function of this and the synced clock; its
  * weak points start at full HP.
@@ -843,6 +878,7 @@ export type ServerMsg =
   | BossDownMsg
   | ChunksMsg
   | CollapseMsg
+  | LabStatsMsg
   | MissileMsg
   | CourseResultMsg
   | CourseBoardMsg

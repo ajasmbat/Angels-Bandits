@@ -48,6 +48,8 @@
     "./hazards": "./src/hazards.ts",
     "./botstyle": "./src/botstyle.ts",
     "./tuning": "./src/tuning.ts",
+    "./destruction-tuning": "./src/destruction-tuning.ts",
+    "./destruct-lab": "./src/destruct-lab.ts",
     "./waves": "./src/waves.ts"
   }
 }

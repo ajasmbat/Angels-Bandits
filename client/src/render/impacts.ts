@@ -113,6 +113,22 @@ export const DUST_RGB: Record<
   [FacadeArchetype.OFFICE]: [0.46, 0.43, 0.38],
 };
 
+/** DL1: one particle's numbers for ImpactPool.spawnFrom (a reused record;
+ * every field starts as a double so V8 keeps them unboxed in place). */
+export interface SpawnRec {
+  vx: number;
+  vy: number;
+  vz: number;
+  lifeMs: number;
+  size: number;
+  r: number;
+  g: number;
+  b: number;
+  now: number;
+  phase: number;
+  settle: number;
+}
+
 /**
  * The pure particle pool: a ring of `capacity` slots, `cap` of them in use
  * (the tier's budget). spawn() writes the next slot round the ring — the
@@ -201,6 +217,30 @@ export class ImpactPool {
     this.rgb[i * 3 + 2] = b;
     this.phase[i] = phase;
     this.settle[i] = settle;
+  }
+
+  /** DL1: spawn() with its numbers read out of `rec` — the collapse
+   * detail sprays thousands of particles a second through spray(), and a
+   * double handed to a call V8 does not inline is boxed (O5's rule): nine
+   * of them per particle. Writes exactly what spawn() would. */
+  spawnFrom(kind: Kind, origin: Vec3, rec: SpawnRec): void {
+    const i = this.head;
+    this.head = (this.head + 1) % this.cap;
+    this.ox[i] = origin.x;
+    this.oy[i] = origin.y;
+    this.oz[i] = origin.z;
+    this.vx[i] = rec.vx;
+    this.vy[i] = rec.vy;
+    this.vz[i] = rec.vz;
+    this.born[i] = rec.now;
+    this.life[i] = rec.lifeMs;
+    this.kind[i] = kind;
+    this.size[i] = rec.size;
+    this.rgb[i * 3] = rec.r;
+    this.rgb[i * 3 + 1] = rec.g;
+    this.rgb[i * 3 + 2] = rec.b;
+    this.phase[i] = rec.phase;
+    this.settle[i] = rec.settle;
   }
 
   isLive(i: number, now: number): boolean {
@@ -405,6 +445,20 @@ export class Impacts {
   qaHidden = false;
   private lastBurnMs = Number.POSITIVE_INFINITY;
   private readonly v: Vec3 = { x: 0, y: 0, z: 0 };
+  /** DL1: spray()'s particle record (spawnFrom). */
+  private readonly rec: SpawnRec = {
+    vx: 0.5,
+    vy: 0.5,
+    vz: 0.5,
+    lifeMs: 0.5,
+    size: 0.5,
+    r: 0.5,
+    g: 0.5,
+    b: 0.5,
+    now: 0.5,
+    phase: 0.5,
+    settle: 0,
+  };
   private readonly at: Vec3 = { x: 0, y: 0, z: 0 };
   private readonly rand = Math.random;
 
@@ -630,6 +684,8 @@ export class Impacts {
     settle = false,
   ): void {
     const rand = this.rand;
+    const rec = this.rec;
+    const pool = settle ? this.chunks : this.pool;
     for (let i = 0; i < this.count(n); i++) {
       const v = sprayInto(
         this.v,
@@ -638,21 +694,19 @@ export class Impacts {
         spread,
         rand,
       );
-      (settle ? this.chunks : this.pool).spawn(
-        kind,
-        point,
-        v.x,
-        v.y,
-        v.z,
-        lifeMs * (0.6 + 0.8 * rand()),
-        size * (0.7 + 0.6 * rand()),
-        rgb[0],
-        rgb[1],
-        rgb[2],
-        now,
-        rand() * 6.28,
-        settle ? 1 : 0,
-      );
+      // DL1: the same numbers spawn() took, in the same order of rand().
+      rec.vx = v.x;
+      rec.vy = v.y;
+      rec.vz = v.z;
+      rec.lifeMs = lifeMs * (0.6 + 0.8 * rand());
+      rec.size = size * (0.7 + 0.6 * rand());
+      rec.r = rgb[0];
+      rec.g = rgb[1];
+      rec.b = rgb[2];
+      rec.now = now;
+      rec.phase = rand() * 6.28;
+      rec.settle = settle ? 1 : 0;
+      pool.spawnFrom(kind, point, rec);
     }
   }
 

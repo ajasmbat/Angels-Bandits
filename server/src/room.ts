@@ -19,12 +19,22 @@
 // joins never land in one, and only a lab room ever holds a tuning other
 // than DEFAULT_TUNING — which its pose validation (validate.ts roomPoseCap)
 // is the only reader of.
+//
+// DL1 Destruction Lab: a lab room joined with `destruct` (`Room.destruct`).
+// It holds a DestructionTuning other than the defaults — the only room that
+// ever does (applyLab refuses everywhere else) — which its room city's
+// planner, chain blasts and stamped wires read (index.ts roomCity).
 
 import {
   CITY_SEED,
   LAB_ROOM_CAP,
   ROOM_CAP,
 } from "@angels-bandits/common/constants";
+import {
+  DEFAULT_DESTRUCTION_TUNING,
+  type DestructionTuning,
+  importDestructionObject,
+} from "@angels-bandits/common/destruction-tuning";
 import type { RosterEntry } from "@angels-bandits/common/protocol";
 import {
   DEFAULT_TUNING,
@@ -53,6 +63,10 @@ export class Room {
   /** W1: the carrier and its enemy waves run in a lab room only when its
    * pilot turns them on. */
   labWaves = false;
+  /** DL1: the destruction tuning this room's city reads. Stays exactly
+   * DEFAULT_DESTRUCTION_TUNING's values in every room but a Destruction Lab
+   * (applyLab refuses). */
+  destructTuning: DestructionTuning = { ...DEFAULT_DESTRUCTION_TUNING };
 
   constructor(
     readonly id: string,
@@ -60,7 +74,11 @@ export class Room {
     readonly seed: number,
     /** FL1: a Flight Lab room — one pilot's private sandbox. */
     readonly lab = false,
-  ) {}
+    /** DL1: a Destruction Lab room (always also a lab room). */
+    readonly destruct = false,
+  ) {
+    if (destruct && !lab) throw new Error("a Destruction Lab is a lab room");
+  }
 
   /**
    * FL1: apply a `lab` message's fields. A tuning is re-imported through the
@@ -72,11 +90,17 @@ export class Room {
     tuning?: unknown;
     chaos?: unknown;
     waves?: unknown;
+    destruct?: unknown;
   }): boolean {
     if (!this.lab) return false;
     if (msg.tuning !== undefined) {
       const imported = importTuningObject(msg.tuning);
       if (imported.ok) this.labTuning = imported.tuning;
+    }
+    // DL1: destruction tuning only ever lands in a Destruction Lab.
+    if (msg.destruct !== undefined && this.destruct) {
+      const imported = importDestructionObject(msg.destruct);
+      if (imported.ok) this.destructTuning = imported.tuning;
     }
     if (typeof msg.chaos === "boolean") this.labChaos = msg.chaos;
     if (typeof msg.waves === "boolean") this.labWaves = msg.waves;
@@ -149,10 +173,11 @@ export class RoomManager {
   }
 
   /** FL1: a fresh lab room of `id`'s own, or null when LAB_ROOM_CAP lab
-   * rooms are already open. Never shared, never resumed into. */
-  joinLab(id: string, name: string): Room | null {
+   * rooms are already open. Never shared, never resumed into. DL1: a
+   * Destruction Lab with `destruct` (the same cap). */
+  joinLab(id: string, name: string, destruct = false): Room | null {
     if (this.list.filter((r) => r.lab).length >= LAB_ROOM_CAP) return null;
-    const room = this.spawnRoom(true);
+    const room = this.spawnRoom(true, destruct);
     room.members.set(id, { id, name });
     this.byMember.set(id, room);
     return room;
@@ -183,8 +208,13 @@ export class RoomManager {
     return this.byMember.get(id);
   }
 
-  private spawnRoom(lab = false): Room {
-    const room = new Room(`room-${this.nextRoomId++}`, CITY_SEED, lab);
+  private spawnRoom(lab = false, destruct = false): Room {
+    const room = new Room(
+      `room-${this.nextRoomId++}`,
+      CITY_SEED,
+      lab,
+      destruct,
+    );
     this.list.push(room);
     return room;
   }

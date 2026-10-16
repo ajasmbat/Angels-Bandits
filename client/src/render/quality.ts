@@ -94,6 +94,10 @@ export interface QualityProfile {
   birds: number;
   /** L10 airliner contrail length, share. */
   contrails: number;
+  /** SKY1 the cosmetic sky (sky-armada.ts): share of the airship, dogfight
+   * and flak slots drawn, and of their radius — instance counts and
+   * uniforms; far-field dressing past the fog limit, never solid. */
+  skyArmada: number;
   /** L13 fire escapes, balconies, AC units, scaffolding; DT2 balcony
    * plants and sconces, ivy curtains and graffiti (all one instanced rig). */
   facadeDetail: boolean;
@@ -236,6 +240,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     fountains: 1,
     birds: 1,
     contrails: 1,
+    skyArmada: 1,
     facadeDetail: true,
     riverDetail: true,
     bloom: true,
@@ -287,6 +292,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     fountains: 0.5,
     birds: 1,
     contrails: 1,
+    skyArmada: 0.8,
     facadeDetail: true,
     riverDetail: true,
     bloom: true,
@@ -338,6 +344,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     fountains: 0,
     birds: 0.5,
     contrails: 0.5,
+    skyArmada: 0.6,
     facadeDetail: false,
     riverDetail: false,
     bloom: true,
@@ -389,6 +396,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     fountains: 0,
     birds: 0.5,
     contrails: 0.5,
+    skyArmada: 0.45,
     facadeDetail: false,
     riverDetail: false,
     bloom: true,
@@ -975,6 +983,15 @@ export const FEATURE_TIERS: readonly {
     low: "reduced",
     mobile: "reduced",
     note: "outer radius 5 / 4.4 / 3.4 / 2.6 km (farSkyline): the tower lattice's side (an instance count: 102² / 90² / 70² / 54² slots) and a uniform — purely far-field dressing behind the fog limit, never solid; two opaque draws on every tier",
+  },
+  {
+    feature:
+      "SKY1 cosmetic sky — airship armada, dogfights, flak, painted horizon",
+    high: "full",
+    medium: "reduced",
+    low: "reduced",
+    mobile: "reduced",
+    note: "100 / 80 / 60 / 45 % of the 640 airship, 120 dogfight and 160 flak slots (skyArmada), the radius with them (ships 5.2 / 4.7 / 4.2 / 3.8 km) — instance counts and uniforms; purely far-field dressing in L2's shell past the fog limit, never solid; four draws on every tier (the painted horizon is the same everywhere, so Mobile's sky stays busy)",
   },
   {
     feature: "Stormlit L2 — city glow in the fog, the dome and the cloud bases",

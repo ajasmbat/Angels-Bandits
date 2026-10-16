@@ -94,7 +94,11 @@ import {
   decodeGhost,
   generateCourses,
 } from "@angels-bandits/common/courses";
-import { type DirectorEvent, EVENT_GAS } from "@angels-bandits/common/director";
+import {
+  type DirectorEvent,
+  EVENT_CARS,
+  EVENT_GAS,
+} from "@angels-bandits/common/director";
 import {
   type FlightState,
   bankPitchMult,
@@ -299,6 +303,7 @@ import {
   stageDestruction,
   stageProps,
 } from "./game/qa-destruction";
+import { type QaLowChaosSpec, planQaLowChaos } from "./game/qa-lowchaos";
 import {
   type QaFleetSpec,
   type QaFleetStage,
@@ -464,6 +469,7 @@ import { Searchlights, type SpotBeam } from "./render/searchlights";
 import { Signage } from "./render/signage";
 import { Signals } from "./render/signals";
 import { EXPOSURE, GroundPlane, SkyDome, setupSky } from "./render/sky";
+import { SkyArmada } from "./render/sky-armada";
 import {
   SKY_MOMENTS,
   SkyCycle,
@@ -958,6 +964,15 @@ skyDome.mesh.add(airliners.points);
 // spires — drawn in a shell just inside 800 m. Two opaque draws, never solid.
 const farSkyline = new FarSkyline(skyDome.uniforms.uMoonDir);
 scene.add(farSkyline.carpet, farSkyline.towers);
+// SKY1 Infinite sky: the cosmetic airship armada, the dogfights and flak
+// round it, and the painted horizon — pure functions of (seed, synced
+// clock) in L2's far shell, four draws, uniforms only per frame.
+const skyArmada = new SkyArmada(
+  welcome.seed,
+  skyDome.uniforms.uMoonDir,
+  renderOpts.armada,
+);
+scene.add(...skyArmada.objects);
 const streetlights = new Streetlights();
 scene.add(streetlights.group);
 // Stormlit L8: the far-field street glow (the lamp pools hand over to it
@@ -1353,7 +1368,8 @@ socket.events.onDirectorWarn = (e) => {
   const serverMs = socket.renderTime();
   const left = (e.at - (serverMs ?? e.w)) / 1000;
   audio.directorWarning(
-    e.k === EVENT_GAS,
+    // C1: a car chain's fire hisses like a gas main.
+    e.k === EVENT_GAS || e.k === EVENT_CARS,
     { x: e.x, y: 10, z: e.z },
     flight.pos,
     flight.yaw,
@@ -1693,6 +1709,9 @@ scene.add(bossRenderer.group);
  * schedule, and how many shells the server sent while it was staged
  * (dropped each frame). */
 let qaBoss: QaFleetStage | null = null;
+/** C1 QA (`__ab.qaLowChaos`): the warnings it put in the director map, and
+ * whether it staged destruction (cleared with it). */
+const qaLowChaos = { ids: [] as number[], staged: false };
 /** P4 QA (`__ab.qaChaos`): the staged chaos scene (game/qa-chaos.ts). */
 let qaChaos: QaChaosStage | null = null;
 let qaForeignShells = 0;
@@ -3022,6 +3041,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   streetlights.setQuality(tier); // L8: the far strip's spill
   farTraffic.setQuality(tier); // L8: phantom fleet share
   farSkyline.setQuality(tier); // L2: the far skyline's radius
+  skyArmada.setQuality(tier); // SKY1: slots drawn and their radius
   signage.setQuality(tier);
   jumbotrons.setQuality(tier); // S1: Mobile shows the static LAST KILL card
   rooftopLife.setQuality(tier);
@@ -3392,6 +3412,9 @@ declare global {
         airlinerPoints: number;
         droneShow: DroneShowRenderer["current"];
         newsHeli: typeof moverField.news;
+        /** SKY1: the tier's slot counts and radii, and the layer's draws
+         * this frame (≤ SKY_ARMADA_DRAWS). */
+        armada: SkyArmada["counts"] & { draws: number };
       };
       forceDroneShow: (ageS: number | null) => void;
       cityStats: () => {
@@ -3570,6 +3593,20 @@ declare global {
         fires: number;
         /** W2: staged bombs the planner refused (`index:reason`). */
         bombsRefused: string[];
+      } | null;
+      /** C1 QA: stage a low run down a canyon with the low-flying chaos
+       * going off round a held pose (game/qa-lowchaos.ts) — the plane's own
+       * pose when omitted — through qaDestruction and the director's
+       * warnings; null clears it. */
+      qaLowChaos: (spec?: QaLowChaosSpec | null) => {
+        /** Warnings still to go off, and gone off (bursts, sirens). */
+        warned: number;
+        fired: number;
+        /** Event kinds staged (DirectorEvent.k). */
+        kinds: number[];
+        fell: number;
+        props: number;
+        gas: number;
       } | null;
       jumbotronView: (
         i: number,
@@ -4054,6 +4091,11 @@ function qaSystems(): {
     ["farSkyline", [farSkyline.carpet, farSkyline.towers]], // Stormlit L2
     ["farCarpet", [farSkyline.carpet]], // Stormlit L2
     ["farTowers", [farSkyline.towers]], // Stormlit L2
+    ["skyArmada", skyArmada.objects], // SKY1: all four draws
+    ["skyShips", [skyArmada.armada]], // SKY1
+    ["skyPlanes", [skyArmada.planes]], // SKY1
+    ["skyFx", [skyArmada.fx]], // SKY1
+    ["skyHorizon", [skyArmada.horizon]], // SKY1
     ["movers", [movers.rig, movers.hulls, movers.rotors]],
     ["moverLights", [moverLights.points]],
     ["train", [train.mesh]],
@@ -4453,6 +4495,10 @@ window.__ab = {
     airlinerPoints: airliners.pointCount,
     droneShow: droneShow.current,
     newsHeli: moverField.news,
+    armada: {
+      ...skyArmada.counts,
+      draws: skyArmada.objects.filter((o) => o.visible).length,
+    },
   }),
   forceDroneShow: (ageS) =>
     droneShow.force(worldTime(), ageS === null ? null : ageS * 1000),
@@ -4754,6 +4800,51 @@ window.__ab = {
       quake: qaChaos.quake !== null,
       fires: qaChaos.fires.length,
       bombsRefused: qaChaos.bombsRefused,
+    };
+  },
+  // C1 QA: stage a low run with the low-flying chaos firing round a held
+  // pose (the plane's own when omitted); null clears it.
+  qaLowChaos: (spec) => {
+    for (const id of qaLowChaos.ids) socket.director.delete(id);
+    qaLowChaos.ids.length = 0;
+    if (qaLowChaos.staged) {
+      window.__ab?.qaDestruction(null);
+      qaLowChaos.staged = false;
+    }
+    if (spec === null) return null;
+    const pose = spec ?? {
+      x: flight.pos.x,
+      y: flight.pos.y,
+      z: flight.pos.z,
+      yaw: flight.yaw,
+    };
+    const t0 = socket.renderTime() ?? lastRenderMs ?? 0;
+    const plan = planQaLowChaos(
+      pose,
+      t0,
+      city.cityBuildings,
+      propLayout,
+      socket.props,
+      welcome.seed,
+    );
+    window.__ab?.qaDestruction({
+      fell: plan.fell,
+      props: { down: plan.down },
+    });
+    qaLowChaos.staged = true;
+    for (const e of plan.events) {
+      socket.director.set(e.id, e);
+      qaLowChaos.ids.push(e.id);
+    }
+    const now = performance.now();
+    for (const g of plan.gas) directorFx.gasBlast(g, now);
+    return {
+      warned: plan.events.filter((e) => e.at > t0).length,
+      fired: plan.events.filter((e) => e.at <= t0).length,
+      kinds: [...new Set(plan.events.map((e) => e.k))].sort((a, b) => a - b),
+      fell: plan.fell.length,
+      props: plan.down.length,
+      gas: plan.gas.length,
     };
   },
   jumbotronView: (i, distance) => jumbotrons.view(i, distance),
@@ -6855,6 +6946,14 @@ const frame = (rafNow: number): void => {
     dt,
     renderer.domElement.height,
     now,
+    sky.domeVisible,
+  );
+  // SKY1: uniforms only (FAR_ORIGIN, just written above, is shared).
+  skyArmada.update(
+    camera,
+    renderMs,
+    renderer.domElement.width,
+    renderer.domElement.height,
     sky.domeVisible,
   );
   const heatCount = inferno.mergeHeat(

@@ -30,17 +30,43 @@
 //   plane's projected path enters its volume → ANNOUNCED (`rebuild` go:false,
 //   cosmetic, at = now + rebuildLeadMs) → APPLIED at the first check ≥ `at`
 //   that still passes (`rebuild` go:true, applied by clients on arrival).
+//
+// C1 low-flying chaos, on top of all that (common/src/lowchaos.ts): while a
+// human flies low among the towers (lowChaosLevel, with hysteresis) the
+// low slots — 2–4 s apart — each try to stage ONE event near and ahead of
+// that human, warned DIRECTOR_WARN_MS ahead like every director event: a
+// tower toppled across or beside the path, a facade peeled into the
+// street, a gas main beside the path, a roof tank or billboard sent over
+// the edge, a bridge span dropped, a chain of cars and trucks set off.
+// Fair: every plane keeps a way out (escapeFrom: straight on, a normal
+// turn, a gentle climb), a lethal one near a plane is charged to the
+// danger budget's `lowchaos` share, and no tower is felled near a human
+// with LOW_FALLING_MAX collapses already coming down round them (the cap
+// holds for the regular picks too). Low events neither set nor read the
+// post-event cooldown (that paces D5's own cadence, which runs on as
+// before). Towers come down from shapes already simulated (prefillLow,
+// one at most every prefillMs), so a low pick never stalls a tick.
+//
+// And the city never runs out (the recycling rule): a ruin farther than
+// recycleFarM from every human — out in the fog — is rebuilt as soon as it
+// has settled, without waiting out its timer, so the destruction can go on
+// round the players indefinitely under DESTROY_CAP and the stop shares.
 
 import {
   type Building,
   chunkBuilding,
   mulberry32,
+  standingProfile,
   tierGrids,
 } from "@angels-bandits/common/city";
 import {
   type Collapse,
   type CollapsePlan,
   type CollapseWire,
+  DIR_NEG_X,
+  DIR_NEG_Z,
+  DIR_POS_X,
+  DIR_POS_Z,
   KIND_CRANE,
   PANCAKE,
   TOPPLE,
@@ -53,7 +79,23 @@ import {
   demolitionPlan,
 } from "@angels-bandits/common/city/collapse";
 import type { CraneSite } from "@angels-bandits/common/city/movers";
+import {
+  PROP_BILLBOARD,
+  PROP_BRIDGE,
+  PROP_CAR,
+  PROP_FUEL,
+  PROP_HP,
+  PROP_TANK,
+  PROP_TAXI,
+  type Prop,
+  fallSeconds,
+  propsNear,
+} from "@angels-bandits/common/city/props";
 import { underCover } from "@angels-bandits/common/city/tunnels";
+import {
+  COLLAPSE_LEAD_MS,
+  FOG_DISTANCE,
+} from "@angels-bandits/common/constants";
 import {
   DIRECTOR_ACTION_M,
   DIRECTOR_DIRS,
@@ -62,9 +104,13 @@ import {
   DIRECTOR_WARN_MS,
   type DangerZone,
   type DirectorEvent,
+  EVENT_CARS,
   EVENT_COLLAPSE,
   EVENT_CRANE,
+  EVENT_FACADE,
   EVENT_GAS,
+  EVENT_ROOF,
+  EVENT_SPAN,
   GAS_BLAST_M,
   GAS_CHUNK_DAMAGE,
   GAS_CHUNK_RADIUS,
@@ -82,7 +128,16 @@ import {
   pathCrossing,
 } from "@angels-bandits/common/director";
 import {
+  ESCAPE_STRAIGHT,
+  LOW_FALLING_MAX,
+  LOW_FALLING_R,
+  escapeFrom,
+  lowChaosLevel,
+  lowSlotsInWindow,
+} from "@angels-bandits/common/lowchaos";
+import {
   type Vec3,
+  canonicalize,
   wrapDeltaAxis,
   wrapDistance,
 } from "@angels-bandits/common/world";
@@ -131,7 +186,40 @@ export interface DestructionTuning {
   rebuildCheckMs: number;
   /** No warning on a building whose rebuild is due within this, ms. */
   rebuildQuietMs: number;
+  /** C1: the low-flying chaos (null: off — D5 as it shipped). */
+  low: LowChaosTuning | null;
+  /** C1 recycling: a ruin this far (plan-view gap) from every human is
+   * rebuilt once settled and recycleAfterMs past its last collapse, its
+   * timer or not, m (0: off). */
+  recycleFarM: number;
+  recycleAfterMs: number;
 }
+
+/** C1: the low-flying chaos's kinds, by the order the pick weighs them. */
+export type LowKind = "topple" | "facade" | "gas" | "roof" | "span" | "cars";
+
+export interface LowChaosTuning {
+  /** An armed low slot retries its pick this often, for this long, ms. */
+  retryMs: number;
+  patienceMs: number;
+  /** How often each kind is tried first (relative). */
+  weights: Readonly<Record<LowKind, number>>;
+  /** No low topple or facade at or above this gone share of the city (the
+   * props kinds go on: PROP_DOWN_CAP and their repairs bound them). */
+  stopShare: number;
+  /** At most one low-topple debris simulation this often, ms. */
+  prefillMs: number;
+}
+
+/** C1: an event every 2–4 s near a human flying low — a topple one time in
+ * five, the rest the cheaper street-level kinds. */
+export const LOW_CHAOS_TUNING: LowChaosTuning = {
+  retryMs: 250,
+  patienceMs: 1500,
+  weights: { topple: 2, facade: 2, gas: 1.5, roof: 2, span: 1, cars: 2 },
+  stopShare: 0.12,
+  prefillMs: 500,
+};
 
 /** C2 constant chaos: a staged collapse, gas main or crane near the action
  * every 10–20 s (the slots of directorSlotsInWindow, scaled by 1/12), a
@@ -158,6 +246,9 @@ export const DESTRUCTION_TUNING: DestructionTuning = {
   rebuildMarginM: 25,
   rebuildCheckMs: 1000,
   rebuildQuietMs: 8000,
+  low: LOW_CHAOS_TUNING,
+  recycleFarM: FOG_DISTANCE,
+  recycleAfterMs: 6000,
 };
 
 /** D5 as it shipped, before C2 (AB_CHAOS=0 restores it): an event every
@@ -182,6 +273,9 @@ export const D5_TUNING: DestructionTuning = {
   rebuildMarginM: 25,
   rebuildCheckMs: 1000,
   rebuildQuietMs: 30_000,
+  low: null,
+  recycleFarM: 0,
+  recycleAfterMs: 0,
 };
 
 /** AB_DIRECTOR_FAST=1 (tests and QA only): an event every ~5–10 s and a
@@ -316,11 +410,42 @@ function zonePoints(e: Pick<DirectorEvent, "x" | "z" | "zone">): Vec3[] {
 const budgetPlanes = (planes: readonly DestructionPlane[]): DangerPlane[] =>
   planes.map((p) => ({ id: p.id, pos: p.pos, vel: p.vel, prot: p.protected }));
 
+/** C1: where plane `p` is `s` seconds on, flying straight (not wrapped). */
+const ahead = (p: DestructionPlane, s: number): Vec3 => ({
+  x: p.pos.x + p.vel.x * s,
+  y: Math.max(0, p.pos.y + p.vel.y * s),
+  z: p.pos.z + p.vel.z * s,
+});
+
+/** Plan-view distance from (x, z) to `p`, m. */
+const planGap = (x: number, z: number, p: Vec3): number =>
+  Math.hypot(wrapDeltaAxis(x, p.x), wrapDeltaAxis(z, p.z));
+
+/** C1 facade peel: the blast that takes a face's slabs and glass off (a
+ * few chunks round the peel point, point-to-box), m and HP. */
+export const FACADE_RADIUS = 7;
+export const FACADE_DAMAGE = 160;
+/** ...and the strip in front of the face its debris rains into, m: the
+ * sidewalk (rubble lands within RUBBLE_REACH of the face) with margin — a
+ * plane down the middle of the street (LOT_LINE from each face) is clear. */
+const FACADE_REACH = 8;
+/** C1: the vehicles a car chain starts from. */
+const VEHICLES = [PROP_CAR, PROP_TAXI, PROP_FUEL] as const;
+/** C1: the roof props that go over the edge. */
+const ROOF_FALLERS = [PROP_TANK, PROP_BILLBOARD] as const;
+/** C1: a low tower is one whose footprint lies within this of the path
+ * ahead, m. */
+const LOW_TOWER_REACH = 120;
+/** C1: towers a low pick (and its prefill) weighs. */
+const LOW_TOWERS = 2;
+
 /** What the tower pick needs of one candidate collapse: its danger zone and
  * (a topple's) fall footprint. */
 interface CollapseShape {
   zone: DangerZone;
   fp: DangerZone | null;
+  /** C1: when its last piece comes to rest, ms after the event. */
+  endMs: number;
 }
 
 /** A1: shapes kept at most; past it the oldest goes first. */
@@ -368,6 +493,18 @@ export class DestructionDirector {
   private readonly shapes = new Map<string, CollapseShape | null>();
   private readonly prefillQueue: PrefillItem[] = [];
   private nextPrefillScan = 0;
+  /** Debris simulations run so far (the tick bench sorts ticks by it). */
+  simulations = 0;
+  /** C1: humans flying low, by id → lowChaosLevel. */
+  private readonly low = new Map<string, number>();
+  /** C1: the low events among the warned (no cooldown either way). */
+  private readonly lowIds = new Set<number>();
+  private lowScanFrom: number | null = null;
+  /** C1: the armed low slot's patience runs out at this, ms. */
+  private lowArmed: number | null = null;
+  private lowNextTry = 0;
+  private lowTurn = 0;
+  private nextLowPrefill = 0;
 
   constructor(
     private readonly seed: number,
@@ -395,6 +532,7 @@ export class DestructionDirector {
   forget(id: string): void {
     this.spawns.delete(id);
     this.cooldown.delete(id);
+    this.low.delete(id);
   }
 
   /** The room's city went back to whole (its last human left). */
@@ -406,6 +544,10 @@ export class DestructionDirector {
     this.cooldown.clear();
     this.spawns.clear();
     this.announced.clear();
+    this.low.clear();
+    this.lowIds.clear();
+    this.lowScanFrom = null;
+    this.lowArmed = null;
   }
 
   private fresh(p: DestructionPlane, now: number): boolean {
@@ -441,10 +583,12 @@ export class DestructionDirector {
         );
         const fired = blocked ? null : this.fire(e, world);
         if (!fired) {
+          this.lowIds.delete(e.id);
           out.cancelled.push(e);
           continue;
         }
         out.fired.push(fired);
+        if (this.lowIds.delete(e.id)) continue;
         for (const p of planes) {
           if (inDangerZone(e, p.pos, t.cooldownMarginM)) {
             this.cooldown.set(p.id, now + t.cooldownMs);
@@ -495,6 +639,8 @@ export class DestructionDirector {
         }
       }
     }
+    // C1: and the low-flying chaos round every human in the canyons.
+    this.tickLow(now, planes, world, out);
     // A1: an idle tick warms the next pick's debris (see prefill) — only
     // while a slot is armed or about to be (the schedule is a pure function
     // of seed and time), so towers broken between slots are not simulated
@@ -536,6 +682,23 @@ export class DestructionDirector {
         collapse: stageCraneFall(city, site, e.at),
         broke: [],
       };
+    }
+    if (e.k === EVENT_FACADE) {
+      // C1: the face's slabs and glass come off into the street (the D2
+      // break of the chunks round the peel point — the `chunks` batch).
+      const broke = city.damage.damageAt(e, FACADE_RADIUS, FACADE_DAMAGE);
+      for (const id of broke) city.breakers.set(chunkBuilding(id), null);
+      return { event: e, collapse: null, broke };
+    }
+    if (e.k === EVENT_ROOF || e.k === EVENT_SPAN || e.k === EVENT_CARS) {
+      // C1: the prop goes down the D9 way — a roof faller over the edge, a
+      // span into the river, the first vehicle's blast setting off the
+      // rest (tickProps: fuses, chain links, crushes; the `props` batch).
+      const state = city.props.slot.state;
+      const p = city.props.layout.props[e.b];
+      if (!p || state.isDown(e.b)) return null;
+      state.damage(e.b, 10 * (PROP_HP[p.kind] ?? 100), 0, null);
+      return { event: e, collapse: null, broke: [] };
     }
     const broke = city.damage.damageAt(
       { x: e.x, y: GAS_CHUNK_Y, z: e.z },
@@ -593,6 +756,8 @@ export class DestructionDirector {
       });
       if (!c) return false;
       const zone = zoneOf(c, 10);
+      // C1: not while LOW_FALLING_MAX already come down round a human.
+      if (this.fallingCapped(world, now, planes, site.x, site.z)) return true;
       const e = this.event(
         EVENT_CRANE,
         id,
@@ -783,13 +948,24 @@ export class DestructionDirector {
     if (cached !== undefined) return built ? false : cached;
     const b = buildings[i] as Building;
     const c = buildCollapse(buildings, wire);
-    const shape = c && { zone: zoneOf(c, 10), fp: fallFootprint(c, b) };
+    this.simulations++;
+    const shape = c && {
+      zone: zoneOf(c, 10),
+      fp: fallFootprint(c, b),
+      endMs: c.endMs,
+    };
     if (this.shapes.size >= SHAPE_CACHE_MAX) {
       const oldest = this.shapes.keys().next();
       if (!oldest.done) this.shapes.delete(oldest.value);
     }
     this.shapes.set(key, shape);
     return built ? true : shape;
+  }
+
+  /** C1: has building `i` brought down as `plan` been simulated already? */
+  private shapeCached(i: number, plan: CollapsePlan): boolean {
+    const wire = collapseWire(plan, i, 0, 0);
+    return this.shapes.has(`${i}:${wire.s}:${wire.d}:${wire.c}`);
   }
 
   /** Every tower near the action that could come down, near a plane first,
@@ -907,6 +1083,7 @@ export class DestructionDirector {
       }
       const zone = shape.zone;
       if (blocked(b.x, b.z, zone)) continue;
+      if (this.fallingCapped(world, now, planes, b.x, b.z)) continue;
       options.push({
         i: cand.i,
         style,
@@ -1042,6 +1219,7 @@ export class DestructionDirector {
       if (!c) continue;
       const zone = zoneOf(c, 10);
       if (blocked(site.x, site.z, zone)) continue;
+      if (this.fallingCapped(world, now, anchors, site.x, site.z)) continue;
       return this.event(
         EVENT_CRANE,
         site.id,
@@ -1054,6 +1232,675 @@ export class DestructionDirector {
       );
     }
     return null;
+  }
+
+  // --- C1: the low-flying chaos ---------------------------------------------
+
+  /** C1: how deep in the canyons human `id` was at the last tick (0: not
+   * low — lowChaosLevel). */
+  lowLevel(id: string): number {
+    return this.low.get(id) ?? 0;
+  }
+
+  /** C1: every human's low level, with hysteresis; the rest forgotten. */
+  private updateLow(
+    planes: readonly DestructionPlane[],
+    world: DestructionWorld,
+  ) {
+    for (const id of this.low.keys()) {
+      if (!planes.some((p) => p.id === id && p.human)) this.low.delete(id);
+    }
+    for (const p of planes) {
+      if (!p.human) continue;
+      const level = lowChaosLevel(
+        { pos: p.pos, wasLow: this.low.has(p.id) },
+        world.city,
+      );
+      if (level > 0) this.low.set(p.id, level);
+      else this.low.delete(p.id);
+    }
+  }
+
+  /** C1: one tick of the low-flying chaos — arm the low slot that came
+   * round while a human is low, try its pick, warm the next topple. */
+  private tickLow(
+    now: number,
+    planes: readonly DestructionPlane[],
+    world: DestructionWorld,
+    out: DirectorTick,
+  ): void {
+    const lt = this.tuning.low;
+    if (!lt) return;
+    this.updateLow(planes, world);
+    if (this.lowScanFrom === null) this.lowScanFrom = now;
+    const slots = lowSlotsInWindow(this.seed, this.lowScanFrom, now);
+    this.lowScanFrom = now;
+    if (this.low.size === 0) {
+      this.lowArmed = null;
+      return;
+    }
+    const last = slots[slots.length - 1];
+    if (last !== undefined) {
+      this.lowArmed = last + lt.patienceMs;
+      this.lowNextTry = 0;
+    }
+    if (this.lowArmed !== null && now >= this.lowNextTry) {
+      if (now > this.lowArmed) {
+        this.lowArmed = null;
+      } else {
+        const e = this.pickLow(now, planes, world);
+        if (e) {
+          this.warned.push(e);
+          out.warned.push(e);
+          this.lowArmed = null;
+        } else {
+          this.lowNextTry = now + lt.retryMs;
+        }
+      }
+    }
+    if (now >= this.nextLowPrefill) {
+      this.nextLowPrefill = now + lt.prefillMs;
+      this.prefillLow(now, planes, world);
+    }
+  }
+
+  /** C1: the kinds in the order this pick tries them — a weighted draw
+   * without replacement. */
+  private lowOrder(lt: LowChaosTuning): LowKind[] {
+    const left = (Object.keys(lt.weights) as LowKind[]).filter(
+      (k) => lt.weights[k] > 0,
+    );
+    const order: LowKind[] = [];
+    while (left.length > 0) {
+      let total = 0;
+      for (const k of left) total += lt.weights[k];
+      let r = this.rand() * total;
+      let j = 0;
+      for (; j < left.length - 1; j++) {
+        r -= lt.weights[left[j] as LowKind];
+        if (r <= 0) break;
+      }
+      order.push(left.splice(j, 1)[0] as LowKind);
+    }
+    return order;
+  }
+
+  /**
+   * C1: pick and build the next low event — near and ahead of a low human
+   * (in turn, when there are several), or null when nothing fits. Two
+   * passes: first only what every plane is clear of flying STRAIGHT on
+   * (beside or beyond the path), then what a normal turn or a gentle
+   * climb gets out of (across the path), which the budget's `lowchaos`
+   * share bounds.
+   */
+  pickLow(
+    now: number,
+    planes: readonly DestructionPlane[],
+    world: DestructionWorld,
+  ): DirectorEvent | null {
+    const lt = this.tuning.low;
+    if (!lt) return null;
+    const anchors = planes.filter(
+      (p) => p.human && this.low.has(p.id) && !this.fresh(p, now),
+    );
+    if (anchors.length === 0) return null;
+    const structural = this.goneShare(world) < lt.stopShare;
+    const order = this.lowOrder(lt);
+    const first = this.lowTurn++ % anchors.length;
+    for (const strict of [true, false]) {
+      for (let j = 0; j < anchors.length; j++) {
+        const a = anchors[(first + j) % anchors.length] as DestructionPlane;
+        for (const kind of order) {
+          const e =
+            kind === "topple"
+              ? structural && this.lowTopple(now, a, planes, world, strict)
+              : kind === "facade"
+                ? structural && this.lowFacade(now, a, planes, world, strict)
+                : kind === "gas"
+                  ? this.lowGas(now, a, planes, world, strict)
+                  : kind === "roof"
+                    ? this.lowRoof(now, a, planes, world, strict)
+                    : kind === "span"
+                      ? this.lowSpan(now, a, planes, world, strict)
+                      : strict && this.lowCars(now, a, planes, world);
+          if (e) return e;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * C1: stage low event (k, b) at `at` with danger `zone` — or null when it
+   * is not fair. Never with a fresh plane in the zone, now or at the
+   * instant. A LETHAL event (`window`: the seconds from now its danger is
+   * live) must leave every other plane a way out (escapeFrom — `strict`:
+   * straight on), and goes through the danger budget's `lowchaos` share:
+   * the planes it is near (points), and every plane that would have to
+   * turn or climb out of it (path), charged once each.
+   */
+  private stageLow(
+    now: number,
+    k: number,
+    b: number,
+    at: Vec3,
+    s: number,
+    d: number,
+    zone: DangerZone,
+    window: readonly [number, number] | null,
+    strict: boolean,
+    planes: readonly DestructionPlane[],
+    world: DestructionWorld,
+  ): DirectorEvent | null {
+    const t = this.tuning;
+    const lead = DIRECTOR_WARN_MS / 1000;
+    // Judged as broadcast — the wire's 0.1 m position and whole-metre zone,
+    // rounded outward — so a client (or a test) re-checking the warning
+    // finds exactly what the server did. Numbered once staged.
+    const e = decodeDirectorEvent(
+      encodeDirectorEvent({
+        id: 0,
+        k,
+        b,
+        ...canonicalize(at),
+        s,
+        d,
+        w: now,
+        at: now + DIRECTOR_WARN_MS,
+        zone,
+      }),
+    ) as DirectorEvent;
+    const z = e.zone;
+    // The zone's plan-view reach from (x, z), m.
+    const reach = Math.max(-z.x0, z.x1, -z.z0, z.z1);
+    const path: string[] = [];
+    for (const p of planes) {
+      if (this.fresh(p, now)) {
+        if (
+          inDangerZone(e, p.pos, t.freshMarginM) ||
+          inDangerZone(e, ahead(p, lead), t.freshMarginM)
+        ) {
+          return null;
+        }
+        continue;
+      }
+      if (!window) continue;
+      // Out of reach for the whole window: nothing to check.
+      const speed = Math.hypot(p.vel.x, p.vel.z);
+      if (planGap(e.x, e.z, p.pos) > reach * 1.5 + speed * window[1] + 20) {
+        continue;
+      }
+      const how = escapeFrom(z, e.x, e.z, p.pos, p.vel, ...window);
+      if (how < 0 || (strict && how !== ESCAPE_STRAIGHT)) return null;
+      if (how !== ESCAPE_STRAIGHT) path.push(p.id);
+    }
+    const budget = world.budget;
+    if (window && budget) {
+      const pts = zonePoints(e);
+      const bp = budgetPlanes(planes);
+      if (!budget.allows("lowchaos", pts, DIRECTOR_WARN_MS, now, bp)) {
+        return null;
+      }
+      if (path.length > 0 && !budget.allowsIds("lowchaos", path, now, bp)) {
+        return null;
+      }
+      const charged = budget.charge("lowchaos", pts, DIRECTOR_WARN_MS, now, bp);
+      const rest = path.filter((id) => !charged.includes(id));
+      if (rest.length > 0) budget.chargeIds("lowchaos", rest, now);
+    }
+    e.id = this.nextId++;
+    this.lowIds.add(e.id);
+    return e;
+  }
+
+  /**
+   * C1: the towers a low topple weighs for plane `a` — standing, whole
+   * enough, not busy or about to be rebuilt, ahead of the plane and within
+   * LOW_TOWER_REACH of where it will be when the warning is up (and, for
+   * the prefill, `extraS` further on) — nearest first, LOW_TOWERS of them,
+   * each with the ways it may fall: away from the path first, then along
+   * it, then across it.
+   */
+  private lowTowers(
+    now: number,
+    a: DestructionPlane,
+    world: DestructionWorld,
+    extraS = 0,
+  ): { i: number; dirs: number[] }[] {
+    const t = this.tuning;
+    const city = world.city;
+    const q = ahead(a, DIRECTOR_WARN_MS / 1000 + extraS);
+    const wear = city.damage.wear();
+    const busy = new Set(
+      this.warned.filter((e) => e.k === EVENT_COLLAPSE).map((e) => e.b),
+    );
+    const found: { i: number; gap: number }[] = [];
+    for (let i = 0; i < city.buildings.length; i++) {
+      const b = city.buildings[i] as Building;
+      if (b.height < t.towerMinM || busy.has(i)) continue;
+      const gap = gapTo(b, q);
+      if (gap > LOW_TOWER_REACH) continue;
+      // Ahead of the plane, not behind it.
+      const dx = wrapDeltaAxis(a.pos.x, b.x);
+      const dz = wrapDeltaAxis(a.pos.z, b.z);
+      if (dx * a.vel.x + dz * a.vel.z <= 0) continue;
+      const g = tierGrids(b)[0];
+      if (!g || g.ny < 3) continue;
+      const worn = wear.get(i);
+      if (worn && worn.share >= 0.5) continue;
+      if (b.damage && standingProfile(b).top < b.height * 0.8) continue;
+      if (this.rebuildSoon(world, i, now)) continue;
+      found.push({ i, gap });
+    }
+    found.sort((x, y) => x.gap - y.gap || x.i - y.i);
+    const alongX = Math.abs(a.vel.x) >= Math.abs(a.vel.z);
+    return found.slice(0, LOW_TOWERS).map(({ i }) => {
+      const b = city.buildings[i] as Building;
+      // Which side of the path the tower stands on, across the path axis.
+      const side = alongX
+        ? wrapDeltaAxis(a.pos.z, b.z)
+        : wrapDeltaAxis(a.pos.x, b.x);
+      const away = alongX
+        ? side >= 0
+          ? DIR_POS_Z
+          : DIR_NEG_Z
+        : side >= 0
+          ? DIR_POS_X
+          : DIR_NEG_X;
+      const toward = away ^ 1;
+      const fwd = alongX
+        ? a.vel.x >= 0
+          ? DIR_POS_X
+          : DIR_NEG_X
+        : a.vel.z >= 0
+          ? DIR_POS_Z
+          : DIR_NEG_Z;
+      return { i, dirs: [away, fwd, fwd ^ 1, toward] };
+    });
+  }
+
+  /** C1: warm the low topple's shapes — the towers a pick 3 s from now
+   * would weigh, at most ONE debris simulation a call. */
+  private prefillLow(
+    now: number,
+    planes: readonly DestructionPlane[],
+    world: DestructionWorld,
+  ): void {
+    if (this.goneShare(world) >= (this.tuning.low?.stopShare ?? 0)) return;
+    const city = world.city;
+    for (const p of planes) {
+      if (!this.low.has(p.id) || this.fresh(p, now)) continue;
+      for (const extra of [0, 3]) {
+        for (const c of this.lowTowers(now, p, world, extra)) {
+          const b = city.buildings[c.i] as Building;
+          for (const dir of c.dirs) {
+            const plan = demolitionPlan(b, c.i, TOPPLE, dir);
+            if (plan && this.shapeOf(city.buildings, c.i, plan, true)) return;
+          }
+        }
+      }
+    }
+  }
+
+  /** C1: a tower near and ahead of `a` toppled beside (strict) or across
+   * its path. One debris simulation at most (the rest must be cached). */
+  private lowTopple(
+    now: number,
+    a: DestructionPlane,
+    planes: readonly DestructionPlane[],
+    world: DestructionWorld,
+    strict: boolean,
+  ): DirectorEvent | null {
+    const city = world.city;
+    let budget = 1;
+    for (const c of this.lowTowers(now, a, world)) {
+      const b = city.buildings[c.i] as Building;
+      if (this.fallingCapped(world, now, planes, b.x, b.z)) continue;
+      for (const dir of c.dirs) {
+        const plan = demolitionPlan(b, c.i, TOPPLE, dir);
+        if (!plan) continue;
+        if (!this.shapeCached(c.i, plan)) {
+          if (budget === 0) continue;
+          budget--;
+        }
+        const shape = this.shapeOf(city.buildings, c.i, plan);
+        if (!shape?.fp) continue;
+        const e = this.stageLow(
+          now,
+          EVENT_COLLAPSE,
+          c.i,
+          { x: b.x, y: 0, z: b.z },
+          TOPPLE,
+          dir,
+          shape.zone,
+          [
+            (DIRECTOR_WARN_MS + COLLAPSE_LEAD_MS) / 1000,
+            (DIRECTOR_WARN_MS + shape.endMs) / 1000 + 1,
+          ],
+          strict,
+          planes,
+          world,
+        );
+        if (e) return e;
+      }
+    }
+    return null;
+  }
+
+  /** C1: a facade beside the path ahead of `a` peels into the street — the
+   * face toward the plane, at about the plane's height. */
+  private lowFacade(
+    now: number,
+    a: DestructionPlane,
+    planes: readonly DestructionPlane[],
+    world: DestructionWorld,
+    strict: boolean,
+  ): DirectorEvent | null {
+    const city = world.city;
+    const lead = DIRECTOR_WARN_MS / 1000;
+    const busy = new Set(this.warned.map((e) => e.b));
+    for (const s of [lead, lead + 0.6, lead + 1.2]) {
+      const q = ahead(a, s);
+      const options: { i: number; dir: number; at: Vec3 }[] = [];
+      for (let i = 0; i < city.buildings.length; i++) {
+        const b = city.buildings[i] as Building;
+        if (b.height < 40 || busy.has(i)) continue;
+        const dx = wrapDeltaAxis(b.x, q.x);
+        const dz = wrapDeltaAxis(b.z, q.z);
+        const hw = (b.tiers[0]?.width ?? b.width) / 2;
+        const hd = (b.tiers[0]?.depth ?? b.depth) / 2;
+        const gx = Math.abs(dx) - hw;
+        const gz = Math.abs(dz) - hd;
+        // The face the plane is in front of (not off a corner).
+        let dir: number;
+        let gap: number;
+        if (gx > 0 && gz < -4) {
+          dir = dx > 0 ? DIR_POS_X : DIR_NEG_X;
+          gap = gx;
+        } else if (gz > 0 && gx < -4) {
+          dir = dz > 0 ? DIR_POS_Z : DIR_NEG_Z;
+          gap = gz;
+        } else continue;
+        if (gap < 12 || gap > 50) continue;
+        const top = b.damage ? standingProfile(b).top : b.height;
+        const y = Math.min(Math.max(q.y + 10, 12), top - 6);
+        if (y < 12) continue;
+        const ox =
+          dir === DIR_POS_X
+            ? hw + 0.5
+            : dir === DIR_NEG_X
+              ? -hw - 0.5
+              : Math.max(-hw + 4, Math.min(hw - 4, dx));
+        const oz =
+          dir === DIR_POS_Z
+            ? hd + 0.5
+            : dir === DIR_NEG_Z
+              ? -hd - 0.5
+              : Math.max(-hd + 4, Math.min(hd - 4, dz));
+        options.push({ i, dir, at: { x: b.x + ox, y, z: b.z + oz } });
+      }
+      while (options.length > 0) {
+        const k = Math.floor(this.rand() * options.length);
+        const o = options.splice(k, 1)[0] as (typeof options)[number];
+        const r = FACADE_REACH;
+        const zone: DangerZone =
+          o.dir === DIR_POS_X
+            ? { x0: -2, x1: r, z0: -r, z1: r, top: o.at.y + 8 }
+            : o.dir === DIR_NEG_X
+              ? { x0: -r, x1: 2, z0: -r, z1: r, top: o.at.y + 8 }
+              : o.dir === DIR_POS_Z
+                ? { x0: -r, x1: r, z0: -2, z1: r, top: o.at.y + 8 }
+                : { x0: -r, x1: r, z0: -r, z1: 2, top: o.at.y + 8 };
+        const e = this.stageLow(
+          now,
+          EVENT_FACADE,
+          o.i,
+          o.at,
+          0,
+          o.dir,
+          zone,
+          [lead, lead + 3],
+          strict,
+          planes,
+          world,
+        );
+        if (e) return e;
+      }
+    }
+    return null;
+  }
+
+  /** C1: a gas main bursting in the street beside the path ahead of `a` —
+   * never closer to where it will be than GAS_BLAST_M + 6, so a plane
+   * flying on takes nothing but the heat. */
+  private lowGas(
+    now: number,
+    a: DestructionPlane,
+    planes: readonly DestructionPlane[],
+    world: DestructionWorld,
+    strict: boolean,
+  ): DirectorEvent | null {
+    if (a.pos.y >= GAS_COLUMN_H + GAS_BLAST_M + 40) return null;
+    const lead = DIRECTOR_WARN_MS / 1000;
+    const there = ahead(a, lead);
+    const zone: DangerZone = {
+      x0: -GAS_BLAST_M,
+      x1: GAS_BLAST_M,
+      z0: -GAS_BLAST_M,
+      z1: GAS_BLAST_M,
+      top: GAS_COLUMN_H + GAS_BLAST_M,
+    };
+    const busy = (site: Vec3) =>
+      this.warned.some(
+        (e) => e.k === EVENT_GAS && planGap(e.x, e.z, site) < 2 * GAS_BLAST_M,
+      );
+    for (const dt of [0.8, 1.4, 0.3, 2, -0.3]) {
+      const site = gasMainNear(this.seed, ahead(a, lead + dt));
+      if (!site || busy(site)) continue;
+      const d = gasDistance(site, there);
+      if (d < GAS_BLAST_M + 6 || d > 90) continue;
+      const e = this.stageLow(
+        now,
+        EVENT_GAS,
+        -1,
+        site,
+        0,
+        0,
+        zone,
+        [lead - 0.1, lead + 0.1],
+        strict,
+        planes,
+        world,
+      );
+      if (e) return e;
+    }
+    return null;
+  }
+
+  /** C1: standing props of `kinds` near the path ahead of `a` (plan view
+   * within [rMin, rMax] of one of its points), nearest first. */
+  private propsAhead(
+    a: DestructionPlane,
+    world: DestructionWorld,
+    kinds: readonly number[],
+    rMin: number,
+    rMax: number,
+  ): Prop[] {
+    const props = world.city.props;
+    const state = props.slot.state;
+    const lead = DIRECTOR_WARN_MS / 1000;
+    const best = new Map<number, number>();
+    for (const s of [lead, lead + 0.7, lead + 1.4]) {
+      const q = ahead(a, s);
+      propsNear(props.layout, q.x, q.z, rMax, (id) => {
+        const p = props.layout.props[id];
+        if (!p || !kinds.includes(p.kind) || state.isDown(id)) return;
+        const d = planGap(p.x, p.z, q);
+        if (d < rMin || d > rMax) return;
+        best.set(id, Math.min(best.get(id) ?? d, d));
+      });
+    }
+    return [...best]
+      .sort((x, y) => x[1] - y[1] || x[0] - y[0])
+      .map(([id]) => props.layout.props[id] as Prop);
+  }
+
+  /** C1: a roof tank or billboard beside the path ahead goes over the edge
+   * (D9's solid faller: what falls is what collides). */
+  private lowRoof(
+    now: number,
+    a: DestructionPlane,
+    planes: readonly DestructionPlane[],
+    world: DestructionWorld,
+    strict: boolean,
+  ): DirectorEvent | null {
+    const lead = DIRECTOR_WARN_MS / 1000;
+    const busy = new Set(
+      this.warned.filter((e) => e.k === EVENT_ROOF).map((e) => e.b),
+    );
+    for (const p of this.propsAhead(a, world, ROOF_FALLERS, 15, 110)) {
+      if (busy.has(p.id)) continue;
+      const r = Math.max(p.hx, p.hz) + 2 * p.hy + 6;
+      const zone: DangerZone = {
+        x0: -r,
+        x1: r,
+        z0: -r,
+        z1: r,
+        top: p.y + p.hy + 4,
+      };
+      const e = this.stageLow(
+        now,
+        EVENT_ROOF,
+        p.id,
+        { x: p.x, y: p.y, z: p.z },
+        0,
+        p.dir,
+        zone,
+        [lead, lead + fallSeconds(p) + 1],
+        strict,
+        planes,
+        world,
+      );
+      if (e) return e;
+    }
+    return null;
+  }
+
+  /** C1: a bridge span near the path ahead drops into the river. */
+  private lowSpan(
+    now: number,
+    a: DestructionPlane,
+    planes: readonly DestructionPlane[],
+    world: DestructionWorld,
+    strict: boolean,
+  ): DirectorEvent | null {
+    const lead = DIRECTOR_WARN_MS / 1000;
+    for (const p of this.propsAhead(a, world, [PROP_BRIDGE], 30, 220)) {
+      if (this.warned.some((e) => e.k === EVENT_SPAN && e.b === p.id)) {
+        continue;
+      }
+      const zone: DangerZone = {
+        x0: -p.hx - 6,
+        x1: p.hx + 6,
+        z0: -p.hz - 6,
+        z1: p.hz + 6,
+        top: p.y + p.hy + 3,
+      };
+      const e = this.stageLow(
+        now,
+        EVENT_SPAN,
+        p.id,
+        { x: p.x, y: p.y, z: p.z },
+        0,
+        0,
+        zone,
+        [lead, lead + fallSeconds(p) + 1],
+        strict,
+        planes,
+        world,
+      );
+      if (e) return e;
+    }
+    return null;
+  }
+
+  /** C1: a car, taxi or fuel truck in the street ahead blows and sets off
+   * the vehicles round it (D9's chain). Prop blasts break chunks and props,
+   * never planes: nothing to charge. The one with most neighbours first. */
+  private lowCars(
+    now: number,
+    a: DestructionPlane,
+    planes: readonly DestructionPlane[],
+    world: DestructionWorld,
+  ): DirectorEvent | null {
+    const layout = world.city.props.layout;
+    const state = world.city.props.slot.state;
+    const busy = new Set(
+      this.warned.filter((e) => e.k === EVENT_CARS).map((e) => e.b),
+    );
+    const scored = this.propsAhead(a, world, VEHICLES, 30, 130)
+      .filter((p) => !busy.has(p.id))
+      .slice(0, 12)
+      .map((p) => {
+        let n = 0;
+        propsNear(layout, p.x, p.z, 14, (id) => {
+          const q = layout.props[id];
+          if (!q || id === p.id || state.isDown(id)) return;
+          if (VEHICLES.includes(q.kind as (typeof VEHICLES)[number])) {
+            if (planGap(q.x, q.z, p) <= 14) n++;
+          }
+        });
+        return { p, n };
+      })
+      .sort((x, y) => y.n - x.n || x.p.id - y.p.id);
+    for (const { p } of scored) {
+      const e = this.stageLow(
+        now,
+        EVENT_CARS,
+        p.id,
+        { x: p.x, y: p.y, z: p.z },
+        0,
+        0,
+        { x0: -20, x1: 20, z0: -20, z1: 20, top: 30 },
+        null,
+        true,
+        planes,
+        world,
+      );
+      if (e) return e;
+    }
+    return null;
+  }
+
+  /** C1: collapses coming down within LOW_FALLING_R of `pos` — warned, or
+   * with debris still in the air. */
+  private fallingNear(world: DestructionWorld, now: number, pos: Vec3): number {
+    let n = 0;
+    for (const c of world.city.collapses.list) {
+      if (now > c.t0 + c.endMs) continue;
+      if (planGap(c.x, c.z, pos) <= LOW_FALLING_R) n++;
+    }
+    for (const e of this.warned) {
+      if (e.k !== EVENT_COLLAPSE && e.k !== EVENT_CRANE) continue;
+      if (planGap(e.x, e.z, pos) <= LOW_FALLING_R) n++;
+    }
+    return n;
+  }
+
+  /** C1: would one more collapse at (x, z) be over LOW_FALLING_MAX for a
+   * human within LOW_FALLING_R of it? */
+  private fallingCapped(
+    world: DestructionWorld,
+    now: number,
+    planes: readonly DestructionPlane[],
+    x: number,
+    z: number,
+  ): boolean {
+    for (const p of planes) {
+      if (!p.human || planGap(x, z, p.pos) > LOW_FALLING_R) continue;
+      if (this.fallingNear(world, now, p.pos) >= LOW_FALLING_MAX) return true;
+    }
+    return false;
   }
 
   // --- The rebuild ----------------------------------------------------------
@@ -1080,8 +1927,17 @@ export class DestructionDirector {
     this.nextRebuildCheck = now + t.rebuildCheckMs;
     const city = world.city;
     const out: RebuildWire[] = [];
+    const humans = planes.filter((p) => p.human);
+    // C1 recycling: out in the fog of every human, and settled.
+    const recycles = (k: 0 | 1, b: number): boolean =>
+      t.recycleFarM > 0 && this.farFromHumans(k, b, humans, world);
     for (const [key, r] of [...this.announced]) {
       if (r.at > now || !this.clearToRebuild(r.k, r.b, now, planes, world)) {
+        continue;
+      }
+      // A recycle a human has come back to waits for its timer (or for
+      // them to leave again): never a rebuild in sight that is not due.
+      if (!this.timedDue(r.k, r.b, now, city) && !recycles(r.k, r.b)) {
         continue;
       }
       this.announced.delete(key);
@@ -1097,18 +1953,76 @@ export class DestructionDirector {
       this.announced.set(key, r);
       out.push(r);
     };
-    for (const [i, first] of city.firstDamageAt) {
-      if (now < first + rebuildDelay(this.seed, 0, i, first, t)) continue;
+    for (const i of city.firstDamageAt.keys()) {
+      if (this.timedDue(0, i, now, city)) {
+        announce(0, i);
+        continue;
+      }
       const last = city.lastStructuralAt.get(i);
-      if (last !== undefined && now < last + t.rebuildAfterCollapseMs) continue;
-      announce(0, i);
+      if (last !== undefined && now < last + t.recycleAfterMs) continue;
+      if (recycles(0, i)) announce(0, i);
     }
     for (const [id, fell] of city.collapses.felled) {
-      if (now < fell + rebuildDelay(this.seed, 1, id, fell, t)) continue;
-      if (now < fell + t.rebuildAfterCollapseMs) continue;
-      announce(1, id);
+      if (this.timedDue(1, id, now, city)) announce(1, id);
+      else if (now >= fell + t.recycleAfterMs && recycles(1, id)) {
+        announce(1, id);
+      }
     }
     return out;
+  }
+
+  /** Is (k, b)'s own rebuild timer up — the seeded delay after its first
+   * damage (fall), and rebuildAfterCollapseMs after its last collapse? */
+  private timedDue(k: 0 | 1, b: number, now: number, city: RoomCity): boolean {
+    const t = this.tuning;
+    if (k === 0) {
+      const first = city.firstDamageAt.get(b);
+      if (first === undefined) return true; // whole again: nothing to time
+      if (now < first + rebuildDelay(this.seed, 0, b, first, t)) return false;
+      const last = city.lastStructuralAt.get(b);
+      return last === undefined || now >= last + t.rebuildAfterCollapseMs;
+    }
+    const fell = city.collapses.felled.get(b);
+    if (fell === undefined) return true;
+    return (
+      now >= fell + rebuildDelay(this.seed, 1, b, fell, t) &&
+      now >= fell + t.rebuildAfterCollapseMs
+    );
+  }
+
+  /** C1: is target (k, b) farther than recycleFarM (plan-view gap from its
+   * footprint, or a crane's reach) from every one of `humans`? */
+  private farFromHumans(
+    k: 0 | 1,
+    b: number,
+    humans: readonly DestructionPlane[],
+    world: DestructionWorld,
+  ): boolean {
+    let cx: number;
+    let cz: number;
+    let hx: number;
+    let hz: number;
+    if (k === 0) {
+      const bd = world.city.buildings[b];
+      if (!bd) return false;
+      cx = bd.x;
+      cz = bd.z;
+      hx = bd.width / 2;
+      hz = bd.depth / 2;
+    } else {
+      const site = world.cranes.find((c) => c.id === b);
+      if (!site) return false;
+      cx = site.x;
+      cz = site.z;
+      hx = hz = Math.max(site.jibLength, site.counterLength);
+    }
+    const far = this.tuning.recycleFarM;
+    for (const h of humans) {
+      const gx = Math.max(Math.abs(wrapDeltaAxis(cx, h.pos.x)) - hx, 0);
+      const gz = Math.max(Math.abs(wrapDeltaAxis(cz, h.pos.z)) - hz, 0);
+      if (Math.hypot(gx, gz) <= far) return false;
+    }
+    return true;
   }
 
   /** May target (k, b) be rebuilt right now? */

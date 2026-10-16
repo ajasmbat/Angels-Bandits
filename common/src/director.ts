@@ -51,6 +51,17 @@ export const DIRECTOR_PATH_S = 3;
 export const EVENT_COLLAPSE = 0;
 export const EVENT_GAS = 1;
 export const EVENT_CRANE = 2;
+/** C1 low-flying chaos (common/src/lowchaos.ts) — near and ahead of a plane
+ * flying low among the towers: a facade's slabs and glass peeling into the
+ * street (b: building, d: the face, DIR_*; y: the height it comes off),
+ * a roof tank or billboard going over the edge (b: its prop id), a bridge
+ * span dropping (b: its prop id), a chain of cars and trucks blowing (b:
+ * the first vehicle's prop id). Towers toppling and gas mains bursting are
+ * EVENT_COLLAPSE and EVENT_GAS, placed the low way. */
+export const EVENT_FACADE = 3;
+export const EVENT_ROOF = 4;
+export const EVENT_SPAN = 5;
+export const EVENT_CARS = 6;
 
 /** Gas main: lethal inside GAS_LETHAL_M of the blast column, then
  * GAS_EDGE_DAMAGE falling to 0 at GAS_BLAST_M. The column is a fireball
@@ -78,12 +89,16 @@ export interface DangerZone {
 /** One staged event, exactly as broadcast in `directorWarn`. */
 export interface DirectorEvent {
   id: number;
-  /** EVENT_COLLAPSE / EVENT_GAS / EVENT_CRANE. */
+  /** EVENT_COLLAPSE / EVENT_GAS / EVENT_CRANE, or C1's EVENT_FACADE /
+   * EVENT_ROOF / EVENT_SPAN / EVENT_CARS. */
   k: number;
-  /** Building index (collapse), crane site id (crane), −1 (gas). */
+  /** Building index (collapse, facade), crane site id (crane), prop id
+   * (roof, span, cars), −1 (gas). */
   b: number;
-  /** Where: the building's / crane's centre, or the gas main; canonical,
-   * on the wire's 0.1 m grid. y: the blast height (gas), else 0. */
+  /** Where: the building's / crane's centre, the gas main, the point a
+   * facade peels from, or the prop; canonical, on the wire's 0.1 m grid.
+   * y: the blast height (gas), the peel height (facade), the prop's centre
+   * height (roof, span, cars), else 0. */
   x: number;
   y: number;
   z: number;

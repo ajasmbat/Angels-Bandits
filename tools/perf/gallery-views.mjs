@@ -1717,6 +1717,51 @@ export const VIEWS = [
     weather: "clear",
     raf: true,
   },
+  // SKY1 Infinite sky: the cosmetic armada past the fog limit — its three
+  // parallax layers drifting east-north-east under the cloud deck, flak
+  // under them, the painted horizon behind. 420 m up over the river,
+  // looking east; the plane parked 160 m behind the eye, out of shot.
+  {
+    name: "sky-armada-wide",
+    x: 840,
+    z: 1100,
+    y: 420,
+    yaw: -Math.PI / 2,
+    eye: [1000, 420, 1100],
+    at: [2000, 500, 1250],
+    timeMs: 1_790_000_000_000,
+    weather: "clear",
+    raf: true,
+  },
+  // SKY1: from the street, up the avenue at x = 1000 — the airships
+  // overhead past the canyon walls, the sky full to the horizon.
+  {
+    name: "sky-armada-low",
+    x: 1000,
+    z: 1560,
+    y: 330,
+    yaw: 0,
+    eye: [1000, 14, 1400],
+    at: [1000, 520, 400],
+    timeMs: 1_790_000_000_000,
+    weather: "clear",
+    raf: true,
+  },
+  // SKY1: the distant dogfights — circling pairs and groups, tracer
+  // streaks, muzzle sparkle, a plane going down burning — 300 m up,
+  // looking a little above the horizon.
+  {
+    name: "sky-dogfights",
+    x: 760,
+    z: 650,
+    y: 300,
+    yaw: Math.PI * 0.75,
+    eye: [600, 300, 600],
+    at: [-400, 430, 250],
+    timeMs: 1_790_000_000_000,
+    weather: "clear",
+    raf: true,
+  },
   // L2: the same long view with reference 2's city burning (burn 0.9).
   {
     name: "reference-wide-inferno",
@@ -1730,5 +1775,22 @@ export const VIEWS = [
     weather: "clear",
     raf: true,
     stage: { burn: 0.9 },
+  },
+  // C1: a low pass down a canyon as the city comes apart ahead — a tower
+  // toppling across the next block and another pouring dust, facades
+  // cracking and peeling, a gas main just blown and one venting, a roof
+  // tank over the edge, a car chain going up, a bridge span about to drop
+  // (`__ab.qaLowChaos` at the pinned world instant: the warnings still to
+  // go off burst while the frames settle). The plane held at 55 m, nose −Z.
+  {
+    name: "chaos-low-pass",
+    x: 0,
+    z: 1500,
+    y: 55,
+    yaw: 0,
+    timeMs: 1_790_000_000_000,
+    weather: "clear",
+    raf: true,
+    lowChaos: true,
   },
 ];

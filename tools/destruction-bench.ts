@@ -9,7 +9,9 @@
 // the same way (client/src/game/qa-destruction.ts) on a CityRenderer of the
 // seed city: 18 buildings 30 % shot away, 21 collapses from 14 s before the
 // instant to 6 s after it (dust, falling and landed debris), the burning
-// blasts, a landed wreck — plus a falling wreck, a director warning and a
+// blasts, a landed wreck — plus a falling wreck, a director warning, C1's
+// low-flying chaos at full tilt (a facade, a roof faller, a span, a car
+// chain and a gas main, each warned and going off every 3 s) and a
 // cruise missile in the air, so every path that draws has work to do. A
 // viewer glides through it at 42 m/s, weaving, so torus images flip.
 //
@@ -50,7 +52,12 @@ import { generateMovers } from "@angels-bandits/common/city/movers";
 import { CITY_SEED, PLAYER_RADIUS } from "@angels-bandits/common/constants";
 import {
   type DirectorEvent,
+  EVENT_CARS,
   EVENT_COLLAPSE,
+  EVENT_FACADE,
+  EVENT_GAS,
+  EVENT_ROOF,
+  EVENT_SPAN,
 } from "@angels-bandits/common/director";
 import type { MissileStrike } from "@angels-bandits/common/strike";
 import type { Vec3 } from "@angels-bandits/common/world";
@@ -174,6 +181,45 @@ const warning: DirectorEvent = {
   zone: { x0: -60, x1: 0, z0: -20, z1: 20, top: 40 },
 };
 const warnings = [warning];
+/** C1: one low event of each street kind round the viewer's path, every
+ * LOW_PERIOD_MS — warned, swelling, going off (each re-warned once it has
+ * gone, in place: lowChaos below). */
+const LOW_PERIOD_MS = 3000;
+const lowEvent = (
+  id: number,
+  k: number,
+  x: number,
+  y: number,
+  z: number,
+  d = 0,
+): DirectorEvent => ({
+  id,
+  k,
+  b: 0,
+  x,
+  y,
+  z,
+  s: 0,
+  d,
+  w: T - 1000 + 400 * id,
+  at: T - 1000 + 400 * id + LOW_PERIOD_MS,
+  zone: { x0: -8, x1: 8, z0: -8, z1: 8, top: 30 },
+});
+const lowWarnings = [
+  lowEvent(2, EVENT_FACADE, target.x + target.width / 2 + 0.5, 30, target.z, 1),
+  lowEvent(3, EVENT_ROOF, 420, 90, 900),
+  lowEvent(4, EVENT_SPAN, 380, -2, 820),
+  lowEvent(5, EVENT_CARS, 405, 0.8, 760),
+  lowEvent(6, EVENT_GAS, 395, 0, 680),
+];
+/** Re-warn every low event that has gone off (its fields, in place). */
+function lowChaos(ms: number): void {
+  for (const e of lowWarnings) {
+    if (ms <= e.at + 200 && ms >= e.w) continue;
+    e.w = ms;
+    e.at = ms + LOW_PERIOD_MS;
+  }
+}
 const missiles = new MissileRenderer(new SmokeTrails(), impacts);
 const flying: MissileStrike[] = [
   {
@@ -331,6 +377,14 @@ const ENTRIES: { name: string; step: Step; reset?: () => void }[] = [
     step: (f) => {
       const { ms, now } = frameAt(f);
       directorFx.update(warnings, ms, now, FRAME_MS / 1000);
+    },
+  },
+  {
+    name: "directorFx.update, C1 chaos",
+    step: (f) => {
+      const { ms, now } = frameAt(f);
+      lowChaos(ms);
+      directorFx.update(lowWarnings, ms, now, FRAME_MS / 1000);
     },
   },
   {

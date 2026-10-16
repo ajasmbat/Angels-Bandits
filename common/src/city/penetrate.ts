@@ -127,10 +127,11 @@ export const IMPACTORS: readonly ImpactorSpec[] = [
     blastRadius: 11,
     blastDamage: 240,
   },
-  // A carrier / airship section: heavy and slow.
+  // A crashing airship (Z1; a carrier section before it): heavy, slow and
+  // huge — its hull meets a roof edge well off its centre.
   {
     mass: 40,
-    radius: 10,
+    radius: 16,
     maxChunks: 24,
     airReach: 30,
     blastRadius: 34,

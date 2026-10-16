@@ -1700,4 +1700,32 @@ export const VIEWS = [
     raf: true,
     stage: { burn: 0.9 },
   },
+  // P1 penetrating impacts, staged through __ab.qaPenetrate on this client
+  // (a quiet room): the tower, the impactor and a side-on camera come from
+  // the planner (game/qa-penetrate.ts), so these views carry no pose of
+  // their own — `penetrate.at` is the shot's time into the sweep, s. A
+  // fighter's airframe flown level into a tower's flank, mid-plough: the
+  // chunks it has reached burst, the hull still moving through.
+  {
+    name: "impact-plane-through",
+    x: 1000,
+    z: 1000,
+    y: 520,
+    yaw: 0,
+    weather: "clear",
+    raf: true,
+    penetrate: { kind: "plane", at: 0.45 },
+  },
+  // P1: a comet through a row of buildings, mid-tear: its fireball head and
+  // long tail inside the second building, the first's tunnel open behind.
+  {
+    name: "impact-comet-row",
+    x: 1000,
+    z: 1000,
+    y: 520,
+    yaw: 0,
+    weather: "clear",
+    raf: true,
+    penetrate: { kind: "comet", at: 0.35 },
+  },
 ];

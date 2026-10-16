@@ -280,7 +280,22 @@ try {
     // pin the weather phase; otherwise the live weather stands.
     const wx = view.weather ?? process.env.AB_GALLERY_WEATHER;
     if (wx) await page.evaluate((w) => window.__ab.weather(w), wx);
-    const v = view.dyn ? await place(page, view) : view;
+    const v = view.dyn ? await place(page, view) : { ...view };
+    if (v.penetrate) {
+      // P1: the planner's side-on camera for this impact (staged far ahead
+      // here only to read the pose; re-staged just before the shot).
+      const r = await page.evaluate(
+        (k) => window.__ab.qaPenetrate(k, 600_000),
+        v.penetrate.kind,
+      );
+      if (r) {
+        v.eye = [r.eye.x, r.eye.y, r.eye.z];
+        v.at = [r.at.x, r.at.y, r.at.z];
+        v.x = r.eye.x;
+        v.z = r.eye.z;
+      }
+      console.log("penetrate-plan", v.name, JSON.stringify(r));
+    }
     const pin = async () =>
       page.evaluate((v) => {
         if (v.trainEye) {
@@ -516,6 +531,22 @@ try {
         { timeout: 120000, polling: "raf" },
       );
     }
+    if (v.penetrate) {
+      // P1: stage it now (1.2 s of render clock out) and hold the shot
+      // until the body is `at` s into its sweep.
+      const r = await page.evaluate(
+        (k) => window.__ab.qaPenetrate(k, 1200),
+        v.penetrate.kind,
+      );
+      console.log("penetrate", v.name, JSON.stringify(r));
+      if (r) {
+        await page.waitForFunction(
+          (target) => (window.__ab.renderMs() ?? 0) >= target,
+          r.t + v.penetrate.at * 1000,
+          { timeout: 180000, polling: "raf" },
+        );
+      }
+    }
     if (v.guns) {
       // L7b: hold the trigger until a burst is in the air (the shot below
       // is taken with it still held).
@@ -574,6 +605,19 @@ try {
       await page.evaluate(() => window.__ab.qaCaveIn(null));
     }
     if (v.drop) await page.evaluate(() => window.__ab.qaChaos(null));
+    if (v.penetrate) {
+      console.log(
+        "penetrations",
+        v.name,
+        JSON.stringify(
+          await page.evaluate(() => ({
+            ...window.__ab.penetrations(),
+            drawCalls: window.__ab.perf().drawCalls,
+          })),
+        ),
+      );
+      await page.evaluate(() => window.__ab.qaPenetrate(null));
+    }
     console.log(
       "aaNests",
       v.name,

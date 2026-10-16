@@ -1444,13 +1444,16 @@ wrecks.setPlough((id, ms, pos, dir) =>
  * is skipped) and its sweep. Null when not crashing. */
 let ownPlough: { rec: ImpactRecord; res: SweepResult } | null = null;
 const ploughPos: Vec3 = { x: 0, y: 0, z: 0 };
+/** P1: where our last crash's record started and until when (frame clock)
+ * the server's echo of it is skipped — the plough may end before it. */
+const ownCrash = { origin: { x: 0, y: 0, z: 0 }, until: 0 };
 socket.events.onImpacts = (recs) => {
   for (const r of recs) {
     // Our own crash's echo: already ploughing locally.
     if (
       r.kind === IMPACT_PLANE &&
-      ownPlough !== null &&
-      wrapDistance(r.origin, ownPlough.rec.origin) < 40
+      performance.now() < ownCrash.until &&
+      wrapDistance(r.origin, ownCrash.origin) < 40
     ) {
       continue;
     }
@@ -5932,6 +5935,10 @@ const frame = (rafNow: number): void => {
         });
         const res = penetrations.add(rec);
         ownPlough = res.contact >= 0 && res.stopT > 0 ? { rec, res } : null;
+        ownCrash.origin.x = rec.origin.x;
+        ownCrash.origin.y = rec.origin.y;
+        ownCrash.origin.z = rec.origin.z;
+        ownCrash.until = now + 3000;
       }
       enterDeath(null, "crash");
     }

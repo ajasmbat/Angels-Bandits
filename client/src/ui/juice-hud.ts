@@ -1,4 +1,4 @@
-// J1 juice HUD: the centre combo banner (DOUBLE KILL … CARRIER DOWN!), the
+// J1 juice HUD: the centre combo banner (DOUBLE KILL … AIRSHIP DOWN!), the
 // style-score popups rising off the reticle, the streak counter, the
 // slow-mo vignette and the break-up cam's `cine` mode (aim chrome hidden —
 // the camera is not looking down the gun line). Every node is built once

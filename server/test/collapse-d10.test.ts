@@ -126,6 +126,8 @@ describe("D10 building on building", () => {
       room.impacts.push({ ...hit, e, t: T0 });
       const before = gone(room, hit.building);
       tickDestruction(room, T0);
+      // P1: the debris sweeps on in; its chain blast lands where it stops.
+      tickDestruction(room, T0 + 5000);
       return gone(room, hit.building) - before;
     };
     const soft = breakWith(CHAIN_ENERGY_MIN);

@@ -1,68 +1,91 @@
-// S4: rounds against the sky boss, shooter side — the pure seam (like
-// hitdetect.ts). Each frame a bullet sweeps `prev` → `cur`; against the
-// zeppelin posed at the render clock (the pose it is drawn and collided at)
-// the segment meets a LIVE weak point (a hit to claim — the server re-runs
-// the same line, common/src/boss.ts bossHitValid), armour (the round stops
-// there: sparks, no claim), or nothing. Torus-aware through wrapDelta.
+// Z1: rounds against the airship fleet, shooter side — the pure seam (like
+// hitdetect.ts). Each frame a bullet sweeps `prev` → `cur`; against every
+// ship posed at the render clock (the pose it is drawn and collided at) the
+// segment meets a weak point or the hull (a hit to claim either way — the
+// server re-runs the same line, common/src/boss.ts shipHitValid), or
+// nothing. The nearest ship it meets stops the round. Torus-aware through
+// wrapDelta.
 
 import {
-  BOSS_RADIUS,
-  type BossPose,
-  type BossSlot,
+  FLEET_LANES,
+  type FleetSlot,
+  SHIP_REACH,
+  type ShipPose,
   blankPose,
-  bossPoseAt,
-  bossPresent,
-  bossRayHit,
+  fleetPoseAt,
+  shipPresent,
+  shipRayHit,
 } from "@angels-bandits/common/boss";
 import { type Vec3, wrapDeltaInto } from "@angels-bandits/common/world";
 
-/** What a bullet's step met on the zeppelin. `dir` is the step's unit
- * direction (the claim's line), `at` where it struck. */
+/** What a bullet's step met on a ship. `dir` is the step's unit direction
+ * (the claim's line), `at` where it struck. */
 export interface BossBulletHit {
-  /** Weak point index, or -1 for armour. */
+  /** The ship's id. */
+  ship: number;
+  /** Weak point index, or -1 for the hull. */
   weak: number;
   at: Vec3;
   dir: Vec3;
 }
 
-const pose: BossPose = blankPose();
+const pose: ShipPose = blankPose();
 const step: Vec3 = { x: 0, y: 0, z: 0 };
-const toBoss: Vec3 = { x: 0, y: 0, z: 0 };
+const toShip: Vec3 = { x: 0, y: 0, z: 0 };
 const unitStep: Vec3 = { x: 0, y: 0, z: 0 };
 
 /**
- * The first thing on the zeppelin this frame's bullet step meets, or null.
- * `alive[k]`: weak point k still has HP. Allocates only on a hit.
+ * The first ship this frame's bullet step meets, and where, or null. Only
+ * intact ships are shootable (a falling one is already going down).
+ * Allocates only on a hit.
  */
 export function bossBulletHit(
-  slot: BossSlot,
-  alive: readonly boolean[],
+  slot: FleetSlot,
   prev: Vec3,
   cur: Vec3,
   renderMs: number | null,
 ): BossBulletHit | null {
-  const r = slot.raid;
-  if (!r || renderMs === null || !bossPresent(slot, renderMs)) return null;
+  if (renderMs === null || slot.ships.length === 0) return null;
   wrapDeltaInto(prev, cur, step);
   const len = Math.hypot(step.x, step.y, step.z);
   if (len === 0) return null;
-  bossPoseAt(r, renderMs, pose);
-  // Far from the hull: no box test at all.
-  wrapDeltaInto(prev, pose, toBoss);
-  if (Math.hypot(toBoss.x, toBoss.y, toBoss.z) > BOSS_RADIUS + len) return null;
   unitStep.x = step.x / len;
   unitStep.y = step.y / len;
   unitStep.z = step.z / len;
-  const hit = bossRayHit(pose, prev, unitStep, len, alive);
-  if (!hit) return null;
+  let best = Number.POSITIVE_INFINITY;
+  let bestShip = -1;
+  let bestWeak = -1;
+  const lo = prev.y < cur.y ? prev.y : cur.y;
+  const hi = prev.y < cur.y ? cur.y : prev.y;
+  for (const s of slot.ships) {
+    if (!shipPresent(s, renderMs)) continue;
+    const lane = FLEET_LANES[s.lane] as { cls: 0 | 1 | 2; alt: number };
+    const reach = SHIP_REACH[lane.cls] as { y: number; r: number };
+    // Its layer's band first: most rounds fly nowhere near it.
+    if (hi < lane.alt - reach.y || lo > lane.alt + reach.y) continue;
+    const cls = lane.cls;
+    const r = reach.r;
+    fleetPoseAt(s, renderMs, pose);
+    // Far from the hull: no part test at all.
+    wrapDeltaInto(prev, pose, toShip);
+    if (Math.hypot(toShip.x, toShip.y, toShip.z) > r + len) continue;
+    const hit = shipRayHit(pose, cls, prev, unitStep, len);
+    if (hit && hit.dist < best) {
+      best = hit.dist;
+      bestShip = s.id;
+      bestWeak = hit.weak;
+    }
+  }
+  if (bestShip < 0) return null;
   const dir = { ...unitStep };
   return {
-    weak: hit.weak,
+    ship: bestShip,
+    weak: bestWeak,
     dir,
     at: {
-      x: prev.x + dir.x * hit.dist,
-      y: prev.y + dir.y * hit.dist,
-      z: prev.z + dir.z * hit.dist,
+      x: prev.x + dir.x * best,
+      y: prev.y + dir.y * best,
+      z: prev.z + dir.z * best,
     },
   };
 }

@@ -60,7 +60,8 @@ export interface Settings {
    * prefers-reduced-motion, resolved at boot and never written back. On,
    * it turns slow-mo, every camera shake and the auto cameras off. */
   reducedMotion: boolean | null;
-  /** J1 CARRIER CAM: the 2–3 s cinematic on the falling carrier. */
+  /** J1 AIRSHIP CAM (the key is J1's): the 2–3 s cinematic on a falling
+   * airship. */
   carrierCam: boolean;
   /** W4 CONTROLS › SENSITIVITY on a desktop: the keyboard and classic
    * stick's gain, one of STICK_SENS_STEPS (touch keeps `ab-touch-sens`). */

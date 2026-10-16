@@ -1,73 +1,75 @@
-// S4 sky boss — the shared, pure half. The SERVER keeps an armoured war
-// zeppelin over a room whenever a human is flying in it (W1: the carrier of
-// the room's enemy waves; the next one comes NEXT_CARRIER_MS after the last
-// goes down) (server/src/boss.ts): it broadcasts one
-// raid (id, start time, orbit centre, entry angle), and from there the
-// zeppelin's pose is a pure function of (raid, synced clock) — the L2 movers'
-// trick — so every client draws, collides with and shoots at the same hull at
-// the same server instant. What only the server knows is streamed: weak-point
-// HP, flak shells (each one a burst point and a fuse) and, when it goes down,
-// the break-up — three hull sections falling on the D4 wreck path to impacts
-// the server swept once.
+// Z1 airship fleet — the shared, pure half (S4's sky boss, made a fleet).
+// The SERVER keeps FLEET_SIZE war airships over a room (server/src/boss.ts
+// FleetDirector). Each one flies its own LANE (FLEET_LANES): a straight
+// course across the torus that closes on itself, at a fixed altitude and
+// speed. So a ship is one small broadcast (its id, its lane, when it came on
+// and where along the lane it was then), and from there its pose is a pure
+// function of (ship, synced clock) — the L2 movers' trick — so every client
+// draws, collides with and shoots at the same hulls at the same server
+// instant. What only the server knows is streamed: each ship's HP (one
+// integer), the flak shells (each one a muzzle, a burst point and a fuse)
+// and, when a ship is shot down, its crash — the whole hull tilting
+// nose-down along the D4 wreck path to the impact the server swept once.
 //
-// Draw == collide: the hull is ONE table of parts (BOSS_PARTS) — S9: solids
-// of revolution lathed from one station table, and boxes — and one
-// derivation of where each is (bossPartBoxInto / bossPiecePartBoxInto). The
-// renderer lathes and builds exactly those shapes (client/src/render/
-// boss-hull.ts) and collideBoss tests exactly those shapes (bossPartSdf).
-// The weak points are some of those parts (the engine cars and the armoured
-// gas-cell blisters) — solid like the rest, drawn glowing. S9 adds the
-// carrier's launches: a bot respawning during a raid is dropped from the
-// belly hangar's trapeze or flung off the dorsal catapult, its sequence a
-// pure function of (raid, launch, clock) like everything else here.
+// Draw == collide: the hull is ONE table of parts (BOSS_PARTS) — S9's
+// solids of revolution lathed from one station table, and boxes. The three
+// hull classes (SHIP_CLASSES: picket, cruiser, carrier) are that table
+// scaled along the hull and across it (SHIP_PARTS), which keeps every solid
+// of revolution a solid of revolution and every box a box. The renderer
+// builds the base hull once and scales each instance by its class (client/
+// src/render/boss.ts, boss-hull.ts); collideBoss tests the class's scaled
+// parts with the same exact distance fields (bossPartSdf).
+//
+// Clearance by construction: the lanes come in two LAYERS whose altitude
+// bands never overlap, and every lane of a layer runs along that layer's
+// one heading (forward or back), at its own offset across it. Two ships of a
+// layer can close along the heading but never across it, and the offsets
+// keep their hulls apart, so no two hulls ever meet (common/test/boss.test.ts
+// checks it over time).
 //
 // Not re-exported from common/src/index.ts; import "@angels-bandits/common/boss".
 
 import type { Building } from "./city/index";
-import { type MoverBox, type MoverHit, sphereHitsBox } from "./city/movers";
+import type { MoverBox, MoverHit } from "./city/movers";
 import { type CityIndex, collideCity, hitsGround } from "./collision";
 import {
+  BLIMP_ALT,
+  BLIMP_HULL,
   BOT_AIM_JITTER,
   BOT_REACTION_MS,
+  BULLET_DAMAGE,
   BULLET_RANGE,
+  HELI_HULL,
   HIT_RADIUS,
   MAX_HP,
+  NEWS_HELI_ALT_MAX,
   RESPAWN_SPEED,
   WORLD_SIZE,
   WRECK_MAX_MS,
   WRECK_STEP_MS,
 } from "./constants";
-import { NEXT_CARRIER_MS, carrierHpScale } from "./waves";
 import {
   type Vec3,
   wrapCoord,
   wrapDelta,
   wrapDeltaAxis,
-  wrapDeltaInto,
+  wrapDistance,
 } from "./world/index";
-import { type WreckHit, type WreckPath, wreckPosAt } from "./wreck";
+import { type WreckHit, wreckPosAt, wreckVelAt } from "./wreck";
 
-// --- Flight envelope ----------------------------------------------------------
+/** The fleet's wire model: what decodeShip / fleetPoseAt / FLEET_LANES
+ * build from a ship record. The welcome carries it; a client built for
+ * another one reloads rather than fly different hulls than the server
+ * collides with. Bump it with any change to the lanes, the classes or the
+ * records. */
+export const FLEET_MODEL = 1;
 
-/** Cruise altitude of the hull's centre, m. H1: the whole hull (540–600 m)
- * sits over every roof (CITY_TOP 480 m, the supertalls) and the news heli
- * (rotor ≤ 519.2 m), under the blimp (≥ 611 m) and CLOUD_BASE. */
-export const BOSS_ALT = 570;
-/** Cruise speed, m/s — a lumbering thing, slower than any plane's MIN_SPEED. */
-export const BOSS_SPEED = 16;
-/** Orbit radius around the raid's centre, m. */
-export const BOSS_ORBIT_R = 360;
-/** Straight run-in along the orbit's tangent, m, and the run-out after. */
-export const BOSS_INGRESS_M = 720;
-export const BOSS_EGRESS_M = 900;
-/** Time on station (the orbit) before it gives up and leaves, ms. */
-export const BOSS_ORBIT_MS = 300_000;
-
-/** DamageMsg shooter id for flak, and the AwardMsg victim id of the boss
- * itself. Player ids are base64url and bots `bot:<room>:<n>`, so it can never
+/** DamageMsg shooter id for flak, and the AwardMsg victim id of a downed
+ * ship. Player ids are base64url and bots `bot:<room>:<n>`, so it can never
  * name a plane (like MISSILE_SHOOTER_ID). */
 export const BOSS_ID = "@boss";
-/** Bot contacts for weak point k are `@boss:<k>` (server only). */
+/** Bot contacts for weak point k of ship s are `@boss:<s>:<k>` (server
+ * only). */
 export const BOSS_CONTACT_PREFIX = "@boss:";
 
 // --- The hull -----------------------------------------------------------------
@@ -81,8 +83,7 @@ export const BOSS_CONTACT_PREFIX = "@boss:";
 // either a small solid of revolution of its own (the engine cars with their
 // pusher props, the gas-cell blisters, the mooring cone) or a box drawn as a
 // box (fins, struts, the control car, the hangar keel, the catapult deck,
-// the turrets). Every part keeps its yaw-only bounding box: the broad phase,
-// the break-up sweep and the bots' reject tests read that.
+// the turrets). Z1: this is the BASE hull; no ship flies it unscaled.
 
 export type BossPartKind =
   | "hull"
@@ -326,10 +327,6 @@ export const BOSS_RADIUS = Math.hypot(BOSS_REACH_X, BOSS_REACH_Y, BOSS_REACH_Z);
 /** The weak points: indices into BOSS_PARTS (4 engine cars, then 3 gas
  * cells). */
 export const BOSS_WEAK_POINTS: readonly number[] = [10, 11, 12, 13, 14, 15, 16];
-/** Each weak point's full HP at hpScale 1 (engines, then gas cells). */
-export const BOSS_WEAK_HP: readonly number[] = [
-  260, 260, 260, 260, 380, 380, 380,
-];
 /** A weak point's bullet target: a sphere this big round its box centre, m —
  * the plane hit radius, so a round that would hit a plane there hits it. */
 export const BOSS_WEAK_RADIUS = HIT_RADIUS;
@@ -343,18 +340,6 @@ export const BOSS_TURRETS: readonly { part: number; up: 1 | -1 }[] = [
   { part: 20, up: -1 },
   { part: 21, up: -1 },
   { part: 22, up: -1 },
-];
-
-/** The three sections it breaks into: their anchor (the frame they fall and
- * turn about) in the hull frame, and the boxes whose bottoms the impact sweep
- * tests (the envelope section and whatever hangs lowest under it). */
-export const BOSS_PIECES: readonly {
-  ax: number;
-  sweep: readonly number[];
-}[] = [
-  { ax: 91, sweep: [1, 4] },
-  { ax: -2, sweep: [0, 9] },
-  { ax: -92, sweep: [3, 6] },
 ];
 
 // --- The exact shape ------------------------------------------------------------
@@ -428,669 +413,613 @@ export function bossPartSdfAt(p: BossPart, b: MoverBox, pos: Vec3): number {
   return bossPartSdf(p, c * dx - s * dz, pos.y - b.y, s * dx + c * dz);
 }
 
-/** Does a sphere at `pos` touch part `p` placed as `b`? The box first. */
-function sphereHitsPart(
-  p: BossPart,
-  b: MoverBox,
-  pos: Vec3,
-  radius: number,
-): boolean {
-  if (!sphereHitsBox(b, pos, radius)) return false;
-  return p.rev === null || bossPartSdfAt(p, b, pos) <= radius;
+// --- Hull classes (Z1) ------------------------------------------------------------
+
+/** The two launch rigs: the belly hangar's trapeze, the dorsal catapult. */
+export const LAUNCH_BELLY = 0;
+export const LAUNCH_CATAPULT = 1;
+export type LaunchKind = 0 | 1;
+
+export const SHIP_PICKET = 0;
+export const SHIP_CRUISER = 1;
+export const SHIP_CARRIER = 2;
+export type ShipClassId = 0 | 1 | 2;
+
+/** One hull class: the base hull scaled `sx` along its length and `sr`
+ * across it (radius, height and beam), its full HP, the turrets it arms
+ * (indices into BOSS_TURRETS) and the launch rigs it carries. */
+export interface ShipClass {
+  name: string;
+  sx: number;
+  sr: number;
+  hp: number;
+  turrets: readonly number[];
+  rigs: readonly LaunchKind[];
 }
 
-// --- Raids --------------------------------------------------------------------
+/** Picket ≈ 91 m nose to tail, cruiser ≈ 142 m, carrier ≈ 198 m — each a
+ * little slimmer than the last is long, so the three read as three ships,
+ * not one at three distances. HP: one plane's sustained fire on the hull
+ * (BULLET_DAMAGE a round, ten a second) downs a picket in about 2 s and a
+ * carrier in about 3 s; rounds into an engine car or a gas cell do
+ * FLEET_WEAK_MULT times that. Only cruisers (one ventral gun) and carriers
+ * (a dorsal and a ventral gun) are armed. */
+export const SHIP_CLASSES: readonly ShipClass[] = [
+  {
+    name: "PICKET",
+    sx: 0.36,
+    sr: 0.4,
+    hp: 140,
+    turrets: [],
+    rigs: [LAUNCH_BELLY],
+  },
+  {
+    name: "CRUISER",
+    sx: 0.56,
+    sr: 0.54,
+    hp: 175,
+    turrets: [2],
+    rigs: [LAUNCH_BELLY],
+  },
+  {
+    name: "CARRIER",
+    sx: 0.78,
+    sr: 0.66,
+    hp: 210,
+    turrets: [0, 3],
+    rigs: [LAUNCH_BELLY, LAUNCH_CATAPULT],
+  },
+];
 
-/** One raid, exactly as broadcast. `cx`/`cz` canonical, on the wire's 0.1 m
- * grid; `th0` on a 0.001 rad grid; `hpScale` on a 0.01 grid. */
-export interface BossRaid {
+/** A round into a live engine car or gas cell does this many times a hull
+ * round's BULLET_DAMAGE — a short burst on one weak point sets a ship
+ * burning. */
+export const FLEET_WEAK_MULT = 3;
+/** Damage of one round, by what it hit (k: weak point, −1 the hull). */
+export const shipRoundDamage = (k: number): number =>
+  k >= 0 ? BULLET_DAMAGE * FLEET_WEAK_MULT : BULLET_DAMAGE;
+
+const scaleProfile = (p: BossProfile, sx: number, sr: number): BossProfile =>
+  p.map(([x, r]) => [x * sx, r * sr] as const);
+
+/** Part `p` of the base hull, scaled to class `c`: exact — a solid of
+ * revolution about hull X scaled sx along and sr across is the solid of its
+ * scaled profile, and a box scales to a box. */
+function scalePart(p: BossPart, c: ShipClass): BossPart {
+  return {
+    kind: p.kind,
+    piece: p.piece,
+    x: p.x * c.sx,
+    y: p.y * c.sr,
+    z: p.z * c.sr,
+    hx: p.hx * c.sx,
+    hy: p.hy * c.sr,
+    hz: p.hz * c.sr,
+    rev: p.rev ? scaleProfile(p.rev, c.sx, c.sr) : null,
+  };
+}
+
+/** Each class's hull, in BOSS_PARTS order — THE shapes collideBoss tests
+ * and the renderer draws (the base hull scaled per instance). */
+export const SHIP_PARTS: readonly (readonly BossPart[])[] = SHIP_CLASSES.map(
+  (c) => BOSS_PARTS.map((p) => scalePart(p, c)),
+);
+
+/** Each class's envelope profile — the silhouettes SKY1's painted armada
+ * reuses, so a far ship and a real one are the same shape. */
+export const SHIP_PROFILES: readonly BossProfile[] = SHIP_CLASSES.map((c) =>
+  scaleProfile(BOSS_PROFILE, c.sx, c.sr),
+);
+
+/** How far a class's hull reaches from its centre, m: per axis (x along
+ * the hull), in plan view and in all (the reject tests). */
+export interface ShipReach {
+  x: number;
+  y: number;
+  z: number;
+  xz: number;
+  r: number;
+}
+export const SHIP_REACH: readonly ShipReach[] = SHIP_CLASSES.map((c) => {
+  const x = BOSS_REACH_X * c.sx;
+  const y = BOSS_REACH_Y * c.sr;
+  const z = BOSS_REACH_Z * c.sr;
+  return { x, y, z, xz: Math.hypot(x, z), r: Math.hypot(x, y, z) };
+});
+/** The furthest any class reaches in plan view, m. */
+export const FLEET_REACH_XZ = Math.max(...SHIP_REACH.map((r) => r.xz));
+
+/** A weak point's bullet target per class: a sphere this big round its box
+ * centre, m — the plane hit radius on the base hull, scaled across. */
+export const SHIP_WEAK_R: readonly number[] = SHIP_CLASSES.map((c) =>
+  Math.max(3, BOSS_WEAK_RADIUS * c.sr),
+);
+
+// --- Lanes and layers -----------------------------------------------------------
+
+/** The band every real ship's hull stays inside, m (on extents): over the
+ * news heli's rotor blur with its 15 m margin (newsheli.test.ts reckons the
+ * blur at 1.3 × the hull's half-height) and over every roof, and 5 m under
+ * the blimp's belly, so under the cloud deck. */
+export const FLEET_ALT_MIN = NEWS_HELI_ALT_MAX + HELI_HULL[1] * 1.3 + 15;
+export const FLEET_ALT_MAX = BLIMP_ALT - BLIMP_HULL[1] - 5;
+
+/** A layer's heading: (p, q) coprime whole numbers, so a lane along it
+ * closes on itself after p tiles in x and q in z. */
+export interface FleetLayer {
+  p: number;
+  q: number;
+  /** The unit heading (forward). */
+  dx: number;
+  dz: number;
+  /** A lane's length before it closes, m: WORLD_SIZE·√(p² + q²). */
+  length: number;
+  /** How far apart, across the heading, a lane's own parallel images lie,
+   * m: WORLD_SIZE / √(p² + q²). Two lanes `a` and `b` are never nearer
+   * than (b.u − a.u) taken round this. */
+  across: number;
+}
+const fleetLayer = (p: number, q: number): FleetLayer => {
+  const n = Math.hypot(p, q);
+  return {
+    p,
+    q,
+    dx: p / n,
+    dz: q / n,
+    length: WORLD_SIZE * n,
+    across: WORLD_SIZE / n,
+  };
+};
+/** Layer 0, the pickets, low and quick, a few degrees off the avenues;
+ * layer 1, the line (cruisers and carriers), higher, steeper across the
+ * grid. */
+export const FLEET_LAYERS: readonly FleetLayer[] = [
+  fleetLayer(3, 1),
+  fleetLayer(1, -2),
+];
+
+/** One lane: who flies it, in which layer, at what altitude (the hull's
+ * centre), how far across the layer's heading, and how fast along it (m/s;
+ * negative flies it backwards). */
+export interface FleetLane {
+  cls: ShipClassId;
+  layer: 0 | 1;
+  alt: number;
+  u: number;
+  v: number;
+}
+
+/** [class, layer, altitude, speed] per lane; the offsets across spread
+ * each layer's lanes evenly. */
+const LANE_ROWS: readonly (readonly [ShipClassId, 0 | 1, number, number])[] = [
+  // Layer 0: eight pickets.
+  [0, 0, 547.6, 13.5],
+  [0, 0, 548.4, -12],
+  [0, 0, 549, 14.5],
+  [0, 0, 547.4, 12.5],
+  [0, 0, 548.8, -15],
+  [0, 0, 548, 13],
+  [0, 0, 547.6, -14],
+  [0, 0, 549, -12.5],
+  // Layer 1: eight cruisers and four carriers, no two carriers abreast.
+  [1, 1, 583, 10.5],
+  [2, 1, 585, -8],
+  [1, 1, 587, 11.5],
+  [1, 1, 581.5, -9.5],
+  [2, 1, 584.6, 7.5],
+  [1, 1, 586, -11],
+  [1, 1, 582.5, 10],
+  [2, 1, 585.4, -8.5],
+  [1, 1, 584, 9],
+  [1, 1, 587.5, -10],
+  [2, 1, 585, 9],
+  [1, 1, 582, -11.5],
+];
+
+/** Every lane — one ship each, so this many ships fly at once (at most). */
+export const FLEET_LANES: readonly FleetLane[] = (() => {
+  const count = [0, 0];
+  const n = [0, 0];
+  for (const [, layer] of LANE_ROWS) n[layer] = (n[layer] as number) + 1;
+  return LANE_ROWS.map(([cls, layer, alt, v]) => {
+    const k = count[layer] as number;
+    count[layer] = k + 1;
+    const across = (FLEET_LAYERS[layer] as FleetLayer).across;
+    return {
+      cls,
+      layer,
+      alt,
+      v,
+      u: ((k + 0.5) * across) / (n[layer] as number),
+    };
+  });
+})();
+/** The fleet's size: one ship per lane. */
+export const FLEET_SIZE = FLEET_LANES.length;
+
+// --- Ships ----------------------------------------------------------------------
+
+/** A ship shot down: its crash, exactly as it crosses the wire. Its centre
+ * follows the D4 wreck path (p, v, t = the down's time, spin, end), its
+ * heading turns slowly from `yaw` and its nose drops (SHIP_FALL_PITCH). */
+export interface ShipDown {
+  t: number;
+  p: Vec3;
+  v: Vec3;
+  yaw: number;
+  spin: 1 | -1;
+  /** ms after `t` when it hits (server-swept), ≤ WRECK_MAX_MS. */
+  end: number;
+  hit: WreckHit;
+  /** Where it hits: the bottom of the sweep sphere that touched first (an
+   * air burst: under its centre), canonical. Swept once against the city as
+   * it stood at the down. */
+  at: Vec3;
+  /** The building it came down on (index into the city), or −1. */
+  b: number;
+}
+
+/** One ship of the fleet, as both sides hold it. `s0` canonical along its
+ * lane on the wire's 0.1 m grid. */
+export interface FleetShip {
+  /** Room-unique, ascending. */
   id: number;
-  /** When the run-in starts, server clock ms. */
+  /** Its lane (index into FLEET_LANES): its class, layer, altitude, speed. */
+  lane: number;
+  /** When it came on, server ms. */
   t0: number;
-  cx: number;
-  cz: number;
-  /** Orbit angle where the run-in joins the circle, rad. */
-  th0: number;
-  /** Time on station, ms. */
-  orbitMs: number;
-  /** Weak-point HP multiplier (tests and QA run small bosses; W1: the
-   * carrier's tier is already in it). */
-  hpScale: number;
-  /** W1: which carrier of the session this is, 1-based (its HUD tier; its
-   * HP and flak scale with it). Absent on a raid from before W1: 1. */
-  tier?: number;
+  /** Where along its lane it was at t0, m. */
+  s0: number;
+  /** Its full HP (its class's, × the room's tuning). */
+  hp0: number;
+  /** Its crash, once it was shot down. */
+  down: ShipDown | null;
 }
 
-const ingressMs = (): number => (BOSS_INGRESS_M / BOSS_SPEED) * 1000;
-const egressMs = (): number => (BOSS_EGRESS_M / BOSS_SPEED) * 1000;
+/** A ship's class. */
+export const shipClass = (s: FleetShip): ShipClassId =>
+  (FLEET_LANES[s.lane] as FleetLane).cls;
 
-/** When it is first in the air, and when the run-out ends (gone), ms. */
-export const raidStart = (r: BossRaid): number => r.t0;
-export const raidEnd = (r: BossRaid): number =>
-  r.t0 + ingressMs() + r.orbitMs + egressMs();
-/** When the orbit ends and the run-out begins, ms. */
-export const raidEgressAt = (r: BossRaid): number =>
-  r.t0 + ingressMs() + r.orbitMs;
-
-/** The zeppelin's pose: centre (canonical x/z), the yaw its boxes carry, and
- * its unit heading in (x, z). */
-export interface BossPose {
+/** A ship's pose: centre (canonical x/z), the yaw its frame carries
+ * (local +X = world (cos yaw, −sin yaw), MoverBox's convention), the nose's
+ * pitch (0 in flight; negative falling) and its unit plan heading. */
+export interface ShipPose {
   x: number;
   y: number;
   z: number;
   yaw: number;
+  pitch: number;
   hx: number;
   hz: number;
 }
 
-export const blankPose = (): BossPose => ({
+export const blankPose = (): ShipPose => ({
   x: 0,
   y: 0,
   z: 0,
   yaw: 0,
+  pitch: 0,
   hx: 1,
   hz: 0,
 });
 
-/**
- * Where the raid's zeppelin is at server time `t`, into `out`. The path: a
- * straight run-in along the orbit's tangent at `th0`, a counter-clockwise
- * (increasing angle) orbit of BOSS_ORBIT_R around (cx, cz) for `orbitMs`, a
- * straight run-out along the tangent where it left. Constant speed, C1 at
- * both joins. Clamped to the path's ends outside [t0, raidEnd]. Pure.
- */
-export function bossPoseAt(r: BossRaid, t: number, out: BossPose): BossPose {
-  const total =
-    BOSS_INGRESS_M + BOSS_SPEED * (r.orbitMs / 1000) + BOSS_EGRESS_M;
-  const s = Math.min(total, Math.max(0, (BOSS_SPEED * (t - r.t0)) / 1000));
-  const orbitLen = BOSS_SPEED * (r.orbitMs / 1000);
-  let x: number;
-  let z: number;
-  let th: number;
-  if (s < BOSS_INGRESS_M) {
-    th = r.th0;
-    const back = BOSS_INGRESS_M - s;
-    x = r.cx + BOSS_ORBIT_R * Math.cos(th) + Math.sin(th) * back;
-    z = r.cz + BOSS_ORBIT_R * Math.sin(th) - Math.cos(th) * back;
-  } else if (s < BOSS_INGRESS_M + orbitLen) {
-    th = r.th0 + (s - BOSS_INGRESS_M) / BOSS_ORBIT_R;
-    x = r.cx + BOSS_ORBIT_R * Math.cos(th);
-    z = r.cz + BOSS_ORBIT_R * Math.sin(th);
-  } else {
-    th = r.th0 + orbitLen / BOSS_ORBIT_R;
-    const on = s - BOSS_INGRESS_M - orbitLen;
-    x = r.cx + BOSS_ORBIT_R * Math.cos(th) - Math.sin(th) * on;
-    z = r.cz + BOSS_ORBIT_R * Math.sin(th) + Math.cos(th) * on;
-  }
-  // Heading: the tangent (−sin θ, cos θ). Local +X = world (cos yaw, −sin yaw).
-  out.hx = -Math.sin(th);
-  out.hz = Math.cos(th);
+/** A lane's pose at along-lane position `s`, into `out`. Pure. */
+export function lanePoseInto(lane: number, s: number, out: ShipPose): ShipPose {
+  const ln = FLEET_LANES[lane] as FleetLane;
+  const ly = FLEET_LAYERS[ln.layer] as FleetLayer;
+  // The lane's origin: `u` across the heading from the layer's own.
+  out.x = wrapCoord(-ly.dz * ln.u + ly.dx * s);
+  out.y = ln.alt;
+  out.z = wrapCoord(ly.dx * ln.u + ly.dz * s);
+  const sg = ln.v < 0 ? -1 : 1;
+  out.hx = ly.dx * sg;
+  out.hz = ly.dz * sg;
   out.yaw = Math.atan2(-out.hz, out.hx);
-  out.x = wrapCoord(x);
-  out.y = BOSS_ALT;
-  out.z = wrapCoord(z);
+  out.pitch = 0;
   return out;
 }
 
-/** Its velocity at `t`, m/s (zero outside the flight). */
-export function bossVelAt(r: BossRaid, t: number, out: Vec3): Vec3 {
-  const pose = bossPoseAt(r, t, scratchPose);
-  const flying = t >= r.t0 && t < raidEnd(r);
-  out.x = flying ? pose.hx * BOSS_SPEED : 0;
-  out.y = 0;
-  out.z = flying ? pose.hz * BOSS_SPEED : 0;
-  return out;
-}
-
-// --- Schedule -----------------------------------------------------------------
-
-export interface BossTuning {
-  /** First raid this long after a human is in the room, ms. */
-  firstMinMs: number;
-  firstMaxMs: number;
-  /** W1: the gap from the previous raid's END (its run-out done, or the
-   * instant it was shot down) to the next raid's start, ms, ± jitter. */
-  periodMs: number;
-  periodJitterMs: number;
-  orbitMs: number;
-  hpScale: number;
-}
-
-/** W1 Carrier War: the first carrier 4–6 s after a human starts flying,
- * the next one NEXT_CARRIER_MS after each goes down (or, never shot down,
- * flies off after 15 min on station). */
-export const BOSS_TUNING: BossTuning = {
-  firstMinMs: 4000,
-  firstMaxMs: 6000,
-  periodMs: NEXT_CARRIER_MS,
-  periodJitterMs: 0,
-  orbitMs: 900_000,
-  hpScale: 1,
-};
-
-/** AB_BOSS_FAST=1 (tests and QA only): a small boss, right away. */
-export const BOSS_FAST_TUNING: BossTuning = {
-  firstMinMs: 2000,
-  firstMaxMs: 3000,
-  periodMs: NEXT_CARRIER_MS,
-  periodJitterMs: 0,
-  orbitMs: 90_000,
-  hpScale: 0.1,
-};
-
-/**
- * When the next raid starts: the first one firstMin..firstMax after a human
- * arrived (`humanSince`), every later one periodMs ± periodJitterMs after
- * `prev` — the previous raid's END (its run-out, or the instant it went
- * down). Pure in its inputs and `rand`; whole ms.
- */
-export function nextRaidAt(
-  prev: number | null,
-  humanSince: number,
-  rand: () => number,
-  tuning: BossTuning = BOSS_TUNING,
-): number {
-  if (prev === null) {
-    return Math.round(
-      humanSince +
-        tuning.firstMinMs +
-        (tuning.firstMaxMs - tuning.firstMinMs) * rand(),
-    );
+/** Z1: the same pose as fleetPoseAt, into a Float64Array at `o`: [x, y, z,
+ * yaw, pitch, hx, hz] — what a per-frame loop over the whole fleet reads
+ * (a typed array's doubles are never boxed; a plain object's fields are).
+ * Bit for bit fleetPoseAt's: the same expressions. */
+export function fleetPoseInto64(
+  ship: FleetShip,
+  t: number,
+  out: Float64Array,
+  o: number,
+): void {
+  const d = ship.down;
+  if (d !== null && t >= d.t) {
+    fallPoseInto(d, t, pose64);
+    out[o] = pose64.x;
+    out[o + 1] = pose64.y;
+    out[o + 2] = pose64.z;
+    out[o + 3] = pose64.yaw;
+    out[o + 4] = pose64.pitch;
+    out[o + 5] = pose64.hx;
+    out[o + 6] = pose64.hz;
+    return;
   }
-  return Math.round(
-    prev + tuning.periodMs + (rand() * 2 - 1) * tuning.periodJitterMs,
-  );
+  const ln = FLEET_LANES[ship.lane] as FleetLane;
+  const ly = FLEET_LAYERS[ln.layer] as FleetLayer;
+  const s = ship.s0 + (ln.v * ((t > ship.t0 ? t : ship.t0) - ship.t0)) / 1000;
+  out[o] = wrapCoord(-ly.dz * ln.u + ly.dx * s);
+  out[o + 1] = ln.alt;
+  out[o + 2] = wrapCoord(ly.dx * ln.u + ly.dz * s);
+  const sg = ln.v < 0 ? -1 : 1;
+  const hx = ly.dx * sg;
+  const hz = ly.dz * sg;
+  out[o + 3] = Math.atan2(-hz, hx);
+  out[o + 4] = 0;
+  out[o + 5] = hx;
+  out[o + 6] = hz;
 }
+const pose64: ShipPose = {
+  x: 0.5,
+  y: 0.5,
+  z: 0.5,
+  yaw: 0.5,
+  pitch: 0.5,
+  hx: 0.5,
+  hz: 0.5,
+};
 
-/** W1: how far a carrier's orbit centre may sit from the human it came for,
- * m (plan view, seeded). */
-export const CARRIER_CENTRE_SPREAD_M = 120;
+/** Where along its lane a ship is at `t` (unwrapped), m. */
+export const shipAlong = (s: FleetShip, t: number): number =>
+  s.s0 + ((FLEET_LANES[s.lane] as FleetLane).v * (t - s.t0)) / 1000;
+
+/** How far a falling ship's nose drops, rad (the asymptote), and how fast
+ * it gets there (time constant, s). */
+export const SHIP_FALL_PITCH = 0.55;
+export const SHIP_FALL_PITCH_TAU_S = 2.2;
+/** How fast a falling ship's heading turns, rad/s (× its spin). */
+export const SHIP_FALL_YAW_RATE = 0.07;
+
+/** A crashing ship's pose at server time `t` (clamped to its fall). */
+export function fallPoseInto(d: ShipDown, t: number, out: ShipPose): ShipPose {
+  wreckPosAt(d, t, out);
+  const s = Math.min(Math.max(t - d.t, 0), d.end) / 1000;
+  out.yaw = d.yaw + d.spin * SHIP_FALL_YAW_RATE * s;
+  out.hx = Math.cos(out.yaw);
+  out.hz = -Math.sin(out.yaw);
+  out.pitch = -SHIP_FALL_PITCH * (1 - Math.exp(-s / SHIP_FALL_PITCH_TAU_S));
+  return out;
+}
 
 /**
- * The raid itself: a seeded centre and entry angle, quantised to the wire.
- * W1: `near` (a human) puts the orbit's centre within
- * CARRIER_CENTRE_SPREAD_M of it — the carrier comes for the pilots, out of
- * the haze ~800 m away — and `tier` scales its HP (carrierHpScale). Three
- * draws either way.
+ * THE ship pose: where `ship` is at server time `t`, into `out` — flying
+ * its lane until it went down, then falling. A pure function of the ship's
+ * record and the clock; outside [t0, its crash] the path's ends clamp.
  */
-export function planRaid(
-  rand: () => number,
-  id: number,
-  t0: number,
-  tuning: BossTuning = BOSS_TUNING,
-  tier = 1,
-  near: Vec3 | null = null,
-): BossRaid {
-  const qc = (v: number) => {
-    const c = Math.round(wrapCoord(v) * 10) / 10;
-    return c >= WORLD_SIZE ? 0 : c;
-  };
-  const rx = rand();
-  const rz = rand();
-  const spread = (r: number) => (r * 2 - 1) * CARRIER_CENTRE_SPREAD_M;
-  return {
-    id,
-    t0: Math.round(t0),
-    cx: qc(near ? near.x + spread(rx) : rx * WORLD_SIZE),
-    cz: qc(near ? near.z + spread(rz) : rz * WORLD_SIZE),
-    th0: Math.round(rand() * Math.PI * 2 * 1000) / 1000,
-    orbitMs: Math.round(tuning.orbitMs),
-    hpScale: Math.max(
-      0.01,
-      Math.round(tuning.hpScale * carrierHpScale(tier) * 100) / 100,
-    ),
-    tier,
-  };
+export function fleetPoseAt(
+  ship: FleetShip,
+  t: number,
+  out: ShipPose,
+): ShipPose {
+  const d = ship.down;
+  if (d && t >= d.t) return fallPoseInto(d, t, out);
+  return lanePoseInto(ship.lane, shipAlong(ship, Math.max(t, ship.t0)), out);
 }
 
-/** A raid's carrier tier (1 for a raid from before W1). */
-export const raidTier = (r: BossRaid): number => r.tier ?? 1;
+/** Its velocity at `t`, m/s (zero before it came on and once it hit). */
+export function shipVelAt(ship: FleetShip, t: number, out: Vec3): Vec3 {
+  const d = ship.down;
+  if (d && t >= d.t) return wreckVelAt(d, t, out);
+  const ln = FLEET_LANES[ship.lane] as FleetLane;
+  const ly = FLEET_LAYERS[ln.layer] as FleetLayer;
+  const on = t >= ship.t0 ? 1 : 0;
+  out.x = ly.dx * ln.v * on;
+  out.y = 0;
+  out.z = ly.dz * ln.v * on;
+  return out;
+}
 
-/** Full HP of weak point `k` on this raid. */
-export const weakMaxHp = (r: BossRaid, k: number): number =>
-  Math.max(1, Math.round((BOSS_WEAK_HP[k] ?? 0) * r.hpScale));
+/** Is the ship intact and in the air at `t`? */
+export const shipPresent = (s: FleetShip, t: number): boolean =>
+  t >= s.t0 && !(s.down !== null && t >= s.down.t);
 
-/** Every weak point's full HP. */
-export const raidMaxHp = (r: BossRaid): number[] =>
-  BOSS_WEAK_HP.map((_, k) => weakMaxHp(r, k));
+/** Is it falling (shot down, not yet hit) at `t`? */
+export const shipFalling = (s: FleetShip, t: number): boolean =>
+  s.down !== null && t >= s.down.t && t < s.down.t + s.down.end;
 
-// --- Where the parts are --------------------------------------------------------
+/** Has its crash landed by `t`? */
+export const shipLanded = (s: FleetShip, t: number): boolean =>
+  s.down !== null && t >= s.down.t + s.down.end;
 
-const scratchPose = blankPose();
+// --- The ship frame ---------------------------------------------------------------
 
-/** Hull-frame offset (lx, ly, lz) placed by `pose` into world `out`. */
-function placeLocal(
-  pose: BossPose,
+/** World delta (from the ship's centre) → ship frame, into `out`: the yaw
+ * undone, then the pitch (about the ship's own +Z). */
+export function shipLocalInto(
+  pose: ShipPose,
+  dx: number,
+  dy: number,
+  dz: number,
+  out: Vec3,
+): Vec3 {
+  const c = Math.cos(pose.yaw);
+  const s = Math.sin(pose.yaw);
+  const ax = c * dx - s * dz;
+  const az = s * dx + c * dz;
+  const cp = Math.cos(pose.pitch);
+  const sp = Math.sin(pose.pitch);
+  out.x = cp * ax + sp * dy;
+  out.y = -sp * ax + cp * dy;
+  out.z = az;
+  return out;
+}
+
+/** Ship-frame point (lx, ly, lz) placed by `pose` into canonical world
+ * `out` — the inverse of shipLocalInto. */
+export function shipPointInto(
+  pose: ShipPose,
   lx: number,
   ly: number,
   lz: number,
   out: Vec3,
 ): Vec3 {
+  const cp = Math.cos(pose.pitch);
+  const sp = Math.sin(pose.pitch);
+  const ax = cp * lx - sp * ly;
+  const ay = sp * lx + cp * ly;
   const c = Math.cos(pose.yaw);
   const s = Math.sin(pose.yaw);
-  out.x = wrapCoord(pose.x + lx * c + lz * s);
-  out.y = pose.y + ly;
-  out.z = wrapCoord(pose.z - lx * s + lz * c);
+  out.x = wrapCoord(pose.x + c * ax + s * lz);
+  out.y = pose.y + ay;
+  out.z = wrapCoord(pose.z - s * ax + c * lz);
   return out;
 }
 
-/**
- * THE definition of where part `i` of an intact hull at `pose` is: writes its
- * canonical box into `out` (the renderer and collideBoss both come here).
- */
-export function bossPartBoxInto(
-  pose: BossPose,
-  i: number,
-  out: MoverBox,
-): MoverBox {
-  const p = BOSS_PARTS[i] as BossPart;
-  placeLocal(pose, p.x, p.y, p.z, out);
-  out.hx = p.hx;
-  out.hy = p.hy;
-  out.hz = p.hz;
-  out.yaw = pose.yaw;
-  out.kind = "boss";
-  out.id = i;
-  return out;
-}
-
-/** The centre of weak point `k` (its box centre) at `pose`. */
-export function weakPointInto(pose: BossPose, k: number, out: Vec3): Vec3 {
-  const p = BOSS_PARTS[BOSS_WEAK_POINTS[k] as number] as BossPart;
-  return placeLocal(pose, p.x, p.y, p.z, out);
-}
-
-/** Turret `k`'s muzzle (the middle of its outer face) at `pose`. */
-export function turretMuzzleInto(pose: BossPose, k: number, out: Vec3): Vec3 {
-  const t = BOSS_TURRETS[k] as { part: number; up: 1 | -1 };
-  const p = BOSS_PARTS[t.part] as BossPart;
-  return placeLocal(pose, p.x, p.y + t.up * p.hy, p.z, out);
-}
-
-// --- Break-up -----------------------------------------------------------------
-
-/** How fast a falling section turns about its anchor, rad/s (× spin). */
-export const BOSS_PIECE_YAW_RATE = 0.22;
-/** Extra speed each section leaves with, m/s: the fore section surges on,
- * the aft one drags; the mid section drops out from under the gas cells. */
-const PIECE_KICK: readonly { along: number; up: number }[] = [
-  { along: 7, up: -2 },
-  { along: 0, up: 1.5 },
-  { along: -6, up: -1 },
-];
-
-/** One falling section, exactly as it crosses the wire. Its anchor follows
- * the D4 wreck path (p, v, t = the down's time, spin, end); its boxes turn
- * about the anchor at BOSS_PIECE_YAW_RATE from `yaw`. */
-export interface BossPiece {
-  k: 0 | 1 | 2;
-  p: Vec3;
-  v: Vec3;
-  yaw: number;
-  spin: 1 | -1;
-  /** ms after the down when it hits (server-swept), ≤ WRECK_MAX_MS. */
-  end: number;
-  hit: WreckHit;
-  /** Where it hits: the bottom of the sweep sphere that touched first (an
-   * air burst: the bottom of its main box), canonical. Swept once against
-   * the city as it stood at the down — never re-derived after other
-   * sections have broken it. */
-  at: Vec3;
-  /** The building it came down on (index into the city, the chunk-id
-   * order), or -1: the street, the river, the air. */
-  b: number;
-}
-
-/** The boss went down: when, and its three sections. */
-export interface BossDown {
-  /** The raid it ends. */
-  id: number;
-  t: number;
-  pieces: BossPiece[];
-}
-
-/** The part of a falling section its pose depends on. */
-export type BossPiecePath = Pick<BossPiece, "k" | "p" | "v" | "yaw" | "spin">;
-
-const pathOf = (piece: BossPiecePath, t: number, end: number): WreckPath => ({
-  p: piece.p,
-  v: piece.v,
-  t,
-  spin: piece.spin,
-  end,
-});
-
-/** The section's anchor pose at server time `ms` (clamped to the fall), as a
- * BossPose (y = the anchor's altitude). */
-export function piecePoseAt(
-  piece: BossPiecePath,
-  t: number,
-  end: number,
-  ms: number,
-  out: BossPose,
-): BossPose {
-  const path = pathOf(piece, t, end);
-  wreckPosAt(path, ms, anchor);
-  const s = Math.min(Math.max(ms - t, 0), end) / 1000;
-  out.x = anchor.x;
-  out.y = anchor.y;
-  out.z = anchor.z;
-  out.yaw = piece.yaw + piece.spin * BOSS_PIECE_YAW_RATE * s;
-  out.hx = Math.cos(out.yaw);
-  out.hz = -Math.sin(out.yaw);
-  return out;
-}
-const anchor: Vec3 = { x: 0, y: 0, z: 0 };
-
-/** Part `i` (which must belong to the section) of a falling section posed at
- * `pose` (its anchor pose, from piecePoseAt): the same box as the intact hull
- * at the down instant, then falling and turning with the section. */
-export function bossPiecePartBoxInto(
-  piece: BossPiecePath,
-  pose: BossPose,
-  i: number,
-  out: MoverBox,
-): MoverBox {
-  const p = BOSS_PARTS[i] as BossPart;
-  const ax = (BOSS_PIECES[piece.k] as { ax: number }).ax;
-  placeLocal(pose, p.x - ax, p.y, p.z, out);
-  out.hx = p.hx;
-  out.hy = p.hy;
-  out.hz = p.hz;
-  out.yaw = pose.yaw;
-  out.kind = "bossDebris";
-  out.id = i;
-  return out;
-}
-
-/** Parts of section `k`, in BOSS_PARTS order. */
-export const PIECE_PARTS: readonly (readonly number[])[] = [0, 1, 2].map((k) =>
-  BOSS_PARTS.flatMap((p, i) => (p.piece === k ? [i] : [])),
-);
-
-/** How far any box of section `k` reaches from its anchor, m (its reject
- * radius while it falls). */
-export const PIECE_REACH: readonly number[] = PIECE_PARTS.map((parts, k) => {
-  const ax = (BOSS_PIECES[k] as { ax: number }).ax;
-  let reach = 0;
-  for (const i of parts) {
-    const p = BOSS_PARTS[i] as BossPart;
-    reach = Math.max(
-      reach,
-      Math.hypot(
-        Math.abs(p.x - ax) + p.hx,
-        Math.abs(p.y) + p.hy,
-        Math.abs(p.z) + p.hz,
-      ),
-    );
-  }
-  return reach;
-});
-
-/** Spin of section `k` of raid `id`: from the ids, never from where. */
-const pieceSpin = (id: number, k: number): 1 | -1 =>
-  (id + k) % 2 === 0 ? 1 : -1;
-
-/** What a falling section is swept against: the room's city as it stands. */
-export interface BossSweepWorld {
-  buildings: readonly Building[];
-  index?: CityIndex;
-}
-
-const sweepBox: MoverBox = {
-  x: 0,
-  y: 0,
-  z: 0,
-  hx: 0,
-  hy: 0,
-  hz: 0,
-  yaw: 0,
-  kind: "bossDebris",
-  id: 0,
-};
-const sweepPose = blankPose();
-const sweepAt: Vec3 = { x: 0, y: 0, z: 0 };
-
-/** What touched at `ms`: the sphere of the chain that did (its centre, in
- * `contactAt`, and radius), what it hit, and the building when it was one. */
-interface Contact {
-  hit: WreckHit;
-  r: number;
-  building: Building | null;
-}
-const contactAt: Vec3 = { x: 0, y: 0, z: 0 };
-
-function pieceContactAt(
-  piece: BossPiecePath,
-  t: number,
-  ms: number,
-  world: BossSweepWorld,
-): Contact | null {
-  piecePoseAt(piece, t, WRECK_MAX_MS, ms, sweepPose);
-  for (const i of (BOSS_PIECES[piece.k] as { sweep: readonly number[] })
-    .sweep) {
-    bossPiecePartBoxInto(piece, sweepPose, i, sweepBox);
-    const r = Math.min(sweepBox.hy, sweepBox.hz);
-    const n = Math.max(1, Math.ceil(sweepBox.hx / r));
-    const c = Math.cos(sweepBox.yaw);
-    const s = Math.sin(sweepBox.yaw);
-    for (let j = 0; j < n; j++) {
-      const lx =
-        n === 1
-          ? 0
-          : -sweepBox.hx + r + ((2 * sweepBox.hx - 2 * r) * j) / (n - 1);
-      contactAt.x = wrapCoord(sweepBox.x + lx * c);
-      contactAt.y = sweepBox.y;
-      contactAt.z = wrapCoord(sweepBox.z - lx * s);
-      if (hitsGround(contactAt, r)) return { hit: "ground", r, building: null };
-      const b = collideCity(contactAt, r, world.buildings, world.index);
-      if (b) return { hit: "city", r, building: b };
+/** Does a sphere at ship-frame `l` touch class `cls`'s hull? The box
+ * first, then a solid of revolution's exact distance. */
+function hullTouches(cls: ShipClassId, l: Vec3, radius: number): boolean {
+  const parts = SHIP_PARTS[cls] as readonly BossPart[];
+  const r2 = radius * radius;
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i] as BossPart;
+    const qx = l.x - p.x;
+    const qy = l.y - p.y;
+    const qz = l.z - p.z;
+    const ex = Math.max(0, Math.abs(qx) - p.hx);
+    const ey = Math.max(0, Math.abs(qy) - p.hy);
+    const ez = Math.max(0, Math.abs(qz) - p.hz);
+    if (ex * ex + ey * ey + ez * ez > r2) continue;
+    if (p.rev === null || revSdf(p.rev, qx, Math.hypot(qy, qz)) <= radius) {
+      return true;
     }
   }
+  return false;
+}
+
+/** Signed distance from ship-frame `l` to class `cls`'s hull (negative
+ * inside): the least over its parts. */
+export function shipSdf(cls: ShipClassId, l: Vec3): number {
+  let d = Number.POSITIVE_INFINITY;
+  for (const p of SHIP_PARTS[cls] as readonly BossPart[]) {
+    d = Math.min(d, bossPartSdf(p, l.x - p.x, l.y - p.y, l.z - p.z));
+  }
+  return d;
+}
+
+/** The centre of weak point `k` (its part's centre) of a class `cls` ship
+ * at `pose`. */
+export function weakPointInto(
+  pose: ShipPose,
+  cls: ShipClassId,
+  k: number,
+  out: Vec3,
+): Vec3 {
+  const p = (SHIP_PARTS[cls] as readonly BossPart[])[
+    BOSS_WEAK_POINTS[k] as number
+  ] as BossPart;
+  return shipPointInto(pose, p.x, p.y, p.z, out);
+}
+
+/** Turret `k`'s muzzle (the middle of its outer face) on a class `cls`
+ * ship at `pose`. */
+export function turretMuzzleInto(
+  pose: ShipPose,
+  cls: ShipClassId,
+  k: number,
+  out: Vec3,
+): Vec3 {
+  const t = BOSS_TURRETS[k] as { part: number; up: 1 | -1 };
+  const p = (SHIP_PARTS[cls] as readonly BossPart[])[t.part] as BossPart;
+  return shipPointInto(pose, p.x, p.y + t.up * p.hy, p.z, out);
+}
+
+// --- The room's fleet, as both sides hold it -------------------------------------
+
+/** A room's fleet on both sides: its ships — flying, or shot down and
+ * falling, or landed and not yet cleared — and the launches still on (or
+ * just off) their rigs, oldest first. Mutated in place (a mover field holds
+ * it, like the news heli's slot). */
+export interface FleetSlot {
+  ships: FleetShip[];
+  launches: BossLaunch[];
+}
+
+export const emptyFleetSlot = (): FleetSlot => ({ ships: [], launches: [] });
+
+/** The ship with this id, or null. */
+export function shipById(slot: FleetSlot, id: number): FleetShip | null {
+  for (const s of slot.ships) if (s.id === id) return s;
   return null;
 }
 
-/**
- * Sweep a section's fall for its first solid (the D4 recipe: fixed
- * WRECK_STEP_MS steps, then bisection). Nothing by WRECK_MAX_MS → it bursts
- * in the air there. Deterministic in its inputs.
- */
-export function bossPieceImpact(
-  piece: BossPiecePath,
-  t: number,
-  world: BossSweepWorld,
-): { end: number; hit: WreckHit; at: Vec3; b: number } {
-  let lo = 0;
-  for (let ms = WRECK_STEP_MS; ms <= WRECK_MAX_MS; ms += WRECK_STEP_MS) {
-    let c = pieceContactAt(piece, t, t + ms, world);
-    if (!c) {
-      lo = ms;
-      continue;
-    }
-    let hi = ms;
-    // The contact (and contactAt) of the latest touching time is the one
-    // reported: keep a copy, bisection overwrites the scratch.
-    let at = { ...contactAt };
-    for (let i = 0; i < 6; i++) {
-      const mid = (lo + hi) / 2;
-      const h = pieceContactAt(piece, t, t + mid, world);
-      if (h) {
-        hi = mid;
-        c = h;
-        at = { ...contactAt };
-      } else lo = mid;
-    }
-    return {
-      end: Math.round(hi * 10) / 10,
-      hit: c.hit,
-      at: { x: at.x, y: Math.max(0, at.y - c.r), z: at.z },
-      b: c.building ? world.buildings.indexOf(c.building) : -1,
-    };
-  }
-  const pose = piecePoseAt(
-    piece,
-    t,
-    WRECK_MAX_MS,
-    t + WRECK_MAX_MS,
-    blankPose(),
-  );
-  const main = (BOSS_PIECES[piece.k] as { sweep: readonly number[] })
-    .sweep[0] as number;
-  const box = bossPiecePartBoxInto(piece, pose, main, { ...sweepBox });
-  return {
-    end: WRECK_MAX_MS,
-    hit: "air",
-    at: { x: box.x, y: Math.max(0, box.y - box.hy), z: box.z },
-    b: -1,
-  };
+/** How many ships are intact and in the air at `t`. */
+export function shipsUp(slot: FleetSlot, t: number): number {
+  let n = 0;
+  for (const s of slot.ships) if (shipPresent(s, t)) n++;
+  return n;
 }
 
-/**
- * The boss goes down at server time `t`: its three sections, each leaving
- * from exactly where it was on the intact hull with the hull's velocity plus
- * its kick, swept once against `world` for where it lands. Pure.
- */
-export function breakUp(
-  r: BossRaid,
-  t: number,
-  world: BossSweepWorld,
-): BossDown {
-  const pose = bossPoseAt(r, t, blankPose());
-  const pieces: BossPiece[] = [];
-  for (const k of [0, 1, 2] as const) {
-    const ax = (BOSS_PIECES[k] as { ax: number }).ax;
-    const kick = PIECE_KICK[k] as { along: number; up: number };
-    const p = placeLocal(pose, ax, 0, 0, { x: 0, y: 0, z: 0 });
-    const path: BossPiecePath = {
-      k,
-      p,
-      v: {
-        x: pose.hx * (BOSS_SPEED + kick.along),
-        y: kick.up,
-        z: pose.hz * (BOSS_SPEED + kick.along),
-      },
-      yaw: pose.yaw,
-      spin: pieceSpin(r.id, k),
-    };
-    pieces.push({ ...path, ...bossPieceImpact(path, t, world) });
-  }
-  return { id: r.id, t, pieces };
-}
-
-// --- The room's boss, as both sides hold it ------------------------------------
-
-/** A room's boss state on both sides: the raid in progress (or the last
- * one) and, once it went down, its break-up. Mutated in place (a mover
- * field holds it, like the news heli's slot). */
-export interface BossSlot {
-  raid: BossRaid | null;
-  down: BossDown | null;
-  /** S9: the carrier's launches still on (or just off) their rig, oldest
-   * first. Absent = none. */
-  launches?: BossLaunch[];
-}
-
-export const emptyBossSlot = (): BossSlot => ({
-  raid: null,
-  down: null,
-  launches: [],
-});
-
-/** Is the intact zeppelin in the air at `t`? */
-export function bossPresent(slot: BossSlot, t: number): boolean {
-  const r = slot.raid;
-  if (!r || t < r.t0 || t >= raidEnd(r)) return false;
-  return !(slot.down && slot.down.id === r.id && t >= slot.down.t);
-}
-
-/** Is any section of a broken-up boss still falling at `t`? */
-export function piecesFalling(slot: BossSlot, t: number): boolean {
-  const d = slot.down;
-  if (!d || t < d.t) return false;
-  return d.pieces.some((p) => t < d.t + p.end);
-}
-
-const hitBox: MoverBox = { ...sweepBox };
 const hitPose = blankPose();
+const hitLocal: Vec3 = { x: 0, y: 0, z: 0 };
 
 /**
- * The mover-field query: first box of the zeppelin (intact, or a section
- * still falling) a sphere at `pos` touches at server time `t`, or null.
- * Cheap rejects first — an altitude band, then the bounding radius — so it
- * can sit in the bot probe loop.
+ * The mover-field query: the first ship (intact, or falling) a sphere at
+ * `pos` touches at server time `t`, or null — kind "boss" for a flying
+ * hull, "bossDebris" for a falling one, the ship's id. Cheap rejects first
+ * (its layer's altitude band, then plan distance), so it can sit in the bot
+ * probe loop.
  */
 export function collideBoss(
-  slot: BossSlot,
+  slot: FleetSlot,
   pos: Vec3,
   radius: number,
   t: number,
 ): MoverHit | null {
-  const r = slot.raid;
-  if (r && bossPresent(slot, t)) {
-    if (Math.abs(pos.y - BOSS_ALT) <= BOSS_REACH_Y + radius) {
-      const pose = bossPoseAt(r, t, hitPose);
-      const dx = wrapDeltaAxis(pose.x, pos.x);
-      const dz = wrapDeltaAxis(pose.z, pos.z);
-      const reach = BOSS_REACH_XZ + radius;
-      if (dx * dx + dz * dz <= reach * reach) {
-        for (let i = 0; i < BOSS_PARTS.length; i++) {
-          const p = BOSS_PARTS[i] as BossPart;
-          if (
-            sphereHitsPart(p, bossPartBoxInto(pose, i, hitBox), pos, radius)
-          ) {
-            return { kind: "boss", id: r.id };
-          }
-        }
-      }
+  const ships = slot.ships;
+  for (let i = 0; i < ships.length; i++) {
+    const ship = ships[i] as FleetShip;
+    if (t < ship.t0) continue;
+    const d = ship.down;
+    const falling = d !== null && t >= d.t;
+    if (d !== null && falling && t >= d.t + d.end) continue;
+    const lane = FLEET_LANES[ship.lane] as FleetLane;
+    const reach = SHIP_REACH[lane.cls] as ShipReach;
+    if (!falling && Math.abs(pos.y - lane.alt) > reach.y + radius) continue;
+    fleetPoseAt(ship, t, hitPose);
+    const dx = wrapDeltaAxis(hitPose.x, pos.x);
+    const dz = wrapDeltaAxis(hitPose.z, pos.z);
+    const dy = pos.y - hitPose.y;
+    if (falling) {
+      const rr = reach.r + radius;
+      if (dx * dx + dy * dy + dz * dz > rr * rr) continue;
+    } else {
+      const rr = reach.xz + radius;
+      if (dx * dx + dz * dz > rr * rr) continue;
     }
-  }
-  const d = slot.down;
-  if (!d || t < d.t) return null;
-  for (const piece of d.pieces) {
-    if (t >= d.t + piece.end) continue;
-    const pose = piecePoseAt(piece, d.t, piece.end, t, hitPose);
-    const dx = wrapDeltaAxis(pose.x, pos.x);
-    const dz = wrapDeltaAxis(pose.z, pos.z);
-    const dy = pos.y - pose.y;
-    const reach = (PIECE_REACH[piece.k] as number) + radius;
-    if (dx * dx + dy * dy + dz * dz > reach * reach) continue;
-    for (const i of PIECE_PARTS[piece.k] as readonly number[]) {
-      const p = BOSS_PARTS[i] as BossPart;
-      if (
-        sphereHitsPart(
-          p,
-          bossPiecePartBoxInto(piece, pose, i, hitBox),
-          pos,
-          radius,
-        )
-      ) {
-        return { kind: "bossDebris", id: d.id };
-      }
+    shipLocalInto(hitPose, dx, dy, dz, hitLocal);
+    if (hullTouches(lane.cls, hitLocal, radius)) {
+      return { kind: falling ? "bossDebris" : "boss", id: ship.id };
     }
   }
   return null;
 }
 
-/** Seconds of straight run-out a respawn must have clear of the zeppelin. */
+/** Seconds of straight run-out a respawn must have clear of every ship. */
 export const BOSS_SPAWN_RUNOUT_S = 6;
 /** ...by this margin, m. */
 export const BOSS_SPAWN_MARGIN = 30;
 
 /**
  * Is a spawn at `pos` flying `yaw` (flight convention: yaw 0 faces −Z) at
- * `speed` clear of the zeppelin — intact or falling — for its first
+ * `speed` clear of every ship — intact or falling — for its first
  * BOSS_SPAWN_RUNOUT_S, by BOSS_SPAWN_MARGIN? Spawn protection does not stop
- * a crash, so a spawn must never be pointed into the hull. `yaw` null (not
+ * a crash, so a spawn must never be pointed into a hull. `yaw` null (not
  * known yet) asks for every heading: the whole run-out disc must be clear.
  */
 export function bossSpawnClear(
-  slot: BossSlot,
+  slot: FleetSlot,
   pos: Vec3,
   yaw: number | null,
   speed: number,
   now: number,
 ): boolean {
-  if (!slot.raid && !slot.down) return true;
+  if (slot.ships.length === 0) return true;
   const fx = yaw === null ? 0 : -Math.sin(yaw);
   const fz = yaw === null ? 0 : -Math.cos(yaw);
   const margin =
@@ -1108,50 +1037,178 @@ export function bossSpawnClear(
 }
 const spawnAt: Vec3 = { x: 0, y: 0, z: 0 };
 
-// --- Carrier launches -----------------------------------------------------------
-//
-// S9: the zeppelin is a carrier. A bot respawning while it is on station may
-// be launched from it instead of the street: dropped from the belly
-// hangar's trapeze (the bay doors in the keel slide open, the plane is
-// lowered on the hook, tips nose-down and lets go) or flung off the dorsal
-// catapult (steam, then a 30 m run along the deck rail). The server picks
-// the station and the start time (server/src/boss.ts planLaunch), so a
-// launch is one small broadcast — everything else is a pure function of the
-// raid, the launch and the clock: where the plane hangs, where the rig is,
-// and the exact pose it is released at, which is the bot's spawn.
+// --- The crash -------------------------------------------------------------------
 
-export const LAUNCH_BELLY = 0;
-export const LAUNCH_CATAPULT = 1;
-export type LaunchKind = 0 | 1;
+/** What a falling ship is swept against: the room's city as it stands. */
+export interface BossSweepWorld {
+  buildings: readonly Building[];
+  index?: CityIndex;
+}
+
+/** A crashing ship leaves with its flight velocity and this much more
+ * sink, m/s. */
+const FALL_KICK_DOWN = -2;
+
+/** The spheres a falling hull is swept with: stations along its envelope,
+ * each as wide as the envelope there (never under 2 m), per class. */
+const SWEEP_STATIONS: readonly (readonly { x: number; r: number }[])[] =
+  SHIP_PROFILES.map((prof) => {
+    const first = prof[0] as readonly [number, number];
+    const last = prof[prof.length - 1] as readonly [number, number];
+    const out: { x: number; r: number }[] = [];
+    let x = first[0] + 1;
+    while (x < last[0]) {
+      const r = Math.max(2, profileR(prof, x));
+      out.push({ x, r });
+      x += Math.max(2, r * 0.8);
+    }
+    out.push({ x: last[0] - 1, r: Math.max(2, profileR(prof, last[0] - 1)) });
+    return out;
+  });
+
+const sweepPose = blankPose();
+const contactAt: Vec3 = { x: 0, y: 0, z: 0 };
+
+interface Contact {
+  hit: WreckHit;
+  r: number;
+  building: Building | null;
+}
+
+function crashContactAt(
+  cls: ShipClassId,
+  d: ShipDown,
+  ms: number,
+  world: BossSweepWorld,
+): Contact | null {
+  fallPoseInto(d, ms, sweepPose);
+  for (const st of SWEEP_STATIONS[cls] as readonly { x: number; r: number }[]) {
+    shipPointInto(sweepPose, st.x, 0, 0, contactAt);
+    if (hitsGround(contactAt, st.r)) {
+      return { hit: "ground", r: st.r, building: null };
+    }
+    const b = collideCity(contactAt, st.r, world.buildings, world.index);
+    if (b) return { hit: "city", r: st.r, building: b };
+  }
+  return null;
+}
+
+/**
+ * Sweep a crash for its first solid (the D4 recipe: fixed WRECK_STEP_MS
+ * steps, then bisection). Nothing by WRECK_MAX_MS → it bursts in the air
+ * there. Deterministic in its inputs.
+ */
+function crashImpact(
+  cls: ShipClassId,
+  d: ShipDown,
+  world: BossSweepWorld,
+): Pick<ShipDown, "end" | "hit" | "at" | "b"> {
+  let lo = 0;
+  for (let ms = WRECK_STEP_MS; ms <= WRECK_MAX_MS; ms += WRECK_STEP_MS) {
+    let c = crashContactAt(cls, d, d.t + ms, world);
+    if (!c) {
+      lo = ms;
+      continue;
+    }
+    let hi = ms;
+    // The contact of the latest touching time is the one reported: keep a
+    // copy, bisection overwrites the scratch.
+    let at = { ...contactAt };
+    for (let i = 0; i < 6; i++) {
+      const mid = (lo + hi) / 2;
+      const h = crashContactAt(cls, d, d.t + mid, world);
+      if (h) {
+        hi = mid;
+        c = h;
+        at = { ...contactAt };
+      } else lo = mid;
+    }
+    return {
+      end: Math.round(hi * 10) / 10,
+      hit: c.hit,
+      at: { x: at.x, y: Math.max(0, at.y - c.r), z: at.z },
+      b: c.building ? world.buildings.indexOf(c.building) : -1,
+    };
+  }
+  const pose = fallPoseInto(d, d.t + WRECK_MAX_MS, blankPose());
+  const reach = SHIP_REACH[cls] as ShipReach;
+  return {
+    end: WRECK_MAX_MS,
+    hit: "air",
+    at: { x: pose.x, y: Math.max(0, pose.y - reach.y), z: pose.z },
+    b: -1,
+  };
+}
+
+/**
+ * `ship` is shot down at server time `t`: its crash — leaving from exactly
+ * where it flew with its flight velocity (and a little sink), its nose
+ * dropping as it falls — swept once against `world` for where it lands.
+ * Pure.
+ */
+export function shipCrash(
+  ship: FleetShip,
+  t: number,
+  world: BossSweepWorld,
+): ShipDown {
+  const pose = lanePoseInto(
+    ship.lane,
+    shipAlong(ship, Math.max(t, ship.t0)),
+    blankPose(),
+  );
+  const speed = Math.abs((FLEET_LANES[ship.lane] as FleetLane).v);
+  const d: ShipDown = {
+    t,
+    p: { x: pose.x, y: pose.y, z: pose.z },
+    v: { x: pose.hx * speed, y: FALL_KICK_DOWN, z: pose.hz * speed },
+    yaw: pose.yaw,
+    spin: ship.id % 2 === 0 ? 1 : -1,
+    end: WRECK_MAX_MS,
+    hit: "air",
+    at: { x: 0, y: 0, z: 0 },
+    b: -1,
+  };
+  return { ...d, ...crashImpact(shipClass(ship), d, world) };
+}
+
+// --- Launches -----------------------------------------------------------------
+//
+// S9: the airships are carriers. An enemy plane is launched from one of them
+// instead of the street: dropped from the belly hangar's trapeze (every
+// class) or flung off the dorsal catapult (carriers only). The server picks
+// the ship, the rig and the start time (server/src/boss.ts planLaunch), so a
+// launch is one small broadcast — everything else is a pure function of the
+// ship, the launch and the clock: where the plane hangs and the exact pose
+// it is released at, which is the bot's spawn.
+
 /** Start to release, ms, per kind. Never longer than the kill-cam, so a
  * launch planned at the death releases on the bot's normal respawn time. */
 export const LAUNCH_SEQ_MS: readonly number[] = [2400, 1800];
-/** A station stays busy this long after a release (the doors closing, the
- * carriage running back), ms. */
+/** A rig stays busy this long after a release, ms. */
 export const LAUNCH_RESET_MS = 1000;
 /** After release the bot flies its launch run straight (its stick neutral)
- * and its own carrier is not solid to it, for this long, ms. */
+ * and the fleet is not solid to it, for this long, ms. */
 export const LAUNCH_GRACE_MS: readonly number[] = [1800, 1500];
 /** Release speed (the respawn speed) and pitch: a dive off the hook, a
  * gentle climb off the deck, rad. */
 export const LAUNCH_SPEED = RESPAWN_SPEED;
 export const LAUNCH_PITCH: readonly number[] = [-0.32, 0.08];
-/** The belly bay (hull frame): its centre x, the plane stowed inside the
- * keel, and how far the trapeze lowers it, m. */
+/** The belly bay (base hull frame): its centre x, the plane stowed inside
+ * the keel, and how far the trapeze lowers it, m — scaled with the hull. */
 export const BAY_X = -4;
-const BAY_STOW_Y = -21.5;
+export const BAY_STOW_Y = -21.5;
 const BAY_HANG_Y = -31;
-/** The catapult run along the deck, hull x, and the plane's height over the
- * deck plate (its wheels on the carriage), m. */
+/** The catapult run along the deck, base hull x, and the plane's height
+ * over the deck plate (its wheels on the carriage — never scaled), m. */
 export const CATAPULT_FROM_X = 12;
 export const CATAPULT_TO_X = 42;
-const DECK_PLANE_H = 1.6;
+export const DECK_PLANE_H = 1.6;
 
 /** One launch, exactly as broadcast. */
 export interface BossLaunch {
   id: number;
-  /** The raid whose carrier launches it. */
-  raid: number;
+  /** The ship that launches it. */
+  ship: number;
   kind: LaunchKind;
   /** When the sequence starts, server ms. */
   t0: number;
@@ -1159,12 +1216,12 @@ export interface BossLaunch {
 
 export const launchReleaseAt = (l: BossLaunch): number =>
   l.t0 + (LAUNCH_SEQ_MS[l.kind] as number);
-/** When its station is free again, ms. */
+/** When its rig is free again, ms. */
 export const launchDoneAt = (l: BossLaunch): number =>
   launchReleaseAt(l) + LAUNCH_RESET_MS;
 
-/** The launched plane's pose in the HULL frame (x nose, y up, z starboard),
- * its nose along +X pitched by `pitch` (rad, + up). */
+/** The launched plane's pose in the ship's frame (x nose, y up, z
+ * starboard), its nose along +X pitched by `pitch` (rad, + up). */
 export interface LaunchLocal {
   x: number;
   y: number;
@@ -1177,20 +1234,23 @@ const smooth = (u: number): number => {
   return c * c * (3 - 2 * c);
 };
 
-/** Where the plane is on its rig at server time `t` (clamped to the
- * sequence: at and after release, the release pose). Pure. */
+/** Where the plane is on its rig of a class `cls` ship at server time `t`
+ * (clamped to the sequence: at and after release, the release pose). Pure. */
 export function launchLocalAt(
   l: BossLaunch,
+  cls: ShipClassId,
   t: number,
   out: LaunchLocal,
 ): LaunchLocal {
+  const c = SHIP_CLASSES[cls] as ShipClass;
   const s =
     Math.min(Math.max(t - l.t0, 0), LAUNCH_SEQ_MS[l.kind] as number) / 1000;
   if (l.kind === LAUNCH_BELLY) {
     // Doors 0–0.6 s, lowered 0.6–1.7 s, tipped nose-down to the release
     // pitch 1.7–2.4 s.
-    out.x = BAY_X;
-    out.y = BAY_STOW_Y + (BAY_HANG_Y - BAY_STOW_Y) * smooth((s - 0.6) / 1.1);
+    out.x = BAY_X * c.sx;
+    out.y =
+      (BAY_STOW_Y + (BAY_HANG_Y - BAY_STOW_Y) * smooth((s - 0.6) / 1.1)) * c.sr;
     out.z = 0;
     out.pitch = (LAUNCH_PITCH[0] as number) * smooth((s - 1.7) / 0.7);
     return out;
@@ -1198,72 +1258,29 @@ export function launchLocalAt(
   // Steam 0–0.6 s, then the run: constant acceleration over 1.2 s, the nose
   // lifting to the release pitch over its last 0.4 s.
   const u = Math.min(1, Math.max(0, (s - 0.6) / 1.2));
-  out.x = CATAPULT_FROM_X + (CATAPULT_TO_X - CATAPULT_FROM_X) * u * u;
-  out.y = BOSS_DECK_Y + DECK_PLANE_H;
+  out.x = (CATAPULT_FROM_X + (CATAPULT_TO_X - CATAPULT_FROM_X) * u * u) * c.sx;
+  out.y = BOSS_DECK_Y * c.sr + DECK_PLANE_H;
   out.z = 0;
   out.pitch = (LAUNCH_PITCH[1] as number) * smooth((s - 1.4) / 0.4);
   return out;
 }
 
-/** The launch rig at server time `t`, for the renderer: how far the bay
- * doors are open (0–1), the trapeze's drop under the keel (m), the
- * catapult carriage's hull x, the steam's strength (0–1), and whether the
- * plane is still on the rig (false at and after release). */
-export interface LaunchRig {
-  doors: number;
-  drop: number;
-  carriage: number;
-  steam: number;
-  onRig: boolean;
-}
-
-export function launchRigAt(
-  l: BossLaunch,
-  t: number,
-  out: LaunchRig,
-): LaunchRig {
-  const s = (t - l.t0) / 1000;
-  const rel = (LAUNCH_SEQ_MS[l.kind] as number) / 1000;
-  const back = LAUNCH_RESET_MS / 1000;
-  out.onRig = s >= 0 && s < rel;
-  const after = s >= rel ? smooth((s - rel) / back) : 0;
-  if (l.kind === LAUNCH_BELLY) {
-    out.doors =
-      s < 0 ? 0 : s < rel ? smooth(s / 0.6) : 1 - smooth((s - rel - 0.2) / 0.7);
-    const at = launchLocalAt(l, Math.min(t, launchReleaseAt(l)), rigScratch);
-    out.drop = (BAY_STOW_Y - at.y) * (1 - after);
-    out.carriage = CATAPULT_FROM_X;
-    out.steam = 0;
-    return out;
-  }
-  out.doors = 0;
-  out.drop = 0;
-  const at = launchLocalAt(l, Math.min(t, launchReleaseAt(l)), rigScratch);
-  out.carriage =
-    s < rel ? at.x : CATAPULT_TO_X + (CATAPULT_FROM_X - CATAPULT_TO_X) * after;
-  out.steam =
-    s < 0 || s > rel + 0.8
-      ? 0
-      : s < 0.6
-        ? s / 0.6
-        : s < rel
-          ? 1
-          : 1 - (s - rel) / 0.8;
-  return out;
-}
-const rigScratch: LaunchLocal = { x: 0, y: 0, z: 0, pitch: 0 };
-
 /** The release: where the bot spawns (the plane's pose on the rig at the
- * release instant, placed by the hull's pose then), its flight yaw (yaw 0
+ * release instant, placed by the ship's pose then), its flight yaw (yaw 0
  * faces −Z) and pitch, and its speed. Pure. */
 export function launchSpawnAt(
-  r: BossRaid,
+  ship: FleetShip,
   l: BossLaunch,
 ): { pos: Vec3; yaw: number; pitch: number; speed: number } {
   const t = launchReleaseAt(l);
-  const pose = bossPoseAt(r, t, blankPose());
-  const at = launchLocalAt(l, t, { x: 0, y: 0, z: 0, pitch: 0 });
-  const pos = placeLocal(pose, at.x, at.y, at.z, { x: 0, y: 0, z: 0 });
+  const pose = fleetPoseAt(ship, t, blankPose());
+  const at = launchLocalAt(l, shipClass(ship), t, {
+    x: 0,
+    y: 0,
+    z: 0,
+    pitch: 0,
+  });
+  const pos = shipPointInto(pose, at.x, at.y, at.z, { x: 0, y: 0, z: 0 });
   return {
     pos,
     yaw: Math.atan2(-pose.hx, -pose.hz),
@@ -1272,21 +1289,21 @@ export function launchSpawnAt(
   };
 }
 
-/** A launch on the wire: [id, raid, kind, t0]. */
-export type WireLaunch = [id: number, raid: number, kind: number, t0: number];
+/** A launch on the wire: [id, ship, kind, t0]. */
+export type WireLaunch = [id: number, ship: number, kind: number, t0: number];
 
 export const encodeLaunch = (l: BossLaunch): WireLaunch => [
   l.id,
-  l.raid,
+  l.ship,
   l.kind,
   l.t0,
 ];
 
 export function decodeLaunch(w: unknown): BossLaunch | null {
   if (!Array.isArray(w) || w.length !== 4 || !w.every(finite)) return null;
-  const [id, raid, kind, t0] = w as number[];
+  const [id, ship, kind, t0] = w as number[];
   if (kind !== LAUNCH_BELLY && kind !== LAUNCH_CATAPULT) return null;
-  return { id: id as number, raid: raid as number, kind, t0: t0 as number };
+  return { id: id as number, ship: ship as number, kind, t0: t0 as number };
 }
 
 // --- Hits ---------------------------------------------------------------------
@@ -1461,65 +1478,98 @@ function raySphere(
   return t >= 0 && t <= maxDist ? t : Number.POSITIVE_INFINITY;
 }
 
+/** Distance along a unit ray from `o` (a delta from the box centre, in the
+ * box's own axes) to an axis-aligned box of half-extents h, or Infinity. */
+function rayAabb(
+  ox: number,
+  oy: number,
+  oz: number,
+  dx: number,
+  dy: number,
+  dz: number,
+  hx: number,
+  hy: number,
+  hz: number,
+  maxDist: number,
+): number {
+  slabT0 = 0;
+  slabT1 = maxDist;
+  if (!slab(ox, dx, hx)) return Number.POSITIVE_INFINITY;
+  if (!slab(oy, dy, hy)) return Number.POSITIVE_INFINITY;
+  if (!slab(oz, dz, hz)) return Number.POSITIVE_INFINITY;
+  return slabT0;
+}
+
 /** What a round meets first along its line. */
 export interface BossRayHit {
-  /** The weak point hit (index into BOSS_WEAK_POINTS), or -1: armour. */
+  /** The weak point hit (index into BOSS_WEAK_POINTS), or -1: the hull. */
   weak: number;
   dist: number;
 }
 
-const rayBoxScratch: MoverBox = { ...sweepBox };
-const rayOff: Vec3 = { x: 0, y: 0, z: 0 };
+/** Weak point index of each BOSS_PARTS part (−1: not one). */
+const WEAK_OF: readonly number[] = BOSS_PARTS.map((_, i) =>
+  BOSS_WEAK_POINTS.indexOf(i),
+);
+const rayO: Vec3 = { x: 0, y: 0, z: 0 };
+const rayD: Vec3 = { x: 0, y: 0, z: 0 };
 
 /**
- * The first thing on the intact hull at `pose` a round from `origin` along
- * unit `dir` meets within `maxDist`: a LIVE weak point (its sphere or its own
- * box) or armour (every other box, dead weak points included). Null: a miss.
- * `alive[k]` false = weak point k is spent armour now.
+ * The first thing on a class `cls` ship at `pose` a round from `origin`
+ * along unit `dir` meets within `maxDist`: a weak point (its sphere or its
+ * own shape) or the hull (every other part). Null: a miss. The test runs in
+ * the ship's frame, where its parts are axis-aligned and exact.
  */
-export function bossRayHit(
-  pose: BossPose,
+export function shipRayHit(
+  pose: ShipPose,
+  cls: ShipClassId,
   origin: Vec3,
   dir: Vec3,
   maxDist: number,
-  alive: readonly boolean[],
 ): BossRayHit | null {
+  shipLocalInto(
+    pose,
+    wrapDeltaAxis(pose.x, origin.x),
+    origin.y - pose.y,
+    wrapDeltaAxis(pose.z, origin.z),
+    rayO,
+  );
+  // A direction turns like a delta (no translation).
+  shipLocalInto(pose, dir.x, dir.y, dir.z, rayD);
+  const parts = SHIP_PARTS[cls] as readonly BossPart[];
+  const weakR = SHIP_WEAK_R[cls] as number;
   let bestWeak = -1;
   let bestDist = Number.POSITIVE_INFINITY;
-  for (let i = 0; i < BOSS_PARTS.length; i++) {
-    bossPartBoxInto(pose, i, rayBoxScratch);
-    wrapDeltaInto(rayBoxScratch, origin, rayOff);
-    const k = BOSS_WEAK_POINTS.indexOf(i);
-    const live = k >= 0 && alive[k] === true;
-    let d = rayPart(
-      BOSS_PARTS[i] as BossPart,
-      rayOff.x,
-      rayOff.y,
-      rayOff.z,
-      dir.x,
-      dir.y,
-      dir.z,
-      rayBoxScratch,
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i] as BossPart;
+    const ox = rayO.x - p.x;
+    const oy = rayO.y - p.y;
+    const oz = rayO.z - p.z;
+    const k = WEAK_OF[i] as number;
+    let d = rayAabb(
+      ox,
+      oy,
+      oz,
+      rayD.x,
+      rayD.y,
+      rayD.z,
+      p.hx,
+      p.hy,
+      p.hz,
       maxDist,
     );
-    if (live) {
+    if (p.rev !== null && d !== Number.POSITIVE_INFINITY) {
+      d = rayRev(p.rev, ox, oy, oz, rayD.x, rayD.y, rayD.z, maxDist);
+    }
+    if (k >= 0) {
       d = Math.min(
         d,
-        raySphere(
-          rayOff.x,
-          rayOff.y,
-          rayOff.z,
-          dir.x,
-          dir.y,
-          dir.z,
-          BOSS_WEAK_RADIUS,
-          maxDist,
-        ),
+        raySphere(ox, oy, oz, rayD.x, rayD.y, rayD.z, weakR, maxDist),
       );
     }
     if (d < bestDist) {
       bestDist = d;
-      bestWeak = live ? k : -1;
+      bestWeak = k;
     }
   }
   return bestDist === Number.POSITIVE_INFINITY
@@ -1532,36 +1582,38 @@ export function bossRayHit(
 export const BOSS_HIT_SLACK = 3;
 
 /**
- * The server's judgement of a round claimed to hit weak point `k`: along the
- * claimed line, at the pose for the claimed time, `k` must be live and be
- * what the round meets first — never armour, never another weak point, and
- * within BULLET_RANGE. The slack only ever widens `k`'s own sphere.
+ * The server's judgement of a round claimed to hit weak point `k` (or the
+ * hull, k = −1) of a class `cls` ship at `pose`, along the claimed line,
+ * within BULLET_RANGE: a hull claim stands when the round meets the ship at
+ * all; a weak-point claim only when `k` is what it meets first — never
+ * through the envelope, never another weak point. The slack only ever
+ * widens `k`'s own sphere.
  */
-export function bossHitValid(
-  pose: BossPose,
+export function shipHitValid(
+  pose: ShipPose,
+  cls: ShipClassId,
   k: number,
   origin: Vec3,
   dir: Vec3,
-  alive: readonly boolean[],
 ): boolean {
-  if (!Number.isInteger(k) || k < 0 || k >= BOSS_WEAK_POINTS.length) {
+  if (!Number.isInteger(k) || k < -1 || k >= BOSS_WEAK_POINTS.length) {
     return false;
   }
-  if (alive[k] !== true) return false;
-  const first = bossRayHit(pose, origin, dir, BULLET_RANGE, alive);
+  const first = shipRayHit(pose, cls, origin, dir, BULLET_RANGE);
+  if (k === -1) return first !== null;
   if (first && first.weak === k) return true;
   // Not first on the exact line: still fair if the round passed within the
   // slack of k's sphere before anything else stopped it.
-  weakPointInto(pose, k, slackAt);
-  wrapDeltaInto(slackAt, origin, rayOff);
+  weakPointInto(pose, cls, k, slackAt);
+  const off = wrapDelta(slackAt, origin);
   const t = raySphere(
-    rayOff.x,
-    rayOff.y,
-    rayOff.z,
+    off.x,
+    off.y,
+    off.z,
     dir.x,
     dir.y,
     dir.z,
-    BOSS_WEAK_RADIUS + BOSS_HIT_SLACK,
+    (SHIP_WEAK_R[cls] as number) + BOSS_HIT_SLACK,
     BULLET_RANGE,
   );
   if (t === Number.POSITIVE_INFINITY) return false;
@@ -1596,16 +1648,6 @@ export const BOSS_FLAK_DAMAGE = 22;
 /** No plane takes more flak than this in any rolling second, across every
  * turret. */
 export const BOSS_FLAK_DPS_CAP = 30;
-
-/** One shell, exactly as broadcast. `to` canonical on the 0.1 m grid. */
-export interface BossFlak {
-  id: number;
-  turret: number;
-  to: Vec3;
-  /** Fired at, server ms; bursts at t0 + fuse. */
-  t0: number;
-  fuse: number;
-}
 
 /** A plane as a turret sees it. */
 export interface FlakTarget {
@@ -1687,24 +1729,39 @@ export function flakDamage(d: number): number {
   );
 }
 
+/** Z1: the fleet's guns are light — a share of S4's shell damage and of
+ * the per-plane cap (the first carrier's old tier-1 scale). */
+export const FLEET_FLAK_SCALE = 0.35;
+
+/** One shell, exactly as broadcast: from its muzzle at its firing to its
+ * burst point (both canonical on the 0.1 m grid), so a shell needs no ship
+ * to draw — it outlives the one that fired it. */
+export interface BossFlak {
+  id: number;
+  from: Vec3;
+  to: Vec3;
+  /** Fired at, server ms; bursts at t0 + fuse. */
+  t0: number;
+  fuse: number;
+}
+
 /** The shell's position at server time `ms` (clamped to its flight): a
- * straight line from the muzzle at its firing to the burst point. */
-export function flakPosAt(
-  r: BossRaid,
-  f: BossFlak,
-  ms: number,
-  out: Vec3,
-): Vec3 {
-  turretMuzzleInto(bossPoseAt(r, f.t0, flakPose), f.turret, out);
+ * straight line from the muzzle to the burst point. */
+export function flakPosAt(f: BossFlak, ms: number, out: Vec3): Vec3 {
   const u = Math.min(1, Math.max(0, (ms - f.t0) / f.fuse));
-  const dx = wrapDeltaAxis(out.x, f.to.x);
-  const dz = wrapDeltaAxis(out.z, f.to.z);
-  out.x = wrapCoord(out.x + dx * u);
-  out.y = out.y + (f.to.y - out.y) * u;
-  out.z = wrapCoord(out.z + dz * u);
+  const dx = wrapDeltaAxis(f.from.x, f.to.x);
+  const dz = wrapDeltaAxis(f.from.z, f.to.z);
+  out.x = wrapCoord(f.from.x + dx * u);
+  out.y = f.from.y + (f.to.y - f.from.y) * u;
+  out.z = wrapCoord(f.from.z + dz * u);
   return out;
 }
-const flakPose = blankPose();
+
+/** A canonical coordinate on the wire's 0.1 m grid. */
+export const gridCoord = (v: number): number => {
+  const c = Math.round(wrapCoord(v) * 10) / 10;
+  return c >= WORLD_SIZE ? 0 : c;
+};
 
 // --- Credit -------------------------------------------------------------------
 
@@ -1739,66 +1796,125 @@ export function bossCredit(damage: ReadonlyMap<string, number>): BossCredit {
   };
 }
 
+// --- Schedule -------------------------------------------------------------------
+
+export interface FleetTuning {
+  /** A downed ship's lane is flown again this long after it went down, ms
+   * (never while its crash is still falling). */
+  refillMs: number;
+  /** ...by a ship coming on out of every human's sight when one can be
+   * found; past this much longer it comes on anyway, ms. */
+  refillWaitMs: number;
+  /** Every ship's HP multiplier (tests and QA fly paper hulls). */
+  hpScale: number;
+}
+
+export const FLEET_TUNING: FleetTuning = {
+  refillMs: 12_000,
+  refillWaitMs: 20_000,
+  hpScale: 1,
+};
+
+/** AB_BOSS_FAST=1 (tests and QA only): paper hulls, quick refills. */
+export const FLEET_FAST_TUNING: FleetTuning = {
+  refillMs: 3000,
+  refillWaitMs: 2000,
+  hpScale: 0.1,
+};
+
+/** A class's full HP under `hpScale` (whole, ≥ 1). */
+export const shipFullHp = (cls: ShipClassId, hpScale: number): number =>
+  Math.max(1, Math.round((SHIP_CLASSES[cls] as ShipClass).hp * hpScale));
+
+/** A new ship comes on out of sight: at least this far, plan view, from
+ * every human (past the fog), m. */
+export const FLEET_HIDE_M = 900;
+
+/**
+ * Where along `lane` a ship coming on at `t` should start: of `tries`
+ * evenly spaced spots (offset by `phase`, 0..1), the one furthest from its
+ * nearest human — out of sight, so it drifts in from the haze. Returns the
+ * spot (on the 0.1 m grid) and that distance (Infinity with no humans).
+ */
+export function hiddenLaneSpot(
+  lane: number,
+  humans: readonly Vec3[],
+  phase: number,
+  tries = 24,
+): { s0: number; clear: number } {
+  const ly = FLEET_LAYERS[(FLEET_LANES[lane] as FleetLane).layer] as FleetLayer;
+  let best = 0;
+  let bestClear = Number.NEGATIVE_INFINITY;
+  for (let i = 0; i < tries; i++) {
+    const s = (((i + phase) / tries) * ly.length) % ly.length;
+    lanePoseInto(lane, s, spotPose);
+    let clear = Number.POSITIVE_INFINITY;
+    for (const h of humans) {
+      clear = Math.min(
+        clear,
+        wrapDistance(
+          { x: h.x, y: 0, z: h.z },
+          { x: spotPose.x, y: 0, z: spotPose.z },
+        ),
+      );
+    }
+    if (clear > bestClear) {
+      bestClear = clear;
+      best = s;
+    }
+  }
+  const s0 = Math.round(best * 10) / 10;
+  return { s0: s0 >= ly.length ? 0 : s0, clear: bestClear };
+}
+const spotPose = blankPose();
+
 // --- Wire ---------------------------------------------------------------------
 
-/** A raid on the wire: integers only, exactly reconstructible —
- * [id, t0, cx ×10, cz ×10, th0 ×1000, orbitMs, hpScale ×100, tier]. */
-export type WireBossRaid = [
+/** A ship on the wire: integers only, exactly reconstructible —
+ * [id, lane, t0, s0 ×10, hp0]. */
+export type WireShip = [
   id: number,
+  lane: number,
   t0: number,
-  cx: number,
-  cz: number,
-  th0: number,
-  orbitMs: number,
-  hpScale: number,
-  tier: number,
+  s0: number,
+  hp0: number,
 ];
 
-export function encodeRaid(r: BossRaid): WireBossRaid {
-  return [
-    r.id,
-    r.t0,
-    Math.round(r.cx * 10),
-    Math.round(r.cz * 10),
-    Math.round(r.th0 * 1000),
-    r.orbitMs,
-    Math.round(r.hpScale * 100),
-    raidTier(r),
-  ];
+export function encodeShip(s: FleetShip): WireShip {
+  return [s.id, s.lane, s.t0, Math.round(s.s0 * 10), s.hp0];
 }
 
 const finite = (v: unknown): v is number =>
   typeof v === "number" && Number.isFinite(v);
 
-/** Inverse of encodeRaid (a pre-W1 7-element raid is tier 1); null for
- * anything malformed. */
-export function decodeRaid(w: unknown): BossRaid | null {
-  if (!Array.isArray(w) || (w.length !== 7 && w.length !== 8)) return null;
-  if (!w.every(finite)) return null;
-  const [id, t0, cx, cz, th0, orbitMs, hp, tier] = w as number[];
-  if ((orbitMs as number) < 0 || (hp as number) <= 0) return null;
-  if (tier !== undefined && !(Number.isInteger(tier) && tier >= 1)) {
+/** Inverse of encodeShip (with no crash); null for anything malformed. */
+export function decodeShip(w: unknown): FleetShip | null {
+  if (!Array.isArray(w) || w.length !== 5 || !w.every(finite)) return null;
+  const [id, lane, t0, s0, hp0] = w as number[];
+  if (!Number.isInteger(lane) || (lane as number) < 0) return null;
+  if ((lane as number) >= FLEET_LANES.length || (hp0 as number) < 1) {
     return null;
   }
   return {
-    ...(tier !== undefined && { tier }),
     id: id as number,
+    lane: lane as number,
     t0: t0 as number,
-    cx: (cx as number) / 10,
-    cz: (cz as number) / 10,
-    th0: (th0 as number) / 1000,
-    orbitMs: orbitMs as number,
-    hpScale: (hp as number) / 100,
+    s0: (s0 as number) / 10,
+    hp0: hp0 as number,
+    down: null,
   };
 }
 
-/** A shell on the wire: [id, turret, to ×10 (x, y, z), t0, fuse]. */
+/** A shell on the wire: [id, from ×10 (x, y, z), to ×10 (x, y, z), t0,
+ * fuse]. */
 export type WireFlak = [
   id: number,
-  turret: number,
-  x: number,
-  y: number,
-  z: number,
+  fx: number,
+  fy: number,
+  fz: number,
+  tx: number,
+  ty: number,
+  tz: number,
   t0: number,
   fuse: number,
 ];
@@ -1806,7 +1922,9 @@ export type WireFlak = [
 export function encodeFlak(f: BossFlak): WireFlak {
   return [
     f.id,
-    f.turret,
+    Math.round(f.from.x * 10),
+    Math.round(f.from.y * 10),
+    Math.round(f.from.z * 10),
     Math.round(f.to.x * 10),
     Math.round(f.to.y * 10),
     Math.round(f.to.z * 10),
@@ -1816,20 +1934,21 @@ export function encodeFlak(f: BossFlak): WireFlak {
 }
 
 export function decodeFlak(w: unknown): BossFlak | null {
-  if (!Array.isArray(w) || w.length !== 7 || !w.every(finite)) return null;
-  const [id, turret, x, y, z, t0, fuse] = w as number[];
-  if (
-    !Number.isInteger(turret) ||
-    (turret as number) < 0 ||
-    (turret as number) >= BOSS_TURRETS.length ||
-    (fuse as number) <= 0
-  ) {
-    return null;
-  }
+  if (!Array.isArray(w) || w.length !== 9 || !w.every(finite)) return null;
+  const [id, fx, fy, fz, tx, ty, tz, t0, fuse] = w as number[];
+  if ((fuse as number) <= 0) return null;
   return {
     id: id as number,
-    turret: turret as number,
-    to: { x: (x as number) / 10, y: (y as number) / 10, z: (z as number) / 10 },
+    from: {
+      x: (fx as number) / 10,
+      y: (fy as number) / 10,
+      z: (fz as number) / 10,
+    },
+    to: {
+      x: (tx as number) / 10,
+      y: (ty as number) / 10,
+      z: (tz as number) / 10,
+    },
     t0: t0 as number,
     fuse: fuse as number,
   };
@@ -1850,66 +1969,65 @@ const isVec = (v: unknown): v is Vec3 =>
   finite((v as Vec3).y) &&
   finite((v as Vec3).z);
 
-/** Shape check for a break-up off the wire (a client never trusts a NaN). */
-export function isBossDown(d: unknown): d is BossDown {
+/** Shape check for a crash off the wire (a client never trusts a NaN). */
+export function isShipDown(d: unknown): d is ShipDown {
   if (typeof d !== "object" || d === null) return false;
-  const o = d as Record<string, unknown>;
-  if (!finite(o.id) || !finite(o.t) || !Array.isArray(o.pieces)) return false;
-  if (o.pieces.length !== 3) return false;
-  return o.pieces.every((p: unknown, i: number) => {
-    if (typeof p !== "object" || p === null) return false;
-    const q = p as Record<string, unknown>;
-    return (
-      q.k === i &&
-      isVec(q.p) &&
-      isVec(q.v) &&
-      finite(q.yaw) &&
-      (q.spin === 1 || q.spin === -1) &&
-      finite(q.end) &&
-      (q.end as number) >= 0 &&
-      (q.end as number) <= WRECK_MAX_MS &&
-      HITS.includes(q.hit as WreckHit) &&
-      isVec(q.at) &&
-      Number.isInteger(q.b) &&
-      (q.b as number) >= -1
-    );
-  });
+  const q = d as Record<string, unknown>;
+  return (
+    finite(q.t) &&
+    isVec(q.p) &&
+    isVec(q.v) &&
+    finite(q.yaw) &&
+    (q.spin === 1 || q.spin === -1) &&
+    finite(q.end) &&
+    (q.end as number) >= 0 &&
+    (q.end as number) <= WRECK_MAX_MS &&
+    HITS.includes(q.hit as WreckHit) &&
+    isVec(q.at) &&
+    Number.isInteger(q.b) &&
+    (q.b as number) >= -1
+  );
 }
 
-/** A room's whole boss state, as a welcome replays it: the raid (null when
- * there has been none, or the last one is long over), every weak point's HP,
- * and the break-up once it went down. */
-export interface WireBossState {
-  r: WireBossRaid;
+/** A room's whole fleet, as a welcome replays it: every ship (flying,
+ * falling, or landed a moment ago), each one's HP and crash (null: still
+ * flying) in the same order, and the launches still on their rigs (a joiner
+ * sees the plane hang). */
+export interface WireFleetState {
+  s: WireShip[];
   hp: number[];
-  d?: BossDown;
-  /** S9: launches still on their rig (a joiner sees the plane hang). */
+  d: (ShipDown | null)[];
   l?: WireLaunch[];
 }
 
-/** Install a welcome's boss state into a slot (null clears it — a resume
- * into another room must not keep the old room's boss). Returns the HP list
- * to hold beside it (empty with no raid). */
-export function applyBossState(
-  slot: BossSlot,
-  state: WireBossState | null | undefined,
-): number[] {
-  const raid = state ? decodeRaid(state.r) : null;
-  slot.raid = raid;
-  slot.down =
-    raid && state?.d && isBossDown(state.d) && state.d.id === raid.id
-      ? state.d
-      : null;
+/** Install a welcome's fleet into a slot (null clears it — a resume into
+ * another room must not keep the old room's ships). Returns each ship's HP
+ * by id, to hold beside it. */
+export function applyFleetState(
+  slot: FleetSlot,
+  state: WireFleetState | null | undefined,
+): Map<number, number> {
+  const hp = new Map<number, number>();
+  slot.ships = [];
   slot.launches = [];
-  if (raid && Array.isArray(state?.l)) {
+  if (!state || !Array.isArray(state.s)) return hp;
+  state.s.forEach((w, i) => {
+    const ship = decodeShip(w);
+    if (!ship) return;
+    const d = state.d?.[i];
+    ship.down = isShipDown(d) ? d : null;
+    slot.ships.push(ship);
+    const v = state.hp?.[i];
+    hp.set(
+      ship.id,
+      finite(v) ? Math.max(0, Math.min(ship.hp0, v)) : ship.down ? 0 : ship.hp0,
+    );
+  });
+  if (Array.isArray(state.l)) {
     for (const w of state.l) {
       const l = decodeLaunch(w);
-      if (l && l.raid === raid.id) slot.launches.push(l);
+      if (l && shipById(slot, l.ship)) slot.launches.push(l);
     }
   }
-  if (!raid || !state) return [];
-  return raidMaxHp(raid).map((max, k) => {
-    const v = state.hp[k];
-    return finite(v) ? Math.max(0, Math.min(max, v)) : max;
-  });
+  return hp;
 }

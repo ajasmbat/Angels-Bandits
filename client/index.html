@@ -670,71 +670,9 @@
       #killcam-card .medals {
         color: #ffd36b;
       }
-      /* S4: the sky boss's shared health bar, top centre over the race
-         readout. Weak-point segments under the bar's fill. */
-      #boss-bar {
-        position: fixed;
-        /* W4: a bare track under the objective line (#wave-hud), which
-           carries the carrier's name and its percentage now. */
-        top: calc(32px + var(--safe-t, 0px));
-        left: 50%;
-        transform: translateX(-50%);
-        width: min(320px, 40vw);
-        display: none;
-        pointer-events: none;
-        user-select: none;
-        text-align: center;
-        color: #ffd8c4;
-        text-shadow: 0 1px 2px #000;
-      }
-      #boss-bar.open {
-        display: block;
-      }
-      #boss-bar .name {
-        font-size: 11px;
-        font-weight: bold;
-        letter-spacing: 0.32em;
-      }
-      #boss-bar .track {
-        position: relative;
-        height: 8px;
-        margin-top: 3px;
-        background: #1a0e0acc;
-        border: 1px solid #ff5a1f66;
-        box-shadow: 0 0 10px #ff5a1f33;
-      }
-      #boss-bar .fill {
-        position: absolute;
-        inset: 0 auto 0 0;
-        width: 100%;
-        background: linear-gradient(90deg, #ff3a10, #ff8a3a);
-        transition: width 0.25s ease-out;
-      }
-      #boss-bar.hit .fill {
-        background: #fff3e8;
-        transition: none;
-      }
-      #boss-bar .name,
-      #boss-bar .cells {
-        display: none !important;
-      }
-      #boss-bar .cells {
-        display: flex;
-        gap: 3px;
-        justify-content: center;
-        margin-top: 3px;
-      }
-      #boss-bar .cell {
-        width: 10px;
-        height: 4px;
-        background: #ff6a2a;
-      }
-      #boss-bar .cell.spent {
-        background: #3a2a24;
-      }
-      /* W1: the carrier war — the wave and the enemies left, under the
-         carrier's bar (shown while a wave is coming or up, carrier or not),
-         and the "WAVE n" banner that pops at each wave's breather. */
+      /* W1: the war — the wave and the enemies left, with Z1's fleet
+         counter (shown while a wave is coming or up, or once a ship is
+         down), and the "WAVE n" banner that pops at each wave's breather. */
       #wave-hud {
         position: fixed;
         top: calc(8px + var(--safe-t, 0px));
@@ -2693,16 +2631,10 @@
     <div id="killfeed"></div>
     <div id="comms"></div>
     <div id="race"></div>
-    <!-- S4 (ui/hud.ts setBoss): the sky boss's shared health. -->
-    <div id="boss-bar" aria-hidden="true">
-      <div class="name">WAR ZEPPELIN</div>
-      <div class="track"><div class="fill"></div></div>
-      <div class="cells"></div>
-    </div>
     <!-- W1 (ui/hud.ts setWaves): the wave, the enemies left, the banner.
-         W4: the objective line — "WAVE 3 · 5 ENEMIES LEFT · CARRIER 62%" —
-         top centre over the carrier's bare bar, the EASY tag, and the
-         bombing warning under it. -->
+         W4/Z1: the objective line — "WAVE 3 · 5 ENEMIES LEFT · AIRSHIPS
+         DOWN 7" — top centre, the EASY tag, and the bombing warning under
+         it. -->
     <div id="wave-hud" aria-live="polite"><span class="easy">EASY</span><span class="line"></span></div>
     <div id="bomb-warn" role="alert">⚠ ENEMY BOMBING NEAR YOU</div>
     <div id="wave-banner" aria-hidden="true"></div>

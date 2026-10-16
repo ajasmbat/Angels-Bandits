@@ -5,15 +5,23 @@
 
 import { type Building, generateCity } from "@angels-bandits/common/city";
 import {
+  IMPACT_WRECK,
+  sweepRecord,
+} from "@angels-bandits/common/city/penetrate";
+import {
   CITY_SEED,
   DAMAGE_MEMORY_MS,
   WRECKS_MAX,
 } from "@angels-bandits/common/constants";
 import type { Vec3 } from "@angels-bandits/common/world";
-import { wreckPosAt } from "@angels-bandits/common/wreck";
+import { wreckPosAt, wreckVelAt } from "@angels-bandits/common/wreck";
 import { describe, expect, it } from "vitest";
 import { Combat } from "../src/combat";
-import { createRoomCity } from "../src/destruction";
+import {
+  createRoomCity,
+  takeSweeps,
+  tickDestruction,
+} from "../src/destruction";
 import { RoomWrecks, applyWreckImpact, impactPos } from "../src/wrecks";
 
 const seedCity = generateCity(CITY_SEED);
@@ -57,6 +65,38 @@ describe("wreck impact", () => {
     expect(applied).toBe(1);
     expect(rc.damage.destroyedIds()).toEqual(broken);
     expect(wrecks.active()).toEqual([]);
+  });
+
+  it("P1: given the wreck, it ploughs on in at its fall velocity", () => {
+    const rc = createRoomCity(seedCity);
+    const wrecks = new RoomWrecks();
+    const t = 20_000;
+    // Shot down well over the tower: it falls onto the roof near terminal.
+    const w = wrecks.spawn(
+      "victim",
+      "shooter",
+      { x: tower.x, y: tower.height + 160, z: tower.z },
+      still,
+      t,
+      { buildings: rc.buildings, index: rc.index },
+    );
+    if (!w) throw new Error("no wreck");
+    expect(w.hit).toBe("city");
+    const [due] = wrecks.settle(t + w.end);
+    expect(due?.params).toEqual(w);
+    expect(applyWreckImpact(rc, impactPos(w), "shooter", w)).toEqual([]);
+    const [rec] = takeSweeps(rc);
+    expect(rec?.kind).toBe(IMPACT_WRECK);
+    expect(rec?.src).toBe(w.id);
+    expect(rec?.t).toBe(Math.round(t + w.end));
+    const v = wreckVelAt(w, t + w.end, { x: 0, y: 0, z: 0 });
+    expect(rec?.velocity.y).toBeCloseTo(v.y, 0);
+    expect(v.y).toBeLessThan(-40);
+    const res = sweepRecord(rec as NonNullable<typeof rec>, rc.buildings);
+    expect(res.chunks.length).toBeGreaterThan(0);
+    tickDestruction(rc, t + w.end + 5000);
+    for (const id of res.chunks) expect(rc.damage.isGone(id)).toBe(true);
+    expect(rc.breakers.get(towerIndex)).toBe("shooter");
   });
 
   it("caps a room at WRECKS_MAX falling wrecks", () => {

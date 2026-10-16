@@ -23,8 +23,8 @@ const MEDAL_TOAST_MS = 2600;
 const WAVE_BANNER_MS = 2600;
 
 /**
- * W1: the carrier war's HUD line — "WAVE 3 · 4 ENEMIES LEFT" while a wave is
- * up, "WAVE 4 INCOMING" through its breather, nothing between carriers.
+ * W1: the war's HUD line — "WAVE 3 · 4 ENEMIES LEFT" while a wave is up,
+ * "WAVE 4 INCOMING" through its breather, nothing before the fleet comes.
  * Pure, for the HUD and its tests.
  */
 export function waveLine(w: WaveState): string {
@@ -35,40 +35,22 @@ export function waveLine(w: WaveState): string {
   return "";
 }
 
-/** W4: the carrier's health as a whole percent, from its weak points' HP
- * over their full HP (S4's bar fill) — null without a carrier. Never 0
- * while any weak point still stands. */
-export function carrierPercent(
-  hp: readonly number[] | null,
-  max: readonly number[],
-): number | null {
-  if (hp === null || hp.length === 0) return null;
-  let left = 0;
-  let full = 0;
-  for (let k = 0; k < max.length; k++) {
-    left += Math.max(0, hp[k] ?? 0);
-    full += max[k] ?? 0;
-  }
-  if (full <= 0) return null;
-  const pct = Math.round((100 * left) / full);
-  return left > 0 ? Math.max(1, pct) : 0;
-}
+/** Z1: the fleet counter — "AIRSHIPS DOWN 7" (airships shot down this
+ * session); nothing before the first. Pure. */
+export const fleetCounter = (downs: number): string =>
+  downs > 0 ? `AIRSHIPS DOWN ${downs}` : "";
 
 /**
- * W4: the objective line, top centre — the wave line (waveLine) and, while
- * a carrier is up, its health: "WAVE 3 · 5 ENEMIES LEFT · CARRIER 62%".
- * A carrier between waves reads on its own. Pure, for the HUD and its tests.
+ * W4/Z1: the objective line, top centre — the wave line (waveLine) and the
+ * fleet counter: "WAVE 3 · 5 ENEMIES LEFT · AIRSHIPS DOWN 7". Either reads
+ * on its own. Pure, for the HUD and its tests.
  */
-export function objectiveLine(w: WaveState, carrierPct: number | null): string {
+export function objectiveLine(w: WaveState): string {
   const wave = waveLine(w);
-  if (carrierPct === null) return wave;
-  const carrier = `CARRIER ${carrierPct}%`;
-  return wave === "" ? carrier : `${wave} · ${carrier}`;
+  const fleet = fleetCounter(w.downs);
+  if (fleet === "") return wave;
+  return wave === "" ? fleet : `${wave} · ${fleet}`;
 }
-
-/** W1: the carrier bar's name line — its tier once it has one. */
-export const carrierName = (tier: number): string =>
-  tier > 0 ? `WAR ZEPPELIN · TIER ${tier}` : "WAR ZEPPELIN";
 
 /**
  * The S7 end-of-life card's two lines: the numbers, then the medals (a
@@ -245,43 +227,24 @@ export class Hud {
     document.body.appendChild(el);
     return el;
   })();
-  /** S4: the boss bar's nodes, the HP it last drew, and its hit flash. */
-  private readonly bossBar = document.getElementById(
-    "boss-bar",
-  ) as HTMLDivElement;
-  private readonly bossFill = this.bossBar.querySelector(
-    ".fill",
-  ) as HTMLDivElement;
-  private readonly bossCells = this.bossBar.querySelector(
-    ".cells",
-  ) as HTMLDivElement;
-  /** The HP the bar last drew (null: hidden). Compared in place — the
-   * bar is checked every frame while the boss flies. */
-  private bossShown: number[] | null = null;
-  private bossFlashUntil = 0;
-  /** W1: the carrier war's nodes and what they last showed. */
-  private readonly bossName = this.bossBar.querySelector(
-    ".name",
-  ) as HTMLDivElement;
+  /** W1: the war's nodes and what they last showed. */
   private readonly waveHud = document.getElementById(
     "wave-hud",
   ) as HTMLDivElement;
   private readonly waveBanner = document.getElementById(
     "wave-banner",
   ) as HTMLDivElement;
-  /** W4: the objective line's text node, the carrier's percent from the
-   * last setBoss, the EASY tag and the bombing warning as last written. */
+  /** W4: the objective line's text node, the EASY tag and the bombing
+   * warning as last written. */
   private readonly waveText = this.waveHud.querySelector(
     ".line",
   ) as HTMLSpanElement | null;
-  private carrierPct: number | null = null;
   private easyShown = false;
   private readonly bombWarn = document.getElementById(
     "bomb-warn",
   ) as HTMLDivElement | null;
   private bombShown = false;
   private waveShown = "";
-  private tierShown = -1;
   private bannerWave = 0;
   private bannerUntil = 0;
   private hitBlipUntil = 0;
@@ -550,75 +513,17 @@ export class Hud {
   }
 
   /**
-   * S4: the sky boss's shared health bar — the sum of its weak points over
-   * their full HP, one cell per weak point under it. `hp` null hides it.
-   * Writes the DOM only when what it shows changed.
-   */
-  setBoss(
-    hp: readonly number[] | null,
-    max: readonly number[],
-    now: number,
-  ): void {
-    this.carrierPct = carrierPercent(hp, max);
-    if (hp === null || hp.length === 0) {
-      if (this.bossShown !== null) {
-        this.bossBar.classList.remove("open");
-        this.bossShown = null;
-      }
-      return;
-    }
-    const was = this.bossShown;
-    if (was !== null && was.length === hp.length) {
-      let same = true;
-      for (let k = 0; k < hp.length && same; k++) same = hp[k] === was[k];
-      if (same) return;
-    }
-    let left = 0;
-    let full = 0;
-    for (let k = 0; k < max.length; k++) {
-      left += Math.max(0, hp[k] ?? 0);
-      full += max[k] ?? 0;
-    }
-    this.bossShown = [...hp];
-    this.bossFill.style.width = `${(100 * left) / Math.max(1, full)}%`;
-    if (this.bossCells.children.length !== max.length) {
-      this.bossCells.replaceChildren(
-        ...max.map(() => {
-          const cell = document.createElement("div");
-          cell.className = "cell";
-          return cell;
-        }),
-      );
-    }
-    hp.forEach((v, k) => {
-      this.bossCells.children[k]?.classList.toggle("spent", v <= 0);
-    });
-    this.bossBar.classList.add("open");
-    if (was !== null) {
-      // A hit since the last change: a white tick on the bar.
-      this.bossBar.classList.add("hit");
-      this.bossFlashUntil = now + 90;
-    }
-  }
-
-  /**
-   * W1: the carrier war — the carrier bar's tier, the wave line, and the
-   * "WAVE n" banner, popped once as each wave's breather starts. Writes the
-   * DOM only when what it shows changed (called every frame).
+   * W1/Z1: the war — the wave line with the fleet counter, and the "WAVE n"
+   * banner, popped once as each wave's breather starts. Writes the DOM only
+   * when what it shows changed (called every frame).
    */
   setWaves(w: WaveState, now: number): void {
-    // W4: the objective line — call after setBoss, which holds the
-    // carrier's percent.
-    const line = objectiveLine(w, this.carrierPct);
+    const line = objectiveLine(w);
     if (line !== this.waveShown) {
       this.waveShown = line;
       if (this.waveText) this.waveText.textContent = line;
       else this.waveHud.textContent = line;
       this.waveHud.classList.toggle("open", line !== "");
-    }
-    if (w.tier !== this.tierShown) {
-      this.tierShown = w.tier;
-      this.bossName.textContent = carrierName(w.tier);
     }
     if (w.phase === WAVE_BREATHER && w.wave !== this.bannerWave) {
       this.bannerWave = w.wave;
@@ -712,10 +617,6 @@ export class Hud {
   /** Call every frame to age the hit blip and hitmarker out. */
   update(now: number): void {
     if (this.respawnAt !== 0) this.tickCountdown(now);
-    if (this.bossFlashUntil !== 0 && now > this.bossFlashUntil) {
-      this.bossBar.classList.remove("hit");
-      this.bossFlashUntil = 0;
-    }
     if (this.bannerUntil !== 0 && now > this.bannerUntil) {
       this.waveBanner.classList.remove("on"); // CSS fades it out
       this.bannerUntil = 0;

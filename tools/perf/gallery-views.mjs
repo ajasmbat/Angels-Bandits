@@ -240,10 +240,11 @@ const referenceView = (name, extra = {}) => ({
   // landmark at (1700, 1300) stand up the right of the frame. Not higher:
   // fire is cut at 760 m (CUT_M, inside the 800 m fog), so from 530 m
   // almost none of the burning city was in reach. The plane is parked
-  // 90 m over the eye (out of shot), its nose aimed so the carrier, staged
-  // 430 m ahead of it, crosses broadside 170 m above the eye in the upper
-  // left with its beams down on the roofs. A posed biplane flies away into
-  // the scene mid-right, 40 m out.
+  // 90 m over the eye (out of shot), its nose aimed down the river; Z1: the
+  // whole airship fleet is staged round the view, its nearest ship 430 m
+  // ahead and the rest receding into the haze over the city, the nearest
+  // throwing their beams down on the roofs. A posed biplane flies away
+  // into the scene mid-right, 40 m out.
   x: 700,
   z: 1230,
   y: 490,
@@ -253,7 +254,7 @@ const referenceView = (name, extra = {}) => ({
   fov: 80,
   timeMs: 1_790_000_000_000,
   weather: "clear",
-  boss: { ahead: Math.hypot(356, 240) },
+  boss: { ahead: Math.hypot(356, 240), count: 20 },
   showcase: [
     {
       kind: "biplane",
@@ -1220,72 +1221,102 @@ export const VIEWS = [
       },
     },
   },
-  // S9: the war-zeppelin carrier, STAGED on the client (`__ab.qaBoss`): a
-  // raid whose hull crosses `boss.ahead` m in front of the pinned plane at
-  // the pinned world instant `timeMs`, flying the view's +X (so the hull
-  // frame is the world frame, centred at x 1000, y 570, z 820 — H1's
-  // BOSS_ALT; the views ride 265 m higher than S9's to keep the framing). A view may
-  // stage a launch `phaseMs` into its sequence (`__ab.qaBossLaunch`) or the
-  // break-up `downAfterMs` ago (`__ab.qaBossDown`). The QA camera frames it.
+  // S9/Z1: the airship fleet, STAGED on the client (`__ab.qaFleet`):
+  // `boss.count` ships (default all twenty) on their own lanes round the
+  // pinned plane at the pinned world instant `timeMs`, the first — the
+  // hero, of class `boss.hero` (0 picket, 1 cruiser, 2 carrier) — the
+  // nearest, `boss.ahead` m out. A close-up frames the hero from
+  // `boss.eye` toward `boss.at`, both in the hero's own frame (x its nose,
+  // y up, z starboard; gallery.mjs places them by its pose). A view may
+  // stage a launch `phaseMs` into its sequence on the hero
+  // (`__ab.qaBossLaunch`) or its crash `downAfterMs` ago
+  // (`__ab.qaShipDown`).
   {
     name: "boss-closeup",
     x: 1000,
     z: 1000,
-    y: 550,
+    y: 520,
     yaw: 0,
     timeMs: 1_790_000_000_000,
-    eye: [1112, 557, 925],
-    at: [1020, 568, 820],
     weather: "clear",
-    boss: { ahead: 180 },
+    boss: { ahead: 260, hero: 2, eye: [70, -14, 150], at: [0, 2, 0] },
   },
   {
     name: "boss-belly-launch",
     x: 1000,
     z: 1000,
-    y: 550,
+    y: 520,
     yaw: 0,
     timeMs: 1_790_000_000_000,
-    eye: [1046, 533, 880],
-    at: [998, 549, 820],
     weather: "clear",
-    boss: { ahead: 180, launch: { kind: 0, phaseMs: 2050 } },
+    boss: {
+      ahead: 260,
+      hero: 2,
+      launch: { kind: 0, phaseMs: 2050 },
+      eye: [36, -30, 52],
+      at: [-3, -18, 0],
+    },
   },
   {
     name: "boss-catapult-launch",
     x: 1000,
     z: 1000,
-    y: 550,
+    y: 520,
     yaw: 0,
     timeMs: 1_790_000_000_000,
-    eye: [1072, 607, 866],
-    at: [1028, 593, 820],
     weather: "clear",
-    boss: { ahead: 180, launch: { kind: 1, phaseMs: 1500 } },
+    boss: {
+      ahead: 260,
+      hero: 2,
+      launch: { kind: 1, phaseMs: 1500 },
+      eye: [56, 34, 40],
+      at: [22, 15, 0],
+    },
   },
   {
     name: "boss-breakup",
     x: 1000,
     z: 1000,
-    y: 550,
+    y: 520,
     yaw: 0,
     timeMs: 1_790_000_000_000,
-    eye: [1060, 565, 1110],
-    at: [1000, 533, 820],
     weather: "clear",
-    boss: { ahead: 180, downAfterMs: 3500 },
+    boss: {
+      ahead: 260,
+      hero: 2,
+      downAfterMs: 3500,
+      eye: [-40, 40, 230],
+      at: [0, -20, 0],
+    },
+  },
+  // Z1: the fleet from under it — the eye 360 m over the middle of the
+  // city, pitched up into the sky full of ships: both layers, every class,
+  // receding into the haze.
+  {
+    name: "fleet-sky",
+    x: 1000,
+    z: 1000,
+    // The plane parked over every roof, under the fleet (out of shot).
+    y: 520,
+    // The staging's "ahead" is the plane's nose: the way the eye looks.
+    yaw: Math.atan2(-380, 440),
+    timeMs: 1_790_000_000_000,
+    eye: [1000, 360, 1000],
+    at: [1380, 500, 560],
+    fov: 80,
+    weather: "clear",
+    boss: { ahead: 320, count: 20 },
   },
   // L6 (Stormlit): the carrier composition (L7b: renamed from a second
-  // `reference-hero`, which shared its name and file with L7's) — the
-  // carrier upper left, its lamps and escort scouts throwing beams down
-  // onto the roofs, a posed biplane mid right (its nav, landing and
-  // exhaust lights lit) flying away into the scene, and the city below.
-  // The own plane is parked high out of shot; the hull is staged 450 m
-  // ahead of the view (centre ≈ x 1500, y 570 — H1's BOSS_ALT — z 550),
-  // over the 400 m landmark at (1500, 300); no rooftop searchlight stands
-  // near the biplane to swing onto it. H1: the eye rides over the downtown
-  // cores (470 m), 100 m under the hull, pitched ~15° down so the hull
-  // still crosses the top of the frame and the supertalls and the city
+  // `reference-hero`, which shared its name and file with L7's) — Z1: the
+  // fleet across the top of the frame, the nearest ships' lamps throwing
+  // beams down onto the roofs, a posed biplane mid right (its nav, landing
+  // and exhaust lights lit) flying away into the scene, and the city below.
+  // The own plane is parked high out of shot; the nearest ship is staged
+  // 450 m ahead of the view, the rest of the fleet behind it; no rooftop
+  // searchlight stands near the biplane to swing onto it. H1: the eye rides
+  // over the downtown cores (470 m), under the fleet, pitched ~15° down so
+  // the hulls cross the top of the frame and the supertalls and the city
   // fill the rest.
   {
     name: "reference-carrier",
@@ -1297,7 +1328,7 @@ export const VIEWS = [
     eye: [1484, 470, 1036],
     at: [1630, 380, 740],
     weather: "clear",
-    boss: { ahead: 450 },
+    boss: { ahead: 450, count: 20 },
     showcase: [
       {
         kind: "biplane",
@@ -1784,6 +1815,34 @@ export const VIEWS = [
     weather: "clear",
     raf: true,
     far: [0.2, 0.38, 0.8, 0.6],
+  },
+  // P1 penetrating impacts, staged through __ab.qaPenetrate on this client
+  // (a quiet room): the tower, the impactor and a side-on camera come from
+  // the planner (game/qa-penetrate.ts), so these views carry no pose of
+  // their own — `penetrate.at` is the shot's time into the sweep, s. A
+  // fighter's airframe flown level into a tower's flank, mid-plough: the
+  // chunks it has reached burst, the hull still moving through.
+  {
+    name: "impact-plane-through",
+    x: 1000,
+    z: 1000,
+    y: 520,
+    yaw: 0,
+    weather: "clear",
+    raf: true,
+    penetrate: { kind: "plane", at: 0.45 },
+  },
+  // P1: a comet through a row of buildings, mid-tear: its fireball head and
+  // long tail inside the second building, the first's tunnel open behind.
+  {
+    name: "impact-comet-row",
+    x: 1000,
+    z: 1000,
+    y: 520,
+    yaw: 0,
+    weather: "clear",
+    raf: true,
+    penetrate: { kind: "comet", at: 0.35 },
   },
   // C1: a low pass down a canyon as the city comes apart ahead — a tower
   // toppling across the next block and another pouring dust, facades

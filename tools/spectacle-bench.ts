@@ -6,8 +6,9 @@
 //        [--only=<entry substring>]
 //
 // The scenes are the harness's own (tools/perf/segments.mjs), staged the same
-// way (client/src/game/qa-spectacle.ts): the `boss` segment's raid crossing
-// the held view with its flak schedule firing; a viewer gliding down S3's
+// way (client/src/game/qa-spectacle.ts): the `boss` segment's staged
+// airship fleet (Z1: all twenty ships) round the held view with its flak
+// schedule firing; a viewer gliding down S3's
 // Canyon Run at 60 m/s with the staged record ghost racing ahead and the
 // rings in race colours; twelve planes on kill streaks trailing S7 smoke;
 // the jumbotrons, S5's fog banks, litter and heat shimmer, the S6 probe's
@@ -59,7 +60,6 @@ import { Session } from "node:inspector/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BossFlak } from "@angels-bandits/common/boss";
-import { raidMaxHp } from "@angels-bandits/common/boss";
 import { type Building, generateCity } from "@angels-bandits/common/city";
 import { generateMovers } from "@angels-bandits/common/city/movers";
 import { natureFor } from "@angels-bandits/common/city/nature";
@@ -90,7 +90,7 @@ g.document ??= {
   hidden: false,
 };
 
-const { qaGhostTrack, qaShell, stageBoss } = await import(
+const { qaGhostTrack, qaShell, stageFleet } = await import(
   "../client/src/game/qa-spectacle"
 );
 const { Music } = await import("../client/src/audio/music");
@@ -98,7 +98,7 @@ const { CamCue, ExplosionShake, FxClock, SLOWMO_RATE, freshPress } =
   await import("../client/src/game/juice");
 const { Explosions } = await import("../client/src/render/fx");
 const { AtmosphereFx } = await import("../client/src/render/atmosphere-fx");
-const { BossRenderer } = await import("../client/src/render/boss");
+const { FleetRenderer } = await import("../client/src/render/boss");
 const { CourseGhost } = await import("../client/src/render/ghost");
 const { Impacts } = await import("../client/src/render/impacts");
 const { Jumbotrons } = await import("../client/src/render/jumbotrons");
@@ -140,7 +140,7 @@ type Seg = (typeof SEGMENTS)[number];
 const BOSS = SEGMENTS.find((s: Seg) => s.name === "boss");
 const RINGS = SEGMENTS.find((s: Seg) => s.name === "rings");
 const W = segmentWorldMs(SEGMENTS.indexOf(BOSS));
-const stage = stageBoss({
+const stage = stageFleet({
   x: BOSS.x,
   y: BOSS.y,
   z: BOSS.z,
@@ -153,7 +153,10 @@ const stage = stageBoss({
 /** The whole flak schedule, built before anything is measured: in the game
  * shells arrive off the wire, not out of the frame loop. */
 const SHELLS: BossFlak[] = [];
-for (let k = 0; k < 400; k++) SHELLS.push(qaShell(stage, k));
+for (let k = 0; k < 400; k++) {
+  const sh = qaShell(stage, k);
+  if (sh) SHELLS.push(sh);
+}
 const canyon = courses.find((c) => c.theme === RINGS.course.theme);
 if (!canyon) throw new Error("no Canyon Run in the seed city");
 const ghostTrack = qaGhostTrack(canyon, RINGS.course.ghostSpeed);
@@ -192,13 +195,13 @@ const jumbotrons = new Jumbotrons(buildings, rendererStub);
 const rings = new CourseRings(courses);
 const ghost = new CourseGhost();
 const impacts = new Impacts();
-const boss = new BossRenderer(
+const boss = new FleetRenderer(
   impacts,
   () => {},
   () => {},
 );
-const bossSlot = { raid: stage.raid, down: null };
-const bossHp = raidMaxHp(stage.raid);
+const bossSlot = { ships: [...stage.ships], launches: [] };
+const bossHp = new Map(stage.ships.map((s) => [s.id, s.hp0]));
 const flak = new Map<number, BossFlak>();
 let nextShell = 0;
 const streak = new SmokeTrails({ tinted: true });
@@ -260,7 +263,6 @@ const musicFrame = {
   threatDist: 120 as number | null,
   hp: 70,
   alive: true,
-  carrierDist: 600 as number | null,
   waveLive: true,
 };
 // J1: blasts round the held boss view, a slow-mo every few seconds.
@@ -331,7 +333,7 @@ const ENTRIES: { name: string; step: Step; reset?: () => void }[] = [
     reset: () => ghost.play(ghostTrack, 100_000),
   },
   {
-    name: "S4 boss.update (zeppelin + flak)",
+    name: "S4 boss.update (20-ship fleet + flak)",
     step: (f) => {
       const { ms, now } = frameAt(f);
       // Bench code: shells arrive the way the socket hands them over.
@@ -625,7 +627,7 @@ if (process.argv.includes("--json")) {
   );
 } else {
   console.log(
-    `scenes: boss (raid ${stage.raid.id}, ${SHELLS.length} scheduled shells), Canyon Run glide (course ${canyon.id}, ghost ${ghostTrack.count} samples), 12 streaking planes`,
+    `scenes: boss (${stage.ships.length} staged airships, ${SHELLS.length} scheduled shells), Canyon Run glide (course ${canyon.id}, ghost ${ghostTrack.count} samples), 12 streaking planes`,
   );
   console.log(
     `bytes allocated per frame (V8 sampling heap profile), ${FRAMES} frames after ${WARM} warm, median of ${RUNS} runs (budget ${BUDGET_BYTES} B an entry point, ${TOTAL_BUDGET_BYTES} B in all)\n`,

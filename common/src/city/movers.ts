@@ -24,7 +24,7 @@
 //   - Helicopters on straight torus loops along street axes.
 //   - One blimp, circling below the cloud deck with a lit banner.
 
-import { type BossSlot, collideBoss } from "../boss";
+import { type FleetSlot, collideBoss } from "../boss";
 import {
   BLIMP_ALT,
   BLIMP_HULL,
@@ -93,7 +93,7 @@ export type MoverKind =
   // D3 collapses (city/collapse.ts): a chunk still falling, or its rubble.
   | "debris"
   | "rubble"
-  // S4 sky boss (boss.ts): the zeppelin's hull, and its falling sections.
+  // Z1 airships (boss.ts): a flying hull, and a crashing one.
   | "boss"
   | "bossDebris"
   // U6 cave-ins (city/caveins.ts): falling rock, or the rubble it became.
@@ -192,10 +192,10 @@ export interface MoverField {
    * pure function of each event and the clock like everything here. The
    * room's ONE field (reset in place), so set once when the field is made. */
   readonly collapses?: CollapseField;
-  /** S4: the room's sky boss — a raid's zeppelin and, once it is shot down,
-   * its falling sections (boss.ts, pure in the slot and the clock). PER
-   * ROOM like `news`; the slot is mutated in place as raids come and go. */
-  readonly boss?: BossSlot;
+  /** Z1: the room's airship fleet — every ship's hull, flying or falling
+   * (boss.ts, pure in the slot and the clock). PER ROOM like `news`; the
+   * slot is mutated in place as ships come and go. */
+  readonly boss?: FleetSlot;
   /** U6: the room's cave-ins (caveins.ts, pure in each event and the
    * clock). PER ROOM like `boss`; the slot is mutated in place. */
   readonly caveins?: CaveInSlot;
@@ -733,8 +733,8 @@ export function collideBotMovers(
   if (field.news && hitsNewsHeli(field.news, pos, radius, timeMs)) {
     return { kind: "newsHeli", id: NEWS_HELI_ID };
   }
-  // S4: the sky boss's hull and its falling sections — 260 m of solid in
-  // the band a bot's attack pass climbs into. Altitude-rejected first.
+  // Z1: the fleet's hulls, flying and falling — up to 200 m of solid each
+  // in the band a bot's attack pass climbs into. Altitude-rejected first.
   if (field.boss) {
     const hit = collideBoss(field.boss, pos, radius, timeMs);
     if (hit) return hit;

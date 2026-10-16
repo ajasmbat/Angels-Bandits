@@ -1230,7 +1230,9 @@ export class CityRenderer {
       const boxes = solids(this.buildings[building] as Building);
       const used = this.slotUsed[building] as number;
       for (let k = 0; k < used; k++) {
-        if ((boxes[k] as SolidBox).tierIndex !== tier) continue;
+        // The slots were laid out from an older solids() list: one that has
+        // since shrunk (a chunk broke after the layout) has no box here.
+        if ((boxes[k] as SolidBox | undefined)?.tierIndex !== tier) continue;
         dData[(start + k) * 2 + 1] = word;
       }
       this.markDirty(this.dirtyAttr, start, start + used);

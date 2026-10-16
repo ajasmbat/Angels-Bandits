@@ -4,7 +4,18 @@
 // D2 chunk damage exactly once, and missile damage that never stretches a
 // shooter's kill credit (8 s DAMAGE_MEMORY_MS).
 
-import { generateCity, mulberry32 } from "@angels-bandits/common/city";
+import { planComet, planMeteor } from "@angels-bandits/common/chaos";
+import {
+  type Building,
+  chunkBuilding,
+  generateCity,
+  mulberry32,
+} from "@angels-bandits/common/city";
+import {
+  IMPACT_COMET,
+  IMPACT_METEOR,
+  sweepRecord,
+} from "@angels-bandits/common/city/penetrate";
 import { buildCityIndex } from "@angels-bandits/common/collision";
 import { CITY_SEED, WORLD_SIZE } from "@angels-bandits/common/constants";
 import {
@@ -16,7 +27,11 @@ import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
 import { nearBuildingProbe } from "../src/cityevents";
 import { Combat } from "../src/combat";
-import { createRoomCity } from "../src/destruction";
+import {
+  createRoomCity,
+  takeSweeps,
+  tickDestruction,
+} from "../src/destruction";
 import {
   DEFAULT_TUNING,
   type DirectorPlane,
@@ -107,6 +122,73 @@ describe("applyMissileImpact via settle", () => {
     // The very same blast on an untouched copy breaks the same chunks.
     const fresh = createRoomCity(seedCity);
     expect(applyMissileImpact(fresh, m).length).toBe(destroyed);
+  });
+});
+
+describe("P1 meteors and comets sweep through", () => {
+  const tower = seedCity.find(
+    (b) => !b.holes && b.height > 150 && b.height < 320,
+  ) as Building;
+
+  it("a meteor drives on down through the roof, chunk by chunk", () => {
+    const rc = createRoomCity(seedCity);
+    const roof = { x: tower.x, y: tower.height, z: tower.z };
+    const m = planMeteor(mulberry32(3), 41, roof, 1000, rc.buildings);
+    expect(m).not.toBeNull();
+    const meteor = m as MissileStrike;
+    const tunnel = applyMissileImpact(rc, meteor);
+    // Nothing is broken at the instant it lands; the tunnel is queued.
+    expect(rc.damage.destroyedCount).toBe(0);
+    expect(tunnel.length).toBeGreaterThan(2);
+    const [rec] = takeSweeps(rc);
+    expect(rec?.kind).toBe(IMPACT_METEOR);
+    expect(rec?.src).toBe(41);
+    expect(rec?.t).toBe(missileImpactAt(meteor));
+    // Downward: the tunnel goes floor after floor.
+    expect(rec?.velocity.y).toBeLessThan(-100);
+    tickDestruction(rc, missileImpactAt(meteor) + 5000);
+    for (const id of tunnel) expect(rc.damage.isGone(id)).toBe(true);
+  });
+
+  it("a comet tears sideways through more than one building", () => {
+    let through = 0;
+    let tried = 0;
+    const tall = seedCity
+      .map((b, i) => ({ b, i }))
+      .filter(({ b }) => !b.holes && b.height > 150)
+      .slice(0, 10);
+    for (const [k, { b }] of tall.entries()) {
+      const rc = createRoomCity(seedCity);
+      const c = planComet(mulberry32(k + 1), 7, b, 2000, rc.buildings);
+      if (!c) continue;
+      tried++;
+      expect(c.kind).toBe("comet");
+      const tunnel = applyMissileImpact(rc, c);
+      const [rec] = takeSweeps(rc);
+      expect(rec?.kind).toBe(IMPACT_COMET);
+      // Shallow: mostly horizontal.
+      const v = rec?.velocity ?? { x: 0, y: 0, z: 0 };
+      expect(Math.abs(v.y)).toBeLessThan(Math.hypot(v.x, v.z) * 0.3);
+      expect(
+        sweepRecord(
+          rec as NonNullable<typeof rec>,
+          createRoomCity(seedCity).buildings,
+        ).chunks,
+      ).toEqual(tunnel);
+      if (new Set(tunnel.map(chunkBuilding)).size >= 2) through++;
+    }
+    expect(tried).toBeGreaterThan(5);
+    expect(through).toBeGreaterThan(tried / 2);
+  });
+
+  it("a cruise missile still bursts on the wall (an explosive, not a penetrator)", () => {
+    const { rc, world } = roomWorld();
+    const director = new MissileDirector(mulberry32(7), FAST_TUNING);
+    const launch = untilLaunch(director, hoverers(1, 11), world, 0);
+    const m = (launch as { strike: MissileStrike }).strike;
+    expect(m.kind === "cruise" || m.kind === "artillery").toBe(true);
+    expect(applyMissileImpact(rc, m).length).toBeGreaterThan(0);
+    expect(takeSweeps(rc)).toEqual([]);
   });
 });
 

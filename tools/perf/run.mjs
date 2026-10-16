@@ -582,8 +582,8 @@ async function flySegment(page, seg, sampleMs, worldMs, ledger = false) {
               };
       };
       if (canStage && s.stage) stage(s.stage, s.worldMs, false);
-      // S8: stage the spectacle the segment measures — the boss raid and its
-      // flak on the pinned world clock, the record ghost the course run will
+      // S8: stage the spectacle the segment measures — Z1: the airship
+      // fleet and its flak on the pinned world clock, the record ghost the course run will
       // play. `show` says whether the build has the hook (an --ab-ref from
       // before S8 does not: no baseline) and whether staging took.
       const show = { boss: null, course: null, chaos: null, caveIn: null };
@@ -766,7 +766,8 @@ async function flySegment(page, seg, sampleMs, worldMs, ledger = false) {
         return {
           boss: b && {
             present: b.present,
-            armour: b.drawn.armour,
+            // Z1: the ships drawn (was the one zeppelin's armour draw).
+            armour: b.drawn.ships,
             shells: b.drawn.shells,
             foreign: b.foreignShells,
           },
@@ -1103,7 +1104,7 @@ export const PILOT_RANGE_MAX_M = 255;
 
 /**
  * S8: did the window show what the segment staged — at BOTH ends of it?
- *  - boss: the zeppelin drawn, shells in the air (the shell draw never
+ *  - boss: the staged airship fleet drawn, shells in the air (the shell draw never
  *    toggles), no shell from a real raid, every pilot inside the LOD band;
  *  - course: the client's run on the staged course, its ghost playing
  *    (drawn on every tier but Mobile, which drops the replay).
@@ -1237,8 +1238,8 @@ function flyWarmupLap(page) {
             keep: s.stage !== undefined,
           });
         }
-        // S8: the staged boss and ghost too, so their first sight (the
-        // hull, the shells, the burst particles) is paid for here.
+        // S8: the staged fleet and ghost too, so their first sight (the
+        // hulls, the shells, the burst particles) is paid for here.
         const boss = s.boss && typeof ab.qaBoss === "function";
         if (boss) {
           ab.qaBoss({
@@ -2088,7 +2089,7 @@ function printVerdicts(report) {
     const end = (e) =>
       [
         e.boss &&
-          `boss ${e.boss.present ? "in the air" : "ABSENT"} (${e.boss.armour} armour boxes), ${e.boss.shells} shells, ${e.boss.foreign} server shells`,
+          `fleet ${e.boss.present ? "in the air" : "ABSENT"} (${e.boss.armour} airships drawn), ${e.boss.shells} shells, ${e.boss.foreign} server shells`,
         e.course &&
           `run on course ${e.course.course} (want ${e.course.expected}), next ring ${e.course.next}, ghost ${e.course.ghost ? (e.course.ghostDrawn ? "drawn" : "playing, not drawn (tier)") : "NOT playing"}`,
         e.chaos &&

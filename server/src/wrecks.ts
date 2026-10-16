@@ -6,6 +6,10 @@
 // index.ts and the bot-sim harness both use exactly these.
 
 import { chunkBuilding } from "@angels-bandits/common/city";
+import {
+  IMPACT_WRECK,
+  makeImpact,
+} from "@angels-bandits/common/city/penetrate";
 import { PLAYER_RADIUS } from "@angels-bandits/common/constants";
 import {
   WRECKS_MAX,
@@ -23,8 +27,9 @@ import {
   wreckNear,
   wreckPosAt,
   wreckTouches,
+  wreckVelAt,
 } from "@angels-bandits/common/wreck";
-import { type RoomCity, blastProps } from "./destruction";
+import { type RoomCity, blastProps, sweepBlast } from "./destruction";
 
 /** One falling wreck and whose it is. */
 export interface WreckRecord {
@@ -49,12 +54,22 @@ export const impactPos = (w: WreckParams): Vec3 =>
 
 /** A wreck hit at `pos`: blow out every chunk near enough (D2 damageAt,
  * WRECK_BLAST_RADIUS, falling off to 0). Returns the chunks destroyed.
- * D3: a collapse it sets off is credited to `by` — the wreck's shooter. */
+ * D3: a collapse it sets off is credited to `by` — the wreck's shooter.
+ * P1: given the wreck (`w`) that came down on a building or the street, it
+ * ploughs on at its fall velocity instead — sweepBlast as IMPACT_WRECK,
+ * the tunnel landing over the next instants (returns []). */
 export function applyWreckImpact(
   city: RoomCity,
   pos: Vec3,
   by: string | null = null,
+  w?: WreckParams,
 ): number[] {
+  if (w && (w.hit === "city" || w.hit === "ground")) {
+    const at = w.t + w.end;
+    const v = wreckVelAt(w, at, { x: 0, y: 0, z: 0 });
+    sweepBlast(city, makeImpact(IMPACT_WRECK, at, pos, v, w.id), by);
+    return [];
+  }
   const out = city.damage.damageAt(pos, WRECK_BLAST_RADIUS, WRECK_BLAST_DAMAGE);
   for (const id of out) city.breakers.set(chunkBuilding(id), by);
   blastProps(city, pos, WRECK_BLAST_RADIUS, WRECK_BLAST_DAMAGE, by); // D9

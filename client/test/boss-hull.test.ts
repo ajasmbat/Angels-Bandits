@@ -1,62 +1,61 @@
-// S9 war-zeppelin carrier: draw == collide. The geometry the renderer draws
-// (client/src/render/boss-hull.ts) against the shape collideBoss tests
-// (common/src/boss.ts bossPartSdf), both ways, within 1.5 m:
-//  - every drawn SOLID vertex is inside the collision shape or within 1.5 m
-//    of it (dressing within its own stated reach);
-//  - every point of the collision surface is within 1.5 m of a drawn solid
-//    triangle — collision never reaches more than 1.5 m outside what is
-//    drawn;
-// at full and light detail, and for each falling section (every solid
-// vertex rides the bone of the section its part falls with, and the
-// renderer's section placement is collideBoss's).
+// Z1 airship fleet: draw == collide, per hull class. The geometry the
+// renderer draws (client/src/render/boss-hull.ts buildShipHull — the base
+// hull, which every instance scales by its class) against the shape
+// collideBoss tests (common/src/boss.ts SHIP_PARTS — the same part table
+// scaled the same way), both ways, within 1.5 m:
+//  - every drawn SOLID vertex, scaled to the class, is inside that class's
+//    collision shape or within 1.5 m of it (dressing within its own stated
+//    reach);
+//  - every point of a class's collision surface is within 1.5 m of a drawn
+//    solid triangle (scaled) — collision never reaches more than 1.5 m
+//    outside what is drawn;
+// at full and light detail, for every class; and the renderer's placement
+// of a ship (flying or pitched in its crash) is collideBoss's.
 
 import {
   BOSS_PARTS,
-  BOSS_PIECES,
   BOSS_PROFILE,
   BOSS_WEAK_POINTS,
   type BossPart,
-  type BossPiecePath,
+  SHIP_CLASSES,
+  SHIP_PARTS,
+  type ShipClassId,
+  type ShipDown,
   blankPose,
   bossPartSdf,
-  bossPiecePartBoxInto,
-  bossRayHit,
-  piecePoseAt,
+  fallPoseInto,
+  shipPointInto,
+  shipRayHit,
   weakPointInto,
 } from "@angels-bandits/common/boss";
 import { mulberry32 } from "@angels-bandits/common/city";
 import * as THREE from "three";
 import { describe, expect, it } from "vitest";
-import { hullMatrixInto } from "../src/render/boss";
+import { shipMatrixInto } from "../src/render/boss";
 import {
-  BONE_COUNT,
   type BossHullGeometry,
   DRESS_REACH_M,
   PENNANT_REACH_M,
   TAG_DRESS,
+  TAG_ESCORT,
   TAG_SOLID,
-  boneRests,
-  buildBossHull,
+  buildShipHull,
 } from "../src/render/boss-hull";
 
 const TOL = 1.5;
+const CLASSES: readonly ShipClassId[] = [0, 1, 2];
 
-/** Signed distance from a hull-frame point to the whole collision shape
- * (the union of the parts), and the part that is nearest. */
-function hullSdf(x: number, y: number, z: number): { d: number; part: number } {
+/** Signed distance from a ship-frame point to class `cls`'s whole
+ * collision shape (the union of its parts). */
+function hullSdf(cls: ShipClassId, x: number, y: number, z: number): number {
   let d = Number.POSITIVE_INFINITY;
-  let part = -1;
-  BOSS_PARTS.forEach((p, i) => {
-    const di = bossPartSdf(p, x - p.x, y - p.y, z - p.z);
-    if (di < d) {
-      d = di;
-      part = i;
-    }
-  });
-  return { d, part };
+  for (const p of SHIP_PARTS[cls] as readonly BossPart[]) {
+    d = Math.min(d, bossPartSdf(p, x - p.x, y - p.y, z - p.z));
+  }
+  return d;
 }
 
-/** Closest-point distance from p to triangle abc (Ericson, RTCD 5.1.5). */
+/** Closest-point distance from p to triangle abc. */
 function triDist(
   p: THREE.Vector3,
   a: THREE.Vector3,
@@ -69,17 +68,20 @@ function triDist(
 }
 const scratch = new THREE.Vector3();
 
-/** The solid triangles of a hull geometry, bucketed in a 3 m grid. */
-function solidGrid(h: BossHullGeometry) {
+/** The solid triangles of a hull geometry scaled to class `cls`, bucketed
+ * in a 3 m grid. */
+function solidGrid(h: BossHullGeometry, cls: ShipClassId) {
+  const c = SHIP_CLASSES[cls] as { sx: number; sr: number };
   const pos = h.geometry.getAttribute("position");
   const cell = 3;
   const grid = new Map<string, number[]>();
   const tris: THREE.Vector3[][] = [];
   for (let t = 0; t < pos.count / 3; t++) {
     if (h.tag[t * 3] !== TAG_SOLID) continue;
-    const v = [0, 1, 2].map((k) =>
-      new THREE.Vector3().fromBufferAttribute(pos, t * 3 + k),
-    );
+    const v = [0, 1, 2].map((k) => {
+      const p = new THREE.Vector3().fromBufferAttribute(pos, t * 3 + k);
+      return p.set(p.x * c.sx, p.y * c.sr, p.z * c.sr);
+    });
     const box = new THREE.Box3().setFromPoints(v);
     const id = tris.push(v) - 1;
     for (
@@ -128,11 +130,10 @@ function solidGrid(h: BossHullGeometry) {
   };
 }
 
-/** A random point on part p's own surface (hull frame). */
+/** A random point on part p's own surface (ship frame). */
 function surfacePoint(p: BossPart, rand: () => number): THREE.Vector3 {
   if (p.rev) {
     const prof = p.rev;
-    // Pick a profile segment by its length, a point on it, an angle round.
     const segs: number[] = [];
     let total = 0;
     for (let i = 1; i < prof.length; i++) {
@@ -145,9 +146,8 @@ function surfacePoint(p: BossPart, rand: () => number): THREE.Vector3 {
     const endN = (prof[prof.length - 1] as readonly [number, number])[1];
     const discs = (Math.PI * (end0 * end0 + endN * endN)) / 2;
     const th = rand() * Math.PI * 2;
-    let r = rand() * (total + discs);
+    const r = rand() * (total + discs);
     if (r > total) {
-      // An end disc (a cut face).
       const first = r - total < (Math.PI * end0 * end0) / 2;
       const [x, rr] = (first ? prof[0] : prof[prof.length - 1]) as readonly [
         number,
@@ -167,14 +167,12 @@ function surfacePoint(p: BossPart, rand: () => number): THREE.Vector3 {
     const u = rand();
     const x = a[0] + (b[0] - a[0]) * u;
     const rad = a[1] + (b[1] - a[1]) * u;
-    r = rad;
     return new THREE.Vector3(
       p.x + x,
-      p.y + r * Math.cos(th),
-      p.z + r * Math.sin(th),
+      p.y + rad * Math.cos(th),
+      p.z + rad * Math.sin(th),
     );
   }
-  // A box face, by area.
   const faces = [
     p.hy * p.hz,
     p.hy * p.hz,
@@ -196,8 +194,8 @@ function surfacePoint(p: BossPart, rand: () => number): THREE.Vector3 {
   return new THREE.Vector3(p.x + u * p.hx, p.y + v * p.hy, p.z + s * p.hz);
 }
 
-describe("the carrier's silhouette", () => {
-  it("is the LZ 129's: a ~6:1 cigar, pointed tail, blunt nose", () => {
+describe("the fleet's silhouettes", () => {
+  it("the base hull is the LZ 129's: a ~6:1 cigar, pointed tail, blunt nose", () => {
     const first = BOSS_PROFILE[0] as readonly [number, number];
     const last = BOSS_PROFILE[BOSS_PROFILE.length - 1] as readonly [
       number,
@@ -210,21 +208,36 @@ describe("the carrier's silhouette", () => {
     expect(first[1]).toBe(0);
     expect(last[1]).toBe(0);
   });
+
+  it("the three classes are three shapes, not one at three sizes", () => {
+    const fineness = SHIP_CLASSES.map((c) => (6.05 * c.sx) / c.sr);
+    expect(new Set(fineness.map((f) => f.toFixed(2))).size).toBe(3);
+  });
+
+  it("no ship flies the escort scouts", () => {
+    const h = buildShipHull("full");
+    expect(h.tag.includes(TAG_ESCORT)).toBe(false);
+  });
 });
 
 for (const detail of ["full", "lite"] as const) {
-  describe(`draw == collide (${detail} detail)`, () => {
-    const h = buildBossHull(detail);
-    const pos = h.geometry.getAttribute("position");
-    const rests = boneRests();
-
-    it("every drawn solid vertex is inside the collision shape or within 1.5 m of it", () => {
-      let worst = Number.NEGATIVE_INFINITY;
-      let solid = 0;
-      for (let i = 0; i < pos.count; i++) {
-        const tag = h.tag[i];
-        if (tag === TAG_SOLID || tag === TAG_DRESS) {
-          const { d } = hullSdf(pos.getX(i), pos.getY(i), pos.getZ(i));
+  const h = buildShipHull(detail);
+  const pos = h.geometry.getAttribute("position");
+  for (const cls of CLASSES) {
+    const c = SHIP_CLASSES[cls] as { sx: number; sr: number; name: string };
+    describe(`draw == collide (${c.name}, ${detail} detail)`, () => {
+      it("every drawn solid vertex is inside the collision shape or within 1.5 m of it", () => {
+        let worst = Number.NEGATIVE_INFINITY;
+        let solid = 0;
+        for (let i = 0; i < pos.count; i++) {
+          const tag = h.tag[i];
+          if (tag !== TAG_SOLID && tag !== TAG_DRESS) continue;
+          const d = hullSdf(
+            cls,
+            pos.getX(i) * c.sx,
+            pos.getY(i) * c.sr,
+            pos.getZ(i) * c.sr,
+          );
           const cap =
             tag === TAG_SOLID
               ? TOL
@@ -237,144 +250,137 @@ for (const detail of ["full", "lite"] as const) {
           }
           expect(d).toBeLessThanOrEqual(cap);
         }
-      }
-      expect(solid).toBeGreaterThan(5000);
-      expect(worst).toBeLessThanOrEqual(TOL);
-    });
-
-    it("collision never reaches more than 1.5 m outside the drawn surface", () => {
-      const nearest = solidGrid(h);
-      const rand = mulberry32(detail === "full" ? 9 : 11);
-      let checked = 0;
-      BOSS_PARTS.forEach((p, i) => {
-        for (let n = 0; n < 60; n++) {
-          const q = surfacePoint(p, rand);
-          // Only where it IS the surface of the whole shape: not buried in
-          // another part.
-          let buried = false;
-          BOSS_PARTS.forEach((o, j) => {
-            if (
-              j !== i &&
-              bossPartSdf(o, q.x - o.x, q.y - o.y, q.z - o.z) < -1e-3
-            )
-              buried = true;
-          });
-          if (buried) continue;
-          checked++;
-          const d = nearest(q);
-          if (d > TOL)
-            throw new Error(
-              `part ${i} (${p.kind}) at ${q.toArray().map((v) => v.toFixed(2))}: ${d.toFixed(2)} m from anything drawn`,
-            );
-        }
+        expect(solid).toBeGreaterThan(5000);
+        expect(worst).toBeLessThanOrEqual(TOL);
       });
-      expect(checked).toBeGreaterThan(800);
-    });
 
-    it("each solid vertex rides the section its part falls with", () => {
-      for (let i = 0; i < pos.count; i++) {
-        if (h.tag[i] !== TAG_SOLID) continue;
-        const { d, part } = hullSdf(pos.getX(i), pos.getY(i), pos.getZ(i));
-        if (d > 0.5) continue; // flush trim between parts: no owner
-        const bone = h.bone[i] as number;
-        expect(bone).toBeLessThan(BONE_COUNT);
-        const section = (rests[bone] as { section: number }).section;
-        // A vertex on a seam between two sections' parts is on both.
-        const owners = BOSS_PARTS.flatMap((o, j) =>
-          bossPartSdf(
-            o,
-            pos.getX(i) - o.x,
-            pos.getY(i) - o.y,
-            pos.getZ(i) - o.z,
-          ) <=
-          d + 1e-3
-            ? [o.piece]
-            : [],
-        );
-        expect(
-          owners.includes(section as 0 | 1 | 2) ||
-            (BOSS_PARTS[part] as BossPart).piece === section,
-        ).toBe(true);
-      }
+      it("collision never reaches more than 1.5 m outside the drawn surface", () => {
+        const nearest = solidGrid(h, cls);
+        const rand = mulberry32((detail === "full" ? 9 : 11) + cls);
+        const parts = SHIP_PARTS[cls] as readonly BossPart[];
+        let checked = 0;
+        parts.forEach((p, i) => {
+          for (let n = 0; n < 40; n++) {
+            const q = surfacePoint(p, rand);
+            let buried = false;
+            parts.forEach((o, j) => {
+              if (
+                j !== i &&
+                bossPartSdf(o, q.x - o.x, q.y - o.y, q.z - o.z) < -1e-3
+              )
+                buried = true;
+            });
+            if (buried) continue;
+            checked++;
+            const d = nearest(q);
+            if (d > TOL)
+              throw new Error(
+                `part ${i} (${p.kind}) at ${q.toArray().map((v) => v.toFixed(2))}: ${d.toFixed(2)} m from anything drawn`,
+              );
+          }
+        });
+        expect(checked).toBeGreaterThan(500);
+      });
     });
-  });
+  }
 }
 
-describe("draw == collide while it falls", () => {
-  it("the renderer places a falling section exactly where collideBoss does", () => {
-    const piece: BossPiecePath = {
-      k: 2,
-      p: { x: 1990, y: 290, z: 12 },
-      v: { x: 9, y: -2, z: -14 },
+describe("the renderer places every ship where collideBoss does", () => {
+  it("flying and crashing, on the viewer's torus image", () => {
+    const down: ShipDown = {
+      t: 0,
+      p: { x: 1995, y: 585, z: 8 },
+      v: { x: 9, y: -2, z: -11 },
       yaw: 2.3,
       spin: -1,
+      end: 9000,
+      hit: "city",
+      at: { x: 0, y: 0, z: 0 },
+      b: -1,
     };
-    const ms = 4200;
-    const pose = piecePoseAt(piece, 0, 30_000, ms, blankPose());
     const viewer = { x: 20, y: 300, z: 1990 };
-    const m = new THREE.Matrix4();
-    const ax = (BOSS_PIECES[2] as { ax: number }).ax;
-    hullMatrixInto(pose.x, pose.y, pose.z, pose.yaw, ax, viewer, m);
-    for (const i of [3, 5, 7]) {
-      const p = BOSS_PARTS[i] as BossPart;
-      const box = bossPiecePartBoxInto(piece, pose, i, {
-        x: 0,
-        y: 0,
-        z: 0,
-        hx: 0,
-        hy: 0,
-        hz: 0,
-        yaw: 0,
-        kind: "bossDebris",
-        id: 0,
-      });
-      const drawn = new THREE.Vector3(p.x, p.y, p.z).applyMatrix4(m);
-      const dx = ((drawn.x - box.x + 3000) % 2000) - 1000;
-      const dz = ((drawn.z - box.z + 3000) % 2000) - 1000;
-      expect(Math.hypot(dx, drawn.y - box.y, dz)).toBeLessThan(1e-6);
+    const m = new Float32Array(16);
+    const p64 = new Float64Array(7);
+    for (const cls of CLASSES) {
+      for (const ms of [0, 2500, 6000]) {
+        const pose = fallPoseInto(down, ms, blankPose());
+        p64.set([
+          pose.x,
+          pose.y,
+          pose.z,
+          pose.yaw,
+          pose.pitch,
+          pose.hx,
+          pose.hz,
+        ]);
+        shipMatrixInto(p64, 0, cls, viewer, m, 0);
+        const mat = new THREE.Matrix4().fromArray(m);
+        for (const i of [0, 4, 10, 17, 27]) {
+          const base = BOSS_PARTS[i] as BossPart;
+          const scaled = (SHIP_PARTS[cls] as readonly BossPart[])[
+            i
+          ] as BossPart;
+          // The base part's centre under the instance matrix…
+          const drawn = new THREE.Vector3(base.x, base.y, base.z).applyMatrix4(
+            mat,
+          );
+          // …is the class's scaled part centre placed by the pose.
+          const want = shipPointInto(pose, scaled.x, scaled.y, scaled.z, {
+            x: 0,
+            y: 0,
+            z: 0,
+          });
+          const dx = ((drawn.x - want.x + 3000) % 2000) - 1000;
+          const dz = ((drawn.z - want.z + 3000) % 2000) - 1000;
+          expect(Math.hypot(dx, drawn.y - want.y, dz)).toBeLessThan(1e-3);
+        }
+        // On the viewer's image: within half a world of it.
+        expect(Math.abs((m[12] as number) - viewer.x)).toBeLessThanOrEqual(
+          1000,
+        );
+        expect(Math.abs((m[14] as number) - viewer.z)).toBeLessThanOrEqual(
+          1000,
+        );
+      }
     }
   });
 });
 
 describe("the weak points are real, hittable parts", () => {
-  it("a round flown at each weak point's centre from outside meets it first", () => {
-    const pose = {
-      x: 1000,
-      y: 305,
-      z: 1000,
-      yaw: 0.4,
-      hx: Math.cos(0.4),
-      hz: -Math.sin(0.4),
-    };
-    const alive = BOSS_WEAK_POINTS.map(() => true);
-    for (let k = 0; k < BOSS_WEAK_POINTS.length; k++) {
-      const p = BOSS_PARTS[BOSS_WEAK_POINTS[k] as number] as BossPart;
-      const wp = weakPointInto(pose, k, { x: 0, y: 0, z: 0 });
-      // From outboard of it: below an engine car, out from a flank cell, over
-      // the dorsal one.
-      const out =
-        p.kind === "engine"
-          ? [0, -1, 0]
-          : p.y > 15
-            ? [0, 1, 0]
-            : [0, 0, Math.sign(p.z)];
-      const c = Math.cos(pose.yaw);
-      const s = Math.sin(pose.yaw);
-      const o = {
-        x: wp.x + 80 * ((out[0] as number) * c + (out[2] as number) * s),
-        y: wp.y + 80 * (out[1] as number),
-        z: wp.z + 80 * (-(out[0] as number) * s + (out[2] as number) * c),
-      };
-      const d = { x: wp.x - o.x, y: wp.y - o.y, z: wp.z - o.z };
-      const len = Math.hypot(d.x, d.y, d.z);
-      const hit = bossRayHit(
-        pose,
-        o,
-        { x: d.x / len, y: d.y / len, z: d.z / len },
-        400,
-        alive,
-      );
-      expect(hit?.weak).toBe(k);
+  it("a round flown at each weak point's centre from outside meets it first, on every class", () => {
+    const pose = { ...blankPose(), x: 1000, y: 585, z: 1000, yaw: 0.4 };
+    pose.hx = Math.cos(0.4);
+    pose.hz = -Math.sin(0.4);
+    for (const cls of CLASSES) {
+      for (let k = 0; k < BOSS_WEAK_POINTS.length; k++) {
+        const p = (SHIP_PARTS[cls] as readonly BossPart[])[
+          BOSS_WEAK_POINTS[k] as number
+        ] as BossPart;
+        const wp = weakPointInto(pose, cls, k, { x: 0, y: 0, z: 0 });
+        const out =
+          p.kind === "engine"
+            ? [0, -1, 0]
+            : p.y > 15 * (SHIP_CLASSES[cls]?.sr as number)
+              ? [0, 1, 0]
+              : [0, 0, Math.sign(p.z)];
+        const c = Math.cos(pose.yaw);
+        const s = Math.sin(pose.yaw);
+        const o = {
+          x: wp.x + 80 * ((out[0] as number) * c + (out[2] as number) * s),
+          y: wp.y + 80 * (out[1] as number),
+          z: wp.z + 80 * (-(out[0] as number) * s + (out[2] as number) * c),
+        };
+        const d = { x: wp.x - o.x, y: wp.y - o.y, z: wp.z - o.z };
+        const len = Math.hypot(d.x, d.y, d.z);
+        const hit = shipRayHit(
+          pose,
+          cls,
+          o,
+          { x: d.x / len, y: d.y / len, z: d.z / len },
+          400,
+        );
+        expect(hit?.weak).toBe(k);
+      }
     }
   });
 });

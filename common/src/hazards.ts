@@ -50,7 +50,10 @@ export function missileHazard(m: MissileStrike): HazardDisc {
     x: m.to.x,
     y: m.to.y,
     z: m.to.z,
-    r: m.kind === "meteor" ? METEOR_BLAST_RADIUS : MISSILE_BLAST_RADIUS,
+    r:
+      m.kind === "meteor" || m.kind === "comet"
+        ? METEOR_BLAST_RADIUS
+        : MISSILE_BLAST_RADIUS,
     t0: at - HAZARD_SLOP_MS,
     t1: at + HAZARD_SLOP_MS,
   };

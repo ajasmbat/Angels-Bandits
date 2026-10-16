@@ -40,14 +40,14 @@
 // BOT_SIM_SECONDS / BOT_SIM_ROOMS stretch or shrink the run (e.g. a 20-min
 // room).
 //
-// S4 sky boss: BOT_SIM_BOSS=1 runs each room's BossDirector with a raid
-// overhead from the first second (full HP, on station the whole run), the
-// boss's weak points in every bot's contacts, its slot in the room's mover
-// field (the hull is solid for bots, and probed), flak bursts through
+// Z1 airship fleet: BOT_SIM_BOSS=1 runs each room's FleetDirector from the
+// first second (full HP, the live refills), the weak points of the ships
+// near the human in every bot's contacts, its slot in the room's mover
+// field (the hulls are solid for bots, and probed), flak bursts through
 // Combat.environmentDamage and bot rounds on weak points through
-// landBotBossRound — the paths index.ts uses. Its sections land through
+// landBotBossRound — the paths index.ts uses. Crashes land through
 // applyBossImpact into the room's destruction. The report counts bot damage
-// on the boss, downs, flak hits and kills, and bots that flew into the hull.
+// on the fleet, downs, flak hits and kills, and bots that flew into a hull.
 //
 // B3 tactics: every bot reads its HP off the contact list (break-offs) and
 // the room's missiles and flak as hazard discs, as on the server. The report
@@ -60,7 +60,7 @@
 // BOT_SIM_BOTS sets the room size (11 = a full room's worth of bots).
 //
 // C2 constant chaos: BOT_SIM_CHAOS=1 runs EVERY layer at production cadence
-// — X1 strikes, the D5 director and its rebuilds, the S4 boss on its real
+// — X1 strikes, the D5 director and its rebuilds, the Z1 fleet on its real
 // schedule, and the C2 chaos director (meteors, quakes, spreading fire) —
 // with the room's DangerBudget shared between them and the gone-share
 // hold: the paths index.ts uses. Every bot counts as a watched human (the
@@ -72,12 +72,7 @@
 // spawned at RESPAWN_ALTITUDE), same seeds and run length — the bar the
 // review set is crashes per bot-minute within 1.15x of them.
 
-import {
-  BOSS_FAST_TUNING,
-  BOSS_TUNING,
-  collideBoss,
-  raidMaxHp,
-} from "@angels-bandits/common/boss";
+import { FLEET_TUNING, collideBoss } from "@angels-bandits/common/boss";
 import {
   type Building,
   chunkId,
@@ -124,7 +119,7 @@ import type { RosterEntry, SpawnState } from "@angels-bandits/common/protocol";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
 import {
-  BossDirector,
+  FleetDirector,
   applyBossImpact,
   bossContactIndex,
   landBotBossRound,
@@ -373,18 +368,11 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         });
       }
       const roomBuildings = rc ? rc.buildings : city;
-      // S4: a raid overhead the whole run (first tick, full HP, on station
-      // past the run's end), seeded per room like the live server's.
-      const boss = BOSS
-        ? new BossDirector(mulberry32(roomSeed(room) ^ 0xb055), {
-            ...BOSS_FAST_TUNING,
-            firstMinMs: 0,
-            firstMaxMs: 0,
-            orbitMs: SECONDS * 1000,
-            hpScale: 1,
-          })
-        : CHAOS
-          ? new BossDirector(mulberry32(roomSeed(room) ^ 0xb055), BOSS_TUNING)
+      // Z1: the fleet overhead the whole run (first tick, full HP), seeded
+      // per room like the live server's.
+      const boss =
+        BOSS || CHAOS
+          ? new FleetDirector(mulberry32(roomSeed(room) ^ 0xb055), FLEET_TUNING)
           : null;
       // C2: the room's danger budget and chaos director.
       const budget = CHAOS ? new DangerBudget() : undefined;
@@ -394,8 +382,8 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
       const bossWorld = rc
         ? { buildings: rc.buildings, index: rc.index }
         : null;
-      // D3: the room's collapses are movers, as on the server — S4: and its
-      // sky boss.
+      // D3: the room's collapses are movers, as on the server — Z1: and its
+      // fleet.
       const roomMovers: MoverField = rc
         ? {
             ...movers,
@@ -557,8 +545,8 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
             });
         }
         if (boss && bossWorld && rc) {
-          // S4: the director's tick (index.ts tickBoss), then its weak
-          // points join the contacts.
+          // Z1: the director's tick (index.ts tickBoss), then the weak points
+          // of the ships near the human join the contacts.
           const planes = roster.flatMap((e) => {
             const c = bots.poseOf(e.id) ? bots.contactOf(e.id) : null;
             return c
@@ -566,8 +554,7 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
               : [];
           });
           const out = boss.tick(now, true, planes, bossWorld);
-          if (out.started)
-            bossHpTotal += raidMaxHp(out.started).reduce((a, b) => a + b, 0);
+          for (const s of out.started) bossHpTotal += s.hp0;
           flakShells += out.flak.length;
           for (const b of out.bursts) {
             for (const v of b.victims) {
@@ -584,7 +571,7 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
             bossLandings++;
             applyBossImpact(rc, at, null, building);
           }
-          for (const c of boss.contacts(now)) {
+          for (const c of boss.contacts(now, hi.pos, 700)) {
             contacts.push({ ...c, prot: false, boss: true });
           }
         }
@@ -718,7 +705,7 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         tickMs.push(performance.now() - t0);
         for (const id of result.crashes) {
           const site = bots.lastPosOf(id);
-          // S4: flown into the zeppelin (counted apart from the city).
+          // Z1: flown into an airship (counted apart from the city).
           if (
             boss &&
             site &&
@@ -800,7 +787,7 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
             humanHits++;
             continue;
           }
-          if (bossContactIndex(round.shot.targetId) >= 0) {
+          if (bossContactIndex(round.shot.targetId) !== null) {
             if (!boss || !bossWorld) continue;
             const hit = landBotBossRound(combat, boss, round, now, bossWorld);
             if (!hit) continue;
@@ -983,7 +970,7 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
         `D5 director            ${DIRECTOR ? `${directorEvents[EVENT_COLLAPSE]} demolitions, ${directorEvents[EVENT_GAS]} gas mains, ${directorEvents[EVENT_CRANE]} crane falls, ${directorCancelled} called off, ${rebuilds} rebuilds` : "off"}`,
         `D5 crash sites         ${crashCauses.rubble} into collapse rubble/debris, ${crashCauses.damaged} into a damaged building, ${crashCauses.warned} inside a warned zone (all in crashes)`,
         `D5 kills by event      ${DIRECTOR ? `demolition ${directorKills.collapse}, crane ${directorKills.crane}, gas ${directorKills.gas}, chain collapse ${directorKills.chain} (${((directorKills.collapse + directorKills.crane + directorKills.gas + directorKills.chain) / botMinutes).toFixed(3)} / bot-min; not in crashes)` : "off"}`,
-        `S4 boss                ${BOSS || CHAOS ? `${bossHits} bot hits on weak points (${((100 * bossHits * BULLET_DAMAGE) / Math.max(1, bossHpTotal)).toFixed(1)}% of all boss HP), ${bossDowns}/${ROOMS} downed (at ${bossDownS.map((x) => x.toFixed(0)).join(", ") || "-"} s), ${bossLandings} sections landed` : "off"}`,
+        `Z1 fleet               ${BOSS || CHAOS ? `${bossHits} bot hits on weak points (${((100 * bossHits * BULLET_DAMAGE) / Math.max(1, bossHpTotal)).toFixed(1)}% of all fleet HP), ${bossDowns} ships downed (at ${bossDownS.map((x) => x.toFixed(0)).join(", ") || "-"} s), ${bossLandings} crashes landed` : "off"}`,
         `S4 flak                ${BOSS || CHAOS ? `${flakShells} shells, ${flakHits} bot hits, ${flakKills} kills (${(flakKills / botMinutes).toFixed(3)} / bot-min), ${hullCrashes} bots flew into the hull` : "off"}`,
         `C2 chaos               ${CHAOS ? `${chaosStaged.meteors} meteors, ${chaosStaged.quakes} quakes, ${chaosStaged.broke} chunks broken by quakes/fire; kills: meteor ${meteorKills} (${(meteorKills / botMinutes).toFixed(3)} / bot-min); chaos tick ms p50 ${q(chaosMs, 0.5).toFixed(3)} p99 ${q(chaosMs, 0.99).toFixed(3)} max ${q(chaosMs, 1).toFixed(3)}` : "off"}`,
         `B3 tactics             ${TACTICS ? `${tactic.boomPasses} boom passes (${tactic.zooms} zooms), ${tactic.pincerDecisions} pincer decisions, ${tactic.breakOffs} break-offs, ${tactic.defendBreaks} defensive breaks, ${tactic.dodges} hazard dodges, ${tactic.decisions} decisions` : "off (pre-B3 brain)"}`,
@@ -1017,9 +1004,8 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
       expect(q(chaosMs, 0.99)).toBeLessThanOrEqual(2);
     }
     if (BOSS) {
-      // S4: bots engage the zeppelin (holdout seeds: 534 rounds on its weak
-      // points), flak wounds far more than it kills (2 kills), and the
-      // stand-off keeps them out of its hull (3).
+      // Z1: bots engage the fleet's weak points, flak wounds far more than
+      // it kills, and the stand-off keeps them out of the hulls.
       expect(bossHits).toBeGreaterThanOrEqual(300);
       expect(flakKills / botMinutes).toBeLessThanOrEqual(0.05);
       expect(hullCrashes).toBeLessThanOrEqual(6);

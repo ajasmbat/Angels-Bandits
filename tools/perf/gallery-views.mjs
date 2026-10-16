@@ -1765,7 +1765,7 @@ export const VIEWS = [
     timeMs: 1_790_000_000_000,
     weather: "clear",
     raf: true,
-    far: [0, 0.36, 0.5, 0.56],
+    far: [0, 0.3, 1, 0.75],
   },
   // R1: the far skyline from low down — 60 m over the river looking east
   // along it, level, so the far towers stand on the horizon past the real
@@ -1783,6 +1783,6 @@ export const VIEWS = [
     timeMs: 1_790_000_000_000,
     weather: "clear",
     raf: true,
-    far: [0.28, 0.4, 0.64, 0.56],
+    far: [0.2, 0.38, 0.8, 0.6],
   },
 ];

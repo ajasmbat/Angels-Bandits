@@ -2934,8 +2934,10 @@ any frame, so a whole-frame score cannot see it sparkle. `--far` (with
 `--grid`) adds one more capture to every view that names a `far` rect in
 `gallery-views.mjs` (x0, y0, x1, y1 as fractions of the frame, top-down):
 the camera slides 0.5 m a frame for 12 frames with the WORLD frozen (the
-same re-pin `still` uses, so beacons, fires and traffic hold still), and
-only the pixels inside the rect are scored. What is left is the far city's
+same re-pin `still` uses, so beacons, fires and traffic hold still) and
+every system but the far skyline and the sky hidden (`FAR_KEEP`: no fog
+bank or searchlight sliding over the rect), and only the pixels inside the
+rect are scored. What is left is the far city's
 response to a moving camera: a sub-pixel window or street line that
 switches as it slides. With `--ref` it prints the far table; the verdict
 is a drop of at least `FAR_DROP` (60 %) per view, and the run exits 1

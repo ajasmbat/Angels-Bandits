@@ -77,7 +77,8 @@
 // one instant every frame, as `still` does), and only the pixels inside the
 // rect are scored. What is left is the far city's own response to a moving
 // camera — sub-pixel windows and street lines switching as they slide —
-// with no animation (beacons, fires, traffic) in it. `--ref` then prints the
+// with no animation (beacons, fires, traffic) in it, and with every other
+// system hidden (FAR_KEEP), so no near sprite sliding over the rect counts. `--ref` then prints the
 // far table and its verdict: the far pan must fall by FAR_DROP vs the ref.
 //
 // `FLICKER_WEATHER=<phase>` (R3) pins the middle of that weather phase
@@ -169,6 +170,11 @@ const FAR_FRAMES = 12;
  * of a pixel a frame: a filtered pattern barely changes, an aliased one
  * switches cells (the sparkle). */
 const FAR_PAN_M = 0.5;
+/** --far: the systems left drawn (`__ab.qaSystems` names) — the far city
+ * and the sky behind it. Everything else (the real city, fog banks, mist,
+ * searchlights …) is hidden for the far capture, so the rect scores the
+ * far field alone and not a near sprite sliding across it. */
+const FAR_KEEP = ["farSkyline", "farCarpet", "farTowers", "sky"];
 export const FAR_DROP = 0.6;
 /** --grid: frames with camera AND world frozen. */
 const GRID_STILL_FRAMES = 4;
@@ -838,11 +844,17 @@ async function measureBuild(
         let farPan = null;
         if (far && v.far) {
           await page.evaluate(
-            ({ t, rect }) => {
+            ({ t, rect, keep }) => {
               window.__flickerStill = t;
               window.__flickerRect = rect;
+              // Only the far field and the sky behind it (captureFrames
+              // re-applies the hide every step).
+              window.__flickerHide = window.__ab
+                .qaSystems()
+                .filter((n) => !keep.includes(n));
+              window.__ab.qaHide(window.__flickerHide);
             },
-            { t: stillMs, rect: v.far },
+            { t: stillMs, rect: v.far, keep: FAR_KEEP },
           );
           await aimView(
             page,
@@ -855,17 +867,22 @@ async function measureBuild(
             },
             FAR_PAN_M,
           );
-          for (let i = 0; i < 2; i++) await page.clock.runFor(STEP_MS);
+          for (let i = 0; i < ABLATE_SETTLE; i++) {
+            await page.evaluate(() => window.__ab.qaHide(window.__flickerHide));
+            await page.clock.runFor(STEP_MS);
+          }
           farPan = await captureFrames(
             page,
             FAR_FRAMES,
             shots,
             `${label}-${v.name}-far`,
           );
-          await page.evaluate(() => {
+          await page.evaluate((base) => {
             window.__flickerStill = null;
             window.__flickerRect = null;
-          });
+            window.__flickerHide = base.length > 0 ? base : null;
+            window.__ab.qaHide(base);
+          }, hide);
         }
         let ablation = null;
         if (ablate) {

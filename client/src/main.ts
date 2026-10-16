@@ -5172,7 +5172,13 @@ window.__ab = {
     clearQaPenetrate();
     if (kind === null) return null;
     const t = Math.round((lastRenderMs ?? 0) + leadMs);
-    const plan = planQaPenetrate(kind, city.cityBuildings, city.cityIndex, t);
+    const plan = planQaPenetrate(
+      kind,
+      city.cityBuildings,
+      city.cityIndex,
+      t,
+      socket.props.gapMask,
+    );
     if (!plan) return null;
     if (plan.strike) socket.missiles.set(plan.strike.id, plan.strike);
     if (plan.wreck) wrecks.add(plan.wreck);

@@ -101,6 +101,8 @@ export function planQaPenetrate(
   buildings: readonly Building[],
   index: CityIndex,
   t: number,
+  /** The room's fallen bridge spans (the camera's sight lines), 0 = none. */
+  gaps = 0,
 ): QaPenetratePlan | null {
   let best: {
     b: number;
@@ -129,11 +131,11 @@ export function planQaPenetrate(
           : kind === "meteor"
             ? res.chunks.length >= 6
             : res.chunks.length >= 3 && res.stopDist > b.width;
-      if (good) return finish(kind, buildings, index, i, dx, dz, t);
+      if (good) return finish(kind, buildings, index, i, dx, dz, t, gaps);
     }
   }
   return best
-    ? finish(kind, buildings, index, best.b, best.dx, best.dz, t)
+    ? finish(kind, buildings, index, best.b, best.dx, best.dz, t, gaps)
     : null;
 }
 
@@ -145,6 +147,7 @@ function finish(
   dx: number,
   dz: number,
   t: number,
+  gaps: number,
 ): QaPenetratePlan {
   const b = buildings[bi] as Building;
   const imp = impactorFor(kind, b, dx, dz);
@@ -211,7 +214,7 @@ function finish(
     );
   }
   const res = sweepRecord(rec, buildings);
-  const { eye, at } = cameraFor(rec, res, buildings);
+  const { eye, at } = cameraFor(rec, res, buildings, gaps);
   return { kind, b: bi, rec, res, strike, wreck, eye, at };
 }
 
@@ -226,6 +229,7 @@ function cameraFor(
   rec: ImpactRecord,
   res: SweepResult,
   buildings: readonly Building[],
+  gaps: number,
 ): { eye: Vec3; at: Vec3 } {
   const d = res.dir;
   const h = Math.hypot(d.x, d.z) || 1;
@@ -256,8 +260,8 @@ function cameraFor(
           z: wrapCoord(entry.z + (bz * c + bx * sn) * dist),
         };
         if (
-          losClear(eye, entry, buildings) &&
-          losClear(eye, above, buildings)
+          losClear(eye, entry, buildings, gaps) &&
+          losClear(eye, above, buildings, gaps)
         ) {
           return { eye, at };
         }

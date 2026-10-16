@@ -25,7 +25,7 @@ import {
   makeImpact,
   sweepRecord,
 } from "@angels-bandits/common/city/penetrate";
-import type { CityIndex } from "@angels-bandits/common/collision";
+import { type CityIndex, losClear } from "@angels-bandits/common/collision";
 import {
   COMET_FLIGHT_MS,
   METEOR_FLIGHT_MS,
@@ -211,18 +211,65 @@ function finish(
     );
   }
   const res = sweepRecord(rec, buildings);
-  // Side-on: the eye off the tunnel's middle, square to it, a little up.
-  const mid = res.stopDist / 2;
-  const mx = rec.origin.x + res.dir.x * mid;
-  const my = rec.origin.y + res.dir.y * mid;
-  const mz = rec.origin.z + res.dir.z * mid;
-  const span = Math.max(80, res.stopDist);
-  const back = span * 0.9 + 140;
-  const at = { x: wrapCoord(mx), y: Math.max(20, my), z: wrapCoord(mz) };
-  const eye = {
-    x: wrapCoord(mx + -dz * back - dx * span * 0.25),
-    y: Math.max(40, my + 30),
-    z: wrapCoord(mz + dx * back - dz * span * 0.25),
-  };
+  const { eye, at } = cameraFor(rec, res, buildings);
   return { kind, b: bi, rec, res, strike, wreck, eye, at };
+}
+
+/**
+ * A fixed camera on the impact: it looks at the entry hole (a little way
+ * into the tunnel), from 45–75° off the line it came in on, 60–180 m out
+ * and above it — the first such eye with a clear line of sight to the hole
+ * (and just over it), searched nearest first. Falls back to straight back
+ * along the incoming line, high.
+ */
+function cameraFor(
+  rec: ImpactRecord,
+  res: SweepResult,
+  buildings: readonly Building[],
+): { eye: Vec3; at: Vec3 } {
+  const d = res.dir;
+  const h = Math.hypot(d.x, d.z) || 1;
+  // The incoming line's reverse in plan (straight down: any heading).
+  const bx = h > 0.2 ? -d.x / h : 1;
+  const bz = h > 0.2 ? -d.z / h : 0;
+  const entry = {
+    x: wrapCoord(rec.origin.x - d.x * 4),
+    y: Math.max(2, rec.origin.y - d.y * 4),
+    z: wrapCoord(rec.origin.z - d.z * 4),
+  };
+  const above = { x: entry.x, y: entry.y + 15, z: entry.z };
+  const into = Math.min(50, res.stopDist / 3);
+  const at = {
+    x: wrapCoord(rec.origin.x + d.x * into),
+    y: Math.max(4, rec.origin.y + d.y * into),
+    z: wrapCoord(rec.origin.z + d.z * into),
+  };
+  for (const dist of [60, 90, 130, 180]) {
+    for (const lift of [15, 45, 90]) {
+      for (const deg of [55, -55, 70, -70, 40, -40]) {
+        const a = (deg * Math.PI) / 180;
+        const c = Math.cos(a);
+        const sn = Math.sin(a);
+        const eye = {
+          x: wrapCoord(entry.x + (bx * c - bz * sn) * dist),
+          y: entry.y + lift,
+          z: wrapCoord(entry.z + (bz * c + bx * sn) * dist),
+        };
+        if (
+          losClear(eye, entry, buildings) &&
+          losClear(eye, above, buildings)
+        ) {
+          return { eye, at };
+        }
+      }
+    }
+  }
+  return {
+    eye: {
+      x: wrapCoord(entry.x + bx * 150),
+      y: entry.y + 120,
+      z: wrapCoord(entry.z + bz * 150),
+    },
+    at,
+  };
 }

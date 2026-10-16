@@ -221,6 +221,9 @@ try {
         await page.evaluate((t) => window.__ab.pinWorld(t), target - WARM_MS);
       }
       await untilWorld(page, target);
+      // Hold the instant: a software frame of seconds would otherwise age
+      // the scene by several virtual frames during the capture itself.
+      if (virtual) await page.evaluate(() => window.__ab.qaFrameClock(0.001));
       const png = await page.screenshot({ timeout: 300_000 });
       const info = await page.evaluate(() => ({
         world: window.__ab.renderMs(),
@@ -230,7 +233,11 @@ try {
         nan: window.__ab.nanProbe(),
       }));
       info.luma = await lumaStats(stats, png);
-      const label = tau === null ? "before" : `t = ${tau.toFixed(2)} s`;
+      if (virtual)
+        await page.evaluate((dt) => window.__ab.qaFrameClock(dt), 1000 / FPS);
+      // Labelled with the instant actually drawn (≥ the target).
+      const off = (info.world - staged.t) / 1000;
+      const label = `${tau === null ? "before: " : ""}t = ${off.toFixed(2)} s`;
       console.log("shot", name, label, JSON.stringify(info));
       writeFileSync(
         `${OUT}/${name}-${tau === null ? "before" : tau.toFixed(2)}.png`,

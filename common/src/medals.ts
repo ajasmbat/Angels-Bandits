@@ -37,7 +37,7 @@ export const MEDAL_LABEL: Readonly<Record<MedalKind, string>> = {
   train: "TRAIN SURFER",
   demolition: "DEMOLITION",
   revenge: "REVENGE",
-  boss: "SKY-BOSS SLAYER",
+  boss: "AIRSHIP BREAKER",
 };
 
 export const isMedalKind = (v: unknown): v is MedalKind =>
@@ -164,8 +164,8 @@ export class MedalLedger {
   }
 
   /**
-   * S4: `id` dealt the most damage to a downed sky boss — SKY-BOSS SLAYER.
-   * The boss is not a pilot: no streak, no double-kill chain, no grudge, and
+   * Z1: `id` dealt the most damage to a downed airship — AIRSHIP BREAKER.
+   * A ship is not a pilot: no streak, no double-kill chain, no grudge, and
    * no record kept for it.
    */
   bossKill(id: string): Award {

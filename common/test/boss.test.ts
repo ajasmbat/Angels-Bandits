@@ -1,12 +1,12 @@
-// S4 sky boss — the pure model (common/src/boss.ts): the schedule and the
-// path are pure; the hull a renderer draws is the hull everything collides
-// with; turret fire is held to the bots' fairness caps; a weak-point hit is
-// judged on the round's line; credit splits by damage; and the break-up
-// falls on the D4 wreck path.
+// Z1 airship fleet — the pure model (common/src/boss.ts): a ship's pose is
+// a pure function of its record and the clock; every lane wraps the torus
+// seamlessly and stays in its altitude layer; no two hulls ever meet; the
+// hull a renderer draws is the hull everything collides with, per class;
+// turret fire is held to the bots' fairness caps; a hit is judged on the
+// round's line; credit splits by damage; and a crash falls on the D4 wreck
+// path.
 
 import {
-  BOSS_ALT,
-  BOSS_FAST_TUNING,
   BOSS_FLAK_BURST_R,
   BOSS_FLAK_CONE,
   BOSS_FLAK_DAMAGE_R,
@@ -15,44 +15,54 @@ import {
   BOSS_FLAK_MIN_RANGE,
   BOSS_FLAK_RANGE,
   BOSS_FLAK_REACTION_MS,
-  BOSS_ORBIT_R,
   BOSS_PARTS,
-  BOSS_PIECES,
   BOSS_REACH_X,
   BOSS_REACH_Y,
   BOSS_REACH_Z,
-  BOSS_SPEED,
-  BOSS_TUNING,
   BOSS_TURRETS,
   BOSS_WEAK_POINTS,
+  type BossFlak,
   type BossPart,
-  type BossRaid,
-  type BossSlot,
-  PIECE_PARTS,
+  FLEET_ALT_MAX,
+  FLEET_ALT_MIN,
+  FLEET_HIDE_M,
+  FLEET_LANES,
+  FLEET_LAYERS,
+  FLEET_SIZE,
+  type FleetShip,
+  type FleetSlot,
+  LAUNCH_BELLY,
+  LAUNCH_CATAPULT,
+  SHIP_CLASSES,
+  SHIP_PARTS,
+  SHIP_REACH,
+  type ShipClassId,
+  applyFleetState,
   blankPose,
   bossCredit,
-  bossHitValid,
-  bossPartBoxInto,
   bossPartSdfAt,
-  bossPiecePartBoxInto,
-  bossPoseAt,
-  bossPresent,
-  bossRayHit,
   bossSpawnClear,
-  breakUp,
   collideBoss,
   decodeFlak,
-  decodeRaid,
+  decodeShip,
   encodeFlak,
-  encodeRaid,
+  encodeLaunch,
+  encodeShip,
+  fallPoseInto,
   flakDamage,
+  flakPosAt,
   flakSolution,
-  nextRaidAt,
-  piecePoseAt,
-  planRaid,
-  raidEgressAt,
-  raidEnd,
-  raidTier,
+  fleetPoseAt,
+  hiddenLaneSpot,
+  launchReleaseAt,
+  launchSpawnAt,
+  shipCrash,
+  shipHitValid,
+  shipLocalInto,
+  shipPresent,
+  shipRayHit,
+  shipSdf,
+  shipVelAt,
   turretMuzzleInto,
   weakPointInto,
 } from "@angels-bandits/common/boss";
@@ -70,11 +80,11 @@ import {
   BOT_REACTION_MS,
   CITY_SEED,
   CLOUD_BASE,
-  HELI_ALT_MAX,
   HELI_HULL,
   MAX_HP,
   NEWS_HELI_ALT_MAX,
   RESPAWN_SPEED,
+  WORLD_SIZE,
   WRECK_MAX_MS,
 } from "@angels-bandits/common/constants";
 import {
@@ -87,125 +97,121 @@ import { describe, expect, it } from "vitest";
 
 /** A server-clock-sized time, never a cosy t = 0. */
 const T0 = 1_787_000_000_000;
-const raid = (over: Partial<BossRaid> = {}): BossRaid => ({
+/** The first lane of each class. */
+const laneOf = (cls: ShipClassId): number =>
+  FLEET_LANES.findIndex((l) => l.cls === cls);
+const ship = (over: Partial<FleetShip> = {}): FleetShip => ({
   id: 3,
+  lane: 9,
   t0: T0,
-  cx: 1000,
-  cz: 1000,
-  th0: 0.7,
-  orbitMs: 300_000,
-  hpScale: 1,
+  s0: 812.3,
+  hp0: 210,
+  down: null,
   ...over,
 });
-const midOrbit = (r: BossRaid) => r.t0 + 60_000;
-const blank = (): MoverBox => ({
-  x: 0,
-  y: 0,
-  z: 0,
-  hx: 0,
-  hy: 0,
-  hz: 0,
-  yaw: 0,
-  kind: "boss",
-  id: 0,
-});
+/** A whole fleet, one ship per lane, seeded spots along them. */
+const fleet = (seed: number): FleetShip[] => {
+  const rand = mulberry32(seed);
+  return FLEET_LANES.map((l, lane) => ({
+    id: lane + 1,
+    lane,
+    t0: T0 - Math.floor(rand() * 60_000),
+    s0:
+      Math.round(
+        rand() * (FLEET_LAYERS[l.layer] as { length: number }).length * 10,
+      ) / 10,
+    hp0: SHIP_CLASSES[l.cls]?.hp as number,
+    down: null,
+  }));
+};
+const slotOf = (...ships: FleetShip[]): FleetSlot => ({ ships, launches: [] });
+const toward = (from: Vec3, to: Vec3): Vec3 => {
+  const d = wrapDelta(from, to);
+  const len = Math.hypot(d.x, d.y, d.z);
+  return { x: d.x / len, y: d.y / len, z: d.z / len };
+};
+const CLASSES: readonly ShipClassId[] = [0, 1, 2];
 
-describe("schedule and path are pure", () => {
-  it("nextRaidAt: the first raid after a human arrives, then every period", () => {
-    const first = nextRaidAt(null, T0, mulberry32(9));
-    expect(first).toBe(nextRaidAt(null, T0, mulberry32(9)));
-    expect(first - T0).toBeGreaterThanOrEqual(BOSS_TUNING.firstMinMs);
-    expect(first - T0).toBeLessThanOrEqual(BOSS_TUNING.firstMaxMs);
-    // `prev` is the last raid's END; the next comes period ± jitter on.
-    const ended = first + 1_000_000;
-    for (let i = 0; i < 50; i++) {
-      const next = nextRaidAt(ended, T0, mulberry32(i));
-      expect(Math.abs(next - ended - BOSS_TUNING.periodMs)).toBeLessThanOrEqual(
-        BOSS_TUNING.periodJitterMs,
+describe("fleetPoseAt is a pure function of the ship's record and the clock", () => {
+  it("the same record and time give the same pose, every time", () => {
+    const s = ship();
+    for (const t of [T0, T0 + 12_345, T0 + 3_600_000, T0 + 86_400_000]) {
+      expect(fleetPoseAt(s, t, blankPose())).toEqual(
+        fleetPoseAt({ ...s }, t, blankPose()),
       );
-      expect(Number.isInteger(next)).toBe(true);
     }
-    // W1: the first carrier 4–6 s after a human starts flying, the next
-    // one 20 s after each goes down or flies off.
-    expect(BOSS_TUNING.firstMinMs).toBe(4000);
-    expect(BOSS_TUNING.firstMaxMs).toBe(6000);
-    expect(BOSS_TUNING.periodMs).toBe(20_000);
-    expect(BOSS_TUNING.periodJitterMs).toBe(0);
-    // The QA schedule is only ever faster.
-    expect(BOSS_FAST_TUNING.firstMaxMs).toBeLessThanOrEqual(
-      BOSS_TUNING.firstMinMs,
+    // Before it came on, it holds its first spot.
+    expect(fleetPoseAt(s, T0 - 5000, blankPose())).toEqual(
+      fleetPoseAt(s, T0, blankPose()),
     );
   });
 
-  it("planRaid is deterministic and survives the wire bit for bit", () => {
-    const a = planRaid(mulberry32(5), 7, T0 + 0.4);
-    expect(a).toEqual(planRaid(mulberry32(5), 7, T0 + 0.4));
-    expect(decodeRaid(encodeRaid(a))).toEqual(a);
-    expect(encodeRaid(a).every(Number.isInteger)).toBe(true);
-    expect(decodeRaid([1, 2, 3])).toBeNull();
-    expect(decodeRaid([1, 2, 3, 4, 5, Number.NaN, 7])).toBeNull();
-    // W1: the tier rides an 8th element; a pre-W1 7-element raid is tier 1.
-    expect(a.tier).toBe(1);
-    expect(encodeRaid(a)).toHaveLength(8);
-    const old = decodeRaid(encodeRaid(a).slice(0, 7));
-    expect(old && raidTier(old)).toBe(1);
-    expect(decodeRaid([...encodeRaid(a).slice(0, 7), 0])).toBeNull();
+  it("survives the wire bit for bit", () => {
+    for (const s of fleet(4)) {
+      const w = encodeShip(s);
+      expect(w.every(Number.isInteger)).toBe(true);
+      const back = decodeShip(w);
+      expect(back).toEqual(s);
+      for (const t of [T0, T0 + 99_999]) {
+        expect(fleetPoseAt(back as FleetShip, t, blankPose())).toEqual(
+          fleetPoseAt(s, t, blankPose()),
+        );
+      }
+    }
+    expect(decodeShip([1, 2, 3])).toBeNull();
+    expect(decodeShip([1, FLEET_SIZE, T0, 0, 100])).toBeNull();
+    expect(decodeShip([1, 0, T0, Number.NaN, 100])).toBeNull();
+    expect(decodeShip([1, 0, T0, 0, 0])).toBeNull();
   });
 
-  it("bossPoseAt is a pure function of (raid, time)", () => {
-    const r = raid();
-    for (const t of [T0, T0 + 12_345, midOrbit(r), raidEgressAt(r) + 9000]) {
-      expect(bossPoseAt(r, t, blankPose())).toEqual(
-        bossPoseAt({ ...r }, t, blankPose()),
+  it("flies its lane at its speed, nose first, wrapping the torus seamlessly", () => {
+    for (const s of fleet(7)) {
+      const lane = FLEET_LANES[s.lane];
+      if (!lane) throw new Error("no lane");
+      const a = blankPose();
+      const b = blankPose();
+      // 40 minutes in 0.25 s steps crosses every seam many times.
+      for (let t = T0; t < T0 + 2_400_000; t += 250) {
+        fleetPoseAt(s, t, a);
+        fleetPoseAt(s, t + 250, b);
+        for (const v of [a.x, a.z]) {
+          expect(v).toBeGreaterThanOrEqual(0);
+          expect(v).toBeLessThan(WORLD_SIZE);
+        }
+        // Never a jump at the seam: the step is the speed, on the torus.
+        expect(wrapDistance(a, b)).toBeCloseTo(Math.abs(lane.v) * 0.25, 6);
+        const d = wrapDelta(a, b);
+        expect(d.x * a.hx + d.z * a.hz).toBeGreaterThan(0);
+        expect(a.y).toBe(lane.alt);
+        expect(a.pitch).toBe(0);
+        expect(Math.cos(a.yaw)).toBeCloseTo(a.hx, 9);
+        expect(-Math.sin(a.yaw)).toBeCloseTo(a.hz, 9);
+      }
+      // The lane closes on itself: a lane's length on, it is where it was.
+      const len = (FLEET_LAYERS[lane.layer] as { length: number }).length;
+      const back = fleetPoseAt(
+        { ...s, s0: s.s0 + len },
+        T0 + 5000,
+        blankPose(),
       );
+      expect(wrapDistance(back, fleetPoseAt(s, T0 + 5000, a))).toBeLessThan(
+        1e-6,
+      );
+      const v = shipVelAt(s, T0 + 5000, { x: 0, y: 0, z: 0 });
+      expect(Math.hypot(v.x, v.z)).toBeCloseTo(Math.abs(lane.v), 9);
     }
   });
 
-  it("flies at BOSS_SPEED along a C1 path: run-in, orbit, run-out", () => {
-    const r = raid();
-    const a = blankPose();
-    const b = blankPose();
-    const end = raidEnd(r);
-    for (let t = r.t0; t < end - 1000; t += 997) {
-      bossPoseAt(r, t, a);
-      bossPoseAt(r, t + 1000, b);
-      const d = wrapDistance(a, b);
-      // A chord of the orbit is a hair shorter than the arc.
-      expect(d).toBeGreaterThan(BOSS_SPEED * 0.995);
-      expect(d).toBeLessThanOrEqual(BOSS_SPEED + 1e-6);
-      expect(a.y).toBe(BOSS_ALT);
-      // The heading turns smoothly: no corner anywhere on the path.
-      expect(a.hx * b.hx + a.hz * b.hz).toBeGreaterThan(Math.cos(0.05));
-      // Box yaw and heading agree (local +X = world (cos yaw, −sin yaw)).
-      expect(Math.cos(a.yaw)).toBeCloseTo(a.hx, 9);
-      expect(-Math.sin(a.yaw)).toBeCloseTo(a.hz, 9);
-    }
-    // On station it circles the raid's centre at BOSS_ORBIT_R.
-    const p = bossPoseAt(r, midOrbit(r), a);
-    const off = wrapDelta({ x: r.cx, y: 0, z: r.cz }, { x: p.x, y: 0, z: p.z });
-    expect(Math.hypot(off.x, off.z)).toBeCloseTo(BOSS_ORBIT_R, 6);
+  it("is in the air from t0 until it is shot down", () => {
+    const s = ship();
+    expect(shipPresent(s, T0 - 1)).toBe(false);
+    expect(shipPresent(s, T0)).toBe(true);
+    expect(shipPresent(s, T0 + 1e9)).toBe(true);
   });
+});
 
-  it("is in the air only between t0 and the end of its run-out", () => {
-    const r = raid();
-    const slot: BossSlot = { raid: r, down: null };
-    expect(bossPresent(slot, r.t0 - 1)).toBe(false);
-    expect(bossPresent(slot, r.t0)).toBe(true);
-    expect(bossPresent(slot, raidEnd(r) - 1)).toBe(true);
-    expect(bossPresent(slot, raidEnd(r))).toBe(false);
-  });
-
-  it("stacks: over every roof and heli, under the news heli, blimp and cloud deck", () => {
-    let top = Number.NEGATIVE_INFINITY;
-    let bottom = Number.POSITIVE_INFINITY;
-    for (const p of BOSS_PARTS) {
-      top = Math.max(top, BOSS_ALT + p.y + p.hy);
-      bottom = Math.min(bottom, BOSS_ALT + p.y - p.hy);
-      // The reject bounds really bound every part.
-      expect(Math.abs(p.x) + p.hx).toBeLessThanOrEqual(BOSS_REACH_X);
-      expect(Math.abs(p.y) + p.hy).toBeLessThanOrEqual(BOSS_REACH_Y);
-      expect(Math.abs(p.z) + p.hz).toBeLessThanOrEqual(BOSS_REACH_Z);
-    }
+describe("the fleet keeps to its altitude layers", () => {
+  it("every hull sits between the news heli and the blimp, over every roof", () => {
     const city = generateCity(CITY_SEED);
     let roofs = 0;
     for (const b of city) {
@@ -214,114 +220,369 @@ describe("schedule and path are pure", () => {
         roofs = Math.max(roofs, s.baseY + s.height);
       }
     }
-    expect(bottom).toBeGreaterThan(roofs + 15);
-    expect(bottom).toBeGreaterThan(HELI_ALT_MAX + (HELI_HULL[1] as number));
-    // H1: the supertalls pushed the carrier over the news heli (its rotor
-    // blur, as newsheli.test.ts reckons it), with the old gap to spare.
-    expect(bottom).toBeGreaterThan(
+    expect(FLEET_ALT_MIN).toBeGreaterThan(roofs + 15);
+    expect(FLEET_ALT_MIN).toBeGreaterThanOrEqual(
       NEWS_HELI_ALT_MAX + (HELI_HULL[1] as number) * 1.3 + 15,
     );
-    expect(top).toBeLessThan(BLIMP_ALT - (BLIMP_HULL[1] as number));
-    expect(top).toBeLessThan(CLOUD_BASE);
-    // "Several times the blimp's size."
-    expect(BOSS_REACH_X).toBeGreaterThan(2.5 * (BLIMP_HULL[0] as number));
+    expect(FLEET_ALT_MAX).toBeLessThan(BLIMP_ALT - (BLIMP_HULL[1] as number));
+    expect(FLEET_ALT_MAX).toBeLessThan(CLOUD_BASE);
+    for (const lane of FLEET_LANES) {
+      const reach = SHIP_REACH[lane.cls];
+      if (!reach) throw new Error("no class");
+      expect(lane.alt - reach.y).toBeGreaterThanOrEqual(FLEET_ALT_MIN);
+      expect(lane.alt + reach.y).toBeLessThanOrEqual(FLEET_ALT_MAX);
+    }
+  });
+
+  it("the reject bounds really bound every part of every class", () => {
+    for (const cls of CLASSES) {
+      const reach = SHIP_REACH[cls];
+      if (!reach) throw new Error("no class");
+      for (const p of SHIP_PARTS[cls] as readonly BossPart[]) {
+        expect(Math.abs(p.x) + p.hx).toBeLessThanOrEqual(reach.x + 1e-9);
+        expect(Math.abs(p.y) + p.hy).toBeLessThanOrEqual(reach.y + 1e-9);
+        expect(Math.abs(p.z) + p.hz).toBeLessThanOrEqual(reach.z + 1e-9);
+      }
+    }
+    for (const p of BOSS_PARTS) {
+      expect(Math.abs(p.y) + p.hy).toBeLessThanOrEqual(BOSS_REACH_Y);
+      expect(Math.abs(p.x) + p.hx).toBeLessThanOrEqual(BOSS_REACH_X);
+      expect(Math.abs(p.z) + p.hz).toBeLessThanOrEqual(BOSS_REACH_Z);
+    }
+  });
+
+  it("three classes of 90–200 m, and about twenty ships", () => {
+    const lengths = CLASSES.map((c) => 2 * (SHIP_REACH[c]?.x as number));
+    expect(lengths[0]).toBeGreaterThan(85);
+    expect(lengths[2]).toBeLessThan(210);
+    expect(lengths[0]).toBeLessThan(lengths[1] as number);
+    expect(lengths[1]).toBeLessThan(lengths[2] as number);
+    expect(FLEET_SIZE).toBe(20);
+    for (const cls of CLASSES) {
+      expect(FLEET_LANES.some((l) => l.cls === cls)).toBe(true);
+    }
+    // Only some ships are armed.
+    const armed = FLEET_LANES.filter(
+      (l) => (SHIP_CLASSES[l.cls]?.turrets.length ?? 0) > 0,
+    ).length;
+    expect(armed).toBeGreaterThan(0);
+    expect(armed).toBeLessThan(FLEET_SIZE);
+  });
+
+  it("a ship flies its lane's altitude whenever it is up", () => {
+    const a = blankPose();
+    for (const s of fleet(11)) {
+      for (let t = T0; t < T0 + 600_000; t += 7919) {
+        expect(fleetPoseAt(s, t, a).y).toBe(FLEET_LANES[s.lane]?.alt);
+      }
+    }
   });
 });
 
-describe("draw == collide for the hull", () => {
-  const r = raid();
-  const slot: BossSlot = { raid: r, down: null };
-  const t = midOrbit(r);
-  const pose = bossPoseAt(r, t, blankPose());
-  const boxes = BOSS_PARTS.map((_, i) => bossPartBoxInto(pose, i, blank()));
+describe("no two hulls ever meet", () => {
+  /** Margin between any two hulls' bounds, m. */
+  const MARGIN = 3;
 
-  it("solid exactly inside the shapes the renderer builds", () => {
-    const rand = mulberry32(17);
-    let hits = 0;
-    for (let n = 0; n < 4000; n++) {
-      const p: Vec3 = {
-        x: pose.x + (rand() * 2 - 1) * 150,
-        y: pose.y + (rand() * 2 - 1) * 32,
-        z: pose.z + (rand() * 2 - 1) * 150,
-      };
-      // S9: each part is its exact shape (a solid of revolution or a box)
-      // inside its bounding box.
-      const drawn = boxes.some(
-        (b, i) =>
-          sphereHitsBox(b, p, 2) &&
-          bossPartSdfAt(BOSS_PARTS[i] as BossPart, b, p) <= 2,
-      );
-      const solid = collideBoss(slot, p, 2, t) !== null;
-      expect(solid).toBe(drawn);
-      if (solid) hits++;
-    }
-    expect(hits).toBeGreaterThan(200);
+  it("the layers' altitude bands do not overlap", () => {
+    const band = (layer: number) => {
+      let lo = Number.POSITIVE_INFINITY;
+      let hi = Number.NEGATIVE_INFINITY;
+      for (const l of FLEET_LANES) {
+        if (l.layer !== layer) continue;
+        const r = SHIP_REACH[l.cls]?.y as number;
+        lo = Math.min(lo, l.alt - r);
+        hi = Math.max(hi, l.alt + r);
+      }
+      return { lo, hi };
+    };
+    expect(band(0).hi + MARGIN).toBeLessThanOrEqual(band(1).lo);
   });
 
-  it("every box centre is solid; just past every face is not", () => {
-    for (const b of boxes) {
-      expect(collideBoss(slot, b, 0.1, t)?.kind).toBe("boss");
-    }
-    // Straight above the dorsal fin's top face, clear of everything.
-    const fin = boxes[5] as MoverBox;
-    expect(
-      collideBoss(slot, { ...fin, y: fin.y + fin.hy + 0.6 }, 0.5, t),
-    ).toBeNull();
-    expect(
-      collideBoss(slot, { ...fin, y: fin.y + fin.hy - 0.4 }, 0.5, t),
-    ).not.toBeNull();
-  });
-
-  it("weak points and turrets are boxes of the hull, not extra geometry", () => {
-    for (const i of BOSS_WEAK_POINTS) {
-      expect(["engine", "cell"]).toContain(BOSS_PARTS[i]?.kind);
-    }
-    for (const { part } of BOSS_TURRETS) {
-      expect(BOSS_PARTS[part]?.kind).toBe("turret");
-    }
-    // Each section's parts partition the hull.
-    expect(PIECE_PARTS.flat().sort((a, b) => a - b)).toEqual(
-      BOSS_PARTS.map((_, i) => i),
-    );
-  });
-
-  it("the falling sections start as the hull and stay yaw-only boxes", () => {
-    const city = generateCity(CITY_SEED);
-    const down = breakUp(r, t, {
-      buildings: city,
-      index: buildCityIndex(city),
-    });
-    for (const piece of down.pieces) {
-      const at0 = piecePoseAt(piece, down.t, piece.end, down.t, blankPose());
-      for (const i of PIECE_PARTS[piece.k] as number[]) {
-        const fall = bossPiecePartBoxInto(piece, at0, i, blank());
-        const whole = boxes[i] as MoverBox;
-        expect(wrapDistance(fall, whole)).toBeLessThan(1e-6);
-        expect(fall.yaw).toBeCloseTo(whole.yaw, 12);
-        expect([fall.hx, fall.hy, fall.hz]).toEqual([
-          whole.hx,
-          whole.hy,
-          whole.hz,
-        ]);
+  it("a layer's lanes are never closer across the heading than two beams", () => {
+    for (const a of FLEET_LANES) {
+      for (const b of FLEET_LANES) {
+        if (a === b || a.layer !== b.layer) continue;
+        const across = (FLEET_LAYERS[a.layer] as { across: number }).across;
+        const raw = (((b.u - a.u) % across) + across) % across;
+        const gap = Math.min(raw, across - raw);
+        expect(gap).toBeGreaterThanOrEqual(
+          (SHIP_REACH[a.cls]?.z as number) +
+            (SHIP_REACH[b.cls]?.z as number) +
+            MARGIN,
+        );
       }
     }
-    // Mid-fall: solid exactly where a section's boxes are drawn.
-    const fallSlot: BossSlot = { raid: r, down };
-    const piece = down.pieces[1];
-    if (!piece) throw new Error("no mid section");
-    const ms = down.t + piece.end / 2;
-    const pose2 = piecePoseAt(piece, down.t, piece.end, ms, blankPose());
-    for (const i of PIECE_PARTS[1] as number[]) {
-      const b = bossPiecePartBoxInto(piece, pose2, i, blank());
-      expect(collideBoss(fallSlot, b, 0.1, ms)?.kind).toBe("bossDebris");
+  });
+
+  it("over two hours of flight, no two hulls' bounds ever overlap", () => {
+    const ships = fleet(23);
+    const poses = ships.map(() => blankPose());
+    for (let t = T0; t < T0 + 7_200_000; t += 1500) {
+      ships.forEach((s, i) => fleetPoseAt(s, t, poses[i] as never));
+      for (let i = 0; i < ships.length; i++) {
+        const la = FLEET_LANES[ships[i]?.lane as number];
+        const pa = poses[i];
+        if (!la || !pa) throw new Error("no ship");
+        const ra = SHIP_REACH[la.cls];
+        if (!ra) throw new Error("no class");
+        for (let j = i + 1; j < ships.length; j++) {
+          const lb = FLEET_LANES[ships[j]?.lane as number];
+          const pb = poses[j];
+          if (!lb || !pb) throw new Error("no ship");
+          const rb = SHIP_REACH[lb.cls];
+          if (!rb) throw new Error("no class");
+          const dy = Math.abs(pa.y - pb.y);
+          if (dy >= ra.y + rb.y + MARGIN) continue;
+          // Same layer, so the same heading line: their plan rectangles are
+          // parallel. They overlap only if they do along AND across.
+          const d = wrapDelta(pa, pb);
+          const along = Math.abs(d.x * pa.hx + d.z * pa.hz);
+          const across = Math.abs(-d.x * pa.hz + d.z * pa.hx);
+          const overlap =
+            along < ra.x + rb.x + MARGIN && across < ra.z + rb.z + MARGIN;
+          expect(overlap).toBe(false);
+        }
+      }
     }
-    // The intact hull is gone the instant it breaks; a landed section too.
-    expect(
-      collideBoss(fallSlot, boxes[0] as MoverBox, 0.1, down.t + 1)?.kind,
-    ).not.toBe("boss");
-    const gone = Math.max(...down.pieces.map((p) => p.end));
-    for (const b of boxes) {
-      expect(collideBoss(fallSlot, b, 0.1, down.t + gone + 1)).toBeNull();
+  });
+});
+
+describe("draw == collide, for every class", () => {
+  const blank = (): MoverBox => ({
+    x: 0,
+    y: 0,
+    z: 0,
+    hx: 0,
+    hy: 0,
+    hz: 0,
+    yaw: 0,
+    kind: "boss",
+    id: 0,
+  });
+
+  it("a flying hull is solid exactly inside its class's scaled parts", () => {
+    for (const cls of CLASSES) {
+      const s = ship({ lane: laneOf(cls) });
+      const t = T0 + 40_000;
+      const pose = fleetPoseAt(s, t, blankPose());
+      // The class's parts as yaw-only boxes in the world (pitch 0 in
+      // flight): an independent placement of the same shapes.
+      const parts = SHIP_PARTS[cls] as readonly BossPart[];
+      const boxes = parts.map((p) => {
+        const b = blank();
+        const c = Math.cos(pose.yaw);
+        const sn = Math.sin(pose.yaw);
+        b.x = (pose.x + p.x * c + p.z * sn + WORLD_SIZE) % WORLD_SIZE;
+        b.y = pose.y + p.y;
+        b.z = (pose.z - p.x * sn + p.z * c + WORLD_SIZE) % WORLD_SIZE;
+        b.hx = p.hx;
+        b.hy = p.hy;
+        b.hz = p.hz;
+        b.yaw = pose.yaw;
+        return b;
+      });
+      const reach = SHIP_REACH[cls];
+      if (!reach) throw new Error("no class");
+      const rand = mulberry32(17 + cls);
+      let hits = 0;
+      for (let n = 0; n < 3000; n++) {
+        const p: Vec3 = {
+          x: pose.x + (rand() * 2 - 1) * reach.x,
+          y: pose.y + (rand() * 2 - 1) * reach.y,
+          z: pose.z + (rand() * 2 - 1) * reach.x,
+        };
+        const drawn = boxes.some(
+          (b, i) =>
+            sphereHitsBox(b, p, 2) &&
+            bossPartSdfAt(parts[i] as BossPart, b, p) <= 2,
+        );
+        const solid = collideBoss(slotOf(s), p, 2, t);
+        expect(solid !== null).toBe(drawn);
+        if (solid) {
+          hits++;
+          expect(solid).toEqual({ kind: "boss", id: s.id });
+        }
+      }
+      expect(hits).toBeGreaterThan(150);
+    }
+  });
+
+  it("a falling hull is solid exactly where its pitched shape is", () => {
+    const city = generateCity(CITY_SEED);
+    const world = { buildings: city, index: buildCityIndex(city) };
+    for (const cls of CLASSES) {
+      const s = ship({ lane: laneOf(cls) });
+      const down = shipCrash(s, T0 + 30_000, world);
+      const fell: FleetShip = { ...s, down };
+      const t = down.t + down.end * 0.6;
+      const pose = fleetPoseAt(fell, t, blankPose());
+      expect(pose.pitch).toBeLessThan(-0.2);
+      // An independent inverse: the transpose of Ry(yaw)·Rz(pitch).
+      const cy = Math.cos(pose.yaw);
+      const sy = Math.sin(pose.yaw);
+      const cp = Math.cos(pose.pitch);
+      const sp = Math.sin(pose.pitch);
+      const R = [
+        [cy * cp, -cy * sp, sy],
+        [sp, cp, 0],
+        [-sy * cp, sy * sp, cy],
+      ];
+      const reach = SHIP_REACH[cls];
+      if (!reach) throw new Error("no class");
+      const rand = mulberry32(5 + cls);
+      let hits = 0;
+      for (let n = 0; n < 3000; n++) {
+        const d = {
+          x: (rand() * 2 - 1) * reach.x,
+          y: (rand() * 2 - 1) * reach.x * 0.6,
+          z: (rand() * 2 - 1) * reach.z * 1.5,
+        };
+        const l = {
+          x:
+            (R[0]?.[0] as number) * d.x +
+            (R[1]?.[0] as number) * d.y +
+            (R[2]?.[0] as number) * d.z,
+          y:
+            (R[0]?.[1] as number) * d.x +
+            (R[1]?.[1] as number) * d.y +
+            (R[2]?.[1] as number) * d.z,
+          z:
+            (R[0]?.[2] as number) * d.x +
+            (R[1]?.[2] as number) * d.y +
+            (R[2]?.[2] as number) * d.z,
+        };
+        const p = {
+          x: (pose.x + d.x + WORLD_SIZE) % WORLD_SIZE,
+          y: pose.y + d.y,
+          z: (pose.z + d.z + WORLD_SIZE) % WORLD_SIZE,
+        };
+        const drawn = shipSdf(cls, l) <= 0.5;
+        const solid = collideBoss(slotOf(fell), p, 0.5, t);
+        // The SDF of the union is exact at its zero set; a hair's slack
+        // for the boxes' corners (their distance is exact too).
+        if (Math.abs(shipSdf(cls, l) - 0.5) < 1e-6) continue;
+        expect(solid !== null).toBe(drawn);
+        if (solid) {
+          hits++;
+          expect(solid.kind).toBe("bossDebris");
+        }
+      }
+      expect(hits).toBeGreaterThan(100);
+      // Gone once it landed.
+      expect(
+        collideBoss(slotOf(fell), down.at, 30, down.t + down.end + 1),
+      ).toBeNull();
+    }
+  });
+
+  it("the ship frame's inverse is its inverse", () => {
+    const pose = {
+      ...blankPose(),
+      x: 1999,
+      y: 580,
+      z: 3,
+      yaw: 2.3,
+      pitch: -0.4,
+    };
+    const l = shipLocalInto(pose, 12, -7, 30, { x: 0, y: 0, z: 0 });
+    expect(Math.hypot(l.x, l.y, l.z)).toBeCloseTo(Math.hypot(12, -7, 30), 9);
+  });
+});
+
+describe("hits are judged on the round's line", () => {
+  for (const cls of CLASSES) {
+    const s = ship({ lane: laneOf(cls) });
+    const t = T0 + 20_000;
+    const pose = fleetPoseAt(s, t, blankPose());
+
+    it(`class ${cls}: a round straight at an engine car from below hits it`, () => {
+      for (let k = 0; k < 4; k++) {
+        const wp = weakPointInto(pose, cls, k, { x: 0, y: 0, z: 0 });
+        const from = { x: wp.x + 15, y: wp.y - 150, z: wp.z + 10 };
+        const dir = toward(from, wp);
+        expect(shipHitValid(pose, cls, k, from, dir)).toBe(true);
+        expect(shipHitValid(pose, cls, -1, from, dir)).toBe(true);
+        expect(shipHitValid(pose, cls, (k + 1) % 4, from, dir)).toBe(false);
+      }
+    });
+
+    it(`class ${cls}: the envelope stops a round meant for the far cell`, () => {
+      // The starboard cell (k 4) from far off to port, through the hull.
+      const cell = weakPointInto(pose, cls, 4, { x: 0, y: 0, z: 0 });
+      const c = Math.cos(pose.yaw);
+      const sn = Math.sin(pose.yaw);
+      const from = { x: cell.x - sn * 200, y: cell.y, z: cell.z - c * 200 };
+      const dir = toward(from, cell);
+      expect(shipRayHit(pose, cls, from, dir, 400)?.weak).toBe(-1);
+      expect(shipHitValid(pose, cls, 4, from, dir)).toBe(false);
+      // ...but it is a hull hit.
+      expect(shipHitValid(pose, cls, -1, from, dir)).toBe(true);
+      const near = { x: cell.x + sn * 120, y: cell.y, z: cell.z + c * 120 };
+      expect(shipHitValid(pose, cls, 4, near, toward(near, cell))).toBe(true);
+    });
+
+    it(`class ${cls}: a miss is a miss`, () => {
+      const wp = weakPointInto(pose, cls, 0, { x: 0, y: 0, z: 0 });
+      const from = { x: wp.x + 15, y: wp.y - 150, z: wp.z + 10 };
+      const off = toward(from, { x: wp.x + 200, y: wp.y, z: wp.z + 200 });
+      expect(shipHitValid(pose, cls, 0, from, off)).toBe(false);
+      expect(shipHitValid(pose, cls, -1, from, off)).toBe(false);
+      expect(shipHitValid(pose, cls, 99, from, toward(from, wp))).toBe(false);
+    });
+  }
+
+  it("credit splits by damage; the top dealer leads; a scratch earns nothing", () => {
+    const credit = bossCredit(
+      new Map([
+        ["b", 300],
+        ["a", 300],
+        ["c", 50],
+        ["d", 7],
+        ["z", 0],
+      ]),
+    );
+    expect(credit.dealers.map((d) => d.id)).toEqual(["a", "b", "c", "d"]);
+    expect(credit.top).toBe("a");
+    expect(credit.dealers.reduce((s, d) => s + d.share, 0)).toBeCloseTo(1, 12);
+    expect(credit.credited).toEqual(["a", "b"]);
+    expect(bossCredit(new Map()).top).toBeNull();
+  });
+});
+
+describe("a downed ship crashes on the D4 wreck path", () => {
+  const city = generateCity(CITY_SEED);
+  const world = { buildings: city, index: buildCityIndex(city) };
+
+  it("leaves from where it flew, nose dropping, its centre on wreckPosAt", () => {
+    for (const s of fleet(31)) {
+      const t = T0 + 45_000;
+      const flying = fleetPoseAt(s, t, blankPose());
+      const down = shipCrash(s, t, world);
+      expect(down).toEqual(shipCrash({ ...s }, t, world));
+      const fell = { ...s, down };
+      const at0 = fleetPoseAt(fell, t, blankPose());
+      expect(wrapDistance(at0, flying)).toBeLessThan(1e-9);
+      expect(at0.yaw).toBeCloseTo(flying.yaw, 12);
+      expect(at0.pitch).toBe(-0);
+      let pitch = 0;
+      for (let ms = 0; ms <= down.end; ms += 250) {
+        const p = fleetPoseAt(fell, t + ms, blankPose());
+        const w = wreckPosAt(down, t + ms, { x: 0, y: 0, z: 0 });
+        expect([p.x, p.y, p.z]).toEqual([w.x, w.y, w.z]);
+        expect(p.pitch).toBeLessThanOrEqual(pitch);
+        pitch = p.pitch;
+      }
+      expect(down.end).toBeGreaterThan(0);
+      expect(down.end).toBeLessThan(WRECK_MAX_MS);
+      expect(["city", "ground", "river"]).toContain(down.hit);
+      expect(shipPresent(fell, t)).toBe(false);
+      expect(shipPresent(fell, t - 1)).toBe(true);
+      const last = fallPoseInto(down, t + down.end, blankPose());
+      expect(
+        wrapDistance({ ...last, y: 0 }, { ...down.at, y: 0 }),
+      ).toBeLessThan(
+        (SHIP_REACH[FLEET_LANES[s.lane]?.cls as ShipClassId]?.x as number) + 1,
+      );
     }
   });
 });
@@ -365,7 +626,6 @@ describe("turret fire is fair", () => {
         () => 0.5,
       ),
     ).toBeNull();
-    // Level with the turret: outside its cone (and so is anything above).
     const level = Math.tan(Math.PI / 2 - BOSS_FLAK_CONE) * 300 * 0.5;
     expect(
       flakSolution(muzzle, ventral, still(300, -level, 0), () => 0.5),
@@ -412,8 +672,6 @@ describe("turret fire is fair", () => {
       z: target.pos.z,
     };
     expect(flakDamage(wrapDistance(straight, s.to))).toBeGreaterThan(0);
-    // The same plane turning onto −Z the moment the shell leaves (a 90°
-    // break at its speed) is long gone when it bursts.
     const broke = {
       x: target.pos.x,
       y: target.pos.y,
@@ -422,192 +680,127 @@ describe("turret fire is fair", () => {
     expect(flakDamage(wrapDistance(broke, s.to))).toBe(0);
   });
 
-  it("shells survive the wire exactly", () => {
-    const f = {
+  it("shells survive the wire exactly and fly muzzle to burst", () => {
+    const f: BossFlak = {
       id: 9,
-      turret: 3,
-      to: { x: 1.2, y: 33.4, z: 1999.9 },
+      from: { x: 1998.4, y: 571.2, z: 3.3 },
+      to: { x: 1.2, y: 333.4, z: 1999.9 },
       t0: T0,
       fuse: 1400,
     };
     expect(decodeFlak(encodeFlak(f))).toEqual(f);
-    expect(decodeFlak([9, 99, 1, 2, 3, T0, 1400])).toBeNull();
-  });
-});
-
-describe("weak-point hit validation and the credit split", () => {
-  const r = raid();
-  const t = midOrbit(r);
-  const pose = bossPoseAt(r, t, blankPose());
-  const alive = BOSS_WEAK_POINTS.map(() => true);
-  const toward = (from: Vec3, to: Vec3): Vec3 => {
-    const d = wrapDelta(from, to);
-    const len = Math.hypot(d.x, d.y, d.z);
-    return { x: d.x / len, y: d.y / len, z: d.z / len };
-  };
-
-  it("a round straight at a live engine from below hits it", () => {
-    for (let k = 0; k < 4; k++) {
-      const wp = weakPointInto(pose, k, { x: 0, y: 0, z: 0 });
-      const from = { x: wp.x + 15, y: wp.y - 150, z: wp.z + 10 };
-      expect(bossHitValid(pose, k, from, toward(from, wp), alive)).toBe(true);
-      // ...but not as a claim on another weak point, or once it is spent.
-      expect(
-        bossHitValid(pose, (k + 1) % 4, from, toward(from, wp), alive),
-      ).toBe(false);
-      const spent = alive.map((v, i) => i !== k && v);
-      expect(bossHitValid(pose, k, from, toward(from, wp), spent)).toBe(false);
-    }
-  });
-
-  it("armour stops a round: a cell can't be hit through the hull", () => {
-    // The starboard cell (k 4) from far off to port, through the mid hull.
-    const cell = weakPointInto(pose, 4, { x: 0, y: 0, z: 0 });
-    const c = Math.cos(pose.yaw);
-    const s = Math.sin(pose.yaw);
-    // Hull-frame −Z (port) in world: (−sin yaw, −cos yaw)·… see placeLocal.
-    const from = { x: cell.x - s * 200, y: cell.y, z: cell.z - c * 200 };
-    const dir = toward(from, cell);
-    expect(bossRayHit(pose, from, dir, 400, alive)?.weak).toBe(-1);
-    expect(bossHitValid(pose, 4, from, dir, alive)).toBe(false);
-    // From its own side it is open.
-    const near = { x: cell.x + s * 120, y: cell.y, z: cell.z + c * 120 };
-    expect(bossHitValid(pose, 4, near, toward(near, cell), alive)).toBe(true);
-  });
-
-  it("a miss is a miss", () => {
-    const wp = weakPointInto(pose, 0, { x: 0, y: 0, z: 0 });
-    const from = { x: wp.x + 15, y: wp.y - 150, z: wp.z + 10 };
-    const off = toward(from, { x: wp.x + 60, y: wp.y, z: wp.z + 60 });
-    expect(bossHitValid(pose, 0, from, off, alive)).toBe(false);
-    expect(bossHitValid(pose, 99, from, toward(from, wp), alive)).toBe(false);
-  });
-
-  it("credit splits by damage; the top dealer leads; a scratch earns nothing", () => {
-    const credit = bossCredit(
-      new Map([
-        ["b", 300],
-        ["a", 300],
-        ["c", 50],
-        ["d", 7],
-        ["z", 0],
-      ]),
-    );
-    expect(credit.dealers.map((d) => d.id)).toEqual(["a", "b", "c", "d"]);
-    expect(credit.top).toBe("a");
-    expect(credit.dealers.reduce((s, d) => s + d.share, 0)).toBeCloseTo(1, 12);
-    // 50 / 657 ≈ 7.6 % and 7 / 657 ≈ 1 %: under the 10 % bar.
-    expect(credit.credited).toEqual(["a", "b"]);
-    expect(bossCredit(new Map()).top).toBeNull();
-  });
-});
-
-describe("the break-up falls on the D4 wreck path", () => {
-  const city = generateCity(CITY_SEED);
-  const world = { buildings: city, index: buildCityIndex(city) };
-  const r = raid();
-  const t = midOrbit(r);
-  const down = breakUp(r, t, world);
-
-  it("each section's anchor IS wreckPosAt of its params", () => {
-    for (const piece of down.pieces) {
-      const path = {
-        p: piece.p,
-        v: piece.v,
-        t: down.t,
-        spin: piece.spin,
-        end: piece.end,
-      };
-      for (let ms = 0; ms <= piece.end; ms += 250) {
-        const a = piecePoseAt(
-          piece,
-          down.t,
-          piece.end,
-          down.t + ms,
-          blankPose(),
-        );
-        const w = wreckPosAt(path, down.t + ms, { x: 0, y: 0, z: 0 });
-        expect(a.x).toBe(w.x);
-        expect(a.y).toBe(w.y);
-        expect(a.z).toBe(w.z);
-      }
-    }
-  });
-
-  it("comes down on the city, inside the D4 window, the same way every time", () => {
-    expect(down).toEqual(breakUp({ ...r }, t, world));
-    expect(down.pieces.map((p) => p.k)).toEqual([0, 1, 2]);
-    for (const p of down.pieces) {
-      expect(p.end).toBeGreaterThan(0);
-      expect(p.end).toBeLessThan(WRECK_MAX_MS);
-      expect(["city", "ground", "river"]).toContain(p.hit);
-    }
-  });
-
-  it("starts each section from where it was on the hull", () => {
-    const pose = bossPoseAt(r, t, blankPose());
-    for (const piece of down.pieces) {
-      const ax = (BOSS_PIECES[piece.k] as { ax: number }).ax;
-      expect(piece.p.y).toBe(BOSS_ALT);
-      const off = wrapDelta(pose, piece.p);
-      expect(Math.hypot(off.x, off.z)).toBeCloseTo(Math.abs(ax), 6);
-    }
-  });
-});
-
-describe("respawns stay out of its way", () => {
-  const r = raid();
-  const slot: BossSlot = { raid: r, down: null };
-  const t = midOrbit(r);
-  const pose = bossPoseAt(r, t, blankPose());
-
-  it("vetoes a spawn whose run-out flies into the hull", () => {
-    // 200 m off the nose, at the hull's height, flying straight at it.
-    const at = {
-      x: pose.x + pose.hx * 330,
-      y: BOSS_ALT,
-      z: pose.z + pose.hz * 330,
-    };
-    const yawAt = Math.atan2(pose.hx, pose.hz); // fwd (−sin, −cos) = −heading
-    expect(bossSpawnClear(slot, at, yawAt, RESPAWN_SPEED, t)).toBe(false);
-    // The same spot flying away from it is clear.
-    expect(bossSpawnClear(slot, at, yawAt + Math.PI, RESPAWN_SPEED, t)).toBe(
-      true,
-    );
-    // No raid: everything is clear.
+    expect(decodeFlak([9, 1, 2, 3, T0, 1400])).toBeNull();
     expect(
-      bossSpawnClear({ raid: null, down: null }, at, yawAt, RESPAWN_SPEED, t),
-    ).toBe(true);
+      wrapDistance(flakPosAt(f, T0 - 10, { x: 0, y: 0, z: 0 }), f.from),
+    ).toBeLessThan(1e-9);
+    expect(
+      wrapDistance(flakPosAt(f, T0 + 1400, { x: 0, y: 0, z: 0 }), f.to),
+    ).toBeLessThan(1e-9);
+    // Across the seam the straight way, never the long way round.
+    const mid = flakPosAt(f, T0 + 700, { x: 0, y: 0, z: 0 });
+    expect(wrapDistance(mid, f.from)).toBeLessThan(wrapDistance(f.from, f.to));
   });
 
-  it("with no heading known, asks for the whole run-out disc", () => {
-    const at = {
-      x: pose.x + pose.hx * 400,
-      y: BOSS_ALT,
-      z: pose.z + pose.hz * 400,
-    };
-    expect(bossSpawnClear(slot, at, null, RESPAWN_SPEED, t)).toBe(false);
-    const far = {
-      x: pose.x + pose.hx * 950,
-      y: BOSS_ALT,
-      z: pose.z + pose.hz * 950,
-    };
-    expect(bossSpawnClear(slot, far, null, RESPAWN_SPEED, t)).toBe(true);
-  });
-
-  it("turret muzzles sit on the hull's outer faces", () => {
-    for (let k = 0; k < BOSS_TURRETS.length; k++) {
-      const m = turretMuzzleInto(pose, k, { x: 0, y: 0, z: 0 });
-      const up = (BOSS_TURRETS[k] as { up: number }).up;
-      expect(up * (m.y - BOSS_ALT)).toBeGreaterThan(18);
-      // S9: and outside the envelope (every section of it) — the gun is
-      // on the skin, never inside the gas.
-      for (const i of [0, 1, 3]) {
-        const b = bossPartBoxInto(pose, i, blank());
-        expect(bossPartSdfAt(BOSS_PARTS[i] as BossPart, b, m)).toBeGreaterThan(
-          0,
+  it("muzzles of every armed class sit outside the envelope, on its faces", () => {
+    for (const cls of CLASSES) {
+      const pose = fleetPoseAt(ship({ lane: laneOf(cls) }), T0, blankPose());
+      for (const k of SHIP_CLASSES[cls]?.turrets ?? []) {
+        const m = turretMuzzleInto(pose, cls, k, { x: 0, y: 0, z: 0 });
+        const up = (BOSS_TURRETS[k] as { up: number }).up;
+        expect(up * (m.y - pose.y)).toBeGreaterThan(
+          18 * (SHIP_CLASSES[cls]?.sr as number),
         );
+        const d = wrapDelta(pose, m);
+        const l = shipLocalInto(pose, d.x, d.y, d.z, { x: 0, y: 0, z: 0 });
+        expect(shipSdf(cls, l)).toBeGreaterThanOrEqual(-1e-9);
       }
+    }
+  });
+});
+
+describe("launches and spawns", () => {
+  it("a launch releases under the belly or off the deck, clear of the hull", () => {
+    for (const cls of CLASSES) {
+      const s = ship({ lane: laneOf(cls) });
+      for (const kind of SHIP_CLASSES[cls]?.rigs ?? []) {
+        const l = { id: 1, ship: s.id, kind, t0: T0 + 1000 };
+        const sp = launchSpawnAt(s, l);
+        const pose = fleetPoseAt(s, launchReleaseAt(l), blankPose());
+        if (kind === LAUNCH_BELLY) expect(sp.pos.y).toBeLessThan(pose.y);
+        if (kind === LAUNCH_CATAPULT) expect(sp.pos.y).toBeGreaterThan(pose.y);
+        const d = wrapDelta(pose, sp.pos);
+        const loc = shipLocalInto(pose, d.x, d.y, d.z, { x: 0, y: 0, z: 0 });
+        expect(shipSdf(cls, loc)).toBeGreaterThan(0.5);
+        // Flying the ship's way (flight yaw 0 faces −Z).
+        expect(
+          -Math.sin(sp.yaw) * pose.hx - Math.cos(sp.yaw) * pose.hz,
+        ).toBeCloseTo(1, 9);
+      }
+    }
+    expect(SHIP_CLASSES[0]?.rigs).not.toContain(LAUNCH_CATAPULT);
+  });
+
+  it("vetoes a spawn whose run-out flies into a hull", () => {
+    const s = ship();
+    const t = T0 + 9000;
+    const pose = fleetPoseAt(s, t, blankPose());
+    const at = {
+      x: pose.x + pose.hx * 250,
+      y: pose.y,
+      z: pose.z + pose.hz * 250,
+    };
+    const yawAt = Math.atan2(pose.hx, pose.hz);
+    expect(bossSpawnClear(slotOf(s), at, yawAt, RESPAWN_SPEED, t)).toBe(false);
+    expect(
+      bossSpawnClear(slotOf(s), at, yawAt + Math.PI, RESPAWN_SPEED, t),
+    ).toBe(true);
+    expect(bossSpawnClear(slotOf(), at, yawAt, RESPAWN_SPEED, t)).toBe(true);
+    expect(bossSpawnClear(slotOf(s), at, null, RESPAWN_SPEED, t)).toBe(false);
+  });
+
+  it("a new ship comes on out of sight of the humans", () => {
+    const humans = [
+      { x: 300, y: 200, z: 300 },
+      { x: 1500, y: 300, z: 900 },
+    ];
+    for (let lane = 0; lane < FLEET_SIZE; lane++) {
+      const spot = hiddenLaneSpot(lane, humans, 0.37);
+      const pose = fleetPoseAt(ship({ lane, s0: spot.s0 }), T0, blankPose());
+      for (const h of humans) {
+        expect(
+          wrapDistance({ ...h, y: 0 }, { ...pose, y: 0 }),
+        ).toBeGreaterThanOrEqual(Math.min(spot.clear, FLEET_HIDE_M) - 0.2);
+      }
+    }
+    expect(hiddenLaneSpot(0, [], 0).clear).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it("a welcome's fleet installs exactly", () => {
+    const city = generateCity(CITY_SEED);
+    const ships = fleet(2);
+    const first = ships[0] as FleetShip;
+    first.down = shipCrash(first, T0 + 1000, { buildings: city });
+    const slot = slotOf();
+    const hp = applyFleetState(slot, {
+      s: ships.map(encodeShip),
+      hp: ships.map((s, i) => (i === 0 ? 0 : s.hp0 - i)),
+      d: ships.map((s) => s.down),
+      l: [encodeLaunch({ id: 4, ship: 2, kind: LAUNCH_BELLY, t0: T0 })],
+    });
+    expect(slot.ships).toEqual(ships);
+    expect(hp.get(first.id)).toBe(0);
+    expect(hp.get(3)).toBe((ships[2] as FleetShip).hp0 - 2);
+    expect(slot.launches).toHaveLength(1);
+    expect(applyFleetState(slot, null).size).toBe(0);
+    expect(slot.ships).toHaveLength(0);
+  });
+
+  it("weak points are parts of the hull, turrets too", () => {
+    for (const i of BOSS_WEAK_POINTS) {
+      expect(["engine", "cell"]).toContain(BOSS_PARTS[i]?.kind);
+    }
+    for (const { part } of BOSS_TURRETS) {
+      expect(BOSS_PARTS[part]?.kind).toBe("turret");
     }
   });
 });

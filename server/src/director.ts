@@ -1394,15 +1394,31 @@ export class DestructionDirector {
   ): DirectorEvent | null {
     const t = this.tuning;
     const lead = DIRECTOR_WARN_MS / 1000;
-    const spot = { x: at.x, z: at.z, zone };
+    // Judged as broadcast — the wire's 0.1 m position and whole-metre zone,
+    // rounded outward — so a client (or a test) re-checking the warning
+    // finds exactly what the server did. Numbered once staged.
+    const e = decodeDirectorEvent(
+      encodeDirectorEvent({
+        id: 0,
+        k,
+        b,
+        ...canonicalize(at),
+        s,
+        d,
+        w: now,
+        at: now + DIRECTOR_WARN_MS,
+        zone,
+      }),
+    ) as DirectorEvent;
+    const z = e.zone;
     // The zone's plan-view reach from (x, z), m.
-    const reach = Math.max(-zone.x0, zone.x1, -zone.z0, zone.z1);
+    const reach = Math.max(-z.x0, z.x1, -z.z0, z.z1);
     const path: string[] = [];
     for (const p of planes) {
       if (this.fresh(p, now)) {
         if (
-          inDangerZone(spot, p.pos, t.freshMarginM) ||
-          inDangerZone(spot, ahead(p, lead), t.freshMarginM)
+          inDangerZone(e, p.pos, t.freshMarginM) ||
+          inDangerZone(e, ahead(p, lead), t.freshMarginM)
         ) {
           return null;
         }
@@ -1411,16 +1427,16 @@ export class DestructionDirector {
       if (!window) continue;
       // Out of reach for the whole window: nothing to check.
       const speed = Math.hypot(p.vel.x, p.vel.z);
-      if (planGap(at.x, at.z, p.pos) > reach * 1.5 + speed * window[1] + 20) {
+      if (planGap(e.x, e.z, p.pos) > reach * 1.5 + speed * window[1] + 20) {
         continue;
       }
-      const how = escapeFrom(zone, at.x, at.z, p.pos, p.vel, ...window);
+      const how = escapeFrom(z, e.x, e.z, p.pos, p.vel, ...window);
       if (how < 0 || (strict && how !== ESCAPE_STRAIGHT)) return null;
       if (how !== ESCAPE_STRAIGHT) path.push(p.id);
     }
     const budget = world.budget;
     if (window && budget) {
-      const pts = zonePoints(spot);
+      const pts = zonePoints(e);
       const bp = budgetPlanes(planes);
       if (!budget.allows("lowchaos", pts, DIRECTOR_WARN_MS, now, bp)) {
         return null;
@@ -1432,16 +1448,7 @@ export class DestructionDirector {
       const rest = path.filter((id) => !charged.includes(id));
       if (rest.length > 0) budget.chargeIds("lowchaos", rest, now);
     }
-    const e = this.event(
-      k,
-      b,
-      canonicalize(at),
-      s,
-      d,
-      now,
-      now + DIRECTOR_WARN_MS,
-      zone,
-    );
+    e.id = this.nextId++;
     this.lowIds.add(e.id);
     return e;
   }

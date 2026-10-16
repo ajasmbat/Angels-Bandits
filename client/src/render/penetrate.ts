@@ -188,16 +188,6 @@ export class Penetrations {
     return res;
   }
 
-  /** The sweep of source `src` of `kind` (a wreck id, a strike id), or
-   * null. */
-  sweepOf(kind: number, src: number): SweepResult | null {
-    for (let i = this.active.length - 1; i >= 0; i--) {
-      const a = this.active[i] as Active;
-      if (a.rec.kind === kind && a.rec.src === src) return a.res;
-    }
-    return null;
-  }
-
   /**
    * Where source `src` of `kind` is at render time `ms` along its tunnel
    * (`pos`, and its unit heading in `dir`): BODY_MOVING, BODY_RESTING

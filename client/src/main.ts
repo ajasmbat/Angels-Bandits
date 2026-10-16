@@ -4564,13 +4564,16 @@ window.__ab = {
     if (qaBoss === null) return null;
     const me = lastQaViewer();
     const t = worldTime() ?? 0;
+    // The staged hero (ship 0) when it carries the rig, else the nearest
+    // staged ship that does.
     let host: FleetShip | null = null;
     let best = Number.POSITIVE_INFINITY;
-    for (const sh of qaBoss.ships) {
+    for (const [i, sh] of qaBoss.ships.entries()) {
       const cls = (FLEET_LANES[sh.lane] as { cls: number }).cls;
       if (!SHIP_CLASSES[cls]?.rigs.includes(kind)) continue;
       if (!shipPresent(sh, t)) continue;
-      const d = wrapDistance(fleetPoseAt(sh, t, blankPose()), me);
+      const d =
+        i === 0 ? -1 : wrapDistance(fleetPoseAt(sh, t, blankPose()), me);
       if (d < best) {
         best = d;
         host = sh;

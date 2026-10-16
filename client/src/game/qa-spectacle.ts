@@ -92,6 +92,9 @@ export interface QaFleetSpec {
   corridor: QaCorridor;
   /** How many ships (default the whole fleet, FLEET_SIZE). */
   count?: number;
+  /** The first (nearest) ship's class — a close-up's hero; default
+   * whichever lane passes nearest. */
+  heroClass?: 0 | 1 | 2;
 }
 /** S8's name for the same spec. */
 export type QaBossSpec = QaFleetSpec;
@@ -145,9 +148,14 @@ export function stageFleet(spec: QaFleetSpec): QaFleetStage {
     }
     return best;
   };
-  const lanes = FLEET_LANES.map((_, i) => i)
-    .sort((a, b) => nearestOn(a, anchor)[1] - nearestOn(b, anchor)[1] || a - b)
-    .slice(0, count);
+  const byNear = FLEET_LANES.map((_, i) => i).sort(
+    (a, b) => nearestOn(a, anchor)[1] - nearestOn(b, anchor)[1] || a - b,
+  );
+  const hero = byNear.find(
+    (i) =>
+      spec.heroClass === undefined || FLEET_LANES[i]?.cls === spec.heroClass,
+  ) as number;
+  const lanes = [hero, ...byNear.filter((i) => i !== hero)].slice(0, count);
   const pose = blankPose();
   const ships: FleetShip[] = lanes.map((lane, i) => {
     const ln = FLEET_LANES[lane] as { cls: 0 | 1 | 2; v: number; layer: 0 | 1 };

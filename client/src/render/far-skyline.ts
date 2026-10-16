@@ -157,11 +157,18 @@ const MOONLIT = 0xbccbe8; // sky.ts DUSK.moon
  * the distance (m) by which a light has dimmed and paled the most. */
 const SIL_NEAR = 0x121827;
 const SIL_MID = 0x232c3e;
-const DEPTH_FAR = 4000;
+const DEPTH_FAR = 3200;
 /** R1: the gain on a tower's window light where its windows are only their
  * mean — a field of sub-pixel lights reads as a glow, not as their
  * average dimmed by the dark wall between them (the cap still holds). */
 const FAR_GLOW_GAIN = 1.8;
+/** R1: where a far tower's own character (colour, occupancy, tone, neon)
+ * converges on the city's mean, m (see `own` in the tower shader), and
+ * that mean occupancy (farCellTower's, dark towers included). */
+const VARIETY_FADE = [1200, 2400] as const;
+const FAR_OCC_MEAN = 0.26;
+/** R1: a far roof's light, as a share of its facade's mean window light. */
+const ROOF_GLOW = 0.5;
 
 /** Linear rgb at unit luminance × `peak`, as a GLSL vec3 literal. */
 function lit(hex: number, peak: number): string {
@@ -278,11 +285,11 @@ float abFarDepth(float d) {
 // with them), on top of the haze abFarVis already lerps to the fog.
 vec3 abFarAirLight(vec3 em, float depth) {
   float l = dot(em, vec3(0.2126, 0.7152, 0.0722));
-  return mix(em, vec3(l), 0.3 * depth) * (1.0 - 0.35 * depth);
+  return mix(em, vec3(l), 0.6 * depth) * (1.0 - 0.5 * depth);
 }
 // And silhouettes layer: near dark blue, mid grey-blue.
 vec3 abFarAirSurface(vec3 col, float depth) {
-  return mix(col, mix(${linear(SIL_NEAR)}, ${linear(SIL_MID)}, depth), 0.2 + 0.4 * depth);
+  return mix(col, mix(${linear(SIL_NEAR)}, ${linear(SIL_MID)}, depth), 0.2 + 0.6 * depth);
 }
 `;
 
@@ -307,14 +314,16 @@ vec4 abSpire(vec2 sc) {
 const TOWER_VERTEX = /* glsl */ `
 ${COMMON_GLSL}
 attribute float aPart;
-// Per instance. A lattice slot (index < uFarN²): its world cell's tower,
-// worked out on the CPU (FarTowerField) — (centre x/z in the cell, half
-// sizes) and (height, seed, occupancy, style; style −1: none). A spire slot
-// (style −2): (super-cell offset x/z from the camera's, −, −).
+// R1: 1 on a roof's inner ring vertex (scaled to the part above's
+// footprint — the roof is a ring round it), 0 elsewhere.
+attribute float aInner;
+// Per instance. A lattice tower (the first N²): its world cell's tower,
+// worked out on the CPU (farCellTower) — (centre x/z from the camera
+// cell's corner, half sizes) and (height, seed, occupancy, style; style −1:
+// none), in DRAW ORDER, far to near (FarSkyline.writeDrawOrder). A spire
+// slot (style −2): (super-cell offset x/z from the camera's, −, −).
 attribute vec4 aTowerA;
 attribute vec4 aTowerB;
-uniform float uFarN; // the lattice's side, cells
-uniform vec2 uFarCellN; // the camera's unwrapped cell, mod uFarN
 uniform vec2 uFarFrac; // the camera cell's corner − the eye, m (x, z)
 uniform vec2 uFarSuper; // the camera's spire super-cell
 uniform vec2 uFarSuperFrac;
@@ -346,13 +355,7 @@ void main() {
   bool alive = true;
   float code = aTowerB.w;
   if (code > -1.5) {
-    // The slot's world cell relative to the camera's (toroidal lattice:
-    // slot ≡ world cell mod N, the window centred on the camera).
-    float id = float(gl_InstanceID);
-    vec2 slot = vec2(mod(id, uFarN), floor(id / uFarN));
-    float hn = floor(uFarN * 0.5);
-    vec2 rel = mod(slot - uFarCellN + hn, uFarN) - hn;
-    c = rel * ${f(FAR_CELL)} + uFarFrac + aTowerA.xy;
+    c = aTowerA.xy + uFarFrac;
     hsz = aTowerA.zw;
     H = aTowerB.x;
     seed = aTowerB.y;
@@ -409,8 +412,10 @@ void main() {
   float y1 = ends.x;
   float s = scale.x;
   float tp = 1.0;
-  if (aPart > 0.5) { y0 = ends.x; y1 = ends.y; s = scale.y; }
-  if (aPart > 1.5) { y0 = ends.y; y1 = ends.z; s = scale.z; tp = taper2; }
+  // The part above's scale (0: none — the roof is whole).
+  float sUp = ends.y > ends.x ? scale.y : 0.0;
+  if (aPart > 0.5) { y0 = ends.x; y1 = ends.y; s = scale.y; sUp = ends.z > ends.y ? scale.z : 0.0; }
+  if (aPart > 1.5) { y0 = ends.y; y1 = ends.z; s = scale.z; tp = taper2; sUp = 0.0; }
   vec2 hp = hsz * s;
   float hgt = H * sink;
   float mastL = 0.0;
@@ -431,11 +436,20 @@ void main() {
   // down; the fragment shader fades that pixel (and the one inside it) to
   // the haze by the true edge's coverage — on silhouette edges only — so a
   // far tower's outline slides instead of stepping a pixel at a time.
+  // Only the tower's top part grows upward: a lower part's roof raised a
+  // pixel would cover the foot of the part standing on it.
   bool solid = aPart < 2.5 && y1 > y0 && hp.x > 0.0;
+  bool top = y1 >= ends.z;
   vHalf = vec4(hp, y0 * hgt, y1 * hgt);
   vTaper = tp;
   vec2 local = position.xz * (hp + (solid ? vec2(pxm) : vec2(0.0))) * mix(1.0, tp, position.y);
-  float y = mix(y0, y1, position.y) * hgt + position.y * (mastL + (solid ? pxm : 0.0));
+  // R1: a lower part's roof is a RING round the part above (its inner
+  // vertices at that part's true footprint). A whole roof put a hidden
+  // floor right behind the upper part's faces; in the far shell a whole
+  // tower is about one depth step deep, so that floor won the depth test
+  // along the junction and a dark seam crawled over every setback.
+  if (aInner > 0.5) local = position.xz * hsz * sUp;
+  float y = mix(y0, y1, position.y) * hgt + position.y * (mastL + (solid && top ? pxm : 0.0));
   vLoc = vec3(local.x, y, local.y);
   vec3 rel3 = vec3(c.x + local.x, y - camY, c.y + local.y);
   vRel = rel3;
@@ -496,25 +510,38 @@ void main() {
   float style = vKind.x;
   float burn = abCityGlow.a;
   float depth = abFarDepth(d);
+  // R1: how much of a tower's own character still shows — 1 near, 0 by
+  // VARIETY_FADE[1]: past it the towers converge on the city's mean, as
+  // the air would merge them. It is also what keeps the shell's depth
+  // ties quiet: ~200 depth steps span 0.8–5 km, so two far towers within
+  // ~35–70 m of each other can trade pixels as the camera moves, which only
+  // shows if they differ.
+  float own = 1.0 - smoothstep(${f(VARIETY_FADE[0])}, ${f(VARIETY_FADE[1])}, d);
   bool roof = n.y > 0.5;
-  vec3 col = roof ? ${linear(ROOF)} : ${linear(MASONRY)} * (0.75 + 0.5 * fract(seed * 5.3));
+  vec3 col = roof ? ${linear(ROOF)} : ${linear(MASONRY)} * (0.75 + 0.5 * mix(0.5, fract(seed * 5.3), own));
   // Moonlight on the faces turned to it, and the glow's bounce.
   col *= 0.3 + 0.55 * max(dot(n, uFarMoon), 0.0) * ${linear(MOONLIT)} + abCityGlow.rgb * 6.0;
   col = abFarAirSurface(col, depth);
   vec3 em = vec3(0.0);
+  // The tower's character: one colour temperature, the odd dark (empty)
+  // tower (its own picks of the seed).
+  float tT = abFarSeed(seed, 2u);
+  vec3 wB = mix(${paletteMean(WINDOW_PEAK)}, ${paletteGlsl("tT", WINDOW_PEAK)}, own);
+  float occB = mix(${FAR_OCC_MEAN.toFixed(3)}, occ * (abFarSeed(seed, 3u) < ${DARK_TOWER_SHARE.toFixed(2)} ? 0.08 : 1.0), own);
+  // R1: a far roof is not black beside its lit floors — rooftop lights and
+  // the glow of the floors under it, averaged: ROOF_GLOW of the facade's
+  // mean light. It keeps the roof-to-face edge (an inner edge no outline AA
+  // reaches) from stepping hard as it slides.
+  if (roof && part < 2.5) em += wB * occB * ${(0.385 * 0.8 * ROOF_GLOW).toFixed(4)} * ${FAR_GLOW_GAIN.toFixed(2)};
   if (!roof && part < 2.5) {
     // R1 WINDOWS, a hierarchy as on the near facades: the tower's lit
     // share → a 3-storey band's → a storey's → each bay × storey window,
     // each level shown only where it is ≥ ~6 px on its own axis and its
     // expected value by ~3 px. Nothing smaller than ~3 px ever switches, so
     // a far tower is a steady glow, banded by its floors where they resolve.
-    // The tower's character: one colour temperature, the odd dark (empty)
-    // tower, and a vertical gradient (brighter up, or brighter down).
-    float tT = abFarSeed(seed, 2u);
-    vec3 wB = ${paletteGlsl("tT", WINDOW_PEAK)};
+    // A vertical gradient (brighter up, or brighter down).
     // The odd floor runs on another temperature (warm ↔ cool).
     vec3 wAlt = tT < ${WINDOW_SHARES[1].toFixed(2)} ? ${lit(WINDOW_PALETTE.led, WINDOW_PEAK)} : ${lit(WINDOW_PALETTE.tungsten, WINDOW_PEAK)};
-    float occB = occ * (abFarSeed(seed, 3u) < ${DARK_TOWER_SHARE.toFixed(2)} ? 0.08 : 1.0);
     float yN = clamp(vFacade.y / max(vTop, 1.0), 0.0, 1.0);
     float grade = 1.0 + (abFarSeed(seed, 4u) - 0.5) * 0.9 * (2.0 * yN - 1.0);
     vec2 g = vFacade / vec2(${f(WIN_CELL[0])}, ${f(WIN_CELL[1])});
@@ -531,7 +558,8 @@ void main() {
     // each window a coin flip at the storey's share.
     float pRow = min(pBand * (0.6 + 0.8 * abFarCell(vec2(613.0, gi.y), seed)), 0.95);
     float winH = abFarCell(gi, seed);
-    float bandK = abFarDetail(${f(WIN_CELL[1] * BAND_STOREYS)}, fw.y);
+    // (Bands converge with the rest of a far tower's character: own.)
+    float bandK = abFarDetail(${f(WIN_CELL[1] * BAND_STOREYS)}, fw.y) * own;
     float rowK = abFarDetail(${f(WIN_CELL[1])}, fw.y);
     float winK = min(abFarDetail(${f(WIN_CELL[0])}, fw.x), rowK);
     float lit = mix(pMean, mix(pBand, mix(pRow, step(winH, pRow), winK), rowK), bandK);
@@ -547,7 +575,7 @@ void main() {
     // spandrel under the next (its top quarter): the lines of lit floors a
     // far tower reads as, box-filtered from ~4 px a band, mean-preserving.
     float baa = fw.y / ${f(WIN_CELL[1] * BAND_STOREYS)};
-    float bandLineK = (1.0 - smoothstep(0.25, 0.45, baa)) * (1.0 - paneK.y);
+    float bandLineK = (1.0 - smoothstep(0.25, 0.45, baa)) * (1.0 - paneK.y) * own;
     pane *= mix(1.0, abFarSpan(fract(vFacade.y / ${f(WIN_CELL[1] * BAND_STOREYS)}), 0.0, 0.75, baa) / 0.75, bandLineK);
     // Colour: the tower's, an eighth of its bands the other temperature
     // (their mean where a band is small); a brightness spread per window
@@ -575,7 +603,7 @@ void main() {
     // as it gets thinner, so it cannot crawl (abLine).
     float neonH = abFarSeed(seed, 6u);
     if (style < 0.5 || style > 1.5) {
-      if (abs(vKind.z - vTop) < 0.5 && neonH < ${NEON_SHARE.toFixed(2)}) {
+      if (abs(vKind.z - vTop) < 0.5 && neonH < ${NEON_SHARE.toFixed(2)} * own) {
         float k = neonH / ${NEON_SHARE.toFixed(2)};
         vec3 nc = k < 0.25 ? ${lit(NEON_COLORS[0], NEON_PEAK)} : k < 0.5 ? ${lit(NEON_COLORS[1], NEON_PEAK)} : k < 0.75 ? ${lit(NEON_COLORS[2], NEON_PEAK)} : ${lit(NEON_COLORS[3], NEON_PEAK)};
         em += nc * abLine(abs(vTop - 2.0 - vFacade.y), 0.6, fw.y);
@@ -618,11 +646,13 @@ void main() {
 `;
 
 /** Four stacked unit boxes without bottoms (shaft, two tiers, the needle),
+ * each roof a ring round the part above (R1, `aInner`),
  * x/z in [−1, 1], y in [0, 1]; `aPart` 0..3, drawn shaft first. */
 function towerGeometry(): THREE.BufferGeometry {
   const pos: number[] = [];
   const nor: number[] = [];
   const part: number[] = [];
+  const inner: number[] = [];
   const idx: number[] = [];
   const faces: [number[], number[][]][] = [
     // normal, 4 corners (CCW from outside)
@@ -662,23 +692,50 @@ function towerGeometry(): THREE.BufferGeometry {
         [1, 1, -1],
       ],
     ],
+  ];
+  // R1: the roof as a ring of four trapezoids, outer edge then inner
+  // (aInner: scaled to the part above in the shader; collapsed to the
+  // centre when there is none, which makes it the whole roof again).
+  const ring: number[][][] = [
     [
-      [0, 1, 0],
-      [
-        [-1, 1, 1],
-        [1, 1, 1],
-        [1, 1, -1],
-        [-1, 1, -1],
-      ],
+      [-1, 1, 1, 0],
+      [1, 1, 1, 0],
+      [1, 1, 1, 1],
+      [-1, 1, 1, 1],
+    ],
+    [
+      [1, 1, 1, 0],
+      [1, 1, -1, 0],
+      [1, 1, -1, 1],
+      [1, 1, 1, 1],
+    ],
+    [
+      [1, 1, -1, 0],
+      [-1, 1, -1, 0],
+      [-1, 1, -1, 1],
+      [1, 1, -1, 1],
+    ],
+    [
+      [-1, 1, -1, 0],
+      [-1, 1, 1, 0],
+      [-1, 1, 1, 1],
+      [-1, 1, -1, 1],
     ],
   ];
+  const quads: [number[], number[][]][] = [
+    ...faces.map(
+      ([n, q]) => [n, q.map((v) => [...v, 0])] as [number[], number[][]],
+    ),
+    ...ring.map((q) => [[0, 1, 0], q] as [number[], number[][]]),
+  ];
   for (let p = 0; p < 4; p++) {
-    for (const [n, quad] of faces) {
+    for (const [n, quad] of quads) {
       const base = pos.length / 3;
       for (const v of quad) {
         pos.push(v[0] as number, v[1] as number, v[2] as number);
         nor.push(n[0] as number, n[1] as number, n[2] as number);
         part.push(p);
+        inner.push(v[3] as number);
       }
       idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
     }
@@ -687,6 +744,7 @@ function towerGeometry(): THREE.BufferGeometry {
   g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute("normal", new THREE.Float32BufferAttribute(nor, 3));
   g.setAttribute("aPart", new THREE.Float32BufferAttribute(part, 1));
+  g.setAttribute("aInner", new THREE.Float32BufferAttribute(inner, 1));
   g.setIndex(idx);
   return g;
 }
@@ -828,6 +886,26 @@ function spireSlots(): [number, number][] {
       if (gap <= FAR_MAX_RADIUS) out.push([ix, iz]);
     }
   }
+  return out;
+}
+
+/** R1: the draw order of a lattice of side `n` — every cell offset from
+ * the camera's cell in the window ([−n/2, n/2) per axis), as (x, z)
+ * pairs, farthest (by cell centre) first. */
+export function farDrawOrder(n: number): Int16Array {
+  const h = n / 2;
+  const cells: [number, number, number][] = [];
+  for (let z = -h; z < h; z++) {
+    for (let x = -h; x < h; x++) {
+      cells.push([x, z, (x + 0.5) ** 2 + (z + 0.5) ** 2]);
+    }
+  }
+  cells.sort((p, q) => q[2] - p[2]);
+  const out = new Int16Array(n * n * 2);
+  cells.forEach(([x, z], k) => {
+    out[k * 2] = x;
+    out[k * 2 + 1] = z;
+  });
   return out;
 }
 
@@ -1001,6 +1079,14 @@ export class FarSkyline {
   private readonly towerA: THREE.InstancedBufferAttribute;
   private readonly towerB: THREE.InstancedBufferAttribute;
   private readonly spires = spireSlots();
+  /** Each world cell's tower, by toroidal slot (slot ≡ world cell mod n):
+   * filled as cells enter the window, then copied into the attributes in
+   * draw order (writeDrawOrder). Sized for the largest lattice. */
+  private readonly slotA: Float32Array;
+  private readonly slotB: Float32Array;
+  /** The window's cell offsets from the camera's cell (x, z pairs), far to
+   * near — the draw order (farDrawOrder). */
+  private order: Int16Array;
   /** The lattice's side (cells) and the camera's UNWRAPPED cell (null:
    * the lattice needs a full fill). */
   private n = farLatticeSide(FAR_MAX_RADIUS);
@@ -1019,8 +1105,6 @@ export class FarSkyline {
       uFarPx: { value: 0.001 },
       uFarTime: { value: 0 },
       uFarMoon: moonDir,
-      uFarN: { value: this.n },
-      uFarCellN: { value: new THREE.Vector2() },
       uFarFrac: { value: new THREE.Vector2() },
       uFarSuper: { value: new THREE.Vector2() },
       uFarSuperFrac: { value: new THREE.Vector2() },
@@ -1035,6 +1119,9 @@ export class FarSkyline {
         side: THREE.FrontSide,
       });
     const capacity = this.n * this.n + this.spires.length;
+    this.slotA = new Float32Array(this.n * this.n * 4);
+    this.slotB = new Float32Array(this.n * this.n * 4);
+    this.order = farDrawOrder(this.n);
     this.geometry = towerGeometry() as THREE.InstancedBufferGeometry;
     this.towerA = new THREE.InstancedBufferAttribute(
       new Float32Array(capacity * 4),
@@ -1090,10 +1177,42 @@ export class FarSkyline {
     farCellTower(
       mod(wx, CELLS),
       mod(wz, CELLS),
-      this.towerA.array as Float32Array,
-      this.towerB.array as Float32Array,
+      this.slotA,
+      this.slotB,
       mod(wz, n) * n + mod(wx, n),
     );
+  }
+
+  /**
+   * R1: the window's towers into the attributes in DRAW order, far to
+   * near, centres from the camera cell's corner. The far shell has only
+   * ~200 depth steps for 0.8–5 km, so two far towers within ~35–70 m of each
+   * other can land on the same depth; three's LessEqual test then keeps the
+   * one drawn LAST, and drawn far to near that is always the nearer one —
+   * no tower ever trades pixels with the one behind it as the camera moves.
+   * A permutation copy (n² × 8 floats) on a cell crossing, which re-uploads
+   * the whole buffer anyway.
+   */
+  private writeDrawOrder(): void {
+    const n = this.n;
+    const a = this.towerA.array as Float32Array;
+    const b = this.towerB.array as Float32Array;
+    const o = this.order;
+    for (let k = 0; k < n * n; k++) {
+      const rx = o[k * 2] as number;
+      const rz = o[k * 2 + 1] as number;
+      const s = (mod(this.wcz + rz, n) * n + mod(this.wcx + rx, n)) * 4;
+      a[k * 4] = (this.slotA[s] as number) + rx * FAR_CELL;
+      a[k * 4 + 1] = (this.slotA[s + 1] as number) + rz * FAR_CELL;
+      a[k * 4 + 2] = this.slotA[s + 2] as number;
+      a[k * 4 + 3] = this.slotA[s + 3] as number;
+      b[k * 4] = this.slotB[s] as number;
+      b[k * 4 + 1] = this.slotB[s + 1] as number;
+      b[k * 4 + 2] = this.slotB[s + 2] as number;
+      b[k * 4 + 3] = this.slotB[s + 3] as number;
+    }
+    this.towerA.needsUpdate = true;
+    this.towerB.needsUpdate = true;
   }
 
   /** Fill the whole window round the camera's cell. */
@@ -1158,17 +1277,11 @@ export class FarSkyline {
       this.wcx = cx;
       this.wcz = cz;
       this.fillAll();
-      this.towerA.needsUpdate = true;
-      this.towerB.needsUpdate = true;
+      this.writeDrawOrder();
     } else if (dx !== 0 || dz !== 0) {
       this.step(dx, dz);
-      this.towerA.needsUpdate = true;
-      this.towerB.needsUpdate = true;
+      this.writeDrawOrder();
     }
-    (u.uFarCellN?.value as THREE.Vector2).set(
-      mod(this.wcx, this.n),
-      mod(this.wcz, this.n),
-    );
     (u.uFarFrac?.value as THREE.Vector2).set(
       cx * FAR_CELL - ux,
       cz * FAR_CELL - uz,
@@ -1195,7 +1308,7 @@ export class FarSkyline {
     const n = farLatticeSide(r);
     if (n === this.n) return;
     this.n = n;
-    (this.uniforms.uFarN as THREE.IUniform).value = n;
+    this.order = farDrawOrder(n);
     (this.towerB.array as Float32Array).fill(-1);
     this.writeSpires();
     this.filled = false;

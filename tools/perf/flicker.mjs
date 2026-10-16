@@ -83,7 +83,8 @@
 // a fraction of a pixel) and the mean |Δ²| = |L(t+1) − 2·L(t) + L(t−1)|
 // (`flicker`): a steady sub-pixel slide changes a pixel at a steady rate,
 // which Δ² cancels, while a cell or line switching on and off does not —
-// the verdict is on the flicker. With --far every capture runs at FAR_RES. `--ref` then prints the
+// the verdict is on the flicker. With --far every capture runs at FAR_RES.
+// `FLICKER_FAR_KEEP=farTowers,sky` (diagnostic) keeps another set drawn. `--ref` then prints the
 // far table and its verdict: the far pan must fall by FAR_DROP vs the ref.
 //
 // `FLICKER_WEATHER=<phase>` (R3) pins the middle of that weather phase
@@ -179,7 +180,9 @@ const FAR_PAN_M = 0.5;
  * and the sky behind it. Everything else (the real city, fog banks, mist,
  * searchlights …) is hidden for the far capture, so the rect scores the
  * far field alone and not a near sprite sliding across it. */
-const FAR_KEEP = ["farSkyline", "farCarpet", "farTowers", "sky"];
+const FAR_KEEP = process.env.FLICKER_FAR_KEEP
+  ? process.env.FLICKER_FAR_KEEP.split(",")
+  : ["farSkyline", "farCarpet", "farTowers", "sky"];
 /** --far: the pixel ratio every capture of the run is drawn at — the M3's
  * Retina 2, where the far city's 2–3 px window cells sparkled; at 1 they
  * are already sub-pixel and resolve to their mean on any build. */
@@ -456,7 +459,12 @@ function readFrame(page) {
           const s = lum[j] - prev[j];
           const d = Math.abs(s);
           sum += d;
-          heat[j] += d;
+          // --far: the heat map is the flicker (|Δ²|) the verdict judges.
+          heat[j] += rect
+            ? prev2
+              ? Math.abs(s - (prev[j] - prev2[j]))
+              : 0
+            : d;
           if (d > hotDelta) n++;
           if (rect) {
             // The canvas reads top row first; the rect is top-down too.

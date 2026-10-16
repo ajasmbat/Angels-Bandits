@@ -1,12 +1,12 @@
 // W1 Carrier War end to end, against a real server process and one human
-// client over a real socket: a fresh room holds no bots; the carrier comes
-// for the pilot; every enemy plane is launched off it — its `bossLaunch`
-// first, then its `respawn` exactly at that launch's release pose — and the
-// enemies close on the human within 15 s of leaving the carrier, shooting
-// at it and never at each other.
+// client over a real socket: a fresh room holds no bots; the airship fleet
+// comes on for the pilot; every enemy plane is launched off one of its
+// ships — its `bossLaunch` first, then its `respawn` exactly at that
+// launch's release pose — and the enemies close on the human within 15 s of
+// leaving their ship, shooting at it and never at each other.
 //
-// AB_BOSS_FAST=1 is the QA carrier (2–3 s after the pilot starts flying,
-// small HP); everything else is the production game. The pilot holds still
+// AB_BOSS_FAST=1 is the QA fleet (paper hulls, quick refills); everything
+// else is the production game. The pilot holds still
 // at its spawn (streaming, so it is in the air) and re-anchors on its own
 // respawn if it is shot down.
 
@@ -14,9 +14,9 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   type BossLaunch,
-  type BossRaid,
+  type FleetShip,
   decodeLaunch,
-  decodeRaid,
+  decodeShip,
   launchSpawnAt,
 } from "@angels-bandits/common/boss";
 import { decodeSnapshotEntry } from "@angels-bandits/common/net";
@@ -34,7 +34,7 @@ const IDENTITY = { x: 0, y: 0, z: 0, w: 1 };
 /** "Closing on the human": an enemy this near it, m (3-D, torus-aware) —
  * well inside its detection range, where it is fighting, not patrolling. */
 const CLOSE_M = 300;
-/** …within this long of leaving the carrier, ms. */
+/** …within this long of leaving its ship, ms. */
 const CLOSE_WITHIN_MS = 15_000;
 
 let child: ChildProcess;
@@ -67,7 +67,7 @@ afterAll(() => {
 
 interface Run {
   welcome: WelcomeMsg;
-  raid: BossRaid | null;
+  ships: Map<number, FleetShip>;
   launches: Map<string, { l: BossLaunch; at: number }>;
   releases: Map<string, { pos: Vec3; yaw: number; at: number }>;
   /** Closest each enemy came to the human within CLOSE_WITHIN_MS of its
@@ -83,7 +83,7 @@ function fly(ms: number): Promise<Run> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url);
     const run: Partial<Run> = {
-      raid: null,
+      ships: new Map(),
       launches: new Map(),
       releases: new Map(),
       closest: new Map(),
@@ -110,8 +110,9 @@ function fly(ms: number): Promise<Run> {
           ws.close();
           resolve(run as Run);
         }, ms);
-      } else if (msg.type === "boss") {
-        run.raid ??= decodeRaid(msg.r);
+      } else if (msg.type === "ship") {
+        const sh = decodeShip(msg.s);
+        if (sh) run.ships?.set(sh.id, sh);
       } else if (msg.type === "playerJoined") {
         if (msg.player.isBot) bots.add(msg.player.id);
       } else if (msg.type === "bossLaunch") {
@@ -150,36 +151,40 @@ function fly(ms: number): Promise<Run> {
   });
 }
 
-describe("W1 carrier waves, end to end with one human", () => {
+describe("W1 fleet waves, end to end with one human", () => {
   let run: Run;
   beforeAll(async () => {
     run = await fly(28_000);
   }, 60_000);
 
-  it("a fresh room holds no bots: enemies exist only as carrier launches", () => {
+  it("a fresh room holds no bots: enemies exist only as airship launches", () => {
     expect(run.welcome.roster.some((r) => r.isBot)).toBe(false);
-    expect(run.raid).not.toBeNull();
+    expect(run.ships.size).toBeGreaterThanOrEqual(20);
     expect(run.launches.size).toBeGreaterThanOrEqual(3);
     // Every enemy that flew was launched first.
     for (const id of run.releases.keys())
       expect(run.launches.has(id)).toBe(true);
   });
 
-  it("every enemy leaves the carrier at its launch's release pose", () => {
-    const raid = run.raid as BossRaid;
+  it("every enemy leaves its ship at its launch's release pose, from several ships", () => {
     expect(run.releases.size).toBeGreaterThanOrEqual(3);
+    const from = new Set<number>();
     for (const [id, rel] of run.releases) {
       const launch = run.launches.get(id);
       if (!launch) throw new Error(`${id} flew without a launch`);
-      const want = launchSpawnAt(raid, launch.l);
+      const ship = run.ships.get(launch.l.ship);
+      if (!ship) throw new Error(`${id} launched off an unknown ship`);
+      from.add(ship.id);
+      const want = launchSpawnAt(ship, launch.l);
       expect(wrapDistance(rel.pos, want.pos)).toBeLessThan(1e-6);
       expect(rel.yaw).toBeCloseTo(want.yaw, 9);
       // Released no earlier than its rig's sequence (± a tick).
       expect(rel.at - launch.at).toBeGreaterThan(1500);
     }
+    expect(from.size).toBeGreaterThan(1);
   });
 
-  it(`enemies close on the human within ${CLOSE_WITHIN_MS / 1000} s of leaving the carrier, and only ever shoot at it`, () => {
+  it(`enemies close on the human within ${CLOSE_WITHIN_MS / 1000} s of leaving their ship, and only ever shoot at it`, () => {
     const closest = [...run.closest.values()];
     console.log(
       `W1 e2e: ${run.launches.size} launched, ${run.releases.size} released; closest approach within 15 s (m): ${closest.map((d) => Math.round(d)).join(", ")}; ${run.hitsOnHuman} hits on the human`,

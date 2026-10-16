@@ -658,9 +658,9 @@ Two rules every tier obeys:
 | S3 stunt course rings | full | full | full | full (guidance) |
 | S3 course record ghost | full | full | full | off |
 | S3 course HUD — run timer, splits, records board | full | full | full | full (DOM, no draw) |
-| S4 sky boss — the zeppelin, weak points, lights, flak shells | full | full | full | full (solid; the flak's telegraph) |
-| S4 sky boss — flak bursts, falling-section fire and smoke | full | 75 % | 50 % | 35 % |
-| S4 boss HUD — weak-point bar, radio calls, warning screens | full | full | full | full (DOM and audio, no draw) |
+| S4 airship fleet — every ship, weak points, lights, flak shells | full | full | full | full (solid; the flak's telegraph; never fewer ships) |
+| S4 airship fleet — flak bursts, smoking engines, crash fire and smoke | full | 75 % | 50 % | 35 % |
+| S4 fleet HUD — fleet counter, radio calls, warning screens | full | full | full | full (DOM and audio, no draw) |
 | S5 fog banks (drifting haze between the towers) | full | full | full | full (visibility parity; one instanced draw) |
 | S5 wind litter (paper, leaves, wrappers; low-pass kick) | full | full | 50 % | 34 %, one block out |
 | S5 moon light shafts | full | full | full | off (pass skipped) |
@@ -1828,7 +1828,7 @@ for the M3, where a window holds hundreds of frames.
 
 Every Spectacle feature has a row in `FEATURE_TIERS` and the tier table
 above (S8 added the five that have no render cost and so had none: the S1
-kill feed and headlines, the S2 score, the S3 course HUD, the S4 boss HUD and
+kill feed and headlines, the S2 score, the S3 course HUD, the S4 fleet HUD and
 radio, the S7 medals and announcer). `tools/spectacle-bench.ts` checks it:
 every S1–S7 prefix has a row, and every row is in the README word for word.
 On Mobile the probe renders no face (`reflections` 0), the ghost and the LAST

@@ -1,161 +1,170 @@
-// S4 sky boss, client half: the renderer places exactly the boxes the
-// crash check collides with (draw == collide), on the weak-point glow and
-// lights' rungs of the emissive ladder; and a round the client sees meet a
-// weak point is one the server's own line test accepts.
+// Z1 airship fleet, client half: the renderer draws the WHOLE fleet in at
+// most four draws (two instanced hull LODs, the lights, the shells), every
+// instance where the crash check collides with it; its glow sits on the
+// emissive ladder's rungs; and a round the client sees meet a ship is one
+// the server's own line test accepts.
 
 import {
-  BOSS_PARTS,
-  BOSS_WEAK_POINTS,
-  type BossRaid,
-  type BossSlot,
+  FLEET_LANES,
+  FLEET_LAYERS,
+  type FleetShip,
+  type FleetSlot,
+  SHIP_CLASSES,
   blankPose,
-  bossHitValid,
-  bossPartBoxInto,
-  bossPartSdf,
-  bossPoseAt,
   collideBoss,
+  fleetPoseAt,
+  shipClass,
+  shipHitValid,
   weakPointInto,
 } from "@angels-bandits/common/boss";
-import type { MoverBox } from "@angels-bandits/common/city/movers";
+import { mulberry32 } from "@angels-bandits/common/city";
 import { EMISSIVE_TRACER, WORLD_SIZE } from "@angels-bandits/common/constants";
 import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import { bossBulletHit } from "../src/game/boss-hits";
-import { SHELL_COLOR, WEAK_COLOR, boxMatrixInto } from "../src/render/boss";
-import { TAG_SOLID, buildBossHull } from "../src/render/boss-hull";
+import {
+  FLEET_DRAWS,
+  FleetRenderer,
+  SHELL_COLOR,
+  WEAK_COLOR,
+} from "../src/render/boss";
 import { luminance } from "../src/render/emissive";
+import type { Impacts } from "../src/render/impacts";
 
 const T0 = 1_787_000_000_000;
-const raid: BossRaid = {
-  id: 1,
-  t0: T0,
-  cx: 1950,
-  cz: 40,
-  th0: 2.1,
-  orbitMs: 300_000,
-  hpScale: 1,
-};
-const slot: BossSlot = { raid, down: null };
 const t = T0 + 70_000;
-const pose = bossPoseAt(raid, t, blankPose());
-const box = (i: number): MoverBox =>
-  bossPartBoxInto(pose, i, {
-    x: 0,
-    y: 0,
-    z: 0,
-    hx: 0,
-    hy: 0,
-    hz: 0,
-    yaw: 0,
-    kind: "boss",
-    id: 0,
+const fleet = (seed: number): FleetShip[] => {
+  const rand = mulberry32(seed);
+  return FLEET_LANES.map((l, lane) => ({
+    id: lane + 1,
+    lane,
+    t0: T0,
+    s0:
+      Math.round(
+        rand() * (FLEET_LAYERS[l.layer] as { length: number }).length * 10,
+      ) / 10,
+    hp0: SHIP_CLASSES[l.cls]?.hp as number,
+    down: null,
+  }));
+};
+const slot: FleetSlot = { ships: fleet(3), launches: [] };
+const hp = new Map(slot.ships.map((s) => [s.id, s.hp0]));
+
+describe("the whole fleet in four draws", () => {
+  // The particle pool needs a DOM; its dressing is not what is tested.
+  const r = new FleetRenderer(
+    { wreckFire: () => {} } as unknown as Impacts,
+    () => {},
+    () => {},
+  );
+  const viewer = { x: 30, y: 400, z: WORLD_SIZE - 20 };
+  r.update(slot, hp, new Map(), viewer, t, 1000);
+
+  it("draws every ship, and no more than four draw objects in all", () => {
+    expect(r.stats.ships).toBe(slot.ships.length);
+    expect(r.stats.draws).toBeLessThanOrEqual(FLEET_DRAWS);
+    expect(FLEET_DRAWS).toBe(4);
+    // The group holds exactly the four draws — however many ships fly.
+    const drawn: THREE.Object3D[] = [];
+    r.group.traverse((o) => {
+      if (
+        o instanceof THREE.Mesh ||
+        o instanceof THREE.Points ||
+        o instanceof THREE.InstancedMesh
+      ) {
+        drawn.push(o);
+      }
+    });
+    expect(drawn.length).toBe(FLEET_DRAWS);
   });
 
-describe("draw == collide (renderer)", () => {
-  it("draws every hull part: solid geometry on each part's own surface", () => {
-    // S9: the hull is one skinned geometry (boss-hull.ts), not instanced
-    // boxes — every part, armour and weak points alike, has drawn solid
-    // surface on it (client/test/boss-hull.test.ts holds the whole shape).
-    const h = buildBossHull("full");
-    const pos = h.geometry.getAttribute("position");
-    const drawn = new Set<number>();
-    for (let v = 0; v < pos.count; v++) {
-      if (h.tag[v] !== TAG_SOLID) continue;
-      BOSS_PARTS.forEach((p, i) => {
-        const d = bossPartSdf(
-          p,
-          pos.getX(v) - p.x,
-          pos.getY(v) - p.y,
-          pos.getZ(v) - p.z,
-        );
-        if (Math.abs(d) < 0.2) drawn.add(i);
-      });
-    }
-    expect([...drawn].sort((a, b) => a - b)).toEqual(
-      BOSS_PARTS.map((_, i) => i),
-    );
-  });
-
-  it("each instance is its collision box, at the viewer's torus image", () => {
-    // A viewer across the seam from a hull near x ≈ 0/2000.
-    const viewer = { x: 30, y: 300, z: WORLD_SIZE - 20 };
+  it("each instance is its ship, on the viewer's torus image", () => {
+    const meshes: THREE.InstancedMesh[] = [];
+    r.group.traverse((o) => {
+      if (o instanceof THREE.InstancedMesh && o.visible) meshes.push(o);
+    });
+    const placed: THREE.Vector3[] = [];
     const m = new THREE.Matrix4();
-    const p = new THREE.Vector3();
-    const q = new THREE.Quaternion();
-    const s = new THREE.Vector3();
-    const local = new THREE.Vector3();
-    for (let i = 0; i < BOSS_PARTS.length; i++) {
-      // S9: the box parts (a solid of revolution's box only bounds it).
-      if (BOSS_PARTS[i]?.rev !== null) continue;
-      const b = box(i);
-      boxMatrixInto(b, viewer, m).decompose(p, q, s);
-      expect(s.x).toBeCloseTo(2 * b.hx, 9);
-      expect(s.y).toBeCloseTo(2 * b.hy, 9);
-      expect(s.z).toBeCloseTo(2 * b.hz, 9);
-      // Drawn within half a world of the viewer, and on the box's canonical
-      // position modulo the torus.
-      expect(Math.abs(p.x - viewer.x)).toBeLessThanOrEqual(WORLD_SIZE / 2);
-      expect(Math.abs(p.z - viewer.z)).toBeLessThanOrEqual(WORLD_SIZE / 2);
-      expect(wrapDistance({ x: p.x, y: p.y, z: p.z }, b)).toBeLessThan(1e-6);
-      // The unit cube's corners land on the collision box's surface: solid
-      // just inside each drawn corner, clear just outside.
-      for (const c of [
-        [1, 1, 1],
-        [-1, 1, -1],
-        [1, -1, -1],
-      ] as const) {
-        local.set(c[0] * 0.49, c[1] * 0.49, c[2] * 0.49).applyMatrix4(m);
-        const inside: Vec3 = { x: local.x, y: local.y, z: local.z };
-        expect(collideBoss(slot, inside, 0.05, t)).not.toBeNull();
+    for (const mesh of meshes) {
+      for (let i = 0; i < mesh.count; i++) {
+        mesh.getMatrixAt(i, m);
+        placed.push(new THREE.Vector3().setFromMatrixPosition(m));
       }
     }
+    expect(placed.length).toBe(slot.ships.length);
+    for (const s of slot.ships) {
+      const pose = fleetPoseAt(s, t, blankPose());
+      // Exactly one instance sits on this ship's centre (mod the torus),
+      // within half a world of the viewer…
+      const on = placed.filter(
+        (p) => wrapDistance({ x: p.x, y: p.y, z: p.z }, pose) < 1e-3,
+      );
+      expect(on).toHaveLength(1);
+      const p = on[0] as THREE.Vector3;
+      expect(Math.abs(p.x - viewer.x)).toBeLessThanOrEqual(WORLD_SIZE / 2);
+      expect(Math.abs(p.z - viewer.z)).toBeLessThanOrEqual(WORLD_SIZE / 2);
+      // …and the crash check finds the hull there.
+      expect(collideBoss(slot, pose, 1, t)?.id).toBe(s.id);
+    }
+  });
+
+  it("draws nothing with no clock, and only the fleet it is handed", () => {
+    r.update(slot, hp, new Map(), viewer, null, 1100);
+    expect(r.group.visible).toBe(false);
+    r.update({ ships: [], launches: [] }, hp, new Map(), viewer, t, 1200);
+    expect(r.stats.ships).toBe(0);
+    expect(r.stats.draws).toBe(0);
   });
 
   it("glows under the tracers on the ladder", () => {
-    // The colours' own luminance stays below the tracer rung before any
-    // boost (the renderer boosts them onto the hazard and beacon rungs).
     expect(luminance(WEAK_COLOR)).toBeLessThan(EMISSIVE_TRACER);
     expect(luminance(SHELL_COLOR)).toBeLessThan(EMISSIVE_TRACER);
   });
 });
 
 describe("what the client claims, the server accepts", () => {
-  it("a round flown straight at a live weak point claims it, and the server agrees", () => {
-    const alive = BOSS_WEAK_POINTS.map(() => true);
-    for (let k = 0; k < 4; k++) {
-      const wp = weakPointInto(pose, k, { x: 0, y: 0, z: 0 });
-      const origin = { x: wp.x + 30, y: wp.y - 200, z: wp.z - 20 };
-      const d = { x: wp.x - origin.x, y: wp.y - origin.y, z: wp.z - origin.z };
-      const len = Math.hypot(d.x, d.y, d.z);
-      const dir = { x: d.x / len, y: d.y / len, z: d.z / len };
-      // The frame step that crosses it.
-      const prev = {
-        x: origin.x + dir.x * (len - 10),
-        y: origin.y + dir.y * (len - 10),
-        z: origin.z + dir.z * (len - 10),
-      };
-      const cur = {
-        x: origin.x + dir.x * (len + 1),
-        y: origin.y + dir.y * (len + 1),
-        z: origin.z + dir.z * (len + 1),
-      };
-      const hit = bossBulletHit(slot, alive, prev, cur, t);
-      expect(hit?.weak).toBe(k);
-      if (!hit) continue;
-      expect(bossHitValid(pose, k, origin, hit.dir, alive)).toBe(true);
+  it("a round flown straight at an engine claims it, and the server agrees", () => {
+    for (const s of slot.ships.slice(0, 6)) {
+      const cls = shipClass(s);
+      const pose = fleetPoseAt(s, t, blankPose());
+      for (let k = 0; k < 4; k++) {
+        const wp = weakPointInto(pose, cls, k, { x: 0, y: 0, z: 0 });
+        const origin = { x: wp.x + 30, y: wp.y - 200, z: wp.z - 20 };
+        const d = {
+          x: wp.x - origin.x,
+          y: wp.y - origin.y,
+          z: wp.z - origin.z,
+        };
+        const len = Math.hypot(d.x, d.y, d.z);
+        const dir = { x: d.x / len, y: d.y / len, z: d.z / len };
+        const at = (u: number): Vec3 => ({
+          x: origin.x + dir.x * u,
+          y: origin.y + dir.y * u,
+          z: origin.z + dir.z * u,
+        });
+        const hit = bossBulletHit(slot, at(len - 10), at(len + 1), t);
+        expect(hit?.ship).toBe(s.id);
+        expect(hit?.weak).toBe(k);
+        if (!hit) continue;
+        expect(shipHitValid(pose, cls, k, origin, hit.dir)).toBe(true);
+      }
     }
   });
 
-  it("armour stops a round; no clock, no raid: nothing", () => {
-    const alive = BOSS_WEAK_POINTS.map(() => true);
-    const mid = box(0);
-    const prev = { x: mid.x, y: mid.y - 40, z: mid.z };
-    const cur = { x: mid.x, y: mid.y - 10, z: mid.z };
-    expect(bossBulletHit(slot, alive, prev, cur, t)?.weak).toBe(-1);
-    expect(bossBulletHit(slot, alive, prev, cur, null)).toBeNull();
+  it("the hull stops a round; no clock, no fleet: nothing", () => {
+    const s = slot.ships[9] as FleetShip;
+    const pose = fleetPoseAt(s, t, blankPose());
+    const prev = { x: pose.x, y: pose.y - 40, z: pose.z };
+    const cur = { x: pose.x, y: pose.y - 5, z: pose.z };
+    const hit = bossBulletHit(slot, prev, cur, t);
+    expect(hit?.ship).toBe(s.id);
+    expect(hit?.weak).toBe(-1);
+    expect(bossBulletHit(slot, prev, cur, null)).toBeNull();
+    expect(bossBulletHit({ ships: [], launches: [] }, prev, cur, t)).toBeNull();
+    // A round far below the fleet never even poses a ship.
     expect(
-      bossBulletHit({ raid: null, down: null }, alive, prev, cur, t),
+      bossBulletHit(slot, { ...prev, y: 80 }, { ...cur, y: 90 }, t),
     ).toBeNull();
   });
 });

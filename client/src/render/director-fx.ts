@@ -10,6 +10,16 @@
 // tremor nearby. main.ts adds the rumble, the groan and the siren (sound.ts
 // directorWarning, ambience `alarm`).
 //
+// C1's low-flying chaos has its own tells, each swelling over the same
+// warning: cracks of light and dust puffs out of a facade about to peel,
+// sparks shearing at a roof tank's or billboard's footing as bits of it
+// rain off the edge, sparks and grit under a bridge span, a fire taking
+// hold under the first car of a chain. When each happens the D2 chunks, the
+// D9 props and their blasts carry the event itself; a peeling facade adds
+// its shower of glass and slabs into the street, a roof faller and a span a
+// burst of grit as they let go (`fire`, on the frame the render clock
+// passes the instant).
+//
 // Every particle goes into the D1 impact pool (one Points draw): no new
 // material, and the tier's budget (QualityProfile.directorFx) on top of the
 // pool's own share. Emission is allocation-free per frame.
@@ -27,9 +37,13 @@ import { TOPPLE } from "@angels-bandits/common/city/collapse";
 import type { CraneSite } from "@angels-bandits/common/city/movers";
 import {
   type DirectorEvent,
+  EVENT_CARS,
   EVENT_COLLAPSE,
   EVENT_CRANE,
+  EVENT_FACADE,
   EVENT_GAS,
+  EVENT_ROOF,
+  EVENT_SPAN,
   GAS_COLUMN_H,
   type RebuildWire,
 } from "@angels-bandits/common/director";
@@ -58,10 +72,29 @@ export const ALARM_TAIL_MS = 15_000;
 /** The warning tremor: felt within this, m, at most this amount (0..1). */
 const TREMOR_RANGE = 350;
 const TREMOR_PEAK = 0.35;
+/** C1 tells, particles per second at full share. */
+const CRACK_RATE = 40;
+const FOOTING_RATE = 26;
+const KINDLE_RATE = 30;
+/** C1: a facade's shower of glass and slabs, particles at full share. */
+const PEEL_GLASS = 70;
+const PEEL_CHIPS = 45;
 const STEAM_RGB = [0.58, 0.6, 0.63] as const;
+const GLASS_RGB = [0.72, 0.88, 1.0] as const;
 const FIRE_RGB = [1.0, 0.52, 0.16] as const;
 const SMOKE_RGB = [0.2, 0.18, 0.21] as const;
 const DUST = DUST_RGB[FacadeArchetype.OFFICE];
+
+/** Does event `e`'s warning shake the ground? A tower, a crane or a span
+ * coming down does; a gas main hisses, and C1's facades, roof props and
+ * cars are too small to. */
+const shakes = (e: DirectorEvent): boolean =>
+  e.k === EVENT_COLLAPSE || e.k === EVENT_CRANE || e.k === EVENT_SPAN;
+
+/** Does it set the sirens off? Everything but C1's small street events —
+ * low-flying chaos stages one every 2–4 s, and the alarm would never stop. */
+const wails = (e: DirectorEvent): boolean =>
+  e.k !== EVENT_FACADE && e.k !== EVENT_ROOF && e.k !== EVENT_CARS;
 
 /** The fraction (0..1) of event `e`'s warning gone by at `serverMs`. */
 export function warnProgress(e: DirectorEvent, serverMs: number): number {
@@ -78,7 +111,7 @@ export function warningTremor(
 ): number {
   let amount = 0;
   for (const e of events) {
-    if (e.k === EVENT_GAS || serverMs < e.w || serverMs > e.at) continue;
+    if (!shakes(e) || serverMs < e.w || serverMs > e.at) continue;
     const d = Math.hypot(
       wrapDeltaAxis(e.x, pos.x),
       pos.y * 0.5,
@@ -101,7 +134,9 @@ export function alarmAt(
 ): Vec3 | null {
   let best = Number.POSITIVE_INFINITY;
   for (const e of events) {
-    if (serverMs < e.w || serverMs > e.at + ALARM_TAIL_MS) continue;
+    if (!wails(e) || serverMs < e.w || serverMs > e.at + ALARM_TAIL_MS) {
+      continue;
+    }
     const d = Math.hypot(wrapDeltaAxis(e.x, pos.x), wrapDeltaAxis(e.z, pos.z));
     if (d >= best) continue;
     best = d;
@@ -123,6 +158,8 @@ export class DirectorFx {
   /** Rebuilds announced (welding until `until`, local ms). */
   private readonly welding: { r: RebuildWire; until: number }[] = [];
   private readonly rand = Math.random;
+  /** C1: the render clock last frame (a C1 event fires when it is passed). */
+  private lastServerMs: number | null = null;
 
   constructor(
     private readonly impacts: Impacts,
@@ -158,14 +195,25 @@ export class DirectorFx {
     dt: number,
   ): void {
     if (serverMs !== null) {
+      // A clock that jumped back (a QA re-stage, a resync) fires nothing.
+      const last =
+        this.lastServerMs !== null && this.lastServerMs <= serverMs
+          ? this.lastServerMs
+          : serverMs;
       for (const e of events) {
+        if (e.at > last && e.at <= serverMs) this.fire(e, now);
         if (serverMs < e.w || serverMs > e.at) continue;
         const swell = 0.3 + 0.7 * warnProgress(e, serverMs);
         if (e.k === EVENT_COLLAPSE) this.spill(e, swell, dt, now);
         else if (e.k === EVENT_GAS) this.steam(e, swell, dt, now);
         else if (e.k === EVENT_CRANE) this.creak(e, swell, dt, now);
+        else if (e.k === EVENT_FACADE) this.crack(e, swell, dt, now);
+        else if (e.k === EVENT_ROOF || e.k === EVENT_SPAN) {
+          this.footing(e, swell, dt, now);
+        } else if (e.k === EVENT_CARS) this.kindle(e, swell, dt, now);
       }
     }
+    this.lastServerMs = serverMs;
     for (let i = this.welding.length - 1; i >= 0; i--) {
       const w = this.welding[i] as { r: RebuildWire; until: number };
       if (now > w.until) {
@@ -302,6 +350,202 @@ export class DirectorFx {
           now,
         );
       }
+    }
+  }
+
+  /** C1: cracks of light and dust puffs out of a facade about to peel —
+   * round the peel point, out of the face. */
+  private crack(e: DirectorEvent, swell: number, dt: number, now: number) {
+    const n = this.emitCount(CRACK_RATE * swell, dt);
+    const nx = FACE_NX[e.d & 3] as number;
+    const nz = FACE_NZ[e.d & 3] as number;
+    for (let i = 0; i < n; i++) {
+      const along = (this.rand() * 2 - 1) * 9;
+      this.at.x = wrapCoord(e.x + (nx === 0 ? along : 0));
+      this.at.y = e.y + (this.rand() * 2 - 1) * 6;
+      this.at.z = wrapCoord(e.z + (nz === 0 ? along : 0));
+      this.n.x = nx;
+      this.n.y = -0.2;
+      this.n.z = nz;
+      if (this.rand() < 0.55) {
+        this.impacts.spray(
+          Kind.SPARK,
+          this.at,
+          this.n,
+          4,
+          0.7,
+          1,
+          350,
+          0.6,
+          SPARK_RGB,
+          now,
+        );
+      } else {
+        this.impacts.spray(
+          Kind.DUST,
+          this.at,
+          this.n,
+          1.5,
+          0.5,
+          1,
+          1800,
+          3,
+          DUST,
+          now,
+        );
+      }
+    }
+  }
+
+  /** C1: a roof tank's or billboard's footing shearing (sparks, bits of it
+   * raining off the edge) — or a bridge span's, under the deck. */
+  private footing(e: DirectorEvent, swell: number, dt: number, now: number) {
+    const n = this.emitCount(FOOTING_RATE * swell, dt);
+    for (let i = 0; i < n; i++) {
+      this.at.x = wrapCoord(e.x + (this.rand() * 2 - 1) * 4);
+      this.at.y = e.y - (e.k === EVENT_SPAN ? 2 : 3);
+      this.at.z = wrapCoord(e.z + (this.rand() * 2 - 1) * 4);
+      this.n.x = this.rand() * 2 - 1;
+      this.n.y = 0.3;
+      this.n.z = this.rand() * 2 - 1;
+      this.impacts.spray(
+        Kind.SPARK,
+        this.at,
+        this.n,
+        7,
+        0.6,
+        1,
+        500,
+        0.7,
+        SPARK_RGB,
+        now,
+      );
+      if (this.rand() < 0.45) {
+        this.n.y = -1;
+        this.impacts.spray(
+          Kind.CHIP,
+          this.at,
+          this.n,
+          2,
+          0.4,
+          1,
+          2400,
+          0.7,
+          DUST,
+          now,
+        );
+      }
+    }
+  }
+
+  /** C1: a fire taking hold under the first car of a chain — smoke and
+   * flickers of flame from the street. */
+  private kindle(e: DirectorEvent, swell: number, dt: number, now: number) {
+    const n = this.emitCount(KINDLE_RATE * swell, dt);
+    this.n.x = 0;
+    this.n.y = 1;
+    this.n.z = 0;
+    for (let i = 0; i < n; i++) {
+      this.at.x = wrapCoord(e.x + (this.rand() * 2 - 1) * 1.5);
+      this.at.y = Math.max(0.5, e.y);
+      this.at.z = wrapCoord(e.z + (this.rand() * 2 - 1) * 1.5);
+      const flame = this.rand() < 0.35 * swell;
+      this.impacts.spray(
+        flame ? Kind.FIRE : Kind.SMOKE,
+        this.at,
+        this.n,
+        flame ? 4 : 2.5,
+        0.35,
+        1,
+        flame ? 500 : 2600,
+        flame ? 1.2 : 3,
+        flame ? FIRE_RGB : SMOKE_RGB,
+        now,
+      );
+    }
+  }
+
+  /** C1: the instant a low event happens, what the shared state does not
+   * already draw — a peeling facade's shower of glass and slabs into the
+   * street, the grit a roof faller or a span lets go with. (A topple's
+   * debris, a gas main's fireball, a car chain's blasts are drawn where
+   * they always were.) */
+  private fire(e: DirectorEvent, now: number): void {
+    const k = this.share;
+    if (e.k === EVENT_FACADE) {
+      this.at.x = e.x;
+      this.at.y = e.y;
+      this.at.z = e.z;
+      this.n.x = FACE_NX[e.d & 3] as number;
+      this.n.y = -0.15;
+      this.n.z = FACE_NZ[e.d & 3] as number;
+      this.impacts.spray(
+        Kind.GLASS,
+        this.at,
+        this.n,
+        8,
+        0.9,
+        Math.round(PEEL_GLASS * k),
+        2200,
+        0.5,
+        GLASS_RGB,
+        now,
+      );
+      this.impacts.spray(
+        Kind.CHIP,
+        this.at,
+        this.n,
+        5,
+        0.7,
+        Math.round(PEEL_CHIPS * k),
+        2600,
+        1.4,
+        DUST,
+        now,
+      );
+      this.impacts.spray(
+        Kind.DUST,
+        this.at,
+        this.n,
+        3,
+        0.8,
+        Math.round(20 * k),
+        3200,
+        6,
+        DUST,
+        now,
+      );
+    } else if (e.k === EVENT_ROOF || e.k === EVENT_SPAN) {
+      this.at.x = e.x;
+      this.at.y = e.y;
+      this.at.z = e.z;
+      this.n.x = 0;
+      this.n.y = 0.5;
+      this.n.z = 0;
+      this.impacts.spray(
+        Kind.DUST,
+        this.at,
+        this.n,
+        3,
+        1,
+        Math.round(18 * k),
+        2400,
+        5,
+        DUST,
+        now,
+      );
+      this.impacts.spray(
+        Kind.SPARK,
+        this.at,
+        this.n,
+        10,
+        1,
+        Math.round(24 * k),
+        500,
+        0.8,
+        SPARK_RGB,
+        now,
+      );
     }
   }
 

@@ -1,68 +1,77 @@
-// S4 sky boss, server side: WHEN a raid comes, what the zeppelin's turrets
-// shoot at, what its weak points have left, who hurt it, and how it comes
-// apart. One BossDirector per room. index.ts and the bot-sim harness both
-// drive exactly this, so the sim measures the boss the live server flies.
+// Z1 airship fleet, server side (S4's sky boss, made a fleet): which ships
+// fly, what each one's guns shoot at, what each one has left, who hurt it,
+// and how it comes down. One FleetDirector per room. index.ts and the
+// bot-sim harness both drive exactly this, so the sim measures the fleet
+// the live server flies.
 //
 // The rules:
-//  - a raid starts only while a human is flying in the room: the first one
-//    tuning.firstMin..firstMax after a human arrived, then (W1) period ±
-//    jitter after the last raid ENDED — flew off, or the instant it was shot
-//    down (common/src/boss.ts nextRaidAt), though never while its sections
-//    are still falling. A room nobody is flying in finishes a raid in
-//    progress but never starts one;
-//  - W1: each raid is the session's next carrier (`tier`, reset by
-//    resetSession when the room empties of humans), its orbit centred near
-//    a human, its HP and flak scaled by its tier (common/src/waves.ts);
-//  - each turret fires at most every BOSS_FLAK_INTERVAL_MS, at the nearest
-//    plane in its range, traverse and line of sight — never a spawn-protected
-//    plane or one that (re)spawned in the last respawnQuietMs — and only
-//    after holding BOSS_FLAK_REACTION_MS on a new target (the bots' rule).
-//    W1: the caller hands it humans only — its own planes are not targets;
+//  - the fleet comes on the first tick a human is flying in the room: one
+//    ship on every lane (common/src/boss.ts FLEET_LANES), seeded along it.
+//    A room nobody is flying in keeps the ships it has, refills nothing and
+//    fires nothing;
+//  - a downed ship's lane is flown again tuning.refillMs after it went down
+//    (never while its crash is still falling), by a new ship coming on at
+//    the spot along the lane furthest from every human — out of sight, so
+//    it drifts in from the haze — or, if none is FLEET_HIDE_M clear,
+//    anywhere once tuning.refillWaitMs more have passed;
+//  - only the armed classes' turrets fire (SHIP_CLASSES[c].turrets), each
+//    at most every BOSS_FLAK_INTERVAL_MS, at the nearest plane in its range,
+//    traverse and line of sight — never a spawn-protected plane or one that
+//    (re)spawned in the last RESPAWN_QUIET_MS — and only after holding
+//    BOSS_FLAK_REACTION_MS on a new target (the bots' rule). The caller
+//    hands it humans only — the enemy planes are not targets;
 //  - a burst hurts by distance from the plane's (extrapolated) on-record
-//    pose, never more than BOSS_FLAK_DPS_CAP (× the tier's flak scale) to
-//    any plane in a rolling second;
-//  - a weak-point hit is judged on the round's whole line against the
-//    zeppelin's own pose (bossHitValid), for players and bots alike.
+//    pose, never more than BOSS_FLAK_DPS_CAP × FLEET_FLAK_SCALE to any plane
+//    in a rolling second, across every turret of the fleet;
+//  - a hit is judged on the round's whole line against the ship's own pose
+//    (shipHitValid), for players and bots alike. One HP integer per ship:
+//    a hull round takes BULLET_DAMAGE, a weak-point round FLEET_WEAK_MULT
+//    times that; at zero the ship crashes (shipCrash), swept here, once.
 
 import {
   BOSS_CONTACT_PREFIX,
   BOSS_FLAK_DPS_CAP,
   BOSS_FLAK_INTERVAL_MS,
+  BOSS_FLAK_RANGE,
   BOSS_FLAK_REACTION_MS,
-  BOSS_TUNING,
   BOSS_TURRETS,
   BOSS_WEAK_POINTS,
-  type BossDown,
   type BossFlak,
   type BossLaunch,
-  type BossPiece,
-  type BossRaid,
   type BossSweepWorld,
-  type BossTuning,
-  LAUNCH_BELLY,
-  LAUNCH_CATAPULT,
+  FLEET_FLAK_SCALE,
+  FLEET_HIDE_M,
+  FLEET_LANES,
+  FLEET_LAYERS,
+  FLEET_TUNING,
+  type FleetShip,
+  type FleetTuning,
   LAUNCH_SEQ_MS,
   type LaunchKind,
-  type WireBossState,
+  SHIP_CLASSES,
+  SHIP_REACH,
+  type ShipDown,
+  type ShipPose,
+  type WireFleetState,
   blankPose,
-  bossHitValid,
-  bossPoseAt,
-  bossPresent,
-  bossVelAt,
-  breakUp,
-  emptyBossSlot,
+  emptyFleetSlot,
   encodeLaunch,
-  encodeRaid,
+  encodeShip,
   flakDamage,
   flakSolution,
+  fleetPoseAt,
+  gridCoord,
+  hiddenLaneSpot,
   launchDoneAt,
   launchReleaseAt,
-  nextRaidAt,
-  planRaid,
-  raidEgressAt,
-  raidEnd,
-  raidMaxHp,
-  raidTier,
+  shipById,
+  shipClass,
+  shipCrash,
+  shipFullHp,
+  shipHitValid,
+  shipPresent,
+  shipRoundDamage,
+  shipVelAt,
   turretMuzzleInto,
   weakPointInto,
 } from "@angels-bandits/common/boss";
@@ -78,11 +87,9 @@ import {
 } from "@angels-bandits/common/city/penetrate";
 import { losClear } from "@angels-bandits/common/collision";
 import {
-  BULLET_DAMAGE,
   INTERP_DELAY_MAX_MS,
   POSE_AGE_MAX_MS,
 } from "@angels-bandits/common/constants";
-import { carrierFlakScale } from "@angels-bandits/common/waves";
 import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 import type { BotRoundHit } from "./bots";
 import type { Combat, SpeedCapFn } from "./combat";
@@ -102,22 +109,37 @@ export type BossWorld = BossSweepWorld;
 
 /** What one tick produced, in broadcast order. */
 export interface BossTickResult {
-  /** A raid that started this tick (broadcast `boss`). */
-  started: BossRaid | null;
+  /** Ships that came on this tick (broadcast `ship`). */
+  started: FleetShip[];
   /** Shells fired this tick (broadcast `flak`). */
   flak: BossFlak[];
   /** Shells that burst this tick and who they hurt. */
   bursts: { flak: BossFlak; victims: { id: string; damage: number }[] }[];
-  /** Falling sections that hit this tick: where, and the building they hit
-   * (null: the street), for the city's damage. */
-  landed: { piece: BossPiece; at: Vec3; building: Building | null }[];
+  /** Crashes that hit this tick: where, the building they hit (null: the
+   * street), and the pilot credited with what they break. */
+  landed: {
+    ship: FleetShip;
+    at: Vec3;
+    building: Building | null;
+    by: string | null;
+  }[];
+}
+
+/** What a hit did: the ship's HP after it, and its crash when it was the
+ * one that brought it down. */
+export interface ShipHitResult {
+  ship: FleetShip;
+  hp: number;
+  down: ShipDown | null;
 }
 
 /** No flak for this long after a (re)spawn, ms (X1's respawn quiet rule). */
 const RESPAWN_QUIET_MS = 5000;
-/** A finished raid stays in the welcome this long after its end, ms, so a
- * joiner still sees the wreck's last moments; after it the room has none. */
-const WELCOME_TAIL_MS = 5000;
+/** A landed crash stays in the slot (and the welcome) this long, ms, so a
+ * joiner still sees its last moments; after it the ship is history. */
+const LANDED_TAIL_MS = 5000;
+/** A pending refill looks for a hidden spot this often, ms. */
+const REFILL_TRY_MS = 500;
 /** A claimed hit time is held to this window before `now`, ms: the round's
  * flight plus the oldest render clock a client may legally draw at. */
 export const BOSS_CLAIM_LOOKBACK_MS =
@@ -126,52 +148,66 @@ export const BOSS_CLAIM_LOOKBACK_MS =
  * on-record nose at the shot, rad: the pose behind it is up to
  * POSE_AGE_MAX_MS old, and a plane turns while the claim is in flight. */
 export const BOSS_DIR_CONE = 0.5;
+/** A launch comes from a ship this near (plan view) some human, m. */
+export const LAUNCH_NEAR_M = 900;
 
 interface Turret {
+  /** Index into BOSS_TURRETS. */
+  k: number;
   targetId: string | null;
   /** When the current target was taken, ms. */
   since: number;
   nextFireAt: number;
 }
 
-export class BossDirector {
-  /** The room's boss as both sides hold it — the room's mover field holds
+export class FleetDirector {
+  /** The room's fleet as both sides hold it — the room's mover field holds
    * this very object, so bots, wrecks and crash checks see it. */
-  readonly slot = emptyBossSlot();
-  /** Every weak point's HP on the current raid (empty with none). */
-  hp: number[] = [];
-  private humanSince: number | null = null;
-  private nextAt: number | null = null;
-  private nextRaid = 1;
-  /** W1: the session's carriers so far (the next raid is tier + 1). */
-  private tier = 0;
+  readonly slot = emptyFleetSlot();
+  /** Each ship's HP, by id (a landed ship's 0 until it is pruned). */
+  readonly hp = new Map<number, number>();
+  private started = false;
+  private nextShip = 1;
   private nextShell = 1;
-  private readonly damageBy = new Map<string, number>();
-  private turrets: Turret[] = [];
+  /** Z1: ships shot down this session (reset with the room's humans). */
+  private downCount = 0;
+  /** Damage dealt to each ship, by pilot (its credit split's input). */
+  private readonly damageBy = new Map<number, Map<string, number>>();
+  /** Each armed ship's turrets, by ship id. */
+  private readonly turrets = new Map<number, Turret[]>();
   private shells: BossFlak[] = [];
-  private readonly settledPieces = new Set<number>();
+  /** Per lane: when its next ship may come on (null: it has one). */
+  private readonly refillAt: (number | null)[] = FLEET_LANES.map(() => null);
+  private readonly refillTry: number[] = FLEET_LANES.map(() => 0);
+  private readonly landedIds = new Set<number>();
   private readonly spawns = new Map<string, number>();
   /** Flak taken per plane in the last second. */
   private readonly taken = new Map<string, { t: number; dmg: number }[]>();
-  private hpDirty = false;
-  /** S9: the carrier's launches by bot id (a launch leaves this map when
-   * its bot is released; the slot keeps it until its rig has reset), the
-   * deaths already offered a launch (bot id → its respawn time), and the
-   * next launch id. */
+  private readonly hpChanged = new Set<number>();
+  /** S9: the launches by bot id (a launch leaves this map when its bot is
+   * released; the slot keeps it until its rig has reset), the deaths
+   * already offered a launch (bot id → its respawn time), and the next
+   * launch id and the ship that launched last (launches spread). */
   private readonly launchByBot = new Map<string, BossLaunch>();
   private readonly offered = new Map<string, number>();
   private nextLaunch = 1;
+  private lastLauncher = -1;
   private readonly pose = blankPose();
   private readonly at: Vec3 = { x: 0, y: 0, z: 0 };
 
   constructor(
     private readonly rand: () => number,
-    private readonly tuning: BossTuning = BOSS_TUNING,
+    private readonly tuning: FleetTuning = FLEET_TUNING,
   ) {}
 
-  /** W1: the room emptied of humans — the next carrier is tier 1 again. */
+  /** The room emptied of humans: the fleet counter starts over. */
   resetSession(): void {
-    this.tier = 0;
+    this.downCount = 0;
+  }
+
+  /** Airships shot down this session (the HUD's fleet counter). */
+  downs(): number {
+    return this.downCount;
   }
 
   /** A plane (re)spawned or came back: no flak at it for a beat. */
@@ -179,16 +215,17 @@ export class BossDirector {
     this.spawns.set(id, now);
   }
 
-  /** A plane left the room: it draws no flak. Its damage credit stays for
-   * the raid (A2): a W2 drop is not a leave, and a pilot who resumes and
-   * finishes the boss is owed it — bossDowned only credits members still in
-   * the room, and every new raid starts the ledger over. */
+  /** A plane left the room: it draws no flak. Its damage credit stays (A2):
+   * a W2 drop is not a leave, and a pilot who resumes and finishes a ship
+   * is owed it — shipDowned only credits members still in the room. */
   forget(id: string): void {
     this.launchByBot.delete(id);
     this.offered.delete(id);
     this.spawns.delete(id);
     this.taken.delete(id);
-    for (const t of this.turrets) if (t.targetId === id) t.targetId = null;
+    for (const ts of this.turrets.values()) {
+      for (const t of ts) if (t.targetId === id) t.targetId = null;
+    }
   }
 
   /** Shells in the air (B3: the bots dodge their bursts). Read-only. */
@@ -196,69 +233,72 @@ export class BossDirector {
     return this.shells;
   }
 
-  /** The raid on, intact and in the air at `t`. */
-  activeRaid(t: number): BossRaid | null {
-    return bossPresent(this.slot, t) ? this.slot.raid : null;
+  /** Ship `id` if it is intact and in the air at `t`. */
+  activeShip(id: number, t: number): FleetShip | null {
+    const s = shipById(this.slot, id);
+    return s && shipPresent(s, t) ? s : null;
   }
 
-  /** Has the room a raid in progress — flying, or its sections falling? */
-  busy(now: number): boolean {
-    const r = this.slot.raid;
-    if (!r) return false;
-    const d = this.slot.down;
-    if (d && d.id === r.id) {
-      return d.pieces.some((_, i) => !this.settledPieces.has(i));
-    }
-    return now < raidEnd(r);
+  /** Every ship intact and in the air at `t`. */
+  activeShips(t: number): FleetShip[] {
+    return this.slot.ships.filter((s) => shipPresent(s, t));
   }
 
-  /** True once since the last call when a hit changed the HP. */
-  takeHpChanged(): boolean {
-    const dirty = this.hpDirty;
-    this.hpDirty = false;
-    return dirty;
+  /** Is any ship up at `t`? */
+  anyUp(t: number): boolean {
+    for (const s of this.slot.ships) if (shipPresent(s, t)) return true;
+    return false;
   }
 
-  /** The welcome's replay (null: no raid worth showing). */
-  state(now: number): WireBossState | null {
-    const r = this.slot.raid;
-    if (!r) return null;
-    const d =
-      this.slot.down && this.slot.down.id === r.id ? this.slot.down : null;
-    const over = d ? d.t + Math.max(...d.pieces.map((p) => p.end)) : raidEnd(r);
-    if (now > over + WELCOME_TAIL_MS) return null;
-    const ls = (this.slot.launches ?? []).filter((l) => launchDoneAt(l) > now);
+  /** The HP of every ship a hit changed since the last call, [id, hp]. */
+  takeHpChanged(): [number, number][] {
+    const out: [number, number][] = [];
+    for (const id of this.hpChanged) out.push([id, this.hp.get(id) ?? 0]);
+    this.hpChanged.clear();
+    return out;
+  }
+
+  /** The welcome's replay (null: no fleet). */
+  state(now: number): WireFleetState | null {
+    if (this.slot.ships.length === 0) return null;
+    const ls = this.slot.launches.filter((l) => launchDoneAt(l) > now);
     return {
-      r: encodeRaid(r),
-      hp: [...this.hp],
-      ...(d && { d }),
+      s: this.slot.ships.map(encodeShip),
+      hp: this.slot.ships.map((s) => this.hp.get(s.id) ?? 0),
+      d: this.slot.ships.map((s) => s.down),
       ...(ls.length > 0 && { l: ls.map(encodeLaunch) }),
     };
   }
 
-  /** Living weak points as bot contacts (`@boss:<k>`), while it flies. */
-  contacts(now: number): { id: string; pos: Vec3; vel: Vec3 }[] {
-    const r = this.activeRaid(now);
-    if (!r) return [];
-    const pose = bossPoseAt(r, now, this.pose);
-    const vel = bossVelAt(r, now, { x: 0, y: 0, z: 0 });
+  /** Living weak points of every flying ship within `range` of `near` as
+   * bot contacts (`@boss:<ship>:<k>`). */
+  contacts(
+    now: number,
+    near: Vec3,
+    range: number,
+  ): { id: string; pos: Vec3; vel: Vec3 }[] {
     const out: { id: string; pos: Vec3; vel: Vec3 }[] = [];
-    for (let k = 0; k < BOSS_WEAK_POINTS.length; k++) {
-      if (!((this.hp[k] ?? 0) > 0)) continue;
-      out.push({
-        id: `${BOSS_CONTACT_PREFIX}${k}`,
-        pos: weakPointInto(pose, k, { x: 0, y: 0, z: 0 }),
-        vel,
-      });
+    for (const s of this.slot.ships) {
+      if (!shipPresent(s, now)) continue;
+      fleetPoseAt(s, now, this.pose);
+      if (wrapDistance(this.pose, near) > range) continue;
+      const vel = shipVelAt(s, now, { x: 0, y: 0, z: 0 });
+      for (let k = 0; k < BOSS_WEAK_POINTS.length; k++) {
+        out.push({
+          id: `${BOSS_CONTACT_PREFIX}${s.id}:${k}`,
+          pos: weakPointInto(this.pose, shipClass(s), k, { x: 0, y: 0, z: 0 }),
+          vel,
+        });
+      }
     }
     return out;
   }
 
   /**
-   * One tick: the schedule, the turrets, the bursts due and the sections
-   * that hit. `humans`: a human is flying in the room. `planes`: the living
-   * planes in the air the turrets may shoot (W1: the humans) — a new raid's
-   * orbit is centred near the first of them.
+   * One tick: the fleet's schedule, the turrets, the bursts due and the
+   * crashes that hit. `humans`: a human is flying in the room. `planes`:
+   * the living planes in the air the turrets may shoot (the humans) — a
+   * refill comes on out of their sight.
    */
   tick(
     now: number,
@@ -267,7 +307,7 @@ export class BossDirector {
     world: BossWorld,
   ): BossTickResult {
     const out: BossTickResult = {
-      started: null,
+      started: [],
       flak: [],
       bursts: [],
       landed: [],
@@ -275,14 +315,13 @@ export class BossDirector {
     for (const [id, t] of this.spawns) {
       if (now - t >= RESPAWN_QUIET_MS) this.spawns.delete(id);
     }
-    this.schedule(now, humans, planes[0]?.pos ?? null, out);
-    const raid = this.activeRaid(now);
-    if (raid) this.fireTurrets(now, raid, planes, world, out);
+    if (humans) this.schedule(now, planes, out);
+    if (humans) this.fireTurrets(now, planes, world, out);
     this.settleShells(now, planes, out);
-    this.settlePieces(now, out, world);
+    this.settleCrashes(now, out, world);
     // S9: a launch whose rig has reset is history.
     const ls = this.slot.launches;
-    if (ls && ls.length > 0 && launchDoneAt(ls[0] as BossLaunch) <= now) {
+    if (ls.length > 0 && launchDoneAt(ls[0] as BossLaunch) <= now) {
       this.slot.launches = ls.filter((l) => launchDoneAt(l) > now);
     }
     return out;
@@ -290,43 +329,61 @@ export class BossDirector {
 
   /**
    * S9: offer a dead bot (`botId`, due back at `respawnAt`) a launch from
-   * the carrier. Once per death. Only while the zeppelin is intact and on
-   * station through the release; on a free station (the deck catapult and
-   * the belly trapeze alternate, either takes the launch when the other is
-   * busy); timed to release AT `respawnAt` (never before `now`, so at most
-   * a tick late); and only when `clear` passes its release run. Returns
-   * the launch (to broadcast) or null — the bot respawns as usual.
+   * the fleet. Once per death. From an intact ship within LAUNCH_NEAR_M of
+   * one of `near` (the humans; any ship when empty), the ship that launched
+   * last only when no other will do — launches spread across the fleet; on
+   * a rig its class carries that is free (a carrier's catapult and trapeze
+   * alternate); timed to release AT `respawnAt` (never before `now`, so at
+   * most a tick late); the ship still up at the release; and only when
+   * `clear` passes the release run. Returns the launch (to broadcast) or
+   * null — the bot respawns as usual.
    */
   planLaunch(
     botId: string,
     respawnAt: number,
     now: number,
-    clear: (raid: BossRaid, l: BossLaunch) => boolean,
+    near: readonly Vec3[],
+    clear: (ship: FleetShip, l: BossLaunch) => boolean,
   ): BossLaunch | null {
     if (this.launchByBot.has(botId)) return null;
     if (this.offered.get(botId) === respawnAt) return null;
     this.offered.set(botId, respawnAt);
-    const raid = this.activeRaid(now);
-    if (!raid) return null;
-    const first: LaunchKind =
-      this.nextLaunch % 2 === 0 ? LAUNCH_BELLY : LAUNCH_CATAPULT;
-    for (const kind of [
-      first,
-      first === LAUNCH_BELLY ? LAUNCH_CATAPULT : LAUNCH_BELLY,
-    ] as const) {
-      const t0 = Math.max(now, respawnAt - (LAUNCH_SEQ_MS[kind] as number));
-      const l: BossLaunch = { id: this.nextLaunch, raid: raid.id, kind, t0 };
-      const release = launchReleaseAt(l);
-      // On station (not running out) and still up at the release.
-      if (release >= raidEgressAt(raid) || !this.activeRaid(release)) continue;
-      const busy = (this.slot.launches ?? []).some(
-        (o) => o.kind === kind && launchDoneAt(o) > t0,
-      );
-      if (busy || !clear(raid, l)) continue;
-      this.nextLaunch++;
-      this.launchByBot.set(botId, l);
-      this.slot.launches = [...(this.slot.launches ?? []), l];
-      return l;
+    // Candidates by distance to their nearest human; the last launcher
+    // goes to the back.
+    const ranked: { s: FleetShip; d: number }[] = [];
+    for (const s of this.slot.ships) {
+      if (!shipPresent(s, now)) continue;
+      fleetPoseAt(s, now, this.pose);
+      let d = near.length === 0 ? 0 : Number.POSITIVE_INFINITY;
+      for (const h of near) {
+        d = Math.min(d, wrapDistance({ ...h, y: 0 }, { ...this.pose, y: 0 }));
+      }
+      if (d > LAUNCH_NEAR_M) continue;
+      ranked.push({ s, d: s.id === this.lastLauncher ? d + 1e6 : d });
+    }
+    ranked.sort((a, b) => a.d - b.d || a.s.id - b.s.id);
+    for (const { s } of ranked) {
+      const rigs = (
+        SHIP_CLASSES[shipClass(s)] as { rigs: readonly LaunchKind[] }
+      ).rigs;
+      const first: LaunchKind =
+        rigs.length > 1 && this.nextLaunch % 2 === 1
+          ? (rigs[1] as LaunchKind)
+          : (rigs[0] as LaunchKind);
+      for (const kind of [first, ...rigs.filter((k) => k !== first)]) {
+        const t0 = Math.max(now, respawnAt - (LAUNCH_SEQ_MS[kind] as number));
+        const l: BossLaunch = { id: this.nextLaunch, ship: s.id, kind, t0 };
+        if (!shipPresent(s, launchReleaseAt(l))) continue;
+        const busy = this.slot.launches.some(
+          (o) => o.ship === s.id && o.kind === kind && launchDoneAt(o) > t0,
+        );
+        if (busy || !clear(s, l)) continue;
+        this.nextLaunch++;
+        this.lastLauncher = s.id;
+        this.launchByBot.set(botId, l);
+        this.slot.launches = [...this.slot.launches, l];
+        return l;
+      }
     }
     return null;
   }
@@ -341,126 +398,141 @@ export class BossDirector {
     this.launchByBot.delete(botId);
   }
 
+  /** The fleet's first fill, then each downed lane's refill. */
   private schedule(
     now: number,
-    humans: boolean,
-    near: Vec3 | null,
+    planes: readonly BossPlane[],
     out: BossTickResult,
   ): void {
-    if (!humans) {
-      this.humanSince = null;
-      if (!this.busy(now)) this.nextAt = null;
+    if (!this.started) {
+      this.started = true;
+      // The sky is full the moment the war begins: every lane, seeded spots.
+      FLEET_LANES.forEach((lane, i) => {
+        const len = (FLEET_LAYERS[lane.layer] as { length: number }).length;
+        const s0 = Math.round(this.rand() * len * 10) / 10;
+        out.started.push(this.comeOn(i, now, s0 >= len ? 0 : s0));
+      });
       return;
     }
-    if (this.humanSince === null) this.humanSince = now;
-    if (this.busy(now)) return;
-    if (this.nextAt === null) {
-      this.nextAt = nextRaidAt(
-        this.lastEnd(),
-        this.humanSince,
-        this.rand,
-        this.tuning,
+    for (let lane = 0; lane < FLEET_LANES.length; lane++) {
+      const due = this.refillAt[lane];
+      if (due === null || due === undefined || now < due) continue;
+      if (now < (this.refillTry[lane] as number)) continue;
+      this.refillTry[lane] = now + REFILL_TRY_MS;
+      const spot = hiddenLaneSpot(
+        lane,
+        planes.map((p) => p.pos),
+        this.rand(),
       );
+      const late = now >= due + this.tuning.refillWaitMs;
+      if (spot.clear < FLEET_HIDE_M && !late) continue;
+      out.started.push(this.comeOn(lane, now, spot.s0));
     }
-    if (now < this.nextAt) return;
-    const raid = planRaid(
-      this.rand,
-      this.nextRaid++,
-      now,
-      this.tuning,
-      ++this.tier,
-      near,
-    );
-    this.slot.raid = raid;
-    this.slot.down = null;
-    this.hp = raidMaxHp(raid);
-    this.damageBy.clear();
-    this.settledPieces.clear();
-    this.launchByBot.clear();
-    this.slot.launches = [];
-    this.shells = [];
-    this.turrets = BOSS_TURRETS.map((_, k) => ({
-      targetId: null,
-      since: now,
-      // Staggered, so six turrets never open up in one volley.
-      nextFireAt: now + (k * BOSS_FLAK_INTERVAL_MS) / BOSS_TURRETS.length,
-    }));
-    this.nextAt = null;
-    out.started = raid;
   }
 
-  /** When the last raid was over: its run-out done or (W1) the instant it
-   * went down. Null before the first raid. */
-  private lastEnd(): number | null {
-    const r = this.slot.raid;
-    if (!r) return null;
-    const d = this.slot.down;
-    if (d && d.id === r.id) return d.t;
-    return raidEnd(r);
+  private comeOn(lane: number, now: number, s0: number): FleetShip {
+    const cls = (FLEET_LANES[lane] as { cls: 0 | 1 | 2 }).cls;
+    const ship: FleetShip = {
+      id: this.nextShip++,
+      lane,
+      t0: Math.round(now),
+      s0,
+      hp0: shipFullHp(cls, this.tuning.hpScale),
+      down: null,
+    };
+    this.slot.ships.push(ship);
+    this.hp.set(ship.id, ship.hp0);
+    this.refillAt[lane] = null;
+    const guns = (SHIP_CLASSES[cls] as { turrets: readonly number[] }).turrets;
+    if (guns.length > 0) {
+      this.turrets.set(
+        ship.id,
+        guns.map((k, j) => ({
+          k,
+          targetId: null,
+          since: now,
+          // Staggered across the fleet, so its guns never open up in one
+          // volley.
+          nextFireAt:
+            now + ((ship.id * 7 + j * 3) % 10) * (BOSS_FLAK_INTERVAL_MS / 10),
+        })),
+      );
+    }
+    return ship;
   }
 
   private fireTurrets(
     now: number,
-    raid: BossRaid,
     planes: readonly BossPlane[],
     world: BossWorld,
     out: BossTickResult,
   ): void {
-    const pose = bossPoseAt(raid, now, this.pose);
-    for (let k = 0; k < this.turrets.length; k++) {
-      const turret = this.turrets[k] as Turret;
-      if (now < turret.nextFireAt) continue;
-      const up = (BOSS_TURRETS[k] as { up: 1 | -1 }).up;
-      const muzzle = turretMuzzleInto(pose, k, this.at);
-      // Nearest plane it may and can shoot at: range and traverse
-      // (flakSolution's own geometry, with a throwaway draw), then sight.
-      const ranked = planes
-        .filter((p) => !p.prot && !this.spawns.has(p.id))
-        .map((p) => ({ p, d: wrapDistance(muzzle, p.pos) }))
-        .sort((a, b) => a.d - b.d);
-      let target: BossPlane | null = null;
-      for (const { p } of ranked) {
-        if (!flakSolution(muzzle, up, p, () => 0)) continue;
-        if (!losClear(muzzle, p.pos, world.buildings)) continue;
-        target = p;
-        break;
+    if (planes.length === 0) return;
+    for (const [id, guns] of this.turrets) {
+      const ship = this.activeShip(id, now);
+      if (!ship) continue;
+      if (!guns.some((g) => now >= g.nextFireAt)) continue;
+      const cls = shipClass(ship);
+      const pose: ShipPose = fleetPoseAt(ship, now, this.pose);
+      // Nothing in range of the ship at all: its guns hold.
+      const reach = (SHIP_REACH[cls] as { r: number }).r + BOSS_FLAK_RANGE;
+      if (!planes.some((p) => wrapDistance(pose, p.pos) <= reach)) continue;
+      for (const turret of guns) {
+        if (now < turret.nextFireAt) continue;
+        const up = (BOSS_TURRETS[turret.k] as { up: 1 | -1 }).up;
+        const muzzle = turretMuzzleInto(pose, cls, turret.k, this.at);
+        // Nearest plane it may and can shoot at: range and traverse
+        // (flakSolution's own geometry, with a throwaway draw), then sight.
+        const ranked = planes
+          .filter((p) => !p.prot && !this.spawns.has(p.id))
+          .map((p) => ({ p, d: wrapDistance(muzzle, p.pos) }))
+          .sort((a, b) => a.d - b.d);
+        let target: BossPlane | null = null;
+        for (const { p } of ranked) {
+          if (!flakSolution(muzzle, up, p, () => 0)) continue;
+          if (!losClear(muzzle, p.pos, world.buildings)) continue;
+          target = p;
+          break;
+        }
+        if (!target) {
+          turret.targetId = null;
+          continue;
+        }
+        if (target.id !== turret.targetId) {
+          // A new target: the reaction delay starts now (the bots' rule).
+          turret.targetId = target.id;
+          turret.since = now;
+        }
+        if (now - turret.since < BOSS_FLAK_REACTION_MS) continue;
+        const sol = flakSolution(muzzle, up, target, this.rand);
+        if (!sol) continue;
+        const shell: BossFlak = {
+          id: this.nextShell++,
+          from: {
+            x: gridCoord(muzzle.x),
+            y: Math.round(muzzle.y * 10) / 10,
+            z: gridCoord(muzzle.z),
+          },
+          to: sol.to,
+          t0: now,
+          fuse: sol.fuse,
+        };
+        this.shells.push(shell);
+        out.flak.push(shell);
+        turret.nextFireAt = now + BOSS_FLAK_INTERVAL_MS;
       }
-      if (!target) {
-        turret.targetId = null;
-        continue;
-      }
-      if (target.id !== turret.targetId) {
-        // A new target: the reaction delay starts now (the bots' rule).
-        turret.targetId = target.id;
-        turret.since = now;
-      }
-      if (now - turret.since < BOSS_FLAK_REACTION_MS) continue;
-      const sol = flakSolution(muzzle, up, target, this.rand);
-      if (!sol) continue;
-      const shell: BossFlak = {
-        id: this.nextShell++,
-        turret: k,
-        to: sol.to,
-        t0: now,
-        fuse: sol.fuse,
-      };
-      this.shells.push(shell);
-      out.flak.push(shell);
-      turret.nextFireAt = now + BOSS_FLAK_INTERVAL_MS;
     }
   }
 
   /** Shells whose fuse ran out by `now`: hurt every plane in the burst,
-   * under the per-second cap. A shell outlives its boss (it is in the air). */
+   * under the per-second cap. A shell outlives its ship (it is in the
+   * air). */
   private settleShells(
     now: number,
     planes: readonly BossPlane[],
     out: BossTickResult,
   ): void {
     if (this.shells.length === 0) return;
-    // W1: the carrier's tier sets how hard its guns hit.
-    const r = this.slot.raid;
-    const scale = r ? carrierFlakScale(raidTier(r)) : 1;
     const left: BossFlak[] = [];
     for (const f of this.shells) {
       if (f.t0 + f.fuse > now) {
@@ -470,9 +542,9 @@ export class BossDirector {
       const victims: { id: string; damage: number }[] = [];
       for (const p of planes) {
         if (p.prot || this.spawns.has(p.id)) continue;
-        const raw = flakDamage(wrapDistance(p.pos, f.to)) * scale;
+        const raw = flakDamage(wrapDistance(p.pos, f.to)) * FLEET_FLAK_SCALE;
         if (raw <= 0) continue;
-        const damage = this.capped(p.id, raw, now, scale);
+        const damage = this.capped(p.id, raw, now);
         if (damage > 0) victims.push({ id: p.id, damage });
       }
       out.bursts.push({ flak: f, victims });
@@ -481,84 +553,137 @@ export class BossDirector {
   }
 
   /** `raw` flak damage to `id` at `now`, cut to what its rolling second
-   * still allows (BOSS_FLAK_DPS_CAP × `scale`); recorded. */
-  private capped(id: string, raw: number, now: number, scale: number): number {
+   * still allows (BOSS_FLAK_DPS_CAP × FLEET_FLAK_SCALE); recorded. */
+  private capped(id: string, raw: number, now: number): number {
     const log = (this.taken.get(id) ?? []).filter((e) => now - e.t < 1000);
     let sum = 0;
     for (const e of log) sum += e.dmg;
-    const damage = Math.max(0, Math.min(raw, BOSS_FLAK_DPS_CAP * scale - sum));
+    const cap = BOSS_FLAK_DPS_CAP * FLEET_FLAK_SCALE;
+    const damage = Math.max(0, Math.min(raw, cap - sum));
     if (damage > 0) log.push({ t: now, dmg: damage });
     this.taken.set(id, log);
     return damage;
   }
 
-  private settlePieces(
+  /** Crashes that hit by `now` (once each), and the landed ones pruned. */
+  private settleCrashes(
     now: number,
     out: BossTickResult,
     world: BossWorld,
   ): void {
-    const d = this.slot.down;
-    if (!d) return;
-    d.pieces.forEach((piece, i) => {
-      if (this.settledPieces.has(i) || now < d.t + piece.end) return;
-      this.settledPieces.add(i);
+    for (const s of this.slot.ships) {
+      const d = s.down;
+      if (!d || this.landedIds.has(s.id) || now < d.t + d.end) continue;
+      this.landedIds.add(s.id);
       // Where and what it hit were swept at the down, against the city as
-      // it stood then (an earlier section's landing must not move them).
+      // it stood then (another crash's landing must not move them).
+      const top = this.topDealer(s.id);
       out.landed.push({
-        piece,
-        at: piece.at,
-        building: piece.b >= 0 ? (world.buildings[piece.b] ?? null) : null,
+        ship: s,
+        at: d.at,
+        building: d.b >= 0 ? (world.buildings[d.b] ?? null) : null,
+        by: top,
       });
+    }
+    if (this.landedIds.size === 0) return;
+    const keep = this.slot.ships.filter((s) => {
+      const d = s.down;
+      return !(d && now >= d.t + d.end + LANDED_TAIL_MS);
     });
+    if (keep.length === this.slot.ships.length) return;
+    for (const s of this.slot.ships) {
+      if (keep.includes(s)) continue;
+      this.landedIds.delete(s.id);
+      this.hp.delete(s.id);
+      this.damageBy.delete(s.id);
+    }
+    this.slot.ships = keep;
+  }
+
+  /** The pilot who dealt ship `id` the most, or null. */
+  private topDealer(id: number): string | null {
+    let top: string | null = null;
+    let most = 0;
+    for (const [who, v] of this.damageBy.get(id) ?? []) {
+      if (v > most || (v === most && top !== null && who < top)) {
+        most = v;
+        top = who;
+      }
+    }
+    return top;
   }
 
   /**
-   * Is a round from `origin` along unit `dir`, meeting weak point `k` at
-   * server time `t`, a fair hit? The boss must be intact and in the air at
-   * `t`, `k` alive, and `k` the first thing on the line (bossHitValid).
+   * Is a round from `origin` along unit `dir`, meeting ship `id`'s weak
+   * point `k` (or its hull, −1) at server time `t`, a fair hit? The ship
+   * must be intact and in the air at `t` (shipHitValid).
    */
-  validHit(k: number, origin: Vec3, dir: Vec3, t: number): boolean {
-    const r = this.activeRaid(t);
-    if (!r) return false;
-    const alive = this.hp.map((v) => v > 0);
-    return bossHitValid(bossPoseAt(r, t, this.pose), k, origin, dir, alive);
+  validHit(id: number, k: number, origin: Vec3, dir: Vec3, t: number): boolean {
+    const s = this.activeShip(id, t);
+    if (!s) return false;
+    return shipHitValid(
+      fleetPoseAt(s, t, this.pose),
+      shipClass(s),
+      k,
+      origin,
+      dir,
+    );
   }
 
   /**
-   * One validated round on weak point `k` by `shooterId` at `now`:
-   * BULLET_DAMAGE off it, credited. Reaching zero across every weak point
-   * brings it down — its break-up swept against `world` right here, once.
-   * Null when nothing was applied (no raid, `k` already spent).
+   * One validated round on ship `id` (weak point `k`, or its hull −1) by
+   * `shooterId` at `now`: its damage off the ship's HP, credited. Reaching
+   * zero brings it down — its crash swept against `world` right here, once,
+   * and its lane due a refill. Null when nothing was applied (no such ship
+   * up).
    */
   damage(
     shooterId: string,
+    id: number,
     k: number,
     now: number,
     world: BossSweepWorld,
-  ): { hp: number[]; down: BossDown | null } | null {
-    const r = this.activeRaid(now);
-    if (!r || !((this.hp[k] ?? 0) > 0)) return null;
-    const dealt = Math.min(this.hp[k] as number, BULLET_DAMAGE);
-    this.hp[k] = (this.hp[k] as number) - dealt;
-    this.damageBy.set(shooterId, (this.damageBy.get(shooterId) ?? 0) + dealt);
-    this.hpDirty = true;
-    let down: BossDown | null = null;
-    if (this.hp.every((v) => v <= 0)) {
-      down = breakUp(r, now, world);
-      this.slot.down = down;
-      this.shells = this.shells.filter((f) => f.t0 + f.fuse > now);
+  ): ShipHitResult | null {
+    const s = this.activeShip(id, now);
+    const left = this.hp.get(id) ?? 0;
+    if (!s || !(left > 0)) return null;
+    const dealt = Math.min(left, shipRoundDamage(k));
+    const hp = left - dealt;
+    this.hp.set(id, hp);
+    let ledger = this.damageBy.get(id);
+    if (!ledger) {
+      ledger = new Map();
+      this.damageBy.set(id, ledger);
     }
-    return { hp: [...this.hp], down };
+    ledger.set(shooterId, (ledger.get(shooterId) ?? 0) + dealt);
+    this.hpChanged.add(id);
+    let down: ShipDown | null = null;
+    if (hp <= 0) {
+      down = shipCrash(s, now, world);
+      s.down = down;
+      this.downCount++;
+      this.turrets.delete(id);
+      this.refillAt[s.lane] = Math.max(
+        now + this.tuning.refillMs,
+        down.t + down.end,
+      );
+      // Its rigs go with it.
+      this.slot.launches = this.slot.launches.filter(
+        (l) => l.ship !== id || launchReleaseAt(l) <= now,
+      );
+    }
+    return { ship: s, hp, down };
   }
 
-  /** Damage dealt this raid, by pilot (the credit split's input). */
-  damageLedger(): ReadonlyMap<string, number> {
-    return this.damageBy;
+  /** Damage dealt to ship `id`, by pilot (the credit split's input). */
+  damageLedger(id: number): ReadonlyMap<string, number> {
+    return this.damageBy.get(id) ?? new Map();
   }
 }
 
 /** A shooter-side `bossHit` claim's fields, shape-checked by the caller. */
 export interface BossHitClaim {
+  ship: number;
   wp: number;
   seq: number;
   origin: Vec3;
@@ -571,28 +696,29 @@ export interface BossHitClaim {
  * is spent through Combat.claimBullet (existence, age, one hit, origin — a
  * plane hit's rules); its claimed direction must sit inside BOSS_DIR_CONE of
  * the nose kept at the shot; the claimed time is held to
- * BOSS_CLAIM_LOOKBACK_MS; then the round's line is re-run against the
- * armour at that time. Null when refused.
+ * BOSS_CLAIM_LOOKBACK_MS; then the round's line is re-run against the ship
+ * at that time. Null when refused.
  */
 export function claimBossHit(
   combat: Combat,
-  boss: BossDirector,
+  fleet: FleetDirector,
   shooterId: string,
   claim: BossHitClaim,
   shooterPos: Vec3,
   now: number,
   world: BossSweepWorld,
   shooterCap?: SpeedCapFn,
-): { hp: number[]; down: BossDown | null } | null {
-  const { wp, dir } = claim;
-  if (!Number.isInteger(wp) || wp < 0 || wp >= BOSS_WEAK_POINTS.length) {
+): ShipHitResult | null {
+  const { ship, wp, dir } = claim;
+  if (!Number.isInteger(ship)) return null;
+  if (!Number.isInteger(wp) || wp < -1 || wp >= BOSS_WEAK_POINTS.length) {
     return null;
   }
   const len = Math.hypot(dir.x, dir.y, dir.z);
   if (!(Math.abs(len - 1) < 1e-3)) return null;
   const t = Math.min(now, Math.max(now - BOSS_CLAIM_LOOKBACK_MS, claim.t));
-  // Cheap refusals first: no boss, or that weak point is spent.
-  if (!boss.activeRaid(t) || !((boss.hp[wp] ?? 0) > 0)) return null;
+  // Cheap refusal first: no such ship up then.
+  if (!fleet.activeShip(ship, t) || !fleet.activeShip(ship, now)) return null;
   const bullet = combat.claimBullet(
     shooterId,
     claim.seq,
@@ -607,37 +733,45 @@ export function claimBossHit(
       bullet.dir.x * dir.x + bullet.dir.y * dir.y + bullet.dir.z * dir.z;
     if (cos < Math.cos(BOSS_DIR_CONE)) return null;
   }
-  if (!boss.validHit(wp, claim.origin, dir, t)) return null;
-  return boss.damage(shooterId, wp, now, world);
+  if (!fleet.validHit(ship, wp, claim.origin, dir, t)) return null;
+  return fleet.damage(shooterId, ship, wp, now, world);
 }
 
-/** The weak point a bot contact id names, or -1 (not a boss contact). */
-export function bossContactIndex(id: string): number {
-  if (!id.startsWith(BOSS_CONTACT_PREFIX)) return -1;
-  const k = Number(id.slice(BOSS_CONTACT_PREFIX.length));
-  return Number.isInteger(k) && k >= 0 && k < BOSS_WEAK_POINTS.length ? k : -1;
+/** The ship and weak point a bot contact id names, or null (not a fleet
+ * contact). */
+export function bossContactIndex(
+  id: string,
+): { ship: number; k: number } | null {
+  if (!id.startsWith(BOSS_CONTACT_PREFIX)) return null;
+  const [s, k] = id.slice(BOSS_CONTACT_PREFIX.length).split(":").map(Number);
+  if (!Number.isInteger(s) || !Number.isInteger(k)) return null;
+  return (k as number) >= 0 && (k as number) < BOSS_WEAK_POINTS.length
+    ? { ship: s as number, k: k as number }
+    : null;
 }
 
 /**
- * A bot round that met a weak point this tick (F4's swept rounds): the same
- * judgement as a player's claim — the round spent through Combat, its line
- * re-run against the armour at `now` — then applied. Null when refused.
+ * A bot round that met a ship's weak point this tick (F4's swept rounds):
+ * the same judgement as a player's claim — the round spent through Combat,
+ * its line re-run against the ship at `now` — then applied. Null when
+ * refused.
  */
 export function landBotBossRound(
   combat: Combat,
-  boss: BossDirector,
+  fleet: FleetDirector,
   round: BotRoundHit,
   now: number,
   world: BossSweepWorld,
-): { hp: number[]; down: BossDown | null } | null {
-  const k = bossContactIndex(round.shot.targetId);
-  if (k < 0) return null;
+): ShipHitResult | null {
+  const c = bossContactIndex(round.shot.targetId);
+  if (!c) return null;
   return claimBossHit(
     combat,
-    boss,
+    fleet,
     round.shot.botId,
     {
-      wp: k,
+      ship: c.ship,
+      wp: c.k,
       seq: round.shot.seq,
       origin: round.shot.origin,
       dir: round.shot.dir,
@@ -649,8 +783,8 @@ export function landBotBossRound(
   );
 }
 
-/** D2/D3: one falling section hit at `at`: blow out the room city's chunks
- * around it, and — when it came down on a building — shear the floor band
+/** D2/D3: a crash hit at `at`: blow out the room city's chunks around it,
+ * and — when it came down on a building — shear the floor band
  * BOSS_CRUSH_DEPTH floors under the hit, so the floors above it pancake
  * (D3's planner does the rest on the next destruction tick). A collapse it
  * sets off is credited to `by` (the top dealer). Returns the chunks
@@ -684,10 +818,10 @@ export function applyBossImpact(
   return out;
 }
 
-/** The floor band BOSS_CRUSH_DEPTH floors under where a section hit
- * building `b` at `at` — counted down through the tiers, so a squat crown
- * shears the tier under it — destroyed across that tier's footprint.
- * Nothing when there are not that many floors under the hit. */
+/** The floor band BOSS_CRUSH_DEPTH floors under where a crash hit building
+ * `b` at `at` — counted down through the tiers, so a squat crown shears
+ * the tier under it — destroyed across that tier's footprint. Nothing when
+ * there are not that many floors under the hit. */
 function crushUnder(city: RoomCity, b: Building, at: Vec3): number[] {
   const index = city.buildings.indexOf(b);
   const grids = tierGrids(b);

@@ -1,27 +1,28 @@
 // W1 Carrier War, server side (server/src/waves.ts) on the room's real
-// carrier (BossDirector), pilots (RoomBots, the seeded city, its movers and
-// trees) and Combat — the same objects index.ts wires, ticked the way its
-// loop ticks them, with a host that records what the room would broadcast:
+// airship fleet (FleetDirector), pilots (RoomBots, the seeded city, its
+// movers and trees) and Combat — the same objects index.ts wires, ticked the
+// way its loop ticks them, with a host that records what the room would
+// broadcast:
 //
 //  - waves come in their cadence (3, then +1..+2 up to the cap, a breather
 //    between) and never put more than the cap in the air;
-//  - every enemy is born at the carrier: its first pose is its launch's
-//    release pose, it is launched once, and once down it leaves the room;
+//  - every enemy is born on an airship near a human — several ships take
+//    turns — its first pose is its launch's release pose, it is launched
+//    once, and once down it leaves the room;
 //  - enemies hunt humans only — their contacts, quarries, targets and
 //    trigger pulls name humans and nothing else;
-//  - shooting the carrier down takes its planes with it, and the next
-//    carrier comes NEXT_CARRIER_MS later, one tier up, with the next wave;
+//  - shooting a ship down takes the planes still on its rigs, the ones it
+//    launched fight on, the counter counts it and its lane refills;
 //  - one seed replays the same war exactly.
 
 import {
-  BOSS_FAST_TUNING,
-  BOSS_WEAK_POINTS,
   type BossLaunch,
-  type BossRaid,
-  type BossTuning,
+  FLEET_TUNING,
+  type FleetShip,
+  type FleetTuning,
   decodeLaunch,
   launchSpawnAt,
-  raidTier,
+  shipById,
 } from "@angels-bandits/common/boss";
 import { generateCity, mulberry32 } from "@angels-bandits/common/city";
 import {
@@ -34,7 +35,6 @@ import { CITY_SEED, TICK_DOWN_HZ } from "@angels-bandits/common/constants";
 import type { SpawnState } from "@angels-bandits/common/protocol";
 import {
   ENEMY_CAP,
-  NEXT_CARRIER_MS,
   WAVE_BREATHER_MS,
   WAVE_LEVELS,
   WAVE_LIVE,
@@ -43,7 +43,7 @@ import {
 } from "@angels-bandits/common/waves";
 import type { Vec3 } from "@angels-bandits/common/world";
 import { beforeAll, describe, expect, it } from "vitest";
-import { BossDirector } from "../src/boss";
+import { FleetDirector } from "../src/boss";
 import { RoomBots } from "../src/bots";
 import { Combat, type Death } from "../src/combat";
 import { createRoomCity } from "../src/destruction";
@@ -55,27 +55,20 @@ const NATURE = buildNatureIndex(natureFor(CITY_SEED, CITY));
 const T0 = 1_790_000_000_000;
 const DT = 1000 / TICK_DOWN_HZ;
 
-/** A carrier 1 s after the humans arrive, on station for the whole test,
- * full HP (tier-scaled). */
-const TUNING: BossTuning = {
-  ...BOSS_FAST_TUNING,
-  firstMinMs: 1000,
-  firstMaxMs: 1000,
-  orbitMs: 900_000,
-  hpScale: 1,
-};
+/** The live fleet: full HP, the live refill pace. */
+const TUNING: FleetTuning = { ...FLEET_TUNING };
 
 interface Launched {
   id: string;
   launch: BossLaunch;
-  raid: BossRaid;
+  ship: FleetShip;
   at: number;
 }
 
 /** One simulated room and everything it broadcast. */
 interface Sim {
   now: number;
-  boss: BossDirector;
+  boss: FleetDirector;
   bots: RoomBots;
   combat: Combat;
   waves: RoomWaves;
@@ -95,12 +88,12 @@ interface Sim {
   shotTargets: string[];
   aims: string[];
   maxAlive: number;
-  raids: BossRaid[];
+  ships: FleetShip[];
 }
 
 function makeSim(seed: number, humans: { id: string; pos: Vec3 }[]): Sim {
   const rc = createRoomCity(CITY);
-  const boss = new BossDirector(mulberry32(seed ^ 0xb055), TUNING);
+  const boss = new FleetDirector(mulberry32(seed ^ 0xb055), TUNING);
   const movers: MoverField = {
     ...MOVERS,
     collapses: rc.collapses,
@@ -130,7 +123,7 @@ function makeSim(seed: number, humans: { id: string; pos: Vec3 }[]): Sim {
     shotTargets: [],
     aims: [],
     maxAlive: 0,
-    raids: [],
+    ships: [],
   } as unknown as Sim;
   sim.waves = new RoomWaves(seed, bots, boss, combat, {
     addEnemy: (entry) => sim.roster.add(entry.id),
@@ -141,9 +134,9 @@ function makeSim(seed: number, humans: { id: string; pos: Vec3 }[]): Sim {
     send: (msg) => {
       if (msg.type === "bossLaunch") {
         const l = decodeLaunch(msg.l);
-        const raid = boss.slot.raid;
-        if (l && raid) {
-          sim.launched.push({ id: msg.bot, launch: l, raid, at: sim.now });
+        const ship = l && shipById(boss.slot, l.ship);
+        if (l && ship) {
+          sim.launched.push({ id: msg.bot, launch: l, ship, at: sim.now });
         }
       } else if (msg.type === "waves") {
         const s = decodeWaves(msg.w);
@@ -170,13 +163,13 @@ function shootDown(sim: Sim, id: string): void {
   down(sim, death, sim.now);
 }
 
-/** One server tick, in index.ts's order: the carrier then its waves, the
+/** One server tick, in index.ts's order: the fleet then its waves, the
  * respawn pass, then the pilots. */
 function step(sim: Sim): void {
   sim.now += DT;
   const now = sim.now;
   const out = sim.boss.tick(now, true, sim.humans, sim.world);
-  if (out.started) sim.raids.push(out.started);
+  sim.ships.push(...out.started);
   sim.waves.tick(now, true, sim.humans);
   for (const id of sim.combat.tick(now).respawnsDue) {
     const r = sim.waves.release(id, now);
@@ -235,7 +228,7 @@ describe("W1 waves: cadence, caps and where enemies come from", () => {
   let sim: Sim;
   beforeAll(() => {
     // Ninety seconds of a pilot downing every enemy four seconds after it
-    // leaves the carrier.
+    // leaves its ship.
     sim = makeSim(5, [H1]);
     fly(sim, 90_000, 4000);
   }, 300_000);
@@ -283,16 +276,16 @@ describe("W1 waves: cadence, caps and where enemies come from", () => {
     }
   });
 
-  it("every enemy is born at the carrier: launched once, its first pose its launch's release pose", () => {
+  it("every enemy is born on an airship: several take turns, launched once, its first pose its launch's release pose", () => {
     expect(sim.launched.length).toBeGreaterThan(10);
-    // Both rigs launched (belly trapeze and dorsal catapult).
-    expect(new Set(sim.launched.map((l) => l.launch.kind)).size).toBe(2);
+    // Z1: the launches spread across the fleet.
+    expect(new Set(sim.launched.map((l) => l.ship.id)).size).toBeGreaterThan(2);
     for (const l of sim.launched) {
       const spawns = sim.released.get(l.id);
       if (!spawns) continue; // still on its rig at the end
       // Launched once: a downed enemy never comes back.
       expect(spawns).toHaveLength(1);
-      const want = launchSpawnAt(l.raid, l.launch);
+      const want = launchSpawnAt(l.ship, l.launch);
       expect(spawns[0]?.pos).toEqual(want.pos);
       expect(spawns[0]?.yaw).toBe(want.yaw);
       expect(sim.launched.filter((o) => o.id === l.id)).toHaveLength(1);
@@ -350,63 +343,50 @@ describe("W1 waves: enemies target only humans", () => {
   }, 120_000);
 });
 
-describe("W1 waves: the carrier loop", () => {
-  it("downing the carrier takes its planes with it; the next carrier comes 20 s later, a tier up, with the next wave", () => {
+describe("W1 waves: the fleet loop", () => {
+  it("downing a ship takes its rigs' planes, its flying ones fight on, the counter counts it and the lane refills", () => {
     const sim = makeSim(3, [H1]);
-    // Wave 1 up, nobody shot down.
-    while (
-      sim.launched.length < 3 ||
-      sim.waves.enemies().every((e) => !sim.bots.contactOf(e.id))
-    ) {
+    // Wave 1 up and flying, nobody shot down.
+    let flying: string | null = null;
+    while (flying === null) {
       step(sim);
       if (sim.now > T0 + 60_000) throw new Error("wave 1 never flew");
+      flying =
+        sim.waves.enemies().find((e) => sim.bots.contactOf(e.id))?.id ?? null;
     }
-    const raid = sim.boss.slot.raid as BossRaid;
-    expect(raidTier(raid)).toBe(1);
-    const before = sim.waves.state().wave;
-    // Every weak point shot out, then the room's down path (index.ts
-    // bossDowned → RoomWaves.carrierDown).
+    const launched = sim.launched.find((l) => l.id === flying) as Launched;
+    const ship = launched.ship;
+    const wave = sim.waves.state().wave;
+    expect(sim.waves.state().downs).toBe(0);
+    // Its hull shot out, then the room's down path (index.ts shipDowned →
+    // RoomWaves.shipDown).
     let downAt: number | null = null;
-    for (let k = 0; k < BOSS_WEAK_POINTS.length; k++) {
-      for (let n = 0; n < 2000 && downAt === null; n++) {
-        const hit = sim.boss.damage(H1.id, k, sim.now, sim.world);
-        if (!hit) break;
-        if (hit.down) downAt = hit.down.t;
-      }
+    for (let n = 0; n < 200 && downAt === null; n++) {
+      const hit = sim.boss.damage(H1.id, ship.id, -1, sim.now, sim.world);
+      if (hit?.down) downAt = hit.down.t;
     }
-    if (downAt === null) throw new Error("the carrier never went down");
-    const enemiesBefore = sim.waves.enemies().map((e) => e.id);
-    sim.waves.carrierDown(raid, sim.now);
-    // Every plane it launched is down with it — scuttled, nobody's kill —
-    // or, still on a rig, gone at once.
-    for (const id of enemiesBefore) {
-      const d = sim.downs.find((x) => x.id === id);
-      if (d) {
-        expect(d.death.cause).toBe("carrier");
-        expect(d.death.killerId).toBeNull();
-      } else {
-        expect(sim.roster.has(id)).toBe(false);
-      }
-    }
-    expect(sim.waves.state().left).toBe(0);
-    // The next carrier: NEXT_CARRIER_MS after the down, one tier up.
-    while (sim.raids.length < 2) {
+    if (downAt === null) throw new Error("the ship never went down");
+    const onRig = sim.waves
+      .enemies()
+      .filter((e) => e.carrier === ship.id && !sim.combat.isAlive(e.id))
+      .map((e) => e.id);
+    sim.waves.shipDown(ship);
+    // The plane it launched fights on; the ones still on its rigs are gone.
+    expect(sim.combat.isAlive(flying)).toBe(true);
+    expect(sim.downs.some((d) => d.id === flying)).toBe(false);
+    for (const id of onRig) expect(sim.roster.has(id)).toBe(false);
+    expect(sim.waves.state().downs).toBe(1);
+    expect(sim.waves.state().wave).toBe(wave);
+    expect(sim.states.at(-1)?.s.downs).toBe(1);
+    // The lane flies again.
+    const before = sim.ships.length;
+    while (sim.ships.length === before) {
       step(sim);
-      if (sim.now > downAt + 60_000) throw new Error("no next carrier");
+      if (sim.now > downAt + 60_000) throw new Error("no refill");
     }
-    const next = sim.raids[1] as BossRaid;
-    expect(next.t0 - downAt).toBeGreaterThanOrEqual(NEXT_CARRIER_MS);
-    expect(next.t0 - downAt).toBeLessThanOrEqual(NEXT_CARRIER_MS + DT);
-    expect(raidTier(next)).toBe(2);
-    expect(next.hpScale).toBeGreaterThan(raid.hpScale);
-    // …and its first wave is the war's next one, launched off IT.
-    fly(sim, 12_000, null);
-    expect(sim.waves.state().wave).toBe(before + 1);
-    const fresh = sim.launched.filter((l) => l.at > next.t0);
-    expect(fresh.length).toBeGreaterThan(0);
-    for (const l of fresh) expect(l.launch.raid).toBe(next.id);
-    // The scuttled planes are gone after their kill-cam.
-    for (const id of enemiesBefore) expect(sim.roster.has(id)).toBe(false);
+    const refill = sim.ships.at(-1) as FleetShip;
+    expect(refill.lane).toBe(ship.lane);
+    expect(refill.t0 - downAt).toBeGreaterThanOrEqual(TUNING.refillMs);
   }, 120_000);
 });
 

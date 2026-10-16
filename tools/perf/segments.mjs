@@ -109,6 +109,8 @@ export const BUDGETS = {
     sidewalk: 113,
     // P4: re-based after the plane fleet drew the room's 12 planes in 7
     // draws: the runner's 92 (85 + the probe's 7) plus ~10 % (was 307).
+    // Z1: kept — the whole 20-ship fleet costs the four draws the one
+    // zeppelin did, so its ceiling does not move.
     boss: 101,
     rings: 114,
     glass: 112,
@@ -467,18 +469,19 @@ export const SEGMENTS = [
   // (`collideBoss`, over warm-up, settle and window): clear.
   {
     name: "boss",
-    what: "S4: a full 12-plane room weaving under the war zeppelin and its flak, at altitude",
+    what: "S4/Z1: a full 12-plane room weaving under the 20-ship airship fleet and its flak, at altitude",
     // HELD at 550 m (H1: S8's 285 m lifted with BOSS_ALT, 305 → 570 m —
-    // over every roof and supertall, under the hull's 540–600 m band only
-    // where the hull is 380+ m away) while 11 fake pilots weave 70–230 m
-    // ahead at 527–582 m — inside the plane LOD's near band (300 m) from
-    // the camera, so every plane is the full airframe all window — and hold
-    // their fire (a tracer is a draw call, timed on the pilots' wall clock).
-    // The zeppelin is STAGED on the client (`__ab.qaBoss`,
-    // client/src/game/qa-spectacle.ts): a raid on station, crossing the view
-    // `boss.ahead` m out at mid-window, its flak a fixed schedule on the
-    // pinned world clock aimed into the pilots' corridor, from 3 s before
-    // the segment's instant so shells are always in the air.
+    // over every roof and supertall; Z1: in the fleet's picket layer, no
+    // hull nearer the view than its reach + 60 m) while 11 fake pilots
+    // weave 70–230 m ahead at 527–582 m — inside the plane LOD's near band
+    // (300 m) from the camera, so every plane is the full airframe all
+    // window — and hold their fire (a tracer is a draw call, timed on the
+    // pilots' wall clock). The fleet is STAGED on the client
+    // (`__ab.qaFleet`, client/src/game/qa-spectacle.ts): all twenty ships
+    // on their lanes, the nearest `boss.ahead` m out at mid-window, the
+    // armed ones' flak a fixed schedule on the pinned world clock aimed
+    // into the pilots' corridor, from 3 s before the segment's instant so
+    // shells are always in the air.
     x: 1000,
     z: 1000,
     y: 550,
@@ -544,18 +547,18 @@ export const SEGMENTS = [
   // and window (README P4): clear.
   {
     name: "chaos",
-    what: "C2 peak chaos: 12 planes under the war zeppelin and its flak, a missile a second, meteors, a quake, fire and a tower toppling across the street",
+    what: "C2 peak chaos: 12 planes under the airship fleet and its flak, a missile a second, meteors, a quake, fire and a tower toppling across the street",
     // D6's `collapse` viewpoint (H1: building 157, 294 m, toppling west
     // across the x = 600 street 236 m ahead), HELD at 110 m. 11 fake pilots weave
     // 70–230 m ahead down the street at 120–200 m — inside the plane LOD's
     // near band, so every plane is the full airframe all window — and hold
     // their fire (a tracer is a draw on the pilots' own wall clock). The
-    // zeppelin crosses 520 m out at mid-window (S8's staging); a missile
+    // fleet comes 520 m out at mid-window (S8/Z1's staging); a missile
     // launches every second (4–5 in the air) and a meteor every 2.5 s
     // (1–2); a quake shakes all window; building 161's street face burns.
-    // H1: the zeppelin flies at BOSS_ALT 570 m now, ~460 m over this held
-    // camera — mostly over the top of the frame; its beams, escorts and
-    // flak still reach down into it.
+    // Z1: the fleet flies at 548 / 585 m, ~440 m over this held camera —
+    // mostly over the top of the frame; its beams and flak still reach
+    // down into it.
     // (W1 retired C2's jet formations, which crossed this view too.)
     x: 600,
     z: 485,
@@ -624,12 +627,12 @@ export const SEGMENTS = [
   },
   {
     name: "exit",
-    what: "U4 into C2: climbing out of Crosstown's east portal into the chaos — the zeppelin, missiles, meteors, a quake",
+    what: "U4 into C2: climbing out of Crosstown's east portal into the chaos — the airships, missiles, meteors, a quake",
     // Crosstown from s = L − 90 (under the lintel, on the ramp) at 40 m/s
     // of WORLD time: out of the cut over plaza (8,2) heading +x, climbing
     // 40° once past the lip (`climb`), held 60 m past it (`maxM` 150) at
     // 62 m — 50 m short of building 506 (92 m). The chaos is staged round
-    // the lip, the view ahead: the zeppelin crossing 520 m out, a missile
+    // the lip, the view ahead: the fleet 520 m out, a missile
     // every second onto the blocks past the plaza, meteors. No pilots.
     tunnel: { id: 0, s: -90, speed: 40, maxM: 150, climb: 40 },
     x: 1710,

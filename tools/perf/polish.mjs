@@ -575,15 +575,14 @@ const WAR_HUD_ON = () => {
     e.classList.add(cls);
   };
   const line = el("wave-hud")?.querySelector(".line");
-  if (line) line.textContent = "WAVE 3 · 5 ENEMIES LEFT · CARRIER 62%";
+  if (line) line.textContent = "WAVE 3 · 5 ENEMIES LEFT · AIRSHIPS DOWN 7";
   show("wave-hud", "open");
   el("wave-hud")?.classList.add("easy-on");
   show("wave-banner", "on", "WAVE 3");
   show("bomb-warn", "on");
-  show("boss-bar", "open");
   const combo = el("juice-combo");
   if (combo) combo.dataset.tone = "moment";
-  show("juice-combo", "on", "CARRIER DOWN!");
+  show("juice-combo", "on", "AIRSHIP DOWN!");
   show("juice-streak", "shown", "STREAK ×5");
   show("juice-pop-0", "on", "+250");
 };
@@ -687,7 +686,7 @@ const PARITY_SAMPLE = (serverNow) => {
       .sort((a, b) => a - b)
       .join(",");
   const d = ab.destruction();
-  const b = ab.boss();
+  const f = ab.fleet();
   const ch = ab.chaos();
   return {
     room: ab.net().roomId,
@@ -697,9 +696,11 @@ const PARITY_SAMPLE = (serverNow) => {
       .recentCollapses(1000)
       .map((c) => `${c.b}@${c.t}`)
       .join(","),
-    bossRaid: b.staged ? "staged" : (b.raid?.id ?? null),
-    bossDown: b.down !== null && b.down !== undefined,
-    bossHp: b.hp.join(","),
+    // Z1: the fleet — staged, or the ids it holds — what is going down,
+    // and every ship's HP.
+    bossRaid: f.staged ? "staged" : f.ships.map((s) => s.id).join(","),
+    bossDown: f.falling > 0,
+    bossHp: f.ships.map((s) => s.hp).join(","),
     caveIns: held ? liveIds(held) : ab.caveIns().live,
     // Quakes are pruned per frame too: ids live at one instant.
     quakes: ch.held ? liveIds(ch.held.quakes) : ch.quakes.length,
@@ -892,7 +893,7 @@ async function spectacle(c, minute) {
       window.__ab.qaCaveIn(null);
       const ab = window.__ab;
       const t = ab.net().worldTime ?? 0;
-      // H1: 265 m higher, with the carrier (BOSS_ALT 305 → 570 m).
+      // H1: 265 m higher, under the fleet (Z1: layers at 548 and 585 m).
       ab.teleport(1000, 1400, 555, 0);
       ab.qaBoss({
         x: 1000,

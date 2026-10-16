@@ -44,15 +44,17 @@ import {
 import {
   type BossFlak,
   type BossLaunch,
-  type BossRaid,
-  applyBossState,
+  FLEET_MODEL,
+  type FleetShip,
+  applyFleetState,
   decodeFlak,
   decodeLaunch,
-  decodeRaid,
-  emptyBossSlot,
-  isBossDown,
+  decodeShip,
+  emptyFleetSlot,
+  isShipDown,
   launchDoneAt,
-  raidMaxHp,
+  launchReleaseAt,
+  shipById,
 } from "@angels-bandits/common/boss";
 import { decodeBurn } from "@angels-bandits/common/burn";
 import {
@@ -109,7 +111,6 @@ import { STREAK_TIERS, isMedalKind } from "@angels-bandits/common/medals";
 import { decodeSnapshotEntry } from "@angels-bandits/common/net";
 import type {
   AwardMsg,
-  BossDownMsg,
   CourseBoardMsg,
   CourseResultMsg,
   DamageMsg,
@@ -123,6 +124,7 @@ import type {
   RosterEntry,
   ScoreEntry,
   ServerMsg,
+  ShipDownMsg,
   SnapshotMsg,
   WelcomeMsg,
 } from "@angels-bandits/common/protocol";
@@ -177,11 +179,11 @@ export interface GameSocketEvents {
   onCourseResult?: (msg: CourseResultMsg) => void;
   /** S3: a course leaderboard changed (ghost attached when a record fell). */
   onCourseBoard?: (msg: CourseBoardMsg) => void;
-  /** S4: a sky-boss raid began (already in `boss`). */
-  onBoss?: (raid: BossRaid) => void;
-  /** S4: the boss went down (already in `boss`): credit and the break-up. */
-  onBossDown?: (msg: BossDownMsg) => void;
-  /** S9: the carrier is launching `bot` (already in `boss.launches`). */
+  /** Z1: an airship came on (already in `boss`). */
+  onShip?: (ship: FleetShip) => void;
+  /** Z1: an airship went down (already in `boss`): its crash and credit. */
+  onShipDown?: (msg: ShipDownMsg, ship: FleetShip) => void;
+  /** S9: an airship is launching `bot` (already in `boss.launches`). */
   onBossLaunch?: (l: BossLaunch, bot: string) => void;
   /** C2: a quake was announced (already in `quakes`). */
   onQuake?: (q: QuakeEvent) => void;
@@ -291,7 +293,7 @@ export class GameSocket {
    * happened. */
   readonly director = new Map<number, DirectorEvent>();
   /** D6 (perf harness): destruction the SERVER sent — `chunks`, `collapse`,
-   * `directorWarn`, `rebuild`, `missile` and `boss` messages, plus a welcome
+   * `directorWarn`, `rebuild`, `missile` and `ship` messages, plus a welcome
    * that carried any. A quiet city (AB_QUIET_CITY) sends none, so a segment
    * that saw this move measured something the harness did not stage. */
   serverDestruction = 0;
@@ -302,12 +304,12 @@ export class GameSocket {
    * respawns the plane and replays the room, so a measured window that saw
    * one is not the scene it set up. */
   resumes = 0;
-  /** S4: the room's sky boss — its raid and break-up (the mover field holds
-   * this very slot, so the crash check sees it), every weak point's HP, and
-   * the shells in the air by id (the renderer drops each once it bursts).
-   * Kept from every welcome and message, listening or not. */
-  readonly boss = emptyBossSlot();
-  bossHp: number[] = [];
+  /** Z1: the room's airship fleet — its ships and their crashes (the mover
+   * field holds this very slot, so the crash check sees it), each ship's HP
+   * by id, and the shells in the air by id (the renderer drops each once it
+   * bursts). Kept from every welcome and message, listening or not. */
+  readonly boss = emptyFleetSlot();
+  bossHp = new Map<number, number>();
   /** W1: the room's carrier war — the wave on or coming, enemies left —
    * from every welcome and `waves` message. */
   waves: WaveState = idleWaves();
@@ -370,7 +372,7 @@ export class GameSocket {
     this.replayDestruction(welcome);
     this.addMissiles(welcome.missiles);
     this.replayRacks(welcome.racks);
-    this.bossHp = applyBossState(this.boss, welcome.boss);
+    this.bossHp = applyFleetState(this.boss, welcome.fleet);
     this.waves = decodeWaves(welcome.waves) ?? idleWaves();
     this.burn = decodeBurn(welcome.burn);
     this.replayChaos(welcome.chaos);
@@ -546,7 +548,7 @@ export class GameSocket {
     this.replayDestruction(next.welcome);
     this.addMissiles(next.welcome.missiles);
     this.replayRacks(next.welcome.racks);
-    this.bossHp = applyBossState(this.boss, next.welcome.boss);
+    this.bossHp = applyFleetState(this.boss, next.welcome.fleet);
     this.waves = decodeWaves(next.welcome.waves) ?? idleWaves();
     this.burn = decodeBurn(next.welcome.burn);
     this.replayChaos(next.welcome.chaos);
@@ -571,6 +573,11 @@ export class GameSocket {
     // hears would name a different building.
     if (staleCityModel(welcome)) {
       reloadOnce(welcome.cg as number, "ab-city-model-reload");
+    }
+    // Z1: likewise a tab built for another fleet model — its lanes and
+    // hulls would not be the server's.
+    if (staleFleetModel(welcome)) {
+      reloadOnce(welcome.fm as number, "ab-fleet-model-reload");
     }
     if (
       (welcome.destroyed?.length ?? 0) > 0 ||
@@ -704,11 +711,13 @@ export class GameSocket {
    * and cave-ins that have settled away. */
   pruneChaos(t: number): void {
     if (this.caveIns.list.length > 0) pruneCaveIns(this.caveIns, t);
-    // S9: carrier launches whose rig has reset.
+    // S9: launches whose rig has reset.
     const ls = this.boss.launches;
-    if (ls && ls.length > 0 && launchDoneAt(ls[0] as BossLaunch) < t) {
+    if (ls.length > 0 && launchDoneAt(ls[0] as BossLaunch) < t) {
       this.boss.launches = ls.filter((l) => launchDoneAt(l) >= t);
     }
+    // Z1: airships whose crash landed a while ago are history.
+    pruneFleet(this.boss, this.bossHp, t);
     if (this.quakes.size === 0) return;
     prune.quakes = this.quakes;
     prune.t = t;
@@ -820,19 +829,20 @@ export class GameSocket {
   }
 
   /**
-   * S4: one of our rounds met the sky boss's live weak point `wp`. The claim
-   * carries the round's whole line — the muzzle, its unit direction, and the
-   * render-clock time it met the zeppelin there — because the server re-runs
-   * that line against the armour itself.
+   * Z1: one of our rounds met airship `ship` — its weak point `wp`, or its
+   * hull (−1). The claim carries the round's whole line — the muzzle, its
+   * unit direction, and the render-clock time it met the ship there —
+   * because the server re-runs that line against the hull itself.
    */
   sendBossHit(
+    ship: number,
     wp: number,
     bulletOrigin: Vec3,
     dir: Vec3,
     seq: number,
     t: number,
   ): void {
-    this.send({ type: "bossHit", wp, seq, bulletOrigin, dir, t });
+    this.send({ type: "bossHit", ship, wp, seq, bulletOrigin, dir, t });
   }
 
   /** Report flying into a building or the ground — or (D4) into the
@@ -996,34 +1006,31 @@ export class GameSocket {
       case "awayStarted":
         this.events.onAwayStarted?.();
         break;
-      case "boss": {
+      case "ship": {
         this.serverDestruction++;
-        const raid = decodeRaid(msg.r);
-        if (!raid) break;
-        this.boss.raid = raid;
-        this.boss.down = null;
-        this.boss.launches = [];
-        this.bossHp = raidMaxHp(raid);
-        this.events.onBoss?.(raid);
+        const ship = decodeShip(msg.s);
+        if (!ship || shipById(this.boss, ship.id)) break;
+        this.boss.ships.push(ship);
+        this.bossHp.set(ship.id, ship.hp0);
+        this.events.onShip?.(ship);
         break;
       }
       case "bossLaunch": {
         const l = decodeLaunch(msg.l);
-        if (!l || this.boss.raid?.id !== l.raid) break;
-        const ls = this.boss.launches ?? [];
+        if (!l || !shipById(this.boss, l.ship)) break;
+        const ls = this.boss.launches;
         if (ls.some((o) => o.id === l.id)) break;
         this.boss.launches = [...ls, l];
         this.events.onBossLaunch?.(l, String(msg.bot));
         break;
       }
-      case "bossHp":
-        if (
-          this.boss.raid?.id === msg.id &&
-          Array.isArray(msg.hp) &&
-          msg.hp.length === this.bossHp.length &&
-          msg.hp.every((v) => typeof v === "number" && Number.isFinite(v))
-        ) {
-          this.bossHp = msg.hp;
+      case "shipHp":
+        for (const e of Array.isArray(msg.hp) ? msg.hp : []) {
+          if (!Array.isArray(e) || e.length !== 2) continue;
+          const [id, hp] = e;
+          if (typeof hp !== "number" || !Number.isFinite(hp)) continue;
+          const ship = shipById(this.boss, id);
+          if (ship) this.bossHp.set(id, Math.max(0, Math.min(ship.hp0, hp)));
         }
         break;
       case "aa": {
@@ -1041,13 +1048,19 @@ export class GameSocket {
           if (f) this.flak.set(f.id, f);
         }
         break;
-      case "bossDown":
-        if (isBossDown(msg.d) && this.boss.raid?.id === msg.d.id) {
-          this.boss.down = msg.d;
-          this.bossHp = this.bossHp.map(() => 0);
-          this.events.onBossDown?.(msg);
+      case "shipDown": {
+        const ship = shipById(this.boss, msg.id);
+        if (ship && isShipDown(msg.d) && ship.down === null) {
+          ship.down = msg.d;
+          this.bossHp.set(ship.id, 0);
+          // Its rigs go with it.
+          this.boss.launches = this.boss.launches.filter(
+            (l) => l.ship !== ship.id || launchReleaseAt(l) <= msg.d.t,
+          );
+          this.events.onShipDown?.(msg, ship);
         }
         break;
+      }
       case "missile":
         this.serverDestruction++;
         this.addMissiles([msg.m]);
@@ -1163,6 +1176,35 @@ export const staleCityModel = (welcome: Pick<WelcomeMsg, "cg">): boolean =>
   typeof welcome.cg === "number" && welcome.cg !== CITY_MODEL;
 
 /** D10: does `welcome` come from a server with another collapse model? */
+/** Z1: is this welcome from a server with another fleet model? */
+export const staleFleetModel = (welcome: Pick<WelcomeMsg, "fm">): boolean =>
+  typeof welcome.fm === "number" && welcome.fm !== FLEET_MODEL;
+
+/** Z1: a landed crash stays in the slot this long after it hit, ms, then
+ * its ship is pruned (the server prunes its own the same way). */
+export const FLEET_LANDED_TAIL_MS = 5000;
+
+/** Z1: drop the ships whose crash landed over FLEET_LANDED_TAIL_MS before
+ * server time `t`, and their HP. Allocates only when one goes. */
+export function pruneFleet(
+  slot: { ships: FleetShip[] },
+  hp: Map<number, number>,
+  t: number,
+): void {
+  let gone = false;
+  for (const s of slot.ships) {
+    const d = s.down;
+    if (d && t > d.t + d.end + FLEET_LANDED_TAIL_MS) gone = true;
+  }
+  if (!gone) return;
+  slot.ships = slot.ships.filter((s) => {
+    const d = s.down;
+    const keep = !(d && t > d.t + d.end + FLEET_LANDED_TAIL_MS);
+    if (!keep) hp.delete(s.id);
+    return keep;
+  });
+}
+
 export const staleCollapseModel = (welcome: Pick<WelcomeMsg, "cm">): boolean =>
   typeof welcome.cm === "number" && welcome.cm !== COLLAPSE_MODEL;
 

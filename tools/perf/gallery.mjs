@@ -381,9 +381,13 @@ try {
       console.log("caveIn", v.name, JSON.stringify(await stageCaveIn()));
     }
     if (v.boss) {
-      // S9: stage the carrier at the pinned instant (see gallery-views.mjs).
+      // S9/Z1: stage the fleet at the pinned instant (see gallery-views.mjs)
+      // — its hero (the first, nearest ship) of the view's class — and, for
+      // a close-up, frame the hero: `boss.eye` / `boss.at` are in its own
+      // frame (x the nose, y up, z starboard), placed by its pose now.
       const r = await page.evaluate((v) => {
-        window.__ab.qaBoss({
+        const ab = window.__ab;
+        ab.qaFleet({
           x: v.x,
           y: v.y,
           z: v.z,
@@ -392,16 +396,34 @@ try {
           worldMs: v.timeMs,
           crossMs: 0,
           corridor: { near: 60, far: 160, lateral: 30, yLo: 250, yHi: 330 },
+          ...(v.boss.count !== undefined && { count: v.boss.count }),
+          ...(v.boss.hero !== undefined && { heroClass: v.boss.hero }),
         });
         if (v.boss.launch) {
-          window.__ab.qaBossLaunch(v.boss.launch.kind, v.boss.launch.phaseMs);
+          ab.qaBossLaunch(v.boss.launch.kind, v.boss.launch.phaseMs);
         }
         if (v.boss.downAfterMs !== undefined) {
-          window.__ab.qaBossDown(v.boss.downAfterMs);
+          ab.qaShipDown(0, v.boss.downAfterMs);
         }
-        return window.__ab.boss();
+        const f = ab.fleet();
+        const hero = f.ships[0];
+        if (hero && v.boss.eye && v.boss.at) {
+          const c = Math.cos(hero.pos.yaw);
+          const s = Math.sin(hero.pos.yaw);
+          const place = ([lx, ly, lz]) => ({
+            x: hero.pos.x + c * lx + s * lz,
+            y: hero.pos.y + ly,
+            z: hero.pos.z - s * lx + c * lz,
+          });
+          ab.qaCamera({
+            eye: place(v.boss.eye),
+            at: place(v.boss.at),
+            ...(v.fov ? { fov: v.fov } : {}),
+          });
+        }
+        return { drawn: f.drawn, hero: hero ?? null };
       }, v);
-      console.log("boss", v.name, JSON.stringify(r?.drawn ?? null));
+      console.log("boss", v.name, JSON.stringify(r));
     }
     if (v.chew) {
       // D2: break the building once, before the frames settle.
@@ -456,6 +478,14 @@ try {
             requestAnimationFrame(tick);
           }),
       );
+    }
+    if (v.lowChaos) {
+      // C1: stage the low run round the held pose (render clock).
+      const r = await page.evaluate(
+        (v) => window.__ab.qaLowChaos({ x: v.x, y: v.y, z: v.z, yaw: v.yaw }),
+        v,
+      );
+      console.log("lowChaos", v.name, JSON.stringify(r));
     }
     // D11: a fixed-camera view holds its plane every frame too — left to fly
     // between pins, it wandered off its parking spot into the city.
@@ -572,7 +602,7 @@ try {
         v.name,
         JSON.stringify(
           await page.evaluate(() => ({
-            ...window.__ab.fleet(),
+            ...window.__ab.planeFleet(),
             nan: window.__ab.nanProbe(),
           })),
         ),
@@ -618,6 +648,7 @@ try {
       );
       await page.evaluate(() => window.__ab.qaPenetrate(null));
     }
+    if (v.lowChaos) await page.evaluate(() => window.__ab.qaLowChaos(null));
     console.log(
       "aaNests",
       v.name,

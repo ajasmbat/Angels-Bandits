@@ -171,6 +171,17 @@ float abFarDensity(vec2 w) {
  * BY REFERENCE with the dome. FarSkyline.update() is its only writer. */
 export const FAR_ORIGIN = { value: new THREE.Vector2() };
 
+/** GLSL: the shell (farShellDistance) — `abFarShell(rel)`, `rel` true and
+ * from the eye → where it is drawn. SKY1's cosmetic sky draws in it too. */
+export const FAR_SHELL_GLSL = /* glsl */ `
+vec3 abFarShell(vec3 rel) {
+  float d = length(rel);
+  float x = max(d - ${f(FOG_DISTANCE)}, 0.0);
+  float s = ${f(SHELL_NEAR)} + ${SHELL_DEPTH.toFixed(3)} * x / (x + ${f(SHELL_KNEE)});
+  return rel * (s / max(d, 1.0));
+}
+`;
+
 /** GLSL shared by both draws: the shell, the far visibility, the uniforms. */
 const COMMON_GLSL = /* glsl */ `
 uniform vec3 fogColor;
@@ -182,13 +193,7 @@ uniform float uFarOuter;
 uniform float uFarPx;
 uniform float uFarTime;
 uniform vec3 uFarMoon;
-// The shell (farShellDistance): \`rel\` (true, from the eye) → where it is drawn.
-vec3 abFarShell(vec3 rel) {
-  float d = length(rel);
-  float x = max(d - ${f(FOG_DISTANCE)}, 0.0);
-  float s = ${f(SHELL_NEAR)} + ${SHELL_DEPTH.toFixed(3)} * x / (x + ${f(SHELL_KNEE)});
-  return rel * (s / max(d, 1.0));
-}
+${FAR_SHELL_GLSL}
 // How much of the far city's own colour shows over the fog at true radial
 // distance d: the haze, the far edge (0 by R − 100) and the weather (none
 // in the deck or dust — abWeather.y, the fog closing in — fogFar).

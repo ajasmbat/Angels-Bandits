@@ -38,6 +38,7 @@
     "./wind": "./src/wind.ts",
     "./fireworks": "./src/fireworks.ts",
     "./skytraffic": "./src/skytraffic.ts",
+    "./skyarmada": "./src/skyarmada.ts",
     "./protocol": "./src/protocol.ts",
     "./net": "./src/net.ts",
     "./wreck": "./src/wreck.ts",

@@ -33,4 +33,31 @@ confirmed on the M3; these are for composition.
   same L9 peak, so the horizon and the cloud deck over the city stop
   reading orange.
 
-No new draws: the far skyline is still its two meshes.
+- **Depth in the far shell.** The shell holds ~200 depth steps for
+  0.8–5 km, so a far tower is about one step deep. The lattice is now
+  drawn far to near (three's LessEqual keeps the nearer tower on a tie), a
+  lower part's roof is a ring round the part above (no hidden floor behind
+  its faces — the seam that crawled along every setback, on main too), and
+  each far tower gets a one-pixel silhouette AA. A tower's own colour,
+  occupancy, bands and neon converge on the city's mean by 2.4 km, as the
+  air would merge them, so the depth ties that remain do not show.
+
+No new draws: the far skyline is still its two meshes (`__ab.perf()`
+draw calls equal main's in every view below).
+
+## Far-field flicker (`flicker.mjs --far`, SwiftShader, res 2)
+
+The camera slides 0.5 m a frame with the world frozen and everything but
+the far skyline and the sky hidden; `flicker` is the mean |Δ²luma| inside
+the view's far rect (a steady sub-pixel slide cancels; switching does not).
+
+| view | main (be8ce88) | R1 | drop |
+| --- | --- | --- | --- |
+| `skyline-horizon-low` | 4.256 | 0.779 | **81.7 %** |
+| `skyline-far` | 2.069 | 1.288 | 37.7 % |
+
+`skyline-far`'s rect is the whole far band from a 380 m eye: hundreds of
+towers a few pixels across, whose remaining flicker is geometric (box edges
+stepping, no MSAA) and depth ties at 2+ km — present on main too, and only
+shrunk, not removed, by the work above. The window sparkle itself (the
+orange checker) is gone in both views.

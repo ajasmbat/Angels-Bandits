@@ -206,6 +206,9 @@ export interface RoomCity {
 export interface SweepLanding {
   t: number;
   chunk: number;
+  /** The building it lands in (a stop blast: the last one the tunnel
+   * reached, or −1) — a rebuild drops what is still due in it. */
+  building: number;
   by: string | null;
   chain: number;
   x: number;
@@ -540,6 +543,7 @@ export function sweepBlast(
     city.sweeps.push({
       t: rec.t + (res.times[k] as number) * 1000,
       chunk: id,
+      building: chunkBuilding(id),
       by,
       chain,
       x: 0,
@@ -552,9 +556,11 @@ export function sweepBlast(
   const r = blast?.r ?? spec.blastRadius;
   const damage = blast?.damage ?? spec.blastDamage;
   if (r > 0 && damage > 0) {
+    const last = res.chunks[res.chunks.length - 1];
     city.sweeps.push({
       t: rec.t + res.stopT * 1000,
       chunk: -1,
+      building: last === undefined ? -1 : chunkBuilding(last),
       by,
       chain,
       x: res.stop.x,
@@ -826,9 +832,7 @@ export function rebuildBuilding(city: RoomCity, index: number): number[] {
   city.firstDamageAt.delete(index);
   city.lastStructuralAt.delete(index);
   // P1: a tunnel still being driven into it stops at its rebuilt walls.
-  city.sweeps = city.sweeps.filter(
-    (s) => s.chunk < 0 || chunkBuilding(s.chunk) !== index,
-  );
+  city.sweeps = city.sweeps.filter((s) => s.building !== index);
   // D9: its roof props and jumbotron come back with it (clients do the same
   // on the `rebuild`), and its soot goes.
   city.props.slot.state.restoreBuilding(index);

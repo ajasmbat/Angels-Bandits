@@ -21,6 +21,7 @@ import {
 } from "@angels-bandits/common/boss";
 import {
   CHAOS_CADENCE,
+  CHAOS_COMET,
   CHAOS_METEOR,
   CHAOS_QUAKE,
   type ChaosLayer,
@@ -199,6 +200,8 @@ interface SimLog {
   /** Chunks quakes/fire broke on a building a plane was in reach of. */
   holdViolations: number;
   chaosBroke: number;
+  /** P1: comets launched. */
+  comets: number;
   /** Event lists for the determinism check. */
   trace: string[];
   mix: Record<string, number>;
@@ -239,6 +242,7 @@ function simulate(minutes: number, seed = 7): SimLog {
     freshViolations: [],
     holdViolations: 0,
     chaosBroke: 0,
+    comets: 0,
     trace: [],
     mix: {},
   };
@@ -338,6 +342,7 @@ function simulate(minutes: number, seed = 7): SimLog {
       index: rc.index,
     });
     for (const m of out.meteors) {
+      if (m.kind === "comet") log.comets++;
       checkFresh("meteor", t, [m.to], missileImpactAt(m) - t, planes);
       log.lethal.push({
         layer: "meteor",
@@ -416,7 +421,11 @@ beforeAll(() => {
 
 describe("C2 schedules are deterministic", () => {
   it("every layer's slots are pure in (seed, window), partition the timeline and keep their band", () => {
-    for (const layer of [CHAOS_METEOR, CHAOS_QUAKE] as ChaosLayer[]) {
+    for (const layer of [
+      CHAOS_METEOR,
+      CHAOS_QUAKE,
+      CHAOS_COMET,
+    ] as ChaosLayer[]) {
       const a = chaosSlotsInWindow(42, layer, 0, 3_600_000);
       expect(chaosSlotsInWindow(42, layer, 0, 3_600_000)).toEqual(a);
       // Abutting windows give the same slots as one long one.
@@ -448,7 +457,13 @@ describe("C2 schedules are deterministic", () => {
   it("quakes and every strike kind survive the wire bit for bit", () => {
     const q = { id: 3, t: T0 + 3000, dur: 5123, mag: 0.73, x: 12.3, z: 1999.9 };
     expect(decodeQuake(encodeQuake(q))).toEqual(q);
-    for (const kind of ["cruise", "artillery", "meteor", "bomb"] as const) {
+    for (const kind of [
+      "cruise",
+      "artillery",
+      "meteor",
+      "bomb",
+      "comet",
+    ] as const) {
       const m: MissileStrike = {
         id: 4,
         kind,
@@ -548,6 +563,14 @@ describe("constant destruction, survivable (60-min room)", () => {
     for (const kind of ["missile", "meteor", "director", "collapse", "quake"]) {
       expect(hour.mix[kind] ?? 0).toBeGreaterThan(0);
     }
+  });
+
+  it("P1: comets join the rotation at a modest rate (a few a minute at most, well under the meteors)", () => {
+    const rocks = hour.trace.filter((s) => s.startsWith("m")).length;
+    const meteors = rocks - hour.comets;
+    expect(hour.comets).toBeGreaterThan(10);
+    expect(hour.comets).toBeLessThanOrEqual(3600 / 35);
+    expect(hour.comets * 3).toBeLessThan(meteors);
   });
 
   it("keeps the city's gone share (broken + fallen) at or under 20 %", () => {

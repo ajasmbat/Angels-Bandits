@@ -23,12 +23,17 @@ import {
 import { bossSpawnClear } from "@angels-bandits/common/boss";
 import { generateCity, mulberry32 } from "@angels-bandits/common/city";
 import {
+  IMPACT_SECTION,
+  sweepRecord,
+} from "@angels-bandits/common/city/penetrate";
+import {
   BULLET_DAMAGE,
   CITY_SEED,
   MAX_HP,
 } from "@angels-bandits/common/constants";
 import { MedalLedger } from "@angels-bandits/common/medals";
 import { type Vec3, wrapCoord, wrapDelta } from "@angels-bandits/common/world";
+import { wreckVelAt } from "@angels-bandits/common/wreck";
 import { describe, expect, it } from "vitest";
 import {
   BossDirector,
@@ -39,7 +44,11 @@ import {
   landBotBossRound,
 } from "../src/boss";
 import { Combat } from "../src/combat";
-import { createRoomCity, tickDestruction } from "../src/destruction";
+import {
+  createRoomCity,
+  takeSweeps,
+  tickDestruction,
+} from "../src/destruction";
 import { pickRespawn, respawnIfUnsafe } from "../src/respawn";
 import { poseFromSpawn } from "../src/validate";
 
@@ -391,8 +400,10 @@ describe("weak-point hit claims", () => {
 describe("the wreck falls via D4 and triggers D3 deterministically", () => {
   /** Down it over a block where its mid section hits a roof; land every
    * section through the director; run the room's destruction ticks. */
-  function crash() {
+  function crash(sweep = false) {
     const rc = createRoomCity(city);
+    /** P1: the swept tunnels' chunks, in order. */
+    const swept: number[] = [];
     const boss = new BossDirector(mulberry32(3), {
       ...BOSS_FAST_TUNING,
       firstMinMs: 0,
@@ -425,9 +436,28 @@ describe("the wreck falls via D4 and triggers D3 deterministically", () => {
         buildings: rc.buildings,
         index: rc.index,
       });
-      for (const { at, building } of out.landed) {
+      for (const { piece, at, building } of out.landed) {
         landed++;
-        chunks.push(...applyBossImpact(rc, at, "top", building));
+        // P1 (as index.ts): the section's velocity as it hit.
+        const path = { p: piece.p, v: piece.v, t: 0, spin: piece.spin };
+        const vel = wreckVelAt({ ...path, end: piece.end }, piece.end, {
+          x: 0,
+          y: 0,
+          z: 0,
+        });
+        chunks.push(
+          ...applyBossImpact(
+            rc,
+            at,
+            "top",
+            building,
+            sweep ? { vel, now } : undefined,
+          ),
+        );
+        for (const rec of takeSweeps(rc)) {
+          expect(rec.kind).toBe(IMPACT_SECTION);
+          swept.push(...sweepRecord(rec, rc.buildings).chunks);
+        }
       }
       collapses.push(...tickDestruction(rc, now).collapses);
     }
@@ -435,10 +465,23 @@ describe("the wreck falls via D4 and triggers D3 deterministically", () => {
       down,
       landed,
       chunks,
+      swept,
+      gone: swept.filter((id) => rc.damage.isGone(id)).length,
       collapses,
       collapseBy: [...rc.collapseBy.values()],
     };
   }
+
+  it("P1: the sections plough on in — the swept tunnels land and still bring a building down", () => {
+    const a = crash(true);
+    expect(a.landed).toBe(3);
+    expect(a.swept.length).toBeGreaterThan(0);
+    expect(a.gone).toBe(a.swept.length);
+    expect(a.collapses.length).toBeGreaterThan(0);
+    expect(a.collapseBy).toContain("top");
+    // Deterministic, swept or not.
+    expect(crash(true).swept).toEqual(a.swept);
+  });
 
   it("lands all three sections, breaks the city and brings a building down", () => {
     const a = crash();

@@ -99,9 +99,10 @@ export const IMPACTORS: readonly ImpactorSpec[] = [
     blastRadius: 9,
     blastDamage: 160,
   },
-  // A shot-down wreck: the same airframe, burning, at its fall speed.
+  // A shot-down wreck: the airframe, fuel and all, at its fall speed
+  // (30–75 m/s): 1–4 chunks.
   {
-    mass: 5,
+    mass: 9,
     radius: 4,
     maxChunks: 8,
     airReach: 12,

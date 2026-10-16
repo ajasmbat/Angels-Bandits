@@ -78,7 +78,12 @@
 // rect are scored. What is left is the far city's own response to a moving
 // camera — sub-pixel windows and street lines switching as they slide —
 // with no animation (beacons, fires, traffic) in it, and with every other
-// system hidden (FAR_KEEP), so no near sprite sliding over the rect counts. `--ref` then prints the
+// system hidden (FAR_KEEP), so no near sprite sliding over the rect counts.
+// It reports the mean |Δ| (`change`: mostly the slide itself, edges moving
+// a fraction of a pixel) and the mean |Δ²| = |L(t+1) − 2·L(t) + L(t−1)|
+// (`flicker`): a steady sub-pixel slide changes a pixel at a steady rate,
+// which Δ² cancels, while a cell or line switching on and off does not —
+// the verdict is on the flicker. With --far every capture runs at FAR_RES. `--ref` then prints the
 // far table and its verdict: the far pan must fall by FAR_DROP vs the ref.
 //
 // `FLICKER_WEATHER=<phase>` (R3) pins the middle of that weather phase
@@ -175,6 +180,10 @@ const FAR_PAN_M = 0.5;
  * searchlights …) is hidden for the far capture, so the rect scores the
  * far field alone and not a near sprite sliding across it. */
 const FAR_KEEP = ["farSkyline", "farCarpet", "farTowers", "sky"];
+/** --far: the pixel ratio every capture of the run is drawn at — the M3's
+ * Retina 2, where the far city's 2–3 px window cells sparkled; at 1 they
+ * are already sub-pixel and resolve to their mean on any build. */
+const FAR_RES = 2;
 export const FAR_DROP = 0.6;
 /** --grid: frames with camera AND world frozen. */
 const GRID_STILL_FRAMES = 4;
@@ -358,6 +367,7 @@ function aimView(page, spec, panM) {
         };
       };
       window.__flickerPrev = null;
+      window.__flickerPrev2 = null;
       window.__flickerHeat?.fill(0);
       // --breathe: every view's ramp starts here, so its settle steps hold
       // `from` and a re-shot (--ablate) breathes exactly like the original.
@@ -411,14 +421,18 @@ function readFrame(page) {
         mean += lum[j];
       }
       const prev = window.__flickerPrev;
+      const prev2 = window.__flickerPrev2 ?? null;
       let delta = null;
       let hot = null;
+      // --far: the rect's mean |Δ²| (L − 2·prev + prev2), the flicker.
+      let flick = null;
       if (prev) {
         let sum = 0;
         let n = 0;
         // --far: the rect's own mean |Δ| (same pixels in every frame).
         let rectSum = 0;
         let rectN = 0;
+        let flickSum = 0;
         const rx0 = rect ? Math.floor(rect[0] * w) : 0;
         const ry0 = rect ? Math.floor(rect[1] * h) : 0;
         const rx1 = rect ? Math.ceil(rect[2] * w) : w;
@@ -451,6 +465,7 @@ function readFrame(page) {
             if (x >= rx0 && x < rx1 && y >= ry0 && y < ry1) {
               rectSum += d;
               rectN++;
+              if (prev2) flickSum += Math.abs(s - (prev[j] - prev2[j]));
             }
           }
           if (d > jitterDelta) {
@@ -461,9 +476,11 @@ function readFrame(page) {
         }
         delta = rect ? rectSum / Math.max(rectN, 1) : sum / lum.length;
         hot = n / lum.length;
+        if (rect && prev2) flick = flickSum / Math.max(rectN, 1);
       }
+      window.__flickerPrev2 = prev ?? null;
       window.__flickerPrev = lum;
-      return { delta, hot, mean: mean / lum.length };
+      return { delta, hot, flick, mean: mean / lum.length };
     },
     [HOT_DELTA, JITTER_DELTA],
   );
@@ -478,6 +495,7 @@ async function captureFrames(page, frames, shots, tag) {
   const deltas = [];
   const hots = [];
   const means = [];
+  const flicks = [];
   // Each capture's heat map and jitter count are its own.
   await page.evaluate(() => {
     window.__flickerHeat?.fill(0);
@@ -542,6 +560,7 @@ async function captureFrames(page, frames, shots, tag) {
       );
     }
     means.push(f.mean);
+    if (f.flick !== null) flicks.push(f.flick);
     if (f.delta !== null) {
       deltas.push(f.delta);
       hots.push(f.hot);
@@ -567,6 +586,8 @@ async function captureFrames(page, frames, shots, tag) {
     deltas: deltas.map((d) => Math.round(d * 1000) / 1000),
     meanLuma: Math.round(avg(means) * 10) / 10,
     flash: deltas.some((d) => d > Math.max(FLASH_DELTA, 3 * typical)),
+    // --far: the mean |Δ²| over the rect (null outside a --far capture).
+    flicker: flicks.length > 0 ? Math.round(avg(flicks) * 1000) / 1000 : null,
   };
 }
 
@@ -626,7 +647,7 @@ async function measureBuild(
     // BEFORE goto: see the header.
     await page.clock.install();
     await page.goto(
-      `http://127.0.0.1:${port}/?res=1&sky=night&quality=high&gputime=0`,
+      `http://127.0.0.1:${port}/?res=${far ? FAR_RES : 1}&sky=night&quality=high&gputime=0`,
     );
     await page.fill("#join-name", "FLICKER");
     await page.click('#join button[type="submit"]');
@@ -1016,8 +1037,8 @@ export function gridViewVerdict(head, ref) {
 }
 
 /**
- * R1 --far verdict: the far-field pan (world frozen, scored inside the
- * view's far rect) must fall by at least FAR_DROP against the ref.
+ * R1 --far verdict: the far-field pan's flicker (mean |Δ²|, world frozen,
+ * inside the view's far rect) must fall by at least FAR_DROP vs the ref.
  */
 export function farViewVerdict(head, ref) {
   const drop = ref > 0 ? 1 - head / ref : 0;
@@ -1030,21 +1051,30 @@ function printFar(report) {
   if (rows.length === 0) return;
   const ref = report.ref ?? null;
   console.log(
-    `\nfar field — the pan with the world frozen, mean |Δluma| per pixel inside each view's far rect, ${FAR_FRAMES} frames`,
+    `\nfar field — the pan with the world frozen inside each view's far rect, ${FAR_FRAMES} frames at res ${FAR_RES}: flicker = mean |Δ²luma|, change = mean |Δluma|`,
   );
   let pass = true;
   const out = [];
   for (const h of rows) {
     const r = ref?.views.find((v) => v.name === h.name)?.farPan ?? null;
     if (!r) {
-      console.log(`${h.name.padEnd(20)} ${h.farPan.score.toFixed(3)}`);
+      console.log(
+        `${h.name.padEnd(20)} flicker ${h.farPan.flicker.toFixed(3)}  change ${h.farPan.score.toFixed(3)}`,
+      );
       continue;
     }
-    const v = farViewVerdict(h.farPan.score, r.score);
+    const v = farViewVerdict(h.farPan.flicker, r.flicker);
     if (!v.pass) pass = false;
-    out.push({ name: h.name, ref: r.score, head: h.farPan.score, ...v });
+    out.push({
+      name: h.name,
+      ref: r.flicker,
+      head: h.farPan.flicker,
+      changeRef: r.score,
+      changeHead: h.farPan.score,
+      ...v,
+    });
     console.log(
-      `${h.name.padEnd(20)} ${r.score.toFixed(3).padStart(7)} → ${h.farPan.score.toFixed(3).padStart(7)}  drop ${(v.drop * 100).toFixed(1)}%  ${v.pass ? "PASS" : `FAIL (< ${FAR_DROP * 100}%)`}`,
+      `${h.name.padEnd(20)} flicker ${r.flicker.toFixed(3).padStart(7)} → ${h.farPan.flicker.toFixed(3).padStart(7)}  drop ${(v.drop * 100).toFixed(1)}%  (change ${r.score.toFixed(3)} → ${h.farPan.score.toFixed(3)})  ${v.pass ? "PASS" : `FAIL (< ${FAR_DROP * 100}%)`}`,
     );
   }
   if (ref) {

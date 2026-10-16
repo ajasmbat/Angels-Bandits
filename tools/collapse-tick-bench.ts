@@ -18,13 +18,24 @@
 // — at p99 ≤ 1 ms. A tick that builds a chained collapse (a neighbour
 // brought down by debris) carries that build — tens of ms for a tower,
 // bounded per tick by COLLAPSE_BUILD_BUDGET_MS — and is reported apart, as
-// is the one-off staging of the three felled towers. Exits 1 over the gate.
+// is the one-off staging of the three felled towers.
+//
+// C1: then the same room tick with the chaos maxed — the D5 director with
+// its low-flying chaos round a human down in the canyons for the whole
+// run (60 m, a staircase down the streets: an event every 2–4 s, the
+// prefill warming topples, the falling cap, the recycling rule) and eleven
+// bots low alongside it (every lethal pick checks each one's way out),
+// for 120 s: director.tick + tickDestruction + the rebuild check, plus the
+// bots' probes. A tick that simulates debris (the director's shape cache,
+// a staged topple, a chained collapse) is a building tick, reported apart;
+// the rest are held to the same steady p99. Exits 1 over either gate.
 
 import {
   type Building,
   generateCity,
   tierGrids,
 } from "@angels-bandits/common/city";
+import { mulberry32 } from "@angels-bandits/common/city";
 import {
   DIR_NEG_Z,
   DIR_POS_X,
@@ -34,14 +45,25 @@ import {
   demolitionPlan,
 } from "@angels-bandits/common/city/collapse";
 import { generateMovers } from "@angels-bandits/common/city/movers";
-import { CITY_SEED, PLAYER_RADIUS } from "@angels-bandits/common/constants";
-import { wrapDeltaAxis } from "@angels-bandits/common/world";
+import {
+  BLOCK_PITCH,
+  CITY_SEED,
+  PLAYER_RADIUS,
+} from "@angels-bandits/common/constants";
+import { canonicalize, wrapDeltaAxis } from "@angels-bandits/common/world";
+import { applyGoneHold } from "../server/src/chaos";
+import { DangerBudget } from "../server/src/danger";
 import {
   type RoomCity,
   createRoomCity,
   stageCollapse,
   tickDestruction,
 } from "../server/src/destruction";
+import {
+  DESTRUCTION_TUNING,
+  DestructionDirector,
+  type DestructionPlane,
+} from "../server/src/director";
 
 const city = generateCity(CITY_SEED);
 const { cranes } = generateMovers(CITY_SEED, city);
@@ -116,6 +138,70 @@ function run(): {
   return { stageMs, steady, building, chained };
 }
 
+/** C1: plane `k` of the low run at `t` — a staircase down the streets at
+ * 80 m/s, 60 m up (k 0 is the human; the bots fly their own, offset). */
+function lowPlane(k: number, t: number): DestructionPlane {
+  const s = ((t - T0) / 1000) * (80 - k);
+  const leg = Math.floor(s / BLOCK_PITCH);
+  const f = s - leg * BLOCK_PITCH;
+  const alongZ = leg % 2 === 0;
+  const pos = canonicalize({
+    x: (1 + (k % 4) + Math.floor(leg / 2)) * BLOCK_PITCH + (alongZ ? 0 : f),
+    y: 60 + 4 * k,
+    z: (2 + (k >> 2) + Math.ceil(leg / 2)) * BLOCK_PITCH + (alongZ ? f : 0),
+  });
+  const v = 80 - k;
+  return {
+    id: k === 0 ? "human" : `bot:${k}`,
+    pos,
+    vel: alongZ ? { x: 0, y: 0, z: v } : { x: v, y: 0, z: 0 },
+    human: k === 0,
+    protected: false,
+    ageMs: 0,
+  };
+}
+
+const LOW_SPAN_MS = 120_000;
+
+function runLow(): { steady: number[]; building: number[]; events: number } {
+  const rc: RoomCity = createRoomCity(city, cranes, CITY_SEED, []);
+  const director = new DestructionDirector(
+    CITY_SEED,
+    mulberry32(0xc1),
+    DESTRUCTION_TUNING,
+  );
+  const budget = new DangerBudget();
+  const world = { city: rc, cranes, budget };
+  const steady: number[] = [];
+  const building: number[] = [];
+  let events = 0;
+  const probe = { x: 0, y: 0, z: 0 };
+  for (let t = T0; t <= T0 + LOW_SPAN_MS; t += TICK_MS) {
+    const planes: DestructionPlane[] = [];
+    for (let k = 0; k < BOTS; k++) planes.push(lowPlane(k, t));
+    const sims = director.simulations;
+    const began = performance.now();
+    applyGoneHold(rc);
+    const out = director.tick(t, planes, world);
+    const d = tickDestruction(rc, t, planes);
+    if (director.rebuildDue(t)) director.rebuild(t, planes, world);
+    for (const p of planes) {
+      probe.x = p.pos.x;
+      probe.y = p.pos.y;
+      probe.z = p.pos.z;
+      collideCollapses(probe, PLAYER_RADIUS, rc.collapses.list, t, true);
+    }
+    const ms = performance.now() - began;
+    events += out.warned.length;
+    const built =
+      director.simulations > sims ||
+      d.collapses.length > 0 ||
+      out.fired.some((f) => f.collapse !== null);
+    (built ? building : steady).push(ms);
+  }
+  return { steady, building, events };
+}
+
 run(); // warm-up: the JIT, the props layout, the link caches
 const steady: number[] = [];
 const building: number[] = [];
@@ -130,6 +216,18 @@ for (let r = 1; r < RUNS; r++) {
 }
 steady.sort((a, b) => a - b);
 building.sort((a, b) => a - b);
+runLow(); // warm-up
+const lowSteady: number[] = [];
+const lowBuilding: number[] = [];
+let lowEvents = 0;
+for (let r = 1; r < RUNS; r++) {
+  const res = runLow();
+  lowSteady.push(...res.steady);
+  lowBuilding.push(...res.building);
+  lowEvents += res.events;
+}
+lowSteady.sort((a, b) => a - b);
+lowBuilding.sort((a, b) => a - b);
 const report = {
   towers: TOWERS.map((i) => ({
     index: i,
@@ -148,9 +246,24 @@ const report = {
     max: building.at(-1) ?? 0,
   },
   stagingMs: stage.reduce((a, b) => a + b, 0) / Math.max(1, stage.length),
+  lowChaos: {
+    ticks: lowSteady.length + lowBuilding.length,
+    events: lowEvents,
+    steady: {
+      p50: pct(lowSteady, 0.5),
+      p99: pct(lowSteady, 0.99),
+      max: lowSteady.at(-1) ?? 0,
+    },
+    buildingTicks: {
+      ticks: lowBuilding.length,
+      p50: pct(lowBuilding, 0.5),
+      max: lowBuilding.at(-1) ?? 0,
+    },
+  },
   gateP99Ms: GATE_P99_MS,
 };
-const ok = report.steady.p99 <= GATE_P99_MS;
+const ok =
+  report.steady.p99 <= GATE_P99_MS && report.lowChaos.steady.p99 <= GATE_P99_MS;
 if (process.argv.includes("--json")) {
   console.log(JSON.stringify({ ...report, ok }, null, 2));
 } else {
@@ -165,5 +278,12 @@ if (process.argv.includes("--json")) {
     `chained-build ticks ${report.chainedBuilds.ticks} (${report.chainedBuilds.collapses} collapses)   p50 ${f(report.chainedBuilds.p50)}   max ${f(report.chainedBuilds.max)}`,
   );
   console.log(`staging the three felled towers: ${f(report.stagingMs)}`);
+  const lc = report.lowChaos;
+  console.log(
+    `C1 low chaos maxed, ${lc.ticks} ticks over ${RUNS - 1} runs, ${lc.events} events: steady tick   p50 ${f(lc.steady.p50)}   p99 ${f(lc.steady.p99)}   max ${f(lc.steady.max)}   (gate p99 ≤ ${GATE_P99_MS} ms: ${lc.steady.p99 <= GATE_P99_MS ? "ok" : "OVER"})`,
+  );
+  console.log(
+    `C1 debris-building ticks ${lc.buildingTicks.ticks}   p50 ${f(lc.buildingTicks.p50)}   max ${f(lc.buildingTicks.max)}`,
+  );
 }
 if (!ok) process.exit(1);

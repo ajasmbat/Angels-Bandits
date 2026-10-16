@@ -442,6 +442,14 @@ try {
           }),
       );
     }
+    if (v.lowChaos) {
+      // C1: stage the low run round the held pose (render clock).
+      const r = await page.evaluate(
+        (v) => window.__ab.qaLowChaos({ x: v.x, y: v.y, z: v.z, yaw: v.yaw }),
+        v,
+      );
+      console.log("lowChaos", v.name, JSON.stringify(r));
+    }
     // D11: a fixed-camera view holds its plane every frame too — left to fly
     // between pins, it wandered off its parking spot into the city.
     if (v.raf || v.eye) {
@@ -574,6 +582,7 @@ try {
       await page.evaluate(() => window.__ab.qaCaveIn(null));
     }
     if (v.drop) await page.evaluate(() => window.__ab.qaChaos(null));
+    if (v.lowChaos) await page.evaluate(() => window.__ab.qaLowChaos(null));
     console.log(
       "aaNests",
       v.name,

@@ -44,6 +44,7 @@
     "./cityevents": "./src/cityevents.ts",
     "./courses": "./src/courses.ts",
     "./director": "./src/director.ts",
+    "./lowchaos": "./src/lowchaos.ts",
     "./medals": "./src/medals.ts",
     "./boss": "./src/boss.ts",
     "./hazards": "./src/hazards.ts",

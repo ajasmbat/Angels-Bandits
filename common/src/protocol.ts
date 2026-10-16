@@ -16,8 +16,8 @@ import type {
 import type { WireChaosState, WireQuake } from "./chaos";
 import type { WireCaveIn } from "./city/caveins";
 import type { CollapseWire } from "./city/collapse";
-import type { WireImpact } from "./city/penetrate";
 import type { NewsHeliSlot, NewsHeliTarget } from "./city/newsheli";
+import type { WireImpact } from "./city/penetrate";
 import type { WireCrater, WirePropState } from "./city/props";
 import type { CityEvent } from "./cityevents";
 import type { RebuildWire, WireDirectorEvent } from "./director";

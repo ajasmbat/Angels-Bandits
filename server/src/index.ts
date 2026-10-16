@@ -56,6 +56,10 @@ import {
   retargetNewsHeli,
   setNewsTarget,
 } from "@angels-bandits/common/city/newsheli";
+import {
+  SWEEP_MODEL_VERSION,
+  encodeImpact,
+} from "@angels-bandits/common/city/penetrate";
 import { PROP_NEST } from "@angels-bandits/common/city/props";
 import {
   type CityIndex,
@@ -128,7 +132,11 @@ import {
   canonicalize,
   wrapDeltaAxis,
 } from "@angels-bandits/common/world";
-import type { WreckParams, WreckWorld } from "@angels-bandits/common/wreck";
+import {
+  type WreckParams,
+  type WreckWorld,
+  wreckVelAt,
+} from "@angels-bandits/common/wreck";
 import { type WebSocket, WebSocketServer } from "ws";
 import { type AaEnemy, RoomAa, STRAFE_DAMAGE } from "./aa";
 import {
@@ -179,6 +187,7 @@ import {
   propsWireState,
   resetRoomCity,
   setLabCity,
+  takeSweeps,
   tickDestruction,
   noseOf as wireNose,
 } from "./destruction";
@@ -676,16 +685,28 @@ const spawnAvoid =
 
 /** A plane died: blast the city at its last on-record position (alive or
  * dead — lastPosOf covers both). Call after the death is decided. A collapse
- * the blast sets off is credited to the death's killer (D3). */
+ * the blast sets off is credited to the death's killer (D3). P1: a CRASH
+ * (`now` given) ploughs on along the plane's velocity at contact — its
+ * on-record pose's for a human, its sim's for a bot. */
 function deathBlast(
   room: Room,
   victimId: string,
   killerId: string | null,
+  now?: number,
 ): void {
   const rc = breakable(room);
   const pos = rc && lastPosOf(room, victimId);
-  if (rc && pos) applyDeathBlast(rc, pos, killerId);
+  if (!rc || !pos) return;
+  const vel = now === undefined ? null : lastVelOf(room, victimId);
+  applyDeathBlast(rc, pos, killerId, vel ?? undefined, now);
 }
+
+/** P1: a member's velocity on record, alive or dead (a crash's sweep). */
+const lastVelOf = (room: Room, id: string): Vec3 | null => {
+  if (room.members.get(id)?.isBot) return botsFor(room).lastVelOf(id);
+  const client = clients.get(id);
+  return client ? poseVelocity(client.pose) : null;
+};
 
 /**
  * D3: the death of `id`, who crashed at `pos` at server time `at`. Falling
@@ -800,8 +821,9 @@ function landWrecks(room: Room, now: number): void {
   for (const { params, shooterId } of wrecks.settle(now)) {
     const pos = impactPos(params);
     const rc = breakable(room);
-    // D3: a collapse the impact sets off is the shooter's.
-    if (rc) applyWreckImpact(rc, pos, shooterId);
+    // D3: a collapse the impact sets off is the shooter's. P1: it ploughs
+    // on in at its fall velocity.
+    if (rc) applyWreckImpact(rc, pos, shooterId, params);
     const event = cityEvents.offer(
       room.id,
       "death",
@@ -1870,7 +1892,7 @@ function handleCrash(
     death = crashDeath(client.room, client.id, client.pose.pos, at, now);
   }
   if (!death) return;
-  deathBlast(client.room, client.id, death.killerId);
+  deathBlast(client.room, client.id, death.killerId, now);
   sendDeath(client.room, death, now);
 }
 
@@ -2008,17 +2030,19 @@ function tickRoomBots(room: Room, now: number): void {
     ...crashes.map((id) => ({
       id,
       death: crashDeath(room, id, bots.lastPosOf(id), now, now),
+      crash: true,
     })),
     ...struck.map(({ id, shooterId }) => {
       const death = combat.wreckKill(id, shooterId, now);
       if (death) bots.setDead(id);
-      return { id, death };
+      return { id, death, crash: false };
     }),
   ];
 
-  for (const { id, death } of deaths) {
+  for (const { id, death, crash } of deaths) {
     if (!death) continue;
-    deathBlast(room, id, death.killerId);
+    // P1: a crash ploughs on in; a mid-air wreck strike bursts in place.
+    deathBlast(room, id, death.killerId, crash ? now : undefined);
     sendDeath(room, death, now);
   }
 
@@ -2284,9 +2308,16 @@ function tickBoss(room: Room, now: number): void {
   if (result.landed.length > 0) {
     const top = bossCredit(boss.damageLedger()).top;
     const by = top !== null && room.members.has(top) ? top : null;
-    for (const { at, building } of result.landed) {
+    for (const { piece, at, building } of result.landed) {
       const rc = breakable(room);
-      if (rc) applyBossImpact(rc, at, by, building);
+      // P1: the section ploughs on at its fall velocity as it hit.
+      const path = { p: piece.p, v: piece.v, t: 0, spin: piece.spin };
+      const vel = wreckVelAt({ ...path, end: piece.end }, piece.end, {
+        x: 0,
+        y: 0,
+        z: 0,
+      });
+      if (rc) applyBossImpact(rc, at, by, building, { vel, now });
       const event = cityEvents.offer(room.id, "death", at, now);
       if (event) sendToRoom(room, { type: "cityEvent", event });
     }
@@ -2871,6 +2902,17 @@ function tick(): void {
       if (lab) {
         const ms = performance.now() - destructionAt;
         lab.noteTick(ms, collapses.length > 0 ? ms : 0);
+      }
+      // P1: what swept through the city this tick, before the batch that
+      // carries the first of its tunnel (clients replay it against the
+      // city as it stood).
+      const swept = takeSweeps(rc);
+      if (swept.length > 0) {
+        sendToRoom(room, {
+          type: "impact",
+          v: SWEEP_MODEL_VERSION,
+          i: swept.map(encodeImpact),
+        });
       }
       if (broke.length > 0) {
         sendToRoom(room, { type: "chunks", d: encodeChunkIds(broke) });

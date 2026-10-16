@@ -81,23 +81,69 @@ export interface ImpactorSpec {
   mass: number;
   radius: number;
   maxChunks: number;
+  /** Air it may cross before it first touches something, m: how far short
+   * of the wall its record may start (a crash's pose is up to a tick old;
+   * a wreck's, a strike's and debris' are at the surface). */
+  airReach: number;
   blastRadius: number;
   blastDamage: number;
 }
 
 export const IMPACTORS: readonly ImpactorSpec[] = [
   // A crashing plane: ~2–4 chunks at combat speed (40–90 m/s).
-  { mass: 5, radius: 3, maxChunks: 8, blastRadius: 9, blastDamage: 160 },
+  {
+    mass: 5,
+    radius: 3,
+    maxChunks: 8,
+    airReach: 20,
+    blastRadius: 9,
+    blastDamage: 160,
+  },
   // A shot-down wreck: the same airframe, burning, at its fall speed.
-  { mass: 5, radius: 4, maxChunks: 8, blastRadius: 12, blastDamage: 240 },
+  {
+    mass: 5,
+    radius: 4,
+    maxChunks: 8,
+    airReach: 12,
+    blastRadius: 12,
+    blastDamage: 240,
+  },
   // A meteor: steep and fast — down through several floors.
-  { mass: 1.6, radius: 5, maxChunks: 16, blastRadius: 11, blastDamage: 240 },
+  {
+    mass: 1.6,
+    radius: 5,
+    maxChunks: 16,
+    airReach: 12,
+    blastRadius: 11,
+    blastDamage: 240,
+  },
   // A comet: shallow and fast — through a row of buildings.
-  { mass: 2.6, radius: 6, maxChunks: 40, blastRadius: 11, blastDamage: 240 },
+  {
+    mass: 2.6,
+    radius: 6,
+    maxChunks: 40,
+    airReach: 12,
+    blastRadius: 11,
+    blastDamage: 240,
+  },
   // A carrier / airship section: heavy and slow.
-  { mass: 40, radius: 10, maxChunks: 24, blastRadius: 34, blastDamage: 1400 },
+  {
+    mass: 40,
+    radius: 10,
+    maxChunks: 24,
+    airReach: 30,
+    blastRadius: 34,
+    blastDamage: 1400,
+  },
   // Collapse debris (its blast is D5's chain blast, sized by the caller).
-  { mass: 1, radius: 4, maxChunks: 6, blastRadius: 0, blastDamage: 0 },
+  {
+    mass: 1,
+    radius: 4,
+    maxChunks: 6,
+    airReach: 12,
+    blastRadius: 0,
+    blastDamage: 0,
+  },
 ];
 
 /** Debris mass per m³ of the piece that struck. */
@@ -689,7 +735,9 @@ export function sweepRecord(
   rec: ImpactRecord,
   buildings: readonly Building[],
 ): SweepResult {
+  const spec = IMPACTORS[rec.kind] as ImpactorSpec;
   return sweepImpact(rec, buildings, {
-    maxChunks: (IMPACTORS[rec.kind] as ImpactorSpec).maxChunks,
+    maxChunks: spec.maxChunks,
+    airReach: spec.airReach,
   });
 }

@@ -2429,6 +2429,12 @@ export interface CollapseImpact {
   /** D10: the blast's scale, CHAIN_ENERGY_MIN..MAX — the striking mass's
    * energy (√(volume · speed²) ÷ CHAIN_ENERGY_REF), clamped. */
   e: number;
+  /** P1: the striking piece's velocity there, m/s, and its volume, m³ —
+   * what it sweeps on into the building with (city/penetrate.ts). */
+  vx: number;
+  vy: number;
+  vz: number;
+  vol: number;
 }
 
 /** D10: an impact's blast scale for `vol` m³ arriving at `speed` m/s. */
@@ -2513,6 +2519,10 @@ export function collapseImpacts(
         hit.add(n.i);
         const w = canonicalize({ x: c.x + pose.x, y: 0, z: c.z + pose.z });
         piecePose(c, p, tMs + 50, ahead);
+        const vx = (ahead.x - pose.x) / 0.05;
+        const vy = (ahead.y - pose.y) / 0.05;
+        const vz = (ahead.z - pose.z) / 0.05;
+        // The D10 scale reads exactly the speed it always did (bit-equal).
         const speed =
           Math.hypot(ahead.x - pose.x, ahead.y - pose.y, ahead.z - pose.z) /
           0.05;
@@ -2523,6 +2533,10 @@ export function collapseImpacts(
           y: pose.y,
           z: w.z,
           e: impactScale(c.vol[p] as number, speed),
+          vx,
+          vy,
+          vz,
+          vol: c.vol[p] as number,
         });
       }
     }

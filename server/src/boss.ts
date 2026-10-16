@@ -72,6 +72,10 @@ import {
   chunkId,
   tierGrids,
 } from "@angels-bandits/common/city";
+import {
+  IMPACT_SECTION,
+  makeImpact,
+} from "@angels-bandits/common/city/penetrate";
 import { losClear } from "@angels-bandits/common/collision";
 import {
   BULLET_DAMAGE,
@@ -82,7 +86,7 @@ import { carrierFlakScale } from "@angels-bandits/common/waves";
 import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 import type { BotRoundHit } from "./bots";
 import type { Combat, SpeedCapFn } from "./combat";
-import { type RoomCity, blastProps } from "./destruction";
+import { type RoomCity, blastProps, sweepBlast } from "./destruction";
 
 /** A plane as the director sees it this tick: its on-record pose (the
  * caller extrapolates a human's to `now`), velocity, and protection. */
@@ -659,9 +663,22 @@ export function applyBossImpact(
   at: Vec3,
   by: string | null,
   building: Building | null = null,
+  /** P1: the section's velocity as it hit and the server time: it ploughs
+   * on through what it hit (sweepBlast) and the big blast lands where it
+   * comes to rest. Omitted: the blast lands at `at` at once. */
+  sweep?: { vel: Vec3; now: number },
 ): number[] {
-  const out = city.damage.damageAt(at, BOSS_IMPACT_RADIUS, BOSS_IMPACT_DAMAGE);
-  blastProps(city, at, BOSS_IMPACT_RADIUS, BOSS_IMPACT_DAMAGE, by); // D9
+  const out: number[] = [];
+  if (sweep) {
+    const rec = makeImpact(IMPACT_SECTION, sweep.now, at, sweep.vel);
+    const blast = { r: BOSS_IMPACT_RADIUS, damage: BOSS_IMPACT_DAMAGE };
+    sweepBlast(city, rec, by, 0, blast);
+  } else {
+    out.push(
+      ...city.damage.damageAt(at, BOSS_IMPACT_RADIUS, BOSS_IMPACT_DAMAGE),
+    );
+    blastProps(city, at, BOSS_IMPACT_RADIUS, BOSS_IMPACT_DAMAGE, by); // D9
+  }
   if (building) out.push(...crushUnder(city, building, at));
   for (const id of out) city.breakers.set(chunkBuilding(id), by);
   return out;

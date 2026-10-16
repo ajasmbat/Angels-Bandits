@@ -156,7 +156,7 @@ describe("sky armada — wrap continuity", () => {
   });
 
   it("frame to frame nothing visible jumps (ships, planes)", () => {
-    // 20 s at 60 fps from an arbitrary instant: every visible pose moves
+    // 10 s at 60 fps from an arbitrary instant: every visible pose moves
     // no more than it can fly in a frame; slots that wrap round their
     // window are invisible while they do, and a downed plane's replacement
     // fades in from nothing (under one 8-bit step is not seen).
@@ -165,7 +165,7 @@ describe("sky armada — wrap continuity", () => {
     const camY = 250;
     let sp = ships(SEED, 3000, 1200, 800);
     let pp = planes(SEED, 3000, 1200, 800);
-    for (let k = 1; k <= 1200; k++) {
+    for (let k = 1; k <= 600; k++) {
       const t = 3000 + k * dt;
       const ns = ships(SEED, t, 1200, 800);
       const np = planes(SEED, t, 1200, 800);

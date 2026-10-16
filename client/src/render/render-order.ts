@@ -19,6 +19,12 @@
 export const RENDER_ORDER = {
   /** Sky dome and its stars: always the backdrop. */
   sky: -1,
+  /** SKY1 the painted horizon (silhouettes, flak) and the cosmetic sky's
+   * lights, flashes and smoke: all in L2's far shell, so they draw right
+   * after the dome and before every nearer transparent (the deck, fog
+   * banks, smoke) — which therefore always paint over them. */
+  skyHorizon: -0.85,
+  skyFx: -0.8,
   /** Cloud puffs, and the dark ceiling sheet under them. The sheet is in
    * front of the puffs from below and behind them from above, so its rung
    * depends on which side of it the camera is (storm.ts). */

@@ -20,6 +20,8 @@
 //                         quality.ts; Mobile is M3's phone tier)
 //   ?fleet=0              P4: every plane draws its own meshes and tag
 //                         sprite instead of the batched plane fleet (fleet.ts)
+//   ?armada=0             SKY1: no cosmetic sky (sky-armada.ts) — its perf
+//                         A/B (default on)
 //   ?nanprobe[=count|paint]  O7: classify every HDR scene pixel as NaN/Inf
 //                         before bloom (nanprobe.ts); `paint` also paints
 //                         them magenta. QA only (default off: no pass at all)
@@ -132,6 +134,12 @@ export interface RenderOptions {
    */
   fleet: boolean;
   /**
+   * SKY1: the cosmetic sky (render/sky-armada.ts — the airship armada,
+   * dogfights, flak and the painted horizon). `?armada=0` hides its four
+   * draws: the paired A/B (`run.mjs --ab "armada=0"`) of its GPU cost.
+   */
+  armada: boolean;
+  /**
    * O7: the NaN/Inf probe (render/nanprobe.ts). `off` ships — the pass is
    * never built; `?nanprobe` (or `=count`) counts non-finite HDR pixels
    * without touching the image, `=paint` also paints them magenta.
@@ -154,6 +162,7 @@ export const DEFAULT_RENDER_OPTIONS: RenderOptions = {
   post: "fused",
   reflections: true,
   fleet: true,
+  armada: true,
   nanProbe: "off",
 };
 
@@ -232,6 +241,9 @@ export function readRenderOptions(
 
   const fleet = params.get("fleet");
   if (fleet !== null) opts.fleet = fleet !== "0" && fleet !== "false";
+
+  const armada = params.get("armada");
+  if (armada !== null) opts.armada = armada !== "0" && armada !== "false";
 
   const probe = params.get("nanprobe");
   if (probe === "paint") opts.nanProbe = "paint";

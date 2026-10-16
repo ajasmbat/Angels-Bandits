@@ -635,7 +635,9 @@ async function measureBuild(
   const { proc, port } = await startServer(cwd);
   const page = await browser.newPage({
     viewport: VIEWPORT,
-    deviceScaleFactor: 1,
+    // --far: a Retina panel — a pinned ?res= is clamped to the device's
+    // own ratio, so FAR_RES needs the device to have it.
+    deviceScaleFactor: far ? FAR_RES : 1,
   });
   try {
     const errors = [];

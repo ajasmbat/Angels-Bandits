@@ -5,7 +5,7 @@
 //                                 [--shots <dir>] [--out <file>] [--repeat N]
 //                                 [--grid] [--only name,name]
 //                                 [--ablate [all|name,name]] [--hide name,name]
-//                                 [--breathe]
+//                                 [--breathe] [--far]
 //
 // Captures FRAMES consecutive frames on a FIXED 16 ms clock and scores the
 // mean per-pixel frame-to-frame luminance change (0–255 units; lower is
@@ -70,6 +70,15 @@
 // on purpose and identical in every arm. A truly frozen camera cannot see
 // anything that is stable while still but re-rolls under ANY change of
 // projection (O6's facade speckle); a breathing one can.
+//
+// `--far` (R1, with --grid) adds a FAR-FIELD pan to every view that names
+// a `far` rect (gallery-views.mjs: the screen share where the far skyline
+// is): the camera slides FAR_PAN_M a frame with the WORLD frozen (re-pinned to
+// one instant every frame, as `still` does), and only the pixels inside the
+// rect are scored. What is left is the far city's own response to a moving
+// camera — sub-pixel windows and street lines switching as they slide —
+// with no animation (beacons, fires, traffic) in it. `--ref` then prints the
+// far table and its verdict: the far pan must fall by FAR_DROP vs the ref.
 //
 // `FLICKER_WEATHER=<phase>` (R3) pins the middle of that weather phase
 // instead of clear-and-dry, e.g. `downpour` to score the rain against the
@@ -153,6 +162,14 @@ const SCENES = {
 /** --grid: frames per view (frozen) and pan frames per view. */
 const GRID_FRAMES = 10;
 const GRID_PAN_FRAMES = 8;
+/** --far: frames of the far-field pan, and the drop it must show vs the
+ * ref (R1: "down by at least 60 %"). */
+const FAR_FRAMES = 12;
+/** --far: the slide, m per frame — small, so the far city moves a fraction
+ * of a pixel a frame: a filtered pattern barely changes, an aliased one
+ * switches cells (the sparkle). */
+const FAR_PAN_M = 0.5;
+export const FAR_DROP = 0.6;
 /** --grid: frames with camera AND world frozen. */
 const GRID_STILL_FRAMES = 4;
 /** --grid: steps on a new view before the first captured frame — time for
@@ -197,6 +214,7 @@ function parseArgs(argv) {
     ablate: null,
     hide: [],
     breathe: false,
+    far: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -210,6 +228,7 @@ function parseArgs(argv) {
     else if (a === "--only") opts.only = argv[++i].split(",");
     else if (a === "--hide") opts.hide = argv[++i].split(",");
     else if (a === "--breathe") opts.breathe = true;
+    else if (a === "--far") opts.far = true;
     else if (a === "--ablate") {
       const next = argv[i + 1];
       opts.ablate =
@@ -222,6 +241,7 @@ function parseArgs(argv) {
   if (!(opts.frames >= 3)) throw new Error("--frames must be >= 3");
   if (opts.ablate && !opts.grid) throw new Error("--ablate needs --grid");
   if (opts.breathe && !opts.grid) throw new Error("--breathe needs --grid");
+  if (opts.far && !opts.grid) throw new Error("--far needs --grid");
   if (opts.hide.length > 0 && !opts.grid)
     throw new Error("--hide needs --grid");
   return opts;
@@ -327,6 +347,8 @@ function aimView(page, spec, panM) {
         return {
           eye: { x: spec.eye.x + dx, y: spec.eye.y, z: spec.eye.z + dz },
           at: { x: spec.at.x + dx, y: spec.at.y, z: spec.at.z + dz },
+          // R1: a view may pin its field of view (as the gallery does).
+          ...(spec.fov ? { fov: spec.fov } : {}),
         };
       };
       window.__flickerPrev = null;
@@ -355,6 +377,8 @@ const sceneSpec = (scene) => ({
 function readFrame(page) {
   return page.evaluate(
     ([hotDelta, jitterDelta]) => {
+      // --far: the scored rect, in fractions of the frame (null: all of it).
+      const rect = window.__flickerRect ?? null;
       // The renderer's canvas: a WebGL one that is in the page (a capability
       // probe's detached canvas never is), the largest if several are.
       const src = (window.__flickerGls ?? [])
@@ -386,6 +410,13 @@ function readFrame(page) {
       if (prev) {
         let sum = 0;
         let n = 0;
+        // --far: the rect's own mean |Δ| (same pixels in every frame).
+        let rectSum = 0;
+        let rectN = 0;
+        const rx0 = rect ? Math.floor(rect[0] * w) : 0;
+        const ry0 = rect ? Math.floor(rect[1] * h) : 0;
+        const rx1 = rect ? Math.ceil(rect[2] * w) : w;
+        const ry1 = rect ? Math.ceil(rect[3] * h) : h;
         // Per-pixel |Δ| summed over the capture: the --shots heat map.
         let heat = window.__flickerHeat;
         if (!heat || heat.length !== lum.length) {
@@ -407,13 +438,22 @@ function readFrame(page) {
           sum += d;
           heat[j] += d;
           if (d > hotDelta) n++;
+          if (rect) {
+            // The canvas reads top row first; the rect is top-down too.
+            const x = j % w;
+            const y = (j - x) / w;
+            if (x >= rx0 && x < rx1 && y >= ry0 && y < ry1) {
+              rectSum += d;
+              rectN++;
+            }
+          }
           if (d > jitterDelta) {
             const sg = s > 0 ? 1 : -1;
             if (jit.sign[j] === -sg && jit.rev[j] < 255) jit.rev[j]++;
             jit.sign[j] = sg;
           }
         }
-        delta = sum / lum.length;
+        delta = rect ? rectSum / Math.max(rectN, 1) : sum / lum.length;
         hot = n / lum.length;
       }
       window.__flickerPrev = lum;
@@ -563,6 +603,7 @@ async function measureBuild(
   ablate,
   hide,
   breathe,
+  far,
 ) {
   const { proc, port } = await startServer(cwd);
   const page = await browser.newPage({
@@ -741,7 +782,13 @@ async function measureBuild(
           );
           return true;
         }, v.stage ?? null);
-        const still = { eye: v.eye, at: v.at, right: null, plane: v.plane };
+        const still = {
+          eye: v.eye,
+          at: v.at,
+          right: null,
+          plane: v.plane,
+          fov: v.fov,
+        };
         await aimView(page, still, PAN_M);
         for (let i = 0; i < GRID_SETTLE; i++) await page.clock.runFor(STEP_MS);
         if (inferno && v.stage?.burn !== undefined) {
@@ -776,7 +823,7 @@ async function measureBuild(
         });
         await aimView(
           page,
-          { eye: v.eye, at: v.at, right: v.right, plane: v.plane },
+          { eye: v.eye, at: v.at, right: v.right, plane: v.plane, fov: v.fov },
           PAN_M,
         );
         for (let i = 0; i < 2; i++) await page.clock.runFor(STEP_MS);
@@ -786,6 +833,40 @@ async function measureBuild(
           shots,
           `${label}-${v.name}-pan`,
         );
+        // --far: the same slide with the world frozen, scored inside the
+        // view's far rect only (see the header).
+        let farPan = null;
+        if (far && v.far) {
+          await page.evaluate(
+            ({ t, rect }) => {
+              window.__flickerStill = t;
+              window.__flickerRect = rect;
+            },
+            { t: stillMs, rect: v.far },
+          );
+          await aimView(
+            page,
+            {
+              eye: v.eye,
+              at: v.at,
+              right: v.right,
+              plane: v.plane,
+              fov: v.fov,
+            },
+            FAR_PAN_M,
+          );
+          for (let i = 0; i < 2; i++) await page.clock.runFor(STEP_MS);
+          farPan = await captureFrames(
+            page,
+            FAR_FRAMES,
+            shots,
+            `${label}-${v.name}-far`,
+          );
+          await page.evaluate(() => {
+            window.__flickerStill = null;
+            window.__flickerRect = null;
+          });
+        }
         let ablation = null;
         if (ablate) {
           const all = await page.evaluate(() =>
@@ -853,6 +934,7 @@ async function measureBuild(
           frozen,
           still: frozenWorld,
           pan,
+          farPan,
           rt: stillAt,
         });
         console.log(
@@ -914,6 +996,46 @@ export function gridViewVerdict(head, ref) {
   const notWorse = verdict(head, ref).pass;
   const ceiling = head <= GRID_CEILING;
   return { pass: halved && notWorse && ceiling, halved, notWorse, ceiling };
+}
+
+/**
+ * R1 --far verdict: the far-field pan (world frozen, scored inside the
+ * view's far rect) must fall by at least FAR_DROP against the ref.
+ */
+export function farViewVerdict(head, ref) {
+  const drop = ref > 0 ? 1 - head / ref : 0;
+  return { pass: drop >= FAR_DROP, drop: Math.round(drop * 1000) / 1000 };
+}
+
+/** --far: each view's far-field pan, before → after, and the verdict. */
+function printFar(report) {
+  const rows = report.head.views.filter((h) => h.farPan);
+  if (rows.length === 0) return;
+  const ref = report.ref ?? null;
+  console.log(
+    `\nfar field — the pan with the world frozen, mean |Δluma| per pixel inside each view's far rect, ${FAR_FRAMES} frames`,
+  );
+  let pass = true;
+  const out = [];
+  for (const h of rows) {
+    const r = ref?.views.find((v) => v.name === h.name)?.farPan ?? null;
+    if (!r) {
+      console.log(`${h.name.padEnd(20)} ${h.farPan.score.toFixed(3)}`);
+      continue;
+    }
+    const v = farViewVerdict(h.farPan.score, r.score);
+    if (!v.pass) pass = false;
+    out.push({ name: h.name, ref: r.score, head: h.farPan.score, ...v });
+    console.log(
+      `${h.name.padEnd(20)} ${r.score.toFixed(3).padStart(7)} → ${h.farPan.score.toFixed(3).padStart(7)}  drop ${(v.drop * 100).toFixed(1)}%  ${v.pass ? "PASS" : `FAIL (< ${FAR_DROP * 100}%)`}`,
+    );
+  }
+  if (ref) {
+    report.farVerdict = { pass, rows: out };
+    console.log(
+      `far: ${out.filter((r) => r.pass).length}/${out.length} views drop >= ${FAR_DROP * 100}% — ${pass ? "PASS" : "FAIL"}`,
+    );
+  }
 }
 
 /** --ablate: each view's per-system table, largest share first. */
@@ -1037,6 +1159,7 @@ async function main() {
           opts.ablate,
           opts.hide,
           opts.breathe,
+          opts.far,
         ),
       );
       if (ref !== null) {
@@ -1051,6 +1174,7 @@ async function main() {
             opts.ablate,
             opts.hide,
             opts.breathe,
+            opts.far,
           ),
         );
       }
@@ -1063,12 +1187,14 @@ async function main() {
   }
   if (opts.grid) {
     printGrid(report);
+    printFar(report);
     printAblation(report);
     const out = opts.out ?? resolve(HERE, "flicker-grid-last.json");
     mkdirSync(dirname(out), { recursive: true });
     writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`);
     console.log(`wrote ${out}`);
     if (report.gridVerdict && !report.gridVerdict.pass) process.exitCode = 1;
+    if (report.farVerdict && !report.farVerdict.pass) process.exitCode = 1;
     return;
   }
 

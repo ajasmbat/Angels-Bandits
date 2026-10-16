@@ -32,13 +32,14 @@ float abBox(vec2 p, vec2 h, float aa) {
 float abDetail(float period, float aa) {
   return 1.0 - smoothstep(0.25 * period, 0.5 * period, aa);
 }
-// The same fade, later, for lit window cells: full detail until a cell is
-// ~3 px, its expected value at ~1.5 px — i.e. it engages around the 2 px
-// sampling limit. Windows are the city's bright points (and its bloom), so
-// they keep their sparkle as long as it is real and only resolve to the
-// mean once it would alias.
+// The same fade for lit window cells: full detail until a cell is ~6 px,
+// its expected value (the average lit fraction) by ~3 px. R1: it used to
+// hold detail down to ~1.5 px to "keep the sparkle", but a per-cell on/off
+// decision between ~3 and ~1.5 px is pure aliasing — under any camera
+// motion the distant city read as orange static. Below ~3 px every cell is
+// its mean, so the glow (and the bloom it feeds) keeps its energy, steady.
 float abCellDetail(float period, float aa) {
-  return 1.0 - smoothstep(0.33 * period, 0.67 * period, aa);
+  return 1.0 - smoothstep(0.167 * period, 0.333 * period, aa);
 }
 // Filtered step(edge, x): one pixel wide, so a long edge does not crawl.
 float abEdge(float edge, float x, float aa) {

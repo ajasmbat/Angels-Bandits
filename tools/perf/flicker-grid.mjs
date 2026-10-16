@@ -126,6 +126,10 @@ export function gridViews(startMs) {
           // L7: the view's staged destruction and burn (__ab.qaDestruction),
           // so an inferno view is scored burning, never intact.
           ...(v.stage ? { stage: v.stage } : {}),
+          // R1: the far field's screen rect (flicker.mjs --far), and a
+          // pinned field of view, as the gallery holds it.
+          ...(v.far ? { far: v.far } : {}),
+          ...(v.fov ? { fov: v.fov } : {}),
         }),
       );
       continue;

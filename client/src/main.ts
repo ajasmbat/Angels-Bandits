@@ -6774,7 +6774,7 @@ const frame = (rafNow: number): void => {
     camera,
     dt,
     renderer.domElement.height,
-    now,
+    renderMs ?? now,
     sky.domeVisible,
   );
   const heatCount = inferno.mergeHeat(

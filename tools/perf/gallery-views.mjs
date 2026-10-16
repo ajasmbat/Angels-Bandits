@@ -1700,4 +1700,44 @@ export const VIEWS = [
     raf: true,
     stage: { burn: 0.9 },
   },
+  // R1: the user's framing of the far city — a high rooftop eye (380 m)
+  // in the south core looking north up the x = 800 avenue (the 450 m
+  // landmark at (1100, 1700) just out of frame), 8.5° down, so
+  // the real city fogs out mid-frame and the far skyline and its street
+  // carpet fill the band to the horizon. The plane is held 140 m behind
+  // the eye and over every roof, out of shot. `far`: the screen rect
+  // (x0, y0, x1, y1 fractions, top-down) that is far skyline — what
+  // flicker.mjs --far scores.
+  {
+    name: "skyline-far",
+    x: 800,
+    z: 2040,
+    y: 490,
+    yaw: 0,
+    eye: [800, 380, 1900],
+    at: [800, 200, 700],
+    fov: 70,
+    timeMs: 1_790_000_000_000,
+    weather: "clear",
+    raf: true,
+    far: [0.16, 0.32, 0.64, 0.56],
+  },
+  // R1: the far skyline from low down — 60 m over the river looking east
+  // along it, level, so the far towers stand on the horizon past the real
+  // city's fog. The plane is held over the river 160 m behind the eye.
+  {
+    name: "skyline-horizon-low",
+    x: 140,
+    z: 1100,
+    y: 330,
+    yaw: -Math.PI / 2,
+    eye: [300, 60, 1100],
+    at: [1300, 66, 1100],
+    // A long lens: the far skyline is a strip between the river's banks.
+    fov: 40,
+    timeMs: 1_790_000_000_000,
+    weather: "clear",
+    raf: true,
+    far: [0.38, 0.44, 0.64, 0.56],
+  },
 ];

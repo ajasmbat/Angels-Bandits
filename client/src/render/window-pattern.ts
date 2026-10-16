@@ -685,7 +685,7 @@ vec2 winF = fract(winGrid / winPitch);
 // On a side face one of x/z is constant, so the max is the run axis.
 vec3 winMAA = fwidth(vMeters);
 vec2 wAA = vec2(max(winMAA.x, winMAA.z), winMAA.y);
-// 1 until one window cell is ~3 px, 0 once it is ~1.5 px: from there every
+// 1 until one window cell is ~6 px, 0 once it is ~3 px (R1): from there every
 // per-cell decision is replaced by its expected value, so a distant facade
 // is a stable average instead of a sparkle. Up close nothing changes.
 float winDetail = min(abCellDetail(winPitch.x, wAA.x), abCellDetail(winPitch.y, wAA.y));

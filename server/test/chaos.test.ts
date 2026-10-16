@@ -205,7 +205,7 @@ interface SimLog {
 }
 
 /** One room, run the way index.ts ticks it, for `minutes`. */
-function simulate(minutes: number, seed = 7): SimLog {
+async function simulate(minutes: number, seed = 7): Promise<SimLog> {
   const rc = createRoomCity(SEED_CITY, CRANES);
   const budget = new DangerBudget();
   const charges = new Map<string, { t: number; layer: DangerLayer }[]>();
@@ -286,6 +286,12 @@ function simulate(minutes: number, seed = 7): SimLog {
 
   const end = T0 + minutes * 60_000;
   for (let t = T0; t < end; t += DT) {
+    // Let the event loop turn every simulated 10 s: as one synchronous
+    // block the hour (heavier since C1's low chaos) can starve the vitest
+    // worker's RPC on a loaded box (vitest.setup.ts). The sim is unchanged.
+    if ((t - T0) % 10_000 === 0) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
     // A wingman respawns every 45 s (fresh for 5 s: nothing lethal near).
     if ((t - T0) % 45_000 === 0 && t > T0) {
       const f = FLYERS[1 + (((t - T0) / 45_000) % 4)] as Flyer;
@@ -410,8 +416,8 @@ function simulate(minutes: number, seed = 7): SimLog {
 }
 
 let hour: SimLog;
-beforeAll(() => {
-  hour = simulate(60);
+beforeAll(async () => {
+  hour = await simulate(60);
 }, 600_000);
 
 describe("C2 schedules are deterministic", () => {
@@ -436,9 +442,9 @@ describe("C2 schedules are deterministic", () => {
     }
   });
 
-  it("the same seed and the same planes stage the same meteors, quakes, missiles and director events", () => {
-    const a = simulate(4, 11).trace;
-    const b = simulate(4, 11).trace;
+  it("the same seed and the same planes stage the same meteors, quakes, missiles and director events", async () => {
+    const a = (await simulate(4, 11)).trace;
+    const b = (await simulate(4, 11)).trace;
     expect(a.length).toBeGreaterThan(20);
     expect(b).toEqual(a);
     expect(a.some((s) => s.startsWith("m"))).toBe(true);

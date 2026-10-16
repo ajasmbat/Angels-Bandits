@@ -94,7 +94,11 @@ import {
   decodeGhost,
   generateCourses,
 } from "@angels-bandits/common/courses";
-import { type DirectorEvent, EVENT_GAS } from "@angels-bandits/common/director";
+import {
+  type DirectorEvent,
+  EVENT_CARS,
+  EVENT_GAS,
+} from "@angels-bandits/common/director";
 import {
   type FlightState,
   bankPitchMult,
@@ -298,6 +302,7 @@ import {
   stageDestruction,
   stageProps,
 } from "./game/qa-destruction";
+import { type QaLowChaosSpec, planQaLowChaos } from "./game/qa-lowchaos";
 import {
   type QaBossSpec,
   type QaBossStage,
@@ -1362,7 +1367,8 @@ socket.events.onDirectorWarn = (e) => {
   const serverMs = socket.renderTime();
   const left = (e.at - (serverMs ?? e.w)) / 1000;
   audio.directorWarning(
-    e.k === EVENT_GAS,
+    // C1: a car chain's fire hisses like a gas main.
+    e.k === EVENT_GAS || e.k === EVENT_CARS,
     { x: e.x, y: 10, z: e.z },
     flight.pos,
     flight.yaw,
@@ -1696,6 +1702,9 @@ scene.add(bossRenderer.group);
 /** S8 QA (`__ab.qaBoss`): the staged raid and its flak schedule, and how
  * many shells the server sent while it was staged (dropped each frame). */
 let qaBoss: QaBossStage | null = null;
+/** C1 QA (`__ab.qaLowChaos`): the warnings it put in the director map, and
+ * whether it staged destruction (cleared with it). */
+const qaLowChaos = { ids: [] as number[], staged: false };
 /** P4 QA (`__ab.qaChaos`): the staged chaos scene (game/qa-chaos.ts). */
 let qaChaos: QaChaosStage | null = null;
 let qaForeignShells = 0;
@@ -3542,6 +3551,20 @@ declare global {
         /** W2: staged bombs the planner refused (`index:reason`). */
         bombsRefused: string[];
       } | null;
+      /** C1 QA: stage a low run down a canyon with the low-flying chaos
+       * going off round a held pose (game/qa-lowchaos.ts) — the plane's own
+       * pose when omitted — through qaDestruction and the director's
+       * warnings; null clears it. */
+      qaLowChaos: (spec?: QaLowChaosSpec | null) => {
+        /** Warnings still to go off, and gone off (bursts, sirens). */
+        warned: number;
+        fired: number;
+        /** Event kinds staged (DirectorEvent.k). */
+        kinds: number[];
+        fell: number;
+        props: number;
+        gas: number;
+      } | null;
       jumbotronView: (
         i: number,
         distance?: number,
@@ -4658,6 +4681,51 @@ window.__ab = {
       quake: qaChaos.quake !== null,
       fires: qaChaos.fires.length,
       bombsRefused: qaChaos.bombsRefused,
+    };
+  },
+  // C1 QA: stage a low run with the low-flying chaos firing round a held
+  // pose (the plane's own when omitted); null clears it.
+  qaLowChaos: (spec) => {
+    for (const id of qaLowChaos.ids) socket.director.delete(id);
+    qaLowChaos.ids.length = 0;
+    if (qaLowChaos.staged) {
+      window.__ab?.qaDestruction(null);
+      qaLowChaos.staged = false;
+    }
+    if (spec === null) return null;
+    const pose = spec ?? {
+      x: flight.pos.x,
+      y: flight.pos.y,
+      z: flight.pos.z,
+      yaw: flight.yaw,
+    };
+    const t0 = socket.renderTime() ?? lastRenderMs ?? 0;
+    const plan = planQaLowChaos(
+      pose,
+      t0,
+      city.cityBuildings,
+      propLayout,
+      socket.props,
+      welcome.seed,
+    );
+    window.__ab?.qaDestruction({
+      fell: plan.fell,
+      props: { down: plan.down },
+    });
+    qaLowChaos.staged = true;
+    for (const e of plan.events) {
+      socket.director.set(e.id, e);
+      qaLowChaos.ids.push(e.id);
+    }
+    const now = performance.now();
+    for (const g of plan.gas) directorFx.gasBlast(g, now);
+    return {
+      warned: plan.events.filter((e) => e.at > t0).length,
+      fired: plan.events.filter((e) => e.at <= t0).length,
+      kinds: [...new Set(plan.events.map((e) => e.k))].sort((a, b) => a - b),
+      fell: plan.fell.length,
+      props: plan.down.length,
+      gas: plan.gas.length,
     };
   },
   jumbotronView: (i, distance) => jumbotrons.view(i, distance),

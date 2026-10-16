@@ -1785,4 +1785,21 @@ export const VIEWS = [
     raf: true,
     far: [0.2, 0.38, 0.8, 0.6],
   },
+  // C1: a low pass down a canyon as the city comes apart ahead — a tower
+  // toppling across the next block and another pouring dust, facades
+  // cracking and peeling, a gas main just blown and one venting, a roof
+  // tank over the edge, a car chain going up, a bridge span about to drop
+  // (`__ab.qaLowChaos` at the pinned world instant: the warnings still to
+  // go off burst while the frames settle). The plane held at 55 m, nose −Z.
+  {
+    name: "chaos-low-pass",
+    x: 0,
+    z: 1500,
+    y: 55,
+    yaw: 0,
+    timeMs: 1_790_000_000_000,
+    weather: "clear",
+    raf: true,
+    lowChaos: true,
+  },
 ];

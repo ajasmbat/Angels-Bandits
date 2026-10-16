@@ -125,22 +125,22 @@ export class KillFeed {
   }
 
   /**
-   * S4: the sky boss is down — its own line, credited to the top dealer
+   * Z1: an airship is down — its own line, credited to the top dealer
    * (null: nobody — never, in practice) and how many more shared the kill.
-   * Tagged with the boss's id so the top dealer's medal badges this line.
+   * Tagged with the fleet's id so the top dealer's medal badges this line.
    */
-  addBossDown(
+  addShipDown(
     topName: string | null,
     others: number,
-    bossId: string,
+    fleetId: string,
     self = false,
   ): void {
     const entry = document.createElement("div");
     entry.className = self ? "entry self" : "entry";
-    entry.dataset.victim = bossId;
+    entry.dataset.victim = fleetId;
     const victim = document.createElement("span");
     victim.className = "victim";
-    victim.textContent = "WAR ZEPPELIN";
+    victim.textContent = "AIRSHIP";
     if (topName === null) {
       entry.append("💥 ", victim, " is down");
     } else {

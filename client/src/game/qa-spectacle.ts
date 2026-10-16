@@ -1,32 +1,39 @@
 // S8 perf gate: the spectacle the harness stages on the client, so a
-// measured window shows the same boss fight and the same record ghost on
-// every pass. QA only — reached through `__ab.qaBoss` / `__ab.qaCourseGhost`
-// (main.ts), never from gameplay; a plain visit runs none of it.
+// measured window shows the same airship fleet and the same record ghost on
+// every pass. QA only — reached through `__ab.qaFleet` (and S8's
+// `__ab.qaBoss`, the same staging) / `__ab.qaCourseGhost` (main.ts), never
+// from gameplay; a plain visit runs none of it.
 //
-// Why staged rather than live: a real raid is started by the server on its
-// wall clock (server/src/boss.ts), its flak aims at wherever planes happen to
-// be, and a record ghost exists only once someone has set a record. None of
-// that can be pinned. Here everything is a pure function of the pinned WORLD
-// clock (`__ab.pinWorld`) or of the course: the zeppelin's pose is the shared
-// `bossPoseAt` of a raid built to cross the held view at a known instant, and
-// shell k of the flak schedule is fired at a fixed world time from a fixed
-// turret at a fixed point. Same inputs, same frame.
+// Why staged rather than live: the real fleet is put up by the server on
+// its wall clock (server/src/boss.ts), its flak aims at wherever planes
+// happen to be, and a record ghost exists only once someone has set a
+// record. None of that can be pinned. Here everything is a pure function of
+// the pinned WORLD clock (`__ab.pinWorld`) or of the course: Z1 puts `count`
+// ships on their own lanes (FleetShip records the server could send), each
+// at the spot along its lane nearest a point receding ahead of the held
+// view at a known instant, and shell k of the flak schedule is fired at a
+// fixed world time from a fixed turret of a fixed armed ship at a fixed
+// point. Same inputs, same frame.
 
 import {
   BOSS_FLAK_INTERVAL_MS,
   BOSS_FLAK_MIN_FUSE_MS,
   BOSS_FLAK_SPEED,
-  BOSS_INGRESS_M,
-  BOSS_ORBIT_MS,
-  BOSS_ORBIT_R,
-  BOSS_SPEED,
-  BOSS_TURRETS,
   type BossFlak,
-  type BossRaid,
+  FLEET_LANES,
+  FLEET_LAYERS,
+  FLEET_SIZE,
+  type FleetShip,
+  SHIP_CLASSES,
+  SHIP_REACH,
   blankPose,
-  bossPoseAt,
+  fleetPoseAt,
+  gridCoord,
+  lanePoseInto,
+  shipFullHp,
   turretMuzzleInto,
 } from "@angels-bandits/common/boss";
+import { WORLD_SIZE } from "@angels-bandits/common/constants";
 import {
   type Course,
   GHOST_HZ,
@@ -36,19 +43,25 @@ import {
 import {
   type Vec3,
   wrapCoord,
+  wrapDelta,
   wrapDeltaAxis,
 } from "@angels-bandits/common/world";
 
-/** A staged raid's id: far above any the server hands out (1, 2, …). */
-export const QA_RAID_ID = 900_001;
+/** Staged ships' ids: far above any the server hands out (1, 2, …). */
+export const QA_SHIP_BASE = 900_001;
 /** Staged shells are numbered from here; anything below is the server's. */
 export const QA_SHELL_BASE = 1_000_000_000;
 /** The flak schedule starts this long before the segment's world instant,
  * so shells are already in the air when the window opens and the shell
  * draw never switches on inside it. */
 export const QA_FLAK_LEAD_MS = 3000;
-/** How long the zeppelin has been on station at the crossing instant. */
+/** How long the staged ships have been up at the segment's instant. */
 const ON_STATION_MS = 60_000;
+/** Each staged ship's point recedes this much further ahead, m. */
+const QA_SHIP_STEP_M = 45;
+/** No staged hull comes nearer the held view than this past its own plan
+ * reach (plan view), m. */
+const QA_VIEW_CLEAR_M = 60;
 
 /** Where the fake pilots weave, relative to the held view (see pilots.mjs). */
 export interface QaCorridor {
@@ -62,70 +75,129 @@ export interface QaCorridor {
   yHi: number;
 }
 
-export interface QaBossSpec {
+export interface QaFleetSpec {
   /** The held view: position and yaw (yaw 0 faces −Z). */
   x: number;
   y: number;
   z: number;
   yaw: number;
-  /** How far ahead of the view the hull's centre crosses, m. */
+  /** How far ahead of the view the nearest ship crosses, m. */
   ahead: number;
   /** The world instant the segment is pinned to, ms. */
   worldMs: number;
-  /** The crossing happens this long after `worldMs` (mid-window), ms. */
+  /** The ships are where they are staged this long after `worldMs`
+   * (mid-window), ms. */
   crossMs: number;
   /** The flak's aim points. */
   corridor: QaCorridor;
+  /** How many ships (default the whole fleet, FLEET_SIZE). */
+  count?: number;
 }
+/** S8's name for the same spec. */
+export type QaBossSpec = QaFleetSpec;
 
-export interface QaBossStage {
-  readonly raid: BossRaid;
-  readonly spec: QaBossSpec;
+export interface QaFleetStage {
+  readonly ships: readonly FleetShip[];
+  readonly spec: QaFleetSpec;
   /** World time shell 0 is fired at, ms. */
   readonly flakFromMs: number;
   /** The next shell not yet handed to the socket's map. */
   next: number;
 }
+export type QaBossStage = QaFleetStage;
+
+/** The plan offsets of every image of `d` near the origin (the torus). */
+const IMAGES = [-2, -1, 0, 1, 2];
 
 /**
- * A raid whose zeppelin, `crossMs` after `worldMs`, is `ahead` metres in
- * front of the view at its centre, flying across it left to right (the
- * view's +X side), on station for a minute already. On the wire's grids
- * (centre 0.1 m, angle 0.001 rad), so it is a raid the server could send.
+ * `count` ships on as many lanes, each `crossMs` after `worldMs` at the
+ * spot along its lane nearest its own point ahead of the view — the first
+ * `ahead` m out, each next one QA_SHIP_STEP_M further — but never within
+ * QA_VIEW_CLEAR_M of the view past its hull's reach. The lanes are the ones
+ * passing nearest the first point. Records on the wire's grids, so they are
+ * ships the server could send.
  */
-export function stageBoss(spec: QaBossSpec): QaBossStage {
-  // Forward (yaw 0 faces −Z) and right of the view.
+export function stageFleet(spec: QaFleetSpec): QaFleetStage {
+  const count = Math.max(1, Math.min(FLEET_SIZE, spec.count ?? FLEET_SIZE));
   const fx = -Math.sin(spec.yaw);
   const fz = -Math.cos(spec.yaw);
-  const hx = Math.cos(spec.yaw);
-  const hz = -Math.sin(spec.yaw);
-  const px = spec.x + fx * spec.ahead;
-  const pz = spec.z + fz * spec.ahead;
-  // On the orbit the heading is (−sin θ, cos θ); centre = P − R (cos θ, sin θ).
-  const th = Math.atan2(-hx, hz);
-  const cx = px - BOSS_ORBIT_R * Math.cos(th);
-  const cz = pz - BOSS_ORBIT_R * Math.sin(th);
-  const onStationM = (BOSS_SPEED * ON_STATION_MS) / 1000;
+  const view = { x: spec.x, y: 0, z: spec.z };
   const crossAt = spec.worldMs + spec.crossMs;
-  const q = (v: number) => Math.round(wrapCoord(v) * 10) / 10;
-  const raid: BossRaid = {
-    id: QA_RAID_ID,
-    t0: Math.round(
-      crossAt - ((BOSS_INGRESS_M + onStationM) / BOSS_SPEED) * 1000,
-    ),
-    cx: q(cx),
-    cz: q(cz),
-    th0: Math.round((th - onStationM / BOSS_ORBIT_R) * 1000) / 1000,
-    orbitMs: BOSS_ORBIT_MS,
-    hpScale: 1,
+  const t0 = Math.round(crossAt - ON_STATION_MS - spec.crossMs);
+  const anchor = {
+    x: wrapCoord(spec.x + fx * spec.ahead),
+    y: 0,
+    z: wrapCoord(spec.z + fz * spec.ahead),
   };
+  /** Lane `lane`'s spot nearest plan point `t`: [s, distance across]. */
+  const nearestOn = (lane: number, t: Vec3): [number, number] => {
+    const ln = FLEET_LANES[lane] as { layer: 0 | 1; u: number };
+    const ly = FLEET_LAYERS[ln.layer] as { dx: number; dz: number };
+    const d = wrapDelta({ x: -ly.dz * ln.u, y: 0, z: ly.dx * ln.u }, t);
+    let best: [number, number] = [0, Number.POSITIVE_INFINITY];
+    for (const a of IMAGES) {
+      for (const b of IMAGES) {
+        const x = d.x + a * WORLD_SIZE;
+        const z = d.z + b * WORLD_SIZE;
+        const across = Math.abs(-ly.dz * x + ly.dx * z);
+        if (across < best[1]) best = [ly.dx * x + ly.dz * z, across];
+      }
+    }
+    return best;
+  };
+  const lanes = FLEET_LANES.map((_, i) => i)
+    .sort((a, b) => nearestOn(a, anchor)[1] - nearestOn(b, anchor)[1] || a - b)
+    .slice(0, count);
+  const pose = blankPose();
+  const ships: FleetShip[] = lanes.map((lane, i) => {
+    const ln = FLEET_LANES[lane] as { cls: 0 | 1 | 2; v: number; layer: 0 | 1 };
+    const len = (FLEET_LAYERS[ln.layer] as { length: number }).length;
+    const reach = (SHIP_REACH[ln.cls] as { xz: number }).xz;
+    const ahead = spec.ahead + QA_SHIP_STEP_M * i;
+    const target = {
+      x: wrapCoord(spec.x + fx * ahead),
+      y: 0,
+      z: wrapCoord(spec.z + fz * ahead),
+    };
+    // The nearest spot to its point that keeps the view clear of the hull.
+    const [s0] = nearestOn(lane, target);
+    let best = s0;
+    let bestD = Number.POSITIVE_INFINITY;
+    for (let k = -40; k <= 40; k++) {
+      const sk = s0 + k * 20;
+      lanePoseInto(lane, sk, pose);
+      const p = { x: pose.x, y: 0, z: pose.z };
+      const off = wrapDelta(view, p);
+      if (Math.hypot(off.x, off.z) < reach + QA_VIEW_CLEAR_M) continue;
+      const to = wrapDelta(target, p);
+      const dist = Math.hypot(to.x, to.z);
+      if (dist < bestD) {
+        bestD = dist;
+        best = sk;
+      }
+    }
+    // Where it starts so it is there at the crossing.
+    const start = best - (ln.v * (crossAt - t0)) / 1000;
+    const wrapped = ((start % len) + len) % len;
+    const q = Math.round(wrapped * 10) / 10;
+    return {
+      id: QA_SHIP_BASE + i,
+      lane,
+      t0,
+      s0: q >= len ? 0 : q,
+      hp0: shipFullHp(ln.cls, 1),
+      down: null,
+    };
+  });
   return {
-    raid,
+    ships,
     spec,
     flakFromMs: spec.worldMs - QA_FLAK_LEAD_MS,
     next: 0,
   };
 }
+/** S8's name for the same staging. */
+export const stageBoss = stageFleet;
 
 /** Shell k's share of [0, 1) for channel `c`: an integer hash, no state. */
 function unit(k: number, c: number): number {
@@ -135,41 +207,59 @@ function unit(k: number, c: number): number {
   return ((h ^ (h >>> 15)) >>> 0) / 4294967296;
 }
 
-/** One shell per turret per BOSS_FLAK_INTERVAL_MS, turrets staggered. */
-const SHELL_EVERY_MS = BOSS_FLAK_INTERVAL_MS / BOSS_TURRETS.length;
+/** The staged fleet's guns, in order: [ship index, turret]. */
+function gunsOf(stage: QaFleetStage): [number, number][] {
+  const out: [number, number][] = [];
+  stage.ships.forEach((s, i) => {
+    const cls = (FLEET_LANES[s.lane] as { cls: number }).cls;
+    for (const k of SHIP_CLASSES[cls]?.turrets ?? []) out.push([i, k]);
+  });
+  return out;
+}
+
+/** One shell per gun per BOSS_FLAK_INTERVAL_MS, the guns staggered (at
+ * least one gun's pace when the staged ships carry none). */
+const shellEveryMs = (stage: QaFleetStage): number =>
+  BOSS_FLAK_INTERVAL_MS / Math.max(1, gunsOf(stage).length);
 const muzzlePose = blankPose();
 const muzzle: Vec3 = { x: 0, y: 0, z: 0 };
 
-/** Shell k of the stage's schedule (a new object: QA, a few a second). */
-export function qaShell(stage: QaBossStage, k: number): BossFlak {
+/** Shell k of the stage's schedule (a new object: QA, a few a second), or
+ * null when no staged ship is armed. */
+export function qaShell(stage: QaFleetStage, k: number): BossFlak | null {
+  const guns = gunsOf(stage);
+  if (guns.length === 0) return null;
   const s = stage.spec;
   const c = s.corridor;
-  const t0 = Math.round(stage.flakFromMs + k * SHELL_EVERY_MS);
-  const turret = k % BOSS_TURRETS.length;
+  const t0 = Math.round(stage.flakFromMs + k * shellEveryMs(stage));
+  const [i, turret] = guns[k % guns.length] as [number, number];
+  const ship = stage.ships[i] as FleetShip;
   const ahead = c.near + (c.far - c.near) * unit(k, 0);
   const side = c.lateral * (2 * unit(k, 1) - 1);
   const fx = -Math.sin(s.yaw);
   const fz = -Math.cos(s.yaw);
   const to: Vec3 = {
-    x:
-      Math.round(wrapCoord(s.x + fx * ahead + Math.cos(s.yaw) * side) * 10) /
-      10,
+    x: gridCoord(s.x + fx * ahead + Math.cos(s.yaw) * side),
     y: Math.round((c.yLo + (c.yHi - c.yLo) * unit(k, 2)) * 10) / 10,
-    z:
-      Math.round(wrapCoord(s.z + fz * ahead - Math.sin(s.yaw) * side) * 10) /
-      10,
+    z: gridCoord(s.z + fz * ahead - Math.sin(s.yaw) * side),
   };
-  turretMuzzleInto(bossPoseAt(stage.raid, t0, muzzlePose), turret, muzzle);
+  const cls = (FLEET_LANES[ship.lane] as { cls: 0 | 1 | 2 }).cls;
+  turretMuzzleInto(fleetPoseAt(ship, t0, muzzlePose), cls, turret, muzzle);
+  const from = {
+    x: gridCoord(muzzle.x),
+    y: Math.round(muzzle.y * 10) / 10,
+    z: gridCoord(muzzle.z),
+  };
   const dist = Math.hypot(
-    wrapDeltaAxis(muzzle.x, to.x),
-    to.y - muzzle.y,
-    wrapDeltaAxis(muzzle.z, to.z),
+    wrapDeltaAxis(from.x, to.x),
+    to.y - from.y,
+    wrapDeltaAxis(from.z, to.z),
   );
   const fuse = Math.max(
     BOSS_FLAK_MIN_FUSE_MS,
     Math.round((dist / BOSS_FLAK_SPEED) * 1000),
   );
-  return { id: QA_SHELL_BASE + k, turret, to, t0, fuse };
+  return { id: QA_SHELL_BASE + k, from, to, t0, fuse };
 }
 
 /** Is this a staged shell (vs one the server sent)? */
@@ -180,13 +270,15 @@ export const isQaShell = (id: number): boolean => id >= QA_SHELL_BASE;
  * yet. Returns how many were added. The renderer bursts and drops them.
  */
 export function qaFlakDue(
-  stage: QaBossStage,
+  stage: QaFleetStage,
   nowMs: number,
   into: Map<number, BossFlak>,
 ): number {
   let added = 0;
-  while (stage.flakFromMs + stage.next * SHELL_EVERY_MS <= nowMs) {
+  const every = shellEveryMs(stage);
+  while (stage.flakFromMs + stage.next * every <= nowMs) {
     const f = qaShell(stage, stage.next++);
+    if (!f) break;
     into.set(f.id, f);
     added++;
   }

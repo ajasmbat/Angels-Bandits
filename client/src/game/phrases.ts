@@ -27,19 +27,21 @@ export const PHRASE = {
   enemyStreakThree: "Heads up, enemy on a three kill streak.",
   enemyStreakFive: "Enemy on a five kill streak. Take them down.",
   enemyStreakTen: "Enemy ace, ten kills. All stations, engage.",
-  // S4 sky boss: the raid's arrival, its flak, its end either way.
-  bossInbound: "All stations, enemy war zeppelin inbound. Hit the engines.",
+  // Z1 airship fleet: the fleet over the city, its flak, a ship coming in
+  // out of the haze, one going down.
+  fleetOverhead:
+    "All stations, enemy airships over the city. Hit the engines and the gas cells.",
   flak: "Flak, flak! Break!",
-  bossDown: "The zeppelin is going down! Clear the area!",
-  bossEscaped: "The zeppelin is pulling out. It got away.",
-  // S9: the carrier launching bandits from its hangar and its catapult.
-  carrierLaunch: "Bandits launching from the carrier!",
+  shipInbound: "Another airship coming in out of the haze.",
+  shipDown: "Airship going down! Clear the area!",
+  // S9: the airships launching bandits from their hangars and catapults.
+  carrierLaunch: "Bandits dropping from the airships!",
   // J1 announcer: the own pilot's combos and the carrier war's big moments.
   comboDouble: "Double kill!",
   comboTriple: "Triple kill!",
   comboMulti: "Multi kill! They're falling out of the sky!",
   bombRunStopped: "Bomb run stopped! Nice work.",
-  carrierDown: "Carrier down! Carrier down!",
+  carrierDown: "Airship down! Airship down!",
   aaAssist: "Triple A assist! Good shooting, ground crew.",
   waveCleared: "Wave cleared! Regroup.",
 } as const;

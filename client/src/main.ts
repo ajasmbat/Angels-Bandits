@@ -22,18 +22,18 @@ import {
 } from "@angels-bandits/common/boost";
 import {
   BOSS_ID,
-  BOSS_WEAK_POINTS,
-  type BossDown,
   type BossLaunch,
+  FLEET_LANES,
+  type FleetShip,
   LAUNCH_BELLY,
+  SHIP_CLASSES,
   blankPose,
-  bossPoseAt,
-  bossPresent,
-  breakUp,
-  piecePoseAt,
-  piecesFalling,
-  raidEnd,
-  raidMaxHp,
+  fleetPoseAt,
+  shipById,
+  shipClass,
+  shipCrash,
+  shipFalling,
+  shipPresent,
 } from "@angels-bandits/common/boss";
 import {
   type Building,
@@ -171,12 +171,11 @@ import {
   AmbientChatter,
   type Callout,
   LOW_HP_CALLOUT,
-  bossEndCallout,
-  bossInboundCallout,
   carrierLaunchCallout,
   checkInCallout,
   comboCallout,
   flakCallout,
+  fleetOverheadCallout,
   hitCallout,
   incomingCallout,
   maydayCallout,
@@ -184,6 +183,8 @@ import {
   nearMissCallout,
   offStationCallout,
   ownKillCallout,
+  shipDownCallout,
+  shipInboundCallout,
   splashCallout,
   streakCallout,
   threatCallout,
@@ -299,12 +300,12 @@ import {
   stageProps,
 } from "./game/qa-destruction";
 import {
-  type QaBossSpec,
-  type QaBossStage,
+  type QaFleetSpec,
+  type QaFleetStage,
   isQaShell,
   qaFlakDue,
   qaGhostTrack,
-  stageBoss,
+  stageFleet,
 } from "./game/qa-spectacle";
 import { caveInShakeAmount, quakeShakeAmount } from "./game/quake";
 import { refreshResumedWorld } from "./game/resume-world";
@@ -337,7 +338,7 @@ import { archetypeFor } from "./render/archetypes";
 import { AtmosphereFx } from "./render/atmosphere-fx";
 import { landBeam } from "./render/beam-landing";
 import { Birds } from "./render/birds";
-import { BossRenderer } from "./render/boss";
+import { FleetRenderer } from "./render/boss";
 import { CaveInRenderer } from "./render/caveins";
 import { CityRenderer } from "./render/city";
 import { PICKUP_TAXIS } from "./render/citylife";
@@ -1008,8 +1009,8 @@ const moverField = {
     welcome.seed,
   ),
   collapses: socket.collapses,
-  // S4: and the room's sky boss — the socket's slot, kept from every welcome
-  // and message, so the zeppelin is solid exactly where it is drawn.
+  // Z1: and the room's airship fleet — the socket's slot, kept from every
+  // welcome and message, so every hull is solid exactly where it is drawn.
   boss: socket.boss,
   // U6: and its cave-ins — the falling rock and rubble in the bores.
   caveins: socket.caveIns,
@@ -1186,8 +1187,8 @@ const fountains = new Fountains(nature.ponds);
 scene.add(fountains.points);
 const fireworks = new Fireworks(welcome.seed);
 const searchlights = new Searchlights(city.cityBuildings);
-/** L6: this frame's moving beams — the carrier's lamps and escorts first,
- * then the helicopters' spots (reused; never reallocated per frame). */
+/** L6: this frame's moving beams — the nearest airships' lamps first, then
+ * the helicopters' spots (reused; never reallocated per frame). */
 const beamSpots: SpotBeam[] = [];
 scene.add(searchlights.mesh);
 // S1: the city's jumbotrons + headline tickers (one draw), told what to say
@@ -1291,7 +1292,7 @@ scene.add(explosions.group);
 const shockRings = new ShockRings();
 scene.add(shockRings.group);
 /** W2: a bomb's shock ring, m; a load going up: its ring and fireball size
- * (fx.ts Explosions: 1 a kill, up to 2 the carrier). */
+ * (fx.ts Explosions: 1 a kill, up to 2 an airship). */
 const BOMB_RING_M = 38;
 const LOAD_RING_M = 55;
 const LOAD_BOOM_SCALE = 2;
@@ -1470,10 +1471,10 @@ for (const type of ["pointerdown", "touchstart", "wheel"] as const) {
  * false when there is nothing to look at any more. */
 function cueTargetAt(ms: number): boolean {
   if (camCue.kind === "breakup") {
-    const down = socket.boss.down;
-    const piece = down?.pieces[1] ?? down?.pieces[0];
-    if (!down || !piece) return false;
-    piecePoseAt(piece, down.t, piece.end, ms, cuePose);
+    // Z1: the airship whose down the cam is on, while it falls.
+    const ship = cueShip === null ? null : shipById(socket.boss, cueShip);
+    if (!ship || !ship.down) return false;
+    fleetPoseAt(ship, ms, cuePose);
     cueTarget.x = cuePose.x;
     cueTarget.y = cuePose.y;
     cueTarget.z = cuePose.z;
@@ -1487,8 +1488,8 @@ function cueTargetAt(ms: number): boolean {
 }
 /**
  * J1: one beat of juice for the local pilot — the banner, the style-score
- * popup, the announcer and (for the big ones) the slow-mo. The carrier-war
- * moments come through here: "carrier" (bossDown), "wave" (the waves
+ * popup, the announcer and (for the big ones) the slow-mo. The war's
+ * moments come through here: "carrier" (Z1: shipDown), "wave" (the waves
  * edge), "aa" (W3: a rooftop nest finished a plane we hit — the death's
  * `assist`), and the hook W2 ("bombrun": an enemy shot down on its bomb
  * run) calls once it lands.
@@ -1637,12 +1638,12 @@ socket.events.onQuake = (q) => {
   );
   radio.noteCombat(performance.now());
 };
-// S4 sky boss: the room's war zeppelin (the socket's slot) on the render
-// clock — hull, glowing weak points, running lights, flak shells — its
-// bursts and its falling sections' fire through the D1 particle pool. A
-// section hitting the city is a big blast and a jolt; a burst near us is a
-// crack and a "flak!" call.
-const bossRenderer = new BossRenderer(
+// Z1: the room's airship fleet (the socket's slot) on the render clock —
+// every hull, its glowing weak points, running lights, flak shells — its
+// bursts and its crashes' fire through the D1 particle pool. A crash hitting
+// the city is a big blast and a jolt; a burst near us is a crack and a
+// "flak!" call.
+const bossRenderer = new FleetRenderer(
   impacts,
   (at) => {
     const t = performance.now();
@@ -1662,7 +1663,7 @@ const bossRenderer = new BossRenderer(
     }
   },
 );
-// S9: the carrier's launches and its break-up, heard where they happen.
+// S9/Z1: the fleet's launches and its downs, heard where they happen.
 bossRenderer.setCues({
   launchStart: (l, at) => {
     if (l.kind === LAUNCH_BELLY) audio.bossKlaxon(at, flight.pos, flight.yaw);
@@ -1672,20 +1673,26 @@ bossRenderer.setCues({
     if (l.kind === LAUNCH_BELLY) audio.hookClunk(at, flight.pos, flight.yaw);
     else audio.catapultHiss(at, flight.pos, flight.yaw, true);
   },
-  breakUp: (joints) => {
+  downed: (at) => {
+    // The fireball as it bursts into flame: three blasts down the hull.
     const t = performance.now();
-    joints.forEach((at, k) => {
-      explosions.explode(at, t + k * 140);
-      sparks.burst(at, t + k * 140);
-    });
-    const first = joints[0];
-    if (first) audio.missileBlast(first, flight.pos, flight.yaw);
+    for (let k = 0; k < 3; k++) {
+      const p = {
+        x: at.x + (k - 1) * 22,
+        y: at.y + (k === 1 ? 6 : 0),
+        z: at.z,
+      };
+      explosions.explode(p, t + k * 140);
+      sparks.burst(p, t + k * 140);
+    }
+    audio.missileBlast(at, flight.pos, flight.yaw);
   },
 });
 scene.add(bossRenderer.group);
-/** S8 QA (`__ab.qaBoss`): the staged raid and its flak schedule, and how
- * many shells the server sent while it was staged (dropped each frame). */
-let qaBoss: QaBossStage | null = null;
+/** S8/Z1 QA (`__ab.qaFleet`, `__ab.qaBoss`): the staged fleet and its flak
+ * schedule, and how many shells the server sent while it was staged
+ * (dropped each frame). */
+let qaBoss: QaFleetStage | null = null;
 /** P4 QA (`__ab.qaChaos`): the staged chaos scene (game/qa-chaos.ts). */
 let qaChaos: QaChaosStage | null = null;
 let qaForeignShells = 0;
@@ -1693,19 +1700,23 @@ let qaForeignShells = 0;
  * from 1). */
 const QA_LAUNCH_BASE = 900_000;
 let qaLaunches = 0;
-/** S9 QA: what is staged on the raid — re-installed if a real raid's
- * message replaces the slot. */
-const qaBossStage: { launches: BossLaunch[]; down: BossDown | null } = {
-  launches: [],
-  down: null,
-};
-/** S4: each weak point's full HP on the current raid (the HUD bar's scale),
- * rebuilt only when the raid changes — never per frame. */
-let bossMaxFor = -1;
-let bossMax: number[] = [];
-const bossAlive: boolean[] = BOSS_WEAK_POINTS.map(() => false);
-/** S4: the raid whose run-out we have already called ("it got away"). */
-let bossEscapeCalled = -1;
+/** S9 QA: the launches staged on the staged fleet — re-installed when a
+ * real fleet message replaces the slot. */
+const qaBossStage: { launches: BossLaunch[] } = { launches: [] };
+/** J1/Z1: the airship the down cam is on (its id), or null. */
+let cueShip: number | null = null;
+/** QA: the viewer the fleet renders for — the QA eye when one is held. */
+function lastQaViewer(): Vec3 {
+  return qaView ? qaView.eye : chase.position;
+}
+/** Z1 QA: the staged fleet into the socket's slot (the same records, so a
+ * staged crash shows), its launches and HP with it. */
+function installQaFleet(stage: QaFleetStage): void {
+  socket.boss.ships = [...stage.ships];
+  socket.boss.launches = [...qaBossStage.launches];
+  socket.bossHp.clear();
+  for (const sh of stage.ships) socket.bossHp.set(sh.id, sh.down ? 0 : sh.hp0);
+}
 /** The classifier's reusable result (allocation-free bullet loop). */
 const impactHit: BulletImpact = createBulletImpact();
 /** QA: the last city impact by a LOCAL round (own guns or __ab.qaFireAt —
@@ -2720,62 +2731,65 @@ socket.events.onAward = (msg) => {
     say(streakCallout(msg.tier, own, nameOf(msg.id)));
   }
 };
-/** S4: a sky-boss raid begins — the whole room hears it, and the score
- * swells (the moment S2 kept for it). */
-socket.events.onBoss = () => {
-  say(bossInboundCallout());
-  music.moment("swell");
+/** Z1: the fleet came over the room — the whole room hears it once, and
+ * the score swells (the moment S2 kept for it). A ship drifting in later
+ * to fill a downed one's lane gets its own, rarer line. A joiner finds the
+ * fleet already up. */
+let fleetCalledAt =
+  socket.boss.ships.length > 0 ? Number.NEGATIVE_INFINITY : Number.NaN;
+socket.events.onShip = () => {
+  const now = performance.now();
+  if (Number.isNaN(fleetCalledAt)) {
+    fleetCalledAt = now;
+    say(fleetOverheadCallout());
+    music.moment("swell");
+  } else if (now - fleetCalledAt > 5000) {
+    say(shipInboundCallout());
+  }
 };
-/** S9: the carrier launches a bandit — the radio calls it (20 s cooldown:
+/** S9: an airship launches a bandit — the radio calls it (20 s cooldown:
  * one call per wave, not per plane). */
 socket.events.onBossLaunch = () => {
   say(carrierLaunchCallout());
 };
+/** Z1: an airship this far off is a radio line; nearer, the jolt. */
+const SHIP_DOWN_CALL_M = 700;
 /**
- * S4: the zeppelin is down. One feed line for the top dealer (+ how many
+ * Z1: an airship is down. One feed line for the top dealer (+ how many
  * shared the kill — the badges of the top dealer's award join it), the
- * screens' headline at its middle section, the radio, and the swell; the
- * credited kills arrive with the `score` after.
+ * screens' headline where it comes down, the radio, and the jolt of its
+ * blast (the fireball is the renderer's, as it bursts into flame); for
+ * the pilots who brought it down, AIRSHIP DOWN, the down cam and the
+ * swell. The credited kills arrive with the `score` after.
  */
-socket.events.onBossDown = (msg) => {
+socket.events.onShipDown = (msg) => {
   const credited = msg.dealers.filter(([, permille]) => permille >= 100);
   const top = msg.top;
-  killFeed.addBossDown(
+  const mine = msg.dealers.some(([id]) => id === socket.selfId);
+  killFeed.addShipDown(
     top === null ? null : nameOf(top),
     Math.max(0, credited.length - 1),
     BOSS_ID,
-    msg.dealers.some(([id]) => id === socket.selfId),
+    mine,
   );
-  const mid = msg.d.pieces[1];
-  const line = bossHeadline(
-    top,
-    screenLabel,
-    msg.d.id,
-    mid?.p.x ?? 0,
-    mid?.p.z ?? 0,
-  );
+  const line = bossHeadline(top, screenLabel, msg.id, msg.d.at.x, msg.d.at.z);
   jumbotrons.addHeadline(line.headline, line.feed);
-  // J1: the carrier's death is the war's big beat — a blast where it
-  // breaks, felt across the city; CARRIER DOWN for those who brought it
-  // down (their call replaces the generic one), the break-up cam and the
-  // slow-mo for everyone flying.
   const now = performance.now();
-  if (mid) {
-    explosions.explode(mid.p, now, 2);
-    blastShake.add(wrapDistance(mid.p, flight.pos), 2, now);
+  const dist = wrapDistance(msg.d.p, flight.pos);
+  blastShake.add(dist, 2, now);
+  if (mine) {
+    juiceEvent("carrier");
+    cueShip = msg.id;
+    startCue("breakup", now);
+    music.moment("swell");
+  } else if (dist < SHIP_DOWN_CALL_M) {
+    say(shipDownCallout());
   }
-  if (msg.dealers.some(([id]) => id === socket.selfId)) juiceEvent("carrier");
-  else {
-    say(bossEndCallout(true));
-    if (alive) fxClock.trigger(now);
-  }
-  startCue("breakup", now);
-  music.moment("swell");
 };
 /** J1: the carrier war moved on — a wave cleared is the room's beat. */
 socket.events.onWaves = (state) => {
-  // W4's edge (game/easy-mode.ts), carrier-down left out: that is the
-  // carrier's own beat (bossDown), never a wave clear.
+  // W4's edge (game/easy-mode.ts), a ship's down left out: that is its own
+  // beat (shipDown), never a wave clear.
   if (waveCleared(lastWaves, state, false)) juiceEvent("wave");
   lastWaves = { ...state };
 };
@@ -3156,6 +3170,8 @@ const perf = { frames: 0, ms: 0, fps: 0, frameMs: 0 };
 /** A1: performance.now() when the boot pre-warm finished (null before) —
  * the harness's zero for "programs linked after the first 5 s". */
 let bootedAt: number | null = null;
+/** The QA surface's own type (its hooks call each other through it). */
+type AbQa = NonNullable<Window["__ab"]>;
 declare global {
   interface Window {
     __ab?: {
@@ -3396,29 +3412,55 @@ declare global {
        * tier switches) and whether every light is in the probe's layer.
        * `{ refill: true }` rebuilds all six faces on the next frame. */
       reflections: (opts?: { refill?: boolean }) => ReflectionProbe["stats"];
-      /** S4 QA: the room's sky boss as this client holds it — the raid, its
-       * HP, whether it flies (or falls) at the render clock, where, the
-       * shells in the air and what the renderer drew. */
+      /** Z1 QA: the room's airship fleet as this client holds it — every
+       * ship (its lane, class, HP, whether it flies or falls at the render
+       * clock, where), the shells in the air and what the renderer drew. */
+      fleet: () => {
+        ships: {
+          id: number;
+          lane: number;
+          cls: string;
+          hp: number;
+          hp0: number;
+          present: boolean;
+          falling: boolean;
+          pos: { x: number; y: number; z: number; yaw: number; pitch: number };
+        }[];
+        up: number;
+        falling: number;
+        flak: number;
+        drawn: FleetRenderer["stats"];
+        /** A staged fleet holds the slot; server shells dropped since. */
+        staged: boolean;
+        foreignShells: number;
+      };
+      /** S4/S8 QA, kept for the perf harness: the fleet summed up as the
+       * old boss read — `present` while any ship flies near-ish, its HP,
+       * the nearest ship's pose, the drawn stats. */
       boss: () => {
-        raid: typeof socket.boss.raid;
-        hp: number[];
-        down: typeof socket.boss.down;
         present: boolean;
         falling: boolean;
         pos: { x: number; y: number; z: number; yaw: number } | null;
         flak: number;
-        drawn: BossRenderer["stats"];
-        /** S8: a staged raid holds the slot; server shells dropped since. */
+        drawn: FleetRenderer["stats"];
         staged: boolean;
         foreignShells: number;
       };
-      /** S8 QA: stage a raid crossing a held view (null clears). */
-      qaBoss: (spec: QaBossSpec | null) => typeof socket.boss.raid;
-      /** S9 QA: on the staged raid, a carrier launch (`kind` 0 belly, 1
-       * catapult) `phaseMs` into its sequence at the world clock now. */
+      /** Z1 QA: stage `spec.count` ships (default the whole fleet) round a
+       * held view, with their flak schedule (null clears). */
+      qaFleet: (spec: QaFleetSpec | null) => FleetShip[] | null;
+      /** S8 QA: the same staging (the perf harness's name). */
+      qaBoss: (spec: QaFleetSpec | null) => FleetShip[] | null;
+      /** S9 QA: on the staged ship nearest the view that carries the rig, a
+       * launch (`kind` 0 belly, 1 catapult) `phaseMs` into its sequence at
+       * the world clock now. */
       qaBossLaunch: (kind: 0 | 1, phaseMs: number) => BossLaunch | null;
-      /** S9 QA: break the staged raid's carrier up, `afterMs` ago. */
-      qaBossDown: (afterMs: number) => BossDown | null;
+      /** Z1 QA: shoot ship `i` of the staged fleet (of the room's, with
+       * none staged) down `afterMs` ago — its crash as the server would
+       * sweep it. Null when there is no such ship. */
+      qaShipDown: (i: number, afterMs?: number) => FleetShip["down"];
+      /** S9 QA (the perf harness's name): the nearest staged ship down. */
+      qaBossDown: (afterMs: number) => FleetShip["down"];
       /** S8 QA: a synthetic record ghost for the first course of `theme`
        * (speed null: none). Null when the city has no such course. */
       qaCourseGhost: (
@@ -3495,8 +3537,9 @@ declare global {
         held: [number, number][];
       };
       /** P4: the plane fleet last frame — planes drawn (near / far LOD)
-       * and the draws they cost; null under `?fleet=0`. */
-      fleet: () => {
+       * and the draws they cost; null under `?fleet=0`. (Z1 renamed it:
+       * `fleet` is the airship fleet's now.) */
+      planeFleet: () => {
         planes: number;
         near: number;
         mid: number;
@@ -4435,69 +4478,142 @@ window.__ab = {
     if (opts?.refill) reflections.requestRefill(true);
     return reflections.stats;
   },
-  boss: () => {
+  fleet: () => {
     const t = lastRenderMs;
-    const raid = socket.boss.raid;
-    const present = raid !== null && t !== null && bossPresent(socket.boss, t);
-    const pose =
-      present && raid && t !== null
-        ? bossPoseAt(raid, t, { x: 0, y: 0, z: 0, yaw: 0, hx: 1, hz: 0 })
-        : null;
+    const pose = blankPose();
+    const ships = socket.boss.ships.map((sh) => {
+      const present = t !== null && shipPresent(sh, t);
+      const falling = t !== null && shipFalling(sh, t);
+      if (t !== null) fleetPoseAt(sh, t, pose);
+      return {
+        id: sh.id,
+        lane: sh.lane,
+        cls: SHIP_CLASSES[shipClass(sh)]?.name ?? "?",
+        hp: socket.bossHp.get(sh.id) ?? 0,
+        hp0: sh.hp0,
+        present,
+        falling,
+        pos: {
+          x: pose.x,
+          y: pose.y,
+          z: pose.z,
+          yaw: pose.yaw,
+          pitch: pose.pitch,
+        },
+      };
+    });
     return {
-      raid,
-      hp: [...socket.bossHp],
-      down: socket.boss.down,
-      present,
-      falling: t !== null && piecesFalling(socket.boss, t),
-      pos: pose && { x: pose.x, y: pose.y, z: pose.z, yaw: pose.yaw },
+      ships,
+      up: ships.filter((x) => x.present).length,
+      falling: ships.filter((x) => x.falling).length,
       flak: socket.flak.size,
       drawn: bossRenderer.stats,
       staged: qaBoss !== null,
       foreignShells: qaForeignShells,
     };
   },
-  // S8 QA: stage a boss raid crossing a held view, with its flak schedule
-  // on the world clock (game/qa-spectacle.ts); null clears it.
-  qaBoss: (spec) => {
+  boss: () => {
+    const f = (window.__ab as AbQa).fleet();
+    const me = lastQaViewer();
+    let nearest: (typeof f.ships)[number] | null = null;
+    let best = Number.POSITIVE_INFINITY;
+    for (const sh of f.ships) {
+      if (!sh.present) continue;
+      const d = wrapDistance(sh.pos, me);
+      if (d < best) {
+        best = d;
+        nearest = sh;
+      }
+    }
+    return {
+      present: f.up > 0 && f.drawn.ships > 0,
+      falling: f.falling > 0,
+      pos: nearest && {
+        x: nearest.pos.x,
+        y: nearest.pos.y,
+        z: nearest.pos.z,
+        yaw: nearest.pos.yaw,
+      },
+      flak: f.flak,
+      drawn: f.drawn,
+      staged: f.staged,
+      foreignShells: f.foreignShells,
+    };
+  },
+  // Z1 QA: stage a fleet round a held view, with its flak schedule on the
+  // world clock (game/qa-spectacle.ts); null clears it.
+  qaFleet: (spec) => {
     if (spec === null) {
       qaBoss = null;
-      socket.boss.raid = null;
-      socket.boss.down = null;
-      socket.bossHp = [];
+      socket.boss.ships = [];
+      socket.boss.launches = [];
+      socket.bossHp.clear();
       socket.flak.clear();
       return null;
     }
-    qaBoss = stageBoss(spec);
+    qaBoss = stageFleet(spec);
     qaForeignShells = 0;
     socket.flak.clear();
     socket.boss.launches = [];
     qaBossStage.launches = [];
-    qaBossStage.down = null;
-    return qaBoss.raid;
+    installQaFleet(qaBoss);
+    return [...qaBoss.ships];
   },
+  qaBoss: (spec) => (window.__ab as AbQa).qaFleet(spec),
   qaBossLaunch: (kind, phaseMs) => {
     if (qaBoss === null) return null;
+    const me = lastQaViewer();
+    const t = worldTime() ?? 0;
+    let host: FleetShip | null = null;
+    let best = Number.POSITIVE_INFINITY;
+    for (const sh of qaBoss.ships) {
+      const cls = (FLEET_LANES[sh.lane] as { cls: number }).cls;
+      if (!SHIP_CLASSES[cls]?.rigs.includes(kind)) continue;
+      if (!shipPresent(sh, t)) continue;
+      const d = wrapDistance(fleetPoseAt(sh, t, blankPose()), me);
+      if (d < best) {
+        best = d;
+        host = sh;
+      }
+    }
+    if (!host) return null;
     const l: BossLaunch = {
       id: QA_LAUNCH_BASE + qaLaunches++,
-      raid: qaBoss.raid.id,
+      ship: host.id,
       kind,
-      t0: Math.round((worldTime() ?? 0) - phaseMs),
+      t0: Math.round(t - phaseMs),
     };
     qaBossStage.launches.push(l);
-    socket.boss.launches = [...(socket.boss.launches ?? []), l];
+    socket.boss.launches = [...socket.boss.launches, l];
     return l;
   },
-  qaBossDown: (afterMs) => {
-    if (qaBoss === null) return null;
-    const down = breakUp(qaBoss.raid, (worldTime() ?? 0) - afterMs, {
+  qaShipDown: (i, afterMs = 0) => {
+    const list = qaBoss !== null ? qaBoss.ships : socket.boss.ships;
+    const sh = list[i];
+    if (!sh) return null;
+    const down = shipCrash(sh, (worldTime() ?? 0) - afterMs, {
       buildings: city.cityBuildings,
       index: city.cityIndex,
     });
-    qaBossStage.down = down;
-    socket.boss.raid = qaBoss.raid;
-    socket.boss.down = down;
-    socket.bossHp = socket.bossHp.map(() => 0);
+    sh.down = down;
+    socket.bossHp.set(sh.id, 0);
     return down;
+  },
+  qaBossDown: (afterMs) => {
+    if (qaBoss === null) return null;
+    // The staged ship nearest the view.
+    const me = lastQaViewer();
+    const t = worldTime() ?? 0;
+    let at = 0;
+    let best = Number.POSITIVE_INFINITY;
+    qaBoss.ships.forEach((sh, i) => {
+      const d = wrapDistance(fleetPoseAt(sh, t, blankPose()), me);
+      if (d < best) {
+        best = d;
+        at = i;
+      }
+    });
+    return (window.__ab as AbQa).qaShipDown(at, afterMs);
   },
   // S8 QA: the record ghost the next run of the first course of `theme`
   // plays — a constant `speed` through its ring centres — or null for none.
@@ -4589,7 +4705,7 @@ window.__ab = {
       c.t0 + c.endMs,
     ]),
   }),
-  fleet: () =>
+  planeFleet: () =>
     fleet && tagBatch
       ? {
           ...fleet.stats,
@@ -5970,15 +6086,11 @@ const frame = (rafNow: number): void => {
       );
       classifyTotal += performance.now() - c0;
     }
-    // S4: the zeppelin. A live weak point takes a claim (own rounds); armour
-    // stops any round — sparks, nothing claimed.
-    if (socket.boss.raid !== null) {
-      for (let k = 0; k < bossAlive.length; k++) {
-        bossAlive[k] = (socket.bossHp[k] ?? 0) > 0;
-      }
+    // Z1: the fleet. A round that meets a hull stops there — sparks — and
+    // an own round claims it: a weak point, or the hull itself.
+    if (socket.boss.ships.length > 0) {
       const onBoss = bossBulletHit(
         socket.boss,
-        bossAlive,
         bullet.prev,
         bullet.pos,
         renderMs,
@@ -5986,8 +6098,9 @@ const frame = (rafNow: number): void => {
       if (onBoss) {
         bullets.remove(bullet);
         sparks.burst(onBoss.at, now);
-        if (!bullet.cosmetic && onBoss.weak >= 0 && renderMs !== null) {
+        if (!bullet.cosmetic && renderMs !== null) {
           socket.sendBossHit(
+            onBoss.ship,
             onBoss.weak,
             bullet.origin,
             onBoss.dir,
@@ -6178,17 +6291,17 @@ const frame = (rafNow: number): void => {
       if (target.id === leaderId) leaderPos = target.pos;
     }
   }
-  // S4: the zeppelin, its flak and its fall. L6: posed here, BEFORE the
-  // searchlights, so the beams its lamps and escort scouts throw — landed
-  // on the roofs they meet, a pool of light in the mover cloud each — are
-  // this frame's, like the hull. Its beams go first: a full beam mesh drops
-  // a helicopter's spot, never the carrier's.
-  const bossViewer = qaView ? qaView.eye : chase.position;
+  // Z1: the fleet, its flak and its crashes. L6: posed here, BEFORE the
+  // searchlights, so the beams the nearest ships' lamps throw — landed on
+  // the roofs they meet, a pool of light in the mover cloud each — are this
+  // frame's, like the hulls. Their beams go first: a full beam mesh drops a
+  // helicopter's spot, never an airship's.
+  const bossViewer = lastQaViewer();
   bossRenderer.update(
     socket.boss,
     socket.bossHp,
     socket.flak,
-    // S9: its detail LOD reads the viewer — the QA eye when one is held.
+    // S9: the detail LOD reads the viewer — the QA eye when one is held.
     bossViewer,
     renderMs,
     now,
@@ -6375,18 +6488,12 @@ const frame = (rafNow: number): void => {
     missileRenderer.update(mf.flying, chase.position, renderMs, now);
     socket.pruneChaos(renderMs); // C2: runs and quakes long over
   }
-  // S8 QA: a staged raid holds the slot (a real `boss` message cannot
-  // replace it mid-window) and only staged shells fly.
+  // S8/Z1 QA: a staged fleet holds the slot (a real `ship` message cannot
+  // add to it mid-window) and only staged shells fly.
   if (qaBoss !== null && renderMs !== null) {
-    if (socket.boss.raid !== qaBoss.raid) {
-      socket.boss.raid = qaBoss.raid;
-      // S9: with its staged launches and break-up (a real `boss` message
-      // clears both).
-      socket.boss.down = qaBossStage.down;
-      socket.boss.launches = [...qaBossStage.launches];
-      socket.bossHp = qaBossStage.down
-        ? raidMaxHp(qaBoss.raid).map(() => 0)
-        : raidMaxHp(qaBoss.raid);
+    const held = socket.boss.ships;
+    if (held.length !== qaBoss.ships.length || held[0] !== qaBoss.ships[0]) {
+      installQaFleet(qaBoss);
     }
     for (const id of socket.flak.keys()) {
       if (isQaShell(id)) continue;
@@ -6440,26 +6547,15 @@ const frame = (rafNow: number): void => {
   aaNests.update(propsViewer, renderMs, now, aaEnemyPos);
   scarsRenderer.update(propsViewer, renderMs, now);
   facadeScars.update(propsViewer, now);
-  // S4: the HUD bar while the zeppelin flies (L6: it is posed above, before
-  // the searchlights); "it got away" once, when a raid runs out still flying.
-  const bossRaid = socket.boss.raid;
-  if (bossRaid && bossRaid.id !== bossMaxFor) {
-    bossMaxFor = bossRaid.id;
-    bossMax = raidMaxHp(bossRaid);
-  }
-  const bossUp =
-    bossRaid !== null &&
-    renderMs !== null &&
-    bossPresent(socket.boss, renderMs);
-  hud.setBoss(bossUp ? socket.bossHp : null, bossMax, now);
-  // W1: the carrier war — its tier, the wave, the enemies left, the banner.
+  // W1/Z1: the war — the wave, the enemies left, the fleet counter, the
+  // banner.
   hud.setWaves(socket.waves, now);
   // W4: Easy mode counts the waves this pilot SEES cleared — never across
   // a hidden tab, a join or a resume (wavesSeen restarts), nor in the lab.
   if (
     wavesSeen !== null &&
     !labMode &&
-    waveCleared(wavesSeen, socket.waves, socket.boss.down !== null)
+    waveCleared(wavesSeen, socket.waves, false)
   ) {
     const was = easyOn();
     easyState = noteCleared(easyState);
@@ -6471,17 +6567,6 @@ const frame = (rafNow: number): void => {
   }
   wavesSeen = document.hidden ? null : socket.waves;
   hud.setEasy(easyOn());
-  if (
-    bossRaid &&
-    renderMs !== null &&
-    bossRaid.id !== bossEscapeCalled &&
-    !socket.boss.down &&
-    renderMs >= raidEnd(bossRaid) - 30_000 &&
-    renderMs < raidEnd(bossRaid)
-  ) {
-    bossEscapeCalled = bossRaid.id;
-    say(bossEndCallout(false));
-  }
   smoke.update(chase.position, now);
   // S7 streak smoke: every living plane on a streak, tinted by its tier.
   if (alive) {
@@ -6683,21 +6768,13 @@ const frame = (rafNow: number): void => {
       if (threatDist === null || d < threatDist) threatDist = d;
     }
   }
-  // J1: the carrier fight — the zeppelin up and how close; a live wave
-  // keeps the score off calm.
-  let carrierDist: number | null = null;
-  if (alive && bossUp && bossRaid !== null && renderMs !== null) {
-    carrierDist = wrapDistance(
-      flight.pos,
-      bossPoseAt(bossRaid, renderMs, cuePose),
-    );
-  }
+  // J1: a live wave keeps the score off calm (Z1: the fleet itself never
+  // sets it — it is always up).
   music.update({
     nowMs: now,
     threatDist,
     hp: selfHp,
     alive,
-    carrierDist,
     waveLive: socket.waves.phase === WAVE_LIVE,
   });
   // A1: the nearest busker within earshot of the plane (silent if none).
@@ -6710,7 +6787,7 @@ const frame = (rafNow: number): void => {
   );
   // L5/T2: the rumble from the nearest car (quieter standing at a station),
   // squealing on a curve, clattering over the joints, and the horn.
-  // S9: the carrier's diesels, from its hull while it flies.
+  // S9/Z1: the nearest airship's diesels, from its hull while it flies.
   audio.setBossDrone(bossRenderer.dronePos(), flight.pos, flight.yaw);
   audio.setTrainRumble(
     train.sound.at,

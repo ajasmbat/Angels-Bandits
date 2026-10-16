@@ -68,7 +68,7 @@ export interface SettingsHooks {
   setCameraRoll: (c: CameraRoll) => void;
   /** J1 REDUCED MOTION as it applies now (the device's until picked). */
   reducedMotion: () => boolean;
-  /** J1 SCREEN SHAKE, REDUCED MOTION or CARRIER CAM changed — applied live. */
+  /** J1 SCREEN SHAKE, REDUCED MOTION or AIRSHIP CAM changed — applied live. */
   setEffects: (s: Settings) => void;
   /** The resolution scale changed (debounced while a slider drags). */
   setResScale: (scale: number) => void;
@@ -170,8 +170,8 @@ const MARKUP = `
         ])}
       </div>
       <div class="row">
-        <span>CARRIER CAM</span>
-        ${seg("carrierCam", "Carrier cam", [
+        <span>AIRSHIP CAM</span>
+        ${seg("carrierCam", "Airship cam", [
           ["on", "ON"],
           ["off", "OFF"],
         ])}

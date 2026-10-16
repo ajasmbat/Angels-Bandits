@@ -55,10 +55,16 @@ export function bossBulletHit(
   let best = Number.POSITIVE_INFINITY;
   let bestShip = -1;
   let bestWeak = -1;
+  const lo = prev.y < cur.y ? prev.y : cur.y;
+  const hi = prev.y < cur.y ? cur.y : prev.y;
   for (const s of slot.ships) {
     if (!shipPresent(s, renderMs)) continue;
-    const cls = (FLEET_LANES[s.lane] as { cls: 0 | 1 | 2 }).cls;
-    const r = (SHIP_REACH[cls] as { r: number }).r;
+    const lane = FLEET_LANES[s.lane] as { cls: 0 | 1 | 2; alt: number };
+    const reach = SHIP_REACH[lane.cls] as { y: number; r: number };
+    // Its layer's band first: most rounds fly nowhere near it.
+    if (hi < lane.alt - reach.y || lo > lane.alt + reach.y) continue;
+    const cls = lane.cls;
+    const r = reach.r;
     fleetPoseAt(s, renderMs, pose);
     // Far from the hull: no part test at all.
     wrapDeltaInto(prev, pose, toShip);

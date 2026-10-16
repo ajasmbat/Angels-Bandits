@@ -541,7 +541,7 @@ try {
         v.name,
         JSON.stringify(
           await page.evaluate(() => ({
-            ...window.__ab.fleet(),
+            ...window.__ab.planeFleet(),
             nan: window.__ab.nanProbe(),
           })),
         ),

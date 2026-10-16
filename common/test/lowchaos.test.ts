@@ -122,7 +122,7 @@ describe("lowChaosLevel", () => {
       ...Array.from({ length: 90 }, (_, k) => 220 - 2 * k),
     ];
     for (const y of ys) {
-      const now =
+      const now: boolean =
         lowChaosLevel({ pos: at(CANYON.pos, y), wasLow: low }, city) > 0;
       if (now !== low) flips.push(y);
       low = now;

@@ -11,11 +11,12 @@
 //    intensity and the wave): a gap between two runs starting, a cap on runs
 //    at once, each enemy resting between its runs, and none before an enemy
 //    has flown FIRST_RUN_MS off its carrier;
-//  - the run's subject is the enemy's W1 quarry — a human, never the carrier
-//    — and a quarry that is spawn-protected or freshly (re)spawned is left
-//    alone; the target (a rooftop near it for a DIVE — W3: often a manned
-//    AA nest — a street point near it for a CARPET) keeps clear of every such human, of a recent respawn and
-//    of the carrier's ground track.
+//  - the run's subject is the enemy's W1 quarry — a human, never an
+//    airship — and a quarry that is spawn-protected or freshly (re)spawned
+//    is left alone; the target (a rooftop near it for a DIVE — W3: often a
+//    manned AA nest — a street point near it for a CARPET) keeps clear of
+//    every such human, of a recent respawn and of every airship's ground
+//    track (Z1);
 // And each release:
 //  - the run's own racks (common/src/bombs.ts: the heavy bomb for a dive,
 //    the wing bombs for a carpet, one stick slot apart), at most
@@ -24,7 +25,8 @@
 //    it stands, landing within the run's reach of its target;
 //  - never at a plane (MISSILE_PLANE_CLEAR_M off every human now and at the
 //    impact), never near a fresh or spawn-protected human, never inside a
-//    respawn's quiet zone, never with the dropper beside the carrier;
+//    respawn's quiet zone, never with the dropper over or beside an
+//    airship (Z1: its bombs would fall through the hull);
 //  - C2's DangerBudget on its `bomb` layer: a human near a run's bombs is
 //    charged ONCE for the whole run.
 // A refused release is simply not made (the brain retries inside its
@@ -42,7 +44,6 @@ import {
   nextRack,
   planBombDrop,
 } from "@angels-bandits/common/bombs";
-import { BOSS_REACH_XZ } from "@angels-bandits/common/boss";
 import { roofPoint } from "@angels-bandits/common/chaos";
 import {
   type Building,
@@ -91,7 +92,8 @@ export interface BombTuning {
   /** A drop lands within this of its run's target, m (plan view). */
   diveReachM: number;
   carpetReachM: number;
-  /** Plan-view clearance of targets and droppers from the carrier, m. */
+  /** Plan-view clearance of targets and droppers past an airship's own
+   * plan reach, m. */
   carrierClearM: number;
   /** Plan-view clearance of a target from a fresh or protected human, m. */
   freshClearM: number;
@@ -111,7 +113,7 @@ export const BOMB_TUNING: BombTuning = {
   targetMaxM: 170,
   diveReachM: 30,
   carpetReachM: 70,
-  carrierClearM: BOSS_REACH_XZ + 80,
+  carrierClearM: 40,
   freshClearM: 80,
   refusedRestMs: 4000,
   runRangeM: 600,
@@ -160,8 +162,8 @@ export interface BombWorld {
   missiles: MissileDirector;
   /** C2's danger budget (absent with AB_CHAOS=0: the plane rules only). */
   budget?: DangerBudget;
-  /** The carrier's position now, or null when none is up. */
-  carrier: Vec3 | null;
+  /** Z1: every airship up now — its centre and its plan reach, m. */
+  ships: readonly { pos: Vec3; reach: number }[];
   /** C2's gone-hold is on: the city takes no more damage for now. */
   hold: boolean;
   /** W1 intensity and the wave on (1-based). */
@@ -417,11 +419,15 @@ export class BombDirector {
       return this.refuse("norun");
     }
     if (this.inFlight(now) >= t.maxInFlight) return this.refuse("cap");
-    if (
-      world.carrier &&
-      this.planDist(cue.pos, world.carrier) < t.carrierClearM
-    ) {
-      return this.refuse("carrier");
+    for (const ship of world.ships) {
+      // Over a hull's bottom and inside its reach: the stick would fall
+      // through it.
+      if (
+        cue.pos.y > ship.pos.y - 40 &&
+        this.planDist(cue.pos, ship.pos) < ship.reach + t.carrierClearM
+      ) {
+        return this.refuse("carrier");
+      }
     }
     const planned = planBombDrop(
       0,
@@ -501,7 +507,7 @@ export class BombDirector {
   }
 
   /** A run's target near `quarry`: a rooftop for a dive, a street point
-   * for a carpet — clear of fresh humans, recent respawns and the carrier.
+   * for a carpet — clear of fresh humans, recent respawns and the fleet.
    * Null when nothing near passes. */
   private pickTarget(
     kind: BombRunKind,
@@ -514,8 +520,10 @@ export class BombDirector {
     const ok = (p: Vec3): boolean => {
       const d = this.planDist(p, quarry.pos);
       if (d < t.targetMinM || d > t.targetMaxM) return false;
-      if (world.carrier && this.planDist(p, world.carrier) < t.carrierClearM) {
-        return false;
+      for (const ship of world.ships) {
+        if (this.planDist(p, ship.pos) < ship.reach + t.carrierClearM) {
+          return false;
+        }
       }
       if (world.missiles.nearSpawn(p, now)) return false;
       for (const h of humans) {

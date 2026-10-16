@@ -1,26 +1,34 @@
-// S4 sky boss, server side (server/src/boss.ts): the turrets keep the bots'
-// fairness rules, a weak-point claim is judged like a plane hit plus the
-// round's line, credit pays real damage only, and the zeppelin's fall is the
-// D4 path into D3 collapses — the same way every time.
+// Z1 airship fleet, server side (server/src/boss.ts): the director keeps a
+// ship on every lane and refills a downed one out of sight; only the armed
+// ships' turrets fire, under the bots' fairness rules and the per-plane
+// cap; a hit claim is judged like a plane hit plus the round's line; credit
+// pays real damage only; launches spread across the fleet; and a crash is
+// the D4 path into D3 collapses — the same way every time.
 
 import {
-  BOSS_FAST_TUNING,
   BOSS_FLAK_DPS_CAP,
   BOSS_FLAK_INTERVAL_MS,
   BOSS_FLAK_REACTION_MS,
-  BOSS_PARTS,
-  BOSS_TUNING,
-  BOSS_WEAK_POINTS,
   type BossFlak,
-  type BossRaid,
+  FLEET_FAST_TUNING,
+  FLEET_FLAK_SCALE,
+  FLEET_HIDE_M,
+  FLEET_LANES,
+  FLEET_SIZE,
+  FLEET_TUNING,
+  FLEET_WEAK_MULT,
+  type FleetShip,
+  type FleetTuning,
+  SHIP_CLASSES,
   blankPose,
-  bossPoseAt,
-  breakUp,
-  raidEnd,
-  raidMaxHp,
+  bossSpawnClear,
+  fleetPoseAt,
+  shipClass,
+  shipCrash,
+  shipFullHp,
+  shipPresent,
   weakPointInto,
 } from "@angels-bandits/common/boss";
-import { bossSpawnClear } from "@angels-bandits/common/boss";
 import { generateCity, mulberry32 } from "@angels-bandits/common/city";
 import {
   BULLET_DAMAGE,
@@ -28,11 +36,16 @@ import {
   MAX_HP,
 } from "@angels-bandits/common/constants";
 import { MedalLedger } from "@angels-bandits/common/medals";
-import { type Vec3, wrapCoord, wrapDelta } from "@angels-bandits/common/world";
+import {
+  type Vec3,
+  wrapCoord,
+  wrapDelta,
+  wrapDistance,
+} from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
 import {
-  BossDirector,
   type BossPlane,
+  FleetDirector,
   applyBossImpact,
   bossContactIndex,
   claimBossHit,
@@ -51,16 +64,14 @@ const world = (() => {
 const T0 = 1_787_000_000_000;
 const TICK = 50;
 
-/** A director whose first raid starts on the first tick a human is in. */
-function startedDirector(seed = 1): { boss: BossDirector; raid: BossRaid } {
-  const boss = new BossDirector(mulberry32(seed), {
-    ...BOSS_FAST_TUNING,
-    firstMinMs: 0,
-    firstMaxMs: 0,
-  });
+/** A director whose fleet came on at T0. */
+function startedDirector(
+  seed = 1,
+  tuning: FleetTuning = FLEET_TUNING,
+): { boss: FleetDirector; ships: FleetShip[] } {
+  const boss = new FleetDirector(mulberry32(seed), tuning);
   const out = boss.tick(T0, true, [], world);
-  if (!out.started) throw new Error("no raid");
-  return { boss, raid: out.started };
+  return { boss, ships: out.started };
 }
 
 const unit = (d: Vec3): Vec3 => {
@@ -68,56 +79,125 @@ const unit = (d: Vec3): Vec3 => {
   return { x: d.x / len, y: d.y / len, z: d.z / len };
 };
 
-/** A plane parked `below` m under weak point 0 (an engine) at `t`. */
-function under(raid: BossRaid, t: number, below = 160): Vec3 {
-  const wp = weakPointInto(bossPoseAt(raid, t, blankPose()), 0, {
-    x: 0,
-    y: 0,
-    z: 0,
-  });
+/** The first ship of class `cls`. */
+const firstOf = (ships: readonly FleetShip[], cls: number): FleetShip => {
+  const s = ships.find((x) => shipClass(x) === cls);
+  if (!s) throw new Error("no such ship");
+  return s;
+};
+
+/** A point `below` m under weak point 0 (an engine) of `ship` at `t`. */
+function under(ship: FleetShip, t: number, below = 160): Vec3 {
+  const wp = weakPointInto(
+    fleetPoseAt(ship, t, blankPose()),
+    shipClass(ship),
+    0,
+    {
+      x: 0,
+      y: 0,
+      z: 0,
+    },
+  );
   return { x: wrapCoord(wp.x + 20), y: wp.y - below, z: wrapCoord(wp.z + 15) };
 }
 
-describe("raid schedule (server)", () => {
-  it("starts only with a human in the room, then never overlaps raids", () => {
-    const boss = new BossDirector(mulberry32(2), BOSS_TUNING);
-    // Bots alone: nothing, however long.
-    for (let t = T0; t < T0 + 20 * 60_000; t += 10_000) {
-      expect(boss.tick(t, false, [], world).started).toBeNull();
+/** Shoot `ship` down at `t` with full-HP rounds on its hull. */
+function down(boss: FleetDirector, ship: FleetShip, t: number) {
+  let hit = null;
+  for (let n = 0; n < 200 && !hit?.down; n++) {
+    hit = boss.damage("s", ship.id, -1, t, world);
+  }
+  return hit;
+}
+
+describe("the fleet's schedule", () => {
+  it("comes on with a human: one ship on every lane, at full HP", () => {
+    const boss = new FleetDirector(mulberry32(2), FLEET_TUNING);
+    // Nobody flying: nothing, however long.
+    for (let t = T0; t < T0 + 10 * 60_000; t += 10_000) {
+      expect(boss.tick(t, false, [], world).started).toEqual([]);
     }
-    // A human arrives: the first raid inside the first window.
-    let started: BossRaid | null = null;
-    let t = T0 + 20 * 60_000;
-    const arrived = t;
-    for (; t < arrived + BOSS_TUNING.firstMaxMs + TICK; t += TICK) {
-      started = boss.tick(t, true, [], world).started ?? started;
-      if (started) break;
+    expect(boss.state(T0)).toBeNull();
+    const t = T0 + 10 * 60_000;
+    const started = boss.tick(t, true, [], world).started;
+    expect(started).toHaveLength(FLEET_SIZE);
+    expect(started.map((s) => s.lane)).toEqual(FLEET_LANES.map((_, i) => i));
+    for (const s of started) {
+      expect(s.hp0).toBe(shipFullHp(shipClass(s), 1));
+      expect(boss.hp.get(s.id)).toBe(s.hp0);
     }
-    if (!started) throw new Error("no raid");
-    expect(started.t0 - arrived).toBeGreaterThanOrEqual(BOSS_TUNING.firstMinMs);
-    expect(boss.state(t)?.hp).toEqual(raidMaxHp(started));
-    // C2: the next one comes period ± jitter after this one ENDS (its
-    // run-out done) — never while it is still up.
-    let second: BossRaid | null = null;
-    for (t += TICK; t < started.t0 + 40 * 60_000; t += 1000) {
-      second = boss.tick(t, true, [], world).started;
-      if (second) break;
+    expect(boss.state(t)?.s).toHaveLength(FLEET_SIZE);
+    expect(boss.activeShips(t)).toHaveLength(FLEET_SIZE);
+    // Only once.
+    expect(boss.tick(t + TICK, true, [], world).started).toEqual([]);
+  });
+
+  it("refills a downed lane after refillMs, out of every human's sight", () => {
+    const { boss, ships } = startedDirector(4);
+    const victim = ships[5] as FleetShip;
+    const t = T0 + 30_000;
+    const hit = down(boss, victim, t);
+    if (!hit?.down) throw new Error("not down");
+    expect(boss.activeShips(t)).toHaveLength(FLEET_SIZE - 1);
+    expect(boss.downs()).toBe(1);
+    const human: BossPlane = {
+      id: "h",
+      pos: { x: 400, y: 300, z: 700 },
+      vel: { x: 0, y: 0, z: 0 },
+      prot: true,
+    };
+    let refill: FleetShip | null = null;
+    for (let now = t; now < t + 120_000 && !refill; now += TICK) {
+      const out = boss.tick(now, true, [human], world);
+      for (const s of out.started) refill = s;
+      if (!refill) {
+        // Never before its delay, nor while the crash still falls.
+        expect(now - t < FLEET_TUNING.refillMs || refill === null).toBe(true);
+      }
     }
-    if (!second) throw new Error("no second raid");
-    expect(second.t0 - raidEnd(started)).toBeGreaterThanOrEqual(
-      BOSS_TUNING.periodMs - BOSS_TUNING.periodJitterMs,
+    if (!refill) throw new Error("no refill");
+    expect(refill.lane).toBe(victim.lane);
+    expect(refill.id).toBeGreaterThan(victim.id);
+    expect(refill.t0 - t).toBeGreaterThanOrEqual(FLEET_TUNING.refillMs);
+    expect(refill.t0).toBeGreaterThanOrEqual(hit.down.t + hit.down.end);
+    const at = fleetPoseAt(refill, refill.t0, blankPose());
+    expect(
+      wrapDistance({ ...at, y: 0 }, { ...human.pos, y: 0 }),
+    ).toBeGreaterThanOrEqual(FLEET_HIDE_M);
+    expect(boss.activeShips(refill.t0)).toHaveLength(FLEET_SIZE);
+  });
+
+  it("keeps the sky full: FLEET_SIZE up again after every kill", () => {
+    const { boss } = startedDirector(6, FLEET_FAST_TUNING);
+    let kills = 0;
+    let lowest = FLEET_SIZE;
+    for (let now = T0 + 250; now < T0 + 600_000; now += 250) {
+      // A kill every 15 s, the oldest ship up.
+      if ((now - T0) % 15_000 === 0) {
+        const s = boss.activeShips(now)[0];
+        if (s && down(boss, s, now)?.down) kills++;
+      }
+      boss.tick(now, true, [], world);
+      lowest = Math.min(lowest, boss.activeShips(now).length);
+    }
+    expect(kills).toBeGreaterThan(30);
+    expect(boss.downs()).toBe(kills);
+    // Never more than the falling one and its refill delay short.
+    expect(lowest).toBeGreaterThanOrEqual(FLEET_SIZE - 2);
+    expect(boss.activeShips(T0 + 600_000)).toHaveLength(FLEET_SIZE);
+    // Landed ships are pruned: the welcome stays a fleet, not a graveyard.
+    expect(boss.state(T0 + 600_000)?.s.length).toBeLessThanOrEqual(
+      FLEET_SIZE + 2,
     );
-    expect(second.t0 - raidEnd(started)).toBeLessThanOrEqual(
-      BOSS_TUNING.periodMs + BOSS_TUNING.periodJitterMs + 1000,
-    );
-    expect(second.id).toBe(started.id + 1);
+    boss.resetSession();
+    expect(boss.downs()).toBe(0);
   });
 });
 
 describe("turret fire is fair (director)", () => {
   /** Run the director for `ms` with `planes(t)` and collect its output. */
   function run(
-    boss: BossDirector,
+    boss: FleetDirector,
     from: number,
     ms: number,
     planes: (t: number) => BossPlane[],
@@ -134,52 +214,89 @@ describe("turret fire is fair (director)", () => {
     return { shells, damage };
   }
 
-  it("waits out its reaction on a new target, then keeps its cadence", () => {
-    const { boss, raid } = startedDirector();
-    const t1 = raid.t0 + 60_000;
-    // Quiet until t1 (no planes), then a plane parks under the engines.
-    run(boss, raid.t0 + TICK, t1 - raid.t0 - TICK, () => []);
-    const { shells } = run(boss, t1, 12_000, (t) => [
-      { id: "p", pos: under(raid, t), vel: { x: 0, y: 0, z: 0 }, prot: false },
+  it("only armed ships fire, after their reaction, at their cadence", () => {
+    const { boss, ships } = startedDirector();
+    const cruiser = firstOf(ships, 1);
+    const t1 = T0 + 60_000;
+    const { shells } = run(boss, t1, 14_000, (t) => [
+      {
+        id: "p",
+        pos: under(cruiser, t),
+        vel: { x: 0, y: 0, z: 0 },
+        prot: false,
+      },
     ]);
     expect(shells.length).toBeGreaterThan(3);
+    const pose = blankPose();
+    const byShip = new Map<number, number[]>();
     for (const s of shells) {
       expect(s.t0 - t1).toBeGreaterThanOrEqual(BOSS_FLAK_REACTION_MS);
+      // The muzzle is on an armed ship.
+      let best: FleetShip | null = null;
+      let bestD = Number.POSITIVE_INFINITY;
+      for (const sh of ships) {
+        const d = wrapDistance(fleetPoseAt(sh, s.t0, pose), s.from);
+        if (d < bestD) {
+          bestD = d;
+          best = sh;
+        }
+      }
+      if (!best) throw new Error("no ship");
+      const guns = SHIP_CLASSES[shipClass(best)]?.turrets ?? [];
+      expect(guns.length).toBeGreaterThan(0);
+      byShip.set(best.id, [...(byShip.get(best.id) ?? []), s.t0]);
     }
-    const byTurret = new Map<number, number[]>();
-    for (const s of shells) {
-      byTurret.set(s.turret, [...(byTurret.get(s.turret) ?? []), s.t0]);
-    }
-    for (const times of byTurret.values()) {
-      for (let i = 1; i < times.length; i++) {
-        expect(
-          (times[i] as number) - (times[i - 1] as number),
-        ).toBeGreaterThanOrEqual(BOSS_FLAK_INTERVAL_MS);
+    // No ship fires more shells in any cadence window than it has guns.
+    for (const [id, times] of byShip) {
+      const s = ships.find((x) => x.id === id) as FleetShip;
+      const guns = SHIP_CLASSES[shipClass(s)]?.turrets.length ?? 0;
+      for (const t of times) {
+        const inWindow = times.filter(
+          (u) => u >= t && u < t + BOSS_FLAK_INTERVAL_MS,
+        ).length;
+        expect(inWindow).toBeLessThanOrEqual(guns);
       }
     }
   });
 
   it("never fires at a protected or freshly spawned plane", () => {
-    const { boss, raid } = startedDirector();
-    const t1 = raid.t0 + 60_000;
+    const { boss, ships } = startedDirector();
+    const cruiser = firstOf(ships, 1);
+    const t1 = T0 + 60_000;
     const prot = run(boss, t1, 8000, (t) => [
-      { id: "p", pos: under(raid, t), vel: { x: 0, y: 0, z: 0 }, prot: true },
+      {
+        id: "p",
+        pos: under(cruiser, t),
+        vel: { x: 0, y: 0, z: 0 },
+        prot: true,
+      },
     ]);
     expect(prot.shells).toEqual([]);
     const t2 = t1 + 8000;
     boss.noteSpawn("q", t2);
     const fresh = run(boss, t2, 4500, (t) => [
-      { id: "q", pos: under(raid, t), vel: { x: 0, y: 0, z: 0 }, prot: false },
+      {
+        id: "q",
+        pos: under(cruiser, t),
+        vel: { x: 0, y: 0, z: 0 },
+        prot: false,
+      },
     ]);
     expect(fresh.shells).toEqual([]);
   });
 
-  it("caps what any plane takes per second, and never one-shots", () => {
-    const { boss, raid } = startedDirector();
-    const t1 = raid.t0 + 60_000;
-    const { damage } = run(boss, t1, 30_000, (t) => [
+  it("caps what any plane takes per second across the fleet, never one-shots", () => {
+    const { boss, ships } = startedDirector();
+    const carrier = firstOf(ships, 2);
+    const t1 = T0 + 60_000;
+    const { damage } = run(boss, t1, 40_000, (t) => [
       // Parked dead still: every shell is a perfect solution.
-      { id: "p", pos: under(raid, t), vel: { x: 0, y: 0, z: 0 }, prot: false },
+      {
+        id: "p",
+        pos: under(carrier, t),
+        vel: { x: 0, y: 0, z: 0 },
+        prot: false,
+      },
     ]);
     expect(damage.length).toBeGreaterThan(0);
     for (const d of damage) {
@@ -187,65 +304,65 @@ describe("turret fire is fair (director)", () => {
       const window = damage
         .filter((e) => e.t > d.t - 1000 && e.t <= d.t)
         .reduce((s, e) => s + e.dmg, 0);
-      expect(window).toBeLessThanOrEqual(BOSS_FLAK_DPS_CAP + 1e-9);
+      expect(window).toBeLessThanOrEqual(
+        BOSS_FLAK_DPS_CAP * FLEET_FLAK_SCALE + 1e-9,
+      );
     }
   });
 });
 
-describe("weak-point hit claims", () => {
-  /** A shooter 160 m under engine 0, its round's line straight at it. */
+describe("hit claims", () => {
+  /** A shooter 160 m under engine 0 of a carrier, its line straight at it. */
   function setup(seed = 1) {
-    const { boss, raid } = startedDirector(seed);
+    const { boss, ships } = startedDirector(seed);
+    const ship = firstOf(ships, 2);
     const combat = new Combat();
-    const t = raid.t0 + 60_000;
+    const t = T0 + 60_000;
     combat.addPlayer("s", t - 10_000);
-    const pos = under(raid, t);
-    const wp = weakPointInto(bossPoseAt(raid, t, blankPose()), 0, {
+    const pos = under(ship, t);
+    const wp = weakPointInto(fleetPoseAt(ship, t, blankPose()), 2, 0, {
       x: 0,
       y: 0,
       z: 0,
     });
     const dir = unit(wrapDelta(pos, wp));
-    return { boss, raid, combat, t, pos, dir };
+    return { boss, ship, combat, t, pos, dir };
   }
 
   it("a fired round on the line lands: HP down, the shooter credited", () => {
-    const { boss, raid, combat, t, pos, dir } = setup();
+    const { boss, ship, combat, t, pos, dir } = setup();
     expect(combat.fire("s", 1, t - 300, dir).ok).toBe(true);
-    const hit = claimBossHit(
+    const claim = { ship: ship.id, wp: 0, seq: 1, origin: pos, dir, t: t - 50 };
+    const hit = claimBossHit(combat, boss, "s", claim, pos, t, world);
+    const weak = BULLET_DAMAGE * FLEET_WEAK_MULT;
+    expect(hit?.hp).toBe(ship.hp0 - weak);
+    expect(boss.damageLedger(ship.id).get("s")).toBe(weak);
+    expect(boss.takeHpChanged()).toEqual([[ship.id, ship.hp0 - weak]]);
+    expect(boss.takeHpChanged()).toEqual([]);
+    // One bullet, one hit.
+    expect(claimBossHit(combat, boss, "s", claim, pos, t, world)).toBeNull();
+    // A hull claim on the same line is a hull round's damage.
+    combat.fire("s", 2, t - 300, dir);
+    const hull = claimBossHit(
       combat,
       boss,
       "s",
-      { wp: 0, seq: 1, origin: pos, dir, t: t - 50 },
+      { ...claim, seq: 2, wp: -1 },
       pos,
       t,
       world,
     );
-    expect(hit?.hp[0]).toBe(raidMaxHp(raid)[0] - BULLET_DAMAGE);
-    expect(boss.damageLedger().get("s")).toBe(BULLET_DAMAGE);
-    expect(boss.takeHpChanged()).toBe(true);
-    // One bullet, one hit.
-    expect(
-      claimBossHit(
-        combat,
-        boss,
-        "s",
-        { wp: 0, seq: 1, origin: pos, dir, t },
-        pos,
-        t,
-        world,
-      ),
-    ).toBeNull();
+    expect(hull?.hp).toBe(ship.hp0 - weak - BULLET_DAMAGE);
   });
 
   it("refuses what the server can see is false", () => {
-    const { boss, combat, t, pos, dir } = setup();
+    const { boss, ship, combat, t, pos, dir } = setup();
     const claim = (seq: number, over: object, at = pos) =>
       claimBossHit(
         combat,
         boss,
         "s",
-        { wp: 0, seq, origin: pos, dir, t, ...over },
+        { ship: ship.id, wp: 0, seq, origin: pos, dir, t, ...over },
         at,
         t,
         world,
@@ -261,22 +378,33 @@ describe("weak-point hit claims", () => {
     // Claimed on another weak point than the line meets.
     combat.fire("s", 4, t - 300, dir);
     expect(claim(4, { wp: 5 })).toBeNull();
-    // Not a unit direction / not a weak point at all.
+    // Not a unit direction / not a weak point / no such ship.
     combat.fire("s", 5, t - 300, dir);
     expect(claim(5, { dir: { x: 2, y: 0, z: 0 } })).toBeNull();
     combat.fire("s", 6, t - 300, dir);
     expect(claim(6, { wp: 99 })).toBeNull();
-    expect(boss.damageLedger().size).toBe(0);
+    combat.fire("s", 7, t - 300, dir);
+    expect(claim(7, { ship: 999 })).toBeNull();
+    // Another ship's id on this ship's line.
+    combat.fire("s", 8, t - 300, dir);
+    expect(claim(8, { ship: ship.id + 1, wp: -1 })).toBeNull();
+    expect(boss.damageLedger(ship.id).size).toBe(0);
   });
 
   it("a bot's round is judged on its line the same way", () => {
-    const { boss, combat, t, pos, dir } = setup();
+    const { boss, ship, combat, t, pos, dir } = setup();
     combat.addPlayer("bot:r:1", t - 10_000);
-    expect(bossContactIndex("@boss:0")).toBe(0);
-    expect(bossContactIndex("bot:r:1")).toBe(-1);
+    expect(bossContactIndex(`@boss:${ship.id}:0`)).toEqual({
+      ship: ship.id,
+      k: 0,
+    });
+    expect(bossContactIndex("bot:r:1")).toBeNull();
+    expect(
+      boss.contacts(t, pos, 400).some((c) => c.id === `@boss:${ship.id}:0`),
+    ).toBe(true);
     const shot = {
       botId: "bot:r:1",
-      targetId: "@boss:0",
+      targetId: `@boss:${ship.id}:0`,
       seq: 1,
       origin: pos,
       dir,
@@ -284,8 +412,8 @@ describe("weak-point hit claims", () => {
     combat.fire(shot.botId, shot.seq, t - 500, dir);
     const round = { shot, shooterPos: pos, targetPos: pos };
     expect(landBotBossRound(combat, boss, round, t, world)).not.toBeNull();
-    // A round whose line misses (fired straight up the side) is refused.
-    const wide = unit({ x: 1, y: 0.2, z: 0 });
+    // A round whose line misses (fired off sideways) is refused.
+    const wide = unit({ x: 1, y: 0.05, z: 0 });
     const shot2 = { ...shot, seq: 2, dir: wide };
     combat.fire(shot2.botId, 2, t - 500, wide);
     expect(
@@ -299,54 +427,43 @@ describe("weak-point hit claims", () => {
     ).toBeNull();
   });
 
-  it("brings it down at zero; nothing lands after", () => {
-    const { boss, raid, combat, t, pos } = setup();
+  it("a short burst brings a ship down; nothing lands on it after", () => {
+    const { boss, ship, combat, t, pos } = setup();
     let seq = 1;
     let downAt: number | null = null;
-    // Every weak point, each from outside its own face, shots spaced so
-    // the gun never overheats.
-    for (let k = 0; k < BOSS_WEAK_POINTS.length && downAt === null; k++) {
-      const part = BOSS_PARTS[BOSS_WEAK_POINTS[k] as number];
-      if (!part) throw new Error("no part");
-      // Outward in the hull frame: engines below, flank cells to their side,
-      // the dorsal cell above.
-      const out =
-        part.kind === "engine"
-          ? { x: 0, y: -1, z: 0 }
-          : part.y > 15
-            ? { x: 0, y: 1, z: 0 }
-            : { x: 0, y: 0, z: Math.sign(part.z) };
-      for (let n = 0; n < 100 && downAt === null; n++) {
-        const now = t + seq * 400;
-        const pose = bossPoseAt(raid, now, blankPose());
-        const wp = weakPointInto(pose, k, { x: 0, y: 0, z: 0 });
-        const c = Math.cos(pose.yaw);
-        const sn = Math.sin(pose.yaw);
-        const from = {
-          x: wrapCoord(wp.x + 120 * (out.x * c + out.z * sn)),
-          y: wp.y + 120 * out.y,
-          z: wrapCoord(wp.z + 120 * (-out.x * sn + out.z * c)),
-        };
-        const dir = unit(wrapDelta(from, wp));
-        expect(combat.fire("s", seq, now - 200, dir).ok).toBe(true);
-        const hit = claimBossHit(
-          combat,
-          boss,
-          "s",
-          { wp: k, seq, origin: from, dir, t: now },
-          from,
-          now,
-          world,
-        );
-        seq++;
-        if (!hit) break; // this one is spent
-        if (hit.down) downAt = now;
-      }
+    let rounds = 0;
+    for (let n = 0; n < 60 && downAt === null; n++) {
+      const now = t + n * 100;
+      const pose = fleetPoseAt(ship, now, blankPose());
+      const wp = weakPointInto(pose, 2, 0, { x: 0, y: 0, z: 0 });
+      const from = {
+        x: wrapCoord(wp.x + 20),
+        y: wp.y - 160,
+        z: wrapCoord(wp.z + 15),
+      };
+      const dir = unit(wrapDelta(from, wp));
+      expect(combat.fire("s", seq, now - 50, dir).ok).toBe(true);
+      const hit = claimBossHit(
+        combat,
+        boss,
+        "s",
+        { ship: ship.id, wp: -1, seq, origin: from, dir, t: now },
+        from,
+        now,
+        world,
+      );
+      seq++;
+      if (!hit) throw new Error("refused");
+      rounds++;
+      if (hit.down) downAt = now;
     }
     if (downAt === null) throw new Error("never came down");
-    expect(boss.hp.every((v) => v === 0)).toBe(true);
-    expect(boss.slot.down?.id).toBe(raid.id);
-    expect(boss.activeRaid(downAt)).toBeNull();
+    // About 3 s of one plane's sustained fire on a carrier's hull.
+    expect(rounds).toBe(Math.ceil(ship.hp0 / BULLET_DAMAGE));
+    expect(rounds * 100).toBeLessThanOrEqual(3200);
+    expect(boss.hp.get(ship.id)).toBe(0);
+    expect(ship.down?.t).toBe(downAt);
+    expect(boss.activeShip(ship.id, downAt)).toBeNull();
     combat.fire("s", seq, downAt + 100, unit({ x: 0, y: 1, z: 0 }));
     expect(
       claimBossHit(
@@ -354,7 +471,8 @@ describe("weak-point hit claims", () => {
         boss,
         "s",
         {
-          wp: 0,
+          ship: ship.id,
+          wp: -1,
           seq,
           origin: pos,
           dir: unit({ x: 0, y: 1, z: 0 }),
@@ -365,16 +483,14 @@ describe("weak-point hit claims", () => {
         world,
       ),
     ).toBeNull();
-    void pos;
   });
 
-  it("the top dealer's medal is SKY-BOSS SLAYER — no streak, no chain", () => {
+  it("the top dealer's medal is AIRSHIP BREAKER — no streak, no chain", () => {
     const ledger = new MedalLedger();
     const award = ledger.bossKill("s");
     expect(award.medals).toEqual(["boss"]);
     expect(award.tier).toBeNull();
     expect(ledger.streakOf("s")).toBe(0);
-    // A kill right after is not a DOUBLE KILL off the boss.
     const next = ledger.kill({
       killerId: "s",
       victimId: "v",
@@ -388,51 +504,72 @@ describe("weak-point hit claims", () => {
   });
 });
 
-describe("the wreck falls via D4 and triggers D3 deterministically", () => {
-  /** Down it over a block where its mid section hits a roof; land every
-   * section through the director; run the room's destruction ticks. */
+describe("launches spread across the fleet", () => {
+  it("successive launches come from different ships near the humans", () => {
+    const { boss, ships } = startedDirector(7);
+    const t = T0 + 20_000;
+    const near = [fleetPoseAt(ships[9] as FleetShip, t, blankPose())];
+    const from = new Set<number>();
+    for (let n = 0; n < 6; n++) {
+      const l = boss.planLaunch(`bot:${n}`, t + 3000, t, near, () => true);
+      if (!l) throw new Error("no launch");
+      from.add(l.ship);
+      const s = ships.find((x) => x.id === l.ship) as FleetShip;
+      expect(SHIP_CLASSES[shipClass(s)]?.rigs.includes(l.kind as 0 | 1)).toBe(
+        true,
+      );
+      const at = fleetPoseAt(s, t, blankPose());
+      expect(
+        wrapDistance({ ...at, y: 0 }, { ...(near[0] as Vec3), y: 0 }),
+      ).toBeLessThanOrEqual(900);
+    }
+    expect(from.size).toBeGreaterThan(1);
+  });
+
+  it("a downed ship's rigs go with it", () => {
+    const { boss, ships } = startedDirector(7);
+    const t = T0 + 20_000;
+    const s = ships[0] as FleetShip;
+    const near = [fleetPoseAt(s, t, blankPose())];
+    const l = boss.planLaunch("bot:1", t + 3000, t, near, () => true);
+    if (!l) throw new Error("no launch");
+    const host = ships.find((x) => x.id === l.ship) as FleetShip;
+    down(boss, host, t + 500);
+    expect(boss.slot.launches.some((x) => x.id === l.id)).toBe(false);
+  });
+});
+
+describe("a crash falls via D4 and triggers D3 deterministically", () => {
+  /** Down a carrier where its crash hits a roof; land it through the
+   * director; run the room's destruction ticks. */
   function crash() {
     const rc = createRoomCity(city);
-    const boss = new BossDirector(mulberry32(3), {
-      ...BOSS_FAST_TUNING,
-      firstMinMs: 0,
-      firstMaxMs: 0,
-      hpScale: 0.01,
-    });
-    const raid = boss.tick(T0, true, [], world).started;
-    if (!raid) throw new Error("no raid");
-    // The first second of the orbit whose break-up puts the mid section on
-    // a building (the search is itself deterministic).
-    let t = raid.t0 + 50_000;
-    for (; t < raid.t0 + 140_000; t += 1000) {
-      const probe = breakUp(raid, t, {
-        buildings: rc.buildings,
-        index: rc.index,
-      });
-      if (probe.pieces[1]?.hit === "city") break;
+    const w = { buildings: rc.buildings, index: rc.index };
+    const boss = new FleetDirector(mulberry32(3), FLEET_FAST_TUNING);
+    const ships = boss.tick(T0, true, [], w).started;
+    const s = firstOf(ships, 2);
+    // The first second whose crash hits a building (the search is itself
+    // deterministic).
+    let t = T0 + 1000;
+    for (; t < T0 + 400_000; t += 1000) {
+      if (shipCrash(s, t, w).hit === "city") break;
     }
-    // Spend every weak point (hpScale 0.01: one round each) at time t.
-    for (let k = 0; k < BOSS_WEAK_POINTS.length; k++) {
-      boss.damage("top", k, t, { buildings: rc.buildings, index: rc.index });
-    }
-    const down = boss.slot.down;
-    if (!down) throw new Error("not down");
+    const hit = down(boss, s, t);
+    if (!hit?.down) throw new Error("not down");
     const collapses: unknown[] = [];
     const chunks: number[] = [];
     let landed = 0;
     for (let now = t; now < t + 20_000; now += TICK) {
-      const out = boss.tick(now, true, [], {
-        buildings: rc.buildings,
-        index: rc.index,
-      });
-      for (const { at, building } of out.landed) {
+      const out = boss.tick(now, true, [], w);
+      for (const { at, building, by } of out.landed) {
         landed++;
+        expect(by).toBe("s");
         chunks.push(...applyBossImpact(rc, at, "top", building));
       }
       collapses.push(...tickDestruction(rc, now).collapses);
     }
     return {
-      down,
+      down: hit.down,
       landed,
       chunks,
       collapses,
@@ -440,13 +577,12 @@ describe("the wreck falls via D4 and triggers D3 deterministically", () => {
     };
   }
 
-  it("lands all three sections, breaks the city and brings a building down", () => {
+  it("lands once, breaks the city and brings a building down", () => {
     const a = crash();
-    expect(a.landed).toBe(3);
-    expect(a.down.pieces[1]?.hit).toBe("city");
+    expect(a.landed).toBe(1);
+    expect(a.down.hit).toBe("city");
     expect(a.chunks.length).toBeGreaterThan(0);
     expect(a.collapses.length).toBeGreaterThan(0);
-    // D3 credits the collapse to whoever the impact names: the top dealer.
     expect(a.collapseBy).toContain("top");
   });
 
@@ -459,35 +595,26 @@ describe("the wreck falls via D4 and triggers D3 deterministically", () => {
   });
 });
 
-describe("respawns during a raid", () => {
-  it("pickRespawn never hands out a spawn pointed into the hull", () => {
-    const { boss, raid } = startedDirector(5);
-    const t = raid.t0 + 60_000;
-    const enemies = [
-      // An enemy on the far side of the hull: the natural spawn faces it.
-      { pos: under(raid, t, -60), fwd: null },
-    ];
+describe("respawns under the fleet", () => {
+  it("pickRespawn never hands out a spawn pointed into a hull", () => {
+    const { boss } = startedDirector(5);
+    const t = T0 + 60_000;
     const rand = mulberry32(8);
     for (let n = 0; n < 200; n++) {
-      // A2: the hull check is pickRespawn's `clear` (4th) — passed as
-      // `avoid`, its heading came in undefined, every candidate read as
-      // avoided and the far fallback won: the guard was never exercised.
-      const spawn = pickRespawn(enemies, rand, undefined, (pos, yaw) =>
+      const spawn = pickRespawn([], rand, undefined, (pos, yaw) =>
         bossSpawnClear(boss.slot, pos, yaw, 65, t),
       );
       expect(bossSpawnClear(boss.slot, spawn.pos, spawn.yaw, 65, t)).toBe(true);
     }
   });
 
-  it("a join spawn the raid moved onto is re-placed when the plane goes live (A2)", () => {
-    const { boss, raid } = startedDirector(5);
-    const t = raid.t0 + 60_000;
+  it("a join spawn a ship moved onto is re-placed when the plane goes live (A2)", () => {
+    const { boss, ships } = startedDirector(5);
+    const t = T0 + 60_000;
     const clear = (pos: Vec3, yaw: number | null) =>
       bossSpawnClear(boss.slot, pos, yaw, 65, t);
     const rand = mulberry32(9);
-    // Picked at join somewhere clear, then booted while the hull came over:
-    // held right at a weak point's height beside it now.
-    const heldAt = under(raid, t, 0);
+    const heldAt = under(firstOf(ships, 2), t, 0);
     expect(clear(heldAt, 0)).toBe(false);
     const moved = respawnIfUnsafe(
       poseFromSpawn({ pos: heldAt, yaw: 0, speed: 65 }),
@@ -498,38 +625,24 @@ describe("respawns during a raid", () => {
     );
     expect(moved).not.toBeNull();
     expect(clear(moved?.pos as Vec3, moved?.yaw ?? null)).toBe(true);
-    // Still clear at go-live (heading included): left exactly where it is.
     const fine = pickRespawn([], rand, undefined, clear);
     expect(
       respawnIfUnsafe(poseFromSpawn(fine), [], rand, () => false, clear),
     ).toBeNull();
-    // A warned hazard on it counts the same.
     expect(
       respawnIfUnsafe(poseFromSpawn(fine), [], rand, () => true, clear),
     ).not.toBeNull();
   });
 });
 
-describe("boss credit across a drop (A2)", () => {
-  it("a W2 drop keeps the pilot's damage for the raid; a new raid starts over", () => {
-    const { boss, raid } = startedDirector(3);
-    const t = raid.t0 + 60_000;
-    expect(boss.damage("s", 0, t, world)).not.toBeNull();
-    // The socket dropped: handleLeave forgets the plane — flak, spawns —
-    // but the pilot may resume and finish the boss inside the raid.
+describe("ship credit across a drop (A2)", () => {
+  it("a W2 drop keeps the pilot's damage on the ship", () => {
+    const { boss, ships } = startedDirector(3);
+    const s = ships[2] as FleetShip;
+    const t = T0 + 60_000;
+    expect(boss.damage("s", s.id, -1, t, world)).not.toBeNull();
     boss.forget("s");
-    expect(boss.damageLedger().get("s")).toBe(BULLET_DAMAGE);
-    // bossDowned only ever credits members still in the room, and the
-    // ledger itself is per raid.
-    let next = null;
-    for (
-      let at = raidEnd(raid) + 1;
-      next === null && at < raidEnd(raid) + 3_600_000;
-      at += 5_000
-    ) {
-      next = boss.tick(at, true, [], world).started;
-    }
-    expect(next).not.toBeNull();
-    expect(boss.damageLedger().size).toBe(0);
+    expect(boss.damageLedger(s.id).get("s")).toBe(BULLET_DAMAGE);
+    expect(shipPresent(s, t)).toBe(true);
   });
 });

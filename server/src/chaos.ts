@@ -21,9 +21,9 @@
 //    the city broken or fallen, nothing breaks until rebuilds catch up.
 
 import {
-  BOSS_FAST_TUNING,
-  BOSS_TUNING,
-  type BossTuning,
+  FLEET_FAST_TUNING,
+  FLEET_TUNING,
+  type FleetTuning,
 } from "@angels-bandits/common/boss";
 import {
   CHAOS_METEOR,
@@ -135,10 +135,10 @@ export const CHAOS_FAST: ChaosTuning = {
 /** Every tuning the room's chaos reads, from the environment — the one seam
  * production rollback (`AB_CHAOS=0`) goes through. */
 export interface ChaosTunings {
-  /** W1: the carrier's schedule — the game loop, not a C2 layer, so
-   * AB_CHAOS=0 leaves it alone. */
-  boss: BossTuning;
-  /** W1: the carrier war (the carrier and its enemy waves) on. AB_WAVES=0
+  /** Z1: the airship fleet's refills and hulls — the game loop, not a C2
+   * layer, so AB_CHAOS=0 leaves it alone (AB_BOSS_FAST=1: paper hulls). */
+  boss: FleetTuning;
+  /** W1: the carrier war (the fleet and its enemy waves) on. AB_WAVES=0
    * turns it off server-wide — the real-server tests and the perf/QA tools
    * that need an empty sky. */
   waves: boolean;
@@ -160,14 +160,14 @@ export interface ChaosTunings {
  * The tunings for an environment. `AB_CHAOS=0` restores every pre-C2 chaos
  * value exactly (X1's strikes, D5's director, D2's cap) and switches the C2
  * layers, the budget and the hold off; the `*_FAST` flags (tests and QA
- * only) work either way. The carrier keeps W1's schedule under either.
+ * only) work either way. The fleet keeps its schedule under either.
  */
 export function chaosTunings(
   env: Readonly<Record<string, string | undefined>>,
 ): ChaosTunings {
   const off = env.AB_CHAOS === "0";
   return {
-    boss: env.AB_BOSS_FAST === "1" ? BOSS_FAST_TUNING : BOSS_TUNING,
+    boss: env.AB_BOSS_FAST === "1" ? FLEET_FAST_TUNING : FLEET_TUNING,
     waves: env.AB_WAVES !== "0",
     missile:
       env.AB_MISSILE_FAST === "1"

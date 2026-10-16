@@ -1,5 +1,5 @@
-// C2 constant chaos, end to end on the server's own directors: the boss is
-// (nearly) always up, something breaks near the fight every few seconds,
+// C2 constant chaos, end to end on the server's own directors: the airship
+// fleet is always up, something breaks near the fight every few seconds,
 // the city never rots past ~20 %, no player is singled out (the danger
 // budget), nothing lethal comes without its warning, quakes and fires never
 // start a collapse where a plane is, the schedules are deterministic, and
@@ -12,13 +12,7 @@
 // respawning every 45 s. Coarse 250 ms ticks; the 60-min run is shared by
 // the cadence, share, budget, telegraph and hold checks.
 
-import {
-  BOSS_TUNING,
-  BOSS_WEAK_POINTS,
-  type BossRaid,
-  raidEnd,
-  raidTier,
-} from "@angels-bandits/common/boss";
+import { FLEET_SIZE, FLEET_TUNING } from "@angels-bandits/common/boss";
 import {
   CHAOS_CADENCE,
   CHAOS_METEOR,
@@ -53,14 +47,13 @@ import {
   encodeMissile,
   missileImpactAt,
 } from "@angels-bandits/common/strike";
-import { NEXT_CARRIER_MS } from "@angels-bandits/common/waves";
 import {
   type Vec3,
   wrapCoord,
   wrapDeltaAxis,
 } from "@angels-bandits/common/world";
 import { beforeAll, describe, expect, it } from "vitest";
-import { BossDirector } from "../src/boss";
+import { FleetDirector } from "../src/boss";
 import {
   CHAOS_TUNING,
   ChaosDirector,
@@ -463,62 +456,36 @@ describe("C2 schedules are deterministic", () => {
   });
 });
 
-describe("the boss is always up", () => {
+describe("the fleet is always up", () => {
   const world = {
     buildings: SEED_CITY,
     index: createRoomCity(SEED_CITY).index,
   };
 
-  it("is in the sky ≥ 90 % of a 30-min session nobody shoots it down in, the first 4–6 s after the human arrives", () => {
-    const boss = new BossDirector(mulberry32(2), BOSS_TUNING);
-    let up = 0;
-    let ticks = 0;
-    let first: number | null = null;
-    for (let t = T0; t < T0 + 30 * 60_000; t += DT) {
-      const out = boss.tick(t, true, [], world);
-      if (out.started && first === null) first = out.started.t0;
-      if (boss.activeRaid(t)) up++;
-      ticks++;
-    }
-    expect(first).not.toBeNull();
-    expect((first as number) - T0).toBeGreaterThanOrEqual(4000);
-    expect((first as number) - T0).toBeLessThanOrEqual(6000 + DT);
-    expect(up / ticks).toBeGreaterThanOrEqual(0.9);
-  });
-
-  it("W1: the next carrier comes 20 s after it is shot down, one tier up, after its sections have all landed", () => {
-    const boss = new BossDirector(mulberry32(4), BOSS_TUNING);
-    let raid: BossRaid | null = null;
+  it("fills the sky the moment the human arrives, and a kill's lane is flown again after its crash has landed", () => {
+    const boss = new FleetDirector(mulberry32(4), FLEET_TUNING);
     let t = T0;
-    for (; !raid; t += DT) raid = boss.tick(t, true, [], world).started;
-    // Shoot every weak point out a minute into the raid.
-    t = raid.t0 + 60_000;
+    expect(boss.tick(t, true, [], world).started).toHaveLength(FLEET_SIZE);
+    t += 60_000;
     boss.tick(t, true, [], world);
-    let downAt: number | null = null;
-    let landed: number | null = null;
-    for (let k = 0; k < BOSS_WEAK_POINTS.length; k++) {
-      for (let n = 0; n < 400; n++) {
-        const hit = boss.damage("p", k, t, world);
-        if (hit?.down) {
-          downAt = hit.down.t;
-          landed = hit.down.t + Math.max(...hit.down.pieces.map((p) => p.end));
-        }
-      }
+    const ship = boss.activeShips(t)[3];
+    if (!ship) throw new Error("no ship");
+    let down = null;
+    for (let n = 0; n < 400 && !down; n++) {
+      down = boss.damage("p", ship.id, -1, t, world)?.down ?? null;
     }
-    if (downAt === null || landed === null) throw new Error("never went down");
-    // Its sections are all down well inside the gap: the next carrier never
-    // cuts the falling wreck short.
-    expect(landed - downAt).toBeLessThan(NEXT_CARRIER_MS);
-    let next: BossRaid | null = null;
-    for (t += DT; t < downAt + 5 * 60_000 && !next; t += DT) {
-      next = boss.tick(t, true, [], world).started;
+    if (!down) throw new Error("never went down");
+    const landed = down.t + down.end;
+    let next = null;
+    for (t += DT; t < down.t + 5 * 60_000 && !next; t += DT) {
+      next = boss.tick(t, true, [], world).started[0] ?? null;
     }
     if (!next) throw new Error("never came back");
-    expect(next.t0 - downAt).toBeGreaterThanOrEqual(NEXT_CARRIER_MS);
-    expect(next.t0 - downAt).toBeLessThanOrEqual(NEXT_CARRIER_MS + DT);
-    expect(raidTier(next)).toBe(raidTier(raid) + 1);
-    expect(next.hpScale).toBeGreaterThan(raid.hpScale);
-    expect(raidEnd(next)).toBeGreaterThan(next.t0);
+    expect(next.lane).toBe(ship.lane);
+    expect(next.t0).toBeGreaterThanOrEqual(landed);
+    expect(next.t0 - down.t).toBeGreaterThanOrEqual(FLEET_TUNING.refillMs);
+    expect(next.t0 - down.t).toBeLessThanOrEqual(FLEET_TUNING.refillMs + DT);
+    expect(boss.activeShips(t)).toHaveLength(FLEET_SIZE);
   });
 });
 
@@ -641,8 +608,8 @@ describe("the danger budget", () => {
 describe("AB_CHAOS=0 is an exact rollback", () => {
   it("restores every pre-C2 tuning and switches the new layers, budget and hold off", () => {
     const off = chaosTunings({ AB_CHAOS: "0" });
-    // W1: the carrier's schedule is the game loop, not a C2 layer.
-    expect(off.boss).toEqual(BOSS_TUNING);
+    // Z1: the fleet's schedule is the game loop, not a C2 layer.
+    expect(off.boss).toEqual(FLEET_TUNING);
     expect(off.waves).toBe(true);
     expect(off.missile).toEqual(X1_TUNING);
     expect(off.missile.areaMinMs).toBe(20_000);
@@ -656,7 +623,7 @@ describe("AB_CHAOS=0 is an exact rollback", () => {
     expect(off.danger).toBeNull();
     expect(off.hold).toBe(false);
     const on = chaosTunings({});
-    expect(on.boss).toEqual(BOSS_TUNING);
+    expect(on.boss).toEqual(FLEET_TUNING);
     expect(on.missile).toEqual(DEFAULT_TUNING);
     expect(on.director).toEqual(DESTRUCTION_TUNING);
     expect(on.chaos).toEqual(CHAOS_TUNING);

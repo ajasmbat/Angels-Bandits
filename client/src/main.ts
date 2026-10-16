@@ -463,6 +463,7 @@ import { Searchlights, type SpotBeam } from "./render/searchlights";
 import { Signage } from "./render/signage";
 import { Signals } from "./render/signals";
 import { EXPOSURE, GroundPlane, SkyDome, setupSky } from "./render/sky";
+import { SkyArmada } from "./render/sky-armada";
 import {
   SKY_MOMENTS,
   SkyCycle,
@@ -957,6 +958,15 @@ skyDome.mesh.add(airliners.points);
 // spires — drawn in a shell just inside 800 m. Two opaque draws, never solid.
 const farSkyline = new FarSkyline(skyDome.uniforms.uMoonDir);
 scene.add(farSkyline.carpet, farSkyline.towers);
+// SKY1 Infinite sky: the cosmetic airship armada, the dogfights and flak
+// round it, and the painted horizon — pure functions of (seed, synced
+// clock) in L2's far shell, four draws, uniforms only per frame.
+const skyArmada = new SkyArmada(
+  welcome.seed,
+  skyDome.uniforms.uMoonDir,
+  renderOpts.armada,
+);
+scene.add(...skyArmada.objects);
 const streetlights = new Streetlights();
 scene.add(streetlights.group);
 // Stormlit L8: the far-field street glow (the lamp pools hand over to it
@@ -3008,6 +3018,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   streetlights.setQuality(tier); // L8: the far strip's spill
   farTraffic.setQuality(tier); // L8: phantom fleet share
   farSkyline.setQuality(tier); // L2: the far skyline's radius
+  skyArmada.setQuality(tier); // SKY1: slots drawn and their radius
   signage.setQuality(tier);
   jumbotrons.setQuality(tier); // S1: Mobile shows the static LAST KILL card
   rooftopLife.setQuality(tier);
@@ -3376,6 +3387,9 @@ declare global {
         airlinerPoints: number;
         droneShow: DroneShowRenderer["current"];
         newsHeli: typeof moverField.news;
+        /** SKY1: the tier's slot counts and radii, and the layer's draws
+         * this frame (≤ SKY_ARMADA_DRAWS). */
+        armada: SkyArmada["counts"] & { draws: number };
       };
       forceDroneShow: (ageS: number | null) => void;
       cityStats: () => {
@@ -4011,6 +4025,11 @@ function qaSystems(): {
     ["farSkyline", [farSkyline.carpet, farSkyline.towers]], // Stormlit L2
     ["farCarpet", [farSkyline.carpet]], // Stormlit L2
     ["farTowers", [farSkyline.towers]], // Stormlit L2
+    ["skyArmada", skyArmada.objects], // SKY1: all four draws
+    ["skyShips", [skyArmada.armada]], // SKY1
+    ["skyPlanes", [skyArmada.planes]], // SKY1
+    ["skyFx", [skyArmada.fx]], // SKY1
+    ["skyHorizon", [skyArmada.horizon]], // SKY1
     ["movers", [movers.rig, movers.hulls, movers.rotors]],
     ["moverLights", [moverLights.points]],
     ["train", [train.mesh]],
@@ -4410,6 +4429,10 @@ window.__ab = {
     airlinerPoints: airliners.pointCount,
     droneShow: droneShow.current,
     newsHeli: moverField.news,
+    armada: {
+      ...skyArmada.counts,
+      draws: skyArmada.objects.filter((o) => o.visible).length,
+    },
   }),
   forceDroneShow: (ageS) =>
     droneShow.force(worldTime(), ageS === null ? null : ageS * 1000),
@@ -6775,6 +6798,14 @@ const frame = (rafNow: number): void => {
     dt,
     renderer.domElement.height,
     renderMs ?? now,
+    sky.domeVisible,
+  );
+  // SKY1: uniforms only (FAR_ORIGIN, just written above, is shared).
+  skyArmada.update(
+    camera,
+    renderMs,
+    renderer.domElement.width,
+    renderer.domElement.height,
     sky.domeVisible,
   );
   const heatCount = inferno.mergeHeat(

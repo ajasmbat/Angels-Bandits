@@ -18,6 +18,10 @@
 // where it landed for WRECK_BURN_MS. A street landing leaves a scorch disc
 // (one more instanced draw). Where it lands is the server's `end`: this
 // side never re-sweeps.
+//
+// P1: where it hit a building it does not stop on the wall: the server's
+// impact record (penetrate.ts `bodyOf`) carries the hull on in along its
+// tunnel, slowing chunk by chunk, and it burns where it comes to rest.
 
 import { WRECKS_MAX } from "@angels-bandits/common/constants";
 import type { Vec3 } from "@angels-bandits/common/world";
@@ -31,6 +35,7 @@ import {
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { Impacts } from "./impacts";
+import { BODY_MOVING, BODY_NONE, BODY_RESTING } from "./penetrate";
 import { nearestImageInto } from "./wrapPlacement";
 
 /** How long a landed wreck keeps burning, ms (on the frame clock). */
@@ -217,6 +222,10 @@ export class Wrecks {
   private scorchHead = 0;
   private share = 1;
   private lastFrameMs = Number.POSITIVE_INFINITY;
+  /** P1: where a landed wreck's body is along its tunnel (BODY_*). */
+  private plough:
+    | ((id: number, ms: number, pos: Vec3, dir: Vec3) => number)
+    | null = null;
 
   constructor(
     private readonly impacts: Impacts,
@@ -303,6 +312,13 @@ export class Wrecks {
     });
   }
 
+  /** P1: the source of each wreck's tunnel (penetrate.ts bodyOf). */
+  setPlough(
+    fn: (id: number, ms: number, pos: Vec3, dir: Vec3) => number,
+  ): void {
+    this.plough = fn;
+  }
+
   /** A welcome (join or resume): exactly the room's falling wrecks. */
   reset(list: readonly WreckParams[]): void {
     this.entries.length = 0;
@@ -362,8 +378,33 @@ export class Wrecks {
       const e = this.entries[k] as Entry; // D6: no iterator a frame
       const w = e.w;
       if (e.landedAt === null && ms !== null && ms >= w.t + w.end) {
+        // P1: on through the building first, while its tunnel lasts.
+        const body =
+          this.plough?.(w.id, ms, scratchPos, scratchVel) ?? BODY_NONE;
+        if (body === BODY_MOVING) {
+          this.place(drawn, viewer, scratchPos, scratchVel, w, ms);
+          this.kindAttr.setX(
+            drawn++,
+            e.kind === "fighter" ? FRAME_FIGHTER : FRAME_BIPLANE,
+          );
+          this.emit(
+            e,
+            scratchPos,
+            TRAIL_FIRE_RATE,
+            TRAIL_SMOKE_RATE,
+            1.2,
+            dt,
+            now,
+          );
+          this.entries[kept++] = e;
+          continue;
+        }
         e.landedAt = now;
-        wreckPosAt(w, w.t + w.end, e.rest);
+        if (body === BODY_RESTING) {
+          e.rest.x = scratchPos.x;
+          e.rest.y = scratchPos.y;
+          e.rest.z = scratchPos.z;
+        } else wreckPosAt(w, w.t + w.end, e.rest);
         if (w.hit === "ground") this.addScorch(e.rest);
         this.onLand(w, e.rest);
       }

@@ -16,6 +16,11 @@
 // fat body with the red glint and (W2) a smoke trail like a missile's — the
 // enemy planes' runs keep at most a handful in the air (server/src/bombs.ts
 // maxInFlight), not C2's carpets of 24.
+//
+// P1: a comet's head is a meteor fireball (its long tail is penetrate.ts's
+// one draw), and a meteor or comet that hit does not vanish on the wall:
+// `ploughing` (penetrate.ts) lists the ones still driving through the city,
+// drawn on the same fireball instances along their tunnels.
 
 import { EMISSIVE_BEACON } from "@angels-bandits/common/constants";
 import {
@@ -26,6 +31,7 @@ import { type Vec3, wrapDeltaInto } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
 import type { Impacts } from "./impacts";
+import type { PloughBody } from "./penetrate";
 import type { SmokeTrails } from "./smoke";
 import { nearestImageInto } from "./wrapPlacement";
 
@@ -98,6 +104,8 @@ export class MissileRenderer {
   private lastBodies = 1;
   private lastMeteors = 1;
   private lastMs = Number.NaN;
+  /** P1: the ploughing bodies' fire trail, carried between frames. */
+  private ploughAcc = 0;
 
   constructor(
     private readonly smoke: SmokeTrails,
@@ -192,12 +200,16 @@ export class MissileRenderer {
     this.chaosFx = Math.max(0, Math.min(1, chaosFx));
   }
 
-  /** Place every flying missile for this frame and feed its smoke trail. */
+  /** Place every flying missile for this frame and feed its smoke trail
+   * — and (P1) the first `ploughCount` of `ploughing`, the meteors and
+   * comets still driving through the city. */
   update(
     flying: readonly MissileStrike[],
     viewer: Vec3,
     renderMs: number,
     now: number,
+    ploughing: readonly PloughBody[] = [],
+    ploughCount = 0,
   ): void {
     const dt = Number.isFinite(this.lastMs)
       ? Math.min(0.1, Math.max(0, (now - this.lastMs) / 1000))
@@ -207,7 +219,7 @@ export class MissileRenderer {
     let nm = 0;
     for (let f = 0; f < flying.length; f++) {
       const m = flying[f] as MissileStrike;
-      const meteor = m.kind === "meteor";
+      const meteor = m.kind === "meteor" || m.kind === "comet";
       if (meteor ? nm >= METEOR_POOL : n >= MISSILE_POOL) continue;
       missilePosAt(m, renderMs, this.pos);
       missilePosAt(m, renderMs + 40, this.ahead);
@@ -251,6 +263,34 @@ export class MissileRenderer {
       n++;
       this.smoke.sync(this.trailKey(m.id), this.pos, now, true);
     }
+    // P1: the ones that hit, still ploughing on through the city.
+    for (let k = 0; k < ploughCount && nm < METEOR_POOL; k++) {
+      const b = ploughing[k] as PloughBody;
+      nearestImageInto(this.img, viewer, b.pos);
+      this.dummy.position.set(this.img.x, this.img.y, this.img.z);
+      this.dummy.lookAt(
+        this.img.x + b.dir.x,
+        this.img.y + b.dir.y,
+        this.img.z + b.dir.z,
+      );
+      this.dummy.scale.set(1, 1, 1.6);
+      this.dummy.updateMatrix();
+      this.meteors.setMatrixAt(nm, this.dummy.matrix);
+      this.meteorGlintPos.setXYZ(nm, this.img.x, this.img.y, this.img.z);
+      nm++;
+      this.ploughAcc += METEOR_FIRE * this.chaosFx * dt;
+      const fire = Math.floor(this.ploughAcc);
+      this.ploughAcc -= fire;
+      if (fire > 0) {
+        this.impacts.wreckFire(
+          b.pos,
+          fire,
+          Math.round((fire * METEOR_SMOKE) / METEOR_FIRE),
+          METEOR_RADIUS,
+          now,
+        );
+      }
+    }
     this.dummy.scale.set(1, 1, 1);
     for (let i = n; i < MISSILE_POOL; i++) {
       if (this.glintPos.getY(i) !== PARKED_Y) {
@@ -290,7 +330,7 @@ export class MissileRenderer {
    * the debris throws out of the struck surface. */
   impact(m: MissileStrike, now: number): void {
     this.fireAcc.delete(m.id);
-    if (m.kind !== "meteor") {
+    if (m.kind !== "meteor" && m.kind !== "comet") {
       const key = this.trailKey(m.id);
       this.smoke.sync(key, m.to, now, false);
       this.trailKeys.delete(m.id);

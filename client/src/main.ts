@@ -7143,7 +7143,7 @@ const frame = (rafNow: number): void => {
     camera,
     dt,
     renderer.domElement.height,
-    now,
+    renderMs ?? now,
     sky.domeVisible,
   );
   // SKY1: uniforms only (FAR_ORIGIN, just written above, is shared).

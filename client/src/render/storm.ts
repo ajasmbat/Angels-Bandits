@@ -373,7 +373,11 @@ const BURN_HAZE_RGB = [0.14, 0.06, 0.035] as const;
  * and its peak linear luminance at the horizon on a clear night (L9: see
  * the value), so the horizon glows warm, far under bloom.
  * The burning city pulls it toward ember red and up by BURN_GLOW_GAIN. */
-export const CITY_GLOW_COLOR = 0xffb26e;
+// R1: 0xf0c0a0 (was 0xffb26e) — a mixed sodium / LED city's sky glow, warm
+// but far less orange: the saturated amber read as a "red gold orange
+// glowing city" behind the far skyline. Same peak (L9's), so the haze keeps
+// its energy over the lit city.
+export const CITY_GLOW_COLOR = 0xf0c0a0;
 // L9: 0.04 (was 0.017) — reference 1's haze glows amber over the whole lit
 // city (palette.mjs: the calm views' hue mass was ~80 % blue); ~1.6× the
 // fog colour's own luminance, still ~1/18 of the bloom threshold.

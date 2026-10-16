@@ -2927,4 +2927,44 @@ fell in the phase it promises — pure geometry over the seed city, so a
 generator change that moves a subject fails `vitest`, not a gallery
 review. Results: [`docs/stormlit/d11`](../../docs/stormlit/d11/README.md).
 
+## R1: the far city's own flicker (`flicker.mjs --far`)
+
+The far skyline (`client/src/render/far-skyline.ts`) is a few percent of
+any frame, so a whole-frame score cannot see it sparkle. `--far` (with
+`--grid`) adds one more capture to every view that names a `far` rect in
+`gallery-views.mjs` (x0, y0, x1, y1 as fractions of the frame, top-down):
+the camera slides 0.5 m a frame for 12 frames with the WORLD frozen (the
+same re-pin `still` uses, so beacons, fires and traffic hold still) and
+every system but the far skyline and the sky hidden (`FAR_KEEP`: no fog
+bank or searchlight sliding over the rect), and only the pixels inside the
+rect are scored. What is left is the far city's response to a moving
+camera. Two numbers per view:
+
+- `change`, the mean |Δluma| a step: mostly the slide itself — every
+  silhouette edge and street line moving a fraction of a pixel. A more
+  varied skyline (more contrast between towers) scores HIGHER here while
+  being perfectly stable, so it is reported, not judged.
+- `flicker`, the mean |Δ²luma| = |L(t+1) − 2·L(t) + L(t−1)|: a steady
+  sub-pixel slide changes a pixel at a steady rate, which the second
+  difference cancels; a window cell or street line switching on and off as
+  it slides does not. This is the sparkle, and the verdict: a drop of at
+  least `FAR_DROP` (60 %) per view against `--ref`, else the run exits 1.
+
+With `--far` every capture of the run is drawn at pixel ratio `FAR_RES`
+(2, the M3's Retina): at ratio 1 the far city's old 6 × 7.2 m window cells
+are already under a pixel and resolve to their mean on any build — the
+sparkle the user saw is a Retina-density effect.
+
+`skyline-far` (the user's framing: a 380 m rooftop eye looking north
+across the whole city) and `skyline-horizon-low` (60 m over the river,
+a 40° lens on the horizon) carry rects; both pin their FOV, which the
+grid now passes to `qaCamera` as the gallery does.
+
+```sh
+npm run build -w client
+AB_CHROME_ARGS="--use-angle=swiftshader --enable-unsafe-swiftshader" \
+  node tools/perf/flicker.mjs --no-build --grid --far \
+  --only skyline-far,skyline-horizon-low --ref origin/main --shots /tmp/r1
+```
+
 <!-- lander smoke test -->

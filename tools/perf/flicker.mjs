@@ -5,7 +5,7 @@
 //                                 [--shots <dir>] [--out <file>] [--repeat N]
 //                                 [--grid] [--only name,name]
 //                                 [--ablate [all|name,name]] [--hide name,name]
-//                                 [--breathe]
+//                                 [--breathe] [--far]
 //
 // Captures FRAMES consecutive frames on a FIXED 16 ms clock and scores the
 // mean per-pixel frame-to-frame luminance change (0–255 units; lower is
@@ -70,6 +70,22 @@
 // on purpose and identical in every arm. A truly frozen camera cannot see
 // anything that is stable while still but re-rolls under ANY change of
 // projection (O6's facade speckle); a breathing one can.
+//
+// `--far` (R1, with --grid) adds a FAR-FIELD pan to every view that names
+// a `far` rect (gallery-views.mjs: the screen share where the far skyline
+// is): the camera slides FAR_PAN_M a frame with the WORLD frozen (re-pinned to
+// one instant every frame, as `still` does), and only the pixels inside the
+// rect are scored. What is left is the far city's own response to a moving
+// camera — sub-pixel windows and street lines switching as they slide —
+// with no animation (beacons, fires, traffic) in it, and with every other
+// system hidden (FAR_KEEP), so no near sprite sliding over the rect counts.
+// It reports the mean |Δ| (`change`: mostly the slide itself, edges moving
+// a fraction of a pixel) and the mean |Δ²| = |L(t+1) − 2·L(t) + L(t−1)|
+// (`flicker`): a steady sub-pixel slide changes a pixel at a steady rate,
+// which Δ² cancels, while a cell or line switching on and off does not —
+// the verdict is on the flicker. With --far every capture runs at FAR_RES.
+// `FLICKER_FAR_KEEP=farTowers,sky` (diagnostic) keeps another set drawn. `--ref` then prints the
+// far table and its verdict: the far pan must fall by FAR_DROP vs the ref.
 //
 // `FLICKER_WEATHER=<phase>` (R3) pins the middle of that weather phase
 // instead of clear-and-dry, e.g. `downpour` to score the rain against the
@@ -153,6 +169,25 @@ const SCENES = {
 /** --grid: frames per view (frozen) and pan frames per view. */
 const GRID_FRAMES = 10;
 const GRID_PAN_FRAMES = 8;
+/** --far: frames of the far-field pan, and the drop it must show vs the
+ * ref (R1: "down by at least 60 %"). */
+const FAR_FRAMES = 12;
+/** --far: the slide, m per frame — small, so the far city moves a fraction
+ * of a pixel a frame: a filtered pattern barely changes, an aliased one
+ * switches cells (the sparkle). */
+const FAR_PAN_M = 0.5;
+/** --far: the systems left drawn (`__ab.qaSystems` names) — the far city
+ * and the sky behind it. Everything else (the real city, fog banks, mist,
+ * searchlights …) is hidden for the far capture, so the rect scores the
+ * far field alone and not a near sprite sliding across it. */
+const FAR_KEEP = process.env.FLICKER_FAR_KEEP
+  ? process.env.FLICKER_FAR_KEEP.split(",")
+  : ["farSkyline", "farCarpet", "farTowers", "sky"];
+/** --far: the pixel ratio every capture of the run is drawn at — the M3's
+ * Retina 2, where the far city's 2–3 px window cells sparkled; at 1 they
+ * are already sub-pixel and resolve to their mean on any build. */
+const FAR_RES = 2;
+export const FAR_DROP = 0.6;
 /** --grid: frames with camera AND world frozen. */
 const GRID_STILL_FRAMES = 4;
 /** --grid: steps on a new view before the first captured frame — time for
@@ -197,6 +232,7 @@ function parseArgs(argv) {
     ablate: null,
     hide: [],
     breathe: false,
+    far: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -210,6 +246,7 @@ function parseArgs(argv) {
     else if (a === "--only") opts.only = argv[++i].split(",");
     else if (a === "--hide") opts.hide = argv[++i].split(",");
     else if (a === "--breathe") opts.breathe = true;
+    else if (a === "--far") opts.far = true;
     else if (a === "--ablate") {
       const next = argv[i + 1];
       opts.ablate =
@@ -222,6 +259,7 @@ function parseArgs(argv) {
   if (!(opts.frames >= 3)) throw new Error("--frames must be >= 3");
   if (opts.ablate && !opts.grid) throw new Error("--ablate needs --grid");
   if (opts.breathe && !opts.grid) throw new Error("--breathe needs --grid");
+  if (opts.far && !opts.grid) throw new Error("--far needs --grid");
   if (opts.hide.length > 0 && !opts.grid)
     throw new Error("--hide needs --grid");
   return opts;
@@ -327,9 +365,12 @@ function aimView(page, spec, panM) {
         return {
           eye: { x: spec.eye.x + dx, y: spec.eye.y, z: spec.eye.z + dz },
           at: { x: spec.at.x + dx, y: spec.at.y, z: spec.at.z + dz },
+          // R1: a view may pin its field of view (as the gallery does).
+          ...(spec.fov ? { fov: spec.fov } : {}),
         };
       };
       window.__flickerPrev = null;
+      window.__flickerPrev2 = null;
       window.__flickerHeat?.fill(0);
       // --breathe: every view's ramp starts here, so its settle steps hold
       // `from` and a re-shot (--ablate) breathes exactly like the original.
@@ -355,6 +396,8 @@ const sceneSpec = (scene) => ({
 function readFrame(page) {
   return page.evaluate(
     ([hotDelta, jitterDelta]) => {
+      // --far: the scored rect, in fractions of the frame (null: all of it).
+      const rect = window.__flickerRect ?? null;
       // The renderer's canvas: a WebGL one that is in the page (a capability
       // probe's detached canvas never is), the largest if several are.
       const src = (window.__flickerGls ?? [])
@@ -381,11 +424,22 @@ function readFrame(page) {
         mean += lum[j];
       }
       const prev = window.__flickerPrev;
+      const prev2 = window.__flickerPrev2 ?? null;
       let delta = null;
       let hot = null;
+      // --far: the rect's mean |Δ²| (L − 2·prev + prev2), the flicker.
+      let flick = null;
       if (prev) {
         let sum = 0;
         let n = 0;
+        // --far: the rect's own mean |Δ| (same pixels in every frame).
+        let rectSum = 0;
+        let rectN = 0;
+        let flickSum = 0;
+        const rx0 = rect ? Math.floor(rect[0] * w) : 0;
+        const ry0 = rect ? Math.floor(rect[1] * h) : 0;
+        const rx1 = rect ? Math.ceil(rect[2] * w) : w;
+        const ry1 = rect ? Math.ceil(rect[3] * h) : h;
         // Per-pixel |Δ| summed over the capture: the --shots heat map.
         let heat = window.__flickerHeat;
         if (!heat || heat.length !== lum.length) {
@@ -405,19 +459,36 @@ function readFrame(page) {
           const s = lum[j] - prev[j];
           const d = Math.abs(s);
           sum += d;
-          heat[j] += d;
+          // --far: the heat map is the flicker (|Δ²|) the verdict judges.
+          heat[j] += rect
+            ? prev2
+              ? Math.abs(s - (prev[j] - prev2[j]))
+              : 0
+            : d;
           if (d > hotDelta) n++;
+          if (rect) {
+            // The canvas reads top row first; the rect is top-down too.
+            const x = j % w;
+            const y = (j - x) / w;
+            if (x >= rx0 && x < rx1 && y >= ry0 && y < ry1) {
+              rectSum += d;
+              rectN++;
+              if (prev2) flickSum += Math.abs(s - (prev[j] - prev2[j]));
+            }
+          }
           if (d > jitterDelta) {
             const sg = s > 0 ? 1 : -1;
             if (jit.sign[j] === -sg && jit.rev[j] < 255) jit.rev[j]++;
             jit.sign[j] = sg;
           }
         }
-        delta = sum / lum.length;
+        delta = rect ? rectSum / Math.max(rectN, 1) : sum / lum.length;
         hot = n / lum.length;
+        if (rect && prev2) flick = flickSum / Math.max(rectN, 1);
       }
+      window.__flickerPrev2 = prev ?? null;
       window.__flickerPrev = lum;
-      return { delta, hot, mean: mean / lum.length };
+      return { delta, hot, flick, mean: mean / lum.length };
     },
     [HOT_DELTA, JITTER_DELTA],
   );
@@ -432,6 +503,7 @@ async function captureFrames(page, frames, shots, tag) {
   const deltas = [];
   const hots = [];
   const means = [];
+  const flicks = [];
   // Each capture's heat map and jitter count are its own.
   await page.evaluate(() => {
     window.__flickerHeat?.fill(0);
@@ -496,6 +568,7 @@ async function captureFrames(page, frames, shots, tag) {
       );
     }
     means.push(f.mean);
+    if (f.flick !== null) flicks.push(f.flick);
     if (f.delta !== null) {
       deltas.push(f.delta);
       hots.push(f.hot);
@@ -521,6 +594,8 @@ async function captureFrames(page, frames, shots, tag) {
     deltas: deltas.map((d) => Math.round(d * 1000) / 1000),
     meanLuma: Math.round(avg(means) * 10) / 10,
     flash: deltas.some((d) => d > Math.max(FLASH_DELTA, 3 * typical)),
+    // --far: the mean |Δ²| over the rect (null outside a --far capture).
+    flicker: flicks.length > 0 ? Math.round(avg(flicks) * 1000) / 1000 : null,
   };
 }
 
@@ -563,11 +638,14 @@ async function measureBuild(
   ablate,
   hide,
   breathe,
+  far,
 ) {
   const { proc, port } = await startServer(cwd);
   const page = await browser.newPage({
     viewport: VIEWPORT,
-    deviceScaleFactor: 1,
+    // --far: a Retina panel — a pinned ?res= is clamped to the device's
+    // own ratio, so FAR_RES needs the device to have it.
+    deviceScaleFactor: far ? FAR_RES : 1,
   });
   try {
     const errors = [];
@@ -579,7 +657,7 @@ async function measureBuild(
     // BEFORE goto: see the header.
     await page.clock.install();
     await page.goto(
-      `http://127.0.0.1:${port}/?res=1&sky=night&quality=high&gputime=0`,
+      `http://127.0.0.1:${port}/?res=${far ? FAR_RES : 1}&sky=night&quality=high&gputime=0`,
     );
     await page.fill("#join-name", "FLICKER");
     await page.click('#join button[type="submit"]');
@@ -741,7 +819,13 @@ async function measureBuild(
           );
           return true;
         }, v.stage ?? null);
-        const still = { eye: v.eye, at: v.at, right: null, plane: v.plane };
+        const still = {
+          eye: v.eye,
+          at: v.at,
+          right: null,
+          plane: v.plane,
+          fov: v.fov,
+        };
         await aimView(page, still, PAN_M);
         for (let i = 0; i < GRID_SETTLE; i++) await page.clock.runFor(STEP_MS);
         if (inferno && v.stage?.burn !== undefined) {
@@ -776,7 +860,7 @@ async function measureBuild(
         });
         await aimView(
           page,
-          { eye: v.eye, at: v.at, right: v.right, plane: v.plane },
+          { eye: v.eye, at: v.at, right: v.right, plane: v.plane, fov: v.fov },
           PAN_M,
         );
         for (let i = 0; i < 2; i++) await page.clock.runFor(STEP_MS);
@@ -786,6 +870,51 @@ async function measureBuild(
           shots,
           `${label}-${v.name}-pan`,
         );
+        // --far: the same slide with the world frozen, scored inside the
+        // view's far rect only (see the header).
+        let farPan = null;
+        if (far && v.far) {
+          await page.evaluate(
+            ({ t, rect, keep }) => {
+              window.__flickerStill = t;
+              window.__flickerRect = rect;
+              // Only the far field and the sky behind it (captureFrames
+              // re-applies the hide every step).
+              window.__flickerHide = window.__ab
+                .qaSystems()
+                .filter((n) => !keep.includes(n));
+              window.__ab.qaHide(window.__flickerHide);
+            },
+            { t: stillMs, rect: v.far, keep: FAR_KEEP },
+          );
+          await aimView(
+            page,
+            {
+              eye: v.eye,
+              at: v.at,
+              right: v.right,
+              plane: v.plane,
+              fov: v.fov,
+            },
+            FAR_PAN_M,
+          );
+          for (let i = 0; i < ABLATE_SETTLE; i++) {
+            await page.evaluate(() => window.__ab.qaHide(window.__flickerHide));
+            await page.clock.runFor(STEP_MS);
+          }
+          farPan = await captureFrames(
+            page,
+            FAR_FRAMES,
+            shots,
+            `${label}-${v.name}-far`,
+          );
+          await page.evaluate((base) => {
+            window.__flickerStill = null;
+            window.__flickerRect = null;
+            window.__flickerHide = base.length > 0 ? base : null;
+            window.__ab.qaHide(base);
+          }, hide);
+        }
         let ablation = null;
         if (ablate) {
           const all = await page.evaluate(() =>
@@ -853,6 +982,7 @@ async function measureBuild(
           frozen,
           still: frozenWorld,
           pan,
+          farPan,
           rt: stillAt,
         });
         console.log(
@@ -914,6 +1044,55 @@ export function gridViewVerdict(head, ref) {
   const notWorse = verdict(head, ref).pass;
   const ceiling = head <= GRID_CEILING;
   return { pass: halved && notWorse && ceiling, halved, notWorse, ceiling };
+}
+
+/**
+ * R1 --far verdict: the far-field pan's flicker (mean |Δ²|, world frozen,
+ * inside the view's far rect) must fall by at least FAR_DROP vs the ref.
+ */
+export function farViewVerdict(head, ref) {
+  const drop = ref > 0 ? 1 - head / ref : 0;
+  return { pass: drop >= FAR_DROP, drop: Math.round(drop * 1000) / 1000 };
+}
+
+/** --far: each view's far-field pan, before → after, and the verdict. */
+function printFar(report) {
+  const rows = report.head.views.filter((h) => h.farPan);
+  if (rows.length === 0) return;
+  const ref = report.ref ?? null;
+  console.log(
+    `\nfar field — the pan with the world frozen inside each view's far rect, ${FAR_FRAMES} frames at res ${FAR_RES}: flicker = mean |Δ²luma|, change = mean |Δluma|`,
+  );
+  let pass = true;
+  const out = [];
+  for (const h of rows) {
+    const r = ref?.views.find((v) => v.name === h.name)?.farPan ?? null;
+    if (!r) {
+      console.log(
+        `${h.name.padEnd(20)} flicker ${h.farPan.flicker.toFixed(3)}  change ${h.farPan.score.toFixed(3)}`,
+      );
+      continue;
+    }
+    const v = farViewVerdict(h.farPan.flicker, r.flicker);
+    if (!v.pass) pass = false;
+    out.push({
+      name: h.name,
+      ref: r.flicker,
+      head: h.farPan.flicker,
+      changeRef: r.score,
+      changeHead: h.farPan.score,
+      ...v,
+    });
+    console.log(
+      `${h.name.padEnd(20)} flicker ${r.flicker.toFixed(3).padStart(7)} → ${h.farPan.flicker.toFixed(3).padStart(7)}  drop ${(v.drop * 100).toFixed(1)}%  (change ${r.score.toFixed(3)} → ${h.farPan.score.toFixed(3)})  ${v.pass ? "PASS" : `FAIL (< ${FAR_DROP * 100}%)`}`,
+    );
+  }
+  if (ref) {
+    report.farVerdict = { pass, rows: out };
+    console.log(
+      `far: ${out.filter((r) => r.pass).length}/${out.length} views drop >= ${FAR_DROP * 100}% — ${pass ? "PASS" : "FAIL"}`,
+    );
+  }
 }
 
 /** --ablate: each view's per-system table, largest share first. */
@@ -1037,6 +1216,7 @@ async function main() {
           opts.ablate,
           opts.hide,
           opts.breathe,
+          opts.far,
         ),
       );
       if (ref !== null) {
@@ -1051,6 +1231,7 @@ async function main() {
             opts.ablate,
             opts.hide,
             opts.breathe,
+            opts.far,
           ),
         );
       }
@@ -1063,12 +1244,14 @@ async function main() {
   }
   if (opts.grid) {
     printGrid(report);
+    printFar(report);
     printAblation(report);
     const out = opts.out ?? resolve(HERE, "flicker-grid-last.json");
     mkdirSync(dirname(out), { recursive: true });
     writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`);
     console.log(`wrote ${out}`);
     if (report.gridVerdict && !report.gridVerdict.pass) process.exitCode = 1;
+    if (report.farVerdict && !report.farVerdict.pass) process.exitCode = 1;
     return;
   }
 

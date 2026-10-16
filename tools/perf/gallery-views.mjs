@@ -1296,14 +1296,16 @@ export const VIEWS = [
     name: "fleet-sky",
     x: 1000,
     z: 1000,
-    y: 380,
-    yaw: 0.6,
+    // The plane parked over every roof, under the fleet (out of shot).
+    y: 520,
+    // The staging's "ahead" is the plane's nose: the way the eye looks.
+    yaw: Math.atan2(-380, 440),
     timeMs: 1_790_000_000_000,
     eye: [1000, 360, 1000],
-    at: [1380, 520, 560],
+    at: [1380, 500, 560],
     fov: 80,
     weather: "clear",
-    boss: { ahead: 300, count: 20 },
+    boss: { ahead: 320, count: 20 },
   },
   // L6 (Stormlit): the carrier composition (L7b: renamed from a second
   // `reference-hero`, which shared its name and file with L7's) — Z1: the

@@ -382,7 +382,7 @@ export function sweepImpact(
           for (let iz = iz0; iz <= iz1 && !exhausted; iz++) {
             for (let ix = ix0; ix <= ix1 && !exhausted; ix++) {
               const cell = cellIndex(g, ix, iy, iz);
-              if (!mask[cell] || (gone && gone[cell])) continue;
+              if (!mask[cell] || gone?.[cell]) continue;
               const id = chunkId(cand.i, k, cell);
               if (chunks.includes(id)) continue;
               if (boxDistance(px, py, pz, cellBox(g, cell, box)) > r) continue;

@@ -81,6 +81,11 @@ import {
   collapseChunks,
 } from "@angels-bandits/common/city/collapse";
 import {
+  type ImpactRecord,
+  SWEEP_MODEL_VERSION,
+  decodeImpact,
+} from "@angels-bandits/common/city/penetrate";
+import {
   type Crater,
   type PropDown,
   PropState,
@@ -187,6 +192,10 @@ export interface GameSocketEvents {
   /** D2: a `chunks` batch broke these (already in `cityDamage`) — D9's
    * glass cascades and broken-window rings. */
   onChunks?: (ids: readonly number[]) => void;
+  /** P1: impacts the server swept through the city this tick (decoded;
+   * sent before the `chunks` that carry their tunnels) — replayed for the
+   * visuals only. */
+  onImpacts?: (recs: readonly ImpactRecord[]) => void;
   /** D9: props went down, blew up, came back, craters opened or closed
    * (all already in `props` / `craters`). */
   onProps?: (e: PropsEvent) => void;
@@ -1090,6 +1099,18 @@ export class GameSocket {
         }
         for (const id of decodeChunkIds(msg.off)) this.fires.delete(id);
         break;
+      case "impact": {
+        this.serverDestruction++;
+        // P1: a record swept by another model would replay another tunnel.
+        if (msg.v !== SWEEP_MODEL_VERSION || !Array.isArray(msg.i)) break;
+        const recs: ImpactRecord[] = [];
+        for (const w of msg.i) {
+          const r = decodeImpact(w);
+          if (r) recs.push(r);
+        }
+        if (recs.length > 0) this.events.onImpacts?.(recs);
+        break;
+      }
       case "chunks": {
         this.serverDestruction++;
         const ids = decodeChunkIds(msg.d);

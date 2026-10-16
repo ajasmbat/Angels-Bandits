@@ -143,9 +143,21 @@ describe("DL1 parity: the default tuning is today's collapse model", () => {
           expect(live.collapseFloorEvents(c), at).toEqual(
             legacy.collapseFloorEvents(a),
           );
-          expect(live.collapseImpacts(c, city, t), at).toEqual(
-            legacy.collapseImpacts(a, city),
-          );
+          // P1 added the piece's velocity and volume; the legacy fields
+          // must still match bit for bit.
+          expect(
+            live
+              .collapseImpacts(c, city, t)
+              .map(({ t: ti, building, x, y, z, e }) => ({
+                t: ti,
+                building,
+                x,
+                y,
+                z,
+                e,
+              })),
+            at,
+          ).toEqual(legacy.collapseImpacts(a, city));
         }
         const c = live.buildCollapse(city, wire);
         if (a && c) expectSamePoses(a, c, `building ${i} style ${style}`);

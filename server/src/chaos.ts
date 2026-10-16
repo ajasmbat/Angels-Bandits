@@ -26,8 +26,10 @@ import {
   type FleetTuning,
 } from "@angels-bandits/common/boss";
 import {
+  CHAOS_COMET,
   CHAOS_METEOR,
   CHAOS_QUAKE,
+  COMET_MIN_HEIGHT,
   type ChaosLayer,
   FIRE_CHUNK_DAMAGE,
   FIRE_LIFE_MS,
@@ -40,6 +42,7 @@ import {
   encodeQuake,
   fireNeighbours,
   holdNear,
+  planComet,
   planMeteor,
   planQuake,
   quakeFalloff,
@@ -66,6 +69,7 @@ import {
   GONE_HOLD_SHARE,
 } from "@angels-bandits/common/constants";
 import {
+  COMET_FLIGHT_MS,
   METEOR_FLIGHT_MS,
   type MissileStrike,
   pickMissileTarget,
@@ -97,9 +101,9 @@ export interface ChaosTuning {
   /** Slot times are chaosSlotsInWindow's, scaled by this (QA: < 1). */
   slotScale: number;
   /** An armed slot retries its pick this often, for this long, ms — per
-   * layer (meteor, quake). */
+   * layer (meteor, quake, comet). */
   retryMs: number;
-  patienceMs: readonly [number, number];
+  patienceMs: readonly [number, number, number];
   /** Share of meteors aimed near a human (the rest anywhere in the city). */
   meteorNearShare: number;
   /** A quake weakens this many seeded buildings' ground floors by
@@ -116,7 +120,7 @@ export interface ChaosTuning {
 export const CHAOS_TUNING: ChaosTuning = {
   slotScale: 1,
   retryMs: 500,
-  patienceMs: [3000, 10_000],
+  patienceMs: [3000, 10_000, 8000],
   meteorNearShare: 0.6,
   quakeBuildings: 40,
   quakeWeakenDamage: 20,
@@ -129,7 +133,7 @@ export const CHAOS_TUNING: ChaosTuning = {
 export const CHAOS_FAST: ChaosTuning = {
   ...CHAOS_TUNING,
   slotScale: 1 / 4,
-  patienceMs: [1500, 5000],
+  patienceMs: [1500, 5000, 4000],
 };
 
 /** Every tuning the room's chaos reads, from the environment — the one seam
@@ -217,7 +221,8 @@ export interface ChaosWorld {
 
 /** What one tick produced, in broadcast order. */
 export interface ChaosTick {
-  /** Meteors launched (already injected) — broadcast as `missile`. */
+  /** Meteors (and P1 comets) launched (already injected) — broadcast as
+   * `missile`. */
   meteors: MissileStrike[];
   /** Quakes warned this tick — `quake`. */
   quakes: QuakeEvent[];
@@ -238,6 +243,7 @@ export class ChaosDirector {
   private readonly armed: ({ until: number; next: number } | null)[] = [
     null,
     null,
+    null,
   ];
   private quakes: QuakeEvent[] = [];
   private readonly quakeDone = new Set<number>();
@@ -249,6 +255,7 @@ export class ChaosDirector {
   private readonly meteorRand: () => number;
   private readonly quakeRand: () => number;
   private readonly fireRand: () => number;
+  private readonly cometRand: () => number;
 
   constructor(
     private readonly seed: number,
@@ -258,6 +265,7 @@ export class ChaosDirector {
     this.meteorRand = mulberry32((seed ^ 0x6e7e0a5) >>> 0);
     this.quakeRand = mulberry32((seed ^ 0x9a4e1d2) >>> 0);
     this.fireRand = mulberry32((seed ^ 0x0f1e5ed) >>> 0);
+    this.cometRand = mulberry32((seed ^ 0xc0e7a1d) >>> 0);
   }
 
   /** Quakes still to come or shaking, oldest first. */
@@ -308,7 +316,7 @@ export class ChaosDirector {
     this.prune(now);
     this.arm(now);
     const humans = planes.filter((p) => p.human && !world.budget.fresh(p, now));
-    for (const layer of [CHAOS_METEOR, CHAOS_QUAKE] as const) {
+    for (const layer of [CHAOS_METEOR, CHAOS_QUAKE, CHAOS_COMET] as const) {
       const a = this.armed[layer];
       if (!a || now < a.next) continue;
       if (now > a.until) {
@@ -319,7 +327,9 @@ export class ChaosDirector {
         humans.length > 0 &&
         (layer === CHAOS_METEOR
           ? this.meteor(now, humans, planes, world, out)
-          : this.quake(now, humans, out));
+          : layer === CHAOS_QUAKE
+            ? this.quake(now, humans, out)
+            : this.comet(now, humans, planes, world, out));
       if (done) this.armed[layer] = null;
       else a.next = now + this.tuning.retryMs;
     }
@@ -351,7 +361,7 @@ export class ChaosDirector {
   private arm(now: number): void {
     if (this.scanFrom === null) this.scanFrom = now;
     const s = this.tuning.slotScale;
-    for (const layer of [CHAOS_METEOR, CHAOS_QUAKE] as const) {
+    for (const layer of [CHAOS_METEOR, CHAOS_QUAKE, CHAOS_COMET] as const) {
       const slots = chaosSlotsInWindow(
         this.seed,
         layer as ChaosLayer,
@@ -464,6 +474,61 @@ export class ChaosDirector {
       }
     }
     return null;
+  }
+
+  // --- Comets (P1) -----------------------------------------------------------
+
+  /** A comet into a tower 150–450 m from a random human (in sight of the
+   * fight, never AT a plane), budget permitting. */
+  private comet(
+    now: number,
+    humans: readonly ChaosPlane[],
+    planes: readonly ChaosPlane[],
+    world: ChaosWorld,
+    out: ChaosTick,
+  ): boolean {
+    const rand = this.cometRand;
+    const buildings = world.city.buildings;
+    const anchor = humans[Math.floor(rand() * humans.length)] as ChaosPlane;
+    for (let n = 0; n < 6; n++) {
+      const a = rand() * Math.PI * 2;
+      const r = 150 + 300 * rand();
+      const probe = {
+        x: wrapCoord(anchor.pos.x + Math.cos(a) * r),
+        y: 0,
+        z: wrapCoord(anchor.pos.z + Math.sin(a) * r),
+      };
+      let best: Building | null = null;
+      let bestH = COMET_MIN_HEIGHT;
+      forEachBuildingNear(world.index, probe, 60, (i) => {
+        const b = buildings[i] as Building;
+        if (b.height > bestH) {
+          bestH = b.height;
+          best = b;
+        }
+      });
+      if (!best) continue;
+      // Its id is drawn once it is accepted (the strike id space is shared).
+      const m = planComet(rand, 0, best, now, buildings);
+      if (!m) continue;
+      const clear = planes.every(
+        (pl) =>
+          wrapDistance(pl.pos, m.to) >= 60 &&
+          wrapDistance(predictedPos(pl, COMET_FLIGHT_MS), m.to) >= 60,
+      );
+      if (!clear) continue;
+      if (
+        !world.budget.allows("meteor", [m.to], COMET_FLIGHT_MS, now, planes)
+      ) {
+        continue;
+      }
+      m.id = world.missiles.allocId();
+      world.budget.charge("meteor", [m.to], COMET_FLIGHT_MS, now, planes);
+      world.missiles.inject(m);
+      out.meteors.push(m);
+      return true;
+    }
+    return false;
   }
 
   // --- Quakes ----------------------------------------------------------------

@@ -1287,6 +1287,16 @@ export class RoomBots {
     return this.bots.get(id)?.flight.pos ?? null;
   }
 
+  /** P1: the bot's last sim velocity, m/s, alive or dead (a crash sweeps
+   * on along it), or null for an unknown bot. */
+  lastVelOf(id: string): Vec3 | null {
+    const bot = this.bots.get(id);
+    if (!bot) return null;
+    const fwd = flightForward(bot.flight);
+    const { speed } = bot.flight;
+    return { x: fwd.x * speed, y: fwd.y * speed, z: fwd.z * speed };
+  }
+
   /** Death settled by Combat: freeze until respawn() reseeds the flight. */
   setDead(id: string): void {
     const bot = this.bots.get(id);

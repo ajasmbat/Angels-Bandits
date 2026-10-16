@@ -56,6 +56,14 @@ import {
 import { natureFor } from "@angels-bandits/common/city/nature";
 import { setNewsTarget } from "@angels-bandits/common/city/newsheli";
 import {
+  IMPACT_PLANE,
+  IMPACT_WRECK,
+  type ImpactRecord,
+  type SweepResult,
+  makeImpact,
+  sweepPosAt,
+} from "@angels-bandits/common/city/penetrate";
+import {
   PROP_CAR,
   PROP_FUEL,
   PROP_JUMBO,
@@ -103,6 +111,7 @@ import {
   type FlightState,
   bankPitchMult,
   createFlightState,
+  flightForward,
   handlingRates,
   realRoll,
   stepFlight,
@@ -305,6 +314,11 @@ import {
 } from "./game/qa-destruction";
 import { type QaLowChaosSpec, planQaLowChaos } from "./game/qa-lowchaos";
 import {
+  type QaPenetrateKind,
+  type QaPenetratePlan,
+  planQaPenetrate,
+} from "./game/qa-penetrate";
+import {
   type QaFleetSpec,
   type QaFleetStage,
   isQaShell,
@@ -391,6 +405,7 @@ import { NameTagBatch } from "./render/nametags";
 import { NanProbePass, type NanProbeReading } from "./render/nanprobe";
 import { NatureRenderer } from "./render/nature";
 import { Pedestrians } from "./render/pedestrians";
+import { Penetrations } from "./render/penetrate";
 import { FrameMeter, type FrameStats, percentile } from "./render/perfmeter";
 import {
   type ControlDeflection,
@@ -1421,6 +1436,50 @@ wrecks.reset((welcome.wrecks ?? []).filter(isWreckParams));
 // Their damage arrives as chunks, damage/death and a `missile` city event.
 const missileRenderer = new MissileRenderer(smoke, impacts);
 scene.add(missileRenderer.group);
+// P1: impacts that sweep THROUGH the city (crashes, wrecks, meteors,
+// comets, carrier sections, collapse debris), replayed from the server's
+// records on the render clock: a burst per chunk as the body reaches it,
+// the body ploughing on (wrecks and strikes through their own draws) and
+// the comet's tail (one draw). What breaks still arrives as `chunks`.
+const penetrations = new Penetrations(
+  city.cityBuildings,
+  explosions,
+  sparks,
+  impacts,
+  (at, _rec, first) => {
+    const t = performance.now();
+    if (first) audio.explosion(at, flight.pos, flight.yaw);
+    blastShake.add(wrapDistance(at, flight.pos), first ? 1 : 0.4, t);
+  },
+);
+scene.add(penetrations.group);
+wrecks.setPlough((id, ms, pos, dir) =>
+  penetrations.bodyOf(IMPACT_WRECK, id, ms, pos, dir),
+);
+/** P1: our own crash, ploughing on in before the respawn cut: its record
+ * (on the render clock — played locally at once; the server's echo of it
+ * is skipped) and its sweep. Null when not crashing. */
+let ownPlough: { rec: ImpactRecord; res: SweepResult } | null = null;
+const ploughPos: Vec3 = { x: 0, y: 0, z: 0 };
+/** P1: where our last crash's record started and until when (frame clock)
+ * the server's echo of it is skipped — the plough may end before it. */
+const ownCrash = { origin: { x: 0, y: 0, z: 0 }, until: 0 };
+socket.events.onImpacts = (recs) => {
+  for (const r of recs) {
+    // Our own crash's echo: already ploughing locally.
+    if (
+      r.kind === IMPACT_PLANE &&
+      performance.now() < ownCrash.until &&
+      wrapDistance(r.origin, ownCrash.origin) < 40
+    ) {
+      continue;
+    }
+    penetrations.add(r);
+  }
+};
+/** P1 QA (`__ab.qaPenetrate`): the staged impact and how many of its
+ * tunnel's chunks this client has broken so far. */
+let qaPen: { plan: QaPenetratePlan; applied: number } | null = null;
 const missileFeed = new MissileFeed();
 const missileShake = new MissileShake();
 /** P3: the player's motion preference (J1: the device default of the
@@ -2420,7 +2479,9 @@ function enterDeath(killerId: string | null, cause: DeathMsg["cause"]): void {
   if (!alive) return;
   alive = false;
   haptics.death(); // after the guard: a crash + its death message buzz once
-  plane.visible = false;
+  // P1: a crash into a building keeps the plane drawn while it ploughs on.
+  plane.visible = cause === "crash" && ownPlough !== null;
+  if (!plane.visible) ownPlough = null;
   planeTrails.clear(socket.selfId);
   bullets.clearOwn();
   flashFade();
@@ -2439,6 +2500,7 @@ function respawnSelf(spawn: SpawnState): void {
   alive = true;
   killCamTargetId = null;
   killCamWreck = null;
+  ownPlough = null; // P1: the respawn cut ends any plough
   plane.visible = true;
   hud.hideKillCam();
   sessionStats.respawned(); // S7: the card came down with the kill-cam
@@ -3014,6 +3076,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
     QUALITY_PROFILES[tier].chaosFx, // C2: meteor fire trails
   );
   fireRenderer.setQuality(QUALITY_PROFILES[tier].chaosFx); // C2
+  penetrations.setQuality(QUALITY_PROFILES[tier].missileDebris); // P1
   inferno.setQuality(tier); // L7: flames, columns and air (counts only)
   propsRenderer.setShare(QUALITY_PROFILES[tier].chaosFx); // D9
   aaNests.setShare(QUALITY_PROFILES[tier].chaosFx); // W3
@@ -3829,6 +3892,32 @@ declare global {
        * the renderer — `stagedDraws` counts the draws only destruction
        * adds (damaged mesh, debris, dust, falling wrecks, scorch,
        * scaffolding; not the impact pool, which bullets feed too). */
+      /**
+       * P1 QA: stage a penetrating impact into a tower on this client only
+       * (game/qa-penetrate.ts) — a plane (a fighter's airframe flown in
+       * level), a meteor onto its roof or a comet through the row behind
+       * it — landing `leadMs` (default 1500) after the render clock now;
+       * its tunnel breaks here at its entry times. `eye`/`at` frame it
+       * side-on. Null clears it (the touched buildings back to whole).
+       */
+      qaPenetrate: (
+        kind: QaPenetrateKind | null,
+        leadMs?: number,
+      ) => {
+        kind: QaPenetrateKind;
+        b: number;
+        t: number;
+        chunks: number;
+        buildings: number;
+        stopT: number;
+        stopDist: number;
+        eye: Vec3;
+        at: Vec3;
+      } | null;
+      /** P1 QA: the sweeps replayed and what they drew last frame (bursts
+       * played, comet tails, bodies still ploughing), and the chunks the
+       * staged impact has broken so far. */
+      penetrations: () => Penetrations["stats"] & { qaApplied: number };
       /** L7 QA: the inferno — the burn drawn, its sites and draws, the D8
        * `floating` count (0) and the overdraw proxy. */
       inferno: () => InfernoStats;
@@ -4140,6 +4229,7 @@ function qaSystems(): {
     ["scaffold", [scaffold.mesh]],
     ["wrecks", [wrecks.group]],
     ["missiles", [missileRenderer.group]],
+    ["penetrate", [penetrations.group]],
     ["boss", [bossRenderer.group]],
     ["reactions", [reactor.points]],
     ["storm", [storm.group, storm.flashLight]],
@@ -4175,6 +4265,39 @@ function qaSystems(): {
   });
   return out;
 }
+/** P1 QA: break the staged tunnel's chunks on this client as the body
+ * reaches each (draw == collide, locally — a quiet room's server breaks
+ * nothing of it). */
+function qaPenetrateFrame(renderMs: number): void {
+  const q = qaPen;
+  if (!q) return;
+  const { rec, res } = q.plan;
+  const due: number[] = [];
+  while (
+    q.applied < res.chunks.length &&
+    rec.t + (res.times[q.applied] as number) * 1000 <= renderMs
+  ) {
+    due.push(res.chunks[q.applied++] as number);
+  }
+  if (due.length > 0) {
+    socket.cityDamage.apply(due);
+    socket.events.onChunks?.(due);
+  }
+}
+
+/** P1 QA: take back what `__ab.qaPenetrate` staged. */
+function clearQaPenetrate(): void {
+  const q = qaPen;
+  if (!q) return;
+  qaPen = null;
+  if (q.plan.strike) socket.missiles.delete(q.plan.strike.id);
+  if (q.plan.wreck) wrecks.remove(q.plan.wreck.id);
+  penetrations.reset();
+  for (const b of new Set(q.plan.res.chunks.map(chunkBuilding))) {
+    socket.cityDamage.restoreBuilding(b);
+  }
+}
+
 // D6 perf harness: what `__ab.qaDestruction` staged, so a clear takes back
 // exactly that — the destroyed set and collapses (all of them: the harness
 // stages into a quiet room), the facades its blasts marked, its burns and
@@ -5232,6 +5355,38 @@ window.__ab = {
       wrecks: crashed,
     };
   },
+  qaPenetrate: (kind, leadMs = 1500) => {
+    clearQaPenetrate();
+    if (kind === null) return null;
+    const t = Math.round((lastRenderMs ?? 0) + leadMs);
+    const plan = planQaPenetrate(
+      kind,
+      city.cityBuildings,
+      city.cityIndex,
+      t,
+      socket.props.gapMask,
+    );
+    if (!plan) return null;
+    if (plan.strike) socket.missiles.set(plan.strike.id, plan.strike);
+    if (plan.wreck) wrecks.add(plan.wreck);
+    penetrations.add(plan.rec);
+    qaPen = { plan, applied: 0 };
+    return {
+      kind,
+      b: plan.b,
+      t: plan.rec.t,
+      chunks: plan.res.chunks.length,
+      buildings: new Set(plan.res.chunks.map(chunkBuilding)).size,
+      stopT: plan.res.stopT,
+      stopDist: plan.res.stopDist,
+      eye: plan.eye,
+      at: plan.at,
+    };
+  },
+  penetrations: () => ({
+    ...penetrations.stats,
+    qaApplied: qaPen?.applied ?? 0,
+  }),
   inferno: () => inferno.info(),
   props: () => ({
     down: socket.props.downCount,
@@ -5550,6 +5705,10 @@ const frame = (rafNow: number): void => {
   }
   const renderMs = qaWorld !== null ? qaWorld.ms : frameClock.time;
   lastRenderMs = renderMs;
+  // P1 QA: the staged tunnel breaks here, at the top of the frame, where a
+  // socket batch would have landed — never between the city's layout and
+  // its damage flush.
+  if (qaPen !== null && renderMs !== null) qaPenetrateFrame(renderMs);
   // DL1: in the Destruction Lab every collapse renderer poses on the lab's
   // clock (live, paused, slowed or scrubbed — exact: the debris and the dust
   // are pure in time), and the view is the lab's camera (unless a QA tool
@@ -5985,6 +6144,22 @@ const frame = (rafNow: number): void => {
     } else if (crashed || wreckHit !== null) {
       // Report and freeze; the server decides credit and the respawn.
       socket.sendCrash(wreckHit, renderMs);
+      // P1: into a building, the plane ploughs on along its tunnel first
+      // (the same sweep the server runs on its record; played here at once).
+      if (crashed && renderMs !== null) {
+        const fwd = flightForward(flight);
+        const rec = makeImpact(IMPACT_PLANE, renderMs, flight.pos, {
+          x: fwd.x * flight.speed,
+          y: fwd.y * flight.speed,
+          z: fwd.z * flight.speed,
+        });
+        const res = penetrations.add(rec);
+        ownPlough = res.contact >= 0 && res.stopT > 0 ? { rec, res } : null;
+        ownCrash.origin.x = rec.origin.x;
+        ownCrash.origin.y = rec.origin.y;
+        ownCrash.origin.z = rec.origin.z;
+        ownCrash.until = now + 3000;
+      }
       enterDeath(null, "crash");
     }
   }
@@ -6131,6 +6306,19 @@ const frame = (rafNow: number): void => {
     }
     // DL1: no plane in the Destruction Lab's shot.
     if (destructLab) plane.visible = false;
+  } else if (ownPlough !== null && renderMs !== null) {
+    // P1: our crashed plane ploughs on in along its tunnel, slowing chunk
+    // by chunk; the camera holds and watches it, then it is gone.
+    const s = (renderMs - ownPlough.rec.t) / 1000;
+    sweepPosAt(ownPlough.res, s, ploughPos);
+    const p = nearestImage(chase.position, ploughPos);
+    plane.position.set(p.x, p.y, p.z);
+    camera.lookAt(p.x, p.y, p.z);
+    if (s >= ownPlough.res.stopT) {
+      plane.visible = false;
+      explosions.explode(ploughPos, now, 1.2);
+      ownPlough = null;
+    }
   } else if (killCamWreck !== null && renderMs !== null) {
     // D4 kill-cam: ride behind our own wreck down to where it hits.
     wreckCamView(killCamWreck, renderMs, wreckEye, wreckAt);
@@ -6579,7 +6767,17 @@ const frame = (rafNow: number): void => {
     hud.setBombWarning(
       bombingNear(mf.flying, renderMs, alive ? flight.pos : null),
     );
-    missileRenderer.update(mf.flying, chase.position, renderMs, now);
+    // P1: the sweeps' bursts and bodies, then the strikes (and the ones
+    // still ploughing through the city) on the fireball draw.
+    penetrations.update(chase.position, renderMs, now, mf.flying);
+    missileRenderer.update(
+      mf.flying,
+      chase.position,
+      renderMs,
+      now,
+      penetrations.ploughing,
+      penetrations.ploughCount,
+    );
     socket.pruneChaos(renderMs); // C2: runs and quakes long over
   }
   // S8/Z1 QA: a staged fleet holds the slot (a real `ship` message cannot

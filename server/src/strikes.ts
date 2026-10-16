@@ -21,21 +21,28 @@
 //    the arc must clear the city as it stands.
 
 import { type Building, chunkBuilding } from "@angels-bandits/common/city";
+import {
+  IMPACT_COMET,
+  IMPACT_METEOR,
+  makeImpact,
+} from "@angels-bandits/common/city/penetrate";
 import type { CityIndex } from "@angels-bandits/common/collision";
 import { DESTROY_CAP_D2, WORLD_SIZE } from "@angels-bandits/common/constants";
 import {
   type MissilePlane,
   type MissileStrike,
+  isPenetrator,
   missileChunkDamage,
   missileDamage,
   missileFlightMs,
   missileImpactAt,
+  missileImpactVelocity,
   pickMissileTarget,
   planMissile,
 } from "@angels-bandits/common/strike";
 import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 import type { DangerBudget } from "./danger";
-import { type RoomCity, blastProps } from "./destruction";
+import { type RoomCity, blastProps, sweepBlast } from "./destruction";
 
 export interface DirectorTuning {
   /** Continuous time near buildings before a plane draws fire, ms. */
@@ -363,8 +370,16 @@ export class MissileDirector {
 
 /** A missile landed: blow out the room city's chunks around the impact
  * (D2's damage API, so D3 collapses ride the same destroyed set). Returns
- * the chunks destroyed. Call once per settled missile. */
+ * the chunks destroyed. Call once per settled missile. P1: a meteor or a
+ * comet does not burst on the wall — it sweeps on in (sweepBlast) and
+ * returns the tunnel it is driving, chunk by chunk over the next instants. */
 export function applyMissileImpact(city: RoomCity, m: MissileStrike): number[] {
+  if (isPenetrator(m.kind)) {
+    const v = missileImpactVelocity(m, { x: 0, y: 0, z: 0 });
+    const kind = m.kind === "comet" ? IMPACT_COMET : IMPACT_METEOR;
+    const at = missileImpactAt(m);
+    return sweepBlast(city, makeImpact(kind, at, m.to, v, m.id)).chunks;
+  }
   const { radius, damage } = missileChunkDamage(m.kind);
   const out = city.damage.damageAt(m.to, radius, damage);
   // D3: a collapse a missile sets off is the environment's — nobody's.

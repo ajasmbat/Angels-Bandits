@@ -24,6 +24,8 @@ import {
 export const MISSILE_FLIGHT_MS = 5000;
 /** C2: a meteor's streak from high over the city to its impact, ms. */
 export const METEOR_FLIGHT_MS = 4500;
+/** P1: a comet's shallow streak in over the rooftops, ms (~220 m/s). */
+export const COMET_FLIGHT_MS = 3600;
 /** A bomb's fall from the plane that drops it to the city, ms — the same
  * for every drop, so its impact instant is a pure function of its release
  * (and never under the telegraph floor). W2: the carrier's enemy planes
@@ -64,17 +66,25 @@ export const MISSILE_SHOOTER_ID = "@missile";
 /** A cruise missile skims in low; an artillery round lobs in from on high.
  * C2 adds two more things that fall on the city along the same pipeline: a
  * meteor (a straight fiery streak from ~900 m up) and a bomb (dropped from a
- * plane; see BOMB_FALL_MS). */
-export type MissileKind = "cruise" | "artillery" | "meteor" | "bomb";
+ * plane; see BOMB_FALL_MS). P1 adds the comet: a fast, shallow streak with a
+ * long glowing tail that tears sideways through a row of buildings. */
+export type MissileKind = "cruise" | "artillery" | "meteor" | "bomb" | "comet";
+
+/** P1: the kinds that do not explode on the first wall but sweep through
+ * (common/src/city/penetrate.ts). */
+export const isPenetrator = (kind: MissileKind): boolean =>
+  kind === "meteor" || kind === "comet";
 
 /** Launch (or drop) → impact for each kind, ms. Every one of them is at
  * least MISSILE_TELEGRAPH_MIN_MS. */
 export function missileFlightMs(kind: MissileKind): number {
   return kind === "meteor"
     ? METEOR_FLIGHT_MS
-    : kind === "bomb"
-      ? BOMB_FALL_MS
-      : MISSILE_FLIGHT_MS;
+    : kind === "comet"
+      ? COMET_FLIGHT_MS
+      : kind === "bomb"
+        ? BOMB_FALL_MS
+        : MISSILE_FLIGHT_MS;
 }
 
 /** A meteor hits harder and wider than a missile. */
@@ -92,7 +102,7 @@ export function missileChunkDamage(kind: MissileKind): {
   radius: number;
   damage: number;
 } {
-  if (kind === "meteor") {
+  if (kind === "meteor" || kind === "comet") {
     return { radius: METEOR_CHUNK_RADIUS, damage: METEOR_CHUNK_DAMAGE };
   }
   if (kind === "bomb") {
@@ -121,6 +131,7 @@ const APEX: Record<MissileKind, number> = {
   artillery: 480,
   meteor: 0,
   bomb: 0,
+  comet: 0,
 };
 
 /** Server time the missile lands, ms. */
@@ -173,14 +184,26 @@ export function missilePosAt(s: MissileStrike, t: number, out: Vec3): Vec3 {
   return out;
 }
 
+/** P1: the strike's velocity as it arrives, m/s — the arc's slope over its
+ * last 20 ms. Writes into `out` and returns it. */
+export function missileImpactVelocity(s: MissileStrike, out: Vec3): Vec3 {
+  const at = missileImpactAt(s);
+  const a = missilePosAt(s, at - 20, { x: 0, y: 0, z: 0 });
+  out.x = wrapDeltaAxis(a.x, s.to.x) / 0.02;
+  out.y = (s.to.y - a.y) / 0.02;
+  out.z = wrapDeltaAxis(a.z, s.to.z) / 0.02;
+  return out;
+}
+
 /** Damage a plane `d` meters from the impact takes: lethal (MAX_HP) inside
  * the lethal radius, then MISSILE_EDGE_DAMAGE falling linearly to 0 at the
- * blast radius — MISSILE_* for missiles and bombs, METEOR_* for a meteor. */
+ * blast radius — MISSILE_* for missiles and bombs, METEOR_* for a meteor
+ * (and a comet). */
 export function missileDamage(d: number, kind: MissileKind = "cruise"): number {
   if (!(d >= 0)) return 0;
-  const lethal =
-    kind === "meteor" ? METEOR_LETHAL_RADIUS : MISSILE_LETHAL_RADIUS;
-  const blast = kind === "meteor" ? METEOR_BLAST_RADIUS : MISSILE_BLAST_RADIUS;
+  const rock = kind === "meteor" || kind === "comet";
+  const lethal = rock ? METEOR_LETHAL_RADIUS : MISSILE_LETHAL_RADIUS;
+  const blast = rock ? METEOR_BLAST_RADIUS : MISSILE_BLAST_RADIUS;
   if (d <= lethal) return MAX_HP;
   if (d >= blast) return 0;
   return (MISSILE_EDGE_DAMAGE * (blast - d)) / (blast - lethal);
@@ -420,15 +443,16 @@ const WIRE_KINDS: readonly MissileKind[] = [
   "artillery",
   "meteor",
   "bomb",
+  "comet",
 ];
 
 /** A strike on the wire: [id, kind (0 cruise, 1 artillery, 2 meteor,
- * 3 bomb), from ×10, to ×10, t0] — integers only, exactly reconstructible.
+ * 3 bomb, 4 comet), from ×10, to ×10, t0] — integers only, exactly reconstructible.
  * W2: a bomb with a `vy` carries it ×10 as a tenth element. */
 export type WireMissile =
   | [
       id: number,
-      kind: 0 | 1 | 2 | 3,
+      kind: 0 | 1 | 2 | 3 | 4,
       fx: number,
       fy: number,
       fz: number,
@@ -439,7 +463,7 @@ export type WireMissile =
     ]
   | [
       id: number,
-      kind: 0 | 1 | 2 | 3,
+      kind: 0 | 1 | 2 | 3 | 4,
       fx: number,
       fy: number,
       fz: number,
@@ -452,7 +476,7 @@ export type WireMissile =
 
 export function encodeMissile(s: MissileStrike): WireMissile {
   const i = (v: number) => Math.round(v * 10);
-  const kind = WIRE_KINDS.indexOf(s.kind) as 0 | 1 | 2 | 3;
+  const kind = WIRE_KINDS.indexOf(s.kind) as 0 | 1 | 2 | 3 | 4;
   const from = [i(s.from.x), i(s.from.y), i(s.from.z)] as const;
   const to = [i(s.to.x), i(s.to.y), i(s.to.z)] as const;
   if (s.kind === "bomb" && s.vy !== undefined) {

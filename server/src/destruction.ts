@@ -28,6 +28,15 @@
 // rebuild (rebuildBuilding / rebuildCrane) restores a whole building, drops
 // its collapse records and everything the room keeps about it.
 //
+// P1: and how far in. A crash, a wreck, a meteor or comet, a carrier
+// section and a collapse's debris no longer stop at the first wall:
+// sweepBlast runs the shared sweep (common/src/city/penetrate.ts) on the
+// impact record, queues every chunk of its tunnel at its entry time (each
+// lands through destroyChunk, so DESTROY_CAP and the C2 hold still rule)
+// and a small radial blast where it comes to rest, and queues the record
+// itself for the room's `impact` message — the clients replay the same
+// sweep for the body ploughing on and a burst per chunk.
+//
 // DL1: and how. The room city carries a DestructionTuning (`tuning`) — the
 // planner's, the chain probe's and the chain blasts' numbers — which is
 // DEFAULT_DESTRUCTION_TUNING in every room but a Destruction Lab. A lab
@@ -60,6 +69,18 @@ import {
   wireKind,
 } from "@angels-bandits/common/city/collapse";
 import type { CraneSite } from "@angels-bandits/common/city/movers";
+import {
+  DEBRIS_DENSITY,
+  IMPACTORS,
+  IMPACT_DEBRIS,
+  IMPACT_PLANE,
+  type ImpactRecord,
+  type ImpactorSpec,
+  type SweepResult,
+  debrisRadius,
+  makeImpact,
+  sweepRecord,
+} from "@angels-bandits/common/city/penetrate";
 import {
   CRATERS_MAX,
   CRATER_MERGE_M,
@@ -171,6 +192,30 @@ export interface RoomCity {
   /** DL1: a Destruction Lab's city — stamps its build tuning on its wires.
    * Set with setLabCity, never back. */
   readonly lab: boolean;
+  /** P1: swept chunks and stop blasts due to land, earliest first. */
+  sweeps: SweepLanding[];
+  /** P1: impact records swept since the room last sent them (its
+   * `impact` message, just before the tick's `chunks`). */
+  sweepsOut: ImpactRecord[];
+}
+
+/** P1: one thing a sweep lands later: a chunk of its tunnel (`chunk` ≥ 0)
+ * at the instant the impactor reaches it, or (`chunk` −1) the radial blast
+ * where it came to rest. `chain` is the D5 link a building it breaks
+ * becomes (0: none — it is not collapse debris). */
+export interface SweepLanding {
+  t: number;
+  chunk: number;
+  /** The building it lands in (a stop blast: the last one the tunnel
+   * reached, or −1) — a rebuild drops what is still due in it. */
+  building: number;
+  by: string | null;
+  chain: number;
+  x: number;
+  y: number;
+  z: number;
+  r: number;
+  damage: number;
 }
 
 /** DL1: make `city` a Destruction Lab's — its wires carry its build tuning
@@ -331,6 +376,8 @@ export function createRoomCity(
     props: createPropRoom(buildings, copy, cranes, seed, trains, layout),
     tuning: DEFAULT_DESTRUCTION_TUNING,
     lab: false,
+    sweeps: [],
+    sweepsOut: [],
   };
 }
 
@@ -346,6 +393,8 @@ export function resetRoomCity(city: RoomCity): void {
   city.chainDepth.clear();
   city.firstDamageAt.clear();
   city.lastStructuralAt.clear();
+  city.sweeps = [];
+  city.sweepsOut = [];
   const props = city.props;
   props.slot.state.reset([]);
   props.blasts = [];
@@ -472,14 +521,108 @@ function addCrater(props: PropRoom, pos: Vec3, r: number, t: number): void {
   props.out.craters.push(c);
 }
 
+/**
+ * P1: an impact sweeps through the room's city. `rec` (already on the wire
+ * grid — makeImpact) is swept against the city as it stands; each chunk of
+ * the tunnel is queued to break at `rec.t` + its entry time, and a radial
+ * blast (`blast`, else the kind's) where it comes to rest at its stop
+ * time; the record is queued for the room's `impact` message. `by` is what
+ * a collapse it sets off credits; `chain` the D5 link (debris only).
+ * Returns the sweep (its `chunks` are what WILL break, cap permitting).
+ */
+export function sweepBlast(
+  city: RoomCity,
+  rec: ImpactRecord,
+  by: string | null = null,
+  chain = 0,
+  blast?: { r: number; damage: number },
+): SweepResult {
+  const res = sweepRecord(rec, city.buildings);
+  const spec = IMPACTORS[rec.kind] as ImpactorSpec;
+  res.chunks.forEach((id, k) => {
+    city.sweeps.push({
+      t: rec.t + (res.times[k] as number) * 1000,
+      chunk: id,
+      building: chunkBuilding(id),
+      by,
+      chain,
+      x: 0,
+      y: 0,
+      z: 0,
+      r: 0,
+      damage: 0,
+    });
+  });
+  const r = blast?.r ?? spec.blastRadius;
+  const damage = blast?.damage ?? spec.blastDamage;
+  if (r > 0 && damage > 0) {
+    const last = res.chunks[res.chunks.length - 1];
+    city.sweeps.push({
+      t: rec.t + res.stopT * 1000,
+      chunk: -1,
+      building: last === undefined ? -1 : chunkBuilding(last),
+      by,
+      chain,
+      x: res.stop.x,
+      y: res.stop.y,
+      z: res.stop.z,
+      r,
+      damage,
+    });
+  }
+  city.sweeps.sort((a, b) => a.t - b.t); // stable: a sweep keeps its order
+  city.sweepsOut.push(rec);
+  return res;
+}
+
+/** P1: land every swept chunk and stop blast due by `now`. */
+function landSweeps(city: RoomCity, now: number): void {
+  let k = 0;
+  while (k < city.sweeps.length && (city.sweeps[k] as SweepLanding).t <= now) {
+    const s = city.sweeps[k] as SweepLanding;
+    k++;
+    const broke =
+      s.chunk >= 0
+        ? city.damage.destroyChunk(s.chunk)
+          ? [s.chunk]
+          : []
+        : city.damage.damageAt(s, s.r, s.damage);
+    if (s.chunk < 0) blastProps(city, s, s.r, s.damage, s.by, s.chain, now);
+    for (const id of broke) {
+      const b = chunkBuilding(id);
+      city.breakers.set(b, s.by);
+      if (s.chain > 0) {
+        city.chainDepth.set(b, Math.max(city.chainDepth.get(b) ?? 0, s.chain));
+      }
+    }
+  }
+  if (k > 0) city.sweeps.splice(0, k);
+}
+
+/** P1: what the room has swept since it last asked (its `impact` batch). */
+export function takeSweeps(city: RoomCity): ImpactRecord[] {
+  const out = city.sweepsOut;
+  city.sweepsOut = [];
+  return out;
+}
+
 /** A plane died at `pos`: blow out every chunk near enough (point-to-box,
  * DEATH_BLAST_RADIUS, falling off to 0). Returns the chunks destroyed.
- * `by` (the death's killer, if any) is what a collapse it causes credits. */
+ * `by` (the death's killer, if any) is what a collapse it causes credits.
+ * P1: given the plane's velocity at contact (`vel`, m/s) and the server
+ * time (`now`), it ploughs on instead — sweepBlast as IMPACT_PLANE, the
+ * tunnel landing over the next instants (nothing broken yet: returns []). */
 export function applyDeathBlast(
   city: RoomCity,
   pos: Vec3,
   by: string | null = null,
+  vel?: Vec3,
+  now?: number,
 ): number[] {
+  if (vel && now !== undefined) {
+    sweepBlast(city, makeImpact(IMPACT_PLANE, now, pos, vel), by);
+    return [];
+  }
   const out = city.damage.damageAt(pos, DEATH_BLAST_RADIUS, DEATH_BLAST_DAMAGE);
   for (const id of out) city.breakers.set(chunkBuilding(id), by);
   blastProps(city, pos, DEATH_BLAST_RADIUS, DEATH_BLAST_DAMAGE, by);
@@ -511,6 +654,7 @@ export function tickDestruction(
   planes: readonly { pos: Vec3; vel: Vec3 }[] = [],
 ): DestructionTick {
   landImpacts(city, now);
+  landSweeps(city, now);
   tickProps(city, now, planes);
   const broke = city.damage.takeDestroyed();
   for (const id of broke) {
@@ -652,16 +796,23 @@ function landImpacts(city: RoomCity, now: number): void {
     const e = Math.min(t.chainEnergyMax, Math.max(t.chainEnergyMin, i.e));
     const radius = t.chainBlastRadius * Math.sqrt(e);
     const damage = t.chainBlastDamage * e;
-    const out = city.damage.damageAt(i, radius, damage);
-    blastProps(city, i, radius, damage, i.by, i.depth + 1, now);
-    for (const id of out) {
-      const b = chunkBuilding(id);
-      city.breakers.set(b, i.by);
-      city.chainDepth.set(
-        b,
-        Math.max(city.chainDepth.get(b) ?? 0, i.depth + 1),
-      );
-    }
+    // P1: the piece drives on in along its velocity (a debris sweep), and
+    // the D10 chain blast lands where it comes to rest.
+    sweepBlast(
+      city,
+      makeImpact(
+        IMPACT_DEBRIS,
+        i.t,
+        i,
+        { x: i.vx, y: i.vy, z: i.vz },
+        0,
+        DEBRIS_DENSITY * i.vol,
+        debrisRadius(i.vol),
+      ),
+      i.by,
+      i.depth + 1,
+      { r: radius, damage },
+    );
   }
   if (k > 0) city.impacts.splice(0, k);
 }
@@ -680,6 +831,8 @@ export function rebuildBuilding(city: RoomCity, index: number): number[] {
   city.chainDepth.delete(index);
   city.firstDamageAt.delete(index);
   city.lastStructuralAt.delete(index);
+  // P1: a tunnel still being driven into it stops at its rebuilt walls.
+  city.sweeps = city.sweeps.filter((s) => s.building !== index);
   // D9: its roof props and jumbotron come back with it (clients do the same
   // on the `rebuild`), and its soot goes.
   city.props.slot.state.restoreBuilding(index);

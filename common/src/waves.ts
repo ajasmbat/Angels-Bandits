@@ -1,7 +1,8 @@
 // W1 Carrier War — the shared, pure half. Every enemy plane in a room is
-// launched by the war-zeppelin carrier (S9's belly trapeze and dorsal
-// catapult), in WAVES, and hunts the humans. The server decides when
-// (server/src/waves.ts); this file is the arithmetic both sides agree on:
+// launched by the airship fleet (Z1: S9's belly trapeze on every ship, the
+// dorsal catapult on the carriers), in WAVES, and hunts the humans. The
+// server decides when (server/src/waves.ts); this file is the arithmetic
+// both sides agree on:
 //
 //  - the room's ENEMY INTENSITY (Easy / Normal / Hard / Insane), which
 //    replaced ANGE-6STDNN's bot-count slider and shapes every wave;
@@ -13,12 +14,10 @@
 //    waves stay easy for a new player;
 //  - each wave's BOMBING (W2): how often its planes start bomb runs and how
 //    many fly at once, heavier with the level and the wave;
-//  - each carrier's TIER: the n-th carrier of a session is tougher and its
-//    flak hits harder;
 //  - who hunts whom (assignQuarries): the nearest human, spread across the
 //    humans when there are several;
-//  - the `waves` state on the wire (the HUD's wave number, banner and
-//    enemies left).
+//  - the `waves` state on the wire (the HUD's wave number, banner, enemies
+//    left and the fleet counter: airships downed this session).
 //
 // Not re-exported from common/src/index.ts; import "@angels-bandits/common/waves".
 
@@ -52,12 +51,9 @@ export const ENEMY_CAP = 12;
 /** The beat between one wave's last plane going down and the next wave's
  * first launch, ms — the "WAVE n" banner shows through it. */
 export const WAVE_BREATHER_MS = 8000;
-/** From a carrier coming on (its run-in starting) to its first wave's
- * launches, ms: the banner, then the planes. */
+/** From the fleet coming on to its first wave's launches, ms: the banner,
+ * then the planes. */
 export const WAVE_FIRST_DELAY_MS = 3000;
-/** The next carrier starts its run-in this long after the last one went
- * down (or flew off), ms. */
-export const NEXT_CARRIER_MS = 20_000;
 /** A wave's grade eases to its level's end values over this many waves. */
 export const WAVE_RAMP = 6;
 
@@ -204,19 +200,6 @@ export function waveBombing(wave: number, level: Intensity): WaveBombing {
   };
 }
 
-// --- Carrier tiers --------------------------------------------------------------
-
-/** The n-th carrier's weak-point HP multiplier: the first one is a soft
- * target for a lone pilot, each later one tougher, to a ceiling. */
-export const carrierHpScale = (tier: number): number =>
-  Math.min(1.5, 0.4 + 0.15 * (Math.max(1, tier) - 1));
-
-/** The n-th carrier's flak multiplier (shell damage and the per-second
- * cap): its six turrets all shoot at humans now, so the first carrier's
- * guns are soft. */
-export const carrierFlakScale = (tier: number): number =>
-  Math.min(1, 0.35 + 0.15 * (Math.max(1, tier) - 1));
-
 // --- Quarries -------------------------------------------------------------------
 
 /** Each enemy already hunting a human makes that human rank this much
@@ -257,7 +240,7 @@ export function assignQuarries(
 
 // --- Wire -----------------------------------------------------------------------
 
-/** No carrier war going on (no carrier yet, or between carriers). */
+/** No war going on (no fleet over the room yet). */
 export const WAVE_IDLE = 0;
 /** The breather before wave `wave`, which starts launching at `at`. */
 export const WAVE_BREATHER = 1;
@@ -277,8 +260,8 @@ export interface WaveState {
   left: number;
   /** The wave's planes in all. */
   size: number;
-  /** The carrier's tier (0: none yet). */
-  tier: number;
+  /** Z1: airships shot down this session (the HUD's fleet counter). */
+  downs: number;
 }
 
 export const idleWaves = (): WaveState => ({
@@ -287,17 +270,17 @@ export const idleWaves = (): WaveState => ({
   at: 0,
   left: 0,
   size: 0,
-  tier: 0,
+  downs: 0,
 });
 
-/** On the wire: [wave, phase, at, left, size, tier], integers only. */
+/** On the wire: [wave, phase, at, left, size, downs], integers only. */
 export type WireWaves = [
   wave: number,
   phase: number,
   at: number,
   left: number,
   size: number,
-  tier: number,
+  downs: number,
 ];
 
 export const encodeWaves = (s: WaveState): WireWaves => [
@@ -306,7 +289,7 @@ export const encodeWaves = (s: WaveState): WireWaves => [
   Math.round(s.at),
   s.left,
   s.size,
-  s.tier,
+  s.downs,
 ];
 
 /** Inverse of encodeWaves; null for anything malformed. */
@@ -318,7 +301,7 @@ export function decodeWaves(w: unknown): WaveState | null {
   ) {
     return null;
   }
-  const [wave, phase, at, left, size, tier] = w as number[];
+  const [wave, phase, at, left, size, downs] = w as number[];
   if (phase !== WAVE_IDLE && phase !== WAVE_BREATHER && phase !== WAVE_LIVE) {
     return null;
   }
@@ -328,6 +311,6 @@ export function decodeWaves(w: unknown): WaveState | null {
     at: at as number,
     left: left as number,
     size: size as number,
-    tier: tier as number,
+    downs: downs as number,
   };
 }

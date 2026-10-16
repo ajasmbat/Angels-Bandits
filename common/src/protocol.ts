@@ -7,11 +7,11 @@
 import type { WireAaBurst } from "./aa";
 import type { WireRacks } from "./bombs";
 import type {
-  BossDown,
-  WireBossRaid,
-  WireBossState,
+  ShipDown,
   WireFlak,
+  WireFleetState,
   WireLaunch,
+  WireShip,
 } from "./boss";
 import type { WireChaosState, WireQuake } from "./chaos";
 import type { WireCaveIn } from "./city/caveins";
@@ -229,15 +229,16 @@ export interface AwayMsg {
 }
 
 /**
- * S4: a shooter-side hit claim on the sky boss's weak point `wp` (an index
- * into common/src/boss.ts BOSS_WEAK_POINTS). Unlike a plane, the boss's pose
- * is the server's own, so the claim carries the round's whole line — the
- * muzzle `bulletOrigin`, the unit `dir` it flew and the server-clock time
- * `t` it met the weak point (the render time) — and the server re-runs the
- * ray against the armour itself (bossHitValid).
+ * Z1: a shooter-side hit claim on airship `ship` — on its weak point `wp`
+ * (an index into common/src/boss.ts BOSS_WEAK_POINTS), or on its hull
+ * (`wp` −1). Unlike a plane, a ship's pose is the server's own, so the claim
+ * carries the round's whole line — the muzzle `bulletOrigin`, the unit `dir`
+ * it flew and the server-clock time `t` it met the ship (the render time) —
+ * and the server re-runs the ray against the hull itself (shipHitValid).
  */
 export interface BossHitMsg {
   type: "bossHit";
+  ship: number;
   wp: number;
   seq: number;
   bulletOrigin: Vec3;
@@ -344,11 +345,14 @@ export interface WelcomeMsg {
    * and sees the same dust. Applied rebuilds need nothing here: `destroyed`
    * and `collapses` already leave them out. */
   director?: WireDirectorEvent[];
-  /** S4: the room's sky boss — the raid (in the air, falling or long gone),
-   * every weak point's HP and its break-up once it went down. Explicitly
-   * null when the room has none, so a resume into another room clears the
-   * old room's boss. */
-  boss?: WireBossState | null;
+  /** Z1: the room's airship fleet — every ship flying, falling or just
+   * landed, each one's HP and crash, and the launches on their rigs.
+   * Explicitly null when the room has none, so a resume into another room
+   * clears the old room's fleet. */
+  fleet?: WireFleetState | null;
+  /** Z1: the server's fleet model (boss.ts FLEET_MODEL). A client built for
+   * another one reloads: its lanes and hulls are not the server's. */
+  fm?: number;
   /** C2: the room's quakes still to come or shaking, and the burning
    * chunks — so a late joiner sees and hears the same chaos. Meteors ride
    * `missiles`. Absent: none (and a resume clears what it held). */
@@ -731,51 +735,53 @@ export interface LabStatsMsg {
 }
 
 /**
- * S4: a sky-boss raid begins (common/src/boss.ts). Everything about the
- * zeppelin's flight is a pure function of this and the synced clock; its
- * weak points start at full HP.
+ * Z1: an airship comes on (a new one, or one refilling a downed ship's
+ * lane — common/src/boss.ts FleetShip). Everything about its flight is a
+ * pure function of this and the synced clock; it starts at full HP.
  */
-export interface BossMsg {
-  type: "boss";
-  r: WireBossRaid;
+export interface ShipMsg {
+  type: "ship";
+  s: WireShip;
 }
 
-/** S4: the boss's weak points' HP after this tick's hits (one per tick at
- * most, only when something changed). `id` is the raid's. */
-export interface BossHpMsg {
-  type: "bossHp";
-  id: number;
-  hp: number[];
+/** Z1: the HP of every ship this tick's hits changed, [id, hp] (one per
+ * tick at most, only when something changed). */
+export interface ShipHpMsg {
+  type: "shipHp";
+  hp: [id: number, hp: number][];
 }
 
-/** S9: the boss carrier launches a bot (common/src/boss.ts BossLaunch):
- * the plane hangs on its rig from `t0` and is released — `bot` respawns —
- * at launchReleaseAt. Everything between is a pure function of the clock. */
+/** S9: an airship launches a bot (common/src/boss.ts BossLaunch): the
+ * plane hangs on its rig from `t0` and is released — `bot` respawns — at
+ * launchReleaseAt. Everything between is a pure function of the clock. */
 export interface BossLaunchMsg {
   type: "bossLaunch";
   l: WireLaunch;
   bot: string;
 }
 
-/** S4: the shells the boss's turrets fired this tick (boss.ts BossFlak):
- * each flies from its turret's muzzle at its firing to its burst point. */
+/** S4: the shells the fleet's turrets fired this tick (boss.ts BossFlak):
+ * each flies from its muzzle at its firing to its burst point. */
 export interface FlakMsg {
   type: "flak";
   f: WireFlak[];
 }
 
 /**
- * S4: the boss is down. `d` is its break-up — three sections on the D4 wreck
- * path to impacts the server already swept; `dealers` every pilot who hurt
- * it with their share in thousandths, most first; `top` the pilot who dealt
- * the most (null: nobody — it can only come down to damage, so never in
- * practice). The credited dealers' kills ride the `score` after it.
+ * Z1: airship `id` is shot down. `d` is its crash — the hull falling
+ * nose-down on the D4 wreck path to an impact the server already swept;
+ * `dealers` every pilot who hurt it with their share in thousandths, most
+ * first; `top` the pilot who dealt the most. `downs` is the room's ships
+ * downed this session, this one included (the HUD's counter). The credited
+ * dealers' kills ride the `score` after it.
  */
-export interface BossDownMsg {
-  type: "bossDown";
-  d: BossDown;
+export interface ShipDownMsg {
+  type: "shipDown";
+  id: number;
+  d: ShipDown;
   dealers: [id: string, permille: number][];
   top: string | null;
+  downs: number;
 }
 
 /**
@@ -871,11 +877,11 @@ export type ServerMsg =
   | FiresMsg
   | DirectorWarnMsg
   | RebuildMsg
-  | BossMsg
-  | BossHpMsg
+  | ShipMsg
+  | ShipHpMsg
   | FlakMsg
   | BossLaunchMsg
-  | BossDownMsg
+  | ShipDownMsg
   | ChunksMsg
   | CollapseMsg
   | LabStatsMsg

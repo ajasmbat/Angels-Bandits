@@ -13,11 +13,7 @@
 // a fixed alias derived from their id (`VIPER-27`). The HUD kill feed keeps
 // real names; it renders them inert and only to the local player.
 
-import {
-  type BossSlot,
-  bossPresent,
-  piecesFalling,
-} from "@angels-bandits/common/boss";
+import { type FleetSlot, shipFalling } from "@angels-bandits/common/boss";
 import {
   CONSTRUCTION_BLOCKS,
   LANDMARK_BLOCKS,
@@ -196,13 +192,14 @@ const AA_LEADS = [
   "FLAK FROM THE ROOFS DROPS",
 ];
 
-/** S4: brought down by the sky boss's flak (environment, like a missile). */
-const FLAK_LEADS = ["FLAK CATCHES", "FLAK BRINGS DOWN", "ZEPPELIN GUNS DOWN"];
-/** S4: the zeppelin falls — the top dealer's headline. */
+/** S4/Z1: brought down by an airship's flak (environment, like a
+ * missile). */
+const FLAK_LEADS = ["FLAK CATCHES", "FLAK BRINGS DOWN", "AIRSHIP GUNS DOWN"];
+/** Z1: an airship falls — the top dealer's headline. */
 const BOSS_VERBS = [
-  "BRINGS DOWN THE WAR ZEPPELIN",
-  "SENDS THE ZEPPELIN DOWN IN FLAMES",
-  "BURSTS THE WAR ZEPPELIN",
+  "BRINGS AN AIRSHIP DOWN",
+  "SENDS AN AIRSHIP DOWN IN FLAMES",
+  "BURSTS A WAR AIRSHIP",
 ];
 
 const pick = (list: readonly string[], seed: number): string =>
@@ -309,54 +306,51 @@ export function replaySubject(death: HeadlineDeath): ReplaySubject {
   return { id: death.killerId, caption: "LAST KILL" };
 }
 
-/** A banner the screens carry above everything else: the storm, and (S4)
- * a sky-boss raid. D5 (destruction) will add its own kind. */
+/** A banner the screens carry above everything else: the storm, and (Z1)
+ * an airship coming down. D5 (destruction) will add its own kind. */
 export interface MatchWarning {
   kind: "storm" | "boss";
   text: string;
 }
 
-/** The raid banners (fixed objects, compared by identity like the storm's). */
-export const BOSS_OVERHEAD: MatchWarning = {
-  kind: "boss",
-  text: "AIR RAID — WAR ZEPPELIN OVER THE CITY",
-};
+/** Z1: the falling banner (a fixed object, compared by identity like the
+ * storm's). The fleet is always up, so it gets no banner of its own. */
 export const BOSS_FALLING: MatchWarning = {
   kind: "boss",
-  text: "ZEPPELIN GOING DOWN — CLEAR THE AREA",
+  text: "AIRSHIP DOWN — CLEAR THE AREA",
 };
 
-/** S4: the raid banner at render time `t` (null: no raid on). A raid
- * outranks the weather on the screens. */
+/** Z1: the banner at render time `t` — an airship coming down (null: none
+ * falling). It outranks the weather on the screens. */
 export function bossWarning(
-  slot: BossSlot,
+  slot: FleetSlot,
   t: number | null,
 ): MatchWarning | null {
   if (t === null) return null;
-  if (bossPresent(slot, t)) return BOSS_OVERHEAD;
-  return piecesFalling(slot, t) ? BOSS_FALLING : null;
+  for (const s of slot.ships) if (shipFalling(s, t)) return BOSS_FALLING;
+  return null;
 }
 
-/** S4: the screens' headline and feed line when the zeppelin goes down —
- * credited to the top dealer (`label`ed like every pilot), placed where its
- * middle section was. The same on every client. */
+/** Z1: the screens' headline and feed line when an airship goes down —
+ * credited to the top dealer (`label`ed like every pilot), placed where it
+ * came down. The same on every client. */
 export function bossHeadline(
   top: string | null,
   label: (id: string) => string,
-  raidId: number,
+  shipId: number,
   x: number,
   z: number,
 ): { headline: string; feed: string } {
   const place = placePhrase(Math.round(x), Math.round(z));
   if (top === null) {
-    const line = "THE WAR ZEPPELIN GOES DOWN";
-    return { headline: place ? `${line} ${place}` : line, feed: "💥 ZEPPELIN" };
+    const line = "AIRSHIP DOWN";
+    return { headline: place ? `${line} ${place}` : line, feed: "💥 AIRSHIP" };
   }
   const who = label(top);
-  const line = `${who} ${pick(BOSS_VERBS, hash(`${top}|${raidId}`))}`;
+  const line = `${who} ${pick(BOSS_VERBS, hash(`${top}|${shipId}`))}`;
   return {
     headline: place ? `${line} ${place}` : line,
-    feed: `${who} ▸ ZEPPELIN`,
+    feed: `${who} ▸ AIRSHIP`,
   };
 }
 

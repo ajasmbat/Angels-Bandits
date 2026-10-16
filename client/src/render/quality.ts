@@ -187,10 +187,12 @@ export interface QualityProfile {
   /** S7 kill-streak smoke: share of its puff emission rate (the trail
    * thins, never shortens). Cosmetic — the streak is on the scoreboard too. */
   streakSmoke: number;
-  /** S4 sky boss: share of the particle dressing — the flak bursts' flames
-   * and smoke, and the falling sections' fire trails and landing fires. The
-   * zeppelin (solid), its weak points, running lights and the flak shells
-   * themselves (the telegraph) are identical on every tier. */
+  /** S4/Z1 airship fleet: share of the particle dressing — the flak bursts'
+   * flames and smoke, a hurt ship's smoking engines, and the crashes' fire
+   * trails and landing fires. The ships (solid — and every one of them, on
+   * every tier: the fleet's size is never scaled), their weak points,
+   * running lights and the flak shells themselves (the telegraph) are
+   * identical on every tier. */
   bossFx: number;
   /** C2 constant chaos: share of the cosmetic dressing — a meteor's fire
    * trail and the spreading fires' flames and smoke (all into the D1
@@ -899,23 +901,24 @@ export const FEATURE_TIERS: readonly {
     note: "S8: DOM toasts and voice lines on events; no draw",
   },
   {
-    feature: "S4 sky boss — the zeppelin, weak points, lights, flak shells",
+    feature: "S4 airship fleet — every ship, weak points, lights, flak shells",
     high: "full",
     medium: "full",
     low: "full",
     mobile: "full",
-    note: "solid (crash check, camera arm, bots) and the flak's telegraph: two instanced draws + two Points on every tier",
+    note: "Z1: solid (crash check, camera arm, bots) and the flak's telegraph: the whole fleet in two instanced hull draws (near / far detail) + two Points on every tier — never fewer ships",
   },
   {
-    feature: "S4 sky boss — flak bursts, falling-section fire and smoke",
+    feature:
+      "S4 airship fleet — flak bursts, smoking engines, crash fire and smoke",
     high: "full",
     medium: "reduced",
     low: "reduced",
     mobile: "reduced",
-    note: "emission 100 / 75 / 50 / 35 % into the D1 particle pool (no extra draw); the bursts' damage and the sections themselves are the same everywhere",
+    note: "emission 100 / 75 / 50 / 35 % into the D1 particle pool (no extra draw); the bursts' damage and the crashing hulls themselves are the same everywhere",
   },
   {
-    feature: "S4 boss HUD — weak-point bar, radio calls, warning screens",
+    feature: "S4 fleet HUD — fleet counter, radio calls, warning screens",
     high: "full",
     medium: "full",
     low: "full",
@@ -924,12 +927,12 @@ export const FEATURE_TIERS: readonly {
   },
   {
     feature:
-      "Stormlit L6 — carrier searchlights and their roof pools, escort scouts, wingtip halos, landing lights",
+      "Stormlit L6 — airship searchlights and their roof pools, wingtip halos, landing lights",
     high: "full",
     medium: "full",
     low: "full",
     mobile: "full",
-    note: "no draw of their own: the beams are instances in the searchlight mesh, the pools in the mover light cloud, the scouts bones of the carrier's skinned draw (cosmetic, solid to nothing), the halos and landing beam points in the plane-lights cloud — the same everywhere (the carrier's searchlights are part of how you find it)",
+    note: "no draw of their own: the beams are instances in the searchlight mesh (Z1: two lamps on each of the three airships nearest the camera), the pools in the mover light cloud, the halos and landing beam points in the plane-lights cloud — the same everywhere (the searchlights are part of how you find a ship)",
   },
   {
     feature: "C2 chaos — meteors, bombs, quake shake",

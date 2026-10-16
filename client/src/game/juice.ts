@@ -31,8 +31,9 @@ export type JuiceKind =
 
 /** A combo a kill chain earns. */
 export type ComboKind = "double" | "triple" | "multi";
-/** A carrier-war moment: a W2 enemy shot down on its bomb run, the carrier down,
- * a W3 AA nest finishing a plane we hit, a wave cleared. */
+/** A war moment: a W2 enemy shot down on its bomb run, an airship down (Z1:
+ * kind "carrier", the pilot who dealt it the most damage — or any share of
+ * it), a W3 AA nest finishing a plane we hit, a wave cleared. */
 export type MomentKind = "bombrun" | "carrier" | "aa" | "wave";
 
 /** Style points each beat is worth (the popup's number — cosmetic, never
@@ -43,7 +44,7 @@ export const STYLE_POINTS: Readonly<Record<JuiceKind, number>> = {
   triple: 500,
   multi: 750,
   bombrun: 300,
-  carrier: 2500,
+  carrier: 600,
   aa: 150,
   wave: 750,
 };
@@ -54,7 +55,7 @@ export const JUICE_LABEL: Readonly<Record<Exclude<JuiceKind, "kill">, string>> =
     triple: "TRIPLE KILL",
     multi: "MULTI KILL",
     bombrun: "BOMB RUN STOPPED!",
-    carrier: "CARRIER DOWN!",
+    carrier: "AIRSHIP DOWN!",
     aa: "AA ASSIST",
     wave: "WAVE CLEARED",
   };
@@ -81,14 +82,10 @@ export function killPoints(chain: number | undefined): number {
   return STYLE_POINTS.kill + STYLE_POINTS[combo] * n;
 }
 
-/** Beats that earn the slow-mo: multi-kills and the carrier kill. */
+/** Beats that earn the slow-mo: multi-kills (Z1: an airship is downed too
+ * often for one — its fireball is the beat). */
 export function slowMoFor(kind: JuiceKind): boolean {
-  return (
-    kind === "double" ||
-    kind === "triple" ||
-    kind === "multi" ||
-    kind === "carrier"
-  );
+  return kind === "double" || kind === "triple" || kind === "multi";
 }
 
 // --- Slow-mo: the FX clock ---------------------------------------------------
@@ -183,11 +180,11 @@ export class FxClock {
 
 // --- Camera cues ---------------------------------------------------------------
 
-/** The carrier break-up cam, and the nudge toward an own kill's wreck. */
+/** The airship-down cam, and the nudge toward an own kill's wreck. */
 export type CueKind = "breakup" | "nudge";
 
-/** The break-up cam's length and how far it turns the view (0..1 of the
- * way onto the falling carrier). */
+/** The down cam's length and how far it turns the view (0..1 of the way
+ * onto the falling airship). */
 export const BREAKUP_CAM_MS = 2600;
 export const BREAKUP_CAM_PEAK = 0.85;
 /** The wreck-spiral nudge: short and slight — a glance, not a takeover. */

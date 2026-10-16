@@ -287,7 +287,7 @@ export class LabPanel {
     play.append(rr);
     for (const [name, label] of [
       ["waves", "Enemy waves"],
-      ["chaos", "Chaos (boss, missiles, quakes)"],
+      ["chaos", "Chaos (airships, missiles, quakes)"],
     ] as const) {
       const lab = el("label", "lab-check");
       const box = el("input");

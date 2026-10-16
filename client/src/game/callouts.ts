@@ -179,8 +179,8 @@ export function comboCallout(combo: ComboKind): Callout {
   };
 }
 
-/** J1: a carrier-war moment the local pilot earned (W2's bomb run, the
- * carrier, W3's AA assist, a wave cleared). */
+/** J1: a war moment the local pilot earned (W2's bomb run, Z1: an airship
+ * downed, W3's AA assist, a wave cleared). */
 const MOMENT_VOICE: Readonly<Record<MomentKind, string>> = {
   bombrun: PHRASE.bombRunStopped,
   carrier: PHRASE.carrierDown,
@@ -189,7 +189,7 @@ const MOMENT_VOICE: Readonly<Record<MomentKind, string>> = {
 };
 const MOMENT_TICKER: Readonly<Record<MomentKind, string>> = {
   bombrun: "bomb run stopped — nice work",
-  carrier: "CARRIER DOWN! CARRIER DOWN!",
+  carrier: "AIRSHIP DOWN! AIRSHIP DOWN!",
   aa: "triple-A assist — good shooting, ground crew",
   wave: "wave cleared — regroup",
 };
@@ -322,15 +322,31 @@ export function incomingCallout(): Callout {
 /** S4: one "flak" per this long — a turret volley is one call. */
 const FLAK_COOLDOWN_MS = 15_000;
 
-/** S4: a sky-boss raid begins — the whole room hears it once. */
-export function bossInboundCallout(): Callout {
+/** Z1: the fleet comes over the room — the whole room hears it once. */
+export function fleetOverheadCallout(): Callout {
   return {
     kind: "threat",
-    key: "boss",
+    key: "fleet",
     cooldownMs: 0,
     expiresMs: 12_000,
-    voice: PHRASE.bossInbound,
-    ticker: "Enemy war zeppelin inbound — hit the engines and gas cells",
+    voice: PHRASE.fleetOverhead,
+    ticker: "Enemy airships over the city — hit the engines and gas cells",
+    speaker: "CONTROL",
+  };
+}
+
+/** Z1: one "new airship" call per this long — the fleet refills often. */
+const SHIP_INBOUND_COOLDOWN_MS = 45_000;
+
+/** Z1: a fresh airship drifts in to fill a downed one's place. */
+export function shipInboundCallout(): Callout {
+  return {
+    kind: "threat",
+    key: "shipin",
+    cooldownMs: SHIP_INBOUND_COOLDOWN_MS,
+    expiresMs: 5_000,
+    voice: PHRASE.shipInbound,
+    ticker: "Fresh airship inbound out of the haze",
     speaker: "CONTROL",
   };
 }
@@ -349,11 +365,11 @@ export function flakCallout(): Callout {
   };
 }
 
-/** S9: one carrier-launch call per this long — a raid launches a bot every
- * few seconds; the radio names it, it does not narrate each one. */
+/** S9: one launch call per this long — the fleet launches a bot every few
+ * seconds; the radio names it, it does not narrate each one. */
 const CARRIER_LAUNCH_COOLDOWN_MS = 20_000;
 
-/** S9: bandits launching off the boss carrier. */
+/** S9/Z1: bandits launching off the airships. */
 export function carrierLaunchCallout(): Callout {
   return {
     kind: "threat",
@@ -361,22 +377,23 @@ export function carrierLaunchCallout(): Callout {
     cooldownMs: CARRIER_LAUNCH_COOLDOWN_MS,
     expiresMs: 4_000,
     voice: PHRASE.carrierLaunch,
-    ticker: "BANDITS LAUNCHING FROM THE CARRIER",
+    ticker: "BANDITS LAUNCHING FROM THE AIRSHIPS",
     speaker: "CONTROL",
   };
 }
 
-/** S4: the zeppelin is down (`own`: we dealt the most), or it got away. */
-export function bossEndCallout(down: boolean): Callout {
+/** Z1: one "airship going down" call per this long — they go down often. */
+const SHIP_DOWN_COOLDOWN_MS = 12_000;
+
+/** Z1: an airship is going down near the action. */
+export function shipDownCallout(): Callout {
   return {
     kind: "kill",
-    key: "bossend",
-    cooldownMs: 0,
-    expiresMs: 10_000,
-    voice: down ? PHRASE.bossDown : PHRASE.bossEscaped,
-    ticker: down
-      ? "The zeppelin is going down — clear the area"
-      : "The zeppelin is pulling out — it got away",
+    key: "shipdown",
+    cooldownMs: SHIP_DOWN_COOLDOWN_MS,
+    expiresMs: 6_000,
+    voice: PHRASE.shipDown,
+    ticker: "Airship going down — clear the area",
     speaker: "CONTROL",
   };
 }

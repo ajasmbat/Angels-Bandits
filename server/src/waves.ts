@@ -1,19 +1,21 @@
 // W1 Carrier War, server side: one RoomWaves per room. Every enemy plane is
-// launched by the room's war-zeppelin carrier (S9's belly trapeze and
-// dorsal catapult) as part of a WAVE, and hunts the humans. There are no
-// free-roaming bots any more. index.ts and the tests drive exactly this, so
-// what the tests check is what the live server does.
+// launched by one of the room's airships (Z1: S9's belly trapeze on every
+// ship, the dorsal catapult on the carriers — whichever ship is near a
+// human) as part of a WAVE, and hunts the humans. There are no free-roaming
+// bots any more. index.ts and the tests drive exactly this, so what the
+// tests check is what the live server does.
 //
 // An enemy's life:
-//  - LAUNCH: while the carrier is on station a wave asks for planes; each
-//    one is planned on a free rig for the id the next RoomBots spawn will
-//    mint (BossDirector.planLaunch, its release run cleared by
+//  - LAUNCH: while the fleet is up a wave asks for planes; each one is
+//    planned on a free rig of a ship near a human for the id the next
+//    RoomBots spawn will mint (FleetDirector.planLaunch, its release run
+//    cleared by
 //    RoomBots.launchClear), then spawned DEAD on the rig: in Combat with
 //    its respawn due at the release (Combat.addAwaiting), in the roster,
 //    and announced (`playerJoined`, `bossLaunch`);
 //  - RELEASE: index.ts's respawn pass hands the due id to release(), which
 //    flies it off the rig (S9's launch pose, stick-neutral grace) — or, when
-//    its carrier is gone, despawns it;
+//    its ship went down first, despawns it;
 //  - HUNT: the brain's contacts are the flying humans only (humanContacts)
 //    and each enemy hunts its quarry (assignQuarries: nearest, spread);
 //  - DOWN: any death the room settles is reported here (downed) — the
@@ -22,20 +24,19 @@
 //    or relaunches a downed enemy.
 //
 // A wave: WAVE_BREATHER (the banner) → WAVE_LIVE (launching, then fighting)
-// → over when every plane of it is down → the next wave's breather. The
-// carrier going down scuttles every enemy it launched (no credit, no wreck)
-// and the war waits for the next carrier, one tier up. The last human out
-// (reset) or the war switched off (a lab, AB_WAVES=0) despawns everything.
+// → over when every plane of it is down → the next wave's breather. Z1: a
+// ship going down takes the planes still on its rigs with it; the ones it
+// already launched fight on. The last human out (reset) or the war switched
+// off (a lab, AB_WAVES=0) despawns everything.
 
 import {
   type BossLaunch,
-  type BossRaid,
+  type FleetShip,
   LAUNCH_GRACE_MS,
   LAUNCH_SEQ_MS,
   encodeLaunch,
   launchReleaseAt,
   launchSpawnAt,
-  raidTier,
 } from "@angels-bandits/common/boss";
 import { mulberry32 } from "@angels-bandits/common/city";
 import type {
@@ -59,7 +60,7 @@ import {
   waveGrade,
 } from "@angels-bandits/common/waves";
 import type { Vec3 } from "@angels-bandits/common/world";
-import type { BossDirector } from "./boss";
+import type { FleetDirector } from "./boss";
 import type { BotContact, RoomBots } from "./bots";
 import type { Combat, Death } from "./combat";
 
@@ -67,7 +68,7 @@ import type { Combat, Death } from "./combat";
  * build on (enemy bombs, rooftop AA, juice). */
 export interface EnemyPlane {
   id: string;
-  /** The raid id of the carrier that launched it. */
+  /** The id of the airship that launched it. */
   carrier: number;
   /** Its wave, 1-based. */
   wave: number;
@@ -109,7 +110,7 @@ export interface WaveHuman {
   hp: number;
 }
 
-/** Launches a tick may plan, at most (two rigs). */
+/** Launches a tick may plan, at most. */
 const LAUNCHES_PER_TICK = 2;
 /** A launch is planned to release this long after it is planned, ms (the
  * longer of the two rigs' sequences, so either rig can take it). */
@@ -149,7 +150,7 @@ export class RoomWaves {
   constructor(
     seed: number,
     private readonly bots: RoomBots,
-    private readonly boss: BossDirector,
+    private readonly boss: FleetDirector,
     private readonly combat: Combat,
     private readonly host: WaveHost,
   ) {
@@ -172,14 +173,13 @@ export class RoomWaves {
 
   /** The HUD's view of the war. */
   state(): WaveState {
-    const tier = this.boss.slot.raid ? raidTier(this.boss.slot.raid) : 0;
     return {
       wave: this.wave,
       phase: this.phase,
       at: this.phaseAt,
       left: this.left(),
       size: this.size,
-      tier,
+      downs: this.boss.downs(),
     };
   }
 
@@ -202,50 +202,39 @@ export class RoomWaves {
       this.reset(now);
       return;
     }
-    const raid = this.boss.activeRaid(now);
-    // A carrier on station: its first wave after a beat. A breather with no
-    // carrier left (it flew off) waits for the next one.
-    if (this.phase === WAVE_IDLE && raid) {
+    const up = this.boss.anyUp(now);
+    // The fleet over the room: its first wave after a beat. A breather with
+    // no ship left waits for the refills.
+    if (this.phase === WAVE_IDLE && up) {
       this.beginBreather(now + WAVE_FIRST_DELAY_MS);
-    } else if (this.phase === WAVE_BREATHER && !raid) {
+    } else if (this.phase === WAVE_BREATHER && !up) {
       this.idle(now);
     }
     if (this.phase === WAVE_BREATHER && now >= this.phaseAt) {
-      if (raid && humans.length > 0) this.beginWave(now);
+      if (up && humans.length > 0) this.beginWave(now);
     }
     if (this.phase === WAVE_LIVE) {
-      if (raid && humans.length > 0) this.launch(now, raid);
-      // The carrier flew off still owing planes: the wave is what is up.
-      if (!raid) this.toLaunch = 0;
+      if (up && humans.length > 0) this.launch(now, humans);
       if (this.left() === 0) {
         this.lastSize = this.size;
-        if (raid) this.beginBreather(now + WAVE_BREATHER_MS);
-        else this.idle(now);
+        this.beginBreather(now + WAVE_BREATHER_MS);
       }
     }
     this.hunt(humans);
     this.broadcast();
   }
 
-  /** The carrier went down: every enemy it launched goes with it — the
-   * ones in the air scuttled (no credit, no wreck), the ones still on a
-   * rig gone at once — and the war waits for the next carrier. */
-  carrierDown(raid: BossRaid, now: number): void {
+  /** Z1: airship `ship` went down: the planes still on its rigs go with it
+   * (gone at once — they never flew; the live wave launches them again
+   * from another ship), and the ones it launched fight on. The fleet
+   * counter rides the broadcast. */
+  shipDown(ship: FleetShip): void {
     for (const e of [...this.enemyById.values()]) {
-      if (e.carrier !== raid.id || e.down) continue;
-      if (!this.combat.isAlive(e.id)) {
-        this.despawn(e.id);
-        continue;
-      }
-      const death = this.combat.scuttle(e.id, now);
-      if (death) {
-        this.bots.setDead(e.id);
-        this.host.death(death, now);
-      }
+      if (e.carrier !== ship.id || e.down) continue;
+      if (this.combat.isAlive(e.id)) continue;
+      if (this.phase === WAVE_LIVE && e.wave === this.wave) this.toLaunch++;
+      this.despawn(e.id);
     }
-    if (this.phase === WAVE_LIVE) this.lastSize = this.size;
-    this.toLaunch = 0;
-    this.idle(now);
     this.broadcast();
   }
 
@@ -267,14 +256,12 @@ export class RoomWaves {
     const e = this.enemyById.get(id);
     if (!e) return undefined;
     const launch = this.boss.launchOf(id);
-    const raid = this.boss.slot.raid;
     if (launch && !e.down) {
+      const ship = this.boss.activeShip(launch.ship, now);
       const at = launchReleaseAt(launch);
-      if (now < at && this.boss.activeRaid(now)) return "wait";
+      if (now < at && ship) return "wait";
       this.boss.released(id);
-      if (raid?.id === launch.raid && this.boss.activeRaid(now)) {
-        return this.fly(id, raid, launch, now);
-      }
+      if (ship) return this.fly(id, ship, launch, now);
     }
     this.despawn(id);
     return null;
@@ -294,11 +281,11 @@ export class RoomWaves {
 
   private fly(
     id: string,
-    raid: BossRaid,
+    ship: FleetShip,
     l: BossLaunch,
     now: number,
   ): SpawnState {
-    const sp = launchSpawnAt(raid, l);
+    const sp = launchSpawnAt(ship, l);
     const spawn = { pos: sp.pos, yaw: sp.yaw, speed: sp.speed };
     this.combat.respawned(id, now);
     this.bots.respawn(id, spawn, {
@@ -331,22 +318,32 @@ export class RoomWaves {
     this.size = 0;
   }
 
-  /** Plan this tick's launches: up to LAUNCHES_PER_TICK, one per free rig,
-   * each cleared; a refusal waits for the next tick. */
-  private launch(now: number, raid: BossRaid): void {
+  /** Plan this tick's launches: up to LAUNCHES_PER_TICK, each on a free
+   * rig of a ship near a human, each cleared; a refusal waits for the next
+   * tick. */
+  private launch(now: number, humans: readonly WaveHuman[]): void {
+    const near = humans.map((h) => h.pos);
     for (let n = 0; n < LAUNCHES_PER_TICK && this.toLaunch > 0; n++) {
       const id = this.bots.nextId();
-      const l = this.boss.planLaunch(id, now + LAUNCH_LEAD_MS, now, (r, l) => {
-        const sp = launchSpawnAt(r, l);
-        return this.bots.launchClear(
-          { pos: sp.pos, yaw: sp.yaw, speed: sp.speed },
-          sp.pitch,
-          LAUNCH_GRACE_MS[l.kind] as number,
-          launchReleaseAt(l),
-        );
-      });
+      const l = this.boss.planLaunch(
+        id,
+        now + LAUNCH_LEAD_MS,
+        now,
+        near,
+        (ship, l) => {
+          const sp = launchSpawnAt(ship, l);
+          return this.bots.launchClear(
+            { pos: sp.pos, yaw: sp.yaw, speed: sp.speed },
+            sp.pitch,
+            LAUNCH_GRACE_MS[l.kind] as number,
+            launchReleaseAt(l),
+          );
+        },
+      );
       if (!l) return;
-      const sp = launchSpawnAt(raid, l);
+      const ship = this.boss.activeShip(l.ship, now);
+      if (!ship) return;
+      const sp = launchSpawnAt(ship, l);
       const entry = this.bots.spawn({
         pos: sp.pos,
         yaw: sp.yaw,
@@ -358,7 +355,7 @@ export class RoomWaves {
       this.combat.addAwaiting(entry.id, launchReleaseAt(l));
       this.enemyById.set(entry.id, {
         id: entry.id,
-        carrier: raid.id,
+        carrier: ship.id,
         wave: this.wave,
         launchedAt: now,
         down: false,

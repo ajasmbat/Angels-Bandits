@@ -1129,6 +1129,55 @@ export function buildBossHull(
   return acc.build();
 }
 /**
+ * Z1: the base hull the instanced fleet draws (client/src/render/boss.ts):
+ * buildBossHull without the escort scouts (no ship of the fleet flies
+ * them), its skeleton turned into a plain per-vertex `aBone` attribute (the
+ * vertex shader spins the props and works the launch rigs off it), no skin.
+ * `tag`, `bone` and `pennant` are filtered the same way, so the draw ==
+ * collide test reads exactly what is drawn. Every class is this geometry
+ * scaled by its instance matrix (common/src/boss.ts SHIP_CLASSES).
+ */
+export function buildShipHull(
+  detail: HullDetail,
+  plane: PlaneGeo | null = null,
+): BossHullGeometry {
+  const h = buildBossHull(detail, plane);
+  const src = h.geometry;
+  const keep: number[] = [];
+  for (let v = 0; v < h.tag.length; v += 3) {
+    if (h.tag[v] !== TAG_ESCORT) keep.push(v, v + 1, v + 2);
+  }
+  const g = new THREE.BufferGeometry();
+  for (const name of ["position", "normal", "color", "uv", "aMat", "aWeak"]) {
+    const a = src.getAttribute(name) as THREE.BufferAttribute;
+    const out = new Float32Array(keep.length * a.itemSize);
+    keep.forEach((v, i) => {
+      for (let c = 0; c < a.itemSize; c++) {
+        out[i * a.itemSize + c] = a.array[v * a.itemSize + c] as number;
+      }
+    });
+    g.setAttribute(name, new THREE.BufferAttribute(out, a.itemSize));
+  }
+  g.setAttribute(
+    "aBone",
+    new THREE.BufferAttribute(
+      Float32Array.from(keep, (v) => h.bone[v] as number),
+      1,
+    ),
+  );
+  // Placed per instance on the torus image nearest the camera: a bound
+  // from the rest pose means nothing.
+  g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e7);
+  src.dispose();
+  return {
+    geometry: g,
+    tag: Uint8Array.from(keep, (v) => h.tag[v] as number),
+    bone: Uint8Array.from(keep, (v) => h.bone[v] as number),
+    pennant: Uint8Array.from(keep, (v) => h.pennant[v] as number),
+  };
+}
+
+/**
  * L6: one escort scout — a small dieselpunk drone, nose +X, ~7 m span: a
  * flattened teardrop body with a glazed dome, stub wings out to two engine
  * pods, a tail fin and the spotlight housing under the nose. Cosmetic

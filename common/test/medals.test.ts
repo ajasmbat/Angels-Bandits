@@ -184,7 +184,7 @@ describe("medals", () => {
     expect(award.medals).toEqual([]);
   });
 
-  it("SKY-BOSS SLAYER is the S4 flag", () => {
+  it("AIRSHIP BREAKER is the Z1 flag", () => {
     expect(kill(new MedalLedger(), { boss: true }).medals).toEqual(["boss"]);
   });
 

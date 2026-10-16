@@ -1,14 +1,13 @@
 // W1 Carrier War, the pure half (common/src/waves.ts): wave sizes start at
 // three and grow by one or two up to a cap inside the perf budget, the
-// first waves are the softest, the carrier's tiers climb, enemies spread
-// over the humans they hunt, and the HUD's state survives the wire.
+// first waves are the softest, enemies spread over the humans they hunt,
+// and the HUD's state survives the wire.
 
 import { mulberry32 } from "@angels-bandits/common/city";
 import {
   ENEMY_CAP,
   INTENSITY_DEFAULT,
   type Intensity,
-  NEXT_CARRIER_MS,
   QUARRY_SPREAD_M,
   WAVE_BREATHER_MS,
   WAVE_LEVELS,
@@ -16,8 +15,6 @@ import {
   WAVE_RAMP,
   asIntensity,
   assignQuarries,
-  carrierFlakScale,
-  carrierHpScale,
   decodeWaves,
   encodeWaves,
   nextWaveSize,
@@ -85,10 +82,9 @@ describe("wave cadence and caps", () => {
     expect(rand()).toBe(twin());
   });
 
-  it("breathes ~8 s between waves; the next carrier comes 20 s after the last", () => {
+  it("breathes ~8 s between waves", () => {
     expect(WAVE_BREATHER_MS).toBeGreaterThanOrEqual(6000);
     expect(WAVE_BREATHER_MS).toBeLessThanOrEqual(10_000);
-    expect(NEXT_CARRIER_MS).toBe(20_000);
   });
 
   it("takes a client's intensity only as a whole level, clamped to EASY–INSANE", () => {
@@ -120,19 +116,6 @@ describe("difficulty ramps gently", () => {
     expect(first.jitter).toBeGreaterThan(1.5);
     expect(first.reaction).toBeGreaterThan(1.2);
     expect(first.fire).toBeLessThanOrEqual(0.5);
-  });
-
-  it("each carrier is tougher and hits harder than the last, to a ceiling", () => {
-    for (let t = 2; t <= 12; t++) {
-      expect(carrierHpScale(t)).toBeGreaterThanOrEqual(carrierHpScale(t - 1));
-      expect(carrierFlakScale(t)).toBeGreaterThanOrEqual(
-        carrierFlakScale(t - 1),
-      );
-    }
-    expect(carrierHpScale(2)).toBeGreaterThan(carrierHpScale(1));
-    expect(carrierHpScale(50)).toBeLessThanOrEqual(1.5);
-    expect(carrierFlakScale(1)).toBeLessThan(1);
-    expect(carrierFlakScale(50)).toBe(1);
   });
 });
 
@@ -185,7 +168,7 @@ describe("the waves state on the wire", () => {
       at: 1_790_000_000_123,
       left: 5,
       size: 6,
-      tier: 2,
+      downs: 2,
     } as const;
     expect(decodeWaves(encodeWaves(s))).toEqual(s);
     expect(decodeWaves([1, 9, 0, 0, 0, 0])).toBeNull();

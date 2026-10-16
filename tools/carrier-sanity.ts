@@ -1,7 +1,8 @@
-// A3 release gate: the Carrier War, played. One scripted NOVICE pilot
-// against the real server, production tunings (no AB_*_FAST: the carrier
-// already comes 4–6 s after the pilot starts flying), on Easy — the pilot's
-// own Easy mode (W4's join flag) and the room's EASY intensity (W1).
+// A3 release gate: the Carrier War, played — Z1: against the airship
+// fleet. One scripted NOVICE pilot against the real server, production
+// tunings (no AB_*_FAST: the fleet comes on the moment the pilot starts
+// flying), on Easy — the pilot's own Easy mode (W4's join flag) and the
+// room's EASY intensity (W1).
 //
 //   node --import tsx tools/carrier-sanity.ts [--runs 3] [--seed 1]
 //        [--out <file.json>] [--timeout 900]
@@ -15,12 +16,12 @@
 //    only with an enemy inside a 12° nose cone within 300 m, and claims a
 //    hit on about one round in four (a seeded roll — novice accuracy);
 //    every claim still has to pass the server's range check;
-//  - once wave 1 is cleared it goes for the carrier the same way, a weak
-//    point at a time — strafing passes at MIN_SPEED, breaking off inside
-//    BREAK_M — claiming (`bossHit`, a line the server re-runs against the
-//    hull) only rounds whose line the pure hull model says meets a live weak
-//    point first: full accuracy there, since what is checked is the carrier
-//    loop, not the novice.
+//  - once wave 1 is cleared it goes for the nearest airship the same way,
+//    at its nearest weak point — strafing passes at MIN_SPEED, breaking off
+//    inside BREAK_M — claiming (`bossHit`, a line the server re-runs
+//    against the hull) only rounds whose line the pure hull model says
+//    meets the ship: full accuracy there, since what is checked is the
+//    fleet loop, not the novice.
 //
 // Clearing wave 1 is the pilot's guns AND the rooftop AA together — the
 // game's design; the report says who downed what.
@@ -36,10 +37,10 @@
 //     roof's stump is lower than the intact roof, and fine) — and at least
 //     SPAWN_CLEAR_M in plan from EVERY spawn point the pilot was given in
 //     the run, at any time;
-//  5. the carrier goes down within CARRIER_DOWN_S of the start, and the
-//     next carrier's raid arrives within NEXT_CARRIER_MS + 10 s of it.
-// After the next carrier the novice flies the war on (orbit and engage)
-// until it has seen MIN_BOMBS bombs or --timeout runs out.
+//  5. an airship goes down within CARRIER_DOWN_S of the start, and a new
+//     one comes on in its lane within its refill (FLEET_TUNING) + 10 s.
+// After the refill the novice flies the war on (orbit and engage) until it
+// has seen MIN_BOMBS bombs or --timeout runs out.
 // A JSON report (per run: the timeline, every bomb, every kill by cause)
 // goes to --out.
 
@@ -47,14 +48,18 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
-  BOSS_ALT,
   BOSS_WEAK_POINTS,
-  type BossRaid,
+  FLEET_ALT_MAX,
+  FLEET_TUNING,
+  type FleetShip,
+  applyFleetState,
   blankPose,
-  bossPoseAt,
-  bossRayHit,
-  decodeRaid,
-  raidMaxHp,
+  decodeShip,
+  fleetPoseAt,
+  isShipDown,
+  shipClass,
+  shipPresent,
+  shipRayHit,
   weakPointInto,
 } from "@angels-bandits/common/boss";
 import {
@@ -88,7 +93,6 @@ import {
   decodeMissile,
 } from "@angels-bandits/common/strike";
 import {
-  NEXT_CARRIER_MS,
   WAVE_BREATHER,
   WAVE_IDLE,
   WAVE_LIVE,
@@ -118,9 +122,9 @@ const TIMEOUT_S = Number(opt("timeout", "900"));
 
 /** Wave 1 cleared within this of going live, s. */
 const WAVE1_CLEAR_S = 240;
-/** The carrier down within this of the pilot's first pose, s. */
+/** An airship down within this of the pilot's first pose, s. */
 const CARRIER_DOWN_S = 600;
-/** The next raid within NEXT_CARRIER_MS + this of the last one going down. */
+/** Its lane flown again within the refill + this of it going down. */
 const NEXT_SLACK_MS = 10_000;
 /** A bomb's impact this close to the surface under it counts as on it, m. */
 const SURFACE_M = 3;
@@ -128,8 +132,8 @@ const SURFACE_M = 3;
  * respawn quiet radius (server/src/strikes.ts respawnClearM), held at all
  * times here rather than only inside its 5 s window. */
 const SPAWN_CLEAR_M = 150;
-/** A run flies on past the next carrier until it has seen this many enemy
- * bombs (Easy's first waves bomb rarely), up to --timeout. */
+/** A run flies on past the refill until it has seen this many enemy bombs
+ * (Easy's first waves bomb rarely), up to --timeout. */
 const MIN_BOMBS = 3;
 
 // --- The novice --------------------------------------------------------------------
@@ -138,15 +142,14 @@ const POSE_HZ = 30;
 const SPEED = 62;
 const TURN_RATE = (45 * Math.PI) / 180;
 const ORBIT = { x: WORLD_SIZE / 2, z: WORLD_SIZE / 2, r: 250, y: 140 };
-/** The novice's own ceiling, m: 115 m over the carrier's cruise (420 m when
- * it flew at 305; H1 lifted it to BOSS_ALT 570) — over its top weak points,
- * far under the storm kill altitude. */
-const TOP_Y = BOSS_ALT + 115;
+/** The novice's own ceiling, m: 80 m over the fleet's top (Z1) — over its
+ * top weak points, far under the storm kill altitude. */
+const TOP_Y = FLEET_ALT_MAX + 80;
 const ENGAGE_M = 700;
 const FIRE_CONE = (12 * Math.PI) / 180;
 const FIRE_M = 300;
 const NOVICE_HIT = 0.25;
-/** The carrier run: extend to this far off the weak point, and break off a
+/** The airship run: extend to this far off the weak point, and break off a
  * pass inside BREAK_M, m. */
 const STANDOFF_M = 250;
 const BREAK_M = 90;
@@ -304,11 +307,11 @@ function fly(url: string, run: number, seed: number): Promise<RunReport> {
   let wave1LiveS: number | null = null;
   let wave1ClearS: number | null = null;
   let deathsInWave1 = 0;
-  let raid: BossRaid | null = null;
-  let raidHp: number[] = [];
-  let firstRaidId: number | null = null;
+  // Z1: the fleet as the pilot holds it.
+  const fleet = { ships: [] as FleetShip[], launches: [] };
+  let fleetHp = new Map<number, number>();
   let carrierDownS: number | null = null;
-  let carrierDownId: number | null = null;
+  let carrierDown: FleetShip | null = null;
   let nextRaidS: number | null = null;
   const bossPose = blankPose();
   let carrierRun = false;
@@ -362,7 +365,8 @@ function fly(url: string, run: number, seed: number): Promise<RunReport> {
 
   const tick = (dt: number) => {
     if (!alive) return;
-    carrierRun = wave1ClearS !== null && raid !== null && carrierDownS === null;
+    carrierRun =
+      wave1ClearS !== null && fleet.ships.length > 0 && carrierDownS === null;
     if (!carrierRun) {
       // Engage the nearest enemy, else orbit the AA anchor.
       let best: [string, Vec3, number] | null = null;
@@ -405,23 +409,27 @@ function fly(url: string, run: number, seed: number): Promise<RunReport> {
         );
       }
     } else {
-      // The carrier run: the live weak point whose line is clearest.
+      // The airship run: the nearest weak point of the nearest ship up.
       const t = serverNow();
-      bossPoseAt(raid, t, bossPose);
-      const live = raidHp.map((h) => h > 0);
+      let ship: FleetShip | null = null;
       let target = -1;
       let targetD = Number.POSITIVE_INFINITY;
-      for (let k = 0; k < BOSS_WEAK_POINTS.length; k++) {
-        if (!live[k]) continue;
-        weakPointInto(bossPose, k, wp);
-        const d = wrapDistance(pos, wp);
-        if (d < targetD) {
-          target = k;
-          targetD = d;
+      for (const s of fleet.ships) {
+        if (!shipPresent(s, t)) continue;
+        fleetPoseAt(s, t, bossPose);
+        for (let k = 0; k < BOSS_WEAK_POINTS.length; k++) {
+          weakPointInto(bossPose, shipClass(s), k, wp);
+          const d = wrapDistance(pos, wp);
+          if (d < targetD) {
+            ship = s;
+            target = k;
+            targetD = d;
+          }
         }
       }
-      if (target >= 0) {
-        weakPointInto(bossPose, target, wp);
+      if (ship && target >= 0) {
+        fleetPoseAt(ship, t, bossPose);
+        weakPointInto(bossPose, shipClass(ship), target, wp);
         const to = wrapDelta(pos, wp);
         if (extending) {
           // Extend out to a stand-off point on the weak point's side, then
@@ -441,14 +449,21 @@ function fly(url: string, run: number, seed: number): Promise<RunReport> {
           if (targetD < BREAK_M) extending = true;
           const n = noseOf(yaw, pitch);
           if (angleBetween(n, unit(to)) < BOSS_FIRE_CONE) {
-            // Claim only what the round's own line meets first.
-            const hit = bossRayHit(bossPose, pos, n, BULLET_RANGE, live);
-            if (hit && hit.weak >= 0) {
+            // Claim only what the round's own line meets.
+            const hit = shipRayHit(
+              bossPose,
+              shipClass(ship),
+              pos,
+              n,
+              BULLET_RANGE,
+            );
+            if (hit) {
               const s = tryFire();
               if (s !== null) {
                 bossClaims++;
                 send({
                   type: "bossHit",
+                  ship: ship.id,
                   wp: hit.weak,
                   seq: s,
                   bulletOrigin: pos,
@@ -462,7 +477,7 @@ function fly(url: string, run: number, seed: number): Promise<RunReport> {
       }
     }
     // Fly where the nose points; never into the ground or the ceiling.
-    // The carrier run flies slow (MIN_SPEED) for longer passes.
+    // The airship run flies slow (MIN_SPEED) for longer passes.
     const v = carrierRun ? MIN_SPEED : SPEED;
     const n = noseOf(yaw, pitch);
     pos = canonicalize({
@@ -508,7 +523,9 @@ function fly(url: string, run: number, seed: number): Promise<RunReport> {
           b.to.y > b.surface + SURFACE_M || b.to.y < minAltitude(b.to.z) - 1,
       );
       const nearSpawn = bombRows.filter((b) => b.spawnM < SPAWN_CLEAR_M);
-      const nextBy = (NEXT_CARRIER_MS + NEXT_SLACK_MS) / 1000;
+      const nextBy =
+        (FLEET_TUNING.refillMs + FLEET_TUNING.refillWaitMs + NEXT_SLACK_MS) /
+        1000;
       const checks = {
         wave1Cleared: {
           pass:
@@ -545,10 +562,10 @@ function fly(url: string, run: number, seed: number): Promise<RunReport> {
             nextRaidS - carrierDownS <= nextBy,
           detail:
             carrierDownS === null
-              ? "the carrier never went down"
+              ? "no airship ever went down"
               : nextRaidS === null
-                ? `down at ${carrierDownS.toFixed(1)} s; no next raid`
-                : `down at ${carrierDownS.toFixed(1)} s; the next raid ${(nextRaidS - carrierDownS).toFixed(1)} s later (≤ ${nextBy})`,
+                ? `down at ${carrierDownS.toFixed(1)} s; its lane never refilled`
+                : `down at ${carrierDownS.toFixed(1)} s; its lane refilled ${(nextRaidS - carrierDownS).toFixed(1)} s later (≤ ${nextBy})`,
         },
       };
       return {
@@ -571,6 +588,7 @@ function fly(url: string, run: number, seed: number): Promise<RunReport> {
         case "welcome": {
           selfId = msg.id;
           for (const r of msg.roster) if (r.isBot) bots.add(r.id);
+          fleetHp = applyFleetState(fleet, msg.fleet);
           spawnAt(msg.spawn);
           send({ type: "setIntensity", level: 0 });
           note(`joined ${msg.roomId}; Easy pilot, room intensity → EASY`);
@@ -623,7 +641,7 @@ function fly(url: string, run: number, seed: number): Promise<RunReport> {
                   ? "breather"
                   : "idle";
             note(
-              `wave ${w.wave} ${ph} (size ${w.size}, left ${w.left}, tier ${w.tier})`,
+              `wave ${w.wave} ${ph} (size ${w.size}, left ${w.left}, airships down ${w.downs})`,
             );
           }
           if (w.wave === 1 && w.phase === WAVE_LIVE && wave1LiveS === null) {
@@ -641,48 +659,41 @@ function fly(url: string, run: number, seed: number): Promise<RunReport> {
           }
           break;
         }
-        case "boss": {
-          const r = decodeRaid(msg.r);
-          if (!r) break;
-          if (firstRaidId === null) firstRaidId = r.id;
-          if (raid?.id !== r.id) {
-            raid = r;
-            raidHp = raidMaxHp(r);
-            note(
-              `carrier raid ${r.id} (weak HP ${raidHp.reduce((a, b) => a + b, 0)})`,
-            );
-            if (
-              carrierDownS !== null &&
-              nextRaidS === null &&
-              r.id !== carrierDownId
-            ) {
-              nextRaidS = sinceS();
-              note("the NEXT carrier arrives");
-              if (bombs.length >= MIN_BOMBS) setTimeout(finish, 1000);
-            }
+        case "ship": {
+          const sh = decodeShip(msg.s);
+          if (!sh) break;
+          fleet.ships.push(sh);
+          fleetHp.set(sh.id, sh.hp0);
+          if (
+            carrierDown !== null &&
+            nextRaidS === null &&
+            sh.lane === carrierDown.lane
+          ) {
+            nextRaidS = sinceS();
+            note(`a new airship comes on in lane ${sh.lane}`);
+            if (bombs.length >= MIN_BOMBS) setTimeout(finish, 1000);
           }
           break;
         }
-        case "bossHp":
-          if (raid && msg.id === raid.id) {
-            raidHp = msg.hp;
-            if (sinceS() - hpLoggedAt >= 30) {
-              hpLoggedAt = sinceS();
-              note(
-                `carrier weak HP ${raidHp.reduce((a, b) => a + Math.max(0, b), 0)} (${bossClaims} claims so far)`,
-              );
-            }
+        case "shipHp":
+          for (const [id, hp] of msg.hp) fleetHp.set(id, hp);
+          if (sinceS() - hpLoggedAt >= 30) {
+            hpLoggedAt = sinceS();
+            note(`${bossClaims} airship claims so far`);
           }
           break;
-        case "bossDown":
-          if (carrierDownS === null) {
+        case "shipDown": {
+          const sh = fleet.ships.find((x) => x.id === msg.id);
+          if (sh && isShipDown(msg.d)) sh.down = msg.d;
+          if (carrierDownS === null && sh) {
             carrierDownS = sinceS();
-            carrierDownId = msg.d.id;
+            carrierDown = sh;
             note(
-              `CARRIER DOWN (top ${msg.top === selfId ? "the pilot" : msg.top})`,
+              `AIRSHIP DOWN (top ${msg.top === selfId ? "the pilot" : msg.top})`,
             );
           }
           break;
+        }
         case "missile": {
           if (msg.by === undefined) break;
           const m = decodeMissile(msg.m);

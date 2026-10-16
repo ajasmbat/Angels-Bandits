@@ -20,13 +20,17 @@ import {
 } from "@angels-bandits/common/boost";
 import {
   BOSS_ID,
-  type BossDown,
+  FLEET_MODEL,
+  type FleetShip,
+  SHIP_REACH,
+  type ShipDown,
   blankPose,
   bossCredit,
-  bossPoseAt,
   bossSpawnClear,
   encodeFlak,
-  encodeRaid,
+  encodeShip,
+  fleetPoseAt,
+  shipClass,
 } from "@angels-bandits/common/boss";
 import {
   BURN_SEND_MS,
@@ -138,9 +142,9 @@ import {
   applyLoadBlast,
 } from "./bombs";
 import {
-  BossDirector,
   type BossPlane,
   type BossWorld,
+  FleetDirector,
   applyBossImpact,
   claimBossHit,
 } from "./boss";
@@ -412,7 +416,8 @@ const roomMovers = (room: Room): MoverField => {
     field = {
       ...withNewsHeli(moversFor(room.seed), room.seed),
       collapses: roomCity(room).collapses,
-      // S4: and its sky boss — the director's own slot, mutated in place.
+      // Z1: and its airship fleet — the director's own slot, mutated in
+      // place.
       boss: roomBoss(room).slot,
       // U6: and its cave-ins — the cave-in director's slot, the same way.
       caveins: roomCaveIns(room),
@@ -526,16 +531,17 @@ const missilesFor = (room: Room): RoomMissiles => {
 };
 
 /**
- * Each room's sky boss (S4): its schedule, HP, turrets and break-up. Created
- * lazily, dropped with the room; seeded from the room's number like its
- * bots. Its slot rides the room's mover field (bots, crash checks, wrecks).
+ * Each room's airship fleet (Z1): its ships, their HP, turrets and crashes.
+ * Created lazily, dropped with the room; seeded from the room's number like
+ * its bots. Its slot rides the room's mover field (bots, crash checks,
+ * wrecks).
  */
-const bossByRoom = new Map<string, BossDirector>();
-const roomBoss = (room: Room): BossDirector => {
+const bossByRoom = new Map<string, FleetDirector>();
+const roomBoss = (room: Room): FleetDirector => {
   let boss = bossByRoom.get(room.id);
   if (!boss) {
     const n = Number(room.id.split("-")[1] ?? 0);
-    boss = new BossDirector(
+    boss = new FleetDirector(
       mulberry32((CITY_SEED ^ Math.imul(n + 1, 0x2b05d1)) >>> 0),
       BOSS_RAID_TUNING,
     );
@@ -544,14 +550,14 @@ const roomBoss = (room: Room): BossDirector => {
   return boss;
 };
 
-/** What the boss sweeps its break-up against and its turrets look past:
- * the room's city as it stands. */
+/** What a crash is swept against and the turrets look past: the room's
+ * city as it stands. */
 const bossWorld = (room: Room): BossWorld => {
   const rc = roomCity(room);
   return { buildings: rc.buildings, index: rc.index };
 };
 
-/** S4: a human (re)spawn must never be pointed into the zeppelin's path. */
+/** S4: a human (re)spawn must never be pointed into an airship's path. */
 const spawnClearOfBoss =
   (room: Room, now: number) =>
   (pos: Vec3, yaw: number | null): boolean =>
@@ -1310,7 +1316,8 @@ function handleJoin(
     racks: bombsByRoom.get(room.id)?.wire() ?? [],
     wrecks: wrecksByRoom.get(room.id)?.active() ?? [],
     director: directorFor(room).pending().map(encodeDirectorEvent),
-    boss: roomBoss(room).state(now),
+    fleet: roomBoss(room).state(now),
+    fm: FLEET_MODEL,
     ...(chaosFor(room) && { chaos: chaosFor(room)?.state(now) }),
     ...(caveInsFor(room) && { caveIns: caveInsFor(room)?.state(now) }),
     props: propsWireState(roomCity(room)),
@@ -1617,14 +1624,15 @@ function handleHitClaim(
 }
 
 /**
- * S4: a shooter-side hit on the sky boss's weak point. The round's whole
- * line is re-judged against the zeppelin's own pose (server/src/boss.ts
- * claimBossHit); the HP change goes out with the tick's `bossHp`, a kill
- * at once.
+ * Z1: a shooter-side hit on an airship — its hull or a weak point. The
+ * round's whole line is re-judged against the ship's own pose
+ * (server/src/boss.ts claimBossHit); the HP change goes out with the tick's
+ * `shipHp`, a kill at once.
  */
 function handleBossHit(client: Client, msg: ClientEnvelope, now: number): void {
-  const { wp, seq, bulletOrigin, dir, t } = msg;
-  if (typeof wp !== "number" || typeof seq !== "number") return;
+  const { ship, wp, seq, bulletOrigin, dir, t } = msg;
+  if (typeof ship !== "number" || typeof wp !== "number") return;
+  if (typeof seq !== "number") return;
   if (typeof t !== "number" || !Number.isFinite(t)) return;
   if (!isVec3(bulletOrigin) || !isVec3(dir)) return;
   const boss = roomBoss(client.room);
@@ -1632,33 +1640,37 @@ function handleBossHit(client: Client, msg: ClientEnvelope, now: number): void {
     combat,
     boss,
     client.id,
-    { wp, seq, origin: bulletOrigin, dir, t },
+    { ship, wp, seq, origin: bulletOrigin, dir, t },
     client.pose.pos,
     now,
     bossWorld(client.room),
     speedCapOf(client, now),
   );
-  if (hit?.down) bossDowned(client.room, hit.down, now);
+  if (hit?.down) shipDowned(client.room, hit.ship, hit.down);
 }
 
 /**
- * S4: the sky boss is down. Credit by damage share (common/src/boss.ts
+ * Z1: an airship is down. Credit by damage share (common/src/boss.ts
  * bossCredit, pilots still in the room): +1 kill for each dealer with
- * BOSS_CREDIT_MIN_SHARE, SKY-BOSS SLAYER for the top one (no streak, no
- * death — the boss is not a pilot), then the break-up, the award and the
- * new tallies. The news heli goes to cover the crash.
+ * BOSS_CREDIT_MIN_SHARE, AIRSHIP BREAKER for the top one (no streak, no
+ * death — a ship is not a pilot), then the crash, the award and the new
+ * tallies. The news heli goes to cover the crash; the planes still on its
+ * rigs go with it.
  */
-function bossDowned(room: Room, down: BossDown, now: number): void {
+function shipDowned(room: Room, ship: FleetShip, down: ShipDown): void {
+  const fleet = roomBoss(room);
   const ledger = new Map(
-    [...roomBoss(room).damageLedger()].filter(([id]) => room.members.has(id)),
+    [...fleet.damageLedger(ship.id)].filter(([id]) => room.members.has(id)),
   );
   const credit = bossCredit(ledger);
   for (const id of credit.credited) combat.creditKill(id);
   sendToRoom(room, {
-    type: "bossDown",
+    type: "shipDown",
+    id: ship.id,
     d: down,
     dealers: credit.dealers.map((d) => [d.id, Math.round(d.share * 1000)]),
     top: credit.top,
+    downs: fleet.downs(),
   });
   if (credit.top !== null) {
     const award = medals.bossKill(credit.top);
@@ -1670,13 +1682,8 @@ function bossDowned(room: Room, down: BossDown, now: number): void {
     });
   }
   broadcastScores(room);
-  const mid = down.pieces[1];
-  if (mid) pendingKillByRoom.set(room.id, { x: mid.p.x, z: mid.p.z });
-  // W1: its planes go down with it.
-  const raid = roomBoss(room).slot.raid;
-  if (raid && raid.id === down.id) {
-    wavesFor(room).carrierDown(raid, now);
-  }
+  pendingKillByRoom.set(room.id, { x: down.at.x, z: down.at.z });
+  wavesFor(room).shipDown(ship);
 }
 
 /**
@@ -2081,14 +2088,21 @@ function tickBombs(
     vel: h.vel,
     prot: h.prot,
   }));
-  const raid = roomBoss(room).activeRaid(now);
-  const carrier = raid ? bossPoseAt(raid, now, blankPose()) : null;
+  const ships = roomBoss(room)
+    .activeShips(now)
+    .map((sh) => {
+      const p = fleetPoseAt(sh, now, blankPose());
+      return {
+        pos: { x: p.x, y: p.y, z: p.z },
+        reach: (SHIP_REACH[shipClass(sh)] as { xz: number }).xz,
+      };
+    });
   const world: BombWorld = {
     index: rc.index,
     buildings: rc.buildings,
     missiles: missilesFor(room).director,
     budget: budgetFor(room),
-    carrier: carrier && { x: carrier.x, y: carrier.y, z: carrier.z },
+    ships,
     hold: rc.damage.hold,
     intensity: waves.intensity,
     wave: waves.state().wave,
@@ -2224,13 +2238,13 @@ function tickMissiles(room: Room, now: number): void {
 }
 
 /**
- * S4/W1 the carrier for one room tick: the schedule (a carrier only comes
- * while a human is flying and the war is on), the turrets' shells at the
- * humans, the bursts due — flak damage through Combat like a missile's, a
- * kill falling as a D4 wreck — and the falling sections that hit: D2 chunk
- * damage (when breakable) credited to the top dealer for D3, and the
- * city's death reaction where each lands. Then the tick's HP change, once,
- * and the carrier's waves.
+ * Z1 the airship fleet for one room tick: the schedule (the fleet comes on,
+ * and downed lanes refill, only while a human is flying and the war is on),
+ * the armed ships' shells at the humans, the bursts due — flak damage
+ * through Combat like a missile's, a kill falling as a D4 wreck — and the
+ * crashes that hit: D2 chunk damage (when breakable) credited to each
+ * ship's top dealer for D3, and the city's death reaction where each
+ * lands. Then the tick's HP changes, once, and the fleet's waves.
  */
 function tickBoss(room: Room, now: number): void {
   const boss = roomBoss(room);
@@ -2244,14 +2258,14 @@ function tickBoss(room: Room, now: number): void {
   }));
   const result = boss.tick(
     now,
-    // D6: no carrier in a quiet city (FL1: nor a calm lab; W1: nor with the
+    // D6: no fleet in a quiet city (FL1: nor a calm lab; W1: nor with the
     // war off).
     carrierOn(room) && flyingHumanIn(room),
     planes,
     bossWorld(room),
   );
-  if (result.started) {
-    sendToRoom(room, { type: "boss", r: encodeRaid(result.started) });
+  for (const ship of result.started) {
+    sendToRoom(room, { type: "ship", s: encodeShip(ship) });
   }
   if (result.flak.length > 0) {
     sendToRoom(room, { type: "flak", f: result.flak.map(encodeFlak) });
@@ -2281,20 +2295,16 @@ function tickBoss(room: Room, now: number): void {
       sendDeath(room, hit.death, now, wreck);
     }
   }
-  if (result.landed.length > 0) {
-    const top = bossCredit(boss.damageLedger()).top;
+  for (const { at, building, by: top } of result.landed) {
     const by = top !== null && room.members.has(top) ? top : null;
-    for (const { at, building } of result.landed) {
-      const rc = breakable(room);
-      if (rc) applyBossImpact(rc, at, by, building);
-      const event = cityEvents.offer(room.id, "death", at, now);
-      if (event) sendToRoom(room, { type: "cityEvent", event });
-    }
+    const rc = breakable(room);
+    if (rc) applyBossImpact(rc, at, by, building);
+    const event = cityEvents.offer(room.id, "death", at, now);
+    if (event) sendToRoom(room, { type: "cityEvent", event });
   }
-  if (boss.takeHpChanged() && boss.slot.raid) {
-    sendToRoom(room, { type: "bossHp", id: boss.slot.raid.id, hp: boss.hp });
-  }
-  // W1: the carrier's waves — after it, so a launch sees this tick's carrier.
+  const hp = boss.takeHpChanged();
+  if (hp.length > 0) sendToRoom(room, { type: "shipHp", hp });
+  // W1: the fleet's waves — after it, so a launch sees this tick's fleet.
   wavesFor(room).tick(now, wavesOn(room), humans);
 }
 

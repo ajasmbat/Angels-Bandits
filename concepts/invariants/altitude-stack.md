@@ -10,7 +10,10 @@
 - `RESPAWN_ALTITUDE` (370 m) and the landmark run-out veto in
   `server/src/respawn.ts` (`landmarkClearance`);
 - the news heli band `NEWS_HELI_ALT_MIN/MAX` (500–515 m, `HELI_HULL`);
-- the carrier `BOSS_ALT` (570 m, `common/src/boss.ts`, reach ±30 m);
+- the airship fleet's band `FLEET_ALT_MIN`–`FLEET_ALT_MAX` (≈ 534–606 m,
+  `common/src/boss.ts`): every lane of `FLEET_LANES` (its `alt` ± its
+  class's `SHIP_REACH[c].y`) sits inside it, the picket layer (≈ 535–561 m)
+  wholly under the line layer (≈ 565–606 m);
 - the blimp `BLIMP_ALT` (625 m, `BLIMP_HULL`);
 - `BOT_CEILING_ALT` (`CLOUD_BASE` − 20) and `CLOUD_BASE` (650 m);
 - `STORM_KILL_ALT` = `SOFT_CEILING` (750 m), `CEILING_FADE`, `MAX_ALTITUDE`
@@ -20,22 +23,25 @@
 
 **The contract:** on EXTENTS, not centres, bottom to top —
 generated roofs < respawn − 30 < landmarks ≤ `CITY_TOP` < news heli belly
-(− 15 m margin) < heli rotor + 15 ≤ carrier hull bottom < carrier top <
-blimp belly < blimp top < `CLOUD_BASE`; `BOT_CEILING_ALT` < `CLOUD_BASE` <
+(− 15 m margin) < heli rotor + 15 ≤ `FLEET_ALT_MIN` ≤ every hull bottom <
+every hull top ≤ `FLEET_ALT_MAX` < blimp belly < blimp top < `CLOUD_BASE`; `BOT_CEILING_ALT` < `CLOUD_BASE` <
 `STORM_KILL_ALT` ≤ `SOFT_CEILING` < `MAX_ALTITUDE` < `METEOR_ALT` <
-airliners. Pinned in `common/test/boss.test.ts` (hull over every roof and
-the heli), `common/test/newsheli.test.ts` (heli over `CITY_TOP`, under the
+airliners. Pinned in `common/test/boss.test.ts` (every lane's hull in the
+fleet band, over every roof and
+the heli, the two layers apart), `common/test/newsheli.test.ts` (heli over `CITY_TOP`, under the
 blimp and the deck), `common/test/movers.test.ts` (helis under the blimp
 under the deck).
 
 **What breaks when they disagree:**
 
-- A carrier whose hull dips into a supertall: its launch poses spawn
-  enemies into a facade, and the hull is drawn through a tower.
+- An airship whose hull dips into a supertall: its launch poses spawn
+  enemies into a facade, and the hull is drawn through a tower. A lane
+  moved into the other layer's band breaks the fleet's clearance by
+  construction (two layers' headings cross, so their hulls would meet).
 - A respawn at `RESPAWN_ALTITUDE` into a landmark shaft: spawn protection
   does not stop a crash (the veto exists for this; any new tall landmark
   must stay in `LANDMARK_BLOCKS` so the veto sees it).
-- A news heli or blimp that intersects the carrier or the deck.
+- A news heli or blimp that intersects an airship or the deck.
 - Anything the `height >= LANDMARK_HEIGHT` test identifies — the minimap
   accent, roof beacons, facade archetypes, searchlight picks — misfires the
   moment a generated lot reaches `LANDMARK_HEIGHT`.

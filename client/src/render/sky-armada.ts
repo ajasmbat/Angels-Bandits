@@ -995,7 +995,10 @@ vec4 abPaint(float phi, float el, float dist, float alt, float cells, float turn
   float dt = length(vec2(dphi + 0.47 * len, el - ce));
   float dc = length(vec2(dphi, el - ce + 0.6 * len * 0.18));
   float sz = fw / r;
-  vec3 em = present * (${NAV_RED} * exp(-dn * dn / (r * r)) + ${NAV_WHITE} * exp(-dt * dt / (r * r))
+  // Only some ships show their lights this far out (a blackout fleet), and
+  // dimly: the horizon must read as haze with sparks, not a light string.
+  float lights = abU8(h, 12u) < 0.35 ? 0.3 : 0.0;
+  vec3 em = present * lights * (${NAV_RED} * exp(-dn * dn / (r * r)) + ${NAV_WHITE} * exp(-dt * dt / (r * r))
     + ${ENGINE} * 0.6 * exp(-dc * dc / (r * r))) * min(sz * sz * 2.0, 1.0);
   // Flak under the layer: a cell's burst each few seconds.
   float bt = uSkyT * ${g(1200 / SKY_LOOP_S)} + abU8(h, 4u);
@@ -1006,7 +1009,7 @@ vec4 abPaint(float phi, float el, float dist, float alt, float cells, float turn
   vec2 fpos = vec2(cx + (abU8(hf, 8u) - 0.5) * 2.0 / cells * AB_TAU * 0.5, ce - (0.4 + abU8(hf, 16u)) * len * 0.3);
   vec2 fd = vec2(phi - fpos.x - AB_TAU * floor((phi - fpos.x) / AB_TAU + 0.5), el - fpos.y);
   float fr = max(fw * 2.0, (18.0 + 50.0 * (1.0 - exp(-age * 6.0))) / dist);
-  em += ${FLAK} * on * exp(-dot(fd, fd) / (fr * fr)) * min(fw * fw * 4.0 / (fr * fr), 1.0) * 6.0;
+  em += ${FLAK} * on * exp(-dot(fd, fd) / (fr * fr)) * min(fw * fw * 4.0 / (fr * fr), 1.0) * 3.0;
   return vec4(em * peak, sil * peak);
 }
 void main() {

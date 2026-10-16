@@ -161,7 +161,7 @@ try {
     viewport: { width: 1280, height: 720 },
     deviceScaleFactor: 1,
   });
-  page.on("pageerror", (e) => console.error("PAGEERROR", e.message));
+  page.on("pageerror", (e) => console.error("PAGEERROR", e.stack));
   const quality = process.env.AB_GALLERY_QUALITY
     ? `&quality=${process.env.AB_GALLERY_QUALITY}`
     : "";

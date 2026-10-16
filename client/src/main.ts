@@ -5512,6 +5512,10 @@ const frame = (rafNow: number): void => {
   }
   const renderMs = qaWorld !== null ? qaWorld.ms : frameClock.time;
   lastRenderMs = renderMs;
+  // P1 QA: the staged tunnel breaks here, at the top of the frame, where a
+  // socket batch would have landed — never between the city's layout and
+  // its damage flush.
+  if (qaPen !== null && renderMs !== null) qaPenetrateFrame(renderMs);
   // DL1: in the Destruction Lab every collapse renderer poses on the lab's
   // clock (live, paused, slowed or scrubbed — exact: the debris and the dust
   // are pure in time), and the view is the lab's camera (unless a QA tool
@@ -6575,7 +6579,6 @@ const frame = (rafNow: number): void => {
     );
     // P1: the sweeps' bursts and bodies, then the strikes (and the ones
     // still ploughing through the city) on the fireball draw.
-    if (qaPen !== null) qaPenetrateFrame(renderMs);
     penetrations.update(chase.position, renderMs, now, mf.flying);
     missileRenderer.update(
       mf.flying,

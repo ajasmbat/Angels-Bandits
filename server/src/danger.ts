@@ -3,7 +3,8 @@
 // charged to that plane, and a plane that has had its share in the last
 // window is left alone for a while. One DangerBudget per room, shared by the
 // X1 missile director, the C2 chaos director (meteors), the
-// D5 destruction director and (W2) the enemy planes' bombs; index.ts and the bot-sim harness drive exactly
+// D5 destruction director (and C1's low-flying chaos) and (W2) the enemy
+// planes' bombs; index.ts and the bot-sim harness drive exactly
 // this.
 //
 // The rules:
@@ -32,7 +33,12 @@ export type DangerLayer =
   | "cavein"
   // W2: an enemy plane's bomb (server/src/bombs.ts) — one charge per human
   // per bomb run, however many bombs of the run land near them.
-  | "bomb";
+  | "bomb"
+  // C1: the director's low-flying chaos (server/src/director.ts) — a
+  // lethal event staged near a plane flying low among the towers. Its own
+  // share UNDER the same total: the 2–4 s cadence lands the rest beside or
+  // beyond the plane's path, outside `nearM`, where nothing is charged.
+  | "lowchaos";
 
 export interface DangerTuning {
   windowMs: number;
@@ -50,7 +56,14 @@ export const DANGER_TUNING: DangerTuning = {
   // W2: one more for the enemy planes' bombs, so they never starve the
   // missiles, meteors and the director of their share (or the reverse).
   total: 5,
-  perLayer: { missile: 2, meteor: 1, director: 1, cavein: 2, bomb: 2 },
+  perLayer: {
+    missile: 2,
+    meteor: 1,
+    director: 1,
+    cavein: 2,
+    bomb: 2,
+    lowchaos: 2,
+  },
   nearM: 80,
   freshMs: 5000,
 };

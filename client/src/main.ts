@@ -94,7 +94,11 @@ import {
   decodeGhost,
   generateCourses,
 } from "@angels-bandits/common/courses";
-import { type DirectorEvent, EVENT_GAS } from "@angels-bandits/common/director";
+import {
+  type DirectorEvent,
+  EVENT_CARS,
+  EVENT_GAS,
+} from "@angels-bandits/common/director";
 import {
   type FlightState,
   bankPitchMult,
@@ -1352,7 +1356,8 @@ socket.events.onDirectorWarn = (e) => {
   const serverMs = socket.renderTime();
   const left = (e.at - (serverMs ?? e.w)) / 1000;
   audio.directorWarning(
-    e.k === EVENT_GAS,
+    // C1: a car chain's fire hisses like a gas main.
+    e.k === EVENT_GAS || e.k === EVENT_CARS,
     { x: e.x, y: 10, z: e.z },
     flight.pos,
     flight.yaw,

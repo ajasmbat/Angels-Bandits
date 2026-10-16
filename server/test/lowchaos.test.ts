@@ -52,7 +52,7 @@ import {
   canonicalize,
   wrapDeltaAxis,
 } from "@angels-bandits/common/world";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { applyGoneHold } from "../src/chaos";
 import { DANGER_TUNING, DangerBudget, type DangerLayer } from "../src/danger";
 import {
@@ -189,6 +189,10 @@ function windowOf(r: Room, e: DirectorEvent): [number, number] | null {
 
 /** Collapses coming down within LOW_FALLING_R of `pos` (warned, or with
  * debris in the air), leaving out event `skip`. */
+/** Let the event loop turn (a long synchronous sim starves the vitest
+ * worker's RPC — vitest.setup.ts). */
+const yieldNow = () => new Promise<void>((resolve) => setImmediate(resolve));
+
 function fallingNear(r: Room, now: number, pos: Vec3, skip: number): number {
   const gap = (x: number, z: number) =>
     Math.hypot(wrapDeltaAxis(x, pos.x), wrapDeltaAxis(z, pos.z));
@@ -207,12 +211,13 @@ function fallingNear(r: Room, now: number, pos: Vec3, skip: number): number {
 
 describe("low-flying chaos: cadence", () => {
   const MINUTES = 3;
-  const run = (y: number, tuning: DestructionTuning) => {
+  const run = async (y: number, tuning: DestructionTuning) => {
     const r = room(tuning);
     const warned: DirectorEvent[] = [];
     let lowTicks = 0;
     let ticks = 0;
     for (let t = T0; t < T0 + MINUTES * 60_000; t += 100) {
+      if ((t - T0) % 10_000 === 0) await yieldNow();
       const planes = [staircase("h", t, y, 3, 1)];
       warned.push(...tick(r, planes, t).warned);
       if (r.director.lowLevel("h") > 0) lowTicks++;
@@ -220,9 +225,15 @@ describe("low-flying chaos: cadence", () => {
     }
     return { warned, lowShare: lowTicks / ticks };
   };
-  const low = run(60, DESTRUCTION_TUNING);
-  const high = run(300, DESTRUCTION_TUNING);
-  const d5 = run(300, { ...DESTRUCTION_TUNING, low: null });
+  type Run = Awaited<ReturnType<typeof run>>;
+  let low: Run;
+  let high: Run;
+  let d5: Run;
+  beforeAll(async () => {
+    low = await run(60, DESTRUCTION_TUNING);
+    high = await run(300, DESTRUCTION_TUNING);
+    d5 = await run(300, { ...DESTRUCTION_TUNING, low: null });
+  }, 300_000);
 
   it("low among the towers: something every 2–4 s, near and ahead", () => {
     console.log(
@@ -266,40 +277,43 @@ describe("low-flying chaos: fair, budgeted and capped (10 min, two humans and a 
   const overCap: string[] = [];
   let lethalChecked = 0;
   let collapses = 0;
-  for (let t = T0; t < T0 + 10 * 60_000; t += 100) {
-    const planes = [
-      staircase("h1", t, 55, 2, 1),
-      staircase("h2", t, 85, 7, 4, 70),
-      staircase("bot:1", t, 70, 2, 2, 75, false),
-    ];
-    tick(r, planes, t, (e) => {
-      kinds.set(e.k, (kinds.get(e.k) ?? 0) + 1);
-      // Every plane keeps a way out of every lethal event, as warned.
-      const w = windowOf(r, e);
-      if (w) {
-        for (const p of planes) {
-          lethalChecked++;
-          if (escapeFrom(e.zone, e.x, e.z, p.pos, p.vel, ...w) < 0) {
-            unfair.push(`${e.id}:${e.k} ${p.id}`);
+  beforeAll(async () => {
+    for (let t = T0; t < T0 + 10 * 60_000; t += 100) {
+      if ((t - T0) % 10_000 === 0) await yieldNow();
+      const planes = [
+        staircase("h1", t, 55, 2, 1),
+        staircase("h2", t, 85, 7, 4, 70),
+        staircase("bot:1", t, 70, 2, 2, 75, false),
+      ];
+      tick(r, planes, t, (e) => {
+        kinds.set(e.k, (kinds.get(e.k) ?? 0) + 1);
+        // Every plane keeps a way out of every lethal event, as warned.
+        const w = windowOf(r, e);
+        if (w) {
+          for (const p of planes) {
+            lethalChecked++;
+            if (escapeFrom(e.zone, e.x, e.z, p.pos, p.vel, ...w) < 0) {
+              unfair.push(`${e.id}:${e.k} ${p.id}`);
+            }
           }
         }
-      }
-      // No tower (or crane) felled near a human already under the cap.
-      if (e.k === EVENT_COLLAPSE || e.k === EVENT_CRANE) {
-        collapses++;
-        for (const p of planes) {
-          if (!p.human) continue;
-          const gap = Math.hypot(
-            wrapDeltaAxis(e.x, p.pos.x),
-            wrapDeltaAxis(e.z, p.pos.z),
-          );
-          if (gap > LOW_FALLING_R) continue;
-          const n = fallingNear(r, t, p.pos, e.id);
-          if (n >= LOW_FALLING_MAX) overCap.push(`${e.id} ${p.id}: ${n}`);
+        // No tower (or crane) felled near a human already under the cap.
+        if (e.k === EVENT_COLLAPSE || e.k === EVENT_CRANE) {
+          collapses++;
+          for (const p of planes) {
+            if (!p.human) continue;
+            const gap = Math.hypot(
+              wrapDeltaAxis(e.x, p.pos.x),
+              wrapDeltaAxis(e.z, p.pos.z),
+            );
+            if (gap > LOW_FALLING_R) continue;
+            const n = fallingNear(r, t, p.pos, e.id);
+            if (n >= LOW_FALLING_MAX) overCap.push(`${e.id} ${p.id}: ${n}`);
+          }
         }
-      }
-    });
-  }
+      });
+    }
+  }, 300_000);
 
   it("stages every kind the city has round the route", () => {
     console.log(`C1 10-min mix by kind: ${JSON.stringify([...kinds])}`);
@@ -361,9 +375,7 @@ describe("the recycling rule", () => {
     let maxGone = 0;
     const WINDOW = 2 * 60_000;
     for (let t = T0; t < T0 + 30 * 60_000; t += 100) {
-      if ((t - T0) % 60_000 === 0) {
-        await new Promise<void>((resolve) => setImmediate(resolve));
-      }
+      if ((t - T0) % 10_000 === 0) await yieldNow();
       const human = staircase("h", t, 60, 1, 6);
       const out = tick(r, [human], t);
       const w = Math.floor((t - T0) / WINDOW);

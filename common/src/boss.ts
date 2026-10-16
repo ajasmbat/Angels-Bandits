@@ -719,6 +719,52 @@ export function lanePoseInto(lane: number, s: number, out: ShipPose): ShipPose {
   return out;
 }
 
+/** Z1: the same pose as fleetPoseAt, into a Float64Array at `o`: [x, y, z,
+ * yaw, pitch, hx, hz] — what a per-frame loop over the whole fleet reads
+ * (a typed array's doubles are never boxed; a plain object's fields are).
+ * Bit for bit fleetPoseAt's: the same expressions. */
+export function fleetPoseInto64(
+  ship: FleetShip,
+  t: number,
+  out: Float64Array,
+  o: number,
+): void {
+  const d = ship.down;
+  if (d !== null && t >= d.t) {
+    fallPoseInto(d, t, pose64);
+    out[o] = pose64.x;
+    out[o + 1] = pose64.y;
+    out[o + 2] = pose64.z;
+    out[o + 3] = pose64.yaw;
+    out[o + 4] = pose64.pitch;
+    out[o + 5] = pose64.hx;
+    out[o + 6] = pose64.hz;
+    return;
+  }
+  const ln = FLEET_LANES[ship.lane] as FleetLane;
+  const ly = FLEET_LAYERS[ln.layer] as FleetLayer;
+  const s = ship.s0 + (ln.v * ((t > ship.t0 ? t : ship.t0) - ship.t0)) / 1000;
+  out[o] = wrapCoord(-ly.dz * ln.u + ly.dx * s);
+  out[o + 1] = ln.alt;
+  out[o + 2] = wrapCoord(ly.dx * ln.u + ly.dz * s);
+  const sg = ln.v < 0 ? -1 : 1;
+  const hx = ly.dx * sg;
+  const hz = ly.dz * sg;
+  out[o + 3] = Math.atan2(-hz, hx);
+  out[o + 4] = 0;
+  out[o + 5] = hx;
+  out[o + 6] = hz;
+}
+const pose64: ShipPose = {
+  x: 0.5,
+  y: 0.5,
+  z: 0.5,
+  yaw: 0.5,
+  pitch: 0.5,
+  hx: 0.5,
+  hz: 0.5,
+};
+
 /** Where along its lane a ship is at `t` (unwrapped), m. */
 export const shipAlong = (s: FleetShip, t: number): number =>
   s.s0 + ((FLEET_LANES[s.lane] as FleetLane).v * (t - s.t0)) / 1000;
@@ -1150,13 +1196,13 @@ export const LAUNCH_PITCH: readonly number[] = [-0.32, 0.08];
 /** The belly bay (base hull frame): its centre x, the plane stowed inside
  * the keel, and how far the trapeze lowers it, m — scaled with the hull. */
 export const BAY_X = -4;
-const BAY_STOW_Y = -21.5;
+export const BAY_STOW_Y = -21.5;
 const BAY_HANG_Y = -31;
 /** The catapult run along the deck, base hull x, and the plane's height
  * over the deck plate (its wheels on the carriage — never scaled), m. */
 export const CATAPULT_FROM_X = 12;
 export const CATAPULT_TO_X = 42;
-const DECK_PLANE_H = 1.6;
+export const DECK_PLANE_H = 1.6;
 
 /** One launch, exactly as broadcast. */
 export interface BossLaunch {

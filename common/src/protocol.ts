@@ -16,6 +16,7 @@ import type {
 import type { WireChaosState, WireQuake } from "./chaos";
 import type { WireCaveIn } from "./city/caveins";
 import type { CollapseWire } from "./city/collapse";
+import type { WireImpact } from "./city/penetrate";
 import type { NewsHeliSlot, NewsHeliTarget } from "./city/newsheli";
 import type { WireCrater, WirePropState } from "./city/props";
 import type { CityEvent } from "./cityevents";
@@ -715,6 +716,22 @@ export interface CollapseMsg {
 }
 
 /**
+ * P1: impacts that sweep THROUGH the city (a crash, a wreck, a meteor, a
+ * comet, a carrier section, collapse debris), the tick they happen, sent
+ * just before that tick's `chunks`. Each record is the impactor exactly as
+ * the server swept it (common/src/city/penetrate.ts); a client replays the
+ * same sweep for the visuals — the body ploughing on, a burst per chunk as
+ * it gets there. What breaks still arrives as `chunks`, each in the tick
+ * its entry time falls in. `v` is SWEEP_MODEL_VERSION: a client on another
+ * model ignores the batch. Old clients ignore it.
+ */
+export interface ImpactMsg {
+  type: "impact";
+  v: number;
+  i: WireImpact[];
+}
+
+/**
  * DL1: the Destruction Lab room's own telemetry, about twice a second (lab
  * rooms only): the server's destruction tick — its last and its p99 over
  * the last LAB_STATS_WINDOW ticks, ms — the debris pieces still moving and
@@ -877,6 +894,7 @@ export type ServerMsg =
   | BossLaunchMsg
   | BossDownMsg
   | ChunksMsg
+  | ImpactMsg
   | CollapseMsg
   | LabStatsMsg
   | MissileMsg

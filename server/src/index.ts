@@ -2338,7 +2338,11 @@ function landMissile(
     });
   }
   const cause =
-    m.kind === "meteor" ? "meteor" : m.kind === "bomb" ? "bomb" : "missile";
+    m.kind === "meteor" || m.kind === "comet"
+      ? "meteor"
+      : m.kind === "bomb"
+        ? "bomb"
+        : "missile";
   for (const victim of rm.director.blastVictims(m, planes, now)) {
     const isBot = room.members.get(victim.id)?.isBot ?? false;
     // W2: every bomb is an enemy plane's, and the enemies are immune to

@@ -12,6 +12,9 @@
 //  - QUAKES: a city-wide tremor, announced QUAKE_LEAD_MS ahead; the camera
 //    shakes by quakeAmp (pure), and at its instant the server weakens chunks.
 //  - FIRE: burning chunks that spread to their neighbours (fireNeighbours).
+//  - P1 COMETS: a fast, shallow streak in over the rooftops into a tower's
+//    facade — a MissileStrike of kind "comet" — that tears sideways through
+//    the row behind it (common/src/city/penetrate.ts). Rarer than meteors.
 //
 // WHEN is the storm's / director's bucket trick, one salted stream per layer
 // (chaosSlotsInWindow): random access, abutting windows partition the
@@ -44,18 +47,20 @@ import { type Vec3, wrapCoord, wrapDeltaAxis } from "./world/index";
 
 export const CHAOS_METEOR = 0;
 export const CHAOS_QUAKE = 1;
-export type ChaosLayer = 0 | 1;
+export const CHAOS_COMET = 2;
+export type ChaosLayer = 0 | 1 | 2;
 
 /** Consecutive slots of each layer are this far apart, ms: a meteor every
- * 4–9 s, a quake every 60–100 s. */
+ * 4–9 s, a quake every 60–100 s, (P1) a comet every 35–65 s. */
 export const CHAOS_CADENCE: readonly (readonly [number, number])[] = [
   [4000, 9000],
   [60_000, 100_000],
+  [35_000, 65_000],
 ];
 /** Each layer's stream salt — the same values C2 shipped, so the meteor and
  * quake schedules are unchanged by W1 retiring the jet layer that sat
- * between them. */
-const LAYER_SALT = [0x3e7e02a1, 0x9a4e1d23] as const;
+ * between them (and by P1 adding the comets after them). */
+const LAYER_SALT = [0x3e7e02a1, 0x9a4e1d23, 0xc0e7a11d] as const;
 
 /**
  * Every slot of `layer` in [tStartMs, tEndMs), ascending — one per bucket of
@@ -124,6 +129,67 @@ export function planMeteor(
       t0: Math.round(t0),
     };
     if (missilePathClear(s, buildings)) return s;
+  }
+  return null;
+}
+
+// --- Comets (P1) ----------------------------------------------------------------
+
+/** A comet comes in this far out (plan view), m — under WORLD_SIZE / 2. */
+const COMET_RUN_MIN_M = 650;
+const COMET_RUN_MAX_M = 850;
+/** ...climbing back along its streak at this angle, rad (shallow). */
+const COMET_ELEV_MIN = 0.07;
+const COMET_ELEV_MAX = 0.16;
+/** It strikes this share of the standing height up the facade. */
+const COMET_HIT_MIN = 0.45;
+const COMET_HIT_MAX = 0.8;
+/** Only towers at least this tall are worth a comet, m. */
+export const COMET_MIN_HEIGHT = 90;
+
+/**
+ * A comet into tower `b` launched at `t0`: a seeded azimuth, the facade
+ * point facing it at 45–80 % of the tower's height, and a shallow streak in
+ * from 650–850 m out, swept clear of the city as it stands (`buildings`).
+ * Null when no azimuth gets through. Quantised to the wire.
+ */
+export function planComet(
+  rand: () => number,
+  id: number,
+  b: Building,
+  t0: number,
+  buildings: readonly Building[],
+): MissileStrike | null {
+  const grids = tierGrids(b);
+  for (let n = 0; n < 8; n++) {
+    const az = rand() * Math.PI * 2;
+    const run = COMET_RUN_MIN_M + (COMET_RUN_MAX_M - COMET_RUN_MIN_M) * rand();
+    const elev = COMET_ELEV_MIN + (COMET_ELEV_MAX - COMET_ELEV_MIN) * rand();
+    const share = COMET_HIT_MIN + (COMET_HIT_MAX - COMET_HIT_MIN) * rand();
+    const c = Math.cos(az);
+    const s = Math.sin(az);
+    const top = b.damage ? standingTopAt(b, 0, 0) : b.height;
+    const y = top * share;
+    // The face of the tier at that height that the comet comes in toward.
+    const g = grids.find((t) => y >= t.baseY && y < t.baseY + t.height);
+    if (!g) continue;
+    const reach = Math.min(
+      Math.abs(c) > 1e-6 ? g.width / 2 / Math.abs(c) : Number.POSITIVE_INFINITY,
+      Math.abs(s) > 1e-6 ? g.depth / 2 / Math.abs(s) : Number.POSITIVE_INFINITY,
+    );
+    const to = { x: b.x + c * reach, y, z: b.z + s * reach };
+    const m: MissileStrike = {
+      id,
+      kind: "comet",
+      from: {
+        x: qc(to.x + c * run),
+        y: q(y + Math.tan(elev) * run),
+        z: qc(to.z + s * run),
+      },
+      to: { x: qc(to.x), y: q(to.y), z: qc(to.z) },
+      t0: Math.round(t0),
+    };
+    if (missilePathClear(m, buildings)) return m;
   }
   return null;
 }

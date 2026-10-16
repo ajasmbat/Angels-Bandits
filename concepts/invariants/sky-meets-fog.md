@@ -8,7 +8,9 @@
   (`searchlights.ts`), the headlight cones (`headlights.ts`), the far rain
   curtain (`rain.ts`'s far layer, L5: attenuated by `abFogFactor` and the
   height haze in its vertex shader, `fog: true` only to be fed the
-  uniforms), and L2's far skyline (`far-skyline.ts`); and the two that
+  uniforms), L2's far skyline (`far-skyline.ts`) and SKY1's cosmetic sky
+  (`sky-armada.ts`: the airship armada, dogfights, flak and painted
+  horizon, all in L2's shell); and the two that
   SHAPE the shared chunk's factor — the inferno flames (`inferno.ts`) and,
   D11, the collapse dust (`dust.ts`, `DUST_FOG_LINE`): the factor squared,
   still exactly 1 at `fogFar`, so they read through the haze and still
@@ -125,6 +127,16 @@ the fog state.
   zero height before it reaches the fog limit.
 - Moving the shell outside 800 m, or past the camera's far plane (900 m),
   breaks this.
+
+**SKY1's cosmetic sky shares the shell** (`sky-armada.ts`, schedule in
+`common/src/skyarmada.ts`). Its slots are placed on torus windows round
+the same unwrapped offset (`FAR_ORIGIN`; both windows divide the 64 km
+period), so its ships and the far city move together and nothing jumps at
+a seam. Every slot's visibility is exactly 0 nearer than `SKY_INNER`
+(900 m), so nothing cosmetic is ever seen inside the fog limit, and the
+hulls fade toward `abGlowFog(abSkyFog(fogColor, sinEl), sinEl)` — they
+sit high, where a plain fog-colour target would leave a pale cut-out above
+`SKY_FOG_STOP`. Its lights, flashes and smoke attenuate (rule 3).
 
 **The dome is centred on the rendered camera.** That is the chase
 camera, or under `__ab.qaCamera` the QA eye's image, as with the river.

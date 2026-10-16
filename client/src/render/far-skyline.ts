@@ -324,6 +324,11 @@ varying vec3 vNormal;
 flat varying vec4 vInfo; // seed, occupancy, colour fade, part
 flat varying vec4 vKind; // style (0 plain, 1 spire, 2 setback), burning, part top y, part height
 flat varying float vTop; // the roof (sunk) height, m: where a neon crown runs
+// R1 silhouette AA: the fragment's box-local position (x, y, z; m), and the
+// part's TRUE extents — half sizes x/z, base and top y (m) — and taper.
+varying vec3 vLoc;
+flat varying vec4 vHalf;
+flat varying float vTaper;
 ${FAR_SPIRE_GLSL}
 void main() {
   vec2 c;     // footprint centre, from the eye (x, z), m
@@ -409,11 +414,12 @@ void main() {
   vec2 hp = hsz * s;
   float hgt = H * sink;
   float mastL = 0.0;
+  // One pixel here, m.
+  float pxm = length(vec3(c, H - camY)) * uFarPx;
   if (aPart > 2.5) {
     y0 = ends.z;
     y1 = 1.0;
     // The needle never thinner than ~1.5 px, so it cannot crawl.
-    float pxm = length(vec3(c, H - camY)) * uFarPx;
     float wpx = 0.75 * pxm;
     hp = vec2(needle > 0.0 ? max(needle, wpx) : mast * max(0.6, wpx));
     tp = needle > 0.0 ? 0.0 : 1.0;
@@ -421,8 +427,16 @@ void main() {
     // the top of it, so it cannot drop through a pixel either).
     mastL = mast * max(12.0, 3.0 * pxm) * sink;
   }
-  vec2 local = position.xz * hp * mix(1.0, tp, position.y);
-  float y = mix(y0, y1, position.y) * hgt + position.y * mastL;
+  // R1 silhouette AA: a solid part is drawn a pixel larger every way but
+  // down; the fragment shader fades that pixel (and the one inside it) to
+  // the haze by the true edge's coverage — on silhouette edges only — so a
+  // far tower's outline slides instead of stepping a pixel at a time.
+  bool solid = aPart < 2.5 && y1 > y0 && hp.x > 0.0;
+  vHalf = vec4(hp, y0 * hgt, y1 * hgt);
+  vTaper = tp;
+  vec2 local = position.xz * (hp + (solid ? vec2(pxm) : vec2(0.0))) * mix(1.0, tp, position.y);
+  float y = mix(y0, y1, position.y) * hgt + position.y * (mastL + (solid ? pxm : 0.0));
+  vLoc = vec3(local.x, y, local.y);
   vec3 rel3 = vec3(c.x + local.x, y - camY, c.y + local.y);
   vRel = rel3;
   vNormal = normal;
@@ -445,6 +459,9 @@ varying vec3 vNormal;
 flat varying vec4 vInfo;
 flat varying vec4 vKind;
 flat varying float vTop;
+varying vec3 vLoc;
+flat varying vec4 vHalf;
+flat varying float vTaper;
 float abFarCell(vec2 cell, float seed) {
   return float(abFarHash(uvec2(ivec2(cell) + 4096) ^ uvec2(uint(seed * 65535.0))) & 0xffffu) / 65535.0;
 }
@@ -469,6 +486,7 @@ void main() {
   // any branch. Never under the isotropic footprint, which is its floor.
   float d = length(vRel);
   vec2 fw = max(fwidth(vFacade), vec2(d * uFarPx));
+  vec3 lw = max(fwidth(vLoc), vec3(1e-4));
   vec3 dir = vRel / max(d, 1.0);
   vec3 fogC = abGlowFog(fogColor, dir.y);
   vec3 n = normalize(vNormal);
@@ -577,7 +595,25 @@ void main() {
   em *= min(1.0, 0.7 / max(dot(em, vec3(0.2126, 0.7152, 0.0722)), 1e-4));
   em = abFarAirLight(em, depth);
   float vis = abFarVis(d) * vInfo.z;
-  gl_FragColor = vec4(mix(fogC, col + em, vis), 1.0);
+  // R1 silhouette AA: the pixel distance to the part's true edge, on the
+  // edges whose neighbouring face is turned away (the outline; an inner
+  // corner between two seen faces stays solid), as a coverage — ½ on the
+  // edge, 0 a half pixel outside it (the drawn pixel of margin), 1 inside.
+  float cov = 1.0;
+  if (part < 2.5) {
+    float t = clamp((vLoc.y - vHalf.z) / max(vHalf.w - vHalf.z, 1e-3), 0.0, 1.0);
+    vec2 hh = vHalf.xy * mix(1.0, vTaper, t);
+    float dpx = 1e3;
+    if (roof || abs(n.z) > 0.5) {
+      if (sign(vLoc.x) * vRel.x >= 0.0) dpx = min(dpx, (hh.x - abs(vLoc.x)) / lw.x);
+    }
+    if (roof || abs(n.x) > 0.5) {
+      if (sign(vLoc.z) * vRel.z >= 0.0) dpx = min(dpx, (hh.y - abs(vLoc.z)) / lw.z);
+    }
+    if (!roof && vHalf.w >= cameraPosition.y) dpx = min(dpx, (vHalf.w - vLoc.y) / lw.y);
+    cov = clamp(dpx + 0.5, 0.0, 1.0);
+  }
+  gl_FragColor = vec4(mix(fogC, col + em, vis * cov), 1.0);
 }
 `;
 

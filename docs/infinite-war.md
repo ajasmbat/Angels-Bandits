@@ -181,6 +181,14 @@ What the final gate found and fixed is in the PR. In short:
   exhaust colour and size into non-inlined calls, and `chaos-bench` failed
   its 1 KB budget on remote planes (1392 B/frame, already at f62e54f). It
   now reads 672.
+- **C1's warnings were easy to miss.** A low pass sets off an event every
+  2–4 s, and its tells (the alarm, dust trickling, a gas main's hiss) were
+  sound and particles only. While an event is warned and still to come
+  within 320 m, the HUD's alert slot now names it ("⚠ TOWER COMING DOWN",
+  "⚠ GAS MAIN ABOUT TO BLOW", …), with a due enemy bomb taking priority
+  (`client/src/game/hazard-warn.ts`).
+- **The soak called a death fade stuck at 0.1 fps.** Its frame floor
+  rounded the frame rate to 0 (`tools/perf/polish.mjs`).
 
 Before and after, SwiftShader, gallery scale 0.5–0.75. The planner checks
 the look on the M3.

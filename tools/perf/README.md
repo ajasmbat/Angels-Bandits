@@ -3010,6 +3010,11 @@ the measurement + ~10 %:
 X1 re-shot the whole set (load average 15–20) and every view held its
 ceiling. `war-peak` now carries the INSANE air force as well (500
 planes): it draws 125, against 121 without them, under its 133.
+On the Mobile tier (`AB_GALLERY_QUALITY=mobile AB_GALLERY_DEVICE=phone`)
+`war-peak` draws 104 and the four chaos views 90–97. The tier's existing
+caps carry the combined worst case: it draws the nearest 150 enemies
+(`airforce`), keeps 45 % of the armada (`skyArmada`) and thins its
+particles. Its fps is the M3's and a phone's to confirm.
 
 On the Mobile tier (`AB_GALLERY_QUALITY=mobile AB_GALLERY_DEVICE=phone`,
 844×390), `war-peak` draws 100 and `chaos-low-pass` 93. The ceilings

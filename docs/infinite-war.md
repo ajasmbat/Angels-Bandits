@@ -327,6 +327,15 @@ guns landed together, and it was transparent on a quiet second.
 `CHAOS_VOICES` (6) keeps a pile-up of one-shots under the guns. Shake and
 the comfort caps are unchanged.
 
+**Perf with everything on:** `war-peak` now carries the INSANE air force
+too (500 planes, with the street fleet, C1's low pass, a P1 comet, the
+armada and the far city). It draws 125 on High, against 121 without the
+planes, and 104 on the Mobile tier, both under its ceiling of 133. The
+four new gallery views draw 101–117 on High and 90–97 on Mobile. Each is
+held to its measurement + ~10 % in `BUDGETS.galleryDraws`. No new quality
+cap was needed: the planes ride the fleet's instanced draws, and the
+Mobile tier already draws only the nearest 150. The M3 confirms the fps.
+
 ### The knobs and the targets
 
 | to change | knob | where |

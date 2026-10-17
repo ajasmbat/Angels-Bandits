@@ -1307,6 +1307,25 @@ export const VIEWS = [
     weather: "clear",
     boss: { ahead: 320, count: 20 },
   },
+  // E1: the air force — 500 enemy planes in squadrons circling the camera
+  // at 120–820 m (__ab.qaAirforce: real wire rows through the real client
+  // path), low over the roofs: the near ones in full detail, the rest
+  // through the fleet's mid / far LOD into the haze. However many there
+  // are, they cost the fleet's same instanced draws. The plane is parked
+  // high over (1000, 1000), out of shot; the squadrons circle it.
+  {
+    name: "airforce-swarm",
+    x: 1000,
+    z: 1000,
+    y: 560,
+    yaw: Math.atan2(-380, 440),
+    eye: [1000, 390, 1000],
+    at: [1380, 270, 560],
+    fov: 75,
+    weather: "clear",
+    raf: true,
+    airforce: 500,
+  },
   // L6 (Stormlit): the carrier composition (L7b: renamed from a second
   // `reference-hero`, which shared its name and file with L7's) — Z1: the
   // fleet across the top of the frame, the nearest ships' lamps throwing

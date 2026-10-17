@@ -126,6 +126,7 @@ import type {
   WelcomeMsg,
 } from "@angels-bandits/common/protocol";
 import { airlinerOffsetInto } from "@angels-bandits/common/skytraffic";
+import { RooflineGrid } from "@angels-bandits/common/squadron";
 import { strikesInWindow } from "@angels-bandits/common/storm";
 import {
   MISSILE_SHOOTER_ID,
@@ -299,6 +300,12 @@ import {
 import { magnetizeVelocity } from "./game/magnetism";
 import { MissileFeed, MissileShake, bombingNear } from "./game/missile-feed";
 import { createPullCue, stepPullCue } from "./game/pull-feel";
+import {
+  type QaAirforceSpec,
+  qaAirforceExtend,
+  qaAirforceIds,
+  qaSquadrons,
+} from "./game/qa-airforce";
 import {
   type QaChaosSpec,
   type QaChaosStage,
@@ -1769,6 +1776,11 @@ scene.add(bossRenderer.group);
  * schedule, and how many shells the server sent while it was staged
  * (dropped each frame). */
 let qaBoss: QaFleetStage | null = null;
+/** E1 QA (`__ab.qaAirforce`): the staged air force riding every snapshot,
+ * and the roofline it keeps over (built on first use). */
+let qaAirforce: QaAirforceSpec | null = null;
+let qaRoofline: RooflineGrid | null = null;
+
 /** C1 QA (`__ab.qaLowChaos`): the warnings it put in the director map, and
  * whether it staged destruction (cleared with it). */
 const qaLowChaos = { ids: [] as number[], staged: false };
@@ -2070,6 +2082,8 @@ remotes.setRoster(welcome.roster);
 remotes.setRacks(socket.racks); // W2: the bombs still on each enemy's racks
 /** E1: remote engines voiced at once, the nearest first. */
 const ENGINE_VOICES = 12;
+/** E1: off-screen edge markers at once, the nearest first. */
+const EDGE_MARKERS = 8;
 
 // --- Combat: guns, bullets, tracers, HUD chrome ---
 const guns = new Guns();
@@ -2564,6 +2578,7 @@ function remoteFired(id: string): void {
 
 // --- Server events ---
 socket.events.onSnapshot = (snap) => {
+  if (qaAirforce && qaRoofline) qaAirforceExtend(qaAirforce, snap, qaRoofline);
   remotes.ingest(snap);
   reactor.observeSnapshot(snap, socket.selfId); // L1 low passes + own track
   const self = snap.players.find((p) => p.id === socket.selfId);
@@ -3665,6 +3680,22 @@ declare global {
        * going off round a held pose (game/qa-lowchaos.ts) — the plane's own
        * pose when omitted — through qaDestruction and the director's
        * warnings; null clears it. */
+      /** E1 QA: stage an air force of `n` enemy planes in squadrons
+       * round the plane (or `spec`'s point) — wire rows through the real
+       * client path (game/qa-airforce.ts); null / 0 clears it. */
+      qaAirforce: (spec: number | QaAirforceSpec | null) => {
+        planes: number;
+        squadrons: number;
+      };
+      /** E1: the air force as this client draws it — enemies sampled and
+       * drawn last frame, the draw distance the tier's cap holds them
+       * under, and the fleet's enemy instances. */
+      airforce: () => {
+        enemies: number;
+        drawn: number;
+        cut: number;
+        fleetEnemies: number;
+      };
       qaLowChaos: (spec?: QaLowChaosSpec | null) => {
         /** Warnings still to go off, and gone off (bursts, sirens). */
         warned: number;
@@ -4929,6 +4960,31 @@ window.__ab = {
       bombsRefused: qaChaos.bombsRefused,
     };
   },
+  // E1 QA: an air force of n planes round the camera.
+  qaAirforce: (spec) => {
+    if (qaAirforce) {
+      for (const id of qaAirforceIds(qaAirforce.n)) remotes.playerLeft(id);
+    }
+    const want =
+      typeof spec === "number"
+        ? { n: spec, x: flight.pos.x, z: flight.pos.z }
+        : spec;
+    qaAirforce = want && want.n > 0 ? want : null;
+    if (qaAirforce) {
+      qaRoofline ??= RooflineGrid.build(city.cityBuildings);
+      qaAirforceIds(qaAirforce.n).forEach((id, i) =>
+        remotes.playerJoined({ id, name: `BANDIT-${i + 1}`, isBot: true }),
+      );
+    }
+    return {
+      planes: qaAirforce?.n ?? 0,
+      squadrons: qaSquadrons(qaAirforce?.n ?? 0),
+    };
+  },
+  airforce: () => ({
+    ...remotes.airStats,
+    fleetEnemies: fleet?.stats.enemies ?? 0,
+  }),
   // C1 QA: stage a low run with the low-flying chaos firing round a held
   // pose (the plane's own when omitted); null clears it.
   qaLowChaos: (spec) => {
@@ -7214,7 +7270,10 @@ const frame = (rafNow: number): void => {
 
   // Matrices are fresh after the render — project the screen-space UI now.
   markerPositions.length = 0; // A1: one array, refilled, not one a frame
-  for (const t of targets) markerPositions.push(t.pos);
+  // E1: the nearest few only — an air force would wall the screen's edge.
+  for (const t of remotes.nearest(targets, EDGE_MARKERS)) {
+    markerPositions.push(t.pos);
+  }
   edgeMarkers.update(camera, chase.position, markerPositions, markerScratch);
   const aimResult = leadIndicator.update(
     camera,

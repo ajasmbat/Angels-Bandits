@@ -363,22 +363,18 @@ export class PlaneLights {
     const flicker =
       0.8 + 0.2 * Math.sin(t * FLICKER_A) * Math.sin(t * FLICKER_B);
     const throttle = Math.min(1, Math.max(0.25, speed / MAX_SPEED));
-    scratchColor
-      .copy(exhaustBoost)
-      .multiplyScalar(throttle * flicker)
-      .lerp(
-        scratchFlame.copy(afterburnBoost).multiplyScalar(flicker),
-        afterburn,
-      );
-    this.appendColor(
-      rendered,
-      mounts.exhaust,
-      scratchColor,
-      EXHAUST_SIZE * (1 + (AFTERBURN_SIZE - 1) * afterburn),
-    );
-    // (Channel by channel: a double handed to a call V8 does not inline is
-    // boxed, per plane per frame — P4's allocation table.)
+    // (Channel by channel, and the computed size written after the call: a
+    // double handed to a call V8 does not inline is boxed, per plane per
+    // frame — P4's allocation table; O1 found 739 B/frame here.)
     const glow = throttle * flicker;
+    const cold = glow * (1 - afterburn);
+    const hot = flicker * afterburn;
+    scratchColor.r = exhaustBoost.r * cold + afterburnBoost.r * hot;
+    scratchColor.g = exhaustBoost.g * cold + afterburnBoost.g * hot;
+    scratchColor.b = exhaustBoost.b * cold + afterburnBoost.b * hot;
+    this.appendColor(rendered, mounts.exhaust, scratchColor, EXHAUST_SIZE);
+    this.sizes[this.count - 1] =
+      EXHAUST_SIZE * (1 + (AFTERBURN_SIZE - 1) * afterburn);
     scratchColor.r = exhaustHalo.r * glow;
     scratchColor.g = exhaustHalo.g * glow;
     scratchColor.b = exhaustHalo.b * glow;
@@ -439,7 +435,6 @@ export class PlaneLights {
 }
 
 const scratchColor = new THREE.Color();
-const scratchFlame = new THREE.Color();
 
 // --- Hero light (VO4): every plane lights ITSELF, in its own shader ---
 //

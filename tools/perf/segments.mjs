@@ -140,6 +140,9 @@ export const BUDGETS = {
   // (city.ts: every chunk COLLAPSE_CAP lets fall, +25 %, +64): growing is a
   // buffer reallocation mid-game, and the boot size is the derived bound.
   chunkInstances: CHUNK_INSTANCES_BUDGET,
+  // O1: gallery views (gallery.mjs) judged on the draw calls of the frame
+  // each one shoots (High, desktop). Filled in below from measurement.
+  galleryDraws: {},
 };
 
 export const SEGMENTS = [

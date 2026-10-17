@@ -55,9 +55,10 @@ export function asIntensity(v: unknown): Intensity | null {
  * the full bot brain). */
 export const ENEMY_CAP = 12;
 /** E1: enemy planes in a room at once, at most — the wave's and the air
- * force's together. The largest count tools/airforce-bench.ts measured in
- * budget (server tick p99 ≤ 4 ms, ≤ 250 KB/s per client); docs/infinite-
- * war.md has the table. */
+ * force's together. The target count: the wire holds it (and 700) inside
+ * 250 KB/s per client; the tick's p99 is the M3 / quiet-box measurement
+ * (tools/airforce-bench.ts; docs/infinite-war.md has the table and what
+ * to lower if it does not hold). */
 export const ENEMY_CAP_MAX = 500;
 /** E1: each level's enemy planes in the sky — its air force plus its
  * wave — EASY / NORMAL / HARD / INSANE. */

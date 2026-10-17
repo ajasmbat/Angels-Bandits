@@ -6,7 +6,8 @@
 // landscape phone profile; AB_GALLERY_QUERY appends raw query
 // params, e.g. `refl=0` for S6's before shots out of the same build;
 // AB_GALLERY_PROBE=streetGlow,farTraffic logs the pre-bloom HDR luma those
-// systems add to each shot, L8).
+// systems add to each shot, L8; AB_GALLERY_SHOT_TIMEOUT_MS how long one
+// shot may wait for its frame, O1).
 // The sky is pinned to deep night (`?sky=night`, L12) so shots never depend
 // on the server's time of night; views with a `sky` field force their own
 // phase through __ab.sky.
@@ -23,6 +24,9 @@ const ONLY = process.argv[4] ? process.argv[4].split(",") : null;
 const PROBE = process.env.AB_GALLERY_PROBE
   ? process.env.AB_GALLERY_PROBE.split(",")
   : null;
+/** O1: how long one shot may wait for its frame (a loaded software box
+ * can take minutes over a staged collapse), ms. */
+const SHOT_MS = Number(process.env.AB_GALLERY_SHOT_TIMEOUT_MS ?? 180000);
 mkdirSync(OUT, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const server = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
@@ -598,7 +602,7 @@ try {
     // read after the view's staging is torn down), judged against the
     // view's ceiling in BUDGETS.galleryDraws where it has one.
     const draws = await page.evaluate(() => window.__ab.perf().drawCalls);
-    await page.screenshot({ path: `${OUT}/${v.name}.png`, timeout: 180000 });
+    await page.screenshot({ path: `${OUT}/${v.name}.png`, timeout: SHOT_MS });
     const ceiling = BUDGETS.galleryDraws[v.name];
     if (ceiling !== undefined) judged.push({ name: v.name, draws, ceiling });
     console.log(

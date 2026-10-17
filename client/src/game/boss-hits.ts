@@ -13,6 +13,8 @@ import {
   type ShipPose,
   blankPose,
   fleetPoseAt,
+  laneAltHi,
+  laneAltLo,
   shipPresent,
   shipRayHit,
 } from "@angels-bandits/common/boss";
@@ -59,10 +61,12 @@ export function bossBulletHit(
   const hi = prev.y < cur.y ? cur.y : prev.y;
   for (const s of slot.ships) {
     if (!shipPresent(s, renderMs)) continue;
-    const lane = FLEET_LANES[s.lane] as { cls: 0 | 1 | 2; alt: number };
+    const lane = FLEET_LANES[s.lane] as { cls: 0 | 1 | 2 };
     const reach = SHIP_REACH[lane.cls] as { y: number; r: number };
-    // Its layer's band first: most rounds fly nowhere near it.
-    if (hi < lane.alt - reach.y || lo > lane.alt + reach.y) continue;
+    // Its lane's band first: most rounds fly nowhere near it.
+    if (hi < laneAltLo(s.lane) - reach.y || lo > laneAltHi(s.lane) + reach.y) {
+      continue;
+    }
     const cls = lane.cls;
     const r = reach.r;
     fleetPoseAt(s, renderMs, pose);

@@ -4,6 +4,7 @@
 // every point on a cone changes smoothly as the eye crosses the wall, stays
 // faint with the eye on the axis, and is gone at the near plane.
 
+import { CLOUD_BASE } from "@angels-bandits/common/constants";
 import type { Vec3 } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
 import {
@@ -19,6 +20,7 @@ import {
   beamCameraFade,
   beamCameraRho,
   beamNearFade,
+  deckBeamLength,
 } from "../src/render/searchlights";
 
 const add = (a: Vec3, b: Vec3, k = 1): Vec3 => ({
@@ -278,5 +280,20 @@ describe("BEAM_FALLOFF_GLSL", () => {
     ]) {
       expect(BEAM_FALLOFF_GLSL).toContain(n.toFixed(4));
     }
+  });
+});
+
+describe("K1 deckBeamLength: a rooftop beam ends in the lowered deck", () => {
+  it("never reaches more than 30 m into the deck, whatever the lamp and lean", () => {
+    for (const lampY of [40, 180, 336]) {
+      for (const dirY of [0.3, 0.6, 0.9, 1]) {
+        const top = lampY + dirY * deckBeamLength(lampY, dirY);
+        expect(top).toBeLessThanOrEqual(CLOUD_BASE + 30 + 1e-9);
+      }
+    }
+  });
+
+  it("keeps its full length when it leans too far to reach the deck", () => {
+    expect(deckBeamLength(100, 0.2)).toBe(deckBeamLength(100, 0));
   });
 });

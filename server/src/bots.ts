@@ -439,9 +439,11 @@ const wrapAngle = (a: number): number => {
 const LAUNCH_SETTLE_MS = 25_000;
 
 /** W2 bomb runs. A dive's IP: this far over its roof, m, never above
- * DIVE_IP_MAX (well under the bot ceiling). */
+ * DIVE_IP_MAX (well under the bot ceiling — K1: the top of the 60–350 m
+ * band the bots fight in, under the rooftop airships' lowest hulls over
+ * the cores). */
 const DIVE_IP_ABOVE = 140;
-const DIVE_IP_MAX = 420;
+const DIVE_IP_MAX = BOT_DEFEND_MAX_ALT;
 /** The dive aims this far over the roof, m, at about DIVE_ANGLE (never
  * steeper than DIVE_MAX_ANGLE), throttle cut: with the bomb's fixed fall
  * the release height has to match the sink (common/src/bombs.ts). */

@@ -146,6 +146,8 @@ const bandScore = (nearest: number): number => Math.abs(nearest - BAND_MID);
  * `clear` (S4) vetoes candidates outright — a sky boss's hull crosses the
  * spawn layer, and spawn protection does not stop a crash. It is asked with
  * the heading the spawn would get (null: none yet — no enemies to face).
+ * K1: with no enemy to face, a candidate takes the first clear heading of
+ * a fan (freeHeading) rather than asking for the whole run-out disc.
  * A sky where nothing is clear keeps the unvetoed pick. H1: the landmark
  * supertalls are always asked (landmarkClear) — and if every candidate
  * fails, the one whose run-out stays farthest from them wins, never an
@@ -159,8 +161,10 @@ export function pickRespawn(
 ): SpawnState {
   let best: Vec3 | null = null;
   let bestScore = Number.POSITIVE_INFINITY;
+  let bestYaw: number | null = null;
   let far: Vec3 | null = null;
   let farScore = Number.NEGATIVE_INFINITY;
+  let farYaw: number | null = null;
   let safest: Vec3 | null = null;
   let safestScore = Number.NEGATIVE_INFINITY;
   for (let i = 0; i < RESPAWN_BAND_SAMPLES; i++) {
@@ -170,17 +174,25 @@ export function pickRespawn(
       z: rand() * WORLD_SIZE,
     };
     const nearest = nearestDistance(candidate, enemies);
-    const heading = facing(candidate, enemies);
-    const room = landmarkClearance(candidate, heading);
+    const facingYaw = facing(candidate, enemies);
+    const room = landmarkClearance(candidate, facingYaw);
     if (room > safestScore) {
       safest = candidate;
       safestScore = room;
     }
-    if (room < BOSS_SPAWN_MARGIN) continue;
-    if (clear && !clear(candidate, heading)) continue;
+    // K1: with no enemy to face and a veto to satisfy, the spawn takes the
+    // first clear heading of a fan instead — the fleet's rooftop layer
+    // cruises the spawn layer, so the whole run-out disc (the null-heading
+    // ask) is all but never clear of every hull.
+    const heading =
+      facingYaw === null && clear ? freeHeading(candidate, clear) : facingYaw;
+    if (facingYaw === null && clear && heading === null) continue;
+    if (heading === facingYaw && room < BOSS_SPAWN_MARGIN) continue;
+    if (clear && heading === facingYaw && !clear(candidate, heading)) continue;
     if (nearest > farScore) {
       far = candidate;
       farScore = nearest;
+      farYaw = heading;
     }
     if (inNoseCone(candidate, enemies)) continue;
     // D5: never into a warned director event's danger zone.
@@ -189,6 +201,7 @@ export function pickRespawn(
     if (score < bestScore) {
       best = candidate;
       bestScore = score;
+      bestYaw = heading;
     }
   }
   // Every candidate vetoed (never, in practice): drop the caller's vetoes,
@@ -201,7 +214,32 @@ export function pickRespawn(
   }
   // RESPAWN_BAND_SAMPLES ≥ 1, so `far` is otherwise always set.
   const pos = best ?? (far as Vec3);
-  return { pos, yaw: yawToNearest(pos, enemies, rand), speed: RESPAWN_SPEED };
+  // The draw is taken either way, so the stream stays aligned.
+  const yaw = yawToNearest(pos, enemies, rand);
+  const free = best ? bestYaw : farYaw;
+  return {
+    pos,
+    yaw: enemies.length === 0 && free !== null ? free : yaw,
+    speed: RESPAWN_SPEED,
+  };
+}
+
+/** K1: headings a spawn with no enemy to face may take, fanned round a
+ * bearing seeded by its position. */
+const FREE_HEADINGS = 8;
+
+/** K1: the first heading of the fan round `pos`'s seeded bearing whose
+ * straight run-out clears the landmarks and `clear`, or null. Pure. */
+function freeHeading(
+  pos: Vec3,
+  clear: (pos: Vec3, yaw: number) => boolean,
+): number | null {
+  const base = (((pos.x * 0.0137 + pos.z * 0.0291) % 1) + 1) % 1;
+  for (let k = 0; k < FREE_HEADINGS; k++) {
+    const yaw = (base + k / FREE_HEADINGS) * Math.PI * 2;
+    if (landmarkClear(pos, yaw) && clear(pos, yaw)) return yaw;
+  }
+  return null;
 }
 
 /**

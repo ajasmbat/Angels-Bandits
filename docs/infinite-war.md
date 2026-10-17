@@ -38,9 +38,9 @@ The hand-offs are distances, and the fog hides each one.
   exactly 0 nearer than `SKY_INNER` and ramps in over `SHIP_FADE_IN`
   (950–1500 m), while the real fleet is fully fogged by 800 m. A real ship
   and a cosmetic one are never both visible in the same place. The real
-  fleet's altitude band (`FLEET_ALT_MIN`–`FLEET_ALT_MAX`, about 534–606 m)
-  sits inside the armada's layers (490–625 m), so the sky reads as one
-  fleet that thins into the haze. A new real ship comes on at least
+  fleet's bands (K1: the two street layers at 86–176 m and the rooftops at
+  about 241–400 m) sit inside the armada's layers (150–410 m), so the sky
+  reads as one fleet that thins into the haze, down among the far towers. A new real ship comes on at least
   `FLEET_HIDE_M` (900 m) from every human, so it drifts out of the haze
   rather than appearing.
 - **Cosmetic → painted.** Both live in L2's far shell and share its haze
@@ -65,6 +65,50 @@ becomes the one thing that pops at 800 m.
 - **Zero per-frame allocation in hot paths.** `tools/chaos-bench.ts`,
   `tools/spectacle-bench.ts` and `tools/destruction-bench.ts` hold every
   entry point to 1 KB/frame and the whole frame to 4 KB.
+
+## The war in the streets (K1)
+
+The sky is lowered onto the skyline. The cloud deck is at `CLOUD_BASE`
+(440 m) and the soft ceiling at 480 m, so the four landmark spires pierce
+the deck and the playable air is the skyline itself. The real fleet flies
+three layers, each with one heading:
+
+- **The x-avenues and the z-avenues.** Pickets and cruisers run below the
+  roofline, their beams inside the avenue's lot lines. Their searchlights
+  swing abeam onto the facades.
+- **The rooftops.** Carriers and two cruisers skim mid-block lines. Each
+  lane's altitude is a profile that keeps 20 m over every roof under it
+  and eases up and down at no more than a 0.2 slope.
+
+`common/src/fleetplan.ts` fits every lane to the city (`laneClearance`):
+the buildings' solids and roof structures, the bridges, piers and
+viaducts, the cranes, the aircraft and the props. Both sides install the
+same plan (`installFleetPlan(planFleet(…))`).
+
+Only a tower crane may stand in a lane's way. It is a **planned
+break-through**: the server finds the instant the hull would meet it on
+the ship's own course (`breakTouchIn`) and fells it 250 ms before. A P1
+sweep carries the impact on from the nose, and the ship takes 12 % of
+its HP.
+
+A street ship that is shot down falls along its avenue, and its landing
+ploughs both facades (P1 flank sweeps).
+
+The sky traffic came down too:
+
+- helicopters fly at 192–222 m, between the street layers and the
+  rooftops;
+- the blimp flies at 388 m on a line beside the rooftop lanes;
+- the news heli flies at 418–424 m, and skips any story whose route meets
+  a spire.
+
+Two more things changed:
+
+- Rooftop AA nests chip at ships passing at eye level, but never take the
+  kill.
+- Belly launches off a street ship slide out level down the avenue.
+
+`concepts/invariants/altitude-stack.md` lists every site that must agree.
 
 ## Budgets
 
@@ -119,7 +163,12 @@ Measured on the runner, at High on desktop (draws of the shot frame;
 107, `impact-plane-through` 100, `sky-dogfights` 97, `boss-breakup` 94,
 `impact-comet-row` 93, `fleet-sky` 90, the sky and skyline views 84–88.
 Every ceiling is that number plus ~10 %. On the Mobile tier (phone
-profile), `war-peak` draws 100 and `chaos-low-pass` 93.
+profile), `war-peak` draws 100 and `chaos-low-pass` 93. K1 (the war in
+the streets) re-measured: `war-peak` 122, `boss-breakup` 96, `fleet-sky`
+99 (re-posed under the rooftops), and its own views `fleet-avenue` 99,
+`fleet-rooftop` 101, `towers-into-clouds` 94, `fleet-breakthrough` 100.
+The fleet is still its four draws in every one; the rise is the city
+in the lower frames.
 
 ### The busiest moment
 

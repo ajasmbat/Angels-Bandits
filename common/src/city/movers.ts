@@ -22,9 +22,17 @@
 //     cable; the jib slews at a constant rate, so the hazard is a function of
 //     WHEN you fly the canyon, not just where.
 //   - Helicopters on straight torus loops along street axes.
-//   - One blimp, circling below the cloud deck with a lit banner.
+//   - One blimp, circling below the cloud deck with a lit banner (K1: down
+//     among the rooftop airships, on a line of its own beside theirs).
 
-import { type FleetSlot, collideBoss } from "../boss";
+import {
+  FLEET_LANES,
+  FLEET_LAYERS,
+  type FleetSlot,
+  LAYER_ROOF,
+  SHIP_REACH,
+  collideBoss,
+} from "../boss";
 import {
   BLIMP_ALT,
   BLIMP_HULL,
@@ -51,6 +59,7 @@ import {
   HELI_HULL,
   HELI_SPEED_MAX,
   HELI_SPEED_MIN,
+  LANDMARK_FOOTPRINT,
   PLAYER_RADIUS,
   WORLD_SIZE,
 } from "../constants";
@@ -63,7 +72,7 @@ import {
 import { type CaveInSlot, collideCaveIns } from "./caveins";
 import { type CollapseField, collideCollapses, craneDown } from "./collapse";
 import { type Building, mulberry32 } from "./index";
-import { CONSTRUCTION_BLOCKS } from "./layout";
+import { CONSTRUCTION_BLOCKS, LANDMARK_BLOCKS } from "./layout";
 import {
   NEWS_HELI_ID,
   type NewsHeliSlot,
@@ -353,11 +362,16 @@ export function generateMovers(
     });
   }
   const blimpRand = routeRand(seed, HELI_COUNT);
+  // K1: the blimp shares the rooftop layer's sky (the lowered deck leaves
+  // no band over it), so it flies the layer's heading on an avenue line
+  // of its own — beside every rooftop lane, clear of every spire. The
+  // axis draw is kept so the rest of the stream is unchanged.
+  blimpRand();
   aircraft.push({
     id: aircraft.length,
     kind: "blimp",
-    axis: blimpRand() < 0.5 ? "x" : "z",
-    cross: Math.round(blimpRand() * WORLD_SIZE),
+    axis: blimpAxis(),
+    cross: blimpCross(blimpRand()),
     dir: blimpRand() < 0.5 ? 1 : -1,
     speed: BLIMP_SPEED,
     phase: blimpRand() * WORLD_SIZE,
@@ -373,6 +387,49 @@ export function generateMovers(
     boats: riverBoats(seed),
     trains: generateTrains(seed, buildings),
   };
+}
+
+/** K1: the blimp flies the fleet's rooftop layer's heading. (A function:
+ * boss.ts and this module import each other, so nothing of the fleet's is
+ * read while the modules load.) */
+const blimpAxis = (): "x" | "z" =>
+  (FLEET_LAYERS[LAYER_ROOF] as { dz: number }).dz === 0 ? "x" : "z";
+/** ...this far, at least, beside any rooftop lane's hull, m. */
+export const BLIMP_LANE_GAP = 5;
+/** ...and this far, plan view, off any landmark's shaft, m. */
+export const BLIMP_SPIRE_GAP = 10;
+
+/**
+ * K1: the avenue line (a BLOCK_PITCH multiple) the blimp flies, picked by
+ * `roll` (0..1) among the lines that keep its hull BLIMP_LANE_GAP beside
+ * every rooftop lane's hull and BLIMP_SPIRE_GAP off every landmark's
+ * podium — so it never meets a hull or a spire. Pure in the fixed lanes
+ * and landmark layout.
+ */
+export function blimpCross(roll: number): number {
+  const axis = blimpAxis();
+  const lines: number[] = [];
+  for (let c = 0; c < WORLD_SIZE; c += BLOCK_PITCH) {
+    const lanes = FLEET_LANES.every(
+      (l) =>
+        l.layer !== LAYER_ROOF ||
+        Math.abs(wrapDeltaAxis(c, l.cross)) >=
+          BLIMP_HULL[2] +
+            (SHIP_REACH[l.cls] as { z: number }).z +
+            BLIMP_LANE_GAP,
+    );
+    const spires = LANDMARK_BLOCKS.every(([bx, bz]) => {
+      const lc = (axis === "z" ? bx : bz) * BLOCK_PITCH + BLOCK_PITCH / 2;
+      return (
+        Math.abs(wrapDeltaAxis(c, lc)) >=
+        LANDMARK_FOOTPRINT / 2 + BLIMP_HULL[2] + BLIMP_SPIRE_GAP
+      );
+    });
+    if (lanes && spires) lines.push(c);
+  }
+  return (
+    lines[Math.min(lines.length - 1, Math.floor(roll * lines.length))] ?? 0
+  );
 }
 
 const TAU = Math.PI * 2;

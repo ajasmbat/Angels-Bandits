@@ -240,10 +240,12 @@ export const MIN_SPEED = 40;
 /** Maximum airspeed, m/s. */
 export const MAX_SPEED = 90;
 /** Soft altitude ceiling, meters — engine power fades above this. H1: 600 →
- * 750, CLOUD_BASE + 100 as before, 270 m over CITY_TOP. */
-export const SOFT_CEILING = 750;
-/** Band above SOFT_CEILING over which engine power fades to nothing, meters. */
-export const CEILING_FADE = 150;
+ * 750. K1: 750 → 480, CLOUD_BASE + 40 and level with CITY_TOP — the war is
+ * fought down in the skyline, and only the spires reach the storm. */
+export const SOFT_CEILING = 480;
+/** Band above SOFT_CEILING over which engine power fades to nothing, meters.
+ * K1: 150 → 100, the same fade feel over the shallower sky. */
+export const CEILING_FADE = 100;
 /** Sink rate at full ceiling fade, m/s — the "mush back down", never a wall. */
 export const MUSH_SINK = 25;
 /** Throttle response: target-speed change per second at full W/S, m/s². */
@@ -400,7 +402,7 @@ export const SPEED_TOLERANCE = 1.1;
 export const POSE_DISTANCE_SLACK = 15;
 /** Claimed altitude is clamped to this, meters (legal flight can't sustain
  * more: SOFT_CEILING + CEILING_FADE + 50). */
-export const MAX_ALTITUDE = 950;
+export const MAX_ALTITUDE = SOFT_CEILING + CEILING_FADE + 50;
 /** Max player-name length on the wire; longer names are truncated. */
 export const NAME_MAX_LENGTH = 16;
 /** Server drops a joined connection silent for this long, ms (clients stream at TICK_UP_HZ). */
@@ -448,13 +450,15 @@ export const BOOT_PING_INTERVAL_MS = 1000;
 // --- Storm (ST1) --- schedule shared client/server; the ceiling is a hidden
 // server rule — no constant here feeds a warning UI, by design.
 /** Cloud deck base altitude, m (ST2 renders the deck; bots stay under it).
- * H1: 500 → 650, over the blimp's hull (≤ 639 m), which is over the
- * carrier's, which is over the news heli, which is over CITY_TOP. The
- * deck's own materials fog as if it were still at 500 m (client storm.ts
- * DECK_FOG_LIFT), so it reads the same from the street. */
-export const CLOUD_BASE = 650;
-/** Above this altitude the hidden death ceiling arms, m. */
-export const STORM_KILL_ALT = 750;
+ * H1: 500 → 650. K1: 650 → 440 — the sky comes down onto the skyline: the
+ * four landmark spires (400–480 m) pierce the deck and vanish into it, and
+ * everything that flies (the fleet, the news heli, the blimp, the planes)
+ * does it under it, among the towers. The deck now sits under the 500 m it
+ * fogged as, so it needs no fog lift (client storm.ts DECK_FOG_LIFT 0). */
+export const CLOUD_BASE = 440;
+/** Above this altitude the hidden death ceiling arms, m — the soft ceiling
+ * (K1: 750 → 480), 40 m into the deck. */
+export const STORM_KILL_ALT = SOFT_CEILING;
 /** Continuous time above STORM_KILL_ALT before the kill bolt, ms — dipping
  * below resets it. Never announced to clients: discovery is the design. */
 export const STORM_GRACE_MS = 3000;
@@ -520,18 +524,23 @@ export const CRANE_SLEW_MIN = 0.014;
 export const CRANE_SLEW_MAX = 0.026;
 /** Helicopters on straight torus loops along street axes. */
 export const HELI_COUNT = 4;
-/** Helicopter cruise altitude band, m — above the canyon, below the blimp. */
-export const HELI_ALT_MIN = 120;
-export const HELI_ALT_MAX = 260;
+/** Helicopter cruise altitude band, m — K1: between the fleet's two street
+ * layers and its rooftop layer (common/src/boss.ts), so a heli on any
+ * avenue never meets an airship cruising one. */
+export const HELI_ALT_MIN = 192;
+export const HELI_ALT_MAX = 222;
 /** Helicopter cruise speed band, m/s. */
 export const HELI_SPEED_MIN = 30;
 export const HELI_SPEED_MAX = 45;
 /** Helicopter hull half-extents, m: half-length along travel, half-height, half-width. */
 export const HELI_HULL = [10, 3.2, 2.8] as const;
-/** Blimp cruise altitude, m. Below CLOUD_BASE so it flies under the deck
- * (hull 611–639 m), over the carrier's hull (≤ 600 m) and far over
- * RESPAWN_ALTITUDE, so a spawn can never land in it. */
-export const BLIMP_ALT = 625;
+/** Blimp cruise altitude, m. K1: under the lowered deck, in the fleet's
+ * rooftop band (hull 374–402 m) — over RESPAWN_ALTITUDE (+ a player's
+ * radius), so a spawn can still never land in it, and over every
+ * generated roof by 38 m, on a line of its own parallel to the rooftop
+ * lanes and clear of every landmark (city/movers.ts blimpCross), so it
+ * never meets a hull or a spire; 12.8 m under the news heli's belly. */
+export const BLIMP_ALT = 388;
 /** Blimp cruise speed, m/s — the slowest thing in the sky. */
 export const BLIMP_SPEED = 12;
 /** Blimp hull half-extents, m: half-length, half-height, half-width. */
@@ -612,9 +621,10 @@ export const TRAIN_BOT_REACH = 150;
 export const FIREWORK_INTERVAL_MIN_MS = 6000;
 export const FIREWORK_INTERVAL_MAX_MS = 11000;
 /** Burst altitude band, m — well above the streetwall, under the cloud deck.
- * H1: lifted over the downtown cores' roofs (BUILDING_MAX_HEIGHT). */
+ * H1: lifted over the downtown cores' roofs (BUILDING_MAX_HEIGHT). K1: the
+ * top comes down under the lowered deck (CLOUD_BASE − 20). */
 export const FIREWORK_ALT_MIN = 340;
-export const FIREWORK_ALT_MAX = 460;
+export const FIREWORK_ALT_MAX = 420;
 /** How long one burst's sparks live, ms. */
 export const FIREWORK_LIFETIME_MS = 2200;
 /** Sparks per burst, and concurrent bursts the client budgets for. Capped
@@ -1287,9 +1297,10 @@ export const BOT_DEFEND_COOLDOWN_MS = 6000;
 export const BOT_DEFEND_TAIL_S = 2;
 export const BOT_DEFEND_MARGIN = 6;
 /** …and never topping out above this, m: a loop from the floor climbs
- * ~150 m, and above here is the news heli's and the zeppelin's sky (H1:
- * heli ≥ 491 m, hull 530–590 m). */
-export const BOT_DEFEND_MAX_ALT = 480;
+ * ~150 m. K1: the top of the 60–350 m band the bots fight in — over it is
+ * the fleet's rooftop layer, the blimp and the news heli, under the
+ * lowered deck. */
+export const BOT_DEFEND_MAX_ALT = 350;
 /** The longest maneuver a rollout may fly before it must have ended, s. */
 export const BOT_DEFEND_MAX_S = 9;
 
@@ -1341,12 +1352,14 @@ export const BOT_TUNNEL_RUNOUT = 60;
 // with the bots); its pose is a pure function of (server-broadcast target,
 // server clock) in common/src/city/newsheli.ts. Airliners and the drone show
 // are scenery schedules in common/src/skytraffic.ts.
-/** News-heli orbit altitude band, m. H1: over every roof (the hull's belly
- * ≥ 496.8 m, 16.8 m over CITY_TOP's 480 m needle), and the rotor blur
- * (≤ 519.2 m) ≥ 20 m under the carrier's hull (BOSS_ALT − BOSS_REACH_Y =
- * 540 m) — the carrier now flies over the heli, not under it. */
-export const NEWS_HELI_ALT_MIN = 500;
-export const NEWS_HELI_ALT_MAX = 515;
+/** News-heli orbit altitude band, m. K1: just under the lowered deck — the
+ * rotor blur (≤ 428.2 m) 11.8 m under CLOUD_BASE, the belly (≥ 414.8 m)
+ * over every generated roof, 12.8 m over the blimp and 15 m over the
+ * fleet's rooftop layer (FLEET_ALT_MAX, common/src/boss.ts). Only the
+ * four landmark spires reach this high, and a story whose route would
+ * meet one is not taken (city/newsheli.ts newsRouteClear). */
+export const NEWS_HELI_ALT_MIN = 418;
+export const NEWS_HELI_ALT_MAX = 424;
 /** Orbit radius around the kill site, m, and the speeds it flies at, m/s. */
 export const NEWS_HELI_ORBIT_R = 110;
 export const NEWS_HELI_ORBIT_SPEED = 28;

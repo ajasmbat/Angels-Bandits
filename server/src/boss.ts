@@ -47,6 +47,7 @@ import {
   type FleetShip,
   type FleetTuning,
   LAUNCH_SEQ_MS,
+  type LaneBreak,
   type LaunchKind,
   SHIP_CLASSES,
   SHIP_REACH,
@@ -62,6 +63,7 @@ import {
   fleetPoseAt,
   gridCoord,
   hiddenLaneSpot,
+  laneBreaks,
   launchDoneAt,
   launchReleaseAt,
   shipById,
@@ -90,6 +92,12 @@ import {
   INTERP_DELAY_MAX_MS,
   POSE_AGE_MAX_MS,
 } from "@angels-bandits/common/constants";
+import {
+  BREAK_LEAD_MS,
+  type BreakObstacle,
+  breakPassEnd,
+  breakTouchIn,
+} from "@angels-bandits/common/fleetplan";
 import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 import type { BotRoundHit } from "./bots";
 import type { Combat, SpeedCapFn } from "./combat";
@@ -124,6 +132,38 @@ export interface BossTickResult {
     by: string | null;
   }[];
 }
+
+/** K1: a planned break-through due — `ship`'s hull is about to meet
+ * break `brk` of its lane, `obstacle`, at `touch`: the caller fells the
+ * crane (or knocks the prop down) at `at`, just before, so the hull is
+ * never drawn through it. The ship takes BREAK_DAMAGE_SHARE of its HP at
+ * `touch`. */
+export interface FleetBreak {
+  ship: FleetShip;
+  brk: LaneBreak;
+  obstacle: BreakObstacle;
+  at: number;
+  touch: number;
+}
+
+/** How a break's obstacle stands, as the room resolves it: its shape, and
+ * whether it is still up at `t`. Null: the room has no such obstacle. */
+export type BreakResolver = (
+  brk: LaneBreak,
+  t: number,
+) => { obstacle: BreakObstacle; standing: boolean } | null;
+
+/** K1: the AA nests' rounds do this share of their plane damage to a ship,
+ * and never take it under this share of its full HP. */
+export const AA_SHIP_SCALE = 0.5;
+export const AA_SHIP_FLOOR = 0.25;
+
+/** K1: a break is looked for this far ahead, ms (the obstacle goes
+ * fleetplan.ts BREAK_LEAD_MS before the hull would touch it). */
+export const BREAK_LOOKAHEAD_MS = 1000;
+/** ...and the ship takes this share of its full HP from it (never the
+ * kill: a break leaves it at least 1 HP). */
+export const BREAK_DAMAGE_SHARE = 0.12;
 
 /** What a hit did: the ship's HP after it, and its crash when it was the
  * one that brought it down. */
@@ -192,6 +232,14 @@ export class FleetDirector {
   private readonly offered = new Map<string, number>();
   private nextLaunch = 1;
   private lastLauncher = -1;
+  /** K1: per ship and break (`id:k`), how far ahead its course has been
+   * searched for the next touch, ms, and the touch found (null: none yet). */
+  private readonly breakScan = new Map<
+    string,
+    { searched: number; touch: number | null }
+  >();
+  /** K1: break damage still to land: [ship id, when, HP]. */
+  private breakHurt: [number, number, number][] = [];
   private readonly pose = blankPose();
   private readonly at: Vec3 = { x: 0, y: 0, z: 0 };
 
@@ -318,6 +366,7 @@ export class FleetDirector {
     if (humans) this.schedule(now, planes, out);
     if (humans) this.fireTurrets(now, planes, world, out);
     this.settleShells(now, planes, out);
+    this.landBreakHurt(now);
     this.settleCrashes(now, out, world);
     // S9: a launch whose rig has reset is history.
     const ls = this.slot.launches;
@@ -386,6 +435,93 @@ export class FleetDirector {
       }
     }
     return null;
+  }
+
+  /**
+   * K1: the break-throughs due by `now + BREAK_LOOKAHEAD_MS` on the ships'
+   * own courses: each flying ship's next touch of every standing obstacle
+   * its lane plans to smash (fleetplan.ts breakTouchIn), once each. The
+   * ship's damage is queued for the touch (landed by `tick`).
+   */
+  dueBreaks(now: number, resolve: BreakResolver): FleetBreak[] {
+    const out: FleetBreak[] = [];
+    const to = now + BREAK_LOOKAHEAD_MS;
+    const live = new Set<string>();
+    for (const ship of this.slot.ships) {
+      if (!shipPresent(ship, now)) continue;
+      const breaks = laneBreaks(ship.lane);
+      for (let k = 0; k < breaks.length; k++) {
+        const brk = breaks[k] as LaneBreak;
+        const key = `${ship.id}:${k}`;
+        live.add(key);
+        const got = resolve(brk, now);
+        if (!got) continue;
+        let scan = this.breakScan.get(key);
+        if (!scan) {
+          scan = { searched: Math.max(now, ship.t0), touch: null };
+          this.breakScan.set(key, scan);
+        }
+        if (scan.touch === null && scan.searched < to) {
+          scan.touch = breakTouchIn(ship, brk, got.obstacle, scan.searched, to);
+          scan.searched = to;
+        }
+        const touch = scan.touch;
+        if (touch === null) continue;
+        // This pass is spoken for: the next search starts past it.
+        scan.touch = null;
+        scan.searched = breakPassEnd(ship, brk, touch);
+        const at = Math.max(now, touch - BREAK_LEAD_MS);
+        // Already down (felled before, by anything): nothing to smash.
+        const standing = resolve(brk, at);
+        if (!standing?.standing || !shipPresent(ship, touch)) continue;
+        out.push({ ship, brk, obstacle: standing.obstacle, at, touch });
+        this.breakHurt.push([
+          ship.id,
+          touch,
+          Math.round(ship.hp0 * BREAK_DAMAGE_SHARE),
+        ]);
+      }
+    }
+    for (const key of [...this.breakScan.keys()]) {
+      if (!live.has(key)) this.breakScan.delete(key);
+    }
+    return out;
+  }
+
+  /**
+   * K1: the city's AA nests hit ship `id` for `dmg` at `now`: chip damage
+   * that never takes a ship under AA_SHIP_FLOOR of its full HP — the kill
+   * stays the pilots'. Returns the HP taken.
+   */
+  aaChip(id: number, dmg: number, now: number): number {
+    const s = this.activeShip(id, now);
+    const hp = this.hp.get(id) ?? 0;
+    if (!s || !(dmg > 0)) return 0;
+    const floor = Math.ceil(s.hp0 * AA_SHIP_FLOOR);
+    const next = Math.max(floor, hp - dmg * AA_SHIP_SCALE);
+    if (next >= hp) return 0;
+    this.hp.set(id, next);
+    this.hpChanged.add(id);
+    return hp - next;
+  }
+
+  /** K1: land the break damage due by `now` (never the kill). */
+  private landBreakHurt(now: number): void {
+    if (this.breakHurt.length === 0) return;
+    const left: [number, number, number][] = [];
+    for (const e of this.breakHurt) {
+      const [id, t, dmg] = e;
+      if (t > now) {
+        left.push(e);
+        continue;
+      }
+      const s = this.activeShip(id, now);
+      const hp = this.hp.get(id) ?? 0;
+      if (!s || hp <= 1) continue;
+      this.hp.set(id, Math.max(1, hp - dmg));
+      this.hpChanged.add(id);
+    }
+    this.breakHurt = left;
   }
 
   /** S9: the launch `botId` is waiting on, or null. */
@@ -816,6 +952,47 @@ export function applyBossImpact(
   if (building) out.push(...crushUnder(city, building, at));
   for (const id of out) city.breakers.set(chunkBuilding(id), by);
   return out;
+}
+
+/** K1: a ship downed over an avenue comes down between its streetwalls:
+ * as it lands its flanks plough into both — a P1 sweep out of each side of
+ * the hull (FLANK_SPEED across, carried on along the street by its fall),
+ * landing FLANK_BLAST where each comes to rest. Credited like the crash.
+ * Deterministic in the city, the crash and the time. */
+export const FLANK_SPEED = 14;
+export const FLANK_BLAST = { r: 16, damage: 900 };
+export function applyFlankSweeps(
+  city: RoomCity,
+  ship: FleetShip,
+  at: Vec3,
+  vel: Vec3,
+  by: string | null,
+  now: number,
+): void {
+  const d = ship.down;
+  if (!d) return;
+  const pose = fleetPoseAt(ship, d.t + d.end, blankPose());
+  // Port of the heading (hx, hz) in plan view.
+  const ax = pose.hz;
+  const az = -pose.hx;
+  const reach = SHIP_REACH[shipClass(ship)] as { y: number; z: number };
+  for (const side of [-1, 1]) {
+    const rec = makeImpact(
+      IMPACT_SECTION,
+      now,
+      {
+        x: at.x + ax * side * reach.z * 0.5,
+        y: Math.max(2, at.y + reach.y * 0.5),
+        z: at.z + az * side * reach.z * 0.5,
+      },
+      {
+        x: ax * side * FLANK_SPEED + vel.x * 0.5,
+        y: 0,
+        z: az * side * FLANK_SPEED + vel.z * 0.5,
+      },
+    );
+    sweepBlast(city, rec, by, 0, FLANK_BLAST);
+  }
 }
 
 /** The floor band BOSS_CRUSH_DEPTH floors under where a crash hit building

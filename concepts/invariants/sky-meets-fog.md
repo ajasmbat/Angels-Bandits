@@ -86,12 +86,13 @@
    `fogColor` itself must mix toward `abGlowFog(fogColor, sinEl)` instead,
    or a fogged object shows as a darker shape against the glowing horizon.
 
-4. **The cloud deck fogs as if it were 150 m lower** (H1, `storm.ts`
-   `DECK_FOG_LIFT`, the `AB_FOG_LIFT` define in `fog_fragment`): the deck
-   rose from 500 m to 650 m over the supertalls, and plain radial fog would
-   swallow it from the street. The lift is capped so the deck is still
+4. **The cloud deck fogs as if it were no higher than 500 m** (H1,
+   `storm.ts` `DECK_FOG_LIFT`, the `AB_FOG_LIFT` define in `fog_fragment`):
+   the lift is `CLOUD_BASE − 500`, capped at 150 m so the deck is still
    fully fogged where the far plane cuts it (from the street, 622 m out:
-   √(622² + 500²) ≈ 798 m).
+   √(622² + 500²) ≈ 798 m), and floored at 0. H1's 650 m deck needed the
+   full 150 m; K1's 440 m deck reads from the street by itself and gets
+   none (a negative lift would fog it MORE).
 
 **What breaks when they disagree:**
 

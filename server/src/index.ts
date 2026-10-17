@@ -19,6 +19,7 @@ import {
   stopBoost,
 } from "@angels-bandits/common/boost";
 import {
+  BOSS_CONTACT_PREFIX,
   BOSS_ID,
   FLEET_MODEL,
   type FleetShip,
@@ -30,8 +31,11 @@ import {
   encodeFlak,
   encodeShip,
   fleetPoseAt,
+  installFleetPlan,
+  laneStreet,
   shipClass,
   shipVelAt,
+  weakPointInto,
 } from "@angels-bandits/common/boss";
 import {
   BURN_SEND_MS,
@@ -49,7 +53,10 @@ import {
   emptyCaveInSlot,
   encodeCaveIn,
 } from "@angels-bandits/common/city/caveins";
-import type { CollapseWire } from "@angels-bandits/common/city/collapse";
+import {
+  type CollapseWire,
+  craneDown,
+} from "@angels-bandits/common/city/collapse";
 import {
   type MoverField,
   generateMovers,
@@ -58,12 +65,15 @@ import {
 import { natureFor } from "@angels-bandits/common/city/nature";
 import {
   canRetarget,
+  newsRouteClear,
   retargetNewsHeli,
   setNewsTarget,
 } from "@angels-bandits/common/city/newsheli";
 import {
+  IMPACT_SECTION,
   SWEEP_MODEL_VERSION,
   encodeImpact,
+  makeImpact,
 } from "@angels-bandits/common/city/penetrate";
 import { PROP_NEST } from "@angels-bandits/common/city/props";
 import {
@@ -108,6 +118,7 @@ import {
   encodeDirectorEvent,
   inDangerZone,
 } from "@angels-bandits/common/director";
+import { fleetWorldOf, planFleet } from "@angels-bandits/common/fleetplan";
 import { flakHazard, missileHazard } from "@angels-bandits/common/hazards";
 import {
   MedalLedger,
@@ -149,8 +160,12 @@ import {
 import {
   type BossPlane,
   type BossWorld,
+  type BreakResolver,
+  type FleetBreak,
   FleetDirector,
   applyBossImpact,
+  applyFlankSweeps,
+  bossContactIndex,
   claimBossHit,
 } from "./boss";
 import {
@@ -188,6 +203,8 @@ import {
   propsWireState,
   resetRoomCity,
   setLabCity,
+  stageCraneFall,
+  sweepBlast,
   takeSweeps,
   tickDestruction,
   noseOf as wireNose,
@@ -389,6 +406,12 @@ const moversFor = (seed: number): MoverField => {
   }
   return field;
 };
+
+/** K1: the fleet's fit to the city — every lane's rooftop profile and
+ * planned break-throughs (common/src/fleetplan.ts), installed once from the
+ * seed's city as generated, exactly as every client installs it. Every room
+ * flies CITY_SEED's city (RoomManager), so one plan serves them all. */
+installFleetPlan(planFleet(fleetWorldOf(city, moversFor(CITY_SEED))));
 
 /**
  * The solid N1 trees, memoised per city seed exactly like `moversFor` — and
@@ -1057,6 +1080,19 @@ function tickAa(room: Room, now: number): void {
       prot: combat.isProtected(e.id, now),
     });
   }
+  // K1: and the airships cruising past — an engine car each, behind any
+  // plane in a gun's pick.
+  const fleet = roomBoss(room);
+  for (const ship of fleet.activeShips(now)) {
+    const pose = fleetPoseAt(ship, now, blankPose());
+    enemies.push({
+      id: `${BOSS_CONTACT_PREFIX}${ship.id}:0`,
+      pos: weakPointInto(pose, shipClass(ship), 0, { x: 0, y: 0, z: 0 }),
+      vel: shipVelAt(ship, now, { x: 0, y: 0, z: 0 }),
+      prot: false,
+      bias: AA_SHIP_BIAS,
+    });
+  }
   const aa = roomAa(room);
   const rc = roomCity(room);
   const state = rc.props.slot.state;
@@ -1069,6 +1105,11 @@ function tickAa(room: Room, now: number): void {
     sendToRoom(room, { type: "aa", b: out.bursts.map(encodeAaBurst) });
   }
   for (const h of out.hits) {
+    const onShip = bossContactIndex(h.target);
+    if (onShip) {
+      fleet.aaChip(onShip.ship, h.damage, now);
+      continue;
+    }
     const hit = combat.aaDamage(h.target, h.damage, now, AA_ID);
     if (!hit) continue;
     sendToRoom(room, {
@@ -1096,6 +1137,9 @@ function tickAa(room: Room, now: number): void {
   }
   bots.setDetours(aa.detours(now));
 }
+
+/** K1: a ship ranks this much further than it is in an AA gun's pick, m. */
+const AA_SHIP_BIAS = 150;
 
 /** W1: an enemy plane leaves `room` for good (RoomWaves already dropped it
  * from its pilots, Combat and the carrier): every other per-plane record
@@ -1862,6 +1906,8 @@ function updateNewsHeli(room: Room, now: number): void {
   if (!site || !news || !canRetarget(news.target, now)) return;
   pendingKillByRoom.delete(room.id);
   const target = retargetNewsHeli(news.target, site, now);
+  // K1: a story whose route would meet a landmark spire is not taken.
+  if (!newsRouteClear(target)) return;
   setNewsTarget(news, target);
   sendToRoom(room, { type: "newsHeli", target });
 }
@@ -2288,6 +2334,10 @@ function tickBoss(room: Room, now: number): void {
   for (const ship of result.started) {
     sendToRoom(room, { type: "ship", s: encodeShip(ship) });
   }
+  // K1: the planned break-throughs on the ships' own courses.
+  for (const b of boss.dueBreaks(now, breakResolver(room))) {
+    landBreak(room, b);
+  }
   if (result.flak.length > 0) {
     sendToRoom(room, { type: "flak", f: result.flak.map(encodeFlak) });
   }
@@ -2324,6 +2374,10 @@ function tickBoss(room: Room, now: number): void {
     const vel = d ? shipVelAt(ship, d.t + d.end, { x: 0, y: 0, z: 0 }) : null;
     if (rc) {
       applyBossImpact(rc, at, by, building, vel ? { vel, now } : undefined);
+      // K1: a street ship comes down between the facades, and both take it.
+      if (vel && laneStreet(ship.lane)) {
+        applyFlankSweeps(rc, ship, at, vel, by, now);
+      }
     }
     const event = cityEvents.offer(room.id, "death", at, now);
     if (event) sendToRoom(room, { type: "cityEvent", event });
@@ -2332,6 +2386,67 @@ function tickBoss(room: Room, now: number): void {
   if (hp.length > 0) sendToRoom(room, { type: "shipHp", hp });
   // W1: the fleet's waves — after it, so a launch sees this tick's fleet.
   wavesFor(room).tick(now, wavesOn(room), humans);
+}
+
+/** K1: a room's break-through obstacles: its crane sites and its props,
+ * and whether each still stands at a time. */
+const breakResolver =
+  (room: Room): BreakResolver =>
+  (brk, t) => {
+    const rc = roomCity(room);
+    if (brk.kind === "crane") {
+      const site = moversFor(room.seed).cranes.find((c) => c.id === brk.id);
+      return site
+        ? {
+            obstacle: { kind: "crane", site },
+            standing: !craneDown(rc.collapses, site.id, t),
+          }
+        : null;
+    }
+    const prop = rc.props.layout.props[brk.id];
+    return prop
+      ? {
+          obstacle: { kind: "prop", prop },
+          standing: !rc.props.slot.state.isDown(brk.id),
+        }
+      : null;
+  };
+
+/** K1: the blast a ship's hull drives through what it smashes (P1's
+ * sweep from the nose, along its course). */
+const BREAK_BLAST = { r: 12, damage: 420 };
+
+/**
+ * K1: a ship smashes a planned break-through: the crane goes over (or the
+ * prop down) just before the hull reaches it, and P1's sweep carries the
+ * impact on from the ship's nose along its course — the street's props and
+ * any facade it reaches. Nobody's: the fleet's own course.
+ */
+function landBreak(room: Room, b: FleetBreak): void {
+  const rc = roomCity(room);
+  if (b.obstacle.kind === "crane") {
+    const wire = stageCraneFall(rc, b.obstacle.site, b.at);
+    sendToRoom(room, { type: "collapse", c: wire });
+  } else {
+    rc.props.slot.state.knockDown(b.obstacle.prop.id, 0, null);
+  }
+  const city = breakable(room);
+  if (!city) return;
+  const pose = fleetPoseAt(b.ship, b.touch, blankPose());
+  const vel = shipVelAt(b.ship, b.touch, { x: 0, y: 0, z: 0 });
+  const nose = (SHIP_REACH[shipClass(b.ship)] as { x: number }).x;
+  sweepBlast(
+    city,
+    makeImpact(
+      IMPACT_SECTION,
+      b.touch,
+      { x: pose.x + pose.hx * nose, y: pose.y, z: pose.z + pose.hz * nose },
+      vel,
+    ),
+    null,
+    0,
+    BREAK_BLAST,
+  );
 }
 
 /**

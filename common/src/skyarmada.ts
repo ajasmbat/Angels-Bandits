@@ -73,11 +73,15 @@ export const SHIP_SCALE_SPAN = 0.4;
 /** BOSS_PROFILE's half length, m (its stations run −128..126). */
 export const SHIP_HALF_LEN = 128;
 /** Altitude bands (cruise centre, m) of the three parallax layers — all
- * under the cloud deck with the widest hull (21 m × the largest scale). */
+ * under the cloud deck with the widest hull (21 m × the largest scale).
+ * K1: down with the deck and the real fleet — the low layer cruises the
+ * far avenues among the far towers, the middle one the far rooftops, the
+ * top one just under the storm — so the real fleet's street and rooftop
+ * bands (common/src/boss.ts, ≈ 94–396 m) sit inside the armada's. */
 export const SHIP_LAYERS: readonly (readonly [number, number])[] = [
-  [490, 545],
-  [550, 590],
-  [595, 625],
+  [150, 230],
+  [250, 330],
+  [340, CLOUD_BASE - 30],
 ];
 /** Each layer's two drift vectors, in lattice steps: the armada moves as
  * one front, the layers at different speeds (the parallax). */
@@ -106,8 +110,9 @@ export const SHIP_EMERGE_S = 15;
 export const SHIP_EMERGE_FADE_S = 8;
 
 /** Dogfights: altitude band, curve radius band, angular rate (whole turns
- * per loop), the chasers' lag along the curve (rad), and bob height. */
-export const GROUP_ALT = [380, 580] as const;
+ * per loop), the chasers' lag along the curve (rad), and bob height. K1:
+ * down into the far skyline, under the lowered deck. */
+export const GROUP_ALT = [120, CLOUD_BASE - 60] as const;
 export const GROUP_R = [90, 200] as const;
 export const GROUP_TURNS = [150, 277] as const;
 export const GROUP_LAG = 0.42;

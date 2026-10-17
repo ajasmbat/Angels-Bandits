@@ -368,7 +368,8 @@ export class Explosions {
   countLive(now: number, seen: (at: Vec3) => boolean): number {
     const t = now - this.lag;
     let n = 0;
-    for (const fx of this.pool) {
+    for (let i = 0; i < this.pool.length; i++) {
+      const fx = this.pool[i] as Explosion;
       const age = t - fx.bornAt;
       if (age >= 0 && age < LIFE_MS && seen(fx.center)) n++;
     }

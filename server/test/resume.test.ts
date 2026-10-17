@@ -308,11 +308,15 @@ describe("away (W2)", () => {
       2000,
     );
     const startedAt = Date.now();
+    // Only the return's respawn: goLive may already have re-placed this
+    // plane with one (its join spawn turned unsafe) before it went away.
+    const from = peer.seen.length;
     send(peer, { type: "away", on: false });
     await nextMsg(
       peer,
       (m): m is RespawnMsg => m.type === "respawn" && m.id === peer.welcome.id,
       3000,
+      from,
     );
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(AWAY_MIN_MS - 60);
     peer.ws.close();

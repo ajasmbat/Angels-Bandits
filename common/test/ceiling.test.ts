@@ -67,7 +67,6 @@ import {
   skySeed,
 } from "@angels-bandits/common/skyarmada";
 import { describe, expect, it } from "vitest";
-import { deckBeamLength } from "../../client/src/render/searchlights";
 
 const CITY = generateCity(CITY_SEED);
 const MOVERS = generateMovers(CITY_SEED, CITY);
@@ -162,15 +161,9 @@ describe("the lowered sky", () => {
       }
     }
   });
-
-  it("ends every rooftop searchlight's beam in the deck, never through it", () => {
-    for (const lampY of [40, 180, 336]) {
-      for (const dirY of [0.3, 0.6, 0.9, 1]) {
-        const top = lampY + dirY * deckBeamLength(lampY, dirY);
-        expect(top).toBeLessThanOrEqual(CLOUD_BASE + 30 + 1e-9);
-      }
-    }
-  });
+  // The rooftop beams' end in the deck is pinned by the client's own
+  // test (client/test/searchlights.test.ts: deckBeamLength) — the client
+  // render code needs the DOM lib this package does not build with.
 });
 
 describe("no system hard-codes an altitude over the deck", () => {

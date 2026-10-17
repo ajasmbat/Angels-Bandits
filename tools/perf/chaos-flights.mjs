@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// X1 chaos audit: nine scripted flights through the LIVE war, each read by
-// the chaos meter (`__ab.chaosMeter`, client/src/game/chaos-meter.ts) —
+// X1 chaos audit: twelve scripted flights through the LIVE war (the nine
+// the ticket names, then the deck and the view straight up and down), each
+// read by the chaos meter (`__ab.chaosMeter`, client/src/game/chaos-meter.ts) —
 // what the pilot could see or hear, second by second, and the longest run
 // of seconds with nothing happening (the dead time).
 //

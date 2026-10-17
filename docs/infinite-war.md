@@ -221,6 +221,129 @@ After a change, run:
 
 The M3 confirms the time.
 
+## Chaos tuning (X1)
+
+X1 audited the whole war for **dead time**: seconds where the pilot can
+see or hear nothing happening. It added a meter, flew the war with it,
+and tuned what the numbers asked for.
+
+### The meter
+
+`__ab.chaosMeter()` (`client/src/game/chaos-meter.ts`) is QA only. The
+first call arms it, `"reset"` restarts its history and `"disarm"` stops
+it; a plain visit never samples. Four times a second it counts what is
+inside the view frustum (within the fog) or audible (within
+`CHAOS_AUDIBLE_M`, 450 m, any direction):
+
+| class | kinds | makes a second live? |
+| --- | --- | --- |
+| **near** (the real war) | explosions, collapses (and the director's facade, span, gas, roof and car events), tracers (rounds and the rooftop AA's), real planes, real airships, falling wrecks, flak (the fleet's and the AA's), strikes in the air (missiles, meteors, comets, bombs) | yes, and near-live |
+| **sky** (SKY1's painted sky) | dogfight planes, their tracers, cosmetic flak, ships and planes shot down | yes |
+| **audio** | radio callouts going on air | yes |
+| **ambient** | cosmetic airships, burning chunks, headlines | no |
+
+The cosmetic kinds come from the CPU mirrors of the sky's shaders
+(`SkyArmada.qaVisible`, the same `shipPoseInto` / `planePoseInto` /
+`flakPoseInto` the tests hold to the GLSL), tested along their view
+ray, because they are drawn on the far shell past the far plane.
+
+Each second keeps the peak of its samples. A second with no live kind is
+**dead**. A second with no near kind is **near-dead**: only the painted
+sky or the radio filled it, the stricter number. A hitch longer than a
+second takes the sample that ended it (the report counts those seconds as
+`unsampled`).
+
+**The targets:** a longest dead run of at most `CHAOS_DEAD_MAX_S` (3 s)
+on every flight, and near-dead time as low as fairness allows.
+
+### The flights
+
+`node tools/perf/chaos-flights.mjs --out <dir> [--label …] [--only …]
+[--seconds 25]` boots the real server with its defaults: the waves and the
+default level's 200-plane air force, the director, C1, C2's meteors and
+comets, and the AA. It joins one SwiftShader page and flies twelve
+flights. The plane is re-teleported every frame at a wall-clock speed, so
+a 1 fps rasteriser flies the same path as a GPU. The flights:
+
+- the nine the ticket names: spawn (hands-off), high cruise (420 m),
+  rooftop skim (18 m over the roofline), street canyon (45 m up
+  x = 200), tunnel exit (Crosstown's east portal), chase (140 m behind the
+  nearest enemy), airship attack (450 → 220 m), death and respawn, and a
+  hover over the lowest district (roofs ≤ 100 m round (1450, 850));
+- three for the holes the ticket lists that those never point at: inside
+  the cloud deck (462 m), and held at 300 m looking 70° up and 70° down
+  (through the QA eye, because the chase camera levels with the plane).
+
+It also samples the mix once a second, and it exits 1 on a dead run over
+3 s or on any console error.
+
+### What it found
+
+Before X1's changes (and after the meter fix below), every flight's
+longest dead run was **0 s**, and the only near-dead second in the whole
+set was spawn's first one, before the first snapshot lands. The real war
+fills even the view straight down or the inside of the deck, with tracers,
+the air force overhead and collapses within earshot. The deck is the one
+place the painted sky goes dark: the dome and the armada are off inside
+it.
+
+| flight | dead s (before → after) | longest dead | near-dead s | headlines |
+| --- | ---: | ---: | ---: | ---: |
+| spawn | 0 → 0 | 0 → 0 | 1 → 1 | 0 → 1 |
+| high-cruise | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 1 |
+| rooftop-skim | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 1 |
+| street-canyon | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 1 |
+| tunnel-exit | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 1 |
+| chase | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 1 |
+| airship-attack | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 1 |
+| death-respawn | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 1 |
+| quiet-hover | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 1 |
+| in-the-deck | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 1 |
+| look-up | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 1 |
+| look-down | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 1 |
+
+So nothing needed filling, and X1 tuned no cadence. Turning the director,
+C1 or the meteors up would only spend the DangerBudget faster. The gaps the
+data did show were in the feel:
+
+- **The screens never had news.** Twelve flights, 300 s of war, and not
+  one headline: the jumbotrons headlined only airship kills and records.
+  A tower that comes down now says "TOWER DOWN NEAR …" (`towerHeadline`,
+  `client/src/game/headlines.ts`). It is held to one every
+  `TOWER_HEADLINE_GAP_MS` (20 s) so that C1's tower every few seconds
+  never floods the ticker, and replays on a resume say nothing.
+- **A joiner never heard the war start.** Somebody who joined with the
+  fleet already up never heard the fleet's radio call. The first spawn now
+  has its moment (`introMoment`, `client/src/main.ts`): "THE CITY IS
+  FALLING" over the view for 3.2 s (the wave banner's slot and pop), the
+  same on the screens, the fleet's call on the radio if it never played,
+  and the music's swell. `__ab.qaMoment("intro")` replays it, its title
+  held for a minute, for the gallery's `chaos-spawn`.
+
+**The mix:** every flight of every pass that sampled it peaked under 0
+dBFS after the limiter (no clipping; the loudest was −0.8 dBFS, a rooftop
+skim). The P3 limiter squashed by up to 8 dB when blasts, flak and the
+guns landed together, and it was transparent on a quiet second.
+`CHAOS_VOICES` (6) keeps a pile-up of one-shots under the guns. Shake and
+the comfort caps are unchanged.
+
+### The knobs and the targets
+
+| to change | knob | where |
+| --- | --- | --- |
+| what counts as seen or heard | `CHAOS_AUDIBLE_M` (450 m), the fog (`FOG_DISTANCE`), `QA_VIS` (0.05 of the far haze) | `client/src/game/chaos-meter.ts`, `client/src/render/sky-armada.ts` |
+| which kinds make a second live / near-live | `CHAOS_AMBIENT_KINDS`, `CHAOS_NEAR_KINDS` | `client/src/game/chaos-meter.ts` |
+| the target | `CHAOS_DEAD_MAX_S` (3 s), the tool's `DEAD_MAX_S` | `client/src/game/chaos-meter.ts`, `tools/perf/chaos-flights.mjs` |
+| how often the screens headline a tower | `TOWER_HEADLINE_GAP_MS` (20 s) | `client/src/game/headlines.ts` |
+| the first spawn's title | `INTRO_BANNER_MS` (3.2 s) | `client/src/main.ts` |
+| the chaos around a plane (if a flight ever shows dead time) | low chaos `LOW_INTERVAL_*`, the director's `slotScale`, `CHAOS_CADENCE`, the air force `AIR_FORCE`, the armada's `SHIP_SLOTS` / `GROUP_SLOTS` | the Tuning table above |
+| how many one-shots sound at once | `CHAOS_VOICES` (6) | `client/src/audio/sound.ts` |
+
+A flight's meter depends on what the war put where, not on the frame rate.
+But a loaded runner hitches: the after pass had 9–19 unsampled seconds a
+flight (load from the gallery running beside it). Read a dead second there
+with that in mind.
+
 ## The O1 gate
 
 What the final gate found and fixed is in the PR. In short:

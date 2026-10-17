@@ -142,8 +142,9 @@ export interface WaveHuman {
 const LAUNCHES_PER_TICK = 2;
 /** E1: squadron launches a tick may plan, at most (after the wave's). */
 const SQUAD_LAUNCHES_PER_TICK = 2;
-/** E1 (AB_AIRFORCE): staged squadrons a tick may put in the air. */
-const STAGED_PER_TICK = 8;
+/** E1 (AB_AIRFORCE): staged squadrons a tick may put in the air — the
+ * live launch pace, so a bench's refills cost what a room's do. */
+const STAGED_PER_TICK = SQUAD_LAUNCHES_PER_TICK;
 /** A launch is planned to release this long after it is planned, ms (the
  * longer of the two rigs' sequences, so either rig can take it). */
 const LAUNCH_LEAD_MS = Math.max(...LAUNCH_SEQ_MS);

@@ -34,6 +34,7 @@ import { WORLD_SIZE } from "@angels-bandits/common/constants";
 import type { FlightState } from "@angels-bandits/common/flight";
 import type { Pose, SpawnState } from "@angels-bandits/common/protocol";
 import {
+  type AceCandidate,
   FORM_BOX,
   FORM_ECHELON,
   FORM_FINGER,
@@ -71,6 +72,7 @@ import {
 import {
   type Vec3,
   wrapCoord,
+  wrapDeltaAxis,
   wrapDistance,
 } from "@angels-bandits/common/world";
 import type { BotShot, RoomBots } from "./bots";
@@ -165,6 +167,9 @@ const FORMS_FOR: readonly (readonly number[])[] = [
 export class RoomSquadrons {
   private readonly squads = new Map<number, Squad>();
   private readonly memberOf = new Map<string, { sq: Squad; slot: number }>();
+  /** The squadron planes the brain flies now (promoted, not yet handed
+   * back; a dead one stays until it is forgotten). */
+  private readonly aceIds = new Set<string>();
   private readonly rand: () => number;
   private nextSid = 1;
   private ticks = 0;
@@ -205,9 +210,7 @@ export class RoomSquadrons {
   /** The aces in the room right now (ids). */
   aces(): string[] {
     const out: string[] = [];
-    for (const id of this.memberOf.keys()) {
-      if (this.combat.isAlive(id) && !this.bots.isSquad(id)) out.push(id);
-    }
+    for (const id of this.aceIds) if (this.combat.isAlive(id)) out.push(id);
     return out;
   }
 
@@ -336,6 +339,7 @@ export class RoomSquadrons {
     const m = this.memberOf.get(id);
     if (!m) return;
     this.memberOf.delete(id);
+    this.aceIds.delete(id);
     m.sq.ids[m.slot] = null;
     if (m.sq.ids.every((x) => x === null)) this.squads.delete(m.sq.sid);
   }
@@ -344,6 +348,7 @@ export class RoomSquadrons {
   reset(): void {
     this.squads.clear();
     this.memberOf.clear();
+    this.aceIds.clear();
   }
 
   /** Promote `id` now whatever the distances (a bomb run's pilot); false
@@ -352,6 +357,7 @@ export class RoomSquadrons {
     if (!this.memberOf.has(id) || !this.bots.isSquad(id)) return false;
     if (!this.combat.isAlive(id)) return false;
     this.bots.promote(id);
+    this.aceIds.add(id);
     this.stats.promotions++;
     return true;
   }
@@ -402,7 +408,11 @@ export class RoomSquadrons {
       );
       this.pose(sq, now);
     }
-    this.promoteAndDemote(humans, locked, cap);
+    // The tiers at the decision cadence (5 Hz): a promotion 200 ms late is
+    // still 600 m out.
+    if (this.ticks % DECIDE_EVERY === 0) {
+      this.promoteAndDemote(humans, locked, cap);
+    }
     return this.guns(now, humans, fire, budget);
   }
 
@@ -570,33 +580,34 @@ export class RoomSquadrons {
     locked: (id: string) => boolean,
     cap: number,
   ): void {
-    if (humans.length === 0 && this.aces().length === 0) return;
-    const cands: {
-      id: string;
-      dist: number;
-      slotDist: number;
-      ace: boolean;
-      locked: boolean;
-    }[] = [];
+    if (humans.length === 0 && this.aceIds.size === 0) return;
+    const cands: AceCandidate[] = [];
+    // The squadron planes within reach of a human (a squadron far out of
+    // it holds no candidate: one distance rejects all eight)…
     for (const sq of this.squads.values()) {
       if (!sq.flying) continue;
-      const anchorDist = nearest(sq.anchorPose.pos, humans);
+      if (nearest(sq.anchorPose.pos, humans) - FORM_REACH > PROMOTE_M) continue;
       for (let k = 0; k < SQUAD_SIZE; k++) {
         const id = sq.ids[k];
-        if (!id || !this.combat.isAlive(id)) continue;
-        const squad = this.bots.isSquad(id);
-        // A whole squadron far out of reach is no candidate (cheap reject).
-        if (squad && anchorDist - FORM_REACH > PROMOTE_M) continue;
-        const slotDist = nearest((sq.poses[k] as Pose).pos, humans);
-        const pos = squad ? null : this.bots.contactOf(id)?.pos;
-        cands.push({
-          id,
-          dist: pos ? nearest(pos, humans) : slotDist,
-          slotDist,
-          ace: !squad,
-          locked: !squad && locked(id),
-        });
+        if (!id || !this.combat.isAlive(id) || !this.bots.isSquad(id)) {
+          continue;
+        }
+        const dist = nearest((sq.poses[k] as Pose).pos, humans);
+        cands.push({ id, dist, slotDist: dist, ace: false, locked: false });
       }
+    }
+    // …and every ace, wherever it is.
+    for (const id of this.aceIds) {
+      const m = this.memberOf.get(id);
+      const pos = this.bots.contactOf(id)?.pos;
+      if (!m || !pos) continue;
+      cands.push({
+        id,
+        dist: nearest(pos, humans),
+        slotDist: nearest((m.sq.poses[m.slot] as Pose).pos, humans),
+        ace: true,
+        locked: locked(id),
+      });
     }
     const { promote, demote } = chooseAces(cands, cap);
     for (const id of demote) {
@@ -607,10 +618,12 @@ export class RoomSquadrons {
         m.sq.flights[m.slot] as FlightState,
         m.sq.poses[m.slot] as Pose,
       );
+      this.aceIds.delete(id);
       this.stats.demotions++;
     }
     for (const id of promote) {
       this.bots.promote(id);
+      this.aceIds.add(id);
       this.stats.promotions++;
     }
   }
@@ -628,10 +641,7 @@ export class RoomSquadrons {
       if (!sq.flying || sq.spread < 1) continue;
       const fwd = forwardOf(sq.anchor);
       for (const h of humans) {
-        if (
-          wrapDistance(sq.anchorPose.pos, h.pos) >
-          SQUAD_FIRE_RANGE + FORM_REACH
-        ) {
+        if (nearest(sq.anchorPose.pos, [h]) > SQUAD_FIRE_RANGE + FORM_REACH) {
           continue;
         }
         const lined: string[] = [];
@@ -668,14 +678,19 @@ export class RoomSquadrons {
   }
 }
 
-/** The nearest human to `p`, m (∞ with none). */
+/** The nearest human to `p`, m (∞ with none). Inline torus math: this
+ * runs per plane near the humans, per tick. */
 function nearest(p: Vec3, humans: readonly SquadHuman[]): number {
   let best = Number.POSITIVE_INFINITY;
-  for (const h of humans) {
-    const d = wrapDistance(p, h.pos);
-    if (d < best) best = d;
+  for (let i = 0; i < humans.length; i++) {
+    const h = (humans[i] as SquadHuman).pos;
+    const dx = wrapDeltaAxis(p.x, h.x);
+    const dy = h.y - p.y;
+    const dz = wrapDeltaAxis(p.z, h.z);
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 < best) best = d2;
   }
-  return best;
+  return Math.sqrt(best);
 }
 
 function forwardOf(a: SquadAnchor): Vec3 {

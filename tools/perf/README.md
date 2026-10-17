@@ -2968,3 +2968,49 @@ AB_CHROME_ARGS="--use-angle=swiftshader --enable-unsafe-swiftshader" \
 ```
 
 <!-- lander smoke test -->
+
+## O1: gallery draw budgets (`BUDGETS.galleryDraws`)
+
+The Infinite War gate made the gallery judge draws. `gallery.mjs` logs a
+`draws <view> <n>` line for the frame it shoots. Earlier, the only number
+was the `shot` line, read after the view's staging was torn down. A view
+named in `BUDGETS.galleryDraws` is held to its ceiling, a summary line
+closes the run, and the run exits 1 when any view is over.
+
+Measured on the GPU-less runner: SwiftShader, High, desktop 1280×720,
+gallery scale 0.75, a quiet server, load average 75–115. Each ceiling is
+the measurement + ~10 %:
+
+| view | draws | ceiling |
+| --- | ---: | ---: |
+| `war-peak` (C1 low pass + Z1 ship going down + P1 comet + SKY1/R1) | 121 | 133 |
+| `chaos-low-pass` | 107 | 118 |
+| `impact-plane-through` | 100 | 110 |
+| `sky-dogfights` | 97 | 107 |
+| `boss-breakup` | 94 | 104 |
+| `impact-comet-row` | 93 | 103 |
+| `fleet-sky` | 90 | 99 |
+| `skyline-horizon-low` | 88 | 97 |
+| `sky-armada-low` | 87 | 96 |
+| `sky-armada-wide` | 85 | 94 |
+| `skyline-far` | 84 | 93 |
+| `ruin-pancake` | 102 | 112 |
+| `ruin-detail` | 94–102 | 112 |
+| `collapse-topple-impact` | 99 | 109 |
+
+Two runner traps the gate fixed along the way:
+
+- **The liveness timeout.** `gallery.mjs` now starts its server with
+  `LIVENESS_TIMEOUT_MS=600000`, as every other staging tool does. A
+  software frame of seconds made the server drop the client, and the
+  resume replayed the room's empty collapse list over the staged one.
+  Every collapse and ruin view then shot an intact tower, or a tower that
+  had simply vanished.
+- **The shot timeout.** Set it with `AB_GALLERY_SHOT_TIMEOUT_MS` (default
+  180 s). A staged collapse on a loaded box can take minutes to draw its
+  frame.
+
+`polish.mjs --soak` also had its stuck-UI floor fixed. It now takes the
+floor from the unrounded frame rate and the last frame's time. The rounded
+fps read 0 below 0.05 fps, so a death fade, which needs two frames, was
+called stuck after 15 s.

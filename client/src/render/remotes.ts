@@ -394,6 +394,16 @@ export class RemotePlanes {
     return out;
   }
 
+  /** X1 QA (the chaos meter): living remotes `seen` accepts at their last
+   * sampled position. */
+  countSeen(seen: (p: Vec3) => boolean): number {
+    let n = 0;
+    for (const r of this.remotes.values()) {
+      if (r.alive && r.lastPos && seen(r.lastPos)) n++;
+    }
+    return n;
+  }
+
   /** The last sampled pose of one remote (remote tracer spawning). */
   poseOf(id: string): Pose | null {
     const remote = this.remotes.get(id);

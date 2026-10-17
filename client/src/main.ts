@@ -29,6 +29,7 @@ import {
   SHIP_CLASSES,
   SHIP_REACH,
   blankPose,
+  flakPosAt,
   fleetPoseAt,
   installFleetPlan,
   laneBreaks,
@@ -114,7 +115,10 @@ import {
 import {
   type DirectorEvent,
   EVENT_CARS,
+  EVENT_FACADE,
   EVENT_GAS,
+  EVENT_ROOF,
+  EVENT_SPAN,
 } from "@angels-bandits/common/director";
 import {
   BREAK_LEAD_MS,
@@ -146,6 +150,7 @@ import { strikesInWindow } from "@angels-bandits/common/storm";
 import {
   MISSILE_SHOOTER_ID,
   missileImpactAt,
+  missilePosAt,
 } from "@angels-bandits/common/strike";
 import { feelFromTuning } from "@angels-bandits/common/tuning";
 import { WAVE_LIVE, type WaveState } from "@angels-bandits/common/waves";
@@ -225,6 +230,11 @@ import {
   collapseShakeAmount,
   collapseShakeOffsetInto,
 } from "./game/camera";
+import {
+  CHAOS_AUDIBLE_M,
+  ChaosMeter,
+  type ChaosReport,
+} from "./game/chaos-meter";
 import { detectCrash, touchesSolid } from "./game/collision";
 import {
   type CornerWorld,
@@ -507,7 +517,7 @@ import { Searchlights, type SpotBeam } from "./render/searchlights";
 import { Signage } from "./render/signage";
 import { Signals } from "./render/signals";
 import { EXPOSURE, GroundPlane, SkyDome, setupSky } from "./render/sky";
-import { SkyArmada } from "./render/sky-armada";
+import { type QaSkyCounts, SkyArmada } from "./render/sky-armada";
 import {
   SKY_MOMENTS,
   SkyCycle,
@@ -1671,7 +1681,10 @@ const aaNests = new AaNestRenderer(
   propSlotLive,
   city.cityBuildings,
   impacts,
-  (at) => audio.flakBurst(at, flight.pos, flight.yaw),
+  (at) => {
+    audio.flakBurst(at, flight.pos, flight.yaw);
+    noteChaosFlak(at);
+  },
 );
 scene.add(aaNests.group);
 /** W3: the enemy planes' drawn positions this frame (reused). */
@@ -2869,6 +2882,28 @@ socket.events.onShip = () => {
     say(shipInboundCallout());
   }
 };
+/** X1: how long the first spawn's title holds, ms. */
+const INTRO_BANNER_MS = 3200;
+/**
+ * X1: the first spawn's "the city is falling" moment — the title over the
+ * view, the screens' headline, the fleet's call on the radio (a joiner
+ * finds the fleet already up and would otherwise never hear it) and the
+ * music's swell. Once per page; the war itself is already all around.
+ */
+function introMoment(now: number, holdMs = INTRO_BANNER_MS): void {
+  if (lab || destructLab) return;
+  hud.banner("THE CITY IS FALLING", holdMs, now, true);
+  jumbotrons.addHeadline(
+    "THE CITY IS FALLING",
+    "ALL STATIONS: THE CITY IS FALLING — WEAPONS FREE",
+  );
+  chaosMeter.note("headlines");
+  if (fleetCalledAt === Number.NEGATIVE_INFINITY) {
+    fleetCalledAt = now;
+    say(fleetOverheadCallout());
+  }
+  music.moment("swell");
+}
 /** S9: an airship launches a bandit — the radio calls it (20 s cooldown:
  * one call per wave, not per plane). */
 socket.events.onBossLaunch = () => {
@@ -2896,6 +2931,7 @@ socket.events.onShipDown = (msg) => {
   );
   const line = bossHeadline(top, screenLabel, msg.id, msg.d.at.x, msg.d.at.z);
   jumbotrons.addHeadline(line.headline, line.feed);
+  chaosMeter.note("headlines");
   const now = performance.now();
   const dist = wrapDistance(msg.d.p, flight.pos);
   blastShake.add(dist, 2, now);
@@ -3405,7 +3441,9 @@ declare global {
        * start ring, facing it, so the race readout shows. "loud": the
        * mix's worst case — three missile blasts and an explosion right by
        * the plane, the kill sting and a callout on air at once. */
-      qaMoment: (kind: "kill" | "medal" | "course" | "loud") => void;
+      /** X1: "intro" replays the first spawn's moment with its title held
+       * for a minute (the gallery's `chaos-spawn` shot). */
+      qaMoment: (kind: "kill" | "medal" | "course" | "loud" | "intro") => void;
       /** P3 QA: the soak's leak counters — GPU resources the renderer
        * holds and the audio engine's live state (null before a context). */
       qaUi: () => {
@@ -3718,6 +3756,18 @@ declare global {
       /** E1: the air force as this client draws it — enemies sampled and
        * drawn last frame, the draw distance the tier's cap holds them
        * under, and the fleet's enemy instances. */
+      /**
+       * X1 QA: the chaos meter (game/chaos-meter.ts) — what was seen or
+       * heard over the last 10 s and since the last reset. The first call
+       * arms it (nothing is sampled before); "reset" restarts the history,
+       * "disarm" stops sampling.
+       */
+      chaosMeter: (
+        cmd?: "reset" | "disarm",
+      ) => ChaosReport & { armed: boolean };
+      /** X1 QA: the squadrons' dilated roofline under (x, z), m — a
+       * scripted flight at this plus a margin touches no building. */
+      roofline: (x: number, z: number) => number;
       airforce: () => {
         enemies: number;
         drawn: number;
@@ -4510,6 +4560,10 @@ window.__ab = {
   }),
   setQuality: (setting) => setQualitySetting(setting, false),
   qaMoment: (kind) => {
+    if (kind === "intro") {
+      introMoment(performance.now(), 60_000);
+      return;
+    }
     if (kind === "loud") {
       const p = flight.pos;
       for (let i = 0; i < 3; i++) {
@@ -5037,6 +5091,19 @@ window.__ab = {
       planes: qaAirforce?.n ?? 0,
       squadrons: qaSquadrons(qaAirforce?.n ?? 0),
     };
+  },
+  chaosMeter: (cmd) => {
+    const now = performance.now();
+    if (cmd === "disarm") chaosMeter.armed = false;
+    else if (!chaosMeter.armed || cmd === "reset") {
+      chaosMeter.armed = true;
+      chaosMeter.reset(now);
+    }
+    return { ...chaosMeter.report(now), armed: chaosMeter.armed };
+  },
+  roofline: (x, z) => {
+    qaRoofline ??= RooflineGrid.build(city.cityBuildings);
+    return qaRoofline.at(x, z);
   },
   airforce: () => ({
     ...remotes.airStats,
@@ -5780,6 +5847,148 @@ flashFade();
 bootedAt = performance.now();
 
 // Named (M2) so the visibility pause at the bottom can stop and restore it.
+/** X1 QA (`__ab.chaosMeter`): the chaos audit's meter (game/chaos-meter.ts),
+ * sampled at the end of a frame only while armed — a plain visit never
+ * runs any of this. */
+const chaosMeter = new ChaosMeter();
+const chaosFrustum = new THREE.Frustum();
+const chaosMat = new THREE.Matrix4();
+const chaosSphere = new THREE.Sphere();
+const chaosAt: Vec3 = { x: 0, y: 0, z: 0 };
+const chaosShip = blankPose();
+const chaosSky: QaSkyCounts = {
+  ships: 0,
+  burning: 0,
+  planes: 0,
+  firing: 0,
+  downed: 0,
+  flak: 0,
+};
+/** W3: the rooftop flak bursts heard lately (a ring; `t` frame clock). */
+const chaosAaFlak = Array.from({ length: 32 }, () => ({
+  x: 0,
+  y: 0,
+  z: 0,
+  t: Number.NEGATIVE_INFINITY,
+}));
+let chaosAaNext = 0;
+/** A rooftop burst counts for this long after it, ms. */
+const CHAOS_FLAK_MS = 1500;
+/** The radius the next `chaosSeen` tests with, m. */
+let chaosR = 0;
+/**
+ * Seen (inside the view frustum, within the fog) or heard (within
+ * CHAOS_AUDIBLE_M, any direction): canonical `p` against the render
+ * camera, through its nearest torus image.
+ */
+const chaosSeen = (p: Vec3): boolean => {
+  const c = camera.position;
+  const dx = wrapDeltaAxis(c.x, p.x);
+  const dy = p.y - c.y;
+  const dz = wrapDeltaAxis(c.z, p.z);
+  const d = Math.sqrt(dx * dx + dy * dy + dz * dz) - chaosR;
+  if (d <= CHAOS_AUDIBLE_M) return true;
+  if (d > FOG_DISTANCE) return false;
+  chaosSphere.center.set(c.x + dx, c.y + dy, c.z + dz);
+  chaosSphere.radius = chaosR;
+  return chaosFrustum.intersectsSphere(chaosSphere);
+};
+const chaosSeenAt = (x: number, y: number, z: number, r: number): boolean => {
+  chaosAt.x = x;
+  chaosAt.y = y;
+  chaosAt.z = z;
+  chaosR = r;
+  const seen = chaosSeen(chaosAt);
+  chaosR = 0;
+  return seen;
+};
+function noteChaosFlak(at: Vec3): void {
+  if (!chaosMeter.armed) return;
+  const f = chaosAaFlak[chaosAaNext] as (typeof chaosAaFlak)[number];
+  chaosAaNext = (chaosAaNext + 1) % chaosAaFlak.length;
+  f.x = at.x;
+  f.y = at.y;
+  f.z = at.z;
+  f.t = last;
+}
+function sampleChaos(now: number, renderMs: number | null): void {
+  if (!chaosMeter.due(now)) return;
+  camera.updateMatrixWorld();
+  chaosMat.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+  chaosFrustum.setFromProjectionMatrix(chaosMat);
+  chaosR = 0;
+  let blasts = explosions.countLive(now, chaosSeen);
+  let collapses = 0;
+  let strikes = 0;
+  let flak = 0;
+  let shipsReal = 0;
+  let shipsDown = 0;
+  if (renderMs !== null) {
+    for (const c of socket.collapses.list) {
+      const age = renderMs - c.t0;
+      if (age >= 0 && age < 9000 && chaosSeenAt(c.x, 40, c.z, 40)) {
+        collapses++;
+      }
+    }
+    for (const e of socket.director.values()) {
+      const age = renderMs - e.at;
+      if (age < 0 || age > 3000 || !chaosSeenAt(e.x, e.y, e.z, 10)) continue;
+      if (e.k === EVENT_GAS || e.k === EVENT_CARS || e.k === EVENT_ROOF) {
+        blasts++;
+      } else if (e.k === EVENT_FACADE || e.k === EVENT_SPAN) collapses++;
+    }
+    for (const m of socket.missiles.values()) {
+      const hit = missileImpactAt(m);
+      if (renderMs >= m.t0 && renderMs < hit) {
+        missilePosAt(m, renderMs, chaosAt);
+        if (chaosSeen(chaosAt)) strikes++;
+      } else if (renderMs >= hit && renderMs < hit + 1500) {
+        if (chaosSeen(m.to)) blasts++;
+      }
+    }
+    for (const f of socket.flak.values()) {
+      const age = renderMs - f.t0;
+      if (age < 0 || age > f.fuse + 1200) continue;
+      flakPosAt(f, renderMs, chaosAt);
+      if (chaosSeen(chaosAt)) flak++;
+    }
+    for (const sh of socket.boss.ships) {
+      const falling = shipFalling(sh, renderMs);
+      if (!falling && !shipPresent(sh, renderMs)) continue;
+      fleetPoseAt(sh, renderMs, chaosShip);
+      if (!chaosSeenAt(chaosShip.x, chaosShip.y, chaosShip.z, 120)) continue;
+      shipsReal++;
+      if (falling) shipsDown++;
+    }
+    skyArmada.qaVisible(camera, chaosFrustum, renderMs, chaosSky);
+  }
+  for (const f of chaosAaFlak) {
+    if (now - f.t < CHAOS_FLAK_MS && chaosSeen(f)) flak++;
+  }
+  let tracers = 0;
+  for (const b of bullets.all) if (chaosSeen(b.pos)) tracers++;
+  chaosMeter.set("explosions", blasts);
+  chaosMeter.set("collapses", collapses);
+  chaosMeter.set("tracers", tracers + aaNests.stats.firing);
+  chaosMeter.set("planesReal", remotes.countSeen(chaosSeen));
+  chaosMeter.set("airshipsReal", shipsReal);
+  chaosMeter.set("debris", wrecks.drawStats.falling);
+  chaosMeter.set("flak", flak);
+  chaosMeter.set("strikes", strikes);
+  chaosMeter.set("fires", fireRenderer.countBurning(chaosSeen));
+  if (renderMs !== null) {
+    chaosMeter.set("planesCosmetic", chaosSky.planes);
+    chaosMeter.set("skyTracers", chaosSky.firing);
+    chaosMeter.set("skyFlak", chaosSky.flak);
+    chaosMeter.set("airshipsCosmetic", chaosSky.ships);
+  }
+  chaosMeter.set(
+    "skyKills",
+    shipsDown + (renderMs !== null ? chaosSky.burning + chaosSky.downed : 0),
+  );
+  chaosMeter.commit(now);
+}
+
 const frame = (rafNow: number): void => {
   // D11 QA: a fixed virtual step instead of the rAF clock (time-lapses).
   if (qaFrameStep !== null) qaFrameStep.now += qaFrameStep.dtMs;
@@ -6606,6 +6815,7 @@ const frame = (rafNow: number): void => {
   if (ambientLine) say(ambientLine);
   const onAir = radio.poll(now);
   if (onAir) {
+    chaosMeter.note("radio");
     comms.add(onAir.speaker, onAir.ticker);
     radioLog.push({
       at: now,
@@ -7401,6 +7611,7 @@ const frame = (rafNow: number): void => {
     if (qualitySetting === "auto") stepQuality(now);
     if (resAuto) stepScaler(now);
   }
+  sampleChaos(now, renderMs); // X1 QA: only while the meter is armed
   perfHud.update(
     now,
     () => frames.stats(),
@@ -7435,6 +7646,7 @@ requestAnimationFrame(() => {
   clearInterval(bootPing);
   closeJoin();
   coach.start(); // U3: hints and the touch coach marks greet the first spawn
+  introMoment(performance.now());
 });
 
 // --- M2: backgrounded tab → pause; back with a dead session → rejoin ---

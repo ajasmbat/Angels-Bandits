@@ -758,6 +758,17 @@
         transition: none;
         animation: wave-banner-pop 0.4s cubic-bezier(0.2, 1.6, 0.4, 1) both;
       }
+      /* X1: the first spawn's "THE CITY IS FALLING" — one line that fits
+         any width, a slower settle. */
+      #wave-banner.intro {
+        font-size: min(44px, 5.4vw);
+        letter-spacing: 0.24em;
+        white-space: nowrap;
+        color: #ff6a2a;
+      }
+      #wave-banner.intro.on {
+        animation-duration: 0.9s;
+      }
       /* A3: its own pop on the independent `scale` property — medal-pop's
          `transform` replaced the banner's translateX(-50%) and left it
          hanging off centre, its left edge on the screen's middle. */

@@ -102,8 +102,17 @@ import {
   SKY_LOOP_S,
   SKY_OUTER_FADE,
   SKY_VIS,
+  flakPoseInto,
+  newFlakPose,
+  newPlanePose,
+  newShipPose,
+  planePoseInto,
+  planeVis,
+  shipPoseInto,
+  shipVis,
   skyLoopTime,
   skySeed,
+  skyVis,
 } from "@angels-bandits/common/skyarmada";
 import * as THREE from "three";
 import { FAR_ORIGIN, FAR_SHELL_GLSL } from "./far-skyline";
@@ -1075,6 +1084,26 @@ function horizonGeometry(): THREE.BufferGeometry {
 // --- The layer ----------------------------------------------------------------
 
 /** The cosmetic sky: four draws, uniforms only per frame. */
+/** X1 QA: SkyArmada.qaVisible's read-back. */
+export interface QaSkyCounts {
+  ships: number;
+  burning: number;
+  planes: number;
+  firing: number;
+  downed: number;
+  flak: number;
+}
+/** The haze share below which a cosmetic thing counts as not seen. */
+const QA_VIS = 0.05;
+/** A flak burst counts while its flash and fresh puff last, s. */
+const QA_FLAK_AGE_S = 1.5;
+/** Where along its view ray a cosmetic thing is frustum-tested, m. */
+const QA_SHELL_M = 400;
+const qaShip = newShipPose();
+const qaPlane = newPlanePose();
+const qaFlak = newFlakPose();
+const qaSphere = new THREE.Sphere();
+
 export class SkyArmada {
   readonly armada: THREE.Mesh;
   readonly planes: THREE.Mesh;
@@ -1217,6 +1246,68 @@ export class SkyArmada {
     for (let k = 0; k < THIN_SECTORS; k++) {
       this.thin[k] = THIN_MAX * Math.min(1, (enemies[k] ?? 0) / THIN_FULL);
     }
+  }
+
+  /**
+   * X1 QA (the chaos meter): what the shaders draw inside `frustum` now,
+   * from the CPU mirrors of their poses — hulls, the burning or falling
+   * ones, dogfight planes, those firing or shot down, and fresh flak.
+   * Visible means the far haze leaves at least QA_VIS of it. Never on a
+   * frame of a plain visit (main.ts calls it only while the meter is armed).
+   */
+  qaVisible(
+    camera: THREE.PerspectiveCamera,
+    frustum: THREE.Frustum,
+    serverMs: number,
+    out: QaSkyCounts,
+  ): QaSkyCounts {
+    out.ships = 0;
+    out.burning = 0;
+    out.planes = 0;
+    out.firing = 0;
+    out.downed = 0;
+    out.flak = 0;
+    if (!this.armada.visible && !this.planes.visible) return out;
+    const seed = (this.uniforms.uSkySeed as THREE.IUniform).value as number;
+    const t = skyLoopTime(serverMs);
+    const o = FAR_ORIGIN.value;
+    const c = this.counts;
+    const cam = camera.position;
+    // Everything here lies past the far plane and is drawn on the far
+    // shell along its own view ray (abFarShell), so only the direction
+    // counts: tested at QA_SHELL_M along it, its radius scaled to match.
+    const inView = (x: number, y: number, z: number, r: number): boolean => {
+      const dy = y - cam.y;
+      const k = QA_SHELL_M / Math.max(Math.hypot(x, dy, z), 1);
+      qaSphere.center.set(cam.x + x * k, cam.y + dy * k, cam.z + z * k);
+      qaSphere.radius = r * k;
+      return frustum.intersectsSphere(qaSphere);
+    };
+    for (let i = 0; i < c.ships; i++) {
+      const p = shipPoseInto(seed, i, t, o.x, o.y, qaShip);
+      if (shipVis(p, cam.y, c.shipOuter) < QA_VIS) continue;
+      if (!inView(p.x, p.y, p.z, SHIP_HALF_LEN * p.scale)) continue;
+      out.ships++;
+      if (p.burn > 0) out.burning++;
+    }
+    for (let g = 0; g < c.groups; g++) {
+      for (let m = 0; m < GROUP_SIZE_MAX; m++) {
+        const p = planePoseInto(seed, g, m, t, o.x, o.y, qaPlane);
+        if (planeVis(p, cam.y, c.planeOuter) < QA_VIS) continue;
+        if (!inView(p.x, p.y, p.z, 12)) continue;
+        out.planes++;
+        if (p.firing) out.firing++;
+        if (p.burn > 0) out.downed++;
+      }
+    }
+    for (let f = 0; f < c.flak; f++) {
+      const p = flakPoseInto(seed, f, t, o.x, o.y, qaFlak);
+      if (p.age > QA_FLAK_AGE_S) continue;
+      const d = Math.hypot(p.x, p.y - cam.y, p.z);
+      if (skyVis(d, c.shipOuter, SHIP_FADE_IN) < QA_VIS) continue;
+      if (inView(p.x, p.y, p.z, 20)) out.flak++;
+    }
+    return out;
   }
 
   /** E1: each bearing sector's thinning share (uSkyThin, by reference). */

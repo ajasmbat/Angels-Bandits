@@ -62,6 +62,18 @@ export class FireRenderer {
     this.share = Math.max(0, Math.min(1, share));
   }
 
+  /** X1 QA (the chaos meter): burning chunks `seen` accepts (the fires
+   * the last update held, at each chunk's flame point). */
+  countBurning(seen: (at: Vec3) => boolean): number {
+    let n = 0;
+    for (const id of this.fires) {
+      if (this.gone(id)) continue;
+      const e = this.emitters.get(id);
+      if (e && seen(e.at)) n++;
+    }
+    return n;
+  }
+
   /** Per frame: emit from the nearest burning chunks. */
   update(fires: ReadonlySet<number>, viewer: Vec3, now: number): void {
     const dt = Number.isFinite(this.lastMs)

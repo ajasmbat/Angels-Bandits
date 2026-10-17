@@ -47,6 +47,9 @@ interface Peer {
   snapshots: { at: number; msg: WireSnapshotMsg; bytes: number }[];
   /** Every enemy the roster named (welcome + playerJoined − playerLeft). */
   roster: Set<string>;
+  /** Every enemy it ever named (a plane that left since stays in it — the
+   * snapshots recorded before it left still carry it). */
+  named: Set<string>;
   at: Pose;
   stop: () => void;
 }
@@ -58,7 +61,12 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 function join(name: string): Promise<Peer> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url);
-    const peer: Partial<Peer> = { ws, snapshots: [], roster: new Set() };
+    const peer: Partial<Peer> = {
+      ws,
+      snapshots: [],
+      roster: new Set(),
+      named: new Set(),
+    };
     ws.on("error", reject);
     ws.on("open", () => ws.send(JSON.stringify({ type: "join", name })));
     ws.on("message", (data: Buffer) => {
@@ -71,11 +79,17 @@ function join(name: string): Promise<Peer> {
         });
       } else if (msg.type === "playerJoined" && msg.player.isBot) {
         peer.roster?.add(msg.player.id);
+        peer.named?.add(msg.player.id);
       } else if (msg.type === "playerLeft") {
         peer.roster?.delete(msg.id);
       } else if (msg.type === "welcome") {
         peer.welcome = msg;
-        for (const r of msg.roster) if (r.isBot) peer.roster?.add(r.id);
+        for (const r of msg.roster) {
+          if (r.isBot) {
+            peer.roster?.add(r.id);
+            peer.named?.add(r.id);
+          }
+        }
         const at: Pose = { ...msg.spawn, quat: { ...IDENTITY } };
         peer.at = at;
         const timer = setInterval(
@@ -170,13 +184,13 @@ describe("E1 air force over the wire", () => {
     expect(rows.length).toBeGreaterThan(20);
     for (const s of a.snapshots) {
       for (const p of planesOf(s.msg)) {
-        if (p.id.startsWith("bot:")) expect(a.roster.has(p.id)).toBe(true);
+        if (p.id.startsWith("bot:")) expect(a.named.has(p.id)).toBe(true);
       }
     }
     expect(a.roster.size).toBeGreaterThanOrEqual(STAGED);
   });
 
-  it("gives each pilot only what is within half the world of it, and two pilots apart different rows", () => {
+  it("gives each pilot only what is within half the world of it, tick by tick", () => {
     for (const peer of [a, b]) {
       for (const s of peer.snapshots) {
         for (const row of s.msg.s ?? []) {
@@ -194,15 +208,21 @@ describe("E1 air force over the wire", () => {
         }
       }
     }
-    if (wrapDistance(a.at.pos, b.at.pos) > 300) {
-      const idsOf = (peer: Peer) =>
-        new Set(
-          peer.snapshots.flatMap((s) => (s.msg.s ?? []).map((r) => r[0])),
-        );
-      const sa = idsOf(a);
-      const sb = idsOf(b);
-      const same = [...sa].filter((id) => sb.has(id)).length;
-      expect(same).toBeLessThan(Math.max(sa.size, sb.size));
+    // The same tick seen by both: a row A got whose squadron was beyond
+    // half the world from B is not in B's snapshot of that tick (the two
+    // spawns are apart, so the geometry varies by seed; it is checked
+    // wherever it occurs).
+    const bByTime = new Map(b.snapshots.map((x) => [x.msg.time, x.msg]));
+    for (const s of a.snapshots) {
+      const other = bByTime.get(s.msg.time);
+      if (!other) continue;
+      const theirs = new Set((other.s ?? []).map((r) => r[0]));
+      for (const row of s.msg.s ?? []) {
+        const r = decodeSquadRow(row);
+        if (wrapDistance(r.anchor.pos, b.at.pos) - FORM_REACH > IM_FAR_M + 1) {
+          expect(theirs.has(r.id0)).toBe(false);
+        }
+      }
     }
   });
 
@@ -243,7 +263,7 @@ describe("E1 air force over the wire", () => {
     expect(first.some((s) => (s.msg.s?.length ?? 0) > 0)).toBe(true);
     for (const s of late.snapshots) {
       for (const p of planesOf(s.msg)) {
-        if (p.id.startsWith("bot:")) expect(late.roster.has(p.id)).toBe(true);
+        if (p.id.startsWith("bot:")) expect(late.named.has(p.id)).toBe(true);
       }
     }
   });

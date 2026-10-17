@@ -60,6 +60,7 @@ import type {
   SpawnState,
 } from "@angels-bandits/common/protocol";
 import {
+  SQUAD_CRUISE_CAP,
   SQUAD_FLOOR_ALT,
   SQUAD_SIZE,
   SQUAD_SPEED_MIN,
@@ -558,14 +559,18 @@ export class RoomWaves {
     for (let n = 0; n < STAGED_PER_TICK; n++) {
       const want = (this.staged ?? 0) - this.forceUp();
       if (want <= 0) return;
-      const x = this.rand() * WORLD_SIZE;
-      const z = this.rand() * WORLD_SIZE;
-      const yaw = this.rand() * Math.PI * 2;
-      const pos = { x, y: 0, z };
-      pos.y = Math.max(
-        SQUAD_FLOOR_ALT,
-        floorAhead(this.bots.roofline(), pos, yaw),
-      );
+      // A point whose roofline ahead it can cruise over (never beside a
+      // spire it would have to climb into the deck to clear).
+      const pos = { x: 0, y: 0, z: 0 };
+      let yaw = 0;
+      for (let tries = 0; tries < 16; tries++) {
+        pos.x = this.rand() * WORLD_SIZE;
+        pos.z = this.rand() * WORLD_SIZE;
+        yaw = this.rand() * Math.PI * 2;
+        pos.y = floorAhead(this.bots.roofline(), pos, yaw);
+        if (pos.y <= SQUAD_CRUISE_CAP) break;
+      }
+      pos.y = Math.max(SQUAD_FLOOR_ALT, Math.min(pos.y, SQUAD_CRUISE_CAP));
       const ids = this.spawnSquad(Math.min(SQUAD_SIZE, want), -1, now, {
         pos,
         yaw,

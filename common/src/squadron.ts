@@ -185,7 +185,7 @@ export const SQUAD_PREF_MAX = 40;
 export const SQUAD_SPEED_MIN = 66;
 export const SQUAD_SPEED_MAX = 80;
 /** Heading rate, rad/s. */
-export const SQUAD_TURN_RATE = 0.5;
+export const SQUAD_TURN_RATE = 0.7;
 /** Steepest climb and dive, rad. */
 const SQUAD_CLIMB_MAX = (40 * Math.PI) / 180;
 const SQUAD_DIVE_MAX = (22 * Math.PI) / 180;
@@ -218,7 +218,7 @@ const STEER_OFFSETS: readonly number[] = [
 const SQUAD_BANK_MAX = 0.9;
 const SQUAD_BANK_RATE = 3;
 /** Boxed in: the chosen way's floor this far over the anchor, m. */
-const SQUAD_BOXED_M = 60;
+const SQUAD_BOXED_M = 20;
 /** The height command looks this far ahead of the anchor, s. */
 const SQUAD_LEAD_S = 0.8;
 const scratchLead: Vec3 = { x: 0, y: 0, z: 0 };
@@ -259,9 +259,15 @@ export class RooflineGrid {
    * starts before the hard floor (`top`) is ever reached. */
   readonly soft: Float32Array;
 
-  constructor(top: Float32Array) {
+  /** E1: the buildings no squadron may climb over (a spire past
+   * SQUAD_ALT_MAX with its clearance), as obstacles to steer round: what
+   * keeps the formations out of the deck. */
+  readonly walls: readonly SquadObstacle[];
+
+  constructor(top: Float32Array, walls: readonly SquadObstacle[] = []) {
     this.top = top;
     this.soft = maxFilter(top, ROOF_SOFT_CELLS);
+    this.walls = walls;
   }
 
   static build(
@@ -295,7 +301,17 @@ export class RooflineGrid {
       stamp(b.x, b.z, b.width / 2, b.depth / 2, h);
     }
     for (const c of columns) stamp(c.x, c.z, c.r, c.r, c.top);
-    return new RooflineGrid(top);
+    const walls: SquadObstacle[] = [];
+    for (const b of buildings) {
+      const h = b.height + (b.roof?.length ? ROOF_STRUCTURE_MAX_HEIGHT : 0);
+      if (h + SQUAD_CLEAR <= SQUAD_ALT_MAX) continue;
+      walls.push({
+        pos: { x: b.x, y: 0, z: b.z },
+        r: Math.hypot(b.width, b.depth) / 2 + PLAYER_RADIUS + WALL_MARGIN,
+        h: Number.POSITIVE_INFINITY,
+      });
+    }
+    return new RooflineGrid(top, walls);
   }
 
   /** The dilated roofline under (x, z), m (0 over open ground). */
@@ -319,6 +335,8 @@ function cellOf(x: number, z: number): number {
 
 /** How many cells the lookahead's roofline is widened by. */
 const ROOF_SOFT_CELLS = 2;
+/** A wall's berth beyond its footprint (and the formation's reach), m. */
+const WALL_MARGIN = 20;
 
 /** A square max filter of radius `r` cells over a torus grid (separable). */
 function maxFilter(src: Float32Array, r: number): Float32Array {
@@ -451,8 +469,9 @@ function obstacleAhead(
     const o = obstacles[k] as SquadObstacle;
     if (Math.abs(o.pos.y - y) > o.h + FORM_TOP + SQUAD_CLEAR) continue;
     const r = o.r + FORM_REACH + SQUAD_CLEAR;
-    for (let i = 0; i < 8; i++) {
-      const d = (LOOK_M[i] as number) * 0.6;
+    // Every 20 m out to a turning circle and a half (r ≥ FORM_REACH, so no
+    // sample skips one).
+    for (let d = 0; d <= OBSTACLE_LOOK_M; d += 20) {
       const dx = wrapDeltaAxis(o.pos.x, pos.x + fx * d);
       const dz = wrapDeltaAxis(o.pos.z, pos.z + fz * d);
       if (dx * dx + dz * dz < r * r) return true;
@@ -460,6 +479,9 @@ function obstacleAhead(
   }
   return false;
 }
+
+/** How far ahead obstacles are looked for, m. */
+const OBSTACLE_LOOK_M = 240;
 
 const wrapAngle = (a: number): number => {
   const twoPi = Math.PI * 2;
@@ -504,6 +526,7 @@ export function stepAnchor(
       cost += aheadMean * 0.005;
       if (need > SQUAD_CRUISE_CAP) cost += 10 + (need - SQUAD_CRUISE_CAP) / 10;
       if (obstacleAhead(a.pos, a.pos.y, yaw, obstacles)) cost += 20;
+      if (obstacleAhead(a.pos, a.pos.y, yaw, grid.walls)) cost += 40;
       if (cost < bestCost) {
         bestCost = cost;
         a.steer = yaw;
@@ -540,8 +563,13 @@ export function stepAnchor(
     floorAhead(grid, a.pos, a.yaw, bestYaw, a.speed),
     floorAhead(grid, scratchLead, a.yaw, bestYaw, a.speed),
   );
+  // Over SQUAD_ALT_MAX only for the roofline right under the lead point
+  // (the hard floor): a tall block further ahead is the steering's to fly
+  // round, never a reason to climb into the deck.
+  const near = grid.at(scratchLead.x, scratchLead.z) + SQUAD_CLEAR_HARD;
   const target = Math.max(
-    floor,
+    Math.min(floor, SQUAD_ALT_MAX),
+    near,
     Math.min(SQUAD_CRUISE_CAP, Math.max(SQUAD_FLOOR_ALT, floor + pref)),
   );
   const vy = Math.max(

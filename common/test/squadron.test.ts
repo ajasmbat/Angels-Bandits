@@ -196,11 +196,17 @@ describe("E1 squadrons: 500 planes over the real city", () => {
       form: number;
     }[] = [];
     for (let i = 0; i < SQUADS; i++) {
-      const x = rand() * WORLD_SIZE;
-      const z = rand() * WORLD_SIZE;
-      const yaw = rand() * Math.PI * 2;
-      const pos = { x, y: 0, z };
-      pos.y = Math.max(SQUAD_FLOOR_ALT, floorAhead(grid, pos, yaw));
+      // Staged as the server stages one: where its roofline ahead is under
+      // the cruise cap (server/src/waves.ts stageForce).
+      const pos = { x: 0, y: 0, z: 0 };
+      let yaw = 0;
+      do {
+        pos.x = rand() * WORLD_SIZE;
+        pos.z = rand() * WORLD_SIZE;
+        yaw = rand() * Math.PI * 2;
+        pos.y = floorAhead(grid, pos, yaw);
+      } while (pos.y > SQUAD_CRUISE_CAP);
+      pos.y = Math.max(SQUAD_FLOOR_ALT, pos.y);
       squads.push({
         a: {
           pos,

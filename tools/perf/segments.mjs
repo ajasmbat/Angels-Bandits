@@ -150,6 +150,9 @@ export const BUDGETS = {
   // low pass alone, nearly all of them pools and meshes that already
   // exist (debris, D1 particles, missiles, director FX), none per object.
   galleryDraws: {
+    // X1: war-peak now carries E1's INSANE air force too (500 planes round
+    // the plane): 125 measured, under the ceiling it already had — the
+    // planes ride the fleet's instanced draws, so 500 cost ~3 over none.
     "war-peak": 133,
     "chaos-low-pass": 118,
     // K1: re-posed down among the street ships (99 measured: more city in
@@ -176,6 +179,17 @@ export const BUDGETS = {
     // E1: 500 enemy planes round the camera (93 measured) — the fleet's
     // same instanced draws, however many planes.
     "airforce-swarm": 103,
+    // X1 chaos audit: the four places the chaos flights look for dead
+    // time, each with every layer the live war stacks there — the default
+    // level's 200-plane air force, the 20-ship fleet, missiles and meteors,
+    // the armada and the far city (C1's low pass in the canyon, a comet in
+    // the high view, the rooftop AA over the quiet district). The runner's
+    // High draws + ~10 % (101, 111, 117, 105). The canyon is the dearest:
+    // the low pass's director FX and debris over the street ships.
+    "chaos-spawn": 111,
+    "chaos-high": 122,
+    "chaos-canyon": 129,
+    "chaos-quiet-district": 116,
   },
 };
 

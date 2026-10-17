@@ -3001,6 +3001,15 @@ the measurement + ~10 %:
 | `ruin-pancake` | 102 | 112 |
 | `ruin-detail` | 94–102 | 112 |
 | `collapse-topple-impact` | 99 | 109 |
+| `airforce-swarm` (E1: 500 planes) | 93 | 103 |
+| `chaos-spawn` (X1: the first spawn's title, the air force, the fleet, missiles, meteors) | 101 | 111 |
+| `chaos-high` (X1: 420 m, the fleet below, a comet, meteors) | 111 | 122 |
+| `chaos-canyon` (X1: C1's low pass, street ships, the air force, missiles) | 117 | 129 |
+| `chaos-quiet-district` (X1: the lowest district, the AA, the fleet, strikes) | 105 | 116 |
+
+X1 re-shot the whole set (load average 15–20) and every view held its
+ceiling. `war-peak` now carries the INSANE air force as well (500
+planes): it draws 125, against 121 without them, under its 133.
 
 On the Mobile tier (`AB_GALLERY_QUALITY=mobile AB_GALLERY_DEVICE=phone`,
 844×390), `war-peak` draws 100 and `chaos-low-pass` 93. The ceilings
@@ -3023,3 +3032,24 @@ Two runner traps the gate fixed along the way:
 floor from the unrounded frame rate and the last frame's time. The rounded
 fps read 0 below 0.05 fps, so a death fade, which needs two frames, was
 called stuck after 15 s.
+
+## X1: the chaos flights (`chaos-flights.mjs`)
+
+```sh
+npm run build -w client
+node tools/perf/chaos-flights.mjs --out <dir> --label after [--only spawn,chase] [--seconds 25]
+```
+
+This tool flies twelve scripted flights through the live war: the real
+server with its defaults, the default level's air force, the director, C1,
+the meteors and the AA. It reads the chaos meter, `__ab.chaosMeter()`
+(`client/src/game/chaos-meter.ts`), after each one and writes
+`chaos-flights-<label>.{json,md}`. It exits 1 when a flight's longest
+dead run is over 3 s, or when the page logged an error.
+
+The flight paths are glides at a wall-clock speed, as `run.mjs` does
+them, so a software rasteriser flies the same path. The meter counts what
+the war put in view or in earshot, not frames. A hitch over a second takes
+the sample that ended it, and the report counts those seconds as
+`unsampled`. `docs/infinite-war.md` ("Chaos tuning") has what the meter
+counts, the before and after tables and the knobs.

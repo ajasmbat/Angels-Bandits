@@ -508,6 +508,27 @@ try {
       );
       console.log("airforce", v.name, JSON.stringify(r));
     }
+    if (v.chaos) {
+      // X1: missiles and meteors round the held pose on the pinned world
+      // clock (qa-chaos.ts), already in the air when the frames settle.
+      const r = await page.evaluate(
+        (v) =>
+          window.__ab.qaChaos({
+            x: v.x,
+            y: v.y,
+            z: v.z,
+            yaw: v.yaw,
+            worldMs: v.timeMs ?? window.__ab.renderMs() ?? 0,
+            ...v.chaos,
+          }),
+        v,
+      );
+      console.log("chaos", v.name, JSON.stringify(r));
+    }
+    if (v.intro) {
+      // X1: the first spawn's title over the view, held for the shot.
+      await page.evaluate(() => window.__ab.qaMoment("intro"));
+    }
     if (v.lowChaos) {
       // C1: stage the low run round the held pose (render clock).
       const r = await page.evaluate(
@@ -677,7 +698,9 @@ try {
       );
       await page.evaluate(() => window.__ab.qaCaveIn(null));
     }
-    if (v.drop) await page.evaluate(() => window.__ab.qaChaos(null));
+    if (v.drop || v.chaos) {
+      await page.evaluate(() => window.__ab.qaChaos(null));
+    }
     if (v.penetrate) {
       console.log(
         "penetrations",

@@ -354,6 +354,24 @@ export function bossHeadline(
   };
 }
 
+/** X1: the least gap between two tower headlines, ms — C1 brings a tower
+ * down every few seconds round a low pass, and the ticker must stay a
+ * front page, not a list. */
+export const TOWER_HEADLINE_GAP_MS = 20_000;
+
+/** X1: the screens' headline and feed line when a tower comes down at
+ * (x, z). The same on every client. */
+export function towerHeadline(
+  x: number,
+  z: number,
+): { headline: string; feed: string } {
+  const place = placePhrase(Math.round(x), Math.round(z));
+  return {
+    headline: place ? `TOWER DOWN ${place}` : "TOWER DOWN",
+    feed: "💥 TOWER DOWN",
+  };
+}
+
 /** Share of the drizzle phase after which the storm is announced. */
 const STORM_APPROACH_T = 0.6;
 /** Share of the clearing phase the all-clear stays up. */

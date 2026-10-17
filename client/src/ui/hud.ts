@@ -538,13 +538,20 @@ export class Hud {
     }
     if (w.phase === WAVE_BREATHER && w.wave !== this.bannerWave) {
       this.bannerWave = w.wave;
-      this.waveBanner.textContent = `WAVE ${w.wave}`;
-      // Restart the pop: the class must be off for a reflow to replay it.
-      this.waveBanner.classList.remove("on");
-      void this.waveBanner.offsetWidth;
-      this.waveBanner.classList.add("on");
-      this.bannerUntil = now + WAVE_BANNER_MS;
+      this.banner(`WAVE ${w.wave}`, WAVE_BANNER_MS, now);
     }
+  }
+
+  /** The big centre title (the wave banner's slot and pop) for `ms`; X1's
+   * first-spawn "the city is falling" shares it with the waves. */
+  banner(text: string, ms: number, now: number, intro = false): void {
+    this.waveBanner.textContent = text;
+    this.waveBanner.classList.toggle("intro", intro);
+    // Restart the pop: the class must be off for a reflow to replay it.
+    this.waveBanner.classList.remove("on");
+    void this.waveBanner.offsetWidth;
+    this.waveBanner.classList.add("on");
+    this.bannerUntil = now + ms;
   }
 
   /** W4: Easy mode's tag on the objective line. */

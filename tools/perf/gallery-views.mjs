@@ -1960,7 +1960,9 @@ export const VIEWS = [
   // its hero breaking up and falling, a P1 comet tearing through a row of
   // towers (wherever the planner finds one: `camera: false` keeps this
   // view's pose), and SKY1's cosmetic armada and R1's far city behind it
-  // all. The perf pass's worst case (BUDGETS.galleryDraws).
+  // all. The perf pass's worst case (BUDGETS.galleryDraws). X1: and E1's
+  // INSANE air force, 500 planes round the plane — every layer of the war
+  // at its top level at once.
   {
     name: "war-peak",
     x: 0,
@@ -1971,7 +1973,131 @@ export const VIEWS = [
     weather: "clear",
     raf: true,
     lowChaos: true,
+    airforce: 500,
     boss: { ahead: 850, count: 20, downAfterMs: 2500 },
     penetrate: { kind: "comet", at: 0.35, camera: false },
+  },
+  // X1 chaos audit: the four places the chaos flights
+  // (tools/perf/chaos-flights.mjs) look for dead time, each with every
+  // layer the live war puts there at once — the default level's 200-plane
+  // air force round the plane, the 20-ship fleet ahead, missiles and
+  // meteors on the pinned clock, and SKY1's armada and R1's far city
+  // behind. Their draws are the combined worst case's
+  // (BUDGETS.galleryDraws).
+  //
+  // A fresh spawn: RESPAWN_ALTITUDE (370 m), under the "THE CITY IS
+  // FALLING" title, the fleet 700 m out and the war already under way
+  // round the spawn's (fair) run-out.
+  {
+    name: "chaos-spawn",
+    x: 700,
+    z: 1400,
+    y: 370,
+    yaw: Math.atan2(1, -1),
+    timeMs: 1_790_000_100_000,
+    weather: "clear",
+    raf: true,
+    intro: true,
+    airforce: 200,
+    boss: { ahead: 700, count: 20, downAfterMs: 3000 },
+    chaos: {
+      missiles: {
+        every: 1500,
+        leadMs: 5000,
+        aim: { ahead: 520, side: -160, y: 60 },
+        seed: 31,
+      },
+      meteors: {
+        every: 2500,
+        leadMs: 4500,
+        aim: { ahead: 650, side: 200, y: 0 },
+        seed: 32,
+      },
+    },
+  },
+  // High cruise just under the deck (420 m) down the x = 1000 avenue: the
+  // fleet's rooftop layer below, a comet through a row ahead.
+  {
+    name: "chaos-high",
+    x: 1000,
+    z: 1900,
+    y: 420,
+    yaw: 0,
+    timeMs: 1_790_000_200_000,
+    weather: "clear",
+    raf: true,
+    airforce: 200,
+    boss: { ahead: 600, count: 20 },
+    penetrate: { kind: "comet", at: 0.35, camera: false },
+    chaos: {
+      meteors: {
+        every: 2000,
+        leadMs: 4500,
+        aim: { ahead: 500, side: 120, y: 0 },
+        seed: 33,
+      },
+    },
+  },
+  // The x = 200 street canyon at 45 m: C1's low pass, the street ships
+  // ahead, missiles onto the blocks down the street, the air force over.
+  {
+    name: "chaos-canyon",
+    x: 200,
+    z: 1400,
+    y: 45,
+    yaw: 0,
+    timeMs: 1_790_000_300_000,
+    weather: "clear",
+    raf: true,
+    lowChaos: true,
+    airforce: 200,
+    boss: { ahead: 700, count: 20 },
+    chaos: {
+      missiles: {
+        every: 1200,
+        leadMs: 5000,
+        aim: { ahead: 320, side: 0, y: 70 },
+        seed: 34,
+      },
+    },
+  },
+  // The city's lowest district (roofs ≤ 100 m round (1450, 850)), held
+  // 40 m over it: the quiet hover the chaos flights fly, with the air
+  // force, the fleet, the rooftop AA and meteors on the blocks round it.
+  {
+    name: "chaos-quiet-district",
+    x: 1450,
+    z: 850,
+    y: 140,
+    yaw: Math.atan2(-1, -1),
+    timeMs: 1_790_000_400_000,
+    weather: "clear",
+    raf: true,
+    airforce: 200,
+    boss: { ahead: 650, count: 20 },
+    // W3's nests round (1250, 700), behind the camera, firing up past it
+    // into the sky ahead.
+    aa: {
+      everyMs: 400,
+      fire: [
+        { nest: 3210, to: { x: 1640, y: 260, z: 1040 } },
+        { nest: 3204, to: { x: 1700, y: 300, z: 980 } },
+        { nest: 3211, to: { x: 1580, y: 240, z: 1110 } },
+      ],
+    },
+    chaos: {
+      meteors: {
+        every: 2000,
+        leadMs: 4500,
+        aim: { ahead: 420, side: -150, y: 0 },
+        seed: 35,
+      },
+      missiles: {
+        every: 2000,
+        leadMs: 5000,
+        aim: { ahead: 300, side: 160, y: 50 },
+        seed: 36,
+      },
+    },
   },
 ];

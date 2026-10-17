@@ -17,7 +17,12 @@
 //  - who hunts whom (assignQuarries): the nearest human, spread across the
 //    humans when there are several;
 //  - the `waves` state on the wire (the HUD's wave number, banner, enemies
-//    left and the fleet counter: airships downed this session).
+//    left and the fleet counter: airships downed this session);
+//  - E1: the AIR FORCE each level fields on top of the waves (AIR_FORCE):
+//    hundreds of real planes in squadrons (common/src/squadron.ts), launched
+//    off the same airships and refilled as they go down. A wave is still
+//    its W1 planes — the aces the banner counts — so a wave stays
+//    clearable; the air force is the sky they fight in.
 //
 // Not re-exported from common/src/index.ts; import "@angels-bandits/common/waves".
 
@@ -46,8 +51,21 @@ export function asIntensity(v: unknown): Intensity | null {
 
 // --- Waves ------------------------------------------------------------------------
 
-/** Enemy planes alive at once, at most, in any room (the perf budget). */
+/** A wave's planes alive at once, at most (W1's aces; the perf budget of
+ * the full bot brain). */
 export const ENEMY_CAP = 12;
+/** E1: enemy planes in a room at once, at most — the wave's and the air
+ * force's together. The largest count tools/airforce-bench.ts measured in
+ * budget (server tick p99 ≤ 4 ms, ≤ 250 KB/s per client); docs/infinite-
+ * war.md has the table. */
+export const ENEMY_CAP_MAX = 500;
+/** E1: each level's enemy planes in the sky — its air force plus its
+ * wave — EASY / NORMAL / HARD / INSANE. */
+export const AIR_FORCE: readonly number[] = [100, 200, 350, ENEMY_CAP_MAX];
+
+/** E1: the air force a level keeps up besides `wavePlanes` of the wave. */
+export const airForceFor = (level: Intensity, wavePlanes: number): number =>
+  Math.max(0, Math.min(ENEMY_CAP_MAX, AIR_FORCE[level] as number) - wavePlanes);
 /** The beat between one wave's last plane going down and the next wave's
  * first launch, ms — the "WAVE n" banner shows through it. */
 export const WAVE_BREATHER_MS = 8000;
@@ -262,6 +280,8 @@ export interface WaveState {
   size: number;
   /** Z1: airships shot down this session (the HUD's fleet counter). */
   downs: number;
+  /** E1: the air force's planes up (in the air or on a rig). */
+  force: number;
 }
 
 export const idleWaves = (): WaveState => ({
@@ -271,9 +291,11 @@ export const idleWaves = (): WaveState => ({
   left: 0,
   size: 0,
   downs: 0,
+  force: 0,
 });
 
-/** On the wire: [wave, phase, at, left, size, downs], integers only. */
+/** On the wire: [wave, phase, at, left, size, downs, force], integers
+ * only. */
 export type WireWaves = [
   wave: number,
   phase: number,
@@ -281,6 +303,7 @@ export type WireWaves = [
   left: number,
   size: number,
   downs: number,
+  force: number,
 ];
 
 export const encodeWaves = (s: WaveState): WireWaves => [
@@ -290,18 +313,19 @@ export const encodeWaves = (s: WaveState): WireWaves => [
   s.left,
   s.size,
   s.downs,
+  s.force,
 ];
 
 /** Inverse of encodeWaves; null for anything malformed. */
 export function decodeWaves(w: unknown): WaveState | null {
   if (
     !Array.isArray(w) ||
-    w.length !== 6 ||
+    w.length !== 7 ||
     !w.every((v) => typeof v === "number" && Number.isInteger(v) && v >= 0)
   ) {
     return null;
   }
-  const [wave, phase, at, left, size, downs] = w as number[];
+  const [wave, phase, at, left, size, downs, force] = w as number[];
   if (phase !== WAVE_IDLE && phase !== WAVE_BREATHER && phase !== WAVE_LIVE) {
     return null;
   }
@@ -312,5 +336,6 @@ export function decodeWaves(w: unknown): WaveState | null {
     left: left as number,
     size: size as number,
     downs: downs as number,
+    force: force as number,
   };
 }

@@ -53,6 +53,8 @@
     "./tuning": "./src/tuning.ts",
     "./destruction-tuning": "./src/destruction-tuning.ts",
     "./destruct-lab": "./src/destruct-lab.ts",
-    "./waves": "./src/waves.ts"
+    "./waves": "./src/waves.ts",
+    "./squadron": "./src/squadron.ts",
+    "./interest": "./src/interest.ts"
   }
 }

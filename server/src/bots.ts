@@ -273,6 +273,7 @@ import type {
   RosterEntry,
   SpawnState,
 } from "@angels-bandits/common/protocol";
+import { RooflineGrid, craneColumns } from "@angels-bandits/common/squadron";
 import { BOMB_FALL_MS } from "@angels-bandits/common/strike";
 import { BOT_TUNING } from "@angels-bandits/common/tuning";
 import type { WaveGrade } from "@angels-bandits/common/waves";
@@ -876,6 +877,12 @@ interface Bot {
   fireRand: () => number;
   /** W2: the bomb run it is flying (startRun), or null. */
   run: BombRun | null;
+  /** E1: a squadron plane — flown by its squadron (server/src/squadrons.ts,
+   * setSquadFlight), skipped by the brain and the physics step; false for
+   * an ace. */
+  squad: boolean;
+  /** E1: a squadron plane's wire pose, as its squadron last set it. */
+  squadPose: Pose | null;
 }
 
 /** A bot with no wave: B3's own aim, reaction and every shot taken. */
@@ -1117,6 +1124,8 @@ export class RoomBots {
       grade: NEUTRAL_GRADE,
       fireRand: mulberry32((botSeed ^ 0x51f1e5) >>> 0),
       run: null,
+      squad: false,
+      squadPose: null,
     });
     return entry;
   }
@@ -1240,6 +1249,7 @@ export class RoomBots {
   poseOf(id: string): Pose | null {
     const bot = this.bots.get(id);
     if (!bot || !bot.alive) return null;
+    if (bot.squad && bot.squadPose) return bot.squadPose;
     const { pos, yaw, pitch, roll, speed } = bot.flight;
     const cy = Math.cos(yaw / 2);
     const sy = Math.sin(yaw / 2);
@@ -1322,6 +1332,14 @@ export class RoomBots {
     bot.flight = this.flightFromSpawn(spawn);
     bot.flight.pitch = launch?.pitch ?? 0;
     bot.carrierUntil = launch?.until ?? Number.NEGATIVE_INFINITY;
+    bot.squad = false;
+    bot.squadPose = null;
+    this.resetBrain(bot, streetGrace(spawn));
+  }
+
+  /** A fresh mind over the flight it has: everything the brain carries
+   * between ticks back to a just-spawned bot's (respawn, promote). */
+  private resetBrain(bot: Bot, graceUntil: number): void {
     bot.input = NEUTRAL;
     bot.state = "PATROL";
     bot.targetId = null;
@@ -1333,7 +1351,7 @@ export class RoomBots {
     bot.attackCooldownUntil = Number.NEGATIVE_INFINITY;
     bot.escapeYaw = null;
     bot.fought = false;
-    bot.graceUntil = streetGrace(spawn);
+    bot.graceUntil = graceUntil;
     bot.streetChase = false;
     bot.thread = null;
     bot.tunnel = null;
@@ -1349,7 +1367,79 @@ export class RoomBots {
     bot.defendCooldownUntil = Number.NEGATIVE_INFINITY;
     bot.dodgeUntil = Number.NEGATIVE_INFINITY;
     bot.run = null;
-    this.pincerPrev.delete(id);
+    this.pincerPrev.delete(bot.entry.id);
+  }
+
+  // --- E1 the squadron seam ---
+  //
+  // A squadron plane is an ordinary bot (roster, Combat, rounds, poseOf,
+  // contactOf all as before) whose flight its squadron writes every tick;
+  // the brain and the physics step skip it. promote() hands it to the brain
+  // where it flies; setSquadFlight() takes it back (demote) — the squadron
+  // only does that out of everyone's sight (common/src/squadron.ts).
+
+  /** E1: the roofline grid the room's squadrons fly over — this city at
+   * its intact heights and the cranes' sweeps — built once. */
+  roofline(): RooflineGrid {
+    this.roof ??= RooflineGrid.build(
+      this.buildings,
+      craneColumns(this.movers.cranes),
+    );
+    return this.roof;
+  }
+
+  private roof: RooflineGrid | null = null;
+
+  /** E1: is `id` flown by its squadron (not the brain)? */
+  isSquad(id: string): boolean {
+    return this.bots.get(id)?.squad ?? false;
+  }
+
+  /** E1: put a living squadron plane at `flight` / `pose` (one tick of its
+   * squadron, or the demote that hands an ace back): alive, flown by the
+   * squadron from now on. `flight` is kept as given (no copy). */
+  setSquadFlight(id: string, flight: FlightState, pose: Pose): void {
+    const bot = this.bots.get(id);
+    if (!bot) return;
+    if (!bot.squad) {
+      bot.squad = true;
+      bot.thread = null;
+      bot.tunnel = null;
+      bot.maneuver = null;
+      bot.run = null;
+      bot.state = "PATROL";
+      bot.targetId = null;
+    }
+    bot.alive = true;
+    bot.flight = flight;
+    bot.squadPose = pose;
+  }
+
+  /** E1: a squadron plane becomes an ace: the brain takes it over from the
+   * flight it is in (its slot's, already level-and-stable), with a fresh
+   * mind and no carrier or street grace. */
+  promote(id: string): void {
+    const bot = this.bots.get(id);
+    if (!bot?.squad) return;
+    bot.squad = false;
+    bot.squadPose = null;
+    bot.flight = { ...bot.flight, pos: { ...bot.flight.pos } };
+    bot.carrierUntil = Number.NEGATIVE_INFINITY;
+    this.resetBrain(bot, Number.NEGATIVE_INFINITY);
+  }
+
+  /** E1: a squadron plane's trigger pull at `targetId` along its nose (the
+   * squadron checked the cone) — routed exactly like a brain's shot. */
+  squadShot(id: string, targetId: string): BotShot | null {
+    const bot = this.bots.get(id);
+    if (!bot?.alive || !bot.squad) return null;
+    return {
+      botId: id,
+      targetId,
+      seq: bot.nextSeq++,
+      origin: bot.flight.pos,
+      dir: flightForward(bot.flight),
+    };
   }
 
   // --- W2 bomb runs ---
@@ -1679,7 +1769,8 @@ export class RoomBots {
     this.beginTick(now, contacts);
 
     for (const bot of this.bots.values()) {
-      if (!bot.alive) continue;
+      // E1: a squadron plane is flown by its squadron, not here.
+      if (!bot.alive || bot.squad) continue;
       // B3: a committed loop / roll flies its own stick (its rollout already
       // flew this exact path clear), then the level tail the rollout also
       // checked (held like a dodge, below), before the brain takes over.

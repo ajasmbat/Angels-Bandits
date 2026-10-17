@@ -14,6 +14,10 @@
 //  - shooting a ship down takes the planes still on its rigs, the ones it
 //    launched fight on, the counter counts it and its lane refills;
 //  - one seed replays the same war exactly.
+//
+// The W1 suites run with the E1 air force off (their counts are the wave's
+// alone); "E1: the air force" runs it on top of the waves, flown the way
+// index.ts flies it (RoomWaves.flyForce before the brain's tick).
 
 import {
   type BossLaunch,
@@ -30,10 +34,20 @@ import {
   generateMovers,
 } from "@angels-bandits/common/city/movers";
 import { natureFor } from "@angels-bandits/common/city/nature";
-import { buildNatureIndex } from "@angels-bandits/common/collision";
-import { CITY_SEED, TICK_DOWN_HZ } from "@angels-bandits/common/constants";
-import type { SpawnState } from "@angels-bandits/common/protocol";
 import {
+  buildCityIndex,
+  buildNatureIndex,
+  collideCity,
+} from "@angels-bandits/common/collision";
+import {
+  CITY_SEED,
+  PLAYER_RADIUS,
+  TICK_DOWN_HZ,
+} from "@angels-bandits/common/constants";
+import type { SpawnState } from "@angels-bandits/common/protocol";
+import { SQUAD_SIZE, aceCap } from "@angels-bandits/common/squadron";
+import {
+  AIR_FORCE,
   ENEMY_CAP,
   WAVE_BREATHER_MS,
   WAVE_LEVELS,
@@ -91,7 +105,11 @@ interface Sim {
   ships: FleetShip[];
 }
 
-function makeSim(seed: number, humans: { id: string; pos: Vec3 }[]): Sim {
+function makeSim(
+  seed: number,
+  humans: { id: string; pos: Vec3 }[],
+  airForce = false,
+): Sim {
   const rc = createRoomCity(CITY);
   const boss = new FleetDirector(mulberry32(seed ^ 0xb055), TUNING);
   const movers: MoverField = {
@@ -146,6 +164,7 @@ function makeSim(seed: number, humans: { id: string; pos: Vec3 }[]): Sim {
     // The room's death path (index.ts sendDeath) reports every death.
     death: (death, now) => down(sim, death, now),
   });
+  sim.waves.airForce = airForce;
   return sim;
 }
 
@@ -179,8 +198,9 @@ function step(sim: Sim): void {
       sim.released.set(id, list);
     }
   }
+  const squadShots = sim.waves.flyForce(now, DT / 1000, sim.humans);
   const { shots, crashes } = sim.bots.tick(now, humanContacts(sim.humans));
-  for (const s of shots) sim.shotTargets.push(s.targetId);
+  for (const s of [...shots, ...squadShots]) sim.shotTargets.push(s.targetId);
   for (const id of crashes) {
     const death = sim.combat.crash(id, now);
     if (death) down(sim, death, now);
@@ -411,5 +431,116 @@ describe("W1 waves: deterministic replay", () => {
     const a = run();
     expect(a.launched.length).toBeGreaterThan(5);
     expect(run()).toEqual(a);
+  }, 120_000);
+});
+
+describe("E1: the air force", () => {
+  // NORMAL, one human hanging over the middle of the city, nobody shooting:
+  // the squadrons launch off the fleet and fill the sky to the level.
+  let sim: Sim;
+  const planesUp: number[] = [];
+  let maxSquadAces = 0;
+  let overCapPromotions = 0;
+  let maxWave = 0;
+  let collisions = 0;
+  let squadSeen = 0;
+  const promotedOnce = new Set<string>();
+  const demoted = new Set<string>();
+  beforeAll(() => {
+    sim = makeSim(21, [H1], true);
+    const index = buildCityIndex(sim.world.buildings);
+    const wasAce = new Map<string, boolean>();
+    let promoted = 0;
+    for (let t = 0; t < 120_000; t += DT) {
+      step(sim);
+      const promotedNow = sim.waves.squadrons.stats.promotions > promoted;
+      promoted = sim.waves.squadrons.stats.promotions;
+      let up = 0;
+      let aces = 0;
+      let wave = 0;
+      for (const e of sim.waves.enemies()) {
+        if (e.down) continue;
+        if (!e.squad) wave++;
+        if (e.squad) up++;
+        const pose = sim.bots.poseOf(e.id);
+        if (!pose) continue;
+        const ace = !sim.bots.isSquad(e.id);
+        if (e.squad && ace) aces++;
+        if (e.squad && !ace) {
+          squadSeen++;
+          if (
+            collideCity(pose.pos, PLAYER_RADIUS, sim.world.buildings, index)
+          ) {
+            collisions++;
+          }
+        }
+        if (e.squad) {
+          if (wasAce.get(e.id) === true && !ace) demoted.add(e.id);
+          if (ace) promotedOnce.add(e.id);
+          wasAce.set(e.id, ace);
+        }
+      }
+      planesUp.push(up);
+      maxSquadAces = Math.max(maxSquadAces, aces);
+      // A promotion never takes the room past its cap (a wave plane
+      // launched later may; a visible ace is never forced back).
+      if (promotedNow && aces + wave > aceCap(1)) overCapPromotions++;
+      maxWave = Math.max(maxWave, wave);
+    }
+  }, 300_000);
+
+  it("fills the sky to the level's count (less the wave's planes), never past it", () => {
+    const level = AIR_FORCE[1] as number;
+    expect(Math.max(...planesUp)).toBeLessThanOrEqual(level);
+    expect(Math.max(...planesUp)).toBeGreaterThanOrEqual(level - ENEMY_CAP);
+    expect(sim.waves.state().force).toBe(planesUp.at(-1));
+    // A squadron is one launch off a rig, its lead the launched plane.
+    const squadLaunches = sim.launched.filter(
+      (l) => sim.waves.enemy(l.id)?.squad,
+    );
+    expect(squadLaunches.length).toBeGreaterThanOrEqual(
+      Math.floor((level - ENEMY_CAP) / SQUAD_SIZE),
+    );
+    expect(new Set(squadLaunches.map((l) => l.ship.id)).size).toBeGreaterThan(
+      2,
+    );
+  });
+
+  it("flies its squadrons clear of every building", () => {
+    expect(squadSeen).toBeGreaterThan(100_000);
+    expect(collisions).toBe(0);
+    expect(sim.waves.squadrons.stats.clamps).toBe(0);
+  });
+
+  it("hands the planes near the human to the brain, within the ace cap, and back out of sight", () => {
+    expect(promotedOnce.size).toBeGreaterThan(0);
+    expect(maxSquadAces).toBeLessThanOrEqual(aceCap(1));
+    expect(overCapPromotions).toBe(0);
+    expect(sim.waves.squadrons.stats.promotions).toBeGreaterThan(0);
+    // The aces it handed back went back onto their slots, in formation.
+    expect(demoted.size).toBe(sim.waves.squadrons.stats.demotions);
+  });
+
+  it("is not the wave: the banner's count is the wave's planes alone", () => {
+    for (const { s } of sim.states) {
+      if (s.phase === WAVE_LIVE) expect(s.size).toBeLessThanOrEqual(ENEMY_CAP);
+    }
+    expect(maxWave).toBeLessThanOrEqual(ENEMY_CAP);
+  });
+
+  it("shoots at humans only", () => {
+    for (const id of sim.shotTargets) expect(id).toBe(H1.id);
+  });
+
+  it("refills what goes down, and a downed squadron plane leaves the room", () => {
+    const up = sim.waves
+      .enemies()
+      .filter((e) => e.squad && sim.bots.contactOf(e.id));
+    const victims = up.slice(0, 16).map((e) => e.id);
+    for (const id of victims) shootDown(sim, id);
+    const before = sim.waves.state().force;
+    for (let t = 0; t < 30_000; t += DT) step(sim);
+    for (const id of victims) expect(sim.roster.has(id)).toBe(false);
+    expect(sim.waves.state().force).toBeGreaterThanOrEqual(before);
   }, 120_000);
 });

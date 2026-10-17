@@ -21,6 +21,8 @@ import { tuning } from "../game/tuning";
 const MEDAL_TOAST_MS = 2600;
 /** How long the "WAVE n" banner stays up, ms (W1). */
 const WAVE_BANNER_MS = 2600;
+/** W4: the alert slot's bombing line (index.html's own text). */
+const BOMB_WARN_TEXT = "⚠ ENEMY BOMBING NEAR YOU";
 
 /**
  * W1: the war's HUD line — "WAVE 3 · 4 ENEMIES LEFT" while a wave is up,
@@ -244,6 +246,10 @@ export class Hud {
     "bomb-warn",
   ) as HTMLDivElement | null;
   private bombShown = false;
+  /** O1: the director's warned event near the own plane (hazard-warn.ts),
+   * shown in the same slot when no bomb is due; and what the slot reads. */
+  private hazardText: string | null = null;
+  private alertText = BOMB_WARN_TEXT;
   private waveShown = "";
   private bannerWave = 0;
   private bannerUntil = 0;
@@ -546,9 +552,27 @@ export class Hud {
   /** W4: "ENEMY BOMBING NEAR YOU" while an enemy bomb is due close by
    * (game/missile-feed.ts bombingNear). */
   setBombWarning(on: boolean): void {
-    if (on === this.bombShown || !this.bombWarn) return;
+    if (on === this.bombShown) return;
     this.bombShown = on;
-    this.bombWarn.classList.toggle("on", on);
+    this.syncAlert();
+  }
+
+  /** O1: name the director's event about to happen near the own plane
+   * (null: none) — in the bombing warning's slot, which a bomb outranks. */
+  setHazardWarning(text: string | null): void {
+    if (text === this.hazardText) return;
+    this.hazardText = text;
+    this.syncAlert();
+  }
+
+  private syncAlert(): void {
+    if (!this.bombWarn) return;
+    const text = this.bombShown ? BOMB_WARN_TEXT : this.hazardText;
+    if (text !== null && text !== this.alertText) {
+      this.alertText = text;
+      this.bombWarn.textContent = text;
+    }
+    this.bombWarn.classList.toggle("on", text !== null);
   }
 
   /** W4: a one-off line in the shared top-centre toast (Easy mode's

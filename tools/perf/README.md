@@ -2998,6 +2998,11 @@ the measurement + ~10 %:
 | `ruin-detail` | 94–102 | 112 |
 | `collapse-topple-impact` | 99 | 109 |
 
+On the Mobile tier (`AB_GALLERY_QUALITY=mobile AB_GALLERY_DEVICE=phone`,
+844×390), `war-peak` draws 100 and `chaos-low-pass` 93. The ceilings
+above are High's and hold every tier. The Mobile tier's fps is the M3's
+and a phone's to confirm.
+
 Two runner traps the gate fixed along the way:
 
 - **The liveness timeout.** `gallery.mjs` now starts its server with

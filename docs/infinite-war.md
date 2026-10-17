@@ -118,7 +118,8 @@ Measured on the runner, at High on desktop (draws of the shot frame;
 `tools/perf/README.md` has the table): `war-peak` 121, `chaos-low-pass`
 107, `impact-plane-through` 100, `sky-dogfights` 97, `boss-breakup` 94,
 `impact-comet-row` 93, `fleet-sky` 90, the sky and skyline views 84–88.
-Every ceiling is that number plus ~10 %.
+Every ceiling is that number plus ~10 %. On the Mobile tier (phone
+profile), `war-peak` draws 100 and `chaos-low-pass` 93.
 
 ### The busiest moment
 

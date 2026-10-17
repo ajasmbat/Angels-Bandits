@@ -2068,6 +2068,8 @@ const remotes = new RemotePlanes(
 );
 remotes.setRoster(welcome.roster);
 remotes.setRacks(socket.racks); // W2: the bombs still on each enemy's racks
+/** E1: remote engines voiced at once, the nearest first. */
+const ENGINE_VOICES = 12;
 
 // --- Combat: guns, bullets, tracers, HUD chrome ---
 const guns = new Guns();
@@ -3106,6 +3108,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   farTraffic.setQuality(tier); // L8: phantom fleet share
   farSkyline.setQuality(tier); // L2: the far skyline's radius
   skyArmada.setQuality(tier); // SKY1: slots drawn and their radius
+  remotes.setEnemyDraw(QUALITY_PROFILES[tier].airforce); // E1
   signage.setQuality(tier);
   jumbotrons.setQuality(tier); // S1: Mobile shows the static LAST KILL card
   rooftopLife.setQuality(tier);
@@ -7040,7 +7043,12 @@ const frame = (rafNow: number): void => {
   // The engine note follows the EFFECTIVE command — throttle under the F5
   // corner cap — the manager's only cue, and an audio one.
   audio.setEngine(Math.min(flight.targetSpeed, cornerCap), alive, overspeed);
-  audio.syncRemotes(contacts, flight.pos, flight.yaw);
+  // E1: an engine voice for the nearest few only (hundreds of enemies).
+  audio.syncRemotes(
+    remotes.nearest(contacts, ENGINE_VOICES),
+    flight.pos,
+    flight.yaw,
+  );
   // In-cloud static bed: quiet crackle ramping in over the deck's first
   // 60 m. The only audio cue for the hidden ceiling — no HUD, by design.
   audio.setStatic(
@@ -7158,6 +7166,7 @@ const frame = (rafNow: number): void => {
     sky.domeVisible,
   );
   // SKY1: uniforms only (FAR_ORIGIN, just written above, is shared).
+  skyArmada.setThin(remotes.enemySectors); // E1: over the dense squadrons
   skyArmada.update(
     camera,
     renderMs,

@@ -44,7 +44,9 @@ beforeAll(async () => {
   // node itself (tsx as a loader), not `npx tsx`: kill() in afterAll must
   // reach the server, or it outlives the test and keeps flying its enemies.
   child = spawn(process.execPath, ["--import", "tsx", entry], {
-    env: { ...process.env, PORT: "0", AB_BOSS_FAST: "1" },
+    // E1: AB_AIRFORCE=0 — no air force: these are the W1 waves alone, each
+    // enemy one rig launch (server/test/airforce.test.ts flies the squadrons).
+    env: { ...process.env, PORT: "0", AB_BOSS_FAST: "1", AB_AIRFORCE: "0" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   url = await new Promise<string>((resolve, reject) => {

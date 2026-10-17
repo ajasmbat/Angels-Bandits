@@ -172,9 +172,17 @@ const drift = (i: number): string => {
   return `vec4(${d.map(g).join(", ")})`;
 };
 
+/** E1: bearing sectors round the camera the dogfights thin by, the most a
+ * sector loses, and the real enemies in a sector that take it all. */
+export const THIN_SECTORS = 8;
+const THIN_MAX = 0.35;
+const THIN_FULL = 40;
+
 /**
  * The pose library, shared by every draw — common/src/skyarmada.ts in
  * GLSL, step for step (shipPoseInto, planePoseInto, flakPoseInto, skyVis).
+ * E1's thinning (uSkyThin) is the one term with no CPU mirror: it only
+ * fades whole groups out.
  */
 const SKY_GLSL = /* glsl */ `
 uniform vec3 fogColor;
@@ -191,6 +199,7 @@ uniform vec3 uSkyCounts;  // the tier's ships, groups, flak slots
 uniform vec3 uSkyMoon;    // the dome's moon direction
 uniform float uSkyPx;     // metres per drawing-buffer pixel per metre
 uniform vec2 uSkyViewport; // drawing-buffer size, px
+uniform float uSkyThin[${THIN_SECTORS}]; // E1: each bearing's thinning share
 const float AB_TAU = 6.28318530718;
 uint abSkyHash(uint x, uint y) {
   uvec2 q = uvec2(x, y) * uvec2(1597334673u, 3812015801u);
@@ -351,6 +360,13 @@ AbPlane abPlanePose(uint gi, uint m) {
   }
   P.p = vec3(abWrapRel(x, uSkyOrigin.x, ${g(PLANE_WINDOW)}), y, abWrapRel(z, uSkyOrigin.y, ${g(PLANE_WINDOW)}));
   P.dir = vel / max(length(vel), 1e-3);
+  // E1: thinner where the real air force is dense — the group's bearing
+  // picks its sector's share (uSkyThin), and a group whose own hash is under
+  // it fades out over a small band (never pops) as the share moves.
+  vec2 gc = vec2(abWrapRel(cx, uSkyOrigin.x, ${g(PLANE_WINDOW)}), abWrapRel(cz, uSkyOrigin.y, ${g(PLANE_WINDOW)}));
+  int sec = int(floor((atan(gc.x, gc.y) + ${g(Math.PI)}) * ${g(THIN_SECTORS / (2 * Math.PI))})) % ${THIN_SECTORS};
+  float hv = abU16(abSkyHash(gi, 0x7e1au), 0u);
+  P.fade *= smoothstep(uSkyThin[sec], uSkyThin[sec] + 0.08, hv);
   return P;
 }
 float abPlaneVis(AbPlane P) {
@@ -1086,6 +1102,7 @@ export class SkyArmada {
       uSkyMoon: moonDir,
       uSkyPx: { value: 0.001 },
       uSkyViewport: { value: new THREE.Vector2(1, 1) },
+      uSkyThin: { value: this.thin },
     };
     const opaque = (
       vertexShader: string,
@@ -1188,6 +1205,22 @@ export class SkyArmada {
       Math.max(viewportH, 1),
     );
   }
+
+  /**
+   * E1: thin the cosmetic dogfights where the real air force is dense.
+   * `enemies[k]`: real enemy planes in bearing sector k round the camera
+   * (remotes.ts enemySectors); a sector with THIN_FULL or more loses
+   * THIN_MAX of its groups, fewer proportionally — so the real and the
+   * painted sky together still read as one endless war, not a pile-up.
+   */
+  setThin(enemies: ArrayLike<number>): void {
+    for (let k = 0; k < THIN_SECTORS; k++) {
+      this.thin[k] = THIN_MAX * Math.min(1, (enemies[k] ?? 0) / THIN_FULL);
+    }
+  }
+
+  /** E1: each bearing sector's thinning share (uSkyThin, by reference). */
+  private readonly thin = new Float32Array(THIN_SECTORS);
 
   /** O3: the tier's share — instance counts and uniforms (rule 1: never a
    * compile). Dressing only, past the fog limit, never solid. */

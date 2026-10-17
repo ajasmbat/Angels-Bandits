@@ -4,6 +4,11 @@
 // a 2×2 wrapped tiling with a modular offset — a torus has no edge, so the
 // minimap never shows one. Dots and the tiling both go through wrapDelta
 // math (the pure seam below); the canvas painting is a thin adapter.
+//
+// E1: with hundreds of enemies up, only the MINIMAP_ARROWS nearest are
+// arrows; the rest are gathered into CLUSTER_CELL squares round the player
+// (clusterContacts) and drawn as one blip each, sized by how many planes
+// it holds — the radar reads "a squadron over there", not a smear.
 
 import {
   type Building,
@@ -68,6 +73,63 @@ export function minimapPatternOffset(
 export interface MinimapContact {
   pos: Vec3;
   angle: number;
+}
+
+/** E1: contacts drawn as arrows at most (the nearest). */
+export const MINIMAP_ARROWS = 24;
+/** E1: the rest are gathered in squares this big round the player, m. */
+export const CLUSTER_CELL = 125;
+
+/** One blip standing for `n` far contacts at their mean offset. */
+export interface MinimapCluster {
+  /** Offset from the player (wrapDelta), m. */
+  dx: number;
+  dz: number;
+  n: number;
+}
+
+/**
+ * E1: split `contacts` into the MINIMAP_ARROWS nearest `player` (pushed
+ * onto `arrows`) and clusters of the rest by CLUSTER_CELL square of offset
+ * (onto `clusters`, each at its members' mean offset). Pure; torus-safe
+ * (every offset is a wrapDelta). Order is stable for equal distances.
+ */
+export function clusterContacts<T extends MinimapContact>(
+  player: Vec3,
+  contacts: readonly T[],
+  arrows: T[],
+  clusters: MinimapCluster[],
+): void {
+  arrows.length = 0;
+  clusters.length = 0;
+  if (contacts.length <= MINIMAP_ARROWS) {
+    for (const c of contacts) arrows.push(c);
+    return;
+  }
+  const ranked = contacts
+    .map((c) => {
+      const d = wrapDelta(player, c.pos);
+      return { c, d, r: d.x * d.x + d.z * d.z };
+    })
+    .sort((a, b) => a.r - b.r);
+  const cells = new Map<number, MinimapCluster>();
+  ranked.forEach(({ c, d }, i) => {
+    if (i < MINIMAP_ARROWS) {
+      arrows.push(c);
+      return;
+    }
+    const key =
+      Math.floor(d.x / CLUSTER_CELL) * 1000 + Math.floor(d.z / CLUSTER_CELL);
+    const cl = cells.get(key);
+    if (cl) {
+      cl.dx += (d.x - cl.dx) / (cl.n + 1);
+      cl.dz += (d.z - cl.dz) / (cl.n + 1);
+      cl.n++;
+    } else {
+      cells.set(key, { dx: d.x, dz: d.z, n: 1 });
+    }
+  });
+  for (const cl of cells.values()) clusters.push(cl);
 }
 
 /** A storm reveal echo: where a plane was lit + its fading level (1 → 0). */
@@ -218,6 +280,9 @@ export class Minimap {
   /** D8: footprints repainted as their buildings break and are rebuilt. */
   private readonly watch: StandingWatch;
   private readonly holes: readonly HoleSpan[];
+  /** E1: this frame's arrows and far clusters (reused). */
+  private readonly arrows: MinimapContact[] = [];
+  private readonly clusters: MinimapCluster[] = [];
 
   constructor(private readonly buildings: readonly Building[]) {
     this.size = this.canvas.width; // square; CSS scales it down for the HUD
@@ -291,7 +356,23 @@ export class Minimap {
       ctx.fill();
       ctx.globalAlpha = 1;
     }
-    for (const c of contacts) {
+    clusterContacts(playerPos, contacts, this.arrows, this.clusters);
+    // E1: the far squadrons first, under the arrows: a dim blip each,
+    // growing with its count.
+    const s = size / WORLD_SIZE;
+    ctx.fillStyle = "rgba(255, 138, 61, 0.55)";
+    for (const cl of this.clusters) {
+      ctx.beginPath();
+      ctx.arc(
+        size / 2 + cl.dx * s,
+        size / 2 + cl.dz * s,
+        2 + Math.min(6, Math.sqrt(cl.n) * 1.4),
+        0,
+        Math.PI * 2,
+      );
+      ctx.fill();
+    }
+    for (const c of this.arrows) {
       const p = minimapPoint(playerPos, c.pos, size);
       this.blip(p.x, p.y, c.angle, "#ff8a3d");
     }

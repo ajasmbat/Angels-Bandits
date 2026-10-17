@@ -8,7 +8,7 @@
 // squadron is up to SQUAD_SIZE planes on the slots of one virtual ANCHOR,
 // which flies a coarse plan low over the roofline grid. Per tick, fly():
 //
-//  - each squadron re-plans when its plan runs out (a patrol lane, a bomber
+//  - each squadron re-plans when its plan runs out (a patrol lane, a strike
 //    stream at a point near a human, an escort loop round an airship),
 //    steps its anchor (stepAnchor: terrain-following, airships avoided),
 //    and writes every plane in formation onto its slot — off the anchor
@@ -80,7 +80,7 @@ import type { DangerBudget } from "./danger";
 /** A squadron re-plans after this long, ms (a seeded draw in the range). */
 const PLAN_MIN_MS = 20_000;
 const PLAN_MAX_MS = 45_000;
-/** A bomber stream counts as arrived this close to its point, m — wider
+/** A strike stream counts as arrived this close to its point, m — wider
  * than its turning circle, so it never orbits a point it cannot hit. */
 const STREAM_ARRIVE_M = 260;
 /** An escort loop's gap outside its airship's reach, m. */
@@ -154,7 +154,7 @@ const newPose = (): Pose => ({
   speed: 0,
 });
 
-/** Formations by plan: bomber streams fly columns or boxes, escorts
+/** Formations by plan: strike streams fly columns or boxes, escorts
  * echelons or fingers, patrols wedges or fingers. */
 const FORMS_FOR: readonly (readonly number[])[] = [
   [FORM_WEDGE, FORM_FINGER, FORM_WEDGE],
@@ -447,7 +447,7 @@ export class RoomSquadrons {
     return wrapDistance(sq.anchor.pos, sq.plan.center) < STREAM_ARRIVE_M;
   }
 
-  /** A fresh plan for `sq` (seeded): a bomber stream at a point near a
+  /** A fresh plan for `sq` (seeded): a strike stream at a point near a
    * human, an escort loop round the nearest airship, or a patrol lane
    * along the nose's nearest axis. */
   private replan(

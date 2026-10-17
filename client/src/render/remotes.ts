@@ -13,8 +13,22 @@
 // that lag. Trade-off, accepted: a bot (age 0) and a human are drawn on
 // clocks a few tens of ms apart. Strobes and the spawn shimmer stay on the
 // shared clock so every client blinks in phase.
+//
+// E1 Air force: a room may hold hundreds of enemy planes, and snapshots are
+// interest managed (common/src/interest.ts). So an ENEMY missing from a
+// snapshot is not dead — it goes stale after IM_STALE_MS (deaths still
+// arrive as `death`); a human's absence still hides it at once. And only
+// the enemies that can be seen pay for a plane: each frame every remote is
+// sampled (the radar and the lead need the pose), but an enemy past the
+// far plane — or past the tier's nearest `airforce` — is not drawn, and the
+// per-plane extras (lights, trails, a name tag) go to the nearest ones.
 
-import { INTERP_JITTER_DECAY, MAX_HP } from "@angels-bandits/common/constants";
+import {
+  FOG_DISTANCE,
+  INTERP_JITTER_DECAY,
+  MAX_HP,
+} from "@angels-bandits/common/constants";
+import { IM_STALE_MS } from "@angels-bandits/common/interest";
 import type {
   Pose,
   RosterEntry,
@@ -47,6 +61,7 @@ import {
 } from "./plane";
 import type { PlaneLights } from "./planelights";
 import { isEnemyId, strobePhaseMs } from "./planelights";
+import { THIN_SECTORS } from "./sky-armada";
 import { REVEAL_COLOR, REVEAL_INTENSITY, turbulenceOffsetInto } from "./storm";
 import type { PlaneTrails, QuatLike } from "./trails";
 import { nearestImageInto } from "./wrapPlacement";
@@ -57,6 +72,21 @@ const SHIMMER_HZ = 5;
 const SHIMMER_COLOR = 0x9fd8e8;
 /** Propeller spin per meter flown, rad — same feel as the local plane's. */
 const PROP_SPIN_PER_M = 0.7;
+
+/** E1: an enemy is drawn only this near (the camera's far plane), m. */
+const ENEMY_DRAW_M = FOG_DISTANCE + 100;
+/** E1: an enemy wears lights within this, m; its trail within this. */
+const ENEMY_LIGHTS_M = 450;
+const ENEMY_TRAIL_M = 300;
+/** E1: an enemy takes a name-tag cell within this and gives it back past
+ * the second (the atlas has 16 cells), m. */
+const ENEMY_TAG_IN_M = 300;
+const ENEMY_TAG_OUT_M = 400;
+/** E1: hit tests, the lead, magnetism and threat calls look this far, m. */
+const ENEMY_TARGET_M = FOG_DISTANCE - 100;
+/** E1: the draw-cap histogram: bins of this many m, out to the far plane. */
+const DIST_BIN_M = 25;
+const DIST_BINS = Math.ceil(ENEMY_DRAW_M / DIST_BIN_M);
 
 /** P4: the shimmer and reveal tints in linear space, for the fleet's glow. */
 const SHIMMER_LIN = new THREE.Color(SHIMMER_COLOR);
@@ -110,6 +140,10 @@ interface Remote {
   sampled: Pose;
   /** W2: the bomb mask last applied to an enemy's racks. */
   bombs: number;
+  /** E1: an enemy plane (the carrier's), and its distance from the viewer
+   * last frame, m. */
+  enemy: boolean;
+  dist: number;
 }
 
 export class RemotePlanes {
@@ -117,6 +151,16 @@ export class RemotePlanes {
   private readonly names = new Map<string, { name: string; isBot: boolean }>();
   /** W2: the room's enemy racks (GameSocket.racks; absent: fully loaded). */
   private racks: ReadonlyMap<string, number> | null = null;
+  /** E1: enemies drawn at most (the tier's `airforce`), the distance that
+   * kept them under it last frame, and this frame's histogram. */
+  private enemyDraw = Number.POSITIVE_INFINITY;
+  private drawCut = ENEMY_DRAW_M;
+  private readonly bins = new Uint16Array(DIST_BINS);
+  /** E1: enemies by bearing sector round the viewer last frame (the
+   * cosmetic sky thins over the dense ones: SkyArmada.setThin). */
+  readonly enemySectors = new Float32Array(THIN_SECTORS);
+  /** E1 QA: enemies sampled / drawn last frame. */
+  readonly airStats = { enemies: 0, drawn: 0, cut: ENEMY_DRAW_M };
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -137,6 +181,11 @@ export class RemotePlanes {
    * leaves its rack empty on the airframe). */
   setRacks(racks: ReadonlyMap<string, number>): void {
     this.racks = racks;
+  }
+
+  /** E1: draw at most `n` enemies (the nearest; QualityProfile.airforce). */
+  setEnemyDraw(n: number): void {
+    this.enemyDraw = n;
   }
 
   setRoster(roster: RosterEntry[]): void {
@@ -178,14 +227,14 @@ export class RemotePlanes {
         const known = this.names.get(id);
         const tagName = known?.name ?? "???";
         const tagBot = known?.isBot ?? false;
+        const enemy = isEnemyId(id);
         remote = {
           // DT1: enemies fly the carrier's fighter-bomber; every human
           // pilot a biplane in their own livery.
-          mesh: isEnemyId(id)
-            ? buildEnemyMesh()
-            : buildPlaneMesh(liveryFor(id)),
+          mesh: enemy ? buildEnemyMesh() : buildPlaneMesh(liveryFor(id)),
           tag: this.tags ? null : createNameTag(tagName, tagBot),
-          tagCell: this.tags ? this.tags.alloc(tagName, tagBot) : -1,
+          // E1: an enemy takes a tag cell only when near (updateOne).
+          tagCell: this.tags && !enemy ? this.tags.alloc(tagName, tagBot) : -1,
           buffer: new InterpolationBuffer(),
           lastPos: null,
           lastPose: null,
@@ -206,6 +255,8 @@ export class RemotePlanes {
             speed: 0,
           },
           bombs: BOMBS_FULL,
+          enemy,
+          dist: Number.POSITIVE_INFINITY,
         };
         remote.mesh.visible = false; // until the first sampled pose
         this.scene.add(remote.mesh);
@@ -230,9 +281,14 @@ export class RemotePlanes {
     }
     // ...and absence is not: dead, still loading, or away (W2, tab hidden).
     // Hide it with its samples dropped, so it never hangs frozen in the sky
-    // or glides in from where it vanished.
+    // or glides in from where it vanished. E1: an enemy's absence only
+    // means it was not sent this tick (interest management) — it goes once
+    // it has been missing for IM_STALE_MS.
     for (const [id, remote] of this.remotes) {
-      if (remote.alive && remote.seenAt !== snap.time) this.setDead(id);
+      if (!remote.alive || remote.seenAt === snap.time) continue;
+      if (!remote.enemy || snap.time - remote.seenAt > IM_STALE_MS) {
+        this.setDead(id);
+      }
     }
   }
 
@@ -277,6 +333,8 @@ export class RemotePlanes {
       prot: boolean;
     }[] = [];
     for (const [id, r] of this.remotes) {
+      // E1: enemies past ENEMY_TARGET_M are no target of anything local.
+      if (r.enemy && r.dist > ENEMY_TARGET_M) continue;
       if (r.alive && r.lastPos) {
         out.push({
           id,
@@ -320,6 +378,7 @@ export class RemotePlanes {
     const out: { pos: Vec3; fwd: Vec3 }[] = [];
     for (const r of this.remotes.values()) {
       if (!r.alive || !r.lastPose) continue;
+      if (r.enemy && r.dist > ENEMY_TARGET_M) continue;
       scratchQuat.set(
         r.lastPose.quat.x,
         r.lastPose.quat.y,
@@ -375,8 +434,34 @@ export class RemotePlanes {
     w.renderTime = renderTime;
     w.target = target;
     w.revealLevelOf = revealLevelOf;
+    this.bins.fill(0);
+    this.enemySectors.fill(0);
+    this.airStats.enemies = 0;
+    this.airStats.drawn = 0;
     this.remotes.forEach(this.updateOne);
     w.revealLevelOf = undefined;
+    // E1: next frame's draw distance — the bin where the nearest
+    // `enemyDraw` enemies run out (one frame late, which nobody can see).
+    let n = 0;
+    let cut = ENEMY_DRAW_M;
+    for (let b = 0; b < DIST_BINS; b++) {
+      n += this.bins[b] as number;
+      if (n > this.enemyDraw) {
+        cut = b * DIST_BIN_M;
+        break;
+      }
+    }
+    this.drawCut = cut;
+    this.airStats.cut = cut;
+  }
+
+  /** E1: the `n` nearest living remotes' contacts (engine audio), from a
+   * contacts() list. */
+  nearest<T extends { id: string }>(list: readonly T[], n: number): T[] {
+    if (list.length <= n) return list as T[];
+    const d = (c: T) =>
+      this.remotes.get(c.id)?.dist ?? Number.POSITIVE_INFINITY;
+    return [...list].sort((a, b) => d(a) - d(b)).slice(0, n);
   }
 
   /** update()'s state for `updateOne`. */
@@ -414,6 +499,44 @@ export class RemotePlanes {
     remote.extraDelay = Math.max(0, renderTime - ownTime - remote.lastAge);
     const pose = remote.buffer.sampleInto(ownTime, remote.sampled);
     if (!pose) return;
+    remote.lastPos = pose.pos;
+    remote.lastPose = pose;
+    const p = nearestImageInto(scratchImage, viewer, pose.pos);
+    // E1: how far, and whether this enemy is drawn at all.
+    const dx = p.x - viewer.x;
+    const dy = p.y - viewer.y;
+    const dz = p.z - viewer.z;
+    remote.dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (remote.enemy) {
+      this.airStats.enemies++;
+      const sec =
+        Math.floor(
+          ((Math.atan2(dx, dz) + Math.PI) * THIN_SECTORS) / (2 * Math.PI),
+        ) % THIN_SECTORS;
+      this.enemySectors[sec] = (this.enemySectors[sec] as number) + 1;
+      const bin = Math.floor(remote.dist / DIST_BIN_M);
+      if (bin < DIST_BINS) this.bins[bin] = (this.bins[bin] as number) + 1;
+      if (remote.dist > this.drawCut) {
+        remote.mesh.visible = false;
+        // Its surfaces start from rest when it comes back into view.
+        remote.prevQuat = null;
+        if (remote.tagCell >= 0 && remote.dist > ENEMY_TAG_OUT_M) {
+          this.tags?.free(remote.tagCell);
+          remote.tagCell = -1;
+        }
+        return;
+      }
+      this.airStats.drawn++;
+      if (this.tags) {
+        if (remote.tagCell < 0 && remote.dist < ENEMY_TAG_IN_M) {
+          const known = this.names.get(id);
+          remote.tagCell = this.tags.alloc(known?.name ?? "???", true);
+        } else if (remote.tagCell >= 0 && remote.dist > ENEMY_TAG_OUT_M) {
+          this.tags.free(remote.tagCell);
+          remote.tagCell = -1;
+        }
+      }
+    }
     spinPropeller(remote.mesh, dt * pose.speed * PROP_SPIN_PER_M);
     // Control surfaces from the frame-to-frame orientation delta over the
     // render clock the pose was sampled on (no protocol change).
@@ -442,11 +565,12 @@ export class RemotePlanes {
       remote.bombs = bombs;
       setPlaneBombs(remote.mesh, bombs);
     }
-    remote.lastPos = pose.pos;
-    remote.lastPose = pose;
-    const p = nearestImageInto(scratchImage, viewer, pose.pos);
-    this.lights.place(id, p, pose.quat, pose.speed, renderTime);
-    this.trails.emit(id, pose.pos, pose.quat, nowMs, dt);
+    if (!remote.enemy || remote.dist < ENEMY_LIGHTS_M) {
+      this.lights.place(id, p, pose.quat, pose.speed, renderTime);
+    }
+    if (!remote.enemy || remote.dist < ENEMY_TRAIL_M) {
+      this.trails.emit(id, pose.pos, pose.quat, nowMs, dt);
+    }
     // In-cloud turbulence wobble (ST2): display-only, zero at/below the
     // deck; phase-shifted per plane so a formation doesn't shake as one.
     const wobble = turbulenceOffsetInto(

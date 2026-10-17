@@ -6,7 +6,7 @@
 // every client draws are the same poses.
 //
 //  - A squadron is up to SQUAD_SIZE planes holding SLOTS off one virtual
-//    ANCHOR. The anchor flies a coarse plan (a patrol lane, a bomber
+//    ANCHOR. The anchor flies a coarse plan (a patrol lane, a strike
 //    stream, an escort loop round an airship); a slot is a fixed offset in
 //    the anchor's LEVEL frame (heading only), so a wingman is never lower
 //    than the anchor and the anchor's floor clears the whole formation.
@@ -94,7 +94,7 @@ export const FORMATIONS: readonly (readonly Slot[])[] = [
     s(-25, 3.5, 22),
     s(-14, 4.5, 32),
   ],
-  // TRAIL: two staggered columns — the bomber stream down an avenue.
+  // TRAIL: two staggered columns — the strike stream down an avenue.
   [
     s(0, 0, 0),
     s(9, 1, 6),
@@ -116,7 +116,7 @@ export const FORMATIONS: readonly (readonly Slot[])[] = [
     s(-20, 3, 18),
     s(-30, 4.5, 27),
   ],
-  // BOX: two rows of four (heavy bombers).
+  // BOX: two rows of four (the heavy strike).
   [
     s(0, 0, 0),
     s(-14, 0, 0),

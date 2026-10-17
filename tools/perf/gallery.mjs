@@ -815,11 +815,9 @@ try {
 }
 if (judged.length > 0) {
   const over = judged.filter((j) => j.draws > j.ceiling);
+  const list = over.map((j) => `${j.name} ${j.draws} > ${j.ceiling}`);
   console.log(
-    `gallery draw budgets: ${judged.length} views judged, ${over.length} over` +
-      (over.length > 0
-        ? ` (${over.map((j) => `${j.name} ${j.draws} > ${j.ceiling}`).join(", ")})`
-        : ""),
+    `gallery draw budgets: ${judged.length} views judged, ${over.length} over${list.length > 0 ? ` (${list.join(", ")})` : ""}`,
   );
   if (over.length > 0) process.exitCode = 1;
 }

@@ -499,6 +499,15 @@ try {
           }),
       );
     }
+    if (v.airforce) {
+      // E1: the air force round the held plane, riding every snapshot from
+      // now on (the pin loop below lets their buffers fill).
+      const r = await page.evaluate(
+        (n) => window.__ab.qaAirforce(n),
+        v.airforce,
+      );
+      console.log("airforce", v.name, JSON.stringify(r));
+    }
     if (v.lowChaos) {
       // C1: stage the low run round the held pose (render clock).
       const r = await page.evaluate(
@@ -681,6 +690,14 @@ try {
         ),
       );
       await page.evaluate(() => window.__ab.qaPenetrate(null));
+    }
+    if (v.airforce) {
+      console.log(
+        "airforce-drawn",
+        v.name,
+        JSON.stringify(await page.evaluate(() => window.__ab.airforce())),
+      );
+      await page.evaluate(() => window.__ab.qaAirforce(null));
     }
     if (v.lowChaos) await page.evaluate(() => window.__ab.qaLowChaos(null));
     console.log(

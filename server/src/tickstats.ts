@@ -23,6 +23,9 @@ export interface TickReport {
   p99: number;
   max: number;
   phases: Record<string, TickPhaseStats>;
+  /** E1: the tick less the D5/C1 director's phase, whose event planning
+   * spikes the same with no enemy at all (tools/airforce-bench.ts). */
+  core: { p50: number; p99: number };
 }
 
 const percentile = (sorted: number[], q: number): number =>
@@ -32,8 +35,12 @@ const percentile = (sorted: number[], q: number): number =>
 
 const round3 = (n: number): number => Math.round(n * 1000) / 1000;
 
+/** E1: phases the `core` figures leave out. */
+const CORE_EXCLUDES = ["director"];
+
 export class TickProfiler {
   private readonly totals: number[] = [];
+  private readonly coreTotals: number[] = [];
   private readonly phases = new Map<string, number[]>();
   private readonly current = new Map<string, number>();
   private t0 = 0;
@@ -58,7 +65,11 @@ export class TickProfiler {
 
   end(): void {
     if (!this.enabled) return;
-    push(this.totals, performance.now() - this.t0);
+    const total = performance.now() - this.t0;
+    push(this.totals, total);
+    let out = 0;
+    for (const phase of CORE_EXCLUDES) out += this.current.get(phase) ?? 0;
+    push(this.coreTotals, total - out);
     for (const [phase, ms] of this.current) {
       let series = this.phases.get(phase);
       if (!series) {
@@ -71,6 +82,7 @@ export class TickProfiler {
 
   report(): TickReport {
     const sorted = [...this.totals].sort((a, b) => a - b);
+    const core = [...this.coreTotals].sort((a, b) => a - b);
     const phases: Record<string, TickPhaseStats> = {};
     for (const [phase, series] of this.phases) {
       const s = [...series].sort((a, b) => a - b);
@@ -88,11 +100,16 @@ export class TickProfiler {
       p99: round3(percentile(sorted, 0.99)),
       max: round3(sorted[sorted.length - 1] ?? 0),
       phases,
+      core: {
+        p50: round3(percentile(core, 0.5)),
+        p99: round3(percentile(core, 0.99)),
+      },
     };
   }
 
   reset(): void {
     this.totals.length = 0;
+    this.coreTotals.length = 0;
     this.phases.clear();
   }
 }

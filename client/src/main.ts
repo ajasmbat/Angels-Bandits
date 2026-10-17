@@ -141,6 +141,7 @@ import type {
   WelcomeMsg,
 } from "@angels-bandits/common/protocol";
 import { airlinerOffsetInto } from "@angels-bandits/common/skytraffic";
+import { RooflineGrid } from "@angels-bandits/common/squadron";
 import { strikesInWindow } from "@angels-bandits/common/storm";
 import {
   MISSILE_SHOOTER_ID,
@@ -314,6 +315,12 @@ import {
 import { magnetizeVelocity } from "./game/magnetism";
 import { MissileFeed, MissileShake, bombingNear } from "./game/missile-feed";
 import { createPullCue, stepPullCue } from "./game/pull-feel";
+import {
+  type QaAirforceSpec,
+  qaAirforceExtend,
+  qaAirforceIds,
+  qaSquadrons,
+} from "./game/qa-airforce";
 import {
   type QaChaosSpec,
   type QaChaosStage,
@@ -1789,6 +1796,11 @@ scene.add(bossRenderer.group);
  * schedule, and how many shells the server sent while it was staged
  * (dropped each frame). */
 let qaBoss: QaFleetStage | null = null;
+/** E1 QA (`__ab.qaAirforce`): the staged air force riding every snapshot,
+ * and the roofline it keeps over (built on first use). */
+let qaAirforce: QaAirforceSpec | null = null;
+let qaRoofline: RooflineGrid | null = null;
+
 /** C1 QA (`__ab.qaLowChaos`): the warnings it put in the director map, and
  * whether it staged destruction (cleared with it). */
 const qaLowChaos = { ids: [] as number[], staged: false };
@@ -2091,6 +2103,10 @@ const remotes = new RemotePlanes(
 );
 remotes.setRoster(welcome.roster);
 remotes.setRacks(socket.racks); // W2: the bombs still on each enemy's racks
+/** E1: remote engines voiced at once, the nearest first. */
+const ENGINE_VOICES = 12;
+/** E1: off-screen edge markers at once, the nearest first. */
+const EDGE_MARKERS = 8;
 
 // --- Combat: guns, bullets, tracers, HUD chrome ---
 const guns = new Guns();
@@ -2585,6 +2601,7 @@ function remoteFired(id: string): void {
 
 // --- Server events ---
 socket.events.onSnapshot = (snap) => {
+  if (qaAirforce && qaRoofline) qaAirforceExtend(qaAirforce, snap, qaRoofline);
   remotes.ingest(snap);
   reactor.observeSnapshot(snap, socket.selfId); // L1 low passes + own track
   const self = snap.players.find((p) => p.id === socket.selfId);
@@ -3129,6 +3146,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   farTraffic.setQuality(tier); // L8: phantom fleet share
   farSkyline.setQuality(tier); // L2: the far skyline's radius
   skyArmada.setQuality(tier); // SKY1: slots drawn and their radius
+  remotes.setEnemyDraw(QUALITY_PROFILES[tier].airforce); // E1
   signage.setQuality(tier);
   jumbotrons.setQuality(tier); // S1: Mobile shows the static LAST KILL card
   rooftopLife.setQuality(tier);
@@ -3690,6 +3708,22 @@ declare global {
        * going off round a held pose (game/qa-lowchaos.ts) — the plane's own
        * pose when omitted — through qaDestruction and the director's
        * warnings; null clears it. */
+      /** E1 QA: stage an air force of `n` enemy planes in squadrons
+       * round the plane (or `spec`'s point) — wire rows through the real
+       * client path (game/qa-airforce.ts); null / 0 clears it. */
+      qaAirforce: (spec: number | QaAirforceSpec | null) => {
+        planes: number;
+        squadrons: number;
+      };
+      /** E1: the air force as this client draws it — enemies sampled and
+       * drawn last frame, the draw distance the tier's cap holds them
+       * under, and the fleet's enemy instances. */
+      airforce: () => {
+        enemies: number;
+        drawn: number;
+        cut: number;
+        fleetEnemies: number;
+      };
       qaLowChaos: (spec?: QaLowChaosSpec | null) => {
         /** Warnings still to go off, and gone off (bursts, sirens). */
         warned: number;
@@ -4983,6 +5017,31 @@ window.__ab = {
       bombsRefused: qaChaos.bombsRefused,
     };
   },
+  // E1 QA: an air force of n planes round the camera.
+  qaAirforce: (spec) => {
+    if (qaAirforce) {
+      for (const id of qaAirforceIds(qaAirforce.n)) remotes.playerLeft(id);
+    }
+    const want =
+      typeof spec === "number"
+        ? { n: spec, x: flight.pos.x, z: flight.pos.z }
+        : spec;
+    qaAirforce = want && want.n > 0 ? want : null;
+    if (qaAirforce) {
+      qaRoofline ??= RooflineGrid.build(city.cityBuildings);
+      qaAirforceIds(qaAirforce.n).forEach((id, i) =>
+        remotes.playerJoined({ id, name: `BANDIT-${i + 1}`, isBot: true }),
+      );
+    }
+    return {
+      planes: qaAirforce?.n ?? 0,
+      squadrons: qaSquadrons(qaAirforce?.n ?? 0),
+    };
+  },
+  airforce: () => ({
+    ...remotes.airStats,
+    fleetEnemies: fleet?.stats.enemies ?? 0,
+  }),
   // C1 QA: stage a low run with the low-flying chaos firing round a held
   // pose (the plane's own when omitted); null clears it.
   qaLowChaos: (spec) => {
@@ -7097,7 +7156,12 @@ const frame = (rafNow: number): void => {
   // The engine note follows the EFFECTIVE command — throttle under the F5
   // corner cap — the manager's only cue, and an audio one.
   audio.setEngine(Math.min(flight.targetSpeed, cornerCap), alive, overspeed);
-  audio.syncRemotes(contacts, flight.pos, flight.yaw);
+  // E1: an engine voice for the nearest few only (hundreds of enemies).
+  audio.syncRemotes(
+    remotes.nearest(contacts, ENGINE_VOICES),
+    flight.pos,
+    flight.yaw,
+  );
   // In-cloud static bed: quiet crackle ramping in over the deck's first
   // 60 m. The only audio cue for the hidden ceiling — no HUD, by design.
   audio.setStatic(
@@ -7215,6 +7279,7 @@ const frame = (rafNow: number): void => {
     sky.domeVisible,
   );
   // SKY1: uniforms only (FAR_ORIGIN, just written above, is shared).
+  skyArmada.setThin(remotes.enemySectors); // E1: over the dense squadrons
   skyArmada.update(
     camera,
     renderMs,
@@ -7262,7 +7327,10 @@ const frame = (rafNow: number): void => {
 
   // Matrices are fresh after the render — project the screen-space UI now.
   markerPositions.length = 0; // A1: one array, refilled, not one a frame
-  for (const t of targets) markerPositions.push(t.pos);
+  // E1: the nearest few only — an air force would wall the screen's edge.
+  for (const t of remotes.nearest(targets, EDGE_MARKERS)) {
+    markerPositions.push(t.pos);
+  }
   edgeMarkers.update(camera, chase.position, markerPositions, markerScratch);
   const aimResult = leadIndicator.update(
     camera,

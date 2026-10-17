@@ -173,6 +173,9 @@ export const BUDGETS = {
     "ruin-detail": 112,
     "ruin-pancake": 112,
     "collapse-topple-impact": 109,
+    // E1: 500 enemy planes round the camera (93 measured) — the fleet's
+    // same instanced draws, however many planes.
+    "airforce-swarm": 103,
   },
 };
 

@@ -145,8 +145,11 @@ const LANDING_CHAIN: readonly { d: number; size: number; lum: number }[] = [
 const LIGHTS_PER_PLANE = 8;
 const LANDING_LIGHTS = 2 + LANDING_CHAIN.length;
 const MAX_LIGHTS_PER_PLANE = LIGHTS_PER_PLANE + LANDING_LIGHTS;
-/** Every plane the fleet can draw (DT1: enemies on top of a full room). */
-const CAPACITY = (ROOM_CAP + 12) * MAX_LIGHTS_PER_PLANE;
+/** Every plane that may wear lights (DT1: enemies on top of a full room).
+ * E1: the room's humans, the wave's planes, and the nearest of the air
+ * force (remotes.ts lights an enemy only within ENEMY_LIGHTS_M; past the
+ * capacity a plane simply goes dark). */
+const CAPACITY = (ROOM_CAP + 12 + 48) * MAX_LIGHTS_PER_PLANE;
 
 /** Concept 1 "Regulation Night Traffic": small steady points, tight halos. */
 const NAV_SIZE = 1.7;

@@ -34,6 +34,11 @@ import {
 } from "./constants";
 import type { Pose, SnapshotEntry, WireSnapshotEntry } from "./protocol";
 
+/** The wire's version. E1 (2): snapshots are per client and interest
+ * managed — an enemy missing from one is not dead — and squadrons travel as
+ * rows. A client built for another version reloads (main.ts). */
+export const PROTOCOL_VERSION = 2;
+
 // --- Quantisation scales (wire units per real unit) ---
 
 /** Position: 10 units per meter → 0.1 m resolution, ±0.05 m worst case. */

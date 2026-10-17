@@ -582,7 +582,8 @@ const WAR_HUD_ON = () => {
     e.classList.add(cls);
   };
   const line = el("wave-hud")?.querySelector(".line");
-  if (line) line.textContent = "WAVE 3 · 5 ENEMIES LEFT · AIRSHIPS DOWN 7";
+  if (line)
+    line.textContent = "WAVE 3 · 5 ACES LEFT · AIR FORCE 480 · AIRSHIPS DOWN 7";
   show("wave-hud", "open");
   el("wave-hud")?.classList.add("easy-on");
   show("wave-banner", "on", "WAVE 3");

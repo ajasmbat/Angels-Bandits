@@ -614,7 +614,10 @@ describe("the danger budget", () => {
     expect(b.take("meteor", [at(540)], 4500, T0 + 2000, p)).toBe(true);
     expect(b.take("director", [at(540)], 3500, T0 + 3000, p)).toBe(true);
     expect(b.take("bomb", [at(540)], 2600, T0 + 3500, p)).toBe(true);
-    // Five in the window: even an unspent layer is refused.
+    // E1: a squadron's burst (charged by id).
+    expect(b.allowsIds("squadron", ["a"], T0 + 3800, p)).toBe(true);
+    b.chargeIds("squadron", ["a"], T0 + 3800);
+    // Six in the window: even an unspent layer is refused.
     expect(b.allows("cavein", [at(540)], 0, T0 + 4000, p)).toBe(false);
     // Far from the plane is not "near" it.
     expect(b.allows("missile", [at(800)], 5000, T0 + 4000, p)).toBe(true);

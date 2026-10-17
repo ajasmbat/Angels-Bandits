@@ -1,11 +1,14 @@
 // W1 Carrier War, the pure half (common/src/waves.ts): wave sizes start at
 // three and grow by one or two up to a cap inside the perf budget, the
 // first waves are the softest, enemies spread over the humans they hunt,
-// and the HUD's state survives the wire.
+// and the HUD's state survives the wire. E1: each level's air force is a
+// sensible count (100 / 200 / 350 / ENEMY_CAP_MAX) on top of its waves.
 
 import { mulberry32 } from "@angels-bandits/common/city";
 import {
+  AIR_FORCE,
   ENEMY_CAP,
+  ENEMY_CAP_MAX,
   INTENSITY_DEFAULT,
   type Intensity,
   QUARRY_SPREAD_M,
@@ -13,6 +16,7 @@ import {
   WAVE_LEVELS,
   WAVE_LIVE,
   WAVE_RAMP,
+  airForceFor,
   asIntensity,
   assignQuarries,
   decodeWaves,
@@ -169,11 +173,35 @@ describe("the waves state on the wire", () => {
       left: 5,
       size: 6,
       downs: 2,
+      force: 431,
     } as const;
     expect(decodeWaves(encodeWaves(s))).toEqual(s);
-    expect(decodeWaves([1, 9, 0, 0, 0, 0])).toBeNull();
-    expect(decodeWaves([1, 1, 0, 0, 0])).toBeNull();
-    expect(decodeWaves([1, 1, 0.5, 0, 0, 0])).toBeNull();
+    expect(decodeWaves([1, 9, 0, 0, 0, 0, 0])).toBeNull();
+    expect(decodeWaves([1, 1, 0, 0, 0, 0])).toBeNull();
+    expect(decodeWaves([1, 1, 0.5, 0, 0, 0, 0])).toBeNull();
     expect(decodeWaves("waves")).toBeNull();
+  });
+});
+
+describe("E1: the air force each level fields", () => {
+  it("is 100 / 200 / 350 / ENEMY_CAP_MAX planes in all, growing with intensity, never past the cap", () => {
+    expect(AIR_FORCE).toEqual([100, 200, 350, ENEMY_CAP_MAX]);
+    expect(ENEMY_CAP_MAX).toBeGreaterThanOrEqual(ENEMY_CAP);
+    let prev = 0;
+    for (const level of LEVELS) {
+      const n = AIR_FORCE[level] as number;
+      expect(n).toBeGreaterThan(prev);
+      expect(n).toBeLessThanOrEqual(ENEMY_CAP_MAX);
+      prev = n;
+    }
+  });
+
+  it("is the level's count less the wave's own planes, never negative", () => {
+    for (const level of LEVELS) {
+      const total = AIR_FORCE[level] as number;
+      expect(airForceFor(level, 0)).toBe(total);
+      expect(airForceFor(level, 7)).toBe(total - 7);
+      expect(airForceFor(level, total + 5)).toBe(0);
+    }
   });
 });

@@ -13,7 +13,7 @@
 // flies the plane while it is up (main.ts), which the header says — and
 // RESUME (or Esc, or ✕) puts the controls back.
 
-import { INTENSITY_NAMES } from "@angels-bandits/common/waves";
+import { AIR_FORCE, INTENSITY_NAMES } from "@angels-bandits/common/waves";
 import { FEELS, type Feel } from "../game/effortless";
 import type { AimMode } from "../game/flight-input";
 import type { RollLevelMode } from "../game/roll-control";
@@ -223,7 +223,7 @@ const MARKUP = `
       ${seg(
         "intensity",
         "Enemy intensity in this room",
-        INTENSITY_NAMES.map((n, i) => [String(i), n]),
+        INTENSITY_NAMES.map((n, i) => [String(i), `${n} ${AIR_FORCE[i]}`]),
       )}
       <div class="row">
         <span>EASY MODE</span>

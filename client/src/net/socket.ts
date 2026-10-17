@@ -108,7 +108,10 @@ import {
   decodeDirectorEvent,
 } from "@angels-bandits/common/director";
 import { STREAK_TIERS, isMedalKind } from "@angels-bandits/common/medals";
-import { decodeSnapshotEntry } from "@angels-bandits/common/net";
+import {
+  PROTOCOL_VERSION,
+  decodeSnapshotEntry,
+} from "@angels-bandits/common/net";
 import type {
   AwardMsg,
   CourseBoardMsg,
@@ -128,6 +131,7 @@ import type {
   SnapshotMsg,
   WelcomeMsg,
 } from "@angels-bandits/common/protocol";
+import { expandSquadRow, isSquadRow } from "@angels-bandits/common/squadron";
 import {
   type MissileStrike,
   decodeMissile,
@@ -576,6 +580,11 @@ export class GameSocket {
     }
     // Z1: likewise a tab built for another fleet model — its lanes and
     // hulls would not be the server's.
+    // E1: a server on another wire version (per-client snapshots, squadron
+    // rows) would be misread — reload once onto its client.
+    if (staleProtocol(welcome)) {
+      reloadOnce(welcome.proto as number, "ab-protocol-reload");
+    }
     if (staleFleetModel(welcome)) {
       reloadOnce(welcome.fm as number, "ab-fleet-model-reload");
     }
@@ -956,6 +965,11 @@ export class GameSocket {
           time: msg.time,
           players: msg.p.map(decodeSnapshotEntry),
         };
+        // E1: each squadron in formation, one entry per plane — the same
+        // remotes and buffers as a plane sent on its own.
+        for (const row of msg.s ?? []) {
+          if (isSquadRow(row)) expandSquadRow(row, decoded.players);
+        }
         this.events.onSnapshot?.(decoded);
         break;
       }
@@ -1176,6 +1190,10 @@ export const staleCityModel = (welcome: Pick<WelcomeMsg, "cg">): boolean =>
   typeof welcome.cg === "number" && welcome.cg !== CITY_MODEL;
 
 /** D10: does `welcome` come from a server with another collapse model? */
+/** E1: is this welcome from a server on another wire version? */
+export const staleProtocol = (welcome: Pick<WelcomeMsg, "proto">): boolean =>
+  typeof welcome.proto === "number" && welcome.proto !== PROTOCOL_VERSION;
+
 /** Z1: is this welcome from a server with another fleet model? */
 export const staleFleetModel = (welcome: Pick<WelcomeMsg, "fm">): boolean =>
   typeof welcome.fm === "number" && welcome.fm !== FLEET_MODEL;

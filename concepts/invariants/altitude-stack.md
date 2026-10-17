@@ -26,6 +26,14 @@ does so under it, among the towers.
 - `RESPAWN_ALTITUDE` (370 m), the landmark run-out veto and, since the
   rooftop ships cruise this layer, the fleet veto with a fanned heading
   (`server/src/respawn.ts` `landmarkClearance`, `freeHeading`);
+- E1's squadron band (`common/src/squadron.ts`), DERIVED, never a literal:
+  `SQUAD_FLOOR_ALT` (60 m) over open ground, the roofline grid's dilated
+  roofs + `SQUAD_CLEAR` everywhere else, the cruise cap `SQUAD_CRUISE_CAP`
+  (the generated skyline `BUILDING_MAX_HEIGHT + ROOF_STRUCTURE_MAX_HEIGHT`
+  + clearance, so the spires are flown round, not over) and the hard top
+  `SQUAD_ALT_MAX` (under `BOT_CEILING_ALT`, `SOFT_CEILING` and the blimp's
+  belly, less the formation's top: 361 m with this deck). The airships are
+  steered round as moving obstacles (`SquadObstacle`), not by altitude;
 - the blimp `BLIMP_ALT` (388 m, hull 374–402 m), on an avenue line parallel
   to the rooftop lanes, clear of them and of the spires
   (`city/movers.ts` `blimpCross`);
@@ -72,6 +80,10 @@ blimp, under the deck, off the spires) and `common/test/movers.test.ts`
   spawn protection does not stop a crash (the vetoes exist for this; any
   new tall landmark must stay in `LANDMARK_BLOCKS` so the vetoes see it).
 - A blimp or news heli in the deck, or one that meets a spire or a hull.
+- A squadron band written as numbers instead of derived, or the blimp
+  lowered without it: the formations fly into the deck or the blimp's hull
+  (squadrons steer round airships, not movers). `common/test/squadron.test.ts`
+  pins the band under the ceilings and the blimp.
 - Anything the `height >= LANDMARK_HEIGHT` test identifies — the minimap
   accent, roof beacons, facade archetypes, searchlight picks — misfires the
   moment a generated lot reaches `LANDMARK_HEIGHT`.

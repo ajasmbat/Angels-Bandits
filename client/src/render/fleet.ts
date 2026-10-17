@@ -55,6 +55,7 @@
 // rollback for bisecting a visual or driver problem.
 
 import { ROOM_CAP } from "@angels-bandits/common/constants";
+import { ENEMY_CAP, ENEMY_CAP_MAX } from "@angels-bandits/common/waves";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import {
@@ -81,8 +82,10 @@ import type { QualityTier } from "./quality";
 /** Biplanes the fleet draws: the room's humans, plus a few remotes that
  * are leaving while others join. Planes past it are not drawn. */
 const CAPACITY_BIPLANE = ROOM_CAP + 8;
-/** DT1: enemy fighter-bombers (the carrier's waves, on top of the room). */
-const CAPACITY_ENEMY = 24;
+/** DT1: enemy fighter-bombers (the carrier's waves, on top of the room).
+ * E1: room for the whole air force and its wave — the instance buffers are
+ * sized once; the tier's `airforce` caps how many are written a frame. */
+const CAPACITY_ENEMY = ENEMY_CAP_MAX + ENEMY_CAP;
 /** Draws both airframes share (LOD, glass, blur). */
 const CAPACITY_ALL = CAPACITY_BIPLANE + CAPACITY_ENEMY;
 

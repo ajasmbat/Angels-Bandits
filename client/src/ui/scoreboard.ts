@@ -7,7 +7,7 @@
 import { streakTier } from "@angels-bandits/common/medals";
 import type { RosterEntry, ScoreEntry } from "@angels-bandits/common/protocol";
 import { INTENSITY_MAX } from "@angels-bandits/common/waves";
-import { type IntensityBar, intensityName } from "./intensity";
+import { type IntensityBar, intensityLabel } from "./intensity";
 
 /** Touch (M9): taps on the intensity cells this soon after the panel opens
  * are ignored — a double-tap on the minimap must not change the room's
@@ -90,9 +90,9 @@ export class Scoreboard {
 
     const paint = (): void => {
       const shown = bar.displayed;
-      value.textContent = intensityName(shown);
+      value.textContent = intensityLabel(shown);
       cells.setAttribute("aria-valuenow", `${shown}`);
-      cells.setAttribute("aria-valuetext", intensityName(shown));
+      cells.setAttribute("aria-valuetext", intensityLabel(shown));
       for (const cell of cells.querySelectorAll<HTMLDivElement>(".cell")) {
         cell.classList.toggle("filled", Number(cell.dataset.level) <= shown);
       }

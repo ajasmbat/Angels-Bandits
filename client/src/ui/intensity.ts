@@ -14,7 +14,11 @@
 // One drag makes exactly one claim, on release — the rate limit is why, and
 // release() spells it out.
 
-import { INTENSITY_MAX, INTENSITY_NAMES } from "@angels-bandits/common/waves";
+import {
+  AIR_FORCE,
+  INTENSITY_MAX,
+  INTENSITY_NAMES,
+} from "@angels-bandits/common/waves";
 
 const clamp = (level: number): number =>
   Math.min(Math.max(Math.round(level), 0), INTENSITY_MAX);
@@ -22,6 +26,11 @@ const clamp = (level: number): number =>
 /** A level's name for the HUD (EASY … INSANE). */
 export const intensityName = (level: number): string =>
   INTENSITY_NAMES[clamp(level)] ?? "";
+
+/** E1: a level as the scoreboard shows it — its name and the enemy planes
+ * it puts in the sky: "INSANE · 500 PLANES". */
+export const intensityLabel = (level: number): string =>
+  `${intensityName(level)} · ${AIR_FORCE[clamp(level)] ?? 0} PLANES`;
 
 export class IntensityBar {
   /** Last value the server confirmed — the room's truth. */

@@ -25,13 +25,14 @@ const WAVE_BANNER_MS = 2600;
 const BOMB_WARN_TEXT = "⚠ ENEMY BOMBING NEAR YOU";
 
 /**
- * W1: the war's HUD line — "WAVE 3 · 4 ENEMIES LEFT" while a wave is up,
+ * W1: the war's HUD line — "WAVE 3 · 4 ACES LEFT" while a wave is up,
  * "WAVE 4 INCOMING" through its breather, nothing before the fleet comes.
- * Pure, for the HUD and its tests.
+ * E1: a wave's planes are its aces (the air force round them is not the
+ * wave), so the line names them. Pure, for the HUD and its tests.
  */
 export function waveLine(w: WaveState): string {
   if (w.phase === WAVE_LIVE) {
-    return `WAVE ${w.wave} · ${w.left} ${w.left === 1 ? "ENEMY" : "ENEMIES"} LEFT`;
+    return `WAVE ${w.wave} · ${w.left} ${w.left === 1 ? "ACE" : "ACES"} LEFT`;
   }
   if (w.phase === WAVE_BREATHER) return `WAVE ${w.wave} INCOMING`;
   return "";
@@ -42,16 +43,20 @@ export function waveLine(w: WaveState): string {
 export const fleetCounter = (downs: number): string =>
   downs > 0 ? `AIRSHIPS DOWN ${downs}` : "";
 
+/** E1: the air force up — "AIR FORCE 480"; nothing while there is none.
+ * Pure. */
+export const forceCounter = (force: number): string =>
+  force > 0 ? `AIR FORCE ${force}` : "";
+
 /**
- * W4/Z1: the objective line, top centre — the wave line (waveLine) and the
- * fleet counter: "WAVE 3 · 5 ENEMIES LEFT · AIRSHIPS DOWN 7". Either reads
- * on its own. Pure, for the HUD and its tests.
+ * W4/Z1: the objective line, top centre — the wave line (waveLine), E1's
+ * air force and the fleet counter: "WAVE 3 · 5 ACES LEFT · AIR FORCE 480 ·
+ * AIRSHIPS DOWN 7". Each reads on its own. Pure, for the HUD and its tests.
  */
 export function objectiveLine(w: WaveState): string {
-  const wave = waveLine(w);
-  const fleet = fleetCounter(w.downs);
-  if (fleet === "") return wave;
-  return wave === "" ? fleet : `${wave} · ${fleet}`;
+  return [waveLine(w), forceCounter(w.force ?? 0), fleetCounter(w.downs)]
+    .filter((part) => part !== "")
+    .join(" · ");
 }
 
 /**

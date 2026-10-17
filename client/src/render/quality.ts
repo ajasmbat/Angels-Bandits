@@ -98,6 +98,10 @@ export interface QualityProfile {
    * and flak slots drawn, and of their radius — instance counts and
    * uniforms; far-field dressing past the fog limit, never solid. */
   skyArmada: number;
+  /** E1 the air force: enemy planes drawn at most, the nearest first
+   * (remotes.ts). The rest still fly, shoot and show on the radar — past
+   * this they are simply not drawn (the far ones are in the fog anyway). */
+  airforce: number;
   /** L13 fire escapes, balconies, AC units, scaffolding; DT2 balcony
    * plants and sconces, ivy curtains and graffiti (all one instanced rig). */
   facadeDetail: boolean;
@@ -241,6 +245,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     birds: 1,
     contrails: 1,
     skyArmada: 1,
+    airforce: 520,
     facadeDetail: true,
     riverDetail: true,
     bloom: true,
@@ -293,6 +298,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     birds: 1,
     contrails: 1,
     skyArmada: 0.8,
+    airforce: 400,
     facadeDetail: true,
     riverDetail: true,
     bloom: true,
@@ -345,6 +351,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     birds: 0.5,
     contrails: 0.5,
     skyArmada: 0.6,
+    airforce: 260,
     facadeDetail: false,
     riverDetail: false,
     bloom: true,
@@ -397,6 +404,7 @@ export const QUALITY_PROFILES: Readonly<Record<QualityTier, QualityProfile>> = {
     birds: 0.5,
     contrails: 0.5,
     skyArmada: 0.45,
+    airforce: 150,
     facadeDetail: false,
     riverDetail: false,
     bloom: true,
@@ -992,6 +1000,14 @@ export const FEATURE_TIERS: readonly {
     low: "reduced",
     mobile: "reduced",
     note: "100 / 80 / 60 / 45 % of the 640 airship, 120 dogfight and 160 flak slots (skyArmada), the radius with them (ships 5.2 / 4.7 / 4.2 / 3.8 km) — instance counts and uniforms; purely far-field dressing in L2's shell past the fog limit, never solid; four draws on every tier (the painted horizon is the same everywhere, so Mobile's sky stays busy)",
+  },
+  {
+    feature: "E1 air force — enemy planes drawn",
+    high: "full",
+    medium: "reduced",
+    low: "reduced",
+    mobile: "reduced",
+    note: "the nearest 520 / 400 / 260 / 150 enemies (airforce) — the rest still fly, fight and show on the radar, past the far plane or the cap they are simply not drawn; the fleet's instanced draws are the same count on every tier",
   },
   {
     feature: "Stormlit L2 — city glow in the fog, the dome and the cloud bases",

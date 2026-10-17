@@ -68,6 +68,14 @@
 // The report counts deaths by cause — missile, meteor, flak, collapse by
 // origin, crash — and the chaos tick's cost.
 //
+// E1 the air force: the canyon bots are the room's ACES; the hundreds of
+// squadron planes round them ride the same RoomBots but are flown by their
+// squadrons (setSquadFlight), and the brain skips them. "E1: squadron
+// planes change nothing about the aces" (always on, ~1 s) flies the same
+// seeded aces with and without 400 squadron planes in their RoomBots and
+// asserts the aces' flights, shots and crashes are bit-for-bit the same,
+// and that a promoted plane flies on from its slot's flight.
+//
 // MAIN_* are the same harness's numbers on main before B1 (bots mostly high,
 // spawned at RESPAWN_ALTITUDE), same seeds and run length — the bar the
 // review set is crashes per bot-minute within 1.15x of them.
@@ -1011,4 +1019,108 @@ describe.skipIf(!process.env.BOT_SIM)("canyon-fight sim (BOT_SIM=1)", () => {
       expect(hullCrashes).toBeLessThanOrEqual(6);
     }
   }, 600_000);
+});
+
+describe("E1: squadron planes change nothing about the aces", () => {
+  const city = generateCity(CITY_SEED);
+  const movers = generateMovers(CITY_SEED, city);
+  const nature = buildNatureIndex(natureFor(CITY_SEED, city));
+  const T0 = 1_790_000_000_000;
+  const DT = 1000 / TICK_DOWN_HZ;
+  const human: BotContact = {
+    id: "human-1",
+    pos: { x: 1000, y: 300, z: 1000 },
+    vel: { x: 0, y: 0, z: 0 },
+    prot: false,
+    hp: 100,
+  };
+
+  /** 20 s of 5 aces hunting an orbiting human, with `squads` squadron
+   * planes parked in the same RoomBots; the aces' track. */
+  function fly(squads: number): string {
+    const bots = new RoomBots("room-e1", 77, city, movers, true, nature);
+    const aces: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const e = bots.spawn({
+        pos: { x: 200 + i * 300, y: 60, z: 400 + i * 150 },
+        yaw: i,
+        speed: 70,
+      });
+      aces.push(e.id);
+    }
+    // Squadron planes hold a pose high over the city (their squadron would
+    // move them; the brain must not touch them either way).
+    for (let i = 0; i < squads; i++) {
+      const e = bots.spawn({ pos: { x: 0, y: 500, z: 0 }, yaw: 0, speed: 70 });
+      const pos = {
+        x: (i * 37) % WORLD_SIZE,
+        y: 420,
+        z: (i * 91) % WORLD_SIZE,
+      };
+      bots.setSquadFlight(
+        e.id,
+        { pos, yaw: 0, pitch: 0, roll: 0, speed: 70, targetSpeed: 70 },
+        { pos, quat: { x: 0, y: 0, z: 0, w: 1 }, speed: 70 },
+      );
+    }
+    bots.setQuarries(new Map(aces.map((id) => [id, human.id])));
+    const track: unknown[] = [];
+    for (let t = 0; t < 400; t++) {
+      const a = (t / 400) * Math.PI * 2;
+      human.pos = {
+        x: 1000 + Math.cos(a) * 300,
+        y: 300,
+        z: 1000 + Math.sin(a) * 300,
+      };
+      const r = bots.tick(T0 + t * DT, [human]);
+      track.push(
+        r.shots.map((s) => s.botId),
+        r.crashes,
+        aces.map((id) => bots.poseOf(id)),
+      );
+    }
+    // The parked planes never moved, never fired, never crashed.
+    return JSON.stringify(track);
+  }
+
+  it("flies the same aces bit for bit with 400 squadron planes in the room", () => {
+    expect(fly(400)).toBe(fly(0));
+  });
+
+  it("skips a squadron plane in the brain, and a promoted one flies on from its slot's flight", () => {
+    const bots = new RoomBots("room-e1b", 5, city, movers, true, nature);
+    const e = bots.spawn({ pos: { x: 0, y: 500, z: 0 }, yaw: 0, speed: 70 });
+    const pos = { x: 1000, y: 420, z: 1000 };
+    const flight = {
+      pos,
+      yaw: 0.5,
+      pitch: 0,
+      roll: 0,
+      speed: 72,
+      targetSpeed: 72,
+    };
+    bots.setSquadFlight(e.id, flight, {
+      pos,
+      quat: { x: 0, y: 0, z: 0, w: 1 },
+      speed: 72,
+    });
+    expect(bots.isSquad(e.id)).toBe(true);
+    bots.tick(T0, [human]);
+    expect(bots.flightOf(e.id)?.pos).toEqual({ x: 1000, y: 420, z: 1000 });
+    expect(bots.squadShot(e.id, human.id)?.dir.y).toBeCloseTo(0, 9);
+    bots.promote(e.id);
+    expect(bots.isSquad(e.id)).toBe(false);
+    bots.tick(T0 + DT, [human]);
+    const after = bots.flightOf(e.id);
+    // One tick on from the slot: a few metres along its heading.
+    const moved = Math.hypot(
+      (after?.pos.x ?? 0) - 1000,
+      (after?.pos.z ?? 0) - 1000,
+    );
+    expect(moved).toBeGreaterThan(2);
+    expect(moved).toBeLessThan(6);
+    // The squadron's own object is not the ace's (promote copies it).
+    expect(pos).toEqual({ x: 1000, y: 420, z: 1000 });
+    expect(bots.squadShot(e.id, human.id)).toBeNull();
+  });
 });

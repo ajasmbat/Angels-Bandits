@@ -38,7 +38,11 @@ export type DangerLayer =
   // lethal event staged near a plane flying low among the towers. Its own
   // share UNDER the same total: the 2–4 s cadence lands the rest beside or
   // beyond the plane's path, outside `nearM`, where nothing is charged.
-  | "lowchaos";
+  | "lowchaos"
+  // E1: a squadron's gun burst at a human (server/src/squadrons.ts) — one
+  // charge per burst, by id. Its own share under the total, so the air
+  // force's guns never starve the director (or the reverse).
+  | "squadron";
 
 export interface DangerTuning {
   windowMs: number;
@@ -55,7 +59,8 @@ export const DANGER_TUNING: DangerTuning = {
   windowMs: 30_000,
   // W2: one more for the enemy planes' bombs, so they never starve the
   // missiles, meteors and the director of their share (or the reverse).
-  total: 5,
+  // E1: and one more for the squadrons' gun bursts.
+  total: 6,
   perLayer: {
     missile: 2,
     meteor: 1,
@@ -63,6 +68,7 @@ export const DANGER_TUNING: DangerTuning = {
     cavein: 2,
     bomb: 2,
     lowchaos: 2,
+    squadron: 2,
   },
   nearM: 80,
   freshMs: 5000,

@@ -121,12 +121,19 @@ import {
 import { fleetWorldOf, planFleet } from "@angels-bandits/common/fleetplan";
 import { flakHazard, missileHazard } from "@angels-bandits/common/hazards";
 import {
+  IM_NEAR_M,
+  type InterestRow,
+  selectRows,
+  snapshotJson,
+} from "@angels-bandits/common/interest";
+import {
   MedalLedger,
   NEEDLE_WINDOW_MS,
   TRAIN_SURFER_RANGE,
   nearTrainCar,
 } from "@angels-bandits/common/medals";
 import {
+  PROTOCOL_VERSION,
   clampInterpDelay,
   encodeSnapshotEntry,
 } from "@angels-bandits/common/net";
@@ -135,8 +142,12 @@ import type {
   ScoreEntry,
   ServerMsg,
   SpawnState,
-  WireSnapshotMsg,
 } from "@angels-bandits/common/protocol";
+import {
+  FORM_REACH,
+  aceCap,
+  encodeSquadRow,
+} from "@angels-bandits/common/squadron";
 import {
   MISSILE_SHOOTER_ID,
   type MissileStrike,
@@ -147,6 +158,7 @@ import {
   type Vec3,
   canonicalize,
   wrapDeltaAxis,
+  wrapDistance,
 } from "@angels-bandits/common/world";
 import type { WreckParams, WreckWorld } from "@angels-bandits/common/wreck";
 import { type WebSocket, WebSocketServer } from "ws";
@@ -988,6 +1000,12 @@ const noseOf = (pose: Pose): Vec3 | null => {
  * the room.
  */
 const wavesByRoom = new Map<string, RoomWaves>();
+/** E1 (benches): AB_AIRFORCE=n puts an air force of exactly n planes in the
+ * air at once, off no rig (tools/airforce-bench.ts); unset in a live room. */
+const AIRFORCE_STAGED = ((): number | null => {
+  const n = Number(process.env.AB_AIRFORCE);
+  return Number.isInteger(n) && n >= 0 ? Math.min(n, 2000) : null;
+})();
 const wavesFor = (room: Room): RoomWaves => {
   let w = wavesByRoom.get(room.id);
   if (!w) {
@@ -1008,6 +1026,8 @@ const wavesFor = (room: Room): RoomWaves => {
       },
     );
     w.intensity = room.intensity;
+    // E1: AB_AIRFORCE=n stages an air force of n planes at once (benches).
+    w.staged = AIRFORCE_STAGED;
     wavesByRoom.set(room.id, w);
   }
   return w;
@@ -1069,8 +1089,14 @@ function tickAa(room: Room, now: number): void {
   const waves = wavesFor(room);
   const bots = botsFor(room);
   const enemies: AaEnemy[] = [];
+  // E1: the guns fight where someone can see it — an enemy past every
+  // human's near tier (beyond the far plane) is no AA target. With an air
+  // force of hundreds this is most of it, and nobody could see the bursts.
+  const watchers = waveHumans(room, now, false).map((h) => h.pos);
   for (const e of waves.enemies()) {
     if (e.down || !combat.isAlive(e.id)) continue;
+    const at = bots.lastPosOf(e.id);
+    if (!at || !withinOf(at, watchers, IM_NEAR_M)) continue;
     const c = bots.contactOf(e.id);
     if (!c) continue;
     enemies.push({
@@ -1078,6 +1104,8 @@ function tickAa(room: Room, now: number): void {
       pos: c.pos,
       vel: c.vel,
       prot: combat.isProtected(e.id, now),
+      // E1: a squadron plane in formation shoots at humans only.
+      strafes: !bots.isSquad(e.id),
     });
   }
   // K1: and the airships cruising past — an engine car each, behind any
@@ -1228,6 +1256,7 @@ function disposeRoom(room: Room): void {
   wrecksByRoom.delete(room.id);
   directorsByRoom.delete(room.id);
   chaosByRoom.delete(room.id);
+  chaosPlanesCache.delete(room.id); // E1
   budgetsByRoom.delete(room.id);
   caveInsByRoom.delete(room.id);
   destructLabs.delete(room.id); // DL1
@@ -1370,6 +1399,7 @@ function handleJoin(
     cityEvents: cityEvents.recent(room.id, now),
     newsHeli: roomMovers(room).news,
     resumeToken: client.resumeToken,
+    proto: PROTOCOL_VERSION,
     destroyed: encodeChunkIds(roomCity(room).damage.destroyedIds()),
     collapses: [...roomCity(room).collapses.records],
     cm: COLLAPSE_MODEL,
@@ -2050,8 +2080,12 @@ function tickRoomBots(room: Room, now: number): void {
   const contacts = humanContacts(waveHumans(room, now, false));
   // B3: a hurt bot breaks off and comes back after regen — its own HP, now
   // that it is not on its own contact list.
+  // E1: the brain's planes only (a squadron plane's HP is read when it
+  // promotes — its next tick).
   for (const member of room.members.values()) {
-    if (member.isBot) bots.setHp(member.id, combat.hpOf(member.id));
+    if (member.isBot && !bots.isSquad(member.id)) {
+      bots.setHp(member.id, combat.hpOf(member.id));
+    }
   }
   // B3: the timed hazards every client has already been told about — X1
   // missiles from their launch, S4 flak from its firing — for the bots to
@@ -2062,7 +2096,16 @@ function tickRoomBots(room: Room, now: number): void {
   );
   bots.setHazardDiscs("flak", roomBoss(room).shellsInFlight().map(flakHazard));
 
+  // E1: the air force flies first — its squadrons onto their slots, its
+  // aces handed to the brain or back — then the brain's own tick.
+  tickStats.lap("bots"); // what came before (the room's previous phases)
+  const squadShots =
+    wavesByRoom
+      .get(room.id)
+      ?.flyForce(now, 1 / TICK_DOWN_HZ, contacts, budgetFor(room)) ?? [];
+  tickStats.lap("airforce"); // E1: the squadrons, their aces and guns
   const { shots, cues, hits, crashes } = bots.tick(now, contacts);
+  shots.push(...squadShots);
 
   // D4: a falling wreck is solid for bots too (they do not probe for it).
   const wrecks = wrecksByRoom.get(room.id);
@@ -2070,8 +2113,9 @@ function tickRoomBots(room: Room, now: number): void {
   if (wrecks && wrecks.count > 0) {
     for (const member of room.members.values()) {
       if (!member.isBot || !combat.isAlive(member.id)) continue;
-      const c = bots.contactOf(member.id);
-      const r = c && wrecks.touching(member.id, c.pos, PLAYER_RADIUS, now);
+      // E1: the position alone (no contact built per plane of an air force).
+      const pos = bots.lastPosOf(member.id);
+      const r = pos && wrecks.touching(member.id, pos, PLAYER_RADIUS, now);
       if (r) struck.push({ id: member.id, shooterId: r.shooterId });
     }
   }
@@ -2114,6 +2158,25 @@ function tickRoomBots(room: Room, now: number): void {
   }
 
   tickBombs(room, bots, cues, now);
+}
+
+/** E1: is `p` within `r` m of any of `points`? (Inline torus math: it
+ * runs per enemy of an air force.) */
+function withinOf(p: Vec3, points: readonly Vec3[], r: number): boolean {
+  for (const q of points) {
+    const dx = wrapDeltaAxis(p.x, q.x);
+    const dz = wrapDeltaAxis(p.z, q.z);
+    const dy = q.y - p.y;
+    if (dx * dx + dy * dy + dz * dz <= r * r) return true;
+  }
+  return false;
+}
+
+/** E1: the wave's own planes in the air (they are aces whatever). */
+function waveAcesUp(waves: RoomWaves): number {
+  let n = 0;
+  for (const e of waves.enemies()) if (!e.squad && !e.down) n++;
+  return n;
 }
 
 /** W3: the room's manned AA nests' roof decks (bomb-run targets). */
@@ -2176,20 +2239,41 @@ function tickBombs(
     nests: mannedNests(room),
   };
   const enemies = [];
+  // E1: a squadron plane may bomb too — promoted to an ace for the run —
+  // while the room has an ace to spare; it hunts the human nearest it.
+  const aceRoom =
+    aceCap(humans.length) - waves.squadrons.aces().length - waveAcesUp(waves) >
+    0;
   for (const e of waves.enemies()) {
+    const squad = bots.isSquad(e.id);
+    if (squad && !aceRoom) continue;
     const c = e.down ? null : bots.contactOf(e.id);
     if (!c) continue;
+    let quarry = bots.quarryOf(e.id);
+    if (squad) {
+      quarry = null;
+      let best = TUNINGS.bombs.runRangeM;
+      for (const h of humans) {
+        const d = wrapDistance(h.pos, c.pos);
+        if (d < best) {
+          best = d;
+          quarry = h.id;
+        }
+      }
+      if (quarry === null) continue;
+    }
     enemies.push({
       id: e.id,
       pos: c.pos,
       vel: c.vel,
-      quarry: bots.quarryOf(e.id),
+      quarry,
       ready: bots.canBomb(e.id, now),
       onRun: bots.runOf(e.id) !== null,
       launchedAt: e.launchedAt,
     });
   }
   for (const order of director.tick(now, enemies, humans, world)) {
+    if (bots.isSquad(order.enemyId)) waves.squadrons.promote(order.enemyId);
     if (!bots.startRun(order.enemyId, order.kind, order.target, now)) {
       director.refused(order.enemyId, now);
     }
@@ -2474,9 +2558,20 @@ function landMissile(
   // right on top of the aim point).
   if (room.destruct) return;
   const planes: { id: string; pos: Vec3 }[] = [];
+  // E1: a squadron plane past every human's near tier is no chaos plane —
+  // strikes, quakes and collapses happen round the humans.
+  const bots = botsByRoom.get(room.id);
+  const watchers = waveHumans(room, now, false).map((h) => h.pos);
   for (const member of room.members.values()) {
     const pose = memberPose(room, member.id);
     if (!pose) continue;
+    if (
+      member.isBot &&
+      bots?.isSquad(member.id) &&
+      !withinOf(pose.pos, watchers, IM_NEAR_M)
+    ) {
+      continue;
+    }
     const age = poseAgeOf(member.id, now) / 1000;
     const v = velocityOf(room, member.id, pose);
     planes.push({
@@ -2676,10 +2771,26 @@ function tickChaos(room: Room, now: number): void {
 /** The room's planes as the C2 and U6 directors see them this tick:
  * living, posed, extrapolated to `now`. */
 function chaosPlanes(room: Room, now: number): ChaosPlane[] {
+  // E1: one list a tick per room (three layers read it, and an air force
+  // makes it hundreds long).
+  const cached = chaosPlanesCache.get(room.id);
+  if (cached?.now === now) return cached.planes;
   const planes: ChaosPlane[] = [];
+  chaosPlanesCache.set(room.id, { now, planes });
+  // E1: a squadron plane past every human's near tier is no chaos plane —
+  // strikes, quakes and collapses happen round the humans.
+  const bots = botsByRoom.get(room.id);
+  const watchers = waveHumans(room, now, false).map((h) => h.pos);
   for (const member of room.members.values()) {
     const pose = memberPose(room, member.id);
     if (!pose) continue;
+    if (
+      member.isBot &&
+      bots?.isSquad(member.id) &&
+      !withinOf(pose.pos, watchers, IM_NEAR_M)
+    ) {
+      continue;
+    }
     const age = poseAgeOf(member.id, now) / 1000;
     const v = velocityOf(room, member.id, pose);
     planes.push({
@@ -2697,12 +2808,22 @@ function chaosPlanes(room: Room, now: number): ChaosPlane[] {
   return planes;
 }
 
+/** E1: each room's chaosPlanes of the tick (by room id). */
+const chaosPlanesCache = new Map<
+  string,
+  { now: number; planes: ChaosPlane[] }
+>();
+
 /** U6: the room's cave-ins this tick — only while its city is live (see
- * quiet), like all chaos: each new one goes out as one `caveIn`. */
+ * quiet), like all chaos: each new one goes out as one `caveIn`. E1: a
+ * squadron plane in formation never flies underground (it holds the
+ * roofline), so the bores only look at the rest. */
 function tickCaveIns(room: Room, now: number): void {
   const director = caveInsFor(room);
   if (!director || quiet(room)) return;
-  const out = director.tick(now, chaosPlanes(room, now), budgetFor(room));
+  const bots = botsByRoom.get(room.id);
+  const planes = chaosPlanes(room, now).filter((p) => !bots?.isSquad(p.id));
+  const out = director.tick(now, planes, budgetFor(room));
   for (const e of out) sendToRoom(room, { type: "caveIn", c: encodeCaveIn(e) });
 }
 
@@ -3061,16 +3182,39 @@ function tick(): void {
       if (f.event.k === EVENT_GAS) landGas(room, f.event, time);
     }
     tickStats.lap("destruction");
-    const snapshot: WireSnapshotMsg = {
-      type: "snapshot",
-      time,
-      p: [],
-    };
-    // Dead planes are simply absent until their respawn is announced.
-    for (const { id } of room.members.values()) {
-      const pose = memberPose(room, id);
-      if (!pose) continue;
-      snapshot.p.push(
+    sendSnapshots(room, time);
+    tickStats.lap("snapshot");
+  }
+  tickStats.end();
+}
+
+/** E1: snapshots sent so far (the interest manager's mid-tier clock). */
+let snapshotTick = 0;
+
+/** A stable small number per id: its mid-tier stagger. */
+const phaseOf = (id: string): number => {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+  return h & 0xff;
+};
+
+/**
+ * E1: this tick's snapshot, per client (common/src/interest.ts). Every row
+ * is encoded ONCE — each plane's tuple, each squadron's row — and every
+ * client gets the humans plus the enemy rows its distance tier sends this
+ * tick, joined as text. Dead planes are simply absent until their respawn
+ * is announced; a squadron plane in formation rides its squadron's row.
+ */
+function sendSnapshots(room: Room, time: number): void {
+  snapshotTick++;
+  const rows: InterestRow[] = [];
+  const bots = botsByRoom.get(room.id);
+  for (const { id, isBot } of room.members.values()) {
+    if (isBot && bots?.isSquad(id)) continue;
+    const pose = memberPose(room, id);
+    if (!pose) continue;
+    rows.push({
+      json: JSON.stringify(
         encodeSnapshotEntry({
           id,
           pose,
@@ -3078,12 +3222,44 @@ function tick(): void {
           prot: combat.isProtected(id, time),
           age: poseAgeOf(id, time),
         }),
-      );
-    }
-    sendToRoom(room, snapshot);
-    tickStats.lap("snapshot");
+      ),
+      pos: pose.pos,
+      reach: 0,
+      phase: phaseOf(id),
+      always: !isBot,
+      squad: false,
+    });
   }
-  tickStats.end();
+  const waves = wavesByRoom.get(room.id);
+  if (waves) {
+    for (const w of waves.squadrons.wire(time)) {
+      rows.push({
+        json: JSON.stringify(encodeSquadRow(w.row)),
+        pos: w.pos,
+        reach: FORM_REACH,
+        phase: w.sid,
+        always: false,
+        squad: true,
+      });
+    }
+  }
+  const planes: string[] = [];
+  const squads: string[] = [];
+  for (const { id, isBot } of room.members.values()) {
+    if (isBot) continue;
+    const member = clients.get(id);
+    if (!member || member.ws.readyState !== member.ws.OPEN) continue;
+    // Where this client looks from: its plane, or where it died (the
+    // kill-cam); a client still loading gets the humans alone.
+    const viewer = member.pending
+      ? null
+      : (memberPose(room, id)?.pos ?? member.pose.pos);
+    planes.length = 0;
+    squads.length = 0;
+    selectRows(viewer, rows, snapshotTick, planes, squads);
+    const text = snapshotJson(time, planes, squads);
+    member.ws.send(Buffer.from(text), { binary: false });
+  }
 }
 
 // Drift-compensating scheduler rather than setInterval: a tick that overruns

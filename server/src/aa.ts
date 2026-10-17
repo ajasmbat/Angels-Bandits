@@ -52,6 +52,7 @@ import type { Intensity } from "@angels-bandits/common/waves";
 import {
   type Vec3,
   wrapDelta,
+  wrapDeltaAxis,
   wrapDistance,
 } from "@angels-bandits/common/world";
 
@@ -79,6 +80,9 @@ export interface AaEnemy {
   vel: Vec3;
   /** Spawn-protected (fresh off the rig): no AA at it. */
   prot: boolean;
+  /** E1: may strafe a nest it flies at (false: a squadron plane in
+   * formation, whose guns are for humans only). Absent: true. */
+  strafes?: boolean;
   /** K1: metres added to its distance when a gun picks a target — an
    * airship passing at eye level is engaged only when no plane is nearer
    * by this much. */
@@ -293,8 +297,15 @@ export class RoomAa {
     if (!target) {
       g.targetId = null;
       let checks = 0;
+      // E1: the plan-view box rejects most of an air force before any
+      // distance is taken (the same candidates, the same order).
       const cands = enemies
-        .filter((e) => !e.prot)
+        .filter(
+          (e) =>
+            !e.prot &&
+            Math.abs(wrapDeltaAxis(pivot.x, e.pos.x)) <= gun.range &&
+            Math.abs(wrapDeltaAxis(pivot.z, e.pos.z)) <= gun.range,
+        )
         .map((e) => ({ e, d: wrapDistance(pivot, e.pos) }))
         .filter((c) => c.d <= gun.range && c.d >= gun.minRange)
         .sort(
@@ -420,6 +431,7 @@ export class RoomAa {
     out: AaTick,
   ): void {
     for (const e of enemies) {
+      if (e.strafes === false) continue;
       const speed = Math.hypot(e.vel.x, e.vel.y, e.vel.z);
       if (speed < 1) continue;
       if (now < (this.strafeAt.get(e.id) ?? Number.NEGATIVE_INFINITY)) {
@@ -428,6 +440,11 @@ export class RoomAa {
       let best: AaNest | null = null;
       let bestD = STRAFE_RANGE;
       for (const n of this.nests) {
+        // E1: per enemy per nest (hundreds of enemies) — the plan-view
+        // reject first, no vector built.
+        const dx = wrapDeltaAxis(e.pos.x, n.x);
+        const dz = wrapDeltaAxis(e.pos.z, n.z);
+        if (Math.abs(dx) > bestD || Math.abs(dz) > bestD) continue;
         const d = wrapDelta(e.pos, aaSightFrom(n, this.sight));
         const dist = Math.hypot(d.x, d.y, d.z);
         if (dist > bestD || dist < 20) continue;

@@ -146,6 +146,9 @@ const STUCK_S = {
   settings: 2,
 };
 
+/** O1: the stuck floor while no frame has been measured yet, s. */
+const FRAME_FLOOR_UNKNOWN_S = 120;
+
 function freePort() {
   return new Promise((ok, fail) => {
     const srv = createServer();
@@ -668,6 +671,9 @@ const SOAK_SAMPLE = () => {
     dom: document.getElementsByTagName("*").length,
     ui: ab.qaUi ? ab.qaUi() : null,
     fps: ab.perf ? Math.round(ab.perf().fps * 10) / 10 : null,
+    // O1: unrounded, for the stuck floor (0.04 fps rounds to 0).
+    rawFps: ab.perf ? ab.perf().fps : null,
+    frameMs: ab.perf ? ab.perf().frameMs : null,
   };
 };
 
@@ -808,8 +814,14 @@ async function releaseInput(c) {
 async function probeUi(c, now, start) {
   const s = await c.page.evaluate(SOAK_SAMPLE);
   // A UI state that clears on a frame (the death fade: two rAFs) cannot be
-  // judged stuck in under three frames — at 0.1 fps that is 30 s.
-  const frameFloorS = s.fps > 0 ? 3 / s.fps : 0;
+  // judged stuck in under three frames — at 0.1 fps that is 30 s. O1: from
+  // the unrounded rate and the last frame's time (the rounded fps read 0 on
+  // a loaded software box and dropped the floor to nothing); no frame
+  // measured at all holds it at FRAME_FLOOR_UNKNOWN_S.
+  const frameFloorS =
+    s.rawFps > 0 || s.frameMs > 0
+      ? Math.max(s.rawFps > 0 ? 3 / s.rawFps : 0, (3 * (s.frameMs ?? 0)) / 1000)
+      : FRAME_FLOOR_UNKNOWN_S;
   if (s.signalLost)
     c.stuck.push({ at: (now - start) / 1000, state: "signalLost" });
   for (const key of Object.keys(STUCK_S)) {

@@ -54,6 +54,7 @@ import {
   addCaveIn,
 } from "@angels-bandits/common/city/caveins";
 import {
+  KIND_BUILDING,
   KIND_CRANE,
   TOPPLE,
   craneFallDir,
@@ -270,6 +271,7 @@ import { createFreeLook, shapeInput, stepFreeLook } from "./game/freelook";
 import { Guns } from "./game/guns";
 import { hazardWarning } from "./game/hazard-warn";
 import {
+  TOWER_HEADLINE_GAP_MS,
   bossHeadline,
   bossWarning,
   feedLine,
@@ -278,6 +280,7 @@ import {
   replaySubject,
   stormWarning,
   topPilot,
+  towerHeadline,
 } from "./game/headlines";
 import { bulletImpact, impactKind } from "./game/hitdetect";
 import {
@@ -1402,7 +1405,22 @@ socket.events.onCollapse = (c) => {
     creepSeconds(debris, at),
   );
   music.noteCombat(performance.now());
+  // X1: a tower coming down now (not a replay) is front-page news — at
+  // most one every TOWER_HEADLINE_GAP_MS.
+  const now = performance.now();
+  if (
+    debris.kind === KIND_BUILDING &&
+    at - debris.t0 < 5000 &&
+    now - towerHeadlineAt >= TOWER_HEADLINE_GAP_MS
+  ) {
+    towerHeadlineAt = now;
+    const line = towerHeadline(debris.x, debris.z);
+    jumbotrons.addHeadline(line.headline, line.feed);
+    chaosMeter.note("headlines");
+  }
 };
+/** X1: when the screens last headlined a tower. */
+let towerHeadlineAt = Number.NEGATIVE_INFINITY;
 // D1 bullet impacts: sparks, dust, chips, glass and burning patches in ONE
 // Points draw; shattered panes, bullet holes and scorch in the building
 // shader's damage map (city.damage). Cosmetic only — nothing here collides.
@@ -2893,10 +2911,7 @@ const INTRO_BANNER_MS = 3200;
 function introMoment(now: number, holdMs = INTRO_BANNER_MS): void {
   if (lab || destructLab) return;
   hud.banner("THE CITY IS FALLING", holdMs, now, true);
-  jumbotrons.addHeadline(
-    "THE CITY IS FALLING",
-    "ALL STATIONS: THE CITY IS FALLING — WEAPONS FREE",
-  );
+  jumbotrons.addHeadline("THE CITY IS FALLING", "⚠ CITY FALLING");
   chaosMeter.note("headlines");
   if (fleetCalledAt === Number.NEGATIVE_INFINITY) {
     fleetCalledAt = now;

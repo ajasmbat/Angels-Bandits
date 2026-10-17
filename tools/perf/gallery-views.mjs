@@ -1960,7 +1960,9 @@ export const VIEWS = [
   // its hero breaking up and falling, a P1 comet tearing through a row of
   // towers (wherever the planner finds one: `camera: false` keeps this
   // view's pose), and SKY1's cosmetic armada and R1's far city behind it
-  // all. The perf pass's worst case (BUDGETS.galleryDraws).
+  // all. The perf pass's worst case (BUDGETS.galleryDraws). X1: and E1's
+  // INSANE air force, 500 planes round the plane — every layer of the war
+  // at its top level at once.
   {
     name: "war-peak",
     x: 0,
@@ -1971,6 +1973,7 @@ export const VIEWS = [
     weather: "clear",
     raf: true,
     lowChaos: true,
+    airforce: 500,
     boss: { ahead: 850, count: 20, downAfterMs: 2500 },
     penetrate: { kind: "comet", at: 0.35, camera: false },
   },

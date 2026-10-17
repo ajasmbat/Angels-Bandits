@@ -151,6 +151,39 @@ export const FLIGHTS = [
     roof: 40,
     yaw: yawToward(1, 1),
   },
+  // The holes the ticket names that the nine above never point at: the
+  // cloud deck (the dome and the painted sky are off inside it) and the
+  // view straight up or straight down.
+  {
+    name: "in-the-deck",
+    what: "level at 462 m inside the cloud deck, down the x = 1000 avenue",
+    kind: "glide",
+    x: 1000,
+    z: 1900,
+    y: 462,
+    yaw: 0,
+    speed: 80,
+  },
+  {
+    name: "look-up",
+    what: "held at 300 m over the x = 1000 avenue, nose 70° up",
+    kind: "hold",
+    x: 1000,
+    z: 1000,
+    y: 300,
+    yaw: 0,
+    pitch: 1.22,
+  },
+  {
+    name: "look-down",
+    what: "held at 300 m over the x = 1000 avenue, nose 70° down",
+    kind: "hold",
+    x: 1000,
+    z: 1000,
+    y: 300,
+    yaw: 0,
+    pitch: -1.22,
+  },
 ];
 
 /** The in-page driver: re-teleports the plane every frame along `spec`. */
@@ -231,6 +264,20 @@ const DRIVER = (spec) => {
       ab.teleport(p.x, p.z, p.y, p.yaw);
     } else if (spec.kind === "hold") {
       ab.teleport(spec.x, spec.z, st.y, spec.yaw);
+      if (spec.pitch) {
+        // The chase camera levels with the plane: the QA eye holds the
+        // look instead (the meter reads the render camera, either way).
+        const f = fwd(spec.yaw);
+        const c = Math.cos(spec.pitch);
+        ab.qaCamera({
+          eye: { x: spec.x, y: st.y, z: spec.z },
+          at: {
+            x: spec.x + f.x * c * 100,
+            y: st.y + Math.sin(spec.pitch) * 100,
+            z: spec.z + f.z * c * 100,
+          },
+        });
+      }
     } else if (spec.kind === "chase" || spec.kind === "airship") {
       let best = null;
       let bd = Number.POSITIVE_INFINITY;
@@ -284,6 +331,7 @@ const DRIVER = (spec) => {
 const READ = () => {
   const st = window.__cf;
   if (st) st.stop = true;
+  if (st?.spec.pitch) window.__ab.qaCamera(null);
   const m = window.__ab.chaosMeter();
   return {
     deaths: st?.deaths ?? 0,

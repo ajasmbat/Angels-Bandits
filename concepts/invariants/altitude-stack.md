@@ -10,6 +10,15 @@
 - `RESPAWN_ALTITUDE` (370 m) and the landmark run-out veto in
   `server/src/respawn.ts` (`landmarkClearance`);
 - the news heli band `NEWS_HELI_ALT_MIN/MAX` (500–515 m, `HELI_HULL`);
+- E1's squadron band (`common/src/squadron.ts`), DERIVED, never a literal:
+  `SQUAD_FLOOR_ALT` (60 m) over open ground, the roofline grid's dilated
+  roofs + `SQUAD_CLEAR` everywhere else, the cruise cap `SQUAD_CRUISE_CAP`
+  (the generated skyline `BUILDING_MAX_HEIGHT + ROOF_STRUCTURE_MAX_HEIGHT`
+  + clearance, so supertalls are flown round, not over) and the hard top
+  `SQUAD_ALT_MAX` (`min(BOT_CEILING_ALT, SOFT_CEILING)` less the
+  formation's top and a margin). The airships are steered round as moving
+  obstacles (`SquadObstacle`), not by altitude, so a fleet lowered into the
+  avenues needs no change here;
 - the airship fleet's band `FLEET_ALT_MIN`–`FLEET_ALT_MAX` (≈ 534–606 m,
   `common/src/boss.ts`): every lane of `FLEET_LANES` (its `alt` ± its
   class's `SHIP_REACH[c].y`) sits inside it, the picket layer (≈ 535–561 m)
@@ -42,6 +51,9 @@ under the deck).
   does not stop a crash (the veto exists for this; any new tall landmark
   must stay in `LANDMARK_BLOCKS` so the veto sees it).
 - A news heli or blimp that intersects an airship or the deck.
+- A squadron band written as numbers instead of derived: lower the clouds
+  (`CLOUD_BASE` → `BOT_CEILING_ALT`) and the formations fly into the deck.
+  `common/test/squadron.test.ts` pins the band under both ceilings.
 - Anything the `height >= LANDMARK_HEIGHT` test identifies — the minimap
   accent, roof beacons, facade archetypes, searchlight picks — misfires the
   moment a generated lot reaches `LANDMARK_HEIGHT`.

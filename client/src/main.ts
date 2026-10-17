@@ -242,6 +242,7 @@ import {
 import { type AimMode, FlightInputSource } from "./game/flight-input";
 import { createFreeLook, shapeInput, stepFreeLook } from "./game/freelook";
 import { Guns } from "./game/guns";
+import { hazardWarning } from "./game/hazard-warn";
 import {
   bossHeadline,
   bossWarning,
@@ -6766,6 +6767,16 @@ const frame = (rafNow: number): void => {
     // W4: the bombing warning on the objective HUD.
     hud.setBombWarning(
       bombingNear(mf.flying, renderMs, alive ? flight.pos : null),
+    );
+    // O1: and, in its slot, the director's event about to happen near us.
+    hud.setHazardWarning(
+      socket.director.size > 0
+        ? hazardWarning(
+            socket.director.values(),
+            alive ? flight.pos : null,
+            renderMs,
+          )
+        : null,
     );
     // P1: the sweeps' bursts and bodies, then the strikes (and the ones
     // still ploughing through the city) on the fireball draw.

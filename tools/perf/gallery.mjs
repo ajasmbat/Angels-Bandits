@@ -6,7 +6,8 @@
 // landscape phone profile; AB_GALLERY_QUERY appends raw query
 // params, e.g. `refl=0` for S6's before shots out of the same build;
 // AB_GALLERY_PROBE=streetGlow,farTraffic logs the pre-bloom HDR luma those
-// systems add to each shot, L8).
+// systems add to each shot, L8; AB_GALLERY_SHOT_TIMEOUT_MS how long one
+// shot may wait for its frame, O1).
 // The sky is pinned to deep night (`?sky=night`, L12) so shots never depend
 // on the server's time of night; views with a `sky` field force their own
 // phase through __ab.sky.
@@ -15,6 +16,7 @@ import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { chromium } from "playwright";
 import { VIEWS } from "./gallery-views.mjs";
+import { BUDGETS } from "./segments.mjs";
 const OUT = resolve(process.argv[2] ?? "gallery");
 const PORT = Number(process.argv[3] ?? 8099);
 const ONLY = process.argv[4] ? process.argv[4].split(",") : null;
@@ -22,6 +24,9 @@ const ONLY = process.argv[4] ? process.argv[4].split(",") : null;
 const PROBE = process.env.AB_GALLERY_PROBE
   ? process.env.AB_GALLERY_PROBE.split(",")
   : null;
+/** O1: how long one shot may wait for its frame (a loaded software box
+ * can take minutes over a staged collapse), ms. */
+const SHOT_MS = Number(process.env.AB_GALLERY_SHOT_TIMEOUT_MS ?? 180000);
 mkdirSync(OUT, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const server = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
@@ -29,10 +34,15 @@ const server = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
   // city — the server's director (and the chains its topples set off) fells
   // towers near the parked plane on the wall clock, so a shot showed (and
   // died to) destruction nobody staged. AB_GALLERY_LIVE_CITY=1 keeps it.
+  // O1: and a slow frame is not a dead client — on a software rasteriser a
+  // frame of seconds tripped the liveness timeout, and the resume replayed
+  // the room's (empty) collapses over what the view had staged, so the
+  // collapse and ruin views shot an intact (or vanished) tower.
   env: {
     ...process.env,
     PORT: String(PORT),
     AB_WAVES: "0",
+    LIVENESS_TIMEOUT_MS: "600000",
     ...(process.env.AB_GALLERY_LIVE_CITY === "1" ? {} : { AB_QUIET_CITY: "1" }),
   },
   stdio: "ignore",
@@ -221,6 +231,8 @@ async function place(page, v) {
   };
 }
 let browser;
+/** O1: every view shot that has a draw budget, and what it drew. */
+const judged = [];
 try {
   for (let i = 0; i < 120; i++) {
     try {
@@ -281,9 +293,11 @@ try {
     const wx = view.weather ?? process.env.AB_GALLERY_WEATHER;
     if (wx) await page.evaluate((w) => window.__ab.weather(w), wx);
     const v = view.dyn ? await place(page, view) : { ...view };
-    if (v.penetrate) {
+    if (v.penetrate && v.penetrate.camera !== false) {
       // P1: the planner's side-on camera for this impact (staged far ahead
-      // here only to read the pose; re-staged just before the shot).
+      // here only to read the pose; re-staged just before the shot). O1:
+      // `camera: false` keeps the view's own pose (the impact is part of a
+      // busier scene, not its subject).
       const r = await page.evaluate(
         (k) => window.__ab.qaPenetrate(k, 600_000),
         v.penetrate.kind,
@@ -584,7 +598,21 @@ try {
       await page.mouse.down();
       await sleep(1500);
     }
-    await page.screenshot({ path: `${OUT}/${v.name}.png`, timeout: 180000 });
+    // O1: the draw calls of the frame being shot (the `shot` line below is
+    // read after the view's staging is torn down), judged against the
+    // view's ceiling in BUDGETS.galleryDraws where it has one.
+    const draws = await page.evaluate(() => window.__ab.perf().drawCalls);
+    await page.screenshot({ path: `${OUT}/${v.name}.png`, timeout: SHOT_MS });
+    const ceiling = BUDGETS.galleryDraws[v.name];
+    if (ceiling !== undefined) judged.push({ name: v.name, draws, ceiling });
+    console.log(
+      "draws",
+      v.name,
+      draws,
+      ceiling === undefined
+        ? "(no budget)"
+        : `<= ${ceiling} ${draws <= ceiling ? "ok" : "OVER"}`,
+    );
     if (v.guns) await page.mouse.up();
     if (PROBE) {
       // Stormlit L8 (AB_GALLERY_PROBE=name,name): the pre-bloom linear HDR
@@ -788,4 +816,12 @@ try {
 } finally {
   server.kill();
   await browser?.close().catch(() => {});
+}
+if (judged.length > 0) {
+  const over = judged.filter((j) => j.draws > j.ceiling);
+  const list = over.map((j) => `${j.name} ${j.draws} > ${j.ceiling}`);
+  console.log(
+    `gallery draw budgets: ${judged.length} views judged, ${over.length} over${list.length > 0 ? ` (${list.join(", ")})` : ""}`,
+  );
+  if (over.length > 0) process.exitCode = 1;
 }

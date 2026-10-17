@@ -140,6 +140,33 @@ export const BUDGETS = {
   // (city.ts: every chunk COLLAPSE_CAP lets fall, +25 %, +64): growing is a
   // buffer reallocation mid-game, and the boot size is the derived bound.
   chunkInstances: CHUNK_INSTANCES_BUDGET,
+  // O1: gallery views (gallery.mjs) judged on the draw calls of the frame
+  // each one shoots — the Infinite War's views, the ruin views O1 fixed and
+  // `war-peak`, its busiest combined moment. Each is the runner's measured
+  // High desktop draws (SwiftShader, quiet server, the S6 probe's 7
+  // included) + ~10 %, so a later ticket that piles onto a view is caught
+  // here (README O1). war-peak (121) sits under `chaos`'s 140: C1, the
+  // falling ship, a comet and the cosmetic sky add ~14 draws over the
+  // low pass alone, nearly all of them pools and meshes that already
+  // exist (debris, D1 particles, missiles, director FX), none per object.
+  galleryDraws: {
+    "war-peak": 133,
+    "chaos-low-pass": 118,
+    "fleet-sky": 99,
+    "boss-breakup": 104,
+    "sky-armada-wide": 94,
+    "sky-armada-low": 96,
+    "sky-dogfights": 107,
+    "impact-plane-through": 110,
+    "impact-comet-row": 103,
+    "skyline-far": 93,
+    "skyline-horizon-low": 97,
+    // The ruin views: 94–102 across shots of the same staging (the probe's
+    // refill on a seconds-long frame), so the ceiling is the high end.
+    "ruin-detail": 112,
+    "ruin-pancake": 112,
+    "collapse-topple-impact": 109,
+  },
 };
 
 export const SEGMENTS = [

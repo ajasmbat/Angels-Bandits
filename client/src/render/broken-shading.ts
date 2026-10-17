@@ -63,6 +63,17 @@ const RIM_EMBER = "vec3(0.3, 0.07, 0.012)";
 const CHAR_M = 1.8;
 /** D8 scorch: how dark the soot patches get (share of albedo removed). */
 const SOOT = 0.7;
+/** O1 rubble: a settled pile is dust-covered broken concrete — paler than
+ * the slabs still standing (linear albedo), the facade's finish a smaller
+ * share of it and dusted over, its soot lighter, and the city's glow
+ * bounced off it (linear emission, far under the 0.72 bloom threshold) so
+ * a pile at night is a grey mound, not a black hole. The chunks are hashed
+ * in the face's own plane: the old xz + y hash ran in diagonal streaks down
+ * every side, the smear `ruin-detail` showed. */
+const RUBBLE_ALBEDO = 0.3;
+const RUBBLE_FINISH = 0.24;
+const RUBBLE_SOOT = 0.35;
+const RUBBLE_GLOW = "vec3(0.034, 0.03, 0.026)";
 /** Ember: share of gutted rooms that smoulder, and its linear colour. */
 const EMBER_SHARE = 0.14;
 const EMBER = "vec3(0.42, 0.13, 0.03)";
@@ -112,6 +123,7 @@ float brkSlabK = 0.0;
 float brkChar = 0.0;
 float brkRoomH = 0.0;
 float brkRoomD = 0.0;
+float brkRubble = 0.0;
 if (brkDmg > 0.5) {
   vec3 brkN = abs(vObjNormal);
   // World-anchored in-plane coordinates for the patterns (seam-safe: the
@@ -124,10 +136,14 @@ if (brkDmg > 0.5) {
     float brkStreak = abHash(vec2(floor(brkW.x * 3.0), floor(brkW.y * 0.7)), vBSeed * 17.0);
     diffuseColor.rgb = mix(${STEEL}, ${RUST}, smoothstep(0.35, 0.95, brkStreak)) * (0.8 + 0.4 * brkNoise);
   } else if (brkDmg > 1.5) {
-    // Rubble: broken concrete, with chunks of the facade's own finish.
-    float brkChunk = abHash(floor(vBWorldPos.xz * 1.3 + vBWorldPos.y * 2.1), vBSeed * 7.0);
-    vec3 brkConcrete = vec3(${SLAB_ALBEDO.toFixed(2)}) * (0.45 + 0.7 * brkNoise);
-    diffuseColor.rgb = mix(brkConcrete, diffuseColor.rgb * 0.8, mix(0.38, step(0.62, brkChunk), abDetail(0.77, brkAA)));
+    // Rubble: dusty broken concrete, with chunks of the facade's own finish
+    // (dusted over too) — hashed in the face's plane, O1.
+    brkRubble = 1.0;
+    float brkChunk = abHash(floor(brkW * 1.3), vBSeed * 7.0);
+    vec3 brkConcrete = vec3(${RUBBLE_ALBEDO.toFixed(2)}) * (0.7 + 0.45 * brkNoise);
+    vec3 brkFinish = mix(diffuseColor.rgb * 0.8, brkConcrete, 0.35);
+    diffuseColor.rgb = mix(brkConcrete, brkFinish,
+      mix(${RUBBLE_FINISH.toFixed(2)}, step(${(1 - RUBBLE_FINISH).toFixed(2)}, brkChunk), abDetail(0.77, brkAA)));
   } else {
     float brkStorey = vWorldY / ${BROKEN_STOREY.toFixed(1)};
     float brkInSlab = fract(brkStorey);
@@ -196,7 +212,7 @@ if (brkDmg > 0.5) {
   // D8 scorch: soot-blackened patches over everything destruction exposed —
   // the stump's cut faces and the rubble alike.
   float brkSoot = mix(0.325, smoothstep(0.5, 0.85, abHash(floor(brkW * 0.45), vBSeed * 5.0)), abDetail(2.2, brkAA));
-  diffuseColor.rgb *= 1.0 - ${SOOT.toFixed(2)} * brkSoot;
+  diffuseColor.rgb *= 1.0 - mix(${SOOT.toFixed(2)}, ${RUBBLE_SOOT.toFixed(2)}, brkRubble) * brkSoot;
 }
 `;
 
@@ -209,6 +225,8 @@ if (brkDmg > 0.5) {
 export const BROKEN_EMISSIVE_GLSL = /* glsl */ `
 if (brkDmg > 0.5) {
   totalEmissiveRadiance = ${EMBER} * brkEmber;
+  // O1: the city's glow off a settled pile (its up faces most).
+  totalEmissiveRadiance += ${RUBBLE_GLOW} * brkRubble * (0.55 + 0.45 * step(0.5, vObjNormal.y));
   float brkFlick = 0.75 + 0.25 * sin(6.2832 * (uFirePhase.x + vBSeed * 5.0 + brkRoomV));
   // DL1: dying lights — a share of the lit rooms dead or stuttering in
   // bursts (their mean once a room is sub-pixel, G7). Off: exactly 1.

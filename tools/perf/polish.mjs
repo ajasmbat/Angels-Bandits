@@ -146,6 +146,13 @@ const STUCK_S = {
   settings: 2,
 };
 
+/** O1: the stuck floor while no frame has been measured yet, s. */
+const FRAME_FLOOR_UNKNOWN_S = 120;
+/** O1: UI states a frame clears (the death fade: two rAFs), and how many
+ * rendered frames one must outlive to be stuck. */
+const FRAME_CLEARED = new Set(["fadeDead"]);
+const FRAME_CLEARED_N = 3;
+
 function freePort() {
   return new Promise((ok, fail) => {
     const srv = createServer();
@@ -643,6 +650,15 @@ async function runOverlap(browser, url) {
 
 /** Runs in the page: what the soak samples, cheaply. */
 const SOAK_SAMPLE = () => {
+  // O1: the page's own frame count (a rAF loop installed on first sample).
+  if (window.__soakFrames === undefined) {
+    window.__soakFrames = 0;
+    const tick = () => {
+      window.__soakFrames++;
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
   const vis = (id, cls) => {
     const el = document.getElementById(id);
     if (!el) return false;
@@ -668,6 +684,10 @@ const SOAK_SAMPLE = () => {
     dom: document.getElementsByTagName("*").length,
     ui: ab.qaUi ? ab.qaUi() : null,
     fps: ab.perf ? Math.round(ab.perf().fps * 10) / 10 : null,
+    // O1: unrounded, for the stuck floor (0.04 fps rounds to 0).
+    rawFps: ab.perf ? ab.perf().fps : null,
+    frameMs: ab.perf ? ab.perf().frameMs : null,
+    frames: window.__soakFrames,
   };
 };
 
@@ -808,8 +828,14 @@ async function releaseInput(c) {
 async function probeUi(c, now, start) {
   const s = await c.page.evaluate(SOAK_SAMPLE);
   // A UI state that clears on a frame (the death fade: two rAFs) cannot be
-  // judged stuck in under three frames — at 0.1 fps that is 30 s.
-  const frameFloorS = s.fps > 0 ? 3 / s.fps : 0;
+  // judged stuck in under three frames — at 0.1 fps that is 30 s. O1: from
+  // the unrounded rate and the last frame's time (the rounded fps read 0 on
+  // a loaded software box and dropped the floor to nothing); no frame
+  // measured at all holds it at FRAME_FLOOR_UNKNOWN_S.
+  const frameFloorS =
+    s.rawFps > 0 || s.frameMs > 0
+      ? Math.max(s.rawFps > 0 ? 3 / s.rawFps : 0, (3 * (s.frameMs ?? 0)) / 1000)
+      : FRAME_FLOOR_UNKNOWN_S;
   if (s.signalLost)
     c.stuck.push({ at: (now - start) / 1000, state: "signalLost" });
   for (const key of Object.keys(STUCK_S)) {
@@ -817,8 +843,16 @@ async function probeUi(c, now, start) {
       key === "settings" ? s.settingsOpen && !c.expectSettings : s[key];
     if (on) {
       c.since[key] ??= now;
+      c.since[`${key}Frames`] ??= s.frames;
+      // O1: a state cleared by frames is stuck only once it has outlived
+      // FRAME_CLEARED_N of them — one respawn frame on a loaded software
+      // box can outlast any floor taken from the average rate.
+      const framesOk =
+        !FRAME_CLEARED.has(key) ||
+        s.frames - c.since[`${key}Frames`] >= FRAME_CLEARED_N;
       if (
         (now - c.since[key]) / 1000 > Math.max(STUCK_S[key], frameFloorS) &&
+        framesOk &&
         !c.since[`${key}Reported`]
       ) {
         c.since[`${key}Reported`] = true;
@@ -826,6 +860,7 @@ async function probeUi(c, now, start) {
       }
     } else {
       c.since[key] = undefined;
+      c.since[`${key}Frames`] = undefined;
       c.since[`${key}Reported`] = false;
     }
   }

@@ -1861,4 +1861,24 @@ export const VIEWS = [
     raf: true,
     lowChaos: true,
   },
+  // O1: the Infinite War's busiest moment, every layer at once — the C1 low
+  // pass above (the same pose, instant and staging), with the Z1 fleet
+  // staged 850 m down the canyon (its ships high in the top of the frame),
+  // its hero breaking up and falling, a P1 comet tearing through a row of
+  // towers (wherever the planner finds one: `camera: false` keeps this
+  // view's pose), and SKY1's cosmetic armada and R1's far city behind it
+  // all. The perf pass's worst case (BUDGETS.galleryDraws).
+  {
+    name: "war-peak",
+    x: 0,
+    z: 1500,
+    y: 55,
+    yaw: 0,
+    timeMs: 1_790_000_000_000,
+    weather: "clear",
+    raf: true,
+    lowChaos: true,
+    boss: { ahead: 850, count: 20, downAfterMs: 2500 },
+    penetrate: { kind: "comet", at: 0.35, camera: false },
+  },
 ];

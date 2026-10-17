@@ -18,7 +18,7 @@ can no longer be seen.
 
 | layer | what is in it | how it moves | costs | can you touch it? |
 | --- | --- | --- | --- | --- |
-| **Real** | the city and its destruction, the 20-ship airship fleet, planes, bots, flak, bombs, comets, meteors, wrecks, C1's low chaos | server-authoritative; every pose is a pure function of wire state and synced server time | CPU (server sim, client posing) and the wire | yes: what is drawn is what collides (draw == collide) |
+| **Real** | the city and its destruction, the 20-ship airship fleet, planes, the E1 air force (hundreds of enemy planes: aces and squadrons), flak, bombs, comets, meteors, wrecks, C1's low chaos | server-authoritative; every pose is a pure function of wire state and synced server time | CPU (server sim, client posing) and the wire | yes: what is drawn is what collides (draw == collide) |
 | **Cosmetic** | SKY1's armada (640 airship slots), distant dogfights (120 groups) and their flak (160) | a pure function of (seed, synced clock, unwrapped camera offset), evaluated per vertex in the shader from `gl_InstanceID` | four draws, no per-object CPU, nothing on the wire | no: it is never nearer than `SKY_INNER` (900 m), beyond the far plane |
 | **Painted** | R1's far city (L2's two meshes: the lit street carpet and the instanced far towers, 0.8–5 km), the sky dome, the cloud deck, the city glow | world-anchored lattice in the far shell; the dome is a shader | a handful of draws | no |
 
@@ -151,6 +151,14 @@ back. Its draw ceiling is in `BUDGETS.galleryDraws`.
 | the far haze | `SKY_VIS`, `SKY_HAZE`; the far city's `abFarVis` | `common/src/skyarmada.ts`, `client/src/render/far-skyline.ts` |
 | how a collapse looks | the Destruction Lab (`?destructlab`), then its defaults | `common/src/destruction-tuning.ts` |
 | how a settled pile looks | `RUBBLE_ALBEDO`, `RUBBLE_FINISH`, `RUBBLE_SOOT`, `RUBBLE_GLOW` | `client/src/render/broken-shading.ts` |
+| how many enemy planes a level fields | `AIR_FORCE` (100 / 200 / 350 / 500), capped by `ENEMY_CAP_MAX` | `common/src/waves.ts` |
+| how many fly the full brain | `ACE_MIN` / `ACE_PER_HUMAN` / `ACE_MAX` (12 + 4 a pilot, ≤ 24) | `common/src/squadron.ts` |
+| when a squadron plane becomes an ace and back | `PROMOTE_M` (600 m), `DEMOTE_M` (950 m, past the far plane) | `common/src/squadron.ts` |
+| how low the squadrons fly | `SQUAD_FLOOR_ALT`, `SQUAD_CLEAR`, `SQUAD_PREF_MAX`; the caps `SQUAD_CRUISE_CAP` / `SQUAD_ALT_MAX` are derived | `common/src/squadron.ts` |
+| the squadrons' guns | `SQUAD_FIRE_RANGE`, `SQUAD_FIRE_CONE`, `BURST_MS`, `BURST_GAP_MS`, the budget's `squadron` share | `common/src/squadron.ts`, `server/src/squadrons.ts`, `server/src/danger.ts` |
+| the wire's tiers | `IM_NEAR_M` (950 m), `IM_FAR_M` (1000 m), `IM_MID_EVERY` (4: 5 Hz), `IM_STALE_MS` | `common/src/interest.ts` |
+| enemies a tier draws | `airforce` (520 / 400 / 260 / 150) | `client/src/render/quality.ts` |
+| how much the cosmetic sky thins over them | `THIN_MAX`, `THIN_FULL` | `client/src/render/sky-armada.ts` |
 
 After a change, run:
 
@@ -199,3 +207,89 @@ the look on the M3.
 | [`ruin-detail.jpg`](infinite-war/ruin-detail.jpg) | the pancake pile up close: the dark smear (main), then the dusty grey pile |
 | [`ruin-pancake.jpg`](infinite-war/ruin-pancake.jpg) | the same pile from across the street, both with the harness fix, to isolate the look |
 | [`collapse-topple-impact.jpg`](infinite-war/collapse-topple-impact.jpg) | tower 157 felled west: no tower in the shot (main's harness), then the topple breaking up onto its neighbour |
+
+## The air force (E1)
+
+E1 fills the sky with real, shootable enemy planes: up to `ENEMY_CAP_MAX`
+in one room, 100 / 200 / 350 / 500 by level (`AIR_FORCE`, the HUD says
+"INSANE · 500 PLANES"). The count scales because almost none of them cost
+what a W1 bot costs.
+
+### Two tiers of the same plane
+
+Every enemy is an ordinary RoomBots bot (roster, Combat, rounds, wrecks,
+AA all as before). What differs is who flies it.
+
+- **Aces** fly the full canyon brain. A wave's own planes (W1, still the
+  banner's "ACES LEFT") are always aces. Air-force planes become aces near
+  a human: the nearest within `PROMOTE_M` (600 m), up to `aceCap` (12, plus
+  4 for each other pilot, at most 24) less the wave's planes.
+- **Squadrons** are everything else: up to 8 planes holding slots off one
+  virtual anchor (`common/src/squadron.ts`). The anchor flies a coarse
+  plan, which is a patrol lane, a strike stream at a point near a human,
+  or an escort loop round an airship. It follows a roofline grid (the
+  tallest roof within the formation's reach, dilated and then widened
+  for the lookahead) like terrain, with a climb cone ahead. It steers
+  round the supertalls and the airships, and never flies under the
+  roofline. Its bands derive from `BOT_CEILING_ALT` / `SOFT_CEILING`, so a
+  lower sky moves them with it. A wingman is its slot off the anchor's
+  level frame, never below the anchor. In flight they hold 60–360 m, with
+  a median of about 230 m (the 500-plane test).
+- **The hand-off.** A promoted plane keeps the flight its slot had, so the
+  brain picks it up mid-stride. An ace demotes only once it and its slot
+  are both `DEMOTE_M` (950 m, past every camera's far plane) from every
+  human. The hand-back snaps to the slot, and nobody can see it.
+- **Guns and bombs.** A squadron plane fires only at a human in its
+  forward cone within `SQUAD_FIRE_RANGE`. Each burst is charged to that
+  human's DangerBudget (the `squadron` share). A strike-stream plane may
+  be picked for a `waveBombing` run: it is promoted for the run and flown
+  by the brain.
+- **Launch.** A squadron is one rig launch off a Z1 airship. All its planes
+  wait on the rig, and at the release they leave folded into one point and
+  fan out over `SQUAD_FORM_UP_MS`. The air force refills as planes go down.
+
+The rooftop AA and the chaos layers see the air force only within a
+human's near tier. A fight nobody can see is not simulated in detail.
+
+### The wire: interest managed
+
+Snapshots are now per client (`common/src/interest.ts`,
+`server/src/index.ts sendSnapshots`). Every row is encoded once a tick:
+
+| what | sent |
+| --- | --- |
+| every human | always (≤ 12; the receiver's own row carries its HP) |
+| an enemy row within `IM_NEAR_M` (950 m: the far plane plus half a second) | every tick, 20 Hz |
+| out to half the world (`IM_FAR_M`, 1000 m) | every 4th tick (5 Hz), staggered by row |
+| beyond | nothing |
+
+A squadron in formation travels as one row: the anchor quantised like any
+snapshot entry, its formation, spread, protection, the slot mask and one
+HP per plane. The client expands it with the same functions the server
+poses its wingmen with (`expandSquadRow`). An enemy missing from a
+snapshot goes stale after `IM_STALE_MS`. It is not dead
+(`concepts/traps/enemy-absent-is-not-dead.md`). `PROTOCOL_VERSION` is
+now 2, and a client built for another version reloads.
+
+### On the client
+
+- `fleet.ts` has instance room for `ENEMY_CAP_MAX` plus a wave. A tier
+  draws its nearest `airforce` enemies (520 / 400 / 260 / 150, Mobile the
+  fewest) through the same near, mid and far LOD (the mid and far levels
+  are impostor frames of one draw). An enemy past the far plane is
+  sampled, not drawn.
+- Lights, trails and name tags go to the nearest enemies.
+- Hit tests, the lead, magnetism and threat calls look only within 700 m.
+- Off-screen markers and engine voices take the nearest 8 and 12.
+- The radar draws the nearest 24 planes as arrows and gathers the rest
+  into `CLUSTER_CELL` blips sized by count.
+- SKY1's dogfights thin by up to `THIN_MAX` (35 %) in the bearing sectors
+  where the real air force is dense. Whole groups fade (`uSkyThin`), so the
+  real sky and the painted one read as one.
+- QA: `__ab.qaAirforce(n)` stages n planes in squadrons round the camera as
+  real wire rows through the real path. `__ab.airforce()` reports what was
+  drawn. The `airforce-swarm` gallery view is 500 of them.
+
+### What a count costs
+
+AIRFORCE_TABLE

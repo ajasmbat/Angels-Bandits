@@ -28,7 +28,7 @@
 // Coverage octaves are identical on every tier (the silhouettes are the
 // same for everyone); only fine detail and the rim's second octave drop.
 
-import { WORLD_SIZE } from "@angels-bandits/common/constants";
+import { CLOUD_BASE, WORLD_SIZE } from "@angels-bandits/common/constants";
 import { type Vec3, wrapDeltaInto } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import type { QualityTier } from "./quality";
@@ -39,8 +39,10 @@ export const CLOUD_PERIOD = 57_600;
 
 /** Layer A — the cumulus masses. */
 export const CLOUD_A = {
-  /** Plane height above the eye, m. */
-  height: 700,
+  /** Plane height above the eye, m. K1: follows the deck down — it was 700
+   * over a 650 m deck, the same 1.08 × CLOUD_BASE over the 440 m one, so
+   * the masses read as the underside of the storm the spires pierce. */
+  height: Math.round((CLOUD_BASE * 700) / 650),
   /** Coarsest octave's cell, m; each octave halves it. */
   cell: 900,
   /** Wind on the synced clock, m/s (x, z) — whole numbers, so the drift

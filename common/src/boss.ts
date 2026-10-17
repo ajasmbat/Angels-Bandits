@@ -20,12 +20,15 @@
 // src/render/boss.ts, boss-hull.ts); collideBoss tests the class's scaled
 // parts with the same exact distance fields (bossPartSdf).
 //
-// Clearance by construction: the lanes come in two LAYERS whose altitude
+// Clearance by construction: the lanes come in three LAYERS whose altitude
 // bands never overlap, and every lane of a layer runs along that layer's
 // one heading (forward or back), at its own offset across it. Two ships of a
 // layer can close along the heading but never across it, and the offsets
 // keep their hulls apart, so no two hulls ever meet (common/test/boss.test.ts
-// checks it over time).
+// checks it over time). K1: the war in the streets — two of the layers
+// cruise the avenues under the roofline and the third skims the rooftops,
+// its altitude following the skyline; fleetplan.ts proves every lane clear
+// of the city, and plans a break-through where it cannot be.
 //
 // Not re-exported from common/src/index.ts; import "@angels-bandits/common/boss".
 
@@ -33,16 +36,15 @@ import type { Building } from "./city/index";
 import type { MoverBox, MoverHit } from "./city/movers";
 import { type CityIndex, collideCity, hitsGround } from "./collision";
 import {
-  BLIMP_ALT,
-  BLIMP_HULL,
   BOT_AIM_JITTER,
   BOT_REACTION_MS,
   BULLET_DAMAGE,
   BULLET_RANGE,
+  HELI_ALT_MAX,
   HELI_HULL,
   HIT_RADIUS,
   MAX_HP,
-  NEWS_HELI_ALT_MAX,
+  NEWS_HELI_ALT_MIN,
   RESPAWN_SPEED,
   WORLD_SIZE,
   WRECK_MAX_MS,
@@ -61,8 +63,8 @@ import { type WreckHit, wreckPosAt, wreckVelAt } from "./wreck";
  * build from a ship record. The welcome carries it; a client built for
  * another one reloads rather than fly different hulls than the server
  * collides with. Bump it with any change to the lanes, the classes or the
- * records. */
-export const FLEET_MODEL = 1;
+ * records. K1: 2 — the lanes came down into the streets. */
+export const FLEET_MODEL = 2;
 
 /** DamageMsg shooter id for flak, and the AwardMsg victim id of a downed
  * ship. Player ids are base64url and bots `bot:<room>:<n>`, so it can never
@@ -536,13 +538,51 @@ export const SHIP_WEAK_R: readonly number[] = SHIP_CLASSES.map((c) =>
 );
 
 // --- Lanes and layers -----------------------------------------------------------
+//
+// K1: the war in the streets. Three LAYERS, each with ONE heading:
+//  - layer 0 cruises the x-avenues (the street centrelines z = k·BLOCK_PITCH)
+//    and layer 1 the z-avenues, each lane at a fixed altitude below the
+//    roofline: pickets and cruisers, their beams inside the avenue's lot
+//    lines (street.ts LOT_LINE), between the towers;
+//  - layer 2 skims the rooftops along mid-block lines (x = (k + ½)·
+//    BLOCK_PITCH), each lane's altitude following the skyline up and down —
+//    its PROFILE, fitted to the city by fleetplan.ts planFleet and installed
+//    on both sides (installFleetPlan).
+// The layers' altitude bands never overlap (the street layers cross only at
+// intersections, one band over the other, and the helicopters fly between
+// them and the rooftops), and a layer's lanes each run a line of their own,
+// so no two hulls ever meet.
 
-/** The band every real ship's hull stays inside, m (on extents): over the
- * news heli's rotor blur with its 15 m margin (newsheli.test.ts reckons the
- * blur at 1.3 × the hull's half-height) and over every roof, and 5 m under
- * the blimp's belly, so under the cloud deck. */
-export const FLEET_ALT_MIN = NEWS_HELI_ALT_MAX + HELI_HULL[1] * 1.3 + 15;
-export const FLEET_ALT_MAX = BLIMP_ALT - BLIMP_HULL[1] - 5;
+/** The street layers' hull bands, m (on extents): layer 0 16 m over the
+ * bots' canyon patrol (BOT_CANYON_ALT_MAX) — their street spawns are
+ * vetoed out of a hull's path (RoomBots.spawnClear sees the fleet) — and
+ * through the tower cranes' jibs (CRANE_MAST_MAX: the planned
+ * break-throughs); layer 1 10 m over it and 11.8 m under the helicopters'
+ * rotor blur (HELI_ALT_MIN − 1.3 × the hull's half-height, as
+ * newsheli.test.ts reckons it). */
+export const FLEET_STREET_BANDS: readonly (readonly [number, number])[] = [
+  [86, 130],
+  [140, 176],
+];
+/** The rooftop layer's band, m (on extents): 15 m over the helicopters'
+ * rotor blur, and 15 m under the news heli's belly — so under the deck.
+ * Over the downtown cores' 336 m roofs a carrier still has 20 m beneath it
+ * (FLEET_ROOF_CLEAR). */
+export const FLEET_ROOF_MIN = HELI_ALT_MAX + HELI_HULL[1] * 1.3 + 15;
+export const FLEET_ALT_MAX = NEWS_HELI_ALT_MIN - HELI_HULL[1] - 15;
+/** The band every real ship's hull stays inside, m (on extents). */
+export const FLEET_ALT_MIN = (
+  FLEET_STREET_BANDS[0] as readonly number[]
+)[0] as number;
+/** A rooftop hull's belly keeps at least this over every roof, roof
+ * structure and crane under it, m — "just over the rooftops". */
+export const FLEET_ROOF_CLEAR = 20;
+/** The steepest a rooftop ship climbs or sinks along its lane, rise per
+ * metre run: it rises and settles level, as an airship does (its pitch
+ * stays 0), never jumps. */
+export const FLEET_ROOF_SLOPE = 0.2;
+/** A profile's sample spacing along its lane, m (divides WORLD_SIZE). */
+export const FLEET_PROFILE_STEP = 5;
 
 /** A layer's heading: (p, q) coprime whole numbers, so a lane along it
  * closes on itself after p tiles in x and q in z. */
@@ -558,8 +598,18 @@ export interface FleetLayer {
    * m: WORLD_SIZE / √(p² + q²). Two lanes `a` and `b` are never nearer
    * than (b.u − a.u) taken round this. */
   across: number;
+  /** K1: a street layer's lanes cruise avenues at fixed altitudes; the
+   * rooftop layer's follow their profiles. */
+  street: boolean;
+  /** The layer's hull band, m (on extents). */
+  band: readonly [number, number];
 }
-const fleetLayer = (p: number, q: number): FleetLayer => {
+const fleetLayer = (
+  p: number,
+  q: number,
+  street: boolean,
+  band: readonly [number, number],
+): FleetLayer => {
   const n = Math.hypot(p, q);
   return {
     p,
@@ -568,74 +618,213 @@ const fleetLayer = (p: number, q: number): FleetLayer => {
     dz: q / n,
     length: WORLD_SIZE * n,
     across: WORLD_SIZE / n,
+    street,
+    band,
   };
 };
-/** Layer 0, the pickets, low and quick, a few degrees off the avenues;
- * layer 1, the line (cruisers and carriers), higher, steeper across the
- * grid. */
+export const LAYER_STREET_X = 0;
+export const LAYER_STREET_Z = 1;
+export const LAYER_ROOF = 2;
+export type FleetLayerId = 0 | 1 | 2;
+/** Layer 0 along +x, layer 1 and the rooftops along +z. */
 export const FLEET_LAYERS: readonly FleetLayer[] = [
-  fleetLayer(3, 1),
-  fleetLayer(1, -2),
+  fleetLayer(1, 0, true, FLEET_STREET_BANDS[0] as readonly [number, number]),
+  fleetLayer(0, 1, true, FLEET_STREET_BANDS[1] as readonly [number, number]),
+  fleetLayer(0, 1, false, [FLEET_ROOF_MIN, FLEET_ALT_MAX]),
 ];
 
-/** One lane: who flies it, in which layer, at what altitude (the hull's
- * centre), how far across the layer's heading, and how fast along it (m/s;
- * negative flies it backwards). */
+/** One lane: who flies it, in which layer, on which line (`cross`: the
+ * avenue's or the mid-block line's fixed coordinate — z for layer 0, x for
+ * the others), at what altitude (the hull's centre: a street lane's own; a
+ * rooftop lane's fallback, the top of its band, when no plan is
+ * installed), how far across the layer's heading (`u`), and how fast along
+ * it (m/s; negative flies it backwards). */
 export interface FleetLane {
   cls: ShipClassId;
-  layer: 0 | 1;
+  layer: FleetLayerId;
+  cross: number;
   alt: number;
   u: number;
   v: number;
 }
 
-/** [class, layer, altitude, speed] per lane; the offsets across spread
- * each layer's lanes evenly. */
-const LANE_ROWS: readonly (readonly [ShipClassId, 0 | 1, number, number])[] = [
-  // Layer 0: eight pickets.
-  [0, 0, 547.6, 13.5],
-  [0, 0, 548.4, -12],
-  [0, 0, 549, 14.5],
-  [0, 0, 547.4, 12.5],
-  [0, 0, 548.8, -15],
-  [0, 0, 548, 13],
-  [0, 0, 547.6, -14],
-  [0, 0, 549, -12.5],
-  // Layer 1: eight cruisers and four carriers, no two carriers abreast.
-  [1, 1, 583, 10.5],
-  [2, 1, 585, -8],
-  [1, 1, 587, 11.5],
-  [1, 1, 581.5, -9.5],
-  [2, 1, 584.6, 7.5],
-  [1, 1, 586, -11],
-  [1, 1, 582.5, 10],
-  [2, 1, 585.4, -8.5],
-  [1, 1, 584, 9],
-  [1, 1, 587.5, -10],
-  [2, 1, 585, 9],
-  [1, 1, 582, -11.5],
+/** [class, layer, line, speed, altitude (street lanes; null: the
+ * rooftops')] per lane. */
+const LANE_ROWS: readonly (readonly [
+  ShipClassId,
+  FleetLayerId,
+  number,
+  number,
+  number | null,
+])[] = [
+  // Layer 0, the x-avenues: five pickets, two cruisers. The z = 200 avenue
+  // runs through a tower crane's jib (the planned break-through): its
+  // picket's envelope spans the jib's height.
+  [0, 0, 0, 13.5, 107],
+  [0, 0, 200, -12, 100],
+  [1, 0, 400, 10.5, 112],
+  [0, 0, 600, 14.5, 107.5],
+  [1, 0, 1000, -9.5, 112.5],
+  [0, 0, 1400, -15, 108],
+  [0, 0, 1600, 13, 107],
+  // Layer 1, the z-avenues: four pickets, three cruisers.
+  [0, 1, 0, -14, 154],
+  [1, 1, 200, 11.5, 158],
+  [0, 1, 600, 12.5, 153],
+  [1, 1, 800, -11, 158.5],
+  [0, 1, 1000, 14, 154.5],
+  [1, 1, 1400, -10, 158],
+  [0, 1, 1800, 12.5, 153.5],
+  // Layer 2, the rooftops: four carriers and two cruisers on the mid-block
+  // lines no landmark spire stands on.
+  [2, 2, 100, 8, null],
+  [1, 2, 300, -11, null],
+  [2, 2, 700, -8.5, null],
+  [1, 2, 900, 10, null],
+  [2, 2, 1300, 7.5, null],
+  [2, 2, 1900, -9, null],
 ];
 
+/** The across-heading offset `u` of the line at `cross` in `layer`: a lane
+ * along +x runs at z = u, one along +z at x = −u. */
+const laneU = (layer: FleetLayer, cross: number): number =>
+  layer.dz === 0 ? cross : wrapCoord(-cross);
+
 /** Every lane — one ship each, so this many ships fly at once (at most). */
-export const FLEET_LANES: readonly FleetLane[] = (() => {
-  const count = [0, 0];
-  const n = [0, 0];
-  for (const [, layer] of LANE_ROWS) n[layer] = (n[layer] as number) + 1;
-  return LANE_ROWS.map(([cls, layer, alt, v]) => {
-    const k = count[layer] as number;
-    count[layer] = k + 1;
-    const across = (FLEET_LAYERS[layer] as FleetLayer).across;
+export const FLEET_LANES: readonly FleetLane[] = LANE_ROWS.map(
+  ([cls, layer, cross, v, alt]) => {
+    const ly = FLEET_LAYERS[layer] as FleetLayer;
+    const reach = (SHIP_REACH[cls] as ShipReach).y;
     return {
       cls,
       layer,
-      alt,
+      cross,
+      alt: alt ?? ly.band[1] - reach,
+      u: laneU(ly, cross),
       v,
-      u: ((k + 0.5) * across) / (n[layer] as number),
     };
-  });
-})();
+  },
+);
 /** The fleet's size: one ship per lane. */
 export const FLEET_SIZE = FLEET_LANES.length;
+/** Does `lane` cruise an avenue (vs skim the rooftops)? */
+export const laneStreet = (lane: number): boolean =>
+  (FLEET_LAYERS[(FLEET_LANES[lane] as FleetLane).layer] as FleetLayer).street;
+
+// --- The plan (K1) ----------------------------------------------------------------
+
+/** A planned break-through: something the lane cannot clear but the ship
+ * smashes as it passes (fleetplan.ts laneClearance) — a tower crane (its
+ * site id) or a standing prop (its id). `s` is where along the lane
+ * (canonical, [0, length)) the obstacle's centre is, and `half` how far
+ * either side of it along the lane any part of it reaches, m. */
+export interface LaneBreak {
+  kind: "crane" | "prop";
+  id: number;
+  s: number;
+  half: number;
+}
+
+/** The fleet's fit to the city: per lane, its altitude profile (samples
+ * every FLEET_PROFILE_STEP m along it — the lane closes on itself, so the
+ * last runs back into the first — or null: a street lane's altitude is
+ * fixed) and its planned break-throughs, ascending along it. A pure
+ * function of the generated city (fleetplan.ts planFleet); both sides
+ * install the same one, so every pose here stays a pure function of (ship,
+ * plan, clock). */
+export interface FleetPlan {
+  readonly alt: readonly (Float64Array | null)[];
+  readonly breaks: readonly (readonly LaneBreak[])[];
+}
+
+let activePlan: FleetPlan | null = null;
+/** Each lane's lowest and highest centre altitude under the plan. */
+const laneLo = new Float64Array(FLEET_LANES.length);
+const laneHi = new Float64Array(FLEET_LANES.length);
+const NO_BREAKS: readonly LaneBreak[] = [];
+
+/** Install the fleet's plan (null: none — every lane flies its fallback
+ * altitude). Both sides call it once with planFleet of the city they fly. */
+export function installFleetPlan(plan: FleetPlan | null): void {
+  if (plan) {
+    if (plan.alt.length !== FLEET_LANES.length) {
+      throw new Error("fleet plan: one profile per lane");
+    }
+    plan.alt.forEach((p, i) => {
+      const ly = FLEET_LAYERS[
+        (FLEET_LANES[i] as FleetLane).layer
+      ] as FleetLayer;
+      if (p && p.length * FLEET_PROFILE_STEP !== ly.length) {
+        throw new Error(`fleet plan: lane ${i}'s profile does not close`);
+      }
+    });
+  }
+  activePlan = plan;
+  FLEET_LANES.forEach((ln, i) => {
+    const p = plan?.alt[i];
+    let lo = ln.alt;
+    let hi = ln.alt;
+    if (p) {
+      lo = Number.POSITIVE_INFINITY;
+      hi = Number.NEGATIVE_INFINITY;
+      for (const a of p) {
+        lo = Math.min(lo, a);
+        hi = Math.max(hi, a);
+      }
+    }
+    laneLo[i] = lo;
+    laneHi[i] = hi;
+  });
+}
+installFleetPlan(null);
+
+/** The installed plan, or null. */
+export const fleetPlan = (): FleetPlan | null => activePlan;
+
+/** `lane`'s planned break-throughs (none without a plan). */
+export const laneBreaks = (lane: number): readonly LaneBreak[] =>
+  activePlan?.breaks[lane] ?? NO_BREAKS;
+
+/** The lowest / highest centre altitude `lane` ever flies, m. */
+export const laneAltLo = (lane: number): number => laneLo[lane] as number;
+export const laneAltHi = (lane: number): number => laneHi[lane] as number;
+
+/** Where along its profile's samples (`n` of them) position `s` falls:
+ * the sample index into `profIdx`, the fraction past it returned. */
+function profileAt(s: number, n: number): number {
+  let u = s / FLEET_PROFILE_STEP;
+  u -= Math.floor(u / n) * n;
+  let i = Math.floor(u);
+  if (i >= n || i < 0) i = 0;
+  profIdx = i;
+  return u - i;
+}
+let profIdx = 0;
+
+/** `lane`'s centre altitude at along-lane position `s` (unwrapped), m:
+ * its profile's, linear between samples, or its fixed altitude. Pure in
+ * (lane, s, plan); allocation-free. */
+export function laneAltAt(lane: number, s: number): number {
+  const p = activePlan?.alt[lane];
+  if (!p) return (FLEET_LANES[lane] as FleetLane).alt;
+  const n = p.length;
+  const f = profileAt(s, n);
+  const a = p[profIdx] as number;
+  const b = p[profIdx + 1 === n ? 0 : profIdx + 1] as number;
+  return a + (b - a) * f;
+}
+
+/** `lane`'s climb at `s`: metres of rise per metre along (0 for a street
+ * lane). */
+export function laneClimbAt(lane: number, s: number): number {
+  const p = activePlan?.alt[lane];
+  if (!p) return 0;
+  const n = p.length;
+  profileAt(s, n);
+  const a = p[profIdx] as number;
+  const b = p[profIdx + 1 === n ? 0 : profIdx + 1] as number;
+  return (b - a) / FLEET_PROFILE_STEP;
+}
 
 // --- Ships ----------------------------------------------------------------------
 
@@ -709,7 +898,7 @@ export function lanePoseInto(lane: number, s: number, out: ShipPose): ShipPose {
   const ly = FLEET_LAYERS[ln.layer] as FleetLayer;
   // The lane's origin: `u` across the heading from the layer's own.
   out.x = wrapCoord(-ly.dz * ln.u + ly.dx * s);
-  out.y = ln.alt;
+  out.y = laneAltAt(lane, s);
   out.z = wrapCoord(ly.dx * ln.u + ly.dz * s);
   const sg = ln.v < 0 ? -1 : 1;
   out.hx = ly.dx * sg;
@@ -745,7 +934,7 @@ export function fleetPoseInto64(
   const ly = FLEET_LAYERS[ln.layer] as FleetLayer;
   const s = ship.s0 + (ln.v * ((t > ship.t0 ? t : ship.t0) - ship.t0)) / 1000;
   out[o] = wrapCoord(-ly.dz * ln.u + ly.dx * s);
-  out[o + 1] = ln.alt;
+  out[o + 1] = laneAltAt(ship.lane, s);
   out[o + 2] = wrapCoord(ly.dx * ln.u + ly.dz * s);
   const sg = ln.v < 0 ? -1 : 1;
   const hx = ly.dx * sg;
@@ -810,7 +999,9 @@ export function shipVelAt(ship: FleetShip, t: number, out: Vec3): Vec3 {
   const ly = FLEET_LAYERS[ln.layer] as FleetLayer;
   const on = t >= ship.t0 ? 1 : 0;
   out.x = ly.dx * ln.v * on;
-  out.y = 0;
+  // K1: a rooftop ship rises and settles along its profile.
+  out.y =
+    laneClimbAt(ship.lane, shipAlong(ship, Math.max(t, ship.t0))) * ln.v * on;
   out.z = ly.dz * ln.v * on;
   return out;
 }
@@ -980,7 +1171,13 @@ export function collideBoss(
     if (d !== null && falling && t >= d.t + d.end) continue;
     const lane = FLEET_LANES[ship.lane] as FleetLane;
     const reach = SHIP_REACH[lane.cls] as ShipReach;
-    if (!falling && Math.abs(pos.y - lane.alt) > reach.y + radius) continue;
+    if (
+      !falling &&
+      (pos.y < laneAltLo(ship.lane) - reach.y - radius ||
+        pos.y > laneAltHi(ship.lane) + reach.y + radius)
+    ) {
+      continue;
+    }
     fleetPoseAt(ship, t, hitPose);
     const dx = wrapDeltaAxis(hitPose.x, pos.x);
     const dz = wrapDeltaAxis(hitPose.z, pos.z);
@@ -1151,16 +1348,18 @@ export function shipCrash(
   t: number,
   world: BossSweepWorld,
 ): ShipDown {
-  const pose = lanePoseInto(
-    ship.lane,
-    shipAlong(ship, Math.max(t, ship.t0)),
-    blankPose(),
-  );
-  const speed = Math.abs((FLEET_LANES[ship.lane] as FleetLane).v);
+  const along = shipAlong(ship, Math.max(t, ship.t0));
+  const pose = lanePoseInto(ship.lane, along, blankPose());
+  const v = (FLEET_LANES[ship.lane] as FleetLane).v;
+  const speed = Math.abs(v);
   const d: ShipDown = {
     t,
     p: { x: pose.x, y: pose.y, z: pose.z },
-    v: { x: pose.hx * speed, y: FALL_KICK_DOWN, z: pose.hz * speed },
+    v: {
+      x: pose.hx * speed,
+      y: FALL_KICK_DOWN + laneClimbAt(ship.lane, along) * v,
+      z: pose.hz * speed,
+    },
     yaw: pose.yaw,
     spin: ship.id % 2 === 0 ? 1 : -1,
     end: WRECK_MAX_MS,
@@ -1193,6 +1392,14 @@ export const LAUNCH_GRACE_MS: readonly number[] = [1800, 1500];
  * gentle climb off the deck, rad. */
 export const LAUNCH_SPEED = RESPAWN_SPEED;
 export const LAUNCH_PITCH: readonly number[] = [-0.32, 0.08];
+/** K1: the belly drop's pitch off a ship cruising an avenue — a shallow
+ * slide off the hook down the street, not a dive into it, rad. */
+export const LAUNCH_STREET_PITCH = -0.1;
+/** The release pitch of rig `kind` on a ship of a street lane or not. */
+export const launchPitch = (kind: LaunchKind, street: boolean): number =>
+  kind === LAUNCH_BELLY && street
+    ? LAUNCH_STREET_PITCH
+    : (LAUNCH_PITCH[kind] as number);
 /** The belly bay (base hull frame): its centre x, the plane stowed inside
  * the keel, and how far the trapeze lowers it, m — scaled with the hull. */
 export const BAY_X = -4;
@@ -1235,12 +1442,15 @@ const smooth = (u: number): number => {
 };
 
 /** Where the plane is on its rig of a class `cls` ship at server time `t`
- * (clamped to the sequence: at and after release, the release pose). Pure. */
+ * (clamped to the sequence: at and after release, the release pose) — off
+ * a ship cruising an avenue when `street` (K1: a shallower belly drop).
+ * Pure. */
 export function launchLocalAt(
   l: BossLaunch,
   cls: ShipClassId,
   t: number,
   out: LaunchLocal,
+  street = false,
 ): LaunchLocal {
   const c = SHIP_CLASSES[cls] as ShipClass;
   const s =
@@ -1252,7 +1462,7 @@ export function launchLocalAt(
     out.y =
       (BAY_STOW_Y + (BAY_HANG_Y - BAY_STOW_Y) * smooth((s - 0.6) / 1.1)) * c.sr;
     out.z = 0;
-    out.pitch = (LAUNCH_PITCH[0] as number) * smooth((s - 1.7) / 0.7);
+    out.pitch = launchPitch(LAUNCH_BELLY, street) * smooth((s - 1.7) / 0.7);
     return out;
   }
   // Steam 0–0.6 s, then the run: constant acceleration over 1.2 s, the nose
@@ -1274,12 +1484,13 @@ export function launchSpawnAt(
 ): { pos: Vec3; yaw: number; pitch: number; speed: number } {
   const t = launchReleaseAt(l);
   const pose = fleetPoseAt(ship, t, blankPose());
-  const at = launchLocalAt(l, shipClass(ship), t, {
-    x: 0,
-    y: 0,
-    z: 0,
-    pitch: 0,
-  });
+  const at = launchLocalAt(
+    l,
+    shipClass(ship),
+    t,
+    { x: 0, y: 0, z: 0, pitch: 0 },
+    laneStreet(ship.lane),
+  );
   const pos = shipPointInto(pose, at.x, at.y, at.z, { x: 0, y: 0, z: 0 });
   return {
     pos,

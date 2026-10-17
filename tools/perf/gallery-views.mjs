@@ -9,7 +9,10 @@
 /** DT1: the turntable sheet — a row of each airframe at four headings, the
  * QA camera `dist` m off (near ≈ 40 m, mid ≈ 250 m, far ≈ 600 m: the three
  * LOD levels). Clear sky high over the city; the own plane parked behind
- * the camera, out of shot. */
+ * the camera, out of shot. K1: every DT1 sheet 70 m lower, under the
+ * lowered deck (440 m) — the plane parked under it (409 m: between the
+ * blimp's top and the news heli's belly — the client's in-cloud air keys
+ * off the chase camera, which rides over the plane). */
 const turntable = (name, dist) => {
   const yaws = [Math.PI / 2, Math.PI * 0.75, Math.PI, Math.PI * 1.3];
   const row = (kind, y) =>
@@ -26,13 +29,13 @@ const turntable = (name, dist) => {
     name,
     x: 1000,
     z: 1000 + dist + 140,
-    y: 600,
+    y: 409,
     yaw: Math.PI,
-    eye: [1000, 460, 1000 + dist],
-    at: [1000, 460, 1000],
+    eye: [1000, 390, 1000 + dist],
+    at: [1000, 390, 1000],
     weather: "clear",
     sky: "dusk",
-    showcase: [...row("biplane", 465), ...row("fighter", 455)],
+    showcase: [...row("biplane", 395), ...row("fighter", 385)],
   };
 };
 
@@ -42,17 +45,17 @@ const closeup = (name, kind, hp = 100) => ({
   name,
   x: 1000,
   z: 1150,
-  y: 600,
+  y: 409,
   yaw: Math.PI,
-  eye: [1008, 464, 1008],
-  at: [1000, 460, 1000],
+  eye: [1008, 394, 1008],
+  at: [1000, 390, 1000],
   weather: "clear",
   sky: "dusk",
   showcase: [
     {
       kind,
       x: 1000,
-      y: 460,
+      y: 390,
       z: 1000,
       yaw: Math.PI * 0.62,
       pitch: 0.04,
@@ -88,13 +91,13 @@ const lodSheet = () => {
     name: "planes-lod-levels",
     x: 1000,
     z: 1180,
-    y: 600,
+    y: 409,
     yaw: Math.PI,
-    eye: [1000, 460, 1036],
-    at: [1000, 460, 1000],
+    eye: [1000, 390, 1036],
+    at: [1000, 390, 1000],
     weather: "clear",
     sky: "dusk",
-    showcase: [...row("biplane", 465), ...row("fighter", 455)],
+    showcase: [...row("biplane", 395), ...row("fighter", 385)],
   };
 };
 
@@ -104,16 +107,16 @@ const wreckedPair = () => ({
   name: "planes-closeup-wrecked",
   x: 1000,
   z: 1150,
-  y: 600,
+  y: 409,
   yaw: Math.PI,
-  eye: [1000, 464, 1016],
-  at: [1000, 460, 1000],
+  eye: [1000, 394, 1016],
+  at: [1000, 390, 1000],
   weather: "clear",
   sky: "dusk",
   showcase: ["biplane", "fighter"].map((kind, i) => ({
     kind,
     x: 994 + i * 12,
-    y: 460,
+    y: 390,
     z: 1000,
     yaw: Math.PI * (i === 0 ? 0.62 : 0.38),
     pitch: 0.25,
@@ -130,7 +133,7 @@ const fullRoom = () => {
   const at = (kind, i, dist, spread) => ({
     kind,
     x: 1000 + (i - 1.5) * spread,
-    y: 460 + (i % 2) * spread * 0.3,
+    y: 390 + (i % 2) * spread * 0.3,
     z: 1000 - dist,
     yaw: Math.PI / 2 + i * 0.4,
     pitch: 0.1,
@@ -148,10 +151,10 @@ const fullRoom = () => {
     name: "planes-full-room",
     x: 1000,
     z: 1200,
-    y: 600,
+    y: 409,
     yaw: Math.PI,
-    eye: [1000, 462, 1010],
-    at: [1000, 460, 900],
+    eye: [1000, 392, 1010],
+    at: [1000, 390, 900],
     weather: "clear",
     sky: "dusk",
     showcase: list,
@@ -166,17 +169,17 @@ const shimmer = (name, kind) => ({
   name,
   x: 1000,
   z: 1180,
-  y: 600,
+  y: 409,
   yaw: Math.PI,
-  eye: [1000, 462, 1030],
-  at: [1000, 460, 990],
+  eye: [1000, 392, 1030],
+  at: [1000, 390, 990],
   weather: "clear",
   sky: "dusk",
   showcase: [0, 1, 2, 3].flatMap((i) => [
     {
       kind,
       x: 982 + i * 12,
-      y: 458 + (i % 2) * 4,
+      y: 388 + (i % 2) * 4,
       z: 1000,
       yaw: Math.PI / 2 + i * 0.6,
       pitch: 0.15,
@@ -185,7 +188,7 @@ const shimmer = (name, kind) => ({
     {
       kind,
       x: 940 + i * 40,
-      y: 470,
+      y: 400,
       z: 910,
       yaw: Math.PI / 2 + i * 0.6,
       pitch: 0.15,
@@ -213,13 +216,13 @@ const damageSheet = () => {
     name: "planes-damage",
     x: 1000,
     z: 1180,
-    y: 600,
+    y: 409,
     yaw: Math.PI,
-    eye: [1000, 460, 1026],
-    at: [1000, 460, 1000],
+    eye: [1000, 390, 1026],
+    at: [1000, 390, 1000],
     weather: "clear",
     sky: "dusk",
-    showcase: [...row("biplane", 465), ...row("fighter", 455)],
+    showcase: [...row("biplane", 395), ...row("fighter", 385)],
   };
 };
 
@@ -247,7 +250,7 @@ const referenceView = (name, extra = {}) => ({
   // into the scene mid-right, 40 m out.
   x: 700,
   z: 1230,
-  y: 490,
+  y: 409,
   yaw: Math.atan2(-356, 240),
   eye: [700, 400, 1230],
   at: [1700, 295, 1080],
@@ -1235,7 +1238,7 @@ export const VIEWS = [
     name: "boss-closeup",
     x: 1000,
     z: 1000,
-    y: 520,
+    y: 409,
     yaw: 0,
     timeMs: 1_790_000_000_000,
     weather: "clear",
@@ -1245,7 +1248,7 @@ export const VIEWS = [
     name: "boss-belly-launch",
     x: 1000,
     z: 1000,
-    y: 520,
+    y: 409,
     yaw: 0,
     timeMs: 1_790_000_000_000,
     weather: "clear",
@@ -1261,7 +1264,7 @@ export const VIEWS = [
     name: "boss-catapult-launch",
     x: 1000,
     z: 1000,
-    y: 520,
+    y: 409,
     yaw: 0,
     timeMs: 1_790_000_000_000,
     weather: "clear",
@@ -1277,32 +1280,33 @@ export const VIEWS = [
     name: "boss-breakup",
     x: 1000,
     z: 1000,
-    y: 520,
+    y: 409,
     yaw: 0,
     timeMs: 1_790_000_000_000,
     weather: "clear",
     boss: {
       ahead: 260,
       hero: 2,
-      downAfterMs: 3500,
+      downAfterMs: 1200,
       eye: [-40, 40, 230],
       at: [0, -20, 0],
     },
   },
-  // Z1: the fleet from under it — the eye 360 m over the middle of the
-  // city, pitched up into the sky full of ships: both layers, every class,
-  // receding into the haze.
+  // Z1: the fleet from under it — K1: the eye 210 m over the river, between
+  // the street layers and the rooftops, pitched up across the city: the
+  // avenue ships below the roofline, the carriers skimming the skyline,
+  // every class, receding into the haze.
   {
     name: "fleet-sky",
-    x: 1000,
-    z: 1000,
-    // The plane parked over every roof, under the fleet (out of shot).
-    y: 520,
+    x: 1100,
+    z: 1100,
+    // The plane parked just under the deck (out of shot).
+    y: 409,
     // The staging's "ahead" is the plane's nose: the way the eye looks.
     yaw: Math.atan2(-380, 440),
     timeMs: 1_790_000_000_000,
-    eye: [1000, 360, 1000],
-    at: [1380, 500, 560],
+    eye: [1100, 210, 1100],
+    at: [1480, 300, 660],
     fov: 80,
     weather: "clear",
     boss: { ahead: 320, count: 20 },
@@ -1312,19 +1316,88 @@ export const VIEWS = [
   // path), low over the roofs: the near ones in full detail, the rest
   // through the fleet's mid / far LOD into the haze. However many there
   // are, they cost the fleet's same instanced draws. The plane is parked
-  // high over (1000, 1000), out of shot; the squadrons circle it.
+  // just under the deck over (1000, 1000), out of shot (K1's lowered sky);
+  // the squadrons circle it.
   {
     name: "airforce-swarm",
     x: 1000,
     z: 1000,
-    y: 560,
+    y: 409,
     yaw: Math.atan2(-380, 440),
-    eye: [1000, 390, 1000],
-    at: [1380, 270, 560],
+    eye: [1000, 300, 1000],
+    at: [1380, 220, 560],
     fov: 75,
     weather: "clear",
     raf: true,
     airforce: 500,
+  },
+  // K1 the war in the streets: from street level in the z = 600 avenue,
+  // between the downtown towers, a picket gliding down it away from the
+  // eye under the roofline — its searchlights swung abeam onto the
+  // facades either side, its engine cars lighting the canyon. The plane
+  // is parked just under the deck over the eye, out of shot.
+  {
+    name: "fleet-avenue",
+    x: 250,
+    z: 600,
+    y: 409,
+    yaw: -Math.PI / 2,
+    timeMs: 1_790_000_000_000,
+    eye: [345, 66, 607],
+    at: [434, 104, 600],
+    fov: 70,
+    weather: "clear",
+    boss: { ahead: 170, count: 20, hero: 0, lane: 3 },
+  },
+  // K1: a carrier skimming the skyline — the x = 700 rooftop lane over the
+  // west core (its profile 20 m over the 307–318 m towers there, the hull
+  // ≈ 345 m), from just over a neighbouring roof, the lane's rise and fall
+  // over the blocks behind it.
+  {
+    name: "fleet-rooftop",
+    x: 790,
+    z: 520,
+    y: 409,
+    yaw: Math.atan2(90, -130),
+    timeMs: 1_790_000_000_000,
+    eye: [800, 342, 470],
+    at: [700, 338, 650],
+    fov: 70,
+    weather: "clear",
+    boss: { ahead: 160, count: 20, hero: 2, lane: 16 },
+  },
+  // K1: the lowered sky — from 230 m over the river, up at the 480 m glass
+  // landmark at (500, 700): its spire piercing the cloud deck (440 m), the
+  // top vanishing into it, lit from under by the city.
+  {
+    name: "towers-into-clouds",
+    x: 500,
+    z: 1180,
+    y: 409,
+    yaw: 0,
+    timeMs: 1_790_000_000_000,
+    eye: [500, 230, 1080],
+    at: [500, 455, 700],
+    fov: 70,
+    weather: "clear",
+  },
+  // K1: a planned break-through — the z = 200 avenue's picket (lane 1) at
+  // the tower crane whose jib it runs through (site 1, at the instant its
+  // jib swings over the street), the crane felled 250 ms before the hull's
+  // touch and toppling across the street onto it, 2.6 s on; from the
+  // street west of it, the ship coming on.
+  {
+    name: "fleet-breakthrough",
+    x: 1060,
+    z: 200,
+    y: 409,
+    yaw: -Math.PI / 2,
+    timeMs: 1_790_000_228_600,
+    eye: [1130, 58, 206],
+    at: [1262, 96, 196],
+    fov: 70,
+    weather: "clear",
+    boss: { ahead: 200, count: 20, lane: 1, breakAfterMs: 2600 },
   },
   // L6 (Stormlit): the carrier composition (L7b: renamed from a second
   // `reference-hero`, which shared its name and file with L7's) — Z1: the
@@ -1341,18 +1414,18 @@ export const VIEWS = [
     name: "reference-carrier",
     x: 1500,
     z: 1000,
-    y: 600,
+    y: 409,
     yaw: 0,
     timeMs: 1_790_000_000_000,
-    eye: [1484, 470, 1036],
-    at: [1630, 380, 740],
+    eye: [1484, 405, 1036],
+    at: [1630, 315, 740],
     weather: "clear",
     boss: { ahead: 450, count: 20 },
     showcase: [
       {
         kind: "biplane",
         x: 1500,
-        y: 450,
+        y: 385,
         z: 1000,
         yaw: 0.1,
         pitch: 0.04,
@@ -1370,7 +1443,7 @@ export const VIEWS = [
     name: "enemy-dive-bomb",
     x: 1000,
     z: 1300,
-    y: 600,
+    y: 409,
     yaw: Math.PI,
     eye: [1009, 147, 468],
     at: [1000, 124, 436],
@@ -1404,7 +1477,7 @@ export const VIEWS = [
     name: "enemy-bomb-impact",
     x: 1000,
     z: 1300,
-    y: 600,
+    y: 409,
     yaw: Math.PI,
     eye: [994, 16, 340],
     at: [1000, 4, 388],
@@ -1451,17 +1524,17 @@ export const VIEWS = [
     name: "planes-dogfight",
     x: 1000,
     z: 1300,
-    y: 600,
+    y: 409,
     yaw: Math.PI,
-    eye: [1004, 451.5, 1031],
-    at: [998, 453, 975],
+    eye: [1004, 381.5, 1031],
+    at: [998, 383, 975],
     weather: "clear",
     sky: "dusk",
     showcase: [
       {
         kind: "biplane",
         x: 995,
-        y: 447.5,
+        y: 377.5,
         z: 1020,
         yaw: 0.25,
         roll: -0.6,
@@ -1472,7 +1545,7 @@ export const VIEWS = [
       {
         kind: "fighter",
         x: 989,
-        y: 457,
+        y: 387,
         z: 1003,
         yaw: -1.35,
         roll: -0.8,
@@ -1483,7 +1556,7 @@ export const VIEWS = [
       {
         kind: "fighter",
         x: 1013,
-        y: 451,
+        y: 381,
         z: 998,
         yaw: 1.3,
         roll: 0.7,
@@ -1494,7 +1567,7 @@ export const VIEWS = [
       {
         kind: "fighter",
         x: 1000,
-        y: 463,
+        y: 393,
         z: 988,
         yaw: -1.0,
         roll: -1.1,
@@ -1504,7 +1577,7 @@ export const VIEWS = [
       {
         kind: "biplane",
         x: 1022,
-        y: 462,
+        y: 392,
         z: 1008,
         yaw: 1.2,
         roll: 0.5,
@@ -1738,8 +1811,9 @@ export const VIEWS = [
   },
   // SKY1 Infinite sky: the cosmetic armada past the fog limit — its three
   // parallax layers drifting east-north-east under the cloud deck, flak
-  // under them, the painted horizon behind. 420 m up over the river,
-  // looking east; the plane parked 160 m behind the eye, out of shot.
+  // under them, the painted horizon behind. 420 m up over the river (K1:
+  // just under the lowered deck), looking east and down across the layers;
+  // the plane parked 160 m behind the eye, out of shot.
   {
     name: "sky-armada-wide",
     x: 840,
@@ -1747,7 +1821,7 @@ export const VIEWS = [
     y: 420,
     yaw: -Math.PI / 2,
     eye: [1000, 420, 1100],
-    at: [2000, 500, 1250],
+    at: [2000, 300, 1250],
     timeMs: 1_790_000_000_000,
     weather: "clear",
     raf: true,
@@ -1807,7 +1881,7 @@ export const VIEWS = [
     name: "skyline-far",
     x: 800,
     z: 2040,
-    y: 490,
+    y: 409,
     yaw: 0,
     eye: [800, 380, 1900],
     at: [800, 200, 700],
@@ -1845,7 +1919,7 @@ export const VIEWS = [
     name: "impact-plane-through",
     x: 1000,
     z: 1000,
-    y: 520,
+    y: 409,
     yaw: 0,
     weather: "clear",
     raf: true,
@@ -1857,7 +1931,7 @@ export const VIEWS = [
     name: "impact-comet-row",
     x: 1000,
     z: 1000,
-    y: 520,
+    y: 409,
     yaw: 0,
     weather: "clear",
     raf: true,

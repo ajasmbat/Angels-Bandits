@@ -58,6 +58,7 @@ import {
   type ShipClass,
   flakPosAt,
   fleetPoseInto64,
+  laneStreet,
   launchDoneAt,
   launchLocalAt,
   launchReleaseAt,
@@ -125,6 +126,10 @@ const SPOT_RANGE_M = 700;
 /** L6: each lamp's sweep centre (rad about +Y; 0 = ahead, +π/2 = to port):
  * the control car's pair ahead to starboard and to port. */
 const LAMP_BEARING: readonly number[] = [-0.85, 0.85];
+/** K1: down an avenue, the pair swings to either beam (rad off the bow)
+ * and leans this far off the vertical — the cones land on the facades. */
+const LAMP_STREET_BEARING = 1.35;
+const LAMP_STREET_TILT = 1.12;
 /** Running lights: port red, starboard green, white tail and crown, and the
  * belly's red anti-collision strobe. */
 const PORT = new THREE.Color(0xff2a20);
@@ -1096,6 +1101,7 @@ export class FleetRenderer {
     const a = draw.rigA.array as Float32Array;
     const b = draw.rigB.array as Float32Array;
     const restCarriage = (this.rests[BONE_CARRIAGE] as BoneRest).x;
+    const street = laneStreet(s.lane);
     let belly: BossLaunch | null = null;
     let deck: BossLaunch | null = null;
     for (let i = 0; i < launches.length; i++) {
@@ -1104,7 +1110,7 @@ export class FleetRenderer {
       if (renderMs >= launchDoneAt(l)) continue;
       if (l.kind === LAUNCH_BELLY) belly = l;
       else deck = l;
-      this.cue(l, cls, renderMs);
+      this.cue(l, cls, renderMs, street);
     }
     let flags = 0;
     // Belly: the doors slide outboard, the trapeze lowers the plane.
@@ -1124,6 +1130,7 @@ export class FleetRenderer {
         cls as 0 | 1 | 2,
         Math.min(renderMs, launchReleaseAt(belly)),
         this.local,
+        street,
       );
       const y = this.local.y / c.sr;
       if (sec < rel) {
@@ -1180,12 +1187,17 @@ export class FleetRenderer {
   }
 
   /** A launch's start and release cues, once each, at the plane's place. */
-  private cue(l: BossLaunch, cls: number, renderMs: number): void {
+  private cue(
+    l: BossLaunch,
+    cls: number,
+    renderMs: number,
+    street: boolean,
+  ): void {
     const startCue = !this.cuedStart.has(l.id);
     const releaseCue =
       !this.cuedRelease.has(l.id) && renderMs >= launchReleaseAt(l);
     if (!startCue && !releaseCue) return;
-    launchLocalAt(l, cls as 0 | 1 | 2, renderMs, this.local);
+    launchLocalAt(l, cls as 0 | 1 | 2, renderMs, this.local, street);
     this.shipPoint(this.local.x, this.local.y, this.local.z, this.at);
     if (startCue) {
       this.cuedStart.add(l.id);
@@ -1312,9 +1324,17 @@ export class FleetRenderer {
           this.at,
         );
         const ph = s.id * 1.7 + k * 2.1;
+        // K1: down an avenue the lamps swing abeam and nearly level, so the
+        // cones sweep the facades either side of the street; over the
+        // rooftops they rake the roofs under the hull.
+        const street = laneStreet(s.lane);
         const az =
-          (LAMP_BEARING[k] as number) + 0.5 * Math.sin(now / 3700 + ph);
-        const tilt = 0.5 + 0.2 * Math.sin(now / 2900 + ph * 0.6);
+          (street ? LAMP_STREET_BEARING : (LAMP_BEARING[k] as number)) *
+            (street ? (k === 0 ? -1 : 1) : 1) +
+          0.5 * Math.sin(now / 3700 + ph);
+        const tilt =
+          (street ? LAMP_STREET_TILT : 0.5) +
+          0.2 * Math.sin(now / 2900 + ph * 0.6);
         // Ship frame: down, tipped out by `tilt` toward bearing `az`.
         const hx = Math.sin(tilt) * Math.cos(az);
         const hy = -Math.cos(tilt);

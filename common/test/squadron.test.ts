@@ -16,6 +16,8 @@ import { generateCity, mulberry32 } from "@angels-bandits/common/city";
 import { generateMovers } from "@angels-bandits/common/city/movers";
 import { buildCityIndex, collideCity } from "@angels-bandits/common/collision";
 import {
+  BLIMP_ALT,
+  BLIMP_HULL,
   BOT_CEILING_ALT,
   CITY_SEED,
   PLAYER_RADIUS,
@@ -161,6 +163,10 @@ describe("E1 squadrons: the altitude bands", () => {
   it("derive from the ceilings: under BOT_CEILING_ALT and SOFT_CEILING, the cruise cap under both", () => {
     expect(SQUAD_ALT_MAX).toBeLessThan(BOT_CEILING_ALT);
     expect(SQUAD_ALT_MAX).toBeLessThan(SOFT_CEILING);
+    // …and the blimp's belly: K1 put its lane over the rooftops.
+    expect(SQUAD_ALT_MAX + 8 + PLAYER_RADIUS).toBeLessThan(
+      BLIMP_ALT - (BLIMP_HULL[1] as number),
+    );
     expect(SQUAD_CRUISE_CAP).toBeLessThanOrEqual(SQUAD_ALT_MAX);
     expect(SQUAD_FLOOR_ALT).toBeLessThan(SQUAD_CRUISE_CAP);
   });

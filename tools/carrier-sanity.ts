@@ -56,6 +56,7 @@ import {
   blankPose,
   decodeShip,
   fleetPoseAt,
+  installFleetPlan,
   isShipDown,
   shipClass,
   shipPresent,
@@ -67,6 +68,7 @@ import {
   generateCity,
   standingTopAt,
 } from "@angels-bandits/common/city";
+import { generateMovers } from "@angels-bandits/common/city/movers";
 import {
   BRIDGE_HALF_WIDTH,
   RIVER_WATER_Y,
@@ -84,8 +86,10 @@ import {
   BULLET_RANGE,
   CITY_SEED,
   MIN_SPEED,
+  STORM_KILL_ALT,
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
+import { fleetWorldOf, planFleet } from "@angels-bandits/common/fleetplan";
 import { decodeSnapshotEntry } from "@angels-bandits/common/net";
 import type { ServerMsg } from "@angels-bandits/common/protocol";
 import {
@@ -142,9 +146,10 @@ const POSE_HZ = 30;
 const SPEED = 62;
 const TURN_RATE = (45 * Math.PI) / 180;
 const ORBIT = { x: WORLD_SIZE / 2, z: WORLD_SIZE / 2, r: 250, y: 140 };
-/** The novice's own ceiling, m: 80 m over the fleet's top (Z1) — over its
- * top weak points, far under the storm kill altitude. */
-const TOP_Y = FLEET_ALT_MAX + 80;
+/** The novice's own ceiling, m: 30 m over the fleet's top (Z1; K1: the
+ * fleet's rooftops, under the lowered deck) — over its top weak points,
+ * under the storm kill altitude. */
+const TOP_Y = Math.min(FLEET_ALT_MAX + 30, STORM_KILL_ALT - 30);
 const ENGAGE_M = 700;
 const FIRE_CONE = (12 * Math.PI) / 180;
 const FIRE_M = 300;
@@ -192,6 +197,10 @@ const wrapAngle = (a: number): number => Math.atan2(Math.sin(a), Math.cos(a));
 // --- The city's surface, for the bomb check ------------------------------------------
 
 const city: Building[] = generateCity(CITY_SEED);
+// K1: the fleet's fit to the city, installed as every client installs it.
+installFleetPlan(
+  planFleet(fleetWorldOf(city, generateMovers(CITY_SEED, city))),
+);
 /** The intact city's surface under (x, z): the tallest building top there,
  * else a bridge deck (the street plane) or the river's water over the open
  * channel, else the street. */

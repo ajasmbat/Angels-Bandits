@@ -1,6 +1,8 @@
 // W3 rooftop AA nests, server side: one RoomAa per room. The nests fight
 // on the pilots' side — every gun tracks the carrier's enemy planes (W1)
-// and nothing else, fires bursts (light nests) or flak (heavy guns on the
+// and, K1, the war airships cruising past at eye level (an engine car as
+// the aim point, ranked behind any plane), and nothing else, fires bursts
+// (light nests) or flak (heavy guns on the
 // tallest towers), and every hit is rolled HERE (common/src/aa.ts is the
 // arithmetic); clients only draw the bursts. index.ts wires the results to
 // Combat (aaDamage — enemies only), the D4 wreck path and the wire.
@@ -81,6 +83,10 @@ export interface AaEnemy {
   /** E1: may strafe a nest it flies at (false: a squadron plane in
    * formation, whose guns are for humans only). Absent: true. */
   strafes?: boolean;
+  /** K1: metres added to its distance when a gun picks a target — an
+   * airship passing at eye level is engaged only when no plane is nearer
+   * by this much. */
+  bias?: number;
 }
 
 /** What the room's city looks like to the guns this tick. */
@@ -302,7 +308,11 @@ export class RoomAa {
         )
         .map((e) => ({ e, d: wrapDistance(pivot, e.pos) }))
         .filter((c) => c.d <= gun.range && c.d >= gun.minRange)
-        .sort((a, b) => a.d - b.d || (a.e.id < b.e.id ? -1 : 1));
+        .sort(
+          (a, b) =>
+            a.d + (a.e.bias ?? 0) - (b.d + (b.e.bias ?? 0)) ||
+            (a.e.id < b.e.id ? -1 : 1),
+        );
       for (const c of cands) {
         if (checks++ >= 2) break;
         if (!this.inSight(g.nest, c.e.pos, world)) continue;

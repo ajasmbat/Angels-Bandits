@@ -1,6 +1,7 @@
 import {
   BANK_ANGLE,
   BOOST_MAX_SPEED,
+  CEILING_FADE,
   CORNER_BRAKE_DECEL,
   MAX_SPEED,
   MIN_SPEED,
@@ -227,9 +228,9 @@ describe("stepFlight: steering", () => {
 });
 
 describe("stepFlight: soft ceiling", () => {
-  it("a sustained full-power climb tops out within 150 m above SOFT_CEILING (750 m)", () => {
+  it("a sustained full-power climb tops out within 150 m above SOFT_CEILING", () => {
     let s: FlightState = {
-      ...cruiseAt(MAX_SPEED, { x: 500, y: 700, z: 500 }),
+      ...cruiseAt(MAX_SPEED, { x: 500, y: SOFT_CEILING - 50, z: 500 }),
       pitch: 1.2,
     };
     const dt = 1 / 60;
@@ -239,16 +240,17 @@ describe("stepFlight: soft ceiling", () => {
       apex = Math.max(apex, s.pos.y);
     }
     expect(apex).toBeLessThanOrEqual(SOFT_CEILING + 150);
-    expect(apex).toBeGreaterThan(SOFT_CEILING); // it's a soft fade, not a wall at 750
+    expect(apex).toBeGreaterThan(SOFT_CEILING); // it's a soft fade, not a wall
   });
 
   it("mushes back down: pinned nose-up above the ceiling, the plane still descends", () => {
+    const top = SOFT_CEILING + CEILING_FADE;
     const start: FlightState = {
-      ...cruiseAt(MIN_SPEED, { x: 500, y: 930, z: 500 }),
+      ...cruiseAt(MIN_SPEED, { x: 500, y: top + 30, z: 500 }),
       pitch: 1.2,
     };
     const end = fly(start, { ...NEUTRAL, pitch: 1 }, 20);
-    expect(end.pos.y).toBeLessThan(850);
+    expect(end.pos.y).toBeLessThan(top - 50);
   });
 
   it("does not touch normal climbs below the ceiling", () => {

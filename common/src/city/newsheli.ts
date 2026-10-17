@@ -25,6 +25,10 @@
 //   3. Orbit: counter-clockwise at NEWS_HELI_ORBIT_SPEED, forever, until the
 //      server issues the next target.
 //
+// K1: the lowered deck brings the heli down to the landmark spires' height,
+// so the server only takes a story whose whole route keeps clear of them
+// (newsRouteClear); the idle orbit is chosen clear the same way.
+//
 // All horizontal math goes through wrapDeltaAxis, so a site across the seam
 // is reached the short way round.
 
@@ -43,6 +47,8 @@ import {
 } from "../constants";
 import { canonicalize, wrapDeltaAxis } from "../world/index";
 import { mulberry32 } from "./index";
+import { landmarkProfile } from "./landmarks";
+import { LANDMARK_BLOCKS } from "./layout";
 import type { MoverBox } from "./movers";
 
 /**
@@ -241,17 +247,83 @@ const altitudeFor = (t: number): number =>
 /**
  * Before anyone has died: an idle orbit over a seeded block centre, issued at
  * t = 0 and starting ON the circle, so it is simply orbiting at every time.
+ * K1: a block whose orbit would meet a spire is passed over for the next.
  */
 export function newsHeliIdle(seed: number): NewsHeliTarget {
   const rand = mulberry32((seed ^ 0x4e455753) >>> 0);
   const blocks = WORLD_SIZE / BLOCK_PITCH;
-  const x = (Math.floor(rand() * blocks) + 0.5) * BLOCK_PITCH;
-  const z = (Math.floor(rand() * blocks) + 0.5) * BLOCK_PITCH;
+  let x = (Math.floor(rand() * blocks) + 0.5) * BLOCK_PITCH;
+  let z = (Math.floor(rand() * blocks) + 0.5) * BLOCK_PITCH;
   const y = Math.round(
     NEWS_HELI_ALT_MIN + rand() * (NEWS_HELI_ALT_MAX - NEWS_HELI_ALT_MIN),
   );
-  const fx = canonicalize({ x: x + NEWS_HELI_ORBIT_R, y: 0, z }).x;
-  return { x, y, z, t: 0, fx, fy: y, fz: z, fyaw: yawOf(0, 1) };
+  const at = (cx: number, cz: number): NewsHeliTarget => {
+    const fx = canonicalize({ x: cx + NEWS_HELI_ORBIT_R, y: 0, z: cz }).x;
+    return { x: cx, y, z: cz, t: 0, fx, fy: y, fz: cz, fyaw: yawOf(0, 1) };
+  };
+  for (let n = 0; n < blocks * blocks && !newsRouteClear(at(x, z)); n++) {
+    x = (x + BLOCK_PITCH) % WORLD_SIZE;
+    if (x < BLOCK_PITCH) z = (z + BLOCK_PITCH) % WORLD_SIZE;
+  }
+  return at(x, z);
+}
+
+// --- K1: the spires ------------------------------------------------------------
+
+/** How far, plan view, the heli's track keeps off a spire's widest tier in
+ * its band, m: its hull's half-length and a margin. */
+export const NEWS_SPIRE_GAP = HELI_HULL[0] + 12;
+
+/** K1: the landmark spires as the heli's band sees them — the only things
+ * that reach it under the lowered deck: each one's centre and the plan
+ * radius (half-diagonal) of its widest tier reaching over the heli's
+ * lowest belly. Pure in the fixed landmark layout. */
+export const NEWS_SPIRES: readonly { x: number; z: number; r: number }[] =
+  LANDMARK_BLOCKS.map(([bx, bz], i) => {
+    const belly = NEWS_HELI_ALT_MIN - HELI_HULL[1];
+    let base = 0;
+    let r = 0;
+    for (const t of landmarkProfile(i).tiers) {
+      if (base + t.height > belly) {
+        r = Math.max(r, Math.hypot(t.width, t.depth) / 2);
+      }
+      base += t.height;
+    }
+    return {
+      x: bx * BLOCK_PITCH + BLOCK_PITCH / 2,
+      z: bz * BLOCK_PITCH + BLOCK_PITCH / 2,
+      r,
+    };
+  }).filter((s) => s.r > 0);
+
+/**
+ * K1: does the route `target` sets — the transit (or the spiral out) and
+ * the orbit — keep NEWS_SPIRE_GAP off every spire? The server only sends
+ * the heli on a story whose route does; one that would meet a spire is
+ * not taken. Pure.
+ */
+export function newsRouteClear(target: NewsHeliTarget): boolean {
+  const r = routeOf(target);
+  for (const sp of NEWS_SPIRES) {
+    const reach = sp.r + NEWS_SPIRE_GAP;
+    // The spire relative to the orbit centre.
+    const sx = wrapDeltaAxis(target.x, sp.x);
+    const sz = wrapDeltaAxis(target.z, sp.z);
+    const d = Math.hypot(sx, sz);
+    // The orbit is a ring of radius R about the centre.
+    if (Math.abs(d - NEWS_HELI_ORBIT_R) < reach) return false;
+    if (r.spiral) {
+      // Out from the start's radius to the ring: the annulus between.
+      if (d > r.d - reach && d < NEWS_HELI_ORBIT_R + reach) return false;
+      continue;
+    }
+    // The straight transit, from the start to the tangent point.
+    const ex = sx - r.vx;
+    const ez = sz - r.vz;
+    const k = Math.min(r.len, Math.max(0, ex * r.dx + ez * r.dz));
+    if (Math.hypot(ex - r.dx * k, ez - r.dz * k) < reach) return false;
+  }
+  return true;
 }
 
 /** A fresh slot for a seed: the idle orbit, no previous route. */

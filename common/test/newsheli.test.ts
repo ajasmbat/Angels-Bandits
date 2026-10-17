@@ -4,7 +4,9 @@
 //      client's crash check and every client's renderer agree on one heli.
 //   2. A retarget never teleports it and never snaps its hull around.
 //   3. It stays where the ticket puts it: 350-450 m, over the site, under
-//      the blimp and the cloud deck, above every roof.
+//      the cloud deck, over the blimp and every generated roof — and (K1,
+//      under the lowered deck) off every landmark spire on every route the
+//      server takes.
 //   4. What you collide with is what is drawn: collideMovers and
 //      collideBotMovers test the SAME box the renderer poses.
 
@@ -16,6 +18,7 @@ import {
   withNewsHeli,
 } from "@angels-bandits/common/city/movers";
 import {
+  NEWS_SPIRES,
   NEWS_SPOT_REACH,
   type NewsHeliTarget,
   canRetarget,
@@ -23,13 +26,16 @@ import {
   newsHeliBoxInto,
   newsHeliIdle,
   newsHeliSlot,
+  newsRouteClear,
   newsTargetAt,
   retargetNewsHeli,
   setNewsTarget,
 } from "@angels-bandits/common/city/newsheli";
+import { ROOF_STRUCTURE_MAX_HEIGHT } from "@angels-bandits/common/city/roof-structures";
 import {
   BLIMP_ALT,
   BLIMP_HULL,
+  BUILDING_MAX_HEIGHT,
   CITY_TOP,
   CLOUD_BASE,
   HELI_HULL,
@@ -175,30 +181,49 @@ describe("news heli pose", () => {
     }
   });
 
-  it("stays in its band: over every roof, under the blimp and the clouds", () => {
-    // H1: L10's 350–450 m band, lifted over the supertalls (CITY_TOP).
+  it("stays in its band: over every roof and the blimp, under the clouds", () => {
+    // H1: L10's 350–450 m band, lifted over the supertalls (CITY_TOP). K1:
+    // brought back under the lowered deck, over every generated roof and
+    // the blimp; the spires that still reach it are steered round.
     expect(NEWS_HELI_ALT_MIN).toBeGreaterThanOrEqual(350);
     expect(NEWS_HELI_ALT_MAX).toBeLessThanOrEqual(CITY_TOP + 50);
     const top = NEWS_HELI_ALT_MAX + HELI_HULL[1] * 1.3; // rotor blur
-    expect(top).toBeLessThan(BLIMP_ALT - BLIMP_HULL[1]);
     expect(top).toBeLessThan(CLOUD_BASE);
-    expect(NEWS_HELI_ALT_MIN - HELI_HULL[1]).toBeGreaterThan(CITY_TOP + 15);
+    const belly = NEWS_HELI_ALT_MIN - HELI_HULL[1];
+    expect(belly).toBeGreaterThan(BLIMP_ALT + BLIMP_HULL[1] + 10);
+    expect(belly).toBeGreaterThan(
+      BUILDING_MAX_HEIGHT + ROOF_STRUCTURE_MAX_HEIGHT + 15,
+    );
     let current = newsHeliIdle(SEED);
+    expect(newsRouteClear(current)).toBe(true);
+    let taken = 0;
     for (let k = 0; k < 40; k++) {
       const t = T0 + k * 90_000;
-      current = retargetNewsHeli(
+      const next = retargetNewsHeli(
         current,
         { x: (k * 977) % WORLD_SIZE, z: (k * 571) % WORLD_SIZE },
         t,
       );
+      // The server takes only a story whose route clears the spires.
+      if (!newsRouteClear(next)) continue;
+      current = next;
+      taken++;
       expect(current.y).toBeGreaterThanOrEqual(NEWS_HELI_ALT_MIN);
       expect(current.y).toBeLessThanOrEqual(NEWS_HELI_ALT_MAX);
-      for (let s = t; s < t + 90_000; s += 3_000) {
-        const y = pose(current, s).y;
-        expect(y).toBeGreaterThanOrEqual(NEWS_HELI_ALT_MIN);
-        expect(y).toBeLessThanOrEqual(NEWS_HELI_ALT_MAX);
+      for (let s = t; s < t + 90_000; s += 1_000) {
+        const p = pose(current, s);
+        expect(p.y).toBeGreaterThanOrEqual(NEWS_HELI_ALT_MIN);
+        expect(p.y).toBeLessThanOrEqual(NEWS_HELI_ALT_MAX);
+        for (const sp of NEWS_SPIRES) {
+          const d = Math.hypot(
+            wrapDeltaAxis(sp.x, p.x),
+            wrapDeltaAxis(sp.z, p.z),
+          );
+          expect(d).toBeGreaterThan(sp.r + HELI_HULL[0]);
+        }
       }
     }
+    expect(taken).toBeGreaterThan(20);
   });
 
   it("throws its spot all the way to the ground under the orbit", () => {

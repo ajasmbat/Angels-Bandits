@@ -28,6 +28,8 @@
 import type { Building } from "./city/index";
 import { ROOF_STRUCTURE_MAX_HEIGHT } from "./city/roof-structures";
 import {
+  BLIMP_ALT,
+  BLIMP_HULL,
   BOT_CEILING_ALT,
   BUILDING_MAX_HEIGHT,
   PLAYER_RADIUS,
@@ -152,11 +154,19 @@ export const SQUAD_CLEAR_HARD = 8;
 /** Below the bots' ceiling and the storm's by this, m (the formation's top
  * included). */
 const SQUAD_TOP_MARGIN = 30;
-/** The highest an anchor may fly: under BOT_CEILING_ALT and SOFT_CEILING
- * with its formation's top and a margin. Over a roof taller than this the
- * squadron steers round instead. */
+/** The blimp's belly less a margin, m: K1 put its lane over the rooftops,
+ * so the squadrons (which never meet a mover by steering) stay under it —
+ * and so under the news heli above it. */
+const UNDER_BLIMP = BLIMP_ALT - (BLIMP_HULL[1] as number) - PLAYER_RADIUS - 4;
+/** The highest an anchor may fly: under BOT_CEILING_ALT, SOFT_CEILING and
+ * the blimp's belly with its formation's top and a margin. Over a roof
+ * taller than this the squadron steers round instead. */
 export const SQUAD_ALT_MAX =
-  Math.min(BOT_CEILING_ALT, SOFT_CEILING) - SQUAD_TOP_MARGIN - FORM_TOP;
+  Math.min(
+    BOT_CEILING_ALT - SQUAD_TOP_MARGIN,
+    SOFT_CEILING - SQUAD_TOP_MARGIN,
+    UNDER_BLIMP,
+  ) - FORM_TOP;
 /** The cruise cap: just over the generated skyline (roofs and their
  * structures) and its clearance — the squadrons cruise under it and steer
  * round anything that would lift them over it (the landmark supertalls),

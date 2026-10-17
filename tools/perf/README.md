@@ -2989,7 +2989,11 @@ the measurement + ~10 %:
 | `sky-dogfights` | 97 | 107 |
 | `boss-breakup` | 94 | 104 |
 | `impact-comet-row` | 93 | 103 |
-| `fleet-sky` | 90 | 99 |
+| `fleet-sky` (K1: re-posed under the rooftop layer) | 99 | 109 |
+| `fleet-avenue` (K1) | 99 | 109 |
+| `fleet-rooftop` (K1) | 101 | 111 |
+| `towers-into-clouds` (K1) | 94 | 103 |
+| `fleet-breakthrough` (K1) | 100 | 110 |
 | `skyline-horizon-low` | 88 | 97 |
 | `sky-armada-low` | 87 | 96 |
 | `sky-armada-wide` | 85 | 94 |

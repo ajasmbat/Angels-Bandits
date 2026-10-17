@@ -17,8 +17,13 @@ import {
   type FleetShip,
   decodeLaunch,
   decodeShip,
+  installFleetPlan,
   launchSpawnAt,
 } from "@angels-bandits/common/boss";
+import { generateCity } from "@angels-bandits/common/city";
+import { generateMovers } from "@angels-bandits/common/city/movers";
+import { CITY_SEED } from "@angels-bandits/common/constants";
+import { fleetWorldOf, planFleet } from "@angels-bandits/common/fleetplan";
 import { decodeSnapshotEntry } from "@angels-bandits/common/net";
 import type {
   Pose,
@@ -30,6 +35,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 
 const entry = fileURLToPath(new URL("../src/index.ts", import.meta.url));
+// K1: the fleet's fit to the city, installed as every client installs it —
+// the release poses below are the server's lanes, rooftop profiles and all.
+const CITY = generateCity(CITY_SEED);
+installFleetPlan(
+  planFleet(fleetWorldOf(CITY, generateMovers(CITY_SEED, CITY))),
+);
 const IDENTITY = { x: 0, y: 0, z: 0, w: 1 };
 /** "Closing on the human": an enemy this near it, m (3-D, torus-aware) —
  * well inside its detection range, where it is fighting, not patrolling. */

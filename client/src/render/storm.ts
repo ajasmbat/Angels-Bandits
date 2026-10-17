@@ -724,8 +724,10 @@ const CEILING_Y = CLOUD_BASE - 3;
  * would otherwise swallow it from the street (~71 % overhead, was 25 %).
  * Capped so the deck is still fully fogged where the camera's far plane
  * (FOG_DISTANCE + 100) cuts it: from the street that is 622 m out, at a
- * lowered distance of √(622² + 500²) ≈ 798 m (fog.ts AB_FOG_LIFT). */
-export const DECK_FOG_LIFT = Math.min(CLOUD_BASE - 500, 150);
+ * lowered distance of √(622² + 500²) ≈ 798 m (fog.ts AB_FOG_LIFT). K1: the
+ * deck came down under 500 m (CLOUD_BASE 440), so it reads from the street
+ * by itself and is never lifted (a negative lift would fog it MORE). */
+export const DECK_FOG_LIFT = Math.max(0, Math.min(CLOUD_BASE - 500, 150));
 const DECK_FOG_DEFINES = { AB_FOG_LIFT: DECK_FOG_LIFT.toFixed(1) };
 const CEILING_COLOR = 0x07090f;
 const CEILING_OPACITY = 0.55;

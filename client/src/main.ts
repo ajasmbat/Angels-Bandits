@@ -27,9 +27,11 @@ import {
   type FleetShip,
   LAUNCH_BELLY,
   SHIP_CLASSES,
+  SHIP_REACH,
   blankPose,
   fleetPoseAt,
   installFleetPlan,
+  laneBreaks,
   shipById,
   shipClass,
   shipCrash,
@@ -50,6 +52,11 @@ import {
   type CaveIn,
   addCaveIn,
 } from "@angels-bandits/common/city/caveins";
+import {
+  KIND_CRANE,
+  TOPPLE,
+  craneFallDir,
+} from "@angels-bandits/common/city/collapse";
 import {
   generateMovers,
   withNewsHeli,
@@ -95,6 +102,7 @@ import {
   MAX_HP,
   PLAYER_RADIUS,
   RESPAWN_SPEED,
+  WORLD_SIZE,
 } from "@angels-bandits/common/constants";
 import {
   type Course,
@@ -108,7 +116,12 @@ import {
   EVENT_CARS,
   EVENT_GAS,
 } from "@angels-bandits/common/director";
-import { fleetWorldOf, planFleet } from "@angels-bandits/common/fleetplan";
+import {
+  BREAK_LEAD_MS,
+  breakTouchIn,
+  fleetWorldOf,
+  planFleet,
+} from "@angels-bandits/common/fleetplan";
 import {
   type FlightState,
   bankPitchMult,
@@ -1786,6 +1799,9 @@ let qaForeignShells = 0;
  * from 1). */
 const QA_LAUNCH_BASE = 900_000;
 let qaLaunches = 0;
+/** K1 QA: a staged break-through's crane fall carries this collapse id
+ * (the server's count up from 1). */
+const QA_COLLAPSE_BASE = 950_000;
 /** S9 QA: the launches staged on the staged fleet — re-installed when a
  * real fleet message replaces the slot. */
 const qaBossStage: { launches: BossLaunch[] } = { launches: [] };
@@ -3555,6 +3571,11 @@ declare global {
       qaShipDown: (i: number, afterMs?: number) => FleetShip["down"];
       /** S9 QA (the perf harness's name): the nearest staged ship down. */
       qaBossDown: (afterMs: number) => FleetShip["down"];
+      /** K1 QA: the staged hero smashes its lane's planned crane — re-timed
+       * so its nose reaches the jib `afterMs` ago, the crane felled as the
+       * server fells it (BREAK_LEAD_MS before the touch). Null when the
+       * hero's lane plans no break. */
+      qaShipBreak: (afterMs?: number) => { touch: number; fell: number } | null;
       /** S8 QA: a synthetic record ghost for the first course of `theme`
        * (speed null: none). Null when the city has no such course. */
       qaCourseGhost: (
@@ -4778,6 +4799,35 @@ window.__ab = {
     sh.down = down;
     socket.bossHp.set(sh.id, 0);
     return down;
+  },
+  qaShipBreak: (afterMs = 0) => {
+    const sh = qaBoss?.ships[0];
+    if (!sh) return null;
+    const brk = laneBreaks(sh.lane).find((b) => b.kind === "crane");
+    const site = brk && moverField.cranes.find((c) => c.id === brk.id);
+    if (!brk || !site) return null;
+    const now = worldTime() ?? 0;
+    const at = now - afterMs;
+    // Its nose on the crane's mast line at `at`.
+    const ln = FLEET_LANES[sh.lane] as { cls: 0 | 1 | 2; v: number };
+    const reach = (SHIP_REACH[ln.cls] as { x: number }).x;
+    const sg = ln.v < 0 ? -1 : 1;
+    const len = WORLD_SIZE;
+    const s0 = brk.s - sg * reach - (ln.v * (at - sh.t0)) / 1000;
+    sh.s0 = Math.round((((s0 % len) + len) % len) * 10) / 10;
+    const touch =
+      breakTouchIn(sh, brk, { kind: "crane", site }, at - 30_000, now) ?? at;
+    const fell = Math.round(touch - BREAK_LEAD_MS);
+    socket.collapses.add({
+      id: QA_COLLAPSE_BASE,
+      b: site.id,
+      t: fell,
+      s: TOPPLE,
+      d: craneFallDir(site, fell),
+      c: [],
+      k: KIND_CRANE,
+    });
+    return { touch, fell };
   },
   qaBossDown: (afterMs) => {
     if (qaBoss === null) return null;

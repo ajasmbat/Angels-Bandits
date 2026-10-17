@@ -152,7 +152,14 @@ export const BUDGETS = {
   galleryDraws: {
     "war-peak": 133,
     "chaos-low-pass": 118,
-    "fleet-sky": 99,
+    // K1: re-posed down among the street ships (99 measured: more city in
+    // the frame, the fleet's own 4 draws unchanged), and the war in the
+    // streets' four views.
+    "fleet-sky": 109,
+    "fleet-avenue": 109,
+    "fleet-rooftop": 111,
+    "towers-into-clouds": 103,
+    "fleet-breakthrough": 110,
     "boss-breakup": 104,
     "sky-armada-wide": 94,
     "sky-armada-low": 96,
@@ -192,7 +199,7 @@ export const SEGMENTS = [
     what: "high and level — the whole skyline inside FOG_DISTANCE at once",
     x: 700,
     z: 1400,
-    y: 560, // under the 750 m storm ceiling, over every supertall: this segment must not die
+    y: 420, // K1: under the 440 m deck and the 480 m storm ceiling, over every generated roof: this segment must not die
     yaw: yawToward(-1, 1),
   },
   {
@@ -497,10 +504,12 @@ export const SEGMENTS = [
   {
     name: "boss",
     what: "S4/Z1: a full 12-plane room weaving under the 20-ship airship fleet and its flak, at altitude",
-    // HELD at 550 m (H1: S8's 285 m lifted with BOSS_ALT, 305 → 570 m —
-    // over every roof and supertall; Z1: in the fleet's picket layer, no
-    // hull nearer the view than its reach + 60 m) while 11 fake pilots
-    // weave 70–230 m ahead at 527–582 m — inside the plane LOD's near band
+    // HELD at 250 m (H1: S8's 285 m lifted with BOSS_ALT, 305 → 570 m; K1:
+    // the fleet came down into the city — over the river at (1100, 1100),
+    // at the floor of its rooftop layer, over the street layers and the
+    // helicopters, no hull nearer the view than its reach + 60 m) while 11
+    // fake pilots weave 70–230 m ahead at 230–275 m (over the 96 m block
+    // ahead) — inside the plane LOD's near band
     // (300 m) from the camera, so every plane is the full airframe all
     // window — and hold their fire (a tracer is a draw call, timed on the
     // pilots' wall clock). The fleet is STAGED on the client
@@ -509,17 +518,17 @@ export const SEGMENTS = [
     // armed ones' flak a fixed schedule on the pinned world clock aimed
     // into the pilots' corridor, from 3 s before the segment's instant so
     // shells are always in the air.
-    x: 1000,
-    z: 1000,
-    y: 550,
+    x: 1100,
+    z: 1100,
+    y: 250,
     yaw: 0,
     hold: true,
     pilots: 11,
-    pilotFlight: { near: 70, far: 230, yLo: 527, yHi: 582 },
+    pilotFlight: { near: 70, far: 230, yLo: 230, yHi: 275 },
     pilotFire: false,
     boss: {
       ahead: 520,
-      corridor: { near: 70, far: 230, lateral: 25, yLo: 527, yHi: 582 },
+      corridor: { near: 70, far: 230, lateral: 25, yLo: 230, yHi: 275 },
     },
   },
   {

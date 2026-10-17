@@ -412,6 +412,7 @@ try {
           corridor: { near: 60, far: 160, lateral: 30, yLo: 250, yHi: 330 },
           ...(v.boss.count !== undefined && { count: v.boss.count }),
           ...(v.boss.hero !== undefined && { heroClass: v.boss.hero }),
+          ...(v.boss.lane !== undefined && { heroLane: v.boss.lane }),
         });
         if (v.boss.launch) {
           ab.qaBossLaunch(v.boss.launch.kind, v.boss.launch.phaseMs);
@@ -419,6 +420,11 @@ try {
         if (v.boss.downAfterMs !== undefined) {
           ab.qaShipDown(0, v.boss.downAfterMs);
         }
+        // K1: the hero smashing its lane's crane `breakAfterMs` ago.
+        const brk =
+          v.boss.breakAfterMs !== undefined
+            ? ab.qaShipBreak(v.boss.breakAfterMs)
+            : null;
         const f = ab.fleet();
         const hero = f.ships[0];
         if (hero && v.boss.eye && v.boss.at) {
@@ -435,7 +441,7 @@ try {
             ...(v.fov ? { fov: v.fov } : {}),
           });
         }
-        return { drawn: f.drawn, hero: hero ?? null };
+        return { drawn: f.drawn, hero: hero ?? null, break: brk };
       }, v);
       console.log("boss", v.name, JSON.stringify(r));
     }

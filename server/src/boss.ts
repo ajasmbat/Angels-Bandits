@@ -93,6 +93,7 @@ import {
   POSE_AGE_MAX_MS,
 } from "@angels-bandits/common/constants";
 import {
+  BREAK_LEAD_MS,
   type BreakObstacle,
   breakPassEnd,
   breakTouchIn,
@@ -157,10 +158,9 @@ export type BreakResolver = (
 export const AA_SHIP_SCALE = 0.5;
 export const AA_SHIP_FLOOR = 0.25;
 
-/** K1: a break is looked for this far ahead, ms, and the obstacle goes
- * this long before the hull would touch it. */
+/** K1: a break is looked for this far ahead, ms (the obstacle goes
+ * fleetplan.ts BREAK_LEAD_MS before the hull would touch it). */
 export const BREAK_LOOKAHEAD_MS = 1000;
-export const BREAK_LEAD_MS = 250;
 /** ...and the ship takes this share of its full HP from it (never the
  * kill: a break leaves it at least 1 HP). */
 export const BREAK_DAMAGE_SHARE = 0.12;

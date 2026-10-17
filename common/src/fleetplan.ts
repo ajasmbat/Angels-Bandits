@@ -451,6 +451,8 @@ export type BreakObstacle =
 /** A crane is checked this often through a pass, ms; the hull's bounds are
  * grown by what the jib's tip and the ship travel in that time. */
 export const BREAK_SAMPLE_MS = 100;
+/** The obstacle goes this long before the hull would touch it, ms. */
+export const BREAK_LEAD_MS = 250;
 
 /** Plan-view separating-axis test of the hull's lane-aligned bounds (centre
  * cx/cz, half extents ex/ez along world x/z) against an oriented box. */

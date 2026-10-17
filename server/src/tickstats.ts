@@ -23,7 +23,7 @@ export interface TickReport {
   p99: number;
   max: number;
   phases: Record<string, TickPhaseStats>;
-  /** E1: the same tick in CPU time (process.cpuUsage) — what the work
+  /** E1: the same tick in main-thread CPU time — what the work
    * cost, not what a busy machine's scheduler added to it. */
   cpu: { p50: number; p99: number; max: number };
   /** E1: the tick less the D5/C1 director's phase (its event planning
@@ -41,9 +41,14 @@ const round3 = (n: number): number => Math.round(n * 1000) / 1000;
 /** E1: phases the `core` figures leave out. */
 const CORE_EXCLUDES = new Set(["director"]);
 
-/** Process CPU time, ms. */
+/** The main thread's CPU time, ms (the tick's own work — not the GC
+ * helpers' or the I/O threads'); the process's where Node lacks
+ * threadCpuUsage (before 23.9). */
+const threadCpu = (
+  process as { threadCpuUsage?: () => { user: number; system: number } }
+).threadCpuUsage;
 const cpuMs = (): number => {
-  const u = process.cpuUsage();
+  const u = threadCpu ? threadCpu() : process.cpuUsage();
   return (u.user + u.system) / 1000;
 };
 

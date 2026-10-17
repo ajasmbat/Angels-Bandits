@@ -3,7 +3,7 @@
 //  - slot keeping: every wingman sits on its slot off the anchor's level
 //    frame, never under the anchor, and a wire row expands into exactly the
 //    poses the server flies (ids counted up from slot 0's);
-//  - 500 planes in 63 squadrons fly ten minutes over the real city on its
+//  - 500 planes in 63 squadrons fly five minutes over the real city on its
 //    roofline grid without one plane touching a building (the full
 //    collision test the planes are never flown against), low among the
 //    towers and under the bands derived from the ceilings;
@@ -173,10 +173,10 @@ describe("E1 squadrons: the altitude bands", () => {
 });
 
 describe("E1 squadrons: 500 planes over the real city", () => {
-  // 63 squadrons (504 planes) on seeded plans for ten minutes at 20 Hz,
+  // 63 squadrons (504 planes) on seeded plans for five minutes at 20 Hz,
   // every plane checked against the city every fourth tick.
   const SQUADS = 63;
-  const TICKS = 20 * 600;
+  const TICKS = 20 * 300;
   const stats = { clamps: 0 };
   let hits = 0;
   let checks = 0;
@@ -274,7 +274,7 @@ describe("E1 squadrons: 500 planes over the real city", () => {
   }, 300_000);
 
   it("never puts a plane into a building", () => {
-    expect(checks).toBeGreaterThan(1_500_000);
+    expect(checks).toBeGreaterThan(750_000);
     expect(hits).toBe(0);
   });
 

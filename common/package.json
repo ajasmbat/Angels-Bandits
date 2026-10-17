@@ -48,6 +48,7 @@
     "./lowchaos": "./src/lowchaos.ts",
     "./medals": "./src/medals.ts",
     "./boss": "./src/boss.ts",
+    "./fleetplan": "./src/fleetplan.ts",
     "./hazards": "./src/hazards.ts",
     "./botstyle": "./src/botstyle.ts",
     "./tuning": "./src/tuning.ts",

@@ -54,7 +54,10 @@ import {
   type CityIndex,
   forEachBuildingNear,
 } from "@angels-bandits/common/collision";
-import { BLOCK_PITCH } from "@angels-bandits/common/constants";
+import {
+  BLOCK_PITCH,
+  BOT_DEFEND_MAX_ALT,
+} from "@angels-bandits/common/constants";
 import {
   BOMB_CHUNK_DAMAGE,
   BOMB_CHUNK_RADIUS,
@@ -126,6 +129,11 @@ export const BOMB_FAST_TUNING: BombTuning = {
   paceScale: 0.25,
   refusedRestMs: 1000,
 };
+
+/** K1: the highest roof a dive is flown at, m — its push-over (the IP,
+ * never over BOT_DEFEND_MAX_ALT, the top of the 60–350 m band the bots
+ * fight in) still 100 m over the roof, so the run is a dive. */
+export const DIVE_ROOF_MAX = BOT_DEFEND_MAX_ALT - 100;
 
 /** W3: the chance a dive with a manned nest near its quarry takes it. */
 const NEST_DIVE_CHANCE = 0.5;
@@ -539,7 +547,10 @@ export class BombDirector {
     if (kind === "dive") {
       // W3: a manned AA nest near the quarry draws a dive half the time —
       // the guns shooting the waves down are what the waves bomb first.
-      const nests = (world.nests ?? []).filter(ok);
+      // K1: only roofs a dive from inside the bots' band can reach.
+      const nests = (world.nests ?? []).filter(
+        (n) => n.y <= DIVE_ROOF_MAX && ok(n),
+      );
       if (nests.length > 0 && this.rand() < NEST_DIVE_CHANCE) {
         const n = nests[Math.floor(this.rand() * nests.length)] as Vec3;
         return { x: n.x, y: n.y, z: n.z };
@@ -553,7 +564,7 @@ export class BombDirector {
           roofs[Math.floor(this.rand() * roofs.length)] as number
         ] as Building;
         const p = roofPoint(b, this.rand);
-        if (p.y >= 20 && ok(p)) return p;
+        if (p.y >= 20 && p.y <= DIVE_ROOF_MAX && ok(p)) return p;
       }
       return null;
     }

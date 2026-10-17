@@ -110,6 +110,10 @@ function under(ship: FleetShip, t: number, below = 160): Vec3 {
   return { x: wrapCoord(wp.x + 20), y: wp.y - below, z: wrapCoord(wp.z + 15) };
 }
 
+/** K1: how far under a street ship's engine a plane in the same avenue
+ * flies, m (over the street furniture). */
+const STREET_BELOW = 80;
+
 /** Shoot `ship` down at `t` with full-HP rounds on its hull. */
 function down(boss: FleetDirector, ship: FleetShip, t: number) {
   let hit = null;
@@ -230,7 +234,9 @@ describe("turret fire is fair (director)", () => {
     const { shells } = run(boss, t1, 14_000, (t) => [
       {
         id: "p",
-        pos: under(cruiser, t),
+        // K1: the first cruiser cruises an avenue — the plane 80 m under
+        // it, down in the same street.
+        pos: under(cruiser, t, STREET_BELOW),
         vel: { x: 0, y: 0, z: 0 },
         prot: false,
       },
@@ -275,7 +281,7 @@ describe("turret fire is fair (director)", () => {
     const prot = run(boss, t1, 8000, (t) => [
       {
         id: "p",
-        pos: under(cruiser, t),
+        pos: under(cruiser, t, STREET_BELOW),
         vel: { x: 0, y: 0, z: 0 },
         prot: true,
       },
@@ -286,7 +292,7 @@ describe("turret fire is fair (director)", () => {
     const fresh = run(boss, t2, 4500, (t) => [
       {
         id: "q",
-        pos: under(cruiser, t),
+        pos: under(cruiser, t, STREET_BELOW),
         vel: { x: 0, y: 0, z: 0 },
         prot: false,
       },

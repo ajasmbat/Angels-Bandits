@@ -4,7 +4,10 @@
 // hull a renderer draws is the hull everything collides with, per class;
 // turret fire is held to the bots' fairness caps; a hit is judged on the
 // round's line; credit splits by damage; and a crash falls on the D4 wreck
-// path.
+// path. K1: the lanes are avenues and rooftop lines fitted to the city
+// (common/src/fleetplan.ts) — every hull clears the city, its movers and
+// its tracks, except where a break-through is planned and scheduled on the
+// ship's own course.
 
 import {
   BOSS_FLAK_BURST_R,
@@ -28,6 +31,11 @@ import {
   FLEET_HIDE_M,
   FLEET_LANES,
   FLEET_LAYERS,
+  FLEET_MODEL,
+  FLEET_PROFILE_STEP,
+  FLEET_ROOF_CLEAR,
+  FLEET_ROOF_MIN,
+  FLEET_ROOF_SLOPE,
   FLEET_SIZE,
   type FleetShip,
   type FleetSlot,
@@ -35,6 +43,7 @@ import {
   LAUNCH_CATAPULT,
   SHIP_CLASSES,
   SHIP_PARTS,
+  SHIP_PROFILES,
   SHIP_REACH,
   type ShipClassId,
   applyFleetState,
@@ -52,13 +61,24 @@ import {
   flakDamage,
   flakPosAt,
   flakSolution,
+  fleetPlan,
   fleetPoseAt,
+  fleetPoseInto64,
   hiddenLaneSpot,
+  installFleetPlan,
+  laneAltAt,
+  laneAltHi,
+  laneAltLo,
+  laneBreaks,
+  lanePoseInto,
   launchReleaseAt,
   launchSpawnAt,
+  profileR,
+  shipAlong,
   shipCrash,
   shipHitValid,
   shipLocalInto,
+  shipPointInto,
   shipPresent,
   shipRayHit,
   shipSdf,
@@ -66,27 +86,46 @@ import {
   turretMuzzleInto,
   weakPointInto,
 } from "@angels-bandits/common/boss";
-import { generateCity, mulberry32 } from "@angels-bandits/common/city";
+import {
+  baseSolids,
+  generateCity,
+  mulberry32,
+} from "@angels-bandits/common/city";
 import {
   type MoverBox,
+  type MoverField,
+  collideMovers,
+  generateMovers,
   sphereHitsBox,
 } from "@angels-bandits/common/city/movers";
+import { generateProps } from "@angels-bandits/common/city/props";
 import { roofStructuresFor } from "@angels-bandits/common/city/roof-structures";
-import { buildCityIndex } from "@angels-bandits/common/collision";
+import { buildCityIndex, collideCity } from "@angels-bandits/common/collision";
 import {
-  BLIMP_ALT,
-  BLIMP_HULL,
   BOT_AIM_JITTER,
+  BOT_CANYON_ALT_MAX,
   BOT_REACTION_MS,
   CITY_SEED,
   CLOUD_BASE,
+  HELI_ALT_MAX,
+  HELI_ALT_MIN,
   HELI_HULL,
   MAX_HP,
-  NEWS_HELI_ALT_MAX,
+  NEWS_HELI_ALT_MIN,
   RESPAWN_SPEED,
   WORLD_SIZE,
   WRECK_MAX_MS,
 } from "@angels-bandits/common/constants";
+import {
+  BREAK_SAMPLE_MS,
+  LANE_MARGIN_XZ,
+  LANE_MARGIN_Y,
+  breakPassEnd,
+  breakTouchIn,
+  fleetWorldOf,
+  laneClearance,
+  planFleet,
+} from "@angels-bandits/common/fleetplan";
 import {
   type Vec3,
   wrapDelta,
@@ -97,9 +136,22 @@ import { describe, expect, it } from "vitest";
 
 /** A server-clock-sized time, never a cosy t = 0. */
 const T0 = 1_787_000_000_000;
+/** K1: the game's city and the fleet's fit to it — what both sides install. */
+const CITY = generateCity(CITY_SEED);
+const MOVERS = generateMovers(CITY_SEED, CITY);
+installFleetPlan(planFleet(fleetWorldOf(CITY, MOVERS)));
 /** The first lane of each class. */
 const laneOf = (cls: ShipClassId): number =>
   FLEET_LANES.findIndex((l) => l.cls === cls);
+/** The highest-flying lane of each class (the longest fall). */
+const topLaneOf = (cls: ShipClassId): number => {
+  let best = -1;
+  FLEET_LANES.forEach((l, i) => {
+    if (l.cls !== cls) return;
+    if (best < 0 || laneAltLo(i) > laneAltLo(best)) best = i;
+  });
+  return best;
+};
 const ship = (over: Partial<FleetShip> = {}): FleetShip => ({
   id: 3,
   lane: 9,
@@ -178,11 +230,18 @@ describe("fleetPoseAt is a pure function of the ship's record and the clock", ()
           expect(v).toBeGreaterThanOrEqual(0);
           expect(v).toBeLessThan(WORLD_SIZE);
         }
-        // Never a jump at the seam: the step is the speed, on the torus.
-        expect(wrapDistance(a, b)).toBeCloseTo(Math.abs(lane.v) * 0.25, 6);
+        // Never a jump at the seam: the step is the speed, on the torus
+        // (K1: in plan view — a rooftop ship rises and settles as it goes).
+        expect(wrapDistance({ ...a, y: 0 }, { ...b, y: 0 })).toBeCloseTo(
+          Math.abs(lane.v) * 0.25,
+          6,
+        );
         const d = wrapDelta(a, b);
         expect(d.x * a.hx + d.z * a.hz).toBeGreaterThan(0);
-        expect(a.y).toBe(lane.alt);
+        expect(Math.abs(b.y - a.y)).toBeLessThanOrEqual(
+          FLEET_ROOF_SLOPE * Math.abs(lane.v) * 0.25 + 1e-9,
+        );
+        expect(a.y).toBe(laneAltAt(s.lane, shipAlong(s, t)));
         expect(a.pitch).toBe(0);
         expect(Math.cos(a.yaw)).toBeCloseTo(a.hx, 9);
         expect(-Math.sin(a.yaw)).toBeCloseTo(a.hz, 9);
@@ -211,27 +270,33 @@ describe("fleetPoseAt is a pure function of the ship's record and the clock", ()
 });
 
 describe("the fleet keeps to its altitude layers", () => {
-  it("every hull sits between the news heli and the blimp, over every roof", () => {
-    const city = generateCity(CITY_SEED);
-    let roofs = 0;
-    for (const b of city) {
-      roofs = Math.max(roofs, b.height);
-      for (const s of roofStructuresFor(b)) {
-        roofs = Math.max(roofs, s.baseY + s.height);
-      }
-    }
-    expect(FLEET_ALT_MIN).toBeGreaterThan(roofs + 15);
-    expect(FLEET_ALT_MIN).toBeGreaterThanOrEqual(
-      NEWS_HELI_ALT_MAX + (HELI_HULL[1] as number) * 1.3 + 15,
+  it("every hull sits in its layer's band, the bands stacked under the deck", () => {
+    // K1: the street layers over the bots' canyon patrol and under the
+    // helicopters' rotor blur; the rooftops over that, 15 m under the news
+    // heli's belly; all of it under the cloud deck.
+    const [l0, l1, roof] = FLEET_LAYERS.map((l) => l.band) as [
+      readonly [number, number],
+      readonly [number, number],
+      readonly [number, number],
+    ];
+    const blur = (HELI_HULL[1] as number) * 1.3;
+    expect(l0[0]).toBe(FLEET_ALT_MIN);
+    expect(l0[0]).toBeGreaterThanOrEqual(BOT_CANYON_ALT_MAX + 15);
+    expect(l1[1] + 10).toBeLessThanOrEqual(HELI_ALT_MIN - blur);
+    expect(roof[0]).toBe(FLEET_ROOF_MIN);
+    expect(roof[0]).toBeGreaterThanOrEqual(HELI_ALT_MAX + blur + 15);
+    expect(roof[1]).toBe(FLEET_ALT_MAX);
+    expect(FLEET_ALT_MAX + 15).toBeLessThanOrEqual(
+      NEWS_HELI_ALT_MIN - (HELI_HULL[1] as number),
     );
-    expect(FLEET_ALT_MAX).toBeLessThan(BLIMP_ALT - (BLIMP_HULL[1] as number));
     expect(FLEET_ALT_MAX).toBeLessThan(CLOUD_BASE);
-    for (const lane of FLEET_LANES) {
+    FLEET_LANES.forEach((lane, i) => {
       const reach = SHIP_REACH[lane.cls];
-      if (!reach) throw new Error("no class");
-      expect(lane.alt - reach.y).toBeGreaterThanOrEqual(FLEET_ALT_MIN);
-      expect(lane.alt + reach.y).toBeLessThanOrEqual(FLEET_ALT_MAX);
-    }
+      const band = FLEET_LAYERS[lane.layer]?.band;
+      if (!reach || !band) throw new Error("no class");
+      expect(laneAltLo(i) - reach.y).toBeGreaterThanOrEqual(band[0] - 1e-9);
+      expect(laneAltHi(i) + reach.y).toBeLessThanOrEqual(band[1] + 1e-9);
+    });
   });
 
   it("the reject bounds really bound every part of every class", () => {
@@ -273,7 +338,10 @@ describe("the fleet keeps to its altitude layers", () => {
     const a = blankPose();
     for (const s of fleet(11)) {
       for (let t = T0; t < T0 + 600_000; t += 7919) {
-        expect(fleetPoseAt(s, t, a).y).toBe(FLEET_LANES[s.lane]?.alt);
+        expect(fleetPoseAt(s, t, a).y).toBe(laneAltAt(s.lane, shipAlong(s, t)));
+        if (FLEET_LAYERS[FLEET_LANES[s.lane]?.layer as number]?.street) {
+          expect(a.y).toBe(FLEET_LANES[s.lane]?.alt);
+        }
       }
     }
   });
@@ -290,12 +358,14 @@ describe("no two hulls ever meet", () => {
       for (const l of FLEET_LANES) {
         if (l.layer !== layer) continue;
         const r = SHIP_REACH[l.cls]?.y as number;
-        lo = Math.min(lo, l.alt - r);
-        hi = Math.max(hi, l.alt + r);
+        const i = FLEET_LANES.indexOf(l);
+        lo = Math.min(lo, laneAltLo(i) - r);
+        hi = Math.max(hi, laneAltHi(i) + r);
       }
       return { lo, hi };
     };
     expect(band(0).hi + MARGIN).toBeLessThanOrEqual(band(1).lo);
+    expect(band(1).hi + MARGIN).toBeLessThanOrEqual(band(2).lo);
   });
 
   it("a layer's lanes are never closer across the heading than two beams", () => {
@@ -341,6 +411,221 @@ describe("no two hulls ever meet", () => {
           const overlap =
             along < ra.x + rb.x + MARGIN && across < ra.z + rb.z + MARGIN;
           expect(overlap).toBe(false);
+        }
+      }
+    }
+  });
+});
+
+describe("K1: the lanes are fitted to the city", () => {
+  const PROPS = generateProps(CITY_SEED, CITY, {
+    cranes: MOVERS.cranes,
+    trains: MOVERS.trains,
+  }).props;
+  const WORLD = fleetWorldOf(CITY, MOVERS, PROPS);
+  const INDEX = buildCityIndex(CITY);
+  /** The movers a hull could meet: cranes, aircraft, trains, boats — the
+   * fleet itself and the news heli (it roams; its band is checked apart)
+   * left out. */
+  const FIELD: MoverField = {
+    cranes: MOVERS.cranes,
+    aircraft: MOVERS.aircraft,
+    trains: MOVERS.trains,
+    boats: MOVERS.boats,
+  };
+  /** Spheres covering class `cls`'s hull in its own frame: the envelope's
+   * stations (as wide as the envelope there) and the engine cars. */
+  const coverOf = (
+    cls: ShipClassId,
+  ): { x: number; y: number; z: number; r: number }[] => {
+    const prof = SHIP_PROFILES[cls];
+    if (!prof) throw new Error("no class");
+    const out: { x: number; y: number; z: number; r: number }[] = [];
+    const reach = SHIP_REACH[cls] as { x: number };
+    for (let x = -reach.x; x <= reach.x; x += 4) {
+      const r = profileR(prof, x);
+      if (r > 0) out.push({ x, y: 0, z: 0, r });
+    }
+    for (const k of [10, 11, 12, 13]) {
+      const p = (SHIP_PARTS[cls] as readonly BossPart[])[k] as BossPart;
+      out.push({ x: p.x, y: p.y, z: p.z, r: p.hy });
+    }
+    return out;
+  };
+  const at: Vec3 = { x: 0, y: 0, z: 0 };
+
+  it("every lane clears the city, its movers and its tracks — but for its planned breaks", () => {
+    expect(FLEET_MODEL).toBeGreaterThanOrEqual(2);
+    let breaks = 0;
+    FLEET_LANES.forEach((lane, i) => {
+      const fit = laneClearance(i, WORLD);
+      expect(fit.conflicts).toEqual([]);
+      expect(fit.clearance).toBeGreaterThanOrEqual(
+        Math.min(LANE_MARGIN_XZ, LANE_MARGIN_Y),
+      );
+      // Only tower cranes are in a lane's way: the props stand clear.
+      for (const b of fit.breaks) expect(b.kind).toBe("crane");
+      expect(laneBreaks(i)).toEqual(fit.breaks);
+      breaks += fit.breaks.length;
+      // A street lane flies one altitude; the rooftops a profile.
+      const street = FLEET_LAYERS[lane.layer]?.street;
+      expect(fit.alt === null).toBe(street);
+    });
+    // At least one avenue runs under a crane's jib: the spectacle.
+    expect(breaks).toBeGreaterThan(0);
+    // The installed plan is the props-free one, and the props change none
+    // of it (both sides fit the city and its movers only).
+    const plain = planFleet(fleetWorldOf(CITY, MOVERS));
+    const withProps = planFleet(WORLD);
+    expect(withProps.breaks).toEqual(plain.breaks);
+    expect(withProps.alt).toEqual(plain.alt);
+    expect(fleetPlan()?.breaks).toEqual(plain.breaks);
+  });
+
+  it("the rooftop lanes skim the skyline, up and down, never jumping", () => {
+    let rise = 0;
+    FLEET_LANES.forEach((lane, i) => {
+      if (FLEET_LAYERS[lane.layer]?.street) return;
+      const reach = SHIP_REACH[lane.cls];
+      const prof = fleetPlan()?.alt[i];
+      if (!reach || !prof) throw new Error("no profile");
+      rise = Math.max(rise, laneAltHi(i) - laneAltLo(i));
+      for (let k = 0; k < prof.length; k++) {
+        const a = prof[k] as number;
+        const b = prof[(k + 1) % prof.length] as number;
+        expect(Math.abs(b - a)).toBeLessThanOrEqual(
+          FLEET_ROOF_SLOPE * FLEET_PROFILE_STEP + 1e-9,
+        );
+      }
+      // An independent read of the roofs under the hull: every tier and
+      // roof structure its plan footprint passes over keeps
+      // FLEET_ROOF_CLEAR under its belly.
+      const pose = blankPose();
+      for (let sk = 0; sk < WORLD_SIZE; sk += 10) {
+        lanePoseInto(i, sk, pose);
+        const belly = pose.y - reach.y;
+        const under = (x: number, z: number, hx: number, hz: number) =>
+          // Lanes run along z: x across, z along.
+          Math.abs(wrapDelta(pose, { x, y: 0, z }).x) < hx + reach.z &&
+          Math.abs(wrapDelta(pose, { x, y: 0, z }).z) < hz + reach.x;
+        for (const b of CITY) {
+          for (const t of baseSolids(b)) {
+            if (!under(b.x + t.dx, b.z + t.dz, t.width / 2, t.depth / 2)) {
+              continue;
+            }
+            expect(belly - (t.baseY + t.height)).toBeGreaterThanOrEqual(
+              FLEET_ROOF_CLEAR - 1e-6,
+            );
+          }
+          for (const r of roofStructuresFor(b)) {
+            if (!under(b.x + r.dx, b.z + r.dz, r.width / 2, r.depth / 2)) {
+              continue;
+            }
+            expect(belly - (r.baseY + r.height)).toBeGreaterThanOrEqual(
+              FLEET_ROOF_CLEAR - 1e-6,
+            );
+          }
+        }
+      }
+    });
+    // It follows the skyline: some lane climbs over 30 m along its line.
+    expect(rise).toBeGreaterThan(30);
+  });
+
+  it("over half an hour, no hull meets a building, an aircraft, a train — or a crane it does not smash first", () => {
+    const ships = fleet(41);
+    const pose = blankPose();
+    let craneHits = 0;
+    for (let t = T0; t < T0 + 1_800_000; t += 1000) {
+      for (const s of ships) {
+        fleetPoseAt(s, t, pose);
+        const cls = FLEET_LANES[s.lane]?.cls as ShipClassId;
+        for (const c of coverOf(cls)) {
+          shipPointInto(pose, c.x, c.y, c.z, at);
+          expect(collideCity(at, c.r, CITY, INDEX)).toBeNull();
+          const hit = collideMovers(at, c.r, FIELD, t);
+          if (!hit) continue;
+          // Only a crane the lane plans to smash — and the break comes
+          // on the ship's own course before the hull reaches it.
+          expect(["mast", "jib", "counterJib", "cable", "hook"]).toContain(
+            hit.kind,
+          );
+          const brk = laneBreaks(s.lane).find(
+            (b) => b.kind === "crane" && b.id === hit.id,
+          );
+          expect(brk).toBeDefined();
+          const site = MOVERS.cranes.find((c2) => c2.id === hit.id);
+          if (!brk || !site) throw new Error("no break");
+          const touch = breakTouchIn(
+            s,
+            brk,
+            { kind: "crane", site },
+            t - 60_000,
+            t,
+          );
+          expect(touch).not.toBeNull();
+          expect(touch as number).toBeLessThanOrEqual(t);
+          craneHits++;
+        }
+      }
+    }
+    // The spectacle happens: ships do run into their cranes.
+    expect(craneHits).toBeGreaterThan(0);
+  });
+
+  it("break-throughs are deterministic, scheduled on the course, before the hull", () => {
+    const lane = FLEET_LANES.findIndex((_, i) => laneBreaks(i).length > 0);
+    const brk = laneBreaks(lane)[0];
+    const site = MOVERS.cranes.find((c) => c.id === brk?.id);
+    if (!brk || !site) throw new Error("no break");
+    const s = ship({ lane, s0: 33.3, hp0: 140 });
+    const cls = FLEET_LANES[lane]?.cls as ShipClassId;
+    const crane = { kind: "crane" as const, site };
+    // Walked the server's way (1 s windows, a pass spoken for once found)
+    // and all at once, the touches are the same instants.
+    const walk = (): number[] => {
+      const out: number[] = [];
+      let searched = T0;
+      for (let now = T0; now < T0 + 3_600_000; now += 50) {
+        const to = now + 1000;
+        if (searched >= to) continue;
+        const t = breakTouchIn(s, brk, crane, searched, to);
+        searched = to;
+        if (t !== null) {
+          out.push(t);
+          searched = breakPassEnd(s, brk, t);
+        }
+      }
+      return out;
+    };
+    const a = walk();
+    expect(walk()).toEqual(a);
+    expect(a.length).toBeGreaterThan(0);
+    const pose = new Float64Array(7);
+    const lap = (WORLD_SIZE / Math.abs(FLEET_LANES[lane]?.v as number)) * 1000;
+    for (const t of a) {
+      // At the touch the hull's grown bounds meet the crane at its slew.
+      expect(breakTouchIn({ ...s }, brk, crane, t, t)).toBe(t);
+      // The real hull meets none of it before the touch (less the lead
+      // the server fells it by): sampled finely back over the pass.
+      for (let u = t - lap / 4; u < t; u += BREAK_SAMPLE_MS / 2) {
+        fleetPoseInto64(s, u, pose, 0);
+        const p = {
+          ...blankPose(),
+          x: pose[0] as number,
+          y: pose[1] as number,
+          z: pose[2] as number,
+          yaw: pose[3] as number,
+        };
+        for (const c of coverOf(cls)) {
+          shipPointInto(p, c.x, c.y, c.z, at);
+          const hit = collideMovers(
+            at,
+            c.r,
+            { cranes: [site], aircraft: [] },
+            u,
+          );
+          expect(hit).toBeNull();
         }
       }
     }
@@ -411,7 +696,8 @@ describe("draw == collide, for every class", () => {
     const city = generateCity(CITY_SEED);
     const world = { buildings: city, index: buildCityIndex(city) };
     for (const cls of CLASSES) {
-      const s = ship({ lane: laneOf(cls) });
+      // The class's highest lane: a long enough fall for its nose to drop.
+      const s = ship({ lane: topLaneOf(cls) });
       const down = shipCrash(s, T0 + 30_000, world);
       const fell: FleetShip = { ...s, down };
       const t = down.t + down.end * 0.6;
@@ -432,10 +718,16 @@ describe("draw == collide, for every class", () => {
       const rand = mulberry32(5 + cls);
       let hits = 0;
       for (let n = 0; n < 3000; n++) {
+        // Sampled round the hull in its own heading (K1: the lanes run
+        // along the world's axes now, so a world-aligned box would sample
+        // a hull heading along z mostly off its sides).
+        const along = (rand() * 2 - 1) * reach.x;
+        const up = (rand() * 2 - 1) * reach.x * 0.6;
+        const side = (rand() * 2 - 1) * reach.z * 1.5;
         const d = {
-          x: (rand() * 2 - 1) * reach.x,
-          y: (rand() * 2 - 1) * reach.x * 0.6,
-          z: (rand() * 2 - 1) * reach.z * 1.5,
+          x: cy * along + sy * side,
+          y: up,
+          z: -sy * along + cy * side,
         };
         const l = {
           x:

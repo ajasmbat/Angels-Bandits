@@ -74,14 +74,14 @@ describe("thunderDelayMs", () => {
 });
 
 describe("turbulenceOffset", () => {
-  it("is exactly zero at and below CLOUD_BASE (650 m)", () => {
-    expect(turbulenceOffset(12_345, 650)).toEqual({ x: 0, y: 0, z: 0 });
+  it("is exactly zero at and below CLOUD_BASE (440 m since K1)", () => {
+    expect(turbulenceOffset(12_345, 440)).toEqual({ x: 0, y: 0, z: 0 });
     expect(turbulenceOffset(12_345, 120)).toEqual({ x: 0, y: 0, z: 0 });
   });
 
   it("shakes above the base, bounded, and ramps with altitude", () => {
-    const low = turbulenceOffset(777, 670);
-    const high = turbulenceOffset(777, 790);
+    const low = turbulenceOffset(777, 450);
+    const high = turbulenceOffset(777, 475);
     const mag = (v: { x: number; y: number; z: number }) =>
       Math.hypot(v.x, v.y, v.z);
     expect(mag(low)).toBeGreaterThan(0);

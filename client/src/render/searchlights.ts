@@ -28,6 +28,7 @@
 
 import type { Building, LocalBox } from "@angels-bandits/common/city";
 import {
+  CLOUD_BASE,
   EMISSIVE_BEACON,
   LANDMARK_HEIGHT,
 } from "@angels-bandits/common/constants";
@@ -47,6 +48,19 @@ export const SEARCHLIGHT_COUNT = 10;
 /** Rooftop beam length and radius at the far end, m — a 4.6° half-angle. */
 const BEAM_LENGTH = 420;
 const BEAM_RADIUS = 34;
+/** K1: how far a rooftop beam reaches into the lowered cloud deck before
+ * the cloud swallows it, m (the deck's puff band starts 5 m over its
+ * base) — the beam ends IN the storm, never a pillar through it. */
+const BEAM_INTO_DECK = 30;
+
+/** K1: a rooftop beam from a lamp at `lampY` along a unit direction with
+ * vertical `dirY`: BEAM_LENGTH, cut where it is BEAM_INTO_DECK into the
+ * cloud deck (never under a tenth of it). Pure. */
+export function deckBeamLength(lampY: number, dirY: number): number {
+  if (dirY <= 1e-3) return BEAM_LENGTH;
+  const toDeck = (CLOUD_BASE + BEAM_INTO_DECK - lampY) / dirY;
+  return Math.min(BEAM_LENGTH, Math.max(BEAM_LENGTH * 0.1, toDeck));
+}
 /** Seconds for one full sweep cycle; each station is offset around it. */
 const SWEEP_PERIOD_S = 23;
 /** How far the beam leans off vertical at the extremes, rad. */
@@ -719,14 +733,12 @@ export class Searchlights {
       this.lamp.y = station.y + 1.5;
       this.lamp.z = station.z;
       const sweep = beamDirection(station, serverTimeMs);
-      this.place(
-        index++,
+      const dir =
         planes.length > 0
           ? trackPlanesInto(this.lamp, sweep, planes, this.tracked)
-          : sweep,
-        BEAM_LENGTH,
-        BEAM_RADIUS,
-      );
+          : sweep;
+      const length = deckBeamLength(this.lamp.y, dir.y);
+      this.place(index++, dir, length, (BEAM_RADIUS * length) / BEAM_LENGTH);
       lights?.place({ x: p.x, y: p.y + 1.5, z: p.z }, headBoost, HEAD_SIZE);
     }
     if (this.leaderLamp) this.placeLeader(index++, cameraPos, leader, lights);

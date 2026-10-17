@@ -29,6 +29,7 @@ import {
   SHIP_CLASSES,
   blankPose,
   fleetPoseAt,
+  installFleetPlan,
   shipById,
   shipClass,
   shipCrash,
@@ -107,6 +108,7 @@ import {
   EVENT_CARS,
   EVENT_GAS,
 } from "@angels-bandits/common/director";
+import { fleetWorldOf, planFleet } from "@angels-bandits/common/fleetplan";
 import {
   type FlightState,
   bankPitchMult,
@@ -1049,6 +1051,11 @@ const moverField = {
   // bridge spans are solid where they are drawn, and the spans' gaps open.
   props: undefined as PropSlot | undefined,
 };
+// K1: the fleet's fit to this city — every lane's rooftop profile and its
+// planned break-throughs, from the city as generated and its movers, the
+// very plan the server installed, so every hull flies (and is solid) where
+// the server has it.
+installFleetPlan(planFleet(fleetWorldOf(city.cityBuildings, moverField)));
 // D5: crane-fall records name the room's crane sites — these.
 socket.collapses.bindCranes(moverField.cranes);
 // D9: the room's destructible props — laid out from the seed, the city and

@@ -292,4 +292,78 @@ now 2, and a client built for another version reloads.
 
 ### What a count costs
 
-AIRFORCE_TABLE
+`node --import tsx tools/airforce-bench.ts` boots the real server once per
+count, with the air force staged at that size (`AB_AIRFORCE`) on top of
+the fleet's own waves. Six ws pilots weave at 200–280 m and fire, and the
+bench reports the tick and every client's wire. The tick is judged with the
+D5/C1 director's phase left out, because its event planning spikes past
+4 ms with no enemy at all. The machine is a shared 16-core Linux runner
+with no GPU.
+
+Median of three interleaved runs, load average about 18:
+
+| air force | enemies up | tick p50 / p99 (no director) | tick p50 / p99 / max (all) | KB/s per client (mean / worst) | snapshots KB/s (worst) | planes per snapshot | in budget |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | :---: |
+| 0 | 3 | 1.46 / 14.78 ms | 1.85 / 65.7 / 261 ms | 11.4 / 12.3 | 10.9 | 8 | NO |
+| 50 | 53 | 5.58 / 27.37 ms | 5.90 / 33.4 / 134 ms | 39.6 / 45.4 | 41.7 | 47 | NO |
+| 100 | 104 | 6.93 / 37.10 ms | 8.69 / 64.1 / 226 ms | 50.4 / 57.6 | 52.7 | 85 | NO |
+| 200 | 204 | 5.08 / 37.12 ms | 5.57 / 52.2 / 73 ms | 71.7 / 80.1 | 72.1 | 164 | NO |
+| 300 | 303 | 5.17 / 16.87 ms | 5.60 / 66.2 / 72 ms | 95.7 / 106.2 | 96.2 | 247 | NO |
+| 500 | 505 | 8.48 / 24.78 ms | 9.02 / 39.0 / 69 ms | 139.5 / 151.4 | 140.4 | 413 | NO |
+| 700 | 704 | 11.37 / 41.15 ms | 13.19 / 94.7 / 117 ms | 177.4 / 190.6 | 169.8 | 581 | NO |
+
+One pass on the same box at load average 4–6, counts run from 700 down:
+
+| air force | enemies up | tick p50 / p99 (no director) | tick p50 / p99 / max (all) | KB/s per client (mean / worst) | snapshots KB/s (worst) | planes per snapshot | in budget |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | :---: |
+| 0 | 3 | 0.89 / 3.28 ms | 1.04 / 17.2 / 29 ms | 12.0 / 13.0 | 11.4 | 8 | yes |
+| 50 | 54 | 2.22 / 8.00 ms | 2.47 / 47.0 / 90 ms | 40.1 / 45.5 | 41.8 | 46 | NO |
+| 100 | 103 | 2.50 / 5.72 ms | 2.66 / 16.2 / 41 ms | 59.6 / 66.1 | 59.8 | 86 | NO |
+| 200 | 204 | 2.58 / 5.62 ms | 2.73 / 18.9 / 39 ms | 76.0 / 84.6 | 75.6 | 168 | NO |
+| 300 | 303 | 4.59 / 20.33 ms | 4.81 / 58.2 / 130 ms | 94.7 / 101.8 | 93.0 | 252 | NO |
+| 500 | 505 | 4.22 / 15.05 ms | 4.52 / 47.8 / 84 ms | 165.8 / 177.8 | 147.4 | 414 | NO |
+| 700 | 703 | 5.00 / 16.09 ms | 5.56 / 43.7 / 62 ms | 198.8 / 211.5 | 181.2 | 582 | NO |
+
+The air force's own work, in process (`--inprocess`: the war, the
+squadrons, the aces' brain and every client's snapshot, nothing else of the
+tick), load about 18:
+
+| air force | tick p50 | p99 | of which squadrons p50 |
+| ---: | ---: | ---: | ---: |
+| 0 | 0.16 ms | 1.40 ms | 0 |
+| 50 | 0.63 ms | 5.80 ms | 0.16 ms |
+| 100 | 0.70 ms | 4.41 ms | 0.24 ms |
+| 200 | 0.85 ms | 3.82 ms | 0.36 ms |
+| 300 | 0.92 ms | 3.48 ms | 0.44 ms |
+| 500 | 1.60 ms | 4.70 ms | 0.84 ms |
+| 700 | 2.03 ms | 5.33 ms | 1.15 ms |
+
+**What the table says, and `ENEMY_CAP_MAX` = 500:**
+
+- **The wire holds to 700.** The worst client gets about 150–180 KB/s at
+  500 and 190–210 KB/s at 700. Squadron rows carry 8 planes for the bytes
+  of about 1.3. The 5 Hz mid tier and the cut at half the world do the
+  rest.
+- **The tick's p99 cannot be judged on this runner.** The 0-enemy baseline
+  ranges from 3.3 to 14.8 ms p99 between runs (load 4 to 18), so no count
+  "passes", not even none. The medians are the trustworthy part. The
+  room's tick median grows from about 1 ms (no war) to 2–2.6 ms with any
+  air force, which is the fixed cost of the aces (12 + 4 a pilot, up to 24
+  full brains, against W1's at most 12). It then grows about 0.5 ms per
+  100 planes to about 4.2–4.7 ms at 500 on a quiet pass. The air force's
+  own work is 1.6 ms at 500 in process.
+- **What blocks a clean 500 against p99 ≤ 4 ms:** the ace tier's brain
+  spikes (bots p99 2.5–5 ms at any count; the canyon brain's decisions and
+  rollouts) and the AA nests engaging the planes near the pilots (aa p50
+  0.5–0.9 ms). The squadrons themselves are not the blocker (≈ 1 ms at 500,
+  p99 ≈ 2 ms). Levers, in order: `ACE_PER_HUMAN` (aces are ~70 % of the
+  variable cost), then AA at 10 Hz for squadron planes.
+- `ENEMY_CAP_MAX` stays 500, the target, because the wire holds and the
+  medians fit. The planner confirms the p99 on a quiet machine with
+  `--repeat 3` and lowers `AIR_FORCE[3]` if it does not hold.
+
+Client fps is the M3's to measure (`airforce-swarm`, and
+`AB_GALLERY_DEVICE=phone` for the Mobile tier, which draws the nearest 150).
+On SwiftShader `airforce-swarm` draws 93 calls (`fleet-sky`: 96). 500
+planes cost no draw of their own beyond the fleet's instanced ones, and
+497 of them were drawn on High.

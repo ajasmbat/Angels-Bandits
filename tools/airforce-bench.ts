@@ -16,7 +16,7 @@
 //
 //   node --import tsx tools/airforce-bench.ts [--counts 50,100,200,300,500,700]
 //        [--humans 6] [--warmup 8] [--seconds 15] [--json out.json]
-//        [--phases] [--cpu-prof <dir>] [--inprocess]
+//        [--repeat 3] [--phases] [--cpu-prof <dir>] [--inprocess]
 //
 // The budget ENEMY_CAP_MAX is held to: server tick p99 ≤ 4 ms per room (the
 // first figure above) and
@@ -50,6 +50,7 @@ const COUNTS = arg("counts", "50,100,200,300,500,700").split(",").map(Number);
 const HUMANS = Number(arg("humans", "6"));
 const WARMUP_S = Number(arg("warmup", "8"));
 const SECONDS = Number(arg("seconds", "15"));
+const REPEAT = Number(arg("repeat", "1"));
 const JSON_OUT = process.argv.includes("--json") ? arg("json", "") : "";
 /** `--cpu-prof <dir>`: the server's V8 CPU profile per count, there. */
 const CPU_PROF = process.argv.includes("--cpu-prof")
@@ -317,13 +318,9 @@ async function inProcess(): Promise<void> {
   const { RoomWaves, humanContacts } = await import("../server/src/waves");
   const city = generateCity(CITY_SEED);
   const nature = buildNatureIndex(natureFor(CITY_SEED, city));
-  const cpu = () => {
-    const u =
-      (
-        process as { threadCpuUsage?: () => { user: number; system: number } }
-      ).threadCpuUsage?.() ?? process.cpuUsage();
-    return (u.user + u.system) / 1000;
-  };
+  // Wall clock per tick: a thread's CPU clock moves in scheduler ticks,
+  // too coarse for a millisecond.
+  const cpu = () => performance.now();
   const q = (a: number[], p: number) =>
     [...a].sort((x, y) => x - y)[Math.floor(a.length * p)] ?? 0;
   console.log(
@@ -468,17 +465,43 @@ type Vec3Like = { x: number; y: number; z: number };
 
 async function main(): Promise<void> {
   if (process.argv.includes("--inprocess")) return inProcess();
-  const rows: { staged: number; row: Row }[] = [];
-  for (const n of COUNTS) {
-    const row = await measure(n);
-    rows.push({ staged: n, row });
-    console.error(`  ${n}: done (${JSON.stringify(row)})`);
+  // `--repeat k`: every count k times, the counts interleaved (one pass
+  // through them, then the next), and each figure the median of its k —
+  // a shared runner's load comes and goes; this keeps it off one count.
+  const runs = new Map<number, Row[]>();
+  for (let r = 0; r < REPEAT; r++) {
+    for (const n of COUNTS) {
+      const row = await measure(n);
+      runs.set(n, [...(runs.get(n) ?? []), row]);
+      console.error(`  ${n} #${r + 1}: ${JSON.stringify(row)}`);
+    }
   }
+  const med = (xs: number[]) =>
+    [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)] ?? 0;
+  const rows = COUNTS.map((n) => {
+    const rs = runs.get(n) ?? [];
+    const pick = (f: (r: Row) => number) => med(rs.map(f));
+    const row: Row = {
+      enemies: pick((r) => r.enemies),
+      tickP50: pick((r) => r.tickP50),
+      tickP99: pick((r) => r.tickP99),
+      tickMax: pick((r) => r.tickMax),
+      coreP50: pick((r) => r.coreP50),
+      coreP99: pick((r) => r.coreP99),
+      bpsMean: pick((r) => r.bpsMean),
+      bpsMax: pick((r) => r.bpsMax),
+      snapBpsMax: pick((r) => r.snapBpsMax),
+      planesPerSnap: pick((r) => r.planesPerSnap),
+      ok: false,
+    };
+    row.ok = row.coreP99 <= TICK_P99_MS && row.bpsMax <= CLIENT_BPS;
+    return { staged: n, row };
+  });
   const la = loadavg()
     .map((x) => x.toFixed(1))
     .join(" ");
   console.log(
-    `\nE1 air force bench — ${HUMANS} pilots in one room, ${SECONDS} s each, loadavg ${la}`,
+    `\nE1 air force bench — ${HUMANS} pilots in one room, ${SECONDS} s each, median of ${REPEAT}, loadavg ${la}`,
   );
   console.log(
     `budget: server tick p99 ≤ ${TICK_P99_MS} ms per room, ≤ ${CLIENT_BPS / 1000} KB/s per client\n`,

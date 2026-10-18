@@ -1,43 +1,37 @@
 // E1 QA (`__ab.qaAirforce`, main.ts): an air force of `n` enemy planes
-// staged round a point on this client, as if the server's squadrons were
+// staged round a point on this client, as if the server's pilots were
 // flying there — QA only, never from gameplay. The gallery's room has no
 // war (AB_WAVES=0), so this is how `airforce-swarm` puts 500 planes round
 // the camera.
 //
-// Every squadron is a WIRE ROW, built and expanded exactly as a live one
-// (common/src/squadron.ts encodeSquadRow → expandSquadRow), so the shot
-// exercises the real client path: the rows ride each real snapshot that
-// lands (their poses a pure function of its time), into the same remotes,
-// buffers, LOD and fleet draws. A squadron circles the point at its own
-// radius (120–820 m) and height, kept over the roofline the live
-// squadrons follow.
+// I1: every plane flies ALONE, a pure function of (spec, time, grid) — its
+// own seeded personality (common/src/pilots.ts personalityOf) picks its
+// loop round its own centre (somewhere within 900 m of the point), its
+// radius, way round, speed, height and weave, so no two share a track and
+// nothing flies in formation. Each one is a snapshot entry through the
+// real client path: it rides each real snapshot that lands, into the same
+// remotes, buffers, LOD and fleet draws. Kept over the roofline the live
+// pilots follow.
 
-import type { Pose, SnapshotMsg } from "@angels-bandits/common/protocol";
 import {
-  FORMATIONS,
+  PILOT_CLEAR,
   type RooflineGrid,
-  SQUAD_CLEAR,
-  SQUAD_SIZE,
   attitudeQuatInto,
-  encodeSquadRow,
-  expandSquadRow,
-} from "@angels-bandits/common/squadron";
+  personalityOf,
+} from "@angels-bandits/common/pilots";
+import type { SnapshotMsg } from "@angels-bandits/common/protocol";
 import { wrapCoord } from "@angels-bandits/common/world";
 
 export interface QaAirforceSpec {
   /** Enemy planes to stage. */
   n: number;
-  /** The point they circle (the camera's, usually). */
+  /** The point they fly round (the camera's, usually). */
   x: number;
   z: number;
 }
 
 /** The id prefix of a staged plane (`bot:` — an enemy to every reader). */
 export const QA_AIRFORCE_PREFIX = "bot:qa-air:";
-
-/** Squadrons for `n` planes. */
-export const qaSquadrons = (n: number): number =>
-  Math.ceil(Math.max(0, n) / SQUAD_SIZE);
 
 /** Every staged plane's id (for the roster). */
 export function qaAirforceIds(n: number): string[] {
@@ -46,55 +40,49 @@ export function qaAirforceIds(n: number): string[] {
   });
 }
 
-const anchor: Pose = {
-  pos: { x: 0, y: 0, z: 0 },
-  quat: { x: 0, y: 0, z: 0, w: 1 },
-  speed: 0,
-};
-
 /**
  * Append the staged air force at server time `timeMs` to `snap` — one
- * squadron row per SQUAD_SIZE planes, expanded into its planes. Pure in
- * (spec, time, grid).
+ * entry per plane, each on its own path. Pure in (spec, time, grid).
  */
 export function qaAirforceExtend(
   spec: QaAirforceSpec,
   snap: SnapshotMsg,
   grid: RooflineGrid,
 ): void {
-  const squads = qaSquadrons(spec.n);
   const t = snap.time / 1000;
-  for (let k = 0; k < squads; k++) {
-    const r = 120 + ((k * 137) % 700);
-    const speed = 70 + (k % 5) * 2;
-    const dir = k % 2 === 0 ? 1 : -1;
+  for (let k = 0; k < spec.n; k++) {
+    const ps = personalityOf(k);
+    // Its own loop: a centre within 900 m of the point, a radius, a way
+    // round and a speed — every one a draw of its personality.
+    const ca = ps.weavePhase * 7.3;
+    const cd = 900 * Math.sqrt((ps.risk + ps.skill * 0.37) % 1);
+    const r = 90 + ps.aggression * 420;
+    const dir = ps.side;
+    const speed = ps.speed;
     const th = k * 2.399 + (dir * speed * t) / r;
-    const x = wrapCoord(spec.x + Math.cos(th) * r);
-    const z = wrapCoord(spec.z + Math.sin(th) * r);
-    // Heading along the circle (yaw 0 faces −Z): the derivative of the
-    // position, dir × (−sin, cos).
+    // The weave swings the loop in and out: no two circles are alike.
+    const rr =
+      r + ps.weaveAmp * 160 * Math.sin(t * ps.weaveHz * 6.28 + ps.weavePhase);
+    const x = wrapCoord(spec.x + Math.cos(ca) * cd + Math.cos(th) * rr);
+    const z = wrapCoord(spec.z + Math.sin(ca) * cd + Math.sin(th) * rr);
+    // Heading along the loop (yaw 0 faces −Z): dir × (−sin, cos).
     const vx = -Math.sin(th) * dir;
     const vz = Math.cos(th) * dir;
     const yaw = Math.atan2(-vx, -vz);
-    const alt = 140 + ((k * 53) % 220);
-    anchor.pos.x = x;
-    anchor.pos.z = z;
-    anchor.pos.y = Math.max(alt, grid.ahead(x, z) + SQUAD_CLEAR);
-    attitudeQuatInto(yaw, 0, -dir * 0.35, anchor.quat);
-    anchor.speed = speed;
-    const count = Math.min(SQUAD_SIZE, spec.n - k * SQUAD_SIZE);
-    const mask = (1 << count) - 1;
-    expandSquadRow(
-      encodeSquadRow({
-        id0: `${QA_AIRFORCE_PREFIX}${k * SQUAD_SIZE}`,
-        anchor,
-        form: k % FORMATIONS.length,
-        spread: 1,
-        prot: false,
-        mask,
-        hp: Array.from({ length: count }, () => 100),
-      }),
-      snap.players,
-    );
+    const alt = 110 + ps.prefAlt * 3 + 25 * Math.sin(t * 0.3 + k);
+    const pose = {
+      pos: { x, y: Math.max(alt, grid.ahead(x, z) + PILOT_CLEAR), z },
+      quat: { x: 0, y: 0, z: 0, w: 1 },
+      speed,
+    };
+    // Its own lean: how hard it banks into the loop.
+    const lean = Math.atan((speed * speed) / (rr * 9.81)) * ps.bank;
+    attitudeQuatInto(yaw, 0, -dir * Math.min(1.1, lean), pose.quat);
+    snap.players.push({
+      id: `${QA_AIRFORCE_PREFIX}${k}`,
+      pose,
+      hp: 100,
+      prot: false,
+    });
   }
 }

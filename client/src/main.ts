@@ -138,6 +138,7 @@ import {
 } from "@angels-bandits/common/flight";
 import { MEDAL_LABEL, streakTier } from "@angels-bandits/common/medals";
 import { hitRangeBudgetFor } from "@angels-bandits/common/net";
+import { RooflineGrid } from "@angels-bandits/common/pilots";
 import type {
   CourseStanding,
   DeathMsg,
@@ -146,7 +147,6 @@ import type {
   WelcomeMsg,
 } from "@angels-bandits/common/protocol";
 import { airlinerOffsetInto } from "@angels-bandits/common/skytraffic";
-import { RooflineGrid } from "@angels-bandits/common/squadron";
 import { strikesInWindow } from "@angels-bandits/common/storm";
 import {
   MISSILE_SHOOTER_ID,
@@ -332,7 +332,6 @@ import {
   type QaAirforceSpec,
   qaAirforceExtend,
   qaAirforceIds,
-  qaSquadrons,
 } from "./game/qa-airforce";
 import {
   type QaChaosSpec,
@@ -3761,12 +3760,11 @@ declare global {
        * going off round a held pose (game/qa-lowchaos.ts) — the plane's own
        * pose when omitted — through qaDestruction and the director's
        * warnings; null clears it. */
-      /** E1 QA: stage an air force of `n` enemy planes in squadrons
-       * round the plane (or `spec`'s point) — wire rows through the real
+      /** E1 QA: stage an air force of `n` individual enemy pilots round
+       * the plane (or `spec`'s point) — snapshot entries through the real
        * client path (game/qa-airforce.ts); null / 0 clears it. */
       qaAirforce: (spec: number | QaAirforceSpec | null) => {
         planes: number;
-        squadrons: number;
       };
       /** E1: the air force as this client draws it — enemies sampled and
        * drawn last frame, the draw distance the tier's cap holds them
@@ -3780,7 +3778,7 @@ declare global {
       chaosMeter: (
         cmd?: "reset" | "disarm",
       ) => ChaosReport & { armed: boolean };
-      /** X1 QA: the squadrons' dilated roofline under (x, z), m — a
+      /** X1 QA: the pilots' dilated roofline under (x, z), m — a
        * scripted flight at this plus a margin touches no building. */
       roofline: (x: number, z: number) => number;
       airforce: () => {
@@ -5102,10 +5100,7 @@ window.__ab = {
         remotes.playerJoined({ id, name: `BANDIT-${i + 1}`, isBot: true }),
       );
     }
-    return {
-      planes: qaAirforce?.n ?? 0,
-      squadrons: qaSquadrons(qaAirforce?.n ?? 0),
-    };
+    return { planes: qaAirforce?.n ?? 0 };
   },
   chaosMeter: (cmd) => {
     const now = performance.now();
@@ -7504,7 +7499,7 @@ const frame = (rafNow: number): void => {
     sky.domeVisible,
   );
   // SKY1: uniforms only (FAR_ORIGIN, just written above, is shared).
-  skyArmada.setThin(remotes.enemySectors); // E1: over the dense squadrons
+  skyArmada.setThin(remotes.enemySectors); // E1: over the dense air force
   skyArmada.update(
     camera,
     renderMs,

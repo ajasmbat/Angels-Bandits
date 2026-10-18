@@ -1311,13 +1311,13 @@ export const VIEWS = [
     weather: "clear",
     boss: { ahead: 320, count: 20 },
   },
-  // E1: the air force — 500 enemy planes in squadrons circling the camera
-  // at 120–820 m (__ab.qaAirforce: real wire rows through the real client
-  // path), low over the roofs: the near ones in full detail, the rest
+  // E1: the air force — 500 enemy planes, I1: each flying alone on its own
+  // loop within ~900 m of the camera (__ab.qaAirforce: snapshot entries
+  // through the real client path), low over the roofs: the near ones in full detail, the rest
   // through the fleet's mid / far LOD into the haze. However many there
   // are, they cost the fleet's same instanced draws. The plane is parked
   // just under the deck over (1000, 1000), out of shot (K1's lowered sky);
-  // the squadrons circle it.
+  // the pilots fly round it.
   {
     name: "airforce-swarm",
     x: 1000,

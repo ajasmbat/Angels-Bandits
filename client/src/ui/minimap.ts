@@ -8,7 +8,7 @@
 // E1: with hundreds of enemies up, only the MINIMAP_ARROWS nearest are
 // arrows; the rest are gathered into CLUSTER_CELL squares round the player
 // (clusterContacts) and drawn as one blip each, sized by how many planes
-// it holds — the radar reads "a squadron over there", not a smear.
+// it holds — the radar reads "a pack over there", not a smear.
 
 import {
   type Building,
@@ -357,7 +357,7 @@ export class Minimap {
       ctx.globalAlpha = 1;
     }
     clusterContacts(playerPos, contacts, this.arrows, this.clusters);
-    // E1: the far squadrons first, under the arrows: a dim blip each,
+    // E1: the far clusters first, under the arrows: a dim blip each,
     // growing with its count.
     const s = size / WORLD_SIZE;
     ctx.fillStyle = "rgba(255, 138, 61, 0.55)";

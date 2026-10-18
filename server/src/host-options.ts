@@ -13,7 +13,6 @@ import {
   LIVENESS_TIMEOUT_MS,
   RESUME_WINDOW_MS,
 } from "@angels-bandits/common/constants";
-import type { Intensity } from "@angels-bandits/common/waves";
 import { type ChaosTunings, chaosTunings } from "./chaos";
 
 export interface GameHostOptions {
@@ -40,9 +39,6 @@ export interface GameHostOptions {
   airForce: number | null;
   /** A1: profile the tick's phases (GameHost.tickReport). */
   tickStats: boolean;
-  /** SOLO: the enemy intensity a new room starts at (the start screen's
-   * difficulty); the shared default when absent. */
-  intensity?: Intensity;
   /** SOLO: the host may be paused (GameHost.setPaused) — only ever a
    * single-player host: a shared room never pauses. */
   pausable: boolean;

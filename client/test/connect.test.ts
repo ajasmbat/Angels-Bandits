@@ -111,6 +111,8 @@ describe("GameSocket.connect — a join always settles", () => {
       hostname: "localhost",
       host: "localhost",
       protocol: "http:",
+      // SOLO: these are the ws path's states — the remote server (`?mp=1`).
+      search: "?mp=1",
     });
     vi.stubGlobal("document", { hidden: false, addEventListener() {} });
   });

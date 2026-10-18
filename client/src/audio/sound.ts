@@ -190,6 +190,8 @@ export class GameAudio implements VoiceSink {
   /** Backgrounded (M2): the context is suspended on purpose, and the
    * per-frame ensure() must not wake it back up. */
   private hidden = false;
+  /** SOLO: the single-player game is paused — silent like a hidden tab. */
+  private paused = false;
 
   constructor() {
     const kick = () => this.ensure();
@@ -269,10 +271,21 @@ export class GameAudio implements VoiceSink {
     // Not while backgrounded (M2). "interrupted" is iOS-only (a call,
     // Siri) and missing from TS's AudioContextState.
     const state = this.ctx.state as AudioContextState | "interrupted";
-    if (!this.hidden && (state === "suspended" || state === "interrupted")) {
+    if (
+      !this.hidden &&
+      !this.paused &&
+      (state === "suspended" || state === "interrupted")
+    ) {
       void this.ctx.resume();
     }
     return this.ctx.state === "running" ? this.ctx : null;
+  }
+
+  /** SOLO: pause (`true`) or resume the whole mix with the game. */
+  setPaused(on: boolean): void {
+    this.paused = on;
+    if (on) void this.ctx?.suspend();
+    else this.ensure();
   }
 
   /** M6 settings: the player's volumes, as gains. Stored first, so a call

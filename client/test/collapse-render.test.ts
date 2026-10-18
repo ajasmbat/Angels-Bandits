@@ -235,6 +235,7 @@ describe("D3 GameSocket keeps the room's collapses", () => {
       hostname: "localhost",
       host: "localhost",
       protocol: "http:",
+      search: "?mp=1", // SOLO: the ws path (the remote server)
     });
     vi.stubGlobal("document", { hidden: false, addEventListener() {} });
 

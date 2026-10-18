@@ -466,10 +466,6 @@ export function createGameHost(
    */
   const QUIET_CITY = cfg.quietCity;
 
-  /** SOLO: the setter id a host-chosen starting intensity is recorded
-   * under — never a player id (base64url has no ':'). */
-  const HOST_SETTER = "host:";
-
   /** After this many consecutive snap-rejects, accept the claim as a re-sync —
    * a client-side respawn (crash death) legitimately teleports across the map. */
   const RESYNC_AFTER_REJECTS = 10;
@@ -1435,11 +1431,6 @@ export function createGameHost(
       return null;
     }
     const now = clock();
-    // SOLO: a fresh room starts at the host's intensity (the start screen's
-    // difficulty) — the welcome below carries it, before any wave exists.
-    if (cfg.intensity !== undefined && !room.lab && room.members.size === 1) {
-      room.setIntensity(HOST_SETTER, cfg.intensity, now);
-    }
     combat.addPlayer(id, now);
     // After addPlayer, which starts every tally at 0/0.
     if (resumed) {

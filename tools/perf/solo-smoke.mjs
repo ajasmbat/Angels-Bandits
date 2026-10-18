@@ -89,7 +89,9 @@ const CHROME_ARGS = [
 const results = [];
 function check(name, ok, detail = "") {
   results.push({ name, ok, detail });
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
+  console.log(
+    `${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`,
+  );
 }
 
 /** Wait until `fn` (in the page) is truthy; false on timeout. */
@@ -109,9 +111,7 @@ async function main() {
   const browser = await chromium.launch({
     headless: true,
     args: CHROME_ARGS,
-    ...(process.env.AB_CHROME
-      ? { executablePath: process.env.AB_CHROME }
-      : {}),
+    ...(process.env.AB_CHROME ? { executablePath: process.env.AB_CHROME } : {}),
   });
   const errors = [];
   try {
@@ -191,8 +191,6 @@ async function main() {
         return {
           alive: c.alive,
           enemies: c.targets.length,
-          deaths: (c.scores.find((r) => r.id === ab.net().selfId) ?? {})
-            .deaths,
           wave: solo.wave,
           ships: ab.fleet().up,
           destroyed: ab.destruction().destroyed,
@@ -217,10 +215,18 @@ async function main() {
       }
       await sleep(2000);
     }
-    check("fight: enemy planes in the air", seen.enemies > 0, `${seen.enemies} in range at most`);
+    check(
+      "fight: enemy planes in the air",
+      seen.enemies > 0,
+      `${seen.enemies} in range at most`,
+    );
     check("waves: a wave came on", seen.wave);
     check("airships: the fleet flew", seen.ships > 0, `${seen.ships} at most`);
-    check("destruction: the city broke", seen.destroyed > 0, `${seen.destroyed} chunks`);
+    check(
+      "destruction: the city broke",
+      seen.destroyed > 0,
+      `${seen.destroyed} chunks`,
+    );
     check("death", seen.died);
     if (seen.died && !seen.respawned) {
       seen.respawned = await until(

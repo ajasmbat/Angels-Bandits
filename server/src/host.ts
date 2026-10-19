@@ -143,17 +143,13 @@ import {
   clampInterpDelay,
   encodeSnapshotEntry,
 } from "@angels-bandits/common/net";
+import { aceCap } from "@angels-bandits/common/pilots";
 import type {
   Pose,
   ScoreEntry,
   ServerMsg,
   SpawnState,
 } from "@angels-bandits/common/protocol";
-import {
-  FORM_REACH,
-  aceCap,
-  encodeSquadRow,
-} from "@angels-bandits/common/squadron";
 import {
   MISSILE_SHOOTER_ID,
   type MissileStrike,
@@ -1190,8 +1186,8 @@ export function createGameHost(
         pos: c.pos,
         vel: c.vel,
         prot: combat.isProtected(e.id, now),
-        // E1: a squadron plane in formation shoots at humans only.
-        strafes: !bots.isSquad(e.id),
+        // I1: a plane its pilot flies shoots at humans only.
+        strafes: !bots.isPilot(e.id),
       });
     }
     // K1: and the airships cruising past — an engine car each, behind any
@@ -2185,10 +2181,9 @@ export function createGameHost(
     const contacts = humanContacts(waveHumans(room, now, false));
     // B3: a hurt bot breaks off and comes back after regen — its own HP, now
     // that it is not on its own contact list.
-    // E1: the brain's planes only (a squadron plane's HP is read when it
-    // promotes — its next tick).
+    // E1: the brain's planes only (a pilot reads its own HP from Combat).
     for (const member of room.members.values()) {
-      if (member.isBot && !bots.isSquad(member.id)) {
+      if (member.isBot && !bots.isPilot(member.id)) {
         bots.setHp(member.id, combat.hpOf(member.id));
       }
     }
@@ -2204,16 +2199,16 @@ export function createGameHost(
       roomBoss(room).shellsInFlight().map(flakHazard),
     );
 
-    // E1: the air force flies first — its squadrons onto their slots, its
-    // aces handed to the brain or back — then the brain's own tick.
+    // E1: the air force flies first — its pilots, its aces handed to the
+    // brain or back — then the brain's own tick.
     tickStats.lap("bots"); // what came before (the room's previous phases)
-    const squadShots =
+    const pilotShots =
       wavesByRoom
         .get(room.id)
         ?.flyForce(now, 1 / TICK_DOWN_HZ, contacts, budgetFor(room)) ?? [];
-    tickStats.lap("airforce"); // E1: the squadrons, their aces and guns
+    tickStats.lap("airforce"); // E1: the pilots, their aces and guns
     const { shots, cues, hits, crashes } = bots.tick(now, contacts);
-    shots.push(...squadShots);
+    shots.push(...pilotShots);
 
     // D4: a falling wreck is solid for bots too (they do not probe for it).
     const wrecks = wrecksByRoom.get(room.id);
@@ -2289,7 +2284,7 @@ export function createGameHost(
   /** E1: the wave's own planes in the air (they are aces whatever). */
   function waveAcesUp(waves: RoomWaves): number {
     let n = 0;
-    for (const e of waves.enemies()) if (!e.squad && !e.down) n++;
+    for (const e of waves.enemies()) if (!e.pilot && !e.down) n++;
     return n;
   }
 
@@ -2357,20 +2352,18 @@ export function createGameHost(
       nests: mannedNests(room),
     };
     const enemies = [];
-    // E1: a squadron plane may bomb too — promoted to an ace for the run —
+    // E1: an air-force plane may bomb too — promoted to an ace for the run —
     // while the room has an ace to spare; it hunts the human nearest it.
     const aceRoom =
-      aceCap(humans.length) -
-        waves.squadrons.aces().length -
-        waveAcesUp(waves) >
+      aceCap(humans.length) - waves.pilots.aces().length - waveAcesUp(waves) >
       0;
     for (const e of waves.enemies()) {
-      const squad = bots.isSquad(e.id);
-      if (squad && !aceRoom) continue;
+      const piloted = bots.isPilot(e.id);
+      if (piloted && !aceRoom) continue;
       const c = e.down ? null : bots.contactOf(e.id);
       if (!c) continue;
       let quarry = bots.quarryOf(e.id);
-      if (squad) {
+      if (piloted) {
         quarry = null;
         let best = TUNINGS.bombs.runRangeM;
         for (const h of humans) {
@@ -2393,7 +2386,7 @@ export function createGameHost(
       });
     }
     for (const order of director.tick(now, enemies, humans, world)) {
-      if (bots.isSquad(order.enemyId)) waves.squadrons.promote(order.enemyId);
+      if (bots.isPilot(order.enemyId)) waves.pilots.promote(order.enemyId);
       if (!bots.startRun(order.enemyId, order.kind, order.target, now)) {
         director.refused(order.enemyId, now);
       }
@@ -2678,8 +2671,8 @@ export function createGameHost(
     // right on top of the aim point).
     if (room.destruct) return;
     const planes: { id: string; pos: Vec3 }[] = [];
-    // E1: a squadron plane past every human's near tier is no chaos plane —
-    // strikes, quakes and collapses happen round the humans.
+    // E1: an air-force plane past every human's near tier is no chaos plane
+    // — strikes, quakes and collapses happen round the humans.
     const bots = botsByRoom.get(room.id);
     const watchers = waveHumans(room, now, false).map((h) => h.pos);
     for (const member of room.members.values()) {
@@ -2687,7 +2680,7 @@ export function createGameHost(
       if (!pose) continue;
       if (
         member.isBot &&
-        bots?.isSquad(member.id) &&
+        bots?.isPilot(member.id) &&
         !withinOf(pose.pos, watchers, IM_NEAR_M)
       ) {
         continue;
@@ -2884,8 +2877,8 @@ export function createGameHost(
     if (cached?.now === now) return cached.planes;
     const planes: ChaosPlane[] = [];
     chaosPlanesCache.set(room.id, { now, planes });
-    // E1: a squadron plane past every human's near tier is no chaos plane —
-    // strikes, quakes and collapses happen round the humans.
+    // E1: an air-force plane past every human's near tier is no chaos plane
+    // — strikes, quakes and collapses happen round the humans.
     const bots = botsByRoom.get(room.id);
     const watchers = waveHumans(room, now, false).map((h) => h.pos);
     for (const member of room.members.values()) {
@@ -2893,7 +2886,7 @@ export function createGameHost(
       if (!pose) continue;
       if (
         member.isBot &&
-        bots?.isSquad(member.id) &&
+        bots?.isPilot(member.id) &&
         !withinOf(pose.pos, watchers, IM_NEAR_M)
       ) {
         continue;
@@ -2923,13 +2916,13 @@ export function createGameHost(
 
   /** U6: the room's cave-ins this tick — only while its city is live (see
    * quiet), like all chaos: each new one goes out as one `caveIn`. E1: a
-   * squadron plane in formation never flies underground (it holds the
+   * piloted air-force plane never flies underground (it holds the
    * roofline), so the bores only look at the rest. */
   function tickCaveIns(room: Room, now: number): void {
     const director = caveInsFor(room);
     if (!director || quiet(room)) return;
     const bots = botsByRoom.get(room.id);
-    const planes = chaosPlanes(room, now).filter((p) => !bots?.isSquad(p.id));
+    const planes = chaosPlanes(room, now).filter((p) => !bots?.isPilot(p.id));
     const out = director.tick(now, planes, budgetFor(room));
     for (const e of out)
       sendToRoom(room, { type: "caveIn", c: encodeCaveIn(e) });
@@ -3129,17 +3122,15 @@ export function createGameHost(
 
   /**
    * E1: this tick's snapshot, per client (common/src/interest.ts). Every row
-   * is encoded ONCE — each plane's tuple, each squadron's row — and every
-   * client gets the humans plus the enemy rows its distance tier sends this
-   * tick, joined as text. Dead planes are simply absent until their respawn
-   * is announced; a squadron plane in formation rides its squadron's row.
+   * is encoded ONCE — each plane its own tuple (I1: every air-force plane
+   * too) — and every client gets the humans plus the enemy rows its distance
+   * tier sends this tick, joined as text. Dead planes are simply absent until
+   * their respawn is announced.
    */
   function sendSnapshots(room: Room, time: number): void {
     snapshotTick++;
     const rows: InterestRow[] = [];
-    const bots = botsByRoom.get(room.id);
     for (const { id, isBot } of room.members.values()) {
-      if (isBot && bots?.isSquad(id)) continue;
       const pose = memberPose(room, id);
       if (!pose) continue;
       rows.push({
@@ -3153,27 +3144,11 @@ export function createGameHost(
           }),
         ),
         pos: pose.pos,
-        reach: 0,
         phase: phaseOf(id),
         always: !isBot,
-        squad: false,
       });
     }
-    const waves = wavesByRoom.get(room.id);
-    if (waves) {
-      for (const w of waves.squadrons.wire(time)) {
-        rows.push({
-          json: JSON.stringify(encodeSquadRow(w.row)),
-          pos: w.pos,
-          reach: FORM_REACH,
-          phase: w.sid,
-          always: false,
-          squad: true,
-        });
-      }
-    }
     const planes: string[] = [];
-    const squads: string[] = [];
     for (const { id, isBot } of room.members.values()) {
       if (isBot) continue;
       const member = clients.get(id);
@@ -3184,9 +3159,8 @@ export function createGameHost(
         ? null
         : (memberPose(room, id)?.pos ?? member.pose.pos);
       planes.length = 0;
-      squads.length = 0;
-      selectRows(viewer, rows, snapshotTick, planes, squads);
-      const text = snapshotJson(time, planes, squads);
+      selectRows(viewer, rows, snapshotTick, planes);
+      const text = snapshotJson(time, planes);
       member.link.send(encoder.encode(text), true);
     }
   }

@@ -25,6 +25,7 @@ import {
   type FleetShip,
   type FleetTuning,
   decodeLaunch,
+  launchReleaseAt,
   launchSpawnAt,
   shipById,
 } from "@angels-bandits/common/boss";
@@ -44,8 +45,8 @@ import {
   PLAYER_RADIUS,
   TICK_DOWN_HZ,
 } from "@angels-bandits/common/constants";
+import { aceCap } from "@angels-bandits/common/pilots";
 import type { SpawnState } from "@angels-bandits/common/protocol";
-import { SQUAD_SIZE, aceCap } from "@angels-bandits/common/squadron";
 import {
   AIR_FORCE,
   ENEMY_CAP,
@@ -198,9 +199,9 @@ function step(sim: Sim): void {
       sim.released.set(id, list);
     }
   }
-  const squadShots = sim.waves.flyForce(now, DT / 1000, sim.humans);
+  const pilotShots = sim.waves.flyForce(now, DT / 1000, sim.humans);
   const { shots, crashes } = sim.bots.tick(now, humanContacts(sim.humans));
-  for (const s of [...shots, ...squadShots]) sim.shotTargets.push(s.targetId);
+  for (const s of [...shots, ...pilotShots]) sim.shotTargets.push(s.targetId);
   for (const id of crashes) {
     const death = sim.combat.crash(id, now);
     if (death) down(sim, death, now);
@@ -436,14 +437,15 @@ describe("W1 waves: deterministic replay", () => {
 
 describe("E1: the air force", () => {
   // NORMAL, one human hanging over the middle of the city, nobody shooting:
-  // the squadrons launch off the fleet and fill the sky to the level.
+  // the pilots launch off the fleet one by one and fill the sky to the
+  // level.
   let sim: Sim;
   const planesUp: number[] = [];
-  let maxSquadAces = 0;
+  let maxPilotAces = 0;
   let overCapPromotions = 0;
   let maxWave = 0;
   let collisions = 0;
-  let squadSeen = 0;
+  let pilotSeen = 0;
   const promotedOnce = new Set<string>();
   const demoted = new Set<string>();
   beforeAll(() => {
@@ -453,35 +455,35 @@ describe("E1: the air force", () => {
     let promoted = 0;
     for (let t = 0; t < 120_000; t += DT) {
       step(sim);
-      const promotedNow = sim.waves.squadrons.stats.promotions > promoted;
-      promoted = sim.waves.squadrons.stats.promotions;
+      const promotedNow = sim.waves.pilots.stats.promotions > promoted;
+      promoted = sim.waves.pilots.stats.promotions;
       let up = 0;
       let aces = 0;
       let wave = 0;
       for (const e of sim.waves.enemies()) {
         if (e.down) continue;
-        if (!e.squad) wave++;
-        if (e.squad) up++;
+        if (!e.pilot) wave++;
+        if (e.pilot) up++;
         const pose = sim.bots.poseOf(e.id);
         if (!pose) continue;
-        const ace = !sim.bots.isSquad(e.id);
-        if (e.squad && ace) aces++;
-        if (e.squad && !ace) {
-          squadSeen++;
+        const ace = !sim.bots.isPilot(e.id);
+        if (e.pilot && ace) aces++;
+        if (e.pilot && !ace) {
+          pilotSeen++;
           if (
             collideCity(pose.pos, PLAYER_RADIUS, sim.world.buildings, index)
           ) {
             collisions++;
           }
         }
-        if (e.squad) {
+        if (e.pilot) {
           if (wasAce.get(e.id) === true && !ace) demoted.add(e.id);
           if (ace) promotedOnce.add(e.id);
           wasAce.set(e.id, ace);
         }
       }
       planesUp.push(up);
-      maxSquadAces = Math.max(maxSquadAces, aces);
+      maxPilotAces = Math.max(maxPilotAces, aces);
       // A promotion never takes the room past its cap (a wave plane
       // launched later may; a visible ace is never forced back).
       if (promotedNow && aces + wave > aceCap(1)) overCapPromotions++;
@@ -494,31 +496,32 @@ describe("E1: the air force", () => {
     expect(Math.max(...planesUp)).toBeLessThanOrEqual(level);
     expect(Math.max(...planesUp)).toBeGreaterThanOrEqual(level - ENEMY_CAP);
     expect(sim.waves.state().force).toBe(planesUp.at(-1));
-    // A squadron is one launch off a rig, its lead the launched plane.
-    const squadLaunches = sim.launched.filter(
-      (l) => sim.waves.enemy(l.id)?.squad,
+    // I1: every pilot is its own launch off a rig, spread over the fleet…
+    const pilotLaunches = sim.launched.filter(
+      (l) => sim.waves.enemy(l.id)?.pilot,
     );
-    expect(squadLaunches.length).toBeGreaterThanOrEqual(
-      Math.floor((level - ENEMY_CAP) / SQUAD_SIZE),
-    );
-    expect(new Set(squadLaunches.map((l) => l.ship.id)).size).toBeGreaterThan(
+    expect(pilotLaunches.length).toBeGreaterThanOrEqual(level - ENEMY_CAP);
+    expect(new Set(pilotLaunches.map((l) => l.ship.id)).size).toBeGreaterThan(
       2,
     );
+    // …and they leave one at a time: hardly two at the same moment.
+    const releases = pilotLaunches.map((l) => launchReleaseAt(l.launch));
+    expect(new Set(releases).size).toBeGreaterThan(releases.length * 0.9);
   });
 
-  it("flies its squadrons clear of every building", () => {
-    expect(squadSeen).toBeGreaterThan(100_000);
+  it("flies its pilots clear of every building", () => {
+    expect(pilotSeen).toBeGreaterThan(100_000);
     expect(collisions).toBe(0);
-    expect(sim.waves.squadrons.stats.clamps).toBe(0);
+    expect(sim.waves.pilots.stats.clamps).toBe(0);
   });
 
   it("hands the planes near the human to the brain, within the ace cap, and back out of sight", () => {
     expect(promotedOnce.size).toBeGreaterThan(0);
-    expect(maxSquadAces).toBeLessThanOrEqual(aceCap(1));
+    expect(maxPilotAces).toBeLessThanOrEqual(aceCap(1));
     expect(overCapPromotions).toBe(0);
-    expect(sim.waves.squadrons.stats.promotions).toBeGreaterThan(0);
-    // The aces it handed back went back onto their slots, in formation.
-    expect(demoted.size).toBe(sim.waves.squadrons.stats.demotions);
+    expect(sim.waves.pilots.stats.promotions).toBeGreaterThan(0);
+    // The aces it handed back went back to their own pilots.
+    expect(demoted.size).toBe(sim.waves.pilots.stats.demotions);
   });
 
   it("is not the wave: the banner's count is the wave's planes alone", () => {
@@ -532,10 +535,10 @@ describe("E1: the air force", () => {
     for (const id of sim.shotTargets) expect(id).toBe(H1.id);
   });
 
-  it("refills what goes down, and a downed squadron plane leaves the room", () => {
+  it("refills what goes down, and a downed air-force plane leaves the room", () => {
     const up = sim.waves
       .enemies()
-      .filter((e) => e.squad && sim.bots.contactOf(e.id));
+      .filter((e) => e.pilot && sim.bots.contactOf(e.id));
     const victims = up.slice(0, 16).map((e) => e.id);
     for (const id of victims) shootDown(sim, id);
     const before = sim.waves.state().force;

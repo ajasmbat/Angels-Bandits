@@ -23,7 +23,7 @@ import {
 import type { Vec3 } from "@angels-bandits/common/world";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ChaseCamera } from "../src/game/camera";
-import { FEELS, FEEL_TUNING } from "../src/game/effortless";
+import { FEELS, FEEL_TUNING, scaleFeel } from "../src/game/effortless";
 import {
   type InstructorState,
   type InstructorTuning,
@@ -44,6 +44,7 @@ import {
 } from "../src/game/touch-aim-dir";
 import { tuning } from "../src/game/tuning";
 import { BASE_FOV } from "../src/game/zoom";
+import { MOUSE_SENS_STEPS } from "../src/ui/settings";
 
 const DEG = Math.PI / 180;
 
@@ -309,6 +310,37 @@ function trackingLag(
   }
   return worst;
 }
+
+// FC1 MOUSE SENSITIVITY (effortless.ts scaleFeel): every step scales the
+// mouse-aim's loop gain with its lag following, so the shipped feel at any
+// sensitivity flies the 30° step without wobbling past it — and a higher
+// sensitivity gets there sooner.
+describe("FC1 mouse sensitivity (camera in the loop)", () => {
+  it("1× is the feel itself", () => {
+    expect(scaleFeel(FEEL_TUNING.normal, 1)).toBe(FEEL_TUNING.normal);
+  });
+
+  for (const sens of MOUSE_SENS_STEPS) {
+    for (const fps of FPS) {
+      it(`${sens}×: 30° step at ${fps} fps overshoots < 1.5° and settles < 1.5 s`, () => {
+        const { overshoot, settle } = stepResponse(
+          65,
+          fps,
+          0,
+          scaleFeel(FEEL_TUNING.normal, sens),
+        );
+        expect(overshoot).toBeLessThan(1.5 * DEG);
+        expect(settle).toBeLessThan(1.5);
+      });
+    }
+  }
+
+  it("a higher sensitivity settles sooner", () => {
+    const slow = stepResponse(65, 60, 0, scaleFeel(FEEL_TUNING.normal, 0.5));
+    const fast = stepResponse(65, 60, 0, scaleFeel(FEEL_TUNING.normal, 1.5));
+    expect(fast.settle).toBeLessThan(slow.settle);
+  });
+});
 
 // F9 feel presets (game/effortless.ts): every feel flies the same 30° step
 // without wobbling past it, and Normal keeps the fine aim a crossing

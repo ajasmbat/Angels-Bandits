@@ -309,6 +309,32 @@ const D11_MS = 1_790_000_000_000;
 
 export const VIEWS = [
   // name, x, z, y, yaw, extra
+  // FC1: the gun-sight zoom on a bandit — the own plane dissolved, the
+  // ring, range arc and gun line round the pipper, the vignette. High over
+  // the city under the deck (DT1's air), the plane held every frame (raf)
+  // so the bandit stays ~150 m off the nose.
+  {
+    name: "zoom-gunsight",
+    x: 1000,
+    z: 1150,
+    y: 395,
+    yaw: 0,
+    weather: "clear",
+    sky: "dusk",
+    raf: true,
+    zoom: true,
+    showcase: [
+      {
+        kind: "fighter",
+        x: 1004,
+        y: 397,
+        z: 1000,
+        yaw: 0.35,
+        pitch: 0.04,
+        speed: 70,
+      },
+    ],
+  },
   { name: "chase-rooftops", x: 300, z: 900, y: 175, yaw: 0.6 },
   { name: "chase-canyon", x: 400, z: 1100, y: 70, yaw: 0 },
   { name: "high-overview", x: 100, z: 1500, y: 380, yaw: 0.9, pitch: -0.35 },
@@ -1311,13 +1337,13 @@ export const VIEWS = [
     weather: "clear",
     boss: { ahead: 320, count: 20 },
   },
-  // E1: the air force — 500 enemy planes in squadrons circling the camera
-  // at 120–820 m (__ab.qaAirforce: real wire rows through the real client
-  // path), low over the roofs: the near ones in full detail, the rest
+  // E1: the air force — 500 enemy planes, I1: each flying alone on its own
+  // loop within ~900 m of the camera (__ab.qaAirforce: snapshot entries
+  // through the real client path), low over the roofs: the near ones in full detail, the rest
   // through the fleet's mid / far LOD into the haze. However many there
   // are, they cost the fleet's same instanced draws. The plane is parked
   // just under the deck over (1000, 1000), out of shot (K1's lowered sky);
-  // the squadrons circle it.
+  // the pilots fly round it.
   {
     name: "airforce-swarm",
     x: 1000,

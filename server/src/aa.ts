@@ -80,8 +80,8 @@ export interface AaEnemy {
   vel: Vec3;
   /** Spawn-protected (fresh off the rig): no AA at it. */
   prot: boolean;
-  /** E1: may strafe a nest it flies at (false: a squadron plane in
-   * formation, whose guns are for humans only). Absent: true. */
+  /** E1: may strafe a nest it flies at (false: an air-force plane flown by
+   * its pilot, whose guns are for humans only). Absent: true. */
   strafes?: boolean;
   /** K1: metres added to its distance when a gun picks a target — an
    * airship passing at eye level is engaged only when no plane is nearer

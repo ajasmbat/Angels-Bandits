@@ -180,11 +180,11 @@ describe("shapeInput", () => {
     expect(shapeInput(input, { steer: zoomSteer(0) })).toEqual(input);
   });
 
-  it("costs 40% of turn/pitch/roll at full zoom, throttle untouched", () => {
+  it("scales a stick's turn/pitch/roll by the FOV at full zoom (30/70), throttle untouched", () => {
     const shaped = shapeInput(input, { steer: zoomSteer(1) });
-    expect(shaped.turn).toBeCloseTo(0.6, 6);
-    expect(shaped.pitch).toBeCloseTo(-0.3, 6);
-    expect(shaped.roll).toBeCloseTo(0.6, 6);
+    expect(shaped.turn).toBeCloseTo(30 / 70, 6);
+    expect(shaped.pitch).toBeCloseTo(-0.5 * (30 / 70), 6);
+    expect(shaped.roll).toBeCloseTo(30 / 70, 6);
     expect(shaped.throttle).toBe(1);
   });
 
@@ -194,10 +194,10 @@ describe("shapeInput", () => {
   });
 
   it("multiplies the free-look and zoom costs while a zoom eases out", () => {
-    // Half-decayed free-look (0.5) under a full zoom (0.6) ⇒ 0.30 authority.
+    // Half-decayed free-look (0.5) under a full zoom (30/70) ⇒ 15/70.
     const authority = 0.5 * zoomSteer(1);
     const shaped = shapeInput(input, { steer: authority });
-    expect(shaped.turn).toBeCloseTo(0.3, 6);
-    expect(shaped.roll).toBeCloseTo(0.3, 6);
+    expect(shaped.turn).toBeCloseTo(15 / 70, 6);
+    expect(shaped.roll).toBeCloseTo(15 / 70, 6);
   });
 });

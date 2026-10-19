@@ -18,6 +18,13 @@
 // Euler fast path (or the bots' envelope) it must still be bit-equal. The
 // pre-F10 model lives on as BOT_TUNING, which the bots fly (server/src/
 // bots.ts botStep): it must match main on EVERY scenario.
+//
+// FC1 then moved three of the PLAYER's physics values on purpose (sharper
+// slow turns, a harder corner airbrake, a punchier boost shove —
+// PRE_FC1_PHYSICS holds them as they were, and BOT_TUNING keeps them). So
+// on those level scenarios it is DEFAULT_TUNING with PRE_FC1_PHYSICS put
+// back that must equal main bit for bit, and an omitted tuning must still
+// fly exactly DEFAULT_TUNING.
 
 import { mulberry32 } from "@angels-bandits/common/city";
 import {
@@ -38,7 +45,12 @@ import {
   turnRadius,
   turnRateAt,
 } from "@angels-bandits/common/flight";
-import { BOT_TUNING, DEFAULT_TUNING } from "@angels-bandits/common/tuning";
+import {
+  BOT_TUNING,
+  DEFAULT_TUNING,
+  type FlightTuning,
+  PRE_FC1_PHYSICS,
+} from "@angels-bandits/common/tuning";
 import { describe, expect, it } from "vitest";
 import * as legacy from "./fixtures/flight-legacy";
 
@@ -78,6 +90,12 @@ function hand(seed: number, n: number, extra: Partial<FlightInput>): Step[] {
 }
 
 const FRAME_RATES = [30, 60, 144];
+
+/** The player's model with FC1's physics put back (see the header). */
+const PLAYER_PRE_FC1: Readonly<FlightTuning> = {
+  ...DEFAULT_TUNING,
+  ...PRE_FC1_PHYSICS,
+};
 
 /** Every scenario: a start state and its recorded input stream. */
 const SCENARIOS: { name: string; start: FlightState; steps: Step[] }[] = [];
@@ -228,6 +246,7 @@ describe("FL1 tuning parity: the pre-F10 model flies exactly as main", () => {
       let bots = sc.start;
       let omitted = sc.start;
       let passed = sc.start;
+      let pre = sc.start;
       for (let i = 0; i < sc.steps.length; i++) {
         const { input, dt } = sc.steps[i] as Step;
         old = legacy.stepFlight(old, input, dt);
@@ -236,7 +255,8 @@ describe("FL1 tuning parity: the pre-F10 model flies exactly as main", () => {
         if (checkDefault) {
           omitted = stepFlight(omitted, input, dt);
           passed = stepFlight(passed, input, dt, DEFAULT_TUNING);
-          d = d ?? firstDiff(old, omitted) ?? firstDiff(old, passed);
+          pre = stepFlight(pre, input, dt, PLAYER_PRE_FC1);
+          d = d ?? firstDiff(passed, omitted) ?? firstDiff(old, pre);
         }
         if (d !== null) {
           expect.fail(`${sc.name}: ${d} differs at step ${i}`);
@@ -255,15 +275,17 @@ describe("FL1 tuning parity: the pre-F10 model flies exactly as main", () => {
 
   it("the derived helpers agree at every speed", () => {
     for (let v = 0; v <= 200; v += 0.37) {
-      expect(turnRateAt(v)).toBe(legacy.turnRateAt(v));
-      expect(turnRateAt(v, DEFAULT_TUNING)).toBe(legacy.turnRateAt(v));
-      expect(turnRadius(v, DEFAULT_TUNING)).toBe(legacy.turnRadius(v));
-      expect(pitchRadius(v, DEFAULT_TUNING)).toBe(legacy.pitchRadius(v));
-      expect(speedForRadius(v, DEFAULT_TUNING)).toBe(legacy.speedForRadius(v));
-      for (const boost of [false, true]) {
-        expect(handlingRates(v, boost, DEFAULT_TUNING)).toEqual(
-          legacy.handlingRates(v, boost),
-        );
+      expect(turnRateAt(v)).toBe(turnRateAt(v, DEFAULT_TUNING));
+      for (const t of [PLAYER_PRE_FC1, BOT_TUNING]) {
+        expect(turnRateAt(v, t)).toBe(legacy.turnRateAt(v));
+        expect(turnRadius(v, t)).toBe(legacy.turnRadius(v));
+        expect(pitchRadius(v, t)).toBe(legacy.pitchRadius(v));
+        expect(speedForRadius(v, t)).toBe(legacy.speedForRadius(v));
+        for (const boost of [false, true]) {
+          expect(handlingRates(v, boost, t)).toEqual(
+            legacy.handlingRates(v, boost),
+          );
+        }
       }
     }
     expect(createFlightState({ x: 1, y: 2, z: 3 }, 4)).toEqual(

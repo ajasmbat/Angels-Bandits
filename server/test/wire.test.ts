@@ -224,17 +224,9 @@ describe("quantised snapshots over the wire", () => {
     await wait(2000);
     stop();
     expect(peer.snapshots.length).toBeGreaterThan(20);
-    // E1: a squadron row carries every plane in its mask.
-    const planesIn = (msg: (typeof peer.snapshots)[number]["msg"]): number => {
-      let n = msg.p.length;
-      for (const row of msg.s ?? []) {
-        for (let k = 0; k < 8; k++) if ((row[12] as number) & (1 << k)) n++;
-      }
-      return n;
-    };
     const perEntry =
       peer.snapshotBytes /
-      peer.snapshots.reduce((n, s) => n + planesIn(s.msg), 0);
+      peer.snapshots.reduce((n, s) => n + s.msg.p.length, 0);
     // The old shape spelled out pose/pos/quat/speed/hp/prot plus full float
     // text and ran ~240 bytes per plane; the tuple is comfortably under 100.
     expect(perEntry).toBeLessThan(100);

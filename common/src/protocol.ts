@@ -498,7 +498,7 @@ export type WireSnapshotEntry = [
  * Room state at TICK_DOWN_HZ, DECODED — the shape client code sees after
  * common/src/net.ts unpacks the wire. E1: per client — every human (the
  * receiver too: receivers skip their own id) and the enemies its interest
- * tier sends this tick (common/src/interest.ts), squadrons expanded.
+ * tier sends this tick (common/src/interest.ts), each plane its own row.
  */
 export interface SnapshotMsg {
   type: "snapshot";
@@ -516,39 +516,7 @@ export interface WireSnapshotMsg {
   type: "snapshot";
   time: number;
   p: WireSnapshotEntry[];
-  /** E1: squadrons in formation, one row each (common/src/squadron.ts) —
-   * absent when there are none. */
-  s?: WireSquadRow[];
 }
-
-/**
- * E1: one enemy squadron in formation as it crosses the wire — its anchor
- * quantised exactly like a snapshot entry, then the formation and the planes
- * in it. The client expands it into one SnapshotEntry per plane
- * (squadron.ts expandSquadRow), deriving each wingman from the anchor.
- *
- *   [id0, x, y, z, qx, qy, qz, qw, speed, form, spread, prot, mask, ...hp]
- *
- * `id0` is slot 0's plane id (slot k's counts up from it), `spread` is in
- * hundredths, `mask` bit k is slot k in formation, and one hp follows per
- * set bit, in slot order.
- */
-export type WireSquadRow = [
-  id0: string,
-  x: number,
-  y: number,
-  z: number,
-  qx: number,
-  qy: number,
-  qz: number,
-  qw: number,
-  speed: number,
-  form: number,
-  spread: number,
-  prot: number,
-  mask: number,
-  ...hp: number[],
-];
 
 /** Broadcast to everyone else when a player's shot passes validation —
  * receivers render that plane's muzzle flash + tracer (cosmetic only). */

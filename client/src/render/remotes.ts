@@ -28,7 +28,11 @@ import {
   INTERP_JITTER_DECAY,
   MAX_HP,
 } from "@angels-bandits/common/constants";
-import { IM_STALE_MS } from "@angels-bandits/common/interest";
+import {
+  IM_FULL_M,
+  IM_MID_LAG_MS,
+  IM_STALE_MS,
+} from "@angels-bandits/common/interest";
 import type {
   Pose,
   RosterEntry,
@@ -66,6 +70,11 @@ import { REVEAL_COLOR, REVEAL_INTENSITY, turbulenceOffsetInto } from "./storm";
 import type { PlaneTrails, QuatLike } from "./trails";
 import { nearestImageInto } from "./wrapPlacement";
 
+/** I1: an enemy this much inside the full-rate tier already eases into its
+ * mid-tier lag (it may cross before the next frame's distance says so), m —
+ * and the rate the lag eases at, a fraction of real time. */
+const TIER_LAG_LEAD_M = 100;
+const TIER_LAG_RATE = 0.35;
 /** Spawn-protection shimmer pulse rate, Hz. */
 const SHIMMER_HZ = 5;
 /** Spawn-protection shimmer emissive tint. */
@@ -130,6 +139,9 @@ interface Remote {
   /** How much staler this remote's image is than the server's on-record
    * pose of it, beyond the shared delay, ms (hit-claim budget). */
   extraDelay: number;
+  /** I1: how much further back this enemy is drawn for its rate tier, ms
+   * (eased toward IM_MID_LAG_MS past the full-rate tier, 0 inside it). */
+  tierLag: number;
   /** `time` of the last snapshot this remote was in (W2: absence hides it). */
   seenAt: number;
   /** P4: this remote's surface commands, rewritten in place each frame. */
@@ -247,6 +259,7 @@ export class RemotePlanes {
           lagPeak: 0,
           lastAge: 0,
           extraDelay: 0,
+          tierLag: enemy ? IM_MID_LAG_MS : 0,
           seenAt: snap.time,
           controls: { ...NEUTRAL_CONTROLS },
           sampled: {
@@ -499,10 +512,19 @@ export class RemotePlanes {
       this.walk;
     if (!clock) return;
     if (!remote.alive) return;
-    const ownTime = remote.clock.advance(
-      clock.frameMs,
-      target - remote.lagPeak,
-    );
+    // I1: an enemy past the full-rate tier (or nearly: TIER_LAG_LEAD_M)
+    // arrives at 5 Hz, so it is drawn IM_MID_LAG_MS further back — always
+    // between two rows — eased in and out at TIER_LAG_RATE of real time: it
+    // slows or quickens a touch, far off, instead of stepping.
+    if (remote.enemy) {
+      const want =
+        remote.dist > IM_FULL_M - TIER_LAG_LEAD_M ? IM_MID_LAG_MS : 0;
+      const step = TIER_LAG_RATE * dt * 1000;
+      remote.tierLag += Math.max(-step, Math.min(step, want - remote.tierLag));
+    }
+    const ownTime =
+      remote.clock.advance(clock.frameMs, target - remote.lagPeak) -
+      remote.tierLag;
     // The server judges a hit on this remote against its NEWEST pose,
     // which is lastAge older than the tick; the image is drawn
     // (renderTime − ownTime) further back than the shared delay.

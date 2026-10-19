@@ -29,6 +29,7 @@ import {
 import { coarsePointer } from "./mobile";
 import {
   type CameraRoll,
+  MOUSE_SENS_STEPS,
   type PanelEnv,
   type PanelEvent,
   STICK_SENS_STEPS,
@@ -89,6 +90,10 @@ export interface SettingsHooks {
   /** W4: the desktop stick SENSITIVITY and the FLIGHT DATA line. */
   setStickSens: (v: number) => void;
   setFlightData: (on: boolean) => void;
+  /** FC1: MOUSE SENSITIVITY, INVERT Y and COLLISION ASSIST — applied live. */
+  setMouseSens: (v: number) => void;
+  setInvertY: (on: boolean) => void;
+  setCollisionAssist: (on: boolean) => void;
   /** SOLO: present in the single-player game — the panel is a real pause,
    * and RESTART calls this. */
   solo?: { restart: () => void };
@@ -214,6 +219,21 @@ const MARKUP = `
           STICK_SENS_STEPS.map((s) => [String(s), `${s}×`]),
         )}
       </div>
+      <div class="row" data-row="mouseSens">
+        <span>MOUSE SENSITIVITY</span>
+        ${seg(
+          "mouseSens",
+          "Mouse sensitivity",
+          MOUSE_SENS_STEPS.map((s) => [String(s), `${s}×`]),
+        )}
+      </div>
+      <div class="row" data-row="invertY">
+        <span>INVERT Y</span>
+        ${seg("invertY", "Invert Y", [
+          ["on", "ON"],
+          ["off", "OFF"],
+        ])}
+      </div>
       <p class="note" data-row="keysHint">ARROWS STEER · ENTER FIRES · SPACE BOOSTS</p>
     </section>
     <section>
@@ -274,6 +294,13 @@ const MARKUP = `
         <div class="row">
           <span>FLIGHT ASSIST</span>
           ${seg("assist", "Flight assist", [
+            ["on", "ON"],
+            ["off", "OFF"],
+          ])}
+        </div>
+        <div class="row">
+          <span>COLLISION ASSIST</span>
+          ${seg("collisionAssist", "Collision assist", [
             ["on", "ON"],
             ["off", "OFF"],
           ])}
@@ -513,6 +540,21 @@ export class SettingsPanel {
       this.values = clampSettings({ ...this.values, stickSens: Number(v) });
       saveSettings(this.store, this.values);
       h.setStickSens(this.values.stickSens);
+    } else if (group === "mouseSens") {
+      this.values = clampSettings({ ...this.values, mouseSens: Number(v) });
+      saveSettings(this.store, this.values);
+      h.setMouseSens(this.values.mouseSens);
+    } else if (group === "invertY") {
+      this.values = clampSettings({ ...this.values, invertY: v === "on" });
+      saveSettings(this.store, this.values);
+      h.setInvertY(this.values.invertY);
+    } else if (group === "collisionAssist") {
+      this.values = clampSettings({
+        ...this.values,
+        collisionAssist: v === "on",
+      });
+      saveSettings(this.store, this.values);
+      h.setCollisionAssist(this.values.collisionAssist);
     } else if (group === "flightData") {
       this.values = clampSettings({ ...this.values, flightData: v === "on" });
       saveSettings(this.store, this.values);
@@ -608,6 +650,9 @@ export class SettingsPanel {
       intensity: String(h.intensity()),
       easy: h.easy() ? "on" : "off",
       stickSens: String(this.values.stickSens),
+      mouseSens: String(this.values.mouseSens),
+      invertY: this.values.invertY ? "on" : "off",
+      collisionAssist: this.values.collisionAssist ? "on" : "off",
       flightData: this.values.flightData ? "on" : "off",
       sensitivity: String(sens),
       aimMode: aim,
@@ -650,7 +695,16 @@ export class SettingsPanel {
     const stickRow = this.root.querySelector<HTMLElement>(
       "[data-row=stickSens]",
     );
-    if (stickRow) stickRow.hidden = touch || aim === "instructor";
+    // W4/FC1: the arrows' sensitivity with the keyboard, the mouse's with
+    // either mouse scheme, INVERT Y wherever a stick flies.
+    if (stickRow) stickRow.hidden = touch || aim !== "keys";
+    const mouseRow = this.root.querySelector<HTMLElement>(
+      "[data-row=mouseSens]",
+    );
+    if (mouseRow) mouseRow.hidden = touch || aim === "keys";
+    const invertRow =
+      this.root.querySelector<HTMLElement>("[data-row=invertY]");
+    if (invertRow) invertRow.hidden = aim === "instructor";
     const keysHint = this.root.querySelector<HTMLElement>(
       "[data-row=keysHint]",
     );

@@ -21,6 +21,21 @@ Nothing here is player-facing. The client changes it depends on are a few
 read-only `window.__ab` hooks and three URL query knobs; the game's default
 configuration is exactly what a plain visit gets.
 
+**SOLO: the game runs in the page.** Since the single-player change the
+game's server is the page's own sim worker (`client/src/sim/worker.ts`,
+running `server/src/host.ts`). The server a harness spawns now only serves
+the built client and `/healthz`. The host flags a harness used to set on that
+server's environment (`AB_QUIET_CITY`, `AB_WAVES`, `LIVENESS_TIMEOUT_MS`,
+`AB_EPOCH_MS`, …) ride the page URL as `?sim=KEY:VALUE,…` instead
+(`local-game.mjs`). They stay on the server's environment too, so an
+`--ab-ref` build from before SOLO still plays on that server over ws. The
+furball's fake pilots join the page's own host (`__ab.qaLink`). The
+Node-side benches (`server-tick.mjs`, `tools/airforce-bench.ts`,
+`tools/net-bench.ts`, `tools/carrier-sanity.ts`) still measure the host in
+Node over ws, and so does `polish.mjs --soak` (`?mp=1`: it soaks the shared
+server). `solo-smoke.mjs` plays the static build offline, and
+`worker-tick.mjs` measures the worker's tick per difficulty.
+
 ---
 
 ## Read this before you read a number

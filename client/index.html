@@ -1079,6 +1079,55 @@
       #join-form:not(.show-install) #pwa-hint {
         display: none;
       }
+      /* SOLO: the difficulty row and the start screen's settings fold. */
+      #join-difficulty,
+      #join-quality {
+        display: flex;
+        justify-content: center;
+        gap: 6px;
+        margin: 14px auto 0;
+      }
+      #join-difficulty button,
+      #join-quality button {
+        background: transparent;
+        border: 1px solid rgba(159, 216, 232, 0.35);
+        color: #9fd8e8;
+        font: inherit;
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        padding: 7px 10px;
+        cursor: pointer;
+      }
+      #join-difficulty button[aria-checked="true"],
+      #join-quality button[aria-checked="true"] {
+        color: #0c0b18;
+        background: #27e0c0;
+        border-color: #27e0c0;
+      }
+      #join-difficulty-note {
+        margin: 8px 0 0;
+        min-height: 1.2em;
+        font-size: 11px;
+        letter-spacing: 0.12em;
+        opacity: 0.8;
+      }
+      body.mp #join-difficulty,
+      body.mp #join-difficulty-note,
+      #join form.busy #join-difficulty,
+      #join form.busy #join-difficulty-note,
+      #join form.busy #join-settings,
+      #join-form:not(.show-settings) #join-settings {
+        display: none;
+      }
+      #join-settings {
+        margin: 16px auto 0;
+        font-size: 11px;
+        letter-spacing: 0.12em;
+      }
+      #join-settings p {
+        margin: 10px 0 0;
+        opacity: 0.7;
+      }
       /* FL1, in the lab: the icon becomes the plain way back to the game. */
       #join-lab.text {
         width: auto;
@@ -2884,6 +2933,16 @@
           enterkeyhint="go"
           spellcheck="false"
         />
+        <!-- SOLO: the start screen's difficulty — the enemy intensity the
+             local host's room flies (ui/join.ts initStartScreen). Hidden on
+             the multiplayer server (?mp=1), where the room shares one. -->
+        <div id="join-difficulty" role="radiogroup" aria-label="Difficulty">
+          <button type="button" data-level="0" role="radio">EASY</button>
+          <button type="button" data-level="1" role="radio">NORMAL</button>
+          <button type="button" data-level="2" role="radio">HARD</button>
+          <button type="button" data-level="3" role="radio">INSANE</button>
+        </div>
+        <p id="join-difficulty-note" aria-live="polite"></p>
         <button type="submit">PLAY</button>
         <!-- W4: one tap to play — everything else behind small icons: the
              controls primer (?), the Flight Lab (FL1; ui/join.ts
@@ -2928,6 +2987,22 @@
               <path d="M12 4l1.5 2.5M17 3l-1 3M20 7l-2.5 1" />
             </svg>
           </a>
+          <!-- SOLO: graphics before the first flight; everything else is
+               in the in-game menu (Esc). -->
+          <button
+            id="join-settings-btn"
+            class="join-icon"
+            type="button"
+            title="Settings"
+            aria-label="Settings"
+            aria-expanded="false"
+            aria-controls="join-settings"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="3.2" />
+              <path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1" />
+            </svg>
+          </button>
           <button
             id="join-install"
             class="join-icon"
@@ -2945,6 +3020,15 @@
         <!-- U3 (ui/coach.ts): the controls primer, desktop or touch — W4:
              folded behind the ? icon. -->
         <ul id="join-primer" aria-label="Controls"></ul>
+        <div id="join-settings">
+          <span>GRAPHICS</span>
+          <div id="join-quality" role="radiogroup" aria-label="Graphics">
+            <button type="button" data-q="auto" role="radio">AUTO</button>
+            <button type="button" data-q="low" role="radio">LOW</button>
+            <button type="button" data-q="high" role="radio">HIGH</button>
+          </div>
+          <p>SOUND, CONTROLS AND THE REST: ESC IN FLIGHT</p>
+        </div>
         <div id="join-progress" aria-hidden="true"><div class="fill"></div></div>
         <p id="join-status" role="status" aria-live="polite">LOADING…</p>
         <button id="join-retry" type="button" hidden>RETRY</button>

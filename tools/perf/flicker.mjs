@@ -100,6 +100,7 @@ import { createServer } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { withSim } from "./local-game.mjs";
 import { prepareRefBuild } from "./refbuild.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -285,6 +286,12 @@ function freePort() {
   });
 }
 
+/** The host flags: the fixed epoch, and (W1) no carrier war — an empty sky
+ * is the only reproducible one. SOLO: the page's own host reads them off
+ * `sim` (local-game.mjs); the spawned server — statics, and a pre-SOLO
+ * build's game — off its environment. */
+const HOST_ENV = { AB_EPOCH_MS: String(EPOCH_MS), AB_WAVES: "0" };
+
 async function startServer(cwd) {
   const port = await freePort();
   const proc = spawn(
@@ -292,13 +299,7 @@ async function startServer(cwd) {
     ["--import", FIXED_EPOCH, "--import", "tsx", "server/src/index.ts"],
     {
       cwd,
-      env: {
-        ...process.env,
-        PORT: String(port),
-        AB_EPOCH_MS: String(EPOCH_MS),
-        // W1: no carrier war — an empty sky is the only reproducible one.
-        AB_WAVES: "0",
-      },
+      env: { ...process.env, PORT: String(port), ...HOST_ENV },
       stdio: "ignore",
     },
   );
@@ -657,7 +658,10 @@ async function measureBuild(
     // BEFORE goto: see the header.
     await page.clock.install();
     await page.goto(
-      `http://127.0.0.1:${port}/?res=${far ? FAR_RES : 1}&sky=night&quality=high&gputime=0`,
+      withSim(
+        `http://127.0.0.1:${port}/?res=${far ? FAR_RES : 1}&sky=night&quality=high&gputime=0`,
+        HOST_ENV,
+      ),
     );
     await page.fill("#join-name", "FLICKER");
     await page.click('#join button[type="submit"]');

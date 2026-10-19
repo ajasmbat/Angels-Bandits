@@ -46,6 +46,11 @@
 //               collapses, boss, cave-ins and chaos with the first client's
 //               and the server's — a field that disagrees on every retry is
 //               a desync.
+// SOLO: --ttff, --shots and --overlap boot the single-player game — its
+// host in the page's sim worker, the flags below on `sim` (local-game.mjs).
+// The soak is the shared server's soak as much as the clients' (its heap,
+// its stderr, its /debug/rooms, peers and parity in ONE room), so it plays
+// on that server: `?mp=1`.
 // Every client is held to the same limits; the server too: it must stay up,
 // write nothing to stderr, keep its heap (forced GC) within +20 % of minute
 // 5, and its RSS trend (median step) under 1 MB/min over the last 15 min. The report has one verdict per client, the server, the
@@ -57,6 +62,7 @@ import { createServer } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { withSim } from "./local-game.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
@@ -192,6 +198,14 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
   });
 }
 
+/** The host flags (see startServer). */
+const HOST_ENV = {
+  // A software-rendered page can go seconds between frames: the
+  // production 4 s liveness bound would drop it and resume mid-soak.
+  LIVENESS_TIMEOUT_MS: "30000",
+  BOOT_TIMEOUT_MS: "180000",
+};
+
 async function startServer(port, cwd = SERVE_REPO) {
   const log = [];
   /** A2: stderr on its own — the soak fails on any line of it. */
@@ -206,10 +220,7 @@ async function startServer(port, cwd = SERVE_REPO) {
         PORT: String(port),
         // A2: /debug/rooms — per-room maps, memory and damage for the soak.
         AB_DEBUG_ROOMS: "1",
-        // A software-rendered page can go seconds between frames: the
-        // production 4 s liveness bound would drop it and resume mid-soak.
-        LIVENESS_TIMEOUT_MS: "30000",
-        BOOT_TIMEOUT_MS: "180000",
+        ...HOST_ENV,
       },
       stdio: ["ignore", "pipe", "pipe"],
     },
@@ -1019,7 +1030,7 @@ function verdictsOf(c) {
 /** A2: the Flight Lab, visited in a page of its own; afterwards the lab room
  * must be gone from every per-room map the server keeps. */
 async function labVisit(url, port) {
-  const c = await openClient(`${url}?lab`, "lab", PEER, "Lab");
+  const c = await openClient(`${url}&lab`, "lab", PEER, "Lab");
   c.keysOnly = true;
   const labRoom = await c.page.evaluate(() => window.__ab.net().roomId);
   const endAt = Date.now() + 45000;
@@ -1260,7 +1271,7 @@ async function main() {
     args: CHROME_ARGS,
     ...(process.env.AB_CHROME ? { executablePath: process.env.AB_CHROME } : {}),
   });
-  const url = `http://127.0.0.1:${port}/`;
+  const url = withSim(`http://127.0.0.1:${port}/`, HOST_ENV);
   const report = {
     label: LABEL,
     chromeArgs: CHROME_ARGS,
@@ -1272,7 +1283,7 @@ async function main() {
     if (REF_REPO) {
       const refPort = await freePort();
       await startServer(refPort, REF_REPO);
-      refUrl = `http://127.0.0.1:${refPort}/`;
+      refUrl = withSim(`http://127.0.0.1:${refPort}/`, HOST_ENV);
     }
     report.ttff = await runTtff(liveBrowser, url, refUrl);
   }
@@ -1286,7 +1297,7 @@ async function main() {
   }
   if (SOAK_MIN > 0) {
     console.log(`soak ${SOAK_MIN} min`);
-    report.soak = await runSoak(url, server);
+    report.soak = await runSoak(`http://127.0.0.1:${port}/?mp=1`, server);
   }
   const path = resolve(OUT, `${LABEL}-report.json`);
   writeFileSync(path, `${JSON.stringify(report, null, 2)}\n`);

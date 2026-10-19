@@ -12,6 +12,9 @@
 // P3: it is also the pause menu. A shared room never pauses — the autopilot
 // flies the plane while it is up (main.ts), which the header says — and
 // RESUME (or Esc, or ✕) puts the controls back.
+// SOLO: the single-player game DOES pause while it is up (the sim worker
+// stops; `hooks.solo`): the header says PAUSED, and RESTART starts a fresh
+// game at the same difficulty.
 
 import { AIR_FORCE, INTENSITY_NAMES } from "@angels-bandits/common/waves";
 import { FEELS, type Feel } from "../game/effortless";
@@ -91,6 +94,9 @@ export interface SettingsHooks {
   setMouseSens: (v: number) => void;
   setInvertY: (on: boolean) => void;
   setCollisionAssist: (on: boolean) => void;
+  /** SOLO: present in the single-player game — the panel is a real pause,
+   * and RESTART calls this. */
+  solo?: { restart: () => void };
 }
 
 /** The Settings values a range slider drives. */
@@ -140,6 +146,7 @@ const MARKUP = `
     <div class="settings-title">
       <h2 id="settings-h">MENU</h2>
       <span class="settings-autopilot">AUTOPILOT FLYING</span>
+      <span class="settings-paused">PAUSED</span>
     </div>
     <button type="button" class="settings-close" aria-label="Close settings" tabindex="-1">✕</button>
   </header>
@@ -346,7 +353,8 @@ const MARKUP = `
   </details>
   <footer class="settings-foot">
     <span class="hint">ESC TO RESUME</span>
-    <button type="button" class="settings-resume" tabindex="-1">RESUME</button>
+    <button type="button" class="settings-restart" id="pause-restart" tabindex="-1">RESTART</button>
+    <button type="button" class="settings-resume" id="pause-resume" tabindex="-1">RESUME</button>
   </footer>
   <footer class="settings-rotate"><span>ROTATE TO LANDSCAPE TO FLY ↻</span></footer>
 </div>`;
@@ -400,6 +408,12 @@ export class SettingsPanel {
       this.event("toggle");
     });
     this.sync();
+  }
+
+  /** SOLO: open the menu — the pause — when the game loses the player
+   * (the window lost focus, the tab hid). Never closes it. */
+  openMenu(): void {
+    if (!this.open) this.event("open");
   }
 
   /** Whether the panel is up (the autopilot's switch). */
@@ -460,6 +474,8 @@ export class SettingsPanel {
     this.built = true;
     const phone = this.root.querySelector(".phone");
     this.root.innerHTML = MARKUP;
+    // SOLO: the pause menu's own header and RESTART (styles key off it).
+    this.root.classList.toggle("solo", this.hooks.solo !== undefined);
     this.root.setAttribute("aria-live", "off");
     if (phone) this.root.querySelector(".settings-rotate")?.prepend(phone);
     swallowMouse(this.root);
@@ -473,6 +489,10 @@ export class SettingsPanel {
       const t = e.target as HTMLElement;
       if (t.closest(".settings-close, .settings-resume")) {
         this.event("close");
+        return;
+      }
+      if (t.closest(".settings-restart")) {
+        this.hooks.solo?.restart();
         return;
       }
       const btn = t.closest<HTMLButtonElement>(".seg button");

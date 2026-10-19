@@ -28,6 +28,7 @@ import { cpus, loadavg, platform, release } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { simValue } from "./local-game.mjs";
 import { startPilots } from "./pilots.mjs";
 import { prepareRefBuild } from "./refbuild.mjs";
 import {
@@ -316,23 +317,25 @@ function freePort() {
   });
 }
 
+/**
+ * D6: a quiet city — no host-timed destruction or boss raid (see
+ * server/src/host.ts QUIET_CITY). The destruction segments stage their own
+ * on the client; every other segment flies an intact city. A build from
+ * before D6 ignores the variable, and its arm reports `quiet` n/a.
+ * D6: and a liveness bound a software-rendered page can keep: at the
+ * host's 4 s, a seconds-long frame dropped the page, and the resume
+ * respawned it mid-segment (each segment reports `resumed`).
+ * SOLO: the host is the page's sim worker, so these ride the URL (`sim`,
+ * local-game.mjs) — and the spawned server's environment too, for an
+ * `--ab-ref` build from before SOLO that still plays on it.
+ */
+const HOST_ENV = { AB_QUIET_CITY: "1", LIVENESS_TIMEOUT_MS: "30000" };
+
 async function startServer(port, cwd = REPO) {
   const log = [];
   const proc = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
     cwd,
-    // D6: a quiet city — no server-timed destruction or boss raid (see
-    // server/src/index.ts QUIET_CITY). The destruction segments stage their
-    // own on the client; every other segment flies an intact city. A build
-    // from before D6 ignores the variable, and its arm reports `quiet` n/a.
-    // D6: and a liveness bound a software-rendered page can keep: at the
-    // server's 4 s, a seconds-long frame dropped the page, and the resume
-    // respawned it mid-segment (each segment reports `resumed`).
-    env: {
-      ...process.env,
-      PORT: String(port),
-      AB_QUIET_CITY: "1",
-      LIVENESS_TIMEOUT_MS: "30000",
-    },
+    env: { ...process.env, PORT: String(port), ...HOST_ENV },
     stdio: ["ignore", "pipe", "pipe"],
   });
   proc.stdout.on("data", (d) => log.push(String(d)));
@@ -1381,10 +1384,12 @@ async function soak(browser, url, seconds) {
   const page = await newProbedPage(browser);
   const errors = await joinGame(page, url);
   await flyWarmupLap(page);
-  const pilots = await startPilots(Number(new URL(url).port), seg.pilots, {
-    x: seg.x,
-    z: seg.z,
-  });
+  const pilots = await startPilots(
+    Number(new URL(url).port),
+    seg.pilots,
+    { x: seg.x, z: seg.z },
+    { page },
+  );
   let s;
   try {
     await sleep(PILOT_SETTLE_MS);
@@ -1708,7 +1713,7 @@ async function measure(browser, url, { trace = true, ledger = true } = {}) {
             port,
             seg.pilots,
             { x: seg.x, z: seg.z },
-            { flight: seg.pilotFlight, fire: seg.pilotFire ?? true },
+            { flight: seg.pilotFlight, fire: seg.pilotFire ?? true, page },
           );
     try {
       if (pilots) await sleep(PILOT_SETTLE_MS);
@@ -2836,6 +2841,7 @@ async function main() {
     // multi-second frames (net/socket.ts) — at 3 s it dropped healthy
     // sessions mid-pass on a loaded runner. Ignored by an older build.
     params.set("silence", "60000");
+    params.set("sim", simValue(HOST_ENV));
     for (const [k, v] of new URLSearchParams(overrides ?? "")) params.set(k, v);
     return `http://127.0.0.1:${at}/?${params}`;
   };

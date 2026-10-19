@@ -177,6 +177,7 @@ import {
   wreckImpact,
   wreckPosAt,
 } from "@angels-bandits/common/wreck";
+import type { TickReport } from "@angels-bandits/server/host";
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
@@ -590,6 +591,12 @@ import { WeatherClock, setWeatherUniform } from "./render/weather";
 import { buildingSeed, isWindowLit } from "./render/window-pattern";
 import { nearestImage, nearestImageInto } from "./render/wrapPlacement";
 import { Wrecks } from "./render/wrecks";
+import {
+  WorkerLink,
+  localTickReport,
+  multiplayer,
+  startLocalHost,
+} from "./sim/local";
 import { COACH_DONE_KEY, Coach, renderPrimer } from "./ui/coach";
 import { CommsTicker } from "./ui/comms";
 import { CourseBoard } from "./ui/course-board";
@@ -608,7 +615,9 @@ import { IntensityBar, intensityName } from "./ui/intensity";
 import {
   closeJoin,
   initLabLink,
+  initStartScreen,
   requestName,
+  restartSolo,
   showJoinError,
   showJoinProgress,
   showSignalLost,
@@ -671,6 +680,19 @@ const DESTRUCT_URL = new URLSearchParams(window.location.search).has(
 const LAB_URL =
   new URLSearchParams(window.location.search).has("lab") || DESTRUCT_URL;
 initLabLink(LAB_URL, DESTRUCT_URL);
+// SOLO: the game runs in this page's sim worker (sim/local.ts) unless the
+// hidden `?mp=1` asks for the multiplayer server. Start the worker now, so
+// its host builds the city while the player is still on the start screen;
+// the card itself is the start screen (difficulty, graphics, controls).
+const MULTIPLAYER = multiplayer();
+if (!MULTIPLAYER) startLocalHost();
+// SOLO: and it plays offline after the first visit — the service worker
+// (client/sw.template.js) precaches the whole build. Production builds only:
+// the dev server's modules are not a build.
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  navigator.serviceWorker.register("./sw.js").catch(() => {});
+}
+const difficulty = initStartScreen(MULTIPLAYER);
 
 // W4 Easy mode (game/easy-mode.ts): decided once and kept — read BEFORE
 // the join card remembers a callsign, which is half of how a pilot who has
@@ -2276,6 +2298,12 @@ showOwnScore(welcome.scores);
 // from the welcome so a late joiner's bar opens where the room already is.
 const intensityBar = new IntensityBar(welcome.intensity);
 intensityBar.onClaim = (level) => socket.sendSetIntensity(level);
+// SOLO: the start screen's difficulty is the room's enemy intensity — the
+// local room is this pilot's alone (a lab room keeps its own rules). Claimed
+// here, once the bar exists, so the host's intensityConfig answer (what the
+// HUD shows, as ever) lands on it; the plane is still loading, so no wave
+// has been sized yet.
+if (socket.local && !LAB_URL) socket.sendSetIntensity(difficulty());
 scoreboard.bindIntensity(intensityBar);
 // M2: no Tab key on a phone — a minimap tap pins the scoreboard (touch only).
 scoreboard.bindTapToggle(document.getElementById("minimap") as HTMLElement);
@@ -3173,11 +3201,13 @@ socket.events.onScores = (scores) => {
 socket.events.onIntensityConfig = (msg) => {
   // The server is the only authority on this value — including for the
   // player who just dragged, whose bar has been showing a preview.
-  intensityBar.applyServer(msg.level, msg.byName);
+  // SOLO: the only setter in the local room is the player.
+  const byName = socket.local ? "YOU" : msg.byName;
+  intensityBar.applyServer(msg.level, byName);
   scoreboard.refreshIntensity();
   // Ticker only, never the voice: byName is free text, and the radio's
   // name guard (game/callouts.ts) exists precisely to keep it out of TTS.
-  comms.add("NET", `${msg.byName} set enemies to ${intensityName(msg.level)}`);
+  comms.add("NET", `${byName} set enemies to ${intensityName(msg.level)}`);
 };
 
 // --- Perf instrumentation (P1) ---
@@ -3555,6 +3585,23 @@ declare global {
         autopilot: boolean;
         values: Settings;
         gains: { master: number; voice: number; music: number } | null;
+      };
+      /** SOLO QA (tools/perf/pilots.mjs): one more connection into this
+       * page's local host — a fake pilot's — or null on a remote server. */
+      qaLink: () => WorkerLink | null;
+      /** SOLO QA (tools/perf/worker-tick.mjs): the sim worker's tick
+       * profile (`sim` AB_TICK_STATS:1), reset after when asked. */
+      simTick: (
+        reset?: boolean,
+      ) => Promise<(TickReport & { at: number }) | null>;
+      /** SOLO QA: the local game — paused, the room's intensity, the wave,
+       * and snapshots received (what a pause stops). */
+      solo: () => {
+        local: boolean;
+        paused: boolean;
+        intensity: number;
+        wave: number;
+        snapshots: number;
       };
       net: () => {
         selfId: string;
@@ -4229,6 +4276,22 @@ declare global {
 // suspended, every held key and the trigger are dropped, and the autopilot
 // (ui/settings.ts) flies the plane level and out of the skyline.
 let settingsOpen = false;
+/**
+ * SOLO: the single-player game pauses while its menu is up — the sim worker
+ * stops (socket.pause: the host's tick and clock, and this side's clock
+ * sync), the frame loop draws nothing (frame), the mix goes quiet, and the
+ * boost edge is dropped so the next press is a real start. A shared room
+ * (`?mp=1`) never pauses: there the autopilot flies, as before.
+ */
+let soloPaused = false;
+function setSoloPaused(on: boolean): void {
+  if (!socket.local || on === soloPaused) return;
+  soloPaused = on;
+  socket.pause(on);
+  audio.setPaused(on);
+  if (on) setBoostBurning(false, performance.now());
+  else interruptQuality(); // O3: the frames around a pause are a transient
+}
 /** The aim as the settings screen opened: what changed is toasted when it
  * closes (M9), since the screen covers the HUD while it is open. */
 let aimAtOpen: { mode: AimMode; sensitivity: number | null } | null = null;
@@ -4336,8 +4399,10 @@ const settingsPanel = new SettingsPanel(
       settings = { ...settings, collisionAssist: on };
       resetCollisionAssist(collisionAssist);
     },
+    ...(socket.local && { solo: { restart: restartSolo } }),
     onOpenChange: (open) => {
       settingsOpen = open;
+      setSoloPaused(open);
       // Resuming recentres the touch aim onto the gun line (M7), so the
       // instructor picks up flying straight rather than from a stale point.
       touchControls?.setSuspended(open);
@@ -4741,6 +4806,15 @@ window.__ab = {
     autopilot: settingsOpen && alive,
     values: settingsPanel.current(),
     gains: audio.busGains(),
+  }),
+  qaLink: () => (socket.local ? new WorkerLink() : null),
+  simTick: (reset = false) => localTickReport(reset),
+  solo: () => ({
+    local: socket.local,
+    paused: socket.paused,
+    intensity: intensityBar.displayed,
+    wave: socket.waves.wave,
+    snapshots: socket.snapshots,
   }),
   net: () => ({
     selfId: socket.selfId,
@@ -6112,6 +6186,12 @@ function sampleChaos(now: number, renderMs: number | null): void {
 }
 
 const frame = (rafNow: number): void => {
+  // SOLO: paused — nothing moves and nothing is drawn (the canvas keeps the
+  // last frame); the next frame after it starts from a fresh `last`.
+  if (soloPaused) {
+    last = rafNow;
+    return;
+  }
   // D11 QA: a fixed virtual step instead of the rAF clock (time-lapses).
   if (qaFrameStep !== null) qaFrameStep.now += qaFrameStep.dtMs;
   const now = qaFrameStep !== null ? qaFrameStep.now : rafNow;
@@ -7875,9 +7955,11 @@ const frame = (rafNow: number): void => {
       `SPD ${flight.speed.toFixed(0)} m/s  THR ${flight.targetSpeed.toFixed(0)}  ` +
       `ALT ${flight.pos.y.toFixed(0)} m`;
     // Touch (M9): a short line for the top band — no player count or FPS.
-    hudEl.textContent = isTouch()
-      ? stats
-      : `${stats}  PLR ${remotes.count + 1}  FPS ${perf.fps.toFixed(0)}`;
+    // SOLO: no player count either — the only pilot is this one.
+    hudEl.textContent =
+      isTouch() || socket.local
+        ? stats
+        : `${stats}  PLR ${remotes.count + 1}  FPS ${perf.fps.toFixed(0)}`;
   }
 };
 renderer.setAnimationLoop(frame);
@@ -7901,6 +7983,12 @@ requestAnimationFrame(() => {
 // heartbeat keeps the socket. Back, the server answers with a fresh spawn,
 // which poses wait for: the local flight state froze with the tab.
 let glLost = false;
+// SOLO: losing the window's focus pauses the solo game (the menu opens).
+// Not under automation (navigator.webdriver): a headless harness has no
+// focus to keep, and its runs must not stall behind a menu.
+window.addEventListener("blur", () => {
+  if (socket.local && !navigator.webdriver) settingsPanel.openMenu();
+});
 let hiddenPing: ReturnType<typeof setInterval> | undefined;
 document.addEventListener("visibilitychange", () => {
   interruptQuality(); // O3: a transient
@@ -7909,9 +7997,20 @@ document.addEventListener("visibilitychange", () => {
     // The server's boost mirror restarts idle on return: stop our burn now
     // so the next start edge is actually sent.
     setBoostBurning(false, performance.now());
+    // SOLO: away from the solo game is a pause — the menu comes up and the
+    // sim worker stops; nothing to hold a seat for, so no away.
+    if (socket.local) {
+      settingsPanel.openMenu();
+      return;
+    }
     socket.sendAway(true);
     clearInterval(hiddenPing);
     hiddenPing = setInterval(() => socket.sendPing(), AWAY_PING_INTERVAL_MS);
+  } else if (socket.local) {
+    if (!glLost) {
+      last = performance.now();
+      renderer.setAnimationLoop(frame);
+    }
   } else {
     clearInterval(hiddenPing);
     socket.sendAway(false);

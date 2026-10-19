@@ -19,6 +19,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { chromium } from "playwright";
+import { withSim } from "./local-game.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (name, dflt) => {
@@ -46,15 +47,18 @@ const LEAD_MS = 5000;
 const WARM_MS = 1500;
 mkdirSync(OUT, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** The host flags. SOLO: the page's own host reads them off `sim`
+ * (local-game.mjs); the spawned server — statics, and a pre-SOLO build's
+ * game — off its environment. */
+// A quiet city with an empty sky: nothing breaks but what is staged.
+const HOST_ENV = {
+  AB_WAVES: "0",
+  AB_QUIET_CITY: "1",
+  LIVENESS_TIMEOUT_MS: "600000",
+};
+
 const server = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
-  // A quiet city with an empty sky: nothing breaks but what is staged.
-  env: {
-    ...process.env,
-    PORT: String(PORT),
-    AB_WAVES: "0",
-    AB_QUIET_CITY: "1",
-    LIVENESS_TIMEOUT_MS: "600000",
-  },
+  env: { ...process.env, PORT: String(PORT), ...HOST_ENV },
   stdio: "ignore",
 });
 
@@ -166,7 +170,10 @@ try {
     ? `&quality=${process.env.AB_GALLERY_QUALITY}`
     : "";
   await page.goto(
-    `http://127.0.0.1:${PORT}/?res=${RES}&sky=night&nanprobe&silence=600000${quality}`,
+    withSim(
+      `http://127.0.0.1:${PORT}/?res=${RES}&sky=night&nanprobe&silence=600000${quality}`,
+      HOST_ENV,
+    ),
   );
   await page.fill("#join-name", "LAPSE");
   await page.click('#join button[type="submit"]');

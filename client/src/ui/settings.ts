@@ -247,7 +247,7 @@ export interface PanelEnv {
   portrait: boolean;
 }
 
-export type PanelEvent = "toggle" | "close" | "landscape";
+export type PanelEvent = "toggle" | "open" | "close" | "landscape";
 
 /** Portrait on a phone holds the panel open whatever the manual state. */
 export function portraitForced(env: PanelEnv): boolean {
@@ -267,6 +267,7 @@ export function nextManual(
 ): boolean {
   if (event === "landscape") return false;
   if (portraitForced(env)) return manual;
+  if (event === "open") return true;
   return event === "toggle" ? !manual : false;
 }
 

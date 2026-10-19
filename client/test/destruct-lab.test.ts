@@ -227,6 +227,7 @@ describe("DL1 lab-only on the client", () => {
       hostname: "localhost",
       host: "localhost",
       protocol: "http:",
+      search: "?mp=1", // SOLO: the ws path (the remote server)
     });
     vi.stubGlobal("document", { hidden: false, addEventListener() {} });
   });

@@ -119,6 +119,7 @@ describe("D5 GameSocket", () => {
       hostname: "localhost",
       host: "localhost",
       protocol: "http:",
+      search: "?mp=1", // SOLO: the ws path (the remote server)
     });
     vi.stubGlobal("document", { hidden: false, addEventListener() {} });
 
@@ -157,6 +158,7 @@ describe("D5 GameSocket", () => {
       hostname: "localhost",
       host: "localhost",
       protocol: "http:",
+      search: "?mp=1", // SOLO: the ws path (the remote server)
     });
     vi.stubGlobal("document", { hidden: false, addEventListener() {} });
     const e: DirectorEvent = {

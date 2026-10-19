@@ -17,6 +17,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { chromium } from "playwright";
+import { withSim } from "./local-game.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (name, dflt) => {
@@ -64,14 +65,17 @@ const PROFILES = {
 
 mkdirSync(OUT, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** The host flags. SOLO: the page's own host reads them off `sim`
+ * (local-game.mjs); the spawned server — statics, and a pre-SOLO build's
+ * game — off its environment. */
+const HOST_ENV = {
+  AB_WAVES: "0",
+  AB_QUIET_CITY: "1",
+  LIVENESS_TIMEOUT_MS: "600000",
+};
+
 const server = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
-  env: {
-    ...process.env,
-    PORT: String(PORT),
-    AB_WAVES: "0",
-    AB_QUIET_CITY: "1",
-    LIVENESS_TIMEOUT_MS: "600000",
-  },
+  env: { ...process.env, PORT: String(PORT), ...HOST_ENV },
   stdio: "ignore",
 });
 let browser = null;
@@ -103,7 +107,9 @@ try {
   });
   const page = await browser.newPage(PROFILES[DEVICE] ?? PROFILES.desktop);
   page.on("pageerror", (e) => console.error("page error:", e.message));
-  await page.goto(`http://127.0.0.1:${PORT}/?destructlab&res=1`);
+  await page.goto(
+    withSim(`http://127.0.0.1:${PORT}/?destructlab&res=1`, HOST_ENV),
+  );
   await page.fill("#join-name", "DLAB");
   await page.click('#join button[type="submit"]');
   await until(page, () => !!window.__ab?.destructLab?.());

@@ -175,6 +175,7 @@ import {
   wreckImpact,
   wreckPosAt,
 } from "@angels-bandits/common/wreck";
+import type { TickReport } from "@angels-bandits/server/host";
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
@@ -565,7 +566,12 @@ import { WeatherClock, setWeatherUniform } from "./render/weather";
 import { buildingSeed, isWindowLit } from "./render/window-pattern";
 import { nearestImage, nearestImageInto } from "./render/wrapPlacement";
 import { Wrecks } from "./render/wrecks";
-import { multiplayer, startLocalHost } from "./sim/local";
+import {
+  WorkerLink,
+  localTickReport,
+  multiplayer,
+  startLocalHost,
+} from "./sim/local";
 import { COACH_DONE_KEY, Coach, renderPrimer } from "./ui/coach";
 import { CommsTicker } from "./ui/comms";
 import { CourseBoard } from "./ui/course-board";
@@ -3495,6 +3501,12 @@ declare global {
         values: Settings;
         gains: { master: number; voice: number; music: number } | null;
       };
+      /** SOLO QA (tools/perf/pilots.mjs): one more connection into this
+       * page's local host — a fake pilot's — or null on a remote server. */
+      qaLink: () => WorkerLink | null;
+      /** SOLO QA (tools/perf/worker-tick.mjs): the sim worker's tick
+       * profile (`sim` AB_TICK_STATS:1), reset after when asked. */
+      simTick: (reset?: boolean) => Promise<TickReport | null>;
       /** SOLO QA: the local game — paused, the room's intensity, the wave,
        * and snapshots received (what a pause stops). */
       solo: () => {
@@ -4686,6 +4698,8 @@ window.__ab = {
     values: settingsPanel.current(),
     gains: audio.busGains(),
   }),
+  qaLink: () => (socket.local ? new WorkerLink() : null),
+  simTick: (reset = false) => localTickReport(reset),
   solo: () => ({
     local: socket.local,
     paused: socket.paused,

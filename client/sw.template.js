@@ -65,16 +65,18 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(
     // ignoreVary: a server's `Vary: Origin` must not split the precached
     // copy from a module script's request (which carries an Origin).
-    caches.match(req, { ignoreSearch: true, ignoreVary: true }).then(
-      (hit) =>
-        hit ??
-        fetch(req).then((res) => {
-          if (res.ok && res.type === "basic") {
-            const copy = res.clone();
-            void caches.open(CACHE).then((c) => c.put(req, copy));
-          }
-          return res;
-        }),
-    ),
+    caches
+      .match(req, { ignoreSearch: true, ignoreVary: true })
+      .then(
+        (hit) =>
+          hit ??
+          fetch(req).then((res) => {
+            if (res.ok && res.type === "basic") {
+              const copy = res.clone();
+              void caches.open(CACHE).then((c) => c.put(req, copy));
+            }
+            return res;
+          }),
+      ),
   );
 });

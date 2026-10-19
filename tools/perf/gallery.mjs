@@ -16,6 +16,7 @@ import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { chromium } from "playwright";
 import { VIEWS } from "./gallery-views.mjs";
+import { withSim } from "./local-game.mjs";
 import { BUDGETS } from "./segments.mjs";
 const OUT = resolve(process.argv[2] ?? "gallery");
 const PORT = Number(process.argv[3] ?? 8099);
@@ -29,6 +30,13 @@ const PROBE = process.env.AB_GALLERY_PROBE
 const SHOT_MS = Number(process.env.AB_GALLERY_SHOT_TIMEOUT_MS ?? 180000);
 mkdirSync(OUT, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** The host flags (SOLO: the page's own host reads them off `sim`; the
+ * spawned server — statics, and a pre-SOLO build's game — off its env). */
+const HOST_ENV = {
+  AB_WAVES: "0",
+  LIVENESS_TIMEOUT_MS: "600000",
+  ...(process.env.AB_GALLERY_LIVE_CITY === "1" ? {} : { AB_QUIET_CITY: "1" }),
+};
 const server = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
   // W1: no carrier war — the gallery frames an empty sky. D11: and a quiet
   // city — the server's director (and the chains its topples set off) fells
@@ -38,13 +46,7 @@ const server = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
   // frame of seconds tripped the liveness timeout, and the resume replayed
   // the room's (empty) collapses over what the view had staged, so the
   // collapse and ruin views shot an intact (or vanished) tower.
-  env: {
-    ...process.env,
-    PORT: String(PORT),
-    AB_WAVES: "0",
-    LIVENESS_TIMEOUT_MS: "600000",
-    ...(process.env.AB_GALLERY_LIVE_CITY === "1" ? {} : { AB_QUIET_CITY: "1" }),
-  },
+  env: { ...process.env, PORT: String(PORT), ...HOST_ENV },
   stdio: "ignore",
 });
 /** Yaw that points the nose along (dx, dz): yaw 0 faces -Z. */
@@ -278,7 +280,10 @@ try {
     ? `&${process.env.AB_GALLERY_QUERY}`
     : "";
   await page.goto(
-    `http://127.0.0.1:${PORT}/?res=${process.env.AB_GALLERY_RES ?? 1.5}&sky=night${quality}${extra}`,
+    withSim(
+      `http://127.0.0.1:${PORT}/?res=${process.env.AB_GALLERY_RES ?? 1.5}&sky=night${quality}${extra}`,
+      HOST_ENV,
+    ),
   );
   await page.fill("#join-name", "SHOT");
   await page.click('#join button[type="submit"]');

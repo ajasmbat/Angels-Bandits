@@ -10,6 +10,7 @@
 // screen. Host flags ride `?sim=KEY:VALUE,KEY:VALUE` — the AB_* switches and
 // timing overrides the harnesses used to set on the server's environment.
 
+import type { TickReport } from "@angels-bandits/server/host";
 import type { FromWorker, ToWorker } from "./protocol";
 
 /** WebSocket's readyState values (a link reports the same ones). */
@@ -71,6 +72,10 @@ export function startLocalHost(): void {
   });
   worker.addEventListener("message", (ev: MessageEvent<FromWorker>) => {
     const msg = ev.data;
+    if (msg.t === "stats") {
+      for (const resolve of statsWaiters.splice(0)) resolve(msg.report);
+      return;
+    }
     if (msg.t === "error") {
       fatal = msg.message || "The game failed to start";
       for (const link of live.values()) link.fail();
@@ -84,6 +89,17 @@ export function startLocalHost(): void {
   });
   postToWorker({ t: "init", env: simEnv(location.search) });
 }
+
+/** QA (tools/perf/worker-tick.mjs): the host's tick profile, or null when
+ * the page runs no local host or profiling is off (`sim` AB_TICK_STATS:1). */
+export function localTickReport(reset: boolean): Promise<TickReport | null> {
+  if (!worker) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    statsWaiters.push(resolve);
+    postToWorker({ t: "stats", reset });
+  });
+}
+const statsWaiters: ((r: TickReport | null) => void)[] = [];
 
 /** Freeze (or resume) the local simulation. */
 export function pauseLocalHost(on: boolean): void {

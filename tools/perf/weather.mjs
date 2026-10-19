@@ -24,6 +24,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { chromium } from "playwright";
+import { withSim } from "./local-game.mjs";
 
 const OUT = resolve(process.argv[2] ?? "weather");
 const PORT = Number(process.argv[3] ?? 8099);
@@ -32,9 +33,14 @@ const WEATHERS = (process.env.WEATHER ?? "clear,drizzle,downpour").split(",");
 const FRAMES = Number(process.env.FRAMES ?? 0);
 mkdirSync(OUT, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** The host flags. SOLO: the page's own host reads them off `sim`
+ * (local-game.mjs); the spawned server — statics, and a pre-SOLO build's
+ * game — off its environment. */
+const HOST_ENV = { AB_WAVES: "0" };
+
 const server = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
   // W1: no carrier war — the weather views frame an empty sky.
-  env: { ...process.env, PORT: String(PORT), AB_WAVES: "0" },
+  env: { ...process.env, PORT: String(PORT), ...HOST_ENV },
   stdio: "ignore",
 });
 // The gallery's static viewpoints (gallery.mjs), weather-relevant subset.
@@ -74,7 +80,10 @@ try {
     if (m.type() === "error") console.error("CONSOLE", m.text());
   });
   await page.goto(
-    `http://127.0.0.1:${PORT}/?res=${process.env.AB_GALLERY_RES ?? 1.5}&sky=night`,
+    withSim(
+      `http://127.0.0.1:${PORT}/?res=${process.env.AB_GALLERY_RES ?? 1.5}&sky=night`,
+      HOST_ENV,
+    ),
   );
   await page.fill("#join-name", "WX");
   await page.click('#join button[type="submit"]');

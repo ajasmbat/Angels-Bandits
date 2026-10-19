@@ -32,6 +32,7 @@ import { createServer } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { withSim } from "./local-game.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
@@ -366,18 +367,21 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
   });
 }
 
+/** The host flags. SOLO: the page's own host reads them off `sim`
+ * (local-game.mjs); the spawned server — statics, and a pre-SOLO build's
+ * game — off its environment. */
+const HOST_ENV = {
+  // A software-rendered frame can take seconds: the production 4 s
+  // liveness bound would drop the page and resume it mid-flight.
+  LIVENESS_TIMEOUT_MS: "600000",
+  BOOT_TIMEOUT_MS: "300000",
+};
+
 async function startServer(port) {
   const log = [];
   const proc = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
     cwd: SERVE_REPO,
-    env: {
-      ...process.env,
-      PORT: String(port),
-      // A software-rendered frame can take seconds: the production 4 s
-      // liveness bound would drop the page and resume it mid-flight.
-      LIVENESS_TIMEOUT_MS: "600000",
-      BOOT_TIMEOUT_MS: "300000",
-    },
+    env: { ...process.env, PORT: String(port), ...HOST_ENV },
     stdio: ["ignore", "pipe", "pipe"],
   });
   liveServer = proc;
@@ -490,7 +494,9 @@ async function main() {
     if (msg.type() === "error") errors.push(msg.text());
   });
   page.on("pageerror", (err) => errors.push(`pageerror: ${err.message}`));
-  await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "commit" });
+  await page.goto(withSim(`http://127.0.0.1:${port}/`, HOST_ENV), {
+    waitUntil: "commit",
+  });
   await page.waitForSelector("#join.open #join-name:not([disabled])", {
     timeout: 300000,
   });

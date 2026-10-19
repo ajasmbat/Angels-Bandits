@@ -251,6 +251,8 @@ import {
 } from "./strikes";
 import { createGuard } from "./tick-guard";
 import { TickProfiler, type TickReport } from "./tickstats";
+
+export type { TickReport };
 import { poseFromSpawn, roomPoseCap, validatePose } from "./validate";
 import { RoomWaves, type WaveHuman, humanContacts } from "./waves";
 import { RoomWrecks, applyWreckImpact, impactPos } from "./wrecks";

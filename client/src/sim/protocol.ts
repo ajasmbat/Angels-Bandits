@@ -1,7 +1,10 @@
 // SOLO: the messages between the page and its sim worker (./worker.ts). The
 // GAME protocol is untouched — its JSON frames ride inside `send`/`frame`
 // exactly as they ride a ws — and these few envelopes only add what a
-// socket gives for free: opening, closing, and (solo only) the pause.
+// socket gives for free: opening, closing, and (solo only) the pause — plus
+// the QA tick profile (tools/perf/worker-tick.mjs).
+
+import type { TickReport } from "@angels-bandits/server/host";
 
 /** Page → worker. */
 export type ToWorker =
@@ -14,7 +17,9 @@ export type ToWorker =
   /** The page closed connection `id`. */
   | { t: "close"; id: number }
   /** Freeze or resume the whole simulation (GameHost.setPaused). */
-  | { t: "pause"; on: boolean };
+  | { t: "pause"; on: boolean }
+  /** QA: the host's tick profile (`sim` AB_TICK_STATS:1), reset after. */
+  | { t: "stats"; reset: boolean };
 
 /** Worker → page. */
 export type FromWorker =
@@ -25,4 +30,6 @@ export type FromWorker =
   /** The host closed connection `id`. */
   | { t: "close"; id: number; code: number; reason: string }
   /** The host could not be built, or a frame could not be handled. */
-  | { t: "error"; message: string };
+  | { t: "error"; message: string }
+  /** QA: the tick profile asked for (null while profiling is off). */
+  | { t: "stats"; report: TickReport | null };

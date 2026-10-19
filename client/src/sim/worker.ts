@@ -80,6 +80,19 @@ function transport(id: number): Transport {
   };
 }
 
+/**
+ * The host's wall clock: Date.now, or (QA, `sim` AB_EPOCH_MS — what
+ * tools/perf/fixed-epoch.mjs did to a Node server) one that starts at that
+ * epoch and runs at real speed, so two builds show the same world at the
+ * same server time.
+ */
+function clockFor(env: Record<string, string>): () => number {
+  const epoch = Number(env.AB_EPOCH_MS);
+  if (!Number.isFinite(epoch) || epoch <= 0) return Date.now;
+  const start = Date.now();
+  return () => epoch + (Date.now() - start);
+}
+
 scope.addEventListener("message", (ev: MessageEvent) => {
   const msg = ev.data as ToWorker;
   try {
@@ -90,6 +103,7 @@ scope.addEventListener("message", (ev: MessageEvent) => {
           ...hostOptionsFromEnv(msg.env),
           // Only ever one player here: the game is theirs to pause.
           pausable: true,
+          clock: clockFor(msg.env),
         });
         host.start();
         return;
@@ -106,6 +120,9 @@ scope.addEventListener("message", (ev: MessageEvent) => {
         return;
       case "pause":
         host?.setPaused(msg.on);
+        return;
+      case "stats":
+        post({ t: "stats", report: host?.tickReport(msg.reset) ?? null });
         return;
     }
   } catch (err) {

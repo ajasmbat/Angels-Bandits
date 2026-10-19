@@ -22,6 +22,7 @@ import { createServer } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { withSim } from "./local-game.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
@@ -71,11 +72,16 @@ for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   });
 }
 
+/** The host flags. SOLO: the page's own host reads them off `sim`
+ * (local-game.mjs); the spawned server — statics, and a pre-SOLO build's
+ * game — off its environment. */
+const HOST_ENV = { AB_WAVES: "0" };
+
 async function startServer(port) {
   const proc = spawn("node", ["--import", "tsx", "server/src/index.ts"], {
     cwd: REPO,
     // W1: no carrier war — an empty sky is the only reproducible one.
-    env: { ...process.env, PORT: String(port), AB_WAVES: "0" },
+    env: { ...process.env, PORT: String(port), ...HOST_ENV },
     stdio: "ignore",
   });
   for (let i = 0; i < 120; i++) {
@@ -112,7 +118,9 @@ async function main() {
       viewport: VIEWPORT,
       deviceScaleFactor: DEVICE_SCALE_FACTOR,
     });
-    await page.goto(`http://127.0.0.1:${port}/?res=auto&perf=1`);
+    await page.goto(
+      withSim(`http://127.0.0.1:${port}/?res=auto&perf=1`, HOST_ENV),
+    );
     await page.fill("#join-name", "SCALER");
     await page.click('#join button[type="submit"]');
     await page.waitForFunction(() => typeof window.__ab !== "undefined", null, {

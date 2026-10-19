@@ -27,6 +27,12 @@ All decisions below were grilled and locked on 2026-08-21. No open branches.
 - **Session model: persistent drop-in FFA arena.** No lobby, no matches. Join
   via link, pick a name, spawn, fight, respawn. Kill-based scoreboard.
   **12 players per room**, rooms auto-spawn when full. Teams/matches are v2.
+- **SOLO (2026-10): single-player by default.** The whole server simulation
+  (`server/src/host.ts`, the GameHost) runs in the player's browser, in a
+  sim Web Worker (`client/src/sim/`), over the unchanged wire protocol. A
+  start screen picks the difficulty (the enemy intensity), the menu pauses
+  the simulation, and the game plays offline after the first visit. The
+  shared rooms above still work behind the hidden `?mp=1`.
 
 ### Networking
 - **Authority split:** client-authoritative movement, server-authoritative
@@ -48,7 +54,8 @@ All decisions below were grilled and locked on 2026-08-21. No open branches.
   interpolation (torus-aware).
 - **Hosting:** one Node process serves the static client and hosts WebSocket
   rooms, on a single small instance (Fly.io/Railway). Several rooms per
-  process is fine.
+  process is fine. SOLO: the client is a static, offline-capable PWA; the
+  ws rooms stay in the same process for `?mp=1`, unused by default.
 
 ### The torus (signature feature)
 - **Nearest-image rendering.** World stored once in canonical coords `[0, S)`.

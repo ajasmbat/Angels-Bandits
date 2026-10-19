@@ -649,6 +649,12 @@ initLabLink(LAB_URL, DESTRUCT_URL);
 // the card itself is the start screen (difficulty, graphics, controls).
 const MULTIPLAYER = multiplayer();
 if (!MULTIPLAYER) startLocalHost();
+// SOLO: and it plays offline after the first visit — the service worker
+// (client/sw.template.js) precaches the whole build. Production builds only:
+// the dev server's modules are not a build.
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  navigator.serviceWorker.register("./sw.js").catch(() => {});
+}
 const difficulty = initStartScreen(MULTIPLAYER);
 
 // W4 Easy mode (game/easy-mode.ts): decided once and kept — read BEFORE

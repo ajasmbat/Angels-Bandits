@@ -4,6 +4,8 @@
 // few minutes. It fails on any console error or page error, and on any of
 // the solo game's milestones not happening:
 //
+//   offline (the first visit's service worker precached the build: the page
+//   is reloaded with the network OFF, and everything below plays offline),
 //   spawn (alive, on the local host), enemies in the air (snapshots), a wave
 //   on, the airship fleet up, the city breaking, a death and its respawn
 //   (forced by flying into the street), pause (Esc: the world clock stands
@@ -130,6 +132,24 @@ async function main() {
     );
     const url = `http://127.0.0.1:${port}/?quality=low`;
     await page.goto(url, { waitUntil: "domcontentloaded" });
+    // The first visit installs the service worker; `ready` is after its
+    // install, which precaches the whole build. Then the network goes.
+    const controlled = await page
+      .evaluate(async () => {
+        await navigator.serviceWorker.ready;
+        for (let i = 0; i < 100 && !navigator.serviceWorker.controller; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        return navigator.serviceWorker.controller !== null;
+      })
+      .catch(() => false);
+    check("offline: the service worker took the page", controlled);
+    await page.context().setOffline(true);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    const fetched = await page.evaluate(
+      async () => (await fetch("/manifest.webmanifest")).ok,
+    );
+    check("offline: reloaded with no network", fetched);
 
     // The start screen: a difficulty pick, then PLAY.
     await page.click(`#join-difficulty [data-level="${DIFFICULTY}"]`);
@@ -191,6 +211,9 @@ async function main() {
         return {
           alive: c.alive,
           enemies: c.targets.length,
+          // Our own deaths on the board: a death and its respawn can both
+          // fall between two samples.
+          deaths: c.scores.find((r) => r.id === ab.net().selfId)?.deaths ?? 0,
           wave: solo.wave,
           ships: ab.fleet().up,
           destroyed: ab.destruction().destroyed,
@@ -201,15 +224,17 @@ async function main() {
       seen.wave ||= s.wave > 0;
       seen.ships = Math.max(seen.ships, s.ships);
       seen.destroyed = Math.max(seen.destroyed, s.destroyed);
-      if (!s.alive) seen.died = true;
+      if (!s.alive || s.deaths > 0) seen.died = true;
       if (seen.died && s.alive) seen.respawned = true;
       // Halfway: fly into the street to see a death and its respawn.
       if (!crashed && Date.now() > endAt - (MINUTES * 60_000) / 2) {
         crashed = true;
         if (!seen.died) {
+          // Low over the street, nose hard down: the ground next frame.
           await page.evaluate(() => {
             const p = window.__ab.state().pos;
-            window.__ab.teleport(p.x, p.z, 0.5);
+            window.__ab.teleport(p.x, p.z, 4);
+            window.__ab.aimAt(p.x, p.z + 10, -400);
           });
         }
       }
@@ -276,7 +301,7 @@ async function main() {
       ? await page.evaluate(() => window.__ab.solo())
       : { intensity: -1 };
     check(
-      "restart: a fresh game at the same difficulty",
+      "restart (offline): a fresh game at the same difficulty",
       again && after.intensity === DIFFICULTY,
       JSON.stringify(after),
     );

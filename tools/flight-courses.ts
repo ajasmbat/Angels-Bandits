@@ -2,6 +2,10 @@
 // zoom and the easy, agile controls are measured against.
 //
 //   node --import tsx tools/flight-courses.ts [--runs=N] [--json]
+//        [--only=slalom|turns|chase] [--set=key:value,…]
+//
+// --set moves the AFTER arm's tuning (a Flight Lab session on the courses);
+// FC_DEBUG=1 logs every crash (where, how fast, what the assists held).
 //
 // The pilot is client/test/novice-sim.ts's novice: the chase eye's view lags
 // the nose at CAMERA_RESPONSE, and the hand puts the cursor where the mark
@@ -13,9 +17,10 @@
 // scheme): the H2 hole assist, the F5 corner manager, the F9 assist, the F10
 // bank-and-pull and roll control, the instructor, the aim zoom's steering
 // cost, stepFlight and the H3 hole save — and, in the AFTER arm, FC1's
-// collision assist and its zoom (full mouse-aim authority zoomed, the eye on
-// the gun line). The BEFORE arm flies the "pre-fc1" tuning preset with
-// every FC1 addition off: main as it was. Movers (airships included) are
+// collision assist and its zoom steering (the mouse-aim keeps its full
+// authority zoomed; before, a flat 0.6). Both arms see the chase as the
+// novice-sim's eye at the plane. The BEFORE arm flies the "pre-fc1" tuning
+// preset with every FC1 addition off: main as it was. Movers (airships included) are
 // left out of both arms, as in novice-sim: they are time-dependent and the
 // airship half of the collision assist is pinned by its unit tests.
 //
@@ -656,15 +661,6 @@ function fly(arm: Arm, course: Course, seed: number): CourseResult {
     flight = stepFlight(flight, shaped, DT, model);
     lastCmd.turn = shaped.turn;
     lastCmd.pitch = shaped.pitch;
-    if (
-      process.env.FC_TRACE &&
-      Number(process.env.FC_TRACE) === seed &&
-      arm.fc1
-    ) {
-      console.log(
-        `t=${res.flown.toFixed(2)} p=${flight.pos.x.toFixed(0)},${flight.pos.y.toFixed(0)},${flight.pos.z.toFixed(0)} yaw=${(flight.yaw / DEG).toFixed(0)} pitch=${(flight.pitch / DEG).toFixed(0)} spd=${flight.speed.toFixed(0)} cmd=${shaped.turn.toFixed(2)},${shaped.pitch.toFixed(2)} ca=${ca.turn.toFixed(2)},${ca.pitch.toFixed(2)} tHit=${ca.tHit.toFixed(2)} guard=${eff.guard} thr=${threading} eff=${effOut.turn.toFixed(2)},${effOut.pitch.toFixed(2)} aim=${effOut.aimYaw.toFixed(2)},${effOut.aimPitch.toFixed(2)}`,
-      );
-    }
     stepHoleSave(save, flight, shaped, DT, saveWorld, null, false);
     res.flown += DT;
     frame++;

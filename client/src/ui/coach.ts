@@ -56,6 +56,7 @@ export function primerItems(touch: boolean): Array<[string, string]> {
       ["FIRE", "shoot · auto-fire on a lock"],
       ["BOOST", "speed"],
       ["⟲ ⟳", "roll · double-tap: snap"],
+      ["180 · ⤿", "quick 180 · barrel-roll dodge"],
       ["LEFT SLIDER", "throttle"],
       ["ZOOM", "tap: stay · hold: peek"],
       ["TWO FINGERS", "look around"],

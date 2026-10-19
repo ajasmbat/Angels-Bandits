@@ -1665,6 +1665,27 @@
       #touch-roll-r {
         left: calc(var(--safe-l) + 248px);
       }
+      /* FC1: the quick 180 and the barrel-roll dodge, over the roll pair. */
+      #touch-uturn,
+      #touch-dodge {
+        bottom: calc(var(--safe-b) + 80px);
+        width: 52px;
+        height: 40px;
+        border-radius: 12px;
+        font-size: 13px;
+        letter-spacing: 0;
+      }
+      #touch-uturn {
+        left: calc(var(--safe-l) + 190px);
+      }
+      #touch-dodge {
+        left: calc(var(--safe-l) + 248px);
+        font-size: 18px;
+      }
+      #touch-ui.dead #touch-uturn,
+      #touch-ui.dead #touch-dodge {
+        visibility: hidden;
+      }
       /* Kill-cam: nothing to fire, boost, zoom or roll. */
       #touch-ui.dead #touch-fire,
       #touch-ui.dead #touch-boost,
@@ -1727,6 +1748,11 @@
         }
         #touch-roll-r {
           left: calc(var(--safe-l) + 136px);
+        }
+        /* FC1: no room for the manoeuvre pair — X / V stay desktop's. */
+        #touch-uturn,
+        #touch-dodge {
+          display: none;
         }
         body.touch #killfeed,
         body.touch #comms {
@@ -2608,6 +2634,9 @@
       <div id="touch-zoom" class="tc">ZOOM</div>
       <div id="touch-roll-l" class="tc" aria-label="Roll left">⟲</div>
       <div id="touch-roll-r" class="tc" aria-label="Roll right">⟳</div>
+      <!-- FC1: X and V's twins, over the roll pair. -->
+      <div id="touch-uturn" class="tc" aria-label="Quick 180">180</div>
+      <div id="touch-dodge" class="tc" aria-label="Barrel-roll dodge">⤿</div>
       <!-- M9: aim mode and sensitivity are on the settings screen only —
            a stray tap mid-fight must not flip them. -->
       <div id="touch-icons">

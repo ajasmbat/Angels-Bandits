@@ -218,6 +218,11 @@ export class FlightInputSource {
     );
   }
 
+  /** FC1: the touch twins of X and V (ui/touch-controls.ts). */
+  pressManoeuvre(kind: "uturn" | "dodge"): void {
+    this.manoeuvre = kind;
+  }
+
   /** FC1: the manoeuvre key pressed since the last call (X: "uturn", V:
    * "dodge"), or null; drains it. */
   takeManoeuvre(): "uturn" | "dodge" | null {

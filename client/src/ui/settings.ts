@@ -6,7 +6,7 @@
 // (O3), `ab-touch-sens` (M1), `ab-aim-mode` (F1), `ab-radio-voice` — and
 // only the new values live under SETTINGS_KEY.
 
-import { CITY_TOP } from "@angels-bandits/common/constants";
+import { RESPAWN_ALTITUDE } from "@angels-bandits/common/constants";
 import type { FlightInput } from "@angels-bandits/common/flight";
 import { FEELS, type Feel } from "../game/effortless";
 import { AUTO_THROTTLE } from "../game/flight-input";
@@ -255,10 +255,13 @@ export function nextManual(
 // ahead at street level — F5's corner manager still brakes for one.
 
 /** Below this the autopilot climbs: H1, just over the tallest thing in the
- * city (the 480 m needle, CITY_TOP) with the plane's radius to spare, and
- * still under the news heli's belly (≥ 491.8 m) — a level hold here
- * clears every roof and every landmark. */
-export const AUTOPILOT_SAFE_ALT = CITY_TOP + 8;
+ * city with the plane's radius to spare. T1: no altitude under the storm's
+ * ceiling clears the cores' supertalls (to 650 m) or the mega-towers, so
+ * it holds the respawn layer: 89 m over every roof of the ring
+ * (SKYLINE_RING_MAX_HEIGHT and its roof structures), under the blimp, the
+ * news heli, the deck and the storm's ceiling (CITY_TOP + 8 was over it
+ * since K1) — F5's corner manager still brakes for a tower dead ahead. */
+export const AUTOPILOT_SAFE_ALT = RESPAWN_ALTITUDE;
 /** Climb attitude below AUTOPILOT_SAFE_ALT, rad (15°). */
 export const AUTOPILOT_CLIMB = (15 * Math.PI) / 180;
 /** Height over which the climb eases to level as it nears the safe altitude. */

@@ -584,6 +584,13 @@ export function stepAnchor(
   a.pos.x = wrapCoord(a.pos.x - Math.sin(a.yaw) * cp * a.speed * dt);
   a.pos.z = wrapCoord(a.pos.z - Math.cos(a.yaw) * cp * a.speed * dt);
   a.pos.y += Math.sin(a.pitch) * a.speed * dt;
+  // T1: never over the band's top — the climb overshoots a target at it by
+  // ~8 m, and the cores' supertalls in the lookahead now bring it there —
+  // though the hard floor below still wins.
+  if (a.pos.y > SQUAD_ALT_MAX) {
+    a.pos.y = SQUAD_ALT_MAX;
+    if (a.pitch > 0) a.pitch = 0;
+  }
   const hard = grid.at(a.pos.x, a.pos.z) + SQUAD_CLEAR_HARD;
   if (a.pos.y < hard) {
     a.pos.y = hard;

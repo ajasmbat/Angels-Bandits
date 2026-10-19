@@ -740,20 +740,22 @@ const LANE_ROWS: readonly (readonly [
   [0, 0, 200, -12, 100],
   [1, 0, 1000, -9.5, 112.5],
   [0, 0, 1400, -15, 108],
-  // Layer 1, the z-avenues: two pickets, two cruisers.
+  // Layer 1, the z-avenues: a picket, two cruisers.
   [1, 1, 200, 11.5, 158],
   [0, 1, 800, -14, 153],
   [1, 1, 1400, -10, 158],
-  [0, 1, 1800, 12.5, 153.5],
   // Layer 2, the rooftops: two carriers on the mid-block lines that cross
   // no core and no mega-tower, over the ring's roofs.
   [2, 2, 100, 8, null],
   [2, 2, 1900, -9, null],
   // T1 layer 3, the threads: a cruiser down the x = 600 avenue through
   // Downtown's supertalls, a picket down x = 1200 through Midtown's — half
-  // way up the canyon walls.
+  // way up the canyon walls — and a picket down x = 1000, along Midtown's
+  // west face and on over the ring's roofs, where a squadron can leave its
+  // rig (squadron.ts departClear).
   [1, 3, 600, 9, 335],
   [0, 3, 1200, -11, 331],
+  [0, 3, 1000, 12.5, 331],
 ];
 
 /** T1: [class, landmark slot, radius, speed, altitude] per orbit: one round

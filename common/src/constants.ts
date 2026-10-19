@@ -1129,8 +1129,11 @@ export const BOT_PROBE_RADIUS = 12;
  * cross-street facade, which is right inside a canyon and wrong among the
  * towers, where 646 buildings now fill the mid-altitude air that 97
  * free-standing ones left empty. Measured over 3 rooms x 11 bots x 200 s,
- * terrain's share of bot deaths: 53.8% at 200 m, 36.6% at 160, 20.7% here. */
-export const BOT_CANYON_PROBE_ALT = 110;
+ * terrain's share of bot deaths: 53.8% at 200 m, 36.6% at 160, 20.7% here.
+ * T1: the ring's towers reach SKYLINE_RING_MAX_HEIGHT, so the canyons do
+ * too — 110 → 280 m, just over the ring's roofs (the same sim: 47.7 % at
+ * 110 m over the supertall city, 26.7 % at 200, 17.9 % here). */
+export const BOT_CANYON_PROBE_ALT = SKYLINE_RING_MAX_HEIGHT + 15;
 /** Canyon probe radius, m. C1's streetwall makes the corridor uniform:
  * buildings stand on LOT_LINE, so a street centerline has exactly 20 m of
  * clearance to the facades on either side, everywhere, at every altitude
@@ -1200,8 +1203,9 @@ export const BOT_FAN_TIMES: readonly number[] = [0.5, 1.2, 2.2];
 /** Highest altitude an ENGAGEd bot aims its pursuit at, m, outside an attack
  * pass. A chase follows the target's ground track down here instead of
  * climbing to it, so a high human drags nobody up out of the streets. Just
- * over BOT_CANYON_PROBE_ALT + a corner hop: low enough that the chase stays
- * among the rooftops, high enough to hop the streetwall mid-pursuit. */
+ * over the canyon band + a corner hop: low enough that the chase stays
+ * among the rooftops, high enough to hop the streetwall mid-pursuit. (T1:
+ * the ring's taller canyons keep it well under BOT_CANYON_PROBE_ALT.) */
 export const BOT_ENGAGE_CEILING = 130;
 /** Longest a climbing attack pass at a target above BOT_ENGAGE_CEILING may
  * last, ms — then the bot breaks off and dives back to its band. */

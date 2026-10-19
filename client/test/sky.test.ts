@@ -25,8 +25,10 @@ describe("VO1 blue-hour sky", () => {
     const fogFromElevation = (0.5 - SKY_FOG_STOP) * Math.PI;
     // Worst case: a landmark at the fog limit (radial fog: the crown is
     // CITY_TOP up and FOG_DISTANCE away), seen from the pavement. H1's
-    // supertalls stand far above the stop there…
-    const tallest = Math.asin(CITY_TOP / FOG_DISTANCE);
+    // supertalls stand far above the stop there… (T1: the mega-towers rise
+    // past FOG_DISTANCE itself, so a fully fogged face can stand anywhere
+    // up to straight overhead.)
+    const tallest = Math.asin(Math.min(1, CITY_TOP / FOG_DISTANCE));
     expect(fogFromElevation).toBeLessThan(tallest);
     // …so above the stop a fully fogged surface takes the dome's own colour
     // (sky-fog.ts abSkyFog): its blend from the fog colour to the dome's

@@ -163,9 +163,11 @@ export const HEIGHT_BANDS_EDGE: ReadonlyArray<
 ];
 /** H1 slenderness cap: a lot's building is at most this many times its
  * short side tall — the big towers land on the big lots, and a 26 m sliver
- * tops out as a pencil tower, never a needle. T1: 7 → 10, so the cores'
- * 50–80 m lots carry their 500–650 m supertalls (a 26 m sliver: 260 m). */
-export const SLENDER_MAX = 10;
+ * tops out as a pencil tower (~180 m), never a 320 m needle. */
+export const SLENDER_MAX = 7;
+/** T1: the cores' cap instead, so their 50–80 m lots carry the 500–650 m
+ * supertalls. */
+export const CORE_SLENDER_MAX = 10;
 /** H1: a lot within this of a construction block (city/layout.ts) stays
  * low enough for its tower crane — the jib reaches CRANE_JIB_MAX + its half
  * side + a plane's radius from a mast set CRANE_MAST_INSET inside the
@@ -475,6 +477,11 @@ export const BOOT_PING_INTERVAL_MS = 1000;
  * does it under it, among the towers. The deck now sits under the 500 m it
  * fogged as, so it needs no fog lift (client storm.ts DECK_FOG_LIFT 0). */
 export const CLOUD_BASE = 440;
+/** T1: no fly-through hole's top (floor + height) rises over this, m —
+ * 40 m under the deck (city/holes.ts). In the cores' supertalls clear air
+ * is only found high up, and a hole in the cloud (or over the storm's
+ * ceiling) is one nobody sees or can fly. */
+export const HOLE_MAX_TOP = CLOUD_BASE - 40;
 /** Above this altitude the hidden death ceiling arms, m — the soft ceiling
  * (K1: 750 → 480), 40 m into the deck. */
 export const STORM_KILL_ALT = SOFT_CEILING;
@@ -740,6 +747,14 @@ export const CHUNK_HP = 60;
  * 0.18 — with the gone-share hold and the fast rebuild, the city stays well
  * under ~20 % gone). */
 export const DESTROY_CAP = 0.18;
+/** T1: the chunk count every share-based destruction cap is a share of,
+ * at most (CityDamage.capBasis): DESTROY_CAP, GONE_HOLD_SHARE, COLLAPSE_CAP,
+ * the director's stop shares and the client's debris pool. H1's seed city
+ * had 38,445 chunks; T1's supertalls hold ~70,600 — their caps stay where
+ * they were tuned in CHUNKS, not in share, so a room breaks, wires and
+ * renders no more than it did. Raise it only with measured headroom
+ * (tools/destruction-bench.ts, collapse-tick-bench.ts). */
+export const DESTRUCTION_CHUNK_BUDGET = 38445;
 /** D2's cap before C2 (AB_CHAOS=0 restores it via CityDamage.setCap). */
 export const DESTROY_CAP_D2 = 0.25;
 /** C2 backstop: while (broken + fallen) / chunks is at or over this, the
@@ -800,8 +815,21 @@ export const COLLAPSE_TOPPLE_DRIFT = 0.45;
 /** D11: no tall tower's collapse debris ever flies or rests further than
  * this many tower-heights from the building's centre (swept bounds
  * included) — the fairness envelope common/test/collapse-reach.test.ts
- * holds every 250 m+ tower of the seed city to (D10's was ~2). */
+ * holds every 250 m+ tower of the seed city to (D10's was ~2). T1: the
+ * cores' supertalls never topple (COLLAPSE_TOPPLE_MAX_SPAN), nor a slab
+ * along its length (COLLAPSE_TOPPLE_RISE_MAX). */
 export const COLLAPSE_TOPPLE_REACH = 1.55;
+/** T1: a falling section taller than this pancakes whatever its survivors
+ * say — a supertall comes down into its own footprint, as real ones do (a
+ * topple from the cores' 650 m would throw its crown across half the map,
+ * far past any warned strip). The ring's towers (SKYLINE_RING_MAX_HEIGHT)
+ * and the cores' fillers still topple. */
+export const COLLAPSE_TOPPLE_MAX_SPAN = 300;
+/** T1: a demolition asked to topple a section that would swing its far
+ * top corner more than this over its own top, m — √(depth along the fall²
+ * + height²) − height — pancakes instead: too squat to tip that way (the
+ * ring's 160 m-deep slabs, felled along their length, would rise ~50 m). */
+export const COLLAPSE_TOPPLE_RISE_MAX = 30;
 /** A landed chunk squashes into a rubble slab this share of its height
  * (≈1.4 m for a 12 m floor band) over COLLAPSE_SQUASH_MS. */
 export const COLLAPSE_RUBBLE_RATIO = 0.12;

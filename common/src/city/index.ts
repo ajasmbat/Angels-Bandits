@@ -7,6 +7,7 @@
 import {
   BLOCK_PITCH,
   CORE_LOT_MAX_DEPTH,
+  CORE_SLENDER_MAX,
   CRANE_SITE_REACH,
   CRANE_SITE_ROOF_MAX,
   HEIGHT_BANDS_CORE,
@@ -380,13 +381,15 @@ const ZONE_BANDS: Record<
  * because the skyline read is the histogram — mostly low streetwall with a
  * thin tail of towers — and that is far easier to tune as bands. H1: then
  * capped at SLENDER_MAX × the lot's short side (a narrow lot keeps a
- * pencil tower, the wide lots take the skyscrapers).
+ * pencil tower, the wide lots take the skyscrapers). T1: the cores' cap is
+ * CORE_SLENDER_MAX, for their supertalls.
  */
 function bandHeight(
   bands: ReadonlyArray<readonly [number, number, number]>,
   rBand: number,
   rIn: number,
   shortSide: number,
+  slender: number = SLENDER_MAX,
 ): number {
   let pick = bands[bands.length - 1];
   for (const band of bands) {
@@ -397,7 +400,7 @@ function bandHeight(
   }
   if (!pick) throw new Error("height band table is empty");
   const h = Math.round(pick[1] + rIn * (pick[2] - pick[1]));
-  return Math.min(h, Math.round(SLENDER_MAX * shortSide));
+  return Math.min(h, Math.round(slender * shortSide));
 }
 
 /**
@@ -521,6 +524,7 @@ export function generateCity(seed: number): Building[] {
           rand(),
           rand(),
           Math.min(width, depth),
+          zone === "core" ? CORE_SLENDER_MAX : SLENDER_MAX,
         );
         const height = nearCraneSite(lot)
           ? Math.min(banded, CRANE_SITE_ROOF_MAX)

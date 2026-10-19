@@ -76,6 +76,7 @@ import { CONSTRUCTION_BLOCKS, LANDMARK_BLOCKS } from "./layout";
 import {
   NEWS_HELI_ID,
   type NewsHeliSlot,
+  type NewsSpire,
   newsHeliBoxInto,
   newsHeliSlot,
   newsTargetAt,
@@ -215,10 +216,15 @@ export interface MoverField {
 }
 
 /** A room's field: the seed's shared cranes and aircraft plus its own news
- * heli, starting on the seed's idle orbit. */
-export const withNewsHeli = (field: MoverField, seed: number): MoverField => ({
+ * heli, starting on the seed's idle orbit (T1: clear of `spires`, the
+ * city's towers in its band — newsSpiresOf). */
+export const withNewsHeli = (
+  field: MoverField,
+  seed: number,
+  spires?: readonly NewsSpire[],
+): MoverField => ({
   ...field,
-  news: newsHeliSlot(seed),
+  news: newsHeliSlot(seed, spires),
 });
 
 /** A field with nothing in it — the safe default for callers that have none. */

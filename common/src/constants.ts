@@ -65,20 +65,31 @@ export const EMISSIVE_TRACER = 1.5;
 // consumers all over the client (minimap, roof beacons, facade archetypes,
 // the city's neon tint, searchlights) identify a landmark by height alone.
 export const BUILDING_MIN_HEIGHT = 20;
-/** H1: the downtown cores' tallest towers (was 240). */
-export const BUILDING_MAX_HEIGHT = 320;
+/** H1: the downtown cores' tallest towers (was 240). T1 supertall canyon:
+ * 320 → 650 — the cores' towers rise through the cloud deck (CLOUD_BASE),
+ * their tops lost in it. */
+export const BUILDING_MAX_HEIGHT = 650;
+/** T1: the tallest generated lot OUTSIDE the cores — the top of the mid
+ * ring's and the edge's band tables (HEIGHT_BANDS_MID / _EDGE). Everything
+ * that flies over the roofline (the squadrons' cruise band, the respawn
+ * layer, the rooftop lanes, the blimp, the news heli) clears THIS and the
+ * roof structures on it; the cores' supertalls and the landmarks rise
+ * through all of it and are vetoed or steered round like spires. */
+export const SKYLINE_RING_MAX_HEIGHT = 265;
 /** Hand-placed landmark supertalls for orientation. H1: the RECOGNITION
  * threshold — every landmark is at least this tall (the shortest is exactly
  * this), every generated building is under it, so `height >=
  * LANDMARK_HEIGHT` still means "a landmark". Their real heights are their
- * profiles' (city/landmarks.ts, 400–480 m). */
-export const LANDMARK_HEIGHT = 400;
+ * profiles' (city/landmarks.ts). T1: 400 → 700, the mega-towers (700–1000
+ * m) over the cores' 650 m supertalls. */
+export const LANDMARK_HEIGHT = 700;
 /** H1: the tallest thing in the city — the tallest landmark profile's
- * summed tiers (city/landmarks.ts keeps them equal; a test pins it). Every
- * altitude that must clear the whole skyline (the carrier, the news heli,
- * the blimp, the cloud deck, the ceilings) is set above this, never above
- * LANDMARK_HEIGHT. */
-export const CITY_TOP = 480;
+ * summed tiers (city/landmarks.ts keeps them equal; a test pins it). T1:
+ * 480 → 1000, far up in the storm deck: nothing flies over the skyline any
+ * more (the ceilings, the deck and every aircraft are under it), so what
+ * must clear the roofline clears SKYLINE_RING_MAX_HEIGHT and is kept off
+ * the towers that rise through it. */
+export const CITY_TOP = 1000;
 /** Footprint side of the slim landmark towers, meters. */
 export const LANDMARK_FOOTPRINT = 90;
 
@@ -117,36 +128,44 @@ export const LOT_INTERIOR_INSET_MAX = 4;
  * ascending by probability, end at exactly 1, and stay inside
  * [BUILDING_MIN_HEIGHT, BUILDING_MAX_HEIGHT].
  *
- *  - CORE: the two downtown cores — a dense mass of 150–320 m towers with
- *    some shorter filler between them (Manhattan's Midtown and Downtown).
- *  - MID: the mid-rise ring round the cores and the landmarks — 40–120 m
- *    blocks with a thin tail of towers.
- *  - EDGE: the outskirts and the waterfront — the low streetwall.
+ *  - CORE: the two downtown cores — T1's canyon of supertalls: mostly
+ *    250–650 m towers (more than half over 420 m, through the cloud deck),
+ *    a few 170–250 m fillers between them.
+ *  - MID: the ring round the cores and the landmarks — 100–265 m towers,
+ *    the old cores' height (T1: was 40–210 m).
+ *  - EDGE: the outskirts and the waterfront — 55–200 m (T1: was 20–90 m),
+ *    so no district is open sky.
+ *
+ * T1: MID and EDGE top out at SKYLINE_RING_MAX_HEIGHT, under the
+ * squadrons' cruise cap (common/src/squadron.ts SQUAD_CRUISE_CAP): the
+ * formations fly over the ring's roofs and steer round the cores and the
+ * landmarks, as they always steered round the spires.
  */
 export const HEIGHT_BANDS_CORE: ReadonlyArray<
   readonly [number, number, number]
 > = [
-  [0.12, 90, 150],
-  [0.5, 150, 240],
-  [1.0, 240, 320],
+  [0.1, 170, 250],
+  [0.45, 250, 420],
+  [1.0, 420, 650],
 ];
 export const HEIGHT_BANDS_MID: ReadonlyArray<
   readonly [number, number, number]
 > = [
-  [0.82, 40, 120],
-  [0.96, 120, 170],
-  [1.0, 170, 210],
+  [0.4, 100, 170],
+  [0.85, 170, 230],
+  [1.0, 230, SKYLINE_RING_MAX_HEIGHT],
 ];
 export const HEIGHT_BANDS_EDGE: ReadonlyArray<
   readonly [number, number, number]
 > = [
-  [0.88, 20, 60],
-  [1.0, 60, 90],
+  [0.6, 55, 130],
+  [1.0, 130, 200],
 ];
 /** H1 slenderness cap: a lot's building is at most this many times its
  * short side tall — the big towers land on the big lots, and a 26 m sliver
- * tops out as a pencil tower (~180 m), never a 320 m needle. */
-export const SLENDER_MAX = 7;
+ * tops out as a pencil tower, never a needle. T1: 7 → 10, so the cores'
+ * 50–80 m lots carry their 500–650 m supertalls (a 26 m sliver: 260 m). */
+export const SLENDER_MAX = 10;
 /** H1: a lot within this of a construction block (city/layout.ts) stays
  * low enough for its tower crane — the jib reaches CRANE_JIB_MAX + its half
  * side + a plane's radius from a mast set CRANE_MAST_INSET inside the

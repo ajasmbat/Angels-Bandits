@@ -481,7 +481,7 @@ export function generateCity(seed: number): Building[] {
           z: bz * BLOCK_PITCH + BLOCK_PITCH / 2,
           width: LANDMARK_FOOTPRINT,
           depth: LANDMARK_FOOTPRINT,
-          // H1: the supertalls differ in height (400–480 m); every one is
+          // H1: the supertalls differ in height (T1: 720–1000 m); every one is
           // at least LANDMARK_HEIGHT, which is how the city knows them.
           height: profile.tiers.reduce((s, t) => s + t.height, 0),
           tiers: profile.tiers.map((t) => ({ ...t })),

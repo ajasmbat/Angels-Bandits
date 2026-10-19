@@ -54,10 +54,12 @@ import {
   LAUNCH_RESET_MS,
   LAUNCH_SEQ_MS,
   type LaunchLocal,
+  PATH_LINE,
   SHIP_CLASSES,
   type ShipClass,
   flakPosAt,
   fleetPoseInto64,
+  lanePath,
   laneStreet,
   launchDoneAt,
   launchLocalAt,
@@ -1326,8 +1328,9 @@ export class FleetRenderer {
         const ph = s.id * 1.7 + k * 2.1;
         // K1: down an avenue the lamps swing abeam and nearly level, so the
         // cones sweep the facades either side of the street; over the
-        // rooftops they rake the roofs under the hull.
-        const street = laneStreet(s.lane);
+        // rooftops they rake the roofs under the hull. T1: an orbit or a
+        // berth sweeps its tower's facades the same way.
+        const street = laneStreet(s.lane) || lanePath(s.lane) !== PATH_LINE;
         const az =
           (street ? LAMP_STREET_BEARING : (LAMP_BEARING[k] as number)) *
             (street ? (k === 0 ? -1 : 1) : 1) +

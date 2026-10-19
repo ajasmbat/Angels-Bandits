@@ -4,12 +4,13 @@
 //      client's crash check and every client's renderer agree on one heli.
 //   2. A retarget never teleports it and never snaps its hull around.
 //   3. It stays where the ticket puts it: 350-450 m, over the site, under
-//      the cloud deck, over the blimp and every generated roof — and (K1,
+//      the cloud deck, over the blimp and every roof of the ring — and (K1,
 //      under the lowered deck) off every landmark spire on every route the
-//      server takes.
+//      server takes (T1: and off every core supertall that reaches it).
 //   4. What you collide with is what is drawn: collideMovers and
 //      collideBotMovers test the SAME box the renderer poses.
 
+import { generateCity } from "@angels-bandits/common/city";
 import {
   type MoverBox,
   type MoverField,
@@ -27,6 +28,7 @@ import {
   newsHeliIdle,
   newsHeliSlot,
   newsRouteClear,
+  newsSpiresOf,
   newsTargetAt,
   retargetNewsHeli,
   setNewsTarget,
@@ -35,7 +37,6 @@ import { ROOF_STRUCTURE_MAX_HEIGHT } from "@angels-bandits/common/city/roof-stru
 import {
   BLIMP_ALT,
   BLIMP_HULL,
-  BUILDING_MAX_HEIGHT,
   CITY_TOP,
   CLOUD_BASE,
   HELI_HULL,
@@ -45,6 +46,7 @@ import {
   NEWS_HELI_ORBIT_R,
   NEWS_HELI_TURN_S,
   PLAYER_RADIUS,
+  SKYLINE_RING_MAX_HEIGHT,
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
 import { wrapDeltaAxis } from "@angels-bandits/common/world";
@@ -181,10 +183,12 @@ describe("news heli pose", () => {
     }
   });
 
-  it("stays in its band: over every roof and the blimp, under the clouds", () => {
+  it("stays in its band: over the ring's roofs and the blimp, under the clouds", () => {
     // H1: L10's 350–450 m band, lifted over the supertalls (CITY_TOP). K1:
     // brought back under the lowered deck, over every generated roof and
-    // the blimp; the spires that still reach it are steered round.
+    // the blimp; the spires that still reach it are steered round. T1:
+    // over every roof of the ring; the cores' supertalls rise into its
+    // band, and the room's routes are kept off them like the spires.
     expect(NEWS_HELI_ALT_MIN).toBeGreaterThanOrEqual(350);
     expect(NEWS_HELI_ALT_MAX).toBeLessThanOrEqual(CITY_TOP + 50);
     const top = NEWS_HELI_ALT_MAX + HELI_HULL[1] * 1.3; // rotor blur
@@ -192,10 +196,21 @@ describe("news heli pose", () => {
     const belly = NEWS_HELI_ALT_MIN - HELI_HULL[1];
     expect(belly).toBeGreaterThan(BLIMP_ALT + BLIMP_HULL[1] + 10);
     expect(belly).toBeGreaterThan(
-      BUILDING_MAX_HEIGHT + ROOF_STRUCTURE_MAX_HEIGHT + 15,
+      SKYLINE_RING_MAX_HEIGHT + ROOF_STRUCTURE_MAX_HEIGHT + 15,
     );
-    let current = newsHeliIdle(SEED);
-    expect(newsRouteClear(current)).toBe(true);
+    const city = generateCity(SEED);
+    const spires = newsSpiresOf(city);
+    // Every landmark, and every generated tower that reaches the band.
+    for (const sp of NEWS_SPIRES) {
+      expect(spires.some((o) => o.x === sp.x && o.z === sp.z)).toBe(true);
+    }
+    for (const b of city) {
+      if (b.height + ROOF_STRUCTURE_MAX_HEIGHT < belly) continue;
+      expect(spires.some((o) => o.x === b.x && o.z === b.z)).toBe(true);
+    }
+    expect(spires.length).toBeGreaterThan(NEWS_SPIRES.length);
+    let current = newsHeliIdle(SEED, spires);
+    expect(newsRouteClear(current, spires)).toBe(true);
     let taken = 0;
     for (let k = 0; k < 40; k++) {
       const t = T0 + k * 90_000;
@@ -205,7 +220,7 @@ describe("news heli pose", () => {
         t,
       );
       // The server takes only a story whose route clears the spires.
-      if (!newsRouteClear(next)) continue;
+      if (!newsRouteClear(next, spires)) continue;
       current = next;
       taken++;
       expect(current.y).toBeGreaterThanOrEqual(NEWS_HELI_ALT_MIN);
@@ -214,7 +229,7 @@ describe("news heli pose", () => {
         const p = pose(current, s);
         expect(p.y).toBeGreaterThanOrEqual(NEWS_HELI_ALT_MIN);
         expect(p.y).toBeLessThanOrEqual(NEWS_HELI_ALT_MAX);
-        for (const sp of NEWS_SPIRES) {
+        for (const sp of spires) {
           const d = Math.hypot(
             wrapDeltaAxis(sp.x, p.x),
             wrapDeltaAxis(sp.z, p.z),
@@ -223,7 +238,7 @@ describe("news heli pose", () => {
         }
       }
     }
-    expect(taken).toBeGreaterThan(20);
+    expect(taken).toBeGreaterThan(15);
   });
 
   it("throws its spot all the way to the ground under the orbit", () => {

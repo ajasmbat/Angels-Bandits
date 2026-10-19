@@ -23,6 +23,7 @@ import {
   BOSS_ID,
   FLEET_MODEL,
   type FleetShip,
+  PATH_MOOR,
   SHIP_REACH,
   type ShipDown,
   blankPose,
@@ -32,6 +33,7 @@ import {
   encodeShip,
   fleetPoseAt,
   installFleetPlan,
+  lanePath,
   laneStreet,
   shipClass,
   shipVelAt,
@@ -64,8 +66,10 @@ import {
 } from "@angels-bandits/common/city/movers";
 import { natureFor } from "@angels-bandits/common/city/nature";
 import {
+  type NewsSpire,
   canRetarget,
   newsRouteClear,
+  newsSpiresOf,
   retargetNewsHeli,
   setNewsTarget,
 } from "@angels-bandits/common/city/newsheli";
@@ -176,6 +180,7 @@ import {
   type FleetBreak,
   FleetDirector,
   applyBossImpact,
+  applyFaceTear,
   applyFlankSweeps,
   bossContactIndex,
   claimBossHit,
@@ -234,7 +239,13 @@ import {
   isResumeToken,
   isVec3,
 } from "./guards";
-import { type RespawnEnemy, pickRespawn, respawnIfUnsafe } from "./respawn";
+import {
+  type RespawnEnemy,
+  installSpawnTowers,
+  pickRespawn,
+  respawnIfUnsafe,
+  spawnTowersOf,
+} from "./respawn";
 import { type Room, RoomManager } from "./room";
 import { createStaticHandler } from "./statics";
 import { StormCeiling } from "./storm";
@@ -424,6 +435,21 @@ const moversFor = (seed: number): MoverField => {
  * seed's city as generated, exactly as every client installs it. Every room
  * flies CITY_SEED's city (RoomManager), so one plan serves them all. */
 installFleetPlan(planFleet(fleetWorldOf(city, moversFor(CITY_SEED))));
+/** T1: the towers of that city a spawn is kept off — the landmarks and the
+ * cores' supertalls that rise through the spawn layer (respawn.ts). */
+installSpawnTowers(spawnTowersOf(city));
+
+/** T1: the towers of a seed's city that reach the news heli's band, which
+ * its routes are kept off (city/newsheli.ts newsSpiresOf), memoised. */
+const newsSpiresBySeed = new Map<number, NewsSpire[]>();
+const newsSpiresFor = (seed: number): NewsSpire[] => {
+  let spires = newsSpiresBySeed.get(seed);
+  if (!spires) {
+    spires = newsSpiresOf(seed === CITY_SEED ? city : generateCity(seed));
+    newsSpiresBySeed.set(seed, spires);
+  }
+  return spires;
+};
 
 /**
  * The solid N1 trees, memoised per city seed exactly like `moversFor` — and
@@ -455,7 +481,11 @@ const roomMovers = (room: Room): MoverField => {
   let field = roomMoversById.get(room.id);
   if (!field) {
     field = {
-      ...withNewsHeli(moversFor(room.seed), room.seed),
+      ...withNewsHeli(
+        moversFor(room.seed),
+        room.seed,
+        newsSpiresFor(room.seed),
+      ),
       collapses: roomCity(room).collapses,
       // Z1: and its airship fleet — the director's own slot, mutated in
       // place.
@@ -1936,8 +1966,9 @@ function updateNewsHeli(room: Room, now: number): void {
   if (!site || !news || !canRetarget(news.target, now)) return;
   pendingKillByRoom.delete(room.id);
   const target = retargetNewsHeli(news.target, site, now);
-  // K1: a story whose route would meet a landmark spire is not taken.
-  if (!newsRouteClear(target)) return;
+  // K1: a story whose route would meet a landmark spire is not taken (T1:
+  // nor one that would meet a core's supertall).
+  if (!newsRouteClear(target, newsSpiresFor(room.seed))) return;
   setNewsTarget(news, target);
   sendToRoom(room, { type: "newsHeli", target });
 }
@@ -2456,7 +2487,10 @@ function tickBoss(room: Room, now: number): void {
     // P1: the crash ploughs on in at its fall velocity as it hit.
     const d = ship.down;
     const vel = d ? shipVelAt(ship, d.t + d.end, { x: 0, y: 0, z: 0 }) : null;
-    if (rc) {
+    if (rc && lanePath(ship.lane) === PATH_MOOR) {
+      // T1: a moored ship tears down its tower's face as it falls.
+      applyFaceTear(rc, ship, at, by, now);
+    } else if (rc) {
       applyBossImpact(rc, at, by, building, vel ? { vel, now } : undefined);
       // K1: a street ship comes down between the facades, and both take it.
       if (vel && laneStreet(ship.lane)) {

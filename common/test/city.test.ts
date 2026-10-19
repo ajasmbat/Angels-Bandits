@@ -18,8 +18,10 @@ import {
   BUILDING_MAX_HEIGHT,
   BUILDING_MIN_HEIGHT,
   CITY_TOP,
+  CLOUD_BASE,
   LANDMARK_HEIGHT,
   LOT_MIN_WIDTH,
+  SKYLINE_RING_MAX_HEIGHT,
   STREET_WIDTH,
   TIER_FOUR_MIN_HEIGHT,
   WORLD_SIZE,
@@ -190,42 +192,42 @@ describe("generateCity layout", () => {
   it("gives every landmark its slot's hand-placed profile (spec literals)", () => {
     // L3: one silhouette per LANDMARK_BLOCKS slot, in that order.
     expect(LANDMARK_PROFILES.map((p) => [p.style, p.tiers])).toEqual([
-      // H1: L3's designs scaled up into the supertalls (480 / 400 / 450 /
-      // 430 m), podiums kept.
+      // H1: L3's designs scaled up into the supertalls; T1: stretched into
+      // the mega-towers (1000 / 720 / 900 / 820 m), podiums and widths kept.
       [
         "glass",
         [
           { width: 90, depth: 90, height: 60 },
-          { width: 60, depth: 60, height: 332 },
-          { width: 34, depth: 34, height: 57 },
-          { width: 10, depth: 10, height: 31 },
+          { width: 60, depth: 60, height: 780 },
+          { width: 34, depth: 34, height: 105 },
+          { width: 10, depth: 10, height: 55 },
         ],
       ],
       [
         "ziggurat",
         [
           { width: 90, depth: 90, height: 60 },
-          { width: 72, depth: 72, height: 197 },
-          { width: 52, depth: 52, height: 72 },
-          { width: 34, depth: 34, height: 71 },
+          { width: 72, depth: 72, height: 400 },
+          { width: 52, depth: 52, height: 140 },
+          { width: 34, depth: 34, height: 120 },
         ],
       ],
       [
         "spire",
         [
           { width: 90, depth: 90, height: 60 },
-          { width: 72, depth: 72, height: 287 },
-          { width: 40, depth: 40, height: 62 },
-          { width: 10, depth: 10, height: 41 },
+          { width: 72, depth: 72, height: 640 },
+          { width: 40, depth: 40, height: 120 },
+          { width: 10, depth: 10, height: 80 },
         ],
       ],
       [
         "arches",
         [
           { width: 90, depth: 90, height: 60 },
-          { width: 64, depth: 64, height: 265 },
-          { width: 40, depth: 40, height: 66 },
-          { width: 10, depth: 10, height: 39 },
+          { width: 64, depth: 64, height: 590 },
+          { width: 40, depth: 40, height: 110 },
+          { width: 10, depth: 10, height: 60 },
         ],
       ],
     ]);
@@ -486,11 +488,12 @@ describe("generateCity lot variance and skyline", () => {
     }
   });
 
-  it("shapes the skyline as a low streetwall with a thin tower tail", () => {
-    // H1: the spec is per zone (constants.ts HEIGHT_BANDS_*): a dense core
-    // of 150–320 m towers, a 40–120 m mid-rise ring, low streetwall at the
-    // edges and the waterfront. Bounds are loose enough to be a
-    // distribution check, not a restatement of the tables.
+  it("shapes the skyline as a canyon of supertalls in the cores, towers everywhere else", () => {
+    // H1: the spec is per zone (constants.ts HEIGHT_BANDS_*). T1: the cores
+    // are a canyon of 250–650 m supertalls, a good share of them through
+    // the cloud deck; the mid ring 100–265 m towers; the edges and the
+    // waterfront 55–200 m, never low streetwall any more. Bounds are loose
+    // enough to be a distribution check, not a restatement of the tables.
     const inZone = (z: string) =>
       lots
         .filter(
@@ -506,16 +509,22 @@ describe("generateCity lot variance and skyline", () => {
     const core = inZone("core");
     const mid = inZone("mid");
     const edge = inZone("edge");
-    expect(share(core, (h) => h >= 150)).toBeGreaterThan(0.75);
-    expect(share(core, (h) => h >= 240)).toBeGreaterThan(0.3);
-    expect(share(mid, (h) => h <= 120)).toBeGreaterThan(0.75);
-    expect(share(mid, (h) => h < 40)).toBeLessThan(0.05);
-    expect(share(edge, (h) => h <= 60)).toBeGreaterThan(0.8);
-    expect(Math.max(...edge)).toBeLessThanOrEqual(90);
-    // The whole skyline: many true skyscrapers, still a minority.
+    expect(share(core, (h) => h >= 250)).toBeGreaterThan(0.75);
+    expect(share(core, (h) => h >= 420)).toBeGreaterThan(0.35);
+    expect(core.filter((h) => h > CLOUD_BASE).length).toBeGreaterThanOrEqual(
+      15,
+    );
+    expect(share(mid, (h) => h <= 230)).toBeGreaterThan(0.75);
+    expect(share(mid, (h) => h < 80)).toBeLessThan(0.05);
+    expect(Math.max(...mid)).toBeLessThanOrEqual(SKYLINE_RING_MAX_HEIGHT);
+    expect(share(edge, (h) => h <= 130)).toBeGreaterThan(0.55);
+    expect(Math.min(...edge)).toBeGreaterThanOrEqual(55);
+    expect(Math.max(...edge)).toBeLessThanOrEqual(200);
+    // The whole skyline: towers everywhere — over half the lots 150 m up —
+    // and only the cores reach the deck.
     const towers = lots.filter((b) => b.height >= 150).length;
-    expect(towers).toBeGreaterThanOrEqual(60);
-    expect(towers / lots.length).toBeLessThan(0.2);
+    expect(towers / lots.length).toBeGreaterThan(0.45);
+    expect(Math.max(...mid, ...edge)).toBeLessThan(CLOUD_BASE);
   });
 
   it("keeps every lot strictly shorter than a landmark, so height still identifies one", () => {

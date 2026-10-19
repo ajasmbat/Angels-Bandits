@@ -3,6 +3,13 @@
 Multiplayer browser dogfight game: TypeScript + Three.js client, Node + ws
 server, set in a procedurally generated downtown skyscraper arena.
 
+**Solo (local mode):** the default game since SOLO. Single-player, with the
+whole game server running in the player's browser. **Multiplayer** is the
+shared ws rooms on the Node server, reached only through the hidden `?mp=1`.
+
+**GameHost:** the game server's simulation (`server/src/host.ts`), whoever
+runs it: the Node shell for multiplayer, the page's **sim worker** for solo.
+
 **Signature feature:** the 2 km × 2 km map is a seamless torus — fly off the
 north edge and you arrive from the south with full visual continuity.
 

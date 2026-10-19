@@ -262,7 +262,41 @@ interface Variant {
   select?: boolean;
   /** DT1: the fighter's procedural paintwork and its decal atlas. */
   detail?: THREE.Texture | null;
+  /** FC1: the own plane's dissolve under the aim zoom — this material's
+   * uniforms (one instance slot fades; -1: none). */
+  fade?: FadeUniforms;
 }
+
+/** FC1: one draw's dissolve — the instance slot that fades, and how far
+ * (0 drawn … 1 gone). Per material, so two draws never share a slot. */
+interface FadeUniforms {
+  slot: { value: number };
+  amount: { value: number };
+}
+
+const fadeUniforms = (): FadeUniforms => ({
+  slot: { value: -1 },
+  amount: { value: 0 },
+});
+
+/** FC1: a screen-door dissolve (4×4 Bayer) of the one instance whose
+ * gl_InstanceID is the draw's slot — flat, so a whole instance reads one
+ * amount, and a branch every other instance skips. Fragment: before any
+ * lighting, so a discarded pixel costs nothing more. */
+const FADE_DECL = `
+uniform int uAbFadeSlot;
+uniform float uAbFade;
+flat varying float vAbFade;`;
+const FADE_BODY = "vAbFade = gl_InstanceID == uAbFadeSlot ? uAbFade : 0.0;";
+const FADE_FRAGMENT_DECL = `
+flat varying float vAbFade;
+float abBayer2(vec2 p) { return mod(2.0 * p.x + 3.0 * p.y, 4.0); }`;
+const FADE_FRAGMENT_BODY = `
+if (vAbFade > 0.0) {
+  vec2 abPx = floor(gl_FragCoord.xy);
+  float abB = (4.0 * abBayer2(mod(abPx, 2.0)) + abBayer2(mod(floor(abPx * 0.5), 2.0)) + 0.5) / 16.0;
+  if (abB < vAbFade) discard;
+}`;
 
 const HINGE_DECL = `
 attribute vec4 aDeflect;
@@ -400,6 +434,13 @@ function patchVariant(
     vBody += "\nvAbExhaust = aPart.z;";
     fDecl += "\nvarying float vAbExhaust;";
   }
+  if (v.fade) {
+    vDecl += FADE_DECL;
+    vBody += `\n${FADE_BODY}`;
+    fDecl += FADE_FRAGMENT_DECL;
+    shader.uniforms.uAbFadeSlot = v.fade.slot;
+    shader.uniforms.uAbFade = v.fade.amount;
+  }
   if (v.alpha) {
     vDecl += "\nflat varying float vAbAlpha;";
     vBody += "\nvAbAlpha = aGlow.w;";
@@ -452,6 +493,12 @@ function patchVariant(
       "#include <color_fragment>\ndiffuseColor.a *= vAbAlpha;",
     );
   }
+  if (v.fade) {
+    fs = fs.replace(
+      "#include <clipping_planes_fragment>",
+      `#include <clipping_planes_fragment>\n${FADE_FRAGMENT_BODY}`,
+    );
+  }
   if (v.detail !== undefined) {
     // After the albedo, before the damage terms (the first include is the
     // one the damage patch kept): scorch and holes paint over the paint.
@@ -491,6 +538,8 @@ interface Draw {
   /** DT1: the frame (LOD / glass) and the rack mask (enemy). */
   kind?: THREE.InstancedBufferAttribute;
   bombs?: THREE.InstancedBufferAttribute;
+  /** FC1: the own plane's dissolve (the biplane's near draws only). */
+  fade?: FadeUniforms;
   /** Instances written this frame. */
   n: number;
 }
@@ -543,6 +592,10 @@ export class PlaneFleet {
   /** Mobile draws neither the glass nor the scarf (quality.ts, P4). */
   private fineParts = true;
   private warming = false;
+  /** FC1: the plane dissolving this frame (the own plane under the zoom),
+   * and how far. */
+  private fadeGroup: THREE.Object3D | null = null;
+  private fadeAmount = 0;
   /** QA (__ab.fleet): planes drawn last frame, by LOD level and kind. */
   readonly stats = { planes: 0, near: 0, mid: 0, far: 0, enemies: 0 };
 
@@ -707,69 +760,115 @@ export class PlaneFleet {
     ]);
 
     const white = { color: 0xffffff, vertexColors: true };
-    const liveryMat = fleetMaterial(
-      M.body,
-      {
-        key: "livery",
-        hero: true,
-        damage: true,
-        hinge: true,
-        livery: true,
-        rm: true,
-      },
-      hinges,
-      white,
-    );
-    const miscMat = fleetMaterial(
-      M.metal,
-      { key: "misc", hero: true, exhaust: true, hinge: true, rm: true },
-      hinges,
-      white,
-    );
-    const B = CAPACITY_BIPLANE;
-    this.livery = this.draw(liveryGeo, liveryMat, B, {
-      deflect: true,
+    // FC1: every near biplane draw can dissolve the own plane; each gets
+    // its own uniforms (a material's), so a slot never leaks to another.
+    const liveryVariant = (fade: FadeUniforms): Variant => ({
+      key: "livery",
+      hero: true,
+      damage: true,
+      hinge: true,
       livery: true,
+      rm: true,
+      fade,
     });
-    this.misc = this.draw(miscGeo, miscMat, B, { deflect: true });
+    const miscVariant = (fade: FadeUniforms): Variant => ({
+      key: "misc",
+      hero: true,
+      exhaust: true,
+      hinge: true,
+      rm: true,
+      fade,
+    });
+    const fades = {
+      livery: fadeUniforms(),
+      misc: fadeUniforms(),
+      rudder: fadeUniforms(),
+      glass: fadeUniforms(),
+      blur: fadeUniforms(),
+      scarf: fadeUniforms(),
+    };
+    const B = CAPACITY_BIPLANE;
+    this.livery = this.draw(
+      liveryGeo,
+      fleetMaterial(M.body, liveryVariant(fades.livery), hinges, white),
+      B,
+      { deflect: true, livery: true },
+    );
+    this.livery.fade = fades.livery;
+    this.misc = this.draw(
+      miscGeo,
+      fleetMaterial(M.metal, miscVariant(fades.misc), hinges, white),
+      B,
+      { deflect: true },
+    );
+    this.misc.fade = fades.misc;
     this.rudder = this.draw(
       rudderGeo,
       fleetMaterial(
         M.rudder,
-        { key: "rudder", hero: true, damage: true, hinge: true, rm: true },
+        {
+          key: "rudder",
+          hero: true,
+          damage: true,
+          hinge: true,
+          rm: true,
+          fade: fades.rudder,
+        },
         hinges,
       ),
       B,
       { deflect: true },
     );
+    this.rudder.fade = fades.rudder;
     this.glass = this.draw(
       glassGeo,
-      fleetMaterial(M.glass, { key: "glass", select: true }, hinges, {
-        depthWrite: false,
-      }),
+      fleetMaterial(
+        M.glass,
+        { key: "glass", select: true, fade: fades.glass },
+        hinges,
+        { depthWrite: false },
+      ),
       CAPACITY_ALL,
       { kind: true },
     );
+    this.glass.fade = fades.glass;
     this.blur = this.draw(
       s.blurDisc,
-      fleetMaterial(M.blur, { key: "blur", alpha: true }, hinges, {
-        opacity: 1,
-      }),
+      fleetMaterial(
+        M.blur,
+        { key: "blur", alpha: true, fade: fades.blur },
+        hinges,
+        { opacity: 1 },
+      ),
       CAPACITY_ALL,
       {},
     );
+    this.blur.fade = fades.blur;
     this.scarf = this.draw(
       scarfGeometry(),
-      fleetMaterial(M.scarf, { key: "scarf", hero: true, scarf: true }, hinges),
+      fleetMaterial(
+        M.scarf,
+        { key: "scarf", hero: true, scarf: true, fade: fades.scarf },
+        hinges,
+      ),
       B,
       {},
     );
-    // The impostor shares the near draws' programs (same variant keys).
-    this.farLivery = this.draw(farLiveryGeo, liveryMat, B, {
-      deflect: true,
-      livery: true,
-    });
-    this.farMisc = this.draw(farMiscGeo, miscMat, B, { deflect: true });
+    this.scarf.fade = fades.scarf;
+    // The impostor shares the near draws' programs (same variant keys) but
+    // not their materials: its own fade uniforms stay at no slot.
+    this.farLivery = this.draw(
+      farLiveryGeo,
+      fleetMaterial(M.body, liveryVariant(fadeUniforms()), hinges, white),
+      B,
+      { deflect: true, livery: true },
+    );
+    this.farMisc = this.draw(
+      farMiscGeo,
+      fleetMaterial(M.metal, miscVariant(fadeUniforms()), hinges, white),
+      B,
+      { deflect: true },
+    );
     this.enemy = this.draw(
       enemyGeo,
       fleetMaterial(
@@ -881,6 +980,13 @@ export class PlaneFleet {
     this.count = 0;
   }
 
+  /** FC1: dissolve `plane` by `amount` (0 drawn … 1 gone) this frame — the
+   * own plane under the aim zoom. Null or 0: nothing fades. */
+  setFade(plane: THREE.Object3D | null, amount: number): void {
+    this.fadeGroup = amount > 0 ? plane : null;
+    this.fadeAmount = amount;
+  }
+
   /** Draw `plane` this frame (if it and its parents are visible), glowing
    * by `glow` — the linear emissive its materials used to be tinted with.
    * An object, not three numbers: a double handed to a call V8 does not
@@ -922,7 +1028,10 @@ export class PlaneFleet {
   commit(camera: THREE.Camera): void {
     if (this.warming) return;
     camera.updateMatrixWorld();
-    for (const d of this.draws) d.n = 0;
+    for (const d of this.draws) {
+      d.n = 0;
+      if (d.fade) d.fade.slot.value = -1;
+    }
     let near = 0;
     let mid = 0;
     let far = 0;
@@ -1074,6 +1183,10 @@ export class PlaneFleet {
     d.mesh.setMatrixAt(k, m);
     d.glow.setXYZW(k, e.r, e.g, e.b, damage);
     d.deflect?.setXYZW(k, ail, elev, rud, prop);
+    if (d.fade && e.group === this.fadeGroup) {
+      d.fade.slot.value = k;
+      d.fade.amount.value = this.fadeAmount;
+    }
     return k;
   }
 }

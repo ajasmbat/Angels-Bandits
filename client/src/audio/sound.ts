@@ -74,6 +74,9 @@ const ENGINE_MAX_HZ = 135;
 /** Engine pitch at full boost speed (F2) — the burn climbs past full throttle. */
 const ENGINE_BOOST_HZ = 185;
 const BOOST_CUE_LEVEL = 0.45;
+/** FC1: the boost punch's low thump, and the zoom-in thunk. */
+const BOOST_THUMP_LEVEL = 0.5;
+const ZOOM_THUNK_LEVEL = 0.22;
 /** X1 incoming-missile whistle: a clean rising TONE — nothing like the
  * storm's filtered-noise thunder, so the two are never confused. */
 const WHISTLE_LEVEL = 0.32;
@@ -830,9 +833,20 @@ export class GameAudio implements VoiceSink {
     rampTo(this.train.pan.pan, s.pan, now, 0.1);
   }
 
-  /** Boost ignition (F2): a rising rush of air as the burn lights. */
-  boostCue(): void {
+  /** Boost ignition (F2): a rising rush of air as the burn lights. FC1:
+   * `kick` (the tuning's boostKick) adds a low thump under it — the punch. */
+  boostCue(kick = 0): void {
     this.burst("bandpass", 500, 2600, 0.5, BOOST_CUE_LEVEL, 0);
+    if (kick > 0) {
+      this.burst("lowpass", 180, 45, 0.35, BOOST_THUMP_LEVEL * kick, 0);
+    }
+  }
+
+  /** FC1: the aim zoom coming in — a soft, short mechanical thunk (a low
+   * filtered knock with a little click on top), well under the guns. */
+  zoomThunk(): void {
+    this.burst("lowpass", 420, 90, 0.12, ZOOM_THUNK_LEVEL, 0);
+    this.burst("bandpass", 2200, 1400, 0.04, ZOOM_THUNK_LEVEL * 0.4, 0);
   }
 
   /** P3: the air rush of rolling or looping through inverted — a soft,

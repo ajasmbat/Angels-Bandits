@@ -178,6 +178,17 @@ export class TouchControls {
         (down) => this.rollPress(-1, down),
         live,
       ),
+      // FC1: X and V's twins — a press starts the manoeuvre.
+      holdButton(
+        byId("touch-uturn"),
+        (down) => down && t.input.pressManoeuvre("uturn"),
+        live,
+      ),
+      holdButton(
+        byId("touch-dodge"),
+        (down) => down && t.input.pressManoeuvre("dodge"),
+        live,
+      ),
     );
     t.scoreboard.bindTapToggle(byId("touch-score"));
 

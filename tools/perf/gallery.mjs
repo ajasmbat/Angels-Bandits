@@ -537,6 +537,30 @@ try {
       );
       console.log("lowChaos", v.name, JSON.stringify(r));
     }
+    // FC1: hold the aim zoom for the shot — the gun-sight view; every other
+    // view hands the zoom back (the page is reused from view to view).
+    await page.evaluate((on) => window.__ab.qaZoom?.(on ? true : null), v.zoom);
+    if (v.zoom) {
+      const z = await page.evaluate(
+        () =>
+          new Promise((done) => {
+            const t0 = performance.now();
+            const tick = () =>
+              window.__ab.zoom().z >= 1 || performance.now() - t0 > 60_000
+                ? done({
+                    ...window.__ab.zoom(),
+                    vignette: getComputedStyle(
+                      document.getElementById("zoom-vignette"),
+                    ).opacity,
+                    sight: getComputedStyle(document.getElementById("gunsight"))
+                      .opacity,
+                  })
+                : requestAnimationFrame(tick);
+            requestAnimationFrame(tick);
+          }),
+      );
+      console.log("zoom", v.name, JSON.stringify(z));
+    }
     // D11: a fixed-camera view holds its plane every frame too — left to fly
     // between pins, it wandered off its parking spot into the city.
     if (v.raf || v.eye) {

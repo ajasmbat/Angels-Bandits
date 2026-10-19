@@ -21,6 +21,7 @@ import {
   turnRadius,
   turnRateAt,
 } from "@angels-bandits/common/flight";
+import { BOT_TUNING, DEFAULT_TUNING } from "@angels-bandits/common/tuning";
 import { describe, expect, it } from "vitest";
 
 // Expected values are worked examples from PLAN.md / the ticket plan (speeds,
@@ -143,7 +144,10 @@ describe("stepFlight: steering", () => {
       2,
     );
     expect(end.yaw).toBeLessThan(-1); // really turning
-    expect(end.yaw).toBeGreaterThan(-2.5); // ...but nowhere near instant
+    // ...but nowhere near instant: FC1's player rate at 65 m/s is halfway
+    // between 1.8 and 0.9, 1.35 rad/s — 2.7 rad in 2 s (fly() bleeds a
+    // little speed, so a hair less).
+    expect(end.yaw).toBeGreaterThan(-3);
   });
 
   it("holding full pull-up loops over the top: pitch reads within ±90°, inverted past vertical (F7)", () => {
@@ -307,17 +311,29 @@ describe("stepFlight: level cruise kinematics", () => {
   });
 });
 
+// F5's model on the constants — the bots' (BOT_TUNING) — and FC1's sharper
+// player turns on the same law (DEFAULT_TUNING: 1.8 rad/s at the slowest).
 describe("F5: speed-dependent turn rate", () => {
   it("is TURN_RATE_SLOW (1.35) at MIN_SPEED easing to TURN_RATE (0.9) at MAX_SPEED", () => {
-    expect(turnRateAt(MIN_SPEED)).toBeCloseTo(1.35, 12);
+    const t = BOT_TUNING;
+    expect(turnRateAt(MIN_SPEED, t)).toBeCloseTo(1.35, 12);
+    expect(turnRateAt(MAX_SPEED, t)).toBeCloseTo(0.9, 12);
+    expect(turnRateAt(65, t)).toBeCloseTo(1.125, 12); // halfway
+    expect(turnRateAt(BOOST_MAX_SPEED, t)).toBeCloseTo(0.9, 12); // flat above
+    expect(turnRateAt(0, t)).toBeCloseTo(1.35, 12); // flat below
+  });
+
+  it("FC1: the player's is 1.8 at MIN_SPEED, the same 0.9 at MAX_SPEED", () => {
+    expect(turnRateAt(MIN_SPEED)).toBeCloseTo(1.8, 12);
     expect(turnRateAt(MAX_SPEED)).toBeCloseTo(0.9, 12);
-    expect(turnRateAt(65)).toBeCloseTo(1.125, 12); // halfway
-    expect(turnRateAt(BOOST_MAX_SPEED)).toBeCloseTo(0.9, 12); // flat above
-    expect(turnRateAt(0)).toBeCloseTo(1.35, 12); // flat below
+    expect(turnRateAt(65)).toBeCloseTo(1.35, 12); // halfway
   });
 
   it("full-deflection radius: 29.6 m at MIN_SPEED (was 44.4), still 100 m at MAX_SPEED", () => {
-    expect(turnRadius(MIN_SPEED)).toBeCloseTo(29.63, 2);
+    expect(turnRadius(MIN_SPEED, BOT_TUNING)).toBeCloseTo(29.63, 2);
+    expect(turnRadius(MAX_SPEED, BOT_TUNING)).toBeCloseTo(100, 9);
+    // FC1's player: 22.2 m at the slowest.
+    expect(turnRadius(MIN_SPEED)).toBeCloseTo(22.22, 2);
     expect(turnRadius(MAX_SPEED)).toBeCloseTo(100, 9);
   });
 
@@ -362,17 +378,26 @@ describe("F5: cornerCap airbrake", () => {
     const dt = 1 / 60;
     s = stepFlight(s, { ...NEUTRAL, throttle: 1, cornerCap: 50 }, dt);
     // At least the airbrake (the ordinary pull toward the lower command,
-    // SPEED_RESPONSE × 40 m/s, is even stronger on this first step).
-    expect(MAX_SPEED - s.speed).toBeGreaterThanOrEqual(
-      CORNER_BRAKE_DECEL * dt - 1e-9,
-    );
-    // Near the cap the pull fades, but the airbrake still holds 22 m/s².
+    // SPEED_RESPONSE × 40 m/s, is even stronger on this first step) — FC1:
+    // the player's 30 m/s².
+    const brake = DEFAULT_TUNING.cornerBrakeDecel;
+    expect(brake).toBe(30);
+    expect(MAX_SPEED - s.speed).toBeGreaterThanOrEqual(brake * dt - 1e-9);
+    // Near the cap the pull fades, but the airbrake still holds.
     const near = stepFlight(
       cruiseAt(55, { x: 500, y: 300, z: 500 }),
       { ...NEUTRAL, throttle: 1, cornerCap: 50 },
       dt,
     );
-    expect(55 - near.speed).toBeCloseTo(CORNER_BRAKE_DECEL * dt, 9);
+    expect(55 - near.speed).toBeCloseTo(brake * dt, 9);
+    // The bots' is the constant's, 22 m/s².
+    const bot = stepFlight(
+      cruiseAt(55, { x: 500, y: 300, z: 500 }),
+      { ...NEUTRAL, throttle: 1, cornerCap: 50 },
+      dt,
+      BOT_TUNING,
+    );
+    expect(55 - bot.speed).toBeCloseTo(CORNER_BRAKE_DECEL * dt, 9);
     s = fly(s, { ...NEUTRAL, throttle: 1, cornerCap: 50 }, 3);
     expect(s.speed).toBeCloseTo(50, 9);
     expect(s.targetSpeed).toBe(MAX_SPEED); // the throttle stays the pilot's

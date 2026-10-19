@@ -436,6 +436,7 @@ import { Inferno, type InfernoStats } from "./render/inferno";
 import { Jumbotrons } from "./render/jumbotrons";
 import { lookPasses } from "./render/lookup";
 import { MissileRenderer } from "./render/missiles";
+import { MooringRigs } from "./render/moorings";
 import { MoverLights, Movers } from "./render/movers";
 import { NameTagBatch } from "./render/nametags";
 import { NanProbePass, type NanProbeReading } from "./render/nanprobe";
@@ -1823,6 +1824,10 @@ bossRenderer.setCues({
   },
 });
 scene.add(bossRenderer.group);
+// T1: the berths' rigging — gangways, mooring arms and cargo cables between
+// each mega-tower and the ship moored at its spire dock.
+const moorings = new MooringRigs();
+scene.add(moorings.group);
 /** S8/Z1 QA (`__ab.qaFleet`, `__ab.qaBoss`): the staged fleet and its flak
  * schedule, and how many shells the server sent while it was staged
  * (dropped each frame). */
@@ -2080,6 +2085,8 @@ dust.setLights({
 const strikeFeed = new StrikeFeed(welcome.seed);
 // The deck everyone shares: seeded layout, drifting on the synced clock.
 const clouds = new CloudDeck(welcome.seed);
+// T1: the supertalls that pierce the deck light it.
+clouds.setTowers(city.cityBuildings);
 scene.add(clouds.group);
 // The storm's neutral radar: strikes reveal nearby planes to EVERYONE.
 const reveals = new StormReveals();
@@ -4358,7 +4365,7 @@ function qaSystems(): {
     ["wrecks", [wrecks.group]],
     ["missiles", [missileRenderer.group]],
     ["penetrate", [penetrations.group]],
-    ["boss", [bossRenderer.group]],
+    ["boss", [bossRenderer.group, moorings.group]],
     ["reactions", [reactor.points]],
     ["storm", [storm.group, storm.flashLight]],
     ["clouds", [clouds.group]],
@@ -6930,6 +6937,7 @@ const frame = (rafNow: number): void => {
     renderMs,
     now,
   );
+  moorings.update(socket.boss, bossViewer, renderMs);
   beamSpots.length = 0;
   const fogNear = scene.fog instanceof THREE.Fog ? scene.fog.near : 0;
   const fogFar = scene.fog instanceof THREE.Fog ? scene.fog.far : 1e9;
@@ -7271,7 +7279,9 @@ const frame = (rafNow: number): void => {
       burnShown += (target - burnShown) * (1 - Math.exp(-dt / 1.5));
     }
   }
-  clouds.update(chase.position, camera.quaternion, renderMs);
+  // T1: centred on the eye the frame is drawn from (the QA eye when one is
+  // held): from under the deck it is the storm ceiling.
+  clouds.update(lastQaViewer(), camera.quaternion, renderMs);
   clouds.setGlow(inferno.cloudGlow, inferno.cloudGlowCount, burnShown);
   // L7b: and the sky over them (the dome, toward the fires).
   skyDome.setBurnGlow(

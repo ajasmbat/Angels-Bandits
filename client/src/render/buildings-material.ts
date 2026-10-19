@@ -18,7 +18,11 @@
 // instance's own height. This file keeps what belongs to the MATERIAL: the
 // emissive ladder normalisation, the varyings, and the shader splice points.
 
-import { EMISSIVE_WINDOW } from "@angels-bandits/common/constants";
+import {
+  CLOUD_BASE,
+  EMISSIVE_BEACON,
+  EMISSIVE_WINDOW,
+} from "@angels-bandits/common/constants";
 import * as THREE from "three";
 import {
   BROKEN_COLOR_GLSL,
@@ -33,7 +37,7 @@ import {
   FRACTURE_PARS_GLSL,
   FRACTURE_VERTEX_GLSL,
 } from "./debris";
-import { luminance } from "./emissive";
+import { emissiveBoost, luminance } from "./emissive";
 import {
   OPENING_SD_GLSL,
   facadeMaterialGlsl,
@@ -134,6 +138,98 @@ export function skylineFacadeLook(): {
     neonDensity: NEON_DENSITY,
   };
 }
+
+/**
+ * T1 the supertall canyon: what a facade up in the storm deck still shows
+ * through it (fog.ts — the deck hides it by its path in cloud, seen from
+ * under it):
+ *  - its windows' glow — light carries through cloud further than a wall
+ *    can be seen: DECK_GLOW of their light, fading DECK_GLOW_REACH times
+ *    slower than the facade, and deep in, as their mean;
+ *  - aircraft-warning beacons — a red dot on every vertical edge of a
+ *    shaft, every DECK_BEACON_STEP m from DECK_BEACON_FROM off the deck's
+ *    base up (the first row just under it, where the street sees it), on
+ *    the synced clock in three phase groups (the far skyline's rhythm),
+ *    seen through DECK_BEACON_REACH times more cloud.
+ * A fragment the deck hides past DECK_SKIP shades nothing but those: the
+ * deck is the occluder that pays for the supertalls' extra facade.
+ */
+export const DECK_GLOW = 0.4;
+export const DECK_GLOW_REACH = 3;
+export const DECK_BEACON_FROM = -20;
+export const DECK_BEACON_STEP = 70;
+export const DECK_BEACON_REACH = 5;
+export const DECK_SKIP = 0.97;
+/** The beacons' blink period, s — divides LIVE.period (7200 s), so the
+ * clock's wrap is just another flash. */
+const DECK_BLINK_S = 1.6;
+/** Beacon red at its ladder rung (the landmark roof beacons'). */
+const DECK_BEACON_COLOR = new THREE.Color(1.0, 0.12, 0.1);
+const DECK_BEACON_RGB = DECK_BEACON_COLOR.clone().multiplyScalar(
+  emissiveBoost(DECK_BEACON_COLOR, EMISSIVE_BEACON),
+);
+/** A facade's mean window light: the warm palette at the WINDOW rung,
+ * times the share of panes a night floor has lit. */
+const DECK_GLOW_MEAN = WINDOW_WARM.clone().multiplyScalar(
+  Number(WINDOW_EMISSIVE_INTENSITY) *
+    ((FACADE.glass.lit + FACADE.masonry.lit + FACADE.office.lit) / 3),
+);
+
+/** GLSL (fragment pars): the deck beacons on a facade fragment. */
+const DECK_PARS_GLSL = /* glsl */ `
+vec3 abDeckBeacon(vec3 meters, vec3 n, vec2 halfXZ, float worldY, float seed) {
+  if (abs(n.y) > 0.5) return vec3(0.0);
+  float along = abs(n.x) > 0.5 ? meters.z : meters.x;
+  float half_ = abs(n.x) > 0.5 ? halfXZ.y : halfXZ.x;
+  float edge = half_ - abs(along);
+  float hb = worldY - ${(CLOUD_BASE + DECK_BEACON_FROM).toFixed(1)};
+  float dv = hb - floor(hb / ${DECK_BEACON_STEP.toFixed(1)} + 0.5) * ${DECK_BEACON_STEP.toFixed(1)};
+  float dot_ = (1.0 - smoothstep(0.6, 1.6, edge)) * (1.0 - smoothstep(0.45, 0.9, abs(dv)))
+    * step(-1.0, hb);
+  if (dot_ <= 0.0) return vec3(0.0);
+  float ph = fract(uLiveTime / ${DECK_BLINK_S.toFixed(2)} + floor(seed * 3.0) / 3.0);
+  float on = smoothstep(0.0, 0.06, ph) * (1.0 - smoothstep(0.3, 0.4, ph));
+  return ${glslVec3(DECK_BEACON_RGB)} * (0.12 + 0.88 * on) * dot_;
+}
+`;
+
+/** GLSL: right at the top of main — a fragment the deck hides past
+ * DECK_SKIP is the fog colour along its ray, its windows' mean glow and its
+ * beacons, and nothing else is shaded. */
+const DECK_EARLY_OUT_GLSL = /* glsl */ `
+#ifdef USE_FOG
+{
+  float abDeckL0 = abDeckPath(cameraPosition.y, vFogWorldY, vFogDepth);
+  if (1.0 - exp(-abDeckL0 * AB_DECK_DENSITY) > ${DECK_SKIP.toFixed(3)}) {
+    float abSinEl0 = (vFogWorldY - cameraPosition.y) / max(vFogDepth, 1.0);
+    vec3 abFogC0 = abGlowFog(abSkyFog(fogColor, abSinEl0), abSinEl0);
+    float abFog0 = abFogFactor(fogNear, fogFar, vFogDepth);
+    vec3 abEm0 = ${glslVec3(DECK_GLOW_MEAN)} * uOccupancy * ${DECK_GLOW.toFixed(2)}
+        * exp(-abDeckL0 * AB_DECK_DENSITY / ${DECK_GLOW_REACH.toFixed(1)})
+      + abDeckBeacon(vMeters, vObjNormal, vHalfXZ, vWorldY, vBSeed)
+        * exp(-abDeckL0 * AB_DECK_DENSITY / ${DECK_BEACON_REACH.toFixed(1)});
+    gl_FragColor = vec4(abFogC0 + abEm0 * (1.0 - abFog0), 1.0);
+    return;
+  }
+}
+#endif
+`;
+
+/** GLSL: after the fog — the windows' glow and the beacons back through the
+ * deck (both zero where it hides nothing). */
+const DECK_GLOW_GLSL = /* glsl */ `
+#ifdef USE_FOG
+{
+  vec3 abGlowEm = mix(totalEmissiveRadiance, ${glslVec3(DECK_GLOW_MEAN)} * uOccupancy,
+    smoothstep(0.8, ${DECK_SKIP.toFixed(3)}, abDeck));
+  gl_FragColor.rgb += (abGlowEm * (${DECK_GLOW.toFixed(2)} * abDeck)
+      * exp(-abDeckL * AB_DECK_DENSITY / ${DECK_GLOW_REACH.toFixed(1)})
+    + abDeckBeacon(vMeters, vObjNormal, vHalfXZ, vWorldY, vBSeed)
+      * exp(-abDeckL * AB_DECK_DENSITY / ${DECK_BEACON_REACH.toFixed(1)}))
+    * (1.0 - fogFactor);
+}
+#endif
+`;
 
 /** Street-level shop band height, meters of WORLD height (tier 1 only —
  * upper-tier bases sit far above this and keep ordinary windows). */
@@ -346,7 +442,7 @@ float abHash(vec2 p, float s) {
 float abSafeDiv(float d) {
   return abs(d) < 1e-4 ? (d < 0.0 ? -1e-4 : 1e-4) : d;
 }
-${OPENING_SD_GLSL}${NEON_SIGN_PARS_GLSL}${DAMAGE_PARS_GLSL}${INFERNO_PARS_GLSL}${roofParsGlsl()}${WAKE_PARS_GLSL}${livingParsGlsl()}${WEATHER_PARS_GLSL}${REFLECTION_PARS_GLSL}`;
+${OPENING_SD_GLSL}${NEON_SIGN_PARS_GLSL}${DAMAGE_PARS_GLSL}${INFERNO_PARS_GLSL}${roofParsGlsl()}${WAKE_PARS_GLSL}${livingParsGlsl()}${WEATHER_PARS_GLSL}${REFLECTION_PARS_GLSL}${DECK_PARS_GLSL}`;
 
 /** Injected after color_fragment: derives the shared window-grid locals
  * (in scope for the emissive block below — same main body), modulates the
@@ -693,12 +789,18 @@ export function createBuildingsMaterial(
       .replace(
         "#include <lights_physical_fragment>",
         `#include <lights_physical_fragment>\n${FRAGMENT_SPECULAR}`,
+      )
+      // T1: the storm deck — skip what it hides, glow what it lets through.
+      .replace("void main() {", `void main() {\n${DECK_EARLY_OUT_GLSL}`)
+      .replace(
+        "#include <fog_fragment>",
+        `#include <fog_fragment>\n${DECK_GLOW_GLSL}`,
       );
   };
   // Distinct compiled program per patch (V3 rule: three keys programs on
   // onBeforeCompile.toString(), and sibling materials collide silently).
   const key =
-    "ab-buildings-h1-holes-l1-wake-l3-live-l4-wet-g1-lobbies-d1-damage-d2-broken-s6-refl";
+    "ab-buildings-h1-holes-l1-wake-l3-live-l4-wet-g1-lobbies-d1-damage-d2-broken-s6-refl-t1-deck";
   material.customProgramCacheKey = () =>
     fracture ? `${key}-d10-fracture` : key;
   return material;

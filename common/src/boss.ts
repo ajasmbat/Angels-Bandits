@@ -633,8 +633,11 @@ export const MOOR_CYCLE = 36;
  * it, per metre of half-length (sin of the sway, rounded up). */
 export const MOOR_SWING = 0.026;
 /** T1: the gap a berth leaves between its hull's beam and the tower's
- * face, m — the gangway's span (the renderer's). */
-export const MOOR_GAP = 8;
+ * face, m — the gangway's span (the renderer's). Too narrow for a plane
+ * (its sphere is 2 × PLAYER_RADIUS across), so the rigging inside it — the
+ * gangway, the mooring arms, the cargo cables — needs no collider: nothing
+ * can fly where it hangs. Its sway (MOOR_SWING) leaves LANE_MARGIN_XZ. */
+export const MOOR_GAP = 4;
 /** T1: an orbit's inner beam keeps this off the shaft's corners, m. */
 export const ORBIT_GAP = 8;
 

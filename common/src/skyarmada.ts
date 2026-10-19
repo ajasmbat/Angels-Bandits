@@ -77,11 +77,14 @@ export const SHIP_HALF_LEN = 128;
  * K1: down with the deck and the real fleet — the low layer cruises the
  * far avenues among the far towers, the middle one the far rooftops, the
  * top one just under the storm — so the real fleet's street and rooftop
- * bands (common/src/boss.ts, ≈ 94–396 m) sit inside the armada's. */
+ * bands (common/src/boss.ts, ≈ 94–396 m) sit inside the armada's. T1: the
+ * real fleet now cruises the avenues (86–176 m), orbits and threads among
+ * the supertalls (241–355 m) — the layers follow it down among the far
+ * towers, which rise past all three into the deck. */
 export const SHIP_LAYERS: readonly (readonly [number, number])[] = [
-  [150, 230],
-  [250, 330],
-  [340, CLOUD_BASE - 30],
+  [100, 180],
+  [240, 320],
+  [330, CLOUD_BASE - 30],
 ];
 /** Each layer's two drift vectors, in lattice steps: the armada moves as
  * one front, the layers at different speeds (the parallax). */

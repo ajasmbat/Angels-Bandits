@@ -1,36 +1,33 @@
 // E1 Air force, end to end against a real server process with a staged
-// air force (AB_AIRFORCE=240: thirty squadrons in the air at once, off no
-// rig) and the carrier war's own waves on (AB_BOSS_FAST):
+// air force (AB_AIRFORCE=240: I1, 240 individual pilots in the air at
+// once, off no rig) and the carrier war's own waves on (AB_BOSS_FAST):
 //
 //  - interest management: each client's snapshot carries only what is
 //    within half the world of IT — two pilots apart get different rows —
-//    the squadrons as rows, the enemies near it at full rate and the ones
-//    past the near tier at 5 Hz;
-//  - every plane a row stands for is a roster member (ids counted up from
-//    slot 0's), and a LATE JOINER's welcome names the whole air force and
-//    its first snapshots carry it;
-//  - a client's wire stays far under the 250 KB/s budget.
+//    every plane its own entry (no squadron rows), the enemies in the
+//    fight (IM_FULL_M) at full rate and the ones past it at 5 Hz;
+//  - every plane an entry stands for is a roster member, and a LATE
+//    JOINER's welcome names the whole air force and its first snapshots
+//    carry it;
+//  - a client's wire stays under the 250 KB/s budget.
 
 import { type ChildProcess, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   IM_FAR_M,
+  IM_FULL_M,
   IM_MID_EVERY,
-  IM_NEAR_M,
 } from "@angels-bandits/common/interest";
-import { decodeSnapshotEntry } from "@angels-bandits/common/net";
+import {
+  PROTOCOL_VERSION,
+  decodeSnapshotEntry,
+} from "@angels-bandits/common/net";
 import type {
   Pose,
   ServerMsg,
   WelcomeMsg,
   WireSnapshotMsg,
 } from "@angels-bandits/common/protocol";
-import {
-  FORM_REACH,
-  SQUAD_SIZE,
-  decodeSquadRow,
-  squadMemberId,
-} from "@angels-bandits/common/squadron";
 import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import WebSocket from "ws";
@@ -106,21 +103,17 @@ function join(name: string): Promise<Peer> {
   });
 }
 
-/** Every plane a snapshot carries: its own entries and its rows' planes. */
+/** Every plane a snapshot carries (each its own entry). */
 function planesOf(msg: WireSnapshotMsg): { id: string; pos: Vec3 }[] {
-  const out = msg.p.map((w) => {
+  return msg.p.map((w) => {
     const e = decodeSnapshotEntry(w);
     return { id: e.id, pos: e.pose.pos };
   });
-  for (const row of msg.s ?? []) {
-    const r = decodeSquadRow(row);
-    for (let k = 0; k < SQUAD_SIZE; k++) {
-      if (r.mask & (1 << k))
-        out.push({ id: squadMemberId(r.id0, k), pos: r.anchor.pos });
-    }
-  }
-  return out;
 }
+
+/** The enemies a snapshot carries. */
+const enemiesOf = (msg: WireSnapshotMsg) =>
+  planesOf(msg).filter((p) => p.id.startsWith("bot:"));
 
 beforeAll(async () => {
   child = spawn(process.execPath, ["--import", "tsx", entry], {
@@ -158,12 +151,12 @@ describe("E1 air force over the wire", () => {
   beforeAll(async () => {
     a = await join("Alpha");
     b = await join("Bravo");
-    // The staged air force goes up as soon as someone flies (8 squadrons a
+    // The staged air force goes up as soon as someone flies (16 pilots a
     // tick); then let it fly and both pilots' snapshots pile up.
     const deadline = Date.now() + 20_000;
     while (Date.now() < deadline) {
       const last = a.snapshots.at(-1)?.msg;
-      if (last && (last.s?.length ?? 0) > 0 && a.roster.size >= STAGED) break;
+      if (last && enemiesOf(last).length > 0 && a.roster.size >= STAGED) break;
       await wait(100);
     }
     await wait(1500);
@@ -179,26 +172,23 @@ describe("E1 air force over the wire", () => {
     late?.stop();
   });
 
-  it("sends the squadrons as rows, every plane of them a roster member", () => {
-    const rows = a.snapshots.flatMap((s) => s.msg.s ?? []);
-    expect(rows.length).toBeGreaterThan(20);
+  it("sends every air-force plane as its own entry, every one a roster member", () => {
+    const ids = new Set<string>();
     for (const s of a.snapshots) {
-      for (const p of planesOf(s.msg)) {
-        if (p.id.startsWith("bot:")) expect(a.named.has(p.id)).toBe(true);
+      // No squadron rows any more (I1).
+      expect((s.msg as { s?: unknown }).s).toBeUndefined();
+      for (const p of enemiesOf(s.msg)) {
+        expect(a.named.has(p.id)).toBe(true);
+        ids.add(p.id);
       }
     }
+    expect(ids.size).toBeGreaterThan(100);
     expect(a.roster.size).toBeGreaterThanOrEqual(STAGED);
   });
 
   it("gives each pilot only what is within half the world of it, tick by tick", () => {
     for (const peer of [a, b]) {
       for (const s of peer.snapshots) {
-        for (const row of s.msg.s ?? []) {
-          const r = decodeSquadRow(row);
-          expect(
-            wrapDistance(r.anchor.pos, peer.at.pos) - FORM_REACH,
-          ).toBeLessThanOrEqual(IM_FAR_M + 1);
-        }
         for (const w of s.msg.p) {
           const e = decodeSnapshotEntry(w);
           if (!e.id.startsWith("bot:")) continue;
@@ -208,35 +198,33 @@ describe("E1 air force over the wire", () => {
         }
       }
     }
-    // The same tick seen by both: a row A got whose squadron was beyond
-    // half the world from B is not in B's snapshot of that tick (the two
-    // spawns are apart, so the geometry varies by seed; it is checked
-    // wherever it occurs).
+    // The same tick seen by both: a plane A got that was beyond half the
+    // world from B is not in B's snapshot of that tick (the two spawns are
+    // apart, so the geometry varies by seed; it is checked wherever it
+    // occurs).
     const bByTime = new Map(b.snapshots.map((x) => [x.msg.time, x.msg]));
     for (const s of a.snapshots) {
       const other = bByTime.get(s.msg.time);
       if (!other) continue;
-      const theirs = new Set((other.s ?? []).map((r) => r[0]));
-      for (const row of s.msg.s ?? []) {
-        const r = decodeSquadRow(row);
-        if (wrapDistance(r.anchor.pos, b.at.pos) - FORM_REACH > IM_FAR_M + 1) {
-          expect(theirs.has(r.id0)).toBe(false);
+      const theirs = new Set(enemiesOf(other).map((p) => p.id));
+      for (const p of enemiesOf(s.msg)) {
+        if (wrapDistance(p.pos, b.at.pos) > IM_FAR_M + 1) {
+          expect(theirs.has(p.id)).toBe(false);
         }
       }
     }
   });
 
-  it("sends a near squadron every tick and a mid one at 5 Hz", () => {
+  it("sends a plane in the fight every tick and one past it at 5 Hz", () => {
     const seen = new Map<string, { n: number; near: number; mid: number }>();
     for (const s of a.snapshots) {
-      for (const row of s.msg.s ?? []) {
-        const r = decodeSquadRow(row);
-        const d = wrapDistance(r.anchor.pos, a.at.pos) - FORM_REACH;
-        const x = seen.get(r.id0) ?? { n: 0, near: 0, mid: 0 };
+      for (const p of enemiesOf(s.msg)) {
+        const d = wrapDistance(p.pos, a.at.pos);
+        const x = seen.get(p.id) ?? { n: 0, near: 0, mid: 0 };
         x.n++;
-        if (d <= IM_NEAR_M - 50) x.near++;
-        else if (d > IM_NEAR_M + 50) x.mid++;
-        seen.set(r.id0, x);
+        if (d <= IM_FULL_M - 50) x.near++;
+        else if (d > IM_FULL_M + 50) x.mid++;
+        seen.set(p.id, x);
       }
     }
     const ticks = a.snapshots.length;
@@ -244,7 +232,7 @@ describe("E1 air force over the wire", () => {
     const near = [...seen.values()].filter((x) => x.near === x.n && x.n > 0);
     const mid = [...seen.values()].filter((x) => x.mid === x.n && x.n > 0);
     expect(near.length).toBeGreaterThan(0);
-    // A squadron that stayed near rode (almost) every snapshot…
+    // A plane that stayed near rode (almost) every snapshot…
     expect(Math.max(...near.map((x) => x.n))).toBeGreaterThan(ticks * 0.9);
     // …one that stayed mid about one in IM_MID_EVERY.
     if (mid.length > 0) {
@@ -258,17 +246,18 @@ describe("E1 air force over the wire", () => {
     expect(
       late.welcome.roster.filter((r) => r.isBot).length,
     ).toBeGreaterThanOrEqual(STAGED);
-    expect(late.welcome.proto).toBe(2);
+    expect(late.welcome.proto).toBe(PROTOCOL_VERSION);
+    expect(PROTOCOL_VERSION).toBe(3);
     const first = late.snapshots.slice(0, IM_MID_EVERY + 2);
-    expect(first.some((s) => (s.msg.s?.length ?? 0) > 0)).toBe(true);
+    expect(first.some((s) => enemiesOf(s.msg).length > 0)).toBe(true);
     for (const s of late.snapshots) {
-      for (const p of planesOf(s.msg)) {
-        if (p.id.startsWith("bot:")) expect(late.named.has(p.id)).toBe(true);
+      for (const p of enemiesOf(s.msg)) {
+        expect(late.named.has(p.id)).toBe(true);
       }
     }
   });
 
-  it("keeps each pilot's snapshots far under 250 KB/s", () => {
+  it("keeps each pilot's snapshots under 250 KB/s", () => {
     for (const peer of [a, b]) {
       const s = peer.snapshots;
       const secs = ((s.at(-1)?.at ?? 0) - (s[0]?.at ?? 0)) / 1000;

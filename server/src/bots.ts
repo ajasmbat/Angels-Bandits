@@ -763,9 +763,13 @@ function tunnelInput(
 }
 
 /** A fresh bot's graceUntil: unstamped (NaN) for a spawn in the canyons, none
- * at all for a high one — see Bot.graceUntil. */
+ * at all for a high one — see Bot.graceUntil. T1: "in the canyons" is under
+ * the band and its corner hop (the street spawns), not the probe split,
+ * which rose over the ring's roofs. */
 const streetGrace = (spawn: SpawnState): number =>
-  spawn.pos.y < BOT_CANYON_PROBE_ALT ? Number.NaN : Number.NEGATIVE_INFINITY;
+  spawn.pos.y < BOT_CANYON_ALT_MAX + BOT_CANYON_HOP
+    ? Number.NaN
+    : Number.NEGATIVE_INFINITY;
 
 /**
  * Candidate heading offsets (yaw, pitch) sampled around the pursuit vector.

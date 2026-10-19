@@ -343,7 +343,8 @@ describe("D10 progressive collapse: a creep, then a crush front", () => {
   });
 
   it("the tallest tower comes down in 8–14 s, pancaked or toppled; beats stay within the cap", () => {
-    const index = TALL[0] as number;
+    // T1: the tallest that can still topple (a supertall only pancakes).
+    const index = TOPPLERS[0] as number;
     const { city } = freshCity();
     const b = city[index] as Building;
     for (const style of [PANCAKE, TOPPLE] as const) {

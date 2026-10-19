@@ -829,7 +829,7 @@ export const COLLAPSE_TOPPLE_MAX_SPAN = 300;
  * top corner more than this over its own top, m — √(depth along the fall²
  * + height²) − height — pancakes instead: too squat to tip that way (the
  * ring's 160 m-deep slabs, felled along their length, would rise ~50 m). */
-export const COLLAPSE_TOPPLE_RISE_MAX = 30;
+export const COLLAPSE_TOPPLE_RISE_MAX = 40;
 /** A landed chunk squashes into a rubble slab this share of its height
  * (≈1.4 m for a 12 m floor band) over COLLAPSE_SQUASH_MS. */
 export const COLLAPSE_RUBBLE_RATIO = 0.12;

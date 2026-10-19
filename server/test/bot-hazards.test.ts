@@ -22,6 +22,7 @@ import {
   type MoverField,
 } from "@angels-bandits/common/city/movers";
 import {
+  BOT_CANYON_PROBE_ALT,
   CITY_SEED,
   PLAYER_RADIUS,
   TICK_DOWN_HZ,
@@ -84,7 +85,9 @@ function chase(
 
 describe("bots dodge X1 impact discs inside the warning window", () => {
   it("flies around a missile landing on its path; without the missile it flies through", () => {
-    const start = { x: 600, y: 150, z: 1000 };
+    // Over the probe split: the high dodge, a swerve (T1: the split rose
+    // over the ring's roofs, 150 m is down in the canyons now).
+    const start = { x: 600, y: BOT_CANYON_PROBE_ALT + 40, z: 1000 };
     // Control: where the chase puts the bot at T.
     const T = 3000;
     let at: Vec3 | null = null;

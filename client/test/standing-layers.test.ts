@@ -431,7 +431,9 @@ describe("D8 demolition leaves a broken, held-up stump", () => {
         await new Promise<void>((resolve) => setImmediate(resolve));
         for (const dir of [DIR_NEG_X, DIR_POS_X, DIR_NEG_Z, DIR_POS_Z]) {
           const plan = demolitionPlan(b, i, TOPPLE, dir);
-          if (!plan) continue;
+          // T1: a supertall (or a slab along its length) asked to topple
+          // pancakes instead — no stepped stump to check.
+          if (!plan || plan.style !== TOPPLE) continue;
           damage.collapse(plan.chunks);
           if (new Set(standingProfile(b).stump).size > 1) stepped++;
           const stump = solids(b).filter((s) => !(s.cut & CUT_RUBBLE));

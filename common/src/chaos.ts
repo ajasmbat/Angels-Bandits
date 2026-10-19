@@ -35,7 +35,7 @@ import {
 import type { Building } from "./city/index";
 import { mulberry32 } from "./city/rng";
 import { standingTopAt } from "./city/standing";
-import { WORLD_SIZE } from "./constants";
+import { CLOUD_BASE, WORLD_SIZE } from "./constants";
 import {
   METEOR_FLIGHT_MS,
   type MissileStrike,
@@ -141,15 +141,22 @@ const COMET_RUN_MAX_M = 850;
 /** ...climbing back along its streak at this angle, rad (shallow). */
 const COMET_ELEV_MIN = 0.07;
 const COMET_ELEV_MAX = 0.16;
-/** It strikes this share of the standing height up the facade. */
-const COMET_HIT_MIN = 0.45;
-const COMET_HIT_MAX = 0.8;
+/** It strikes this share of the standing height up the facade (T1: 0.45–
+ * 0.8 → 0.6–0.95 — in the taller city a shallow streak only clears the
+ * roofs round a tower near its crown)... */
+const COMET_HIT_MIN = 0.6;
+const COMET_HIT_MAX = 0.95;
+/** ...never higher than this, m (T1: a supertall's 80 % is up in the deck,
+ * over every tower round it — a comet strikes where it is seen, and tears
+ * on into the next). */
+const COMET_HIT_TOP = CLOUD_BASE - 60;
 /** Only towers at least this tall are worth a comet, m. */
 export const COMET_MIN_HEIGHT = 90;
 
 /**
  * A comet into tower `b` launched at `t0`: a seeded azimuth, the facade
- * point facing it at 45–80 % of the tower's height, and a shallow streak in
+ * point facing it at 60–95 % of the tower's height (under COMET_HIT_TOP),
+ * and a shallow streak in
  * from 650–850 m out, swept clear of the city as it stands (`buildings`).
  * Null when no azimuth gets through. Quantised to the wire.
  */
@@ -169,7 +176,7 @@ export function planComet(
     const c = Math.cos(az);
     const s = Math.sin(az);
     const top = b.damage ? standingTopAt(b, 0, 0) : b.height;
-    const y = top * share;
+    const y = Math.min(top * share, COMET_HIT_TOP);
     // The face of the tier at that height that the comet comes in toward.
     const g = grids.find((t) => y >= t.baseY && y < t.baseY + t.height);
     if (!g) continue;

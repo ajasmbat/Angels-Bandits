@@ -40,6 +40,7 @@ import {
   COLLAPSE_CREEP_MS,
   COLLAPSE_LEAD_MS,
   COLLAPSE_MODEL,
+  DESTRUCTION_CHUNK_BUDGET,
   STREET_WIDTH,
 } from "@angels-bandits/common/constants";
 import * as THREE from "three";
@@ -244,6 +245,8 @@ describe("D10 the debris mesh in the city renderer", () => {
     for (const b of r.cityBuildings) {
       for (const mask of chunkMask(b)) for (const v of mask) chunks += v;
     }
+    // T1: of the chunks the caps count (DESTRUCTION_CHUNK_BUDGET at most).
+    chunks = Math.min(chunks, DESTRUCTION_CHUNK_BUDGET);
     const stats = r.destructionStats;
     expect(stats.debrisBootCapacity).toBeGreaterThanOrEqual(
       Math.ceil(chunks * COLLAPSE_CAP * 3.76),

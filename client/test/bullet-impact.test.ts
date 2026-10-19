@@ -18,14 +18,16 @@ import {
 import { FacadeArchetype, archetypeFor } from "../src/render/archetypes";
 import { FACADE, ROOF } from "../src/render/window-pattern";
 
-/** A slim 40 m-wide, 90 m slab — a GLASS curtain-wall (height/side ≥ 1.4). */
+/** The slab's height, m (T1: 90 → 130 — a shaft is 3 sides tall now). */
+const H = 130;
+/** A slim 40 m-wide, H m slab — a GLASS curtain-wall (a slim shaft). */
 const slab = (x: number, z: number): Building => ({
   x,
   z,
   width: 40,
   depth: 30,
-  height: 90,
-  tiers: [{ width: 40, depth: 30, height: 90 }],
+  height: H,
+  tiers: [{ width: 40, depth: 30, height: H }],
 });
 
 const classify = (city: Building[], from: object, to: object) => {
@@ -93,10 +95,10 @@ describe("classifyBulletStep — facades", () => {
     expect(edge?.surface).toBe("facade");
     expect(edge?.pane).toBe(false);
     // R2: the top row whose top crosses height − windowBand is spandrel.
-    const topRow = Math.floor((90 - ROOF.windowBand) / py);
-    // Inside that row AND under the 90 m roof (L11's taller floors put the
-    // row's centre above the roof line on this slab).
-    const bandY = Math.min((topRow + 0.5) * py, 90 - 0.3);
+    const topRow = Math.floor((H - ROOF.windowBand) / py);
+    // Inside that row AND under the roof (L11's taller floors put the row's
+    // centre above the roof line on this slab).
+    const bandY = Math.min((topRow + 0.5) * py, H - 0.3);
     const roofBand = classify(
       [b],
       { x: 540, y: bandY, z: 500 + 0.5 * px },
@@ -116,8 +118,8 @@ describe("classifyBulletStep — facades", () => {
   it("a roof hit carries no cell", () => {
     const hit = classify(
       [b],
-      { x: 505, y: 100, z: 505 },
-      { x: 505, y: 80, z: 505 },
+      { x: 505, y: H + 10, z: 505 },
+      { x: 505, y: H - 10, z: 505 },
     );
     expect(hit?.surface).toBe("roof");
     expect(hit?.face).toBe(-1);

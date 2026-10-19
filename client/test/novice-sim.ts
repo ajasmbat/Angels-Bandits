@@ -143,6 +143,12 @@ const SCREEN_PITCH = 32 * DEG;
 const TUNNEL_STEP = 120;
 /** A waypoint counts as reached inside this, m. */
 const CAPTURE = 22;
+/** A hole's run-in (and run-out) waypoint, this far off its mouth, m. T1:
+ * 70 → 120, still inside the clear corridor the city keeps beyond every
+ * mouth (HOLE_RUN_OUT, 140 m) — the ring's taller walls left a short
+ * line-up no roof to overshoot over (one seed's two crashes decided the
+ * F10/F9 comparison). */
+const RUN_IN = 120;
 
 // The real city, built once.
 const buildings = generateCity(CITY_SEED);
@@ -264,14 +270,14 @@ function makeRoute(seed: number, i: number): Route {
         const near = sign > 0 ? s.entry : s.exit;
         const far = sign > 0 ? s.exit : s.entry;
         const a = canon({
-          x: near.x - ax * sign * 70,
+          x: near.x - ax * sign * RUN_IN,
           y: s.center.y,
-          z: near.z - az * sign * 70,
+          z: near.z - az * sign * RUN_IN,
         });
         const b = canon({
-          x: far.x + ax * sign * 70,
+          x: far.x + ax * sign * RUN_IN,
           y: s.center.y,
-          z: far.z + az * sign * 70,
+          z: far.z + az * sign * RUN_IN,
         });
         if (!clearSegment(a, b, 2.5)) continue;
         if (!clearSegment(at, a, 8)) continue;
@@ -490,8 +496,10 @@ function fly(arm: Arm, route: Route, seed: number): Result {
     let pos: Vec3 = target;
     // H1: the server vetoes a spawn whose straight run-out meets a landmark
     // supertall (server/src/respawn.ts); so does this one — the first draw
-    // whose 6 s at RESPAWN_SPEED toward its target is clear.
-    for (let k = 0; k < 12; k++) {
+    // whose 6 s at RESPAWN_SPEED toward its target is clear. T1: the cores'
+    // supertalls veto most of a draw's band there, so it looks harder (12
+    // tries left a pilot respawned inside a tower now and then).
+    for (let k = 0; k < 64; k++) {
       const bearing = rand() * 2 * Math.PI;
       const r =
         RESPAWN_BAND_MIN + rand() * (RESPAWN_BAND_MAX - RESPAWN_BAND_MIN);

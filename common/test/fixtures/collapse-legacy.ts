@@ -5,6 +5,10 @@
 // DEFAULT_DESTRUCTION_TUNING and demands bit-equal debris. Only the import
 // paths differ from the original; do not edit it to follow model changes —
 // a deliberate model change re-freezes it from that change's parent.
+// T1 (the supertall canyon) is one: its three style rules — a section over
+// COLLAPSE_TOPPLE_MAX_SPAN pancakes (styleOf, nextPlan's shear) and so does
+// a demolition topple that would rise over COLLAPSE_TOPPLE_RISE_MAX — are
+// re-frozen in here, marked T1, and nothing else moved.
 
 // D3 collapses — when a building loses what holds it up, the section above
 // comes down, shared verbatim by client and server.
@@ -122,6 +126,8 @@ import {
   COLLAPSE_TOPPLE_BREAK_TOP,
   COLLAPSE_TOPPLE_DRIFT,
   COLLAPSE_TOPPLE_K,
+  COLLAPSE_TOPPLE_MAX_SPAN,
+  COLLAPSE_TOPPLE_RISE_MAX,
   COLLAPSE_ZONE_TAIL_MS,
   CRANE_MAST_SIDE,
 } from "../../src/constants";
@@ -410,6 +416,8 @@ function styleOf(
     }
   }
   if (sn === 0) return { style: PANCAKE, dir: 0 };
+  // T1: a supertall's section comes straight down, whatever survives.
+  if (height > COLLAPSE_TOPPLE_MAX_SPAN) return { style: PANCAKE, dir: 0 };
   // From the survivors toward what is missing: the weak side.
   const ox = (ax / an - sx / sn) / g.width;
   const oz = (az / an - sz / sn) / g.depth;
@@ -642,7 +650,9 @@ function nextPlan(
     set = unsupported(b, standing);
     if (set.length === 0) return null;
     const d = shearDir(grids, standing, set);
-    if (d >= 0) {
+    const span = spanOf(grids, set);
+    // T1: a supertall's wing comes straight down too.
+    if (d >= 0 && span.top - span.base <= COLLAPSE_TOPPLE_MAX_SPAN) {
       style = TOPPLE;
       dir = d;
     }
@@ -754,8 +764,21 @@ export function demolitionPlan(
   };
   let set = pick(false);
   if (set.length === 0) return null;
-  const failY = spanOf(grids, set).base;
-  if (style === TOPPLE && g0) {
+  const span = spanOf(grids, set);
+  const failY = span.base;
+  // T1: a supertall is brought straight down, whichever way it was asked
+  // to fall — and so is a section too squat to tip that way.
+  const tall = span.top - span.base;
+  const along =
+    dir === DIR_POS_X || dir === DIR_NEG_X
+      ? (g0?.width ?? 0)
+      : (g0?.depth ?? 0);
+  const how: CollapseStyle =
+    tall > COLLAPSE_TOPPLE_MAX_SPAN ||
+    Math.hypot(along, tall) - tall > COLLAPSE_TOPPLE_RISE_MAX
+      ? PANCAKE
+      : style;
+  if (how === TOPPLE && g0) {
     const jagged = pick(true);
     // Keep the broken stump only if, with the section gone, it owes nothing
     // (no band under COLLAPSE_BAND_MIN with chunks above, nothing unheld).
@@ -765,13 +788,13 @@ export function demolitionPlan(
     }
     if (jagged.length > 0 && !nextPlan(b, index, after)) set = jagged;
   }
-  if (style === PANCAKE) set = set.concat(crushedUnder(grids, standing, set));
+  if (how === PANCAKE) set = set.concat(crushedUnder(grids, standing, set));
   const chunks: number[] = [];
   for (let j = 0; j < set.length; j += 2) {
     chunks.push(chunkId(index, set[j] as number, set[j + 1] as number));
   }
   chunks.sort((x, y) => x - y);
-  return { style, dir: style === TOPPLE ? dir : 0, chunks, fail: failY };
+  return { style: how, dir: how === TOPPLE ? dir : 0, chunks, fail: failY };
 }
 
 /** A plan as the wire event `id` at server time `t`. */

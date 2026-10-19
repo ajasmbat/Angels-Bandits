@@ -110,6 +110,43 @@ Two more things changed:
 
 `concepts/invariants/altitude-stack.md` lists every site that must agree.
 
+## The supertall canyon (T1)
+
+The towers go up into the clouds and the sky goes away. The cores' towers
+run 250–650 m (`HEIGHT_BANDS_CORE`, slenderer than the ring,
+`CORE_SLENDER_MAX`), the four landmarks are mega-towers of 720–1000 m
+(`LANDMARK_HEIGHT` 700 is still the recognition line no generated lot
+reaches), and the ring round the cores rises only to 265 m
+(`SKYLINE_RING_MAX_HEIGHT`) so the squadrons and the bots keep a band
+over it. Everything over the 440 m deck is inside it: the fog chunk hazes
+whatever stands above `CLOUD_BASE` by its path through the cloud
+(`concepts/invariants/sky-meets-fog.md` rule 5), so the tops vanish, the
+windows glow through, and red warning beacons blink in the murk. Looking
+up from the canyon there is cloud and tower and no open sky; the far
+skyline shell and the SKY1 armada were raised to match.
+
+The fleet came in among them, all of it real (draw == collide,
+`laneClearance` extended to every new path):
+
+- **Threads.** Cruisers down the core avenues at 330–335 m, between the
+  supertalls' shafts.
+- **Orbits.** A ship circling each mega-tower at 63–76 m out (`PATH_ORBIT`,
+  clearance the annulus round the tower).
+- **Berths.** A cruiser moored at each mega-tower's mast face, 4 m off it,
+  swaying (`PATH_MOOR`, its pose still a pure function of the clock).
+  `client/src/render/moorings.ts` rigs the gap — a lit gangway, mooring
+  arms on brackets, cargo cables — never solid, since nothing a plane can
+  reach is drawn. A berthed ship shot down lurches into its tower and
+  tears down the face (`server/src/boss.ts` `applyFaceTear`, a P1 sweep
+  down the facade).
+
+Destruction scales with the towers: a span over `COLLAPSE_TOPPLE_MAX_SPAN`
+(300 m) only pancakes (a 600 m topple would reach two blocks), the chunk
+caps work from `DESTRUCTION_CHUNK_BUDGET` rather than the taller city's
+chunk count, and no tunnel, nest or comet hit sits in the deck. The
+respawn and news-heli vetoes read every tower through their heights, not
+just the landmarks.
+
 ## Budgets
 
 The target is 60 fps on the M3 (GPU p50 ≤ 14 ms at a pixel ratio of 2), and
@@ -137,6 +174,7 @@ What each feature costs in draws, on every tier:
 | Z1 fleet (20 ships) | 2 instanced hull draws (near and far detail) + 2 Points (lights, flak) | particle emission only; the ships are never fewer |
 | SKY1 armada, dogfights, flak, painted horizon | 4 | `skyArmada`: 100 / 80 / 60 / 45 % of the slots and radius |
 | R1 far city | 2 (carpet, towers) | lattice size |
+| T1 berth rigging | 1 per berth in view while moored (0–2 in practice) | — |
 | C1 low chaos | 0 of its own: the debris mesh, the D1 particle pool, the props and the director FX already exist | — |
 | P1 penetration | 0 of its own: the tunnels are chunk breaks, the bodies ride the missile and wreck meshes, the bursts the D1 pool | — |
 

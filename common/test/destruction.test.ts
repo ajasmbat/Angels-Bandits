@@ -109,11 +109,11 @@ describe("D2 chunk grid", () => {
         total++;
       }
     });
-    // The planner's count for the seed city (70,613 cells; hole air
+    // The planner's count for the seed city (70,616 cells; hole air
     // removed). H1's taller skyline: was 26,731; T1's supertalls: was
     // 38,445 (now DESTRUCTION_CHUNK_BUDGET, what the caps count).
-    expect(total).toBeGreaterThan(69913);
-    expect(total).toBeLessThanOrEqual(70613);
+    expect(total).toBeGreaterThan(69916);
+    expect(total).toBeLessThanOrEqual(70616);
   });
 
   it("tiles every tier exactly: cells sum to the tier volume, never overlap", () => {

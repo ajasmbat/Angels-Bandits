@@ -854,13 +854,13 @@ export const COLLAPSE_DUST_MS = 20_000;
 /** The collapse model's version: what buildCollapse derives from a wire.
  * The welcome carries it; a client built for another model reloads rather
  * than build different debris than the server collides with. */
-export const COLLAPSE_MODEL = 12; // D11: a topple's chunks keep COLLAPSE_TOPPLE_DRIFT of their throw
+export const COLLAPSE_MODEL = 13; // T1: supertalls only pancake (COLLAPSE_TOPPLE_MAX_SPAN / RISE_MAX)
 /** H1: the city generator's version — the welcome carries it like
  * COLLAPSE_MODEL. A tab built for another generator (a deploy since it
  * loaded) would build a different city, so every chunk id, collapse and
  * prop it hears would name the wrong building: it reloads instead. Bump it
  * with any change that moves a building. */
-export const CITY_MODEL = 2;
+export const CITY_MODEL = 3; // T1: the supertall canyon
 /** Pancake: the creep after the lead beat, ms — the failure floor groans
  * and sags, dust puffs out, then the upper block lets go. */
 export const COLLAPSE_CREEP_MS = 900;

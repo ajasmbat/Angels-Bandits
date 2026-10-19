@@ -373,41 +373,44 @@ export const VIEWS = [
   // W3 rooftop AA: a quad machine-gun nest from 9 m (sandbags, crates,
   // the gun on its pedestal, its gunner, the searchlight), and a night
   // engagement — two light nests and a heavy flak gun on the tallest tower
-  // nearby firing at a fighter-bomber over the block (staged on this client
+  // nearby firing at a fighter-bomber over the block (T1: Midtown's flak on
+  // its 353 m tower, from down the x = 1000 avenue) (staged on this client
   // through `__ab.qaAa`: each `aa.fire` entry's nest bursts at its `to`
   // every `aa.everyMs` on the render clock). Nest ids are prop ids
   // (`__ab.aaNests().list`).
+  // T1: the supertall city re-rolled the nests: the close-up is nest 3692
+  // on a 58 m roof at (1263, 633), from the old offsets.
   {
     name: "aa-nest-closeup",
-    x: 1262,
-    z: 704,
-    y: 95,
+    x: 1263,
+    z: 633,
+    y: 110,
     yaw: 0,
-    eye: [1255.5, 39, 697],
-    at: [1247.5, 34.2, 688.9],
+    eye: [1271, 64.8, 641.1],
+    at: [1263, 60, 633],
     weather: "clear",
     // Swung side-on to the camera, firing up and away to its right.
     aa: {
       everyMs: 700,
-      fire: [{ nest: 3210, to: { x: 1400, y: 190, z: 540 } }],
+      fire: [{ nest: 3692, to: { x: 1416, y: 216, z: 484 } }],
     },
   },
   {
     name: "aa-firing-night",
-    x: 1330,
-    z: 860,
-    y: 160,
+    x: 1000,
+    z: 1230,
+    y: 260,
     yaw: 0,
-    eye: [1257, 38.5, 700],
-    at: [1212, 118, 615],
+    eye: [1000, 260, 1260],
+    at: [990, 300, 1420],
     weather: "clear",
     sky: "night",
     showcase: [
       {
         kind: "fighter",
-        x: 1195,
-        y: 150,
-        z: 600,
+        x: 985,
+        y: 300,
+        z: 1440,
         yaw: 1.2,
         pitch: 0.05,
         roll: -0.4,
@@ -418,10 +421,10 @@ export const VIEWS = [
     aa: {
       everyMs: 300,
       fire: [
-        { nest: 3210, to: { x: 1197, y: 151, z: 603 } },
-        { nest: 3204, to: { x: 1192, y: 148, z: 598 } },
-        { nest: 3211, to: { x: 1199, y: 153, z: 605 } },
-        { nest: 3208, to: { x: 1188, y: 158, z: 612 } },
+        { nest: 3688, to: { x: 987, y: 301, z: 1443 } },
+        { nest: 3683, to: { x: 982, y: 298, z: 1438 } },
+        { nest: 3682, to: { x: 989, y: 303, z: 1445 } },
+        { nest: 3688, to: { x: 978, y: 308, z: 1452 } },
       ],
     },
   },
@@ -729,7 +732,7 @@ export const VIEWS = [
   // looks straight into one shot-through row of a plain mid-rise.
   {
     name: "destruction-chewed",
-    x: 585,
+    x: 600,
     z: 300,
     y: 300,
     yaw: 0,
@@ -996,7 +999,7 @@ export const VIEWS = [
     z: 900,
     y: 240,
     yaw: 0,
-    eye: [300, 95, 960],
+    eye: [300, 150, 1000],
     at: [400, 35, 780],
     weather: "clear",
     stage: {
@@ -1032,8 +1035,8 @@ export const VIEWS = [
     phase: "falling",
     timeMs: D11_MS,
     sky: "dusk",
-    x: 785,
-    z: 566,
+    x: 800,
+    z: 600,
     y: 360,
     yaw: 0,
     eye: [850, 140, 200],
@@ -1047,8 +1050,8 @@ export const VIEWS = [
     phase: "falling",
     timeMs: D11_MS,
     sky: "dusk",
-    x: 785,
-    z: 566,
+    x: 800,
+    z: 600,
     y: 360,
     yaw: 0,
     eye: [814, 180, 121],
@@ -1066,8 +1069,8 @@ export const VIEWS = [
     phase: "settled",
     timeMs: D11_MS,
     sky: "dusk",
-    x: 785,
-    z: 566,
+    x: 800,
+    z: 600,
     y: 360,
     yaw: 0,
     eye: [800, 10, 311],
@@ -1081,8 +1084,8 @@ export const VIEWS = [
     phase: "settled",
     timeMs: D11_MS,
     sky: "dusk",
-    x: 785,
-    z: 566,
+    x: 800,
+    z: 600,
     y: 360,
     yaw: 0,
     eye: [803, 14, 301],
@@ -1331,44 +1334,46 @@ export const VIEWS = [
     raf: true,
     airforce: 500,
   },
-  // K1 the war in the streets: from street level in the z = 600 avenue,
-  // between the downtown towers, a picket gliding down it away from the
+  // K1 the war in the streets: from street level in the z = 1400 avenue
+  // (lane 3; T1 re-laned the fleet), looking west down it between the
+  // Midtown towers, a picket gliding down it away from the
   // eye under the roofline — its searchlights swung abeam onto the
   // facades either side, its engine cars lighting the canyon. The plane
   // is parked just under the deck over the eye, out of shot.
   {
     name: "fleet-avenue",
-    x: 250,
-    z: 600,
+    x: 1300,
+    z: 1400,
     y: 409,
-    yaw: -Math.PI / 2,
+    yaw: Math.PI / 2,
     timeMs: 1_790_000_000_000,
-    eye: [345, 66, 607],
-    at: [434, 104, 600],
+    eye: [1205, 66, 1407],
+    at: [1116, 104, 1400],
     fov: 70,
     weather: "clear",
     boss: { ahead: 170, count: 20, hero: 0, lane: 3 },
   },
-  // K1: a carrier skimming the skyline — the x = 700 rooftop lane over the
-  // west core (its profile 20 m over the 307–318 m towers there, the hull
-  // ≈ 345 m), from just over a neighbouring roof, the lane's rise and fall
-  // over the blocks behind it.
+  // K1: a carrier skimming the skyline — the x = 100 rooftop lane (lane 7;
+  // T1 lifted the rooftop lanes off the supertall core onto the west edge,
+  // its profile ≈ 260–310 m over the 200–260 m blocks there), from just
+  // over a neighbouring roof, the lane's rise and fall over the blocks
+  // behind it.
   {
     name: "fleet-rooftop",
-    x: 790,
+    x: 190,
     z: 520,
     y: 409,
     yaw: Math.atan2(90, -130),
     timeMs: 1_790_000_000_000,
-    eye: [800, 342, 470],
-    at: [700, 338, 650],
+    eye: [200, 300, 470],
+    at: [100, 290, 650],
     fov: 70,
     weather: "clear",
-    boss: { ahead: 160, count: 20, hero: 2, lane: 16 },
+    boss: { ahead: 160, count: 20, hero: 2, lane: 7 },
   },
-  // K1: the lowered sky — from 230 m over the river, up at the 480 m glass
-  // landmark at (500, 700): its spire piercing the cloud deck (440 m), the
-  // top vanishing into it, lit from under by the city.
+  // K1: the lowered sky — from 230 m over the river, up at the glass
+  // landmark at (500, 700) (T1: 1000 m): its tower piercing the cloud
+  // deck (440 m), the top lost in it, its glow through the haze.
   {
     name: "towers-into-clouds",
     x: 500,
@@ -1378,6 +1383,72 @@ export const VIEWS = [
     timeMs: 1_790_000_000_000,
     eye: [500, 230, 1080],
     at: [500, 455, 700],
+    fov: 70,
+    weather: "clear",
+  },
+  // T1 the supertall canyon: from 60 m up in the z = 600 avenue, east up
+  // it between the west core's 390–600 m towers — the canyon walls closing
+  // overhead and running up into the storm deck, the glass mega-tower's
+  // shaft on the right, no open sky at the top of the frame.
+  {
+    name: "canyon-supertalls",
+    x: 250,
+    z: 600,
+    y: 409,
+    yaw: -Math.PI / 2,
+    timeMs: 1_790_000_000_000,
+    eye: [200, 60, 605],
+    at: [600, 260, 600],
+    fov: 70,
+    weather: "clear",
+  },
+  // T1: a cruiser moored at the glass mega-tower's berth (lane 16: its west
+  // face at x = 470, the hull 4 m off it, 338 m), from above and south of
+  // the shaft, down along the face into the gap — the lit gangway across it, the
+  // arms on their brackets, the cargo cables, the facade running up past
+  // the hull into the deck.
+  {
+    name: "mooring-masts",
+    x: 380,
+    z: 560,
+    y: 409,
+    yaw: Math.atan2(-70, -140),
+    timeMs: 1_790_000_000_000,
+    eye: [492, 378, 575],
+    at: [468, 336, 700],
+    fov: 70,
+    weather: "clear",
+    boss: { ahead: 100, count: 20, lane: 16 },
+  },
+  // T1: a cruiser on the ziggurat's orbit (lane 13: R 76 m round (1500,
+  // 300) at 271 m), from out over the blocks south-west of it — the hull
+  // swinging round the Deco setbacks, the mega-tower above it lost in the
+  // deck.
+  {
+    name: "orbit-mega-tower",
+    x: 1380,
+    z: 200,
+    y: 409,
+    yaw: Math.atan2(-120, -100),
+    timeMs: 1_790_000_000_000,
+    eye: [1360, 250, 190],
+    at: [1500, 300, 300],
+    fov: 70,
+    weather: "clear",
+    boss: { ahead: 100, count: 20, lane: 13 },
+  },
+  // T1: the skyline wall — from 270 m over the east side, west across the
+  // city at the west core: towers to the deck edge to edge, no open sky
+  // under the cloud.
+  {
+    name: "skyline-wall",
+    x: 1150,
+    z: 900,
+    y: 409,
+    yaw: Math.atan2(500, 350),
+    timeMs: 1_790_000_000_000,
+    eye: [1150, 270, 900],
+    at: [650, 340, 550],
     fov: 70,
     weather: "clear",
   },
@@ -1748,7 +1819,7 @@ export const VIEWS = [
     z: 900,
     y: 240,
     yaw: 0,
-    eye: [300, 95, 960],
+    eye: [300, 150, 1000],
     at: [400, 35, 780],
     weather: "clear",
     stage: {
@@ -2064,25 +2135,27 @@ export const VIEWS = [
   // The city's lowest district (roofs ≤ 100 m round (1450, 850)), held
   // 40 m over it: the quiet hover the chaos flights fly, with the air
   // force, the fleet, the rooftop AA and meteors on the blocks round it.
+  // T1: the lowest now is round the construction site at (1300, 1250)
+  // (roofs ≤ 102 m), held 48 m over it.
   {
     name: "chaos-quiet-district",
-    x: 1450,
-    z: 850,
-    y: 140,
+    x: 1300,
+    z: 1250,
+    y: 150,
     yaw: Math.atan2(-1, -1),
     timeMs: 1_790_000_400_000,
     weather: "clear",
     raf: true,
     airforce: 200,
     boss: { ahead: 650, count: 20 },
-    // W3's nests round (1250, 700), behind the camera, firing up past it
-    // into the sky ahead.
+    // Nests west and behind the camera (T1: 3687, 3686, 3682 round
+    // (1050, 1150)), firing up past it into the sky ahead.
     aa: {
       everyMs: 400,
       fire: [
-        { nest: 3210, to: { x: 1640, y: 260, z: 1040 } },
-        { nest: 3204, to: { x: 1700, y: 300, z: 980 } },
-        { nest: 3211, to: { x: 1580, y: 240, z: 1110 } },
+        { nest: 3687, to: { x: 1490, y: 260, z: 1440 } },
+        { nest: 3686, to: { x: 1550, y: 300, z: 1380 } },
+        { nest: 3682, to: { x: 1430, y: 240, z: 1520 } },
       ],
     },
     chaos: {

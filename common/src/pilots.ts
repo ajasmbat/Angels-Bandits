@@ -109,7 +109,7 @@ const PITCH_RATE = 1.4;
 /** The climb cone the lookahead assumes: a roof d m ahead raises today's
  * need by its height minus d × this (flatter than CLIMB_MAX, so a pilot
  * always has climb in hand). */
-const CLIMB_GRADE = Math.tan((20 * Math.PI) / 180);
+const CLIMB_GRADE = Math.tan((16 * Math.PI) / 180);
 /** Lookahead distances along a candidate heading, m. */
 const LOOK_M: readonly number[] = [
   0, 7, 14, 21, 30, 42, 58, 80, 110, 150, 200, 260, 330, 410, 500, 600, 700,
@@ -133,10 +133,15 @@ const STEER_OFFSETS: readonly number[] = [
  * the personality's `bank`). */
 const BANK_MAX = 0.9;
 const BANK_RATE = 3;
+/** A way whose floor is this far over the pilot is more climb than it can
+ * be sure to make in time, m. */
+const CLIMB_FEASIBLE_M = 15;
 /** Boxed in: the chosen way's floor this far over the pilot, m. */
-const BOXED_M = 20;
-/** The height command looks this far ahead of the pilot, s. */
-const LEAD_S = 0.8;
+const BOXED_M = 12;
+/** The height command's climb cone starts this far ahead of the pilot, s,
+ * and the hard floor it never goes under is read this far ahead, s. */
+const LEAD_S = 1.2;
+const NEAR_LEAD_S = 0.6;
 /** Speed change toward the wanted speed, m/s². */
 const SPEED_EASE = 7;
 const G = 9.81;
@@ -260,8 +265,9 @@ function cellOf(x: number, z: number): number {
 
 /** How many cells the lookahead's roofline is widened by. */
 const ROOF_SOFT_CELLS = 2;
-/** A wall's berth beyond its footprint, m. */
-const WALL_MARGIN = 20;
+/** A wall's berth beyond its footprint, m: wide enough that the soft
+ * roofline round a spire is met by the steering before the climb. */
+const WALL_MARGIN = 45;
 
 /** A square max filter of radius `r` cells over a torus grid (separable). */
 function maxFilter(src: Float32Array, r: number): Float32Array {
@@ -465,8 +471,10 @@ export interface Pilot {
    * need along it, m (stepPilot keeps both). */
   steer: number;
   steerNeed: number;
-  /** The roofline floor ahead its height last followed, m. */
+  /** The roofline floor ahead along its way, and toward the heading it
+   * wants (under the cruise cap), that its height last followed, m. */
   floor: number;
+  floorWant: number;
   intent: Intent;
   /** When the intent runs out, ms. */
   until: number;
@@ -530,6 +538,7 @@ export function newPilot(
     steer: yaw,
     steerNeed: 0,
     floor: 0,
+    floorWant: 0,
     intent: INTENT_PATROL,
     until: Number.NEGATIVE_INFINITY,
     district: { x: pos.x, y: 0, z: pos.z },
@@ -568,10 +577,12 @@ export interface PilotStats {
 
 /**
  * The roofline-following floor ahead: the highest of (roof + PILOT_CLEAR −
- * d × CLIMB_GRADE) over the lookahead, along the path a plane at `pos`
- * heading `yaw` flies while it turns toward `toYaw` at `rate` (at `speed`)
- * — the arc, not the straight line, so a tower beside a turn is seen
- * before the turn swings the nose onto it.
+ * (d − lead) × CLIMB_GRADE) over the lookahead, along the path a plane at
+ * `pos` heading `yaw` flies while it turns toward `toYaw` at `rate` (at
+ * `speed`) — the arc, not the straight line, so a tower beside a turn is
+ * seen before the turn swings the nose onto it. `lead` m: the climb cone
+ * starts that far ahead (the feed-forward: the floor where the plane will
+ * be in a moment).
  */
 export function floorAhead(
   grid: RooflineGrid,
@@ -580,6 +591,7 @@ export function floorAhead(
   toYaw: number = yaw,
   speed: number = PILOT_SPEED_MAX,
   rate: number = PILOT_TURN_RATE,
+  lead = 0,
 ): number {
   const perM = rate / Math.max(1, speed);
   let h = yaw;
@@ -614,7 +626,7 @@ export function floorAhead(
     }
     const roof = grid.ahead(x, z);
     sum += roof;
-    const v = roof + PILOT_CLEAR - d * CLIMB_GRADE;
+    const v = roof + PILOT_CLEAR - Math.max(0, d - lead) * CLIMB_GRADE;
     if (v > need) need = v;
   }
   aheadMean = sum / LOOK_M.length;
@@ -650,7 +662,8 @@ function gatherObstacles(
 
 /** Does flying `yaw` from `pos` pass inside one of nearObstacles[from..to)
  * within the lookahead? (The straight run as a segment: its closest point
- * to each obstacle's axis, in closed form.) */
+ * to each obstacle's axis, in closed form.) Already inside one's berth,
+ * only a heading that closes on it does: the way out is always open. */
 function obstacleAhead(
   pos: Vec3,
   yaw: number,
@@ -664,7 +677,12 @@ function obstacleAhead(
     const r = o.r + PILOT_CLEAR;
     const dx = wrapDeltaAxis(pos.x, o.pos.x);
     const dz = wrapDeltaAxis(pos.z, o.pos.z);
-    const t = Math.max(0, Math.min(OBSTACLE_LOOK_M, dx * fx + dz * fz));
+    const along = dx * fx + dz * fz;
+    if (dx * dx + dz * dz < r * r) {
+      if (along > 0) return true;
+      continue;
+    }
+    const t = Math.max(0, Math.min(OBSTACLE_LOOK_M, along));
     const ex = dx - fx * t;
     const ez = dz - fz * t;
     if (ex * ex + ez * ez < r * r) return true;
@@ -726,7 +744,13 @@ export function stepPilot(
       // steeper the climb it would take, the less it wants that way — a
       // tower turned into close is a tower it cannot clear. And a little
       // for height itself: the low way round wins a tie.
-      cost += Math.max(0, need - p.pos.y) * 0.2 + need * 0.002;
+      const climb = need - p.pos.y;
+      cost += Math.max(0, climb) * 0.2 + need * 0.002;
+      // More climb than it can make before the roofline arrives: a way
+      // it must not take while any other is open (turning round is
+      // cheaper than this).
+      if (climb > CLIMB_FEASIBLE_M)
+        cost += 4 + (climb - CLIMB_FEASIBLE_M) * 0.3;
       cost += aheadMean * 0.005;
       if (need > PILOT_CRUISE_CAP) cost += 10 + (need - PILOT_CRUISE_CAP) / 10;
       if (ships > 0 && obstacleAhead(p.pos, yaw, 0, ships)) cost += 20;
@@ -755,27 +779,38 @@ export function stepPilot(
   );
   p.roll += (-lean - p.roll) * Math.min(1, BANK_RATE * p.persona.bank * dt);
 
-  // Height: follow the floor ahead — along the nose now, from where the
-  // pilot will be in LEAD_S (the feed-forward that keeps a rising floor
-  // from outrunning the climb) and along the heading it is turning to —
-  // never under it, and what it wants over it, under the cap.
-  const lead = p.speed * LEAD_S;
-  scratchLead.x = p.pos.x - Math.sin(p.yaw) * lead;
-  scratchLead.y = p.pos.y;
-  scratchLead.z = p.pos.z - Math.cos(p.yaw) * lead;
+  // Height: follow the floor ahead along the heading it is turning to, its
+  // climb cone from where the pilot will be in LEAD_S (the feed-forward
+  // that keeps a rising floor from outrunning the climb) — never under it,
+  // and what it wants over it, under the cap.
   // (Every other tick, `fresh`: between, the last one stands — the hard
-  // floor below is checked every tick.)
+  // floor below is checked every tick.) And the floor toward the heading
+  // it WANTS (under the cruise cap): it will turn that way as soon as the
+  // steering lets it, so it climbs for what lies there before the turn,
+  // not in it — at the decision cadence: it only prepares a climb.
+  const lead = p.speed * LEAD_S;
   if (fresh || decide) {
-    p.floor = Math.max(
-      floorAhead(grid, p.pos, p.yaw, bestYaw, p.speed, rate),
-      floorAhead(grid, scratchLead, p.yaw, bestYaw, p.speed, rate),
-    );
+    p.floor = floorAhead(grid, p.pos, p.yaw, bestYaw, p.speed, rate, lead);
   }
-  const floor = Math.max(bestNeed, p.floor);
-  // Over PILOT_ALT_MAX only for the roofline right under the lead point
-  // (the hard floor): a tall block further ahead is the steering's to fly
-  // round, never a reason to climb into the deck.
-  const near = grid.at(scratchLead.x, scratchLead.z) + PILOT_CLEAR_HARD;
+  if (decide) {
+    p.floorWant =
+      Math.abs(wrapAngle(p.wantYaw - bestYaw)) < 0.2
+        ? 0
+        : Math.min(
+            PILOT_CRUISE_CAP,
+            floorAhead(grid, p.pos, p.yaw, p.wantYaw, p.speed, rate),
+          );
+  }
+  const floor = Math.max(bestNeed, p.floor, p.floorWant);
+  // Over PILOT_ALT_MAX only for the roofline right under the near lead
+  // point (the hard floor): a tall block further ahead is the steering's to
+  // fly round, never a reason to climb into the deck.
+  const nearLead = p.speed * NEAR_LEAD_S;
+  const near =
+    grid.at(
+      p.pos.x - Math.sin(p.yaw) * nearLead,
+      p.pos.z - Math.cos(p.yaw) * nearLead,
+    ) + PILOT_CLEAR_HARD;
   const want =
     (p.wantAlt >= 0 ? p.wantAlt : floor + p.persona.prefAlt) + p.altBias;
   const target = Math.max(
@@ -787,7 +822,17 @@ export function stepPilot(
     -p.speed * Math.sin(p.diveMax),
     Math.min(p.speed * Math.sin(CLIMB_MAX), (target - p.pos.y) * 2.5),
   );
-  const pitchWant = Math.asin(vy / p.speed);
+  let pitchWant = Math.asin(vy / p.speed);
+  // Level out in time: the height a climb (dive) still gains (loses) while
+  // the pitch rate brings the nose back to level — no overshoot past the
+  // caps, no clipping the floor out of a dive. (A climb to a lower target
+  // is the rising floor's: it never eases off that.)
+  const stop = (p.speed * (1 - Math.cos(p.pitch))) / PITCH_RATE;
+  if (p.pitch > 0 && target >= PILOT_CRUISE_CAP && p.pos.y + stop >= target) {
+    pitchWant = Math.min(pitchWant, 0);
+  } else if (p.pitch < 0 && p.pos.y - stop <= target) {
+    pitchWant = Math.max(pitchWant, 0);
+  }
   const maxPitch = PITCH_RATE * dt;
   p.pitch += Math.max(-maxPitch, Math.min(maxPitch, pitchWant - p.pitch));
 
@@ -1205,7 +1250,13 @@ export function flyPilots(
   for (let i = 0; i < n; i++) {
     const p = pilots[i] as Pilot;
     const hp = hpOf(p);
-    const decide = (tick + p.idx) % DECIDE_EVERY === 0;
+    // In trouble — its floor ahead above it, climbing to clear it — a
+    // pilot re-plans and re-reads its floor every other tick, not on its
+    // turn: the way round may have opened, the wall come closer.
+    const trouble = p.floor > p.pos.y;
+    const decide =
+      (tick + p.idx) % DECIDE_EVERY === 0 ||
+      (trouble && (tick + p.idx) % 2 === 0);
     const burning = hp > 0 && hp < PILOT_BURNING_HP;
     if (hp < p.hp || (burning && p.intent !== INTENT_FLEE)) {
       thinkPilot(p, w, hp); // hit, or on fire
@@ -1237,7 +1288,7 @@ export function flyPilots(
       obstacles,
       dt,
       decide,
-      (tick + p.idx) % 2 === 0,
+      trouble || (tick + p.idx) % 2 === 0,
       stats,
     );
   }

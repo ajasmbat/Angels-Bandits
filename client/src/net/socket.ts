@@ -579,8 +579,9 @@ export class GameSocket {
     }
     // Z1: likewise a tab built for another fleet model — its lanes and
     // hulls would not be the server's.
-    // E1: a server on another wire version (per-client snapshots; I1: no
-    // squadron rows) would be misread — reload once onto its client.
+    // E1: a server on another wire version (per-client snapshots; I1:
+    // every enemy its own entry) would be misread — reload once onto its
+    // client.
     if (staleProtocol(welcome)) {
       reloadOnce(welcome.proto as number, "ab-protocol-reload");
     }

@@ -1,10 +1,9 @@
 // E1 Air force: a plane's image never pops when it changes how it travels.
-// A squadron plane in formation reaches this client inside its squadron's
-// row (expanded off the anchor), at 5 Hz while it is out past the near
-// tier; when a human comes close it PROMOTES and arrives as its own entry,
-// at 20 Hz. Both feed the same InterpolationBuffer, and the ace starts from
-// the very flight its slot had — so the drawn pose glides through the
-// hand-over exactly as it glides between any two snapshots.
+// I1: a pilot's plane reaches this client as its own entry, at 5 Hz while
+// it is out past the full-rate tier; when a human comes close it PROMOTES
+// and the brain flies it on from the very flight its pilot had — at 20 Hz.
+// Both feed the same InterpolationBuffer, so the drawn pose glides through
+// the hand-over exactly as it glides between any two snapshots.
 
 import { generateCity } from "@angels-bandits/common/city";
 import {
@@ -17,18 +16,15 @@ import {
   decodeSnapshotEntry,
   encodeSnapshotEntry,
 } from "@angels-bandits/common/net";
-import type { Pose, SnapshotEntry } from "@angels-bandits/common/protocol";
 import {
+  PILOT_FLOOR_ALT,
   RooflineGrid,
-  SQUAD_FLOOR_ALT,
-  type SquadAnchor,
   attitudeQuatInto,
-  encodeSquadRow,
-  expandSquadRow,
   floorAhead,
-  slotPoseInto,
-  stepAnchor,
-} from "@angels-bandits/common/squadron";
+  newPilot,
+  stepPilot,
+} from "@angels-bandits/common/pilots";
+import type { Pose, SnapshotEntry } from "@angels-bandits/common/protocol";
 import { BOT_TUNING } from "@angels-bandits/common/tuning";
 import { wrapDistance } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
@@ -36,80 +32,51 @@ import { InterpolationBuffer } from "../src/net/interp";
 
 const grid = RooflineGrid.build(generateCity(CITY_SEED));
 const T0 = 1_790_000_000_000;
-const SLOT = 5;
-const FORM = 0;
+const ID = "bot:room-1:105";
 
-/** The snapshots one client receives for squadron slot SLOT's plane: in
- * formation (its squadron's rows — every IM_MID_EVERY-th tick before
- * `nearTick`, the mid tier, then every tick) until `promoteTick`, then an
- * ace on its own entry every tick (the near tier: promotion happens well
- * inside it, PROMOTE_M < IM_NEAR_M). */
+/** The snapshots one client receives for one pilot's plane: its own entry
+ * (every IM_MID_EVERY-th tick before `nearTick`, the mid tier, then every
+ * tick) until `promoteTick`, then an ace on the same entry every tick (the
+ * full-rate tier: promotion happens close, inside it). */
 function feed(promoteTick: number, ticks: number, nearTick = 0) {
   const pos = { x: 600, y: 0, z: 900 };
   const yaw = 0.4;
-  pos.y = Math.max(SQUAD_FLOOR_ALT, floorAhead(grid, pos, yaw));
-  const a: SquadAnchor = {
-    pos,
-    yaw,
-    pitch: 0,
-    roll: 0,
-    speed: 74,
-    steer: yaw,
-    steerNeed: 0,
-  };
-  const anchor: Pose = {
-    pos: a.pos,
+  pos.y = Math.max(PILOT_FLOOR_ALT, floorAhead(grid, pos, yaw));
+  const p = newPilot(ID, 0, 7, pos, yaw, 74);
+  const pose: Pose = {
+    pos: p.pos,
     quat: { x: 0, y: 0, z: 0, w: 1 },
-    speed: a.speed,
+    speed: p.speed,
   };
   let ace: FlightState | null = null;
   const out: { time: number; entry: SnapshotEntry }[] = [];
   const dt = SNAPSHOT_INTERVAL_MS / 1000;
+  const entry = (pose: Pose): SnapshotEntry =>
+    decodeSnapshotEntry(
+      encodeSnapshotEntry({ id: ID, pose, hp: 100, prot: false }),
+    );
   for (let t = 0; t < ticks; t++) {
     const time = T0 + t * SNAPSHOT_INTERVAL_MS;
     if (t < promoteTick) {
-      stepAnchor(
-        a,
-        0.4 + 0.3 * Math.sin(t / 30),
-        20,
-        grid,
-        [],
-        dt,
-        t % 4 === 0,
-      );
-      attitudeQuatInto(a.yaw, a.pitch, a.roll, anchor.quat);
-      anchor.speed = a.speed;
-      const row = encodeSquadRow({
-        id0: "bot:room-1:100",
-        anchor,
-        form: FORM,
-        spread: 1,
-        prot: false,
-        mask: 0xff,
-        hp: [100, 100, 100, 100, 100, 100, 100, 100],
-      });
+      p.wantYaw = 0.4 + 0.3 * Math.sin(t / 30);
+      stepPilot(p, grid, [], dt, t % 4 === 0, t % 2 === 0);
+      attitudeQuatInto(p.yaw, p.pitch, p.roll, pose.quat);
+      pose.speed = p.speed;
       if (t >= nearTick || t % IM_MID_EVERY === 0) {
-        const players: SnapshotEntry[] = [];
-        expandSquadRow(row, players);
-        out.push({ time, entry: players[SLOT] as SnapshotEntry });
+        out.push({ time, entry: entry(pose) });
       }
       if (t === promoteTick - 1) {
-        // The promotion: the brain takes the slot's flight as it stands
-        // (server/src/squadrons.ts pose(): slot position, anchor attitude).
-        const p = slotPoseInto(anchor, FORM, SLOT, 1, {
-          pos: { x: 0, y: 0, z: 0 },
-          quat: { x: 0, y: 0, z: 0, w: 1 },
-          speed: 0,
-        });
+        // The promotion: the brain takes the pilot's flight as it stands
+        // (RoomBots.promote copies it).
         ace = {
           pos: { ...p.pos },
-          yaw: a.yaw,
-          pitch: a.pitch,
-          roll: a.roll,
-          bank: a.roll,
+          yaw: p.yaw,
+          pitch: p.pitch,
+          roll: p.roll,
+          bank: p.roll,
           rollRate: 0,
-          speed: a.speed,
-          targetSpeed: a.speed,
+          speed: p.speed,
+          targetSpeed: p.speed,
         };
       }
     } else if (ace) {
@@ -120,32 +87,15 @@ function feed(promoteTick: number, ticks: number, nearTick = 0) {
         dt,
         BOT_TUNING,
       );
-      const cy = Math.cos(ace.yaw / 2);
-      const sy = Math.sin(ace.yaw / 2);
-      const cx = Math.cos(ace.pitch / 2);
-      const sx = Math.sin(ace.pitch / 2);
-      const cz = Math.cos(ace.roll / 2);
-      const sz = Math.sin(ace.roll / 2);
-      const pose: Pose = {
-        pos: ace.pos,
-        quat: {
-          x: sx * cy * cz + cx * sy * sz,
-          y: cx * sy * cz - sx * cy * sz,
-          z: cx * cy * sz - sx * sy * cz,
-          w: cx * cy * cz + sx * sy * sz,
-        },
-        speed: ace.speed,
-      };
+      const q = attitudeQuatInto(ace.yaw, ace.pitch, ace.roll, {
+        x: 0,
+        y: 0,
+        z: 0,
+        w: 1,
+      });
       out.push({
         time,
-        entry: decodeSnapshotEntry(
-          encodeSnapshotEntry({
-            id: "bot:room-1:105",
-            pose,
-            hp: 100,
-            prot: false,
-          }),
-        ),
+        entry: entry({ pos: ace.pos, quat: q, speed: ace.speed }),
       });
     }
   }
@@ -153,11 +103,9 @@ function feed(promoteTick: number, ticks: number, nearTick = 0) {
 }
 
 describe("E1: promotion and the rate switch never pop a plane", () => {
-  it("keeps the slot plane's id across the hand-over", () => {
+  it("keeps the plane's id across the hand-over", () => {
     const f = feed(60, 120);
-    expect(new Set(f.map((x) => x.entry.id))).toEqual(
-      new Set(["bot:room-1:105"]),
-    );
+    expect(new Set(f.map((x) => x.entry.id))).toEqual(new Set([ID]));
   });
 
   /** The worst frame-to-frame move of the drawn image at 60 fps, 100 ms
@@ -200,7 +148,7 @@ describe("E1: promotion and the rate switch never pop a plane", () => {
     expect(worst).toBeLessThan(2);
   });
 
-  it("is smooth again within a snapshot of a mid → near rate switch (past the far plane, where the mid tier lives)", () => {
+  it("is smooth again within a snapshot of a mid → near rate switch", () => {
     const worst = worstStep(
       feed(200, 140, 60),
       140,

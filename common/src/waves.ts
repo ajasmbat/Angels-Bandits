@@ -19,8 +19,9 @@
 //  - the `waves` state on the wire (the HUD's wave number, banner, enemies
 //    left and the fleet counter: airships downed this session);
 //  - E1: the AIR FORCE each level fields on top of the waves (AIR_FORCE):
-//    hundreds of real planes in squadrons (common/src/squadron.ts), launched
-//    off the same airships and refilled as they go down. A wave is still
+//    hundreds of real planes, I1: each an individual pilot
+//    (common/src/pilots.ts), launched one by one off the same airships and
+//    refilled as they go down. A wave is still
 //    its W1 planes — the aces the banner counts — so a wave stays
 //    clearable; the air force is the sky they fight in.
 //

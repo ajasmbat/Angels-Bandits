@@ -31,5 +31,6 @@ export type FromWorker =
   | { t: "close"; id: number; code: number; reason: string }
   /** The host could not be built, or a frame could not be handled. */
   | { t: "error"; message: string }
-  /** QA: the tick profile asked for (null while profiling is off). */
-  | { t: "stats"; report: TickReport | null };
+  /** QA: the tick profile asked for (null while profiling is off), and
+   * the worker's clock when it was taken (its own timeline, ms). */
+  | { t: "stats"; report: TickReport | null; at: number };

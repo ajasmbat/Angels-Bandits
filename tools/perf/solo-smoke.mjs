@@ -60,8 +60,15 @@ function freePort() {
 /** `vite preview` of client/dist on `port` — statics only. */
 async function startPreview(port) {
   const proc = spawn(
-    "npx",
-    ["vite", "preview", "--port", String(port), "--strictPort"],
+    // vite's own entry, not `npx vite`: killing npx would orphan the server.
+    process.execPath,
+    [
+      resolve(REPO, "node_modules/vite/bin/vite.js"),
+      "preview",
+      "--port",
+      String(port),
+      "--strictPort",
+    ],
     { cwd: resolve(REPO, "client"), stdio: ["ignore", "pipe", "pipe"] },
   );
   const log = [];

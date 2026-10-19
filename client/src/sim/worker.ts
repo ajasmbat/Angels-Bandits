@@ -122,7 +122,11 @@ scope.addEventListener("message", (ev: MessageEvent) => {
         host?.setPaused(msg.on);
         return;
       case "stats":
-        post({ t: "stats", report: host?.tickReport(msg.reset) ?? null });
+        post({
+          t: "stats",
+          report: host?.tickReport(msg.reset) ?? null,
+          at: performance.now(),
+        });
         return;
     }
   } catch (err) {

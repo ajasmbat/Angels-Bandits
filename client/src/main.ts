@@ -3506,7 +3506,9 @@ declare global {
       qaLink: () => WorkerLink | null;
       /** SOLO QA (tools/perf/worker-tick.mjs): the sim worker's tick
        * profile (`sim` AB_TICK_STATS:1), reset after when asked. */
-      simTick: (reset?: boolean) => Promise<TickReport | null>;
+      simTick: (
+        reset?: boolean,
+      ) => Promise<(TickReport & { at: number }) | null>;
       /** SOLO QA: the local game — paused, the room's intensity, the wave,
        * and snapshots received (what a pause stops). */
       solo: () => {

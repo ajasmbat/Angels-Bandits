@@ -73,7 +73,8 @@ export function startLocalHost(): void {
   worker.addEventListener("message", (ev: MessageEvent<FromWorker>) => {
     const msg = ev.data;
     if (msg.t === "stats") {
-      for (const resolve of statsWaiters.splice(0)) resolve(msg.report);
+      const out = msg.report && { ...msg.report, at: msg.at };
+      for (const resolve of statsWaiters.splice(0)) resolve(out);
       return;
     }
     if (msg.t === "error") {
@@ -92,14 +93,16 @@ export function startLocalHost(): void {
 
 /** QA (tools/perf/worker-tick.mjs): the host's tick profile, or null when
  * the page runs no local host or profiling is off (`sim` AB_TICK_STATS:1). */
-export function localTickReport(reset: boolean): Promise<TickReport | null> {
+export function localTickReport(
+  reset: boolean,
+): Promise<(TickReport & { at: number }) | null> {
   if (!worker) return Promise.resolve(null);
   return new Promise((resolve) => {
     statsWaiters.push(resolve);
     postToWorker({ t: "stats", reset });
   });
 }
-const statsWaiters: ((r: TickReport | null) => void)[] = [];
+const statsWaiters: ((r: (TickReport & { at: number }) | null) => void)[] = [];
 
 /** Freeze (or resume) the local simulation. */
 export function pauseLocalHost(on: boolean): void {

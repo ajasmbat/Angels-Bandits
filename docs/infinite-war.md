@@ -548,3 +548,90 @@ Client fps is the M3's to measure (`airforce-swarm`, and
 On SwiftShader `airforce-swarm` draws 93 calls (`fleet-sky`: 96). 500
 planes cost no draw of their own beyond the fleet's instanced ones, and
 497 of them were drawn on High.
+
+## Solo / local simulation
+
+Since SOLO the game is single-player by default, and the whole game server
+runs on the player's own machine. The room simulation (rooms, bots, waves,
+fleet, destruction, chaos, AA, bombs, strikes, director and the
+interest-managed snapshots) is the **GameHost** (`server/src/host.ts`,
+`createGameHost(options)`). The page runs it in a dedicated Web Worker
+(`client/src/sim/worker.ts`). `GameSocket` talks to the worker through a
+WebSocket-shaped link (`client/src/sim/local.ts`) with the same wire
+protocol. Every server frame comes back as UTF-8 bytes whose buffer is
+transferred, not copied. Nothing about the game's rules changed; only
+where they run did.
+
+- **The same host runs in Node.** `server/src/index.ts` is now only the
+  Node shell: environment, `/healthz`, the statics, and the ws rooms behind
+  the hidden `?mp=1`. Every `server/test/*` suite still boots that shell, so
+  the host is tested over a real ws. `client/test/sim-worker-bundle.test.ts`
+  bundles the worker entry for the browser and fails on any Node import.
+- **Configuration is options.** `hostOptionsFromEnv` maps `process.env` in
+  Node and the page's `?sim=KEY:VALUE,…` in the worker, with the same
+  `AB_*` names. That is how the harnesses (`tools/perf/local-game.mjs`)
+  give the local host a quiet city, an empty sky or a fixed epoch.
+- **Time is the host's clock.** The tick is the host's own drift-corrected
+  loop, on the worker's timers. The clock sync still runs and comes out
+  near zero. The menu (Esc, a lost focus, a hidden tab) pauses the solo
+  game for real: the worker's tick stops and the host clock stands still.
+  The page takes the same pause out of its own clock, so neither the
+  interpolation nor any wall-clock schedule (waves, strikes, the director)
+  jumps when it resumes. See `concepts/invariants/host-runs-in-the-browser.md`.
+- **Solo flow.** The join card is the start screen: title, PLAY, the
+  difficulty (EASY / NORMAL / HARD / INSANE, the enemy intensity and with
+  it the air force: 100 / 200 / 350 / 500 planes), graphics behind the
+  gear, and controls behind `?`. RESTART in the pause menu reloads into a
+  fresh game at the same difficulty. The PWA's service worker precaches
+  the whole build (`client/sw.template.js`, emitted as `/sw.js`), so a
+  reload works offline after the first visit.
+
+### What the tick costs the player
+
+`node tools/perf/worker-tick.mjs` measures the worker's tick per difficulty
+on the static build. It stages each level's whole air force at once
+(`AB_AIRFORCE`), puts the fleet up fast, and flies the plane among the
+squadrons with its guns hot. After a 10 s warm-up it reads the host's own
+tick profile over 20 s, timing the window on the worker's clock.
+
+The **mobile tier** throttles the sim worker's thread alone to a quarter of
+a core: a threaded cgroup with `cpu.max 2500 10000`, DevTools' "4x
+slowdown" mid-tier phone. Chrome's CPU throttle cannot do this. It refuses
+worker targets ("only supported for pages"), and throttling the page leaves
+its worker alone; both were measured. Under the cgroup quota a tick that
+fits a 2.5 ms slice runs at full speed, so a mobile p50 under about 3 ms
+reads like the desktop's. The tail and the rate carry the slowdown.
+
+Shared 16-core Linux runner (Ryzen 7 PRO 8700GE), SwiftShader, load average
+11–25 from other jobs:
+
+| tier | level | planes | tick p50 | p95 | p99 | max | ticks/s |
+|---|---|---:|---:|---:|---:|---:|---:|
+| desktop | EASY | 100 | 3.0 ms | 8.2 | 22.9 | 64.6 | 19.9 |
+| desktop | NORMAL | 200 | 4.7 ms | 18.3 | 31.0 | 134.5 | 19.7 |
+| desktop | HARD | 350 | 6.7 ms | 24.0 | 44.4 | 111.6 | 19.7 |
+| desktop | INSANE | 500 | 6.2 ms | 24.4 | 47.1 | 75.7 | 19.8 |
+| mobile (¼ core) | EASY | 100 | 3.2 ms | 24.2 | 46.8 | 99.0 | 19.7 |
+| mobile (¼ core) | NORMAL | 200 | 6.7 ms | 77.5 | 173 | 571.5 | 16.3 |
+| mobile (¼ core) | HARD | 350 | 11.0 ms | 32.6 | 119.6 | 200.2 | 18.8 |
+| mobile (¼ core) | INSANE | 500 | 19.3 ms | 31.4 | 61.6 | 97.1 | 19.5 |
+| M3 (planner) | EASY … INSANE | | to measure | | | | |
+
+**What it says:**
+
+- **Desktop holds every level.** It delivers the full 20 Hz, with medians
+  of 3–7 ms (6–14 % of the 50 ms slot), like the Node bench's medians for
+  the same counts (E1 above). The p99s of 23–47 ms are this loaded runner:
+  E1's 0-enemy Node baseline swings from 3 to 15 ms p99 on the same box.
+- **The emulated phone keeps up at INSANE.** The median is 19 ms (39 % of
+  the slot) and 19.5 of 20 ticks a second are delivered. The tick runs on
+  its own core, beside the page's main thread, not inside its 33 ms frame.
+  So **no mobile difficulty cap was added**, and the tick stays at 20 Hz:
+  a faster tick does not fit the mobile tier. The NORMAL row's 16.3 Hz is
+  one noisy window at load 21. HARD and INSANE, either side of it, held
+  18.8–19.5 Hz.
+- **If a real phone disagrees:** the lever is the level's air force on the
+  Mobile quality tier (`AIR_FORCE` in `common/src/waves.ts`, via
+  `airForceFor`). The aces' brain is about 70 % of the variable cost (E1).
+  The planner runs `worker-tick.mjs` on the M3 for its rows, and the game
+  on a phone.

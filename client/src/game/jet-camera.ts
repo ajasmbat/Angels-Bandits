@@ -92,3 +92,28 @@ export function speedFov(speed: number): number {
     clamp((speed - minSpeed) / (maxSpeed - minSpeed), 0, 1)
   );
 }
+
+/** FC1 boost punch: its rise to the peak, s, and its fall's time constant, s
+ * — a hard kick, gone in under a second. */
+const PUNCH_RISE_S = 0.06;
+const PUNCH_FALL_S = 0.22;
+/** At the tuning's boostKick 1: the FOV's overshoot, degrees, and how far
+ * the displayed camera is shoved back, m. */
+const PUNCH_FOV = 6;
+const PUNCH_PUSH = 2.2;
+
+/** The punch's envelope `t` s after a fresh burn lit: 0 → 1 over
+ * PUNCH_RISE_S, then an exp fall; 0 before the burn and 0 with boostKick 0. */
+export function boostPunch(t: number): number {
+  if (!(t >= 0) || tuning.boostKick <= 0) return 0;
+  const shape =
+    t < PUNCH_RISE_S
+      ? t / PUNCH_RISE_S
+      : Math.exp(-(t - PUNCH_RISE_S) / PUNCH_FALL_S);
+  return shape * tuning.boostKick;
+}
+
+/** The punch's extra vertical FOV, degrees, for an envelope value. */
+export const punchFov = (punch: number): number => PUNCH_FOV * punch;
+/** The punch's shove of the displayed camera back along the nose, m. */
+export const punchPush = (punch: number): number => PUNCH_PUSH * punch;

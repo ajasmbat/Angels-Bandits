@@ -181,6 +181,19 @@ export interface FlightTuning {
    * largest attitude tweak, rad (SAVE_MAX_ANGLE). */
   saveMaxOffset: number;
   saveMaxAngle: number;
+  /** FC1 collision assist (a nudge off a near-certain head-on impact with
+   * a building or an airship): 1 on, 0 off — Settings has the player's
+   * own switch; both must be on. */
+  collisionAssist: number;
+  /** How far ahead it flies the plane's path, s. */
+  collisionHorizon: number;
+  /** Its strongest nudge, share of full stick. */
+  collisionStrength: number;
+  /** FC1 manoeuvres: the bank a flat quick-180 rolls to, rad (where the
+   * sky above has no room for the Immelmann), and the barrel-roll dodge's
+   * pull, stick. */
+  uTurnBank: number;
+  dodgePull: number;
 
   // --- Mouse & Camera ---
   /** Classic stick: cursor offset multiplier (1 = today). */
@@ -212,6 +225,23 @@ export interface FlightTuning {
    * rolls with the plane (F7's chase camera), between = a blend. */
   cameraRoll: number;
 
+  // --- Zoom (FC1 gun-sight) ---
+  /** The aim zoom's FOV steps, degrees: the first is where right-click
+   * lands, the wheel steps to the second and third while it is held. */
+  zoomFov: number;
+  zoomFovMid: number;
+  zoomFovTight: number;
+  /** Time to 95% of the way in (or out), s. */
+  zoomTime: number;
+  /** Share of the camera shake and the roll wobble taken out at full zoom. */
+  zoomSteady: number;
+  /** Bullet magnetism's bend rate at full zoom, × (its cone never widens;
+   * capped well under where F1 measured an aimer off the lead landing). */
+  zoomMagnet: number;
+  /** 1: the own plane dissolves away as the zoom comes in (0: drawn, as
+   * before FC1). */
+  zoomFade: number;
+
   // --- Boost ---
   /** Top airspeed while boosting, m/s (BOOST_MAX_SPEED). */
   boostMaxSpeed: number;
@@ -230,9 +260,18 @@ export interface FlightTuning {
    * (BOOST_MIN_START / BOOST_START_COST). */
   boostMinStart: number;
   boostStartCost: number;
+  /** FC1: the boost's kick on a fresh burn — the camera's punch back, the
+   * FOV's overshoot and the thump (0 = none, 1 = the default). */
+  boostKick: number;
 }
 
 export type TuningKey = keyof FlightTuning;
+
+/** FC1's player physics (tools/flight-courses.ts measured them on a novice
+ * pilot); the bots keep the constants (BOT_TUNING). */
+const FC1_TURN_RATE_SLOW = 1.8;
+const FC1_CORNER_BRAKE_DECEL = 30;
+const FC1_BOOST_RESPONSE = 2.2;
 
 /** Today's game, exactly. Frozen: the lab works on a copy. */
 export const DEFAULT_TUNING: Readonly<FlightTuning> = Object.freeze({
@@ -246,18 +285,22 @@ export const DEFAULT_TUNING: Readonly<FlightTuning> = Object.freeze({
   climbFreeAngle: CLIMB_FREE_ANGLE,
   diveFadeBand: DIVE_FADE_BAND,
   autoSlow: 1,
-  cornerBrakeDecel: CORNER_BRAKE_DECEL,
+  // FC1: a harder airbrake — the corner manager makes its corner sooner.
+  cornerBrakeDecel: FC1_CORNER_BRAKE_DECEL,
   wallHorizon: 220,
   capFallRate: 250,
   capRiseRate: 12,
 
   turnRate: TURN_RATE,
-  turnRateSlow: TURN_RATE_SLOW,
+  // FC1: sharper slow turns (a 22 m radius at the slowest speed, was 30).
+  turnRateSlow: FC1_TURN_RATE_SLOW,
   bankAngle: BANK_ANGLE,
   bankFreq: BANK_FREQ,
-  instructorGain: 8,
+  // FC1: a tighter mouse-aim (the damping follows the gain, so still no
+  // overshoot), its big re-aims less soft.
+  instructorGain: 10,
   feelBand: 2 * DEG,
-  feelSteer: 3.5,
+  feelSteer: 4.5,
   stickAuthority: 0.85,
   instructorBankThreshold: 35 * DEG,
   instructorBankMax: 80 * DEG,
@@ -287,6 +330,11 @@ export const DEFAULT_TUNING: Readonly<FlightTuning> = Object.freeze({
   holeAssistRange: 80,
   saveMaxOffset: 1.5,
   saveMaxAngle: 3 * DEG,
+  collisionAssist: 1,
+  collisionHorizon: 1.2,
+  collisionStrength: 0.6,
+  uTurnBank: 80 * DEG,
+  dodgePull: 0.35,
 
   mouseSensitivity: 1,
   invertY: 0,
@@ -303,8 +351,17 @@ export const DEFAULT_TUNING: Readonly<FlightTuning> = Object.freeze({
   turnLead: 0.05,
   cameraRoll: 0,
 
+  zoomFov: 30,
+  zoomFovMid: 22,
+  zoomFovTight: 15,
+  zoomTime: 0.15,
+  zoomSteady: 0.7,
+  zoomMagnet: 1.25,
+  zoomFade: 1,
+
   boostMaxSpeed: BOOST_MAX_SPEED,
-  boostResponse: BOOST_RESPONSE,
+  // FC1: a punchier shove toward the boost's top speed.
+  boostResponse: FC1_BOOST_RESPONSE,
   boostTurnMult: BOOST_TURN_MULT,
   boostPitchMult: BOOST_PITCH_MULT,
   boostDrainRate: BOOST_DRAIN_RATE,
@@ -312,6 +369,7 @@ export const DEFAULT_TUNING: Readonly<FlightTuning> = Object.freeze({
   boostRechargeDelay: BOOST_RECHARGE_DELAY_MS,
   boostMinStart: BOOST_MIN_START,
   boostStartCost: BOOST_START_COST,
+  boostKick: 1,
 });
 
 // --- The spec: one row per field -----------------------------------------------
@@ -322,6 +380,7 @@ export const TUNING_GROUPS = [
   "Roll & Pitch",
   "Assists",
   "Mouse & Camera",
+  "Zoom",
   "Boost",
 ] as const;
 export type TuningGroup = (typeof TUNING_GROUPS)[number];
@@ -446,6 +505,11 @@ export const TUNING_SPEC: readonly TuningSpec[] = [
   num("holeAssistRange", "Assists", "Hole magnet reach", "How far from a hole the magnet starts.", 20, 200, 5, "m"),
   num("saveMaxOffset", "Assists", "Hole save slide", "Last-moment sideways slide that threads a hole you would clip.", 0, 6, 0.1, "m"),
   deg("saveMaxAngle", "Assists", "Hole save twist", "Last-moment heading tweak for the same save.", 0, 12, 0.5),
+  toggle("collisionAssist", "Assists", "Collision assist", "Nudges you off a head-on hit with a building or an airship."),
+  num("collisionHorizon", "Assists", "Collision look-ahead", "How far ahead (in seconds of flight) it looks for a hit.", 0.4, 3, 0.05, "s"),
+  num("collisionStrength", "Assists", "Collision nudge", "Its strongest nudge, as a share of full stick.", 0, 1, 0.05),
+  deg("uTurnBank", "Assists", "Quick-180 bank", "X: where there is no room to loop over, the bank of the flat U-turn.", 45, 90, 1),
+  num("dodgePull", "Assists", "Barrel-roll pull", "V: how hard the barrel-roll dodge pulls while it rolls (a wider corkscrew).", 0, 1, 0.05),
   // Mouse & Camera
   num("mouseSensitivity", "Mouse & Camera", "Mouse sensitivity", "Classic stick (M): how far the cursor travels for full stick.", 0.25, 4, 0.05, "×"),
   toggle("invertY", "Mouse & Camera", "Invert Y", "Classic stick (M): mouse up dives."),
@@ -461,6 +525,14 @@ export const TUNING_SPEC: readonly TuningSpec[] = [
   num("boostFovKick", "Mouse & Camera", "Boost FOV kick", "Extra field of view at full boost.", 0, 25, 0.5, "°"),
   num("turnLead", "Mouse & Camera", "Look into turns", "How much the camera looks into a hard turn.", 0, 0.3, 0.01),
   num("cameraRoll", "Mouse & Camera", "Camera roll", "0 = the horizon stays level when you roll; 1 = the view rolls with the plane.", 0, 1, 0.05),
+  // Zoom
+  num("zoomFov", "Zoom", "Zoom field of view", "Right-click zoom: the field of view it lands on.", 10, 60, 1, "°"),
+  num("zoomFovMid", "Zoom", "Zoom step 2", "One wheel notch further in while zoomed.", 8, 60, 1, "°"),
+  num("zoomFovTight", "Zoom", "Zoom step 3", "Two wheel notches in: the tightest sight.", 5, 60, 1, "°"),
+  num("zoomTime", "Zoom", "Zoom speed", "Seconds to zoom (nearly all the way) in or out.", 0.05, 0.6, 0.01, "s"),
+  num("zoomSteady", "Zoom", "Zoom steadying", "Share of the camera shake and roll wobble taken out while zoomed.", 0, 1, 0.05),
+  num("zoomMagnet", "Zoom", "Zoom bullet magnet", "How much harder rounds bend onto a target while zoomed.", 1, 1.5, 0.05, "×"),
+  toggle("zoomFade", "Zoom", "Hide own plane when zoomed", "Your plane fades away so the sight is clear."),
   // Boost
   num("boostMaxSpeed", "Boost", "Boost top speed", "Top speed while holding SPACE.", 50, 260, 1, "m/s"),
   num("boostResponse", "Boost", "Boost kick", "How hard the boost shoves you toward its top speed.", 0.2, 5, 0.1, "/s"),
@@ -471,6 +543,7 @@ export const TUNING_SPEC: readonly TuningSpec[] = [
   num("boostRechargeDelay", "Boost", "Boost recharge wait", "How long the gauge waits after a burn before it refills.", 0, 5000, 100, "ms"),
   num("boostMinStart", "Boost", "Boost minimum", "How full the gauge must be to start a burn.", 0, 0.9, 0.05),
   num("boostStartCost", "Boost", "Boost start cost", "Gauge every start costs up front (stops tap-spamming).", 0, 0.5, 0.01),
+  num("boostKick", "Boost", "Boost punch", "The kick of a fresh burn: camera punch, FOV overshoot and thump.", 0, 2, 0.05, "×"),
 ];
 
 const SPEC_BY_KEY = new Map(TUNING_SPEC.map((s) => [s.key, s]));
@@ -494,12 +567,44 @@ export interface TuningPreset {
   values: Partial<FlightTuning>;
 }
 
+/** FC1's player physics as they were — the constants', which the bots
+ * still fly (BOT_TUNING): the flight model's half of PRE_FC1_VALUES. */
+export const PRE_FC1_PHYSICS: Readonly<Partial<FlightTuning>> = Object.freeze({
+  turnRateSlow: TURN_RATE_SLOW,
+  cornerBrakeDecel: CORNER_BRAKE_DECEL,
+  boostResponse: BOOST_RESPONSE,
+});
+
+/** FC1: what the gun-sight zoom and easy-controls pass changed, as it was
+ * before — the "pre-fc1" preset, and the BEFORE arm of
+ * tools/flight-courses.ts. Fields FC1 added are off or identity here. */
+export const PRE_FC1_VALUES: Partial<FlightTuning> = {
+  ...PRE_FC1_PHYSICS,
+  instructorGain: 8,
+  feelSteer: 3.5,
+  zoomFov: 28,
+  zoomFovMid: 28,
+  zoomFovTight: 28,
+  zoomTime: 0.17,
+  zoomSteady: 0,
+  zoomMagnet: 1,
+  zoomFade: 0,
+  collisionAssist: 0,
+  boostKick: 0,
+};
+
 export const TUNING_PRESETS: readonly TuningPreset[] = [
   {
     id: "default",
     name: "Current default",
     hint: "The game as it ships today.",
     values: {},
+  },
+  {
+    id: "pre-fc1",
+    name: "Before FC1",
+    hint: "The controls and zoom as they were before the FC1 pass, for comparison.",
+    values: PRE_FC1_VALUES,
   },
   {
     id: "relaxed",
@@ -517,9 +622,9 @@ export const TUNING_PRESETS: readonly TuningPreset[] = [
     name: "Normal",
     hint: "The Normal feel (today's default).",
     values: {
-      instructorGain: 8,
+      instructorGain: 10,
       feelBand: 2 * DEG,
-      feelSteer: 3.5,
+      feelSteer: 4.5,
       stickAuthority: 0.85,
     },
   },
@@ -611,10 +716,14 @@ export const TUNING_PRESETS: readonly TuningPreset[] = [
  * The flight model the server's bots fly (F10): the defaults with the
  * pre-F10 roll — ROLL_RATE, the flight model's own self-levelling
  * (ROLL_LEVEL_RATE: their barrel rolls roll out on it), no bank-and-pull
- * gain and no knife-edge sink — so every bot flies bit-for-bit as before.
+ * gain and no knife-edge sink — and FC1's physics undone, so every bot
+ * flies bit-for-bit as before.
  */
 export const BOT_TUNING: Readonly<FlightTuning> = Object.freeze({
   ...DEFAULT_TUNING,
+  // FC1 moved the player's slow turns, corner airbrake and boost shove;
+  // the bots fly the constants they always did.
+  ...PRE_FC1_PHYSICS,
   rollRate: ROLL_RATE,
   rollLevelRate: ROLL_LEVEL_RATE,
   bankPull: 0,

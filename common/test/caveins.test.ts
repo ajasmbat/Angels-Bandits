@@ -11,7 +11,11 @@
 //       section, at MIN, MAX and boost speed, both ways, arriving at every
 //       phase of the event the lead rule allows — flies through clean
 //       against the bore's walls and the falling rock; also two cave-ins
-//       at the minimum separation with opposite lanes.
+//       at the minimum separation with opposite lanes. The pilot's fixed
+//       gain is a bot's (nextCaveInAhead's lane, as the bots fly it), so it
+//       flies the bots' model, BOT_TUNING: FC1's sharper player turns would
+//       make that fixed gain a different loop (the player's own pilots —
+//       the instructor, the stick — normalise by the rates they get).
 
 import {
   CAVEIN_CEIL,
@@ -55,6 +59,7 @@ import {
   type FlightState,
   stepFlight,
 } from "@angels-bandits/common/flight";
+import { BOT_TUNING } from "@angels-bandits/common/tuning";
 import { type Vec3, wrapCoord } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
 
@@ -332,7 +337,7 @@ function fly(run: Run): string | null {
       boost,
       pitchLimit: PITCH_LIMIT,
     };
-    f = stepFlight(f, input, DT);
+    f = stepFlight(f, input, DT, BOT_TUNING);
     const tNext = tMs + DT * 1000;
     if (hitsGround(f.pos, R)) {
       return `wall at s ${frame.s.toFixed(1)} lat ${frame.lat.toFixed(1)}`;

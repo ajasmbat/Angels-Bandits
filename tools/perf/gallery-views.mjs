@@ -309,6 +309,32 @@ const D11_MS = 1_790_000_000_000;
 
 export const VIEWS = [
   // name, x, z, y, yaw, extra
+  // FC1: the gun-sight zoom on a bandit — the own plane dissolved, the
+  // ring, range arc and gun line round the pipper, the vignette. High over
+  // the city under the deck (DT1's air), the plane held every frame (raf)
+  // so the bandit stays ~150 m off the nose.
+  {
+    name: "zoom-gunsight",
+    x: 1000,
+    z: 1150,
+    y: 395,
+    yaw: 0,
+    weather: "clear",
+    sky: "dusk",
+    raf: true,
+    zoom: true,
+    showcase: [
+      {
+        kind: "fighter",
+        x: 1004,
+        y: 397,
+        z: 1000,
+        yaw: 0.35,
+        pitch: 0.04,
+        speed: 70,
+      },
+    ],
+  },
   { name: "chase-rooftops", x: 300, z: 900, y: 175, yaw: 0.6 },
   { name: "chase-canyon", x: 400, z: 1100, y: 70, yaw: 0 },
   { name: "high-overview", x: 100, z: 1500, y: 380, yaw: 0.9, pitch: -0.35 },

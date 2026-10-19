@@ -6,13 +6,15 @@
 //   (deadzone + expo, read());
 // - keys (W4, the settings' KEYBOARD): the arrow keys are that rate stick
 //   and the mouse steers nothing — ENTER fires (game/guns.ts).
+// X flies the quick 180 and V the barrel-roll dodge (FC1, game/manoeuvres.ts).
 // W/S drive throttle, A/D (Q/E aliases, F10) the roll — shaped by
 // game/roll-control.ts in main. The throttle lives at FULL (F5):
 // with no W/S held and no finger on the touch slider the axis reads
 // AUTO_THROTTLE, so the command rides back to full after any change — S
 // slows only while held. F9: the mouse wheel is W/S too — each notch holds
 // the key for WHEEL_HOLD_S (down = slower), so it rides back to full
-// exactly like a released key. (The corner speed manager, not the throttle, is
+// exactly like a released key — except while the aim zoom is held, when it
+// steps the zoom's sights (FC1). (The corner speed manager, not the throttle, is
 // what slows the plane for a corner.) No pointer lock — the HUD needs
 // the visible cursor. On a touch device (M1) ui/touch-controls.ts feeds the
 // same state through the setTouch* seams: the thumb's aim point IS the
@@ -21,6 +23,7 @@
 import type { FlightInput } from "@angels-bandits/common/flight";
 import { DEFAULT_TUNING } from "@angels-bandits/common/tuning";
 import { FREELOOK_KEY } from "./freelook";
+import { DODGE_KEY, UTURN_KEY } from "./manoeuvres";
 import { rollKey } from "./roll-control";
 import { emulatedMouse, watchTouches } from "./touch-input";
 import { tuning } from "./tuning";
@@ -93,8 +96,16 @@ export class FlightInputSource {
   private active = false; // the mouse moved since the last takeActivity
   /** F9 wheel throttle: seconds of W (+) or S (−) still held. */
   private wheelHold = 0;
-  /** W4: the settings' stick SENSITIVITY (the keyboard and classic stick). */
+  /** FC1: wheel notches turned while the zoom was held (+ = down). */
+  private zoomNotches = 0;
+  /** FC1: a manoeuvre key pressed since the last takeManoeuvre. */
+  private manoeuvre: "uturn" | "dodge" | null = null;
+  /** W4: the settings' stick SENSITIVITY (the keyboard's arrows). */
   private stickSens = 1;
+  /** FC1: the settings' MOUSE SENSITIVITY (the classic mouse stick; the
+   * mouse-aim's own is its loop gain, main.ts) and INVERT Y (every stick). */
+  private mouseSens = 1;
+  private invert = false;
 
   constructor(private readonly target: Window = window) {
     this.aimModeV = loadAimMode(target);
@@ -125,9 +136,15 @@ export class FlightInputSource {
       if (tag === "INPUT" || tag === "TEXTAREA") return;
       this.toggleAimMode();
     });
-    target.addEventListener("keydown", (e: KeyboardEvent) =>
-      this.keys.add(e.code),
-    );
+    target.addEventListener("keydown", (e: KeyboardEvent) => {
+      this.keys.add(e.code);
+      // FC1: X is the quick 180, V the barrel-roll dodge — a fresh press,
+      // never while typing.
+      if (e.repeat || (e.code !== UTURN_KEY && e.code !== DODGE_KEY)) return;
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      this.manoeuvre = e.code === UTURN_KEY ? "uturn" : "dodge";
+    });
     target.addEventListener("keyup", (e: KeyboardEvent) =>
       this.keys.delete(e.code),
     );
@@ -146,7 +163,10 @@ export class FlightInputSource {
         const el = e.target as Element | null;
         if (el?.closest?.(".settings")) return;
         e.preventDefault();
-        this.addWheel(wheelNotches(e.deltaY, e.deltaMode));
+        // FC1: while the aim zoom is held the wheel steps its sights.
+        const n = wheelNotches(e.deltaY, e.deltaMode);
+        if (this.aimHeld()) this.zoomNotches += n;
+        else this.addWheel(n);
       },
       { passive: false },
     );
@@ -198,6 +218,22 @@ export class FlightInputSource {
     );
   }
 
+  /** FC1: the manoeuvre key pressed since the last call (X: "uturn", V:
+   * "dodge"), or null; drains it. */
+  takeManoeuvre(): "uturn" | "dodge" | null {
+    const m = this.manoeuvre;
+    this.manoeuvre = null;
+    return m;
+  }
+
+  /** FC1: wheel notches turned while the zoom was held since the last call
+   * (+ = toward the user: a wider sight); drains them. */
+  takeZoomNotches(): number {
+    const n = this.zoomNotches;
+    this.zoomNotches = 0;
+    return n;
+  }
+
   /** Whether the pilot moved the mouse since the last call; drains it (F9
    * idle). Touch reports its own (TouchControls.aiming). */
   takeActivity(): boolean {
@@ -212,10 +248,20 @@ export class FlightInputSource {
     this.setAimMode(this.aimModeV === "instructor" ? "classic" : "instructor");
   }
 
-  /** W4: the settings' stick SENSITIVITY (×), for the keyboard and the
-   * classic stick. */
+  /** W4: the settings' stick SENSITIVITY (×), for the keyboard's arrows. */
   setStickSensitivity(v: number): void {
     this.stickSens = Number.isFinite(v) && v > 0 ? v : 1;
+  }
+
+  /** FC1: the settings' MOUSE SENSITIVITY (×) — the classic mouse stick's
+   * (and the touch stick's) gain. */
+  setMouseSensitivity(v: number): void {
+    this.mouseSens = Number.isFinite(v) && v > 0 ? v : 1;
+  }
+
+  /** FC1: the settings' INVERT Y — up on any stick dives. */
+  setInvertY(on: boolean): void {
+    this.invert = on;
   }
 
   /** Pick the aim mode (M6 settings panel), persisted like the toggle. */
@@ -235,6 +281,8 @@ export class FlightInputSource {
     this.keys.clear();
     this.aim = false;
     this.wheelHold = 0;
+    this.zoomNotches = 0;
+    this.manoeuvre = null;
   }
 
   /** Touch aim point, client px — exactly what a mousemove would report.
@@ -365,8 +413,9 @@ export class FlightInputSource {
       -1,
       Math.min(1, rollKey((c) => this.keys.has(c)) + this.touchRoll),
     );
-    const sens = tuning.mouseSensitivity * this.stickSens;
-    const ySign = tuning.invertY === 1 ? -1 : 1;
+    const sens = tuning.mouseSensitivity * this.mouseSens;
+    // The lab's invert and the player's: either flips, both cancel.
+    const ySign = (tuning.invertY === 1) !== this.invert ? -1 : 1;
     if (this.aimModeV === "keys") {
       // W4 KEYBOARD: the arrows are the stick (→ turns right, ↑ pulls up);
       // the mouse steers nothing.

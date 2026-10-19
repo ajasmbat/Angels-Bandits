@@ -17,6 +17,7 @@ import { STORM_KILL_ALT } from "@angels-bandits/common/constants";
 import { BOOST_KEY } from "../game/boost-key";
 import { AIM_MODE_KEY } from "../game/flight-input";
 import { FREELOOK_KEY } from "../game/freelook";
+import { DODGE_KEY, UTURN_KEY } from "../game/manoeuvres";
 import { readStored, writeStored } from "./storage";
 
 /** One-time flags, same `ab:` prefix as the remembered callsign. */
@@ -61,18 +62,21 @@ export function primerItems(touch: boolean): Array<[string, string]> {
       ["TAP MINIMAP", "scores"],
     ];
   }
+  // FC1: grouped the way the hands sit — the mouse (fly, shoot, sight),
+  // then the left hand (speed, roll, the two manoeuvres), then the rest.
   return [
-    ["MOUSE", "aim"],
+    ["MOUSE", "aim · the plane flies there"],
     ["HOLD CLICK", "fire"],
+    ["HOLD RIGHT CLICK", "gun-sight zoom · wheel: closer"],
     [keyName(BOOST_KEY), "boost"],
-    ["W / S", "throttle"],
+    ["W / S · WHEEL", "throttle"],
     ["A / D", "roll · double-tap: snap"],
-    ["RIGHT CLICK", "zoom"],
-    ["ARROWS · ENTER", "keyboard: steer · fire"],
+    [keyName(UTURN_KEY), "quick 180"],
+    [keyName(DODGE_KEY), "barrel-roll dodge"],
     [keyName(FREELOOK_KEY), "look around"],
     ["TAB", "scores & bots"],
     [keyName(AIM_MODE_KEY), "aim mode"],
-    ["ESC", "settings"],
+    ["ESC", "settings · keyboard flying"],
   ];
 }
 

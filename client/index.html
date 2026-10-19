@@ -422,6 +422,90 @@
       body.zoom #crosshair .tick {
         opacity: 1;
       }
+      /* FC1 gun-sight (ui/gunsight.ts): the ring, range arc and gun line
+         fade in with the zoom; opacity is written per frame. */
+      #gunsight {
+        position: fixed;
+        left: 0;
+        top: 0;
+        width: 200px;
+        height: 200px;
+        margin: -100px 0 0 -100px;
+        color: #ffd9a0;
+        opacity: 0;
+        filter: drop-shadow(0 0 2px #000);
+        pointer-events: none;
+        user-select: none;
+        will-change: transform, opacity;
+      }
+      #gunsight .ring {
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1;
+        opacity: 0.55;
+      }
+      #gunsight .arc {
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 3;
+        opacity: 0.85;
+      }
+      #gunsight.in-range {
+        color: #fff3d6;
+      }
+      #gunsight.in-range .arc {
+        stroke: #ffc46b;
+      }
+      #gunsight .mil,
+      #gunsight .rtick {
+        stroke: currentColor;
+        stroke-width: 1.5;
+      }
+      #gunsight .rtick {
+        opacity: 0.8;
+      }
+      #gunsight text {
+        fill: currentColor;
+        font-size: 11px;
+        letter-spacing: 0.15em;
+        text-anchor: middle;
+      }
+      #gun-line {
+        position: fixed;
+        left: 0;
+        top: 0;
+        width: 100vw;
+        height: 100vh;
+        overflow: visible;
+        color: #ffd9a0;
+        opacity: 0;
+        pointer-events: none;
+      }
+      #gun-line polyline {
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.2;
+        stroke-dasharray: 3 3;
+      }
+      #gun-line circle {
+        fill: currentColor;
+      }
+      #zoom-vignette {
+        position: fixed;
+        inset: 0;
+        background: radial-gradient(
+          ellipse at center,
+          transparent 52%,
+          rgba(0, 0, 0, 0.55) 78%,
+          rgba(0, 0, 0, 0.9) 100%
+        );
+        opacity: 0;
+        pointer-events: none;
+      }
+      body.freelook #gunsight,
+      body.freelook #gun-line {
+        display: none;
+      }
       #killfeed {
         position: fixed;
         top: 14px;
@@ -2537,6 +2621,33 @@
       <line class="tick" x1="24" y1="33" x2="24" y2="37" />
       <line class="tick" x1="11" y1="24" x2="15" y2="24" />
       <line class="tick" x1="33" y1="24" x2="37" y2="24" />
+    </svg>
+    <!-- FC1 gun-sight (ui/gunsight.ts): under the zoom, the sight ring with
+         its range arc and ticks round the pipper, the projected gun line,
+         and the vignette. -->
+    <div id="zoom-vignette"></div>
+    <svg id="gun-line" aria-hidden="true">
+      <polyline id="gun-line-path" points="" />
+    </svg>
+    <svg id="gunsight" viewBox="0 0 200 200" aria-hidden="true">
+      <circle class="ring" cx="100" cy="100" r="52" />
+      <circle
+        id="gunsight-arc"
+        class="arc"
+        cx="100"
+        cy="100"
+        r="52"
+        stroke-dasharray="0 327"
+        transform="rotate(-90 100 100)"
+      />
+      <line class="mil" x1="100" y1="36" x2="100" y2="44" />
+      <line class="mil" x1="100" y1="156" x2="100" y2="164" />
+      <line class="mil" x1="36" y1="100" x2="44" y2="100" />
+      <line class="mil" x1="156" y1="100" x2="164" y2="100" />
+      <line class="rtick" x1="145.8" y1="110.5" x2="156.5" y2="112.9" />
+      <line class="rtick" x1="79.6" y1="142.3" x2="74.8" y2="152.3" />
+      <line class="rtick" x1="63.3" y1="70.7" x2="54.7" y2="63.8" />
+      <text id="gunsight-range" x="100" y="182"></text>
     </svg>
     <div id="damage-flash"></div>
     <div id="damage-arcs"></div>

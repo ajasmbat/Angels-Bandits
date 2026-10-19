@@ -198,6 +198,9 @@ export interface AimResult {
   /** Where the lead reticle sits on screen, or null when hidden (M8's aim
    * friction). */
   lead: { x: number; y: number } | null;
+  /** FC1: the lead target's range, m, or null with none (the gun-sight's
+   * range arc). */
+  range: number | null;
 }
 
 /** DOM reticle over the intercept point of the best on-aim target. */
@@ -228,6 +231,11 @@ export class LeadIndicator {
       h,
     );
     const target = pickLeadTarget(flight, targets);
+    let range: number | null = null;
+    if (target) {
+      const d = wrapDelta(flight.pos, target.pos);
+      range = Math.hypot(d.x, d.y, d.z);
+    }
     // Bullets inherit the plane's forward speed (guns.ts) — lead with it.
     const point =
       target && leadPoint(flight.pos, BULLET_SPEED + flight.speed, target);
@@ -241,10 +249,10 @@ export class LeadIndicator {
     if (!px) {
       // No target, or behind the camera — no reticle.
       this.el.style.display = "none";
-      return { aim, solution: false, lead: null };
+      return { aim, solution: false, lead: null, range };
     }
     this.el.style.transform = `translate(${px.x.toFixed(1)}px, ${px.y.toFixed(1)}px)`;
     this.el.style.display = "block";
-    return { aim, solution, lead: px };
+    return { aim, solution, lead: px, range };
   }
 }

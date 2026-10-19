@@ -161,6 +161,7 @@ describe("D2 GameSocket keeps the destroyed set", () => {
       hostname: "localhost",
       host: "localhost",
       protocol: "http:",
+      search: "?mp=1", // SOLO: the ws path (the remote server)
     });
     vi.stubGlobal("document", { hidden: false, addEventListener() {} });
     const [a, b, c] = chunksOf(buildings[2] as Building, 2);

@@ -67,14 +67,14 @@ describe("chase camera at zoom 0", () => {
 });
 
 describe("chase camera at full zoom", () => {
-  it("dollies in to 6 m behind and 2.6 m above", () => {
+  it("puts the eye 2.5 m behind and 1.4 m over the gun line (FC1)", () => {
     const { pos } = framed(1);
     expect(pos[0]).toBeCloseTo(1000, 3);
-    expect(pos[1]).toBeCloseTo(302.6, 3);
-    expect(pos[2]).toBeCloseTo(1006, 3);
+    expect(pos[1]).toBeCloseTo(301.4, 3);
+    expect(pos[2]).toBeCloseTo(1002.5, 3);
   });
 
-  it("closes the eye-to-plane distance from 29 m to 6.5 m", () => {
+  it("closes the eye-to-plane distance from 29 m to 2.9 m", () => {
     const far = framed(0).pos;
     const near = framed(1).pos;
     const range = (p: number[]) =>
@@ -84,7 +84,7 @@ describe("chase camera at full zoom", () => {
         (p[2] as number) - 1000,
       );
     expect(range(far)).toBeCloseTo(29, 2);
-    expect(range(near)).toBeCloseTo(6.539, 2);
+    expect(range(near)).toBeCloseTo(2.865, 2);
   });
 
   it("swings the view axis onto the gun line, 350 m down the nose", () => {
@@ -119,7 +119,7 @@ describe("zoom composes with the other display modifiers", () => {
       calls.pos[1] - 300,
       calls.pos[2] - 1000,
     );
-    expect(r).toBeCloseTo(6.539, 2);
+    expect(r).toBeCloseTo(2.865, 2);
   });
 
   it("never lets the zoom leak into the smoothed chase state", () => {

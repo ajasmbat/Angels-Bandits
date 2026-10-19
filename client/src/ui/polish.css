@@ -405,6 +405,34 @@ body.kbd #join .join-tag {
   box-shadow: 0 0 18px #27e0c055;
   transition: transform 0.12s var(--ab-ease), background 0.15s ease;
 }
+/* SOLO: the single-player pause menu — PAUSED instead of the autopilot
+   line, and RESTART beside RESUME. */
+#rotate .settings-paused,
+#rotate .settings .settings-restart {
+  display: none;
+}
+#rotate.solo .settings-autopilot {
+  display: none;
+}
+#rotate.solo .settings-paused {
+  display: inline;
+  color: var(--ab-accent);
+  font-size: var(--ab-fs-xs);
+  letter-spacing: 0.2em;
+}
+#rotate.solo .settings .settings-restart {
+  display: inline-block;
+  height: 36px;
+  padding: 0 20px;
+  background: transparent;
+  border: 1px solid #9fd8e866;
+  color: var(--ab-ink);
+  font-size: var(--ab-fs-m);
+  letter-spacing: 0.2em;
+}
+#rotate.solo .settings .settings-restart:hover {
+  border-color: var(--ab-accent);
+}
 #rotate .settings .settings-resume:hover {
   background: #5bf0d6;
 }

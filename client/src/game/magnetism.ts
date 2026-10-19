@@ -16,6 +16,10 @@ import { type Vec3, wrapDelta } from "@angels-bandits/common/world";
 
 const CONE_RAD = (MAGNETISM_CONE_DEG * Math.PI) / 180;
 const MAX_RAD_PER_S = (MAGNETISM_MAX_DEG_PER_S * Math.PI) / 180;
+/** FC1: the zoom may raise the bend rate by at most this (its cone never
+ * widens) — F1 measured faster bends leaving an aimer held off the lead
+ * marker still under its 15% bar; 1.5× keeps well inside that. */
+export const MAGNETISM_ZOOM_MAX = 1.5;
 
 /**
  * Where a bullet at `speed` meets a target offset `d` moving at `v`, as an
@@ -49,13 +53,15 @@ function interceptOffset(d: Vec3, v: Vec3 | undefined, speed: number): Vec3 {
  * within MAGNETISM_CONE_DEG of the flight line, by at most
  * MAGNETISM_MAX_DEG_PER_S × `dt` (never past the intercept line). A target
  * without `vel` is treated as still. Speed is preserved; with no target in
- * the cone the velocity comes back unchanged.
+ * the cone the velocity comes back unchanged. `rate` (FC1: the aim zoom's
+ * zoomMagnet) scales the bend rate, clamped to 1..MAGNETISM_ZOOM_MAX.
  */
 export function magnetizeVelocity(
   pos: Vec3,
   vel: Vec3,
   targets: readonly { pos: Vec3; vel?: Vec3; prot?: boolean }[],
   dt: number,
+  rate = 1,
 ): Vec3 {
   const speed = Math.hypot(vel.x, vel.y, vel.z);
   if (speed === 0) return vel;
@@ -83,7 +89,8 @@ export function magnetizeVelocity(
   if (!best || bestAngle === 0) return vel;
 
   // Rotate vel toward the target direction by the capped angle (Rodrigues).
-  const theta = Math.min(bestAngle, MAX_RAD_PER_S * dt);
+  const boost = Math.min(MAGNETISM_ZOOM_MAX, Math.max(1, rate));
+  const theta = Math.min(bestAngle, MAX_RAD_PER_S * boost * dt);
   // Axis = normalize(vel × toTarget); bestAngle > 0 keeps it well-defined.
   let ax = vel.y * best.z - vel.z * best.y;
   let ay = vel.z * best.x - vel.x * best.z;

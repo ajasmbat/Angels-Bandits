@@ -60,6 +60,7 @@ import {
   craneFallDir,
 } from "@angels-bandits/common/city/collapse";
 import {
+  collideMovers,
   generateMovers,
   withNewsHeli,
 } from "@angels-bandits/common/city/movers";
@@ -104,6 +105,7 @@ import {
   MAX_HP,
   PLAYER_RADIUS,
   RESPAWN_SPEED,
+  STORM_KILL_ALT,
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
 import {
@@ -138,6 +140,7 @@ import {
 } from "@angels-bandits/common/flight";
 import { MEDAL_LABEL, streakTier } from "@angels-bandits/common/medals";
 import { hitRangeBudgetFor } from "@angels-bandits/common/net";
+import { RooflineGrid } from "@angels-bandits/common/pilots";
 import type {
   CourseStanding,
   DeathMsg,
@@ -146,7 +149,6 @@ import type {
   WelcomeMsg,
 } from "@angels-bandits/common/protocol";
 import { airlinerOffsetInto } from "@angels-bandits/common/skytraffic";
-import { RooflineGrid } from "@angels-bandits/common/squadron";
 import { strikesInWindow } from "@angels-bandits/common/storm";
 import {
   MISSILE_SHOOTER_ID,
@@ -175,6 +177,7 @@ import {
   wreckImpact,
   wreckPosAt,
 } from "@angels-bandits/common/wreck";
+import type { TickReport } from "@angels-bandits/server/host";
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
@@ -238,6 +241,16 @@ import {
 } from "./game/chaos-meter";
 import { detectCrash, touchesSolid } from "./game/collision";
 import {
+  type CollisionAssistWorld,
+  collisionAssistActive,
+  collisionAssistError,
+  collisionAssistOn,
+  collisionAssistStick,
+  createCollisionAssist,
+  resetCollisionAssist,
+  stepCollisionAssist,
+} from "./game/collision-assist";
+import {
   type CornerWorld,
   cornerCapInput,
   cornerSpeed,
@@ -264,6 +277,7 @@ import {
   effortlessError,
   effortlessStick,
   resetEffortless,
+  scaleFeel,
   stepEffortless,
 } from "./game/effortless";
 import { type AimMode, FlightInputSource } from "./game/flight-input";
@@ -309,7 +323,7 @@ import {
   instructorBankPull,
   instructorInput,
 } from "./game/instructor";
-import { speedFov } from "./game/jet-camera";
+import { boostPunch, punchFov, punchPush, speedFov } from "./game/jet-camera";
 import {
   CUE_MIN_ALT,
   CamCue,
@@ -326,13 +340,21 @@ import {
   slowMoFor,
 } from "./game/juice";
 import { magnetizeVelocity } from "./game/magnetism";
+import {
+  cancelManoeuvre,
+  createManoeuvre,
+  createManoeuvreStick,
+  manoeuvreActive,
+  startDodge,
+  startUTurn,
+  stepManoeuvre,
+} from "./game/manoeuvres";
 import { MissileFeed, MissileShake, bombingNear } from "./game/missile-feed";
 import { createPullCue, stepPullCue } from "./game/pull-feel";
 import {
   type QaAirforceSpec,
   qaAirforceExtend,
   qaAirforceIds,
-  qaSquadrons,
 } from "./game/qa-airforce";
 import {
   type QaChaosSpec,
@@ -380,7 +402,11 @@ import {
   stepZoom,
   zoomFov,
   zoomHeld,
+  zoomMagnet,
+  zoomPlaneFade,
+  zoomSteady,
   zoomSteer,
+  zoomWheel,
 } from "./game/zoom";
 import { DestructLab } from "./lab/destruct-lab";
 import { FlightLab } from "./lab/lab";
@@ -566,11 +592,23 @@ import { WeatherClock, setWeatherUniform } from "./render/weather";
 import { buildingSeed, isWindowLit } from "./render/window-pattern";
 import { nearestImage, nearestImageInto } from "./render/wrapPlacement";
 import { Wrecks } from "./render/wrecks";
+import {
+  WorkerLink,
+  localTickReport,
+  multiplayer,
+  startLocalHost,
+} from "./sim/local";
 import { COACH_DONE_KEY, Coach, renderPrimer } from "./ui/coach";
 import { CommsTicker } from "./ui/comms";
 import { CourseBoard } from "./ui/course-board";
 import { DamageIndicator } from "./ui/damage-indicator";
 import { initFullscreenUi } from "./ui/fullscreen";
+import {
+  GUN_LINE_RANGES,
+  Gunsight,
+  gunsightView,
+  projectGunLine,
+} from "./ui/gunsight";
 import { Haptics } from "./ui/haptics";
 import { HPBAR_ALTITUDE, HpBarSprite, HpBarTracker } from "./ui/hpbar";
 import { Hud, deathLabel } from "./ui/hud";
@@ -578,7 +616,9 @@ import { IntensityBar, intensityName } from "./ui/intensity";
 import {
   closeJoin,
   initLabLink,
+  initStartScreen,
   requestName,
+  restartSolo,
   showJoinError,
   showJoinProgress,
   showSignalLost,
@@ -641,6 +681,19 @@ const DESTRUCT_URL = new URLSearchParams(window.location.search).has(
 const LAB_URL =
   new URLSearchParams(window.location.search).has("lab") || DESTRUCT_URL;
 initLabLink(LAB_URL, DESTRUCT_URL);
+// SOLO: the game runs in this page's sim worker (sim/local.ts) unless the
+// hidden `?mp=1` asks for the multiplayer server. Start the worker now, so
+// its host builds the city while the player is still on the start screen;
+// the card itself is the start screen (difficulty, graphics, controls).
+const MULTIPLAYER = multiplayer();
+if (!MULTIPLAYER) startLocalHost();
+// SOLO: and it plays offline after the first visit — the service worker
+// (client/sw.template.js) precaches the whole build. Production builds only:
+// the dev server's modules are not a build.
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  navigator.serviceWorker.register("./sw.js").catch(() => {});
+}
+const difficulty = initStartScreen(MULTIPLAYER);
 
 // W4 Easy mode (game/easy-mode.ts): decided once and kept — read BEFORE
 // the join card remembers a callsign, which is half of how a pilot who has
@@ -1200,9 +1253,42 @@ const holeSave = createHoleSave();
 // FEEL, its state and its per-frame output (written in place), and the
 // static solids its soft walls probe — the crash check's.
 let assistOn = settings.assist;
-let feelTuning = FEEL_TUNING[settings.feel];
+// FC1: MOUSE SENSITIVITY scales the mouse-aim's loop (scaleFeel).
+let feelTuning = scaleFeel(FEEL_TUNING[settings.feel], settings.mouseSens);
 const effortless = createEffortless();
 const effOut = createEffortlessOut();
+// FC1 collision assist (game/collision-assist.ts): the settings' COLLISION
+// ASSIST, its state, the static solids and — at the clock they are drawn
+// on — the movers, the airships among them; and the command stepFlight flew
+// last frame (a nudge is only worth what the stick has left).
+const collisionAssist = createCollisionAssist();
+const caWorld: CollisionAssistWorld = {
+  buildings: city.cityBuildings,
+  index: city.cityIndex,
+  nature: natureIndex,
+  moving: (p, r, t) => collideMovers(p, r, moverField, t) !== null,
+};
+const lastShaped = { turn: 0, pitch: 0 };
+// FC1 one-key manoeuvres (game/manoeuvres.ts): the macro being flown, its
+// stick, the solids its quick 180 checks the half loop and the U-turn
+// against (the crash check's, at the render clock), and the ceiling the
+// loop's top keeps under (the storm's, with air to spare).
+const manoeuvre = createManoeuvre();
+const manoeuvreStick = createManoeuvreStick();
+const manoeuvreSolid = (p: Vec3, r: number): boolean =>
+  touchesSolid(
+    p,
+    r,
+    city.cityBuildings,
+    city.cityIndex,
+    moverField,
+    chaseMoversMs,
+    natureIndex,
+  );
+const MANOEUVRE_CEILING = STORM_KILL_ALT - 15;
+/** A manoeuvre hands back once the collision assist calls a hit this
+ * close, s. */
+const MANOEUVRE_ABORT_S = 0.6;
 // F10 roll control (game/roll-control.ts): A/D/Q/E and the touch roll
 // buttons, the snap roll, bank ownership and the ROLL AUTO-LEVEL setting
 // (null = the device's default) — and the instructor's own bank-and-pull.
@@ -2184,6 +2270,9 @@ const hud = new Hud();
 const minimap = new Minimap(city.cityBuildings);
 const edgeMarkers = new EdgeMarkers();
 const leadIndicator = new LeadIndicator();
+// FC1: the zoomed view's gun-sight, and its gun line's screen points.
+const gunsight = new Gunsight();
+const gunLinePx = new Float64Array(GUN_LINE_RANGES.length * 2);
 // One soft tick on ACQUIRING a firing solution, never while it holds.
 const solutionTone = new SolutionTone();
 const markerScratch = new THREE.Vector3();
@@ -2216,6 +2305,12 @@ showOwnScore(welcome.scores);
 // from the welcome so a late joiner's bar opens where the room already is.
 const intensityBar = new IntensityBar(welcome.intensity);
 intensityBar.onClaim = (level) => socket.sendSetIntensity(level);
+// SOLO: the start screen's difficulty is the room's enemy intensity — the
+// local room is this pilot's alone (a lab room keeps its own rules). Claimed
+// here, once the bar exists, so the host's intensityConfig answer (what the
+// HUD shows, as ever) lands on it; the plane is still loading, so no wave
+// has been sized yet.
+if (socket.local && !LAB_URL) socket.sendSetIntensity(difficulty());
 scoreboard.bindIntensity(intensityBar);
 // M2: no Tab key on a phone — a minimap tap pins the scoreboard (touch only).
 scoreboard.bindTapToggle(document.getElementById("minimap") as HTMLElement);
@@ -2300,6 +2395,9 @@ const botCallsigns = (): string[] => {
 const input = new FlightInputSource();
 // W4: the settings' desktop stick sensitivity and the flight-data line.
 input.setStickSensitivity(settings.stickSens);
+// FC1: MOUSE SENSITIVITY and INVERT Y.
+input.setMouseSensitivity(settings.mouseSens);
+input.setInvertY(settings.invertY);
 document.body.classList.toggle("flight-data", settings.flightData);
 const chase = new ChaseCamera();
 // L11b spring arm: the eye never sits inside a building, the ground, the
@@ -2319,6 +2417,9 @@ chase.solid = (p, r) =>
 let freelook = createFreeLook();
 // Hold-right-click aim zoom: same deal — display + input shaping only.
 let zoom = createZoom();
+/** FC1 QA (__ab.qaZoom): a held (or released) zoom the gallery pins; null
+ * = the right button's. */
+let qaZoomHold: boolean | null = null;
 // Mouse-aim instructor (F1): client-only, its output is ordinary input.
 let instructor = createInstructor();
 // W4: KEYBOARD is a desktop scheme — a touch device flies the instructor.
@@ -2365,7 +2466,14 @@ const overspeedOf = (speed: number): number =>
  * speed FOV (jet-camera.ts) un-zoomed. The instructor reads the cursor
  * through the same one. */
 const viewFov = (z: number, overspeed: number, speed: number): number =>
-  zoomFov(z) + (tuning.boostFovKick * overspeed + speedFov(speed)) * (1 - z);
+  zoomFov(z, zoom.fov) +
+  (tuning.boostFovKick * overspeed + speedFov(speed) + punchFov(punch)) *
+    (1 - z);
+/** FC1: when the current burn lit (performance.now(), ms), and this frame's
+ * punch envelope (jet-camera.ts boostPunch) — the FOV overshoot and the
+ * camera's shove. */
+let boostLitAt = Number.NEGATIVE_INFINITY;
+let punch = 0;
 let flight: FlightState = createFlightState(
   welcome.spawn.pos,
   welcome.spawn.yaw,
@@ -2477,6 +2585,8 @@ function resetAssist(): void {
   holeAssist.pitch = 0;
   resetHoleSave(holeSave); // H3: and no save mid-slide
   resetEffortless(effortless); // F9: and no idle, no guard escape
+  resetCollisionAssist(collisionAssist); // FC1: and no nudge…
+  cancelManoeuvre(manoeuvre); // …and no macro still flying
   resetRollControl(rollCtl); // F10: no ramp, snap or bank carried over
   bankPull.engaged = false;
   gMeter.reset();
@@ -2601,7 +2711,10 @@ function setBoostBurning(on: boolean, now: number): void {
   if (boost.active === boostSent) return;
   boostSent = boost.active;
   socket.sendBoost(boostSent);
-  if (boostSent) audio.boostCue();
+  if (boostSent) {
+    audio.boostCue(tuning.boostKick);
+    boostLitAt = now;
+  }
 }
 
 /** Cosmetic tracer burst for a remote's validated shot. */
@@ -3095,11 +3208,13 @@ socket.events.onScores = (scores) => {
 socket.events.onIntensityConfig = (msg) => {
   // The server is the only authority on this value — including for the
   // player who just dragged, whose bar has been showing a preview.
-  intensityBar.applyServer(msg.level, msg.byName);
+  // SOLO: the only setter in the local room is the player.
+  const byName = socket.local ? "YOU" : msg.byName;
+  intensityBar.applyServer(msg.level, byName);
   scoreboard.refreshIntensity();
   // Ticker only, never the voice: byName is free text, and the radio's
   // name guard (game/callouts.ts) exists precisely to keep it out of TTS.
-  comms.add("NET", `${msg.byName} set enemies to ${intensityName(msg.level)}`);
+  comms.add("NET", `${byName} set enemies to ${intensityName(msg.level)}`);
 };
 
 // --- Perf instrumentation (P1) ---
@@ -3478,6 +3593,23 @@ declare global {
         values: Settings;
         gains: { master: number; voice: number; music: number } | null;
       };
+      /** SOLO QA (tools/perf/pilots.mjs): one more connection into this
+       * page's local host — a fake pilot's — or null on a remote server. */
+      qaLink: () => WorkerLink | null;
+      /** SOLO QA (tools/perf/worker-tick.mjs): the sim worker's tick
+       * profile (`sim` AB_TICK_STATS:1), reset after when asked. */
+      simTick: (
+        reset?: boolean,
+      ) => Promise<(TickReport & { at: number }) | null>;
+      /** SOLO QA: the local game — paused, the room's intensity, the wave,
+       * and snapshots received (what a pause stops). */
+      solo: () => {
+        local: boolean;
+        paused: boolean;
+        intensity: number;
+        wave: number;
+        snapshots: number;
+      };
       net: () => {
         selfId: string;
         roomId: string;
@@ -3547,6 +3679,9 @@ declare global {
       /** U3 QA: the hint on screen, the queue left, the touch overlay. */
       coach: () => ReturnType<Coach["debug"]>;
       zoom: () => { held: boolean; z: number; fov: number };
+      /** FC1 QA: hold the aim zoom (true), release it (false) or hand it
+       * back to the right button (null). */
+      qaZoom: (held: boolean | null) => void;
       lampImage: (x: number, z: number) => { x: number; z: number } | null;
       traffic: (at?: number | null) => ReturnType<Traffic["debug"]>;
       /** L6 QA: the longest red-light queue at a server time (gallery pin). */
@@ -3768,12 +3903,11 @@ declare global {
        * going off round a held pose (game/qa-lowchaos.ts) — the plane's own
        * pose when omitted — through qaDestruction and the director's
        * warnings; null clears it. */
-      /** E1 QA: stage an air force of `n` enemy planes in squadrons
-       * round the plane (or `spec`'s point) — wire rows through the real
+      /** E1 QA: stage an air force of `n` individual enemy pilots round
+       * the plane (or `spec`'s point) — snapshot entries through the real
        * client path (game/qa-airforce.ts); null / 0 clears it. */
       qaAirforce: (spec: number | QaAirforceSpec | null) => {
         planes: number;
-        squadrons: number;
       };
       /** E1: the air force as this client draws it — enemies sampled and
        * drawn last frame, the draw distance the tier's cap holds them
@@ -3787,7 +3921,7 @@ declare global {
       chaosMeter: (
         cmd?: "reset" | "disarm",
       ) => ChaosReport & { armed: boolean };
-      /** X1 QA: the squadrons' dilated roofline under (x, z), m — a
+      /** X1 QA: the pilots' dilated roofline under (x, z), m — a
        * scripted flight at this plus a margin touches no building. */
       roofline: (x: number, z: number) => number;
       airforce: () => {
@@ -4149,6 +4283,22 @@ declare global {
 // suspended, every held key and the trigger are dropped, and the autopilot
 // (ui/settings.ts) flies the plane level and out of the skyline.
 let settingsOpen = false;
+/**
+ * SOLO: the single-player game pauses while its menu is up — the sim worker
+ * stops (socket.pause: the host's tick and clock, and this side's clock
+ * sync), the frame loop draws nothing (frame), the mix goes quiet, and the
+ * boost edge is dropped so the next press is a real start. A shared room
+ * (`?mp=1`) never pauses: there the autopilot flies, as before.
+ */
+let soloPaused = false;
+function setSoloPaused(on: boolean): void {
+  if (!socket.local || on === soloPaused) return;
+  soloPaused = on;
+  socket.pause(on);
+  audio.setPaused(on);
+  if (on) setBoostBurning(false, performance.now());
+  else interruptQuality(); // O3: the frames around a pause are a transient
+}
 /** The aim as the settings screen opened: what changed is toasted when it
  * closes (M9), since the screen covers the HUD while it is open. */
 let aimAtOpen: { mode: AimMode; sensitivity: number | null } | null = null;
@@ -4174,7 +4324,11 @@ const settingsPanel = new SettingsPanel(
       resetEffortless(effortless);
     },
     setFeel: (feel) => {
-      feelTuning = labMode ? feelFromTuning(tuning) : FEEL_TUNING[feel];
+      settings = { ...settings, feel };
+      feelTuning = scaleFeel(
+        labMode ? feelFromTuning(tuning) : FEEL_TUNING[feel],
+        settings.mouseSens,
+      );
     },
     rollLevel: () => rollLevelMode,
     setRollLevel: (mode) => {
@@ -4236,8 +4390,26 @@ const settingsPanel = new SettingsPanel(
       settings = { ...settings, flightData: on };
       document.body.classList.toggle("flight-data", on);
     },
+    setMouseSens: (v) => {
+      settings = { ...settings, mouseSens: v };
+      input.setMouseSensitivity(v);
+      feelTuning = scaleFeel(
+        labMode ? feelFromTuning(tuning) : FEEL_TUNING[settings.feel],
+        v,
+      );
+    },
+    setInvertY: (on) => {
+      settings = { ...settings, invertY: on };
+      input.setInvertY(on);
+    },
+    setCollisionAssist: (on) => {
+      settings = { ...settings, collisionAssist: on };
+      resetCollisionAssist(collisionAssist);
+    },
+    ...(socket.local && { solo: { restart: restartSolo } }),
     onOpenChange: (open) => {
       settingsOpen = open;
+      setSoloPaused(open);
       // Resuming recentres the touch aim onto the gun line (M7), so the
       // instructor picks up flying straight rather than from a stale point.
       touchControls?.setSuspended(open);
@@ -4642,6 +4814,15 @@ window.__ab = {
     values: settingsPanel.current(),
     gains: audio.busGains(),
   }),
+  qaLink: () => (socket.local ? new WorkerLink() : null),
+  simTick: (reset = false) => localTickReport(reset),
+  solo: () => ({
+    local: socket.local,
+    paused: socket.paused,
+    intensity: intensityBar.displayed,
+    wave: socket.waves.wave,
+    snapshots: socket.snapshots,
+  }),
   net: () => ({
     selfId: socket.selfId,
     roomId: currentRoomId,
@@ -4716,6 +4897,9 @@ window.__ab = {
   // ANGE-G9CPCV QA: aim-zoom state plus the FOV it is actually driving
   // (drive it with real button-2 mouse events).
   zoom: () => ({ held: zoom.held, z: zoom.z, fov: camera.fov }),
+  qaZoom: (held: boolean | null) => {
+    qaZoomHold = held;
+  },
   // Seam QA: where the lamp nearest canonical (x, z) is drawn right now.
   lampImage: (x, z) => streetlights.imageOf(x, z),
   // Traffic QA: canonical poses of the first cars at a server time. Pass one
@@ -5109,10 +5293,7 @@ window.__ab = {
         remotes.playerJoined({ id, name: `BANDIT-${i + 1}`, isBot: true }),
       );
     }
-    return {
-      planes: qaAirforce?.n ?? 0,
-      squadrons: qaSquadrons(qaAirforce?.n ?? 0),
-    };
+    return { planes: qaAirforce?.n ?? 0 };
   },
   chaosMeter: (cmd) => {
     const now = performance.now();
@@ -5789,7 +5970,7 @@ const lab: FlightLab | null =
         routes: buildLabRoutes(city.cityBuildings, courses),
         teleport: labTeleport,
         onTuning: () => {
-          feelTuning = feelFromTuning(tuning);
+          feelTuning = scaleFeel(feelFromTuning(tuning), settings.mouseSens);
           assistOn = tuning.assist === 1;
           // A shorter top speed must not leave the corner cap above it.
           cornerCap = Math.min(cornerCap, tuning.maxSpeed);
@@ -6012,6 +6193,12 @@ function sampleChaos(now: number, renderMs: number | null): void {
 }
 
 const frame = (rafNow: number): void => {
+  // SOLO: paused — nothing moves and nothing is drawn (the canvas keeps the
+  // last frame); the next frame after it starts from a fresh `last`.
+  if (soloPaused) {
+    last = rafNow;
+    return;
+  }
   // D11 QA: a fixed virtual step instead of the rAF clock (time-lapses).
   if (qaFrameStep !== null) qaFrameStep.now += qaFrameStep.dtMs;
   const now = qaFrameStep !== null ? qaFrameStep.now : rafNow;
@@ -6110,7 +6297,16 @@ const frame = (rafNow: number): void => {
   // alive, so a death mid-zoom would otherwise freeze the FOV narrowed for
   // the whole kill-cam. Dying eases it back out instead.
   const zoomPrev = zoom.z;
-  zoom = stepZoom(zoom, alive && zoomHeld(input.aimHeld(), freelook.held), dt);
+  const zoomWasHeld = zoom.held;
+  // FC1: the wheel steps the sights while the zoom is held (drained dead or
+  // alive, so a spin in the kill-cam never lands after the respawn).
+  zoom = zoomWheel(zoom, input.takeZoomNotches());
+  zoom = stepZoom(
+    zoom,
+    alive && zoomHeld(qaZoomHold ?? input.aimHeld(), freelook.held),
+    dt,
+  );
+  if (zoom.held && !zoomWasHeld) audio.zoomThunk();
   aimConverged = false;
   // Boost (F2): a burn starts only on a fresh press (drained every frame, dead
   // too, so a press during the kill-cam can't fire after respawn) and ends on
@@ -6122,6 +6318,7 @@ const frame = (rafNow: number): void => {
     else if (!boostKey.isHeld()) setBoostBurning(false, now);
   }
   if (boost.active !== boostSent) setBoostBurning(false, now); // ran dry
+  punch = alive ? boostPunch((now - boostLitAt) / 1000) : 0;
   if (alive) {
     freelook = stepFreeLook(
       freelook,
@@ -6135,7 +6332,15 @@ const frame = (rafNow: number): void => {
     // Zoom buys its steady sight picture with turn rate, and spends it
     // through the same input-shaping seam free-look uses — the camera never
     // reaches flight state. Authority is the product of both costs.
-    const steer = freelook.steer * zoomSteer(zoom.z);
+    // FC1: the mouse-aim keeps full authority (its cursor already moves
+    // fewer degrees per pixel zoomed); a rate stick scales with the FOV.
+    const steer =
+      freelook.steer *
+      zoomSteer(
+        zoom.z,
+        aimMode === "instructor" ? "instructor" : "stick",
+        zoom.fov,
+      );
     let command = input.read();
     // H2 hole assist: stands down while the pilot shoots, free-looks or the
     // view is reframing (zoom easing) — then glides back to zero. F7: and
@@ -6289,6 +6494,12 @@ const frame = (rafNow: number): void => {
     // F9 effortless assist: auto-level, coordinated turns, the ground floor
     // and the soft walls, from the pilot's activity and this pose.
     const touchAiming = touchControls?.aiming() ?? false;
+    /** Threading a hole or a bore: H2/H3 own the line, the walls stand down. */
+    const threading =
+      holeAssist.yaw !== 0 ||
+      holeAssist.pitch !== 0 ||
+      holeSaveActive(holeSave) ||
+      threadingCorridor(cornerWorld, flight, assistDir.x, assistDir.z) !== null;
     stepEffortless(
       effortless,
       flight,
@@ -6308,12 +6519,7 @@ const frame = (rafNow: number): void => {
           input.presence() < 0.5 ||
           (anchored && !touchAiming),
         firing: guns.firing,
-        threading:
-          holeAssist.yaw !== 0 ||
-          holeAssist.pitch !== 0 ||
-          holeSaveActive(holeSave) ||
-          threadingCorridor(cornerWorld, flight, assistDir.x, assistDir.z) !==
-            null,
+        threading,
         pilotTurn: intentTurn,
         pilotPitch: intentPitch,
         cornerCap: cornerCapInput(cornerCap),
@@ -6329,6 +6535,19 @@ const frame = (rafNow: number): void => {
     if (effortless.weight > 0 && anchored && !touchAiming) {
       touchControls?.followNose();
     }
+    // FC1 collision assist: a nudge off a near-certain head-on hit with a
+    // building or an airship (the movers at the clock they are drawn on).
+    stepCollisionAssist(
+      collisionAssist,
+      flight,
+      caWorld,
+      renderMs,
+      collisionAssistOn(settings.collisionAssist) && !autopilot,
+      threading || destructLab !== null,
+      rates,
+      lastShaped,
+      dt,
+    );
     // F10: roll-control owns every wing-levelling now (the pilot's bank is
     // held, or auto-levelled by the setting; anyone else's is levelled), so
     // F9's idle roll never reaches the stick.
@@ -6350,7 +6569,8 @@ const frame = (rafNow: number): void => {
               cornerCap < tuning.maxSpeed ||
               holeAssist.yaw !== 0 ||
               holeAssist.pitch !== 0 ||
-              holeSaveActive(holeSave),
+              holeSaveActive(holeSave) ||
+              collisionAssistActive(collisionAssist),
           );
     if (bankView === null) bankPull.engaged = false;
     if (instructorMode) {
@@ -6370,6 +6590,7 @@ const frame = (rafNow: number): void => {
           biased,
         );
       }
+      collisionAssistError(collisionAssist, feelTuning, rates, biased);
       instructor = instructorInput(
         biased,
         latch,
@@ -6407,6 +6628,50 @@ const frame = (rafNow: number): void => {
         rates.pitchRate,
         command,
       );
+      collisionAssistStick(collisionAssist, command);
+    }
+    // FC1 one-key manoeuvres (X: quick 180, V: barrel-roll dodge): a fresh
+    // press starts one; while it flies it owns the stick (its roll as
+    // roll-control's `auto`, so A/D still wins), and an impact the
+    // collision assist calls imminent hands the stick straight back.
+    const press = input.takeManoeuvre();
+    if (autopilot || freelook.held || destructLab !== null) {
+      cancelManoeuvre(manoeuvre);
+    } else if (press !== null) {
+      const cursor = input.cursorNdc();
+      const side =
+        rollKeys !== 0
+          ? Math.sign(rollKeys)
+          : instructorMode
+            ? cursor.x > 0
+              ? -1
+              : 1
+            : command.turn > 0
+              ? -1
+              : 1;
+      if (press === "uturn") {
+        startUTurn(manoeuvre, flight, manoeuvreSolid, MANOEUVRE_CEILING, side);
+      } else {
+        startDodge(manoeuvre, flight, side);
+      }
+    }
+    let manoeuvreRoll: number | null = null;
+    if (manoeuvreActive(manoeuvre)) {
+      if (collisionAssist.tHit < MANOEUVRE_ABORT_S) cancelManoeuvre(manoeuvre);
+      if (stepManoeuvre(manoeuvre, flight, dt, manoeuvreStick)) {
+        command = {
+          ...command,
+          turn: manoeuvreStick.turn,
+          pitch: manoeuvreStick.pitch,
+        };
+        manoeuvreRoll = manoeuvreStick.roll;
+      }
+      // Handed back: no lagged command from before it, no stale idle.
+      if (!manoeuvreActive(manoeuvre)) {
+        instructor = createInstructor();
+        resetEffortless(effortless);
+        bankPull.engaged = false;
+      }
     }
     if (!autopilot) {
       command = {
@@ -6415,7 +6680,7 @@ const frame = (rafNow: number): void => {
           rollCtl,
           {
             key: rollKeys,
-            auto: bankAuto,
+            auto: manoeuvreRoll ?? bankAuto,
             mode: effectiveRollLevel(rollLevelMode),
             roll,
             pitch: flight.pitch,
@@ -6429,6 +6694,8 @@ const frame = (rafNow: number): void => {
       boost: boost.active,
       cornerCap: cornerCapInput(cornerCap),
     };
+    lastShaped.turn = shaped.turn;
+    lastShaped.pitch = shaped.pitch;
     leadYawRate =
       -shaped.turn * handlingRates(flight.speed, boost.active, tuning).turnRate;
     flight = stepFlight(flight, shaped, dt, tuning);
@@ -6607,6 +6874,19 @@ const frame = (rafNow: number): void => {
     }
     // P3's one budget; J1: scaled by SCREEN SHAKE (0 under reduced motion).
     budgetShake(camShake, shakeScale(settings.shake, reducedMotionOn()));
+    // FC1: the zoom steadies the sight picture.
+    const steady = zoomSteady(zoom.z);
+    camShake.x *= steady;
+    camShake.y *= steady;
+    camShake.z *= steady;
+    // FC1: a fresh burn shoves the view back a beat (display only).
+    if (punch > 0) {
+      const push = punchPush(punch) * (1 - zoom.z);
+      const cp = Math.cos(flight.pitch);
+      camShake.x += Math.sin(flight.yaw) * cp * push;
+      camShake.y -= Math.sin(flight.pitch) * push;
+      camShake.z += Math.cos(flight.yaw) * cp * push;
+    }
     // P3: rolling or looping through inverted rushes air past the canopy.
     const inverted = Math.cos(flight.pitch) * Math.cos(flight.roll) < -0.2;
     if (inverted && !wasInverted && alive) audio.aeroWhoosh(now);
@@ -6635,6 +6915,9 @@ const frame = (rafNow: number): void => {
       planePos.z + planeShake.z * 0.5,
     );
     plane.rotation.set(flight.pitch, flight.yaw, flight.roll, "YXZ");
+    // FC1: zoomed, the own plane dissolves (the fleet's screen-door fade);
+    // the `?fleet=0` rollback just hides it past half.
+    if (!fleet) plane.visible = zoomPlaneFade(zoom.z) < 0.5;
     // Prop speed tracks the commanded throttle (same factor as remotes').
     spinPropeller(plane, dt * Math.min(flight.targetSpeed, cornerCap) * 0.7);
     animatePlane(plane, ownControls, flight.speed, qaPlaneHp ?? selfHp, dt);
@@ -6688,7 +6971,13 @@ const frame = (rafNow: number): void => {
   const targets = remotes.targets();
   for (const bullet of bullets.all) {
     if (!bullet.cosmetic) {
-      bullet.vel = magnetizeVelocity(bullet.pos, bullet.vel, targets, dt);
+      bullet.vel = magnetizeVelocity(
+        bullet.pos,
+        bullet.vel,
+        targets,
+        dt,
+        zoomMagnet(zoom.z),
+      );
     }
   }
   // D9: rounds and the flight assist see the bridges' fallen spans.
@@ -6808,6 +7097,7 @@ const frame = (rafNow: number): void => {
     selfGlow.g = REVEAL_LIN.g * k;
     selfGlow.b = REVEAL_LIN.b * k;
     fleet.add(plane, selfGlow);
+    fleet.setFade(plane, alive ? zoomPlaneFade(zoom.z) : 0);
   } else {
     plane.traverse((child) => {
       if (child instanceof THREE.Mesh) {
@@ -7514,7 +7804,7 @@ const frame = (rafNow: number): void => {
     sky.domeVisible,
   );
   // SKY1: uniforms only (FAR_ORIGIN, just written above, is shared).
-  skyArmada.setThin(remotes.enemySectors); // E1: over the dense squadrons
+  skyArmada.setThin(remotes.enemySectors); // E1: over the dense air force
   skyArmada.update(
     camera,
     renderMs,
@@ -7577,6 +7867,23 @@ const frame = (rafNow: number): void => {
   // The pipper is the gun line's own vanishing point, so it only means
   // anything while we are flying it — the kill-cam gets no aim chrome.
   hud.setAimPoint(alive ? aimResult.aim : null);
+  // FC1: the gun-sight — ring, range arc, gun line, vignette.
+  if (alive && zoom.z > 0) {
+    projectGunLine(
+      camera,
+      chase.position,
+      flight,
+      gunLinePx,
+      markerScratch,
+      window.innerWidth,
+      window.innerHeight,
+    );
+  }
+  gunsight.update(
+    gunsightView(alive ? zoom.z : 0, aimResult.range),
+    alive ? aimResult.aim : null,
+    gunLinePx,
+  );
   // R3: the rain keeps the pipper's neighbourhood clear (next frame's draw).
   rain.setAim(aimResult.aim, window.innerWidth, window.innerHeight);
   leadSolution = alive && aimResult.solution;
@@ -7658,9 +7965,11 @@ const frame = (rafNow: number): void => {
       `SPD ${flight.speed.toFixed(0)} m/s  THR ${flight.targetSpeed.toFixed(0)}  ` +
       `ALT ${flight.pos.y.toFixed(0)} m`;
     // Touch (M9): a short line for the top band — no player count or FPS.
-    hudEl.textContent = isTouch()
-      ? stats
-      : `${stats}  PLR ${remotes.count + 1}  FPS ${perf.fps.toFixed(0)}`;
+    // SOLO: no player count either — the only pilot is this one.
+    hudEl.textContent =
+      isTouch() || socket.local
+        ? stats
+        : `${stats}  PLR ${remotes.count + 1}  FPS ${perf.fps.toFixed(0)}`;
   }
 };
 renderer.setAnimationLoop(frame);
@@ -7684,6 +7993,12 @@ requestAnimationFrame(() => {
 // heartbeat keeps the socket. Back, the server answers with a fresh spawn,
 // which poses wait for: the local flight state froze with the tab.
 let glLost = false;
+// SOLO: losing the window's focus pauses the solo game (the menu opens).
+// Not under automation (navigator.webdriver): a headless harness has no
+// focus to keep, and its runs must not stall behind a menu.
+window.addEventListener("blur", () => {
+  if (socket.local && !navigator.webdriver) settingsPanel.openMenu();
+});
 let hiddenPing: ReturnType<typeof setInterval> | undefined;
 document.addEventListener("visibilitychange", () => {
   interruptQuality(); // O3: a transient
@@ -7692,9 +8007,20 @@ document.addEventListener("visibilitychange", () => {
     // The server's boost mirror restarts idle on return: stop our burn now
     // so the next start edge is actually sent.
     setBoostBurning(false, performance.now());
+    // SOLO: away from the solo game is a pause — the menu comes up and the
+    // sim worker stops; nothing to hold a seat for, so no away.
+    if (socket.local) {
+      settingsPanel.openMenu();
+      return;
+    }
     socket.sendAway(true);
     clearInterval(hiddenPing);
     hiddenPing = setInterval(() => socket.sendPing(), AWAY_PING_INTERVAL_MS);
+  } else if (socket.local) {
+    if (!glLost) {
+      last = performance.now();
+      renderer.setAnimationLoop(frame);
+    }
   } else {
     clearInterval(hiddenPing);
     socket.sendAway(false);

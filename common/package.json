@@ -55,7 +55,7 @@
     "./destruction-tuning": "./src/destruction-tuning.ts",
     "./destruct-lab": "./src/destruct-lab.ts",
     "./waves": "./src/waves.ts",
-    "./squadron": "./src/squadron.ts",
+    "./pilots": "./src/pilots.ts",
     "./interest": "./src/interest.ts"
   }
 }

@@ -1,6 +1,6 @@
 // E1 Air force: what does an enemy count cost? Boots the REAL server once per
-// count with the air force staged at that size (AB_AIRFORCE=n: n squadron
-// planes in the air at once, off no rig) on top of the carrier war's own
+// count with the air force staged at that size (AB_AIRFORCE=n: n
+// individual pilots in the air at once, off no rig) on top of the carrier war's own
 // waves (AB_BOSS_FAST: the fleet is up in seconds, its wave's aces come
 // off it), joins `--humans` ws pilots that weave through the city at
 // TICK_UP_HZ (tools/perf/pilots.mjs) and fire in bursts, and after a
@@ -35,7 +35,7 @@ import { TICK_UP_HZ } from "@angels-bandits/common/constants";
 import WebSocket from "ws";
 import { pilotPose } from "./perf/pilots.mjs";
 
-/** The pilots weave at 200–280 m: among the squadrons, and over C1's
+/** The pilots weave at 200–280 m: among the air force, and over C1's
  * low-flying chaos band (LOW_EXIT_ALT), so its collapses — not the air
  * force — do not decide the tick. */
 const BENCH_FLIGHT = { near: 80, far: 380, yLo: 200, yHi: 280 };
@@ -172,12 +172,7 @@ function join(port: number, i: number): Promise<Client> {
       if (type === "snapshot") {
         c.snapBytes += data.length;
         c.snaps++;
-        const m = JSON.parse(text) as { p: unknown[]; s?: number[][] };
-        let n = m.p.length;
-        for (const row of m.s ?? []) {
-          for (let k = 0; k < 8; k++) if ((row[12] as number) & (1 << k)) n++;
-        }
-        c.planes += n;
+        c.planes += (JSON.parse(text) as { p: unknown[] }).p.length;
       }
     });
   });
@@ -231,7 +226,7 @@ async function measure(n: number): Promise<Row> {
         }
       }
     }, 250);
-    // Until the air force is up (8 squadrons a tick), then the warm-up.
+    // Until the air force is up (16 pilots a tick), then the warm-up.
     const until = Date.now() + 30_000;
     while (Date.now() < until && (clients[0]?.enemies.size ?? 0) < n) {
       await sleep(200);
@@ -289,7 +284,7 @@ const kb = (b: number) => (b / 1000).toFixed(1);
 /**
  * `--inprocess`: the air force's OWN tick in this process, on the main
  * thread — the room's war (RoomWaves with its staged air force,
- * the fleet, Combat's releases), the squadrons (flyForce), the aces' brain
+ * the fleet, Combat's releases), the pilots (flyForce), the aces' brain
  * (RoomBots.tick) and every client's interest-managed snapshot (rows
  * encoded once, selected and joined per client) — with nothing else of the
  * server's tick around it, so the director's spikes and the sockets do not
@@ -305,9 +300,6 @@ async function inProcess(): Promise<void> {
   const { CITY_SEED } = await import("@angels-bandits/common/constants");
   const { FLEET_FAST_TUNING } = await import("@angels-bandits/common/boss");
   const { encodeSnapshotEntry } = await import("@angels-bandits/common/net");
-  const { FORM_REACH, encodeSquadRow } = await import(
-    "@angels-bandits/common/squadron"
-  );
   const { selectRows, snapshotJson } = await import(
     "@angels-bandits/common/interest"
   );
@@ -329,7 +321,7 @@ async function inProcess(): Promise<void> {
       .join(" ")}\n`,
   );
   console.log(
-    "| air force | enemies up | aces | tick p50 | p99 | of which squadrons p50 | snapshots (all clients) p50 |",
+    "| air force | enemies up | aces | tick p50 | p99 | of which pilots p50 | snapshots (all clients) p50 |",
   );
   console.log("| ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
   for (const n of COUNTS) {
@@ -367,7 +359,7 @@ async function inProcess(): Promise<void> {
     });
     waves.staged = n;
     const total: number[] = [];
-    const squad: number[] = [];
+    const pilots: number[] = [];
     const snap: number[] = [];
     let now = T0;
     const warm = WARMUP_S * 20;
@@ -412,14 +404,11 @@ async function inProcess(): Promise<void> {
             }),
           ),
           pos: h.pos,
-          reach: 0,
           phase: 0,
           always: true,
-          squad: false,
         });
       }
       for (const e of waves.enemies()) {
-        if (bots.isSquad(e.id)) continue;
         const pose = bots.poseOf(e.id);
         if (!pose) continue;
         rows.push({
@@ -427,36 +416,23 @@ async function inProcess(): Promise<void> {
             encodeSnapshotEntry({ id: e.id, pose, hp: 100, prot: false }),
           ),
           pos: pose.pos,
-          reach: 0,
-          phase: e.id.length,
+          phase: Number(e.id.slice(e.id.lastIndexOf(":") + 1)),
           always: false,
-          squad: false,
-        });
-      }
-      for (const w of waves.squadrons.wire(now)) {
-        rows.push({
-          json: JSON.stringify(encodeSquadRow(w.row)),
-          pos: w.pos,
-          reach: FORM_REACH,
-          phase: w.sid,
-          always: false,
-          squad: true,
         });
       }
       for (const h of humans) {
         const planes: string[] = [];
-        const squads: string[] = [];
-        selectRows(h.pos, rows, t, planes, squads);
-        Buffer.from(snapshotJson(now, planes, squads));
+        selectRows(h.pos, rows, t, planes);
+        Buffer.from(snapshotJson(now, planes));
       }
       const c4 = cpu();
       if (t < warm) continue;
       total.push(c4 - c0);
-      squad.push(c2 - c1);
+      pilots.push(c2 - c1);
       snap.push(c4 - c3);
     }
     console.log(
-      `| ${n} | ${waves.state().force + waves.enemies().filter((e) => !e.squad).length} | ${waves.squadrons.aces().length} | ${q(total, 0.5).toFixed(2)} ms | ${q(total, 0.99).toFixed(2)} ms | ${q(squad, 0.5).toFixed(2)} ms | ${q(snap, 0.5).toFixed(2)} ms |`,
+      `| ${n} | ${waves.state().force + waves.enemies().filter((e) => !e.pilot).length} | ${waves.pilots.aces().length} | ${q(total, 0.5).toFixed(2)} ms | ${q(total, 0.99).toFixed(2)} ms | ${q(pilots, 0.5).toFixed(2)} ms | ${q(snap, 0.5).toFixed(2)} ms |`,
     );
   }
 }

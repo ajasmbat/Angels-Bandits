@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@angels-bandits/common": "*",
+    "@angels-bandits/server": "*",
     "three": "^0.170.0"
   },
   "devDependencies": {

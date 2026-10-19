@@ -68,7 +68,21 @@ export interface Settings {
   stickSens: number;
   /** W4 ADVANCED › FLIGHT DATA: the SPD / ALT / FPS line (off: decluttered). */
   flightData: boolean;
+  /** FC1 CONTROLS › MOUSE SENSITIVITY, one of MOUSE_SENS_STEPS: how hard
+   * the mouse-aim chases the cursor (its loop gain — the damping is kept)
+   * and the classic mouse stick's gain. */
+  mouseSens: number;
+  /** FC1 CONTROLS › INVERT Y: up on a stick dives — the classic mouse
+   * stick, the keyboard's arrows and the touch stick. The mouse-aim's
+   * cursor is a place, not a stick, so it never inverts. */
+  invertY: boolean;
+  /** FC1 FLYING › COLLISION ASSIST (game/collision-assist.ts): on by
+   * default. */
+  collisionAssist: boolean;
 }
+
+/** FC1: the MOUSE SENSITIVITY steps (×). */
+export const MOUSE_SENS_STEPS: readonly number[] = [0.5, 0.75, 1, 1.25, 1.5];
 
 /** W4: the desktop stick SENSITIVITY steps (×). */
 export const STICK_SENS_STEPS: readonly number[] = [0.75, 1, 1.25, 1.5];
@@ -101,6 +115,9 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = {
   carrierCam: true,
   stickSens: 1,
   flightData: false,
+  mouseSens: 1,
+  invertY: false,
+  collisionAssist: true,
 };
 
 const clamp = (v: number, lo: number, hi: number) =>
@@ -147,6 +164,14 @@ export function clampSettings(raw: unknown): Settings {
       ? (o.stickSens as number)
       : d.stickSens,
     flightData: typeof o.flightData === "boolean" ? o.flightData : d.flightData,
+    mouseSens: MOUSE_SENS_STEPS.includes(o.mouseSens as number)
+      ? (o.mouseSens as number)
+      : d.mouseSens,
+    invertY: typeof o.invertY === "boolean" ? o.invertY : d.invertY,
+    collisionAssist:
+      typeof o.collisionAssist === "boolean"
+        ? o.collisionAssist
+        : d.collisionAssist,
   };
 }
 
@@ -222,7 +247,7 @@ export interface PanelEnv {
   portrait: boolean;
 }
 
-export type PanelEvent = "toggle" | "close" | "landscape";
+export type PanelEvent = "toggle" | "open" | "close" | "landscape";
 
 /** Portrait on a phone holds the panel open whatever the manual state. */
 export function portraitForced(env: PanelEnv): boolean {
@@ -242,6 +267,7 @@ export function nextManual(
 ): boolean {
   if (event === "landscape") return false;
   if (portraitForced(env)) return manual;
+  if (event === "open") return true;
   return event === "toggle" ? !manual : false;
 }
 

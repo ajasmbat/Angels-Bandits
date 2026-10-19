@@ -11,7 +11,7 @@ the deck — so the sky above the war is cloud and tower, never open air.
 - the skyline: `BUILDING_MAX_HEIGHT` (650 m, the core band's top) plus
   `ROOF_STRUCTURE_MAX_HEIGHT` (16 m); `SKYLINE_RING_MAX_HEIGHT` (265 m, the
   mid and edge bands' top — the ring round the cores stays under the
-  squadrons' and the bots' high bands, and only the cores pierce the
+  pilots' and the bots' high bands, and only the cores pierce the
   deck); `LANDMARK_HEIGHT` (700 m, the recognition threshold — every
   landmark is at least this, nothing generated reaches it); `CITY_TOP`
   (1000 m, the tallest landmark profile in `city/landmarks.ts`). Tunnels
@@ -40,14 +40,17 @@ the deck — so the sky above the war is cloud and tower, never open air.
   core towers stand through it (`spawnTowersOf`) — and, since the rooftop
   ships cruise this layer, the fleet veto with a fanned heading
   (`server/src/respawn.ts` `landmarkClearance`, `freeHeading`);
-- E1's squadron band (`common/src/squadron.ts`), DERIVED, never a literal:
-  `SQUAD_FLOOR_ALT` (60 m) over open ground, the roofline grid's dilated
-  roofs + `SQUAD_CLEAR` everywhere else, the cruise cap `SQUAD_CRUISE_CAP`
-  (the generated skyline `BUILDING_MAX_HEIGHT + ROOF_STRUCTURE_MAX_HEIGHT`
-  + clearance, so the spires are flown round, not over) and the hard top
-  `SQUAD_ALT_MAX` (under `BOT_CEILING_ALT`, `SOFT_CEILING` and the blimp's
-  belly, less the formation's top: 361 m with this deck). The airships are
-  steered round as moving obstacles (`SquadObstacle`), not by altitude;
+- the air force's pilot band (E1, I1: `common/src/pilots.ts`), DERIVED,
+  never a literal: `PILOT_FLOOR_ALT` (60 m) over open ground, the roofline
+  grid's dilated roofs + `PILOT_CLEAR` everywhere else, the cruise cap
+  `PILOT_CRUISE_CAP` (the ring's skyline `SKYLINE_RING_MAX_HEIGHT +
+  ROOF_STRUCTURE_MAX_HEIGHT` + clearance, so the cores' supertalls and the
+  spires are flown round, not over) and the hard top `PILOT_ALT_MAX` (under `BOT_CEILING_ALT`,
+  `SOFT_CEILING` and the blimp's belly: 368 m with this deck). The
+  airships and the spires are steered round as obstacles
+  (`PilotObstacle`), not by altitude; a pilot climbing to a cap levels
+  out by its pitch-rate stopping distance, so it never overshoots it
+  (T1: and is held at `PILOT_ALT_MAX` outright, under the hard floor);
 - the blimp `BLIMP_ALT` (388 m, hull 374–402 m), on an avenue line parallel
   to the rooftop lanes, clear of them and of the spires
   (`city/movers.ts` `blimpCross`);
@@ -96,10 +99,11 @@ blimp, under the deck, off the spires) and `common/test/movers.test.ts`
   read the city's own towers, `installSpawnTowers`, so a taller skyline is
   seen without a list to keep).
 - A blimp or news heli in the deck, or one that meets a spire or a hull.
-- A squadron band written as numbers instead of derived, or the blimp
-  lowered without it: the formations fly into the deck or the blimp's hull
-  (squadrons steer round airships, not movers). `common/test/squadron.test.ts`
-  pins the band under the ceilings and the blimp.
+- A pilot band written as numbers instead of derived, or the blimp
+  lowered without it: the air force flies into the deck or the blimp's
+  hull (pilots steer round airships, not movers). `common/test/pilots.test.ts`
+  pins the band under the ceilings and the blimp, and 500 pilots under
+  `PILOT_ALT_MAX` for five minutes.
 - Anything the `height >= LANDMARK_HEIGHT` test identifies — the minimap
   accent, roof beacons, facade archetypes, searchlight picks — misfires the
   moment a generated lot reaches `LANDMARK_HEIGHT`.

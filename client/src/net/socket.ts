@@ -34,6 +34,13 @@
 // order, so a `chunks` batch after a rebuild lands after it here too.
 // C2: and the chaos — quakes (`quakes`) and the burning chunks (`fires`).
 // U6: and the cave-ins (`caveIns`, the mover field's slot).
+//
+// SOLO: "the server" is usually the sim worker on this very page
+// (../sim/local.ts): the same frames over a WorkerLink instead of a ws, and
+// `?mp=1` for the remote server. The clock sync below still runs — its
+// offset just comes out near zero locally — and a solo pause takes its
+// length out of the local clock (pause()), as the host takes it out of its
+// own, so the estimate holds across it.
 
 import { type AaBurst, decodeAaBurst } from "@angels-bandits/common/aa";
 import {
@@ -131,7 +138,6 @@ import type {
   SnapshotMsg,
   WelcomeMsg,
 } from "@angels-bandits/common/protocol";
-import { expandSquadRow, isSquadRow } from "@angels-bandits/common/squadron";
 import {
   type MissileStrike,
   decodeMissile,
@@ -142,6 +148,13 @@ import {
   idleWaves,
 } from "@angels-bandits/common/waves";
 import type { Vec3 } from "@angels-bandits/common/world";
+import {
+  type Link,
+  type LinkEvent,
+  WorkerLink,
+  multiplayer,
+  pauseLocalHost,
+} from "../sim/local";
 import { PoseCadence, RenderClock } from "./clock";
 import { InterpDelay } from "./delay";
 import { reconnectDelayMs } from "./reconnect";
@@ -271,6 +284,14 @@ const socketUrl = (): string => {
   return `${proto}://${location.host}`;
 };
 
+/** A link's readyState while frames can flow (WebSocket.OPEN). */
+const LINK_OPEN = 1;
+
+/** SOLO: a new connection — into the local sim worker, or (`?mp=1`) a ws to
+ * the remote server. */
+const openLink = (): Link =>
+  multiplayer() ? new WebSocket(socketUrl()) : new WorkerLink();
+
 export class GameSocket {
   /** The latest welcome — replaced by each resume (same id, fresh token). */
   welcome: WelcomeMsg;
@@ -308,6 +329,8 @@ export class GameSocket {
    * respawns the plane and replays the room, so a measured window that saw
    * one is not the scene it set up. */
   resumes = 0;
+  /** SOLO QA (`__ab.solo`): snapshots received — what a pause stops. */
+  snapshots = 0;
   /** Z1: the room's airship fleet — its ships and their crashes (the mover
    * field holds this very slot, so the crash check sees it), each ship's HP
    * by id, and the shells in the air by id (the renderer drops each once it
@@ -337,7 +360,7 @@ export class GameSocket {
   readonly craters = new Map<number, Crater>();
   readonly spanRepairs = new Map<number, number>();
   readonly soot = new Set<number>();
-  private ws: WebSocket;
+  private ws: Link;
   /** W2: "open" → "reconnecting" on a drop → back, or "lost" for good. */
   private state: "open" | "reconnecting" | "lost" = "open";
   /** When the drop was noticed, and how many resumes have been tried. */
@@ -356,6 +379,11 @@ export class GameSocket {
   private readonly nowClock = new RenderClock();
   /** Smoothed render time: slews toward now − delay, never backward. */
   private readonly renderClock = new RenderClock();
+  /** SOLO: local ms spent paused so far, and when the current pause began
+   * (null while running) — taken out of every local time the clock sync
+   * reads, as the host takes its pauses out of server time. */
+  private pausedMs = 0;
+  private pausedAt: number | null = null;
   private frame: FrameClock = {
     frameMs: 0,
     time: null,
@@ -364,7 +392,7 @@ export class GameSocket {
   };
 
   private constructor(
-    ws: WebSocket,
+    ws: Link,
     welcome: WelcomeMsg,
     private readonly name: string,
   ) {
@@ -395,7 +423,7 @@ export class GameSocket {
       const now = performance.now();
       const stalled = now - lastCheckMs > WATCHDOG_MS * 2;
       lastCheckMs = now;
-      if (stalled || document.hidden) this.lastHeardMs = now;
+      if (stalled || document.hidden || this.paused) this.lastHeardMs = now;
       if (this.state !== "open") return;
       if (now - this.lastHeardMs > serverSilenceMs) this.dropped();
     }, WATCHDOG_MS);
@@ -428,9 +456,9 @@ export class GameSocket {
     resume?: string,
     lab = false,
     destruct = false,
-  ): Promise<{ ws: WebSocket; welcome: WelcomeMsg }> {
+  ): Promise<{ ws: Link; welcome: WelcomeMsg }> {
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(socketUrl());
+      const ws = openLink();
       let settled = false;
       const fail = (message = "Can't reach the server"): void => {
         if (settled) return;
@@ -457,7 +485,7 @@ export class GameSocket {
       );
       ws.addEventListener("error", () => fail());
       // FL1: a refused lab join (4001) says why; any other close is generic.
-      ws.addEventListener("close", (ev: CloseEvent) =>
+      ws.addEventListener("close", (ev: LinkEvent) =>
         fail(ev.code === LAB_FULL_CODE && ev.reason ? ev.reason : undefined),
       );
       ws.addEventListener(
@@ -477,7 +505,7 @@ export class GameSocket {
 
   /** Route a ws's traffic here — only while it is the CURRENT one, so a
    * replaced socket's stragglers (and its late close) are ignored. */
-  private attach(ws: WebSocket): void {
+  private attach(ws: Link): void {
     ws.addEventListener("message", (ev) => {
       if (ws !== this.ws) return;
       this.lastHeardMs = performance.now();
@@ -527,7 +555,7 @@ export class GameSocket {
       });
       return;
     }
-    let next: { ws: WebSocket; welcome: WelcomeMsg };
+    let next: { ws: Link; welcome: WelcomeMsg };
     try {
       next = await GameSocket.open(this.name, this.welcome.resumeToken);
     } catch {
@@ -580,8 +608,9 @@ export class GameSocket {
     }
     // Z1: likewise a tab built for another fleet model — its lanes and
     // hulls would not be the server's.
-    // E1: a server on another wire version (per-client snapshots, squadron
-    // rows) would be misread — reload once onto its client.
+    // E1: a server on another wire version (per-client snapshots; I1:
+    // every enemy its own entry) would be misread — reload once onto its
+    // client.
     if (staleProtocol(welcome)) {
       reloadOnce(welcome.proto as number, "ab-protocol-reload");
     }
@@ -775,6 +804,39 @@ export class GameSocket {
     return this.welcome.lab === true && this.welcome.destruct === true;
   }
 
+  /** SOLO: is this the single-player game on the local sim worker? */
+  get local(): boolean {
+    return !multiplayer();
+  }
+
+  /** SOLO: is the local game paused? */
+  get paused(): boolean {
+    return this.pausedAt !== null;
+  }
+
+  /**
+   * SOLO: pause (`true`) or resume the local game: the worker's whole
+   * simulation stops — the host clock with it — and the time it stood still
+   * comes out of this side's clock too, so neither clock sync nor the
+   * render clock sees a jump. Never in a shared room (`?mp=1`): a no-op.
+   */
+  pause(on: boolean): void {
+    if (!this.local || on === this.paused) return;
+    const now = performance.now();
+    if (on) this.pausedAt = now;
+    else {
+      this.pausedMs += now - (this.pausedAt as number);
+      this.pausedAt = null;
+      this.lastHeardMs = now;
+    }
+    pauseLocalHost(on);
+  }
+
+  /** A local timestamp (performance.now / rAF ms) less every pause. */
+  private unpaused(ms: number): number {
+    return (this.pausedAt ?? ms) - this.pausedMs;
+  }
+
   /** W2: the tab hid (`true`) or came back (`false`). */
   sendAway(on: boolean): void {
     this.send({ type: "away", on });
@@ -786,7 +848,7 @@ export class GameSocket {
    * interpolated on when each pose was TAKEN, not when a tick sampled it). */
   sendPose(pose: Pose, frameMs: number): void {
     if (!this.cadence.due(frameMs)) return;
-    if (this.ws.readyState !== WebSocket.OPEN) return;
+    if (this.ws.readyState !== LINK_OPEN) return;
     const t = this.frame.frameMs === frameMs ? this.nowClock.time : null;
     this.ws.send(
       JSON.stringify(
@@ -895,8 +957,7 @@ export class GameSocket {
   }
 
   private send(msg: object): void {
-    if (this.ws.readyState === WebSocket.OPEN)
-      this.ws.send(JSON.stringify(msg));
+    if (this.ws.readyState === LINK_OPEN) this.ws.send(JSON.stringify(msg));
   }
 
   /**
@@ -909,10 +970,13 @@ export class GameSocket {
       this.frame = { frameMs, time: null, target: null, serverNow: null };
       return this.frame;
     }
-    const serverNow = frameMs + this.clockOffset;
+    // SOLO: the clocks run on unpaused local time (the same as frameMs
+    // outside a solo pause).
+    const localMs = this.unpaused(frameMs);
+    const serverNow = localMs + this.clockOffset;
     const target = serverNow - this.interpDelayMs;
-    this.nowClock.advance(frameMs, serverNow);
-    const time = this.renderClock.advance(frameMs, target);
+    this.nowClock.advance(localMs, serverNow);
+    const time = this.renderClock.advance(localMs, target);
     this.frame = { frameMs, time, target, serverNow };
     return this.frame;
   }
@@ -945,11 +1009,12 @@ export class GameSocket {
     return this.delay.jitter;
   }
 
-  private handle(ev: MessageEvent): void {
+  private handle(ev: LinkEvent): void {
     const msg = JSON.parse(ev.data as string) as ServerMsg;
     switch (msg.type) {
       case "snapshot": {
-        const arrival = performance.now();
+        this.snapshots++;
+        const arrival = this.unpaused(performance.now());
         this.delay.observe(arrival);
         // Each sample of serverTime − now is the true offset minus that
         // packet's latency, so the LARGEST sample is the best estimate; adapt
@@ -965,11 +1030,6 @@ export class GameSocket {
           time: msg.time,
           players: msg.p.map(decodeSnapshotEntry),
         };
-        // E1: each squadron in formation, one entry per plane — the same
-        // remotes and buffers as a plane sent on its own.
-        for (const row of msg.s ?? []) {
-          if (isSquadRow(row)) expandSquadRow(row, decoded.players);
-        }
         this.events.onSnapshot?.(decoded);
         break;
       }

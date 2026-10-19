@@ -15,8 +15,22 @@
 // callsign and an empty box flies under exactly that one — and PLAY is the
 // card's only call to action. The controls primer, the Flight Lab and the
 // iPhone install hint sit behind small icons (wired here).
+//
+// SOLO: the card is the single-player start screen — title, PLAY, the
+// difficulty (EASY / NORMAL / HARD / INSANE: the enemy intensity, and with
+// it the air force's size), the graphics pick behind a gear, and the
+// controls behind `?`. The callsign box stays: the killfeed and headlines
+// name the solo pilot by it. RESTART (the pause menu) reloads straight back
+// into a fresh game at the same difficulty, past this card.
 
 import { NAME_MAX_LENGTH } from "@angels-bandits/common/constants";
+import {
+  AIR_FORCE,
+  INTENSITY_DEFAULT,
+  type Intensity,
+  asIntensity,
+} from "@angels-bandits/common/waves";
+import { QUALITY_STORAGE_KEY, parseQualitySetting } from "../render/quality";
 import { coarsePointer } from "./mobile";
 import { readStored, writeStored } from "./storage";
 
@@ -29,6 +43,8 @@ const REJOIN_KEY = "ab:rejoin";
  * it and take the live session over), so the reload comes back as the same
  * player with the same score. */
 const RESUME_KEY = "ab:resume";
+/** SOLO: the start screen's difficulty, remembered across visits. */
+const DIFFICULTY_KEY = "ab:difficulty";
 /** P3: where the bar sits while the socket connects (the stages after it
  * are main.ts's). */
 const CONNECTING_PROGRESS = 0.2;
@@ -72,6 +88,65 @@ function bindFold(id: string, cls: string): void {
     const open = form.classList.toggle(cls);
     btn.setAttribute("aria-expanded", String(open));
   });
+}
+
+/** SOLO: the difficulty the start screen shows first — the last one
+ * picked, NORMAL before any. */
+export function storedDifficulty(): Intensity {
+  const raw = readStored(DIFFICULTY_KEY);
+  return (raw === null ? null : asIntensity(Number(raw))) ?? INTENSITY_DEFAULT;
+}
+
+/**
+ * SOLO: wire the start screen — the difficulty row (remembered; its note
+ * says how many enemy planes it puts up) and the gear's graphics pick
+ * (stored where render/quality.ts reads it at boot). Returns the current
+ * pick. `multiplayer` (?mp=1) hides the difficulty: a shared room's
+ * intensity is the room's.
+ */
+export function initStartScreen(multiplayer: boolean): () => Intensity {
+  document.body.classList.toggle("mp", multiplayer);
+  let level = storedDifficulty();
+  const row = document.getElementById("join-difficulty");
+  const note = document.getElementById("join-difficulty-note");
+  const paint = (): void => {
+    for (const b of row?.querySelectorAll<HTMLButtonElement>("button") ?? []) {
+      b.setAttribute("aria-checked", String(Number(b.dataset.level) === level));
+    }
+    if (note) note.textContent = `${AIR_FORCE[level] ?? 0} ENEMY PLANES`;
+  };
+  row?.addEventListener("click", (ev) => {
+    const b = (ev.target as HTMLElement).closest<HTMLButtonElement>("button");
+    const picked = asIntensity(Number(b?.dataset.level));
+    if (picked === null) return;
+    level = picked;
+    writeStored(DIFFICULTY_KEY, String(level));
+    paint();
+  });
+  paint();
+  bindFold("join-settings-btn", "show-settings");
+  const quality = document.getElementById("join-quality");
+  const paintQuality = (): void => {
+    const q = parseQualitySetting(readStored(QUALITY_STORAGE_KEY)) ?? "auto";
+    for (const b of quality?.querySelectorAll<HTMLButtonElement>("button") ??
+      []) {
+      b.setAttribute("aria-checked", String(b.dataset.q === q));
+    }
+  };
+  quality?.addEventListener("click", (ev) => {
+    const b = (ev.target as HTMLElement).closest<HTMLButtonElement>("button");
+    if (!b?.dataset.q) return;
+    writeStored(QUALITY_STORAGE_KEY, b.dataset.q);
+    paintQuality();
+  });
+  paintQuality();
+  return () => level;
+}
+
+/** SOLO: RESTART — a fresh game: reload straight past the start screen
+ * under the same callsign, at the remembered difficulty. */
+export function restartSolo(): void {
+  rejoin();
 }
 
 /** Read-and-clear the resume token a reload left behind, if any. */

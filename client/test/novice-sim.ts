@@ -418,9 +418,23 @@ export interface Arm {
    * knife-edge lift) through main's roll control (stray roll levelled,
    * the ROLL AUTO-LEVEL setting at `rollLevel`), the instructor's
    * bank-and-pull and the corner auto-slow's bank stand-down. Absent: the
-   * pre-F10 roll model (BOT_TUNING's), exactly as main flew before F10. */
+   * pre-F10 roll model (BOT_TUNING's) on the player's physics — exactly as
+   * main flew before F10, with FC1's player physics (PRE_F10_ROLL). */
   f10?: { rollLevel: "off" | "gentle" | "strong" };
 }
+
+/** The player's model with the pre-F10 roll: the arms without `f10`. When
+ * F10 wrote it this was BOT_TUNING itself; FC1 then left the bots on the
+ * constants' turn and airbrake, so only BOT_TUNING's roll is taken — each
+ * arm flies the player's physics, and F10's roll is the only difference. */
+const PRE_F10_ROLL: Readonly<FlightTuning> = {
+  ...DEFAULT_TUNING,
+  rollRate: BOT_TUNING.rollRate,
+  rollLevelRate: BOT_TUNING.rollLevelRate,
+  bankPull: BOT_TUNING.bankPull,
+  knifeLift: BOT_TUNING.knifeLift,
+  knifeSpeed: BOT_TUNING.knifeSpeed,
+};
 
 /** F10: past this |sin roll| (60°) the corner auto-slow stands down. */
 const CORNER_BANK_OUT = Math.sin(60 * DEG);
@@ -449,7 +463,7 @@ function fly(arm: Arm, route: Route, seed: number): Result {
   const histYaw = new Float64Array(delaySteps + 1);
   const histPitch = new Float64Array(delaySteps + 1);
   const f10 = arm.f10;
-  const model: Readonly<FlightTuning> = f10 ? DEFAULT_TUNING : BOT_TUNING;
+  const model: Readonly<FlightTuning> = f10 ? DEFAULT_TUNING : PRE_F10_ROLL;
   const rollCtl = createRollControl();
   const bankPull = createBankPull();
   let flight = createFlightState(route.start);

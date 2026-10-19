@@ -58,6 +58,7 @@ import {
 import { pitchRadius, turnRadius } from "./flight";
 import { POS_SCALE } from "./net";
 import type { GhostPath, Medal } from "./protocol";
+import { BOT_TUNING } from "./tuning";
 import {
   type Vec3,
   canonicalize,
@@ -82,8 +83,11 @@ export const COURSE_BOARD_SIZE = 5;
 export const COURSES_MAX = 6;
 export const COURSES_MIN = 4;
 /** The reference turn: between the full-deflection turn and pull-up radii
- * at 60 m/s — a pilot who slows down turns tighter than this. */
-export const COURSE_REF_RADIUS = (turnRadius(60) + pitchRadius(60)) / 2;
+ * at 60 m/s — a pilot who slows down turns tighter than this. On the bots'
+ * (the constants') physics: FC1's sharper player turns must not move a
+ * course every client and the server already agree on. */
+export const COURSE_REF_RADIUS =
+  (turnRadius(60, BOT_TUNING) + pitchRadius(60, BOT_TUNING)) / 2;
 /** Probe sphere and spacing for the reference-path sweep, m. */
 export const COURSE_PROBE_RADIUS = 5;
 export const COURSE_PROBE_STEP = 3;

@@ -101,6 +101,28 @@ export const FEEL_TUNING: Readonly<Record<Feel, Readonly<FeelTuning>>> = {
   sharp: { gain: SHARP_TUNING.gain, stick: 1 },
 };
 
+/**
+ * FC1 MOUSE SENSITIVITY: the mouse-aim's loop at `sens` × its gain (and its
+ * gentle re-aim slope) — instructorInput's lag follows the gain, so the
+ * damping, and the no-overshoot margin, are the same at every step. The
+ * stick's authority is the stick's own business (flight-input.ts). Returns
+ * `feel` itself at 1.
+ */
+export function scaleFeel(
+  feel: Readonly<FeelTuning>,
+  sens: number,
+): Readonly<FeelTuning> {
+  if (sens === 1 || !(sens > 0)) return feel;
+  return feel.band === undefined || feel.steer === undefined
+    ? { gain: feel.gain * sens, stick: feel.stick }
+    : {
+        gain: feel.gain * sens,
+        band: feel.band,
+        steer: feel.steer * sens,
+        stick: feel.stick,
+      };
+}
+
 // --- Tunables ---------------------------------------------------------------
 // FL1: the pilot-facing ones live in the shared FlightTuning (their defaults
 // in common/src/tuning.ts, re-exported here under their old names); the

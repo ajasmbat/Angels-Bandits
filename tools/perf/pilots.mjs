@@ -20,6 +20,12 @@
 // Only the wire's `join` / `pose` / `fire` shapes are used, all three
 // unchanged since long before 86e5982, so the same pilots fly against an
 // --ab-ref build too.
+//
+// SOLO: a page playing the LOCAL game (its own sim worker) is a room no ws
+// can reach — so, given the measuring `page`, the pilots fly INSIDE it:
+// the same joins, poses and bursts, over links into that page's host
+// (`__ab.qaLink`), on the page's timers. A pre-SOLO build (no such hook)
+// still gets them over ws on `port`.
 
 import WebSocket from "ws";
 
@@ -86,8 +92,12 @@ export async function startPilots(
   port,
   count,
   center,
-  { flight = FURBALL_FLIGHT, fire = true } = {},
+  { flight = FURBALL_FLIGHT, fire = true, page = null } = {},
 ) {
+  const local =
+    page !== null &&
+    (await page.evaluate(() => typeof window.__ab?.qaLink === "function"));
+  if (local) return startPagePilots(page, count, center, flight, fire);
   const sockets = [];
   const join = (i) =>
     new Promise((resolve, reject) => {
@@ -145,6 +155,107 @@ export async function startPilots(
       clearInterval(poseTimer);
       for (const t of fireTimers) clearInterval(t);
       for (const ws of sockets) ws.close();
+    },
+  };
+}
+
+/**
+ * SOLO: the same pilots inside `page`, joined to its local host over
+ * `__ab.qaLink()` links — pilotPose is shipped as source (it is pure: Math
+ * only), the cadences are the ones above.
+ */
+async function startPagePilots(page, count, center, flight, fire) {
+  await page.evaluate(
+    async ({ count, center, flight, fire, poseSrc, hz, every, shots, gap }) => {
+      const pose = new Function(`return (${poseSrc})`)();
+      // All at once, each posing from its own welcome: a page on a software
+      // rasteriser turns each round trip into seconds, and a pilot left
+      // waiting for the others would outlast the host's boot timeout.
+      const links = [];
+      const live = new Set();
+      const t0 = performance.now();
+      let seq = 0;
+      const timers = [
+        setInterval(() => {
+          const t = (performance.now() - t0) / 1000;
+          links.forEach((l, i) => {
+            if (!live.has(l)) return;
+            l.send(
+              JSON.stringify({
+                type: "pose",
+                pose: pose(i, t, center, flight),
+              }),
+            );
+          });
+        }, 1000 / hz),
+      ];
+      const join = (i) =>
+        new Promise((resolve, reject) => {
+          const link = window.__ab.qaLink();
+          links[i] = link;
+          const timer = setTimeout(
+            () => reject(new Error(`pilot ${i} never got a welcome`)),
+            60_000,
+          );
+          link.addEventListener("open", () =>
+            link.send(JSON.stringify({ type: "join", name: `FURBALL${i}` })),
+          );
+          link.addEventListener("close", () => {
+            clearTimeout(timer);
+            reject(new Error(`pilot ${i} was dropped before its welcome`));
+          });
+          link.addEventListener(
+            "message",
+            (ev) => {
+              if (JSON.parse(ev.data).type !== "welcome") return;
+              clearTimeout(timer);
+              live.add(link);
+              resolve();
+            },
+            { once: true },
+          );
+        });
+      window.__abPilots = {
+        stop() {
+          for (const t of timers) clearInterval(t);
+          for (const l of links) l?.close();
+        },
+      };
+      await Promise.all(Array.from({ length: count }, (_, i) => join(i)));
+      if (fire) {
+        links.forEach((l, i) =>
+          timers.push(
+            setInterval(
+              () => {
+                for (let k = 0; k < shots; k++) {
+                  setTimeout(
+                    () => l.send(JSON.stringify({ type: "fire", seq: ++seq })),
+                    k * gap,
+                  );
+                }
+              },
+              every + (i % 3) * 170,
+            ),
+          ),
+        );
+      }
+    },
+    {
+      count,
+      center,
+      flight,
+      fire,
+      poseSrc: pilotPose.toString(),
+      hz: POSE_HZ,
+      every: FIRE_EVERY_MS,
+      shots: FIRE_SHOTS,
+      gap: FIRE_GAP_MS,
+    },
+  );
+  return {
+    count,
+    stop() {
+      page.evaluate(() => window.__abPilots?.stop()).catch(() => {});
     },
   };
 }

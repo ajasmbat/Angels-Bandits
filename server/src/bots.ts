@@ -268,12 +268,12 @@ import {
   pointInHazard,
 } from "@angels-bandits/common/hazards";
 import { inHoleSpan } from "@angels-bandits/common/medals";
+import { RooflineGrid, craneColumns } from "@angels-bandits/common/pilots";
 import type {
   Pose,
   RosterEntry,
   SpawnState,
 } from "@angels-bandits/common/protocol";
-import { RooflineGrid, craneColumns } from "@angels-bandits/common/squadron";
 import { BOMB_FALL_MS } from "@angels-bandits/common/strike";
 import { BOT_TUNING } from "@angels-bandits/common/tuning";
 import type { WaveGrade } from "@angels-bandits/common/waves";
@@ -883,12 +883,12 @@ interface Bot {
   fireRand: () => number;
   /** W2: the bomb run it is flying (startRun), or null. */
   run: BombRun | null;
-  /** E1: a squadron plane — flown by its squadron (server/src/squadrons.ts,
-   * setSquadFlight), skipped by the brain and the physics step; false for
+  /** I1: an air-force plane flown by its pilot (server/src/pilots.ts,
+   * setPilotFlight), skipped by the brain and the physics step; false for
    * an ace. */
-  squad: boolean;
-  /** E1: a squadron plane's wire pose, as its squadron last set it. */
-  squadPose: Pose | null;
+  pilot: boolean;
+  /** I1: a piloted plane's wire pose, as its pilot last set it. */
+  pilotPose: Pose | null;
 }
 
 /** A bot with no wave: B3's own aim, reaction and every shot taken. */
@@ -1130,8 +1130,8 @@ export class RoomBots {
       grade: NEUTRAL_GRADE,
       fireRand: mulberry32((botSeed ^ 0x51f1e5) >>> 0),
       run: null,
-      squad: false,
-      squadPose: null,
+      pilot: false,
+      pilotPose: null,
     });
     return entry;
   }
@@ -1255,7 +1255,7 @@ export class RoomBots {
   poseOf(id: string): Pose | null {
     const bot = this.bots.get(id);
     if (!bot || !bot.alive) return null;
-    if (bot.squad && bot.squadPose) return bot.squadPose;
+    if (bot.pilot && bot.pilotPose) return bot.pilotPose;
     const { pos, yaw, pitch, roll, speed } = bot.flight;
     const cy = Math.cos(yaw / 2);
     const sy = Math.sin(yaw / 2);
@@ -1338,8 +1338,8 @@ export class RoomBots {
     bot.flight = this.flightFromSpawn(spawn);
     bot.flight.pitch = launch?.pitch ?? 0;
     bot.carrierUntil = launch?.until ?? Number.NEGATIVE_INFINITY;
-    bot.squad = false;
-    bot.squadPose = null;
+    bot.pilot = false;
+    bot.pilotPose = null;
     this.resetBrain(bot, streetGrace(spawn));
   }
 
@@ -1376,16 +1376,16 @@ export class RoomBots {
     this.pincerPrev.delete(bot.entry.id);
   }
 
-  // --- E1 the squadron seam ---
+  // --- I1 the pilot seam ---
   //
-  // A squadron plane is an ordinary bot (roster, Combat, rounds, poseOf,
-  // contactOf all as before) whose flight its squadron writes every tick;
-  // the brain and the physics step skip it. promote() hands it to the brain
-  // where it flies; setSquadFlight() takes it back (demote) — the squadron
-  // only does that out of everyone's sight (common/src/squadron.ts).
+  // An air-force plane is an ordinary bot (roster, Combat, rounds, poseOf,
+  // contactOf all as before) whose flight its pilot writes every tick; the
+  // brain and the physics step skip it. promote() hands it to the brain
+  // where it flies; setPilotFlight() takes it back (demote) — the pilot
+  // only does that out of everyone's sight (common/src/pilots.ts).
 
-  /** E1: the roofline grid the room's squadrons fly over — this city at
-   * its intact heights and the cranes' sweeps — built once. */
+  /** E1: the roofline grid the room's pilots fly over — this city at its
+   * intact heights and the cranes' sweeps — built once. */
   roofline(): RooflineGrid {
     this.roof ??= RooflineGrid.build(
       this.buildings,
@@ -1396,19 +1396,19 @@ export class RoomBots {
 
   private roof: RooflineGrid | null = null;
 
-  /** E1: is `id` flown by its squadron (not the brain)? */
-  isSquad(id: string): boolean {
-    return this.bots.get(id)?.squad ?? false;
+  /** I1: is `id` flown by its pilot (not the brain)? */
+  isPilot(id: string): boolean {
+    return this.bots.get(id)?.pilot ?? false;
   }
 
-  /** E1: put a living squadron plane at `flight` / `pose` (one tick of its
-   * squadron, or the demote that hands an ace back): alive, flown by the
-   * squadron from now on. `flight` is kept as given (no copy). */
-  setSquadFlight(id: string, flight: FlightState, pose: Pose): void {
+  /** I1: put a living air-force plane at `flight` / `pose` (one tick of its
+   * pilot, or the demote that hands an ace back): alive, flown by the pilot
+   * from now on. `flight` is kept as given (no copy). */
+  setPilotFlight(id: string, flight: FlightState, pose: Pose): void {
     const bot = this.bots.get(id);
     if (!bot) return;
-    if (!bot.squad) {
-      bot.squad = true;
+    if (!bot.pilot) {
+      bot.pilot = true;
       bot.thread = null;
       bot.tunnel = null;
       bot.maneuver = null;
@@ -1418,27 +1418,27 @@ export class RoomBots {
     }
     bot.alive = true;
     bot.flight = flight;
-    bot.squadPose = pose;
+    bot.pilotPose = pose;
   }
 
-  /** E1: a squadron plane becomes an ace: the brain takes it over from the
-   * flight it is in (its slot's, already level-and-stable), with a fresh
-   * mind and no carrier or street grace. */
+  /** I1: a piloted plane becomes an ace: the brain takes it over from the
+   * flight its pilot had it in, with a fresh mind and no carrier or street
+   * grace. */
   promote(id: string): void {
     const bot = this.bots.get(id);
-    if (!bot?.squad) return;
-    bot.squad = false;
-    bot.squadPose = null;
+    if (!bot?.pilot) return;
+    bot.pilot = false;
+    bot.pilotPose = null;
     bot.flight = { ...bot.flight, pos: { ...bot.flight.pos } };
     bot.carrierUntil = Number.NEGATIVE_INFINITY;
     this.resetBrain(bot, Number.NEGATIVE_INFINITY);
   }
 
-  /** E1: a squadron plane's trigger pull at `targetId` along its nose (the
-   * squadron checked the cone) — routed exactly like a brain's shot. */
-  squadShot(id: string, targetId: string): BotShot | null {
+  /** I1: a pilot's trigger pull at `targetId` along its nose (the pilot
+   * checked the cone) — routed exactly like a brain's shot. */
+  pilotShot(id: string, targetId: string): BotShot | null {
     const bot = this.bots.get(id);
-    if (!bot?.alive || !bot.squad) return null;
+    if (!bot?.alive || !bot.pilot) return null;
     return {
       botId: id,
       targetId,
@@ -1775,8 +1775,8 @@ export class RoomBots {
     this.beginTick(now, contacts);
 
     for (const bot of this.bots.values()) {
-      // E1: a squadron plane is flown by its squadron, not here.
-      if (!bot.alive || bot.squad) continue;
+      // I1: an air-force plane is flown by its pilot, not here.
+      if (!bot.alive || bot.pilot) continue;
       // B3: a committed loop / roll flies its own stick (its rollout already
       // flew this exact path clear), then the level tail the rollout also
       // checked (held like a dodge, below), before the brain takes over.

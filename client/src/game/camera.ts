@@ -177,7 +177,7 @@ export class ChaseCamera {
   ): { eye: Vec3; at: Vec3; up: Vec3 } {
     if (!this.dir) this.snapTo(state);
     const fwd = flightForward(state);
-    const up = this.upV;
+    const up = this.steadyUp(zoom);
     const chase = this.offset();
     const eye = zoom !== 0 ? zoomOffset(chase, fwd, zoom, up) : chase;
     const at = leadLookAt(
@@ -197,6 +197,22 @@ export class ChaseCamera {
       },
       up,
     };
+  }
+
+  /** FC1: the view's up under the aim zoom — the chase up eased toward
+   * world-up by the tuning's zoomSteady, so a rolling camera (F10 FOLLOW)
+   * holds the sight picture steadier. The chase's own up itself, untouched,
+   * at z=0 (and in LEVEL, where it already is world-up upright). The render
+   * and aimFrame both read it: the cursor ray stays the one on screen. */
+  private steadyUp(zoom: number): Vec3 {
+    const u = this.upV;
+    const k = zoom * tuning.zoomSteady;
+    if (k <= 0) return u;
+    const x = u.x * (1 - k);
+    const y = u.y * (1 - k) + k;
+    const z = u.z * (1 - k);
+    const l = Math.hypot(x, y, z);
+    return l > 1e-6 ? { x: x / l, y: y / l, z: z / l } : u;
   }
 
   /** The chase eye's offset from the plane. */
@@ -243,14 +259,14 @@ export class ChaseCamera {
     const uz = u.z + (upWant.z - u.z) * ub;
     const ul = Math.hypot(ux, uy, uz);
     this.upV = ul > 1e-6 ? { x: ux / ul, y: uy / ul, z: uz / ul } : upWant;
-    const up = this.upV;
+    const chaseUp = this.upV;
     const blend = 1 - Math.exp(-tuning.cameraResponse * dt);
     if (tuning.cameraRoll <= 0) {
       // F10 LEVEL: heading/elevation about world-up, off the zenith.
       this.dir = this.levelDir(state, this.dir as Vec3, blend, dt);
     } else {
       this.holdHeading = null;
-      const want = chaseDir(fwd, up);
+      const want = chaseDir(fwd, chaseUp);
       const d = this.dir as Vec3;
       const mixed = {
         x: d.x + (want.x - d.x) * blend,
@@ -272,6 +288,9 @@ export class ChaseCamera {
     // itself stays un-orbited, so releasing E always eases back to the exact
     // chase framing and the orbit never feeds back into the smoothing.
     const aim = { x: state.pos.x, y: state.pos.y, z: state.pos.z };
+    // FC1: the displayed view's up (steadied under the zoom); the chase
+    // state above never sees it.
+    const up = this.steadyUp(zoom);
     let view = this.pos;
     // Aim zoom (ANGE-G9CPCV) dollies the DISPLAYED eye in toward the nose and
     // swings the look-at out along the gun line. Like the orbit and the shake

@@ -12,6 +12,9 @@
 // P3: it is also the pause menu. A shared room never pauses — the autopilot
 // flies the plane while it is up (main.ts), which the header says — and
 // RESUME (or Esc, or ✕) puts the controls back.
+// SOLO: the single-player game DOES pause while it is up (the sim worker
+// stops; `hooks.solo`): the header says PAUSED, and RESTART starts a fresh
+// game at the same difficulty.
 
 import { AIR_FORCE, INTENSITY_NAMES } from "@angels-bandits/common/waves";
 import { FEELS, type Feel } from "../game/effortless";
@@ -26,6 +29,7 @@ import {
 import { coarsePointer } from "./mobile";
 import {
   type CameraRoll,
+  MOUSE_SENS_STEPS,
   type PanelEnv,
   type PanelEvent,
   STICK_SENS_STEPS,
@@ -86,6 +90,13 @@ export interface SettingsHooks {
   /** W4: the desktop stick SENSITIVITY and the FLIGHT DATA line. */
   setStickSens: (v: number) => void;
   setFlightData: (on: boolean) => void;
+  /** FC1: MOUSE SENSITIVITY, INVERT Y and COLLISION ASSIST — applied live. */
+  setMouseSens: (v: number) => void;
+  setInvertY: (on: boolean) => void;
+  setCollisionAssist: (on: boolean) => void;
+  /** SOLO: present in the single-player game — the panel is a real pause,
+   * and RESTART calls this. */
+  solo?: { restart: () => void };
 }
 
 /** The Settings values a range slider drives. */
@@ -135,6 +146,7 @@ const MARKUP = `
     <div class="settings-title">
       <h2 id="settings-h">MENU</h2>
       <span class="settings-autopilot">AUTOPILOT FLYING</span>
+      <span class="settings-paused">PAUSED</span>
     </div>
     <button type="button" class="settings-close" aria-label="Close settings" tabindex="-1">✕</button>
   </header>
@@ -207,6 +219,21 @@ const MARKUP = `
           STICK_SENS_STEPS.map((s) => [String(s), `${s}×`]),
         )}
       </div>
+      <div class="row" data-row="mouseSens">
+        <span>MOUSE SENSITIVITY</span>
+        ${seg(
+          "mouseSens",
+          "Mouse sensitivity",
+          MOUSE_SENS_STEPS.map((s) => [String(s), `${s}×`]),
+        )}
+      </div>
+      <div class="row" data-row="invertY">
+        <span>INVERT Y</span>
+        ${seg("invertY", "Invert Y", [
+          ["on", "ON"],
+          ["off", "OFF"],
+        ])}
+      </div>
       <p class="note" data-row="keysHint">ARROWS STEER · ENTER FIRES · SPACE BOOSTS</p>
     </section>
     <section>
@@ -272,6 +299,13 @@ const MARKUP = `
           ])}
         </div>
         <div class="row">
+          <span>COLLISION ASSIST</span>
+          ${seg("collisionAssist", "Collision assist", [
+            ["on", "ON"],
+            ["off", "OFF"],
+          ])}
+        </div>
+        <div class="row">
           <span>FEEL</span>
           ${seg(
             "feel",
@@ -319,7 +353,8 @@ const MARKUP = `
   </details>
   <footer class="settings-foot">
     <span class="hint">ESC TO RESUME</span>
-    <button type="button" class="settings-resume" tabindex="-1">RESUME</button>
+    <button type="button" class="settings-restart" id="pause-restart" tabindex="-1">RESTART</button>
+    <button type="button" class="settings-resume" id="pause-resume" tabindex="-1">RESUME</button>
   </footer>
   <footer class="settings-rotate"><span>ROTATE TO LANDSCAPE TO FLY ↻</span></footer>
 </div>`;
@@ -373,6 +408,12 @@ export class SettingsPanel {
       this.event("toggle");
     });
     this.sync();
+  }
+
+  /** SOLO: open the menu — the pause — when the game loses the player
+   * (the window lost focus, the tab hid). Never closes it. */
+  openMenu(): void {
+    if (!this.open) this.event("open");
   }
 
   /** Whether the panel is up (the autopilot's switch). */
@@ -433,6 +474,8 @@ export class SettingsPanel {
     this.built = true;
     const phone = this.root.querySelector(".phone");
     this.root.innerHTML = MARKUP;
+    // SOLO: the pause menu's own header and RESTART (styles key off it).
+    this.root.classList.toggle("solo", this.hooks.solo !== undefined);
     this.root.setAttribute("aria-live", "off");
     if (phone) this.root.querySelector(".settings-rotate")?.prepend(phone);
     swallowMouse(this.root);
@@ -446,6 +489,10 @@ export class SettingsPanel {
       const t = e.target as HTMLElement;
       if (t.closest(".settings-close, .settings-resume")) {
         this.event("close");
+        return;
+      }
+      if (t.closest(".settings-restart")) {
+        this.hooks.solo?.restart();
         return;
       }
       const btn = t.closest<HTMLButtonElement>(".seg button");
@@ -493,6 +540,21 @@ export class SettingsPanel {
       this.values = clampSettings({ ...this.values, stickSens: Number(v) });
       saveSettings(this.store, this.values);
       h.setStickSens(this.values.stickSens);
+    } else if (group === "mouseSens") {
+      this.values = clampSettings({ ...this.values, mouseSens: Number(v) });
+      saveSettings(this.store, this.values);
+      h.setMouseSens(this.values.mouseSens);
+    } else if (group === "invertY") {
+      this.values = clampSettings({ ...this.values, invertY: v === "on" });
+      saveSettings(this.store, this.values);
+      h.setInvertY(this.values.invertY);
+    } else if (group === "collisionAssist") {
+      this.values = clampSettings({
+        ...this.values,
+        collisionAssist: v === "on",
+      });
+      saveSettings(this.store, this.values);
+      h.setCollisionAssist(this.values.collisionAssist);
     } else if (group === "flightData") {
       this.values = clampSettings({ ...this.values, flightData: v === "on" });
       saveSettings(this.store, this.values);
@@ -588,6 +650,9 @@ export class SettingsPanel {
       intensity: String(h.intensity()),
       easy: h.easy() ? "on" : "off",
       stickSens: String(this.values.stickSens),
+      mouseSens: String(this.values.mouseSens),
+      invertY: this.values.invertY ? "on" : "off",
+      collisionAssist: this.values.collisionAssist ? "on" : "off",
       flightData: this.values.flightData ? "on" : "off",
       sensitivity: String(sens),
       aimMode: aim,
@@ -630,7 +695,16 @@ export class SettingsPanel {
     const stickRow = this.root.querySelector<HTMLElement>(
       "[data-row=stickSens]",
     );
-    if (stickRow) stickRow.hidden = touch || aim === "instructor";
+    // W4/FC1: the arrows' sensitivity with the keyboard, the mouse's with
+    // either mouse scheme, INVERT Y wherever a stick flies.
+    if (stickRow) stickRow.hidden = touch || aim !== "keys";
+    const mouseRow = this.root.querySelector<HTMLElement>(
+      "[data-row=mouseSens]",
+    );
+    if (mouseRow) mouseRow.hidden = touch || aim === "keys";
+    const invertRow =
+      this.root.querySelector<HTMLElement>("[data-row=invertY]");
+    if (invertRow) invertRow.hidden = aim === "instructor";
     const keysHint = this.root.querySelector<HTMLElement>(
       "[data-row=keysHint]",
     );

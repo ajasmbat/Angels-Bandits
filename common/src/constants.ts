@@ -71,7 +71,7 @@ export const BUILDING_MIN_HEIGHT = 20;
 export const BUILDING_MAX_HEIGHT = 650;
 /** T1: the tallest generated lot OUTSIDE the cores — the top of the mid
  * ring's and the edge's band tables (HEIGHT_BANDS_MID / _EDGE). Everything
- * that flies over the roofline (the squadrons' cruise band, the respawn
+ * that flies over the roofline (the pilots' cruise band, the respawn
  * layer, the rooftop lanes, the blimp, the news heli) clears THIS and the
  * roof structures on it; the cores' supertalls and the landmarks rise
  * through all of it and are vetoed or steered round like spires. */
@@ -137,9 +137,9 @@ export const LOT_INTERIOR_INSET_MAX = 4;
  *    so no district is open sky.
  *
  * T1: MID and EDGE top out at SKYLINE_RING_MAX_HEIGHT, under the
- * squadrons' cruise cap (common/src/squadron.ts SQUAD_CRUISE_CAP): the
- * formations fly over the ring's roofs and steer round the cores and the
- * landmarks, as they always steered round the spires.
+ * pilots' cruise cap (common/src/pilots.ts PILOT_CRUISE_CAP, derived from
+ * it): the air force flies over the ring's roofs and steers round the
+ * cores and the landmarks, as it always steered round the spires.
  */
 export const HEIGHT_BANDS_CORE: ReadonlyArray<
   readonly [number, number, number]

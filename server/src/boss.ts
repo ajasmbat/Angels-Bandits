@@ -95,6 +95,7 @@ import {
   BLOCK_PITCH,
   INTERP_DELAY_MAX_MS,
   POSE_AGE_MAX_MS,
+  WORLD_SIZE,
 } from "@angels-bandits/common/constants";
 import {
   BREAK_LEAD_MS,
@@ -196,8 +197,14 @@ export const BOSS_CLAIM_LOOKBACK_MS =
  * on-record nose at the shot, rad: the pose behind it is up to
  * POSE_AGE_MAX_MS old, and a plane turns while the claim is in flight. */
 export const BOSS_DIR_CONE = 0.5;
-/** A launch comes from a ship this near (plan view) some human, m. */
-export const LAUNCH_NEAR_M = 900;
+/** A launch comes from a ship this near (plan view) some human, m. T1:
+ * the whole torus (its half diagonal) — the ships are still tried nearest
+ * first. The cores' supertalls leave a pilot no clear release among them
+ * (pilots.ts departClear), so the air force's rigs are the carriers on the
+ * edge's rooftop lines and the threads where they leave the cores, and the
+ * far ones must count wherever the humans are (900 m left the middle of
+ * the city a third of its planes short). */
+export const LAUNCH_NEAR_M = Math.ceil(WORLD_SIZE / Math.SQRT2);
 
 interface Turret {
   /** Index into BOSS_TURRETS. */

@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@angels-bandits/common": "*",
+    "@dimforge/rapier3d-compat": "0.19.3",
     "tsx": "^4.19.0",
     "ws": "^8.18.0"
   },

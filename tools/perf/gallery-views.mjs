@@ -773,6 +773,30 @@ export const VIEWS = [
       spread: 0.45,
     },
   },
+  // DS2: the rooms behind a shot-out facade, up close — the same chewing
+  // as destruction-chewed, framed from 25 m across the street at the
+  // broken floors: ceiling grids and light panels, desks and cabinets in
+  // silhouette, torn cables hanging, fire on some floors, cracks running
+  // out across the facade from the hits.
+  {
+    name: "interior-exposed",
+    timeMs: D11_MS,
+    sky: "dusk",
+    x: 600,
+    z: 300,
+    y: 300,
+    yaw: 0,
+    eye: [597, 50, 428],
+    at: [621, 56, 447],
+    fov: 70,
+    weather: "clear",
+    chew: {
+      eye: [598, 34, 440],
+      at: [620, 58, 445.5],
+      rounds: 700,
+      spread: 0.45,
+    },
+  },
   {
     name: "destruction-closeup",
     x: 1990,

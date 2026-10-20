@@ -53,6 +53,7 @@ import {
 } from "@angels-bandits/common/constants";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { patchDeposit } from "./dust-deposit";
 import { emissiveBoost } from "./emissive";
 import { uploadPrefix } from "./wrapPlacement";
 
@@ -169,6 +170,8 @@ export class PropsRenderer {
           "#include <emissivemap_fragment>",
           "#include <emissivemap_fragment>\ntotalEmissiveRadiance += diffuseColor.rgb * vGlow;",
         );
+      // DS2: a collapse's settled dust lies on the parked cars and props.
+      patchDeposit(shader);
     };
     this.mesh = new THREE.InstancedMesh(geometry, material, PROPS_INSTANCES);
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);

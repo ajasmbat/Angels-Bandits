@@ -62,6 +62,7 @@ import { destructLook } from "./destruct-look";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { RENDER_ORDER } from "./render-order";
 import { DUSK, LIGHT_RIG } from "./sky";
+import { SURGE_ALONG_M, SURGE_SCALE_H_M, surgeAlong } from "./surge";
 import { pushUpdateRange } from "./update-range";
 
 /** Puffs per cloud at full quality (D11: 72 → 144, for the curtain and
@@ -138,8 +139,11 @@ const CURTAIN_HOT_MS = 2200;
  * rolls past where it meets it, m (most of a block each way); how high it
  * hugs the ground, m; and how fast it lifts once it has slowed, m/s. */
 const SURGE_TAU_S = 2.4;
-export const SURGE_ALONG_M = 0.8 * BLOCK_PITCH;
+export { SURGE_ALONG_M, surgeAlong };
 export const SURGE_TOP_M = 14;
+/** DS2: a big collapse's surge puffs are bigger (√ of surge.ts's scale,
+ * capped). */
+const SURGE_PUFF_MAX = 1.2;
 const SURGE_LIFT = 0.45;
 /** A squib: how far it jets, m, its e-folding time, s, and its life, ms. */
 const SQUIB_REACH_M = 22;
@@ -516,8 +520,7 @@ function surgeOf(c: Collapse, cloud: Cloud, k: number, out: DustPuff): boolean {
   // …then along the street, one way, most of a block.
   const turn = (cloud.seeds[k * HASHES + 4] as number) < 0.5 ? -1 : 1;
   const along =
-    SURGE_ALONG_M *
-    destructLook.dustRollOut *
+    surgeAlong(cloud.height) *
     (0.35 + 0.65 * (cloud.seeds[k * HASHES + 5] as number));
   const run = (out1 + along) * (1 - Math.exp(-s / SURGE_TAU_S));
   const lane =
@@ -537,7 +540,11 @@ function surgeOf(c: Collapse, cloud: Cloud, k: number, out: DustPuff): boolean {
   const grow = Math.min(1, s / 6);
   out.size =
     (PUFF_SIZE_MIN * 0.8 + (PUFF_SIZE_MAX - PUFF_SIZE_MIN * 0.8) * grow) *
-    (0.6 + 0.4 * (cloud.seeds[k * HASHES + 7] as number));
+    (0.6 + 0.4 * (cloud.seeds[k * HASHES + 7] as number)) *
+    Math.min(
+      SURGE_PUFF_MAX,
+      Math.sqrt(Math.max(1, cloud.height / SURGE_SCALE_H_M)),
+    );
   // Ground-hugging; slowly lifting once it has slowed. Never so low that
   // the ground cuts more than the sprite's soft rim.
   const lift = SURGE_LIFT * Math.max(0, s - 3);
@@ -737,7 +744,7 @@ function surgeHaze(c: Collapse, cloud: Cloud, cam: Vec3, tMs: number): number {
     const street =
       streetAhead((alongX ? c.x : c.z) + face, sign) - (alongX ? c.x : c.z);
     const out1 = Math.abs(street - face);
-    const run = (out1 + SURGE_ALONG_M * destructLook.dustRollOut) * reach;
+    const run = (out1 + surgeAlong(cloud.height)) * reach;
     const u = alongX ? x : z; // the fall-out axis
     const v = alongX ? z : x;
     const lo = alongX ? cloud.fz0 : cloud.fx0;

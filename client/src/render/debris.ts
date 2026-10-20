@@ -5,21 +5,31 @@
 // facade it fell from); this module is the pure, tested seam between the two.
 //
 // D10: the mesh's shape. A piece is still the oriented box it collides as,
-// but it is DRAWN as a broken one inside that box: the fracture geometry
-// below is the unit box subdivided, every vertex carrying a chip depth in
-// metres (uv.x) that the debris material pushes it inward by — per boundary
-// axis, scaled by a per-piece hash and clamped to FRACTURE_MAX_SHARE of the
-// piece's half extent on that axis — so corners are knocked off and edges
-// are torn on a 20 m slab and a 1.2 m column alike, and nothing ever pokes
-// out of the box (drawn ⊆ collided). Rebar ribbons (uv.y 1–4) span each
-// chipped edge midpoint, from the broken concrete out to where the edge was,
-// painted as steel. `fractureInset` is the shader's displacement in JS — the
-// tests hold the GLSL to it.
+// but it is DRAWN as a broken one inside that box. DS2: the shape is one of
+// the fracture library's baked cells (fracture-library.ts) — a Voronoi-style
+// convex polytope inside the unit box, per material class (concrete slab,
+// masonry, glass, steel) and variant — read by the vertex shader from the
+// library texture by gl_VertexID, rotated onto the piece's own thin (or, for
+// steel, long) axis. Every cell lies inside the box, so nothing ever pokes
+// out of it (drawn ⊆ collided); rebar ribbons run from inside the torn
+// concrete out into the space the break opened, a metric REBAR_HALF wide,
+// and a steel member is thinned, twisted and bowed inside its box.
+// `libraryVertex` is the shader's vertex in JS — the tests hold the GLSL to
+// it.
 
-import { mulberry32 } from "@angels-bandits/common/city";
 import type { PiecePose } from "@angels-bandits/common/city/collapse";
 import * as THREE from "three";
 import { KIND_STRIDE } from "./broken-shading";
+import {
+  FRACTURE_VARIANTS,
+  FracClass,
+  INTACT_ROW,
+  LIB_VERTS,
+  ROW_TEXELS,
+  intactCell,
+  libraryIndices,
+  libraryTexels,
+} from "./fracture-library";
 
 const AXIS_X = new THREE.Vector3(1, 0, 0);
 const AXIS_Z = new THREE.Vector3(0, 0, 1);
@@ -122,143 +132,275 @@ function quatMatrix(
   return out;
 }
 
-// --- D10 fracture geometry ----------------------------------------------------
+// --- DS2 fracture geometry (the library, posed) -----------------------------
 
-/** Segments per axis of the subdivided unit box. */
-export const FRACTURE_SEGMENTS = 2;
-/** A vertex never moves in further than this share of the piece's half
- * extent on any axis. */
-export const FRACTURE_MAX_SHARE = 0.3;
-/** Chip depth ranges, m: a knocked-off corner, a torn edge, a face's
- * roughness. */
-export const CHIP_CORNER: readonly [number, number] = [1.0, 2.6];
-export const CHIP_EDGE: readonly [number, number] = [0.4, 1.8];
-export const CHIP_FACE: readonly [number, number] = [0, 0.25];
-/** The per-piece hash scales a chip into [FRACTURE_HASH_MIN, 1]. */
-export const FRACTURE_HASH_MIN = 0.45;
-/** D11: the share of its chips an intact piece (CUT_INTACT) keeps. */
-export const INTACT_CHIP = 0.1;
-/** Half width of a rebar ribbon, m. */
+/** Half width of a rebar ribbon, m, and the longest a bar sticks out of
+ * the break, m (a bar in a 20 m slab's unit cell would run for metres). */
 export const REBAR_HALF = 0.05;
-/** D11: the falling debris's ember (chipped concrete) and uplight colours,
- * linear — their sum stays under the bloom threshold. */
+export const REBAR_MAX_M = 1.4;
+/** DS2: once a piece rests, its cuts are filled back this far toward its
+ * box (a pile of thin crushed slabs, cut deep, is all dark slits). */
+export const REST_FILL = 0.55;
+/** A broken steel member's cross-section share of its box, its twist at
+ * the ends (rad, at most) and its bow (unit-box share, at most): the
+ * rotated, bowed section stays inside the box. */
+export const STEEL_THIN = 0.55;
+export const STEEL_TWIST = 0.6;
+export const STEEL_BOW = 0.5 - 0.5 * STEEL_THIN * Math.SQRT2;
+/** D11: the falling debris's ember (fresh-broken concrete) and uplight
+ * colours, linear — their sum stays under the bloom threshold. */
 const FRACTURE_EMBER = "vec3(0.42, 0.12, 0.025)";
 const FRACTURE_UPLIGHT = "vec3(0.16, 0.1, 0.05)";
-/** uv.y role codes: 0 the box surface; 1/2 a rebar ribbon's inner end
- * (side −/+), 3/4 its outer end (side −/+). */
-export const ROLE_SURFACE = 0;
+/** DS2: the share of falling pieces whose broken faces glow with the fire
+ * they came out of, and the glow the rest keep. */
+const FRACTURE_HOT_SHARE = "0.3";
+const FRACTURE_COOL = "0.15";
+/** CUT_STEEL (city/destruction.ts), CUT_RUBBLE and city.ts CUT_INTACT. */
+const STEEL_BIT = 128;
+const RUBBLE_BIT = 64;
+const INTACT_BIT = 256;
 
-/** Which axes `p` (unit box, y in [0, 1]) lies on the boundary of. */
-function boundary(
-  p: readonly [number, number, number],
-): [boolean, boolean, boolean] {
-  return [
-    Math.abs(p[0]) > 0.4999,
-    p[1] < 0.0001 || p[1] > 0.9999,
-    Math.abs(p[2]) > 0.4999,
-  ];
+/** The library's class for a piece: steel if CUT_STEEL; a plate whose thin
+ * axis is y is a floor slab (concrete); a facade plate breaks as its
+ * building's facade (archetype 0 glass, 1 masonry, 2 office concrete). */
+export function pieceClass(
+  steel: boolean,
+  thinAxis: number,
+  archetype: number,
+): FracClass {
+  if (steel) return FracClass.STEEL;
+  if (thinAxis === 1) return FracClass.CONCRETE;
+  const arch = Math.floor(archetype + 0.01);
+  return arch < 1
+    ? FracClass.GLASS
+    : arch < 2
+      ? FracClass.MASONRY
+      : FracClass.CONCRETE;
 }
 
-/** The chip depth of a surface vertex at unit position `p`, m — keyed on
- * the position (a vertex shared by several faces gets one depth, so the
- * broken box stays closed). */
-export function chipAt(p: readonly [number, number, number]): number {
-  const q = (v: number) => Math.round((v + 0.5) * 8);
-  const rand = mulberry32(
-    (Math.imul(q(p[0]) + 3, 0x9e3779b1) ^
-      Math.imul(q(p[1]) + 5, 0x85ebca6b) ^
-      Math.imul(q(p[2]) + 7, 0xc2b2ae35)) >>>
-      0,
-  );
-  const n = boundary(p).filter(Boolean).length;
-  const [lo, hi] = n >= 3 ? CHIP_CORNER : n === 2 ? CHIP_EDGE : CHIP_FACE;
-  return lo + (hi - lo) * rand();
+/** The piece's special axis: a plate's thinnest, steel's longest. */
+export function pieceAxis(
+  size: readonly [number, number, number],
+  steel: boolean,
+): number {
+  const [x, y, z] = size;
+  if (steel) return x >= y && x >= z ? 0 : y >= z ? 1 : 2;
+  return x <= y && x <= z ? 0 : y <= z ? 1 : 2;
+}
+
+/** Canonical (Y special) → the piece's axes: cyclic, so windings hold. */
+export function permute(
+  c: readonly [number, number, number],
+  axis: number,
+): [number, number, number] {
+  if (axis === 1) return [c[0], c[1], c[2]];
+  if (axis === 0) return [c[1], c[2], c[0]];
+  return [c[2], c[0], c[1]];
+}
+
+/** A resting piece's cell vertex filled back toward the box: REST_FILL of
+ * the way to where the ray from the centre leaves the box. Inside the box
+ * (a mix of two points inside it). */
+export function restFill(
+  c: readonly [number, number, number],
+): [number, number, number] {
+  const m = Math.max(Math.abs(c[0]), Math.abs(c[1]), Math.abs(c[2]), 1e-6);
+  const k = 1 + REST_FILL * (0.5 / m - 1);
+  return [c[0] * k, c[1] * k, c[2] * k];
+}
+
+/** The steel's twist-and-bow of canonical point `c` (the shader's, in JS):
+ * the section thinned to STEEL_THIN, turned by up to ±STEEL_TWIST from end
+ * to end, bowed by up to STEEL_BOW in the middle. `h2`, `h3` in [0, 1). */
+export function steelBend(
+  c: readonly [number, number, number],
+  h2: number,
+  h3: number,
+): [number, number, number] {
+  const t = c[1] + 0.5;
+  const th = (h2 - 0.5) * 2 * STEEL_TWIST * (2 * t - 1);
+  const x = c[0] * STEEL_THIN;
+  const z = c[2] * STEEL_THIN;
+  const cs = Math.cos(th);
+  const sn = Math.sin(th);
+  const bow = STEEL_BOW * (2 * h3 - 1) * 4 * t * (1 - t);
+  return [cs * x - sn * z + bow, c[1], sn * x + cs * z];
 }
 
 /**
- * The shader's displacement in JS: unit-box vertex `p` with chip `chip`
- * (m) and role `role` on a piece of size `size` (m) whose per-piece hash
- * is `h01`, as a displaced unit position. Inward along each boundary axis
- * by min(chip · (MIN + (1 − MIN)·h01), MAX_SHARE · half) metres; a rebar
- * end also steps REBAR_HALF along its edge, and its outer end stays put.
+ * The shader's vertex in JS: vertex `v` of library row `row` (texels from
+ * libraryTexels) on a piece of size `size` (m) whose special axis is
+ * `axis`, as a unit-box position (y in [0, 1]). `steel` applies the bend.
  */
-export function fractureInset(
-  p: readonly [number, number, number],
-  chip: number,
-  role: number,
+export function libraryVertex(
+  texels: Float32Array,
+  row: number,
+  v: number,
   size: readonly [number, number, number],
-  h01: number,
-  intact = false,
+  axis: number,
+  steel: { h2: number; h3: number } | null,
+  rest = false,
+  barLen = 1,
 ): [number, number, number] {
-  const c = [p[0], p[1] - 0.5, p[2]];
-  const b = boundary(p);
-  const out: [number, number, number] = [p[0], p[1], p[2]];
-  const depth =
-    chip *
-    (FRACTURE_HASH_MIN + (1 - FRACTURE_HASH_MIN) * h01) *
-    (intact ? INTACT_CHIP : 1);
-  const outer = role > 2.5;
-  for (let a = 0; a < 3; a++) {
-    const s = Math.max(size[a] as number, 1e-4);
-    if (b[a] && !outer) {
-      const d = Math.min(depth, FRACTURE_MAX_SHARE * 0.5 * s);
-      out[a] = (out[a] as number) - (Math.sign(c[a] as number) * d) / s;
-    }
-    if (role > 0.5 && !b[a]) {
-      const side = role === 2 || role === 4 ? 1 : -1;
-      out[a] = (out[a] as number) + (side * REBAR_HALF) / s;
-    }
+  const at = (r: number) => ((row * ROW_TEXELS + r) * LIB_VERTS + v) * 4;
+  let c: [number, number, number] = [
+    texels[at(0)] as number,
+    texels[at(0) + 1] as number,
+    texels[at(0) + 2] as number,
+  ];
+  if ((texels[at(3) + 3] as number) > 0.5) {
+    // A bar's outer end, held to REBAR_MAX_M (× barLen in [0.5, 1]).
+    const a = [texels[at(3)], texels[at(3) + 1], texels[at(3) + 2]] as [
+      number,
+      number,
+      number,
+    ];
+    const d = permute([c[0] - a[0], c[1] - a[1], c[2] - a[2]], axis);
+    const m = Math.hypot(d[0] * size[0], d[1] * size[1], d[2] * size[2]);
+    const k = Math.min(1, (REBAR_MAX_M * barLen) / Math.max(m, 1e-6));
+    c = [
+      a[0] + (c[0] - a[0]) * k,
+      a[1] + (c[1] - a[1]) * k,
+      a[2] + (c[2] - a[2]) * k,
+    ];
   }
-  return out;
+  if (rest && (texels[at(0) + 3] as number) < 1.5) c = restFill(c);
+  if (steel) c = steelBend(c, steel.h2, steel.h3);
+  const o = permute(
+    [
+      texels[at(2)] as number,
+      texels[at(2) + 1] as number,
+      texels[at(2) + 2] as number,
+    ],
+    axis,
+  );
+  const p = permute(c, axis);
+  return [
+    p[0] + (o[0] * REBAR_HALF) / Math.max(size[0], 1e-4),
+    p[1] + 0.5 + (o[1] * REBAR_HALF) / Math.max(size[1], 1e-4),
+    p[2] + (o[2] * REBAR_HALF) / Math.max(size[2], 1e-4),
+  ];
 }
 
-/** The debris material's vertex displacement (after VERTEX_MAIN: `sScale`,
- * `brkHalf` and three's `transformed` in scope). Bit for bit the formula of
- * fractureInset; the per-piece hash is keyed on the piece's own offset in
- * its tier frame (aSubOff.xyz — static, unique per piece) and the vertex,
- * never on the slot, so a re-layout never re-rolls a shape. */
+/** DS2: the library's vertex-stage pars — the texture, the rebar share,
+ * and `position` / `normal` redefined as the library vertex (abFrInit, the
+ * first thing main does, fills them; the facade passes read them as they
+ * read the box's). */
+export const FRACTURE_VERTEX_PARS_GLSL = /* glsl */ `
+#ifdef AB_FRACTURE
+uniform highp sampler2D uFracLib;
+uniform float uRebar;
+vec3 abFrPos;
+vec3 abFrN;
+vec3 abFrTrueN;
+float abFrOn;
+float abFrClass;
+float abFrHash;
+void abFrInit() {
+  vec3 frSize = vec3(length(instanceMatrix[0].xyz), length(instanceMatrix[1].xyz), length(instanceMatrix[2].xyz));
+  float frMask = floor(aSubOff.w + 0.5);
+  float frIntact = step(${INTACT_BIT - 0.5}, frMask);
+  frMask -= ${INTACT_BIT}.0 * frIntact;
+  float frSteel = step(${STEEL_BIT - 0.5}, frMask);
+  float frRest = mod(floor(frMask / ${RUBBLE_BIT}.0), 2.0);
+  int frAx;
+  if (frSteel > 0.5) {
+    frAx = frSize.x >= frSize.y && frSize.x >= frSize.z ? 0 : frSize.y >= frSize.z ? 1 : 2;
+  } else {
+    frAx = frSize.x <= frSize.y && frSize.x <= frSize.z ? 0 : frSize.y <= frSize.z ? 1 : 2;
+  }
+  float frArch = floor(aArchetype.x + 0.01);
+  abFrClass = frSteel > 0.5 ? ${FracClass.STEEL}.0 : frAx == 1 ? ${FracClass.CONCRETE}.0
+    : frArch < 0.5 ? ${FracClass.GLASS}.0 : frArch < 1.5 ? ${FracClass.MASONRY}.0 : ${FracClass.CONCRETE}.0;
+  // The per-piece hash: its own offset in its tier frame (static, unique
+  // per piece) and its tier — never the slot, so a re-layout never re-rolls.
+  float frH = fract(sin(dot(aSubOff.xyz + 0.37 * aParent, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+  abFrHash = frH;
+  float frH2 = fract(frH * 7.13 + 0.31);
+  float frH3 = fract(frH * 13.7 + 0.57);
+  int frRow = frIntact > 0.5 ? ${INTACT_ROW}
+    : int(abFrClass) * ${FRACTURE_VARIANTS} + int(min(floor(frH * ${FRACTURE_VARIANTS}.0), ${FRACTURE_VARIANTS - 1}.0));
+  ivec2 frTc = ivec2(gl_VertexID, frRow * ${ROW_TEXELS});
+  vec4 frT0 = texelFetch(uFracLib, frTc, 0);
+  vec4 frT1 = texelFetch(uFracLib, frTc + ivec2(0, 1), 0);
+  vec4 frT2 = texelFetch(uFracLib, frTc + ivec2(0, 2), 0);
+  vec4 frT3 = texelFetch(uFracLib, frTc + ivec2(0, 3), 0);
+  vec3 frC = frT0.xyz;
+  vec3 frN = frT1.xyz;
+  vec3 frO = frT2.xyz;
+  abFrOn = frT0.w;
+  // A bar's outer end, held to REBAR_MAX_M (its own length, 0.5–1 of it).
+  if (frT3.w > 0.5) {
+    vec3 frD = frC - frT3.xyz;
+    vec3 frDP = frAx == 1 ? frD : frAx == 0 ? frD.yzx : frD.zxy;
+    float frM = length(frDP * frSize);
+    float frLen = ${REBAR_MAX_M.toFixed(2)} * (0.5 + 0.5 * fract(frH * 3.7 + frT1.w * 0.29));
+    frC = frT3.xyz + frD * min(1.0, frLen / max(frM, 1e-6));
+  }
+  // A resting piece's cuts filled back toward its box (restFill, in JS).
+  if (frRest > 0.5 && abFrOn < 1.5) {
+    vec3 frAbs = abs(frC);
+    float frMx = max(max(frAbs.x, frAbs.y), max(frAbs.z, 1e-6));
+    frC *= 1.0 + ${REST_FILL.toFixed(2)} * (0.5 / frMx - 1.0);
+  }
+  // DL1 rebar share: a bar past it collapses to a point.
+  if (abFrOn > 1.5 && fract(frH * 5.3 + frT1.w * 0.618) >= uRebar) {
+    frC = vec3(0.0);
+    frO = vec3(0.0);
+  }
+  // Steel twists and bows (steelBend, in JS), inside its box.
+  if (abFrClass > 2.5 && frIntact < 0.5) {
+    float frT = frC.y + 0.5;
+    float frTh = (frH2 - 0.5) * ${(2 * STEEL_TWIST).toFixed(3)} * (2.0 * frT - 1.0);
+    float frCs = cos(frTh);
+    float frSn = sin(frTh);
+    vec2 frXZ = frC.xz * ${STEEL_THIN.toFixed(3)};
+    frC.xz = vec2(frCs * frXZ.x - frSn * frXZ.y, frSn * frXZ.x + frCs * frXZ.y);
+    frC.x += ${STEEL_BOW.toFixed(4)} * (2.0 * frH3 - 1.0) * 4.0 * frT * (1.0 - frT);
+    frN.xz = vec2(frCs * frN.x - frSn * frN.z, frSn * frN.x + frCs * frN.z);
+  }
+  vec3 frP = frAx == 1 ? frC : frAx == 0 ? frC.yzx : frC.zxy;
+  vec3 frPN = frAx == 1 ? frN : frAx == 0 ? frN.yzx : frN.zxy;
+  vec3 frPO = frAx == 1 ? frO : frAx == 0 ? frO.yzx : frO.zxy;
+  abFrPos = frP + vec3(0.0, 0.5, 0.0) + frPO * ${REBAR_HALF.toFixed(2)} / max(frSize, vec3(1e-4));
+  abFrTrueN = frPN;
+  // The facade passes want a box face's axis: the cut face's nearest.
+  vec3 frA = abs(frPN);
+  abFrN = frA.x >= frA.y && frA.x >= frA.z ? vec3(sign(frPN.x), 0.0, 0.0)
+    : frA.y >= frA.z ? vec3(0.0, sign(frPN.y), 0.0) : vec3(0.0, 0.0, sign(frPN.z));
+}
+#define position abFrPos
+#define normal abFrN
+#endif
+`;
+
+/** The debris material's vertex stage after VERTEX_MAIN (`brkMask`,
+ * `brkIntact`, `brkHalf`, `sScale` in scope): a cut face paints as broken
+ * concrete (kind 4: aggregate, brick or glass edge by class), rebar as
+ * steel; patterns ride the piece. */
 export const FRACTURE_VERTEX_GLSL = /* glsl */ `
 #ifdef AB_FRACTURE
 {
-  vec3 frC = position - vec3(0.0, 0.5, 0.0);
-  vec3 frB = vec3(
-    step(0.4999, abs(frC.x)),
-    max(step(position.y, 0.0001), step(0.9999, position.y)),
-    step(0.4999, abs(frC.z))
-  );
-  float frH = fract(sin(dot(aSubOff.xyz, vec3(12.9898, 78.233, 37.719)) +
-    dot(position, vec3(91.7, 23.1, 57.3))) * 43758.5453);
-  // D11: an intact piece (CUT_INTACT) keeps INTACT_CHIP of its chips.
-  float frDepth = uv.x * (${FRACTURE_HASH_MIN.toFixed(2)} + ${(1 - FRACTURE_HASH_MIN).toFixed(2)} * frH)
-    * (1.0 - ${(1 - INTACT_CHIP).toFixed(2)} * brkIntact);
-  vec3 frS = max(sScale, vec3(1e-4));
-  vec3 frD = min(vec3(frDepth), ${FRACTURE_MAX_SHARE.toFixed(2)} * 0.5 * frS);
-  float frOuter = step(2.5, uv.y);
-  transformed -= sign(frC) * frB * frD / frS * (1.0 - frOuter);
-  float frRebar = step(0.5, uv.y);
-  float frSide = (abs(uv.y - 2.0) < 0.5 || abs(uv.y - 4.0) < 0.5) ? 1.0 : -1.0;
-  transformed += (vec3(1.0) - frB) * frRebar * frSide * ${REBAR_HALF.toFixed(2)} / frS;
-  // Rebar paints as steel whatever face it leaves from.
-  if (frRebar > 0.5) vBroken.w = brkHalf.y + 3.0 * ${KIND_STRIDE};
-  // D11: the facade passes read the DISPLACED surface. A rebar ribbon's
-  // four corners share one unit-box position, so the undisplaced meters
-  // had no screen derivative: the facade's AA band collapsed to
-  // smoothstep(0, 0, x) — undefined, NaN on SwiftShader (O7's detector).
-  vMeters = transformed * sScale + aSubOff.xyz;
-  vWorldY = transformed.y * sScale.y + instanceMatrix[3].y;
-  vBWorldPos = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;
+  float frKind = floor(vBroken.w / ${KIND_STRIDE});
+  if (abFrOn > 1.5) {
+    // Rebar paints as steel whatever face it leaves from.
+    vBroken.w = brkHalf.y + 3.0 * ${KIND_STRIDE};
+  } else if (abFrOn > 0.5 && frKind < 2.5) {
+    vBroken.w = brkHalf.y + 4.0 * ${KIND_STRIDE};
+  }
   // DS1: patterns ride the piece (its tier frame, in metres) — a storey's
   // slab lines along its own storeys, however it lands or tumbles.
   vPatPos = vMeters;
   vPatY = vMeters.y;
-  // D11 lit debris: falling (no CUT_RUBBLE bit yet), the chip depth, and
-  // how far this face looks down once posed (a box face's direction under
-  // R·S is R·n — the scale only lengthens it).
+  // D11 lit debris: falling (no CUT_RUBBLE bit yet), on a cut face, and how
+  // far this face looks down once posed (R·n — the scale only lengthens it).
   vFrLit = vec3(
     (1.0 - mod(floor(brkMask / 64.0), 2.0)) * (1.0 - brkIntact),
-    uv.x,
-    max(0.0, -normalize(mat3(modelMatrix) * mat3(instanceMatrix) * normal).y)
+    // a cut face — the hot ones (a few pieces) glow fully
+    step(0.5, abFrOn) * step(abFrOn, 1.5) * mix(${FRACTURE_COOL}, 1.0, step(abFrHash, ${FRACTURE_HOT_SHARE})),
+    max(0.0, -normalize(mat3(modelMatrix) * mat3(instanceMatrix) * abFrTrueN).y)
   );
+  vFrClass = abFrClass;
 }
 #endif
 `;
@@ -266,78 +408,48 @@ export const FRACTURE_VERTEX_GLSL = /* glsl */ `
 /** D11: the fracture variant's own varyings (both stages). */
 export const FRACTURE_PARS_GLSL = /* glsl */ `
 #ifdef AB_FRACTURE
-// (falling, chip depth m, how far the face looks down)
+// (falling, on a cut face, how far the face looks down)
 varying vec3 vFrLit;
+// DS2: the library class (fracture-library.ts FracClass).
+flat varying float vFrClass;
 #endif
 `;
 
 /** D11: debris that reads at range — while a piece falls, the faces the
- * fracture exposed (its broken concrete, not its facade) glow with the fire
- * it came out of at the knocked-off corners (CHIP_CORNER) and, looking
- * down, take the street's warm glow from below. Off once it rests (the rubble is the D2 look). Both
- * under the bloom threshold (0.72). */
+ * break exposed (its broken concrete, not its facade) glow with the fire it
+ * came out of and, looking down, take the street's warm glow from below.
+ * Off once it rests (the rubble is the D2 look). Both under the bloom
+ * threshold (0.72). */
 export const FRACTURE_EMISSIVE_GLSL = /* glsl */ `
 #ifdef AB_FRACTURE
 if (vFrLit.x > 0.5 && brkDmg > 0.5) {
-  float frEdge = smoothstep(1.0, 2.0, vFrLit.y);
-  totalEmissiveRadiance += ${FRACTURE_EMBER} * frEdge + ${FRACTURE_UPLIGHT} * vFrLit.z;
+  totalEmissiveRadiance += ${FRACTURE_EMBER} * 0.6 * vFrLit.y + ${FRACTURE_UPLIGHT} * vFrLit.z;
 }
 #endif
 `;
 
 /**
- * The debris mesh's geometry: the unit box (y in [0, 1]) subdivided
- * FRACTURE_SEGMENTS per axis with every vertex's chip depth in uv.x, plus
- * a two-sided rebar ribbon at every edge midpoint. Pure; built once.
+ * The debris mesh's geometry: LIB_VERTS vertices sharing the library's
+ * index buffer. Its own position / normal are the intact box's (bounds,
+ * and three's attribute set); the shader reads the real ones by
+ * gl_VertexID. Pure; built once.
  */
 export function fractureGeometry(): THREE.BufferGeometry {
-  const n = FRACTURE_SEGMENTS;
-  const box = new THREE.BoxGeometry(1, 1, 1, n, n, n);
-  box.translate(0, 0.5, 0);
-  const P = box.getAttribute("position") as THREE.BufferAttribute;
-  const N = box.getAttribute("normal") as THREE.BufferAttribute;
-  const index = box.getIndex();
-  if (!index) throw new Error("BoxGeometry without an index");
-  const positions: number[] = [];
-  const normals: number[] = [];
-  const uvs: number[] = [];
-  const indices: number[] = Array.from(index.array as ArrayLike<number>);
-  const rebarAt = new Map<string, [number, number, number]>();
-  for (let i = 0; i < P.count; i++) {
-    const p: [number, number, number] = [P.getX(i), P.getY(i), P.getZ(i)];
-    positions.push(...p);
-    normals.push(N.getX(i), N.getY(i), N.getZ(i));
-    uvs.push(chipAt(p), ROLE_SURFACE);
-    const b = boundary(p);
-    if (b.filter(Boolean).length === 2) {
-      rebarAt.set(p.map((v) => v.toFixed(4)).join(","), p);
-    }
+  const intact = libraryTexels([intactCell()]);
+  const pos = new Float32Array(LIB_VERTS * 3);
+  const nrm = new Float32Array(LIB_VERTS * 3);
+  for (let v = 0; v < LIB_VERTS; v++) {
+    pos[v * 3] = intact[v * 4] as number;
+    pos[v * 3 + 1] = (intact[v * 4 + 1] as number) + 0.5;
+    pos[v * 3 + 2] = intact[v * 4 + 2] as number;
+    const n = (LIB_VERTS + v) * 4;
+    nrm[v * 3] = intact[n] as number;
+    nrm[v * 3 + 1] = intact[n + 1] as number;
+    nrm[v * 3 + 2] = intact[n + 2] as number;
   }
-  // Rebar: inner end on the chipped edge, outer end where the edge was.
-  for (const p of rebarAt.values()) {
-    const b = boundary(p);
-    const out = b[0] ? 0 : 2; // the ribbon's outward axis (x first)
-    const nx = out === 0 ? Math.sign(p[0]) : 0;
-    const nz = out === 2 ? Math.sign(p[2]) : 0;
-    const chip = chipAt(p);
-    const first = positions.length / 3;
-    for (const role of [1, 2, 3, 4]) {
-      positions.push(...p);
-      normals.push(nx, 0, nz);
-      uvs.push(chip, role);
-    }
-    // Two-sided: both windings.
-    indices.push(first, first + 2, first + 1, first + 1, first + 2, first + 3);
-    indices.push(first, first + 1, first + 2, first + 1, first + 3, first + 2);
-  }
-  box.dispose();
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute(
-    "position",
-    new THREE.Float32BufferAttribute(positions, 3),
-  );
-  geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
-  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
-  geometry.setIndex(indices);
+  geometry.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  geometry.setAttribute("normal", new THREE.BufferAttribute(nrm, 3));
+  geometry.setIndex(libraryIndices());
   return geometry;
 }

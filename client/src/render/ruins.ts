@@ -8,6 +8,10 @@
 // id, rest bounds and building), so every client smokes the same lot from
 // the same spots; only the RUINS_DRAWN nearest within RUIN_DRAW_M emit, and
 // the rate scales with the tier's chaosFx share (fires.ts's idiom).
+//
+// DS2: the columns linger longer over the rubble, small fires keep burning
+// in it (the embers, most of a ruin's first two minutes), and the stump's
+// cut cables shed showers of sparks off its broken top for a while.
 
 import { type Building, standingTopAt } from "@angels-bandits/common/city";
 import {
@@ -22,17 +26,23 @@ import {
   wrapCoord,
   wrapDeltaAxis,
 } from "@angels-bandits/common/world";
-import type { Impacts } from "./impacts";
+import { type Impacts, Kind, SPARK_RGB } from "./impacts";
 
 /** How long a ruin smoulders after its last piece lands, ms. */
-export const RUIN_SMOKE_MS = 90_000;
-/** Embers glow in the smoke this long, ms. */
-const RUIN_EMBER_MS = 30_000;
+export const RUIN_SMOKE_MS = 150_000;
+/** Embers glow in the smoke this long, ms (DS2: small fires in the
+ * rubble). */
+const RUIN_EMBER_MS = 110_000;
+/** DS2: the stump's cut cables spark this long, ms, at this many showers a
+ * second (fresh), each this many sparks. */
+const CABLE_SPARK_MS = 45_000;
+const CABLE_RATE = 0.8;
+const CABLE_SPARKS = 9;
 /** Ruins further than this do not smoke, m; at most this many at once. */
 const RUIN_DRAW_M = 700;
 const RUINS_DRAWN = 4;
 /** Smoke puffs per second per ruin when fresh (fading to a wisp). */
-const SMOKE_RATE = 6;
+const SMOKE_RATE = 8;
 /** Emitters per ruin: the stump, then two spots on the rubble. */
 const EMITTERS = 3;
 /** Puffs scatter this far round an emitter, m. */
@@ -58,9 +68,10 @@ export class RuinSmoke {
   /** Fractional puffs owed per collapse id. DL1: in a record whose double
    * field is written in place — a double stored straight into a Map is a
    * fresh HeapNumber every frame. */
-  private readonly acc = new Map<number, { v: number }>();
+  private readonly acc = new Map<number, { v: number; sparks: number }>();
   private readonly near: Near[] = [];
   private readonly at: Vec3 = { x: 0, y: 0, z: 0 };
+  private readonly down: Vec3 = { x: 0, y: -1, z: 0 };
 
   constructor(
     private readonly impacts: Impacts,
@@ -123,7 +134,7 @@ export class RuinSmoke {
       const fade = 1 - age / RUIN_SMOKE_MS;
       let rec = this.acc.get(c.id);
       if (!rec) {
-        rec = { v: hash01(c.id, 99) };
+        rec = { v: hash01(c.id, 99), sparks: hash01(c.id, 98) };
         this.acc.set(c.id, rec);
       }
       let owed = rec.v + SMOKE_RATE * this.share * fade * dt;
@@ -131,10 +142,35 @@ export class RuinSmoke {
         owed -= 1;
         const k = Math.floor(hash01(c.id, Math.floor(now / 97)) * EMITTERS);
         if (!this.emitter(c, k)) continue;
-        const ember = age < RUIN_EMBER_MS && hash01(c.id, now) < 0.35 ? 1 : 0;
+        const ember = age < RUIN_EMBER_MS && hash01(c.id, now) < 0.45 ? 1 : 0;
         this.impacts.wreckFire(this.at, ember, 1, SPREAD, now);
       }
       rec.v = owed;
+      // DS2: cut cables spark off the stump's broken top, raining down.
+      if (age < CABLE_SPARK_MS) {
+        let showers =
+          rec.sparks +
+          CABLE_RATE * this.share * (1 - age / CABLE_SPARK_MS) * dt;
+        while (showers >= 1) {
+          showers -= 1;
+          if (!this.emitter(c, 0)) continue;
+          this.at.x += (hash01(c.id, Math.floor(now / 53)) - 0.5) * 6;
+          this.at.z += (hash01(c.id, Math.floor(now / 59)) - 0.5) * 6;
+          this.impacts.spray(
+            Kind.SPARK,
+            this.at,
+            this.down,
+            2.5,
+            1.2,
+            CABLE_SPARKS,
+            900,
+            0.35,
+            SPARK_RGB,
+            now,
+          );
+        }
+        rec.sparks = showers;
+      }
     }
   }
 

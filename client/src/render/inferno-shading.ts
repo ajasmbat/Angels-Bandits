@@ -173,7 +173,11 @@ export const GUTTED_COLOR_GLSL = /* glsl */ `
 // --- L7 gutted frames: charred grey-brown, sooty, on the original faces only ---
 float gutK = ${GUT_K_GLSL};
 if (gutK > 0.0 && brkDmg < 0.5) {
-  float gutSootN = abHash(floor(vMeters.xz * 0.2 + vec2(vMeters.y * 0.2)), vBSeed * 29.0);
+  // DS2: smooth soot in the face's own plane — the old 5 m hash of
+  // (x + y, z + y) ran in diagonal bands down every face, and with x (or
+  // z) fixed on a face it streaked.
+  vec2 gutP = abs(vObjNormal.x) > 0.5 ? vMeters.zy : abs(vObjNormal.z) > 0.5 ? vMeters.xy : vMeters.xz;
+  float gutSootN = abVNoise(gutP * 0.2, vBSeed * 29.0);
   float gutSoot = mix(0.5, gutSootN, abDetail(5.0, max(wAA.x, wAA.y)));
   vec3 gutChar = ${CHAR_RGB} * (0.7 + 0.6 * gutSoot) * (1.0 - 0.65 * pane * facade);
   diffuseColor.rgb = mix(diffuseColor.rgb, gutChar, gutK * 0.85);
@@ -290,7 +294,9 @@ if (brkDmg > 0.5 && brkDmg < 2.5 && uBurn > 0.0) {
     totalEmissiveRadiance += ${WRECK_FIRE} * (wrLit * wrHeat * wrFlick * wrK);
   } else {
     // Rubble: glowing patches of embers under the soot.
-    float wrPatch = mix(0.5, smoothstep(0.3, 0.7, abHash(floor(vPatPos.xz * 0.6), vBSeed * 19.0)),
+    // DS2: in the face's own plane, smooth (the plan-view hash striped
+    // every steep face of the pile).
+    float wrPatch = mix(0.5, smoothstep(0.35, 0.65, abVNoise(wrW * 0.6, vBSeed * 19.0)),
       abDetail(1.67, max(wAA.x, wAA.y)));
     totalEmissiveRadiance += ${WRECK_EMBER} * (wrPatch * wrFlick * wrK);
   }

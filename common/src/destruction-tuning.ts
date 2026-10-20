@@ -105,6 +105,9 @@ export const LOOK_DEFAULTS = {
   /** dust.ts MAX_CLOUDS (the buffer is sized for this many; the lab can
    * only lower it). */
   dustClouds: 6,
+  /** DS2 broken-shading.ts: the share of a broken floor's lit rooms whose
+   * office lights flicker or have died. */
+  roomFlicker: 0.3,
 } as const;
 
 export interface DestructionTuning {
@@ -192,6 +195,9 @@ export interface DestructionTuning {
   /** The whole cloud never covers more than this share of the frame
    * (dust.ts DUST_COVERAGE_MAX). */
   dustCoverageMax: number;
+  /** DS2: × how thick the dust lies on the streets round a collapse once
+   * the cloud has settled (0: none). */
+  dustSettle: number;
 
   // --- Fire & Sparks (look) ---
   /** Gravel trail emissions per second per collapse (TRAIL_RATE). */
@@ -211,6 +217,14 @@ export interface DestructionTuning {
   roomFlicker: number;
   /** …and of a blue-white electrical flash (FLASH_CHANCE). */
   flashChance: number;
+  /** DS2: × the glittering shards a glass curtain wall rains as it comes
+   * down (glass-rain.ts; 0: none). */
+  glassShards: number;
+  /** DS2: the share of a torn slab's rebar drawn (fracture-library.ts). */
+  rebar: number;
+  /** DS2: × how far cracks run out across a facade from its hits
+   * (facade-cracks; 0: no cracks). */
+  crackGrowth: number;
 
   // --- Chain reactions (server) ---
   /** A debris impact's blast damage at the centre (CHAIN_BLAST_DAMAGE). */
@@ -296,6 +310,7 @@ export const DEFAULT_DESTRUCTION_TUNING: Readonly<DestructionTuning> =
     dustSize: 1,
     dustLife: 1,
     dustCoverageMax: LOOK_DEFAULTS.dustCoverageMax,
+    dustSettle: 1,
 
     trailRate: LOOK_DEFAULTS.trailRate,
     gravelBurst: LOOK_DEFAULTS.gravelBurst,
@@ -304,8 +319,11 @@ export const DEFAULT_DESTRUCTION_TUNING: Readonly<DestructionTuning> =
     sparkAmount: 1,
     floorFire: 1,
     fireChance: LOOK_DEFAULTS.fireChance,
-    roomFlicker: 0,
+    roomFlicker: LOOK_DEFAULTS.roomFlicker,
     flashChance: LOOK_DEFAULTS.flashChance,
+    glassShards: 1,
+    rebar: 1,
+    crackGrowth: 1,
 
     chainBlastDamage: CHAIN_BLAST_DAMAGE,
     chainBlastRadius: CHAIN_BLAST_RADIUS,
@@ -465,6 +483,7 @@ export const DESTRUCTION_SPEC: readonly DestructionSpec[] = [
   num("dustSize", "Dust & Smoke", "look", "Puff size", "How big each puff of dust is.", 0.5, 2, 0.05, "×"),
   num("dustLife", "Dust & Smoke", "look", "Dust hang time", "How long a cloud hangs in the canyon (the haze you can't see through follows it).", 0.3, 2, 0.05, "×"),
   num("dustCoverageMax", "Dust & Smoke", "look", "Screen-coverage cap", "The dust never covers more than this share of the screen — no white-outs.", 0.2, 1, 0.01),
+  num("dustSettle", "Dust & Smoke", "look", "Dust settling", "How thick the dust lies on the streets and cars round a collapse once the cloud settles.", 0, 2, 0.05, "×"),
   // Fire & Sparks
   num("trailRate", "Fire & Sparks", "look", "Gravel trail", "Gravel and chunks shed by falling pieces, per second per collapse.", 0, 150, 1, "/s"),
   num("gravelBurst", "Fire & Sparks", "look", "Gravel burst", "Gravel thrown out each time a floor fails or debris lands.", 0, 100, 1),
@@ -475,6 +494,9 @@ export const DESTRUCTION_SPEC: readonly DestructionSpec[] = [
   num("fireChance", "Fire & Sparks", "look", "Fire on impact", "Chance a crush-front burst catches fire.", 0, 1, 0.01),
   num("roomFlicker", "Fire & Sparks", "look", "Dying lights", "Share of the lit rooms on a broken floor whose lights stutter or have died (0 = all steady).", 0, 1, 0.01),
   num("flashChance", "Fire & Sparks", "look", "Electrical flashes", "Chance a burst flashes blue-white (severed cables).", 0, 1, 0.01),
+  num("glassShards", "Debris", "look", "Glass shard rain", "How many glittering shards a glass tower rains as it comes down.", 0, 2, 0.05, "×"),
+  num("rebar", "Debris", "look", "Rebar", "Share of the steel bars left sticking out of torn concrete.", 0, 1, 0.05),
+  num("crackGrowth", "Debris", "look", "Crack growth", "How far cracks run out across a facade from where it was hit.", 0, 3, 0.05, "×"),
   // Chain reactions
   num("chainBlastDamage", "Chain reactions", "server", "Impact damage", "How much falling debris smashes the buildings it hits.", 0, 600, 5),
   num("chainBlastRadius", "Chain reactions", "server", "Impact radius", "How wide each debris impact bites into a neighbour.", 2, 30, 0.5, "m"),
@@ -600,6 +622,7 @@ export const DESTRUCTION_PRESETS: readonly DestructionPreset[] = [
       collapsesNear: 2,
       particleBudget: 300,
       dustClouds: 3,
+      glassShards: 0.5,
     },
   },
 ];

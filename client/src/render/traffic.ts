@@ -58,6 +58,7 @@ import {
 } from "@angels-bandits/common/constants";
 import { type Vec3, canonicalize } from "@angels-bandits/common/world";
 import * as THREE from "three";
+import { patchDeposit } from "./dust-deposit";
 import { emissiveBoost } from "./emissive";
 import {
   type CityReactions,
@@ -987,6 +988,8 @@ function createCarMaterial(): THREE.MeshStandardMaterial {
         "#include <emissivemap_fragment>",
         `#include <emissivemap_fragment>\n${FRAGMENT_MAIN}`,
       );
+    // DS2: the dust a collapse leaves settles on the cars too.
+    patchDeposit(shader);
   };
   return material;
 }

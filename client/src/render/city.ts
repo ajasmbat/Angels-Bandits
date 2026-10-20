@@ -48,6 +48,7 @@ import {
   posePieceNow,
   setPoseClock,
 } from "@angels-bandits/common/city/collapse";
+import { PIECE_HELD, PIECE_WHOLE } from "@angels-bandits/common/city/physpose";
 import {
   type CityIndex,
   buildCityIndex,
@@ -673,7 +674,10 @@ export class CityRenderer {
       if (c.kind !== KIND_BUILDING) continue;
       const kx = imageIndex(cameraPos.x, c.x);
       const kz = imageIndex(cameraPos.z, c.z);
-      const settled = t >= c.t0 + c.endMs;
+      // DS1: a physics collapse lies still once its final frame came.
+      // (Fields, not collapseSettledAt: a returned double boxes, O5.)
+      const settled =
+        c.phys !== null ? t >= c.phys.settledAt : t >= c.t0 + c.endMs;
       if (
         settled &&
         this.drawnSettled[k] &&
@@ -694,11 +698,16 @@ export class CityRenderer {
       for (let i = 0; i < c.n; i++) {
         const pose = posePieceNow(c, i, this.bPose);
         debris.setMatrixAt(start + i, pieceMatrixAt(pose, this.scratch));
-        const state = pose.rest
-          ? AT_REST
-          : pieceIntact(c, i, t, pose.hy)
-            ? INTACT
-            : BROKEN;
+        // DS1: a physics piece is whole while held, or riding a whole
+        // section (the pose clock is set: no double handed on — and
+        // pieceIntact stays small enough to inline, O5).
+        const phys = c.phys;
+        const whole =
+          phys !== null
+            ? phys.stateNow(i) === PIECE_HELD ||
+              phys.stateNow(i) === PIECE_WHOLE
+            : pieceIntact(c, i, t, pose.hy);
+        const state = pose.rest ? AT_REST : whole ? INTACT : BROKEN;
         if (this.bRest[start + i] !== state) {
           this.bRest[start + i] = state;
           subOff.setW(

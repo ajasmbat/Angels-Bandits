@@ -1055,6 +1055,10 @@ export const VIEWS = [
   // the ground. Ruin detail: the pile up close — slumped slabs, steel stubs
   // leaning out of it, rebar off the broken edges, sheets lying in the
   // street. The plane is parked at 360 m over the lot, out of shot.
+  // DS1: in the solo game these collapses are physical (simulated in the
+  // sim worker) — the closed-form views here are what multiplayer draws.
+  // The physical ones, and DS1's collapse-lean-hinge and rubble-heap, are
+  // shot in the Destruction Lab by tools/perf/ds1-gallery.mjs.
   {
     name: "collapse-pancake-mid",
     fov: 70,

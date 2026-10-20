@@ -155,6 +155,7 @@ import {
   multiplayer,
   pauseLocalHost,
 } from "../sim/local";
+import { pagePhysics } from "../sim/poses";
 import { PoseCadence, RenderClock } from "./clock";
 import { InterpDelay } from "./delay";
 import { reconnectDelayMs } from "./reconnect";
@@ -401,6 +402,12 @@ export class GameSocket {
     // DL1: only a Destruction Lab's field builds a wire's stamped tuning —
     // set before the welcome's records are built.
     this.collapses.lab = welcome.lab === true && welcome.destruct === true;
+    // DS1: solo collapses are physical — posed from the local host's
+    // frames (the lab keeps every frame, for its scrub).
+    if (!multiplayer()) {
+      pagePhysics.history = this.collapses.lab;
+      this.collapses.attachPhysics(pagePhysics);
+    }
     this.replayDestruction(welcome);
     this.addMissiles(welcome.missiles);
     this.replayRacks(welcome.racks);
@@ -600,7 +607,11 @@ export class GameSocket {
     // D10: a tab built for another collapse model (a deploy since it
     // loaded) would build debris the server does not collide with: reload
     // — once per session per server model, so a cached page can never loop.
-    if (staleCollapseModel(welcome)) reloadOnce(welcome.cm as number);
+    // DS1: multiplayer only. A solo host is this page's own build, and its
+    // debris is physics streamed from the worker, not rebuilt from wires.
+    if (multiplayer() && staleCollapseModel(welcome)) {
+      reloadOnce(welcome.cm as number);
+    }
     // H1: likewise a tab built for another city generator — every id it
     // hears would name a different building.
     if (staleCityModel(welcome)) {

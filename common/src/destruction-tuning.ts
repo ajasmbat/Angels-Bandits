@@ -64,6 +64,9 @@ import {
   COLLAPSE_TOPPLE_BREAK_TOP,
   COLLAPSE_TOPPLE_DRIFT,
   COLLAPSE_TOPPLE_K,
+  DS1_COLUMN_STRENGTH,
+  DS1_FRACTURE_SPEED,
+  DS1_FRICTION,
 } from "./constants";
 
 const DEG = Math.PI / 180;
@@ -227,6 +230,22 @@ export interface DestructionTuning {
   /** Links a chain may run (CHAIN_DEPTH_MAX). */
   chainDepthMax: number;
 
+  // --- Physics (server: DS1's debris world, a physics room only) ---
+  /** A floor fails when fewer than this share of its columns stand
+   * (DS1_COLUMN_STRENGTH): lower = a tougher frame. */
+  columnStrength: number;
+  /** × every debris body's mass: heavier sections crush more floors and
+   * hit the neighbours harder. */
+  physMass: number;
+  /** Debris friction (DS1_FRICTION): how far pieces slide and tumble. */
+  physFriction: number;
+  /** A falling section breaks into its pieces above this impact speed,
+   * m/s (DS1_FRACTURE_SPEED): lower = it shatters sooner. */
+  physFracture: number;
+  /** × the quality tier's budget of moving bodies (more = more pieces stay
+   * physical before they merge into the pile). */
+  physBudget: number;
+
   // --- Performance (look) ---
   /** Collapses further than this shed no particles, m (DETAIL_RANGE_M):
    * the dressing's LOD distance. */
@@ -297,6 +316,12 @@ export const DEFAULT_DESTRUCTION_TUNING: Readonly<DestructionTuning> =
     chainImpactsMax: CHAIN_IMPACTS_MAX,
     chainDepthMax: CHAIN_DEPTH_MAX,
 
+    columnStrength: DS1_COLUMN_STRENGTH,
+    physMass: 1,
+    physFriction: DS1_FRICTION,
+    physFracture: DS1_FRACTURE_SPEED,
+    physBudget: 1,
+
     detailRange: LOOK_DEFAULTS.detailRange,
     collapsesNear: LOOK_DEFAULTS.collapsesNear,
     particleBudget: LOOK_DEFAULTS.particleBudget,
@@ -311,6 +336,7 @@ export const DESTRUCTION_GROUPS = [
   "Dust & Smoke",
   "Fire & Sparks",
   "Chain reactions",
+  "Physics",
   "Performance",
 ] as const;
 export type DestructionGroup = (typeof DESTRUCTION_GROUPS)[number];
@@ -458,6 +484,12 @@ export const DESTRUCTION_SPEC: readonly DestructionSpec[] = [
   int("chainImpactsPerBuilding", "Chain reactions", "server", "Hits per neighbour", "Most impacts one collapse lands on one neighbour.", 0, 12),
   int("chainImpactsMax", "Chain reactions", "server", "Hits per collapse", "Most impacts one collapse lands in all.", 0, 48),
   int("chainDepthMax", "Chain reactions", "server", "Chain length", "How many buildings a domino may run through (0 = debris breaks nothing).", 0, 8),
+  // Physics
+  num("columnStrength", "Physics", "server", "Column strength", "A floor gives once fewer than this share of its columns stand — lower is a tougher frame.", 0.2, 0.95, 0.01, "×"),
+  num("physMass", "Physics", "server", "Debris mass", "How heavy the falling pieces are: heavier sections crush more floors and hit neighbours harder.", 0.25, 4, 0.05, "×"),
+  num("physFriction", "Physics", "server", "Friction", "How grippy rubble is: low slides and tumbles far, high stops where it lands.", 0, 1.5, 0.05),
+  num("physFracture", "Physics", "server", "Fracture threshold", "A falling section breaks into pieces when it hits something faster than this.", 1, 20, 0.5, "m/s"),
+  num("physBudget", "Physics", "server", "Body budget", "How many moving pieces the physics may keep (× the graphics tier's): more stay physical before merging into the pile.", 0.25, 2, 0.05, "×"),
   // Performance
   num("detailRange", "Performance", "look", "Detail range", "Collapses further than this shed no particles (the dressing's LOD distance).", 150, 1200, 10, "m"),
   int("collapsesNear", "Performance", "look", "Detailed collapses", "At most this many collapses shed particles at once (the nearest).", 1, 8),

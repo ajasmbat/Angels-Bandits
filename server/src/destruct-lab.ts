@@ -27,6 +27,7 @@ import {
   demolitionPlan,
 } from "@angels-bandits/common/city/collapse";
 import { cellIndex } from "@angels-bandits/common/city/destruction";
+import { pieceMoving } from "@angels-bandits/common/city/physpose";
 import {
   BLOCK_PITCH,
   BULLET_RANGE,
@@ -84,6 +85,11 @@ export class DestructLab {
   private nTicks = 0;
   private head = 0;
   private lastTick = 0;
+  /** DS1: the physics step's costs, ms (a ring like `ticks`). */
+  private readonly phys = new Float64Array(LAB_STATS_WINDOW);
+  private nPhys = 0;
+  private physHead = 0;
+  private lastPhys = 0;
   private builds: number[] = [];
   private lastSent = Number.NEGATIVE_INFINITY;
 
@@ -156,6 +162,9 @@ export class DestructLab {
         break;
       case "charge":
         floorCharge(city, t.b, t.f ?? 1);
+        break;
+      case "lean":
+        leanCharge(city, t.b, t.f ?? 1, t.d ?? 1);
         break;
       case "neighbour": {
         const w = fell(city, t.b, TOPPLE, towardNeighbour(city, t.b), now);
@@ -250,6 +259,14 @@ export class DestructLab {
     if (this.builds.length > 32) this.builds.shift();
   }
 
+  /** DS1: note one physics step's cost, ms. */
+  notePhysics(ms: number): void {
+    this.lastPhys = ms;
+    this.phys[this.physHead] = ms;
+    this.physHead = (this.physHead + 1) % LAB_STATS_WINDOW;
+    this.nPhys = Math.min(LAB_STATS_WINDOW, this.nPhys + 1);
+  }
+
   /** The telemetry message, at most every LAB_STATS_MS (null between). */
   stats(
     city: RoomCity,
@@ -260,6 +277,10 @@ export class DestructLab {
     build: number;
     live: number;
     boxes: number;
+    bodies?: number;
+    budget?: number;
+    physLast?: number;
+    physP99?: number;
   } | null {
     if (now - this.lastSent < LAB_STATS_MS) return null;
     this.lastSent = now;
@@ -271,15 +292,34 @@ export class DestructLab {
     let boxes = 0;
     for (const c of city.collapses.list) {
       boxes += c.n;
-      if (now < c.t0 + c.endMs) live += c.n;
+      if (c.phys) {
+        // DS1: the pieces its bodies are moving now.
+        if (c.phys.settled) continue;
+        for (let i = 0; i < c.n; i++) {
+          if (pieceMoving(c.phys.state(i, now))) live++;
+        }
+      } else if (now < c.t0 + c.endMs) live += c.n;
     }
     const round = (v: number) => Math.round(v * 1000) / 1000;
-    return {
+    const out = {
       last: round(this.lastTick),
       p99: round(p99),
       build: round(Math.max(0, ...this.builds)),
       live,
       boxes,
+    };
+    const physics = city.physics;
+    if (!physics) return out;
+    const np = this.nPhys;
+    const ps = Array.from(this.phys.subarray(0, np)).sort((a, b) => a - b);
+    return {
+      ...out,
+      bodies: physics.active,
+      budget: physics.budget,
+      physLast: round(this.lastPhys),
+      physP99: round(
+        np > 0 ? (ps[Math.min(np - 1, Math.floor(np * 0.99))] ?? 0) : 0,
+      ),
     };
   }
 }
@@ -424,6 +464,27 @@ function floorCharge(city: RoomCity, b: number, f: number): void {
   if (!g) return;
   for (let iz = 0; iz < g.nz; iz++) {
     for (let ix = 0; ix < g.nx; ix++) breakCell(city, b, ix, f, iz);
+  }
+}
+
+/** DS1: floor band `f` of tier 0 blown out on the `dir` side — the two
+ * thirds of its bays toward that side — so its columns fail there and the
+ * column planner leans the tower over toward it (a hinge on the line of
+ * the columns left standing). */
+function leanCharge(city: RoomCity, b: number, f: number, dir: number): void {
+  const building = city.buildings[b] as Building;
+  const g = tierGrids(building)[0];
+  if (!g) return;
+  const alongX = dir === DIR_NEG_X || dir === DIR_POS_X;
+  const n = alongX ? g.nx : g.nz;
+  const keep = Math.max(1, Math.floor(n / 3));
+  for (let iz = 0; iz < g.nz; iz++) {
+    for (let ix = 0; ix < g.nx; ix++) {
+      const i = alongX ? ix : iz;
+      // Toward +: everything past the kept third; toward −: before it.
+      const plus = dir === DIR_POS_X || dir === DIR_POS_Z;
+      if (plus ? i >= keep : i < n - keep) breakCell(city, b, ix, f, iz);
+    }
   }
 }
 

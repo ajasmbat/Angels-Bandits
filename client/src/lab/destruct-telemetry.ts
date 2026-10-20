@@ -2,8 +2,9 @@
 // numbers a destruction tune is judged by — frame rate and time, draw
 // calls, the debris pieces still moving, the particles on screen, every
 // collision box the field holds, and the server's destruction tick (last /
-// p99, and the heaviest collapse build) — plus a warning when a setting
-// breaks a budget. Written per frame, cheaply: a cell's text node is only
+// p99, and the heaviest collapse build), and (DS1) the debris physics' moving
+// bodies against their budget and its step's cost — plus a warning when a
+// setting breaks a budget. Written per frame, cheaply: a cell's text node is only
 // touched when its string changes.
 
 import "./lab.css";
@@ -22,12 +23,20 @@ export interface DestructTelemetry {
   serverLast: number | null;
   serverP99: number | null;
   serverBuild: number | null;
+  /** DS1: moving debris bodies / the budget, and the physics step, last /
+   * p99 ms (null: an analytic room). */
+  bodies: number | null;
+  bodyBudget: number | null;
+  physLast: number | null;
+  physP99: number | null;
 }
 
 /** The budgets the warning checks: a 60 fps frame (with a little slack
  * for the measurement), the server's collapse tick, and the pool. */
 export const FRAME_BUDGET_MS = 1000 / 55;
 export const SERVER_TICK_BUDGET_MS = 1;
+/** DS1: the physics step's budget (the worker's, at the tier's bodies). */
+export const PHYSICS_STEP_BUDGET_MS = 4;
 export const POOL_FULL_SHARE = 0.95;
 
 const DASH = "—";
@@ -41,6 +50,8 @@ const CELLS = [
   ["particles", "PARTICLES"],
   ["server", "SRV TICK"],
   ["build", "BUILD"],
+  ["bodies", "BODIES"],
+  ["physics", "PHYSICS"],
   ["warn", "BUDGET"],
 ] as const;
 type Cell = (typeof CELLS)[number][0];
@@ -51,6 +62,9 @@ export function budgetWarning(v: DestructTelemetry): string {
   if (v.frameMs > FRAME_BUDGET_MS) over.push("frame");
   if (v.serverP99 !== null && v.serverP99 > SERVER_TICK_BUDGET_MS) {
     over.push("server p99");
+  }
+  if (v.physP99 !== null && v.physP99 > PHYSICS_STEP_BUDGET_MS) {
+    over.push("physics p99");
   }
   if (v.particleCap > 0 && v.particles >= v.particleCap * POOL_FULL_SHARE) {
     over.push("particles");
@@ -101,6 +115,16 @@ export class DestructTelemetryStrip {
     this.set(
       "build",
       v.serverBuild === null ? DASH : `${v.serverBuild.toFixed(1)} ms`,
+    );
+    this.set(
+      "bodies",
+      v.bodies === null ? DASH : `${v.bodies} / ${v.bodyBudget ?? DASH}`,
+    );
+    this.set(
+      "physics",
+      v.physLast === null || v.physP99 === null
+        ? DASH
+        : `${v.physLast.toFixed(2)} / ${v.physP99.toFixed(2)} ms`,
     );
     const w = budgetWarning(v);
     this.set("warn", w);

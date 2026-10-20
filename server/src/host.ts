@@ -222,6 +222,7 @@ import {
   propsWireState,
   resetRoomCity,
   setLabCity,
+  setRoomPhysics,
   stageCraneFall,
   sweepBlast,
   takeSweeps,
@@ -242,6 +243,7 @@ import {
   isVec3,
 } from "./guards";
 import { type GameHostOptions, defaultHostOptions } from "./host-options";
+import type { PhysicsView } from "./physics-port";
 import {
   type RespawnEnemy,
   installSpawnTowers,
@@ -303,6 +305,9 @@ export interface GameHost {
   debugRooms(): Record<string, unknown>;
   /** A1: the tick's per-phase cost, or null when profiling is off. */
   tickReport(reset: boolean): TickReport | null;
+  /** DS1: where the player's camera is and how many moving debris bodies
+   * its quality tier allows (every room's physics LODs and budgets by it). */
+  setPhysicsView(view: PhysicsView): void;
 }
 
 const encoder = new TextEncoder();
@@ -443,6 +448,8 @@ export function createGameHost(
   let pausedAt: number | null = null;
   let pausedTotal = 0;
   const clock = (): number => (pausedAt ?? cfg.clock()) - pausedTotal;
+  /** DS1: the page's camera and body budget (setPhysicsView). */
+  let physicsView: PhysicsView | null = null;
 
   const JOIN_DEADLINE = cfg.joinDeadlineMs;
   const BOOT_TIMEOUT = cfg.bootTimeoutMs;
@@ -634,6 +641,12 @@ export function createGameHost(
       if (room.destruct) {
         setLabCity(rc);
         rc.tuning = room.destructTuning;
+      }
+      // DS1: and, in the sim worker, its debris is physical.
+      if (cfg.debrisPhysics) {
+        const physics = cfg.debrisPhysics(rc);
+        if (physicsView) physics.setView(physicsView);
+        setRoomPhysics(rc, physics);
       }
       roomCityById.set(room.id, rc);
     }
@@ -1367,6 +1380,8 @@ export function createGameHost(
     cityEvents.forget(room.id);
     roomMoversById.delete(room.id);
     pendingKillByRoom.delete(room.id);
+    const gone = roomCityById.get(room.id);
+    if (gone) setRoomPhysics(gone, null);
     roomCityById.delete(room.id);
     missilesByRoom.delete(room.id);
     bossByRoom.delete(room.id);
@@ -3095,7 +3110,10 @@ export function createGameHost(
           breakable(room) ? chaosPlanes(room, time) : [],
         );
         if (lab) {
-          const ms = performance.now() - destructionAt;
+          // DS1: the physics step has its own budget and cell.
+          const phys = rc.physics?.lastStepMs ?? 0;
+          if (rc.physics) lab.notePhysics(phys);
+          const ms = performance.now() - destructionAt - phys;
           lab.noteTick(ms, collapses.length > 0 ? ms : 0);
         }
         // P1: what swept through the city this tick, before the batch that
@@ -3125,6 +3143,9 @@ export function createGameHost(
           directorFor(room).condemnCrane(site);
         if (props.broke.length > 0)
           chaosFor(room)?.ignite(props.broke, time, rc);
+        // DS1: the debris world's poses this tick, to the page.
+        const frame = rc.physics?.takeFrame();
+        if (frame) cfg.onPhysicsFrame?.(frame);
         const stats = lab?.stats(rc, time);
         if (stats) sendToRoom(room, { type: "labStats", ...stats });
       }
@@ -3403,6 +3424,10 @@ export function createGameHost(
       clearInterval(livenessTimer);
       tickTimer = undefined;
       livenessTimer = undefined;
+    },
+    setPhysicsView(view: PhysicsView): void {
+      physicsView = view;
+      for (const rc of roomCityById.values()) rc.physics?.setView(view);
     },
     setPaused(on: boolean): void {
       if (!cfg.pausable || on === (pausedAt !== null)) return;

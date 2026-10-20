@@ -128,7 +128,7 @@ if (brkDmg > 0.5) {
   vec3 brkN = abs(vObjNormal);
   // World-anchored in-plane coordinates for the patterns (seam-safe: the
   // instance sits at its nearest torus image, like every other pattern).
-  vec2 brkW = brkN.x > 0.5 ? vBWorldPos.zy : brkN.z > 0.5 ? vBWorldPos.xy : vBWorldPos.xz;
+  vec2 brkW = brkN.x > 0.5 ? vPatPos.zy : brkN.z > 0.5 ? vPatPos.xy : vPatPos.xz;
   float brkAA = max(wAA.x, wAA.y);
   float brkNoise = mix(0.5, abHash(floor(brkW * 1.7), vBSeed * 31.0), abDetail(0.6, brkAA));
   if (brkDmg > 2.5) {
@@ -145,12 +145,12 @@ if (brkDmg > 0.5) {
     diffuseColor.rgb = mix(brkConcrete, brkFinish,
       mix(${RUBBLE_FINISH.toFixed(2)}, step(${(1 - RUBBLE_FINISH).toFixed(2)}, brkChunk), abDetail(0.77, brkAA)));
   } else {
-    float brkStorey = vWorldY / ${BROKEN_STOREY.toFixed(1)};
+    float brkStorey = vPatY / ${BROKEN_STOREY.toFixed(1)};
     float brkInSlab = fract(brkStorey);
     // The skeleton: a slab every storey and a column every bay, filtered
     // (they thin to their area share far away); a floor or ceiling face
     // (normal ±y) is all slab.
-    float brkSlabLine = abLine(abPeriodic(vWorldY, ${((SLAB_SHARE * BROKEN_STOREY) / 2).toFixed(3)}, ${BROKEN_STOREY.toFixed(1)}),
+    float brkSlabLine = abLine(abPeriodic(vPatY, ${((SLAB_SHARE * BROKEN_STOREY) / 2).toFixed(3)}, ${BROKEN_STOREY.toFixed(1)}),
       ${((SLAB_SHARE * BROKEN_STOREY) / 2).toFixed(3)}, wAA.y);
     float brkColumn = abLine(abPeriodic(brkW.x, 0.0, ${ROOM_BAY.toFixed(1)}), ${COLUMN_HALF.toFixed(2)}, wAA.x);
     float brkSlab = max(max(brkSlabLine, brkColumn), step(0.5, brkN.y));

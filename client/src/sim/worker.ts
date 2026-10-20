@@ -6,7 +6,18 @@
 // the frame's own (every snapshot is). The tick is the host's own
 // drift-corrected loop, on this worker's timers; a pause stops it and
 // freezes the host clock.
+//
+// DS1: and the debris is physical here. Rapier's WASM loads before the
+// host is built (messages that arrive meanwhile wait their turn), each room
+// gets a DebrisPhysics, and every tick's pose frame goes to the page as one
+// transferred Float32Array (`poses`). `?sim=AB_PHYSICS:0` turns it off (the
+// closed-form collapses, as multiplayer has them).
 
+import {
+  DebrisPhysics,
+  PHYS_BUDGET,
+  initDebrisPhysics,
+} from "@angels-bandits/server/debris-physics";
 import {
   type GameHost,
   type Transport,
@@ -93,19 +104,60 @@ function clockFor(env: Record<string, string>): () => number {
   return () => epoch + (Date.now() - start);
 }
 
+/** Every message waits for the one before it (the host is built after
+ * Rapier loads, asynchronously). */
+let queue: Promise<void> = Promise.resolve();
+
 scope.addEventListener("message", (ev: MessageEvent) => {
   const msg = ev.data as ToWorker;
+  queue = queue.then(() => handle(msg));
+});
+
+/** Build the host from the page's `?sim=` pairs, with debris physics
+ * unless they turn it off (or Rapier will not load). */
+async function build(env: Record<string, string>): Promise<GameHost> {
+  let physics = env.AB_PHYSICS !== "0";
+  if (physics) {
+    try {
+      await initDebrisPhysics();
+    } catch (err) {
+      console.error("sim worker: no debris physics:", err);
+      physics = false;
+    }
+  }
+  return createGameHost({
+    ...hostOptionsFromEnv(env),
+    // Only ever one player here: the game is theirs to pause.
+    pausable: true,
+    clock: clockFor(env),
+    debrisPhysics: physics
+      ? (room) => new DebrisPhysics(room, undefined, { governed: true })
+      : null,
+    onPhysicsFrame: (f) => {
+      const transfer: Transferable[] = [f.data.buffer as ArrayBuffer];
+      if (f.heaps) transfer.push(f.heaps.buffer as ArrayBuffer);
+      post(
+        { t: "poses", at: f.t, epoch: f.epoch, data: f.data, heaps: f.heaps },
+        transfer,
+      );
+    },
+  });
+}
+
+async function handle(msg: ToWorker): Promise<void> {
   try {
     switch (msg.t) {
       case "init":
         if (host) return;
-        host = createGameHost({
-          ...hostOptionsFromEnv(msg.env),
-          // Only ever one player here: the game is theirs to pause.
-          pausable: true,
-          clock: clockFor(msg.env),
-        });
+        host = await build(msg.env);
         host.start();
+        return;
+      case "view":
+        host?.setPhysicsView({
+          x: msg.x,
+          z: msg.z,
+          budget: PHYS_BUDGET[msg.tier] ?? PHYS_BUDGET.high,
+        });
         return;
       case "open":
         if (!host) throw new Error("the sim worker has no host yet");
@@ -133,4 +185,4 @@ scope.addEventListener("message", (ev: MessageEvent) => {
     console.error("sim worker:", err);
     post({ t: "error", message: err instanceof Error ? err.message : "" });
   }
-});
+}

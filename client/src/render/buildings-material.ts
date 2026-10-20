@@ -316,6 +316,12 @@ varying float vWorldY;
 flat varying float vArch;
 varying float vBHeight;
 varying vec3 vBWorldPos;
+// DS1: where the in-plane patterns (broken concrete, rooms, slab lines,
+// scorch, embers) are anchored: the world for a standing box, the piece's
+// own standing frame for debris (it tumbles; a world pattern projected by
+// its object normal streaks across a rotated face).
+varying vec3 vPatPos;
+varying float vPatY;
 varying vec4 vRoof;
 varying vec3 vLed;
 varying vec3 vCrown;
@@ -362,6 +368,8 @@ vBHeight = bScale.y;
 // instances sit at their nearest torus image, so camera-relative geometry
 // is already seam-correct.
 vBWorldPos = (modelMatrix * instanceMatrix * vec4(position, 1.0)).xyz;
+vPatPos = vBWorldPos;
+vPatY = vWorldY;
 // VO3 roofs & crowns (roofs.ts → city.ts): roof kind / crown depth / tone,
 // LED outline colour, crown tint — plus the tier's half extents in meters.
 vRoof = aRoof;
@@ -426,6 +434,12 @@ varying float vWorldY;
 flat varying float vArch;
 varying float vBHeight;
 varying vec3 vBWorldPos;
+// DS1: where the in-plane patterns (broken concrete, rooms, slab lines,
+// scorch, embers) are anchored: the world for a standing box, the piece's
+// own standing frame for debris (it tumbles; a world pattern projected by
+// its object normal streaks across a rotated face).
+varying vec3 vPatPos;
+varying float vPatY;
 varying vec4 vRoof;
 varying vec3 vLed;
 varying vec3 vCrown;

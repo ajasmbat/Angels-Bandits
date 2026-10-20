@@ -24,6 +24,7 @@ import {
   raycastChunk,
   tierGrids,
 } from "@angels-bandits/common/city/destruction";
+import { pieceMoving } from "@angels-bandits/common/city/physpose";
 import { BLOCK_PITCH } from "@angels-bandits/common/constants";
 import {
   type LabTrigger,
@@ -491,6 +492,13 @@ export class DestructLab {
       const c = list[k] as Collapse;
       boxes += c.n;
       if (view === null) continue;
+      // DS1: a physics collapse's moving pieces are its frames' to say.
+      if (c.phys) {
+        for (let i = 0; i < c.n; i++) {
+          if (pieceMoving(c.phys.state(i, view))) live++;
+        }
+        continue;
+      }
       const age = (view - c.t0) / 1000;
       if (age < 0 || age * 1000 > c.endMs) continue;
       for (let i = 0; i < c.n; i++) {
@@ -509,6 +517,10 @@ export class DestructLab {
       serverLast: this.stats?.last ?? null,
       serverP99: this.stats?.p99 ?? null,
       serverBuild: this.stats?.build ?? null,
+      bodies: this.stats?.bodies ?? null,
+      bodyBudget: this.stats?.budget ?? null,
+      physLast: this.stats?.physLast ?? null,
+      physP99: this.stats?.physP99 ?? null,
     });
     const focus = this.focusCollapse();
     let u: number | null = null;
@@ -574,7 +586,14 @@ export class DestructLab {
   /** Its replay span, server ms: from just before the event to its dust's
    * settling. */
   private span(c: Collapse): [number, number] {
-    return [c.t0 - 1000, c.t0 + c.endMs + 6000];
+    // DS1: a physics collapse runs until its final frame (or, still going,
+    // its newest) — the lab keeps every frame, so all of it scrubs.
+    const end = c.phys
+      ? c.phys.settled
+        ? c.phys.settledAt
+        : Math.max(c.t0, c.phys.last)
+      : c.t0 + c.endMs;
+    return [c.t0 - 1000, end + 6000];
   }
 
   private scrubTo(u: number): void {

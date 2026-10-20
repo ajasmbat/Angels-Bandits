@@ -7,7 +7,9 @@
 // TUNNEL of destruction.
 //
 // The model: the impactor carries E = ½·m·v². Breaking a chunk costs its
-// volume × SWEEP_COST_PER_M3 × its material; that energy is released over
+// volume × SWEEP_COST_PER_M3 × what its structural frame resists (DS1,
+// city/structure.ts bayResistance: glass curtain wall gives, masonry and
+// column steel resist, ≈ 1 on the average bay); that energy is released over
 // the chunk's depth along the path, so the body decelerates THROUGH the
 // chunk, not at its face. Air costs nothing. It stops when E hits zero, at
 // the ground, at its kind's chunk cap, or at SWEEP_MAX_DIST. A chunk it
@@ -24,7 +26,7 @@
 //
 // Not re-exported from city/index.ts; import "@angels-bandits/common/city/penetrate".
 
-import { LANDMARK_HEIGHT, WORLD_SIZE } from "../constants";
+import { WORLD_SIZE } from "../constants";
 import { type Vec3, wrapCoord } from "../world/index";
 import {
   type LocalBox,
@@ -39,16 +41,17 @@ import {
   tierGrids,
 } from "./destruction";
 import type { Building } from "./index";
+import { LANDMARK_HARDNESS, bayResistance } from "./structure";
 
 /** The sweep model's version, carried by every impact record: a client
  * whose model differs ignores the record (it would replay a different
  * tunnel). Bump on any change to sweepImpact's result for the same input. */
-export const SWEEP_MODEL_VERSION = 1;
+export const SWEEP_MODEL_VERSION = 2; // DS1: a bay costs what its frame resists
 
 /** Energy to break 1 m³ of chunk (E is ½·m·v², m in the table's units). */
 export const SWEEP_COST_PER_M3 = 1;
 /** A landmark's steel frame costs this much more to break through. */
-export const SWEEP_LANDMARK_HARDNESS = 1.6;
+export const SWEEP_LANDMARK_HARDNESS = LANDMARK_HARDNESS;
 /** March step inside a building, m (chunks are 12 m floors × 13–27 m bays). */
 export const SWEEP_STEP_M = 2;
 /** The longest tunnel, m (well under WORLD_SIZE / 2: wrapDelta stays exact). */
@@ -409,7 +412,6 @@ export function sweepImpact(
       const pz = dir.z * at - cand.cz;
       const grids = tierGrids(b);
       const masks = chunkMask(b);
-      const hard = b.height >= LANDMARK_HEIGHT ? SWEEP_LANDMARK_HARDNESS : 1;
       for (let k = 0; k < grids.length && !exhausted; k++) {
         const g = grids[k] as TierGrid;
         if (py + r < g.baseY || py - r > g.baseY + g.height) continue;
@@ -435,7 +437,15 @@ export function sweepImpact(
               if (chunks.includes(id)) continue;
               if (boxDistance(px, py, pz, cellBox(g, cell, box)) > r) continue;
               if (contact < 0) contact = at;
-              const cost = g.cw * g.ch * g.cd * SWEEP_COST_PER_M3 * hard;
+              // DS1: what this bay's frame resists — its panels' material
+              // (glass gives, brick resists), slabs and column steel, the
+              // landmarks' SWEEP_LANDMARK_HARDNESS included.
+              const cost =
+                g.cw *
+                g.ch *
+                g.cd *
+                SWEEP_COST_PER_M3 *
+                bayResistance(b, k, cell);
               const len = Math.max(
                 1,
                 Math.abs(dir.x) * g.cw +

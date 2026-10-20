@@ -753,6 +753,12 @@ export interface LabStatsMsg {
   build: number;
   live: number;
   boxes: number;
+  /** DS1 (a physics room): moving debris bodies and the budget, and the
+   * physics step's cost, last / p99 in the window, ms. */
+  bodies?: number;
+  budget?: number;
+  physLast?: number;
+  physP99?: number;
 }
 
 /**

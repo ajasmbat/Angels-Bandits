@@ -19,6 +19,7 @@ export const LAB_TRIGGERS = [
   "topple",
   "shear",
   "charge",
+  "lean",
   "neighbour",
   "chain",
 ] as const;
@@ -32,6 +33,7 @@ export const LAB_TRIGGER_NAMES: Record<LabTriggerKind, string> = {
   topple: "Topple",
   shear: "Shear a corner",
   charge: "Floor charge",
+  lean: "Lean",
   neighbour: "Hit neighbour",
   chain: "Chain the block",
 };
@@ -46,6 +48,7 @@ export const LAB_TRIGGER_HINTS: Record<LabTriggerKind, string> = {
   topple: "The same charge, but it tips over in the chosen direction.",
   shear: "Cuts away one corner's support: that wing shears off.",
   charge: "Blows out the whole of the chosen floor.",
+  lean: "Blows out the chosen floor on the chosen side only: its columns fail there and the tower leans over and hinges (DS1).",
   neighbour: "Topples the tower into its nearest neighbour.",
   chain:
     "Fells every tower in the block one after another, each into the next.",
@@ -63,6 +66,7 @@ export const TRIGGER_NEEDS: Record<
   topple: { dir: true },
   shear: { corner: true },
   charge: { floor: true },
+  lean: { floor: true, dir: true },
   neighbour: {},
   chain: {},
 };
@@ -75,11 +79,11 @@ export interface LabTrigger {
   p?: Vec3;
   /** The shooter's eye (canonical) — shoot. */
   o?: Vec3;
-  /** DIR_* topple direction (−x, +x, −z, +z) — topple. */
+  /** DIR_* topple direction (−x, +x, −z, +z) — topple, lean. */
   d?: number;
   /** Corner 0..3 (bit 0: +x side, bit 1: +z side) — shear. */
   c?: number;
-  /** Tier-0 floor band — charge. */
+  /** Tier-0 floor band — charge, lean. */
   f?: number;
 }
 

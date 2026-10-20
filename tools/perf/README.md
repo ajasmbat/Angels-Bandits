@@ -3073,3 +3073,29 @@ the war put in view or in earshot, not frames. A hitch over a second takes
 the sample that ended it, and the report counts those seconds as
 `unsampled`. `docs/infinite-war.md` ("Chaos tuning") has what the meter
 counts, the before and after tables and the knobs.
+
+## DS1: the physical collapses (`ds1-gallery.mjs`, `physics-bench.ts`)
+
+A solo collapse is simulated in the sim worker (docs/physical-destruction),
+so its views can't be staged on the page against a pinned world clock the
+way gallery.mjs stages the closed form. `ds1-gallery.mjs` shoots them in the
+Destruction Lab instead. Each shot fires a trigger through the real host
+(the column planner and the Rapier world) and lets the collapse play out
+live. Then it scrubs the lab clock, which replays the recorded frames, to
+each instant it saves: `collapse-pancake-mid`, `collapse-lean-hinge` (a
+the Lean trigger: one side of a floor blown out, so its columns fail
+there and the tower hinges over),
+`collapse-topple-impact` (into a neighbour), each with a strip of instants,
+and `rubble-heap` (a low eye over a settled lot). `report.json` records
+each collapse's pieces, settle time, frame count and heap.
+
+    npm run build -w client
+    node tools/perf/ds1-gallery.mjs <outDir> [--shots a,b] [--port 8243]
+
+`physics-bench.ts` holds the two budgets: the worker's physics step per
+host tick (p99 ≤ 4 ms, over every tick with anything moving) and the page's
+pose upload (p99 ≤ 1 ms). It reports, per tier, how many bodies the
+self-governing budget let it run. Run it on an idle machine. On a shared,
+loaded box the governor holds fewer bodies, and the p99 is the box's.
+
+    node --import tsx tools/physics-bench.ts [--tier=high] [--runs=3]

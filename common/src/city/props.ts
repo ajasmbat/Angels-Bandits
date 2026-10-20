@@ -1418,6 +1418,11 @@ const scratchPose: PiecePose = {
   axis: 0,
   phi: 0,
   rest: false,
+  quat: false,
+  qx: 0,
+  qy: 0,
+  qz: 0,
+  qw: 1,
 };
 
 /**

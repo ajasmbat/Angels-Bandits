@@ -129,6 +129,8 @@ const CRUSH_LOSS = 0.12;
 /** A floor struck harder than this (as a speed lost in a step, m/s) is
  * crushed flat. */
 const CRUSH_SPEED = 3;
+/** A shock's memory: the share left after a step. */
+const SHOCK_DECAY = 0.8;
 /** Strikes slower than this never become chain impacts, m/s. */
 const IMPACT_SPEED_MIN = 4;
 /** A piece lying this still (m/s, rad/s) for FREEZE_S freezes into rubble;
@@ -148,12 +150,13 @@ const LEAN_STALL_S = 0.4;
 const LEAN_PROGRESS = 0.012;
 /** A hinge torn under this tilt, rad, never turned: its section breaks
  * into bays rather than floors. */
-const LEAN_TORN_TILT = 0.25;
+const LEAN_TORN_TILT = 0.6;
 const LEAN_BEARS = 3;
 /** What a bearing-down drives through the floors under it with, m/s, and
  * the spacing of its impacts along the edge, m (one a bay). */
-const BEAR_SPEED = 8;
+const BEAR_SPEED = 20;
 const BEAR_SPACING = 18;
+const BEAR_POINTS = 6;
 /** A leaning section is kicked over this fast, rad/s (it never balances on
  * its hinge). */
 const LEAN_KICK = 0.06;
@@ -200,6 +203,10 @@ interface Group {
   snapAt: number;
   /** A strike this step asked it to break (`deep`: into its bays). */
   crack: boolean;
+  /** The speed it has lost to strikes lately, m/s (decaying), and whether
+   * it was struck through a floor this step (moved on, no shock). */
+  shock: number;
+  through: boolean;
   deep: boolean;
   /** LEAN: how long its tilt has not grown past `stallTilt`, s, and how
    * many times it has borne down since it last made progress. */
@@ -262,6 +269,8 @@ export class DebrisPhysics implements PhysicsHost {
   private readonly room: PhysicsRoom;
   private collapses: PhysCollapse[] = [];
   private byCollider = new Map<number, Group>();
+  /** Each debris collider's mass (its share of its group's). */
+  private colliderMass = new Map<number, number>();
   private buildingOf = new Map<number, number>();
   private statics = new Map<number, StaticBuilding>();
   private impacts: PhysicsImpact[] = [];
@@ -331,6 +340,7 @@ export class DebrisPhysics implements PhysicsHost {
     this.queue = new RAPIER.EventQueue(true);
     this.collapses = [];
     this.byCollider.clear();
+    this.colliderMass.clear();
     this.buildingOf.clear();
     this.statics.clear();
     this.impacts = [];
@@ -560,6 +570,8 @@ export class DebrisPhysics implements PhysicsHost {
       anchor: null,
       snapAt: Number.POSITIVE_INFINITY,
       crack: false,
+      shock: 0,
+      through: false,
       deep: false,
       stall: 0,
       stallTilt: 0,
@@ -581,22 +593,32 @@ export class DebrisPhysics implements PhysicsHost {
   }
 
   /** (Re)build `g`'s colliders from its pieces as they are (squashed
-   * slabs included): a box per bay — its pieces' local bounds — above the
-   * piece level, a box per piece at it. */
+   * slabs included): a box per floor band — its pieces' local bounds — for
+   * a section or a floor, per bay for a bay, per piece for a piece. (Rapier
+   * keeps narrow-phase pairs between a body's own colliders: few boxes on
+   * a big body are what keeps a falling tower cheap. The plane never meets
+   * these — it collides with the drawn pieces.) */
   private collide(g: Group): void {
     const pc = g.pc;
     const c = pc.c;
+    const b = this.room.buildings[c.building] as Building;
     for (const h of g.colliders) {
       const col = this.world.getCollider(h);
       if (col) this.world.removeCollider(col, false);
       this.byCollider.delete(h);
+      this.colliderMass.delete(h);
     }
     g.colliders = [];
     g.mass = 0;
     const units = new Map<number, number[]>();
     for (let k = 0; k < g.pieces.length; k++) {
       const i = g.pieces[k] as number;
-      const key = g.level >= LEVEL_PIECE ? i : -1 - (c.chunk[i] as number);
+      const key =
+        g.level >= LEVEL_PIECE
+          ? i
+          : g.level === LEVEL_BAY
+            ? -1 - (c.chunk[i] as number)
+            : -1 - 0x4000000 - this.bandOf(b, c, i);
       const u = units.get(key);
       if (u) u.push(k);
       else units.set(key, [k]);
@@ -638,6 +660,7 @@ export class DebrisPhysics implements PhysicsHost {
       );
       g.colliders.push(col.handle);
       this.byCollider.set(col.handle, g);
+      this.colliderMass.set(col.handle, m);
       g.mass += m;
     }
   }
@@ -703,8 +726,11 @@ export class DebrisPhysics implements PhysicsHost {
           : g.mass * this.room.tuning.gravity * HOLD_FACTOR
         : (g.mass * Math.min(this.room.tuning.physFracture, IMPACT_SPEED_MIN)) /
           PHYS_STEP_S;
+    // Each collider reports its share: a strike spread over a compound's
+    // many boxes still adds up to the whole (events.ts sums them).
     for (const h of g.colliders) {
-      this.world.getCollider(h)?.setContactForceEventThreshold(f);
+      const share = (this.colliderMass.get(h) ?? g.mass) / (g.mass || 1);
+      this.world.getCollider(h)?.setContactForceEventThreshold(f * share);
     }
   }
 
@@ -885,7 +911,10 @@ export class DebrisPhysics implements PhysicsHost {
   private destroy(g: Group): void {
     if (g.joint) this.world.removeImpulseJoint(g.joint, true);
     if (g.anchor) this.world.removeRigidBody(g.anchor);
-    for (const h of g.colliders) this.byCollider.delete(h);
+    for (const h of g.colliders) {
+      this.byCollider.delete(h);
+      this.colliderMass.delete(h);
+    }
     this.world.removeRigidBody(g.body);
     if (g.state === FREE) this.active--;
     g.joint = null;
@@ -896,8 +925,8 @@ export class DebrisPhysics implements PhysicsHost {
   }
 
   /** Break `g` one level down (a strike, or a snapped hinge) — or, `deep`,
-   * straight into its bays (a hinge torn before it turned: the bays over
-   * the failed columns drop into the floor that gave). */
+   * straight into its bays, crushed (a hinge torn before it could turn:
+   * the section crumbles down onto what held it). */
   private crack(g: Group, deep = false): void {
     const c = g.pc.c;
     const b = this.room.buildings[c.building];
@@ -923,14 +952,17 @@ export class DebrisPhysics implements PhysicsHost {
         return;
     }
     if (g.level <= LEVEL_BAND) {
-      if (
-        this.split(
-          g,
-          by((i) => c.chunk[i] as number),
-          LEVEL_BAY,
-        )
-      )
+      const bays = this.split(
+        g,
+        by((i) => c.chunk[i] as number),
+        LEVEL_BAY,
+      );
+      if (bays) {
+        // Torn off its hinge before it could turn: it crumbles where it
+        // is, every bay crushed — the section comes down on itself.
+        if (deep) for (const bay of bays) this.crush(bay);
         return;
+      }
     }
     this.split(
       g,
@@ -980,7 +1012,8 @@ export class DebrisPhysics implements PhysicsHost {
     sb.version = version;
     for (const h of sb.colliders) {
       const col = this.world.getCollider(h);
-      if (col) this.world.removeCollider(col, false);
+      // Wake what rested on it: its support may be gone.
+      if (col) this.world.removeCollider(col, true);
       this.buildingOf.delete(h);
     }
     sb.colliders = [];
@@ -1099,7 +1132,6 @@ export class DebrisPhysics implements PhysicsHost {
       }
     });
     if (touched.length === 0) return;
-    const fractureAt = this.room.tuning.physFracture / PHYS_STEP_S;
     const through = new Set<Group>();
     for (const g of touched) {
       if (g.state !== HELD || g.load <= g.capacity || !g.strikers) continue;
@@ -1132,20 +1164,9 @@ export class DebrisPhysics implements PhysicsHost {
       // facade sheets peel off as it goes: crush what is left of it).
       for (const part of this.release(g, v)) this.crush(part);
     }
-    const crushAt = CRUSH_SPEED / PHYS_STEP_S;
+    // The column struck through moves on at its new speed: no shock.
+    for (const g of through) g.through = true;
     for (const g of touched) {
-      if (g.state === FREE && !through.has(g)) {
-        if (
-          g.level > LEVEL_SECTION &&
-          g.hit > g.mass * crushAt &&
-          this.crush(g)
-        ) {
-          // A floor slammed: crushed flat along its own storeys (a stack
-          // leaning on a facade slumps down it).
-        } else if (g.hit > g.mass * fractureAt) {
-          g.crack = true;
-        }
-      }
       g.load = 0;
       g.hit = 0;
       g.strikers = null;
@@ -1162,6 +1183,58 @@ export class DebrisPhysics implements PhysicsHost {
     const pc = g.pc;
     const c = pc.c;
     const t = this.room.tuning;
+    // Whatever buildings it rests on — its own stump, or a neighbour it
+    // has leant onto — at the points it touches them.
+    const sx = c.dir === DIR_POS_X ? 1 : c.dir === DIR_NEG_X ? -1 : 0;
+    const sz = c.dir === DIR_POS_Z ? 1 : c.dir === DIR_NEG_Z ? -1 : 0;
+    const points: { b: number; x: number; y: number; z: number }[] = [];
+    for (const h of g.colliders) {
+      const col = this.world.getCollider(h);
+      if (!col) continue;
+      this.world.contactPairsWith(col, (other) => {
+        const bi = this.buildingOf.get(other.handle);
+        if (bi === undefined) return;
+        this.world.contactPair(col, other, (m) => {
+          for (let k = 0; k < m.numSolverContacts(); k++) {
+            const p = m.solverContactPoint(k);
+            if (points.length >= BEAR_POINTS) return;
+            if (
+              points.some(
+                (q) =>
+                  Math.hypot(q.x - p.x, q.y - p.y, q.z - p.z) < BEAR_SPACING,
+              )
+            )
+              continue;
+            points.push({ b: bi, x: p.x, y: p.y, z: p.z });
+          }
+        });
+      });
+    }
+    if (points.length > 0) {
+      let mass = 0;
+      for (const i of g.pieces)
+        mass +=
+          8 * (c.hx[i] as number) * (c.hy[i] as number) * (c.hz[i] as number);
+      for (const p of points) {
+        const w = canonicalize({ x: p.x, y: 0, z: p.z });
+        this.impacts.push({
+          t: this.time,
+          building: p.b,
+          x: w.x,
+          y: Math.max(0, p.y - 1),
+          z: w.z,
+          e: t.chainEnergyMax,
+          // On through it, the way it leans, and down.
+          vx: sx * BEAR_SPEED,
+          vy: -BEAR_SPEED,
+          vz: sz * BEAR_SPEED,
+          vol: mass / points.length,
+          source: c.id,
+          depth: pc.depth,
+        });
+      }
+      return;
+    }
     // The section's base on its falling side, in its own frame: the
     // lowest local y, the furthest along the fall direction.
     const alongX = c.dir === DIR_NEG_X || c.dir === DIR_POS_X;
@@ -1263,6 +1336,7 @@ export class DebrisPhysics implements PhysicsHost {
   /** Cracks, hinges snapping, pieces freezing, collapses settling. */
   private afterStep(): void {
     const dt = PHYS_STEP_S;
+    const gravity = this.room.tuning.gravity;
     for (const pc of this.collapses) {
       if (pc.settled) continue;
       let live = 0;
@@ -1296,6 +1370,7 @@ export class DebrisPhysics implements PhysicsHost {
             g.stallTilt = tilt;
             if (g.bears++ >= LEAN_BEARS) snap = true;
             else this.bear(g);
+            g.body.wakeUp();
           }
           if (snap) {
             this.world.removeImpulseJoint(g.joint, true);
@@ -1304,6 +1379,26 @@ export class DebrisPhysics implements PhysicsHost {
             g.anchor = null;
             g.crack = true;
             g.deep = tilt < LEAN_TORN_TILT;
+          }
+        }
+        // Shock: the speed it lost this step beyond gravity's pull, with a
+        // few steps' memory (Rapier stops a slab over several steps).
+        const vel = g.body.linvel();
+        const dvx = vel.x - g.vx;
+        const dvy = vel.y - g.vy + gravity * dt;
+        const dvz = vel.z - g.vz;
+        g.shock = g.through
+          ? 0
+          : g.shock * SHOCK_DECAY +
+            Math.sqrt(dvx * dvx + dvy * dvy + dvz * dvz);
+        g.through = false;
+        if (!g.joint && !g.crack && g.shock > CRUSH_SPEED) {
+          if (g.level > LEVEL_SECTION && this.crush(g)) {
+            // A floor slammed: crushed flat along its own storeys (a
+            // stack leaning on a facade slumps down it).
+            g.shock = 0;
+          } else if (g.shock > this.room.tuning.physFracture) {
+            g.crack = true;
           }
         }
         if (g.crack) {

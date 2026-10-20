@@ -14,6 +14,7 @@ import {
   RESUME_WINDOW_MS,
 } from "@angels-bandits/common/constants";
 import { type ChaosTunings, chaosTunings } from "./chaos";
+import type { PhysicsFactory, PhysicsFrame } from "./physics-port";
 
 export interface GameHostOptions {
   /** How long a connection may stay open without sending `join` (S1). */
@@ -44,6 +45,13 @@ export interface GameHostOptions {
   pausable: boolean;
   /** The wall clock, ms. Injected so a test can drive it; Date.now. */
   clock: () => number;
+  /** DS1: builds each room's debris physics — the sim worker's Rapier
+   * world (server/src/debris-physics.ts); null (the Node shell, tests):
+   * every collapse is the closed form. */
+  debrisPhysics: PhysicsFactory | null;
+  /** DS1: each tick's physics frame, per room that has one (the worker
+   * transfers it to the page). */
+  onPhysicsFrame: ((frame: PhysicsFrame) => void) | null;
 }
 
 /** A host as it ships: the shared constants, C2's chaos, nothing staged. */
@@ -76,5 +84,7 @@ export function hostOptionsFromEnv(
     tickStats: env.AB_TICK_STATS === "1",
     pausable: false,
     clock: Date.now,
+    debrisPhysics: null,
+    onPhysicsFrame: null,
   };
 }

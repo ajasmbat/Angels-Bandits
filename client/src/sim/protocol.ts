@@ -2,8 +2,10 @@
 // GAME protocol is untouched — its JSON frames ride inside `send`/`frame`
 // exactly as they ride a ws — and these few envelopes only add what a
 // socket gives for free: opening, closing, and (solo only) the pause — plus
-// the QA tick profile (tools/perf/worker-tick.mjs).
+// the QA tick profile (tools/perf/worker-tick.mjs), and (DS1) the debris
+// physics' poses down and the camera it LODs by up.
 
+import type { PhysTier } from "@angels-bandits/server/debris-physics";
 import type { TickReport } from "@angels-bandits/server/host";
 
 /** Page → worker. */
@@ -19,7 +21,10 @@ export type ToWorker =
   /** Freeze or resume the whole simulation (GameHost.setPaused). */
   | { t: "pause"; on: boolean }
   /** QA: the host's tick profile (`sim` AB_TICK_STATS:1), reset after. */
-  | { t: "stats"; reset: boolean };
+  | { t: "stats"; reset: boolean }
+  /** DS1: the camera (canonical x, z) and the quality tier — the debris
+   * physics' LOD and moving-body budget. */
+  | { t: "view"; x: number; z: number; tier: PhysTier };
 
 /** Worker → page. */
 export type FromWorker =
@@ -33,4 +38,13 @@ export type FromWorker =
   | { t: "error"; message: string }
   /** QA: the tick profile asked for (null while profiling is off), and
    * the worker's clock when it was taken (its own timeline, ms). */
-  | { t: "stats"; report: TickReport | null; at: number };
+  | { t: "stats"; report: TickReport | null; at: number }
+  /** DS1: one tick of debris poses (common/src/city/physpose.ts records),
+   * at host time `at`, its buffers transferred. */
+  | {
+      t: "poses";
+      at: number;
+      epoch: number;
+      data: Float32Array;
+      heaps: Float32Array | null;
+    };

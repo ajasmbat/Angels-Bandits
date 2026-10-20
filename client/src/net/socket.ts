@@ -155,6 +155,7 @@ import {
   multiplayer,
   pauseLocalHost,
 } from "../sim/local";
+import { pagePhysics } from "../sim/poses";
 import { PoseCadence, RenderClock } from "./clock";
 import { InterpDelay } from "./delay";
 import { reconnectDelayMs } from "./reconnect";
@@ -401,6 +402,12 @@ export class GameSocket {
     // DL1: only a Destruction Lab's field builds a wire's stamped tuning —
     // set before the welcome's records are built.
     this.collapses.lab = welcome.lab === true && welcome.destruct === true;
+    // DS1: solo collapses are physical — posed from the local host's
+    // frames (the lab keeps every frame, for its scrub).
+    if (!multiplayer()) {
+      pagePhysics.history = this.collapses.lab;
+      this.collapses.attachPhysics(pagePhysics);
+    }
     this.replayDestruction(welcome);
     this.addMissiles(welcome.missiles);
     this.replayRacks(welcome.racks);

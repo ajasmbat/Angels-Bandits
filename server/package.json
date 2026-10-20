@@ -5,7 +5,9 @@
   "type": "module",
   "exports": {
     "./host": "./src/host.ts",
-    "./host-options": "./src/host-options.ts"
+    "./host-options": "./src/host-options.ts",
+    "./debris-physics": "./src/debris-physics.ts",
+    "./physics-port": "./src/physics-port.ts"
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",

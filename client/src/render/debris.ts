@@ -39,7 +39,9 @@ export function pieceMatrix(
   originZ: number,
   out: THREE.Matrix4,
 ): THREE.Matrix4 {
-  quat.setFromAxisAngle(pose.axis === 0 ? AXIS_X : AXIS_Z, pose.phi);
+  // DS1: a physics pose carries its own rotation.
+  if (pose.quat) quat.set(pose.qx, pose.qy, pose.qz, pose.qw);
+  else quat.setFromAxisAngle(pose.axis === 0 ? AXIS_X : AXIS_Z, pose.phi);
   pos.set(originX + pose.x, pose.y, originZ + pose.z);
   scale.set(2 * pose.hx, 2 * pose.hy, 2 * pose.hz);
   return out.compose(pos, quat, scale).multiply(CENTRE);
@@ -55,7 +57,9 @@ export function pieceMatrixAt(
   pose: PiecePose,
   out: THREE.Matrix4,
 ): THREE.Matrix4 {
-  quat.setFromAxisAngle(pose.axis === 0 ? AXIS_X : AXIS_Z, pose.phi);
+  // DS1: a physics pose carries its own rotation.
+  if (pose.quat) quat.set(pose.qx, pose.qy, pose.qz, pose.qw);
+  else quat.setFromAxisAngle(pose.axis === 0 ? AXIS_X : AXIS_Z, pose.phi);
   pos.set(pieceOrigin.x + pose.x, pose.y, pieceOrigin.z + pose.z);
   scale.set(2 * pose.hx, 2 * pose.hy, 2 * pose.hz);
   return out.compose(pos, quat, scale).multiply(CENTRE);

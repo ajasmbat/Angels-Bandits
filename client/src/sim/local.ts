@@ -10,7 +10,9 @@
 // screen. Host flags ride `?sim=KEY:VALUE,KEY:VALUE` — the AB_* switches and
 // timing overrides the harnesses used to set on the server's environment.
 
+import type { PhysTier } from "@angels-bandits/server/debris-physics";
 import type { TickReport } from "@angels-bandits/server/host";
+import { ingestPoses, sendPhysicsView } from "./poses";
 import type { FromWorker, ToWorker } from "./protocol";
 
 /** WebSocket's readyState values (a link reports the same ones). */
@@ -72,6 +74,10 @@ export function startLocalHost(): void {
   });
   worker.addEventListener("message", (ev: MessageEvent<FromWorker>) => {
     const msg = ev.data;
+    if (msg.t === "poses") {
+      ingestPoses(msg);
+      return;
+    }
     if (msg.t === "stats") {
       const out = msg.report && { ...msg.report, at: msg.at };
       for (const resolve of statsWaiters.splice(0)) resolve(out);
@@ -103,6 +109,17 @@ export function localTickReport(
   });
 }
 const statsWaiters: ((r: (TickReport & { at: number }) | null) => void)[] = [];
+
+/** DS1: the camera (any torus image) and quality tier, for the local
+ * host's debris physics (throttled; a no-op without a worker). */
+export function localPhysicsView(
+  x: number,
+  z: number,
+  tier: PhysTier,
+  now: number,
+): void {
+  if (worker) sendPhysicsView(postToWorker, x, z, tier, now);
+}
 
 /** Freeze (or resume) the local simulation. */
 export function pauseLocalHost(on: boolean): void {

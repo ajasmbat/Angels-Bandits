@@ -593,6 +593,7 @@ import { nearestImage, nearestImageInto } from "./render/wrapPlacement";
 import { Wrecks } from "./render/wrecks";
 import {
   WorkerLink,
+  localPhysicsView,
   localTickReport,
   multiplayer,
   startLocalHost,
@@ -7141,6 +7142,9 @@ const frame = (rafNow: number): void => {
   city.update(chase.position);
   // D3: debris posed at the render clock — the one the crash check uses.
   city.updateDebris(chase.position, collapseMs);
+  // DS1: the local host's debris physics LODs and budgets by this camera
+  // and tier (throttled to a few messages a second).
+  localPhysicsView(chase.position.x, chase.position.z, qualityTier, now);
   // L3 living windows: slow on/off, TV glow, silhouettes and the cleaning
   // crew all run off this one shared-clock uniform (living-windows.ts).
   city.updateLiveWindows(renderMs, now);

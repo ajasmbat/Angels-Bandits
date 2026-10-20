@@ -13,7 +13,10 @@ import { type Building, standingTopAt } from "@angels-bandits/common/city";
 import {
   type Collapse,
   KIND_BUILDING,
+  collapseSettledAt,
 } from "@angels-bandits/common/city/collapse";
+import type { LocalBox } from "@angels-bandits/common/city/destruction";
+import { heapHeight } from "@angels-bandits/common/city/physpose";
 import {
   type Vec3,
   wrapCoord,
@@ -88,12 +91,12 @@ export class RuinSmoke {
     let count = 0;
     for (const c of collapses) {
       if (c.kind !== KIND_BUILDING) continue;
-      const age = renderMs - (c.t0 + c.endMs);
+      const age = renderMs - collapseSettledAt(c);
       if (age < 0 || age >= RUIN_SMOKE_MS) {
         this.acc.delete(c.id);
         continue;
       }
-      const r = c.restBounds;
+      const r = restOf(c);
       const dx = wrapDeltaAxis(viewer.x, c.x + (r.x0 + r.x1) / 2);
       const dz = wrapDeltaAxis(viewer.z, c.z + (r.z0 + r.z1) / 2);
       // DL1: not Math.hypot (a builtin: its result boxed every call).
@@ -116,7 +119,7 @@ export class RuinSmoke {
     }
     for (let i = 0; i < Math.min(count, RUINS_DRAWN); i++) {
       const c = (this.near[i] as Near).c;
-      const age = renderMs - (c.t0 + c.endMs);
+      const age = renderMs - collapseSettledAt(c);
       const fade = 1 - age / RUIN_SMOKE_MS;
       let rec = this.acc.get(c.id);
       if (!rec) {
@@ -139,7 +142,7 @@ export class RuinSmoke {
    * over the building centre (skipped when nothing stands there), else a
    * fixed spot on top of the rubble. */
   private emitter(c: Collapse, k: number): boolean {
-    const r = c.restBounds;
+    const r = restOf(c);
     if (k === 0) {
       const b = this.buildings[c.building];
       if (!b) return false;
@@ -152,9 +155,17 @@ export class RuinSmoke {
     }
     const u = hash01(c.id, k * 2);
     const v = hash01(c.id, k * 2 + 1);
-    this.at.x = wrapCoord(c.x + r.x0 + (r.x1 - r.x0) * u);
-    this.at.y = r.y1;
-    this.at.z = wrapCoord(c.z + r.z0 + (r.z1 - r.z0) * v);
+    const lx = r.x0 + (r.x1 - r.x0) * u;
+    const lz = r.z0 + (r.z1 - r.z0) * v;
+    this.at.x = wrapCoord(c.x + lx);
+    // DS1: a physics ruin smokes off its heap of fine rubble.
+    const heap = c.phys?.heap;
+    this.at.y = heap ? Math.max(0, heapHeight(heap, lx, lz)) + 1 : r.y1;
+    this.at.z = wrapCoord(c.z + lz);
     return true;
   }
 }
+
+/** Where a ruin's rubble lies (centre-relative): DS1's physics bounds, or
+ * the closed form's rest boxes. */
+const restOf = (c: Collapse): LocalBox => c.phys?.bounds ?? c.restBounds;

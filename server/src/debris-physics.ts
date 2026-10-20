@@ -239,6 +239,8 @@ interface PhysCollapse {
   settled: boolean;
   sentFinal: boolean;
   heap: RubbleHeap | null;
+  /** Its heap in the world (a fixed heightfield), once settled. */
+  heapBody: RAPIER.RigidBody | null;
   /** Chain impacts landed, per building and in all. */
   hits: Map<number, { x: number; y: number; z: number }[]>;
   hitCount: number;
@@ -382,6 +384,7 @@ export class DebrisPhysics implements PhysicsHost {
       settled: false,
       sentFinal: false,
       heap: null,
+      heapBody: null,
       hits: new Map(),
       hitCount: 0,
     };
@@ -448,7 +451,8 @@ export class DebrisPhysics implements PhysicsHost {
     const k = this.collapses.findIndex((pc) => pc.c.id === id);
     if (k < 0) return;
     const pc = this.collapses[k] as PhysCollapse;
-    for (const g of pc.groups) this.destroy(g);
+    for (const g of [...pc.groups]) this.destroy(g);
+    if (pc.heapBody) this.world.removeRigidBody(pc.heapBody);
     this.collapses.splice(k, 1);
     this.registry.drop(pc.c.id, pc.c.building);
   }
@@ -1454,6 +1458,7 @@ export class DebrisPhysics implements PhysicsHost {
       }
     }
     pc.heap = this.raiseHeap(pc, merged);
+    if (pc.heap) pc.heapBody = this.groundHeap(pc.c, pc.heap);
     this.pendingHeaps.push(this.collapses.indexOf(pc));
   }
 
@@ -1560,6 +1565,36 @@ export class DebrisPhysics implements PhysicsHost {
       }
     }
     return { x0, z0, cell: HEAP_CELL, nx, nz, h, top };
+  }
+
+  /** `heap` in the world: what the next collapse's debris piles onto. */
+  private groundHeap(c: Collapse, heap: RubbleHeap): RAPIER.RigidBody {
+    // Rapier's heightfield: rows along z, columns along x, column-major,
+    // centred on its collider.
+    const rows = heap.nz;
+    const cols = heap.nx;
+    const h = new Float32Array((rows + 1) * (cols + 1));
+    for (let i = 0; i <= cols; i++) {
+      for (let j = 0; j <= rows; j++) {
+        h[i * (rows + 1) + j] = heap.h[j * (cols + 1) + i] as number;
+      }
+    }
+    const body = this.world.createRigidBody(
+      RAPIER.RigidBodyDesc.fixed().setTranslation(
+        c.x + heap.x0 + (cols * heap.cell) / 2,
+        0,
+        c.z + heap.z0 + (rows * heap.cell) / 2,
+      ),
+    );
+    this.world.createCollider(
+      RAPIER.ColliderDesc.heightfield(rows, cols, h, {
+        x: cols * heap.cell,
+        y: 1,
+        z: rows * heap.cell,
+      }).setFriction(this.room.tuning.physFriction),
+      body,
+    );
+    return body;
   }
 
   /** Chain impacts found since the last call, earliest first. */

@@ -539,6 +539,7 @@ import { CourseRings } from "./render/rings";
 import { BRIDGE_GONE_UNIFORM, RiverRenderer } from "./render/river";
 import { RoofClutterRenderer } from "./render/roofclutter";
 import { RooftopLifeRenderer } from "./render/rooftop-life";
+import { RubbleHeaps } from "./render/rubble-heap";
 import { RuinSmoke } from "./render/ruins";
 import { ScaffoldRenderer } from "./render/scaffold";
 import { ScarsRenderer } from "./render/scars";
@@ -1766,6 +1767,10 @@ let qaBurn: number | null = null;
 let burnWelcome: unknown = null;
 // D8: fresh ruins smoulder (smoke + embers off the stump and rubble).
 const ruinSmoke = new RuinSmoke(impacts, city.cityBuildings);
+// DS1: a settled physics collapse's heap of fine rubble (drawn as exactly
+// the surface the crash check collides with).
+const rubbleHeaps = new RubbleHeaps(city.cityBuildings);
+scene.add(rubbleHeaps.group);
 // D10: what a collapsing building sheds — gravel, window frames, glass,
 // steel sparks, and a burst at every floor event (the D1 pool, no draw).
 const collapseDetail = new CollapseDetail(impacts, city.cityBuildings);
@@ -7521,6 +7526,7 @@ const frame = (rafNow: number): void => {
   const collapseViewer = qaView ? qaView.eye : chase.position;
   dust.update(socket.collapses.list, collapseViewer, collapseMs, camera.aspect);
   ruinSmoke.update(socket.collapses.list, collapseViewer, collapseMs, now);
+  rubbleHeaps.update(socket.collapses.list, collapseViewer);
   collapseDetail.update(socket.collapses.list, collapseViewer, collapseMs, now);
   // D5: the director's warnings (dust, steam, sparks) and the rebuilds'
   // welders; an event is forgotten once its alarm has died away.

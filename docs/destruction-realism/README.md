@@ -94,7 +94,7 @@ catch the same scene at a slightly different state.
 | `rubble-heap.jpg` | the heap from 48 m: settled dust over the pile and the street, glass glitter, rebar and slab edges out of it, small fires; the pile no longer a blown-out pink wall |
 | `collapse-dust-street.jpg` | the closed-form pile from the street: the rubble's checkerboard squares and the black rebar streaks gone, torn slab edges |
 | `interior-exposed.jpg` | NEW view: rooms behind a shot-out facade — ceiling panels and depth instead of flat lit tiles, smooth soot instead of squares |
-| `destruction-glass.jpg` | the glass cascade off a chewed curtain wall (D9's shower, now with cracks round the hits on the facade) |
+| `destruction-glass.jpg` | the glass cascade off a chewed curtain wall (D9's shower); no regression from the new shading |
 
 **Draw calls** (`__ab.perf()`, the gallery's count): interior-exposed 98 →
 98, collapse-dust-street 103 → 98, destruction-glass 110 → 104; the lab

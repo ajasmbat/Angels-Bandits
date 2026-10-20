@@ -38,7 +38,8 @@
 2. **Below `SKY_FOG_STOP` the dome IS this frame's fog colour; above it, a
    fogged surface fades toward the dome's own gradient.** A fully fogged
    landmark must not show against the sky (pinned in
-   `client/test/sky.test.ts`). H1's supertalls reach `CITY_TOP` (480 m):
+   `client/test/sky.test.ts`). H1's supertalls reached `CITY_TOP` (480 m,
+   T1: 1000 m, though the deck now hides what stands above it — rule 5):
    at the fog limit a crown stands up to asin(480/800) ≈ 37° up, far above
    the 18° stop, and the stop cannot rise that far without burying the
    moon (`MOON_EL_LOW`). So `fog_fragment` mixes toward `abSkyFog(fogColor,
@@ -93,6 +94,24 @@
    √(622² + 500²) ≈ 798 m), and floored at 0. H1's 650 m deck needed the
    full 150 m; K1's 440 m deck reads from the street by itself and gets
    none (a negative lift would fog it MORE).
+
+5. **Above `CLOUD_BASE` a surface is inside the deck** (T1, `fog.ts`
+   `deckPath` / `abDeckPath`, the TS mirror `deckAmount`): the fog chunk
+   measures how much of the eye-to-fragment ray runs above the deck's
+   base, softened over `DECK_SOFT`, and mixes the fragment toward the
+   fogged colour by `1 − exp(−path · DECK_DENSITY)`, after the ordinary
+   fog — so a mega-tower's shaft dissolves into the cloud (~60 % gone 65 m
+   up the ray, ~95 % by 210 m) and the deck reads as a lid over the canyon, not a
+   sheet the towers pass through. The camera inside the deck
+   (`DECK_CAM_FADE`) gets the flat in-cloud soup instead. The deck's own
+   sheet and puffs define `AB_NO_DECK` (they ARE the deck: hazing them by
+   it would fog them twice). The buildings' shader skips the windows of a
+   fragment that is `DECK_SKIP` lost (cheap early out) and adds the warm
+   glow and the warning beacons through the haze on top
+   (`buildings-material.ts`), and the far skyline fades its lattice into
+   the deck the same way (`FAR_DECK_FADE`). The deck sheet itself is
+   subdivided (`CEILING_SEGMENTS`): fog distance is interpolated per
+   vertex, and one quad 1.8 km across reads as fully fogged everywhere.
 
 **What breaks when they disagree:**
 

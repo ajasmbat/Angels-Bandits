@@ -186,6 +186,12 @@ describe("D3 collapses over the wire", () => {
       15000,
     );
     clearInterval(firing);
+    // A goes on streaming its pose, as a live client does: T1's taller
+    // target puts the fly-in below past the liveness bound
+    // (LIVENESS_TIMEOUT_MS), which would drop a silent A — and its credit.
+    const streaming = setInterval(() => {
+      a.ws.send(JSON.stringify({ type: "pose", pose: aim }));
+    }, 100);
     expect(fell).toBe(true);
 
     // Both clients got the same event, about the tower A shot.
@@ -250,15 +256,15 @@ describe("D3 collapses over the wire", () => {
       killerId: a.welcome.id,
       cause: "collapse",
     };
-    expect(
-      await until(
-        () =>
-          a.deaths.some((d) => d.victimId === b.welcome.id) &&
-          b.deaths.some((d) => d.victimId === b.welcome.id),
-        // Generous: under a loaded full-suite run the server child lags.
-        10000,
-      ),
-    ).toBe(true);
+    const died = await until(
+      () =>
+        a.deaths.some((d) => d.victimId === b.welcome.id) &&
+        b.deaths.some((d) => d.victimId === b.welcome.id),
+      // Generous: under a loaded full-suite run the server child lags.
+      10000,
+    );
+    clearInterval(streaming);
+    expect(died).toBe(true);
     expect(a.deaths.find((d) => d.victimId === b.welcome.id)).toMatchObject(
       want,
     );

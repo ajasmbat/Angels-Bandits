@@ -190,6 +190,12 @@ export const BUDGETS = {
     "chaos-high": 122,
     "chaos-canyon": 129,
     "chaos-quiet-district": 116,
+    // T1 the supertall canyon's views: measured (94, 101, 95, 97) + ~10 %.
+    // The berths' rigging is one draw for them all, while one is near.
+    "canyon-supertalls": 104,
+    "mooring-masts": 111,
+    "orbit-mega-tower": 105,
+    "skyline-wall": 107,
   },
 };
 
@@ -370,14 +376,17 @@ export const SEGMENTS = [
   // 50 ms from 1 s before the segment's instant to 12 s after: clear.
   {
     name: "collapse",
-    what: "D3/D5: a 294 m skyscraper toppling across the street ahead — debris in the air, the dust cloud rising",
+    what: "D3/D5: a 299 m skyscraper toppling across the street ahead — debris in the air, the dust cloud rising",
     // H1: building 157 (658.5, 249), 294 m, in the downtown core, west
     // face on the x = 600 street (D6's tower 343 at (1240, 464) on the
     // x = 1200 street is a mid-rise now; this is its pose shifted (−600,
     // −215), so the street and the face line up as they did). HELD on that
     // street's centreline 236 m south, 110 m up, nose north. It topples
     // west (−x) across the street into the towers there — never near the
-    // camera.
+    // camera. T1: 157 is a 577 m supertall (it only pancakes); the 299 m
+    // building 109 (542.5, 257) across the street, its east face on it,
+    // topples east (+x) across it into 157 instead — the same street, the
+    // same distance ahead.
     x: 600,
     z: 485,
     y: 110,
@@ -389,7 +398,7 @@ export const SEGMENTS = [
     // ~0.75 s of world time) and on the M3 (~5 s of it) alike. The harness
     // asserts it has NOT all landed by the window's end.
     stageAtWindow: {
-      fell: [{ b: 157, h: 294, style: "topple", dir: 0, t: -1500 }],
+      fell: [{ b: 109, h: 299, style: "topple", dir: 1, t: -1500 }],
       // D9: and what its debris and the fight knock over on the street
       // ahead — two cars blown, a roof tank toppling, lamps snapped, a
       // crater with its water main spraying.
@@ -481,7 +490,8 @@ export const SEGMENTS = [
     // The x = 1200 street, from z = 1880 north at 20 m (the x = 800 street
     // has a viaduct over it). H1: buildings 303 (west) and 340 and 341
     // (east, the 241 m one) toppled across it 58–62 s before the segment's
-    // instant, after 25 % of the chunks of the three buildings within 120 m
+    // instant (T1: 303 and 340 at 227 / 226 m, 341 a 423 m supertall that
+    // pancakes beside the street), after 25 % of the chunks of the three buildings within 120 m
     // of (1200, 1700) were shot away (Midtown's landmark is one of them) —
     // no dust, nothing moving; the harness asserts every collapse is at
     // rest. A glide in WALL time, like `hole`.
@@ -505,9 +515,10 @@ export const SEGMENTS = [
         buildings: 3,
       },
       fell: [
-        { b: 303, h: 117, style: "topple", dir: 1, t: -62_000 },
-        { b: 340, h: 132, style: "topple", dir: 0, t: -60_000 },
-        { b: 341, h: 241, style: "topple", dir: 0, t: -58_000 },
+        { b: 303, h: 227, style: "topple", dir: 1, t: -62_000 },
+        { b: 340, h: 226, style: "topple", dir: 0, t: -60_000 },
+        // T1: 341 is a 423 m supertall now — it comes straight down.
+        { b: 341, h: 423, style: "pancake", dir: 0, t: -58_000 },
       ],
     },
     expect: "settled",
@@ -602,7 +613,8 @@ export const SEGMENTS = [
     name: "chaos",
     what: "C2 peak chaos: 12 planes under the airship fleet and its flak, a missile a second, meteors, a quake, fire and a tower toppling across the street",
     // D6's `collapse` viewpoint (H1: building 157, 294 m, toppling west
-    // across the x = 600 street 236 m ahead), HELD at 110 m. 11 fake pilots weave
+    // across the x = 600 street 236 m ahead; T1: building 109, 299 m,
+    // toppling east across it), HELD at 110 m. 11 fake pilots weave
     // 70–230 m ahead down the street at 120–200 m — inside the plane LOD's
     // near band, so every plane is the full airframe all window — and hold
     // their fire (a tracer is a draw on the pilots' own wall clock). The
@@ -629,7 +641,7 @@ export const SEGMENTS = [
       // L7: the inferno at its peak — burn 0.9, snapped (never ramps
       // inside the window); a build without it ignores the field.
       burn: 0.9,
-      fell: [{ b: 157, h: 294, style: "topple", dir: 0, t: -1500 }],
+      fell: [{ b: 109, h: 299, style: "topple", dir: 1, t: -1500 }],
       // D9: and what its debris and the fight knock over on the street
       // ahead — two cars blown, a roof tank toppling, lamps snapped, a
       // crater with its water main spraying.

@@ -42,13 +42,13 @@ import {
   FLEET_FLAK_SCALE,
   FLEET_HIDE_M,
   FLEET_LANES,
-  FLEET_LAYERS,
   FLEET_TUNING,
   type FleetShip,
   type FleetTuning,
   LAUNCH_SEQ_MS,
   type LaneBreak,
   type LaunchKind,
+  PATH_MOOR,
   SHIP_CLASSES,
   SHIP_REACH,
   type ShipDown,
@@ -64,6 +64,8 @@ import {
   gridCoord,
   hiddenLaneSpot,
   laneBreaks,
+  laneLength,
+  lanePath,
   launchDoneAt,
   launchReleaseAt,
   shipById,
@@ -79,6 +81,7 @@ import {
 } from "@angels-bandits/common/boss";
 import {
   type Building,
+  LANDMARK_BLOCKS,
   chunkBuilding,
   chunkId,
   tierGrids,
@@ -89,8 +92,10 @@ import {
 } from "@angels-bandits/common/city/penetrate";
 import { losClear } from "@angels-bandits/common/collision";
 import {
+  BLOCK_PITCH,
   INTERP_DELAY_MAX_MS,
   POSE_AGE_MAX_MS,
+  WORLD_SIZE,
 } from "@angels-bandits/common/constants";
 import {
   BREAK_LEAD_MS,
@@ -98,7 +103,11 @@ import {
   breakPassEnd,
   breakTouchIn,
 } from "@angels-bandits/common/fleetplan";
-import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
+import {
+  type Vec3,
+  wrapDeltaAxis,
+  wrapDistance,
+} from "@angels-bandits/common/world";
 import type { BotRoundHit } from "./bots";
 import type { Combat, SpeedCapFn } from "./combat";
 import { type RoomCity, blastProps, sweepBlast } from "./destruction";
@@ -188,8 +197,14 @@ export const BOSS_CLAIM_LOOKBACK_MS =
  * on-record nose at the shot, rad: the pose behind it is up to
  * POSE_AGE_MAX_MS old, and a plane turns while the claim is in flight. */
 export const BOSS_DIR_CONE = 0.5;
-/** A launch comes from a ship this near (plan view) some human, m. */
-export const LAUNCH_NEAR_M = 900;
+/** A launch comes from a ship this near (plan view) some human, m. T1:
+ * the whole torus (its half diagonal) — the ships are still tried nearest
+ * first. The cores' supertalls leave a pilot no clear release among them
+ * (pilots.ts departClear), so the air force's rigs are the carriers on the
+ * edge's rooftop lines and the threads where they leave the cores, and the
+ * far ones must count wherever the humans are (900 m left the middle of
+ * the city a third of its planes short). */
+export const LAUNCH_NEAR_M = Math.ceil(WORLD_SIZE / Math.SQRT2);
 
 interface Turret {
   /** Index into BOSS_TURRETS. */
@@ -543,8 +558,8 @@ export class FleetDirector {
     if (!this.started) {
       this.started = true;
       // The sky is full the moment the war begins: every lane, seeded spots.
-      FLEET_LANES.forEach((lane, i) => {
-        const len = (FLEET_LAYERS[lane.layer] as { length: number }).length;
+      FLEET_LANES.forEach((_, i) => {
+        const len = laneLength(i);
         const s0 = Math.round(this.rand() * len * 10) / 10;
         out.started.push(this.comeOn(i, now, s0 >= len ? 0 : s0));
       });
@@ -993,6 +1008,55 @@ export function applyFlankSweeps(
     );
     sweepBlast(city, rec, by, 0, FLANK_BLAST);
   }
+}
+
+/** T1: a moored ship comes down on its own tower's face and tears down
+ * it: P1 sweeps straight down the face from where it hit toward the
+ * street, one every FACE_TEAR_STEP m of height, each starting as the
+ * falling hull would reach that height — a gash down the face, never a
+ * band through the tower (a mega-tower keeps standing). Credited like the
+ * crash. Deterministic in the city, the crash and the time. */
+export const FACE_TEAR_SPEED = 30;
+export const FACE_TEAR_STEP = 110;
+export const FACE_TEAR_MASS = 400;
+export const FACE_TEAR_BLAST = { r: 12, damage: 600 };
+export function applyFaceTear(
+  city: RoomCity,
+  ship: FleetShip,
+  at: Vec3,
+  by: string | null,
+  now: number,
+): void {
+  const tower = towerCentre(ship.lane);
+  if (!tower) return;
+  // Into the face: from the berth toward the tower's axis.
+  const ln = FLEET_LANES[ship.lane] as { cx: number; cz: number };
+  const nx = wrapDeltaAxis(ln.cx, tower.x);
+  const nz = wrapDeltaAxis(ln.cz, tower.z);
+  const n = Math.hypot(nx, nz) || 1;
+  for (let y = at.y; y > 0; y -= FACE_TEAR_STEP) {
+    const fall = Math.sqrt((2 * (at.y - y)) / 9.81) * 1000;
+    const rec = makeImpact(
+      IMPACT_SECTION,
+      now + fall,
+      { x: at.x, y, z: at.z },
+      { x: (nx / n) * 4, y: -FACE_TEAR_SPEED, z: (nz / n) * 4 },
+      0,
+      FACE_TEAR_MASS,
+    );
+    sweepBlast(city, rec, by, 0, FACE_TEAR_BLAST);
+  }
+}
+
+/** T1: the centre of the mega-tower a berth's lane docks at, or null. */
+function towerCentre(lane: number): { x: number; z: number } | null {
+  const slot = (FLEET_LANES[lane] as { tower: number }).tower;
+  const block = LANDMARK_BLOCKS[slot];
+  if (lanePath(lane) !== PATH_MOOR || !block) return null;
+  return {
+    x: block[0] * BLOCK_PITCH + BLOCK_PITCH / 2,
+    z: block[1] * BLOCK_PITCH + BLOCK_PITCH / 2,
+  };
 }
 
 /** The floor band BOSS_CRUSH_DEPTH floors under where a crash hit building

@@ -27,6 +27,7 @@
 // For them the right fog is attenuation: multiply by (1 - fog). The beam
 // shader includes `AB_FOG_GLSL` and does exactly that.
 
+import { CLOUD_BASE } from "@angels-bandits/common/constants";
 import * as THREE from "three";
 import { AB_SKY_FOG_GLSL, SKY_FOG_AIR, SKY_FOG_STOPS } from "./sky-fog";
 
@@ -168,6 +169,50 @@ export function fogFactor(
   return s ** k;
 }
 
+/**
+ * T1 the supertall canyon: the storm deck as an occluder. Seen from under
+ * it, everything above CLOUD_BASE is in cloud: the share of a view ray
+ * that runs above the base, times its length, is its path in cloud, and
+ * the surface fades by 1 − exp(−path × DECK_DENSITY) toward the fog colour
+ * along that ray (the dome's colour behind it — sky-meets-fog), so the
+ * cores' supertalls and the mega-towers disappear up into the deck (~60 %
+ * gone 65 m into it, ~95 % by 210 m; from DECK_SOFT under its base). It fades out as the camera climbs
+ * into the deck itself (DECK_CAM_FADE), where the storm's in-cloud fog
+ * takes over. Applied in the shared fog chunk, so every fogged material
+ * agrees; the building material adds its windows' glow and beacons back
+ * through it (buildings-material.ts).
+ */
+export const DECK_DENSITY = 1 / 70;
+export const DECK_CAM_FADE = [CLOUD_BASE - 10, CLOUD_BASE + 30] as const;
+/** ...and its base is soft: the haze thickens from this far under
+ * CLOUD_BASE, m, so a tower dissolves up into the deck instead of being cut
+ * at its sheet (storm.ts). */
+export const DECK_SOFT = 30;
+/** Where the deck's haze starts, m. */
+export const DECK_HAZE_BASE = CLOUD_BASE - DECK_SOFT;
+
+/** Mirror of the GLSL: a view ray's path in the deck, m, from a camera at
+ * `camY` to a fragment at `fragY` and radial distance `dist`. */
+export function deckPath(camY: number, fragY: number, dist: number): number {
+  const lo = Math.min(camY, fragY);
+  const hi = Math.max(camY, fragY);
+  const above = Math.max(hi - CLOUD_BASE, 0) - Math.max(lo - CLOUD_BASE, 0);
+  const dy = hi - lo;
+  const share = dy > 0.5 ? above / dy : lo >= CLOUD_BASE ? 1 : 0;
+  const t = Math.min(
+    1,
+    Math.max(
+      0,
+      (camY - DECK_CAM_FADE[0]) / (DECK_CAM_FADE[1] - DECK_CAM_FADE[0]),
+    ),
+  );
+  return Math.max(0, dist) * share * (1 - t * t * (3 - 2 * t));
+}
+
+/** Mirror of the GLSL: how much of a fragment the deck hides, 0..1. */
+export const deckAmount = (camY: number, fragY: number, dist: number): number =>
+  1 - Math.exp(-deckPath(camY, fragY, dist) * DECK_DENSITY);
+
 /** The two layers combined: what a fogged surface's colour is mixed by. */
 export function combinedFog(linear: number, haze: number): number {
   return 1 - (1 - linear) * (1 - haze);
@@ -250,6 +295,18 @@ float abFogFactor(float near, float far, float dist) {
   float s = smoothstep(near, far, dist);
   float k = AB_FOG_SHAPE - clamp(abWeather.y, 0.0, 1.0) * (AB_FOG_SHAPE - 1.0);
   return pow(s, k);
+}
+const float AB_DECK_BASE = ${DECK_HAZE_BASE.toFixed(1)};
+const float AB_DECK_DENSITY = ${DECK_DENSITY.toFixed(6)};
+// T1: the view ray's path in the storm deck, m (deckPath).
+float abDeckPath(float camY, float fragY, float dist) {
+  float lo = min(camY, fragY);
+  float hi = max(camY, fragY);
+  float above = max(hi - AB_DECK_BASE, 0.0) - max(lo - AB_DECK_BASE, 0.0);
+  float dy = hi - lo;
+  float share = dy > 0.5 ? above / dy : step(AB_DECK_BASE, lo);
+  return max(dist, 0.0) * share
+    * (1.0 - smoothstep(${DECK_CAM_FADE[0].toFixed(1)}, ${DECK_CAM_FADE[1].toFixed(1)}, camY));
 }
 float abHazeAmount(float camY, float fragY, float dist) {
   float cy = max(camY, 0.0);
@@ -403,7 +460,17 @@ export function installHeightFog(): void {
 	// street.
 	vec3 abFogC = mix( abGlowFog( abSkyFog( fogColor, abSinEl ), abSinEl ), fogColor, abTunnelAir.a );
 	gl_FragColor.rgb = mix( gl_FragColor.rgb, abFogC, fogFactor );
-	float abHaze = abHazeAmount(cameraPosition.y, vFogWorldY, abFogDepth) * (1.0 - fogFactor) * (1.0 - abUnder);
+	// T1: the storm deck hides what rises into it, seen from under it
+	// (fog.ts DECK_DENSITY) — toward the same colour, so it meets the sky.
+	#ifdef AB_NO_DECK
+		// The deck's own sheet and puffs ARE the deck (storm.ts).
+		float abDeckL = 0.0;
+	#else
+		float abDeckL = abDeckPath(cameraPosition.y, vFogWorldY, vFogDepth) * (1.0 - abUnder);
+	#endif
+	float abDeck = 1.0 - exp(-abDeckL * AB_DECK_DENSITY);
+	gl_FragColor.rgb = mix( gl_FragColor.rgb, abFogC, abDeck );
+	float abHaze = abHazeAmount(cameraPosition.y, vFogWorldY, abFogDepth) * (1.0 - fogFactor) * (1.0 - abUnder) * (1.0 - abDeck);
 	vec3 abHazeColor = mix(abFogC, abHazeParams.rgb, abHazeParams.a);
 	gl_FragColor.rgb = mix( gl_FragColor.rgb, abHazeColor, abHaze );
 #endif

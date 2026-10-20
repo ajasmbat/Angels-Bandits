@@ -65,20 +65,31 @@ export const EMISSIVE_TRACER = 1.5;
 // consumers all over the client (minimap, roof beacons, facade archetypes,
 // the city's neon tint, searchlights) identify a landmark by height alone.
 export const BUILDING_MIN_HEIGHT = 20;
-/** H1: the downtown cores' tallest towers (was 240). */
-export const BUILDING_MAX_HEIGHT = 320;
+/** H1: the downtown cores' tallest towers (was 240). T1 supertall canyon:
+ * 320 → 650 — the cores' towers rise through the cloud deck (CLOUD_BASE),
+ * their tops lost in it. */
+export const BUILDING_MAX_HEIGHT = 650;
+/** T1: the tallest generated lot OUTSIDE the cores — the top of the mid
+ * ring's and the edge's band tables (HEIGHT_BANDS_MID / _EDGE). Everything
+ * that flies over the roofline (the pilots' cruise band, the respawn
+ * layer, the rooftop lanes, the blimp, the news heli) clears THIS and the
+ * roof structures on it; the cores' supertalls and the landmarks rise
+ * through all of it and are vetoed or steered round like spires. */
+export const SKYLINE_RING_MAX_HEIGHT = 265;
 /** Hand-placed landmark supertalls for orientation. H1: the RECOGNITION
  * threshold — every landmark is at least this tall (the shortest is exactly
  * this), every generated building is under it, so `height >=
  * LANDMARK_HEIGHT` still means "a landmark". Their real heights are their
- * profiles' (city/landmarks.ts, 400–480 m). */
-export const LANDMARK_HEIGHT = 400;
+ * profiles' (city/landmarks.ts). T1: 400 → 700, the mega-towers (700–1000
+ * m) over the cores' 650 m supertalls. */
+export const LANDMARK_HEIGHT = 700;
 /** H1: the tallest thing in the city — the tallest landmark profile's
- * summed tiers (city/landmarks.ts keeps them equal; a test pins it). Every
- * altitude that must clear the whole skyline (the carrier, the news heli,
- * the blimp, the cloud deck, the ceilings) is set above this, never above
- * LANDMARK_HEIGHT. */
-export const CITY_TOP = 480;
+ * summed tiers (city/landmarks.ts keeps them equal; a test pins it). T1:
+ * 480 → 1000, far up in the storm deck: nothing flies over the skyline any
+ * more (the ceilings, the deck and every aircraft are under it), so what
+ * must clear the roofline clears SKYLINE_RING_MAX_HEIGHT and is kept off
+ * the towers that rise through it. */
+export const CITY_TOP = 1000;
 /** Footprint side of the slim landmark towers, meters. */
 export const LANDMARK_FOOTPRINT = 90;
 
@@ -117,36 +128,46 @@ export const LOT_INTERIOR_INSET_MAX = 4;
  * ascending by probability, end at exactly 1, and stay inside
  * [BUILDING_MIN_HEIGHT, BUILDING_MAX_HEIGHT].
  *
- *  - CORE: the two downtown cores — a dense mass of 150–320 m towers with
- *    some shorter filler between them (Manhattan's Midtown and Downtown).
- *  - MID: the mid-rise ring round the cores and the landmarks — 40–120 m
- *    blocks with a thin tail of towers.
- *  - EDGE: the outskirts and the waterfront — the low streetwall.
+ *  - CORE: the two downtown cores — T1's canyon of supertalls: mostly
+ *    250–650 m towers (more than half over 420 m, through the cloud deck),
+ *    a few 170–250 m fillers between them.
+ *  - MID: the ring round the cores and the landmarks — 100–265 m towers,
+ *    the old cores' height (T1: was 40–210 m).
+ *  - EDGE: the outskirts and the waterfront — 55–200 m (T1: was 20–90 m),
+ *    so no district is open sky.
+ *
+ * T1: MID and EDGE top out at SKYLINE_RING_MAX_HEIGHT, under the
+ * pilots' cruise cap (common/src/pilots.ts PILOT_CRUISE_CAP, derived from
+ * it): the air force flies over the ring's roofs and steers round the
+ * cores and the landmarks, as it always steered round the spires.
  */
 export const HEIGHT_BANDS_CORE: ReadonlyArray<
   readonly [number, number, number]
 > = [
-  [0.12, 90, 150],
-  [0.5, 150, 240],
-  [1.0, 240, 320],
+  [0.1, 170, 250],
+  [0.45, 250, 420],
+  [1.0, 420, 650],
 ];
 export const HEIGHT_BANDS_MID: ReadonlyArray<
   readonly [number, number, number]
 > = [
-  [0.82, 40, 120],
-  [0.96, 120, 170],
-  [1.0, 170, 210],
+  [0.4, 100, 170],
+  [0.85, 170, 230],
+  [1.0, 230, SKYLINE_RING_MAX_HEIGHT],
 ];
 export const HEIGHT_BANDS_EDGE: ReadonlyArray<
   readonly [number, number, number]
 > = [
-  [0.88, 20, 60],
-  [1.0, 60, 90],
+  [0.6, 55, 130],
+  [1.0, 130, 200],
 ];
 /** H1 slenderness cap: a lot's building is at most this many times its
  * short side tall — the big towers land on the big lots, and a 26 m sliver
  * tops out as a pencil tower (~180 m), never a 320 m needle. */
 export const SLENDER_MAX = 7;
+/** T1: the cores' cap instead, so their 50–80 m lots carry the 500–650 m
+ * supertalls. */
+export const CORE_SLENDER_MAX = 10;
 /** H1: a lot within this of a construction block (city/layout.ts) stays
  * low enough for its tower crane — the jib reaches CRANE_JIB_MAX + its half
  * side + a plane's radius from a mast set CRANE_MAST_INSET inside the
@@ -456,6 +477,11 @@ export const BOOT_PING_INTERVAL_MS = 1000;
  * does it under it, among the towers. The deck now sits under the 500 m it
  * fogged as, so it needs no fog lift (client storm.ts DECK_FOG_LIFT 0). */
 export const CLOUD_BASE = 440;
+/** T1: no fly-through hole's top (floor + height) rises over this, m —
+ * 40 m under the deck (city/holes.ts). In the cores' supertalls clear air
+ * is only found high up, and a hole in the cloud (or over the storm's
+ * ceiling) is one nobody sees or can fly. */
+export const HOLE_MAX_TOP = CLOUD_BASE - 40;
 /** Above this altitude the hidden death ceiling arms, m — the soft ceiling
  * (K1: 750 → 480), 40 m into the deck. */
 export const STORM_KILL_ALT = SOFT_CEILING;
@@ -721,6 +747,14 @@ export const CHUNK_HP = 60;
  * 0.18 — with the gone-share hold and the fast rebuild, the city stays well
  * under ~20 % gone). */
 export const DESTROY_CAP = 0.18;
+/** T1: the chunk count every share-based destruction cap is a share of,
+ * at most (CityDamage.capBasis): DESTROY_CAP, GONE_HOLD_SHARE, COLLAPSE_CAP,
+ * the director's stop shares and the client's debris pool. H1's seed city
+ * had 38,445 chunks; T1's supertalls hold ~70,600 — their caps stay where
+ * they were tuned in CHUNKS, not in share, so a room breaks, wires and
+ * renders no more than it did. Raise it only with measured headroom
+ * (tools/destruction-bench.ts, collapse-tick-bench.ts). */
+export const DESTRUCTION_CHUNK_BUDGET = 38445;
 /** D2's cap before C2 (AB_CHAOS=0 restores it via CityDamage.setCap). */
 export const DESTROY_CAP_D2 = 0.25;
 /** C2 backstop: while (broken + fallen) / chunks is at or over this, the
@@ -781,8 +815,21 @@ export const COLLAPSE_TOPPLE_DRIFT = 0.45;
 /** D11: no tall tower's collapse debris ever flies or rests further than
  * this many tower-heights from the building's centre (swept bounds
  * included) — the fairness envelope common/test/collapse-reach.test.ts
- * holds every 250 m+ tower of the seed city to (D10's was ~2). */
+ * holds every 250 m+ tower of the seed city to (D10's was ~2). T1: the
+ * cores' supertalls never topple (COLLAPSE_TOPPLE_MAX_SPAN), nor a slab
+ * along its length (COLLAPSE_TOPPLE_RISE_MAX). */
 export const COLLAPSE_TOPPLE_REACH = 1.55;
+/** T1: a falling section taller than this pancakes whatever its survivors
+ * say — a supertall comes down into its own footprint, as real ones do (a
+ * topple from the cores' 650 m would throw its crown across half the map,
+ * far past any warned strip). The ring's towers (SKYLINE_RING_MAX_HEIGHT)
+ * and the cores' fillers still topple. */
+export const COLLAPSE_TOPPLE_MAX_SPAN = 300;
+/** T1: a demolition asked to topple a section that would swing its far
+ * top corner more than this over its own top, m — √(depth along the fall²
+ * + height²) − height — pancakes instead: too squat to tip that way (the
+ * ring's 160 m-deep slabs, felled along their length, would rise ~50 m). */
+export const COLLAPSE_TOPPLE_RISE_MAX = 40;
 /** A landed chunk squashes into a rubble slab this share of its height
  * (≈1.4 m for a 12 m floor band) over COLLAPSE_SQUASH_MS. */
 export const COLLAPSE_RUBBLE_RATIO = 0.12;
@@ -807,13 +854,13 @@ export const COLLAPSE_DUST_MS = 20_000;
 /** The collapse model's version: what buildCollapse derives from a wire.
  * The welcome carries it; a client built for another model reloads rather
  * than build different debris than the server collides with. */
-export const COLLAPSE_MODEL = 12; // D11: a topple's chunks keep COLLAPSE_TOPPLE_DRIFT of their throw
+export const COLLAPSE_MODEL = 13; // T1: supertalls only pancake (COLLAPSE_TOPPLE_MAX_SPAN / RISE_MAX)
 /** H1: the city generator's version — the welcome carries it like
  * COLLAPSE_MODEL. A tab built for another generator (a deploy since it
  * loaded) would build a different city, so every chunk id, collapse and
  * prop it hears would name the wrong building: it reloads instead. Bump it
  * with any change that moves a building. */
-export const CITY_MODEL = 2;
+export const CITY_MODEL = 3; // T1: the supertall canyon
 /** Pancake: the creep after the lead beat, ms — the failure floor groans
  * and sags, dust puffs out, then the upper block lets go. */
 export const COLLAPSE_CREEP_MS = 900;
@@ -1082,8 +1129,11 @@ export const BOT_PROBE_RADIUS = 12;
  * cross-street facade, which is right inside a canyon and wrong among the
  * towers, where 646 buildings now fill the mid-altitude air that 97
  * free-standing ones left empty. Measured over 3 rooms x 11 bots x 200 s,
- * terrain's share of bot deaths: 53.8% at 200 m, 36.6% at 160, 20.7% here. */
-export const BOT_CANYON_PROBE_ALT = 110;
+ * terrain's share of bot deaths: 53.8% at 200 m, 36.6% at 160, 20.7% here.
+ * T1: the ring's towers reach SKYLINE_RING_MAX_HEIGHT, so the canyons do
+ * too — 110 → 280 m, just over the ring's roofs (the same sim: 47.7 % at
+ * 110 m over the supertall city, 26.7 % at 200, 17.9 % here). */
+export const BOT_CANYON_PROBE_ALT = SKYLINE_RING_MAX_HEIGHT + 15;
 /** Canyon probe radius, m. C1's streetwall makes the corridor uniform:
  * buildings stand on LOT_LINE, so a street centerline has exactly 20 m of
  * clearance to the facades on either side, everywhere, at every altitude
@@ -1153,8 +1203,9 @@ export const BOT_FAN_TIMES: readonly number[] = [0.5, 1.2, 2.2];
 /** Highest altitude an ENGAGEd bot aims its pursuit at, m, outside an attack
  * pass. A chase follows the target's ground track down here instead of
  * climbing to it, so a high human drags nobody up out of the streets. Just
- * over BOT_CANYON_PROBE_ALT + a corner hop: low enough that the chase stays
- * among the rooftops, high enough to hop the streetwall mid-pursuit. */
+ * over the canyon band + a corner hop: low enough that the chase stays
+ * among the rooftops, high enough to hop the streetwall mid-pursuit. (T1:
+ * the ring's taller canyons keep it well under BOT_CANYON_PROBE_ALT.) */
 export const BOT_ENGAGE_CEILING = 130;
 /** Longest a climbing attack pass at a target above BOT_ENGAGE_CEILING may
  * last, ms — then the bot breaks off and dives back to its band. */

@@ -23,12 +23,17 @@ import {
   FLEET_LANES,
   FLEET_LAYERS,
   FLEET_SIZE,
+  type FleetLane,
   type FleetShip,
+  PATH_LINE,
+  PATH_ORBIT,
   SHIP_CLASSES,
   SHIP_REACH,
   blankPose,
   fleetPoseAt,
   gridCoord,
+  laneLength,
+  lanePath,
   lanePoseInto,
   shipFullHp,
   turretMuzzleInto,
@@ -134,9 +139,19 @@ export function stageFleet(spec: QaFleetSpec): QaFleetStage {
     y: 0,
     z: wrapCoord(spec.z + fz * spec.ahead),
   };
-  /** Lane `lane`'s spot nearest plan point `t`: [s, distance across]. */
+  /** Lane `lane`'s spot nearest plan point `t`: [s, distance across].
+   * T1: an orbit's nearest spot is round its circle toward the point, a
+   * berth's its dock. */
   const nearestOn = (lane: number, t: Vec3): [number, number] => {
-    const ln = FLEET_LANES[lane] as { layer: 0 | 1; u: number };
+    const ln = FLEET_LANES[lane] as FleetLane;
+    const path = lanePath(lane);
+    if (path !== PATH_LINE) {
+      const c = wrapDelta({ x: ln.cx, y: 0, z: ln.cz }, t);
+      const d = Math.hypot(c.x, c.z);
+      return path === PATH_ORBIT
+        ? [ln.r * Math.atan2(c.z, c.x), Math.abs(d - ln.r)]
+        : [0, d];
+    }
     const ly = FLEET_LAYERS[ln.layer] as { dx: number; dz: number };
     const d = wrapDelta({ x: -ly.dz * ln.u, y: 0, z: ly.dx * ln.u }, t);
     let best: [number, number] = [0, Number.POSITIVE_INFINITY];
@@ -164,8 +179,8 @@ export function stageFleet(spec: QaFleetSpec): QaFleetStage {
   const lanes = [hero, ...byNear.filter((i) => i !== hero)].slice(0, count);
   const pose = blankPose();
   const ships: FleetShip[] = lanes.map((lane, i) => {
-    const ln = FLEET_LANES[lane] as { cls: 0 | 1 | 2; v: number; layer: 0 | 1 };
-    const len = (FLEET_LAYERS[ln.layer] as { length: number }).length;
+    const ln = FLEET_LANES[lane] as FleetLane;
+    const len = laneLength(lane);
     const reach = (SHIP_REACH[ln.cls] as { xz: number }).xz;
     const ahead = spec.ahead + QA_SHIP_STEP_M * i;
     const target = {
@@ -177,8 +192,10 @@ export function stageFleet(spec: QaFleetSpec): QaFleetStage {
     const [s0] = nearestOn(lane, target);
     let best = s0;
     let bestD = Number.POSITIVE_INFINITY;
+    // T1: an orbit is searched round its circle, a berth not at all.
+    const step = lanePath(lane) === PATH_LINE ? 20 : len / 81;
     for (let k = -40; k <= 40; k++) {
-      const sk = s0 + k * 20;
+      const sk = s0 + k * step;
       lanePoseInto(lane, sk, pose);
       const p = { x: pose.x, y: 0, z: pose.z };
       const off = wrapDelta(view, p);

@@ -51,13 +51,15 @@ describe("archetypeFor", () => {
     );
   });
 
-  it("classifies tall towers as GLASS (spec: height > 150)", () => {
-    expect(archetypeFor(box(120, 120, 176))).toBe(FacadeArchetype.GLASS);
+  it("classifies tall towers as GLASS (spec: height > 150; T1: > 250, the supertalls)", () => {
+    expect(archetypeFor(box(150, 150, 276))).toBe(FacadeArchetype.GLASS);
   });
 
   it("classifies slim towers as GLASS even under 120 m (slim aspect)", () => {
-    // 110 m tall on a 60×55 footprint: aspect 2.0 — a slim shaft.
-    expect(archetypeFor(box(60, 55, 110))).toBe(FacadeArchetype.GLASS);
+    // 110 m tall on a 60×55 footprint: aspect 2.0 — a slim shaft. T1: the
+    // ring's towers stand 2–3 footprints tall, so a shaft is 3 — 110 m on
+    // a 36×32 footprint.
+    expect(archetypeFor(box(36, 32, 110))).toBe(FacadeArchetype.GLASS);
   });
 
   it("classifies low, wide slabs as MASONRY (spec: height < 70 and wide)", () => {

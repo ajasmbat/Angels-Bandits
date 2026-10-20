@@ -72,9 +72,21 @@ describe("lowChaosLevel", () => {
   });
 
   it("needs towers: over open ground or low-rise it is never low", () => {
-    // The seed city has towers round every intersection; keep only its
-    // low-rise (and then nothing at all).
-    const lowRise = CITY.filter((b) => b.height < LOW_TOWERS_MIN);
+    // The seed city has towers round every intersection; flatten it to a
+    // low-rise streetwall on the same footprints (T1: its edges start at
+    // 55 m, so it has no low-rise of its own any more) — and then nothing
+    // at all.
+    const h = LOW_TOWERS_MIN - 5;
+    const lowRise = CITY.map((b) =>
+      makeBuilding({
+        x: b.x,
+        z: b.z,
+        width: b.width,
+        depth: b.depth,
+        height: h,
+        tiers: [{ width: b.width, depth: b.depth, height: h }],
+      }),
+    );
     expect(lowRise.length).toBeGreaterThan(10);
     for (const s of SPOTS) {
       for (const buildings of [lowRise, []]) {

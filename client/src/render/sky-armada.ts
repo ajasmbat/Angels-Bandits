@@ -969,11 +969,13 @@ function fxGeometry(): THREE.InstancedBufferGeometry {
 // --- 4. The painted horizon ---------------------------------------------------
 
 /** The painted layers: true distance (m), cruise altitude (m), cells round
- * the horizon, drift (whole turns per loop), peak alpha. */
+ * the horizon, drift (whole turns per loop), peak alpha. T1: down under the
+ * deck with the armada (was 560–600 m), among the far city's supertalls,
+ * which rise past them into the cloud — the horizon a wall of city. */
 const HORIZON_LAYERS = [
-  [7000, 560, 150, 2, 0.34],
-  [9500, 585, 210, 1, 0.26],
-  [13000, 600, 300, -1, 0.19],
+  [7000, 380, 150, 2, 0.34],
+  [9500, 395, 210, 1, 0.26],
+  [13000, 410, 300, -1, 0.19],
 ] as const;
 /** The ring's true radius, m: past every layer (the shell keeps it inside
  * the fog limit, behind the far city). */

@@ -20,6 +20,7 @@ import {
   CHUNK_FLOOR,
   CHUNK_HP,
   DESTROY_CAP,
+  DESTRUCTION_CHUNK_BUDGET,
   HOLE_CORRIDOR_MARGIN,
   RUBBLE_FALL_RANGE,
   RUBBLE_MAX_HEIGHT,
@@ -653,7 +654,7 @@ export class CityDamage {
       for (const mask of chunkMask(b)) for (const v of mask) total += v;
     }
     this.total = total;
-    this.limit = Math.floor(total * this.capShare);
+    this.limit = Math.floor(this.capBasis * this.capShare);
     const held = [...this.destroyed];
     const fell = [...this.fallen];
     this.destroyed.clear();
@@ -668,19 +669,25 @@ export class CityDamage {
   /** The share of chunks that may be broken (DESTROY_CAP by default). */
   setCap(share: number): void {
     this.capShare = share;
-    if (this.buildings) this.limit = Math.floor(this.total * share);
+    if (this.buildings) this.limit = Math.floor(this.capBasis * share);
   }
 
-  /** (broken + fallen) / chunks of the bound city (0 before bind). */
+  /** (broken + fallen) / capBasis (0 before bind). */
   get goneShare(): number {
     return this.total > 0
-      ? (this.destroyed.size + this.fallen.size) / this.total
+      ? (this.destroyed.size + this.fallen.size) / this.capBasis
       : 0;
   }
 
   /** Chunks in the bound city (0 before bind). */
   get chunkCount(): number {
     return this.total;
+  }
+
+  /** T1: what the share-based caps are shares of — the bound city's
+   * chunks, at most DESTRUCTION_CHUNK_BUDGET (0 before bind). */
+  get capBasis(): number {
+    return Math.min(this.total, DESTRUCTION_CHUNK_BUDGET);
   }
 
   get destroyedCount(): number {

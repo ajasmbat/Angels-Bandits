@@ -26,10 +26,14 @@ export const FacadeArchetype = {
 export type FacadeArchetype =
   (typeof FacadeArchetype)[keyof typeof FacadeArchetype];
 
-/** GLASS when taller than this, whatever the footprint. */
-const GLASS_MIN_HEIGHT = 150;
-/** ... or when height/longest-side reads as a slim shaft. */
-const GLASS_MIN_ASPECT = 1.8;
+/** GLASS when taller than this, whatever the footprint. T1: 150 → 250 —
+ * the supertalls start there now; the ring's 100–265 m towers stay brick,
+ * stone and office (the prewar skyline, and its laundry, flags, banners). */
+const GLASS_MIN_HEIGHT = 250;
+/** ... or when height/longest-side reads as a slim shaft. T1: 1.8 → 3 —
+ * the ring's towers stand two or three footprints tall now; at 1.8 most of
+ * them read as shafts (57 % of the city glass, was 17 %). */
+const GLASS_MIN_ASPECT = 3;
 /** OFFICE for a seeded share of the walk-ups (low commercial blocks)… */
 const OFFICE_SHARE_LOW = 0.65;
 /** …a smaller share of the 40 m+ mid-rises and towers, which the reference

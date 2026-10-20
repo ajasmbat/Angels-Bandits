@@ -217,14 +217,30 @@ describe("the director's pick", () => {
     };
     const plain = createRoomCity(SEED_CITY, CRANES);
     const before = share(plain, j);
-    // One X1 strike on tower j's facade (the server's own impact path).
-    const struck = createRoomCity(SEED_CITY, CRANES);
-    const bj = struck.buildings[j] as Building;
-    struck.damage.damageAt(
-      { x: bj.x + bj.width / 2, y: 30, z: bj.z },
-      MISSILE_CHUNK_RADIUS,
-      MISSILE_CHUNK_DAMAGE,
-    );
+    // One X1 strike on tower j's facade (the server's own impact path) —
+    // on a face that softens j alone (T1: the seed city's pair stands in
+    // one block, a party wall from its neighbours).
+    const strike = (face: number): RoomCity => {
+      const city = createRoomCity(SEED_CITY, CRANES);
+      const bj = city.buildings[j] as Building;
+      const sx = face === 0 ? 1 : face === 1 ? -1 : 0;
+      const sz = face === 2 ? 1 : face === 3 ? -1 : 0;
+      city.damage.damageAt(
+        {
+          x: bj.x + (sx * bj.width) / 2,
+          y: 30,
+          z: bj.z + (sz * bj.depth) / 2,
+        },
+        MISSILE_CHUNK_RADIUS,
+        MISSILE_CHUNK_DAMAGE,
+      );
+      return city;
+    };
+    const struck = [0, 1, 2, 3]
+      .map(strike)
+      .find((c) => [...c.damage.wear().keys()].every((k) => k === j));
+    if (!struck) throw new Error("no face of tower j softens it alone");
+    expect(struck.damage.wear().has(j)).toBe(true);
     const after = share(struck, j);
     expect(after).toBeGreaterThanOrEqual(0.5);
     expect(after).toBeGreaterThan(before + 0.2);

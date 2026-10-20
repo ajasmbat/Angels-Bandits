@@ -5,8 +5,11 @@
 // living enemy (torus wrapDistance), never inside any enemy's nose cone, and
 // faces that enemy; the 5.5 s spawn protection covers the approach. Sampled:
 // random candidates, best band score wins. RESPAWN_ALTITUDE is above every
-// generated rooftop; H1's landmark supertalls rise through it, so a
-// candidate whose straight run-out meets one is vetoed (landmarkClearance).
+// rooftop of the ring (SKYLINE_RING_MAX_HEIGHT); H1's landmark supertalls —
+// and T1's cores, whose towers rise into the deck — rise through it, so a
+// candidate whose straight run-out meets one is vetoed (landmarkClearance,
+// against the towers installSpawnTowers put up: the landmarks alone until
+// the server installs its city's).
 //
 // The RNG is injected (like the city generator's seeding) so tests choose
 // the candidates and the winner is deterministic.
@@ -15,6 +18,7 @@ import {
   BOSS_SPAWN_MARGIN,
   BOSS_SPAWN_RUNOUT_S,
 } from "@angels-bandits/common/boss";
+import type { Building } from "@angels-bandits/common/city";
 import { landmarkProfile } from "@angels-bandits/common/city/landmarks";
 import { LANDMARK_BLOCKS } from "@angels-bandits/common/city/layout";
 import { overChannel } from "@angels-bandits/common/city/river";
@@ -77,32 +81,80 @@ function inNoseCone(p: Vec3, enemies: readonly RespawnEnemy[]): boolean {
   return false;
 }
 
+/** A tower as the spawn layer sees it: its centre and a plan radius. */
+export interface SpawnTower {
+  x: number;
+  z: number;
+  r: number;
+}
+
+/** The plan radius (half-diagonal) of the widest of `tiers` (stacked from
+ * the ground, each centred) reaching within BOSS_SPAWN_MARGIN of
+ * RESPAWN_ALTITUDE, or 0. */
+function spawnReach(
+  tiers: readonly { width: number; depth: number; height: number }[],
+): number {
+  let base = 0;
+  let half = 0;
+  for (const t of tiers) {
+    if (base + t.height >= RESPAWN_ALTITUDE - BOSS_SPAWN_MARGIN) {
+      half = Math.max(half, Math.hypot(t.width, t.depth) / 2);
+    }
+    base += t.height;
+  }
+  return half;
+}
+
 /**
  * H1: each landmark supertall as the spawn layer sees it — its centre and
  * the plan radius (half-diagonal) of its widest tier reaching within
  * BOSS_SPAWN_MARGIN of RESPAWN_ALTITUDE. Pure in the fixed landmark layout,
  * so no city is needed (a broken tower is only ever smaller).
  */
-const LANDMARK_SPAWN_SOLIDS = LANDMARK_BLOCKS.map(([bx, bz], i) => {
-  let base = 0;
-  let half = 0;
-  for (const t of landmarkProfile(i).tiers) {
-    if (base + t.height >= RESPAWN_ALTITUDE - BOSS_SPAWN_MARGIN) {
-      half = Math.max(half, Math.hypot(t.width, t.depth) / 2);
-    }
-    base += t.height;
-  }
-  return {
+const LANDMARK_SPAWN_SOLIDS: readonly SpawnTower[] = LANDMARK_BLOCKS.map(
+  ([bx, bz], i) => ({
     x: bx * BLOCK_PITCH + BLOCK_PITCH / 2,
     z: bz * BLOCK_PITCH + BLOCK_PITCH / 2,
-    r: half,
-  };
-}).filter((s) => s.r > 0);
+    r: spawnReach(landmarkProfile(i).tiers),
+  }),
+).filter((s) => s.r > 0);
+
+/**
+ * T1: every building of `buildings` (as generated — a broken tower is only
+ * ever smaller) that reaches the spawn layer, roof structures included:
+ * the landmarks and the cores' supertalls. Pure.
+ */
+export function spawnTowersOf(buildings: readonly Building[]): SpawnTower[] {
+  const out: SpawnTower[] = [];
+  const floor = RESPAWN_ALTITUDE - BOSS_SPAWN_MARGIN;
+  for (const b of buildings) {
+    let r = spawnReach(b.tiers);
+    // Only its roof structures reach: they stand on the top tier.
+    const top = b.tiers[b.tiers.length - 1];
+    if (
+      r === 0 &&
+      top &&
+      (b.roof ?? []).some((s) => s.baseY + s.height >= floor)
+    ) {
+      r = Math.hypot(top.width, top.depth) / 2;
+    }
+    if (r > 0) out.push({ x: b.x, z: b.z, r });
+  }
+  return out;
+}
+
+let spawnTowers: readonly SpawnTower[] = LANDMARK_SPAWN_SOLIDS;
+
+/** T1: the towers every spawn is kept off (spawnTowersOf the server's
+ * city); null puts back the landmarks alone. */
+export function installSpawnTowers(towers: readonly SpawnTower[] | null): void {
+  spawnTowers = towers ?? LANDMARK_SPAWN_SOLIDS;
+}
 
 /**
  * H1: the closest a spawn at `pos` flying `yaw` level at RESPAWN_SPEED for
- * BOSS_SPAWN_RUNOUT_S comes to a landmark supertall, plan metres (negative:
- * it flies into one). `yaw` null (not known yet) asks for every heading,
+ * BOSS_SPAWN_RUNOUT_S comes to a landmark supertall (T1: any installed
+ * tower), plan metres (negative: it flies into one). `yaw` null (not known yet) asks for every heading,
  * like bossSpawnClear: the whole run-out disc counts.
  */
 export function landmarkClearance(pos: Vec3, yaw: number | null): number {
@@ -117,7 +169,7 @@ export function landmarkClearance(pos: Vec3, yaw: number | null): number {
       y: pos.y,
       z: pos.z + fz * RESPAWN_SPEED * s,
     };
-    for (const l of LANDMARK_SPAWN_SOLIDS) {
+    for (const l of spawnTowers) {
       const d = wrapDelta(p, { x: l.x, y: pos.y, z: l.z });
       clearance = Math.min(clearance, Math.hypot(d.x, d.z) - l.r - disc);
     }

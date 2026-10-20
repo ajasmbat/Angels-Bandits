@@ -29,6 +29,7 @@ import {
   HOLE_CLEARANCE,
   HOLE_CORRIDOR_MARGIN,
   HOLE_LINTEL_MIN,
+  HOLE_MAX_TOP,
   HOLE_MIN_FLOOR,
   HOLE_RUN_OUT,
   HOLE_SILL_MIN,
@@ -612,6 +613,7 @@ function fitHole(
     clearFloor(host.x, host.z, axis, along / 2, width, [host], buildings),
   );
   if (y0 + height + HOLE_LINTEL_MIN > base + tier.height) return null;
+  if (y0 + height > HOLE_MAX_TOP) return null; // T1: never up in the deck
   if (
     nearCrane(host.x, host.z, axis, along / 2, width / 2 + HOLE_CORRIDOR_MARGIN)
   ) {
@@ -738,6 +740,8 @@ function fitRow(
     const cx = axis === "x" ? mid : line;
     const cz = axis === "x" ? line : mid;
     y0 = clearFloor(cx, cz, axis, (aHi - aLo) / 2, w, cand, buildings);
+    // T1: never up in the deck.
+    if (y0 + TUNNEL_HEIGHT > HOLE_MAX_TOP) return null;
     // A candidate whose whole roof is under the floor is passed over.
     const next = cand.filter((b) => b.height > y0 - HOLE_CLEARANCE);
     if (next.length < cand.length) {

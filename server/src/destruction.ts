@@ -666,7 +666,7 @@ export function tickDestruction(
   const damage = city.damage;
   const capped = () =>
     damage.destroyedCount + damage.fallenCount >=
-    COLLAPSE_CAP * damage.chunkCount;
+    COLLAPSE_CAP * damage.capBasis;
   // D10: a tall tower's debris is ~4× the pieces it was; past
   // COLLAPSE_BUILD_BUDGET_MS of building this tick, the rest wait a tick
   // (the first always runs, so the queue always moves).

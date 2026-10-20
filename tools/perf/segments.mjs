@@ -191,7 +191,7 @@ export const BUDGETS = {
     "chaos-canyon": 129,
     "chaos-quiet-district": 116,
     // T1 the supertall canyon's views: measured (94, 101, 95, 97) + ~10 %.
-    // The berth's rigging is one draw while the ship is moored in view.
+    // The berths' rigging is one draw for them all, while one is near.
     "canyon-supertalls": 104,
     "mooring-masts": 111,
     "orbit-mega-tower": 105,

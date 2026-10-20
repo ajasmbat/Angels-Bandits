@@ -215,7 +215,7 @@ describe("S6 shader seams", () => {
   it("gives every reflecting material a new program cache key", () => {
     const src = (f: string) =>
       readFileSync(resolve(__dirname, "../src/render", f), "utf8");
-    expect(src("buildings-material.ts")).toMatch(/d2-broken-s6-refl"/);
+    expect(src("buildings-material.ts")).toMatch(/d2-broken-s6-refl-t1-deck"/);
     expect(src("sky.ts")).toContain('"ab-ground-paint-g1-s6-refl"');
     expect(src("river.ts")).toContain('"ab-river-water-s6-refl"');
   });

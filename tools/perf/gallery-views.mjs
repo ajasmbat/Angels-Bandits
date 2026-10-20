@@ -1939,15 +1939,17 @@ export const VIEWS = [
   },
   // SKY1: the distant dogfights — circling pairs and groups, tracer
   // streaks, muzzle sparkle, a plane going down burning — 300 m up,
-  // looking a little above the horizon.
+  // looking a little above the horizon. T1: from 220 m over the low east
+  // side (the core's supertalls now wall in the old west-core eye), east
+  // over the edge's roofs.
   {
     name: "sky-dogfights",
-    x: 760,
-    z: 650,
+    x: 1350,
+    z: 1250,
     y: 300,
-    yaw: Math.PI * 0.75,
-    eye: [600, 300, 600],
-    at: [-400, 430, 250],
+    yaw: -Math.PI / 2,
+    eye: [1300, 220, 1250],
+    at: [2300, 380, 1500],
     timeMs: 1_790_000_000_000,
     weather: "clear",
     raf: true,

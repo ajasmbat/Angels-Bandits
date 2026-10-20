@@ -12,9 +12,9 @@
 // closes off, and the gap is narrower than a plane (MOOR_GAP). Draw ==
 // collide is untouched: nothing a plane can reach is drawn here.
 //
-// One unlit instanced draw per berth, each culled by its own small sphere
-// (a berth out of view or past the fog costs no draw), the lamps and the
-// arms' lights bright on the LAMP rung, the steel dark: it reads as a
+// One unlit instanced draw for every berth together (none while no berth is
+// near: each one's instances are written only within the fog), the lamps and
+// the arms' lights bright on the LAMP rung, the steel dark: it reads as a
 // silhouette and a string of lights at night, like everything else up
 // there. Shown only while the berth's ship is moored (present and not
 // falling).
@@ -148,8 +148,10 @@ interface Berth {
   nx: number;
   nz: number;
   face: number;
-  mesh: THREE.InstancedMesh;
 }
+
+/** Instances per berth: the pieces and the two brackets. */
+const PER_BERTH = RIG_PIECES.length + 2;
 
 const pose: ShipPose = blankPose();
 const at: Vec3 = { x: 0, y: 0, z: 0 };
@@ -167,9 +169,9 @@ export class MooringRigs {
   private readonly material = new THREE.MeshBasicMaterial({
     color: 0xffffff,
   });
+  private readonly mesh: THREE.InstancedMesh;
 
   constructor() {
-    const count = RIG_PIECES.length + 2;
     FLEET_LANES.forEach((ln: FleetLane, lane) => {
       if (lanePath(lane) !== PATH_MOOR) return;
       const block = LANDMARK_BLOCKS[ln.tower];
@@ -182,30 +184,30 @@ export class MooringRigs {
       const half =
         ((landmarkProfile(ln.tower).tiers[1] as { width: number }).width ?? 0) /
         2;
-      const mesh = new THREE.InstancedMesh(this.geometry, this.material, count);
-      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      for (let i = 0; i < count; i++) {
-        const piece = RIG_PIECES[i];
-        mesh.setColorAt(i, piece ? (looks[piece.look] as THREE.Color) : STEEL);
-      }
-      mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 110);
-      mesh.visible = false;
-      this.group.add(mesh);
-      this.berths.push({
-        lane,
-        tx,
-        tz,
-        nx: dx / n,
-        nz: dz / n,
-        face: half,
-        mesh,
-      });
+      this.berths.push({ lane, tx, tz, nx: dx / n, nz: dz / n, face: half });
     });
+    const total = Math.max(1, this.berths.length) * PER_BERTH;
+    this.mesh = new THREE.InstancedMesh(this.geometry, this.material, total);
+    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    for (let i = 0; i < total; i++) {
+      const piece = RIG_PIECES[i % PER_BERTH];
+      this.mesh.setColorAt(
+        i,
+        piece ? (looks[piece.look] as THREE.Color) : STEEL,
+      );
+    }
+    // The berths are posed at the viewer's images, all within the fog:
+    // one draw for whichever are shown, never culled per berth.
+    this.mesh.frustumCulled = false;
+    this.mesh.count = 0;
+    this.mesh.visible = false;
+    this.group.add(this.mesh);
   }
 
   /** Pose every moored ship's rig at `renderMs`, at its torus image
    * nearest `viewer`; hide the rest. Allocation-free. */
   update(slot: FleetSlot, viewer: Vec3, renderMs: number | null): void {
+    let k = 0;
     for (const berth of this.berths) {
       const ship =
         renderMs === null ? null : mooredShip(slot, berth.lane, renderMs);
@@ -215,7 +217,6 @@ export class MooringRigs {
       const near =
         Math.hypot(ln.cx + ox - viewer.x, ln.cz + oz - viewer.z) <
         FOG_DISTANCE + 100;
-      berth.mesh.visible = ship !== null && near;
       if (!ship || !near || renderMs === null) continue;
       fleetPoseAt(ship, renderMs, pose);
       const cls = ln.cls;
@@ -229,7 +230,6 @@ export class MooringRigs {
           : -1;
       const fx = berth.tx + berth.nx * berth.face;
       const fz = berth.tz + berth.nz * berth.face;
-      let k = 0;
       for (const piece of RIG_PIECES) {
         const lx = piece.along * reach;
         const r = profileR(prof, lx);
@@ -256,7 +256,7 @@ export class MooringRigs {
         pos.set(cx, at.y, cz);
         q.setFromAxisAngle(up, Math.atan2(-berth.nz, berth.nx));
         scl.set(piece.at === undefined ? span : piece.w, piece.h, piece.w);
-        berth.mesh.setMatrixAt(k++, m4.compose(pos, q, scl));
+        this.mesh.setMatrixAt(k++, m4.compose(pos, q, scl));
       }
       // The arms' brackets on the face.
       for (const along of [0.62, -0.62]) {
@@ -271,15 +271,12 @@ export class MooringRigs {
         );
         q.setFromAxisAngle(up, Math.atan2(-berth.nz, berth.nx));
         scl.set(BRACKET.out, BRACKET.h, BRACKET.w);
-        berth.mesh.setMatrixAt(k++, m4.compose(pos, q, scl));
+        this.mesh.setMatrixAt(k++, m4.compose(pos, q, scl));
       }
-      berth.mesh.instanceMatrix.needsUpdate = true;
-      (berth.mesh.boundingSphere as THREE.Sphere).center.set(
-        ln.cx + ox,
-        ln.alt,
-        ln.cz + oz,
-      );
     }
+    this.mesh.count = k;
+    this.mesh.visible = k > 0;
+    if (k > 0) this.mesh.instanceMatrix.needsUpdate = true;
   }
 }
 

@@ -174,7 +174,7 @@ What each feature costs in draws, on every tier:
 | Z1 fleet (20 ships) | 2 instanced hull draws (near and far detail) + 2 Points (lights, flak) | particle emission only; the ships are never fewer |
 | SKY1 armada, dogfights, flak, painted horizon | 4 | `skyArmada`: 100 / 80 / 60 / 45 % of the slots and radius |
 | R1 far city | 2 (carpet, towers) | lattice size |
-| T1 berth rigging | 1 per berth in view while moored (0–2 in practice) | — |
+| T1 berth rigging | 1 for every berth together, only while a moored ship is within the fog | — |
 | C1 low chaos | 0 of its own: the debris mesh, the D1 particle pool, the props and the director FX already exist | — |
 | P1 penetration | 0 of its own: the tunnels are chunk breaks, the bodies ride the missile and wreck meshes, the bursts the D1 pool | — |
 

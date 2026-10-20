@@ -50,7 +50,6 @@ import {
 } from "@angels-bandits/common/city";
 import {
   type Collapse,
-  type CollapseImpact,
   DIR_NEG_X,
   DIR_NEG_Z,
   DIR_POS_X,
@@ -58,7 +57,6 @@ import {
   KIND_BUILDING,
   PANCAKE,
   ROLE_SHEET,
-  ROLE_SLAB,
   impactScale,
   standingOf,
 } from "@angels-bandits/common/city/collapse";
@@ -79,7 +77,6 @@ import {
   hingeLine,
 } from "@angels-bandits/common/city/structure";
 import { CHAIN_COALESCE_M, WORLD_SIZE } from "@angels-bandits/common/constants";
-import type { DestructionTuning } from "@angels-bandits/common/destruction-tuning";
 import { canonicalize, wrapDeltaAxis } from "@angels-bandits/common/world";
 import type {
   PhysicsFrame,

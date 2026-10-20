@@ -5,8 +5,9 @@
 // Rapier bodies (server/src/debris-physics.ts). Their poses are no longer a
 // pure function of time, so they travel: once per host tick the physics
 // writes ONE frame — every piece of every active collapse, as centre (from
-// the building's centre, like a PiecePose) + rotation quaternion + state —
-// into one Float32Array (`writeRecord`), which the worker transfers to the
+// the building's centre, like a PiecePose) + rotation quaternion + state +
+// squash (a crushed slab's share of its height) — into one Float32Array
+// (DebrisPhysics.takeFrame), which the worker transfers to the
 // page. Both sides ingest the SAME bytes into a PhysRegistry: the host for
 // its bots, the page for the plane and the renderer. Each Collapse the
 // registry knows gets `phys` (a PhysPoses), and collapse.ts's poseNow /

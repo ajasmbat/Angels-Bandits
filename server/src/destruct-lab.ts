@@ -163,6 +163,9 @@ export class DestructLab {
       case "charge":
         floorCharge(city, t.b, t.f ?? 1);
         break;
+      case "lean":
+        leanCharge(city, t.b, t.f ?? 1, t.d ?? 1);
+        break;
       case "neighbour": {
         const w = fell(city, t.b, TOPPLE, towardNeighbour(city, t.b), now);
         if (w) out.collapses.push(w);
@@ -461,6 +464,27 @@ function floorCharge(city: RoomCity, b: number, f: number): void {
   if (!g) return;
   for (let iz = 0; iz < g.nz; iz++) {
     for (let ix = 0; ix < g.nx; ix++) breakCell(city, b, ix, f, iz);
+  }
+}
+
+/** DS1: floor band `f` of tier 0 blown out on the `dir` side — the two
+ * thirds of its bays toward that side — so its columns fail there and the
+ * column planner leans the tower over toward it (a hinge on the line of
+ * the columns left standing). */
+function leanCharge(city: RoomCity, b: number, f: number, dir: number): void {
+  const building = city.buildings[b] as Building;
+  const g = tierGrids(building)[0];
+  if (!g) return;
+  const alongX = dir === DIR_NEG_X || dir === DIR_POS_X;
+  const n = alongX ? g.nx : g.nz;
+  const keep = Math.max(1, Math.floor(n / 3));
+  for (let iz = 0; iz < g.nz; iz++) {
+    for (let ix = 0; ix < g.nx; ix++) {
+      const i = alongX ? ix : iz;
+      // Toward +: everything past the kept third; toward −: before it.
+      const plus = dir === DIR_POS_X || dir === DIR_POS_Z;
+      if (plus ? i >= keep : i < n - keep) breakCell(city, b, ix, f, iz);
+    }
   }
 }
 

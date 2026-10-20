@@ -16,6 +16,15 @@ defaults.
 - The game's own renderers draw it. The lab only feeds them its look
   (`client/src/render/destruct-look.ts`) and its clock.
 
+**DS1: the lab is physical.** The lab room is a solo room, so its
+collapses run in the sim worker's Rapier world (docs/physical-destruction).
+A **Physics** group (column strength, debris mass, friction, fracture
+threshold, body budget; server scope) tunes it live. The page keeps every
+pose frame in the lab, so the scrub and the time-lapse sheet replay the
+simulation, not a formula. The strip adds BODIES and PHYSICS (the step's
+last / p99, over budget past 4 ms). The bit-identity notes below are about
+the closed form, which multiplayer still uses.
+
 ## The tuning
 
 `common/src/destruction-tuning.ts` holds `DestructionTuning` and

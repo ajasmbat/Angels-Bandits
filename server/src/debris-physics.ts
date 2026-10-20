@@ -183,9 +183,13 @@ const LEAN_KICK = 0.06;
 const MERGE_M3 = 6;
 /** The heap: grid cell, m; the share of the collapse's volume that is fine
  * rubble; its highest point, m (always flyable over). */
-const HEAP_CELL = 3;
+const HEAP_CELL = 1.5;
 const HEAP_SHARE = 0.05;
 const HEAP_MAX_M = 6;
+/** The heap's grid at most this many cells a side (240 m at 1.5 m), and
+ * how far a vertex is knocked up or down, m. */
+const HEAP_CELLS_MAX = 160;
+const HEAP_KNOCK_M = 0.9;
 
 const HELD = 0;
 const FREE = 1;
@@ -1634,8 +1638,8 @@ export class DebrisPhysics implements PhysicsHost {
     const pad = 2 * HEAP_CELL;
     x0 -= pad;
     z0 -= pad;
-    const nx = Math.min(120, Math.ceil((x1 + pad - x0) / HEAP_CELL));
-    const nz = Math.min(120, Math.ceil((z1 + pad - z0) / HEAP_CELL));
+    const nx = Math.min(HEAP_CELLS_MAX, Math.ceil((x1 + pad - x0) / HEAP_CELL));
+    const nz = Math.min(HEAP_CELLS_MAX, Math.ceil((z1 + pad - z0) / HEAP_CELL));
     const row = nx + 1;
     const w = new Float32Array(row * (nz + 1));
     for (let i = 0; i < c.n; i++) {
@@ -1691,8 +1695,13 @@ export class DebrisPhysics implements PhysicsHost {
       for (let k = 0; k <= nx; k++) {
         const at = j * row + k;
         if (j === 0 || k === 0 || j === nz || k === nx) continue;
+        // Rubble, not a dune: each vertex scaled and knocked up or down
+        // a little by its own hash (where there is rubble at all).
+        const base = (w[at] as number) * scale;
         const rough = 0.75 + 0.5 * hash3(c.id, k, j);
-        const v = Math.min(HEAP_MAX_M, (w[at] as number) * scale * rough);
+        const knock =
+          base > 0.3 ? HEAP_KNOCK_M * (hash3(c.id + 7919, k, j) - 0.5) : 0;
+        const v = Math.min(HEAP_MAX_M, Math.max(0, base * rough + knock));
         h[at] = v;
         top = Math.max(top, v);
       }

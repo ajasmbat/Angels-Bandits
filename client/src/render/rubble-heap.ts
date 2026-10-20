@@ -40,10 +40,19 @@ const HEAP_DRAW_M = 900;
 /** Linear base colours of the fine rubble, by the building's facade. */
 const RUBBLE_TINT: Readonly<Record<number, readonly [number, number, number]>> =
   {
-    [MAT_MASONRY]: [0.15, 0.085, 0.06],
-    [MAT_GLASS]: [0.1, 0.105, 0.11],
+    [MAT_MASONRY]: [0.11, 0.06, 0.042],
+    [MAT_GLASS]: [0.075, 0.078, 0.082],
   };
-const CONCRETE: readonly [number, number, number] = [0.12, 0.11, 0.1];
+const CONCRETE: readonly [number, number, number] = [0.085, 0.08, 0.072];
+
+/** A hash of three integers into [0, 1). */
+function hash01(a: number, b: number, c: number): number {
+  let h = Math.imul(a + 1, 0x9e3779b1);
+  h = Math.imul(h ^ (b + 0x632be5ab), 0x85ebca6b);
+  h = Math.imul(h ^ (c + 7), 0xc2b2ae35);
+  h ^= h >>> 15;
+  return (h >>> 0) / 4294967296;
+}
 
 /** The heap's triangles as a geometry in its building's frame. */
 export function heapGeometry(
@@ -72,8 +81,16 @@ export function heapGeometry(
         (heap.h[Math.max(0, j - 1) * row + i] as number);
       const slope = Math.min(1, Math.hypot(hx, hz) / (4 * heap.cell));
       const lift = Math.min(1, h / 3);
+      // Broken concrete and brick in clods: a coarse patch hash (2 × 2
+      // cells) and a fine one per vertex, darker on the steep faces and
+      // in the low rim, soot over all of it.
+      const patch = hash01(seed, i >> 1, j >> 1);
+      const fine = rand();
       const shade =
-        (0.55 + 0.35 * lift) * (1 - 0.35 * slope) * (0.8 + 0.4 * rand());
+        (0.35 + 0.45 * lift) *
+        (1 - 0.45 * slope) *
+        (0.55 + 0.6 * patch) *
+        (0.75 + 0.5 * fine);
       col[k * 3] = (tint[0] as number) * shade;
       col[k * 3 + 1] = (tint[1] as number) * shade;
       col[k * 3 + 2] = (tint[2] as number) * shade;

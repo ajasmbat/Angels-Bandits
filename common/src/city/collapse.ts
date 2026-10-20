@@ -59,6 +59,17 @@
 // bit for bit (common/test/destruction-parity.test.ts). A Destruction Lab
 // room stamps its build tuning on the wire (`dt`); only a lab CollapseField
 // builds from it.
+//
+// DS1: in a physics room (the solo sim worker's) the planner fails floors by
+// their COLUMNS instead of the band rule (city/structure.ts; `structural`),
+// and the debris built here is simulated, not posed in closed form: the
+// host's Rapier world (server/src/debris-physics.ts) moves the very pieces
+// built here and streams their poses, and each Collapse it took gets
+// `phys` (city/physpose.ts). poseNow and collideCollapses read `phys` first,
+// so every renderer and every collision check — host bots and the page's
+// plane alike — pose from the same frames. The closed form below remains
+// the whole model for multiplayer, far collapses, cranes and anything over
+// the physics' body budget.
 
 import {
   CHAIN_COALESCE_M,

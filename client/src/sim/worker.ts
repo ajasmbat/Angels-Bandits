@@ -130,7 +130,9 @@ async function build(env: Record<string, string>): Promise<GameHost> {
     // Only ever one player here: the game is theirs to pause.
     pausable: true,
     clock: clockFor(env),
-    debrisPhysics: physics ? (room) => new DebrisPhysics(room) : null,
+    debrisPhysics: physics
+      ? (room) => new DebrisPhysics(room, undefined, { governed: true })
+      : null,
     onPhysicsFrame: (f) => {
       const transfer: Transferable[] = [f.data.buffer as ArrayBuffer];
       if (f.heaps) transfer.push(f.heaps.buffer as ArrayBuffer);

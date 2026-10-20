@@ -126,7 +126,11 @@ const camera = {
 function run(tier: PhysTier): Row {
   const budget = PHYS_BUDGET[tier];
   const city = createRoomCity(seedCity);
-  const physics = new DebrisPhysics(city, { ...camera, budget });
+  const physics = new DebrisPhysics(
+    city,
+    { ...camera, budget },
+    { governed: true },
+  );
   // The step's CPU time (this thread's work, not the time a loaded box
   // spends running something else) alongside its wall time.
   let cpuMs = 0;

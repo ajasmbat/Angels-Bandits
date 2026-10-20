@@ -315,16 +315,26 @@ export class DebrisPhysics implements PhysicsHost {
   /** The last step's cost, ms (benches, the lab's telemetry). */
   lastStepMs = 0;
   /** The governed budget (≤ the tier's), and the last steps' costs. */
-  private governed = Number.POSITIVE_INFINITY;
+  private governedBudget = Number.POSITIVE_INFINITY;
   private readonly costs = new Float64Array(GOVERN_WINDOW);
   private costAt = 0;
   /** Bodies made by break-ups this tick (SPAWN_MAX). */
   private spawned = 0;
 
-  constructor(room: PhysicsRoom, view?: PhysicsView) {
+  /** Govern the body budget by the step's wall-clock cost (govern()).
+   * The sim worker and the bench do; a test does not — a governed world's
+   * outcome depends on how busy the machine is. */
+  readonly governed: boolean;
+
+  constructor(
+    room: PhysicsRoom,
+    view?: PhysicsView,
+    opts: { governed?: boolean } = {},
+  ) {
     if (!ready) throw new Error("debris physics used before init");
     this.room = room;
     this.view = view ?? null;
+    this.governed = opts.governed === true;
     this.world = this.makeWorld();
     this.queue = new RAPIER.EventQueue(true);
   }
@@ -352,7 +362,7 @@ export class DebrisPhysics implements PhysicsHost {
   get budget(): number {
     return Math.min(
       this.maxBudget,
-      Math.max(GOVERN_MIN, Math.floor(this.governed)),
+      Math.max(GOVERN_MIN, Math.floor(this.governedBudget)),
     );
   }
 
@@ -384,15 +394,15 @@ export class DebrisPhysics implements PhysicsHost {
     }
     const max = this.maxBudget;
     if (worst > PHYS_STEP_BUDGET_MS && this.active > GOVERN_MIN) {
-      this.governed = Math.max(
+      this.governedBudget = Math.max(
         GOVERN_MIN,
-        Math.min(this.governed, this.active) * GOVERN_SHRINK,
+        Math.min(this.governedBudget, this.active) * GOVERN_SHRINK,
       );
       this.costs.fill(0);
     } else if (worst < PHYS_STEP_BUDGET_MS * GOVERN_EASE) {
-      this.governed = Math.min(max, this.governed + GOVERN_GROW);
+      this.governedBudget = Math.min(max, this.governedBudget + GOVERN_GROW);
     }
-    if (this.governed > max) this.governed = max;
+    if (this.governedBudget > max) this.governedBudget = max;
     // Over the budget now: the slowest bodies that are all but still go.
     let over = this.active - this.budget;
     if (over <= 0) return;
@@ -439,7 +449,7 @@ export class DebrisPhysics implements PhysicsHost {
     this.impacts = [];
     this.pendingHeaps = [];
     this.active = 0;
-    this.governed = Number.POSITIVE_INFINITY;
+    this.governedBudget = Number.POSITIVE_INFINITY;
     this.costs.fill(0);
     this.epoch = ++epochs;
     this.registry.clear();
@@ -1183,7 +1193,7 @@ export class DebrisPhysics implements PhysicsHost {
     }
     if (steps > 0) this.afterTick(steps * PHYS_STEP_S);
     this.lastStepMs = performance.now() - began;
-    this.govern(this.lastStepMs);
+    if (this.governed) this.govern(this.lastStepMs);
     this.spawned = 0;
   }
 

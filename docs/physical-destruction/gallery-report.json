@@ -1,0 +1,127 @@
+{
+  "collapse-pancake-mid": {
+    "id": 1,
+    "building": 159,
+    "pieces": 1668,
+    "physics": true,
+    "settledAfterMs": 48074,
+    "frames": 962,
+    "heap": {
+      "top": 6,
+      "nx": 160,
+      "nz": 160
+    },
+    "stats": {
+      "type": "labStats",
+      "last": 0.1,
+      "p99": 8.7,
+      "build": 42,
+      "live": 285,
+      "boxes": 2047,
+      "bodies": 1,
+      "budget": 400,
+      "physLast": 0.5,
+      "physP99": 3.4
+    }
+  },
+  "collapse-lean-hinge": {
+    "id": 198,
+    "building": 159,
+    "pieces": 1459,
+    "physics": true,
+    "settledAfterMs": 33950,
+    "frames": 678,
+    "heap": {
+      "top": 6,
+      "nx": 126,
+      "nz": 98
+    },
+    "stats": {
+      "type": "labStats",
+      "last": 0,
+      "p99": 2,
+      "build": 71.4,
+      "live": 0,
+      "boxes": 1497,
+      "bodies": 0,
+      "budget": 150,
+      "physLast": 1.9,
+      "physP99": 7.8
+    }
+  },
+  "collapse-topple-impact": {
+    "id": 384,
+    "building": 159,
+    "pieces": 1553,
+    "physics": true,
+    "settledAfterMs": 23785,
+    "frames": 470,
+    "heap": {
+      "top": 6,
+      "nx": 101,
+      "nz": 102
+    },
+    "stats": {
+      "type": "labStats",
+      "last": 0.2,
+      "p99": 0.8,
+      "build": 36.8,
+      "live": 905,
+      "boxes": 3327,
+      "bodies": 30,
+      "budget": 27,
+      "physLast": 5,
+      "physP99": 24.4
+    }
+  },
+  "ruin-detail": {
+    "id": 516,
+    "building": 159,
+    "pieces": 1668,
+    "physics": true,
+    "settledAfterMs": 41782,
+    "frames": 835,
+    "heap": {
+      "top": 6,
+      "nx": 75,
+      "nz": 107
+    },
+    "stats": {
+      "type": "labStats",
+      "last": 0,
+      "p99": 0.2,
+      "build": 116.2,
+      "live": 0,
+      "boxes": 1671,
+      "bodies": 0,
+      "budget": 150,
+      "physLast": 1.1,
+      "physP99": 7.8
+    }
+  },
+  "rubble-heap": {
+    "id": 524,
+    "building": 159,
+    "pieces": 1668,
+    "physics": true,
+    "settledAfterMs": 29272,
+    "frames": 586,
+    "heap": {
+      "top": 6,
+      "nx": 72,
+      "nz": 85
+    },
+    "stats": {
+      "type": "labStats",
+      "last": 0.2,
+      "p99": 7,
+      "build": 45.9,
+      "live": 570,
+      "boxes": 3768,
+      "bodies": 64,
+      "budget": 68,
+      "physLast": 2.8,
+      "physP99": 9.5
+    }
+  }
+}

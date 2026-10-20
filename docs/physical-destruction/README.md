@@ -106,14 +106,47 @@ budget) and PHYSICS (step last / p99, warning over 4 ms).
 
 ## Benches
 
-- `node --import tsx tools/physics-bench.ts`: per tier, the worker's step
-  per tick (gate p99 ≤ 4 ms) and the page's pose upload (gate p99 ≤ 1 ms),
-  the median of three runs.
-- `node --import tsx tools/destruction-bench.ts`: bytes allocated per frame.
-  The physics row poses the `ruins` scene from frames.
+`node --import tsx tools/physics-bench.ts`: per tier, the worker's step per
+host tick (gate p99 ≤ 4 ms over every busy tick) and the page's pose upload
+(gate p99 ≤ 1 ms), the median of three runs. Measured on this box (a
+power-capped Ryzen 7 8700GE, shared; load 1, after the other work stopped),
+exit 0:
 
-Results are in the PR. The worker numbers depend on the machine: this box
-(a power-capped Ryzen 7 8700GE, shared, load 10–18) is not the M3.
+| tier | budget | peak | held to (governor) | step p50 / p99 | p99 at ≥ 75 % of the budget | page p50 / p99 |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| high | 400 | 400 | 165 | 2.52 / 3.99 ms | 3.69 ms (185 ticks) | 0.126 / 0.152 ms |
+| medium | 250 | 250 | 119 | 2.59 / 3.94 ms | 3.71 ms (506 ticks) | 0.110 / 0.147 ms |
+| low | 150 | 150 | 138 | 1.98 / 2.69 ms | 2.69 ms (721 ticks) | 0.115 / 0.145 ms |
+| mobile | 80 | 80 | 80 | 0.84 / 2.70 ms | 2.70 ms (733 ticks) | 0.101 / 0.132 ms |
+
+The run before it gave the same picture except high's p99 at ≥ 75 % of
+its budget: 4.59 ms. High sits at the edge on this box. The governor keeps
+the busy-tick p99 inside 4 ms by running fewer bodies when it has to.
+
+`node --import tsx tools/destruction-bench.ts`: bytes allocated per frame.
+The physics row poses the `ruins` scene from frames at 694 B/frame, the
+same as the closed-form row (693 B; flushDebris, three's upload list). The
+judged total is 4 011 B of 4 096 (main: 4 039).
+
+The M3 numbers are the planner's. This box has no GPU, and SwiftShader also
+starves the worker, so in the lab shots below collapses play slower than
+they would on a real machine.
+
+## Evidence (SwiftShader)
+
+Shot with `node tools/perf/ds1-gallery.mjs` (the lab: real host, recorded
+frames scrubbed to each instant), on T1's tower 159 (293 m) with the
+closed-form gallery's cameras. `gallery-report.json` holds each collapse's
+pieces, settle time and heap.
+
+| file | what it shows |
+| --- | --- |
+| `pancake-timelapse.jpg`, `collapse-pancake-mid.jpg` | The demolition pancake. The block lets go, drives down through floors that give one after another (crushed flat), and the pile settles with its heap. 1 668 pieces, settled after 48 s |
+| `lean-hinge-timelapse.jpg`, `collapse-lean-hinge.jpg` | The Lean trigger: floor 2 blown out on the +x side. The tower tilts whole about its last column line (3 to 6.5 s), then breaks into its floors and crumbles onto the lot. 1 459 pieces, settled after 34 s |
+| `topple-impact-timelapse.jpg`, `collapse-topple-impact.jpg` | Felled toward +x: its floors break up and pour down the canyon as tilted, tumbling plates, striking what they meet |
+| `ruin-detail.jpg` | The settled pancake at street level: stacked floor plates, slabs leaning, the dark heap with embers in front |
+| `rubble-heap.jpg` | The heap of fine rubble over the lot, from 48 m, the pile behind it |
+| `ruin-streaks-before-after.jpg` | Multiplayer's closed-form ruin: on main the slumped slab tops smear into long streaks; with DS1's piece-anchored patterns they don't |
 
 ## Multiplayer
 

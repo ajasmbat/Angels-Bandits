@@ -760,6 +760,10 @@ export function createBuildingsMaterial(
   const fracture = opts.fracture === true;
   // Added to three's own (MeshStandardMaterial's STANDARD), never instead.
   if (fracture) material.defines = { ...material.defines, AB_FRACTURE: "" };
+  // G8: debris is faceted, and a resting piece's cuts are reshaped in the
+  // vertex stage (debris.ts restJag), so its library normals no longer
+  // match its faces: light every face by its own (derivative) normal.
+  if (fracture) material.flatShading = true;
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uLiveTime = liveTime;
     // O3: the quality tier's living-windows switch, shared by reference.

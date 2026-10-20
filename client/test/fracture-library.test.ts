@@ -4,7 +4,13 @@
 // way — and the new destruction emissives under the bloom threshold.
 
 import { describe, expect, it } from "vitest";
-import { INTERIOR_PEAK } from "../src/render/broken-shading";
+import { INTERIOR_PEAK, triplanarWeights } from "../src/render/broken-shading";
+import {
+  REST_JAG_M,
+  libraryVertex,
+  patternAxis,
+  permute,
+} from "../src/render/debris";
 import {
   FACE_SLOTS,
   FACE_VERTS,
@@ -125,6 +131,79 @@ describe("DS2 fracture library: variety", () => {
         expect(Math.abs((f as { n: number[] }).n[1] as number)).toBeGreaterThan(
           0.5,
         );
+      }
+    }
+  });
+});
+
+describe("G8 no stretched pattern on any piece", () => {
+  // Pieces as a collapse poses them: a crushed rest slab (the pile in
+  // `ruin-detail`), a storey slab, a facade sheet, a column.
+  const sizes: [number, number, number][] = [
+    [20, 0.46, 20],
+    [20.2, 0.49, 2],
+    [20, 3.83, 20],
+    [2, 12, 20],
+    [1.2, 11.6, 1.2],
+  ];
+  /** How far a face's pattern stretches projected along `axis`: 1 / |m·axis|
+   * for its unit METRIC normal m (1 on the plane, ∞ edge-on). */
+  const stretch = (
+    n: readonly number[],
+    size: readonly number[],
+    axis: number,
+  ) => {
+    const m = n.map((c, k) => c / (size[k] as number));
+    const len = Math.hypot(...m);
+    return len / Math.abs(m[axis] as number);
+  };
+  const faces = cells
+    .slice(0, INTACT_ROW)
+    .flatMap((c) => c.faces.filter((f) => f !== null))
+    .map((f) => (f as { n: [number, number, number] }).n);
+
+  it("projects every library face, on every piece, within √3 of true", () => {
+    let unitWorst = 0;
+    for (const size of sizes) {
+      for (let axis = 0; axis < 3; axis++) {
+        for (const nc of faces) {
+          const n = permute(nc, axis);
+          const s = stretch(n, size, patternAxis(n, size));
+          expect(s).toBeLessThanOrEqual(Math.sqrt(3) + 1e-9);
+          // The old pick (the unit-box normal's nearest axis), for scale.
+          const unit = patternAxis(n, [1, 1, 1]);
+          unitWorst = Math.max(unitWorst, stretch(n, size, unit));
+        }
+      }
+    }
+    // The bug this holds off: on a crushed slab the unit-box pick smeared
+    // a face's pattern across metres.
+    expect(unitWorst).toBeGreaterThan(10);
+  });
+
+  it("triplanar weights sum to 1, and an axis-aligned face takes one plane", () => {
+    for (const nc of faces) {
+      const w = triplanarWeights(nc);
+      expect(w[0] + w[1] + w[2]).toBeCloseTo(1, 12);
+      for (const v of w) expect(v).toBeGreaterThanOrEqual(0);
+    }
+    expect(triplanarWeights([0, 1, 0])).toEqual([0, 1, 0]);
+    expect(triplanarWeights([0, 0, -1])).toEqual([0, 0, 1]);
+  });
+
+  it("a resting piece's cuts bite at most REST_JAG_M deep, in metres", () => {
+    const texels = libraryTexels(cells);
+    for (const size of sizes) {
+      for (let row = 0; row < FracClass.STEEL * FRACTURE_VARIANTS; row++) {
+        for (let v = 0; v < LIB_VERTS; v++) {
+          const q = libraryVertex(texels, row, v, size, 1, null, true);
+          const p = [q[0], q[1] - 0.5, q[2]];
+          for (let k = 0; k < 3; k++) {
+            const inset =
+              (0.5 - Math.abs(p[k] as number)) * (size[k] as number);
+            expect(inset).toBeLessThanOrEqual(REST_JAG_M + 0.05 + 1e-9);
+          }
+        }
       }
     }
   });

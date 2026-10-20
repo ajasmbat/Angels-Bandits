@@ -4239,6 +4239,8 @@ declare global {
          * the haze at the viewer. */
         dustCoverage: number;
         dustScale: number;
+        /** G8: the dust's summed sprite area, in frames (its fill cost). */
+        dustFill: number;
         dustHazeAtEye: number;
         collapseView: CollapseView | null;
         settledFlecks: number;
@@ -4545,6 +4547,11 @@ function qaSystems(): {
         dust.points,
       ],
     ],
+    // G8: fx's draws, one by one (attribution).
+    ["fxExplosions", [explosions.group]],
+    ["fxSparks", [sparks.points, shieldSparks.points]],
+    ["fxSmoke", [smoke.points, streakSmoke.points]],
+    ["fxDust", [dust.points]],
     ["impacts", [impacts.points]],
     // L7: the inferno's three draws, one by one.
     ["infernoFlames", [inferno.flames]],
@@ -5837,6 +5844,8 @@ window.__ab = {
       // budget's alpha scale, and the haze at the viewer.
       dustCoverage: dustCover.share,
       dustScale: dustCover.scale,
+      // G8: the dust's summed sprite area (frames of fill).
+      dustFill: dustCover.fill,
       dustHazeAtEye: lastDustHaze,
       // D11: what the camera sees of the collapses, and the settled ring.
       collapseView:

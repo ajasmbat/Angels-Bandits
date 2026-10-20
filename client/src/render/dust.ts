@@ -783,6 +783,8 @@ export class DustClouds {
    * budget), and the budget's scale on every alpha (1 = under it). */
   private lastCoverage = 0;
   private lastScale = 1;
+  /** G8 QA: the drawn puffs' summed sprite area last frame, in frames. */
+  private lastFill = 0;
   private share = 1;
   /** D10: the light the dust is lit by, relative to the night it was tuned
    * under (1, 1, 1 there): at its top, and at street level. */
@@ -946,8 +948,12 @@ export class DustClouds {
 
   /** D11 QA: the share of the frame the cloud covered last frame, and the
    * coverage budget's scale on every alpha (1 = it fitted). */
-  get coverage(): { share: number; scale: number } {
-    return { share: this.lastCoverage, scale: this.lastScale };
+  get coverage(): { share: number; scale: number; fill: number } {
+    return {
+      share: this.lastCoverage,
+      scale: this.lastScale,
+      fill: this.lastFill,
+    };
   }
 
   /** Re-project every live puff around the viewer. Call once per frame.
@@ -966,6 +972,7 @@ export class DustClouds {
     }
     let i = 0;
     let cover = 0;
+    let fill = 0;
     if (serverMs !== null) {
       const per = Math.max(
         1,
@@ -1015,8 +1022,9 @@ export class DustClouds {
           // size · (H/2) / depth px across (depth ≈ distance; behind the
           // camera it counts too — conservative).
           const half = size / (2 * Math.max(dist, 1));
-          cover +=
-            alpha * SPRITE_MEAN_ALPHA * Math.min(1, (half * half) / aspect);
+          const area = Math.min(1, (half * half) / aspect);
+          cover += alpha * SPRITE_MEAN_ALPHA * area;
+          fill += area;
           i++;
         }
       }
@@ -1026,6 +1034,7 @@ export class DustClouds {
     const cap = look.dustCoverageMax;
     this.lastScale = cover > cap ? cap / cover : 1;
     this.lastCoverage = cover * this.lastScale;
+    this.lastFill = fill;
     if (this.lastScale < 1) {
       const a = this.alphas.array as Float32Array;
       for (let k = 0; k < i; k++) a[k] = (a[k] as number) * this.lastScale;

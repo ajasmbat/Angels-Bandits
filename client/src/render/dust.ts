@@ -245,6 +245,11 @@ interface Cloud {
   curtain: Float64Array;
   /** The tower's height (the curtain's reach and size scale). */
   height: number;
+  /** G8: surgeAlong(height) at the look's roll-out `alongRoll` — worked
+   * out once, not per surge puff per frame (a double returned from a call
+   * V8 does not inline is boxed: the destruction bench's dust.update). */
+  along: number;
+  alongRoll: number;
   /** Every puff's seeds, HASHES per puff (D6: a hash per seed per puff per
    * frame boxed a double each). */
   seeds: Float64Array;
@@ -305,6 +310,8 @@ function cloudOf(c: Collapse): Cloud {
     squibs,
     curtain: new Float64Array(DUST_PUFFS * CURTAIN_STRIDE),
     height,
+    along: surgeAlong(height),
+    alongRoll: destructLook.dustRollOut,
     seeds: new Float64Array(DUST_PUFFS * HASHES),
     kinds: new Uint8Array(DUST_PUFFS),
   };
@@ -418,14 +425,6 @@ export function puffKind(id: number, k: number): number {
           : PUFF_PLUME;
 }
 
-/** The street line (a BLOCK_PITCH multiple) a run from world coordinate
- * `from` meets going `sign` (±1) — never behind it. */
-function streetAhead(from: number, sign: number): number {
-  return sign > 0
-    ? Math.ceil(from / BLOCK_PITCH) * BLOCK_PITCH
-    : Math.floor(from / BLOCK_PITCH) * BLOCK_PITCH;
-}
-
 /**
  * Puff `k` of `c`'s cloud at server time `tMs`, centre-relative (add the
  * collapse's x/z), into `out`. False while the puff is not alive.
@@ -514,14 +513,24 @@ function surgeOf(c: Collapse, cloud: Cloud, k: number, out: DustPuff): boolean {
     ? cloud.fz0 + (cloud.fz1 - cloud.fz0) * across
     : cloud.fx0 + (cloud.fx1 - cloud.fx0) * across;
   // …to the street line beyond it (world coordinates for the grid).
+  // The street line (a BLOCK_PITCH multiple) the run meets going `sign`,
+  // never behind it — inline (G8: no double through a call per puff).
   const worldFace = (alongX ? c.x : c.z) + face;
-  const street = streetAhead(worldFace, sign) - (alongX ? c.x : c.z);
+  const street =
+    (sign > 0
+      ? Math.ceil(worldFace / BLOCK_PITCH)
+      : Math.floor(worldFace / BLOCK_PITCH)) *
+      BLOCK_PITCH -
+    (alongX ? c.x : c.z);
   const out1 = Math.abs(street - face);
   // …then along the street, one way, most of a block.
   const turn = (cloud.seeds[k * HASHES + 4] as number) < 0.5 ? -1 : 1;
+  if (cloud.alongRoll !== destructLook.dustRollOut) {
+    cloud.alongRoll = destructLook.dustRollOut;
+    cloud.along = surgeAlong(cloud.height);
+  }
   const along =
-    surgeAlong(cloud.height) *
-    (0.35 + 0.65 * (cloud.seeds[k * HASHES + 5] as number));
+    cloud.along * (0.35 + 0.65 * (cloud.seeds[k * HASHES + 5] as number));
   const run = (out1 + along) * (1 - Math.exp(-s / SURGE_TAU_S));
   const lane =
     ((cloud.seeds[k * HASHES + 6] as number) * 2 - 1) * (STREET_WIDTH / 2 - 3);
@@ -706,7 +715,7 @@ export function dustHaze(
     const r = cloud.r + 45 * (1 - Math.exp(-age / 4000));
     // D6: the cheap reject first — most clouds are nowhere near the camera.
     if (dx * dx + dz * dz >= r * r) continue;
-    const d = Math.hypot(dx, dz);
+    const d = Math.sqrt(dx * dx + dz * dz);
     if (d >= r) continue;
     const top = cloud.h + 10;
     if (cam.y >= top + 25) continue;
@@ -730,6 +739,10 @@ function surgeHaze(c: Collapse, cloud: Cloud, cam: Vec3, tMs: number): number {
   const x = wrapDeltaAxis(c.x, cam.x);
   const z = wrapDeltaAxis(c.z, cam.z);
   const reach = 1 - Math.exp(-age / 1000 / SURGE_TAU_S);
+  if (cloud.alongRoll !== destructLook.dustRollOut) {
+    cloud.alongRoll = destructLook.dustRollOut;
+    cloud.along = surgeAlong(cloud.height);
+  }
   let best = 0;
   for (let side = 0; side < 4; side++) {
     const alongX = side < 2;
@@ -741,10 +754,16 @@ function surgeHaze(c: Collapse, cloud: Cloud, cam: Vec3, tMs: number): number {
       : sign > 0
         ? cloud.fz1
         : cloud.fz0;
+    // The street line it meets, as in surgeOf (inline, G8).
+    const worldFace = (alongX ? c.x : c.z) + face;
     const street =
-      streetAhead((alongX ? c.x : c.z) + face, sign) - (alongX ? c.x : c.z);
+      (sign > 0
+        ? Math.ceil(worldFace / BLOCK_PITCH)
+        : Math.floor(worldFace / BLOCK_PITCH)) *
+        BLOCK_PITCH -
+      (alongX ? c.x : c.z);
     const out1 = Math.abs(street - face);
-    const run = (out1 + surgeAlong(cloud.height)) * reach;
+    const run = (out1 + cloud.along) * reach;
     const u = alongX ? x : z; // the fall-out axis
     const v = alongX ? z : x;
     const lo = alongX ? cloud.fz0 : cloud.fx0;
@@ -973,6 +992,10 @@ export class DustClouds {
     let i = 0;
     let cover = 0;
     let fill = 0;
+    const pos = this.positions.array as Float32Array;
+    const sizes = this.sizes.array as Float32Array;
+    const alphas = this.alphas.array as Float32Array;
+    const heats = this.heats.array as Float32Array;
     if (serverMs !== null) {
       const per = Math.max(
         1,
@@ -1014,10 +1037,13 @@ export class DustClouds {
           );
           if (fade <= 0) continue;
           const alpha = this.puff.alpha * fade;
-          this.positions.setXYZ(i, px, this.puff.y, pz);
-          this.sizes.setX(i, size);
-          this.alphas.setX(i, alpha);
-          this.heats.setX(i, this.puff.heat ?? 0);
+          // G8: straight into the arrays (setXYZ / setX box their doubles).
+          pos[i * 3] = px;
+          pos[i * 3 + 1] = this.puff.y;
+          pos[i * 3 + 2] = pz;
+          sizes[i] = size;
+          alphas[i] = alpha;
+          heats[i] = this.puff.heat ?? 0;
           // Its share of the frame: three's size attenuation draws it
           // size · (H/2) / depth px across (depth ≈ distance; behind the
           // camera it counts too — conservative).

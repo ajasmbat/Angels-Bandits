@@ -3508,6 +3508,9 @@ declare global {
         fps: number;
         frameMs: number;
         drawCalls: number;
+        /** G8: triangles submitted last frame, every pass (instances × the
+         * drawn range — the vertex work a tile GPU bins). */
+        triangles: number;
         smokePuffs: number;
         /** L5: the mist's survival of the parting, per layer. */
         mist: Readonly<MistStats>;
@@ -4714,6 +4717,7 @@ window.__ab = {
     fps: perf.fps,
     frameMs: perf.frameMs,
     drawCalls: renderer.info.render.calls,
+    triangles: renderer.info.render.triangles,
     smokePuffs: smoke.puffCount,
     mist: atmosphere.fogBanks.stats,
     clearanceTests: atmosphere.fogBanks.stats.boxTests + steam.boxTests,

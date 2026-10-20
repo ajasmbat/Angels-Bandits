@@ -440,6 +440,7 @@ import {
 } from "./render/director-fx";
 import { DroneShowRenderer } from "./render/drones";
 import { DustClouds, dustHaze } from "./render/dust";
+import { DustDeposit } from "./render/dust-deposit";
 import { FacadeDetailRenderer } from "./render/facade-detail";
 import { FacadeGarnishRenderer } from "./render/facade-garnish";
 import { FacadeLifeRenderer } from "./render/facade-life";
@@ -453,6 +454,7 @@ import type { MistStats } from "./render/fogbanks";
 import { Fountains } from "./render/fountains";
 import { Explosions, ShockRings, Sparks } from "./render/fx";
 import { CourseGhost } from "./render/ghost";
+import { GlassRain } from "./render/glass-rain";
 import { GpuTimer } from "./render/gputimer";
 import { createGradePass } from "./render/grade";
 import { Headlights } from "./render/headlights";
@@ -1775,6 +1777,14 @@ scene.add(rubbleHeaps.group);
 // D10: what a collapsing building sheds — gravel, window frames, glass,
 // steel sparks, and a burst at every floor event (the D1 pool, no draw).
 const collapseDetail = new CollapseDetail(impacts, city.cityBuildings);
+// DS2: a collapsing tower's glass raining down as glittering shards (ONE
+// draw, posed in the vertex shader from the collapse and the clock).
+const glassRain = new GlassRain(city.cityBuildings);
+scene.add(glassRain.mesh);
+// DS2: the dust a collapse leaves on the streets, cars and props once its
+// cloud has settled (ONE draw for the ground; the cars read it).
+const dustDeposit = new DustDeposit(city.cityBuildings);
+scene.add(dustDeposit.mesh);
 // D9 destructible props: wrecks, snapped lamps and masts, poles and wires,
 // gas stations and every solid faller (ONE draw, drawn == collided for the
 // fallers); the street's craters and scorch (ONE draw) and every prop
@@ -3303,6 +3313,7 @@ function applyQualityTier(tier: QualityTier, keepRatio = false): void {
   scarsRenderer.setShare(QUALITY_PROFILES[tier].chaosFx); // D9
   ruinSmoke.setQuality(QUALITY_PROFILES[tier].chaosFx); // D8
   collapseDetail.setQuality(QUALITY_PROFILES[tier].chaosFx); // D10
+  glassRain.setQuality(QUALITY_PROFILES[tier].chaosFx); // DS2
   blastLedger.setBurnCap(burnCapFor(QUALITY_PROFILES[tier].impacts));
   wrecks.setShare(QUALITY_PROFILES[tier].wreckFire); // D4
   planeFires.setShare(QUALITY_PROFILES[tier].wreckFire); // DT1
@@ -7537,6 +7548,8 @@ const frame = (rafNow: number): void => {
   // second.
   localPhysicsView(collapseViewer.x, collapseViewer.z, qualityTier, now);
   collapseDetail.update(socket.collapses.list, collapseViewer, collapseMs, now);
+  glassRain.update(socket.collapses.list, collapseViewer, collapseMs);
+  dustDeposit.update(socket.collapses.list, collapseViewer, collapseMs);
   // D5: the director's warnings (dust, steam, sparks) and the rebuilds'
   // welders; an event is forgotten once its alarm has died away.
   if (socket.director.size > 0 && renderMs !== null) {

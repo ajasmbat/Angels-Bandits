@@ -45,6 +45,10 @@ export const ATLAS_HEIGHT = DAMAGE.slotsY * DAMAGE.rows;
 /** Bytes per texel (RG8). */
 const TEXEL = 2;
 
+/** DS2: × how far cracks run out from a facade's hits (the lab's
+ * crackGrowth; 0: no cracks). */
+export const CRACK_GROWTH_UNIFORM = { value: 1 };
+
 /** R channel: the shattered-pane bit, and the bullet-hole count below it. */
 export const SHATTERED = 0x80;
 export const HOLE_MASK = 0x03;
@@ -495,6 +499,7 @@ export const DAMAGE_ON_UNIFORM = { value: 1 };
 export const DAMAGE_PARS_GLSL = /* glsl */ `
 uniform highp sampler2D uDamage;
 uniform float uDamageOn;
+uniform float uCrackGrowth; // DS2: × how far cracks run from the hits
 flat varying highp float vDmgWord;
 // Smooth value noise (bilinear over abHash lattice values, smoothstep-eased).
 float abVNoise(vec2 p) {
@@ -521,7 +526,11 @@ float abVNoise(vec2 p) {
  *  - bullet holes: up to 3 dark pits with a pale chipped ring at hashed
  *    spots in the cell;
  *  - scorch: a 4-tap bilinear soot blend over cell centres, noisy edge;
- *    heavy scorch also kills the window's light.
+ *    heavy scorch also kills the window's light;
+ *  - DS2 cracks: the hits (holes, shattered panes) blended the same way
+ *    over the cell centres, and a network of hairline cracks (value-noise
+ *    ridges) running out from them as far as that blend × uCrackGrowth
+ *    reaches — dark in the wall, pale in the glass.
  * Per-cell detail fades with winDetail (O1: no distant sparkle). An
  * undamaged tier pays one compare; an undamaged face one integer decode.
  */
@@ -530,6 +539,7 @@ export const DAMAGE_GLSL = /* glsl */ `
 float dmgGlass = 0.0;
 float dmgHoles = 0.0;
 float dmgScorch = 0.0;
+float dmgCrack = 0.0;
 if (uDamageOn > 0.5 && facade > 0.0 && vDmgWord > 0.5) {
   uint dmgW = uint(vDmgWord + 0.5);
   bool dmgOnX = abs(vObjNormal.x) > 0.5;
@@ -559,9 +569,27 @@ if (uDamageOn > 0.5 && facade > 0.0 && vDmgWord > 0.5) {
     // 0.5 m) break the soft edge into licks and blotches.
     float dmgN = 0.65 * abVNoise(winGrid / 1.6) + 0.35 * abVNoise(winGrid / 0.5 + 17.0);
     dmgScorch = smoothstep(0.1, 0.8, dmgScorch * (0.45 + 1.1 * dmgN));
+    // DS2 cracks: how hit the cells round here are (holes / 3, a shattered
+    // pane counts full), blended like the scorch.
+    if (uCrackGrowth > 0.0) {
+      vec4 dmgR4 = floor(vec4(
+        texelFetch(uDamage, dmgO + clamp(dmgB, ivec2(0), dmgHi), 0).r,
+        texelFetch(uDamage, dmgO + clamp(dmgB + ivec2(1, 0), ivec2(0), dmgHi), 0).r,
+        texelFetch(uDamage, dmgO + clamp(dmgB + ivec2(0, 1), ivec2(0), dmgHi), 0).r,
+        texelFetch(uDamage, dmgO + clamp(dmgB + ivec2(1, 1), ivec2(0), dmgHi), 0).r) * 255.0 + 0.5);
+      vec4 dmgK4 = min(vec4(1.0), mod(dmgR4, 4.0) / 3.0 + step(127.5, dmgR4));
+      float dmgHit = mix(mix(dmgK4.x, dmgK4.y, dmgGf.x), mix(dmgK4.z, dmgK4.w, dmgGf.x), dmgGf.y);
+      float crkReach = dmgHit * uCrackGrowth;
+      if (crkReach > 0.0) {
+        float crkRidge = abs(abVNoise(winGrid / 1.1 + 3.0) - 0.5) + 0.35 * abs(abVNoise(winGrid / 0.37 + 9.0) - 0.5);
+        float crkLine = abLine(crkRidge * 1.1, 0.016, max(wAA.x, wAA.y));
+        float crkGrow = smoothstep(0.0, 0.2, crkReach * 1.3 - abVNoise(winGrid / 2.7 + 21.0));
+        dmgCrack = crkLine * crkGrow * abDetail(0.5, max(wAA.x, wAA.y));
+      }
+    }
   }
 }
-if (dmgGlass + dmgHoles + dmgScorch > 0.0) {
+if (dmgGlass + dmgHoles + dmgScorch + dmgCrack > 0.0) {
   // Shattered pane: a black room behind, a jagged rim of glass left in the
   // frame (meters in from the pane edge vs a per-sliver hash).
   float dmgPane = pane * dmgGlass * winDetail;
@@ -584,6 +612,8 @@ if (dmgGlass + dmgHoles + dmgScorch > 0.0) {
   }
   diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 1.6 + 0.04, dmgChip * (1.0 - dmgPit) * winDetail * 0.6);
   diffuseColor.rgb *= 1.0 - 0.85 * dmgPit * winDetail;
+  // DS2 cracks: dark in the wall, pale in the glass still in its frame.
+  diffuseColor.rgb = mix(diffuseColor.rgb, mix(diffuseColor.rgb * 0.25, diffuseColor.rgb * 0.6 + 0.12, pane), dmgCrack);
   // Scorch: soot over everything, and a burnt-out window is dark.
   diffuseColor.rgb *= 1.0 - 0.88 * dmgScorch;
   lit *= 1.0 - smoothstep(0.55, 0.9, dmgScorch);

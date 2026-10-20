@@ -11,6 +11,8 @@ import {
   type DestructionTuning,
 } from "@angels-bandits/common/destruction-tuning";
 import { ROOM_FLICKER_UNIFORM } from "./broken-shading";
+import { CRACK_GROWTH_UNIFORM } from "./damage-map";
+import { REBAR_UNIFORM } from "./fracture-library";
 
 /** The live look. Read it; write it only through setDestructLook. */
 export const destructLook: DestructionTuning = {
@@ -26,5 +28,7 @@ export let destructLookVersion = 0;
 export function setDestructLook(t: Readonly<DestructionTuning>): void {
   Object.assign(destructLook, t);
   ROOM_FLICKER_UNIFORM.value = t.roomFlicker;
+  REBAR_UNIFORM.value = t.rebar;
+  CRACK_GROWTH_UNIFORM.value = t.crackGrowth;
   destructLookVersion++;
 }

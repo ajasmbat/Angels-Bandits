@@ -28,14 +28,21 @@ import {
   BROKEN_COLOR_GLSL,
   BROKEN_DETAIL_UNIFORM,
   BROKEN_EMISSIVE_GLSL,
+  BROKEN_PARS_GLSL,
   BROKEN_VERTEX_GLSL,
   ROOM_FLICKER_UNIFORM,
 } from "./broken-shading";
-import { DAMAGE_GLSL, DAMAGE_ON_UNIFORM, DAMAGE_PARS_GLSL } from "./damage-map";
+import {
+  CRACK_GROWTH_UNIFORM,
+  DAMAGE_GLSL,
+  DAMAGE_ON_UNIFORM,
+  DAMAGE_PARS_GLSL,
+} from "./damage-map";
 import {
   FRACTURE_EMISSIVE_GLSL,
   FRACTURE_PARS_GLSL,
   FRACTURE_VERTEX_GLSL,
+  FRACTURE_VERTEX_PARS_GLSL,
 } from "./debris";
 import { emissiveBoost, luminance } from "./emissive";
 import {
@@ -43,6 +50,7 @@ import {
   facadeMaterialGlsl,
   windowDepthGlsl,
 } from "./facade-window";
+import { REBAR_UNIFORM, fractureLibraryTexture } from "./fracture-library";
 import {
   GUTTED_COLOR_GLSL,
   GUTTED_EMISSIVE_GLSL,
@@ -456,7 +464,7 @@ float abHash(vec2 p, float s) {
 float abSafeDiv(float d) {
   return abs(d) < 1e-4 ? (d < 0.0 ? -1e-4 : 1e-4) : d;
 }
-${OPENING_SD_GLSL}${NEON_SIGN_PARS_GLSL}${DAMAGE_PARS_GLSL}${INFERNO_PARS_GLSL}${roofParsGlsl()}${WAKE_PARS_GLSL}${livingParsGlsl()}${WEATHER_PARS_GLSL}${REFLECTION_PARS_GLSL}${DECK_PARS_GLSL}`;
+${BROKEN_PARS_GLSL}${OPENING_SD_GLSL}${NEON_SIGN_PARS_GLSL}${DAMAGE_PARS_GLSL}${INFERNO_PARS_GLSL}${roofParsGlsl()}${WAKE_PARS_GLSL}${livingParsGlsl()}${WEATHER_PARS_GLSL}${REFLECTION_PARS_GLSL}${DECK_PARS_GLSL}`;
 
 /** Injected after color_fragment: derives the shared window-grid locals
  * (in scope for the emissive block below — same main body), modulates the
@@ -770,14 +778,30 @@ export function createBuildingsMaterial(
     // D1: the facade damage atlas and its switch (damage-map.ts).
     shader.uniforms.uDamage = { value: damage };
     shader.uniforms.uDamageOn = DAMAGE_ON_UNIFORM;
+    shader.uniforms.uCrackGrowth = CRACK_GROWTH_UNIFORM;
     // S6: the reflection probe's cubes, blend and switch, by reference.
     bindReflectionUniforms(shader.uniforms);
     // L7: the burn, the fire lights and the flicker clocks, by reference.
     bindInfernoUniforms(shader.uniforms);
+    // DS2: the fracture library and the lab's rebar share (debris only).
+    if (fracture) {
+      shader.uniforms.uFracLib = { value: fractureLibraryTexture() };
+      shader.uniforms.uRebar = REBAR_UNIFORM;
+    }
     shader.vertexShader = shader.vertexShader
       .replace(
         "#include <common>",
-        `#include <common>\n${VERTEX_PARS}${FRACTURE_PARS_GLSL}`,
+        `#include <common>\n${VERTEX_PARS}${FRACTURE_PARS_GLSL}${FRACTURE_VERTEX_PARS_GLSL}`,
+      )
+      // DS2: the library vertex first (debris.ts abFrInit), and its true
+      // normal for the lighting (the passes read the box axis nearest it).
+      .replace(
+        "void main() {",
+        "void main() {\n#ifdef AB_FRACTURE\nabFrInit();\n#endif",
+      )
+      .replace(
+        "#include <beginnormal_vertex>",
+        "#include <beginnormal_vertex>\n#ifdef AB_FRACTURE\nobjectNormal = abFrTrueN;\n#endif",
       )
       .replace(
         "#include <begin_vertex>",

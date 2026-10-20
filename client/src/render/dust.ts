@@ -140,6 +140,17 @@ const CURTAIN_HOT_MS = 2200;
 const SURGE_TAU_S = 2.4;
 export const SURGE_ALONG_M = 0.8 * BLOCK_PITCH;
 export const SURGE_TOP_M = 14;
+/** DS2: a big collapse's surge is a pyroclastic flow — it rolls further
+ * down the avenues (× height / SURGE_SCALE_H_M, 1..SURGE_SCALE_MAX: a
+ * supertall's runs blocks each way) in bigger puffs (√ of it, capped). */
+const SURGE_SCALE_H_M = 110;
+export const SURGE_SCALE_MAX = 2.6;
+const SURGE_PUFF_MAX = 1.2;
+/** How far the surge rolls along the street past where it meets it, m. */
+export const surgeAlong = (height: number): number =>
+  SURGE_ALONG_M *
+  destructLook.dustRollOut *
+  Math.min(SURGE_SCALE_MAX, Math.max(1, height / SURGE_SCALE_H_M));
 const SURGE_LIFT = 0.45;
 /** A squib: how far it jets, m, its e-folding time, s, and its life, ms. */
 const SQUIB_REACH_M = 22;
@@ -516,8 +527,7 @@ function surgeOf(c: Collapse, cloud: Cloud, k: number, out: DustPuff): boolean {
   // …then along the street, one way, most of a block.
   const turn = (cloud.seeds[k * HASHES + 4] as number) < 0.5 ? -1 : 1;
   const along =
-    SURGE_ALONG_M *
-    destructLook.dustRollOut *
+    surgeAlong(cloud.height) *
     (0.35 + 0.65 * (cloud.seeds[k * HASHES + 5] as number));
   const run = (out1 + along) * (1 - Math.exp(-s / SURGE_TAU_S));
   const lane =
@@ -537,7 +547,11 @@ function surgeOf(c: Collapse, cloud: Cloud, k: number, out: DustPuff): boolean {
   const grow = Math.min(1, s / 6);
   out.size =
     (PUFF_SIZE_MIN * 0.8 + (PUFF_SIZE_MAX - PUFF_SIZE_MIN * 0.8) * grow) *
-    (0.6 + 0.4 * (cloud.seeds[k * HASHES + 7] as number));
+    (0.6 + 0.4 * (cloud.seeds[k * HASHES + 7] as number)) *
+    Math.min(
+      SURGE_PUFF_MAX,
+      Math.sqrt(Math.max(1, cloud.height / SURGE_SCALE_H_M)),
+    );
   // Ground-hugging; slowly lifting once it has slowed. Never so low that
   // the ground cuts more than the sprite's soft rim.
   const lift = SURGE_LIFT * Math.max(0, s - 3);
@@ -737,7 +751,7 @@ function surgeHaze(c: Collapse, cloud: Cloud, cam: Vec3, tMs: number): number {
     const street =
       streetAhead((alongX ? c.x : c.z) + face, sign) - (alongX ? c.x : c.z);
     const out1 = Math.abs(street - face);
-    const run = (out1 + SURGE_ALONG_M * destructLook.dustRollOut) * reach;
+    const run = (out1 + surgeAlong(cloud.height)) * reach;
     const u = alongX ? x : z; // the fall-out axis
     const v = alongX ? z : x;
     const lo = alongX ? cloud.fz0 : cloud.fx0;
